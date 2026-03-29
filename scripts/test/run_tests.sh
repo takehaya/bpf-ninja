@@ -163,6 +163,27 @@ test_tailcall_dispatcher() {
     [[ "$count" -ge 3 ]]
 }
 
+test_exit_pcap_action() {
+    local pcap=$(mktemp --suffix=.pcap)
+    local err=$(mktemp)
+    timeout 10 "$BINARY" -i veth0 --mode exit -w "$pcap" -c 3 2>"$err" &
+    local pid=$!
+    sleep 2
+    send_packets 5
+    wait $pid 2>/dev/null || true
+    # tshark でインターフェース名に xdp: が含まれるか確認
+    # tshark がなければ tcpdump で読めることだけ確認
+    if command -v tshark &>/dev/null; then
+        tshark -r "$pcap" -T fields -e frame.interface_name 2>/dev/null | grep -q "xdp:"
+        local result=$?
+    else
+        tcpdump -r "$pcap" -c 1 > /dev/null 2>&1
+        local result=$?
+    fi
+    rm -f "$pcap" "$err"
+    [[ $result -eq 0 ]]
+}
+
 test_graceful_shutdown() {
     require_bpftool || return 1
     local prog_id_before=$(bpftool prog show name xdp_pass 2>/dev/null | head -1 | awk '{print $1}' | tr -d ':')
@@ -199,6 +220,7 @@ run_test "entry_filter_nomatch"  test_entry_filter_nomatch
 run_test "exit_capture"          test_exit_capture
 run_test "prog_id"               test_prog_id
 run_test "pcap_output"           test_pcap_output
+run_test "exit_pcap_action"      test_exit_pcap_action
 run_test "tailcall_dispatcher"   test_tailcall_dispatcher
 run_test "graceful_shutdown"     test_graceful_shutdown
 

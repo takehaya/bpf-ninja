@@ -93,7 +93,7 @@ func run(ctx context.Context, cmd *cli.Command) error {
 	}
 	defer probe.Close()
 
-	writer, err := output.NewWriter(cmd.String("write"))
+	writer, err := output.NewWriter(cmd.String("write"), mode)
 	if err != nil {
 		return err
 	}
