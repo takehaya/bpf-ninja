@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.0](https://github.com/takehaya/xdp-ninja/compare/v0.1.0...v0.2.0) (2026-03-29)
+
+
+### 🎉 Features
+
+* embed XDP action as pcapng interface names in exit mode ([1ca525f](https://github.com/takehaya/xdp-ninja/commit/1ca525f76cffee591d961eb73ac6055738f2fc8b))
+* embed XDP action as pcapng interface names in exit mode ([5eedd7b](https://github.com/takehaya/xdp-ninja/commit/5eedd7be439cd2d947a471178cc51ffc240d8715))
+
 ## [0.1.0](https://github.com/takehaya/xdp-ninja/compare/v0.0.1...v0.1.0) (2026-03-24)
 
 
