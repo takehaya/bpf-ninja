@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.4.0](https://github.com/takehaya/xdp-ninja/compare/v0.3.0...v0.4.0) (2026-03-30)
+
+
+### 🎉 Features
+
+* BTF func resolution, exit mode pcapng, version flag & CI fixes ([f464819](https://github.com/takehaya/xdp-ninja/commit/f464819b449775c0ea5bca94616b1316ee7440b5))
+* resolve XDP entry function name via BTF and update tail call notes ([eb52cb0](https://github.com/takehaya/xdp-ninja/commit/eb52cb0e1f93b93c20896865f3d0356ac9dc4c35))
+
+
+### 🐛 Bug Fixes
+
+* resolve -v flag conflict between --verbose and --version ([baad18e](https://github.com/takehaya/xdp-ninja/commit/baad18e69fc3e799ac30a26bba740099ca664af8))
+
 ## [0.3.0](https://github.com/takehaya/xdp-ninja/compare/v0.2.0...v0.3.0) (2026-03-29)
 
 
