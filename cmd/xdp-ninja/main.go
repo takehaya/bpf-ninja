@@ -52,6 +52,16 @@ var flags = []cli.Flag{
 	},
 }
 
+func init() {
+	cli.VersionFlag = &cli.BoolFlag{
+		Name:        "version",
+		Aliases:     []string{"V"},
+		Usage:       "print the version",
+		HideDefault: true,
+		Local:       true,
+	}
+}
+
 func main() {
 	app := &cli.Command{
 		Name:      "xdp-ninja",

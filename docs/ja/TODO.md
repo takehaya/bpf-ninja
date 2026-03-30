@@ -19,13 +19,14 @@
 ## 既知の制限
 
 - [ ] tail call 先プログラムへの fentry/fexit アタッチが動作しない
-  - `bpf_tail_call` はプログラムジャンプであり通常の関数呼び出しではないため、
-    カーネルの BPF trampoline が介入しない
-  - dispatcher にアタッチすれば tail call 前のパケットは捕捉可能
+  - JIT が tail call 時にプロローグをスキップするため trampoline が発火しない
+  - `__noinline` サブ関数への fentry も tail call 経由では発火しない（検証済み）
+  - 詳細: [docs/ja/tailcall-trampoline-limitation.md](tailcall-trampoline-limitation.md)
   - 対処法:
-    - カーネル側の対応を待つ (fentry on tail call targets)
-    - tail call 挿入方式に切り替える (既存プログラムの差し替えが必要)
-    - tail call 先のプログラムにフック用の BPF subprogram を追加してもらう
+    - `--wrap` モード: prog_array の value を wrapper に書き換えて leaf の前に挟む（設計済み、未実装）
+      - entry 相当のみ。exit は取れない（tail call は制御が戻らないため）
+      - 設計: [docs/ja/wrap-mode-design.md](wrap-mode-design.md)
+    - カーネル側の対応を待つ（該当パッチは現時点で存在しない）
 
 - [ ] フィルタ実行時の scratch buffer コピーオーバーヘッド (~80ns)
   - verifier が xdp_buff->data 経由のメモリロードを scalar として拒否するため、
