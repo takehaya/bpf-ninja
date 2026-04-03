@@ -42,6 +42,12 @@ sudo xdp-ninja -i eth0 -w capture.pcap -c 100
 # Attach by BPF program ID (for multi-prog / libxdp setups)
 sudo xdp-ninja -p 42 | tcpdump -n -r -
 
+# List available BTF functions in the target program
+sudo xdp-ninja -i eth0 --list-funcs
+
+# Attach to a specific __noinline subfunction
+sudo xdp-ninja -i eth0 --func process_packet | tcpdump -n -r -
+
 # Capture both before and after (run two instances)
 sudo xdp-ninja -i eth0 | tcpdump -n -r -
 sudo xdp-ninja -i eth0 --mode exit | tcpdump -n -r -
@@ -54,11 +60,47 @@ sudo xdp-ninja -i eth0 --mode exit | tcpdump -n -r -
 | `-i, --interface` | Network interface to capture on |
 | `-p, --prog-id` | BPF program ID to attach to (alternative to `-i`) |
 | `--mode` | `entry` (before XDP, default) or `exit` (after XDP) |
+| `--func` | Attach to a specific `__noinline` subfunction by BTF name |
+| `--list-funcs` | List available BTF functions in the target program and exit |
 | `-w, --write` | Write to pcap file instead of stdout |
 | `-c, --count` | Stop after N packets (0 = unlimited) |
 | `-v, --verbose` | Verbose output to stderr |
 
 Specify either `-i` or `-p`, not both.
+
+### Attaching to subfunctions
+
+You can use `--func` to attach fentry/fexit to a `__noinline` subfunction inside the target XDP program, instead of the entry function. The subfunction must take `struct xdp_md *ctx` as its first argument.
+
+Use `--list-funcs` to discover available functions:
+
+```bash
+sudo xdp-ninja -i eth0 --list-funcs
+```
+
+Both global and static `__noinline` subfunctions work:
+
+```c
+/* Global — always survives in BTF */
+__attribute__((noinline))
+int classify_packet(struct xdp_md *ctx) {
+    void *data = (void *)(long)ctx->data;
+    void *data_end = (void *)(long)ctx->data_end;
+    if (data + 1 > data_end) return 1;
+    return 2;
+}
+
+/* Static — also works, but the body must be non-trivial */
+static __attribute__((noinline))
+int parse_headers(struct xdp_md *ctx) {
+    void *data = (void *)(long)ctx->data;
+    void *data_end = (void *)(long)ctx->data_end;
+    if (data + 1 > data_end) return -1;
+    return 2;
+}
+```
+
+> **Note:** The subfunction must have a non-trivial body (e.g. access `ctx->data`). A trivial body like `return 2;` will be constant-folded by `clang -O2`, eliminating the bpf2bpf call entirely.
 
 ## Prerequisites
 

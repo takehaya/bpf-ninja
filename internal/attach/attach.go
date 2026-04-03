@@ -69,6 +69,143 @@ func FindXDPProgram(ifaceName string) (*XDPInfo, error) {
 	}, nil
 }
 
+// TailCallTarget holds information about a program in a PROG_ARRAY map.
+type TailCallTarget struct {
+	Index    uint32
+	ProgID   uint32
+	ProgName string
+}
+
+// ListTailCallTargets finds all tail call targets reachable from the given program
+// by scanning its PROG_ARRAY maps.
+func ListTailCallTargets(prog *ebpf.Program) ([]TailCallTarget, error) {
+	info, err := prog.Info()
+	if err != nil {
+		return nil, fmt.Errorf("getting program info: %w", err)
+	}
+
+	mapIDs, ok := info.MapIDs()
+	if !ok {
+		return nil, nil
+	}
+
+	var targets []TailCallTarget
+	for _, mapID := range mapIDs {
+		m, err := ebpf.NewMapFromID(mapID)
+		if err != nil {
+			continue
+		}
+
+		mapInfo, err := m.Info()
+		if err != nil {
+			m.Close()
+			continue
+		}
+		if mapInfo.Type != ebpf.ProgramArray {
+			m.Close()
+			continue
+		}
+
+		// Iterate PROG_ARRAY entries
+		var key, val uint32
+		iter := m.Iterate()
+		for iter.Next(&key, &val) {
+			progID := val
+			targetProg, err := ebpf.NewProgramFromID(ebpf.ProgramID(progID))
+			if err != nil {
+				continue
+			}
+
+			targetInfo, err := targetProg.Info()
+			if err != nil {
+				targetProg.Close()
+				continue
+			}
+
+			targets = append(targets, TailCallTarget{
+				Index:    key,
+				ProgID:   progID,
+				ProgName: targetInfo.Name,
+			})
+			targetProg.Close()
+		}
+		m.Close()
+	}
+
+	return targets, nil
+}
+
+// FuncInfo holds metadata about a BTF function in a BPF program.
+type FuncInfo struct {
+	Name    string
+	Linkage string // "static", "global", "extern"
+}
+
+// btfSpec opens the BTF handle for a loaded program and returns its spec.
+func btfSpec(prog *ebpf.Program) (*btf.Spec, error) {
+	handle, err := prog.Handle()
+	if err != nil {
+		return nil, fmt.Errorf("BTF unavailable: %w", err)
+	}
+	defer handle.Close()
+
+	spec, err := handle.Spec(nil)
+	if err != nil {
+		return nil, fmt.Errorf("reading BTF: %w", err)
+	}
+	return spec, nil
+}
+
+// ListFuncs returns all BTF function entries found in the program.
+func ListFuncs(prog *ebpf.Program) ([]FuncInfo, error) {
+	spec, err := btfSpec(prog)
+	if err != nil {
+		return nil, err
+	}
+	return ListFuncsFromSpec(spec)
+}
+
+// ValidateSubfunc checks that the given function name exists in the program's BTF.
+// If the function is not found, the error message includes a list of available functions.
+func ValidateSubfunc(prog *ebpf.Program, progID uint32, funcName string) error {
+	spec, err := btfSpec(prog)
+	if err != nil {
+		return fmt.Errorf("program (id=%d): %w", progID, err)
+	}
+
+	var fn *btf.Func
+	if err := spec.TypeByName(funcName, &fn); err == nil {
+		return nil
+	}
+
+	funcs, _ := ListFuncsFromSpec(spec)
+	var names []string
+	for _, f := range funcs {
+		names = append(names, f.Name)
+	}
+	return fmt.Errorf(
+		"function %q not found in program (id=%d) BTF; available functions: %v",
+		funcName, progID, names,
+	)
+}
+
+// ListFuncsFromSpec collects function entries from a BTF spec.
+func ListFuncsFromSpec(spec *btf.Spec) ([]FuncInfo, error) {
+	var funcs []FuncInfo
+	for typ, err := range spec.All() {
+		if err != nil {
+			return funcs, err
+		}
+		if f, ok := typ.(*btf.Func); ok {
+			funcs = append(funcs, FuncInfo{
+				Name:    f.Name,
+				Linkage: f.Linkage.String(),
+			})
+		}
+	}
+	return funcs, nil
+}
+
 // resolveEntryFunc resolves the entry function name from the program's BTF.
 //
 // fentry/fexit requires BTF, so this function errors if BTF is unavailable
