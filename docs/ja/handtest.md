@@ -1,192 +1,466 @@
-# ハンドテスト手順
+# ハンドテスト: xdp-ninja パケットキャプチャ
+
+xdp-ninja の各機能を手動で検証する手順書。
+シンプルな XDP プログラムへの fentry/fexit から始め、
+`--func` によるサブ関数プローブ、tail call 環境での動作まで段階的に確認する。
 
 ## 前提条件
 
-- Linux kernel 5.8+ (BTF有効: `/sys/kernel/btf/vmlinux` が存在すること)
-- root権限 or `CAP_BPF` + `CAP_NET_ADMIN`
-- 必要パッケージ: `clang`, `libpcap-dev`, `tcpdump`, `bpftool`
+- Linux kernel 6.x 以上（bpf2bpf call と tail call の共存をサポート）
+- root 権限
+- clang, bpftool, tcpdump
 
-## 1. ビルド
-
-```bash
-cd xdp-ninja
-make build
-```
-
-## 2. テスト環境セットアップ
-
-veth pair + ダミーXDPプログラムを作成:
+## 0. ビルド
 
 ```bash
-sudo scripts/test/setup.sh
+cd /path/to/xdp-ninja
+go build -o xdp-ninja ./cmd/xdp-ninja/
 ```
 
-確認:
-```bash
-# veth0 にXDPプログラムがアタッチされていること
-sudo bpftool prog show name xdp_pass
+---
 
-# IP が付いていること
-ip addr show veth0  # 10.0.0.1/24
-sudo ip netns exec xdptest ip addr show veth1  # 10.0.0.2/24
+## Part 1: エントリ関数への fentry/fexit
 
-# ping が通ること (veth1 は netns xdptest 内)
-sudo ip netns exec xdptest ping -c 1 10.0.0.1
-```
+最もシンプルなケース。XDP プログラムのエントリ関数にアタッチしてパケットをキャプチャする。
 
-## 3. テスト実行
-
-### 3.1 基本: フィルタなしキャプチャ
-
-ターミナル1:
-```bash
-sudo ./xdp-ninja -i veth0 | tcpdump -n -r -
-```
-
-ターミナル2:
-```bash
-sudo ip netns exec xdptest ping -c 3 10.0.0.1
-```
-
-期待: ターミナル1に ICMP パケット等が表示される。Ctrl+C で停止。
-
-### 3.2 フィルタ付きキャプチャ
-
-ターミナル1:
-```bash
-sudo ./xdp-ninja -i veth0 "icmp" | tcpdump -n -r -
-```
-
-ターミナル2:
-```bash
-sudo ip netns exec xdptest ping -c 3 10.0.0.1
-```
-
-期待: ICMP echo request のみ表示。ARP や IPv6 NDP は表示されない。
-
-### 3.3 フィルタ不一致の確認
-
-ターミナル1:
-```bash
-sudo ./xdp-ninja -i veth0 "tcp port 80" | tcpdump -n -r -
-```
-
-ターミナル2:
-```bash
-sudo ip netns exec xdptest ping -c 5 10.0.0.1
-```
-
-期待: 何も表示されない（ICMP/ARP は tcp port 80 にマッチしない）。Ctrl+C で停止すると `0 packets captured`。
-
-### 3.4 fexit (XDP処理後) キャプチャ
-
-ターミナル1:
-```bash
-sudo ./xdp-ninja -i veth0 --mode exit | tcpdump -n -r -
-```
-
-ターミナル2:
-```bash
-sudo ip netns exec xdptest ping -c 3 10.0.0.1
-```
-
-期待: パケットが表示される。（ダミーXDPプログラムは XDP_PASS を返すので、パケットは通過する）
-
-### 3.5 pcapファイル出力
+### 1.1 テスト用プログラムの作成
 
 ```bash
-sudo ./xdp-ninja -i veth0 -w /tmp/test.pcap -c 5
+cat > /tmp/xdp_simple.c << 'EOF'
+#include <linux/bpf.h>
+#include <bpf/bpf_helpers.h>
+
+SEC("xdp")
+int xdp_pass(struct xdp_md *ctx) {
+    return 2; /* XDP_PASS */
+}
+
+char _license[] SEC("license") = "GPL";
+EOF
+clang -O2 -g -target bpf -c /tmp/xdp_simple.c -o /tmp/xdp_simple.o
 ```
 
-別ターミナル:
-```bash
-sudo ip netns exec xdptest ping -c 5 10.0.0.1
-```
-
-5パケットキャプチャ後に自動停止。確認:
-```bash
-tcpdump -n -r /tmp/test.pcap
-```
-
-### 3.6 パケット数制限
-
-```bash
-sudo ./xdp-ninja -i veth0 -c 3 | tcpdump -n -r -
-```
-
-別ターミナルから ping を送ると、3パケット後に自動停止。
-
-### 3.7 verbose モード
+### 1.2 環境構築
 
 ```bash
-sudo ./xdp-ninja -i veth0 -v "arp" | tcpdump -n -r -
+sudo ip netns add nstest
+sudo ip link add vtest0 type veth peer name vtest1
+sudo ip link set vtest1 netns nstest
+sudo ip addr add 10.77.0.1/24 dev vtest0
+sudo ip netns exec nstest ip addr add 10.77.0.2/24 dev vtest1
+sudo ip link set vtest0 up
+sudo ip netns exec nstest ip link set vtest1 up
+sudo ip netns exec nstest ip link set lo up
+
+# XDP プログラムをアタッチ
+sudo ip link set dev vtest0 xdp obj /tmp/xdp_simple.o sec xdp
 ```
 
-stderr にプログラム情報とフィルタ式が表示される:
-```
-found XDP program "xdp_pass" (id=XXX)
-filter: arp
-capturing (prog "xdp_pass" id=XXX on veth0, mode=entry)...
-```
-
-### 3.8 プログラムID指定 (-p)
-
-まずプログラムIDを調べる:
-```bash
-sudo bpftool prog show name xdp_pass
-# 出力例: 123: xdp  name xdp_pass ...
-```
-
-ターミナル1:
-```bash
-sudo ./xdp-ninja -p 123 | tcpdump -n -r -
-```
-
-ターミナル2:
-```bash
-sudo ip netns exec xdptest ping -c 3 10.0.0.1
-```
-
-期待: `-i veth0` と同じようにパケットが表示される。multi-prog (libxdp) 環境では個別プログラムを狙い撃ちできる。
-
-### 3.9 entry + exit 同時キャプチャ (2プロセス)
-
-ターミナル1 (entry):
-```bash
-sudo ./xdp-ninja -i veth0 | tcpdump -n -r -
-```
-
-ターミナル2 (exit):
-```bash
-sudo ./xdp-ninja -i veth0 --mode exit | tcpdump -n -r -
-```
-
-ターミナル3:
-```bash
-sudo ip netns exec xdptest ping -c 3 10.0.0.1
-```
-
-期待: 両方のターミナルにパケットが表示される。
-
-## 4. クリーンアップ
+疎通確認:
 
 ```bash
-sudo scripts/test/cleanup.sh
+sudo ip netns exec nstest ping -c 3 10.77.0.1
 ```
 
-## トラブルシューティング
+### 1.3 fentry（XDP 処理前のキャプチャ）
 
-### `no XDP program attached to veth0`
-→ `sudo scripts/test/setup.sh` を実行してダミーXDPプログラムをアタッチしてください。
+ターミナル 1:
 
-### `retrieve BTF ID: not supported`
-→ ダミーXDPプログラムにBTFがない。`scripts/test/setup.sh` は `-g` 付きでコンパイルするので、再実行してください。
+```bash
+sudo ./xdp-ninja -i vtest0 -v | tcpdump -n -r -
+```
 
-### `permission denied` (BPFロード時)
-→ `sudo` で実行してください。または `CAP_BPF` + `CAP_NET_ADMIN` を付与。
+ターミナル 2:
 
-### tcpdump に何も表示されない
-→ stderr を確認: `sudo ./xdp-ninja -i veth0 -v 2>/tmp/err.txt | tcpdump -n -r -` してから `cat /tmp/err.txt`
+```bash
+sudo ip netns exec nstest ping -c 5 10.77.0.1
+```
 
-### `lost N samples`
-→ perf buffer が溢れている。パケットレートが高い場合に発生。キャプチャ対象を絞るフィルタを使うか、将来的にバッファサイズオプションの追加を検討。
+期待: ICMP パケットがキャプチャされる。
+
+### 1.4 fexit（XDP 処理後のキャプチャ）
+
+```bash
+sudo ./xdp-ninja -i vtest0 --mode exit -v | tcpdump -n -r -
+```
+
+期待: ICMP パケットがキャプチャされる。
+
+### 1.5 フィルタ付き
+
+```bash
+# マッチするフィルタ
+sudo ./xdp-ninja -i vtest0 "icmp" -v | tcpdump -n -r -
+
+# マッチしないフィルタ
+sudo ./xdp-ninja -i vtest0 "tcp port 80" -v -c 3 | tcpdump -n -r -
+```
+
+期待: icmp フィルタではキャプチャされ、tcp port 80 では `0 packets captured`。
+
+### 1.6 pcap ファイル出力
+
+```bash
+sudo ./xdp-ninja -i vtest0 -w /tmp/capture.pcap -c 5 &
+sudo ip netns exec nstest ping -c 5 10.77.0.1
+wait
+tcpdump -n -r /tmp/capture.pcap
+```
+
+期待: pcap ファイルが生成され、tcpdump で読める。
+
+### 1.7 クリーンアップ
+
+```bash
+sudo ip link set dev vtest0 xdp off
+sudo ip link delete vtest0 2>/dev/null
+sudo ip netns delete nstest 2>/dev/null
+```
+
+---
+
+## Part 2: `--func` によるサブ関数プローブ
+
+`__noinline` サブ関数にアタッチしてキャプチャする。
+global と static の両方を含むプログラムで動作を確認する。
+
+### 2.1 テスト用プログラムの作成
+
+```
+xdp_main
+  └─ classify_packet  [global __noinline]
+      └─ parse_headers  [static __noinline]
+```
+
+```bash
+cat > /tmp/xdp_subfunc.c << 'EOF'
+#include <linux/bpf.h>
+#include <bpf/bpf_helpers.h>
+
+#define ETH_P_IP     0x0800
+#define IPPROTO_ICMP 1
+
+struct ethhdr {
+    unsigned char h_dest[6];
+    unsigned char h_source[6];
+    __be16        h_proto;
+} __attribute__((packed));
+
+struct iphdr {
+    __u8   ihl_ver;
+    __u8   tos;
+    __be16 tot_len;
+    __be16 id;
+    __be16 frag_off;
+    __u8   ttl;
+    __u8   protocol;
+    __be16 check;
+    __be32 saddr;
+    __be32 daddr;
+} __attribute__((packed));
+
+/* static __noinline: verifier が呼び出し元のコンテキストで検証する */
+static __attribute__((noinline))
+int parse_headers(struct xdp_md *ctx) {
+    void *data     = (void *)(long)ctx->data;
+    void *data_end = (void *)(long)ctx->data_end;
+
+    struct ethhdr *eth = data;
+    if ((void *)(eth + 1) > data_end)
+        return -1;
+
+    if (eth->h_proto != __builtin_bswap16(ETH_P_IP))
+        return -1;
+
+    struct iphdr *ip = (void *)(eth + 1);
+    if ((void *)(ip + 1) > data_end)
+        return -1;
+
+    return ip->protocol;
+}
+
+/* global __noinline: verifier が独立して検証する */
+__attribute__((noinline))
+int classify_packet(struct xdp_md *ctx) {
+    int proto = parse_headers(ctx);
+    if (proto == IPPROTO_ICMP)
+        return 2; /* XDP_PASS */
+    return 2; /* XDP_PASS */
+}
+
+SEC("xdp")
+int xdp_main(struct xdp_md *ctx) {
+    return classify_packet(ctx);
+}
+
+char _license[] SEC("license") = "GPL";
+EOF
+clang -O2 -g -target bpf -c /tmp/xdp_subfunc.c -o /tmp/xdp_subfunc.o
+```
+
+> **注意:** `__noinline` サブ関数の body は `ctx->data` 等にアクセスする非自明な処理が必要。
+> `return 2;` だけの trivial な body は `clang -O2` で定数畳み込みされ、bpf2bpf call ごと消える。
+
+### 2.2 環境構築
+
+```bash
+sudo ip netns add nstest
+sudo ip link add vtest0 type veth peer name vtest1
+sudo ip link set vtest1 netns nstest
+sudo ip addr add 10.77.0.1/24 dev vtest0
+sudo ip netns exec nstest ip addr add 10.77.0.2/24 dev vtest1
+sudo ip link set vtest0 up
+sudo ip netns exec nstest ip link set vtest1 up
+sudo ip netns exec nstest ip link set lo up
+
+sudo ip link set dev vtest0 xdp obj /tmp/xdp_subfunc.o sec xdp
+```
+
+疎通確認:
+
+```bash
+sudo ip netns exec nstest ping -c 3 10.77.0.1
+```
+
+### 2.3 `--list-funcs` で関数一覧を確認
+
+```bash
+sudo ./xdp-ninja -i vtest0 --list-funcs
+```
+
+期待出力:
+
+```
+BTF functions in program (id=XXXX):
+  parse_headers                              [static]
+  classify_packet                            [global]
+  xdp_main                                   [global]
+```
+
+### 2.4 fentry on `classify_packet`（global）
+
+```bash
+sudo ./xdp-ninja -i vtest0 --func classify_packet -v | tcpdump -n -r -
+```
+
+期待: ICMP パケットがキャプチャされる。
+
+### 2.5 fentry on `parse_headers`（static）
+
+```bash
+sudo ./xdp-ninja -i vtest0 --func parse_headers -v | tcpdump -n -r -
+```
+
+期待: 同様にキャプチャされる。
+
+### 2.6 fexit on サブ関数
+
+```bash
+sudo ./xdp-ninja -i vtest0 --func classify_packet --mode exit -v | tcpdump -n -r -
+```
+
+期待: キャプチャされる。
+
+### 2.7 存在しない関数名（エラー）
+
+```bash
+sudo ./xdp-ninja -i vtest0 --func no_such_func
+```
+
+期待: 利用可能な関数名を含むエラーメッセージ。
+
+### 2.8 クリーンアップ
+
+```bash
+sudo ip link set dev vtest0 xdp off
+sudo ip link delete vtest0 2>/dev/null
+sudo ip netns delete nstest 2>/dev/null
+```
+
+---
+
+## Part 3: tail call 環境でのサブ関数プローブ
+
+dispatcher が tail call で leaf を呼び出す構成で、
+leaf 内のサブ関数に fentry/fexit をアタッチできることを確認する。
+
+### 3.1 テスト用プログラムの作成
+
+```
+xdp_dispatcher
+  └─ tail call ─→ xdp_leaf
+                    └─ classify_packet  [global]
+                        └─ parse_headers  [static]
+```
+
+```bash
+cat > /tmp/xdp_tc_subfunc.c << 'EOF'
+#include <linux/bpf.h>
+#include <bpf/bpf_helpers.h>
+
+#define ETH_P_IP     0x0800
+#define IPPROTO_ICMP 1
+
+struct ethhdr {
+    unsigned char h_dest[6];
+    unsigned char h_source[6];
+    __be16        h_proto;
+} __attribute__((packed));
+
+struct iphdr {
+    __u8   ihl_ver;
+    __u8   tos;
+    __be16 tot_len;
+    __be16 id;
+    __be16 frag_off;
+    __u8   ttl;
+    __u8   protocol;
+    __be16 check;
+    __be32 saddr;
+    __be32 daddr;
+} __attribute__((packed));
+
+struct {
+    __uint(type, BPF_MAP_TYPE_PROG_ARRAY);
+    __uint(max_entries, 1);
+    __uint(key_size, sizeof(__u32));
+    __uint(value_size, sizeof(__u32));
+} prog_array SEC(".maps");
+
+/* static __noinline */
+static __attribute__((noinline))
+int parse_headers(struct xdp_md *ctx) {
+    void *data     = (void *)(long)ctx->data;
+    void *data_end = (void *)(long)ctx->data_end;
+
+    struct ethhdr *eth = data;
+    if ((void *)(eth + 1) > data_end)
+        return -1;
+
+    if (eth->h_proto != __builtin_bswap16(ETH_P_IP))
+        return -1;
+
+    struct iphdr *ip = (void *)(eth + 1);
+    if ((void *)(ip + 1) > data_end)
+        return -1;
+
+    return ip->protocol;
+}
+
+/* global __noinline */
+__attribute__((noinline))
+int classify_packet(struct xdp_md *ctx) {
+    int proto = parse_headers(ctx);
+    if (proto == IPPROTO_ICMP)
+        return 2;
+    return 2;
+}
+
+SEC("xdp")
+int xdp_leaf(struct xdp_md *ctx) {
+    return classify_packet(ctx);
+}
+
+SEC("xdp")
+int xdp_dispatcher(struct xdp_md *ctx) {
+    bpf_tail_call(ctx, &prog_array, 0);
+    return 2;
+}
+
+char _license[] SEC("license") = "GPL";
+EOF
+clang -O2 -g -target bpf -c /tmp/xdp_tc_subfunc.c -o /tmp/xdp_tc_subfunc.o
+```
+
+### 3.2 環境構築
+
+```bash
+sudo ip netns add nstest
+sudo ip link add vtest0 type veth peer name vtest1
+sudo ip link set vtest1 netns nstest
+sudo ip addr add 10.77.0.1/24 dev vtest0
+sudo ip netns exec nstest ip addr add 10.77.0.2/24 dev vtest1
+sudo ip link set vtest0 up
+sudo ip netns exec nstest ip link set vtest1 up
+sudo ip netns exec nstest ip link set lo up
+
+# bpftool でロード（dispatcher と leaf を別プログラムとしてロード）
+sudo rm -rf /sys/fs/bpf/tctest
+sudo mkdir -p /sys/fs/bpf/tctest
+sudo bpftool prog loadall /tmp/xdp_tc_subfunc.o /sys/fs/bpf/tctest
+
+# プログラム ID を取得
+DISP_ID=$(sudo bpftool prog show pinned /sys/fs/bpf/tctest/xdp_dispatcher | head -1 | awk '{print $1}' | tr -d ':')
+LEAF_ID=$(sudo bpftool prog show pinned /sys/fs/bpf/tctest/xdp_leaf | head -1 | awk '{print $1}' | tr -d ':')
+echo "DISP_ID=$DISP_ID LEAF_ID=$LEAF_ID"
+
+# dispatcher をインターフェースにアタッチ
+sudo bpftool net attach xdp id "$DISP_ID" dev vtest0
+
+# prog_array を pin して tail call を設定
+MAP_ID=$(sudo bpftool prog show id "$DISP_ID" | grep -oP 'map_ids \K\d+')
+sudo bpftool map pin id "$MAP_ID" /sys/fs/bpf/tctest/prog_array
+sudo bpftool map update pinned /sys/fs/bpf/tctest/prog_array key 0 0 0 0 value id "$LEAF_ID"
+```
+
+疎通確認:
+
+```bash
+sudo ip netns exec nstest ping -c 3 10.77.0.1
+```
+
+### 3.3 `--list-progs` で tail call ツリーを確認
+
+```bash
+sudo ./xdp-ninja -i vtest0 --list-progs
+```
+
+期待出力:
+
+```
+id=XXXX   xdp_dispatcher
+id=YYYY   xdp_leaf (tailcall[0])
+```
+
+### 3.4 leaf のサブ関数一覧
+
+```bash
+sudo ./xdp-ninja -p $LEAF_ID --list-funcs
+```
+
+### 3.5 fentry on サブ関数（tail call 経由で発火するか）
+
+```bash
+sudo ./xdp-ninja -p $LEAF_ID --func classify_packet -v | tcpdump -n -r -
+```
+
+期待: ICMP パケットがキャプチャされる。
+tail call 先プログラム内の bpf2bpf call はトランポリンが正常に動作する。
+
+### 3.6 fexit on サブ関数
+
+```bash
+sudo ./xdp-ninja -p $LEAF_ID --func classify_packet --mode exit -v | tcpdump -n -r -
+```
+
+期待: キャプチャされる。
+
+### 3.7 tail call 先エントリ関数への直接アタッチ（発火しないケース）
+
+```bash
+sudo ./xdp-ninja -p $LEAF_ID -v -c 3 | tcpdump -n -r -
+```
+
+期待: `0 packets captured`。
+tail call は `jmp` でエントリのトランポリンをバイパスするため、
+エントリ関数への fentry は発火しない。
+一方、内部の bpf2bpf call は通常の関数呼び出しなのでトランポリンが動作する。
+
+### 3.8 クリーンアップ
+
+```bash
+sudo bpftool net detach xdp dev vtest0
+sudo rm -rf /sys/fs/bpf/tctest
+sudo ip link delete vtest0 2>/dev/null
+sudo ip netns delete nstest 2>/dev/null
+```
