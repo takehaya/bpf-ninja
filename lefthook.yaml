@@ -1,0 +1,91 @@
+---
+pre-commit:
+  parallel: true
+  commands:
+    trailing-whitespace:
+      glob: "**/*"
+      exclude:
+        - "*.md"
+        - "*.patch"
+        - "*.o"
+      run: |
+        for file in {staged_files}; do
+          if ! file --mime-type "$file" | grep -q "text/"; then
+            continue
+          fi
+          if grep -q '[[:space:]]$' "$file"; then
+            sed -i 's/[[:space:]]*$//' "$file"
+            echo "Fixed trailing whitespace in: $file"
+          fi
+        done
+
+    mixed-line-ending:
+      glob: "**/*"
+      run: |
+        for file in {staged_files}; do
+          if ! file --mime-type "$file" | grep -q "text/"; then
+            continue
+          fi
+          if command -v dos2unix >/dev/null 2>&1; then
+            dos2unix -q "$file"
+          fi
+        done
+
+    check-executables-have-shebangs:
+      glob: "**/*"
+      run: |
+        for file in {staged_files}; do
+          if ! file --mime-type "$file" | grep -q "text/"; then
+            continue
+          fi
+          if [ -x "$file" ] && [ -f "$file" ] && ! grep -q '^#!' "$file"; then
+            echo "Executable without shebang: $file"
+            exit 1
+          fi
+        done
+
+    yamllint:
+      glob: "**/*.{yml,yaml}"
+      run: yamllint -f colored {staged_files}
+
+    check-json:
+      glob: "**/*.json"
+      run: |
+        failed=0
+        for f in {staged_files}; do
+          if ! jq -e empty "$f" >/dev/null 2>&1; then
+            echo "JSON parse error in $f"
+            jq empty "$f"
+            failed=1
+          fi
+        done
+        exit $failed
+
+    go-vet:
+      glob: "**/*.go"
+      run: go vet ./...
+
+    golangci-lint:
+      glob: "**/*.go"
+      run: golangci-lint run --fix ./...
+
+    go-test:
+      glob: "**/*.go"
+      run: go test ./...
+
+    clang-format:
+      glob: "**/*.{c,h}"
+      run: clang-format -i {staged_files}
+
+commit-msg:
+  commands:
+    conventional-commit:
+      run: |
+        if ! grep -qE '^(hotfix|feat|fix|docs|style|refactor|perf|test|chore|ci)(\([^\)]*\))?!?:\s' {1}; then
+          echo "Commit message must follow conventional commits format."
+          echo "Format: <type>(<scope>): <description>"
+          echo "Types: feat, fix, docs, style, refactor, perf, test, chore, ci, hotfix"
+          exit 1
+        fi
+
+colors: true
