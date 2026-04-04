@@ -66,9 +66,9 @@ func loadTailcallCollection(t *testing.T) (dispatcher, leaf *ebpf.Program, progA
 		t.Fatalf("load: %v", err)
 	}
 	t.Cleanup(func() {
-		objs.Dispatcher.Close()
-		objs.Leaf.Close()
-		objs.ProgArray.Close()
+		_ = objs.Dispatcher.Close()
+		_ = objs.Leaf.Close()
+		_ = objs.ProgArray.Close()
 	})
 
 	if err := objs.ProgArray.Put(uint32(0), uint32(objs.Leaf.FD())); err != nil {
@@ -83,14 +83,14 @@ func setupVethWithXDP(t *testing.T, xdpProg *ebpf.Program) (ifaceName string) {
 	t.Helper()
 	const veth0, veth1 = "tcftest0", "tcftest1"
 
-	exec.Command("ip", "link", "del", veth0).Run()
+	_ = exec.Command("ip", "link", "del", veth0).Run()
 	if err := netlink.LinkAdd(&netlink.Veth{
 		LinkAttrs: netlink.LinkAttrs{Name: veth0},
 		PeerName:  veth1,
 	}); err != nil {
 		t.Fatalf("veth add: %v", err)
 	}
-	t.Cleanup(func() { exec.Command("ip", "link", "del", veth0).Run() })
+	t.Cleanup(func() { _ = exec.Command("ip", "link", "del", veth0).Run() })
 
 	nl0, err := netlink.LinkByName(veth0)
 	if err != nil {
@@ -116,7 +116,7 @@ func setupVethWithXDP(t *testing.T, xdpProg *ebpf.Program) (ifaceName string) {
 	if err := netlink.LinkSetXdpFd(nl0, xdpProg.FD()); err != nil {
 		t.Fatalf("XDP attach: %v", err)
 	}
-	t.Cleanup(func() { netlink.LinkSetXdpFd(nl0, -1) })
+	t.Cleanup(func() { _ = netlink.LinkSetXdpFd(nl0, -1) })
 
 	return veth0
 }
@@ -136,13 +136,13 @@ func countProbeEvents(t *testing.T, targetProg *ebpf.Program, funcName, iface st
 	if err != nil {
 		t.Fatalf("load probe (%s): %v", funcName, err)
 	}
-	defer probe.Close()
+	defer func() { _ = probe.Close() }()
 
 	reader, err := perf.NewReader(probe.EventsMap, 64*1024)
 	if err != nil {
 		t.Fatalf("perf reader: %v", err)
 	}
-	defer reader.Close()
+	defer func() { _ = reader.Close() }()
 
 	// Give the probe time to attach before sending packets.
 	time.Sleep(200 * time.Millisecond)
@@ -150,7 +150,7 @@ func countProbeEvents(t *testing.T, targetProg *ebpf.Program, funcName, iface st
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		exec.Command("ping", "-c", "5", "-W", "1", "-I", iface, "10.99.0.2").CombinedOutput()
+		_, _ = exec.Command("ping", "-c", "5", "-W", "1", "-I", iface, "10.99.0.2").CombinedOutput()
 	}()
 	defer func() { <-done }()
 

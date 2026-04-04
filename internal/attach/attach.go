@@ -27,7 +27,7 @@ func FindXDPProgramByID(progID uint32) (*XDPInfo, error) {
 
 	funcName, err := resolveEntryFunc(prog, progID)
 	if err != nil {
-		prog.Close()
+		_ = prog.Close()
 		return nil, err
 	}
 
@@ -57,7 +57,7 @@ func FindXDPProgram(ifaceName string) (*XDPInfo, error) {
 
 	funcName, err := resolveEntryFunc(prog, xdp.ProgId)
 	if err != nil {
-		prog.Close()
+		_ = prog.Close()
 		return nil, err
 	}
 
@@ -98,11 +98,11 @@ func ListTailCallTargets(prog *ebpf.Program) ([]TailCallTarget, error) {
 
 		mapInfo, err := m.Info()
 		if err != nil {
-			m.Close()
+			_ = m.Close()
 			continue
 		}
 		if mapInfo.Type != ebpf.ProgramArray {
-			m.Close()
+			_ = m.Close()
 			continue
 		}
 
@@ -118,7 +118,7 @@ func ListTailCallTargets(prog *ebpf.Program) ([]TailCallTarget, error) {
 
 			targetInfo, err := targetProg.Info()
 			if err != nil {
-				targetProg.Close()
+				_ = targetProg.Close()
 				continue
 			}
 
@@ -127,9 +127,9 @@ func ListTailCallTargets(prog *ebpf.Program) ([]TailCallTarget, error) {
 				ProgID:   progID,
 				ProgName: targetInfo.Name,
 			})
-			targetProg.Close()
+			_ = targetProg.Close()
 		}
-		m.Close()
+		_ = m.Close()
 	}
 
 	return targets, nil
@@ -147,7 +147,7 @@ func btfSpec(prog *ebpf.Program) (*btf.Spec, error) {
 	if err != nil {
 		return nil, fmt.Errorf("BTF unavailable: %w", err)
 	}
-	defer handle.Close()
+	defer func() { _ = handle.Close() }()
 
 	spec, err := handle.Spec(nil)
 	if err != nil {
@@ -228,7 +228,7 @@ func resolveEntryFunc(prog *ebpf.Program, progID uint32) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("program %q (id=%d): BTF unavailable (required for fentry/fexit): %w", progName, progID, err)
 	}
-	defer handle.Close()
+	defer func() { _ = handle.Close() }()
 
 	spec, err := handle.Spec(nil)
 	if err != nil {

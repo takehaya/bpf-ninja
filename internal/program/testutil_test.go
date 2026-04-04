@@ -57,7 +57,9 @@ func compileXDPObjFromSource(t *testing.T, source string) string {
 	dir := t.TempDir()
 	srcFile := filepath.Join(dir, "xdp.c")
 	objFile := filepath.Join(dir, "xdp.o")
-	os.WriteFile(srcFile, []byte(source), 0644)
+	if err := os.WriteFile(srcFile, []byte(source), 0644); err != nil {
+		t.Fatalf("writing source: %v", err)
+	}
 
 	out, err := exec.Command("clang", "-O2", "-g", "-target", "bpf", "-c", srcFile, "-o", objFile).CombinedOutput()
 	if err != nil {
@@ -88,7 +90,7 @@ func loadDummyXDP(t *testing.T) *ebpf.Program {
 	if err := spec.LoadAndAssign(&objs, nil); err != nil {
 		t.Fatalf("loading XDP program: %v", err)
 	}
-	t.Cleanup(func() { objs.Prog.Close() })
+	t.Cleanup(func() { _ = objs.Prog.Close() })
 	return objs.Prog
 }
 
@@ -109,7 +111,7 @@ func loadDummyXDPWithSubfunc(t *testing.T) *ebpf.Program {
 	if err := spec.LoadAndAssign(&objs, nil); err != nil {
 		t.Fatalf("loading XDP program: %v", err)
 	}
-	t.Cleanup(func() { objs.Prog.Close() })
+	t.Cleanup(func() { _ = objs.Prog.Close() })
 	return objs.Prog
 }
 
@@ -130,6 +132,6 @@ func loadProbeOrFail(t *testing.T, xdpProg *ebpf.Program, funcName, filterExpr s
 		}
 		t.Fatalf("loading probe: %v", err)
 	}
-	t.Cleanup(func() { probe.Close() })
+	t.Cleanup(func() { _ = probe.Close() })
 	return probe
 }

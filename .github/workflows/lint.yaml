@@ -1,0 +1,72 @@
+name: Lint
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Go
+        id: setup-go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Cache Go modules and build cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: ${{ runner.os }}-go-${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-${{ steps.setup-go.outputs.go-version }}-
+            ${{ runner.os }}-go-
+
+      - name: Cache golangci-lint
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/golangci-lint
+          key: golangci-lint-${{ runner.os }}-${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            golangci-lint-${{ runner.os }}-${{ steps.setup-go.outputs.go-version }}-
+            golangci-lint-${{ runner.os }}-
+
+      - name: Install dependencies
+        run: sudo apt-get update -qq && sudo apt-get install -y libpcap-dev
+
+      - name: Install lint tools
+        run: make install-lint-tools
+
+      - name: Run lefthook (push)
+        if: github.event_name == 'push'
+        run: |
+          FILES=$(git diff --name-only "${{ github.event.before }}" HEAD | tr '\n' ' ')
+          if [[ -n "$FILES" ]]; then
+            lefthook run pre-commit --file $FILES
+          fi
+
+      - name: Run lefthook (pull_request)
+        if: github.event_name == 'pull_request'
+        run: |
+          git fetch origin ${{ github.base_ref }}
+          make lint-ci DIFF_FROM_BRANCH_NAME=origin/${{ github.base_ref }}
+
+      - name: Check modified files
+        if: failure()
+        run: |
+          if [[ -n $(git status --porcelain) ]]; then
+            echo "::error::Files were modified by lefthook. Please run 'make lint' locally and commit the changes."
+            git status --porcelain
+            git diff
+          fi

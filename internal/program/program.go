@@ -3,6 +3,7 @@
 package program
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/cilium/ebpf"
@@ -23,16 +24,24 @@ type Probe struct {
 	link      link.Link
 }
 
-func (p *Probe) Close() {
+func (p *Probe) Close() error {
+	var errs []error
 	if p.link != nil {
-		p.link.Close()
+		if err := p.link.Close(); err != nil {
+			errs = append(errs, err)
+		}
 	}
 	if p.prog != nil {
-		p.prog.Close()
+		if err := p.prog.Close(); err != nil {
+			errs = append(errs, err)
+		}
 	}
 	for _, m := range p.maps {
-		m.Close()
+		if err := m.Close(); err != nil {
+			errs = append(errs, err)
+		}
 	}
+	return errors.Join(errs...)
 }
 
 // LoadEntry は fentry (前段) probe を作成してアタッチする。
@@ -84,7 +93,7 @@ func loadProbe(targetProg *ebpf.Program, funcName string, filterExpr string, isF
 			KeySize: 4, ValueSize: scratchBufSize, MaxEntries: 1,
 		})
 		if err != nil {
-			probe.Close()
+			_ = probe.Close()
 			return nil, fmt.Errorf("creating scratch map: %w", err)
 		}
 		probe.maps = append(probe.maps, scratchMap)
@@ -98,14 +107,14 @@ func loadProbe(targetProg *ebpf.Program, funcName string, filterExpr string, isF
 		Instructions: insns, License: "GPL",
 	})
 	if err != nil {
-		probe.Close()
+		_ = probe.Close()
 		return nil, fmt.Errorf("loading %s program: %w", label, err)
 	}
 	probe.prog = prog
 
 	l, err := link.AttachTracing(link.TracingOptions{Program: prog, AttachType: attachType})
 	if err != nil {
-		probe.Close()
+		_ = probe.Close()
 		return nil, fmt.Errorf("attaching %s: %w", label, err)
 	}
 	probe.link = l

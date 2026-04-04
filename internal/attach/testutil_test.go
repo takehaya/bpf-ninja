@@ -45,7 +45,9 @@ func loadTestXDP(t *testing.T) *ebpf.Program {
 	dir := t.TempDir()
 	srcFile := filepath.Join(dir, "xdp.c")
 	objFile := filepath.Join(dir, "xdp.o")
-	os.WriteFile(srcFile, []byte(xdpSubfuncSource), 0644)
+	if err := os.WriteFile(srcFile, []byte(xdpSubfuncSource), 0644); err != nil {
+		t.Fatalf("writing source: %v", err)
+	}
 
 	out, err := exec.Command("clang", "-O2", "-g", "-target", "bpf", "-c", srcFile, "-o", objFile).CombinedOutput()
 	if err != nil {
@@ -63,6 +65,6 @@ func loadTestXDP(t *testing.T) *ebpf.Program {
 	if err := spec.LoadAndAssign(&objs, nil); err != nil {
 		t.Fatalf("loading XDP program: %v", err)
 	}
-	t.Cleanup(func() { objs.Prog.Close() })
+	t.Cleanup(func() { _ = objs.Prog.Close() })
 	return objs.Prog
 }

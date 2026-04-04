@@ -110,7 +110,7 @@ func run(ctx context.Context, cmd *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	defer info.Program.Close()
+	defer func() { _ = info.Program.Close() }()
 
 	// --list-progs: show tail call targets, then exit
 	if cmd.Bool("list-progs") {
@@ -158,19 +158,27 @@ func run(ctx context.Context, cmd *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	defer probe.Close()
+	defer func() {
+		if cerr := probe.Close(); cerr != nil {
+			fmt.Fprintf(os.Stderr, "warning: closing probe: %v\n", cerr)
+		}
+	}()
 
 	writer, err := output.NewWriter(cmd.String("write"), mode)
 	if err != nil {
 		return err
 	}
-	defer writer.Close()
+	defer func() {
+		if cerr := writer.Close(); cerr != nil {
+			fmt.Fprintf(os.Stderr, "warning: closing writer: %v\n", cerr)
+		}
+	}()
 
 	reader, err := capture.NewReader(probe.EventsMap, 256*1024)
 	if err != nil {
 		return err
 	}
-	defer reader.Close()
+	defer func() { _ = reader.Close() }()
 
 	label := fmt.Sprintf("prog %q id=%d", info.FuncName, info.ProgID)
 	if info.IfaceName != "" {
@@ -212,7 +220,7 @@ func captureLoop(cmd *cli.Command, reader *capture.Reader, writer *output.Writer
 
 	go func() {
 		<-sig
-		reader.Close()
+		_ = reader.Close()
 	}()
 
 	count := int(cmd.Int("count"))

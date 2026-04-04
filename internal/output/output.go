@@ -47,7 +47,9 @@ func NewWriter(path string, mode string) (*Writer, error) {
 	}
 	if err != nil {
 		if w.file != nil {
-			w.file.Close()
+			if cerr := w.file.Close(); cerr != nil {
+				err = fmt.Errorf("%w (also failed to close file: %v)", err, cerr)
+			}
 		}
 		return nil, fmt.Errorf("creating pcap writer: %w", err)
 	}
