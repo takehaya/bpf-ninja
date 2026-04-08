@@ -24,7 +24,7 @@ type Writer struct {
 // NewWriter creates a pcapng writer. If path is empty, writes to stdout.
 // In exit mode, creates one pcapng interface per XDP action so that
 // Wireshark displays the action as the interface name.
-func NewWriter(path string, mode string) (*Writer, error) {
+func NewWriter(path string, isFexit bool) (*Writer, error) {
 	var dest io.Writer
 	w := &Writer{}
 
@@ -40,7 +40,7 @@ func NewWriter(path string, mode string) (*Writer, error) {
 	}
 
 	var err error
-	if mode == "exit" {
+	if isFexit {
 		err = w.initExitMode(dest)
 	} else {
 		w.pcapWriter, err = pcapgo.NewNgWriter(dest, layers.LinkTypeEthernet)

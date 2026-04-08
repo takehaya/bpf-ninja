@@ -55,7 +55,7 @@ func TestBuildTracingInsns(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// FD=0 は実際のmapではないが、命令生成のテストには十分
-			insns := buildTracingInsns(tt.filter, 0, 0, tt.isFexit)
+			insns := buildTracingInsns(tt.filter, nil, 0, 0, tt.isFexit)
 			if len(insns) == 0 {
 				t.Fatal("buildTracingInsns returned empty instructions")
 			}
@@ -71,7 +71,7 @@ func TestBuildTracingInsns(t *testing.T) {
 
 func TestBuildTracingInsnsLabels(t *testing.T) {
 	filter := dummyFilter()
-	insns := buildTracingInsns(filter, 0, 0, false)
+	insns := buildTracingInsns(filter, nil, 0, 0, false)
 
 	labels := map[string]bool{}
 	for _, insn := range insns {

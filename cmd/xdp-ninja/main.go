@@ -13,6 +13,7 @@ import (
 
 	"github.com/takehaya/xdp-ninja/internal/attach"
 	"github.com/takehaya/xdp-ninja/internal/capture"
+	"github.com/takehaya/xdp-ninja/internal/filter"
 	"github.com/takehaya/xdp-ninja/internal/output"
 	"github.com/takehaya/xdp-ninja/internal/program"
 )
@@ -58,6 +59,14 @@ var flags = []cli.Flag{
 		Name:  "list-progs",
 		Usage: "list tail call targets reachable from the target program and exit",
 	},
+	&cli.StringSliceFlag{
+		Name:  "arg-filter",
+		Usage: "filter by function argument value (requires --func); format: param=value, param>=val, param<=val, param=min..max",
+	},
+	&cli.BoolFlag{
+		Name:  "list-params",
+		Usage: "list filterable parameters for the target function (requires --func) and exit",
+	},
 	&cli.BoolFlag{
 		Name: "verbose", Aliases: []string{"v"},
 		Usage: "verbose output to stderr",
@@ -102,7 +111,12 @@ Examples:
 
 func run(ctx context.Context, cmd *cli.Command) error {
 	mode := cmd.String("mode")
-	if mode != "entry" && mode != "exit" {
+	var isFexit bool
+	switch mode {
+	case "entry":
+	case "exit":
+		isFexit = true
+	default:
 		return fmt.Errorf("invalid mode %q: must be entry or exit", mode)
 	}
 
@@ -139,13 +153,62 @@ func run(ctx context.Context, cmd *cli.Command) error {
 		return nil
 	}
 
-	// --func: override target function name
-	if funcName := cmd.String("func"); funcName != "" {
-		if err := attach.ValidateSubfunc(info.Program, info.ProgID, funcName); err != nil {
+	// --func: override target function name.
+	// Open BTF once and share across validation and parameter extraction.
+	funcName := cmd.String("func")
+	needParams := cmd.Bool("list-params") || len(cmd.StringSlice("arg-filter")) > 0
+	var params []attach.FuncParamInfo
+	if funcName != "" {
+		spec, err := attach.BTFSpec(info.Program)
+		if err != nil {
+			return fmt.Errorf("program (id=%d): %w", info.ProgID, err)
+		}
+		if err := attach.ValidateSubfuncFromSpec(spec, info.ProgID, funcName); err != nil {
 			return err
 		}
 		logVerbose(cmd, "overriding entry function with --func %q", funcName)
 		info.FuncName = funcName
+
+		if needParams {
+			params, err = attach.GetFuncParamsFromSpec(spec, funcName)
+			if err != nil {
+				return err
+			}
+		}
+	} else if needParams {
+		if cmd.Bool("list-params") {
+			return fmt.Errorf("--list-params requires --func")
+		}
+		return fmt.Errorf("--arg-filter requires --func")
+	}
+
+	// --list-params: show filterable parameters, then exit
+	if cmd.Bool("list-params") {
+		fmt.Fprintf(os.Stderr, "Filterable parameters for %s (id=%d):\n", funcName, info.ProgID)
+		if len(params) == 0 {
+			fmt.Fprintf(os.Stderr, "  (none - only integer parameters after the first argument are supported)\n")
+		}
+		for _, p := range params {
+			signStr := "unsigned"
+			if p.Signed {
+				signStr = "signed"
+			}
+			fmt.Fprintf(os.Stderr, "  %-20s [%d bytes, %s, arg index %d]\n", p.Name, p.Size, signStr, p.Index)
+		}
+		return nil
+	}
+
+	// --arg-filter: parse and validate argument filters
+	var argFilters []filter.ArgFilter
+	if argFilterExprs := cmd.StringSlice("arg-filter"); len(argFilterExprs) > 0 {
+		var err error
+		argFilters, err = filter.ParseAndValidateFilters(argFilterExprs, params)
+		if err != nil {
+			return err
+		}
+		for _, f := range argFilters {
+			logVerbose(cmd, "arg filter: %s", f.String())
+		}
 	}
 
 	filterExpr := strings.Join(cmd.Args().Slice(), " ")
@@ -154,7 +217,7 @@ func run(ctx context.Context, cmd *cli.Command) error {
 		logVerbose(cmd, "filter: %s", filterExpr)
 	}
 
-	probe, err := loadProbe(mode, info, filterExpr)
+	probe, err := loadProbe(isFexit, info, filterExpr, argFilters)
 	if err != nil {
 		return err
 	}
@@ -164,7 +227,7 @@ func run(ctx context.Context, cmd *cli.Command) error {
 		}
 	}()
 
-	writer, err := output.NewWriter(cmd.String("write"), mode)
+	writer, err := output.NewWriter(cmd.String("write"), isFexit)
 	if err != nil {
 		return err
 	}
@@ -206,11 +269,11 @@ func findTarget(cmd *cli.Command) (*attach.XDPInfo, error) {
 	return attach.FindXDPProgram(ifaceName)
 }
 
-func loadProbe(mode string, info *attach.XDPInfo, filterExpr string) (*program.Probe, error) {
-	if mode == "exit" {
-		return program.LoadExit(info.Program, info.FuncName, filterExpr)
+func loadProbe(isFexit bool, info *attach.XDPInfo, filterExpr string, argFilters []filter.ArgFilter) (*program.Probe, error) {
+	if isFexit {
+		return program.LoadExit(info.Program, info.FuncName, filterExpr, argFilters)
 	}
-	return program.LoadEntry(info.Program, info.FuncName, filterExpr)
+	return program.LoadEntry(info.Program, info.FuncName, filterExpr, argFilters)
 }
 
 func captureLoop(cmd *cli.Command, reader *capture.Reader, writer *output.Writer) error {

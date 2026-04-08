@@ -23,7 +23,7 @@ install_tool "yamllint" "sudo apt-get install -y yamllint"
 install_tool "jq" "sudo apt-get install -y jq"
 install_tool "dos2unix" "sudo apt-get install -y dos2unix"
 install_tool "clang-format" "sudo apt-get install -y clang-format"
-install_tool "golangci-lint" "go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest"
+install_tool "golangci-lint" "go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest"
 
 echo ""
 echo "All lint tools have been installed."

@@ -12,6 +12,7 @@ import (
 	"github.com/cloudflare/cbpfc"
 	"github.com/google/gopacket/layers"
 	"github.com/google/gopacket/pcap"
+	"github.com/takehaya/xdp-ninja/internal/filter"
 	"golang.org/x/net/bpf"
 )
 
@@ -45,16 +46,16 @@ func (p *Probe) Close() error {
 }
 
 // LoadEntry は fentry (前段) probe を作成してアタッチする。
-func LoadEntry(targetProg *ebpf.Program, funcName string, filterExpr string) (*Probe, error) {
-	return loadProbe(targetProg, funcName, filterExpr, false)
+func LoadEntry(targetProg *ebpf.Program, funcName string, filterExpr string, argFilters []filter.ArgFilter) (*Probe, error) {
+	return loadProbe(targetProg, funcName, filterExpr, argFilters, false)
 }
 
 // LoadExit は fexit (後段) probe を作成してアタッチする。
-func LoadExit(targetProg *ebpf.Program, funcName string, filterExpr string) (*Probe, error) {
-	return loadProbe(targetProg, funcName, filterExpr, true)
+func LoadExit(targetProg *ebpf.Program, funcName string, filterExpr string, argFilters []filter.ArgFilter) (*Probe, error) {
+	return loadProbe(targetProg, funcName, filterExpr, argFilters, true)
 }
 
-func loadProbe(targetProg *ebpf.Program, funcName string, filterExpr string, isFexit bool) (*Probe, error) {
+func loadProbe(targetProg *ebpf.Program, funcName string, filterExpr string, argFilters []filter.ArgFilter, isFexit bool) (*Probe, error) {
 	var filterInsns asm.Instructions
 	if filterExpr != "" {
 		fi, err := compileFilter(filterExpr)
@@ -100,7 +101,7 @@ func loadProbe(targetProg *ebpf.Program, funcName string, filterExpr string, isF
 		scratchFD = scratchMap.FD()
 	}
 
-	insns := buildTracingInsns(filterInsns, eventsMap.FD(), scratchFD, isFexit)
+	insns := buildTracingInsns(filterInsns, argFilters, eventsMap.FD(), scratchFD, isFexit)
 	prog, err := ebpf.NewProgram(&ebpf.ProgramSpec{
 		Name: fmt.Sprintf("xdp_ninja_%s", label), Type: ebpf.Tracing, AttachType: attachType,
 		AttachTo: funcName, AttachTarget: targetProg,
@@ -175,10 +176,11 @@ const (
 
 const bpfFCurrentCPU int64 = 0xFFFFFFFF
 
-func buildTracingInsns(filter asm.Instructions, eventsFD, scratchFD int, isFexit bool) asm.Instructions {
+func buildTracingInsns(pktFilter asm.Instructions, argFilters []filter.ArgFilter, eventsFD, scratchFD int, isFexit bool) asm.Instructions {
 	var insns asm.Instructions
 	insns = append(insns, loadPacketPointers()...)
-	insns = append(insns, runFilter(filter, scratchFD)...)
+	insns = append(insns, buildArgFilter(argFilters)...)
+	insns = append(insns, runFilter(pktFilter, scratchFD)...)
 	insns = append(insns, captureWithXdpOutput(eventsFD, isFexit)...)
 	insns = append(insns, asm.Mov.Imm(asm.R0, 0).WithSymbol("exit"), asm.Return())
 	return insns
@@ -194,10 +196,10 @@ func loadPacketPointers() asm.Instructions {
 		asm.LoadMem(asm.R6, asm.R1, 0, asm.DWord),     // R6 = args[0] = xdp_buff *
 
 		// xdp_buff の構造体フィールドを直接読む (trusted pointer)
-		asm.LoadMem(asm.R7, asm.R6, 0, asm.DWord),     // R7 = xdp_buff->data
-		asm.LoadMem(asm.R8, asm.R6, 8, asm.DWord),     // R8 = xdp_buff->data_end
+		asm.LoadMem(asm.R7, asm.R6, 0, asm.DWord), // R7 = xdp_buff->data
+		asm.LoadMem(asm.R8, asm.R6, 8, asm.DWord), // R8 = xdp_buff->data_end
 
-		asm.Mov.Reg(asm.R9, asm.R8),                    // R9 = pkt_len
+		asm.Mov.Reg(asm.R9, asm.R8), // R9 = pkt_len
 		asm.Sub.Reg(asm.R9, asm.R7),
 	}
 }
@@ -243,7 +245,8 @@ func runFilter(filter asm.Instructions, scratchFD int) asm.Instructions {
 // perf event に付加してくれるので、bpf_probe_read_kernel でのパケットコピーが不要。
 //
 // ユーザーランドで受け取る RawSample のフォーマット:
-//   [metadata (8B)] [パケットデータ (pkt_len バイト)]
+//
+//	[metadata (8B)] [パケットデータ (pkt_len バイト)]
 func captureWithXdpOutput(eventsFD int, isFexit bool) asm.Instructions {
 	insns := asm.Instructions{}
 
@@ -253,13 +256,13 @@ func captureWithXdpOutput(eventsFD int, isFexit bool) asm.Instructions {
 		insns = append(insns,
 			asm.LoadMem(asm.R2, asm.R10, -48, asm.DWord), // saved args ptr
 			asm.LoadMem(asm.R2, asm.R2, 8, asm.DWord),    // args[1] = XDP action
-			asm.StoreMem(asm.R10, -8, asm.R2, asm.Word),   // stack[-8] = action (u32)
-			asm.StoreImm(asm.R10, -4, 1, asm.Byte),        // stack[-4] = mode=1 (exit)
+			asm.StoreMem(asm.R10, -8, asm.R2, asm.Word),  // stack[-8] = action (u32)
+			asm.StoreImm(asm.R10, -4, 1, asm.Byte),       // stack[-4] = mode=1 (exit)
 		)
 	} else {
 		insns = append(insns,
-			asm.StoreImm(asm.R10, -8, 0, asm.Word),        // stack[-8] = action=0
-			asm.StoreImm(asm.R10, -4, 0, asm.Byte),        // stack[-4] = mode=0 (entry)
+			asm.StoreImm(asm.R10, -8, 0, asm.Word), // stack[-8] = action=0
+			asm.StoreImm(asm.R10, -4, 0, asm.Byte), // stack[-4] = mode=0 (entry)
 		)
 	}
 
@@ -276,24 +279,105 @@ func captureWithXdpOutput(eventsFD int, isFexit bool) asm.Instructions {
 	// R4 = &metadata (スタック上)
 	// R5 = sizeof(metadata)
 	insns = append(insns,
-		asm.Mov.Reg(asm.R1, asm.R6),                      // R1 = xdp_buff
-		asm.LoadMapPtr(asm.R2, eventsFD),                  // R2 = perf map
+		asm.Mov.Reg(asm.R1, asm.R6),      // R1 = xdp_buff
+		asm.LoadMapPtr(asm.R2, eventsFD), // R2 = perf map
 
 		// R3 = flags: (cap_len << 32) | BPF_F_CURRENT_CPU
 		// cap_len = min(pkt_len, 1500)
-		asm.Mov.Reg(asm.R3, asm.R9),                      // R3 = pkt_len
+		asm.Mov.Reg(asm.R3, asm.R9), // R3 = pkt_len
 		asm.JLE.Imm(asm.R3, maxCapLen, "xdp_out_cap_ok"),
 		asm.Mov.Imm(asm.R3, maxCapLen),
 		asm.LSh.Imm(asm.R3, 32).WithSymbol("xdp_out_cap_ok"), // R3 = cap_len << 32
-		asm.LoadImm(asm.R0, bpfFCurrentCPU, asm.DWord),   // R0 = BPF_F_CURRENT_CPU
-		asm.Or.Reg(asm.R3, asm.R0),                        // R3 = (cap_len << 32) | BPF_F_CURRENT_CPU
+		asm.LoadImm(asm.R0, bpfFCurrentCPU, asm.DWord),       // R0 = BPF_F_CURRENT_CPU
+		asm.Or.Reg(asm.R3, asm.R0),                           // R3 = (cap_len << 32) | BPF_F_CURRENT_CPU
 
-		asm.Mov.Reg(asm.R4, asm.R10),                     // R4 = &metadata
+		asm.Mov.Reg(asm.R4, asm.R10), // R4 = &metadata
 		asm.Add.Imm(asm.R4, -int32(metadataSize)),
-		asm.Mov.Imm(asm.R5, int32(metadataSize)),         // R5 = 8
+		asm.Mov.Imm(asm.R5, int32(metadataSize)), // R5 = 8
 
 		asm.FnXdpOutput.Call(),
 	)
 
 	return insns
+}
+
+// buildArgFilter generates eBPF instructions to filter based on function arguments.
+// Arguments are accessed from the fentry/fexit args array stored at stack[-48].
+//
+// The args array layout for fentry is:
+//
+//	args[0] = first parameter (xdp_buff *)
+//	args[1] = second parameter
+//	args[N] = N+1th parameter
+//
+// For each filter, we load the argument value and compare it.
+// If any filter doesn't match, we jump to "exit".
+func buildArgFilter(filters []filter.ArgFilter) asm.Instructions {
+	if len(filters) == 0 {
+		return nil
+	}
+
+	var insns asm.Instructions
+	// Load args pointer once — R2 is not clobbered by subsequent loads/compares.
+	insns = append(insns, asm.LoadMem(asm.R2, asm.R10, -48, asm.DWord))
+
+	for _, f := range filters {
+		offset := int16(f.ParamIndex * 8)
+
+		var loadSize asm.Size
+		switch f.ParamSize {
+		case 1:
+			loadSize = asm.Byte
+		case 2:
+			loadSize = asm.Half
+		case 4:
+			loadSize = asm.Word
+		default:
+			loadSize = asm.DWord
+		}
+		insns = append(insns, asm.LoadMem(asm.R3, asm.R2, offset, loadSize))
+
+		// Byte/Half/Word loads zero-extend into R3. For signed parameters we must
+		// sign-extend to 64-bit so that JSLT/JSGT comparisons work correctly
+		// (e.g. int8 -1 is loaded as 0xFF and must become 0xFFFFFFFFFFFFFFFF).
+		if f.Signed && f.ParamSize < 8 {
+			shift := int32((8 - f.ParamSize) * 8) // bits to shift
+			insns = append(insns,
+				asm.LSh.Imm(asm.R3, shift),
+				asm.ArSh.Imm(asm.R3, shift),
+			)
+		}
+
+		// Select unsigned or signed jump ops based on parameter signedness.
+		jLT, jGT := asm.JLT, asm.JGT
+		if f.Signed {
+			jLT, jGT = asm.JSLT, asm.JSGT
+		}
+
+		switch f.Op {
+		case filter.OpEqual:
+			insns = appendCmpJump(insns, asm.JNE, f.Value)
+		case filter.OpGreaterEqual:
+			insns = appendCmpJump(insns, jLT, f.Value)
+		case filter.OpLessEqual:
+			insns = appendCmpJump(insns, jGT, f.Value)
+		case filter.OpRange:
+			insns = appendCmpJump(insns, jLT, f.Value)
+			insns = appendCmpJump(insns, jGT, f.MaxValue)
+		}
+	}
+
+	return insns
+}
+
+// appendCmpJump appends a conditional jump-to-exit comparing R3 against value.
+// Uses an immediate operand when the value fits in int32, otherwise loads into R4.
+func appendCmpJump(insns asm.Instructions, op asm.JumpOp, value uint64) asm.Instructions {
+	if value <= 0x7FFFFFFF {
+		return append(insns, op.Imm(asm.R3, int32(value), "exit"))
+	}
+	return append(insns,
+		asm.LoadImm(asm.R4, int64(value), asm.DWord),
+		op.Reg(asm.R3, asm.R4, "exit"),
+	)
 }

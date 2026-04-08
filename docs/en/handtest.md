@@ -466,3 +466,163 @@ sudo rm -rf /sys/fs/bpf/tctest
 sudo ip link delete vtest0 2>/dev/null
 sudo ip netns delete nstest 2>/dev/null
 ```
+
+---
+
+## Part 4: Argument Filtering with `--arg-filter`
+
+Filter based on the values of function arguments specified with `--func`.
+Only integer parameters (excluding the first xdp_md pointer) are supported.
+
+### 4.1 Create Test Program
+
+```
+xdp_entry
+  └─ process_packet(ctx, tunnel_id)  [global __noinline, with u32 arg]
+```
+
+```bash
+cat > /tmp/xdp_argfilter.c << 'EOF'
+#include <linux/bpf.h>
+#include <bpf/bpf_helpers.h>
+
+__attribute__((noinline))
+int process_packet(struct xdp_md *ctx, __u32 tunnel_id) {
+    void *data     = (void *)(long)ctx->data;
+    void *data_end = (void *)(long)ctx->data_end;
+    if (data + 1 > data_end)
+        return 1;
+    volatile __u32 id = tunnel_id; /* prevent clang from optimizing away the arg */
+    return (id > 0) ? 2 : 1;
+}
+
+SEC("xdp")
+int xdp_entry(struct xdp_md *ctx) {
+    return process_packet(ctx, 42);
+}
+
+char _license[] SEC("license") = "GPL";
+EOF
+clang -O2 -g -target bpf -c /tmp/xdp_argfilter.c -o /tmp/xdp_argfilter.o
+```
+
+### 4.2 Set Up Environment
+
+```bash
+sudo ip netns add nstest
+sudo ip link add vtest0 type veth peer name vtest1
+sudo ip link set vtest1 netns nstest
+sudo ip addr add 10.77.0.1/24 dev vtest0
+sudo ip netns exec nstest ip addr add 10.77.0.2/24 dev vtest1
+sudo ip link set vtest0 up
+sudo ip netns exec nstest ip link set vtest1 up
+sudo ip netns exec nstest ip link set lo up
+
+sudo ip link set dev vtest0 xdp obj /tmp/xdp_argfilter.o sec xdp
+```
+
+Verify connectivity:
+
+```bash
+sudo ip netns exec nstest ping -c 3 10.77.0.1
+```
+
+### 4.3 List Filterable Parameters with `--list-params`
+
+```bash
+sudo ./xdp-ninja -i vtest0 --func process_packet --list-params
+```
+
+Expected output:
+
+```
+Filterable parameters for process_packet (id=XXXX):
+  tunnel_id            [4 bytes, unsigned, arg index 1]
+```
+
+### 4.4 `--list-params` Without `--func` (Error)
+
+```bash
+sudo ./xdp-ninja -i vtest0 --list-params
+```
+
+Expected: `--list-params requires --func` error.
+
+### 4.5 Exact Match Filter (Hit)
+
+```bash
+sudo ./xdp-ninja -i vtest0 --func process_packet --arg-filter "tunnel_id=42" -v | tcpdump -n -r -
+```
+
+Expected: Packets are captured since tunnel_id=42.
+
+### 4.6 Exact Match Filter (Miss)
+
+```bash
+sudo ./xdp-ninja -i vtest0 --func process_packet --arg-filter "tunnel_id=99" -v -c 3 | tcpdump -n -r -
+```
+
+Expected: `0 packets captured`.
+
+### 4.7 Range Filter
+
+```bash
+# Hit (42 is within 40..50)
+sudo ./xdp-ninja -i vtest0 --func process_packet --arg-filter "tunnel_id=40..50" -v | tcpdump -n -r -
+
+# Miss (42 is outside 100..200)
+sudo ./xdp-ninja -i vtest0 --func process_packet --arg-filter "tunnel_id=100..200" -v -c 3 | tcpdump -n -r -
+```
+
+### 4.8 Comparison Filters
+
+```bash
+# >= (42 >= 40 → hit)
+sudo ./xdp-ninja -i vtest0 --func process_packet --arg-filter "tunnel_id>=40" -v | tcpdump -n -r -
+
+# <= (42 <= 50 → hit)
+sudo ./xdp-ninja -i vtest0 --func process_packet --arg-filter "tunnel_id<=50" -v | tcpdump -n -r -
+
+# >= (42 >= 100 → miss)
+sudo ./xdp-ninja -i vtest0 --func process_packet --arg-filter "tunnel_id>=100" -v -c 3 | tcpdump -n -r -
+```
+
+### 4.9 Hexadecimal Values
+
+```bash
+sudo ./xdp-ninja -i vtest0 --func process_packet --arg-filter "tunnel_id=0x2a" -v | tcpdump -n -r -
+```
+
+Expected: Packets are captured since 0x2a = 42.
+
+### 4.10 Combined with Packet Filter
+
+```bash
+sudo ./xdp-ninja -i vtest0 --func process_packet --arg-filter "tunnel_id=42" "icmp" -v | tcpdump -n -r -
+```
+
+Expected: Only packets matching both the argument filter and the packet filter are captured.
+
+### 4.11 Non-existent Parameter Name (Error)
+
+```bash
+sudo ./xdp-ninja -i vtest0 --func process_packet --arg-filter "no_such=42"
+```
+
+Expected: Error message listing available parameter names.
+
+### 4.12 `--arg-filter` Without `--func` (Error)
+
+```bash
+sudo ./xdp-ninja -i vtest0 --arg-filter "tunnel_id=42"
+```
+
+Expected: `--arg-filter requires --func` error.
+
+### 4.13 Cleanup
+
+```bash
+sudo ip link set dev vtest0 xdp off
+sudo ip link delete vtest0 2>/dev/null
+sudo ip netns delete nstest 2>/dev/null
+```

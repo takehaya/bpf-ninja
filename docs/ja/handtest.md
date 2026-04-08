@@ -464,3 +464,163 @@ sudo rm -rf /sys/fs/bpf/tctest
 sudo ip link delete vtest0 2>/dev/null
 sudo ip netns delete nstest 2>/dev/null
 ```
+
+---
+
+## Part 4: `--arg-filter` による引数フィルタリング
+
+`--func` で指定したサブ関数の引数値でフィルタリングする。
+整数型の引数（最初の xdp_md ポインタを除く）が対象。
+
+### 4.1 テスト用プログラムの作成
+
+```
+xdp_entry
+  └─ process_packet(ctx, tunnel_id)  [global __noinline, u32 引数付き]
+```
+
+```bash
+cat > /tmp/xdp_argfilter.c << 'EOF'
+#include <linux/bpf.h>
+#include <bpf/bpf_helpers.h>
+
+__attribute__((noinline))
+int process_packet(struct xdp_md *ctx, __u32 tunnel_id) {
+    void *data     = (void *)(long)ctx->data;
+    void *data_end = (void *)(long)ctx->data_end;
+    if (data + 1 > data_end)
+        return 1;
+    volatile __u32 id = tunnel_id; /* 最適化で引数が消えるのを防止 */
+    return (id > 0) ? 2 : 1;
+}
+
+SEC("xdp")
+int xdp_entry(struct xdp_md *ctx) {
+    return process_packet(ctx, 42);
+}
+
+char _license[] SEC("license") = "GPL";
+EOF
+clang -O2 -g -target bpf -c /tmp/xdp_argfilter.c -o /tmp/xdp_argfilter.o
+```
+
+### 4.2 環境構築
+
+```bash
+sudo ip netns add nstest
+sudo ip link add vtest0 type veth peer name vtest1
+sudo ip link set vtest1 netns nstest
+sudo ip addr add 10.77.0.1/24 dev vtest0
+sudo ip netns exec nstest ip addr add 10.77.0.2/24 dev vtest1
+sudo ip link set vtest0 up
+sudo ip netns exec nstest ip link set vtest1 up
+sudo ip netns exec nstest ip link set lo up
+
+sudo ip link set dev vtest0 xdp obj /tmp/xdp_argfilter.o sec xdp
+```
+
+疎通確認:
+
+```bash
+sudo ip netns exec nstest ping -c 3 10.77.0.1
+```
+
+### 4.3 `--list-params` でフィルタ可能なパラメータを確認
+
+```bash
+sudo ./xdp-ninja -i vtest0 --func process_packet --list-params
+```
+
+期待出力:
+
+```
+Filterable parameters for process_packet (id=XXXX):
+  tunnel_id            [4 bytes, unsigned, arg index 1]
+```
+
+### 4.4 `--list-params` を `--func` なしで実行（エラー）
+
+```bash
+sudo ./xdp-ninja -i vtest0 --list-params
+```
+
+期待: `--list-params requires --func` エラー。
+
+### 4.5 完全一致フィルタ（マッチ）
+
+```bash
+sudo ./xdp-ninja -i vtest0 --func process_packet --arg-filter "tunnel_id=42" -v | tcpdump -n -r -
+```
+
+期待: tunnel_id=42 なのでパケットがキャプチャされる。
+
+### 4.6 完全一致フィルタ（不一致）
+
+```bash
+sudo ./xdp-ninja -i vtest0 --func process_packet --arg-filter "tunnel_id=99" -v -c 3 | tcpdump -n -r -
+```
+
+期待: `0 packets captured`。
+
+### 4.7 範囲フィルタ
+
+```bash
+# マッチ (42 は 40..50 の範囲内)
+sudo ./xdp-ninja -i vtest0 --func process_packet --arg-filter "tunnel_id=40..50" -v | tcpdump -n -r -
+
+# 不一致 (42 は 100..200 の範囲外)
+sudo ./xdp-ninja -i vtest0 --func process_packet --arg-filter "tunnel_id=100..200" -v -c 3 | tcpdump -n -r -
+```
+
+### 4.8 比較フィルタ
+
+```bash
+# >= (42 >= 40 → マッチ)
+sudo ./xdp-ninja -i vtest0 --func process_packet --arg-filter "tunnel_id>=40" -v | tcpdump -n -r -
+
+# <= (42 <= 50 → マッチ)
+sudo ./xdp-ninja -i vtest0 --func process_packet --arg-filter "tunnel_id<=50" -v | tcpdump -n -r -
+
+# >= (42 >= 100 → 不一致)
+sudo ./xdp-ninja -i vtest0 --func process_packet --arg-filter "tunnel_id>=100" -v -c 3 | tcpdump -n -r -
+```
+
+### 4.9 16進数値
+
+```bash
+sudo ./xdp-ninja -i vtest0 --func process_packet --arg-filter "tunnel_id=0x2a" -v | tcpdump -n -r -
+```
+
+期待: 0x2a = 42 なのでキャプチャされる。
+
+### 4.10 パケットフィルタとの併用
+
+```bash
+sudo ./xdp-ninja -i vtest0 --func process_packet --arg-filter "tunnel_id=42" "icmp" -v | tcpdump -n -r -
+```
+
+期待: 引数フィルタとパケットフィルタの両方を満たすパケットのみキャプチャされる。
+
+### 4.11 存在しないパラメータ名（エラー）
+
+```bash
+sudo ./xdp-ninja -i vtest0 --func process_packet --arg-filter "no_such=42"
+```
+
+期待: 利用可能なパラメータ名を含むエラーメッセージ。
+
+### 4.12 `--arg-filter` を `--func` なしで実行（エラー）
+
+```bash
+sudo ./xdp-ninja -i vtest0 --arg-filter "tunnel_id=42"
+```
+
+期待: `--arg-filter requires --func` エラー。
+
+### 4.13 クリーンアップ
+
+```bash
+sudo ip link set dev vtest0 xdp off
+sudo ip link delete vtest0 2>/dev/null
+sudo ip netns delete nstest 2>/dev/null
+```
