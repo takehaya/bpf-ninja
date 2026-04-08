@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.7.0](https://github.com/takehaya/xdp-ninja/compare/v0.6.0...v0.7.0) (2026-04-08)
+
+
+### 🎉 Features
+
+* add --arg-filter and --list-params for fentry/fexit argument filtering ([139c568](https://github.com/takehaya/xdp-ninja/commit/139c5683cb5322ecd4aecf57ca3473e1fa584a48))
+* add --arg-filter and --list-params for function argument filtering ([ffb5c80](https://github.com/takehaya/xdp-ninja/commit/ffb5c80df3848916f86d3139aff605edbb911efb))
+
+
+### 🐛 Bug Fixes
+
+* address Copilot review on signed arg filter correctness ([98bb76a](https://github.com/takehaya/xdp-ninja/commit/98bb76ac4921b4dcf36026c7710f41754ce8d637))
+* address Copilot review round 2 ([9ea8d78](https://github.com/takehaya/xdp-ninja/commit/9ea8d785df87c6ad80799e9242303b2a6dc25751))
+* allow negative values for signed 64-bit arg filter parameters ([52df696](https://github.com/takehaya/xdp-ninja/commit/52df6969f67bf62e2fa8f800a8dad9f20e5ee624))
+* update golangci-lint install path to v2 ([a79a40c](https://github.com/takehaya/xdp-ninja/commit/a79a40c011d836a17b1d9855d3e79fdaa280f54a))
+* validate signed range min&lt;=max after BTF signedness is resolved ([237fe4a](https://github.com/takehaya/xdp-ninja/commit/237fe4aec6621e47a3ba9b47b9447de887b32178))
+
+
+### 📝 Documentation
+
+* rename handtest-func-tailcall.md to handtest.md ([4128c03](https://github.com/takehaya/xdp-ninja/commit/4128c03ba4f4ccb10bdabfee4f33de2e19574198))
+* rename handtest-func-tailcall.md to handtest.md ([3dab58f](https://github.com/takehaya/xdp-ninja/commit/3dab58fe7291aaba20dfbd76635af0c4064e74f5))
+
+
+### ♻️ Code Refactoring
+
+* remove dead code, noise comment, and test boilerplate ([ac2c6d6](https://github.com/takehaya/xdp-ninja/commit/ac2c6d6b7af8484bc4d18cb585c3266e09aab266))
+
 ## [0.6.0](https://github.com/takehaya/xdp-ninja/compare/v0.5.0...v0.6.0) (2026-04-04)
 
 
