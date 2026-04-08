@@ -81,7 +81,7 @@ func ParseArgFilter(expr string) (ParsedFilter, error) {
 		} else {
 			pf.Op = OpLessEqual
 		}
-		v, err := parseUint64(valueStr)
+		v, err := parseValue(valueStr)
 		if err != nil {
 			return ParsedFilter{}, fmt.Errorf("invalid value in %q: %w", expr, err)
 		}
@@ -93,22 +93,24 @@ func ParseArgFilter(expr string) (ParsedFilter, error) {
 				return ParsedFilter{}, fmt.Errorf("invalid range in %q: expected min..max", expr)
 			}
 			pf.Op = OpRange
-			v, err := parseUint64(parts[0])
+			v, err := parseValue(parts[0])
 			if err != nil {
 				return ParsedFilter{}, fmt.Errorf("invalid min value in %q: %w", expr, err)
 			}
 			pf.Value = v
-			mv, err := parseUint64(parts[1])
+			mv, err := parseValue(parts[1])
 			if err != nil {
 				return ParsedFilter{}, fmt.Errorf("invalid max value in %q: %w", expr, err)
 			}
 			pf.MaxValue = mv
-			if pf.Value > pf.MaxValue {
-				return ParsedFilter{}, fmt.Errorf("invalid range in %q: min (%d) > max (%d)", expr, pf.Value, pf.MaxValue)
+			// Reject if min > max under both unsigned and signed interpretation.
+			// The correct signedness is resolved later in ParseAndValidateFilters.
+			if pf.Value > pf.MaxValue && int64(pf.Value) > int64(pf.MaxValue) {
+				return ParsedFilter{}, fmt.Errorf("invalid range in %q: min > max", expr)
 			}
 		} else {
 			pf.Op = OpEqual
-			v, err := parseUint64(valueStr)
+			v, err := parseValue(valueStr)
 			if err != nil {
 				return ParsedFilter{}, fmt.Errorf("invalid value in %q: %w", expr, err)
 			}
@@ -119,11 +121,21 @@ func ParseArgFilter(expr string) (ParsedFilter, error) {
 	return pf, nil
 }
 
-// parseUint64 parses a string as uint64, supporting hex (0x) and decimal.
-func parseUint64(s string) (uint64, error) {
+// parseValue parses a string as uint64, supporting hex (0x), decimal, and
+// negative values. Negative values are stored as their two's complement
+// bit pattern (e.g. -1 → 0xFFFFFFFFFFFFFFFF), which is the representation
+// used by the eBPF signed comparison instructions.
+func parseValue(s string) (uint64, error) {
 	s = strings.TrimSpace(s)
 	if strings.HasPrefix(s, "0x") || strings.HasPrefix(s, "0X") {
 		return strconv.ParseUint(s[2:], 16, 64)
+	}
+	if strings.HasPrefix(s, "-") {
+		v, err := strconv.ParseInt(s, 10, 64)
+		if err != nil {
+			return 0, err
+		}
+		return uint64(v), nil
 	}
 	return strconv.ParseUint(s, 10, 64)
 }
@@ -159,6 +171,16 @@ func ParseAndValidateFilters(exprs []string, params []attach.FuncParamInfo) ([]A
 			return nil, fmt.Errorf("parameter %q not found; available parameters: %v", pf.ParamName, available)
 		}
 
+		// Validate that filter values fit within the parameter's bit width.
+		if err := validateValueRange(pf.Value, param.Size, param.Signed, expr); err != nil {
+			return nil, err
+		}
+		if pf.Op == OpRange {
+			if err := validateValueRange(pf.MaxValue, param.Size, param.Signed, expr); err != nil {
+				return nil, err
+			}
+		}
+
 		filters = append(filters, ArgFilter{
 			ParamName:  pf.ParamName,
 			ParamIndex: param.Index,
@@ -171,4 +193,26 @@ func ParseAndValidateFilters(exprs []string, params []attach.FuncParamInfo) ([]A
 	}
 
 	return filters, nil
+}
+
+// validateValueRange checks that value fits within the given parameter size and signedness.
+func validateValueRange(value uint64, size uint32, signed bool, expr string) error {
+	if size >= 8 {
+		return nil // 64-bit: any value fits
+	}
+	bits := size * 8
+	if signed {
+		min := -(int64(1) << (bits - 1))          // e.g. -128 for int8
+		max := int64(1)<<(bits-1) - 1              // e.g. 127 for int8
+		sv := int64(value)
+		if sv < min || sv > max {
+			return fmt.Errorf("value %d in %q is out of range for %d-bit signed parameter [%d, %d]", sv, expr, bits, min, max)
+		}
+	} else {
+		max := uint64(1)<<bits - 1 // e.g. 255 for uint8
+		if value > max {
+			return fmt.Errorf("value %d in %q is out of range for %d-bit unsigned parameter [0, %d]", value, expr, bits, max)
+		}
+	}
+	return nil
 }

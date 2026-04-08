@@ -68,6 +68,21 @@ func TestParseArgFilter(t *testing.T) {
 			wantVal:   123,
 		},
 		{
+			name:      "negative value",
+			expr:      "temp>=-10",
+			wantParam: "temp",
+			wantOp:    OpGreaterEqual,
+			wantVal:   ^uint64(9), // two's complement of -10
+		},
+		{
+			name:      "negative range",
+			expr:      "offset=-100..100",
+			wantParam: "offset",
+			wantOp:    OpRange,
+			wantVal:   ^uint64(99), // two's complement of -100
+			wantMax:   100,
+		},
+		{
 			name:    "invalid: no value",
 			expr:    "id=",
 			wantErr: true,
@@ -161,6 +176,21 @@ func TestParseAndValidateFilters(t *testing.T) {
 		{
 			name:    "invalid expression",
 			exprs:   []string{"invalid"},
+			wantErr: true,
+		},
+		{
+			name:    "value out of range for u32",
+			exprs:   []string{"id=4294967296"}, // 2^32, exceeds u32 max
+			wantErr: true,
+		},
+		{
+			name:  "signed negative value in range",
+			exprs: []string{"count>=-100"},
+			want:  1,
+		},
+		{
+			name:    "signed value out of range",
+			exprs:   []string{"count>=3000000000"}, // exceeds int32 max
 			wantErr: true,
 		},
 	}

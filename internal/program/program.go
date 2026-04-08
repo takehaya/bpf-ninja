@@ -337,6 +337,17 @@ func buildArgFilter(filters []filter.ArgFilter) asm.Instructions {
 		}
 		insns = append(insns, asm.LoadMem(asm.R3, asm.R2, offset, loadSize))
 
+		// Byte/Half/Word loads zero-extend into R3. For signed parameters we must
+		// sign-extend to 64-bit so that JSLT/JSGT comparisons work correctly
+		// (e.g. int8 -1 is loaded as 0xFF and must become 0xFFFFFFFFFFFFFFFF).
+		if f.Signed && f.ParamSize < 8 {
+			shift := int32((8 - f.ParamSize) * 8) // bits to shift
+			insns = append(insns,
+				asm.LSh.Imm(asm.R3, shift),
+				asm.ArSh.Imm(asm.R3, shift),
+			)
+		}
+
 		// Select unsigned or signed jump ops based on parameter signedness.
 		jLT, jGT := asm.JLT, asm.JGT
 		if f.Signed {
