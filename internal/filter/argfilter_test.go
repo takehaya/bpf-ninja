@@ -193,6 +193,16 @@ func TestParseAndValidateFilters(t *testing.T) {
 			exprs:   []string{"count>=3000000000"}, // exceeds int32 max
 			wantErr: true,
 		},
+		{
+			name:    "signed range inverted",
+			exprs:   []string{"count=10..-10"}, // min > max in signed domain
+			wantErr: true,
+		},
+		{
+			name:  "signed range valid negative",
+			exprs: []string{"count=-10..10"},
+			want:  1,
+		},
 	}
 
 	for _, tt := range tests {

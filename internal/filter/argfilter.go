@@ -185,6 +185,16 @@ func ParseAndValidateFilters(exprs []string, params []attach.FuncParamInfo) ([]A
 			if err := validateValueRange(pf.MaxValue, param.Size, param.Signed, expr); err != nil {
 				return nil, err
 			}
+			// Re-check min <= max under the resolved signedness.
+			if param.Signed {
+				if int64(pf.Value) > int64(pf.MaxValue) {
+					return nil, fmt.Errorf("invalid range in %q: min (%d) > max (%d) for signed parameter", expr, int64(pf.Value), int64(pf.MaxValue))
+				}
+			} else {
+				if pf.Value > pf.MaxValue {
+					return nil, fmt.Errorf("invalid range in %q: min (%d) > max (%d)", expr, pf.Value, pf.MaxValue)
+				}
+			}
 		}
 
 		filters = append(filters, ArgFilter{
