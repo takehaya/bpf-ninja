@@ -94,6 +94,14 @@ func (l *Lexer) Next() (Token, error) {
 			l.advance()
 			l.advance()
 			return Token{Kind: TokGe, Text: ">=", Pos: pos}, nil
+		case b == '<' && n == '<':
+			l.advance()
+			l.advance()
+			return Token{Kind: TokShl, Text: "<<", Pos: pos}, nil
+		case b == '>' && n == '>':
+			l.advance()
+			l.advance()
+			return Token{Kind: TokShr, Text: ">>", Pos: pos}, nil
 		}
 	}
 
@@ -132,6 +140,12 @@ func (l *Lexer) Next() (Token, error) {
 		return Token{Kind: TokMinus, Text: "-", Pos: pos}, nil
 	case '%':
 		return Token{Kind: TokPercent, Text: "%", Pos: pos}, nil
+	case '&':
+		return Token{Kind: TokAmp, Text: "&", Pos: pos}, nil
+	case '^':
+		return Token{Kind: TokCaret, Text: "^", Pos: pos}, nil
+	case ':':
+		return Token{Kind: TokColon, Text: ":", Pos: pos}, nil
 	case '=':
 		return Token{Kind: TokEq, Text: "=", Pos: pos}, nil
 	case '<':

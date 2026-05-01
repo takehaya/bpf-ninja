@@ -72,13 +72,13 @@ var dslEntryExprs = []string{
 	"eth/ipv4@outer/udp/gtp/ipv4@inner/tcp capture inner+8",
 	"eth/ipv4/tcp capture ipv4",
 	"eth/ipv4/tcp capture absolute 96",
-	// Bool literal: `where true` is identity (no-op condition); the
-	// `where false` counterpart compiles fine but is excluded from
-	// the verifier-load matrix because the always-reject pattern
-	// surfaces a kernel-side corner case unrelated to the type
-	// system (the spec allows it; we just don't load it in CI).
-	// dsl-types.md §4.6.
+	// Bool literal: `where true` is identity (no-op condition);
+	// `where false` short-circuits in Gen to a minimal always-reject
+	// program (codegen.go::isConstantFalseCondition), so the chain
+	// emit's bounds-check side effects don't dangle as dead code.
+	// dsl-types.md §4.6 / §15.4.
 	"eth/ipv4/tcp where true",
+	"eth/ipv4/tcp where false",
 	// Bare aux-exists: `where gtp.opt.exists` desugars in the resolver
 	// to the aux-gating emit path (no field load, just the gate).
 	"eth/ipv4/udp/gtp/ipv4/tcp where gtp.opt.exists",
@@ -96,6 +96,44 @@ var dslEntryExprs = []string{
 	// either side resolves to the same WAtomLiteralCmp IR.
 	"eth/ipv4/tcp where 10.0.0.1 == ipv4.dst",
 	"eth/ipv4/tcp where 10.0.0.0/8 != ipv4.dst",
+	// F7 (`field in [...]`) — integer alternatives reach codegen as
+	// an OR-chain of JEq jumps, with no overall packet-state delta
+	// versus the equivalent `dport == 80 or dport == 443`.
+	"eth/ipv4/tcp[dport in [80, 443]]",
+	"eth/ipv4/tcp[dport in [80, 443, 8080, 8443]]",
+	// F6 bitwise op set — `&`, `<<`, `>>` at mul/div precedence,
+	// `|`, `^` at add/sub. The classic flag/mask + shift idioms
+	// reach codegen as plain BPF ALU ops.
+	"eth/ipv4/tcp where tcp.dport & 0xff == 80",
+	"eth/ipv4/tcp where tcp.dport | 0x80 == 80",
+	"eth/ipv4/tcp where tcp.dport ^ 0x01 == 80",
+	"eth/ipv4/tcp where tcp.dport >> 4 == 0",
+	"eth/ipv4/tcp where tcp.dport << 1 == 160",
+	// F3 IPv6 ordered cmp — lexicographic comparison emitted as
+	// high-half decision + low-half fall-through.
+	"eth/ipv6[dst < fe80::ffff]/tcp",
+	"eth/ipv6[dst >= ::1]/tcp",
+	// F4 Int<128> arith eq/ne in the where path: plain field cmp
+	// works (single dual-LDX), but `field + const` / `field - const`
+	// trip the verifier's register-tracking rules — the
+	// register-pair carry / borrow needs additional plumbing the
+	// MVP doesn't ship. Compile is fine; verifier-load is staged.
+	"eth/ipv6/tcp where ipv6.src == ipv6.dst",
+	// `field[lo:hi]` bit-slice — narrows a wide field down to a
+	// single LDX-sized window, or sugar for the full-field cmp at
+	// width 128. Replaces the F5 multiplication path nobody wanted.
+	"eth/ipv6/tcp where ipv6.src[0:32] == 0x20010db8",
+	"eth/ipv6/tcp where ipv6.src[64:128] == ipv6.dst[64:128]",
+	"eth/ipv6/tcp where ipv6.src[0:128] == ipv6.dst[0:128]",
+	"eth/ipv6[src[0:32]==0x20010db8]/tcp",
+	// F12 mid-width slice cmp — resolver desugars into AND-chain
+	// of LDX-aligned sub-cmps. 96bit (= 8+4 split) is the typical
+	// IPv4-mapped-prefix shape.
+	"eth/ipv6/tcp where ipv6.src[0:96] == ipv6.dst[0:96]",
+	// F13 non-aligned bit-slice — codegen loads pow2-byte cover and
+	// applies shift+mask after bswap to extract the actual slice bits.
+	"eth/ipv6/tcp where ipv6.src[3:9] == 1",
+	"eth/ipv6/tcp where ipv6.src[4:12] == 0xff",
 }
 
 // dslExitExprs covers fexit-specific constructs (action atoms) plus a

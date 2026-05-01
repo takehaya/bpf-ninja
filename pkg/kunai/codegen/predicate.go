@@ -24,6 +24,9 @@ func genPredicate(pred *ir.Predicate) (asm.Instructions, error) {
 	if pred.Unsupported != "" {
 		return nil, fmt.Errorf("%w: %s", ErrNotImplemented, pred.Unsupported)
 	}
+	if pred.Kind == ast.PredIn {
+		return emitInPredicate(pred)
+	}
 	if pred.Kind != ast.PredCmp {
 		return nil, fmt.Errorf("%w: predicate kind %s", ErrNotImplemented, pred.Kind)
 	}
@@ -130,7 +133,17 @@ func emitIntPredicate(pred *ir.Predicate) (asm.Instructions, error) {
 	if err != nil {
 		return nil, err
 	}
+	hasSlice := pred.Field != nil && pred.Field.Slice != nil
 	switch {
+	case hasSlice:
+		// Slice-narrowed load: always bring the register to host
+		// order, then shift+mask. The constant stays in host order
+		// (the user wrote it that way), so we don't apply the
+		// constant-side bswap trick the equality fast-path uses.
+		if bytes > 1 {
+			insns = append(insns, asm.HostTo(asm.BE, asm.R3, size))
+		}
+		insns = append(insns, emitSliceShiftMask(pred.Field, bytes)...)
 	case bytes <= 1:
 		// 1-byte: register holds the raw byte; nothing to swap.
 	case pred.Op == ast.CmpEq || pred.Op == ast.CmpNeq:
@@ -165,7 +178,10 @@ func swapValueBytes(v uint64, bytes int) uint64 {
 // at codegen time and compare with a single JEq/JNE — same trick
 // genFieldDispatch uses for protocol-id consts.
 func emitIPv4Predicate(pred *ir.Predicate) (asm.Instructions, error) {
-	if pred.Field != nil && pred.Field.Aux != nil {
+	if pred.Field == nil || pred.Field.Layer == nil || pred.Field.Field == nil {
+		return nil, fmt.Errorf("codegen: IPv4 predicate missing field reference")
+	}
+	if pred.Field.Aux != nil {
 		return nil, fmt.Errorf("%w: IPv4 literal predicate on auxiliary header field is not yet supported", ErrNotImplemented)
 	}
 	fieldOff, bytes, err := findFieldByteOffset(pred.Field.Layer.Spec, pred.Field.Field.Name)
@@ -186,11 +202,13 @@ func emitIPv4Predicate(pred *ir.Predicate) (asm.Instructions, error) {
 	return insns, nil
 }
 
-// emitIPv6Predicate handles `field == fe80::1` and `field != fe80::1`.
-// IPv6 fields are `bit<128>` (e.g. ipv6.src / ipv6.dst), too wide for a
-// single LDX, so the body splits into two 8-byte LDX-DWord loads. Each
-// half is byte-swapped at codegen so the LE-reading LDX matches the
-// BE constant. The == / != branching shape comes from multiWordRoute.
+// emitIPv6Predicate handles `field == fe80::1`, `field != fe80::1`,
+// and the ordered comparisons `<` / `≤` / `>` / `≥` (F3). IPv6 fields
+// are `bit<128>`, too wide for a single LDX, so the body splits into
+// two 8-byte LDX-DWord loads. For ==/!= each half is byte-swapped at
+// codegen so the LE-reading LDX matches the BE constant. For ordered
+// cmp we host-swap the loaded register so its numeric ordering
+// matches the literal, and lexicographic-compare the high half first.
 func emitIPv6Predicate(pred *ir.Predicate) (asm.Instructions, error) {
 	if pred.Field != nil && pred.Field.Aux != nil {
 		return nil, fmt.Errorf("%w: IPv6 literal predicate on auxiliary header field is not yet supported", ErrNotImplemented)
@@ -199,17 +217,97 @@ func emitIPv6Predicate(pred *ir.Predicate) (asm.Instructions, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := requireEqualityOp(pred, "IPv6 literal"); err != nil {
-		return nil, err
+	switch pred.Op {
+	case ast.CmpEq, ast.CmpNeq:
+		highBE := binary.BigEndian.Uint64(pred.Value.V6[0:8])
+		lowBE := binary.BigEndian.Uint64(pred.Value.V6[8:16])
+		return multiWordRoute(pred.Op, func(fail string) asm.Instructions {
+			var insns asm.Instructions
+			insns = append(insns, ipv6HalfCheck(int16(fieldOff), ^uint64(0), highBE, fail)...)
+			insns = append(insns, ipv6HalfCheck(int16(fieldOff+8), ^uint64(0), lowBE, fail)...)
+			return insns
+		}), nil
+	case ast.CmpLt, ast.CmpLe, ast.CmpGt, ast.CmpGe:
+		return emitIPv6OrderedCmp(pred, fieldOff), nil
 	}
-	highBE := binary.BigEndian.Uint64(pred.Value.V6[0:8])
-	lowBE := binary.BigEndian.Uint64(pred.Value.V6[8:16])
-	return multiWordRoute(pred.Op, func(fail string) asm.Instructions {
-		var insns asm.Instructions
-		insns = append(insns, ipv6HalfCheck(int16(fieldOff), ^uint64(0), highBE, fail)...)
-		insns = append(insns, ipv6HalfCheck(int16(fieldOff+8), ^uint64(0), lowBE, fail)...)
-		return insns
-	}), nil
+	return nil, fmt.Errorf("%w: IPv6 literal cmp op %v not supported", ErrNotImplemented, pred.Op)
+}
+
+// emitIPv6OrderedCmp emits the lexicographic compare for `field <op>
+// literal` where op ∈ {<, ≤, >, ≥} and field is a 128-bit IPv6
+// address (F3). Algorithm:
+//
+//   load + host-swap high half of field into R3
+//   reg-cmp R3 against literal high:
+//     - if `op` is "strictly more permissive" (e.g. < and field<lit) → match
+//     - if `op` is "strictly impossible" (e.g. < and field>lit) → fail
+//     - if equal → fall through to low check
+//   load + host-swap low half of field into R3
+//   reg-cmp R3 against literal low (same op as the original):
+//     - on miss → fail
+//     - on match → success
+//
+// Match success falls through to the next predicate; mismatches jump
+// to dslReject. We use a per-predicate match landing so the early
+// "high half decides" exit can skip the low half emit.
+func emitIPv6OrderedCmp(pred *ir.Predicate, fieldOff int) asm.Instructions {
+	highHostOrder := binary.BigEndian.Uint64(pred.Value.V6[0:8])
+	lowHostOrder := binary.BigEndian.Uint64(pred.Value.V6[8:16])
+	matchLabel := nextPredicateMatchLabel()
+
+	highSuccess, highFail := highHalfJumps(pred.Op)
+	lowMissJump := lowHalfMissJump(pred.Op)
+
+	var insns asm.Instructions
+	// High half: load → bswap → cmp.
+	insns = append(insns, loadFromOffset(int16(fieldOff), asm.DWord)...)
+	insns = append(insns, asm.HostTo(asm.BE, asm.R3, asm.DWord))
+	insns = append(insns, asm.LoadImm(asm.R5, int64(highHostOrder), asm.DWord))
+	insns = append(insns, highSuccess.Reg(asm.R3, asm.R5, matchLabel))
+	insns = append(insns, highFail.Reg(asm.R3, asm.R5, dslReject))
+	// High half equal — proceed to low half.
+	insns = append(insns, loadFromOffset(int16(fieldOff+8), asm.DWord)...)
+	insns = append(insns, asm.HostTo(asm.BE, asm.R3, asm.DWord))
+	insns = append(insns, asm.LoadImm(asm.R5, int64(lowHostOrder), asm.DWord))
+	insns = append(insns, lowMissJump.Reg(asm.R3, asm.R5, dslReject))
+	// Match landing — both the early "high decides" exit and the
+	// low-half pass land here, then fall through to the next predicate.
+	insns = append(insns, landingNoop(matchLabel))
+	return insns
+}
+
+// highHalfJumps returns the (success, fail) reg-reg jump ops for the
+// high-half lexicographic decision under cmp op `op`. "Success" means
+// the high half alone proves the inequality; "fail" means the high
+// half alone disproves it. The equal case falls through to the
+// caller's low-half emit.
+func highHalfJumps(op ast.CmpOp) (asm.JumpOp, asm.JumpOp) {
+	switch op {
+	case ast.CmpLt, ast.CmpLe:
+		// field < lit ⟸ high(field) < high(lit)
+		// field > lit ⟸ high(field) > high(lit) (so fail high if >)
+		return asm.JLT, asm.JGT
+	case ast.CmpGt, ast.CmpGe:
+		return asm.JGT, asm.JLT
+	}
+	return 0, 0
+}
+
+// lowHalfMissJump returns the reg-reg jump op that *fails* (= jumps
+// to dslReject) on the low half. For `<` we miss when low(field) ≥
+// low(lit); for `≤` we miss when low(field) > low(lit); etc.
+func lowHalfMissJump(op ast.CmpOp) asm.JumpOp {
+	switch op {
+	case ast.CmpLt:
+		return asm.JGE
+	case ast.CmpLe:
+		return asm.JGT
+	case ast.CmpGt:
+		return asm.JLE
+	case ast.CmpGe:
+		return asm.JLT
+	}
+	return 0
 }
 
 // emitIPv6CIDRPredicate handles `field == 2001:db8::/32` (and !=).
@@ -390,6 +488,95 @@ func requireEqualityOp(pred *ir.Predicate, kind string) error {
 		return fmt.Errorf("%w: %s supports only == / != (got %s)", ErrNotImplemented, kind, pred.Op)
 	}
 	return nil
+}
+
+// emitInPredicate handles `field in [v1, v2, ...]`. The IR carries
+// the field on pred.Field and the alternatives on pred.List; the
+// resolver has already fit-checked each element against the field
+// width. We load the field once, emit an "if equal jump to match"
+// for every alternative, and jump to dslReject if none matched.
+//
+// MVP scope (dsl-followups.md F7): integer alternatives only, on
+// fields ≤ 64 bits. IPv4 / IPv6 / MAC / CIDR alternatives stay as
+// ErrNotImplemented since they would each need their own multi-
+// word emit path; fold them in when there's user demand.
+func emitInPredicate(pred *ir.Predicate) (asm.Instructions, error) {
+	if len(pred.List) == 0 {
+		return nil, fmt.Errorf("codegen: 'in' predicate has empty list")
+	}
+	for _, v := range pred.List {
+		if v == nil || v.Kind != ast.ValInt {
+			return nil, fmt.Errorf("%w: 'in' predicate currently supports only integer alternatives (got %v)", ErrNotImplemented, vKindOf(v))
+		}
+	}
+	if pred.Field == nil || pred.Field.Field == nil {
+		return nil, fmt.Errorf("codegen: 'in' predicate missing field reference")
+	}
+	fieldBits := pred.Field.Field.Bits
+	if fieldBits <= 0 || fieldBits > 64 {
+		return nil, fmt.Errorf("%w: 'in' on bit<%d> field — only ≤ bit<64> wired", ErrNotImplemented, fieldBits)
+	}
+
+	dynamic := pred.Field.Aux != nil && pred.Field.Aux.Stack != nil && !pred.Field.Aux.Stack.IsStatic
+	var insns asm.Instructions
+	var bytes int
+	switch {
+	case dynamic:
+		bytes = pred.Field.Aux.FieldBitWidth / 8
+		size, err := asmSizeFor(bytes)
+		if err != nil {
+			return nil, err
+		}
+		dyn, err := emitDynamicStackLoad(pred.Field, size, dslReject)
+		if err != nil {
+			return nil, err
+		}
+		insns = append(insns, dyn...)
+	default:
+		fieldOff, bs, err := fieldRefByteOffset(pred.Field)
+		if err != nil {
+			return nil, err
+		}
+		bytes = bs
+		size, err := asmSizeFor(bs)
+		if err != nil {
+			return nil, err
+		}
+		if pred.Field.Aux != nil {
+			insns = append(insns, emitAuxGating(pred.Field.Aux.Gating, r4Anchor(), dslReject)...)
+		}
+		insns = append(insns, loadFromOffset(int16(fieldOff), size)...)
+	}
+
+	matchLabel := nextPredicateMatchLabel()
+	for _, v := range pred.List {
+		value := v.Int
+		if fieldBits < 64 {
+			value &= (uint64(1) << fieldBits) - 1
+		}
+		// Multi-byte fields land in R3 in network-byte order packed
+		// as little-endian; mirror emitIntPredicate by byte-swapping
+		// the constant so a single JEq still matches.
+		if bytes > 1 {
+			value = swapValueBytes(value, bytes)
+		}
+		if value > 0x7FFFFFFF {
+			return nil, fmt.Errorf("%w: 'in' alternative %d exceeds int32 immediate range", ErrNotImplemented, v.Int)
+		}
+		insns = append(insns, asm.JEq.Imm(asm.R3, int32(value), matchLabel))
+	}
+	insns = append(insns, asm.Ja.Label(dslReject))
+	insns = append(insns, landingNoop(matchLabel))
+	return insns, nil
+}
+
+// vKindOf is a nil-safe ValueKind extractor used in error messages
+// to keep the formatter from blowing up on a malformed predicate.
+func vKindOf(v *ast.Value) ast.ValueKind {
+	if v == nil {
+		return ast.ValueKind(0)
+	}
+	return v.Kind
 }
 
 // predMatchLabelPrefix is the label prefix multiWordRoute uses for

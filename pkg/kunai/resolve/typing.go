@@ -147,7 +147,7 @@ func exprMaxFieldBits(e *ir.ArithExpr) int {
 	}
 	switch e.Kind {
 	case ast.ArithField:
-		return fieldRefBits(e.Field)
+		return e.Field.EffectiveBits()
 	case ast.ArithBinOp:
 		l := exprMaxFieldBits(e.Left)
 		r := exprMaxFieldBits(e.Right)
@@ -159,21 +159,6 @@ func exprMaxFieldBits(e *ir.ArithExpr) int {
 	return 0
 }
 
-// fieldRefBits returns the declared bit width of a FieldRef. Aux
-// references use the aux header's field bit window; primary
-// references use the field's declared width.
-func fieldRefBits(ref *ir.FieldRef) int {
-	if ref == nil {
-		return 0
-	}
-	if ref.Aux != nil {
-		return ref.Aux.FieldBitWidth
-	}
-	if ref.Field != nil {
-		return ref.Field.Bits
-	}
-	return 0
-}
 
 // uintFitsBits reports whether a uint64 literal fits in the unsigned
 // range [0, 2^bits). Negative literals reach this helper as their
@@ -204,4 +189,240 @@ func uintFitsBits(v uint64, bits int) bool {
 
 func isZeroLiteral(e *ir.ArithExpr) bool {
 	return e != nil && e.Kind == ast.ArithConst && e.Const == 0
+}
+
+// detachTrailingSlice peels a `[lo:hi]` slice index off the last
+// segment of fp so the existing dispatch logic in
+// resolveQualifiedField / resolveUnqualifiedField doesn't choke on
+// it as a forbidden trailing index. The returned FieldPath shares
+// the original Parts slice but truncates Indices when the last
+// slot held a slice. The caller re-attaches the slice to the
+// resolved FieldRef via attachSlice.
+//
+// Also performs the byte-aligned MVP check (lo % 8 == 0,
+// hi % 8 == 0); non-aligned ranges surface as ErrNotImplemented
+// once F11 lands a shift+mask emit.
+func detachTrailingSlice(fp *ast.FieldPath) (*ast.FieldPath, *ast.IndexExpr, error) {
+	if fp == nil || len(fp.Parts) == 0 || len(fp.Indices) == 0 {
+		return fp, nil, nil
+	}
+	// Indices is parallel to Parts but may be shorter when the
+	// trailing segment has no `[…]` attached. Bound-check both
+	// before peeking at the trailing slot.
+	last := len(fp.Parts) - 1
+	if last >= len(fp.Indices) {
+		return fp, nil, nil
+	}
+	idx := fp.Indices[last]
+	if idx == nil || !idx.IsSlice {
+		return fp, nil, nil
+	}
+	// dsl-types.md §3.4 allows arbitrary lo / hi as long as the
+	// resulting width fits the codegen's load-and-mask path. The
+	// field-aware alignment / range validation runs in attachSlice
+	// once the FieldRef is known.
+	cleaned := *fp
+	cleaned.Indices = append([]*ast.IndexExpr(nil), fp.Indices...)
+	cleaned.Indices[last] = nil
+	return &cleaned, idx, nil
+}
+
+// tryDesugarMultiLDXSliceCmp converts a `slice == slice` (or `!=`)
+// comparison whose width exceeds a single LDX into an AND / OR of
+// LDX-sized sub-comparisons. Returns nil when the pattern doesn't
+// match, in which case the caller proceeds with the regular cmp
+// emit.
+//
+// Mechanics: split the slice's bit range from `lo` greedily into
+// LDX-aligned chunks (8 / 4 / 2 / 1 bytes), build a per-chunk cmp
+// Condition, and combine left-to-right with WAnd (for ==) or WOr
+// (for !=). Each sub-cmp targets a single-LDX-sized slice on each
+// side so the existing 64-bit pipeline handles them without any
+// new emit. byte-aligned slices in (64, 128) (e.g. [0:96]) are
+// the obvious win; degenerate widths like 88 (= 8+2+1 bytes) work
+// too via 3-way split.
+func tryDesugarMultiLDXSliceCmp(al, ar *ir.ArithExpr, op ast.CmpOp, pos ast.Position) *ir.Condition {
+	if al == nil || ar == nil {
+		return nil
+	}
+	if al.Kind != ast.ArithField || ar.Kind != ast.ArithField {
+		return nil
+	}
+	if al.Field == nil || ar.Field == nil {
+		return nil
+	}
+	if al.Field.Slice == nil || ar.Field.Slice == nil {
+		return nil
+	}
+	if op != ast.CmpEq && op != ast.CmpNeq {
+		return nil
+	}
+	lWidth := al.Field.Slice.Bits()
+	rWidth := ar.Field.Slice.Bits()
+	if lWidth != rWidth {
+		return nil
+	}
+	if lWidth <= 64 {
+		// Fits a single LDX; no desugar needed.
+		return nil
+	}
+	chunks := splitSliceIntoLDXChunks(lWidth)
+	if len(chunks) <= 1 {
+		return nil
+	}
+	conds := make([]*ir.Condition, 0, len(chunks))
+	for _, ch := range chunks {
+		lhsRef := cloneFieldRefWithSlice(al.Field, al.Field.Slice.Lo+ch.lo, al.Field.Slice.Lo+ch.hi)
+		rhsRef := cloneFieldRefWithSlice(ar.Field, ar.Field.Slice.Lo+ch.lo, ar.Field.Slice.Lo+ch.hi)
+		conds = append(conds, &ir.Condition{
+			Kind:   ast.WAtomArith,
+			ArithL: &ir.ArithExpr{Kind: ast.ArithField, Field: lhsRef, Pos: pos},
+			ArithR: &ir.ArithExpr{Kind: ast.ArithField, Field: rhsRef, Pos: pos},
+			Op:     op,
+			Pos:    pos,
+		})
+	}
+	combiner := ast.WAnd
+	if op == ast.CmpNeq {
+		combiner = ast.WOr
+	}
+	return combineConditions(conds, combiner, pos)
+}
+
+// chunk is a half-open bit range produced by splitSliceIntoLDXChunks.
+type chunk struct {
+	lo, hi int
+}
+
+// splitSliceIntoLDXChunks divides a width-bit byte-aligned range
+// into chunks each fitting a single asmSizeFor-acceptable LDX
+// (8 / 4 / 2 / 1 bytes). Greedy from the start. Width must be a
+// multiple of 8; the caller's byte-aligned check (in attachSlice)
+// guarantees this.
+func splitSliceIntoLDXChunks(width int) []chunk {
+	var chunks []chunk
+	pos := 0
+	for pos < width {
+		bytesLeft := (width - pos) / 8
+		var chunkBytes int
+		switch {
+		case bytesLeft >= 8:
+			chunkBytes = 8
+		case bytesLeft >= 4:
+			chunkBytes = 4
+		case bytesLeft >= 2:
+			chunkBytes = 2
+		default:
+			chunkBytes = 1
+		}
+		chunks = append(chunks, chunk{lo: pos, hi: pos + chunkBytes*8})
+		pos += chunkBytes * 8
+	}
+	return chunks
+}
+
+// cloneFieldRefWithSlice returns a shallow copy of orig with its
+// Slice field replaced by [lo, hi). Layer / Field / Aux pointers
+// are preserved so downstream codegen finds the same vocab metadata.
+func cloneFieldRefWithSlice(orig *ir.FieldRef, lo, hi int) *ir.FieldRef {
+	cp := *orig
+	cp.Slice = &ir.FieldSlice{Lo: lo, Hi: hi}
+	return &cp
+}
+
+// combineConditions folds conds left-to-right with kind ∈ {WAnd, WOr}.
+// Caller guarantees len(conds) ≥ 1.
+func combineConditions(conds []*ir.Condition, kind ast.WhereKind, pos ast.Position) *ir.Condition {
+	result := conds[0]
+	for _, c := range conds[1:] {
+		result = &ir.Condition{Kind: kind, Left: result, Right: c, Pos: pos}
+	}
+	return result
+}
+
+// attachSlice validates a detached `[lo:hi]` slice against the
+// resolved FieldRef's underlying width and pins it on the ref.
+func attachSlice(ref *ir.FieldRef, slice *ast.IndexExpr) error {
+	if ref == nil || slice == nil {
+		return nil
+	}
+	width := 0
+	switch {
+	case ref.Aux != nil:
+		width = ref.Aux.FieldBitWidth
+	case ref.Field != nil:
+		width = ref.Field.Bits
+	}
+	if width == 0 {
+		return errorf(slice.Pos, "bit-slice [%d:%d] applied to a field with unknown width", slice.SliceLo, slice.SliceHi)
+	}
+	if int(slice.SliceHi) > width {
+		return errorf(slice.Pos, "bit-slice [%d:%d] exceeds field width bit<%d>", slice.SliceLo, slice.SliceHi, width)
+	}
+	bits := int(slice.SliceHi - slice.SliceLo)
+	// Cap at 128 bits = the widest single field the spec models.
+	// Within the [1, 128] band:
+	//   - widths ≤ 64 ride the single-LDX cmp / arith path (with a
+	//     post-load shift+mask for non-aligned sub-byte slices)
+	//   - widths > 64 ride the F12 desugar (= AND/OR-chain of
+	//     LDX-aligned sub-cmps); only available in cmp context, not
+	//     arith binops
+	if bits > 128 {
+		return errorf(slice.Pos, "bit-slice [%d:%d] yields %d bits; the spec caps at bit<128>", slice.SliceLo, slice.SliceHi, bits)
+	}
+	// For widths > 64 the F12 desugar requires byte-aligned
+	// endpoints — the multi-chunk split currently only steps in
+	// 8-bit increments. Sub-byte slices wider than 64 would need
+	// additional plumbing; reject up front.
+	if bits > 64 && (slice.SliceLo%8 != 0 || slice.SliceHi%8 != 0) {
+		return errorf(slice.Pos, "bit-slice [%d:%d] yields %d bits and is not byte-aligned; the > 64 desugar path requires byte-aligned endpoints", slice.SliceLo, slice.SliceHi, bits)
+	}
+	ref.Slice = &ir.FieldSlice{Lo: int(slice.SliceLo), Hi: int(slice.SliceHi)}
+	return nil
+}
+
+// lintArithCondition is the F1 strict-arith pass. It walks both
+// sides of the cmp and reports binops whose operand shapes almost
+// certainly wrap at the field's natural width. The set is
+// intentionally narrow — we want to flag the obvious traps
+// (`field + field`, `field - field` with RHS ≥ LHS, `field *
+// field`) without false-positiving on the everyday `tcp.dport + 1`
+// pattern. Callers opt in via resolve.Options.StrictArithLint.
+func lintArithCondition(c *ir.Condition) error {
+	if c == nil {
+		return nil
+	}
+	if err := lintArithExpr(c.ArithL); err != nil {
+		return err
+	}
+	return lintArithExpr(c.ArithR)
+}
+
+func lintArithExpr(e *ir.ArithExpr) error {
+	if e == nil || e.Kind != ast.ArithBinOp {
+		return nil
+	}
+	if err := lintArithExpr(e.Left); err != nil {
+		return err
+	}
+	if err := lintArithExpr(e.Right); err != nil {
+		return err
+	}
+	leftIsField := e.Left != nil && e.Left.Kind == ast.ArithField
+	rightIsField := e.Right != nil && e.Right.Kind == ast.ArithField
+	switch e.Op {
+	case ast.ArithAdd, ast.ArithMul:
+		if leftIsField && rightIsField {
+			return errArithOverflowSuspect(e.Pos, e.Op)
+		}
+	case ast.ArithSub:
+		if leftIsField && rightIsField {
+			lb := exprMaxFieldBits(e.Left)
+			rb := exprMaxFieldBits(e.Right)
+			if rb >= lb {
+				return errArithUnderflowSuspect(e.Pos, lb, rb)
+			}
+		}
+	}
+	return nil
 }

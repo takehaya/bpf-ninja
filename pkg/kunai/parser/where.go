@@ -395,7 +395,6 @@ func (p *parser) tryLeadingNetworkLiteralCmp() (*ast.Value, ast.CmpOp, bool, err
 // lexer and p.cur are restored to their post-`advance()` state so
 // the caller can fall through to `parseArithExpr` cleanly.
 func (p *parser) tryNetworkLiteral(snap lexer.Snapshot) (*ast.Value, bool, error) {
-	savedCur := p.cur
 	p.lex.Restore(snap)
 	tok, err := p.lex.NextValue()
 	if err != nil || tok.Kind != lexer.TokValue || !isNetworkLiteralKind(tok.Value.Kind) {
@@ -407,7 +406,6 @@ func (p *parser) tryNetworkLiteral(snap lexer.Snapshot) (*ast.Value, bool, error
 			return nil, false, err2
 		}
 		p.cur = next
-		_ = savedCur // savedCur and `next` should match modulo identity
 		return nil, false, nil
 	}
 	// Literal accepted — advance into the next structural token so
@@ -422,16 +420,30 @@ func isNetworkLiteralKind(k ast.ValueKind) bool {
 	return k == ast.ValIPv4 || k == ast.ValIPv6 || k == ast.ValMAC || k == ast.ValCIDR
 }
 
-// arith_expr := arith_term (("+"|"-") arith_term)*
+// arith_expr := arith_term (("+"|"-"|"|"|"^") arith_term)*
+//
+// `|` and `^` (bitwise OR / XOR) join `+` / `-` at the same
+// precedence — they're additive in the lattice sense and treating
+// them at this level mirrors the way users write masked equality
+// (`(flags >> 4) & 0x0f | extra_bit == val`).
 func (p *parser) parseArithExpr() (*ast.ArithExpr, error) {
 	left, err := p.parseArithTerm()
 	if err != nil {
 		return nil, err
 	}
-	for p.cur.Kind == lexer.TokPlus || p.cur.Kind == lexer.TokMinus {
-		op := ast.ArithAdd
-		if p.cur.Kind == lexer.TokMinus {
+	for {
+		var op ast.ArithOp
+		switch p.cur.Kind {
+		case lexer.TokPlus:
+			op = ast.ArithAdd
+		case lexer.TokMinus:
 			op = ast.ArithSub
+		case lexer.TokPipe:
+			op = ast.ArithOr
+		case lexer.TokCaret:
+			op = ast.ArithXor
+		default:
+			return left, nil
 		}
 		pos := p.cur.Pos
 		if err := p.advance(); err != nil {
@@ -443,10 +455,17 @@ func (p *parser) parseArithExpr() (*ast.ArithExpr, error) {
 		}
 		left = &ast.ArithExpr{Kind: ast.ArithBinOp, Op: op, Left: left, Right: right, Pos: pos}
 	}
-	return left, nil
 }
 
-// arith_term := arith_fac (("*"|"/"|"%") arith_fac)*
+// arith_term := arith_fac (("*"|"/"|"%"|"&"|"<<"|">>") arith_fac)*
+//
+// Bitwise `&` and the shifts `<<` / `>>` sit at the same
+// precedence as `*` / `/` / `%`. This is a deliberate
+// simplification of C: it keeps the natural flag idiom
+// `tcp.flags & 0x12 == 0x12` parens-free, and shift-with-mask
+// patterns like `flags >> 4 & 1` reading left-to-right at one
+// precedence. `|` / `^` live one level up (arith_expr) since they
+// behave more like additive on the truth-value side.
 func (p *parser) parseArithTerm() (*ast.ArithExpr, error) {
 	left, err := p.parseArithFac()
 	if err != nil {
@@ -461,6 +480,12 @@ func (p *parser) parseArithTerm() (*ast.ArithExpr, error) {
 			op = ast.ArithDiv
 		case lexer.TokPercent:
 			op = ast.ArithMod
+		case lexer.TokAmp:
+			op = ast.ArithAnd
+		case lexer.TokShl:
+			op = ast.ArithShl
+		case lexer.TokShr:
+			op = ast.ArithShr
 		default:
 			return left, nil
 		}

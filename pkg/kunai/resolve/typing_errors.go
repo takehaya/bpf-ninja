@@ -58,3 +58,18 @@ func errUnknownActionLiteral(pos ast.Position, name string, accepted int) error 
 func errOrderedNotAllowed(pos ast.Position, op ast.CmpOp, kind string) error {
 	return errorf(pos, "ordered comparison %s not allowed for %s (%s supports only == and !=)", op, kind, kind)
 }
+
+// errArithOverflowSuspect reports an F1 strict-arith violation:
+// two-field `+` / `*` whose result almost certainly wraps at the
+// field's natural width. Only fires under
+// resolve.Options.StrictArithLint.
+func errArithOverflowSuspect(pos ast.Position, op ast.ArithOp) error {
+	return errorf(pos, "arith %s on two field operands likely overflows the result width (StrictArithLint); cast or rewrite to make the wrap intent explicit", op)
+}
+
+// errArithUnderflowSuspect reports an F1 strict-arith violation
+// for `field - field` where the RHS is at least as wide as the LHS,
+// so the result can underflow into the high bits.
+func errArithUnderflowSuspect(pos ast.Position, lhsBits, rhsBits int) error {
+	return errorf(pos, "arith - on two field operands (LHS bit<%d>, RHS bit<%d>) likely underflows: RHS is at least as wide as LHS (StrictArithLint)", lhsBits, rhsBits)
+}

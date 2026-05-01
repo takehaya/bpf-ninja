@@ -190,6 +190,14 @@ func (o Output) Instructions() asm.Instructions {
 // a jump to "filter_result" from inside our emitted code lands on it.
 const filterResultLabel = "filter_result"
 
+// isConstantFalseCondition reports whether c folds to a literal
+// `false`. Used by Gen to short-circuit the always-reject case so
+// the kernel verifier doesn't see a chain followed by an
+// unreachable accept tail.
+func isConstantFalseCondition(c *ir.Condition) bool {
+	return c != nil && c.Kind == ast.WAtomBoolLit && !c.BoolLitValue
+}
+
 // dslReject sets R2=0 and falls through to filter_result. The constant
 // is a fixed string, so two Gen outputs cannot be concatenated into a
 // single assembly unit without symbol collision — callers wrap each
@@ -251,6 +259,29 @@ func Gen(p *ir.Program, caps Capabilities) (Output, error) {
 	capInfo, where, err := computeCapture(p, p.Where)
 	if err != nil {
 		return Output{}, err
+	}
+
+	// `where false` short-circuit: a filter whose where clause is
+	// constant-false never accepts a packet, so emit a minimal
+	// always-reject program and skip the chain entirely. Without
+	// this short-circuit the kernel verifier objects to the chain's
+	// bounds-check side effects becoming dead state once where false
+	// jumps over the accept tail (dsl-types.md §15.4 known corner
+	// case). Capture clauses are dropped because they fire only on
+	// the accept path that no packet will ever reach.
+	if isConstantFalseCondition(where) {
+		// Always-reject: a single Mov + Ja gets us into the host's
+		// filter_result tail with R2=0. We deliberately do *not* emit
+		// the dsl_reject symbol landing — there's no Ja into it from
+		// this minimal stream, so leaving the dead-code Mov triggers
+		// the kernel verifier's "unreachable insn" rule.
+		return Output{
+			Main: asm.Instructions{
+				asm.Mov.Imm(asm.R2, 0),
+				asm.Ja.Label(filterResultLabel),
+			},
+			Capture: capInfo,
+		}, nil
 	}
 
 	insns := asm.Instructions{
@@ -795,6 +826,26 @@ func findFieldByteOffset(spec *vocab.ProtocolSpec, name string) (int, int, error
 	return bitOff / 8, bits / 8, nil
 }
 
+// findFieldByteOffset128 is a width-relaxed sibling of
+// findFieldByteOffset for the F4 / F3 paths that handle 128-bit
+// fields (e.g. ipv6.src / ipv6.dst). The single-load 64-bit
+// constraint of the original helper does not apply here because
+// the caller emits two LDX-DWord loads and joins the halves into
+// a register pair.
+func findFieldByteOffset128(spec *vocab.ProtocolSpec, name string) (int, int, error) {
+	bitOff, bits, err := findFieldBitOffset(spec, name)
+	if err != nil {
+		return 0, 0, err
+	}
+	if bitOff%8 != 0 {
+		return 0, 0, fmt.Errorf("%w: field %s.%s starts at bit %d (not byte-aligned)", ErrNotImplemented, spec.Name, name, bitOff)
+	}
+	if bits != 128 {
+		return 0, 0, fmt.Errorf("%w: bit<128> path called with %d-bit field %s.%s", ErrNotImplemented, bits, spec.Name, name)
+	}
+	return bitOff / 8, bits / 8, nil
+}
+
 // fieldRefByteOffset returns the byte offset (relative to the
 // owning layer's start, anchored on offsetBase at predicate-emit
 // time) and byte width for a FieldRef. Aux references add the aux
@@ -817,7 +868,28 @@ func fieldRefByteOffset(ref *ir.FieldRef) (int, int, error) {
 		return 0, 0, fmt.Errorf("%w: TCP/IPv4 option lookup (`%s.options.%s`) requires the option-walk codegen which is not yet implemented", ErrNotImplemented, ref.Layer.Spec.Name, ref.Aux.Option.Name)
 	}
 	if ref.Aux == nil {
-		return findFieldByteOffset(ref.Layer.Spec, ref.Field.Name)
+		off, size, err := findFieldByteOffset(ref.Layer.Spec, ref.Field.Name)
+		if err != nil {
+			// findFieldByteOffset rejects > 8-byte fields, but a
+			// bit-slice may have narrowed an Int<128> down to ≤ 64
+			// bits; bypass the check for that path so e.g.
+			// `ipv6.src[0:32]` reaches the load.
+			if ref.Slice != nil {
+				bitOff, bits, ferr := findFieldBitOffset(ref.Layer.Spec, ref.Field.Name)
+				if ferr != nil {
+					return 0, 0, ferr
+				}
+				if bitOff%8 != 0 {
+					return 0, 0, fmt.Errorf("%w: field %s.%s starts at bit %d (not byte-aligned)", ErrNotImplemented, ref.Layer.Spec.Name, ref.Field.Name, bitOff)
+				}
+				_ = bits
+				off = bitOff / 8
+				size = ref.Slice.Bits() / 8
+			} else {
+				return 0, 0, err
+			}
+		}
+		return applySliceToOffset(ref, off, size)
 	}
 	if ref.Aux.FieldBitOff%8 != 0 {
 		return 0, 0, fmt.Errorf("%w: aux field %s.%s.%s starts at bit %d (not byte-aligned)", ErrNotImplemented, ref.Layer.Spec.Name, ref.Aux.OutParam, ref.Field.Name, ref.Aux.FieldBitOff)
@@ -835,7 +907,80 @@ func fieldRefByteOffset(ref *ir.FieldRef) (int, int, error) {
 		}
 		off += int(ref.Aux.Stack.Static) * ref.Aux.HeaderSize
 	}
-	return off, ref.Aux.FieldBitWidth / 8, nil
+	return applySliceToOffset(ref, off, ref.Aux.FieldBitWidth/8)
+}
+
+// applySliceToOffset narrows (off, size) by the field's bit-slice
+// when set. For byte-aligned slices the result is exact (off shifts
+// to the slice start, size is the slice width in bytes). For
+// sub-byte slices we round the load up to the smallest power-of-2
+// byte size that covers the slice; the caller is responsible for
+// emitting the post-load shift + mask via slicePostAdjust.
+func applySliceToOffset(ref *ir.FieldRef, off, size int) (int, int, error) {
+	if ref.Slice == nil {
+		return off, size, nil
+	}
+	byteStart := ref.Slice.Lo / 8
+	byteEndExclusive := (ref.Slice.Hi + 7) / 8
+	cover := byteEndExclusive - byteStart
+	loadBytes := nextLDXSize(cover)
+	if loadBytes == 0 {
+		return 0, 0, fmt.Errorf("%w: bit-slice [%d:%d] needs %d-byte load (max 8)", ErrNotImplemented, ref.Slice.Lo, ref.Slice.Hi, cover)
+	}
+	off += byteStart
+	return off, loadBytes, nil
+}
+
+// nextLDXSize returns the smallest LDX-acceptable byte count
+// (1 / 2 / 4 / 8) ≥ cover, or 0 if cover > 8. The post-load
+// shift + mask narrows the loaded value back down to the slice's
+// actual bits.
+func nextLDXSize(cover int) int {
+	switch {
+	case cover <= 1:
+		return 1
+	case cover <= 2:
+		return 2
+	case cover <= 4:
+		return 4
+	case cover <= 8:
+		return 8
+	}
+	return 0
+}
+
+// slicePostAdjust returns the shift and mask the caller emits to
+// pull the slice's bits out of a freshly-loaded (and byte-swapped)
+// register. Returns shift = 0 and mask = 0 when no adjustment is
+// needed (= byte-aligned slice that exactly fills the load, or
+// no slice at all). The caller emits:
+//
+//	if shift > 0:  asm.RSh.Imm(R3, int32(shift))
+//	if mask  > 0:  asm.LoadImm(R5, int64(mask), DWord); asm.And.Reg(R3, R5)
+//	             (or And.Imm if mask fits int32)
+//
+// Bit numbering: the slice's network bit `lo` lives at host bit
+// position `loadBytes*8 - 1 - (lo - byteStart*8)` in the swapped
+// register. shift = loadBytes*8 - (hi - byteStart*8) drops the bits
+// below the slice; mask = (1<<width) - 1 keeps only the slice bits.
+func slicePostAdjust(ref *ir.FieldRef, loadBytes int) (shift int, mask uint64) {
+	if ref.Slice == nil {
+		return 0, 0
+	}
+	byteStart := ref.Slice.Lo / 8
+	loadBits := loadBytes * 8
+	hiInLoad := ref.Slice.Hi - byteStart*8
+	width := ref.Slice.Bits()
+	// Default: no adjustment when slice exactly equals the load.
+	if hiInLoad == loadBits && ref.Slice.Lo == byteStart*8 && width == loadBits {
+		return 0, 0
+	}
+	shift = loadBits - hiInLoad
+	mask = (uint64(1) << uint(width)) - 1
+	if width >= 64 {
+		mask = ^uint64(0)
+	}
+	return shift, mask
 }
 
 // emitAuxGating emits the runtime check that the aux is present on

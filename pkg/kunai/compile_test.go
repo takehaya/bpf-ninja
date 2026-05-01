@@ -244,6 +244,240 @@ func TestCompileWhereNetworkLiteralOnLHS(t *testing.T) {
 	}
 }
 
+func TestCompileBracketInAccepted(t *testing.T) {
+	// F7: bracket-predicate `in [...]` for integer alternatives.
+	for _, expr := range []string{
+		"eth/ipv4/tcp[dport in [80, 443]]",
+		"eth/ipv4/tcp[dport in [80, 443, 8080, 8443]]",
+	} {
+		t.Run(expr, func(t *testing.T) {
+			insns, err := compileForTest(expr)
+			if err != nil {
+				t.Fatalf("Compile(%q): %v", expr, err)
+			}
+			if len(insns) == 0 {
+				t.Fatal("expected non-empty instructions")
+			}
+		})
+	}
+}
+
+func TestCompileBracketInOutOfRangeRejected(t *testing.T) {
+	// Each alternative is fit-checked against the field width.
+	_, err := compileForTest("eth/ipv4/tcp[dport in [99999]]")
+	if err == nil || !strings.Contains(err.Error(), "does not fit") {
+		t.Fatalf("err = %v; want fit-check rejection", err)
+	}
+}
+
+func TestCompileWhereBitwiseOps(t *testing.T) {
+	// F6: full bitwise op set. `&`, `<<`, `>>` at mul/div precedence;
+	// `|`, `^` at add/sub precedence.
+	for _, expr := range []string{
+		"eth/ipv4/tcp where tcp.dport & 0xff == 80",
+		"eth/ipv4/tcp where ipv4.ttl & 0x0f != 0",
+		"eth/ipv4/tcp where tcp.dport | 0x80 == 80",
+		"eth/ipv4/tcp where tcp.dport ^ 0x01 == 80",
+		"eth/ipv4/tcp where tcp.dport >> 4 == 0",
+		"eth/ipv4/tcp where tcp.dport << 1 == 160",
+	} {
+		t.Run(expr, func(t *testing.T) {
+			insns, err := compileForTest(expr)
+			if err != nil {
+				t.Fatalf("Compile(%q): %v", expr, err)
+			}
+			if len(insns) == 0 {
+				t.Fatal("expected non-empty instructions")
+			}
+		})
+	}
+}
+
+func TestCompileBitSlice(t *testing.T) {
+	// `field[lo:hi]` MVP: byte-aligned slices on Int<128> fields,
+	// usable in both bracket predicates and where-arith.
+	for _, expr := range []string{
+		"eth/ipv6/tcp where ipv6.src[0:32] == 0x20010db8",
+		"eth/ipv6/tcp where ipv6.src[96:128] == ipv6.dst[96:128]",
+		"eth/ipv6/tcp where ipv6.src[64:128] == ipv6.dst[64:128]",
+		"eth/ipv6/tcp where ipv6.src[0:64] != ipv6.dst[0:64]",
+		"eth/ipv6[src[0:32]==0x20010db8]/tcp",
+	} {
+		t.Run(expr, func(t *testing.T) {
+			insns, err := compileForTest(expr)
+			if err != nil {
+				t.Fatalf("Compile(%q): %v", expr, err)
+			}
+			if len(insns) == 0 {
+				t.Fatal("expected non-empty instructions")
+			}
+		})
+	}
+}
+
+func TestCompileBitSliceRejected(t *testing.T) {
+	// Slice-related resolver rejections that survive the F13
+	// non-aligned support: out-of-field-width, empty range,
+	// and >64bit non-aligned slice (the F12 desugar requires
+	// byte-aligned endpoints when crossing the 64-bit boundary).
+	for _, c := range []struct {
+		expr string
+		want string
+	}{
+		{"eth/ipv6/tcp where ipv6.src[0:200] == 0", "exceeds field width"},
+		{"eth/ipv6/tcp where ipv6.src[64:64] == 0", "lo < hi"},
+		{"eth/ipv6/tcp where ipv6.src[1:80] == ipv6.dst[1:80]", "not byte-aligned"},
+	} {
+		t.Run(c.expr, func(t *testing.T) {
+			_, err := compileForTest(c.expr)
+			if err == nil {
+				t.Fatalf("Compile(%q): expected error containing %q", c.expr, c.want)
+			}
+			if !strings.Contains(err.Error(), c.want) {
+				t.Errorf("err = %v; want substring %q", err, c.want)
+			}
+		})
+	}
+}
+
+func TestCompileBitSliceNonAligned(t *testing.T) {
+	// F13: slice endpoints no longer need to be byte-aligned. The
+	// codegen rounds the load up to the next pow-of-2 byte size and
+	// emits shift+mask after the bswap so the register holds the
+	// slice bits in host order.
+	for _, expr := range []string{
+		"eth/ipv6/tcp where ipv6.src[3:9] == 1",     // sub-byte within first byte
+		"eth/ipv6/tcp where ipv6.src[4:12] == 0xff", // crosses byte boundary
+		"eth/ipv6/tcp where ipv6.src[0:24] == 0xa0",  // byte-aligned but odd byte count
+		"eth/ipv6[src[3:9]==1]/tcp",                  // bracket form
+	} {
+		t.Run(expr, func(t *testing.T) {
+			insns, err := compileForTest(expr)
+			if err != nil {
+				t.Fatalf("Compile(%q): %v", expr, err)
+			}
+			if len(insns) == 0 {
+				t.Fatal("expected non-empty instructions")
+			}
+		})
+	}
+}
+
+func TestCompileBitSlice128IsSugar(t *testing.T) {
+	// `field[0:128]` is sugar for the full Int<128> field — the
+	// resolver lifted the 64-bit cap so the dual-LDX cmp pipeline
+	// fires the same way as `ipv6.src == ipv6.dst`.
+	insns, err := compileForTest("eth/ipv6/tcp where ipv6.src[0:128] == ipv6.dst[0:128]")
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	if len(insns) == 0 {
+		t.Fatal("expected non-empty instructions")
+	}
+}
+
+func TestCompileBitSliceMidWidthSplit(t *testing.T) {
+	// F12: slice widths in (64, 128) are now desugared in the
+	// resolver into a chain of LDX-aligned sub-cmps, so the
+	// previously-staged shapes compile cleanly. Each sub-cmp rides
+	// the existing single-LDX path.
+	for _, expr := range []string{
+		"eth/ipv6/tcp where ipv6.src[0:96] == ipv6.dst[0:96]",     // 8+4
+		"eth/ipv6/tcp where ipv6.src[0:80] == ipv6.dst[0:80]",     // 8+2
+		"eth/ipv6/tcp where ipv6.src[0:72] == ipv6.dst[0:72]",     // 8+1
+		"eth/ipv6/tcp where ipv6.src[0:88] == ipv6.dst[0:88]",     // 8+2+1
+		"eth/ipv6/tcp where ipv6.src[0:120] == ipv6.dst[0:120]",   // 8+4+2+1
+		"eth/ipv6/tcp where ipv6.src[0:96] != ipv6.dst[0:96]",     // != → OR-chain
+		"eth/ipv6/tcp where ipv6.src[32:128] == ipv6.dst[32:128]", // non-zero start
+	} {
+		t.Run(expr, func(t *testing.T) {
+			insns, err := compileForTest(expr)
+			if err != nil {
+				t.Fatalf("Compile(%q): %v", expr, err)
+			}
+			if len(insns) == 0 {
+				t.Fatal("expected non-empty instructions")
+			}
+		})
+	}
+}
+
+func TestCompileWhereIPv6Arith128(t *testing.T) {
+	// F4: 128-bit equality comparisons in the where-arith path.
+	// Plain field == field, plus field + const / field - const for
+	// adjacent-address checks. Multiplication and field+field stay
+	// staged (F5).
+	for _, expr := range []string{
+		"eth/ipv6/tcp where ipv6.src == ipv6.dst",
+		"eth/ipv6/tcp where ipv6.src + 1 == ipv6.dst",
+		"eth/ipv6/tcp where ipv6.src - 1 == ipv6.dst",
+		"eth/ipv6/tcp where ipv6.src != ipv6.dst",
+	} {
+		t.Run(expr, func(t *testing.T) {
+			insns, err := compileForTest(expr)
+			if err != nil {
+				t.Fatalf("Compile(%q): %v", expr, err)
+			}
+			if len(insns) == 0 {
+				t.Fatal("expected non-empty instructions")
+			}
+		})
+	}
+}
+
+func TestCompileWhereIPv6OrderedAndMulStaged(t *testing.T) {
+	// F4 / F5 boundaries: ordered cmp and multiplication on Int<128>
+	// in the where path stay staged.
+	for _, expr := range []string{
+		"eth/ipv6/tcp where ipv6.src < ipv6.dst",
+		"eth/ipv6/tcp where ipv6.src * 2 == ipv6.dst",
+		"eth/ipv6/tcp where ipv6.src + ipv6.dst == ipv6.src",
+	} {
+		t.Run(expr, func(t *testing.T) {
+			_, err := compileForTest(expr)
+			if err == nil {
+				t.Fatalf("Compile(%q): expected ErrNotImplemented", expr)
+			}
+			if !errors.Is(err, codegen.ErrNotImplemented) {
+				t.Fatalf("err = %v; want ErrNotImplemented", err)
+			}
+		})
+	}
+}
+
+func TestCompileBracketIPv6OrderedCmp(t *testing.T) {
+	// F3: lexicographic compare for `<`, `≤`, `>`, `≥` on IPv6.
+	for _, expr := range []string{
+		"eth/ipv6[dst < fe80::ffff]/tcp",
+		"eth/ipv6[dst <= fe80::ffff]/tcp",
+		"eth/ipv6[dst > 2001:db8::1]/tcp",
+		"eth/ipv6[dst >= ::1]/tcp",
+	} {
+		t.Run(expr, func(t *testing.T) {
+			insns, err := compileForTest(expr)
+			if err != nil {
+				t.Fatalf("Compile(%q): %v", expr, err)
+			}
+			if len(insns) == 0 {
+				t.Fatal("expected non-empty instructions")
+			}
+		})
+	}
+}
+
+func TestCompileBracketInIPv4AlternativesNotYetWired(t *testing.T) {
+	// MVP scope: integer alternatives only. IPv4/IPv6/MAC alternatives
+	// would each need their own multi-word emit path, so they surface
+	// as ErrNotImplemented for now.
+	_, err := compileForTest("eth/ipv4[src in [10.0.0.1, 10.0.0.2]]/tcp")
+	if err == nil {
+		t.Fatal("expected ErrNotImplemented for IPv4 alternatives")
+	}
+	if !errors.Is(err, codegen.ErrNotImplemented) {
+		t.Fatalf("err = %v; want ErrNotImplemented", err)
+	}
+}
+
 func TestCompileWhereBareBoolExistsAux(t *testing.T) {
 	// `where gtp.opt.exists` reuses the aux-gating emit path: the
 	// parser machine has already extracted opt only on the E|S|PN tuple.

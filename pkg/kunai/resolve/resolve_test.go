@@ -258,10 +258,16 @@ func TestResolveAuxStackRejectsSinglePath(t *testing.T) {
 	resolveErr(t, "eth/ipv4/udp/gtp[exts.next_ext==0]/ipv4/tcp", nil, "needs an index")
 }
 
-func TestResolvePredicateInMarksUnsupported(t *testing.T) {
-	p := resolveOK(t, "eth/ipv4[src in [10.0.0.1, 10.0.0.2]]/tcp", nil)
-	if got := p.Layers[1].Predicates[0].Unsupported; got == "" {
-		t.Error("PredIn should be marked Unsupported")
+func TestResolvePredicateInIntegerAcceptsResolve(t *testing.T) {
+	// F7 landed: integer alternatives now resolve cleanly. The
+	// predicate is no longer flagged Unsupported.
+	p := resolveOK(t, "eth/ipv4/tcp[dport in [80, 443]]", nil)
+	pr := p.Layers[2].Predicates[0]
+	if pr.Unsupported != "" {
+		t.Errorf("PredIn integer should NOT be Unsupported, got %q", pr.Unsupported)
+	}
+	if len(pr.List) != 2 {
+		t.Errorf("List length = %d, want 2", len(pr.List))
 	}
 }
 
@@ -491,6 +497,47 @@ func TestResolveNegativeLiteralFitsInt16(t *testing.T) {
 func TestResolveNegativeLiteralOutOfRangeInt8(t *testing.T) {
 	// -129 cannot fit in bit<8>: signed range is [-128, 256).
 	resolveErr(t, "eth/ipv4/tcp where ipv4.ttl == -129", nil, "does not fit")
+}
+
+// resolveStrict parses expr and resolves it with StrictArithLint
+// enabled, returning the error (if any) for assertion. Helper keeps
+// the F1 tests compact.
+func resolveStrict(t *testing.T, expr string) error {
+	t.Helper()
+	f, err := parser.Parse(expr, "t.dsl", nil)
+	if err != nil {
+		t.Fatalf("parse(%q): %v", expr, err)
+	}
+	_, err = ResolveWithOptions(f, loadVocab(t), nil, Options{StrictArithLint: true})
+	return err
+}
+
+func TestResolveStrictArithLintRejectsTwoFieldAdd(t *testing.T) {
+	err := resolveStrict(t, "eth/ipv4/tcp where tcp.dport + tcp.sport > 100")
+	if err == nil || !strings.Contains(err.Error(), "likely overflows") {
+		t.Fatalf("err = %v; want overflow-suspect error", err)
+	}
+}
+
+func TestResolveStrictArithLintAllowsFieldPlusConst(t *testing.T) {
+	// Single field + small const is the common, intentional pattern;
+	// strict mode must not false-positive on it.
+	if err := resolveStrict(t, "eth/ipv4/tcp where tcp.dport + 1 > 100"); err != nil {
+		t.Fatalf("err = %v; want clean resolve", err)
+	}
+}
+
+func TestResolveStrictArithLintRejectsFieldMinusEqualWidth(t *testing.T) {
+	err := resolveStrict(t, "eth/ipv4/tcp where tcp.dport - tcp.sport > 100")
+	if err == nil || !strings.Contains(err.Error(), "likely underflows") {
+		t.Fatalf("err = %v; want underflow-suspect error", err)
+	}
+}
+
+func TestResolveStrictArithLintOffByDefault(t *testing.T) {
+	// Without StrictArithLint, two-field arith resolves cleanly —
+	// the typed-OK / silent-wrap contract from §6.1 stays intact.
+	resolveOK(t, "eth/ipv4/tcp where tcp.dport + tcp.sport > 100", nil)
 }
 
 

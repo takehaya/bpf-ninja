@@ -47,6 +47,11 @@ const (
 	TokStar     // *
 	TokMinus    // -
 	TokPercent  // %
+	TokAmp      // &  (bitwise AND; logical AND is the `and` keyword)
+	TokCaret    // ^  (bitwise XOR)
+	TokShl      // << (bitwise shift left)
+	TokShr      // >> (bitwise shift right)
+	TokColon    // :  (bit-slice separator inside `[lo:hi]`)
 	TokEq       // =  (standalone; "==" is TokEqEq)
 
 	// Comparison
@@ -126,6 +131,16 @@ func (k TokenKind) String() string {
 		return "'-'"
 	case TokPercent:
 		return "'%'"
+	case TokAmp:
+		return "'&'"
+	case TokCaret:
+		return "'^'"
+	case TokShl:
+		return "'<<'"
+	case TokShr:
+		return "'>>'"
+	case TokColon:
+		return "':'"
 	case TokEq:
 		return "'='"
 	case TokEqEq:

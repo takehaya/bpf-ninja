@@ -46,6 +46,14 @@ func (r *resolver) resolveWhere(w *ast.WhereExpr) (*ir.Condition, error) {
 		if err != nil {
 			return nil, err
 		}
+		// Mid-width slice cmp (F12): when both sides are sliced
+		// fields with matching widths > 64 bits, desugar into an
+		// AND (for ==) / OR (for !=) of LDX-aligned sub-cmps. The
+		// sub-cmps each ride the existing single-LDX path, so no
+		// new emit is needed.
+		if rewritten := tryDesugarMultiLDXSliceCmp(al, ar, w.Op, w.Pos); rewritten != nil {
+			return rewritten, nil
+		}
 		c.ArithL, c.ArithR = al, ar
 		c.Op = w.Op
 		// Type checks: literal fit-check across the full arith tree
@@ -53,6 +61,15 @@ func (r *resolver) resolveWhere(w *ast.WhereExpr) (*ir.Condition, error) {
 		// docs/ja/dsl-types.md §6.1, §7.
 		if err := checkArithCondition(c); err != nil {
 			return nil, err
+		}
+		// Optional F1 strict-arith pass: caller opt-in via
+		// resolve.Options.StrictArithLint promotes obvious overflow
+		// shapes (field + field, field - field with RHS ≥ LHS,
+		// field * field) from silent-wrap into a resolver error.
+		if r.opts.StrictArithLint {
+			if err := lintArithCondition(c); err != nil {
+				return nil, err
+			}
 		}
 	case ast.WAtomLiteralCmp:
 		ref, err := r.resolveQualifiedField(w.LiteralField)
@@ -232,12 +249,36 @@ func (r *resolver) resolveQualifiedField(fp *ast.FieldPath) (*ir.FieldRef, error
 	if fp == nil || len(fp.Parts) == 0 {
 		return nil, errorf(ast.Position{}, "internal: empty field path")
 	}
+	// Detach a trailing bit-slice if present so the existing
+	// dispatch logic doesn't see it as an unsupported trailing
+	// index. The slice is re-attached to the resolved FieldRef
+	// before returning. dsl-types.md §3.x bit-slice rules.
+	fp, slice, err := detachTrailingSlice(fp)
+	if err != nil {
+		return nil, err
+	}
 	if len(fp.Parts) < 2 {
 		return nil, errorf(fp.Pos, "field path %q must be qualified (e.g. 'ipv4.src' or '<label>.<field>')", fp.String())
 	}
 	if len(fp.Parts) > 4 {
 		return nil, errorf(fp.Pos, "nested field access %q is not supported (max 4 segments)", fp.String())
 	}
+	ref, err := r.resolveQualifiedFieldNoSlice(fp)
+	if err != nil {
+		return nil, err
+	}
+	if slice != nil {
+		if err := attachSlice(ref, slice); err != nil {
+			return nil, err
+		}
+	}
+	return ref, nil
+}
+
+// resolveQualifiedFieldNoSlice is the original dispatch body — kept
+// behind a helper so resolveQualifiedField can wrap it with slice
+// detach/attach handling.
+func (r *resolver) resolveQualifiedFieldNoSlice(fp *ast.FieldPath) (*ir.FieldRef, error) {
 	qualifier := fp.Parts[0]
 	layer, err := r.lookupByQualifier(qualifier, fp.Pos)
 	if err != nil {

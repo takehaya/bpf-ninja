@@ -419,6 +419,49 @@ func TestValueNegativeIntegerSignedRange(t *testing.T) {
 	}
 }
 
+func TestStructuralOperatorTokens(t *testing.T) {
+	// Single-character bitwise / slice operators.
+	for _, c := range []struct {
+		src  string
+		want TokenKind
+	}{
+		{"&", TokAmp},
+		{"^", TokCaret},
+		{":", TokColon},
+		{"%", TokPercent},
+	} {
+		t.Run(c.src, func(t *testing.T) {
+			toks := lexAll(t, c.src)
+			if len(toks) != 2 || toks[0].Kind != c.want || toks[1].Kind != TokEOF {
+				t.Errorf("got %v, want [%v, EOF]", kinds(toks), []TokenKind{c.want, TokEOF})
+			}
+		})
+	}
+}
+
+func TestStructuralTwoCharOperatorTokens(t *testing.T) {
+	// Two-character operators that share a prefix with cmp ops or
+	// other singles. Confirm the peek lands on the right token.
+	for _, c := range []struct {
+		src  string
+		want TokenKind
+	}{
+		{"<<", TokShl},
+		{">>", TokShr},
+		{"<=", TokLe},
+		{">=", TokGe},
+		{"==", TokEqEq},
+		{"!=", TokNeq},
+	} {
+		t.Run(c.src, func(t *testing.T) {
+			toks := lexAll(t, c.src)
+			if len(toks) != 2 || toks[0].Kind != c.want || toks[1].Kind != TokEOF {
+				t.Errorf("got %v, want [%v, EOF]", kinds(toks), []TokenKind{c.want, TokEOF})
+			}
+		})
+	}
+}
+
 func TestValueRangeInverted(t *testing.T) {
 	_, err := New([]byte("100..50]"), "t").NextValue()
 	if err == nil {

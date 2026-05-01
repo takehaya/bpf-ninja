@@ -83,17 +83,32 @@ func (f *FieldPath) String() string {
 }
 
 // IndexExpr is the resolved form of a `[…]` index that follows a
-// path segment. Either Int or Field is set (mutually exclusive).
+// path segment. Three mutually exclusive shapes:
+//   - IsInt: a single integer index (`stack[3]`)
+//   - Field set (and IsInt/IsSlice false): a dynamic index sourced
+//     from a field path (`stack[srv6.last_entry]`)
+//   - IsSlice: a bit-range slice on the field's value
+//     (`ipv6.src[0:32]`), with SliceLo / SliceHi giving the
+//     half-open bit range (lo inclusive, hi exclusive). Bit 0 is
+//     the network-order MSB.
 type IndexExpr struct {
-	Int      uint64     // when IsInt is true
-	IsInt    bool
-	Field    *FieldPath // when IsInt is false
-	Pos      Position
+	Int   uint64 // when IsInt is true
+	IsInt bool
+	Field *FieldPath // when IsInt and IsSlice are both false
+
+	IsSlice bool
+	SliceLo uint64 // bit position (inclusive)
+	SliceHi uint64 // bit position (exclusive)
+
+	Pos Position
 }
 
 func (e *IndexExpr) String() string {
 	if e == nil {
 		return ""
+	}
+	if e.IsSlice {
+		return fmtInt(e.SliceLo) + ":" + fmtInt(e.SliceHi)
 	}
 	if e.IsInt {
 		return fmtInt(e.Int)
