@@ -279,7 +279,6 @@ sudo xdp-ninja --dsl -i veth0 \
 |---|---|---|
 | `field in [v1, v2, ...]` | 未対応 | `where` で `or` 連結 |
 | `field has FLAG` | 未対応 | bitmask 比較を `where` で |
-| `flow.is_new` 等 flow 状態 | 未対応 | — |
 | `capture f1, f2` フィールド列 | 未対応 | `capture headers+N` |
 | chain 内 hs を含む `headers+N` | 未対応 | quantifier 確定後のチェーンに使う |
 | Sanity self-dispatch 連鎖 | 未対応 | NO_CHECK / Field self-dispatch を使う |
@@ -287,9 +286,64 @@ sudo xdp-ninja --dsl -i veth0 \
 | alt 後の layer 異種 dispatch | 未対応 | vocab で揃えるか filter を分割 |
 | 算術ネスト 4 段以上 | 未対応 | 中間値を別 filter 起動で計算 |
 
+## 型エラーの例
+
+resolver / parser が出す主要なエラーパターン (詳しくは [`dsl-types.md`](./dsl-types.md))。
+
+### 値が field 幅に収まらない
+
+```
+$ xdp-ninja -i eth0 --dsl 'eth/ipv4/tcp where tcp.dport > 99999'
+1:30: value 99999 does not fit in bit<16> (in arithmetic context)
+```
+
+`tcp.dport` は `bit<16>` field なので、99999 は narrow できない。`> 65535` に書き直すか、より広い field を使う。
+
+### CIDR の host bits が立っている
+
+```
+$ xdp-ninja -i eth0 --dsl 'eth/ipv4[src==10.0.0.5/24]/tcp'
+1:14: CIDR "10.0.0.5/24" has host bits set; network would be 10.0.0.0/24
+  (suggestion: 10.0.0.0/24 for the subnet, or 10.0.0.5/32 for the single host)
+```
+
+CIDR は network address (boundary 整列) を要求する。`10.0.0.0/24` で subnet match、`10.0.0.5/32` で host match の使い分けを明示する。
+
+### division / modulo by zero (静的)
+
+```
+$ xdp-ninja -i eth0 --dsl 'eth/ipv4/tcp where tcp.dport / 0 == 1'
+1:33: division by zero
+```
+
+書き間違いを防ぐため resolver が reject。runtime に divisor が 0 の場合は BPF の既定で `0` が返る。
+
+### Bool に対する ordered cmp
+
+```
+$ xdp-ninja -i eth0 --dsl 'eth/ipv4/tcp where true < false'
+1:25: ordered comparison < not allowed for Bool (Bool supports only == and !=)
+```
+
+Bool には自然順序がないので `<`, `>` 等は禁止。`==` (iff) / `!=` (xor) を使う。
+
+## Bool atom の使い方
+
+`where` 直下に bool atom を書ける ([`dsl-types.md` §5.4](./dsl-types.md#54-intn--bool-coercion-bool-文脈))。
+
+```
+where true                              # 常に match (where 省略と等価)
+where false                             # 常に no-match
+where gtp.opt.exists                    # GTP-U の opt block が抽出されたか
+where tcp.dport                         # tcp.dport != 0 の縮約 (Int<N> -> Bool decay)
+where (tcp.dport == 443) == gtp.opt.exists   # iff (両方真 or 両方偽)
+where (tcp.dport == 443) != gtp.opt.exists   # xor (片方だけ真)
+```
+
 ## 仕組みのざっくり
 
 1. one-liner を **AST → IR** に解決 (vocab に照らして protocol/field/dispatch をバインド)
+   - 同時に **型システム** が異幅 cmp の widening、リテラルの fit-check、Bool/Action/CIDR の文脈チェックを行う ([`dsl-types.md`](./dsl-types.md))
 2. IR を **eBPF 命令** に codegen
    - 静的チェーンや predicate は素直に展開
    - chain (`+`/`*`/大きい `{n,m}`) は **bpf_loop + bpf2bpf callback** で BTF func_info 付きで emit
@@ -301,5 +355,6 @@ sudo xdp-ninja --dsl -i veth0 \
 
 - [dsl-overview.md](./dsl-overview.md) — DSL ドキュメント index
 - [dsl-grammar.md](./dsl-grammar.md) — formal EBNF + 例文
+- [dsl-types.md](./dsl-types.md) — 型システム (型・暗黙変換・widening・fit check・エラーカタログ)
 - [dsl-followups.md](./dsl-followups.md) — 残作業
 - vocab 一覧: `pkg/kunai/protocols/*.p4`

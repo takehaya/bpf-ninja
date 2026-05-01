@@ -70,12 +70,25 @@ func genPredicate(pred *ir.Predicate) (asm.Instructions, error) {
 // matching the verifier-walk floor we promise.
 func emitIntPredicate(pred *ir.Predicate) (asm.Instructions, error) {
 	value := pred.Value.Int
-	// The resolver guarantees value fits in the field's bit width, so
-	// the only remaining constraint is asm.JumpOp.Imm's int32 limit.
-	// Larger values require a 64-bit reg-reg compare, deferred to a
-	// later phase.
+	// Narrow the literal to the field's declared width before the
+	// immediate-range check. The resolver's fit-check (typing.go:
+	// uintFitsBits) accepts signed-extended negatives (`-1` stored
+	// as 0xffff..ff), and at codegen we only ever compare the low
+	// `bits` bits of the field anyway, so masking here is the
+	// correct narrowing per dsl-types.md §4.1 / §7.3.
+	if pred.Field != nil && pred.Field.Field != nil {
+		fieldBits := pred.Field.Field.Bits
+		if fieldBits > 0 && fieldBits < 64 {
+			value &= (uint64(1) << fieldBits) - 1
+		}
+	}
+	// After narrowing, the only remaining constraint is the
+	// asm.JumpOp.Imm int32 limit. Values that still exceed it come
+	// from genuine bit<N> fields with N > 32, which the spec stages
+	// (dsl-types.md §9.1, follow-up F3). Type-OK program; rebuild
+	// against a kernel that ships the staged emitter.
 	if value > 0x7FFFFFFF {
-		return nil, fmt.Errorf("%w: value %d exceeds int32 immediate range (64-bit compares deferred)", ErrNotImplemented, value)
+		return nil, fmt.Errorf("%w: value %d exceeds int32 immediate range — staged Int<N>>32 cmp (dsl-types.md §9.1, F3)", ErrNotImplemented, value)
 	}
 	jumpOp, ok := rejectingJumpOp(pred.Op)
 	if !ok {

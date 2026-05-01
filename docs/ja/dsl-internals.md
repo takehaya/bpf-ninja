@@ -752,7 +752,7 @@ implementation 詳細は `pkg/kunai/codegen/parser_machine.go` の state graph e
 | 領域 | 制限 |
 |---|---|
 | Predicate | `field in [...]` / `field has FLAG` parser は受理するが codegen は ErrNotImplemented |
-| Where | 算術ネスト最大 3 段 / `flow.is_new` 等は dead syntax (codegen reject) |
+| Where | 算術ネスト最大 3 段 |
 | Capture | `capture f1, f2` フィールド列 不可 / chain 含む filter で `headers+N` 不可 |
 | Alternation | alt 数 2-4 / 同サイズ only / ネスト不可 / 先頭不可 |
 | Sanity dispatch | NIBBLE のみ (MAGIC / LENGTH / RANGE 未対応) / chain 内 sanity self-dispatch 不可 |

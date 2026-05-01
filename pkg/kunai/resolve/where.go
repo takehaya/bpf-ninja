@@ -1,7 +1,6 @@
 package resolve
 
 import (
-	"fmt"
 	"strings"
 
 	"github.com/takehaya/xdp-ninja/pkg/kunai/ast"
@@ -49,13 +48,32 @@ func (r *resolver) resolveWhere(w *ast.WhereExpr) (*ir.Condition, error) {
 		}
 		c.ArithL, c.ArithR = al, ar
 		c.Op = w.Op
+		// Type checks: literal fit-check across the full arith tree
+		// and static divide/modulo-by-zero detection. See
+		// docs/ja/dsl-types.md §6.1, §7.
+		if err := checkArithCondition(c); err != nil {
+			return nil, err
+		}
 	case ast.WAtomLiteralCmp:
 		ref, err := r.resolveQualifiedField(w.LiteralField)
 		if err != nil {
 			return nil, err
 		}
-		if err := validateLiteralFieldType(ref, w.LiteralValue, w.Pos); err != nil {
+		if err := checkLiteralWidthShape(ref, w.LiteralValue, w.Pos); err != nil {
 			return nil, err
+		}
+		// Ordered cmp on network literals is forbidden by §6.2.
+		// Parser already gates this on the LHS-literal path, but the
+		// RHS-literal path admits the operator from parseArithExpr
+		// without a kind-aware check; reject here so both paths see
+		// the same diagnostic.
+		if w.LiteralOp != ast.CmpEq && w.LiteralOp != ast.CmpNeq {
+			kind := "CIDR"
+			switch w.LiteralValue.Kind {
+			case ast.ValIPv4, ast.ValIPv6, ast.ValMAC:
+				kind = "address"
+			}
+			return nil, errOrderedNotAllowed(w.Pos, w.LiteralOp, kind)
 		}
 		c.LiteralField = ref
 		c.LiteralValue = w.LiteralValue
@@ -65,12 +83,9 @@ func (r *resolver) resolveWhere(w *ast.WhereExpr) (*ir.Condition, error) {
 			return nil, errorf(w.Pos, "`action == %s` is not available on this host (no action atoms declared in caps)", w.ActionValue)
 		}
 		if _, ok := r.allowedActions[w.ActionValue]; !ok {
-			return nil, errorf(w.Pos, "unknown action %q (host accepts %d symbols)", w.ActionValue, len(r.allowedActions))
+			return nil, errUnknownActionLiteral(w.Pos, w.ActionValue, len(r.allowedActions))
 		}
 		c.ActionValue = w.ActionValue
-	case ast.WAtomFlow:
-		c.FlowKind = w.FlowKind
-		c.Unsupported = fmt.Sprintf("flow.%s is not yet implemented in MVP codegen", w.FlowKind)
 	case ast.WAny, ast.WAll:
 		inner, err := r.resolveWhere(w.Inner)
 		if err != nil {
@@ -87,6 +102,51 @@ func (r *resolver) resolveWhere(w *ast.WhereExpr) (*ir.Condition, error) {
 			return nil, err
 		}
 		c.QuantTarget = target
+	case ast.WAtomBoolLit:
+		c.BoolLitValue = w.BoolLitValue
+	case ast.WAtomBoolExists:
+		// Re-attach the trailing `.exists` segment so resolveQualifiedField
+		// dispatches to the existing aux-exists path.
+		fpWithExists := &ast.FieldPath{
+			Parts: append(append([]string(nil), w.BoolField.Parts...), "exists"),
+			Pos:   w.BoolField.Pos,
+		}
+		if len(w.BoolField.Indices) > 0 {
+			fpWithExists.Indices = append([]*ast.IndexExpr(nil), w.BoolField.Indices...)
+		}
+		ref, err := r.resolveQualifiedField(fpWithExists)
+		if err != nil {
+			return nil, err
+		}
+		if !ref.IsExistsCheck() {
+			if ref.Aux == nil {
+				return nil, errorf(w.Pos, "%s does not name an aux header (`.exists` requires an aux reference)", w.BoolField.String())
+			}
+			// Resolver returned a field; collapse to the synthetic
+			// exists sentinel (Field == nil) for codegen.
+			ref.Field = nil
+		}
+		c.BoolField = ref
+	case ast.WAtomBoolEq:
+		// Defense in depth: parser already blocks ordered cmp on Bool
+		// in maybeBoolEqTail, but a future parser refactor could let
+		// it slip past — reject here too so §12 T-Where-BoolEq's
+		// op_eq ∈ {==, !=} side condition is enforced at the IR
+		// boundary.
+		if w.BoolEqOp != ast.CmpEq && w.BoolEqOp != ast.CmpNeq {
+			return nil, errOrderedNotAllowed(w.Pos, w.BoolEqOp, "Bool")
+		}
+		left, err := r.resolveWhere(w.BoolL)
+		if err != nil {
+			return nil, err
+		}
+		right, err := r.resolveWhere(w.BoolR)
+		if err != nil {
+			return nil, err
+		}
+		c.BoolL = left
+		c.BoolR = right
+		c.BoolEqOp = w.BoolEqOp
 	default:
 		return nil, errorf(w.Pos, "internal: unknown where kind %v", w.Kind)
 	}
@@ -128,35 +188,6 @@ func (r *resolver) findQuantTarget(c *ir.Condition, pos ast.Position) (*ir.Quant
 	}, nil
 }
 
-
-// validateLiteralFieldType pins the network-literal RHS to a field
-// whose width can hold it: IPv4/CIDR-v4 → bit<32>, IPv6/CIDR-v6 →
-// bit<128>, MAC → bit<48>. Mismatches surface as resolver errors so
-// the user gets a clear diagnostic before codegen.
-func validateLiteralFieldType(ref *ir.FieldRef, v *ast.Value, pos ast.Position) error {
-	want := 0
-	desc := ""
-	switch v.Kind {
-	case ast.ValIPv4:
-		want, desc = 32, "IPv4 address"
-	case ast.ValIPv6:
-		want, desc = 128, "IPv6 address"
-	case ast.ValMAC:
-		want, desc = 48, "MAC address"
-	case ast.ValCIDR:
-		if v.AF == 4 {
-			want, desc = 32, "IPv4 CIDR"
-		} else {
-			want, desc = 128, "IPv6 CIDR"
-		}
-	default:
-		return errorf(pos, "internal: %v is not a network literal", v.Kind)
-	}
-	if ref.Field.Bits != want {
-		return errorf(pos, "%s literal needs a bit<%d> field; %s.%s is bit<%d>", desc, want, ref.Layer.Spec.Name, ref.Field.Name, ref.Field.Bits)
-	}
-	return nil
-}
 
 // resolveArith converts an ast.ArithExpr to ir.ArithExpr, binding every
 // field reference to its owning layer.

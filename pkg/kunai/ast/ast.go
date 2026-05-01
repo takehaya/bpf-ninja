@@ -158,8 +158,20 @@ type WhereExpr struct {
 	// WAtomAction (e.g. action == XDP_DROP)
 	ActionValue string
 
-	// WAtomFlow (e.g. flow.is_new)
-	FlowKind string
+	// WAtomBoolLit (e.g. `where true` / `where false`).
+	BoolLitValue bool
+
+	// WAtomBoolExists (e.g. `where gtp.opt.exists`). The trailing
+	// `.exists` segment is consumed at parse time; BoolField holds the
+	// path up to (but not including) `exists`.
+	BoolField *FieldPath
+
+	// WAtomBoolEq operands. BoolL/BoolR are themselves Bool-valued
+	// where expressions (cmp result / exists / Int decay / literal).
+	BoolL *WhereExpr
+	BoolR *WhereExpr
+	// BoolEqOp distinguishes `==` (iff) from `!=` (xor).
+	BoolEqOp CmpOp
 
 	// Unsupported marks MVP-not-yet-implemented atoms so downstream
 	// stages can emit a consistent error without re-parsing.

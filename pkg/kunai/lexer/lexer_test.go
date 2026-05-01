@@ -1,6 +1,7 @@
 package lexer
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/takehaya/xdp-ninja/pkg/kunai/ast"
@@ -51,11 +52,11 @@ func TestLexSimpleLayerChain(t *testing.T) {
 }
 
 func TestLexKeywords(t *testing.T) {
-	src := "where capture all headers and or not in has flow action"
+	src := "where capture all headers and or not in has action"
 	toks := lexAll(t, src)
 	want := []TokenKind{
 		TokWhere, TokCapture, TokAll, TokHeaders,
-		TokAnd, TokOr, TokNot, TokIn, TokHas, TokFlow, TokAction,
+		TokAnd, TokOr, TokNot, TokIn, TokHas, TokAction,
 		TokEOF,
 	}
 	if !eqKinds(kinds(toks), want) {
@@ -285,10 +286,136 @@ func TestValueBadIPv4(t *testing.T) {
 	}
 }
 
+// TestValueIPv6ZoneIDRejected pins the dsl-types.md §4.3 reject. The
+// underlying behaviour is "Go's net.ParseIP refuses zone IDs", but
+// without this test we'd lose the spec contract if the implementation
+// ever rerouted IPv6 parsing.
+func TestValueIPv6ZoneIDRejected(t *testing.T) {
+	_, err := New([]byte("fe80::1%eth0]"), "t").NextValue()
+	if err == nil {
+		t.Fatal("expected zone-id reject")
+	}
+}
+
+// TestValueMACDashRejected covers the dsl-types.md §4.4 spec rule
+// that MAC literals are colon-only. The lexer disqualifies the dash
+// shape before reaching buildMAC and routes it to IPv6, which then
+// fails classification.
+func TestValueMACDashRejected(t *testing.T) {
+	_, err := New([]byte("aa-bb-cc-dd-ee-ff]"), "t").NextValue()
+	if err == nil {
+		t.Fatal("expected dash-form MAC to be rejected")
+	}
+}
+
+// TestValueMACCiscoDotRejected covers the same §4.4 spec rule for
+// the Cisco-style dot grouping (`aabb.ccdd.eeff`).
+func TestValueMACCiscoDotRejected(t *testing.T) {
+	_, err := New([]byte("aabb.ccdd.eeff]"), "t").NextValue()
+	if err == nil {
+		t.Fatal("expected Cisco-dot MAC to be rejected")
+	}
+}
+
+// TestValueIntHexNegative confirms that the negative-integer lexer
+// path accepts hex digits (dsl-types.md §4.1 specifies the literal
+// range, not the base).
+func TestValueIntHexNegative(t *testing.T) {
+	tok, err := New([]byte("-0xff]"), "t").NextValue()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if tok.Value == nil || tok.Value.Kind != ast.ValInt || tok.Value.Int != ^uint64(254) {
+		t.Errorf("value = %+v, want Int = -0xff (^254)", tok.Value)
+	}
+}
+
+// TestValueIntHexPrefixUppercase covers the `0X` prefix variant.
+func TestValueIntHexPrefixUppercase(t *testing.T) {
+	tok, err := New([]byte("0X12]"), "t").NextValue()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if tok.Value == nil || tok.Value.Kind != ast.ValInt || tok.Value.Int != 0x12 {
+		t.Errorf("value = %+v, want Int = 18", tok.Value)
+	}
+}
+
 func TestValueBadCIDRPrefix(t *testing.T) {
 	_, err := New([]byte("10.0.0.0/33]"), "t").NextValue()
 	if err == nil {
 		t.Fatal("expected IPv4 prefix out-of-range error")
+	}
+}
+
+func TestValueCIDRHostBitsRejected(t *testing.T) {
+	cases := []string{
+		"10.0.0.5/24]",
+		"10.0.0.5/30]",
+		"10.0.0.7/30]",
+		"10.0.0.5/31]",
+		"fe80::1/64]",
+	}
+	for _, c := range cases {
+		_, err := New([]byte(c), "t").NextValue()
+		if err == nil {
+			t.Errorf("input %q: expected host-bits-set error, got nil", c)
+			continue
+		}
+		if !strings.Contains(err.Error(), "host bits set") {
+			t.Errorf("input %q: unexpected error: %v", c, err)
+		}
+	}
+}
+
+func TestValueCIDRBoundaryAlignedAccepted(t *testing.T) {
+	cases := []struct {
+		raw    string
+		prefix int
+	}{
+		{"10.0.0.0/24]", 24},
+		{"10.0.0.4/30]", 30},
+		{"10.0.0.5/32]", 32},
+		{"fe80::/64]", 64},
+		{"::1/128]", 128},
+	}
+	for _, c := range cases {
+		tok, err := New([]byte(c.raw), "t").NextValue()
+		if err != nil {
+			t.Errorf("input %q: unexpected error: %v", c.raw, err)
+			continue
+		}
+		if tok.Value == nil || tok.Value.Kind != ast.ValCIDR || tok.Value.Prefix != c.prefix {
+			t.Errorf("input %q: bad value %+v", c.raw, tok.Value)
+		}
+	}
+}
+
+func TestValueNegativeIntegerSignedRange(t *testing.T) {
+	cases := []struct {
+		raw   string
+		want  uint64 // 2's-complement representation
+		ok    bool
+	}{
+		{"-1]", ^uint64(0), true},
+		{"-128]", ^uint64(127), true},
+		{"-2147483648]", ^uint64(2147483647), true},
+		{"-9223372036854775808]", uint64(1) << 63, true},
+		{"-9223372036854775809]", 0, false}, // out of int64
+	}
+	for _, c := range cases {
+		tok, err := New([]byte(c.raw), "t").NextValue()
+		if c.ok {
+			if err != nil {
+				t.Errorf("%q: unexpected error: %v", c.raw, err)
+				continue
+			}
+			if tok.Value == nil || tok.Value.Kind != ast.ValInt || tok.Value.Int != c.want {
+				t.Errorf("%q: got %+v, want Int=%#x", c.raw, tok.Value, c.want)
+			}
+		} else if err == nil {
+			t.Errorf("%q: expected error for out-of-range literal", c.raw)
+		}
 	}
 }
 

@@ -337,15 +337,6 @@ func TestResolveWhereRejectsUnknownAction(t *testing.T) {
 	resolveErr(t, "eth/ipv4/tcp where action == SOMETHING_ELSE", xdpTestActions, "unknown action")
 }
 
-func TestResolveWhereFlowMarksUnsupported(t *testing.T) {
-	p := resolveOK(t, "eth/ipv4/tcp where flow.is_new", nil)
-	if p.Where == nil || p.Where.Kind != ast.WAtomFlow || p.Where.FlowKind != "is_new" {
-		t.Fatalf("where = %+v", p.Where)
-	}
-	if p.Where.Unsupported == "" {
-		t.Error("flow.is_new should be Unsupported")
-	}
-}
 
 func TestResolveWhereArithWithLabels(t *testing.T) {
 	expr := "eth/ipv4@outer/udp/gtp/ipv4@inner/tcp where outer.total_length == inner.total_length + 36"
@@ -472,6 +463,37 @@ func TestResolveCaptureAbsoluteRejectsZero(t *testing.T) {
 
 // --- Integration: every canonical filter example from docs/ja/dsl-grammar.md & dsl-usage.md ---
 
+func TestResolveArithFitCheckRejectsOverwidthLiteral(t *testing.T) {
+	// tcp.dport is bit<16>; 99999 cannot be narrowed to Int<16> per
+	// dsl-types.md §6.1.
+	resolveErr(t, "eth/ipv4/tcp where tcp.dport > 99999", nil, "does not fit")
+}
+
+func TestResolveArithStaticDivByZero(t *testing.T) {
+	resolveErr(t, "eth/ipv4/tcp where tcp.dport / 0 == 1", nil, "division by zero")
+}
+
+func TestResolveArithStaticModByZero(t *testing.T) {
+	resolveErr(t, "eth/ipv4/tcp where tcp.dport % 0 == 1", nil, "modulo by zero")
+}
+
+func TestResolveArithFieldOnlyCmpAccepted(t *testing.T) {
+	// Two integer fields: no literal, no fit-check needed; widening
+	// per §5.2 keeps it well-typed.
+	resolveOK(t, "eth/ipv4/tcp where tcp.dport == tcp.sport", nil)
+}
+
+func TestResolveNegativeLiteralFitsInt16(t *testing.T) {
+	// -1 narrows to bit<16> as 0xffff via 2's complement (§4.1, §7.3).
+	resolveOK(t, "eth/ipv4/tcp where tcp.dport == -1", nil)
+}
+
+func TestResolveNegativeLiteralOutOfRangeInt8(t *testing.T) {
+	// -129 cannot fit in bit<8>: signed range is [-128, 256).
+	resolveErr(t, "eth/ipv4/tcp where ipv4.ttl == -129", nil, "does not fit")
+}
+
+
 func TestResolveAllExamples(t *testing.T) {
 	// Each entry lists: (expr, should resolve?). Examples that require
 	// protocols or features outside the MVP vocabulary — MPLS, VXLAN,
@@ -498,7 +520,6 @@ func TestResolveAllExamples(t *testing.T) {
 		{"l2vpn_no_cw", "eth/mpls+/eth@inner/ipv4/tcp", false, ""},
 		{"l2vpn_cw", "eth/mpls+/cw?/eth@inner/ipv4/tcp", false, ""},
 		{"where_arith_gtp", "eth/ipv4@outer/udp/gtp/ipv4@inner/tcp where outer.total_length == inner.total_length + 36", false, ""},
-		{"where_flow", "eth/ipv4/tcp[dport==443] where flow.is_new", false, ""}, // Unsupported flagged, not errored
 		{"where_action", "eth/ipv4/tcp where action == XDP_DROP", false, ""},
 		{"capture_truncated", "eth/ipv4/tcp[dport==443] capture headers+64", false, ""},
 		{"capture_conditional", "eth/ipv4/tcp[dport==443] capture headers where action == XDP_PASS capture all where action == XDP_DROP", false, ""},

@@ -72,6 +72,30 @@ var dslEntryExprs = []string{
 	"eth/ipv4@outer/udp/gtp/ipv4@inner/tcp capture inner+8",
 	"eth/ipv4/tcp capture ipv4",
 	"eth/ipv4/tcp capture absolute 96",
+	// Bool literal: `where true` is identity (no-op condition); the
+	// `where false` counterpart compiles fine but is excluded from
+	// the verifier-load matrix because the always-reject pattern
+	// surfaces a kernel-side corner case unrelated to the type
+	// system (the spec allows it; we just don't load it in CI).
+	// dsl-types.md §4.6.
+	"eth/ipv4/tcp where true",
+	// Bare aux-exists: `where gtp.opt.exists` desugars in the resolver
+	// to the aux-gating emit path (no field load, just the gate).
+	"eth/ipv4/udp/gtp/ipv4/tcp where gtp.opt.exists",
+	// Int<N> -> Bool decay: `where tcp.dport` is `tcp.dport != 0`
+	// (always true on real TCP frames, but exercises the §5.4 path).
+	"eth/ipv4/tcp where tcp.dport",
+	// Bool == Bool (iff): a parens-grouped sub-condition feeds a
+	// WAtomBoolEq desugared into and/or/not via dsl-types.md §6.2.
+	"eth/ipv4/tcp where (tcp.dport == 443) == (tcp.sport == 443)",
+	// Negative integer literal (where & bracket forms). 2's-complement
+	// narrow per dsl-types.md §4.1: -1 against bit<16> binds to 0xffff.
+	"eth/ipv4/tcp where tcp.dport == -1",
+	"eth/ipv4/tcp[dport==-1]",
+	// LHS network literal symmetry per dsl-types.md §6.2: literal on
+	// either side resolves to the same WAtomLiteralCmp IR.
+	"eth/ipv4/tcp where 10.0.0.1 == ipv4.dst",
+	"eth/ipv4/tcp where 10.0.0.0/8 != ipv4.dst",
 }
 
 // dslExitExprs covers fexit-specific constructs (action atoms) plus a

@@ -131,15 +131,17 @@ func (k ArithKind) String() string {
 type WhereKind int
 
 const (
-	WOr         WhereKind = iota // a or b
-	WAnd                         // a and b
-	WNot                         // not a
-	WAtomArith                   // arith cmp arith, e.g. tcp.dport == 443
-	WAtomLiteralCmp              // field cmp network literal, e.g. ipv4.dst == 10.0.0.1
-	WAtomAction                  // action == XDP_DROP
-	WAtomFlow                    // flow.is_new | flow.age | flow.state
-	WAny                         // any(<inner>) — exists-quantifier over an aux header stack
-	WAll                         // all(<inner>) — for-all-quantifier over an aux header stack
+	WOr             WhereKind = iota // a or b
+	WAnd                             // a and b
+	WNot                             // not a
+	WAtomArith                       // arith cmp arith, e.g. tcp.dport == 443
+	WAtomLiteralCmp                  // field cmp network literal, e.g. ipv4.dst == 10.0.0.1
+	WAtomAction                      // action == XDP_DROP
+	WAny                             // any(<inner>) — exists-quantifier over an aux header stack
+	WAll                             // all(<inner>) — for-all-quantifier over an aux header stack
+	WAtomBoolLit                     // bare 'true' / 'false' bool literal
+	WAtomBoolExists                  // bare aux-exists, e.g. `where gtp.opt.exists`
+	WAtomBoolEq                      // Bool == Bool / Bool != Bool (iff / xor)
 )
 
 func (k WhereKind) String() string {
@@ -156,12 +158,16 @@ func (k WhereKind) String() string {
 		return "literalcmp"
 	case WAtomAction:
 		return "action"
-	case WAtomFlow:
-		return "flow"
 	case WAny:
 		return "any"
 	case WAll:
 		return "all"
+	case WAtomBoolLit:
+		return "boollit"
+	case WAtomBoolExists:
+		return "boolexists"
+	case WAtomBoolEq:
+		return "booleq"
 	}
 	return fmt.Sprintf("WhereKind(%d)", int(k))
 }

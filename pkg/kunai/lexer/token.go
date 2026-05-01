@@ -26,8 +26,9 @@ const (
 	TokNot
 	TokIn
 	TokHas
-	TokFlow
 	TokAction
+	TokTrue  // bool literal: true
+	TokFalse // bool literal: false
 
 	// Punctuation
 	TokSlash    // /
@@ -87,10 +88,12 @@ func (k TokenKind) String() string {
 		return "'in'"
 	case TokHas:
 		return "'has'"
-	case TokFlow:
-		return "'flow'"
 	case TokAction:
 		return "'action'"
+	case TokTrue:
+		return "'true'"
+	case TokFalse:
+		return "'false'"
 	case TokSlash:
 		return "'/'"
 	case TokAt:
@@ -163,6 +166,7 @@ var keywords = map[string]TokenKind{
 	"not":     TokNot,
 	"in":      TokIn,
 	"has":     TokHas,
-	"flow":    TokFlow,
 	"action":  TokAction,
+	"true":    TokTrue,
+	"false":   TokFalse,
 }

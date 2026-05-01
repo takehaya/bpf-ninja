@@ -78,8 +78,85 @@ func (c *whereCtx) gen(w *ir.Condition, failLabel string) (asm.Instructions, err
 		return c.genAny(w, failLabel)
 	case ast.WAll:
 		return c.genAll(w, failLabel)
+	case ast.WAtomBoolLit:
+		return c.genBoolLit(w, failLabel)
+	case ast.WAtomBoolExists:
+		return c.genBoolExists(w, failLabel)
+	case ast.WAtomBoolEq:
+		return c.genBoolEq(w, failLabel)
 	}
 	return nil, fmt.Errorf("%w: where kind %s", ErrNotImplemented, w.Kind)
+}
+
+// genBoolLit handles `where true` / `where false` after constant
+// folding. `true` falls through (always match), `false` jumps to
+// failLabel unconditionally (always reject).
+func (c *whereCtx) genBoolLit(w *ir.Condition, failLabel string) (asm.Instructions, error) {
+	if w == nil {
+		return nil, nil
+	}
+	if w.BoolLitValue {
+		return nil, nil
+	}
+	return asm.Instructions{asm.Ja.Label(failLabel)}, nil
+}
+
+// genBoolExists handles `where <aux>.exists`. Reuses the existing
+// aux-gating emit path: the FieldRef carries Aux information; codegen
+// emits the gating predicate and falls through on extracted, jumps to
+// failLabel on missing.
+func (c *whereCtx) genBoolExists(w *ir.Condition, failLabel string) (asm.Instructions, error) {
+	if w == nil || w.BoolField == nil || w.BoolField.Aux == nil {
+		return nil, fmt.Errorf("codegen: bool exists atom lacks aux reference")
+	}
+	absOff, err := c.layerOffset(w.BoolField.Layer)
+	if err != nil {
+		return nil, err
+	}
+	return emitAuxGating(w.BoolField.Aux.Gating, absAnchor(absOff), failLabel), nil
+}
+
+// genBoolEq handles `Bool == Bool` (iff) and `Bool != Bool` (xor)
+// by desugaring into existing and/or/not primitives. The desugar
+// shares operand pointers between branches, so `(a == b) == (c == d)`
+// emits the inner cmps twice in the linearised BPF stream — verifier
+// keeps both copies. A precision-preserving codegen that materialises
+// each operand once into a register and compares the two truth values
+// is feasible but requires a new "evaluate to {0,1}" emit path; that
+// follow-up is tracked separately.
+func (c *whereCtx) genBoolEq(w *ir.Condition, failLabel string) (asm.Instructions, error) {
+	if w == nil || w.BoolL == nil || w.BoolR == nil {
+		return nil, fmt.Errorf("codegen: bool-eq lacks operands")
+	}
+	rewritten, err := desugarBoolEq(w)
+	if err != nil {
+		return nil, err
+	}
+	return c.gen(rewritten, failLabel)
+}
+
+// desugarBoolEq rewrites a WAtomBoolEq node into an equivalent
+// WAnd / WOr / WNot tree, leaving the operand subtrees intact.
+//
+//	iff(a, b)  =  (a and b) or (not a and not b)
+//	xor(a, b)  =  (a and not b) or (not a and b)
+func desugarBoolEq(w *ir.Condition) (*ir.Condition, error) {
+	a, b := w.BoolL, w.BoolR
+	notA := &ir.Condition{Kind: ast.WNot, Inner: a, Pos: w.Pos}
+	notB := &ir.Condition{Kind: ast.WNot, Inner: b, Pos: w.Pos}
+	switch w.BoolEqOp {
+	case ast.CmpEq:
+		// (a and b) or (not a and not b)
+		left := &ir.Condition{Kind: ast.WAnd, Left: a, Right: b, Pos: w.Pos}
+		right := &ir.Condition{Kind: ast.WAnd, Left: notA, Right: notB, Pos: w.Pos}
+		return &ir.Condition{Kind: ast.WOr, Left: left, Right: right, Pos: w.Pos}, nil
+	case ast.CmpNeq:
+		// (a and not b) or (not a and b)
+		left := &ir.Condition{Kind: ast.WAnd, Left: a, Right: notB, Pos: w.Pos}
+		right := &ir.Condition{Kind: ast.WAnd, Left: notA, Right: b, Pos: w.Pos}
+		return &ir.Condition{Kind: ast.WOr, Left: left, Right: right, Pos: w.Pos}, nil
+	}
+	return nil, fmt.Errorf("codegen: bool-eq with op %v not supported", w.BoolEqOp)
 }
 
 // genAny emits a static-unroll over the quantifier's iteration
@@ -456,15 +533,65 @@ const (
 	maxArithDepth  = 4
 )
 
+// arithCmpTargetBits returns the comparison's effective integer
+// width: the wider of the two operands' field widths, or 0 if both
+// sides are pure-literal (no field references). Mirrors
+// resolve/typing.go::arithCmpTargetBits but lives here too because
+// codegen cannot import resolve.
+func arithCmpTargetBits(l, r *ir.ArithExpr) int {
+	lb := arithMaxFieldBits(l)
+	rb := arithMaxFieldBits(r)
+	if lb > rb {
+		return lb
+	}
+	return rb
+}
+
+// arithMaxFieldBits walks an arith subtree and returns the largest
+// declared bit width of any field reference encountered. Returns 0
+// if the subtree is pure-literal.
+func arithMaxFieldBits(e *ir.ArithExpr) int {
+	if e == nil {
+		return 0
+	}
+	switch e.Kind {
+	case ast.ArithField:
+		if e.Field == nil {
+			return 0
+		}
+		if e.Field.Aux != nil {
+			return e.Field.Aux.FieldBitWidth
+		}
+		if e.Field.Field != nil {
+			return e.Field.Field.Bits
+		}
+		return 0
+	case ast.ArithBinOp:
+		l := arithMaxFieldBits(e.Left)
+		r := arithMaxFieldBits(e.Right)
+		if l > r {
+			return l
+		}
+		return r
+	}
+	return 0
+}
+
 // genArithCompare emits code for "arith CmpOp arith". Left operand
 // ends up in R5, right in R3; the reject-direction jump covers the
 // failure branch.
 func (c *whereCtx) genArithCompare(w *ir.Condition, failLabel string) (asm.Instructions, error) {
-	left, err := c.genArith(w.ArithL, 0)
+	// Compute the comparison's target width per dsl-types.md §5.2 so
+	// integer literals can be narrowed via 2's-complement on the way
+	// to the BPF int32 immediate. Without this, `tcp.dport == -1`
+	// stores the constant as 0xffff..ff and trips the immediate
+	// range check; the spec wants it narrowed to bit<16> = 0xffff.
+	targetBits := arithCmpTargetBits(w.ArithL, w.ArithR)
+	left, err := c.genArithWithBits(w.ArithL, 0, targetBits)
 	if err != nil {
 		return nil, err
 	}
-	right, err := c.genArith(w.ArithR, 0)
+	right, err := c.genArithWithBits(w.ArithR, 0, targetBits)
 	if err != nil {
 		return nil, err
 	}
@@ -486,15 +613,28 @@ func (c *whereCtx) genArithCompare(w *ir.Condition, failLabel string) (asm.Instr
 // genArith computes e's value into R3. depth indexes the stack slot
 // used if e is a binary op; callers pass the current nesting level.
 func (c *whereCtx) genArith(e *ir.ArithExpr, depth int) (asm.Instructions, error) {
+	return c.genArithWithBits(e, depth, 0)
+}
+
+// genArithWithBits is genArith plus a target-width hint used to narrow
+// integer-constant leaves at codegen time (dsl-types.md §5.2 / §7.3).
+// targetBits = 0 means "no narrowing"; targetBits ∈ [1, 63] masks
+// the constant to its low `targetBits` so 2's-complement negative
+// literals fit the BPF int32 immediate.
+func (c *whereCtx) genArithWithBits(e *ir.ArithExpr, depth int, targetBits int) (asm.Instructions, error) {
 	if depth >= maxArithDepth {
 		return nil, fmt.Errorf("%w: arith expression nested deeper than %d levels", ErrNotImplemented, maxArithDepth)
 	}
 	switch e.Kind {
 	case ast.ArithConst:
-		if e.Const > 0x7FFFFFFF {
+		v := e.Const
+		if targetBits > 0 && targetBits < 64 {
+			v &= (uint64(1) << targetBits) - 1
+		}
+		if v > 0x7FFFFFFF {
 			return nil, fmt.Errorf("%w: arith constant %d exceeds int32 immediate range", ErrNotImplemented, e.Const)
 		}
-		return asm.Instructions{asm.Mov.Imm(asm.R3, int32(e.Const))}, nil
+		return asm.Instructions{asm.Mov.Imm(asm.R3, int32(v))}, nil
 	case ast.ArithField:
 		return c.genArithFieldLoad(e.Field)
 	case ast.ArithBinOp:

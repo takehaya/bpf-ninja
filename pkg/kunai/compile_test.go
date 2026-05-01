@@ -75,7 +75,7 @@ func TestCompileIPv4Predicates(t *testing.T) {
 		"eth/ipv4[dst==192.168.1.42]/tcp",
 		"eth/ipv4[dst==10.0.0.0/8]/tcp",
 		"eth/ipv4[src==192.168.0.0/16]/tcp[dport==443]",
-		"eth/ipv4[src==10.0.0.0/0]/tcp", // /0 ==-match collapses to a no-op
+		"eth/ipv4[src==0.0.0.0/0]/tcp", // /0 ==-match collapses to a no-op (host-bits must be 0)
 	})
 }
 
@@ -170,6 +170,84 @@ func TestCompileWhereActionAtFEntryFails(t *testing.T) {
 func TestCompileWhereArithCompare(t *testing.T) {
 	// eth/ipv4/tcp where ipv4.total_length == 100
 	insns, err := compileForTest("eth/ipv4/tcp where ipv4.total_length == 100")
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	if len(insns) == 0 {
+		t.Fatal("expected non-empty instructions")
+	}
+}
+
+func TestCompileWhereBoolLitTrue(t *testing.T) {
+	// `where true` is the identity condition; compile must succeed.
+	insns, err := compileForTest("eth/ipv4/tcp where true")
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	if len(insns) == 0 {
+		t.Fatal("expected non-empty instructions")
+	}
+}
+
+func TestCompileWhereBoolLitFalse(t *testing.T) {
+	// `where false` always rejects; compile must succeed.
+	insns, err := compileForTest("eth/ipv4/tcp where false")
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	if len(insns) == 0 {
+		t.Fatal("expected non-empty instructions")
+	}
+}
+
+func TestCompileWhereBareBoolFieldDecay(t *testing.T) {
+	// `where tcp.dport` triggers Int<16> -> Bool decay -> `tcp.dport != 0`.
+	// (tcp.dport is byte-aligned, so codegen handles it without invoking the
+	// not-yet-implemented sub-byte field-load path that would gate flag bits.)
+	insns, err := compileForTest("eth/ipv4/tcp where tcp.dport")
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	if len(insns) == 0 {
+		t.Fatal("expected non-empty instructions")
+	}
+}
+
+func TestCompileWhereBoolEqIff(t *testing.T) {
+	insns, err := compileForTest("eth/ipv4/tcp where (tcp.dport == 443) == (tcp.sport == 443)")
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	if len(insns) == 0 {
+		t.Fatal("expected non-empty instructions")
+	}
+}
+
+func TestCompileWhereNetworkLiteralOnLHS(t *testing.T) {
+	// Network literal on the LHS resolves to the same WAtomLiteralCmp
+	// IR as the field-LHS form, so codegen reuses the existing
+	// emitIPv4/IPv6/MAC/CIDR predicate paths.
+	for _, expr := range []string{
+		"eth/ipv4/tcp where 10.0.0.1 == ipv4.dst",
+		"eth/ipv4/tcp where 10.0.0.0/8 != ipv4.dst",
+		"eth/ipv4/tcp where aa:bb:cc:dd:ee:ff == eth.dst",
+	} {
+		t.Run(expr, func(t *testing.T) {
+			insns, err := compileForTest(expr)
+			if err != nil {
+				t.Fatalf("Compile(%q): %v", expr, err)
+			}
+			if len(insns) == 0 {
+				t.Fatal("expected non-empty instructions")
+			}
+		})
+	}
+}
+
+func TestCompileWhereBareBoolExistsAux(t *testing.T) {
+	// `where gtp.opt.exists` reuses the aux-gating emit path: the
+	// parser machine has already extracted opt only on the E|S|PN tuple.
+	insns, err := compileForTest("eth/ipv4/udp/gtp/ipv4/tcp where gtp.opt.exists")
 	if err != nil {
 		t.Fatalf("Compile: %v", err)
 	}
