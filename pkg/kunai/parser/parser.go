@@ -23,6 +23,10 @@ func Parse(expr string, file string, reservedLabels map[string]bool) (*ast.Filte
 		file:           file,
 		reservedLabels: reservedLabels,
 	}
+	// Seed preCurSnap so the speculative LHS-literal probe in
+	// parseCmpOrBoolAtom has a defined snapshot even before the very
+	// first p.advance().
+	p.preCurSnap = p.lex.Save()
 	if err := p.advance(); err != nil {
 		return nil, err
 	}
@@ -32,15 +36,21 @@ func Parse(expr string, file string, reservedLabels map[string]bool) (*ast.Filte
 type parser struct {
 	lex            *lexer.Lexer
 	cur            lexer.Token
+	preCurSnap     lexer.Snapshot // lexer state at the start of the byte run that produced p.cur; used by speculative re-reads (e.g. LHS network-literal probing in `where`)
 	file           string
 	depth          int             // alternation nesting depth
 	reservedLabels map[string]bool // host-supplied @label rejection set
 }
 
 func (p *parser) advance() error {
-	var err error
-	p.cur, err = p.lex.Next()
-	return err
+	snap := p.lex.Save()
+	next, err := p.lex.Next()
+	if err != nil {
+		return err
+	}
+	p.preCurSnap = snap
+	p.cur = next
+	return nil
 }
 
 // advanceValue consumes the current token and fetches the next one in

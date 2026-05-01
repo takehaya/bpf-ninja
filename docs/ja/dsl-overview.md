@@ -10,6 +10,7 @@
 | **library として使いたい** (Go から `kunai.Compile`) | [`pkg/kunai/README.md`](../../pkg/kunai/README.md) (英語) |
 | **vocab を書きたい** (新プロトコル追加) | [`pkg/kunai/protocols/`](../../pkg/kunai/protocols/) の既存 .p4 を参考に + [`pkg/kunai/vocab/loader.go`](../../pkg/kunai/vocab/loader.go) の `classifyConsts` で命名規約を確認 |
 | **可変長構造をどう vocab で表すか知りたい** (chain vs aux の判断) | [`dsl-internals.md` §6](./dsl-internals.md#6-可変長構造の分類と表現) |
+| **型の意味を知りたい** (異幅 cmp / Bool / CIDR / 各種 literal) | [`dsl-types.md`](./dsl-types.md) |
 | **中身をレビューしたい** (codegen / verifier) | [`dsl-walkthrough.md`](./dsl-walkthrough.md) (コード読解ガイド) |
 | **何が残ってるか見たい** | [`dsl-followups.md`](./dsl-followups.md) |
 | **性能比較したい** | [`dsl-benchmark.md`](./dsl-benchmark.md) |
@@ -18,6 +19,8 @@
 
 - [`dsl-usage.md`](./dsl-usage.md) — ユーザー向け CLI ガイド
 - [`dsl-grammar.md`](./dsl-grammar.md) — formal EBNF (filter 式 + p4lite) + 例文 + parser 関数マッピング
+- [`dsl-types.md`](./dsl-types.md) — 型システム仕様 (型・暗黙変換・widening・fit check・エラーカタログ)
+- [`dsl-internals.md`](./dsl-internals.md) — 設計動機 / アーキテクチャ / codegen ABI / vocab 著者ガイド / P4-16 互換性
 - [`dsl-walkthrough.md`](./dsl-walkthrough.md) — `pkg/kunai/` のコードを読み下すための内部ガイド (レビュー用)
 - [`dsl-followups.md`](./dsl-followups.md) — 残作業 (P0 → P5)
 - [`dsl-benchmark.md`](./dsl-benchmark.md) — cbpfc vs DSL のベンチ方法論

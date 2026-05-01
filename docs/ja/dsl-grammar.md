@@ -71,12 +71,12 @@ op             ::= '==' | '!=' | '<' | '<=' | '>' | '>=' | '='
 value          ::= integer | ipv4 | ipv4-cidr | ipv6 | ipv6-cidr | mac
 value-list     ::= '[' value (',' value)* ']'
 flag-name      ::= [A-Z] [A-Z0-9_]*
-integer        ::= '0x' [0-9a-fA-F]+ | [0-9]+
-ipv4           ::= INT '.' INT '.' INT '.' INT
-ipv4-cidr      ::= ipv4 '/' INT
-ipv6           ::= (* RFC 4291 形式 *)
-ipv6-cidr      ::= ipv6 '/' INT
-mac            ::= [0-9a-fA-F]{2} (':' [0-9a-fA-F]{2}){5}
+integer        ::= '-'? ('0x' [0-9a-fA-F]+ | [0-9]+)        (* 値域: [-2^63, 2^64) *)
+ipv4           ::= INT '.' INT '.' INT '.' INT              (* 各 INT: 0..255、zero-prefix 拒否 *)
+ipv4-cidr      ::= ipv4 '/' INT                             (* INT: 0..32、host bits ゼロ必須 *)
+ipv6           ::= (* RFC 4291 形式、zone id (%xxx) 拒否、bracket 拒否 *)
+ipv6-cidr      ::= ipv6 '/' INT                             (* INT: 0..128、host bits ゼロ必須 *)
+mac            ::= [0-9a-fA-F]{2} (':' [0-9a-fA-F]{2}){5}   (* colon 区切り 6 octet *)
 ```
 
 | Production | parser | 例文 |
@@ -96,6 +96,7 @@ mac            ::= [0-9a-fA-F]{2} (':' [0-9a-fA-F]{2}){5}
 - `/0 ==` → 命令ゼロ (常に match)
 - `/0 !=` → `Ja dsl_reject` (常に miss)
 - `/32` (v4) / `/128` (v6) → host match に collapse
+- **host bits 非ゼロは parse-time reject**: `10.0.0.5/24` は不可 (`10.0.0.0/24` を要求)。`10.0.0.5/30` のような boundary 不一致もすべて reject。エラーメッセージで `network would be 10.0.0.4/30` 形で誘導 (型仕様: [`dsl-types.md §4.5`](./dsl-types.md#45-cidr-リテラル))
 
 **Bracket aux predicate**:
 - `proto[<aux>.<field> op value]` で auxiliary header の field を読む
@@ -111,14 +112,19 @@ or-expr        ::= and-expr (('or' | '||') and-expr)*
 and-expr       ::= not-expr (('and' | '&&') not-expr)*
 not-expr       ::= ('not' | '!') not-expr | atom
 atom           ::= '(' or-expr ')'
+                 | bool-atom                                  (* bare Bool: tcp.syn / gtp.opt.exists / true *)
                  | action-atom
-                 | flow-atom                                  (* parser only, codegen reject *)
                  | quant-atom
-                 | arith-cmp
-action-atom    ::= 'action' op xdp-action
-flow-atom      ::= 'flow' '.' ('is_new' | 'age' | 'state')   (* WAtomFlow, dead syntax *)
+                 | cmp-expr                                   (* literal allowed on either side *)
+bool-atom      ::= bool-literal | aux-exists | field-ref      (* Int<N> field also coerces to Bool here *)
+bool-literal   ::= 'true' | 'false'
+aux-exists     ::= field-ref '.' 'exists'
+action-atom    ::= 'action' op action-value
+                 | action-value op 'action'                   (* symmetric: XDP_DROP == action *)
+action-value   ::= xdp-action
 quant-atom     ::= ('any' | 'all') '(' or-expr ')'
-arith-cmp      ::= arith-expr op arith-expr
+cmp-expr       ::= cmp-operand op cmp-operand
+cmp-operand    ::= arith-expr | network-literal
 arith-expr     ::= arith-term (('+' | '-') arith-term)*
 arith-term     ::= arith-factor (('*' | '/' | '%') arith-factor)*
 arith-factor   ::= field-ref | integer | '(' arith-expr ')'
@@ -126,7 +132,12 @@ field-ref      ::= ident index? ('.' ident index?)*           (* see field-ref s
 index          ::= '[' (integer | field-ref) ']'
 xdp-action     ::= 'XDP_ABORTED' | 'XDP_DROP' | 'XDP_PASS'
                  | 'XDP_TX' | 'XDP_REDIRECT'
+network-literal ::= ipv4 | ipv4-cidr | ipv6 | ipv6-cidr | mac
 ```
+
+**LHS / RHS 対称性**: `cmp-expr` は両 operand に network literal (IPv4/IPv6/MAC/CIDR) を許す (例: `443 == tcp.dport`、`10.0.0.0/24 == ipv4.dst`、`fe80::1 == ipv6.src`)。LHS literal の検出は parser が lexer 値モードで先読みする実装で、network literal が `==` / `!=` の前にあるときだけ確定する (ordered cmp は仕様上 reject)。型ルールは [`dsl-types.md §6.2`](./dsl-types.md#62-比較演算)。
+
+**Bool atom**: `bool-atom` 位置に `field-ref` が来た場合、その field の型が `Int<N>` であれば Bool 文脈で `!= 0` として coerce される (C 風)。詳細は [`dsl-types.md §5.4`](./dsl-types.md#54-intn--bool-coercion-bool-文脈)。
 
 **field-ref shapes** (where 節で使えるフィールドアクセス):
 
@@ -135,7 +146,7 @@ xdp-action     ::= 'XDP_ABORTED' | 'XDP_DROP' | 'XDP_PASS'
 | `proto.field` | `tcp.dport` | primary header の field |
 | `@label.field` | `outer.src` | 同 protocol が複数あるときラベルで識別 |
 | `proto.aux.field` | `gtp.opt.next_ext` | 単発 aux header の field (auto gating) |
-| `proto.aux.exists` | `gtp.opt.exists` | aux が抽出されたかの bool (※ 現在は arith 内のみ、bare bool atom は未対応) |
+| `proto.aux.exists` | `gtp.opt.exists` | aux が抽出されたかの bool。`where gtp.opt.exists` のように bare bool atom として書ける |
 | `proto.stack[N].field` | `srv6.segments[0].addr` | aux header stack の N 番目 (静的 index) |
 | `proto.stack[proto.f].field` | `srv6.segments[srv6.last_entry].addr` | 動的 index (parent header field 由来) |
 | `proto.options.NAME.field` | `tcp.options.MSS.value` | TCP/IPv4 option lookup (`<NAME>` は declared option) |
@@ -146,7 +157,6 @@ xdp-action     ::= 'XDP_ABORTED' | 'XDP_DROP' | 'XDP_PASS'
 | `and-expr` | `where.go::parseAndExpr` | `... and ipv4.ttl > 64` |
 | `not-expr` | `where.go::parseNotExpr` | `not action == XDP_DROP` |
 | `action-atom` | `where.go::parseActionAtom` | `action == XDP_DROP` (fexit only) |
-| `flow-atom` | `where.go::parseFlowAtom` | `flow.is_new` *(codegen reject)* |
 | `quant-atom` | `where.go::parseQuantAtom` | `any(srv6.segments.addr == fc00::1)` |
 | `arith-cmp` | `where.go::parseArithCmp` | `ipv4.total_length > 100` |
 | `arith-expr` | `where.go::parseArithExpr` | `ipv4.total_length - 20` |
@@ -318,7 +328,8 @@ parser EthFragment(packet_in pkt, out eth_h hdr) {
 1. 該当 EBNF rule の更新 (本ファイル)
 2. parser 関数の修正 (`pkg/kunai/parser/` または `pkg/kunai/vocab/p4lite/`)
 3. 例文表 (本ファイルの「例文」列) の更新
-4. (将来) `pkg/kunai/parser/grammar_test.go` の例文 table 更新 — accept / reject 各 1 ケース以上
+4. 型に関わる変更なら [`dsl-types.md`](./dsl-types.md) も更新
+5. (将来) `pkg/kunai/parser/grammar_test.go` の例文 table 更新 — accept / reject 各 1 ケース以上
 
 drift 検知は CI で grammar_test が走ることで担保される予定 (現状は手動レビュー)。
 

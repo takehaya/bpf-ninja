@@ -214,8 +214,18 @@ type Condition struct {
 	// WAtomAction
 	ActionValue string
 
-	// WAtomFlow
-	FlowKind string
+	// WAtomBoolLit (bare `true` / `false`).
+	BoolLitValue bool
+
+	// WAtomBoolExists (bare `<aux>.exists` in where atom position).
+	// BoolField is a FieldRef whose Aux is set; Field == nil (i.e.
+	// IsExistsCheck() returns true).
+	BoolField *FieldRef
+
+	// WAtomBoolEq operands (Bool == Bool / Bool != Bool).
+	BoolL    *Condition
+	BoolR    *Condition
+	BoolEqOp ast.CmpOp
 
 	Unsupported string
 

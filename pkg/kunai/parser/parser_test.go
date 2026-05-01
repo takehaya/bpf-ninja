@@ -321,18 +321,6 @@ func TestParseWhereActionAtom(t *testing.T) {
 	}
 }
 
-func TestParseWhereFlowAtomUnsupported(t *testing.T) {
-	f := mustParse(t, "eth/ipv4/tcp[dport==443] where flow.is_new")
-	w := f.Where
-	if w == nil || w.Kind != ast.WAtomFlow || w.FlowKind != "is_new" || !w.Unsupported {
-		t.Fatalf("where = %+v", w)
-	}
-}
-
-func TestParseWhereFlowRejectsUnknownKind(t *testing.T) {
-	mustFail(t, "eth/ipv4/tcp where flow.bogus", "unknown flow property")
-}
-
 func TestParseWhereArithEquality(t *testing.T) {
 	expr := "eth/ipv4@outer/udp/vxlan/ipv4@inner/tcp where outer.total_length == inner.total_length + 36"
 	f := mustParse(t, expr)
@@ -392,6 +380,163 @@ func TestParseWhereActionRejectsNonEq(t *testing.T) {
 
 // --- Per-capture where ---
 
+func TestParseWhereBoolLiteralTrue(t *testing.T) {
+	f := mustParse(t, "eth/ipv4/tcp where true")
+	if f.Where == nil || f.Where.Kind != ast.WAtomBoolLit || f.Where.BoolLitValue != true {
+		t.Fatalf("where = %+v", f.Where)
+	}
+}
+
+func TestParseWhereBoolLiteralFalse(t *testing.T) {
+	f := mustParse(t, "eth/ipv4/tcp where false")
+	if f.Where == nil || f.Where.Kind != ast.WAtomBoolLit || f.Where.BoolLitValue != false {
+		t.Fatalf("where = %+v", f.Where)
+	}
+}
+
+func TestParseWhereBareBoolFieldDecay(t *testing.T) {
+	// `where tcp.syn` should parse as `tcp.syn != 0` (Int<N> -> Bool decay).
+	f := mustParse(t, "eth/ipv4/tcp where tcp.syn")
+	if f.Where == nil || f.Where.Kind != ast.WAtomArith {
+		t.Fatalf("where kind = %v, want WAtomArith decay", f.Where.Kind)
+	}
+	if f.Where.Op != ast.CmpNeq {
+		t.Errorf("op = %v, want !=", f.Where.Op)
+	}
+	if f.Where.ArithR == nil || f.Where.ArithR.Kind != ast.ArithConst || f.Where.ArithR.Const != 0 {
+		t.Errorf("RHS = %+v, want literal 0", f.Where.ArithR)
+	}
+}
+
+func TestParseWhereBareBoolExists(t *testing.T) {
+	// `where gtp.opt.exists` should produce a WAtomBoolExists with the
+	// trailing `.exists` segment stripped.
+	f := mustParse(t, "eth/ipv4/tcp where gtp.opt.exists")
+	if f.Where == nil || f.Where.Kind != ast.WAtomBoolExists {
+		t.Fatalf("where kind = %v, want WAtomBoolExists", f.Where.Kind)
+	}
+	if f.Where.BoolField == nil {
+		t.Fatalf("BoolField is nil")
+	}
+	got := f.Where.BoolField.String()
+	if got != "gtp.opt" {
+		t.Errorf("BoolField path = %q, want %q", got, "gtp.opt")
+	}
+}
+
+func TestParseWhereBoolEqIff(t *testing.T) {
+	f := mustParse(t, "eth/ipv4/tcp where true == true")
+	if f.Where == nil || f.Where.Kind != ast.WAtomBoolEq {
+		t.Fatalf("where kind = %v, want WAtomBoolEq", f.Where.Kind)
+	}
+	if f.Where.BoolEqOp != ast.CmpEq {
+		t.Errorf("op = %v, want ==", f.Where.BoolEqOp)
+	}
+}
+
+func TestParseWhereBoolEqWithParens(t *testing.T) {
+	// `(<cmp>) == <bool-atom>` triggers BoolEq via parens path.
+	f := mustParse(t, "eth/ipv4/tcp where (tcp.dport == 443) == gtp.opt.exists")
+	if f.Where == nil || f.Where.Kind != ast.WAtomBoolEq {
+		t.Fatalf("where kind = %v, want WAtomBoolEq", f.Where.Kind)
+	}
+	if f.Where.BoolEqOp != ast.CmpEq {
+		t.Errorf("op = %v, want ==", f.Where.BoolEqOp)
+	}
+	if f.Where.BoolL == nil || f.Where.BoolR == nil {
+		t.Errorf("BoolL/BoolR missing: L=%+v R=%+v", f.Where.BoolL, f.Where.BoolR)
+	}
+}
+
+func TestParseWhereBoolOrderedRejected(t *testing.T) {
+	mustFail(t, "eth/ipv4/tcp where true < false", "ordered comparison")
+}
+
+func TestParseWhereCIDRHostBitsRejected(t *testing.T) {
+	mustFail(t, "eth/ipv4[src==10.0.0.5/24]/tcp", "host bits set")
+}
+
+// TestParseWhereIPv6BracketRejected pins the dsl-types.md §4.3 spec
+// rule that IPv6 literals cannot use the URL-style bracket form
+// (`[fe80::1]`). The actual rejection is structural: the opening `[`
+// is consumed by the parser as the start of a bracket predicate
+// while the next token is not a field name. The exact message
+// depends on the parse path, so we only require that *some* error
+// surfaces.
+func TestParseWhereIPv6BracketRejected(t *testing.T) {
+	mustFail(t, "eth/ipv6/tcp where [fe80::1] == ipv6.dst", "")
+}
+
+func TestParseWhereNegativeLiteralWhere(t *testing.T) {
+	// `-1` in a where clause is parsed as unary minus over an integer
+	// literal; the AST stores it as 0xffff..ff (2's complement).
+	f := mustParse(t, "eth/ipv4/tcp where tcp.dport == -1")
+	if f.Where == nil || f.Where.Kind != ast.WAtomArith {
+		t.Fatalf("where = %+v", f.Where)
+	}
+	if f.Where.ArithR == nil || f.Where.ArithR.Kind != ast.ArithConst {
+		t.Fatalf("RHS arith = %+v", f.Where.ArithR)
+	}
+	if f.Where.ArithR.Const != ^uint64(0) {
+		t.Errorf("RHS = %#x, want %#x", f.Where.ArithR.Const, ^uint64(0))
+	}
+}
+
+func TestParseWhereNegativeLiteralBracket(t *testing.T) {
+	// `-1` in a bracket predicate is consumed via lexer value mode and
+	// the buildInt helper recognises the leading minus.
+	f := mustParse(t, "eth/ipv4/tcp[dport==-1]")
+	tcpLayer := f.Layers[len(f.Layers)-1]
+	if len(tcpLayer.Predicates) != 1 {
+		t.Fatalf("got %d predicates", len(tcpLayer.Predicates))
+	}
+	v := tcpLayer.Predicates[0].Value
+	if v == nil || v.Kind != ast.ValInt {
+		t.Fatalf("value = %+v", v)
+	}
+	if v.Int != ^uint64(0) {
+		t.Errorf("Int = %#x, want %#x", v.Int, ^uint64(0))
+	}
+}
+
+func TestParseWhereNegativeLiteralAfterUnaryRejectsNonInt(t *testing.T) {
+	mustFail(t, "eth/ipv4/tcp where tcp.dport == -tcp.sport", "expected integer literal after unary")
+}
+
+func TestParseWhereNetworkLiteralOnLHS(t *testing.T) {
+	cases := []struct {
+		expr     string
+		litKind  ast.ValueKind
+		fieldStr string
+	}{
+		{"eth/ipv4/tcp where 10.0.0.1 == ipv4.dst", ast.ValIPv4, "ipv4.dst"},
+		{"eth/ipv4/tcp where 10.0.0.0/8 != ipv4.dst", ast.ValCIDR, "ipv4.dst"},
+		{"eth/ipv6/tcp where fe80::1 == ipv6.src", ast.ValIPv6, "ipv6.src"},
+		{"eth/ipv4/tcp where aa:bb:cc:dd:ee:ff == eth.dst", ast.ValMAC, "eth.dst"},
+	}
+	for _, c := range cases {
+		t.Run(c.expr, func(t *testing.T) {
+			f := mustParse(t, c.expr)
+			if f.Where == nil || f.Where.Kind != ast.WAtomLiteralCmp {
+				t.Fatalf("where kind = %v, want WAtomLiteralCmp", f.Where.Kind)
+			}
+			if f.Where.LiteralValue == nil || f.Where.LiteralValue.Kind != c.litKind {
+				t.Errorf("literal value = %+v, want kind %v", f.Where.LiteralValue, c.litKind)
+			}
+			if f.Where.LiteralField == nil || f.Where.LiteralField.String() != c.fieldStr {
+				t.Errorf("literal field = %v, want %q", f.Where.LiteralField, c.fieldStr)
+			}
+		})
+	}
+}
+
+func TestParseWhereNetworkLiteralLHSOrderedRejected(t *testing.T) {
+	// Per dsl-types.md §6.2 network literals only support ==/!=. The
+	// ordered comparison falls through to the arith path which then
+	// fails because `10.0.0.1` is not a valid arith expression head.
+	mustFail(t, "eth/ipv4/tcp where 10.0.0.1 < ipv4.dst", "")
+}
+
 func TestParseCaptureWithConditional(t *testing.T) {
 	f := mustParse(t, "eth/ipv4/tcp[dport==443] capture headers where action == XDP_PASS capture all where action == XDP_DROP")
 	if len(f.Captures) != 2 {
@@ -421,7 +566,6 @@ func TestParseAllExamples(t *testing.T) {
 		"eth/mpls+/eth@inner/ipv4/tcp",
 		"eth/mpls+/cw?/eth@inner/ipv4/tcp",
 		"eth/ipv4@outer/udp/vxlan/ipv4@inner/tcp where outer.total_length == inner.total_length + 36",
-		"eth/ipv4/tcp[dport==443] where flow.is_new",
 		"eth/ipv4/tcp where action == XDP_DROP",
 		"eth/ipv4/tcp[dport==443] capture headers+64",
 		"eth/ipv4/tcp[dport==443] capture headers where action == XDP_PASS capture all where action == XDP_DROP",

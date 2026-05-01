@@ -17,17 +17,12 @@ func (r *resolver) resolveBracketPredicate(ap *ast.Predicate, layer *ir.LayerIns
 	if field.Aux != nil && field.Aux.Stack != nil && field.Aux.Stack.IsIterator {
 		return nil, errorf(ap.Pos, "auxiliary header stack %q needs an index inside a bracket predicate (use `[N]` or wrap in `any(...)` / `all(...)`)", field.Aux.OutParam)
 	}
-	// Catch values that cannot fit the field's declared width. This is
-	// a semantic error ("tcp.dport is 16 bits, 99999 does not fit"),
-	// not a codegen limitation, so it belongs here.
-	if ap.Kind == ast.PredCmp && ap.Value != nil && ap.Value.Kind == ast.ValInt && field.Field != nil {
-		bits := field.Field.Bits
-		if bits < 64 && ap.Value.Int >= (uint64(1)<<bits) {
-			fieldName := field.Field.Name
-			if field.Aux != nil {
-				fieldName = field.Aux.OutParam + "." + fieldName
-			}
-			return nil, errorf(ap.Pos, "value %d does not fit in %d-bit field %s.%s", ap.Value.Int, bits, layer.Spec.Name, fieldName)
+	// Bracket-predicate fit check: integer literal must fit the
+	// field's declared bit width (dsl-types.md §7.2). Delegated to
+	// the typing helper so the same rule is in one place.
+	if ap.Kind == ast.PredCmp {
+		if err := checkBracketIntFit(field, ap.Value, layer.Spec.Name, ap.Pos); err != nil {
+			return nil, err
 		}
 	}
 	rp := &ir.Predicate{

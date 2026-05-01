@@ -252,7 +252,13 @@ func isHexChar(b byte) bool {
 }
 
 // isValueByte reports whether b may appear in a value-mode token.
-// Whitespace, `]`, `,`, `)`, `}` all terminate a value run.
+// Whitespace, `]`, `,`, `)`, `}` all terminate a value run. The
+// leading `-` is allowed so signed integer literals (e.g. `-1`,
+// `-128`) reach buildInt; classification rejects ambiguous shapes.
+// `%` is included so a stray IPv6 zone-id suffix (`fe80::1%eth0`)
+// is captured into the same value run and reaches buildIPv6, which
+// rejects it explicitly per dsl-types.md §4.3 instead of being
+// silently truncated by a too-narrow value scanner.
 func isValueByte(b byte) bool {
 	if b >= '0' && b <= '9' {
 		return true
@@ -263,5 +269,5 @@ func isValueByte(b byte) bool {
 	if b >= 'A' && b <= 'Z' {
 		return true
 	}
-	return b == '.' || b == ':' || b == '/' || b == '_'
+	return b == '.' || b == ':' || b == '/' || b == '_' || b == '-' || b == '%'
 }

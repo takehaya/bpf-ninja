@@ -64,9 +64,21 @@ func buildRange(raw, loStr, hiStr string, pos ast.Position) (*ast.Value, error) 
 }
 
 func buildCIDR(raw string, pos ast.Position) (*ast.Value, error) {
-	_, ipnet, err := net.ParseCIDR(raw)
+	ip, ipnet, err := net.ParseCIDR(raw)
 	if err != nil {
 		return nil, fmt.Errorf("CIDR %q: %v", raw, err)
+	}
+	// Reject non-zero host bits per dsl-types.md §4.5: the user's
+	// intent is ambiguous between "this single host" and "this
+	// subnet", so demand explicit phrasing.
+	if !ip.Equal(ipnet.IP) {
+		_, bits := ipnet.Mask.Size()
+		networkStr := ipnet.String()
+		hostStr := ipForHost(ip, bits)
+		return nil, fmt.Errorf(
+			"CIDR %q has host bits set; network would be %s (suggestion: %s for the subnet, or %s/%d for the single host)",
+			raw, networkStr, networkStr, hostStr, bits,
+		)
 	}
 	ones, _ := ipnet.Mask.Size()
 	if len(ipnet.IP) == net.IPv4len {
@@ -77,6 +89,18 @@ func buildCIDR(raw string, pos ast.Position) (*ast.Value, error) {
 	var v6 [16]byte
 	copy(v6[:], ipnet.IP)
 	return &ast.Value{Kind: ast.ValCIDR, Raw: raw, AF: 6, V6: v6, Prefix: ones, Pos: pos}, nil
+}
+
+// ipForHost returns the original IP (pre-masking) as a string so the
+// suggestion `host/<full-prefix>` is well-formed.
+func ipForHost(ip net.IP, bits int) string {
+	if bits == 32 {
+		v4 := ip.To4()
+		if v4 != nil {
+			return v4.String()
+		}
+	}
+	return ip.String()
 }
 
 func buildIPv4(raw string, pos ast.Position) (*ast.Value, error) {
@@ -121,6 +145,17 @@ func buildMAC(raw string, pos ast.Position) (*ast.Value, error) {
 }
 
 func buildInt(raw string, pos ast.Position) (*ast.Value, error) {
+	if strings.HasPrefix(raw, "-") {
+		// Signed literal: must fit in int64; the value is then stored
+		// as its 2's-complement uint64 so the resolver can narrow it
+		// to any target Int<N> per dsl-types.md §4.1.
+		signed, err := strconv.ParseInt(raw, 0, 64)
+		if err != nil {
+			return nil, fmt.Errorf("invalid integer %q: %v", raw, err)
+		}
+		// #nosec G115 — intentional reinterpretation as uint64.
+		return &ast.Value{Kind: ast.ValInt, Raw: raw, Int: uint64(signed), Pos: pos}, nil
+	}
 	v, err := strconv.ParseUint(raw, 0, 64)
 	if err != nil {
 		return nil, fmt.Errorf("invalid integer %q: %v", raw, err)
@@ -153,6 +188,16 @@ func isMACShape(s string) bool {
 func isIntegerLiteral(s string) bool {
 	if s == "" {
 		return false
+	}
+	// Optional leading minus: a single '-' must be followed by at
+	// least one digit (or a hex prefix). We strip it before the
+	// usual hex/decimal classification so the rest of the rules stay
+	// untouched.
+	if s[0] == '-' {
+		if len(s) == 1 {
+			return false
+		}
+		s = s[1:]
 	}
 	if strings.HasPrefix(s, "0x") || strings.HasPrefix(s, "0X") {
 		if len(s) == 2 {

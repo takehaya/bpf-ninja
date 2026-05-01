@@ -44,7 +44,7 @@ xdp-ninja の DSL 実装 (`pkg/kunai/` 配下) を読むための内部ガイド
 `ast.go` が AST のルート型。`Filter` (= 1 つの `--dsl` 式に対応)、その下に `Layer[]` / `WhereExpr` / `CaptureClause[]`。`Predicate` / `WhereExpr` / `CaptureClause` 等の各 Sum 型は `kinds.go` の enum (`PredKind`, `WhereKind`, `CaptureKind`, `ValueKind`, `Quantifier`, `CmpOp`) で識別される。
 
 **読みどころ**:
-- `ast.go:8` のパッケージ doc に `Unsupported string` フィールドの意図が書いてある — parser が受理した「これから codegen でやる予定」(PredIn/PredHas/CapFields/WAtomFlow) を明示マークする仕掛け
+- `ast.go:8` のパッケージ doc に `Unsupported string` フィールドの意図が書いてある — parser が受理した「これから codegen でやる予定」(PredIn/PredHas/CapFields) を明示マークする仕掛け
 - `value.go` — predicate 値の Sum 型 (`Int`, `V4 [4]byte`, `V6 [16]byte`, `MAC [6]byte`, `Prefix int` for CIDR)
 - (本ブランチで `xdp.go` は撤去 — XDP 知識は `codegen/caps.go::XDPActions` + `XDPFexitFetcher` に host-supplied 形で外出し)
 

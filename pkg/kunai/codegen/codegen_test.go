@@ -328,15 +328,6 @@ func TestGenArithDepthLimit(t *testing.T) {
 	}
 }
 
-func TestGenFlowAtomRejected(t *testing.T) {
-	p := ethIPv4TCPProgram()
-	p.Where = &ir.Condition{Kind: ast.WAtomFlow, FlowKind: "is_new", Unsupported: "flow state not yet implemented"}
-	_, err := Gen(p, Capabilities{})
-	if !errors.Is(err, ErrNotImplemented) {
-		t.Fatalf("err = %v; want ErrNotImplemented", err)
-	}
-}
-
 // --- Logical ops ---
 
 func actionAtom(v string) *ir.Condition {
@@ -426,16 +417,17 @@ func TestGenNestedLogicalOps(t *testing.T) {
 	}
 }
 
-func TestGenFlowInsideAndRejected(t *testing.T) {
+func TestGenUnsupportedInsideAndBubbles(t *testing.T) {
 	// Unsupported atoms buried in a logical op must still bubble up.
+	// Use a synthetic Unsupported marker rather than a real WhereKind
+	// so the test stays isolated from the live atom catalogue.
 	p := ethIPv4TCPProgram()
 	p.Where = &ir.Condition{
 		Kind: ast.WAnd,
 		Left: actionAtom("XDP_DROP"),
 		Right: &ir.Condition{
-			Kind:        ast.WAtomFlow,
-			FlowKind:    "is_new",
-			Unsupported: "flow state not yet implemented",
+			Kind:        ast.WAtomArith,
+			Unsupported: "synthetic unsupported atom for test",
 		},
 	}
 	_, err := Gen(p, xdpFexitCapsForTest())

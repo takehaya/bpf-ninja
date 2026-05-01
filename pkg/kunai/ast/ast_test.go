@@ -60,7 +60,6 @@ func TestKindStrings(t *testing.T) {
 		{WNot.String(), "not"},
 		{WAtomArith.String(), "arith"},
 		{WAtomAction.String(), "action"},
-		{WAtomFlow.String(), "flow"},
 		{PredCmp.String(), "cmp"},
 		{PredIn.String(), "in"},
 		{PredHas.String(), "has"},
@@ -170,10 +169,6 @@ func TestBuildWhereArith(t *testing.T) {
 // expected places. If either flag drifts to another type, codegen's
 // "not yet implemented" detection would break silently.
 func TestUnsupportedMarker(t *testing.T) {
-	w := &WhereExpr{Kind: WAtomFlow, FlowKind: "is_new", Unsupported: true}
-	if !w.Unsupported || w.Kind != WAtomFlow || w.FlowKind != "is_new" {
-		t.Fatalf("WhereExpr shape wrong: %+v", w)
-	}
 	c := &CaptureClause{
 		Kind: CapFields,
 		Fields: []*FieldPath{

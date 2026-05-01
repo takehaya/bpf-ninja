@@ -113,19 +113,37 @@ func withPos(err error, pos ast.Position) error {
 	return &PositionedError{Pos: pos, Wrapped: err}
 }
 
-// ErrNotImplemented is returned by Gen when a resolved program uses a
-// feature codegen does not yet emit. Current cases:
+// ErrNotImplemented is returned by Gen when a resolved program is
+// well-typed but the BPF emitter does not yet cover the required
+// shape. Two flavours coexist under this single error:
 //
-//   - dynamic aux header stack indices outside the static-fold path
-//     (fieldRefByteOffset),
-//   - TCP/IPv4 option lookups when a caller hits the static-fold path
-//     instead of the option-walk emitter,
-//   - non-byte-aligned or oversized fields (>8 bytes),
-//   - quantifier shapes the resolver let through but codegen has not
-//     wired up.
+//   1. Codegen staging declared by docs/ja/dsl-types.md §9.1 — the
+//      resolver accepts the program, but the spec deliberately
+//      defers the BPF expansion until follow-up work lands. Current
+//      staging cases:
+//        - Int<N> ordered comparison with N > 64 (F3 in
+//          dsl-followups.md): lexicographic cmp not yet wired up,
+//        - Int<128> arithmetic binary ops (+, -, *) (F4/F5):
+//          register-pair carry propagation not yet wired up.
+//      User-visible programs hitting this branch are spec-correct;
+//      they need a kernel build with the staged emitter, not an
+//      expression rewrite.
+//
+//   2. MVP gaps that the resolver structurally lets through but
+//      codegen has yet to plumb. Examples:
+//        - dynamic aux header stack indices outside the static-fold
+//          path (fieldRefByteOffset),
+//        - TCP / IPv4 option lookups reaching the static-fold path
+//          instead of the option-walk emitter,
+//        - non-byte-aligned or oversized primary fields (> 8 bytes),
+//        - quantifier shapes the resolver accepts but emit has not
+//          covered yet.
+//      These are codegen TODOs rather than spec'd staging.
 //
 // Callers can match it with errors.Is to distinguish "valid DSL,
-// codegen still to come" from other errors.
+// codegen still to come" from genuine type or vocabulary errors.
+// The wrapped reason in each call site identifies which flavour the
+// caller hit.
 var ErrNotImplemented = errors.New("dsl codegen is not yet fully implemented")
 
 // CaptureInfo summarises the compile-time capture configuration that
