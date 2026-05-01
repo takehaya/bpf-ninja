@@ -168,6 +168,29 @@ func (p *parser) tryParseIndexExpr() (*ast.IndexExpr, error) {
 		if err := p.advance(); err != nil {
 			return nil, err
 		}
+		if p.cur.Kind == lexer.TokColon {
+			// Bit-slice `[lo:hi]`: half-open range, lo inclusive /
+			// hi exclusive. Bit 0 is the network-order MSB, matching
+			// the IETF convention users expect when reading e.g.
+			// `ipv6.src[0:32]` as "the first 32 bits".
+			if err := p.advance(); err != nil {
+				return nil, err
+			}
+			if p.cur.Kind != lexer.TokInt {
+				return nil, p.errorf(p.cur.Pos, "expected slice end after ':' in `[lo:hi]`, got %s", p.cur.Kind)
+			}
+			hi := p.cur.Int
+			if err := p.advance(); err != nil {
+				return nil, err
+			}
+			if _, err := p.expect(lexer.TokRBracket); err != nil {
+				return nil, err
+			}
+			if hi <= v {
+				return nil, p.errorf(openPos, "bit-slice [%d:%d] requires lo < hi", v, hi)
+			}
+			return &ast.IndexExpr{IsSlice: true, SliceLo: v, SliceHi: hi, Pos: openPos}, nil
+		}
 		if _, err := p.expect(lexer.TokRBracket); err != nil {
 			return nil, err
 		}

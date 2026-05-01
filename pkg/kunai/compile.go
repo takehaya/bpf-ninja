@@ -49,7 +49,9 @@ func Compile(expr string, caps codegen.Capabilities) (codegen.Output, error) {
 	if err != nil {
 		return codegen.Output{}, err
 	}
-	prog, err := resolve.Resolve(f, v, caps.Action)
+	prog, err := resolve.ResolveWithOptions(f, v, caps.Action, resolve.Options{
+		StrictArithLint: caps.StrictArithLint,
+	})
 	if err != nil {
 		return codegen.Output{}, err
 	}

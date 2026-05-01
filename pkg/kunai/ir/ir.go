@@ -105,6 +105,49 @@ type FieldRef struct {
 	Layer *LayerInstance
 	Field *vocab.Field
 	Aux   *AuxRef // nil when Field is in the primary header
+
+	// Slice is non-nil for `field[lo:hi]` bit-slice references. When
+	// set, downstream codegen narrows the field load to the slice's
+	// byte range and the effective width becomes Hi - Lo bits.
+	Slice *FieldSlice
+}
+
+// FieldSlice represents a half-open bit range [Lo, Hi) on the
+// referenced field. Bit 0 is the network-order MSB so users reading
+// e.g. `ipv6.src[0:32]` as "the first 32 bits" get the natural IETF
+// convention. The MVP requires both endpoints byte-aligned (Lo % 8
+// == 0 and Hi % 8 == 0); non-aligned slices follow up under F11.
+type FieldSlice struct {
+	Lo int // bit position, inclusive
+	Hi int // bit position, exclusive
+}
+
+// Bits returns the slice's effective width.
+func (s *FieldSlice) Bits() int {
+	if s == nil {
+		return 0
+	}
+	return s.Hi - s.Lo
+}
+
+// EffectiveBits returns the number of bits a field reference yields
+// after applying any bit-slice. Used by the typing pass and codegen
+// instead of reading FieldRef.Field.Bits directly so slice-narrowed
+// references behave consistently.
+func (r *FieldRef) EffectiveBits() int {
+	if r == nil {
+		return 0
+	}
+	if r.Slice != nil {
+		return r.Slice.Bits()
+	}
+	if r.Aux != nil {
+		return r.Aux.FieldBitWidth
+	}
+	if r.Field != nil {
+		return r.Field.Bits
+	}
+	return 0
 }
 
 // AuxRef captures the metadata predicate codegen needs to read an

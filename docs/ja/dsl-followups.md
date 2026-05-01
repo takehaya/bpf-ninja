@@ -261,81 +261,41 @@ chain decomposition (= `srv6/srv6_seg+/...` のように segments を独立 chai
 
 [`dsl-types.md`](./dsl-types.md) で定義された型仕様の **段階展開** および **拡張**項目。型仕様自体は uniform に書かれているので、ここの実装が遅れても "型 OK / codegen ErrNotImplemented" の状態で安全。
 
-### F1. Overflow lint mode
+### F1. Overflow lint mode ✅ 完了
 
-**動機**: `dsl-types.md §6.1` で算術結果は `Int<max(N,M)>` mod 2^max とした (silent wrap)。これは BPF 実装と素直だが、`tcp.dport + 1 > 65530` のような式が dport=65535 のとき wrap して 0 になり、意図せず常に false 化する罠がある。
+`resolve.Options.StrictArithLint` opt-in pass として実装 (`resolve/typing.go::lintArithCondition`、`codegen.Capabilities.StrictArithLint` 経由で host が選択)。検出パターンは保守的: `field + field` / `field * field` の overflow、`field - field` で RHS ≥ LHS の underflow を error 化。`field + const` などの一般パターンは false-positive を避けるため pass。
 
-**スコープ**: resolver の typing pass 後に lint pass を追加し、以下のパターンを検出して warning:
-- 両 operand が full-width に近い (range 解析できれば)
-- `e1 - e2` で e2 width ≥ e1 width (underflow 注意)
+### F2. 明示 cast 構文 ⏸ negative spec
 
-**工数**: 1-2 日 (range 解析の精度次第)。
+`dsl-types.md §5.5` で「**入れない**」と決定。F1 が landed したので overflow ケアの代替も既に提供済。需要が出たら再検討する保留枠として残置。
 
-### F2. 明示 cast 構文
+### F3. `Int<128>` ordered cmp の codegen ✅ 完了 (bracket predicate)
 
-**動機**: F1 の overflow ケアの代替として `(bit<32>) tcp.dport + (bit<32>) tcp.window` で precision-preserving 演算を opt-in 可能にしたい場面がある。
+`emitIPv6OrderedCmp` で lexicographic compare (high-half 決定 + low-half fall-through) を実装。bracket predicate 経路 (`ipv6[dst < fe80::ffff]`) で動作。where-arith 経路 (`where ipv6.src < ipv6.dst`) はまだ staged — 必要なら register-pair lex cmp の追加で landing 可能。
 
-**スコープ**: parser に `(bit<N>) <expr>` を追加、resolver で widening を発火、codegen で field load size を上書き。
+### F4. `Int<128>` arith binop (`+`, `-`) の codegen ✅ partial 完了
 
-**工数**: 2 日。
+`genArithCompare128` / `genArith128` で `field == field` と `field op const == field` (op ∈ {+, -}) を実装。register-pair carry/borrow 伝播 (~5 命令)。`field + field`、ordered cmp on Int<128> in where はまだ staged。
 
-### F3. `Int<128>` ordered cmp の codegen
+### F5. `Int<128>` arith binop (`*`) の codegen ❌ 廃止
 
-**動機**: `dsl-types.md §9.1` のとおり、64 < N ≤ 128 の ordered cmp (`<`, `>`, `≤`, `≥`) は型 OK だが codegen 未実装。`ipv6.src < ipv6.dst` のような IPv6 ordered cmp が要望されたら解禁。
+scope outside と判断。F11 bit-slice (`field[lo:hi]`) で「128bit 同士の比較 / prefix 抽出」を可能にしたため、ipv6 同士の乗算は実用 scenario が見当たらない。bit-slice の方が prefix/suffix 比較で広く使えるため。
 
-**スコープ**: lexicographic cmp (high half cmp → equal なら low half cmp) を `predicate.go` / `where.go` に追加。`==`/`!=` の dual-load 経路を流用。
+### F6. bitwise op (`&`, `|`, `^`, `<<`, `>>`) ✅ 完了
 
-**工数**: 1 日 + verifier テスト。
+`&` `<<` `>>` は mul/div 級 precedence、`|` `^` は add/sub 級。parser+AST+resolver+codegen 全 layer を network filter 用 idiom (`tcp.flags & 0x12 == 0x12`、`tcp.dport >> 4 == 0` 等) で landing。
 
-### F4. `Int<128>` arith binop (`+`, `-`) の codegen
+### F7. `field in [v1, v2, ...]` 実装 ✅ partial 完了
 
-**動機**: `ipv6.src + 1` のような IPv6 加減算。
+`emitInPredicate` で **整数 alternatives** (`tcp[dport in [80, 443, 8080, 8443]]`) を OR-chain emit。IPv4 / IPv6 / MAC / CIDR alternatives は MVP scope outside (それぞれ専用 multi-word emit が必要、需要が出たら)。
 
-**スコープ**: register pair (high R3, low R5) + carry 伝播 (~5 命令)。stack slot を 16-byte に拡張。
+### F8. `field has FLAG` 実装 ✅ F6 で superseded
 
-**工数**: 2 日。
+F6 の bitwise `&` で `tcp.flags & 0x12 == 0x12` と書けるようになり、専用 emit は不要。vocab 著者が flag 定数を declare するかどうかは vocab 設計の自由。
 
-### F5. `Int<128>` arith binop (`*`) の codegen
+### F10. `Bool == Bool` の precision-preserving codegen ✅ 完了
 
-**動機**: 128bit 乗算。実用シーン極めて稀だが、型仕様上は許される。
-
-**スコープ**: 4 つの 64×64 mul + シフト + キャリー合成 (~20 命令)。
-
-**工数**: 2-3 日。
-
-### F6. bitwise op (`&`, `|`, `^`, `<<`, `>>`)
-
-**動機**: TCP flag check (`tcp.flags & 0x12 == 0x12`)、subnet mask 計算など。
-
-**スコープ**: parser に bitwise op を追加、type system で `Int<N>` × `Int<N>` → `Int<N>`。shift は RHS が `Int<8>` 程度。
-
-**工数**: 2-3 日。
-
-### F7. `field in [v1, v2, ...]` 実装 (P2-8 の再掲)
-
-**動機**: 既存 dead syntax の有効化。OR-chain 構文糖。
-
-**実装方針**: codegen で `==` の OR 連鎖に展開 (MVP)。型は `Int<N> in [v1, v2, ...]` で各 `vᵢ` が `Int<N>` に narrow + fit check。
-
-**工数**: 0.5-1 日。
-
-### F8. `field has FLAG` 実装 (P2-9 の再掲)
-
-**動機**: bitmask 比較。
-
-**実装方針**: vocab に flag bit 定数 (`const bit<N> TCP_FLAG_SYN = 0x002;`) を declare、codegen で `field & mask != 0` を emit。F6 (bitwise op) で代替可能。
-
-**工数**: 1 日。
-
-### F10. `Bool == Bool` の precision-preserving codegen
-
-**動機**: 現実装は iff/xor を `(a and b) or (not a and not b)` / `(a and not b) or (not a and b)` に desugar している (`codegen/where.go::desugarBoolEq`)。意味的には正しいが、operand ポインタを共有して使い回すため、`(tcp.dport == 443) == gtp.opt.exists` のような式は **dport 読み + opt.gating を 2 回 emit** する。verifier はそれを実行可能なまま保ち、per-packet で 2 回評価される。
-
-**スコープ**: 各 operand を「成功時 R3=1 / 失敗時 R3=0」のシーケンスで評価して register に固定し、両者を XOR/EQ で比較する codegen を追加。これにより operand を 1 回ずつしか評価しない。
-
-**工数**: 1 日。`evaluateAsBool(w *ir.Condition) → asm.Instructions (R3 ∈ {0,1})` ヘルパを書き、`genBoolEq` から `desugarBoolEq` 経由ではなくこの helper を 2 回呼んで R3 と R5 を比較する形に切り替える。`genBoolLit` も `where true/false` を Bool 値として返せるように整える。
-
-**インパクト**: per-packet で各 operand 1 回評価に減る。ただし現実の式は短いので絶対量は小さい (few BPF instructions/iteration)。実用上の必要性が出てから優先度を上げる候補。
+`genConditionAsBool` で各 operand を {0, 1} に評価して register に置き、scratch slot 経由で比較する形に置き換え。per-packet operand 評価が 1 回ずつになり、`(tcp.dport == 443) == gtp.opt.exists` のような式の dport 読みや gating が 1 回しか走らない。
 
 ### F9. `flow.*` dead syntax 削除 ✅ 完了
 
@@ -350,6 +310,18 @@ chain decomposition (= `srv6/srv6_seg+/...` のように segments を独立 chai
 - 関連 test (parser_test / resolve_test / ast_test / codegen_test) を全削除 or 入れ替え
 
 これで「`flow.is_new` を書くと parser が単に `flow` を未知の識別子として扱う」状態になり、エラーは「`flow` という protocol が見つからない」系の通常 path に乗る。dead syntax の影響範囲が完全に消えた。
+
+### F11. bit-slice `field[lo:hi]` MVP ✅ 完了
+
+`dsl-types.md §3.4` で構文・意味・実装制限を導入。lexer (`TokColon`) + parser (`tryParseIndexExpr` の slice 分岐) + AST (`IndexExpr.IsSlice` / SliceLo / SliceHi) + IR (`FieldRef.Slice` + `EffectiveBits()`) + resolver (`detachTrailingSlice` / `attachSlice`) + codegen (`applySliceToOffset` + `slicePostAdjust` + `emitSliceShiftMask`) の全 layer を landed。bracket predicate / where-arith 双方で使用可能。
+
+### F12. bit-slice mid-width cmp (`(64, 128]` 範囲) ✅ 完了
+
+`tryDesugarMultiLDXSliceCmp` で resolver に desugar pass を追加。`splitSliceIntoLDXChunks` が greedy に 8 / 4 / 2 / 1 byte chunks に分解し、各 chunk が単一 LDX cmp として AND-chain (`==`) / OR-chain (`!=`) で連結される。`[0:96]` → `[0:64]` AND `[64:96]` のように展開。
+
+### F13. bit-slice non-aligned 端点 ✅ 完了 (≤ 64bit 範囲)
+
+`emitSliceShiftMask` で post-load shift+mask emit を追加。codegen が `pow2 ≥ cover` バイトを LDX し、bswap → shift → mask の順で slice bits を抽出。`tcp.dport[3:9]` のような sub-byte 範囲が動く。`> 64bit` の non-aligned slice は依然 staged (cross-byte の AND-chain × shift+mask の組み合わせ実装になる)。
 
 ## P4: 大物 (スコープ要再検討)
 
@@ -441,13 +413,19 @@ P5-16 target 抽象化        (feat/p4_based_dsl: Capabilities + host/xdp + ABI 
 F9    flow.* 削除           dead syntax を削除して parser/ast/ir/resolve からも完全除去
 ```
 
+**完了 (型システム PR で対応済)**:
+
+```
+P2-8  field in              ✅ F7 で landed (整数 alternatives)
+P2-9  field has             ✅ F6 bitwise & で superseded (`tcp.flags & 0x12 == 0x12`)
+B-1   .exists bool atom     ✅ 型システム PR-2 で対応 (where 句直接記述)
+F1-F13                       ✅ 上記 §F1-F13 を参照
+```
+
 **未着手 (需要次第)**:
 
 ```
-P2-8  field in              `where ... in [v1, v2]` の codegen
-P2-9  field has             `tcp.flags has SYN` bitmask 比較
 P2-10 算術ネスト 4+
-B-1   .exists bool atom     ✅ 型システム PR-2 で対応 (where 句直接記述)
 B-2   IPv4 options vocab    PR-D 枠組みで Router Alert 等を declare
 B-3   aux field × literal   IPv4/IPv6/MAC/CIDR literal の aux access
 B-4   option 内部 array     SACK.blocks / RR.addrs (Schema C)

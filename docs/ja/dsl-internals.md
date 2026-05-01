@@ -691,27 +691,19 @@ parser TcpFragment(packet_in pkt,
             default: parse_options;
         }
     }
-    state parse_options {
-        transition select(pkt.lookahead<bit<8>>()) {
-            0:       accept;                    // EOL terminator
-            1:       parse_nop;                 // NOP padding (1 byte)
-            2:       parse_mss;
-            3:       parse_ws;
-            4:       parse_sack_perm;
-            8:       parse_ts;
-            default: parse_skip;                // unknown: length-byte advance
-        }
-    }
-    state parse_mss        { pkt.extract(mss);       transition parse_options; }
-    state parse_ws         { pkt.extract(ws);        transition parse_options; }
-    state parse_sack_perm  { pkt.extract(sack_perm); transition parse_options; }
-    state parse_ts         { pkt.extract(ts);        transition parse_options; }
-    state parse_nop        { /* 1 byte 進めて parse_options に戻る */ }
-    state parse_skip       { /* byte 1 (length) 分進めて parse_options に戻る */ }
+    /* 注: 上記 select は概念図。p4lite が公式 P4-16 から外している
+       lookahead<>() を使った疑似コードで、実際の vocab には書けない。
+       実装は別経路で TCP option を扱う (下の "実装上の対応" 参照)。 */
 }
 ```
 
-各 option は wire 上 0 or 1 回出現する想定 (典型的な実 TCP frame と一致)。同 kind が複数現れる malformed packet は最後の値で上書き、または header stack 化 (Phase 2) で全件保持。
+**実装上の対応**: 上の parser block は `pkt.lookahead<bit<8>>()` を select 鍵に取っているが、これは p4lite が**サポートしない** (P4-16 の `lookahead` は subset から除外、§5 参照)。代わりに kunai は **option-walk emitter** (`pkg/kunai/codegen/options.go`) という専用 codegen を持つ:
+
+- vocab 側の declaration は `const bit<8> OPT_<NAME>_KIND = ...` および `const bit<8> OPT_<NAME>_LEN = ...` (kind/length 定数のペア) を `tcp.p4` に並べるだけ
+- resolver が `tcp.options.MSS.value` のような field path に出会うと、option-walk 経路に dispatch
+- codegen が「options 領域 (= header の data_offset 越え末尾) を `bpf_loop` で walk して、kind が一致したら value を取り出す」命令列を emit
+
+つまり vocab に `parser_machine` を書く必要はなく、`OPT_*` 定数だけで自動生成される。各 option は wire 上 0 or 1 回出現する想定 (典型的な TCP frame と一致)。同 kind が複数現れる malformed packet は最後の値で上書き。
 
 ### 6.6 DSL access の体系
 

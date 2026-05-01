@@ -117,47 +117,78 @@ func (c *whereCtx) genBoolExists(w *ir.Condition, failLabel string) (asm.Instruc
 }
 
 // genBoolEq handles `Bool == Bool` (iff) and `Bool != Bool` (xor)
-// by desugaring into existing and/or/not primitives. The desugar
-// shares operand pointers between branches, so `(a == b) == (c == d)`
-// emits the inner cmps twice in the linearised BPF stream — verifier
-// keeps both copies. A precision-preserving codegen that materialises
-// each operand once into a register and compares the two truth values
-// is feasible but requires a new "evaluate to {0,1}" emit path; that
-// follow-up is tracked separately.
+// by materialising each operand once as a {0, 1} truth value in a
+// register, saving the LHS to a scratch slot, then comparing the
+// two. This avoids the per-packet 2× evaluation that the older
+// and/or/not desugar produced (F10).
 func (c *whereCtx) genBoolEq(w *ir.Condition, failLabel string) (asm.Instructions, error) {
 	if w == nil || w.BoolL == nil || w.BoolR == nil {
 		return nil, fmt.Errorf("codegen: bool-eq lacks operands")
 	}
-	rewritten, err := desugarBoolEq(w)
+	leftInsns, err := c.genConditionAsBool(w.BoolL)
 	if err != nil {
 		return nil, err
 	}
-	return c.gen(rewritten, failLabel)
-}
-
-// desugarBoolEq rewrites a WAtomBoolEq node into an equivalent
-// WAnd / WOr / WNot tree, leaving the operand subtrees intact.
-//
-//	iff(a, b)  =  (a and b) or (not a and not b)
-//	xor(a, b)  =  (a and not b) or (not a and b)
-func desugarBoolEq(w *ir.Condition) (*ir.Condition, error) {
-	a, b := w.BoolL, w.BoolR
-	notA := &ir.Condition{Kind: ast.WNot, Inner: a, Pos: w.Pos}
-	notB := &ir.Condition{Kind: ast.WNot, Inner: b, Pos: w.Pos}
+	rightInsns, err := c.genConditionAsBool(w.BoolR)
+	if err != nil {
+		return nil, err
+	}
+	var jumpOp asm.JumpOp
 	switch w.BoolEqOp {
 	case ast.CmpEq:
-		// (a and b) or (not a and not b)
-		left := &ir.Condition{Kind: ast.WAnd, Left: a, Right: b, Pos: w.Pos}
-		right := &ir.Condition{Kind: ast.WAnd, Left: notA, Right: notB, Pos: w.Pos}
-		return &ir.Condition{Kind: ast.WOr, Left: left, Right: right, Pos: w.Pos}, nil
+		// fail when sides differ
+		jumpOp = asm.JNE
 	case ast.CmpNeq:
-		// (a and not b) or (not a and b)
-		left := &ir.Condition{Kind: ast.WAnd, Left: a, Right: notB, Pos: w.Pos}
-		right := &ir.Condition{Kind: ast.WAnd, Left: notA, Right: b, Pos: w.Pos}
-		return &ir.Condition{Kind: ast.WOr, Left: left, Right: right, Pos: w.Pos}, nil
+		// fail when sides agree
+		jumpOp = asm.JEq
+	default:
+		return nil, fmt.Errorf("codegen: bool-eq with op %v not supported", w.BoolEqOp)
 	}
-	return nil, fmt.Errorf("codegen: bool-eq with op %v not supported", w.BoolEqOp)
+	// Reuse the arith scratch slot 0; bool-eq doesn't nest with
+	// arith binops in the resolved IR (parser produces them as
+	// disjoint subtrees), so the slot is free at this point.
+	slot := arithStackSlot(0)
+	var insns asm.Instructions
+	insns = append(insns, leftInsns...)
+	insns = append(insns, asm.StoreMem(asm.R10, slot, asm.R3, asm.DWord))
+	insns = append(insns, rightInsns...)
+	insns = append(insns, asm.LoadMem(asm.R5, asm.R10, slot, asm.DWord))
+	insns = append(insns, jumpOp.Reg(asm.R5, asm.R3, failLabel))
+	return insns, nil
 }
+
+// genConditionAsBool evaluates cond once and leaves R3 ∈ {0, 1}
+// reflecting whether cond was true. Internally:
+//
+//   inner emit (jump to `falsyLabel` on miss)
+//   R3 = 1
+//   Ja done
+//   falsyLabel: R3 = 0
+//   done:
+//
+// Used by genBoolEq so each operand of a Bool == Bool comparison is
+// emitted exactly once.
+func (c *whereCtx) genConditionAsBool(cond *ir.Condition) (asm.Instructions, error) {
+	falsyLabel := c.freshLabel("bool_zero")
+	doneLabel := c.freshLabel("bool_done")
+	inner, err := c.gen(cond, falsyLabel)
+	if err != nil {
+		return nil, err
+	}
+	var insns asm.Instructions
+	insns = append(insns, inner...)
+	insns = append(insns, asm.Mov.Imm(asm.R3, 1))
+	insns = append(insns, asm.Ja.Label(doneLabel))
+	insns = append(insns, asm.Mov.Imm(asm.R3, 0).WithSymbol(falsyLabel))
+	insns = append(insns, landingNoop(doneLabel))
+	return insns, nil
+}
+
+// (Earlier revisions desugared WAtomBoolEq into and/or/not via a
+// helper; the precision-preserving genConditionAsBool path above
+// replaces it. The algebraic form for reference:
+//   iff(a, b) = (a and b) or (not a and not b)
+//   xor(a, b) = (a and not b) or (not a and b))
 
 // genAny emits a static-unroll over the quantifier's iteration
 // target. Each iteration substitutes the iterator FieldRef with a
@@ -548,24 +579,15 @@ func arithCmpTargetBits(l, r *ir.ArithExpr) int {
 }
 
 // arithMaxFieldBits walks an arith subtree and returns the largest
-// declared bit width of any field reference encountered. Returns 0
-// if the subtree is pure-literal.
+// effective bit width of any field reference encountered (slice-
+// adjusted). Returns 0 if the subtree is pure-literal.
 func arithMaxFieldBits(e *ir.ArithExpr) int {
 	if e == nil {
 		return 0
 	}
 	switch e.Kind {
 	case ast.ArithField:
-		if e.Field == nil {
-			return 0
-		}
-		if e.Field.Aux != nil {
-			return e.Field.Aux.FieldBitWidth
-		}
-		if e.Field.Field != nil {
-			return e.Field.Field.Bits
-		}
-		return 0
+		return e.Field.EffectiveBits()
 	case ast.ArithBinOp:
 		l := arithMaxFieldBits(e.Left)
 		r := arithMaxFieldBits(e.Right)
@@ -587,6 +609,9 @@ func (c *whereCtx) genArithCompare(w *ir.Condition, failLabel string) (asm.Instr
 	// stores the constant as 0xffff..ff and trips the immediate
 	// range check; the spec wants it narrowed to bit<16> = 0xffff.
 	targetBits := arithCmpTargetBits(w.ArithL, w.ArithR)
+	if targetBits > 64 {
+		return c.genArithCompare128(w, failLabel, targetBits)
+	}
 	left, err := c.genArithWithBits(w.ArithL, 0, targetBits)
 	if err != nil {
 		return nil, err
@@ -607,6 +632,165 @@ func (c *whereCtx) genArithCompare(w *ir.Condition, failLabel string) (asm.Instr
 	insns = append(insns, right...)
 	insns = append(insns, asm.LoadMem(asm.R5, asm.R10, slot, asm.DWord))
 	insns = append(insns, jumpOp.Reg(asm.R5, asm.R3, failLabel))
+	return insns, nil
+}
+
+// genArithCompare128 handles where-arith comparisons whose effective
+// width is > 64 bits — i.e. an Int<128> (= IPv6 address) reaches the
+// arith path. The 64-bit pipeline can't load these in one shot, so
+// we emit a register-pair pipeline where each side leaves
+// R3 = high half, R5 = low half. Currently only `==` / `!=` are
+// supported (F4); ordered cmp on Int<128> in the where path stays
+// staged via F3's bracket-predicate-only completion. Operand shapes
+// supported: ArithField (an Int<128> field), and `field + const` /
+// `field - const` with the const treated as zero-extended Int<128>
+// (its high half is 0). Anything more elaborate (field + field,
+// nested binops, multiplication) returns ErrNotImplemented.
+func (c *whereCtx) genArithCompare128(w *ir.Condition, failLabel string, targetBits int) (asm.Instructions, error) {
+	if w.Op != ast.CmpEq && w.Op != ast.CmpNeq {
+		return nil, fmt.Errorf("%w: ordered cmp on bit<%d> in where-arith is staged (dsl-types.md §9.1, F3 where-arith slice)", ErrNotImplemented, targetBits)
+	}
+	// Mid-width slice cmps (widths in (64, 128) other than exactly
+	// 128) are desugared in the resolver into chains of single-LDX
+	// sub-cmps, so we should only see `targetBits == 128` here. A
+	// width that slipped past the desugar is either an arith binop
+	// (operand width > 64) or a non-slice 128-bit field — both go
+	// through the dual-LDX pipeline below.
+	if targetBits != 128 {
+		return nil, fmt.Errorf("%w: bit<%d> arith cmp in where-path needs a mid-width pipeline that hasn't been wired (resolver should have desugared this; see tryDesugarMultiLDXSliceCmp)", ErrNotImplemented, targetBits)
+	}
+	leftInsns, err := c.genArith128(w.ArithL)
+	if err != nil {
+		return nil, err
+	}
+	rightInsns, err := c.genArith128(w.ArithR)
+	if err != nil {
+		return nil, err
+	}
+	// Save LHS pair to two scratch slots, then evaluate RHS, then
+	// reload LHS into R8/R9 for the dual JEq/JNE.
+	highSlot := arithStackSlot(0)
+	lowSlot := arithStackSlot(1)
+	var insns asm.Instructions
+	insns = append(insns, leftInsns...)
+	insns = append(insns, asm.StoreMem(asm.R10, highSlot, asm.R3, asm.DWord))
+	insns = append(insns, asm.StoreMem(asm.R10, lowSlot, asm.R5, asm.DWord))
+	insns = append(insns, rightInsns...)
+	insns = append(insns, asm.LoadMem(asm.R8, asm.R10, highSlot, asm.DWord))
+	insns = append(insns, asm.LoadMem(asm.R9, asm.R10, lowSlot, asm.DWord))
+	switch w.Op {
+	case ast.CmpEq:
+		// Both halves must match. Failing either jumps to failLabel.
+		insns = append(insns, asm.JNE.Reg(asm.R8, asm.R3, failLabel))
+		insns = append(insns, asm.JNE.Reg(asm.R9, asm.R5, failLabel))
+	case ast.CmpNeq:
+		// Match (= no jump) when at least one half differs. We use a
+		// per-cmp landing so the first-half mismatch can short-circuit
+		// past the second-half check.
+		matchLabel := c.freshLabel("ne128_match")
+		insns = append(insns, asm.JNE.Reg(asm.R8, asm.R3, matchLabel))
+		insns = append(insns, asm.JEq.Reg(asm.R9, asm.R5, failLabel))
+		insns = append(insns, landingNoop(matchLabel))
+	}
+	return insns, nil
+}
+
+// genArith128 emits insns that leave R3=high and R5=low of an Int<128>
+// arith expression. Supported shapes are restricted (see
+// genArithCompare128); other shapes return ErrNotImplemented. The
+// const RHS in `field + const` carries through low-half ALU only,
+// with carry / borrow propagated to high.
+func (c *whereCtx) genArith128(e *ir.ArithExpr) (asm.Instructions, error) {
+	if e == nil {
+		return nil, fmt.Errorf("codegen: nil 128-bit arith expression")
+	}
+	switch e.Kind {
+	case ast.ArithField:
+		return c.genArithField128Load(e.Field)
+	case ast.ArithBinOp:
+		if e.Op != ast.ArithAdd && e.Op != ast.ArithSub {
+			return nil, fmt.Errorf("%w: bit<128> arith binop %s is staged (F5)", ErrNotImplemented, e.Op)
+		}
+		if e.Right == nil || e.Right.Kind != ast.ArithConst {
+			return nil, fmt.Errorf("%w: bit<128> arith binop currently supports only `field op const`", ErrNotImplemented)
+		}
+		leftInsns, err := c.genArith128(e.Left)
+		if err != nil {
+			return nil, err
+		}
+		// Apply the const RHS to low (R5), propagate carry/borrow to high (R3).
+		var insns asm.Instructions
+		insns = append(insns, leftInsns...)
+		// Save original low to R6 so we can detect wrap by comparing
+		// the post-op value back to it.
+		insns = append(insns, asm.Mov.Reg(asm.R6, asm.R5))
+		imm := e.Right.Const
+		if imm > 0x7FFFFFFF {
+			return nil, fmt.Errorf("%w: bit<128> arith const exceeds int32 immediate range", ErrNotImplemented)
+		}
+		switch e.Op {
+		case ast.ArithAdd:
+			// R5 += imm. Carry iff new R5 < orig R5.
+			insns = append(insns, asm.Add.Imm(asm.R5, int32(imm)))
+			noCarry := c.freshLabel("v128_nocarry")
+			insns = append(insns, asm.JGE.Reg(asm.R5, asm.R6, noCarry))
+			insns = append(insns, asm.Add.Imm(asm.R3, 1))
+			insns = append(insns, landingNoop(noCarry))
+		case ast.ArithSub:
+			// R5 -= imm. Borrow iff new R5 > orig R5.
+			insns = append(insns, asm.Sub.Imm(asm.R5, int32(imm)))
+			noBorrow := c.freshLabel("v128_noborrow")
+			insns = append(insns, asm.JLE.Reg(asm.R5, asm.R6, noBorrow))
+			insns = append(insns, asm.Sub.Imm(asm.R3, 1))
+			insns = append(insns, landingNoop(noBorrow))
+		}
+		return insns, nil
+	case ast.ArithConst:
+		// Const-only arith expression at width > 64 is unusual but
+		// we materialise it as (0, const). The const has been
+		// resolver-narrowed to int32 territory upstream.
+		return asm.Instructions{
+			asm.Mov.Imm(asm.R3, 0),
+			asm.Mov.Imm(asm.R5, int32(e.Const)),
+		}, nil
+	}
+	return nil, fmt.Errorf("%w: bit<128> arith expression kind %v not supported", ErrNotImplemented, e.Kind)
+}
+
+// genArithField128Load loads a 128-bit field into (R3=high, R5=low).
+// The two LDX-DWord loads are followed by HostTo BE swaps so each
+// half holds host-native ordering — the common shape for cmp and
+// arith on IPv6 addresses (which the user reads as numeric ranges).
+func (c *whereCtx) genArithField128Load(f *ir.FieldRef) (asm.Instructions, error) {
+	if f == nil || f.Field == nil {
+		return nil, fmt.Errorf("codegen: bit<128> field load with nil ref")
+	}
+	if f.Aux != nil {
+		return nil, fmt.Errorf("%w: bit<128> arith on aux field is not yet wired", ErrNotImplemented)
+	}
+	if f.Field.Bits != 128 {
+		return nil, fmt.Errorf("codegen: bit<128> path called with %d-bit field", f.Field.Bits)
+	}
+	absOff, err := c.layerOffset(f.Layer)
+	if err != nil {
+		return nil, err
+	}
+	bitOff, _, err := findFieldByteOffset128(f.Layer.Spec, f.Field.Name)
+	if err != nil {
+		return nil, err
+	}
+	fieldOff := absOff + bitOff
+	var insns asm.Instructions
+	// High half load → R3, then bswap.
+	insns = append(insns, loadFromOffset(int16(fieldOff), asm.DWord)...)
+	insns = append(insns, asm.HostTo(asm.BE, asm.R3, asm.DWord))
+	// Stash high to R7 so the low-half load doesn't clobber it.
+	insns = append(insns, asm.Mov.Reg(asm.R7, asm.R3))
+	insns = append(insns, loadFromOffset(int16(fieldOff+8), asm.DWord)...)
+	insns = append(insns, asm.HostTo(asm.BE, asm.R3, asm.DWord))
+	// Move low to R5 and restore high to R3.
+	insns = append(insns, asm.Mov.Reg(asm.R5, asm.R3))
+	insns = append(insns, asm.Mov.Reg(asm.R3, asm.R7))
 	return insns, nil
 }
 
@@ -699,7 +883,32 @@ func (c *whereCtx) genArithFieldLoad(f *ir.FieldRef) (asm.Instructions, error) {
 	if fieldBytes > 1 {
 		insns = append(insns, asm.HostTo(asm.BE, asm.R3, size))
 	}
+	insns = append(insns, emitSliceShiftMask(f, fieldBytes)...)
 	return insns, nil
+}
+
+// emitSliceShiftMask returns the post-load shift + AND instructions
+// that narrow R3 down to the slice's actual bits when the slice is
+// non-byte-aligned (or otherwise smaller than the load). Returns
+// empty when no adjustment is needed.
+func emitSliceShiftMask(f *ir.FieldRef, loadBytes int) asm.Instructions {
+	shift, mask := slicePostAdjust(f, loadBytes)
+	if shift == 0 && mask == 0 {
+		return nil
+	}
+	var insns asm.Instructions
+	if shift > 0 {
+		insns = append(insns, asm.RSh.Imm(asm.R3, int32(shift)))
+	}
+	if mask != 0 && mask != ^uint64(0) {
+		if mask <= 0x7FFFFFFF {
+			insns = append(insns, asm.And.Imm(asm.R3, int32(mask)))
+		} else {
+			insns = append(insns, asm.LoadImm(asm.R5, int64(mask), asm.DWord))
+			insns = append(insns, asm.And.Reg(asm.R3, asm.R5))
+		}
+	}
+	return insns
 }
 
 // genArithBinOp evaluates left, saves R3 to a depth-indexed stack
@@ -746,6 +955,16 @@ func arithALUOp(op ast.ArithOp) (asm.ALUOp, error) {
 		return asm.Div, nil
 	case ast.ArithMod:
 		return asm.Mod, nil
+	case ast.ArithAnd:
+		return asm.And, nil
+	case ast.ArithOr:
+		return asm.Or, nil
+	case ast.ArithXor:
+		return asm.Xor, nil
+	case ast.ArithShl:
+		return asm.LSh, nil
+	case ast.ArithShr:
+		return asm.RSh, nil
 	}
 	return 0, fmt.Errorf("codegen: unknown arith op %v", op)
 }
@@ -820,6 +1039,9 @@ func genActionAtom(w *ir.Condition, caps Capabilities, failLabel string) (asm.In
 //     which leaves R5 = element start so subsequent LDX use
 //     R5-relative offsets instead of R0-relative.
 func (c *whereCtx) genLiteralCompare(w *ir.Condition, failLabel string) (asm.Instructions, error) {
+	if w == nil || w.LiteralField == nil || w.LiteralField.Layer == nil {
+		return nil, fmt.Errorf("codegen: WAtomLiteralCmp condition missing field reference")
+	}
 	ref := w.LiteralField
 	jumpOp, ok := ipEqualityJumpOp(w.LiteralOp)
 	if !ok {

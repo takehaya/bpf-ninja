@@ -25,6 +25,19 @@ func (r *resolver) resolveBracketPredicate(ap *ast.Predicate, layer *ir.LayerIns
 			return nil, err
 		}
 	}
+	if ap.Kind == ast.PredIn {
+		if len(ap.List) == 0 {
+			return nil, errorf(ap.Pos, "'in' predicate needs at least one alternative")
+		}
+		// Each alternative narrows independently against the same
+		// field — apply the bracket fit-check per element so
+		// out-of-range values surface here, not at codegen time.
+		for _, v := range ap.List {
+			if err := checkBracketIntFit(field, v, layer.Spec.Name, ap.Pos); err != nil {
+				return nil, err
+			}
+		}
+	}
 	rp := &ir.Predicate{
 		Kind:     ap.Kind,
 		Field:    field,
@@ -34,10 +47,7 @@ func (r *resolver) resolveBracketPredicate(ap *ast.Predicate, layer *ir.LayerIns
 		FlagName: ap.FlagName,
 		Pos:      ap.Pos,
 	}
-	switch ap.Kind {
-	case ast.PredIn:
-		rp.Unsupported = "'in' predicate not yet implemented"
-	case ast.PredHas:
+	if ap.Kind == ast.PredHas {
 		rp.Unsupported = "'has' predicate not yet implemented"
 	}
 	return rp, nil
@@ -53,6 +63,14 @@ func resolveUnqualifiedField(fp *ast.FieldPath, layer *ir.LayerInstance) (*ir.Fi
 	if fp == nil || len(fp.Parts) == 0 {
 		return nil, errorf(ast.Position{}, "empty field path")
 	}
+	// Detach a trailing bit-slice so the existing dispatch can run on
+	// the un-sliced path; reattach to the resolved FieldRef before
+	// returning.
+	fp, slice, err := detachTrailingSlice(fp)
+	if err != nil {
+		return nil, err
+	}
+	var ref *ir.FieldRef
 	switch len(fp.Parts) {
 	case 1:
 		name := fp.Parts[0]
@@ -60,10 +78,19 @@ func resolveUnqualifiedField(fp *ast.FieldPath, layer *ir.LayerInstance) (*ir.Fi
 		if !ok {
 			return nil, errorf(fp.Pos, "protocol %q has no field %q", layer.Spec.Name, name)
 		}
-		return &ir.FieldRef{Layer: layer, Field: f}, nil
+		ref = &ir.FieldRef{Layer: layer, Field: f}
 	case 2:
-		return resolveAuxField(layer, fp.Parts[0], fp.Parts[1], fp)
+		ref, err = resolveAuxField(layer, fp.Parts[0], fp.Parts[1], fp)
+		if err != nil {
+			return nil, err
+		}
 	default:
 		return nil, errorf(fp.Pos, "nested field access %q is not supported inside a predicate", fp.String())
 	}
+	if slice != nil {
+		if err := attachSlice(ref, slice); err != nil {
+			return nil, err
+		}
+	}
+	return ref, nil
 }

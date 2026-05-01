@@ -125,11 +125,14 @@ action-value   ::= xdp-action
 quant-atom     ::= ('any' | 'all') '(' or-expr ')'
 cmp-expr       ::= cmp-operand op cmp-operand
 cmp-operand    ::= arith-expr | network-literal
-arith-expr     ::= arith-term (('+' | '-') arith-term)*
-arith-term     ::= arith-factor (('*' | '/' | '%') arith-factor)*
-arith-factor   ::= field-ref | integer | '(' arith-expr ')'
+arith-expr     ::= arith-term (('+' | '-' | '|' | '^') arith-term)*
+arith-term     ::= arith-factor (('*' | '/' | '%' | '&' | '<<' | '>>') arith-factor)*
+arith-factor   ::= ('-')? integer | field-ref | '(' arith-expr ')'
 field-ref      ::= ident index? ('.' ident index?)*           (* see field-ref shapes below *)
-index          ::= '[' (integer | field-ref) ']'
+index          ::= '[' (integer (':' integer)? | field-ref) ']'
+                                                                (* `[N]` = aux stack static index *)
+                                                                (* `[lo:hi]` = bit-slice; half-open, bit 0 = MSB; see dsl-types.md §3.4 *)
+                                                                (* `[<field-ref>]` = aux stack dynamic index *)
 xdp-action     ::= 'XDP_ABORTED' | 'XDP_DROP' | 'XDP_PASS'
                  | 'XDP_TX' | 'XDP_REDIRECT'
 network-literal ::= ipv4 | ipv4-cidr | ipv6 | ipv6-cidr | mac
@@ -138,6 +141,17 @@ network-literal ::= ipv4 | ipv4-cidr | ipv6 | ipv6-cidr | mac
 **LHS / RHS 対称性**: `cmp-expr` は両 operand に network literal (IPv4/IPv6/MAC/CIDR) を許す (例: `443 == tcp.dport`、`10.0.0.0/24 == ipv4.dst`、`fe80::1 == ipv6.src`)。LHS literal の検出は parser が lexer 値モードで先読みする実装で、network literal が `==` / `!=` の前にあるときだけ確定する (ordered cmp は仕様上 reject)。型ルールは [`dsl-types.md §6.2`](./dsl-types.md#62-比較演算)。
 
 **Bool atom**: `bool-atom` 位置に `field-ref` が来た場合、その field の型が `Int<N>` であれば Bool 文脈で `!= 0` として coerce される (C 風)。詳細は [`dsl-types.md §5.4`](./dsl-types.md#54-intn--bool-coercion-bool-文脈)。
+
+`bool-atom` の三つの形を取り得る:
+
+```
+where true                              # bool-literal
+where gtp.opt.exists                    # aux-exists (= aux header の抽出有無)
+where tcp.dport                         # field-ref → Int<16>→Bool decay (`!= 0`)
+where (tcp.dport == 443) == gtp.opt.exists   # parens 越しの bool-eq (iff)
+```
+
+`bool-atom` を `==` / `!=` で組合せた form は `WAtomBoolEq` (= iff / xor) として扱われる ([`dsl-types.md §6.2`](./dsl-types.md#62-比較演算))。
 
 **field-ref shapes** (where 節で使えるフィールドアクセス):
 

@@ -47,6 +47,14 @@ type Capabilities struct {
 	// shadow the action symbol). nil means no reservations — useful
 	// for hosts that disable action atoms entirely.
 	ReservedLabels map[string]bool
+
+	// StrictArithLint promotes the F1 overflow-suspect lint
+	// (resolve.Options.StrictArithLint) from silent-wrap to a
+	// resolver-level error. Off by default so existing hosts keep
+	// the typed-OK / silent-wrap contract; opt-in for hosts that
+	// prefer to surface arithmetic foot-guns at compile time.
+	// dsl-types.md §9.4 row F1.
+	StrictArithLint bool
 }
 
 // HasActionAtoms reports whether the caps configure an action map +

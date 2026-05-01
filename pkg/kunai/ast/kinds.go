@@ -86,6 +86,11 @@ const (
 	ArithMul                // *
 	ArithDiv                // /
 	ArithMod                // %
+	ArithAnd                // & (bitwise AND)
+	ArithOr                 // | (bitwise OR)
+	ArithXor                // ^ (bitwise XOR)
+	ArithShl                // << (shift left)
+	ArithShr                // >> (shift right, logical)
 )
 
 func (o ArithOp) String() string {
@@ -100,6 +105,16 @@ func (o ArithOp) String() string {
 		return "/"
 	case ArithMod:
 		return "%"
+	case ArithAnd:
+		return "&"
+	case ArithOr:
+		return "|"
+	case ArithXor:
+		return "^"
+	case ArithShl:
+		return "<<"
+	case ArithShr:
+		return ">>"
 	}
 	return fmt.Sprintf("ArithOp(%d)", int(o))
 }
