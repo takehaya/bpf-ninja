@@ -198,6 +198,65 @@ func TestResolvePredicateField(t *testing.T) {
 	}
 }
 
+func TestResolveBracketAuxField(t *testing.T) {
+	// `gtp[opt.next_ext == 0]`: aux field via bracket form. The
+	// resolver should produce a FieldRef with Aux populated, the
+	// gating coming from the parser block (E|S|PN gate on byte 0).
+	p := resolveOK(t, "eth/ipv4/udp/gtp[opt.next_ext==0]/ipv4/tcp", nil)
+	gtp := p.Layers[3]
+	if len(gtp.Predicates) != 1 {
+		t.Fatalf("expected 1 predicate on gtp, got %d", len(gtp.Predicates))
+	}
+	pr := gtp.Predicates[0]
+	if pr.Field == nil || pr.Field.Aux == nil {
+		t.Fatalf("expected pred with Aux set, got %+v", pr.Field)
+	}
+	aux := pr.Field.Aux
+	if aux.OutParam != "opt" || aux.HeaderName != "gtp_opt_h" {
+		t.Errorf("aux = %+v", aux)
+	}
+	if aux.OffsetInLayer != 8 || aux.HeaderSize != 4 {
+		t.Errorf("aux offset/size = %d/%d, want 8/4", aux.OffsetInLayer, aux.HeaderSize)
+	}
+	if aux.Gating == nil || aux.Gating.Mask != 0x07 {
+		t.Errorf("aux gating = %+v, want mask 0x07", aux.Gating)
+	}
+	if aux.FieldBitOff != 24 || aux.FieldBitWidth != 8 {
+		t.Errorf("field window = (%d, %d), want (24, 8)", aux.FieldBitOff, aux.FieldBitWidth)
+	}
+}
+
+func TestResolveWhereAuxField(t *testing.T) {
+	// `where gtp.opt.next_ext == 0`: 3-part path in where clause.
+	p := resolveOK(t, "eth/ipv4/udp/gtp/ipv4/tcp where gtp.opt.next_ext == 0", nil)
+	if p.Where == nil {
+		t.Fatal("where condition missing")
+	}
+	// Walk to the leaf comparison and check its Field.Aux is populated.
+	leaf := p.Where
+	for leaf.Left != nil || leaf.Inner != nil {
+		switch {
+		case leaf.Left != nil:
+			leaf = leaf.Left
+		case leaf.Inner != nil:
+			leaf = leaf.Inner
+		}
+	}
+	if leaf.ArithL == nil || leaf.ArithL.Field == nil || leaf.ArithL.Field.Aux == nil {
+		t.Fatalf("leaf condition has no Aux field ref: %+v", leaf)
+	}
+	if leaf.ArithL.Field.Aux.OutParam != "opt" {
+		t.Errorf("aux out param = %q, want opt", leaf.ArithL.Field.Aux.OutParam)
+	}
+}
+
+func TestResolveAuxStackRejectsSinglePath(t *testing.T) {
+	// Stack auxes (gtp.exts) need an index inside a bracket
+	// predicate. Without one the resolver suggests `[N]` or a
+	// surrounding any/all.
+	resolveErr(t, "eth/ipv4/udp/gtp[exts.next_ext==0]/ipv4/tcp", nil, "needs an index")
+}
+
 func TestResolvePredicateInMarksUnsupported(t *testing.T) {
 	p := resolveOK(t, "eth/ipv4[src in [10.0.0.1, 10.0.0.2]]/tcp", nil)
 	if got := p.Layers[1].Predicates[0].Unsupported; got == "" {

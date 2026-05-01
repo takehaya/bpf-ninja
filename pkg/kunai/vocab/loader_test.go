@@ -150,12 +150,32 @@ func TestLoadSrv6Header(t *testing.T) {
 	if srv6.HeaderName != "srv6_h" {
 		t.Errorf("primary header = %q", srv6.HeaderName)
 	}
-	if len(srv6.File.Headers) != 1 {
-		t.Fatalf("got %d headers, want 1 (srv6_h only — segment list lives in the variable trail)", len(srv6.File.Headers))
+	wantHeaders := []string{"srv6_h", "srv6_seg_h"}
+	got := make([]string, 0, len(srv6.File.Headers))
+	for _, h := range srv6.File.Headers {
+		got = append(got, h.Name)
 	}
-	primary := srv6.File.Headers[0]
-	if primary.Name != "srv6_h" {
-		t.Errorf("primary header name = %q, want srv6_h", primary.Name)
+	if len(got) != len(wantHeaders) {
+		t.Fatalf("got %d headers, want %d: %v", len(got), len(wantHeaders), got)
+	}
+	for i, want := range wantHeaders {
+		if got[i] != want {
+			t.Errorf("header[%d] = %q, want %q", i, got[i], want)
+		}
+	}
+	// segments aux is declared as a stack so resolver can route
+	// `srv6.segments[N].addr` to it. The parser block does not push
+	// to it; the variable trail in codegen advances R4 past all
+	// segments in one statically-bounded skip.
+	if srv6.ParseStateMachine == nil {
+		t.Fatal("expected non-trivial ParseStateMachine after segments declaration")
+	}
+	stack, ok := srv6.ParseStateMachine.StackRefs["segments"]
+	if !ok {
+		t.Fatalf("StackRefs[segments] missing; got %+v", srv6.ParseStateMachine.StackRefs)
+	}
+	if stack.Capacity != 8 || stack.ElemSize != 16 || stack.HeaderName != "srv6_seg_h" {
+		t.Errorf("segments stack = %+v", stack)
 	}
 }
 
@@ -246,6 +266,46 @@ func TestLoadEthMplsNoCheck(t *testing.T) {
 	}
 	if dc.Type != DispatchNoCheck || dc.Parent != "mpls" || !dc.Bool {
 		t.Errorf("no-check const = %+v", dc)
+	}
+}
+
+func TestLoadTcpOptionWalk(t *testing.T) {
+	specs := loadBundled(t)
+	tcp := specs["tcp"]
+	if tcp == nil {
+		t.Fatal("tcp not loaded")
+	}
+	if tcp.OptionWalk == nil {
+		t.Fatal("tcp.OptionWalk is nil; expected option-walk metadata after declaring <PROTO>_OPT_<NAME>_KIND/SIZE")
+	}
+	walk := tcp.OptionWalk
+	if walk.TerminatorKind != 0 || walk.PaddingKind != 1 || walk.LengthByteOff != 1 {
+		t.Errorf("walk skeleton = {term=%d, pad=%d, lenOff=%d}, want {0,1,1}", walk.TerminatorKind, walk.PaddingKind, walk.LengthByteOff)
+	}
+	wantNames := map[string]struct {
+		kind uint64
+		size int
+	}{
+		"MSS":       {2, 4},
+		"WS":        {3, 3},
+		"SACK_PERM": {4, 2},
+		"TS":        {8, 10},
+	}
+	if len(walk.Options) != len(wantNames) {
+		t.Fatalf("got %d options, want %d", len(walk.Options), len(wantNames))
+	}
+	for _, opt := range walk.Options {
+		want, ok := wantNames[opt.Name]
+		if !ok {
+			t.Errorf("unexpected option %q", opt.Name)
+			continue
+		}
+		if opt.Kind != want.kind || opt.Size != want.size {
+			t.Errorf("option %q = {kind=%d, size=%d}, want {%d, %d}", opt.Name, opt.Kind, opt.Size, want.kind, want.size)
+		}
+		if opt.HeaderRef == nil {
+			t.Errorf("option %q has nil HeaderRef", opt.Name)
+		}
 	}
 }
 
@@ -601,6 +661,59 @@ func TestParseStateMachineGtp(t *testing.T) {
 	if len(pext.Extracts) != 1 || !pext.Extracts[0].IsStackPush {
 		t.Errorf("parse_ext extract = %+v, want one stack push", pext.Extracts)
 	}
+
+	// OffsetAtEntry: start arrives with R4 == layer entry (=0); parse_opt
+	// runs after gtp_h (8 B); parse_ext runs after gtp_h + gtp_opt_h (12 B)
+	// on the first iteration. Subsequent iterations of the parse_ext
+	// self-loop have a dynamic per-iteration offset that the static model
+	// does not capture; assignStateOffsets keeps the first-arrival value
+	// since the conflict only arises on the self-edge.
+	if got := machine.States[idx["start"]].OffsetAtEntry; got != 0 {
+		t.Errorf("start.OffsetAtEntry = %d, want 0", got)
+	}
+	if got := machine.States[idx["parse_opt"]].OffsetAtEntry; got != 8 {
+		t.Errorf("parse_opt.OffsetAtEntry = %d, want 8", got)
+	}
+	if got := pext.OffsetAtEntry; got != 12 {
+		t.Errorf("parse_ext.OffsetAtEntry = %d, want 12", got)
+	}
+
+	// AuxLayouts: opt sits at offset 8, gated by E|S|PN bits (0x07
+	// mask on byte 0 of gtp_h, NotEqual zero). exts is a stack so it
+	// must be absent from AuxLayouts (PR-B handles header stacks).
+	auxOpt, ok := machine.AuxLayouts["opt"]
+	if !ok {
+		t.Fatalf("AuxLayouts[opt] missing; got keys %v", auxLayoutNames(machine.AuxLayouts))
+	}
+	if auxOpt.HeaderName != "gtp_opt_h" {
+		t.Errorf("aux opt: HeaderName = %q, want gtp_opt_h", auxOpt.HeaderName)
+	}
+	if auxOpt.OffsetInLayer != 8 {
+		t.Errorf("aux opt: OffsetInLayer = %d, want 8", auxOpt.OffsetInLayer)
+	}
+	if auxOpt.HeaderSize != 4 {
+		t.Errorf("aux opt: HeaderSize = %d, want 4", auxOpt.HeaderSize)
+	}
+	if auxOpt.Gating == nil {
+		t.Fatal("aux opt: Gating is nil; want (byte 0 & 0x07) != 0")
+	}
+	if auxOpt.Gating.ByteOff != 0 || auxOpt.Gating.Mask != 0x07 || auxOpt.Gating.Op != GatingNe || auxOpt.Gating.Value != 0 {
+		t.Errorf("aux opt Gating = %+v, want {ByteOff:0 Mask:0x07 Op:Ne Value:0}", auxOpt.Gating)
+	}
+	if _, ok := machine.AuxLayouts["exts"]; ok {
+		t.Errorf("AuxLayouts[exts] should be absent (stack handled by StackRefs); got %+v", machine.AuxLayouts["exts"])
+	}
+}
+
+func auxLayoutNames(m map[string]*AuxLayout) []string {
+	if len(m) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(m))
+	for k := range m {
+		names = append(names, k)
+	}
+	return names
 }
 
 func TestParseStateMachineSrv6(t *testing.T) {

@@ -19,6 +19,7 @@ const (
 	TokWhere
 	TokCapture
 	TokAll
+	TokAny
 	TokHeaders
 	TokAnd
 	TokOr
@@ -72,6 +73,8 @@ func (k TokenKind) String() string {
 		return "'capture'"
 	case TokAll:
 		return "'all'"
+	case TokAny:
+		return "'any'"
 	case TokHeaders:
 		return "'headers'"
 	case TokAnd:
@@ -153,6 +156,7 @@ var keywords = map[string]TokenKind{
 	"where":   TokWhere,
 	"capture": TokCapture,
 	"all":     TokAll,
+	"any":     TokAny,
 	"headers": TokHeaders,
 	"and":     TokAnd,
 	"or":      TokOr,

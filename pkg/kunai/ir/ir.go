@@ -86,9 +86,106 @@ type Predicate struct {
 }
 
 // FieldRef is a resolved pointer into a layer's protocol header.
+//
+// When Aux is nil (the common case), Field references one entry of
+// the layer's primary header — codegen reads the bytes anchored on
+// R4 (the running offset register) at the field's bit window.
+//
+// When Aux is non-nil, Field references one entry of an auxiliary
+// header (e.g. gtp_opt_h.next_ext). Codegen must:
+//   1. Optionally evaluate Aux.Gating to decide whether the aux is
+//      present on this packet's path. A failed gate means the field
+//      does not exist for this packet — predicate codegen treats
+//      that as "match fails", consistent with `proto.aux.exists`
+//      being false.
+//   2. Read the field at offset (Aux.OffsetInLayer + Field's bit
+//      window) anchored on the layer-entry slot, not R4 (which has
+//      advanced past the layer by the time predicates run).
 type FieldRef struct {
 	Layer *LayerInstance
 	Field *vocab.Field
+	Aux   *AuxRef // nil when Field is in the primary header
+}
+
+// AuxRef captures the metadata predicate codegen needs to read an
+// aux header field: where the aux sits within the layer, the field's
+// bit window inside the aux header, and either an optional gating
+// predicate (single aux) or a stack-index descriptor (aux header
+// stack).
+//
+// Single auxes (Stack == nil) read at offset OffsetInLayer with an
+// optional gate; stack auxes (Stack != nil) read at offset
+// OffsetInLayer + index*ElemSize where index comes from
+// Stack.Static or Stack.Dynamic depending on Stack.IsStatic.
+type AuxRef struct {
+	OutParam      string         // parser out parameter name (e.g. "opt", "segments")
+	HeaderName    string         // aux header type name (e.g. "gtp_opt_h", "srv6_seg_h")
+	OffsetInLayer int            // bytes from layer-entry slot to aux start (for stacks: base of stack)
+	HeaderSize    int            // bytes; element size when Stack != nil
+	Gating        *vocab.AuxGating
+	// FieldBitOff / FieldBitWidth give the field's window inside the
+	// aux header (or per-entry stack header), in bits (matches
+	// vocab.findFieldBitWindow output).
+	FieldBitOff   int
+	FieldBitWidth int
+	// Stack is non-nil when this AuxRef indexes into an aux header
+	// stack (`out <type>[N] segments`) instead of a single aux.
+	Stack *StackIndex
+	// Option is non-nil when this AuxRef is reached via an
+	// option-walk lookup (TCP / IPv4 options): codegen emits a walk
+	// that scans options, dispatches on kind, and reads the matching
+	// option's field.
+	Option *OptionLookup
+}
+
+// OptionLookup carries the metadata predicate codegen needs to walk
+// a layer's option list (TCP / IPv4) and locate the addressed
+// option by its kind discriminator. ExistsOnly = true means the
+// predicate is `<proto>.options.<NAME>.exists` and codegen emits a
+// "found?" check without reading any field bytes.
+type OptionLookup struct {
+	Name           string         // upper-case option name (e.g. "MSS")
+	Kind           uint64         // kind discriminator value
+	OptionSize     int            // total option byte size (or 0 if variable)
+	TerminatorKind uint64         // walk-end discriminator
+	PaddingKind    uint64         // 1-byte advance discriminator
+	LengthByteOff  int            // byte offset of length within an option
+	ExistsOnly     bool           // when true, skip the field load and just report match-found
+}
+
+// StackIndex describes which element of an aux header stack a
+// FieldRef addresses. Static indices (`segments[0]`) inline as a
+// constant byte offset; dynamic indices (`segments[srv6.last_entry]`)
+// load the parent field at runtime, multiply by ElemSize, and add to
+// the stack base. IsIterator marks the field as the iteration
+// variable of an enclosing any/all quantifier — codegen substitutes
+// the loop iteration index for the offset compute.
+type StackIndex struct {
+	Capacity   int       // declared array size from `out <type>[N]` (= verifier-safe upper bound)
+	IsStatic   bool
+	Static     uint64    // when IsStatic
+	Dynamic    *FieldRef // when !IsStatic && !IsIterator; primary-header field of the same layer
+	IsIterator bool      // when this StackIndex is the any/all iteration variable
+}
+
+// IsExistsCheck reports whether this FieldRef represents an
+// `<proto>.<aux>.exists` access — i.e. an aux reference whose Field
+// is the synthetic "exists" sentinel (FieldBitWidth == 0). Codegen
+// short-circuits to "evaluate gating only" for these.
+func (r *FieldRef) IsExistsCheck() bool {
+	return r != nil && r.Aux != nil && r.Field == nil
+}
+
+// QuantTarget identifies the aux header stack a `any(...)` / `all(...)`
+// expression iterates over. Codegen wraps the inner condition in a
+// bpf_loop callback whose per-iter state addresses
+// `OffsetInLayer + iter*ElemSize` within the owning layer.
+type QuantTarget struct {
+	OutParam      string // parser out parameter name (e.g. "segments")
+	HeaderName    string // aux header type name (e.g. "srv6_seg_h")
+	OffsetInLayer int    // bytes from layer-entry slot to stack start
+	ElemSize      int    // bytes per stack entry
+	Capacity      int    // declared array size = verifier loop cap
 }
 
 // Condition mirrors ast.WhereExpr but with any field references
@@ -98,7 +195,11 @@ type Condition struct {
 
 	Left  *Condition
 	Right *Condition
-	Inner *Condition
+	Inner *Condition // WNot / WAny / WAll inner expression
+
+	// QuantTarget is populated for WAny / WAll: it identifies the
+	// aux header stack the inner expression iterates over.
+	QuantTarget *QuantTarget
 
 	// WAtomArith
 	ArithL *ArithExpr

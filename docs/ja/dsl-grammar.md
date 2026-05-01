@@ -62,9 +62,10 @@ quantifier     ::= '?' | '+' | '*' | '{' INT '}' | '{' INT ',' INT '}'
 ### 1.3 Predicate
 
 ```ebnf
-predicate      ::= '[' field-name op value ']'
-                 | '[' field-name 'in' value-list ']'      (* parser only, codegen unsupported *)
-                 | '[' field-name 'has' flag-name ']'      (* parser only, codegen unsupported *)
+predicate      ::= '[' field-path op value ']'
+                 | '[' field-path 'in' value-list ']'      (* parser only, codegen unsupported *)
+                 | '[' field-path 'has' flag-name ']'      (* parser only, codegen unsupported *)
+field-path     ::= field-name ('.' field-name)*            (* aux access: <aux>.<field> *)
 field-name     ::= [a-z] [a-z0-9_]*
 op             ::= '==' | '!=' | '<' | '<=' | '>' | '>=' | '='
 value          ::= integer | ipv4 | ipv4-cidr | ipv6 | ipv6-cidr | mac
@@ -80,10 +81,11 @@ mac            ::= [0-9a-fA-F]{2} (':' [0-9a-fA-F]{2}){5}
 
 | Production | parser | 例文 |
 |---|---|---|
-| `predicate` (cmp) | `predicate.go::parsePredicate` | `[dport==443]`, `[src!=fe80::1]` |
+| `predicate` (cmp) | `predicate.go::parsePredicate` | `[dport==443]`, `[src!=fe80::1]`, `[opt.next_ext == 0]` |
 | `predicate` (in) | `predicate.go::parsePredicate` (`PredIn` branch) | `[dport in [80, 443]]` *(codegen reject)* |
 | `predicate` (has) | `predicate.go::parsePredicate` (`PredHas` branch) | `[flags has SYN]` *(codegen reject)* |
-| `field-name` | `predicate.go::parseFieldPath` | `dport` / `src` |
+| `field-path` (1-part) | `predicate.go::parseFieldPath` | `dport` / `src` |
+| `field-path` (2-part = aux) | `predicate.go::parseFieldPath` | `opt.next_ext` (gtp の auxiliary header field) |
 
 **Op 仕様**:
 - `==` / `!=`: 全 value 型で動く
@@ -95,6 +97,13 @@ mac            ::= [0-9a-fA-F]{2} (':' [0-9a-fA-F]{2}){5}
 - `/0 !=` → `Ja dsl_reject` (常に miss)
 - `/32` (v4) / `/128` (v6) → host match に collapse
 
+**Bracket aux predicate**:
+- `proto[<aux>.<field> op value]` で auxiliary header の field を読む
+- 例: `gtp[opt.next_ext == 0]` (= GTP-U の opt block で next_ext == 0)
+- gating 付き aux (GTP の opt 等) は parser machine の state graph から「extract される条件」を resolver が逆算して codegen が gate emit
+- gate fail (= aux 未抽出) は predicate false (= packet reject)
+- aux header stack (`gtp.exts`, `srv6.segments` 等) は bracket 内では index 必須、または `where any/all(...)` で量化
+
 ### 1.4 Where 節
 
 ```ebnf
@@ -104,17 +113,32 @@ not-expr       ::= ('not' | '!') not-expr | atom
 atom           ::= '(' or-expr ')'
                  | action-atom
                  | flow-atom                                  (* parser only, codegen reject *)
+                 | quant-atom
                  | arith-cmp
 action-atom    ::= 'action' op xdp-action
 flow-atom      ::= 'flow' '.' ('is_new' | 'age' | 'state')   (* WAtomFlow, dead syntax *)
+quant-atom     ::= ('any' | 'all') '(' or-expr ')'
 arith-cmp      ::= arith-expr op arith-expr
 arith-expr     ::= arith-term (('+' | '-') arith-term)*
 arith-term     ::= arith-factor (('*' | '/' | '%') arith-factor)*
 arith-factor   ::= field-ref | integer | '(' arith-expr ')'
-field-ref      ::= ident ('.' ident)?                         (* proto.field or @label.field *)
+field-ref      ::= ident index? ('.' ident index?)*           (* see field-ref shapes below *)
+index          ::= '[' (integer | field-ref) ']'
 xdp-action     ::= 'XDP_ABORTED' | 'XDP_DROP' | 'XDP_PASS'
                  | 'XDP_TX' | 'XDP_REDIRECT'
 ```
+
+**field-ref shapes** (where 節で使えるフィールドアクセス):
+
+| Shape | 例 | 意味 |
+|---|---|---|
+| `proto.field` | `tcp.dport` | primary header の field |
+| `@label.field` | `outer.src` | 同 protocol が複数あるときラベルで識別 |
+| `proto.aux.field` | `gtp.opt.next_ext` | 単発 aux header の field (auto gating) |
+| `proto.aux.exists` | `gtp.opt.exists` | aux が抽出されたかの bool (※ 現在は arith 内のみ、bare bool atom は未対応) |
+| `proto.stack[N].field` | `srv6.segments[0].addr` | aux header stack の N 番目 (静的 index) |
+| `proto.stack[proto.f].field` | `srv6.segments[srv6.last_entry].addr` | 動的 index (parent header field 由来) |
+| `proto.options.NAME.field` | `tcp.options.MSS.value` | TCP/IPv4 option lookup (`<NAME>` は declared option) |
 
 | Production | parser | 例文 |
 |---|---|---|
@@ -123,14 +147,24 @@ xdp-action     ::= 'XDP_ABORTED' | 'XDP_DROP' | 'XDP_PASS'
 | `not-expr` | `where.go::parseNotExpr` | `not action == XDP_DROP` |
 | `action-atom` | `where.go::parseActionAtom` | `action == XDP_DROP` (fexit only) |
 | `flow-atom` | `where.go::parseFlowAtom` | `flow.is_new` *(codegen reject)* |
+| `quant-atom` | `where.go::parseQuantAtom` | `any(srv6.segments.addr == fc00::1)` |
 | `arith-cmp` | `where.go::parseArithCmp` | `ipv4.total_length > 100` |
 | `arith-expr` | `where.go::parseArithExpr` | `ipv4.total_length - 20` |
-| `arith-factor` | `where.go::parseArithFac` | `outer.dst` / `0xc0a80101` |
+| `arith-factor` | `where.go::parseArithFac` | `outer.dst` / `0xc0a80101` / `tcp.options.MSS.value` |
+
+**Quantifier 仕様** (`any` / `all`):
+- `any(EXPR)` = ∃: EXPR 内の aux header stack 参照 (index 無し) を iteration 変数として扱い、stack の少なくとも 1 entry が EXPR を満たすとき true
+- `all(EXPR)` = ∀: 全 entry が EXPR を満たすとき true
+- iteration 変数は EXPR 内に **1 個だけ** stack 参照 (index 無し) を要求。複数 / 0 個は parse-time error
+- 静的 unroll で stack capacity 回反復。SRv6 segments のような parent-count 系は per-iter `iter < parent.last_entry+1` の guard を入れて実 entry 数を超えた walk が誤 match しないよう保護
+- 例: `where any(srv6.segments.addr == fc00::1)` (経路に該当 segment が含まれる)、`where all(vlan.id < 4096)` *(VLAN tag は chain なので別パス、現在 quantifier は aux stack 限定)*
 
 **MVP 制約**:
 - 算術ネスト最大 3 段 (4 段以上 → ErrNotImplemented)
 - `action == NAME` は host 側で `Capabilities.Action` map と `ActionFetcher` を提供しているときのみ。XDP の場合は **fexit attach (`--mode exit`)** で `pkg/kunai/host/xdp.FexitCapabilities()` 経由に有効化される
 - 同 protocol が 2 段以上ある場合 `proto.field` だけだと ambiguous → `@label.field` 必須
+- Aux predicate / stack index access / options lookup は wrapper protocol の中身を見るため (PR-A〜PR-D で landing)、protocol 側の `out` parameter declaration が必要 (詳細は `dsl-internals.md §6`)
+- Aux 系の補助関数 / stack walk は bracket form (`proto[…]`) と where form の両方で動くが、CIDR / IPv4 / MAC literal predicate を aux field に対して書くのは現在 `ErrNotImplemented` (整数比較は OK)
 
 ### 1.5 Capture 節
 

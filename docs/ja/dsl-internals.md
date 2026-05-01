@@ -9,7 +9,8 @@ xdp-ninja DSL の **設計動機 / 全体アーキテクチャ / codegen ABI / v
 3. [Vocab 著者ガイド](#3-vocab-著者ガイド)
 4. [Codegen ABI](#4-codegen-abi)
 5. [P4-16 互換性](#5-p4-16-互換性)
-6. [制限と将来拡張](#6-制限と将来拡張)
+6. [可変長構造の分類と表現](#6-可変長構造の分類と表現)
+7. [制限と将来拡張](#7-制限と将来拡張)
 
 ---
 
@@ -497,11 +498,239 @@ eBPF の LDX は x86 上 little-endian で読む。packet bytes は network orde
 
 ---
 
-## 6. 制限と将来拡張
+## 6. 可変長構造の分類と表現
+
+ネットワークプロトコルの可変長部分は形が複数ある。kunai DSL では **どのパターンを chain として書かせ、どのパターンを wrapper の aux として表現するか** を設計判断として明確にしている。本節は分類とその表現指針を述べる。
+
+### 6.1 4 パターンの分類
+
+実 protocol の可変長構造は wire 形上 4 つの基本パターンに分類できる。
+
+| # | パターン | 例 | 構造の特徴 |
+|---|---|---|---|
+| **A** | 全体繰り返し (層スタック) | VLAN, MPLS, QinQ | wire 上で同じ shape の header が back-to-back に並ぶ。各 entry が独立 |
+| **B** | 拡張ヘッダ繰り返し | IPv6 ext, GTP-U ext header | wrapper の中に extension header が並ぶ。各 ext は次 type を field で持つ |
+| **C** | wrapper + 内部項目列 | SRv6 segment list (16B 固定), TCP/IPv4 options (kind 依存可変) | 1 つの wrapper の中に items が並ぶ。entry 自体には dispatch 情報がない |
+| **D** | wrapper + 条件付き単発 | GTP-U opt (E/S/PN flag gated) | wrapper の flag で有無が決まる、最大 1 回 |
+
+これらの **判別基準は wire 構造**:
+- 「外側に独立した header が並ぶ」(A) なら chain
+- 「wrapper の内側に sub-header が入っている」(B/C/D) なら wrapper の aux
+
+### 6.2 表現指針: chain vs aux
+
+vocab 上の表現は 2 種類:
+
+#### chain protocol (パターン A)
+
+独立した protocol を vocab で 1 つ宣言、quantifier (`+` `*` `?` `{n,m}`) で repetition を表す。DSL 上は wire 順に並んだ別 layer として書く:
+
+```
+eth/vlan+/ipv4/tcp                ; VLAN tag (1 個以上)
+eth/mpls+/ipv4/tcp                ; MPLS label stack
+eth/qinq/vlan+/ipv4/tcp           ; QinQ (S-tag + C-tag stack)
+```
+
+vocab 側は `<SELF>_<PARENT>_<FIELD>` 系の dispatch const で「どこから始まるか / どこで終わるか」を declare する。
+
+#### wrapper + aux header (パターン B/C/D)
+
+1 個の protocol が **primary header + 0 個以上の aux header** を持つ形。aux は parser block の `out` 引数として宣言、parser の state machine が「いつ extract するか」を記述する。DSL 上は wrapper protocol の 1 layer として書き、内部の aux は dot path でアクセス:
+
+```
+; パターン B: 拡張ヘッダ繰り返し
+eth/ipv4/udp/gtp/ipv4/tcp where any(gtp.exts.ext_type == 0xc0)
+eth/ipv4/udp/gtp/ipv4/tcp where gtp.exts.count >= 1
+eth/ipv6/tcp where any(ipv6.exts.next_header == 44)              ; Fragment ext あり
+
+; パターン C: wrapper + 内部項目列
+eth/ipv6/srv6/tcp where srv6.segments[0].addr == fc00::1         ; final dest
+eth/ipv6/srv6/tcp where srv6.segments[srv6.last_entry].addr == X ; first hop
+eth/ipv6/srv6/tcp where any(srv6.segments.addr == fc00::1)       ; ∃
+eth/ipv4/tcp where tcp.mss.value == 1460                         ; TCP option (固定 size)
+eth/ipv4/tcp where tcp.ts.val > 1000000
+
+; パターン D: wrapper + 条件付き単発
+eth/ipv4/udp/gtp/ipv4/tcp where gtp.opt.exists
+eth/ipv4/udp/gtp/ipv4/tcp where gtp.opt.next_ext == 0
+```
+
+### 6.3 パターン C/D の判定基準: 「中身か外か」
+
+「VLAN は eth の aux」「MPLS は eth の aux」と呼ぶことはしない。理由は VLAN/MPLS の wire 構造:
+
+- VLAN tag は ethertype (0x8100) で type-of-next を持っている = 外側に「並ぶ」存在
+- MPLS label は s-bit で stack 終端を持っている = 同上
+
+これらは「eth の中身」ではない。「eth の後ろに並んだ別 protocol layer」なので chain (パターン A)。
+
+一方、SRv6 の segment list は:
+
+- SRH header の last_entry/segments_left field で長さが決まる
+- 各 segment は IPv6 アドレスのみで type-of-next を持たない
+- SRH header と segments は不可分の 1 セット (segments だけ抜き出して別解釈は不可能)
+
+これは明確に「SRH の中身」=>aux (パターン C)。
+
+GTP の opt も同じ: GTP header の E/S/PN flag で有無が決まる、独立 layer ではない。
+
+### 6.4 過去の設計検討と現方針
+
+開発初期に `srv6_seg` を独立 chain protocol として切り出す案 (`eth/ipv6/srv6/srv6_seg+/tcp`) を実装したが、aux model に切り替えた。判断理由:
+
+1. **wire 構造に対して不誠実**: `srv6/srv6_seg+` は「srv6 → srv6_seg → srv6_seg → ...」と読める。実際は SRH 1 個 + その中の segment 列であり、構造が二段に分離して見えるのは misleading
+2. **ネスト SRH (= SRH/SRH、Segment Routing over Segment Routing) と区別困難**: chain として書くと `srv6/srv6_seg+/srv6/srv6_seg+/...` と書ける一方、それが「ネスト SRH」なのか「外側 SRH の segment 列の続き」なのか visually 不明瞭
+3. **概念の重複**: chain mechanism と aux mechanism が「リスト的なもの」を 2 系統で扱うことになり、user にとって学ぶ概念が増える
+
+(Y) aux model 採用後は user が見える概念が:
+- **chain protocol** (`+` quantifier、`vlan+` のような外側スタック)
+- **wrapper + aux** (`protocol.aux_name`、`srv6.segments[N]` のような内側構造)
+
+の 2 つに整理され、wire 構造との対応が一目瞭然になる。
+
+### 6.5 vocab declaration の方法
+
+aux header は parser block の `out` 引数で declare し、state machine で extract 条件を記述する。
+
+#### 単発 aux (パターン D)
+
+```p4
+// gtp.p4
+header gtp_h     { bit<3> version; ... bit<1> e; bit<1> s; bit<1> pn; ... }
+header gtp_opt_h { bit<16> seq; bit<8> npdu; bit<8> next_ext; }
+
+parser GtpFragment(packet_in pkt,
+                   out gtp_h     gtp,
+                   out gtp_opt_h opt) {
+    state start {
+        pkt.extract(gtp);
+        transition select(gtp.e, gtp.s, gtp.pn) {
+            (0,0,0): accept;            // opt 未抽出のまま
+            default: parse_opt;
+        }
+    }
+    state parse_opt {
+        pkt.extract(opt);
+        transition accept;
+    }
+}
+```
+
+DSL での `gtp.opt.exists` は「`parse_opt` state に到達したか」を runtime で確かめる。`gtp.opt.next_ext` は「opt が extract された場合のみ field 読み、未抽出なら predicate 不一致」。
+
+#### aux header stack (パターン B/C)
+
+P4 の header stack `H[N]` を使う:
+
+```p4
+// srv6.p4
+header srv6_h     { bit<8> next_header; ... bit<8> last_entry; ... }
+header srv6_seg_h { bit<128> addr; }
+
+parser SRv6Fragment(packet_in pkt,
+                    out srv6_h        hdr,
+                    out srv6_seg_h[8] segments) {
+    state start {
+        pkt.extract(hdr);
+        transition select(hdr.routing_type) {
+            4:       parse_segments;
+            default: reject;
+        }
+    }
+    state parse_segments {
+        pkt.extract(segments.next);
+        transition select(/* iter < hdr.last_entry+1 を表す */) {
+            ...: parse_segments;
+            ...: accept;
+        }
+    }
+}
+```
+
+stack の reservation 数 (上の例では 8) は **verifier-safe な loop 上限** として codegen が利用する。実 packet では `hdr.last_entry+1` 個まで使われる。
+
+#### option-style aux (パターン C 可変、TCP/IPv4 options)
+
+各 option を kind ごとに独立 aux header として declare、parser block の state machine で kind dispatch + 条件付き extract:
+
+```p4
+// tcp.p4
+header tcp_h               { ... bit<4> data_offset; ... }
+header tcp_opt_mss_h       { bit<8> kind; bit<8> length; bit<16> value; }
+header tcp_opt_ws_h        { bit<8> kind; bit<8> length; bit<8>  shift; }
+header tcp_opt_sack_perm_h { bit<8> kind; bit<8> length; }
+header tcp_opt_ts_h        { bit<8> kind; bit<8> length; bit<32> val; bit<32> ecr; }
+
+parser TcpFragment(packet_in pkt,
+                   out tcp_h               tcp,
+                   out tcp_opt_mss_h       mss,
+                   out tcp_opt_ws_h        ws,
+                   out tcp_opt_sack_perm_h sack_perm,
+                   out tcp_opt_ts_h        ts) {
+    state start {
+        pkt.extract(tcp);
+        transition select(tcp.data_offset) {
+            5:       accept;                    // options 領域なし
+            default: parse_options;
+        }
+    }
+    state parse_options {
+        transition select(pkt.lookahead<bit<8>>()) {
+            0:       accept;                    // EOL terminator
+            1:       parse_nop;                 // NOP padding (1 byte)
+            2:       parse_mss;
+            3:       parse_ws;
+            4:       parse_sack_perm;
+            8:       parse_ts;
+            default: parse_skip;                // unknown: length-byte advance
+        }
+    }
+    state parse_mss        { pkt.extract(mss);       transition parse_options; }
+    state parse_ws         { pkt.extract(ws);        transition parse_options; }
+    state parse_sack_perm  { pkt.extract(sack_perm); transition parse_options; }
+    state parse_ts         { pkt.extract(ts);        transition parse_options; }
+    state parse_nop        { /* 1 byte 進めて parse_options に戻る */ }
+    state parse_skip       { /* byte 1 (length) 分進めて parse_options に戻る */ }
+}
+```
+
+各 option は wire 上 0 or 1 回出現する想定 (典型的な実 TCP frame と一致)。同 kind が複数現れる malformed packet は最後の値で上書き、または header stack 化 (Phase 2) で全件保持。
+
+### 6.6 DSL access の体系
+
+aux への access は **dot path で統一**。chain element も同じ accessor を共有する:
+
+| 操作 | 構文 | 適用例 |
+|---|---|---|
+| 単発 aux のフィールド | `<proto>.<aux>.<field>` | `gtp.opt.next_ext == 0`, `tcp.mss.value == 1460` |
+| 単発 aux の存在 | `<proto>.<aux>.exists` | `gtp.opt.exists`, `tcp.sack_perm.exists` |
+| stack/chain の index | `<proto>.<aux>[N].<field>` | `srv6.segments[0].addr == fc00::1` |
+| stack/chain の動的 index | `<proto>.<aux>[<expr>].<field>` | `srv6.segments[srv6.last_entry].addr` |
+| 集合 ∃ | `any(<expr>)` | `any(srv6.segments.addr == X)`, `any(vlan.id == 100)` |
+| 集合 ∀ | `all(<expr>)` | `all(srv6.segments.addr in fc00::/16)` |
+| 件数 | `<proto>.<aux>.count` | `srv6.segments.count >= 3` |
+
+`any` / `all` は関数形。bracket 形 `vlan+[id == 100]` は `all(vlan.id == 100)` の syntax sugar として残す (∀ デフォルト維持)。
+
+### 6.7 codegen 上の扱い (概要)
+
+| 表現 | 実装 mechanism |
+|---|---|
+| 単発 aux への field 読み | parser machine の state graph から「aux 抽出条件」を逆算し、gating check + offset 計算 + field load を emit |
+| stack aux への [N] index (静的) | parse-time に `0 <= N < cap` を check、runtime は parser の state graph から算出した offset で field load |
+| stack aux への [parent.field] (動的) | runtime に bound check (`<expr> < count`) + dynamic offset 計算 |
+| `any(P)` / `all(P)` | bpf_loop 経由で per-iter P 評価。any: 1 個目の match で R0=1 早期 break、all: 1 個目の miss で reject |
+| `count` | wrapper の field 由来 (SRv6 の last_entry+1 等) または stack walk 結果 |
+
+implementation 詳細は `pkg/kunai/codegen/parser_machine.go` の state graph emit ロジックを参照。
+
+---
+
+## 7. 制限と将来拡張
 
 詳細は [`dsl-followups.md`](./dsl-followups.md) を参照。本節は制約マップだけ簡潔に列挙。
 
-### 6.1 現状の MVP 制限
+### 7.1 現状の MVP 制限
 
 | 領域 | 制限 |
 |---|---|
@@ -513,7 +742,7 @@ eBPF の LDX は x86 上 little-endian で読む。packet bytes は network orde
 | Vocab | 1 protocol あたり最大 2 ラベル |
 | Kernel | quantifier / parser self-loop あり: 5.17+ (`bpf_loop` 必須) / fixed chain のみ: さらに古くても可 |
 
-### 6.2 アーキテクチャ上動かない要件
+### 7.2 アーキテクチャ上動かない要件
 
 以下は本 DSL の design choice 上「動かない」もので、いずれも user 要望が出てから別 design check が必要:
 

@@ -71,7 +71,13 @@ func (p *parser) parseNotExpr() (*ast.WhereExpr, error) {
 	return p.parseWhereAtom()
 }
 
-// atom := "(" or_expr ")" | action_atom | flow_atom | arith_cmp
+// atom := "(" or_expr ")" | action_atom | flow_atom | quant_atom | arith_cmp
+//
+// quant_atom is `any( inner )` or `all( inner )` where inner is a
+// where expression that references an aux header stack (e.g.
+// `srv6.segments.addr == fc00::1`). The resolver locates the
+// iteration target inside the inner expression and codegen emits a
+// bpf_loop wrapper.
 func (p *parser) parseWhereAtom() (*ast.WhereExpr, error) {
 	startPos := p.cur.Pos
 	switch p.cur.Kind {
@@ -91,8 +97,30 @@ func (p *parser) parseWhereAtom() (*ast.WhereExpr, error) {
 		return p.parseActionAtom(startPos)
 	case lexer.TokFlow:
 		return p.parseFlowAtom(startPos)
+	case lexer.TokAny:
+		return p.parseQuantAtom(startPos, ast.WAny)
+	case lexer.TokAll:
+		return p.parseQuantAtom(startPos, ast.WAll)
 	}
 	return p.parseArithCmp(startPos)
+}
+
+// quant_atom := ("any"|"all") "(" or_expr ")"
+func (p *parser) parseQuantAtom(startPos ast.Position, kind ast.WhereKind) (*ast.WhereExpr, error) {
+	if err := p.advance(); err != nil { // consume 'any' / 'all'
+		return nil, err
+	}
+	if _, err := p.expect(lexer.TokLParen); err != nil {
+		return nil, err
+	}
+	inner, err := p.parseOrExpr()
+	if err != nil {
+		return nil, err
+	}
+	if _, err := p.expect(lexer.TokRParen); err != nil {
+		return nil, err
+	}
+	return &ast.WhereExpr{Kind: kind, Inner: inner, Pos: startPos}, nil
 }
 
 // action_atom := "action" "==" IDENT

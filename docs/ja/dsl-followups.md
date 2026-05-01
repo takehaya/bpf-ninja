@@ -91,10 +91,20 @@
 **追加で対応した項目** (本ブランチ):
 - **kernel 6.1 BSWAP**: ✅ 解消。`asm.BSwap` (opcode `0xd7`、6.6+) を使っていた `predicate.go` / `where.go` を `asm.HostTo(asm.BE, ...)` (BPF_END family、5.x で動く) に置換。equality は constant 側を codegen 時に byte-swap して swap 命令を完全省略。**vimto kernel 6.1 で 35 chains 全 PASS** を確認
 - **ESP terminal layer**: ✅ 完了。`pkg/kunai/protocols/esp.p4` 追加 — `eth/ipv4/esp` / `eth/ipv6/esp` で SPI/Sequence Number まで match できる (内側 encrypted は読めないので chain 終端)。dsltest E2E 追加 (`TestEthIPv{4,6}ESPMatch`)
+- **SRv6 segment chain decomposition** (PR 2): 🔄 **採用見送り (rollback 対象)**。`srv6seg_h` を独立 chain protocol として切り出し、`eth/ipv6/srv6/srv6seg+/tcp` で書ける形を試作したが、**SRH segment list は SRH wrapper の中身であり外側の独立 layer ではない** という構造上の不整合が議論で明確化。aux header model (`srv6.segments[N]`) で再実装する方針に切り替え。本 PR で導入した `ChainCountSpec` (`<SELF>_<PARENT>_COUNT_FROM_<FIELD>`) は aux header stack の count source として再利用可能。詳細は dsl-internals.md §6 を参照
+- **GTP-U ext header chain decomposition** (PR 3): 🔄 **採用見送り (rollback 対象)**。`gtpext.p4` を独立 chain protocol として切り出したが、PR 2 と同じ理由で aux header model (`gtp.exts[N]`) に切り替え。GTP ext は GTP wrapper の中身。本 PR の `*` / `?` quantifier silent-miss 問題 (NoCheck 親 dispatch との組合せ) も aux model なら parser block の state machine が gating を表現するので解消する
+
+**(Y) aux header model の採択** (主要設計判断):
+chain decomposition (PR 2/3) を試作する過程で、可変長構造には大きく **(A) stacked external headers** (= chain) と **(B/C/D) wrapper + aux headers** の 2 系統がある事実が明確化した。VLAN/MPLS/QinQ は (A)、SRv6 segment / GTP opt / GTP ext / TCP/IPv4 options は (B/C/D)。chain 機構で全部表現しようとすると wire 構造との対応が崩れる。aux header model (parser block の `out` 引数で aux を declare、state machine で gating 記述、DSL は `protocol.aux_name[.index][.field]` で access) に統一することで一貫性を確保。詳細な分類と実装指針は **`dsl-internals.md` §6 「可変長構造の分類と表現」** に集約。
 
 **残課題 (低優先、別 PR で対応想定)**:
 - **IPv6 ext + SRv6 Routing(43) 衝突**: 現状 scratch 512 で吸収。**fastpath JEq による verifier-narrowing を試行したが効果なし** — parser machine の done label に ext-walk path と fastpath path の両方が Ja で合流するため、verifier は両 path の R4 max を join して同じ広い bound を維持する (scratch 256 でも reject が再現)。fundamental には fastpath 専用の 別 done label + child dispatch 二重化が必要で、parser machine emit を大きく refactor する必要がある。scratch 512 (worst-case 320 B、余裕 192 B) で実用上は問題ないため defer
-- **aux header predicate** (`gtp[opt.next_ext > 0]` 等): `ErrNotImplemented`。実装には predicate codegen の field resolver を aux header に対応させ、aux extract が走ったあとに predicate を emit する位置調整が要る (parser machine の state 内 emit) — 大規模。primary header / `where` 句で代替できるケースが多いため defer
+- **aux header predicate / access** (`gtp.opt.next_ext`, `srv6.segments[0].addr`, `tcp.options.MSS.value` 等): ✅ **完了** (PR-A〜PR-D + PR-B' で landing)。
+  - PR-A: 単発 aux predicate + bracket form (`gtp[opt.next_ext == 0]` / `where gtp.opt.next_ext == 0`)
+  - PR-B + PR-B': aux header stack の static / dynamic index access (`srv6.segments[0].addr`, `srv6.segments[srv6.last_entry].addr`)、IPv6 アドレス比較対応
+  - PR-C: `any() / all()` 量化詞 (SRv6 segments を中心に、count guard 付き)
+  - PR-D: TCP options walk codegen + parser block 経由の vocab declaration (`tcp.options.MSS.value == 1460` 他)
+  - 残: `.exists` を bare bool atom として where parser に追加、IPv4 options vocab、CIDR/MAC literal の aux field 対応、option 内部 array (Phase 2 — SACK.blocks 等) はすべて future work
 
 ## P1: UX / 運用品質
 
@@ -273,6 +283,12 @@ P3-13 alt-of-alt           ⏳ 未着手
 P4-14 flow state           ⏳ 未着手
 P5-15 pkg/kunai/ 移動      ✅ 完了 (本ブランチ、internal/dsl/ → pkg/kunai/)
 P5-16 target 抽象化         ✅ 完了 (本ブランチ、Capabilities API + host/xdp サブパッケージ + ABI 文書化 + regression test)
+N0  PR2/3 rollback         ✅ 完了 (chain decomposition 撤回、aux model 採用)
+PR-A 単発 aux predicate    ✅ 完了 (gtp.opt.next_ext, bracket + where 両形式)
+PR-B aux header stack       ✅ 完了 (srv6.segments[N], gtp.exts[N] static + dynamic index)
+PR-B' SRv6 segments E2E     ✅ 完了 (where literal compare で IPv6 aux field 対応)
+PR-C any() / all()          ✅ 完了 (aux header stack 量化、count guard 付き)
+PR-D TCP options walk       ✅ 完了 (tcp.options.MSS.value 等、option-walk codegen + parser block 宣言)
 ```
 
 P0 / P1 / P5 すべて片付いた。残りは需要が出てから着手で良い水準。

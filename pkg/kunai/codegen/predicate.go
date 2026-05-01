@@ -69,14 +69,6 @@ func genPredicate(pred *ir.Predicate) (asm.Instructions, error) {
 // every emitted predicate on opcodes that work back to Linux 5.x,
 // matching the verifier-walk floor we promise.
 func emitIntPredicate(pred *ir.Predicate) (asm.Instructions, error) {
-	fieldOff, bytes, err := findFieldByteOffset(pred.Field.Layer.Spec, pred.Field.Field.Name)
-	if err != nil {
-		return nil, err
-	}
-	size, err := asmSizeFor(bytes)
-	if err != nil {
-		return nil, err
-	}
 	value := pred.Value.Int
 	// The resolver guarantees value fits in the field's bit width, so
 	// the only remaining constraint is asm.JumpOp.Imm's int32 limit.
@@ -89,7 +81,42 @@ func emitIntPredicate(pred *ir.Predicate) (asm.Instructions, error) {
 	if !ok {
 		return nil, fmt.Errorf("codegen: unknown comparison op %v", pred.Op)
 	}
-	insns := loadFromOffset(int16(fieldOff), size)
+	var insns asm.Instructions
+	var bytes int
+	dynamic := pred.Field != nil && pred.Field.Aux != nil && pred.Field.Aux.Stack != nil && !pred.Field.Aux.Stack.IsStatic
+	switch {
+	case dynamic:
+		bytes = pred.Field.Aux.FieldBitWidth / 8
+		size, err := asmSizeFor(bytes)
+		if err != nil {
+			return nil, err
+		}
+		// Gating doesn't apply to stack auxes (extracted unconditionally
+		// inside the parser-machine self-loop), so we skip emitAuxGating.
+		dyn, err := emitDynamicStackLoad(pred.Field, size, dslReject)
+		if err != nil {
+			return nil, err
+		}
+		insns = append(insns, dyn...)
+	default:
+		fieldOff, bs, err := fieldRefByteOffset(pred.Field)
+		if err != nil {
+			return nil, err
+		}
+		bytes = bs
+		size, err := asmSizeFor(bs)
+		if err != nil {
+			return nil, err
+		}
+		if pred.Field != nil && pred.Field.Aux != nil {
+			insns = append(insns, emitAuxGating(pred.Field.Aux.Gating, r4Anchor(), dslReject)...)
+		}
+		insns = append(insns, loadFromOffset(int16(fieldOff), size)...)
+	}
+	size, err := asmSizeFor(bytes)
+	if err != nil {
+		return nil, err
+	}
 	switch {
 	case bytes <= 1:
 		// 1-byte: register holds the raw byte; nothing to swap.
@@ -125,6 +152,9 @@ func swapValueBytes(v uint64, bytes int) uint64 {
 // at codegen time and compare with a single JEq/JNE — same trick
 // genFieldDispatch uses for protocol-id consts.
 func emitIPv4Predicate(pred *ir.Predicate) (asm.Instructions, error) {
+	if pred.Field != nil && pred.Field.Aux != nil {
+		return nil, fmt.Errorf("%w: IPv4 literal predicate on auxiliary header field is not yet supported", ErrNotImplemented)
+	}
 	fieldOff, bytes, err := findFieldByteOffset(pred.Field.Layer.Spec, pred.Field.Field.Name)
 	if err != nil {
 		return nil, err
@@ -149,6 +179,9 @@ func emitIPv4Predicate(pred *ir.Predicate) (asm.Instructions, error) {
 // half is byte-swapped at codegen so the LE-reading LDX matches the
 // BE constant. The == / != branching shape comes from multiWordRoute.
 func emitIPv6Predicate(pred *ir.Predicate) (asm.Instructions, error) {
+	if pred.Field != nil && pred.Field.Aux != nil {
+		return nil, fmt.Errorf("%w: IPv6 literal predicate on auxiliary header field is not yet supported", ErrNotImplemented)
+	}
 	fieldOff, err := requireIPv6Field(pred)
 	if err != nil {
 		return nil, err
@@ -176,6 +209,9 @@ func emitIPv6Predicate(pred *ir.Predicate) (asm.Instructions, error) {
 //   - /0 with == → emit nothing (matches every address).
 //   - /0 with != → Ja dslReject (matches no address).
 func emitIPv6CIDRPredicate(pred *ir.Predicate) (asm.Instructions, error) {
+	if pred.Field != nil && pred.Field.Aux != nil {
+		return nil, fmt.Errorf("%w: IPv6 CIDR predicate on auxiliary header field is not yet supported", ErrNotImplemented)
+	}
 	fieldOff, err := requireIPv6Field(pred)
 	if err != nil {
 		return nil, err
@@ -251,6 +287,9 @@ func requireIPv6Field(pred *ir.Predicate) (int, error) {
 // rebuild — both JNE.Imm comparisons fit in 32 bits and so leave R5
 // untouched. The == / != branching shape comes from multiWordRoute.
 func emitMACPredicate(pred *ir.Predicate) (asm.Instructions, error) {
+	if pred.Field != nil && pred.Field.Aux != nil {
+		return nil, fmt.Errorf("%w: MAC literal predicate on auxiliary header field is not yet supported", ErrNotImplemented)
+	}
 	fieldOff, bytes, err := findFieldByteOffset(pred.Field.Layer.Spec, pred.Field.Field.Name)
 	if err != nil {
 		return nil, err
@@ -381,6 +420,9 @@ func ipv6PrefixMaskBE(prefix int) (high, low uint64) {
 //   - /0 with == matches every address — emit nothing.
 //   - /0 with != matches nothing — jump straight to dslReject.
 func emitIPv4CIDRPredicate(pred *ir.Predicate) (asm.Instructions, error) {
+	if pred.Field != nil && pred.Field.Aux != nil {
+		return nil, fmt.Errorf("%w: IPv4 CIDR predicate on auxiliary header field is not yet supported", ErrNotImplemented)
+	}
 	fieldOff, bytes, err := findFieldByteOffset(pred.Field.Layer.Spec, pred.Field.Field.Name)
 	if err != nil {
 		return nil, err

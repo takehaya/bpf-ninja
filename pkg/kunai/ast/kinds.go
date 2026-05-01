@@ -138,6 +138,8 @@ const (
 	WAtomLiteralCmp              // field cmp network literal, e.g. ipv4.dst == 10.0.0.1
 	WAtomAction                  // action == XDP_DROP
 	WAtomFlow                    // flow.is_new | flow.age | flow.state
+	WAny                         // any(<inner>) — exists-quantifier over an aux header stack
+	WAll                         // all(<inner>) — for-all-quantifier over an aux header stack
 )
 
 func (k WhereKind) String() string {
@@ -156,6 +158,10 @@ func (k WhereKind) String() string {
 		return "action"
 	case WAtomFlow:
 		return "flow"
+	case WAny:
+		return "any"
+	case WAll:
+		return "all"
 	}
 	return fmt.Sprintf("WhereKind(%d)", int(k))
 }

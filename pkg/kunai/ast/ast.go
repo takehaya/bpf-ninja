@@ -48,16 +48,76 @@ type Layer struct {
 }
 
 // FieldPath is a dotted identifier chain such as "outer.total_length".
+//
+// Indices, when non-nil, is parallel to Parts: Indices[i] holds the
+// optional `[expr]` that followed Parts[i] in the source. nil entries
+// mean "no index for that segment". Used by aux header stack access
+// such as `srv6.segments[0].addr` (Parts = [srv6, segments, addr],
+// Indices[1] = int literal 0).
 type FieldPath struct {
-	Parts []string
-	Pos   Position
+	Parts   []string
+	Indices []*IndexExpr // nil when no segment carries an index
+	Pos     Position
 }
 
 func (f *FieldPath) String() string {
 	if f == nil {
 		return "<nil>"
 	}
-	return strings.Join(f.Parts, ".")
+	if len(f.Indices) == 0 {
+		return strings.Join(f.Parts, ".")
+	}
+	var b strings.Builder
+	for i, p := range f.Parts {
+		if i > 0 {
+			b.WriteByte('.')
+		}
+		b.WriteString(p)
+		if i < len(f.Indices) && f.Indices[i] != nil {
+			b.WriteByte('[')
+			b.WriteString(f.Indices[i].String())
+			b.WriteByte(']')
+		}
+	}
+	return b.String()
+}
+
+// IndexExpr is the resolved form of a `[…]` index that follows a
+// path segment. Either Int or Field is set (mutually exclusive).
+type IndexExpr struct {
+	Int      uint64     // when IsInt is true
+	IsInt    bool
+	Field    *FieldPath // when IsInt is false
+	Pos      Position
+}
+
+func (e *IndexExpr) String() string {
+	if e == nil {
+		return ""
+	}
+	if e.IsInt {
+		return fmtInt(e.Int)
+	}
+	if e.Field != nil {
+		return e.Field.String()
+	}
+	return "?"
+}
+
+func fmtInt(v uint64) string {
+	// Avoid pulling in strconv just for this; the values that show up
+	// here are small (chain index caps, parent.field bit widths).
+	if v == 0 {
+		return "0"
+	}
+	var buf [20]byte
+	i := len(buf)
+	for v > 0 {
+		i--
+		buf[i] = byte('0' + v%10)
+		v /= 10
+	}
+	return string(buf[i:])
 }
 
 // Predicate is one entry within a layer's [...] list.

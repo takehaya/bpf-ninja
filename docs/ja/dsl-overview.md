@@ -9,6 +9,7 @@
 | **使いたい** (CLI で `--dsl` を叩く) | [`dsl-usage.md`](./dsl-usage.md) → [`dsl-grammar.md`](./dsl-grammar.md) (詳しい文法) |
 | **library として使いたい** (Go から `kunai.Compile`) | [`pkg/kunai/README.md`](../../pkg/kunai/README.md) (英語) |
 | **vocab を書きたい** (新プロトコル追加) | [`pkg/kunai/protocols/`](../../pkg/kunai/protocols/) の既存 .p4 を参考に + [`pkg/kunai/vocab/loader.go`](../../pkg/kunai/vocab/loader.go) の `classifyConsts` で命名規約を確認 |
+| **可変長構造をどう vocab で表すか知りたい** (chain vs aux の判断) | [`dsl-internals.md` §6](./dsl-internals.md#6-可変長構造の分類と表現) |
 | **中身をレビューしたい** (codegen / verifier) | [`dsl-walkthrough.md`](./dsl-walkthrough.md) (コード読解ガイド) |
 | **何が残ってるか見たい** | [`dsl-followups.md`](./dsl-followups.md) |
 | **性能比較したい** | [`dsl-benchmark.md`](./dsl-benchmark.md) |

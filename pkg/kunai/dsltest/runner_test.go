@@ -79,6 +79,63 @@ func TestParserMachineGTPOpt(t *testing.T) {
 	r.MustMatch(t, pkt, "GTP-U with opt block (next_ext=0)")
 }
 
+// TestAuxPredicateGtpOptNextExt exercises the single-aux predicate
+// codegen: gating reads (gtp[0] & 0x07) and rejects when zero (= opt
+// not present), then reads byte 11 (= gtp+8+3 = opt.next_ext) and
+// compares with the literal. A frame with E/S/PN clear should be
+// rejected because the gate fails (no opt extracted) — even though
+// numerically that same byte happens to be zero in the wire.
+func TestAuxPredicateGtpOptNextExt(t *testing.T) {
+	r := New(t, "eth/ipv4/udp/gtp[opt.next_ext==0]/ipv4/tcp")
+	matchPkt := BuildGTPU(t, GTPUOpts{
+		TEID:    0xdeadbeef,
+		Flags:   0x32, // version=1, pt=1, s=1 → opt extracted
+		MsgType: 0xff,
+		Opt:     &GTPOpt{Seq: 0x1234, NextExt: 0},
+	})
+	r.MustMatch(t, matchPkt, "gtp.opt.next_ext == 0 with opt present")
+
+	mismatchExt := BuildGTPU(t, GTPUOpts{
+		TEID:    0xdeadbeef,
+		Flags:   0x34, // E=1 → opt with non-zero next_ext (chain follows)
+		MsgType: 0xff,
+		Opt:     &GTPOpt{NextExt: 0xc0},
+		Exts: []GTPExt{
+			{ExtLength: 1, ExtType: 0x0001, NextExt: 0},
+		},
+	})
+	r.MustReject(t, mismatchExt, "gtp.opt.next_ext != 0 (= 0xc0)")
+
+	noOpt := BuildGTPU(t, GTPUOpts{
+		TEID:    0xdeadbeef,
+		Flags:   0x30, // E=S=PN=0 → opt absent, gate fails
+		MsgType: 0xff,
+	})
+	r.MustReject(t, noOpt, "opt absent (E|S|PN clear) — gate fails, predicate fails")
+}
+
+// TestAuxPredicateGtpOptInWhere covers the same predicate written in
+// the where clause form: `where gtp.opt.next_ext == 0`. Same gating
+// + read shape, just exercised through the where path instead of
+// the bracket path.
+func TestAuxPredicateGtpOptInWhere(t *testing.T) {
+	r := New(t, "eth/ipv4/udp/gtp/ipv4/tcp where gtp.opt.next_ext == 0")
+	matchPkt := BuildGTPU(t, GTPUOpts{
+		TEID:    0xdeadbeef,
+		Flags:   0x32,
+		MsgType: 0xff,
+		Opt:     &GTPOpt{Seq: 0x1234, NextExt: 0},
+	})
+	r.MustMatch(t, matchPkt, "where gtp.opt.next_ext == 0 with opt present")
+
+	noOpt := BuildGTPU(t, GTPUOpts{
+		TEID:    0xdeadbeef,
+		Flags:   0x30,
+		MsgType: 0xff,
+	})
+	r.MustReject(t, noOpt, "where gtp.opt.next_ext == 0 with opt absent — gate fails")
+}
+
 // TestParserMachineGTPExt exercises the parse_ext self-loop: opt's
 // next_ext is non-zero, then exts run until next_ext == 0. Two ext
 // headers here so the bpf_loop callback runs at least once.
@@ -95,6 +152,152 @@ func TestParserMachineGTPExt(t *testing.T) {
 		},
 	})
 	r.MustMatch(t, pkt, "GTP-U with 2 ext headers")
+}
+
+// TestAuxStackGtpExtsIndex0 reads the first GTP extension's
+// ext_type via static aux header stack index `gtp.exts[0]`. The
+// ext stack starts at offset 12 (gtp_h 8 + gtp_opt_h 4); ext_type
+// is at +1 (after the 1-byte ext_length), so the read lands at
+// scratch byte gtp_layer_offset + 13.
+func TestAuxStackGtpExtsIndex0(t *testing.T) {
+	r := New(t, "eth/ipv4/udp/gtp/ipv4/tcp where gtp.exts[0].ext_type == 1")
+	matchPkt := BuildGTPU(t, GTPUOpts{
+		TEID:    0xdeadbeef,
+		Flags:   0x34, // E=1 → opt + ext
+		MsgType: 0xff,
+		Opt:     &GTPOpt{NextExt: 0xc0},
+		Exts: []GTPExt{
+			{ExtLength: 1, ExtType: 1, NextExt: 0},
+		},
+	})
+	r.MustMatch(t, matchPkt, "gtp.exts[0].ext_type == 1")
+
+	mismatch := BuildGTPU(t, GTPUOpts{
+		TEID:    0xdeadbeef,
+		Flags:   0x34,
+		MsgType: 0xff,
+		Opt:     &GTPOpt{NextExt: 0xc0},
+		Exts: []GTPExt{
+			{ExtLength: 1, ExtType: 0x0099, NextExt: 0},
+		},
+	})
+	r.MustReject(t, mismatch, "gtp.exts[0].ext_type != 1 (= 0x99)")
+}
+
+// TestAuxStackSrv6SegmentsStaticIndex reads the first SRv6 segment
+// (= final destination, segment[0] in wire order) via static index
+// access. SRH segments live in the variable trail of srv6_h: the
+// resolver places the stack base at offset 8 (= sizeof(srv6_h)) and
+// segment[0] starts there.
+func TestAuxStackSrv6SegmentsStaticIndex(t *testing.T) {
+	r := New(t, "eth/ipv6/srv6/tcp where srv6.segments[0].addr == fc00::1")
+	matchPkt := BuildSRv6(t, SRv6Opts{
+		Segments:        []net.IP{net.ParseIP("fc00::1")},
+		InnerNextHeader: 6,
+	})
+	r.MustMatch(t, matchPkt, "first segment == fc00::1")
+
+	mismatch := BuildSRv6(t, SRv6Opts{
+		Segments:        []net.IP{net.ParseIP("fc00::beef")},
+		InnerNextHeader: 6,
+	})
+	r.MustReject(t, mismatch, "first segment != fc00::1 (= fc00::beef)")
+}
+
+// TestAuxStackSrv6SegmentsAnyMatch covers the `any(...)` quantifier:
+// the iter target is srv6.segments and the predicate fires when at
+// least one segment equals the literal. Static unrolls 8 iterations
+// (= stack capacity), each guarded by `iter < srv6.last_entry+1` so
+// out-of-range reads can't accidentally match in the bytes past the
+// real segment list.
+func TestAuxStackSrv6SegmentsAnyMatch(t *testing.T) {
+	r := New(t, "eth/ipv6/srv6/tcp where any(srv6.segments.addr == fc00::2)")
+	matchPkt := BuildSRv6(t, SRv6Opts{
+		Segments: []net.IP{
+			net.ParseIP("fc00::1"),
+			net.ParseIP("fc00::2"),
+			net.ParseIP("fc00::3"),
+		},
+		InnerNextHeader: 6,
+	})
+	r.MustMatch(t, matchPkt, "any(segments.addr == fc00::2) — middle segment matches")
+
+	missPkt := BuildSRv6(t, SRv6Opts{
+		Segments: []net.IP{
+			net.ParseIP("fc00::1"),
+			net.ParseIP("fc00::3"),
+		},
+		InnerNextHeader: 6,
+	})
+	r.MustReject(t, missPkt, "any(segments.addr == fc00::2) — no segment matches")
+}
+
+// TestAuxStackSrv6SegmentsAllMatch covers `all(...)`: every segment
+// must satisfy the predicate. With the count guard, iterations
+// beyond the actual segment count are skipped from the all() vote.
+func TestAuxStackSrv6SegmentsAllMatch(t *testing.T) {
+	r := New(t, "eth/ipv6/srv6/tcp where all(srv6.segments.addr == fc00::1)")
+	matchPkt := BuildSRv6(t, SRv6Opts{
+		Segments: []net.IP{
+			net.ParseIP("fc00::1"),
+			net.ParseIP("fc00::1"),
+			net.ParseIP("fc00::1"),
+		},
+		InnerNextHeader: 6,
+	})
+	r.MustMatch(t, matchPkt, "all(segments.addr == fc00::1) — all three match")
+
+	mixedPkt := BuildSRv6(t, SRv6Opts{
+		Segments: []net.IP{
+			net.ParseIP("fc00::1"),
+			net.ParseIP("fc00::2"),
+			net.ParseIP("fc00::1"),
+		},
+		InnerNextHeader: 6,
+	})
+	r.MustReject(t, mixedPkt, "all(segments.addr == fc00::1) — middle segment differs")
+}
+
+// TestAuxStackSrv6SegmentsDynamicIndex reads the segment at the
+// runtime index `srv6.last_entry`. With 3 segments wire-order
+// [fc00::1, fc00::2, fc00::3], last_entry == 2 so the read picks
+// fc00::3 (= the next hop). The codegen path: load byte at
+// srv6_h[4], JGE-bound-check vs capacity 8, multiply by 16, add to
+// stack base, LDX two 8-byte halves.
+func TestAuxStackSrv6SegmentsDynamicIndex(t *testing.T) {
+	r := New(t, "eth/ipv6/srv6/tcp where srv6.segments[srv6.last_entry].addr == fc00::3")
+	matchPkt := BuildSRv6(t, SRv6Opts{
+		Segments: []net.IP{
+			net.ParseIP("fc00::1"),
+			net.ParseIP("fc00::2"),
+			net.ParseIP("fc00::3"),
+		},
+		InnerNextHeader: 6,
+	})
+	r.MustMatch(t, matchPkt, "segments[last_entry] == fc00::3")
+
+	mismatch := BuildSRv6(t, SRv6Opts{
+		Segments: []net.IP{
+			net.ParseIP("fc00::1"),
+			net.ParseIP("fc00::2"),
+			net.ParseIP("fc00::99"),
+		},
+		InnerNextHeader: 6,
+	})
+	r.MustReject(t, mismatch, "segments[last_entry] != fc00::3 (= fc00::99)")
+}
+
+// TestAuxStackIpv6ExtsIndex0 reads the first IPv6 extension's
+// next_header via `ipv6.exts[0].next_header`. The ext stack starts
+// at offset 40 (ipv6_h size); next_header is byte 0 of an ext.
+func TestAuxStackIpv6ExtsIndex0(t *testing.T) {
+	r := New(t, "eth/ipv6/tcp where ipv6.exts[0].next_header == 6")
+	pkt := BuildIPv6WithExts(t, IPv6WithExtsOpts{
+		FirstNextHeader: 0,  // HBH
+		Exts:            []IPv6Ext{{NextHeader: 6, HdrExtLen: 0, Options: bytes16("hbh-payload")}},
+		FinalNextHeader: 6, // TCP
+	})
+	r.MustMatch(t, pkt, "first ipv6 ext.next_header == 6 (= TCP)")
 }
 
 // TestParserMachineGTPRejectsNonGTPDport confirms the parent-layer
@@ -308,6 +511,64 @@ func TestIPv4OptionsMaxIHL(t *testing.T) {
 		{OptionType: 1}, // NOP
 	}
 	r.MustMatch(t, Build(t, o), "ipv4 IHL=15 (40B options) + tcp")
+}
+
+// TestTCPOptionLookupMSSValue exercises the option-walk codegen:
+// `tcp.options.MSS.value == 1460` scans the TCP options area until
+// it finds kind=2 (MSS) and reads its 16-bit value field.
+func TestTCPOptionLookupMSSValue(t *testing.T) {
+	r := New(t, "eth/ipv4/tcp where tcp.options.MSS.value == 1460")
+	matchOpts := Defaults()
+	matchOpts.TCPOptions = []layers.TCPOption{{
+		OptionType:   layers.TCPOptionKindMSS,
+		OptionLength: 4,
+		OptionData:   []byte{0x05, 0xb4}, // 1460
+	}}
+	r.MustMatch(t, Build(t, matchOpts), "MSS.value == 1460")
+
+	mismatchOpts := Defaults()
+	mismatchOpts.TCPOptions = []layers.TCPOption{{
+		OptionType:   layers.TCPOptionKindMSS,
+		OptionLength: 4,
+		OptionData:   []byte{0x05, 0xa0}, // 1440
+	}}
+	r.MustReject(t, Build(t, mismatchOpts), "MSS.value == 1440 vs filter 1460")
+
+	// MSS absent → walk reaches end-of-options without match → reject.
+	noMSSOpts := Defaults()
+	noMSSOpts.TCPOptions = []layers.TCPOption{{
+		OptionType:   layers.TCPOptionKindWindowScale,
+		OptionLength: 3,
+		OptionData:   []byte{7},
+	}}
+	r.MustReject(t, Build(t, noMSSOpts), "MSS option absent — walk fails to find")
+}
+
+// TestTCPOptionLookupSkipUnknown exercises the unknown-kind branch:
+// MSS lives behind a Window Scale option, so the walk must read WS's
+// length byte and advance correctly to find MSS at the next position.
+func TestTCPOptionLookupSkipUnknown(t *testing.T) {
+	r := New(t, "eth/ipv4/tcp where tcp.options.MSS.value == 1460")
+	o := Defaults()
+	o.TCPOptions = []layers.TCPOption{
+		{OptionType: layers.TCPOptionKindWindowScale, OptionLength: 3, OptionData: []byte{7}},
+		{OptionType: layers.TCPOptionKindMSS, OptionLength: 4, OptionData: []byte{0x05, 0xb4}},
+	}
+	r.MustMatch(t, Build(t, o), "WS first, MSS second — walk skips unknown")
+}
+
+// TestTCPOptionLookupNopPadding exercises the padding (NOP) branch:
+// NOP options advance R3 by 1 byte without a length field. MSS lives
+// after several NOPs so the walk must advance past them correctly.
+func TestTCPOptionLookupNopPadding(t *testing.T) {
+	r := New(t, "eth/ipv4/tcp where tcp.options.MSS.value == 1460")
+	o := Defaults()
+	o.TCPOptions = []layers.TCPOption{
+		{OptionType: layers.TCPOptionKindNop},
+		{OptionType: layers.TCPOptionKindNop},
+		{OptionType: layers.TCPOptionKindMSS, OptionLength: 4, OptionData: []byte{0x05, 0xb4}},
+	}
+	r.MustMatch(t, Build(t, o), "MSS after 2 NOPs — walk advances past padding")
 }
 
 // TestTCPOptionsMaxDataOffset drives data_offset=15 (maximum),

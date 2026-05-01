@@ -39,8 +39,8 @@ eth/ipv4/udp/gtp/ipv4/tcp           # GTP-U の内側 IP
 | `cw` | EoMPLS Control Word |
 | `mpls` | label stack (詳細は後述) |
 | `gre`, `vxlan`, `geneve` | encapsulation |
-| `gtp` | GTP-U |
-| `srv6` | SRH (segment list は MVP 範囲外) |
+| `gtp` | GTP-U (固定 8 B + E/S/PN flag で optional 4 B + ext header 列) |
+| `srv6` | SRH (固定 8 B + segment list)。segment list は `srv6.segments[N]` で aux header stack として access |
 
 ### Quantifier
 
@@ -86,6 +86,14 @@ eth[dst==de:ad:be:ef:00:01]/ipv4/tcp               # MAC アドレス
 
 すべてのリテラルで `==` / `!=` が使える。整数リテラルのみ ordered (`<`, `<=`, `>`, `>=`) も可。
 
+**Aux header field** にも bracket 内でアクセスできる (例: GTP-U の opt block):
+
+```
+eth/ipv4/udp/gtp[opt.next_ext == 0]/ipv4/tcp     # GTP の auxiliary header opt の next_ext field
+```
+
+ただし aux header stack (`gtp.exts`, `srv6.segments` 等) は index または `where any/all(...)` 必要。詳細は §Where 節 を参照。
+
 ### Where 節
 
 レイヤチェーンの後に `where <expr>` を付けて、より広い条件を書く。
@@ -109,9 +117,51 @@ eth/ipv4/tcp where action == XDP_DROP            # exit mode 限定
 
 #### フィールド参照
 
-- `proto.field` — チェーン内に同名 protocol が 1 つしかないとき。
-- `@label.field` — `eth/ipv4@outer/udp/gtp/ipv4@inner/tcp` のように `@label` 付与しておく。
-- 同じ protocol が 2 つ以上あって `@label` が無い場合は resolve エラー。
+| 形 | 例 | 用途 |
+|---|---|---|
+| `proto.field` | `tcp.dport` | primary header の field (チェーン内 1 個のとき) |
+| `@label.field` | `outer.src` | 同 protocol が複数あるときラベルで識別 |
+| `proto.aux.field` | `gtp.opt.next_ext` | 単発 auxiliary header の field |
+| `proto.stack[N].field` | `srv6.segments[0].addr` | aux header stack の N 番目 (静的 index) |
+| `proto.stack[expr].field` | `srv6.segments[srv6.last_entry].addr` | 動的 index (parent header field 由来) |
+| `proto.options.NAME.field` | `tcp.options.MSS.value` | TCP/IPv4 option lookup |
+
+#### Aux header / stack / options アクセスの実例
+
+```
+# GTP-U の opt block の next_ext (gating 自動)
+eth/ipv4/udp/gtp/ipv4/tcp where gtp.opt.next_ext == 0
+
+# SRv6 segment list の特定位置
+eth/ipv6/srv6/tcp where srv6.segments[0].addr == fc00::1            # 最終 dest (wire 先頭)
+eth/ipv6/srv6/tcp where srv6.segments[srv6.last_entry].addr == X    # 最後の hop
+eth/ipv6/srv6/tcp where srv6.segments[srv6.segments_left].addr == X # 現 active hop
+
+# IPv6 / GTP-U extension headers
+eth/ipv6/tcp where ipv6.exts[0].next_header == 44                    # 最初の ext type
+eth/ipv4/udp/gtp/ipv4/tcp where gtp.exts[0].ext_type == 1            # 最初の GTP ext type
+
+# TCP option lookup (走査して match)
+eth/ipv4/tcp where tcp.options.MSS.value == 1460
+eth/ipv4/tcp where tcp.options.WS.shift > 5
+eth/ipv4/tcp where tcp.options.TS.val > 0
+```
+
+#### Quantifier (`any` / `all`)
+
+aux header stack 全 entry に対する量化:
+
+```
+# どれかの segment が一致 (∃)
+eth/ipv6/srv6/tcp where any(srv6.segments.addr == fc00::1)
+
+# 全 segment が一致 (∀)
+eth/ipv6/srv6/tcp where all(srv6.segments.addr == fc00::1)
+```
+
+`any/all` 内では aux header stack 名を **index 無し** で書く (= iteration 変数)。EXPR 内に stack 参照は **1 個まで** (複数あると parse error)。
+
+SRv6 segments のような parent-count 系には自動 count guard が入る (= `srv6.last_entry+1` を超えた walk は無視)。
 
 #### action atom
 

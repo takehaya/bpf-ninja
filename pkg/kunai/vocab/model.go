@@ -5,6 +5,7 @@ package vocab
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/takehaya/xdp-ninja/pkg/kunai/vocab/p4lite"
 )
@@ -44,6 +45,14 @@ type ProtocolSpec struct {
 	// the flag bits within the primary header.
 	FlagTriggers    []FlagTrigger
 	FlagsByteOffset int
+	// OptionWalk describes a TCP/IPv4-style options walk: byte 0 of
+	// each option is a kind discriminator, kind=Terminator stops the
+	// walk, kind=Padding advances 1 byte, otherwise byte LengthByteOff
+	// gives the option's total byte length and the codegen advances
+	// by that much. Per-option metadata (kind, total bytes, named
+	// header type) lives in Options. nil when the .p4 declared no
+	// option-walk consts.
+	OptionWalk *OptionWalk
 	// ParseStateMachine is a normalised view of the protocol's
 	// `parser` block, populated when the block describes more than
 	// the trivial "extract primary header; transition accept;"
@@ -82,6 +91,45 @@ type VariableSuffix struct {
 	LenShift   int
 	Scale      int
 	Base       int // bytes to subtract (i.e. minimum header size in bytes)
+}
+
+// OptionWalk carries the metadata codegen needs to walk a TCP/IPv4
+// option list and dispatch on per-option kind. The walk starts at
+// the layer's variable trailer (= primary header size) and ends at
+// the trailer length declared by VAREXT or at the first terminator
+// kind, whichever comes first.
+type OptionWalk struct {
+	TerminatorKind uint64
+	PaddingKind    uint64
+	LengthByteOff  int
+	// Options lists the named options the .p4 declared, in
+	// declaration order. Each entry pairs the user-facing name
+	// (e.g. "MSS") with its kind discriminator and the aux header
+	// the parser block out-bound it to.
+	Options []OptionEntry
+}
+
+// OptionEntry is one named option's metadata.
+type OptionEntry struct {
+	Name      string         // upper-case, matches DSL identifier
+	Kind      uint64         // kind discriminator
+	Size      int            // total option byte size; 0 = variable
+	HeaderRef *p4lite.Header // pointer into File.Headers for tcp_opt_<name>_h
+}
+
+// FindOption returns the entry matching name (case-insensitive) and
+// true when present.
+func (w *OptionWalk) FindOption(name string) (*OptionEntry, bool) {
+	if w == nil {
+		return nil, false
+	}
+	upper := strings.ToUpper(name)
+	for i := range w.Options {
+		if w.Options[i].Name == upper {
+			return &w.Options[i], true
+		}
+	}
+	return nil, false
 }
 
 // FlagTrigger names one optional fixed-length field gated by a flag
@@ -229,7 +277,72 @@ type ParseStateMachine struct {
 	EntryIdx   int            // index of the "start" state
 	HeaderRefs map[string]*p4lite.Header
 	StackRefs  map[string]*HeaderStack // out-stack param name → resolved stack
+	// AuxLayouts maps each non-stack `out` parameter name to its byte
+	// position within the layer plus the (optional) gating predicate
+	// that decides whether the aux is extracted on a given packet's
+	// path. Predicate codegen consumes this to read aux header fields
+	// at static offsets and, when Gating != nil, gate the read on the
+	// gating condition. nil entries are absent — a missing key means
+	// the corresponding out parameter is a stack (StackRefs).
+	AuxLayouts map[string]*AuxLayout
 }
+
+// AuxLayout is the per-aux summary needed by predicate codegen.
+type AuxLayout struct {
+	OutParam      string         // parser out parameter name (e.g. "opt")
+	HeaderName    string         // referenced header type name (e.g. "gtp_opt_h")
+	HeaderRef     *p4lite.Header // pointer into File.Headers (do not mutate)
+	OffsetInLayer int            // bytes from layer-entry slot to aux start
+	HeaderSize    int            // bytes; byte-aligned (mirrors ExtractOp.HeaderSize/8)
+	// Gating describes the runtime condition that decides whether the
+	// aux is present on this packet. nil means "extracted
+	// unconditionally on every accepted path". The MVP only models
+	// gating reachable from a single tuple-select at the entry state
+	// where each key is a single-bit (or otherwise narrow) field of
+	// the primary header — that covers GTP's E/S/PN tuple. Other
+	// shapes are surfaced as build errors so they cannot silently
+	// land as "always-present" auxes.
+	Gating *AuxGating
+}
+
+// FindField returns the bit window of a named field within the aux
+// header. (bitOff, bitWidth) are in bits, relative to the aux
+// header's start (= AuxLayout.OffsetInLayer × 8). The bool is false
+// when the aux header has no field by that name.
+func (a *AuxLayout) FindField(name string) (int, int, bool) {
+	if a == nil || a.HeaderRef == nil {
+		return 0, 0, false
+	}
+	bitOff := 0
+	for _, f := range a.HeaderRef.Fields {
+		if f.Name == name {
+			return bitOff, f.Bits, true
+		}
+		bitOff += f.Bits
+	}
+	return 0, 0, false
+}
+
+// AuxGating expresses "the aux is extracted iff (primary[ByteOff] &
+// Mask) <Op> Value". The byte offset is within the primary header
+// (= layer-entry slot + ByteOff). MVP: every gating in the bundled
+// vocab fits this shape.
+type AuxGating struct {
+	ByteOff int      // within primary header
+	Mask    uint64   // bits looked at; Mask <= 0xFF for the MVP byte read
+	Op      GatingOp // Eq | Ne
+	Value   uint64
+}
+
+// GatingOp is the comparison used in AuxGating.
+type GatingOp int
+
+const (
+	// GatingEq fires the aux when (primary[ByteOff] & Mask) == Value.
+	GatingEq GatingOp = iota
+	// GatingNe fires the aux when (primary[ByteOff] & Mask) != Value.
+	GatingNe
+)
 
 // IsAccept reports whether t terminates the machine in the "accept"
 // final state (StateAccept sentinel). Direct/select transitions can
@@ -259,11 +372,21 @@ type HeaderStack struct {
 
 // ParseState is a single state in the machine. Extracts run in
 // declaration order, then Trans decides where control goes next.
+//
+// OffsetAtEntry is the byte distance from the layer's primary header
+// start (= layer-entry slot) to where R4 points when control arrives
+// at this state. Computed by walking the state graph from "start"
+// (where OffsetAtEntry == 0) and accumulating extract sizes along
+// each direct/select edge. -1 means "not on a non-cyclic path from
+// start" or "the state participates in a stack-push cycle whose
+// per-iteration offset is not a single value" — predicate codegen
+// must route those through the bpf_loop machinery, not static reads.
 type ParseState struct {
-	Name     string
-	Extracts []ExtractOp
-	Trans    TransitionOp
-	Pos      p4lite.Position
+	Name          string
+	Extracts      []ExtractOp
+	Trans         TransitionOp
+	OffsetAtEntry int
+	Pos           p4lite.Position
 }
 
 // ExtractOp is one `obj.extract(<var>)` or `obj.extract(<stack>.next)`

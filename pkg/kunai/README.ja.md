@@ -16,6 +16,9 @@
 eth/ipv4/udp/vxlan/eth/ipv4/tcp[dport=443]
 eth/ipv4@outer/udp/gtp/ipv4@inner/tcp where outer.dst == 0xc0a80101
 eth/mpls{1,8}/ipv4/tcp where ipv4.total_length > 100 capture headers+64
+eth/ipv4/udp/gtp[opt.next_ext == 0]/ipv4/tcp                            # auxiliary header field
+eth/ipv6/srv6/tcp where any(srv6.segments.addr == fc00::1)              # aux header stack quantifier
+eth/ipv4/tcp where tcp.options.MSS.value == 1460                        # TCP option lookup
 ```
 
 `kunai.Compile` に渡すと以下が返る:

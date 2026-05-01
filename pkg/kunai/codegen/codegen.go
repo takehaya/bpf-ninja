@@ -733,6 +733,184 @@ func findFieldByteOffset(spec *vocab.ProtocolSpec, name string) (int, int, error
 	return bitOff / 8, bits / 8, nil
 }
 
+// fieldRefByteOffset returns the byte offset (relative to the
+// owning layer's start, anchored on offsetBase at predicate-emit
+// time) and byte width for a FieldRef. Aux references add the aux
+// header's OffsetInLayer to the field's bit-window byte offset
+// inside that aux header; aux header stack references with a static
+// index further add Static * ElemSize so a single immediate offset
+// points at the addressed entry's field. Predicate codegen uses
+// this in place of findFieldByteOffset whenever the field may
+// belong to an aux header.
+//
+// Dynamic stack indices return ErrNotImplemented from this helper —
+// they need a different code shape (runtime field load + multiply +
+// add) emitted via emitAuxStackDynamicLoad. Callers wrap this
+// helper for the static path only.
+func fieldRefByteOffset(ref *ir.FieldRef) (int, int, error) {
+	if ref == nil {
+		return 0, 0, fmt.Errorf("codegen: nil field ref")
+	}
+	if ref.Aux != nil && ref.Aux.Option != nil {
+		return 0, 0, fmt.Errorf("%w: TCP/IPv4 option lookup (`%s.options.%s`) requires the option-walk codegen which is not yet implemented", ErrNotImplemented, ref.Layer.Spec.Name, ref.Aux.Option.Name)
+	}
+	if ref.Aux == nil {
+		return findFieldByteOffset(ref.Layer.Spec, ref.Field.Name)
+	}
+	if ref.Aux.FieldBitOff%8 != 0 {
+		return 0, 0, fmt.Errorf("%w: aux field %s.%s.%s starts at bit %d (not byte-aligned)", ErrNotImplemented, ref.Layer.Spec.Name, ref.Aux.OutParam, ref.Field.Name, ref.Aux.FieldBitOff)
+	}
+	if ref.Aux.FieldBitWidth%8 != 0 {
+		return 0, 0, fmt.Errorf("%w: aux field %s.%s.%s is %d bits (not byte-sized)", ErrNotImplemented, ref.Layer.Spec.Name, ref.Aux.OutParam, ref.Field.Name, ref.Aux.FieldBitWidth)
+	}
+	if ref.Aux.FieldBitWidth/8 > 8 {
+		return 0, 0, fmt.Errorf("%w: aux field %s.%s.%s is %d bytes (max 8)", ErrNotImplemented, ref.Layer.Spec.Name, ref.Aux.OutParam, ref.Field.Name, ref.Aux.FieldBitWidth/8)
+	}
+	off := ref.Aux.OffsetInLayer + ref.Aux.FieldBitOff/8
+	if ref.Aux.Stack != nil {
+		if !ref.Aux.Stack.IsStatic {
+			return 0, 0, fmt.Errorf("%w: dynamic aux header stack index requires runtime offset emit (use emitAuxStackDynamicLoad)", ErrNotImplemented)
+		}
+		off += int(ref.Aux.Stack.Static) * ref.Aux.HeaderSize
+	}
+	return off, ref.Aux.FieldBitWidth / 8, nil
+}
+
+// emitAuxGating emits the runtime check that the aux is present on
+// this packet's path: reads one byte from primary[Gating.ByteOff],
+// masks it with Gating.Mask, and jumps to failLabel when the
+// comparison disagrees. The byte address is computed via base —
+// predicate-time callers pass r4Anchor() (R4 still equals layer
+// entry); where-clause callers pass absAnchor(absOff) where
+// absOff = c.layerOffset(layer). nil gating emits no instructions.
+func emitAuxGating(g *vocab.AuxGating, base layerAnchor, failLabel string) asm.Instructions {
+	if g == nil {
+		return nil
+	}
+	var insns asm.Instructions
+	if base.UseR4 {
+		insns = loadFromOffset(int16(g.ByteOff), asm.Byte)
+	} else {
+		insns = asm.Instructions{
+			asm.LoadMem(asm.R3, asm.R0, int16(base.AbsOffset+g.ByteOff), asm.Byte),
+		}
+	}
+	insns = append(insns, asm.And.Imm(asm.R3, int32(g.Mask)))
+	switch g.Op {
+	case vocab.GatingNe:
+		insns = append(insns, asm.JEq.Imm(asm.R3, int32(g.Value), failLabel))
+	case vocab.GatingEq:
+		insns = append(insns, asm.JNE.Imm(asm.R3, int32(g.Value), failLabel))
+	}
+	return insns
+}
+
+// emitDynamicStackAddress emits the runtime index source byte read,
+// bounds check, and multiply-add address compute for a dynamic aux
+// header stack index. After it runs, R5 holds the absolute scratch
+// address of the addressed stack entry's start. Callers append one
+// or more LDX from R5 with field-relative offsets to read individual
+// fields.
+//
+// `layerBase` describes how the layer's start is anchored:
+//   - LayerAnchorR4: R0 + offsetBase = layer start. Used by predicate
+//     codegen which runs while R4 still equals layer entry.
+//   - LayerAnchorAbsolute(off): R0 + off = layer start. Used by
+//     where-clause codegen which runs after R4 has advanced past
+//     every layer.
+//
+// failLabel is where the bounds check jumps when the runtime index
+// reaches the stack's declared capacity. R3 is also clobbered; R5
+// remains live until the next emitter that touches it.
+//
+// MVP constraints:
+//   - The dynamic index source must be a byte-aligned 1-byte
+//     primary-header field of the same layer.
+//   - The element size must be ≤127 (single-byte multiplier).
+//   - The aux's OffsetInLayer is folded into R5 too: callers'
+//     trailing LDX uses field byte offset within the aux, no extra
+//     base addition required.
+func emitDynamicStackAddress(ref *ir.FieldRef, base layerAnchor, failLabel string) (asm.Instructions, error) {
+	if ref == nil || ref.Aux == nil || ref.Aux.Stack == nil || ref.Aux.Stack.IsStatic {
+		return nil, fmt.Errorf("codegen: emitDynamicStackAddress called on non-dynamic ref")
+	}
+	stack := ref.Aux.Stack
+	if stack.Dynamic == nil {
+		return nil, fmt.Errorf("codegen: dynamic stack index has no source field")
+	}
+	if stack.Dynamic.Aux != nil {
+		return nil, fmt.Errorf("%w: dynamic index source must be a primary-header field", ErrNotImplemented)
+	}
+	if stack.Dynamic.Layer != ref.Layer {
+		return nil, fmt.Errorf("%w: dynamic index source must live on the same layer as the stack", ErrNotImplemented)
+	}
+	idxByteOff, idxBytes, err := findFieldByteOffset(stack.Dynamic.Layer.Spec, stack.Dynamic.Field.Name)
+	if err != nil {
+		return nil, err
+	}
+	if idxBytes != 1 {
+		return nil, fmt.Errorf("%w: dynamic index source %s.%s is %d bytes (only 1-byte sources supported)", ErrNotImplemented, stack.Dynamic.Layer.Spec.Name, stack.Dynamic.Field.Name, idxBytes)
+	}
+	if ref.Aux.HeaderSize <= 0 || ref.Aux.HeaderSize > 127 {
+		return nil, fmt.Errorf("%w: dynamic stack element size %d outside 1..127", ErrNotImplemented, ref.Aux.HeaderSize)
+	}
+	// Compute R3 = scratch_offset_of_layer_start.
+	insns := asm.Instructions{}
+	if base.UseR4 {
+		insns = append(insns,
+			asm.Mov.Reg(asm.R3, asm.R0),
+			asm.Add.Reg(asm.R3, offsetBase),
+		)
+	} else {
+		insns = append(insns,
+			asm.Mov.Reg(asm.R3, asm.R0),
+			asm.Add.Imm(asm.R3, int32(base.AbsOffset)),
+		)
+	}
+	// Load index byte from primary header at offset idxByteOff.
+	insns = append(insns,
+		asm.LoadMem(asm.R3, asm.R3, int16(idxByteOff), asm.Byte),
+		asm.JGE.Imm(asm.R3, int32(stack.Capacity), failLabel),
+		asm.Mul.Imm(asm.R3, int32(ref.Aux.HeaderSize)),
+		asm.Add.Imm(asm.R3, int32(ref.Aux.OffsetInLayer)),
+	)
+	if base.UseR4 {
+		insns = append(insns, asm.Add.Reg(asm.R3, offsetBase))
+	} else {
+		insns = append(insns, asm.Add.Imm(asm.R3, int32(base.AbsOffset)))
+	}
+	insns = append(insns,
+		asm.Mov.Reg(asm.R5, asm.R0),
+		asm.Add.Reg(asm.R5, asm.R3),
+	)
+	return insns, nil
+}
+
+// layerAnchor abstracts how to express "the byte offset of the
+// owning layer's start" — R4-relative for predicates, absolute for
+// where clauses.
+type layerAnchor struct {
+	UseR4     bool
+	AbsOffset int
+}
+
+func r4Anchor() layerAnchor       { return layerAnchor{UseR4: true} }
+func absAnchor(off int) layerAnchor { return layerAnchor{AbsOffset: off} }
+
+// emitDynamicStackLoad is the single-LDX convenience built on
+// emitDynamicStackAddress for predicate-emit-time callers (R4 still
+// at layer entry). Multi-byte literals (IPv6, MAC, multi-half CIDR)
+// call emitDynamicStackAddress directly so they can issue multiple
+// LDX from the same R5 base.
+func emitDynamicStackLoad(ref *ir.FieldRef, size asm.Size, failLabel string) (asm.Instructions, error) {
+	addr, err := emitDynamicStackAddress(ref, r4Anchor(), failLabel)
+	if err != nil {
+		return nil, err
+	}
+	fieldByteOff := ref.Aux.FieldBitOff / 8
+	return append(addr, asm.LoadMem(asm.R3, asm.R5, int16(fieldByteOff), size)), nil
+}
+
 // headerSize sums the protocol's header field bits, rejecting
 // non-byte-aligned totals.
 func headerSize(spec *vocab.ProtocolSpec) (int, error) {

@@ -33,7 +33,70 @@ const bit<8> TCP_VAREXT_LEN_SHIFT       = 4;
 const bit<8> TCP_VAREXT_LEN_SCALE       = 4;
 const bit<8> TCP_VAREXT_LEN_BASE        = 20;
 
-parser TcpFragment(packet_in pkt, out tcp_h hdr) {
+// === TCP options (RFC 9293, IANA TCP Parameters) ===
+//
+// Options live in the variable trailer past the 20-byte fixed
+// header. Each non-padding option is TLV-shaped: byte 0 = kind,
+// byte 1 = length-in-bytes, then per-kind payload. Kind=0 (EOL)
+// and kind=1 (NOP) are special: 1-byte total, no length byte.
+//
+// The codegen walks the options once at TCP-layer entry, dispatches
+// on kind, and records each named option's byte offset within the
+// options area in scratch memory. Predicate codegen reads the
+// recorded offset to load fields without walking again.
+//
+// Option-walk behaviour is anchored on three vocab const families:
+//   - <PROTO>_OPT_TERMINATOR_KIND : kind value that ends the walk
+//   - <PROTO>_OPT_PADDING_KIND    : kind value that advances 1 byte
+//                                    (no length byte, no payload)
+//   - <PROTO>_OPT_LENGTH_BYTE_OFF : byte position within an option
+//                                    that holds total option length
+const bit<8> TCP_OPT_TERMINATOR_KIND  = 0; // EOL
+const bit<8> TCP_OPT_PADDING_KIND     = 1; // NOP
+const bit<8> TCP_OPT_LENGTH_BYTE_OFF  = 1;
+
+// MSS (kind=2, RFC 9293 §3.2.6.2): single 16-bit value.
+header tcp_opt_mss_h {
+    bit<8>  kind;
+    bit<8>  length;
+    bit<16> value;
+}
+const bit<8> TCP_OPT_MSS_KIND = 2;
+const bit<8> TCP_OPT_MSS_SIZE = 4;
+
+// Window Scale (kind=3, RFC 7323 §2): single 8-bit shift.
+header tcp_opt_ws_h {
+    bit<8> kind;
+    bit<8> length;
+    bit<8> shift;
+}
+const bit<8> TCP_OPT_WS_KIND = 3;
+const bit<8> TCP_OPT_WS_SIZE = 3;
+
+// SACK Permitted (kind=4, RFC 2018): negotiation flag, no payload.
+header tcp_opt_sack_perm_h {
+    bit<8> kind;
+    bit<8> length;
+}
+const bit<8> TCP_OPT_SACK_PERM_KIND = 4;
+const bit<8> TCP_OPT_SACK_PERM_SIZE = 2;
+
+// Timestamps (kind=8, RFC 7323 §3): val + ecr (each 32-bit).
+header tcp_opt_ts_h {
+    bit<8>  kind;
+    bit<8>  length;
+    bit<32> val;
+    bit<32> ecr;
+}
+const bit<8> TCP_OPT_TS_KIND = 8;
+const bit<8> TCP_OPT_TS_SIZE = 10;
+
+parser TcpFragment(packet_in pkt,
+                   out tcp_h               hdr,
+                   out tcp_opt_mss_h       mss,
+                   out tcp_opt_ws_h        ws,
+                   out tcp_opt_sack_perm_h sack_perm,
+                   out tcp_opt_ts_h        ts) {
     state start {
         pkt.extract(hdr);
         transition accept;

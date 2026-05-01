@@ -42,6 +42,30 @@ var dslEntryExprs = []string{
 	"eth/ipv4/tcp capture headers+64 where tcp.dport > 1024",
 	// Parser machine: GTP-U with optional + extension-header chain.
 	"eth/ipv4/udp/gtp/ipv4/tcp",
+	// Aux header predicate (gtp.opt.next_ext): reads a field of an
+	// auxiliary header gated by the parser's E|S|PN tuple-select
+	// (= opt is only extracted when any of those flags is set).
+	"eth/ipv4/udp/gtp[opt.next_ext==0]/ipv4/tcp",
+	"eth/ipv4/udp/gtp/ipv4/tcp where gtp.opt.next_ext == 0",
+	// Aux header stack static index access: read N-th element's field.
+	// gtp.exts is a fixed 4B-per-entry stack; ipv6.exts is a variable
+	// per-entry stack but [0].next_header still lands at a fixed byte
+	// (= start of first ext immediately after ipv6_h).
+	"eth/ipv4/udp/gtp/ipv4/tcp where gtp.exts[0].ext_type == 0",
+	"eth/ipv6/tcp where ipv6.exts[0].next_header == 6",
+	// SRv6 segment list address access via aux header stack:
+	// static index (final destination = wire-order [0]) and
+	// dynamic index from a parent field (next hop = [last_entry]).
+	"eth/ipv6/srv6/tcp where srv6.segments[0].addr == fc00::1",
+	"eth/ipv6/srv6/tcp where srv6.segments[srv6.last_entry].addr == fc00::1",
+	// any/all quantifiers over an aux header stack: static unrolls
+	// 8 iters (= capacity), each guarded by srv6.last_entry+1.
+	"eth/ipv6/srv6/tcp where any(srv6.segments.addr == fc00::1)",
+	"eth/ipv6/srv6/tcp where all(srv6.segments.addr == fc00::1)",
+	// TCP option lookup: walk options area searching for kind=2 (MSS),
+	// read 16-bit value field, compare. Static unroll capped at 20
+	// iters (= 40-byte options / 1-byte minimum option = 20 max).
+	"eth/ipv4/tcp where tcp.options.MSS.value == 1460",
 	// Flag-triggered optional sub-headers: GRE C/K/S advance.
 	"eth/ipv4/gre/ipv4/tcp",
 	// Capture: layer-targeted slicing (label, proto name, absolute).

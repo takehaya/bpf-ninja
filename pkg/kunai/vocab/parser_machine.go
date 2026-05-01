@@ -81,13 +81,296 @@ func buildParseStateMachine(file *p4lite.File, primary *p4lite.Header, source st
 		return nil, nil
 	}
 
+	if err := assignStateOffsets(states, entryIdx, source); err != nil {
+		return nil, err
+	}
+
+	auxLayouts, err := computeAuxLayouts(states, entryIdx, headerRefs, primary, source)
+	if err != nil {
+		return nil, err
+	}
+
 	return &ParseStateMachine{
 		States:     states,
 		StateIdx:   stateIdx,
 		EntryIdx:   entryIdx,
 		HeaderRefs: headerRefs,
 		StackRefs:  stackRefs,
+		AuxLayouts: auxLayouts,
 	}, nil
+}
+
+// computeAuxLayouts walks the state machine to derive each aux header's
+// byte offset within the layer and (when the aux is conditionally
+// extracted) the gating predicate that decides whether the aux is
+// present on a given packet's path. Stacks (out param tracked in
+// stackRefs, not headerRefs) are deliberately skipped — they are
+// addressed by aux header stack index access (PR-B), not single aux
+// predicates.
+//
+// MVP scope for gating: the extracting state is either the entry
+// state (= unconditional, gating nil) or a direct one-hop successor
+// of the entry state via a tuple-select whose explicit case's values
+// are all concrete zero with a default targeting the extracting
+// state. That covers GTP's opt (E|S|PN gate). Other shapes return a
+// build error so they cannot silently land as "always-present" auxes.
+func computeAuxLayouts(states []*ParseState, entryIdx int, headerRefs map[string]*p4lite.Header, primary *p4lite.Header, source string) (map[string]*AuxLayout, error) {
+	if len(headerRefs) == 0 {
+		return nil, nil
+	}
+	out := map[string]*AuxLayout{}
+	for outName, hdr := range headerRefs {
+		// The primary header's `out` param is always one of headerRefs.
+		// It is not an aux from the predicate codegen perspective —
+		// primary fields are accessed via the existing 2-part path.
+		if hdr == primary {
+			continue
+		}
+		extractStateIdx, headerSizeBits, err := findUniqueAuxExtractor(states, outName, hdr, source)
+		if err != nil {
+			return nil, err
+		}
+		if extractStateIdx < 0 {
+			// Aux declared but never extracted in any state. Predicate
+			// codegen would have nothing to read; record as always-fail
+			// gating so user-written predicates produce a clear error
+			// rather than a silent miss.
+			out[outName] = &AuxLayout{
+				OutParam:   outName,
+				HeaderName: hdr.Name,
+				HeaderRef:  hdr,
+				HeaderSize: headerSizeBits / 8,
+			}
+			continue
+		}
+		state := states[extractStateIdx]
+		if state.OffsetAtEntry < 0 {
+			return nil, fmt.Errorf("%s:%s: aux %q extracted at state %q whose static byte offset is undefined (stack-cycle path); single aux predicates require a unique offset", source, state.Pos, outName, state.Name)
+		}
+		gating, err := computeAuxGating(states, entryIdx, extractStateIdx, primary, source)
+		if err != nil {
+			return nil, err
+		}
+		out[outName] = &AuxLayout{
+			OutParam:      outName,
+			HeaderName:    hdr.Name,
+			HeaderRef:     hdr,
+			OffsetInLayer: state.OffsetAtEntry,
+			HeaderSize:    headerSizeBits / 8,
+			Gating:        gating,
+		}
+	}
+	return out, nil
+}
+
+// findUniqueAuxExtractor scans all states for the (sole) state that
+// performs `pkt.extract(<outName>)` against a non-stack out parameter.
+// Returns (-1, headerSizeBits, nil) when the aux is declared but
+// never extracted; an error when extracted by more than one state.
+func findUniqueAuxExtractor(states []*ParseState, outName string, hdr *p4lite.Header, source string) (int, int, error) {
+	idx := -1
+	for i, s := range states {
+		for _, ex := range s.Extracts {
+			if ex.IsStackPush {
+				continue
+			}
+			if ex.HeaderRef == hdr {
+				if idx >= 0 {
+					return -1, 0, fmt.Errorf("%s:%s: aux %q extracted by multiple states (%q and %q); single aux predicates require a unique extractor", source, s.Pos, outName, states[idx].Name, s.Name)
+				}
+				idx = i
+			}
+		}
+	}
+	return idx, totalBits(hdr), nil
+}
+
+// computeAuxGating derives the AuxGating that decides whether the
+// extract state is reached on a given packet. Returns nil (no
+// gating) when the extract state is the entry state. MVP only
+// understands the GTP pattern: a one-hop tuple-select edge from
+// entry where every explicit case value is the zero literal and
+// the default targets the aux state. Anything else is an error so
+// silent "always-present" landings are impossible.
+func computeAuxGating(states []*ParseState, entryIdx, extractIdx int, primary *p4lite.Header, source string) (*AuxGating, error) {
+	if extractIdx == entryIdx {
+		return nil, nil
+	}
+	entry := states[entryIdx]
+	switch entry.Trans.Kind {
+	case TransDirect:
+		if entry.Trans.Target == extractIdx {
+			// Unconditional one-hop: no gating beyond the dispatch
+			// that already gated entry into this layer.
+			return nil, nil
+		}
+		return nil, fmt.Errorf("%s:%s: aux state %q is not reachable in one direct hop from entry; multi-hop gating not supported by MVP", source, entry.Pos, states[extractIdx].Name)
+	case TransSelect:
+		return gatingFromSelect(entry.Trans.Select, extractIdx, primary, source, entry.Pos)
+	}
+	return nil, fmt.Errorf("%s:%s: entry state transition kind %v cannot derive aux gating", source, entry.Pos, entry.Trans.Kind)
+}
+
+// gatingFromSelect handles the entry-state select shape. MVP
+// pattern: the extract state is the default target and exactly one
+// explicit case targets a non-extract state with all-zero values.
+// (Symmetric pattern: extract state is the only explicit case with
+// concrete values, default elsewhere.) Other shapes return an
+// error.
+func gatingFromSelect(sel *SelectOp, extractIdx int, primary *p4lite.Header, source string, pos p4lite.Position) (*AuxGating, error) {
+	var explicit []SelectCase
+	for _, c := range sel.Cases {
+		if c.Target == extractIdx {
+			explicit = append(explicit, c)
+		}
+	}
+	defaultTargetsExtract := sel.Default == extractIdx
+	switch {
+	case defaultTargetsExtract && len(explicit) == 0:
+		// Extract is the default branch. Gating: NOT (any explicit
+		// case matches). MVP requires exactly one explicit case
+		// whose values are all concrete zero, so the negation is
+		// "the OR of the keys' bit-fields is non-zero".
+		if len(sel.Cases) != 1 {
+			return nil, fmt.Errorf("%s:%s: aux gating via default: MVP supports exactly one explicit case (got %d)", source, pos, len(sel.Cases))
+		}
+		c := sel.Cases[0]
+		if len(c.Values) != len(sel.Keys) {
+			return nil, fmt.Errorf("%s:%s: aux gating: case value count %d != key count %d", source, pos, len(c.Values), len(sel.Keys))
+		}
+		for _, v := range c.Values {
+			if v.IsWildcard || v.Value != 0 {
+				return nil, fmt.Errorf("%s:%s: aux gating via default requires explicit case all-zero, got %+v", source, pos, c.Values)
+			}
+		}
+		return mergeBitFieldsToMask(sel.Keys, primary, GatingNe, 0, source, pos)
+	case !defaultTargetsExtract && len(explicit) == 1:
+		// Symmetric: extract is the unique explicit case. Gating
+		// values must all be concrete (no wildcard).
+		c := explicit[0]
+		if len(c.Values) != len(sel.Keys) {
+			return nil, fmt.Errorf("%s:%s: aux gating: case value count %d != key count %d", source, pos, len(c.Values), len(sel.Keys))
+		}
+		// MVP: single key with concrete value, single byte field.
+		if len(sel.Keys) != 1 {
+			return nil, fmt.Errorf("%s:%s: aux gating via explicit case: MVP supports a single key (got %d)", source, pos, len(sel.Keys))
+		}
+		if c.Values[0].IsWildcard {
+			return nil, fmt.Errorf("%s:%s: aux gating via explicit case requires concrete value", source, pos)
+		}
+		return mergeBitFieldsToMask(sel.Keys, primary, GatingEq, c.Values[0].Value, source, pos)
+	}
+	return nil, fmt.Errorf("%s:%s: aux gating shape unsupported (default→extract:%v, explicit cases:%d)", source, pos, defaultTargetsExtract, len(explicit))
+}
+
+// mergeBitFieldsToMask folds a tuple of single-byte primary-header
+// keys into one (byteOffset, mask) pair so codegen can emit a single
+// byte read followed by an AND + compare. All keys must live in the
+// primary header within the same byte, with no straddle.
+func mergeBitFieldsToMask(keys []FieldRef, primary *p4lite.Header, op GatingOp, value uint64, source string, pos p4lite.Position) (*AuxGating, error) {
+	if len(keys) == 0 {
+		return nil, fmt.Errorf("%s:%s: aux gating: no select keys", source, pos)
+	}
+	byteOff := -1
+	var mask uint64
+	for i, k := range keys {
+		if k.HeaderName != primary.Name {
+			return nil, fmt.Errorf("%s:%s: aux gating key %d (%s.%s) is not in the primary header %q", source, pos, i, k.HeaderName, k.FieldName, primary.Name)
+		}
+		if k.IsStackLast {
+			return nil, fmt.Errorf("%s:%s: aux gating key %d uses stack.last; MVP does not support that", source, pos, i)
+		}
+		bitInByte := k.BitOffset % 8
+		if bitInByte+k.BitWidth > 8 {
+			return nil, fmt.Errorf("%s:%s: aux gating key %s straddles a byte boundary (bit-off %d, width %d)", source, pos, k.FieldName, k.BitOffset, k.BitWidth)
+		}
+		keyByte := k.BitOffset / 8
+		if byteOff < 0 {
+			byteOff = keyByte
+		} else if byteOff != keyByte {
+			return nil, fmt.Errorf("%s:%s: aux gating keys span multiple bytes (%d vs %d); MVP requires a single byte", source, pos, byteOff, keyByte)
+		}
+		// Within the byte, the field's most-significant bit sits at
+		// bitInByte (counting from the byte's MSB). Network/P4 byte
+		// order: the MSB of the byte is the value-bit (1 << 7) when
+		// the byte is read as a u8.
+		keyMask := ((uint64(1) << k.BitWidth) - 1) << (8 - bitInByte - k.BitWidth)
+		if keyMask&mask != 0 {
+			return nil, fmt.Errorf("%s:%s: aux gating keys overlap (mask collision %#x)", source, pos, keyMask&mask)
+		}
+		mask |= keyMask
+	}
+	if mask == 0 || mask > 0xFF {
+		return nil, fmt.Errorf("%s:%s: aux gating mask %#x out of single-byte range", source, pos, mask)
+	}
+	return &AuxGating{ByteOff: byteOff, Mask: mask, Op: op, Value: value}, nil
+}
+
+// assignStateOffsets populates ParseState.OffsetAtEntry for every
+// reachable state by DFS from the entry state. Edges that would push
+// a stack header (gtp ext, ipv6 ext, srv6 segments) leave the
+// destination's per-iteration offset undefined — those states keep
+// OffsetAtEntry == -1 so predicate codegen routes through the
+// loop-aware path instead of treating offsets as static. Conflicts
+// (a state reached via two paths with different cumulative byte
+// distances) are surfaced as build errors so silent miscomputes
+// cannot ride into codegen.
+func assignStateOffsets(states []*ParseState, entryIdx int, source string) error {
+	for _, s := range states {
+		s.OffsetAtEntry = -1
+	}
+	type frame struct{ idx, off int }
+	stack := []frame{{entryIdx, 0}}
+	for len(stack) > 0 {
+		fr := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if fr.idx < 0 || fr.idx >= len(states) {
+			continue
+		}
+		s := states[fr.idx]
+		if s.OffsetAtEntry >= 0 {
+			if s.OffsetAtEntry != fr.off {
+				return fmt.Errorf("%s:%s: state %q is reachable at two distinct byte offsets (%d vs %d); aux predicate static offsets undefined", source, s.Pos, s.Name, s.OffsetAtEntry, fr.off)
+			}
+			continue
+		}
+		s.OffsetAtEntry = fr.off
+		// Cumulative byte advance after this state's extracts. Stack
+		// pushes (gtp_ext_h.next, ipv6_ext_h.next, ...) advance the
+		// physical R4, but successors that are themselves the same
+		// state (= self-loop) are deliberately skipped from offset
+		// propagation: each iteration starts at the prior iteration's
+		// post-extract position, which is dynamic — the static
+		// offset model cannot capture it. Same edge taken by direct
+		// transitions keeps the linear accumulation valid.
+		nextOff, hasStackPush := postExtractOffset(s, fr.off)
+		for _, succ := range stateSuccessors(s) {
+			if hasStackPush && succ == fr.idx {
+				// Self-loop on a stack-pushing state: don't propagate
+				// the post-extract offset back to itself, the next
+				// iteration's entry offset is dynamic.
+				continue
+			}
+			stack = append(stack, frame{succ, nextOff})
+		}
+	}
+	return nil
+}
+
+// postExtractOffset returns the byte distance from layer entry to R4
+// after running a state's Extracts. The bool reports whether any of
+// the extracts is a stack push (= variable / loop-driven advance from
+// the perspective of static offset tracking).
+func postExtractOffset(s *ParseState, entryOff int) (int, bool) {
+	off := entryOff
+	hasStackPush := false
+	for _, ex := range s.Extracts {
+		off += ex.HeaderSize / 8
+		if ex.IsStackPush {
+			hasStackPush = true
+		}
+	}
+	return off, hasStackPush
 }
 
 // resolveParserParams binds each `out <type> <var>` (or `out <type>[N]
