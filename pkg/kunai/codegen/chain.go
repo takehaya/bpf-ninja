@@ -56,7 +56,7 @@ func genStaticChain(layer *ir.LayerInstance, index int, all []*ir.LayerInstance)
 	selfConst := layer.Spec.SelectDispatchConst(layer.Spec.Name)
 	if selfConst == nil {
 		self := strings.ToUpper(layer.Spec.Name)
-		return nil, fmt.Errorf("%w: chained %q has no self-dispatch const (declare %s_%s_<FIELD|SANITY_<TYPE>|NO_CHECK> in %s.p4)", ErrNotImplemented, layer.Spec.Name, self, self, layer.Spec.Name)
+		return nil, fmt.Errorf("%w: chained %q has no self-dispatch const (declare %s_%s_<FIELD|NO_CHECK> in %s.p4)", ErrNotImplemented, layer.Spec.Name, self, self, layer.Spec.Name)
 	}
 	selfLayer := &ir.LayerInstance{
 		Spec:     layer.Spec,

@@ -114,10 +114,18 @@ func withPos(err error, pos ast.Position) error {
 }
 
 // ErrNotImplemented is returned by Gen when a resolved program uses a
-// feature the MVP codegen does not yet support (sanity/no-check
-// dispatch, non-integer predicate values, chained layers, alternation,
-// where clauses, capture clauses). Callers can match it with errors.Is
-// to distinguish "valid DSL, codegen still to come" from other errors.
+// feature codegen does not yet emit. Current cases:
+//
+//   - dynamic aux header stack indices outside the static-fold path
+//     (fieldRefByteOffset),
+//   - TCP/IPv4 option lookups when a caller hits the static-fold path
+//     instead of the option-walk emitter,
+//   - non-byte-aligned or oversized fields (>8 bytes),
+//   - quantifier shapes the resolver let through but codegen has not
+//     wired up.
+//
+// Callers can match it with errors.Is to distinguish "valid DSL,
+// codegen still to come" from other errors.
 var ErrNotImplemented = errors.New("dsl codegen is not yet fully implemented")
 
 // CaptureInfo summarises the compile-time capture configuration that
@@ -159,15 +167,16 @@ func (o Output) Instructions() asm.Instructions {
 	return out
 }
 
-
 // Label placed at the end of a filter block. The runFilter wrapper
 // attaches "filter_result" to its JEq R2,0 → exit instruction, so
 // a jump to "filter_result" from inside our emitted code lands on it.
 const filterResultLabel = "filter_result"
 
-// dslReject is internal to one Gen invocation; it sets R2=0 and falls
-// through to filter_result. Unique per compile in case two filter
-// programs ever share an assembly unit.
+// dslReject sets R2=0 and falls through to filter_result. The constant
+// is a fixed string, so two Gen outputs cannot be concatenated into a
+// single assembly unit without symbol collision — callers wrap each
+// Gen output as its own function (the bpf2bpf callbacks in
+// Output.Callbacks already use this pattern).
 const dslReject = "dsl_reject"
 
 // KunaiStackTop is the shallowest (closest-to-zero) R10 offset that
@@ -513,13 +522,11 @@ func genStaticLayer(layer *ir.LayerInstance, index int, all []*ir.LayerInstance)
 		insns = append(insns, asm.StoreMem(asm.R10, bpfLoopCtxLayerEntrySlot, offsetBase, asm.DWord))
 	}
 	insns = append(insns, emitAdvance(hs))
-	if vs := layer.Spec.VariableSuffix; vs != nil {
-		tail, err := emitVariableTrailInline(hs, variableTailSkipFromSuffix(vs), dslReject)
-		if err != nil {
-			return nil, err
-		}
-		insns = append(insns, tail...)
+	tail, err := emitPrimaryVariableTail(layer.Spec)
+	if err != nil {
+		return nil, err
 	}
+	insns = append(insns, tail...)
 	if len(layer.Spec.FlagTriggers) > 0 {
 		flags, err := emitFlagTriggers(hs, layer.Spec.FlagsByteOffset, layer.Spec.FlagTriggers, dslReject)
 		if err != nil {
@@ -538,6 +545,14 @@ func genStaticLayer(layer *ir.LayerInstance, index int, all []*ir.LayerInstance)
 // statically bounded by sum(LenBytes) so the verifier can prove the
 // running offset stays within ScratchBufSize when the layer's caller
 // has already reserved that much.
+//
+// Caller invariant: emitFlagTriggers is invoked AFTER emitAdvance(hs),
+// so offsetBase already points past the fixed primary header. The
+// initial flag-byte LDX uses immediate `-fixedHs+flagsByteOff` to
+// reach back into the just-passed primary header. If a future caller
+// reorders the advance / triggers sequence in genStaticLayer, this
+// helper must change to match (or split into a "read flag byte" /
+// "emit triggers" pair).
 func emitFlagTriggers(fixedHs, flagsByteOff int, triggers []vocab.FlagTrigger, failLabel string) (asm.Instructions, error) {
 	insns := asm.Instructions{
 		asm.Mov.Reg(asm.R5, asm.R0),
@@ -559,6 +574,25 @@ func emitFlagTriggers(fixedHs, flagsByteOff int, triggers []vocab.FlagTrigger, f
 		)
 	}
 	return insns, nil
+}
+
+// emitPrimaryVariableTail emits the VAREXT_LEN_* trail consume for a
+// layer whose primary header carries an IHL-style declared-length
+// trailer. R4 must already point past the fixed primary header; the
+// trail reads the length field, scales it, subtracts MinimumTotal,
+// and advances R4 the rest of the way. Returns nil instructions when
+// the spec has no VariableSuffix. Shared between genStaticLayer's
+// fixed-size path and genParserMachine's accept landing.
+func emitPrimaryVariableTail(spec *vocab.ProtocolSpec) (asm.Instructions, error) {
+	vs := spec.VariableSuffix
+	if vs == nil {
+		return nil, nil
+	}
+	hs, err := headerSize(spec)
+	if err != nil {
+		return nil, err
+	}
+	return emitVariableTrailInline(hs, variableTailSkipFromSuffix(vs), dslReject)
 }
 
 // variableTailSkipFromSuffix lifts a vocab.VariableSuffix into the
@@ -609,6 +643,13 @@ func genOptionalLayer(layer *ir.LayerInstance, index int, all []*ir.LayerInstanc
 // The caller is responsible for placing peekFailLabel's landing
 // somewhere sensible (a no-op for `?`, a marker after the bpf_loop
 // call for `*`).
+//
+// Order note: peek runs before this layer's bounds check (reverse of
+// genStaticLayer's bounds-then-dispatch order). That is deliberate —
+// the peek reads from the parent's header, which the parent's
+// emitBounds has already validated, so it is safe; and skipping the
+// current layer's bounds check on the absent path avoids spurious
+// dslReject when an optional layer is simply not there.
 func emitPeekedIterZero(layer *ir.LayerInstance, index int, all []*ir.LayerInstance, peekFailLabel string) (asm.Instructions, error) {
 	if index == 0 || layer.Dispatch == nil {
 		return nil, fmt.Errorf("%w: peeked iter-0 on %q requires a parent dispatch", ErrNotImplemented, layer.Spec.Name)
@@ -642,10 +683,13 @@ func genDispatch(current, parent *ir.LayerInstance, parentHS int, failLabel stri
 	switch current.Dispatch.Type {
 	case vocab.DispatchField:
 		return genFieldDispatch(current, parent, parentHS, failLabel)
-	case vocab.DispatchSanity:
-		return genSanityDispatch(current, failLabel)
 	case vocab.DispatchNoCheck:
 		return genNoCheckDispatch(current)
+	case vocab.DispatchSelfValidating:
+		// Boundary emits nothing: the child's parser machine validates
+		// the layer via its `transition select(...) { ...; default:
+		// reject; }`, so we delegate the check entirely to the parser.
+		return nil, nil
 	}
 	return nil, fmt.Errorf("codegen: unknown dispatch type %v", current.Dispatch.Type)
 }
@@ -830,6 +874,18 @@ func emitAuxGating(g *vocab.AuxGating, base layerAnchor, failLabel string) asm.I
 //   - The aux's OffsetInLayer is folded into R5 too: callers'
 //     trailing LDX uses field byte offset within the aux, no extra
 //     base addition required.
+//
+// Bounds invariant: this helper does not emit an explicit
+// `R5+fieldBytes ≤ R1` check. The verifier accepts the LDX from R5
+// because (a) the index byte is narrowed by JGE.Imm to < Capacity,
+// (b) the multiplier and OffsetInLayer are constants, and (c) the
+// owning layer's outer bounds (emitted by genStaticLayer or the
+// parser machine) cover the full stack envelope —
+// `Capacity * HeaderSize + OffsetInLayer` bytes — so R5 stays
+// within the validated window. Adding a stack to a vocab without
+// extending those outer bounds will let R5 escape; the
+// ScratchBufSize sizing contract in the package doc must then be
+// re-verified.
 func emitDynamicStackAddress(ref *ir.FieldRef, base layerAnchor, failLabel string) (asm.Instructions, error) {
 	if ref == nil || ref.Aux == nil || ref.Aux.Stack == nil || ref.Aux.Stack.IsStatic {
 		return nil, fmt.Errorf("codegen: emitDynamicStackAddress called on non-dynamic ref")

@@ -95,9 +95,6 @@ func genBpfLoopChain(layer *ir.LayerInstance, index int, all []*ir.LayerInstance
 	if selfConst == nil {
 		return nil, nil, fmt.Errorf("%w: chained %q has no self-dispatch const", ErrNotImplemented, layer.Spec.Name)
 	}
-	if selfConst.Type == vocab.DispatchSanity {
-		return nil, nil, fmt.Errorf("%w: chained %q uses sanity self-dispatch which is not yet supported", ErrNotImplemented, layer.Spec.Name)
-	}
 
 	maxIter, err := chainMaxIter(layer)
 	if err != nil {

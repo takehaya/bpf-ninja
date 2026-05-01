@@ -96,10 +96,17 @@ func (r *resolver) resolveAlternation(al *ast.Layer, parent *ir.LayerInstance) (
 
 // selectDispatch finds the strongest matching DispatchConst on spec
 // whose Parent equals parentName and wraps it in an ir.DispatchChoice.
+// When no const matches but the child's parser block self-validates
+// (e.g. ipv4 / ipv6 with `transition select(version) { ...; default:
+// reject; }`), we synthesize a DispatchSelfValidating choice — the
+// boundary emits nothing and the parser machine handles the check.
 func selectDispatch(spec *vocab.ProtocolSpec, parentName string, pos ast.Position) (*ir.DispatchChoice, error) {
 	c := spec.SelectDispatchConst(parentName)
 	if c == nil {
-		return nil, errorf(pos, "no dispatch constant for %q under %q (declare %s_%s_<FIELD|SANITY_<TYPE>|NO_CHECK> in %s.p4)", spec.Name, parentName, strings.ToUpper(spec.Name), strings.ToUpper(parentName), spec.Name)
+		if spec.IsSelfValidating() {
+			return &ir.DispatchChoice{Type: vocab.DispatchSelfValidating}, nil
+		}
+		return nil, errorf(pos, "no dispatch constant for %q under %q (declare %s_%s_<FIELD|NO_CHECK> in %s.p4, or have %s.p4 self-validate via a parser-block `transition select(...) { ...; default: reject; }`)", spec.Name, parentName, strings.ToUpper(spec.Name), strings.ToUpper(parentName), spec.Name, spec.Name)
 	}
 	return &ir.DispatchChoice{Type: c.Type, Const: c}, nil
 }
@@ -116,7 +123,7 @@ func selectAltParentDispatch(spec *vocab.ProtocolSpec, alts []*ir.LayerInstance,
 	for _, alt := range alts {
 		c := spec.SelectDispatchConst(alt.Spec.Name)
 		if c == nil {
-			return nil, errorf(pos, "no dispatch constant for %q under alternative %q (declare %s_%s_<FIELD|SANITY_<TYPE>|NO_CHECK> in %s.p4)", spec.Name, alt.Spec.Name, strings.ToUpper(spec.Name), strings.ToUpper(alt.Spec.Name), spec.Name)
+			return nil, errorf(pos, "no dispatch constant for %q under alternative %q (declare %s_%s_<FIELD|NO_CHECK> in %s.p4, or have %s.p4 self-validate via a parser-block `transition select(...) { ...; default: reject; }`)", spec.Name, alt.Spec.Name, strings.ToUpper(spec.Name), strings.ToUpper(alt.Spec.Name), spec.Name, spec.Name)
 		}
 		if representative == nil {
 			representative = c

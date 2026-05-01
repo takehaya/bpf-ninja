@@ -927,39 +927,31 @@ func TestGenPredicateIPv6NotEqualEmitsMatchLanding(t *testing.T) {
 	}
 }
 
-func TestGenSanityNibbleDispatch(t *testing.T) {
-	// Synthesise "MPLS" (auxiliary payload-less protocol) → ipv4 chain
-	// where ipv4 dispatches via SANITY NIBBLE=4.
+func TestGenSelfValidatingNoBoundaryEmit(t *testing.T) {
+	// After the SANITY removal, an mpls → ipv4 chain resolves the inner
+	// ipv4 via DispatchSelfValidating (ipv4's parser block validates
+	// version=4 itself). The boundary must emit zero dispatch
+	// instructions — no RSh.Imm, no JNE.Imm beyond the standard layer
+	// bounds check / accept-reject epilogue.
 	mplsSpec := newSpec("mpls", "mpls_h",
 		vocab.Field{Name: "label", Bits: 20},
 		vocab.Field{Name: "tc", Bits: 3},
 		vocab.Field{Name: "s", Bits: 1},
 		vocab.Field{Name: "ttl", Bits: 8},
 	)
-	sanityConst := &vocab.DispatchConst{
-		Type:       vocab.DispatchSanity,
-		Name:       "IPV4_MPLS_SANITY_NIBBLE",
-		Parent:     "mpls",
-		SanityType: "NIBBLE",
-		Bits:       4,
-		Value:      4,
-	}
 	mpls := &ir.LayerInstance{Spec: mplsSpec}
-	ipv4 := &ir.LayerInstance{Spec: ipv4Spec, Dispatch: &ir.DispatchChoice{Type: vocab.DispatchSanity, Const: sanityConst}}
+	ipv4 := &ir.LayerInstance{Spec: ipv4Spec, Dispatch: &ir.DispatchChoice{Type: vocab.DispatchSelfValidating}}
 	p := &ir.Program{Layers: []*ir.LayerInstance{mpls, ipv4}}
 
 	out, err := Gen(p, Capabilities{})
 	if err != nil {
 		t.Fatalf("Gen: %v", err)
 	}
-	rshSeen := false
 	for _, ins := range out.Main {
 		if ins.OpCode == asm.RSh.Op(asm.ImmSource) {
-			rshSeen = true
+			t.Error("DispatchSelfValidating must not emit RSh.Imm at the boundary")
+			break
 		}
-	}
-	if !rshSeen {
-		t.Error("NIBBLE sanity dispatch must emit an RSh.Imm")
 	}
 }
 
@@ -1010,22 +1002,6 @@ func TestGenNoCheckRejectsFalseConst(t *testing.T) {
 	}
 }
 
-func TestGenSanityRejectsUnknownType(t *testing.T) {
-	sanityConst := &vocab.DispatchConst{
-		Type:       vocab.DispatchSanity,
-		Name:       "FOO_BAR_SANITY_MAGIC",
-		Parent:     "bar",
-		SanityType: "MAGIC",
-		Bits:       8,
-		Value:      0xAA,
-	}
-	p := ethIPv4TCPProgram()
-	p.Layers[1].Dispatch = &ir.DispatchChoice{Type: vocab.DispatchSanity, Const: sanityConst}
-	_, err := Gen(p, Capabilities{})
-	if !errors.Is(err, ErrNotImplemented) {
-		t.Fatalf("err = %v; want ErrNotImplemented", err)
-	}
-}
 
 func TestGenPredicateRejectsInt32Overflow(t *testing.T) {
 	// The resolver catches "does not fit in the field" (99999 in 16-bit
