@@ -65,8 +65,14 @@ type ProtocolSpec struct {
 	// state extract+accept shape; codegen routes those through the
 	// existing fixed-size path with no behaviour change.
 	ParseStateMachine *ParseStateMachine
-	File              *p4lite.File // full AST (for resolver/codegen later)
-	Source            string       // original file path, for diagnostics
+	// selfValidating caches whether the parser block proves the
+	// protocol's identity itself (start-state `transition select(...)
+	// { ...; default: reject; }` keyed on a primary-header field).
+	// Computed once at vocab load (loader.go) and queried per Compile
+	// via IsSelfValidating().
+	selfValidating bool
+	File           *p4lite.File // full AST (for resolver/codegen later)
+	Source         string       // original file path, for diagnostics
 }
 
 // VariableSuffix describes a "primary header has a declared-length
@@ -172,6 +178,66 @@ func (p *ProtocolSpec) HasVariableLayout() bool {
 	return p.ParseStateMachine != nil || p.VariableSuffix != nil || len(p.FlagTriggers) > 0
 }
 
+// TotalExtracts reports the sum of `pkt.extract(...)` operations
+// across every state in the machine. Loader uses it to gate
+// VariableSuffix coexistence on a single-extract invariant; downstream
+// invariants that depend on R4 sitting at primary_end at accept time
+// can reuse the same query.
+func (m *ParseStateMachine) TotalExtracts() int {
+	if m == nil {
+		return 0
+	}
+	n := 0
+	for _, st := range m.States {
+		n += len(st.Extracts)
+	}
+	return n
+}
+
+// IsSelfValidating reports whether the parser block proves the
+// protocol's identity itself — i.e. its `start` state's transition
+// is `select(...) { ...; default: reject; }` keyed on at least one
+// primary-header field. When true, a parent that lacks a Field
+// dispatch can still chain to this protocol because the parser
+// machine's transition select rejects packets that don't match the
+// expected shape (e.g. ipv4's `transition select(hdr.version) { 4:
+// accept; default: reject; }`).
+//
+// Resolver uses this to decide whether to allow `mpls/ipv4`-shaped
+// chains without an explicit dispatch const: if the child is
+// self-validating, no boundary emit is needed (the parser machine
+// validates internally). Cached at vocab load via computeSelfValidating.
+func (p *ProtocolSpec) IsSelfValidating() bool {
+	return p.selfValidating
+}
+
+// computeSelfValidating walks the parser machine to detect the
+// "self-validating" shape. Called once per spec from the vocab loader
+// (after buildParseStateMachine) so the per-Compile IsSelfValidating
+// query is a single field load.
+func computeSelfValidating(p *ProtocolSpec) bool {
+	if p.ParseStateMachine == nil {
+		return false
+	}
+	m := p.ParseStateMachine
+	if m.EntryIdx < 0 || m.EntryIdx >= len(m.States) {
+		return false
+	}
+	start := m.States[m.EntryIdx]
+	if start.Trans.Kind != TransSelect || start.Trans.Select == nil {
+		return false
+	}
+	if start.Trans.Select.Default != StateReject {
+		return false
+	}
+	for _, k := range start.Trans.Select.Keys {
+		if k.HeaderName == p.HeaderName {
+			return true
+		}
+	}
+	return false
+}
+
 // FindField returns the named header field and true when present.
 // The returned pointer aliases into ProtocolSpec.Fields.
 func (p *ProtocolSpec) FindField(name string) (*Field, bool) {
@@ -217,37 +283,38 @@ const (
 	// DispatchField: parent has an identifying field (e.g. ipv4.protocol),
 	// named as <SELF>_<PARENT>_<FIELD> = value.
 	DispatchField DispatchType = iota
-	// DispatchSanity: parent has no dispatch field, so the child verifies
-	// itself (e.g. IPv4 under MPLS checks its first nibble is 4), named
-	// as <SELF>_<PARENT>_SANITY_<TYPE> = value.
-	DispatchSanity
 	// DispatchNoCheck: blind cast, user-declared trust (e.g. Ethernet
 	// payload of MPLS in EoMPLS), named as <SELF>_<PARENT>_NO_CHECK = true.
 	DispatchNoCheck
+	// DispatchSelfValidating: parent has no Field/NoCheck, but the child's
+	// parser block validates itself via `transition select(...) { ...;
+	// default: reject; }` (see ProtocolSpec.IsSelfValidating). No const
+	// declaration is required and no boundary instructions are emitted —
+	// the parser machine's transition select rejects mismatched packets.
+	DispatchSelfValidating
 )
 
 func (d DispatchType) String() string {
 	switch d {
 	case DispatchField:
 		return "field"
-	case DispatchSanity:
-		return "sanity"
 	case DispatchNoCheck:
 		return "no-check"
+	case DispatchSelfValidating:
+		return "self-validating"
 	}
 	return fmt.Sprintf("DispatchType(%d)", int(d))
 }
 
 // DispatchConst is one classified <SELF>_<PARENT>_... constant.
 type DispatchConst struct {
-	Type       DispatchType
-	Name       string // original full constant name, for diagnostics
-	Parent     string // lowercase parent protocol name (e.g. "ipv4")
-	FieldName  string // lowercase field name of the parent; Field only
-	SanityType string // uppercase sanity type (e.g. "NIBBLE"); Sanity only
-	Bits       int    // width of the constant; Field/Sanity only
-	Value      uint64 // integer value; Field/Sanity only
-	Bool       bool   // truth value; NoCheck only (must be true to be valid)
+	Type      DispatchType
+	Name      string // original full constant name, for diagnostics
+	Parent    string // lowercase parent protocol name (e.g. "ipv4")
+	FieldName string // lowercase field name of the parent; Field only
+	Bits      int    // width of the constant; Field only
+	Value     uint64 // integer value; Field only
+	Bool      bool   // truth value; NoCheck only (must be true to be valid)
 }
 
 // --- Parse state machine (within-protocol structure) ---
@@ -462,12 +529,13 @@ type FieldRef struct {
 }
 
 // SelectDispatchConst returns the strongest dispatch const whose
-// Parent matches parentName. Preference: Field > Sanity > NoCheck.
-// Returns nil when no match exists; callers decide how to phrase the
-// resulting diagnostic (resolver reports "no dispatch for child under
-// parent", chain codegen reports "missing self-dispatch").
+// Parent matches parentName. Preference: Field > NoCheck.
+//
+// Returns nil when no const matches; the resolver then checks
+// IsSelfValidating to decide whether to synthesize a
+// DispatchSelfValidating choice or surface a "no dispatch" error.
 func (s *ProtocolSpec) SelectDispatchConst(parentName string) *DispatchConst {
-	var field, sanity, nocheck *DispatchConst
+	var field, nocheck *DispatchConst
 	for i := range s.Consts {
 		c := &s.Consts[i]
 		if c.Parent != parentName {
@@ -478,10 +546,6 @@ func (s *ProtocolSpec) SelectDispatchConst(parentName string) *DispatchConst {
 			if field == nil {
 				field = c
 			}
-		case DispatchSanity:
-			if sanity == nil {
-				sanity = c
-			}
 		case DispatchNoCheck:
 			if nocheck == nil {
 				nocheck = c
@@ -491,8 +555,6 @@ func (s *ProtocolSpec) SelectDispatchConst(parentName string) *DispatchConst {
 	switch {
 	case field != nil:
 		return field
-	case sanity != nil:
-		return sanity
 	case nocheck != nil:
 		return nocheck
 	}

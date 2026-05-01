@@ -137,6 +137,7 @@ func loadFile(fsys fs.FS, p string) (*ProtocolSpec, error) {
 	if err := validateLayoutExclusivity(spec); err != nil {
 		return nil, err
 	}
+	spec.selfValidating = computeSelfValidating(spec)
 	return spec, nil
 }
 
@@ -154,17 +155,26 @@ func loadFile(fsys fs.FS, p string) (*ProtocolSpec, error) {
 //     FlagTriggers — a real bug masquerading as success.
 //   - The semantics overlap (which trailer wins?) is undefined.
 //
-// We refuse the combination at load time so the silent miss never
-// reaches codegen.
+// We refuse the FlagTriggers combination at load time so the silent
+// miss never reaches codegen. VariableSuffix is permitted to coexist
+// with a parser machine, but only when the parser machine has exactly
+// one extract: codegen runs the VAREXT_LEN_* trail at the parser's
+// accept landing on the assumption that R4 sits at primary_end there,
+// which only holds for a single-extract entry state. Multi-extract
+// parser machines (ipv6's parse_ext loop, gtp's opt + exts) leave R4
+// advanced past the primary header by accept-landing time, which
+// would silently miscompute the trailer.
 func validateLayoutExclusivity(s *ProtocolSpec) error {
 	if s.ParseStateMachine == nil {
 		return nil
 	}
-	if s.VariableSuffix != nil {
-		return fmt.Errorf("%s: protocol %q declares both a non-trivial parser block and VAREXT_LEN_* — choose one channel for variable-length layout", s.Source, s.Name)
-	}
 	if len(s.FlagTriggers) > 0 {
 		return fmt.Errorf("%s: protocol %q declares both a non-trivial parser block and OPT_TRIGGER_* — choose one channel for variable-length layout", s.Source, s.Name)
+	}
+	if s.VariableSuffix != nil {
+		if extracts := s.ParseStateMachine.TotalExtracts(); extracts != 1 {
+			return fmt.Errorf("%s: protocol %q pairs a VAREXT_LEN_* trailer with a multi-extract parser machine; the trailer codegen assumes R4 is at the primary header's end at the parser's accept landing, which only holds for a single-extract entry state (got %d extracts)", s.Source, s.Name, extracts)
+		}
 	}
 	return nil
 }
@@ -183,11 +193,22 @@ const maxDepthCap = 64
 // accept it (parent="CHAIN", field="END_X"). A protocol whose
 // parent is genuinely named "chain" therefore cannot use a Field
 // dispatch const whose field name starts with "END_".
+//
+// reSanityName is here purely to surface a clear error if someone
+// declares a legacy `<SELF>_<PARENT>_SANITY_<TYPE>` or `<SELF>_SANITY_<TYPE>`
+// const. The SANITY family was removed in favour of parser-block
+// self-validation (transition select with `default: reject`); without
+// this check the name would fall through to reField and silently
+// become a Field dispatch. The optional prefix accepts `[A-Z0-9_]+_`
+// so multi-token parents (e.g. `FOO_BAR_SANITY_NIBBLE`) are caught
+// alongside the single-token shapes — false positives like a const
+// that happens to contain the substring `_SANITY_` are accepted as
+// the cost of making the loud-fail exhaustive.
 var (
-	reNoCheck  = regexp.MustCompile(`^([A-Z0-9]+)_NO_CHECK$`)
-	reSanity   = regexp.MustCompile(`^([A-Z0-9]+)_SANITY_([A-Z0-9_]+)$`)
-	reChainEnd = regexp.MustCompile(`^CHAIN_END_([A-Z0-9_]+)$`)
-	reField    = regexp.MustCompile(`^([A-Z0-9]+)_([A-Z0-9_]+)$`)
+	reNoCheck    = regexp.MustCompile(`^([A-Z0-9]+)_NO_CHECK$`)
+	reSanityName = regexp.MustCompile(`^(?:[A-Z0-9_]+_)?SANITY_[A-Z0-9_]+$`)
+	reChainEnd   = regexp.MustCompile(`^CHAIN_END_([A-Z0-9_]+)$`)
+	reField      = regexp.MustCompile(`^([A-Z0-9]+)_([A-Z0-9_]+)$`)
 )
 
 // classifyResult bundles the per-protocol metadata classifyConsts
@@ -229,12 +250,12 @@ type optFlagConsts struct {
 // before they are validated (terminator + padding + length-byte +
 // per-option kind/size set).
 type optWalkConsts struct {
-	HasTerminator   bool
-	TerminatorKind  uint64
-	HasPadding      bool
-	PaddingKind     uint64
-	HasLengthOff    bool
-	LengthByteOff   int
+	HasTerminator  bool
+	TerminatorKind uint64
+	HasPadding     bool
+	PaddingKind    uint64
+	HasLengthOff   bool
+	LengthByteOff  int
 	// optionOrder lists option names in declaration order so codegen
 	// emits dispatch checks deterministically.
 	optionOrder []string
@@ -610,15 +631,8 @@ func classifyConsts(cs []*p4lite.Const, protoName, source string) (classifyResul
 			dc.Type = DispatchNoCheck
 			dc.Parent = strings.ToLower(m[1])
 			dc.Bool = true
-		} else if m := reSanity.FindStringSubmatch(rest); m != nil {
-			if c.IsBool {
-				return classifyResult{}, fmt.Errorf("%s: SANITY const %q must be bit<N>, got bool", source, c.Name)
-			}
-			dc.Type = DispatchSanity
-			dc.Parent = strings.ToLower(m[1])
-			dc.SanityType = m[2]
-			dc.Bits = c.Bits
-			dc.Value = c.Int
+		} else if reSanityName.MatchString(rest) {
+			return classifyResult{}, fmt.Errorf("%s: const %q uses the SANITY family, which has been removed — declare a parser-block `transition select(<field>) { ...; default: reject; }` to self-validate the protocol instead", source, c.Name)
 		} else if m := reField.FindStringSubmatch(rest); m != nil {
 			if c.IsBool {
 				return classifyResult{}, fmt.Errorf("%s: field-dispatch const %q must be bit<N>, got bool", source, c.Name)
@@ -629,7 +643,7 @@ func classifyConsts(cs []*p4lite.Const, protoName, source string) (classifyResul
 			dc.Bits = c.Bits
 			dc.Value = c.Int
 		} else {
-			return classifyResult{}, fmt.Errorf("%s: const %q does not match <SELF>_<PARENT>_{<FIELD>|SANITY_<TYPE>|NO_CHECK|MAX_DEPTH|CHAIN_END_<FIELD>}", source, c.Name)
+			return classifyResult{}, fmt.Errorf("%s: const %q does not match <SELF>_{<PARENT>_<FIELD>|<PARENT>_NO_CHECK|MAX_DEPTH|CHAIN_END_<FIELD>}", source, c.Name)
 		}
 		res.Consts = append(res.Consts, dc)
 	}

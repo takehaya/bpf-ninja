@@ -101,17 +101,18 @@ func TestResolveIPv6Chain(t *testing.T) {
 	}
 }
 
-func TestResolveGtpChainUsesSanity(t *testing.T) {
-	// gtp has GTP_UDP_DPORT==2152 (field dispatch from udp);
-	// ipv4 under gtp uses IPV4_GTP_SANITY_NIBBLE==4 since gtp has no type field.
+func TestResolveGtpChainUsesSelfValidating(t *testing.T) {
+	// gtp has GTP_UDP_DPORT==2152 (field dispatch from udp); ipv4 under
+	// gtp resolves via DispatchSelfValidating because gtp has no type
+	// field and ipv4's parser block validates `version == 4` itself.
 	p := resolveOK(t, "eth/ipv4/udp/gtp/ipv4/tcp", nil)
 	gtp := p.Layers[3].Dispatch
 	if gtp == nil || gtp.Const.Name != "GTP_UDP_DPORT" || gtp.Const.Value != 2152 {
 		t.Errorf("gtp dispatch = %+v", gtp)
 	}
 	innerIPv4 := p.Layers[4].Dispatch
-	if innerIPv4 == nil || innerIPv4.Type != vocab.DispatchSanity || innerIPv4.Const.SanityType != "NIBBLE" {
-		t.Errorf("inner ipv4 dispatch = %+v", innerIPv4)
+	if innerIPv4 == nil || innerIPv4.Type != vocab.DispatchSelfValidating || innerIPv4.Const != nil {
+		t.Errorf("inner ipv4 dispatch = %+v, want DispatchSelfValidating with nil Const", innerIPv4)
 	}
 }
 
@@ -173,9 +174,9 @@ func TestResolveUnknownField(t *testing.T) {
 }
 
 func TestResolveMissingDispatch(t *testing.T) {
-	// ipv4 has no IPV4_IPV4_* dispatch constant, so "ipv4 under ipv4"
-	// must fail with a helpful message.
-	resolveErr(t, "eth/ipv4/ipv4", nil, "no dispatch constant")
+	// tcp has no TCP_ETH_* dispatch constant and no parent-less
+	// sanity, so "tcp directly under eth" must fail.
+	resolveErr(t, "eth/tcp", nil, "no dispatch constant")
 }
 
 func TestResolveRejectsValueWiderThanField(t *testing.T) {
@@ -485,12 +486,13 @@ func TestResolveAllExamples(t *testing.T) {
 		{"cidr", "eth/ipv4[src==10.0.0.0/8]/tcp", false, ""},
 		{"vlan_opt", "eth/vlan?/ipv4/tcp", false, ""},
 		{"mpls_stack", "eth/mpls{1,8}/ipv4/tcp", false, ""},
-		// VXLAN's payload is always Ethernet; the DSL "ipv4 directly
-		// after vxlan" therefore has no dispatch constant declared.
-		{"vxlan_with_labels", "eth/ipv4@outer/udp/vxlan[vni==100]/ipv4@inner/tcp[dport==80]", true, "no dispatch constant"},
-		// srv6 chain fails on missing IPV6_SRV6_* dispatch before the MVP
-		// label cap would be checked; that is the current, helpful error.
-		{"srv6_three_stage", "eth/ipv6@transit/srv6/ipv6@service/srv6/ipv6@user/tcp", true, "no dispatch constant"},
+		// VXLAN's payload is always Ethernet, but ipv4's self-validating
+		// parser block lets the chain resolve; at runtime its
+		// `transition select(version)` rejects non-IPv4 payloads.
+		{"vxlan_with_labels", "eth/ipv4@outer/udp/vxlan[vni==100]/ipv4@inner/tcp[dport==80]", false, ""},
+		// srv6 chain resolves dispatch via ipv6's self-validating parser,
+		// but hits the MVP label cap (max 2 labeled instances).
+		{"srv6_three_stage", "eth/ipv6@transit/srv6/ipv6@service/srv6/ipv6@user/tcp", true, "3 labeled instances"},
 		{"gtp", "eth/ipv4/udp/gtp[teid==0x12345]/ipv4/tcp[dport==443]", false, ""},
 		{"l3vpn", "eth/mpls+/ipv4/tcp", false, ""},
 		{"l2vpn_no_cw", "eth/mpls+/eth@inner/ipv4/tcp", false, ""},

@@ -25,7 +25,7 @@
 - `766e8e8` IPv4 host + IPv4 CIDR `==`/`!=`
 - `369d556` IPv4 /32 short-circuit
 - `02ba9c2` IPv6 host + IPv6 CIDR + MAC (`==` のみ)
-- `(本ブランチ)` IPv6 host / IPv6 CIDR / MAC で `!=` 対応 (multi-word match 用ラベル経路追加)
+- (`feat/p4_based_dsl`) IPv6 host / IPv6 CIDR / MAC で `!=` 対応 (multi-word match 用ラベル経路追加)
 
 `eth/ipv4[src==10.0.0.1]/tcp` から `eth/ipv6[dst!=2001:db8::/32]/tcp` や `eth[dst!=de:ad:be:ef:00:01]/ipv4/tcp` まで vimto verifier 通過。lexer/parser はもともと全種を tokenize していたので、codegen が追いついた格好。
 
@@ -45,7 +45,7 @@
 
 **動機**: バンドル `.p4` ファイル群は p4lite が parse できる形だが、本物の P4-16 仕様に乗っているか継続検証したい。`feat/p4_based_dsl` ブランチ名のとおり、P4 互換性は design goal。
 
-**完了内容** (本ブランチ):
+**完了内容** (`feat/p4_based_dsl`):
 - `docker/p4c-check/Dockerfile` — `p4lang/p4c:1.2.5.12` をベースに multi-stage build。pin 指定で upstream の `latest` 再リファレンス drift を防ぐ
 - `docker/p4c-check/check.sh` — 各 `.p4` を `p4test --parse-only --Werror` で検証。**per-file content-hash キャッシュ** (`/work/.p4c-cache/<sha256>.<ver>.ok`) 内蔵
 - `scripts/p4c-check.sh` — ローカル実行用 wrapper、`docker build` + `docker run` を呼ぶだけの薄い shell
@@ -72,7 +72,7 @@
 
 **動機**: `pkg/kunai/protocols/` 配下の `.p4` vocab は MVP 当初固定長ヘッダしか codegen に伝えておらず、GTP-U 拡張、IPv6 ext header chain、SRv6 segment list、IPv4/TCP options、GRE flags などの実フレームを silent miss していた。`feat/p4_based_dsl` ブランチ名のとおり、P4 標準への完全 alignment を目指して可変長解釈を full implementation。
 
-**完了内容** (本ブランチの未コミット作業):
+**完了内容** (`feat/p4_based_dsl`):
 
 - **PR 1**: `vocab.ParseStateMachine` IR — p4lite parser AST から正規化された state machine を構築。trivial (`extract; transition accept;`) は `nil` で legacy path に流す
 - **PR 2**: `genParserMachine` codegen — state machine を walk して命令列を emit、self-loop は bpf_loop 化、select tuple match (≤3 keys) 対応。GTP-U の `gtp_h` + optional + ext chain を実装
@@ -88,23 +88,37 @@
 - `make p4c-check` 緑 (新規追加した `.p4` const も p4c parse-only 通過)
 - **`pkg/kunai/dsltest/`** に移動して kunai library の test helper として位置付け。gopacket 製の実フレーム against 28 E2E cases (IPv4 options / TCP options / GRE flags / IPv6 ext / SRv6 / GTP-U / VLAN / MPLS) を root で全 PASS — vimto kernel 6.18 上でも緑
 
-**追加で対応した項目** (本ブランチ):
+**追加で対応した項目** (`feat/p4_based_dsl`):
 - **kernel 6.1 BSWAP**: ✅ 解消。`asm.BSwap` (opcode `0xd7`、6.6+) を使っていた `predicate.go` / `where.go` を `asm.HostTo(asm.BE, ...)` (BPF_END family、5.x で動く) に置換。equality は constant 側を codegen 時に byte-swap して swap 命令を完全省略。**vimto kernel 6.1 で 35 chains 全 PASS** を確認
 - **ESP terminal layer**: ✅ 完了。`pkg/kunai/protocols/esp.p4` 追加 — `eth/ipv4/esp` / `eth/ipv6/esp` で SPI/Sequence Number まで match できる (内側 encrypted は読めないので chain 終端)。dsltest E2E 追加 (`TestEthIPv{4,6}ESPMatch`)
-- **SRv6 segment chain decomposition** (PR 2): 🔄 **採用見送り (rollback 対象)**。`srv6seg_h` を独立 chain protocol として切り出し、`eth/ipv6/srv6/srv6seg+/tcp` で書ける形を試作したが、**SRH segment list は SRH wrapper の中身であり外側の独立 layer ではない** という構造上の不整合が議論で明確化。aux header model (`srv6.segments[N]`) で再実装する方針に切り替え。本 PR で導入した `ChainCountSpec` (`<SELF>_<PARENT>_COUNT_FROM_<FIELD>`) は aux header stack の count source として再利用可能。詳細は dsl-internals.md §6 を参照
-- **GTP-U ext header chain decomposition** (PR 3): 🔄 **採用見送り (rollback 対象)**。`gtpext.p4` を独立 chain protocol として切り出したが、PR 2 と同じ理由で aux header model (`gtp.exts[N]`) に切り替え。GTP ext は GTP wrapper の中身。本 PR の `*` / `?` quantifier silent-miss 問題 (NoCheck 親 dispatch との組合せ) も aux model なら parser block の state machine が gating を表現するので解消する
 
-**(Y) aux header model の採択** (主要設計判断):
-chain decomposition (PR 2/3) を試作する過程で、可変長構造には大きく **(A) stacked external headers** (= chain) と **(B/C/D) wrapper + aux headers** の 2 系統がある事実が明確化した。VLAN/MPLS/QinQ は (A)、SRv6 segment / GTP opt / GTP ext / TCP/IPv4 options は (B/C/D)。chain 機構で全部表現しようとすると wire 構造との対応が崩れる。aux header model (parser block の `out` 引数で aux を declare、state machine で gating 記述、DSL は `protocol.aux_name[.index][.field]` で access) に統一することで一貫性を確保。詳細な分類と実装指針は **`dsl-internals.md` §6 「可変長構造の分類と表現」** に集約。
-
-**残課題 (低優先、別 PR で対応想定)**:
+**残課題 (低優先)**:
 - **IPv6 ext + SRv6 Routing(43) 衝突**: 現状 scratch 512 で吸収。**fastpath JEq による verifier-narrowing を試行したが効果なし** — parser machine の done label に ext-walk path と fastpath path の両方が Ja で合流するため、verifier は両 path の R4 max を join して同じ広い bound を維持する (scratch 256 でも reject が再現)。fundamental には fastpath 専用の 別 done label + child dispatch 二重化が必要で、parser machine emit を大きく refactor する必要がある。scratch 512 (worst-case 320 B、余裕 192 B) で実用上は問題ないため defer
-- **aux header predicate / access** (`gtp.opt.next_ext`, `srv6.segments[0].addr`, `tcp.options.MSS.value` 等): ✅ **完了** (PR-A〜PR-D + PR-B' で landing)。
-  - PR-A: 単発 aux predicate + bracket form (`gtp[opt.next_ext == 0]` / `where gtp.opt.next_ext == 0`)
-  - PR-B + PR-B': aux header stack の static / dynamic index access (`srv6.segments[0].addr`, `srv6.segments[srv6.last_entry].addr`)、IPv6 アドレス比較対応
-  - PR-C: `any() / all()` 量化詞 (SRv6 segments を中心に、count guard 付き)
-  - PR-D: TCP options walk codegen + parser block 経由の vocab declaration (`tcp.options.MSS.value == 1460` 他)
-  - 残: `.exists` を bare bool atom として where parser に追加、IPv4 options vocab、CIDR/MAC literal の aux field 対応、option 内部 array (Phase 2 — SACK.blocks 等) はすべて future work
+
+### B. aux header model — predicate / stack / quantifier / options ✅ 完了
+
+**動機**: §A で可変長解釈は parser-state-machine + VAREXT として実装したが、parser block の `out` parameter で declare された **auxiliary header の field を DSL から直接 predicate / where で読む** 手段が無かった。GTP-U の opt block (`gtp.opt.next_ext`)、SRv6 segment list (`srv6.segments[N].addr`)、TCP options (`tcp.options.MSS.value`) などへのアクセスが silent gap。
+
+**設計判断 (Y) aux header model**:
+chain decomposition (= `srv6/srv6_seg+/...` のように segments を独立 chain protocol にする案) と aux header model (= `srv6.segments[N]` のように SRH wrapper の中身として表現する案) の比較で **後者を採択**。SRH segment list は SRH wrapper の中身であって外側の独立 layer ではないこと、入れ子 SRH との visual 区別が必要なこと、TCP/IPv4 options が wrapper-内ルックアップ系であることから、wrapper + aux 概念で統一。chain protocol は VLAN/MPLS/QinQ のような **真の stacked external headers** に限定。詳細な分類と実装指針は **`dsl-internals.md` §6 「可変長構造の分類と表現」**。
+
+**実装した PR (`feat/p4_based_dsl` ブランチ)**:
+
+| PR | scope | 例 |
+|---|---|---|
+| PR-A | 単発 aux predicate + bracket / where 両形 | `gtp[opt.next_ext == 0]` / `where gtp.opt.next_ext == 0` |
+| PR-B + PR-B' | aux header stack の static / dynamic index access、IPv6 アドレス比較対応 | `srv6.segments[0].addr == fc00::1`、`srv6.segments[srv6.last_entry].addr == X` |
+| PR-C | `any() / all()` 量化詞 (SRv6 segments を中心に、count guard 付き) | `where any(srv6.segments.addr == fc00::1)` |
+| PR-D | TCP options walk codegen + parser block 経由の vocab declaration | `where tcp.options.MSS.value == 1460` |
+
+**廃案**: 同じ問題に対し chain decomposition 方向で `srv6_seg+` / `gtpext+` を独立 chain protocol にする案を試作したが (草案 commit が一時 push、後 rollback)、wire 構造との対応が崩れること、`*` / `?` quantifier silent-miss 問題、入れ子 SRH との syntactic 区別困難、で採用見送り。aux model に切り替えたあとも、本草案で導入した parent-field-count chain end (`<SELF>_<PARENT>_COUNT_FROM_<FIELD>`) の codegen は aux header stack の count source に流用している。
+
+**検証**:
+- vimto kernel 6.1 / 6.6 / 6.12 で `TestBpfEntryWithDSLFilter` 全 case 緑
+- dsltest E2E で aux predicate / static index / dynamic index / any / all / TCP option lookup を root で実フレーム match 確認
+- `make p4c-check` 緑 (新規 option declaration の `header tcp_opt_*_h` も p4c parse-only 通過)
+
+**Document**: 文法は `dsl-grammar.md §1.3 / §1.4`、user 例文は `dsl-usage.md §フィールド参照 / §Aux header / §Quantifier`、設計思想は `dsl-internals.md §6` を参照。
 
 ## P1: UX / 運用品質
 
@@ -159,6 +173,51 @@ chain decomposition (PR 2/3) を試作する過程で、可変長構造には大
 - 既存 stack 利用箇所 (`-48` の args ptr, bpf_loop ctx の `-128`〜 など) との衝突を再確認
 
 **工数**: 0.5 日。
+
+### B-1. `.exists` bool atom (where 句直接記述)
+
+**動機**: §B で `proto.aux.exists` の resolver path は実装済み (`ir.AuxRef.Option.ExistsOnly` / `ir.FieldRef.IsExistsCheck`)。ただし where 句で `where gtp.opt.exists` を **裸の bool atom として書く** parser 拡張が未対応 — 現状 parser は field path 後に op を要求する。
+
+**スコープ**:
+- `parseWhereAtom` に「field path の末尾が `exists` なら bool atom として終端」分岐追加
+- `parseArithCmp` の早期分岐で TokIdent → field path → `.exists` チェック
+- codegen 側は既存の AuxRef gating-only emit を流用
+
+**工数**: 0.5 日。
+
+### B-2. IPv4 options vocab 拡張
+
+**動機**: §B PR-D で TCP options の vocab 宣言と option-walk codegen は通った。同じ枠組みで IPv4 options (Router Alert, Record Route, Source Route, Timestamp, Security 等) を declare すれば追加 codegen なしで動く。
+
+**スコープ**:
+- `pkg/kunai/protocols/ipv4.p4` に `IPV4_OPT_TERMINATOR_KIND/PADDING_KIND/LENGTH_BYTE_OFF` + 各 option の `<NAME>_KIND/SIZE` + `header ipv4_opt_<name>_h`
+- 主要対象: Router Alert (kind 148, 4 B 固定)、Record Route / LSR / SSR / Internet Timestamp (可変、内部 array — Phase 2 まで `.exists` のみ)
+- dsltest E2E
+
+**工数**: 1 日 (RA だけなら 2 時間)。
+
+### B-3. CIDR / IPv4 / MAC literal を aux field に
+
+**動機**: §B PR-A〜D で integer 比較の aux access は通ったが、IPv4 / IPv6 / MAC / CIDR literal を aux 経由で比較するパスは現状 `ErrNotImplemented`。`gtp[opt.flow_label == fe80::1]` 等は parse / resolve 通るが codegen 拒否。
+
+**スコープ**:
+- `pkg/kunai/codegen/predicate.go::emitIPv4Predicate` / `emitIPv6Predicate` / `emitMACPredicate` / `emitIPv4CIDRPredicate` / `emitIPv6CIDRPredicate` の `pred.Field.Aux != nil` ガードを通す
+- aux byte offset を `fieldRefByteOffset` で取り、where 側の `genLiteralCompareDynamic` 同様に gating + 多 byte 読み出しを emit
+- bracket form 同様
+
+**工数**: 1-2 日 (5 関数に並列に対応)。
+
+### B-4. Option 内部 array (SACK.blocks / RR.addrs)
+
+**動機**: §B PR-D は TCP options を Schema A/B (固定フィールド + 単発) に絞った。SACK は `{left, right}` ブロックの配列 (Schema C)、IPv4 RR は IP アドレスの配列。これらにアクセスするには option 内部 array に `[N]` index と `any/all` を効かせる必要あり。
+
+**スコープ**:
+- vocab に array 宣言 (option header 後の trailing variable 領域 + 要素サイズ)
+- resolver: `tcp.options.SACK.blocks[N].left` の 5-part path 受理
+- codegen: option-walk で見つけた option base + `[N] * elem_size` で内部要素アクセス
+- `any(tcp.options.SACK.blocks.left > 1000)` などの量化
+
+**工数**: 2-3 日。chain quantifier 系のロジック流用可。
 
 ## P3: コード負債 / Sanity 系
 
@@ -219,7 +278,7 @@ chain decomposition (PR 2/3) を試作する過程で、可変長構造には大
 
 **命名**: パッケージ名は **`kunai`** (苦無 — 多目的の ninja 道具)。`xdp-ninja` ecosystem を保ちつつ独立 library として通用する。
 
-**完了内容** (本ブランチ):
+**完了内容** (`feat/p4_based_dsl`):
 - `internal/dsl/` → `pkg/kunai/` 配下に全移動 (`codegen/` / `parser/` / `lexer/` / `resolve/` / `ir/` / `ast/` / `vocab/` / `dslvocab/` / `protocols/`)
 - `compile.go` のパッケージ宣言 `package dsl` → `package kunai`、`compile_test.go` も同様
 - import path 一括置換 (`xdp-ninja/internal/dsl` → `xdp-ninja/pkg/kunai`、42 ファイル)
@@ -235,7 +294,7 @@ chain decomposition (PR 2/3) を試作する過程で、可変長構造には大
 
 **動機**: cBPF が pcap でも socket でも kernel でも動く portable bytecode だったように、`kunai` の codegen output (= `[R0, R1) のバイト列を見て R2 に accept/reject を書く eBPF subprogram`) も target portable にする。
 
-**完了内容** (本ブランチ):
+**完了内容** (`feat/p4_based_dsl`):
 
 段階 A (API decouple):
 - `pkg/kunai/codegen/caps.go` 新設: `Capabilities`, `ActionFetcher` interface のみ (host 知識 0)
@@ -266,38 +325,47 @@ chain decomposition (PR 2/3) を試作する過程で、可変長構造には大
 
 ## 進捗サマリ
 
+**完了**:
+
 ```
-P0-1 CI vimto              ✅ 完了 (255d9dd)
-P0-2 IP リテラル predicate  ✅ 完了 (766e8e8, 369d556, 02ba9c2, 本ブランチ)
-P0-3 CHAIN_END 一般化       ✅ 完了 (befecd2, 64dff53)
-P0-4 p4c CI 検証           ✅ 完了 (本ブランチ、Dockerfile + cache)
-P1-5 ソース位置統一         ✅ 完了 (d258272)
-P1-6 --dsl-help             ✅ 完了 (6ad3b97)
-P1-7 --list-protos          ✅ P1-6 で代替
-P2-8 field in              ⏳ 未着手
-P2-9 field has             ⏳ 未着手
-P2-10 算術ネスト 4+         ⏳ 未着手
-P3-11 sanity self-disp     ⏳ 未着手
-P3-12 alt 異種 size        ⏳ 未着手
-P3-13 alt-of-alt           ⏳ 未着手
-P4-14 flow state           ⏳ 未着手
-P5-15 pkg/kunai/ 移動      ✅ 完了 (本ブランチ、internal/dsl/ → pkg/kunai/)
-P5-16 target 抽象化         ✅ 完了 (本ブランチ、Capabilities API + host/xdp サブパッケージ + ABI 文書化 + regression test)
-N0  PR2/3 rollback         ✅ 完了 (chain decomposition 撤回、aux model 採用)
-PR-A 単発 aux predicate    ✅ 完了 (gtp.opt.next_ext, bracket + where 両形式)
-PR-B aux header stack       ✅ 完了 (srv6.segments[N], gtp.exts[N] static + dynamic index)
-PR-B' SRv6 segments E2E     ✅ 完了 (where literal compare で IPv6 aux field 対応)
-PR-C any() / all()          ✅ 完了 (aux header stack 量化、count guard 付き)
-PR-D TCP options walk       ✅ 完了 (tcp.options.MSS.value 等、option-walk codegen + parser block 宣言)
+P0-1  CI vimto             (255d9dd)
+P0-2  IP リテラル predicate (766e8e8, 369d556, 02ba9c2, feat/p4_based_dsl)
+P0-3  CHAIN_END 一般化      (befecd2, 64dff53)
+P0-4  p4c CI 検証          (feat/p4_based_dsl: Dockerfile + cache)
+A     可変長 header 対応    (feat/p4_based_dsl: parser machine + VAREXT/OPT)
+B     aux header model      (feat/p4_based_dsl: PR-A〜PR-D + PR-B', dsl-internals.md §6)
+P1-5  ソース位置統一        (d258272)
+P1-6  --dsl-help            (6ad3b97)
+P1-7  --list-protos         P1-6 で代替
+P5-15 pkg/kunai/ 移動      (feat/p4_based_dsl: internal/dsl/ → pkg/kunai/)
+P5-16 target 抽象化        (feat/p4_based_dsl: Capabilities + host/xdp + ABI 契約 + regression test)
 ```
 
-P0 / P1 / P5 すべて片付いた。残りは需要が出てから着手で良い水準。
+**未着手 (需要次第)**:
+
+```
+P2-8  field in              `where ... in [v1, v2]` の codegen
+P2-9  field has             `tcp.flags has SYN` bitmask 比較
+P2-10 算術ネスト 4+
+B-1   .exists bool atom     where 句直接記述 (parser 拡張)
+B-2   IPv4 options vocab    PR-D 枠組みで Router Alert 等を declare
+B-3   aux field × literal   IPv4/IPv6/MAC/CIDR literal の aux access
+B-4   option 内部 array     SACK.blocks / RR.addrs (Schema C)
+P3-11 sanity self-disp     chain で sanity NIBBLE
+P3-12 alt 異種 size        `(ipv4|ipv6)/tcp` を成立させる
+P3-13 alt-of-alt
+P4-14 flow state           BPF_MAP_TYPE_HASH 経由の flow tracking
+```
+
+P0 / P1 / P5 + §A / §B はすべて片付いた。残りは需要が出てから着手で良い水準。
 
 ## 中長期 (具体化はそのとき)
 
-- p4c とのインターオペ: 標準 P4 ファイルを直接食えるようにする
-- BTF auto-vocab: kernel に load されている BPF プログラムの BTF から自動 vocab 生成
-- DSL→tcpdump ロスレス変換 (一部式): デバッグ時に「この DSL 式を tcpdump で書くと何か」を表示
+- **p4c とのインターオペ拡張**:
+  - **kunai → p4c (既達)**: 自作 vocab 16 ファイルすべて `p4test --parse-only --Werror` 通過 (P0-4)。p4lite は P4-16 の strict subset として設計されており、`header` / `const` / `parser` (extract/select/accept/reject 含む) は full に対応。
+  - **p4c → kunai (現状の限界)**: 任意の P4 file を p4lite で食えるのは「dsl が必要とする宣言だけが含まれるファイル」まで。`action` / `table` / `control` / `apply` / `extern` を含む実 dataplane プログラムは `lexer.go::rejectedKeywords` で明示 reject (詳細は `dsl-internals.md §5`)。dataplane `.p4` から header 定義と parser block だけを抽出する preprocessor、もしくは対応キーワードを silent skip するモードが、本格 P4 ecosystem との橋渡しに必要。
+- **BTF auto-vocab**: kernel に load されている BPF プログラムの BTF から自動 vocab 生成
+- **DSL→tcpdump ロスレス変換** (一部式): デバッグ時に「この DSL 式を tcpdump で書くと何か」を表示
 
 これらは技術的に面白いが MVP の延長線にはない大物。要望ベースで考える。
 

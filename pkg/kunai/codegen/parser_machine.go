@@ -63,6 +63,17 @@ func genParserMachine(layer *ir.LayerInstance, layerIdx int, all []*ir.LayerInst
 	// helper call, so a Mov R3,R3 noop here would be !read_ok —
 	// pick R0 which is consistent on both paths.
 	insns = append(insns, asm.Mov.Reg(asm.R0, asm.R0).WithSymbol(pmCtx.doneLabel))
+
+	// Layer-level VAREXT_LEN_* trail: when the protocol declares both
+	// a parser machine (version self-check) and a VariableSuffix (ipv4
+	// IHL trailing), R4 sits at primary_end after the parser's
+	// emitAdvance(hs) inside emitStateBody — same precondition as
+	// genStaticLayer, so they share emitPrimaryVariableTail.
+	tail, err := emitPrimaryVariableTail(spec)
+	if err != nil {
+		return nil, nil, err
+	}
+	insns = append(insns, tail...)
 	return insns, callbacks, nil
 }
 

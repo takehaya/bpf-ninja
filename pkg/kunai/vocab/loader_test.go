@@ -179,14 +179,23 @@ func TestLoadSrv6Header(t *testing.T) {
 	}
 }
 
-func TestLoadIpv4GtpSanity(t *testing.T) {
+func TestLoadIpv4DispatchClassification(t *testing.T) {
 	ipv4 := loadBundled(t)["ipv4"]
-	dc, ok := indexByName(ipv4.Consts)["IPV4_GTP_SANITY_NIBBLE"]
-	if !ok {
-		t.Fatal("IPV4_GTP_SANITY_NIBBLE not found")
+	// After SANITY removal, ipv4 self-validates via the parser block.
+	// SelectDispatchConst returns Field for eth/vlan/qinq parents, and
+	// nil for parents without a Field declaration; resolver synthesises
+	// DispatchSelfValidating in that case.
+	eth := ipv4.SelectDispatchConst("eth")
+	if eth == nil || eth.Type != DispatchField {
+		t.Errorf("SelectDispatchConst(\"eth\") = %+v, want Field dispatch", eth)
 	}
-	if dc.Type != DispatchSanity || dc.Parent != "gtp" || dc.SanityType != "NIBBLE" || dc.Value != 4 {
-		t.Errorf("const = %+v", dc)
+	for _, parent := range []string{"gtp", "mpls"} {
+		if got := ipv4.SelectDispatchConst(parent); got != nil {
+			t.Errorf("SelectDispatchConst(%q) = %+v, want nil (resolver falls back to self-validation)", parent, got)
+		}
+	}
+	if !ipv4.IsSelfValidating() {
+		t.Error("ipv4 must be self-validating after the migration")
 	}
 }
 
@@ -236,21 +245,6 @@ func TestLoadTcpDispatchClassification(t *testing.T) {
 		if dc.Value != tc.value {
 			t.Errorf("%s: value %d, want %d", tc.constName, dc.Value, tc.value)
 		}
-	}
-}
-
-func TestLoadIpv4MplsSanity(t *testing.T) {
-	specs := loadBundled(t)
-	ipv4 := specs["ipv4"]
-	if ipv4 == nil {
-		t.Fatal("ipv4 not loaded")
-	}
-	dc, ok := indexByName(ipv4.Consts)["IPV4_MPLS_SANITY_NIBBLE"]
-	if !ok {
-		t.Fatal("IPV4_MPLS_SANITY_NIBBLE not found")
-	}
-	if dc.Type != DispatchSanity || dc.Parent != "mpls" || dc.SanityType != "NIBBLE" || dc.Value != 4 || dc.Bits != 4 {
-		t.Errorf("sanity const = %+v", dc)
 	}
 }
 
@@ -590,9 +584,11 @@ parser F(packet_in pkt, out foo_h h) { state start { pkt.extract(h); transition 
 func TestParseStateMachineTrivialIsNil(t *testing.T) {
 	// Protocols whose .p4 declares only `state start { extract(primary); transition accept; }`
 	// must yield ProtocolSpec.ParseStateMachine == nil so codegen routes
-	// them through the legacy fixed-size path.
+	// them through the legacy fixed-size path. ipv4 / ipv6 self-validate
+	// their version field and therefore carry a non-trivial parser
+	// machine — they are exercised by TestIsSelfValidating instead.
 	specs := loadBundled(t)
-	trivial := []string{"eth", "ipv4", "tcp", "udp", "icmp", "icmp6"}
+	trivial := []string{"eth", "tcp", "udp", "icmp", "icmp6"}
 	for _, name := range trivial {
 		sp, ok := specs[name]
 		if !ok {
@@ -1047,12 +1043,12 @@ parser F(packet_in pkt, out foo_h h) {
 	}
 }
 
-// TestRejectsParserMachinePlusVAREXT pins the layout exclusivity
-// invariant: vocab cannot declare both a non-trivial parser block
-// (which already expresses aux extracts) AND a primary-header
-// VAREXT_LEN trailer. Codegen would silently ignore the trailer
-// because genLayerInner dispatches on ParseStateMachine first.
-func TestRejectsParserMachinePlusVAREXT(t *testing.T) {
+// TestAllowsParserMachinePlusVAREXT pins the relaxed layout rule:
+// vocab MAY declare both a non-trivial parser block (e.g. version
+// self-validation) AND a primary-header VAREXT_LEN trailer. The
+// parser machine handles extract + validation; codegen runs the
+// VAREXT trail at the parser's accept landing. Used by ipv4 / ipv6.
+func TestAllowsParserMachinePlusVAREXT(t *testing.T) {
 	fsys := fstest.MapFS{
 		"vocab/foo.p4": &fstest.MapFile{Data: []byte(`
 header foo_h { bit<8> a; bit<8> b; bit<16> c; }
@@ -1069,9 +1065,81 @@ parser F(packet_in pkt, out foo_h h) {
 }
 `)},
 	}
+	specs, err := Load(fsys, "vocab")
+	if err != nil {
+		t.Fatalf("expected load success with parser machine + VAREXT, got %v", err)
+	}
+	foo := specs["foo"]
+	if foo == nil {
+		t.Fatal("foo spec not loaded")
+	}
+	if foo.ParseStateMachine == nil {
+		t.Error("expected non-trivial ParseStateMachine")
+	}
+	if foo.VariableSuffix == nil {
+		t.Error("expected VariableSuffix to coexist with ParseStateMachine")
+	}
+}
+
+// TestRejectsParserMachineMultiExtractPlusVAREXT pins the
+// single-extract invariant the VAREXT_LEN_* trailer codegen relies
+// on: when a vocab pairs VariableSuffix with a parser machine that
+// extracts more than once (e.g. primary + aux stack), R4 at the
+// parser's accept landing no longer equals primary_end and the trail
+// would silently miscompute. Loader must reject this combination so
+// the silent miss never reaches codegen.
+func TestRejectsParserMachineMultiExtractPlusVAREXT(t *testing.T) {
+	fsys := fstest.MapFS{
+		"vocab/foo.p4": &fstest.MapFile{Data: []byte(`
+header foo_h     { bit<8> a; bit<8> b; bit<16> c; }
+header foo_ext_h { bit<8> kind; bit<8> _pad; bit<16> data; }
+const bit<8> FOO_VAREXT_LEN_BYTE_OFFSET = 0;
+const bit<8> FOO_VAREXT_LEN_MASK = 0x0F;
+const bit<8> FOO_VAREXT_LEN_SHIFT = 0;
+const bit<8> FOO_VAREXT_LEN_SCALE = 4;
+const bit<8> FOO_VAREXT_LEN_BASE = 4;
+parser F(packet_in pkt, out foo_h h, out foo_ext_h[4] exts) {
+  state start {
+    pkt.extract(h);
+    transition select(h.a) {
+      0: parse_ext;
+      default: accept;
+    }
+  }
+  state parse_ext {
+    pkt.extract(exts.next);
+    transition accept;
+  }
+}
+`)},
+	}
 	_, err := Load(fsys, "vocab")
-	if err == nil || !strings.Contains(err.Error(), "VAREXT_LEN_") {
-		t.Fatalf("expected layout exclusivity error, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "multi-extract parser machine") {
+		t.Fatalf("expected multi-extract guard error, got %v", err)
+	}
+}
+
+// TestIsSelfValidating pins the parser-block self-check detection.
+// True: ipv4 (transition select(hdr.version)), ipv6 (tuple-select
+// over version + next_header), srv6 (routing_type). False: protocols
+// with no parser machine (eth, tcp, udp) — they rely on Field/NoCheck
+// dispatch from their parents.
+func TestIsSelfValidating(t *testing.T) {
+	specs := loadBundled(t)
+
+	for _, name := range []string{"ipv4", "ipv6", "srv6"} {
+		if !specs[name].IsSelfValidating() {
+			t.Errorf("%s must report self-validating", name)
+		}
+	}
+	for _, name := range []string{"eth", "tcp", "udp"} {
+		s := specs[name]
+		if s == nil {
+			t.Fatalf("%s spec not loaded", name)
+		}
+		if s.IsSelfValidating() {
+			t.Errorf("%s should not report self-validating (no non-trivial parser block)", name)
+		}
 	}
 }
 
@@ -1118,6 +1186,65 @@ parser F(packet_in pkt, out foo_h h) {
 	_, err := Load(fsys, "vocab")
 	if err == nil || !strings.Contains(err.Error(), "power of two") {
 		t.Fatalf("expected scale-power-of-two error, got %v", err)
+	}
+}
+
+// TestRejectsSanityConstName pins that the SANITY family is gone:
+// any const matching `<SELF>_[<PARENT>_]SANITY_<TYPE>` must fail at
+// load with a pointer to parser-block self-validation. Without an
+// explicit reject path the name would silently fall through to
+// reField (parent="sanity", field="nibble") and become a Field
+// dispatch — silent miss territory.
+func TestRejectsSanityConstName(t *testing.T) {
+	cases := []struct {
+		name   string
+		source string
+	}{
+		{
+			name: "parent_specific",
+			source: `
+header foo_h { bit<8> a; bit<8> b; bit<16> c; }
+const bit<4> FOO_BAR_SANITY_NIBBLE = 4;
+parser F(packet_in pkt, out foo_h h) {
+  state start { pkt.extract(h); transition accept; }
+}
+`,
+		},
+		{
+			name: "parent_less",
+			source: `
+header foo_h { bit<8> a; bit<8> b; bit<16> c; }
+const bit<4> FOO_SANITY_NIBBLE = 4;
+parser F(packet_in pkt, out foo_h h) {
+  state start { pkt.extract(h); transition accept; }
+}
+`,
+		},
+		{
+			// `FOO_BAR_BAZ` looks like a multi-token parent name. The
+			// previous regex (parent group `[A-Z0-9]+`) failed to match
+			// these and let them slip through reField as silent Field
+			// dispatches; the widened pattern catches them.
+			name: "multi_token_parent",
+			source: `
+header foo_h { bit<8> a; bit<8> b; bit<16> c; }
+const bit<4> FOO_BAR_BAZ_SANITY_NIBBLE = 4;
+parser F(packet_in pkt, out foo_h h) {
+  state start { pkt.extract(h); transition accept; }
+}
+`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fsys := fstest.MapFS{
+				"vocab/foo.p4": &fstest.MapFile{Data: []byte(tc.source)},
+			}
+			_, err := Load(fsys, "vocab")
+			if err == nil || !strings.Contains(err.Error(), "SANITY family") {
+				t.Fatalf("expected SANITY-removal error, got %v", err)
+			}
+		})
 	}
 }
 

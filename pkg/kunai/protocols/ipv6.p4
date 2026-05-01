@@ -26,11 +26,6 @@ const bit<16> IPV6_ETH_ETHERTYPE  = 0x86DD;
 const bit<16> IPV6_VLAN_ETHERTYPE = 0x86DD;
 const bit<16> IPV6_QINQ_ETHERTYPE = 0x86DD;
 
-// Under an MPLS stack or a GTP-U tunnel, check that the first nibble
-// of the payload is 6.
-const bit<4>  IPV6_MPLS_SANITY_NIBBLE = 6;
-const bit<4>  IPV6_GTP_SANITY_NIBBLE  = 6;
-
 // Under GRE, dispatch on the EtherType-shaped protocol_type field.
 const bit<16> IPV6_GRE_PROTOCOL_TYPE = 0x86DD;
 
@@ -42,16 +37,24 @@ const bit<16> IPV6_GRE_PROTOCOL_TYPE = 0x86DD;
 // conservative ceiling.
 const bit<8> IPV6_MAX_DEPTH = 4;
 
+// Self-validating parser: the start state's tuple-select rejects on
+// version != 6, replacing the per-parent SANITY const family. Resolver
+// allows ipv6 under any parent (e.g. MPLS, GTP-U) via
+// DispatchSelfValidating; the runtime version reject happens here.
+// next_header dispatching is unchanged from the pre-migration shape:
+// 0 / 44 / 60 walk into ext-chain parsing, anything else accepts the
+// primary header and lets the outer chain pick the next protocol.
 parser IPv6Fragment(packet_in pkt,
                     out ipv6_h hdr,
                     out ipv6_ext_h[8] exts) {
     state start {
         pkt.extract(hdr);
-        transition select(hdr.next_header) {
-            0:  parse_ext;   // Hop-by-Hop options
-            44: parse_ext;   // Fragment
-            60: parse_ext;   // Destination options
-            default: accept;
+        transition select(hdr.version, hdr.next_header) {
+            (6,  0): parse_ext;   // Hop-by-Hop options
+            (6, 44): parse_ext;   // Fragment
+            (6, 60): parse_ext;   // Destination options
+            (6,  _): accept;      // any other inner protocol
+            default: reject;      // version != 6
         }
     }
     state parse_ext {

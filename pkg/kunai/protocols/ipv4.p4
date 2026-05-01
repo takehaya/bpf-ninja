@@ -19,12 +19,6 @@ const bit<16> IPV4_ETH_ETHERTYPE  = 0x0800;
 const bit<16> IPV4_VLAN_ETHERTYPE = 0x0800;
 const bit<16> IPV4_QINQ_ETHERTYPE = 0x0800;
 
-// Under an MPLS stack or a GTP-U tunnel the outer layer has no
-// explicit type, so check that the first nibble of the payload is 4
-// (the IPv4 version field).
-const bit<4>  IPV4_MPLS_SANITY_NIBBLE = 4;
-const bit<4>  IPV4_GTP_SANITY_NIBBLE  = 4;
-
 // SRv6 transports IPv4-in-IPv6 (SRv6 → IPv4 inner): the SRH
 // next_header byte uses IANA protocol number 4 (IPIP).
 const bit<8>  IPV4_SRV6_NEXT_HEADER = 4;
@@ -45,9 +39,18 @@ const bit<8> IPV4_VAREXT_LEN_SHIFT       = 0;
 const bit<8> IPV4_VAREXT_LEN_SCALE       = 4;
 const bit<8> IPV4_VAREXT_LEN_BASE        = 20;
 
+// Self-validating parser: `transition select(hdr.version) { ... }`
+// guarantees the first nibble is 4. When a parent layer has no Field
+// dispatch (e.g. MPLS, GTP-U, VXLAN inner Ethernet), resolver allows
+// the chain via DispatchSelfValidating and the runtime check happens
+// here. The IHL trailing is still consumed by the VAREXT_LEN_* family
+// after the parser block accepts.
 parser IPv4Fragment(packet_in pkt, out ipv4_h hdr) {
     state start {
         pkt.extract(hdr);
-        transition accept;
+        transition select(hdr.version) {
+            4:       accept;
+            default: reject;
+        }
     }
 }
