@@ -1,0 +1,298 @@
+# DSL 文法定義
+
+xdp-ninja の DSL は **filter 式 DSL** と **p4lite vocab DSL** の 2 言語で構成される。本ドキュメントは両者の formal EBNF と、各 production rule に対応する parser 関数 / 例文を載せる。
+
+文法を変更したらこのドキュメント + 該当 parser コード + (将来) `pkg/kunai/parser/grammar_test.go` の例文表を **同時更新** する規律でメンテする。
+
+記法は W3C EBNF 風:
+- `A ::= B` 定義
+- `A | B` 選択
+- `A?` 0 or 1
+- `A*` 0 回以上
+- `A+` 1 回以上
+- `(A B)` グループ
+- `'literal'` リテラル
+- `[...]` 文字クラス
+
+---
+
+## 1. Filter 式 DSL
+
+CLI に `--dsl <expr>` で渡される一行式。
+
+### 1.1 Top-level
+
+```ebnf
+filter         ::= layer-chain where-clause? capture-clause*
+layer-chain    ::= layer ('/' layer)*
+where-clause   ::= 'where' or-expr
+capture-clause ::= 'capture' capture-spec ('where' or-expr)?
+```
+
+| Production | parser | 例文 (accept) | 例文 (reject) |
+|---|---|---|---|
+| `filter` | `parser.go::parseFilter` | `eth/ipv4/tcp` | `(空文字列)` |
+| `layer-chain` | `layer.go::parseLayerChain` | `eth/ipv4/tcp` | `eth//tcp` (空 layer) |
+| `where-clause` | `where.go::parseWhereClause` | `... where tcp.dport == 443` | `... where` (空 expr) |
+| `capture-clause` | `capture.go::parseCaptureClause` | `... capture headers+64` | `... capture` (空 spec) |
+
+### 1.2 Layer
+
+```ebnf
+layer          ::= layer-atom quantifier? predicate*
+layer-atom     ::= proto-name ('@' label)?
+                 | '(' layer ('|' layer)+ ')'        (* alternation *)
+proto-name     ::= [a-z] [a-z0-9_]*
+label          ::= [a-zA-Z_] [a-zA-Z0-9_]*
+quantifier     ::= '?' | '+' | '*' | '{' INT '}' | '{' INT ',' INT '}'
+```
+
+| Production | parser | 例文 |
+|---|---|---|
+| `layer` | `layer.go::parseLayerItem` | `ipv4@outer[ttl==64]` |
+| `layer-atom` (proto) | `layer.go::parseProtoLeaf` | `ipv4@outer` |
+| `layer-atom` (alt) | `layer.go::parseLayerAltGroup` | `(vlan\|qinq)` |
+| `quantifier` | `layer.go::parseQuantifier` / `parseQuantRange` | `?` / `+` / `{1,4}` |
+
+**MVP 制約 (resolver / codegen が enforce)**:
+- Alternation は alt 数 2-4、全 alt が同じ header size、ネスト不可、先頭 layer に置けない、quantifier 不可
+- `?` / `*` は最初の layer に置けない (親 dispatch を peek できないため)
+- 1 protocol あたり最大 2 ラベル
+
+### 1.3 Predicate
+
+```ebnf
+predicate      ::= '[' field-name op value ']'
+                 | '[' field-name 'in' value-list ']'      (* parser only, codegen unsupported *)
+                 | '[' field-name 'has' flag-name ']'      (* parser only, codegen unsupported *)
+field-name     ::= [a-z] [a-z0-9_]*
+op             ::= '==' | '!=' | '<' | '<=' | '>' | '>=' | '='
+value          ::= integer | ipv4 | ipv4-cidr | ipv6 | ipv6-cidr | mac
+value-list     ::= '[' value (',' value)* ']'
+flag-name      ::= [A-Z] [A-Z0-9_]*
+integer        ::= '0x' [0-9a-fA-F]+ | [0-9]+
+ipv4           ::= INT '.' INT '.' INT '.' INT
+ipv4-cidr      ::= ipv4 '/' INT
+ipv6           ::= (* RFC 4291 形式 *)
+ipv6-cidr      ::= ipv6 '/' INT
+mac            ::= [0-9a-fA-F]{2} (':' [0-9a-fA-F]{2}){5}
+```
+
+| Production | parser | 例文 |
+|---|---|---|
+| `predicate` (cmp) | `predicate.go::parsePredicate` | `[dport==443]`, `[src!=fe80::1]` |
+| `predicate` (in) | `predicate.go::parsePredicate` (`PredIn` branch) | `[dport in [80, 443]]` *(codegen reject)* |
+| `predicate` (has) | `predicate.go::parsePredicate` (`PredHas` branch) | `[flags has SYN]` *(codegen reject)* |
+| `field-name` | `predicate.go::parseFieldPath` | `dport` / `src` |
+
+**Op 仕様**:
+- `==` / `!=`: 全 value 型で動く
+- `<`, `<=`, `>`, `>=`: 整数のみ (IP / MAC は意味的に不可)
+- `=` は `==` の syntax sugar
+
+**CIDR 特例**:
+- `/0 ==` → 命令ゼロ (常に match)
+- `/0 !=` → `Ja dsl_reject` (常に miss)
+- `/32` (v4) / `/128` (v6) → host match に collapse
+
+### 1.4 Where 節
+
+```ebnf
+or-expr        ::= and-expr (('or' | '||') and-expr)*
+and-expr       ::= not-expr (('and' | '&&') not-expr)*
+not-expr       ::= ('not' | '!') not-expr | atom
+atom           ::= '(' or-expr ')'
+                 | action-atom
+                 | flow-atom                                  (* parser only, codegen reject *)
+                 | arith-cmp
+action-atom    ::= 'action' op xdp-action
+flow-atom      ::= 'flow' '.' ('is_new' | 'age' | 'state')   (* WAtomFlow, dead syntax *)
+arith-cmp      ::= arith-expr op arith-expr
+arith-expr     ::= arith-term (('+' | '-') arith-term)*
+arith-term     ::= arith-factor (('*' | '/' | '%') arith-factor)*
+arith-factor   ::= field-ref | integer | '(' arith-expr ')'
+field-ref      ::= ident ('.' ident)?                         (* proto.field or @label.field *)
+xdp-action     ::= 'XDP_ABORTED' | 'XDP_DROP' | 'XDP_PASS'
+                 | 'XDP_TX' | 'XDP_REDIRECT'
+```
+
+| Production | parser | 例文 |
+|---|---|---|
+| `or-expr` | `where.go::parseOrExpr` | `tcp.dport == 443 or tcp.dport == 80` |
+| `and-expr` | `where.go::parseAndExpr` | `... and ipv4.ttl > 64` |
+| `not-expr` | `where.go::parseNotExpr` | `not action == XDP_DROP` |
+| `action-atom` | `where.go::parseActionAtom` | `action == XDP_DROP` (fexit only) |
+| `flow-atom` | `where.go::parseFlowAtom` | `flow.is_new` *(codegen reject)* |
+| `arith-cmp` | `where.go::parseArithCmp` | `ipv4.total_length > 100` |
+| `arith-expr` | `where.go::parseArithExpr` | `ipv4.total_length - 20` |
+| `arith-factor` | `where.go::parseArithFac` | `outer.dst` / `0xc0a80101` |
+
+**MVP 制約**:
+- 算術ネスト最大 3 段 (4 段以上 → ErrNotImplemented)
+- `action == NAME` は host 側で `Capabilities.Action` map と `ActionFetcher` を提供しているときのみ。XDP の場合は **fexit attach (`--mode exit`)** で `pkg/kunai/host/xdp.FexitCapabilities()` 経由に有効化される
+- 同 protocol が 2 段以上ある場合 `proto.field` だけだと ambiguous → `@label.field` 必須
+
+### 1.5 Capture 節
+
+```ebnf
+capture-spec   ::= 'all'
+                 | 'headers' ('+' INT)?
+                 | 'absolute' INT
+                 | IDENT ('+' INT)?                 (* layer label or protocol name *)
+                 | field-ref (',' field-ref)*       (* parser only, codegen reject *)
+```
+
+| Production | parser | 例文 |
+|---|---|---|
+| `capture-spec` | `capture.go::parseCaptureSpec` | `all` / `headers` / `headers+64` / `inner+64` / `ipv4` / `absolute 96` |
+| `CapToLayer` | `capture.go::parseCaptureIdent` | `inner` (label) / `ipv4` (proto, chain 内 1 つだけのとき) |
+| `CapAbsolute` | `capture.go::parseCaptureIdent` (text == "absolute") | `absolute 96` |
+| (CapFields) | `capture.go::parseCaptureSpec` (`CapFields` branch) | `tcp.flags, ipv4.dst` *(codegen reject)* |
+
+**意味論**:
+- `headers (+N)?` — chain 全 layer の固定 header 合計 + 任意 N bytes
+- `<label_or_proto> (+N)?` — 指定 layer の末尾までを capture (+ 任意 N bytes)。label が複数候補にマッチする protocol 名なら ambiguous error。chain 内に存在しないと unknown error
+- `absolute N` — 先頭固定 N bytes (chain shape に依存しない、quantifier 制約も無し)
+
+**MVP 制約**:
+- chain (`+`/`*`/`{n,m}`) を含む filter で `headers (+N)?` / `<label_or_proto> (+N)?` 不可 (静的に長さ確定不能、`absolute N` は影響なし)
+- per-capture `where` は filter 全体の `where` と AND 合成
+- `absolute` は capture 内 contextual keyword。label が `absolute` という名前と衝突する稀ケースは `absolute+0` で label 解釈を強制可能
+
+---
+
+## 2. p4lite Vocab DSL
+
+`pkg/kunai/protocols/*.p4` の中身を parse する。P4-16 の **strict subset** ([P4-16 仕様](https://p4.org/wp-content/uploads/sites/53/2024/10/P4-16-spec-v1.2.5.html))。
+
+### 2.1 Top-level
+
+```ebnf
+file           ::= top-decl*
+top-decl       ::= header-decl | const-decl | parser-decl
+```
+
+| Production | parser | 例文 |
+|---|---|---|
+| `file` | `vocab/p4lite/parser.go::Parse` | (proto file 全体) |
+
+**Reject keywords** (`vocab/p4lite/lexer.go::rejectedKeywords`): `action`, `table`, `control`, `apply`, `extern`。
+
+### 2.2 Header
+
+```ebnf
+header-decl    ::= 'header' ident '{' field+ '}'
+field          ::= 'bit' '<' INT '>' ident ';'
+```
+
+| Production | parser | 例文 |
+|---|---|---|
+| `header-decl` | `vocab/p4lite/parser.go::parseHeader` | `header eth_h { bit<48> dst; ... }` |
+
+**制約**:
+- `bit<N>`: N は 1..2048
+- 全 field の bit 合計 = byte 倍数 (loader が enforce)
+- primary header 名は `<filename>_h` (e.g. `mpls.p4` → `mpls_h`)
+- field 型は `bit<N>` のみ。`int<N>` / `varbit<N>` / `bool` field は未対応 (P4 範囲内だが p4lite で除外)
+
+### 2.3 Const
+
+```ebnf
+const-decl     ::= 'const' const-type ident '=' literal ';'
+const-type     ::= 'bit' '<' INT '>' | 'bool'
+literal        ::= integer | 'true' | 'false'
+```
+
+| Production | parser | 例文 |
+|---|---|---|
+| `const-decl` | `vocab/p4lite/parser.go::parseConst` | `const bit<16> IPV4_ETH_ETHERTYPE = 0x0800;` |
+
+**Dispatch 命名規約** (loader が `vocab/loader.go` 内 regex で classify):
+
+| 名前パターン | regex | 意味 |
+|---|---|---|
+| `<SELF>_<PARENT>_<FIELD>` | `reField` | 親の `field` がこの値のとき自分にディスパッチ |
+| `<SELF>_<PARENT>_SANITY_<TYPE>` | `reSanity` | 自分の先頭 nibble 等で sanity 検査 (NIBBLE のみサポート) |
+| `<SELF>_<PARENT>_NO_CHECK = true` | `reNoCheck` | 検査なしで blind cast |
+| `<SELF>_MAX_DEPTH = N` | `reMaxDepth` | bpf_loop chain の上限 (既定 8、最大 64) |
+| `<SELF>_CHAIN_END_<FIELD> = V` | `reChainEnd` | chain 終了条件 (例: MPLS の s-bit) |
+
+**制約**:
+- bit 幅 1..64 (uint64 で値を保持)
+- 整数リテラルは 10進 / `0x` 16進のみ (`0b` バイナリ / `0o` 8進 / sized literal `8w0xff` は未対応)
+- 式 (`A + 1`) や名前参照は不可
+
+### 2.4 Parser fragment
+
+```ebnf
+parser-decl    ::= 'parser' ident '(' params ')' '{' state+ '}'
+params         ::= param (',' param)*
+param          ::= 'packet_in' ident
+                 | 'out' type-ref ident
+type-ref       ::= ident ('[' INT ']')?              (* header stack *)
+state          ::= 'state' ident '{' stmt* transition '}'
+stmt           ::= ident '.' 'extract' '(' arg ')' ';'
+arg            ::= ident ('.' ident)?                (* ident or ident.next *)
+transition     ::= 'transition' transition-target ';'
+transition-target ::= 'accept' | 'reject' | ident
+                 | 'select' '(' key-list ')' '{' case+ '}'
+key-list       ::= key (',' key)*
+key            ::= ident ('.' ident)*                (* dotted path *)
+case           ::= case-keyset ':' transition-target ';'
+case-keyset    ::= integer | '_' | 'default'
+                 | '(' case-keyset (',' case-keyset)* ')'
+```
+
+| Production | parser | 例文 |
+|---|---|---|
+| `parser-decl` | `vocab/p4lite/parser.go::parseParser` | `parser EthFragment(packet_in pkt, out eth_h hdr) {...}` |
+| `state` | `vocab/p4lite/parser.go::parseState` | `state start { pkt.extract(hdr); transition accept; }` |
+| `transition` | `vocab/p4lite/parser.go::parseTransition` | `transition select(eth.ethertype) { 0x0800: ipv4; default: reject; }` |
+
+**制約**:
+- 引数 direction は `packet_in` / `out` のみ (`in` / `inout` 未対応)
+- statement は `obj.extract(target)` または `obj.extract(target.next)` のみ
+- `select` case は整数 / `_` / `default` / tuple のみ。mask (`val &&& mask`) / range (`a..b`) / 名前参照は未対応
+
+### 2.5 例文ファイル
+
+最小 vocab 例 (`pkg/kunai/protocols/eth.p4` 抜粋):
+
+```p4
+header eth_h {
+    bit<48> dst;
+    bit<48> src;
+    bit<16> ethertype;
+}
+
+const bool ETH_MPLS_NO_CHECK = true;
+
+parser EthFragment(packet_in pkt, out eth_h hdr) {
+    state start {
+        pkt.extract(hdr);
+        transition accept;
+    }
+}
+```
+
+---
+
+## 3. メンテナンス規約
+
+文法の変更を入れるときは以下を **同じ PR で**:
+
+1. 該当 EBNF rule の更新 (本ファイル)
+2. parser 関数の修正 (`pkg/kunai/parser/` または `pkg/kunai/vocab/p4lite/`)
+3. 例文表 (本ファイルの「例文」列) の更新
+4. (将来) `pkg/kunai/parser/grammar_test.go` の例文 table 更新 — accept / reject 各 1 ケース以上
+
+drift 検知は CI で grammar_test が走ることで担保される予定 (現状は手動レビュー)。
+
+---
+
+## 4. 参考
+
+- [P4-16 v1.2.5 公式仕様](https://p4.org/wp-content/uploads/sites/53/2024/10/P4-16-spec-v1.2.5.html) (BNF: G "Appendix: P4 grammar")
+- [p4c parser grammar](https://github.com/p4lang/p4c/blob/main/frontends/parsers/p4/p4parser.ypp)
+- [`dsl-usage.md`](./dsl-usage.md) — エンドユーザー向けガイド (本ドキュメントのカジュアル版)
+- [`pkg/kunai/vocab/p4lite/conformance_test.go`](../../pkg/kunai/vocab/p4lite/conformance_test.go) — p4lite が拒否する P4-16 構文を pin する test (subset boundary の正規定義)

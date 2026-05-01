@@ -63,11 +63,43 @@ sudo xdp-ninja -i eth0 --mode exit | tcpdump -n -r -
 | `--func` | Attach to a specific `__noinline` subfunction by BTF name |
 | `--list-funcs` | List available BTF functions in the target program and exit |
 | `--list-progs` | List tail call targets reachable from the target program and exit |
+| `--dsl` | Interpret the filter expression as xdp-ninja DSL (see below) instead of tcpdump syntax |
+| `--dsl-help` | Print the DSL grammar + bundled protocol catalogue and exit (no `-i`/`-p` required) |
 | `-w, --write` | Write to pcap file instead of stdout |
 | `-c, --count` | Stop after N packets (0 = unlimited) |
 | `-v, --verbose` | Verbose output to stderr |
 
 Specify either `-i` or `-p`, not both.
+
+### DSL filter (`--dsl`)
+
+The default filter syntax is tcpdump (compiled to eBPF via cbpfc). For multi-encapsulation cases tcpdump cannot express — MPLS label stacks, VXLAN inner Ethernet, GTP-U inner IP, SRv6, … — pass `--dsl` and write the filter as a protocol stack chain:
+
+```bash
+# IPv4/TCP, dport 443
+sudo xdp-ninja --dsl -i eth0 "eth/ipv4/tcp[dport=443]"
+
+# Up to 3 VLAN tags before IPv4
+sudo xdp-ninja --dsl -i eth0 "eth/vlan{1,3}/ipv4/tcp"
+
+# MPLS label stack (terminates at the s-bit)
+sudo xdp-ninja --dsl -i eth0 "eth/mpls+/ipv4/tcp"
+
+# VXLAN inner IPv4/TCP
+sudo xdp-ninja --dsl -i eth0 "eth/ipv4/udp/vxlan/eth/ipv4/tcp"
+
+# Capture only headers + 64 bytes when the inner TCP dport > 1024
+sudo xdp-ninja --dsl -i eth0 \
+  "eth/ipv4/tcp capture headers+64 where tcp.dport > 1024"
+
+# fexit-only: filter on the XDP return action
+sudo xdp-ninja --dsl -i eth0 --mode exit \
+  "eth/ipv4/tcp where action == XDP_DROP"
+```
+
+User-facing CLI guide: [docs/ja/dsl-usage.md](./docs/ja/dsl-usage.md). Internal architecture, codegen ABI, vocab authoring, and P4-16 conformance are consolidated in [docs/ja/dsl-internals.md](./docs/ja/dsl-internals.md); formal grammar (EBNF) lives in [docs/ja/dsl-grammar.md](./docs/ja/dsl-grammar.md). Index: [docs/ja/dsl-overview.md](./docs/ja/dsl-overview.md).
+
+xdp-ninja's `.p4` vocab files are a strict subset of P4-16 (see internals §5). They are NOT a full p4c-compatible program: the bundled fragments declare only `header` / `const` / `parser` blocks (no `action` / `table` / `control` / `apply` / `extern`).
 
 ### Attaching to subfunctions
 

@@ -8,10 +8,14 @@ import (
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/asm"
+	"github.com/cilium/ebpf/btf"
 	"github.com/cilium/ebpf/link"
 	"github.com/cloudflare/cbpfc"
 	"github.com/google/gopacket/layers"
 	"github.com/google/gopacket/pcap"
+	"github.com/takehaya/xdp-ninja/pkg/kunai"
+	"github.com/takehaya/xdp-ninja/pkg/kunai/codegen"
+	xdphost "github.com/takehaya/xdp-ninja/pkg/kunai/host/xdp"
 	"github.com/takehaya/xdp-ninja/internal/filter"
 	"golang.org/x/net/bpf"
 )
@@ -46,23 +50,25 @@ func (p *Probe) Close() error {
 }
 
 // LoadEntry は fentry (前段) probe を作成してアタッチする。
-func LoadEntry(targetProg *ebpf.Program, funcName string, filterExpr string, argFilters []filter.ArgFilter) (*Probe, error) {
-	return loadProbe(targetProg, funcName, filterExpr, argFilters, false)
+// useDSL=true のとき filterExpr は xdp-ninja DSL として解釈される。
+func LoadEntry(targetProg *ebpf.Program, funcName string, filterExpr string, argFilters []filter.ArgFilter, useDSL bool) (*Probe, error) {
+	return loadProbe(targetProg, funcName, filterExpr, argFilters, false, useDSL)
 }
 
 // LoadExit は fexit (後段) probe を作成してアタッチする。
-func LoadExit(targetProg *ebpf.Program, funcName string, filterExpr string, argFilters []filter.ArgFilter) (*Probe, error) {
-	return loadProbe(targetProg, funcName, filterExpr, argFilters, true)
+// useDSL=true のとき filterExpr は xdp-ninja DSL として解釈される。
+func LoadExit(targetProg *ebpf.Program, funcName string, filterExpr string, argFilters []filter.ArgFilter, useDSL bool) (*Probe, error) {
+	return loadProbe(targetProg, funcName, filterExpr, argFilters, true, useDSL)
 }
 
-func loadProbe(targetProg *ebpf.Program, funcName string, filterExpr string, argFilters []filter.ArgFilter, isFexit bool) (*Probe, error) {
-	var filterInsns asm.Instructions
+func loadProbe(targetProg *ebpf.Program, funcName string, filterExpr string, argFilters []filter.ArgFilter, isFexit, useDSL bool) (*Probe, error) {
+	var filterOut codegen.Output
 	if filterExpr != "" {
-		fi, err := compileFilter(filterExpr)
+		out, err := compileFilter(filterExpr, useDSL, isFexit)
 		if err != nil {
 			return nil, err
 		}
-		filterInsns = fi
+		filterOut = out
 	}
 
 	label := "entry"
@@ -88,7 +94,7 @@ func loadProbe(targetProg *ebpf.Program, funcName string, filterExpr string, arg
 	// (verifier が xdp->data 経由のメモリアクセスを scalar として拒否するため、
 	//  PTR_TO_MAP_VALUE にコピーしてからフィルタを実行する)
 	scratchFD := 0
-	if len(filterInsns) > 0 {
+	if len(filterOut.Main) > 0 {
 		scratchMap, err := ebpf.NewMap(&ebpf.MapSpec{
 			Name: fmt.Sprintf("ninja_%s_sc", label), Type: ebpf.PerCPUArray,
 			KeySize: 4, ValueSize: scratchBufSize, MaxEntries: 1,
@@ -101,7 +107,7 @@ func loadProbe(targetProg *ebpf.Program, funcName string, filterExpr string, arg
 		scratchFD = scratchMap.FD()
 	}
 
-	insns := buildTracingInsns(filterInsns, argFilters, eventsMap.FD(), scratchFD, isFexit)
+	insns := buildTracingInsns(filterOut, argFilters, eventsMap.FD(), scratchFD, isFexit)
 	prog, err := ebpf.NewProgram(&ebpf.ProgramSpec{
 		Name: fmt.Sprintf("xdp_ninja_%s", label), Type: ebpf.Tracing, AttachType: attachType,
 		AttachTo: funcName, AttachTarget: targetProg,
@@ -123,12 +129,34 @@ func loadProbe(targetProg *ebpf.Program, funcName string, filterExpr string, arg
 	return probe, nil
 }
 
-// --- Filter compilation (tcpdump expr → cBPF → eBPF) ---
+// --- Filter compilation ---
+//
+// Two paths share the runFilter contract (R0=scratch start, R1=scratch
+// end, filter sets R2 and ends at "filter_result"):
+//
+//   useDSL=false: tcpdump expression → cBPF → eBPF via cbpfc (default)
+//   useDSL=true:  xdp-ninja DSL → eBPF via kunai.Compile
+//
+// See docs/ja/dsl-overview.md for the DSL doc index. The codegen
+// ABI this wrapper plugs into is documented in
+// pkg/kunai/codegen/codegen.go (KunaiStackTop and the package doc).
 
-func compileFilter(expr string) (asm.Instructions, error) {
+func compileFilter(expr string, useDSL, isFexit bool) (codegen.Output, error) {
+	if useDSL {
+		// fexit attaches see the XDP retval at args[1]; fentry has no
+		// action value yet, so disable action atoms by passing the
+		// zero Capabilities. The xdp-ninja host wrapper saves the
+		// tracing args ptr at stack[-48] in either case, which is
+		// exactly the ABI xdphost.FexitFetcher expects.
+		var caps codegen.Capabilities
+		if isFexit {
+			caps = xdphost.FexitCapabilities()
+		}
+		return kunai.Compile(expr, caps)
+	}
 	rawInsns, err := pcap.CompileBPFFilter(layers.LinkTypeEthernet, 65535, expr)
 	if err != nil {
-		return nil, fmt.Errorf("compiling filter %q: %w", expr, err)
+		return codegen.Output{}, fmt.Errorf("compiling filter %q: %w", expr, err)
 	}
 
 	bpfInsns := make([]bpf.Instruction, len(rawInsns))
@@ -136,12 +164,16 @@ func compileFilter(expr string) (asm.Instructions, error) {
 		bpfInsns[i] = bpf.RawInstruction{Op: insn.Code, Jt: insn.Jt, Jf: insn.Jf, K: insn.K}.Disassemble()
 	}
 
-	return cbpfc.ToEBPF(bpfInsns, cbpfc.EBPFOpts{
+	cbpfcInsns, err := cbpfc.ToEBPF(bpfInsns, cbpfc.EBPFOpts{
 		PacketStart: asm.R0, PacketEnd: asm.R1, Result: asm.R2,
 		ResultLabel: "filter_result",
 		Working:     [4]asm.Register{asm.R2, asm.R3, asm.R4, asm.R5},
 		LabelPrefix: "filter",
 	})
+	if err != nil {
+		return codegen.Output{}, err
+	}
+	return codegen.Output{Main: cbpfcInsns}, nil
 }
 
 // --- eBPF program generation ---
@@ -168,21 +200,37 @@ func compileFilter(expr string) (asm.Instructions, error) {
 //   [metadata (8B)] [パケットデータ (カーネルが自動付加)]
 //   metadata: u32 action + u8 mode + u8 _pad[3]
 
+// scratchBufSize is an alias for codegen.ScratchBufSize so this file's
+// existing references (map size, runFilter caps) keep their concise
+// names without losing the single-source-of-truth.
+const scratchBufSize = codegen.ScratchBufSize
+
 const (
-	scratchBufSize = 256
-	maxCapLen      = 1500
-	metadataSize   = 8 // action(4) + mode(1) + pad(3)
+	// defaultCapLen is the packet prefix length captured when no DSL
+	// capture clause narrowed the request. Matches libpcap's default
+	// snaplen for tcpdump.
+	defaultCapLen = 1500
+	metadataSize  = 8 // action(4) + mode(1) + pad(3)
 )
 
 const bpfFCurrentCPU int64 = 0xFFFFFFFF
 
-func buildTracingInsns(pktFilter asm.Instructions, argFilters []filter.ArgFilter, eventsFD, scratchFD int, isFexit bool) asm.Instructions {
+func buildTracingInsns(filterOut codegen.Output, argFilters []filter.ArgFilter, eventsFD, scratchFD int, isFexit bool) asm.Instructions {
 	var insns asm.Instructions
 	insns = append(insns, loadPacketPointers()...)
 	insns = append(insns, buildArgFilter(argFilters)...)
-	insns = append(insns, runFilter(pktFilter, scratchFD)...)
-	insns = append(insns, captureWithXdpOutput(eventsFD, isFexit)...)
+	insns = append(insns, runFilter(filterOut.Main, scratchFD)...)
+	insns = append(insns, captureWithXdpOutput(eventsFD, isFexit, filterOut.Capture.MaxCapLen)...)
 	insns = append(insns, asm.Mov.Imm(asm.R0, 0).WithSymbol("exit"), asm.Return())
+	// bpf2bpf subprograms (currently only DSL bpf_loop chain
+	// callbacks) live after the tracing body so they sit past the
+	// program's final Return. The kernel also needs BTF func_info
+	// for the outer program in that case — tag the first tracing
+	// insn with codegen's canonical func proto.
+	if len(filterOut.Callbacks) > 0 {
+		insns[0] = btf.WithFuncMetadata(insns[0], codegen.MainFilterFuncBTF())
+		insns = append(insns, filterOut.Callbacks...)
+	}
 	return insns
 }
 
@@ -247,7 +295,10 @@ func runFilter(filter asm.Instructions, scratchFD int) asm.Instructions {
 // ユーザーランドで受け取る RawSample のフォーマット:
 //
 //	[metadata (8B)] [パケットデータ (pkt_len バイト)]
-func captureWithXdpOutput(eventsFD int, isFexit bool) asm.Instructions {
+func captureWithXdpOutput(eventsFD int, isFexit bool, maxCapLen int) asm.Instructions {
+	if maxCapLen <= 0 {
+		maxCapLen = defaultCapLen
+	}
 	insns := asm.Instructions{}
 
 	// --- メタデータをスタック上に構築 ---
@@ -285,8 +336,8 @@ func captureWithXdpOutput(eventsFD int, isFexit bool) asm.Instructions {
 		// R3 = flags: (cap_len << 32) | BPF_F_CURRENT_CPU
 		// cap_len = min(pkt_len, 1500)
 		asm.Mov.Reg(asm.R3, asm.R9), // R3 = pkt_len
-		asm.JLE.Imm(asm.R3, maxCapLen, "xdp_out_cap_ok"),
-		asm.Mov.Imm(asm.R3, maxCapLen),
+		asm.JLE.Imm(asm.R3, int32(maxCapLen), "xdp_out_cap_ok"),
+		asm.Mov.Imm(asm.R3, int32(maxCapLen)),
 		asm.LSh.Imm(asm.R3, 32).WithSymbol("xdp_out_cap_ok"), // R3 = cap_len << 32
 		asm.LoadImm(asm.R0, bpfFCurrentCPU, asm.DWord),       // R0 = BPF_F_CURRENT_CPU
 		asm.Or.Reg(asm.R3, asm.R0),                           // R3 = (cap_len << 32) | BPF_F_CURRENT_CPU

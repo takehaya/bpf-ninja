@@ -1,0 +1,96 @@
+package codegen
+
+import (
+	"fmt"
+	"strings"
+
+	"github.com/cilium/ebpf/asm"
+
+	"github.com/takehaya/xdp-ninja/pkg/kunai/ir"
+)
+
+// staticChainCap is the {n,m} m upper bound the unroll path accepts.
+// Quantifiers beyond this (including `+` / `*` / open-ended `{n,}`)
+// require bpf_loop-based chain codegen and land in a later commit.
+const staticChainCap = 4
+
+// staticChainFitsRange reports whether a QuantRange's upper bound can
+// ride the static-unroll path. Open-ended ({n,} has RangeMax=-1) and
+// anything past the cap spill to the bpf_loop path.
+func staticChainFitsRange(max int) bool {
+	return max > 0 && max <= staticChainCap
+}
+
+// genStaticChain emits `{n,m}` by repeating the layer block m times.
+// Chain iteration is required because `{n,m>1}` identifies the *next*
+// instance by the previous one, not by the outer parent — so the
+// second and later iterations peek a self-dispatch const that must be
+// declared in the vocab (e.g. VLAN_VLAN_ETHERTYPE, MPLS_MPLS_NO_CHECK).
+// Iterations below RangeMin fail hard; iterations at or above RangeMin
+// skip to a single chain-done landing so a short stack falls through.
+func genStaticChain(layer *ir.LayerInstance, index int, all []*ir.LayerInstance) (asm.Instructions, error) {
+	if layer.RangeMax < 0 {
+		return nil, fmt.Errorf("%w: open-ended quantifier {%d,} on %q needs bpf_loop chain codegen", ErrNotImplemented, layer.RangeMin, layer.Spec.Name)
+	}
+	if layer.RangeMax > staticChainCap {
+		return nil, fmt.Errorf("%w: {%d,%d} on %q exceeds static-unroll cap %d; bpf_loop chain codegen will cover this", ErrNotImplemented, layer.RangeMin, layer.RangeMax, layer.Spec.Name, staticChainCap)
+	}
+	if layer.RangeMin < 1 {
+		return nil, fmt.Errorf("%w: quantifier {%d,%d} with min < 1 on %q needs bpf_loop chain codegen", ErrNotImplemented, layer.RangeMin, layer.RangeMax, layer.Spec.Name)
+	}
+
+	hs, err := headerSize(layer.Spec)
+	if err != nil {
+		return nil, err
+	}
+
+	first, err := genStaticLayer(layer, index, all)
+	if err != nil {
+		return nil, err
+	}
+	insns := append(asm.Instructions{}, first...)
+	if layer.RangeMax == 1 {
+		return insns, nil
+	}
+
+	selfConst := layer.Spec.SelectDispatchConst(layer.Spec.Name)
+	if selfConst == nil {
+		self := strings.ToUpper(layer.Spec.Name)
+		return nil, fmt.Errorf("%w: chained %q has no self-dispatch const (declare %s_%s_<FIELD|SANITY_<TYPE>|NO_CHECK> in %s.p4)", ErrNotImplemented, layer.Spec.Name, self, self, layer.Spec.Name)
+	}
+	selfLayer := &ir.LayerInstance{
+		Spec:     layer.Spec,
+		Dispatch: &ir.DispatchChoice{Type: selfConst.Type, Const: selfConst},
+	}
+	// Predicates are identical across iterations; emit once and append
+	// the same slice from each iteration.
+	preds, err := emitPredicates(layer.Predicates)
+	if err != nil {
+		return nil, err
+	}
+
+	chainDone := fmt.Sprintf("dsl_chain_done_%d", index)
+	for i := 1; i < layer.RangeMax; i++ {
+		failLabel := dslReject
+		if i >= layer.RangeMin {
+			failLabel = chainDone
+		}
+		dispatch, err := genDispatch(selfLayer, layer, hs, failLabel)
+		if err != nil {
+			return nil, err
+		}
+		insns = append(insns, dispatch...)
+		insns = append(insns, emitBounds(hs, dslReject)...)
+		insns = append(insns, preds...)
+		insns = append(insns, emitAdvance(hs))
+	}
+
+	if layer.RangeMin < layer.RangeMax {
+		// Landing for any optional iteration that missed its
+		// self-dispatch peek: falls through to the next layer with
+		// offsetBase still pointing past the last successful
+		// iteration.
+		insns = append(insns, landingNoop(chainDone))
+	}
+	return insns, nil
+}

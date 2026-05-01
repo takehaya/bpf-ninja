@@ -135,3 +135,7 @@ $RECYCLE.BIN/
 # Undo overly broad rules above that catch Go project files
 !go.mod
 !cmd/*
+
+# p4c parse-check per-file content cache (see scripts/p4c-check.sh)
+/.p4c-cache/
+dist

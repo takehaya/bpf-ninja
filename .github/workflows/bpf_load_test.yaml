@@ -6,11 +6,13 @@ on:
     paths:
       - 'go.*'
       - '**.go'
+      - '**.p4'
       - '.github/workflows/bpf_load_test.yaml'
   pull_request:
     paths:
       - 'go.*'
       - '**.go'
+      - '**.p4'
       - '.github/workflows/bpf_load_test.yaml'
 
 jobs:

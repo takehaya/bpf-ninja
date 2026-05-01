@@ -1,0 +1,450 @@
+package kunai
+
+import (
+	"errors"
+	"strings"
+	"testing"
+
+	"github.com/cilium/ebpf/asm"
+
+	"github.com/takehaya/xdp-ninja/pkg/kunai/codegen"
+	xdphost "github.com/takehaya/xdp-ninja/pkg/kunai/host/xdp"
+)
+
+// compileForTest wraps Compile with the zero Capabilities so most
+// tests stay terse and target-agnostic. Tests that need action atoms
+// pass xdphost.FexitCapabilities() explicitly. Callers that need the
+// CaptureInfo or the callback subprograms should invoke Compile
+// directly.
+func compileForTest(expr string) (asm.Instructions, error) {
+	out, err := Compile(expr, codegen.Capabilities{})
+	return out.Instructions(), err
+}
+
+// runCompileExprCases asserts that each expression compiles cleanly
+// at fentry and produces a non-empty main instruction stream. Most
+// "<feature> succeeds" tests want exactly this shape.
+func runCompileExprCases(t *testing.T, cases []string) {
+	t.Helper()
+	for _, expr := range cases {
+		t.Run(expr, func(t *testing.T) {
+			out, err := Compile(expr, codegen.Capabilities{})
+			if err != nil {
+				t.Fatalf("Compile(%q): %v", expr, err)
+			}
+			if len(out.Main) == 0 {
+				t.Fatalf("Compile(%q) produced empty instructions", expr)
+			}
+		})
+	}
+}
+
+func TestCompileEthIPv4TCPSucceeds(t *testing.T) {
+	insns, err := compileForTest("eth/ipv4/tcp")
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	if len(insns) == 0 {
+		t.Fatal("expected non-empty instructions")
+	}
+}
+
+func TestCompileWithIntegerPredicateSucceeds(t *testing.T) {
+	insns, err := compileForTest("eth/ipv4/tcp[dport==443]")
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	if len(insns) == 0 {
+		t.Fatal("expected non-empty instructions")
+	}
+}
+
+func TestCompileReachesCodegenForUnsupportedValue(t *testing.T) {
+	// `[field has FLAG]` is one of the predicate kinds the resolver
+	// still flags Unsupported. Use it as a stable probe that codegen
+	// surfaces ErrNotImplemented for a not-yet-emitted predicate shape.
+	_, err := compileForTest("eth/ipv4/tcp[flags has SYN]")
+	if !errors.Is(err, codegen.ErrNotImplemented) {
+		t.Fatalf("expected codegen.ErrNotImplemented, got %v", err)
+	}
+}
+
+func TestCompileIPv4Predicates(t *testing.T) {
+	runCompileExprCases(t, []string{
+		"eth/ipv4[src==10.0.0.1]/tcp",
+		"eth/ipv4[dst==192.168.1.42]/tcp",
+		"eth/ipv4[dst==10.0.0.0/8]/tcp",
+		"eth/ipv4[src==192.168.0.0/16]/tcp[dport==443]",
+		"eth/ipv4[src==10.0.0.0/0]/tcp", // /0 ==-match collapses to a no-op
+	})
+}
+
+func TestCompileIPv6Predicates(t *testing.T) {
+	runCompileExprCases(t, []string{
+		"eth/ipv6[src==fe80::1]/tcp",
+		"eth/ipv6[dst==::1]/tcp",
+		"eth/ipv6[src==2001:db8::1]/tcp",
+		"eth/ipv6[src==fe80::/10]/tcp",       // /10 — only high half masked
+		"eth/ipv6[dst==2001:db8::/32]/tcp",   // /32 — high half partial
+		"eth/ipv6[src==2001:db8::1/128]/tcp", // /128 — host match
+		"eth/ipv6[src==::/0]/tcp",            // /0 ==-match collapses to no-op
+	})
+}
+
+func TestCompileIPv6NotEqualSucceeds(t *testing.T) {
+	runCompileExprCases(t, []string{
+		"eth/ipv6[src!=fe80::1]/tcp",
+		"eth/ipv6[dst!=2001:db8::/32]/tcp",
+		"eth/ipv6[src!=2001:db8::1/128]/tcp", // /128 collapses to host !=
+		"eth/ipv6[src!=::/0]/tcp",            // /0 != is `Ja dsl_reject`
+	})
+}
+
+func TestCompileMACPredicates(t *testing.T) {
+	runCompileExprCases(t, []string{
+		"eth[dst==de:ad:be:ef:00:01]/ipv4/tcp",
+		"eth[src==00:11:22:33:44:55]/ipv4/tcp",
+	})
+}
+
+func TestCompileMACNotEqualSucceeds(t *testing.T) {
+	runCompileExprCases(t, []string{
+		"eth[dst!=de:ad:be:ef:00:01]/ipv4/tcp",
+		"eth[src!=00:11:22:33:44:55]/ipv4/tcp",
+	})
+}
+
+func TestCompileIPv4OrderedRejected(t *testing.T) {
+	// IPv4 host literals support only == / !=. Ordered comparisons
+	// are not meaningful on IP addresses; codegen must reject.
+	_, err := Compile("eth/ipv4[src>10.0.0.0]/tcp", codegen.Capabilities{})
+	if !errors.Is(err, codegen.ErrNotImplemented) {
+		t.Fatalf("expected ErrNotImplemented for ordered IPv4, got %v", err)
+	}
+}
+
+func TestCompileVlanOptionalSucceeds(t *testing.T) {
+	// `?` quantifier + real vlan vocab — verifies end-to-end path.
+	insns, err := compileForTest("eth/vlan?/ipv4/tcp")
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	if len(insns) == 0 {
+		t.Fatal("expected non-empty instructions")
+	}
+}
+
+func TestCompileVlanOptionalWithPredicateSucceeds(t *testing.T) {
+	insns, err := compileForTest("eth/vlan?/ipv4/tcp[dport==443]")
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	if len(insns) == 0 {
+		t.Fatal("expected non-empty instructions")
+	}
+}
+
+func TestCompileWhereActionAtFExit(t *testing.T) {
+	out, err := Compile("eth/ipv4/tcp where action == XDP_DROP", xdphost.FexitCapabilities())
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	if len(out.Main) == 0 {
+		t.Fatal("expected non-empty instructions")
+	}
+}
+
+func TestCompileWhereActionAtFEntryFails(t *testing.T) {
+	// `action == XDP_DROP` requires the host to declare a non-nil
+	// Capabilities.Action map. With the zero Capabilities the
+	// resolver rejects the atom early with a host-mismatch message.
+	_, err := Compile("eth/ipv4/tcp where action == XDP_DROP", codegen.Capabilities{})
+	if err == nil {
+		t.Fatal("expected error compiling action atom against zero Capabilities")
+	}
+	if !strings.Contains(err.Error(), "not available on this host") {
+		t.Fatalf("error = %v; want host-mismatch message", err)
+	}
+}
+
+func TestCompileWhereArithCompare(t *testing.T) {
+	// eth/ipv4/tcp where ipv4.total_length == 100
+	insns, err := compileForTest("eth/ipv4/tcp where ipv4.total_length == 100")
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	if len(insns) == 0 {
+		t.Fatal("expected non-empty instructions")
+	}
+}
+
+func TestCompileWhereLogicalCombination(t *testing.T) {
+	// "tcp.dport == 443 or tcp.dport == 80" exercises OR over two arith atoms.
+	insns, err := compileForTest("eth/ipv4/tcp where tcp.dport == 443 or tcp.dport == 80")
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	if len(insns) == 0 {
+		t.Fatal("expected non-empty instructions")
+	}
+}
+
+func TestCompileSurfacesParseError(t *testing.T) {
+	_, err := compileForTest("eth/ipv4/")
+	if err == nil {
+		t.Fatal("expected parse error")
+	}
+	if errors.Is(err, codegen.ErrNotImplemented) {
+		t.Errorf("parse error masked by ErrNotImplemented: %v", err)
+	}
+}
+
+func TestCompileSurfacesResolveError(t *testing.T) {
+	_, err := compileForTest("eth/bogus/tcp")
+	if err == nil {
+		t.Fatal("expected resolve error")
+	}
+	if errors.Is(err, codegen.ErrNotImplemented) {
+		t.Errorf("resolve error masked by ErrNotImplemented: %v", err)
+	}
+	if !strings.Contains(err.Error(), "unknown protocol") {
+		t.Errorf("error = %v; want 'unknown protocol'", err)
+	}
+}
+
+func TestCompileAlternationLastLayerSucceeds(t *testing.T) {
+	// `eth/(vlan|qinq)` — both alts have the same 4-byte header size
+	// and sit at the tail of the filter. Post-group dispatch is not
+	// yet supported, so this is the MVP shape.
+	out, err := Compile("eth/(vlan|qinq)", codegen.Capabilities{})
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	if len(out.Main) == 0 {
+		t.Fatal("expected non-empty instructions")
+	}
+}
+
+func TestResolverAcceptsAlternationAgreementOK(t *testing.T) {
+	// Internal-machinery regression test: when an alt group is
+	// followed by another layer, the resolver requires every alt
+	// member to agree on the dispatch const for that next layer.
+	// `(vlan|qinq)` is the only bundled-vocab pair where the rule
+	// is satisfiable (both 4-byte headers, both dispatch ipv4 via
+	// ethertype==0x0800), so it doubles as the positive smoke
+	// covering selectAltParentDispatch in resolve/layer.go.
+	//
+	// Pair test: TestResolverRejectsAlternationDivergence
+	// (negative case for ipv4|ipv6 — different sizes, different
+	// dispatch fields). User-facing alternation utility is
+	// effectively gated on dsl-followups.md P3-12.
+	out, err := Compile("eth/(vlan|qinq)/ipv4/tcp", codegen.Capabilities{})
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	if len(out.Main) == 0 {
+		t.Fatal("expected non-empty instructions")
+	}
+}
+
+func TestCompileQinqVlanChainCoversAllTagShapes(t *testing.T) {
+	// Practical pattern: `eth/qinq?/vlan?/ipv4/tcp` is the recommended
+	// way to write a single filter that matches every realistic
+	// tagging shape on Ethernet — untagged, single VLAN, QinQ-only
+	// S-tag, and the typical QinQ-stacked S+C tags. It works because
+	// `?` peeks the parent's last-2-byte ethertype field, which has
+	// the same semantic ("next protocol") in eth, qinq, and vlan.
+	//
+	// Alternation cannot do this in MVP (`(vlan|qinq)` matches
+	// single-tag only; stacked frames need a different chain
+	// shape). Until alt is generalised in P3-12, optional-chain
+	// is the user-facing answer for tag-flexibility filters.
+	insns, err := compileForTest("eth/qinq?/vlan?/ipv4/tcp")
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	if len(insns) == 0 {
+		t.Fatal("expected non-empty instructions")
+	}
+}
+
+func TestResolverRejectsAlternationDivergence(t *testing.T) {
+	// Pair of TestResolverAcceptsAlternationAgreementOK. The user-
+	// facing case `eth/(ipv4|ipv6)/tcp` is what most operators want
+	// from alternation, but MVP rejects it: ipv4 and ipv6 differ in
+	// header size (20 vs 40) AND in the dispatch field for tcp
+	// (ipv4.protocol vs ipv6.next_header at different offsets).
+	// Lifting both restrictions is dsl-followups.md P3-12; until
+	// then this rejection is correct behaviour.
+	_, err := Compile("eth/(ipv4|ipv6)/tcp", codegen.Capabilities{})
+	if err == nil {
+		t.Fatal("expected resolve error for divergent alt dispatch")
+	}
+}
+
+func TestCompileStaticChainSucceeds(t *testing.T) {
+	// `{n,m}` with m <= 4 rides the static-unroll path; these cover
+	// both field self-dispatch (VLAN) and NO_CHECK self-dispatch (MPLS).
+	cases := []string{
+		"eth/vlan{1,3}/ipv4/tcp",
+		"eth/vlan{3,3}/ipv4/tcp",
+		"eth/mpls{1,4}/ipv4/tcp",
+		"eth/mpls{2,2}/ipv4/tcp",
+	}
+	for _, expr := range cases {
+		t.Run(expr, func(t *testing.T) {
+			out, err := Compile(expr, codegen.Capabilities{})
+			if err != nil {
+				t.Fatalf("Compile(%q): %v", expr, err)
+			}
+			if len(out.Main) == 0 {
+				t.Fatalf("Compile(%q) produced empty instructions", expr)
+			}
+		})
+	}
+}
+
+func TestCompileBpfLoopChainCompiles(t *testing.T) {
+	// Chains beyond the static-unroll cap and open-ended `+` ride the
+	// bpf_loop path. Verifier coverage lives in
+	// internal/program.TestBpfEntryWithDSLFilter.
+	cases := []string{
+		"eth/vlan{1,5}/ipv4/tcp",
+		"eth/vlan+/ipv4/tcp",
+		"eth/mpls+/ipv4/tcp",
+	}
+	for _, expr := range cases {
+		t.Run(expr, func(t *testing.T) {
+			out, err := Compile(expr, codegen.Capabilities{})
+			if err != nil {
+				t.Fatalf("Compile(%q): %v", expr, err)
+			}
+			if len(out.Main) == 0 {
+				t.Fatalf("Compile(%q) produced empty instructions", expr)
+			}
+		})
+	}
+}
+
+func TestCompileStarQuantifierCompiles(t *testing.T) {
+	// `*` rides the bpf_loop path with a pre-chain peek that can skip
+	// the whole iteration group when the parent dispatch mismatches.
+	out, err := Compile("eth/mpls*/ipv4/tcp", codegen.Capabilities{})
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	if len(out.Main) == 0 || len(out.Callbacks) == 0 {
+		t.Fatalf("expected main + callbacks for `*`, got %d/%d", len(out.Main), len(out.Callbacks))
+	}
+}
+
+func TestCompileStarOnFirstLayerRejected(t *testing.T) {
+	// No outer parent to peek before the chain — reject with a
+	// targeted message.
+	_, err := Compile("vlan*/ipv4/tcp", codegen.Capabilities{})
+	if !errors.Is(err, codegen.ErrNotImplemented) {
+		t.Fatalf("err = %v; want ErrNotImplemented for `*` on first layer", err)
+	}
+}
+
+func TestCompileIcmpAndIcmp6Succeed(t *testing.T) {
+	cases := []string{
+		"eth/ipv4/icmp",
+		"eth/ipv6/icmp6",
+		"eth/ipv4/icmp[type==8]",
+		"eth/ipv6/icmp6[type==128] capture headers+16",
+	}
+	for _, expr := range cases {
+		t.Run(expr, func(t *testing.T) {
+			out, err := Compile(expr, codegen.Capabilities{})
+			if err != nil {
+				t.Fatalf("Compile(%q): %v", expr, err)
+			}
+			if len(out.Main) == 0 {
+				t.Fatalf("Compile(%q) produced empty instructions", expr)
+			}
+		})
+	}
+}
+
+func TestCompileCaptureHeadersPlusReportsLength(t *testing.T) {
+	out, err := Compile("eth/ipv4/tcp capture headers+64", codegen.Capabilities{})
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	if len(out.Main) == 0 {
+		t.Fatal("expected non-empty instructions")
+	}
+	// eth(14) + ipv4(20) + tcp(20) + 64 = 118
+	if out.Capture.MaxCapLen != 14+20+20+64 {
+		t.Errorf("MaxCapLen = %d, want %d", out.Capture.MaxCapLen, 14+20+20+64)
+	}
+}
+
+func TestCompilePerCaptureWhereReachesCodegen(t *testing.T) {
+	// Smoke-test: a per-capture where must flow through resolve →
+	// codegen instead of being silently dropped. The action atom
+	// against a zero Capabilities is the cheapest atom that fails
+	// loudly the moment resolve sees it.
+	_, err := Compile(
+		"eth/ipv4/tcp capture headers+32 where action == XDP_DROP",
+		codegen.Capabilities{},
+	)
+	if err == nil {
+		t.Fatal("expected per-capture action atom to fail against zero Capabilities")
+	}
+	if !strings.Contains(err.Error(), "not available on this host") {
+		t.Fatalf("error = %v; want host-mismatch message", err)
+	}
+}
+
+// TestZeroCapsIsHostAgnostic locks in the kunai-vs-host boundary:
+// when the caller passes the zero Capabilities, the emitted main
+// instruction stream must not read or write any register / stack
+// slot the host owns (R6-R8 callee-saved, R9 read-only, stack[-48]
+// host scratch). If a future change leaks XDP-specific assumptions
+// back into the core codegen this test should turn red.
+func TestZeroCapsIsHostAgnostic(t *testing.T) {
+	cases := []string{
+		"eth/ipv4/tcp",
+		"eth/ipv4/tcp[dport==443]",
+		"eth/ipv4[src==10.0.0.0/8]/tcp",
+		"eth/(vlan|qinq)/ipv4/tcp",
+		"eth/mpls+/ipv4/tcp",
+		"eth/ipv4/tcp where ipv4.total_length > 100 capture headers+64",
+	}
+	for _, expr := range cases {
+		t.Run(expr, func(t *testing.T) {
+			out, err := Compile(expr, codegen.Capabilities{})
+			if err != nil {
+				t.Fatalf("Compile(%q): %v", expr, err)
+			}
+			all := append(asm.Instructions{}, out.Main...)
+			all = append(all, out.Callbacks...)
+			for _, ins := range all {
+				if isHostOwned(ins) {
+					t.Errorf("instruction touches host-owned register or stack slot: %+v", ins)
+				}
+			}
+		})
+	}
+}
+
+// isHostOwned reports whether ins touches a host-only resource per
+// the ABI contract documented in codegen/codegen.go: R6-R8 must not
+// be referenced (callee-saved from kunai's view), and any R10 slot
+// shallower than codegen.KunaiStackTop is the host's scratch range.
+func isHostOwned(ins asm.Instruction) bool {
+	for _, r := range []asm.Register{asm.R6, asm.R7, asm.R8} {
+		if ins.Dst == r || ins.Src == r {
+			return true
+		}
+	}
+	if (ins.Dst == asm.R10 || ins.Src == asm.R10) && ins.Offset > codegen.KunaiStackTop && ins.Offset < 0 {
+		return true
+	}
+	return false
+}
+
+// Cache correctness for dslvocab.Bundled is covered in its own
+// package; Compile merely threads the call through.

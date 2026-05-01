@@ -1,0 +1,75 @@
+name: p4c parse-check
+
+# Validates bundled .p4 vocab files with the official P4 compiler
+# (p4test --parse-only) so syntax stays compatible with the upstream
+# P4-16 spec. Triggered when DSL parser, vocab loader, .p4 files, or
+# the check harness changes.
+#
+# Two-tier caching keeps repeat runs cheap:
+#   1. docker buildx GHA cache: image layers (libboost install +
+#      check.sh COPY) survive across runs, so re-builds are seconds
+#      after the first cold pull.
+#   2. .p4c-cache/<sha256>.<ver>.ok markers: per-file content hash
+#      cache; only files whose bytes changed re-enter p4test.
+#
+# Cache invalidation has two layers:
+#   - check.sh's CACHE_VERSION constant invalidates per-file `.ok`
+#     markers when parse semantics change (manual bump).
+#   - This workflow's `hashFiles` cache key invalidates the GHA-side
+#     cache when the parse harness (Dockerfile + check.sh) or vocab
+#     files change. Keep both files in the hashFiles list below so
+#     a Dockerfile-only edit (e.g. base image bump) doesn't restore
+#     stale `.ok` markers.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'pkg/kunai/protocols/**.p4'
+      - 'pkg/kunai/vocab/**'
+      - 'docker/p4c-check/**'
+      - 'scripts/p4c-check.sh'
+      - '.github/workflows/p4c-check.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'pkg/kunai/protocols/**.p4'
+      - 'pkg/kunai/vocab/**'
+      - 'docker/p4c-check/**'
+      - 'scripts/p4c-check.sh'
+      - '.github/workflows/p4c-check.yml'
+
+jobs:
+  p4c-parse:
+    name: p4c --parse-only
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up docker buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build p4c-check image (with layer cache)
+        uses: docker/build-push-action@v6
+        with:
+          context: docker/p4c-check
+          load: true
+          tags: xdp-ninja-p4c-check:local
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Restore per-file parse-check cache
+        uses: actions/cache@v4
+        with:
+          path: .p4c-cache
+          # Cache key encodes the full parse harness (Dockerfile +
+          # check.sh) plus a coarse vocab-files hash. Any edit to
+          # the harness or to a .p4 file produces a fresh key;
+          # restore-keys falls back to the most recent prior cache
+          # so unchanged files keep their `.ok` markers.
+          key: p4c-cache-${{ hashFiles('docker/p4c-check/Dockerfile', 'docker/p4c-check/check.sh', 'pkg/kunai/protocols/**.p4') }}
+          restore-keys: |
+            p4c-cache-
+
+      - name: Run parse-check
+        run: docker run --rm -v "$PWD:/work" xdp-ninja-p4c-check:local

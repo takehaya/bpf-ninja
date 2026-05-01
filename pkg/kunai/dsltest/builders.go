@@ -1,0 +1,678 @@
+package dsltest
+
+import (
+	"net"
+	"testing"
+
+	"github.com/google/gopacket"
+	"github.com/google/gopacket/layers"
+)
+
+// PacketOpts configures a single packet built by Build. Zero values
+// are filled in with deterministic defaults so callers only set the
+// fields the test cares about. Each helper composes the layers with
+// gopacket.SerializeOptions{ComputeChecksums: true, FixLengths:
+// true} so the resulting bytes are byte-for-byte identical to a
+// real frame on the wire.
+type PacketOpts struct {
+	// Ethernet
+	SrcMAC, DstMAC net.HardwareAddr
+	EthType        layers.EthernetType // overridden by upper layer when zero
+
+	// VLAN tags (outer first). Zero-length means no tag.
+	VLAN []uint16
+	// QinQ outer ethertype: 0x88a8 (default 0x8100 when QinQ true).
+	QinQ bool
+
+	// MPLS labels (outer first). Zero-length means no MPLS.
+	MPLS []uint32
+
+	// IP layer: SrcIP / DstIP (v4 or v6). When both are nil, no IP.
+	SrcIP, DstIP net.IP
+	IPProto      uint8 // overridden by upper layer when zero
+
+	// L4
+	SrcPort, DstPort uint16
+	TCP              bool
+	UDP              bool
+	ICMP             bool
+
+	// IPv4 options. When non-empty, gopacket lifts ihl past 5 and
+	// emits the option bytes — exercises the IPv4 VAREXT advance.
+	IPv4Options []layers.IPv4Option
+	// TCP options. Same idea for data_offset > 5.
+	TCPOptions []layers.TCPOption
+
+	// Payload
+	Payload []byte
+}
+
+// Defaults returns a PacketOpts with sensible defaults so tests can
+// override individual fields. Two layers worth of "valid filler"
+// (Ethernet+IPv4+TCP/80) so the resulting bytes match
+// `eth/ipv4/tcp` out of the box.
+func Defaults() PacketOpts {
+	return PacketOpts{
+		SrcMAC:  mustMAC("aa:bb:cc:dd:ee:01"),
+		DstMAC:  mustMAC("aa:bb:cc:dd:ee:02"),
+		SrcIP:   net.ParseIP("10.0.0.1"),
+		DstIP:   net.ParseIP("10.0.0.2"),
+		SrcPort: 12345,
+		DstPort: 80,
+		TCP:     true,
+		Payload: []byte("hello"),
+	}
+}
+
+// BuildEthIPv4TCP returns a serialized Ethernet/IPv4/TCP frame with
+// the requested ports. Convenience wrapper for the most common
+// chain shape.
+func BuildEthIPv4TCP(t *testing.T, srcPort, dstPort uint16) []byte {
+	t.Helper()
+	o := Defaults()
+	o.SrcPort, o.DstPort = srcPort, dstPort
+	return Build(t, o)
+}
+
+// BuildEthIPv4UDP returns a serialized Ethernet/IPv4/UDP frame.
+func BuildEthIPv4UDP(t *testing.T, srcPort, dstPort uint16, payload []byte) []byte {
+	t.Helper()
+	o := Defaults()
+	o.TCP, o.UDP = false, true
+	o.SrcPort, o.DstPort = srcPort, dstPort
+	if payload != nil {
+		o.Payload = payload
+	}
+	return Build(t, o)
+}
+
+// BuildEthIPv6TCP returns a serialized Ethernet/IPv6/TCP frame.
+func BuildEthIPv6TCP(t *testing.T, src, dst net.IP, srcPort, dstPort uint16) []byte {
+	t.Helper()
+	o := Defaults()
+	o.SrcIP, o.DstIP = src, dst
+	o.SrcPort, o.DstPort = srcPort, dstPort
+	return Build(t, o)
+}
+
+// Build serializes the packet described by opts. The function picks
+// the right gopacket layer combination from the flags + which
+// IP/MAC fields are populated; tests should call Defaults() and
+// override only what they need.
+func Build(t *testing.T, opts PacketOpts) []byte {
+	t.Helper()
+
+	if opts.SrcMAC == nil {
+		opts.SrcMAC = mustMAC("aa:bb:cc:dd:ee:01")
+	}
+	if opts.DstMAC == nil {
+		opts.DstMAC = mustMAC("aa:bb:cc:dd:ee:02")
+	}
+
+	isV6 := opts.SrcIP != nil && opts.SrcIP.To4() == nil
+	if opts.EthType == 0 {
+		switch {
+		case len(opts.MPLS) > 0:
+			opts.EthType = layers.EthernetTypeMPLSUnicast
+		case isV6:
+			opts.EthType = layers.EthernetTypeIPv6
+		case opts.SrcIP != nil:
+			opts.EthType = layers.EthernetTypeIPv4
+		default:
+			opts.EthType = layers.EthernetTypeIPv4
+		}
+	}
+	if len(opts.VLAN) > 0 {
+		if opts.QinQ {
+			opts.EthType = layers.EthernetTypeQinQ
+		} else {
+			opts.EthType = layers.EthernetTypeDot1Q
+		}
+	}
+
+	eth := &layers.Ethernet{
+		SrcMAC:       opts.SrcMAC,
+		DstMAC:       opts.DstMAC,
+		EthernetType: opts.EthType,
+	}
+
+	stack := []gopacket.SerializableLayer{eth}
+
+	for i, vid := range opts.VLAN {
+		next := layers.EthernetTypeDot1Q
+		if i == len(opts.VLAN)-1 {
+			switch {
+			case len(opts.MPLS) > 0:
+				next = layers.EthernetTypeMPLSUnicast
+			case isV6:
+				next = layers.EthernetTypeIPv6
+			default:
+				next = layers.EthernetTypeIPv4
+			}
+		}
+		stack = append(stack, &layers.Dot1Q{
+			VLANIdentifier: vid,
+			Type:           next,
+		})
+	}
+
+	for i, label := range opts.MPLS {
+		stack = append(stack, &layers.MPLS{
+			Label:        label,
+			TrafficClass: 0,
+			StackBottom:  i == len(opts.MPLS)-1,
+			TTL:          64,
+		})
+	}
+
+	upper, payload := buildL3L4(t, &opts, isV6)
+	stack = append(stack, upper...)
+	if payload != nil {
+		stack = append(stack, gopacket.Payload(payload))
+	}
+
+	buf := gopacket.NewSerializeBuffer()
+	if err := gopacket.SerializeLayers(buf, gopacket.SerializeOptions{
+		ComputeChecksums: true,
+		FixLengths:       true,
+	}, stack...); err != nil {
+		t.Fatalf("gopacket.SerializeLayers: %v", err)
+	}
+	return buf.Bytes()
+}
+
+func buildL3L4(t *testing.T, o *PacketOpts, isV6 bool) ([]gopacket.SerializableLayer, []byte) {
+	t.Helper()
+	var ip gopacket.SerializableLayer
+	var netLayer gopacket.NetworkLayer
+	if o.SrcIP == nil {
+		return nil, o.Payload
+	}
+	switch {
+	case isV6:
+		v6 := &layers.IPv6{
+			Version:    6,
+			HopLimit:   64,
+			SrcIP:      o.SrcIP,
+			DstIP:      o.DstIP,
+			NextHeader: layers.IPProtocolTCP,
+		}
+		switch {
+		case o.UDP:
+			v6.NextHeader = layers.IPProtocolUDP
+		case o.ICMP:
+			v6.NextHeader = layers.IPProtocolICMPv6
+		}
+		ip, netLayer = v6, v6
+	default:
+		v4 := &layers.IPv4{
+			Version:  4,
+			IHL:      5,
+			TTL:      64,
+			SrcIP:    o.SrcIP.To4(),
+			DstIP:    o.DstIP.To4(),
+			Protocol: layers.IPProtocolTCP,
+			Options:  o.IPv4Options,
+		}
+		switch {
+		case o.UDP:
+			v4.Protocol = layers.IPProtocolUDP
+		case o.ICMP:
+			v4.Protocol = layers.IPProtocolICMPv4
+		}
+		ip, netLayer = v4, v4
+	}
+
+	var upper []gopacket.SerializableLayer
+	upper = append(upper, ip)
+
+	switch {
+	case o.UDP:
+		udp := &layers.UDP{
+			SrcPort: layers.UDPPort(o.SrcPort),
+			DstPort: layers.UDPPort(o.DstPort),
+		}
+		_ = udp.SetNetworkLayerForChecksum(netLayer)
+		upper = append(upper, udp)
+	case o.ICMP:
+		if isV6 {
+			upper = append(upper, &layers.ICMPv6{
+				TypeCode: layers.CreateICMPv6TypeCode(layers.ICMPv6TypeEchoRequest, 0),
+			})
+		} else {
+			upper = append(upper, &layers.ICMPv4{
+				TypeCode: layers.CreateICMPv4TypeCode(layers.ICMPv4TypeEchoRequest, 0),
+			})
+		}
+	default:
+		tcp := &layers.TCP{
+			SrcPort: layers.TCPPort(o.SrcPort),
+			DstPort: layers.TCPPort(o.DstPort),
+			Window:  65535,
+			SYN:     true,
+			Seq:     1,
+			Options: o.TCPOptions,
+		}
+		_ = tcp.SetNetworkLayerForChecksum(netLayer)
+		upper = append(upper, tcp)
+	}
+
+	return upper, o.Payload
+}
+
+// BuildGTPU constructs an Ethernet/IPv4/UDP/GTP-U/IPv4/TCP frame.
+// `flags` is the GTP byte 0 (version|pt|reserved|e|s|pn). When any
+// of the lower three flag bits are set, opts.Opt populates the
+// optional 4-byte block; opts.Exts populates the extension-header
+// chain (terminated implicitly by next_ext == 0).
+type GTPUOpts struct {
+	TEID    uint32
+	Flags   uint8 // version<<5 | pt<<4 | reserved<<3 | e<<2 | s<<1 | pn<<0; default 0x30 (v1, pt=1)
+	MsgType uint8 // GTP message type; default 0xff (T-PDU)
+	Opt     *GTPOpt
+	Exts    []GTPExt
+	// Inner IPv4/TCP ports.
+	InnerSrc, InnerDst net.IP
+	InnerSrcPort       uint16
+	InnerDstPort       uint16
+}
+
+// GTPOpt is the optional 4-byte block present when E|S|PN is set.
+// Layout: seq(16) | npdu(8) | next_ext(8).
+type GTPOpt struct {
+	Seq           uint16
+	NPDU, NextExt uint8
+}
+
+// GTPExt is one 4-byte extension header; the terminating ext should
+// have NextExt == 0.
+type GTPExt struct {
+	ExtLength uint8
+	ExtType   uint16 // payload of ext (any 16-bit value)
+	NextExt   uint8
+}
+
+// BuildGTPU serializes a GTP-U frame as described by opts.
+func BuildGTPU(t *testing.T, opts GTPUOpts) []byte {
+	t.Helper()
+
+	flags := opts.Flags
+	if flags == 0 {
+		flags = 0x30 // version 1, pt 1
+	}
+	msgType := opts.MsgType
+	if msgType == 0 {
+		msgType = 0xff
+	}
+	if opts.InnerSrc == nil {
+		opts.InnerSrc = net.ParseIP("192.168.1.1")
+	}
+	if opts.InnerDst == nil {
+		opts.InnerDst = net.ParseIP("192.168.1.2")
+	}
+	if opts.InnerSrcPort == 0 {
+		opts.InnerSrcPort = 4444
+	}
+	if opts.InnerDstPort == 0 {
+		opts.InnerDstPort = 5555
+	}
+
+	// Build inner IPv4/TCP first.
+	innerOpts := Defaults()
+	innerOpts.SrcIP, innerOpts.DstIP = opts.InnerSrc, opts.InnerDst
+	innerOpts.SrcPort, innerOpts.DstPort = opts.InnerSrcPort, opts.InnerDstPort
+	innerBytes := Build(t, innerOpts)
+	// Strip the outer eth (14 bytes); GTP-U payload starts at IP.
+	innerIP := innerBytes[14:]
+
+	// Assemble the GTP payload: gtp_h (8) + opt (4) + exts (4N) + innerIP.
+	gtp := make([]byte, 0, 8+4+4*len(opts.Exts)+len(innerIP))
+	gtp = append(gtp,
+		flags, msgType,
+		0, 0, // length placeholder (filled below)
+		byte(opts.TEID>>24), byte(opts.TEID>>16), byte(opts.TEID>>8), byte(opts.TEID),
+	)
+	if opts.Opt != nil {
+		gtp = append(gtp, 0, 0, opts.Opt.NPDU, opts.Opt.NextExt)
+		// `seq` is the first 16 bits but we kept order simple; rewrite seq below.
+		gtp[len(gtp)-4] = byte(opts.Opt.Seq >> 8)
+		gtp[len(gtp)-3] = byte(opts.Opt.Seq)
+	}
+	for _, ext := range opts.Exts {
+		gtp = append(gtp,
+			ext.ExtLength,
+			byte(ext.ExtType>>8), byte(ext.ExtType),
+			ext.NextExt,
+		)
+	}
+	gtp = append(gtp, innerIP...)
+
+	// Fill the GTP length field (offset 2, 16 bits, big-endian).
+	// Length = bytes after the fixed 8-byte header (per TS 29.281).
+	tail := len(gtp) - 8
+	gtp[2] = byte(tail >> 8)
+	gtp[3] = byte(tail)
+
+	// Wrap in eth/ipv4/udp(2152).
+	udpOpts := Defaults()
+	udpOpts.TCP, udpOpts.UDP = false, true
+	udpOpts.SrcPort, udpOpts.DstPort = 2152, 2152
+	udpOpts.Payload = gtp
+	return Build(t, udpOpts)
+}
+
+func mustMAC(s string) net.HardwareAddr {
+	mac, err := net.ParseMAC(s)
+	if err != nil {
+		panic(err)
+	}
+	return mac
+}
+
+// bytes16 returns a fixed-width 16-byte buffer for HBH/DestOpt
+// option payloads. Padding lets gopacket-built frames carry a
+// realistic fingerprint without the test caring about byte values.
+func bytes16(seed string) []byte {
+	out := make([]byte, 16)
+	copy(out, seed)
+	return out
+}
+
+// Common in-frame offsets shared by IPv6-suffix builders (BuildIPv6WithExts,
+// BuildSRv6). Naming the magic numbers keeps the builders auditable.
+const (
+	ethHeaderSize     = 14
+	ipv6HeaderSize    = 40
+	ipv6PayloadLenOff = 4 // bytes 4-5 of ipv6_h (big-endian u16)
+	ipv6NextHeaderOff = 6 // byte 6 of ipv6_h
+	ethIPv6PrefixSize = ethHeaderSize + ipv6HeaderSize
+)
+
+// buildEthIPv6Prefix returns the eth(14)+ipv6(40) bytes for a frame
+// that will carry custom variable+inner payload past the IPv6 base
+// header. The caller patches ipv6.next_header to the first chained
+// header type and ipv6.payload_length to len(variable)+len(inner)
+// after concatenation. Both BuildIPv6WithExts and BuildSRv6 use it
+// to avoid duplicating the strip-and-patch dance.
+func buildEthIPv6Prefix(t *testing.T, src, dst net.IP) []byte {
+	t.Helper()
+	o := Defaults()
+	o.SrcIP, o.DstIP = src, dst
+	o.TCP = false
+	o.UDP = true
+	o.Payload = nil
+	frame := Build(t, o)
+	out := make([]byte, ethIPv6PrefixSize)
+	copy(out, frame[:ethIPv6PrefixSize])
+	return out
+}
+
+// patchIPv6NextHeaderAndLen rewrites the just-built eth+ipv6 prefix
+// to advertise nextHeader and a payload_length covering the
+// concatenation of the trailing bytes (variable + inner) the caller
+// is about to append.
+func patchIPv6NextHeaderAndLen(prefix []byte, nextHeader uint8, payloadLen int) {
+	prefix[ethHeaderSize+ipv6NextHeaderOff] = nextHeader
+	prefix[ethHeaderSize+ipv6PayloadLenOff] = byte(payloadLen >> 8)
+	prefix[ethHeaderSize+ipv6PayloadLenOff+1] = byte(payloadLen)
+}
+
+// stripToTCPSegment builds a stock IPv4/TCP frame and strips the
+// outer eth(14)+ipv4(20) so callers can splice the bare TCP segment
+// past their own IPv6+ext chain or SRH.
+func stripToTCPSegment(t *testing.T, src, dst net.IP, srcPort, dstPort uint16) []byte {
+	t.Helper()
+	tcpInner := Defaults()
+	tcpInner.SrcIP, tcpInner.DstIP = src, dst
+	tcpInner.SrcPort, tcpInner.DstPort = srcPort, dstPort
+	tcpBytes := Build(t, tcpInner)
+	return tcpBytes[ethHeaderSize+20:]
+}
+
+// SRv6Opts describes an Ethernet/IPv6/SRH/<inner> frame.
+type SRv6Opts struct {
+	Src, Dst         net.IP
+	Segments         []net.IP // segment list (last_entry+1 entries); first is innermost
+	InnerNextHeader  uint8    // protocol for SRH.next_header (e.g. 6=TCP)
+	InnerSrcPort     uint16
+	InnerDstPort     uint16
+}
+
+// BuildSRv6 builds Ethernet+IPv6(NH=43)+SRH+inner-TCP. The number
+// of segments = len(opts.Segments); SRH.last_entry = N-1; SRH bytes
+// after the fixed 8 = N * 16. Codegen consumes these via the
+// variable trail (knownVariableTails["srv6_h"]).
+func BuildSRv6(t *testing.T, opts SRv6Opts) []byte {
+	t.Helper()
+	if opts.Src == nil {
+		opts.Src = net.ParseIP("fe80::1")
+	}
+	if opts.Dst == nil {
+		opts.Dst = net.ParseIP("fe80::2")
+	}
+	if len(opts.Segments) == 0 {
+		opts.Segments = []net.IP{net.ParseIP("fe80::dead")}
+	}
+	if opts.InnerNextHeader == 0 {
+		opts.InnerNextHeader = 6 // TCP
+	}
+	if opts.InnerSrcPort == 0 {
+		opts.InnerSrcPort = 1234
+	}
+	if opts.InnerDstPort == 0 {
+		opts.InnerDstPort = 80
+	}
+
+	tcpSeg := stripToTCPSegment(t, net.IPv4(1, 2, 3, 4), net.IPv4(5, 6, 7, 8), opts.InnerSrcPort, opts.InnerDstPort)
+
+	n := len(opts.Segments)
+	srh := make([]byte, 8+n*16)
+	srh[0] = opts.InnerNextHeader
+	srh[1] = uint8(2 * n) // hdr_ext_len in 8-byte units (each segment = 2 units)
+	srh[2] = 4            // routing_type = SRH
+	srh[3] = uint8(n - 1) // segments_left
+	srh[4] = uint8(n - 1) // last_entry
+	for i, seg := range opts.Segments {
+		copy(srh[8+i*16:8+(i+1)*16], seg.To16())
+	}
+
+	out := buildEthIPv6Prefix(t, opts.Src, opts.Dst)
+	patchIPv6NextHeaderAndLen(out, 43, len(srh)+len(tcpSeg))
+	out = append(out, srh...)
+	out = append(out, tcpSeg...)
+	return out
+}
+
+// GREOpts describes an Ethernet/IPv4/GRE/IPv4/TCP frame. Each
+// Checksum/Key/Sequence flag adds a 4-byte block past the fixed GRE
+// header — codegen advances R4 via the OPT_TRIGGER/OPT_LEN const
+// pairs in gre.p4.
+type GREOpts struct {
+	HasChecksum bool
+	HasKey      bool
+	HasSequence bool
+	Key         uint32
+	Sequence    uint32
+	// Inner IPv4/TCP ports.
+	InnerSrcPort, InnerDstPort uint16
+}
+
+// BuildGRE serializes Ethernet/IPv4/GRE/<inner IPv4/TCP> with the
+// requested optional sub-headers enabled. The outer IPv4 carries
+// protocol=47 (GRE); inner ports default to 4444 → 5555.
+func BuildGRE(t *testing.T, opts GREOpts) []byte {
+	t.Helper()
+	if opts.InnerSrcPort == 0 {
+		opts.InnerSrcPort = 4444
+	}
+	if opts.InnerDstPort == 0 {
+		opts.InnerDstPort = 5555
+	}
+
+	innerOpts := Defaults()
+	innerOpts.SrcIP = net.ParseIP("192.168.10.1")
+	innerOpts.DstIP = net.ParseIP("192.168.10.2")
+	innerOpts.SrcPort, innerOpts.DstPort = opts.InnerSrcPort, opts.InnerDstPort
+	innerBytes := Build(t, innerOpts)
+	innerIP := innerBytes[ethHeaderSize:] // strip outer eth
+
+	gre := &layers.GRE{
+		Protocol:        layers.EthernetTypeIPv4,
+		Version:         0,
+		ChecksumPresent: opts.HasChecksum,
+		KeyPresent:      opts.HasKey,
+		SeqPresent:      opts.HasSequence,
+		Key:             opts.Key,
+		Seq:             opts.Sequence,
+	}
+
+	d := Defaults()
+	eth := &layers.Ethernet{
+		SrcMAC:       d.SrcMAC,
+		DstMAC:       d.DstMAC,
+		EthernetType: layers.EthernetTypeIPv4,
+	}
+	v4 := &layers.IPv4{
+		Version:  4,
+		IHL:      5,
+		TTL:      64,
+		SrcIP:    net.ParseIP("10.1.0.1").To4(),
+		DstIP:    net.ParseIP("10.1.0.2").To4(),
+		Protocol: layers.IPProtocolGRE,
+	}
+
+	buf := gopacket.NewSerializeBuffer()
+	if err := gopacket.SerializeLayers(buf, gopacket.SerializeOptions{
+		ComputeChecksums: true,
+		FixLengths:       true,
+	}, eth, v4, gre, gopacket.Payload(innerIP)); err != nil {
+		t.Fatalf("gopacket.SerializeLayers (gre): %v", err)
+	}
+	return buf.Bytes()
+}
+
+// BuildEthIPv4ESP returns an Ethernet/IPv4/ESP frame with the given
+// SPI and sequence number. The 8-byte ESP fixed header is plaintext
+// (kunai matches on it); the appended 16 opaque bytes simulate the
+// encrypted payload that kunai cannot inspect — testing here pins
+// that the chain match succeeds despite the inner being unreadable.
+func BuildEthIPv4ESP(t *testing.T, spi, seq uint32) []byte {
+	t.Helper()
+	o := Defaults()
+	o.UDP = true // any IPv4 child is fine; we patch the protocol byte after build
+	o.TCP = false
+	o.Payload = espPayload(spi, seq)
+	pkt := Build(t, o)
+	patchIPv4Protocol(pkt, 50) // IPPROTO_ESP
+	return pkt
+}
+
+// BuildEthIPv6ESP returns an Ethernet/IPv6/ESP frame.
+func BuildEthIPv6ESP(t *testing.T, src, dst net.IP, spi, seq uint32) []byte {
+	t.Helper()
+	out := buildEthIPv6Prefix(t, src, dst)
+	body := espPayload(spi, seq)
+	patchIPv6NextHeaderAndLen(out, 50, len(body))
+	return append(out, body...)
+}
+
+// espPayload synthesises the 8-byte ESP fixed header (SPI + seq)
+// plus 16 placeholder bytes representing the encrypted payload.
+func espPayload(spi, seq uint32) []byte {
+	out := make([]byte, 8+16)
+	out[0], out[1], out[2], out[3] = byte(spi>>24), byte(spi>>16), byte(spi>>8), byte(spi)
+	out[4], out[5], out[6], out[7] = byte(seq>>24), byte(seq>>16), byte(seq>>8), byte(seq)
+	copy(out[8:], "encrypted-bytes-")
+	return out
+}
+
+// patchIPv4Protocol overrides the IPv4 protocol byte at offset 14+9
+// in a just-built frame and recomputes the IPv4 header checksum.
+// Used when we need a frame for an L4 protocol gopacket does not
+// model directly (e.g. ESP).
+func patchIPv4Protocol(pkt []byte, proto uint8) {
+	pkt[ethHeaderSize+9] = proto
+	pkt[ethHeaderSize+10] = 0
+	pkt[ethHeaderSize+11] = 0
+	var sum uint32
+	for i := ethHeaderSize; i < ethHeaderSize+20; i += 2 {
+		sum += uint32(pkt[i])<<8 | uint32(pkt[i+1])
+	}
+	for sum>>16 != 0 {
+		sum = (sum & 0xffff) + (sum >> 16)
+	}
+	cs := ^uint16(sum)
+	pkt[ethHeaderSize+10] = byte(cs >> 8)
+	pkt[ethHeaderSize+11] = byte(cs)
+}
+
+// IPv6Ext is one chained IPv6 extension header (RFC 8200). HdrExtLen
+// is in 8-byte units NOT including the first 8 bytes (i.e. 0 means
+// the ext header is exactly 8 bytes total).
+type IPv6Ext struct {
+	NextHeader uint8
+	HdrExtLen  uint8
+	Options    []byte // arbitrary options payload, padded to fit the declared length
+}
+
+// IPv6WithExts constructs Ethernet/IPv6/<ext-chain>/TCP frames so
+// tests can drive the ipv6 parser machine through HBH/Fragment/
+// DestOpt iterations. firstNextHeader is the value the IPv6 base
+// header puts in next_header; the chain ends when the most recent
+// ext header carries a non-ext next_header (e.g. IPPROTO_TCP=6).
+type IPv6WithExtsOpts struct {
+	Src, Dst         net.IP
+	SrcPort, DstPort uint16
+	FirstNextHeader  uint8 // base ipv6.next_header — value of the *first* ext, or final L4 if no exts
+	Exts             []IPv6Ext
+	FinalNextHeader  uint8 // protocol for the last ext header's next_header (e.g. 6 for TCP)
+}
+
+// BuildIPv6WithExts serializes Ethernet/IPv6/<ext chain>/TCP. The
+// caller picks the chain shape via opts.Exts (each entry's HdrExtLen
+// is in 8-byte units; 0 means an 8-byte ext header). The base
+// header's next_header points at the first ext type, each ext's
+// next_header points at the next ext (or FinalNextHeader on the
+// last ext).
+func BuildIPv6WithExts(t *testing.T, opts IPv6WithExtsOpts) []byte {
+	t.Helper()
+	if opts.Src == nil {
+		opts.Src = net.ParseIP("fe80::1")
+	}
+	if opts.Dst == nil {
+		opts.Dst = net.ParseIP("fe80::2")
+	}
+	if opts.SrcPort == 0 {
+		opts.SrcPort = 1234
+	}
+	if opts.DstPort == 0 {
+		opts.DstPort = 80
+	}
+	if opts.FinalNextHeader == 0 {
+		opts.FinalNextHeader = 6 // TCP
+	}
+
+	tcpSeg := stripToTCPSegment(t, net.IPv4(1, 2, 3, 4), net.IPv4(5, 6, 7, 8), opts.SrcPort, opts.DstPort)
+
+	var extPayload []byte
+	for i, ex := range opts.Exts {
+		nh := opts.FinalNextHeader
+		if i+1 < len(opts.Exts) {
+			nh = opts.Exts[i+1].NextHeader
+		}
+		extLen := int(ex.HdrExtLen)*8 + 8
+		buf := make([]byte, extLen)
+		buf[0] = nh
+		buf[1] = ex.HdrExtLen
+		if extLen > 8 {
+			copy(buf[8:], ex.Options)
+		}
+		extPayload = append(extPayload, buf...)
+	}
+
+	out := buildEthIPv6Prefix(t, opts.Src, opts.Dst)
+	patchIPv6NextHeaderAndLen(out, opts.FirstNextHeader, len(extPayload)+len(tcpSeg))
+	out = append(out, extPayload...)
+	out = append(out, tcpSeg...)
+	return out
+}

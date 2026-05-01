@@ -1,5 +1,5 @@
 .PHONY: build clean test test-unit test-bpf test-integration test-all vet goreleaser
-.PHONY: install-lint-tools lint lint-ci
+.PHONY: install-lint-tools lint lint-ci p4c-check
 
 BINARY = xdp-ninja
 DIFF_FROM_BRANCH_NAME ?= main
@@ -36,6 +36,9 @@ test-integration: build
 	sudo scripts/test/run_tests.sh
 
 test-all: test-unit test-bpf test-integration
+
+p4c-check: ## Validate bundled .p4 vocab with the official p4c parser (docker required)
+	./scripts/p4c-check.sh
 
 goreleaser: ## build with goreleaser
 	goreleaser release --snapshot --clean

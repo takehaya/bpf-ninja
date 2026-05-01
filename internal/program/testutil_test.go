@@ -117,9 +117,9 @@ func countEvents(t *testing.T, targetProg *ebpf.Program, funcName, iface, pingTa
 	var probe *Probe
 	var err error
 	if isFexit {
-		probe, err = LoadExit(targetProg, funcName, "", argFilters)
+		probe, err = LoadExit(targetProg, funcName, "", argFilters, false)
 	} else {
-		probe, err = LoadEntry(targetProg, funcName, "", argFilters)
+		probe, err = LoadEntry(targetProg, funcName, "", argFilters, false)
 	}
 	if err != nil {
 		t.Fatalf("load probe (%s): %v", funcName, err)
@@ -160,15 +160,26 @@ func countEvents(t *testing.T, targetProg *ebpf.Program, funcName, iface, pingTa
 	return count
 }
 
+// runFilterMatrix attaches one probe per filter expression and fails
+// the subtest when the verifier rejects the produced bytecode.
+func runFilterMatrix(t *testing.T, xdpProg *ebpf.Program, funcName string, exprs []string, exit, useDSL bool) {
+	t.Helper()
+	for _, expr := range exprs {
+		t.Run(expr, func(t *testing.T) {
+			loadProbeOrFail(t, xdpProg, funcName, expr, exit, useDSL)
+		})
+	}
+}
+
 // loadProbeOrFail loads a probe and fails with verifier output on error.
-func loadProbeOrFail(t *testing.T, xdpProg *ebpf.Program, funcName, filterExpr string, exit bool) *Probe {
+func loadProbeOrFail(t *testing.T, xdpProg *ebpf.Program, funcName, filterExpr string, exit, useDSL bool) *Probe {
 	t.Helper()
 	var probe *Probe
 	var err error
 	if exit {
-		probe, err = LoadExit(xdpProg, funcName, filterExpr, nil)
+		probe, err = LoadExit(xdpProg, funcName, filterExpr, nil, useDSL)
 	} else {
-		probe, err = LoadEntry(xdpProg, funcName, filterExpr, nil)
+		probe, err = LoadEntry(xdpProg, funcName, filterExpr, nil, useDSL)
 	}
 	if err != nil {
 		var ve *ebpf.VerifierError

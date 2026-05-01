@@ -68,6 +68,14 @@ var flags = []cli.Flag{
 		Usage: "list filterable parameters for the target function (requires --func) and exit",
 	},
 	&cli.BoolFlag{
+		Name:  "dsl",
+		Usage: "interpret the filter expression as xdp-ninja DSL (e.g. 'eth/ipv4/tcp[dport=443]') instead of tcpdump syntax",
+	},
+	&cli.BoolFlag{
+		Name:  "dsl-help",
+		Usage: "print the xdp-ninja DSL grammar + bundled protocol list and exit",
+	},
+	&cli.BoolFlag{
 		Name: "verbose", Aliases: []string{"v"},
 		Usage: "verbose output to stderr",
 	},
@@ -110,6 +118,10 @@ Examples:
 }
 
 func run(ctx context.Context, cmd *cli.Command) error {
+	if cmd.Bool("dsl-help") {
+		return printDSLHelp(os.Stdout)
+	}
+
 	mode := cmd.String("mode")
 	var isFexit bool
 	switch mode {
@@ -217,7 +229,11 @@ func run(ctx context.Context, cmd *cli.Command) error {
 		logVerbose(cmd, "filter: %s", filterExpr)
 	}
 
-	probe, err := loadProbe(isFexit, info, filterExpr, argFilters)
+	useDSL := cmd.Bool("dsl")
+	if useDSL && filterExpr == "" {
+		return fmt.Errorf("--dsl requires a filter expression")
+	}
+	probe, err := loadProbe(isFexit, info, filterExpr, argFilters, useDSL)
 	if err != nil {
 		return err
 	}
@@ -269,11 +285,11 @@ func findTarget(cmd *cli.Command) (*attach.XDPInfo, error) {
 	return attach.FindXDPProgram(ifaceName)
 }
 
-func loadProbe(isFexit bool, info *attach.XDPInfo, filterExpr string, argFilters []filter.ArgFilter) (*program.Probe, error) {
+func loadProbe(isFexit bool, info *attach.XDPInfo, filterExpr string, argFilters []filter.ArgFilter, useDSL bool) (*program.Probe, error) {
 	if isFexit {
-		return program.LoadExit(info.Program, info.FuncName, filterExpr, argFilters)
+		return program.LoadExit(info.Program, info.FuncName, filterExpr, argFilters, useDSL)
 	}
-	return program.LoadEntry(info.Program, info.FuncName, filterExpr, argFilters)
+	return program.LoadEntry(info.Program, info.FuncName, filterExpr, argFilters, useDSL)
 }
 
 func captureLoop(cmd *cli.Command, reader *capture.Reader, writer *output.Writer) error {
