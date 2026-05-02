@@ -425,21 +425,62 @@ func TestCompileWhereIPv6Arith128(t *testing.T) {
 	}
 }
 
-func TestCompileWhereIPv6OrderedAndMulStaged(t *testing.T) {
-	// F4 / F5 boundaries: ordered cmp and multiplication on Int<128>
-	// in the where path stay staged.
+func TestCompileWhereIPv6MulStaged(t *testing.T) {
+	// F5 boundary: multiplication on Int<128> in the where path stays
+	// staged — bit-slice (F11) covers the practical IPv6 manipulation
+	// cases. Ordered cmp (F3) and field+field add/sub (F4) are no
+	// longer staged; see TestCompileWhereIPv6OrderedCmp /
+	// TestCompileWhereIPv6FieldFieldArith.
+	_, err := compileForTest("eth/ipv6/tcp where ipv6.src * 2 == ipv6.dst")
+	if err == nil {
+		t.Fatal("Compile: expected ErrNotImplemented for Int<128> mul")
+	}
+	if !errors.Is(err, codegen.ErrNotImplemented) {
+		t.Fatalf("err = %v; want ErrNotImplemented", err)
+	}
+}
+
+func TestCompileWhereIPv6FieldFieldArith(t *testing.T) {
+	// F4 (full): `field + field` and `field - field` on Int<128>
+	// compile via the dual-LDX pipeline and stack-bridged carry/borrow
+	// propagation (no host-callee-saved registers touched).
 	for _, expr := range []string{
-		"eth/ipv6/tcp where ipv6.src < ipv6.dst",
-		"eth/ipv6/tcp where ipv6.src * 2 == ipv6.dst",
 		"eth/ipv6/tcp where ipv6.src + ipv6.dst == ipv6.src",
+		"eth/ipv6/tcp where ipv6.src - ipv6.dst == ipv6.src",
+		// Const path also works alongside (existing F4 partial,
+		// regression guard).
+		"eth/ipv6/tcp where ipv6.src + 1 == ipv6.dst",
+		"eth/ipv6/tcp where ipv6.dst - 1 == ipv6.src",
 	} {
 		t.Run(expr, func(t *testing.T) {
-			_, err := compileForTest(expr)
-			if err == nil {
-				t.Fatalf("Compile(%q): expected ErrNotImplemented", expr)
+			insns, err := compileForTest(expr)
+			if err != nil {
+				t.Fatalf("Compile(%q): %v", expr, err)
 			}
-			if !errors.Is(err, codegen.ErrNotImplemented) {
-				t.Fatalf("err = %v; want ErrNotImplemented", err)
+			if len(insns) == 0 {
+				t.Fatal("expected non-empty instructions")
+			}
+		})
+	}
+}
+
+func TestCompileWhereIPv6OrderedCmp(t *testing.T) {
+	// F3 where-arith: lexicographic compare for `<`, `≤`, `>`, `≥` on
+	// Int<128> reaches the where path now (genArithCompare128 ordered
+	// branch), mirroring the bracket-side support.
+	for _, expr := range []string{
+		"eth/ipv6/tcp where ipv6.src < ipv6.dst",
+		"eth/ipv6/tcp where ipv6.src <= ipv6.dst",
+		"eth/ipv6/tcp where ipv6.src > ipv6.dst",
+		"eth/ipv6/tcp where ipv6.src >= ipv6.dst",
+	} {
+		t.Run(expr, func(t *testing.T) {
+			insns, err := compileForTest(expr)
+			if err != nil {
+				t.Fatalf("Compile(%q): %v", expr, err)
+			}
+			if len(insns) == 0 {
+				t.Fatal("expected non-empty instructions")
 			}
 		})
 	}
@@ -580,17 +621,130 @@ func TestCompileQinqVlanChainCoversAllTagShapes(t *testing.T) {
 	}
 }
 
-func TestResolverRejectsAlternationDivergence(t *testing.T) {
-	// Pair of TestResolverAcceptsAlternationAgreementOK. The user-
-	// facing case `eth/(ipv4|ipv6)/tcp` is what most operators want
-	// from alternation, but MVP rejects it: ipv4 and ipv6 differ in
-	// header size (20 vs 40) AND in the dispatch field for tcp
-	// (ipv4.protocol vs ipv6.next_header at different offsets).
-	// Lifting both restrictions is dsl-followups.md P3-12; until
-	// then this rejection is correct behaviour.
-	_, err := Compile("eth/(ipv4|ipv6)/tcp", codegen.Capabilities{})
+func TestCompileAlternationDivergentSize(t *testing.T) {
+	// P3-12: `eth/(ipv4|ipv6)/tcp` is the canonical user-facing alt
+	// case. ipv4 and ipv6 differ in header size (20 vs 40 bytes) AND
+	// in the dispatch field for tcp (ipv4.protocol at byte 9 vs
+	// ipv6.next_header at byte 6). Both alts have variable layout
+	// (ipv4 IHL options, ipv6 ext-header walk) so this also exercises
+	// the layer-entry-slot path of the diverged dispatch emit.
+	for _, expr := range []string{
+		"eth/(ipv4|ipv6)/tcp",
+		"eth/(ipv4|ipv6)/udp",
+		// Bracket predicate inside the post-alt layer: uses R4-relative
+		// addressing so the runtime offset works whichever alt matched.
+		"eth/(ipv4|ipv6)/tcp[dport==443]",
+		"eth/(ipv4|ipv6)/udp[dport==53]",
+	} {
+		t.Run(expr, func(t *testing.T) {
+			insns, err := Compile(expr, codegen.Capabilities{})
+			if err != nil {
+				t.Fatalf("Compile(%q): %v", expr, err)
+			}
+			if len(insns.Main) == 0 {
+				t.Fatal("expected non-empty instructions")
+			}
+		})
+	}
+}
+
+func TestCompileAlternationHetSizeWhere(t *testing.T) {
+	// PR-A/PR-B: where / capture across a heterogeneous-size alt now
+	// works via per-layer entry slots. The resolver marks the post-
+	// alt layer NeedsRuntimeOffset; codegen stores R4 to a slot at
+	// layer entry; downstream where field loads address through the
+	// slot instead of R0+static_prefix.
+	for _, expr := range []string{
+		"eth/(ipv4|ipv6)/tcp where tcp.dport == 443",
+		"eth/(ipv4|ipv6)/tcp where tcp.dport > 1024",
+		// Capture: max-alt rounding picks ipv6 (40) for the prefix.
+		"eth/(ipv4|ipv6)/tcp capture headers+64",
+		// Option lookup past het-alt — exercises slot anchor through
+		// the option-walk loop.
+		"eth/(ipv4|ipv6)/tcp where tcp.options.MSS.value == 1460",
+	} {
+		t.Run(expr, func(t *testing.T) {
+			out, err := Compile(expr, codegen.Capabilities{})
+			if err != nil {
+				t.Fatalf("Compile(%q): %v", expr, err)
+			}
+			if len(out.Main) == 0 {
+				t.Fatal("expected non-empty instructions")
+			}
+		})
+	}
+}
+
+func TestCompileAlternationHetSizeAltMemberWhereStaged(t *testing.T) {
+	// `where ipv6.src == ...` references an alt member directly. Each
+	// member sits inside the alt group rather than in p.Layers, and
+	// the slot mechanism would only address the alt's primary bytes
+	// (semantics ill-defined when the *other* alt was matched). MVP
+	// keeps this rejected so users write per-alt bracket predicates
+	// instead: `eth/(ipv4|ipv6[src==fe80::1])/tcp`.
+	for _, expr := range []string{
+		"eth/(ipv4|ipv6)/tcp where ipv6.src == fe80::1",
+		"eth/(ipv4|ipv6)/tcp where ipv4.src == 10.0.0.1",
+	} {
+		t.Run(expr, func(t *testing.T) {
+			_, err := Compile(expr, codegen.Capabilities{})
+			if err == nil {
+				t.Fatalf("Compile(%q): expected ErrNotImplemented", expr)
+			}
+			if !errors.Is(err, codegen.ErrNotImplemented) {
+				t.Fatalf("err = %v; want ErrNotImplemented", err)
+			}
+		})
+	}
+}
+
+func TestCompileNestedAlternationFlattens(t *testing.T) {
+	// P3-13: nested alt groups are flattened in the resolver. The
+	// flat result rides the existing P3-12 codegen — heterogeneous
+	// sizes / dispatches across all flat leaves work the same.
+	for _, expr := range []string{
+		"eth/((vlan|qinq)|ipv4)",
+		"eth/((vlan|qinq)|(ipv4|ipv6))",
+		"eth/(((vlan|qinq)|ipv4)|ipv6)",
+	} {
+		t.Run(expr, func(t *testing.T) {
+			out, err := Compile(expr, codegen.Capabilities{})
+			if err != nil {
+				t.Fatalf("Compile(%q): %v", expr, err)
+			}
+			if len(out.Main) == 0 {
+				t.Fatal("expected non-empty instructions")
+			}
+		})
+	}
+}
+
+func TestCompileNestedAlternationCapOverflow(t *testing.T) {
+	// Flattening can blow past altCountCap (= 4). Codegen surfaces
+	// the cap error verbatim; this test pins down the user-visible
+	// behaviour so we don't accidentally start over-flattening.
+	_, err := Compile("eth/((vlan|qinq)|(vlan|qinq|vlan))", codegen.Capabilities{})
 	if err == nil {
-		t.Fatal("expected resolve error for divergent alt dispatch")
+		t.Fatal("expected ErrNotImplemented for flatten cap overflow")
+	}
+	if !errors.Is(err, codegen.ErrNotImplemented) {
+		t.Fatalf("err = %v; want ErrNotImplemented", err)
+	}
+	if !strings.Contains(err.Error(), "exceeds MVP cap") {
+		t.Errorf("error should mention MVP cap: %v", err)
+	}
+}
+
+func TestCompileNestedAlternationQuantifiedRejected(t *testing.T) {
+	// `(a|b)?` inside an outer alt is NOT flattened — the optional
+	// semantics differ from a flat alt — and codegen still rejects
+	// it via the QuantOne check, with the existing error message.
+	_, err := Compile("eth/((vlan|qinq)?|ipv4)", codegen.Capabilities{})
+	if err == nil {
+		t.Fatal("expected error for quantified inner alt group")
+	}
+	if !errors.Is(err, codegen.ErrNotImplemented) {
+		t.Fatalf("err = %v; want ErrNotImplemented", err)
 	}
 }
 
@@ -724,6 +878,17 @@ func TestZeroCapsIsHostAgnostic(t *testing.T) {
 		"eth/(vlan|qinq)/ipv4/tcp",
 		"eth/mpls+/ipv4/tcp",
 		"eth/ipv4/tcp where ipv4.total_length > 100 capture headers+64",
+		// Int<128> compare paths exercise the dual-half compare in
+		// genArithCompare128. R9 is host pkt_len that
+		// captureWithXdpOutput reads after filter eval, so a kunai
+		// write would silently truncate MaxCapLen — pin both R6-R8
+		// and R9 here so the regression is caught at unit time.
+		"eth/ipv6/tcp where ipv6.src == ipv6.dst",
+		"eth/ipv6/tcp where ipv6.src != ipv6.dst",
+		"eth/ipv6/tcp where ipv6.src < ipv6.dst",
+		"eth/ipv6/tcp where ipv6.src + 1 == ipv6.dst",
+		"eth/ipv6/tcp where ipv6.src + ipv6.dst == ipv6.src",
+		"eth/ipv6/tcp where ipv6.src == ipv6.dst capture headers+64",
 	}
 	for _, expr := range cases {
 		t.Run(expr, func(t *testing.T) {
@@ -744,10 +909,13 @@ func TestZeroCapsIsHostAgnostic(t *testing.T) {
 
 // isHostOwned reports whether ins touches a host-only resource per
 // the ABI contract documented in codegen/codegen.go: R6-R8 must not
-// be referenced (callee-saved from kunai's view), and any R10 slot
-// shallower than codegen.KunaiStackTop is the host's scratch range.
+// be referenced (callee-saved from kunai's view), R9 is the host's
+// pkt_len that captureWithXdpOutput re-reads after filter eval (so
+// any kunai write would silently truncate MaxCapLen), and any R10
+// slot shallower than codegen.KunaiStackTop is the host's scratch
+// range.
 func isHostOwned(ins asm.Instruction) bool {
-	for _, r := range []asm.Register{asm.R6, asm.R7, asm.R8} {
+	for _, r := range []asm.Register{asm.R6, asm.R7, asm.R8, asm.R9} {
 		if ins.Dst == r || ins.Src == r {
 			return true
 		}

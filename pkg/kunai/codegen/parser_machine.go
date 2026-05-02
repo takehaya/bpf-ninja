@@ -134,6 +134,19 @@ func (c *pmCtx) emitState(stateIdx int) (asm.Instructions, asm.Instructions, err
 		// load-bearing. The slot doubles as bpf_loop ctx field 24, so
 		// self-loop callbacks read it via R2+bpfLoopCbCtxLayerEntryField.
 		insns = append(insns, asm.StoreMem(asm.R10, bpfLoopCtxLayerEntrySlot, offsetBase, asm.DWord))
+		if c.layer.NeedsRuntimeOffset {
+			// Independent of the single-shared bpfLoopCtxLayerEntrySlot
+			// above (which the next layer's dispatch overwrites): store
+			// R4 to this layer's per-layer entry slot so where /
+			// capture / option-walk emitted later in the program can
+			// recover the layer's start regardless of how far the
+			// parser machine advances R4 inside its own body.
+			slotEntry, err := whereLayerEntrySlot(c.layer.LayerPos)
+			if err != nil {
+				return nil, nil, err
+			}
+			insns = append(insns, asm.StoreMem(asm.R10, slotEntry, offsetBase, asm.DWord))
+		}
 	} else {
 		insns = append(insns, landingNoop(c.stateLabel(stateIdx)))
 	}
@@ -152,12 +165,7 @@ func (c *pmCtx) emitEntryDispatch() (asm.Instructions, error) {
 	if c.layerIdx == 0 || c.layer.Dispatch == nil {
 		return nil, nil
 	}
-	parent := dispatchParent(c.all[c.layerIdx-1])
-	parentHS, err := headerSize(parent.Spec)
-	if err != nil {
-		return nil, err
-	}
-	return genDispatch(c.layer, parent, parentHS, dslReject)
+	return genLayerDispatch(c.layer, c.all[c.layerIdx-1], dslReject)
 }
 
 // emitStateBody emits one state's extracts + transition. When the

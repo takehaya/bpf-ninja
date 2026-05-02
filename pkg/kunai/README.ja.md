@@ -13,7 +13,7 @@
 次のような式を:
 
 ```text
-eth/ipv4/udp/vxlan/eth/ipv4/tcp[dport=443]
+eth/ipv4/udp/vxlan/eth/ipv4/tcp[dport==443]
 eth/ipv4@outer/udp/gtp/ipv4@inner/tcp where outer.dst == 0xc0a80101
 eth/mpls{1,8}/ipv4/tcp where ipv4.total_length > 100 capture headers+64
 eth/ipv4/udp/gtp[opt.next_ext == 0]/ipv4/tcp                            # auxiliary header field
@@ -55,7 +55,7 @@ func main() {
     // 0 値の Capabilities = target-agnostic (action atom 不可)。
     // XDP fexit attach では pkg/kunai/host/xdp を import して
     // xdp.FexitCapabilities() を渡す。
-    out, err := kunai.Compile("eth/ipv4/tcp[dport=443]", codegen.Capabilities{})
+    out, err := kunai.Compile("eth/ipv4/tcp[dport==443]", codegen.Capabilities{})
     if err != nil {
         panic(err)
     }
@@ -137,13 +137,13 @@ out, err := kunai.Compile(expr, caps)
 
 ## 同梱 vocabulary
 
-ライブラリには 16 個のプロトコル定義が組み込み済み: `eth`, `vlan`, `qinq`, `cw`, `mpls`, `ipv4`, `ipv6`, `tcp`, `udp`, `icmp`, `icmp6`, `gre`, `vxlan`, `geneve`, `gtp`, `srv6`。これらは [`protocols/`](./protocols/) 以下に `.p4` ファイルとして置かれ、ビルド時に `//go:embed` で埋め込まれる。
+ライブラリには 17 個のプロトコル定義が組み込み済み: `eth`, `vlan`, `qinq`, `cw`, `mpls`, `ipv4`, `ipv6`, `tcp`, `udp`, `icmp`, `icmp6`, `gre`, `esp`, `vxlan`, `geneve`, `gtp`, `srv6`。これらは [`protocols/`](./protocols/) 以下に `.p4` ファイルとして置かれ、ビルド時に `//go:embed` で埋め込まれる。
 
 新プロトコルを追加するには、`<name>.p4` を `protocols/` に置き、dispatch-constant の命名規約に従う。命名規約の正規定義は [`pkg/kunai/vocab/loader.go`](./vocab/loader.go) の `classifyConsts` 周辺の regex 群を参照。vocabulary loader は regex ベースで、起動時に malformed な名前を reject する。
 
 `.p4` ファイルは P4-16 構文の strict subset であり、公式 `p4c --parse-only` を通る (CI で全変更について検証している)。テストハーネスは親リポジトリの `docker/p4c-check/` を参照。
 
-vocabulary のパースは `dslvocab.Bundled()` 内で `sync.Once` により **process 内で 1 回限り**にキャッシュされる (`pkg/kunai/dslvocab/dslvocab.go`)。同 process で `kunai.Compile()` を複数回呼んでも 16 ファイルの再パースは発生しない。永続キャッシュ (build-time / on-disk) は parse コストが microsecond オーダーで意義が薄いため未実装。
+vocabulary のパースは `dslvocab.Bundled()` 内で `sync.Once` により **process 内で 1 回限り**にキャッシュされる (`pkg/kunai/dslvocab/dslvocab.go`)。同 process で `kunai.Compile()` を複数回呼んでも 17 ファイルの再パースは発生しない。永続キャッシュ (build-time / on-disk) は parse コストが microsecond オーダーで意義が薄いため未実装。
 
 ## バージョニングと安定性
 

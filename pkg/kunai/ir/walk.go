@@ -3,9 +3,16 @@ package ir
 import "github.com/takehaya/xdp-ninja/pkg/kunai/ast"
 
 // WalkConditionFieldRefs invokes fn on every FieldRef reachable
-// from c — LiteralField, fields inside ArithL/ArithR, and the
-// equivalents inside Left/Right/Inner sub-conditions. The traversal
-// is pre-order; fn must not mutate c.
+// from c — LiteralField, BoolField (WAtomBoolExists), fields inside
+// ArithL/ArithR, and the equivalents inside Left/Right/Inner/BoolL/
+// BoolR sub-conditions. The traversal is pre-order; fn must not
+// mutate c.
+//
+// Caller invariant: any new FieldRef-bearing field on Condition MUST
+// be threaded through here. resolve.markRuntimeOffsetLayers depends
+// on full coverage to mark layers past a heterogeneous-size alt;
+// missed branches silently leave layers unmarked, producing
+// codegen with stale R0+static_prefix addressing.
 func WalkConditionFieldRefs(c *Condition, fn func(*FieldRef)) {
 	if c == nil {
 		return
@@ -13,11 +20,16 @@ func WalkConditionFieldRefs(c *Condition, fn func(*FieldRef)) {
 	if c.LiteralField != nil {
 		fn(c.LiteralField)
 	}
+	if c.BoolField != nil {
+		fn(c.BoolField)
+	}
 	WalkArithFieldRefs(c.ArithL, fn)
 	WalkArithFieldRefs(c.ArithR, fn)
 	WalkConditionFieldRefs(c.Left, fn)
 	WalkConditionFieldRefs(c.Right, fn)
 	WalkConditionFieldRefs(c.Inner, fn)
+	WalkConditionFieldRefs(c.BoolL, fn)
+	WalkConditionFieldRefs(c.BoolR, fn)
 }
 
 // WalkArithFieldRefs invokes fn on every FieldRef reachable from a

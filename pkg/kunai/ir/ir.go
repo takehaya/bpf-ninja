@@ -37,6 +37,15 @@ type LayerInstance struct {
 	// and so on — regardless of whether the user labelled them.
 	Index int
 
+	// LayerPos is this layer's position within Program.Layers (0-based).
+	// Distinct from Index, which counts per-protocol occurrences. Used
+	// by codegen to allocate per-layer entry-offset stack slots
+	// (whereLayerEntrySlot) when NeedsRuntimeOffset is set. Alt
+	// members carry the alt group's LayerPos rather than their own
+	// position so all alts share the same slot — see resolver mark
+	// pass for the allocation invariant.
+	LayerPos int
+
 	Predicates []*Predicate
 
 	// Quantifier; QuantOne when none was specified.
@@ -62,13 +71,34 @@ type LayerInstance struct {
 	// are surfaced alongside.
 	Unsupported string
 
+	// NeedsRuntimeOffset tells codegen that where / capture clauses
+	// reference fields in this layer (or pass through it) and that
+	// the layer's position in the packet cannot be known at compile
+	// time — typically because a heterogeneous-size alternation group
+	// sits at or before this layer in the chain. When set, the layer's
+	// emit MUST store offsetBase (R4) into whereLayerEntrySlot at
+	// layer entry, and field loads in where / capture / option-walk
+	// MUST address through that slot rather than R0+static_prefix.
+	// Resolver decides; codegen executes.
+	NeedsRuntimeOffset bool
+
 	Pos ast.Position
 }
 
 // DispatchChoice records how this layer is selected from its parent.
+//
+// AltConsts / IsAltDiverged are populated when the parent is an
+// alternation group. Codegen consumes them to route the dispatch
+// check through a matched-alt-index check (set by the alt block,
+// read here) so that `(ipv4|ipv6)/tcp` and friends — where the alts
+// disagree on which field carries the next protocol — can compile.
+// When the alts agree, IsAltDiverged stays false and Const carries
+// the single representative dispatch (existing fast path).
 type DispatchChoice struct {
-	Type  vocab.DispatchType
-	Const *vocab.DispatchConst
+	Type          vocab.DispatchType
+	Const         *vocab.DispatchConst
+	AltConsts     []*vocab.DispatchConst
+	IsAltDiverged bool
 }
 
 // Predicate is a resolved [field op value] entry.
@@ -286,6 +316,44 @@ type ArithExpr struct {
 	Right *ArithExpr
 
 	Pos ast.Position
+}
+
+// IsHeterogeneousAlt reports whether l is an alternation group whose
+// members differ in fixed primary-header byte size. Co-resolver and
+// codegen both consult this — the resolver to decide whether layers
+// past l need NeedsRuntimeOffset, codegen to handle the per-alt
+// inline advance / matched-flag plumbing. Returns false for non-alt
+// layers, single-alt groups, or alt groups whose members all agree
+// on header size (the latter still ride the static prefix path).
+//
+// Members with non-byte-aligned headers are treated as agreeing
+// (returns false) — the actual size mismatch will surface as a
+// distinct error from headerSize when codegen tries to advance R4.
+func IsHeterogeneousAlt(l *LayerInstance) bool {
+	if l == nil || len(l.Alternation) == 0 {
+		return false
+	}
+	var hs int
+	first := true
+	for _, alt := range l.Alternation {
+		if alt == nil || alt.Spec == nil {
+			return false
+		}
+		bits := vocab.SumBits(alt.Spec.Fields)
+		if bits%8 != 0 {
+			return false
+		}
+		ahs := bits / 8
+		if first {
+			hs = ahs
+			first = false
+			continue
+		}
+		if ahs != hs {
+			return true
+		}
+	}
+	return false
 }
 
 // CaptureClause is a resolved "capture ..." directive.

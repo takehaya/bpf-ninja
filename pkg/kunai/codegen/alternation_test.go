@@ -65,15 +65,22 @@ func TestGenAlternationEmitsSequencedDispatch(t *testing.T) {
 		t.Error("expected dsl_alt_end_<i> landing on the shared advance")
 	}
 
-	// Exactly one offsetBase advance for the whole group.
-	if got := countOffsetAdvances(out.Main, 4); got != 1 {
-		t.Errorf("expected 1 offsetBase advance for uniform alt group, got %d", got)
+	// One advance per alt now that P3-12 lifted the uniform-size
+	// constraint — each alt block bumps R4 by its own header size
+	// inline before falling through to altEnd.
+	if got := countOffsetAdvances(out.Main, 4); got != 2 {
+		t.Errorf("expected 2 offsetBase advances (one per alt) for the alt group, got %d", got)
 	}
 }
 
-func TestGenAlternationRejectsNonUniformSize(t *testing.T) {
-	// vlan (4 bytes) vs ipv4 (20 bytes) is a realistic-looking but
-	// MVP-invalid mix.
+func TestGenAlternationAcceptsNonUniformSize(t *testing.T) {
+	// P3-12: alts of different header sizes (vlan 4B vs ipv4 20B) now
+	// compile. Each alt advances R4 by its own size inline; the post-
+	// group landing is just a Mov R3,R3 noop. Heterogeneous dispatch
+	// is also exercised (vlan dispatches via ethertype=0x8100, ipv4
+	// via ethertype=0x0800) — same field, different values, so
+	// IsAltDiverged stays false (the next-layer dispatch isn't
+	// affected by the disagreement on the alt's *own* parent value).
 	eth := &ir.LayerInstance{Spec: ethSpec}
 	vlanAlt := &ir.LayerInstance{
 		Spec:     vlanSpecForChain,
@@ -86,12 +93,15 @@ func TestGenAlternationRejectsNonUniformSize(t *testing.T) {
 	group := &ir.LayerInstance{Alternation: []*ir.LayerInstance{vlanAlt, ipv4Alt}}
 	p := &ir.Program{Layers: []*ir.LayerInstance{eth, group}}
 
-	_, err := Gen(p, Capabilities{})
-	if !errors.Is(err, ErrNotImplemented) {
-		t.Fatalf("err = %v; want ErrNotImplemented for mixed-size alternation", err)
+	out, err := Gen(p, Capabilities{})
+	if err != nil {
+		t.Fatalf("Gen: %v", err)
 	}
-	if !strings.Contains(err.Error(), "uniform size") {
-		t.Errorf("error should mention uniform size: %v", err)
+	if got := countOffsetAdvances(out.Main, 4); got != 1 {
+		t.Errorf("expected 1 advance of 4 bytes (vlan), got %d", got)
+	}
+	if got := countOffsetAdvances(out.Main, 20); got != 1 {
+		t.Errorf("expected 1 advance of 20 bytes (ipv4), got %d", got)
 	}
 }
 

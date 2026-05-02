@@ -63,6 +63,7 @@ package codegen
 import (
 	"errors"
 	"fmt"
+	"sync/atomic"
 
 	"github.com/cilium/ebpf/asm"
 	"github.com/cilium/ebpf/btf"
@@ -213,6 +214,13 @@ const dslReject = "dsl_reject"
 //
 //   - kunai: arith spill at -56 .. -80 (4 slots × 8 bytes)
 //   - kunai: bpf_loop ctx at -128 .. -96 (4 slots × 8 bytes)
+//   - kunai: per-layer entry slots at -160 .. -160-8*N (where N <
+//     whereLayerEntrySlotCap = 12), allocated lazily when the
+//     resolver marks a layer NeedsRuntimeOffset (= where / capture
+//     references it past a heterogeneous-size alt). Worst-case
+//     bottom is -248; total kunai stack consumption is bounded by
+//     KunaiStackTop − 248 = 192 bytes, well within the 512-byte
+//     BPF stack budget.
 //   - host: any subset of [-1, KunaiStackTop+1]; xdp-ninja uses -48
 //     for the saved tracing args pointer.
 //
@@ -507,8 +515,7 @@ func genLayer(layer *ir.LayerInstance, index int, all []*ir.LayerInstance) (asm.
 
 func genLayerInner(layer *ir.LayerInstance, index int, all []*ir.LayerInstance) (asm.Instructions, asm.Instructions, error) {
 	if layer.Alternation != nil {
-		insns, err := genAlternation(layer, index, all)
-		return insns, nil, err
+		return genAlternation(layer, index, all)
 	}
 	switch layer.Quant {
 	case ast.QuantOne:
@@ -544,12 +551,7 @@ func genStaticLayer(layer *ir.LayerInstance, index int, all []*ir.LayerInstance)
 	insns := emitBounds(hs, dslReject)
 
 	if index > 0 && layer.Dispatch != nil {
-		parent := dispatchParent(all[index-1])
-		parentHS, err := headerSize(parent.Spec)
-		if err != nil {
-			return nil, err
-		}
-		di, err := genDispatch(layer, parent, parentHS, dslReject)
+		di, err := genLayerDispatch(layer, all[index-1], dslReject)
 		if err != nil {
 			return nil, err
 		}
@@ -569,6 +571,18 @@ func genStaticLayer(layer *ir.LayerInstance, index int, all []*ir.LayerInstance)
 		// store — see the lifecycle docs there for the read/write
 		// ordering invariant.
 		insns = append(insns, asm.StoreMem(asm.R10, bpfLoopCtxLayerEntrySlot, offsetBase, asm.DWord))
+	}
+	if layer.NeedsRuntimeOffset {
+		// Resolver flagged this layer as referenced by where / capture
+		// past a heterogeneous-size alt. Store R4 (= layer entry byte
+		// offset within scratch) into the per-layer slot so downstream
+		// where / capture / option-walk loads can address through it
+		// instead of the (now-runtime-variable) R0+static_prefix.
+		slotEntry, err := whereLayerEntrySlot(layer.LayerPos)
+		if err != nil {
+			return nil, err
+		}
+		insns = append(insns, asm.StoreMem(asm.R10, slotEntry, offsetBase, asm.DWord))
 	}
 	insns = append(insns, emitAdvance(hs))
 	tail, err := emitPrimaryVariableTail(layer.Spec)
@@ -707,12 +721,7 @@ func emitPeekedIterZero(layer *ir.LayerInstance, index int, all []*ir.LayerInsta
 	if err != nil {
 		return nil, err
 	}
-	parent := dispatchParent(all[index-1])
-	parentHS, err := headerSize(parent.Spec)
-	if err != nil {
-		return nil, err
-	}
-	peek, err := genDispatch(layer, parent, parentHS, peekFailLabel)
+	peek, err := genLayerDispatch(layer, all[index-1], peekFailLabel)
 	if err != nil {
 		return nil, err
 	}
@@ -741,6 +750,127 @@ func genDispatch(current, parent *ir.LayerInstance, parentHS int, failLabel stri
 		return nil, nil
 	}
 	return nil, fmt.Errorf("codegen: unknown dispatch type %v", current.Dispatch.Type)
+}
+
+// genLayerDispatch is the call-site wrapper for layer-level dispatch
+// emission (genStaticLayer / parser_machine entry). It looks at `prev`
+// (= the unresolved parent — possibly an alt group) to decide whether
+// the current layer's dispatch needs the alt-diverged path (P3-12,
+// `(ipv4|ipv6)/tcp` etc., where alts disagree on dispatch field), or
+// the existing single-dispatch path (uniform alts or non-alt parent).
+//
+// For diverged dispatch each alt branch is emitted under a JNE check
+// against matchedAltReg (set by genAlternation when `IsAltDiverged`
+// holds for the next layer). For non-diverged we keep the historical
+// behavior — collapse the alt group to its first member via
+// dispatchParent and call genDispatch as before.
+func genLayerDispatch(current, prev *ir.LayerInstance, failLabel string) (asm.Instructions, error) {
+	if current.Dispatch == nil {
+		return nil, nil
+	}
+	if current.Dispatch.IsAltDiverged {
+		if prev.Alternation == nil {
+			return nil, fmt.Errorf("codegen: IsAltDiverged dispatch on %q but parent is not an alt group (resolver bug)", current.Spec.Name)
+		}
+		return genFieldDispatchAltDiverged(current, prev.Alternation, failLabel)
+	}
+	parent := dispatchParent(prev)
+	parentHS, err := headerSize(parent.Spec)
+	if err != nil {
+		return nil, err
+	}
+	return genDispatch(current, parent, parentHS, failLabel)
+}
+
+// genFieldDispatchAltDiverged emits per-alt dispatch for a layer
+// whose alt parents disagree on the dispatch field — e.g. `(ipv4|ipv6)
+// /tcp` where IPv4 reads `protocol` at byte 9 and IPv6 reads
+// `next_header` at byte 6. Each alt branch is gated on
+// `matchedAltReg == i` (set by genAlternation as the alt block falls
+// through to altEnd), so only the matched alt's check actually runs.
+//
+// Layout per branch:
+//
+//	jne R5, i, dsl_altdisp_skip_<n>          // (omitted for last alt)
+//	<setup R3 for this alt's parent>          // R0+R4 or layer-entry slot
+//	ldx <field>, jne <const>, failLabel      // single-alt dispatch
+//	ja dsl_altdisp_done_<n>                  // (omitted for last alt)
+//	dsl_altdisp_skip_<n>:
+//	...
+//	dsl_altdisp_done_<n>:
+//
+// The last alt has no skip / ja — matchedAltReg is guaranteed to be
+// N-1 if we got here (genAlternation set it before the fall-through).
+func genFieldDispatchAltDiverged(current *ir.LayerInstance, altParents []*ir.LayerInstance, failLabel string) (asm.Instructions, error) {
+	consts := current.Dispatch.AltConsts
+	if len(altParents) != len(consts) {
+		return nil, fmt.Errorf("codegen: alt parent count %d != AltConsts count %d (resolver bug)", len(altParents), len(consts))
+	}
+
+	doneLabel := nextAltDispatchLabel("done")
+	var insns asm.Instructions
+	for i, altParent := range altParents {
+		var skipLabel string
+		if i+1 < len(altParents) {
+			skipLabel = nextAltDispatchLabel("skip")
+			insns = append(insns, asm.JNE.Imm(matchedAltReg, int32(i), skipLabel))
+		}
+
+		var (
+			check asm.Instructions
+			err   error
+		)
+		if altParent.Spec.HasVariableLayout() {
+			check, err = emitFieldDispatchCheck(
+				altParent.Spec,
+				consts[i],
+				0,
+				asm.R3,
+				asm.Instructions{
+					asm.LoadMem(asm.R3, asm.R10, bpfLoopCtxLayerEntrySlot, asm.DWord),
+					asm.Add.Reg(asm.R3, asm.R0),
+				},
+				failLabel,
+			)
+		} else {
+			altParentHS, herr := headerSize(altParent.Spec)
+			if herr != nil {
+				return nil, herr
+			}
+			check, err = emitFieldDispatchCheck(
+				altParent.Spec,
+				consts[i],
+				altParentHS,
+				asm.R3,
+				asm.Instructions{
+					asm.Mov.Reg(asm.R3, asm.R0),
+					asm.Add.Reg(asm.R3, offsetBase),
+				},
+				failLabel,
+			)
+		}
+		if err != nil {
+			return nil, err
+		}
+		insns = append(insns, check...)
+
+		if i+1 < len(altParents) {
+			insns = append(insns, asm.Ja.Label(doneLabel))
+			insns = append(insns, landingNoop(skipLabel))
+		}
+	}
+	insns = append(insns, landingNoop(doneLabel))
+	return insns, nil
+}
+
+var altDispatchLabelCounter atomic.Uint64
+
+// nextAltDispatchLabel returns a process-unique alt-diverged dispatch
+// label in the `dsl_altdisp_<role>_<n>` shape. Atomic so concurrent
+// Compile() calls produce non-colliding labels even though label
+// uniqueness is only required within a single instruction stream.
+func nextAltDispatchLabel(role string) string {
+	return fmt.Sprintf("dsl_altdisp_%s_%d", role, altDispatchLabelCounter.Add(1))
 }
 
 // genFieldDispatch emits the check that parent.<field> == value.
@@ -994,14 +1124,7 @@ func emitAuxGating(g *vocab.AuxGating, base layerAnchor, failLabel string) asm.I
 	if g == nil {
 		return nil
 	}
-	var insns asm.Instructions
-	if base.UseR4 {
-		insns = loadFromOffset(int16(g.ByteOff), asm.Byte)
-	} else {
-		insns = asm.Instructions{
-			asm.LoadMem(asm.R3, asm.R0, int16(base.AbsOffset+g.ByteOff), asm.Byte),
-		}
-	}
+	insns := emitFieldLoad(base, g.ByteOff, asm.Byte)
 	insns = append(insns, asm.And.Imm(asm.R3, int32(g.Mask)))
 	switch g.Op {
 	case vocab.GatingNe:
@@ -1073,14 +1196,26 @@ func emitDynamicStackAddress(ref *ir.FieldRef, base layerAnchor, failLabel strin
 	if ref.Aux.HeaderSize <= 0 || ref.Aux.HeaderSize > 127 {
 		return nil, fmt.Errorf("%w: dynamic stack element size %d outside 1..127", ErrNotImplemented, ref.Aux.HeaderSize)
 	}
-	// Compute R3 = scratch_offset_of_layer_start.
+	// Compute R3 = scratch address of the layer's primary-header
+	// start, then read the index byte from primary[idxByteOff]. For
+	// slot anchors we load the layer-entry offset into R5 first so
+	// the post-multiply addition can reuse it without a second slot
+	// read; abs / R4 anchors keep the entry offset implicitly in
+	// AbsOffset / R4 and add it twice.
 	insns := asm.Instructions{}
-	if base.UseR4 {
+	switch {
+	case base.UseR4:
 		insns = append(insns,
 			asm.Mov.Reg(asm.R3, asm.R0),
 			asm.Add.Reg(asm.R3, offsetBase),
 		)
-	} else {
+	case base.UseSlot:
+		insns = append(insns,
+			asm.LoadMem(asm.R5, asm.R10, base.SlotOff, asm.DWord),
+			asm.Mov.Reg(asm.R3, asm.R0),
+			asm.Add.Reg(asm.R3, asm.R5),
+		)
+	default:
 		insns = append(insns,
 			asm.Mov.Reg(asm.R3, asm.R0),
 			asm.Add.Imm(asm.R3, int32(base.AbsOffset)),
@@ -1093,9 +1228,12 @@ func emitDynamicStackAddress(ref *ir.FieldRef, base layerAnchor, failLabel strin
 		asm.Mul.Imm(asm.R3, int32(ref.Aux.HeaderSize)),
 		asm.Add.Imm(asm.R3, int32(ref.Aux.OffsetInLayer)),
 	)
-	if base.UseR4 {
+	switch {
+	case base.UseR4:
 		insns = append(insns, asm.Add.Reg(asm.R3, offsetBase))
-	} else {
+	case base.UseSlot:
+		insns = append(insns, asm.Add.Reg(asm.R3, asm.R5))
+	default:
 		insns = append(insns, asm.Add.Imm(asm.R3, int32(base.AbsOffset)))
 	}
 	insns = append(insns,
@@ -1106,15 +1244,70 @@ func emitDynamicStackAddress(ref *ir.FieldRef, base layerAnchor, failLabel strin
 }
 
 // layerAnchor abstracts how to express "the byte offset of the
-// owning layer's start" — R4-relative for predicates, absolute for
-// where clauses.
+// owning layer's start". Three modes:
+//
+//   - UseR4: R0 + offsetBase = layer start. Used by bracket
+//     predicates which run while R4 still equals layer entry.
+//   - AbsOffset: R0 + AbsOffset = layer start. Used by where /
+//     capture when the layer's runtime position is statically
+//     known (no heterogeneous-size alt sits earlier in the chain).
+//   - SlotOff: R0 + R10[SlotOff] = layer start. Used by where /
+//     capture when a heterogeneous-size alt makes the static prefix
+//     unknowable; the layer's emit stores R4 into the slot at entry,
+//     downstream readers reload it at use time.
 type layerAnchor struct {
 	UseR4     bool
 	AbsOffset int
+	UseSlot   bool
+	SlotOff   int16
 }
 
-func r4Anchor() layerAnchor       { return layerAnchor{UseR4: true} }
+func r4Anchor() layerAnchor         { return layerAnchor{UseR4: true} }
 func absAnchor(off int) layerAnchor { return layerAnchor{AbsOffset: off} }
+func slotAnchor(slot int16) layerAnchor {
+	return layerAnchor{UseSlot: true, SlotOff: slot}
+}
+
+// whereLayerEntrySlot returns the stack slot reserved for layer at
+// position layerPos (= LayerInstance.LayerPos) in the program. Slots
+// descend from -160 in 8-byte steps so they sit below kunai's existing
+// allocations (arith spill -56..-80, bpf_loop ctx -96..-128) without
+// colliding with the per-layer-entry slot the parser machine uses
+// (-104, single shared slot for the immediate next layer's dispatch).
+//
+// The cap below mirrors the practical chain depth in the bundled
+// vocab plus headroom — `eth/ipv4/udp/gtp/ipv4/tcp` is 6 layers, an
+// alt + post-alt extra brings you to ~8. 12 slots × 8 bytes = 96
+// bytes, fitting comfortably within the 512-byte BPF stack budget.
+const whereLayerEntrySlotBase = int16(-160)
+const whereLayerEntrySlotCap = 12
+
+func whereLayerEntrySlot(layerPos int) (int16, error) {
+	if layerPos < 0 || layerPos >= whereLayerEntrySlotCap {
+		return 0, fmt.Errorf("%w: layer position %d exceeds where-slot cap %d (chain too deep for runtime addressing)", ErrNotImplemented, layerPos, whereLayerEntrySlotCap)
+	}
+	return whereLayerEntrySlotBase - int16(layerPos)*8, nil
+}
+
+// emitFieldLoad reads `size` bytes at `fieldOff` from the layer
+// anchored by `anchor` into R3. The three anchor modes pick different
+// addressing strategies; callers don't need to branch.
+func emitFieldLoad(anchor layerAnchor, fieldOff int, size asm.Size) asm.Instructions {
+	switch {
+	case anchor.UseSlot:
+		return asm.Instructions{
+			asm.LoadMem(asm.R3, asm.R10, anchor.SlotOff, asm.DWord),
+			asm.Add.Reg(asm.R3, asm.R0),
+			asm.LoadMem(asm.R3, asm.R3, int16(fieldOff), size),
+		}
+	case anchor.UseR4:
+		return loadFromOffset(int16(fieldOff), size)
+	default:
+		return asm.Instructions{
+			asm.LoadMem(asm.R3, asm.R0, int16(anchor.AbsOffset+fieldOff), size),
+		}
+	}
+}
 
 // emitDynamicStackLoad is the single-LDX convenience built on
 // emitDynamicStackAddress for predicate-emit-time callers (R4 still

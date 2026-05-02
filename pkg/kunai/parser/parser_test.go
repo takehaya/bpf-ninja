@@ -378,6 +378,14 @@ func TestParseWhereActionRejectsNonEq(t *testing.T) {
 	mustFail(t, "eth/ipv4/tcp where action != XDP_DROP", "expected '=='")
 }
 
+func TestParseWhereInGivesPredicateHint(t *testing.T) {
+	// `in` is a bracket-predicate operator; surfacing the bare
+	// "expected ')'" from the enclosing scope hides what the user
+	// got wrong. The targeted hint should land at the `in` token.
+	mustFail(t, "eth/ipv4/tcp where tcp.dport in [80, 443]", "'in' is only valid in bracket predicates")
+	mustFail(t, "eth/ipv6/srv6/tcp where any(srv6.segments.addr in [fc00::1, fc00::2])", "'in' is only valid in bracket predicates")
+}
+
 // --- Per-capture where ---
 
 func TestParseWhereBoolLiteralTrue(t *testing.T) {

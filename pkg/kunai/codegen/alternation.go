@@ -11,103 +11,178 @@ import (
 )
 
 // altCountCap is the MVP upper bound on alternatives per group. The
-// emitted stream grows roughly linearly per alternative (bounds is
-// shared; dispatch + predicates + branching per alt), and beyond four
-// the filter-expression readability collapses anyway.
+// emitted stream grows linearly per alternative (per-alt guard +
+// full layer body), and beyond four the filter-expression readability
+// collapses anyway.
 const altCountCap = 4
 
-// genAlternation emits `(a|b|c)`. Each alternative is tried in order:
-// its dispatch check jumps to the next alternative on mismatch; on
-// match the alternative's predicates run and control jumps to the
-// shared group-end landing. When no alternative matches, the last
-// alt's dispatch falls through to dslReject. offsetBase advances by
-// the group's uniform header size exactly once at the end.
+// matchedAltReg holds the matched alt index for the layer immediately
+// following an alt group with diverged dispatch (P3-12). genAlternation
+// stores the alt index here as it falls through to altEnd, and
+// genFieldDispatchAltDiverged reads it back to pick the correct alt's
+// dispatch field/value pair. R5 is otherwise unused between the alt
+// emit and the next layer's dispatch (only the where-arith pipeline
+// uses R5, and that runs after every chain layer).
+var matchedAltReg = asm.R5
+
+// genAlternation emits `(a|b|c)`. Each non-last alt is fronted by a
+// 2-insn guard (LDX parent.<field>; JNE alt.value, dsl_alt_<idx>_<i+1>)
+// that routes a mismatch to the next alt's entry; the last alt has no
+// guard since its body's own dispatch failure correctly lands at
+// dslReject. After the guard each alt's full layer body runs via
+// genLayerInner — that gives us bounds, dispatch (re-checked, redundant
+// but cheap), predicates, slot store, advance, primary variable tail,
+// flag triggers, and parser-machine self-loops, exactly the same way
+// a non-alt layer would emit them. Per-alt size differences therefore
+// fall out for free (each body advances R4 by its own size).
+//
+// When the layer immediately following the alt group has IsAltDiverged
+// dispatch, each alt branch additionally records its own index in
+// matchedAltReg before falling through to altEnd, so the next layer
+// can read it back and pick the right per-alt dispatch field.
 //
 // MVP constraints:
 //   - alt count ∈ [2, altCountCap]
 //   - QuantOne only
-//   - every alternative has the same headerSize (so the post-group
-//     advance is a single Add.Imm regardless of which alt matched)
 //   - every alternative carries a parent-side dispatch (no first-
 //     layer alternation)
 //   - no nested alternation
-//
-// Layers following an alternation group stay Unsupported at resolve
-// time — the post-group dispatch selection is a separate feature.
-func genAlternation(layer *ir.LayerInstance, index int, all []*ir.LayerInstance) (asm.Instructions, error) {
+//   - DispatchNoCheck alternatives are rejected (a fall-through alt
+//     would always "win" — semantic noise)
+//   - alt members must use Field dispatch (the guard is a Field check)
+func genAlternation(layer *ir.LayerInstance, index int, all []*ir.LayerInstance) (asm.Instructions, asm.Instructions, error) {
 	if layer.Quant != ast.QuantOne {
-		return nil, fmt.Errorf("%w: quantifier %s on alternation group", ErrNotImplemented, layer.Quant)
+		return nil, nil, fmt.Errorf("%w: quantifier %s on alternation group", ErrNotImplemented, layer.Quant)
 	}
 	if index == 0 {
-		return nil, fmt.Errorf("%w: alternation as the first layer has no parent to dispatch from", ErrNotImplemented)
+		return nil, nil, fmt.Errorf("%w: alternation as the first layer has no parent to dispatch from", ErrNotImplemented)
 	}
 	alts := layer.Alternation
 	if len(alts) < 2 {
-		return nil, fmt.Errorf("%w: alternation needs at least two alternatives, got %d", ErrNotImplemented, len(alts))
+		return nil, nil, fmt.Errorf("%w: alternation needs at least two alternatives, got %d", ErrNotImplemented, len(alts))
 	}
 	if len(alts) > altCountCap {
-		return nil, fmt.Errorf("%w: alternation with %d alts exceeds MVP cap %d", ErrNotImplemented, len(alts), altCountCap)
+		return nil, nil, fmt.Errorf("%w: alternation with %d alts exceeds MVP cap %d", ErrNotImplemented, len(alts), altCountCap)
 	}
 
 	if err := validateAlternatives(alts); err != nil {
-		return nil, err
-	}
-	hs, err := uniformAltHeaderSize(alts)
-	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	parent := dispatchParent(all[index-1])
 	parentHS, err := headerSize(parent.Spec)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	altEnd := fmt.Sprintf("dsl_alt_end_%d", index)
 
-	// Bounds check fires once — every alt has the same hs so the
-	// verifier's bounds decision is the same regardless of which
-	// dispatch winds up matching.
-	insns := emitBounds(hs, dslReject)
+	// Only emit `Mov R5, i` markers when a downstream layer actually
+	// reads them — otherwise uniform-dispatch alts (vlan|qinq) would
+	// carry dead writes to R5 that just bloat the stream.
+	needMatchedFlag := false
+	if index+1 < len(all) {
+		next := all[index+1]
+		if next.Dispatch != nil && next.Dispatch.IsAltDiverged {
+			needMatchedFlag = true
+		}
+	}
 
+	var (
+		insns     asm.Instructions
+		callbacks asm.Instructions
+	)
 	for i, alt := range alts {
-		failLabel := dslReject
+		altStart := len(insns)
+
+		// Guard for non-last alts: route a mismatch to the next alt's
+		// entry. Last alt has no guard since its body's dispatch
+		// already targets dslReject (correct on no-match).
 		if i+1 < len(alts) {
-			failLabel = fmt.Sprintf("dsl_alt_%d_%d", index, i+1)
+			nextAltLabel := fmt.Sprintf("dsl_alt_%d_%d", index, i+1)
+			guard, err := emitAltGuard(alt, parent, parentHS, nextAltLabel)
+			if err != nil {
+				return nil, nil, err
+			}
+			insns = append(insns, guard...)
 		}
 
-		dispatch, err := genDispatch(alt, parent, parentHS, failLabel)
+		// Full alt-member body via the same path a standalone layer
+		// would take (bounds + dispatch + preds + advance + tail +
+		// flags + parser machine). Dispatch in the body re-checks the
+		// same field as the guard but with dslReject as failLabel —
+		// since the guard already passed, the body's dispatch will
+		// pass too, so the duplicate is dead code at runtime. The
+		// alternative is threading a custom fail label through every
+		// layer emit which is a much larger refactor for marginal gain.
+		altBody, altCbs, err := genLayerInner(alt, index, all)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
-		preds, err := emitPredicates(alt.Predicates)
-		if err != nil {
-			return nil, err
+		insns = append(insns, altBody...)
+		callbacks = append(callbacks, altCbs...)
+
+		if needMatchedFlag {
+			insns = append(insns, asm.Mov.Imm(matchedAltReg, int32(i)))
 		}
 
-		// Append directly to insns (no intermediate slice) and
-		// remember the index of this alt's first instruction so we
-		// can stamp the entry-point symbol. i==0 has no jumpers, so
-		// it needs no symbol.
-		start := len(insns)
-		insns = append(insns, dispatch...)
-		insns = append(insns, preds...)
 		if i > 0 {
 			sym := fmt.Sprintf("dsl_alt_%d_%d", index, i)
-			if existing := insns[start].Symbol(); existing != "" {
-				return nil, fmt.Errorf("codegen: alt %d entry already carries symbol %q", i, existing)
+			if existing := insns[altStart].Symbol(); existing != "" {
+				return nil, nil, fmt.Errorf("codegen: alt %d entry already carries symbol %q", i, existing)
 			}
-			insns[start] = insns[start].WithSymbol(sym)
+			insns[altStart] = insns[altStart].WithSymbol(sym)
 		}
 
 		if i+1 < len(alts) {
 			insns = append(insns, asm.Ja.Label(altEnd))
 		}
-		// The last alternative falls through naturally to the advance.
+		// The last alt falls through naturally to the altEnd landing.
 	}
 
-	insns = append(insns, emitAdvance(hs).WithSymbol(altEnd))
-	return insns, nil
+	// Landing for the `Ja altEnd` jumps from earlier alts. We use a
+	// `Mov R0, R0` rather than the canonical `Mov R3, R3` (landingNoop)
+	// because the alt body may end in a parser machine bpf_loop —
+	// after a bpf_loop call R3 is killed by the helper, while R0 is
+	// reloaded from a stack save. Same idiom genParserMachine's done
+	// landing uses for the same reason.
+	insns = append(insns, asm.Mov.Reg(asm.R0, asm.R0).WithSymbol(altEnd))
+	return insns, callbacks, nil
+}
+
+// emitAltGuard emits the per-alt lookahead: load parent's dispatch
+// field and JNE to nextAltLabel on mismatch. Identical shape to the
+// fixed-size dispatch check, but routed to the next alt's entry
+// rather than dslReject so the body of the previous alt can be
+// skipped without rejecting the packet outright.
+func emitAltGuard(alt *ir.LayerInstance, parent *ir.LayerInstance, parentHS int, nextAltLabel string) (asm.Instructions, error) {
+	if alt.Dispatch == nil || alt.Dispatch.Type != vocab.DispatchField {
+		return nil, fmt.Errorf("%w: alternation guard requires Field dispatch on alt %q (got %v)", ErrNotImplemented, alt.Spec.Name, alt.Dispatch.Type)
+	}
+	if parent.Spec.HasVariableLayout() {
+		return emitFieldDispatchCheck(
+			parent.Spec,
+			alt.Dispatch.Const,
+			0,
+			asm.R3,
+			asm.Instructions{
+				asm.LoadMem(asm.R3, asm.R10, bpfLoopCtxLayerEntrySlot, asm.DWord),
+				asm.Add.Reg(asm.R3, asm.R0),
+			},
+			nextAltLabel,
+		)
+	}
+	return emitFieldDispatchCheck(
+		parent.Spec,
+		alt.Dispatch.Const,
+		parentHS,
+		asm.R3,
+		asm.Instructions{
+			asm.Mov.Reg(asm.R3, asm.R0),
+			asm.Add.Reg(asm.R3, offsetBase),
+		},
+		nextAltLabel,
+	)
 }
 
 // validateAlternatives walks the alt list once rejecting MVP-invalid
@@ -128,25 +203,4 @@ func validateAlternatives(alts []*ir.LayerInstance) error {
 		}
 	}
 	return nil
-}
-
-// uniformAltHeaderSize returns the header size every alternative
-// shares, or an ErrNotImplemented when they diverge. Uniformity lets
-// genAlternation use a single advance and a single bounds check at
-// the group level.
-func uniformAltHeaderSize(alts []*ir.LayerInstance) (int, error) {
-	hs, err := headerSize(alts[0].Spec)
-	if err != nil {
-		return 0, err
-	}
-	for _, alt := range alts[1:] {
-		other, err := headerSize(alt.Spec)
-		if err != nil {
-			return 0, err
-		}
-		if other != hs {
-			return 0, fmt.Errorf("%w: alternation alt %q has header size %d, expected %d (MVP requires uniform size)", ErrNotImplemented, alt.Spec.Name, other, hs)
-		}
-	}
-	return hs, nil
 }

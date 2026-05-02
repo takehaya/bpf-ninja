@@ -270,10 +270,11 @@ literal        ::= integer | 'true' | 'false'
 | 名前パターン | regex | 意味 |
 |---|---|---|
 | `<SELF>_<PARENT>_<FIELD>` | `reField` | 親の `field` がこの値のとき自分にディスパッチ |
-| `<SELF>_<PARENT>_SANITY_<TYPE>` | `reSanity` | 自分の先頭 nibble 等で sanity 検査 (NIBBLE のみサポート) |
 | `<SELF>_<PARENT>_NO_CHECK = true` | `reNoCheck` | 検査なしで blind cast |
 | `<SELF>_MAX_DEPTH = N` | `reMaxDepth` | bpf_loop chain の上限 (既定 8、最大 64) |
 | `<SELF>_CHAIN_END_<FIELD> = V` | `reChainEnd` | chain 終了条件 (例: MPLS の s-bit) |
+
+(legacy `<SELF>_<PARENT>_SANITY_<TYPE>` は廃止。代わりに parser block 内で `transition select(field) { v: accept; default: reject; }` 形式で **self-validating dispatch** を declare する。`reSanityName` regex は legacy 名を見つけたら明示エラーで弾くために残す)
 
 **制約**:
 - bit 幅 1..64 (uint64 で値を保持)

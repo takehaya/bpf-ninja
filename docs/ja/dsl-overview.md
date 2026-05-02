@@ -8,23 +8,29 @@
 |---|---|
 | **使いたい** (CLI で `--dsl` を叩く) | [`dsl-usage.md`](./dsl-usage.md) → [`dsl-grammar.md`](./dsl-grammar.md) (詳しい文法) |
 | **library として使いたい** (Go から `kunai.Compile`) | [`pkg/kunai/README.md`](../../pkg/kunai/README.md) (英語) |
-| **vocab を書きたい** (新プロトコル追加) | [`pkg/kunai/protocols/`](../../pkg/kunai/protocols/) の既存 .p4 を参考に + [`pkg/kunai/vocab/loader.go`](../../pkg/kunai/vocab/loader.go) の `classifyConsts` で命名規約を確認 |
+| **vocab を書きたい** (新プロトコル追加) | [`dsl-internals.md` §3 vocab 著者ガイド](./dsl-internals.md#3-vocab-著者ガイド) + [`pkg/kunai/protocols/`](../../pkg/kunai/protocols/) の既存 .p4 |
 | **可変長構造をどう vocab で表すか知りたい** (chain vs aux の判断) | [`dsl-internals.md` §6](./dsl-internals.md#6-可変長構造の分類と表現) |
-| **型の意味を知りたい** (異幅 cmp / Bool / CIDR / 各種 literal) | [`dsl-types.md`](./dsl-types.md) |
-| **中身をレビューしたい** (codegen / verifier) | [`dsl-walkthrough.md`](./dsl-walkthrough.md) (コード読解ガイド) |
+| **型 / 演算子の意味を知りたい** (異幅 cmp、bit-slice、Bool、CIDR、各種 literal) | [`dsl-types.md` Part I](./dsl-types.md) (実装者向け実用仕様) |
+| **形式仕様を読みたい** (抽象構文、typing judgments、操作的意味論) | [`dsl-types.md` Part II](./dsl-types.md#part-ii-形式仕様-構文論--操作的意味論) (§11-§15) |
+| **中身をレビューしたい** (codegen / verifier) | [`dsl-internals.md` §2.3-§2.5](./dsl-internals.md#23-パッケージごとのツアー-依存順-leaf--root) (パッケージ別ツアー + キー概念 + チェックリスト) |
 | **何が残ってるか見たい** | [`dsl-followups.md`](./dsl-followups.md) |
 | **性能比較したい** | [`dsl-benchmark.md`](./dsl-benchmark.md) |
+| **設計思想を物語形式で読みたい** (連載 3 部作) | [`kunai-overview-article.md`](./kunai-overview-article.md) → [`kunai-dsl-deepdive.md`](./kunai-dsl-deepdive.md) → [`kunai-codegen-deepdive.md`](./kunai-codegen-deepdive.md) |
 
 ## ファイル一覧
 
-- [`dsl-usage.md`](./dsl-usage.md) — ユーザー向け CLI ガイド
-- [`dsl-grammar.md`](./dsl-grammar.md) — formal EBNF (filter 式 + p4lite) + 例文 + parser 関数マッピング
-- [`dsl-types.md`](./dsl-types.md) — 型システム仕様 (型・暗黙変換・widening・fit check・エラーカタログ)
-- [`dsl-internals.md`](./dsl-internals.md) — 設計動機 / アーキテクチャ / codegen ABI / vocab 著者ガイド / P4-16 互換性
-- [`dsl-walkthrough.md`](./dsl-walkthrough.md) — `pkg/kunai/` のコードを読み下すための内部ガイド (レビュー用)
-- [`dsl-followups.md`](./dsl-followups.md) — 残作業 (P0 → P5)
-- [`dsl-benchmark.md`](./dsl-benchmark.md) — cbpfc vs DSL のベンチ方法論
-- [`../../pkg/kunai/README.md`](../../pkg/kunai/README.md) — library 利用者向け (英語、godoc/pkg.go.dev 想定)
+| ファイル | 内容 | 行数目安 |
+|---|---|---|
+| [`dsl-usage.md`](./dsl-usage.md) | ユーザー向け CLI ガイド (例文豊富) | ~360 |
+| [`dsl-grammar.md`](./dsl-grammar.md) | formal EBNF (filter 式 + p4lite) + 例文 + parser 関数マッピング | ~360 |
+| [`dsl-types.md`](./dsl-types.md) | **言語仕様書** Part I (型・widening・fit check・エラーカタログ・実装ステージング) + Part II (抽象構文・typing rules・操作的意味論・soundness sketch) | ~1340 |
+| [`dsl-internals.md`](./dsl-internals.md) | 設計動機 / アーキテクチャ / パッケージ別ツアー / codegen ABI / vocab 著者ガイド / P4-16 互換性 / レビューチェックリスト | ~960 |
+| [`dsl-followups.md`](./dsl-followups.md) | 残作業 (P0 完 / P1 完 / P2 / B / P3 / P4 階層) | ~470 |
+| [`dsl-benchmark.md`](./dsl-benchmark.md) | cbpfc vs DSL のベンチ方法論 | ~160 |
+| [`kunai-overview-article.md`](./kunai-overview-article.md) | 連載 3 部作 ①: なぜ kunai を作ったか / DSL で書ける式 / 全体アーキ (読み物) | ~250 |
+| [`kunai-dsl-deepdive.md`](./kunai-dsl-deepdive.md) | 連載 3 部作 ②: lexer / parser / resolver の実装読み込み (読み物) | ~340 |
+| [`kunai-codegen-deepdive.md`](./kunai-codegen-deepdive.md) | 連載 3 部作 ③: IR → BPF lowering / ABI / chain quantifier 戦略 (読み物) | ~335 |
+| [`../../pkg/kunai/README.md`](../../pkg/kunai/README.md) | library 利用者向け (英語、godoc/pkg.go.dev 想定) | — |
 
 ## 30 秒でわかる概要
 

@@ -25,6 +25,35 @@ var dslEntryExprs = []string{
 	"eth/mpls*/ipv4/tcp",
 	"eth/(vlan|qinq)",
 	"eth/(vlan|qinq)/ipv4/tcp",
+	// P3-12 alt with diverged size + diverged dispatch. (ipv4|ipv6)
+	// differs in both header size (20 vs 40) and the field tcp/udp
+	// dispatches off (protocol byte 9 vs next_header byte 6). The alt
+	// block emits per-alt advance + matched-alt index in R5; the next
+	// layer's dispatch reads R5 and JNEs into a per-alt check.
+	"eth/(ipv4|ipv6)/tcp",
+	"eth/(ipv4|ipv6)/udp",
+	// Bracket predicate inside post-alt layer rides on R4-relative
+	// addressing — agnostic to which alt's primary header size R4
+	// got advanced past.
+	"eth/(ipv4|ipv6)/tcp[dport==443]",
+	// P3-13: nested alt groups are flattened in the resolver, so
+	// `((a|b)|c)` ends up identical to `(a|b|c)` for codegen.
+	// We pick a 3-way alt without ipv6 to keep the bpf_loop callback
+	// out of this test — kernel 6.6's verifier loses bpf_loop ctx
+	// spill bounds when the callback sits behind several preceding
+	// alt dispatches, so the ipv6-bearing 4-way variant is exercised
+	// in compile_test only (TestCompileNestedAlternationFlattens).
+	"eth/((vlan|qinq)|ipv4)",
+	// PR-A/PR-B: where past het-alt — uses per-layer entry slot to
+	// recover tcp.dport's runtime address. The alt block stores R4
+	// to slot at layer entry; tcp's where load reads the slot back.
+	"eth/(ipv4|ipv6)/tcp where tcp.dport == 443",
+	"eth/(ipv4|ipv6)/tcp where tcp.dport > 1024",
+	// Capture past het-alt — uses max-alt rounding for MaxCapLen.
+	"eth/(ipv4|ipv6)/tcp capture headers+64",
+	// Option lookup past het-alt — option-walk loop's per-iter R2
+	// compute switches between abs / slot anchor based on layer mark.
+	"eth/(ipv4|ipv6)/tcp where tcp.options.MSS.value == 1460",
 	"eth/ipv4/tcp[dport==443]",
 	"eth/ipv4[src==10.0.0.1]/tcp",
 	"eth/ipv4[dst==10.0.0.0/8]/tcp",
@@ -113,12 +142,28 @@ var dslEntryExprs = []string{
 	// high-half decision + low-half fall-through.
 	"eth/ipv6[dst < fe80::ffff]/tcp",
 	"eth/ipv6[dst >= ::1]/tcp",
-	// F4 Int<128> arith eq/ne in the where path: plain field cmp
-	// works (single dual-LDX), but `field + const` / `field - const`
-	// trip the verifier's register-tracking rules — the
-	// register-pair carry / borrow needs additional plumbing the
-	// MVP doesn't ship. Compile is fine; verifier-load is staged.
+	// F4 Int<128> arith in the where path. The carry/borrow plumbing
+	// is now ABI-clean (no R6/R7/R8 use), so plain cmp, field + const
+	// / field - const, and field + field / field - field all
+	// verifier-load. Mul stays staged via F5 (bit-slice covers the
+	// IPv6 manipulation cases that mattered).
 	"eth/ipv6/tcp where ipv6.src == ipv6.dst",
+	"eth/ipv6/tcp where ipv6.src + 1 == ipv6.dst",
+	"eth/ipv6/tcp where ipv6.dst - 1 == ipv6.src",
+	"eth/ipv6/tcp where ipv6.src + ipv6.dst == ipv6.src",
+	"eth/ipv6/tcp where ipv6.src - ipv6.dst == ipv6.src",
+	// 128-bit cmp + capture combo — this is the shape that caught
+	// the earlier R8/R9 ABI leak: filter clobbered R9 (host pkt_len)
+	// and captureWithXdpOutput's `Mov R3, R9` after filter then read
+	// a stale value, silently truncating MaxCapLen. ABI-clean fix
+	// (slot 2 routing in genArithCompare128) is pinned by both
+	// TestZeroCapsIsHostAgnostic and this verifier-load case.
+	"eth/ipv6/tcp where ipv6.src == ipv6.dst capture headers+64",
+	// F3 where-arith Int<128> ordered cmp — same lex compare shape
+	// as the bracket path, lifted into where via genArithCompare128
+	// so `where ipv6.src < ipv6.dst` etc. now load.
+	"eth/ipv6/tcp where ipv6.src < ipv6.dst",
+	"eth/ipv6/tcp where ipv6.src >= ipv6.dst",
 	// `field[lo:hi]` bit-slice — narrows a wide field down to a
 	// single LDX-sized window, or sugar for the full-field cmp at
 	// width 128. Replaces the F5 multiplication path nobody wanted.

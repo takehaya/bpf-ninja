@@ -53,7 +53,13 @@ func captureLength(c *ir.CaptureClause, p *ir.Program) (int, error) {
 	case ast.CapAll:
 		return 0, nil
 	case ast.CapHeaders, ast.CapHeadersPlus:
-		total, err := prefixHeaderSize(p, nil, "capture headers")
+		// Capture length is an upper bound: when a het-alt makes the
+		// prefix runtime-variable, we round up to the largest alt
+		// rather than error. The wrapper still emits the same bytes
+		// regardless of which alt matched, so a slightly larger
+		// MaxCapLen just means a few wasted bytes at the tail when
+		// the smaller alt fired — acceptable for "headers" semantics.
+		total, err := prefixHeaderSizeMaxAlt(p, nil, "capture headers")
 		if err != nil {
 			return 0, err
 		}
@@ -64,7 +70,8 @@ func captureLength(c *ir.CaptureClause, p *ir.Program) (int, error) {
 		}
 		// prefixHeaderSize sums up to (but excluding) the target;
 		// add the target's own header size to capture through it.
-		prefix, err := prefixHeaderSize(p, c.TargetLayer, "capture <label>")
+		// Same het-alt upper-bound treatment as CapHeaders.
+		prefix, err := prefixHeaderSizeMaxAlt(p, c.TargetLayer, "capture <label>")
 		if err != nil {
 			return 0, err
 		}

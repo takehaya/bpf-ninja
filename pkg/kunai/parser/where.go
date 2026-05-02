@@ -229,6 +229,12 @@ func (p *parser) parseCmpOrBoolAtom(startPos ast.Position) (*ast.WhereExpr, erro
 	if err != nil {
 		return nil, err
 	}
+	if p.cur.Kind == lexer.TokIn {
+		// `in` is a bracket-predicate operator only. Surfacing the
+		// usual "expected ')'" from the enclosing scope hides what
+		// the user got wrong; nudge them at the source position.
+		return nil, p.errorf(p.cur.Pos, "'in' is only valid in bracket predicates (`proto[field in [...]]`); inside `where` use a chain of `or` (`field == v1 or field == v2`) instead")
+	}
 	op, ok := cmpOpFor(p.cur.Kind)
 	if !ok {
 		// No comparison operator: treat as bare Bool atom.

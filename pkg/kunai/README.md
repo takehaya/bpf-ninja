@@ -13,7 +13,7 @@ It was extracted from [xdp-ninja](https://github.com/takehaya/xdp-ninja) and is 
 Given an expression like:
 
 ```text
-eth/ipv4/udp/vxlan/eth/ipv4/tcp[dport=443]
+eth/ipv4/udp/vxlan/eth/ipv4/tcp[dport==443]
 eth/ipv4@outer/udp/gtp/ipv4@inner/tcp where outer.dst == 0xc0a80101
 eth/mpls{1,8}/ipv4/tcp where ipv4.total_length > 100 capture headers+64
 eth/ipv4/udp/gtp[opt.next_ext == 0]/ipv4/tcp                            # auxiliary header field
@@ -55,7 +55,7 @@ func main() {
     // Zero Capabilities: target-agnostic filter (no action atoms).
     // For an XDP fexit attach point, import pkg/kunai/host/xdp and
     // pass xdp.FexitCapabilities() instead.
-    out, err := kunai.Compile("eth/ipv4/tcp[dport=443]", codegen.Capabilities{})
+    out, err := kunai.Compile("eth/ipv4/tcp[dport==443]", codegen.Capabilities{})
     if err != nil {
         panic(err)
     }
@@ -137,13 +137,13 @@ Errors are returned as-is from each phase. Recognise them with `errors.As`/`erro
 
 ## Bundled vocabulary
 
-The library ships with 16 baked-in protocol definitions: `eth`, `vlan`, `qinq`, `cw`, `mpls`, `ipv4`, `ipv6`, `tcp`, `udp`, `icmp`, `icmp6`, `gre`, `vxlan`, `geneve`, `gtp`, `srv6`. They live as `.p4` files under [`protocols/`](./protocols/) and are embedded at build time via `//go:embed`.
+The library ships with 17 baked-in protocol definitions: `eth`, `vlan`, `qinq`, `cw`, `mpls`, `ipv4`, `ipv6`, `tcp`, `udp`, `icmp`, `icmp6`, `gre`, `esp`, `vxlan`, `geneve`, `gtp`, `srv6`. They live as `.p4` files under [`protocols/`](./protocols/) and are embedded at build time via `//go:embed`.
 
 To add a new protocol, drop a `<name>.p4` file into `protocols/` and follow the dispatch-constant naming convention. The loader's regex tables in [`pkg/kunai/vocab/loader.go`](./vocab/loader.go) (search for `classifyConsts` and `re*` regexes) are the authoritative reference — any malformed name is rejected at startup.
 
 The `.p4` files are a strict subset of P4-16 syntax — they pass the official `p4c --parse-only` (CI verifies this on every change). See `docker/p4c-check/` in the parent repo for the test harness.
 
-Vocabulary parsing is memoised: `dslvocab.Bundled()` (in `pkg/kunai/dslvocab/`) wraps `vocab.Load` with `sync.Once`, so the 16 `.p4` files are parsed once per process and every subsequent `kunai.Compile()` call reuses the cached `ProtocolSpec` map. There is no persistent (on-disk / build-time) cache — parsing the bundled set takes microseconds and is dwarfed by BPF program load, so the in-memory cache is sufficient.
+Vocabulary parsing is memoised: `dslvocab.Bundled()` (in `pkg/kunai/dslvocab/`) wraps `vocab.Load` with `sync.Once`, so the 17 `.p4` files are parsed once per process and every subsequent `kunai.Compile()` call reuses the cached `ProtocolSpec` map. There is no persistent (on-disk / build-time) cache — parsing the bundled set takes microseconds and is dwarfed by BPF program load, so the in-memory cache is sufficient.
 
 ## Versioning & stability
 

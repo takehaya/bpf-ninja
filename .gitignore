@@ -139,3 +139,10 @@ $RECYCLE.BIN/
 # p4c parse-check per-file content cache (see scripts/p4c-check.sh)
 /.p4c-cache/
 dist
+
+# Per-developer scratch (docs the author moves out of the way locally,
+# Serena agent metadata, Claude Code per-machine settings).
+**/old/
+.serena/
+.claude/
+.ocr

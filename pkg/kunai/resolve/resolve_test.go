@@ -291,6 +291,49 @@ func TestResolveAlternationResolves(t *testing.T) {
 	}
 }
 
+func TestResolveAlternationNestedFlattens(t *testing.T) {
+	// P3-13: nested alt groups are equivalent to a flat alt because
+	// alt members are single layers without their own chain /
+	// quantifier / predicate (= grouping has no extra semantic).
+	// The resolver flattens `((a|b)|c)` into `(a|b|c)` so codegen
+	// sees a 3-way alt and runs the existing P3-12 path.
+	for _, tc := range []struct {
+		expr     string
+		wantLeaf []string
+	}{
+		// Outer-2 with one nested-2 + one leaf → flat 3.
+		{"eth/((vlan|qinq)|ipv4)", []string{"vlan", "qinq", "ipv4"}},
+		// Both members nested → flat 4 (= altCountCap).
+		{"eth/((vlan|qinq)|(ipv4|ipv6))", []string{"vlan", "qinq", "ipv4", "ipv6"}},
+		// Three-deep nesting still flattens.
+		{"eth/(((vlan|qinq)|ipv4)|ipv6)", []string{"vlan", "qinq", "ipv4", "ipv6"}},
+	} {
+		t.Run(tc.expr, func(t *testing.T) {
+			p := resolveOK(t, tc.expr, nil)
+			if len(p.Layers) < 2 {
+				t.Fatalf("layers=%d, want >=2", len(p.Layers))
+			}
+			alt := p.Layers[1]
+			if alt.Alternation == nil {
+				t.Fatal("layer 1 should be an alt group")
+			}
+			if got := len(alt.Alternation); got != len(tc.wantLeaf) {
+				t.Fatalf("flatten count = %d; want %d (%v)", got, len(tc.wantLeaf), tc.wantLeaf)
+			}
+			for i, leafName := range tc.wantLeaf {
+				m := alt.Alternation[i]
+				if m.Spec == nil || m.Spec.Name != leafName {
+					t.Errorf("alt[%d].Spec.Name = %v; want %s", i, m.Spec, leafName)
+				}
+				if m.Alternation != nil {
+					t.Errorf("alt[%d] still nested (Alternation != nil)", i)
+				}
+			}
+		})
+	}
+}
+
+
 func TestResolveAlternationFollowedLayerAgreesOnDispatch(t *testing.T) {
 	// IPv4 sits under either VLAN or QinQ via ethertype==0x0800 — the
 	// dispatch agrees across alternatives, so the post-group layer
@@ -308,10 +351,109 @@ func TestResolveAlternationFollowedLayerAgreesOnDispatch(t *testing.T) {
 	}
 }
 
-func TestResolveAlternationFollowedLayerDiverges(t *testing.T) {
-	// TCP under IPv4 reads `protocol`, under IPv6 reads `next_header`
-	// — different fields, so the MVP uniform constraint must reject.
-	resolveErr(t, "eth/(ipv4|ipv6)/tcp", nil, "disagree on dispatch")
+func TestResolveMarksRuntimeOffsetForLayersPastHetAlt(t *testing.T) {
+	// `eth/(ipv4|ipv6)/tcp where tcp.dport == 443` — the alt members
+	// disagree on header size (20 vs 40), so tcp.dport's offset is
+	// runtime-variable and the resolver must mark tcp with
+	// NeedsRuntimeOffset so codegen knows to address through a
+	// per-layer entry slot rather than R0+static_prefix.
+	p := resolveOK(t, "eth/(ipv4|ipv6)/tcp where tcp.dport == 443", nil)
+	if len(p.Layers) != 3 {
+		t.Fatalf("layers=%d; want 3", len(p.Layers))
+	}
+	eth, alt, tcp := p.Layers[0], p.Layers[1], p.Layers[2]
+
+	if eth.LayerPos != 0 || alt.LayerPos != 1 || tcp.LayerPos != 2 {
+		t.Errorf("LayerPos = %d/%d/%d; want 0/1/2", eth.LayerPos, alt.LayerPos, tcp.LayerPos)
+	}
+	for _, m := range alt.Alternation {
+		if m.LayerPos != 1 {
+			t.Errorf("alt member %q LayerPos = %d; want 1 (alt group's pos)", m.Spec.Name, m.LayerPos)
+		}
+	}
+
+	if eth.NeedsRuntimeOffset || alt.NeedsRuntimeOffset {
+		t.Error("eth / alt should NOT need runtime offset (eth precedes het-alt; alt itself has no Spec)")
+	}
+	if !tcp.NeedsRuntimeOffset {
+		t.Error("tcp SHOULD need runtime offset (sits past het-alt and is referenced by where)")
+	}
+}
+
+func TestResolveDoesNotMarkRuntimeOffsetWithoutHetAlt(t *testing.T) {
+	// `eth/(vlan|qinq)/ipv4/tcp where tcp.dport == 443` — alt is
+	// uniform-size (4 bytes each), so the static prefix path still
+	// works; no layer should be marked.
+	p := resolveOK(t, "eth/(vlan|qinq)/ipv4/tcp where tcp.dport == 443", nil)
+	for _, l := range p.Layers {
+		if l.NeedsRuntimeOffset {
+			name := "<alt>"
+			if l.Spec != nil {
+				name = l.Spec.Name
+			}
+			t.Errorf("layer %q (pos %d) was marked NeedsRuntimeOffset; want false (uniform-size alt)", name, l.LayerPos)
+		}
+		for _, m := range l.Alternation {
+			if m.NeedsRuntimeOffset {
+				t.Errorf("alt member %q was marked NeedsRuntimeOffset; want false", m.Spec.Name)
+			}
+		}
+	}
+}
+
+func TestResolveDoesNotMarkRuntimeOffsetWithoutWhere(t *testing.T) {
+	// Het-alt without any where / capture reference: nothing to
+	// address through a slot, so no layer needs the marker.
+	p := resolveOK(t, "eth/(ipv4|ipv6)/tcp", nil)
+	for _, l := range p.Layers {
+		if l.NeedsRuntimeOffset {
+			name := "<alt>"
+			if l.Spec != nil {
+				name = l.Spec.Name
+			}
+			t.Errorf("layer %q (pos %d) was marked NeedsRuntimeOffset; want false (no where/capture references)", name, l.LayerPos)
+		}
+	}
+}
+
+func TestResolveMarksRuntimeOffsetForCaptureTargetPastHetAlt(t *testing.T) {
+	// `capture proto+0` targeting tcp through a het-alt: the resolver
+	// must mark tcp so codegen routes the capture's offset through
+	// a slot.
+	p := resolveOK(t, "eth/(ipv4|ipv6)/tcp capture tcp+0", nil)
+	tcp := p.Layers[2]
+	if !tcp.NeedsRuntimeOffset {
+		t.Error("tcp SHOULD need runtime offset (capture target past het-alt)")
+	}
+}
+
+func TestResolveAlternationFollowedLayerDivergesAccepted(t *testing.T) {
+	// P3-12: alts that disagree on the post-group dispatch field used
+	// to be a hard reject; now they resolve with IsAltDiverged=true
+	// and AltConsts populated, and codegen routes through a per-alt
+	// JNE check gated on the matched-alt index. Sanity-check the
+	// resolver's IR shape here; the actual emit is tested in
+	// pkg/kunai/codegen and end-to-end in compile_test / load_dsl_test.
+	p := resolveOK(t, "eth/(ipv4|ipv6)/tcp", nil)
+	if len(p.Layers) != 3 {
+		t.Fatalf("layers = %d; want 3", len(p.Layers))
+	}
+	tcp := p.Layers[2]
+	if tcp.Dispatch == nil {
+		t.Fatal("tcp dispatch nil")
+	}
+	if !tcp.Dispatch.IsAltDiverged {
+		t.Error("tcp.Dispatch.IsAltDiverged = false; want true")
+	}
+	if len(tcp.Dispatch.AltConsts) != 2 {
+		t.Fatalf("len(AltConsts) = %d; want 2", len(tcp.Dispatch.AltConsts))
+	}
+	if tcp.Dispatch.AltConsts[0].FieldName != "protocol" {
+		t.Errorf("AltConsts[0].FieldName = %q; want protocol", tcp.Dispatch.AltConsts[0].FieldName)
+	}
+	if tcp.Dispatch.AltConsts[1].FieldName != "next_header" {
+		t.Errorf("AltConsts[1].FieldName = %q; want next_header", tcp.Dispatch.AltConsts[1].FieldName)
+	}
 }
 
 func TestResolveCaptureBasic(t *testing.T) {

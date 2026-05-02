@@ -119,11 +119,80 @@ func (r *resolver) resolveFilter(f *ast.Filter) (*ir.Program, error) {
 		captures = append(captures, c)
 	}
 
-	return &ir.Program{
+	p := &ir.Program{
 		Layers:     layers,
 		Where:      where,
 		Captures:   captures,
 		LabelTable: r.labels,
 		Pos:        f.Pos,
-	}, nil
+	}
+	markRuntimeOffsetLayers(p)
+	return p, nil
+}
+
+// markRuntimeOffsetLayers populates LayerPos on every layer (including
+// alt members) and sets NeedsRuntimeOffset on layers whose runtime
+// position cannot be computed via the static-prefix path because a
+// heterogeneous-size alternation group sits earlier in the chain.
+// Codegen consumes NeedsRuntimeOffset to decide whether a layer must
+// store offsetBase (R4) into its per-layer entry slot, and whether
+// downstream where / capture / option-walk loads must address through
+// that slot rather than R0+static_prefix.
+//
+// Alt members share the alt group's LayerPos so all members write
+// into the same slot — codegen's per-alt advance logic guarantees
+// whichever alt matched is the one whose R4 entry was just stored.
+func markRuntimeOffsetLayers(p *ir.Program) {
+	hetAltPos := -1
+	for i, l := range p.Layers {
+		if l == nil {
+			continue
+		}
+		l.LayerPos = i
+		for _, alt := range l.Alternation {
+			if alt != nil {
+				alt.LayerPos = i
+			}
+		}
+		if hetAltPos == -1 && ir.IsHeterogeneousAlt(l) {
+			hetAltPos = i
+		}
+	}
+	if hetAltPos == -1 {
+		return
+	}
+
+	mark := func(target *ir.LayerInstance) {
+		if target == nil || target.LayerPos <= hetAltPos {
+			return
+		}
+		target.NeedsRuntimeOffset = true
+		for _, alt := range target.Alternation {
+			if alt != nil {
+				alt.NeedsRuntimeOffset = true
+			}
+		}
+	}
+
+	visitField := func(f *ir.FieldRef) {
+		if f != nil {
+			mark(f.Layer)
+		}
+	}
+
+	if p.Where != nil {
+		ir.WalkConditionFieldRefs(p.Where, visitField)
+	}
+	for _, c := range p.Captures {
+		if c == nil {
+			continue
+		}
+		mark(c.TargetLayer)
+		if c.Where != nil {
+			ir.WalkConditionFieldRefs(c.Where, visitField)
+		}
+		for _, f := range c.Fields {
+			visitField(f)
+		}
+	}
 }

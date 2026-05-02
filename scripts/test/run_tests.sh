@@ -178,7 +178,7 @@ test_exit_pcap_action() {
 }
 
 test_dsl_entry_filter_match()    { run_count_test 3 --dsl -i veth0 -c 3 "eth/ipv4/icmp"; }
-test_dsl_entry_predicate_match() { run_count_test 3 --dsl -i veth0 -c 3 "eth/ipv4/icmp[type=8]"; }
+test_dsl_entry_predicate_match() { run_count_test 3 --dsl -i veth0 -c 3 "eth/ipv4/icmp[type==8]"; }
 test_dsl_entry_filter_nomatch()  { run_nomatch_test --dsl -i veth0 "eth/ipv4/tcp"; }
 test_dsl_capture_headers()       { run_pcap_test --dsl -i veth0 -c 3 "eth/ipv4/icmp capture headers+32"; }
 

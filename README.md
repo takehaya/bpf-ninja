@@ -77,7 +77,7 @@ The default filter syntax is tcpdump (compiled to eBPF via cbpfc). For multi-enc
 
 ```bash
 # IPv4/TCP, dport 443
-sudo xdp-ninja --dsl -i eth0 "eth/ipv4/tcp[dport=443]"
+sudo xdp-ninja --dsl -i eth0 "eth/ipv4/tcp[dport==443]"
 
 # Up to 3 VLAN tags before IPv4
 sudo xdp-ninja --dsl -i eth0 "eth/vlan{1,3}/ipv4/tcp"
