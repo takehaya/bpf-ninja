@@ -33,17 +33,17 @@ const bit<16> IPV4_GRE_PROTOCOL_TYPE = 0x0800;
 // 0x0F, shifts right 0, multiplies by 4, then subtracts the 20-byte
 // minimum to obtain the options length and advances R4 past it.
 // IHL < 5 falls below MinimumTotal=20 and rejects the packet.
-const bit<8> IPV4_VAREXT_LEN_BYTE_OFFSET = 0;
-const bit<8> IPV4_VAREXT_LEN_MASK        = 0x0F;
-const bit<8> IPV4_VAREXT_LEN_SHIFT       = 0;
-const bit<8> IPV4_VAREXT_LEN_SCALE       = 4;
-const bit<8> IPV4_VAREXT_LEN_BASE        = 20;
+const bit<8> IPV4_HDRLEN_BYTE_OFFSET = 0;
+const bit<8> IPV4_HDRLEN_MASK        = 0x0F;
+const bit<8> IPV4_HDRLEN_SHIFT       = 0;
+const bit<8> IPV4_HDRLEN_SCALE       = 4;
+const bit<8> IPV4_HDRLEN_BASE        = 20;
 
 // Self-validating parser: `transition select(hdr.version) { ... }`
 // guarantees the first nibble is 4. When a parent layer has no Field
 // dispatch (e.g. MPLS, GTP-U, VXLAN inner Ethernet), resolver allows
 // the chain via DispatchSelfValidating and the runtime check happens
-// here. The IHL trailing is still consumed by the VAREXT_LEN_* family
+// here. The IHL trailing is still consumed by the HDRLEN_* family
 // after the parser block accepts.
 parser IPv4Fragment(packet_in pkt, out ipv4_h hdr) {
     state start {

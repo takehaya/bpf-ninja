@@ -317,7 +317,7 @@ parser IPv4Fragment(packet_in pkt, out ipv4_h hdr) {
 
 - 旧 `<SELF>_<PARENT>_SANITY_<TYPE>` / `<SELF>_SANITY_<TYPE>` const family は撤廃された (legacy 名で declare すると vocab loader が error で reject)
 - self-validation は標準 P4-16 構文のみで表現するので vocab が self-contained に。 srv6 の `transition select(routing_type) { 4: accept; default: reject; }` と同 idiom
-- ipv4 + IHL trailing のように parser machine + VAREXT_LEN_* が同居しても codegen が両方を順番に消化するため OK (`validateLayoutExclusivity` は両立を許可)
+- ipv4 + IHL trailing のように parser machine + HDRLEN_* が同居しても codegen が両方を順番に消化するため OK (`validateLayoutExclusivity` は両立を許可)
 - 親が Field/NoCheck/SelfValidating のいずれの dispatch も持たない場合は resolver が `no dispatch constant for ...` で reject
 
 **NoCheck dispatch**:
@@ -521,7 +521,7 @@ DSL output が既存の runFilter wrapper にどう乗るか。**コードを読
 3. **predicate emit**: layer のフィールド条件を AND で連鎖
 4. (`NeedsRuntimeOffset` 設定時) **per-layer entry slot 書き出し**: `Store R4 → fp[whereLayerEntrySlot(LayerPos)]` — het-alt 後の where/capture/option-walk が runtime offset を読むため
 5. **R4 進める**: `Add R4, hs`
-6. **VAREXT 末尾消費** (`emitPrimaryVariableTail`): IPv4 IHL / TCP data_offset の trailing bytes を R4 に加算
+6. **HDRLEN 末尾消費** (`emitPrimaryVariableTail`): IPv4 IHL / TCP data_offset の trailing bytes を R4 に加算
 7. **flag-triggered sub-header advance** (`emitFlagTriggers`): GRE C/K/S 等の flag-gated 4B sub-header を per-flag に R4 advance
 
 ### 4.4 chain (`+` / `*` / `{n,m}`)
@@ -745,11 +745,87 @@ GTP の opt も同じ: GTP header の E/S/PN flag で有無が決まる、独立
 
 の 2 つに整理され、wire 構造との対応が一目瞭然になる。
 
-### 6.5 vocab declaration の方法
+### 6.5 vocab declaration mechanism (7 種)
 
-aux header は parser block の `out` 引数で declare し、state machine で extract 条件を記述する。
+§6.1 の wire パターン (A/B/C/D) に対し、vocab 著者が使える declaration mechanism は 7 種類ある。**1 つの protocol が複数 mechanism を併用する**ことも普通 (TCP は HDRLEN_* で trailer を確保しつつ、その中身は TLV options walk 経路で読む、など)。
 
-#### 単発 aux (パターン D)
+| # | mechanism | declare 方法 | 対応 wire パターン | 例 protocol | codegen 入口 |
+|---|---|---|---|---|---|
+| **1** | **HDRLEN trailer** | `<SELF>_HDRLEN_{BYTE_OFFSET,MASK,SHIFT,SCALE,BASE}` 5 const | primary header の variable trailer | IPv4 (IHL × 4 - 20)、TCP (data_offset × 4 - 20) | `parser_machine.go::emitVariableTrail*` |
+| **2** | **chain self-loop** | `<SELF>_CHAIN_END_<FIELD>` + `<SELF>_MAX_DEPTH` | A: 全体繰り返し | MPLS (s-bit)、VLAN+、QinQ | `bpfloop.go::chainEndCheck` |
+| **3** | **parser self-loop** | parser block の state 自己 transition | B: 拡張ヘッダ繰り返し | IPv6 ext (`parse_ext` self-loop) | `parser_machine.go` state graph |
+| **4** | **aux header stack** | `out h_t[N] name` + parser state | B/C: wrapper 内要素列 | SRv6 segments、GTP exts | `parser_machine.go` + `emitDynamicStackAddress` |
+| **5** | **gated single aux** | `out h_t name` + transition select で gating | D: 条件付き単発 | GTP opt (E/S/PN flag gated) | `parser_machine.go` state graph |
+| **6** | **flag-triggered optional fields** | `<SELF>_OPT_FLAGS_BYTE_OFFSET` + `<SELF>_OPT_TRIGGER_<NAME>` + `<SELF>_OPT_LEN_<NAME>` | D の集合体 (flag 群が固定 size optional を gating) | GRE (C/K/S → checksum/key/seq) | `parser_machine.go::emitOptFlags*` |
+| **7** | **TLV options walk** | HDRLEN_* (trailer 領域) + `<SELF>_OPT_TERMINATOR_KIND` + `<SELF>_OPT_PADDING_KIND` + `<SELF>_OPT_LENGTH_BYTE_OFF` + per-option aux header (kind/size を持つ) | C の TLV variant | TCP options (MSS/WS/SACK_PERM/TS) | `where.go::genOptionLookupLoad` |
+
+ユーザーが「可変長」と認識しがちな代表例 4 つの内訳:
+
+- **TCP/IPv4 タイプ** = mechanism 1 (HDRLEN trailer)。TCP はさらに mechanism 7 (TLV walk) を併用して中身を読む
+- **MPLS タイプ** = mechanism 2 (chain self-loop)
+- **SRv6 タイプ** = mechanism 4 (aux header stack)
+- **GTP タイプ** = mechanism 5 (gated single aux: `opt`) + mechanism 4 (aux stack: `exts`) の両用い
+
+これに加えて vocab 著者向けに mechanism 3 (IPv6 ext のような異 type ext-header chain) と mechanism 6 (GRE のような flag-triggered optional) と mechanism 7 (TLV walk) が利用できる。
+
+以下、各 mechanism を順に declare 方法で示す。**mechanism 1 (HDRLEN) と mechanism 7 (TLV walk) と mechanism 6 (flag-triggered) は const 宣言だけで自動生成され、parser block を書く必要はない**。残り (chain / parser self-loop / aux / aux stack / gated aux) は parser block + state machine で表現する。
+
+(以下の sub-section は文書化の歴史上 1→2→3→5→4→7→6 の順に並んでいる。表の番号で目的の mechanism にジャンプして読むのが楽。)
+
+#### Mechanism 1: HDRLEN trailer (TCP / IPv4 タイプ)
+
+primary header の **末尾に長さ可変の trailer** が付く形。長さは header 内の field (IPv4 IHL、TCP data_offset) × scale で計算できる。const 5 個を declare するだけで、codegen が自動的に R3 で長さ計算 + R4 advance + bound check を emit する。
+
+```p4
+// ipv4.p4
+const bit<8> IPV4_HDRLEN_BYTE_OFFSET = 0;     // IHL は byte 0 の下 nibble
+const bit<8> IPV4_HDRLEN_MASK        = 0x0F;
+const bit<8> IPV4_HDRLEN_SHIFT       = 0;
+const bit<8> IPV4_HDRLEN_SCALE       = 4;     // ihl × 4 byte
+const bit<8> IPV4_HDRLEN_BASE        = 20;    // 固定 header 分は引く
+```
+
+計算式は `((byte[OFFSET] & MASK) >> SHIFT) * SCALE - BASE` で trailer の byte 数。`< 0` (IHL < 5 等) は loud reject。trailer **そのもの**には dot path で access できない (=「options 領域があることだけ知ってる」状態)。中身を読みたい場合は mechanism 7 (TLV walk) を併用する。
+
+#### Mechanism 2: chain self-loop (MPLS タイプ)
+
+同 shape の header が back-to-back に並ぶ。終了条件は header 内の終端 bit (MPLS の S-bit) で declare する:
+
+```p4
+// mpls.p4
+const bit<1> MPLS_CHAIN_END_S    = 1;          // S-bit == 1 で stack 末尾
+const bit<8> MPLS_MAX_DEPTH      = 8;          // verifier-safe loop 上限
+```
+
+DSL 上は `mpls+` quantifier。codegen は bpf_loop subprogram に展開し、各 iter で `<SELF>_CHAIN_END_<FIELD>` の field を読んで break 判定する。
+
+#### Mechanism 3: parser self-loop (IPv6 ext タイプ)
+
+parser block の state が自己 transition で次 ext header に進む形。各 ext header の type (next_header) が次の ext type を指す chain。aux header の固定 reservation 数 (`out h_t[N]`) で verifier-safe な loop 上限を持たせる:
+
+```p4
+// ipv6.p4 (抜粋)
+parser IPv6Fragment(packet_in pkt, out ipv6_h hdr, out ipv6_ext_h[8] exts) {
+    state start {
+        pkt.extract(hdr);
+        transition select(hdr.next_header) {
+            0, 43, 44, 50, 60, 135: parse_ext;  // ext header 系
+            default: accept;                    // 上位 L4
+        }
+    }
+    state parse_ext {
+        pkt.extract(exts.next);
+        transition select(/* exts.last.next_header */) {
+            ...: parse_ext;                     // 自己 loop
+            default: accept;
+        }
+    }
+}
+```
+
+DSL では `any(ipv6.exts.next_header == 44)` で fragment 拡張ヘッダの存在判定など。
+
+#### Mechanism 5: gated single aux (GTP opt タイプ、パターン D)
 
 ```p4
 // gtp.p4
@@ -775,7 +851,7 @@ parser GtpFragment(packet_in pkt,
 
 DSL での `gtp.opt.exists` は「`parse_opt` state に到達したか」を runtime で確かめる。`gtp.opt.next_ext` は「opt が extract された場合のみ field 読み、未抽出なら predicate 不一致」。
 
-#### aux header stack (パターン B/C)
+#### Mechanism 4: aux header stack (SRv6 タイプ、パターン B/C)
 
 P4 の header stack `H[N]` を使う:
 
@@ -806,7 +882,7 @@ parser SRv6Fragment(packet_in pkt,
 
 stack の reservation 数 (上の例では 8) は **verifier-safe な loop 上限** として codegen が利用する。実 packet では `hdr.last_entry+1` 個まで使われる。
 
-#### option-style aux (パターン C 可変、TCP/IPv4 options)
+#### Mechanism 7: TLV options walk (TCP options タイプ、パターン C 可変)
 
 各 option を kind ごとに独立 aux header として declare、parser block の state machine で kind dispatch + 条件付き extract:
 
@@ -844,6 +920,28 @@ parser TcpFragment(packet_in pkt,
 - codegen が「options 領域 (= header の data_offset 越え末尾) を `bpf_loop` で walk して、kind が一致したら value を取り出す」命令列を emit
 
 つまり vocab に `parser_machine` を書く必要はなく、`OPT_*` 定数だけで自動生成される。各 option は wire 上 0 or 1 回出現する想定 (典型的な TCP frame と一致)。同 kind が複数現れる malformed packet は最後の値で上書き。
+
+#### Mechanism 6: flag-triggered optional fields (GRE タイプ)
+
+primary header の **flag bit が複数の固定 size optional field を gating** する形。GRE の C/K/S flag が checksum / key / sequence の有無を決めるのが代表例。`OPT_FLAGS_BYTE_OFFSET` で flag byte の位置、`OPT_TRIGGER_<NAME>` で各 flag の bit mask、`OPT_LEN_<NAME>` で対応 optional field の byte size を declare する:
+
+```p4
+// gre.p4 (抜粋)
+const bit<8> GRE_OPT_FLAGS_BYTE_OFFSET = 0;
+const bit<8> GRE_OPT_TRIGGER_C         = 0x80;   // checksum present
+const bit<8> GRE_OPT_TRIGGER_K         = 0x20;   // key present
+const bit<8> GRE_OPT_TRIGGER_S         = 0x10;   // sequence present
+const bit<8> GRE_OPT_LEN_C             = 4;      // checksum field 4 byte
+const bit<8> GRE_OPT_LEN_K             = 4;
+const bit<8> GRE_OPT_LEN_S             = 4;
+```
+
+codegen が flag byte を読んで、各 trigger bit が立っていれば対応 LEN だけ R4 を advance する命令列を順に emit する (`parser_machine.go::emitOptFlags*`)。HDRLEN_* と同様、parser block を書く必要はない。NAME は uppercase の任意 token で、TRIGGER と LEN を NAME で対応付ける。
+
+mechanism 5 (gated single aux) との違い:
+
+- **5 (gated aux)** は **aux header として field が見える** (`gtp.opt.next_ext` で値読みできる)
+- **6 (flag-triggered)** は **trailer 領域確保のみ** で、optional field の **値は読めない** (現状)。GRE の checksum/key/sequence は「存在を検出して下流 ipv4/ipv6 への dispatch を正しく動かす」目的で十分だから
 
 ### 6.6 DSL access の体系
 

@@ -452,7 +452,7 @@ func TestSRv6ThreeSegments(t *testing.T) {
 	r.MustMatch(t, pkt, "eth/ipv6/srv6 (3 segments)/tcp")
 }
 
-// TestIPv4OptionsAdvance exercises IPv4 VAREXT_LEN: an IPv4 frame
+// TestIPv4OptionsAdvance exercises IPv4 HDRLEN: an IPv4 frame
 // with one Record-Route option (option type 7, length 11) lifts IHL
 // to 8 (32-byte header). Codegen must read IHL, multiply by 4,
 // subtract 20, and advance R4 by 12 so the TCP layer's dispatch
@@ -470,7 +470,7 @@ func TestIPv4OptionsAdvance(t *testing.T) {
 
 // TestIPv4OptionsRejectsTooShort confirms the IHL underflow guard:
 // a hand-crafted frame with IHL=4 (< 5) must be rejected by the
-// VAREXT MinimumTotal check.
+// HDRLEN MinimumTotal check.
 func TestIPv4OptionsRejectsTooShort(t *testing.T) {
 	r := New(t, "eth/ipv4/tcp")
 	pkt := BuildEthIPv4TCP(t, 12345, 80)
@@ -480,7 +480,7 @@ func TestIPv4OptionsRejectsTooShort(t *testing.T) {
 	r.MustReject(t, pkt, "ipv4 with IHL=4 should be rejected")
 }
 
-// TestTCPOptionsAdvance exercises TCP VAREXT_LEN. A TCP frame with
+// TestTCPOptionsAdvance exercises TCP HDRLEN. A TCP frame with
 // one MSS option (kind 2, length 4) plus EOL padding lifts
 // data_offset to 6 (24-byte header). Codegen reads byte 12, masks
 // upper nibble, shifts right 4, multiplies by 4, subtracts 20.
@@ -497,7 +497,7 @@ func TestTCPOptionsAdvance(t *testing.T) {
 
 // TestIPv4OptionsMaxIHL drives IHL=15 (the maximum legal value),
 // which lifts the IPv4 header to 60 B = 40 B of options. Stresses
-// the VAREXT advance ((IHL & 0x0F) * 4 - 20 = 40) to confirm
+// the HDRLEN advance ((IHL & 0x0F) * 4 - 20 = 40) to confirm
 // codegen narrows the advance correctly under the 512 B scratch.
 func TestIPv4OptionsMaxIHL(t *testing.T) {
 	r := New(t, "eth/ipv4/tcp")
@@ -573,7 +573,7 @@ func TestTCPOptionLookupNopPadding(t *testing.T) {
 
 // TestTCPOptionsMaxDataOffset drives data_offset=15 (maximum),
 // lifting the TCP header to 60 B = 40 B of options. Mirror of the
-// IPv4 max-IHL stress test for the TCP VAREXT path.
+// IPv4 max-IHL stress test for the TCP HDRLEN path.
 func TestTCPOptionsMaxDataOffset(t *testing.T) {
 	r := New(t, "eth/ipv4/tcp")
 	o := Defaults()
@@ -648,7 +648,7 @@ func TestSRv6MalformedSegmentsMismatch(t *testing.T) {
 	r.MustMatch(t, pkt, "srv6 with mismatched segments_left/last_entry still matches")
 }
 
-// TestIPv4AndTCPOptionsAdvance verifies both VAREXT advances stack
+// TestIPv4AndTCPOptionsAdvance verifies both HDRLEN advances stack
 // correctly: IPv4 options + TCP options together.
 func TestIPv4AndTCPOptionsAdvance(t *testing.T) {
 	r := New(t, "eth/ipv4/tcp[dport==443]")

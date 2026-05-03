@@ -27,11 +27,11 @@ const bit<8> TCP_SRV6_NEXT_HEADER = 6;
 // subtracts the 20-byte minimum to obtain the options length.
 // data_offset < 5 falls below MinimumTotal=20 and rejects the
 // packet.
-const bit<8> TCP_VAREXT_LEN_BYTE_OFFSET = 12;
-const bit<8> TCP_VAREXT_LEN_MASK        = 0xF0;
-const bit<8> TCP_VAREXT_LEN_SHIFT       = 4;
-const bit<8> TCP_VAREXT_LEN_SCALE       = 4;
-const bit<8> TCP_VAREXT_LEN_BASE        = 20;
+const bit<8> TCP_HDRLEN_BYTE_OFFSET = 12;
+const bit<8> TCP_HDRLEN_MASK        = 0xF0;
+const bit<8> TCP_HDRLEN_SHIFT       = 4;
+const bit<8> TCP_HDRLEN_SCALE       = 4;
+const bit<8> TCP_HDRLEN_BASE        = 20;
 
 // === TCP options (RFC 9293, IANA TCP Parameters) ===
 //

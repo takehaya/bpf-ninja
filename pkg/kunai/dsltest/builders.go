@@ -38,7 +38,7 @@ type PacketOpts struct {
 	ICMP             bool
 
 	// IPv4 options. When non-empty, gopacket lifts ihl past 5 and
-	// emits the option bytes — exercises the IPv4 VAREXT advance.
+	// emits the option bytes — exercises the IPv4 HDRLEN advance.
 	IPv4Options []layers.IPv4Option
 	// TCP options. Same idea for data_offset > 5.
 	TCPOptions []layers.TCPOption

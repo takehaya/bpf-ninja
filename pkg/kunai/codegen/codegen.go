@@ -241,7 +241,7 @@ const KunaiStackTop = int16(-56)
 //
 // holds for every reachable chain shape. Per-protocol max trail
 // is `(LenMask >> LenShift) << log2(Scale) - MinimumTotal + Base`
-// for VAREXT, `iter_cap × per-iter advance` for parser-machine
+// for HDRLEN, `iter_cap × per-iter advance` for parser-machine
 // self-loops (e.g. ipv6_ext_h LenMask=0x03 ⇒ 32 B/iter × 4 iter cap
 // = 128 B). Currently every chain in the bundled vocab fits within
 // 320 B; the 192 B slack accommodates one more variable-trail layer
@@ -620,7 +620,7 @@ func genStaticLayer(layer *ir.LayerInstance, index int, all []*ir.LayerInstance)
 	if layer.Spec.HasVariableLayout() {
 		// Save this layer's entry offsetBase to the slot before the
 		// fixed-prefix advance so children's dispatch can recover the
-		// primary-header position regardless of how far VAREXT / OPT
+		// primary-header position regardless of how far HDRLEN / OPT
 		// shifts R4 afterwards. Mirror of parser_machine.go's slot
 		// store — see the lifecycle docs there for the read/write
 		// ordering invariant.
@@ -693,15 +693,15 @@ func emitFlagTriggers(fixedHs, flagsByteOff int, triggers []vocab.FlagTrigger, f
 	return insns, nil
 }
 
-// emitPrimaryVariableTail emits the VAREXT_LEN_* trail consume for a
+// emitPrimaryVariableTail emits the HDRLEN_* trail consume for a
 // layer whose primary header carries an IHL-style declared-length
 // trailer. R4 must already point past the fixed primary header; the
 // trail reads the length field, scales it, subtracts MinimumTotal,
 // and advances R4 the rest of the way. Returns nil instructions when
-// the spec has no VariableSuffix. Shared between genStaticLayer's
+// the spec has no HeaderLength. Shared between genStaticLayer's
 // fixed-size path and genParserMachine's accept landing.
 func emitPrimaryVariableTail(spec *vocab.ProtocolSpec) (asm.Instructions, error) {
-	vs := spec.VariableSuffix
+	vs := spec.HeaderLength
 	if vs == nil {
 		return nil, nil
 	}
@@ -709,14 +709,14 @@ func emitPrimaryVariableTail(spec *vocab.ProtocolSpec) (asm.Instructions, error)
 	if err != nil {
 		return nil, err
 	}
-	return emitVariableTrailInline(hs, variableTailSkipFromSuffix(vs), dslReject)
+	return emitVariableTrailInline(hs, variableTailSkipFromHeaderLength(vs), dslReject)
 }
 
-// variableTailSkipFromSuffix lifts a vocab.VariableSuffix into the
+// variableTailSkipFromHeaderLength lifts a vocab.HeaderLength into the
 // codegen-internal variableTailSkip representation. Primary-header
 // suffixes always set MinimumTotal so an undersized length field
 // (IHL < 5, data_offset < 5) jumps to dslReject before R5 can wrap.
-func variableTailSkipFromSuffix(vs *vocab.VariableSuffix) variableTailSkip {
+func variableTailSkipFromHeaderLength(vs *vocab.HeaderLength) variableTailSkip {
 	return variableTailSkip{
 		LenFieldByteOff: vs.LenByteOff,
 		LenMask:         vs.LenMask,

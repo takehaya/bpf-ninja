@@ -99,7 +99,7 @@ func loadFile(fsys fs.FS, p string) (*ProtocolSpec, error) {
 	if err != nil {
 		return nil, err
 	}
-	suffix, err := buildVariableSuffix(res.VarExt, fields, p)
+	suffix, err := buildHeaderLength(res.HdrLen, fields, p)
 	if err != nil {
 		return nil, err
 	}
@@ -118,7 +118,7 @@ func loadFile(fsys fs.FS, p string) (*ProtocolSpec, error) {
 		Consts:            res.Consts,
 		MaxDepth:          res.MaxDepth,
 		ChainEnd:          res.ChainEnd,
-		VariableSuffix:    suffix,
+		HeaderLength:      suffix,
 		FlagTriggers:      triggers,
 		FlagsByteOffset:   flagsOff,
 		OptionWalk:        walk,
@@ -145,20 +145,20 @@ func loadFile(fsys fs.FS, p string) (*ProtocolSpec, error) {
 // variable-layout features in ways the codegen does not handle. A
 // parser-state-machine block is the canonical "complex layout"
 // channel and already lets the protocol express aux extracts and
-// per-iteration advances; declarative VAREXT_LEN_* / OPT_TRIGGER_*
+// per-iteration advances; declarative HDRLEN_* / OPT_TRIGGER_*
 // consts are the simpler channel for primary-header trailers /
 // flag-gated optional fields. Mixing both on the same protocol
 // hits two issues at once:
 //
 //   - genLayerInner dispatches on ParseStateMachine first, so a
-//     parser-machine layer silently ignores VariableSuffix and
+//     parser-machine layer silently ignores HeaderLength and
 //     FlagTriggers — a real bug masquerading as success.
 //   - The semantics overlap (which trailer wins?) is undefined.
 //
 // We refuse the FlagTriggers combination at load time so the silent
-// miss never reaches codegen. VariableSuffix is permitted to coexist
+// miss never reaches codegen. HeaderLength is permitted to coexist
 // with a parser machine, but only when the parser machine has exactly
-// one extract: codegen runs the VAREXT_LEN_* trail at the parser's
+// one extract: codegen runs the HDRLEN_* trail at the parser's
 // accept landing on the assumption that R4 sits at primary_end there,
 // which only holds for a single-extract entry state. Multi-extract
 // parser machines (ipv6's parse_ext loop, gtp's opt + exts) leave R4
@@ -171,9 +171,9 @@ func validateLayoutExclusivity(s *ProtocolSpec) error {
 	if len(s.FlagTriggers) > 0 {
 		return fmt.Errorf("%s: protocol %q declares both a non-trivial parser block and OPT_TRIGGER_* — choose one channel for variable-length layout", s.Source, s.Name)
 	}
-	if s.VariableSuffix != nil {
+	if s.HeaderLength != nil {
 		if extracts := s.ParseStateMachine.TotalExtracts(); extracts != 1 {
-			return fmt.Errorf("%s: protocol %q pairs a VAREXT_LEN_* trailer with a multi-extract parser machine; the trailer codegen assumes R4 is at the primary header's end at the parser's accept landing, which only holds for a single-extract entry state (got %d extracts)", s.Source, s.Name, extracts)
+			return fmt.Errorf("%s: protocol %q pairs a HDRLEN_* trailer with a multi-extract parser machine; the trailer codegen assumes R4 is at the primary header's end at the parser's accept landing, which only holds for a single-extract entry state (got %d extracts)", s.Source, s.Name, extracts)
 		}
 	}
 	return nil
@@ -218,7 +218,7 @@ type classifyResult struct {
 	Consts   []DispatchConst
 	MaxDepth int
 	ChainEnd *ChainEndConst
-	VarExt   varExtConsts
+	HdrLen   hdrLenConsts
 	OptFlags optFlagConsts
 }
 
@@ -263,11 +263,11 @@ type optWalkConsts struct {
 	sizes       map[string]int
 }
 
-// varExtConsts is the raw form of <SELF>_VAREXT_LEN_* constants
+// hdrLenConsts is the raw form of <SELF>_HDRLEN_* constants
 // before they are validated as a complete five-tuple. Each set bit in
-// `seen` corresponds to one of the required keys; loadVariableSuffix
+// `seen` corresponds to one of the required keys; loadHeaderLength
 // rejects partial declarations.
-type varExtConsts struct {
+type hdrLenConsts struct {
 	ByteOff int
 	Mask    int
 	Shift   int
@@ -277,14 +277,14 @@ type varExtConsts struct {
 }
 
 const (
-	varExtByteOffBit uint8 = 1 << iota
-	varExtMaskBit
-	varExtShiftBit
-	varExtScaleBit
-	varExtBaseBit
+	hdrLenByteOffBit uint8 = 1 << iota
+	hdrLenMaskBit
+	hdrLenShiftBit
+	hdrLenScaleBit
+	hdrLenBaseBit
 )
 
-const varExtAllBits = varExtByteOffBit | varExtMaskBit | varExtShiftBit | varExtScaleBit | varExtBaseBit
+const hdrLenAllBits = hdrLenByteOffBit | hdrLenMaskBit | hdrLenShiftBit | hdrLenScaleBit | hdrLenBaseBit
 
 // setOptFlagsField parses one <SELF>_OPT_* key. Recognised forms:
 //
@@ -462,65 +462,65 @@ func buildOptionWalk(raw *optWalkConsts, file *p4lite.File, protoName, source st
 	return out, nil
 }
 
-// setVarExtField records one VAREXT_LEN_* key into ve, rejecting
+// setHdrLenField records one HDRLEN_* key into ve, rejecting
 // duplicates and unknown suffixes. Caller has already verified the
 // const is bit<N>, not bool.
-func setVarExtField(ve *varExtConsts, key string, c *p4lite.Const, source string) error {
+func setHdrLenField(ve *hdrLenConsts, key string, c *p4lite.Const, source string) error {
 	var bit uint8
 	var dst *int
 	switch key {
 	case "BYTE_OFFSET":
-		bit, dst = varExtByteOffBit, &ve.ByteOff
+		bit, dst = hdrLenByteOffBit, &ve.ByteOff
 	case "MASK":
-		bit, dst = varExtMaskBit, &ve.Mask
+		bit, dst = hdrLenMaskBit, &ve.Mask
 	case "SHIFT":
-		bit, dst = varExtShiftBit, &ve.Shift
+		bit, dst = hdrLenShiftBit, &ve.Shift
 	case "SCALE":
-		bit, dst = varExtScaleBit, &ve.Scale
+		bit, dst = hdrLenScaleBit, &ve.Scale
 	case "BASE":
-		bit, dst = varExtBaseBit, &ve.Base
+		bit, dst = hdrLenBaseBit, &ve.Base
 	default:
-		return fmt.Errorf("%s: VAREXT_LEN const %q has unknown suffix %q (expected BYTE_OFFSET|MASK|SHIFT|SCALE|BASE)", source, c.Name, key)
+		return fmt.Errorf("%s: HDRLEN const %q has unknown suffix %q (expected BYTE_OFFSET|MASK|SHIFT|SCALE|BASE)", source, c.Name, key)
 	}
 	if ve.seen&bit != 0 {
-		return fmt.Errorf("%s: duplicate VAREXT_LEN_%s declaration %q", source, key, c.Name)
+		return fmt.Errorf("%s: duplicate HDRLEN_%s declaration %q", source, key, c.Name)
 	}
 	ve.seen |= bit
 	*dst = int(c.Int)
 	return nil
 }
 
-// buildVariableSuffix promotes the raw varExtConsts to a fully
-// validated VariableSuffix, or returns nil when the .p4 declared no
-// VAREXT keys at all. Partial declarations are rejected with a
+// buildHeaderLength promotes the raw hdrLenConsts to a fully
+// validated HeaderLength, or returns nil when the .p4 declared no
+// HDRLEN keys at all. Partial declarations are rejected with a
 // pointer at the missing keys.
-func buildVariableSuffix(ve varExtConsts, fields []Field, source string) (*VariableSuffix, error) {
+func buildHeaderLength(ve hdrLenConsts, fields []Field, source string) (*HeaderLength, error) {
 	if ve.seen == 0 {
 		return nil, nil
 	}
-	if ve.seen != varExtAllBits {
+	if ve.seen != hdrLenAllBits {
 		var missing []string
 		for _, kv := range []struct {
 			bit  uint8
 			name string
 		}{
-			{varExtByteOffBit, "BYTE_OFFSET"},
-			{varExtMaskBit, "MASK"},
-			{varExtShiftBit, "SHIFT"},
-			{varExtScaleBit, "SCALE"},
-			{varExtBaseBit, "BASE"},
+			{hdrLenByteOffBit, "BYTE_OFFSET"},
+			{hdrLenMaskBit, "MASK"},
+			{hdrLenShiftBit, "SHIFT"},
+			{hdrLenScaleBit, "SCALE"},
+			{hdrLenBaseBit, "BASE"},
 		} {
 			if ve.seen&kv.bit == 0 {
-				missing = append(missing, "VAREXT_LEN_"+kv.name)
+				missing = append(missing, "HDRLEN_"+kv.name)
 			}
 		}
-		return nil, fmt.Errorf("%s: VAREXT_LEN declaration is incomplete (missing %s)", source, strings.Join(missing, ", "))
+		return nil, fmt.Errorf("%s: HDRLEN declaration is incomplete (missing %s)", source, strings.Join(missing, ", "))
 	}
 	if ve.Mask == 0 || ve.Mask > 0xFF {
-		return nil, fmt.Errorf("%s: VAREXT_LEN_MASK %#x must be in (0, 0xFF]", source, ve.Mask)
+		return nil, fmt.Errorf("%s: HDRLEN_MASK %#x must be in (0, 0xFF]", source, ve.Mask)
 	}
 	if ve.Shift < 0 || ve.Shift > 7 {
-		return nil, fmt.Errorf("%s: VAREXT_LEN_SHIFT %d must be in [0, 7]", source, ve.Shift)
+		return nil, fmt.Errorf("%s: HDRLEN_SHIFT %d must be in [0, 7]", source, ve.Shift)
 	}
 	// Codegen lowers `* Scale` to a left-shift, so Scale must be a
 	// power of two it knows how to encode (codegen.scaleShift table:
@@ -528,19 +528,19 @@ func buildVariableSuffix(ve varExtConsts, fields []Field, source string) (*Varia
 	// worst-case computed advance ((mask >> shift) << log2(scale))
 	// within 0xFFFF, well clear of int32 overflow.
 	if ve.Scale <= 0 || ve.Scale > 128 || (ve.Scale&(ve.Scale-1)) != 0 {
-		return nil, fmt.Errorf("%s: VAREXT_LEN_SCALE %d must be a power of two in [1, 128]", source, ve.Scale)
+		return nil, fmt.Errorf("%s: HDRLEN_SCALE %d must be a power of two in [1, 128]", source, ve.Scale)
 	}
 	if ve.Base < 0 {
-		return nil, fmt.Errorf("%s: VAREXT_LEN_BASE %d must be >= 0 (declared minimum header bytes)", source, ve.Base)
+		return nil, fmt.Errorf("%s: HDRLEN_BASE %d must be >= 0 (declared minimum header bytes)", source, ve.Base)
 	}
 	headerBytes := SumBits(fields) / 8
 	if ve.ByteOff < 0 || ve.ByteOff >= headerBytes {
-		return nil, fmt.Errorf("%s: VAREXT_LEN_BYTE_OFFSET %d is out of range for %d-byte primary header", source, ve.ByteOff, headerBytes)
+		return nil, fmt.Errorf("%s: HDRLEN_BYTE_OFFSET %d is out of range for %d-byte primary header", source, ve.ByteOff, headerBytes)
 	}
 	if ve.Base != headerBytes {
-		return nil, fmt.Errorf("%s: VAREXT_LEN_BASE %d must equal the primary header size (%d bytes)", source, ve.Base, headerBytes)
+		return nil, fmt.Errorf("%s: HDRLEN_BASE %d must equal the primary header size (%d bytes)", source, ve.Base, headerBytes)
 	}
-	return &VariableSuffix{
+	return &HeaderLength{
 		LenByteOff: ve.ByteOff,
 		LenMask:    ve.Mask,
 		LenShift:   ve.Shift,
@@ -553,7 +553,7 @@ func classifyConsts(cs []*p4lite.Const, protoName, source string) (classifyResul
 	protoUpper := strings.ToUpper(protoName)
 	res := classifyResult{Consts: make([]DispatchConst, 0, len(cs))}
 	// Reject any duplicate const name regardless of family. Some
-	// families (MAX_DEPTH, CHAIN_END, VAREXT_LEN_*, OPT_*) already
+	// families (MAX_DEPTH, CHAIN_END, HDRLEN_*, OPT_*) already
 	// have purpose-specific dup checks, but plain Dispatch consts
 	// (NO_CHECK / SANITY / Field) used to slip through silently —
 	// `SelectDispatchConst` would just return whichever copy came
@@ -595,12 +595,12 @@ func classifyConsts(cs []*p4lite.Const, protoName, source string) (classifyResul
 			}
 			continue
 		}
-		if strings.HasPrefix(rest, "VAREXT_LEN_") {
+		if strings.HasPrefix(rest, "HDRLEN_") {
 			if c.IsBool {
-				return classifyResult{}, fmt.Errorf("%s: VAREXT_LEN const %q must be bit<N>, got bool", source, c.Name)
+				return classifyResult{}, fmt.Errorf("%s: HDRLEN const %q must be bit<N>, got bool", source, c.Name)
 			}
-			key := rest[len("VAREXT_LEN_"):]
-			if err := setVarExtField(&res.VarExt, key, c, source); err != nil {
+			key := rest[len("HDRLEN_"):]
+			if err := setHdrLenField(&res.HdrLen, key, c, source); err != nil {
 				return classifyResult{}, err
 			}
 			continue

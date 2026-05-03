@@ -860,58 +860,58 @@ func specNames(s map[string]*ProtocolSpec) []string {
 	return out
 }
 
-// TestVariableSuffixIPv4 confirms the bundled IPv4 vocab declares the
-// VAREXT_LEN five-tuple correctly so codegen can advance past
+// TestHeaderLengthIPv4 confirms the bundled IPv4 vocab declares the
+// HDRLEN five-tuple correctly so codegen can advance past
 // options when IHL > 5. The numeric values are pinned because
 // codegen depends on them — nudging them silently would shift R4.
-func TestVariableSuffixIPv4(t *testing.T) {
+func TestHeaderLengthIPv4(t *testing.T) {
 	specs := loadBundled(t)
-	vs := specs["ipv4"].VariableSuffix
+	vs := specs["ipv4"].HeaderLength
 	if vs == nil {
-		t.Fatal("ipv4 must declare a VariableSuffix")
+		t.Fatal("ipv4 must declare a HeaderLength")
 	}
 	if vs.LenByteOff != 0 || vs.LenMask != 0x0F || vs.LenShift != 0 ||
 		vs.Scale != 4 || vs.Base != 20 {
-		t.Errorf("unexpected ipv4 VariableSuffix: %+v", *vs)
+		t.Errorf("unexpected ipv4 HeaderLength: %+v", *vs)
 	}
 }
 
-// TestVariableSuffixTCP confirms the TCP data_offset upper-nibble
+// TestHeaderLengthTCP confirms the TCP data_offset upper-nibble
 // shape — the shift is what distinguishes it from IPv4 IHL.
-func TestVariableSuffixTCP(t *testing.T) {
+func TestHeaderLengthTCP(t *testing.T) {
 	specs := loadBundled(t)
-	vs := specs["tcp"].VariableSuffix
+	vs := specs["tcp"].HeaderLength
 	if vs == nil {
-		t.Fatal("tcp must declare a VariableSuffix")
+		t.Fatal("tcp must declare a HeaderLength")
 	}
 	if vs.LenByteOff != 12 || vs.LenMask != 0xF0 || vs.LenShift != 4 ||
 		vs.Scale != 4 || vs.Base != 20 {
-		t.Errorf("unexpected tcp VariableSuffix: %+v", *vs)
+		t.Errorf("unexpected tcp HeaderLength: %+v", *vs)
 	}
 }
 
-// TestVariableSuffixAbsentForFixedProtocols pins which protocols do
-// NOT declare a VariableSuffix — adding VAREXT to a previously-fixed
+// TestHeaderLengthAbsentForFixedProtocols pins which protocols do
+// NOT declare a HeaderLength — adding HDRLEN to a previously-fixed
 // protocol changes codegen behaviour, so the test forces a deliberate
 // update here when that happens.
-func TestVariableSuffixAbsentForFixedProtocols(t *testing.T) {
+func TestHeaderLengthAbsentForFixedProtocols(t *testing.T) {
 	specs := loadBundled(t)
 	for _, name := range []string{"eth", "ipv6", "udp", "gtp", "srv6", "vlan", "qinq", "mpls", "gre", "vxlan", "geneve", "icmp", "icmp6", "cw"} {
-		if specs[name].VariableSuffix != nil {
-			t.Errorf("%s should not declare a VariableSuffix (got %+v)", name, *specs[name].VariableSuffix)
+		if specs[name].HeaderLength != nil {
+			t.Errorf("%s should not declare a HeaderLength (got %+v)", name, *specs[name].HeaderLength)
 		}
 	}
 }
 
-// TestVariableSuffixIncomplete rejects partial declarations: a
-// VAREXT_LEN_BYTE_OFFSET without the rest is a configuration bug,
+// TestHeaderLengthIncomplete rejects partial declarations: a
+// HDRLEN_BYTE_OFFSET without the rest is a configuration bug,
 // not a "best-effort" behaviour.
-func TestVariableSuffixIncomplete(t *testing.T) {
+func TestHeaderLengthIncomplete(t *testing.T) {
 	fsys := fstest.MapFS{
 		"vocab/foo.p4": &fstest.MapFile{Data: []byte(`
 header foo_h { bit<8> a; bit<8> b; bit<16> c; }
-const bit<8> FOO_VAREXT_LEN_BYTE_OFFSET = 0;
-const bit<8> FOO_VAREXT_LEN_MASK = 0x0F;
+const bit<8> FOO_HDRLEN_BYTE_OFFSET = 0;
+const bit<8> FOO_HDRLEN_MASK = 0x0F;
 parser F(packet_in pkt, out foo_h h) {
   state start { pkt.extract(h); transition accept; }
 }
@@ -919,17 +919,17 @@ parser F(packet_in pkt, out foo_h h) {
 	}
 	_, err := Load(fsys, "vocab")
 	if err == nil || !strings.Contains(err.Error(), "incomplete") {
-		t.Fatalf("expected incomplete-VAREXT error, got %v", err)
+		t.Fatalf("expected incomplete-HDRLEN error, got %v", err)
 	}
 }
 
-// TestVariableSuffixUnknownSuffix rejects an unrecognised key like
-// VAREXT_LEN_FOO so typos surface immediately.
-func TestVariableSuffixUnknownSuffix(t *testing.T) {
+// TestHeaderLengthUnknownSuffix rejects an unrecognised key like
+// HDRLEN_FOO so typos surface immediately.
+func TestHeaderLengthUnknownSuffix(t *testing.T) {
 	fsys := fstest.MapFS{
 		"vocab/foo.p4": &fstest.MapFile{Data: []byte(`
 header foo_h { bit<8> a; bit<8> b; bit<16> c; }
-const bit<8> FOO_VAREXT_LEN_FOO = 0;
+const bit<8> FOO_HDRLEN_FOO = 0;
 parser F(packet_in pkt, out foo_h h) {
   state start { pkt.extract(h); transition accept; }
 }
@@ -941,19 +941,19 @@ parser F(packet_in pkt, out foo_h h) {
 	}
 }
 
-// TestVariableSuffixBaseMustEqualHeaderSize: Base != header bytes is
+// TestHeaderLengthBaseMustEqualHeaderSize: Base != header bytes is
 // a logical error — the codegen subtracts Base from total to get the
 // trailer length, so any mismatch means the vocab and codegen
 // disagree about where the fixed prefix ends.
-func TestVariableSuffixBaseMustEqualHeaderSize(t *testing.T) {
+func TestHeaderLengthBaseMustEqualHeaderSize(t *testing.T) {
 	fsys := fstest.MapFS{
 		"vocab/foo.p4": &fstest.MapFile{Data: []byte(`
 header foo_h { bit<8> a; bit<8> b; bit<16> c; }
-const bit<8> FOO_VAREXT_LEN_BYTE_OFFSET = 0;
-const bit<8> FOO_VAREXT_LEN_MASK = 0x0F;
-const bit<8> FOO_VAREXT_LEN_SHIFT = 0;
-const bit<8> FOO_VAREXT_LEN_SCALE = 4;
-const bit<8> FOO_VAREXT_LEN_BASE = 8;
+const bit<8> FOO_HDRLEN_BYTE_OFFSET = 0;
+const bit<8> FOO_HDRLEN_MASK = 0x0F;
+const bit<8> FOO_HDRLEN_SHIFT = 0;
+const bit<8> FOO_HDRLEN_SCALE = 4;
+const bit<8> FOO_HDRLEN_BASE = 8;
 parser F(packet_in pkt, out foo_h h) {
   state start { pkt.extract(h); transition accept; }
 }
@@ -1043,20 +1043,20 @@ parser F(packet_in pkt, out foo_h h) {
 	}
 }
 
-// TestAllowsParserMachinePlusVAREXT pins the relaxed layout rule:
+// TestAllowsParserMachinePlusHDRLEN pins the relaxed layout rule:
 // vocab MAY declare both a non-trivial parser block (e.g. version
-// self-validation) AND a primary-header VAREXT_LEN trailer. The
+// self-validation) AND a primary-header HDRLEN trailer. The
 // parser machine handles extract + validation; codegen runs the
-// VAREXT trail at the parser's accept landing. Used by ipv4 / ipv6.
-func TestAllowsParserMachinePlusVAREXT(t *testing.T) {
+// HDRLEN trail at the parser's accept landing. Used by ipv4 / ipv6.
+func TestAllowsParserMachinePlusHDRLEN(t *testing.T) {
 	fsys := fstest.MapFS{
 		"vocab/foo.p4": &fstest.MapFile{Data: []byte(`
 header foo_h { bit<8> a; bit<8> b; bit<16> c; }
-const bit<8> FOO_VAREXT_LEN_BYTE_OFFSET = 0;
-const bit<8> FOO_VAREXT_LEN_MASK = 0x0F;
-const bit<8> FOO_VAREXT_LEN_SHIFT = 0;
-const bit<8> FOO_VAREXT_LEN_SCALE = 4;
-const bit<8> FOO_VAREXT_LEN_BASE = 4;
+const bit<8> FOO_HDRLEN_BYTE_OFFSET = 0;
+const bit<8> FOO_HDRLEN_MASK = 0x0F;
+const bit<8> FOO_HDRLEN_SHIFT = 0;
+const bit<8> FOO_HDRLEN_SCALE = 4;
+const bit<8> FOO_HDRLEN_BASE = 4;
 parser F(packet_in pkt, out foo_h h) {
   state start {
     pkt.extract(h);
@@ -1067,7 +1067,7 @@ parser F(packet_in pkt, out foo_h h) {
 	}
 	specs, err := Load(fsys, "vocab")
 	if err != nil {
-		t.Fatalf("expected load success with parser machine + VAREXT, got %v", err)
+		t.Fatalf("expected load success with parser machine + HDRLEN, got %v", err)
 	}
 	foo := specs["foo"]
 	if foo == nil {
@@ -1076,28 +1076,28 @@ parser F(packet_in pkt, out foo_h h) {
 	if foo.ParseStateMachine == nil {
 		t.Error("expected non-trivial ParseStateMachine")
 	}
-	if foo.VariableSuffix == nil {
-		t.Error("expected VariableSuffix to coexist with ParseStateMachine")
+	if foo.HeaderLength == nil {
+		t.Error("expected HeaderLength to coexist with ParseStateMachine")
 	}
 }
 
-// TestRejectsParserMachineMultiExtractPlusVAREXT pins the
-// single-extract invariant the VAREXT_LEN_* trailer codegen relies
-// on: when a vocab pairs VariableSuffix with a parser machine that
+// TestRejectsParserMachineMultiExtractPlusHDRLEN pins the
+// single-extract invariant the HDRLEN_* trailer codegen relies
+// on: when a vocab pairs HeaderLength with a parser machine that
 // extracts more than once (e.g. primary + aux stack), R4 at the
 // parser's accept landing no longer equals primary_end and the trail
 // would silently miscompute. Loader must reject this combination so
 // the silent miss never reaches codegen.
-func TestRejectsParserMachineMultiExtractPlusVAREXT(t *testing.T) {
+func TestRejectsParserMachineMultiExtractPlusHDRLEN(t *testing.T) {
 	fsys := fstest.MapFS{
 		"vocab/foo.p4": &fstest.MapFile{Data: []byte(`
 header foo_h     { bit<8> a; bit<8> b; bit<16> c; }
 header foo_ext_h { bit<8> kind; bit<8> _pad; bit<16> data; }
-const bit<8> FOO_VAREXT_LEN_BYTE_OFFSET = 0;
-const bit<8> FOO_VAREXT_LEN_MASK = 0x0F;
-const bit<8> FOO_VAREXT_LEN_SHIFT = 0;
-const bit<8> FOO_VAREXT_LEN_SCALE = 4;
-const bit<8> FOO_VAREXT_LEN_BASE = 4;
+const bit<8> FOO_HDRLEN_BYTE_OFFSET = 0;
+const bit<8> FOO_HDRLEN_MASK = 0x0F;
+const bit<8> FOO_HDRLEN_SHIFT = 0;
+const bit<8> FOO_HDRLEN_SCALE = 4;
+const bit<8> FOO_HDRLEN_BASE = 4;
 parser F(packet_in pkt, out foo_h h, out foo_ext_h[4] exts) {
   state start {
     pkt.extract(h);
@@ -1166,18 +1166,18 @@ parser F(packet_in pkt, out foo_h h) {
 	}
 }
 
-// TestVariableSuffixScaleMustBePowerOfTwo: codegen lowers the
+// TestHeaderLengthScaleMustBePowerOfTwo: codegen lowers the
 // `* Scale` step to a left-shift table, so non-power-of-two values
 // or values past 128 break the emit.
-func TestVariableSuffixScaleMustBePowerOfTwo(t *testing.T) {
+func TestHeaderLengthScaleMustBePowerOfTwo(t *testing.T) {
 	fsys := fstest.MapFS{
 		"vocab/foo.p4": &fstest.MapFile{Data: []byte(`
 header foo_h { bit<8> a; bit<8> b; bit<16> c; }
-const bit<8> FOO_VAREXT_LEN_BYTE_OFFSET = 0;
-const bit<8> FOO_VAREXT_LEN_MASK = 0x0F;
-const bit<8> FOO_VAREXT_LEN_SHIFT = 0;
-const bit<8> FOO_VAREXT_LEN_SCALE = 3;
-const bit<8> FOO_VAREXT_LEN_BASE = 4;
+const bit<8> FOO_HDRLEN_BYTE_OFFSET = 0;
+const bit<8> FOO_HDRLEN_MASK = 0x0F;
+const bit<8> FOO_HDRLEN_SHIFT = 0;
+const bit<8> FOO_HDRLEN_SCALE = 3;
+const bit<8> FOO_HDRLEN_BASE = 4;
 parser F(packet_in pkt, out foo_h h) {
   state start { pkt.extract(h); transition accept; }
 }

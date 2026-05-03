@@ -30,12 +30,12 @@ type ProtocolSpec struct {
 	// chain stops without consuming further bytes. Nil when the
 	// vocab declared no <SELF>_CHAIN_END_<FIELD> const.
 	ChainEnd *ChainEndConst
-	// VariableSuffix declares that the primary header has a
+	// HeaderLength declares that the primary header has a
 	// declared-length variable trailer past its fixed minimum
 	// (IPv4 options when IHL > 5, TCP options when data_offset > 5,
 	// etc.). Codegen advances R4 past the trailer after the fixed
-	// extract. Nil when the .p4 declares no VAREXT const set.
-	VariableSuffix *VariableSuffix
+	// extract. Nil when the .p4 declares no HDRLEN const set.
+	HeaderLength *HeaderLength
 	// FlagTriggers is an ordered set of "if a flag bit is set,
 	// advance R4 by N bytes" rules used by protocols whose header
 	// suffix is not a single declared length but a chain of
@@ -75,9 +75,9 @@ type ProtocolSpec struct {
 	Source         string       // original file path, for diagnostics
 }
 
-// VariableSuffix describes a "primary header has a declared-length
+// HeaderLength describes a "primary header has a declared-length
 // variable trailer past its fixed minimum" pattern, fed to codegen by
-// five paired <SELF>_VAREXT_LEN_* constants. The trailer length in
+// five paired <SELF>_HDRLEN_* constants. The trailer length in
 // bytes is computed as
 //
 //	((<byte at LenByteOff> & LenMask) >> LenShift) * Scale - Base
@@ -91,7 +91,7 @@ type ProtocolSpec struct {
 //
 // Codegen caps the runtime advance via verifier-friendly scalar
 // narrowing so the suffix cannot grow past ScratchBufSize.
-type VariableSuffix struct {
+type HeaderLength struct {
 	LenByteOff int
 	LenMask    int
 	LenShift   int
@@ -102,7 +102,7 @@ type VariableSuffix struct {
 // OptionWalk carries the metadata codegen needs to walk a TCP/IPv4
 // option list and dispatch on per-option kind. The walk starts at
 // the layer's variable trailer (= primary header size) and ends at
-// the trailer length declared by VAREXT or at the first terminator
+// the trailer length declared by HDRLEN or at the first terminator
 // kind, whichever comes first.
 type OptionWalk struct {
 	TerminatorKind uint64
@@ -175,12 +175,12 @@ type Field struct {
 // C/K/S). Codegen consumes this to decide whether children must
 // anchor field reads on the layer-entry slot rather than on R4.
 func (p *ProtocolSpec) HasVariableLayout() bool {
-	return p.ParseStateMachine != nil || p.VariableSuffix != nil || len(p.FlagTriggers) > 0
+	return p.ParseStateMachine != nil || p.HeaderLength != nil || len(p.FlagTriggers) > 0
 }
 
 // TotalExtracts reports the sum of `pkt.extract(...)` operations
 // across every state in the machine. Loader uses it to gate
-// VariableSuffix coexistence on a single-extract invariant; downstream
+// HeaderLength coexistence on a single-extract invariant; downstream
 // invariants that depend on R4 sitting at primary_end at accept time
 // can reuse the same query.
 func (m *ParseStateMachine) TotalExtracts() int {

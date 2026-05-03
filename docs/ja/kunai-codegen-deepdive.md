@@ -65,7 +65,7 @@ func genStaticLayer(layer, index, all) (asm.Instructions, error) {
     }
     insns = append(insns, emitAdvance(hs))  // (5) R4 += hs
 
-    tail := emitPrimaryVariableTail(layer.Spec)  // (6) VAREXT_LEN_* trail (IPv4 IHL 等)
+    tail := emitPrimaryVariableTail(layer.Spec)  // (6) HDRLEN_* trail (IPv4 IHL 等)
     insns = append(insns, tail...)
 
     if len(layer.Spec.FlagTriggers) > 0 {
@@ -83,7 +83,7 @@ func genStaticLayer(layer, index, all) (asm.Instructions, error) {
 - **dispatch は parent の field を見る**: 親が advance 前なら R4 = parent_start、 advance 後なら R4 = parent_end。 kunai は前者の状態で dispatch を出す
 - **bracket predicate は dispatch 後**: 親 layer のパケット bytes (= dispatch 元) は predicate には関係ないが、 dispatch 失敗パスを優先するため
 - **layer-entry slot 保存は advance 前**: 子の dispatch が親の primary header を読むとき、 R4 は変動しているので fp の slot に layer entry offset を保存しておく
-- **VAREXT trail は advance 後**: trail は primary header の末尾から計算する length field を消費する
+- **HDRLEN trail は advance 後**: trail は primary header の末尾から計算する length field を消費する
 
 ## Predicate codegen — BSwap 回避と byte-swap constant
 
@@ -291,7 +291,7 @@ verifier は `JGE` から `R3 < 8` を伝播し、 multiply 後に `< 128` と n
 
 ### 3. layer-entry slot anchor (variable layout layer の child dispatch)
 
-`HasVariableLayout()` な layer (= parser machine / VAREXT / FlagTrigger を持つ) は R4 が advance しまくるので、 子の dispatch が親の primary header を読みたいとき R4 - parentHS では届かない。 解決: layer 入場時に R4 を fp の slot (`bpfLoopCtxLayerEntrySlot`) に保存し、 子は slot から load する。
+`HasVariableLayout()` な layer (= parser machine / HDRLEN / FlagTrigger を持つ) は R4 が advance しまくるので、 子の dispatch が親の primary header を読みたいとき R4 - parentHS では届かない。 解決: layer 入場時に R4 を fp の slot (`bpfLoopCtxLayerEntrySlot`) に保存し、 子は slot から load する。
 
 ```
 [parent layer entry (variable layout の場合)]

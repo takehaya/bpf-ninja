@@ -64,8 +64,8 @@ func genParserMachine(layer *ir.LayerInstance, layerIdx int, all []*ir.LayerInst
 	// pick R0 which is consistent on both paths.
 	insns = append(insns, asm.Mov.Reg(asm.R0, asm.R0).WithSymbol(pmCtx.doneLabel))
 
-	// Layer-level VAREXT_LEN_* trail: when the protocol declares both
-	// a parser machine (version self-check) and a VariableSuffix (ipv4
+	// Layer-level HDRLEN_* trail: when the protocol declares both
+	// a parser machine (version self-check) and a HeaderLength (ipv4
 	// IHL trailing), R4 sits at primary_end after the parser's
 	// emitAdvance(hs) inside emitStateBody — same precondition as
 	// genStaticLayer, so they share emitPrimaryVariableTail.
@@ -120,7 +120,7 @@ func (c *pmCtx) emitState(stateIdx int) (asm.Instructions, asm.Instructions, err
 		//
 		//   1. Parent emitted its layer body and stored its own entry
 		//      offsetBase to the slot — either here for parser-machine
-		//      parents, or in genStaticLayer for VAREXT/OPT parents.
+		//      parents, or in genStaticLayer for HDRLEN/OPT parents.
 		//   2. emitEntryDispatch (just above) reads that slot to
 		//      anchor `parent.field == const` reads on the parent's
 		//      primary header, regardless of how far the parent has

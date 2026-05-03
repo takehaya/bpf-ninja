@@ -214,7 +214,7 @@ func WriteProtocolHelp(w io.Writer, name string) error {
 	}
 
 	// Notes: emit one line per *present* variability source. Some
-	// protocols carry more than one (e.g. ipv4 has both a VAREXT IHL
+	// protocols carry more than one (e.g. ipv4 has both a HDRLEN IHL
 	// trailer AND a parser-machine version self-check), so the
 	// branches are independent — switch{first-match} would silently
 	// drop the second source.
@@ -222,7 +222,7 @@ func WriteProtocolHelp(w io.Writer, name string) error {
 		if _, err := io.WriteString(w, "\nNotes:\n"); err != nil {
 			return err
 		}
-		if vs := spec.VariableSuffix; vs != nil {
+		if vs := spec.HeaderLength; vs != nil {
 			if _, err := fmt.Fprintf(w, "  variable trailer: ((byte@%d & 0x%x) >> %d) * %d - %d bytes past fixed header\n",
 				vs.LenByteOff, vs.LenMask, vs.LenShift, vs.Scale, vs.Base); err != nil {
 				return err
