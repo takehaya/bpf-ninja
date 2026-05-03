@@ -249,11 +249,13 @@ func chainEndCheck(spec *vocab.ProtocolSpec, hs int, breakLabel string) (asm.Ins
 	if err != nil {
 		return nil, err
 	}
-	insns := asm.Instructions{
-		asm.Mov.Reg(asm.R0, asm.R4),
-		asm.Add.Reg(asm.R0, asm.R3),
-		asm.LoadMem(asm.R0, asm.R0, int16(-hs+byteOff), asm.Byte),
-	}
+	// Chain-end byte lives at R4 + R3 + (-hs + byteOff); R3 is
+	// post-advance so the const offset is typically negative. R1 is
+	// free in this callback frame (bpf_loop idx no longer used) — use
+	// it as the scalar scratch.
+	loadByteOff := int32(-hs + byteOff)
+	insns := append(asm.Instructions{}, foldOffsetIntoScalar(asm.R1, asm.R3, loadByteOff, breakLabel)...)
+	insns = append(insns, boundedScalarLoad(asm.R0, asm.R4, asm.R1, asm.R5, asm.Byte, breakLabel)...)
 	if mask != 0xff {
 		insns = append(insns, asm.And.Imm(asm.R0, int32(mask)))
 	}
@@ -308,22 +310,45 @@ func encodeChainEndField(bitOff, width int, value uint64) (byteOff int, mask uin
 
 // chainFieldPeek reads the self-dispatch field of the previous
 // instance and jumps to breakLabel on mismatch. Inside the callback
-// R4=scratch_start and R3=ctx.offset, so the dispatch address is
-// R4+R3+(fieldOff-hs) and the helper lets emitFieldDispatchCheck
-// materialise the LDX/JNE against the same byte-swapped constant
-// genFieldDispatch uses in the outer program.
+// R4=scratch_start, R5=scratch_end, R3=ctx.offset; the field lives at
+// R4+R3+(fieldOff-hs) (negative const off — the read targets a
+// position inside the just-consumed header).
+//
+// PTR_TO_PACKET-safe emit: pre-fold the negative offset into a
+// non-negative scalar (R1, free in this callback frame) so the
+// packet-pointer arithmetic uses only positive const offsets, then
+// apply the cbpfc-style end+JGT+LoadMem(-size) pattern. See
+// emitVariableTrail for the same invariant. Falls back to the simple
+// emit (via emitFieldDispatchCheck) when the resolved offset turns
+// out to be non-negative.
 func chainFieldPeek(spec *vocab.ProtocolSpec, selfConst *vocab.DispatchConst, hs int, breakLabel string) (asm.Instructions, error) {
-	return emitFieldDispatchCheck(
-		spec,
-		selfConst,
-		hs,
-		asm.R0,
-		asm.Instructions{
-			asm.Mov.Reg(asm.R0, asm.R4),
-			asm.Add.Reg(asm.R0, asm.R3),
-		},
-		breakLabel,
-	)
+	fieldOff, fieldBytes, err := findFieldByteOffset(spec, selfConst.FieldName)
+	if err != nil {
+		return nil, err
+	}
+	loadByteOff := int32(fieldOff - hs)
+	if loadByteOff >= 0 {
+		return emitFieldDispatchCheck(
+			spec,
+			selfConst,
+			hs,
+			asm.R0,
+			asm.Instructions{
+				asm.Mov.Reg(asm.R0, asm.R4),
+				asm.Add.Reg(asm.R0, asm.R3),
+			},
+			breakLabel,
+		)
+	}
+	size, err := asmSizeFor(fieldBytes)
+	if err != nil {
+		return nil, err
+	}
+	expected := int32(byteSwap(selfConst.Value, fieldBytes))
+	insns := append(asm.Instructions{}, foldOffsetIntoScalar(asm.R1, asm.R3, loadByteOff, breakLabel)...)
+	insns = append(insns, boundedScalarLoad(asm.R0, asm.R4, asm.R1, asm.R5, size, breakLabel)...)
+	insns = append(insns, asm.JNE.Imm(asm.R0, expected, breakLabel))
+	return insns, nil
 }
 
 // chainBounds normalises QuantPlus / QuantStar / QuantRange into the

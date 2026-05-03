@@ -201,10 +201,17 @@ func (c *pmCtx) emitStateBody(state *vocab.ParseState, stateIdx int, isEntry boo
 		insns = append(insns, emitAdvance(hs))
 		if vt, ok := knownVariableTails[ex.HeaderName]; ok {
 			if state.Trans.Kind == vocab.TransSelect {
-				stashInsns, err := emitStashSelectKeys(state.Trans.Select, c, asm.R3, asm.Instructions{
-					asm.Mov.Reg(asm.R3, asm.R0),
-					asm.Add.Reg(asm.R3, offsetBase),
-				})
+				// Inline ABI: R0/R1 are scratch_start/end, R4 is the
+				// running offset (offsetBase). Use R3 as the load
+				// destination / pointer scratch and R5 as the scalar
+				// scratch.
+				stashInsns, err := emitStashSelectKeys(state.Trans.Select, c, stashEnv{
+					addrReg:      asm.R3,
+					scalarReg:    asm.R5,
+					offset:       offsetBase,
+					scratchStart: asm.R0,
+					scratchEnd:   asm.R1,
+				}, dslReject)
 				if err != nil {
 					return nil, nil, err
 				}
@@ -420,11 +427,14 @@ func emitVariableTrail(fixedHs int, vt variableTailSkip, env trailEnv, failLabel
 
 	var insns asm.Instructions
 	if wb := vt.WriteBack; wb != nil {
-		insns = append(insns,
-			asm.Mov.Reg(env.addrReg, env.scratchStart),
-			asm.Add.Reg(env.addrReg, env.offset),
-			asm.LoadMem(env.addrReg, env.addrReg, int16(-fixedHs+wb.SourceByteOff), asm.Byte),
-		)
+		// Source byte lives at R0 + R4 + (-fixedHs + SourceByteOff).
+		// R4 is post-advance so the offset is negative — fold to
+		// non-negative scalar (in lenReg, overwritten by the load),
+		// then bound-load into addrReg. The subsequent loadLayerEntry
+		// reuses lenReg for the writeback target offset.
+		wbByteOff := int32(-fixedHs + wb.SourceByteOff)
+		insns = append(insns, foldOffsetIntoScalar(env.lenReg, env.offset, wbByteOff, failLabel)...)
+		insns = append(insns, boundedScalarLoad(env.addrReg, env.scratchStart, env.lenReg, env.scratchEnd, asm.Byte, failLabel)...)
 		insns = append(insns, env.loadLayerEntry...)
 		insns = append(insns,
 			asm.Add.Reg(env.lenReg, env.scratchStart),
@@ -432,11 +442,13 @@ func emitVariableTrail(fixedHs int, vt variableTailSkip, env trailEnv, failLabel
 		)
 	}
 
-	insns = append(insns,
-		asm.Mov.Reg(env.lenReg, env.scratchStart),
-		asm.Add.Reg(env.lenReg, env.offset),
-		asm.LoadMem(env.lenReg, env.lenReg, int16(-fixedHs+vt.LenFieldByteOff), asm.Byte),
-	)
+	// Length byte lives at R0 + R4 + (-fixedHs + LenFieldByteOff).
+	// R4 has been pre-advanced past the fixed header (emitAdvance),
+	// so the byte offset is negative — fold into a non-negative
+	// scalar before the bounded load.
+	loadByteOff := int32(-fixedHs + vt.LenFieldByteOff)
+	insns = append(insns, foldOffsetIntoScalar(env.addrReg, env.offset, loadByteOff, failLabel)...)
+	insns = append(insns, boundedScalarLoad(env.lenReg, env.scratchStart, env.addrReg, env.scratchEnd, asm.Byte, failLabel)...)
 	if vt.LenMask != 0 {
 		insns = append(insns, asm.And.Imm(env.lenReg, int32(vt.LenMask)))
 	}
@@ -736,7 +748,21 @@ func emitKeyCompare(addr selectAddr, shape selectKeyShape, keyIdx int, value uin
 // selectAddr.fromStash. baseInsns produces the pointer "current
 // header start" into `tempReg`; the helper appends the byte load
 // and store to slot.
-func emitStashSelectKeys(sel *vocab.SelectOp, c *pmCtx, tempReg asm.Register, baseInsns asm.Instructions) (asm.Instructions, error) {
+// stashEnv bundles the registers emitStashSelectKeys needs for
+// packet-pointer-safe loads of select keys. Field naming mirrors
+// trailEnv. addrReg is the load destination (also clobbered as a
+// packet-pointer scratch). scalarReg is a scalar scratch — must
+// differ from addrReg and from the other env registers. offset is
+// the running scalar offset into the packet (= R3 in callback).
+type stashEnv struct {
+	addrReg      asm.Register
+	scalarReg    asm.Register
+	offset       asm.Register
+	scratchStart asm.Register
+	scratchEnd   asm.Register
+}
+
+func emitStashSelectKeys(sel *vocab.SelectOp, c *pmCtx, env stashEnv, failLabel string) (asm.Instructions, error) {
 	if len(sel.Keys) > len(stashKeySlots) {
 		return nil, fmt.Errorf("%w: variable-trail select with %d keys exceeds stash slots", ErrNotImplemented, len(sel.Keys))
 	}
@@ -746,15 +772,19 @@ func emitStashSelectKeys(sel *vocab.SelectOp, c *pmCtx, tempReg asm.Register, ba
 		if err != nil {
 			return nil, err
 		}
-		insns = append(insns, baseInsns...)
-		insns = append(insns, asm.LoadMem(tempReg, tempReg, int16(shape.byteOffsetFromR4), asm.Byte))
+		// byteOffsetFromR4 can be negative (reading back into the
+		// just-passed header). Fold to a non-negative scalar, then
+		// bound-load.
+		byteOff := int32(shape.byteOffsetFromR4)
+		insns = append(insns, foldOffsetIntoScalar(env.scalarReg, env.offset, byteOff, failLabel)...)
+		insns = append(insns, boundedScalarLoad(env.addrReg, env.scratchStart, env.scalarReg, env.scratchEnd, asm.Byte, failLabel)...)
 		if shape.shift > 0 {
-			insns = append(insns, asm.RSh.Imm(tempReg, int32(shape.shift)))
+			insns = append(insns, asm.RSh.Imm(env.addrReg, int32(shape.shift)))
 		}
 		if shape.maskAfterShift != 0xff {
-			insns = append(insns, asm.And.Imm(tempReg, int32(shape.maskAfterShift)))
+			insns = append(insns, asm.And.Imm(env.addrReg, int32(shape.maskAfterShift)))
 		}
-		insns = append(insns, asm.StoreMem(asm.R10, stashKeySlots[i], tempReg, asm.DWord))
+		insns = append(insns, asm.StoreMem(asm.R10, stashKeySlots[i], env.addrReg, asm.DWord))
 	}
 	return insns, nil
 }
@@ -835,10 +865,17 @@ func (c *pmCtx) emitSelfLoopCallback(state *vocab.ParseState, stateIdx int, cbSy
 		)
 		if vt, ok := knownVariableTails[ex.HeaderName]; ok {
 			if state.Trans.Kind == vocab.TransSelect {
-				stashInsns, err := emitStashSelectKeys(state.Trans.Select, c, asm.R0, asm.Instructions{
-					asm.Mov.Reg(asm.R0, asm.R4),
-					asm.Add.Reg(asm.R0, asm.R3),
-				})
+				// Callback ABI: R0/R1 are free here (R1 = bpf_loop idx
+				// is already past use), R3 = current offset, R4/R5 =
+				// scratchStart/End. Use R0 as the load destination /
+				// pointer scratch and R1 as the scalar scratch.
+				stashInsns, err := emitStashSelectKeys(state.Trans.Select, c, stashEnv{
+					addrReg:      asm.R0,
+					scalarReg:    asm.R1,
+					offset:       asm.R3,
+					scratchStart: asm.R4,
+					scratchEnd:   asm.R5,
+				}, breakLabel)
 				if err != nil {
 					return nil, err
 				}

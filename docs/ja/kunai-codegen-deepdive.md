@@ -332,4 +332,4 @@ kunai codegen の核心は **verifier との対戦**。 boundary check の位置
 
 これらは Test infrastructure の deep-dive として別シリーズで扱ってもいい。 packet filter library を 1.0 に向けてどう品質保証するかの実例として面白い領域。
 
-連載お読みいただきありがとう。 kunai は [xdp-ninja](https://github.com/takehaya/xdp-ninja) の `--dsl` フラグ経由で実 packet capture に使えるので、 試してみてほしい。 vocab 追加 (1 ファイル) も歓迎。
+連載お読みいただきありがとう。 kunai は [xdp-ninja](https://github.com/takehaya/xdp-ninja) の default filter syntax として実 packet capture に使えるので、 試してみてほしい。 vocab 追加 (1 ファイル) も歓迎。

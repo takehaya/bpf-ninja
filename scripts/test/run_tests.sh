@@ -177,14 +177,14 @@ test_exit_pcap_action() {
     [[ $result -eq 0 ]]
 }
 
-test_dsl_entry_filter_match()    { run_count_test 3 --dsl -i veth0 -c 3 "eth/ipv4/icmp"; }
-test_dsl_entry_predicate_match() { run_count_test 3 --dsl -i veth0 -c 3 "eth/ipv4/icmp[type==8]"; }
-test_dsl_entry_filter_nomatch()  { run_nomatch_test --dsl -i veth0 "eth/ipv4/tcp"; }
-test_dsl_capture_headers()       { run_pcap_test --dsl -i veth0 -c 3 "eth/ipv4/icmp capture headers+32"; }
+test_dsl_entry_filter_match()    { run_count_test 3 -i veth0 -c 3 "eth/ipv4/icmp"; }
+test_dsl_entry_predicate_match() { run_count_test 3 -i veth0 -c 3 "eth/ipv4/icmp[type==8]"; }
+test_dsl_entry_filter_nomatch()  { run_nomatch_test -i veth0 "eth/ipv4/tcp"; }
+test_dsl_capture_headers()       { run_pcap_test -i veth0 -c 3 "eth/ipv4/icmp capture headers+32"; }
 
 # Dummy XDP returns XDP_PASS (=2); this exercises the fexit action atom
 # codegen against a known return value.
-test_dsl_exit_action() { run_count_test 3 --dsl -i veth0 --mode exit -c 3 "eth/ipv4/icmp where action == XDP_PASS"; }
+test_dsl_exit_action() { run_count_test 3 -i veth0 --mode exit -c 3 "eth/ipv4/icmp where action == XDP_PASS"; }
 
 test_graceful_shutdown() {
     require_bpftool || return 1

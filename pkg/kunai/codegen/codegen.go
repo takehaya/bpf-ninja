@@ -404,14 +404,68 @@ func emitFieldDispatchCheck(
 // with the field's within-layer byte offset as the immediate.
 const offsetBase = asm.R4
 
-// loadFromOffset emits the three-instruction sequence that materialises
-// the scratch address `R0 + offsetBase + off` into R3 and loads `size`
-// bytes from there into R3.
-func loadFromOffset(off int16, size asm.Size) asm.Instructions {
+// emitBoundedLoad emits a packet-pointer-safe `size`-byte load at
+// R0+offsetBase+off into dst. The end+JGT+LoadMem(-size) pattern
+// is mandatory on PTR_TO_PACKET (verifier rejects through a packet
+// pointer + scalar without an explicit bound check) and harmless on
+// PTR_TO_MAP_VALUE (the JGT is redundant against the static map
+// bound).
+func emitBoundedLoad(dst asm.Register, off int16, size asm.Size, failLabel string) asm.Instructions {
+	sizeBytes := int32(size.Sizeof())
 	return asm.Instructions{
 		asm.Mov.Reg(asm.R3, asm.R0),
 		asm.Add.Reg(asm.R3, offsetBase),
-		asm.LoadMem(asm.R3, asm.R3, off, size),
+		asm.Add.Imm(asm.R3, int32(off)+sizeBytes),
+		asm.JGT.Reg(asm.R3, asm.R1, failLabel),
+		asm.Sub.Imm(asm.R3, sizeBytes),
+		asm.LoadMem(dst, asm.R3, 0, size),
+	}
+}
+
+// foldOffsetIntoScalar emits the scalar-arithmetic preamble that lets
+// a subsequent boundedScalarLoad use only positive const offsets when
+// the desired packet-relative offset is potentially negative (= reading
+// back into a just-passed header). Produces dst = src + off, gating on
+// failLabel when off < 0 and src < |off| would underflow.
+//
+// Required because the verifier conservatively rejects loads through a
+// PTR_TO_PACKET that has been advanced by a const negative offset, even
+// after a JGT bound check on the access end. Folding the negative byte
+// offset into a non-negative scalar before the pkt-pointer arithmetic
+// sidesteps the issue.
+//
+// dst MUST differ from src; the helper writes dst.
+func foldOffsetIntoScalar(dst, src asm.Register, off int32, failLabel string) asm.Instructions {
+	switch {
+	case off < 0:
+		return asm.Instructions{
+			asm.JLT.Imm(src, -off, failLabel),
+			asm.Mov.Reg(dst, src),
+			asm.Sub.Imm(dst, -off),
+		}
+	case off > 0:
+		return asm.Instructions{
+			asm.Mov.Reg(dst, src),
+			asm.Add.Imm(dst, off),
+		}
+	default:
+		return asm.Instructions{asm.Mov.Reg(dst, src)}
+	}
+}
+
+// boundedScalarLoad emits a PTR_TO_PACKET-safe `size`-byte load from
+// scratchStart + scalar into dst. Uses the cbpfc end+JGT+LoadMem(-size)
+// pattern; dst doubles as the pointer scratch and final load
+// destination. The scalar MUST be non-negative — pair with
+// foldOffsetIntoScalar when the source byte offset can go negative.
+func boundedScalarLoad(dst, scratchStart, scalar, scratchEnd asm.Register, size asm.Size, failLabel string) asm.Instructions {
+	sizeBytes := int32(size.Sizeof())
+	return asm.Instructions{
+		asm.Mov.Reg(dst, scratchStart),
+		asm.Add.Reg(dst, scalar),
+		asm.Add.Imm(dst, sizeBytes),
+		asm.JGT.Reg(dst, scratchEnd, failLabel),
+		asm.LoadMem(dst, dst, int16(-sizeBytes), size),
 	}
 }
 
@@ -1292,19 +1346,31 @@ func whereLayerEntrySlot(layerPos int) (int16, error) {
 // emitFieldLoad reads `size` bytes at `fieldOff` from the layer
 // anchored by `anchor` into R3. The three anchor modes pick different
 // addressing strategies; callers don't need to branch.
+//
+// All three branches are PTR_TO_PACKET-safe: an explicit
+// `JGT (end-of-access), R1, dslReject` precedes the load so the
+// verifier propagates `r ≥ size` to the LoadMem. The check is
+// mandatory for PTR_TO_PACKET and harmless for PTR_TO_MAP_VALUE.
 func emitFieldLoad(anchor layerAnchor, fieldOff int, size asm.Size) asm.Instructions {
+	sizeBytes := int32(size.Sizeof())
 	switch {
 	case anchor.UseSlot:
 		return asm.Instructions{
 			asm.LoadMem(asm.R3, asm.R10, anchor.SlotOff, asm.DWord),
 			asm.Add.Reg(asm.R3, asm.R0),
-			asm.LoadMem(asm.R3, asm.R3, int16(fieldOff), size),
+			asm.Add.Imm(asm.R3, int32(fieldOff)+sizeBytes), // R3 = end-of-access
+			asm.JGT.Reg(asm.R3, asm.R1, dslReject),
+			asm.LoadMem(asm.R3, asm.R3, int16(-sizeBytes), size), // load at R3 - size
 		}
 	case anchor.UseR4:
-		return loadFromOffset(int16(fieldOff), size)
+		return emitBoundedLoad(asm.R3, int16(fieldOff), size, dslReject)
 	default:
+		totalOff := int32(anchor.AbsOffset+fieldOff) + sizeBytes
 		return asm.Instructions{
-			asm.LoadMem(asm.R3, asm.R0, int16(anchor.AbsOffset+fieldOff), size),
+			asm.Mov.Reg(asm.R3, asm.R0),
+			asm.Add.Imm(asm.R3, totalOff), // R3 = R0 + absOff + fieldOff + size
+			asm.JGT.Reg(asm.R3, asm.R1, dslReject),
+			asm.LoadMem(asm.R3, asm.R3, int16(-sizeBytes), size),
 		}
 	}
 }

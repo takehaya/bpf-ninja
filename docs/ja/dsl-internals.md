@@ -41,7 +41,7 @@ xdp-ninja は **non-invasive な XDP 観測ツール**。BPF trampoline (fentry 
 |---|---|
 | **薄い user-facing DSL + 厚い vocab** | プロトコル知識は再利用可能な `.p4` ファイルに切り出す |
 | **kernel 5.17+ (quantifier / parser self-loop あり) / さらに古くても可 (fixed chain)** | `bpf_loop` が必須。predicate は BPF_END で済むので BSWAP (6.6+) は不要 |
-| **`--dsl` フラグ** | 既存の cbpfc パスを破壊しない、opt-in |
+| **DSL がデフォルト、`--cbpf` opt-in** | DSL の surface が安定したので default 化、cbpfc パスは legacy fallback として残す (deprecation notice 付き) |
 | **baked-in vocab** | `//go:embed *.p4` で `.p4` ファイル群を binary に同梱、deploy 時に外部依存ゼロ |
 | **vocab は p4lite (P4-16 strict subset)** | p4c で parse 可能な範囲に留める (互換性は §5 参照) |
 | **MVP は ラベル 2 段まで** | `@outer` / `@inner` の 2 段で VXLAN / GTP-U の典型ケースをカバー |
@@ -106,7 +106,7 @@ xdp-ninja は **non-invasive な XDP 観測ツール**。BPF trampoline (fentry 
 | Codegen | `pkg/kunai/codegen/` | `Gen(p, mode)` | IR → `Output{Main, Callbacks, Capture}` |
 | Compile | `pkg/kunai/compile.go` | `Compile(expr, mode)` | 全部束ねる薄い wrapper |
 | Load 統合 | `internal/program/program.go` | `compileFilter(expr, useDSL)` | DSL or cbpfc を選び runFilter wrapper に乗せる |
-| CLI | `cmd/xdp-ninja/main.go` | `--dsl` 分岐 | CLI 引数解釈 |
+| CLI | `cmd/xdp-ninja/main.go` | `resolveFilterSyntax()` | DSL がデフォルト、`--cbpf` で legacy 経路 |
 
 ### 2.3 パッケージごとのツアー (依存順、leaf → root)
 
@@ -114,7 +114,7 @@ xdp-ninja は **non-invasive な XDP 観測ツール**。BPF trampoline (fentry 
 
 #### `ast/` (~560 行) — 純粋な型定義
 
-`ast.go` が AST のルート型。`Filter` (= 1 つの `--dsl` 式に対応)、その下に `Layer[]` / `WhereExpr` / `CaptureClause[]`。`Predicate` / `WhereExpr` / `CaptureClause` 等の各 Sum 型は `kinds.go` の enum (`PredKind`, `WhereKind`, `CaptureKind`, `ValueKind`, `Quantifier`, `CmpOp`, `ArithOp`) で識別される。
+`ast.go` が AST のルート型。`Filter` (= 1 つの DSL filter 式に対応)、その下に `Layer[]` / `WhereExpr` / `CaptureClause[]`。`Predicate` / `WhereExpr` / `CaptureClause` 等の各 Sum 型は `kinds.go` の enum (`PredKind`, `WhereKind`, `CaptureKind`, `ValueKind`, `Quantifier`, `CmpOp`, `ArithOp`) で識別される。
 
 **読みどころ**:
 - `ast.go` のパッケージ doc に `Unsupported string` フィールドの意図 — parser が受理した「これから codegen でやる予定」(PredIn/PredHas/CapFields) を明示マーク
