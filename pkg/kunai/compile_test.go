@@ -178,6 +178,28 @@ func TestCompileWhereArithCompare(t *testing.T) {
 	}
 }
 
+func TestCompileWhereDeepNestedArith(t *testing.T) {
+	// Left-leaning chain of 7 `+` binops — the largest tree the
+	// post-bump maxArithDepth=8 guard accepts (deepest binop at
+	// call-depth 6, its leaf children at call-depth 7 < 8). The old
+	// maxArithDepth=4 rejected anything past 3 binops, so this
+	// expression is the headline gain for P2-10.
+	//
+	// Using tcp.sport (a 16-bit field) keeps codegen on the 64-bit
+	// arith path that owns slot 0..7. (A top-level parenthesised
+	// arith subexpression like `(a+b)*c` cannot start a where atom
+	// because the where parser claims the outer `(` for itself; this
+	// is an orthogonal parser quirk, not part of the depth limit.)
+	expr := "eth/ipv4/tcp where tcp.sport+1+2+3+4+5+6+7 == 100"
+	insns, err := compileForTest(expr)
+	if err != nil {
+		t.Fatalf("Compile %q: %v", expr, err)
+	}
+	if len(insns) == 0 {
+		t.Fatal("expected non-empty instructions")
+	}
+}
+
 func TestCompileWhereBoolLitTrue(t *testing.T) {
 	// `where true` is the identity condition; compile must succeed.
 	insns, err := compileForTest("eth/ipv4/tcp where true")

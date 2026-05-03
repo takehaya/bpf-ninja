@@ -45,21 +45,29 @@ F13   bit-slice non-aligned ≤64bit 範囲で post-load shift+mask
 F14   packet-pointer codegen `--mode xdp` で DSL 13 chain 全 verifier 通過
 P2-8  field in              ✅ F7 で landed
 P2-9  field has             ✅ F6 bitwise & で superseded (`tcp.flags & 0x12 == 0x12`)
+P2-10 算術ネスト 4→8        bpf_loop ctx を 16 byte 下に移動 + maxArithDepth bump
 B-1   .exists bool atom     ✅ 型システム PR-2 で対応 (where 句直接記述)
 ```
 
 ## P2: 機能拡張 (需要次第)
 
-### 10. 算術ネスト 4 段以上
+### 10b. 算術ネスト depth 8 → 16 (将来枠)
 
-**動機**: 現在 stack slot が 4 段。`((a+b)*c+d)*e` のような長い式が ErrNotImplemented。
+**動機**: P2-10 で 4 → 8 まで上げた (`maxArithDepth = 8`、bpf_loop ctx を -16 シフトして [-160, -128) gap を半分使用)。さらに 16 まで上げると `where` 句で 15 段の binop が書けるが、現時点で 8 段越えの実用ケースは出ていない。
 
-**スコープ**:
-- `arithStackBase = -56`, max depth 4 を 8 か 16 まで拡張
-- BPF stack 512 byte 制限内に収める
-- 既存 stack 利用箇所 (`-48` の args ptr, bpf_loop ctx の `-128`〜 など) との衝突を再確認
+**ブロッカー**: 16 にすると arith slot 13 (-160) が `whereLayerEntrySlotBase = -160` と衝突する。回避案は 2 通り:
 
-**工数**: 0.5 日。
+- (a) `whereLayerEntrySlotCap` を 12 → 8 に減らす (12-layer chain は実用稀。192 byte → 128 byte の節約で arith に 8 slot 回せる)
+- (b) where layer slots を `[-256, -160)` に押し下げる ([-512, -256) は今全部 free だが host が将来拡張する余地として残しておきたい)
+
+**スコープ (将来)**:
+- 上記 (a) または (b) を採用
+- `pkg/kunai/codegen/codegen.go::KunaiStackTop` doc block 更新
+- `TestZeroCapsIsHostAgnostic` で stack budget が 512 byte 内に収まること再確認
+
+**parser quirk** (P2-10 と同時にレポート、修正は別件): where atom の冒頭 `(` は parseWhereAtom が where-or-expr 用に消費するので、`where (a+b)*c == 21` の形で arith subexpression を parens 化することが できない。回避は `where a*c+b*c == 21` のように parens を外すか、`where ... and (a*c == 21)` 形の bool wrap で書く。修正には parser の lookahead 追加 (paren が arith なのか where なのか peek) または明示的 syntax marker (`@(` 等) が必要。
+
+**工数**: 0.5〜1 日 (どの slot 構成を採用するか合意 + test 拡張)。
 
 ### B-2. IPv4 options vocab 拡張
 

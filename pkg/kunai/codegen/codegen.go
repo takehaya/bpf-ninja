@@ -212,8 +212,17 @@ const dslReject = "dsl_reject"
 // metadata, etc.) without colliding with kunai. The current
 // allocations:
 //
-//   - kunai: arith spill at -56 .. -80 (4 slots × 8 bytes)
-//   - kunai: bpf_loop ctx at -128 .. -96 (4 slots × 8 bytes)
+//   - kunai: arith spill at -56 .. -112 (8 slots × 8 bytes,
+//     maxArithDepth = 8). Slot 4 (-88) is shared with the 128-bit
+//     transient stash like every other slot in the region; the
+//     64-bit and 128-bit paths never interleave.
+//   - kunai: bpf_loop ctx at -144 .. -112 (4 slots × 8 bytes). The
+//     top byte of the ctx (layerEntry's upper bound at -112) sits
+//     flush against the arith stack's bottom byte at the same
+//     offset — the two writes touch disjoint byte ranges so the
+//     packing is verifier-safe. The 16-byte gap [-160, -144)
+//     below ctx is the contract margin against the where-layer
+//     slots.
 //   - kunai: per-layer entry slots at -160 .. -160-8*N (where N <
 //     whereLayerEntrySlotCap = 12), allocated lazily when the
 //     resolver marks a layer NeedsRuntimeOffset (= where / capture

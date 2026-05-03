@@ -2,6 +2,7 @@ package codegen
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -325,6 +326,44 @@ func TestGenArithDepthLimit(t *testing.T) {
 	_, err := Gen(p, Capabilities{})
 	if !errors.Is(err, ErrNotImplemented) {
 		t.Fatalf("err = %v; want ErrNotImplemented for deep arith", err)
+	}
+}
+
+func TestGenArithNestedHappyPath(t *testing.T) {
+	// Pin every nesting count from 1 up to the largest tree the depth
+	// guard accepts so a future bump (or stack-layout change) cannot
+	// silently drop a level. The tree is left-leaning:
+	// ((((1+1)+1)+1)... — `binops` = N produces N nested binops on the
+	// left spine. The depth guard rejects at call-depth >= maxArithDepth,
+	// which is reached by the leaf children of the deepest binop, so the
+	// largest accepted tree has maxArithDepth-1 binops (deepest binop at
+	// call-depth maxArithDepth-2, its leaves at maxArithDepth-1).
+	totalLenField := &ipv4Spec.Fields[3]
+	for binops := 1; binops < maxArithDepth; binops++ {
+		t.Run(fmt.Sprintf("binops_%d", binops), func(t *testing.T) {
+			var expr = &ir.ArithExpr{Kind: ast.ArithConst, Const: 1}
+			for range binops {
+				expr = &ir.ArithExpr{
+					Kind:  ast.ArithBinOp,
+					Op:    ast.ArithAdd,
+					Left:  expr,
+					Right: &ir.ArithExpr{Kind: ast.ArithConst, Const: 1},
+				}
+			}
+			p := ethIPv4TCPProgram()
+			p.Where = &ir.Condition{
+				Kind: ast.WAtomArith,
+				Op:   ast.CmpEq,
+				ArithL: &ir.ArithExpr{
+					Kind:  ast.ArithField,
+					Field: &ir.FieldRef{Layer: p.Layers[1], Field: totalLenField},
+				},
+				ArithR: expr,
+			}
+			if _, err := Gen(p, Capabilities{}); err != nil {
+				t.Fatalf("binops %d: Gen: %v", binops, err)
+			}
+		})
 	}
 }
 

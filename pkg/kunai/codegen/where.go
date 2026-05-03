@@ -603,21 +603,19 @@ func (c *whereCtx) genNot(w *ir.Condition, failLabel string) (asm.Instructions, 
 //
 // Slot allocation (each path "owns" its slots while it executes):
 //
-//   - 0, 1: genArithCompare128's LHS preserve in the compare phase
-//     (written AFTER leftInsns + rightInsns return; callers inside
-//     genArith128 MUST NOT touch slot 0 or 1).
-//   - 0..3: 64-bit arith stack — genArithWithBits at depth d uses
+//   - 0..7: 64-bit arith stack — genArithWithBits at depth d uses
 //     slot d. The 64-bit and 128-bit paths never interleave within a
-//     single binop emit, so they can share slot 0..3 across calls.
-//   - 2, 3: 128-bit `field + field` LHS high/low preserve while RHS
-//     is computed (used inside genArith128 only).
-//   - 4 (-88): genArithField128Load's high-half stash so the
-//     low-half load can clobber R3 freely. Transient — freed when
-//     the field load returns. The bpf_loop ctx region starts at -96
-//     so this slot is comfortably inside the kunai-owned region.
+//     single binop emit, so the 128-bit path safely reuses slots in
+//     this region for its own preserves: 0,1 for genArithCompare128's
+//     LHS hold, 2,3 for genArith128's `field + field` LHS hi/lo, and
+//     4 for genArithField128Load's high-half transient stash.
+//
+// The deepest slot (slot 7 at -112) writes bytes [-112, -104) and
+// abuts bpfLoopCtxLayerEntrySlot's range [-120, -112) without
+// overlap.
 const (
 	arithStackBase = -56
-	maxArithDepth  = 4
+	maxArithDepth  = 8
 )
 
 // arithCmpTargetBits returns the comparison's effective integer

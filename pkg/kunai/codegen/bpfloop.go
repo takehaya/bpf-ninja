@@ -39,10 +39,10 @@ var chainCbProto = &btf.FuncProto{
 
 // ctx layout on the main program's stack:
 //
-//	[-128..-120) offset       u64   current byte offset from scratch
-//	[-120..-112) scratchStart u64   PTR_TO_MAP_VALUE at layer 0
-//	[-112..-104) scratchEnd   u64   PTR_TO_MAP_VALUE + snap length
-//	[-104..-96)  layerEntry   u64   scalar offset of the current
+//	[-144..-136) offset       u64   current byte offset from scratch
+//	[-136..-128) scratchStart u64   PTR_TO_MAP_VALUE at layer 0
+//	[-128..-120) scratchEnd   u64   PTR_TO_MAP_VALUE + snap length
+//	[-120..-112) layerEntry   u64   scalar offset of the current
 //	                                parser-machine layer's first byte;
 //	                                used by IPv6 ext-chain write-back.
 //	                                Unused by chain (mpls+, vlan+)
@@ -50,15 +50,20 @@ var chainCbProto = &btf.FuncProto{
 //	                                slot as-is.
 //
 // The callback reads each via its second arg (R2 = &ctx at
-// stack[-128]). bpfLoopCbCtx*Field are the offsets the callback uses
+// stack[-144]). bpfLoopCbCtx*Field are the offsets the callback uses
 // against R2 — kept in sync with the stack-slot constants here so a
-// future re-layout only edits one place.
+// future re-layout only edits one place. The arith stack bottom
+// (slot 7 at -112 under maxArithDepth=8) sits flush against
+// layerEntry's upper bound — the byte ranges [-112, -104) and
+// [-120, -112) are disjoint, so packing without a margin is safe.
+// The remaining 16-byte gap [-160, -144) below ctx is the contract
+// margin against whereLayerEntrySlotBase.
 const (
-	bpfLoopCtxOffsetSlot       int16 = -128
-	bpfLoopCtxScratchStartSlot int16 = -120
-	bpfLoopCtxScratchEndSlot   int16 = -112
-	bpfLoopCtxLayerEntrySlot   int16 = -104
-	bpfLoopCtxBaseOffset       int32 = -128
+	bpfLoopCtxOffsetSlot       int16 = -144
+	bpfLoopCtxScratchStartSlot int16 = -136
+	bpfLoopCtxScratchEndSlot   int16 = -128
+	bpfLoopCtxLayerEntrySlot   int16 = -120
+	bpfLoopCtxBaseOffset       int32 = int32(bpfLoopCtxOffsetSlot)
 
 	bpfLoopCbCtxOffsetField       int16 = 0
 	bpfLoopCbCtxScratchStartField int16 = 8
