@@ -146,6 +146,23 @@ func computeAuxLayouts(states []*ParseState, entryIdx int, headerRefs map[string
 			continue
 		}
 		state := states[extractStateIdx]
+		// Auxes extracted inside a multi-state self-loop sibling
+		// (TLV walk) live at a per-iteration dynamic offset and are
+		// gated by the loop entry's lookahead dispatch — not by a
+		// primary-header field the static gating model can name.
+		// where-clause access for these auxes routes through the
+		// option-walk codegen path (genOptionLookupLoad), which uses
+		// OPT_*_KIND/SIZE consts rather than AuxLayout.OffsetInLayer
+		// or Gating, so a nil Gating + zero OffsetInLayer is safe.
+		if IsMultiStateLoopSibling(states, extractStateIdx) {
+			out[outName] = &AuxLayout{
+				OutParam:   outName,
+				HeaderName: hdr.Name,
+				HeaderRef:  hdr,
+				HeaderSize: headerSizeBits / 8,
+			}
+			continue
+		}
 		if state.OffsetAtEntry < 0 {
 			return nil, fmt.Errorf("%s:%s: aux %q extracted at state %q whose static byte offset is undefined (stack-cycle path); single aux predicates require a unique offset", source, state.Pos, outName, state.Name)
 		}
@@ -268,14 +285,21 @@ func gatingFromSelect(sel *SelectOp, extractIdx int, primary *p4lite.Header, sou
 // mergeBitFieldsToMask folds a tuple of single-byte primary-header
 // keys into one (byteOffset, mask) pair so codegen can emit a single
 // byte read followed by an AND + compare. All keys must live in the
-// primary header within the same byte, with no straddle.
-func mergeBitFieldsToMask(keys []FieldRef, primary *p4lite.Header, op GatingOp, value uint64, source string, pos p4lite.Position) (*AuxGating, error) {
+// primary header within the same byte, with no straddle. Lookahead
+// keys are rejected — the aux-gating model needs an extracted field
+// the gating predicate can name, and a lookahead peeks unconsumed
+// bytes that don't bind to an aux's presence.
+func mergeBitFieldsToMask(keys []SelectKey, primary *p4lite.Header, op GatingOp, value uint64, source string, pos p4lite.Position) (*AuxGating, error) {
 	if len(keys) == 0 {
 		return nil, fmt.Errorf("%s:%s: aux gating: no select keys", source, pos)
 	}
 	byteOff := -1
 	var mask uint64
-	for i, k := range keys {
+	for i, sk := range keys {
+		if sk.Kind != SelectKeyField {
+			return nil, fmt.Errorf("%s:%s: aux gating key %d is a `pkt.lookahead<...>()` peek; aux gating requires a field reference", source, pos, i)
+		}
+		k := sk.Field
 		if k.HeaderName != primary.Name {
 			return nil, fmt.Errorf("%s:%s: aux gating key %d (%s.%s) is not in the primary header %q", source, pos, i, k.HeaderName, k.FieldName, primary.Name)
 		}
@@ -351,6 +375,17 @@ func assignStateOffsets(states []*ParseState, entryIdx int, source string) error
 				// Self-loop on a stack-pushing state: don't propagate
 				// the post-extract offset back to itself, the next
 				// iteration's entry offset is dynamic.
+				continue
+			}
+			if succ >= 0 && succ < len(states) && IsMultiStateLoopEntry(states, succ) &&
+				s.Trans.Kind == TransDirect && s.Trans.Target == succ {
+				// Multi-state self-loop entry (TLV walk parse_options
+				// shape): a direct edge from a sibling back to the
+				// entry is the per-iteration loop-back, which the
+				// bpf_loop callback handles dynamically. The first
+				// edge into the entry comes from outside the cycle
+				// (e.g. start → parse_options) and still propagates
+				// normally.
 				continue
 			}
 			stack = append(stack, frame{succ, nextOff})
@@ -532,6 +567,28 @@ func buildExtract(es *p4lite.ExtractStmt, ctx *buildCtx) (ExtractOp, error) {
 //   - ScaleLog2 ≥ 3 keeps Scale a whole-byte multiplier; codegen
 //     advances R4 in bytes, sub-byte shifts have no path.
 func buildAdvance(as *p4lite.AdvanceStmt, ctx *buildCtx) (AdvanceOp, error) {
+	switch as.Kind {
+	case p4lite.AdvanceField:
+		return buildAdvanceField(as, ctx)
+	case p4lite.AdvanceLookahead:
+		return buildAdvanceLookahead(as, ctx)
+	case p4lite.AdvanceLiteral:
+		return buildAdvanceLiteral(as, ctx)
+	}
+	return AdvanceOp{}, fmt.Errorf("%s:%s: unknown pkt.advance template kind %d", ctx.source, as.Pos, as.Kind)
+}
+
+// scaleBytesFromLog2 converts the AdvanceStmt's `<< S` shift count
+// (in bits) into a whole-byte multiplier. S < 3 makes the shift
+// sub-byte, which has no codegen path — R4 advances in bytes.
+func scaleBytesFromLog2(as *p4lite.AdvanceStmt, ctx *buildCtx) (int, error) {
+	if as.ScaleLog2 < 3 {
+		return 0, fmt.Errorf("%s:%s: pkt.advance shift S=%d is sub-byte (codegen advances in whole bytes; require S ≥ 3)", ctx.source, as.Pos, as.ScaleLog2)
+	}
+	return 1 << (as.ScaleLog2 - 3), nil
+}
+
+func buildAdvanceField(as *p4lite.AdvanceStmt, ctx *buildCtx) (AdvanceOp, error) {
 	h, ok := ctx.headerRefs[as.Target]
 	if !ok {
 		return AdvanceOp{}, fmt.Errorf("%s:%s: pkt.advance target %q is not an `out` header parameter", ctx.source, as.Pos, as.Target)
@@ -551,13 +608,14 @@ func buildAdvance(as *p4lite.AdvanceStmt, ctx *buildCtx) (AdvanceOp, error) {
 	if bitInByte+fieldBits > 8 {
 		return AdvanceOp{}, fmt.Errorf("%s:%s: pkt.advance field %q crosses a byte boundary (bits [%d,%d) — only single-byte fields are supported)", ctx.source, as.Pos, as.FieldName, bitOff, bitOff+fieldBits)
 	}
-	if as.ScaleLog2 < 3 {
-		return AdvanceOp{}, fmt.Errorf("%s:%s: pkt.advance shift S=%d is sub-byte (codegen advances in whole bytes; require S ≥ 3)", ctx.source, as.Pos, as.ScaleLog2)
+	scaleBytes, err := scaleBytesFromLog2(as, ctx)
+	if err != nil {
+		return AdvanceOp{}, err
 	}
 	lsbShift := 8 - bitInByte - fieldBits
 	mask := ((1 << fieldBits) - 1) << lsbShift
-	scaleBytes := 1 << (as.ScaleLog2 - 3)
 	return AdvanceOp{
+		Kind:      AdvanceOpField,
 		Target:    as.Target,
 		FieldName: as.FieldName,
 		Skip: &HeaderLength{
@@ -568,6 +626,59 @@ func buildAdvance(as *p4lite.AdvanceStmt, ctx *buildCtx) (AdvanceOp, error) {
 			Base:       as.BaseWords * scaleBytes,
 		},
 		Pos: as.Pos,
+	}, nil
+}
+
+// buildAdvanceLookahead handles
+// `pkt.advance(((bit<N>)pkt.lookahead<bit<M>>()[hi:lo]) << S)`. The
+// slice [hi:lo] must align with one byte of the M-bit peek so the
+// codegen path stays a single byte LDX. M is in bits and the peek
+// is in network MSB-first order, so the byte position from R4 is
+// `(M/8 - 1) - (lo/8)`.
+func buildAdvanceLookahead(as *p4lite.AdvanceStmt, ctx *buildCtx) (AdvanceOp, error) {
+	if as.LookaheadBits%8 != 0 {
+		return AdvanceOp{}, fmt.Errorf("%s:%s: pkt.lookahead<bit<%d>>() must peek a whole-byte width", ctx.source, as.Pos, as.LookaheadBits)
+	}
+	sliceWidth := as.SliceHi - as.SliceLo + 1
+	if sliceWidth != 8 {
+		return AdvanceOp{}, fmt.Errorf("%s:%s: pkt.advance lookahead slice [%d:%d] must select exactly 8 bits", ctx.source, as.Pos, as.SliceHi, as.SliceLo)
+	}
+	if as.SliceLo%8 != 0 {
+		return AdvanceOp{}, fmt.Errorf("%s:%s: pkt.advance lookahead slice [%d:%d] must start at a byte boundary (lo %% 8 == 0)", ctx.source, as.Pos, as.SliceHi, as.SliceLo)
+	}
+	scaleBytes, err := scaleBytesFromLog2(as, ctx)
+	if err != nil {
+		return AdvanceOp{}, err
+	}
+	byteOff := (as.LookaheadBits / 8) - 1 - (as.SliceLo / 8)
+	return AdvanceOp{
+		Kind: AdvanceOpLookahead,
+		Skip: &HeaderLength{
+			LenByteOff: byteOff,
+			LenMask:    0xFF,
+			LenShift:   0,
+			Scale:      scaleBytes,
+			Base:       0,
+		},
+		Pos: as.Pos,
+	}, nil
+}
+
+// buildAdvanceLiteral handles `pkt.advance(<INT>)`. The literal is
+// the bit count; codegen advances R4 by literal/8 bytes after a
+// bounds check. Sub-byte literals are rejected (no whole-byte
+// codegen path).
+func buildAdvanceLiteral(as *p4lite.AdvanceStmt, ctx *buildCtx) (AdvanceOp, error) {
+	if as.LiteralBits%8 != 0 {
+		return AdvanceOp{}, fmt.Errorf("%s:%s: pkt.advance(%d) is sub-byte (must be a multiple of 8)", ctx.source, as.Pos, as.LiteralBits)
+	}
+	if as.LiteralBits <= 0 {
+		return AdvanceOp{}, fmt.Errorf("%s:%s: pkt.advance(%d) must advance at least 1 byte", ctx.source, as.Pos, as.LiteralBits)
+	}
+	return AdvanceOp{
+		Kind:         AdvanceOpLiteral,
+		LiteralBytes: as.LiteralBits / 8,
+		Pos:          as.Pos,
 	}, nil
 }
 
@@ -611,13 +722,26 @@ func buildSelect(sel *p4lite.Select, ctx *buildCtx) (*SelectOp, error) {
 	if len(sel.Keys) > parserMachineMaxKeys {
 		return nil, fmt.Errorf("%s:%s: `transition select` has %d keys; MVP cap is %d", ctx.source, sel.Pos, len(sel.Keys), parserMachineMaxKeys)
 	}
-	keys := make([]FieldRef, len(sel.Keys))
+	keys := make([]SelectKey, len(sel.Keys))
 	for i, k := range sel.Keys {
-		ref, err := resolveFieldRef(k, ctx, sel.Pos)
-		if err != nil {
-			return nil, err
+		switch k.Kind {
+		case p4lite.SelectKeyField:
+			ref, err := resolveFieldRef(k.Path, ctx, k.Pos)
+			if err != nil {
+				return nil, err
+			}
+			keys[i] = SelectKey{Kind: SelectKeyField, Field: ref, Pos: k.Pos}
+		case p4lite.SelectKeyLookahead:
+			// Codegen only knows how to single-byte LDX a lookahead
+			// key. Wider widths (multi-byte peeks, sub-byte slicing)
+			// would need a different load shape.
+			if k.Bits != 8 {
+				return nil, fmt.Errorf("%s:%s: `pkt.lookahead<bit<%d>>()` select keys must be exactly 8 bits; for wider peeks, slice the value inside a pkt.advance arg or extract a header first", ctx.source, k.Pos, k.Bits)
+			}
+			keys[i] = SelectKey{Kind: SelectKeyLookahead, Bits: k.Bits, Pos: k.Pos}
+		default:
+			return nil, fmt.Errorf("%s:%s: unknown SelectKey kind %d", ctx.source, k.Pos, k.Kind)
 		}
-		keys[i] = ref
 	}
 
 	out := &SelectOp{Keys: keys, Default: StateReject, Pos: sel.Pos}
@@ -709,17 +833,121 @@ func resolveFieldRef(keyPath string, ctx *buildCtx, pos p4lite.Position) (FieldR
 	return FieldRef{}, fmt.Errorf("%s:%s: select key %q references unknown parser parameter %q", ctx.source, pos, keyPath, head)
 }
 
-// validateStateGraph rejects cycles other than self-loops. Self-loops
-// (state X transitioning to X) lower naturally to a bpf_loop callback;
-// multi-state cycles would need an irreducible CFG that the codegen
-// has no reason to support today.
+// IsMultiStateLoopEntry reports whether `idx` is the entry of an
+// indirect (multi-state) self-loop suitable for the TLV-walk codegen
+// path. The shape is:
+//
+//   - The entry state has no extracts and no advances. Its body is
+//     just the dispatch.
+//   - Its transition is a single-key select with key shape
+//     pkt.lookahead<bit<8>>() — the kind-byte dispatch.
+//   - Every case (including default) targets either accept/reject
+//     OR a "sibling" state whose only transition is a TransDirect
+//     back to the entry. Sibling bodies inline into the callback.
+//
+// Loader and codegen both branch on this shape — the loader to skip
+// cycle-internal edges in assignStateOffsets and to relax the gating
+// model for sibling auxes, the codegen to absorb sibling bodies into
+// the loop callback.
+func IsMultiStateLoopEntry(states []*ParseState, idx int) bool {
+	if idx < 0 || idx >= len(states) {
+		return false
+	}
+	s := states[idx]
+	if len(s.Extracts) != 0 || len(s.Advances) != 0 {
+		return false
+	}
+	if s.Trans.Kind != TransSelect || s.Trans.Select == nil {
+		return false
+	}
+	sel := s.Trans.Select
+	if len(sel.Keys) != 1 || sel.Keys[0].Kind != SelectKeyLookahead || sel.Keys[0].Bits != 8 {
+		return false
+	}
+	check := func(target int) bool {
+		if target == StateAccept || target == StateReject {
+			return true
+		}
+		if target < 0 || target >= len(states) {
+			return false
+		}
+		sib := states[target]
+		return sib.Trans.Kind == TransDirect && sib.Trans.Target == idx
+	}
+	if !check(sel.Default) {
+		return false
+	}
+	for _, k := range sel.Cases {
+		if !check(k.Target) {
+			return false
+		}
+	}
+	return true
+}
+
+// IsMultiStateLoopSibling reports whether `idx` is a sibling state
+// of any multi-state self-loop entry — i.e. a state whose only
+// transition is a TransDirect to a multi-state entry that lists
+// `idx` as one of its case targets.
+func IsMultiStateLoopSibling(states []*ParseState, idx int) bool {
+	if idx < 0 || idx >= len(states) {
+		return false
+	}
+	s := states[idx]
+	if s.Trans.Kind != TransDirect {
+		return false
+	}
+	target := s.Trans.Target
+	if target < 0 || target >= len(states) {
+		return false
+	}
+	if !IsMultiStateLoopEntry(states, target) {
+		return false
+	}
+	entry := states[target]
+	for _, k := range entry.Trans.Select.Cases {
+		if k.Target == idx {
+			return true
+		}
+	}
+	return entry.Trans.Select.Default == idx
+}
+
+// MultiStateLoopAbsorbedStates returns the set of sibling state
+// indices a multi-state self-loop pulls into its callback — every
+// non-accept/reject case target plus the default target. Codegen
+// uses this to skip emitting standalone code for absorbed siblings.
+func MultiStateLoopAbsorbedStates(states []*ParseState, entryIdx int) map[int]bool {
+	out := map[int]bool{}
+	if !IsMultiStateLoopEntry(states, entryIdx) {
+		return out
+	}
+	sel := states[entryIdx].Trans.Select
+	for _, k := range sel.Cases {
+		if k.Target >= 0 && k.Target < len(states) {
+			out[k.Target] = true
+		}
+	}
+	if sel.Default >= 0 && sel.Default < len(states) {
+		out[sel.Default] = true
+	}
+	return out
+}
+
+// validateStateGraph rejects cycles codegen has no path for. Direct
+// self-loops (state X → X) lower via the standard self-loop
+// callback. Multi-state cycles (X → Y → X) lower via the multi-
+// state self-loop callback only when the entry has the TLV-walk
+// shape — see IsMultiStateLoopEntry for the predicate. Cycles whose
+// entry is anything else are rejected here so the user gets a
+// load-time diagnostic instead of an opaque codegen error later.
 func validateStateGraph(states []*ParseState, source string) error {
 	for i, s := range states {
 		reachable := map[int]bool{}
 		var queue []int
 		for _, succ := range stateSuccessors(s) {
 			if succ == i {
-				continue // self-loop edge from i, ignored for cycle search
+				continue // direct self-loop, handled by codegen
 			}
 			queue = append(queue, succ)
 		}
@@ -731,7 +959,10 @@ func validateStateGraph(states []*ParseState, source string) error {
 			}
 			reachable[cur] = true
 			if cur == i {
-				return fmt.Errorf("%s:%s: state %q is part of a multi-state cycle; MVP only supports self-loops", source, s.Pos, s.Name)
+				if IsMultiStateLoopEntry(states, i) || IsMultiStateLoopSibling(states, i) {
+					break // TLV-walk cycle entry or sibling
+				}
+				return fmt.Errorf("%s:%s: state %q is part of a multi-state cycle codegen has no lowering for; the supported shape is the TLV-walk one (see IsMultiStateLoopEntry)", source, s.Pos, s.Name)
 			}
 			queue = append(queue, stateSuccessors(states[cur])...)
 		}

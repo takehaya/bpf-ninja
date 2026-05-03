@@ -146,28 +146,53 @@ type ExtractStmt struct {
 
 func (*ExtractStmt) stmtNode() {}
 
-// AdvanceStmt represents `pkt.advance(((bit<N>)(hdr.<F> - K)) << S)`,
-// the single variable-trailer skip template p4lite recognises. The
-// arg, in P4-16 standard form, computes the trailer length in BITS as
-//
-//	((field_value - BaseWords) * 2^ScaleLog2) bits
-//
-// Higher layers translate (Target, FieldName, BaseWords, ScaleLog2)
-// into the codegen's existing variableTailSkip shape (byte offset /
-// mask / shift / scale / base) by resolving the field's position in
-// the primary header.
-//
-// BNF: parserStatement (methodCall variant, P4-16 Section 13.5;
-// the spec'd advance signature is `void packet_in.advance(in
-// bit<32> sizeInBits)`).
+// AdvanceKind tags AdvanceStmt with the template shape the parser
+// recognised. Each variant gates a distinct subset of fields; the
+// other groups are zero-valued.
+type AdvanceKind int
+
+const (
+	// AdvanceField is the `pkt.advance(((bit<N>)(hdr.<F> - K)) << S)`
+	// template — primary-header variable trailer (IPv4 IHL, TCP
+	// data_offset). Active fields: BitWidth, Target, FieldName,
+	// BaseWords, ScaleLog2.
+	AdvanceField AdvanceKind = iota
+	// AdvanceLookahead is the
+	// `pkt.advance(((bit<N>)pkt.lookahead<bit<M>>()[lo:hi]) << S)`
+	// template — a peek-and-skip whose advance length is a slice of
+	// the next M bits the parser hasn't consumed. Active fields:
+	// BitWidth, LookaheadBits, SliceLo, SliceHi, ScaleLog2.
+	AdvanceLookahead
+	// AdvanceLiteral is `pkt.advance(<INT>)` — a fixed bit advance.
+	// Active field: LiteralBits.
+	AdvanceLiteral
+)
+
+// AdvanceStmt represents one of three variable-trailer skip templates
+// p4lite recognises inside parser-state bodies. Each template's arg,
+// in P4-16 standard form, evaluates to a bit count fed to
+// `packet_in.advance(in bit<32> sizeInBits)` (P4-16 Section 13.5).
 type AdvanceStmt struct {
-	Object    string // method receiver, e.g. "pkt"
-	BitWidth  int    // the N in `(bit<N>) ...`
+	Object string // method receiver, e.g. "pkt"
+	Kind   AdvanceKind
+	Pos    Position
+
+	// Common to AdvanceField and AdvanceLookahead.
+	BitWidth  int // the N in `(bit<N>) ...`
+	ScaleLog2 int // the S in `<< S` (unit: bits)
+
+	// AdvanceField only.
 	Target    string // the `hdr` in `hdr.<F>` — the parser's `out` parameter holding the field
 	FieldName string // the `<F>` in `hdr.<F>`
 	BaseWords int    // the K subtracted from the field value
-	ScaleLog2 int    // the S in `<< S` (unit: bits)
-	Pos       Position
+
+	// AdvanceLookahead only.
+	LookaheadBits int // the M in `pkt.lookahead<bit<M>>()`
+	SliceLo       int // the lo in `[lo:hi]` (LSB-numbered)
+	SliceHi       int // the hi in `[lo:hi]` (LSB-numbered, inclusive)
+
+	// AdvanceLiteral only.
+	LiteralBits int // raw integer bit count
 }
 
 func (*AdvanceStmt) stmtNode() {}
@@ -193,12 +218,37 @@ type Transition struct {
 	Pos    Position
 }
 
+// SelectKeyKind tags SelectKey with the syntactic form of one
+// select-tuple slot.
+type SelectKeyKind int
+
+const (
+	// SelectKeyField is a dotted field path, e.g. `gtp.e` or
+	// `exts.last.next_ext`. The Path field carries the source
+	// text; Bits is unused.
+	SelectKeyField SelectKeyKind = iota
+	// SelectKeyLookahead is `pkt.lookahead<bit<N>>()` — peek N
+	// bits ahead without advancing R4. Bits = N; Path is unused.
+	SelectKeyLookahead
+)
+
+// SelectKey is one slot of a `transition select(...)` tuple —
+// either a dotted field path on an extracted header (the legacy
+// shape) or a `pkt.lookahead<bit<N>>()` peek of the next N
+// unconsumed bits.
+type SelectKey struct {
+	Kind SelectKeyKind
+	Path string // valid when Kind == SelectKeyField
+	Bits int    // valid when Kind == SelectKeyLookahead
+	Pos  Position
+}
+
 // Select is the `select(key1, key2) { case...; default: ...; }`
 // payload of a transition.
 //
 // BNF: selectExpression (P4-16 Section 13.6)
 type Select struct {
-	Keys  []string // dotted paths (e.g. "gtp.e", "exts.last.next_ext")
+	Keys  []SelectKey
 	Cases []Case
 	Pos   Position
 }

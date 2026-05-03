@@ -28,20 +28,17 @@ const bit<8> TCP_SRV6_NEXT_HEADER = 6;
 // byte 1 = length-in-bytes, then per-kind payload. Kind=0 (EOL)
 // and kind=1 (NOP) are special: 1-byte total, no length byte.
 //
-// The codegen walks the options once at TCP-layer entry, dispatches
-// on kind, and records each named option's byte offset within the
-// options area in scratch memory. Predicate codegen reads the
-// recorded offset to load fields without walking again.
+// The parser block walks the options as a state machine that
+// dispatches on the next kind byte (peeked via lookahead), extracts
+// known options, advances past unknown ones using the length byte,
+// and terminates on EOL or by exhausting MAX_DEPTH iterations.
+// Predicate codegen reads each option's recorded offset directly
+// without re-walking.
 //
-// Option-walk behaviour is anchored on three vocab const families:
-//   - <PROTO>_OPT_TERMINATOR_KIND : kind value that ends the walk
-//   - <PROTO>_OPT_PADDING_KIND    : kind value that advances 1 byte
-//                                    (no length byte, no payload)
-//   - <PROTO>_OPT_LENGTH_BYTE_OFF : byte position within an option
-//                                    that holds total option length
-const bit<8> TCP_OPT_TERMINATOR_KIND  = 0; // EOL
-const bit<8> TCP_OPT_PADDING_KIND     = 1; // NOP
-const bit<8> TCP_OPT_LENGTH_BYTE_OFF  = 1;
+// EOL kind = 0, NOP kind = 1, length byte at option-offset 1 — the
+// loader's RFC-universal defaults match TCP's encoding so no
+// TERMINATOR_KIND / PADDING_KIND / LENGTH_BYTE_OFF override is
+// declared here.
 
 // MSS (kind=2, RFC 9293 §3.2.6.2): single 16-bit value.
 header tcp_opt_mss_h {
@@ -79,6 +76,13 @@ header tcp_opt_ts_h {
 const bit<8> TCP_OPT_TS_KIND = 8;
 const bit<8> TCP_OPT_TS_SIZE = 10;
 
+// TCP options trailer is at most 40 bytes (data_offset = 15 → 60 byte
+// header → 40 byte trailer). The smallest option is 1 byte (NOP / EOL),
+// so the option-walk loop runs at most 32 iterations (= bpf_loop cap).
+// Higher values exceed the verifier's per-callback iteration budget;
+// 32 covers every well-formed TCP packet observed in the wild.
+const bit<8> TCP_PARSER_MAX_DEPTH = 32;
+
 parser TcpFragment(packet_in pkt,
                    out tcp_h               hdr,
                    out tcp_opt_mss_h       mss,
@@ -87,10 +91,35 @@ parser TcpFragment(packet_in pkt,
                    out tcp_opt_ts_h        ts) {
     state start {
         pkt.extract(hdr);
-        transition skip_options;
+        transition select(hdr.data_offset) {
+            5:       accept;
+            default: parse_options;
+        }
     }
-    state skip_options {
-        pkt.advance(((bit<32>)(hdr.data_offset - 5)) << 5);
-        transition accept;
+    state parse_options {
+        transition select(pkt.lookahead<bit<8>>()) {
+            0:       accept;       // EOL
+            1:       parse_nop;
+            2:       parse_mss;
+            3:       parse_ws;
+            4:       parse_sack_perm;
+            8:       parse_ts;
+            default: parse_unknown_opt;
+        }
+    }
+    state parse_nop          { pkt.advance(8);         transition parse_options; }
+    state parse_mss          { pkt.extract(mss);       transition parse_options; }
+    state parse_ws           { pkt.extract(ws);        transition parse_options; }
+    state parse_sack_perm    { pkt.extract(sack_perm); transition parse_options; }
+    state parse_ts           { pkt.extract(ts);        transition parse_options; }
+    state parse_unknown_opt {
+        // Length byte sits at byte +1 of the unknown option (the kind
+        // byte at byte 0 already failed dispatch). lookahead<bit<16>>()
+        // peeks (kind, length) without advancing; [7:0] picks the
+        // length byte (network MSB-first → byte 1 occupies the low 8
+        // bits of bit<16>). length is the total option size in bytes,
+        // including the kind+length pair.
+        pkt.advance(((bit<32>)pkt.lookahead<bit<16>>()[7:0]) << 3);
+        transition parse_options;
     }
 }

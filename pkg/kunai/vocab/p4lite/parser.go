@@ -360,9 +360,8 @@ func (p *parser) parseState() (*State, error) {
 }
 
 // supportedMethods maps the method-keyword token to the per-method
-// parser. Adding a new method (e.g. lookahead in B-3) means adding
-// one entry here; the dispatch error in parseStmt picks up the new
-// name automatically.
+// parser. Adding a new method means adding one entry here; the
+// dispatch error in parseStmt picks up the new name automatically.
 var supportedMethods = map[TokenKind]func(p *parser, obj string, startPos Position) (Stmt, error){
 	TokExtract: (*parser).parseExtractCall,
 	TokAdvance: (*parser).parseAdvanceCall,
@@ -425,14 +424,57 @@ func (p *parser) parseExtractCall(obj string, startPos Position) (Stmt, error) {
 	return es, nil
 }
 
-// parseAdvanceCall handles `pkt.advance(((bit<N>)(hdr.<F> - K)) << S)`,
-// the single template p4lite accepts for variable-trailer skips.
+// parseAdvanceCall handles all three pkt.advance templates:
+//   - field shift:  pkt.advance(((bit<N>)(hdr.<F> - K)) << S)
+//   - lookahead:    pkt.advance(((bit<N>)pkt.lookahead<bit<M>>()[lo:hi]) << S)
+//   - literal:      pkt.advance(<INT>)
+//
 // Cursor sits past the `advance` token. Anything that doesn't match
-// the template shape (other expression forms, missing parens, etc.)
-// gets a loud, source-located error pointing at the supported form.
+// one of these shapes gets a loud, source-located error pointing at
+// the supported forms.
 func (p *parser) parseAdvanceCall(obj string, startPos Position) (Stmt, error) {
+	if _, err := p.expect(TokLParen); err != nil {
+		return nil, err
+	}
+	// Template C dispatch: literal advance is the only form whose
+	// arg starts with an integer rather than a paren.
+	if p.cur.Kind == TokInt {
+		return p.parseAdvanceLiteral(obj, startPos)
+	}
+	return p.parseAdvanceCastedShift(obj, startPos)
+}
+
+// parseAdvanceLiteral parses `<INT>);` — the tail of `pkt.advance(<INT>)`.
+// Cursor sits at the int token.
+func (p *parser) parseAdvanceLiteral(obj string, startPos Position) (Stmt, error) {
+	iTok := p.cur
+	if err := p.advance(); err != nil {
+		return nil, err
+	}
+	if _, err := p.expect(TokRParen); err != nil {
+		return nil, err
+	}
+	if _, err := p.expect(TokSemi); err != nil {
+		return nil, err
+	}
+	if iTok.Int > uint64(maxInt32) {
+		return nil, p.errorf(iTok.Pos, "literal advance %d exceeds the int32 range", iTok.Int)
+	}
+	return &AdvanceStmt{
+		Object:      obj,
+		Kind:        AdvanceLiteral,
+		LiteralBits: int(iTok.Int),
+		Pos:         startPos,
+	}, nil
+}
+
+// parseAdvanceCastedShift parses the templates that share the
+// `((bit<N>) ...) << S` shape — AdvanceField and AdvanceLookahead.
+// Cursor sits one token past the `pkt.advance(` opener (so on the
+// first inner `(`).
+func (p *parser) parseAdvanceCastedShift(obj string, startPos Position) (Stmt, error) {
 	mismatch := func(pos Position) error {
-		return p.errorf(pos, "pkt.advance must use the form `pkt.advance(((bit<N>)(hdr.<F> - K)) << S)`")
+		return p.errorf(pos, "pkt.advance must use one of `pkt.advance(((bit<N>)(hdr.<F> - K)) << S)` / `pkt.advance(((bit<N>)pkt.lookahead<bit<M>>()[lo:hi]) << S)` / `pkt.advance(<INT>)`")
 	}
 	expectShape := func(k TokenKind) (Token, error) {
 		if p.cur.Kind != k {
@@ -444,7 +486,8 @@ func (p *parser) parseAdvanceCall(obj string, startPos Position) (Stmt, error) {
 		}
 		return t, nil
 	}
-	for _, k := range []TokenKind{TokLParen, TokLParen, TokLParen, TokBit, TokLAngle} {
+	// Common prefix `((bit<N>)`.
+	for _, k := range []TokenKind{TokLParen, TokLParen, TokBit, TokLAngle} {
 		if _, err := expectShape(k); err != nil {
 			return nil, err
 		}
@@ -453,10 +496,55 @@ func (p *parser) parseAdvanceCall(obj string, startPos Position) (Stmt, error) {
 	if err != nil {
 		return nil, err
 	}
-	for _, k := range []TokenKind{TokRAngle, TokRParen, TokLParen} {
+	for _, k := range []TokenKind{TokRAngle, TokRParen} {
 		if _, err := expectShape(k); err != nil {
 			return nil, err
 		}
+	}
+	// Branch on the cast operand: `(` opens an arith group (template A);
+	// `pkt` starts a lookahead expression (template B).
+	var adv *AdvanceStmt
+	switch {
+	case p.cur.Kind == TokLParen:
+		adv, err = p.parseAdvanceFieldOperand(obj, startPos, nTok, expectShape)
+	case p.cur.Kind == TokIdent && p.cur.Value == "pkt":
+		adv, err = p.parseAdvanceLookaheadOperand(obj, startPos, nTok, expectShape)
+	default:
+		return nil, mismatch(p.cur.Pos)
+	}
+	if err != nil {
+		return nil, err
+	}
+	// Common tail: `) << S );`.
+	for _, k := range []TokenKind{TokRParen, TokLShift} {
+		if _, err := expectShape(k); err != nil {
+			return nil, err
+		}
+	}
+	sTok, err := expectShape(TokInt)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := expectShape(TokRParen); err != nil {
+		return nil, err
+	}
+	if _, err := p.expect(TokSemi); err != nil {
+		return nil, err
+	}
+	// ScaleLog2 ≥ N would shift past the cast width (P4-16 §8.7 makes
+	// this implementation-defined).
+	if sTok.Int >= uint64(nTok.Int) {
+		return nil, p.errorf(sTok.Pos, "shift S=%d must be smaller than the cast width N=%d", sTok.Int, nTok.Int)
+	}
+	adv.ScaleLog2 = int(sTok.Int)
+	return adv, nil
+}
+
+// parseAdvanceFieldOperand parses `(hdr.<F> - K)` after the
+// `((bit<N>)` prefix. Cursor sits on the opening `(`.
+func (p *parser) parseAdvanceFieldOperand(obj string, startPos Position, nTok Token, expectShape func(TokenKind) (Token, error)) (*AdvanceStmt, error) {
+	if _, err := expectShape(TokLParen); err != nil {
+		return nil, err
 	}
 	hdrTok, err := expectShape(TokIdent)
 	if err != nil {
@@ -476,40 +564,78 @@ func (p *parser) parseAdvanceCall(obj string, startPos Position) (Stmt, error) {
 	if err != nil {
 		return nil, err
 	}
-	for _, k := range []TokenKind{TokRParen, TokRParen, TokLShift} {
-		if _, err := expectShape(k); err != nil {
-			return nil, err
-		}
-	}
-	sTok, err := expectShape(TokInt)
-	if err != nil {
-		return nil, err
-	}
 	if _, err := expectShape(TokRParen); err != nil {
 		return nil, err
 	}
-	if _, err := p.expect(TokSemi); err != nil {
-		return nil, err
-	}
-	// BaseWords and ScaleLog2 are bounded small integers — a word
-	// count and a log2 shift. ScaleLog2 ≥ 32 would shift past the
-	// `bit<32>` cast width (P4-16 §8.7 makes this implementation-
-	// defined); BaseWords ≥ 2^31 can't represent any meaningful
-	// header trailer.
 	if kTok.Int > uint64(maxInt32) {
 		return nil, p.errorf(kTok.Pos, "K=%d exceeds the supported range for the BaseWords slot", kTok.Int)
 	}
-	if sTok.Int >= uint64(nTok.Int) {
-		return nil, p.errorf(sTok.Pos, "shift S=%d must be smaller than the cast width N=%d", sTok.Int, nTok.Int)
-	}
 	return &AdvanceStmt{
 		Object:    obj,
+		Kind:      AdvanceField,
 		BitWidth:  int(nTok.Int),
 		Target:    hdrTok.Value,
 		FieldName: fldTok.Value,
 		BaseWords: int(kTok.Int),
-		ScaleLog2: int(sTok.Int),
 		Pos:       startPos,
+	}, nil
+}
+
+// parseAdvanceLookaheadOperand parses `pkt.lookahead<bit<M>>()[lo:hi]`
+// after the `((bit<N>)` prefix. Cursor sits on the `pkt` ident.
+func (p *parser) parseAdvanceLookaheadOperand(obj string, startPos Position, nTok Token, expectShape func(TokenKind) (Token, error)) (*AdvanceStmt, error) {
+	pktTok, err := expectShape(TokIdent)
+	if err != nil {
+		return nil, err
+	}
+	if pktTok.Value != "pkt" {
+		return nil, p.errorf(pktTok.Pos, "expected `pkt.lookahead<...>()` inside the cast, got `%s.<...>`", pktTok.Value)
+	}
+	if _, err := expectShape(TokDot); err != nil {
+		return nil, err
+	}
+	if _, err := expectShape(TokLookahead); err != nil {
+		return nil, err
+	}
+	mBits, err := p.parseLookaheadType()
+	if err != nil {
+		return nil, err
+	}
+	// `[lo:hi]` slice.
+	if _, err := expectShape(TokLBracket); err != nil {
+		return nil, err
+	}
+	hiTok, err := expectShape(TokInt)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := expectShape(TokColon); err != nil {
+		return nil, err
+	}
+	loTok, err := expectShape(TokInt)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := expectShape(TokRBracket); err != nil {
+		return nil, err
+	}
+	// Slice operands: P4-16 spec writes [hi:lo] (MSB:LSB, inclusive,
+	// LSB-numbered). hi >= lo required; both must fit inside the
+	// lookahead width.
+	if loTok.Int > hiTok.Int {
+		return nil, p.errorf(loTok.Pos, "slice lo=%d must be ≤ hi=%d (use [hi:lo] convention)", loTok.Int, hiTok.Int)
+	}
+	if hiTok.Int >= uint64(mBits) {
+		return nil, p.errorf(hiTok.Pos, "slice hi=%d must be smaller than the lookahead width M=%d", hiTok.Int, mBits)
+	}
+	return &AdvanceStmt{
+		Object:        obj,
+		Kind:          AdvanceLookahead,
+		BitWidth:      int(nTok.Int),
+		LookaheadBits: mBits,
+		SliceLo:       int(loTok.Int),
+		SliceHi:       int(hiTok.Int),
+		Pos:           startPos,
 	}, nil
 }
 
@@ -570,7 +696,7 @@ func (p *parser) parseSelect() (*Select, error) {
 	}
 	sel := &Select{Pos: startPos}
 	for p.cur.Kind != TokRParen && p.cur.Kind != TokEOF {
-		key, err := p.parseDottedPath()
+		key, err := p.parseSelectKey()
 		if err != nil {
 			return nil, err
 		}
@@ -598,6 +724,79 @@ func (p *parser) parseSelect() (*Select, error) {
 		return nil, err
 	}
 	return sel, nil
+}
+
+// parseSelectKey accepts either a dotted field path (keyed on an
+// extracted-header field) or a `pkt.lookahead<bit<N>>()` peek that
+// dispatches on bytes the parser hasn't consumed yet.
+func (p *parser) parseSelectKey() (SelectKey, error) {
+	startPos := p.cur.Pos
+	// `pkt` is a TokIdent; lookahead requires recognising the method
+	// name after `.`. The parser look-ahead is one token, so we save
+	// the lexer position and try the lookahead form first.
+	if p.cur.Kind == TokIdent && p.cur.Value == "pkt" {
+		snap := p.lex.Save()
+		objTok := p.cur
+		if err := p.advance(); err != nil {
+			return SelectKey{}, err
+		}
+		if p.cur.Kind == TokDot {
+			if err := p.advance(); err != nil {
+				return SelectKey{}, err
+			}
+			if p.cur.Kind == TokLookahead {
+				if err := p.advance(); err != nil {
+					return SelectKey{}, err
+				}
+				bits, err := p.parseLookaheadType()
+				if err != nil {
+					return SelectKey{}, err
+				}
+				return SelectKey{Kind: SelectKeyLookahead, Bits: bits, Pos: startPos}, nil
+			}
+		}
+		// Not a lookahead — rewind and fall through to dotted path,
+		// where `pkt.foo` is a (rare but legal) field path.
+		p.lex.Restore(snap)
+		p.cur = objTok
+	}
+	path, err := p.parseDottedPath()
+	if err != nil {
+		return SelectKey{}, err
+	}
+	return SelectKey{Kind: SelectKeyField, Path: path, Pos: startPos}, nil
+}
+
+// parseLookaheadType consumes the `<bit<N>>()` tail of a
+// `pkt.lookahead` expression and returns the N. Cursor sits past
+// the `lookahead` keyword on entry.
+func (p *parser) parseLookaheadType() (int, error) {
+	if _, err := p.expect(TokLAngle); err != nil {
+		return 0, err
+	}
+	if _, err := p.expect(TokBit); err != nil {
+		return 0, err
+	}
+	if _, err := p.expect(TokLAngle); err != nil {
+		return 0, err
+	}
+	nTok, err := p.expect(TokInt)
+	if err != nil {
+		return 0, err
+	}
+	if _, err := p.expect(TokRAngle); err != nil {
+		return 0, err
+	}
+	if _, err := p.expect(TokRAngle); err != nil {
+		return 0, err
+	}
+	if _, err := p.expect(TokLParen); err != nil {
+		return 0, err
+	}
+	if _, err := p.expect(TokRParen); err != nil {
+		return 0, err
+	}
+	return int(nTok.Int), nil
 }
 
 func (p *parser) parseDottedPath() (string, error) {

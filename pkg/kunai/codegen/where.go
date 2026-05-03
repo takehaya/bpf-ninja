@@ -1494,9 +1494,8 @@ func (c *whereCtx) genOptionLookupLoad(ref *ir.FieldRef) (asm.Instructions, erro
 	if opt.ExistsOnly {
 		return nil, fmt.Errorf("%w: option `%s.options.%s.exists` codegen needs the bool-atom parser extension", ErrNotImplemented, ref.Layer.Spec.Name, opt.Name)
 	}
-	vs := ref.Layer.Spec.PrimaryAdvanceSkip()
-	if vs == nil {
-		return nil, fmt.Errorf("%w: option lookup needs %q to declare a variable trailer (parser-block pkt.advance)", ErrNotImplemented, ref.Layer.Spec.Name)
+	if ref.Layer.Spec.OptionWalk == nil {
+		return nil, fmt.Errorf("%w: option lookup needs %q to declare an OPT_*_KIND/SIZE option-walk family", ErrNotImplemented, ref.Layer.Spec.Name)
 	}
 	primaryBits := vocab.SumBits(ref.Layer.Spec.Fields)
 	if primaryBits%8 != 0 {
@@ -1520,38 +1519,24 @@ func (c *whereCtx) genOptionLookupLoad(ref *ir.FieldRef) (asm.Instructions, erro
 
 	foundLabel := c.freshLabel("opt_found")
 	// staticUpperBound is the layer-header-end ceiling: primarySize +
-	// max options bytes (40 for both TCP and IPv4). Clamping R4 (=
-	// options_end) to this constant once gives the verifier a tight
-	// upper bound that propagates to R3 across the JGE.Reg compare —
-	// without the clamp, the verifier cannot infer R3 < scratch_size
-	// from a register-vs-register compare and the post-walk LDX is
-	// rejected with "R2 max value is outside the allowed memory range".
+	// max options bytes (40 for both TCP and IPv4). The walk uses
+	// this as a fixed R4 upper bound instead of deriving it
+	// dynamically from a primary-header length field — the
+	// alternative parser-block TLV walk (B-3) does not surface a
+	// length descriptor here, and the static bound combined with
+	// EOL-kind termination is sufficient for well-formed packets.
 	staticUpperBound := primarySize + 40
 
 	var insns asm.Instructions
 	// R3 = current option offset (layer-relative); start at primarySize.
-	// R4 = options_end (layer-relative) — caller-saved scratch in where
-	//      context (offsetBase is dead here), reused throughout the walk.
+	// R4 = options_end (layer-relative) — set to the static ceiling
+	//      so the verifier sees a tight constant upper bound on R3.
 	// R5 = scratch for the per-iter kind / length byte.
 	// R2 = address of the current option's first byte (= R0+layerBase+R3),
 	//      stable across kind and length loads in the same iter.
-	// emitFieldLoad targets R3, so load the length byte into R3 first,
-	// move it to R4, then prime R3 as the walk cursor.
-	insns = append(insns, emitFieldLoad(anchor, vs.LenByteOff, asm.Byte)...)
 	insns = append(insns,
-		asm.Mov.Reg(asm.R4, asm.R3),
 		asm.Mov.Imm(asm.R3, int32(primarySize)),
-		asm.And.Imm(asm.R4, int32(vs.LenMask)),
-	)
-	if vs.LenShift > 0 {
-		insns = append(insns, asm.RSh.Imm(asm.R4, int32(vs.LenShift)))
-	}
-	if vs.Scale > 1 {
-		insns = append(insns, asm.Mul.Imm(asm.R4, int32(vs.Scale)))
-	}
-	insns = append(insns,
-		asm.JLT.Imm(asm.R4, int32(primarySize), dslReject),
-		asm.JGT.Imm(asm.R4, int32(staticUpperBound), dslReject),
+		asm.Mov.Imm(asm.R4, int32(staticUpperBound)),
 	)
 
 	for range optionWalkMaxIters {

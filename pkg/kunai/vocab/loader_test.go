@@ -338,6 +338,31 @@ parser F(packet_in pkt, out foo_h h) { state start { pkt.extract(h); transition 
 	}
 }
 
+// TestLoadOptionWalkPartialOverrideRejected pins the loader's
+// "all-or-nothing" guard on the OPT_TERMINATOR_KIND / PADDING_KIND /
+// LENGTH_BYTE_OFF triple. Declaring some-but-not-all reads as a
+// typo: the protocol either accepts the RFC defaults (declare none)
+// or supplies a complete override (declare all three).
+func TestLoadOptionWalkPartialOverrideRejected(t *testing.T) {
+	fsys := fstest.MapFS{
+		"vocab/foo.p4": &fstest.MapFile{Data: []byte(`
+header foo_h { bit<8> x; }
+header foo_opt_a_h { bit<8> kind; bit<8> length; }
+const bit<8> FOO_OPT_TERMINATOR_KIND = 0;
+const bit<8> FOO_OPT_A_KIND = 2;
+const bit<8> FOO_OPT_A_SIZE = 2;
+parser F(packet_in pkt, out foo_h h, out foo_opt_a_h a) { state start { pkt.extract(h); transition accept; } }
+`)},
+	}
+	_, err := Load(fsys, "vocab")
+	if err == nil {
+		t.Fatal("expected partial-override declaration to be rejected")
+	}
+	if !strings.Contains(err.Error(), "TERMINATOR_KIND/PADDING_KIND/LENGTH_BYTE_OFF") {
+		t.Errorf("error should mention the triple: %v", err)
+	}
+}
+
 func TestLoadRejectsConstOutsideNamingConvention(t *testing.T) {
 	fsys := fstest.MapFS{
 		"vocab/foo.p4": &fstest.MapFile{Data: []byte(`
@@ -633,8 +658,13 @@ func TestParseStateMachineGtp(t *testing.T) {
 		t.Errorf("start select key count = %d, want %d (e,s,pn)", got, want)
 	}
 	for i, want := range []string{"e", "s", "pn"} {
-		if start.Trans.Select.Keys[i].FieldName != want {
-			t.Errorf("start select key[%d] = %q, want %q", i, start.Trans.Select.Keys[i].FieldName, want)
+		key := start.Trans.Select.Keys[i]
+		if key.Kind != SelectKeyField {
+			t.Errorf("start select key[%d] kind = %d, want SelectKeyField", i, key.Kind)
+			continue
+		}
+		if key.Field.FieldName != want {
+			t.Errorf("start select key[%d] = %q, want %q", i, key.Field.FieldName, want)
 		}
 	}
 
@@ -875,20 +905,6 @@ func TestVariableTrailIPv4(t *testing.T) {
 	if vs.LenByteOff != 0 || vs.LenMask != 0x0F || vs.LenShift != 0 ||
 		vs.Scale != 4 || vs.Base != 20 {
 		t.Errorf("unexpected ipv4 trail Skip: %+v", *vs)
-	}
-}
-
-// TestVariableTrailTCP confirms the TCP data_offset upper-nibble
-// shape — the shift is what distinguishes it from IPv4 IHL.
-func TestVariableTrailTCP(t *testing.T) {
-	specs := loadBundled(t)
-	vs := specs["tcp"].PrimaryAdvanceSkip()
-	if vs == nil {
-		t.Fatal("tcp must declare a variable trailer")
-	}
-	if vs.LenByteOff != 12 || vs.LenMask != 0xF0 || vs.LenShift != 4 ||
-		vs.Scale != 4 || vs.Base != 20 {
-		t.Errorf("unexpected tcp trail Skip: %+v", *vs)
 	}
 }
 
@@ -1146,6 +1162,183 @@ parser P(packet_in pkt, out foo_h hdr) {
 				t.Fatalf("err = %v; want containing %q", err, tc.want)
 			}
 		})
+	}
+}
+
+// TestParserBlockAdvanceLookaheadLowering pins the loader-side
+// translation of `pkt.advance(((bit<32>)pkt.lookahead<bit<16>>()[7:0]) << 3)`
+// — the unknown-option length-skip form — into a HeaderLength with
+// LenByteOff=1 (the length byte sits at R4+1 once the kind byte is
+// the current cursor). Scale=1 byte, no minimum to subtract.
+func TestParserBlockAdvanceLookaheadLowering(t *testing.T) {
+	src := `header foo_h { bit<8> a; }
+parser P(packet_in pkt, out foo_h hdr) {
+	state start { pkt.extract(hdr); transition skip; }
+	state skip {
+		pkt.advance(((bit<32>)pkt.lookahead<bit<16>>()[7:0]) << 3);
+		transition accept;
+	}
+}`
+	fsys := fstest.MapFS{"vocab/foo.p4": &fstest.MapFile{Data: []byte(src)}}
+	specs, err := Load(fsys, "vocab")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	skip := specs["foo"].ParseStateMachine.States[1]
+	if len(skip.Advances) != 1 {
+		t.Fatalf("Advances=%d, want 1", len(skip.Advances))
+	}
+	adv := skip.Advances[0]
+	if adv.Kind != AdvanceOpLookahead {
+		t.Fatalf("Kind=%d, want AdvanceOpLookahead", adv.Kind)
+	}
+	want := HeaderLength{LenByteOff: 1, LenMask: 0xFF, LenShift: 0, Scale: 1, Base: 0}
+	if *adv.Skip != want {
+		t.Errorf("Skip = %+v, want %+v", *adv.Skip, want)
+	}
+}
+
+// TestParserBlockAdvanceLiteralLowering pins the literal-form
+// `pkt.advance(8);` (NOP padding skip) into LiteralBytes=1.
+func TestParserBlockAdvanceLiteralLowering(t *testing.T) {
+	src := `header foo_h { bit<8> a; }
+parser P(packet_in pkt, out foo_h hdr) {
+	state start { pkt.extract(hdr); transition skip; }
+	state skip { pkt.advance(8); transition accept; }
+}`
+	fsys := fstest.MapFS{"vocab/foo.p4": &fstest.MapFile{Data: []byte(src)}}
+	specs, err := Load(fsys, "vocab")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	adv := specs["foo"].ParseStateMachine.States[1].Advances[0]
+	if adv.Kind != AdvanceOpLiteral || adv.LiteralBytes != 1 {
+		t.Errorf("adv = %+v, want Kind=AdvanceOpLiteral LiteralBytes=1", adv)
+	}
+}
+
+// TestParserBlockAdvanceLiteralRejects pins the load-time guards on
+// the literal form: whole-byte advance and ≥ 1-byte minimum.
+func TestParserBlockAdvanceLiteralRejects(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want string
+	}{
+		{"sub_byte_literal", `pkt.advance(7);`, "sub-byte"},
+		{"zero_literal", `pkt.advance(0);`, "at least 1 byte"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			src := `header foo_h { bit<8> a; }
+parser P(packet_in pkt, out foo_h hdr) {
+	state start { pkt.extract(hdr); transition skip; }
+	state skip { ` + tc.body + ` transition accept; }
+}`
+			fsys := fstest.MapFS{"vocab/foo.p4": &fstest.MapFile{Data: []byte(src)}}
+			_, err := Load(fsys, "vocab")
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("err = %v; want containing %q", err, tc.want)
+			}
+		})
+	}
+}
+
+// TestParserBlockAdvanceLookaheadRejects pins the load-time guards
+// on the lookahead form: byte-aligned slice required, whole-byte
+// peek width required, whole-byte shift required.
+func TestParserBlockAdvanceLookaheadRejects(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			"non_byte_aligned_slice",
+			`pkt.advance(((bit<32>)pkt.lookahead<bit<16>>()[3:0]) << 3);`,
+			"select exactly 8 bits",
+		},
+		{
+			"non_byte_boundary_lo",
+			`pkt.advance(((bit<32>)pkt.lookahead<bit<16>>()[10:3]) << 3);`,
+			"start at a byte boundary",
+		},
+		{
+			"sub_byte_shift",
+			`pkt.advance(((bit<32>)pkt.lookahead<bit<16>>()[7:0]) << 2);`,
+			"sub-byte",
+		},
+		{
+			"non_byte_lookahead_width",
+			`pkt.advance(((bit<32>)pkt.lookahead<bit<12>>()[7:0]) << 3);`,
+			"whole-byte width",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			src := `header foo_h { bit<8> a; }
+parser P(packet_in pkt, out foo_h hdr) {
+	state start { pkt.extract(hdr); transition skip; }
+	state skip { ` + tc.body + ` transition accept; }
+}`
+			fsys := fstest.MapFS{"vocab/foo.p4": &fstest.MapFile{Data: []byte(src)}}
+			_, err := Load(fsys, "vocab")
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("err = %v; want containing %q", err, tc.want)
+			}
+		})
+	}
+}
+
+// TestSelectKeyLookaheadAccepted pins the load-time happy path for
+// the new lookahead select key — the kind-byte dispatch shape TLV
+// walks need. The vocab loader resolves it into a SelectKey with
+// Kind=SelectKeyLookahead and Bits=8 so codegen can emit a
+// no-advance peek-and-compare.
+func TestSelectKeyLookaheadAccepted(t *testing.T) {
+	src := `header foo_h { bit<8> a; }
+parser P(packet_in pkt, out foo_h hdr) {
+	state start {
+		pkt.extract(hdr);
+		transition select(pkt.lookahead<bit<8>>()) {
+			0: accept;
+			default: reject;
+		}
+	}
+}`
+	fsys := fstest.MapFS{"vocab/foo.p4": &fstest.MapFile{Data: []byte(src)}}
+	specs, err := Load(fsys, "vocab")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	keys := specs["foo"].ParseStateMachine.States[0].Trans.Select.Keys
+	if len(keys) != 1 {
+		t.Fatalf("keys=%d, want 1", len(keys))
+	}
+	if keys[0].Kind != SelectKeyLookahead || keys[0].Bits != 8 {
+		t.Errorf("key = %+v, want {Kind:SelectKeyLookahead Bits:8}", keys[0])
+	}
+}
+
+// TestSelectKeyLookaheadRejectsNon8Bit pins the MVP cap: lookahead
+// keys must be exactly 8 bits because codegen only knows how to
+// emit a single-byte LDX for the peek. Wider widths would need
+// multi-byte loads.
+func TestSelectKeyLookaheadRejectsNon8Bit(t *testing.T) {
+	src := `header foo_h { bit<8> a; }
+parser P(packet_in pkt, out foo_h hdr) {
+	state start {
+		pkt.extract(hdr);
+		transition select(pkt.lookahead<bit<16>>()) {
+			0: accept;
+			default: reject;
+		}
+	}
+}`
+	fsys := fstest.MapFS{"vocab/foo.p4": &fstest.MapFile{Data: []byte(src)}}
+	_, err := Load(fsys, "vocab")
+	if err == nil || !strings.Contains(err.Error(), "must be exactly 8 bits") {
+		t.Fatalf("err = %v; want bit-width hint", err)
 	}
 }
 

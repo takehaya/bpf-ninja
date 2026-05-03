@@ -232,7 +232,10 @@ func computeSelfValidating(p *ProtocolSpec) bool {
 		return false
 	}
 	for _, k := range start.Trans.Select.Keys {
-		if k.HeaderName == p.HeaderName {
+		// Lookahead keys peek at unconsumed bytes; they cannot
+		// reference an extracted field so they don't contribute to
+		// self-validation by definition.
+		if k.Kind == SelectKeyField && k.Field.HeaderName == p.HeaderName {
 			return true
 		}
 	}
@@ -470,22 +473,42 @@ type ExtractOp struct {
 	Pos         p4lite.Position
 }
 
-// AdvanceOp is one `pkt.advance(((bit<N>)(hdr.<F> - K)) << S)`
-// statement in a state — the parser-block form of a variable
-// trailer. The loader resolves (Target, FieldName, BaseWords,
-// ScaleLog2) into the same five-tuple HeaderLength carries
-// (LenByteOff / LenMask / LenShift / Scale / Base) so codegen reuses
-// the existing emitVariableTrail path verbatim.
-//
-// Skip's LenByteOff is relative to the primary-header start (the
-// layer-entry slot), not to R4. This matches HeaderLength's
-// convention; the Skip is consumed by emitVariableTrailInline which
-// reads from the stored entry slot, not R4.
+// AdvanceOpKind tags AdvanceOp with which p4lite template the loader
+// lowered. The active fields differ per kind; the others are
+// zero-valued.
+type AdvanceOpKind int
+
+const (
+	// AdvanceOpField is the layer-entry-relative trailer — lowered
+	// from `pkt.advance(((bit<N>)(hdr.<F> - K)) << S)`. Codegen
+	// reads the length field from the layer-entry slot via
+	// emitVariableTrailInline. Active fields: Target, FieldName, Skip.
+	AdvanceOpField AdvanceOpKind = iota
+	// AdvanceOpLookahead is the R4-relative trailer — lowered from
+	// `pkt.advance(((bit<N>)pkt.lookahead<bit<M>>()[hi:lo]) << S)`.
+	// Codegen reads the length byte from R0+R4+Skip.LenByteOff
+	// (forward peek, no advance until the value is computed).
+	// Active field: Skip.
+	AdvanceOpLookahead
+	// AdvanceOpLiteral is the fixed advance — lowered from
+	// `pkt.advance(<INT>)`. Codegen emits a bounds check followed by
+	// `Add.Imm R4, LiteralBytes`. Active field: LiteralBytes.
+	AdvanceOpLiteral
+)
+
+// AdvanceOp is one of the three pkt.advance variants the loader
+// recognises in a parser-state body. For Field and Lookahead kinds
+// the Skip carries the resolved (LenByteOff / LenMask / LenShift /
+// Scale / Base) tuple codegen consumes; the Kind discriminator
+// tells codegen whether Skip.LenByteOff is layer-entry-relative
+// (Field) or R4-relative (Lookahead).
 type AdvanceOp struct {
-	Target    string // out parameter the field came from
-	FieldName string // field whose value drives the advance
-	Skip      *HeaderLength
-	Pos       p4lite.Position
+	Kind         AdvanceOpKind
+	Target       string // AdvanceOpField only — out parameter the field came from
+	FieldName    string // AdvanceOpField only — field whose value drives the advance
+	Skip         *HeaderLength
+	LiteralBytes int // AdvanceOpLiteral only — fixed advance in bytes
+	Pos          p4lite.Position
 }
 
 // TransKind enumerates the four shapes of a parser-state
@@ -515,10 +538,37 @@ type TransitionOp struct {
 // counting as match), control moves to that case's Target.
 // Default fires when no case matches.
 type SelectOp struct {
-	Keys    []FieldRef
+	Keys    []SelectKey
 	Cases   []SelectCase
 	Default int // state index | StateAccept | StateReject
 	Pos     p4lite.Position
+}
+
+// SelectKeyKind tags one slot of a tuple-select key.
+type SelectKeyKind int
+
+const (
+	// SelectKeyField reads from an already-extracted header field.
+	// The byte offset is negative w.r.t. the current R4 (the load
+	// reaches back into the just-extracted bytes).
+	SelectKeyField SelectKeyKind = iota
+	// SelectKeyLookahead peeks at bytes the parser has not yet
+	// consumed. The byte offset is non-negative w.r.t. the current
+	// R4 and R4 is unchanged. MVP supports only `bit<8>`
+	// lookaheads (single-byte LDX in codegen).
+	SelectKeyLookahead
+)
+
+// SelectKey is one slot of a SelectOp's key tuple. The Kind
+// discriminator decides which sub-shape is active; the unused
+// fields are zero-valued.
+type SelectKey struct {
+	Kind SelectKeyKind
+	// SelectKeyField only.
+	Field FieldRef
+	// SelectKeyLookahead only.
+	Bits int // peek width (MVP cap = 8)
+	Pos  p4lite.Position
 }
 
 // SelectCase is one `(v1, v2, ...): target;` line of a `transition

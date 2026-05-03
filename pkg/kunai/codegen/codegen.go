@@ -462,14 +462,27 @@ func foldOffsetIntoScalar(dst, src asm.Register, off int32, failLabel string) as
 	}
 }
 
-// boundedScalarLoad emits a PTR_TO_PACKET-safe `size`-byte load from
-// scratchStart + scalar into dst. Uses the cbpfc end+JGT+LoadMem(-size)
-// pattern; dst doubles as the pointer scratch and final load
-// destination. The scalar MUST be non-negative — pair with
-// foldOffsetIntoScalar when the source byte offset can go negative.
+// boundedScalarLoad emits a `size`-byte load from scratchStart +
+// scalar into dst, using the cbpfc-style end-pointer + LoadMem(-size)
+// pattern wrapped in a scalar pre-clamp. dst doubles as the pointer
+// scratch and final load destination. The scalar MUST be non-negative
+// — pair with foldOffsetIntoScalar when the source byte offset can
+// go negative.
+//
+// Two register kinds reach this helper. For PTR_TO_PACKET the end-
+// pointer JGT alone is sufficient (the verifier specially narrows
+// pkt pointers via find_good_pkt_pointers). For PTR_TO_MAP_VALUE the
+// verifier does NOT narrow the variable component through pointer
+// comparison, so the access end retains the pre-comparison umax and
+// the LDX falls one byte past vs. The pre-clamp `JGT scalar,
+// ScratchBufSize - sizeBytes, fail` pins scalar.umax tight enough
+// that scratchStart + scalar + sizeBytes stays within vs even when
+// the pointer-side JGT propagates nothing — fixes the entry / exit
+// hook path which uses a per-CPU map_value scratch.
 func boundedScalarLoad(dst, scratchStart, scalar, scratchEnd asm.Register, size asm.Size, failLabel string) asm.Instructions {
 	sizeBytes := int32(size.Sizeof())
 	return asm.Instructions{
+		asm.JGT.Imm(scalar, int32(ScratchBufSize)-sizeBytes, failLabel),
 		asm.Mov.Reg(dst, scratchStart),
 		asm.Add.Reg(dst, scalar),
 		asm.Add.Imm(dst, sizeBytes),

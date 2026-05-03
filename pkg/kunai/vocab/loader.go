@@ -371,20 +371,29 @@ func buildFlagTriggers(of optFlagConsts, fields []Field, source string) (int, []
 // pairs each named option (TCP_OPT_<NAME>_KIND/SIZE) with its aux
 // header type tcp_opt_<NAME>_h declared in the parser block. nil
 // when the .p4 declared no option-walk consts.
+//
+// TerminatorKind / PaddingKind / LengthByteOff default to the RFC
+// universal values (0 = EOL, 1 = NOP, length byte at offset 1) used
+// by both TCP options (RFC 9293) and IPv4 options (RFC 791). A
+// .p4 may either declare all three explicitly (override) or none
+// (use defaults). Declaring some-but-not-all is a typo guard.
 func buildOptionWalk(raw *optWalkConsts, file *p4lite.File, protoName, source string) (*OptionWalk, error) {
 	if raw == nil {
 		return nil, nil
 	}
-	if !raw.HasTerminator || !raw.HasPadding || !raw.HasLengthOff {
-		return nil, fmt.Errorf("%s: protocol %q declares some OPT_ option-walk consts but missing one of TERMINATOR_KIND/PADDING_KIND/LENGTH_BYTE_OFF", source, protoName)
+	hasAny := raw.HasTerminator || raw.HasPadding || raw.HasLengthOff
+	hasAll := raw.HasTerminator && raw.HasPadding && raw.HasLengthOff
+	if hasAny && !hasAll {
+		return nil, fmt.Errorf("%s: protocol %q declares some OPT_ option-walk consts but missing one of TERMINATOR_KIND/PADDING_KIND/LENGTH_BYTE_OFF (declare all three to override the RFC defaults, or none to accept them)", source, protoName)
 	}
 	if len(raw.optionOrder) == 0 {
 		return nil, fmt.Errorf("%s: protocol %q declares OPT_ option-walk skeleton but no <NAME>_KIND/SIZE entries", source, protoName)
 	}
-	out := &OptionWalk{
-		TerminatorKind: raw.TerminatorKind,
-		PaddingKind:    raw.PaddingKind,
-		LengthByteOff:  raw.LengthByteOff,
+	out := &OptionWalk{TerminatorKind: 0, PaddingKind: 1, LengthByteOff: 1}
+	if hasAll {
+		out.TerminatorKind = raw.TerminatorKind
+		out.PaddingKind = raw.PaddingKind
+		out.LengthByteOff = raw.LengthByteOff
 	}
 	for _, name := range raw.optionOrder {
 		kind, hasK := raw.kinds[name]

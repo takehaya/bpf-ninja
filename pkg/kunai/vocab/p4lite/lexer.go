@@ -43,6 +43,7 @@ const (
 	TokOut
 	TokExtract
 	TokAdvance
+	TokLookahead
 	TokTrue
 	TokFalse
 	TokLBrace
@@ -100,6 +101,8 @@ func (k TokenKind) String() string {
 		return "'extract'"
 	case TokAdvance:
 		return "'advance'"
+	case TokLookahead:
+		return "'lookahead'"
 	case TokTrue:
 		return "'true'"
 	case TokFalse:
@@ -154,6 +157,7 @@ var keywords = map[string]TokenKind{
 	"out":        TokOut,
 	"extract":    TokExtract,
 	"advance":    TokAdvance,
+	"lookahead":  TokLookahead,
 	"true":       TokTrue,
 	"false":      TokFalse,
 }
@@ -183,6 +187,19 @@ type Lexer struct {
 
 func NewLexer(src []byte, file string) *Lexer {
 	return &Lexer{src: src, line: 1, col: 1, file: file}
+}
+
+// LexerSnapshot captures a Lexer's mutable state so the parser can
+// rewind after a speculative read. Used to disambiguate forms that
+// share a prefix (`pkt.lookahead<...>()` vs `pkt.<field>...`).
+type LexerSnapshot struct {
+	pos, line, col int
+}
+
+func (l *Lexer) Save() LexerSnapshot { return LexerSnapshot{l.pos, l.line, l.col} }
+
+func (l *Lexer) Restore(s LexerSnapshot) {
+	l.pos, l.line, l.col = s.pos, s.line, s.col
 }
 
 func (l *Lexer) syntaxErr(pos Position, format string, args ...any) error {

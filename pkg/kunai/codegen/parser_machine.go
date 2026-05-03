@@ -6,6 +6,7 @@ import (
 	"github.com/cilium/ebpf/asm"
 	"github.com/cilium/ebpf/btf"
 
+	"github.com/takehaya/xdp-ninja/pkg/kunai/ast"
 	"github.com/takehaya/xdp-ninja/pkg/kunai/ir"
 	"github.com/takehaya/xdp-ninja/pkg/kunai/vocab"
 	"github.com/takehaya/xdp-ninja/pkg/kunai/vocab/p4lite"
@@ -36,19 +37,33 @@ func genParserMachine(layer *ir.LayerInstance, layerIdx int, all []*ir.LayerInst
 	}
 
 	pmCtx := &pmCtx{
-		spec:      spec,
-		machine:   m,
-		layerIdx:  layerIdx,
-		layer:     layer,
-		all:       all,
-		labelNS:   fmt.Sprintf("dsl_pm_%s_%d", spec.Name, layerIdx),
-		doneLabel: fmt.Sprintf("dsl_pm_%s_%d_done", spec.Name, layerIdx),
+		spec:       spec,
+		machine:    m,
+		layerIdx:   layerIdx,
+		layer:      layer,
+		all:        all,
+		labelNS:    fmt.Sprintf("dsl_pm_%s_%d", spec.Name, layerIdx),
+		doneLabel:  fmt.Sprintf("dsl_pm_%s_%d_done", spec.Name, layerIdx),
+		absorbed:   map[int]bool{},
+		r4IsRange:  precedingLayersLeaveR4Range(all, layerIdx),
+	}
+	// Pre-scan for multi-state self-loops. Each loop entry's siblings
+	// inline into the entry's bpf_loop callback, so the per-state
+	// emit loop below skips them — no standalone code, no landing
+	// label.
+	for i := range m.States {
+		for sib := range vocab.MultiStateLoopAbsorbedStates(m.States, i) {
+			pmCtx.absorbed[sib] = true
+		}
 	}
 
 	var insns asm.Instructions
 	var callbacks asm.Instructions
 
 	for i := range m.States {
+		if pmCtx.absorbed[i] {
+			continue
+		}
 		body, cbs, err := pmCtx.emitState(i)
 		if err != nil {
 			return nil, nil, err
@@ -77,6 +92,47 @@ type pmCtx struct {
 	labelNS            string
 	doneLabel          string
 	selectCounterValue int
+	// absorbed tracks state indices folded into a multi-state self-
+	// loop callback — those states have no standalone emit because
+	// their bodies live inside the loop entry's callback.
+	absorbed map[int]bool
+	// r4IsRange records whether R4 may carry a non-constant value at
+	// the current emit point. Set when entering this layer if any
+	// preceding layer's emit can leave R4 non-constant; raised mid-
+	// state by emitStateBody as the per-state extracts/advances run.
+	// Drives emitKeyCompare's fast-path / bounded-load choice.
+	r4IsRange bool
+}
+
+// precedingLayersLeaveR4Range scans the layers emitted before idx and
+// reports whether any of them can advance R4 by a non-constant amount.
+// Variable-layout specs (parser machine with pkt.advance / parser-
+// machine sibling extracts / flag triggers), non-One quantifiers
+// (`+`, `*`, `{n,m>1}`), and alt groups (per-alt size differences
+// after convergence) all qualify.
+func precedingLayersLeaveR4Range(all []*ir.LayerInstance, idx int) bool {
+	for _, l := range all[:idx] {
+		if layerLeavesR4Range(l) {
+			return true
+		}
+	}
+	return false
+}
+
+func layerLeavesR4Range(l *ir.LayerInstance) bool {
+	if l.Quant != ast.QuantOne {
+		return true
+	}
+	if l.Alternation != nil {
+		// Each alt body advances R4 by its own size, so even when
+		// uniformAltPrefixSize pins the dispatch anchor R4 after
+		// convergence reflects whichever alt won.
+		return true
+	}
+	if l.Spec != nil && l.Spec.HasVariableLayout() {
+		return true
+	}
+	return false
 }
 
 func (c *pmCtx) stateLabel(idx int) string {
@@ -170,6 +226,9 @@ func (c *pmCtx) emitEntryDispatch() (asm.Instructions, error) {
 // load from those slots.
 func (c *pmCtx) emitStateBody(state *vocab.ParseState, stateIdx int, isEntry bool) (asm.Instructions, asm.Instructions, error) {
 	selfLoop := transitionRefsState(state.Trans, stateIdx)
+	if vocab.IsMultiStateLoopEntry(c.machine.States, stateIdx) {
+		return c.emitMultiStateSelfLoop(state, stateIdx)
+	}
 
 	var insns asm.Instructions
 	stashAddr := inlineSelectAddr
@@ -218,26 +277,52 @@ func (c *pmCtx) emitStateBody(state *vocab.ParseState, stateIdx int, isEntry boo
 				return nil, nil, err
 			}
 			insns = append(insns, tail...)
+			c.r4IsRange = true
 		}
 	}
 
-	// Per-AdvanceOp emit: pkt.advance(...) lowers to the standard
-	// variableTailSkip codegen. The "fixed header size already
-	// advanced" arg is state.OffsetAtEntry — R4 sits at
-	// layer_entry + OffsetAtEntry on state entry, and the loader-
-	// side build constraints (advance lives in its own extract-less
-	// state, references the primary header) keep that invariant
-	// trivially true.
+	// Per-AdvanceOp emit: pkt.advance(...) has three template
+	// variants the loader has already lowered. Field and Lookahead
+	// templates share the variableTailSkip path; they differ only in
+	// the "bytes already advanced" arg (state.OffsetAtEntry vs 0).
+	// Literal templates are a fixed bounds-checked Add.Imm.
 	for _, adv := range state.Advances {
 		if state.OffsetAtEntry < 0 {
 			return nil, nil, fmt.Errorf("%w: state %q has dynamic R4 on entry; pkt.advance requires a static layer-entry offset", ErrNotImplemented, state.Name)
 		}
-		vt := variableTailSkipFromHeaderLength(adv.Skip)
-		tail, err := emitVariableTrailInline(state.OffsetAtEntry, vt, dslReject)
-		if err != nil {
-			return nil, nil, err
+		switch adv.Kind {
+		case vocab.AdvanceOpField:
+			vt := variableTailSkipFromHeaderLength(adv.Skip)
+			tail, err := emitVariableTrailInline(state.OffsetAtEntry, vt, dslReject)
+			if err != nil {
+				return nil, nil, err
+			}
+			insns = append(insns, tail...)
+			c.r4IsRange = true
+		case vocab.AdvanceOpLookahead:
+			// LenByteOff is R4-relative; pass hs=0 to skip the
+			// layer-entry adjustment emitVariableTrail folds in.
+			vt := variableTailSkipFromHeaderLength(adv.Skip)
+			tail, err := emitVariableTrailInline(0, vt, dslReject)
+			if err != nil {
+				return nil, nil, err
+			}
+			insns = append(insns, tail...)
+			c.r4IsRange = true
+		case vocab.AdvanceOpLiteral:
+			insns = append(insns, emitBounds(adv.LiteralBytes, dslReject)...)
+			insns = append(insns, emitAdvance(adv.LiteralBytes))
+		default:
+			return nil, nil, fmt.Errorf("%w: unknown AdvanceOp kind %d", ErrNotImplemented, adv.Kind)
 		}
-		insns = append(insns, tail...)
+	}
+
+	// Only the inline non-stash path reads R4 live; stash mode pre-
+	// loaded the byte before any range-introducing emit, and callback
+	// paths run under bpf_loop where R4 always reloads as a range
+	// scalar. So offsetIsConst is meaningful only here.
+	if !stashAddr.fromStash {
+		stashAddr.offsetIsConst = !c.r4IsRange
 	}
 
 	if !selfLoop {
@@ -622,14 +707,17 @@ func (c *pmCtx) emitSelectGeneric(sel *vocab.SelectOp, addr selectAddr, branch f
 }
 
 // selectKeyShape carries the byte-level encoding for one select key.
-// It is the codegen-friendly version of vocab.FieldRef: the bit window
-// has been resolved against the parser-bound header (primary or stack
-// element) and reduced to "byte at this offset, mask, shift" so a
-// single-byte LDX + AND + cmp suffices.
+// It is the codegen-friendly version of vocab.SelectKey: the bit
+// window has been resolved against the parser-bound header (primary,
+// stack element, or unconsumed lookahead) and reduced to "byte at
+// this offset, mask, shift" so a single-byte LDX + AND + cmp
+// suffices.
 type selectKeyShape struct {
 	// byteOffsetFromR4 is the byte offset relative to the *current*
-	// offsetBase. Negative because select keys read fields of headers
-	// already extracted (R4 advanced past them).
+	// offsetBase. Negative for SelectKeyField (the field lives in a
+	// header already extracted, so R4 has advanced past it);
+	// non-negative for SelectKeyLookahead (peeking at unconsumed
+	// bytes from the cursor forward).
 	byteOffsetFromR4 int
 	// maskAfterShift is the byte mask applied after shifting; it spans
 	// only the key's bits.
@@ -640,7 +728,30 @@ type selectKeyShape struct {
 	bits int
 }
 
-func (c *pmCtx) resolveSelectKey(k vocab.FieldRef) (selectKeyShape, error) {
+func (c *pmCtx) resolveSelectKey(sk vocab.SelectKey) (selectKeyShape, error) {
+	switch sk.Kind {
+	case vocab.SelectKeyField:
+		return c.resolveFieldSelectKey(sk.Field)
+	case vocab.SelectKeyLookahead:
+		// MVP cap (mirrored in vocab/parser_machine.go::buildSelect):
+		// only single-byte lookahead is wired to codegen because the
+		// load below is a one-byte LDX. Wider widths require multi-
+		// byte loads + assembly of the value.
+		if sk.Bits != 8 {
+			return selectKeyShape{}, fmt.Errorf("%w: lookahead select key is %d bits; codegen only supports 8", ErrNotImplemented, sk.Bits)
+		}
+		return selectKeyShape{
+			byteOffsetFromR4: 0,
+			maskAfterShift:   0xFF,
+			shift:            0,
+			bits:             8,
+		}, nil
+	default:
+		return selectKeyShape{}, fmt.Errorf("%w: unknown SelectKey kind %d", ErrNotImplemented, sk.Kind)
+	}
+}
+
+func (c *pmCtx) resolveFieldSelectKey(k vocab.FieldRef) (selectKeyShape, error) {
 	if k.BitOffset%8+k.BitWidth > 8 {
 		return selectKeyShape{}, fmt.Errorf("%w: select key %s.%s straddles byte boundary (bit_offset=%d width=%d)", ErrNotImplemented, k.HeaderName, k.FieldName, k.BitOffset, k.BitWidth)
 	}
@@ -679,73 +790,122 @@ func p4HeaderBytes(h *p4lite.Header) int {
 }
 
 // selectAddr captures how a transition-select key reads its byte.
-// Three concrete strategies exist:
+// Two computed strategies plus an indirect one:
 //
-//  1. Direct from R0+offsetBase (inline path, no variable trail).
-//  2. Direct from R4+R3 (callback path, no variable trail).
-//  3. Indirect from a stack slot (when a preceding variable-length
-//     trail has already moved offsetBase past the header the select
-//     references; the codegen pre-loads the byte before the trail).
+//  1. Inline: scratchStart=R0, scratchEnd=R1, offsetReg=R4 (offsetBase),
+//     scalarReg=R5, dst=R3.
+//  2. Callback: scratchStart=R4, scratchEnd=R5, offsetReg=R3,
+//     scalarReg=R1, dst=R0.
+//  3. Stash: read pre-loaded byte from R10[stashSlots[i]] (used when
+//     a preceding variable-length trail already moved offsetBase past
+//     the header the select references).
 //
-// labelTag keeps per-case skip labels disjoint across the variants.
+// Computed strategies use foldOffsetIntoScalar + boundedScalarLoad
+// rather than direct PTR_TO_PACKET arithmetic so the load survives
+// the verifier even when offsetBase is a range (e.g. after a chain
+// of pkt.advance templates earlier in the layer stack accumulated
+// uncertainty into offsetBase).
+//
+// pktFailLabel receives the underflow / out-of-bounds jump for the
+// computed strategies (typically dslReject for inline, breakLabel
+// for callback). labelTag keeps per-case skip labels disjoint across
+// the variants.
+//
+// offsetIsConst flips emitKeyCompare onto the fast path (3-insn
+// direct LDX) when offsetReg carries a verifier-constant value. The
+// bounded path is unconditionally correct but adds ~5 insns per key
+// for the underflow/overflow gate that a constant offset doesn't
+// need. Set true for inline paths reachable only through fixed-
+// layout layers, and false for callback paths or any path whose
+// preceding layer body added a runtime range to offsetReg.
 type selectAddr struct {
-	dst       asm.Register
-	emitBase  asm.Instructions
-	labelTag  string
-	fromStash bool       // true: read from R10[stashSlots[i]] instead of computing the byte
-	stashR10  asm.Register // R10 of the right frame (main vs callback)
-	stashSlots [3]int16   // stack slot per key index; only first len(keys) entries used
+	dst           asm.Register
+	offsetReg     asm.Register
+	scalarReg     asm.Register
+	scratchStart  asm.Register
+	scratchEnd    asm.Register
+	pktFailLabel  string
+	labelTag      string
+	offsetIsConst bool
+	fromStash     bool         // true: read from R10[stashSlots[i]] instead of computing the byte
+	stashR10      asm.Register // R10 of the right frame (main vs callback)
+	stashSlots    [3]int16     // stack slot per key index; only first len(keys) entries used
 }
 
-var (
-	inlineSelectAddr = selectAddr{
-		dst: asm.R3,
-		emitBase: asm.Instructions{
-			asm.Mov.Reg(asm.R3, asm.R0),
-			asm.Add.Reg(asm.R3, offsetBase),
-		},
-		labelTag: "case",
+var inlineSelectAddr = selectAddr{
+	dst:          asm.R3,
+	offsetReg:    offsetBase,
+	scalarReg:    asm.R5,
+	scratchStart: asm.R0,
+	scratchEnd:   asm.R1,
+	pktFailLabel: dslReject,
+	labelTag:     "case",
+}
+
+// callbackSelectAddr returns the addressing strategy for a transition
+// select inside a bpf_loop callback. labelTag and pktFailLabel are
+// caller-supplied so different subprograms keep their case-skip labels
+// disjoint and route bound failures to their own break landings.
+func callbackSelectAddr(labelTag, breakLabel string) selectAddr {
+	return selectAddr{
+		dst:          asm.R0,
+		offsetReg:    asm.R3,
+		scalarReg:    asm.R1,
+		scratchStart: asm.R4,
+		scratchEnd:   asm.R5,
+		pktFailLabel: breakLabel,
+		labelTag:     labelTag,
 	}
-	callbackSelectAddr = selectAddr{
-		dst: asm.R0,
-		emitBase: asm.Instructions{
-			asm.Mov.Reg(asm.R0, asm.R4),
-			asm.Add.Reg(asm.R0, asm.R3),
-		},
-		labelTag: "cb_case",
-	}
-)
+}
 
 // stashKeySlots picks the kunai-internal stack slots used to spill
 // pre-loaded select-key bytes. Reused across inline and callback
 // (each frame has its own R10) so they cannot collide.
 var stashKeySlots = [3]int16{-56, -64, -72}
 
-// emitKeyCompare emits "materialise base, load byte, optional shift,
-// optional mask, JNE failLabel". When `value` does not fit in the
-// shape's bit width the case can never match, so the body collapses
-// to a single Ja → failLabel. When addr.fromStash is set the helper
-// loads the pre-computed key byte from the stash slot instead and
-// skips mask/shift (already applied during stash).
-func emitKeyCompare(addr selectAddr, shape selectKeyShape, keyIdx int, value uint64, failLabel string) asm.Instructions {
+// emitKeyCompare emits the per-case load + compare. Three shapes:
+//
+//   - fromStash: the key byte was pre-loaded into a stack slot before
+//     a preceding variable trail moved offsetReg; just LDX the slot
+//     and JNE caseSkip.
+//   - offsetIsConst: offsetReg is a verifier-known constant scalar
+//     (no preceding variable advance), so the verifier admits direct
+//     PTR_TO_PACKET arithmetic — emit Mov dst,scratchStart; Add
+//     dst,offsetReg; LoadMem dst,dst,byteOff,Byte (3 insns).
+//   - default (range offsetReg): emit foldOffsetIntoScalar +
+//     boundedScalarLoad so the verifier accepts the load even when
+//     offsetReg has accumulated a range from a preceding pkt.advance.
+//
+// caseSkip is the per-case fall-through (next case or default).
+// addr.pktFailLabel receives bounds failures (bounded path only).
+func emitKeyCompare(addr selectAddr, shape selectKeyShape, keyIdx int, value uint64, caseSkip string) asm.Instructions {
 	if value >= 1<<uint(shape.bits) {
-		return asm.Instructions{asm.Ja.Label(failLabel)}
+		return asm.Instructions{asm.Ja.Label(caseSkip)}
 	}
 	if addr.fromStash {
 		return asm.Instructions{
 			asm.LoadMem(addr.dst, addr.stashR10, addr.stashSlots[keyIdx], asm.DWord),
-			asm.JNE.Imm(addr.dst, int32(value), failLabel),
+			asm.JNE.Imm(addr.dst, int32(value), caseSkip),
 		}
 	}
-	insns := append(asm.Instructions{}, addr.emitBase...)
-	insns = append(insns, asm.LoadMem(addr.dst, addr.dst, int16(shape.byteOffsetFromR4), asm.Byte))
+	var insns asm.Instructions
+	if addr.offsetIsConst {
+		insns = append(insns,
+			asm.Mov.Reg(addr.dst, addr.scratchStart),
+			asm.Add.Reg(addr.dst, addr.offsetReg),
+			asm.LoadMem(addr.dst, addr.dst, int16(shape.byteOffsetFromR4), asm.Byte),
+		)
+	} else {
+		insns = append(insns, foldOffsetIntoScalar(addr.scalarReg, addr.offsetReg, int32(shape.byteOffsetFromR4), addr.pktFailLabel)...)
+		insns = append(insns, boundedScalarLoad(addr.dst, addr.scratchStart, addr.scalarReg, addr.scratchEnd, asm.Byte, addr.pktFailLabel)...)
+	}
 	if shape.shift > 0 {
 		insns = append(insns, asm.RSh.Imm(addr.dst, int32(shape.shift)))
 	}
 	if shape.maskAfterShift != 0xff {
 		insns = append(insns, asm.And.Imm(addr.dst, int32(shape.maskAfterShift)))
 	}
-	insns = append(insns, asm.JNE.Imm(addr.dst, int32(value), failLabel))
+	insns = append(insns, asm.JNE.Imm(addr.dst, int32(value), caseSkip))
 	return insns
 }
 
@@ -837,6 +997,195 @@ func (c *pmCtx) emitSelfLoop(state *vocab.ParseState, stateIdx int) (asm.Instruc
 	return insns, callback, nil
 }
 
+// emitMultiStateSelfLoop is the codegen path for indirect self-loops
+// (TLV walks). The state body is a single-byte lookahead dispatch
+// over sibling states; each sibling does one extract or advance,
+// then transitions back to the entry. The callback inlines the
+// dispatch + every sibling body, so each bpf_loop iteration is
+// "read kind byte, do the matching sibling's work, return 0".
+//
+// MAX_DEPTH governs the bpf_loop iter cap. The state itself has no
+// inline iter-0 — control enters via Ja from a parent state,
+// invokes bpf_loop, then jumps to doneLabel.
+func (c *pmCtx) emitMultiStateSelfLoop(state *vocab.ParseState, stateIdx int) (asm.Instructions, asm.Instructions, error) {
+	maxIter := c.spec.MaxDepth
+	if maxIter == 0 {
+		maxIter = defaultChainDepth
+	}
+	if maxIter > bpfLoopChainCap {
+		return nil, nil, fmt.Errorf("%w: parser machine %s multi-state self-loop depth %d exceeds cap %d", ErrNotImplemented, c.spec.Name, maxIter, bpfLoopChainCap)
+	}
+	cbSym := c.selfLoopCbSym(stateIdx)
+	callback, err := c.emitMultiStateCallback(state, stateIdx, cbSym)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	insns := asm.Instructions{
+		asm.StoreMem(asm.R10, bpfLoopCtxOffsetSlot, offsetBase, asm.DWord),
+		asm.StoreMem(asm.R10, bpfLoopCtxScratchStartSlot, asm.R0, asm.DWord),
+		asm.StoreMem(asm.R10, bpfLoopCtxScratchEndSlot, asm.R1, asm.DWord),
+		asm.Mov.Imm(asm.R1, int32(maxIter)),
+		loadFunctionRef(asm.R2, cbSym),
+		asm.Mov.Reg(asm.R3, asm.R10),
+		asm.Add.Imm(asm.R3, bpfLoopCtxBaseOffset),
+		asm.Mov.Imm(asm.R4, 0),
+		asm.FnLoop.Call(),
+		asm.LoadMem(offsetBase, asm.R10, bpfLoopCtxOffsetSlot, asm.DWord),
+		asm.LoadMem(asm.R0, asm.R10, bpfLoopCtxScratchStartSlot, asm.DWord),
+		asm.LoadMem(asm.R1, asm.R10, bpfLoopCtxScratchEndSlot, asm.DWord),
+		asm.Ja.Label(c.doneLabel),
+	}
+	return insns, callback, nil
+}
+
+// emitMultiStateCallback emits the bpf_loop callback for an indirect
+// self-loop. Each iteration reads the lookahead byte, then runs
+// either an inlined sibling body (extract or advance + return 0) or
+// breaks (accept / reject / EOL → return 1).
+func (c *pmCtx) emitMultiStateCallback(entry *vocab.ParseState, entryIdx int, cbSym string) (asm.Instructions, error) {
+	breakLabel := c.selfLoopBreak(entryIdx)
+	continueLabel := cbSym + "_continue"
+
+	first := asm.LoadMem(asm.R3, asm.R2, bpfLoopCbCtxOffsetField, asm.DWord).WithSymbol(cbSym)
+	first = btf.WithFuncMetadata(first, chainCallbackFunc(cbSym))
+
+	insns := asm.Instructions{
+		first,
+		asm.LoadMem(asm.R4, asm.R2, bpfLoopCbCtxScratchStartField, asm.DWord),
+		asm.LoadMem(asm.R5, asm.R2, bpfLoopCbCtxScratchEndField, asm.DWord),
+		// R3 came from a stack spill, so the verifier re-enters this
+		// callback with R3 marked as an unbounded scalar. Pin its
+		// upper bound against ScratchBufSize before any pkt-pointer
+		// arithmetic; on the surviving path R3 ∈ [0, ScratchBufSize),
+		// which lets the subsequent `pkt + R3` adds verify.
+		asm.JGT.Imm(asm.R3, int32(ScratchBufSize)-1, breakLabel),
+	}
+	// Per-case dispatch over the lookahead<bit<8>>() byte. Use the
+	// existing emitSelectGeneric machinery with a callback-flavoured
+	// selectAddr that materialises the byte at R4+R3.
+	addr := callbackSelectAddr("tlvcb", breakLabel)
+	// Bound-check the 1-byte peek before any case body runs.
+	insns = append(insns,
+		asm.Mov.Reg(asm.R0, asm.R4),
+		asm.Add.Reg(asm.R0, asm.R3),
+		asm.Add.Imm(asm.R0, 1),
+		asm.JGT.Reg(asm.R0, asm.R5, breakLabel),
+	)
+	dispatch, err := c.emitMultiStateDispatch(entry, entryIdx, addr, breakLabel, continueLabel)
+	if err != nil {
+		return nil, err
+	}
+	insns = append(insns, dispatch...)
+
+	insns = append(insns,
+		asm.Mov.Imm(asm.R0, 0).WithSymbol(continueLabel),
+		asm.Return(),
+		asm.Mov.Imm(asm.R0, 1).WithSymbol(breakLabel),
+		asm.Return(),
+	)
+	return insns, nil
+}
+
+// emitMultiStateDispatch builds the per-case cascade for the entry's
+// transition select. Each case either inlines its sibling's body
+// (followed by Ja continueLabel) or jumps to breakLabel for
+// accept / reject targets.
+func (c *pmCtx) emitMultiStateDispatch(entry *vocab.ParseState, entryIdx int, addr selectAddr, breakLabel, continueLabel string) (asm.Instructions, error) {
+	sel := entry.Trans.Select
+	// Single key, single byte (validated by vocab.IsMultiStateLoopEntry).
+	shape, err := c.resolveSelectKey(sel.Keys[0])
+	if err != nil {
+		return nil, err
+	}
+	var insns asm.Instructions
+	for _, kase := range sel.Cases {
+		caseSkip := fmt.Sprintf("%s_%s_%d_skip", c.labelNS, addr.labelTag, c.selectCounter())
+		mv := kase.Values[0]
+		if !mv.IsWildcard {
+			insns = append(insns, emitKeyCompare(addr, shape, 0, mv.Value, caseSkip)...)
+		}
+		body, err := c.emitMultiStateCaseBody(kase.Target, entryIdx, breakLabel, continueLabel)
+		if err != nil {
+			return nil, err
+		}
+		insns = append(insns, body...)
+		if !mv.IsWildcard {
+			insns = append(insns, landingNoop(caseSkip))
+		} else {
+			return insns, nil
+		}
+	}
+	body, err := c.emitMultiStateCaseBody(sel.Default, entryIdx, breakLabel, continueLabel)
+	if err != nil {
+		return nil, err
+	}
+	insns = append(insns, body...)
+	return insns, nil
+}
+
+// emitMultiStateCaseBody emits the action a single dispatch arm
+// performs: break for accept / reject targets, or inline the
+// sibling state's extracts and advances and Ja continueLabel.
+func (c *pmCtx) emitMultiStateCaseBody(target, entryIdx int, breakLabel, continueLabel string) (asm.Instructions, error) {
+	if target == vocab.StateAccept || target == vocab.StateReject {
+		return asm.Instructions{asm.Ja.Label(breakLabel)}, nil
+	}
+	sib := c.machine.States[target]
+	body, err := c.emitSiblingCallbackBody(sib, breakLabel)
+	if err != nil {
+		return nil, err
+	}
+	body = append(body, asm.Ja.Label(continueLabel))
+	return body, nil
+}
+
+// emitSiblingCallbackBody lowers a sibling state's extracts and
+// advances using the callback ABI (R3 = offset, R4 = scratchStart,
+// R5 = scratchEnd, R0/R1 = scratch). Each iteration of the multi-
+// state self-loop runs exactly one sibling.
+func (c *pmCtx) emitSiblingCallbackBody(sib *vocab.ParseState, breakLabel string) (asm.Instructions, error) {
+	var insns asm.Instructions
+	for _, ex := range sib.Extracts {
+		if ex.HeaderSize%8 != 0 {
+			return nil, fmt.Errorf("%w: multi-state callback extract on %q is %d bits (not byte-aligned)", ErrNotImplemented, ex.HeaderName, ex.HeaderSize)
+		}
+		hs := ex.HeaderSize / 8
+		insns = append(insns,
+			asm.Mov.Reg(asm.R0, asm.R4),
+			asm.Add.Reg(asm.R0, asm.R3),
+			asm.Add.Imm(asm.R0, int32(hs)),
+			asm.JGT.Reg(asm.R0, asm.R5, breakLabel),
+			asm.Add.Imm(asm.R3, int32(hs)),
+			asm.StoreMem(asm.R2, bpfLoopCbCtxOffsetField, asm.R3, asm.DWord),
+		)
+	}
+	for _, adv := range sib.Advances {
+		switch adv.Kind {
+		case vocab.AdvanceOpLookahead:
+			vt := variableTailSkipFromHeaderLength(adv.Skip)
+			tail, err := emitVariableTrailCallback(0, vt, breakLabel)
+			if err != nil {
+				return nil, err
+			}
+			insns = append(insns, tail...)
+		case vocab.AdvanceOpLiteral:
+			n := int32(adv.LiteralBytes)
+			insns = append(insns,
+				asm.Mov.Reg(asm.R0, asm.R4),
+				asm.Add.Reg(asm.R0, asm.R3),
+				asm.Add.Imm(asm.R0, n),
+				asm.JGT.Reg(asm.R0, asm.R5, breakLabel),
+				asm.Add.Imm(asm.R3, n),
+				asm.StoreMem(asm.R2, bpfLoopCbCtxOffsetField, asm.R3, asm.DWord),
+			)
+		default:
+			return nil, fmt.Errorf("%w: multi-state callback sibling advance kind %d not yet supported", ErrNotImplemented, adv.Kind)
+		}
+	}
+	return insns, nil
+}
+
 // emitSelfLoopCallback is the bpf2bpf callback bpf_loop runs per
 // iteration. R2 = &ctx (offset/scratch_start/scratch_end), R1 = idx.
 // Each transition branch ends with an explicit Ja to either
@@ -857,7 +1206,7 @@ func (c *pmCtx) emitSelfLoopCallback(state *vocab.ParseState, stateIdx int, cbSy
 		asm.LoadMem(asm.R5, asm.R2, bpfLoopCbCtxScratchEndField, asm.DWord),
 	}
 
-	stashAddr := callbackSelectAddr
+	stashAddr := callbackSelectAddr("cb_case", breakLabel)
 	for _, ex := range state.Extracts {
 		if ex.HeaderSize%8 != 0 {
 			return nil, fmt.Errorf("%w: parser machine self-loop extract on %q is %d bits (not byte-aligned)", ErrNotImplemented, ex.HeaderName, ex.HeaderSize)
@@ -968,6 +1317,7 @@ func transitionRefsState(t vocab.TransitionOp, stateIdx int) bool {
 	}
 	return false
 }
+
 
 // selectCounter feeds unique case-skip labels per (layer, state, case).
 // Each emit pass starts at zero so labels stay deterministic.

@@ -141,8 +141,15 @@ parser P(packet_in pkt, out h_t hdr) {
 	if sel == nil {
 		t.Fatal("transition.select is nil")
 	}
-	if got, want := sel.Keys, []string{"hdr.a", "hdr.b", "hdr.c"}; !equalStrs(got, want) {
-		t.Errorf("keys = %v, want %v", got, want)
+	gotPaths := make([]string, len(sel.Keys))
+	for i, k := range sel.Keys {
+		if k.Kind != SelectKeyField {
+			t.Fatalf("key[%d] kind = %d, want SelectKeyField", i, k.Kind)
+		}
+		gotPaths[i] = k.Path
+	}
+	if want := []string{"hdr.a", "hdr.b", "hdr.c"}; !equalStrs(gotPaths, want) {
+		t.Errorf("keys = %v, want %v", gotPaths, want)
 	}
 	if len(sel.Cases) != 2 {
 		t.Fatalf("cases=%d", len(sel.Cases))
@@ -457,16 +464,92 @@ func TestParseAdvanceTemplateRoundTrip(t *testing.T) {
 	}
 	want := AdvanceStmt{
 		Object:    "pkt",
+		Kind:      AdvanceField,
 		BitWidth:  32,
 		Target:    "hdr",
 		FieldName: "data_offset",
 		BaseWords: 5,
 		ScaleLog2: 5,
 	}
-	if adv.Object != want.Object || adv.BitWidth != want.BitWidth ||
+	if adv.Object != want.Object || adv.Kind != want.Kind || adv.BitWidth != want.BitWidth ||
 		adv.Target != want.Target || adv.FieldName != want.FieldName ||
 		adv.BaseWords != want.BaseWords || adv.ScaleLog2 != want.ScaleLog2 {
 		t.Errorf("AdvanceStmt = %+v, want %+v", *adv, want)
+	}
+}
+
+func TestParseAdvanceLiteralRoundTrip(t *testing.T) {
+	src := `parser P(packet_in pkt, out tcp_h hdr) {
+	state s {
+		pkt.advance(8);
+		transition accept;
+	}
+}`
+	f, err := Parse([]byte(src), "t.p4")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	stmts := f.Parsers[0].States[0].Stmts
+	adv := stmts[0].(*AdvanceStmt)
+	if adv.Kind != AdvanceLiteral {
+		t.Errorf("Kind = %d, want AdvanceLiteral (%d)", adv.Kind, AdvanceLiteral)
+	}
+	if adv.LiteralBits != 8 {
+		t.Errorf("LiteralBits = %d, want 8", adv.LiteralBits)
+	}
+}
+
+func TestParseAdvanceLookaheadRoundTrip(t *testing.T) {
+	src := `parser P(packet_in pkt, out tcp_h hdr) {
+	state s {
+		pkt.advance(((bit<32>)pkt.lookahead<bit<16>>()[7:0]) << 3);
+		transition accept;
+	}
+}`
+	f, err := Parse([]byte(src), "t.p4")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	adv := f.Parsers[0].States[0].Stmts[0].(*AdvanceStmt)
+	want := AdvanceStmt{
+		Kind:          AdvanceLookahead,
+		BitWidth:      32,
+		LookaheadBits: 16,
+		SliceLo:       0,
+		SliceHi:       7,
+		ScaleLog2:     3,
+	}
+	if adv.Kind != want.Kind || adv.BitWidth != want.BitWidth ||
+		adv.LookaheadBits != want.LookaheadBits ||
+		adv.SliceLo != want.SliceLo || adv.SliceHi != want.SliceHi ||
+		adv.ScaleLog2 != want.ScaleLog2 {
+		t.Errorf("AdvanceStmt = %+v, want %+v", *adv, want)
+	}
+}
+
+func TestParseSelectKeyLookaheadRoundTrip(t *testing.T) {
+	src := `parser P(packet_in pkt, out tcp_h hdr) {
+	state s {
+		pkt.extract(hdr);
+		transition select(pkt.lookahead<bit<8>>()) {
+			0: accept;
+			default: reject;
+		}
+	}
+}`
+	f, err := Parse([]byte(src), "t.p4")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	keys := f.Parsers[0].States[0].Transition.Select.Keys
+	if len(keys) != 1 {
+		t.Fatalf("keys=%d, want 1", len(keys))
+	}
+	if keys[0].Kind != SelectKeyLookahead {
+		t.Errorf("Kind = %d, want SelectKeyLookahead (%d)", keys[0].Kind, SelectKeyLookahead)
+	}
+	if keys[0].Bits != 8 {
+		t.Errorf("Bits = %d, want 8", keys[0].Bits)
 	}
 }
 
@@ -478,9 +561,11 @@ func TestParseAdvanceRejectsNonTemplateForms(t *testing.T) {
 		// Note: unsupported method dispatch is exercised separately by
 		// TestParseRejectsUnknownMethodCall below. Tokens the lexer
 		// doesn't recognise (e.g. `+`) trip a lexer-level error before
-		// the template matcher runs and aren't covered here.
+		// the template matcher runs and aren't covered here. The
+		// literal-int form `pkt.advance(8);` is the AdvanceLiteral
+		// template, intentionally accepted — exercised by the
+		// round-trip test below.
 		{"missing_paren_count", `pkt.advance((bit<32>)(hdr.data_offset - 5) << 5);`},
-		{"raw_int_arg", `pkt.advance(8);`},
 		{"missing_cast", `pkt.advance(((hdr.data_offset - 5)) << 5);`},
 		{"shift_right_instead_of_left", `pkt.advance(((bit<32>)(hdr.data_offset - 5)) >> 5);`},
 	}
@@ -497,7 +582,7 @@ func TestParseAdvanceRejectsNonTemplateForms(t *testing.T) {
 			if err == nil {
 				t.Fatalf("expected error for %q, got nil", tc.body)
 			}
-			if !strings.Contains(err.Error(), "pkt.advance must use the form") {
+			if !strings.Contains(err.Error(), "pkt.advance must use one of") {
 				t.Errorf("err = %q; want template-form hint", err.Error())
 			}
 		})

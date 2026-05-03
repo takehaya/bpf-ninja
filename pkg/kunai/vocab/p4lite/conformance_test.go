@@ -89,14 +89,13 @@ func TestSubsetRejectsParserDirectionsBeyondMVP(t *testing.T) {
 }
 
 func TestSubsetRejectsParserStatementsBeyondExtract(t *testing.T) {
-	// Real P4 lets parser states do `pkt.advance(N)`, `verify(...)`,
-	// `var = expr`, and conditional / block statements. p4lite only
-	// knows extract.
+	// Real P4 lets parser states do `verify(...)`, `var = expr`, and
+	// conditional / block statements. p4lite knows only extract and
+	// advance.
 	cases := []struct {
 		name string
 		stmt string
 	}{
-		{"advance", "pkt.advance(8);"},
 		{"verify", "verify(true, error.NoError);"},
 		{"assignment", "x = 1;"},
 		{"conditional", "if (true) {}"},
