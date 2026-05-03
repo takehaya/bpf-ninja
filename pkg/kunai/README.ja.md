@@ -4,7 +4,7 @@
 
 `kunai` は一行のパケットフィルタ DSL を target-portable な eBPF 命令列にコンパイルする小さな Go ライブラリ。プロトコルヘッダの記述には P4 風の vocabulary ファイルを使う。
 
-[xdp-ninja](https://github.com/takehaya/xdp-ninja) から切り出されたもので、その `--dsl` フラグの実体だが、パッケージ自体は self-contained。public surface に XDP 固有の依存はなく、連続したパケットバイト列のウィンドウを露出するホストであれば tracing / fentry / fexit / tc / userspace BPF など何にでも組み込める。
+[xdp-ninja](https://github.com/takehaya/xdp-ninja) から切り出されたもので、その default DSL filter モードの実体だが、パッケージ自体は self-contained。public surface に XDP 固有の依存はなく、連続したパケットバイト列のウィンドウを露出するホストであれば tracing / fentry / fexit / tc / userspace BPF など何にでも組み込める。
 
 > **ステータス**: pre-1.0。public API は小さい (`Compile` 1 つ) が、surface が安定するまでは変動しうる。1.0 までは minor バージョン間で breaking change があり得る。
 
@@ -156,7 +156,7 @@ vocabulary のパースは `dslvocab.Bundled()` 内で `sync.Once` により **p
 
 - [xdp-ninja](https://github.com/takehaya/xdp-ninja) — 本パッケージのメイン consumer である非侵襲 XDP 観測ツール
 - [cilium/ebpf](https://github.com/cilium/ebpf) — codegen のターゲットである BPF アセンブラ / ローダ
-- [cloudflare/cbpfc](https://github.com/cloudflare/cbpfc) — 代替の classical-BPF (tcpdump 構文) コンパイラ。xdp-ninja は `--dsl` 未指定時にこれを使う
+- [cloudflare/cbpfc](https://github.com/cloudflare/cbpfc) — 代替の classical-BPF (tcpdump 構文) コンパイラ。xdp-ninja は `--cbpf` 指定時の legacy 経路で使う
 - [p4lang/p4c](https://github.com/p4lang/p4c) — 公式 P4 コンパイラ。`.p4` vocab ファイルが P4-16 内に収まっていることを CI で検証するのに使う
 
 ## ライセンス

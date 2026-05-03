@@ -1,6 +1,6 @@
 # DSL ベンチ方法論
 
-xdp-ninja の DSL (`--dsl`) と既定の cbpfc (tcpdump 構文) を比べたい人向け。本ドキュメントは **再現手順** を残すのが目的で、特定環境の数値を載せることはしない (環境依存性が高すぎるため)。
+xdp-ninja の DSL (default) と legacy cbpfc (`--cbpf`、tcpdump 構文) を比べたい人向け。本ドキュメントは **再現手順** を残すのが目的で、特定環境の数値を載せることはしない (環境依存性が高すぎるため)。
 
 ## 何を測るか
 
@@ -88,13 +88,13 @@ sudo iperf3 -c 10.0.0.2 -t 30 -P 4
 sudo perf stat -e cycles,instructions,cache-misses,task-clock -- \
   timeout 30 xdp-ninja -i veth0 -c 0 > /dev/null
 
-# (B) cbpfc filter 経由
+# (B) cbpfc filter 経由 (--cbpf で legacy 構文に切替)
 sudo perf stat -e cycles,instructions,cache-misses,task-clock -- \
-  timeout 30 xdp-ninja -i veth0 -c 0 "tcp port 443" > /dev/null
+  timeout 30 xdp-ninja --cbpf -i veth0 -c 0 "tcp port 443" > /dev/null
 
 # (C) DSL filter 経由
 sudo perf stat -e cycles,instructions,cache-misses,task-clock -- \
-  timeout 30 xdp-ninja --dsl -i veth0 -c 0 "eth/ipv4/tcp[dport==443]" > /dev/null
+  timeout 30 xdp-ninja -i veth0 -c 0 "eth/ipv4/tcp[dport==443]" > /dev/null
 ```
 
 `xdp-ninja` の stderr に `N packets captured` が出る。30s 走らせて N/30 で実効 pps。`perf stat` の `cycles` / `instructions` は kernel-side オーバーヘッドの目安。
@@ -117,7 +117,7 @@ sudo perf stat -e cycles,instructions,cache-misses,task-clock -- \
 `--mode exit` を加えると trampoline で XDP の戻り値も観測する。fentry より僅かに重いが filter 自体の比較性質は変わらない。
 
 ```bash
-sudo xdp-ninja --dsl -i veth0 --mode exit -c 0 \
+sudo xdp-ninja -i veth0 --mode exit -c 0 \
   "eth/ipv4/tcp where action == XDP_DROP" > /dev/null
 ```
 

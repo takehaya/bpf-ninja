@@ -250,4 +250,4 @@ kunai は packet filter の DSL を:
 
 という方針で設計したライブラリ。 122 commits の積み上げの結果、 17 protocol を bundle して、 GTP-U の 7 階層 encapsulation や SRv6 segments の `any()` 量化、 TCP options の kind 別 lookup まで 1 行の DSL で書けるようになった。
 
-詳しい仕様は `pkg/kunai/README.md` (英) / `pkg/kunai/README.ja.md` (日本語)、 internal は `docs/ja/dsl-internals.md`、 文法 BNF は `docs/ja/dsl-grammar.md` を参照。 親リポジトリ `xdp-ninja` の `--dsl` フラグで実 packet capture に使える。
+詳しい仕様は `pkg/kunai/README.md` (英) / `pkg/kunai/README.ja.md` (日本語)、 internal は `docs/ja/dsl-internals.md`、 文法 BNF は `docs/ja/dsl-grammar.md` を参照。 親リポジトリ `xdp-ninja` の default filter syntax として実 packet capture に使える。

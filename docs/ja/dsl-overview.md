@@ -1,12 +1,12 @@
 # xdp-ninja DSL ドキュメント
 
-`--dsl` フラグで使う一行フィルタ DSL のドキュメント index。tcpdump 構文で書きにくい多段カプセル化 (GTP-U / MPLS / VXLAN / SRv6 …) を「プロトコルスタックの形」のまま書けるのが目的。
+xdp-ninja の filter 式 (DSL) のドキュメント index。tcpdump 構文 (legacy `--cbpf`) で書きにくい多段カプセル化 (GTP-U / MPLS / VXLAN / SRv6 …) を「プロトコルスタックの形」のまま書けるのが目的。DSL は xdp-ninja の **default filter syntax**。
 
 ## 役割別にどこから読むか
 
 | あなたは | 読む順 |
 |---|---|
-| **使いたい** (CLI で `--dsl` を叩く) | [`dsl-usage.md`](./dsl-usage.md) → [`dsl-grammar.md`](./dsl-grammar.md) (詳しい文法) |
+| **使いたい** (CLI のフィルタ式を書く) | [`dsl-usage.md`](./dsl-usage.md) → [`dsl-grammar.md`](./dsl-grammar.md) (詳しい文法) |
 | **library として使いたい** (Go から `kunai.Compile`) | [`pkg/kunai/README.md`](../../pkg/kunai/README.md) (英語) |
 | **vocab を書きたい** (新プロトコル追加) | [`dsl-internals.md` §3 vocab 著者ガイド](./dsl-internals.md#3-vocab-著者ガイド) + [`pkg/kunai/protocols/`](../../pkg/kunai/protocols/) の既存 .p4 |
 | **可変長構造をどう vocab で表すか知りたい** (chain vs aux の判断) | [`dsl-internals.md` §6](./dsl-internals.md#6-可変長構造の分類と表現) |
@@ -53,4 +53,4 @@ filter expr  →  AST  →  IR (vocab 解決済)  →  asm.Instructions  →  ci
 - Host adapter: `pkg/kunai/host/xdp/` (XDP fentry/fexit 用、新 host を追加するときは `host/<name>/` を並べる)
 - ABI 契約 (kunai ↔ host): `pkg/kunai/codegen/codegen.go` の package doc + `KunaiStackTop` constant
 - 既存 fentry/fexit との接続: `internal/program/program.go::compileFilter`
-- CLI 入口: `cmd/xdp-ninja/main.go` の `--dsl` 分岐
+- CLI 入口: `cmd/xdp-ninja/main.go` の `resolveFilterSyntax()` (DSL がデフォルト、`--cbpf` で legacy)

@@ -1,18 +1,18 @@
 # xdp-ninja DSL 利用ガイド
 
-`--dsl` フラグを付けると、フィルタ式は tcpdump 構文ではなく **xdp-ninja DSL** として解釈される。tcpdump/cbpfc では書きにくい多段カプセル化 (GTP-U over UDP, MPLS label stack, VXLAN inner Ethernet, …) を「プロトコルスタックの形」のまま記述できるのがゴール。
+フィルタ式は **xdp-ninja DSL** としてコンパイルされる (default)。tcpdump/cbpfc では書きにくい多段カプセル化 (GTP-U over UDP, MPLS label stack, VXLAN inner Ethernet, …) を「プロトコルスタックの形」のまま記述できるのがゴール。
 
 このドキュメントは利用者向け。formal な EBNF と例文表は [dsl-grammar.md](./dsl-grammar.md) にある。新しいプロトコル vocab を書きたい場合は [`pkg/kunai/protocols/`](../../pkg/kunai/protocols/) の既存 .p4 と [`pkg/kunai/vocab/loader.go`](../../pkg/kunai/vocab/loader.go) を参考にする。
 
 ## クイックスタート
 
 ```bash
-sudo xdp-ninja --dsl -i veth0 "eth/ipv4/tcp[dport==443]"
+sudo xdp-ninja -i veth0 "eth/ipv4/tcp[dport==443]"
 ```
 
-- `--dsl` を付けないと従来どおり tcpdump 式扱い (cbpfc にコンパイル) になる。
+- DSL は **default**。tcpdump/cBPF 構文を使いたいときだけ `--cbpf` を付ける (legacy、deprecation notice 出る)。
 - フィルタ式は **位置引数** として末尾に渡す。
-- 既存の `-w pcap`, `-c count`, `--mode exit` などはすべて DSL でも使える。
+- 既存の `-w pcap`, `-c count`, `--mode exit/xdp` などはすべて DSL でも使える。
 
 ## 文法
 
@@ -126,6 +126,8 @@ eth/ipv4/tcp where action == XDP_DROP            # exit mode 限定
 | `proto.stack[expr].field` | `srv6.segments[srv6.last_entry].addr` | 動的 index (parent header field 由来) |
 | `proto.options.NAME.field` | `tcp.options.MSS.value` | TCP/IPv4 option lookup |
 
+あるプロトコルにどんな aux / stack / options が露出してるか調べたいときは `xdp-ninja --dsl-help <proto>` で full reference を出せる (例: `--dsl-help srv6` で `segments[0..7]` stack の field と access pattern が、`--dsl-help gtp` で `opt` aux + `exts[0..7]` stack が、`--dsl-help tcp` で options walk の named entries が一覧される)。
+
 #### Aux header / stack / options アクセスの実例
 
 ```
@@ -165,7 +167,7 @@ SRv6 segments のような parent-count 系には自動 count guard が入る (=
 
 #### action atom
 
-`action == XDP_*` は **exit mode (`--mode exit`)** でのみ使える。`fentry` 段階では XDP がまだ実行されていないので、リジェクトされる。
+`action == XDP_*` は **exit mode (`--mode exit`)** でのみ使える。`fentry` (`--mode entry`) 段階では XDP がまだ実行されていないので action 値が存在せず、`xdp-native` (`--mode xdp`) は xdp-ninja 自身が action を「決める」立場 (常に `XDP_PASS`) で観測対象がないので、いずれも resolver で reject される。
 
 サポート: `XDP_ABORTED`, `XDP_DROP`, `XDP_PASS`, `XDP_TX`, `XDP_REDIRECT`。
 
@@ -230,32 +232,32 @@ eth/ipv4@outer/udp/gtp/ipv4@inner/tcp where outer.dst == 0xc0a80101 and inner.dp
 
 ```bash
 # ICMP echo request だけ
-sudo xdp-ninja --dsl -i veth0 "eth/ipv4/icmp[type==8]"
+sudo xdp-ninja -i veth0 "eth/ipv4/icmp[type==8]"
 
 # IPv6 TCP に絞って snaplen 256
-sudo xdp-ninja --dsl -i veth0 "eth/ipv6/tcp capture headers+128"
+sudo xdp-ninja -i veth0 "eth/ipv6/tcp capture headers+128"
 
 # fexit 観測で XDP が DROP したものだけ
-sudo xdp-ninja --dsl -i veth0 --mode exit "eth/ipv4/tcp where action == XDP_DROP"
+sudo xdp-ninja -i veth0 --mode exit "eth/ipv4/tcp where action == XDP_DROP"
 ```
 
 ### encapsulation
 
 ```bash
 # VLAN 任意 1 段の TCP/443
-sudo xdp-ninja --dsl -i veth0 "eth/vlan?/ipv4/tcp[dport==443]"
+sudo xdp-ninja -i veth0 "eth/vlan?/ipv4/tcp[dport==443]"
 
 # QinQ + VLAN いずれか
-sudo xdp-ninja --dsl -i veth0 "eth/(vlan|qinq)/ipv4/tcp"
+sudo xdp-ninja -i veth0 "eth/(vlan|qinq)/ipv4/tcp"
 
 # MPLS スタック (s-bit で終端、IPv4 ペイロード)
-sudo xdp-ninja --dsl -i veth0 "eth/mpls+/ipv4/tcp"
+sudo xdp-ninja -i veth0 "eth/mpls+/ipv4/tcp"
 
 # VXLAN inner Ethernet/IP/TCP
-sudo xdp-ninja --dsl -i veth0 "eth/ipv4/udp/vxlan/eth/ipv4/tcp"
+sudo xdp-ninja -i veth0 "eth/ipv4/udp/vxlan/eth/ipv4/tcp"
 
 # GTP-U inner IP, ラベル付き outer/inner
-sudo xdp-ninja --dsl -i veth0 \
+sudo xdp-ninja -i veth0 \
   "eth/ipv4@outer/udp/gtp/ipv4@inner/tcp where outer.src == 0xc0a80001"
 ```
 
@@ -263,11 +265,11 @@ sudo xdp-ninja --dsl -i veth0 \
 
 ```bash
 # total_length 100 byte 超の TCP のみ、ヘッダ + 64 byte 取得
-sudo xdp-ninja --dsl -i veth0 \
+sudo xdp-ninja -i veth0 \
   "eth/ipv4/tcp where ipv4.total_length > 100 capture headers+64"
 
 # TCP/443 か TCP/80
-sudo xdp-ninja --dsl -i veth0 \
+sudo xdp-ninja -i veth0 \
   "eth/ipv4/tcp where tcp.dport == 443 or tcp.dport == 80"
 ```
 
@@ -299,7 +301,7 @@ resolver / parser が出す主要なエラーパターン (詳しくは [`dsl-ty
 ### 値が field 幅に収まらない
 
 ```
-$ xdp-ninja -i eth0 --dsl 'eth/ipv4/tcp where tcp.dport > 99999'
+$ xdp-ninja -i eth0 'eth/ipv4/tcp where tcp.dport > 99999'
 1:30: value 99999 does not fit in bit<16> (in arithmetic context)
 ```
 
@@ -308,7 +310,7 @@ $ xdp-ninja -i eth0 --dsl 'eth/ipv4/tcp where tcp.dport > 99999'
 ### CIDR の host bits が立っている
 
 ```
-$ xdp-ninja -i eth0 --dsl 'eth/ipv4[src==10.0.0.5/24]/tcp'
+$ xdp-ninja -i eth0 'eth/ipv4[src==10.0.0.5/24]/tcp'
 1:14: CIDR "10.0.0.5/24" has host bits set; network would be 10.0.0.0/24
   (suggestion: 10.0.0.0/24 for the subnet, or 10.0.0.5/32 for the single host)
 ```
@@ -318,7 +320,7 @@ CIDR は network address (boundary 整列) を要求する。`10.0.0.0/24` で s
 ### division / modulo by zero (静的)
 
 ```
-$ xdp-ninja -i eth0 --dsl 'eth/ipv4/tcp where tcp.dport / 0 == 1'
+$ xdp-ninja -i eth0 'eth/ipv4/tcp where tcp.dport / 0 == 1'
 1:33: division by zero
 ```
 
@@ -327,7 +329,7 @@ $ xdp-ninja -i eth0 --dsl 'eth/ipv4/tcp where tcp.dport / 0 == 1'
 ### Bool に対する ordered cmp
 
 ```
-$ xdp-ninja -i eth0 --dsl 'eth/ipv4/tcp where true < false'
+$ xdp-ninja -i eth0 'eth/ipv4/tcp where true < false'
 1:25: ordered comparison < not allowed for Bool (Bool supports only == and !=)
 ```
 
@@ -345,6 +347,55 @@ where tcp.dport                         # tcp.dport != 0 の縮約 (Int<N> -> Bo
 where (tcp.dport == 443) == gtp.opt.exists   # iff (両方真 or 両方偽)
 where (tcp.dport == 443) != gtp.opt.exists   # xor (片方だけ真)
 ```
+
+## `--mode xdp`: native XDP として直接 attach
+
+通常の xdp-ninja は **既存の XDP プログラム** に fentry/fexit で trampoline attach する観測ツール (=「他人の XDP を覗く」モード)。一方 `--mode xdp` を付けると **xdp-ninja 自身が XDP として interface に直接 attach** する。「interface に何も XDP が attach されていない、けど filter したい」場合に便利。
+
+```bash
+# tcpdump filter (cbpfc) で TCP/443 だけ capture, それ以外は素通し (XDP_PASS)
+sudo xdp-ninja --mode xdp -i eth0 "tcp port 443"
+
+# DSL filter (限定的に対応, 後述)
+sudo xdp-ninja --mode xdp -i eth0 "eth/ipv4/udp"
+
+# 既存 XDP がある interface では fail (production XDP を意図せず壊さない設計)
+sudo xdp-ninja --mode xdp -i eth0 "tcp port 443"
+# → error: interface eth0 already has XDP program (id=42, mode=driver);
+#          use --mode entry to observe it via fentry, or detach the existing program first
+```
+
+挙動:
+- マッチしたパケットは `bpf_perf_event_output` で perf ring に capture
+- どのパケットも常に `XDP_PASS` を返す (drop モードは v2 follow-up)
+- mode metadata 値は `2` (= xdp-native; 既存 entry=0, exit=1)
+
+DSL / tcpdump 両方とも `--mode xdp` で完全 load 可能 (kunai codegen が packet-pointer-safe な bound check を emit する設計、F14 完了済)。IPv4 / IPv6 / alternation / 各種 quantifier / capture / where すべて verifier 通過確認 (`internal/program/program_xdp_test.go::xdpNativeDSLExprs` 参照)。
+
+## Hand-test: `--dump-asm` で eBPF asm を覗く
+
+`--dump-asm` を付けると、フィルタをコンパイルした結果の eBPF 命令列を **load せずに** stdout に print して exit する。`-i` / `-p` 不要。色々な式を試して codegen の挙動を確認したいときに便利。
+
+2 段階のスコープがある:
+
+| 値 | 範囲 |
+|---|---|
+| `--dump-asm filter` | kunai (DSL) または cbpfc (tcpdump) が出した **filter Main + Callbacks + CaptureInfo** だけ。target-agnostic ABI (R0=pkt_start, R1=pkt_end → R2=accept/reject @ filter_result) |
+| `--dump-asm full` | 上記を `loadProbe` の wrapper (xdp_buff load + scratch コピー + bpf_xdp_output + return) で囲んだ完全な tracing program。map FD は 0 placeholder (load しないので無問題) |
+
+```bash
+# DSL filter のみ
+xdp-ninja --dump-asm filter "eth/ipv4/tcp where tcp.dport == 443"
+
+# tcpdump filter のみ (cbpfc 出力)
+xdp-ninja --dump-asm filter "tcp port 443"
+
+# 完全な tracing program (mode 別に shape が変わる)
+xdp-ninja --dump-asm full --mode entry "tcp port 443"
+xdp-ninja --dump-asm full --mode exit "eth/ipv4/tcp where action == XDP_DROP"
+```
+
+DSL の parse error / type error も同じ経路を通るので、`--dump-asm filter` は **構文/型のサニティチェック** にも使える (load 前に stderr で error 出して exit 1)。
 
 ## 仕組みのざっくり
 

@@ -62,13 +62,9 @@ func LoadExit(targetProg *ebpf.Program, funcName string, filterExpr string, argF
 }
 
 func loadProbe(targetProg *ebpf.Program, funcName string, filterExpr string, argFilters []filter.ArgFilter, isFexit, useDSL bool) (*Probe, error) {
-	var filterOut codegen.Output
-	if filterExpr != "" {
-		out, err := compileFilter(filterExpr, useDSL, isFexit)
-		if err != nil {
-			return nil, err
-		}
-		filterOut = out
+	filterOut, err := compileFilter(filterExpr, useDSL, isFexit)
+	if err != nil {
+		return nil, err
 	}
 
 	label := "entry"
@@ -142,6 +138,13 @@ func loadProbe(targetProg *ebpf.Program, funcName string, filterExpr string, arg
 // pkg/kunai/codegen/codegen.go (KunaiStackTop and the package doc).
 
 func compileFilter(expr string, useDSL, isFexit bool) (codegen.Output, error) {
+	// Empty expression == capture everything: no filter to compile,
+	// callers wrap the zero Output with their own prologue/epilogue.
+	// Centralised here so attach modes (entry/exit/xdp) don't each
+	// reimplement the empty-filter policy and drift apart.
+	if expr == "" {
+		return codegen.Output{}, nil
+	}
 	if useDSL {
 		// fexit attaches see the XDP retval at args[1]; fentry has no
 		// action value yet, so disable action atoms by passing the

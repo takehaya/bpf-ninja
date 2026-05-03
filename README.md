@@ -1,6 +1,6 @@
 # xdp-ninja
 
-xdp-ninja is a tool that captures packets before or after XDP processing, without modifying the existing XDP program🥷
+xdp-ninja captures packets at XDP-time. `tcpdump` runs below XDP and can't show what XDP did to the packet, and cBPF filters can't walk into VXLAN / GTP / MPLS / SRv6 inner headers. Attach via fentry/fexit to a running XDP without modifying it, or `--mode xdp` for standalone capture on a netdev. Filters use the built-in DSL by default — chains like `eth/ipv4/udp/vxlan/eth/ipv4/tcp`. Plain tcpdump syntax via [cbpfc](https://github.com/cloudflare/cbpfc) is still accepted via `--cbpf`, kept for backwards compatibility and planned to retire once the DSL surface stabilises. Output is pcap (pcapng) to stdout.🥷
 
 ## Install
 
@@ -20,88 +20,107 @@ cd xdp-ninja
 make build
 ```
 
-It uses BPF trampoline (fentry/fexit) to non-invasively trace the target XDP program. Optionally, a tcpdump-style filter is compiled to eBPF via cbpfc and executed in the kernel, so only matching packets are sent to userspace.
+## Modes
 
-Outputs pcap (pcapng) to stdout. Pipe to `tcpdump`, `wireshark`, etc.
+xdp-ninja supports three attach modes via `--mode`:
+
+| Mode | Attach via | Existing XDP needed | Sees XDP action | Typical use |
+|---|---|---|---|---|
+| `entry` (default) | fentry on the target XDP | yes (with BTF) | no — packet only | observe what reaches the production XDP |
+| `exit` | fexit on the target XDP | yes (with BTF) | yes (`XDP_PASS`/`DROP`/...) | observe what the XDP decided; filter on action |
+| `xdp` | attach as the primary XDP on the netdev | no — fails if one is attached | n/a (xdp-ninja decides; always returns `XDP_PASS`) | capture on a netdev with no XDP, no BTF needed |
+
+`entry` and `exit` are non-invasive: the target program is unmodified, attach is via BPF trampoline. `xdp` is the standalone path for "I just want to capture, there's nothing else here".
 
 ## Usage
 
 ```bash
-# Capture before XDP, pipe to tcpdump
+# Default: observe via fentry on whatever XDP is attached to eth0
 sudo xdp-ninja -i eth0 | tcpdump -n -r -
 
-# With filter
-sudo xdp-ninja -i eth0 "host 10.0.0.1 and tcp port 80" | tcpdump -n -r -
+# Filter (DSL is the default — no flag needed)
+sudo xdp-ninja -i eth0 "eth/ipv4/tcp[dport==80]" | tcpdump -n -r -
 
-# Capture after XDP (see XDP action in verbose mode)
-sudo xdp-ninja -i eth0 --mode exit | tcpdump -n -r -
+# fexit — filter on the XDP return action
+sudo xdp-ninja -i eth0 --mode exit "eth/ipv4/tcp where action == XDP_DROP"
 
-# Write to pcap file
+# Standalone XDP attach (no existing XDP needed)
+sudo xdp-ninja --mode xdp -i eth0 "eth/ipv4/tcp[dport==443]" | tcpdump -n -r -
+
+# Legacy tcpdump/cBPF syntax (--cbpf opt-in, prints a deprecation notice)
+sudo xdp-ninja --cbpf -i eth0 "host 10.0.0.1 and tcp port 80" | tcpdump -n -r -
+
+# Write to pcap file, stop after 100 packets
 sudo xdp-ninja -i eth0 -w capture.pcap -c 100
 
 # Attach by BPF program ID (for multi-prog / libxdp setups)
 sudo xdp-ninja -p 42 | tcpdump -n -r -
 
-# List available BTF functions in the target program
+# List BTF functions in the target program
 sudo xdp-ninja -i eth0 --list-funcs
 
-# Attach to a specific __noinline subfunction
+# Attach to a specific __noinline subfunction (entry/exit only)
 sudo xdp-ninja -i eth0 --func process_packet | tcpdump -n -r -
-
-# Capture both before and after (run two instances)
-sudo xdp-ninja -i eth0 | tcpdump -n -r -
-sudo xdp-ninja -i eth0 --mode exit | tcpdump -n -r -
 ```
 
-### Options
+### Filter syntax
 
-| Option | Description |
-|--------|-------------|
-| `-i, --interface` | Network interface to capture on |
-| `-p, --prog-id` | BPF program ID to attach to (alternative to `-i`) |
-| `--mode` | `entry` (before XDP, default) or `exit` (after XDP) |
-| `--func` | Attach to a specific `__noinline` subfunction by BTF name |
-| `--list-funcs` | List available BTF functions in the target program and exit |
-| `--list-progs` | List tail call targets reachable from the target program and exit |
-| `--dsl` | Interpret the filter expression as xdp-ninja DSL (see below) instead of tcpdump syntax |
-| `--dsl-help` | Print the DSL grammar + bundled protocol catalogue and exit (no `-i`/`-p` required) |
-| `-w, --write` | Write to pcap file instead of stdout |
-| `-c, --count` | Stop after N packets (0 = unlimited) |
-| `-v, --verbose` | Verbose output to stderr |
-
-Specify either `-i` or `-p`, not both.
-
-### DSL filter (`--dsl`)
-
-The default filter syntax is tcpdump (compiled to eBPF via cbpfc). For multi-encapsulation cases tcpdump cannot express — MPLS label stacks, VXLAN inner Ethernet, GTP-U inner IP, SRv6, … — pass `--dsl` and write the filter as a protocol stack chain:
+The filter expression is interpreted as the built-in DSL by default. Write it as a protocol stack chain — it covers everything tcpdump's cBPF can express and adds the multi-encapsulation cases cBPF can't (MPLS label stacks, VXLAN inner Ethernet, GTP-U inner IP, SRv6, …):
 
 ```bash
 # IPv4/TCP, dport 443
-sudo xdp-ninja --dsl -i eth0 "eth/ipv4/tcp[dport==443]"
+sudo xdp-ninja -i eth0 "eth/ipv4/tcp[dport==443]"
 
 # Up to 3 VLAN tags before IPv4
-sudo xdp-ninja --dsl -i eth0 "eth/vlan{1,3}/ipv4/tcp"
+sudo xdp-ninja -i eth0 "eth/vlan{1,3}/ipv4/tcp"
 
 # MPLS label stack (terminates at the s-bit)
-sudo xdp-ninja --dsl -i eth0 "eth/mpls+/ipv4/tcp"
+sudo xdp-ninja -i eth0 "eth/mpls+/ipv4/tcp"
 
 # VXLAN inner IPv4/TCP
-sudo xdp-ninja --dsl -i eth0 "eth/ipv4/udp/vxlan/eth/ipv4/tcp"
+sudo xdp-ninja -i eth0 "eth/ipv4/udp/vxlan/eth/ipv4/tcp"
 
 # Capture only headers + 64 bytes when the inner TCP dport > 1024
-sudo xdp-ninja --dsl -i eth0 \
+sudo xdp-ninja -i eth0 \
   "eth/ipv4/tcp capture headers+64 where tcp.dport > 1024"
 
-# fexit-only: filter on the XDP return action
-sudo xdp-ninja --dsl -i eth0 --mode exit \
+# fexit: filter on the XDP return action
+sudo xdp-ninja -i eth0 --mode exit \
   "eth/ipv4/tcp where action == XDP_DROP"
 ```
 
-User-facing CLI guide: [docs/ja/dsl-usage.md](./docs/ja/dsl-usage.md). Internal architecture, codegen ABI, vocab authoring, and P4-16 conformance are consolidated in [docs/ja/dsl-internals.md](./docs/ja/dsl-internals.md); formal grammar (EBNF) lives in [docs/ja/dsl-grammar.md](./docs/ja/dsl-grammar.md). Index: [docs/ja/dsl-overview.md](./docs/ja/dsl-overview.md).
+Run `xdp-ninja --dsl-help` for the grammar + bundled protocol catalogue, or `xdp-ninja --dsl-help <proto>` (e.g. `--dsl-help ipv4`) to see a protocol's field list, dispatch parents/children, and any variable-layout note.
+
+User-facing CLI guide: [docs/ja/dsl-usage.md](./docs/ja/dsl-usage.md). Internal architecture, codegen ABI, vocab authoring, and P4-16 conformance: [docs/ja/dsl-internals.md](./docs/ja/dsl-internals.md). Formal grammar (EBNF): [docs/ja/dsl-grammar.md](./docs/ja/dsl-grammar.md). Index: [docs/ja/dsl-overview.md](./docs/ja/dsl-overview.md).
 
 xdp-ninja's `.p4` vocab files are a strict subset of P4-16 (see internals §5). They are NOT a full p4c-compatible program: the bundled fragments declare only `header` / `const` / `parser` blocks (no `action` / `table` / `control` / `apply` / `extern`).
 
-### Attaching to subfunctions
+#### Legacy: tcpdump syntax (`--cbpf`)
+
+Pass `--cbpf` to interpret the filter expression as tcpdump syntax and compile it to eBPF via [cbpfc](https://github.com/cloudflare/cbpfc). Kept for backwards compatibility. Each invocation prints a deprecation notice on stderr; the flag is expected to retire once the DSL surface stabilises.
+
+```bash
+sudo xdp-ninja --cbpf -i eth0 "host 10.0.0.1 and tcp port 80"
+```
+
+### Hand-test: `--dump-asm`
+
+`--dump-asm` compiles a filter and prints the resulting eBPF asm without loading. No `-i`/`-p` needed:
+
+```bash
+# Just the filter body (kunai/cbpfc Main + Callbacks + CaptureInfo)
+xdp-ninja --dump-asm filter "eth/ipv4/tcp where tcp.dport == 443"
+xdp-ninja --dump-asm filter --cbpf "tcp port 443"     # legacy tcpdump syntax
+
+# Wrapped program with prologue/epilogue (mode-aware)
+xdp-ninja --dump-asm full --mode entry "eth/ipv4/tcp[dport==443]"
+xdp-ninja --dump-asm full --mode exit  "eth/ipv4/tcp where action == XDP_DROP"
+xdp-ninja --dump-asm full --mode xdp --cbpf "tcp port 443"
+```
+
+Use this to sanity-check DSL parse/type errors, inspect codegen output, or verify the wrapped program shape per mode.
+
+### Attaching to subfunctions (entry/exit only)
 
 You can use `--func` to attach fentry/fexit to a `__noinline` subfunction inside the target XDP program, instead of the entry function. The subfunction must take `struct xdp_md *ctx` as its first argument.
 
@@ -135,14 +154,43 @@ int parse_headers(struct xdp_md *ctx) {
 
 > **Note:** The subfunction must have a non-trivial body (e.g. access `ctx->data`). A trivial body like `return 2;` will be constant-folded by `clang -O2`, eliminating the bpf2bpf call entirely.
 
+`--func`, `--list-funcs`, `--list-progs`, `--list-params`, and `--arg-filter` only apply to `entry`/`exit` modes (xdp-native has no tracing args or BTF subfunction concept).
+
+## Options
+
+| Option | Description | Modes |
+|---|---|---|
+| `-i, --interface` | Network interface to capture on | all |
+| `-p, --prog-id` | BPF program ID to attach to (alternative to `-i`) | entry, exit |
+| `--mode` | `entry` (default), `exit`, or `xdp` | — |
+| `-w, --write` | Write to pcap file instead of stdout | all |
+| `-c, --count` | Stop after N packets (0 = unlimited) | all |
+| `-v, --verbose` | Verbose output to stderr | all |
+| `--cbpf` | Use the legacy tcpdump/cBPF syntax (compiled via cbpfc); default is the built-in DSL. Prints a deprecation notice when used. | all |
+| `--dsl-help` | Print the DSL grammar + bundled protocol catalogue and exit (no `-i`/`-p` required) | — |
+| `--dump-asm` | Print compiled eBPF asm and exit. Values: `filter` (kunai/cbpfc body only) \| `full` (wrapped program). No `-i`/`-p` required | — |
+| `--func` | Attach to a specific `__noinline` subfunction by BTF name | entry, exit |
+| `--list-funcs` | List available BTF functions in the target program and exit | entry, exit |
+| `--list-progs` | List tail call targets reachable from the target program and exit | entry, exit |
+| `--list-params` | List filterable parameters for `--func` (requires `--func`) | entry, exit |
+| `--arg-filter` | Filter by function argument value (requires `--func`); format: `param=value`, `param>=val`, `param<=val`, `param=min..max` | entry, exit |
+
+Specify either `-i` or `-p`, not both.
+
 ## Prerequisites
 
+Common:
+
 - Linux kernel 5.8+ with BTF (`/sys/kernel/btf/vmlinux`)
-- An existing XDP program attached to the target interface (with BTF)
 - Root privileges (or `CAP_BPF` + `CAP_NET_ADMIN`)
-- Go 1.21+
-- libpcap-dev
-- clang (for running BPF load tests)
+- Go 1.25+ (build only — pre-built binaries don't need Go)
+- libpcap-dev (runtime + tcpdump-syntax filter compilation)
+
+Mode-specific:
+
+- **`--mode entry` / `exit`**: an XDP program already attached to the target interface, with BTF.
+- **`--mode xdp`**: no XDP attached to the interface (xdp-ninja becomes the XDP program).
+- **DSL with chain quantifier (`+`, `*`, `{n,m>4}`), parser-machine self-loop (variable-length headers like IPv6 ext / GTP options / SRv6 segments), or alternation (`(a|b)`)**: kernel 5.17+ (uses `bpf_loop` + bpf2bpf subprograms). Plain DSL chains and `--cbpf` filters work on 5.8+.
 
 ```bash
 # Debian/Ubuntu
@@ -151,6 +199,8 @@ sudo apt install libpcap-dev clang
 # Fedora/RHEL
 sudo dnf install libpcap-devel clang
 ```
+
+`clang` is only needed for running BPF load tests locally; not required for using xdp-ninja itself.
 
 ## Development
 
@@ -169,7 +219,7 @@ make test
 # BPF verifier load tests (root required, needs clang)
 make test-bpf
 
-# Integration tests with veth pair (root required)
+# Integration tests with veth pair (root required, needs clang + tcpdump)
 make test-integration
 
 # All tests
@@ -187,7 +237,7 @@ make test
 
 #### BPF load tests
 
-Verifies that the dynamically generated fentry/fexit programs pass the kernel's BPF verifier. Tests both with and without cbpfc filters. Requires root and clang.
+Verifies that the dynamically generated fentry/fexit/xdp programs pass the kernel's BPF verifier. Tests both with and without filters. Requires root and clang.
 
 ```bash
 make test-bpf

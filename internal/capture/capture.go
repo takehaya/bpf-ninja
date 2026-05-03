@@ -16,7 +16,7 @@ type Packet struct {
 	Timestamp time.Time
 	Data      []byte
 	Action    uint32 // XDP action (fexit only)
-	Mode      uint8  // 0=entry(fentry), 1=exit(fexit)
+	Mode      uint8  // 0=entry(fentry), 1=exit(fexit), 2=xdp-native
 }
 
 // XDP actions for display.

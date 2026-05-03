@@ -8,6 +8,7 @@ import (
 
 	"github.com/takehaya/xdp-ninja/pkg/kunai/dslvocab"
 	"github.com/takehaya/xdp-ninja/pkg/kunai/vocab"
+	"github.com/takehaya/xdp-ninja/pkg/kunai/vocab/p4lite"
 )
 
 // SyntaxHelp is a short EBNF-style grammar of the DSL, suitable for
@@ -53,12 +54,7 @@ func WriteProtocolCatalogue(w io.Writer) error {
 }
 
 func writeProtocolCatalogue(w io.Writer, v map[string]*vocab.ProtocolSpec) error {
-	names := make([]string, 0, len(v))
-	for n := range v {
-		names = append(names, n)
-	}
-	sort.Strings(names)
-
+	names := sortedProtocolNames(v)
 	if _, err := fmt.Fprintf(w, "Bundled protocols (%d):\n", len(names)); err != nil {
 		return err
 	}
@@ -94,4 +90,310 @@ func dispatchParents(spec *vocab.ProtocolSpec) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// dispatchChildEdge captures one "parent.field == const → child" edge,
+// in the form "field is the discriminator that picks among children".
+type dispatchChildEdge struct {
+	Field    string
+	Children []string // sorted
+}
+
+// dispatchChildren returns the dispatch graph rooted at parentName,
+// sorted by field name so callers don't need to re-sort. Each edge
+// lists the child protocols selected by `parent.field == const` over
+// all const values declared on that field.
+func dispatchChildren(parentName string, v map[string]*vocab.ProtocolSpec) []dispatchChildEdge {
+	byField := map[string]map[string]struct{}{}
+	for _, child := range v {
+		if child.Name == parentName {
+			continue
+		}
+		for _, c := range child.Consts {
+			if c.Parent != parentName {
+				continue
+			}
+			if _, ok := byField[c.FieldName]; !ok {
+				byField[c.FieldName] = map[string]struct{}{}
+			}
+			byField[c.FieldName][child.Name] = struct{}{}
+		}
+	}
+	fields := make([]string, 0, len(byField))
+	for f := range byField {
+		fields = append(fields, f)
+	}
+	sort.Strings(fields)
+	out := make([]dispatchChildEdge, 0, len(fields))
+	for _, f := range fields {
+		set := byField[f]
+		names := make([]string, 0, len(set))
+		for n := range set {
+			names = append(names, n)
+		}
+		sort.Strings(names)
+		out = append(out, dispatchChildEdge{Field: f, Children: names})
+	}
+	return out
+}
+
+// sortedProtocolNames returns the bundled protocol names sorted in
+// stable string order. Used by WriteProtocolCatalogue and
+// WriteProtocolHelp's unknown-protocol error path.
+func sortedProtocolNames(v map[string]*vocab.ProtocolSpec) []string {
+	names := make([]string, 0, len(v))
+	for n := range v {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// WriteProtocolHelp writes a per-protocol reference for `name`:
+// field list (with bit widths and running byte offsets), dispatch
+// parents and children, and any variable-layout note. Returns an
+// error when the protocol is unknown — message lists the bundled
+// names so the user sees which to retry with.
+func WriteProtocolHelp(w io.Writer, name string) error {
+	v, err := dslvocab.Bundled()
+	if err != nil {
+		return fmt.Errorf("loading bundled DSL vocab: %w", err)
+	}
+	spec, ok := v[name]
+	if !ok {
+		return fmt.Errorf("unknown protocol %q (bundled: %s)", name, strings.Join(sortedProtocolNames(v), ", "))
+	}
+
+	bytes := protocolHeaderBytes(spec)
+	suffix := ""
+	if spec.HasVariableLayout() {
+		suffix = " minimum (variable layout, see Notes)"
+	}
+	if _, err := fmt.Fprintf(w, "%s — header %d bytes%s\n\n", spec.Name, bytes, suffix); err != nil {
+		return err
+	}
+
+	if _, err := io.WriteString(w, "Fields (bit width, running byte offset):\n"); err != nil {
+		return err
+	}
+	if err := writeFieldRows(w, "  ", len(spec.Fields), vocabFieldRow(spec.Fields)); err != nil {
+		return err
+	}
+
+	if pm := spec.ParseStateMachine; pm != nil {
+		if err := writeAuxHeaders(w, spec.Name, pm); err != nil {
+			return err
+		}
+		if err := writeAuxStacks(w, spec.Name, pm); err != nil {
+			return err
+		}
+	}
+	if ow := spec.OptionWalk; ow != nil {
+		if err := writeOptionsWalk(w, spec.Name, ow); err != nil {
+			return err
+		}
+	}
+
+	parents := dispatchParents(spec)
+	if len(parents) > 0 {
+		if _, err := fmt.Fprintf(w, "\nDispatched from: %s\n", strings.Join(parents, ", ")); err != nil {
+			return err
+		}
+	}
+
+	children := dispatchChildren(spec.Name, v)
+	if len(children) > 0 {
+		if _, err := io.WriteString(w, "Dispatches to:\n"); err != nil {
+			return err
+		}
+		for _, edge := range children {
+			if _, err := fmt.Fprintf(w, "  via %-12s -> %s\n", edge.Field, strings.Join(edge.Children, ", ")); err != nil {
+				return err
+			}
+		}
+	}
+
+	// Notes: emit one line per *present* variability source. Some
+	// protocols carry more than one (e.g. ipv4 has both a VAREXT IHL
+	// trailer AND a parser-machine version self-check), so the
+	// branches are independent — switch{first-match} would silently
+	// drop the second source.
+	if spec.HasVariableLayout() {
+		if _, err := io.WriteString(w, "\nNotes:\n"); err != nil {
+			return err
+		}
+		if vs := spec.VariableSuffix; vs != nil {
+			if _, err := fmt.Fprintf(w, "  variable trailer: ((byte@%d & 0x%x) >> %d) * %d - %d bytes past fixed header\n",
+				vs.LenByteOff, vs.LenMask, vs.LenShift, vs.Scale, vs.Base); err != nil {
+				return err
+			}
+		}
+		if len(spec.FlagTriggers) > 0 {
+			if _, err := fmt.Fprintf(w, "  flag-triggered optional fields gated on byte@%d\n", spec.FlagsByteOffset); err != nil {
+				return err
+			}
+		}
+		if spec.ParseStateMachine != nil {
+			if _, err := io.WriteString(w, "  parser state machine (variable extension headers or self-validation)\n"); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
+// writeFieldRows prints one row per field with the standard column
+// layout shared by primary header, aux headers, aux stack elements,
+// and option entries (name padded 20, bit<N> padded 9, @offset).
+//
+// Iterator form (count + getter) avoids converting between
+// vocab.Field and p4lite.Field at call sites — the two types share
+// the (name, bits) pair the helper needs but Go's type system can't
+// duck-type that without a wrapper.
+//
+// Fields whose name starts with "_" are internal padding placeholders
+// (e.g. ipv6_ext_h._opts) — skipped from the output but still
+// included in the running bit-offset accumulator so subsequent
+// field offsets stay correct.
+func writeFieldRows(w io.Writer, indent string, count int, get func(i int) (name string, bits int)) error {
+	bitOff := 0
+	for i := 0; i < count; i++ {
+		name, bits := get(i)
+		if !strings.HasPrefix(name, "_") {
+			byteOff := bitOff / 8
+			bitInByte := bitOff % 8
+			offDisp := fmt.Sprintf("%d", byteOff)
+			if bitInByte != 0 {
+				offDisp = fmt.Sprintf("%d+%db", byteOff, bitInByte)
+			}
+			if _, err := fmt.Fprintf(w, "%s%-20s %-9s @%s\n", indent, name, fmt.Sprintf("bit<%d>", bits), offDisp); err != nil {
+				return err
+			}
+		}
+		bitOff += bits
+	}
+	return nil
+}
+
+// vocabFieldRow / p4liteFieldRow adapt the two Field types into the
+// (name, bits) pair writeFieldRows needs.
+func vocabFieldRow(fs []vocab.Field) func(i int) (string, int) {
+	return func(i int) (string, int) { return fs[i].Name, fs[i].Bits }
+}
+func p4liteFieldRow(fs []p4lite.Field) func(i int) (string, int) {
+	return func(i int) (string, int) { return fs[i].Name, fs[i].Bits }
+}
+
+// writeAuxHeaders prints the protocol's single-instance auxiliary
+// headers (e.g. gtp.opt, the GRE checksum/key/sequence trailers exposed
+// via parser-machine extracts). Each aux gets its name, header type,
+// byte offset within the layer, and any gating predicate.
+func writeAuxHeaders(w io.Writer, protoName string, pm *vocab.ParseStateMachine) error {
+	if len(pm.AuxLayouts) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(pm.AuxLayouts))
+	for n := range pm.AuxLayouts {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	if _, err := io.WriteString(w, "\nAux headers:\n"); err != nil {
+		return err
+	}
+	for _, name := range names {
+		aux := pm.AuxLayouts[name]
+		gating := ""
+		if aux.Gating != nil {
+			op := "=="
+			if aux.Gating.Op == vocab.GatingNe {
+				op = "!="
+			}
+			gating = fmt.Sprintf(" (gated: (byte@%d & 0x%x) %s 0x%x)", aux.Gating.ByteOff, aux.Gating.Mask, op, aux.Gating.Value)
+		}
+		if _, err := fmt.Fprintf(w, "  %s (%s, %d bytes @ +%d from layer start)%s\n", name, aux.HeaderName, aux.HeaderSize, aux.OffsetInLayer, gating); err != nil {
+			return err
+		}
+		if aux.HeaderRef != nil {
+			if err := writeFieldRows(w, "    ", len(aux.HeaderRef.Fields), p4liteFieldRow(aux.HeaderRef.Fields)); err != nil {
+				return err
+			}
+		}
+		if _, err := fmt.Fprintf(w, "    use: %s.%s.<field>  or  %s[%s.<field> == X]\n", protoName, name, protoName, name); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// writeAuxStacks prints the protocol's auxiliary header stacks (e.g.
+// srv6.segments, ipv6.exts, gtp.exts). Each stack prints capacity,
+// element type, fields, and the DSL access patterns the resolver
+// supports (static index, dynamic index, any/all quantifier).
+func writeAuxStacks(w io.Writer, protoName string, pm *vocab.ParseStateMachine) error {
+	if len(pm.StackRefs) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(pm.StackRefs))
+	for n := range pm.StackRefs {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	if _, err := io.WriteString(w, "\nAux header stacks:\n"); err != nil {
+		return err
+	}
+	for _, name := range names {
+		st := pm.StackRefs[name]
+		if _, err := fmt.Fprintf(w, "  %s[0..%d] (%s × %d bytes each)\n", name, st.Capacity-1, st.HeaderName, st.ElemSize); err != nil {
+			return err
+		}
+		if st.HeaderRef != nil {
+			if err := writeFieldRows(w, "    ", len(st.HeaderRef.Fields), p4liteFieldRow(st.HeaderRef.Fields)); err != nil {
+				return err
+			}
+		}
+		if _, err := fmt.Fprintf(w, "    use: %s.%s[N].<field>            static index\n", protoName, name); err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintf(w, "         %s.%s[<primary_field>].<field>  dynamic index\n", protoName, name); err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintf(w, "         where any(%s.%s.<field> == X)  quantifier (∃)\n", protoName, name); err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintf(w, "         where all(%s.%s.<field> == X)  quantifier (∀)\n", protoName, name); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// writeOptionsWalk prints the protocol's named option set (TCP/IPv4
+// options walked at runtime via kind discriminator). Each named entry
+// prints kind, total byte size (0 = variable), and accessible fields.
+func writeOptionsWalk(w io.Writer, protoName string, ow *vocab.OptionWalk) error {
+	if len(ow.Options) == 0 {
+		return nil
+	}
+	if _, err := fmt.Fprintf(w, "\nOptions walk (kind discriminator at byte 0 of each option, terminator=%d):\n", ow.TerminatorKind); err != nil {
+		return err
+	}
+	for _, opt := range ow.Options {
+		sizeDisp := fmt.Sprintf("%d bytes", opt.Size)
+		if opt.Size == 0 {
+			sizeDisp = "variable"
+		}
+		if _, err := fmt.Fprintf(w, "  %s (kind=%d, %s)\n", opt.Name, opt.Kind, sizeDisp); err != nil {
+			return err
+		}
+		if opt.HeaderRef != nil {
+			if err := writeFieldRows(w, "    ", len(opt.HeaderRef.Fields), p4liteFieldRow(opt.HeaderRef.Fields)); err != nil {
+				return err
+			}
+		}
+		if _, err := fmt.Fprintf(w, "    use: %s.options.%s.<field>\n", protoName, opt.Name); err != nil {
+			return err
+		}
+	}
+	return nil
 }

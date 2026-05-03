@@ -4,7 +4,7 @@
 
 `kunai` is a small Go library that compiles a one-liner packet-filter DSL into target-portable eBPF instructions, using P4-flavoured vocabulary files to describe protocol headers.
 
-It was extracted from [xdp-ninja](https://github.com/takehaya/xdp-ninja) and is the engine behind its `--dsl` flag, but the package is self-contained: it has no XDP-specific dependencies in its public surface and can be wired into any tracing / fentry / fexit / tc / userspace BPF host that exposes a contiguous packet-bytes window.
+It was extracted from [xdp-ninja](https://github.com/takehaya/xdp-ninja) and is the engine behind its default DSL filter mode, but the package is self-contained: it has no XDP-specific dependencies in its public surface and can be wired into any tracing / fentry / fexit / tc / userspace BPF host that exposes a contiguous packet-bytes window.
 
 > **Status**: pre-1.0. The public API is small (one `Compile` call) but may shift as the surface stabilises. Expect breaking changes between minor versions until 1.0.
 
@@ -156,7 +156,7 @@ Vocabulary parsing is memoised: `dslvocab.Bundled()` (in `pkg/kunai/dslvocab/`) 
 
 - [xdp-ninja](https://github.com/takehaya/xdp-ninja) — non-invasive XDP observability tool that is the primary consumer of this package.
 - [cilium/ebpf](https://github.com/cilium/ebpf) — the BPF assembler / loader the codegen targets.
-- [cloudflare/cbpfc](https://github.com/cloudflare/cbpfc) — alternative classical-BPF (tcpdump syntax) compiler, used by xdp-ninja when `--dsl` is not set.
+- [cloudflare/cbpfc](https://github.com/cloudflare/cbpfc) — alternative classical-BPF (tcpdump syntax) compiler, used by xdp-ninja when `--cbpf` is set (legacy fallback).
 - [p4lang/p4c](https://github.com/p4lang/p4c) — official P4 compiler, used in CI to verify our `.p4` vocab files stay within P4-16.
 
 ## License

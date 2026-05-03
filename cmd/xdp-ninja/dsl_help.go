@@ -7,8 +7,12 @@ import (
 )
 
 const xdpNinjaHelpFooter = `
-Run with --dsl <expr>. Full reference: docs/ja/dsl-usage.md
-                       Formal grammar:   docs/ja/dsl-grammar.md
+Pass a DSL expression as the positional arg (DSL is the default
+filter syntax). For tcpdump/cBPF syntax, add --cbpf.
+
+  Full reference: docs/ja/dsl-usage.md
+  Formal grammar: docs/ja/dsl-grammar.md
+  Per-protocol fields: xdp-ninja --dsl-help <proto>
 
 `
 
@@ -31,4 +35,12 @@ func printDSLHelp(w io.Writer) error {
 	}
 	_, err := io.WriteString(w, xdpNinjaHelpFooter)
 	return err
+}
+
+// printProtoHelp writes a per-protocol reference (field list +
+// dispatch parents/children + variable-layout note) for the named
+// bundled protocol. Useful for "what's the field name for IPv4 dst?"
+// style questions before writing a DSL filter.
+func printProtoHelp(w io.Writer, name string) error {
+	return kunai.WriteProtocolHelp(w, name)
 }

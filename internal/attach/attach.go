@@ -8,6 +8,7 @@ import (
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/btf"
 	"github.com/vishvananda/netlink"
+	"github.com/vishvananda/netlink/nl"
 )
 
 // XDPInfo holds information about the existing XDP program on an interface.
@@ -36,6 +37,56 @@ func FindXDPProgramByID(progID uint32) (*XDPInfo, error) {
 		Program:  prog,
 		FuncName: funcName,
 	}, nil
+}
+
+// ExistingXDP describes an XDP program already attached to an interface.
+type ExistingXDP struct {
+	ProgID uint32
+	Mode   string // "skb", "driver", "offload", or "unknown"
+}
+
+// InterfaceState is what the --mode xdp startup path reads from a
+// single netlink lookup: the kernel ifindex and any existing XDP
+// attachment.
+type InterfaceState struct {
+	IfIndex  int
+	Existing *ExistingXDP
+}
+
+// InspectInterface looks up the interface once and returns ifindex +
+// any attached XDP, in a single LinkByName.
+func InspectInterface(ifaceName string) (*InterfaceState, error) {
+	link, err := netlink.LinkByName(ifaceName)
+	if err != nil {
+		return nil, fmt.Errorf("interface %s not found: %w", ifaceName, err)
+	}
+
+	state := &InterfaceState{
+		IfIndex: link.Attrs().Index,
+	}
+	if xdp := link.Attrs().Xdp; xdp != nil && xdp.Attached && xdp.ProgId != 0 {
+		state.Existing = &ExistingXDP{
+			ProgID: xdp.ProgId,
+			Mode:   xdpAttachModeName(xdp.AttachMode),
+		}
+	}
+	return state, nil
+}
+
+// xdpAttachModeName maps the IFLA_XDP_ATTACHED enum to a label.
+// LinkXdp.Flags is the *request* flags (UPDATE_IF_NOEXIST/SKB_MODE/
+// DRV_MODE bitfield) — not what mode is actually attached.
+func xdpAttachModeName(mode uint32) string {
+	switch mode {
+	case nl.XDP_ATTACHED_DRV:
+		return "driver"
+	case nl.XDP_ATTACHED_SKB:
+		return "skb"
+	case nl.XDP_ATTACHED_HW:
+		return "offload"
+	default:
+		return "unknown"
+	}
 }
 
 // FindXDPProgram finds the existing XDP program on the given interface.

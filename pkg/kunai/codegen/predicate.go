@@ -127,7 +127,7 @@ func emitIntPredicate(pred *ir.Predicate) (asm.Instructions, error) {
 		if pred.Field != nil && pred.Field.Aux != nil {
 			insns = append(insns, emitAuxGating(pred.Field.Aux.Gating, r4Anchor(), dslReject)...)
 		}
-		insns = append(insns, loadFromOffset(int16(fieldOff), size)...)
+		insns = append(insns, emitBoundedLoad(asm.R3, int16(fieldOff), size, dslReject)...)
 	}
 	size, err := asmSizeFor(bytes)
 	if err != nil {
@@ -197,7 +197,7 @@ func emitIPv4Predicate(pred *ir.Predicate) (asm.Instructions, error) {
 	}
 	v4 := pred.Value.V4
 	expected := uint32(byteSwap(uint64(binary.BigEndian.Uint32(v4[:])), 4))
-	insns := loadFromOffset(int16(fieldOff), asm.Word)
+	insns := emitBoundedLoad(asm.R3, int16(fieldOff), asm.Word, dslReject)
 	insns = append(insns, cmpRegEqU32(jumpOp, expected, dslReject)...)
 	return insns, nil
 }
@@ -260,13 +260,13 @@ func emitIPv6OrderedCmp(pred *ir.Predicate, fieldOff int) asm.Instructions {
 
 	var insns asm.Instructions
 	// High half: load → bswap → cmp.
-	insns = append(insns, loadFromOffset(int16(fieldOff), asm.DWord)...)
+	insns = append(insns, emitBoundedLoad(asm.R3, int16(fieldOff), asm.DWord, dslReject)...)
 	insns = append(insns, asm.HostTo(asm.BE, asm.R3, asm.DWord))
 	insns = append(insns, asm.LoadImm(asm.R5, int64(highHostOrder), asm.DWord))
 	insns = append(insns, highSuccess.Reg(asm.R3, asm.R5, matchLabel))
 	insns = append(insns, highFail.Reg(asm.R3, asm.R5, dslReject))
 	// High half equal — proceed to low half.
-	insns = append(insns, loadFromOffset(int16(fieldOff+8), asm.DWord)...)
+	insns = append(insns, emitBoundedLoad(asm.R3, int16(fieldOff+8), asm.DWord, dslReject)...)
 	insns = append(insns, asm.HostTo(asm.BE, asm.R3, asm.DWord))
 	insns = append(insns, asm.LoadImm(asm.R5, int64(lowHostOrder), asm.DWord))
 	insns = append(insns, lowMissJump.Reg(asm.R3, asm.R5, dslReject))
@@ -364,7 +364,7 @@ func emitIPv6CIDRPredicate(pred *ir.Predicate) (asm.Instructions, error) {
 // where the per-half mismatch jumps; multiWordRoute picks dslReject
 // for == and a per-predicate match landing for !=.
 func ipv6HalfCheck(off int16, mask, host uint64, failLabel string) asm.Instructions {
-	insns := loadFromOffset(off, asm.DWord)
+	insns := emitBoundedLoad(asm.R3, off, asm.DWord, dslReject)
 	if mask != ^uint64(0) {
 		insns = append(insns,
 			asm.LoadImm(asm.R5, int64(byteSwap(mask, 8)), asm.DWord),
@@ -545,7 +545,7 @@ func emitInPredicate(pred *ir.Predicate) (asm.Instructions, error) {
 		if pred.Field.Aux != nil {
 			insns = append(insns, emitAuxGating(pred.Field.Aux.Gating, r4Anchor(), dslReject)...)
 		}
-		insns = append(insns, loadFromOffset(int16(fieldOff), size)...)
+		insns = append(insns, emitBoundedLoad(asm.R3, int16(fieldOff), size, dslReject)...)
 	}
 
 	matchLabel := nextPredicateMatchLabel()
@@ -651,7 +651,7 @@ func emitIPv4CIDRPredicate(pred *ir.Predicate) (asm.Instructions, error) {
 	hostBE := binary.BigEndian.Uint32(pred.Value.V4[:]) & maskBE
 	expectedLE := uint32(byteSwap(uint64(hostBE), 4))
 	maskLE := uint32(byteSwap(uint64(maskBE), 4))
-	insns := loadFromOffset(int16(fieldOff), asm.Word)
+	insns := emitBoundedLoad(asm.R3, int16(fieldOff), asm.Word, dslReject)
 	insns = append(insns, asm.And.Imm(asm.R3, int32(maskLE)))
 	insns = append(insns, cmpRegEqU32(jumpOp, expectedLE, dslReject)...)
 	return insns, nil
