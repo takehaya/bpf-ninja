@@ -15,14 +15,14 @@ import (
 // during the parser machine's execution and the slots are reused
 // across machines, so a small fixed region suffices.
 //
-// The slot region carves into the 16-byte gap [-160, -144) that used
-// to sit as a documentation margin between bpf_loop ctx [-144, -112)
-// and the where-layer slots starting at -160. Two slots cover every
+// The slot region carves into the 16-byte gap [-224, -208) that sits
+// as a documentation margin between bpf_loop ctx [-208, -176) and
+// the where-layer slots starting at -224. Two slots cover every
 // vocab in the tree (TCP and IPv4 declare one counter each); raise
 // parserCounterMaxSlots and ensure the gap (or its replacement) is
 // wide enough before adding a third.
 const (
-	parserCounterSlotsBase int16 = -152
+	parserCounterSlotsBase int16 = -216
 	parserCounterSlotSize  int16 = 8
 	parserCounterMaxSlots        = 2
 )

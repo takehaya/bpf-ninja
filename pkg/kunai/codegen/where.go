@@ -645,19 +645,19 @@ func (c *whereCtx) genNot(w *ir.Condition, failLabel string) (asm.Instructions, 
 //
 // Slot allocation (each path "owns" its slots while it executes):
 //
-//   - 0..7: 64-bit arith stack — genArithWithBits at depth d uses
+//   - 0..15: 64-bit arith stack — genArithWithBits at depth d uses
 //     slot d. The 64-bit and 128-bit paths never interleave within a
 //     single binop emit, so the 128-bit path safely reuses slots in
 //     this region for its own preserves: 0,1 for genArithCompare128's
 //     LHS hold, 2,3 for genArith128's `field + field` LHS hi/lo, and
 //     4 for genArithField128Load's high-half transient stash.
 //
-// The deepest slot (slot 7 at -112) writes bytes [-112, -104) and
-// abuts bpfLoopCtxLayerEntrySlot's range [-120, -112) without
+// The deepest slot (slot 15 at -176) writes bytes [-176, -168) and
+// abuts bpfLoopCtxLayerEntrySlot's range [-184, -176) without
 // overlap.
 const (
 	arithStackBase = -56
-	maxArithDepth  = 8
+	maxArithDepth  = 16
 )
 
 // arithCmpTargetBits returns the comparison's effective integer

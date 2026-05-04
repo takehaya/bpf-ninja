@@ -38,8 +38,9 @@
 //     into the scratch buffer; codegen adds a constant on each
 //     layer advance.
 //
-//   - Stack offsets [-56 .. -80] (arith spill) and [-128 .. -104]
-//     (bpf_loop ctx) belong to codegen.
+//   - Stack offsets [-56 .. -176] (arith spill) and [-208 .. -176]
+//     (bpf_loop ctx) belong to codegen. See KunaiStackTop's docblock
+//     for the full layout.
 //
 //   - Untouched: R6, R7, R8 are callee-saved from kunai's
 //     perspective. The host typically uses them to hold
@@ -212,24 +213,32 @@ const dslReject = "dsl_reject"
 // metadata, etc.) without colliding with kunai. The current
 // allocations:
 //
-//   - kunai: arith spill at -56 .. -112 (8 slots × 8 bytes,
-//     maxArithDepth = 8). Slot 4 (-88) is shared with the 128-bit
-//     transient stash like every other slot in the region; the
-//     64-bit and 128-bit paths never interleave.
-//   - kunai: bpf_loop ctx at -144 .. -112 (4 slots × 8 bytes). The
-//     top byte of the ctx (layerEntry's upper bound at -112) sits
+//   - kunai: arith spill at -56 .. -176 (16 slots × 8 bytes,
+//     maxArithDepth = 16). The 64-bit and 128-bit paths never
+//     interleave within a single binop emit; the 128-bit path
+//     reuses slots in this region for its own preserves.
+//   - kunai: bpf_loop ctx at -208 .. -176 (4 slots × 8 bytes). The
+//     top byte of the ctx (layerEntry's upper bound at -176) sits
 //     flush against the arith stack's bottom byte at the same
 //     offset — the two writes touch disjoint byte ranges so the
-//     packing is verifier-safe. The 16-byte gap [-160, -144)
-//     below ctx is the contract margin against the where-layer
-//     slots.
-//   - kunai: per-layer entry slots at -160 .. -160-8*N (where N <
-//     whereLayerEntrySlotCap = 12), allocated lazily when the
+//     packing is verifier-safe.
+//   - kunai: parser counter slots in the gap [-224, -208) below
+//     ctx (2 slots × 8 bytes, parserCounterSlotsBase = -216).
+//   - kunai: per-layer entry slots at -224 .. -224-8*N (where N <
+//     whereLayerEntrySlotCap = 7), allocated lazily when the
 //     resolver marks a layer NeedsRuntimeOffset (= where / capture
 //     references it past a heterogeneous-size alt). Worst-case
-//     bottom is -248; total kunai stack consumption is bounded by
-//     KunaiStackTop − 248 = 192 bytes, well within the 512-byte
-//     BPF stack budget.
+//     bottom is -272 (slot 6 at -272 writing [-272, -264)); total
+//     kunai stack consumption above the dynamic-aux region is
+//     bounded by KunaiStackTop − 272 = 216 bytes.
+//   - kunai: dynamic aux slots at -280 .. -512 (29 slot positions,
+//     dynamicAuxOffsetSlotBase = -280). Worst case usage is TCP at
+//     layerPos=5 with 5 queried options, slot=-512 (= bpfStackBottom
+//     limit). The kunai stack overall fits inside the 512-byte BPF
+//     stack budget exactly at the boundary; adding a 6th queried
+//     TCP option (raise dynamicAuxMaxSlotsPerLayer past 5) or a 7th
+//     deep-chain layer requires reducing the dynamic aux stride or
+//     restructuring the slot allocator.
 //   - host: any subset of [-1, KunaiStackTop+1]; xdp-ninja uses -48
 //     for the saved tracing args pointer.
 //
@@ -1429,17 +1438,18 @@ func slotAnchor(slot int16) layerAnchor {
 
 // whereLayerEntrySlot returns the stack slot reserved for layer at
 // position layerPos (= LayerInstance.LayerPos) in the program. Slots
-// descend from -160 in 8-byte steps so they sit below kunai's existing
-// allocations (arith spill -56..-80, bpf_loop ctx -96..-128) without
-// colliding with the per-layer-entry slot the parser machine uses
-// (-104, single shared slot for the immediate next layer's dispatch).
+// descend from -224 in 8-byte steps so they sit below the parser
+// counter gap [-224, -208) and the bpf_loop ctx [-208, -176) (see
+// the KunaiStackTop docblock for the full layout map).
 //
-// The cap below mirrors the practical chain depth in the bundled
-// vocab plus headroom — `eth/ipv4/udp/gtp/ipv4/tcp` is 6 layers, an
-// alt + post-alt extra brings you to ~8. 12 slots × 8 bytes = 96
-// bytes, fitting comfortably within the 512-byte BPF stack budget.
-const whereLayerEntrySlotBase = int16(-160)
-const whereLayerEntrySlotCap = 12
+// The cap is tight — 7 slots × 8 bytes = 56 bytes — because the
+// 10b arith bump consumed the slack the previous 12-slot region had.
+// The bundled chain set tops out at TCP at layerPos=5
+// (`eth/ipv4/udp/gtp/ipv4/tcp`), so cap=7 leaves one position of
+// headroom; deeper chains needing runtime offsets will require
+// either a slot-stride redesign or arith depth rollback.
+const whereLayerEntrySlotBase = int16(-224)
+const whereLayerEntrySlotCap = 7
 
 func whereLayerEntrySlot(layerPos int) (int16, error) {
 	if layerPos < 0 || layerPos >= whereLayerEntrySlotCap {

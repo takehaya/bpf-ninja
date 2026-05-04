@@ -18,7 +18,7 @@ import (
 // surfaces the "no third counter without a region rethink" footgun
 // added by parser_counter.go's gap-region carve-out.
 func TestParserCounterSlotAllocation(t *testing.T) {
-	for i, want := range []int16{-152, -160} {
+	for i, want := range []int16{-216, -224} {
 		got, err := parserCounterSlot(i)
 		if err != nil {
 			t.Fatalf("parserCounterSlot(%d): %v", i, err)

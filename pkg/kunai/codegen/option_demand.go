@@ -148,20 +148,23 @@ func (qo queriedOptions) dynamicAuxSlotForLayout(layer *ir.LayerInstance, layout
 
 // dynamicAuxOffsetSlot returns the stack slot at index `slotIdx`
 // (1-based) for a layer at position `layerPos`. The block descends
-// from -256 in 8-byte steps; cap is dynamicAuxMaxSlotsPerLayer = 5
+// from -280 in 8-byte steps; cap is dynamicAuxMaxSlotsPerLayer = 5
 // (TCP's MSS, WS, SACK_PERM, SACK, TS). Worst-case usage is
-// layerPos×5×8 + 5×8 bytes below the base; with the 12-layer
-// where-slot cap a chain can address up to TCP at layerPos=5
-// (covers eth/ipv4/udp/gtp/ipv4/tcp). Expanding past 5 trims the
-// addressable depth further — needs either a denser slot allocator
-// (only allocate for layers that actually query) or a wider region.
+// layerPos×5×8 + 5×8 bytes below the base; with the 7-layer
+// where-slot cap a chain can address up to TCP at layerPos=5 (slot
+// = -280 - 29×8 = -512, exactly at bpfStackBottom). The base was
+// pushed down by 24 bytes (from -256) when maxArithDepth was bumped
+// 8 → 16 — adding a 6th queried TCP option (raise
+// dynamicAuxMaxSlotsPerLayer past 5) or a 7th deep-chain layer
+// requires either a denser slot allocator (only allocate for
+// layers that actually query) or a wider region.
 //
 // Bounds-checks against the 512-byte BPF stack so deep chains with
 // many TLV-walk-bearing layers can't silently land outside the
 // addressable region — the verifier would reject the load anyway,
 // but failing here gives the user the layer index and a chain-
 // shape pointer instead of a verifier opcode dump.
-const dynamicAuxOffsetSlotBase = int16(-256)
+const dynamicAuxOffsetSlotBase = int16(-280)
 const dynamicAuxMaxSlotsPerLayer = 5
 const bpfStackBottom = int16(-512)
 

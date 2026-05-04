@@ -57,19 +57,21 @@ B-4a  IPv4 Record Route      pc.decrement に field-expr / lookahead-form 拡張
 
 ## P2: 機能拡張 (需要次第)
 
-### 10b. 算術ネスト depth 8 → 16 (将来枠)
+### 10b. 算術ネスト depth 8 → 16 (将来枠 / 着手時に再見積もり)
 
 **動機**: P2-10 で 4 → 8 まで上げた (`maxArithDepth = 8`、bpf_loop ctx を -16 シフトして [-160, -128) gap を半分使用)。さらに 16 まで上げると `where` 句で 15 段の binop が書けるが、現時点で 8 段越えの実用ケースは出ていない。
 
-**ブロッカー**: 16 にすると arith slot 13 (-160) が `whereLayerEntrySlotBase = -160` と衝突する。回避案は 2 通り:
+**ブロッカー (2026-05-04 再評価)**: 当初想定していた「arith slot 13 が `whereLayerEntrySlotBase = -160` と衝突」より深刻。実際の衝突点は arith slot 8 at -120 が `bpfLoopCtxLayerEntrySlot = -120` と衝突する点。
 
-- (a) `whereLayerEntrySlotCap` を 12 → 8 に減らす (12-layer chain は実用稀。192 byte → 128 byte の節約で arith に 8 slot 回せる)
-- (b) where layer slots を `[-256, -160)` に押し下げる ([-512, -256) は今全部 free だが host が将来拡張する余地として残しておきたい)
+stack budget の cascade:
+- arith 16 slots = 128 bytes (現 64 bytes) → +64 bytes 追加が必要
+- arith を下げるなら bpf_loop ctx も下げ、parser counter slots / where layer entry slots / dynamic aux slots 全て連鎖シフト
+- **dynamic aux slot 領域が一番影響を受ける**: 現在 [-512, -256) = 256 bytes / 8 = 32 slot positions。`dynamicAuxOffsetSlotBase` を下げると上限が減り、`option_demand.go` の slot allocator 公式 `slot = -256 - (layerPos × 5 + slotIdx-1) × 8` が `eth/ipv4/udp/gtp/ipv4/tcp` chain (TCP at layerPos=5、5 queried options で slot=-488) を扱えなくなる
+- 回避には `dynamicAuxMaxSlotsPerLayer` を 5 → 4 に戻す必要があり、TCP の MSS/WS/SACK_PERM/SACK/TS のうち 1 つ常時 allocator-fail に
 
-**スコープ (将来)**:
-- 上記 (a) または (b) を採用
-- `pkg/kunai/codegen/codegen.go::KunaiStackTop` doc block 更新
-- `TestZeroCapsIsHostAgnostic` で stack budget が 512 byte 内に収まること再確認
+**結論 (2026-05-04)**: 単純な slot config 合意ではなく、slot allocator の per-layer-demand-sized stride 化 (option_demand.go コメント記載の future improvement) や arith slot 領域の非連続化 (8-15 を別領域に間借り) など、re-engineering 規模。当初の "0.5-1 d" 見積もりは無効。
+
+**defer 状態**: 8 段 arith は実用上問題ない (dsl-types.md / 既存テストで 4-8 段で十分)、re-engineering の justification がない。需要が出たときに改めて plan する。
 
 **parser quirk** (P2-10 と同時にレポート、修正は別件): where atom の冒頭 `(` は parseWhereAtom が where-or-expr 用に消費するので、`where (a+b)*c == 21` の形で arith subexpression を parens 化することが できない。回避は `where a*c+b*c == 21` のように parens を外すか、`where ... and (a*c == 21)` 形の bool wrap で書く。修正には parser の lookahead 追加 (paren が arith なのか where なのか peek) または明示的 syntax marker (`@(` 等) が必要。
 
@@ -99,12 +101,18 @@ B-4a  IPv4 Record Route      pc.decrement に field-expr / lookahead-form 拡張
 
 **現状の落とし所**: emit を no-op にして deferred。MAX_DEPTH=32 の cap は維持されてるので length=0/1 packet も終端する (32 iter ぶんの CPU 浪費だけ、infinite loop ではない) — 正しさ問題ではなく polish 項目。コメントを `parser_machine.go::emitVariableTrail` 内に残してある。
 
-**残スコープ**:
-- (a) bpf_loop callback から early-exit する tight local label を仕組み化し、`JLT lenReg, 2, exitLabel` で scalar ID を引き回さない経路を作る
-- (b) または lookahead-driven advance を専用 emit (`emitTLVAdvance`) に切り出し、loop body 全体を verifier-friendly な形に再構成
-- (c) length byte mask を tighten (`AND 0xFE` → `JLT 2`) して verifier に値域 hint を渡せないか探る
+**残スコープ (2026-05-04 再評価で 3 案とも棄却)**:
+- (a) bpf_loop callback から early-exit する tight local label に `JLT lenReg, 2, exitLabel` を発行 → ❌ JLT が verifier scalar ID を増やす根本原因は jump 先ではなく **no-jump 経路の新 scalar ID 伝播**。jump 先を変えても MAX_DEPTH×N の id explosion は緩和されない。
+- (b) lookahead-driven advance を専用 emit (`emitTLVAdvance`) に切り出し → ❌ 別関数にしても結局 lenReg を packet からロード → 比較 → 分岐の流れは同じ。verifier の state-ID 蓄積問題は構造的で emit の場所を変えても解決しない。
+- (c) length byte mask tighten で branch-less saturation → ❌ `lenReg | 2` は length=4→6, length=8→10 など偶数長を壊す。`& 0xFE` は length=1→0 と退化。BPF に saturating arith / cmov が無く、branch-less に length≥2 を強制する操作がない。
 
-**工数 (予測)**: 1-2 日 (emit 形態探索 + 4-kernel verifier 検証)。優先度低 (CPU 浪費のみ、機能不足ではない)。
+**現状の落とし所 (defer 確定 + soft 仕様 test pin、commit pending)**: emit を no-op にして deferred。MAX_DEPTH=32 cap は維持されるので length=0/1 packet も終端する (32 iter ぶんの CPU 浪費)。
+
+**Regression test (`TestTCPMalformedUnknownOptLengthZero` / `LengthOne` in `dsltest/runner_test.go`)**: hand-rolled malformed TCP packet (kind=99, length=0/1) を eth/ipv4/tcp filter に通し、prog.Test() が timeout / panic せず完走することを確認。verdict は pin しない (R3 がどの byte に landing するかで match / reject が分かれうる) が、**完走そのもの**を MAX_DEPTH cap への依存として lock-in。
+
+**security analysis**: malformed packet が MAX_DEPTH 終端で R4 が garbage 位置に landing → 後続の where 評価が誤った byte を読む可能性 (例: `tcp.dport == 443` が garbage と比較)。**ただし** real-world TCP packets で length=0/1 unknown option は実質存在せず、誤分類は起きても system compromise にはならない。filter logic の "soft" 仕様として受容。
+
+**今後の道筋**: BPF verifier 側の改善 (kernel 6.20+ で state-ID coalescing が入る等) があれば再評価。kunai 側からの解決策は現状なし。
 
 ### B-3. CIDR / IPv4 / MAC literal を aux field に ✅ landed
 

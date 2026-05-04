@@ -586,6 +586,65 @@ func TestIPv4OptionsRRAddrAnyQuantifier(t *testing.T) {
 	r.MustReject(t, Build(t, noMatch), "no addr matches 192.168.1.1")
 }
 
+// TestTCPMalformedUnknownOptShortLength pins the MAX_DEPTH-bounded
+// behaviour for malformed TCP options whose length byte is 0 or 1.
+// parse_unknown_opt reads the length via lookahead and advances R3
+// by `length` bytes; for length<2 R3 fails to clear the kind+length
+// pair and the dispatch re-enters at the same (or near-same)
+// position. Without a guard this would spin forever; instead the
+// bpf_loop callback's MAX_DEPTH=32 cap fires and the program
+// returns. The verdict isn't pinned (the chain may match or reject
+// depending on where R3 lands relative to scratchEnd), but the
+// program MUST complete without timing out or panicking — Match()
+// returning at all is the implicit assertion.
+//
+// This locks in B-2a's "soft" behaviour: a length<2 guard inside
+// the bpf_loop body inflates verifier scalar IDs past the 1M insn
+// limit on kernels 6.1/6.6/6.12/6.18, so kunai relies on MAX_DEPTH
+// for termination. The runner is shared across the two cases so we
+// pay for one DSL compile + verifier load instead of two.
+func TestTCPMalformedUnknownOptShortLength(t *testing.T) {
+	r := New(t, "eth/ipv4/tcp")
+	for _, tc := range []struct {
+		name       string
+		lengthByte byte
+	}{
+		{"LengthZero", 0},
+		{"LengthOne", 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r.Match(t, buildMalformedUnknownOpt(t, tc.lengthByte))
+		})
+	}
+}
+
+// buildMalformedUnknownOpt crafts an Ethernet/IPv4/TCP frame with a
+// hand-rolled TCP option region: kind=99 (unknown), length=lengthByte,
+// followed by a 2-byte filler so the TCP header lands on a 4-byte
+// boundary. data_offset is set to 6 (24-byte header).
+func buildMalformedUnknownOpt(t *testing.T, lengthByte byte) []byte {
+	t.Helper()
+	pkt := BuildEthIPv4TCP(t, 12345, 80)
+	// pkt structure: eth (14) + ipv4 (20) + tcp (20). Append 4 bytes
+	// of options to reach a 24-byte TCP header.
+	const tcpStart = 14 + 20
+	const dataOffByte = tcpStart + 12 // tcp byte 12 holds (doff << 4) | reserved
+	// Bump data_offset from 5 to 6: upper nibble at byte 12.
+	pkt[dataOffByte] = (6 << 4) | (pkt[dataOffByte] & 0x0F)
+	// Append 4-byte option region: kind=99, length=N, 2 bytes pad.
+	opt := []byte{99, lengthByte, 0, 0}
+	pkt = append(pkt, opt...)
+	// Patch IPv4 total_length (offset eth+2..eth+4) to include the
+	// extra 4 bytes. Original total = ipv4 header (20) + tcp header
+	// (20) = 40. New total = 40 + 4 = 44.
+	const ipv4TotalLenOff = 14 + 2
+	binary.BigEndian.PutUint16(pkt[ipv4TotalLenOff:ipv4TotalLenOff+2], 44)
+	// IPv4 header checksum needs recompute, but the BPF parser doesn't
+	// validate the checksum — leaving it stale is harmless for this
+	// test.
+	return pkt
+}
+
 // TestIPv4OptionsRejectsTooShort confirms the IHL underflow guard:
 // a hand-crafted frame with IHL=4 (< 5) must be rejected by the
 // HDRLEN MinimumTotal check.
