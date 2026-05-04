@@ -140,10 +140,9 @@ func TestPrintProtoHelpTCPOptions(t *testing.T) {
 
 	for _, want := range []string{
 		"Options walk",
-		"terminator=0",
-		"MSS (kind=2",
-		"WS (kind=3",
-		"TS (kind=8",
+		"MSS (4 bytes)",
+		"WS (3 bytes)",
+		"TS (10 bytes)",
 		"tcp.options.MSS.<field>",
 	} {
 		if !strings.Contains(out, want) {

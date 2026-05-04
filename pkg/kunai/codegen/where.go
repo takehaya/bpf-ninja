@@ -8,7 +8,6 @@ import (
 
 	"github.com/takehaya/xdp-ninja/pkg/kunai/ast"
 	"github.com/takehaya/xdp-ninja/pkg/kunai/ir"
-	"github.com/takehaya/xdp-ninja/pkg/kunai/vocab"
 )
 
 // whereCtx carries the shared state that codegen for a where
@@ -22,6 +21,7 @@ type whereCtx struct {
 	caps    Capabilities
 	labels  int
 	anchors map[*ir.LayerInstance]layerAnchor
+	queried queriedOptions
 }
 
 func (c *whereCtx) freshLabel(prefix string) string {
@@ -89,8 +89,8 @@ func layerSpecName(l *ir.LayerInstance) string {
 // to true and jump to failLabel when it evaluates to false. Errors
 // surface with the condition's source position prefixed so users see
 // which `where` atom blew up.
-func genCondition(w *ir.Condition, caps Capabilities, p *ir.Program, failLabel string) (asm.Instructions, error) {
-	ctx := &whereCtx{p: p, caps: caps, anchors: make(map[*ir.LayerInstance]layerAnchor)}
+func genCondition(w *ir.Condition, caps Capabilities, p *ir.Program, qo queriedOptions, failLabel string) (asm.Instructions, error) {
+	ctx := &whereCtx{p: p, caps: caps, anchors: make(map[*ir.LayerInstance]layerAnchor), queried: qo}
 	insns, err := ctx.gen(w, failLabel)
 	return insns, withPos(err, w.Pos)
 }
@@ -1022,8 +1022,8 @@ func (c *whereCtx) genArithWithBits(e *ir.ArithExpr, depth int, targetBits int) 
 // where, and a missing aux means the where atom evaluates false —
 // which the surrounding compound boolean handles via dslReject.
 func (c *whereCtx) genArithFieldLoad(f *ir.FieldRef) (asm.Instructions, error) {
-	if f.Aux != nil && f.Aux.Option != nil {
-		return c.genOptionLookupLoad(f)
+	if slot, ok := c.dynamicOffsetSlotFor(f); ok {
+		return c.genDynamicOffsetAuxLoad(f, slot)
 	}
 	if f.Aux != nil && f.Aux.Stack != nil && !f.Aux.Stack.IsStatic {
 		// Dynamic stack index in a where clause: fold runtime offset
@@ -1457,144 +1457,42 @@ func (c *whereCtx) genLiteralCompareDynamic(w *ir.Condition, failLabel string) (
 	return nil, fmt.Errorf("%w: dynamic-index aux compare for literal kind %v", ErrNotImplemented, w.LiteralValue.Kind)
 }
 
-// genOptionLookupLoad emits a TCP/IPv4 option walk that scans the
-// option list for the kind discriminator named by ref.Aux.Option,
-// then loads the addressed field bytes into R3 (with HostTo(BE) for
-// multi-byte fields so downstream comparison sees natural-order
-// integers). Failure (option not found, or end of options reached
-// without a match) jumps to dslReject.
-//
-// The walk is a static unroll capped at optionWalkMaxIters (= 20):
-// max options area is 40 bytes, min option size is 1 byte, so 20
-// iterations conservatively covers every real packet. Each iter
-// reads one byte (the kind discriminator) and dispatches:
-//   - kind == TerminatorKind → fail (no more options, target absent)
-//   - kind == PaddingKind    → advance 1 byte, next iter
-//   - kind == OptionKind     → match, exit walk and read field
-//   - otherwise              → advance by length byte, next iter
-//
-// Layer location anchor: where-clause field loads compute the
-// layer's absolute byte offset via c.layerOffset. The walk threads
-// that absolute offset into R2 each iter so register-relative LDX
-// can address bytes without re-deriving R0 + offset every time.
-//
-// Out-of-this-MVP:
-//   - .exists predicates land via a different shape (return bool
-//     into a register without a downstream LDX); this commit only
-//     handles ExistsOnly = false.
-//   - bracket-predicate / R4-anchored callers (predicate.go) do not
-//     route here; option access from inside a layer's bracket
-//     predicate is rare and surfaces ErrNotImplemented from
-//     fieldRefByteOffset until a follow-up plumbs it.
-const optionWalkMaxIters = 20
+// dynamicOffsetSlotFor reports the stack slot a FieldRef should
+// read its aux offset from — non-zero only when the demand walker
+// claimed this aux during compile (the slot the parser-machine
+// callback wrote the per-packet offset to). Callers fall through
+// to other where paths when the aux isn't dynamic-eligible.
+func (c *whereCtx) dynamicOffsetSlotFor(f *ir.FieldRef) (int16, bool) {
+	layout := dynamicAuxLayoutOf(f)
+	if layout == nil {
+		return 0, false
+	}
+	return c.queried.dynamicAuxSlotForLayout(f.Layer, layout)
+}
 
-func (c *whereCtx) genOptionLookupLoad(ref *ir.FieldRef) (asm.Instructions, error) {
-	aux := ref.Aux
-	opt := aux.Option
-	if opt.ExistsOnly {
-		return nil, fmt.Errorf("%w: option `%s.options.%s.exists` codegen needs the bool-atom parser extension", ErrNotImplemented, ref.Layer.Spec.Name, opt.Name)
+// genDynamicOffsetAuxLoad reads an aux header field whose layer
+// position was recorded by the parser machine into a dynamic offset
+// slot. The slot value is the absolute scratch offset of the aux's
+// first byte; sentinel (-1) means the option was not extracted on
+// this packet — the predicate evaluates false (jumps to dslReject).
+//
+// ~6 insns versus the ~200 emitted by the legacy option walk.
+func (c *whereCtx) genDynamicOffsetAuxLoad(f *ir.FieldRef, slot int16) (asm.Instructions, error) {
+	if f.Aux.FieldBitOff%8 != 0 || f.Aux.FieldBitWidth%8 != 0 {
+		return nil, fmt.Errorf("%w: dynamic-offset aux field %s.%s not byte-aligned (bit-off %d, %d bits)", ErrNotImplemented, f.Layer.Spec.Name, f.Aux.OutParam, f.Aux.FieldBitOff, f.Aux.FieldBitWidth)
 	}
-	if ref.Layer.Spec.OptionWalk == nil {
-		return nil, fmt.Errorf("%w: option lookup needs %q to declare an OPT_*_KIND/SIZE option-walk family", ErrNotImplemented, ref.Layer.Spec.Name)
-	}
-	primaryBits := vocab.SumBits(ref.Layer.Spec.Fields)
-	if primaryBits%8 != 0 {
-		return nil, fmt.Errorf("%w: layer %q primary header is %d bits (not byte-aligned)", ErrNotImplemented, ref.Layer.Spec.Name, primaryBits)
-	}
-	primarySize := primaryBits / 8
-
-	anchor, err := c.layerAnchorFor(ref.Layer)
-	if err != nil {
-		return nil, err
-	}
-	if aux.FieldBitOff%8 != 0 || aux.FieldBitWidth%8 != 0 {
-		return nil, fmt.Errorf("%w: option field %s.%s.%s not byte-aligned (bit-off %d, %d bits)", ErrNotImplemented, ref.Layer.Spec.Name, opt.Name, ref.Field.Name, aux.FieldBitOff, aux.FieldBitWidth)
-	}
-	fieldByteOff := aux.FieldBitOff / 8
-	fieldBytes := aux.FieldBitWidth / 8
+	fieldByteOff := f.Aux.FieldBitOff / 8
+	fieldBytes := f.Aux.FieldBitWidth / 8
 	size, err := asmSizeFor(fieldBytes)
 	if err != nil {
 		return nil, err
 	}
-
-	foundLabel := c.freshLabel("opt_found")
-	// staticUpperBound is the layer-header-end ceiling: primarySize +
-	// max options bytes (40 for both TCP and IPv4). The walk uses
-	// this as a fixed R4 upper bound instead of deriving it
-	// dynamically from a primary-header length field — the
-	// alternative parser-block TLV walk (B-3) does not surface a
-	// length descriptor here, and the static bound combined with
-	// EOL-kind termination is sufficient for well-formed packets.
-	staticUpperBound := primarySize + 40
-
-	var insns asm.Instructions
-	// R3 = current option offset (layer-relative); start at primarySize.
-	// R4 = options_end (layer-relative) — set to the static ceiling
-	//      so the verifier sees a tight constant upper bound on R3.
-	// R5 = scratch for the per-iter kind / length byte.
-	// R2 = address of the current option's first byte (= R0+layerBase+R3),
-	//      stable across kind and length loads in the same iter.
-	insns = append(insns,
-		asm.Mov.Imm(asm.R3, int32(primarySize)),
-		asm.Mov.Imm(asm.R4, int32(staticUpperBound)),
-	)
-
-	for range optionWalkMaxIters {
-		notPad := c.freshLabel("opt_not_pad")
-		nextIter := c.freshLabel("opt_iter_done")
-
-		insns = append(insns,
-			asm.JGE.Reg(asm.R3, asm.R4, dslReject),
-			// Per-iter constant cap: lets the verifier infer R3.umax
-			// across iterations. The single setup-time `R4 <= staticUB`
-			// clamp (above) is not enough because the verifier loses
-			// the propagated bound through Add.Reg in each iter.
-			asm.JGE.Imm(asm.R3, int32(staticUpperBound), dslReject),
-		)
-		// Compute R2 = R0 + layer_base + R3 in 3 insns regardless of
-		// anchor mode (Mov+Add+Add for abs / R4, LoadMem+Add+Add for
-		// slot — same instruction count).
-		switch {
-		case anchor.UseSlot:
-			insns = append(insns,
-				asm.LoadMem(asm.R2, asm.R10, anchor.SlotOff, asm.DWord),
-				asm.Add.Reg(asm.R2, asm.R0),
-				asm.Add.Reg(asm.R2, asm.R3),
-			)
-		case anchor.UseR4:
-			insns = append(insns,
-				asm.Mov.Reg(asm.R2, asm.R0),
-				asm.Add.Reg(asm.R2, offsetBase),
-				asm.Add.Reg(asm.R2, asm.R3),
-			)
-		default:
-			insns = append(insns,
-				asm.Mov.Reg(asm.R2, asm.R0),
-				asm.Add.Imm(asm.R2, int32(anchor.AbsOffset)),
-				asm.Add.Reg(asm.R2, asm.R3),
-			)
-		}
-		insns = append(insns,
-			asm.LoadMem(asm.R5, asm.R2, 0, asm.Byte),
-			asm.JEq.Imm(asm.R5, int32(opt.TerminatorKind), dslReject),
-			asm.JNE.Imm(asm.R5, int32(opt.PaddingKind), notPad),
-			asm.Add.Imm(asm.R3, 1),
-			asm.Ja.Label(nextIter),
-			landingNoop(notPad),
-			asm.JEq.Imm(asm.R5, int32(opt.Kind), foundLabel),
-			asm.LoadMem(asm.R5, asm.R2, int16(opt.LengthByteOff), asm.Byte),
-			asm.JLT.Imm(asm.R5, 2, dslReject),
-			asm.Add.Reg(asm.R3, asm.R5),
-			landingNoop(nextIter),
-		)
+	insns := asm.Instructions{
+		asm.LoadMem(asm.R3, asm.R10, slot, asm.DWord),
+		asm.JEq.Imm(asm.R3, dynamicAuxSentinel, dslReject),
 	}
-	insns = append(insns, asm.Ja.Label(dslReject))
-
-	// Match landing: R2 still points at the addressed option's first
-	// byte (the kind dispatch did not clobber it), so the field LDX
-	// reuses it without recomputing the address.
-	insns = append(insns, landingNoop(foundLabel))
-	insns = append(insns, asm.LoadMem(asm.R3, asm.R2, int16(fieldByteOff), size))
+	insns = append(insns, foldOffsetIntoScalar(asm.R5, asm.R3, int32(fieldByteOff), dslReject)...)
+	insns = append(insns, boundedScalarLoad(asm.R3, asm.R0, asm.R5, asm.R1, size, dslReject)...)
 	if fieldBytes > 1 {
 		insns = append(insns, asm.HostTo(asm.BE, asm.R3, size))
 	}

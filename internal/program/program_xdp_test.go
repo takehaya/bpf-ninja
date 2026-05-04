@@ -101,6 +101,7 @@ func loadXDPNativeOrFail(t *testing.T, expr string, useDSL bool) {
 	if err != nil {
 		var ve *ebpf.VerifierError
 		if errors.As(err, &ve) {
+			dumpVerifierStats(t, expr, ve)
 			t.Fatalf("verifier rejected %q:\n%+v", expr, ve)
 		}
 		t.Fatalf("loading XDP-native program for %q: %v", expr, err)

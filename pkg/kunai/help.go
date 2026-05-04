@@ -188,9 +188,7 @@ func WriteProtocolHelp(w io.Writer, name string) error {
 		if err := writeAuxStacks(w, spec.Name, pm); err != nil {
 			return err
 		}
-	}
-	if ow := spec.OptionWalk; ow != nil {
-		if err := writeOptionsWalk(w, spec.Name, ow); err != nil {
+		if err := writeOptionsWalk(w, spec.Name, pm); err != nil {
 			return err
 		}
 	}
@@ -369,30 +367,39 @@ func writeAuxStacks(w io.Writer, protoName string, pm *vocab.ParseStateMachine) 
 	return nil
 }
 
-// writeOptionsWalk prints the protocol's named option set (TCP/IPv4
-// options walked at runtime via kind discriminator). Each named entry
-// prints kind, total byte size (0 = variable), and accessible fields.
-func writeOptionsWalk(w io.Writer, protoName string, ow *vocab.OptionWalk) error {
-	if len(ow.Options) == 0 {
+// writeOptionsWalk prints the protocol's TLV-walk options (TCP today)
+// derived from the parser block: every aux extracted by a sibling
+// state inside a multi-state self-loop is addressable via
+// `<proto>.options.<NAME>.<field>` (with NAME = upper-case OutParam).
+func writeOptionsWalk(w io.Writer, protoName string, pm *vocab.ParseStateMachine) error {
+	type opt struct {
+		name   string
+		layout *vocab.AuxLayout
+	}
+	var opts []opt
+	for _, layout := range pm.AuxLayouts {
+		if !layout.IsDynamicEligible {
+			continue
+		}
+		opts = append(opts, opt{name: strings.ToUpper(layout.OutParam), layout: layout})
+	}
+	if len(opts) == 0 {
 		return nil
 	}
-	if _, err := fmt.Fprintf(w, "\nOptions walk (kind discriminator at byte 0 of each option, terminator=%d):\n", ow.TerminatorKind); err != nil {
+	sort.Slice(opts, func(i, j int) bool { return opts[i].name < opts[j].name })
+	if _, err := fmt.Fprintf(w, "\nOptions walk (parsed by parser block, %d named options):\n", len(opts)); err != nil {
 		return err
 	}
-	for _, opt := range ow.Options {
-		sizeDisp := fmt.Sprintf("%d bytes", opt.Size)
-		if opt.Size == 0 {
-			sizeDisp = "variable"
-		}
-		if _, err := fmt.Fprintf(w, "  %s (kind=%d, %s)\n", opt.Name, opt.Kind, sizeDisp); err != nil {
+	for _, o := range opts {
+		if _, err := fmt.Fprintf(w, "  %s (%d bytes)\n", o.name, o.layout.HeaderSize); err != nil {
 			return err
 		}
-		if opt.HeaderRef != nil {
-			if err := writeFieldRows(w, "    ", len(opt.HeaderRef.Fields), p4liteFieldRow(opt.HeaderRef.Fields)); err != nil {
+		if o.layout.HeaderRef != nil {
+			if err := writeFieldRows(w, "    ", len(o.layout.HeaderRef.Fields), p4liteFieldRow(o.layout.HeaderRef.Fields)); err != nil {
 				return err
 			}
 		}
-		if _, err := fmt.Fprintf(w, "    use: %s.options.%s.<field>\n", protoName, opt.Name); err != nil {
+		if _, err := fmt.Fprintf(w, "    use: %s.options.%s.<field>\n", protoName, o.name); err != nil {
 			return err
 		}
 	}

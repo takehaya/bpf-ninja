@@ -29,7 +29,7 @@ import (
 // bpf2bpf callback that bpf_loop invokes max_iter times. The first
 // iteration runs inline so dispatch and predicates remain in the main
 // stream where the verifier can see them.
-func genParserMachine(layer *ir.LayerInstance, layerIdx int, all []*ir.LayerInstance) (asm.Instructions, asm.Instructions, error) {
+func genParserMachine(layer *ir.LayerInstance, layerIdx int, all []*ir.LayerInstance, qo queriedOptions) (asm.Instructions, asm.Instructions, error) {
 	spec := layer.Spec
 	m := spec.ParseStateMachine
 	if m == nil {
@@ -37,15 +37,16 @@ func genParserMachine(layer *ir.LayerInstance, layerIdx int, all []*ir.LayerInst
 	}
 
 	pmCtx := &pmCtx{
-		spec:       spec,
-		machine:    m,
-		layerIdx:   layerIdx,
-		layer:      layer,
-		all:        all,
-		labelNS:    fmt.Sprintf("dsl_pm_%s_%d", spec.Name, layerIdx),
-		doneLabel:  fmt.Sprintf("dsl_pm_%s_%d_done", spec.Name, layerIdx),
-		absorbed:   map[int]bool{},
-		r4IsRange:  precedingLayersLeaveR4Range(all, layerIdx),
+		spec:      spec,
+		machine:   m,
+		layerIdx:  layerIdx,
+		layer:     layer,
+		all:       all,
+		labelNS:   fmt.Sprintf("dsl_pm_%s_%d", spec.Name, layerIdx),
+		doneLabel: fmt.Sprintf("dsl_pm_%s_%d_done", spec.Name, layerIdx),
+		absorbed:  map[int]bool{},
+		r4IsRange: precedingLayersLeaveR4Range(all, layerIdx),
+		queried:   qo,
 	}
 	// Pre-scan for multi-state self-loops. Each loop entry's siblings
 	// inline into the entry's bpf_loop callback, so the per-state
@@ -102,6 +103,10 @@ type pmCtx struct {
 	// state by emitStateBody as the per-state extracts/advances run.
 	// Drives emitKeyCompare's fast-path / bounded-load choice.
 	r4IsRange bool
+	// queried is the demand walker's per-program option set; the
+	// multi-state callback emits a flat slot-store prelude for every
+	// option in this layer's slice (and only those). nil-safe.
+	queried queriedOptions
 }
 
 // precedingLayersLeaveR4Range scans the layers emitted before idx and
@@ -192,6 +197,16 @@ func (c *pmCtx) emitState(stateIdx int) (asm.Instructions, asm.Instructions, err
 			}
 			insns = append(insns, asm.StoreMem(asm.R10, slotEntry, offsetBase, asm.DWord))
 		}
+		// Sentinel-init each queried option's dynamic offset slot so
+		// where-time access can detect "option not extracted in this
+		// packet" via JEq sentinel. The TLV-walk callback's prelude
+		// overwrites the slot only when the matching kind byte runs
+		// — un-extracted options keep the sentinel value.
+		dynInit, err := c.emitDynamicAuxSentinelInit()
+		if err != nil {
+			return nil, nil, err
+		}
+		insns = append(insns, dynInit...)
 	} else {
 		insns = append(insns, landingNoop(c.stateLabel(stateIdx)))
 	}
@@ -1039,6 +1054,67 @@ func (c *pmCtx) emitMultiStateSelfLoop(state *vocab.ParseState, stateIdx int) (a
 	return insns, callback, nil
 }
 
+// emitDynamicAuxSentinelInit zero-inits each queried-option slot to
+// dynamicAuxSentinel before the parser machine runs. The TLV-walk
+// callback overwrites the slot only when it actually extracts the
+// matching kind; where-time access compares the slot value against
+// the sentinel to detect "option not present in this packet". Empty
+// when no where / capture clause queries this layer's options.
+func (c *pmCtx) emitDynamicAuxSentinelInit() (asm.Instructions, error) {
+	demand := c.queried[c.layer]
+	if len(demand) == 0 {
+		return nil, nil
+	}
+	insns := asm.Instructions{asm.Mov.Imm(asm.R3, dynamicAuxSentinel)}
+	for idx := range demand {
+		slot, err := dynamicAuxOffsetSlot(c.layer.LayerPos, idx+1)
+		if err != nil {
+			return nil, err
+		}
+		insns = append(insns, asm.StoreMem(asm.R10, slot, asm.R3, asm.DWord))
+	}
+	return insns, nil
+}
+
+// emitDynamicAuxSlotPrelude emits the per-iter "load kind byte → for
+// each queried option, JNE-skip past a single StoreMem of R3 into the
+// option's main-frame slot" sequence. Lives before the dispatch
+// cascade, runs once per iter, and writes only the slots the
+// program's where / capture clauses actually read (see
+// collectQueriedOptions). When no queried options reference this
+// layer the prelude is empty.
+//
+// The store reaches main's stack via R2 (= ctx pointer) plus a
+// constant offset — callback R10 points at a separate frame. R1 is
+// the kind-byte scratch (R0 was clobbered by the bound check above).
+// The byte is loaded from R4+R3 with no additional bound check
+// because the immediately preceding `R0 = R4+R3+1; JGT R0, R5,
+// break` already proved the byte is in scratch.
+func (c *pmCtx) emitDynamicAuxSlotPrelude() (asm.Instructions, error) {
+	demand := c.queried[c.layer]
+	if len(demand) == 0 {
+		return nil, nil
+	}
+	insns := asm.Instructions{
+		asm.Mov.Reg(asm.R1, asm.R4),
+		asm.Add.Reg(asm.R1, asm.R3),
+		asm.LoadMem(asm.R1, asm.R1, 0, asm.Byte),
+	}
+	for idx, layout := range demand {
+		slot, err := dynamicAuxOffsetSlot(c.layer.LayerPos, idx+1)
+		if err != nil {
+			return nil, err
+		}
+		skip := fmt.Sprintf("%s_pre_skip_%d", c.labelNS, c.selectCounter())
+		insns = append(insns,
+			asm.JNE.Imm(asm.R1, int32(layout.DynamicKindByte), skip),
+			asm.StoreMem(asm.R2, mainStackOffsetFromCb(slot), asm.R3, asm.DWord),
+			landingNoop(skip),
+		)
+	}
+	return insns, nil
+}
+
 // emitMultiStateCallback emits the bpf_loop callback for an indirect
 // self-loop. Each iteration reads the lookahead byte, then runs
 // either an inlined sibling body (extract or advance + return 0) or
@@ -1072,6 +1148,16 @@ func (c *pmCtx) emitMultiStateCallback(entry *vocab.ParseState, entryIdx int, cb
 		asm.Add.Imm(asm.R0, 1),
 		asm.JGT.Reg(asm.R0, asm.R5, breakLabel),
 	)
+	// Slot-store prelude must run BEFORE the dispatch cascade, not
+	// inside the case bodies — the per-iter slot value has to be a
+	// function of the kind byte alone so the verifier doesn't track
+	// "which case ran × which slot was written" across iters. See
+	// docs/ja/dsl-internals.md §6.5 Mechanism 7.
+	prelude, err := c.emitDynamicAuxSlotPrelude()
+	if err != nil {
+		return nil, err
+	}
+	insns = append(insns, prelude...)
 	dispatch, err := c.emitMultiStateDispatch(entry, entryIdx, addr, breakLabel, continueLabel)
 	if err != nil {
 		return nil, err

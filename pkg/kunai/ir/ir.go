@@ -204,26 +204,6 @@ type AuxRef struct {
 	// Stack is non-nil when this AuxRef indexes into an aux header
 	// stack (`out <type>[N] segments`) instead of a single aux.
 	Stack *StackIndex
-	// Option is non-nil when this AuxRef is reached via an
-	// option-walk lookup (TCP / IPv4 options): codegen emits a walk
-	// that scans options, dispatches on kind, and reads the matching
-	// option's field.
-	Option *OptionLookup
-}
-
-// OptionLookup carries the metadata predicate codegen needs to walk
-// a layer's option list (TCP / IPv4) and locate the addressed
-// option by its kind discriminator. ExistsOnly = true means the
-// predicate is `<proto>.options.<NAME>.exists` and codegen emits a
-// "found?" check without reading any field bytes.
-type OptionLookup struct {
-	Name           string         // upper-case option name (e.g. "MSS")
-	Kind           uint64         // kind discriminator value
-	OptionSize     int            // total option byte size (or 0 if variable)
-	TerminatorKind uint64         // walk-end discriminator
-	PaddingKind    uint64         // 1-byte advance discriminator
-	LengthByteOff  int            // byte offset of length within an option
-	ExistsOnly     bool           // when true, skip the field load and just report match-found
 }
 
 // StackIndex describes which element of an aux header stack a

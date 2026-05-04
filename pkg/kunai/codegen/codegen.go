@@ -307,9 +307,10 @@ func Gen(p *ir.Program, caps Capabilities) (Output, error) {
 		// optional / repeating layers can advance conditionally.
 		asm.Mov.Imm(offsetBase, 0),
 	}
+	qo := collectQueriedOptions(p)
 	var callbacks asm.Instructions
 	for i, layer := range p.Layers {
-		layerInsns, cb, err := genLayer(layer, i, p.Layers)
+		layerInsns, cb, err := genLayer(layer, i, p.Layers, qo)
 		if err != nil {
 			return Output{}, err
 		}
@@ -322,7 +323,7 @@ func Gen(p *ir.Program, caps Capabilities) (Output, error) {
 	// layer-level mismatch. `where` may include conditions merged in
 	// from per-capture clauses (see computeCapture).
 	if where != nil {
-		whereInsns, err := genCondition(where, caps, p, dslReject)
+		whereInsns, err := genCondition(where, caps, p, qo, dslReject)
 		if err != nil {
 			return Output{}, err
 		}
@@ -584,19 +585,19 @@ func checkUnsupported(p *ir.Program) error {
 // value holds any bpf2bpf subprogram instructions the chain codegen
 // needs appended after the main stream — empty for every non-bpf_loop
 // path.
-func genLayer(layer *ir.LayerInstance, index int, all []*ir.LayerInstance) (asm.Instructions, asm.Instructions, error) {
-	insns, callbacks, err := genLayerInner(layer, index, all)
+func genLayer(layer *ir.LayerInstance, index int, all []*ir.LayerInstance, qo queriedOptions) (asm.Instructions, asm.Instructions, error) {
+	insns, callbacks, err := genLayerInner(layer, index, all, qo)
 	return insns, callbacks, withPos(err, layer.Pos)
 }
 
-func genLayerInner(layer *ir.LayerInstance, index int, all []*ir.LayerInstance) (asm.Instructions, asm.Instructions, error) {
+func genLayerInner(layer *ir.LayerInstance, index int, all []*ir.LayerInstance, qo queriedOptions) (asm.Instructions, asm.Instructions, error) {
 	if layer.Alternation != nil {
-		return genAlternation(layer, index, all)
+		return genAlternation(layer, index, all, qo)
 	}
 	switch layer.Quant {
 	case ast.QuantOne:
 		if layer.Spec.ParseStateMachine != nil {
-			return genParserMachine(layer, index, all)
+			return genParserMachine(layer, index, all, qo)
 		}
 		insns, err := genStaticLayer(layer, index, all)
 		return insns, nil, err
@@ -1055,9 +1056,6 @@ func findFieldByteOffset128(spec *vocab.ProtocolSpec, name string) (int, int, er
 func fieldRefByteOffset(ref *ir.FieldRef) (int, int, error) {
 	if ref == nil {
 		return 0, 0, fmt.Errorf("codegen: nil field ref")
-	}
-	if ref.Aux != nil && ref.Aux.Option != nil {
-		return 0, 0, fmt.Errorf("%w: TCP/IPv4 option lookup (`%s.options.%s`) requires the option-walk codegen which is not yet implemented", ErrNotImplemented, ref.Layer.Spec.Name, ref.Aux.Option.Name)
 	}
 	if ref.Aux == nil {
 		off, size, err := findFieldByteOffset(ref.Layer.Spec, ref.Field.Name)

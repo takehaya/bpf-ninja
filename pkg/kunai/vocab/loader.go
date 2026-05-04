@@ -103,10 +103,6 @@ func loadFile(fsys fs.FS, p string) (*ProtocolSpec, error) {
 	if err != nil {
 		return nil, err
 	}
-	walk, err := buildOptionWalk(res.OptFlags.optionsWalk, file, protoName, p)
-	if err != nil {
-		return nil, err
-	}
 	spec := &ProtocolSpec{
 		Name:              protoName,
 		HeaderName:        primary.Name,
@@ -116,7 +112,6 @@ func loadFile(fsys fs.FS, p string) (*ProtocolSpec, error) {
 		ChainEnd:          res.ChainEnd,
 		FlagTriggers:      triggers,
 		FlagsByteOffset:   flagsOff,
-		OptionWalk:        walk,
 		ParseStateMachine: machine,
 		File:              file,
 		Source:            p,
@@ -197,11 +192,6 @@ type classifyResult struct {
 // constants in declaration order. buildFlagTriggers cross-references
 // TRIGGER_<N> with LEN_<N> after the full file is parsed so order is
 // preserved regardless of which key appears first in the source.
-//
-// The same OPT_ prefix is shared with TCP/IPv4 option-walk consts
-// (TERMINATOR_KIND / PADDING_KIND / LENGTH_BYTE_OFF / <NAME>_KIND /
-// <NAME>_SIZE) so this struct also collects them; they end up on a
-// separate ProtocolSpec field after classification.
 type optFlagConsts struct {
 	HasFlagsByteOffset bool
 	FlagsByteOffset    int
@@ -211,27 +201,6 @@ type optFlagConsts struct {
 	triggerOrder []string
 	triggers     map[string]int // name → bit mask
 	lengths      map[string]int // name → byte length
-
-	// TCP/IPv4 options walk: optionsWalk is non-nil when at least one
-	// of the option-walk keys was declared.
-	optionsWalk *optWalkConsts
-}
-
-// optWalkConsts holds the raw form of TCP/IPv4 option-walk consts
-// before they are validated (terminator + padding + length-byte +
-// per-option kind/size set).
-type optWalkConsts struct {
-	HasTerminator  bool
-	TerminatorKind uint64
-	HasPadding     bool
-	PaddingKind    uint64
-	HasLengthOff   bool
-	LengthByteOff  int
-	// optionOrder lists option names in declaration order so codegen
-	// emits dispatch checks deterministically.
-	optionOrder []string
-	kinds       map[string]uint64
-	sizes       map[string]int
 }
 
 // setOptFlagsField parses one <SELF>_OPT_* key. Recognised forms:
@@ -258,52 +227,7 @@ func setOptFlagsField(of *optFlagConsts, key string, c *p4lite.Const, source str
 	if name, ok := strings.CutPrefix(key, "LEN_"); ok {
 		return recordOptField(of, &of.lengths, "LEN", name, c, source)
 	}
-	// Options-walk consts: <PROTO>_OPT_{TERMINATOR_KIND|PADDING_KIND|
-	// LENGTH_BYTE_OFF|<NAME>_KIND|<NAME>_SIZE}.
-	if of.optionsWalk == nil {
-		of.optionsWalk = &optWalkConsts{kinds: map[string]uint64{}, sizes: map[string]int{}}
-	}
-	walk := of.optionsWalk
-	switch key {
-	case "TERMINATOR_KIND":
-		if walk.HasTerminator {
-			return fmt.Errorf("%s: duplicate OPT_TERMINATOR_KIND declaration %q", source, c.Name)
-		}
-		walk.HasTerminator = true
-		walk.TerminatorKind = c.Int
-		return nil
-	case "PADDING_KIND":
-		if walk.HasPadding {
-			return fmt.Errorf("%s: duplicate OPT_PADDING_KIND declaration %q", source, c.Name)
-		}
-		walk.HasPadding = true
-		walk.PaddingKind = c.Int
-		return nil
-	case "LENGTH_BYTE_OFF":
-		if walk.HasLengthOff {
-			return fmt.Errorf("%s: duplicate OPT_LENGTH_BYTE_OFF declaration %q", source, c.Name)
-		}
-		walk.HasLengthOff = true
-		walk.LengthByteOff = int(c.Int)
-		return nil
-	}
-	if name, ok := strings.CutSuffix(key, "_KIND"); ok && name != "" {
-		if _, dup := walk.kinds[name]; dup {
-			return fmt.Errorf("%s: duplicate OPT_%s_KIND declaration %q", source, name, c.Name)
-		}
-		walk.kinds[name] = c.Int
-		walk.optionOrder = appendIfNew(walk.optionOrder, name)
-		return nil
-	}
-	if name, ok := strings.CutSuffix(key, "_SIZE"); ok && name != "" {
-		if _, dup := walk.sizes[name]; dup {
-			return fmt.Errorf("%s: duplicate OPT_%s_SIZE declaration %q", source, name, c.Name)
-		}
-		walk.sizes[name] = int(c.Int)
-		walk.optionOrder = appendIfNew(walk.optionOrder, name)
-		return nil
-	}
-	return fmt.Errorf("%s: OPT const %q has unknown key %q (expected FLAGS_BYTE_OFFSET|TRIGGER_<NAME>|LEN_<NAME>|TERMINATOR_KIND|PADDING_KIND|LENGTH_BYTE_OFF|<NAME>_KIND|<NAME>_SIZE)", source, c.Name, key)
+	return fmt.Errorf("%s: OPT const %q has unknown key %q (expected FLAGS_BYTE_OFFSET|TRIGGER_<NAME>|LEN_<NAME>)", source, c.Name, key)
 }
 
 // recordOptField stores one TRIGGER_<NAME> or LEN_<NAME> value into
@@ -366,59 +290,6 @@ func buildFlagTriggers(of optFlagConsts, fields []Field, source string) (int, []
 	}
 	return of.FlagsByteOffset, triggers, nil
 }
-
-// buildOptionWalk validates the raw OPT_ option-walk consts and
-// pairs each named option (TCP_OPT_<NAME>_KIND/SIZE) with its aux
-// header type tcp_opt_<NAME>_h declared in the parser block. nil
-// when the .p4 declared no option-walk consts.
-//
-// TerminatorKind / PaddingKind / LengthByteOff default to the RFC
-// universal values (0 = EOL, 1 = NOP, length byte at offset 1) used
-// by both TCP options (RFC 9293) and IPv4 options (RFC 791). A
-// .p4 may either declare all three explicitly (override) or none
-// (use defaults). Declaring some-but-not-all is a typo guard.
-func buildOptionWalk(raw *optWalkConsts, file *p4lite.File, protoName, source string) (*OptionWalk, error) {
-	if raw == nil {
-		return nil, nil
-	}
-	hasAny := raw.HasTerminator || raw.HasPadding || raw.HasLengthOff
-	hasAll := raw.HasTerminator && raw.HasPadding && raw.HasLengthOff
-	if hasAny && !hasAll {
-		return nil, fmt.Errorf("%s: protocol %q declares some OPT_ option-walk consts but missing one of TERMINATOR_KIND/PADDING_KIND/LENGTH_BYTE_OFF (declare all three to override the RFC defaults, or none to accept them)", source, protoName)
-	}
-	if len(raw.optionOrder) == 0 {
-		return nil, fmt.Errorf("%s: protocol %q declares OPT_ option-walk skeleton but no <NAME>_KIND/SIZE entries", source, protoName)
-	}
-	out := &OptionWalk{TerminatorKind: 0, PaddingKind: 1, LengthByteOff: 1}
-	if hasAll {
-		out.TerminatorKind = raw.TerminatorKind
-		out.PaddingKind = raw.PaddingKind
-		out.LengthByteOff = raw.LengthByteOff
-	}
-	for _, name := range raw.optionOrder {
-		kind, hasK := raw.kinds[name]
-		size, hasS := raw.sizes[name]
-		switch {
-		case hasK && !hasS:
-			return nil, fmt.Errorf("%s: OPT_%s_KIND declared without matching OPT_%s_SIZE", source, name, name)
-		case !hasK && hasS:
-			return nil, fmt.Errorf("%s: OPT_%s_SIZE declared without matching OPT_%s_KIND", source, name, name)
-		}
-		hdrName := strings.ToLower(protoName) + "_opt_" + strings.ToLower(name) + "_h"
-		hdr := findHeader(file, hdrName)
-		if hdr == nil {
-			return nil, fmt.Errorf("%s: option %q has KIND/SIZE consts but no %q header declared", source, name, hdrName)
-		}
-		out.Options = append(out.Options, OptionEntry{
-			Name:      name,
-			Kind:      kind,
-			Size:      size,
-			HeaderRef: hdr,
-		})
-	}
-	return out, nil
-}
-
 
 func classifyConsts(cs []*p4lite.Const, protoName, source string) (classifyResult, error) {
 	protoUpper := strings.ToUpper(protoName)

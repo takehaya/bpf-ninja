@@ -314,47 +314,38 @@ func (r *resolver) resolveQualifiedFieldNoSlice(fp *ast.FieldPath) (*ir.FieldRef
 }
 
 // resolveOptionField handles `<qualifier>.options.<NAME>.<field>` and
-// `<qualifier>.options.<NAME>.exists`. The option name must match
-// one of the protocol's OptionWalk entries; the trailing identifier
-// is either "exists" (existence check) or a field of the option's
-// declared header type (tcp_opt_<name>_h).
+// `<qualifier>.options.<NAME>.exists`. NAME maps to a parser-block
+// out parameter via lower-casing (`MSS` → `mss`); the corresponding
+// AuxLayout must be IsDynamicEligible (i.e. extracted by a TLV-walk
+// sibling) so the parser machine records the option's per-packet
+// offset for where-time access.
+//
+// `.exists` predicates remain unsupported (no codegen path yet);
+// they surface a clear ErrNotImplemented now that the legacy
+// OptionLookup ExistsOnly bit is no longer set.
 func resolveOptionField(layer *ir.LayerInstance, optName, tail string, fp *ast.FieldPath) (*ir.FieldRef, error) {
-	if layer.Spec.OptionWalk == nil {
-		return nil, errorf(fp.Pos, "protocol %q declares no OPT_ option-walk consts; %q is not addressable via .options.<NAME>", layer.Spec.Name, layer.Spec.Name)
+	machine := layer.Spec.ParseStateMachine
+	if machine == nil || len(machine.AuxLayouts) == 0 {
+		return nil, errorf(fp.Pos, "protocol %q declares no parser-block options; %q is not addressable via .options.<NAME>", layer.Spec.Name, layer.Spec.Name)
 	}
-	walk := layer.Spec.OptionWalk
-	entry, ok := walk.FindOption(optName)
-	if !ok {
-		names := make([]string, 0, len(walk.Options))
-		for _, e := range walk.Options {
-			names = append(names, e.Name)
+	outName := strings.ToLower(optName)
+	layout, ok := machine.AuxLayouts[outName]
+	if !ok || !layout.IsDynamicEligible {
+		names := make([]string, 0, len(machine.AuxLayouts))
+		for _, l := range machine.AuxLayouts {
+			if !l.IsDynamicEligible {
+				continue
+			}
+			names = append(names, strings.ToUpper(l.OutParam))
 		}
 		return nil, errorf(fp.Pos, "protocol %q has no option named %q (declared options: %v)", layer.Spec.Name, optName, names)
 	}
-	lookup := &ir.OptionLookup{
-		Name:           entry.Name,
-		Kind:           entry.Kind,
-		OptionSize:     entry.Size,
-		TerminatorKind: walk.TerminatorKind,
-		PaddingKind:    walk.PaddingKind,
-		LengthByteOff:  walk.LengthByteOff,
-	}
 	if tail == "exists" {
-		lookup.ExistsOnly = true
-		return &ir.FieldRef{
-			Layer: layer,
-			Field: nil,
-			Aux: &ir.AuxRef{
-				OutParam:   strings.ToLower(entry.Name),
-				HeaderName: entry.HeaderRef.Name,
-				HeaderSize: entry.Size,
-				Option:     lookup,
-			},
-		}, nil
+		return nil, errorf(fp.Pos, "%s.options.%s.exists is not yet implemented (planned alongside the bool-atom parser extension)", layer.Spec.Name, optName)
 	}
 	bitOff := 0
 	bitWidth := 0
-	for _, f := range entry.HeaderRef.Fields {
+	for _, f := range layout.HeaderRef.Fields {
 		if f.Name == tail {
 			bitWidth = f.Bits
 			break
@@ -362,18 +353,17 @@ func resolveOptionField(layer *ir.LayerInstance, optName, tail string, fp *ast.F
 		bitOff += f.Bits
 	}
 	if bitWidth == 0 {
-		return nil, errorf(fp.Pos, "option %q has no field %q (header %q)", entry.Name, tail, entry.HeaderRef.Name)
+		return nil, errorf(fp.Pos, "option %q has no field %q (header %q)", optName, tail, layout.HeaderName)
 	}
 	return &ir.FieldRef{
 		Layer: layer,
 		Field: &vocab.Field{Name: tail, Bits: bitWidth},
 		Aux: &ir.AuxRef{
-			OutParam:      strings.ToLower(entry.Name),
-			HeaderName:    entry.HeaderRef.Name,
-			HeaderSize:    entry.Size,
+			OutParam:      layout.OutParam,
+			HeaderName:    layout.HeaderName,
+			HeaderSize:    layout.HeaderSize,
 			FieldBitOff:   bitOff,
 			FieldBitWidth: bitWidth,
-			Option:        lookup,
 		},
 	}, nil
 }

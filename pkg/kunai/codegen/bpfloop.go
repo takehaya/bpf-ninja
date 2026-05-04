@@ -71,6 +71,17 @@ const (
 	bpfLoopCbCtxLayerEntryField   int16 = 24
 )
 
+// mainStackOffsetFromCb translates a main-frame R10-relative stack
+// slot into the equivalent R2-relative offset usable from inside a
+// bpf_loop callback. R2 in the callback is the ctx pointer = main
+// R10 + bpfLoopCtxOffsetSlot, so any access at `R2 + (slot -
+// bpfLoopCtxOffsetSlot)` lands at `main R10 + slot`. Use this when
+// a callback needs to read or write a slot the main frame owns
+// (e.g. dynamic aux offset slots written by TLV-walk siblings).
+func mainStackOffsetFromCb(slot int16) int16 {
+	return slot - bpfLoopCtxOffsetSlot
+}
+
 // defaultChainDepth is the bpf_loop max_iter fallback used when the
 // protocol's vocab did not declare a <SELF>_MAX_DEPTH.
 const defaultChainDepth = 8

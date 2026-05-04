@@ -35,10 +35,10 @@ const bit<8> TCP_SRV6_NEXT_HEADER = 6;
 // Predicate codegen reads each option's recorded offset directly
 // without re-walking.
 //
-// EOL kind = 0, NOP kind = 1, length byte at option-offset 1 — the
-// loader's RFC-universal defaults match TCP's encoding so no
-// TERMINATOR_KIND / PADDING_KIND / LENGTH_BYTE_OFF override is
-// declared here.
+// Each option's identity (kind value) and total wire size live in
+// the parser block itself: the `transition select(...)` case label
+// pins the kind, the `header tcp_opt_<name>_h` decl pins the size.
+// Vocabulary need not repeat them as constants.
 
 // MSS (kind=2, RFC 9293 §3.2.6.2): single 16-bit value.
 header tcp_opt_mss_h {
@@ -46,8 +46,6 @@ header tcp_opt_mss_h {
     bit<8>  length;
     bit<16> value;
 }
-const bit<8> TCP_OPT_MSS_KIND = 2;
-const bit<8> TCP_OPT_MSS_SIZE = 4;
 
 // Window Scale (kind=3, RFC 7323 §2): single 8-bit shift.
 header tcp_opt_ws_h {
@@ -55,16 +53,12 @@ header tcp_opt_ws_h {
     bit<8> length;
     bit<8> shift;
 }
-const bit<8> TCP_OPT_WS_KIND = 3;
-const bit<8> TCP_OPT_WS_SIZE = 3;
 
 // SACK Permitted (kind=4, RFC 2018): negotiation flag, no payload.
 header tcp_opt_sack_perm_h {
     bit<8> kind;
     bit<8> length;
 }
-const bit<8> TCP_OPT_SACK_PERM_KIND = 4;
-const bit<8> TCP_OPT_SACK_PERM_SIZE = 2;
 
 // Timestamps (kind=8, RFC 7323 §3): val + ecr (each 32-bit).
 header tcp_opt_ts_h {
@@ -73,8 +67,6 @@ header tcp_opt_ts_h {
     bit<32> val;
     bit<32> ecr;
 }
-const bit<8> TCP_OPT_TS_KIND = 8;
-const bit<8> TCP_OPT_TS_SIZE = 10;
 
 // TCP options trailer is at most 40 bytes (data_offset = 15 → 60 byte
 // header → 40 byte trailer). The smallest option is 1 byte (NOP / EOL),

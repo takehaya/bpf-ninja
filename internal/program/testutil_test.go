@@ -4,7 +4,9 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"os"
 	"os/exec"
+	"strings"
 	"testing"
 	"time"
 
@@ -14,6 +16,42 @@ import (
 	"github.com/takehaya/xdp-ninja/internal/testutil"
 	"github.com/vishvananda/netlink"
 )
+
+// verifierStatsLine pulls the verifier's per-load summary (e.g.
+// "processed 1234 insns (limit 1000000) max_states_per_insn 3
+// total_states 42 peak_states 27 mark_read 5") out of an
+// ebpf.VerifierError's log. Returns "" when the log has no such line.
+//
+// The cilium/ebpf VerifierError.Error() strips this line from its own
+// formatted output, but the raw line is what tells you whether a
+// failure was an outright reject ("...is unsafe") or a state-cascade
+// blow-up ("Processed 1000001 insn"). Surfacing it before the full
+// log makes CI scans faster.
+func verifierStatsLine(ve *ebpf.VerifierError) string {
+	for _, line := range ve.Log {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "processed ") && strings.Contains(trimmed, " insn") {
+			return trimmed
+		}
+	}
+	return ""
+}
+
+// dumpVerifierStats prepends the verifier's state-count summary line
+// (when present) to the test failure context so a one-screen log scan
+// can distinguish "instruction unsafe" rejects from "Processed
+// 1000001 insn" state-cascade blow-ups. Setting KUNAI_DEBUG_VERIFIER=1
+// additionally dumps the full verifier log via t.Logf so a local
+// reproduction can iterate on the cascade structure without re-running.
+func dumpVerifierStats(t *testing.T, label string, ve *ebpf.VerifierError) {
+	t.Helper()
+	if stats := verifierStatsLine(ve); stats != "" {
+		t.Logf("verifier stats for %q: %s", label, stats)
+	}
+	if os.Getenv("KUNAI_DEBUG_VERIFIER") == "1" {
+		t.Logf("full verifier log for %q:\n%+v", label, ve)
+	}
+}
 
 const xdpFuncName = "xdp_pass_test"
 
@@ -184,6 +222,7 @@ func loadProbeOrFail(t *testing.T, xdpProg *ebpf.Program, funcName, filterExpr s
 	if err != nil {
 		var ve *ebpf.VerifierError
 		if errors.As(err, &ve) {
+			dumpVerifierStats(t, filterExpr, ve)
 			t.Fatalf("verifier error:\n%+v", ve)
 		}
 		t.Fatalf("loading probe: %v", err)

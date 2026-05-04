@@ -263,42 +263,36 @@ func TestLoadEthMplsNoCheck(t *testing.T) {
 	}
 }
 
-func TestLoadTcpOptionWalk(t *testing.T) {
+// TestComputeAuxLayoutsTcpKindBytes pins the TLV-walk siblings TCP
+// declares — each one's aux header should land in AuxLayouts with
+// IsDynamicEligible = true and the kind byte recovered from the
+// parser block's `transition select` case label (= MSS_KIND = 2,
+// WS_KIND = 3, SACK_PERM_KIND = 4, TS_KIND = 8).
+func TestComputeAuxLayoutsTcpKindBytes(t *testing.T) {
 	specs := loadBundled(t)
 	tcp := specs["tcp"]
-	if tcp == nil {
-		t.Fatal("tcp not loaded")
+	if tcp == nil || tcp.ParseStateMachine == nil {
+		t.Fatal("tcp.ParseStateMachine missing")
 	}
-	if tcp.OptionWalk == nil {
-		t.Fatal("tcp.OptionWalk is nil; expected option-walk metadata after declaring <PROTO>_OPT_<NAME>_KIND/SIZE")
+	want := map[string]uint64{"mss": 2, "ws": 3, "sack_perm": 4, "ts": 8}
+	got := map[string]uint64{}
+	for outName, layout := range tcp.ParseStateMachine.AuxLayouts {
+		if !layout.IsDynamicEligible {
+			t.Errorf("aux %q has IsDynamicEligible = false; TLV-walk siblings should always be eligible", outName)
+		}
+		got[outName] = layout.DynamicKindByte
 	}
-	walk := tcp.OptionWalk
-	if walk.TerminatorKind != 0 || walk.PaddingKind != 1 || walk.LengthByteOff != 1 {
-		t.Errorf("walk skeleton = {term=%d, pad=%d, lenOff=%d}, want {0,1,1}", walk.TerminatorKind, walk.PaddingKind, walk.LengthByteOff)
+	if len(got) != len(want) {
+		t.Fatalf("got %d eligible auxes, want %d (got: %v)", len(got), len(want), got)
 	}
-	wantNames := map[string]struct {
-		kind uint64
-		size int
-	}{
-		"MSS":       {2, 4},
-		"WS":        {3, 3},
-		"SACK_PERM": {4, 2},
-		"TS":        {8, 10},
-	}
-	if len(walk.Options) != len(wantNames) {
-		t.Fatalf("got %d options, want %d", len(walk.Options), len(wantNames))
-	}
-	for _, opt := range walk.Options {
-		want, ok := wantNames[opt.Name]
+	for name, kind := range want {
+		gotKind, ok := got[name]
 		if !ok {
-			t.Errorf("unexpected option %q", opt.Name)
+			t.Errorf("missing aux %q", name)
 			continue
 		}
-		if opt.Kind != want.kind || opt.Size != want.size {
-			t.Errorf("option %q = {kind=%d, size=%d}, want {%d, %d}", opt.Name, opt.Kind, opt.Size, want.kind, want.size)
-		}
-		if opt.HeaderRef == nil {
-			t.Errorf("option %q has nil HeaderRef", opt.Name)
+		if gotKind != kind {
+			t.Errorf("aux %q DynamicKindByte = %d, want %d", name, gotKind, kind)
 		}
 	}
 }
@@ -338,30 +332,6 @@ parser F(packet_in pkt, out foo_h h) { state start { pkt.extract(h); transition 
 	}
 }
 
-// TestLoadOptionWalkPartialOverrideRejected pins the loader's
-// "all-or-nothing" guard on the OPT_TERMINATOR_KIND / PADDING_KIND /
-// LENGTH_BYTE_OFF triple. Declaring some-but-not-all reads as a
-// typo: the protocol either accepts the RFC defaults (declare none)
-// or supplies a complete override (declare all three).
-func TestLoadOptionWalkPartialOverrideRejected(t *testing.T) {
-	fsys := fstest.MapFS{
-		"vocab/foo.p4": &fstest.MapFile{Data: []byte(`
-header foo_h { bit<8> x; }
-header foo_opt_a_h { bit<8> kind; bit<8> length; }
-const bit<8> FOO_OPT_TERMINATOR_KIND = 0;
-const bit<8> FOO_OPT_A_KIND = 2;
-const bit<8> FOO_OPT_A_SIZE = 2;
-parser F(packet_in pkt, out foo_h h, out foo_opt_a_h a) { state start { pkt.extract(h); transition accept; } }
-`)},
-	}
-	_, err := Load(fsys, "vocab")
-	if err == nil {
-		t.Fatal("expected partial-override declaration to be rejected")
-	}
-	if !strings.Contains(err.Error(), "TERMINATOR_KIND/PADDING_KIND/LENGTH_BYTE_OFF") {
-		t.Errorf("error should mention the triple: %v", err)
-	}
-}
 
 func TestLoadRejectsConstOutsideNamingConvention(t *testing.T) {
 	fsys := fstest.MapFS{

@@ -147,19 +147,24 @@ func computeAuxLayouts(states []*ParseState, entryIdx int, headerRefs map[string
 		}
 		state := states[extractStateIdx]
 		// Auxes extracted inside a multi-state self-loop sibling
-		// (TLV walk) live at a per-iteration dynamic offset and are
-		// gated by the loop entry's lookahead dispatch — not by a
-		// primary-header field the static gating model can name.
-		// where-clause access for these auxes routes through the
-		// option-walk codegen path (genOptionLookupLoad), which uses
-		// OPT_*_KIND/SIZE consts rather than AuxLayout.OffsetInLayer
-		// or Gating, so a nil Gating + zero OffsetInLayer is safe.
+		// (TLV walk) live at a per-packet dynamic offset. Mark the
+		// layout eligible for dynamic-slot recording and recover the
+		// kind byte that dispatches to this aux's sibling state.
+		// Codegen later allocates a stack slot only when a where /
+		// capture clause queries the aux (the demand walker in
+		// pkg/kunai/codegen drives slot allocation).
 		if IsMultiStateLoopSibling(states, extractStateIdx) {
+			kind, ok := dispatchKindForSibling(states, extractStateIdx)
+			if !ok {
+				return nil, fmt.Errorf("%s:%s: aux %q is extracted by sibling state %q but no parser-block transition select case targets that sibling — TLV-walk vocab invariant violated", source, state.Pos, outName, state.Name)
+			}
 			out[outName] = &AuxLayout{
-				OutParam:   outName,
-				HeaderName: hdr.Name,
-				HeaderRef:  hdr,
-				HeaderSize: headerSizeBits / 8,
+				OutParam:          outName,
+				HeaderName:        hdr.Name,
+				HeaderRef:         hdr,
+				HeaderSize:        headerSizeBits / 8,
+				IsDynamicEligible: true,
+				DynamicKindByte:   kind,
 			}
 			continue
 		}
@@ -911,6 +916,46 @@ func IsMultiStateLoopSibling(states []*ParseState, idx int) bool {
 		}
 	}
 	return entry.Trans.Select.Default == idx
+}
+
+// dispatchKindForSibling looks up the kind value the multi-state
+// loop entry's transition select uses to dispatch to sibling state
+// `siblingIdx`. Returns (0, false) when the sibling is the default
+// target (no case label) or when no case targets it (defensive: the
+// caller already gated on IsMultiStateLoopSibling).
+//
+// Drives AuxLayout.DynamicKindByte so codegen's demand-driven slot
+// store prelude can match the kind byte against the queried option
+// without re-deriving the cascade structure.
+func dispatchKindForSibling(states []*ParseState, siblingIdx int) (uint64, bool) {
+	if siblingIdx < 0 || siblingIdx >= len(states) {
+		return 0, false
+	}
+	s := states[siblingIdx]
+	if s.Trans.Kind != TransDirect {
+		return 0, false
+	}
+	entryIdx := s.Trans.Target
+	if entryIdx < 0 || entryIdx >= len(states) {
+		return 0, false
+	}
+	entry := states[entryIdx]
+	if entry.Trans.Kind != TransSelect || entry.Trans.Select == nil {
+		return 0, false
+	}
+	for _, c := range entry.Trans.Select.Cases {
+		if c.Target != siblingIdx {
+			continue
+		}
+		// MVP: a sibling case has exactly one key value (the
+		// lookahead<bit<8>>() byte) — the multi-state shape check
+		// already validated single-key dispatch.
+		if len(c.Values) != 1 || c.Values[0].IsWildcard {
+			return 0, false
+		}
+		return c.Values[0].Value, true
+	}
+	return 0, false
 }
 
 // MultiStateLoopAbsorbedStates returns the set of sibling state

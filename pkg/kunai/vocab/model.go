@@ -5,7 +5,6 @@ package vocab
 
 import (
 	"fmt"
-	"strings"
 
 	"github.com/takehaya/xdp-ninja/pkg/kunai/vocab/p4lite"
 )
@@ -39,14 +38,6 @@ type ProtocolSpec struct {
 	// the flag bits within the primary header.
 	FlagTriggers    []FlagTrigger
 	FlagsByteOffset int
-	// OptionWalk describes a TCP/IPv4-style options walk: byte 0 of
-	// each option is a kind discriminator, kind=Terminator stops the
-	// walk, kind=Padding advances 1 byte, otherwise byte LengthByteOff
-	// gives the option's total byte length and the codegen advances
-	// by that much. Per-option metadata (kind, total bytes, named
-	// header type) lives in Options. nil when the .p4 declared no
-	// option-walk consts.
-	OptionWalk *OptionWalk
 	// ParseStateMachine is a normalised view of the protocol's
 	// `parser` block, populated when the block describes more than
 	// the trivial "extract primary header; transition accept;"
@@ -95,44 +86,6 @@ type HeaderLength struct {
 	Base       int // bytes to subtract (i.e. minimum header size in bytes)
 }
 
-// OptionWalk carries the metadata codegen needs to walk a TCP/IPv4
-// option list and dispatch on per-option kind. The walk starts at
-// the layer's variable trailer (= primary header size) and ends at
-// the trailer length declared by the parser-block pkt.advance or at
-// the first terminator kind, whichever comes first.
-type OptionWalk struct {
-	TerminatorKind uint64
-	PaddingKind    uint64
-	LengthByteOff  int
-	// Options lists the named options the .p4 declared, in
-	// declaration order. Each entry pairs the user-facing name
-	// (e.g. "MSS") with its kind discriminator and the aux header
-	// the parser block out-bound it to.
-	Options []OptionEntry
-}
-
-// OptionEntry is one named option's metadata.
-type OptionEntry struct {
-	Name      string         // upper-case, matches DSL identifier
-	Kind      uint64         // kind discriminator
-	Size      int            // total option byte size; 0 = variable
-	HeaderRef *p4lite.Header // pointer into File.Headers for tcp_opt_<name>_h
-}
-
-// FindOption returns the entry matching name (case-insensitive) and
-// true when present.
-func (w *OptionWalk) FindOption(name string) (*OptionEntry, bool) {
-	if w == nil {
-		return nil, false
-	}
-	upper := strings.ToUpper(name)
-	for i := range w.Options {
-		if w.Options[i].Name == upper {
-			return &w.Options[i], true
-		}
-	}
-	return nil, false
-}
 
 // FlagTrigger names one optional fixed-length field gated by a flag
 // bit in the primary header. Codegen emits roughly
@@ -374,6 +327,21 @@ type AuxLayout struct {
 	// shapes are surfaced as build errors so they cannot silently
 	// land as "always-present" auxes.
 	Gating *AuxGating
+	// IsDynamicEligible is true for auxes extracted by a TLV-walk
+	// sibling state (parse_mss / parse_ws / ... in tcp.p4): the
+	// option's start position varies per packet, so the static
+	// OffsetInLayer / Gating fields above don't apply. Codegen
+	// records the position in a per-LayerInstance stack slot
+	// (allocated only when a where / capture clause queries this
+	// aux — see the demand walker in pkg/kunai/codegen) and where-
+	// time access reads the slot back.
+	IsDynamicEligible bool
+	// DynamicKindByte is the kind value the multi-state loop entry's
+	// transition select uses to dispatch to this aux's sibling state.
+	// Recovered from the parser block at vocab load time (= the
+	// `2: parse_mss` case label pins MSS_KIND = 2). Zero when
+	// IsDynamicEligible is false.
+	DynamicKindByte uint64
 }
 
 // FindField returns the bit window of a named field within the aux

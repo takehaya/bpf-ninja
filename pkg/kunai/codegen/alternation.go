@@ -50,7 +50,7 @@ var matchedAltReg = asm.R5
 //   - DispatchNoCheck alternatives are rejected (a fall-through alt
 //     would always "win" — semantic noise)
 //   - alt members must use Field dispatch (the guard is a Field check)
-func genAlternation(layer *ir.LayerInstance, index int, all []*ir.LayerInstance) (asm.Instructions, asm.Instructions, error) {
+func genAlternation(layer *ir.LayerInstance, index int, all []*ir.LayerInstance, qo queriedOptions) (asm.Instructions, asm.Instructions, error) {
 	if layer.Quant != ast.QuantOne {
 		return nil, nil, fmt.Errorf("%w: quantifier %s on alternation group", ErrNotImplemented, layer.Quant)
 	}
@@ -115,7 +115,7 @@ func genAlternation(layer *ir.LayerInstance, index int, all []*ir.LayerInstance)
 		// pass too, so the duplicate is dead code at runtime. The
 		// alternative is threading a custom fail label through every
 		// layer emit which is a much larger refactor for marginal gain.
-		altBody, altCbs, err := genLayerInner(alt, index, all)
+		altBody, altCbs, err := genLayerInner(alt, index, all, qo)
 		if err != nil {
 			return nil, nil, err
 		}
