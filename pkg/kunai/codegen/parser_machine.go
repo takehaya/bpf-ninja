@@ -250,6 +250,9 @@ func (c *pmCtx) emitEntryDispatch() (asm.Instructions, error) {
 func (c *pmCtx) emitStateBody(state *vocab.ParseState, stateIdx int, isEntry bool) (asm.Instructions, asm.Instructions, error) {
 	selfLoop := transitionRefsState(state.Trans, stateIdx)
 	if vocab.IsMultiStateLoopEntry(c.machine.States, stateIdx) {
+		if c.canFallbackToBulkAdvance(stateIdx) {
+			return c.emitCounterDrivenBulkAdvance(state, stateIdx)
+		}
 		return c.emitMultiStateSelfLoop(state, stateIdx)
 	}
 
@@ -600,6 +603,15 @@ func emitVariableTrail(fixedHs int, vt variableTailSkip, env trailEnv, failLabel
 			asm.Sub.Imm(env.lenReg, int32(vt.MinimumTotal)),
 		)
 	}
+	// vt.MinValue would naturally emit a `JLT lenReg, MinValue, fail`
+	// guard before the bounds compute. In the bpf_loop callback path
+	// (parse_options self-loop) the extra branch inflates verifier
+	// state IDs across MAX_DEPTH iterations and trips the 1M insn
+	// limit on kernels 6.1 / 6.6 / 6.12 / 6.18. Termination is still
+	// bounded by MAX_DEPTH, so a length=0/1 byte just costs MAX_DEPTH
+	// wasted iterations rather than spinning indefinitely; the guard
+	// is a polish item we defer until the callback can carry a tight
+	// early-exit label that won't accumulate scalar IDs.
 	if vt.Base != 0 {
 		insns = append(insns, asm.Add.Imm(env.lenReg, int32(vt.Base)))
 	}
@@ -1064,6 +1076,85 @@ func (c *pmCtx) emitSelfLoop(state *vocab.ParseState, stateIdx int) (asm.Instruc
 		asm.Ja.Label(c.doneLabel),
 	}
 	return insns, callback, nil
+}
+
+// canFallbackToBulkAdvance reports whether the multi-state-loop
+// entry at stateIdx can be lowered as a single-shot bulk advance
+// instead of a bpf_loop walk. Two conditions must hold:
+//
+//  1. The entry's select uses a counter key (1-key counter or 2-key
+//     counter+lookahead). Lookahead-only walks (Mechanism 7 TCP
+//     options) need iter-level kind dispatch and have no static
+//     bulk-skip equivalent.
+//  2. No options for this layer are queried by the program. When
+//     `len(c.queried[c.layer]) == 0`, no per-option position
+//     recording is needed, so the bpf_loop's only job is to advance
+//     R4 past the trailer — which the bulk-advance path does in
+//     ~10 insns instead of dragging in a bpf_loop subprogram and
+//     its 32-iter verifier exploration.
+//
+// This is the demand-driven escape hatch that lets ipv4.p4 stay on
+// Mechanism 8 without blowing the 1M-insn verifier limit on chains
+// like `eth/ipv4/udp/gtp/...` where ipv4 options aren't queried —
+// see dsl-followups.md B-2 for context.
+func (c *pmCtx) canFallbackToBulkAdvance(stateIdx int) bool {
+	state := c.machine.States[stateIdx]
+	sel := state.Trans.Select
+	if sel == nil {
+		return false
+	}
+	hasCounter := false
+	for _, k := range sel.Keys {
+		if k.Kind == vocab.SelectKeyCounterIsZero {
+			hasCounter = true
+			break
+		}
+	}
+	if !hasCounter {
+		return false
+	}
+	return len(c.queried[c.layer]) == 0
+}
+
+// emitCounterDrivenBulkAdvance lowers a counter-driven multi-state
+// loop entry as a Mechanism-1-equivalent variable-trail advance —
+// no bpf_loop, no per-iter callback. The byte expression comes from
+// the matching CounterOpSet's Skip, which encodes the same five-
+// tuple (LenByteOff / mask / shift / scale / base) as
+// AdvanceField. R4 advances by exactly that count, the (queried-
+// option-free) walk's only observable side effect.
+//
+// Caller must have gated this through canFallbackToBulkAdvance so
+// the entry is known counter-driven and the layer has no demand
+// slots that would force a real walk.
+func (c *pmCtx) emitCounterDrivenBulkAdvance(state *vocab.ParseState, stateIdx int) (asm.Instructions, asm.Instructions, error) {
+	sel := state.Trans.Select
+	var counterName string
+	for _, k := range sel.Keys {
+		if k.Kind == vocab.SelectKeyCounterIsZero {
+			counterName = k.Counter
+			break
+		}
+	}
+	if counterName == "" {
+		return nil, nil, fmt.Errorf("%w: bulk-advance fallback called on entry without counter key", ErrNotImplemented)
+	}
+	skip := vocab.CounterSetSkipForCounter(c.machine.States, counterName)
+	if skip == nil {
+		return nil, nil, fmt.Errorf("%w: counter %q has no set op; cannot derive bulk-skip expression", ErrNotImplemented, counterName)
+	}
+	if state.OffsetAtEntry < 0 {
+		return nil, nil, fmt.Errorf("%w: bulk-advance fallback at state %q with dynamic R4 offset", ErrNotImplemented, state.Name)
+	}
+	vt := variableTailSkipFromHeaderLength(skip)
+	tail, err := emitVariableTrailInline(state.OffsetAtEntry, vt, dslReject)
+	if err != nil {
+		return nil, nil, err
+	}
+	insns := append(asm.Instructions{}, tail...)
+	insns = append(insns, asm.Ja.Label(c.doneLabel))
+	c.r4IsRange = true
+	return insns, nil, nil
 }
 
 // emitMultiStateSelfLoop is the codegen path for indirect self-loops

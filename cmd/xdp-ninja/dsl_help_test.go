@@ -50,7 +50,7 @@ func TestPrintProtoHelpIPv4(t *testing.T) {
 
 	wantSubstrings := []string{
 		"ipv4 — header 20 bytes",
-		"variable layout",       // IPv4 has IHL trailer
+		"variable layout",       // IPv4 walks options via ParserCounter
 		"Fields (bit width",
 		"src",                   // canonical fields
 		"dst",
@@ -63,8 +63,9 @@ func TestPrintProtoHelpIPv4(t *testing.T) {
 		"tcp",                   // ipv4 → tcp
 		"udp",
 		"Notes:",
-		"variable trailer",            // IHL × 4 trailer note
-		"parser state machine",        // ipv4 also has version self-check; both must show
+		// Mechanism 1 ("variable trailer") moved to Mechanism 8
+		// (parser state machine + ParserCounter byte-bounded walk).
+		"parser state machine",
 	}
 	for _, s := range wantSubstrings {
 		if !strings.Contains(out, s) {

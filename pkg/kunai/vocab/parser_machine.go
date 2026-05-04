@@ -1093,6 +1093,28 @@ func dispatchKindForSibling(states []*ParseState, siblingIdx int) (uint64, bool)
 	return 0, false
 }
 
+// CounterSetSkipForCounter returns the HeaderLength expression a
+// CounterOpSet stores into the named counter slot — i.e. the byte
+// count the counter is initialised with. Used by codegen to derive
+// a Mechanism-1-equivalent bulk advance when no per-option query
+// reaches into the multi-state walk's siblings, sidestepping the
+// bpf_loop subprogram entirely.
+//
+// The MVP assumes one set op per counter (typical: pc.set in start,
+// pc.decrement in siblings); returns the first match. Returns nil
+// when no set is found (= the counter is read but never written, an
+// invalid vocab the loader rejects upstream).
+func CounterSetSkipForCounter(states []*ParseState, counterName string) *HeaderLength {
+	for _, s := range states {
+		for _, op := range s.Counters {
+			if op.Kind == CounterOpSet && op.Counter == counterName {
+				return op.Skip
+			}
+		}
+	}
+	return nil
+}
+
 // MultiStateLoopAbsorbedStates returns the set of sibling state
 // indices a multi-state self-loop pulls into its callback — every
 // non-accept/reject case target plus the default target. Codegen
