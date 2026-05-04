@@ -403,6 +403,40 @@ func TestMplsPlusChain(t *testing.T) {
 	r.MustMatch(t, Build(t, o), "eth+2xMPLS+ipv4+tcp")
 }
 
+// TestIPIPLayered exercises the layered ipv4-in-ipv4 chain
+// `eth/ipv4/ipv4/tcp`. Backed by IPV4_IPV4_PROTOCOL = 4 in ipv4.p4,
+// each ipv4 layer runs its own parser machine — so the inner ipv4
+// can carry options (IHL>5) and the IHL-driven trailer skip still
+// advances R4 to the right TCP byte. The IHL>5 case is the use case
+// the chain quantifier `ipv4+` cannot handle (chain emit advances by
+// fixed hs).
+func TestIPIPLayered(t *testing.T) {
+	r := New(t, "eth/ipv4/ipv4/tcp")
+
+	// Inner IHL=5 (no options): fixed 20-byte inner.
+	r.MustMatch(t, BuildEthIPIPTCP(t, IPIPOpts{}), "outer+inner(IHL=5)+tcp")
+
+	// Inner IHL=6 (Router Alert option, 4 bytes): inner header is 24
+	// bytes. Layered chain handles this because the inner parser
+	// machine reads IHL and advances accordingly.
+	withOpts := BuildEthIPIPTCP(t, IPIPOpts{
+		InnerOptions: []layers.IPv4Option{
+			{OptionType: 148, OptionLength: 4, OptionData: []byte{0, 0}},
+		},
+	})
+	r.MustMatch(t, withOpts, "outer+inner(IHL=6, Router Alert)+tcp")
+
+	// Negative: plain UDP frame must reject.
+	r.MustReject(t, BuildEthIPv4UDP(t, 53, 53, []byte("dns")), "single-ipv4 UDP vs ipv4/ipv4/tcp filter")
+}
+
+// TestIPv6inIPv6Layered mirrors TestIPIPLayered for the v6-in-v6
+// layered chain. Backed by IPV6_IPV6_NEXT_HEADER = 41.
+func TestIPv6inIPv6Layered(t *testing.T) {
+	r := New(t, "eth/ipv6/ipv6/tcp")
+	r.MustMatch(t, BuildEthIPv6inIPv6TCP(t), "eth+ipv6(outer)+ipv6(inner)+tcp")
+}
+
 // TestEthIPv4UDPDirect ensures the simple UDP path still works
 // alongside the GTP-over-UDP path. Important regression check
 // because both filters share the udp.p4 vocab.

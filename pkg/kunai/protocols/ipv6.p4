@@ -29,6 +29,13 @@ const bit<16> IPV6_QINQ_ETHERTYPE = 0x86DD;
 // Under GRE, dispatch on the EtherType-shaped protocol_type field.
 const bit<16> IPV6_GRE_PROTOCOL_TYPE = 0x86DD;
 
+// IPv6-in-IPv6 tunneling (RFC 2473): the outer ipv6's next_header is
+// 41 (IANA "IPv6"). Lets users write `eth/ipv6/ipv6/tcp` for v6-in-v6
+// tunnels without resorting to a chain quantifier — each ipv6 layer
+// runs its own parser machine, so ext headers on either layer are
+// handled correctly.
+const bit<8>  IPV6_IPV6_NEXT_HEADER = 41;
+
 // Cap the ext-header chain depth. Real frames almost never carry
 // more than 2 ext headers (HBH + DestOpt is the typical maximum);
 // the verifier needs the loop times the per-iteration max growth

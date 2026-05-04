@@ -483,6 +483,85 @@ func BuildSRv6(t *testing.T, opts SRv6Opts) []byte {
 	return out
 }
 
+// IPIPOpts describes an Ethernet/IPv4(outer, proto=IPIP)/IPv4(inner)/
+// TCP frame. InnerOptions populate the inner IPv4 header's options
+// (lifting its IHL past 5) so tests can confirm the layered chain
+// `eth/ipv4/ipv4/tcp` correctly handles inner IPv4 with options —
+// which is the use case the chain-quantifier `ipv4+` cannot handle.
+type IPIPOpts struct {
+	InnerOptions []layers.IPv4Option
+}
+
+// BuildEthIPIPTCP serializes Ethernet/IPv4(outer, proto=IPIP)/IPv4
+// (inner)/TCP. Each ipv4 layer runs its own parser machine when
+// matched against `eth/ipv4/ipv4/tcp`, so the inner can carry options
+// (IHL>5) and still match — the parser's IHL-driven trailer skip
+// advances R4 correctly per layer.
+func BuildEthIPIPTCP(t *testing.T, opts IPIPOpts) []byte {
+	t.Helper()
+	innerInputs := Defaults()
+	innerInputs.IPv4Options = opts.InnerOptions
+	innerBytes := Build(t, innerInputs)
+	innerIP := innerBytes[ethHeaderSize:] // strip inner eth
+
+	d := Defaults()
+	eth := &layers.Ethernet{
+		SrcMAC:       d.SrcMAC,
+		DstMAC:       d.DstMAC,
+		EthernetType: layers.EthernetTypeIPv4,
+	}
+	outer := &layers.IPv4{
+		Version:  4,
+		IHL:      5,
+		TTL:      64,
+		SrcIP:    net.ParseIP("203.0.113.1").To4(),
+		DstIP:    net.ParseIP("203.0.113.2").To4(),
+		Protocol: layers.IPProtocolIPv4, // IANA "IPIP"
+	}
+	buf := gopacket.NewSerializeBuffer()
+	if err := gopacket.SerializeLayers(buf, gopacket.SerializeOptions{
+		ComputeChecksums: true,
+		FixLengths:       true,
+	}, eth, outer, gopacket.Payload(innerIP)); err != nil {
+		t.Fatalf("gopacket.SerializeLayers (ipip): %v", err)
+	}
+	return buf.Bytes()
+}
+
+// BuildEthIPv6inIPv6TCP serializes Ethernet/IPv6(outer, next_header=IPv6)/
+// IPv6(inner)/TCP. Mirrors BuildEthIPIPTCP for the v6-in-v6 layered
+// chain (`eth/ipv6/ipv6/tcp`).
+func BuildEthIPv6inIPv6TCP(t *testing.T) []byte {
+	t.Helper()
+	o := Defaults()
+	o.SrcIP = net.ParseIP("2001:db8::1")
+	o.DstIP = net.ParseIP("2001:db8::2")
+	innerBytes := Build(t, o)
+	innerIP := innerBytes[ethHeaderSize:]
+
+	d := Defaults()
+	eth := &layers.Ethernet{
+		SrcMAC:       d.SrcMAC,
+		DstMAC:       d.DstMAC,
+		EthernetType: layers.EthernetTypeIPv6,
+	}
+	outer := &layers.IPv6{
+		Version:    6,
+		HopLimit:   64,
+		SrcIP:      net.ParseIP("2001:db8:f00::1"),
+		DstIP:      net.ParseIP("2001:db8:f00::2"),
+		NextHeader: layers.IPProtocolIPv6,
+	}
+	buf := gopacket.NewSerializeBuffer()
+	if err := gopacket.SerializeLayers(buf, gopacket.SerializeOptions{
+		ComputeChecksums: true,
+		FixLengths:       true,
+	}, eth, outer, gopacket.Payload(innerIP)); err != nil {
+		t.Fatalf("gopacket.SerializeLayers (ipv6-in-ipv6): %v", err)
+	}
+	return buf.Bytes()
+}
+
 // GREOpts describes an Ethernet/IPv4/GRE/IPv4/TCP frame. Each
 // Checksum/Key/Sequence flag adds a 4-byte block past the fixed GRE
 // header — codegen advances R4 via the OPT_TRIGGER/OPT_LEN const

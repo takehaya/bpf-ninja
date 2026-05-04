@@ -53,29 +53,18 @@ B-2   IPv4 options vocab     ParserCounter ベースの 2-key tuple-select walk 
 B-4   Option 内部 array      TCP SACK の {left, right} ブロック配列を 4-PR で land (c97a0ba/a4375c1/0cba890/51f9992)。owner-bound HeaderStack + dispatched-but-not-extracted aux で R1 verifier 爆発を回避、static unroll 量化で bpf_loop 増やさず。RR 追加は PR-A.5 として別 entry
 B-3   aux literal predicate  IPv4/IPv6/MAC/CIDR の 6 gate sites を解除 (6547a42)。新 auxLoadEmitter で aux 4 mode (single/static-stack/dynamic-stack/owner-bound) を unify、`srv6.segments[0].addr == fc00::/16`、`ipv4.options.RR.addrs[0].addr == 10.0.0.1` 等が動く
 B-4a  IPv4 Record Route      pc.decrement に field-expr / lookahead-form 拡張 (69cc697)、ipv4.p4 RR declare (b17d1c5)。R1 contingency 発火 → dispatched-but-not-extracted shape に pivot。SACK と同型の addrs[N] / any/all
+#11   IPIP layered dispatch  (synth chain は revert)。ipv4.p4 / ipv6.p4 に `IPV4_IPV4_PROTOCOL=4` / `IPV6_IPV6_NEXT_HEADER=41` を 1 行 declare、`eth/ipv4/ipv4/tcp` / `eth/ipv6/ipv6/tcp` で IPIP / 6-in-6 が表現可能。各 layer 独立 parser machine で IHL>5 / ext header も正しく handle
 ```
 
 ## P2: 機能拡張 (需要次第)
 
-### 10b. 算術ネスト depth 8 → 16 (将来枠 / 着手時に再見積もり)
+### 10b. 算術ネスト depth 8 → 16 ✅ landed
 
-**動機**: P2-10 で 4 → 8 まで上げた (`maxArithDepth = 8`、bpf_loop ctx を -16 シフトして [-160, -128) gap を半分使用)。さらに 16 まで上げると `where` 句で 15 段の binop が書けるが、現時点で 8 段越えの実用ケースは出ていない。
+**動機**: P2-10 で 4 → 8 まで上げた。 さらに 16 まで上げて `where` 句で 15 段の binop が書けるように。
 
-**ブロッカー (2026-05-04 再評価)**: 当初想定していた「arith slot 13 が `whereLayerEntrySlotBase = -160` と衝突」より深刻。実際の衝突点は arith slot 8 at -120 が `bpfLoopCtxLayerEntrySlot = -120` と衝突する点。
+**Land 内容 (commit 016cacc77c)**: stack 再配置で `maxArithDepth = 8 → 16`、 `bpfLoopCtxOffsetSlot = -144 → -208` (-64 シフト)、 `whereLayerEntrySlotBase = -160 → -224` (-64 シフト)、 `dynamicAuxOffsetSlotBase = -256 → -280` (-24 シフト)、 `whereLayerEntrySlotCap = 12 → 7`。 trade-off は whereLayerEntrySlotCap 縮小だが現存 chain set (TCP at layerPos=5 が最深) は全 pass。
 
-stack budget の cascade:
-- arith 16 slots = 128 bytes (現 64 bytes) → +64 bytes 追加が必要
-- arith を下げるなら bpf_loop ctx も下げ、parser counter slots / where layer entry slots / dynamic aux slots 全て連鎖シフト
-- **dynamic aux slot 領域が一番影響を受ける**: 現在 [-512, -256) = 256 bytes / 8 = 32 slot positions。`dynamicAuxOffsetSlotBase` を下げると上限が減り、`option_demand.go` の slot allocator 公式 `slot = -256 - (layerPos × 5 + slotIdx-1) × 8` が `eth/ipv4/udp/gtp/ipv4/tcp` chain (TCP at layerPos=5、5 queried options で slot=-488) を扱えなくなる
-- 回避には `dynamicAuxMaxSlotsPerLayer` を 5 → 4 に戻す必要があり、TCP の MSS/WS/SACK_PERM/SACK/TS のうち 1 つ常時 allocator-fail に
-
-**結論 (2026-05-04)**: 単純な slot config 合意ではなく、slot allocator の per-layer-demand-sized stride 化 (option_demand.go コメント記載の future improvement) や arith slot 領域の非連続化 (8-15 を別領域に間借り) など、re-engineering 規模。当初の "0.5-1 d" 見積もりは無効。
-
-**defer 状態**: 8 段 arith は実用上問題ない (dsl-types.md / 既存テストで 4-8 段で十分)、re-engineering の justification がない。需要が出たときに改めて plan する。
-
-**parser quirk** (P2-10 と同時にレポート、修正は別件): where atom の冒頭 `(` は parseWhereAtom が where-or-expr 用に消費するので、`where (a+b)*c == 21` の形で arith subexpression を parens 化することが できない。回避は `where a*c+b*c == 21` のように parens を外すか、`where ... and (a*c == 21)` 形の bool wrap で書く。修正には parser の lookahead 追加 (paren が arith なのか where なのか peek) または明示的 syntax marker (`@(` 等) が必要。
-
-**工数**: 0.5〜1 日 (どの slot 構成を採用するか合意 + test 拡張)。
+**parser quirk** (10b と関係しない別件、 修正は未着手): where atom の冒頭 `(` は parseWhereAtom が where-or-expr 用に消費するので、`where (a+b)*c == 21` の形で arith subexpression を parens 化することができない。 回避は `where a*c+b*c == 21` のように parens を外すか、`where ... and (a*c == 21)` 形の bool wrap で書く。 修正には parser の lookahead 追加 (paren が arith なのか where なのか peek) または明示的 syntax marker (`@(` 等) が必要。
 
 ### B-2. IPv4 options vocab 拡張 ✅ landed (Router Alert)
 
@@ -99,16 +88,14 @@ stack budget の cascade:
 
 **試行 (2026-05-04)**: `vocab.HeaderLength` に `MinValue` field を足し、`buildAdvanceLookahead` で `MinValue = LookaheadBits/8 = 2` をセット、`emitVariableTrail` で `JLT lenReg, 2, fail` の guard を発行する変更を実装 → `eth/ipv4/tcp where tcp.options.MSS.value == 1460` 系で kernel verifier が 1M insn 上限超過。bpf_loop callback (parse_options 自己ループ) の中に新 conditional を足すと MAX_DEPTH 反復で scalar ID 数が掛け算で増えて verifier 探索が爆発。
 
-**現状の落とし所**: emit を no-op にして deferred。MAX_DEPTH=32 の cap は維持されてるので length=0/1 packet も終端する (32 iter ぶんの CPU 浪費だけ、infinite loop ではない) — 正しさ問題ではなく polish 項目。コメントを `parser_machine.go::emitVariableTrail` 内に残してある。
-
 **残スコープ (2026-05-04 再評価で 3 案とも棄却)**:
 - (a) bpf_loop callback から early-exit する tight local label に `JLT lenReg, 2, exitLabel` を発行 → ❌ JLT が verifier scalar ID を増やす根本原因は jump 先ではなく **no-jump 経路の新 scalar ID 伝播**。jump 先を変えても MAX_DEPTH×N の id explosion は緩和されない。
 - (b) lookahead-driven advance を専用 emit (`emitTLVAdvance`) に切り出し → ❌ 別関数にしても結局 lenReg を packet からロード → 比較 → 分岐の流れは同じ。verifier の state-ID 蓄積問題は構造的で emit の場所を変えても解決しない。
 - (c) length byte mask tighten で branch-less saturation → ❌ `lenReg | 2` は length=4→6, length=8→10 など偶数長を壊す。`& 0xFE` は length=1→0 と退化。BPF に saturating arith / cmov が無く、branch-less に length≥2 を強制する操作がない。
 
-**現状の落とし所 (defer 確定 + soft 仕様 test pin、commit pending)**: emit を no-op にして deferred。MAX_DEPTH=32 cap は維持されるので length=0/1 packet も終端する (32 iter ぶんの CPU 浪費)。
+**現状の落とし所 (defer 確定 + soft 仕様 test pin)**: emit は no-op のまま deferred。 MAX_DEPTH=32 cap は維持されるので length=0/1 packet も終端する (32 iter ぶんの CPU 浪費だけ、 infinite loop ではない) — 正しさ問題ではなく polish 項目。 コメントは `parser_machine.go::emitVariableTrail` 内に残置。
 
-**Regression test (`TestTCPMalformedUnknownOptLengthZero` / `LengthOne` in `dsltest/runner_test.go`)**: hand-rolled malformed TCP packet (kind=99, length=0/1) を eth/ipv4/tcp filter に通し、prog.Test() が timeout / panic せず完走することを確認。verdict は pin しない (R3 がどの byte に landing するかで match / reject が分かれうる) が、**完走そのもの**を MAX_DEPTH cap への依存として lock-in。
+**Regression test (`TestTCPMalformedUnknownOptShortLength` in `dsltest/runner_test.go`、 commit 56664ac8 で land + e2e80851 で table-driven 集約)**: hand-rolled malformed TCP packet (kind=99, length=0/1) を eth/ipv4/tcp filter に通す table-driven test (LengthZero / LengthOne 2 subtests)、 `prog.Test()` が timeout / panic せず完走することを確認。 verdict は pin しない (R3 がどの byte に landing するかで match / reject が分かれうる) が、 **完走そのもの**を MAX_DEPTH cap への依存として lock-in。
 
 **security analysis**: malformed packet が MAX_DEPTH 終端で R4 が garbage 位置に landing → 後続の where 評価が誤った byte を読む可能性 (例: `tcp.dport == 443` が garbage と比較)。**ただし** real-world TCP packets で length=0/1 unknown option は実質存在せず、誤分類は起きても system compromise にはならない。filter logic の "soft" 仕様として受容。
 
@@ -190,15 +177,27 @@ where any(ipv4.options.RR.addrs.addr == 192.168.1.1)
 
 ## P3: コード負債 / Sanity 系
 
-### 11. Sanity self-dispatch chain
+### 11. Self-validating self-dispatch chain ❌ 不要 (= 設計の wrong question だった、layered dispatch で代替)
 
-**動機**: chain self-dispatch は Field / NoCheck のみ。Sanity (NIBBLE) は codegen で明示拒否。
+**当初の動機**: chain self-dispatch (`+` `*` `{N,M>1}`) は `<SELF>_<SELF>_<FIELD|NO_CHECK>` const を要求。 self-validating protocol (ipv4/ipv6/srv6) を chain したい場合 (`ipv4+` の IPIP tunnel 等) はその const がなく `ErrNotImplemented` で reject される。
 
-**スコープ**:
-- 実用ケース稀 (MPLS s-bit は CHAIN_END で対応済み、SRv6 もまだ必要なし)
-- 「dispatch 全種類が chain で使える」という API 対称性のため
+**着手 → revert の経緯 (2026-05-04 〜 2026-05-05)**:
 
-**工数**: 0.5 日 (callback 内 sanity 検査の emit は既存ヘルパ流用)。
+1. parser machine の start state `transition select` から `(byteOff, mask, shift, expected)` を合成する synth path を実装。 `eth/ipv4+/tcp` / `eth/ipv6+/tcp` の compile + verifier 通過まで land。
+2. simplify pass + OCR multi-agent review で **silent miscompile** が判明: chain emit は per-iter 固定 hs (= primary header size) で advance するため、 ipv4 で IHL>5 (options 持ち) や ipv6 で chained iter に ext header があると R4 がずれて誤分類する。
+3. doc-only warning vs codegen refuse vs IHL guard 案を検討するも、 そもそも問いを取り違えていたことが判明。 実用 IPIP は **常に 2 段固定** (RFC 上も推奨)、 N 段 IPIP は実存しない → chain 量化詞 (`+`) は不要。
+4. **解** = layered dispatch: ipv4.p4 / ipv6.p4 に **1 行ずつ const 追加** で `eth/ipv4/ipv4/tcp` / `eth/ipv6/ipv6/tcp` が書ける。 各 layer は独立に parser machine が走るので IHL>5 / ext header も正しく handle される (silent miscompile クラスが消滅)。
+5. synth chain の全コード (180 行 + tests + builder + doc) を revert、 layered dispatch を land。
+
+**Land 内容 (2026-05-05)**:
+
+- `pkg/kunai/protocols/ipv4.p4`: `const bit<8> IPV4_IPV4_PROTOCOL = 4;` (IANA "IPIP" 番号)
+- `pkg/kunai/protocols/ipv6.p4`: `const bit<8> IPV6_IPV6_NEXT_HEADER = 41;` (IANA "IPv6" tunneling 番号)
+- `pkg/kunai/dsltest/builders.go`: `BuildEthIPIPTCP(t, IPIPOpts{InnerOptions: ...})` / `BuildEthIPv6inIPv6TCP(t)` を gopacket で組み立て
+- `pkg/kunai/dsltest/runner_test.go::TestIPIPLayered` / `TestIPv6inIPv6Layered`: IHL=5 + IHL=6 (Router Alert option) inner、 reject 系を含む
+- `internal/program/load_dsl_test.go`: 4 kernel matrix に `eth/ipv4/ipv4/tcp` / `eth/ipv6/ipv6/tcp` 追加
+
+**結論**: `<SELF>_<SELF>_<FIELD|NO_CHECK>` const を必要とする chain self-dispatch (本 entry の当初動機) は設計として誤っていた。 N 段 tunneling は実存せず、 1-2 段 tunneling は layered dispatch で表現可能 + 各 layer の parser machine が独立に走るので可変 trailer も正しく handle される。 chain 量化詞 (`ipv4+` 等) を self-validating protocol に対して書く意味は無い。
 
 ## P3.5: 型システム関連 follow-up (`dsl-types.md` から派生)
 

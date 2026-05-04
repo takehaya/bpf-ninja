@@ -74,6 +74,12 @@ var dslEntryExprs = []string{
 	"eth/ipv4/tcp where ipv4.total_length > 100",
 	"eth/ipv4/tcp capture headers+64",
 	"eth/ipv4/tcp capture headers+64 where tcp.dport > 1024",
+	// IPIP / 6-in-6 tunneling expressed as explicit two-layer chain
+	// rather than a `+` quantifier — each ipv4/ipv6 layer runs its
+	// own parser machine, so options/ext-headers on either layer are
+	// handled correctly. Backed by IPV4_IPV4_PROTOCOL / IPV6_IPV6_NEXT_HEADER.
+	"eth/ipv4/ipv4/tcp",
+	"eth/ipv6/ipv6/tcp",
 	// Parser machine: GTP-U with optional + extension-header chain.
 	"eth/ipv4/udp/gtp/ipv4/tcp",
 	// Aux header predicate (gtp.opt.next_ext): reads a field of an
