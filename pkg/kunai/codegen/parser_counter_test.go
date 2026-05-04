@@ -34,18 +34,24 @@ func TestParserCounterSlotAllocation(t *testing.T) {
 
 // TestGenIPv4ParserCounterMachine compiles a synthetic vocab whose
 // IPv4 parser uses ParserCounter to walk the option trailer. The
-// test confirms Gen accepts the counter-driven ParseStateMachine
-// and emits the four observable shapes:
+// DSL doesn't query any per-option aux, so codegen routes through
+// canFallbackToBulkAdvance → emitCounterDrivenBulkAdvance: no
+// bpf_loop subprogram, no per-iter callback, just an
+// emitVariableTrailInline-equivalent advance that reads the
+// length expression from the primary header and bumps R4.
 //
-//  1. Counter slot zero-init at machine entry.
-//  2. Counter set (StoreMem to the slot after the byte-expression
-//     load).
-//  3. Counter dispatch in the bpf_loop callback (JEq slot, 0).
-//  4. Counter decrement in the sibling body (Load → Sub → Store).
+// Asserts:
 //
-// Asserts only the structural presence of each — instruction-by-
-// instruction matching belongs in dsltest, where the verifier and
-// runtime confirm the stream is correct.
+//  1. Counter slot zero-init at machine entry (unchanged from full
+//     walk path).
+//  2. Counter set still emits in the start state — the byte
+//     expression is captured even though the walk skips reading it
+//     back from the slot at runtime.
+//  3. NO bpf_loop subprogram (out.Callbacks empty for this layer).
+//
+// The full bpf_loop path is exercised separately by dsltest's
+// TestParserCounterTupleDispatch, which uses a 2-key vocab + an
+// aux query to force per-option codegen.
 func TestGenIPv4ParserCounterMachine(t *testing.T) {
 	const ipv4Source = `
 header ipv4_h {
@@ -142,16 +148,11 @@ parser ETH(packet_in pkt, out eth_h hdr) {
 	if err := assertCounterStoreToR10(stream, slot0); err != nil {
 		t.Errorf("counter slot init: %v", err)
 	}
-	// JEq.Imm 0 against the counter slot register sits in the
-	// bpf_loop callback. Sample the union for the opcode shape.
-	if !containsOp(stream, asm.JEq.Imm(asm.R0, 0, "").OpCode) {
-		t.Errorf("expected JEq.Imm matching counter-is-zero branch")
-	}
-	// The decrement signature is Load slot → Sub.Imm 1 → Store slot.
-	// Asserting the triple pins the emit shape against drift more
-	// tightly than a bare "any Sub.Imm 1" match.
-	if !hasCounterDecrement(stream, 1) {
-		t.Errorf("expected Load(slot) + Sub.Imm 1 + Store(slot) decrement triple")
+	// No aux is queried, so bulk-advance fallback fires: the
+	// bpf_loop subprogram (which would land in out.Callbacks) is
+	// skipped.
+	if len(out.Callbacks) != 0 {
+		t.Errorf("bulk-advance fallback should emit no callbacks; got %d insns", len(out.Callbacks))
 	}
 }
 
@@ -167,37 +168,4 @@ func assertCounterStoreToR10(stream asm.Instructions, slot int16) error {
 	return errors.New("no StoreMem to expected counter slot")
 }
 
-func containsOp(stream asm.Instructions, op asm.OpCode) bool {
-	for _, ins := range stream {
-		if ins.OpCode == op {
-			return true
-		}
-	}
-	return false
-}
-
-// hasCounterDecrement looks for the Load(slot) → Sub.Imm imm →
-// Store(slot) triple anywhere in the stream. The slot offset must
-// match across the load/store, which fingerprints the pattern as
-// "decrement of a stack slot by imm" without taking on responsibility
-// for which counter the slot belongs to.
-func hasCounterDecrement(stream asm.Instructions, imm int32) bool {
-	for i := 0; i+2 < len(stream); i++ {
-		ld, sub, st := stream[i], stream[i+1], stream[i+2]
-		if !ld.OpCode.Class().IsLoad() || !st.OpCode.Class().IsStore() {
-			continue
-		}
-		if ld.Offset != st.Offset {
-			continue
-		}
-		if sub.OpCode != asm.Sub.Imm(asm.R0, imm).OpCode {
-			continue
-		}
-		if sub.Constant != int64(imm) {
-			continue
-		}
-		return true
-	}
-	return false
-}
 

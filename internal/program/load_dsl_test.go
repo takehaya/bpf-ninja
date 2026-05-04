@@ -25,6 +25,11 @@ var dslEntryExprs = []string{
 	"eth/mpls*/ipv4/tcp",
 	"eth/(vlan|qinq)",
 	"eth/(vlan|qinq)/ipv4/tcp",
+	// MPLS under QinQ — relies on MPLS_QINQ_ETHERTYPE = 0x8847 in
+	// mpls.p4 (parallel to the eth and vlan ethertypes; MPLS rides
+	// every L2 carrier with the same payload-protocol code).
+	"eth/qinq/mpls{1,2}/ipv4/tcp",
+	"eth/qinq/mpls+/ipv4/tcp",
 	// P3-12 alt with diverged size + diverged dispatch. (ipv4|ipv6)
 	// differs in both header size (20 vs 40) and the field tcp/udp
 	// dispatches off (protocol byte 9 vs next_header byte 6). The alt

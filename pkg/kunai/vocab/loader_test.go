@@ -861,30 +861,20 @@ func specNames(s map[string]*ProtocolSpec) []string {
 	return out
 }
 
-// TestVariableTrailIPv4 confirms the bundled IPv4 vocab's parser
-// block lowers `pkt.advance(((bit<32>)(hdr.ihl - 5)) << 5)` to the
-// five-tuple HeaderLength shape codegen consumes. The numeric
-// values are pinned because codegen depends on them — nudging them
-// silently would shift R4.
-func TestVariableTrailIPv4(t *testing.T) {
-	specs := loadBundled(t)
-	vs := specs["ipv4"].PrimaryAdvanceSkip()
-	if vs == nil {
-		t.Fatal("ipv4 must declare a variable trailer")
-	}
-	if vs.LenByteOff != 0 || vs.LenMask != 0x0F || vs.LenShift != 0 ||
-		vs.Scale != 4 || vs.Base != 20 {
-		t.Errorf("unexpected ipv4 trail Skip: %+v", *vs)
-	}
-}
-
 // TestVariableTrailAbsentForFixedProtocols pins which protocols
-// declare no variable trailer. Adding a trailer to a previously-
-// fixed protocol changes codegen behaviour, so the test forces a
-// deliberate update here when that happens.
+// declare no Mechanism-1 (PrimaryAdvanceSkip) variable trailer.
+// Adding such a trailer to a previously-fixed protocol changes
+// codegen behaviour, so the test forces a deliberate update here
+// when that happens.
+//
+// IPv4 used to declare a Mechanism-1 trailer
+// (`pkt.advance(((bit<32>)(hdr.ihl - 5)) << 5)`) but moved to
+// Mechanism 8 (ParserCounter byte-bounded walk) when option-aware
+// extraction landed. TCP is the lone remaining Mechanism-1 user
+// for its data_offset-driven trailer skip.
 func TestVariableTrailAbsentForFixedProtocols(t *testing.T) {
 	specs := loadBundled(t)
-	for _, name := range []string{"eth", "ipv6", "udp", "gtp", "srv6", "vlan", "qinq", "mpls", "gre", "vxlan", "geneve", "icmp", "icmp6", "cw"} {
+	for _, name := range []string{"eth", "ipv4", "ipv6", "udp", "gtp", "srv6", "vlan", "qinq", "mpls", "gre", "vxlan", "geneve", "icmp", "icmp6", "cw"} {
 		if vs := specs[name].PrimaryAdvanceSkip(); vs != nil {
 			t.Errorf("%s should not declare a variable trailer (got %+v)", name, *vs)
 		}

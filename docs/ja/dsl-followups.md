@@ -48,7 +48,8 @@ P2-9  field has             ✅ F6 bitwise & で superseded (`tcp.flags & 0x12 =
 P2-10 算術ネスト 4→8        bpf_loop ctx を 16 byte 下に移動 + maxArithDepth bump
 B-1   .exists bool atom     ✅ 型システム PR-2 で対応 (where 句直接記述)
 B-3   parser-block TLV walk  PR-3-1〜4 + Phase 2 retry (demand-driven slot, lifted prelude, ~6 insn vs legacy ~200; 4 kernel matrix green)
-B-5   ParserCounter extern   p4lite に Tofino TNA 互換 ParserCounter (extern + set/decrement/is_zero) を追加。vocab loader / codegen / dsltest E2E まで通り、合成 IPv4 vocab で IHL=5/6/7/15 walk が verifier 通過 (production vocab 未採用、移行は別件)
+B-5   ParserCounter extern   p4lite に Tofino TNA 互換 ParserCounter (extern + set/decrement/is_zero) を追加。vocab loader / codegen / dsltest E2E まで通り、合成 IPv4 vocab で IHL=5/6/7/15 walk が verifier 通過
+B-2   IPv4 options vocab     ParserCounter ベースの 2-key tuple-select walk + demand-driven bulk-advance fallback (02ea93e) で production migration (625ba5e)。Router Alert (kind=148) を declare、4 kernel matrix green
 ```
 
 ## P2: 機能拡張 (需要次第)
@@ -71,22 +72,38 @@ B-5   ParserCounter extern   p4lite に Tofino TNA 互換 ParserCounter (extern 
 
 **工数**: 0.5〜1 日 (どの slot 構成を採用するか合意 + test 拡張)。
 
-### B-2. IPv4 options vocab 拡張
+### B-2. IPv4 options vocab 拡張 ✅ landed (Router Alert)
 
-**動機**: §B PR-D で TCP options の vocab 宣言と option-walk codegen は通った。同じ枠組みで IPv4 options (Router Alert, Record Route, Source Route, Timestamp, Security 等) を declare すれば追加 codegen なしで動く。
+**動機**: §B PR-D で TCP options の vocab 宣言と option-walk codegen は通った。同じ枠組みで IPv4 options を declare すれば追加 codegen なしで動く。
 
-**現状 (2026-05-04)**: B-5 (ParserCounter) で extern + counter-driven walk が landed、続く 2-key tuple-select 拡張 (`(pc.is_zero(), pkt.lookahead<bit<8>>())`) の vocab + codegen も landed。合成 IPv4 vocab 経由の `TestParserCounterTupleDispatch` (dsltest) で E2E 検証済。
+**経緯と完了 (2026-05-04)**:
 
-ただし bundled `ipv4.p4` を Mechanism 8 化する **production migration は試行 → revert**: `eth/ipv4/udp/gtp/...` のような chain で kernel verifier の 1M insn limit を超える combinatorial blowup が発生 (commit `39f5c530` で push、kernel 6.1/6.6 で reject)。原因は `(4,5):accept` fast path が verifier の bpf_loop subprogram 探索を isolate できず、ipv4 + 下流レイヤの state 数が掛け算で爆発するため (Plan agent の R4 risk が顕在化)。
+1. B-5 (ParserCounter extern) と 2-key tuple-select (`(pc.is_zero(), pkt.lookahead<bit<8>>())`) の vocab + codegen は先行 landing。合成 IPv4 vocab 経由の `TestParserCounterTupleDispatch` (dsltest) で E2E 検証済。
+2. 第一次 production migration (commit `39f5c530`) は `eth/ipv4/udp/gtp/...` chain で kernel verifier 1M insn limit 超過 → 一旦 revert。原因は bpf_loop subprogram の探索を verifier が下流レイヤと isolate できなかったため。
+3. **demand-driven bulk-advance fallback** (commit `02ea93e`): program が `ipv4.options.<X>` を query しない場合は bpf_loop を emit せず Mechanism 1 相当の bulk advance に short-circuit する codegen を追加。`option_demand.go::collectQueriedOptions` パターンを walk 全体に拡張。
+4. **production migration 再試行 + Router Alert** (commit `625ba5e`): bundled `ipv4.p4` を Mechanism 8 化。`(4,5):accept` fast path は verifier blowup の原因だったので削除し、bulk-advance fallback が IHL=5 = 0-byte advance を吸収する形に。Router Alert (kind=148) を `ipv4_opt_router_alert_h` として declare、`parse_router_alert` state で extract。
+5. 4-kernel matrix (6.1 / 6.6 / 6.12 / 6.18) で全 `TestBpf*` green を確認。
 
-**残スコープ (要 verifier 探索量削減)**:
-- (a) **demand-driven** 化: program が `ipv4.options.<X>` を query しない場合は bpf_loop を emit せず Mechanism 1 の bulk advance にフォールバック (option_demand.go の slot allocator パターンを walk 全体に拡張)
-- (b) Mechanism 8 emit 時に `(4,5):accept` を verifier に対して dead-code として証明する path-isolation
-- (c) bpf_loop subprogram の per-iter state を pin する new prelude (slot-store prelude の応用、kind byte だけでなく counter slot も verifier-friendly に)
+**残スコープ (現状の小品 / future)**:
+- 他の主要 IPv4 options (Record Route、LSR/SSR、Timestamp、Security) は現状未宣言。要望次第で declare すれば codegen 追加なしで動く想定。
+- B-4 (Option 内部 array) で Record Route の `addrs[N]` や Timestamp の `entries[N]` を扱う場合は別経路。
 
-(a) が最も筋良く、`option_demand.go::collectQueriedOptions` の existing デマンド walker が前例。production 移行は (a) の codegen 拡張が landing してから再試行。
+### B-2a. tcp parse_unknown_opt の length≥2 guard (verifier blowup で deferred)
 
-**工数 (予測)**: 3-4 日 (demand-driven walk 拡張 1-2 + ipv4.p4 移行 0.5 + Router Alert + 主要 option 0.5 + 4-kernel 検証 0.5)。
+### B-2a. tcp parse_unknown_opt の length≥2 guard (verifier blowup で deferred)
+
+**動機**: tcp.p4 の `parse_unknown_opt` は `pkt.advance(((bit<32>)pkt.lookahead<bit<16>>()[7:0]) << 3)` で length byte を読んで advance するが、length=0/1 の malformed packet だと R4 が peeked window を超えず、parse_options self-loop が同じ kind/length に対して再入し MAX_DEPTH (32) まで spin する。
+
+**試行 (2026-05-04)**: `vocab.HeaderLength` に `MinValue` field を足し、`buildAdvanceLookahead` で `MinValue = LookaheadBits/8 = 2` をセット、`emitVariableTrail` で `JLT lenReg, 2, fail` の guard を発行する変更を実装 → `eth/ipv4/tcp where tcp.options.MSS.value == 1460` 系で kernel verifier が 1M insn 上限超過。bpf_loop callback (parse_options 自己ループ) の中に新 conditional を足すと MAX_DEPTH 反復で scalar ID 数が掛け算で増えて verifier 探索が爆発。
+
+**現状の落とし所**: emit を no-op にして deferred。MAX_DEPTH=32 の cap は維持されてるので length=0/1 packet も終端する (32 iter ぶんの CPU 浪費だけ、infinite loop ではない) — 正しさ問題ではなく polish 項目。コメントを `parser_machine.go::emitVariableTrail` 内に残してある。
+
+**残スコープ**:
+- (a) bpf_loop callback から early-exit する tight local label を仕組み化し、`JLT lenReg, 2, exitLabel` で scalar ID を引き回さない経路を作る
+- (b) または lookahead-driven advance を専用 emit (`emitTLVAdvance`) に切り出し、loop body 全体を verifier-friendly な形に再構成
+- (c) length byte mask を tighten (`AND 0xFE` → `JLT 2`) して verifier に値域 hint を渡せないか探る
+
+**工数 (予測)**: 1-2 日 (emit 形態探索 + 4-kernel verifier 検証)。優先度低 (CPU 浪費のみ、機能不足ではない)。
 
 ### B-3. CIDR / IPv4 / MAC literal を aux field に
 
