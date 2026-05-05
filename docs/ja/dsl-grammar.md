@@ -184,7 +184,7 @@ where (tcp.dport == 443) == gtp.opt.exists   # parens 越しの bool-eq (iff)
 - 例: `where any(srv6.segments.addr == fc00::1)` (経路に該当 segment が含まれる)、`where all(vlan.id < 4096)` *(VLAN tag は chain なので別パス、現在 quantifier は aux stack 限定)*
 
 **MVP 制約**:
-- 算術ネスト最大 3 段 (4 段以上 → ErrNotImplemented)
+- 算術ネスト最大 16 段 (`maxArithDepth`、 17 段以上 → ErrNotImplemented)
 - `action == NAME` は host 側で `Capabilities.Action` map と `ActionFetcher` を提供しているときのみ。XDP の場合は **fexit attach (`--mode exit`)** で `pkg/kunai/host/xdp.FexitCapabilities()` 経由に有効化される
 - 同 protocol が 2 段以上ある場合 `proto.field` だけだと ambiguous → `@label.field` 必須
 - Aux predicate / stack index access / options lookup は wrapper protocol の中身を見るため (PR-A〜PR-D で landing)、protocol 側の `out` parameter declaration が必要 (詳細は `dsl-internals.md §6`)
@@ -227,14 +227,15 @@ capture-spec   ::= 'all'
 
 ```ebnf
 file           ::= top-decl*
-top-decl       ::= header-decl | const-decl | parser-decl
+top-decl       ::= header-decl | const-decl | extern-decl | parser-decl
+extern-decl    ::= 'extern' ident '{' opaque-body '}'        (* body skipped; vocab loader currently consumes only ParserCounter *)
 ```
 
 | Production | parser | 例文 |
 |---|---|---|
 | `file` | `vocab/p4lite/parser.go::Parse` | (proto file 全体) |
 
-**Reject keywords** (`vocab/p4lite/lexer.go::rejectedKeywords`): `action`, `table`, `control`, `apply`, `extern`。
+**Reject keywords** (`vocab/p4lite/lexer.go::rejectedKeywords`): `action`, `table`, `control`, `apply`。`extern` は受理されるが本体は opaque-skip され、現在 vocab loader が認識する extern は **`ParserCounter`** のみ (B-5 / mechanism 8)。
 
 ### 2.2 Header
 
@@ -284,21 +285,39 @@ literal        ::= integer | 'true' | 'false'
 ### 2.4 Parser fragment
 
 ```ebnf
-parser-decl    ::= 'parser' ident '(' params ')' '{' state+ '}'
+parser-decl    ::= 'parser' ident '(' params ')' '{' counter-decl? state+ '}'
 params         ::= param (',' param)*
 param          ::= 'packet_in' ident
                  | 'out' type-ref ident
 type-ref       ::= ident ('[' INT ']')?              (* header stack *)
+counter-decl   ::= 'ParserCounter' '(' ')' ident ';'  (* mechanism 8: pc; declared once, scoped to the parser block *)
 state          ::= 'state' ident '{' stmt* transition '}'
-stmt           ::= ident '.' 'extract' '(' arg ')' ';'
+stmt           ::= ident '.' 'extract' '(' arg ')' ';'                                   (* primary / aux header extract *)
+                 | 'pkt' '.' 'advance' '(' advance-arg ')' ';'                           (* mechanism 1 / 8 trailer skip *)
+                 | ident '.' counter-op ';'                                              (* mechanism 8 ParserCounter ops: pc.set / pc.decrement *)
 arg            ::= ident ('.' ident)?                (* ident or ident.next *)
+advance-arg    ::= integer                                                               (* template C: literal byte count *)
+                 | '(' '(' 'bit' '<' INT '>' ')' '(' 'hdr' '.' ident '-' integer ')' ')' '<<' integer
+                                                                                          (* template A: ((bit<N>)(hdr.<F> - K)) << S — IPv4 IHL / TCP data_offset 系 *)
+                 | '(' '(' 'bit' '<' INT '>' ')' lookahead-expr ')' '<<' integer
+                                                                                          (* template B: lookahead-driven trailer (TCP TLV options length byte) *)
+lookahead-expr ::= 'pkt' '.' 'lookahead' '<' 'bit' '<' INT '>' '>' '(' ')' ('[' INT ':' INT ']')?
+                                                                                          (* MSB-first inclusive bit-slice *)
+counter-op     ::= 'set' '(' counter-set-arg ')'                                         (* pc.set(<aux>.<field>) or pc.set(((bit<N>)(...)) << S) *)
+                 | 'decrement' '(' counter-decrement-arg ')'                              (* pc.decrement(<INT>) or pc.decrement(<aux>.<field>) *)
+counter-set-arg ::= ident '.' ident                                                       (* aux.field, e.g. ipv4.ihl *)
+                 | '(' '(' 'bit' '<' INT '>' ')' '(' ident '.' ident '-' integer ')' ')' '<<' integer
+                                                                                          (* same template-A shape as pkt.advance *)
+counter-decrement-arg ::= integer | ident '.' ident                                       (* literal or aux.field *)
 transition     ::= 'transition' transition-target ';'
 transition-target ::= 'accept' | 'reject' | ident
                  | 'select' '(' key-list ')' '{' case+ '}'
 key-list       ::= key (',' key)*
-key            ::= ident ('.' ident)*                (* dotted path *)
+key            ::= ident ('.' ident)*                                                    (* dotted field path *)
+                 | lookahead-expr                                                         (* pkt.lookahead<bit<N>>() (with optional bit-slice) as a select key *)
+                 | ident '.' 'is_zero' '(' ')'                                            (* pc.is_zero() — bool match-key, paired with `true` / `false` cases *)
 case           ::= case-keyset ':' transition-target ';'
-case-keyset    ::= integer | '_' | 'default'
+case-keyset    ::= integer | 'true' | 'false' | '_' | 'default'
                  | '(' case-keyset (',' case-keyset)* ')'
 ```
 
@@ -310,8 +329,14 @@ case-keyset    ::= integer | '_' | 'default'
 
 **制約**:
 - 引数 direction は `packet_in` / `out` のみ (`in` / `inout` 未対応)
-- statement は `obj.extract(target)` または `obj.extract(target.next)` のみ
-- `select` case は整数 / `_` / `default` / tuple のみ。mask (`val &&& mask`) / range (`a..b`) / 名前参照は未対応
+- statement は `obj.extract(target)` / `obj.extract(target.next)` / `pkt.advance(...)` / `pc.set(...)` / `pc.decrement(...)` のみ。`verify` / 代入文 / `if` / `else` などは未対応 (詳細は `vocab/p4lite/conformance_test.go::TestSubsetRejectsParserStatementsBeyondExtract`)
+- `pkt.advance` template:
+  - **A**: `pkt.advance(((bit<N>)(hdr.<F> - K)) << S)` — primary header の field × scale で trailer 長を決める (IPv4 IHL、TCP data_offset)。詳細は internals §6.5 mechanism 1
+  - **B**: `pkt.advance(((bit<N>)pkt.lookahead<bit<M>>()[lo:hi]) << S)` — wire 上の length byte を peek して advance (TCP TLV options)。詳細は §6.5 mechanism 7
+  - **C**: `pkt.advance(<INT>)` — 固定 byte 数。`pkt.advance(8)` 等
+- `pc.set(...)` は parser block の **start state** でのみ呼べる (counter は per-parser-invocation で 0 に初期化、変更は 1 回限り)
+- `pc.decrement(N)` / `pc.decrement(<aux>.<field>)` は self-loop 反復毎に呼ぶ。zero に到達した時点で `select(pc.is_zero())` の `true` ケースが発火
+- `select` case は整数 / `true`/`false` (1-key bool match の場合) / `_` / `default` / tuple のみ。mask (`val &&& mask`) / range (`a..b`) / 名前参照は未対応
 
 **convention**: bundled vocab は固定 size protocol (vlan / udp / icmp 等) でも常に `parser <Proto>Parser(...) { state start { pkt.extract(hdr); transition accept; } }` の trivial block を declare する。loader は `isTrivialMachine` で同 shape を検出して `ParseStateMachine = nil` に集約する (legacy fixed-size codegen path)。block の有無で生成 BPF は変わらないが、全 vocab が同じ「header + const + parser block」3 段構成になり、`make p4c-check` も自然に通る。
 

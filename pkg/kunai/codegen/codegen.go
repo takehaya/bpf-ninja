@@ -655,7 +655,7 @@ func genStaticLayer(layer *ir.LayerInstance, index int, all []*ir.LayerInstance)
 		// Save this layer's entry offsetBase to the slot before the
 		// fixed-prefix advance so children's dispatch can recover the
 		// primary-header position regardless of how far the OPT-flag
-		// shift moves R4 afterwards. Mirror of parser_machine.go's
+		// shift moves R4 afterwards. Mirror of parser_state.go's
 		// slot store — see the lifecycle docs there for the
 		// read/write ordering invariant.
 		insns = append(insns, asm.StoreMem(asm.R10, bpfLoopCtxLayerEntrySlot, offsetBase, asm.DWord))
@@ -818,7 +818,7 @@ func genDispatch(current, parent *ir.LayerInstance, parentHS int, failLabel stri
 }
 
 // genLayerDispatch is the call-site wrapper for layer-level dispatch
-// emission (genStaticLayer / parser_machine entry). It looks at `prev`
+// emission (genStaticLayer / parser-machine entry). It looks at `prev`
 // (= the unresolved parent — possibly an alt group) to decide whether
 // the current layer's dispatch needs the alt-diverged path (P3-12,
 // `(ipv4|ipv6)/tcp` etc., where alts disagree on dispatch field), or

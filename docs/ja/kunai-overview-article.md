@@ -85,7 +85,7 @@ DSL 構文は手書き再帰下降パーサで処理する。 構文の特徴は
 
 ### AST → IR (resolve 層)
 
-AST は構文を木にしただけなので、 protocol 名が「文字列 `ipv4`」のままになっている。 これを resolver が **vocabulary** (= 後述の `.p4` ファイル) と照合して、 「ipv4_h header の field layout」 「親 protocol からの dispatch 条件」 「HDRLEN_* の header-length 形」 などを resolved IR に変える。
+AST は構文を木にしただけなので、 protocol 名が「文字列 `ipv4`」のままになっている。 これを resolver が **vocabulary** (= 後述の `.p4` ファイル) と照合して、 「ipv4_h header の field layout」 「親 protocol からの dispatch 条件」 「parser block の variable-trailer (`pkt.advance` template) や TLV walk の構造」 などを resolved IR に変える。
 
 ここで **`@label` 重複検出** や **chain quantifier の妥当性** や **field 名のタイポ検出** などが行われる。 また「ipv4 が gtp の下に来たとき、 vocab に `IPV4_GTP_*` の dispatch const があるか?」のようなケースで、 const がなくても **ipv4 自身の parser block が `transition select(version) { 4: accept; default: reject; }` で自己検証していれば** allow する (=  parser-block self-validation)。 これは kunai の重要な設計で、 後述。
 
@@ -111,7 +111,7 @@ verifier 通過のために、 各 layer の境界で必ず bounds check (R0 + R
 
 - **P4 はそのまま packet header 記述用に作られた言語**。 `header` block で field layout、 `parser` block で extract / transition select / variable extension headers を表現できる
 - **公式 p4c がパースを検証してくれる**。 `make p4c-check` で `docker exec p4c --parse-only` を全 vocab に走らせる CI が組み込まれている。 kunai 側で P4 文法を勝手に拡張しないかぎり、 vocab ファイルは **本物の P4-16 として valid なまま**
-- **dispatch / HDRLEN / option-walk といった declarative metadata は const family の命名規約で表現**: `<SELF>_<PARENT>_<FIELD> = <value>` (Field dispatch)、 `<SELF>_<PARENT>_NO_CHECK = true` (NoCheck)、 `<SELF>_HDRLEN_*` (variable trailer length 計算式) など。 const は P4 の標準構文で、 命名規約の方を kunai が解釈する
+- **dispatch / variable-trailer / option-walk といった declarative metadata は const family の命名規約 + parser block で表現**: `<SELF>_<PARENT>_<FIELD> = <value>` (Field dispatch)、 `<SELF>_<PARENT>_NO_CHECK = true` (NoCheck)、 variable trailer は parser block の `pkt.advance(((bit<N>)(hdr.<F> - K)) << S)` template (mechanism 1) など。 const と parser block は P4-16 の標準構文で、 命名規約 / template 形状の方を kunai が解釈する (旧 `<SELF>_HDRLEN_*` const family は B-2 で `pkt.advance` parser-block 表現に移行済、 loader は loud-reject)
 
 例: `pkg/kunai/protocols/ipv4.p4` の抜粋:
 
@@ -129,21 +129,21 @@ const bit<16> IPV4_ETH_ETHERTYPE  = 0x0800;
 const bit<16> IPV4_VLAN_ETHERTYPE = 0x0800;
 const bit<16> IPV4_QINQ_ETHERTYPE = 0x0800;
 
-// IHL trailing は HDRLEN で表現
-const bit<8> IPV4_HDRLEN_BYTE_OFFSET = 0;
-const bit<8> IPV4_HDRLEN_MASK        = 0x0F;
-const bit<8> IPV4_HDRLEN_SCALE       = 4;
-const bit<8> IPV4_HDRLEN_BASE        = 20;
-
-// 自己検証 — 親に Field dispatch がない場合 (MPLS / GTP-U の下) でも、
-// version=4 を確認することで chain を許可
+// IHL trailing は parser block の pkt.advance template A で表現
+//   - 自己検証 (version == 4) — 親に Field dispatch がない場合 (MPLS / GTP-U
+//     の下) でも、 version=4 を確認することで chain を許可
+//   - skip_options state で IHL × 4 byte - 20 byte の trailer を advance
 parser IPv4Parser(packet_in pkt, out ipv4_h hdr) {
     state start {
         pkt.extract(hdr);
         transition select(hdr.version) {
-            4:       accept;
+            4:       skip_options;
             default: reject;
         }
+    }
+    state skip_options {
+        pkt.advance(((bit<32>)(hdr.ihl - 5)) << 5);  // (ihl - 5) × 32 bit
+        transition accept;
     }
 }
 ```

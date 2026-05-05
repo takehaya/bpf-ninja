@@ -82,7 +82,7 @@ For a complete worked example (XDP fentry/fexit attach + perf-event capture), se
 
 The pipeline is `expr → AST → IR → asm.Instructions`. The AST is built by a hand-written recursive-descent parser; the IR holds vocabulary-resolved layer instances and binds every field reference to a concrete `*vocab.ProtocolSpec`; codegen lowers the IR to [cilium/ebpf](https://github.com/cilium/ebpf) `asm.Instructions` with verifier-safe bounds checks at every layer boundary. Variable-length quantifiers (`+`, `*`, `{n,m>4}`) and parser-machine self-loops emit a `bpf_loop` helper call into a bpf2bpf subprogram, which lands in **Linux 5.17**. Predicate codegen sticks to the BPF_END byte-swap family so it does not require BSWAP (`0xd7`, 6.6+). CI gates the matrix on 6.1 / 6.6 / 6.12 / 6.18 (`vimto`); chains without quantifiers or parser-machine self-loops can run on even older kernels.
 
-The formal EBNF lives in [`docs/ja/dsl-grammar.md`](https://github.com/takehaya/xdp-ninja/blob/main/docs/ja/dsl-grammar.md). Code-level entry points: `pkg/kunai/codegen/codegen.go` (compile pipeline + ABI), `pkg/kunai/vocab/p4lite/` (P4-16 strict subset parser), `pkg/kunai/codegen/parser_machine.go` (variable-length header codegen).
+The formal EBNF lives in [`docs/ja/dsl-grammar.md`](https://github.com/takehaya/xdp-ninja/blob/main/docs/ja/dsl-grammar.md). Code-level entry points: `pkg/kunai/codegen/codegen.go` (compile pipeline + ABI), `pkg/kunai/vocab/p4lite/` (P4-16 strict subset parser), and the `parser_state.go` / `parser_trail.go` / `parser_select.go` / `parser_loop.go` quartet under `pkg/kunai/codegen/` (variable-length header codegen — split for review readability).
 
 ## API
 

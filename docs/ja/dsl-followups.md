@@ -94,7 +94,7 @@ F15   TC adapter             `pkg/kunai/host/tc/` 新規 (host/xdp の peer)。 
 - (b) lookahead-driven advance を専用 emit (`emitTLVAdvance`) に切り出し → ❌ 別関数にしても結局 lenReg を packet からロード → 比較 → 分岐の流れは同じ。verifier の state-ID 蓄積問題は構造的で emit の場所を変えても解決しない。
 - (c) length byte mask tighten で branch-less saturation → ❌ `lenReg | 2` は length=4→6, length=8→10 など偶数長を壊す。`& 0xFE` は length=1→0 と退化。BPF に saturating arith / cmov が無く、branch-less に length≥2 を強制する操作がない。
 
-**現状の落とし所 (defer 確定 + soft 仕様 test pin)**: emit は no-op のまま deferred。 MAX_DEPTH=32 cap は維持されるので length=0/1 packet も終端する (32 iter ぶんの CPU 浪費だけ、 infinite loop ではない) — 正しさ問題ではなく polish 項目。 コメントは `parser_machine.go::emitVariableTrail` 内に残置。
+**現状の落とし所 (defer 確定 + soft 仕様 test pin)**: emit は no-op のまま deferred。 MAX_DEPTH=32 cap は維持されるので length=0/1 packet も終端する (32 iter ぶんの CPU 浪費だけ、 infinite loop ではない) — 正しさ問題ではなく polish 項目。 コメントは `parser_trail.go::emitVariableTrail` 内に残置。
 
 **Regression test (`TestTCPMalformedUnknownOptShortLength` in `dsltest/runner_test.go`、 commit 56664ac8 で land + e2e80851 で table-driven 集約)**: hand-rolled malformed TCP packet (kind=99, length=0/1) を eth/ipv4/tcp filter に通す table-driven test (LengthZero / LengthOne 2 subtests)、 `prog.Test()` が timeout / panic せず完走することを確認。 verdict は pin しない (R3 がどの byte に landing するかで match / reject が分かれうる) が、 **完走そのもの**を MAX_DEPTH cap への依存として lock-in。
 
@@ -108,11 +108,11 @@ F15   TC adapter             `pkg/kunai/host/tc/` 新規 (host/xdp の peer)。 
 - **B-4 R1 contingency**: TCP SACK の `extract(sack); pkt.advance((sack.length - 2) << 3)` の JLT+Sub combo → `eth/(ipv4|ipv6)/tcp` で 1M insn 超過 → dispatched-but-not-extracted shape へ pivot
 - **B-4a R1 contingency**: IPv4 RR 同型問題 → 同じ pivot
 
-3 件全部 **callback 内に新 conditional / 算術分岐を足すと scalar ID が MAX_DEPTH 反復で乗算的に増える** という共通の構造的制限。 systemic mitigation 候補 (1.0 までに):
+3 件全部 **callback 内に新 conditional / 算術分岐を足すと scalar ID が MAX_DEPTH 反復で乗算的に増える** という共通の構造的制限。 systemic mitigation:
 
-- **(a) compile-time callback branch-count assertion**: bpf_loop callback 1 つあたりの conditional 数を静的に counter、 閾値超過で `ErrNotImplemented` を返す lint。 vocab 著者が "callback hot path に分岐を足すと verifier 爆発する" を即座に検知できる
-- **(b) callback 内 length-guard 専用 emit pattern**: lookahead-driven advance を専用関数化、 個別 site が同じ shape を再発明しないよう強制
-- **(c) codegen fuzzer in CI**: ランダム vocab + ランダム where で生成した program を 4-kernel matrix verifier に投げ、 1M insn 超を回帰検出
+- **(a) compile-time callback branch-count assertion ✅ landed**: `pkg/kunai/codegen/callback_lint.go::assertCallbackComplexity` (閾値 + rationale はファイル冒頭の comment block を参照)。 hook は `genBpfLoopCallback` (chain) + `emitSelfLoopCallback` / `emitMultiStateCallback` (parser-machine self-loop) の callback emit 末尾。 boundary tests は `callback_lint_test.go`。
+- **(b) callback 内 length-guard 専用 emit pattern**: lookahead-driven advance を専用関数化、 個別 site が同じ shape を再発明しないよう強制 (未着手、 1.0 後)
+- **(c) codegen fuzzer in CI**: ランダム vocab + ランダム where で生成した program を 4-kernel matrix verifier に投げ、 1M insn 超を回帰検出 (未着手、 1.0 後)
 
 dispatched-but-not-extracted shape (B-4 / B-4a で確立) が現状の workaround、 owner-bound stack `OwnerOption != ""` 時に適用。 invariant test `pkg/kunai/vocab/owner_bound_invariant_test.go::TestOwnerBoundStacksUseDispatchedButNotExtracted` で「owner aux 状態に Extract op がない」 を pin、 将来の revert を CI 検出。
 

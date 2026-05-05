@@ -1268,7 +1268,7 @@ eval-key(k, α) =
 
 `current_header` は extract block 内で直前に `extract()` した header に bound されている。p4lite parser は extract と transition の順序を強制するため、select-key は常に "ちょうど抽出された" header の field を指す。
 
-実装対応: `pkg/kunai/vocab/p4lite/parser.go` が select expression を AST に格納し、`pkg/kunai/codegen/parser_machine.go` がこれを `R3 = mem[π + field_offset]` + 必要なら `R3 &= const` に展開。
+実装対応: `pkg/kunai/vocab/p4lite/parser.go` が select expression を AST に格納し、`pkg/kunai/codegen/parser_select.go` がこれを `R3 = mem[π + field_offset]` + 必要なら `R3 &= const` に展開。
 
 ### 14.4 layer 全体での aux 抽出
 

@@ -31,6 +31,24 @@ BenchmarkCompile/dsl/TCP_443-64        49881    4615 ns/op   32.00 insns/op
 
 `b.ReportMetric` で命令数を `insns/op` で報告するので、`go test -bench` の 1 行に **時間と emit サイズが両方** 載る。
 
+### Per-pattern microbench (codegen path 単位)
+
+`BenchmarkCompile` 1 件は 7 codegen path を conflate するので path 単位の regression 検出に向かない。 `internal/program/bench_test.go` に 9 microbench を追加して codegen path を分離した:
+
+| Bench | 計測対象 | 例 expression |
+|---|---|---|
+| `BenchmarkCompileBaseline` | 最小 chain (regression baseline) | `eth/ipv4/tcp` |
+| `BenchmarkPredicateOnly` | bracket predicate (`predicate.go`) | `eth/ipv4[src==10.0.0.1]/tcp` |
+| `BenchmarkWhereOnly` | where 句 (`where.go`) | `eth/ipv4/tcp where tcp.dport == 443` |
+| `BenchmarkCaptureOnly` | capture metadata (`capture.go`) | `eth/ipv4/tcp capture headers+64` |
+| `BenchmarkChainStatic` | 静的アンロール (`chain.go`) | `eth/vlan{1,3}/ipv4/tcp` |
+| `BenchmarkChainBpfLoop` | bpf_loop callback (`bpfloop.go`) | `eth/vlan+/ipv4/tcp` |
+| `BenchmarkAlternationSimple` | het-alt (`alternation.go`) | `eth/(vlan\|qinq)/ipv4/tcp` |
+| `BenchmarkDynamicAuxLookup` | option slot allocation (`option_demand.go` + parser-machine TLV) | `eth/ipv4/tcp where tcp.options.MSS.value == 1460` |
+| `BenchmarkVocabLoad` | vocab init (`dslvocab.Bundled` cache miss) | (first compile baseline) |
+
+新 codegen path を 1 件追加するときは対応 microbench を足すと regression 警告が早く出る (`go test -bench=. -benchtime=1s ./internal/program/...` で全部 1 度に取れる)。
+
 傾向:
 - **コンパイル時間は DSL のほうが速い**。cbpfc は cBPF → eBPF の純粋トランスパイラで libpcap 経由のパース → cBPF byte-code → eBPF 命令変換と段が多く、起動コストが見えてくる。DSL は AST → IR → codegen の 3 段だが各段が軽量。
 - **生成命令数は式によって逆転する**。簡単な `icmp` (= L2 + L3 のみフィルタ) は cbpfc が短い。`tcp port 443` のように L2/L3/L4 の bounds と dispatch を全部展開する式では cbpfc 側のほうが冗長になる傾向 (cBPF の絶対オフセットアクセスを 1:1 で eBPF に展開するため)。
@@ -133,7 +151,7 @@ C 軸で DSL が cbpfc より重く見える典型ケース:
 ## ベンチで陥りがちな罠
 
 - **uname r が違う環境を混ぜない**: bpf_loop は 5.17+。それより古いと DSL の chain は load 自体が失敗する。
-- **scratch buffer のサイズ (256 byte) を超える** パケットでは filter は丸読みしない。capture 量とフィルタ評価範囲が分離されている事実を忘れない。
+- **scratch buffer のサイズ (`ScratchBufSize = 512` byte) を超える** packet では filter は丸読みしない。 capture 量とフィルタ評価範囲が分離されている事実を忘れない (per-CPU map にコピーする prefix 長は別、 `MaxCapLen` で制御)。
 - **veth 環境は GRO/GSO の影響を受けやすい**。`ethtool -K vethX gso off tso off gro off` で揃える。
 - **負荷源 (pktgen/iperf3) の上限が NIC でなく CPU** になっていないか `mpstat` で確認。
 - **同じ pcap ファイルへの書き込み** で IO が律速していないか確認 (`-w /dev/null` に向けるか `-c 100` などで頭切る)。
