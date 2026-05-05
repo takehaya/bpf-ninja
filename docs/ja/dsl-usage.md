@@ -12,7 +12,19 @@ sudo xdp-ninja -i veth0 "eth/ipv4/tcp[dport==443]"
 
 - DSL は **default**。tcpdump/cBPF 構文を使いたいときだけ `--cbpf` を付ける (legacy、deprecation notice 出る)。
 - フィルタ式は **位置引数** として末尾に渡す。
-- 既存の `-w pcap`, `-c count`, `--mode exit/xdp` などはすべて DSL でも使える。
+- 既存の `-w pcap`, `-c count`, `--mode entry/exit/xdp/tc-entry/tc-exit` などはすべて DSL でも使える。
+
+#### `--mode` 一覧
+
+| Mode | Attach 方法 | 既存プログラム | XDP/TC return action 観測 | 主用途 |
+|---|---|---|---|---|
+| `entry` (default) | XDP fentry trampoline | 必須 (BTF 付) | × (packet only) | production XDP に来る前のパケットを観測 |
+| `exit` | XDP fexit trampoline | 必須 (BTF 付) | ○ (`XDP_PASS`/`DROP`/...) | XDP の判断結果を観測。`where action == XDP_DROP` 等で絞れる |
+| `xdp` | netdev に直接 attach | 不要 (既に attach されてるとエラー) | n/a (常に `XDP_PASS`) | XDP が attach されてない netdev の standalone capture |
+| `tc-entry` | TC clsact fentry trampoline | 必須 (TC clsact filter; `tc filter add ... direction ingress/egress`) | × (skb の pre-state) | tc-bpf が来る前の skb を観測 |
+| `tc-exit` | TC clsact fexit trampoline | 必須 (同上) | ○ (`TC_ACT_OK/SHOT/...`) | tc-bpf の verdict を観測。`where action == TC_ACT_SHOT` 等 |
+
+`tc-entry`/`tc-exit` は XDP 不要 (TC 層の clsact filter に対する fentry/fexit)。target 指定は `-p <progID>` のみ (TC clsact qdisc の interface walk は未配線)。
 
 ## 文法
 
@@ -113,7 +125,7 @@ eth/ipv4/tcp where action == XDP_DROP            # exit mode 限定
 | 論理 | `or`, `and`, `not` (`&&`/`\|\|` も可) |
 | カッコ | `(`, `)` |
 
-算術ネストは MVP で **3 段まで** (それを超えると `ErrNotImplemented`)。
+算術ネストは MVP で **16 段まで** (それを超えると `ErrNotImplemented`、`maxArithDepth` 定数で管理)。
 
 #### フィールド参照
 
@@ -167,9 +179,14 @@ SRv6 segments のような parent-count 系には自動 count guard が入る (=
 
 #### action atom
 
-`action == XDP_*` は **exit mode (`--mode exit`)** でのみ使える。`fentry` (`--mode entry`) 段階では XDP がまだ実行されていないので action 値が存在せず、`xdp-native` (`--mode xdp`) は xdp-ninja 自身が action を「決める」立場 (常に `XDP_PASS`) で観測対象がないので、いずれも resolver で reject される。
+`action == <NAME>` は **fexit 系の mode** (`--mode exit` / `--mode tc-exit`) でのみ使える。fentry 系 (`entry` / `tc-entry`) では下流プログラムの戻り値がまだ存在せず、`--mode xdp` は xdp-ninja 自身が常に `XDP_PASS` を返す立場で観測対象がないので、いずれも resolver で reject される。
 
-サポート: `XDP_ABORTED`, `XDP_DROP`, `XDP_PASS`, `XDP_TX`, `XDP_REDIRECT`。
+| Mode | サポートされる定数 |
+|---|---|
+| `--mode exit` (XDP fexit) | `XDP_ABORTED`, `XDP_DROP`, `XDP_PASS`, `XDP_TX`, `XDP_REDIRECT` |
+| `--mode tc-exit` (TC fexit) | `TC_ACT_UNSPEC` (-1), `TC_ACT_OK`, `TC_ACT_RECLASSIFY`, `TC_ACT_SHOT`, `TC_ACT_PIPE`, `TC_ACT_STOLEN`, `TC_ACT_QUEUED`, `TC_ACT_REPEAT`, `TC_ACT_REDIRECT`, `TC_ACT_TRAP` |
+
+(host adapter ごとの定数表は `pkg/kunai/host/xdp/xdp.go` / `pkg/kunai/host/tc/tc.go` の `Capabilities()` を参照。新 host を足すときは同 shape の `Action map[string]int32` + `ActionFetcher` を提供する。)
 
 ### Capture 節
 

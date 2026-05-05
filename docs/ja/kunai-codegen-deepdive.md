@@ -63,13 +63,10 @@ func genStaticLayer(layer, index, all) (asm.Instructions, error) {
     if layer.Spec.HasVariableLayout() {
         insns = append(insns, asm.StoreMem(R10, layerEntrySlot, R4, DWord))  // (4) layer-entry slot 保存
     }
-    insns = append(insns, emitAdvance(hs))  // (5) R4 += hs
-
-    tail := emitPrimaryVariableTail(layer.Spec)  // (6) HDRLEN_* trail (IPv4 IHL 等)
-    insns = append(insns, tail...)
+    insns = append(insns, emitAdvance(hs))  // (5) R4 += hs (固定 prefix のみ)
 
     if len(layer.Spec.FlagTriggers) > 0 {
-        flags := emitFlagTriggers(...)  // (7) GRE C/K/S 等の flag-gated optional fields
+        flags := emitFlagTriggers(...)  // (6) GRE C/K/S 等の flag-gated optional fields
         insns = append(insns, flags...)
     }
 
@@ -77,13 +74,15 @@ func genStaticLayer(layer, index, all) (asm.Instructions, error) {
 }
 ```
 
+可変長 trailer (IPv4 IHL / TCP data_offset 等) は genStaticLayer の責務ではなく、 layer.Spec.HasVariableLayout() == true の場合に **parser machine** (`parser_state.go::emitState` → `parser_trail.go::emitVariableTrail*`) が parser block の `pkt.advance(((bit<N>)(hdr.<F> - K)) << S)` template を解釈して advance を emit する。 旧 `<SELF>_HDRLEN_*` const family の codegen path は B-2 PR-2 で retire 済。
+
 順序が verifier に対してクリティカル:
 
 - **bounds 先**: bounds 通過前に LDX を出すと verifier が拒否する
 - **dispatch は parent の field を見る**: 親が advance 前なら R4 = parent_start、 advance 後なら R4 = parent_end。 kunai は前者の状態で dispatch を出す
 - **bracket predicate は dispatch 後**: 親 layer のパケット bytes (= dispatch 元) は predicate には関係ないが、 dispatch 失敗パスを優先するため
 - **layer-entry slot 保存は advance 前**: 子の dispatch が親の primary header を読むとき、 R4 は変動しているので fp の slot に layer entry offset を保存しておく
-- **HDRLEN trail は advance 後**: trail は primary header の末尾から計算する length field を消費する
+- **flag-trigger は固定 prefix advance 後**: trigger bit 評価時の load offset は hs に依存するため
 
 ## Predicate codegen — BSwap 回避と byte-swap constant
 
@@ -262,7 +261,7 @@ self-loop している state は callback subprogram に展開、 main が bpf_l
 
 `_` wildcard (例: ipv6 の `(6, _): accept`) も `mv.IsWildcard` 分岐で自然に対応。 tuple key は `selectAddr` という abstraction で「key の byte をどこから読むか」 (R4-relative or stack stash) を統一して扱う。
 
-実装: `pkg/kunai/codegen/parser_machine.go` (~700 LOC)
+実装: `pkg/kunai/codegen/parser_state.go` (state walk root) + `parser_trail.go` (variable-trail) + `parser_select.go` (select tuple-key) + `parser_loop.go` (bpf_loop callback) — 元 1 ファイルから機能境界で 4 分割
 
 ## Verifier 通過テクニック
 
@@ -304,7 +303,7 @@ LDX.W R3, [R3 + dispatch_field_offset]
 JNE.Imm R3, expected, dslReject
 ```
 
-slot は再利用される (per-layer)、 step 順序は load-bearing: **子の dispatch (= slot を read) が、 子の slot 上書き (= step 3) よりも前** に来る必要がある。 詳細は `parser_machine.go::emitState` の slot lifecycle コメント (line 108-128)。
+slot は再利用される (per-layer)、 step 順序は load-bearing: **子の dispatch (= slot を read) が、 子の slot 上書き (= step 3) よりも前** に来る必要がある。 詳細は `parser_state.go::emitState` の slot lifecycle コメントを参照。
 
 ### 4. parser-block self-validation の boundary 命令ゼロ
 

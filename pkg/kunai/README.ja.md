@@ -82,7 +82,7 @@ func main() {
 
 パイプラインは `expr → AST → IR → asm.Instructions`。AST は手書きの再帰下降パーサで構築、IR は vocab 解決済みの layer instance を保持し、すべてのフィールド参照を具体的な `*vocab.ProtocolSpec` にバインドする。codegen は IR を [cilium/ebpf](https://github.com/cilium/ebpf) の `asm.Instructions` に lower し、各 layer 境界で verifier-safe な bounds check を emit する。可変長 quantifier (`+`, `*`, `{n,m>4}`) と parser machine の self-loop は `bpf_loop` ヘルパ呼び出しを bpf2bpf subprogram に対して emit するため、**Linux 5.17+** が必要。predicate codegen は BPF_END byte-swap family を使うので BSWAP (`0xd7`、6.6+) には依存しない。CI matrix は `vimto` で 6.1 / 6.6 / 6.12 / 6.18 を gating。quantifier / parser-machine self-loop を含まない chain ならさらに古い kernel でも動作する。
 
-formal な EBNF は [`docs/ja/dsl-grammar.md`](https://github.com/takehaya/xdp-ninja/blob/main/docs/ja/dsl-grammar.md) にある。コード側のエントリポイント: `pkg/kunai/codegen/codegen.go` (compile pipeline + ABI)、`pkg/kunai/vocab/p4lite/` (P4-16 strict subset parser)、`pkg/kunai/codegen/parser_machine.go` (可変長 header codegen)。
+formal な EBNF は [`docs/ja/dsl-grammar.md`](https://github.com/takehaya/xdp-ninja/blob/main/docs/ja/dsl-grammar.md) にある。コード側のエントリポイント: `pkg/kunai/codegen/codegen.go` (compile pipeline + ABI)、`pkg/kunai/vocab/p4lite/` (P4-16 strict subset parser)、 `pkg/kunai/codegen/` の `parser_state.go` / `parser_trail.go` / `parser_select.go` / `parser_loop.go` 4 ファイル (可変長 header codegen — review 容易性のため機能境界で split)。
 
 ## API
 
