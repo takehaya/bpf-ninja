@@ -361,13 +361,15 @@ var (
 
 // MainFilterFuncBTF is the btf.Func the outer tracing program needs
 // to advertise when any bpf2bpf subprogram is present. Wrappers that
-// splice callbacks after their own body (internal/program) tag their
-// first instruction with this metadata; the signature shape is not
-// load-bearing for fentry/fexit — the real context comes from
-// AttachTarget — but BTF requires the entry to exist.
-func MainFilterFuncBTF() *btf.Func {
+// splice callbacks after their own body tag their first instruction
+// with this metadata; the signature shape is not load-bearing for
+// fentry/fexit — the real context comes from AttachTarget — but BTF
+// requires the entry to exist. The name is host-supplied so the
+// kunai library stays target-agnostic; pass the host product name
+// (e.g. "xdp_ninja_filter") so verifier logs identify the wrapper.
+func MainFilterFuncBTF(name string) *btf.Func {
 	return &btf.Func{
-		Name:    "xdp_ninja_filter",
+		Name:    name,
 		Type:    &btf.FuncProto{Return: btfLong},
 		Linkage: btf.GlobalFunc,
 	}

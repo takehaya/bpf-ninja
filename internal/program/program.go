@@ -255,7 +255,7 @@ func buildTracingInsns(filterOut codegen.Output, argFilters []filter.ArgFilter, 
 	// for the outer program in that case — tag the first tracing
 	// insn with codegen's canonical func proto.
 	if len(filterOut.Callbacks) > 0 {
-		insns[0] = btf.WithFuncMetadata(insns[0], codegen.MainFilterFuncBTF())
+		insns[0] = btf.WithFuncMetadata(insns[0], codegen.MainFilterFuncBTF("xdp_ninja_filter"))
 		insns = append(insns, filterOut.Callbacks...)
 	}
 	return insns, nil

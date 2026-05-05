@@ -495,7 +495,11 @@ var knownVariableTails = map[string]variableTailSkip{
 		LenFieldByteOff: 1,
 		Scale:           8,
 		Base:            0,
-		LenMask:         0x07, // up to 7*8 = 56 bytes (≈ 3 segments)
+		// LenMask 0x0F = up to 15*8 = 120 bytes, covering the full
+		// `srv6_seg_h[8]` capacity (7 segments + 8B TLV) declared in
+		// srv6.p4. A tighter mask would let `srv6.segments[N]` reads
+		// land on non-segment bytes when hdr_ext_len exceeds the cap.
+		LenMask: 0x0F,
 	},
 }
 

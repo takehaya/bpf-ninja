@@ -147,7 +147,7 @@ vocabulary のパースは `dslvocab.Bundled()` 内で `sync.Once` により **p
 
 ## バージョニングと安定性
 
-- public API: `kunai.Compile`, `codegen.Capabilities`, `codegen.ActionFetcher`, `codegen.Output`, `codegen.CaptureInfo`, `host/xdp` / `host/tc` adapter パッケージ、上記のエラー型
+- public API: `kunai.Compile`, `kunai.CompileWithVocab` (カスタム vocab 受入)、 `kunai.SyntaxHelp` / `kunai.ExamplesHelp` / `kunai.WriteProtocolCatalogue` / `kunai.WriteProtocolHelp` (xdp-ninja の `--dsl-help` 用)、 `codegen.Capabilities`、 `codegen.ActionFetcher`、 `codegen.Output`、 `codegen.CaptureInfo`、 `codegen.MainFilterFuncBTF` (host wrapper 用)、 `codegen.PositionedError` (位置情報付きエラー型)、 `host/xdp` / `host/tc` adapter パッケージ、上記のエラー型
 - それ以外 (AST node、IR 型、vocab loader 内部、parser 内部、`dslvocab.Bundled` キャッシュ) は予告なく変更される可能性あり
 - `pkg/kunai/dsltest` (gopacket-based packet-level harness) は **experimental**。1.0 までは `Runner` API / packet builder を予告なく変更する可能性あり。下流 test が依存する場合は tag 固定推奨
 - プロトコル vocabulary は public surface の一部として扱う — 新プロトコル追加は非破壊変更、リネーム/削除は破壊変更

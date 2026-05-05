@@ -102,6 +102,20 @@ F15   TC adapter             `pkg/kunai/host/tc/` 新規 (host/xdp の peer)。 
 
 **今後の道筋**: BPF verifier 側の改善 (kernel 6.20+ で state-ID coalescing が入る等) があれば再評価。kunai 側からの解決策は現状なし。
 
+**class 化**: 本 entry が指す問題は **「new branch in bpf_loop callback → scalar-ID inflation」 fingerprint の class** の 1 instance であって、 単独の TCP unknown_opt 固有問題ではない。 同 fingerprint で発火した過去事例:
+
+- **B-2a (本 entry)**: tcp.p4 `parse_unknown_opt` の length>=2 guard
+- **B-4 R1 contingency**: TCP SACK の `extract(sack); pkt.advance((sack.length - 2) << 3)` の JLT+Sub combo → `eth/(ipv4|ipv6)/tcp` で 1M insn 超過 → dispatched-but-not-extracted shape へ pivot
+- **B-4a R1 contingency**: IPv4 RR 同型問題 → 同じ pivot
+
+3 件全部 **callback 内に新 conditional / 算術分岐を足すと scalar ID が MAX_DEPTH 反復で乗算的に増える** という共通の構造的制限。 systemic mitigation 候補 (1.0 までに):
+
+- **(a) compile-time callback branch-count assertion**: bpf_loop callback 1 つあたりの conditional 数を静的に counter、 閾値超過で `ErrNotImplemented` を返す lint。 vocab 著者が "callback hot path に分岐を足すと verifier 爆発する" を即座に検知できる
+- **(b) callback 内 length-guard 専用 emit pattern**: lookahead-driven advance を専用関数化、 個別 site が同じ shape を再発明しないよう強制
+- **(c) codegen fuzzer in CI**: ランダム vocab + ランダム where で生成した program を 4-kernel matrix verifier に投げ、 1M insn 超を回帰検出
+
+dispatched-but-not-extracted shape (B-4 / B-4a で確立) が現状の workaround、 owner-bound stack `OwnerOption != ""` 時に適用。 invariant test `pkg/kunai/vocab/owner_bound_invariant_test.go::TestOwnerBoundStacksUseDispatchedButNotExtracted` で「owner aux 状態に Extract op がない」 を pin、 将来の revert を CI 検出。
+
 ### B-3. CIDR / IPv4 / MAC literal を aux field に ✅ landed
 
 **動機**: §B PR-A〜D で integer 比較の aux access は通ったが、IPv4 / IPv6 / MAC / CIDR literal を aux 経由で比較するパスは `ErrNotImplemented` で bail していた。

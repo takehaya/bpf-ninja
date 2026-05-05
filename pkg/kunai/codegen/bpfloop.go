@@ -112,6 +112,10 @@ func genBpfLoopChain(layer *ir.LayerInstance, index int, all []*ir.LayerInstance
 	if selfConst == nil {
 		return nil, nil, fmt.Errorf("%w: chained %q has no self-dispatch const", ErrNotImplemented, layer.Spec.Name)
 	}
+	// Same #11-class miscompile guard as genStaticChain — see chain.go.
+	if layer.Spec.HasVariableLayout() {
+		return nil, nil, fmt.Errorf("%w: chained %q has a variable-length primary header; use layered dispatch (e.g. `eth/%s/%s/...`)", ErrNotImplemented, layer.Spec.Name, layer.Spec.Name, layer.Spec.Name)
+	}
 
 	maxIter, err := chainMaxIter(layer)
 	if err != nil {
@@ -297,7 +301,7 @@ func chainEndShape(spec *vocab.ProtocolSpec) (byteOff int, mask uint8, expected 
 	}
 	byteOff, mask, expected, err = encodeChainEndField(bitOff, bits, spec.ChainEnd.Value)
 	if err != nil {
-		return 0, 0, 0, fmt.Errorf("%w: chain-end const %q: %v", ErrNotImplemented, spec.ChainEnd.Name, err)
+		return 0, 0, 0, fmt.Errorf("%w: chain-end const %q: %w", ErrNotImplemented, spec.ChainEnd.Name, err)
 	}
 	return byteOff, mask, expected, nil
 }

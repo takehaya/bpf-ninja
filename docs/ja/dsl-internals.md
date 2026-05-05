@@ -1099,11 +1099,11 @@ implementation 詳細は `pkg/kunai/codegen/parser_machine.go` の state graph e
 | 領域 | 制限 |
 |---|---|
 | Predicate | `field in [...]` ✅ 整数 alternatives 実装済 (F7) / IPv4/IPv6/MAC/CIDR alternatives は scope outside / `bit<>64` の field に対する `in` は未対応 (今のところ ≤64-bit のみ wired) / `field has FLAG` ⏸ F6 bitwise `&` で superseded (`tcp.flags & 0x12 == 0x12` で同等表現) |
-| Where | 算術ネスト最大 4 段 (`maxArithDepth`) / het-alt 後の where が alt member の field を直接参照 (`where ipv6.src == fe80::1`) は reject (alt 識別不能) / `in` は **bracket predicate `[...]` 専用**、where 句では `==` の `or` chain で代替 (parser が targeted hint を返す) |
-| Aux × literal | aux header field の値比較は **整数 literal のみ** ✅。IPv4/IPv6/MAC/CIDR literal を aux 経由で比較するパスは `ErrNotImplemented` (例: `srv6.segments[0].addr == fc00::/16`)。followups B-3 で追跡 |
+| Where | 算術ネスト最大 16 段 (`maxArithDepth`、 10b で 8→16 bump) / het-alt 後の where が alt member の field を直接参照 (`where ipv6.src == fe80::1`) は reject (alt 識別不能) / `in` は **bracket predicate `[...]` 専用**、where 句では `==` の `or` chain で代替 (parser が targeted hint を返す) |
+| Aux × literal | ✅ landed (B-3 commit 6547a42): IPv4/IPv6/MAC/CIDR literal を aux 経由で比較可能。 例: `srv6.segments[0].addr == fc00::/16`、 `where ipv4.options.RR.addrs[0].addr == 10.0.0.1` |
 | Capture | `capture f1, f2` フィールド列 不可 / 量化 layer (`+`/`*`/`{n,m}`) を含む filter で `headers+N` 不可。het-alt 越えの capture は max-alt 上界丸めで動作 |
 | Alternation | alt 数 2-4 (`altCountCap`) / ✅ heterogeneous size + diverged dispatch 対応 (P3-12) / ✅ nested alt は resolver flatten (P3-13) / quantifier 付き内側 alt (`(a\|b)?`) は reject / 先頭不可 |
-| Layer 数 | per-layer entry slot を要する filter は最大 12 layer (`whereLayerEntrySlotCap`)。実用上の chain 深度 (深 6 layer) を充分上回る上限 |
+| Layer 数 | per-layer entry slot を要する filter は最大 7 layer (`whereLayerEntrySlotCap`、 10b で 12→7 にトレードオフ縮小)。 実用上の chain 深度 (深 5 layer = `eth/ipv4/udp/gtp/ipv4/tcp`) を上回る上限 |
 | Parser machine (vocab 著者向け) | select key 幅 ≤8 bit / select key 本数 ≤3 / variable-trail scale は 2 冪のみ / self-loop 反復上限あり (vocab の `<SELF>_MAX_DEPTH` で declare) |
 | Self-validation | parser-block 自検証 (`transition select(field) { v: accept; default: reject; }`) のみ。旧 SANITY const family は撤廃 (legacy 名は loud-fail で拒否) |
 | Vocab | 1 protocol あたり最大 2 ラベル |

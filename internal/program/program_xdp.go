@@ -126,7 +126,7 @@ func buildXDPNativeInsns(filterOut codegen.Output, eventsFD int) asm.Instruction
 		asm.Return(),
 	)
 	if len(filterOut.Callbacks) > 0 {
-		insns[0] = btf.WithFuncMetadata(insns[0], codegen.MainFilterFuncBTF())
+		insns[0] = btf.WithFuncMetadata(insns[0], codegen.MainFilterFuncBTF("xdp_ninja_filter"))
 		insns = append(insns, filterOut.Callbacks...)
 	}
 	return insns

@@ -201,9 +201,9 @@ var dslExitExprs = []string{
 }
 
 // dslTCEntryExprs is the tc clsact fentry-side DSL matrix. A subset
-// of dslEntryExprs that exercises the kunai-host-agnostic compile +
-// the new tc context loading path (skb->data / data_end / len read
-// via verifier-rewritten __sk_buff offsets).
+// of dslEntryExprs broad enough to pin the kunai-host-agnostic
+// codegen on the tc context-loading path (skb->data / data_end /
+// len via runtime BTF resolve).
 var dslTCEntryExprs = []string{
 	"eth/ipv4/tcp",
 	"eth/ipv4/udp",
@@ -214,15 +214,30 @@ var dslTCEntryExprs = []string{
 	"eth/(ipv4|ipv6)/tcp",
 	"eth/vlan+/ipv4/tcp",
 	"eth/ipv4/ipv4/tcp",
+	// Parser-machine paths: GTP-U with optional + ext-header chain,
+	// SRv6 segments, IPv6 ext walk. These exercise the bpf_loop
+	// callback subprograms under tc-style tracing context.
+	"eth/ipv4/udp/gtp/ipv4/tcp",
+	"eth/ipv6/srv6/tcp",
+	// Aux predicate (option-walk + slot prelude) under tc.
+	"eth/ipv4/tcp where tcp.options.MSS.value == 1460",
+	// Owner-bound array (TCP SACK addrs[N] static index + any/all
+	// quantifier).
+	"eth/ipv4/tcp where any(ipv4.options.RR.addrs.addr == 192.168.0.0/16)",
 }
 
-// dslTCExitExprs covers tc clsact fexit-side action atoms — the
-// whole point of the tc adapter is that `where action == TC_ACT_*`
-// resolves correctly via tchost.FexitCapabilities.
+// dslTCExitExprs covers tc clsact fexit-side action atoms. Every
+// distinct verdict shape used by the project should compile + load:
+// positive verdicts (TC_ACT_OK/SHOT/REDIRECT), pipe/continue
+// (TC_ACT_PIPE), and the only signed verdict (TC_ACT_UNSPEC = -1)
+// which previously broke silently due to JNE.Imm sign-extension —
+// pinned here as a regression test for the JNE.Imm32 fix.
 var dslTCExitExprs = []string{
 	"eth/ipv4/tcp",
 	"eth/ipv4/tcp where action == TC_ACT_SHOT",
 	"eth/ipv4/tcp where action == TC_ACT_OK or action == TC_ACT_REDIRECT",
+	"eth/ipv4/tcp where action == TC_ACT_PIPE",
+	"eth/ipv4/tcp where action == TC_ACT_UNSPEC",
 }
 
 func TestBpfEntryWithDSLFilter(t *testing.T) {

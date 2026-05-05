@@ -58,6 +58,15 @@ func genStaticChain(layer *ir.LayerInstance, index int, all []*ir.LayerInstance)
 		self := strings.ToUpper(layer.Spec.Name)
 		return nil, fmt.Errorf("%w: chained %q has no self-dispatch const (declare %s_%s_<FIELD|NO_CHECK> in %s.p4)", ErrNotImplemented, layer.Spec.Name, self, self, layer.Spec.Name)
 	}
+	// chain iter ≥ 1 skips genStaticLayer / parser machine and only does
+	// extract+advance(hs). For variable-layout protocols (ipv4 IHL,
+	// ipv6 ext, srv6 segments, etc.) that means the iter would advance
+	// by primary-header size only, missing the variable trailer — silent
+	// miscompile (= the #11 class). Use layered dispatch
+	// (`eth/X/X/...`) instead so each layer runs its own parser machine.
+	if layer.Spec.HasVariableLayout() {
+		return nil, fmt.Errorf("%w: chained %q has a variable-length primary header (parser machine present); chain iter ≥ 1 would skip the trailer walk and silently miscompile. Use layered dispatch (e.g. `eth/%s/%s/...`) so each layer runs its own parser machine", ErrNotImplemented, layer.Spec.Name, layer.Spec.Name, layer.Spec.Name)
+	}
 	selfLayer := &ir.LayerInstance{
 		Spec:     layer.Spec,
 		Dispatch: &ir.DispatchChoice{Type: selfConst.Type, Const: selfConst},

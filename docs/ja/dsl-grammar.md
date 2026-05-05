@@ -63,8 +63,8 @@ quantifier     ::= '?' | '+' | '*' | '{' INT '}' | '{' INT ',' INT '}'
 
 ```ebnf
 predicate      ::= '[' field-path op value ']'
-                 | '[' field-path 'in' value-list ']'      (* parser only, codegen unsupported *)
-                 | '[' field-path 'has' flag-name ']'      (* parser only, codegen unsupported *)
+                 | '[' field-path 'in' value-list ']'      (* F7: integer 値の OR-chain *)
+                 | '[' field-path 'has' flag-name ']'      (* F6 bitwise & で superseded *)
 field-path     ::= field-name ('.' field-name)*            (* aux access: <aux>.<field> *)
 field-name     ::= [a-z] [a-z0-9_]*
 op             ::= '==' | '!=' | '<' | '<=' | '>' | '>=' | '='

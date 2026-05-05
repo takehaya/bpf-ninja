@@ -1320,7 +1320,12 @@ func genActionAtom(w *ir.Condition, caps Capabilities, failLabel string) (asm.In
 		return nil, fmt.Errorf("codegen: unknown action %q (host caps.Action has %d entries)", w.ActionValue, len(caps.Action))
 	}
 	insns := caps.ActionFetcher.EmitFetch(asm.R3)
-	return append(insns, asm.JNE.Imm(asm.R3, val, failLabel)), nil
+	// 32-bit JNE so signed action values (e.g. TC_ACT_UNSPEC = -1)
+	// compare against R3's low 32 bits without 64-bit sign-extension
+	// of the immediate. R3 is loaded zero-extended via Word LDX, so
+	// a 64-bit JNE.Imm against -1 sign-extends the imm to 0xFFFF_FFFF_FFFF_FFFF
+	// and never matches R3's 0x0000_0000_FFFF_FFFF — silently always rejects.
+	return append(insns, asm.JNE.Imm32(asm.R3, val, failLabel)), nil
 }
 
 // genLiteralCompare emits `field <op> <network literal>` for where

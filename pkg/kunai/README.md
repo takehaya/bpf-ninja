@@ -147,7 +147,7 @@ Vocabulary parsing is memoised: `dslvocab.Bundled()` (in `pkg/kunai/dslvocab/`) 
 
 ## Versioning & stability
 
-- Public API: `kunai.Compile`, `codegen.Capabilities`, `codegen.ActionFetcher`, `codegen.Output`, `codegen.CaptureInfo`, the `host/xdp` and `host/tc` adapter packages, and the error types listed above.
+- Public API: `kunai.Compile`, `kunai.CompileWithVocab` (custom-vocab variant), `kunai.SyntaxHelp` / `kunai.ExamplesHelp` / `kunai.WriteProtocolCatalogue` / `kunai.WriteProtocolHelp` (used by xdp-ninja's `--dsl-help`), `codegen.Capabilities`, `codegen.ActionFetcher`, `codegen.Output`, `codegen.CaptureInfo`, `codegen.MainFilterFuncBTF` (host wrapper helper), `codegen.PositionedError` (source-position-aware error type), the `host/xdp` and `host/tc` adapter packages, and the error types listed above.
 - Everything else (AST nodes, IR types, vocab loader internals, parser internals, the `dslvocab.Bundled` cache) may change without notice.
 - `pkg/kunai/dsltest` (the gopacket-based packet-level harness) is **experimental** until 1.0 — its `Runner` API and packet builders may change without notice. Pin a tagged version if downstream tests depend on it.
 - The protocol vocabulary is treated as part of the public surface — adding new protocols is non-breaking; renaming or removing one is a breaking change.

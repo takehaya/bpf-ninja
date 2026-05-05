@@ -237,7 +237,7 @@ func buildXDPWrapper(filterOut codegen.Output, scratchFD int) asm.Instructions {
 	)
 
 	if len(filterOut.Callbacks) > 0 {
-		insns[0] = btf.WithFuncMetadata(insns[0], codegen.MainFilterFuncBTF())
+		insns[0] = btf.WithFuncMetadata(insns[0], codegen.MainFilterFuncBTF("kunai_dsltest_filter"))
 		insns = append(insns, filterOut.Callbacks...)
 	}
 

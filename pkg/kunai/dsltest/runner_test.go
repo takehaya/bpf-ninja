@@ -386,21 +386,33 @@ func TestVlanChainTwoTags(t *testing.T) {
 }
 
 // TestVlanQuestionMarkOptional covers the `?` quantifier: filter
-// must accept frames with or without a VLAN tag.
+// must accept frames with or without a VLAN tag, and reject frames
+// whose ethertype is neither IPv4 nor 0x8100 (= no VLAN, no plain
+// IPv4 either — must not silently skip past the optional tag and
+// "succeed" on garbage).
 func TestVlanQuestionMarkOptional(t *testing.T) {
 	r := New(t, "eth/vlan?/ipv4/tcp")
 	r.MustMatch(t, BuildEthIPv4TCP(t, 1, 80), "no VLAN tag")
 	o := Defaults()
 	o.VLAN = []uint16{100}
 	r.MustMatch(t, Build(t, o), "one VLAN tag")
+	// Reject: IPv6 ethertype (0x86DD) — neither plain IPv4 nor VLAN.
+	o6 := Defaults()
+	o6.SrcIP = net.ParseIP("fe80::1")
+	o6.DstIP = net.ParseIP("fe80::2")
+	r.MustReject(t, Build(t, o6), "ipv6 ethertype must reject vlan? filter")
 }
 
 // TestMplsPlusChain covers the `+` (1+) MPLS chain via bpf_loop.
+// Reject case pins that a non-MPLS ethertype frame fails the chain
+// dispatch rather than spinning the bpf_loop on garbage.
 func TestMplsPlusChain(t *testing.T) {
 	r := New(t, "eth/mpls+/ipv4/tcp")
 	o := Defaults()
 	o.MPLS = []uint32{16, 17}
 	r.MustMatch(t, Build(t, o), "eth+2xMPLS+ipv4+tcp")
+	// Reject: plain IPv4 frame — no MPLS labels, dispatch must fail.
+	r.MustReject(t, BuildEthIPv4TCP(t, 1, 80), "no-MPLS frame must reject mpls+ filter")
 }
 
 // TestIPIPLayered exercises the layered ipv4-in-ipv4 chain
@@ -435,6 +447,65 @@ func TestIPIPLayered(t *testing.T) {
 func TestIPv6inIPv6Layered(t *testing.T) {
 	r := New(t, "eth/ipv6/ipv6/tcp")
 	r.MustMatch(t, BuildEthIPv6inIPv6TCP(t), "eth+ipv6(outer)+ipv6(inner)+tcp")
+}
+
+// TestIPv4OptionsWalkBoundary exercises the parser-counter-driven
+// IPv4 options walk at IHL boundaries: IHL=5 (no options, fast path
+// via demand-driven bulk-advance) and IHL=6/7 (Router Alert option,
+// single/double walk iter). The `where ipv4.options.RR.kind` predicate
+// is used to force the demand walker into emitting the actual walk
+// (not the bulk-advance short-circuit) so the per-iter offset accounting
+// is exercised — IHL=5 must land at TCP after a 0-byte advance,
+// IHL=6 after consuming the 4-byte Router Alert.
+func TestIPv4OptionsWalkBoundary(t *testing.T) {
+	r := New(t, "eth/ipv4/tcp")
+
+	// IHL=5: no options.
+	r.MustMatch(t, BuildEthIPv4TCP(t, 12345, 80), "IHL=5 (no options)")
+
+	// IHL=6: 4 bytes of Router Alert (kind=148, length=4).
+	o := Defaults()
+	o.IPv4Options = []layers.IPv4Option{
+		{OptionType: 148, OptionLength: 4, OptionData: []byte{0, 0}},
+	}
+	r.MustMatch(t, Build(t, o), "IHL=6 with Router Alert")
+
+	// IHL=7: 2 Router Alert options (8 bytes total).
+	o2 := Defaults()
+	o2.IPv4Options = []layers.IPv4Option{
+		{OptionType: 148, OptionLength: 4, OptionData: []byte{0, 0}},
+		{OptionType: 148, OptionLength: 4, OptionData: []byte{0, 1}},
+	}
+	r.MustMatch(t, Build(t, o2), "IHL=7 with 2 Router Alerts")
+}
+
+// TestIPv6ExtMidChain pins the IPv6 ext-header walk's accounting
+// when Fragment (fixed 8-byte) is sandwiched between variable-trail
+// neighbours. This shape has different bpf_loop offset accounting
+// than the trailing-Fragment case covered by TestIPv6FragmentExt.
+func TestIPv6ExtMidChain(t *testing.T) {
+	r := New(t, "eth/ipv6/tcp")
+	pkt := BuildIPv6WithExts(t, IPv6WithExtsOpts{
+		FirstNextHeader: 0, // HBH
+		Exts: []IPv6Ext{
+			{HdrExtLen: 1, NextHeader: 44, Options: bytes16("HBH option pad")},
+			{HdrExtLen: 0, NextHeader: 60}, // Fragment in the middle
+			{HdrExtLen: 1, NextHeader: 6, Options: bytes16("DestOpt pad")},
+		},
+		FinalNextHeader: 6,
+	})
+	r.MustMatch(t, pkt, "eth/ipv6/HBH/Fragment/DestOpt/tcp (mid-chain Fragment)")
+}
+
+// TestQinQLeaf exercises QinQ as the leaf-most before IPv4 (= no
+// inner VLAN), i.e. ethernet → QinQ tag → IPv4 (vs the more common
+// QinQ + inner VLAN form).
+func TestQinQLeaf(t *testing.T) {
+	r := New(t, "eth/qinq/ipv4/tcp")
+	o := Defaults()
+	o.QinQ = true
+	o.VLAN = []uint16{200}
+	r.MustMatch(t, Build(t, o), "eth+QinQ+ipv4+tcp")
 }
 
 // TestEthIPv4UDPDirect ensures the simple UDP path still works
