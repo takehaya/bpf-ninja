@@ -42,16 +42,23 @@ const callbackBranchThreshold = 64
 // self-loop callback path (emitSelfLoopCallback in parser_loop.go)
 // both call this just before returning their final asm.Instructions.
 func assertCallbackComplexity(insns asm.Instructions, sym string) error {
+	count := countBranches(insns)
+	if count > callbackBranchThreshold {
+		return fmt.Errorf("%w: callback %q has %d branch instructions (threshold %d); risks verifier state-ID inflation across MAX_DEPTH iterations (B-2a class, see dsl-followups.md)", ErrNotImplemented, sym, count, callbackBranchThreshold)
+	}
+	return nil
+}
+
+// countBranches returns the count of branch instructions in insns —
+// conditional jumps + unconditional Ja, excluding Call / Exit.
+func countBranches(insns asm.Instructions) int {
 	count := 0
 	for i := range insns {
 		if isBranchOpcode(insns[i].OpCode) {
 			count++
 		}
 	}
-	if count > callbackBranchThreshold {
-		return fmt.Errorf("%w: callback %q has %d branch instructions (threshold %d); risks verifier state-ID inflation across MAX_DEPTH iterations (B-2a class, see dsl-followups.md)", ErrNotImplemented, sym, count, callbackBranchThreshold)
-	}
-	return nil
+	return count
 }
 
 // isBranchOpcode reports whether the OpCode is a conditional jump

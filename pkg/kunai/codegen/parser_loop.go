@@ -6,6 +6,7 @@ import (
 	"github.com/cilium/ebpf/asm"
 	"github.com/cilium/ebpf/btf"
 
+	"github.com/takehaya/xdp-ninja/pkg/kunai/ir"
 	"github.com/takehaya/xdp-ninja/pkg/kunai/vocab"
 )
 
@@ -321,10 +322,14 @@ func (c *pmCtx) emitMultiStateDispatch(entry *vocab.ParseState, entryIdx int, ad
 	if err != nil {
 		return nil, err
 	}
+	defaultElidable := c.defaultIsLengthByteAdvance(sel.Default)
 	var insns asm.Instructions
 	for _, kase := range sel.Cases {
-		caseSkip := fmt.Sprintf("%s_%s_%d_skip", c.labelNS, addr.labelTag, c.selectCounter())
 		mv := kase.Values[0]
+		if !mv.IsWildcard && defaultElidable && c.caseRedundantWithDefault(kase.Target) {
+			continue
+		}
+		caseSkip := fmt.Sprintf("%s_%s_%d_skip", c.labelNS, addr.labelTag, c.selectCounter())
 		if !mv.IsWildcard {
 			insns = append(insns, emitKeyCompare(addr, shape, 0, mv.Value, caseSkip)...)
 		}
@@ -345,6 +350,103 @@ func (c *pmCtx) emitMultiStateDispatch(entry *vocab.ParseState, entryIdx int, ad
 	}
 	insns = append(insns, body...)
 	return insns, nil
+}
+
+// buildQueriedAuxNames materialises the OutParam-name set for the
+// layer's queried options once per pmCtx, to avoid rebuilding it
+// on every dispatch site. nil when no options are queried.
+func buildQueriedAuxNames(qo queriedOptions, layer *ir.LayerInstance) map[string]bool {
+	if qo == nil || layer == nil {
+		return nil
+	}
+	layouts := qo[layer]
+	if len(layouts) == 0 {
+		return nil
+	}
+	names := make(map[string]bool, len(layouts))
+	for _, l := range layouts {
+		if l != nil {
+			names[l.OutParam] = true
+		}
+	}
+	return names
+}
+
+// defaultIsLengthByteAdvance reports whether the dispatch's default
+// target is a parse_unknown_opt-equivalent sibling: zero extracts +
+// exactly one lookahead-driven advance. When true, cases satisfying
+// caseRedundantWithDefault may be elided; when false, every case
+// must emit explicitly. Hoisted out of the per-case loop so the
+// scan runs once per dispatch instead of once per case.
+func (c *pmCtx) defaultIsLengthByteAdvance(defaultIdx int) bool {
+	if defaultIdx == vocab.StateAccept || defaultIdx == vocab.StateReject {
+		return false
+	}
+	if c.machine == nil {
+		return false
+	}
+	def := c.machine.States[defaultIdx]
+	if def == nil {
+		return false
+	}
+	// Inline the parse_unknown_opt-equivalent shape: zero extracts,
+	// exactly one lookahead-driven advance. Same predicate as
+	// vocab/parser_machine.go's isAdvanceOnlySibling — duplicated
+	// here so the elision contract doesn't require a cross-package
+	// vocab export. Vocab-internal callers (ownerCandidate /
+	// dispatchedAuxKind) keep using the lowercase predicate.
+	return len(def.Extracts) == 0 && len(def.Advances) == 1 && def.Advances[0].Kind == vocab.AdvanceOpLookahead
+}
+
+// caseRedundantWithDefault reports whether a TLV-walk dispatch case
+// is structurally equivalent to falling through to the cascade's
+// default target — i.e. its only effect is extracting an aux that
+// no consumer reads, and the default's length-byte advance consumes
+// the option equivalently. Caller must have already checked the
+// default via defaultIsLengthByteAdvance.
+//
+// Conditions (all must hold):
+//   - Target is a sibling state (not accept/reject).
+//   - Target has zero manual Advances (any kind), zero CounterOps.
+//   - Target has at least one ExtractOp; no extract is a stack push;
+//     no extracted aux is in c.queriedAuxes.
+//
+// Exclusions: EOL (target == StateAccept), NOP (literal advance),
+// queried kinds, and parse_unknown_opt-equivalent siblings (no
+// extract — would lose the dispatched-but-not-extracted shape that
+// owner-bound stacks rely on; pinned by
+// vocab/owner_bound_invariant_test.go) all fail at least one rule
+// and stay emitted. Orthogonal to canFallbackToBulkAdvance, which
+// elides the entire bpf_loop subprogram when no aux is queried.
+//
+// Motivation: kernel 6.12 / B-2a-2 fingerprint — see
+// docs/ja/dsl-followups.md mitigation (d).
+func (c *pmCtx) caseRedundantWithDefault(targetIdx int) bool {
+	if targetIdx == vocab.StateAccept || targetIdx == vocab.StateReject {
+		return false
+	}
+	if c.machine == nil {
+		return false
+	}
+	target := c.machine.States[targetIdx]
+	if target == nil {
+		return false
+	}
+	if len(target.Advances) > 0 || len(target.Counters) > 0 {
+		return false
+	}
+	if len(target.Extracts) == 0 {
+		return false
+	}
+	for _, ex := range target.Extracts {
+		if ex.IsStackPush {
+			return false
+		}
+		if c.queriedAuxes[ex.OutParam] {
+			return false
+		}
+	}
+	return true
 }
 
 // hasCounterAndKindKeys reports whether sel uses the canonical TNA
@@ -384,11 +486,26 @@ func (c *pmCtx) emitMultiStateCounterKindDispatch(entry *vocab.ParseState, entry
 
 	insns := append(asm.Instructions{}, probe...)
 
-	// Walk counter-false cases. Concrete kinds emit JNE; wildcard
-	// kind (`(false, _)`) holds the counter-false default target
-	// for the fall-through after the cascade. Counter-true cases
-	// are deferred to the tail body.
+	// The counter-false default (`(false, _)`) needs locating ahead
+	// of the case loop so the elision check sees the right fall-
+	// through target regardless of vocab declaration order.
 	counterFalseDefaultTarget := sel.Default
+	for _, kase := range sel.Cases {
+		cv := kase.Values[counterIdx]
+		isCounterFalse := cv.IsWildcard || (cv.IsBool && !cv.Bool)
+		if !isCounterFalse {
+			continue
+		}
+		if kase.Values[kindIdx].IsWildcard {
+			counterFalseDefaultTarget = kase.Target
+			break
+		}
+	}
+	defaultElidable := c.defaultIsLengthByteAdvance(counterFalseDefaultTarget)
+
+	// Walk counter-false cases. Concrete kinds emit JNE; wildcard
+	// kind already captured above. Counter-true cases are deferred
+	// to the tail body.
 	for _, kase := range sel.Cases {
 		cv := kase.Values[counterIdx]
 		isCounterFalse := cv.IsWildcard || (cv.IsBool && !cv.Bool)
@@ -397,7 +514,9 @@ func (c *pmCtx) emitMultiStateCounterKindDispatch(entry *vocab.ParseState, entry
 		}
 		kv := kase.Values[kindIdx]
 		if kv.IsWildcard {
-			counterFalseDefaultTarget = kase.Target
+			continue
+		}
+		if defaultElidable && c.caseRedundantWithDefault(kase.Target) {
 			continue
 		}
 		caseSkip := fmt.Sprintf("%s_%s_%d_skip", c.labelNS, addr.labelTag, c.selectCounter())
