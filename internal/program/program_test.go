@@ -3,7 +3,10 @@ package program
 import (
 	"testing"
 
+	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/asm"
+
+	"github.com/takehaya/xdp-ninja/pkg/kunai/codegen"
 )
 
 func TestCompileFilter(t *testing.T) {
@@ -22,11 +25,11 @@ func TestCompileFilter(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			insns, err := compileFilter(tt.expr)
+			out, err := compileFilter(tt.expr, false, false, ebpf.XDP)
 			if err != nil {
 				t.Fatalf("compileFilter(%q) failed: %v", tt.expr, err)
 			}
-			if len(insns) == 0 {
+			if len(out.Main) == 0 {
 				t.Fatalf("compileFilter(%q) returned empty instructions", tt.expr)
 			}
 		})
@@ -34,9 +37,26 @@ func TestCompileFilter(t *testing.T) {
 }
 
 func TestCompileFilterInvalid(t *testing.T) {
-	_, err := compileFilter("not a valid filter ???")
+	_, err := compileFilter("not a valid filter ???", false, false, ebpf.XDP)
 	if err == nil {
 		t.Fatal("expected error for invalid filter, got nil")
+	}
+}
+
+func TestCompileFilterDSL(t *testing.T) {
+	out, err := compileFilter("eth/ipv4/tcp[dport==443]", true, false, ebpf.XDP)
+	if err != nil {
+		t.Fatalf("compileFilter(DSL): %v", err)
+	}
+	if len(out.Main) == 0 {
+		t.Fatal("compileFilter(DSL) returned empty instructions")
+	}
+}
+
+func TestCompileFilterDSLInvalid(t *testing.T) {
+	_, err := compileFilter("not-a-dsl-expr", true, false, ebpf.XDP)
+	if err == nil {
+		t.Fatal("expected error for invalid DSL, got nil")
 	}
 }
 
@@ -54,8 +74,11 @@ func TestBuildTracingInsns(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// FD=0 は実際のmapではないが、命令生成のテストには十分
-			insns := buildTracingInsns(tt.filter, nil, 0, 0, tt.isFexit)
+			// FD==0 は実際のmapではないが、命令生成のテストには十分
+			insns, err := buildTracingInsns(codegen.Output{Main: tt.filter}, nil, 0, 0, tt.isFexit, ebpf.XDP)
+			if err != nil {
+				t.Fatalf("buildTracingInsns: %v", err)
+			}
 			if len(insns) == 0 {
 				t.Fatal("buildTracingInsns returned empty instructions")
 			}
@@ -71,7 +94,10 @@ func TestBuildTracingInsns(t *testing.T) {
 
 func TestBuildTracingInsnsLabels(t *testing.T) {
 	filter := dummyFilter()
-	insns := buildTracingInsns(filter, nil, 0, 0, false)
+	insns, err := buildTracingInsns(codegen.Output{Main: filter}, nil, 0, 0, false, ebpf.XDP)
+	if err != nil {
+		t.Fatalf("buildTracingInsns: %v", err)
+	}
 
 	labels := map[string]bool{}
 	for _, insn := range insns {

@@ -6,11 +6,13 @@ on:
     paths:
       - 'go.*'
       - '**.go'
+      - '**.p4'
       - '.github/workflows/bpf_load_test.yaml'
   pull_request:
     paths:
       - 'go.*'
       - '**.go'
+      - '**.p4'
       - '.github/workflows/bpf_load_test.yaml'
 
 jobs:
@@ -99,3 +101,11 @@ jobs:
 
       - name: Run BPF load test
         run: vimto -sudo -kernel :${{ matrix.kernel }} -- go test -v -count 1 -timeout 5m ./internal/program/ -run TestBpf
+
+      # dsltest exercises the full DSL → eBPF pipeline end-to-end via
+      # BPF_PROG_TEST_RUN against gopacket-built frames. Adding it here
+      # gives ParserCounter (and any future codegen shape introduced
+      # via synthetic vocabs in dsltest) the same 4-kernel verifier
+      # coverage as the bundled-vocab paths above.
+      - name: Run DSL E2E test
+        run: vimto -sudo -kernel :${{ matrix.kernel }} -- go test -v -count 1 -timeout 5m ./pkg/kunai/dsltest/

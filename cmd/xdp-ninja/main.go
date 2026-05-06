@@ -41,7 +41,7 @@ var flags = []cli.Flag{
 	},
 	&cli.StringFlag{
 		Name: "mode", Value: "entry",
-		Usage: "capture point: entry (before XDP) or exit (after XDP)",
+		Usage: "capture point: entry / exit (XDP fentry/fexit observer), tc-entry / tc-exit (tc clsact fentry/fexit observer), or xdp (attach as native XDP)",
 	},
 	&cli.IntFlag{
 		Name: "count", Aliases: []string{"c"},
@@ -68,6 +68,18 @@ var flags = []cli.Flag{
 		Usage: "list filterable parameters for the target function (requires --func) and exit",
 	},
 	&cli.BoolFlag{
+		Name:  "cbpf",
+		Usage: "use the legacy tcpdump/cBPF filter syntax (compiled via cbpfc); default is the built-in DSL",
+	},
+	&cli.BoolFlag{
+		Name:  "dsl-help",
+		Usage: "print the xdp-ninja DSL grammar + bundled protocol list and exit (pass a protocol name as positional arg to inspect its fields, e.g. `--dsl-help ipv4`)",
+	},
+	&cli.StringFlag{
+		Name:  "dump-asm",
+		Usage: "compile the filter and print the resulting eBPF asm without loading; values: filter (kunai/cbpfc Main + Callbacks) | full (wrapped tracing program)",
+	},
+	&cli.BoolFlag{
 		Name: "verbose", Aliases: []string{"v"},
 		Usage: "verbose output to stderr",
 	},
@@ -87,15 +99,22 @@ func main() {
 	app := &cli.Command{
 		Name:      "xdp-ninja",
 		Version:   fmt.Sprintf("%s, commit %s, built at %s, built by %s", version, commit, date, builtBy),
-		Usage:     "capture packets before or after XDP processing",
+		Usage:     "capture packets at XDP time (fentry/fexit observer or standalone XDP)",
 		ArgsUsage: "[filter expression]",
 		Description: `Outputs pcap (pcapng) to stdout. Pipe to tcpdump, wireshark, etc.
-To capture both before and after, run two instances with different --mode.
+
+Modes (--mode):
+  entry     fentry on the existing XDP — observe packets before the program runs (default)
+  exit      fexit on the existing XDP — observe action returned (filter on XDP_PASS/DROP/...)
+  tc-entry  fentry on a tc clsact program (specify target via -p)
+  tc-exit   fexit on a tc clsact program (filter on TC_ACT_OK/SHOT/...)
+  xdp       attach as the primary XDP on the netdev (no existing XDP needed)
 
 Examples:
   xdp-ninja -i eth0 | tcpdump -n -r -
   xdp-ninja -i eth0 "host 10.0.0.1" | tcpdump -r -
   xdp-ninja -i eth0 --mode exit | tcpdump -r -
+  xdp-ninja --mode xdp -i eth0 "tcp port 443" | tcpdump -r -
   xdp-ninja -p 42 | tcpdump -n -r -
   xdp-ninja -i eth0 -w out.pcap`,
 		Flags:                 flags,
@@ -110,17 +129,46 @@ Examples:
 }
 
 func run(ctx context.Context, cmd *cli.Command) error {
+	if cmd.Bool("dsl-help") {
+		// Positional arg, when present, names a bundled protocol
+		// whose fields the user wants to inspect.
+		if args := cmd.Args().Slice(); len(args) > 0 {
+			return printProtoHelp(os.Stdout, args[0])
+		}
+		return printDSLHelp(os.Stdout)
+	}
+
 	mode := cmd.String("mode")
-	var isFexit bool
+	var isFexit, isXDPNative, isTC bool
 	switch mode {
 	case "entry":
 	case "exit":
 		isFexit = true
+	case "tc-entry":
+		isTC = true
+	case "tc-exit":
+		isTC = true
+		isFexit = true
+	case "xdp":
+		isXDPNative = true
 	default:
-		return fmt.Errorf("invalid mode %q: must be entry or exit", mode)
+		return fmt.Errorf("invalid mode %q: must be entry, exit, tc-entry, tc-exit, or xdp", mode)
 	}
 
-	info, err := findTarget(cmd)
+	if scope := cmd.String("dump-asm"); scope != "" {
+		filterExpr := strings.Join(cmd.Args().Slice(), " ")
+		useDSL, err := resolveFilterSyntax(cmd)
+		if err != nil {
+			return err
+		}
+		return program.DumpAsm(os.Stdout, program.DumpScope(scope), filterExpr, useDSL, mode)
+	}
+
+	if isXDPNative {
+		return runXDPNative(cmd)
+	}
+
+	info, err := findTarget(cmd, isTC)
 	if err != nil {
 		return err
 	}
@@ -217,10 +265,36 @@ func run(ctx context.Context, cmd *cli.Command) error {
 		logVerbose(cmd, "filter: %s", filterExpr)
 	}
 
-	probe, err := loadProbe(isFexit, info, filterExpr, argFilters)
+	useDSL, err := resolveFilterSyntax(cmd)
 	if err != nil {
 		return err
 	}
+	probe, err := loadProbe(isFexit, info, filterExpr, argFilters, useDSL)
+	if err != nil {
+		return err
+	}
+
+	label := fmt.Sprintf("prog %q id=%d", info.FuncName, info.ProgID)
+	if info.IfaceName != "" {
+		label = fmt.Sprintf("%s on %s", label, info.IfaceName)
+	}
+	return runCaptureLoop(cmd, probe, isFexit, fmt.Sprintf("%s, mode=%s", label, mode))
+}
+
+// resolveFilterSyntax returns whether to use the DSL path (default)
+// or the legacy cBPF path (--cbpf).
+func resolveFilterSyntax(cmd *cli.Command) (useDSL bool, err error) {
+	useCBPF := cmd.Bool("cbpf")
+	if useCBPF {
+		fmt.Fprintln(os.Stderr, "warning: --cbpf selects the legacy cBPF path; prefer the default DSL.")
+	}
+	return !useCBPF, nil
+}
+
+// runCaptureLoop wires a loaded probe to the perf reader + pcap
+// writer and pumps the capture loop until SIGINT/SIGTERM. Owns the
+// teardown order: probe → writer → reader.
+func runCaptureLoop(cmd *cli.Command, probe *program.Probe, isFexit bool, label string) error {
 	defer func() {
 		if cerr := probe.Close(); cerr != nil {
 			fmt.Fprintf(os.Stderr, "warning: closing probe: %v\n", cerr)
@@ -243,16 +317,68 @@ func run(ctx context.Context, cmd *cli.Command) error {
 	}
 	defer func() { _ = reader.Close() }()
 
-	label := fmt.Sprintf("prog %q id=%d", info.FuncName, info.ProgID)
-	if info.IfaceName != "" {
-		label = fmt.Sprintf("%s on %s", label, info.IfaceName)
-	}
-	fmt.Fprintf(os.Stderr, "capturing (%s, mode=%s)...\n", label, mode)
-
+	fmt.Fprintf(os.Stderr, "capturing (%s)...\n", label)
 	return captureLoop(cmd, reader, writer)
 }
 
-func findTarget(cmd *cli.Command) (*attach.XDPInfo, error) {
+// runXDPNative handles --mode xdp: xdp-ninja is itself the XDP
+// program on the netdev (no fentry/fexit piggybacking).
+func runXDPNative(cmd *cli.Command) error {
+	if err := validateXDPNativeFlags(cmd); err != nil {
+		return err
+	}
+
+	filterExpr := strings.Join(cmd.Args().Slice(), " ")
+	useDSL, err := resolveFilterSyntax(cmd)
+	if err != nil {
+		return err
+	}
+
+	ifaceName := cmd.String("interface")
+	state, err := attach.InspectInterface(ifaceName)
+	if err != nil {
+		return err
+	}
+
+	if state.Existing != nil {
+		return fmt.Errorf(
+			"interface %s already has XDP program (id=%d, mode=%s); use --mode entry to observe it via fentry, or detach the existing program first",
+			ifaceName, state.Existing.ProgID, state.Existing.Mode,
+		)
+	}
+
+	logVerbose(cmd, "attaching xdp-ninja as native XDP on %s (filter: %s)", ifaceName, filterExpr)
+
+	probe, err := program.LoadXDPNative(state, filterExpr, useDSL)
+	if err != nil {
+		return err
+	}
+	return runCaptureLoop(cmd, probe, false, fmt.Sprintf("xdp-native on %s", ifaceName))
+}
+
+// validateXDPNativeFlags rejects flags that don't apply to --mode xdp
+// (entry/exit-only flags) so the user gets a clear error before any
+// netlink lookup.
+func validateXDPNativeFlags(cmd *cli.Command) error {
+	if cmd.String("interface") == "" {
+		return fmt.Errorf("--mode xdp requires -i <interface>")
+	}
+	if cmd.Int("prog-id") != 0 {
+		return fmt.Errorf("--mode xdp does not accept -p (the program is xdp-ninja itself, not an existing one)")
+	}
+	if cmd.String("func") != "" {
+		return fmt.Errorf("--func is only valid with --mode entry/exit (no BTF subfunction concept in xdp-native)")
+	}
+	if len(cmd.StringSlice("arg-filter")) > 0 {
+		return fmt.Errorf("--arg-filter is only valid with --mode entry/exit (no tracing args in xdp-native)")
+	}
+	if cmd.Bool("list-funcs") || cmd.Bool("list-progs") || cmd.Bool("list-params") {
+		return fmt.Errorf("--list-* flags are only valid with --mode entry/exit")
+	}
+	return nil
+}
+
+func findTarget(cmd *cli.Command, isTC bool) (*attach.ProgInfo, error) {
 	ifaceName := cmd.String("interface")
 	progID := cmd.Int("prog-id")
 
@@ -263,17 +389,26 @@ func findTarget(cmd *cli.Command) (*attach.XDPInfo, error) {
 		return nil, fmt.Errorf("specify -i <interface> or -p <prog-id>")
 	}
 
+	if isTC {
+		// tc clsact targets are addressed by program ID — no
+		// interface-based clsact qdisc walk wired up yet.
+		if ifaceName != "" {
+			return nil, fmt.Errorf("--mode tc-* requires -p <prog-id>; interface-based tc target lookup is not implemented")
+		}
+		return attach.FindBPFProgramByID(uint32(progID))
+	}
+
 	if progID != 0 {
 		return attach.FindXDPProgramByID(uint32(progID))
 	}
 	return attach.FindXDPProgram(ifaceName)
 }
 
-func loadProbe(isFexit bool, info *attach.XDPInfo, filterExpr string, argFilters []filter.ArgFilter) (*program.Probe, error) {
+func loadProbe(isFexit bool, info *attach.ProgInfo, filterExpr string, argFilters []filter.ArgFilter, useDSL bool) (*program.Probe, error) {
 	if isFexit {
-		return program.LoadExit(info.Program, info.FuncName, filterExpr, argFilters)
+		return program.LoadExit(info.Program, info.FuncName, filterExpr, argFilters, useDSL)
 	}
-	return program.LoadEntry(info.Program, info.FuncName, filterExpr, argFilters)
+	return program.LoadEntry(info.Program, info.FuncName, filterExpr, argFilters, useDSL)
 }
 
 func captureLoop(cmd *cli.Command, reader *capture.Reader, writer *output.Writer) error {

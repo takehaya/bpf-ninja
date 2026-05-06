@@ -8,21 +8,56 @@ import (
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/btf"
 	"github.com/vishvananda/netlink"
+	"github.com/vishvananda/netlink/nl"
 )
 
-// XDPInfo holds information about the existing XDP program on an interface.
-type XDPInfo struct {
+// ProgInfo holds information about an existing BPF program targeted
+// by a probe. `Type` discriminates between XDP and tc clsact targets
+// so callers can route to the correct host adapter.
+type ProgInfo struct {
 	ProgID    uint32
 	Program   *ebpf.Program
 	FuncName  string // BTF-resolved entry function name
 	IfaceName string
+	Type      ebpf.ProgramType
 }
 
-// FindXDPProgramByID gets an XDP program by its BPF program ID.
-func FindXDPProgramByID(progID uint32) (*XDPInfo, error) {
+// FindXDPProgramByID gets an XDP program by its BPF program ID. The
+// type check is strict: tc clsact programs are rejected here so that
+// `--mode entry/exit` callers don't accidentally attach to a TC
+// target. Use FindBPFProgramByID for the type-permissive variant the
+// `--mode tc-*` paths consume.
+func FindXDPProgramByID(progID uint32) (*ProgInfo, error) {
+	info, err := FindBPFProgramByID(progID)
+	if err != nil {
+		return nil, err
+	}
+	if info.Type != ebpf.XDP {
+		_ = info.Program.Close()
+		return nil, fmt.Errorf("program (id=%d) is %s, expected XDP", progID, info.Type)
+	}
+	return info, nil
+}
+
+// FindBPFProgramByID gets a BPF program by ID, accepting XDP /
+// SchedCLS / SchedACT — the program types xdp-ninja can attach a
+// fentry/fexit probe to. Returns the resolved entry func name and the
+// program type so the caller can route to the correct host adapter.
+func FindBPFProgramByID(progID uint32) (*ProgInfo, error) {
 	prog, err := ebpf.NewProgramFromID(ebpf.ProgramID(progID))
 	if err != nil {
 		return nil, fmt.Errorf("getting program (id=%d): %w", progID, err)
+	}
+
+	progInfo, err := prog.Info()
+	if err != nil {
+		_ = prog.Close()
+		return nil, fmt.Errorf("reading program info (id=%d): %w", progID, err)
+	}
+	progType := progInfo.Type
+	if progType != ebpf.XDP && progType != ebpf.SchedCLS && progType != ebpf.SchedACT {
+		_ = prog.Close()
+		return nil, fmt.Errorf("program (id=%d) type %s is not supported (need XDP, SchedCLS, or SchedACT)", progID, progType)
 	}
 
 	funcName, err := resolveEntryFunc(prog, progID)
@@ -31,15 +66,66 @@ func FindXDPProgramByID(progID uint32) (*XDPInfo, error) {
 		return nil, err
 	}
 
-	return &XDPInfo{
+	return &ProgInfo{
 		ProgID:   progID,
 		Program:  prog,
 		FuncName: funcName,
+		Type:     progType,
 	}, nil
 }
 
+// ExistingXDP describes an XDP program already attached to an interface.
+type ExistingXDP struct {
+	ProgID uint32
+	Mode   string // "skb", "driver", "offload", or "unknown"
+}
+
+// InterfaceState is what the --mode xdp startup path reads from a
+// single netlink lookup: the kernel ifindex and any existing XDP
+// attachment.
+type InterfaceState struct {
+	IfIndex  int
+	Existing *ExistingXDP
+}
+
+// InspectInterface looks up the interface once and returns ifindex +
+// any attached XDP, in a single LinkByName.
+func InspectInterface(ifaceName string) (*InterfaceState, error) {
+	link, err := netlink.LinkByName(ifaceName)
+	if err != nil {
+		return nil, fmt.Errorf("interface %s not found: %w", ifaceName, err)
+	}
+
+	state := &InterfaceState{
+		IfIndex: link.Attrs().Index,
+	}
+	if xdp := link.Attrs().Xdp; xdp != nil && xdp.Attached && xdp.ProgId != 0 {
+		state.Existing = &ExistingXDP{
+			ProgID: xdp.ProgId,
+			Mode:   xdpAttachModeName(xdp.AttachMode),
+		}
+	}
+	return state, nil
+}
+
+// xdpAttachModeName maps the IFLA_XDP_ATTACHED enum to a label.
+// LinkXdp.Flags is the *request* flags (UPDATE_IF_NOEXIST/SKB_MODE/
+// DRV_MODE bitfield) — not what mode is actually attached.
+func xdpAttachModeName(mode uint32) string {
+	switch mode {
+	case nl.XDP_ATTACHED_DRV:
+		return "driver"
+	case nl.XDP_ATTACHED_SKB:
+		return "skb"
+	case nl.XDP_ATTACHED_HW:
+		return "offload"
+	default:
+		return "unknown"
+	}
+}
+
 // FindXDPProgram finds the existing XDP program on the given interface.
-func FindXDPProgram(ifaceName string) (*XDPInfo, error) {
+func FindXDPProgram(ifaceName string) (*ProgInfo, error) {
 	nl, err := netlink.LinkByName(ifaceName)
 	if err != nil {
 		return nil, fmt.Errorf("interface %s not found: %w", ifaceName, err)
@@ -61,11 +147,12 @@ func FindXDPProgram(ifaceName string) (*XDPInfo, error) {
 		return nil, err
 	}
 
-	return &XDPInfo{
+	return &ProgInfo{
 		ProgID:    xdp.ProgId,
 		Program:   prog,
 		FuncName:  funcName,
 		IfaceName: ifaceName,
+		Type:      ebpf.XDP,
 	}, nil
 }
 
