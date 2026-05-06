@@ -36,16 +36,17 @@ func genParserMachine(layer *ir.LayerInstance, layerIdx int, all []*ir.LayerInst
 	}
 
 	pmCtx := &pmCtx{
-		spec:      spec,
-		machine:   m,
-		layerIdx:  layerIdx,
-		layer:     layer,
-		all:       all,
-		labelNS:   fmt.Sprintf("dsl_pm_%s_%d", spec.Name, layerIdx),
-		doneLabel: fmt.Sprintf("dsl_pm_%s_%d_done", spec.Name, layerIdx),
-		absorbed:  map[int]bool{},
-		r4IsRange: precedingLayersLeaveR4Range(all, layerIdx),
-		queried:   qo,
+		spec:         spec,
+		machine:      m,
+		layerIdx:     layerIdx,
+		layer:        layer,
+		all:          all,
+		labelNS:      fmt.Sprintf("dsl_pm_%s_%d", spec.Name, layerIdx),
+		doneLabel:    fmt.Sprintf("dsl_pm_%s_%d_done", spec.Name, layerIdx),
+		absorbed:     map[int]bool{},
+		r4IsRange:    precedingLayersLeaveR4Range(all, layerIdx),
+		queried:      qo,
+		queriedAuxes: buildQueriedAuxNames(qo, layer),
 	}
 	// Pre-scan for multi-state self-loops. Each loop entry's siblings
 	// inline into the entry's bpf_loop callback, so the per-state
@@ -106,6 +107,12 @@ type pmCtx struct {
 	// multi-state callback emits a flat slot-store prelude for every
 	// option in this layer's slice (and only those). nil-safe.
 	queried queriedOptions
+	// queriedAuxes is the OutParam-name set for c.queried[c.layer]
+	// — built once at pmCtx construction and consulted by the
+	// TLV-walk dispatch elision predicate (caseRedundantWithDefault)
+	// without rebuilding per dispatch site. nil when no options are
+	// queried for this layer.
+	queriedAuxes map[string]bool
 }
 
 // precedingLayersLeaveR4Range scans the layers emitted before idx and
