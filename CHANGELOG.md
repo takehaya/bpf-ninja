@@ -1,5 +1,48 @@
 # Changelog
 
+## [0.8.0](https://github.com/takehaya/xdp-ninja/compare/v0.7.0...v0.8.0) (2026-05-06)
+
+
+### 🎉 Features
+
+* **cli:** --dump-asm hand-test + --mode xdp standalone capture ([2ef87ba](https://github.com/takehaya/xdp-ninja/commit/2ef87bae2896957b26b7373947af369da42fde01))
+* **codegen:** aux-targeted IPv4/IPv6/MAC/CIDR literal predicates (B-3 PR-1) ([8fcf307](https://github.com/takehaya/xdp-ninja/commit/8fcf3079e05dbb6f366a6c0901b7c43f724b4ffc))
+* **codegen:** demand-driven AuxLayout slot region (Phase 2 land) ([aa29b4f](https://github.com/takehaya/xdp-ninja/commit/aa29b4fc537b2ddec3a0287be7c5ce2b3d2c337e))
+* **codegen:** demand-driven bulk-advance fallback for counter walks ([e784c74](https://github.com/takehaya/xdp-ninja/commit/e784c74bcf8f704b4d22f974672107d6354977e8))
+* **codegen:** land 10b arith depth 8→16 + B-2a malformed TCP test pin ([b2ca32c](https://github.com/takehaya/xdp-ninja/commit/b2ca32ce43d9ca49df3b1244b87e45b4e8a7f701))
+* **dsl:** alt expansion (F3 + P3-12 + P3-13 + het-alt where/capture) ([791918b](https://github.com/takehaya/xdp-ninja/commit/791918b1dd77b2f212b70be9c0ebdac0dc14d48a))
+* **dsl:** aux header system — gating, stacks, dynamic indices, option walk ([ff3acd5](https://github.com/takehaya/xdp-ninja/commit/ff3acd5588c43660cb984a67c7b4bece9976b29d))
+* **dsl:** F1-F13 follow-up landings (bit-slice, bitwise, Int&lt;128&gt;, etc.) ([e8a1d0f](https://github.com/takehaya/xdp-ninja/commit/e8a1d0fafae08deaa338643f6f757897ae5c4c32))
+* **dsl:** kunai — embedded DSL → eBPF compiler for layered packet filters ([3507cb8](https://github.com/takehaya/xdp-ninja/commit/3507cb8c7082eb2306f7029a0d5919ef27a00b45))
+* **dsl:** kunai DSL compiler — scaffolding through multi-protocol vocab ([28cd871](https://github.com/takehaya/xdp-ninja/commit/28cd871d4d49ac7a5709be3f909f44dc180859cf))
+* **dsl:** static type system + formal spec (PR-1 ~ D8) ([f2287cd](https://github.com/takehaya/xdp-ninja/commit/f2287cdbb8ba67d415ab8d97f48360df2bed0e14))
+* **host,attach,cmd:** tc clsact host adapter (F15) ([53beb5d](https://github.com/takehaya/xdp-ninja/commit/53beb5d1bee4e9170463ab87bb1d6893cfd73847))
+* **p4lite,vocab,codegen:** pkt.advance migration (PR-2 — templates A wire + tcp/ipv4 cutover + retire HDRLEN_*) ([d98150d](https://github.com/takehaya/xdp-ninja/commit/d98150d9d9525ab3c7ba2d213e321779e6efe54f))
+* **p4lite,vocab,codegen:** TLV-walk migration (PR-3 — lookahead + bit-slice + multi-state TCP options) ([be1d537](https://github.com/takehaya/xdp-ninja/commit/be1d53759f5b7c41eb457e0d4b6301baa0b53b45))
+* **p4lite:** ParserCounter extern + counter ops + bool match-key ([488290c](https://github.com/takehaya/xdp-ninja/commit/488290c667a2072f0ccb3b25af0f3314516f6e27))
+* **vocab,codegen:** pc.decrement(&lt;aux&gt;.&lt;field&gt;) field-expr (B-4a PR-2) ([3566c00](https://github.com/takehaya/xdp-ninja/commit/3566c00257ffeaa0352aea3ffae97c01f17a95a3))
+* **vocab,dsltest:** IPIP / IP6IP6 layered dispatch ([#11](https://github.com/takehaya/xdp-ninja/issues/11) Option H) ([5c3525a](https://github.com/takehaya/xdp-ninja/commit/5c3525a2c2fc04a1b60351eb8ce7cf4c6c6e8032))
+* **vocab:** B-1b — cross-check HDRLEN_* against the primary header layout ([fb38fb1](https://github.com/takehaya/xdp-ninja/commit/fb38fb12ea4c2b6de742abbdc33f6cc6b5dba641))
+* **vocab:** owner-bound HeaderStack for option-internal arrays (B-4 PR-1) ([5298834](https://github.com/takehaya/xdp-ninja/commit/52988346dd21450e26733216ba2406048988add5))
+
+
+### 🐛 Bug Fixes
+
+* **codegen,host:** TC_ACT_UNSPEC + boundary leaks (round-2 blockers) ([38de3e6](https://github.com/takehaya/xdp-ninja/commit/38de3e6e6bc1287a7e11f6cf79ff146b91ac3c0a))
+* **codegen:** elide unqueried-aux dispatch cases in TLV-walk cascade ([a200a5b](https://github.com/takehaya/xdp-ninja/commit/a200a5b3703aee47ead20ffc55a8f42d391fe22b))
+
+
+### 📝 Documentation
+
+* sync grammar / usage / internals to the landed branch state ([121408e](https://github.com/takehaya/xdp-ninja/commit/121408e90af07638630851c5f93ab356f1857cf5))
+
+
+### ♻️ Code Refactoring
+
+* **codegen:** shift bpf_loop ctx down 16 bytes to free arith slots ([2bc329f](https://github.com/takehaya/xdp-ninja/commit/2bc329fcd8e6aeb3d053aba0d247ade22440e379))
+* **dsl:** rename VAREXT_LEN family to HDRLEN — network-conventional ([97a093b](https://github.com/takehaya/xdp-ninja/commit/97a093bbe5d324a74b5c46c2f6326d4d5e55f27c))
+* **dsl:** vocab maintenance — self-validating dispatch + p4c interop ([59e6ab9](https://github.com/takehaya/xdp-ninja/commit/59e6ab969f2f75433d0a80386e960ad734cc61a0))
+
 ## [0.7.0](https://github.com/takehaya/xdp-ninja/compare/v0.6.0...v0.7.0) (2026-04-08)
 
 
