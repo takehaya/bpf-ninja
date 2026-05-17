@@ -5,6 +5,8 @@ import (
 	"math/bits"
 
 	"github.com/cilium/ebpf/asm"
+
+	"github.com/takehaya/xdp-ninja/pkg/kunai/vocab"
 )
 
 
@@ -56,24 +58,35 @@ type writeBackOp struct {
 	ParentByteOff int // byte offset in the parent layer's header
 }
 
-// knownVariableTails enumerates the headers whose extracts pull a
-// variable trailer past the byte-aligned minimum prefix.
-//
-//   - ipv6_ext_h: per-iteration HBH/Fragment/DestOpt walking. The
-//     write-back keeps ipv6.next_header in sync with the chain tail
-//     so the next layer's dispatch (TCP_IPV6_NEXT_HEADER etc.) sees
-//     the inner protocol rather than the first ext type.
-var knownVariableTails = map[string]variableTailSkip{
-	"ipv6_ext_h": {
-		LenFieldByteOff: 1,
-		Scale:           8,
-		Base:            0,
-		LenMask:         0x03,
-		WriteBack: &writeBackOp{
-			SourceByteOff: 0,
-			ParentByteOff: 6,
-		},
-	},
+// variableTailFor lowers a vocab.HeaderAnnotations entry into the
+// codegen-internal variableTailSkip the trail emit consumes. Returns
+// ok=false when the header has no @kunai_variable_tail annotation.
+// Every header that used to live in the hand-curated knownVariableTails
+// table (srv6_h, ipv6_ext_h) now drives its trailer through this
+// path — either via @kunai_variable_tail on the header or via a
+// pkt.advance lowered to AdvanceOp upstream.
+func variableTailFor(spec *vocab.ProtocolSpec, headerName string) (variableTailSkip, bool) {
+	if spec == nil || spec.HeaderAnnotations == nil {
+		return variableTailSkip{}, false
+	}
+	ann, ok := spec.HeaderAnnotations[headerName]
+	if !ok || ann == nil || ann.VariableTail == nil {
+		return variableTailSkip{}, false
+	}
+	vt := variableTailSkip{
+		LenFieldByteOff: ann.VariableTail.LenFieldByteOff,
+		Scale:           ann.VariableTail.Scale,
+		Base:            ann.VariableTail.Base,
+		LenMask:         ann.VariableTail.LenMask,
+		LenShift:        ann.VariableTail.LenShift,
+	}
+	if ann.WriteBack != nil {
+		vt.WriteBack = &writeBackOp{
+			SourceByteOff: ann.WriteBack.SourceByteOff,
+			ParentByteOff: ann.WriteBack.ParentByteOff,
+		}
+	}
+	return vt, true
 }
 
 // log2PowerOfTwo returns log2(n) when n is a positive power of two,
