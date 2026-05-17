@@ -50,6 +50,12 @@ type ProtocolSpec struct {
 	// state extract+accept shape; codegen routes those through the
 	// existing fixed-size path with no behaviour change.
 	ParseStateMachine *ParseStateMachine
+	// HeaderAnnotations records per-header @kunai_* decorators read
+	// from the .p4 source. Nil-or-missing entries mean "no kunai
+	// annotations on that header"; the primary header may also appear
+	// here when it carries cross-cutting kunai metadata that the
+	// dispatch-const / parser-block channels can't express.
+	HeaderAnnotations map[string]*HeaderAnnotations
 	// selfValidating caches whether the parser block proves the
 	// protocol's identity itself (start-state `transition select(...)
 	// { ...; default: reject; }` keyed on a primary-header field).
@@ -58,6 +64,53 @@ type ProtocolSpec struct {
 	selfValidating bool
 	File           *p4lite.File // full AST (for resolver/codegen later)
 	Source         string       // original file path, for diagnostics
+}
+
+// HeaderAnnotations bundles kunai-specific decorators carried on a
+// non-primary header within a protocol's vocab. Today these describe
+// extension-header chain elements (ipv6_ext_h) whose variable-trailer
+// and parent-field write-back behaviour has no native P4 expression.
+// Keyed by header name in ProtocolSpec.HeaderAnnotations.
+type HeaderAnnotations struct {
+	// VariableTail mirrors codegen/parser_trail.go::variableTailSkip
+	// for the in-protocol header; nil when the header declares no
+	// @kunai_variable_tail.
+	VariableTail *VariableTailSpec
+	// WriteBack captures the @kunai_writeback decorator: after the
+	// extension header is consumed inside a self-loop, copy one byte
+	// of its primary back into the parent protocol's named field so
+	// the next dispatch sees the inner protocol identifier.
+	WriteBack *WriteBackSpec
+}
+
+// VariableTailSpec is the .p4-declared form of the same five-tuple
+// codegen/parser_trail.go::variableTailSkip carries: a runtime length
+// computed as `((<byte at LenFieldByteOff> & LenMask) >> LenShift) *
+// Scale + Base`. The kunai-specific @kunai_variable_tail annotation
+// names the field; the loader resolves it against the header's bit
+// layout the same way pkt.advance's lowerCastShiftSkip does.
+type VariableTailSpec struct {
+	LenFieldByteOff int
+	LenMask         int
+	LenShift        int
+	Scale           int
+	Base            int
+}
+
+// WriteBackSpec captures the cross-protocol byte copy a chained
+// extension header's parser-loop emits per iteration. Source names
+// a field on the chained header (resolved against the header's
+// declared layout). Parent identifies the destination via a
+// proto.field path the loader resolves to a concrete byte offset
+// (ParentByteOff) once every spec is loaded — the resolved offset
+// matches the layout codegen already uses, so the write-back stays
+// verifier-safe against PTR_TO_MAP_VALUE.
+type WriteBackSpec struct {
+	SourceField   string
+	ParentProto   string
+	ParentField   string
+	SourceByteOff int // resolved during loadFile against the chained header
+	ParentByteOff int // resolved during Load's pass 2 against the parent spec
 }
 
 // HeaderLength is the lowered shape of a primary-header variable

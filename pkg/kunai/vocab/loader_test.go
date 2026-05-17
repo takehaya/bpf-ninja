@@ -771,6 +771,37 @@ func TestParseStateMachineSrv6(t *testing.T) {
 	}
 }
 
+// TestIPv6ExtHeaderAnnotations pins the kunai-specific annotations
+// on ipv6_ext_h: the variable-trail params replace the legacy
+// codegen/parser_trail.go::knownVariableTails entry, and the writeback
+// resolves ipv6.next_header to the correct byte offset (6) so the
+// chain tail's next_header propagates to the parent layer.
+func TestIPv6ExtHeaderAnnotations(t *testing.T) {
+	specs := loadBundled(t)
+	ipv6 := specs["ipv6"]
+	if ipv6 == nil {
+		t.Fatal("missing ipv6 spec")
+	}
+	ann, ok := ipv6.HeaderAnnotations["ipv6_ext_h"]
+	if !ok || ann == nil {
+		t.Fatal("ipv6_ext_h has no HeaderAnnotations")
+	}
+	wantVT := &VariableTailSpec{LenFieldByteOff: 1, LenMask: 0x03, LenShift: 0, Scale: 8, Base: 0}
+	if ann.VariableTail == nil || *ann.VariableTail != *wantVT {
+		t.Errorf("VariableTail = %+v, want %+v", ann.VariableTail, wantVT)
+	}
+	wantWB := &WriteBackSpec{
+		SourceField:   "next_header",
+		ParentProto:   "ipv6",
+		ParentField:   "next_header",
+		SourceByteOff: 0, // first field of ipv6_ext_h
+		ParentByteOff: 6, // ipv6_h: version(4) + traffic_class(8) + flow_label(20) + payload_length(16) = 48 bits, then next_header
+	}
+	if ann.WriteBack == nil || *ann.WriteBack != *wantWB {
+		t.Errorf("WriteBack = %+v, want %+v", ann.WriteBack, wantWB)
+	}
+}
+
 func TestParseStateMachineRejectsMultiStateCycle(t *testing.T) {
 	fsys := fstest.MapFS{
 		"vocab/foo.p4": &fstest.MapFile{Data: []byte(`

@@ -44,6 +44,9 @@ func Load(fsys fs.FS, root string) (map[string]*ProtocolSpec, error) {
 		}
 		out[spec.Name] = spec
 	}
+	if err := resolveHeaderWritebackTargets(out); err != nil {
+		return nil, err
+	}
 	return out, nil
 }
 
@@ -103,6 +106,10 @@ func loadFile(fsys fs.FS, p string) (*ProtocolSpec, error) {
 	if err != nil {
 		return nil, err
 	}
+	headerAnnotations, err := readHeaderAnnotations(file, p)
+	if err != nil {
+		return nil, err
+	}
 	spec := &ProtocolSpec{
 		Name:              protoName,
 		HeaderName:        primary.Name,
@@ -113,6 +120,7 @@ func loadFile(fsys fs.FS, p string) (*ProtocolSpec, error) {
 		FlagTriggers:      triggers,
 		FlagsByteOffset:   flagsOff,
 		ParseStateMachine: machine,
+		HeaderAnnotations: headerAnnotations,
 		File:              file,
 		Source:            p,
 	}
