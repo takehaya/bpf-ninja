@@ -6,6 +6,15 @@ import (
 	"github.com/takehaya/xdp-ninja/pkg/kunai/vocab/p4lite"
 )
 
+// Annotation names recognised by the loader. Hoisting these to
+// constants makes a rename grep-safe across `.p4` files and Go code,
+// and surfaces typos at compile time inside the loader itself.
+const (
+	annKunaiVariableTail = "kunai_variable_tail"
+	annKunaiWriteback    = "kunai_writeback"
+	annKunaiOptionSeg    = "kunai_option_segment"
+)
+
 // readParserOptionSegment scans the parser block's @-decorators for
 // @kunai_option_segment[name=IDENT]. Returns the declared segment
 // name or the empty string when no override exists; the loader treats
@@ -17,7 +26,7 @@ func readParserOptionSegment(file *p4lite.File, source string) (string, error) {
 	allowed := map[string]bool{"name": true}
 	for _, par := range file.Parsers {
 		for _, ann := range par.Annotations {
-			if ann.Name != "kunai_option_segment" {
+			if ann.Name != annKunaiOptionSeg {
 				continue
 			}
 			if err := requireKnownKeys(ann, allowed, source); err != nil {
@@ -54,7 +63,7 @@ func readHeaderAnnotations(file *p4lite.File, source string) (map[string]*Header
 	for _, h := range file.Headers {
 		for _, ann := range h.Annotations {
 			switch ann.Name {
-			case "kunai_variable_tail":
+			case annKunaiVariableTail:
 				vt, err := lowerKunaiVariableTail(ann, h, source)
 				if err != nil {
 					return nil, err
@@ -64,7 +73,7 @@ func readHeaderAnnotations(file *p4lite.File, source string) (map[string]*Header
 					return nil, fmt.Errorf("%s:%s: header %q declares @kunai_variable_tail twice", source, ann.Pos, h.Name)
 				}
 				entry.VariableTail = vt
-			case "kunai_writeback":
+			case annKunaiWriteback:
 				wb, err := lowerKunaiWriteback(ann, h, source)
 				if err != nil {
 					return nil, err
