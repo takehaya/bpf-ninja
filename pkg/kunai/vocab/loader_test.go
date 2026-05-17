@@ -802,6 +802,42 @@ func TestIPv6ExtHeaderAnnotations(t *testing.T) {
 	}
 }
 
+// TestOptionSegmentDefault pins the default routing name for 4-/5-part
+// field paths. Every bundled protocol must yield OptionSegment="options"
+// when no @kunai_option_segment overrides it so the legacy
+// `<proto>.options.<NAME>.<field>` shape keeps resolving.
+func TestOptionSegmentDefault(t *testing.T) {
+	specs := loadBundled(t)
+	for name, spec := range specs {
+		if spec.OptionSegment != "options" {
+			t.Errorf("protocol %q: OptionSegment=%q, want %q", name, spec.OptionSegment, "options")
+		}
+	}
+}
+
+// TestOptionSegmentOverride pins @kunai_option_segment[name=IDENT] as
+// the channel a protocol uses to expose its option walk under a name
+// other than "options" — e.g. a TLV-style protocol that reads as
+// "<proto>.tlvs.<NAME>.<field>".
+func TestOptionSegmentOverride(t *testing.T) {
+	src := `header foo_h { bit<8> a; }
+@kunai_option_segment[name=tlvs]
+parser P(packet_in pkt, out foo_h hdr) {
+	state start {
+		pkt.extract(hdr);
+		transition accept;
+	}
+}`
+	fsys := fstest.MapFS{"vocab/foo.p4": &fstest.MapFile{Data: []byte(src)}}
+	specs, err := Load(fsys, "vocab")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if specs["foo"].OptionSegment != "tlvs" {
+		t.Errorf("OptionSegment=%q, want %q", specs["foo"].OptionSegment, "tlvs")
+	}
+}
+
 func TestParseStateMachineRejectsMultiStateCycle(t *testing.T) {
 	fsys := fstest.MapFS{
 		"vocab/foo.p4": &fstest.MapFile{Data: []byte(`

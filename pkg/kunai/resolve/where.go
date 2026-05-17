@@ -8,11 +8,6 @@ import (
 	"github.com/takehaya/xdp-ninja/pkg/kunai/vocab"
 )
 
-// optionsSegment is the reserved second segment that routes 4-part
-// field paths (`<proto>.options.<NAME>.<field>`) into the option-walk
-// resolver instead of the aux-stack / single-aux paths.
-const optionsSegment = "options"
-
 // resolveWhere converts an ast.WhereExpr tree to ir.Condition, binding
 // field references inside arithmetic atoms to layers via FieldRef.
 func (r *resolver) resolveWhere(w *ast.WhereExpr) (*ir.Condition, error) {
@@ -299,16 +294,18 @@ func (r *resolver) resolveQualifiedFieldNoSlice(fp *ast.FieldPath) (*ir.FieldRef
 	// any/all; iterator form (no index) is permitted only inside a
 	// quantifier.
 	if len(fp.Parts) == 5 {
-		if fp.Parts[1] != optionsSegment {
-			return nil, errorf(fp.Pos, "5-part field path requires the second segment to be %q (got %q)", optionsSegment, fp.Parts[1])
+		if fp.Parts[1] != layer.Spec.OptionSegment {
+			return nil, errorf(fp.Pos, "5-part field path requires the second segment to be %q (got %q)", layer.Spec.OptionSegment, fp.Parts[1])
 		}
 		return r.resolveOptionStackField(layer, fp.Parts[2], fp.Parts[3], indexAt(fp, 3), fp.Parts[4], fp)
 	}
-	// 4-part: `<qualifier>.options.<NAME>.<field|exists>` routes to
-	// the protocol's declared OptionWalk.
+	// 4-part: `<qualifier>.<option_segment>.<NAME>.<field|exists>` routes to
+	// the protocol's declared OptionWalk. `<option_segment>` defaults
+	// to `options` but can be overridden per-protocol via
+	// @kunai_option_segment on the parser block.
 	if len(fp.Parts) == 4 {
-		if fp.Parts[1] != optionsSegment {
-			return nil, errorf(fp.Pos, "4-part field path requires the second segment to be %q (got %q)", optionsSegment, fp.Parts[1])
+		if fp.Parts[1] != layer.Spec.OptionSegment {
+			return nil, errorf(fp.Pos, "4-part field path requires the second segment to be %q (got %q)", layer.Spec.OptionSegment, fp.Parts[1])
 		}
 		return resolveOptionField(layer, fp.Parts[2], fp.Parts[3], fp)
 	}

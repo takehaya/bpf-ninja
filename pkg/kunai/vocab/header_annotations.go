@@ -16,6 +16,36 @@ import (
 // Cross-protocol field references inside @kunai_writeback are parsed
 // but not resolved — the loader's pass-2 fills SourceByteOff /
 // ParentByteOff once every spec is in scope.
+// readParserOptionSegment scans the parser block's @-decorators for
+// @kunai_option_segment[name=IDENT]. Returns the declared segment
+// name or the empty string when no override exists; the loader treats
+// empty as "use the default of 'options'".
+func readParserOptionSegment(file *p4lite.File, source string) (string, error) {
+	if file == nil {
+		return "", nil
+	}
+	allowed := map[string]bool{"name": true}
+	for _, par := range file.Parsers {
+		for _, ann := range par.Annotations {
+			if ann.Name != "kunai_option_segment" {
+				continue
+			}
+			if err := requireKnownKeys(ann, allowed, source); err != nil {
+				return "", err
+			}
+			v, ok := ann.KVs["name"]
+			if !ok {
+				return "", fmt.Errorf("%s:%s: @kunai_option_segment is missing required key `name`", source, ann.Pos)
+			}
+			if v.Kind != p4lite.AnnotationIdent {
+				return "", fmt.Errorf("%s:%s: @kunai_option_segment.name must be an identifier", source, ann.Pos)
+			}
+			return v.Ident, nil
+		}
+	}
+	return "", nil
+}
+
 func readHeaderAnnotations(file *p4lite.File, source string) (map[string]*HeaderAnnotations, error) {
 	if file == nil {
 		return nil, nil

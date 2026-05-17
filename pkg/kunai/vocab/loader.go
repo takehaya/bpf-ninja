@@ -110,6 +110,13 @@ func loadFile(fsys fs.FS, p string) (*ProtocolSpec, error) {
 	if err != nil {
 		return nil, err
 	}
+	optionSegment, err := readParserOptionSegment(file, p)
+	if err != nil {
+		return nil, err
+	}
+	if optionSegment == "" {
+		optionSegment = "options"
+	}
 	spec := &ProtocolSpec{
 		Name:              protoName,
 		HeaderName:        primary.Name,
@@ -121,6 +128,7 @@ func loadFile(fsys fs.FS, p string) (*ProtocolSpec, error) {
 		FlagsByteOffset:   flagsOff,
 		ParseStateMachine: machine,
 		HeaderAnnotations: headerAnnotations,
+		OptionSegment:     optionSegment,
 		File:              file,
 		Source:            p,
 	}

@@ -56,6 +56,14 @@ type ProtocolSpec struct {
 	// here when it carries cross-cutting kunai metadata that the
 	// dispatch-const / parser-block channels can't express.
 	HeaderAnnotations map[string]*HeaderAnnotations
+	// OptionSegment names the reserved second path segment for 4-/5-part
+	// field references like `<proto>.<seg>.<NAME>.<field>` that route to
+	// the protocol's parser-declared option walk. Defaults to "options"
+	// when no @kunai_option_segment[name=...] decorates the parser
+	// block. The non-default value lets a protocol expose its
+	// option-walk under a domain-appropriate name (e.g. "tlvs") without
+	// a resolver-side code change.
+	OptionSegment string
 	// selfValidating caches whether the parser block proves the
 	// protocol's identity itself (start-state `transition select(...)
 	// { ...; default: reject; }` keyed on a primary-header field).
