@@ -24,10 +24,21 @@ import (
 // Probe は fentry または fexit の1つのトレーシングポイント。
 type Probe struct {
 	EventsMap *ebpf.Map
+	InnerMaps []*ebpf.Map // non-nil only in per-CPU sharded mode
 	IsFexit   bool
+	Warnings  []string // resolver / codegen non-fatal notices; CLI prints to stderr
 	maps      []*ebpf.Map
 	prog      *ebpf.Program
 	link      link.Link
+}
+
+// Program returns the underlying tracing program. Exposed so that
+// benchmarks (E2 / B2) can call Program.Test() to measure the per-
+// packet runtime cost of the filter via BPF_PROG_TEST_RUN. Not
+// intended for general callers — production code should manipulate
+// the probe through Close() / EventsMap.
+func (p *Probe) Program() *ebpf.Program {
+	return p.prog
 }
 
 func (p *Probe) Close() error {
@@ -76,6 +87,9 @@ func loadProbe(targetProg *ebpf.Program, funcName string, filterExpr string, arg
 	if err != nil {
 		return nil, err
 	}
+	if SnaplenOverride > 0 {
+		filterOut.Capture.MaxCapLen = SnaplenOverride
+	}
 
 	label := "entry"
 	attachType := ebpf.AttachTraceFEntry
@@ -84,21 +98,22 @@ func loadProbe(targetProg *ebpf.Program, funcName string, filterExpr string, arg
 		attachType = ebpf.AttachTraceFExit
 	}
 
-	eventsMap, err := ebpf.NewMap(&ebpf.MapSpec{
-		Name: fmt.Sprintf("ninja_%s_pe", label), Type: ebpf.PerfEventArray,
-	})
+	outerMap, innerMaps, err := createShardedRingbuf(label)
 	if err != nil {
-		return nil, fmt.Errorf("creating perf map: %w", err)
+		return nil, err
 	}
 
 	probe := &Probe{
-		EventsMap: eventsMap, IsFexit: isFexit,
-		maps: []*ebpf.Map{eventsMap},
+		EventsMap: outerMap, InnerMaps: innerMaps, IsFexit: isFexit,
+		Warnings: filterOut.Warnings,
+		maps:     append([]*ebpf.Map{outerMap}, innerMaps...),
 	}
 
-	// フィルタがある場合のみ scratch buffer を作成
-	// (verifier が xdp->data 経由のメモリアクセスを scalar として拒否するため、
-	//  PTR_TO_MAP_VALUE にコピーしてからフィルタを実行する)
+	// Filter scratch buffer: kunai/cBPF eval cannot read xdp_buff packet
+	// memory as a scalar region, so runFilter copies a 256-byte prefix
+	// into PTR_TO_MAP_VALUE first. Output staging is no longer needed
+	// here — the bpf_ringbuf_reserve+submit path writes the metadata +
+	// packet bytes directly into the reserved ring slot.
 	scratchFD := 0
 	if len(filterOut.Main) > 0 {
 		scratchMap, err := ebpf.NewMap(&ebpf.MapSpec{
@@ -113,7 +128,7 @@ func loadProbe(targetProg *ebpf.Program, funcName string, filterExpr string, arg
 		scratchFD = scratchMap.FD()
 	}
 
-	insns, err := buildTracingInsns(filterOut, argFilters, eventsMap.FD(), scratchFD, isFexit, progType)
+	insns, err := buildTracingInsns(filterOut, argFilters, outerMap.FD(), scratchFD, isFexit, progType)
 	if err != nil {
 		_ = probe.Close()
 		return nil, err
@@ -175,7 +190,12 @@ func compileFilter(expr string, useDSL, isFexit bool, progType ebpf.ProgramType)
 				caps = tchost.FexitCapabilities()
 			}
 		}
-		return kunai.Compile(expr, caps)
+		out, err := kunai.Compile(expr, caps)
+		if err != nil {
+			return out, fmt.Errorf("DSL filter compile failed: %w\n\nhint: %s",
+				err, dslHintFor(expr))
+		}
+		return out, nil
 	}
 	rawInsns, err := pcap.CompileBPFFilter(layers.LinkTypeEthernet, 65535, expr)
 	if err != nil {
@@ -228,15 +248,95 @@ func compileFilter(expr string, useDSL, isFexit bool, progType ebpf.ProgramType)
 // names without losing the single-source-of-truth.
 const scratchBufSize = codegen.ScratchBufSize
 
-const (
-	// defaultCapLen is the packet prefix length captured when no DSL
-	// capture clause narrowed the request. Matches libpcap's default
-	// snaplen for tcpdump.
-	defaultCapLen = 1500
-	metadataSize  = 8 // action(4) + mode(1) + pad(3)
-)
+// DefaultCapLen is the packet prefix length captured when no DSL
+// capture clause narrowed the request and no --snaplen override was
+// passed. Matches libpcap's default snaplen for tcpdump.
+const DefaultCapLen = 1500
 
-const bpfFCurrentCPU int64 = 0xFFFFFFFF
+// SnaplenOverride, when > 0, forces the per-packet capture length
+// regardless of any DSL capture clause or default. Set once by the
+// CLI's --snaplen flag before calling LoadEntry / LoadExit /
+// LoadXDPNative; zero means "use the per-filter MaxCapLen, falling
+// back to DefaultCapLen". Process-global because the kunai/codegen
+// compile chain has no callsite-level cap-override hook today.
+var SnaplenOverride int
+
+// BPF_RB_NO_WAKEUP skips the eventfd write that wakes a poll'ing
+// consumer on every bpf_ringbuf_submit. Safe only when the consumer
+// polls periodically; required when the producer rate is very high
+// to avoid wasted eventfd traffic.
+const BPF_RB_NO_WAKEUP uint32 = 1
+
+// RingbufSubmitFlags is the flags argument passed to bpf_ringbuf_submit
+// in every emit path (XDP-native captureXDPNative + tracing
+// captureWithRingbuf). Set via --no-wakeup at startup; safe only with
+// --fast-reader since the cilium/ebpf slow path would block on the
+// missing wakeup.
+var RingbufSubmitFlags uint32
+
+// HWTimestampKfuncID, when non-zero, makes captureXDPNative emit a
+// call to bpf_xdp_metadata_rx_timestamp(ctx, &ts) for the per-packet
+// timestamp instead of bpf_ktime_get_ns(). Populated by
+// ResolveHWTimestampKfunc when --rx-hwts is set.
+var HWTimestampKfuncID uint32
+
+// emitKfuncCall assembles a BPF call instruction targeting the kfunc
+// with the given BTF type ID. cilium/ebpf v0.21.0 does not expose a
+// public helper for this (asm.PseudoKfuncCall is the wire constant
+// but no asm.Func.Kfunc(id) wrapper exists), so we hand-build the
+// instruction with the kfunc-call wire encoding.
+func emitKfuncCall(kfuncID uint32) asm.Instruction {
+	return asm.Instruction{
+		OpCode:   asm.OpCode(asm.JumpClass).SetJumpOp(asm.Call),
+		Src:      asm.PseudoKfuncCall,
+		Constant: int64(kfuncID),
+	}
+}
+
+// resolveKfuncID looks up a BTF type ID for the named kfunc in the
+// running kernel's BTF dump. Returns the ID and nil on success, or
+// 0 plus a descriptive error when the kernel doesn't expose the
+// kfunc. All ResolveXxxKfunc public wrappers share this body.
+func resolveKfuncID(name string) (uint32, error) {
+	ks, err := btf.LoadKernelSpec()
+	if err != nil {
+		return 0, fmt.Errorf("loading kernel BTF: %w", err)
+	}
+	var fn *btf.Func
+	if err := ks.TypeByName(name, &fn); err != nil {
+		return 0, fmt.Errorf("kfunc %s not in kernel BTF: %w", name, err)
+	}
+	id, err := ks.TypeID(fn)
+	if err != nil {
+		return 0, fmt.Errorf("resolving kfunc %s BTF ID: %w", name, err)
+	}
+	return uint32(id), nil
+}
+
+// ResolveHWTimestampKfunc resolves bpf_xdp_metadata_rx_timestamp.
+// Available on ice + Linux 6.8+; callers should fall back to
+// bpf_ktime_get_ns when the resolve fails.
+func ResolveHWTimestampKfunc() error {
+	id, err := resolveKfuncID("bpf_xdp_metadata_rx_timestamp")
+	if err != nil {
+		return err
+	}
+	HWTimestampKfuncID = id
+	return nil
+}
+
+// RingbufSize is the byte capacity of the BPF ringbuf events map.
+// Must be a power of two and a multiple of PAGE_SIZE. Larger rings
+// absorb more burst at the cost of memory (multiplied by per-CPU
+// shard count). Set via --ringbuf-size at startup.
+var RingbufSize uint32 = 64 * 1024 * 1024
+
+const (
+	defaultCapLen = DefaultCapLen
+	// Must stay in sync with capture.MetadataSize; asserted by
+	// TestMetadataSizeMatchesCapture in metadata_size_test.go.
+	metadataSize = 16
+)
 
 func buildTracingInsns(filterOut codegen.Output, argFilters []filter.ArgFilter, eventsFD, scratchFD int, isFexit bool, progType ebpf.ProgramType) (asm.Instructions, error) {
 	var insns asm.Instructions
@@ -246,8 +346,8 @@ func buildTracingInsns(filterOut codegen.Output, argFilters []filter.ArgFilter, 
 	}
 	insns = append(insns, prelude...)
 	insns = append(insns, buildArgFilter(argFilters)...)
-	insns = append(insns, runFilter(filterOut.Main, scratchFD)...)
-	insns = append(insns, captureWithXdpOutput(eventsFD, isFexit, filterOut.Capture.MaxCapLen, progType)...)
+	insns = append(insns, runFilter(filterOut.Main, scratchFD, filterScanLen(filterOut))...)
+	insns = append(insns, captureWithRingbuf(eventsFD, isFexit, filterOut.Capture.MaxCapLen)...)
 	insns = append(insns, asm.Mov.Imm(asm.R0, 0).WithSymbol("exit"), asm.Return())
 	// bpf2bpf subprograms (currently only DSL bpf_loop chain
 	// callbacks) live after the tracing body so they sit past the
@@ -301,10 +401,45 @@ func loadPacketPointers(progType ebpf.ProgramType) (asm.Instructions, error) {
 	return nil, fmt.Errorf("unsupported program type %s", progType)
 }
 
+// ObserverPrefetch, when true, makes runFilter always probe_read the
+// full scratchBufSize (512 B) regardless of the chain-specific
+// FilterMinPrefix kunai computes. Sacrifices filter-eval CPU time
+// (the R32-fix 20× → 1× win) in exchange for warming the ice driver
+// L1 dcache, which R12 (docs/ja/r12-fentry-prefetch-finding.md)
+// showed accelerates production XDP_TX programs by ≈ 70 %. The
+// trade-off is visible to operators; default off because the
+// production-XDP-vs-observer-throughput Pareto curve preferences
+// vary by deployment.
+var ObserverPrefetch bool
+
+// filterScanLen picks the bpf_probe_read_kernel size for runFilter:
+// the kunai-computed FilterMinPrefix when available (clamped to
+// [1, scratchBufSize]), otherwise the conservative scratchBufSize.
+// Zero from codegen means "analyser bailed" — fall back to the full
+// scratch read so the verifier doesn't reject the filter for accessing
+// past R1. ObserverPrefetch=true bypasses the dynamic sizing.
+func filterScanLen(out codegen.Output) int {
+	if ObserverPrefetch {
+		return scratchBufSize
+	}
+	n := out.Capture.FilterMinPrefix
+	if n <= 0 || n > scratchBufSize {
+		return scratchBufSize
+	}
+	return n
+}
+
 // runFilter は scratch buffer にヘッダをコピーして cbpfc フィルタを実行する。
-func runFilter(filter asm.Instructions, scratchFD int) asm.Instructions {
+// scanLen is the number of packet bytes bpf_probe_read_kernel copies in
+// and the upper bound exposed to the filter via R1; sized per-chain
+// from codegen.Output.Capture.FilterMinPrefix to avoid copying 512 B
+// when the filter only needs (e.g.) 54 B.
+func runFilter(filter asm.Instructions, scratchFD, scanLen int) asm.Instructions {
 	if len(filter) == 0 {
 		return nil
+	}
+	if scanLen <= 0 || scanLen > scratchBufSize {
+		scanLen = scratchBufSize
 	}
 
 	insns := asm.Instructions{
@@ -316,17 +451,17 @@ func runFilter(filter asm.Instructions, scratchFD int) asm.Instructions {
 		asm.JEq.Imm(asm.R0, 0, "exit"),
 		asm.StoreMem(asm.R10, -24, asm.R0, asm.DWord),
 
-		// ヘッダコピー: bpf_probe_read_kernel(scratch, 256, data)
+		// ヘッダコピー: bpf_probe_read_kernel(scratch, scanLen, data)
 		asm.Mov.Reg(asm.R1, asm.R0),
-		asm.Mov.Imm(asm.R2, int32(scratchBufSize)),
+		asm.Mov.Imm(asm.R2, int32(scanLen)),
 		asm.Mov.Reg(asm.R3, asm.R7),
 		asm.FnProbeReadKernel.Call(),
 
-		// R0 = scratch 先頭, R1 = scratch + min(pkt_len, 256)
+		// R0 = scratch 先頭, R1 = scratch + min(pkt_len, scanLen)
 		asm.LoadMem(asm.R0, asm.R10, -24, asm.DWord),
 		asm.Mov.Reg(asm.R1, asm.R9),
-		asm.JLE.Imm(asm.R1, int32(scratchBufSize), "len_ok"),
-		asm.Mov.Imm(asm.R1, int32(scratchBufSize)),
+		asm.JLE.Imm(asm.R1, int32(scanLen), "len_ok"),
+		asm.Mov.Imm(asm.R1, int32(scanLen)),
 		asm.Add.Reg(asm.R1, asm.R0).WithSymbol("len_ok"),
 	}
 	insns = append(insns, filter...)
@@ -334,73 +469,113 @@ func runFilter(filter asm.Instructions, scratchFD int) asm.Instructions {
 	return insns
 }
 
-// captureWithXdpOutput は bpf_xdp_output / bpf_skb_output でパケットを
-// perf buffer に送出する。XDP では bpf_xdp_output、TC (sched_cls /
-// sched_act) では同じ ABI の bpf_skb_output を発行 — どちらも
-// 「ctx, perf_map, (cap_len<<32)|CURRENT_CPU, &meta, sizeof(meta)」
-// で kernel が ctx から packet bytes を自動 attach してくれる。
+// captureWithRingbuf is the tracing-mode capture epilogue: reserve a
+// fixed-size slot in the BPF ringbuf, write metadata + copy packet
+// bytes directly into the slot, then submit. This is the
+// reserve+submit shape (one fewer memcpy than bpf_ringbuf_output, which
+// internally memcpy's the data buffer into the reserved slot before
+// commit).
 //
-// ユーザーランドで受け取る RawSample のフォーマット:
+// On-wire RawSample is the full reservation (metadataSize + maxCapLen
+// bytes); the caplen field in the metadata header tells userspace how
+// many of the trailing payload bytes are real (the producer always
+// writes 8 + caplen useful bytes; the rest of the slot is unwritten
+// memory but the ringbuf submit makes the entire reservation visible
+// regardless).
 //
-//	[metadata (8B)] [パケットデータ (cap_len バイト)]
-func captureWithXdpOutput(eventsFD int, isFexit bool, maxCapLen int, progType ebpf.ProgramType) asm.Instructions {
+// Stack layout assumptions on entry:
+//
+//	R6 = ctx (xdp_buff* or sk_buff*)
+//	R7 = data start
+//	R8 = data_end
+//	R9 = pkt_len
+//	stack[-48] = saved tracing args ptr (for fexit action lookup)
+//
+// Local stack slots used here:
+//
+//	stack[-32] = reserved-slot ptr (PTR_TO_MEM, mem_size = metadataSize + maxCapLen)
+//	stack[-40] = u32 saved copy_size (preserved across the
+//	             bpf_probe_read_kernel call, which clobbers R0..R5)
+//
+// Verifier acceptance hinges on the reserve size being a known
+// compile-time constant — we always pass int32(metadataSize+maxCapLen)
+// as an immediate, never a register-derived value. See
+// docs/paper/PLAN_bpf_ringbuf risk register entry "Verifier rejects
+// bpf_ringbuf_reserve with non-constant size".
+func captureWithRingbuf(eventsFD int, isFexit bool, maxCapLen int) asm.Instructions {
 	if maxCapLen <= 0 {
 		maxCapLen = defaultCapLen
 	}
-	insns := asm.Instructions{}
+	reserveSize := int32(metadataSize + maxCapLen)
 
-	// --- メタデータをスタック上に構築 ---
+	insns := asm.Instructions{
+		// --- kernel_ts_ns = bpf_ktime_get_ns() ---
+		// Saved on stack before any other helper call so the R0
+		// return from bpf_ringbuf_reserve doesn't clobber it.
+		// stack[-56] is below the args[] slot at -48 used by fexit
+		// for arg fetching.
+		asm.FnKtimeGetNs.Call(),
+		asm.StoreMem(asm.R10, -56, asm.R0, asm.DWord),
+
+		// cpu_id at stack[-16] overwrites the filter scratch lookup
+		// key (line above) — both are u32 and the key is dead after
+		// the filter_result label.
+		asm.FnGetSmpProcessorId.Call(),
+		asm.StoreMem(asm.R10, -16, asm.R0, asm.Word),
+	}
+	insns = append(insns, emitShardedRBReserve(eventsFD, reserveSize)...)
+	insns = append(insns,
+		// --- Write kernel_ts_ns into slot[0..8] ---
+		asm.LoadMem(asm.R1, asm.R10, -56, asm.DWord),
+		asm.StoreMem(asm.R0, 0, asm.R1, asm.DWord),
+	)
+
+	// --- Write action+mode metadata at slot[8..14] ---
 	if isFexit {
-		// action = args[1]
 		insns = append(insns,
-			asm.LoadMem(asm.R2, asm.R10, -48, asm.DWord), // saved args ptr
-			asm.LoadMem(asm.R2, asm.R2, 8, asm.DWord),    // args[1] = XDP action
-			asm.StoreMem(asm.R10, -8, asm.R2, asm.Word),  // stack[-8] = action (u32)
-			asm.StoreImm(asm.R10, -4, 1, asm.Byte),       // stack[-4] = mode=1 (exit)
+			asm.LoadMem(asm.R2, asm.R10, -48, asm.DWord),
+			asm.LoadMem(asm.R2, asm.R2, 8, asm.DWord), // args[1] = XDP action
+			asm.StoreMem(asm.R0, 8, asm.R2, asm.Word),
+			asm.StoreImm(asm.R0, 12, 1, asm.Byte), // mode = 1 (exit)
 		)
 	} else {
 		insns = append(insns,
-			asm.StoreImm(asm.R10, -8, 0, asm.Word), // stack[-8] = action=0
-			asm.StoreImm(asm.R10, -4, 0, asm.Byte), // stack[-4] = mode=0 (entry)
+			asm.StoreImm(asm.R0, 8, 0, asm.Word),
+			asm.StoreImm(asm.R0, 12, 0, asm.Byte),
 		)
 	}
-
-	// padding
 	insns = append(insns,
-		asm.StoreImm(asm.R10, -3, 0, asm.Byte),
-		asm.StoreImm(asm.R10, -2, 0, asm.Half),
+		asm.StoreImm(asm.R0, 13, 0, asm.Byte), // _pad
 	)
 
-	// --- bpf_xdp_output ---
-	// R1 = xdp_buff (カーネルがここからパケットデータを読む)
-	// R2 = perf event map
-	// R3 = (cap_len << 32) | BPF_F_CURRENT_CPU
-	// R4 = &metadata (スタック上)
-	// R5 = sizeof(metadata)
+	// --- copy_size = min(pkt_len, maxCapLen) → caplen field + save ---
 	insns = append(insns,
-		asm.Mov.Reg(asm.R1, asm.R6),      // R1 = xdp_buff
-		asm.LoadMapPtr(asm.R2, eventsFD), // R2 = perf map
-
-		// R3 = flags: (cap_len << 32) | BPF_F_CURRENT_CPU
-		// cap_len = min(pkt_len, 1500)
-		asm.Mov.Reg(asm.R3, asm.R9), // R3 = pkt_len
-		asm.JLE.Imm(asm.R3, int32(maxCapLen), "xdp_out_cap_ok"),
+		asm.Mov.Reg(asm.R3, asm.R9),
+		asm.JLE.Imm(asm.R3, int32(maxCapLen), "rb_cap_ok"),
 		asm.Mov.Imm(asm.R3, int32(maxCapLen)),
-		asm.LSh.Imm(asm.R3, 32).WithSymbol("xdp_out_cap_ok"), // R3 = cap_len << 32
-		asm.LoadImm(asm.R0, bpfFCurrentCPU, asm.DWord),       // R0 = BPF_F_CURRENT_CPU
-		asm.Or.Reg(asm.R3, asm.R0),                           // R3 = (cap_len << 32) | BPF_F_CURRENT_CPU
-
-		asm.Mov.Reg(asm.R4, asm.R10), // R4 = &metadata
-		asm.Add.Imm(asm.R4, -int32(metadataSize)),
-		asm.Mov.Imm(asm.R5, int32(metadataSize)), // R5 = 8
+		asm.StoreMem(asm.R10, -40, asm.R3, asm.Word).WithSymbol("rb_cap_ok"),
+		asm.StoreMem(asm.R0, 14, asm.R3, asm.Half),
 	)
-	switch progType {
-	case ebpf.SchedCLS, ebpf.SchedACT:
-		insns = append(insns, asm.FnSkbOutput.Call())
-	default:
-		insns = append(insns, asm.FnXdpOutput.Call())
-	}
 
+	// --- bpf_probe_read_kernel(R0 + 16, copy_size, packet_ptr) ---
+	insns = append(insns,
+		asm.Mov.Reg(asm.R1, asm.R0), asm.Add.Imm(asm.R1, int32(metadataSize)),
+		asm.Mov.Reg(asm.R2, asm.R3),
+		asm.Mov.Reg(asm.R3, asm.R7),
+		asm.FnProbeReadKernel.Call(),
+	)
+
+	// --- bpf_ringbuf_submit(reservation_ptr, RingbufSubmitFlags) ---
+	// Same flag plumbing as captureXDPNative — must honour
+	// --no-wakeup uniformly across attach modes (the CLI flag
+	// promises "every ringbuf submit", and the R22 sharded-ringbuf
+	// hoist brought the tracing path under the same fast-reader as
+	// XDP-native).
+	insns = append(insns,
+		asm.LoadMem(asm.R1, asm.R10, -32, asm.DWord),
+		asm.Mov.Imm(asm.R2, int32(RingbufSubmitFlags)),
+		asm.FnRingbufSubmit.Call(),
+	)
 	return insns
 }
 

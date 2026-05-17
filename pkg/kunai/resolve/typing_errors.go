@@ -73,3 +73,14 @@ func errArithOverflowSuspect(pos ast.Position, op ast.ArithOp) error {
 func errArithUnderflowSuspect(pos ast.Position, lhsBits, rhsBits int) error {
 	return errorf(pos, "arith - on two field operands (LHS bit<%d>, RHS bit<%d>) likely underflows: RHS is at least as wide as LHS (StrictArithLint)", lhsBits, rhsBits)
 }
+
+// errBareIdentValue rejects a bare identifier on the RHS of a
+// bracket predicate (e.g. `tcp[dport == true]`,
+// `tcp[dport == port]`). Predicate values are restricted to typed
+// literals; the previous codegen-side "predicate value type ident"
+// ErrNotImplemented was a typing violation, not a missing emit, so
+// it surfaces here as a resolver-level error with a position pointing
+// at the offending value.
+func errBareIdentValue(pos ast.Position, ident string) error {
+	return errorf(pos, "predicate value cannot be a bare identifier %q. predicate values must be integer/IPv4/IPv6/MAC/CIDR/range literal. for boolean coercion of an integer field, use 'where <proto>.<field> != 0'", ident)
+}

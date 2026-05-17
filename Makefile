@@ -32,6 +32,10 @@ test-bpf:
 	sudo env "PATH=$(PATH)" "HOME=$(HOME)" "GOPATH=$$(go env GOPATH)" "GOMODCACHE=$$(go env GOMODCACHE)" \
 		go test -v -count 1 -timeout 5m ./internal/program/ -run TestBpf
 
+test-bench-run:
+	sudo env "PATH=$(PATH)" "HOME=$(HOME)" "GOPATH=$$(go env GOPATH)" "GOMODCACHE=$$(go env GOMODCACHE)" \
+		bash benchmark/microbench/run_runtime.sh
+
 test-integration: build
 	sudo scripts/test/run_tests.sh
 

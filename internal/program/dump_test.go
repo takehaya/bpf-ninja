@@ -83,9 +83,10 @@ func TestDumpAsmFull(t *testing.T) {
 	wrapperMarkers := []string{
 		"=== Full tracing program",
 		"mode=exit",
-		"FnMapLookupElem", // scratch lookup in runFilter
-		"FnXdpOutput",     // epilogue capture call
-		"fd: 0",           // placeholder map FDs
+		"FnMapLookupElem",  // scratch lookup in runFilter
+		"FnRingbufReserve", // capture epilogue: reserve+submit
+		"FnRingbufSubmit",
+		"fd: 0", // placeholder map FDs
 	}
 	for _, s := range wrapperMarkers {
 		if !strings.Contains(got, s) {
@@ -95,8 +96,8 @@ func TestDumpAsmFull(t *testing.T) {
 }
 
 // TestDumpAsmFullXDP checks that mode=xdp produces the XDP-native
-// shape (direct packet access, FnPerfEventOutput epilogue) instead of
-// the tracing wrapper.
+// shape (direct packet access for filter, FnRingbufReserve +
+// FnRingbufSubmit epilogue) instead of the tracing wrapper.
 func TestDumpAsmFullXDP(t *testing.T) {
 	var buf bytes.Buffer
 	if err := DumpAsm(&buf, DumpScopeFull, "tcp port 443", false, "xdp"); err != nil {
@@ -107,7 +108,10 @@ func TestDumpAsmFullXDP(t *testing.T) {
 	wantMarkers := []string{
 		"=== Full XDP-native program",
 		"mode=xdp",
-		"FnPerfEventOutput", // XDP-side perf output
+		"FnGetSmpProcessorId",
+		"FnMapLookupElem",
+		"FnRingbufReserve",
+		"FnRingbufSubmit",
 	}
 	for _, s := range wantMarkers {
 		if !strings.Contains(got, s) {
@@ -115,10 +119,8 @@ func TestDumpAsmFullXDP(t *testing.T) {
 		}
 	}
 
-	// Tracing-only markers should NOT appear in xdp shape.
 	wrongMarkers := []string{
-		"FnMapLookupElem", // no scratch in xdp-native (direct packet access)
-		"FnXdpOutput",     // tracing-only helper
+		"FnXdpOutput",
 	}
 	for _, s := range wrongMarkers {
 		if strings.Contains(got, s) {

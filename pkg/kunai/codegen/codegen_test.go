@@ -535,6 +535,51 @@ func TestGenCaptureToLayerSumsThroughTarget(t *testing.T) {
 	}
 }
 
+func TestGenFilterMinPrefixForChain(t *testing.T) {
+	// FilterMinPrefix is the chain prefix sum even when no `where`
+	// clause is present. eth+ipv4+tcp = 14+20+20 = 54.
+	p := ethIPv4TCPProgram()
+	out, err := Gen(p, Capabilities{})
+	if err != nil {
+		t.Fatalf("Gen: %v", err)
+	}
+	if out.Capture.FilterMinPrefix != 54 {
+		t.Errorf("eth/ipv4/tcp: FilterMinPrefix = %d, want 54", out.Capture.FilterMinPrefix)
+	}
+}
+
+// No `capture` clause is sugar for `capture all`: MaxCapLen=0 so the
+// host falls back to DefaultCapLen (= 1500 B). Locks in the
+// principle-of-least-surprise behaviour after the Option A redesign
+// — `tcp where dport == 443` should capture full packets the same
+// way tcpdump does, not silently truncate to 54 B.
+func TestGenNoCaptureClauseLeavesMaxCapLenZero(t *testing.T) {
+	p := ethIPv4TCPProgram()
+	// tcp where tcp.dport == 443
+	p.Where = &ir.Condition{
+		Kind: ast.WAtomArith,
+		Op:   ast.CmpEq,
+		ArithL: &ir.ArithExpr{
+			Kind:  ast.ArithField,
+			Field: &ir.FieldRef{Layer: p.Layers[2], Field: &tcpSpec.Fields[1]}, // dport
+		},
+		ArithR: &ir.ArithExpr{Kind: ast.ArithConst, Const: 443},
+	}
+	out, err := Gen(p, Capabilities{})
+	if err != nil {
+		t.Fatalf("Gen: %v", err)
+	}
+	if out.Capture.MaxCapLen != 0 {
+		t.Errorf("no capture clause: MaxCapLen = %d, want 0 (= host fallback to DefaultCapLen)", out.Capture.MaxCapLen)
+	}
+	// FilterMinPrefix is the scratch-read sizing, independent of the
+	// payload truncation; it must still be computed when the where
+	// clause reaches into tcp.dport.
+	if out.Capture.FilterMinPrefix < 54 {
+		t.Errorf("no capture clause: FilterMinPrefix = %d, want >= 54 (eth+ipv4+tcp.dport offset)", out.Capture.FilterMinPrefix)
+	}
+}
+
 func TestGenCaptureAbsoluteIndependentOfChain(t *testing.T) {
 	p := ethIPv4TCPProgram()
 	p.Captures = []*ir.CaptureClause{{Kind: ast.CapAbsolute, Extra: 96}}

@@ -27,13 +27,24 @@ import (
 	"github.com/takehaya/xdp-ninja/pkg/kunai/codegen"
 )
 
+// XDPNativeBenchDrop toggles the --mode xdp action: when true, captured
+// packets return XDP_DROP instead of XDP_PASS, bypassing the kernel
+// skb-create / IP-layer-drop path. Useful for benchmarks where that
+// path becomes the dominant per-packet cost (microburst stress).
+// Production deployments should leave this false.
+var XDPNativeBenchDrop bool
+
 const (
 	// xdpModeNative is the metadata `mode` byte emitted by --mode xdp.
 	// 0 = entry (fentry), 1 = exit (fexit), 2 = xdp-native.
 	xdpModeNative uint8 = 2
 
-	// xdpPass is the action value xdp-native always returns.
+	// xdpPass is the action value xdp-native returns for captured packets
+	// in production mode. Override via XDPNativeBenchDrop for benchmark
+	// scenarios where the kernel-side netif drop path (skb create + IP
+	// layer drop) becomes the bottleneck.
 	xdpPass int32 = 2
+	xdpDrop int32 = 1
 )
 
 // LoadXDPNative builds and attaches xdp-ninja as a native XDP program
@@ -51,26 +62,37 @@ func LoadXDPNative(state *attach.InterfaceState, filterExpr string, useDSL bool)
 	if err != nil {
 		return nil, err
 	}
+	if SnaplenOverride > 0 {
+		out.Capture.MaxCapLen = SnaplenOverride
+	}
 
-	eventsMap, err := ebpf.NewMap(&ebpf.MapSpec{
-		Name: "ninja_xdp_pe", Type: ebpf.PerfEventArray,
-	})
+	outerMap, innerMaps, err := createShardedRingbuf("xdp")
 	if err != nil {
-		return nil, fmt.Errorf("creating perf map: %w", err)
+		return nil, err
 	}
-
 	probe := &Probe{
-		EventsMap: eventsMap,
-		maps:      []*ebpf.Map{eventsMap},
+		Warnings:  out.Warnings,
+		EventsMap: outerMap,
+		InnerMaps: innerMaps,
+		maps:      append([]*ebpf.Map{outerMap}, innerMaps...),
 	}
 
-	insns := buildXDPNativeInsns(out, eventsMap.FD())
-	prog, err := ebpf.NewProgram(&ebpf.ProgramSpec{
+	insns := buildXDPNativeInsns(out, outerMap.FD())
+	spec := &ebpf.ProgramSpec{
 		Name:         "xdp_ninja_native",
 		Type:         ebpf.XDP,
 		Instructions: insns,
 		License:      "GPL",
-	})
+	}
+	if HWTimestampKfuncID != 0 {
+		// xdp_metadata kfuncs require the program to be device-bound:
+		// the verifier needs to know which driver implements the
+		// metadata ops. BPF_F_XDP_DEV_BOUND_ONLY (= 1<<6) binds the
+		// program to state.IfIndex without auto-attaching as XDP.
+		spec.Ifindex = uint32(state.IfIndex)
+		spec.Flags |= 1 << 6
+	}
+	prog, err := ebpf.NewProgram(spec)
 	if err != nil {
 		_ = probe.Close()
 		return nil, fmt.Errorf("loading XDP program: %w", err)
@@ -121,8 +143,12 @@ func buildXDPNativeInsns(filterOut codegen.Output, eventsFD int) asm.Instruction
 	insns = append(insns, loadXDPPacketPointers()...)
 	insns = append(insns, runFilterDirect(filterOut.Main)...)
 	insns = append(insns, captureXDPNative(eventsFD, filterOut.Capture.MaxCapLen)...)
+	finalAction := xdpPass
+	if XDPNativeBenchDrop {
+		finalAction = xdpDrop
+	}
 	insns = append(insns,
-		asm.Mov.Imm(asm.R0, xdpPass).WithSymbol("exit"),
+		asm.Mov.Imm(asm.R0, finalAction).WithSymbol("exit"),
 		asm.Return(),
 	)
 	if len(filterOut.Callbacks) > 0 {
@@ -162,45 +188,107 @@ func runFilterDirect(filter asm.Instructions) asm.Instructions {
 	return insns
 }
 
-// captureXDPNative emits bpf_xdp_output(ctx, &events_map, ...) for the
-// matched packet. Metadata is built on the stack; action is hardcoded
-// to XDP_PASS (we always pass), mode is xdpModeNative.
+// captureXDPNative is the XDP-native capture epilogue, mirror of
+// captureWithRingbuf (tracing): bpf_ringbuf_reserve a fixed-size slot,
+// write metadata + bounded packet copy directly into the slot, then
+// bpf_ringbuf_submit. No staging map.
+//
+// On-wire RawSample is the full reservation
+// (metadataSize + maxCapLen bytes); the metadata's u16 caplen field
+// tells userspace how many of the trailing payload bytes are real.
+// XDP-native always reports action = XDP_PASS (= 2) and mode = 2.
+//
+// Metadata layout matches capture.MetadataSize (16 B) — see
+// internal/capture/capture.go for the wire format.
+//
+// Local stack slots used here (R10 negative offsets):
+//
+//	-16: u32 cpu_id (scratch for outer-map lookup)
+//	-32: reserved-slot ptr (PTR_TO_MEM, mem_size = metadataSize + maxCapLen)
+//	-40: u32 saved copy_size
+//	-48: u64 kernel_ts_ns (saved bpf_ktime_get_ns return)
 func captureXDPNative(eventsFD int, maxCapLen int) asm.Instructions {
 	if maxCapLen <= 0 {
 		maxCapLen = defaultCapLen
 	}
+	reserveSize := int32(metadataSize + maxCapLen)
 
-	insns := asm.Instructions{
-		// metadata: action = XDP_PASS (=2), mode = 2 (xdp-native), pad = 0
-		asm.StoreImm(asm.R10, -8, int64(xdpPass), asm.Word),
-		asm.StoreImm(asm.R10, -4, int64(xdpModeNative), asm.Byte),
-		asm.StoreImm(asm.R10, -3, 0, asm.Byte),
-		asm.StoreImm(asm.R10, -2, 0, asm.Half),
-
-		// bpf_xdp_output(ctx, &events_map, flags, &metadata, sizeof(metadata))
-		asm.Mov.Reg(asm.R1, asm.R6),      // R1 = xdp_md ctx
-		asm.LoadMapPtr(asm.R2, eventsFD), // R2 = perf event map
-
-		// R3 = (cap_len << 32) | BPF_F_CURRENT_CPU
-		asm.Mov.Reg(asm.R3, asm.R9), // R3 = pkt_len
-		asm.JLE.Imm(asm.R3, int32(maxCapLen), "xdp_native_cap_ok"),
-		asm.Mov.Imm(asm.R3, int32(maxCapLen)),
-		asm.LSh.Imm(asm.R3, 32).WithSymbol("xdp_native_cap_ok"),
-		asm.LoadImm(asm.R0, bpfFCurrentCPU, asm.DWord),
-		asm.Or.Reg(asm.R3, asm.R0),
-
-		asm.Mov.Reg(asm.R4, asm.R10),
-		asm.Add.Imm(asm.R4, -int32(metadataSize)),
-		asm.Mov.Imm(asm.R5, int32(metadataSize)),
-
-		// bpf_perf_event_output for XDP context. The high 32 bits of
-		// the flags arg (BPF_F_CTXLEN_MASK) tell the kernel to append
-		// that many bytes of the packet (read from xdp_md->data) after
-		// the user metadata. Same flag layout as bpf_xdp_output, but
-		// FnPerfEventOutput is what the verifier permits for
-		// BPF_PROG_TYPE_XDP.
-		asm.FnPerfEventOutput.Call(),
+	var insns asm.Instructions
+	// Timestamp prologue: hardware (NIC PHC via kfunc) if enabled and
+	// available, otherwise software bpf_ktime_get_ns(). Both branches
+	// leave the timestamp at stack[-48]; the smp_processor_id epilogue
+	// is shared.
+	if HWTimestampKfuncID != 0 {
+		insns = append(insns,
+			// bpf_xdp_metadata_rx_timestamp(ctx=R6, &stack[-48])
+			asm.Mov.Reg(asm.R1, asm.R6),
+			asm.Mov.Reg(asm.R2, asm.R10),
+			asm.Add.Imm(asm.R2, -48),
+			emitKfuncCall(HWTimestampKfuncID),
+			// R0 == 0 means the kfunc wrote a valid HW ts to
+			// stack[-48]; non-zero (typically -EOPNOTSUPP) falls
+			// through to software ktime.
+			asm.JEq.Imm(asm.R0, 0, "ts_ok"),
+			asm.FnKtimeGetNs.Call(),
+			asm.StoreMem(asm.R10, -48, asm.R0, asm.DWord),
+			asm.FnGetSmpProcessorId.Call().WithSymbol("ts_ok"),
+			asm.StoreMem(asm.R10, -16, asm.R0, asm.Word),
+		)
+	} else {
+		insns = append(insns,
+			asm.FnKtimeGetNs.Call(),
+			asm.StoreMem(asm.R10, -48, asm.R0, asm.DWord),
+			asm.FnGetSmpProcessorId.Call(),
+			asm.StoreMem(asm.R10, -16, asm.R0, asm.Word),
+		)
 	}
+	insns = append(insns, emitShardedRBReserve(eventsFD, reserveSize)...)
+	insns = append(insns, asm.Instructions{
+
+		// --- Write kernel_ts_ns into slot[0..8] ---
+		asm.LoadMem(asm.R1, asm.R10, -48, asm.DWord),
+		asm.StoreMem(asm.R0, 0, asm.R1, asm.DWord),
+
+		// --- Write remaining metadata into slot[8..16] ---
+		asm.StoreImm(asm.R0, 8, int64(xdpPass), asm.Word),
+		asm.StoreImm(asm.R0, 12, int64(xdpModeNative), asm.Byte),
+		asm.StoreImm(asm.R0, 13, 0, asm.Byte),
+	}...)
+
+	insns = append(insns, asm.Instructions{
+		// --- copy_size = min(pkt_len, maxCapLen) → metadata caplen ---
+		// pkt_len here is the LINEAR-region length (R9 = data_end -
+		// data); multi-buff frag total is not accessible without a
+		// working bpf_xdp_get_buff_len kfunc invocation, deferred as
+		// future work.
+		asm.Mov.Reg(asm.R3, asm.R9),
+		asm.JLE.Imm(asm.R3, int32(maxCapLen), "xn_cap_ok"),
+		asm.Mov.Imm(asm.R3, int32(maxCapLen)),
+		asm.StoreMem(asm.R0, 14, asm.R3, asm.Half).WithSymbol("xn_cap_ok"),
+
+		// --- bpf_xdp_load_bytes(ctx, 0, R0+16, copy_size) ---
+		// XDP-aware bounded read; dst = slot + metadataSize (= 16).
+		// Helper requires Linux 5.18+, which our verifier matrix
+		// (6.1+) satisfies.
+		//
+		// Verifier-friendly ordering (verified on 6.1 / 6.6 / 6.12
+		// / 6.18): the JLT < 1 guard runs first so the umin=1
+		// constraint applies to R3 directly; R4 is then mov'd from
+		// R3 BEFORE R3 is clobbered to become the dst pointer. A
+		// stack roundtrip would drop umin=1 across the reload,
+		// which 6.1 / 6.6 reject as "R4 invalid zero-sized read".
+		asm.JLT.Imm(asm.R3, 1, "xn_skip_load"),
+		asm.Mov.Reg(asm.R1, asm.R6),                                           // ctx
+		asm.Mov.Imm(asm.R2, 0),                                                // offset
+		asm.Mov.Reg(asm.R4, asm.R3),                                           // copy_size (umin=1)
+		asm.Mov.Reg(asm.R3, asm.R0), asm.Add.Imm(asm.R3, int32(metadataSize)), // dst = slot+16
+		asm.FnXdpLoadBytes.Call(),
+
+		// --- bpf_ringbuf_submit(reservation_ptr, flags) ---
+		asm.LoadMem(asm.R1, asm.R10, -32, asm.DWord).WithSymbol("xn_skip_load"),
+		asm.Mov.Imm(asm.R2, int32(RingbufSubmitFlags)),
+		asm.FnRingbufSubmit.Call(),
+	}...)
 	return insns
 }
 

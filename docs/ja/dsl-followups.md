@@ -55,7 +55,20 @@ B-3   aux literal predicate  IPv4/IPv6/MAC/CIDR の 6 gate sites を解除 (6547
 B-4a  IPv4 Record Route      pc.decrement に field-expr / lookahead-form 拡張 (69cc697)、ipv4.p4 RR declare (b17d1c5)。R1 contingency 発火 → dispatched-but-not-extracted shape に pivot。SACK と同型の addrs[N] / any/all
 #11   IPIP layered dispatch  (synth chain は revert)。ipv4.p4 / ipv6.p4 に `IPV4_IPV4_PROTOCOL=4` / `IPV6_IPV6_NEXT_HEADER=41` を 1 行 declare、`eth/ipv4/ipv4/tcp` / `eth/ipv6/ipv6/tcp` で IPIP / 6-in-6 が表現可能。各 layer 独立 parser machine で IHL>5 / ext header も正しく handle
 F15   TC adapter             `pkg/kunai/host/tc/` 新規 (host/xdp の peer)。 `loadPacketPointers` を host-aware 化 + sk_buff member offset を runtime BTF resolve、 `--mode tc-entry/tc-exit` で `where action == TC_ACT_SHOT` 等が動く。 4-kernel verifier matrix に TC 用 entry 追加
+R32   dynamic scratch        per-filter `FilterMinPrefix` で in-kernel scratch read を 512 B → 必要分のみに動的縮小。 fentry filter cost を 0.7→14.5 Mpps に解消 (paper §6 R32)
+R22   sharded ringbuf hoist  per-CPU ringbuf を `ARRAY_OF_MAPS` で entry/exit/xdp の全 attach mode に統一。 capture 出力は `path.pcap.cpuN` shards に分散
+SnapA snaplen Option A       `capture` 句なし = `capture all` の sugar (= MaxCapLen=0 → host DefaultCapLen=1500 fallback)。 tcpdump 互換 UX を優先、 ringbuf 予約縮小は `capture headers` 等で opt-in
 ```
+
+### ⚠️ Breaking changes since v0.x (master 投入時に release notes へ)
+
+- **SnapA (snaplen Option A)**: `capture` 句なしの payload default が「filter
+  最小 prefix」 から「full packet (1500 B)」 に変わった。 旧挙動に依存して高
+  throughput を出していた pipeline は filter 末尾に `capture headers` を追記
+  すること。 詳細: `docs/ja/dsl-usage.md` の "snaplen トレードオフ" 節。
+- **R22 sharded output**: `-w foo.pcap` の出力は `foo.pcap` (SHB+IDB のみの
+  marker) + `foo.pcap.cpuN` (実 packet) に分散。 単一 file を期待する downstream
+  tool は `mergecap` 等で結合する。
 
 ## P2: 機能拡張 (需要次第)
 
@@ -291,3 +304,25 @@ F6 の bitwise `&` で `tcp.flags & 0x12 == 0x12` と書けるようになり、
 - コード読解 — [`dsl-internals.md` §2.3 パッケージごとのツアー](./dsl-internals.md#23-パッケージごとのツアー-依存順-leaf--root)
 - 利用者向けガイド — [`dsl-usage.md`](./dsl-usage.md)
 - 開発経緯は git log を参照 (旧 `dsl-development-summary.md` / `plan_dsl.md` は本 followups と git 履歴に統合)
+
+## R15 / R16 follow-up (future、 2026-05-15 ユーザ提案)
+
+`--bench-drop` (XDP_DROP) で kernel netif bypass、 microburst stress 下で 32× capture rate up を実証。 paper §6 で「pure capture pipeline capacity」 measurement として記載予定。
+
+ユーザ提案の **ringbuf reserve fail 時の cross-shard retry**:
+
+```c
+slot = bpf_ringbuf_reserve(inner_maps[cpu_id], size, 0);
+if (!slot) {
+    for (i = 1; i <= N_FALLBACK; i++) {
+        u32 alt = (cpu_id + i) % numCPUs;
+        slot = bpf_ringbuf_reserve(inner_maps[alt], size, 0);
+        if (slot) break;
+    }
+}
+```
+
+**評価**: R15 実証で「**ringbuf overflow が真因の場面は稀** (XDP_DROP で消える)」 が判明、 retry idea は ROI 低い。 paper v1.1 / future work で検討。 もし implement するなら:
+- BPF verifier に複数 map lookup OK か確認 (loop unroll で N_FALLBACK = 2-4 程度に絞れば pass)
+- cross-CPU write の cache line bounce cost を `perf stat` で実測
+- consumer-side で「自 CPU 以外の shard も読む」 ロジック追加 (currently 1:1 mapping)

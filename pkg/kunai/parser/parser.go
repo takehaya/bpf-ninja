@@ -39,8 +39,16 @@ type parser struct {
 	preCurSnap     lexer.Snapshot // lexer state at the start of the byte run that produced p.cur; used by speculative re-reads (e.g. LHS network-literal probing in `where`)
 	file           string
 	depth          int             // alternation nesting depth
+	parenDepth     int             // `(` nesting in where / arith expressions; guarded by maxParenDepth to keep recursive descent off the OS stack on fuzz inputs like `((((...))))`
 	reservedLabels map[string]bool // host-supplied @label rejection set
 }
+
+// maxParenDepth caps `(` nesting inside where / arith expressions so a
+// pathological `((((...))))` input cannot blow the OS stack during
+// recursive descent. 32 is well above any hand-written filter (the
+// 14-example regression set tops out at 1) while staying small enough
+// that the recursion fits comfortably in the default goroutine stack.
+const maxParenDepth = 32
 
 func (p *parser) advance() error {
 	snap := p.lex.Save()

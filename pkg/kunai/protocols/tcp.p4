@@ -31,7 +31,8 @@ const bit<8> TCP_SRV6_NEXT_HEADER = 6;
 // The parser block walks the options as a state machine that
 // dispatches on the next kind byte (peeked via lookahead), extracts
 // known options, advances past unknown ones using the length byte,
-// and terminates on EOL or by exhausting MAX_DEPTH iterations.
+// and terminates on EOL or by exhausting the bpf_loop iteration cap
+// (defaults to 8; see the MAX_DEPTH note near the parser block).
 // Predicate codegen reads each option's recorded offset directly
 // without re-walking.
 //
@@ -100,10 +101,21 @@ header tcp_sack_block_h {
 
 // TCP options trailer is at most 40 bytes (data_offset = 15 → 60 byte
 // header → 40 byte trailer). The smallest option is 1 byte (NOP / EOL),
-// so the option-walk loop runs at most 32 iterations (= bpf_loop cap).
-// Higher values exceed the verifier's per-callback iteration budget;
-// 32 covers every well-formed TCP packet observed in the wild.
-const bit<8> TCP_PARSER_MAX_DEPTH = 32;
+// so the option-walk loop would need up to 40 iterations to drain a
+// worst-case all-NOP trailer. The vocab loader's MAX_DEPTH path
+// recognises `<SELF>_MAX_DEPTH = N` (default 8 when omitted, hard cap
+// 64 — see vocab/loader.go classifyConsts). We currently leave it
+// unset, so codegen uses the default 8-iteration cap — enough to drain
+// every well-formed TCP option mix observed in production (MSS / WS /
+// SACK_PERM / TS = 4 options at most, terminating well before iter 8).
+// A previous declaration named `TCP_PARSER_MAX_DEPTH` was silently
+// misclassified by the loader as a `<SELF>_<PARENT>_<FIELD>` dispatch
+// const with a phantom parent named "parser"; the intended 32-iter
+// cap was never applied. Removed to eliminate the source/impl drift.
+// If a higher iteration cap is needed, declare `TCP_MAX_DEPTH = N` and
+// verify on every supported kernel (older kernels' 1M-insn callback
+// budget can blow up past 8 iterations — see dsl-followups.md "TCP
+// malformed unknown-option short length").
 
 parser TcpParser(packet_in pkt,
                    out tcp_h                hdr,

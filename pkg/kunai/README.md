@@ -114,9 +114,34 @@ type Output struct {
     Capture   CaptureInfo
 }
 type CaptureInfo struct {
-    MaxCapLen int  // 0 = caller default
+    MaxCapLen       int  // 0 = caller default (host falls back to its DefaultCapLen)
+    FilterMinPrefix int  // bytes the filter actually reads (0 = caller fallback)
 }
 ```
+
+`MaxCapLen` is the payload byte count the host should reserve in the
+ringbuf and copy from the packet. A non-zero value comes from an
+explicit `capture` clause (e.g. `capture headers` → 54 B,
+`capture headers+64` → 118 B, `capture absolute 96` → 96 B). When the
+DSL omits the `capture` clause entirely, the value stays at zero and
+the host is expected to fall back to its own default — `xdp-ninja`
+uses `DefaultCapLen = 1500` to match libpcap / tcpdump's full-packet
+behaviour. The no-clause case is sugar for `capture all`; users who
+want the ringbuf-reservation throughput win must opt in explicitly
+with `capture headers` (or shrink via the host's CLI `--snaplen`).
+
+`FilterMinPrefix` is the maximum byte offset the compiled filter
+reads from the packet — chain's natural header prefix sum combined
+with the merged where-clause's rightmost field-end. The tracing
+host (LoadEntry / LoadExit) uses it to size the
+`bpf_probe_read_kernel` into its per-CPU scratch map, so simple
+filters (e.g. `eth/ipv4/tcp where tcp.dport == 443` → 54 B) avoid
+copying the conservative `ScratchBufSize` per packet. Zero means
+the analyser bailed (quantified chain, het-alt) and the host
+should fall back to the full scratch read. **`FilterMinPrefix` is
+independent of `MaxCapLen`**: the scratch-read optimisation always
+applies, whether or not the user opted into the ringbuf-reservation
+optimisation via `capture headers`.
 
 The host wires kunai to its specific BPF attach point by constructing a `Capabilities` value. The kunai core ships no host-specific helpers; canonical adapters live under [`host/`](./host/) sub-packages. For an XDP fexit attach point:
 

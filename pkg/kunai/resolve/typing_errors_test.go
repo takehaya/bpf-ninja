@@ -6,6 +6,7 @@ import (
 
 	"github.com/takehaya/xdp-ninja/pkg/kunai/ast"
 	"github.com/takehaya/xdp-ninja/pkg/kunai/ir"
+	"github.com/takehaya/xdp-ninja/pkg/kunai/parser"
 	"github.com/takehaya/xdp-ninja/pkg/kunai/vocab"
 )
 
@@ -85,5 +86,37 @@ func TestErrOrderedNotAllowedMatchesSpec(t *testing.T) {
 	want := "ordered comparison < not allowed for CIDR (CIDR supports only == and !=)"
 	if got != want {
 		t.Errorf("\n  got:  %q\n  want: %q", got, want)
+	}
+}
+
+// TestResolveRejectsBareIdentValue locks the resolver's typing reject
+// for bracket predicates whose RHS is a bare identifier. Previously
+// the codegen surfaced ErrNotImplemented "predicate value type ident"
+// for these — a misleading "missing emit" diagnostic for what is
+// actually a type-system violation. The resolver now stops them with
+// a clear error before codegen.
+func TestResolveRejectsBareIdentValue(t *testing.T) {
+	cases := []string{
+		"eth/ipv4/tcp[dport==true]",
+		"eth/ipv4/tcp[dport==port]",
+		"eth/ipv4/tcp[dport==X]",
+		// 'in' list element bare-ident is also rejected — typing rule
+		// is per-element, not per-predicate.
+		"eth/ipv4/tcp[dport in [443, foo]]",
+	}
+	for _, expr := range cases {
+		f, perr := parser.Parse(expr, "t.dsl", nil)
+		if perr != nil {
+			t.Fatalf("%s: parse: %v", expr, perr)
+		}
+		_, err := Resolve(f, loadVocab(t), nil)
+		if err == nil {
+			t.Errorf("%s: expected reject", expr)
+			continue
+		}
+		msg := err.Error()
+		if !strings.Contains(msg, "bare identifier") && !strings.Contains(msg, "predicate value") {
+			t.Errorf("%s: error message lacks typing hint: %v", expr, msg)
+		}
 	}
 }

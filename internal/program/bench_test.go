@@ -1,10 +1,14 @@
 package program
 
 import (
+	"net"
+	"os"
 	"testing"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/asm"
+	"github.com/google/gopacket/layers"
+	"github.com/takehaya/xdp-ninja/pkg/kunai/dsltest"
 )
 
 // Compile benchmarks that compare the cbpfc and DSL paths on
@@ -186,4 +190,193 @@ func BenchmarkVocabLoad(b *testing.B) {
 	// memoised dslvocab.Bundled().
 	benchmarkCompile(b, "eth/ipv4/tcp", true)
 	b.SetBytes(0) // disable bytes/sec metric for clarity
+}
+
+// BenchmarkFilterSet walks the canonical F1-F10 evaluation set
+// (defined in filterset_test.go::FilterSet) and reports per-filter
+// compile time + raw-insn count. Each entry runs the kunai DSL path;
+// filters that have a comparable cBPF form (FilterSpec.CBPFCExpr non-
+// empty) additionally run the cbpfc path so a single bench invocation
+// produces both halves of the §6.3 comparison plot.
+//
+// Subtest naming is `Fn/dsl` and `Fn/cbpfc` so `go test -bench` output
+// can be parsed line-by-line into benchmark/results/b1_insns.csv (see
+// benchmark/microbench/run.sh).
+func BenchmarkFilterSet(b *testing.B) {
+	for _, fs := range FilterSet {
+		b.Run(fs.ID+"/dsl", func(b *testing.B) {
+			benchmarkCompile(b, fs.Expr, true)
+		})
+		if fs.CBPFCExpr != "" {
+			b.Run(fs.ID+"/cbpfc", func(b *testing.B) {
+				benchmarkCompile(b, fs.CBPFCExpr, false)
+			})
+		}
+	}
+}
+
+// BenchmarkFilterSetRun is the runtime counterpart of BenchmarkFilterSet
+// (E2 / B2 mesobench). It loads each filter as a real tracing program
+// against the dummy XDP target and measures per-packet end-to-end cost
+// via BPF_PROG_TEST_RUN (one syscall + one program execution per Go
+// bench iteration; see benchmarkRun for the rationale on choosing Test
+// over Program.Benchmark).
+//
+// Comparing kunai/F* against cbpfc/F* on the filters where cBPF can
+// compete (F1-F4, F6) is the §6.3 trace-tone source: if the per-packet
+// gap is small the static-insn-count gap reported in §6.3 is amortized
+// at runtime; if it stays large the codegen needs §8 future-work.
+//
+// Requires root (BPF_PROG_TEST_RUN). Sub-bench naming is Fn/{kunai,cbpfc}
+// so benchmark/microbench/run_runtime.sh can awk it into b2_runtime.csv.
+func BenchmarkFilterSetRun(b *testing.B) {
+	if os.Getuid() != 0 {
+		b.Skip("requires root")
+	}
+	targetProg := loadDummyXDP(b)
+
+	for _, fs := range FilterSet {
+		pkt := buildPacketForFilter(b, fs)
+
+		b.Run(fs.ID+"/kunai", func(b *testing.B) {
+			benchmarkRun(b, targetProg, fs.Expr, pkt, true)
+		})
+		if fs.CBPFCExpr != "" {
+			b.Run(fs.ID+"/cbpfc", func(b *testing.B) {
+				benchmarkRun(b, targetProg, fs.CBPFCExpr, pkt, false)
+			})
+		}
+	}
+}
+
+// benchmarkRun loads a tracing probe with the given filter expression
+// (DSL or pcap-filter depending on useDSL), then measures per-packet
+// runtime via BPF_PROG_TEST_RUN. Reports ns/pkt that includes the
+// syscall overhead (~600 ns on this kernel); the syscall path is the
+// same for kunai and cbpfc so the kunai/cbpfc *delta* is the codegen
+// signal we're after.
+//
+// We avoid the kernel-internal repeat loop in Program.Benchmark because
+// some kernels report only the duration of a single program invocation
+// regardless of the requested repeat count, which silently underflows
+// the metric to zero. Calling Test() inside the Go bench loop sidesteps
+// that by using Go's own elapsed-time measurement.
+func benchmarkRun(b *testing.B, targetProg *ebpf.Program, expr string, pkt []byte, useDSL bool) {
+	b.Helper()
+	probe, err := LoadEntry(targetProg, xdpFuncName, expr, nil, useDSL)
+	if err != nil {
+		b.Fatalf("LoadEntry %q: %v", expr, err)
+	}
+	defer func() { _ = probe.Close() }()
+
+	// Warm so the first measured iteration sees a hot JIT cache.
+	if _, _, err := probe.Program().Test(pkt); err != nil {
+		b.Fatalf("warmup Test: %v", err)
+	}
+
+	b.ResetTimer()
+	for range b.N {
+		if _, _, err := probe.Program().Test(pkt); err != nil {
+			b.Fatalf("Test: %v", err)
+		}
+	}
+	// Go's native ns/op (= total wall time / b.N) is already the
+	// per-packet end-to-end cost (syscall + one kernel run). We
+	// alias it as ns/pkt so the run_runtime.sh awk pattern can grep
+	// for the same metric name as the rest of the bench harness.
+	b.ReportMetric(float64(b.Elapsed().Nanoseconds())/float64(b.N), "ns/pkt")
+}
+
+// buildPacketForFilter materializes a packet that the given filter
+// matches. Unlike the verifier-load test which only cares about
+// compilation, the runtime bench needs a packet that exercises the
+// full filter body (parser machine + where-clause comparison + capture)
+// so the measured ns/pkt reflects the real path, not an early reject.
+//
+// Field values below must stay in sync with FilterSpec.Expr in
+// filterset_test.go: any literal that appears in an Expr predicate
+// (port number, address, VLAN id, MSS value, …) must show up here too,
+// or the bench silently measures a parser-rejected packet path and
+// the ns/pkt number stops being meaningful. The per-case comments
+// quote the predicate that pins each literal.
+func buildPacketForFilter(b *testing.B, fs FilterSpec) []byte {
+	b.Helper()
+	switch fs.ID {
+	case "F1":
+		// Expr: tcp.dport == 443
+		return dsltest.BuildEthIPv4TCP(b, 12345, 443)
+	case "F2":
+		// Expr: ipv4[src==10.0.0.0/8] and tcp.dport == 80
+		return dsltest.Build(b, dsltest.PacketOpts{
+			SrcIP:   net.ParseIP("10.0.0.1"),
+			DstIP:   net.ParseIP("10.0.0.2"),
+			DstPort: 80,
+			TCP:     true,
+		})
+	case "F3":
+		// Expr: ipv6[src==2001:db8::/32]
+		return dsltest.BuildEthIPv6TCP(b,
+			net.ParseIP("2001:db8::1"),
+			net.ParseIP("2001:db8::2"),
+			1234, 443)
+	case "F4":
+		// Expr: vlan[tci==100] and tcp.dport == 80
+		return dsltest.Build(b, dsltest.PacketOpts{
+			VLAN:    []uint16{100},
+			DstPort: 80,
+			TCP:     true,
+		})
+	case "F5":
+		// Expr: eth/qinq/vlan/ipv4/tcp where tcp.dport == 80
+		// (no explicit tci predicate — chain dispatch alone suffices)
+		return dsltest.Build(b, dsltest.PacketOpts{
+			QinQ:    true,
+			VLAN:    []uint16{200},
+			DstPort: 80,
+			TCP:     true,
+		})
+	case "F6":
+		// Expr: icmp.type == 8 (echo request, BuildEthIPv4ICMP default)
+		return dsltest.Build(b, dsltest.PacketOpts{
+			ICMP: true,
+			TCP:  false,
+			UDP:  false,
+		})
+	case "F7":
+		// Expr: inner.dst == 10.0.0.1 (GTP-U inner IPv4)
+		return dsltest.BuildGTPU(b, dsltest.GTPUOpts{
+			InnerDst:     net.ParseIP("10.0.0.1"),
+			InnerDstPort: 80,
+		})
+	case "F8":
+		// Expr: any(srv6.segments.addr == fc00::1); InnerNextHeader=6
+		// keeps the post-SRH dispatch on TCP so the parser walks past
+		// the segment list rather than rejecting on an unknown nexthdr.
+		return dsltest.BuildSRv6(b, dsltest.SRv6Opts{
+			Segments:        []net.IP{net.ParseIP("fc00::1")},
+			InnerNextHeader: 6,
+			InnerDstPort:    80,
+		})
+	case "F9":
+		// Expr: inner.dst == 10.0.0.1 (Geneve inner IPv4)
+		return dsltest.BuildGeneveInnerIPv4TCP(b, dsltest.GeneveInnerIPv4TCPOpts{
+			InnerDstIP:   net.ParseIP("10.0.0.1"),
+			InnerDstPort: 80,
+		})
+	case "F10":
+		// Expr: tcp.options.MSS.value == 1460 (= 0x05b4 big-endian)
+		return dsltest.Build(b, dsltest.PacketOpts{
+			DstPort: 12345, // unused by the filter; MSS is the predicate
+			TCP:     true,
+			TCPOptions: []layers.TCPOption{
+				{
+					OptionType:   layers.TCPOptionKindMSS,
+					OptionLength: 4,
+					OptionData:   []byte{0x05, 0xb4},
+				},
+			},
+		})
+	}
+	b.Fatalf("no packet builder for %s", fs.ID)
+	return nil
 }

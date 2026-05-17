@@ -92,6 +92,32 @@ func TestResolveSimpleChain(t *testing.T) {
 	}
 }
 
+func TestChainRootWarning(t *testing.T) {
+	// Standard L2 entry (root == eth) must NOT raise a warning.
+	p := resolveOK(t, "eth/ipv4/tcp", nil)
+	if len(p.Warnings) != 0 {
+		t.Errorf("eth/ipv4/tcp: unexpected warnings: %v", p.Warnings)
+	}
+
+	// Bare non-eth root SHOULD warn. The chain itself still resolves
+	// — non-eth roots are valid for tunnels / raw-IP capture, just
+	// rarely what users mean.
+	p2 := resolveOK(t, "tcp", nil)
+	if len(p2.Warnings) == 0 {
+		t.Fatalf("tcp: expected chain root warning, got none")
+	}
+	if !strings.Contains(p2.Warnings[0], "chain root") || !strings.Contains(p2.Warnings[0], "eth") {
+		t.Errorf("warning message lacks expected substrings: %q", p2.Warnings[0])
+	}
+
+	// ipv4-root (without eth) is the canonical "I forgot eth/" case
+	// and must also warn.
+	p3 := resolveOK(t, "ipv4/tcp", nil)
+	if len(p3.Warnings) == 0 {
+		t.Fatalf("ipv4/tcp: expected chain root warning, got none")
+	}
+}
+
 func TestResolveIPv6Chain(t *testing.T) {
 	p := resolveOK(t, "eth/ipv6/tcp", nil)
 	// tcp is dual-declared; under ipv6 we expect TCP_IPV6_NEXT_HEADER==6.

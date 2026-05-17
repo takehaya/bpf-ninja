@@ -50,6 +50,11 @@ func TestExitModeInterfaces(t *testing.T) {
 		}
 	}
 
+	// Flush before reading: Write() no longer flushes per-packet.
+	if err := w.Flush(); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+
 	// Read back
 	r, err := pcapgo.NewNgReader(&buf, pcapgo.DefaultNgReaderOptions)
 	if err != nil {
@@ -96,6 +101,9 @@ func TestExitModeUnknownAction(t *testing.T) {
 	if err := w.Write(pkt); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
+	if err := w.Flush(); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
 
 	r, err := pcapgo.NewNgReader(&buf, pcapgo.DefaultNgReaderOptions)
 	if err != nil {
@@ -127,6 +135,9 @@ func TestEntryModeUnchanged(t *testing.T) {
 	}
 	if err := w.Write(pkt); err != nil {
 		t.Fatalf("Write: %v", err)
+	}
+	if err := w.Flush(); err != nil {
+		t.Fatalf("Flush: %v", err)
 	}
 
 	r, err := pcapgo.NewNgReader(&buf, pcapgo.DefaultNgReaderOptions)

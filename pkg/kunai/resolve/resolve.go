@@ -16,6 +16,8 @@
 package resolve
 
 import (
+	"fmt"
+
 	"github.com/takehaya/xdp-ninja/pkg/kunai/ast"
 	"github.com/takehaya/xdp-ninja/pkg/kunai/ir"
 	"github.com/takehaya/xdp-ninja/pkg/kunai/vocab"
@@ -126,8 +128,33 @@ func (r *resolver) resolveFilter(f *ast.Filter) (*ir.Program, error) {
 		LabelTable: r.labels,
 		Pos:        f.Pos,
 	}
+	addChainRootWarning(p, f)
 	markRuntimeOffsetLayers(p)
 	return p, nil
+}
+
+// addChainRootWarning appends a notice to p.Warnings when the chain's
+// first protocol is not "eth". Standard L2 packet entry expects an
+// `eth/...` root, so a non-eth root is almost always a typo (e.g.
+// `tcp` instead of `eth/ipv4/tcp`) — but it can be legitimate for
+// callers that attach to a non-Ethernet datapath, so it stays a
+// warning rather than an error. Skips alternation-group roots and
+// empty chains; both are handled by other passes.
+func addChainRootWarning(p *ir.Program, f *ast.Filter) {
+	if p == nil || len(f.Layers) == 0 {
+		return
+	}
+	root := f.Layers[0]
+	if root.Kind == ast.LayerAltGroup {
+		return
+	}
+	if root.ProtoName == "" || root.ProtoName == "eth" {
+		return
+	}
+	p.Warnings = append(p.Warnings, fmt.Sprintf(
+		"chain root %q is not 'eth'; standard L2 packet entry expects 'eth/...'. Use --dump-asm filter to inspect the generated BPF.",
+		root.ProtoName,
+	))
 }
 
 // markRuntimeOffsetLayers populates LayerPos on every layer (including

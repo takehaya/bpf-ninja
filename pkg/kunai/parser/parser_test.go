@@ -559,6 +559,47 @@ func TestParseCaptureWithConditional(t *testing.T) {
 	}
 }
 
+// TestParseDeepNesting pins the recursion-depth guard in the where /
+// arith parsers: a pathological `((((...))))` payload (depth 100) is
+// rejected with a clear "too deep" diagnostic instead of overflowing
+// the Go stack via recursive descent. Mirrors the maxAltDepth check
+// that already covers layer-chain alternation groups.
+func TestParseDeepNesting(t *testing.T) {
+	expr := "eth/ipv4/tcp where " + strings.Repeat("(", 100) + "tcp.dport == 443" + strings.Repeat(")", 100)
+	_, err := Parse(expr, "t.dsl", nil)
+	if err == nil {
+		t.Fatal("expected nesting depth error")
+	}
+	if !strings.Contains(err.Error(), "too deep") {
+		t.Errorf("error message lacks depth hint: %v", err)
+	}
+}
+
+// TestParseDeepNestingArith covers the same guard inside the arith
+// factor parser: `(((... + 1 ...)))` should be rejected before the
+// recursion exhausts the stack.
+func TestParseDeepNestingArith(t *testing.T) {
+	expr := "eth/ipv4/tcp where tcp.dport == " + strings.Repeat("(", 100) + "1" + strings.Repeat(")", 100)
+	_, err := Parse(expr, "t.dsl", nil)
+	if err == nil {
+		t.Fatal("expected nesting depth error")
+	}
+	if !strings.Contains(err.Error(), "too deep") {
+		t.Errorf("error message lacks depth hint: %v", err)
+	}
+}
+
+// TestParseShallowNestingAccepted is a regression guard: nesting at
+// exactly the limit (no deeper) must continue to parse cleanly so the
+// guard does not regress normal hand-written filters.
+func TestParseShallowNestingAccepted(t *testing.T) {
+	// 16 paren pairs — comfortably under maxParenDepth (32).
+	expr := "eth/ipv4/tcp where " + strings.Repeat("(", 16) + "tcp.dport == 443" + strings.Repeat(")", 16)
+	if _, err := Parse(expr, "t.dsl", nil); err != nil {
+		t.Fatalf("shallow nesting rejected: %v", err)
+	}
+}
+
 // --- All 13 examples end-to-end ---
 
 func TestParseAllExamples(t *testing.T) {

@@ -64,21 +64,28 @@ const bit<8>  IPV4_IPV4_PROTOCOL = 4;
 // payload — IPv4 uses the well-known 0x0800.
 const bit<16> IPV4_GRE_PROTOCOL_TYPE = 0x0800;
 
-// Cap the option-walk loop. Worst-case trailer is 40 bytes (IHL=15)
-// of NOPs (kind=1, single byte), so 40 iterations would drain the
-// trailer fully. The verifier-safe bpf_loop cap is 32, which clips
-// at IHL=12 with all-NOP options — packets above that drop at the
-// loop end. Mixed real-world options (Router Alert at 4 B/iter,
-// other options TBD in B-4) hit the cap far sooner; 32 is adequate
-// for every well-formed IPv4 packet observed in the wild.
+// Option-walk loop bound: worst-case trailer is 40 bytes (IHL=15)
+// of NOPs (kind=1, single byte), so up to 40 iterations would drain
+// the trailer fully. We leave the bound at codegen's default 8
+// iterations (see vocab/loader.go classifyConsts MAX_DEPTH path).
+// Mixed real-world options (Router Alert at 4 B/iter, Record Route
+// at 4 B/entry) hit the cap far sooner; 8 is adequate for every
+// well-formed IPv4 packet observed in the wild.
 //
-// The cap is only consulted when codegen emits the bpf_loop walk
+// A previous declaration named `IPV4_PARSER_MAX_DEPTH = 32` was
+// silently misclassified by the loader as a `<SELF>_<PARENT>_<FIELD>`
+// dispatch const with a phantom parent named "parser"; the intended
+// 32-iter cap was never applied. Removed to eliminate the
+// source/impl drift. The loader's MAX_DEPTH path matches the exact
+// name `<SELF>_MAX_DEPTH` only — declare `IPV4_MAX_DEPTH = N` (and
+// verify on every supported kernel) if a higher cap is needed.
+//
+// The bound is only consulted when codegen emits the bpf_loop walk
 // — which happens only when the program queries an IPv4 option.
 // Programs that don't reach into ipv4.options.<X> route through
 // the demand-driven bulk-advance fallback (see dsl-internals.md
 // §6.5 Mechanism 8 / canFallbackToBulkAdvance) and skip the
 // loop entirely.
-const bit<8> IPV4_PARSER_MAX_DEPTH = 32;
 
 extern ParserCounter {
     ParserCounter();

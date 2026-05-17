@@ -528,6 +528,22 @@ func TestGeneveDispatch(t *testing.T) {
 	r.MustReject(t, BuildEthIPv4UDP(t, 12345, 53, []byte("dns")), "non-geneve UDP (dport=53) must reject geneve filter")
 }
 
+// TestGeneveInnerIPv4Dispatch covers the F9-style chain where the
+// filter walks past the Geneve fixed header into the inner Ethernet
+// frame and matches on inner IPv4 destination. eth.p4 declares
+// ETH_GENEVE_NO_CHECK so the inner-eth dispatch is accepted by the
+// parser without a constant comparison.
+func TestGeneveInnerIPv4Dispatch(t *testing.T) {
+	r := New(t, "eth/ipv4@outer/udp/geneve/eth/ipv4@inner/tcp where inner.dst == 192.168.1.2")
+	r.MustMatch(t, BuildGeneveInnerIPv4TCP(t, GeneveInnerIPv4TCPOpts{}),
+		"geneve-encapsulated inner ipv4 dst matches the where-clause")
+	r.MustReject(t, BuildGeneveInnerIPv4TCP(t, GeneveInnerIPv4TCPOpts{
+		InnerDstIP: net.ParseIP("192.168.1.99"),
+	}), "geneve frame whose inner ipv4 dst does not match must reject")
+	r.MustReject(t, BuildEthIPv4TCP(t, 12345, 80),
+		"non-tunneled TCP frame must not match the geneve-inner filter")
+}
+
 // TestEthIPv4UDPDirect ensures the simple UDP path still works
 // alongside the GTP-over-UDP path. Important regression check
 // because both filters share the udp.p4 vocab.

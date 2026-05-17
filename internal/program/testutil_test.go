@@ -7,11 +7,13 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/cilium/ebpf"
-	"github.com/cilium/ebpf/perf"
+	"github.com/takehaya/xdp-ninja/internal/capture"
 	"github.com/takehaya/xdp-ninja/internal/filter"
 	"github.com/takehaya/xdp-ninja/internal/testutil"
 	"github.com/vishvananda/netlink"
@@ -80,7 +82,7 @@ char _license[] SEC("license") = "GPL";
 // BTF — peer of loadDummyXDP. The classifier returns TC_ACT_OK; the
 // xdp-ninja observer attaches as fentry/fexit and the dummy never
 // sees real traffic in unit tests, so the stub body suffices.
-func loadDummyTC(t *testing.T) *ebpf.Program {
+func loadDummyTC(t testing.TB) *ebpf.Program {
 	t.Helper()
 	testutil.SkipIfNotRoot(t)
 
@@ -100,7 +102,7 @@ func loadDummyTC(t *testing.T) *ebpf.Program {
 }
 
 // loadDummyXDP compiles and loads a minimal XDP_PASS program with BTF.
-func loadDummyXDP(t *testing.T) *ebpf.Program {
+func loadDummyXDP(t testing.TB) *ebpf.Program {
 	t.Helper()
 	testutil.SkipIfNotRoot(t)
 
@@ -121,7 +123,7 @@ func loadDummyXDP(t *testing.T) *ebpf.Program {
 
 // loadDummyXDPWithSubfunc compiles and loads an XDP program with a __noinline subfunction.
 // Returns the loaded program (entry = "xdp_subfunc_test", subfunction = "process_packet").
-func loadDummyXDPWithSubfunc(t *testing.T) *ebpf.Program {
+func loadDummyXDPWithSubfunc(t testing.TB) *ebpf.Program {
 	t.Helper()
 	testutil.SkipIfNotRoot(t)
 
@@ -149,6 +151,14 @@ func setupVeth(t *testing.T, xdpProg *ebpf.Program, veth0, veth1, ip0, ip1 strin
 		LinkAttrs: netlink.LinkAttrs{Name: veth0},
 		PeerName:  veth1,
 	}); err != nil {
+		// vimto's prebuilt kernels (CI matrix) ship without the veth
+		// driver in some configurations. Skip cleanly rather than
+		// flagging an environment issue as a verifier regression.
+		// EOPNOTSUPP = built-in driver disabled; ENOPKG = module not
+		// loaded.
+		if errors.Is(err, syscall.EOPNOTSUPP) || errors.Is(err, syscall.ENOPKG) {
+			t.Skipf("veth not supported on this kernel: %v", err)
+		}
 		t.Fatalf("veth add: %v", err)
 	}
 	t.Cleanup(func() { _ = exec.Command("ip", "link", "del", veth0).Run() })
@@ -198,38 +208,44 @@ func countEvents(t *testing.T, targetProg *ebpf.Program, funcName, iface, pingTa
 	}
 	defer func() { _ = probe.Close() }()
 
-	reader, err := perf.NewReader(probe.EventsMap, 64*1024)
+	// EventsMap is now the outer ARRAY_OF_MAPS (R22 sharded-ringbuf
+	// hoist); fan out to per-CPU inner ringbufs via the sharded
+	// reader so this exercises the same path as `xdp-ninja --mode
+	// {entry,exit}` does in production.
+	sr, err := capture.NewShardedReader(probe.InnerMaps)
 	if err != nil {
-		t.Fatalf("perf reader: %v", err)
+		t.Fatalf("sharded reader: %v", err)
 	}
-	defer func() { _ = reader.Close() }()
 
 	// Give the probe time to attach before sending packets.
 	time.Sleep(200 * time.Millisecond)
+
+	var count atomic.Int64
+	sink := func(shardIdx int, pkts []capture.Packet) error {
+		count.Add(int64(len(pkts)))
+		return nil
+	}
+	stop, err := sr.RunShards(sink)
+	if err != nil {
+		t.Fatalf("RunShards: %v", err)
+	}
+	defer stop()
 
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		_, _ = exec.Command("ping", "-c", fmt.Sprintf("%d", pingCount), "-W", "1", "-I", iface, pingTarget).CombinedOutput()
 	}()
-	defer func() { <-done }()
 
-	reader.SetDeadline(time.Now().Add(time.Duration(pingCount+5) * time.Second))
-	count := 0
-	for {
-		record, err := reader.Read()
-		if err != nil {
+	deadline := time.Now().Add(time.Duration(pingCount+5) * time.Second)
+	for time.Now().Before(deadline) {
+		if int(count.Load()) >= maxEvents {
 			break
 		}
-		if record.LostSamples > 0 {
-			continue
-		}
-		count++
-		if count >= maxEvents {
-			break
-		}
+		time.Sleep(50 * time.Millisecond)
 	}
-	return count
+	<-done
+	return int(count.Load())
 }
 
 // runFilterMatrix attaches one probe per filter expression and fails

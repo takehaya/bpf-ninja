@@ -21,6 +21,9 @@ func (r *resolver) resolveBracketPredicate(ap *ast.Predicate, layer *ir.LayerIns
 	// field's declared bit width (dsl-types.md §7.2). Delegated to
 	// the typing helper so the same rule is in one place.
 	if ap.Kind == ast.PredCmp {
+		if err := rejectBareIdentValue(ap.Value); err != nil {
+			return nil, err
+		}
 		if err := checkBracketIntFit(field, ap.Value, layer.Spec.Name, ap.Pos); err != nil {
 			return nil, err
 		}
@@ -33,6 +36,9 @@ func (r *resolver) resolveBracketPredicate(ap *ast.Predicate, layer *ir.LayerIns
 		// field — apply the bracket fit-check per element so
 		// out-of-range values surface here, not at codegen time.
 		for _, v := range ap.List {
+			if err := rejectBareIdentValue(v); err != nil {
+				return nil, err
+			}
 			if err := checkBracketIntFit(field, v, layer.Spec.Name, ap.Pos); err != nil {
 				return nil, err
 			}
@@ -51,6 +57,21 @@ func (r *resolver) resolveBracketPredicate(ap *ast.Predicate, layer *ir.LayerIns
 		rp.Unsupported = "'has' predicate not yet implemented"
 	}
 	return rp, nil
+}
+
+// rejectBareIdentValue surfaces a typing error when the RHS of a
+// bracket predicate is a bare identifier (`tcp[dport == true]`,
+// `tcp[dport == port]`). Predicate values must be typed literals;
+// the previous failure mode here was a codegen-side
+// ErrNotImplemented "predicate value type ident" that masked the
+// actual type violation. Surface it here with position info so users
+// see "1:14: predicate value cannot be a bare identifier..." instead
+// of a kunai internals error.
+func rejectBareIdentValue(v *ast.Value) error {
+	if v == nil || v.Kind != ast.ValIdent {
+		return nil
+	}
+	return errBareIdentValue(v.Pos, v.Ident)
 }
 
 // resolveUnqualifiedField looks up a field path scoped to one

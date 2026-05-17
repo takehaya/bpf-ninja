@@ -83,15 +83,27 @@ func loadXDPNativeOrFail(t *testing.T, expr string, useDSL bool) {
 		t.Fatalf("compile %q: %v", expr, err)
 	}
 
-	eventsMap, err := ebpf.NewMap(&ebpf.MapSpec{
-		Name: "ninja_xdp_test_pe", Type: ebpf.PerfEventArray,
+	innerSpec := &ebpf.MapSpec{
+		Name: "ninja_xdp_test_rb", Type: ebpf.RingBuf, MaxEntries: 65536,
+	}
+	innerMap, err := ebpf.NewMap(innerSpec)
+	if err != nil {
+		t.Fatalf("creating inner ringbuf: %v", err)
+	}
+	t.Cleanup(func() { _ = innerMap.Close() })
+	outerMap, err := ebpf.NewMap(&ebpf.MapSpec{
+		Name: "ninja_xdp_test_outer", Type: ebpf.ArrayOfMaps,
+		KeySize: 4, ValueSize: 4, MaxEntries: 1, InnerMap: innerSpec,
 	})
 	if err != nil {
-		t.Fatalf("creating perf map: %v", err)
+		t.Fatalf("creating outer array_of_maps: %v", err)
 	}
-	t.Cleanup(func() { _ = eventsMap.Close() })
+	t.Cleanup(func() { _ = outerMap.Close() })
+	if err := outerMap.Put(uint32(0), innerMap); err != nil {
+		t.Fatalf("populating outer map: %v", err)
+	}
 
-	insns := buildXDPNativeInsns(out, eventsMap.FD())
+	insns := buildXDPNativeInsns(out, outerMap.FD())
 	prog, err := ebpf.NewProgram(&ebpf.ProgramSpec{
 		Name:         "xdp_ninja_native_test",
 		Type:         ebpf.XDP,

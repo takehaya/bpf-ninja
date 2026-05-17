@@ -216,6 +216,28 @@ MVP 制限:
 - proto 名で指定するとき chain 内に複数 instance があると ambiguous error。`@label` で一意化する。
 - `absolute` は capture 内の contextual keyword。label が `absolute` という名前と衝突する稀ケースは `absolute+0` で label 解釈を強制可能。
 
+#### snaplen トレードオフ (重要)
+
+`capture` 句を **書かない** = `capture all` の sugar。 **既定で full packet を取る**
+(host 側 `DefaultCapLen=1500` にフォールバック、 libpcap / tcpdump の `-s 0`
+相当)。 これは「`tcp where dport==443` と書いたら payload まで取れる」 という
+tcpdump 互換の UX を優先した設計。
+
+高 rate capture (>1 Mpps 級) で ringbuf 予約サイズを縮めて throughput を上げ
+たい場合は **明示的に `capture headers` (or `headers+N`)** を書く。 paper §6
+の R32 数字 (filter+payload 14+ Mpps) はこの opt-in 状態で測定している:
+
+| 書き方 | ringbuf 予約 | 用途 |
+|---|---|---|
+| `tcp where dport==443` (= `capture all` 暗黙) | 1500 B | tcpdump 相当、 payload 完全保存 |
+| `tcp where dport==443 capture headers` | 54 B | 高 rate、 header 解析だけしたい |
+| `tcp where dport==443 capture headers+64` | 118 B | header + L7 先頭 64 B |
+| `--snaplen N` (CLI 上書き) | N B | 上記全てを N で clamp |
+
+なお **filter 評価コスト** (in-kernel scratch read) は `capture` 句に関係なく
+常に `inferFilterMinPrefix` で動的に縮められている (R32 の filter cost
+14×→0× win)。 縮まらないのは ringbuf 予約 / pcap 出力サイズだけ。
+
 ### Alternation
 
 `(a|b|c)` でカッコ区切りの選択肢を書ける。
@@ -370,14 +392,17 @@ where (tcp.dport == 443) != gtp.opt.exists   # xor (片方だけ真)
 通常の xdp-ninja は **既存の XDP プログラム** に fentry/fexit で trampoline attach する観測ツール (=「他人の XDP を覗く」モード)。一方 `--mode xdp` を付けると **xdp-ninja 自身が XDP として interface に直接 attach** する。「interface に何も XDP が attach されていない、けど filter したい」場合に便利。
 
 ```bash
-# tcpdump filter (cbpfc) で TCP/443 だけ capture, それ以外は素通し (XDP_PASS)
-sudo xdp-ninja --mode xdp -i eth0 "tcp port 443"
+# DSL で TCP/443 だけ capture, それ以外は素通し (XDP_PASS)
+sudo xdp-ninja --mode xdp -i eth0 "eth/ipv4/tcp[dport==443]"
 
-# DSL filter (限定的に対応, 後述)
+# DSL filter (UDP は全部 capture)
 sudo xdp-ninja --mode xdp -i eth0 "eth/ipv4/udp"
 
+# 旧 pcap syntax を使いたい時は --cbpf 必須 (legacy)
+sudo xdp-ninja --cbpf --mode xdp -i eth0 "tcp port 443"
+
 # 既存 XDP がある interface では fail (production XDP を意図せず壊さない設計)
-sudo xdp-ninja --mode xdp -i eth0 "tcp port 443"
+sudo xdp-ninja --mode xdp -i eth0 "eth/ipv4/tcp[dport==443]"
 # → error: interface eth0 already has XDP program (id=42, mode=driver);
 #          use --mode entry to observe it via fentry, or detach the existing program first
 ```
@@ -388,6 +413,67 @@ sudo xdp-ninja --mode xdp -i eth0 "tcp port 443"
 - mode metadata 値は `2` (= xdp-native; 既存 entry=0, exit=1)
 
 DSL / tcpdump 両方とも `--mode xdp` で完全 load 可能 (kunai codegen が packet-pointer-safe な bound check を emit する設計、F14 完了済)。IPv4 / IPv6 / alternation / 各種 quantifier / capture / where すべて verifier 通過確認 (`internal/program/program_xdp_test.go::xdpNativeDSLExprs` 参照)。
+
+## 出力ファイルレイアウト (per-CPU sharded)
+
+R22 以降、 ringbuf は per-CPU shard (`BPF_MAP_TYPE_ARRAY_OF_MAPS` の inner =
+個別 `BPF_MAP_TYPE_RINGBUF`) で構成される。 user-space 側も shard ごとに
+1 goroutine + 1 file で受けるので、 `-w path.pcap` を指定したとき出力は:
+
+```
+path.pcap         ← SHB+IDB のみの marker file (0 packets)
+path.pcap.cpu0    ← CPU 0 が受けた packets
+path.pcap.cpu1    ← CPU 1 が受けた packets
+...
+path.pcap.cpuN    ← (N = nproc - 1)
+```
+
+`tcpdump -r path.pcap` は marker を読むだけで packets は出ない。 各 `cpuN` ファイル
+は独立した valid pcap-ng として開ける:
+
+```bash
+# CPU 12 が受けた分だけ読む
+tcpdump -r path.pcap.cpu12
+
+# 全 shard を mergecap でまとめる
+mergecap -w merged.pcap path.pcap.cpu*
+
+# 確認: shard ごとの packet count
+for f in path.pcap.cpu*; do echo "$(basename $f): $(tcpdump -r $f 2>/dev/null | wc -l)"; done
+```
+
+**注意**: `xdp-ninja convert` は `--raw-dump` 用の `.raw` を pcap-ng に変換する
+サブコマンドで、 **`.cpuN` pcap-ng shards は処理しない**。 shards をまとめたい
+場合は wireshark 同梱の `mergecap` を使う。 raw-dump path
+(`--raw-dump -w foo.raw`) を使う場合は `.cpuN` 分割が同じ命名規則で起こり、
+`xdp-ninja convert -i foo.raw.cpu0 ...` で 1 個ずつ pcap-ng に変換できる。
+
+## Performance flags
+
+高 rate capture (>1 Mpps 級) で使う flag 群。 通常用途では既定値で十分。
+
+| Flag | 既定 | 効果 / 注意 |
+|---|---|---|
+| `--snaplen N` | 0 (= MaxCapLen or DefaultCapLen=1500) | 1 packet あたりの保存 byte 数を CLI から強制上書き。 DSL の `capture` 句より優先 |
+| `--ringbuf-size MB` | 16 | per-CPU ringbuf 1 個あたりの size。 storage 帯域が追いつかない時は増やす |
+| `--fast-reader` | off | mmap+atomic 直叩きの fastrb reader を使う。 cilium/ebpf の generic reader より低 CPU、 高 throughput |
+| `--no-wakeup` | off | `BPF_RB_NO_WAKEUP` を全 submit に立てる。 reader 側 epoll wake が無くなり throughput up、 **代わりに p50 latency が 100µs → ~2.6ms に悪化** (1ms polling 床)。 `--fast-reader` 必須 |
+| `--observer-prefetch` | off | filter scratch を 512 B 強制。 R12 の ice driver で L1-dcache prefetch が効くケースに opt-in |
+| `--in-memory-buffer MB` | 0 (off) | raw-dump 出力先を mmap 上の `MAP_POPULATE` バッファに置く。 NVMe write が bottleneck な時に隠せる |
+| `--null-output` | off | bench 用。 出力 file を一切開かず、 reader の CPU コストだけ測る |
+| `--latency-sample-period N` | 0 (off) | N packet ごとに 1 サンプル、 BPF→reader latency (ns 単位) を tsv に蓄積 |
+| `--latency-sample-output PATH` | (stderr) | 上の sample tsv の出力先 |
+| `--raw-dump` | off | pcap-ng 経由を bypass。 packet bytes + header をそのまま raw に追記。 後で `xdp-ninja convert` で pcap-ng 化 |
+| `--rx-hwts` | off | `bpf_xdp_metadata_rx_timestamp` kfunc を使って NIC の HW timestamp を埋め込む。 ice 等 6.8+ driver 対応のみ |
+
+flag 同士の組合せメモ:
+
+- `--no-wakeup` は必ず `--fast-reader` と一緒に。 cilium/ebpf reader は missing
+  wake で永久ブロックする
+- `--in-memory-buffer` は `--raw-dump` の時のみ意味あり (pcap-ng path には未対応)
+- `--rx-hwts` は `--mode xdp` only。 entry/exit (fentry/fexit) では使えない
+- `--snaplen 0` (CLI 既定) はバイパスを意味する。 強制 0B にしたい場合は
+  `capture absolute 0` を DSL 側で書く
 
 ## Hand-test: `--dump-asm` で eBPF asm を覗く
 
@@ -404,11 +490,11 @@ DSL / tcpdump 両方とも `--mode xdp` で完全 load 可能 (kunai codegen が
 # DSL filter のみ
 xdp-ninja --dump-asm filter "eth/ipv4/tcp where tcp.dport == 443"
 
-# tcpdump filter のみ (cbpfc 出力)
-xdp-ninja --dump-asm filter "tcp port 443"
+# tcpdump filter のみ (cbpfc 出力、 --cbpf 必須)
+xdp-ninja --cbpf --dump-asm filter "tcp port 443"
 
 # 完全な tracing program (mode 別に shape が変わる)
-xdp-ninja --dump-asm full --mode entry "tcp port 443"
+xdp-ninja --dump-asm full --mode entry "eth/ipv4/tcp[dport==443]"
 xdp-ninja --dump-asm full --mode exit "eth/ipv4/tcp where action == XDP_DROP"
 ```
 

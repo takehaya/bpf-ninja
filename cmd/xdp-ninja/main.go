@@ -1,14 +1,20 @@
 package main
 
 import (
+	"bufio"
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"os/signal"
+	"runtime/pprof"
+	"slices"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"syscall"
+	"time"
 
+	"github.com/cilium/ebpf"
 	"github.com/urfave/cli/v3"
 
 	"github.com/takehaya/xdp-ninja/internal/attach"
@@ -83,6 +89,75 @@ var flags = []cli.Flag{
 		Name: "verbose", Aliases: []string{"v"},
 		Usage: "verbose output to stderr",
 	},
+	&cli.IntFlag{
+		Name:  "snaplen",
+		Value: 0,
+		Usage: fmt.Sprintf("force the per-packet capture length (0 = use the DSL capture clause's value, falling back to the host default of %d bytes)", program.DefaultCapLen),
+	},
+	&cli.BoolFlag{
+		Name:  "null-output",
+		Usage: "skip pcap-ng emission and just count packets (bench / profiling)",
+	},
+	&cli.StringFlag{
+		Name:  "cpuprofile",
+		Usage: "write Go cpu profile to file (bench / debugging)",
+	},
+	&cli.BoolFlag{
+		Name:  "no-async-preempt-off",
+		Usage: "keep Go's SIGURG-based goroutine preemption enabled (diagnostic opt-out)",
+	},
+	&cli.BoolFlag{
+		Name:  "bench-drop",
+		Usage: "(--mode xdp only) return XDP_DROP after capturing instead of XDP_PASS, bypassing kernel skb-create / IP drop path. Bench-only; production should leave this off",
+	},
+	&cli.BoolFlag{
+		Name:  "no-cpu-affinity",
+		Usage: "disable pinning each per-shard ringbuf reader to its producer CPU (diagnostic opt-out)",
+	},
+	&cli.IntFlag{
+		Name:  "ringbuf-size",
+		Value: 64,
+		Usage: "total ringbuf capacity in MiB (power of two); in sharded modes split evenly across CPUs",
+	},
+	&cli.BoolFlag{
+		Name:  "legacy-timestamp",
+		Usage: "use a per-batch userland time.Now() instead of the per-packet kernel bpf_ktime_get_ns() timestamp",
+	},
+	&cli.BoolFlag{
+		Name:  "raw-dump",
+		Usage: "dump ringbuf records verbatim to per-CPU .raw files; reconstruct standard pcap-ng offline via `xdp-ninja convert`",
+	},
+	&cli.BoolFlag{
+		Name:  "fast-reader",
+		Usage: "use the in-tree mmap+atomic batch ringbuf reader instead of cilium/ebpf's per-record API; supported in both --raw-dump and pcap-ng paths",
+	},
+	&cli.BoolFlag{
+		Name:  "no-wakeup",
+		Usage: "set BPF_RB_NO_WAKEUP on every ringbuf submit (saves eventfd writes on the BPF side; safe only with --fast-reader since the slow path needs wakeups)",
+	},
+	&cli.IntFlag{
+		Name:  "in-memory-buffer",
+		Value: 0,
+		Usage: "if >0, per-shard raw-dump buffer size in MiB; bytes held in pre-touched Go heap until Close (bypasses write(2) + tmpfs page-fault in the hot path; raw-dump only)",
+	},
+	&cli.BoolFlag{
+		Name:  "rx-hwts",
+		Usage: "use NIC hardware timestamps (bpf_xdp_metadata_rx_timestamp kfunc, Linux 6.8+); --mode xdp only; software fallback if kfunc / driver unsupported",
+	},
+	&cli.BoolFlag{
+		Name:  "observer-prefetch",
+		Usage: "force the fentry/fexit filter to probe_read the full 512-byte scratch regardless of the chain's actual prefix needs. Trades a per-packet helper-CPU cost for warming the ice driver's L1 dcache; on prod_tx_reflect-style targets this accelerates the observed XDP program by ~70% (see docs/ja/r12-fentry-prefetch-finding.md). Default off — most deployments prefer lower observer CPU",
+	},
+	&cli.IntFlag{
+		Name:  "latency-sample-period",
+		Value: 0,
+		Usage: "if >0, sample every Nth ringbuf record's BPF-submit→reader-read latency per shard. Samples land in --latency-sample-output (default stderr summary) for offline percentile analysis. Raw-dump path only",
+	},
+	&cli.StringFlag{
+		Name:  "latency-sample-output",
+		Value: "",
+		Usage: "tsv path to dump latency samples (one int64 ns per line). Empty = print summary (p50/p90/p99/p99.9/p99.99/max) to stderr",
+	},
 }
 
 func init() {
@@ -95,7 +170,53 @@ func init() {
 	}
 }
 
+// ensureAsyncPreemptDisabled re-execs the process with
+// GODEBUG=asyncpreemptoff=1 unless already set or --no-async-preempt-off
+// is on argv. SIGURG-driven preemption otherwise dominates CPU when the
+// per-CPU ringbuf reader goroutines run tight loops without natural
+// yield points; this loads the equivalent setting before any
+// goroutines start. The flag scan is intentionally simple — it runs
+// before cli/v3 parses args.
+func ensureAsyncPreemptDisabled() {
+	for _, a := range os.Args[1:] {
+		if a == "--no-async-preempt-off" {
+			return
+		}
+	}
+	debug := os.Getenv("GODEBUG")
+	if strings.Contains(debug, "asyncpreemptoff=1") {
+		return
+	}
+
+	var newDebug string
+	if debug == "" {
+		newDebug = "asyncpreemptoff=1"
+	} else {
+		newDebug = "asyncpreemptoff=1," + debug
+	}
+	env := os.Environ()
+	replaced := false
+	for i, e := range env {
+		if strings.HasPrefix(e, "GODEBUG=") {
+			env[i] = "GODEBUG=" + newDebug
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		env = append(env, "GODEBUG="+newDebug)
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		// Fall through silently; the user just loses the perf win,
+		// not correctness.
+		return
+	}
+	_ = syscall.Exec(exe, os.Args, env)
+}
+
 func main() {
+	ensureAsyncPreemptDisabled()
 	app := &cli.Command{
 		Name:      "xdp-ninja",
 		Version:   fmt.Sprintf("%s, commit %s, built at %s, built by %s", version, commit, date, builtBy),
@@ -112,13 +233,15 @@ Modes (--mode):
 
 Examples:
   xdp-ninja -i eth0 | tcpdump -n -r -
-  xdp-ninja -i eth0 "host 10.0.0.1" | tcpdump -r -
+  xdp-ninja -i eth0 "eth/ipv4[dst==10.0.0.1]" | tcpdump -r -
   xdp-ninja -i eth0 --mode exit | tcpdump -r -
-  xdp-ninja --mode xdp -i eth0 "tcp port 443" | tcpdump -r -
+  xdp-ninja --mode xdp -i eth0 "eth/ipv4/tcp[dport==443]" | tcpdump -r -
+  xdp-ninja --cbpf --mode xdp -i eth0 "tcp port 443" | tcpdump -r -   # legacy pcap syntax
   xdp-ninja -p 42 | tcpdump -n -r -
   xdp-ninja -i eth0 -w out.pcap`,
 		Flags:                 flags,
 		Action:                run,
+		Commands:              []*cli.Command{convertCommand},
 		EnableShellCompletion: true,
 	}
 
@@ -136,6 +259,62 @@ func run(ctx context.Context, cmd *cli.Command) error {
 			return printProtoHelp(os.Stdout, args[0])
 		}
 		return printDSLHelp(os.Stdout)
+	}
+
+	if path := cmd.String("cpuprofile"); path != "" {
+		f, err := os.Create(path)
+		if err != nil {
+			return fmt.Errorf("cpuprofile: %w", err)
+		}
+		defer func() { _ = f.Close() }()
+		if err := pprof.StartCPUProfile(f); err != nil {
+			return fmt.Errorf("cpuprofile start: %w", err)
+		}
+		defer pprof.StopCPUProfile()
+	}
+
+	capture.LegacyTimestamp = cmd.Bool("legacy-timestamp")
+	capture.DisableCPUAffinity = cmd.Bool("no-cpu-affinity")
+	if mib := cmd.Int("ringbuf-size"); mib > 0 {
+		sz := uint32(mib) * 1024 * 1024
+		if sz&(sz-1) != 0 {
+			return fmt.Errorf("--ringbuf-size %d MiB is not a power of two", mib)
+		}
+		program.RingbufSize = sz
+	}
+	if cmd.Bool("no-wakeup") {
+		if !cmd.Bool("fast-reader") {
+			return fmt.Errorf("--no-wakeup requires --fast-reader (the slow ringbuf path would hang without wakeups)")
+		}
+		program.RingbufSubmitFlags = program.BPF_RB_NO_WAKEUP
+	}
+	if mib := cmd.Int("in-memory-buffer"); mib > 0 {
+		if !cmd.Bool("raw-dump") {
+			return fmt.Errorf("--in-memory-buffer requires --raw-dump")
+		}
+	}
+	if cmd.Bool("rx-hwts") {
+		if cmd.String("mode") != "xdp" {
+			return fmt.Errorf("--rx-hwts requires --mode xdp (kfunc only available on XDP-native)")
+		}
+		if err := program.ResolveHWTimestampKfunc(); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: --rx-hwts requested but kfunc unavailable (%v); falling back to software bpf_ktime_get_ns\n", err)
+		} else {
+			// ice xdp_metadata_rx_timestamp returns wall-clock-aligned
+			// ns (PHC initialised to system time at driver load), so
+			// ParseRawSample must NOT add the monotonic→wall offset.
+			capture.WallOffsetNs = 0
+		}
+	}
+
+	if snaplen := cmd.Int("snaplen"); snaplen > 0 {
+		program.SnaplenOverride = int(snaplen)
+	}
+	if cmd.Bool("observer-prefetch") {
+		program.ObserverPrefetch = true
+	}
+	if period := cmd.Int("latency-sample-period"); period > 0 {
+		capture.LatencySamplePeriod = int64(period)
 	}
 
 	mode := cmd.String("mode")
@@ -273,12 +452,22 @@ func run(ctx context.Context, cmd *cli.Command) error {
 	if err != nil {
 		return err
 	}
+	printProbeWarnings(probe)
 
 	label := fmt.Sprintf("prog %q id=%d", info.FuncName, info.ProgID)
 	if info.IfaceName != "" {
 		label = fmt.Sprintf("%s on %s", label, info.IfaceName)
 	}
 	return runCaptureLoop(cmd, probe, isFexit, fmt.Sprintf("%s, mode=%s", label, mode))
+}
+
+// printProbeWarnings drains non-fatal resolver / codegen notices the
+// kunai DSL pipeline attached to the probe (typically about chain-
+// root conventions) onto stderr.
+func printProbeWarnings(probe *program.Probe) {
+	for _, w := range probe.Warnings {
+		fmt.Fprintln(os.Stderr, "warning:", w)
+	}
 }
 
 // resolveFilterSyntax returns whether to use the DSL path (default)
@@ -291,34 +480,370 @@ func resolveFilterSyntax(cmd *cli.Command) (useDSL bool, err error) {
 	return !useCBPF, nil
 }
 
-// runCaptureLoop wires a loaded probe to the perf reader + pcap
-// writer and pumps the capture loop until SIGINT/SIGTERM. Owns the
-// teardown order: probe → writer → reader.
+// runCaptureLoop wires a loaded probe to the per-CPU sharded reader
+// and pumps until SIGINT/SIGTERM. Every attach mode populates
+// probe.InnerMaps after the R22 sharded-ringbuf hoist, so the
+// sharded path is the only live path; captureLoopSharded owns the
+// per-shard writer lifecycle.
+//
+// We still call output.NewWriter(basePath, isFexit) here to ensure
+// the base path exists as a valid (SHB-only) pcap-ng file. Single-
+// file consumers (`tcpdump -r out.pcap`) point at the base path; the
+// per-CPU `.cpuN` companions hold the actual packets and are merged
+// offline via `xdp-ninja convert`. Integration tests
+// (run_pcap_test) rely on the base file's existence.
 func runCaptureLoop(cmd *cli.Command, probe *program.Probe, isFexit bool, label string) error {
 	defer func() {
 		if cerr := probe.Close(); cerr != nil {
 			fmt.Fprintf(os.Stderr, "warning: closing probe: %v\n", cerr)
 		}
 	}()
-
+	if len(probe.InnerMaps) == 0 {
+		return fmt.Errorf("probe has no inner ringbufs — sharded ringbuf hoist (R22) should populate them for every attach mode")
+	}
+	// Create a base-path SHB-only marker file when -w is set, so
+	// downstream tools that expect a single file at that path see a
+	// readable pcap-ng even though packets land in per-CPU shards.
 	writer, err := output.NewWriter(cmd.String("write"), isFexit)
 	if err != nil {
 		return err
 	}
+	_ = writer.Close()
+	return captureLoopSharded(cmd, probe.InnerMaps, isFexit, label)
+}
+
+// captureLoopSharded: per-CPU shard goroutines, each writes to its
+// own pcap file (no mutex). --null-output skips file writes for
+// benchmarking; --raw-dump switches to the raw-bytes path.
+func captureLoopSharded(cmd *cli.Command, inners []*ebpf.Map, isFexit bool, label string) error {
+	basePath := cmd.String("write")
+	null := cmd.Bool("null-output")
+	rawDump := cmd.Bool("raw-dump")
+	if rawDump {
+		return captureLoopShardedRaw(cmd, inners, label, basePath)
+	}
+
+	writers := make([]*output.Writer, len(inners))
+	if !null {
+		for i := range inners {
+			var path string
+			if basePath != "" {
+				path = fmt.Sprintf("%s.cpu%d", basePath, i)
+			} else if i > 0 {
+				continue
+			}
+			w, err := output.NewWriter(path, isFexit)
+			if err != nil {
+				return fmt.Errorf("opening per-CPU writer %d: %w", i, err)
+			}
+			writers[i] = w
+		}
+		defer func() {
+			for _, w := range writers {
+				if w != nil {
+					_ = w.Close()
+				}
+			}
+		}()
+	}
+
+	fastReader := cmd.Bool("fast-reader")
+	count := int64(cmd.Int("count"))
+	var captured atomic.Int64
+	var writeErrCount atomic.Int64
+	var firstWriteErr atomic.Pointer[string]
+
+	sink := func(shardIdx int, pkts []capture.Packet) error {
+		if count > 0 && captured.Load() >= count {
+			return nil
+		}
+		if !null && writers[shardIdx] != nil {
+			if err := writers[shardIdx].WriteBatch(pkts); err != nil {
+				writeErrCount.Add(1)
+				if firstWriteErr.Load() == nil {
+					msg := fmt.Sprintf("shard %d: %v", shardIdx, err)
+					firstWriteErr.CompareAndSwap(nil, &msg)
+				}
+			}
+		}
+		captured.Add(int64(len(pkts)))
+		return nil
+	}
+
+	var stop func()
+	readerLabel := "ringbuf.Reader"
+	if fastReader {
+		fr, err := capture.NewFastShardedReader(inners)
+		if err != nil {
+			return err
+		}
+		stop, err = fr.RunShardsFast(sink)
+		if err != nil {
+			return err
+		}
+		readerLabel = "fastrb (mmap bypass)"
+	} else {
+		r, err := capture.NewShardedReader(inners)
+		if err != nil {
+			return err
+		}
+		stop, err = r.RunShards(sink)
+		if err != nil {
+			return err
+		}
+	}
+
+	mode := "sharded"
+	if null {
+		mode = "sharded null-output"
+	}
+	fmt.Fprintf(os.Stderr, "capturing (%s, %s, %d shards via %s)...\n", label, mode, len(inners), readerLabel)
+
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(sig)
+
+	if count > 0 {
+		for {
+			select {
+			case <-sig:
+				stop()
+				goto done
+			default:
+				if captured.Load() >= count {
+					stop()
+					goto done
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+		}
+	} else {
+		<-sig
+		stop()
+	}
+
+done:
+	fmt.Fprintf(os.Stderr, "\n%d packets captured\n", captured.Load())
+	if n := writeErrCount.Load(); n > 0 {
+		first := "?"
+		if p := firstWriteErr.Load(); p != nil {
+			first = *p
+		}
+		fmt.Fprintf(os.Stderr, "warning: %d WriteBatch errors; first: %s\n", n, first)
+	}
+	return nil
+}
+
+// captureLoopShardedRaw is the --raw-dump variant: per-CPU goroutines
+// splat ringbuf record bytes verbatim into
+// <basePath>.W<wall_offset_ns>.cpu<N>.raw files; offline conversion
+// happens via the convert subcommand.
+func captureLoopShardedRaw(cmd *cli.Command, inners []*ebpf.Map, label, basePath string) error {
+	if basePath == "" {
+		return fmt.Errorf("--raw-dump requires -w <path> (per-CPU files are not streamable to stdout)")
+	}
+
+	offset := capture.WallOffsetNs
+	inMemMiB := cmd.Int("in-memory-buffer")
+	writers := make([]output.Sink, len(inners))
+	// Parallelise writer init: each in-memory writer mmaps and
+	// MAP_POPULATE-prefaults its buffer (page-allocation blocks for
+	// the full buffer size), so sequential init across all shards
+	// would visibly delay capture start.
+	var initWg sync.WaitGroup
+	initErrs := make([]error, len(inners))
+	for i := range inners {
+		initWg.Add(1)
+		go func(i int) {
+			defer initWg.Done()
+			path := fmt.Sprintf("%s.W%d.cpu%d.raw", basePath, offset, i)
+			var w output.Sink
+			var err error
+			if inMemMiB > 0 {
+				w, err = output.NewInMemoryRawDumpWriter(path, offset, int(inMemMiB)*1024*1024)
+			} else {
+				w, err = output.NewRawDumpWriter(path, offset)
+			}
+			if err != nil {
+				initErrs[i] = err
+				return
+			}
+			writers[i] = w
+		}(i)
+	}
+	initWg.Wait()
+	for i, err := range initErrs {
+		if err != nil {
+			for _, prev := range writers {
+				if prev != nil {
+					_ = prev.Close()
+				}
+			}
+			return fmt.Errorf("opening raw-dump writer %d: %w", i, err)
+		}
+	}
 	defer func() {
-		if cerr := writer.Close(); cerr != nil {
-			fmt.Fprintf(os.Stderr, "warning: closing writer: %v\n", cerr)
+		for _, w := range writers {
+			if w != nil {
+				_ = w.Close()
+			}
 		}
 	}()
 
-	reader, err := capture.NewReader(probe.EventsMap, 256*1024)
-	if err != nil {
-		return err
+	fastReader := cmd.Bool("fast-reader")
+	count := int64(cmd.Int("count"))
+	// Per-shard local counter, padded to a full 64 B cacheline so
+	// adjacent goroutines incrementing their own slot don't
+	// ping-pong the line across cores at 10+ Mpps. The hot path is
+	// shardCounts[shardIdx].n++; only one shard goroutine ever
+	// writes its own slot, and the final reader runs after stop().
+	type paddedCounter struct {
+		n   int64
+		_   [56]byte
 	}
-	defer func() { _ = reader.Close() }()
+	shardCounts := make([]paddedCounter, len(inners))
+	var captured atomic.Int64
 
-	fmt.Fprintf(os.Stderr, "capturing (%s)...\n", label)
-	return captureLoop(cmd, reader, writer)
+	var rawSink capture.RawShardSink
+	if count > 0 {
+		rawSink = func(shardIdx int, raw []byte) error {
+			if captured.Load() >= count {
+				return nil
+			}
+			if err := writers[shardIdx].WriteRaw(raw); err != nil {
+				return err
+			}
+			captured.Add(1)
+			return nil
+		}
+	} else {
+		rawSink = func(shardIdx int, raw []byte) error {
+			shardCounts[shardIdx].n++
+			return writers[shardIdx].WriteRaw(raw)
+		}
+	}
+
+	var stop func()
+	if fastReader {
+		fr, err := capture.NewFastShardedReader(inners)
+		if err != nil {
+			return err
+		}
+		stop, err = fr.RunRawShardsFast(rawSink)
+		if err != nil {
+			return err
+		}
+	} else {
+		r, err := capture.NewShardedReader(inners)
+		if err != nil {
+			return err
+		}
+		stop, err = r.RunRawShards(rawSink)
+		if err != nil {
+			return err
+		}
+	}
+
+	readerLabel := "ringbuf.Reader"
+	if fastReader {
+		readerLabel = "fastrb (mmap bypass)"
+	}
+	fmt.Fprintf(os.Stderr, "capturing (%s, sharded raw-dump, %d shards via %s, wall_offset_ns=%d)...\n",
+		label, len(inners), readerLabel, offset)
+
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(sig)
+
+	if count > 0 {
+		for {
+			select {
+			case <-sig:
+				stop()
+				goto done
+			default:
+				if captured.Load() >= count {
+					stop()
+					goto done
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+		}
+	} else {
+		<-sig
+		stop()
+	}
+
+done:
+	total := captured.Load()
+	for i := range shardCounts {
+		total += shardCounts[i].n
+	}
+	// Close writers eagerly so flushAll() runs before we print the
+	// durability summary; the deferred Close becomes a no-op for
+	// nil'd slots.
+	var anomalies output.WriteAnomalies
+	for i, w := range writers {
+		if w == nil {
+			continue
+		}
+		if cerr := w.Close(); cerr != nil {
+			fmt.Fprintf(os.Stderr, "warning: shard %d close: %v\n", i, cerr)
+		}
+		if r, ok := w.(output.AnomalyReporter); ok {
+			anomalies.Add(r.Anomalies())
+		}
+		writers[i] = nil
+	}
+	fmt.Fprintf(os.Stderr, "\n%d packets captured (raw-dump)\n", total)
+	if anomalies.Any() {
+		fmt.Fprintf(os.Stderr,
+			"warning: write-path anomalies: flush_errors=%d short_writes=%d bytes_lost=%d (%.1f MiB)\n",
+			anomalies.FlushErrors, anomalies.ShortWrites, anomalies.BytesLost,
+			float64(anomalies.BytesLost)/1024.0/1024.0)
+	}
+	if capture.LatencySamplePeriod > 0 {
+		reportLatencySamples(cmd.String("latency-sample-output"))
+	}
+	return nil
+}
+
+// reportLatencySamples drains capture.LatencySamples (filled by the
+// fast-reader's per-shard goroutines) into either a tsv file or a
+// stderr percentile summary. Empty path = stderr summary; non-empty
+// path = one int64 ns per line, all shards concatenated.
+func reportLatencySamples(outputPath string) {
+	var all []int64
+	for _, shard := range capture.LatencySamples {
+		all = append(all, shard...)
+	}
+	if len(all) == 0 {
+		fmt.Fprintln(os.Stderr, "latency-sample: no samples collected")
+		return
+	}
+	slices.Sort(all)
+	pct := func(p float64) int64 {
+		idx := int(float64(len(all)-1) * p)
+		return all[idx]
+	}
+	fmt.Fprintf(os.Stderr,
+		"latency-sample n=%d (ns): p50=%d p90=%d p99=%d p99.9=%d p99.99=%d max=%d\n",
+		len(all), pct(0.50), pct(0.90), pct(0.99), pct(0.999), pct(0.9999), all[len(all)-1])
+	if outputPath == "" {
+		return
+	}
+	f, err := os.Create(outputPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "latency-sample: cannot write %s: %v\n", outputPath, err)
+		return
+	}
+	defer func() { _ = f.Close() }()
+	bw := bufio.NewWriter(f)
+	for _, v := range all {
+		_, _ = fmt.Fprintln(bw, v)
+	}
+	_ = bw.Flush()
+	fmt.Fprintf(os.Stderr, "latency-sample: %d samples → %s\n", len(all), outputPath)
 }
 
 // runXDPNative handles --mode xdp: xdp-ninja is itself the XDP
@@ -326,6 +851,11 @@ func runCaptureLoop(cmd *cli.Command, probe *program.Probe, isFexit bool, label 
 func runXDPNative(cmd *cli.Command) error {
 	if err := validateXDPNativeFlags(cmd); err != nil {
 		return err
+	}
+
+	if cmd.Bool("bench-drop") {
+		program.XDPNativeBenchDrop = true
+		fmt.Fprintln(os.Stderr, "warning: --bench-drop active: returning XDP_DROP after capture (bench-only)")
 	}
 
 	filterExpr := strings.Join(cmd.Args().Slice(), " ")
@@ -353,6 +883,7 @@ func runXDPNative(cmd *cli.Command) error {
 	if err != nil {
 		return err
 	}
+	printProbeWarnings(probe)
 	return runCaptureLoop(cmd, probe, false, fmt.Sprintf("xdp-native on %s", ifaceName))
 }
 
@@ -411,42 +942,6 @@ func loadProbe(isFexit bool, info *attach.ProgInfo, filterExpr string, argFilter
 	return program.LoadEntry(info.Program, info.FuncName, filterExpr, argFilters, useDSL)
 }
 
-func captureLoop(cmd *cli.Command, reader *capture.Reader, writer *output.Writer) error {
-	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
-	defer signal.Stop(sig)
-
-	go func() {
-		<-sig
-		_ = reader.Close()
-	}()
-
-	count := int(cmd.Int("count"))
-	captured := 0
-
-	for {
-		pkt, err := reader.Read()
-		if err != nil {
-			if errors.Is(err, capture.ErrClosed) {
-				break
-			}
-			logVerbose(cmd, "warning: %v", err)
-			continue
-		}
-
-		if err := writer.Write(pkt); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: write error: %v\n", err)
-		}
-
-		captured++
-		if count > 0 && captured >= count {
-			break
-		}
-	}
-
-	fmt.Fprintf(os.Stderr, "\n%d packets captured\n", captured)
-	return nil
-}
 
 func logVerbose(cmd *cli.Command, format string, args ...any) {
 	if cmd.Bool("verbose") {

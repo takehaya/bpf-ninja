@@ -50,6 +50,26 @@ func TestLoadMplsDispatch(t *testing.T) {
 	}
 }
 
+// TestLoadBundledNoPhantomParserDispatch guards against re-introducing
+// the `<SELF>_PARSER_MAX_DEPTH = N` drift that TCP and IPv4 used to
+// carry. The loader's MAX_DEPTH path matches the exact name
+// `<SELF>_MAX_DEPTH` only; a `_PARSER_` infix slips past that check
+// and is silently classified as a `<SELF>_<PARENT>_<FIELD>` dispatch
+// const with Parent="parser" — which dispatches to nothing because
+// no real layer is named "parser", so the intended iteration cap is
+// never applied. Loud-fail here so source/impl drift can't recur.
+func TestLoadBundledNoPhantomParserDispatch(t *testing.T) {
+	specs := loadBundled(t)
+	for name, spec := range specs {
+		for _, c := range spec.Consts {
+			if c.Type == DispatchField && c.Parent == "parser" {
+				t.Errorf("%s: const %q has phantom Parent=%q FieldName=%q Value=%d — declare `<SELF>_MAX_DEPTH = N` (no `_PARSER_` infix) instead",
+					name, c.Name, c.Parent, c.FieldName, c.Value)
+			}
+		}
+	}
+}
+
 func TestLoadGreDispatch(t *testing.T) {
 	gre := loadBundled(t)["gre"]
 	dc := indexByName(gre.Consts)
@@ -1693,7 +1713,7 @@ func TestLoadParserCounterTupleSelect(t *testing.T) {
 header foo_h    { bit<8> ihl; }
 header foo_ra_h { bit<8> kind; bit<8> length; bit<16> value; }
 const bit<16> FOO_BAR_ETHERTYPE = 0x0800;
-const bit<8>  FOO_PARSER_MAX_DEPTH = 11;
+const bit<8>  FOO_MAX_DEPTH = 11;
 
 extern ParserCounter {
     ParserCounter();
@@ -1773,7 +1793,7 @@ func TestLoadParserCounterDecrementFieldExpr(t *testing.T) {
 header foo_h    { bit<8> ihl; }
 header foo_rr_h { bit<8> kind; bit<8> length; bit<8> pointer; }
 const bit<16> FOO_BAR_ETHERTYPE = 0x0800;
-const bit<8>  FOO_PARSER_MAX_DEPTH = 11;
+const bit<8>  FOO_MAX_DEPTH = 11;
 
 extern ParserCounter {
     ParserCounter();
@@ -1846,7 +1866,7 @@ func TestLoadParserCounterDecrementFieldExprRejectsPrimary(t *testing.T) {
 		"vocab/foo.p4": &fstest.MapFile{Data: []byte(`
 header foo_h { bit<8> ihl; }
 const bit<16> FOO_BAR_ETHERTYPE = 0x0800;
-const bit<8>  FOO_PARSER_MAX_DEPTH = 11;
+const bit<8>  FOO_MAX_DEPTH = 11;
 
 extern ParserCounter {
     ParserCounter();
@@ -1891,7 +1911,7 @@ func TestLoadParserCounterRejectsReversedTuple(t *testing.T) {
 		"vocab/foo.p4": &fstest.MapFile{Data: []byte(`
 header foo_h { bit<8> ihl; }
 const bit<16> FOO_BAR_ETHERTYPE = 0x0800;
-const bit<8>  FOO_PARSER_MAX_DEPTH = 4;
+const bit<8>  FOO_MAX_DEPTH = 4;
 
 extern ParserCounter {
     ParserCounter();

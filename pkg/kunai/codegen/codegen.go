@@ -156,6 +156,14 @@ type CaptureInfo struct {
 	// MaxCapLen is the packet prefix length the wrapper should emit to
 	// the perf buffer. Zero preserves the caller default.
 	MaxCapLen int
+	// FilterMinPrefix is the smallest packet prefix (in bytes) the
+	// compiled filter actually reads to make its match decision. The
+	// tracing host (LoadEntry/LoadExit) uses this to size its
+	// bpf_probe_read_kernel call into the per-CPU scratch buffer; the
+	// XDP-native host (LoadXDPNative) ignores it because runFilterDirect
+	// reads packet memory in place. Zero means "no scan analysable" and
+	// the host falls back to ScratchBufSize.
+	FilterMinPrefix int
 }
 
 // Output bundles everything codegen produces for a DSL program. Main
@@ -170,6 +178,14 @@ type Output struct {
 	Main      asm.Instructions
 	Callbacks asm.Instructions
 	Capture   CaptureInfo
+
+	// Warnings is the list of non-fatal notices the resolver and
+	// codegen accumulate during compile. Callers (xdp-ninja CLI etc.)
+	// typically surface them on stderr. Until kunai 1.0 the slice is
+	// considered internal — its exact wording may change between
+	// patch releases (see pkg/kunai/README.md). The zero value (nil)
+	// means "no warnings".
+	Warnings []string
 }
 
 // Instructions returns Main concatenated with Callbacks. Callers
@@ -306,7 +322,8 @@ func Gen(p *ir.Program, caps Capabilities) (Output, error) {
 				asm.Mov.Imm(asm.R2, 0),
 				asm.Ja.Label(filterResultLabel),
 			},
-			Capture: capInfo,
+			Capture:  capInfo,
+			Warnings: cloneWarnings(p.Warnings),
 		}, nil
 	}
 
@@ -347,7 +364,25 @@ func Gen(p *ir.Program, caps Capabilities) (Output, error) {
 		asm.Mov.Imm(asm.R2, 0).WithSymbol(dslReject),
 	)
 
-	return Output{Main: insns, Callbacks: callbacks, Capture: capInfo}, nil
+	return Output{
+		Main:      insns,
+		Callbacks: callbacks,
+		Capture:   capInfo,
+		Warnings:  cloneWarnings(p.Warnings),
+	}, nil
+}
+
+// cloneWarnings returns a defensive copy of the resolver's warnings
+// slice so callers mutating Output.Warnings cannot accidentally
+// scribble back into the IR. Returns nil for nil/empty input so the
+// "no warnings" case stays a comparable zero value.
+func cloneWarnings(ws []string) []string {
+	if len(ws) == 0 {
+		return nil
+	}
+	out := make([]string, len(ws))
+	copy(out, ws)
+	return out
 }
 
 // Shared BTF primitives for func_info entries. Keeping them at

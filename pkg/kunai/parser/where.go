@@ -87,16 +87,24 @@ func (p *parser) parseWhereAtom() (*ast.WhereExpr, error) {
 	startPos := p.cur.Pos
 	switch p.cur.Kind {
 	case lexer.TokLParen:
+		if p.parenDepth >= maxParenDepth {
+			return nil, p.errorf(p.cur.Pos, "expression nesting too deep (limit: %d)", maxParenDepth)
+		}
+		p.parenDepth++
 		if err := p.advance(); err != nil {
+			p.parenDepth--
 			return nil, err
 		}
 		inner, err := p.parseOrExpr()
 		if err != nil {
+			p.parenDepth--
 			return nil, err
 		}
 		if _, err := p.expect(lexer.TokRParen); err != nil {
+			p.parenDepth--
 			return nil, err
 		}
+		p.parenDepth--
 		return p.maybeBoolEqTail(startPos, inner)
 	case lexer.TokAction:
 		return p.parseActionAtom(startPos)
@@ -157,16 +165,27 @@ func (p *parser) parseQuantAtom(startPos ast.Position, kind ast.WhereKind) (*ast
 	if err := p.advance(); err != nil { // consume 'any' / 'all'
 		return nil, err
 	}
+	if p.cur.Kind != lexer.TokLParen {
+		return nil, p.errorf(p.cur.Pos, "expected '(', got %s (%q)", p.cur.Kind, p.cur.Text)
+	}
+	if p.parenDepth >= maxParenDepth {
+		return nil, p.errorf(p.cur.Pos, "expression nesting too deep (limit: %d)", maxParenDepth)
+	}
+	p.parenDepth++
 	if _, err := p.expect(lexer.TokLParen); err != nil {
+		p.parenDepth--
 		return nil, err
 	}
 	inner, err := p.parseOrExpr()
 	if err != nil {
+		p.parenDepth--
 		return nil, err
 	}
 	if _, err := p.expect(lexer.TokRParen); err != nil {
+		p.parenDepth--
 		return nil, err
 	}
+	p.parenDepth--
 	return &ast.WhereExpr{Kind: kind, Inner: inner, Pos: startPos}, nil
 }
 
@@ -552,16 +571,24 @@ func (p *parser) parseArithFac() (*ast.ArithExpr, error) {
 		}
 		return &ast.ArithExpr{Kind: ast.ArithField, Field: field, Pos: startPos}, nil
 	case lexer.TokLParen:
+		if p.parenDepth >= maxParenDepth {
+			return nil, p.errorf(p.cur.Pos, "expression nesting too deep (limit: %d)", maxParenDepth)
+		}
+		p.parenDepth++
 		if err := p.advance(); err != nil {
+			p.parenDepth--
 			return nil, err
 		}
 		inner, err := p.parseArithExpr()
 		if err != nil {
+			p.parenDepth--
 			return nil, err
 		}
 		if _, err := p.expect(lexer.TokRParen); err != nil {
+			p.parenDepth--
 			return nil, err
 		}
+		p.parenDepth--
 		return inner, nil
 	}
 	return nil, p.errorf(startPos, "expected integer, field path, or '(' in arithmetic expression, got %s", p.cur.Kind)

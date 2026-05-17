@@ -9,7 +9,7 @@ import (
 )
 
 // SkipIfNotRoot skips the test if not running as root.
-func SkipIfNotRoot(t *testing.T) {
+func SkipIfNotRoot(t testing.TB) {
 	t.Helper()
 	if os.Getuid() != 0 {
 		t.Skip("requires root")
@@ -18,7 +18,7 @@ func SkipIfNotRoot(t *testing.T) {
 
 // CompileBPFSource compiles a BPF C source string to an object file with BTF.
 // Skips the test if clang is not available.
-func CompileBPFSource(t *testing.T, source string) string {
+func CompileBPFSource(t testing.TB, source string) string {
 	t.Helper()
 	dir := t.TempDir()
 	srcFile := filepath.Join(dir, "xdp.c")

@@ -3,12 +3,14 @@ name: BPF load test
 
 on:
   push:
+    branches: [main]
     paths:
       - 'go.*'
       - '**.go'
       - '**.p4'
       - '.github/workflows/bpf_load_test.yaml'
   pull_request:
+    branches: [main]
     paths:
       - 'go.*'
       - '**.go'
@@ -28,6 +30,7 @@ jobs:
           - "6.6"
           - "6.12"
           - "6.18"
+          - "7.0"
     permissions:
       contents: read
       packages: read
@@ -100,7 +103,45 @@ jobs:
           fi
 
       - name: Run BPF load test
-        run: vimto -sudo -kernel :${{ matrix.kernel }} -- go test -v -count 1 -timeout 5m ./internal/program/ -run TestBpf
+        run: |
+          set -o pipefail
+          vimto -sudo -kernel :${{ matrix.kernel }} -- \
+            go test -v -count 1 -timeout 5m ./internal/program/ -run TestBpf \
+            2>&1 | tee bpf_load_kernel_${{ matrix.kernel }}.log
+
+      # E4 verifier matrix: extract the per-(filter, host) verdict from
+      # TestBpfFilterSet{XDP,TC}/Fn subtests so the paper's Table 2 has
+      # a per-cell artifact rather than reading the full test log.
+      # Header + 20 rows per kernel; aggregating the four kernel CSVs
+      # gives the 80-cell matrix.
+      - name: Extract verifier matrix CSV
+        if: always()
+        run: |
+          {
+            echo "filter,host,verdict,kernel"
+            awk -v k="${{ matrix.kernel }}" '
+              /^    --- (PASS|FAIL): TestBpfFilterSet(XDP|TC)\// {
+                verdict = tolower($2); sub(/:$/, "", verdict)
+                n = split($3, parts, "/")
+                if (n >= 2) {
+                  host = parts[1]
+                  sub(/^TestBpfFilterSet/, "", host)
+                  print parts[2] "," host "," verdict "," k
+                }
+              }
+            ' bpf_load_kernel_${{ matrix.kernel }}.log
+          } > verifier_matrix_kernel_${{ matrix.kernel }}.csv
+          cat verifier_matrix_kernel_${{ matrix.kernel }}.csv
+
+      - name: Upload verifier matrix
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: verifier-matrix-kernel-${{ matrix.kernel }}
+          path: |
+            verifier_matrix_kernel_${{ matrix.kernel }}.csv
+            bpf_load_kernel_${{ matrix.kernel }}.log
+          retention-days: 30
 
       # dsltest exercises the full DSL → eBPF pipeline end-to-end via
       # BPF_PROG_TEST_RUN against gopacket-built frames. Adding it here

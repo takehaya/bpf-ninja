@@ -6,8 +6,13 @@
 // Both programs are type XDP. The section names use "xdp" prefix so
 // libbpf/bpftool recognizes them as XDP programs.
 
-#include <bpf/bpf_helpers.h>
+// clang-format off
+// linux/bpf.h must precede bpf/bpf_helpers.h so __u32/__u64 are
+// defined before bpf_helper_defs.h consumes them. Default
+// clang-format sorts alphabetically, swapping the order.
 #include <linux/bpf.h>
+#include <bpf/bpf_helpers.h>
+// clang-format on
 
 struct {
   __uint(type, BPF_MAP_TYPE_PROG_ARRAY);

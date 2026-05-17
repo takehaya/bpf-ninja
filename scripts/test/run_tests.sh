@@ -52,6 +52,29 @@ capture_count() {
     grep -oP '\d+(?= packets captured)' "$1" 2>/dev/null || echo 0
 }
 
+# read_any_shard <base-pcap-path> [match-pattern]
+# After R22 (sharded ringbuf hoist), packets land in $base.cpuN per-CPU
+# files; the base $pcap is a SHB+IDBs marker only. This walks the shards
+# and returns 0 on the first one that contains at least one packet (and
+# optionally matches `match-pattern` in the tshark frame.interface_name
+# field). Returns 1 if no shard satisfies the check.
+read_any_shard() {
+    local base=$1
+    local pattern=${2:-}
+    local checker=tcpdump
+    command -v tshark &>/dev/null && checker=tshark
+    for shard in "$base".cpu*; do
+        [[ -e "$shard" ]] || continue
+        if [[ -n "$pattern" && $checker == tshark ]]; then
+            tshark -r "$shard" -c 1 -T fields -e frame.interface_name 2>/dev/null \
+                | grep -q "$pattern" && return 0
+        else
+            tcpdump -r "$shard" -c 1 >/dev/null 2>&1 && return 0
+        fi
+    done
+    return 1
+}
+
 # run_count_test <expected-min> <xdp-ninja-args...>
 # Runs xdp-ninja with the given args in the background, sends 5 pings
 # from the test netns, and asserts the captured packet count is at
@@ -88,7 +111,8 @@ run_nomatch_test() {
 }
 
 # run_pcap_test <xdp-ninja-args...>
-# Captures to a pcap file and asserts tcpdump can parse it back.
+# Captures to a pcap file and asserts at least one shard contains a
+# packet (the base $pcap is SHB+IDBs only after R22).
 run_pcap_test() {
     local pcap=$(mktemp --suffix=.pcap)
     local err=$(mktemp)
@@ -97,9 +121,9 @@ run_pcap_test() {
     sleep 2
     send_packets 5
     wait $pid 2>/dev/null || true
-    tcpdump -r "$pcap" -c 1 > /dev/null 2>&1
+    read_any_shard "$pcap"
     local result=$?
-    rm -f "$pcap" "$err"
+    rm -f "$pcap" "$pcap".cpu* "$err"
     [[ $result -eq 0 ]]
 }
 
@@ -164,16 +188,11 @@ test_exit_pcap_action() {
     sleep 2
     send_packets 5
     wait $pid 2>/dev/null || true
-    # tshark でインターフェース名に xdp: が含まれるか確認
-    # tshark がなければ tcpdump で読めることだけ確認
-    if command -v tshark &>/dev/null; then
-        tshark -r "$pcap" -T fields -e frame.interface_name 2>/dev/null | grep -q "xdp:"
-        local result=$?
-    else
-        tcpdump -r "$pcap" -c 1 > /dev/null 2>&1
-        local result=$?
-    fi
-    rm -f "$pcap" "$err"
+    # tshark がいれば xdp:* interface name 込みで検証、 無ければ単なる
+    # parse 可能性 fallback (cpuN shard の 1 つでも 1 packet あれば pass)。
+    read_any_shard "$pcap" "xdp:"
+    local result=$?
+    rm -f "$pcap" "$pcap".cpu* "$err"
     [[ $result -eq 0 ]]
 }
 

@@ -25,6 +25,12 @@ type Program struct {
 	// form "<proto>#<index>" for each layer.
 	LabelTable map[string]*LayerInstance
 
+	// Warnings is the resolver's non-fatal notice channel. codegen.Gen
+	// forwards these onto codegen.Output.Warnings so the host can
+	// surface them on stderr without inspecting the IR. The zero value
+	// (nil) means "no warnings".
+	Warnings []string
+
 	Pos ast.Position
 }
 

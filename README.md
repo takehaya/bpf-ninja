@@ -53,6 +53,7 @@ sudo xdp-ninja --mode xdp -i eth0 "eth/ipv4/tcp[dport==443]" | tcpdump -n -r -
 sudo xdp-ninja --cbpf -i eth0 "host 10.0.0.1 and tcp port 80" | tcpdump -n -r -
 
 # Write to pcap file, stop after 100 packets
+# (output is sharded across per-CPU files; see "Sharded output" below)
 sudo xdp-ninja -i eth0 -w capture.pcap -c 100
 
 # Attach by BPF program ID (for multi-prog / libxdp setups)
@@ -104,6 +105,32 @@ Pass `--cbpf` to interpret the filter expression as tcpdump syntax and compile i
 ```bash
 sudo xdp-ninja --cbpf -i eth0 "host 10.0.0.1 and tcp port 80"
 ```
+
+### Sharded output
+
+For high-rate captures, xdp-ninja uses a per-CPU sharded ringbuf and writes one pcap-ng file per CPU. With `-w capture.pcap`:
+
+```
+capture.pcap          # SHB+IDB marker (0 packets — for single-file consumers)
+capture.pcap.cpu0     # CPU 0 packets
+capture.pcap.cpu1     # CPU 1 packets
+...
+```
+
+Read a single shard with `tcpdump -r capture.pcap.cpu0`, or merge all shards with `mergecap -w merged.pcap capture.pcap.cpu*` (from the Wireshark toolkit). `xdp-ninja convert` handles `--raw-dump` `.raw` shards, not pcap-ng shards.
+
+### Performance flags (high-rate captures)
+
+| Flag | Purpose |
+|------|---------|
+| `--snaplen N` | Cap per-packet capture bytes (CLI override). Default = full packet (1500 B), libpcap-equivalent |
+| `--fast-reader` | mmap+atomic ringbuf reader (lower CPU than cilium/ebpf generic) |
+| `--no-wakeup` | Suppress eventfd wake per submit. Trades p50 latency for throughput. **Requires `--fast-reader`** |
+| `--ringbuf-size MB` | Per-CPU ringbuf size (default 16 MB) |
+| `--raw-dump` | Raw bytes path; convert offline with `xdp-ninja convert` |
+| `--null-output` | Drop output entirely (bench only) |
+
+Detailed flag reference + DSL `capture` clause's snaplen trade-off: [docs/ja/dsl-usage.md](./docs/ja/dsl-usage.md#performance-flags).
 
 ### Hand-test: `--dump-asm`
 

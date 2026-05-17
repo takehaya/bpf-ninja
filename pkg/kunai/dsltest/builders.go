@@ -68,7 +68,7 @@ func Defaults() PacketOpts {
 // BuildEthIPv4TCP returns a serialized Ethernet/IPv4/TCP frame with
 // the requested ports. Convenience wrapper for the most common
 // chain shape.
-func BuildEthIPv4TCP(t *testing.T, srcPort, dstPort uint16) []byte {
+func BuildEthIPv4TCP(t testing.TB, srcPort, dstPort uint16) []byte {
 	t.Helper()
 	o := Defaults()
 	o.SrcPort, o.DstPort = srcPort, dstPort
@@ -76,7 +76,7 @@ func BuildEthIPv4TCP(t *testing.T, srcPort, dstPort uint16) []byte {
 }
 
 // BuildEthIPv4UDP returns a serialized Ethernet/IPv4/UDP frame.
-func BuildEthIPv4UDP(t *testing.T, srcPort, dstPort uint16, payload []byte) []byte {
+func BuildEthIPv4UDP(t testing.TB, srcPort, dstPort uint16, payload []byte) []byte {
 	t.Helper()
 	o := Defaults()
 	o.TCP, o.UDP = false, true
@@ -88,7 +88,7 @@ func BuildEthIPv4UDP(t *testing.T, srcPort, dstPort uint16, payload []byte) []by
 }
 
 // BuildEthIPv6TCP returns a serialized Ethernet/IPv6/TCP frame.
-func BuildEthIPv6TCP(t *testing.T, src, dst net.IP, srcPort, dstPort uint16) []byte {
+func BuildEthIPv6TCP(t testing.TB, src, dst net.IP, srcPort, dstPort uint16) []byte {
 	t.Helper()
 	o := Defaults()
 	o.SrcIP, o.DstIP = src, dst
@@ -100,7 +100,7 @@ func BuildEthIPv6TCP(t *testing.T, src, dst net.IP, srcPort, dstPort uint16) []b
 // the right gopacket layer combination from the flags + which
 // IP/MAC fields are populated; tests should call Defaults() and
 // override only what they need.
-func Build(t *testing.T, opts PacketOpts) []byte {
+func Build(t testing.TB, opts PacketOpts) []byte {
 	t.Helper()
 
 	if opts.SrcMAC == nil {
@@ -182,7 +182,7 @@ func Build(t *testing.T, opts PacketOpts) []byte {
 	return buf.Bytes()
 }
 
-func buildL3L4(t *testing.T, o *PacketOpts, isV6 bool) ([]gopacket.SerializableLayer, []byte) {
+func buildL3L4(t testing.TB, o *PacketOpts, isV6 bool) ([]gopacket.SerializableLayer, []byte) {
 	t.Helper()
 	var ip gopacket.SerializableLayer
 	var netLayer gopacket.NetworkLayer
@@ -294,7 +294,7 @@ type GTPExt struct {
 }
 
 // BuildGTPU serializes a GTP-U frame as described by opts.
-func BuildGTPU(t *testing.T, opts GTPUOpts) []byte {
+func BuildGTPU(t testing.TB, opts GTPUOpts) []byte {
 	t.Helper()
 
 	flags := opts.Flags
@@ -395,7 +395,7 @@ const (
 // header type and ipv6.payload_length to len(variable)+len(inner)
 // after concatenation. Both BuildIPv6WithExts and BuildSRv6 use it
 // to avoid duplicating the strip-and-patch dance.
-func buildEthIPv6Prefix(t *testing.T, src, dst net.IP) []byte {
+func buildEthIPv6Prefix(t testing.TB, src, dst net.IP) []byte {
 	t.Helper()
 	o := Defaults()
 	o.SrcIP, o.DstIP = src, dst
@@ -421,7 +421,7 @@ func patchIPv6NextHeaderAndLen(prefix []byte, nextHeader uint8, payloadLen int) 
 // stripToTCPSegment builds a stock IPv4/TCP frame and strips the
 // outer eth(14)+ipv4(20) so callers can splice the bare TCP segment
 // past their own IPv6+ext chain or SRH.
-func stripToTCPSegment(t *testing.T, src, dst net.IP, srcPort, dstPort uint16) []byte {
+func stripToTCPSegment(t testing.TB, src, dst net.IP, srcPort, dstPort uint16) []byte {
 	t.Helper()
 	tcpInner := Defaults()
 	tcpInner.SrcIP, tcpInner.DstIP = src, dst
@@ -443,7 +443,7 @@ type SRv6Opts struct {
 // of segments = len(opts.Segments); SRH.last_entry = N-1; SRH bytes
 // after the fixed 8 = N * 16. Codegen consumes these via the
 // variable trail (knownVariableTails["srv6_h"]).
-func BuildSRv6(t *testing.T, opts SRv6Opts) []byte {
+func BuildSRv6(t testing.TB, opts SRv6Opts) []byte {
 	t.Helper()
 	if opts.Src == nil {
 		opts.Src = net.ParseIP("fe80::1")
@@ -488,7 +488,7 @@ func BuildSRv6(t *testing.T, opts SRv6Opts) []byte {
 // without an inner payload. The vxlan vocab's parser is
 // `extract; transition accept` so this exercises dispatch + extract;
 // inner Ethernet support is not declared in the vocab.
-func BuildEthIPv4UDPVXLAN(t *testing.T, vni uint32) []byte {
+func BuildEthIPv4UDPVXLAN(t testing.TB, vni uint32) []byte {
 	t.Helper()
 	d := Defaults()
 	eth := &layers.Ethernet{SrcMAC: d.SrcMAC, DstMAC: d.DstMAC, EthernetType: layers.EthernetTypeIPv4}
@@ -510,10 +510,108 @@ func BuildEthIPv4UDPVXLAN(t *testing.T, vni uint32) []byte {
 	return buf.Bytes()
 }
 
+// geneveHeader returns the 8-byte Geneve fixed header (RFC 8926):
+//
+//	[0]     ver(2) | opt_len(6)   — 0 = v0, no options
+//	[1]     O(1) | C(1) | rsvd(6) — 0
+//	[2..3]  protocol_type (BE16)
+//	[4..6]  VNI (BE24)
+//	[7]     reserved              — 0
+//
+// gopacket's Geneve type is non-serializable, so callers hand-roll
+// the bytes via this helper. Used by both BuildEthIPv4UDPGeneve
+// (protocol_type = IPv4) and BuildGeneveInnerIPv4TCP (protocol_type =
+// TransparentEthernetBridging).
+func geneveHeader(vni uint32, protocolType layers.EthernetType) []byte {
+	hdr := make([]byte, 8)
+	binary.BigEndian.PutUint16(hdr[2:4], uint16(protocolType))
+	hdr[4] = byte(vni >> 16)
+	hdr[5] = byte(vni >> 8)
+	hdr[6] = byte(vni)
+	return hdr
+}
+
+// GeneveInnerIPv4TCPOpts describes an Ethernet/IPv4/UDP(6081)/Geneve/
+// Ethernet/IPv4/TCP frame for testing F9-style filters that chain past
+// Geneve into the inner Ethernet ("eth/ipv4@outer/udp/geneve/eth/ipv4@inner/tcp").
+// Geneve's protocol_type is set to TransparentEthernetBridging (RFC 5694)
+// so the payload is a full inner Ethernet frame; eth.p4 declares
+// ETH_GENEVE_NO_CHECK so the kunai parser accepts the chain without a
+// dispatch constant check.
+type GeneveInnerIPv4TCPOpts struct {
+	VNI                        uint32
+	OuterSrcIP, OuterDstIP     net.IP
+	InnerSrcMAC, InnerDstMAC   net.HardwareAddr
+	InnerSrcIP, InnerDstIP     net.IP
+	InnerSrcPort, InnerDstPort uint16
+}
+
+// BuildGeneveInnerIPv4TCP serializes the Geneve-tunneled frame described
+// above. Defaults: outer 10.0.0.1 -> 10.0.0.2, inner 192.168.1.1 ->
+// 192.168.1.2, inner ports 4444 -> 5555, vni 0x123456.
+func BuildGeneveInnerIPv4TCP(t testing.TB, opts GeneveInnerIPv4TCPOpts) []byte {
+	t.Helper()
+
+	if opts.VNI == 0 {
+		opts.VNI = 0x123456
+	}
+	if opts.OuterSrcIP == nil {
+		opts.OuterSrcIP = net.ParseIP("10.0.0.1")
+	}
+	if opts.OuterDstIP == nil {
+		opts.OuterDstIP = net.ParseIP("10.0.0.2")
+	}
+	if opts.InnerSrcIP == nil {
+		opts.InnerSrcIP = net.ParseIP("192.168.1.1")
+	}
+	if opts.InnerDstIP == nil {
+		opts.InnerDstIP = net.ParseIP("192.168.1.2")
+	}
+	if opts.InnerSrcPort == 0 {
+		opts.InnerSrcPort = 4444
+	}
+	if opts.InnerDstPort == 0 {
+		opts.InnerDstPort = 5555
+	}
+
+	innerInputs := Defaults()
+	if opts.InnerSrcMAC != nil {
+		innerInputs.SrcMAC = opts.InnerSrcMAC
+	}
+	if opts.InnerDstMAC != nil {
+		innerInputs.DstMAC = opts.InnerDstMAC
+	}
+	innerInputs.SrcIP, innerInputs.DstIP = opts.InnerSrcIP, opts.InnerDstIP
+	innerInputs.SrcPort, innerInputs.DstPort = opts.InnerSrcPort, opts.InnerDstPort
+	innerFrame := Build(t, innerInputs)
+
+	d := Defaults()
+	eth := &layers.Ethernet{SrcMAC: d.SrcMAC, DstMAC: d.DstMAC, EthernetType: layers.EthernetTypeIPv4}
+	v4 := &layers.IPv4{
+		Version: 4, IHL: 5, TTL: 64,
+		SrcIP:    opts.OuterSrcIP.To4(),
+		DstIP:    opts.OuterDstIP.To4(),
+		Protocol: layers.IPProtocolUDP,
+	}
+	udp := &layers.UDP{SrcPort: 12345, DstPort: 6081}
+	_ = udp.SetNetworkLayerForChecksum(v4)
+
+	geneve := geneveHeader(opts.VNI, layers.EthernetTypeTransparentEthernetBridging)
+	payload := append(geneve, innerFrame...)
+
+	buf := gopacket.NewSerializeBuffer()
+	if err := gopacket.SerializeLayers(buf, gopacket.SerializeOptions{
+		ComputeChecksums: true, FixLengths: true,
+	}, eth, v4, udp, gopacket.Payload(payload)); err != nil {
+		t.Fatalf("gopacket.SerializeLayers (geneve-inner): %v", err)
+	}
+	return buf.Bytes()
+}
+
 // BuildEthIPv4UDPGeneve returns Ethernet/IPv4/UDP(dport=6081)/Geneve
-// (no options, protocol_type=IPv4). gopacket's Geneve type is
-// non-serializable so the 8-byte header is hand-rolled.
-func BuildEthIPv4UDPGeneve(t *testing.T, vni uint32) []byte {
+// (no options, protocol_type=IPv4). The 8-byte Geneve header layout
+// is documented on geneveHeader above.
+func BuildEthIPv4UDPGeneve(t testing.TB, vni uint32) []byte {
 	t.Helper()
 	d := Defaults()
 	eth := &layers.Ethernet{SrcMAC: d.SrcMAC, DstMAC: d.DstMAC, EthernetType: layers.EthernetTypeIPv4}
@@ -526,17 +624,7 @@ func BuildEthIPv4UDPGeneve(t *testing.T, vni uint32) []byte {
 	udp := &layers.UDP{SrcPort: 12345, DstPort: 6081}
 	_ = udp.SetNetworkLayerForChecksum(v4)
 
-	// Geneve header bytes per RFC 8926:
-	//   [0]     ver(2) | opt_len(6)        — 0 = v0, no options
-	//   [1]     O(1)|C(1)|rsvd(6)          — 0
-	//   [2..3]  protocol_type (BE16)        — 0x0800 (IPv4)
-	//   [4..6]  VNI (BE24)
-	//   [7]     reserved                    — 0
-	geneve := make([]byte, 8)
-	binary.BigEndian.PutUint16(geneve[2:4], uint16(layers.EthernetTypeIPv4))
-	geneve[4] = byte(vni >> 16)
-	geneve[5] = byte(vni >> 8)
-	geneve[6] = byte(vni)
+	geneve := geneveHeader(vni, layers.EthernetTypeIPv4)
 
 	buf := gopacket.NewSerializeBuffer()
 	if err := gopacket.SerializeLayers(buf, gopacket.SerializeOptions{
@@ -561,7 +649,7 @@ type IPIPOpts struct {
 // matched against `eth/ipv4/ipv4/tcp`, so the inner can carry options
 // (IHL>5) and still match — the parser's IHL-driven trailer skip
 // advances R4 correctly per layer.
-func BuildEthIPIPTCP(t *testing.T, opts IPIPOpts) []byte {
+func BuildEthIPIPTCP(t testing.TB, opts IPIPOpts) []byte {
 	t.Helper()
 	innerInputs := Defaults()
 	innerInputs.IPv4Options = opts.InnerOptions
@@ -595,7 +683,7 @@ func BuildEthIPIPTCP(t *testing.T, opts IPIPOpts) []byte {
 // BuildEthIPv6inIPv6TCP serializes Ethernet/IPv6(outer, next_header=IPv6)/
 // IPv6(inner)/TCP. Mirrors BuildEthIPIPTCP for the v6-in-v6 layered
 // chain (`eth/ipv6/ipv6/tcp`).
-func BuildEthIPv6inIPv6TCP(t *testing.T) []byte {
+func BuildEthIPv6inIPv6TCP(t testing.TB) []byte {
 	t.Helper()
 	o := Defaults()
 	o.SrcIP = net.ParseIP("2001:db8::1")
@@ -643,7 +731,7 @@ type GREOpts struct {
 // BuildGRE serializes Ethernet/IPv4/GRE/<inner IPv4/TCP> with the
 // requested optional sub-headers enabled. The outer IPv4 carries
 // protocol=47 (GRE); inner ports default to 4444 → 5555.
-func BuildGRE(t *testing.T, opts GREOpts) []byte {
+func BuildGRE(t testing.TB, opts GREOpts) []byte {
 	t.Helper()
 	if opts.InnerSrcPort == 0 {
 		opts.InnerSrcPort = 4444
@@ -699,7 +787,7 @@ func BuildGRE(t *testing.T, opts GREOpts) []byte {
 // (kunai matches on it); the appended 16 opaque bytes simulate the
 // encrypted payload that kunai cannot inspect — testing here pins
 // that the chain match succeeds despite the inner being unreadable.
-func BuildEthIPv4ESP(t *testing.T, spi, seq uint32) []byte {
+func BuildEthIPv4ESP(t testing.TB, spi, seq uint32) []byte {
 	t.Helper()
 	o := Defaults()
 	o.UDP = true // any IPv4 child is fine; we patch the protocol byte after build
@@ -711,7 +799,7 @@ func BuildEthIPv4ESP(t *testing.T, spi, seq uint32) []byte {
 }
 
 // BuildEthIPv6ESP returns an Ethernet/IPv6/ESP frame.
-func BuildEthIPv6ESP(t *testing.T, src, dst net.IP, spi, seq uint32) []byte {
+func BuildEthIPv6ESP(t testing.TB, src, dst net.IP, spi, seq uint32) []byte {
 	t.Helper()
 	out := buildEthIPv6Prefix(t, src, dst)
 	body := espPayload(spi, seq)
@@ -777,7 +865,7 @@ type IPv6WithExtsOpts struct {
 // header's next_header points at the first ext type, each ext's
 // next_header points at the next ext (or FinalNextHeader on the
 // last ext).
-func BuildIPv6WithExts(t *testing.T, opts IPv6WithExtsOpts) []byte {
+func BuildIPv6WithExts(t testing.TB, opts IPv6WithExtsOpts) []byte {
 	t.Helper()
 	if opts.Src == nil {
 		opts.Src = net.ParseIP("fe80::1")

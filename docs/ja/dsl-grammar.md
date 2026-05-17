@@ -67,7 +67,7 @@ predicate      ::= '[' field-path op value ']'
                  | '[' field-path 'has' flag-name ']'      (* F6 bitwise & で superseded *)
 field-path     ::= field-name ('.' field-name)*            (* aux access: <aux>.<field> *)
 field-name     ::= [a-z] [a-z0-9_]*
-op             ::= '==' | '!=' | '<' | '<=' | '>' | '>=' | '='
+op             ::= '==' | '!=' | '<' | '<=' | '>' | '>='
 value          ::= integer | ipv4 | ipv4-cidr | ipv6 | ipv6-cidr | mac
 value-list     ::= '[' value (',' value)* ']'
 flag-name      ::= [A-Z] [A-Z0-9_]*
@@ -90,7 +90,6 @@ mac            ::= [0-9a-fA-F]{2} (':' [0-9a-fA-F]{2}){5}   (* colon 区切り 6
 **Op 仕様**:
 - `==` / `!=`: 全 value 型で動く
 - `<`, `<=`, `>`, `>=`: 整数のみ (IP / MAC は意味的に不可)
-- `=` は `==` の syntax sugar
 
 **CIDR 特例**:
 - `/0 ==` → 命令ゼロ (常に match)
@@ -374,6 +373,22 @@ parser EthParser(packet_in pkt, out eth_h hdr) {
 5. (将来) `pkg/kunai/parser/grammar_test.go` の例文 table 更新 — accept / reject 各 1 ケース以上
 
 drift 検知は CI で grammar_test が走ることで担保される予定 (現状は手動レビュー)。
+
+---
+
+## Chain root convention
+
+DSL の `layer-chain` は grammar 上 root を制約しないが、 operational semantic としては:
+
+- Ethernet 経由の packet を XDP/TC で受け取る前提 → chain は **`eth/...` で始める**
+- VLAN/QinQ stacking なら `eth/(vlan|qinq)/...`
+- VXLAN inner なら `eth/ipv4/udp/vxlan/eth/...` (outer + inner)
+
+例外:
+- `--mode tc-entry` の clsact なら入り口で既に L2 解析済の場合あり、 短い chain で OK
+- 自前 testing で特定 protocol だけ codegen 確認したい時 (vocab 学習目的) は短 chain も valid
+
+短 chain (root が `eth` 以外) は resolver で warning が出るが compile は通る。
 
 ---
 
