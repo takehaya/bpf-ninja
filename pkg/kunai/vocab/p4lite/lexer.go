@@ -64,6 +64,7 @@ const (
 	TokMinus
 	TokLShift
 	TokAmp
+	TokAt
 )
 
 func (k TokenKind) String() string {
@@ -146,6 +147,8 @@ func (k TokenKind) String() string {
 		return "'<<'"
 	case TokAmp:
 		return "'&'"
+	case TokAt:
+		return "'@'"
 	}
 	return fmt.Sprintf("TokenKind(%d)", int(k))
 }
@@ -333,6 +336,8 @@ func (l *Lexer) Next() (Token, error) {
 		return Token{Kind: TokMinus, Value: "-", Pos: pos}, nil
 	case '&':
 		return Token{Kind: TokAmp, Value: "&", Pos: pos}, nil
+	case '@':
+		return Token{Kind: TokAt, Value: "@", Pos: pos}, nil
 	}
 	return Token{}, l.syntaxErr(pos, "unexpected character %q", b)
 }

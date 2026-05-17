@@ -73,21 +73,40 @@ func (p *parser) accept(k TokenKind) (Token, bool, error) {
 
 func (p *parser) parseFile() (*File, error) {
 	f := &File{}
+	// pending accumulates @-prefixed annotations encountered before the
+	// next declaration. The trailing-annotation guard (`len > 0` at EOF
+	// and before extern, which p4lite treats as opaque) prevents
+	// annotations from silently being dropped when the user mis-orders
+	// them.
+	var pending []Annotation
 	for p.cur.Kind != TokEOF {
 		switch p.cur.Kind {
+		case TokAt:
+			ann, err := p.parseAnnotation()
+			if err != nil {
+				return nil, err
+			}
+			pending = append(pending, *ann)
 		case TokHeader:
 			h, err := p.parseHeader()
 			if err != nil {
 				return nil, err
 			}
+			h.Annotations = pending
+			pending = nil
 			f.Headers = append(f.Headers, h)
 		case TokConst:
 			c, err := p.parseConst()
 			if err != nil {
 				return nil, err
 			}
+			c.Annotations = pending
+			pending = nil
 			f.Consts = append(f.Consts, c)
 		case TokExtern:
+			if len(pending) > 0 {
+				return nil, p.errorf(pending[0].Pos, "annotations are not supported on extern declarations (p4lite treats extern bodies as opaque)")
+			}
 			ex, err := p.parseExtern()
 			if err != nil {
 				return nil, err
@@ -98,12 +117,111 @@ func (p *parser) parseFile() (*File, error) {
 			if err != nil {
 				return nil, err
 			}
+			par.Annotations = pending
+			pending = nil
 			f.Parsers = append(f.Parsers, par)
 		default:
-			return nil, p.errorf(p.cur.Pos, "expected 'header', 'const', 'extern', or 'parser' at top level, got %s (%q)", p.cur.Kind, p.cur.Value)
+			return nil, p.errorf(p.cur.Pos, "expected 'header', 'const', 'extern', 'parser', or '@annotation' at top level, got %s (%q)", p.cur.Kind, p.cur.Value)
 		}
 	}
+	if len(pending) > 0 {
+		return nil, p.errorf(pending[0].Pos, "annotation @%s has no following declaration to attach to", pending[0].Name)
+	}
 	return f, nil
+}
+
+// parseAnnotation parses one structured `@name[k=v, ...]` decorator.
+// Cursor sits on the `@` token on entry. Only the structured form is
+// accepted; positional `@name(...)` is rejected so heterogeneous
+// parameter sets can't be silently reordered. Empty `@name[]` is
+// accepted (lets callers omit args while still declaring the
+// annotation name for future extension).
+func (p *parser) parseAnnotation() (*Annotation, error) {
+	startPos := p.cur.Pos
+	if _, err := p.expect(TokAt); err != nil {
+		return nil, err
+	}
+	nameTok, err := p.expect(TokIdent)
+	if err != nil {
+		return nil, err
+	}
+	switch p.cur.Kind {
+	case TokLBracket:
+		// structured form, fall through
+	case TokLParen:
+		return nil, p.errorf(p.cur.Pos, "positional annotation form @%s(...) is not supported in p4lite; use the structured form @%s[k=v, ...]", nameTok.Value, nameTok.Value)
+	default:
+		return nil, p.errorf(p.cur.Pos, "expected '[' to start structured annotation arg list for @%s, got %s", nameTok.Value, p.cur.Kind)
+	}
+	if err := p.advance(); err != nil {
+		return nil, err
+	}
+	kvs := map[string]AnnotationValue{}
+	for p.cur.Kind != TokRBracket {
+		keyTok, err := p.expect(TokIdent)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := p.expect(TokEquals); err != nil {
+			return nil, err
+		}
+		val, err := p.parseAnnotationValue()
+		if err != nil {
+			return nil, err
+		}
+		if _, exists := kvs[keyTok.Value]; exists {
+			return nil, p.errorf(keyTok.Pos, "duplicate annotation key %q in @%s", keyTok.Value, nameTok.Value)
+		}
+		kvs[keyTok.Value] = val
+		switch p.cur.Kind {
+		case TokComma:
+			if err := p.advance(); err != nil {
+				return nil, err
+			}
+		case TokRBracket:
+			// loop will exit
+		default:
+			return nil, p.errorf(p.cur.Pos, "expected ',' or ']' after annotation key=value in @%s, got %s", nameTok.Value, p.cur.Kind)
+		}
+	}
+	if _, err := p.expect(TokRBracket); err != nil {
+		return nil, err
+	}
+	return &Annotation{Name: nameTok.Value, KVs: kvs, Pos: startPos}, nil
+}
+
+// parseAnnotationValue parses one RHS of a `k=v` pair: an integer
+// literal, a bare identifier, or a dotted `proto.field` reference.
+// P4-16 §7.4 also permits string literals and expression forms;
+// p4lite defers those until a kunai annotation needs them.
+func (p *parser) parseAnnotationValue() (AnnotationValue, error) {
+	pos := p.cur.Pos
+	switch p.cur.Kind {
+	case TokInt:
+		tok := p.cur
+		if err := p.advance(); err != nil {
+			return AnnotationValue{}, err
+		}
+		return AnnotationValue{Kind: AnnotationInt, Int: tok.Int, Pos: pos}, nil
+	case TokIdent:
+		name := p.cur.Value
+		if err := p.advance(); err != nil {
+			return AnnotationValue{}, err
+		}
+		if p.cur.Kind == TokDot {
+			if err := p.advance(); err != nil {
+				return AnnotationValue{}, err
+			}
+			fldTok, err := p.expect(TokIdent)
+			if err != nil {
+				return AnnotationValue{}, err
+			}
+			return AnnotationValue{Kind: AnnotationFieldRef, Proto: name, Field: fldTok.Value, Pos: pos}, nil
+		}
+		return AnnotationValue{Kind: AnnotationIdent, Ident: name, Pos: pos}, nil
+	default:
+		return AnnotationValue{}, p.errorf(pos, "expected int literal, identifier, or 'proto.field' as annotation value, got %s", p.cur.Kind)
+	}
 }
 
 // parseExtern records `extern <Name> { ... }` and skips the body

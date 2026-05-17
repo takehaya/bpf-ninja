@@ -135,9 +135,23 @@ func TestLexerKeywordsVsIdents(t *testing.T) {
 }
 
 func TestLexerUnexpectedCharacter(t *testing.T) {
-	_, err := NewLexer([]byte("@"), "t.p4").Next()
+	// Pick a character outside the lexer's recognised token set. `@`
+	// became a valid token in the structured-annotation work, so use
+	// `$` here — it's part of P4-16's reserved set but p4lite has no
+	// model for it.
+	_, err := NewLexer([]byte("$"), "t.p4").Next()
 	if err == nil {
-		t.Fatal("expected error for '@'")
+		t.Fatal("expected error for '$'")
+	}
+}
+
+func TestLexerAtToken(t *testing.T) {
+	tok, err := NewLexer([]byte("@"), "t.p4").Next()
+	if err != nil {
+		t.Fatalf("lex '@': %v", err)
+	}
+	if tok.Kind != TokAt {
+		t.Errorf("Kind=%v, want TokAt", tok.Kind)
 	}
 }
 
