@@ -63,10 +63,11 @@ type writeBackOp struct {
 //     write-back keeps ipv6.next_header in sync with the chain tail
 //     so the next layer's dispatch (TCP_IPV6_NEXT_HEADER etc.) sees
 //     the inner protocol rather than the first ext type.
-//   - srv6_h: an IPv6 Routing extension whose segment list lives in
-//     the variable region. SRv6's own next_header byte (offset 0)
-//     identifies the inner protocol, so child dispatches can read it
-//     directly via the layerEntry slot — no write-back needed.
+//
+// srv6_h was migrated to a native pkt.advance in srv6.p4's
+// skip_segments state; the trail params (Scale=8, Mask=0x0F, etc.)
+// now flow through the existing AdvanceOp path that emits the same
+// variableTailSkip via state.Advances in parser_state.go.
 var knownVariableTails = map[string]variableTailSkip{
 	"ipv6_ext_h": {
 		LenFieldByteOff: 1,
@@ -77,16 +78,6 @@ var knownVariableTails = map[string]variableTailSkip{
 			SourceByteOff: 0,
 			ParentByteOff: 6,
 		},
-	},
-	"srv6_h": {
-		LenFieldByteOff: 1,
-		Scale:           8,
-		Base:            0,
-		// LenMask 0x0F = up to 15*8 = 120 bytes, covering the full
-		// `srv6_seg_h[8]` capacity (7 segments + 8B TLV) declared in
-		// srv6.p4. A tighter mask would let `srv6.segments[N]` reads
-		// land on non-segment bytes when hdr_ext_len exceeds the cap.
-		LenMask: 0x0F,
 	},
 }
 

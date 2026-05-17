@@ -734,18 +734,42 @@ func auxLayoutNames(m map[string]*AuxLayout) []string {
 }
 
 func TestParseStateMachineSrv6(t *testing.T) {
+	// srv6.p4 now has 2 states: `start` extracts the SRH primary and
+	// transitions to `skip_segments` on routing_type==4 (reject
+	// otherwise); `skip_segments` runs the variable trail via
+	// pkt.advance and accepts. This replaced the legacy single-state
+	// shape where the variable trail came from a Go-side
+	// knownVariableTails entry keyed on srv6_h.
 	specs := loadBundled(t)
 	srv6 := specs["srv6"]
 	if srv6 == nil || srv6.ParseStateMachine == nil {
-		t.Fatal("expected srv6 to have a non-trivial ParseStateMachine (single state with a routing_type select)")
+		t.Fatal("expected srv6 to have a non-trivial ParseStateMachine")
 	}
 	machine := srv6.ParseStateMachine
-	if len(machine.States) != 1 {
-		t.Fatalf("srv6 state count = %d, want 1", len(machine.States))
+	if len(machine.States) != 2 {
+		t.Fatalf("srv6 state count = %d, want 2 (start + skip_segments)", len(machine.States))
 	}
-	state := machine.States[0]
-	if state.Trans.Kind != TransSelect {
-		t.Errorf("srv6 transition kind = %v, want TransSelect (routing_type guard)", state.Trans.Kind)
+	start := machine.States[0]
+	if start.Name != "start" {
+		t.Errorf("states[0].Name = %q, want %q", start.Name, "start")
+	}
+	if start.Trans.Kind != TransSelect {
+		t.Errorf("start transition kind = %v, want TransSelect (routing_type guard)", start.Trans.Kind)
+	}
+	skip := machine.States[1]
+	if skip.Name != "skip_segments" {
+		t.Errorf("states[1].Name = %q, want %q", skip.Name, "skip_segments")
+	}
+	if len(skip.Advances) != 1 {
+		t.Fatalf("skip_segments advance count = %d, want 1", len(skip.Advances))
+	}
+	adv := skip.Advances[0]
+	if adv.Kind != AdvanceOpField {
+		t.Errorf("advance kind = %v, want AdvanceOpField", adv.Kind)
+	}
+	want := HeaderLength{LenByteOff: 1, LenMask: 0x0F, LenShift: 0, Scale: 8, Base: 0}
+	if adv.Skip == nil || *adv.Skip != want {
+		t.Errorf("skip = %+v, want %+v", adv.Skip, want)
 	}
 }
 
@@ -891,10 +915,12 @@ func specNames(s map[string]*ProtocolSpec) []string {
 // (`pkt.advance(((bit<32>)(hdr.ihl - 5)) << 5)`) but moved to
 // Mechanism 8 (ParserCounter byte-bounded walk) when option-aware
 // extraction landed. TCP is the lone remaining Mechanism-1 user
-// for its data_offset-driven trailer skip.
+// for its data_offset-driven trailer skip. SRv6 now declares its
+// variable trail through pkt.advance in srv6.p4's skip_segments
+// state, so it's omitted here too.
 func TestVariableTrailAbsentForFixedProtocols(t *testing.T) {
 	specs := loadBundled(t)
-	for _, name := range []string{"eth", "ipv4", "ipv6", "udp", "gtp", "srv6", "vlan", "qinq", "mpls", "gre", "vxlan", "geneve", "icmp", "icmp6", "cw"} {
+	for _, name := range []string{"eth", "ipv4", "ipv6", "udp", "gtp", "vlan", "qinq", "mpls", "gre", "vxlan", "geneve", "icmp", "icmp6", "cw"} {
 		if vs := specs[name].PrimaryAdvanceSkip(); vs != nil {
 			t.Errorf("%s should not declare a variable trailer (got %+v)", name, *vs)
 		}
