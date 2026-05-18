@@ -5,6 +5,8 @@ import (
 	"math/bits"
 
 	"github.com/cilium/ebpf/asm"
+
+	"github.com/takehaya/xdp-ninja/pkg/kunai/vocab"
 )
 
 
@@ -56,38 +58,36 @@ type writeBackOp struct {
 	ParentByteOff int // byte offset in the parent layer's header
 }
 
-// knownVariableTails enumerates the headers whose extracts pull a
-// variable trailer past the byte-aligned minimum prefix.
-//
-//   - ipv6_ext_h: per-iteration HBH/Fragment/DestOpt walking. The
-//     write-back keeps ipv6.next_header in sync with the chain tail
-//     so the next layer's dispatch (TCP_IPV6_NEXT_HEADER etc.) sees
-//     the inner protocol rather than the first ext type.
-//   - srv6_h: an IPv6 Routing extension whose segment list lives in
-//     the variable region. SRv6's own next_header byte (offset 0)
-//     identifies the inner protocol, so child dispatches can read it
-//     directly via the layerEntry slot — no write-back needed.
-var knownVariableTails = map[string]variableTailSkip{
-	"ipv6_ext_h": {
-		LenFieldByteOff: 1,
-		Scale:           8,
-		Base:            0,
-		LenMask:         0x03,
-		WriteBack: &writeBackOp{
-			SourceByteOff: 0,
-			ParentByteOff: 6,
-		},
-	},
-	"srv6_h": {
-		LenFieldByteOff: 1,
-		Scale:           8,
-		Base:            0,
-		// LenMask 0x0F = up to 15*8 = 120 bytes, covering the full
-		// `srv6_seg_h[8]` capacity (7 segments + 8B TLV) declared in
-		// srv6.p4. A tighter mask would let `srv6.segments[N]` reads
-		// land on non-segment bytes when hdr_ext_len exceeds the cap.
-		LenMask: 0x0F,
-	},
+// variableTailFor lowers a vocab.HeaderAnnotations entry into the
+// codegen-internal variableTailSkip the trail emit consumes. Returns
+// ok=false when the header has no @kunai_variable_tail annotation
+// (the common case — headers whose trailer is expressed natively via
+// pkt.advance flow through state.Advances upstream).
+func variableTailFor(spec *vocab.ProtocolSpec, headerName string) (variableTailSkip, bool) {
+	if spec == nil || spec.HeaderAnnotations == nil {
+		return variableTailSkip{}, false
+	}
+	ann, ok := spec.HeaderAnnotations[headerName]
+	if !ok || ann == nil || ann.VariableTail == nil {
+		return variableTailSkip{}, false
+	}
+	vt := variableTailSkip{
+		LenFieldByteOff: ann.VariableTail.LenFieldByteOff,
+		Scale:           ann.VariableTail.Scale,
+		Base:            ann.VariableTail.Base,
+		LenMask:         ann.VariableTail.LenMask,
+		LenShift:        ann.VariableTail.LenShift,
+	}
+	if ann.WriteBack != nil {
+		if !ann.WriteBack.Resolved {
+			panic(fmt.Sprintf("codegen: WriteBackSpec for header %q referenced before resolveHeaderWritebackTargets ran (vocab loader bug — call vocab.Load not loadFile in isolation)", headerName))
+		}
+		vt.WriteBack = &writeBackOp{
+			SourceByteOff: ann.WriteBack.SourceByteOff,
+			ParentByteOff: ann.WriteBack.ParentByteOff,
+		}
+	}
+	return vt, true
 }
 
 // log2PowerOfTwo returns log2(n) when n is a positive power of two,

@@ -288,7 +288,7 @@ func (c *pmCtx) emitStateBody(state *vocab.ParseState, stateIdx int, isEntry boo
 		hs := ex.HeaderSize / 8
 		insns = append(insns, emitAdvance(hs))
 		fixedHs += hs
-		if vt, ok := knownVariableTails[ex.HeaderName]; ok {
+		if vt, ok := variableTailFor(c.spec, ex.HeaderName); ok {
 			if state.Trans.Kind == vocab.TransSelect {
 				// Inline ABI: R0/R1 are scratch_start/end, R4 is the
 				// running offset (offsetBase). Use R3 as the load

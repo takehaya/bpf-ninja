@@ -50,6 +50,36 @@ type ProtocolSpec struct {
 	// state extract+accept shape; codegen routes those through the
 	// existing fixed-size path with no behaviour change.
 	ParseStateMachine *ParseStateMachine
+	// HeaderAnnotations records per-header @kunai_* decorators read
+	// from the .p4 source. Nil-or-missing entries mean "no kunai
+	// annotations on that header"; the primary header may also appear
+	// here when it carries cross-cutting kunai metadata that the
+	// dispatch-const / parser-block channels can't express.
+	HeaderAnnotations map[string]*HeaderAnnotations
+	// StackLayouts captures the @kunai_layout annotation on each
+	// declare-only `out X[N] stack` parser parameter. The resolver
+	// uses these to compute aux-stack base offsets when the parser
+	// block doesn't push entries explicitly — without an explicit
+	// layout declaration, multiple declare-only stacks would alias
+	// onto the same byte offset. Keyed by stack (parameter) name.
+	// Empty when every aux stack in the protocol is pushed by some
+	// parser-block state (= the standard P4 idiom).
+	StackLayouts map[string]*StackLayoutSpec
+	// StackCounts captures the @kunai_stack_count annotation on a
+	// declare-only aux stack parameter, naming a primary-header byte
+	// whose value (plus an optional offset) gives the stack's runtime
+	// element count for `any/all` quantifiers. Empty when no parameter
+	// carries the annotation; the codegen then falls back to the
+	// static Capacity bound.
+	StackCounts map[string]*StackCountSpec
+	// OptionSegment names the reserved second path segment for 4-/5-part
+	// field references like `<proto>.<seg>.<NAME>.<field>` that route to
+	// the protocol's parser-declared option walk. Defaults to "options"
+	// when no @kunai_option_segment[name=...] decorates the parser
+	// block. The non-default value lets a protocol expose its
+	// option-walk under a domain-appropriate name (e.g. "tlvs") without
+	// a resolver-side code change.
+	OptionSegment string
 	// selfValidating caches whether the parser block proves the
 	// protocol's identity itself (start-state `transition select(...)
 	// { ...; default: reject; }` keyed on a primary-header field).
@@ -58,6 +88,86 @@ type ProtocolSpec struct {
 	selfValidating bool
 	File           *p4lite.File // full AST (for resolver/codegen later)
 	Source         string       // original file path, for diagnostics
+}
+
+// StackLayoutSpec captures the @kunai_layout[after=...] decorator on
+// a parser parameter declaring an aux stack that the parser block
+// does not extract into. The byte offset is computed by resolving the
+// chain: `after=primary` anchors at the primary header end;
+// `after=<other_stack>` walks back to a previously-resolved layout
+// (cycle-free by construction since the loader processes parameters
+// in declaration order and rejects forward references). The resolved
+// BaseByteOff is what the field-path resolver consumes.
+type StackLayoutSpec struct {
+	After       string // "primary" or another stack's parameter name
+	BaseByteOff int    // resolved at load-time
+}
+
+// StackCountSpec is the .p4-declared form the codegen's quantifier
+// count source consumes for top-level declare-only aux stacks. The
+// loader resolves the @kunai_stack_count[field=NAME, offset=N]
+// annotation against the primary header's bit layout into the byte
+// offset of the named field; the codegen emits a single-byte LDX
+// from `layer_entry + CountByteOff`, adds Offset, and uses the
+// result as the iteration cap. The field must be byte-aligned and
+// exactly 8 bits wide so the LDX hits the whole value in one load.
+type StackCountSpec struct {
+	ByteOff int
+	Offset  int
+}
+
+// HeaderAnnotations bundles kunai-specific decorators carried on a
+// non-primary header within a protocol's vocab. Today these describe
+// extension-header chain elements (ipv6_ext_h) whose variable-trailer
+// and parent-field write-back behaviour has no native P4 expression.
+// Keyed by header name in ProtocolSpec.HeaderAnnotations.
+type HeaderAnnotations struct {
+	// VariableTail mirrors codegen/parser_trail.go::variableTailSkip
+	// for the in-protocol header; nil when the header declares no
+	// @kunai_variable_tail.
+	VariableTail *VariableTailSpec
+	// WriteBack captures the @kunai_writeback decorator: after the
+	// extension header is consumed inside a self-loop, copy one byte
+	// of its primary back into the parent protocol's named field so
+	// the next dispatch sees the inner protocol identifier.
+	WriteBack *WriteBackSpec
+}
+
+// VariableTailSpec is the .p4-declared form of the same five-tuple
+// codegen/parser_trail.go::variableTailSkip carries: a runtime length
+// computed as `((<byte at LenFieldByteOff> & LenMask) >> LenShift) *
+// Scale + Base`. The kunai-specific @kunai_variable_tail annotation
+// names the field; the loader resolves it against the header's bit
+// layout the same way pkt.advance's lowerCastShiftSkip does.
+type VariableTailSpec struct {
+	LenFieldByteOff int
+	LenMask         int
+	LenShift        int
+	Scale           int
+	Base            int
+}
+
+// WriteBackSpec captures the cross-protocol byte copy a chained
+// extension header's parser-loop emits per iteration. Source names
+// a field on the chained header (resolved against the header's
+// declared layout). Parent identifies the destination via a
+// proto.field path the loader resolves to a concrete byte offset
+// (ParentByteOff) once every spec is loaded — the resolved offset
+// matches the layout codegen already uses, so the write-back stays
+// verifier-safe against PTR_TO_MAP_VALUE.
+type WriteBackSpec struct {
+	SourceField   string
+	ParentProto   string
+	ParentField   string
+	SourceByteOff int // resolved during loadFile against the chained header
+	ParentByteOff int // resolved during Load's pass 2 against the parent spec
+	// Resolved distinguishes a real ParentByteOff=0 (= writeback target is the
+	// first byte of the parent's primary header) from "pass-2 hasn't run yet".
+	// Set to true by resolveHeaderWritebackTargets; consumers in codegen panic
+	// loudly when WriteBack is non-nil but Resolved is false, surfacing
+	// loader-bypassing callers immediately rather than silently writing into
+	// byte 0 of a parent that may not be the intended target.
+	Resolved bool
 }
 
 // HeaderLength is the lowered shape of a primary-header variable

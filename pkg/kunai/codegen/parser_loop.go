@@ -735,7 +735,7 @@ func (c *pmCtx) emitSelfLoopCallback(state *vocab.ParseState, stateIdx int, cbSy
 			asm.Add.Imm(asm.R3, int32(hs)),
 			asm.StoreMem(asm.R2, bpfLoopCbCtxOffsetField, asm.R3, asm.DWord),
 		)
-		if vt, ok := knownVariableTails[ex.HeaderName]; ok {
+		if vt, ok := variableTailFor(c.spec, ex.HeaderName); ok {
 			if state.Trans.Kind == vocab.TransSelect {
 				// Callback ABI: R0/R1 are free here (R1 = bpf_loop idx
 				// is already past use), R3 = current offset, R4/R5 =

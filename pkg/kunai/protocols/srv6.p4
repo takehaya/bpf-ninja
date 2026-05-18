@@ -2,17 +2,20 @@
 //
 // SRH is an IPv6 Routing extension header (next_header=43 in IPv6,
 // routing_type=4 in SRH itself). Total wire size = 8 + hdr_ext_len*8
-// — codegen handles the variable trail uniformly via the
-// knownVariableTails table; segment entries (16 bytes each) and any
+// — the `skip_segments` state below skips the variable region via
+// `pkt.advance(((bit<32>)(hdr.hdr_ext_len & 0x0F)) << 6)`. The
+// mask 0x0F caps the runtime advance to (15 * 8 = 120) bytes so the
+// verifier sees a static upper bound; well-formed SRv6 frames stay
+// well under this cap. Segment entries (16 bytes each) and any
 // trailing TLVs ride inside the variable region as opaque bytes.
 //
 // `segments` is declared as an aux header stack so the resolver can
 // expose `srv6.segments[N].addr` to predicate / where codegen. The
-// parser does NOT push entries to this stack: the variable trail
-// handler in parser_machine codegen advances R4 past all segments in
-// one statically-bounded skip, and segment-N reads use that base
-// offset (= primary header size). Stack capacity 8 caps verifier
-// loop iterations identically to gtp.exts / ipv6.exts.
+// parser does NOT push entries to this stack: the variable advance
+// in `skip_segments` moves R4 past all segments in one statically-
+// bounded skip, and segment-N reads use that base offset (= primary
+// header size). Stack capacity 8 caps verifier loop iterations
+// identically to gtp.exts / ipv6.exts.
 header srv6_h {
     bit<8>  next_header;
     bit<8>  hdr_ext_len;     // in 8-byte units, excluding the first 8
@@ -35,6 +38,8 @@ const bit<8> SRV6_IPV6_NEXT_HEADER = 43;
 
 parser SRv6Parser(packet_in pkt,
                     out srv6_h        hdr,
+                    @kunai_layout[after=primary]
+                    @kunai_stack_count[field=last_entry, offset=1]
                     out srv6_seg_h[8] segments) {
     state start {
         pkt.extract(hdr);
@@ -43,8 +48,16 @@ parser SRv6Parser(packet_in pkt,
         // p4lite's match grammar only accepts integer literals so the
         // value is inlined here.
         transition select(hdr.routing_type) {
-            4:       accept;
+            4:       skip_segments;
             default: reject;
         }
+    }
+    // Variable trail: skip the (hdr_ext_len * 8)-byte region holding
+    // segments + TLVs. Mask 0x0F caps the runtime advance at 120 bytes
+    // so the verifier sees a static upper bound; well-formed SRv6
+    // frames stay well under this cap.
+    state skip_segments {
+        pkt.advance(((bit<32>)(hdr.hdr_ext_len & 0x0F)) << 6);
+        transition accept;
     }
 }

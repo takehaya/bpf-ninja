@@ -477,6 +477,78 @@ func TestParseAdvanceTemplateRoundTrip(t *testing.T) {
 	}
 }
 
+func TestParseAdvanceMaskFormRoundTrip(t *testing.T) {
+	// Mask form `(hdr.<F> & MASK) << S` — extension-header variable
+	// trailer template used by IPv6 / SRv6 hdr_ext_len.
+	src := `parser P(packet_in pkt, out srv6_h hdr) {
+	state start {
+		pkt.extract(hdr);
+		pkt.advance(((bit<32>)(hdr.hdr_ext_len & 0x0F)) << 3);
+		transition accept;
+	}
+}`
+	f, err := Parse([]byte(src), "t.p4")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	stmts := f.Parsers[0].States[0].Stmts
+	if len(stmts) != 2 {
+		t.Fatalf("stmts=%d, want 2", len(stmts))
+	}
+	adv, ok := stmts[1].(*AdvanceStmt)
+	if !ok {
+		t.Fatalf("stmt[1] is %T, want *AdvanceStmt", stmts[1])
+	}
+	want := AdvanceStmt{
+		Object:    "pkt",
+		Kind:      AdvanceField,
+		BitWidth:  32,
+		Target:    "hdr",
+		FieldName: "hdr_ext_len",
+		BaseWords: 0,
+		Mask:      0x0F,
+		ScaleLog2: 3,
+	}
+	if adv.Object != want.Object || adv.Kind != want.Kind || adv.BitWidth != want.BitWidth ||
+		adv.Target != want.Target || adv.FieldName != want.FieldName ||
+		adv.BaseWords != want.BaseWords || adv.Mask != want.Mask || adv.ScaleLog2 != want.ScaleLog2 {
+		t.Errorf("AdvanceStmt = %+v, want %+v", *adv, want)
+	}
+}
+
+func TestParseAdvanceMaskRejectsBadOperands(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want string
+	}{
+		{"mask_zero", `pkt.advance(((bit<32>)(hdr.hdr_ext_len & 0)) << 3);`, "mask MASK=0"},
+		// 0x100 > 0xFF for an 8-bit field — caught at parse time by the
+		// uint64 → int32 range guard if it overflows, otherwise by the
+		// lowering's "exceeds the N-bit field" check (loader_test).
+		// Here we just test the parse-time MASK=0 rejection lives in the
+		// parser.
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			src := `parser P(packet_in pkt, out srv6_h hdr) {
+	state start {
+		pkt.extract(hdr);
+		` + tc.body + `
+		transition accept;
+	}
+}`
+			_, err := Parse([]byte(src), "t.p4")
+			if err == nil {
+				t.Fatalf("expected error for %q, got nil", tc.body)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("err = %q; want substring %q", err.Error(), tc.want)
+			}
+		})
+	}
+}
+
 func TestParseAdvanceLiteralRoundTrip(t *testing.T) {
 	src := `parser P(packet_in pkt, out tcp_h hdr) {
 	state s {
@@ -889,5 +961,164 @@ func TestParseCounterIsZeroFallthroughOnPlainPath(t *testing.T) {
 	keys := f.Parsers[0].States[0].Transition.Select.Keys
 	if len(keys) != 1 || keys[0].Kind != SelectKeyField || keys[0].Path != "hdr.foo" {
 		t.Errorf("keys = %+v, want one SelectKeyField(hdr.foo)", keys)
+	}
+}
+
+func TestParseAnnotationOnHeaderEmpty(t *testing.T) {
+	src := `@kunai_marker[]
+header foo_h { bit<8> a; }`
+	f, err := Parse([]byte(src), "t.p4")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(f.Headers) != 1 {
+		t.Fatalf("headers=%d, want 1", len(f.Headers))
+	}
+	anns := f.Headers[0].Annotations
+	if len(anns) != 1 {
+		t.Fatalf("annotations=%d, want 1", len(anns))
+	}
+	if anns[0].Name != "kunai_marker" {
+		t.Errorf("Name=%q, want kunai_marker", anns[0].Name)
+	}
+	if len(anns[0].KVs) != 0 {
+		t.Errorf("KVs=%v, want empty", anns[0].KVs)
+	}
+}
+
+func TestParseAnnotationValueShapes(t *testing.T) {
+	// Pins each AnnotationValueKind round-trip end-to-end:
+	// int / ident / proto.field. Together they cover every kv-pair
+	// shape kunai annotations actually use today.
+	src := `@kunai_variable_tail[len_field=hdr_ext_len, scale=8, mask=15]
+@kunai_writeback[source=next_header, parent=ipv6.next_header]
+header ipv6_ext_h { bit<8> next_header; bit<8> hdr_ext_len; }`
+	f, err := Parse([]byte(src), "t.p4")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(f.Headers) != 1 || len(f.Headers[0].Annotations) != 2 {
+		t.Fatalf("annotations=%d, want 2 on one header", len(f.Headers[0].Annotations))
+	}
+	vt := f.Headers[0].Annotations[0]
+	if vt.Name != "kunai_variable_tail" {
+		t.Errorf("vt.Name=%q", vt.Name)
+	}
+	if vt.KVs["len_field"].Kind != AnnotationIdent || vt.KVs["len_field"].Ident != "hdr_ext_len" {
+		t.Errorf("len_field = %+v, want ident 'hdr_ext_len'", vt.KVs["len_field"])
+	}
+	if vt.KVs["scale"].Kind != AnnotationInt || vt.KVs["scale"].Int != 8 {
+		t.Errorf("scale = %+v, want int 8", vt.KVs["scale"])
+	}
+	if vt.KVs["mask"].Kind != AnnotationInt || vt.KVs["mask"].Int != 15 {
+		t.Errorf("mask = %+v, want int 15", vt.KVs["mask"])
+	}
+	wb := f.Headers[0].Annotations[1]
+	if wb.Name != "kunai_writeback" {
+		t.Errorf("wb.Name=%q", wb.Name)
+	}
+	if wb.KVs["source"].Kind != AnnotationIdent || wb.KVs["source"].Ident != "next_header" {
+		t.Errorf("source = %+v, want ident 'next_header'", wb.KVs["source"])
+	}
+	parent := wb.KVs["parent"]
+	if parent.Kind != AnnotationFieldRef || parent.Proto != "ipv6" || parent.Field != "next_header" {
+		t.Errorf("parent = %+v, want fieldref 'ipv6.next_header'", parent)
+	}
+}
+
+func TestParseAnnotationOnParserParam(t *testing.T) {
+	src := `header foo_h { bit<8> a; }
+header bar_h { bit<128> b; }
+parser P(packet_in pkt,
+         out foo_h hdr,
+         @kunai_layout[after=primary]
+         out bar_h[8] segments) {
+	state start {
+		pkt.extract(hdr);
+		transition accept;
+	}
+}`
+	f, err := Parse([]byte(src), "t.p4")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(f.Parsers) != 1 || len(f.Parsers[0].Params) != 3 {
+		t.Fatalf("params=%d, want 3", len(f.Parsers[0].Params))
+	}
+	segParam := f.Parsers[0].Params[2]
+	if segParam.VarName != "segments" {
+		t.Fatalf("params[2].VarName=%q, want segments", segParam.VarName)
+	}
+	if len(segParam.Annotations) != 1 {
+		t.Fatalf("segments annotations=%d, want 1", len(segParam.Annotations))
+	}
+	ann := segParam.Annotations[0]
+	if ann.Name != "kunai_layout" {
+		t.Errorf("annotation name=%q, want kunai_layout", ann.Name)
+	}
+	after, ok := ann.KVs["after"]
+	if !ok {
+		t.Fatal("kunai_layout missing `after` key")
+	}
+	if after.Kind != AnnotationIdent || after.Ident != "primary" {
+		t.Errorf("after = %+v, want ident primary", after)
+	}
+	if len(f.Parsers[0].Params[0].Annotations) != 0 || len(f.Parsers[0].Params[1].Annotations) != 0 {
+		t.Errorf("non-annotated params carry stray annotations: %+v", f.Parsers[0].Params)
+	}
+}
+
+func TestParseAnnotationOnConstAndParser(t *testing.T) {
+	src := `@kunai_dispatch[order=1]
+const bit<8> FOO_TCP = 6;
+@kunai_loop_cap[iters=8]
+parser P(packet_in pkt, out foo_h hdr) {
+	state start {
+		pkt.extract(hdr);
+		transition accept;
+	}
+}
+header foo_h { bit<8> a; }`
+	f, err := Parse([]byte(src), "t.p4")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(f.Consts) != 1 || len(f.Consts[0].Annotations) != 1 {
+		t.Fatalf("const annotations=%d, want 1", len(f.Consts[0].Annotations))
+	}
+	if f.Consts[0].Annotations[0].Name != "kunai_dispatch" {
+		t.Errorf("const annotation name=%q", f.Consts[0].Annotations[0].Name)
+	}
+	if len(f.Parsers) != 1 || len(f.Parsers[0].Annotations) != 1 {
+		t.Fatalf("parser annotations=%d, want 1", len(f.Parsers[0].Annotations))
+	}
+	if f.Parsers[0].Annotations[0].Name != "kunai_loop_cap" {
+		t.Errorf("parser annotation name=%q", f.Parsers[0].Annotations[0].Name)
+	}
+}
+
+func TestParseAnnotationRejects(t *testing.T) {
+	cases := []struct {
+		name string
+		src  string
+		want string
+	}{
+		{"positional_form", `@foo(1, 2) header h { bit<8> a; }`, "positional annotation form"},
+		{"bare_no_args", `@foo header h { bit<8> a; }`, "expected '[' to start structured annotation"},
+		{"duplicate_key", `@foo[a=1, a=2] header h { bit<8> a; }`, "duplicate annotation key"},
+		{"missing_value", `@foo[a=] header h { bit<8> a; }`, "expected int literal, identifier"},
+		{"dangling_eof", `@foo[a=1]`, "has no following declaration"},
+		{"before_extern", `@foo[a=1] extern ParserCounter { }`, "annotations are not supported on extern"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Parse([]byte(tc.src), "t.p4")
+			if err == nil {
+				t.Fatalf("expected error, got nil")
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("err = %q; want substring %q", err.Error(), tc.want)
+			}
+		})
 	}
 }

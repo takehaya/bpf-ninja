@@ -73,21 +73,38 @@ func (p *parser) accept(k TokenKind) (Token, bool, error) {
 
 func (p *parser) parseFile() (*File, error) {
 	f := &File{}
+	// pending accumulates @-prefixed annotations encountered before the
+	// next declaration so a dangling @anno (EOF or before an extern
+	// p4lite can't decorate) errors instead of silently dropping.
+	var pending []Annotation
 	for p.cur.Kind != TokEOF {
 		switch p.cur.Kind {
+		case TokAt:
+			ann, err := p.parseAnnotation()
+			if err != nil {
+				return nil, err
+			}
+			pending = append(pending, *ann)
 		case TokHeader:
 			h, err := p.parseHeader()
 			if err != nil {
 				return nil, err
 			}
+			h.Annotations = pending
+			pending = nil
 			f.Headers = append(f.Headers, h)
 		case TokConst:
 			c, err := p.parseConst()
 			if err != nil {
 				return nil, err
 			}
+			c.Annotations = pending
+			pending = nil
 			f.Consts = append(f.Consts, c)
 		case TokExtern:
+			if len(pending) > 0 {
+				return nil, p.errorf(pending[0].Pos, "annotations are not supported on extern declarations (p4lite treats extern bodies as opaque)")
+			}
 			ex, err := p.parseExtern()
 			if err != nil {
 				return nil, err
@@ -98,12 +115,109 @@ func (p *parser) parseFile() (*File, error) {
 			if err != nil {
 				return nil, err
 			}
+			par.Annotations = pending
+			pending = nil
 			f.Parsers = append(f.Parsers, par)
 		default:
-			return nil, p.errorf(p.cur.Pos, "expected 'header', 'const', 'extern', or 'parser' at top level, got %s (%q)", p.cur.Kind, p.cur.Value)
+			return nil, p.errorf(p.cur.Pos, "expected 'header', 'const', 'extern', 'parser', or '@annotation' at top level, got %s (%q)", p.cur.Kind, p.cur.Value)
 		}
 	}
+	if len(pending) > 0 {
+		return nil, p.errorf(pending[0].Pos, "annotation @%s has no following declaration to attach to", pending[0].Name)
+	}
 	return f, nil
+}
+
+// parseAnnotation parses one structured `@name[k=v, ...]` decorator.
+// Cursor sits on the `@` token on entry. Only the structured form is
+// accepted; positional `@name(...)` is rejected so heterogeneous
+// parameter sets can't be silently reordered. Empty `@name[]` is
+// accepted (lets callers omit args while still declaring the
+// annotation name for future extension).
+func (p *parser) parseAnnotation() (*Annotation, error) {
+	startPos := p.cur.Pos
+	if _, err := p.expect(TokAt); err != nil {
+		return nil, err
+	}
+	nameTok, err := p.expect(TokIdent)
+	if err != nil {
+		return nil, err
+	}
+	switch p.cur.Kind {
+	case TokLBracket:
+		// structured form, fall through
+	case TokLParen:
+		return nil, p.errorf(p.cur.Pos, "positional annotation form @%s(...) is not supported in p4lite; use the structured form @%s[k=v, ...]", nameTok.Value, nameTok.Value)
+	default:
+		return nil, p.errorf(p.cur.Pos, "expected '[' to start structured annotation arg list for @%s, got %s", nameTok.Value, p.cur.Kind)
+	}
+	if _, err := p.expect(TokLBracket); err != nil {
+		return nil, err
+	}
+	var kvs map[string]AnnotationValue
+	for p.cur.Kind != TokRBracket {
+		keyTok, err := p.expect(TokIdent)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := p.expect(TokEquals); err != nil {
+			return nil, err
+		}
+		val, err := p.parseAnnotationValue()
+		if err != nil {
+			return nil, err
+		}
+		if _, exists := kvs[keyTok.Value]; exists {
+			return nil, p.errorf(keyTok.Pos, "duplicate annotation key %q in @%s", keyTok.Value, nameTok.Value)
+		}
+		if kvs == nil {
+			kvs = make(map[string]AnnotationValue)
+		}
+		kvs[keyTok.Value] = val
+		if _, ok, err := p.accept(TokComma); err != nil {
+			return nil, err
+		} else if !ok {
+			break
+		}
+	}
+	if _, err := p.expect(TokRBracket); err != nil {
+		return nil, err
+	}
+	return &Annotation{Name: nameTok.Value, KVs: kvs, Pos: startPos}, nil
+}
+
+// parseAnnotationValue parses one RHS of a `k=v` pair: an integer
+// literal, a bare identifier, or a dotted `proto.field` reference.
+// P4-16 §7.4 also permits string literals and expression forms;
+// p4lite defers those until a kunai annotation needs them.
+func (p *parser) parseAnnotationValue() (AnnotationValue, error) {
+	pos := p.cur.Pos
+	switch p.cur.Kind {
+	case TokInt:
+		tok := p.cur
+		if err := p.advance(); err != nil {
+			return AnnotationValue{}, err
+		}
+		return AnnotationValue{Kind: AnnotationInt, Int: tok.Int, Pos: pos}, nil
+	case TokIdent:
+		name := p.cur.Value
+		if err := p.advance(); err != nil {
+			return AnnotationValue{}, err
+		}
+		if p.cur.Kind == TokDot {
+			if err := p.advance(); err != nil {
+				return AnnotationValue{}, err
+			}
+			fldTok, err := p.expect(TokIdent)
+			if err != nil {
+				return AnnotationValue{}, err
+			}
+			return AnnotationValue{Kind: AnnotationFieldRef, Proto: name, Field: fldTok.Value, Pos: pos}, nil
+		}
+		return AnnotationValue{Kind: AnnotationIdent, Ident: name, Pos: pos}, nil
+	default:
+		return AnnotationValue{}, p.errorf(pos, "expected int literal, identifier, or 'proto.field' as annotation value, got %s", p.cur.Kind)
+	}
 }
 
 // parseExtern records `extern <Name> { ... }` and skips the body
@@ -290,10 +404,19 @@ func (p *parser) parseParser() (*Parser, error) {
 	}
 	par := &Parser{Name: name.Value, Pos: startPos}
 	for p.cur.Kind != TokRParen && p.cur.Kind != TokEOF {
+		var paramAnnotations []Annotation
+		for p.cur.Kind == TokAt {
+			ann, err := p.parseAnnotation()
+			if err != nil {
+				return nil, err
+			}
+			paramAnnotations = append(paramAnnotations, *ann)
+		}
 		param, err := p.parseParam()
 		if err != nil {
 			return nil, err
 		}
+		param.Annotations = paramAnnotations
 		par.Params = append(par.Params, param)
 		if _, ok, err := p.accept(TokComma); err != nil {
 			return nil, err
@@ -543,6 +666,9 @@ func (p *parser) parseCounterSetCall(counter string, startPos Position) (Stmt, e
 	}
 	if adv.Kind != AdvanceField {
 		return nil, p.errorf(startPos, "%s.set requires the `((bit<N>)(hdr.<F> - K)) << S` template (lookahead form not supported here)", counter)
+	}
+	if adv.Mask != 0 {
+		return nil, p.errorf(startPos, "%s.set requires the subtract form `(hdr.<F> - K)`; mask form `(hdr.<F> & MASK)` is not supported here (CounterCallStmt has no Mask slot, the mask would be silently dropped)", counter)
 	}
 	return &CounterCallStmt{
 		Counter:   counter,
@@ -838,8 +964,11 @@ func (p *parser) parseAdvanceCastedShift(obj string, startPos Position) (*Advanc
 	return adv, nil
 }
 
-// parseAdvanceFieldOperand parses `(hdr.<F> - K)` after the
-// `((bit<N>)` prefix. Cursor sits on the opening `(`.
+// parseAdvanceFieldOperand parses `(hdr.<F> - K)` (subtract form) or
+// `(hdr.<F> & MASK)` (mask form) after the `((bit<N>)` prefix. Cursor
+// sits on the opening `(`. Subtract form is used by primary-header
+// variable trailers (IPv4 IHL, TCP data_offset); mask form is used by
+// extension-header variable trailers (IPv6 hdr_ext_len, SRH hdr_ext_len).
 func (p *parser) parseAdvanceFieldOperand(obj string, startPos Position, nTok Token, expectShape func(TokenKind) (Token, error)) (*AdvanceStmt, error) {
 	if _, err := expectShape(TokLParen); err != nil {
 		return nil, err
@@ -855,18 +984,44 @@ func (p *parser) parseAdvanceFieldOperand(obj string, startPos Position, nTok To
 	if err != nil {
 		return nil, err
 	}
-	if _, err := expectShape(TokMinus); err != nil {
-		return nil, err
-	}
-	kTok, err := expectShape(TokInt)
-	if err != nil {
-		return nil, err
+	// Branch on `-` (subtract form) vs `&` (mask form). Any other
+	// token here is a parse error pointing at this position so the
+	// diagnostic names exactly which operator was expected.
+	opTok := p.cur
+	var baseWords, mask int
+	switch opTok.Kind {
+	case TokMinus:
+		if _, err := expectShape(TokMinus); err != nil {
+			return nil, err
+		}
+		kTok, err := expectShape(TokInt)
+		if err != nil {
+			return nil, err
+		}
+		if kTok.Int > uint64(maxInt32) {
+			return nil, p.errorf(kTok.Pos, "K=%d exceeds the int32 range", kTok.Int)
+		}
+		baseWords = int(kTok.Int)
+	case TokAmp:
+		if _, err := expectShape(TokAmp); err != nil {
+			return nil, err
+		}
+		mTok, err := expectShape(TokInt)
+		if err != nil {
+			return nil, err
+		}
+		if mTok.Int == 0 {
+			return nil, p.errorf(mTok.Pos, "mask MASK=0 makes the advance always zero — unintended")
+		}
+		if mTok.Int > uint64(maxInt32) {
+			return nil, p.errorf(mTok.Pos, "MASK=0x%x exceeds the int32 range", mTok.Int)
+		}
+		mask = int(mTok.Int)
+	default:
+		return nil, p.errorf(opTok.Pos, "expected `-` (subtract form) or `&` (mask form) after `hdr.<field>` inside pkt.advance, got %s", opTok.Kind)
 	}
 	if _, err := expectShape(TokRParen); err != nil {
 		return nil, err
-	}
-	if kTok.Int > uint64(maxInt32) {
-		return nil, p.errorf(kTok.Pos, "K=%d exceeds the supported range for the BaseWords slot", kTok.Int)
 	}
 	return &AdvanceStmt{
 		Object:    obj,
@@ -874,7 +1029,8 @@ func (p *parser) parseAdvanceFieldOperand(obj string, startPos Position, nTok To
 		BitWidth:  int(nTok.Int),
 		Target:    hdrTok.Value,
 		FieldName: fldTok.Value,
-		BaseWords: int(kTok.Int),
+		BaseWords: baseWords,
+		Mask:      mask,
 		Pos:       startPos,
 	}, nil
 }

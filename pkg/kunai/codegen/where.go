@@ -406,12 +406,13 @@ type quantCountSource struct {
 }
 
 // stackCountSource derives a runtime count for the quantifier
-// target's stack. SRv6 segments use the primary-header path
-// (last_entry + 1); option-internal arrays (B-4 SACK blocks) use
-// the owner-slot path with the option's length byte. Other stacks
-// return nil so the unroll runs over the full Capacity (which is
-// safe for self-flag chains where the parser has already walked
-// every entry).
+// target's stack. Option-internal arrays (B-4 SACK blocks) use the
+// owner-slot path with the option's length byte. Declare-only aux
+// stacks with a @kunai_stack_count annotation use the primary-header
+// path (Spec.StackCounts entry; SRv6 segments are the canonical
+// example via `field=last_entry, offset=1`). Other stacks return nil
+// so the unroll runs over the full Capacity (which is safe for
+// self-flag chains where the parser has already walked every entry).
 func stackCountSource(w *ir.Condition) (*quantCountSource, error) {
 	target := w.QuantTarget
 	var iterRef *ir.FieldRef
@@ -444,10 +445,14 @@ func stackCountSource(w *ir.Condition) (*quantCountSource, error) {
 			RShAfter:  shift,
 		}, nil
 	}
-	if iterRef.Layer.Spec.Name == "srv6" && target.OutParam == "segments" {
-		// last_entry is byte 4 of srv6_h. count = last_entry + 1.
-		return &quantCountSource{Layer: iterRef.Layer, ByteOff: 4, Offset: 1}, nil
+	if cnt := iterRef.Layer.Spec.StackCounts[target.OutParam]; cnt != nil {
+		return &quantCountSource{
+			Layer:   iterRef.Layer,
+			ByteOff: cnt.ByteOff,
+			Offset:  cnt.Offset,
+		}, nil
 	}
+	// No @kunai_stack_count → caller unrolls over the static Capacity.
 	return nil, nil
 }
 

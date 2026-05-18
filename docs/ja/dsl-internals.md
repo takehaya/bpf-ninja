@@ -870,7 +870,7 @@ DSL での `gtp.opt.exists` は「`parse_opt` state に到達したか」を run
 
 #### Mechanism 4: aux header stack (SRv6 タイプ、パターン B/C)
 
-P4 の header stack `H[N]` を使う:
+P4 の header stack `H[N]` を使う。bundled SRv6 は extract せず `pkt.advance` で trailer を一発スキップし、stack の bytes は scratch 上で静的アドレス算出から読む形 (`@kunai_layout[after=primary]` で base 明示):
 
 ```p4
 // srv6.p4
@@ -879,25 +879,23 @@ header srv6_seg_h { bit<128> addr; }
 
 parser SRv6Parser(packet_in pkt,
                     out srv6_h        hdr,
+                    @kunai_layout[after=primary]
                     out srv6_seg_h[8] segments) {
     state start {
         pkt.extract(hdr);
         transition select(hdr.routing_type) {
-            4:       parse_segments;
+            4:       skip_segments;
             default: reject;
         }
     }
-    state parse_segments {
-        pkt.extract(segments.next);
-        transition select(/* iter < hdr.last_entry+1 を表す */) {
-            ...: parse_segments;
-            ...: accept;
-        }
+    state skip_segments {
+        pkt.advance(((bit<32>)(hdr.hdr_ext_len & 0x0F)) << 6);
+        transition accept;
     }
 }
 ```
 
-stack の reservation 数 (上の例では 8) は **verifier-safe な loop 上限** として codegen が利用する。実 packet では `hdr.last_entry+1` 個まで使われる。
+stack の reservation 数 (上の例では 8) は **verifier-safe な loop 上限** として codegen が利用する。DSL の `srv6.segments[N].addr` は `layer_entry + 8 (primary) + N × 16 + 0` の静的アドレス算出でロードされる (実 segment 数を実行時に数えない設計)。マスク `0x0F` は `pkt.advance` 後の R4 が scratch buffer を超えない静的上限を verifier に与えるためのキャップ。
 
 #### Mechanism 7: TLV options walk (TCP options タイプ、パターン C 可変)
 
