@@ -44,6 +44,9 @@ func Load(fsys fs.FS, root string) (map[string]*ProtocolSpec, error) {
 		}
 		out[spec.Name] = spec
 	}
+	if err := resolveHeaderWritebackTargets(out); err != nil {
+		return nil, err
+	}
 	return out, nil
 }
 
@@ -103,6 +106,25 @@ func loadFile(fsys fs.FS, p string) (*ProtocolSpec, error) {
 	if err != nil {
 		return nil, err
 	}
+	headerAnnotations, err := readHeaderAnnotations(file, p)
+	if err != nil {
+		return nil, err
+	}
+	optionSegment, err := readParserOptionSegment(file, p)
+	if err != nil {
+		return nil, err
+	}
+	if optionSegment == "" {
+		optionSegment = "options"
+	}
+	stackLayouts, err := readParserParamLayouts(file, p)
+	if err != nil {
+		return nil, err
+	}
+	stackCounts, err := readParserParamCounts(file, fields, p)
+	if err != nil {
+		return nil, err
+	}
 	spec := &ProtocolSpec{
 		Name:              protoName,
 		HeaderName:        primary.Name,
@@ -113,8 +135,18 @@ func loadFile(fsys fs.FS, p string) (*ProtocolSpec, error) {
 		FlagTriggers:      triggers,
 		FlagsByteOffset:   flagsOff,
 		ParseStateMachine: machine,
+		HeaderAnnotations: headerAnnotations,
+		StackLayouts:      stackLayouts,
+		StackCounts:       stackCounts,
+		OptionSegment:     optionSegment,
 		File:              file,
 		Source:            p,
+	}
+	if err := resolveStackLayouts(spec); err != nil {
+		return nil, err
+	}
+	if err := validateDeclareOnlyStacks(spec); err != nil {
+		return nil, err
 	}
 	if res.ChainEnd != nil {
 		// Validate the field exists in the primary header now; the

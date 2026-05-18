@@ -442,7 +442,7 @@ type SRv6Opts struct {
 // BuildSRv6 builds Ethernet+IPv6(NH=43)+SRH+inner-TCP. The number
 // of segments = len(opts.Segments); SRH.last_entry = N-1; SRH bytes
 // after the fixed 8 = N * 16. Codegen consumes these via the
-// variable trail (knownVariableTails["srv6_h"]).
+// variable trail declared by srv6.p4's skip_segments state.
 func BuildSRv6(t testing.TB, opts SRv6Opts) []byte {
 	t.Helper()
 	if opts.Src == nil {

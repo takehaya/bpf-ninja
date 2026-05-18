@@ -62,6 +62,50 @@ type File struct {
 	Parsers []*Parser
 }
 
+// AnnotationValueKind tags the syntactic shape of one annotation
+// argument. P4-16 §7.4 allows expression-form values; p4lite accepts
+// the three shapes kunai-specific annotations need today.
+type AnnotationValueKind int
+
+const (
+	// AnnotationInt is a plain integer literal (decimal or 0x hex).
+	AnnotationInt AnnotationValueKind = iota
+	// AnnotationIdent is a bare identifier — used for field names
+	// (`source=next_header`) and other symbolic values.
+	AnnotationIdent
+	// AnnotationFieldRef is a dotted `proto.field` reference — used
+	// for cross-protocol references (`parent=ipv6.next_header`). The
+	// loader resolves Proto against the loaded ProtocolSpec set.
+	AnnotationFieldRef
+)
+
+// AnnotationValue is one argument to a structured P4 annotation. Each
+// kind activates a distinct subset of fields; unused fields are zero-
+// valued. P4-16 §7.4 also allows string literals; p4lite defers that
+// until a use case arises.
+type AnnotationValue struct {
+	Kind  AnnotationValueKind
+	Int   uint64 // valid when Kind == AnnotationInt
+	Ident string // valid when Kind == AnnotationIdent
+	Proto string // the LHS of "proto.field" when Kind == AnnotationFieldRef
+	Field string // the RHS of "proto.field" when Kind == AnnotationFieldRef
+	Pos   Position
+}
+
+// Annotation is one structured `@name[k=v, k=v, ...]` decorator on a
+// header / const / parser declaration. p4lite accepts only the
+// key-value (structured) form; the positional form `@name(arg, arg)`
+// is rejected at parse time because heterogeneous parameter sets
+// (e.g. variable-trail's mask + scale + shift + base) are
+// silent-break vectors when reordered.
+//
+// BNF: structuredAnnotation (P4-16 §7.4, 1.2.0+)
+type Annotation struct {
+	Name string
+	KVs  map[string]AnnotationValue
+	Pos  Position
+}
+
 // Extern is an architectural extern declaration — kept as an opaque
 // token so vocab files can declare types the host architecture
 // supplies (currently only `extern ParserCounter`). p4lite only
@@ -78,9 +122,10 @@ type Extern struct {
 //
 // BNF: headerTypeDeclaration (P4-16 Section 7.2.2 "Header types")
 type Header struct {
-	Name   string
-	Fields []Field
-	Pos    Position
+	Name        string
+	Fields      []Field
+	Annotations []Annotation
+	Pos         Position
 }
 
 // Field is a single member of a Header (`bit<N> name;`).
@@ -96,23 +141,25 @@ type Field struct {
 //
 // BNF: constantDeclaration (P4-16 Section 11.1 "Constants")
 type Const struct {
-	Name   string
-	IsBool bool
-	Bits   int    // zero when IsBool
-	Bool   bool   // valid when IsBool
-	Int    uint64 // valid when !IsBool
-	Pos    Position
+	Name        string
+	IsBool      bool
+	Bits        int    // zero when IsBool
+	Bool        bool   // valid when IsBool
+	Int         uint64 // valid when !IsBool
+	Annotations []Annotation
+	Pos         Position
 }
 
 // Parser is `parser P(packet_in pkt, out H hdr) { state ... }`.
 //
 // BNF: parserDeclaration (P4-16 Section 13.2 "Parser declarations")
 type Parser struct {
-	Name     string
-	Params   []Param
-	Counters []CounterInst
-	States   []*State
-	Pos      Position
+	Name        string
+	Params      []Param
+	Counters    []CounterInst
+	States      []*State
+	Annotations []Annotation
+	Pos         Position
 }
 
 // CounterInst is a `ParserCounter() <name>;` instance declaration
@@ -127,17 +174,20 @@ type CounterInst struct {
 }
 
 // Param is one entry in a parser's parameter list, e.g. `packet_in
-// pkt`, `out H hdr`, or `out H[8] stack`.
+// pkt`, `out H hdr`, or `out H[8] stack`. Annotations decorate the
+// parameter itself; today the only consumer is the @kunai_layout
+// loader pass on declare-only aux stacks.
 //
 // BNF: parameter (P4-16 Section 6.8 "Calling convention: call by copy in/out")
 type Param struct {
-	IsPacketIn bool
-	IsOut      bool
-	TypeName   string
-	IsArray    bool
-	ArraySize  int
-	VarName    string
-	Pos        Position
+	IsPacketIn  bool
+	IsOut       bool
+	TypeName    string
+	IsArray     bool
+	ArraySize   int
+	VarName     string
+	Annotations []Annotation
+	Pos         Position
 }
 
 // State is one `state name { stmts; transition ...; }` block.
@@ -177,10 +227,14 @@ func (*ExtractStmt) stmtNode() {}
 type AdvanceKind int
 
 const (
-	// AdvanceField is the `pkt.advance(((bit<N>)(hdr.<F> - K)) << S)`
+	// AdvanceField is the
+	// `pkt.advance(((bit<N>)(hdr.<F> - K)) << S)` (subtract form) or
+	// `pkt.advance(((bit<N>)(hdr.<F> & MASK)) << S)` (mask form)
 	// template — primary-header variable trailer (IPv4 IHL, TCP
-	// data_offset). Active fields: BitWidth, Target, FieldName,
-	// BaseWords, ScaleLog2.
+	// data_offset) and extension-header variable trailer (IPv6
+	// hdr_ext_len, SRH hdr_ext_len). Active fields: BitWidth, Target,
+	// FieldName, ScaleLog2, plus exactly one of BaseWords / Mask
+	// (parser sets BaseWords for `-`, Mask for `&`).
 	AdvanceField AdvanceKind = iota
 	// AdvanceLookahead is the
 	// `pkt.advance(((bit<N>)pkt.lookahead<bit<M>>()[lo:hi]) << S)`
@@ -209,7 +263,8 @@ type AdvanceStmt struct {
 	// AdvanceField only.
 	Target    string // the `hdr` in `hdr.<F>` — the parser's `out` parameter holding the field
 	FieldName string // the `<F>` in `hdr.<F>`
-	BaseWords int    // the K subtracted from the field value
+	BaseWords int    // the K subtracted from the field value (subtract form: (hdr.F - K))
+	Mask      int    // the MASK bitwise-AND'd with the field value (mask form: (hdr.F & MASK)). Zero = "no mask, subtract form active". Mask and BaseWords are mutually exclusive: parseAdvanceFieldOperand branches on `-` vs `&` and only sets one.
 
 	// AdvanceLookahead only.
 	LookaheadBits int // the M in `pkt.lookahead<bit<M>>()`

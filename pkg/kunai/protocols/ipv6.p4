@@ -12,9 +12,16 @@ header ipv6_h {
 
 // Extension header (RFC 8200). The first 8 bytes of every chained
 // IPv6 ext header share this fixed shape; the variable-length tail
-// is `hdr_ext_len * 8` more bytes (codegen handles that advance).
+// is `hdr_ext_len * 8` more bytes consumed by @kunai_variable_tail.
 // Fragment (44) is the lone exception with hdr_ext_len always 0,
-// keeping the fixed-formula valid.
+// keeping the fixed-formula valid. Mask 0x03 caps the runtime advance
+// at 24 bytes per iteration so the verifier sees a static upper
+// bound; well-formed HBH/Fragment/DestOpt stay under that cap.
+// @kunai_writeback keeps ipv6.next_header in sync with the chain
+// tail's next_header so the next layer's dispatch (tcp/udp/icmp6/...)
+// sees the inner protocol rather than the first ext type.
+@kunai_variable_tail[len_field=hdr_ext_len, scale=8, mask=0x03]
+@kunai_writeback[source=next_header, parent=ipv6.next_header]
 header ipv6_ext_h {
     bit<8>  next_header;
     bit<8>  hdr_ext_len;
@@ -39,9 +46,9 @@ const bit<8>  IPV6_IPV6_NEXT_HEADER = 41;
 // Cap the ext-header chain depth. Real frames almost never carry
 // more than 2 ext headers (HBH + DestOpt is the typical maximum);
 // the verifier needs the loop times the per-iteration max growth
-// (8 fixed + ≤24 variable per iter, see knownVariableTails) to stay
-// within the 256-byte scratch buffer, so 4 iterations is the
-// conservative ceiling.
+// (8 fixed + ≤24 variable per iter from @kunai_variable_tail on
+// ipv6_ext_h above) to stay within the 256-byte scratch buffer, so
+// 4 iterations is the conservative ceiling.
 const bit<8> IPV6_MAX_DEPTH = 4;
 
 // Self-validating parser: the start state's tuple-select rejects on

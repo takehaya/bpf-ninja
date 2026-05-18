@@ -735,7 +735,7 @@ func buildCounter(cs *p4lite.CounterCallStmt, ctx *buildCtx) (CounterOp, error) 
 	}
 	switch cs.Op {
 	case p4lite.CounterSet:
-		skip, h, err := lowerCastShiftSkip(cs.Target, cs.FieldName, cs.BaseWords, cs.ScaleLog2, cs.Counter+".set", ctx, cs.Pos)
+		skip, h, err := lowerCastShiftSkip(cs.Target, cs.FieldName, cs.BaseWords, 0, cs.ScaleLog2, cs.Counter+".set", ctx, cs.Pos)
 		if err != nil {
 			return CounterOp{}, err
 		}
@@ -912,6 +912,8 @@ func lookupAuxFieldByteOffset(target, fieldName string, ctx *buildCtx, pos p4lit
 }
 
 // lowerCastShiftSkip lowers the `((bit<N>)(hdr.<F> - K)) << S`
+// (subtract form, userMask=0) or `((bit<N>)(hdr.<F> & MASK)) << S`
+// (mask form, baseWords=0, userMask=MASK) AdvanceField
 // template — shared by `pkt.advance` (AdvanceField) and
 // `<counter>.set` — into a HeaderLength five-tuple plus the resolved
 // header pointer. variableTailSkip consumes the tuple to drive a
@@ -922,7 +924,7 @@ func lookupAuxFieldByteOffset(target, fieldName string, ctx *buildCtx, pos p4lit
 // always wants primary (the layer-entry slot anchors the load),
 // pkt.advance permits aux for the SACK-style option-with-trailing-
 // array shape.
-func lowerCastShiftSkip(target, fieldName string, baseWords, scaleLog2 int, opName string, ctx *buildCtx, pos p4lite.Position) (*HeaderLength, *p4lite.Header, error) {
+func lowerCastShiftSkip(target, fieldName string, baseWords, userMask, scaleLog2 int, opName string, ctx *buildCtx, pos p4lite.Position) (*HeaderLength, *p4lite.Header, error) {
 	h, ok := ctx.headerRefs[target]
 	if !ok {
 		return nil, nil, fmt.Errorf("%s:%s: %s target %q is not an `out` header parameter", ctx.source, pos, opName, target)
@@ -938,9 +940,21 @@ func lowerCastShiftSkip(target, fieldName string, baseWords, scaleLog2 int, opNa
 	if scaleLog2 < 3 {
 		return nil, nil, fmt.Errorf("%s:%s: %s shift S=%d is sub-byte (codegen advances in whole bytes; require S ≥ 3)", ctx.source, pos, opName, scaleLog2)
 	}
+	if baseWords != 0 && userMask != 0 {
+		return nil, nil, fmt.Errorf("%s:%s: %s combines subtract (-K) and mask (& MASK) forms; only one is supported per advance", ctx.source, pos, opName)
+	}
 	scaleBytes := 1 << (scaleLog2 - 3)
 	lsbShift := 8 - bitInByte - fieldBits
 	mask := ((1 << fieldBits) - 1) << lsbShift
+	if userMask != 0 {
+		// userMask is expressed against the field value; reject anything
+		// that doesn't fit so the byte-shifted mask stays inside the
+		// field's own bit window. Parser already rejects userMask=0.
+		if userMask >= (1 << fieldBits) {
+			return nil, nil, fmt.Errorf("%s:%s: %s mask MASK=0x%x exceeds the %d-bit field %q (max 0x%x)", ctx.source, pos, opName, userMask, fieldBits, fieldName, (1<<fieldBits)-1)
+		}
+		mask = userMask << lsbShift
+	}
 	return &HeaderLength{
 		LenByteOff: bitOff / 8,
 		LenMask:    mask,
@@ -951,7 +965,7 @@ func lowerCastShiftSkip(target, fieldName string, baseWords, scaleLog2 int, opNa
 }
 
 func buildAdvanceField(as *p4lite.AdvanceStmt, ctx *buildCtx) (AdvanceOp, error) {
-	skip, _, err := lowerCastShiftSkip(as.Target, as.FieldName, as.BaseWords, as.ScaleLog2, "pkt.advance", ctx, as.Pos)
+	skip, _, err := lowerCastShiftSkip(as.Target, as.FieldName, as.BaseWords, as.Mask, as.ScaleLog2, "pkt.advance", ctx, as.Pos)
 	if err != nil {
 		return AdvanceOp{}, err
 	}

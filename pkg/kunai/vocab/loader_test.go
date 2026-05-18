@@ -734,18 +734,341 @@ func auxLayoutNames(m map[string]*AuxLayout) []string {
 }
 
 func TestParseStateMachineSrv6(t *testing.T) {
+	// 2 states: `start` extracts the SRH primary and transitions to
+	// `skip_segments` on routing_type==4 (reject otherwise);
+	// `skip_segments` runs the variable trail via pkt.advance and
+	// accepts.
 	specs := loadBundled(t)
 	srv6 := specs["srv6"]
 	if srv6 == nil || srv6.ParseStateMachine == nil {
-		t.Fatal("expected srv6 to have a non-trivial ParseStateMachine (single state with a routing_type select)")
+		t.Fatal("expected srv6 to have a non-trivial ParseStateMachine")
 	}
 	machine := srv6.ParseStateMachine
-	if len(machine.States) != 1 {
-		t.Fatalf("srv6 state count = %d, want 1", len(machine.States))
+	if len(machine.States) != 2 {
+		t.Fatalf("srv6 state count = %d, want 2 (start + skip_segments)", len(machine.States))
 	}
-	state := machine.States[0]
-	if state.Trans.Kind != TransSelect {
-		t.Errorf("srv6 transition kind = %v, want TransSelect (routing_type guard)", state.Trans.Kind)
+	start := machine.States[0]
+	if start.Name != "start" {
+		t.Errorf("states[0].Name = %q, want %q", start.Name, "start")
+	}
+	if start.Trans.Kind != TransSelect {
+		t.Errorf("start transition kind = %v, want TransSelect (routing_type guard)", start.Trans.Kind)
+	}
+	skip := machine.States[1]
+	if skip.Name != "skip_segments" {
+		t.Errorf("states[1].Name = %q, want %q", skip.Name, "skip_segments")
+	}
+	if len(skip.Advances) != 1 {
+		t.Fatalf("skip_segments advance count = %d, want 1", len(skip.Advances))
+	}
+	adv := skip.Advances[0]
+	if adv.Kind != AdvanceOpField {
+		t.Errorf("advance kind = %v, want AdvanceOpField", adv.Kind)
+	}
+	want := HeaderLength{LenByteOff: 1, LenMask: 0x0F, LenShift: 0, Scale: 8, Base: 0}
+	if adv.Skip == nil || *adv.Skip != want {
+		t.Errorf("skip = %+v, want %+v", adv.Skip, want)
+	}
+}
+
+// TestSRv6SegmentsStackCount pins that the SRv6 segments aux stack
+// resolves its runtime iteration count from the @kunai_stack_count
+// annotation on the parser parameter (= byte 4 of srv6_h, the
+// last_entry field, plus 1 per the SRv6 spec).
+func TestSRv6SegmentsStackCount(t *testing.T) {
+	specs := loadBundled(t)
+	srv6 := specs["srv6"]
+	if srv6 == nil {
+		t.Fatal("missing srv6 spec")
+	}
+	cnt, ok := srv6.StackCounts["segments"]
+	if !ok || cnt == nil {
+		t.Fatal("srv6.StackCounts[segments] missing — @kunai_stack_count not consumed")
+	}
+	// srv6_h layout: next_header(8) + hdr_ext_len(8) + routing_type(8)
+	// + segments_left(8) + last_entry(8) ...  → last_entry at byte 4.
+	if cnt.ByteOff != 4 {
+		t.Errorf("ByteOff = %d, want 4 (= byte position of srv6_h.last_entry)", cnt.ByteOff)
+	}
+	if cnt.Offset != 1 {
+		t.Errorf("Offset = %d, want 1 (= last_entry + 1 SRv6 spec formula)", cnt.Offset)
+	}
+}
+
+// TestStackCountUnknownField pins that @kunai_stack_count[field=X]
+// errors at load time when X is not a primary-header field name.
+func TestStackCountUnknownField(t *testing.T) {
+	src := `header foo_h { bit<8> a; bit<8> b; }
+header seg_h { bit<128> addr; }
+parser P(packet_in pkt,
+         out foo_h hdr,
+         @kunai_layout[after=primary]
+         @kunai_stack_count[field=does_not_exist, offset=0]
+         out seg_h[8] segments) {
+	state start {
+		pkt.extract(hdr);
+		transition accept;
+	}
+}`
+	fsys := fstest.MapFS{"vocab/foo.p4": &fstest.MapFile{Data: []byte(src)}}
+	_, err := Load(fsys, "vocab")
+	if err == nil {
+		t.Fatal("expected unknown-field error, got nil")
+	}
+	if !strings.Contains(err.Error(), "unknown field") {
+		t.Errorf("error %q should mention unknown field", err.Error())
+	}
+}
+
+// TestStackCountNonByteAlignedField pins that @kunai_stack_count rejects
+// a field that isn't a byte-aligned 8-bit slot, since the codegen
+// emits a single-byte LDX for the count load.
+func TestStackCountNonByteAlignedField(t *testing.T) {
+	src := `header foo_h { bit<4> high; bit<4> low; }
+header seg_h { bit<128> addr; }
+parser P(packet_in pkt,
+         out foo_h hdr,
+         @kunai_layout[after=primary]
+         @kunai_stack_count[field=high]
+         out seg_h[8] segments) {
+	state start {
+		pkt.extract(hdr);
+		transition accept;
+	}
+}`
+	fsys := fstest.MapFS{"vocab/foo.p4": &fstest.MapFile{Data: []byte(src)}}
+	_, err := Load(fsys, "vocab")
+	if err == nil {
+		t.Fatal("expected byte-alignment error, got nil")
+	}
+	if !strings.Contains(err.Error(), "byte-aligned") {
+		t.Errorf("error %q should mention byte-aligned", err.Error())
+	}
+}
+
+// TestStackCountOnNonArrayParam pins that @kunai_stack_count rejects
+// non-array parameters — the count semantic only makes sense for
+// `out X[N] name`, not for a single header `out X name`.
+func TestStackCountOnNonArrayParam(t *testing.T) {
+	src := `header foo_h { bit<8> a; bit<8> b; }
+parser P(packet_in pkt,
+         out foo_h hdr,
+         @kunai_stack_count[field=b]
+         out foo_h other) {
+	state start {
+		pkt.extract(hdr);
+		transition accept;
+	}
+}`
+	fsys := fstest.MapFS{"vocab/foo.p4": &fstest.MapFile{Data: []byte(src)}}
+	_, err := Load(fsys, "vocab")
+	if err == nil {
+		t.Fatal("expected non-array-param error, got nil")
+	}
+	if !strings.Contains(err.Error(), "out X[N] name") {
+		t.Errorf("error %q should mention `out X[N] name`", err.Error())
+	}
+}
+
+// TestSRv6SegmentsLayoutAnnotation pins that the SRv6 segments aux
+// stack (= the bundled Mode B / declare-only example) resolves its
+// base byte offset from the parser-parameter @kunai_layout decorator
+// rather than the legacy implicit "primary directly after" fallback.
+func TestSRv6SegmentsLayoutAnnotation(t *testing.T) {
+	specs := loadBundled(t)
+	srv6 := specs["srv6"]
+	if srv6 == nil {
+		t.Fatal("missing srv6 spec")
+	}
+	layout, ok := srv6.StackLayouts["segments"]
+	if !ok || layout == nil {
+		t.Fatal("srv6.StackLayouts[segments] missing — @kunai_layout not consumed")
+	}
+	if layout.After != "primary" {
+		t.Errorf("layout.After = %q, want primary", layout.After)
+	}
+	if layout.BaseByteOff != 8 {
+		t.Errorf("layout.BaseByteOff = %d, want 8 (= sizeof(srv6_h) primary)", layout.BaseByteOff)
+	}
+}
+
+// TestDeclareOnlyStackRequiresLayoutAnnotation pins that a top-level
+// declare-only aux stack without @kunai_layout fails at load time,
+// preventing the historical alias bug where multiple un-annotated
+// stacks would collapse onto the same byte offset.
+func TestDeclareOnlyStackRequiresLayoutAnnotation(t *testing.T) {
+	src := `header foo_h { bit<8> a; bit<8> b; }
+header seg_h { bit<128> addr; }
+parser P(packet_in pkt,
+         out foo_h hdr,
+         out seg_h[8] segments) {
+	state start {
+		pkt.extract(hdr);
+		transition accept;
+	}
+}`
+	fsys := fstest.MapFS{"vocab/foo.p4": &fstest.MapFile{Data: []byte(src)}}
+	_, err := Load(fsys, "vocab")
+	if err == nil {
+		t.Fatal("expected error for un-annotated declare-only stack, got nil")
+	}
+	if !strings.Contains(err.Error(), "@kunai_layout") {
+		t.Errorf("error %q should mention @kunai_layout", err.Error())
+	}
+}
+
+// TestStackLayoutChainResolves pins that chained @kunai_layout
+// (`after=<other_stack>`) resolves each stack's base offset against
+// the upstream stack's end, walking the dependency chain iteratively
+// regardless of declaration order in the .p4 file.
+func TestStackLayoutChainResolves(t *testing.T) {
+	src := `header foo_h { bit<8> a; bit<8> b; }
+header seg_h { bit<128> addr; }
+header tlv_h { bit<32> value; }
+parser P(packet_in pkt,
+         out foo_h hdr,
+         @kunai_layout[after=segments]
+         out tlv_h[2] tlvs,
+         @kunai_layout[after=primary]
+         out seg_h[4] segments) {
+	state start {
+		pkt.extract(hdr);
+		transition accept;
+	}
+}`
+	fsys := fstest.MapFS{"vocab/foo.p4": &fstest.MapFile{Data: []byte(src)}}
+	specs, err := Load(fsys, "vocab")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	layouts := specs["foo"].StackLayouts
+	// primary = (8+8)/8 = 2 bytes
+	// segments base = 2; span = 4 * (128/8) = 64
+	// tlvs base = segments base + segments span = 2 + 64 = 66
+	if got := layouts["segments"].BaseByteOff; got != 2 {
+		t.Errorf("segments base = %d, want 2", got)
+	}
+	if got := layouts["tlvs"].BaseByteOff; got != 66 {
+		t.Errorf("tlvs base = %d, want 66 (= 2 + 4*16)", got)
+	}
+}
+
+// TestStackLayoutChainCycle pins that a cyclic @kunai_layout chain
+// (foo→bar→foo) errors at load time rather than spinning the
+// fixed-point resolver indefinitely.
+func TestStackLayoutChainCycle(t *testing.T) {
+	src := `header foo_h { bit<8> a; }
+header seg_h { bit<128> addr; }
+parser P(packet_in pkt,
+         out foo_h hdr,
+         @kunai_layout[after=bar]
+         out seg_h[4] foo,
+         @kunai_layout[after=foo]
+         out seg_h[4] bar) {
+	state start {
+		pkt.extract(hdr);
+		transition accept;
+	}
+}`
+	fsys := fstest.MapFS{"vocab/foo.p4": &fstest.MapFile{Data: []byte(src)}}
+	_, err := Load(fsys, "vocab")
+	if err == nil {
+		t.Fatal("expected cycle error, got nil")
+	}
+	if !strings.Contains(err.Error(), "cycle or forward reference") {
+		t.Errorf("error %q should mention cycle", err.Error())
+	}
+}
+
+// TestStackLayoutChainUnknown pins that @kunai_layout[after=X] where
+// X is neither "primary" nor a declared parameter stack errors with a
+// clear "unknown anchor" diagnostic.
+func TestStackLayoutChainUnknown(t *testing.T) {
+	src := `header foo_h { bit<8> a; }
+header seg_h { bit<128> addr; }
+parser P(packet_in pkt,
+         out foo_h hdr,
+         @kunai_layout[after=does_not_exist]
+         out seg_h[4] segments) {
+	state start {
+		pkt.extract(hdr);
+		transition accept;
+	}
+}`
+	fsys := fstest.MapFS{"vocab/foo.p4": &fstest.MapFile{Data: []byte(src)}}
+	_, err := Load(fsys, "vocab")
+	if err == nil {
+		t.Fatal("expected unknown-anchor error, got nil")
+	}
+	if !strings.Contains(err.Error(), "unknown anchor") {
+		t.Errorf("error %q should mention unknown anchor", err.Error())
+	}
+}
+
+// TestIPv6ExtHeaderAnnotations pins the kunai-specific annotations
+// on ipv6_ext_h: the variable-trail params and the writeback resolve
+// ipv6.next_header to byte offset 6 so the chain tail's next_header
+// propagates to the parent layer.
+func TestIPv6ExtHeaderAnnotations(t *testing.T) {
+	specs := loadBundled(t)
+	ipv6 := specs["ipv6"]
+	if ipv6 == nil {
+		t.Fatal("missing ipv6 spec")
+	}
+	ann, ok := ipv6.HeaderAnnotations["ipv6_ext_h"]
+	if !ok || ann == nil {
+		t.Fatal("ipv6_ext_h has no HeaderAnnotations")
+	}
+	wantVT := &VariableTailSpec{LenFieldByteOff: 1, LenMask: 0x03, LenShift: 0, Scale: 8, Base: 0}
+	if ann.VariableTail == nil || *ann.VariableTail != *wantVT {
+		t.Errorf("VariableTail = %+v, want %+v", ann.VariableTail, wantVT)
+	}
+	wantWB := &WriteBackSpec{
+		SourceField:   "next_header",
+		ParentProto:   "ipv6",
+		ParentField:   "next_header",
+		SourceByteOff: 0, // first field of ipv6_ext_h
+		ParentByteOff: 6, // ipv6_h: version(4) + traffic_class(8) + flow_label(20) + payload_length(16) = 48 bits, then next_header
+		Resolved:      true,
+	}
+	if ann.WriteBack == nil || *ann.WriteBack != *wantWB {
+		t.Errorf("WriteBack = %+v, want %+v", ann.WriteBack, wantWB)
+	}
+}
+
+// TestOptionSegmentDefault pins the default routing name for 4-/5-part
+// field paths. Every bundled protocol must yield OptionSegment="options"
+// when no @kunai_option_segment overrides it so the legacy
+// `<proto>.options.<NAME>.<field>` shape keeps resolving.
+func TestOptionSegmentDefault(t *testing.T) {
+	specs := loadBundled(t)
+	for name, spec := range specs {
+		if spec.OptionSegment != "options" {
+			t.Errorf("protocol %q: OptionSegment=%q, want %q", name, spec.OptionSegment, "options")
+		}
+	}
+}
+
+// TestOptionSegmentOverride pins @kunai_option_segment[name=IDENT] as
+// the channel a protocol uses to expose its option walk under a name
+// other than "options" — e.g. a TLV-style protocol that reads as
+// "<proto>.tlvs.<NAME>.<field>".
+func TestOptionSegmentOverride(t *testing.T) {
+	src := `header foo_h { bit<8> a; }
+@kunai_option_segment[name=tlvs]
+parser P(packet_in pkt, out foo_h hdr) {
+	state start {
+		pkt.extract(hdr);
+		transition accept;
+	}
+}`
+	fsys := fstest.MapFS{"vocab/foo.p4": &fstest.MapFile{Data: []byte(src)}}
+	specs, err := Load(fsys, "vocab")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if specs["foo"].OptionSegment != "tlvs" {
+		t.Errorf("OptionSegment=%q, want %q", specs["foo"].OptionSegment, "tlvs")
 	}
 }
 
@@ -891,10 +1214,12 @@ func specNames(s map[string]*ProtocolSpec) []string {
 // (`pkt.advance(((bit<32>)(hdr.ihl - 5)) << 5)`) but moved to
 // Mechanism 8 (ParserCounter byte-bounded walk) when option-aware
 // extraction landed. TCP is the lone remaining Mechanism-1 user
-// for its data_offset-driven trailer skip.
+// for its data_offset-driven trailer skip. SRv6 now declares its
+// variable trail through pkt.advance in srv6.p4's skip_segments
+// state, so it's omitted here too.
 func TestVariableTrailAbsentForFixedProtocols(t *testing.T) {
 	specs := loadBundled(t)
-	for _, name := range []string{"eth", "ipv4", "ipv6", "udp", "gtp", "srv6", "vlan", "qinq", "mpls", "gre", "vxlan", "geneve", "icmp", "icmp6", "cw"} {
+	for _, name := range []string{"eth", "ipv4", "ipv6", "udp", "gtp", "vlan", "qinq", "mpls", "gre", "vxlan", "geneve", "icmp", "icmp6", "cw"} {
 		if vs := specs[name].PrimaryAdvanceSkip(); vs != nil {
 			t.Errorf("%s should not declare a variable trailer (got %+v)", name, *vs)
 		}
@@ -1058,6 +1383,43 @@ func TestParserBlockAdvanceLowersToHeaderLength(t *testing.T) {
 				}
 			}`,
 			HeaderLength{LenByteOff: 0, LenMask: 0x0F, LenShift: 0, Scale: 4, Base: 20},
+		},
+		{
+			// SRv6 shape: hdr_ext_len (bit<8>) at byte 1, masked with
+			// 0x0F (= LenMask cap so verifier sees a static upper bound),
+			// scale 8 bytes/unit (= S=6 in bits: << 6 means << 3 in bytes
+			// after the scaleBytes = 1 << (S-3) normalisation), base 0.
+			"srv6_hdr_ext_len_mask",
+			`header foo_h { bit<8> next_header; bit<8> hdr_ext_len; bit<48> tail; }
+			parser P(packet_in pkt, out foo_h hdr) {
+				state start {
+					pkt.extract(hdr);
+					transition skip;
+				}
+				state skip {
+					pkt.advance(((bit<32>)(hdr.hdr_ext_len & 0x0F)) << 6);
+					transition accept;
+				}
+			}`,
+			HeaderLength{LenByteOff: 1, LenMask: 0x0F, LenShift: 0, Scale: 8, Base: 0},
+		},
+		{
+			// IPv6 ext header shape: hdr_ext_len (bit<8>) at byte 1,
+			// masked with 0x03 (tighter cap than SRv6 — IPv6 ext headers
+			// are typically ≤ 32 bytes in well-formed traffic), scale 8.
+			"ipv6_ext_hdr_ext_len_mask",
+			`header foo_h { bit<8> next_header; bit<8> hdr_ext_len; bit<48> tail; }
+			parser P(packet_in pkt, out foo_h hdr) {
+				state start {
+					pkt.extract(hdr);
+					transition skip;
+				}
+				state skip {
+					pkt.advance(((bit<32>)(hdr.hdr_ext_len & 0x03)) << 6);
+					transition accept;
+				}
+			}`,
+			HeaderLength{LenByteOff: 1, LenMask: 0x03, LenShift: 0, Scale: 8, Base: 0},
 		},
 	}
 	for _, tc := range cases {
@@ -1252,7 +1614,10 @@ header seg_h { bit<128> addr; }
 
 const bit<8> FOO_IPV6_NEXT_HEADER = 43;
 
-parser P(packet_in pkt, out foo_h hdr, out seg_h[8] segments) {
+parser P(packet_in pkt,
+         out foo_h hdr,
+         @kunai_layout[after=primary]
+         out seg_h[8] segments) {
 	state start {
 		pkt.extract(hdr);
 		transition select(hdr.rt_type) {
