@@ -61,6 +61,49 @@ SnapA snaplen Option A       `capture` 句なし = `capture all` の sugar (= Ma
 V4    P4 vocab-driven layout `codegen/parser_trail.go::knownVariableTails` ハードコード map + `resolve/where.go::optionsSegment` 予約名 + `codegen/where.go::stackCountSource` の srv6-specific 分岐を全削除。SRv6 は native `pkt.advance` で表現、ipv6_ext_h は `@kunai_variable_tail` + `@kunai_writeback` で表現、byte offset 6 (ipv6.next_header) は ipv6.p4 の field layout から動的解決。declare-only top-level aux stack は `@kunai_layout[after=primary|<stack>]` 必須化 (alias bug 防止)、chain 解決 + cycle 検出付き。SRv6 segments の runtime iteration count は `@kunai_stack_count[field=last_entry, offset=1]` から動的解決。filterset_test 30 sub-test insn count 全 byte-for-byte 維持、`p4c --parse-only` 通過
 ```
 
+### V4 intentional non-violations (= `.p4` 駆動化せず Go に残した hardcode)
+
+V4 migration で「`.p4` 1 個 drop で新規 protocol を足せる」 を建前として 4 件の
+protocol-specific hardcode を `.p4` 側に逃したが、 同 survey で見つかった残り
+2 件は **意図的に Go 側に残置** した。 将来の audit 担当者がこれを「未解決の
+違反」 と誤解して再対応しないよう、 判断根拠を残す。
+
+**violation D: `pkg/kunai/vocab/loader.go::classifyConsts` の命名規約 regex**
+
+dispatch const を `<SELF>_<PARENT>_<FIELD>` 等の正規表現マッチで分類してる箇所
+(`reField`, `reChainEnd`, `reNoCheck`, `reSanityName`)。 形式上「`.p4` 1 個
+drop で済む」 を破るが、 これは **cross-file consistency の load-bearing
+mechanism**:
+
+- 全 16+ プロトコルが同じ命名規約に従う事で typo / 誤分類が起こりにくい
+  (= `TCP_IPV4_NEXT_HEADER` のような pattern が全 protocol で統一)
+- annotation 化すると uniformity が weakening、 各 `.p4` が独自にカテゴリ宣言
+  できてしまう
+- 新規 protocol が命名規約に従わない場合は **明示エラーで loader が弾く** 方が
+  silent miscompile より遥かに安全 (= 規約破りは設計者の意図と離れた事を
+  示唆するシグナルとして機能する)
+
+つまりこの regex は「強制的な API contract」 であって、 `.p4` 側に annotation
+として落とすと API contract が緩むだけで何も得しない。 残置で正解。
+
+**violation E: `pkg/kunai/vocab/loader.go::maxDepthCap = 64`**
+
+全 protocol 共通の MAX_DEPTH 上限 64。 `.p4` 側で `<SELF>_MAX_DEPTH = N` を
+declare できるが、 **64 を超える値は Go 側で reject** する hard ceiling。
+
+これは **BPF verifier の 1M insn limit に対する安全弁**:
+
+- N を大きく超える depth (例: 4096) を `.p4` で declare すると、 codegen が
+  4096 × 1 iteration あたり数十命令 → 1M insn 制限を踏む
+- vocab author が知らずに巨大値を書くと load 時には通っても compile 時に
+  cryptic な verifier reject が出る、 デバッグ困難
+- 64 は経験的に妥当な上限 (現存 vocab は max が 32 = TCP_PARSER_MAX_DEPTH)
+- annotation 化して vocab 側 override を許すと事故母体になる ROI 釣り合わず
+
+protocol 別の安全弁として残置で正解。 もし将来 verifier の 1M 上限が緩和
+されたら (Linux 6.20+ で state-ID coalescing が入る話 = B-2a 関連) この cap も
+再評価候補。
+
 ### ⚠️ Breaking changes since v0.x (master 投入時に release notes へ)
 
 - **SnapA (snaplen Option A)**: `capture` 句なしの payload default が「filter

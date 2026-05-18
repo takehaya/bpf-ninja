@@ -551,6 +551,7 @@ func resolveHeaderWritebackTargets(specs map[string]*ProtocolSpec) error {
 				return fmt.Errorf("%s: @kunai_writeback on %q targets non-byte-aligned field %s.%s (bit offset %d)", spec.Source, hname, wb.ParentProto, wb.ParentField, bitOff)
 			}
 			wb.ParentByteOff = bitOff / 8
+			wb.Resolved = true
 		}
 	}
 	return nil

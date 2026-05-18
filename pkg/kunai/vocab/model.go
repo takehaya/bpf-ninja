@@ -161,6 +161,13 @@ type WriteBackSpec struct {
 	ParentField   string
 	SourceByteOff int // resolved during loadFile against the chained header
 	ParentByteOff int // resolved during Load's pass 2 against the parent spec
+	// Resolved distinguishes a real ParentByteOff=0 (= writeback target is the
+	// first byte of the parent's primary header) from "pass-2 hasn't run yet".
+	// Set to true by resolveHeaderWritebackTargets; consumers in codegen panic
+	// loudly when WriteBack is non-nil but Resolved is false, surfacing
+	// loader-bypassing callers immediately rather than silently writing into
+	// byte 0 of a parent that may not be the intended target.
+	Resolved bool
 }
 
 // HeaderLength is the lowered shape of a primary-header variable

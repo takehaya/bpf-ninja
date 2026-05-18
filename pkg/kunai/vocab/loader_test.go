@@ -1029,6 +1029,7 @@ func TestIPv6ExtHeaderAnnotations(t *testing.T) {
 		ParentField:   "next_header",
 		SourceByteOff: 0, // first field of ipv6_ext_h
 		ParentByteOff: 6, // ipv6_h: version(4) + traffic_class(8) + flow_label(20) + payload_length(16) = 48 bits, then next_header
+		Resolved:      true,
 	}
 	if ann.WriteBack == nil || *ann.WriteBack != *wantWB {
 		t.Errorf("WriteBack = %+v, want %+v", ann.WriteBack, wantWB)

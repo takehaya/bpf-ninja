@@ -79,6 +79,9 @@ func variableTailFor(spec *vocab.ProtocolSpec, headerName string) (variableTailS
 		LenShift:        ann.VariableTail.LenShift,
 	}
 	if ann.WriteBack != nil {
+		if !ann.WriteBack.Resolved {
+			panic(fmt.Sprintf("codegen: WriteBackSpec for header %q referenced before resolveHeaderWritebackTargets ran (vocab loader bug — call vocab.Load not loadFile in isolation)", headerName))
+		}
 		vt.WriteBack = &writeBackOp{
 			SourceByteOff: ann.WriteBack.SourceByteOff,
 			ParentByteOff: ann.WriteBack.ParentByteOff,
