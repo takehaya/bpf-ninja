@@ -36,39 +36,23 @@ const stackLayoutAfterPrimary = "primary"
 // header's byte end) or another stack's parameter name (chain — not
 // yet supported; reserved for a follow-up that walks dependencies).
 func readParserParamLayouts(file *p4lite.File, source string) (map[string]*StackLayoutSpec, error) {
-	if file == nil {
-		return nil, nil
-	}
-	allowed := map[string]bool{"after": true}
-	out := make(map[string]*StackLayoutSpec)
-	for _, par := range file.Parsers {
-		for _, prm := range par.Params {
-			for _, ann := range prm.Annotations {
-				if ann.Name != annKunaiLayout {
-					continue
-				}
-				if err := requireKnownKeys(ann, allowed, source); err != nil {
-					return nil, err
-				}
-				afterVal, ok := ann.KVs["after"]
-				if !ok {
-					return nil, fmt.Errorf("%s:%s: @%s on parameter %q is missing required key `after`", source, ann.Pos, annKunaiLayout, prm.VarName)
-				}
-				if afterVal.Kind != p4lite.AnnotationIdent {
-					return nil, fmt.Errorf("%s:%s: @%s.after must be an identifier (got %v)", source, ann.Pos, annKunaiLayout, afterVal.Kind)
-				}
-				if !prm.IsOut || !prm.IsArray {
-					return nil, fmt.Errorf("%s:%s: @%s only applies to `out X[N] name` parameters (got %q)", source, ann.Pos, annKunaiLayout, prm.VarName)
-				}
-				if _, exists := out[prm.VarName]; exists {
-					return nil, fmt.Errorf("%s:%s: parameter %q has multiple @%s annotations", source, ann.Pos, prm.VarName, annKunaiLayout)
-				}
-				out[prm.VarName] = &StackLayoutSpec{After: afterVal.Ident}
-			}
+	var out map[string]*StackLayoutSpec
+	err := forEachParserParamAnnotation(file, annKunaiLayout, stackLayoutAllowedKeys, source, func(prm *p4lite.Param, ann p4lite.Annotation) error {
+		afterVal, ok := ann.KVs["after"]
+		if !ok {
+			return fmt.Errorf("%s:%s: @%s on parameter %q is missing required key `after`", source, ann.Pos, annKunaiLayout, prm.VarName)
 		}
-	}
-	if len(out) == 0 {
-		return nil, nil
+		if afterVal.Kind != p4lite.AnnotationIdent {
+			return fmt.Errorf("%s:%s: @%s.after must be an identifier (got %v)", source, ann.Pos, annKunaiLayout, afterVal.Kind)
+		}
+		if out == nil {
+			out = make(map[string]*StackLayoutSpec)
+		}
+		out[prm.VarName] = &StackLayoutSpec{After: afterVal.Ident}
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 	return out, nil
 }
@@ -241,10 +225,57 @@ func ownerBoundStackNames(spec *ProtocolSpec) map[string]bool {
 	return out
 }
 
-// stackCountAllowedKeys is the @kunai_stack_count key set, hoisted to
-// package scope so the no-annotation common case (= every protocol
-// except srv6 today) doesn't allocate a transient map per loadFile.
-var stackCountAllowedKeys = map[string]bool{"field": true, "offset": true}
+// Allowed-key sets per parser-param annotation, hoisted to package
+// scope so the no-annotation common case (= every protocol except
+// srv6 today) doesn't allocate a transient map per loadFile.
+var (
+	stackLayoutAllowedKeys = map[string]bool{"after": true}
+	stackCountAllowedKeys  = map[string]bool{"field": true, "offset": true}
+)
+
+// forEachParserParamAnnotation walks each parser parameter's
+// @<annName> annotation across all parser blocks in file. The helper
+// owns the structural preconditions every param-level kunai annotation
+// needs — allowed-key validation, IsOut + IsArray shape check,
+// duplicate-per-param dedup — so per-reader callbacks only handle
+// annotation-specific key decoding. Returning an error halts
+// iteration and propagates up.
+func forEachParserParamAnnotation(
+	file *p4lite.File,
+	annName string,
+	allowedKeys map[string]bool,
+	source string,
+	fn func(prm *p4lite.Param, ann p4lite.Annotation) error,
+) error {
+	if file == nil {
+		return nil
+	}
+	seen := make(map[string]bool)
+	for _, par := range file.Parsers {
+		for i := range par.Params {
+			prm := &par.Params[i]
+			for _, ann := range prm.Annotations {
+				if ann.Name != annName {
+					continue
+				}
+				if err := requireKnownKeys(ann, allowedKeys, source); err != nil {
+					return err
+				}
+				if !prm.IsOut || !prm.IsArray {
+					return fmt.Errorf("%s:%s: @%s only applies to `out X[N] name` parameters (got %q)", source, ann.Pos, annName, prm.VarName)
+				}
+				if seen[prm.VarName] {
+					return fmt.Errorf("%s:%s: parameter %q has multiple @%s annotations", source, ann.Pos, prm.VarName, annName)
+				}
+				seen[prm.VarName] = true
+				if err := fn(prm, ann); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
+}
 
 // readParserParamCounts lowers each @kunai_stack_count decorator on a
 // parser parameter into a StackCountSpec keyed by parameter name.
@@ -253,55 +284,40 @@ var stackCountAllowedKeys = map[string]bool{"field": true, "offset": true}
 // for `any/all` quantifiers. Resolution requires the primary header's
 // field layout, so the caller supplies the parsed `[]Field` slice.
 func readParserParamCounts(file *p4lite.File, primaryFields []Field, source string) (map[string]*StackCountSpec, error) {
-	if file == nil {
-		return nil, nil
-	}
 	var out map[string]*StackCountSpec
-	for _, par := range file.Parsers {
-		for _, prm := range par.Params {
-			for _, ann := range prm.Annotations {
-				if ann.Name != annKunaiStackCount {
-					continue
-				}
-				if err := requireKnownKeys(ann, stackCountAllowedKeys, source); err != nil {
-					return nil, err
-				}
-				if !prm.IsOut || !prm.IsArray {
-					return nil, fmt.Errorf("%s:%s: @%s only applies to `out X[N] name` parameters (got %q)", source, ann.Pos, annKunaiStackCount, prm.VarName)
-				}
-				fieldVal, ok := ann.KVs["field"]
-				if !ok {
-					return nil, fmt.Errorf("%s:%s: @%s on parameter %q is missing required key `field`", source, ann.Pos, annKunaiStackCount, prm.VarName)
-				}
-				if fieldVal.Kind != p4lite.AnnotationIdent {
-					return nil, fmt.Errorf("%s:%s: @%s.field must be an identifier (got %v)", source, ann.Pos, annKunaiStackCount, fieldVal.Kind)
-				}
-				bitOff, bits, found := BitOffsetIn(primaryFields, fieldVal.Ident)
-				if !found {
-					return nil, fmt.Errorf("%s:%s: @%s.field references unknown field %q in primary header", source, ann.Pos, annKunaiStackCount, fieldVal.Ident)
-				}
-				if bits != 8 || bitOff%8 != 0 {
-					return nil, fmt.Errorf("%s:%s: @%s.field %q must be a byte-aligned 8-bit field (got bit offset %d, %d bits wide)", source, ann.Pos, annKunaiStackCount, fieldVal.Ident, bitOff, bits)
-				}
-				offset := 0
-				if oVal, ok := ann.KVs["offset"]; ok {
-					if oVal.Kind != p4lite.AnnotationInt {
-						return nil, fmt.Errorf("%s:%s: @%s.offset must be an int literal", source, ann.Pos, annKunaiStackCount)
-					}
-					offset = int(oVal.Int)
-				}
-				if _, exists := out[prm.VarName]; exists {
-					return nil, fmt.Errorf("%s:%s: parameter %q has multiple @%s annotations", source, ann.Pos, prm.VarName, annKunaiStackCount)
-				}
-				if out == nil {
-					out = make(map[string]*StackCountSpec)
-				}
-				out[prm.VarName] = &StackCountSpec{
-					ByteOff: bitOff / 8,
-					Addend:  offset,
-				}
-			}
+	err := forEachParserParamAnnotation(file, annKunaiStackCount, stackCountAllowedKeys, source, func(prm *p4lite.Param, ann p4lite.Annotation) error {
+		fieldVal, ok := ann.KVs["field"]
+		if !ok {
+			return fmt.Errorf("%s:%s: @%s on parameter %q is missing required key `field`", source, ann.Pos, annKunaiStackCount, prm.VarName)
 		}
+		if fieldVal.Kind != p4lite.AnnotationIdent {
+			return fmt.Errorf("%s:%s: @%s.field must be an identifier (got %v)", source, ann.Pos, annKunaiStackCount, fieldVal.Kind)
+		}
+		bitOff, bits, found := BitOffsetIn(primaryFields, fieldVal.Ident)
+		if !found {
+			return fmt.Errorf("%s:%s: @%s.field references unknown field %q in primary header", source, ann.Pos, annKunaiStackCount, fieldVal.Ident)
+		}
+		if bits != 8 || bitOff%8 != 0 {
+			return fmt.Errorf("%s:%s: @%s.field %q must be a byte-aligned 8-bit field (got bit offset %d, %d bits wide)", source, ann.Pos, annKunaiStackCount, fieldVal.Ident, bitOff, bits)
+		}
+		addend := 0
+		if oVal, ok := ann.KVs["offset"]; ok {
+			if oVal.Kind != p4lite.AnnotationInt {
+				return fmt.Errorf("%s:%s: @%s.offset must be an int literal", source, ann.Pos, annKunaiStackCount)
+			}
+			addend = int(oVal.Int)
+		}
+		if out == nil {
+			out = make(map[string]*StackCountSpec)
+		}
+		out[prm.VarName] = &StackCountSpec{
+			ByteOff: bitOff / 8,
+			Addend:  addend,
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 	return out, nil
 }
