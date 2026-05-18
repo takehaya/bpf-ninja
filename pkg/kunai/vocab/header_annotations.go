@@ -72,10 +72,15 @@ func readParserParamLayouts(file *p4lite.File, source string) (map[string]*Stack
 	return out, nil
 }
 
-// resolveStackLayouts fills BaseByteOff on each StackLayoutSpec. Must
-// run after primary header bit width is known. `after=primary` is the
-// only currently-supported anchor; future chained forms
-// (`after=<other_stack>`) will walk dependencies here.
+// resolveStackLayouts fills BaseByteOff on each StackLayoutSpec.
+// `after=primary` anchors at the primary header's byte end;
+// `after=<other_stack>` references another aux stack and resolves to
+// (upstream.BaseByteOff + upstream_capacity * upstream_elem_bytes).
+//
+// Chains are resolved iteratively (fixed-point) so declaration order
+// doesn't matter. A cycle aborts with a clear diagnostic; an unknown
+// anchor (= referenced name is neither "primary" nor a declared
+// stack) also errors loudly.
 func resolveStackLayouts(spec *ProtocolSpec) error {
 	if len(spec.StackLayouts) == 0 {
 		return nil
@@ -85,15 +90,96 @@ func resolveStackLayouts(spec *ProtocolSpec) error {
 		return fmt.Errorf("%s: primary header of %q is %d bits (not byte-aligned); cannot resolve @kunai_layout base", spec.Source, spec.Name, primaryBits)
 	}
 	primaryBytes := primaryBits / 8
-	for name, layout := range spec.StackLayouts {
-		switch layout.After {
-		case stackLayoutAfterPrimary:
-			layout.BaseByteOff = primaryBytes
-		default:
-			return fmt.Errorf("%s: @kunai_layout on %q references unsupported anchor %q (only %q is implemented in MVP; chained `after=<stack>` is reserved for future work)", spec.Source, name, layout.After, stackLayoutAfterPrimary)
+
+	resolved := make(map[string]bool, len(spec.StackLayouts))
+	pending := make(map[string]bool, len(spec.StackLayouts))
+	for name := range spec.StackLayouts {
+		pending[name] = true
+	}
+
+	progress := true
+	for len(pending) > 0 && progress {
+		progress = false
+		for name := range pending {
+			layout := spec.StackLayouts[name]
+			switch {
+			case layout.After == stackLayoutAfterPrimary:
+				layout.BaseByteOff = primaryBytes
+				resolved[name] = true
+				delete(pending, name)
+				progress = true
+			case spec.StackLayouts[layout.After] != nil:
+				if !resolved[layout.After] {
+					continue
+				}
+				upstream := spec.StackLayouts[layout.After]
+				span, err := stackSpanBytes(spec, layout.After)
+				if err != nil {
+					return fmt.Errorf("%s: @kunai_layout on %q (after=%q): %w", spec.Source, name, layout.After, err)
+				}
+				layout.BaseByteOff = upstream.BaseByteOff + span
+				resolved[name] = true
+				delete(pending, name)
+				progress = true
+			default:
+				return fmt.Errorf("%s: @kunai_layout on %q references unknown anchor %q (must be %q or another parser-parameter stack name)", spec.Source, name, layout.After, stackLayoutAfterPrimary)
+			}
 		}
 	}
+	if len(pending) > 0 {
+		names := make([]string, 0, len(pending))
+		for n := range pending {
+			names = append(names, n)
+		}
+		return fmt.Errorf("%s: @kunai_layout chain has a cycle or forward reference among %v", spec.Source, names)
+	}
 	return nil
+}
+
+// stackSpanBytes returns the on-wire byte span of a parser-parameter
+// stack: capacity × sizeof(its header type). The parser parameter
+// list is the source of truth for capacity (= [N]), and file.Headers
+// for the per-element bit width.
+func stackSpanBytes(spec *ProtocolSpec, stackName string) (int, error) {
+	if spec.File == nil {
+		return 0, fmt.Errorf("spec %q has no parsed file; cannot compute span of %q", spec.Name, stackName)
+	}
+	var prm *p4lite.Param
+	for _, par := range spec.File.Parsers {
+		for i := range par.Params {
+			if par.Params[i].VarName == stackName {
+				prm = &par.Params[i]
+				break
+			}
+		}
+		if prm != nil {
+			break
+		}
+	}
+	if prm == nil {
+		return 0, fmt.Errorf("stack %q is not a parser parameter", stackName)
+	}
+	if !prm.IsArray {
+		return 0, fmt.Errorf("stack %q is not an array parameter (`out X[N]`)", stackName)
+	}
+	var hdr *p4lite.Header
+	for _, h := range spec.File.Headers {
+		if h.Name == prm.TypeName {
+			hdr = h
+			break
+		}
+	}
+	if hdr == nil {
+		return 0, fmt.Errorf("stack %q references unknown header type %q", stackName, prm.TypeName)
+	}
+	bits := 0
+	for _, f := range hdr.Fields {
+		bits += f.Bits
+	}
+	if bits%8 != 0 {
+		return 0, fmt.Errorf("header %q is %d bits (not byte-aligned); element size for stack %q is undefined", prm.TypeName, bits, stackName)
+	}
+	return prm.ArraySize * (bits / 8), nil
 }
 
 // validateDeclareOnlyStacks ensures every top-level declare-only aux

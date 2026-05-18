@@ -818,6 +818,94 @@ parser P(packet_in pkt,
 	}
 }
 
+// TestStackLayoutChainResolves pins that chained @kunai_layout
+// (`after=<other_stack>`) resolves each stack's base offset against
+// the upstream stack's end, walking the dependency chain iteratively
+// regardless of declaration order in the .p4 file.
+func TestStackLayoutChainResolves(t *testing.T) {
+	src := `header foo_h { bit<8> a; bit<8> b; }
+header seg_h { bit<128> addr; }
+header tlv_h { bit<32> value; }
+parser P(packet_in pkt,
+         out foo_h hdr,
+         @kunai_layout[after=segments]
+         out tlv_h[2] tlvs,
+         @kunai_layout[after=primary]
+         out seg_h[4] segments) {
+	state start {
+		pkt.extract(hdr);
+		transition accept;
+	}
+}`
+	fsys := fstest.MapFS{"vocab/foo.p4": &fstest.MapFile{Data: []byte(src)}}
+	specs, err := Load(fsys, "vocab")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	layouts := specs["foo"].StackLayouts
+	// primary = (8+8)/8 = 2 bytes
+	// segments base = 2; span = 4 * (128/8) = 64
+	// tlvs base = segments base + segments span = 2 + 64 = 66
+	if got := layouts["segments"].BaseByteOff; got != 2 {
+		t.Errorf("segments base = %d, want 2", got)
+	}
+	if got := layouts["tlvs"].BaseByteOff; got != 66 {
+		t.Errorf("tlvs base = %d, want 66 (= 2 + 4*16)", got)
+	}
+}
+
+// TestStackLayoutChainCycle pins that a cyclic @kunai_layout chain
+// (foo→bar→foo) errors at load time rather than spinning the
+// fixed-point resolver indefinitely.
+func TestStackLayoutChainCycle(t *testing.T) {
+	src := `header foo_h { bit<8> a; }
+header seg_h { bit<128> addr; }
+parser P(packet_in pkt,
+         out foo_h hdr,
+         @kunai_layout[after=bar]
+         out seg_h[4] foo,
+         @kunai_layout[after=foo]
+         out seg_h[4] bar) {
+	state start {
+		pkt.extract(hdr);
+		transition accept;
+	}
+}`
+	fsys := fstest.MapFS{"vocab/foo.p4": &fstest.MapFile{Data: []byte(src)}}
+	_, err := Load(fsys, "vocab")
+	if err == nil {
+		t.Fatal("expected cycle error, got nil")
+	}
+	if !strings.Contains(err.Error(), "cycle or forward reference") {
+		t.Errorf("error %q should mention cycle", err.Error())
+	}
+}
+
+// TestStackLayoutChainUnknown pins that @kunai_layout[after=X] where
+// X is neither "primary" nor a declared parameter stack errors with a
+// clear "unknown anchor" diagnostic.
+func TestStackLayoutChainUnknown(t *testing.T) {
+	src := `header foo_h { bit<8> a; }
+header seg_h { bit<128> addr; }
+parser P(packet_in pkt,
+         out foo_h hdr,
+         @kunai_layout[after=does_not_exist]
+         out seg_h[4] segments) {
+	state start {
+		pkt.extract(hdr);
+		transition accept;
+	}
+}`
+	fsys := fstest.MapFS{"vocab/foo.p4": &fstest.MapFile{Data: []byte(src)}}
+	_, err := Load(fsys, "vocab")
+	if err == nil {
+		t.Fatal("expected unknown-anchor error, got nil")
+	}
+	if !strings.Contains(err.Error(), "unknown anchor") {
+		t.Errorf("error %q should mention unknown anchor", err.Error())
+	}
+}
+
 // TestIPv6ExtHeaderAnnotations pins the kunai-specific annotations
 // on ipv6_ext_h: the variable-trail params and the writeback resolve
 // ipv6.next_header to byte offset 6 so the chain tail's next_header
