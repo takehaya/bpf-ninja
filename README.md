@@ -128,9 +128,13 @@ Read a single shard with `tcpdump -r capture.pcap.cpu0`, or merge all shards wit
 | `--no-wakeup` | Suppress eventfd wake per submit. Trades p50 latency for throughput. **Requires `--fast-reader`** |
 | `--ringbuf-size MB` | Per-CPU ringbuf size (default 16 MB) |
 | `--raw-dump` | Raw bytes path; convert offline with `xdp-ninja convert` |
+| `--rx-cores N` | Split-core: pin ringbuf consumers to cores `N..2N-1`, off the RX softirqs (set the NIC to `N` queues yourself via `ethtool -L combined N`). +30% on `-w` output. **Requires `--fast-reader`**; pair with `--busy-poll --no-wakeup` |
+| `--busy-poll` | Spin the fast-reader shards instead of sleeping in `epoll_wait`. Burns a core per shard. **Requires `--fast-reader`** |
 | `--null-output` | Drop output entirely (bench only) |
 
 Detailed flag reference + DSL `capture` clause's snaplen trade-off: [docs/ja/dsl-usage.md](./docs/ja/dsl-usage.md#performance-flags).
+
+High-rate tuning — which lever in which order, and what doesn't work: [docs/ja/tuning.md](./docs/ja/tuning.md).
 
 ### Hand-test: `--dump-asm`
 

@@ -135,6 +135,15 @@ var flags = []cli.Flag{
 		Name:  "no-wakeup",
 		Usage: "set BPF_RB_NO_WAKEUP on every ringbuf submit (saves eventfd writes on the BPF side; safe only with --fast-reader since the slow path needs wakeups)",
 	},
+	&cli.BoolFlag{
+		Name:  "busy-poll",
+		Usage: "spin the fast-reader shard goroutines on ReadBatch instead of blocking in epoll_wait; the consumer never sleeps so it drains continuously and needs no wakeup. burns a core per shard. requires --fast-reader; pair with --no-wakeup",
+	},
+	&cli.IntFlag{
+		Name:  "rx-cores",
+		Value: 0,
+		Usage: "split-core capture: if >0, RX/capture is assumed confined to cores 0..N-1 (set the NIC to N queues yourself via `ethtool -L combined N`); xdp-ninja runs N consumer goroutines pinned to cores N..2N-1, off the RX softirqs. pair with --busy-poll --no-wakeup",
+	},
 	&cli.IntFlag{
 		Name:  "in-memory-buffer",
 		Value: 0,
@@ -275,6 +284,14 @@ func run(ctx context.Context, cmd *cli.Command) error {
 
 	capture.LegacyTimestamp = cmd.Bool("legacy-timestamp")
 	capture.DisableCPUAffinity = cmd.Bool("no-cpu-affinity")
+	capture.BusyPoll = cmd.Bool("busy-poll")
+	if capture.BusyPoll && !cmd.Bool("fast-reader") {
+		return fmt.Errorf("--busy-poll requires --fast-reader (it spins the in-tree fast reader)")
+	}
+	capture.SplitCoreRX = int(cmd.Int("rx-cores"))
+	if capture.SplitCoreRX > 0 && !cmd.Bool("fast-reader") {
+		return fmt.Errorf("--rx-cores requires --fast-reader (split-core mode only applies to the in-tree fast reader)")
+	}
 	if mib := cmd.Int("ringbuf-size"); mib > 0 {
 		sz := uint32(mib) * 1024 * 1024
 		if sz&(sz-1) != 0 {
@@ -857,7 +874,6 @@ func runXDPNative(cmd *cli.Command) error {
 		program.XDPNativeBenchDrop = true
 		fmt.Fprintln(os.Stderr, "warning: --bench-drop active: returning XDP_DROP after capture (bench-only)")
 	}
-
 	filterExpr := strings.Join(cmd.Args().Slice(), " ")
 	useDSL, err := resolveFilterSyntax(cmd)
 	if err != nil {

@@ -27,6 +27,21 @@ var WallOffsetNs uint64
 // the --legacy-timestamp CLI flag.
 var LegacyTimestamp bool
 
+// BusyPoll, when true, makes the fast-reader shard goroutines spin on
+// ReadBatch instead of blocking in epoll_wait. The consumer never
+// sleeps, so it drains the ringbuf continuously and needs no producer-
+// side wakeup — pair with --no-wakeup to take wakeup backpressure off
+// the RX softirq. Burns a core per shard. Set via --busy-poll.
+var BusyPoll bool
+
+// SplitCoreRX, when > 0, puts the fast-reader in split-core mode: it
+// assumes RX/capture is confined to cores 0..SplitCoreRX-1 (the caller
+// sets the NIC queue count to SplitCoreRX via `ethtool -L`), runs only
+// the first SplitCoreRX shard readers, and pins reader i to core
+// SplitCoreRX+i — the upper core half — so a --busy-poll spin does not
+// steal cycles from the RX softirqs. Set via --rx-cores.
+var SplitCoreRX int
+
 // DisableCPUAffinity, when true, skips pinning each per-shard reader
 // goroutine to its producer CPU. Default-false pins goroutine N to
 // CPU N so the read stays on the cache line the BPF producer just
@@ -434,9 +449,26 @@ func (r *FastShardedReader) RunShardsFast(sink ShardSink) (stop func(), err erro
 	}
 	stopCh := make(chan struct{})
 	doneCh := make(chan struct{}, len(r.readers))
+	launched := 0
 	for idx, rdr := range r.readers {
-		go func(shardIdx int, rdr *fastrb.Reader) {
-			pinReaderToCPU(shardIdx)
+		// Split-core mode: only shards 0..SplitCoreRX-1 are fed (RX
+		// confined to cores 0..SplitCoreRX-1 via ethtool -L); pin
+		// their readers to the upper core half so the busy-poll spin
+		// does not contend with the RX softirqs.
+		if SplitCoreRX > 0 && idx >= SplitCoreRX {
+			break
+		}
+		pinCPU := idx
+		if SplitCoreRX > 0 {
+			// Consumers occupy cores [SplitCoreRX, NumCPU); spread the
+			// SplitCoreRX reader goroutines across them (more than one
+			// per core when RX takes the larger share).
+			consumerCores := max(runtime.NumCPU()-SplitCoreRX, 1)
+			pinCPU = SplitCoreRX + idx%consumerCores
+		}
+		launched++
+		go func(shardIdx, pinCPU int, rdr *fastrb.Reader) {
+			pinReaderToCPU(pinCPU)
 			defer func() { doneCh <- struct{}{} }()
 			buf := make([]Packet, 0, 256)
 			for {
@@ -445,8 +477,10 @@ func (r *FastShardedReader) RunShardsFast(sink ShardSink) (stop func(), err erro
 					return
 				default:
 				}
-				if _, err := rdr.WaitForData(shardPollTimeoutMs); err != nil {
-					return
+				if !BusyPoll {
+					if _, err := rdr.WaitForData(shardPollTimeoutMs); err != nil {
+						return
+					}
 				}
 				now := time.Now()
 				rdr.ReadBatch(func(record []byte) {
@@ -464,11 +498,11 @@ func (r *FastShardedReader) RunShardsFast(sink ShardSink) (stop func(), err erro
 					buf = buf[:0]
 				}
 			}
-		}(idx, rdr)
+		}(idx, pinCPU, rdr)
 	}
 	stop = func() {
 		close(stopCh)
-		for range r.readers {
+		for i := 0; i < launched; i++ {
 			<-doneCh
 		}
 		for _, rdr := range r.readers {
@@ -497,9 +531,21 @@ func (r *FastShardedReader) RunRawShardsFast(rawSink RawShardSink) (stop func(),
 	}
 	stopCh := make(chan struct{})
 	doneCh := make(chan struct{}, len(r.readers))
+	launched := 0
 	for idx, rdr := range r.readers {
-		go func(shardIdx int, rdr *fastrb.Reader) {
-			pinReaderToCPU(shardIdx)
+		// Split-core mode: see RunShardsFast — only shards
+		// 0..SplitCoreRX-1 run, pinned to the upper core half.
+		if SplitCoreRX > 0 && idx >= SplitCoreRX {
+			break
+		}
+		pinCPU := idx
+		if SplitCoreRX > 0 {
+			consumerCores := max(runtime.NumCPU()-SplitCoreRX, 1)
+			pinCPU = SplitCoreRX + idx%consumerCores
+		}
+		launched++
+		go func(shardIdx, pinCPU int, rdr *fastrb.Reader) {
+			pinReaderToCPU(pinCPU)
 			defer func() { doneCh <- struct{}{} }()
 			var seen int64
 			period := LatencySamplePeriod
@@ -520,11 +566,13 @@ func (r *FastShardedReader) RunRawShardsFast(rawSink RawShardSink) (stop func(),
 				// Bounds stopCh-check latency under idle traffic;
 				// on the saturated hot path EpollWait returns
 				// immediately because data is always ready.
-				if _, err := rdr.WaitForData(shardPollTimeoutMs); err != nil {
-					if period > 0 {
-						LatencySamples[shardIdx] = localSamples
+				if !BusyPoll {
+					if _, err := rdr.WaitForData(shardPollTimeoutMs); err != nil {
+						if period > 0 {
+							LatencySamples[shardIdx] = localSamples
+						}
+						return
 					}
-					return
 				}
 				rdr.ReadBatch(func(record []byte) {
 					_ = rawSink(shardIdx, record)
@@ -538,11 +586,11 @@ func (r *FastShardedReader) RunRawShardsFast(rawSink RawShardSink) (stop func(),
 					}
 				})
 			}
-		}(idx, rdr)
+		}(idx, pinCPU, rdr)
 	}
 	stop = func() {
 		close(stopCh)
-		for range r.readers {
+		for i := 0; i < launched; i++ {
 			<-doneCh
 		}
 		for _, rdr := range r.readers {
