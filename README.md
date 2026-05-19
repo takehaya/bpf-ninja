@@ -134,6 +134,8 @@ Read a single shard with `tcpdump -r capture.pcap.cpu0`, or merge all shards wit
 
 Detailed flag reference + DSL `capture` clause's snaplen trade-off: [docs/ja/dsl-usage.md](./docs/ja/dsl-usage.md#performance-flags).
 
+High-rate tuning — which lever in which order, and what doesn't work: [docs/ja/tuning.md](./docs/ja/tuning.md).
+
 ### Hand-test: `--dump-asm`
 
 `--dump-asm` compiles a filter and prints the resulting eBPF asm without loading. No `-i`/`-p` needed:
