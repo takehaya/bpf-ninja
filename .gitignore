@@ -146,3 +146,6 @@ dist
 .serena/
 .claude/
 .ocr
+
+# Local-only DSL backlog (author moves follow-up tracking out of the repo)
+docs/ja/dsl-followups.md

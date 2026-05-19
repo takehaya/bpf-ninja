@@ -312,27 +312,6 @@ sudo xdp-ninja -i veth0 \
   "eth/ipv4/tcp where tcp.dport == 443 or tcp.dport == 80"
 ```
 
-## MVP 制限まとめ
-
-実装中だが今は使えないもの (✅ 完了済み項目は詳細を [`dsl-followups.md`](./dsl-followups.md) §F1-F13 参照):
-
-| 機能 | 状態 | 代替 / 備考 |
-|---|---|---|
-| `field in [v1, v2, ...]` | ✅ 整数値で実装済 (F7) | IPv4/IPv6/MAC/CIDR alternatives は scope outside、`where` で `or` 連結 |
-| `field has FLAG` | ✅ F6 bitwise で代替 | `tcp.flags & 0x12 == 0x12` のように書く |
-| `capture f1, f2` フィールド列 | 未対応 | `capture headers+N` |
-| chain 内 hs を含む `headers+N` | 未対応 | quantifier 確定後のチェーンに使う |
-| Sanity self-dispatch 連鎖 | 未対応 | NO_CHECK / Field self-dispatch を使う |
-| alt のネスト (grouping のみ) | ✅ P3-13 で実装 | `((a\|b)\|(c\|d))` は resolver で `(a\|b\|c\|d)` に平坦化される (alt member 数は altCountCap = 4 まで) |
-| alt のネストに quantifier (`(a\|b)?`) | 未対応 | optional な内側 alt は意味が違うので flatten 不可。当面 reject |
-| alt 異種サイズ | ✅ P3-12 で実装 | `(ipv4\|ipv6)/tcp` のように size の違う alt が動く |
-| alt 後の layer 異種 dispatch | ✅ P3-12 で実装 | `(ipv4\|ipv6)/tcp` で `protocol` vs `next_header` の field 違いを per-alt JNE で吸収 |
-| where / capture が異種サイズ alt を跨ぐ | ✅ PR-A/B で実装 | `(ipv4\|ipv6)/tcp where tcp.dport == 443` も `capture headers+64` も `where tcp.options.MSS.value == 1460` も per-layer entry slot で動く |
-| where が alt member を直接参照 (`where ipv6.src == ...`) | 未対応 | alt 別の field なのでどちらの alt が match したか区別不可。bracket predicate `(ipv4\|ipv6[src==fe80::1])/tcp` で書く |
-| 算術ネスト 4 段以上 | 未対応 | 中間値を別 filter 起動で計算 |
-| `Int<128>` の `+`/`-` | ✅ 完了 (F4) | `field == field` / `field op const == field` / `field op field == field` 全形が動く |
-| `Int<128>` ordered cmp (`<`/`>`) | ✅ bracket / where-arith 両方 (F3) | `ipv6[dst < fe80::ffff]` も `where ipv6.src < ipv6.dst` も両方動く |
-
 ## 型エラーの例
 
 resolver / parser が出す主要なエラーパターン (詳しくは [`dsl-types.md`](./dsl-types.md))。
