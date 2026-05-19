@@ -1,90 +1,90 @@
 # xdp-ninja 性能チューニングガイド
 
-高 pps（>1 Mpps 級）の capture で取りこぼしを減らすための設定ガイド。通常用途では既定値で十分なので、まず取りこぼしが実際に出ているか測ってから手を入れること。
+1 Mpps を超える高 pps の capture で取りこぼしを減らすための設定ガイドです。通常の用途では既定値で十分なので、まず取りこぼしが実際に出ているかどうかを測定してから手を入れてください。
 
-フラグの一覧と既定値は [dsl-usage.md の Performance flags](./dsl-usage.md#performance-flags) を参照。
+フラグの一覧と既定値については [dsl-usage.md の Performance flags](./dsl-usage.md#performance-flags) を参照してください。
 
-## 1. 天井を理解する
+## 1. 性能の上限を理解する
 
-xdp-ninja の capture スループットには、設定では越えられない物理的な天井がある。
+xdp-ninja の capture スループットには、設定では越えられない物理的な上限があります。
 
-ボトルネックは **packet データの cold read**。NIC が DMA したパケットは DDIO でいったん L3 に載るが、line rate ではキャプチャ処理が読む前に後続パケットで evict され、メモリから読み直すことになる（DRAM レイテンシ stall）。性質として:
+ボトルネックは packet データの cold read です。NIC が DMA したパケットは DDIO でいったん L3 に載りますが、line rate ではキャプチャ処理が読む前に後続のパケットによって evict され、メモリから読み直すことになります。このとき DRAM のレイテンシによる stall が発生します。性質としては次のとおりです。
 
-- **メモリ帯域**ではなく**レイテンシ**律速。DDR5 にしても速くならない（DRAM の latency は世代でほぼ横ばい、長所の bandwidth は元々余っている）。
-- 効くのは「大きい L3」。DDIO 領域にパケットが長く留まるほど cold miss が減る。巨大 L3 を積む CPU が有利。
+- メモリ帯域ではなくレイテンシによって律速されます。DDR5 にしても速くなりません。DRAM のレイテンシは世代でほぼ横ばいで、DDR5 の長所である帯域は元々余っているからです。
+- 効くのは大きい L3 です。DDIO の領域にパケットが長く留まるほど cold miss が減るため、巨大な L3 を積む CPU が有利になります。
 
-設定でできるのは「天井をなるべく高くする」「天井に近づける」ことであって、天井そのものは消せない。これを踏まえた上で以下のレバーを使う。
+設定でできるのは、この上限をなるべく高くすることと、上限に近づけることです。上限そのものは消せません。これを踏まえた上で以下の対策を使ってください。
 
-## 2. まず測る
+## 2. 現状を測定する
 
-チューニング前に現状を数値で掴む。
+チューニングの前に、現状を数値で把握してください。
 
-- **`--null-output`** — 出力を捨てて reader の CPU コストだけ測る。取りこぼしゼロで何 Mpps 通せるかというパイプライン天井が出る。
-- **`-w` 実出力** — 実効レート。`--null-output` より大きく落ちるなら producer-consumer の結合が効いている（→ §3.6 split-core）。
-- **ringbuf drop** — 終了時に stderr へ出る。captured が「XDP に届いた数」より少ないなら ring が溢れている（→ §3.1 snaplen / §3.3 ringbuf-size）。
+- --null-output を使うと、出力を捨てて reader の CPU コストだけを測れます。取りこぼしゼロで何 Mpps を通せるかという、パイプラインの上限が出ます。
+- -w による実出力では実効レートが出ます。--null-output より大きく落ちる場合は、producer と consumer の結合が効いています。3.6 の split-core を参照してください。
+- ringbuf drop は終了時に stderr へ出力されます。captured が XDP に届いた数より少ない場合は ring が溢れています。3.1 の snaplen や 3.3 の ringbuf-size を参照してください。
 
-## 3. レバー（ROI 順）
+## 3. 効果の大きい順に設定を変える
 
-### 3.1 snaplen を下げる ★最優先
+### 3.1 snaplen を下げる
 
-`--snaplen N` で 1 パケットの保存バイト数を切る（または DSL の `capture` 句で指定）。効果が二重にある:
+--snaplen N で 1 パケットあたりの保存バイト数を切り詰めます。DSL の capture 句でも指定できます。効果は二重にあります。
 
-- **読む cache line 数が減る** → cold miss の回数が減る。
-- **ringbuf 予約が縮む** → 同じ ring 容量により多くのレコードが入り、burst 吸収が増える。
+- 読み込む cache line の数が減るため、cold miss の回数が減ります。
+- ringbuf の予約サイズが縮むため、同じ ring 容量により多くのレコードが入り、burst の吸収が増えます。
 
-ヘッダだけ要るなら `capture headers+0`、L4 ヘッダまで見たいなら 64〜128 B で足りることが多い。フルパケットが要らないなら必ず下げる。
+ヘッダだけが必要なら capture headers+0、L4 ヘッダまで見たいなら 64 から 128 バイトで足りることが多いです。フルパケットが必要でなければ必ず下げてください。これを最優先で検討してください。
 
-### 3.2 `--fast-reader` ★高 rate は常時 on
+### 3.2 --fast-reader を常用する
 
-mmap+atomic 直叩きの reader。cilium/ebpf の generic reader より低 CPU・高 throughput。高 rate では実質必須で、以下のフラグはすべて `--fast-reader` を前提にしている。
+--fast-reader は mmap と atomic で直接読み出す reader です。cilium/ebpf の generic な reader より CPU が低く、スループットが高くなります。高 rate では実質的に必須で、以下のフラグはすべて --fast-reader を前提としています。
 
-### 3.3 `--ringbuf-size`
+### 3.3 --ringbuf-size を増やす
 
-per-CPU ring の容量（既定 16 MB）。瞬間的な burst で取りこぼすなら増やす。snaplen を下げる方が経済的だが、両方効く。
+--ringbuf-size は per-CPU の ring 1 個あたりの容量で、既定値は 16 MB です。瞬間的な burst で取りこぼすなら増やしてください。snaplen を下げる方が経済的ですが、両方とも効きます。
 
-### 3.4 `--raw-dump`（+ `--in-memory-buffer`）
+### 3.4 --raw-dump で出力経路を軽くする
 
-pcap-ng 整形を bypass し、パケットバイト + ヘッダをそのまま raw ファイルに追記する。後で `xdp-ninja convert` で pcap-ng 化。出力（writer / storage）が律速のとき有効。NVMe write が間に合わないなら `--in-memory-buffer N` で mmap 上のバッファに退避できる。
+--raw-dump は pcap-ng の整形を bypass し、パケットのバイト列とヘッダをそのまま raw ファイルに追記します。後から xdp-ninja convert で pcap-ng に変換します。writer や storage が律速になっているときに有効です。NVMe への書き込みが間に合わないなら、--in-memory-buffer N で mmap 上のバッファに退避できます。
 
-なお consumer 側が律速でない構成（§3.6 split-core 等）では raw-dump と pcap-ng の差はほぼ無い。出力経路がボトルネックのときだけ意味がある。
+なお consumer 側が律速になっていない構成、たとえば 3.6 の split-core では、raw-dump と pcap-ng の差はほとんどありません。出力経路がボトルネックのときにだけ意味があります。
 
-### 3.5 `--no-wakeup`
+### 3.5 --no-wakeup を有効にする
 
-`BPF_RB_NO_WAKEUP` を全 submit に立て、reader を起こす eventfd を止める。throughput は上がるが、代わりに p50 latency が悪化する（おおよそ 100µs → ~2.6ms、polling 床 1ms）。`--fast-reader` 必須。レイテンシより総量を採る場面で使う。
+--no-wakeup は BPF_RB_NO_WAKEUP を全 submit に立て、reader を起こす eventfd を止めます。スループットは上がりますが、代わりに p50 のレイテンシが悪化します。おおよそ 100µs から 2.6ms 程度まで悪化し、polling の床が 1ms になります。--fast-reader が必須です。レイテンシより総量を優先する場面で使ってください。
 
-### 3.6 split-core（`--rx-cores` + `--busy-poll`）
+### 3.6 split-core でコアを分離する
 
-`-w` 実出力でレートが `--null-output` の半分近くまで落ちるときに効く。原因は producer（RX softirq）と consumer の結合 — 寝ている consumer を起こす経路が RX softirq に背圧をかけ、結果として両方が遅くなる。
+-w の実出力でレートが --null-output の半分近くまで落ちるときに効きます。原因は、producer である RX softirq と consumer の結合です。寝ている consumer を起こす経路が RX softirq に背圧をかけ、結果として両方が遅くなります。
 
-分離の手順:
+コアを分離する手順は次のとおりです。
 
-1. NIC queue を N に固定する: `ethtool -L combined N`（**ドライバ安定後に**実行。下の注意を必ず読むこと）。これで RX/capture が core `0..N-1` に閉じる。
-2. `--rx-cores N` — consumer goroutine を core `N..2N-1` に pin し、RX softirq のコアから外す。
-3. `--busy-poll --no-wakeup` — consumer を `epoll_wait` で寝かさず常時 drain させ、wakeup を不要にする。
+1. NIC の queue を N に固定します。ethtool -L combined N を実行します。実行のタイミングについては下の注意を必ず読んでください。これで RX と capture が core 0 から N-1 に閉じます。
+2. --rx-cores N を指定すると、consumer の goroutine が core N から 2N-1 に pin され、RX softirq のコアから外れます。
+3. --busy-poll と --no-wakeup を指定すると、consumer が epoll_wait で寝なくなり、常時 drain して wakeup が不要になります。
 
-コアを半々に分ける対称分割（例: 64 コアなら 32/32）が sweet spot。RX 側のコアを増やす非対称分割はむしろ逆効果になる（busy-poll spinner の memory トラフィックがレイテンシ律速の RX をかき乱す）。実測で `-w` 出力が +30%。
+コアを半分ずつに分ける対称な分割が最も効きます。たとえば 64 コアなら 32 と 32 に分けます。RX 側のコアを増やす非対称な分割はむしろ逆効果になります。busy-poll の spinner が出すメモリトラフィックが、レイテンシ律速の RX をかき乱すからです。実測では -w の出力が 30% 向上しました。
 
-> **注意 — `ethtool -L` のタイミング**: `ethtool -L combined N` は名前は軽いが、実態は VSI 再構築で RTNL（netdev グローバルロック）を握る重い操作。`modprobe` 直後のドライバ初期化が完了していない状態で叩くと、ice 等のドライバが RTNL を握ったまま D-state でデッドロックし、udev / dmesg など box 全体に波及する（reboot 必須になる）。ドライバが十分安定してから実行すること。split-core を使わないなら queue 数はいじらなくてよい。
+> ethtool -L のタイミングに注意してください。ethtool -L combined N は名前こそ軽そうですが、実態は VSI の再構築で、netdev のグローバルロックである RTNL を握る重い操作です。modprobe の直後でドライバの初期化が完了していない状態で実行すると、ice などのドライバが RTNL を握ったまま D-state でデッドロックし、udev や dmesg など box 全体に波及します。この場合は reboot が必要になります。ドライバが十分に安定してから実行してください。split-core を使わないなら queue の数はいじらなくて構いません。
 
-## 4. 効かないもの（実証済みの negative finding）
+## 4. 効果がなかった対策を避ける
 
-時間を溶かさないために — 以下は試して効果が無かった、または退行した:
+時間を無駄にしないために記録しておきます。以下は、試して効果がなかった対策と、退行した対策です。
 
-- **packet prefetch**（kprobe / kfunc で次 batch のバッファを暖める）— 飽和した RX コア上で prefetcher を走らせても memory-latency の壁は越えられない。prefetch した cache line が working set を汚してむしろ微悪化する。
-- **CPUMAP で capture を別コアへ decouple** — 全コアが RX softirq で飽和した box では cpumap kthread が starve し、ほぼ起動しない。逃がす空きコアが無い。
-- **wakeup-batch**（N 回に 1 回だけ wakeup を強制）— 単体では効果ゼロ。結合を断つのはコアの物理分離（split-core）であって wakeup の頻度ではない。
-- **writer の zero-copy 化（writev）** — syscall coalesce が既存の bufio に負けて退行。
+- packet prefetch は効きませんでした。kprobe や kfunc で次の batch のバッファを暖める方法です。飽和した RX コアの上で prefetcher を走らせても memory-latency の壁は越えられません。prefetch した cache line が working set を汚し、むしろわずかに悪化します。
+- CPUMAP で capture を別のコアへ decouple する方法も効きませんでした。全コアが RX softirq で飽和した box では cpumap の kthread が starve し、ほとんど起動しません。逃がす先の空きコアがないからです。
+- wakeup-batch は効きませんでした。N 回に 1 回だけ wakeup を強制する方法ですが、単体では効果がありません。結合を断つのはコアの物理的な分離である split-core であって、wakeup の頻度ではありません。
+- writev による writer の zero-copy 化は退行しました。syscall の coalesce が既存の bufio に負けます。
 
-要するに、capture rate を上げる実レバーは snaplen・split-core・サンプリング・ハードウェアであって、prefetch / cpumap / wakeup 頻度 / writer の小細工ではない。
+要するに、capture rate を上げる実効的な対策は snaplen、split-core、サンプリング、ハードウェアであって、prefetch や cpumap、wakeup の頻度、writer の小細工ではありません。
 
-## 5. ワークロード別の使い分け
+## 5. ワークロードごとに使い分ける
 
-- **capture アプライアンス（録って捨てる）** — `--mode xdp` で観測後そのまま XDP_DROP。split-core で最大スループットを狙える。
-- **inline 観測（観測しつつ転送する）** — 転送アクション次第で大きく変わる。reflect 系（XDP_TX）はカーネルスタックを通らないので実用的なレートが出る。スタックへ流す（XDP_PASS）と skb 生成 + netif 経路が壁になり大幅に落ちるが、これは xdp-ninja ではなくカーネル netif 経路の性質で、設定では救えない。
-- **fentry / fexit 観測** — 既存の XDP プログラムに非侵襲で相乗りする。コストは観測対象の動作（drop / tx / redirect）に依存する。
+- capture アプライアンスとして録って捨てる用途では、--mode xdp で観測した後そのまま XDP_DROP します。split-core で最大のスループットを狙えます。
+- inline で観測しつつ転送する用途では、転送アクションによって大きく変わります。reflect 系の XDP_TX はカーネルスタックを通らないので、実用的なレートが出ます。スタックへ流す XDP_PASS では skb の生成と netif の経路が壁になり大幅に落ちますが、これは xdp-ninja ではなくカーネルの netif 経路の性質であり、設定では救えません。
+- fentry や fexit で観測する用途では、既存の XDP プログラムに非侵襲で相乗りします。コストは観測対象の動作によって変わり、観測対象が drop するか tx するか redirect するかで変わります。
 
-## 6. ハードウェア
+## 6. ハードウェアを選ぶ
 
-- **大きい L3 が効く** — DDIO 領域にパケットが長く留まり cold miss が減る。
-- **DDR5 は効かない** — 律速は latency であり、DDR5 の長所は bandwidth。DRAM latency は世代でほぼ横ばい。
-- queue 数や IRQ affinity を制御できる NIC（ice / E810 等）だと split-core を組みやすい。
+- 大きい L3 が効きます。DDIO の領域にパケットが長く留まり、cold miss が減るからです。
+- DDR5 は効きません。律速しているのはレイテンシであり、DDR5 の長所は帯域だからです。DRAM のレイテンシは世代でほぼ横ばいです。
+- queue の数や IRQ の affinity を制御できる NIC なら、split-core を組みやすくなります。ice や E810 などが該当します。
