@@ -149,3 +149,7 @@ dist
 
 # Local-only DSL backlog (author moves follow-up tracking out of the repo)
 docs/ja/dsl-followups.md
+
+# AI assistant instruction files (kept local, untracked)
+/CLAUDE.md
+/AGENTS.md
