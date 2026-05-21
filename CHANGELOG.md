@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.10.0](https://github.com/takehaya/xdp-ninja/compare/v0.9.0...v0.10.0) (2026-05-20)
+
+
+### 🎉 Features
+
+* **capture:** split-core capture mode + tuning docs ([#24](https://github.com/takehaya/xdp-ninja/issues/24)) ([deb4ce9](https://github.com/takehaya/xdp-ninja/commit/deb4ce964253f3f425900f92076410fefb971c1f))
+
+
+### 🔧 Miscellaneous Chores
+
+* untrack local instruction files ([ec9343b](https://github.com/takehaya/xdp-ninja/commit/ec9343b06699e820c4ad4a74979146c81cf513e0))
+
 ## [0.9.0](https://github.com/takehaya/xdp-ninja/compare/v0.8.0...v0.9.0) (2026-05-18)
 
 
