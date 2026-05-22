@@ -1,10 +1,21 @@
 package program
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/cilium/ebpf"
 )
+
+// exprHasVlanLayer reports whether a corpus expression carries a
+// vlan/qinq layer. The tc host rejects these at compile time because
+// the kernel extracts the outer VLAN tag into skb metadata before the
+// program runs (codegen.Capabilities.VlanInMetadata); they compile and
+// load only on XDP, where VLAN is in-band. No corpus field is named
+// "vlan"/"qinq", so a substring match is sufficient and self-contained.
+func exprHasVlanLayer(expr string) bool {
+	return strings.Contains(expr, "vlan") || strings.Contains(expr, "qinq")
+}
 
 // VerifierCorpus is a curated set of well-typed kunai expressions that
 // extends the F1-F10 set with broader language coverage. Every entry
@@ -134,7 +145,15 @@ func TestFilterCorpusCompiles(t *testing.T) {
 	for _, c := range VerifierCorpus {
 		for _, h := range hosts {
 			t.Run(c.ID+"/"+h.name, func(t *testing.T) {
-				if _, err := compileFilter(c.Expr, true /*useDSL*/, false /*isFexit*/, h.progType); err != nil {
+				tcVlan := h.progType != ebpf.XDP && exprHasVlanLayer(c.Expr)
+				_, err := compileFilter(c.Expr, true /*useDSL*/, false /*isFexit*/, h.progType)
+				if tcVlan {
+					if err == nil {
+						t.Fatalf("compile %s (%s): expected tc rejection (VLAN in skb metadata), got success", c.ID, h.name)
+					}
+					return
+				}
+				if err != nil {
 					t.Fatalf("compile %s (%s): %v", c.ID, h.name, err)
 				}
 			})
@@ -159,8 +178,12 @@ func TestBpfFilterCorpusTC(t *testing.T) {
 
 func runFilterCorpusMatrix(t *testing.T, hostProg *ebpf.Program, funcName string) {
 	t.Helper()
+	isTC := funcName == tcFuncName
 	for _, c := range VerifierCorpus {
 		t.Run(c.ID, func(t *testing.T) {
+			if isTC && exprHasVlanLayer(c.Expr) {
+				t.Skipf("%s carries a vlan/qinq layer; the tc host extracts the outer VLAN tag into skb metadata, so it is rejected at compile time (not loadable)", c.ID)
+			}
 			loadProbeOrFail(t, hostProg, funcName, c.Expr, false /*exit*/, true /*useDSL*/)
 		})
 	}

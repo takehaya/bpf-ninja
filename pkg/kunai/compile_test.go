@@ -369,8 +369,8 @@ func TestCompileBitSliceNonAligned(t *testing.T) {
 	for _, expr := range []string{
 		"eth/ipv6/tcp where ipv6.src[3:9] == 1",     // sub-byte within first byte
 		"eth/ipv6/tcp where ipv6.src[4:12] == 0xff", // crosses byte boundary
-		"eth/ipv6/tcp where ipv6.src[0:24] == 0xa0",  // byte-aligned but odd byte count
-		"eth/ipv6[src[3:9]==1]/tcp",                  // bracket form
+		"eth/ipv6/tcp where ipv6.src[0:24] == 0xa0", // byte-aligned but odd byte count
+		"eth/ipv6[src[3:9]==1]/tcp",                 // bracket form
 	} {
 		t.Run(expr, func(t *testing.T) {
 			insns, err := compileForTest(expr)
@@ -945,6 +945,38 @@ func isHostOwned(ins asm.Instruction) bool {
 		return true
 	}
 	return false
+}
+
+// TestVlanInMetadataRejectsVlanLayers asserts that a host advertising
+// VlanInMetadata (e.g. tc, where the kernel strips the outer VLAN tag
+// into skb metadata before the program runs) rejects any chain with a
+// vlan or qinq layer at compile time, rather than silently parsing the
+// wrong bytes. The same expressions must still compile under the zero
+// (in-band) Capabilities used by XDP and the test harness.
+func TestVlanInMetadataRejectsVlanLayers(t *testing.T) {
+	rejected := []string{
+		"eth/vlan[tci==100]/ipv4/tcp where tcp.dport == 80",
+		"eth/qinq/vlan/ipv4/tcp where tcp.dport == 80",
+		"eth/vlan?/ipv4/tcp",
+		"eth/(vlan|qinq)/ipv4/tcp",
+	}
+	tcCaps := codegen.Capabilities{VlanInMetadata: true}
+	for _, expr := range rejected {
+		t.Run("reject/"+expr, func(t *testing.T) {
+			_, err := Compile(expr, tcCaps)
+			if err == nil {
+				t.Fatalf("Compile(%q) with VlanInMetadata: expected rejection, got nil", expr)
+			}
+			if !errors.Is(err, codegen.ErrNotImplemented) {
+				t.Fatalf("Compile(%q): expected ErrNotImplemented, got %v", expr, err)
+			}
+		})
+		t.Run("allow/"+expr, func(t *testing.T) {
+			if _, err := Compile(expr, codegen.Capabilities{}); err != nil {
+				t.Fatalf("Compile(%q) with zero caps: expected success, got %v", expr, err)
+			}
+		})
+	}
 }
 
 // Cache correctness for dslvocab.Bundled is covered in its own
