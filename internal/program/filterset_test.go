@@ -86,14 +86,14 @@ func TestFilterSetCompiles(t *testing.T) {
 		for _, h := range hosts {
 			t.Run(fs.ID+"/"+h.name, func(t *testing.T) {
 				if fs.TCUnsupported && h.progType != ebpf.XDP {
-					_, err := compileFilter(fs.Expr /*useDSL=*/, true /*isFexit=*/, false, h.progType)
+					_, err := compileFilter(fs.Expr, true /*useDSL*/, false /*isFexit*/, h.progType)
 					if err == nil {
 						t.Fatalf("compile %s (%s): expected tc rejection (VLAN in skb metadata), got success\n  expr: %s", fs.ID, fs.Notes, fs.Expr)
 					}
 					t.Logf("rejected on %s as expected: %v", h.name, err)
 					return
 				}
-				out, err := compileFilter(fs.Expr /*useDSL=*/, true /*isFexit=*/, false, h.progType)
+				out, err := compileFilter(fs.Expr, true /*useDSL*/, false /*isFexit*/, h.progType)
 				if err != nil {
 					t.Fatalf("compile %s (%s): %v\n  expr: %s", fs.ID, fs.Notes, err, fs.Expr)
 				}
@@ -112,7 +112,7 @@ func TestFilterSetCompiles(t *testing.T) {
 func TestFilterSetCounts(t *testing.T) {
 	for _, fs := range FilterSet {
 		t.Run(fs.ID, func(t *testing.T) {
-			out, err := compileFilter(fs.Expr /*useDSL=*/, true /*isFexit=*/, false, ebpf.XDP)
+			out, err := compileFilter(fs.Expr, true /*useDSL*/, false /*isFexit*/, ebpf.XDP)
 			if err != nil {
 				t.Fatalf("compile %s: %v", fs.ID, err)
 			}
