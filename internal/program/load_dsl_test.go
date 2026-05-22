@@ -212,7 +212,10 @@ var dslTCEntryExprs = []string{
 	"eth/ipv4/tcp where tcp.dport == 443",
 	"eth/ipv4/tcp capture headers+64",
 	"eth/(ipv4|ipv6)/tcp",
-	"eth/vlan+/ipv4/tcp",
+	// mpls+ (not vlan+) pins the `+` quantifier / bpf_loop path on the
+	// tc context: the kernel strips the outer VLAN tag into skb
+	// metadata before tc, so vlan/qinq layers are rejected there.
+	"eth/mpls+/ipv4/tcp",
 	"eth/ipv4/ipv4/tcp",
 	// Parser-machine paths: GTP-U with optional + ext-header chain,
 	// SRv6 segments, IPv6 ext walk. These exercise the bpf_loop
