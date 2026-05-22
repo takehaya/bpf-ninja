@@ -13,11 +13,11 @@ import (
 	"github.com/cloudflare/cbpfc"
 	"github.com/google/gopacket/layers"
 	"github.com/google/gopacket/pcap"
+	"github.com/takehaya/xdp-ninja/internal/filter"
 	"github.com/takehaya/xdp-ninja/pkg/kunai"
 	"github.com/takehaya/xdp-ninja/pkg/kunai/codegen"
 	tchost "github.com/takehaya/xdp-ninja/pkg/kunai/host/tc"
 	xdphost "github.com/takehaya/xdp-ninja/pkg/kunai/host/xdp"
-	"github.com/takehaya/xdp-ninja/internal/filter"
 	"golang.org/x/net/bpf"
 )
 
@@ -176,19 +176,26 @@ func compileFilter(expr string, useDSL, isFexit bool, progType ebpf.ProgramType)
 	}
 	if useDSL {
 		// fexit attaches see the host retval at args[1] (XDP action
-		// or TC verdict, ABI shared); fentry has no action value yet
-		// so disable action atoms by passing zero Capabilities. The
-		// xdp-ninja host wrapper saves the tracing args ptr at
-		// stack[-48] in either case, which is exactly the ABI both
-		// FexitFetcher implementations expect.
+		// or TC verdict, ABI shared); fentry has no action value yet,
+		// so action atoms are disabled. The xdp-ninja host wrapper saves
+		// the tracing args ptr at stack[-48] in either case, which is
+		// exactly the ABI both FexitFetcher implementations expect.
+		// The tc host also carries VlanInMetadata in both entry and
+		// fexit caps, because the kernel strips the outer VLAN tag into
+		// skb metadata before either attach point runs.
 		var caps codegen.Capabilities
-		if isFexit {
-			switch progType {
-			case ebpf.XDP:
-				caps = xdphost.FexitCapabilities()
-			case ebpf.SchedCLS, ebpf.SchedACT:
+		switch progType {
+		case ebpf.SchedCLS, ebpf.SchedACT:
+			if isFexit {
 				caps = tchost.FexitCapabilities()
+			} else {
+				caps = tchost.EntryCapabilities()
 			}
+		case ebpf.XDP:
+			if isFexit {
+				caps = xdphost.FexitCapabilities()
+			}
+			// XDP entry keeps zero caps: VLAN is in-band at XDP.
 		}
 		out, err := kunai.Compile(expr, caps)
 		if err != nil {

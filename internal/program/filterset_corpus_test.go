@@ -1,10 +1,30 @@
 package program
 
 import (
+	"errors"
+	"regexp"
 	"testing"
 
 	"github.com/cilium/ebpf"
+
+	"github.com/takehaya/xdp-ninja/pkg/kunai/codegen"
 )
+
+// vlanLayerRe matches a vlan/qinq layer token in a chain: a layer name
+// always follows a chain separator (`/`, or `(`/`|` inside an
+// alternation), so anchoring on those excludes labels like `@vlan` and
+// longer names like `vxlan` (preceded by `vx`, not a separator). The
+// trailing \b keeps it from matching a hypothetical `vlanfoo`.
+var vlanLayerRe = regexp.MustCompile(`[/(|](vlan|qinq)\b`)
+
+// exprHasVlanLayer reports whether a corpus expression carries a
+// vlan/qinq layer. The tc host rejects these at compile time because
+// the kernel extracts the outer VLAN tag into skb metadata before the
+// program runs (codegen.Capabilities.VlanInMetadata); they compile and
+// load only on XDP, where VLAN is in-band.
+func exprHasVlanLayer(expr string) bool {
+	return vlanLayerRe.MatchString(expr)
+}
 
 // VerifierCorpus is a curated set of well-typed kunai expressions that
 // extends the F1-F10 set with broader language coverage. Every entry
@@ -134,7 +154,15 @@ func TestFilterCorpusCompiles(t *testing.T) {
 	for _, c := range VerifierCorpus {
 		for _, h := range hosts {
 			t.Run(c.ID+"/"+h.name, func(t *testing.T) {
-				if _, err := compileFilter(c.Expr, true /*useDSL*/, false /*isFexit*/, h.progType); err != nil {
+				tcVlan := h.progType != ebpf.XDP && exprHasVlanLayer(c.Expr)
+				_, err := compileFilter(c.Expr, true /*useDSL*/, false /*isFexit*/, h.progType)
+				if tcVlan {
+					if !errors.Is(err, codegen.ErrNotImplemented) {
+						t.Fatalf("compile %s (%s): expected tc rejection with ErrNotImplemented (VLAN in skb metadata), got %v", c.ID, h.name, err)
+					}
+					return
+				}
+				if err != nil {
 					t.Fatalf("compile %s (%s): %v", c.ID, h.name, err)
 				}
 			})
@@ -159,8 +187,12 @@ func TestBpfFilterCorpusTC(t *testing.T) {
 
 func runFilterCorpusMatrix(t *testing.T, hostProg *ebpf.Program, funcName string) {
 	t.Helper()
+	isTC := funcName == tcFuncName
 	for _, c := range VerifierCorpus {
 		t.Run(c.ID, func(t *testing.T) {
+			if isTC && exprHasVlanLayer(c.Expr) {
+				t.Skipf("%s carries a vlan/qinq layer; the tc host extracts the outer VLAN tag into skb metadata, so it is rejected at compile time (not loadable)", c.ID)
+			}
 			loadProbeOrFail(t, hostProg, funcName, c.Expr, false /*exit*/, true /*useDSL*/)
 		})
 	}

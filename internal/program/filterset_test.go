@@ -1,9 +1,12 @@
 package program
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/cilium/ebpf"
+
+	"github.com/takehaya/xdp-ninja/pkg/kunai/codegen"
 )
 
 // FilterSpec is one row of the paper's evaluation matrix
@@ -26,6 +29,12 @@ type FilterSpec struct {
 	CBPFCExpr string // pcap-filter equivalent; "" when cBPF cannot express
 	WantInsns int    // entry-mode XDP host raw-insn count (tc emits the same body)
 	Notes     string // short rationale; surfaces in test output
+	// TCUnsupported marks filters the tc host rejects at compile time.
+	// The kernel extracts the outer VLAN tag into skb metadata before
+	// the tc program runs, so vlan/qinq layers are not in packet bytes
+	// (see codegen.Capabilities.VlanInMetadata). These compile and load
+	// on XDP, where VLAN is in-band.
+	TCUnsupported bool
 }
 
 // FilterSet is the canonical F1-F10 used across the paper's expressiveness
@@ -44,11 +53,11 @@ var FilterSet = []FilterSpec{
 		WantInsns: 338, Notes: "IPv6 source CIDR via bracket predicate"},
 	{ID: "F4", Expr: "eth/vlan[tci==100]/ipv4/tcp where tcp.dport == 80",
 		CBPFCExpr: "vlan 100 and tcp dst port 80",
-		WantInsns: 213, Notes: "VLAN tag (TCI=100) + TCP dst"},
+		WantInsns: 213, Notes: "VLAN tag (TCI=100) + TCP dst", TCUnsupported: true},
 	{ID: "F5", Expr: "eth/qinq/vlan/ipv4/tcp where tcp.dport == 80",
 		// pcap "vlan 100 and vlan 200" is kernel/NIC dependent; intentionally
 		// omitted so the bench does not pretend the comparison is meaningful.
-		WantInsns: 215, Notes: "QinQ S-VLAN + inner C-VLAN via chain"},
+		WantInsns: 215, Notes: "QinQ S-VLAN + inner C-VLAN via chain", TCUnsupported: true},
 	{ID: "F6", Expr: "eth/ipv4/icmp where icmp.type == 8",
 		CBPFCExpr: "icmp[icmptype]==8",
 		WantInsns: 83, Notes: "ICMP echo request"},
@@ -79,7 +88,15 @@ func TestFilterSetCompiles(t *testing.T) {
 	for _, fs := range FilterSet {
 		for _, h := range hosts {
 			t.Run(fs.ID+"/"+h.name, func(t *testing.T) {
-				out, err := compileFilter(fs.Expr, /*useDSL=*/ true, /*isFexit=*/ false, h.progType)
+				if fs.TCUnsupported && h.progType != ebpf.XDP {
+					_, err := compileFilter(fs.Expr, true /*useDSL*/, false /*isFexit*/, h.progType)
+					if !errors.Is(err, codegen.ErrNotImplemented) {
+						t.Fatalf("compile %s (%s): expected tc rejection with ErrNotImplemented (VLAN in skb metadata), got %v\n  expr: %s", fs.ID, fs.Notes, err, fs.Expr)
+					}
+					t.Logf("rejected on %s as expected: %v", h.name, err)
+					return
+				}
+				out, err := compileFilter(fs.Expr, true /*useDSL*/, false /*isFexit*/, h.progType)
 				if err != nil {
 					t.Fatalf("compile %s (%s): %v\n  expr: %s", fs.ID, fs.Notes, err, fs.Expr)
 				}
@@ -98,7 +115,7 @@ func TestFilterSetCompiles(t *testing.T) {
 func TestFilterSetCounts(t *testing.T) {
 	for _, fs := range FilterSet {
 		t.Run(fs.ID, func(t *testing.T) {
-			out, err := compileFilter(fs.Expr, /*useDSL=*/ true, /*isFexit=*/ false, ebpf.XDP)
+			out, err := compileFilter(fs.Expr, true /*useDSL*/, false /*isFexit*/, ebpf.XDP)
 			if err != nil {
 				t.Fatalf("compile %s: %v", fs.ID, err)
 			}

@@ -28,8 +28,12 @@ func TestBpfFilterSetTC(t *testing.T) {
 
 func runFilterSetMatrix(t *testing.T, hostProg *ebpf.Program, funcName string) {
 	t.Helper()
+	isTC := funcName == tcFuncName
 	for _, fs := range FilterSet {
 		t.Run(fs.ID, func(t *testing.T) {
+			if isTC && fs.TCUnsupported {
+				t.Skipf("%s carries a vlan/qinq layer; the tc host extracts the outer VLAN tag into skb metadata, so it is rejected at compile time (not loadable)", fs.ID)
+			}
 			loadProbeOrFail(t, hostProg, funcName, fs.Expr, false /*exit*/, true /*useDSL*/)
 		})
 	}

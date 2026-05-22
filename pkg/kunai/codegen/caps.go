@@ -47,6 +47,20 @@ type Capabilities struct {
 	// shadow the action symbol). nil means no reservations — useful
 	// for hosts that disable action atoms entirely.
 	ReservedLabels map[string]bool
+
+	// VlanInMetadata declares that at this host the kernel has already
+	// extracted the outer VLAN tag into skb metadata (skb->vlan_tci)
+	// before the program runs, so it is NOT present in the packet bytes
+	// the filter parses. This is the case at the tc (SCHED_CLS) attach
+	// point, where skb_vlan_untag fires before the program. The zero
+	// value (false) assumes VLAN is in-band — correct for XDP and for
+	// the target-agnostic BPF_PROG_TEST_RUN harness, which feed raw
+	// frames with the tag present.
+	//
+	// When true, kunai rejects any chain containing a vlan or qinq
+	// layer at compile time rather than silently parsing the wrong
+	// bytes. Reading the tag from skb metadata is future work.
+	VlanInMetadata bool
 }
 
 // HasActionAtoms reports whether the caps configure an action map +

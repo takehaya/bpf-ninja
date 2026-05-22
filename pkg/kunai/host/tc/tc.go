@@ -52,11 +52,26 @@ func (fexitFetcher) EmitFetch(dst asm.Register) asm.Instructions {
 // FexitCapabilities returns the standard codegen.Capabilities for
 // hosts attached as fexit on a tc clsact program. The parser-side
 // reservation of "TC_ACT_*" labels is derived automatically from
-// Actions by kunai.Compile, so the returned struct only sets the two
-// required fields.
+// Actions by kunai.Compile. VlanInMetadata is set because at the tc
+// attach point the kernel has already extracted the outer VLAN tag
+// into skb metadata, so vlan/qinq layers cannot be matched from packet
+// bytes.
 func FexitCapabilities() codegen.Capabilities {
 	return codegen.Capabilities{
-		Action:        Actions,
-		ActionFetcher: FexitFetcher(),
+		Action:         Actions,
+		ActionFetcher:  FexitFetcher(),
+		VlanInMetadata: true,
+	}
+}
+
+// EntryCapabilities returns the codegen.Capabilities for hosts attached
+// as fentry on a tc clsact program. fentry has no action value yet, so
+// action atoms are disabled (Action nil); the only tc-specific bit is
+// VlanInMetadata, which holds at the tc attach point regardless of
+// entry vs fexit because the kernel strips the outer VLAN tag into skb
+// metadata before the program runs.
+func EntryCapabilities() codegen.Capabilities {
+	return codegen.Capabilities{
+		VlanInMetadata: true,
 	}
 }
