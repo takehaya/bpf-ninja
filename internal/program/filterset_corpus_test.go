@@ -1,20 +1,29 @@
 package program
 
 import (
-	"strings"
+	"errors"
+	"regexp"
 	"testing"
 
 	"github.com/cilium/ebpf"
+
+	"github.com/takehaya/xdp-ninja/pkg/kunai/codegen"
 )
+
+// vlanLayerRe matches a vlan/qinq layer token in a chain: a layer name
+// always follows a chain separator (`/`, or `(`/`|` inside an
+// alternation), so anchoring on those excludes labels like `@vlan` and
+// longer names like `vxlan` (preceded by `vx`, not a separator). The
+// trailing \b keeps it from matching a hypothetical `vlanfoo`.
+var vlanLayerRe = regexp.MustCompile(`[/(|](vlan|qinq)\b`)
 
 // exprHasVlanLayer reports whether a corpus expression carries a
 // vlan/qinq layer. The tc host rejects these at compile time because
 // the kernel extracts the outer VLAN tag into skb metadata before the
 // program runs (codegen.Capabilities.VlanInMetadata); they compile and
-// load only on XDP, where VLAN is in-band. No corpus field is named
-// "vlan"/"qinq", so a substring match is sufficient and self-contained.
+// load only on XDP, where VLAN is in-band.
 func exprHasVlanLayer(expr string) bool {
-	return strings.Contains(expr, "vlan") || strings.Contains(expr, "qinq")
+	return vlanLayerRe.MatchString(expr)
 }
 
 // VerifierCorpus is a curated set of well-typed kunai expressions that
@@ -148,8 +157,8 @@ func TestFilterCorpusCompiles(t *testing.T) {
 				tcVlan := h.progType != ebpf.XDP && exprHasVlanLayer(c.Expr)
 				_, err := compileFilter(c.Expr, true /*useDSL*/, false /*isFexit*/, h.progType)
 				if tcVlan {
-					if err == nil {
-						t.Fatalf("compile %s (%s): expected tc rejection (VLAN in skb metadata), got success", c.ID, h.name)
+					if !errors.Is(err, codegen.ErrNotImplemented) {
+						t.Fatalf("compile %s (%s): expected tc rejection with ErrNotImplemented (VLAN in skb metadata), got %v", c.ID, h.name, err)
 					}
 					return
 				}

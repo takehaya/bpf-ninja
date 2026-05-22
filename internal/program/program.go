@@ -176,8 +176,8 @@ func compileFilter(expr string, useDSL, isFexit bool, progType ebpf.ProgramType)
 	}
 	if useDSL {
 		// fexit attaches see the host retval at args[1] (XDP action
-		// or TC verdict, ABI shared); fentry has no action value yet
-		// so disables action atoms. The xdp-ninja host wrapper saves
+		// or TC verdict, ABI shared); fentry has no action value yet,
+		// so action atoms are disabled. The xdp-ninja host wrapper saves
 		// the tracing args ptr at stack[-48] in either case, which is
 		// exactly the ABI both FexitFetcher implementations expect.
 		// The tc host also carries VlanInMetadata in both entry and
