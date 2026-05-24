@@ -19,7 +19,7 @@ import (
 // cache.
 type whereCtx struct {
 	p       *ir.Program
-	caps    Capabilities
+	lang    LangCaps
 	labels  int
 	anchors map[*ir.LayerInstance]layerAnchor
 	queried queriedOptions
@@ -90,8 +90,8 @@ func layerSpecName(l *ir.LayerInstance) string {
 // to true and jump to failLabel when it evaluates to false. Errors
 // surface with the condition's source position prefixed so users see
 // which `where` atom blew up.
-func genCondition(w *ir.Condition, caps Capabilities, p *ir.Program, qo queriedOptions, failLabel string) (asm.Instructions, error) {
-	ctx := &whereCtx{p: p, caps: caps, anchors: make(map[*ir.LayerInstance]layerAnchor), queried: qo}
+func genCondition(w *ir.Condition, lang LangCaps, p *ir.Program, qo queriedOptions, failLabel string) (asm.Instructions, error) {
+	ctx := &whereCtx{p: p, lang: lang, anchors: make(map[*ir.LayerInstance]layerAnchor), queried: qo}
 	insns, err := ctx.gen(w, failLabel)
 	return insns, withPos(err, w.Pos)
 }
@@ -105,7 +105,7 @@ func (c *whereCtx) gen(w *ir.Condition, failLabel string) (asm.Instructions, err
 	}
 	switch w.Kind {
 	case ast.WAtomAction:
-		return genActionAtom(w, c.caps, failLabel)
+		return genActionAtom(w, c.lang, failLabel)
 	case ast.WAtomArith:
 		return c.genArithCompare(w, failLabel)
 	case ast.WAtomLiteralCmp:
@@ -1316,15 +1316,15 @@ func altPrefixSizeRange(alts []*ir.LayerInstance) (min, max int, err error) {
 // u32 in R3. When caps disable action atoms (Action map nil or
 // fetcher nil) this returns ErrNotImplemented — the resolver
 // normally catches that earlier with a clearer message.
-func genActionAtom(w *ir.Condition, caps Capabilities, failLabel string) (asm.Instructions, error) {
-	if !caps.HasActionAtoms() {
-		return nil, fmt.Errorf("%w: `action == %s` is not available on this host (caps.Action is nil)", ErrNotImplemented, w.ActionValue)
+func genActionAtom(w *ir.Condition, lang LangCaps, failLabel string) (asm.Instructions, error) {
+	if !lang.HasActionAtoms() {
+		return nil, fmt.Errorf("%w: `action == %s` is not available on this host (action atoms require both LangCaps.Action and LangCaps.ActionFetcher to be set)", ErrNotImplemented, w.ActionValue)
 	}
-	val, ok := caps.Action[w.ActionValue]
+	val, ok := lang.Action[w.ActionValue]
 	if !ok {
-		return nil, fmt.Errorf("codegen: unknown action %q (host caps.Action has %d entries)", w.ActionValue, len(caps.Action))
+		return nil, fmt.Errorf("codegen: unknown action %q (host LangCaps.Action has %d entries)", w.ActionValue, len(lang.Action))
 	}
-	insns := caps.ActionFetcher.EmitFetch(asm.R3)
+	insns := lang.ActionFetcher.EmitFetch(asm.R3)
 	// 32-bit JNE so signed action values (e.g. TC_ACT_UNSPEC = -1)
 	// compare against R3's low 32 bits without 64-bit sign-extension
 	// of the immediate. R3 is loaded zero-extended via Word LDX, so

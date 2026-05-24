@@ -33,8 +33,7 @@ func xdpFexitCapsForTest() Capabilities {
 		reserved[k] = true
 	}
 	return Capabilities{
-		Action:         testActions,
-		ActionFetcher:  testFexitFetcher{},
-		ReservedLabels: reserved,
+		Lex:  LexCaps{ReservedLabels: reserved},
+		Lang: LangCaps{Action: testActions, ActionFetcher: testFexitFetcher{}},
 	}
 }
