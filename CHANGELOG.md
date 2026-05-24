@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.10.1](https://github.com/takehaya/xdp-ninja/compare/v0.10.0...v0.10.1) (2026-05-24)
+
+
+### 🐛 Bug Fixes
+
+* **codegen:** reject vlan/qinq layers at the tc host ([#28](https://github.com/takehaya/xdp-ninja/issues/28)) ([601f423](https://github.com/takehaya/xdp-ninja/commit/601f423e1faed7f59773775908d71b2fbcd70f6f))
+
+
+### ♻️ Code Refactoring
+
+* **kunai:** split Capabilities into phase-scoped groups ([#30](https://github.com/takehaya/xdp-ninja/issues/30)) ([7bdfe3f](https://github.com/takehaya/xdp-ninja/commit/7bdfe3ff0743140abd2a06b9026c4d22fd60754d))
+
 ## [0.10.0](https://github.com/takehaya/xdp-ninja/compare/v0.9.0...v0.10.0) (2026-05-20)
 
 
