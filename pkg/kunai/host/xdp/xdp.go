@@ -53,13 +53,15 @@ func (fexitFetcher) EmitFetch(dst asm.Register) asm.Instructions {
 }
 
 // FexitCapabilities returns the standard codegen.Capabilities for
-// hosts attached as fexit on an XDP program. The parser-side
-// reservation of "XDP_*" labels is derived automatically from
-// Actions by kunai.Compile, so the returned struct only sets the
-// two required fields.
+// hosts attached as fexit on an XDP program. Only the Lang group is
+// populated; the parser-side reservation of "XDP_*" labels is derived
+// automatically from Lang.Action by kunai.Compile, and XDP keeps VLAN
+// in-band so Host stays zero.
 func FexitCapabilities() codegen.Capabilities {
 	return codegen.Capabilities{
-		Action:        Actions,
-		ActionFetcher: FexitFetcher(),
+		Lang: codegen.LangCaps{
+			Action:        Actions,
+			ActionFetcher: FexitFetcher(),
+		},
 	}
 }

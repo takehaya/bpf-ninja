@@ -298,7 +298,7 @@ func Gen(p *ir.Program, caps Capabilities) (Output, error) {
 	if err := checkUnsupported(p); err != nil {
 		return Output{}, err
 	}
-	if err := checkHostLayerSupport(p, caps); err != nil {
+	if err := checkHostLayerSupport(p, caps.Host); err != nil {
 		return Output{}, err
 	}
 	capInfo, where, err := computeCapture(p, p.Where)
@@ -352,7 +352,7 @@ func Gen(p *ir.Program, caps Capabilities) (Output, error) {
 	// layer-level mismatch. `where` may include conditions merged in
 	// from per-capture clauses (see computeCapture).
 	if where != nil {
-		whereInsns, err := genCondition(where, caps, p, qo, dslReject)
+		whereInsns, err := genCondition(where, caps.Lang, p, qo, dslReject)
 		if err != nil {
 			return Output{}, err
 		}
@@ -630,13 +630,13 @@ func checkUnsupported(p *ir.Program) error {
 
 // checkHostLayerSupport rejects chains the target host cannot match by
 // parsing packet bytes. Currently this guards VLAN: when the host has
-// caps.VlanInMetadata set (e.g. tc, where skb_vlan_untag moves the
+// HostLayout.VlanInMetadata set (e.g. tc, where skb_vlan_untag moves the
 // outer tag into skb metadata before the program runs), a vlan or qinq
 // layer in the chain would parse the wrong bytes. We fail at compile
 // time with a clear message instead of silently mis-matching. Reading
-// the tag from skb metadata is future work; see caps.VlanInMetadata.
-func checkHostLayerSupport(p *ir.Program, caps Capabilities) error {
-	if !caps.VlanInMetadata {
+// the tag from skb metadata is future work; see HostLayout.VlanInMetadata.
+func checkHostLayerSupport(p *ir.Program, host HostLayout) error {
+	if !host.VlanInMetadata {
 		return nil
 	}
 	isVlan := func(l *ir.LayerInstance) bool {

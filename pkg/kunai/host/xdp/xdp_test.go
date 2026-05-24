@@ -81,16 +81,16 @@ func TestFexitFetcherEmitFetchHonorsDstReg(t *testing.T) {
 // returns the same 2-insn shape EmitFetch above pins.
 func TestFexitCapabilities(t *testing.T) {
 	caps := FexitCapabilities()
-	if caps.Action == nil {
-		t.Fatal("Capabilities.Action is nil")
+	if caps.Lang.Action == nil {
+		t.Fatal("Capabilities.Lang.Action is nil")
 	}
-	if len(caps.Action) != len(Actions) {
-		t.Errorf("caps.Action has %d entries, want %d (matching pkg-level Actions)", len(caps.Action), len(Actions))
+	if len(caps.Lang.Action) != len(Actions) {
+		t.Errorf("caps.Lang.Action has %d entries, want %d (matching pkg-level Actions)", len(caps.Lang.Action), len(Actions))
 	}
-	if caps.ActionFetcher == nil {
-		t.Fatal("Capabilities.ActionFetcher is nil")
+	if caps.Lang.ActionFetcher == nil {
+		t.Fatal("Capabilities.Lang.ActionFetcher is nil")
 	}
-	insns := caps.ActionFetcher.EmitFetch(asm.R3)
+	insns := caps.Lang.ActionFetcher.EmitFetch(asm.R3)
 	if len(insns) != 2 {
 		t.Errorf("caps.ActionFetcher.EmitFetch returned %d insns, want 2", len(insns))
 	}

@@ -960,7 +960,7 @@ func TestVlanInMetadataRejectsVlanLayers(t *testing.T) {
 		"eth/vlan?/ipv4/tcp",
 		"eth/(vlan|qinq)/ipv4/tcp",
 	}
-	tcCaps := codegen.Capabilities{VlanInMetadata: true}
+	tcCaps := codegen.Capabilities{Host: codegen.HostLayout{VlanInMetadata: true}}
 	for _, expr := range rejected {
 		t.Run("reject/"+expr, func(t *testing.T) {
 			_, err := Compile(expr, tcCaps)
