@@ -57,7 +57,7 @@ func CompileWithVocab(expr string, v map[string]*vocab.ProtocolSpec, caps codege
 	if err != nil {
 		return codegen.Output{}, err
 	}
-	prog, err := resolve.Resolve(f, v, caps.Action)
+	prog, err := resolve.Resolve(f, v, caps.Lang.Action)
 	if err != nil {
 		return codegen.Output{}, err
 	}
@@ -65,19 +65,19 @@ func CompileWithVocab(expr string, v map[string]*vocab.ProtocolSpec, caps codege
 }
 
 // reservedLabels picks the parser's @label rejection set: caller
-// override if non-nil, else derive from caps.Action keys (the common
-// case — a host that exposes XDP_DROP probably wants the label
-// "XDP_DROP" reserved too). Returns nil when neither source applies,
-// which the parser interprets as "no reservations".
+// override if Lex.ReservedLabels is non-nil, else derive from
+// Lang.Action keys (the common case — a host that exposes XDP_DROP
+// probably wants the label "XDP_DROP" reserved too). Returns nil when
+// neither source applies, which the parser reads as "no reservations".
 func reservedLabels(caps codegen.Capabilities) map[string]bool {
-	if caps.ReservedLabels != nil {
-		return caps.ReservedLabels
+	if caps.Lex.ReservedLabels != nil {
+		return caps.Lex.ReservedLabels
 	}
-	if caps.Action == nil {
+	if caps.Lang.Action == nil {
 		return nil
 	}
-	out := make(map[string]bool, len(caps.Action))
-	for k := range caps.Action {
+	out := make(map[string]bool, len(caps.Lang.Action))
+	for k := range caps.Lang.Action {
 		out[k] = true
 	}
 	return out

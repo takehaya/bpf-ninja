@@ -92,16 +92,32 @@ The public surface is intentionally tiny. Sub-packages are exported but consider
 // kunai
 func Compile(expr string, caps codegen.Capabilities) (codegen.Output, error)
 
-// codegen
+// codegen — three phase-scoped groups composed into a thin aggregate.
 type Capabilities struct {
+    Lex  LexCaps  // parser: label reservation
+    Lang LangCaps // resolver + codegen: action atoms
+    Host HostLayout // codegen: host packet-layout facts
+}
+
+type LexCaps struct {
+    // ReservedLabels: symbol names @label cannot collide with.
+    // nil → derived from Lang.Action keys by Compile.
+    ReservedLabels map[string]bool
+}
+
+type LangCaps struct {
     // Action: symbolic name → integer for `where action == NAME`.
     // nil disables action atoms (the resolver rejects them).
     Action map[string]int32
     // ActionFetcher emits insns that load the action u32 into R3.
     // Required iff Action is non-nil.
     ActionFetcher ActionFetcher
-    // ReservedLabels: symbol names @label cannot collide with.
-    ReservedLabels map[string]bool
+}
+
+type HostLayout struct {
+    // VlanInMetadata: the kernel pre-extracted the outer VLAN tag into
+    // skb metadata (tc), so vlan/qinq layers are rejected at compile.
+    VlanInMetadata bool
 }
 
 type ActionFetcher interface {

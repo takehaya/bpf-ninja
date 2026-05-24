@@ -2,35 +2,54 @@ package codegen
 
 import "github.com/cilium/ebpf/asm"
 
-// Capabilities tells the compiler what host-specific DSL extensions
-// are available at runtime. The zero value yields a fully
-// target-agnostic filter — no action atoms, no host-specific
-// reservations, just protocol-stack matching and where/capture
-// clauses. That output is portable across any BPF attach point that
-// supplies the runFilter ABI documented in this package's doc comment.
+// Capabilities is the thin aggregate a host hands to kunai.Compile. It
+// composes three phase-scoped capability groups, each consumed by a
+// single pipeline phase, so no phase has to reach into a grab-bag of
+// unrelated fields:
 //
-// Hosts construct a Capabilities value from their own host adapter
-// package — for example, pkg/kunai/host/xdp.FexitCapabilities() for
-// an XDP fexit attach point — and pass it to kunai.Compile. The
-// kunai core ships no host-specific helpers itself; sub-packages
-// under pkg/kunai/host/ encapsulate that knowledge.
+//   - Lex  → the parser (label reservation)
+//   - Lang → the resolver and codegen (action atoms)
+//   - Host → codegen (host packet-layout facts)
 //
-// Treat a Capabilities value as immutable after construction: the
-// compile pipeline only reads from the maps and the fetcher; multiple
-// goroutines may share the same value safely as long as no caller
-// mutates the maps.
+// The zero value yields a fully target-agnostic filter — no action
+// atoms, no reservations, VLAN assumed in-band — portable across any
+// BPF attach point that supplies the runFilter ABI documented in this
+// package's doc comment.
 //
-// Future host-specific operations (e.g. XDP's packet-resize helpers
-// or skb metadata access) extend this struct with additional hook
-// fields; the contract is always "kunai stays target-agnostic, the
-// host adapter contributes the per-target wiring".
+// Hosts construct a Capabilities from their own adapter package — e.g.
+// pkg/kunai/host/xdp.FexitCapabilities() — and pass it to kunai.Compile.
+// The kunai core ships no host-specific helpers itself.
+//
+// Treat a Capabilities (and its groups) as immutable after
+// construction: the compile pipeline only reads the maps and the
+// fetcher, so multiple goroutines may share one value safely as long
+// as no caller mutates the maps.
 type Capabilities struct {
+	Lex  LexCaps
+	Lang LangCaps
+	Host HostLayout
+}
+
+// LexCaps carries the capabilities the parser needs.
+type LexCaps struct {
+	// ReservedLabels names that DSL @labels must not collide with.
+	// Typically the keys of LangCaps.Action (so a label named "XDP_DROP"
+	// cannot shadow the action symbol); kunai.Compile derives that set
+	// automatically when this is nil. nil means no reservations.
+	ReservedLabels map[string]bool
+}
+
+// LangCaps carries the host-specific language extensions: the action
+// atom vocabulary and the fetcher that loads the action value. The
+// resolver reads Action (to validate `where action == NAME`); codegen
+// reads both (to emit the comparison).
+type LangCaps struct {
 	// Action: symbolic name → integer constant for `where action == NAME`
 	// clauses. Keys (e.g. "XDP_DROP") are the symbols accepted in DSL
 	// expressions; values are the integers the action register is
 	// compared against. nil disables action atoms entirely — both the
-	// parser (label reservation) and resolver (atom validity) treat
-	// `action == ...` as an error.
+	// resolver (atom validity) and codegen treat `action == ...` as an
+	// error.
 	//
 	// Pair Action with a non-nil ActionFetcher.
 	Action map[string]int32
@@ -41,13 +60,18 @@ type Capabilities struct {
 	// XDP fexit reads stack[-48] then args[1]); host adapter packages
 	// provide ready-made implementations.
 	ActionFetcher ActionFetcher
+}
 
-	// ReservedLabels names that DSL @labels must not collide with.
-	// Typically the keys of Action (so a label named "XDP_DROP" cannot
-	// shadow the action symbol). nil means no reservations — useful
-	// for hosts that disable action atoms entirely.
-	ReservedLabels map[string]bool
+// HasActionAtoms reports whether the lang caps configure an action map
+// + fetcher pair. Used by the resolver to short-circuit `action == X`
+// validation when the host has not opted in.
+func (l LangCaps) HasActionAtoms() bool {
+	return l.Action != nil && l.ActionFetcher != nil
+}
 
+// HostLayout carries facts about how the host presents packet bytes to
+// the filter — independent of the language extensions in LangCaps.
+type HostLayout struct {
 	// VlanInMetadata declares that at this host the kernel has already
 	// extracted the outer VLAN tag into skb metadata (skb->vlan_tci)
 	// before the program runs, so it is NOT present in the packet bytes
@@ -61,13 +85,6 @@ type Capabilities struct {
 	// layer at compile time rather than silently parsing the wrong
 	// bytes. Reading the tag from skb metadata is future work.
 	VlanInMetadata bool
-}
-
-// HasActionAtoms reports whether the caps configure an action map +
-// fetcher pair. Used by the resolver to short-circuit `action == X`
-// validation when the host has not opted in.
-func (c Capabilities) HasActionAtoms() bool {
-	return c.Action != nil && c.ActionFetcher != nil
 }
 
 // ActionFetcher loads the current action value into a register so the
