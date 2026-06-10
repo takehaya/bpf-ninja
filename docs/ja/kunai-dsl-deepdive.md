@@ -98,7 +98,7 @@ type Layer struct {
 
 quantifier は `?` `+` `*` のいずれか、または `{n,m}` の range です。`{n}` (= `{n,n}`) も、上限を省略した `{n,}` (open upper bound、`RangeMax = -1`) も許可されます。
 
-alternation `(a|b|c)` は layer-level の OR です。chain 中で IPv4 でも IPv6 でもよいという条件を 1 layer slot として扱えます。後の resolver で各 alt の dispatch const が agree することを要求します。これは MVP 制約で、bracket predicate は alt-group 単位で課されます。
+alternation `(a|b|c)` は layer-level の OR です。chain 中で IPv4 でも IPv6 でもよいという条件を 1 layer slot として扱えます。alt 直後の layer の dispatch const は後の resolver が alt ごとに収集します (alt 間で揃っていなくても解決できます)。bracket predicate が alt-group 単位で課されるのは MVP 制約です。
 
 ### 2. Bracket predicate
 
@@ -198,7 +198,7 @@ const (
 
 resolver は子 spec の `SelectDispatchConst(parentName)` method で Field / NoCheck の優先順位で探し、nil なら `spec.IsSelfValidating()` で子の parser block が自己検証可能かを query します。結果がすべて nil なら `no dispatch constant for "foo" under "udp"` エラーになります。
 
-なお dispatch の alt group 対応は意外に難しいところです。`(ipv4|ipv6)/tcp` の場合、tcp は ipv4 と ipv6 両方の親を持ちえますが、resolver は `selectAltParentDispatch` で全 alt の dispatch const が type / field / value で agree することを要求します。TCP_IPV4_PROTOCOL=6 と TCP_IPV6_NEXT_HEADER=6 は値が一致するので OK です。
+なお dispatch の alt group 対応は意外に難しいところです。`(ipv4|ipv6)/tcp` の場合、tcp は ipv4 と ipv6 両方の親を持ちえます。resolver は `selectAltParentDispatch` で全 alt の dispatch const を収集し、type / field / value / 幅がすべて一致すれば非 alt と同じ単一チェックの fast path に、一致しなければ diverged dispatch (`IsAltDiverged`) として解決します。後者では codegen が alt block の matched-alt-index を読み、alt ごとに別の Field dispatch を emit します。TCP_IPV4_PROTOCOL と TCP_IPV6_NEXT_HEADER は値こそ同じ 6 ですが field が異なるため、diverged 経路に落ちます。
 
 ### 4. Field reference の resolution
 

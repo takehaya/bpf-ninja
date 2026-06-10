@@ -128,7 +128,7 @@ const bit<16> IPV4_QINQ_ETHERTYPE = 0x0800;
 - ビット幅は親フィールドの宣言幅と一致させます。`ethertype` であれば `bit<16>` です。
 - 値は byte-swap せず直感どおりに書きます。network-order 化は codegen の仕事です。
 - 親が複数あるなら、上記のように同じ値でも親ごとに別 const として 1 行ずつ宣言します。
-- `(ipv4|ipv6)/tcp` のような alternation の直後に置くレイヤは、各 alt に対する dispatch const が field offset と値で揃っている必要があります。これは MVP の制限です。
+- `(ipv4|ipv6)/tcp` のような alternation の直後に置くレイヤは、各 alt に対する dispatch const を 1 つずつ宣言しておく必要があります。const が alt 間で揃っていれば単一チェックに、field や値が異なる場合も全 alt が Field dispatch であれば alt ごとの diverged dispatch として codegen されます。
 
 ### 5.2 NoCheck dispatch
 
@@ -461,7 +461,7 @@ vocab を書いたら、`go test ./pkg/kunai/vocab/...` が最初の関門です
 |---|---|
 | `no dispatch constant for "foo" under "udp"` | §5.4 のいずれかを宣言する |
 | `chained "foo" has no self-dispatch const` | `FOO_FOO_*` を宣言する (§5.3) |
-| `alternation alts disagree on dispatch for "tcp"` | 各 alt の dispatch const を field offset と値で揃える |
+| `alternation alts disagree on dispatch for "tcp"` | dispatch が alt 間で揃わないこと自体は可。Field dispatch でない alt が混ざったときに出るので、全 alt に Field const を宣言する |
 | `parser machine self-loop depth N exceeds cap M` | `<SELF>_MAX_DEPTH` で調整する。既定 8、最大 64 |
 
 ## 10. テストとチェックリスト

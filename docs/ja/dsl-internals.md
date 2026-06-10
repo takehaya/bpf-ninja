@@ -466,10 +466,10 @@ no dispatch constant for "foo" under "udp" (declare FOO_UDP_<FIELD|NO_CHECK> in 
 DSL で `eth/ipv4/udp/foo` を書いたものの、`foo.p4` に `FOO_UDP_*` (Field / NoCheck) も、parser block での自己検証 (`transition select(<primary-field>) { ...; default: reject; }`) も無い状態です。どちらかを宣言します。
 
 ```
-alternation alts disagree on dispatch for "tcp": "TCP_IPV4_PROTOCOL" vs "TCP_IPV6_NEXT_HEADER"
+alternation alts disagree on dispatch for "tcp" and at least one alt uses self-validating dispatch — codegen only handles diverged Field dispatch (per-alt JNE check)
 ```
 
-alt group 後の layer に対して、各 alt の dispatch const が型/値/フィールドで揃っていません。MVP では同じ field offset + value を要求します。
+alt group 後の layer の dispatch const が alt 間で揃っておらず、かつ Field dispatch でない alt が混ざっている状態です。揃っていないこと自体はエラーではなく、全 alt が Field dispatch であれば alt ごとの diverged dispatch として codegen されます。NoCheck や self-validating の alt が混ざる場合のみ reject されます。
 
 codegen エラーは次のとおりです。
 
