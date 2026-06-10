@@ -187,7 +187,7 @@ SRv6 segments のような parent-count 系には自動 count guard が入り、
 | `--mode exit` (XDP fexit) | `XDP_ABORTED`, `XDP_DROP`, `XDP_PASS`, `XDP_TX`, `XDP_REDIRECT` |
 | `--mode tc-exit` (TC fexit) | `TC_ACT_UNSPEC` (-1), `TC_ACT_OK`, `TC_ACT_RECLASSIFY`, `TC_ACT_SHOT`, `TC_ACT_PIPE`, `TC_ACT_STOLEN`, `TC_ACT_QUEUED`, `TC_ACT_REPEAT`, `TC_ACT_REDIRECT`, `TC_ACT_TRAP` |
 
-host adapter ごとの定数表は `pkg/kunai/host/xdp/xdp.go` / `pkg/kunai/host/tc/tc.go` の `Capabilities()` を参照してください。新 host を足すときは同 shape の `Action map[string]int32` + `ActionFetcher` を提供します。
+host adapter ごとの定数表は `pkg/kunai/host/xdp/xdp.go` / `pkg/kunai/host/tc/tc.go` の `FexitCapabilities()` を参照してください。新 host を足すときは `Capabilities.Lang` に同 shape の `Action map[string]int32` + `ActionFetcher` を提供します。
 
 ### Capture 節
 

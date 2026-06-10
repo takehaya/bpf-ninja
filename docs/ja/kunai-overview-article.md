@@ -229,7 +229,7 @@ GTP の optional header `gtp.opt`、SRv6 の `srv6.segments[N]`、TCP の `tcp.o
 
 kunai の output は XDP に固定されません。2 レジスタの packet window と少数のワーキングレジスタしか仮定せず、attach point 固有の prologue / epilogue である host adapter が、context から R0 / R1 / R9 をセットアップする責務を持ちます。
 
-`pkg/kunai/host/xdp/` が xdp-ninja の fentry/fexit 用 adapter で、同じ paradigm で tc clsact / userspace `BPF_PROG_TEST_RUN` / 独自 tracing 等の host adapter を書けます。fexit attach では `where action == XDP_DROP` のような action atom が使えますが、fentry では return code がまだ無いため使えません。これは `Capabilities.Action` map で host から kunai に declare する設計です。
+`pkg/kunai/host/xdp/` が xdp-ninja の fentry/fexit 用 adapter で、同じ paradigm で tc clsact / userspace `BPF_PROG_TEST_RUN` / 独自 tracing 等の host adapter を書けます。fexit attach では `where action == XDP_DROP` のような action atom が使えますが、fentry では return code がまだ無いため使えません。これは `Capabilities.Lang.Action` map で host から kunai に declare する設計です。
 
 kunai 自身は XDP を知らず、XDP を知る adapter が wrap する、というのが kunai のスタンスです。結果として、library として完全に独立して使えます。使い方は `pkg/kunai/README.md` の Quick start を参照してください。
 
