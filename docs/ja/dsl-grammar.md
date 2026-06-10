@@ -53,7 +53,7 @@ quantifier     ::= '?' | '+' | '*' | '{' INT '}' | '{' INT ',' INT? '}'
 | `quantifier` | `layer.go::parseQuantifier` / `parseQuantRange` | `?` / `+` / `{1,4}` |
 
 resolver / codegen が enforce する MVP 制約は次のとおりです。
-- Alternation は alt 数 2-4、全 alt が同じ header size、ネスト不可、先頭 layer に置けない、quantifier 不可
+- Alternation は alt 数 2-4、先頭 layer に置けない、quantifier 不可、各 alt は親からの Field dispatch 必須 (NoCheck 不可)。ネストした group は flatten され、header size は alt 間で異なっていても構いません
 - `?` / `*` は親 dispatch を peek できないため、最初の layer に置けない
 - 1 protocol あたり最大 2 ラベル
 

@@ -245,11 +245,12 @@ eth/(vlan|qinq)/ipv4/tcp
 codegen が enforce する MVP 制約は次のとおりです。
 
 - 2〜4 alt
-- uniform advance のため、すべての alt が同じ header size
 - `?`/`+`/`*` 等の quantifier は alt 全体には付けられず、QuantOne のみ
-- ネスト不可
 - 先頭 layer 不可
-- alt 後の layer は、すべての alt が同一の dispatch を提供している必要があります。たとえば VLAN/QinQ → IPv4 はどちらも `ethertype=0x0800` で揃うので OK ですが、IPv4/IPv6 → TCP は `protocol` と `next_header` で異なるので resolve エラーになります。
+- 各 alt は親からの Field dispatch const が必要です (NoCheck dispatch の alt は不可)
+- ネストした alt group は flatten され、`(a|b|c|d)` と等価に扱われます
+- header size は alt 間で異なっていても構いません。サイズが異なる場合、後続 layer の field 参照は実行時 offset 経由になります
+- alt 後の layer は、各 alt に対する dispatch const を持っている必要があります。VLAN/QinQ → IPv4 のように全 alt で揃っていれば単一チェック、IPv4/IPv6 → TCP のように field が異なる場合も、alt ごとの dispatch (diverged dispatch) として動きます。
 
 ### Label
 
