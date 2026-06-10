@@ -99,8 +99,8 @@ xdp-ninja は non-invasive な XDP 観測ツールです。BPF trampoline (fentr
 | Vocab load | `pkg/kunai/vocab/` | `Bundled()` | `.p4` → `ProtocolSpec` (cache 付き) |
 | Resolve | `pkg/kunai/resolve/` | `Resolve()` | AST + vocab → IR、dispatch 選択、ラベル解決 |
 | IR | `pkg/kunai/ir/` | (型定義) | 解決済みプログラム表現 |
-| Codegen | `pkg/kunai/codegen/` | `Gen(p, mode)` | IR → `Output{Main, Callbacks, Capture}` |
-| Compile | `pkg/kunai/compile.go` | `Compile(expr, mode)` | 全部束ねる薄い wrapper |
+| Codegen | `pkg/kunai/codegen/` | `Gen(p, caps)` | IR → `Output{Main, Callbacks, Capture}` |
+| Compile | `pkg/kunai/compile.go` | `Compile(expr, caps)` | 全部束ねる薄い wrapper |
 | Load 統合 | `internal/program/program.go` | `compileFilter(expr, useDSL)` | DSL or cbpfc を選び runFilter wrapper に乗せる |
 | CLI | `cmd/xdp-ninja/main.go` | `resolveFilterSyntax()` | DSL がデフォルト、`--cbpf` で legacy 経路 |
 
@@ -185,7 +185,7 @@ xdp-ninja は non-invasive な XDP 観測ツールです。BPF trampoline (fentr
 ファイル構成を読む順に示します。
 
 1. `codegen.go::Gen` は全体の骨格です。共通 helper として、slice 用 `applySliceToOffset` / `slicePostAdjust` / `nextLDXSize`、anchor 三種 `layerAnchorFor` / `absAnchor` / `slotAnchor` / `emitFieldLoad`、per-layer entry slot allocator `whereLayerEntrySlot` を含みます。パッケージ doc が読みどころの最上位です。ABI (R0/R1/R2/R4 の役割、`offsetBase` 概念、`dslReject` / `filter_result` ラベル、`KunaiStackTop` / `ScratchBufSize` の sizing 契約) はここに集約されています。§4 の codegen ABI を参照してください。
-2. `caps.go` は host 提供の `Capabilities` (Action map、ActionFetcher、`StrictArithLint`) と `ActionFetcher` interface です。
+2. `caps.go` は host 提供の `Capabilities` と `ActionFetcher` interface です。`Capabilities` は `Lex` (ReservedLabels) / `Lang` (Action map + ActionFetcher) / `Host` (packet layout) の 3 つのフェーズ別グループを束ねる薄い集約体です。
 3. `dispatch.go` は Field / NoCheck / SelfValidating の dispatch 検査を emit します。Sanity family は撤廃済みで、parser-block 自検証に統合されています。§3.2 / §5 を参照してください。
 4. `predicate.go` は predicate codegen です。整数 / IPv4 / IPv6 / MAC / CIDR、`==` / `!=` / ordered を扱い、F3 IPv6 ordered cmp (`emitIPv6OrderedCmp`)、F7 整数 in (`emitInPredicate`)、bit-slice 適用も含みます。`multiWordRoute` ヘルパで `==` と `!=` を統一しています。
 5. `chain.go` は `{n,m}` で `m≤4` の静的アンロールです。
@@ -204,7 +204,7 @@ xdp-ninja は non-invasive な XDP 観測ツールです。BPF trampoline (fentr
 
 1. `dslvocab.Bundled()` → vocab map
 2. `parser.Parse(expr, ...)` → `Filter` (AST)
-3. `resolve.ResolveWithOptions(filter, vocab, caps.Action, opts)` → `Program` (IR)
+3. `resolve.Resolve(filter, vocab, caps.Lang.Action)` → `Program` (IR)
 4. `codegen.Gen(prog, caps)` → `Output`
 
 数行のパイプラインです。各段の入口点を確認できます。
@@ -572,7 +572,7 @@ NOT は inner success label を作って `Ja failLabel` で反転します。
 
 het-alt 後の field addressing では、resolver の `markRuntimeOffsetLayers` が het-alt より後ろの layer を `NeedsRuntimeOffset = true` でマークします。codegen は `layerAnchorFor` で、その layer の field load を abs anchor (R0+静的 prefix) ではなく slot anchor (R10[whereLayerEntrySlot] + R0) で emit します。het-alt の無い filter は、slot 経路ゼロ、命令数増加なしの完全 fast path を維持します。詳細は `codegen.go::layerAnchor` 周辺と `where.go::layerAnchorFor` を参照してください。
 
-action atom (`action == NAME`) では、codegen は `caps.ActionFetcher.EmitFetch(R3)` を呼んで R3 に action u32 をロードする命令列を取得し、続けて `JNE R3, caps.Action[NAME], dsl_reject` を emit します。既定 fexit ABI (`pkg/kunai/host/xdp.FexitFetcher` / `pkg/kunai/host/tc.FexitFetcher`) は `stack[-48] → args[1]` の 2 段 LDX を返します。BPF tracing args ABI が host 非依存なので EmitFetch ロジックは XDP / tc で共通で、違いは XDP_DROP=1 と TC_ACT_SHOT=2 のような Actions map の値です。`caps.Action == nil` のときは、host が action 値を提供できないため resolver が atom を拒否します。userspace target 等は `pkg/kunai/host/<name>/` で独自の fetcher を実装すれば再利用可能で、kunai コアは host 知識を持ちません。
+action atom (`action == NAME`) では、codegen は `caps.Lang.ActionFetcher.EmitFetch(R3)` を呼んで R3 に action u32 をロードする命令列を取得し、続けて `JNE R3, caps.Lang.Action[NAME], dsl_reject` を emit します。既定 fexit ABI (`pkg/kunai/host/xdp.FexitFetcher` / `pkg/kunai/host/tc.FexitFetcher`) は `stack[-48] → args[1]` の 2 段 LDX を返します。BPF tracing args ABI が host 非依存なので EmitFetch ロジックは XDP / tc で共通で、違いは XDP_DROP=1 と TC_ACT_SHOT=2 のような Actions map の値です。`caps.Lang.Action == nil` のときは、host が action 値を提供できないため resolver が atom を拒否します。userspace target 等は `pkg/kunai/host/<name>/` で独自の fetcher を実装すれば再利用可能で、kunai コアは host 知識を持ちません。
 
 ### 4.7 capture 節
 
@@ -788,9 +788,9 @@ aux model 採用後に user から見える概念は、次の 2 つです。
 
 これに加えて vocab 著者向けに、mechanism 3 (IPv6 ext のような異 type ext-header chain) と mechanism 6 (GRE のような flag-triggered optional) と mechanism 7 (TLV walk) が利用できます。
 
-以下、各 mechanism の declare 方法を順に示します。mechanism 7 (TLV walk) と mechanism 6 (flag-triggered) は const 宣言だけで自動生成され、parser block を書く必要はありません。残り (mechanism 1 pkt.advance / chain / parser self-loop / aux / aux stack / gated aux) は parser block + state machine で表現します。
+以下、各 mechanism の declare 方法を順に示します。mechanism 6 (flag-triggered) は const 宣言だけで自動生成され、parser block を書く必要はありません。残り (mechanism 1 pkt.advance / chain / parser self-loop / aux / aux stack / gated aux / TLV walk / ParserCounter) は parser block + state machine で表現します。
 
-以下の sub-section は、文書化の経緯から 1→2→3→5→4→7→6 の順に並んでいます。表の番号で目的の mechanism にジャンプして読むと効率的です。
+以下の sub-section は、文書化の経緯から 1→2→3→5→4→7→6→8 の順に並んでいます。表の番号で目的の mechanism にジャンプして読むと効率的です。
 
 #### Mechanism 1: pkt.advance trailer (TCP / IPv4 タイプ)
 
@@ -974,7 +974,7 @@ callback の per-iter 構造 (Phase 2 retry 設計) は次のとおりです。
 
 prelude を cascade の outside に置くのが重要です。per-iter の slot 状態は kind byte だけの関数になり、verifier が、どの case が走ったかとどの slot が変わったかの組み合わせを per-iter で track せずに済みます。これが 6.12+ の 1M-insn 限界に収まる根拠です。per-case slot store で実施した失敗パターンは、`dsl-followups.md` B-3 の 2026-05-04 試行記録に残してあります。
 
-Demand-driven 割当では、codegen は `collectQueriedOptions(p)` (`pkg/kunai/codegen/option_demand.go`) で program 全体の where、各 layer の bracket predicate、各 capture を walk し、参照された (layer, option) ペアだけ slot を割り当てます。`where tcp.options.MSS.value == 1460` だけなら slot は 1 個です (per-layer × per-aux で最大 4 まで、`dynamicAuxMaxSlotsPerLayer` = TCP の queryable kind 数)。layer entry では `emitDynamicAuxSentinelInit` が各 slot を sentinel `-1` で zero-init します。extract されなかった option は sentinel のまま残り、where 評価で reject されます。
+Demand-driven 割当では、codegen は `collectQueriedOptions(p)` (`pkg/kunai/codegen/option_demand.go`) で program 全体の where、各 layer の bracket predicate、各 capture を walk し、参照された (layer, option) ペアだけ slot を割り当てます。`where tcp.options.MSS.value == 1460` だけなら slot は 1 個です (per-layer × per-aux で最大 5 まで、`dynamicAuxMaxSlotsPerLayer` = TCP の queryable kind 数)。layer entry では `emitDynamicAuxSentinelInit` が各 slot を sentinel `-1` で zero-init します。extract されなかった option は sentinel のまま残り、where 評価で reject されます。
 
 Where 評価では、`tcp.options.MSS.value == 1460` のような predicate は `genArithFieldLoad → dynamicOffsetSlotFor → genDynamicOffsetAuxLoad` (`pkg/kunai/codegen/where.go`) の経路をたどります。
 
