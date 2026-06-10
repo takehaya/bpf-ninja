@@ -135,7 +135,7 @@ network-literal ::= ipv4 | ipv4-cidr | ipv6 | ipv6-cidr | mac
 
 `action` キーワードは DSL レベルで予約された atom で、host がパケット処理完了状態を保持する 1 register を登録すれば、それをフィルタ対象にできる機能です。XDP host (`--mode exit`) が XDP retval を、将来の TC host adapter が TC verdict を、それぞれ completion-state register として `Capabilities.Action` 経由で expose します。右辺の `ident` は host が登録した name → int32 mapping を resolver が lookup する形なので、有効な名前集合は DSL レベルのキーワードではなく host が決めます。バンドルされた XDP host adapter は `XDP_ABORTED` / `XDP_DROP` / `XDP_PASS` / `XDP_TX` / `XDP_REDIRECT` を登録します。`action` 自体を XDP 専用から完了状態 register へ一般化する semantic refactor は dsl-followups.md F15 を参照してください。
 
-LHS / RHS は対称です。`cmp-expr` は両 operand に IPv4/IPv6/MAC/CIDR の network literal を許します。例えば `443 == tcp.dport`、`10.0.0.0/24 == ipv4.dst`、`fe80::1 == ipv6.src` と書けます。LHS literal の検出は parser が lexer 値モードで先読みする実装で、network literal が `==` / `!=` の前にあるときだけ確定します。ordered cmp は仕様上 reject されます。型ルールは [`dsl-types.md §6.2`](./dsl-types.md#62-比較演算) を参照してください。
+LHS / RHS は対称です。`cmp-expr` は両 operand に IPv4/IPv6/MAC/CIDR の network literal を許します。例えば `443 == tcp.dport`、`10.0.0.0/24 == ipv4.dst`、`fe80::1 == ipv6.src` と書けます。LHS literal の検出は parser が lexer 値モードで先読みする実装で、network literal が `==` / `!=` の前にあるときだけ確定します。ordered cmp は仕様上 reject されます。型ルールは [`dsl-types.md §6.2`](./dsl-types.md#62-比較演算------) を参照してください。
 
 `bool-atom` 位置に `field-ref` が来た場合、その field の型が `Int<N>` であれば、C 風に Bool 文脈で `!= 0` として coerce されます。詳細は [`dsl-types.md §5.4`](./dsl-types.md#54-intn--bool-coercion-bool-文脈) を参照してください。
 
@@ -148,7 +148,7 @@ where tcp.dport                         # field-ref → Int<16>→Bool decay (`!
 where (tcp.dport == 443) == gtp.opt.exists   # parens 越しの bool-eq (iff)
 ```
 
-`bool-atom` を `==` / `!=` で組み合わせた form は `WAtomBoolEq` (= iff / xor) として扱われます ([`dsl-types.md §6.2`](./dsl-types.md#62-比較演算))。
+`bool-atom` を `==` / `!=` で組み合わせた form は `WAtomBoolEq` (= iff / xor) として扱われます ([`dsl-types.md §6.2`](./dsl-types.md#62-比較演算------))。
 
 field-ref の shape、つまり where 節で使えるフィールドアクセスは次のとおりです。
 
