@@ -63,8 +63,8 @@ cbpfc が読めない式 (MPLS+、VXLAN inner など) は DSL でしか測れま
 |---|---|---|
 | ICMP | `icmp` | `eth/ipv4/icmp` |
 | TCP/443 | `tcp port 443` | `eth/ipv4/tcp[dport==443]` |
-| ホスト | `host 10.0.0.1` | (DSL は IP リテラル未対応のため比較不可) |
-| TCP and host | `tcp and host 10.0.0.1` | (同上) |
+| ホスト | `host 10.0.0.1` | `eth/ipv4 where ipv4.src == 10.0.0.1 or ipv4.dst == 10.0.0.1` |
+| TCP and host | `tcp and host 10.0.0.1` | `eth/ipv4/tcp where ipv4.src == 10.0.0.1 or ipv4.dst == 10.0.0.1` |
 
 ## C 軸 (kernel PPS)
 

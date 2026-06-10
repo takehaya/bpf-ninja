@@ -66,6 +66,7 @@ eth/ipv4/udp/gtp/ipv4/tcp           # GTP-U の内側 IP
 | `*` | 0 回以上 (bpf_loop、先頭の peek でスキップ) |
 | `{n}` | ちょうど n 回 (静的アンロール、`{n,n}` と等価) |
 | `{n,m}` | n〜m 回。m≤4 は静的アンロール、それ以上は bpf_loop |
+| `{n,}` | n 回以上 (上限省略、bpf_loop で展開) |
 
 例を示します。
 

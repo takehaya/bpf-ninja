@@ -42,7 +42,7 @@ layer-atom     ::= proto-name ('@' label)?
                  | '(' layer ('|' layer)+ ')'        (* alternation *)
 proto-name     ::= [a-z] [a-z0-9_]*
 label          ::= [a-zA-Z_] [a-zA-Z0-9_]*
-quantifier     ::= '?' | '+' | '*' | '{' INT '}' | '{' INT ',' INT '}'
+quantifier     ::= '?' | '+' | '*' | '{' INT '}' | '{' INT ',' INT? '}'
 ```
 
 | Production | parser | 例文 |
