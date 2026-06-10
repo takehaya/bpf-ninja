@@ -225,7 +225,7 @@ type AuxRef struct {
 }
 ```
 
-aux ref については、parser block の `out` 引数として宣言された auxiliary header を vocab loader が分析して `AuxLayout` を populate し、resolver がそれを引いて FieldRef.Aux に詰めます。path は次の 5 形態です。
+aux ref については、parser block の `out` 引数として宣言された auxiliary header を vocab loader が分析して `AuxLayout` を populate し、resolver がそれを引いて FieldRef.Aux に詰めます。path は次の 6 形態です。
 
 | 構文 | 意味 |
 |---|---|
@@ -234,8 +234,9 @@ aux ref については、parser block の `out` 引数として宣言された 
 | `<layer>.<aux>[N].<field>` | aux header stack の static index (srv6.segments[0]) |
 | `<layer>.<aux>[<layer>.<field>].<field>` | aux header stack の dynamic index (srv6.segments[srv6.last_entry]) |
 | `<layer>.options.<NAME>.<field>` | TCP / IPv4 option lookup (option-walk 経路) |
+| `<layer>.options.<NAME>.<stack>[N].<field>` | option aux 配下の stack (tcp.options.SACK.blocks[0].left) |
 
-各 path 形は `pkg/kunai/resolve/where.go` の resolver 関数群 (`resolveAuxField`, `resolveAuxStackField`, `resolveOptionField`) で個別に実装され、IR.FieldRef.Aux に対応する metadata を埋めます。
+各 path 形は `pkg/kunai/resolve/where.go` の resolver 関数群 (`resolveAuxField`, `resolveAuxStackField`, `resolveOptionField`, `resolveOptionStackField`) で個別に実装され、IR.FieldRef.Aux に対応する metadata を埋めます。
 
 ## Error reporting: PositionedError
 
@@ -336,7 +337,7 @@ DSL frontend の特徴は次のとおりです。
 1. lexer の value mode は、IP literal 等の atomic token を読むために `==` の後に切り替わる lexer state です。backtracking 対応により、where 句の literal vs arith を後付けで追加できました。
 2. parser は構文ごとにファイルを分離し、layer / predicate / where / capture を独立 module にしています。boolean 演算は precedence climbing で処理します。
 3. resolver の 3 仕事は、vocab bind (1) / label table (2 個ルール + auto-index) / dispatch resolution (Field / NoCheck / SelfValidating fallback) です。
-4. field path には 5 形態 (primary / aux / aux stack static / aux stack dynamic / option lookup) があり、resolver で吸収して IR の `FieldRef.Aux` に詰めます。
+4. field path には 6 形態 (primary / aux / aux stack static / aux stack dynamic / option lookup / option 配下 stack) があり、resolver で吸収して IR の `FieldRef.Aux` に詰めます。
 5. PositionedError は inner-most-wins で、codegen 深部で起きた error も DSL の line:col を保ったまま user に届きます。
 
 このレイヤを cleanly に切ったおかげで、codegen は DSL syntax を知らずに IR だけを見れば仕事が済み、vocab loader は protocol metadata だけに専念できる、という modularity を獲得しています。

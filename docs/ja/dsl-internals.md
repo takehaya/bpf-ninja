@@ -788,7 +788,7 @@ aux model 採用後に user から見える概念は、次の 2 つです。
 
 これに加えて vocab 著者向けに、mechanism 3 (IPv6 ext のような異 type ext-header chain) と mechanism 6 (GRE のような flag-triggered optional) と mechanism 7 (TLV walk) が利用できます。
 
-以下、各 mechanism の declare 方法を順に示します。mechanism 6 (flag-triggered) は const 宣言だけで自動生成され、parser block を書く必要はありません。残り (mechanism 1 pkt.advance / chain / parser self-loop / aux / aux stack / gated aux / TLV walk / ParserCounter) は parser block + state machine で表現します。
+以下、各 mechanism の declare 方法を順に示します。mechanism 2 (chain self-loop) と mechanism 6 (flag-triggered) は const 宣言だけで表現でき、parser block は単一 state の trivial なもの (extract + accept) で済みます。残り (mechanism 1 pkt.advance / parser self-loop / aux / aux stack / gated aux / TLV walk / ParserCounter) は parser block の state machine で表現します。
 
 以下の sub-section は、文書化の経緯から 1→2→3→5→4→7→6→8 の順に並んでいます。表の番号で目的の mechanism にジャンプして読むと効率的です。
 
