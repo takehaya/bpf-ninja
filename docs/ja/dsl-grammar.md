@@ -133,7 +133,7 @@ index          ::= '[' (integer (':' integer)? | field-ref) ']'
 network-literal ::= ipv4 | ipv4-cidr | ipv6 | ipv6-cidr | mac
 ```
 
-`action` キーワードは DSL レベルで予約された atom で、host がパケット処理完了状態を保持する 1 register を登録すれば、それをフィルタ対象にできる機能です。XDP host (`--mode exit`) が XDP retval を、将来の TC host adapter が TC verdict を、それぞれ completion-state register として `Capabilities.Action` 経由で expose します。右辺の `ident` は host が登録した name → int32 mapping を resolver が lookup する形なので、有効な名前集合は DSL レベルのキーワードではなく host が決めます。バンドルされた XDP host adapter は `XDP_ABORTED` / `XDP_DROP` / `XDP_PASS` / `XDP_TX` / `XDP_REDIRECT` を登録します。`action` 自体を XDP 専用から完了状態 register へ一般化する semantic refactor は dsl-followups.md F15 を参照してください。
+`action` キーワードは DSL レベルで予約された atom で、host がパケット処理完了状態を保持する 1 register を登録すれば、それをフィルタ対象にできる機能です。XDP host (`--mode exit`) が XDP retval を、tc host adapter が TC verdict を、それぞれ completion-state register として `Capabilities.Lang.Action` 経由で expose します。右辺の `ident` は host が登録した name → int32 mapping を resolver が lookup する形なので、有効な名前集合は DSL レベルのキーワードではなく host が決めます。バンドルされた XDP host adapter は `XDP_ABORTED` / `XDP_DROP` / `XDP_PASS` / `XDP_TX` / `XDP_REDIRECT` を登録します。`action` 自体を XDP 専用から完了状態 register へ一般化する semantic refactor は dsl-followups.md F15 を参照してください。
 
 LHS / RHS は対称です。`cmp-expr` は両 operand に IPv4/IPv6/MAC/CIDR の network literal を許します。例えば `443 == tcp.dport`、`10.0.0.0/24 == ipv4.dst`、`fe80::1 == ipv6.src` と書けます。LHS literal の検出は parser が lexer 値モードで先読みする実装で、network literal が `==` / `!=` の前にあるときだけ確定します。ordered cmp は仕様上 reject されます。型ルールは [`dsl-types.md §6.2`](./dsl-types.md#62-比較演算------) を参照してください。
 
@@ -182,7 +182,7 @@ field-ref の shape、つまり where 節で使えるフィールドアクセス
 
 MVP 制約は次のとおりです。
 - 算術ネストは最大 16 段 (`maxArithDepth`) で、17 段以上は ErrNotImplemented になります。
-- `action == NAME` は、host 側で `Capabilities.Action` map と `ActionFetcher` を提供しているときのみ使えます。XDP の場合は fexit attach (`--mode exit`) で `pkg/kunai/host/xdp.FexitCapabilities()` 経由で有効化されます。
+- `action == NAME` は、host 側で `Capabilities.Lang` の `Action` map と `ActionFetcher` を提供しているときのみ使えます。XDP の場合は fexit attach (`--mode exit`) で `pkg/kunai/host/xdp.FexitCapabilities()` 経由で有効化されます。
 - 同 protocol が 2 段以上ある場合、`proto.field` だけでは ambiguous になるため `@label.field` が必須です。
 - PR-A〜PR-D で landing した aux predicate / stack index access / options lookup は、wrapper protocol の中身を見るため、protocol 側の `out` parameter declaration が必要です。詳細は `dsl-internals.md §6` を参照してください。
 - Aux 系の補助関数 / stack walk は bracket form (`proto[...]`) と where form の両方で動きますが、CIDR / IPv4 / MAC literal predicate を aux field に対して書くのは現在 `ErrNotImplemented` です。整数比較は可能です。
