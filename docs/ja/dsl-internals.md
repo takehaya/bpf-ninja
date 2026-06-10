@@ -1,6 +1,6 @@
 # DSL 内部仕様
 
-xdp-ninja DSL の **設計動機 / 全体アーキテクチャ / codegen ABI / vocab 著者ガイド / P4-16 互換性** を 1 本にまとめた内部資料。CLI 利用者向けは [`dsl-usage.md`](./dsl-usage.md)、文法定義は [`dsl-grammar.md`](./dsl-grammar.md) を参照。
+xdp-ninja DSL の **設計動機 / 全体アーキテクチャ / codegen ABI / vocab 開発ガイド / P4-16 互換性** を 1 本にまとめた内部資料。CLI 利用者向けは [`dsl-usage.md`](./dsl-usage.md)、文法定義は [`dsl-grammar.md`](./dsl-grammar.md) を参照。
 
 **型 / 演算子 / 形式意味論** は [`dsl-types.md`](./dsl-types.md) (Part I + Part II) に分離。本書はそれと重ならないよう、resolver より下のレイヤ (vocab、codegen ABI、可変長構造) を中心に扱う。
 
@@ -8,7 +8,7 @@ xdp-ninja DSL の **設計動機 / 全体アーキテクチャ / codegen ABI / v
 
 1. [設計動機](#1-設計動機)
 2. [全体アーキテクチャ](#2-全体アーキテクチャ)
-3. [Vocab 著者ガイド](#3-vocab-著者ガイド)
+3. [Vocab 開発ガイド](#3-vocab-開発ガイド)
 4. [Codegen ABI](#4-codegen-abi)
 5. [P4-16 互換性](#5-p4-16-互換性)
 6. [可変長構造の分類と表現](#6-可変長構造の分類と表現)
@@ -246,9 +246,11 @@ xdp-ninja は **non-invasive な XDP 観測ツール**。BPF trampoline (fentry 
 
 ---
 
-## 3. Vocab 著者ガイド
+## 3. Vocab 開発ガイド
 
 新プロトコルを DSL に追加する手順。`pkg/kunai/protocols/<name>.p4` を 1 ファイル足し、規約どおりの const を書けば codegen がそのまま走る。
+
+> **hands-on 完全版は [`dsl-vocab-authoring.md`](./dsl-vocab-authoring.md)**。parser block の state machine の書き分け (可変長 8 機構)、@kunai_* annotation、loader 制約の早見表、テスト手順はそちらが正典。この §3 は const 規約と設計判断のサマリ。
 
 ### 3.1 ファイル配置
 
@@ -351,7 +353,7 @@ const bit<1> MPLS_CHAIN_END_S = 1;
 
 chain 中、SELF の `s` field が `1` のとき chain を終了。MPLS の bottom-of-stack ビットがこの典型。
 
-#### Parser 宣言 (シンタックスチェックのみ)
+#### Parser 宣言
 
 ```p4
 parser MplsParser(packet_in pkt, out mpls_h hdr) {
@@ -362,7 +364,7 @@ parser MplsParser(packet_in pkt, out mpls_h hdr) {
 }
 ```
 
-p4lite はこのセクションを **シンタックスチェックのみ** に使う (codegen は header だけを読む)。`extract` + `transition accept` の最小形を書いておけば良い。複雑な state マシンを書いても無視される。
+固定長プロトコルはこの最小形 (1 state、primary を extract、accept) を書く — loader が trivial と判定し、parser machine を作らず固定長の高速経路を通る。それ以外の形 (自己検証 select、self-loop、TLV walk、ParserCounter walk…) は **実行コードに lower される** state machine になる (§6.5 の Mechanism 3/5/7/8)。state machine の書き分けは [`dsl-vocab-authoring.md` §6-§7](./dsl-vocab-authoring.md) 参照。
 
 ### 3.3 どの dispatch type を選ぶか
 
@@ -481,10 +483,10 @@ chained "foo" has no self-dispatch const (declare FOO_FOO_<FIELD|NO_CHECK> in fo
 
 ### 3.8 設計上の心構え
 
-1. **NO_CHECK は最後の手段**。Field/Sanity で識別できるなら必ずそれを使う。NO_CHECK は user の記述順だけが頼り = 間違うと誤読する
+1. **NO_CHECK は最後の手段**。Field dispatch か parser block の自己検証で識別できるなら必ずそれを使う。NO_CHECK は user の記述順だけが頼り = 間違うと誤読する
 2. **MAX_DEPTH は実利用上限ではなく安全弁**。MPLS なら現実は 4-8 段だが、verifier に喰わせる loop 上限として一桁を選ぶ
 3. **Field の値は byte-swap なし** で書く。codegen 側で network-order に直す。`ETHERTYPE = 0x0800` (IPv4) のように直感どおりに書ける
-4. **Sanity NIBBLE のフィールド** は header 先頭 1 nibble (= 4 bit) を切り出した値を比較する。`bit<4>` 必須
+4. **自己検証は標準 P4-16 構文だけで書く** (`transition select(<primary-field>) { <ok>: ...; default: reject; }`)。kunai 独自 const に頼らないので vocab が self-contained になり、p4c でもそのまま意味が読める
 
 ---
 

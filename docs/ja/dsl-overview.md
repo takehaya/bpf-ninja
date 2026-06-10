@@ -8,7 +8,7 @@ xdp-ninja の filter 式 (DSL) のドキュメント index。tcpdump 構文 (leg
 |---|---|
 | **使いたい** (CLI のフィルタ式を書く) | [`dsl-usage.md`](./dsl-usage.md) → [`dsl-grammar.md`](./dsl-grammar.md) (詳しい文法) |
 | **library として使いたい** (Go から `kunai.Compile`) | [`pkg/kunai/README.md`](../../pkg/kunai/README.md) (英語) |
-| **vocab を書きたい** (新プロトコル追加) | [`dsl-internals.md` §3 vocab 著者ガイド](./dsl-internals.md#3-vocab-著者ガイド) + [`pkg/kunai/protocols/`](../../pkg/kunai/protocols/) の既存 .p4 |
+| **vocab を書きたい** (新プロトコル追加) | [`dsl-vocab-authoring.md`](./dsl-vocab-authoring.md) (hands-on 完全版) + [`pkg/kunai/protocols/`](../../pkg/kunai/protocols/) の既存 .p4 |
 | **可変長構造をどう vocab で表すか知りたい** (chain vs aux の判断) | [`dsl-internals.md` §6](./dsl-internals.md#6-可変長構造の分類と表現) |
 | **型 / 演算子の意味を知りたい** (異幅 cmp、bit-slice、Bool、CIDR、各種 literal) | [`dsl-types.md` Part I](./dsl-types.md) (実装者向け実用仕様) |
 | **形式仕様を読みたい** (抽象構文、typing judgments、操作的意味論) | [`dsl-types.md` Part II](./dsl-types.md#part-ii-形式仕様-構文論--操作的意味論) (§11-§15) |
@@ -24,7 +24,8 @@ xdp-ninja の filter 式 (DSL) のドキュメント index。tcpdump 構文 (leg
 | [`dsl-usage.md`](./dsl-usage.md) | ユーザー向け CLI ガイド (例文豊富) | ~360 |
 | [`dsl-grammar.md`](./dsl-grammar.md) | formal EBNF (filter 式 + p4lite) + 例文 + parser 関数マッピング | ~360 |
 | [`dsl-types.md`](./dsl-types.md) | **言語仕様書** Part I (型・widening・fit check・エラーカタログ・実装ステージング) + Part II (抽象構文・typing rules・操作的意味論・soundness sketch) | ~1340 |
-| [`dsl-internals.md`](./dsl-internals.md) | 設計動機 / アーキテクチャ / パッケージ別ツアー / codegen ABI / vocab 著者ガイド / P4-16 互換性 / レビューチェックリスト | ~960 |
+| [`dsl-internals.md`](./dsl-internals.md) | 設計動機 / アーキテクチャ / パッケージ別ツアー / codegen ABI / vocab 開発ガイド / P4-16 互換性 / レビューチェックリスト | ~960 |
+| [`dsl-vocab-authoring.md`](./dsl-vocab-authoring.md) | **vocab 開発の hands-on ガイド**: .p4 の書き方全規約 (const / parser block / annotation)、可変長 8 機構の書き分け、loader 制約早見表、テスト手順、実例 walkthrough | ~570 |
 | [`dsl-followups.md`](./dsl-followups.md) | 残作業 (P0 完 / P1 完 / P2 / B / P3 / P4 階層) | ~470 |
 | [`dsl-benchmark.md`](./dsl-benchmark.md) | cbpfc vs DSL のベンチ方法論 | ~160 |
 | [`kunai-overview-article.md`](./kunai-overview-article.md) | 連載 3 部作 ①: なぜ kunai を作ったか / DSL で書ける式 / 全体アーキ (読み物) | ~250 |

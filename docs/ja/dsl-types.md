@@ -2,7 +2,7 @@
 
 DSL filter 式の **抽象構文 / 静的型付け / 操作的意味論** を一冊にまとめた言語仕様書。本ドキュメントは仕様 (= resolver / codegen が実装すべきルール集) であり、現実装の挙動描写ではない。実装ステージング (どこまで現 codegen が対応するか) は §9 を参照。
 
-`dsl-grammar.md` が「具象構文 (parser が食う表記)」、本書が「**抽象構文 + 型 + 意味**」、`dsl-internals.md` が「実装アーキテクチャ + パッケージツアー + codegen ABI + vocab 著者ガイド」。3 者の関係は概ね EBNF (concrete) → AST (abstract syntax) → 型付け規則 → 操作的意味論。
+`dsl-grammar.md` が「具象構文 (parser が食う表記)」、本書が「**抽象構文 + 型 + 意味**」、`dsl-internals.md` が「実装アーキテクチャ + パッケージツアー + codegen ABI + vocab 開発ガイド」。3 者の関係は概ね EBNF (concrete) → AST (abstract syntax) → 型付け規則 → 操作的意味論。
 
 ---
 
@@ -698,7 +698,7 @@ dsl codegen is not yet fully implemented: value V exceeds int32 immediate range 
 
 - [`dsl-overview.md`](./dsl-overview.md) — index
 - [`dsl-grammar.md`](./dsl-grammar.md) — formal EBNF + 例文 (本書の具象構文側)
-- [`dsl-internals.md`](./dsl-internals.md) — 内部実装ノート、ABI、vocab 著者ガイド
+- [`dsl-internals.md`](./dsl-internals.md) — 内部実装ノート、ABI、vocab 開発ガイド
 - [`dsl-usage.md`](./dsl-usage.md) — エンドユーザー向け CLI ガイド
 - [`dsl-followups.md`](./dsl-followups.md) — 残課題リスト (F1-F13 / 完了状態 / 未着手項目)
 
