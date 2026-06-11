@@ -79,12 +79,17 @@ func genStaticChain(layer *ir.LayerInstance, index int, all []*ir.LayerInstance)
 	}
 
 	chainDone := fmt.Sprintf("dsl_chain_done_%d", index)
+	// Self-repeating layer: the dispatch parent is this same layer, so
+	// R4-range and parent-entry-range both reduce to "did anything
+	// before this layer leave R4 a range scalar". Computed once outside
+	// the unroll loop since it is invariant across iterations.
+	selfRange := precedingLayersLeaveR4Range(all, index)
 	for i := 1; i < layer.RangeMax; i++ {
 		failLabel := dslReject
 		if i >= layer.RangeMin {
 			failLabel = chainDone
 		}
-		dispatch, err := genDispatch(selfLayer, layer, hs, failLabel)
+		dispatch, err := genDispatch(selfLayer, layer, hs, selfRange, selfRange, failLabel)
 		if err != nil {
 			return nil, err
 		}

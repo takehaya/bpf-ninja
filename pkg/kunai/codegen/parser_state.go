@@ -239,7 +239,7 @@ func (c *pmCtx) emitEntryDispatch() (asm.Instructions, error) {
 	if c.layerIdx == 0 || c.layer.Dispatch == nil {
 		return nil, nil
 	}
-	return genLayerDispatch(c.layer, c.all[c.layerIdx-1], dslReject)
+	return genLayerDispatch(c.layer, c.all[c.layerIdx-1], c.r4IsRange, precedingLayersLeaveR4Range(c.all, c.layerIdx-1), dslReject)
 }
 
 // emitStateBody emits one state's extracts + transition. When the
