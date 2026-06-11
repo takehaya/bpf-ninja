@@ -119,28 +119,28 @@ func withPos(err error, pos ast.Position) error {
 // well-typed but the BPF emitter does not yet cover the required
 // shape. Two flavours coexist under this single error:
 //
-//   1. Codegen staging declared by docs/ja/dsl-types.md §9.1 — the
-//      resolver accepts the program, but the spec deliberately
-//      defers the BPF expansion until follow-up work lands. Current
-//      staging cases:
-//        - Int<N> ordered comparison with N > 64 (F3 in
-//          dsl-followups.md): lexicographic cmp not yet wired up,
-//        - Int<128> arithmetic binary ops (+, -, *) (F4/F5):
-//          register-pair carry propagation not yet wired up.
-//      User-visible programs hitting this branch are spec-correct;
-//      they need a kernel build with the staged emitter, not an
-//      expression rewrite.
+//  1. Codegen staging declared by docs/ja/dsl-types.md §9.1 — the
+//     resolver accepts the program, but the spec deliberately
+//     defers the BPF expansion until follow-up work lands. Current
+//     staging cases:
+//     - Int<N> ordered comparison with N > 64 (F3 in
+//     dsl-followups.md): lexicographic cmp not yet wired up,
+//     - Int<128> arithmetic binary ops (+, -, *) (F4/F5):
+//     register-pair carry propagation not yet wired up.
+//     User-visible programs hitting this branch are spec-correct;
+//     they need a kernel build with the staged emitter, not an
+//     expression rewrite.
 //
-//   2. MVP gaps that the resolver structurally lets through but
-//      codegen has yet to plumb. Examples:
-//        - dynamic aux header stack indices outside the static-fold
-//          path (fieldRefByteOffset),
-//        - TCP / IPv4 option lookups reaching the static-fold path
-//          instead of the option-walk emitter,
-//        - non-byte-aligned or oversized primary fields (> 8 bytes),
-//        - quantifier shapes the resolver accepts but emit has not
-//          covered yet.
-//      These are codegen TODOs rather than spec'd staging.
+//  2. MVP gaps that the resolver structurally lets through but
+//     codegen has yet to plumb. Examples:
+//     - dynamic aux header stack indices outside the static-fold
+//     path (fieldRefByteOffset),
+//     - TCP / IPv4 option lookups reaching the static-fold path
+//     instead of the option-walk emitter,
+//     - non-byte-aligned or oversized primary fields (> 8 bytes),
+//     - quantifier shapes the resolver accepts but emit has not
+//     covered yet.
+//     These are codegen TODOs rather than spec'd staging.
 //
 // Callers can match it with errors.Is to distinguish "valid DSL,
 // codegen still to come" from genuine type or vocabulary errors.
@@ -457,6 +457,69 @@ func emitFieldDispatchCheck(
 	return insns, nil
 }
 
+// emitFieldDispatchCheckBounded is the PTR_TO_PACKET-safe counterpart
+// of emitFieldDispatchCheck, used when R4 (the running layer offset)
+// may be a range scalar — i.e. some preceding layer was variable-
+// length, so the verifier cannot prove a fixed range for `R0 +
+// offsetReg` and rejects the negative-immediate readback that the
+// fast path emits. Mirrors emitKeyCompare's range branch: fold the
+// field's byte offset into a non-negative scalar, then run the
+// cbpfc-style end+JGT+LoadMem(-size) bounded load. Harmless (just
+// larger) on PTR_TO_MAP_VALUE, so the same bytecode loads on every
+// host; only filters whose dispatch sits behind a variable-length
+// layer take this path, leaving fixed-offset chains byte-identical.
+//
+// offsetReg holds the scalar base offset from R0 (offsetBase for a
+// fixed parent, or the parent's layer-entry slot value for a
+// parser-machine parent — loaded by the caller). byteOff is the
+// field's offset relative to that base and may be negative (reading
+// back into the parent header).
+//
+// Register constraints: scalar receives the folded offset and stays
+// live across the load, so it must differ from offsetReg, dst, R0 and
+// R1. dst is written only by the bounded load, after the fold has
+// already consumed offsetReg, so dst MAY alias offsetReg (the
+// variable-parent caller does exactly this to free a register) but
+// must differ from scalar, R0 and R1.
+func emitFieldDispatchCheckBounded(
+	spec *vocab.ProtocolSpec,
+	c *vocab.DispatchConst,
+	offsetReg, scalar, dst asm.Register,
+	byteOff int,
+	failLabel string,
+) (asm.Instructions, error) {
+	fieldOff, fieldBytes, err := findFieldByteOffset(spec, c.FieldName)
+	if err != nil {
+		return nil, err
+	}
+	size, err := asmSizeFor(fieldBytes)
+	if err != nil {
+		return nil, err
+	}
+	expected := int32(byteSwap(c.Value, fieldBytes))
+	insns := foldOffsetIntoScalar(scalar, offsetReg, int32(fieldOff+byteOff), failLabel)
+	insns = append(insns, boundedScalarLoad(dst, asm.R0, scalar, asm.R1, size, failLabel)...)
+	insns = append(insns, asm.JNE.Imm(dst, expected, failLabel))
+	return insns, nil
+}
+
+// emitVarParentDispatchBounded is the PTR_TO_PACKET-safe dispatch for a
+// variable-layout parent whose entry offset may be a range scalar: load
+// the parent's layer-entry offset from its slot into R3, then bounded-
+// read the dispatch field at +fieldOff off that base. R3 doubles as
+// offset source and load destination (the fold consumes it before the
+// load overwrites it). Shared by genFieldDispatch and the alt-diverged
+// path so the slot-load + register aliasing live in one place.
+func emitVarParentDispatchBounded(spec *vocab.ProtocolSpec, c *vocab.DispatchConst, failLabel string) (asm.Instructions, error) {
+	check, err := emitFieldDispatchCheckBounded(spec, c, asm.R3, asm.R5, asm.R3, 0, failLabel)
+	if err != nil {
+		return nil, err
+	}
+	return append(asm.Instructions{
+		asm.LoadMem(asm.R3, asm.R10, bpfLoopCtxLayerEntrySlot, asm.DWord),
+	}, check...), nil
+}
+
 // offsetBase is the register that holds the byte offset from R0
 // (scratch buffer start) to the current layer's start. Each layer's
 // load instructions first compute `R3 = R0 + offsetBase`, then LDX
@@ -710,7 +773,7 @@ func genStaticLayer(layer *ir.LayerInstance, index int, all []*ir.LayerInstance)
 	insns := emitBounds(hs, dslReject)
 
 	if index > 0 && layer.Dispatch != nil {
-		di, err := genLayerDispatch(layer, all[index-1], dslReject)
+		di, err := genLayerDispatch(layer, all[index-1], precedingLayersLeaveR4Range(all, index), precedingLayersLeaveR4Range(all, index-1), dslReject)
 		if err != nil {
 			return nil, err
 		}
@@ -807,7 +870,6 @@ func variableTailSkipFromHeaderLength(vs *vocab.HeaderLength) variableTailSkip {
 	}
 }
 
-
 // genOptionalLayer emits the `?` quantifier: peek the dispatch check
 // from the parent; if it fails we skip the layer entirely without
 // advancing R4. If it succeeds we do the bounds check, predicates,
@@ -857,7 +919,7 @@ func emitPeekedIterZero(layer *ir.LayerInstance, index int, all []*ir.LayerInsta
 	if err != nil {
 		return nil, err
 	}
-	peek, err := genLayerDispatch(layer, all[index-1], peekFailLabel)
+	peek, err := genLayerDispatch(layer, all[index-1], precedingLayersLeaveR4Range(all, index), precedingLayersLeaveR4Range(all, index-1), peekFailLabel)
 	if err != nil {
 		return nil, err
 	}
@@ -873,10 +935,10 @@ func emitPeekedIterZero(layer *ir.LayerInstance, index int, all []*ir.LayerInsta
 	return out, nil
 }
 
-func genDispatch(current, parent *ir.LayerInstance, parentHS int, failLabel string) (asm.Instructions, error) {
+func genDispatch(current, parent *ir.LayerInstance, parentHS int, r4IsRange, parentEntryIsRange bool, failLabel string) (asm.Instructions, error) {
 	switch current.Dispatch.Type {
 	case vocab.DispatchField:
-		return genFieldDispatch(current, parent, parentHS, failLabel)
+		return genFieldDispatch(current, parent, parentHS, r4IsRange, parentEntryIsRange, failLabel)
 	case vocab.DispatchNoCheck:
 		return genNoCheckDispatch(current)
 	case vocab.DispatchSelfValidating:
@@ -900,7 +962,14 @@ func genDispatch(current, parent *ir.LayerInstance, parentHS int, failLabel stri
 // holds for the next layer). For non-diverged we keep the historical
 // behavior — collapse the alt group to its first member via
 // dispatchParent and call genDispatch as before.
-func genLayerDispatch(current, prev *ir.LayerInstance, failLabel string) (asm.Instructions, error) {
+// r4IsRange reports whether R4 (the current running offset) may be a
+// range scalar at this dispatch — drives the fixed-parent negative
+// readback's bounded form. parentEntryIsRange reports whether the
+// parent layer's entry offset may be a range scalar — drives the
+// variable-parent (layer-entry slot) forward read's bounded form.
+// Both default false for fully fixed-offset chains, which keeps their
+// bytecode byte-identical.
+func genLayerDispatch(current, prev *ir.LayerInstance, r4IsRange, parentEntryIsRange bool, failLabel string) (asm.Instructions, error) {
 	if current.Dispatch == nil {
 		return nil, nil
 	}
@@ -908,14 +977,14 @@ func genLayerDispatch(current, prev *ir.LayerInstance, failLabel string) (asm.In
 		if prev.Alternation == nil {
 			return nil, fmt.Errorf("codegen: IsAltDiverged dispatch on %q but parent is not an alt group (resolver bug)", current.Spec.Name)
 		}
-		return genFieldDispatchAltDiverged(current, prev.Alternation, failLabel)
+		return genFieldDispatchAltDiverged(current, prev.Alternation, r4IsRange, parentEntryIsRange, failLabel)
 	}
 	parent := dispatchParent(prev)
 	parentHS, err := headerSize(parent.Spec)
 	if err != nil {
 		return nil, err
 	}
-	return genDispatch(current, parent, parentHS, failLabel)
+	return genDispatch(current, parent, parentHS, r4IsRange, parentEntryIsRange, failLabel)
 }
 
 // genFieldDispatchAltDiverged emits per-alt dispatch for a layer
@@ -937,7 +1006,7 @@ func genLayerDispatch(current, prev *ir.LayerInstance, failLabel string) (asm.In
 //
 // The last alt has no skip / ja — matchedAltReg is guaranteed to be
 // N-1 if we got here (genAlternation set it before the fall-through).
-func genFieldDispatchAltDiverged(current *ir.LayerInstance, altParents []*ir.LayerInstance, failLabel string) (asm.Instructions, error) {
+func genFieldDispatchAltDiverged(current *ir.LayerInstance, altParents []*ir.LayerInstance, r4IsRange, parentEntryIsRange bool, failLabel string) (asm.Instructions, error) {
 	consts := current.Dispatch.AltConsts
 	if len(altParents) != len(consts) {
 		return nil, fmt.Errorf("codegen: alt parent count %d != AltConsts count %d (resolver bug)", len(altParents), len(consts))
@@ -957,33 +1026,46 @@ func genFieldDispatchAltDiverged(current *ir.LayerInstance, altParents []*ir.Lay
 			err   error
 		)
 		if altParent.Spec.HasVariableLayout() {
-			check, err = emitFieldDispatchCheck(
-				altParent.Spec,
-				consts[i],
-				0,
-				asm.R3,
-				asm.Instructions{
-					asm.LoadMem(asm.R3, asm.R10, bpfLoopCtxLayerEntrySlot, asm.DWord),
-					asm.Add.Reg(asm.R3, asm.R0),
-				},
-				failLabel,
-			)
+			// Forward read off the layer-entry slot; bounded when the
+			// parent entry may be a range scalar (see genFieldDispatch).
+			if parentEntryIsRange {
+				check, err = emitVarParentDispatchBounded(altParent.Spec, consts[i], failLabel)
+			} else {
+				check, err = emitFieldDispatchCheck(
+					altParent.Spec,
+					consts[i],
+					0,
+					asm.R3,
+					asm.Instructions{
+						asm.LoadMem(asm.R3, asm.R10, bpfLoopCtxLayerEntrySlot, asm.DWord),
+						asm.Add.Reg(asm.R3, asm.R0),
+					},
+					failLabel,
+				)
+			}
 		} else {
 			altParentHS, herr := headerSize(altParent.Spec)
 			if herr != nil {
 				return nil, herr
 			}
-			check, err = emitFieldDispatchCheck(
-				altParent.Spec,
-				consts[i],
-				altParentHS,
-				asm.R3,
-				asm.Instructions{
-					asm.Mov.Reg(asm.R3, asm.R0),
-					asm.Add.Reg(asm.R3, offsetBase),
-				},
-				failLabel,
-			)
+			if r4IsRange {
+				check, err = emitFieldDispatchCheckBounded(
+					altParent.Spec, consts[i],
+					offsetBase /*offsetReg=R4*/, asm.R5 /*scalar*/, asm.R3 /*dst*/, -altParentHS, failLabel,
+				)
+			} else {
+				check, err = emitFieldDispatchCheck(
+					altParent.Spec,
+					consts[i],
+					altParentHS,
+					asm.R3,
+					asm.Instructions{
+						asm.Mov.Reg(asm.R3, asm.R0),
+						asm.Add.Reg(asm.R3, offsetBase),
+					},
+					failLabel,
+				)
+			}
 		}
 		if err != nil {
 			return nil, err
@@ -1038,8 +1120,19 @@ func nextAltDispatchLabel(role string) string {
 // The scratch buffer holds packet bytes in network order but eBPF
 // LDX reads them little-endian; rather than emit a BSwap at runtime
 // we byte-swap the constant at codegen time so a single JNE suffices.
-func genFieldDispatch(current, parent *ir.LayerInstance, parentHS int, failLabel string) (asm.Instructions, error) {
+func genFieldDispatch(current, parent *ir.LayerInstance, parentHS int, r4IsRange, parentEntryIsRange bool, failLabel string) (asm.Instructions, error) {
 	if parent.Spec.HasVariableLayout() {
+		// Parser-machine parent: base is the parent's layer-entry slot
+		// value, dispatch field at +fieldOff (forward read from the
+		// parent's primary header start). When that slot value is a
+		// range scalar (the parent itself started at a non-constant
+		// offset, e.g. inner IPv4 behind a GTP tunnel) the forward read
+		// through `R0 + slotval` has no proven range and is rejected on
+		// PTR_TO_PACKET; the bounded idiom fixes it. A constant slot
+		// (parent at a fixed offset) keeps the byte-identical fast path.
+		if parentEntryIsRange {
+			return emitVarParentDispatchBounded(parent.Spec, current.Dispatch.Const, failLabel)
+		}
 		return emitFieldDispatchCheck(
 			parent.Spec,
 			current.Dispatch.Const,
@@ -1050,6 +1143,18 @@ func genFieldDispatch(current, parent *ir.LayerInstance, parentHS int, failLabel
 				asm.Add.Reg(asm.R3, asm.R0),
 			},
 			failLabel,
+		)
+	}
+	// Fixed parent: base is offsetBase (R4), dispatch field at
+	// (fieldOff - parentHS) — negative when reading back into the
+	// parent header (e.g. udp.dport at gtp_start-6). When R4 is a
+	// range scalar (a preceding layer was variable-length) the
+	// negative readback through a freshly built packet pointer is
+	// rejected on PTR_TO_PACKET; the bounded idiom fixes it.
+	if r4IsRange {
+		return emitFieldDispatchCheckBounded(
+			parent.Spec, current.Dispatch.Const,
+			offsetBase /*offsetReg=R4*/, asm.R5 /*scalar*/, asm.R3 /*dst*/, -parentHS, failLabel,
 		)
 	}
 	return emitFieldDispatchCheck(
@@ -1064,7 +1169,6 @@ func genFieldDispatch(current, parent *ir.LayerInstance, parentHS int, failLabel
 		failLabel,
 	)
 }
-
 
 // findFieldBitOffset returns the bit offset (from the start of the
 // header) and bit width of the named field, or an error when the

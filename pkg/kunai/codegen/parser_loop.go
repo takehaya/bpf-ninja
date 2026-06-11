@@ -213,19 +213,22 @@ func emitFillStackSlots(initImm int32, n int, resolve func(int) (int16, error)) 
 // The store reaches main's stack via R2 (= ctx pointer) plus a
 // constant offset — callback R10 points at a separate frame. R1 is
 // the kind-byte scratch (R0 was clobbered by the bound check above).
-// The byte is loaded from R4+R3 with no additional bound check
-// because the immediately preceding `R0 = R4+R3+1; JGT R0, R5,
-// break` already proved the byte is in scratch.
-func (c *pmCtx) emitDynamicAuxSlotPrelude() (asm.Instructions, error) {
+//
+// The kind byte is loaded through boundedScalarLoad rather than a
+// bare `R1 = R4+R3; *(u8*)(R1)`. On PTR_TO_MAP_VALUE the preceding
+// `R0 = R4+R3+1; JGT R0, R5, break` would suffice, but on
+// PTR_TO_PACKET (native XDP) the verifier does not carry that bound
+// across to a freshly built pointer in another register, so it
+// rejects the load as out of packet range. boundedScalarLoad re-runs
+// the end-pointer check on the load register itself, which both hosts
+// accept; the extra check is redundant on the map-value path.
+func (c *pmCtx) emitDynamicAuxSlotPrelude(breakLabel string) (asm.Instructions, error) {
 	demand := c.queried[c.layer]
 	if len(demand) == 0 {
 		return nil, nil
 	}
-	insns := asm.Instructions{
-		asm.Mov.Reg(asm.R1, asm.R4),
-		asm.Add.Reg(asm.R1, asm.R3),
-		asm.LoadMem(asm.R1, asm.R1, 0, asm.Byte),
-	}
+	// R1 = kind byte at scratchStart(R4) + cursor(R3); R3/R4/R5 survive.
+	insns := boundedScalarLoad(asm.R1, asm.R4, asm.R3, asm.R5, asm.Byte, breakLabel)
 	for idx, layout := range demand {
 		slot, err := c.queried.slotForLayer(c.layer, idx+1)
 		if err != nil {
@@ -279,7 +282,7 @@ func (c *pmCtx) emitMultiStateCallback(entry *vocab.ParseState, entryIdx int, cb
 	// function of the kind byte alone so the verifier doesn't track
 	// "which case ran × which slot was written" across iters. See
 	// docs/ja/dsl-internals.md §6.5 Mechanism 7.
-	prelude, err := c.emitDynamicAuxSlotPrelude()
+	prelude, err := c.emitDynamicAuxSlotPrelude(breakLabel)
 	if err != nil {
 		return nil, err
 	}
@@ -843,7 +846,6 @@ func transitionRefsState(t vocab.TransitionOp, stateIdx int) bool {
 	}
 	return false
 }
-
 
 // selectCounter feeds unique case-skip labels per (layer, state, case).
 // Each emit pass starts at zero so labels stay deterministic.

@@ -62,13 +62,13 @@ var FilterSet = []FilterSpec{
 		CBPFCExpr: "icmp[icmptype]==8",
 		WantInsns: 83, Notes: "ICMP echo request"},
 	{ID: "F7", Expr: "eth/ipv4@outer/udp/gtp/ipv4@inner/tcp where inner.dst == 10.0.0.1",
-		WantInsns: 391, Notes: "GTP-U inner IPv4 dst (5G core)"},
+		WantInsns: 403, Notes: "GTP-U inner IPv4 dst (5G core)"},
 	{ID: "F8", Expr: "eth/ipv6/srv6 where any(srv6.segments.addr == fc00::1)",
 		WantInsns: 425, Notes: "SRv6 segment-list any-quantifier (5G/SDN)"},
 	{ID: "F9", Expr: "eth/ipv4@outer/udp/geneve/eth/ipv4@inner/tcp where inner.dst == 10.0.0.1",
-		WantInsns: 281, Notes: "Geneve inner IPv4 dst (Cilium overlay / cloud VPC)"},
+		WantInsns: 299, Notes: "Geneve inner IPv4 dst (Cilium overlay / cloud VPC)"},
 	{ID: "F10", Expr: "eth/ipv4/tcp where tcp.options.MSS.value == 1460",
-		WantInsns: 227, Notes: "TCP option MSS via parser-counter walk"},
+		WantInsns: 230, Notes: "TCP option MSS via parser-counter walk"},
 }
 
 // TestFilterSetCompiles confirms every paper filter compiles end-to-end
