@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.10.2](https://github.com/takehaya/xdp-ninja/compare/v0.10.1...v0.10.2) (2026-06-11)
+
+
+### 🐛 Bug Fixes
+
+* **codegen:** make dispatch reads PTR_TO_PACKET-safe for native XDP ([#33](https://github.com/takehaya/xdp-ninja/issues/33)) ([cdff69f](https://github.com/takehaya/xdp-ninja/commit/cdff69ff194cfc52214da43d2682b7df8332aa88))
+
+
+### 📝 Documentation
+
+* **ja:** add vocab authoring guide, unify prose style, fix stale claims ([#31](https://github.com/takehaya/xdp-ninja/issues/31)) ([563dd6b](https://github.com/takehaya/xdp-ninja/commit/563dd6b5446f500a887cc0559445da7c8b24c607))
+
 ## [0.10.1](https://github.com/takehaya/xdp-ninja/compare/v0.10.0...v0.10.1) (2026-05-24)
 
 
