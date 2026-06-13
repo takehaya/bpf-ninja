@@ -165,16 +165,25 @@ func (r *resolver) resolveWhere(w *ast.WhereExpr) (*ir.Condition, error) {
 	return c, nil
 }
 
-// findQuantTarget locates the aux header stack the inner expression
-// iterates over. The inner contains exactly one FieldRef whose
-// Aux.Stack is set and IsStatic is false (no explicit index = the
-// quantifier's iteration variable). Other field refs inside the
-// inner are constants per-iteration. Multiple stack refs or a
-// stack ref already carrying a static index inside any/all are
-// rejected — the codegen contract requires a single iteration
-// dimension.
+// findQuantTarget locates the single aux header stack the inner
+// expression iterates over: a FieldRef whose Aux.Stack is set with
+// IsIterator true (no explicit index = the quantifier's iteration
+// variable). The same stack may be referenced more than once — every
+// such ref reads the current element per iteration (e.g.
+// `addr == X or addr == Y`). Indexed refs and primary fields stay
+// constant within the iteration. Zero iterator refs, or refs to two
+// distinct stacks (which would demand two iteration dimensions), are
+// rejected here so the error carries position info.
+//
+// Stack identity is (owning layer, out param), not the out param
+// alone: distinct protocols can expose a stack under the same name
+// (ipv6 and gtp both declare `out ... exts`), so `any(ipv6.exts... or
+// gtp.exts...)` is two iteration dimensions despite sharing the
+// "exts" out param. The owning layer must therefore be part of the
+// comparison.
 func (r *resolver) findQuantTarget(c *ir.Condition, pos ast.Position) (*ir.QuantTarget, error) {
-	var found *ir.AuxRef
+	var found *ir.FieldRef
+	multiple := false
 	ir.WalkConditionFieldRefs(c, func(ref *ir.FieldRef) {
 		if ref == nil || ref.Aux == nil || ref.Aux.Stack == nil {
 			return
@@ -186,17 +195,26 @@ func (r *resolver) findQuantTarget(c *ir.Condition, pos ast.Position) (*ir.Quant
 		if !ref.Aux.Stack.IsIterator {
 			return
 		}
-		found = ref.Aux
+		if found == nil {
+			found = ref
+		} else if ref.Layer != found.Layer || ref.Aux.OutParam != found.Aux.OutParam {
+			multiple = true
+		}
 	})
 	if found == nil {
 		return nil, errorf(pos, "any/all requires exactly one aux header stack reference inside (e.g. `any(srv6.segments.addr == X)`)")
 	}
+	if multiple {
+		return nil, errorf(pos, "any/all iterates a single aux header stack, but the inner expression references more than one (the same stack may be referenced multiple times, but not two different stacks)")
+	}
+	a := found.Aux
 	return &ir.QuantTarget{
-		OutParam:      found.OutParam,
-		HeaderName:    found.HeaderName,
-		OffsetInLayer: found.OffsetInLayer,
-		ElemSize:      found.HeaderSize,
-		Capacity:      found.Stack.Capacity,
+		Layer:         found.Layer,
+		OutParam:      a.OutParam,
+		HeaderName:    a.HeaderName,
+		OffsetInLayer: a.OffsetInLayer,
+		ElemSize:      a.HeaderSize,
+		Capacity:      a.Stack.Capacity,
 	}, nil
 }
 
