@@ -537,9 +537,14 @@ func TestGeneveInnerIPv4Dispatch(t *testing.T) {
 	r := New(t, "eth/ipv4@outer/udp/geneve/eth/ipv4@inner/tcp where inner.dst == 192.168.1.2")
 	r.MustMatch(t, BuildGeneveInnerIPv4TCP(t, GeneveInnerIPv4TCPOpts{}),
 		"geneve-encapsulated inner ipv4 dst matches the where-clause")
+	r.MustMatch(t, BuildGeneveInnerIPv4TCP(t, GeneveInnerIPv4TCPOpts{OptLenWords: 2}),
+		"geneve with 8-byte options: parser skips opt_len*4 bytes, inner ipv4 dst still matches")
 	r.MustReject(t, BuildGeneveInnerIPv4TCP(t, GeneveInnerIPv4TCPOpts{
 		InnerDstIP: net.ParseIP("192.168.1.99"),
 	}), "geneve frame whose inner ipv4 dst does not match must reject")
+	r.MustReject(t, BuildGeneveInnerIPv4TCP(t, GeneveInnerIPv4TCPOpts{
+		OptLenWords: 3, InnerDstIP: net.ParseIP("192.168.1.99"),
+	}), "geneve with options + non-matching inner dst must still reject (offset resolved past options)")
 	r.MustReject(t, BuildEthIPv4TCP(t, 12345, 80),
 		"non-tunneled TCP frame must not match the geneve-inner filter")
 }

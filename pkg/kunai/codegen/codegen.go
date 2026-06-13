@@ -1364,8 +1364,9 @@ func slicePostAdjust(ref *ir.FieldRef, loadBytes int) (shift int, mask uint64) {
 // masks it with Gating.Mask, and jumps to failLabel when the
 // comparison disagrees. The byte address is computed via base —
 // predicate-time callers pass r4Anchor() (R4 still equals layer
-// entry); where-clause callers pass absAnchor(absOff) where
-// absOff = c.layerOffset(layer). nil gating emits no instructions.
+// entry); where-clause callers pass the anchor from
+// c.layerAnchorFor(layer) (slot or absolute). nil gating emits no
+// instructions.
 func emitAuxGating(g *vocab.AuxGating, base layerAnchor, failLabel string) asm.Instructions {
 	if g == nil {
 		return nil

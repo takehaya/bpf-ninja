@@ -544,6 +544,12 @@ type GeneveInnerIPv4TCPOpts struct {
 	InnerSrcMAC, InnerDstMAC   net.HardwareAddr
 	InnerSrcIP, InnerDstIP     net.IP
 	InnerSrcPort, InnerDstPort uint16
+	// OptLenWords sets the Geneve opt_len field (count of 4-byte option
+	// words after the fixed 8-byte header). Zero = no options. The
+	// builder writes opt_len into the header and inserts OptLenWords*4
+	// filler option bytes so the inner Ethernet frame sits at the offset
+	// opt_len implies — exercising the parser's option-skip advance.
+	OptLenWords int
 }
 
 // BuildGeneveInnerIPv4TCP serializes the Geneve-tunneled frame described
@@ -597,6 +603,14 @@ func BuildGeneveInnerIPv4TCP(t testing.TB, opts GeneveInnerIPv4TCPOpts) []byte {
 	_ = udp.SetNetworkLayerForChecksum(v4)
 
 	geneve := geneveHeader(opts.VNI, layers.EthernetTypeTransparentEthernetBridging)
+	if opts.OptLenWords < 0 || opts.OptLenWords > 0x3F {
+		t.Fatalf("OptLenWords=%d out of range (Geneve opt_len is 6 bits, 0..63)", opts.OptLenWords)
+	}
+	// opt_len occupies the low 6 bits of byte 0 (version stays 0); append
+	// the matching opt_len*4 filler bytes so the inner frame sits past
+	// them. OptLenWords==0 leaves the header untouched (no-op append).
+	geneve[0] = byte(opts.OptLenWords)
+	geneve = append(geneve, make([]byte, opts.OptLenWords*4)...)
 	payload := append(geneve, innerFrame...)
 
 	buf := gopacket.NewSerializeBuffer()

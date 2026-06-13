@@ -65,27 +65,6 @@ func (c *whereCtx) layerAnchorFor(l *ir.LayerInstance) (layerAnchor, error) {
 	return anchor, nil
 }
 
-// layerOffset is a thin wrapper preserved for callers that only need
-// the static absolute offset (= they cannot handle slot anchors).
-// New code should use layerAnchorFor and emitFieldLoad instead.
-func (c *whereCtx) layerOffset(l *ir.LayerInstance) (int, error) {
-	a, err := c.layerAnchorFor(l)
-	if err != nil {
-		return 0, err
-	}
-	if a.UseSlot {
-		return 0, fmt.Errorf("%w: layer %q needs runtime offset but caller asked for a static prefix (likely option-walk past a het-alt — not yet wired)", ErrNotImplemented, layerSpecName(l))
-	}
-	return a.AbsOffset, nil
-}
-
-func layerSpecName(l *ir.LayerInstance) string {
-	if l == nil || l.Spec == nil {
-		return "<unnamed>"
-	}
-	return l.Spec.Name
-}
-
 // genCondition emits instructions that fall through when w evaluates
 // to true and jump to failLabel when it evaluates to false. Errors
 // surface with the condition's source position prefixed so users see
@@ -1873,11 +1852,15 @@ func emitDynamicAuxByteLoad(slot int16, byteOff int, size asm.Size, failLabel st
 // branches through a per-clause match landing while `==` jumps to
 // failLabel directly on any mismatch.
 func whereDynamicMultiByte(c *whereCtx, ref *ir.FieldRef, op ast.CmpOp, failLabel string, body func(fail string) asm.Instructions) (asm.Instructions, error) {
-	absOff, err := c.layerOffset(ref.Layer)
+	// layerAnchorFor (not the static-only layerOffset) so a dynamic aux
+	// index resolves correctly when its layer sits past a runtime-offset
+	// boundary (e.g. srv6 segments after ipv6 ext headers, or any stack
+	// past a variable-length predecessor). emitDynamicStackAddress
+	// already handles slot anchors.
+	anchor, err := c.layerAnchorFor(ref.Layer)
 	if err != nil {
 		return nil, err
 	}
-	anchor := absAnchor(absOff)
 	if op == ast.CmpEq {
 		addr, err := emitDynamicStackAddress(ref, anchor, failLabel)
 		if err != nil {

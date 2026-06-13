@@ -429,22 +429,56 @@ func TestResolveMarksRuntimeOffsetForLayersPastHetAlt(t *testing.T) {
 	}
 }
 
-func TestResolveDoesNotMarkRuntimeOffsetWithoutHetAlt(t *testing.T) {
-	// `eth/(vlan|qinq)/ipv4/tcp where tcp.dport == 443` — alt is
-	// uniform-size (4 bytes each), so the static prefix path still
-	// works; no layer should be marked.
+func TestResolveMarksRuntimeOffsetForVariableLayoutAltMember(t *testing.T) {
+	// `udp/(vxlan|geneve)/eth/ipv4@inner/tcp where inner.dst` — vxlan and
+	// geneve share the 8-byte fixed size, so the alt is NOT heterogeneous,
+	// but geneve carries an opt_len-driven options trailer. The alt is
+	// therefore a runtime-offset boundary, so the inner ipv4 read by the
+	// where clause must be marked NeedsRuntimeOffset.
+	//
+	// The root is udp (not eth/ipv4/udp) on purpose: every layer before
+	// the alt is fixed-size, so the alt is the *first* runtime boundary
+	// and this test isolates the alt-member check. With a variable ipv4
+	// (options) ahead of the alt, @inner would be marked regardless, and
+	// a regression in slices.ContainsFunc(l.Alternation, hasVarBody)
+	// would go undetected.
+	p := resolveOK(t, "udp/(vxlan|geneve)/eth/ipv4@inner/tcp where inner.dst == 10.0.0.1", nil)
+	var sawInner bool
+	for _, l := range p.Layers {
+		if l.Label != "inner" {
+			continue
+		}
+		sawInner = true
+		if !l.NeedsRuntimeOffset {
+			t.Error("inner ipv4 SHOULD need runtime offset (alt member geneve has a variable-length options trailer)")
+		}
+	}
+	if !sawInner {
+		t.Fatal("inner ipv4 layer (@inner) not found in resolved chain")
+	}
+}
+
+func TestResolveUniformAltIsNotRuntimeOffsetBoundary(t *testing.T) {
+	// `eth/(vlan|qinq)/ipv4/tcp where tcp.dport == 443` — the alt is
+	// uniform-size (4 bytes each), so it is NOT a runtime-offset
+	// boundary. ipv4 *is* a boundary (variable options shift later
+	// layers), so tcp — read by the where clause, past ipv4 — is
+	// correctly marked. eth, the alt, and ipv4 itself must stay
+	// unmarked: if the uniform alt were wrongly treated as a boundary,
+	// ipv4 (which sits past it) would also be marked.
 	p := resolveOK(t, "eth/(vlan|qinq)/ipv4/tcp where tcp.dport == 443", nil)
 	for _, l := range p.Layers {
-		if l.NeedsRuntimeOffset {
-			name := "<alt>"
-			if l.Spec != nil {
-				name = l.Spec.Name
-			}
-			t.Errorf("layer %q (pos %d) was marked NeedsRuntimeOffset; want false (uniform-size alt)", name, l.LayerPos)
+		name := "<alt>"
+		if l.Spec != nil {
+			name = l.Spec.Name
+		}
+		wantMarked := name == "tcp" // only tcp sits past ipv4's variable boundary and is read
+		if l.NeedsRuntimeOffset != wantMarked {
+			t.Errorf("layer %q (pos %d) NeedsRuntimeOffset=%v; want %v", name, l.LayerPos, l.NeedsRuntimeOffset, wantMarked)
 		}
 		for _, m := range l.Alternation {
 			if m.NeedsRuntimeOffset {
-				t.Errorf("alt member %q was marked NeedsRuntimeOffset; want false", m.Spec.Name)
+				t.Errorf("alt member %q was marked NeedsRuntimeOffset; want false (uniform-size alt is not a boundary)", m.Spec.Name)
 			}
 		}
 	}

@@ -1214,12 +1214,14 @@ func specNames(s map[string]*ProtocolSpec) []string {
 // (`pkt.advance(((bit<32>)(hdr.ihl - 5)) << 5)`) but moved to
 // Mechanism 8 (ParserCounter byte-bounded walk) when option-aware
 // extraction landed. TCP is the lone remaining Mechanism-1 user
-// for its data_offset-driven trailer skip. SRv6 now declares its
+// for its data_offset-driven trailer skip. SRv6 declares its
 // variable trail through pkt.advance in srv6.p4's skip_segments
-// state, so it's omitted here too.
+// state, and Geneve likewise skips its opt_len*4 options section via
+// pkt.advance in geneve.p4's skip_options state, so both are omitted
+// here too.
 func TestVariableTrailAbsentForFixedProtocols(t *testing.T) {
 	specs := loadBundled(t)
-	for _, name := range []string{"eth", "ipv4", "ipv6", "udp", "gtp", "vlan", "qinq", "mpls", "gre", "vxlan", "geneve", "icmp", "icmp6", "cw"} {
+	for _, name := range []string{"eth", "ipv4", "ipv6", "udp", "gtp", "vlan", "qinq", "mpls", "gre", "vxlan", "icmp", "icmp6", "cw"} {
 		if vs := specs[name].PrimaryAdvanceSkip(); vs != nil {
 			t.Errorf("%s should not declare a variable trailer (got %+v)", name, *vs)
 		}
