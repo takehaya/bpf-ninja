@@ -430,13 +430,19 @@ func TestResolveMarksRuntimeOffsetForLayersPastHetAlt(t *testing.T) {
 }
 
 func TestResolveMarksRuntimeOffsetForVariableLayoutAltMember(t *testing.T) {
-	// `eth/ipv4/udp/(vxlan|geneve)/eth/ipv4@inner/tcp where inner.dst`
-	// — vxlan and geneve share the 8-byte fixed size, so the alt is NOT
-	// heterogeneous, but geneve carries an opt_len-driven options
-	// trailer. The alt is therefore a runtime-offset boundary on the
-	// geneve branch, so the inner ipv4 read by the where clause must be
-	// marked NeedsRuntimeOffset.
-	p := resolveOK(t, "eth/ipv4/udp/(vxlan|geneve)/eth/ipv4@inner/tcp where inner.dst == 10.0.0.1", nil)
+	// `udp/(vxlan|geneve)/eth/ipv4@inner/tcp where inner.dst` — vxlan and
+	// geneve share the 8-byte fixed size, so the alt is NOT heterogeneous,
+	// but geneve carries an opt_len-driven options trailer. The alt is
+	// therefore a runtime-offset boundary, so the inner ipv4 read by the
+	// where clause must be marked NeedsRuntimeOffset.
+	//
+	// The root is udp (not eth/ipv4/udp) on purpose: every layer before
+	// the alt is fixed-size, so the alt is the *first* runtime boundary
+	// and this test isolates the alt-member check. With a variable ipv4
+	// (options) ahead of the alt, @inner would be marked regardless, and
+	// a regression in slices.ContainsFunc(l.Alternation, hasVarBody)
+	// would go undetected.
+	p := resolveOK(t, "udp/(vxlan|geneve)/eth/ipv4@inner/tcp where inner.dst == 10.0.0.1", nil)
 	var sawInner bool
 	for _, l := range p.Layers {
 		if l.Label != "inner" {
