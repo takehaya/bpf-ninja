@@ -284,6 +284,19 @@ func TestResolveAuxStackRejectsSinglePath(t *testing.T) {
 	resolveErr(t, "eth/ipv4/udp/gtp[exts.next_ext==0]/ipv4/tcp", nil, "needs an index")
 }
 
+func TestResolveQuantSameStackMultipleRefs(t *testing.T) {
+	// any()/all() require exactly one iteration *target* stack, not
+	// exactly one textual reference. The same stack may appear more
+	// than once; each ref reads the current element per iteration.
+	p := resolveOK(t, "eth/ipv6/srv6/tcp where any(srv6.segments.addr == fc00::1 or srv6.segments.addr == fc00::2)", nil)
+	if p.Where == nil || p.Where.QuantTarget == nil {
+		t.Fatalf("expected a QuantTarget on the any() condition, got %+v", p.Where)
+	}
+	if p.Where.QuantTarget.OutParam != "segments" {
+		t.Errorf("quant target out param = %q, want segments", p.Where.QuantTarget.OutParam)
+	}
+}
+
 func TestResolvePredicateInIntegerAcceptsResolve(t *testing.T) {
 	// F7 landed: integer alternatives now resolve cleanly. The
 	// predicate is no longer flagged Unsupported.
