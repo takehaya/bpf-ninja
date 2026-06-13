@@ -248,6 +248,12 @@ func (r *FieldRef) IsExistsCheck() bool {
 // bpf_loop callback whose per-iter state addresses
 // `OffsetInLayer + iter*ElemSize` within the owning layer.
 type QuantTarget struct {
+	// Layer is the owning layer instance. Stack identity is (Layer,
+	// OutParam): distinct layers can expose a stack under the same
+	// out-param name (ipv6 and gtp both declare `exts`), so OutParam
+	// alone is not a unique key. codegen's rebindFieldRef compares
+	// against Layer to keep iterator refs bound to the right stack.
+	Layer         *LayerInstance
 	OutParam      string // parser out parameter name (e.g. "segments")
 	HeaderName    string // aux header type name (e.g. "srv6_seg_h")
 	OffsetInLayer int    // bytes from layer-entry slot to stack start

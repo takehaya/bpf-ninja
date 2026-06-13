@@ -550,12 +550,30 @@ func cloneArithWithRebind(a *ir.ArithExpr, target *ir.QuantTarget, idx uint64) (
 	return &cp, nil
 }
 
+// layerName describes a layer for error messages: "ipv6", or
+// "ipv6@inner" when labelled. Nil-safe.
+func layerName(l *ir.LayerInstance) string {
+	if l == nil || l.Spec == nil {
+		return "?"
+	}
+	if l.Label != "" {
+		return l.Spec.Name + "@" + l.Label
+	}
+	return l.Spec.Name
+}
+
 func rebindFieldRef(ref *ir.FieldRef, target *ir.QuantTarget, idx uint64) (*ir.FieldRef, error) {
 	if ref == nil || ref.Aux == nil || ref.Aux.Stack == nil || !ref.Aux.Stack.IsIterator {
 		return ref, nil
 	}
-	if ref.Aux.OutParam != target.OutParam {
-		return nil, fmt.Errorf("codegen: iterator FieldRef references stack %q but quantifier target is %q", ref.Aux.OutParam, target.OutParam)
+	// Stack identity is (owning layer, out param): distinct layers can
+	// expose a stack under the same name (ipv6 and gtp both declare
+	// `exts`), so the layer must match too. The resolver already
+	// rejects multi-stack quantifiers (findQuantTarget); this guards
+	// the same invariant at the codegen boundary.
+	if ref.Layer != target.Layer || ref.Aux.OutParam != target.OutParam {
+		return nil, fmt.Errorf("codegen: iterator FieldRef references stack %s.%s but quantifier target is %s.%s",
+			layerName(ref.Layer), ref.Aux.OutParam, layerName(target.Layer), target.OutParam)
 	}
 	cp := *ref
 	auxCopy := *ref.Aux
