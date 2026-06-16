@@ -21,6 +21,7 @@ package program
 import (
 	"fmt"
 	"net"
+	"os"
 	"testing"
 
 	"github.com/google/gopacket/layers"
@@ -292,17 +293,49 @@ var corpusLoadOnly = map[string]string{
 
 func TestBpfFilterCorpusCorrectness(t *testing.T) {
 	exprByID := make(map[string]string, len(VerifierCorpus))
-	covered := make(map[string]bool, len(corpusCorrectness))
 	for _, c := range VerifierCorpus {
 		exprByID[c.ID] = c.Expr
+	}
+
+	// drift guard (root-free): every corpus ID must be classified in exactly
+	// one of corpusCorrectness or corpusLoadOnly. Forces a decision as the
+	// corpus grows and catches an ID listed in both (a dead load-only reason).
+	for _, c := range VerifierCorpus {
+		_, correct := corpusCorrectness[c.ID]
+		_, loadOnly := corpusLoadOnly[c.ID]
+		switch {
+		case correct && loadOnly:
+			t.Errorf("corpus %s is in both corpusCorrectness and corpusLoadOnly; it must be in exactly one", c.ID)
+		case !correct && !loadOnly:
+			t.Errorf("corpus %s (%q): classify it in corpusCorrectness or corpusLoadOnly", c.ID, c.Expr)
+		}
+	}
+	// no stale IDs in either map.
+	for id := range corpusCorrectness {
+		if _, ok := exprByID[id]; !ok {
+			t.Errorf("corpusCorrectness has %s which is not in VerifierCorpus", id)
+		}
+	}
+	for id := range corpusLoadOnly {
+		if _, ok := exprByID[id]; !ok {
+			t.Errorf("corpusLoadOnly has %s which is not in VerifierCorpus", id)
+		}
+	}
+
+	// Packet-level checks need root (BPF_PROG_TEST_RUN / CAP_SYS_ADMIN). Gate
+	// once here rather than letting dt.New skip inside each subtest, which
+	// would spawn dozens of skipped subtests in non-root runs.
+	if os.Getuid() != 0 {
+		t.Skip("packet-level corpus checks need root (BPF_PROG_TEST_RUN)")
+	}
+	for _, c := range VerifierCorpus {
 		cc, ok := corpusCorrectness[c.ID]
 		if !ok {
 			continue
 		}
-		covered[c.ID] = true
 		c := c
 		t.Run(c.ID, func(t *testing.T) {
-			r := dt.New(t, c.Expr) // skips when not root
+			r := dt.New(t, c.Expr)
 			for i, mk := range cc.match {
 				r.MustMatch(t, mk(t), fmt.Sprintf("%s match #%d (%s)", c.ID, i, c.Expr))
 			}
@@ -310,32 +343,5 @@ func TestBpfFilterCorpusCorrectness(t *testing.T) {
 				r.MustReject(t, rk(t), fmt.Sprintf("%s reject #%d (%s)", c.ID, i, c.Expr))
 			}
 		})
-	}
-
-	// drift guard: every corpus ID must be correctness-covered or documented
-	// load-only. Forces a decision as the corpus grows.
-	for _, c := range VerifierCorpus {
-		if covered[c.ID] {
-			continue
-		}
-		if _, ok := corpusLoadOnly[c.ID]; !ok {
-			t.Errorf("corpus %s (%q): classify it in corpusCorrectness or corpusLoadOnly", c.ID, c.Expr)
-		}
-	}
-	// other direction: no stale IDs in either map.
-	for id := range corpusCorrectness {
-		if _, ok := exprByID[id]; !ok {
-			t.Errorf("corpusCorrectness has %s which is not in VerifierCorpus", id)
-		}
-		// "exactly one of" — an ID in both maps would be silently treated as
-		// covered above, leaving a dead load-only reason. Reject it.
-		if _, both := corpusLoadOnly[id]; both {
-			t.Errorf("corpus %s is in both corpusCorrectness and corpusLoadOnly; it must be in exactly one", id)
-		}
-	}
-	for id := range corpusLoadOnly {
-		if _, ok := exprByID[id]; !ok {
-			t.Errorf("corpusLoadOnly has %s which is not in VerifierCorpus", id)
-		}
 	}
 }
