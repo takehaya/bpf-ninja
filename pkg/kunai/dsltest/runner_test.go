@@ -24,6 +24,37 @@ func TestEthIPv4TCPMatch(t *testing.T) {
 	r.MustReject(t, BuildEthIPv4UDP(t, 12345, 53, []byte("query")), "UDP against eth/ipv4/tcp filter")
 }
 
+// TestNestedBoolEq covers bool-eq `(cmp) == (cmp)` (XNOR) and its nesting
+// on either operand. genBoolEq parks each level's LHS in a distinct arith
+// slot (top-down by nesting depth); a single fixed slot let a nested
+// bool-eq clobber an enclosing one — the right/both-nested cases pin that.
+func TestNestedBoolEq(t *testing.T) {
+	pkt := func(dp, sp uint16) []byte {
+		o := Defaults()
+		o.DstPort, o.SrcPort = dp, sp
+		return Build(t, o)
+	}
+
+	flat := New(t, "eth/ipv4/tcp where (tcp.dport == 443) == (tcp.sport == 443)")
+	flat.MustMatch(t, pkt(443, 443), "T == T")
+	flat.MustMatch(t, pkt(80, 12345), "F == F")
+	flat.MustReject(t, pkt(443, 12345), "T == F")
+	flat.MustReject(t, pkt(80, 443), "F == T")
+
+	left := New(t, "eth/ipv4/tcp where ((tcp.dport == 443) == (tcp.sport == 443)) == (tcp.dport == 80)")
+	left.MustMatch(t, pkt(80, 12345), "(F==F=T) == (T) -> T")
+	left.MustReject(t, pkt(443, 443), "(T==T=T) == (F) -> F")
+
+	right := New(t, "eth/ipv4/tcp where (tcp.dport == 80) == ((tcp.dport == 443) == (tcp.sport == 443))")
+	right.MustMatch(t, pkt(80, 12345), "(T) == (F==F=T) -> T")
+	right.MustReject(t, pkt(443, 443), "(F) == (T==T=T) -> F")
+
+	both := New(t, "eth/ipv4/tcp where ((tcp.dport == 443) == (tcp.sport == 443)) == ((tcp.dport == 80) == (tcp.sport == 80))")
+	both.MustReject(t, pkt(80, 12345), "(F==F=T) == (T==F=F) -> F")
+	both.MustMatch(t, pkt(443, 80), "(T==F=F) == (F==F=T)... -> T")
+	both.MustMatch(t, pkt(80, 80), "(F==F=T) == (T==T=T) -> T")
+}
+
 // TestEthIPv4TCPDportPredicate exercises a primary-header predicate
 // (`tcp[dport==443]`). Confirms the predicate path runs in the
 // scratch-buffer wrapper and that byte-swap-at-codegen handles the
@@ -341,7 +372,7 @@ func TestAuxStackSrv6SegmentsDynamicIndex(t *testing.T) {
 func TestAuxStackIpv6ExtsIndex0(t *testing.T) {
 	r := New(t, "eth/ipv6/tcp where ipv6.exts[0].next_header == 6")
 	pkt := BuildIPv6WithExts(t, IPv6WithExtsOpts{
-		FirstNextHeader: 0,  // HBH
+		FirstNextHeader: 0, // HBH
 		Exts:            []IPv6Ext{{NextHeader: 6, HdrExtLen: 0, Options: bytes16("hbh-payload")}},
 		FinalNextHeader: 6, // TCP
 	})
