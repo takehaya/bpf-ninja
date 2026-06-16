@@ -532,6 +532,10 @@ func BuildVXLANInnerIPv4TCP(t testing.TB, innerDst net.IP, innerDstPort uint16) 
 	if innerDst == nil {
 		innerDst = net.IPv4(10, 0, 0, 1)
 	}
+	innerDst4 := innerDst.To4()
+	if innerDst4 == nil {
+		t.Fatalf("BuildVXLANInnerIPv4TCP: innerDst %v is not an IPv4 address", innerDst)
+	}
 	if innerDstPort == 0 {
 		innerDstPort = 80
 	}
@@ -547,7 +551,7 @@ func BuildVXLANInnerIPv4TCP(t testing.TB, innerDst net.IP, innerDstPort uint16) 
 	vx := &layers.VXLAN{ValidIDFlag: true, VNI: 100}
 	inner := &layers.IPv4{
 		Version: 4, IHL: 5, TTL: 64,
-		SrcIP: net.IPv4(192, 168, 0, 1).To4(), DstIP: innerDst.To4(),
+		SrcIP: net.IPv4(192, 168, 0, 1).To4(), DstIP: innerDst4,
 		Protocol: layers.IPProtocolTCP,
 	}
 	itcp := &layers.TCP{
