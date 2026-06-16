@@ -98,6 +98,19 @@ const bpfLoopChainCap = 32
 // the main Return. The returned callback always carries btf.Func
 // metadata on its first instruction — required by the kernel for any
 // bpf2bpf subprogram.
+//
+// s-bit termination here is exact for the cases that reach this path in
+// practice — `+` and `*` (RangeMin ≤ 1, unbounded RangeMax): the callback
+// breaks on the chain-end signal and the pre-loop check handles a
+// single-header stack, so there is no under- or over-run to bound. The
+// genuinely bounded `{n,m>staticChainCap}` shape with n ≥ 2 is the one
+// gap: a chain-end before RangeMin jumps to chainDone past the RangeMin
+// floor check, and a stack longer than RangeMax is not rejected (the
+// iteration cap stops consuming but the last header's s-bit is never
+// required). The common bounded MPLS quantifiers (m ≤ staticChainCap)
+// take the fully-guarded static path in chain.go; tightening this loop's
+// bounded case to match is a follow-up. Non-chain-end protocols (VLAN)
+// bound both ends via their self-dispatch peek and are unaffected.
 func genBpfLoopChain(layer *ir.LayerInstance, index int, all []*ir.LayerInstance) (asm.Instructions, asm.Instructions, error) {
 	rangeMin, _ := chainBounds(layer)
 	if rangeMin == 0 && index == 0 {
@@ -302,23 +315,55 @@ func chainEndCheck(spec *vocab.ProtocolSpec, hs int, fr chainFrame, breakLabel s
 	if spec.ChainEnd == nil {
 		return nil, nil
 	}
-	byteOff, mask, expected, err := chainEndShape(spec)
+	insns, expected, err := chainEndLoad(spec, hs, fr, breakLabel)
 	if err != nil {
 		return nil, err
 	}
-	// The chain-end byte lives in the just-consumed header at
-	// fr.offset + (-hs + byteOff); the offset is post-advance so the
-	// const is typically negative.
+	// Terminate when the loaded value equals the chain-end value. MPLS
+	// declares CHAIN_END_S = 1: "stop when s == 1 (= bottom of stack)".
+	insns = append(insns, asm.JEq.Imm(fr.dst, expected, breakLabel))
+	return insns, nil
+}
+
+// chainEndRequire is the over-run guard for the last static iteration:
+// after consuming the quantifier's RangeMax headers without an earlier
+// natural end, the final header MUST signal chain-end, otherwise the
+// stack is longer than the quantifier allows and the chain rejects.
+// Inverse of chainEndCheck — jumps to rejectLabel when the signal is
+// *absent*. No-op for protocols without a chain-end signal (their
+// over-run is caught by the next layer's self-dispatch peek instead).
+func chainEndRequire(spec *vocab.ProtocolSpec, hs int, fr chainFrame, rejectLabel string) (asm.Instructions, error) {
+	if spec.ChainEnd == nil {
+		return nil, nil
+	}
+	insns, expected, err := chainEndLoad(spec, hs, fr, rejectLabel)
+	if err != nil {
+		return nil, err
+	}
+	insns = append(insns, asm.JNE.Imm(fr.dst, expected, rejectLabel))
+	return insns, nil
+}
+
+// chainEndLoad emits the load+mask of the just-consumed header's
+// chain-end byte into fr.dst and returns the expected value the caller
+// compares against. The byte lives in the just-consumed header at
+// fr.offset + (-hs + byteOff); the offset is post-advance so the const
+// is typically negative. boundsLabel takes an out-of-window load — for a
+// terminate check that means "treat as end", for an over-run guard
+// "reject", so the caller supplies the right target. Shared by
+// chainEndCheck and chainEndRequire.
+func chainEndLoad(spec *vocab.ProtocolSpec, hs int, fr chainFrame, boundsLabel string) (asm.Instructions, int32, error) {
+	byteOff, mask, expected, err := chainEndShape(spec)
+	if err != nil {
+		return nil, 0, err
+	}
 	loadByteOff := int32(-hs + byteOff)
-	insns := append(asm.Instructions{}, foldOffsetIntoScalar(fr.scalar, fr.offset, loadByteOff, breakLabel)...)
-	insns = append(insns, boundedScalarLoad(fr.dst, fr.start, fr.scalar, fr.end, asm.Byte, breakLabel)...)
+	insns := append(asm.Instructions{}, foldOffsetIntoScalar(fr.scalar, fr.offset, loadByteOff, boundsLabel)...)
+	insns = append(insns, boundedScalarLoad(fr.dst, fr.start, fr.scalar, fr.end, asm.Byte, boundsLabel)...)
 	if mask != 0xff {
 		insns = append(insns, asm.And.Imm(fr.dst, int32(mask)))
 	}
-	// Terminate when the loaded value equals the chain-end value. MPLS
-	// declares CHAIN_END_S = 1: "stop when s == 1 (= bottom of stack)".
-	insns = append(insns, asm.JEq.Imm(fr.dst, int32(expected), breakLabel))
-	return insns, nil
+	return insns, int32(expected), nil
 }
 
 // chainEndShape resolves the vocab's CHAIN_END field into (byteOff,

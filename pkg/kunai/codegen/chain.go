@@ -50,6 +50,14 @@ func genStaticChain(layer *ir.LayerInstance, index int, all []*ir.LayerInstance)
 	}
 	insns := append(asm.Instructions{}, first...)
 	if layer.RangeMax == 1 {
+		// One mandatory header. For a chain-end protocol it must signal
+		// end, else an (RangeMax+1)-th header follows that the quantifier
+		// disallows — reject. No-op for self-dispatch protocols.
+		overRun, err := chainEndRequire(layer.Spec, hs, staticChainFrame, dslReject)
+		if err != nil {
+			return nil, err
+		}
+		insns = append(insns, overRun...)
 		return insns, nil
 	}
 
@@ -85,23 +93,25 @@ func genStaticChain(layer *ir.LayerInstance, index int, all []*ir.LayerInstance)
 	// the unroll loop since it is invariant across iterations.
 	selfRange := precedingLayersLeaveR4Range(all, index)
 	for i := 1; i < layer.RangeMax; i++ {
-		failLabel := dslReject
+		// Where this iteration goes when the chain ends here (i headers in
+		// so far). Below RangeMin a chain-end means the stack is shorter
+		// than the quantifier requires (under-run) → reject; at or above
+		// RangeMin it is a valid natural end → terminate the chain and fall
+		// through to the next layer. Both termination mechanisms share the
+		// target: chainEndCheck (the MPLS s-bit, the same check the bpf_loop
+		// path runs) and genDispatch's fail path (VLAN's self-dispatch peek,
+		// for which chainEndCheck is a no-op).
+		target := dslReject
 		if i >= layer.RangeMin {
-			failLabel = chainDone
-			// RangeMin is satisfied (i instances consumed): terminate the
-			// chain when the just-consumed header signals chain-end — the
-			// same s-bit check the bpf_loop path runs. Protocols that
-			// distinguish the next instance by a self-dispatch const (VLAN
-			// ethertype) declare no ChainEnd, so this is a no-op for them
-			// and they terminate via genDispatch below instead. Either way
-			// both paths share one termination mechanism.
-			endCheck, err := chainEndCheck(layer.Spec, hs, staticChainFrame, chainDone)
-			if err != nil {
-				return nil, err
-			}
-			insns = append(insns, endCheck...)
+			target = chainDone
 		}
-		dispatch, err := genDispatch(selfLayer, layer, hs, selfRange, selfRange, failLabel)
+		endCheck, err := chainEndCheck(layer.Spec, hs, staticChainFrame, target)
+		if err != nil {
+			return nil, err
+		}
+		insns = append(insns, endCheck...)
+
+		dispatch, err := genDispatch(selfLayer, layer, hs, selfRange, selfRange, target)
 		if err != nil {
 			return nil, err
 		}
@@ -111,11 +121,21 @@ func genStaticChain(layer *ir.LayerInstance, index int, all []*ir.LayerInstance)
 		insns = append(insns, emitAdvance(hs))
 	}
 
+	// All RangeMax headers consumed without an earlier natural end: the
+	// last one must signal chain-end, else the stack is longer than the
+	// quantifier allows (over-run) → reject. No-op for self-dispatch
+	// protocols, whose over-run the next layer's dispatch peek catches.
+	overRun, err := chainEndRequire(layer.Spec, hs, staticChainFrame, dslReject)
+	if err != nil {
+		return nil, err
+	}
+	insns = append(insns, overRun...)
+
 	if layer.RangeMin < layer.RangeMax {
-		// Landing for any optional iteration that missed its
-		// self-dispatch peek: falls through to the next layer with
-		// offsetBase still pointing past the last successful
-		// iteration.
+		// Landing for any in-range iteration that hit its natural chain-end
+		// (or, for self-dispatch protocols, missed its self-dispatch peek):
+		// falls through to the next layer with offsetBase still pointing
+		// past the last successful iteration.
 		insns = append(insns, landingNoop(chainDone))
 	}
 	return insns, nil
