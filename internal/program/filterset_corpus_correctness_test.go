@@ -43,10 +43,12 @@ func cp(mut func(o *dt.PacketOpts)) pktFn {
 
 func pks(fs ...pktFn) []pktFn { return fs }
 
-// asUDP / asICMP swap the default TCP L4 for the chain-shape match/reject cases.
+// asUDP / asICMP swap the default TCP L4 for the chain-shape match/reject
+// cases. Each sets all three L4 flags so the selection is unambiguous even
+// if a mutation composes them (buildL3L4 picks UDP before ICMP before TCP).
 var (
-	asUDP  = func(o *dt.PacketOpts) { o.TCP, o.UDP = false, true }
-	asICMP = func(o *dt.PacketOpts) { o.TCP, o.ICMP = false, true }
+	asUDP  = func(o *dt.PacketOpts) { o.TCP, o.UDP, o.ICMP = false, true, false }
+	asICMP = func(o *dt.PacketOpts) { o.TCP, o.UDP, o.ICMP = false, false, true }
 )
 
 func mac(s string) net.HardwareAddr {
