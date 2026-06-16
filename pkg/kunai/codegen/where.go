@@ -169,7 +169,9 @@ func (c *whereCtx) genBoolEq(w *ir.Condition, failLabel string) (asm.Instruction
 	// bool-eq) parks its own LHS one slot lower, so they never collide.
 	slotDepth := maxArithDepth - 1 - c.boolEqDepth
 	if slotDepth < boolEqOperandReserve {
-		return nil, fmt.Errorf("%w: bool-eq nested deeper than %d levels", ErrNotImplemented, maxArithDepth-1-boolEqOperandReserve)
+		// Usable park slots are boolEqOperandReserve..maxArithDepth-1
+		// inclusive, i.e. maxArithDepth-boolEqOperandReserve nesting levels.
+		return nil, fmt.Errorf("%w: bool-eq nested deeper than %d levels", ErrNotImplemented, maxArithDepth-boolEqOperandReserve)
 	}
 	slot := arithStackSlot(slotDepth)
 
