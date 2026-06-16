@@ -207,9 +207,13 @@ var corpusCorrectness = map[string]corpusCase{
 			cp(func(o *dt.PacketOpts) { o.MPLS = []uint32{16, 17, 18, 19, 20} }), // 5 > max 4
 		),
 	},
-	"D06": { // mpls{2,2}: exactly 2 labels matches; 3 is out of range
+	"D06": { // mpls{2,2}: exactly 2 labels match; 1 (under-run), 3 (over-run), 0 all reject on the s-bit
 		pks(cp(func(o *dt.PacketOpts) { o.MPLS = []uint32{16, 17} })),
-		pks(cp(func(o *dt.PacketOpts) { o.MPLS = []uint32{16, 17, 18} }), cp(nil)),
+		pks(
+			cp(func(o *dt.PacketOpts) { o.MPLS = []uint32{16} }),         // 1 < min 2 (under-run)
+			cp(func(o *dt.PacketOpts) { o.MPLS = []uint32{16, 17, 18} }), // 3 > max 2 (over-run)
+			cp(nil), // 0 labels
+		),
 	},
 	"D07": {
 		pks(cp(func(o *dt.PacketOpts) { o.DstPort = 443 }), cp(func(o *dt.PacketOpts) { o.VLAN = []uint16{100}; o.DstPort = 443 })),

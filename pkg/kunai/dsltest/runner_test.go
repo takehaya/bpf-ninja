@@ -55,6 +55,40 @@ func TestNestedBoolEq(t *testing.T) {
 	both.MustMatch(t, pkt(80, 80), "(F==F=T) == (T==T=T) -> T")
 }
 
+// TestMplsChainBoundaries pins the bounded mpls{n,m} quantifier's count
+// boundaries. MPLS has no self-dispatch ethertype (NO_CHECK), so the
+// label-stack length is defined by the bottom-of-stack s-bit alone: the
+// static chain must reject a stack shorter than n (under-run) and longer
+// than m (over-run) on the s-bit itself, not lean on the next layer's
+// self-validation to mop up the mis-parse.
+func TestMplsChainBoundaries(t *testing.T) {
+	mpls := func(labels ...uint32) []byte {
+		o := Defaults()
+		o.MPLS = labels
+		return Build(t, o)
+	}
+
+	r14 := New(t, "eth/mpls{1,4}/ipv4/tcp")
+	r14.MustMatch(t, mpls(16), "{1,4} 1 label")
+	r14.MustMatch(t, mpls(16, 17, 18, 19), "{1,4} 4 labels")
+	r14.MustReject(t, mpls(), "{1,4} 0 labels (under-run)")
+	r14.MustReject(t, mpls(16, 17, 18, 19, 20), "{1,4} 5 labels (over-run)")
+	// 5th label whose top nibble is 0x4 would mimic an ipv4 version if the
+	// over-run leaked to the next layer; the s-bit guard rejects it first.
+	r14.MustReject(t, mpls(16, 17, 18, 19, 0x40000), "{1,4} 5 labels (crafted over-run)")
+
+	r22 := New(t, "eth/mpls{2,2}/ipv4/tcp")
+	r22.MustMatch(t, mpls(16, 17), "{2,2} 2 labels")
+	r22.MustReject(t, mpls(16), "{2,2} 1 label (under-run)")
+	r22.MustReject(t, mpls(16, 17, 18), "{2,2} 3 labels (over-run)")
+
+	r23 := New(t, "eth/mpls{2,3}/ipv4/tcp")
+	r23.MustMatch(t, mpls(16, 17), "{2,3} 2 labels")
+	r23.MustMatch(t, mpls(16, 17, 18), "{2,3} 3 labels")
+	r23.MustReject(t, mpls(16), "{2,3} 1 label (under-run)")
+	r23.MustReject(t, mpls(16, 17, 18, 19), "{2,3} 4 labels (over-run)")
+}
+
 // TestEthIPv4TCPDportPredicate exercises a primary-header predicate
 // (`tcp[dport==443]`). Confirms the predicate path runs in the
 // scratch-buffer wrapper and that byte-swap-at-codegen handles the
