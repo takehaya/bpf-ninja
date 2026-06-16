@@ -671,6 +671,15 @@ func (c *whereCtx) genNot(w *ir.Condition, failLabel string) (asm.Instructions, 
 //     LHS hold, 2,3 for genArith128's `field + field` LHS hi/lo, and
 //     4 for genArithField128Load's high-half transient stash.
 //
+// genBoolEq also parks LHS truth values in this region, growing *down*
+// from slot 15 (one per bool-eq nesting level) while operand arith grows
+// *up* from slot 0. The two are kept disjoint by two guards: bool-eq park
+// slots can't drop below boolEqOperandReserve (protecting the 128-bit
+// path's fixed low slots), and genArithWithBits caps operand arith depth
+// at maxArithDepth-boolEqDepth (protecting the parked slots from a deep
+// `+`/`-` chain). Without the latter, a bool-eq operand arith chain
+// reaching slot 15 would overwrite the saved LHS and silently mis-compare.
+//
 // The deepest slot (slot 15 at -176) writes bytes [-176, -168) and
 // abuts bpfLoopCtxLayerEntrySlot's range [-184, -176) without
 // overlap.
@@ -1057,8 +1066,17 @@ func (c *whereCtx) genArith(e *ir.ArithExpr, depth int) (asm.Instructions, error
 // the constant to its low `targetBits` so 2's-complement negative
 // literals fit the BPF int32 immediate.
 func (c *whereCtx) genArithWithBits(e *ir.ArithExpr, depth int, targetBits int) (asm.Instructions, error) {
-	if depth >= maxArithDepth {
-		return nil, fmt.Errorf("%w: arith expression nested deeper than %d levels", ErrNotImplemented, maxArithDepth)
+	// Cap the usable arith depth by the bool-eq LHS values currently
+	// parked at the top of the arith region. genBoolEq parks one slot per
+	// nesting level growing down from slot maxArithDepth-1, so operand
+	// arith must stay strictly below the lowest parked slot; otherwise a
+	// deep `+`/`-` chain inside a bool-eq operand reaches slot
+	// (maxArithDepth-1) and overwrites the saved LHS, silently
+	// mis-comparing. Outside any bool-eq (boolEqDepth == 0) the ceiling is
+	// the full maxArithDepth, so non-bool-eq expressions are unaffected.
+	ceiling := maxArithDepth - c.boolEqDepth
+	if depth >= ceiling {
+		return nil, fmt.Errorf("%w: arith expression nested deeper than %d levels", ErrNotImplemented, ceiling)
 	}
 	switch e.Kind {
 	case ast.ArithConst:
