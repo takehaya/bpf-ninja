@@ -325,6 +325,11 @@ func TestBpfFilterCorpusCorrectness(t *testing.T) {
 		if _, ok := exprByID[id]; !ok {
 			t.Errorf("corpusCorrectness has %s which is not in VerifierCorpus", id)
 		}
+		// "exactly one of" — an ID in both maps would be silently treated as
+		// covered above, leaving a dead load-only reason. Reject it.
+		if _, both := corpusLoadOnly[id]; both {
+			t.Errorf("corpus %s is in both corpusCorrectness and corpusLoadOnly; it must be in exactly one", id)
+		}
 	}
 	for id := range corpusLoadOnly {
 		if _, ok := exprByID[id]; !ok {
