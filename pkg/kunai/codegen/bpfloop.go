@@ -99,18 +99,21 @@ const bpfLoopChainCap = 32
 // metadata on its first instruction — required by the kernel for any
 // bpf2bpf subprogram.
 //
-// s-bit termination here is exact for the cases that reach this path in
-// practice — `+` and `*` (RangeMin ≤ 1, unbounded RangeMax): the callback
-// breaks on the chain-end signal and the pre-loop check handles a
-// single-header stack, so there is no under- or over-run to bound. The
-// genuinely bounded `{n,m>staticChainCap}` shape with n ≥ 2 is the one
-// gap: a chain-end before RangeMin jumps to chainDone past the RangeMin
-// floor check, and a stack longer than RangeMax is not rejected (the
-// iteration cap stops consuming but the last header's s-bit is never
-// required). The common bounded MPLS quantifiers (m ≤ staticChainCap)
-// take the fully-guarded static path in chain.go; tightening this loop's
-// bounded case to match is a follow-up. Non-chain-end protocols (VLAN)
-// bound both ends via their self-dispatch peek and are unaffected.
+// s-bit termination here is exact for `+` and `*` (RangeMin ≤ 1,
+// unbounded RangeMax): the callback breaks on the chain-end signal and the
+// pre-loop check accepts a single-header stack as a valid natural end.
+// Under-run is bounded for the bounded `{n,m>staticChainCap}` shape too:
+// the pre-loop check rejects a single-header stack when RangeMin > 1, and
+// the post-loop RangeMin floor rejects a multi-header under-run. The one
+// remaining gap is over-run — a stack longer than RangeMax is not rejected
+// on the s-bit (the iteration cap stops consuming but the last header's
+// s-bit is never required), so it leans on the next layer's
+// self-validation to reject the mis-parse: masked in practice, never
+// reproduced as a false-accept, but not the primary guard. The common
+// bounded MPLS quantifiers (m ≤ staticChainCap) take the fully-guarded
+// static path in chain.go; tightening this loop's over-run to match is a
+// follow-up. Non-chain-end protocols (VLAN) bound both ends via their
+// self-dispatch peek.
 func genBpfLoopChain(layer *ir.LayerInstance, index int, all []*ir.LayerInstance) (asm.Instructions, asm.Instructions, error) {
 	rangeMin, _ := chainBounds(layer)
 	if rangeMin == 0 && index == 0 {
@@ -165,12 +168,19 @@ func genBpfLoopChain(layer *ir.LayerInstance, index int, all []*ir.LayerInstance
 
 	// Both branches above consumed iteration 0 and advanced offsetBase. If
 	// that header already signals chain-end (e.g. an MPLS single-label
-	// stack with s == 1), skip the bpf_loop entirely — otherwise its first
-	// callback iteration consumes the following layer as a phantom
-	// instance. No-op when the protocol declares no ChainEnd (VLAN
-	// terminates via its self-dispatch). For `*` the 0-label peek-miss has
-	// already jumped to chainDone, so this runs only when ≥1 was consumed.
-	preLoopEnd, err := chainEndCheck(layer.Spec, hs, staticChainFrame, chainDone)
+	// stack with s == 1), the stack has exactly one header. For `+` / `*`
+	// (RangeMin <= 1) that is a valid natural end → skip the bpf_loop
+	// entirely (otherwise its first callback iteration consumes the
+	// following layer as a phantom instance). For a bounded quantifier with
+	// RangeMin > 1 a single-header stack is an under-run → reject; skipping
+	// to chainDone here would bypass the post-loop RangeMin floor check and
+	// wrongly accept it. No-op when the protocol declares no ChainEnd (VLAN
+	// terminates via its self-dispatch).
+	preLoopTarget := chainDone
+	if rangeMin > 1 {
+		preLoopTarget = dslReject
+	}
+	preLoopEnd, err := chainEndCheck(layer.Spec, hs, staticChainFrame, preLoopTarget)
 	if err != nil {
 		return nil, nil, err
 	}

@@ -58,9 +58,11 @@ func TestNestedBoolEq(t *testing.T) {
 // TestMplsChainBoundaries pins the bounded mpls{n,m} quantifier's count
 // boundaries. MPLS has no self-dispatch ethertype (NO_CHECK), so the
 // label-stack length is defined by the bottom-of-stack s-bit alone: the
-// static chain must reject a stack shorter than n (under-run) and longer
-// than m (over-run) on the s-bit itself, not lean on the next layer's
-// self-validation to mop up the mis-parse.
+// chain must reject a stack shorter than n (under-run) and longer than m
+// (over-run) on the s-bit itself, not lean on the next layer's
+// self-validation to mop up the mis-parse. Covers both the static unroll
+// (m <= staticChainCap) and the bpf_loop path (m = 10), the latter for the
+// single-label under-run that bypassed its RangeMin floor.
 func TestMplsChainBoundaries(t *testing.T) {
 	mpls := func(labels ...uint32) []byte {
 		o := Defaults()
@@ -87,6 +89,15 @@ func TestMplsChainBoundaries(t *testing.T) {
 	r23.MustMatch(t, mpls(16, 17, 18), "{2,3} 3 labels")
 	r23.MustReject(t, mpls(16), "{2,3} 1 label (under-run)")
 	r23.MustReject(t, mpls(16, 17, 18, 19), "{2,3} 4 labels (over-run)")
+
+	// {2,10} exceeds staticChainCap so it takes the bpf_loop path. Its
+	// pre-loop chain-end check must reject a single-label under-run instead
+	// of jumping past the post-loop RangeMin floor (which would wrongly
+	// accept it, since the 1-label stack lands the next layer correctly).
+	r210 := New(t, "eth/mpls{2,10}/ipv4/tcp")
+	r210.MustMatch(t, mpls(16, 17), "{2,10} 2 labels")
+	r210.MustMatch(t, mpls(16, 17, 18, 19, 20, 21), "{2,10} 6 labels")
+	r210.MustReject(t, mpls(16), "{2,10} 1 label (bpf_loop under-run)")
 }
 
 // TestEthIPv4TCPDportPredicate exercises a primary-header predicate
