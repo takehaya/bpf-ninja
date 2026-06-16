@@ -88,6 +88,18 @@ func genStaticChain(layer *ir.LayerInstance, index int, all []*ir.LayerInstance)
 		failLabel := dslReject
 		if i >= layer.RangeMin {
 			failLabel = chainDone
+			// RangeMin is satisfied (i instances consumed): terminate the
+			// chain when the just-consumed header signals chain-end — the
+			// same s-bit check the bpf_loop path runs. Protocols that
+			// distinguish the next instance by a self-dispatch const (VLAN
+			// ethertype) declare no ChainEnd, so this is a no-op for them
+			// and they terminate via genDispatch below instead. Either way
+			// both paths share one termination mechanism.
+			endCheck, err := chainEndCheck(layer.Spec, hs, staticChainFrame, chainDone)
+			if err != nil {
+				return nil, err
+			}
+			insns = append(insns, endCheck...)
 		}
 		dispatch, err := genDispatch(selfLayer, layer, hs, selfRange, selfRange, failLabel)
 		if err != nil {
