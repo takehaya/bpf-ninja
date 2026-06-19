@@ -31,6 +31,11 @@ type PacketOpts struct {
 	// IP layer: SrcIP / DstIP (v4 or v6). When both are nil, no IP.
 	SrcIP, DstIP net.IP
 	IPProto      uint8 // overridden by upper layer when zero
+	// TTL sets the IPv4 TTL (and is ignored for IPv6, which uses a
+	// fixed HopLimit). Zero means the default 64, so predicates like
+	// `ipv4[ttl==64]` match out of the box and a reject case sets a
+	// different value.
+	TTL uint8
 
 	// L4
 	SrcPort, DstPort uint16
@@ -206,10 +211,14 @@ func buildL3L4(t testing.TB, o *PacketOpts, isV6 bool) ([]gopacket.SerializableL
 		}
 		ip, netLayer = v6, v6
 	default:
+		ttl := o.TTL
+		if ttl == 0 {
+			ttl = 64
+		}
 		v4 := &layers.IPv4{
 			Version:  4,
 			IHL:      5,
-			TTL:      64,
+			TTL:      ttl,
 			SrcIP:    o.SrcIP.To4(),
 			DstIP:    o.DstIP.To4(),
 			Protocol: layers.IPProtocolTCP,
@@ -237,9 +246,11 @@ func buildL3L4(t testing.TB, o *PacketOpts, isV6 bool) ([]gopacket.SerializableL
 		upper = append(upper, udp)
 	case o.ICMP:
 		if isV6 {
-			upper = append(upper, &layers.ICMPv6{
+			icmp6 := &layers.ICMPv6{
 				TypeCode: layers.CreateICMPv6TypeCode(layers.ICMPv6TypeEchoRequest, 0),
-			})
+			}
+			_ = icmp6.SetNetworkLayerForChecksum(netLayer)
+			upper = append(upper, icmp6)
 		} else {
 			upper = append(upper, &layers.ICMPv4{
 				TypeCode: layers.CreateICMPv4TypeCode(layers.ICMPv4TypeEchoRequest, 0),
@@ -432,11 +443,11 @@ func stripToTCPSegment(t testing.TB, src, dst net.IP, srcPort, dstPort uint16) [
 
 // SRv6Opts describes an Ethernet/IPv6/SRH/<inner> frame.
 type SRv6Opts struct {
-	Src, Dst         net.IP
-	Segments         []net.IP // segment list (last_entry+1 entries); first is innermost
-	InnerNextHeader  uint8    // protocol for SRH.next_header (e.g. 6=TCP)
-	InnerSrcPort     uint16
-	InnerDstPort     uint16
+	Src, Dst        net.IP
+	Segments        []net.IP // segment list (last_entry+1 entries); first is innermost
+	InnerNextHeader uint8    // protocol for SRH.next_header (e.g. 6=TCP)
+	InnerSrcPort    uint16
+	InnerDstPort    uint16
 }
 
 // BuildSRv6 builds Ethernet+IPv6(NH=43)+SRH+inner-TCP. The number
@@ -493,7 +504,7 @@ func BuildEthIPv4UDPVXLAN(t testing.TB, vni uint32) []byte {
 	d := Defaults()
 	eth := &layers.Ethernet{SrcMAC: d.SrcMAC, DstMAC: d.DstMAC, EthernetType: layers.EthernetTypeIPv4}
 	v4 := &layers.IPv4{
-		Version:  4, IHL: 5, TTL: 64,
+		Version: 4, IHL: 5, TTL: 64,
 		SrcIP:    d.SrcIP.To4(),
 		DstIP:    d.DstIP.To4(),
 		Protocol: layers.IPProtocolUDP,
@@ -506,6 +517,53 @@ func BuildEthIPv4UDPVXLAN(t testing.TB, vni uint32) []byte {
 		ComputeChecksums: true, FixLengths: true,
 	}, eth, v4, udp, vx); err != nil {
 		t.Fatalf("gopacket.SerializeLayers (vxlan): %v", err)
+	}
+	return buf.Bytes()
+}
+
+// BuildVXLANInnerIPv4TCP builds eth/ipv4/udp(4789)/VXLAN/ipv4/tcp.
+// The vxlan vocab parser extracts the fixed 8-byte header and accepts,
+// transitioning straight to the next network header (no inner
+// Ethernet), so the inner IPv4/TCP sits immediately after the VXLAN
+// header. innerDst and innerDstPort drive the fields the F00/F03
+// corpus filters read; nil/zero fall back to 10.0.0.1 / port 80.
+func BuildVXLANInnerIPv4TCP(t testing.TB, innerDst net.IP, innerDstPort uint16) []byte {
+	t.Helper()
+	if innerDst == nil {
+		innerDst = net.IPv4(10, 0, 0, 1)
+	}
+	innerDst4 := innerDst.To4()
+	if innerDst4 == nil {
+		t.Fatalf("BuildVXLANInnerIPv4TCP: innerDst %v is not an IPv4 address", innerDst)
+	}
+	if innerDstPort == 0 {
+		innerDstPort = 80
+	}
+	d := Defaults()
+	eth := &layers.Ethernet{SrcMAC: d.SrcMAC, DstMAC: d.DstMAC, EthernetType: layers.EthernetTypeIPv4}
+	outer := &layers.IPv4{
+		Version: 4, IHL: 5, TTL: 64,
+		SrcIP: d.SrcIP.To4(), DstIP: d.DstIP.To4(),
+		Protocol: layers.IPProtocolUDP,
+	}
+	udp := &layers.UDP{SrcPort: 12345, DstPort: 4789}
+	_ = udp.SetNetworkLayerForChecksum(outer)
+	vx := &layers.VXLAN{ValidIDFlag: true, VNI: 100}
+	inner := &layers.IPv4{
+		Version: 4, IHL: 5, TTL: 64,
+		SrcIP: net.IPv4(192, 168, 0, 1).To4(), DstIP: innerDst4,
+		Protocol: layers.IPProtocolTCP,
+	}
+	itcp := &layers.TCP{
+		SrcPort: 1024, DstPort: layers.TCPPort(innerDstPort),
+		Window: 65535, SYN: true, Seq: 1,
+	}
+	_ = itcp.SetNetworkLayerForChecksum(inner)
+	buf := gopacket.NewSerializeBuffer()
+	if err := gopacket.SerializeLayers(buf, gopacket.SerializeOptions{
+		ComputeChecksums: true, FixLengths: true,
+	}, eth, outer, udp, vx, inner, itcp); err != nil {
+		t.Fatalf("gopacket.SerializeLayers (vxlan inner): %v", err)
 	}
 	return buf.Bytes()
 }
@@ -630,7 +688,7 @@ func BuildEthIPv4UDPGeneve(t testing.TB, vni uint32) []byte {
 	d := Defaults()
 	eth := &layers.Ethernet{SrcMAC: d.SrcMAC, DstMAC: d.DstMAC, EthernetType: layers.EthernetTypeIPv4}
 	v4 := &layers.IPv4{
-		Version:  4, IHL: 5, TTL: 64,
+		Version: 4, IHL: 5, TTL: 64,
 		SrcIP:    d.SrcIP.To4(),
 		DstIP:    d.DstIP.To4(),
 		Protocol: layers.IPProtocolUDP,

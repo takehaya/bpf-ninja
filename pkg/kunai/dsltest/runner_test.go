@@ -24,6 +24,82 @@ func TestEthIPv4TCPMatch(t *testing.T) {
 	r.MustReject(t, BuildEthIPv4UDP(t, 12345, 53, []byte("query")), "UDP against eth/ipv4/tcp filter")
 }
 
+// TestNestedBoolEq covers bool-eq `(cmp) == (cmp)` (XNOR) and its nesting
+// on either operand. genBoolEq parks each level's LHS in a distinct arith
+// slot (top-down by nesting depth); a single fixed slot let a nested
+// bool-eq clobber an enclosing one — the right/both-nested cases pin that.
+func TestNestedBoolEq(t *testing.T) {
+	pkt := func(dp, sp uint16) []byte {
+		o := Defaults()
+		o.DstPort, o.SrcPort = dp, sp
+		return Build(t, o)
+	}
+
+	flat := New(t, "eth/ipv4/tcp where (tcp.dport == 443) == (tcp.sport == 443)")
+	flat.MustMatch(t, pkt(443, 443), "T == T")
+	flat.MustMatch(t, pkt(80, 12345), "F == F")
+	flat.MustReject(t, pkt(443, 12345), "T == F")
+	flat.MustReject(t, pkt(80, 443), "F == T")
+
+	left := New(t, "eth/ipv4/tcp where ((tcp.dport == 443) == (tcp.sport == 443)) == (tcp.dport == 80)")
+	left.MustMatch(t, pkt(80, 12345), "(F==F=T) == (T) -> T")
+	left.MustReject(t, pkt(443, 443), "(T==T=T) == (F) -> F")
+
+	right := New(t, "eth/ipv4/tcp where (tcp.dport == 80) == ((tcp.dport == 443) == (tcp.sport == 443))")
+	right.MustMatch(t, pkt(80, 12345), "(T) == (F==F=T) -> T")
+	right.MustReject(t, pkt(443, 443), "(F) == (T==T=T) -> F")
+
+	both := New(t, "eth/ipv4/tcp where ((tcp.dport == 443) == (tcp.sport == 443)) == ((tcp.dport == 80) == (tcp.sport == 80))")
+	both.MustReject(t, pkt(80, 12345), "(F==F=T) == (T==F=F) -> F")
+	both.MustMatch(t, pkt(443, 80), "(T==F=F) == (F==F=T)... -> T")
+	both.MustMatch(t, pkt(80, 80), "(F==F=T) == (T==T=T) -> T")
+}
+
+// TestMplsChainBoundaries pins the bounded mpls{n,m} quantifier's count
+// boundaries. MPLS has no self-dispatch ethertype (NO_CHECK), so the
+// label-stack length is defined by the bottom-of-stack s-bit alone: the
+// chain must reject a stack shorter than n (under-run) and longer than m
+// (over-run) on the s-bit itself, not lean on the next layer's
+// self-validation to mop up the mis-parse. Covers both the static unroll
+// (m <= staticChainCap) and the bpf_loop path (m = 10), the latter for the
+// single-label under-run that bypassed its RangeMin floor.
+func TestMplsChainBoundaries(t *testing.T) {
+	mpls := func(labels ...uint32) []byte {
+		o := Defaults()
+		o.MPLS = labels
+		return Build(t, o)
+	}
+
+	r14 := New(t, "eth/mpls{1,4}/ipv4/tcp")
+	r14.MustMatch(t, mpls(16), "{1,4} 1 label")
+	r14.MustMatch(t, mpls(16, 17, 18, 19), "{1,4} 4 labels")
+	r14.MustReject(t, mpls(), "{1,4} 0 labels (under-run)")
+	r14.MustReject(t, mpls(16, 17, 18, 19, 20), "{1,4} 5 labels (over-run)")
+	// 5th label whose top nibble is 0x4 would mimic an ipv4 version if the
+	// over-run leaked to the next layer; the s-bit guard rejects it first.
+	r14.MustReject(t, mpls(16, 17, 18, 19, 0x40000), "{1,4} 5 labels (crafted over-run)")
+
+	r22 := New(t, "eth/mpls{2,2}/ipv4/tcp")
+	r22.MustMatch(t, mpls(16, 17), "{2,2} 2 labels")
+	r22.MustReject(t, mpls(16), "{2,2} 1 label (under-run)")
+	r22.MustReject(t, mpls(16, 17, 18), "{2,2} 3 labels (over-run)")
+
+	r23 := New(t, "eth/mpls{2,3}/ipv4/tcp")
+	r23.MustMatch(t, mpls(16, 17), "{2,3} 2 labels")
+	r23.MustMatch(t, mpls(16, 17, 18), "{2,3} 3 labels")
+	r23.MustReject(t, mpls(16), "{2,3} 1 label (under-run)")
+	r23.MustReject(t, mpls(16, 17, 18, 19), "{2,3} 4 labels (over-run)")
+
+	// {2,10} exceeds staticChainCap so it takes the bpf_loop path. Its
+	// pre-loop chain-end check must reject a single-label under-run instead
+	// of jumping past the post-loop RangeMin floor (which would wrongly
+	// accept it, since the 1-label stack lands the next layer correctly).
+	r210 := New(t, "eth/mpls{2,10}/ipv4/tcp")
+	r210.MustMatch(t, mpls(16, 17), "{2,10} 2 labels")
+	r210.MustMatch(t, mpls(16, 17, 18, 19, 20, 21), "{2,10} 6 labels")
+	r210.MustReject(t, mpls(16), "{2,10} 1 label (bpf_loop under-run)")
+}
+
 // TestEthIPv4TCPDportPredicate exercises a primary-header predicate
 // (`tcp[dport==443]`). Confirms the predicate path runs in the
 // scratch-buffer wrapper and that byte-swap-at-codegen handles the
@@ -341,7 +417,7 @@ func TestAuxStackSrv6SegmentsDynamicIndex(t *testing.T) {
 func TestAuxStackIpv6ExtsIndex0(t *testing.T) {
 	r := New(t, "eth/ipv6/tcp where ipv6.exts[0].next_header == 6")
 	pkt := BuildIPv6WithExts(t, IPv6WithExtsOpts{
-		FirstNextHeader: 0,  // HBH
+		FirstNextHeader: 0, // HBH
 		Exts:            []IPv6Ext{{NextHeader: 6, HdrExtLen: 0, Options: bytes16("hbh-payload")}},
 		FinalNextHeader: 6, // TCP
 	})

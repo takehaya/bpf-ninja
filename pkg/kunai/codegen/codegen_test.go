@@ -367,6 +367,59 @@ func TestGenArithNestedHappyPath(t *testing.T) {
 	}
 }
 
+// deepLeftArithCompare returns `ipv4.total_length == (1+1+...+1)` whose
+// RHS is `binops` left-leaning additions, so its leaves land at arith
+// call-depth `binops`. layer is the ipv4 LayerInstance the field reads.
+func deepLeftArithCompare(layer *ir.LayerInstance, binops int) *ir.Condition {
+	var expr = &ir.ArithExpr{Kind: ast.ArithConst, Const: 1}
+	for range binops {
+		expr = &ir.ArithExpr{
+			Kind:  ast.ArithBinOp,
+			Op:    ast.ArithAdd,
+			Left:  expr,
+			Right: &ir.ArithExpr{Kind: ast.ArithConst, Const: 1},
+		}
+	}
+	return &ir.Condition{
+		Kind:   ast.WAtomArith,
+		Op:     ast.CmpEq,
+		ArithL: &ir.ArithExpr{Kind: ast.ArithField, Field: &ir.FieldRef{Layer: layer, Field: &ipv4Spec.Fields[3]}},
+		ArithR: expr,
+	}
+}
+
+// TestGenBoolEqOperandArithDepthBudget pins the bool-eq / operand-arith
+// slot accounting. genBoolEq parks each operand's LHS truth value at the
+// top of the arith region, so genArithWithBits lowers the usable arith
+// depth by the bool-eq nesting level: a `+`/`-` chain that compiles at the
+// top depth standalone must be rejected once it sits inside a bool-eq
+// operand, where climbing that deep would clobber the parked LHS and
+// silently mis-compare.
+func TestGenBoolEqOperandArithDepthBudget(t *testing.T) {
+	// binops = maxArithDepth-1 puts the leaves at the deepest call-depth
+	// the full (boolEqDepth == 0) guard still accepts.
+	const binops = maxArithDepth - 1
+
+	standalone := ethIPv4TCPProgram()
+	standalone.Where = deepLeftArithCompare(standalone.Layers[1], binops)
+	if _, err := Gen(standalone, Capabilities{}); err != nil {
+		t.Fatalf("standalone deep arith should compile at the top depth: %v", err)
+	}
+
+	// Same chain as a bool-eq operand: the budget drops by one level, so
+	// the deepest leaf now exceeds the ceiling and is rejected.
+	nested := ethIPv4TCPProgram()
+	nested.Where = &ir.Condition{
+		Kind:     ast.WAtomBoolEq,
+		BoolEqOp: ast.CmpEq,
+		BoolL:    deepLeftArithCompare(nested.Layers[1], binops),
+		BoolR:    deepLeftArithCompare(nested.Layers[1], 0), // shallow, valid operand
+	}
+	if _, err := Gen(nested, Capabilities{}); !errors.Is(err, ErrNotImplemented) {
+		t.Fatalf("deep arith inside bool-eq operand: err = %v; want ErrNotImplemented", err)
+	}
+}
+
 // --- Logical ops ---
 
 func actionAtom(v string) *ir.Condition {
