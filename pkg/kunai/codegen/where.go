@@ -23,6 +23,10 @@ type whereCtx struct {
 	labels  int
 	anchors map[*ir.LayerInstance]layerAnchor
 	queried queriedOptions
+	// boolEqDepth is the current `Bool == Bool` nesting level. genBoolEq
+	// uses it to pick a distinct LHS-save slot per level so a nested
+	// bool-eq operand does not clobber an enclosing one.
+	boolEqDepth int
 }
 
 func (c *whereCtx) freshLabel(prefix string) string {
@@ -146,14 +150,6 @@ func (c *whereCtx) genBoolEq(w *ir.Condition, failLabel string) (asm.Instruction
 	if w == nil || w.BoolL == nil || w.BoolR == nil {
 		return nil, fmt.Errorf("codegen: bool-eq lacks operands")
 	}
-	leftInsns, err := c.genConditionAsBool(w.BoolL)
-	if err != nil {
-		return nil, err
-	}
-	rightInsns, err := c.genConditionAsBool(w.BoolR)
-	if err != nil {
-		return nil, err
-	}
 	var jumpOp asm.JumpOp
 	switch w.BoolEqOp {
 	case ast.CmpEq:
@@ -165,10 +161,32 @@ func (c *whereCtx) genBoolEq(w *ir.Condition, failLabel string) (asm.Instruction
 	default:
 		return nil, fmt.Errorf("codegen: bool-eq with op %v not supported", w.BoolEqOp)
 	}
-	// Reuse the arith scratch slot 0; bool-eq doesn't nest with
-	// arith binops in the resolved IR (parser produces them as
-	// disjoint subtrees), so the slot is free at this point.
-	slot := arithStackSlot(0)
+	// Park the LHS truth value across the RHS evaluation. The RHS is a full
+	// condition whose own comparison/arith codegen writes the low arith
+	// scratch slots (slot 0 for a scalar compare, up to slot 4 for a
+	// 128-bit compare), so the LHS lives in the top of the arith region.
+	// One slot per bool-eq nesting level: a bool-eq operand (nested
+	// bool-eq) parks its own LHS one slot lower, so they never collide.
+	slotDepth := maxArithDepth - 1 - c.boolEqDepth
+	if slotDepth < boolEqOperandReserve {
+		// Usable park slots are boolEqOperandReserve..maxArithDepth-1
+		// inclusive, i.e. maxArithDepth-boolEqOperandReserve nesting levels.
+		return nil, fmt.Errorf("%w: bool-eq nested deeper than %d levels", ErrNotImplemented, maxArithDepth-boolEqOperandReserve)
+	}
+	slot := arithStackSlot(slotDepth)
+
+	// Operands are one level deeper so a nested bool-eq uses a lower slot.
+	c.boolEqDepth++
+	defer func() { c.boolEqDepth-- }()
+	leftInsns, err := c.genConditionAsBool(w.BoolL)
+	if err != nil {
+		return nil, err
+	}
+	rightInsns, err := c.genConditionAsBool(w.BoolR)
+	if err != nil {
+		return nil, err
+	}
+
 	var insns asm.Instructions
 	insns = append(insns, leftInsns...)
 	insns = append(insns, asm.StoreMem(asm.R10, slot, asm.R3, asm.DWord))
@@ -181,11 +199,11 @@ func (c *whereCtx) genBoolEq(w *ir.Condition, failLabel string) (asm.Instruction
 // genConditionAsBool evaluates cond once and leaves R3 ∈ {0, 1}
 // reflecting whether cond was true. Internally:
 //
-//   inner emit (jump to `falsyLabel` on miss)
-//   R3 = 1
-//   Ja done
-//   falsyLabel: R3 = 0
-//   done:
+//	inner emit (jump to `falsyLabel` on miss)
+//	R3 = 1
+//	Ja done
+//	falsyLabel: R3 = 0
+//	done:
 //
 // Used by genBoolEq so each operand of a Bool == Bool comparison is
 // emitted exactly once.
@@ -306,6 +324,7 @@ func (c *whereCtx) genQuantUnroll(w *ir.Condition, acceptLabel, failLabel string
 // it. The fail target depends on anySemantics:
 //   - any: per-iter mismatch → iterSkip (= "try next iter")
 //   - all: per-iter mismatch → failLabel (= "all() fails")
+//
 // On success:
 //   - any: emit a Ja to acceptLabel after the body so the unroll
 //     short-circuits
@@ -581,10 +600,10 @@ func (c *whereCtx) genAnd(w *ir.Condition, failLabel string) (asm.Instructions, 
 // genOr: left success skips right (short-circuit accept); otherwise
 // try right with the caller's failLabel.
 //
-//   <left with failLabel = tryRight>
-//   Ja orDone
-//   tryRight: <right with failLabel = failLabel>
-//   orDone: <landing symbol>
+//	<left with failLabel = tryRight>
+//	Ja orDone
+//	tryRight: <right with failLabel = failLabel>
+//	orDone: <landing symbol>
 func (c *whereCtx) genOr(w *ir.Condition, failLabel string) (asm.Instructions, error) {
 	tryRight := c.freshLabel("or_right")
 	orDone := c.freshLabel("or_done")
@@ -620,9 +639,9 @@ func (c *whereCtx) genOr(w *ir.Condition, failLabel string) (asm.Instructions, e
 // genNot: inner success means "not" fails; inner failure means "not"
 // succeeds.
 //
-//   <inner with failLabel = notSucc>
-//   Ja failLabel    # inner succeeded → not fails
-//   notSucc: <landing symbol>
+//	<inner with failLabel = notSucc>
+//	Ja failLabel    # inner succeeded → not fails
+//	notSucc: <landing symbol>
 func (c *whereCtx) genNot(w *ir.Condition, failLabel string) (asm.Instructions, error) {
 	notSucc := c.freshLabel("not_succ")
 	inner, err := c.gen(w.Inner, notSucc)
@@ -654,12 +673,27 @@ func (c *whereCtx) genNot(w *ir.Condition, failLabel string) (asm.Instructions, 
 //     LHS hold, 2,3 for genArith128's `field + field` LHS hi/lo, and
 //     4 for genArithField128Load's high-half transient stash.
 //
+// genBoolEq also parks LHS truth values in this region, growing *down*
+// from slot 15 (one per bool-eq nesting level) while operand arith grows
+// *up* from slot 0. The two are kept disjoint by two guards: bool-eq park
+// slots can't drop below boolEqOperandReserve (protecting the 128-bit
+// path's fixed low slots), and genArithWithBits caps operand arith depth
+// at maxArithDepth-boolEqDepth (protecting the parked slots from a deep
+// `+`/`-` chain). Without the latter, a bool-eq operand arith chain
+// reaching slot 15 would overwrite the saved LHS and silently mis-compare.
+//
 // The deepest slot (slot 15 at -176) writes bytes [-176, -168) and
 // abuts bpfLoopCtxLayerEntrySlot's range [-184, -176) without
 // overlap.
 const (
 	arithStackBase = -56
 	maxArithDepth  = 16
+	// boolEqOperandReserve is how many low arith slots a single bool-eq
+	// operand compare may consume (slots 0..4 for a 128-bit compare).
+	// genBoolEq parks its LHS in the top of the arith region growing
+	// downward one slot per nesting level, so it must stay above these
+	// reserved low slots; deeper bool-eq nesting is rejected.
+	boolEqOperandReserve = 5
 )
 
 // arithCmpTargetBits returns the comparison's effective integer
@@ -819,12 +853,12 @@ func (c *whereCtx) genArithCompare128(w *ir.Condition, failLabel string, targetB
 //   - ArithField: 16-byte field load via genArithField128Load
 //   - ArithConst: literal materialised as (0, const) (rare standalone)
 //   - ArithBinOp with op ∈ {+, -}:
-//     - `field op const`: const folded into low half, carry/borrow
-//       propagated to high via a const-relative compare (no register
-//       beyond R3/R5 needed).
-//     - `field op field`: LHS preserved in arith slots 2/3 while RHS
-//       is computed, then RHS is the in-place accumulator that LHS
-//       gets added/subtracted into.
+//   - `field op const`: const folded into low half, carry/borrow
+//     propagated to high via a const-relative compare (no register
+//     beyond R3/R5 needed).
+//   - `field op field`: LHS preserved in arith slots 2/3 while RHS
+//     is computed, then RHS is the in-place accumulator that LHS
+//     gets added/subtracted into.
 //
 // Mul / div / mod on bit<128> stay ErrNotImplemented (F5 — bit-slice
 // covers the practical IPv6 manipulation cases).
@@ -908,7 +942,9 @@ func (c *whereCtx) genArith128FieldOpConst(e *ir.ArithExpr) (asm.Instructions, e
 // host-callee-saved, R0/R4 carry packet pointers we mustn't trample).
 //
 // Output: R3 = (lhs_high + rhs_high + carry) mod 2^64,
-//         R5 = (lhs_low  + rhs_low)            mod 2^64
+//
+//	R5 = (lhs_low  + rhs_low)            mod 2^64
+//
 // (mirrored for sub: borrow propagates from low to high).
 func (c *whereCtx) genArith128FieldOpField(e *ir.ArithExpr) (asm.Instructions, error) {
 	leftInsns, err := c.genArith128(e.Left)
@@ -934,7 +970,7 @@ func (c *whereCtx) genArith128FieldOpField(e *ir.ArithExpr) (asm.Instructions, e
 		// register" slot. R5 keeps rhs_low until we add lhs_low.
 		insns = append(insns, asm.StoreMem(asm.R10, arithStackSlot(4), asm.R3, asm.DWord))
 		insns = append(insns, asm.LoadMem(asm.R3, asm.R10, lhsLowSlot, asm.DWord)) // R3 = lhs_low
-		insns = append(insns, asm.Add.Reg(asm.R5, asm.R3))                          // R5 = lhs_low + rhs_low
+		insns = append(insns, asm.Add.Reg(asm.R5, asm.R3))                         // R5 = lhs_low + rhs_low
 		// Carry iff sum < lhs_low (R3 still holds lhs_low).
 		noCarry := c.freshLabel("v128_ff_nocarry")
 		insns = append(insns, asm.JGE.Reg(asm.R5, asm.R3, noCarry))
@@ -947,11 +983,11 @@ func (c *whereCtx) genArith128FieldOpField(e *ir.ArithExpr) (asm.Instructions, e
 		// R5 holds new_low. Compute R3 = rhs_high + lhs_high
 		// (carry-adjusted). Park R5, free R3 for the high add.
 		insns = append(insns,
-			asm.StoreMem(asm.R10, lhsLowSlot, asm.R5, asm.DWord), // park new_low briefly
+			asm.StoreMem(asm.R10, lhsLowSlot, asm.R5, asm.DWord),       // park new_low briefly
 			asm.LoadMem(asm.R3, asm.R10, arithStackSlot(4), asm.DWord), // R3 = rhs_high
-			asm.LoadMem(asm.R5, asm.R10, lhsHighSlot, asm.DWord),        // R5 = lhs_high (carry-adjusted)
-			asm.Add.Reg(asm.R3, asm.R5),                                 // R3 = rhs_high + lhs_high
-			asm.LoadMem(asm.R5, asm.R10, lhsLowSlot, asm.DWord),         // R5 = new_low restored
+			asm.LoadMem(asm.R5, asm.R10, lhsHighSlot, asm.DWord),       // R5 = lhs_high (carry-adjusted)
+			asm.Add.Reg(asm.R3, asm.R5),                                // R3 = rhs_high + lhs_high
+			asm.LoadMem(asm.R5, asm.R10, lhsLowSlot, asm.DWord),        // R5 = new_low restored
 		)
 	case ast.ArithSub:
 		// Sub mirror: borrow ⇔ lhs_low < rhs_low. Detect first, then
@@ -971,12 +1007,12 @@ func (c *whereCtx) genArith128FieldOpField(e *ir.ArithExpr) (asm.Instructions, e
 		// the Mov R5,R3 + Store R5 → slot dance collapses to one
 		// Store. R5 stays free for the rhs_high load below.
 		insns = append(insns,
-			asm.Sub.Reg(asm.R3, asm.R5),                                 // R3 = lhs_low − rhs_low
-			asm.StoreMem(asm.R10, lhsLowSlot, asm.R3, asm.DWord),        // park new_low
-			asm.LoadMem(asm.R3, asm.R10, lhsHighSlot, asm.DWord),        // R3 = lhs_high (carry-adjusted)
-			asm.LoadMem(asm.R5, asm.R10, arithStackSlot(4), asm.DWord),  // R5 = rhs_high
-			asm.Sub.Reg(asm.R3, asm.R5),                                 // R3 = new_high
-			asm.LoadMem(asm.R5, asm.R10, lhsLowSlot, asm.DWord),         // R5 = new_low
+			asm.Sub.Reg(asm.R3, asm.R5),                                // R3 = lhs_low − rhs_low
+			asm.StoreMem(asm.R10, lhsLowSlot, asm.R3, asm.DWord),       // park new_low
+			asm.LoadMem(asm.R3, asm.R10, lhsHighSlot, asm.DWord),       // R3 = lhs_high (carry-adjusted)
+			asm.LoadMem(asm.R5, asm.R10, arithStackSlot(4), asm.DWord), // R5 = rhs_high
+			asm.Sub.Reg(asm.R3, asm.R5),                                // R3 = new_high
+			asm.LoadMem(asm.R5, asm.R10, lhsLowSlot, asm.DWord),        // R5 = new_low
 		)
 	}
 	return insns, nil
@@ -1032,8 +1068,17 @@ func (c *whereCtx) genArith(e *ir.ArithExpr, depth int) (asm.Instructions, error
 // the constant to its low `targetBits` so 2's-complement negative
 // literals fit the BPF int32 immediate.
 func (c *whereCtx) genArithWithBits(e *ir.ArithExpr, depth int, targetBits int) (asm.Instructions, error) {
-	if depth >= maxArithDepth {
-		return nil, fmt.Errorf("%w: arith expression nested deeper than %d levels", ErrNotImplemented, maxArithDepth)
+	// Cap the usable arith depth by the bool-eq LHS values currently
+	// parked at the top of the arith region. genBoolEq parks one slot per
+	// nesting level growing down from slot maxArithDepth-1, so operand
+	// arith must stay strictly below the lowest parked slot; otherwise a
+	// deep `+`/`-` chain inside a bool-eq operand reaches slot
+	// (maxArithDepth-1) and overwrites the saved LHS, silently
+	// mis-comparing. Outside any bool-eq (boolEqDepth == 0) the ceiling is
+	// the full maxArithDepth, so non-bool-eq expressions are unaffected.
+	ceiling := maxArithDepth - c.boolEqDepth
+	if depth >= ceiling {
+		return nil, fmt.Errorf("%w: arith expression nested deeper than %d levels", ErrNotImplemented, ceiling)
 	}
 	switch e.Kind {
 	case ast.ArithConst:

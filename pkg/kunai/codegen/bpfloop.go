@@ -98,6 +98,22 @@ const bpfLoopChainCap = 32
 // the main Return. The returned callback always carries btf.Func
 // metadata on its first instruction — required by the kernel for any
 // bpf2bpf subprogram.
+//
+// s-bit termination here is exact for `+` and `*` (RangeMin ≤ 1,
+// unbounded RangeMax): the callback breaks on the chain-end signal and the
+// pre-loop check accepts a single-header stack as a valid natural end.
+// Under-run is bounded for the bounded `{n,m>staticChainCap}` shape too:
+// the pre-loop check rejects a single-header stack when RangeMin > 1, and
+// the post-loop RangeMin floor rejects a multi-header under-run. The one
+// remaining gap is over-run — a stack longer than RangeMax is not rejected
+// on the s-bit (the iteration cap stops consuming but the last header's
+// s-bit is never required), so it leans on the next layer's
+// self-validation to reject the mis-parse: masked in practice, never
+// reproduced as a false-accept, but not the primary guard. The common
+// bounded MPLS quantifiers (m ≤ staticChainCap) take the fully-guarded
+// static path in chain.go; tightening this loop's over-run to match is a
+// follow-up. Non-chain-end protocols (VLAN) bound both ends via their
+// self-dispatch peek.
 func genBpfLoopChain(layer *ir.LayerInstance, index int, all []*ir.LayerInstance) (asm.Instructions, asm.Instructions, error) {
 	rangeMin, _ := chainBounds(layer)
 	if rangeMin == 0 && index == 0 {
@@ -150,6 +166,26 @@ func genBpfLoopChain(layer *ir.LayerInstance, index int, all []*ir.LayerInstance
 		mainInsns = append(mainInsns, first...)
 	}
 
+	// Both branches above consumed iteration 0 and advanced offsetBase. If
+	// that header already signals chain-end (e.g. an MPLS single-label
+	// stack with s == 1), the stack has exactly one header. For `+` / `*`
+	// (RangeMin <= 1) that is a valid natural end → skip the bpf_loop
+	// entirely (otherwise its first callback iteration consumes the
+	// following layer as a phantom instance). For a bounded quantifier with
+	// RangeMin > 1 a single-header stack is an under-run → reject; skipping
+	// to chainDone here would bypass the post-loop RangeMin floor check and
+	// wrongly accept it. No-op when the protocol declares no ChainEnd (VLAN
+	// terminates via its self-dispatch).
+	preLoopTarget := chainDone
+	if rangeMin > 1 {
+		preLoopTarget = dslReject
+	}
+	preLoopEnd, err := chainEndCheck(layer.Spec, hs, staticChainFrame, preLoopTarget)
+	if err != nil {
+		return nil, nil, err
+	}
+	mainInsns = append(mainInsns, preLoopEnd...)
+
 	// Seed ctx with offsetBase + scratch_start/end, then call bpf_loop
 	// with (max_iter, &cb, &ctx, flags=0). R0..R5 are caller-saved
 	// across the helper so we must restore them from ctx afterwards.
@@ -183,13 +219,14 @@ func genBpfLoopChain(layer *ir.LayerInstance, index int, all []*ir.LayerInstance
 		asm.LoadMem(asm.R1, asm.R10, bpfLoopCtxScratchEndSlot, asm.DWord),
 	)
 
-	if optionalChain {
-		// Landing for the `*` peek-miss path. The no-op must use a
-		// register whose verifier type agrees on both paths: the
-		// peek-miss path skipped the helper entirely, so R0 retains
-		// the scratch_start PTR_TO_MAP_VALUE; the bpf_loop path
-		// just reloaded it from ctx. R3 is caller-saved and would
-		// land as !read_ok on the miss path.
+	if optionalChain || layer.Spec.ChainEnd != nil {
+		// Landing for paths that jump past the bpf_loop call: the `*`
+		// peek-miss path, and the pre-loop chain-end skip above. The
+		// no-op must use a register whose verifier type agrees on both
+		// paths: the skip paths never entered the helper, so R0 retains
+		// the scratch_start PTR_TO_MAP_VALUE; the bpf_loop path just
+		// reloaded it from ctx. R3 is caller-saved and would land as
+		// !read_ok on the miss path.
 		mainInsns = append(mainInsns, asm.Mov.Reg(asm.R0, asm.R0).WithSymbol(chainDone))
 	}
 
@@ -232,7 +269,7 @@ func genBpfLoopCallback(spec *vocab.ProtocolSpec, selfConst *vocab.DispatchConst
 		asm.Add.Imm(asm.R3, int32(hs)),
 		asm.StoreMem(asm.R2, bpfLoopCbCtxOffsetField, asm.R3, asm.DWord),
 	)
-	endCheck, err := chainEndCheck(spec, hs, breakLabel)
+	endCheck, err := chainEndCheck(spec, hs, loopChainFrame, breakLabel)
 	if err != nil {
 		return nil, err
 	}
@@ -265,29 +302,78 @@ func genBpfLoopCallback(spec *vocab.ProtocolSpec, selfConst *vocab.DispatchConst
 // Wider byte-aligned fields (16/32-bit) and bit fields wider than 1
 // are deliberately rejected so the codegen path stays auditable; add
 // support when a real protocol needs it.
-func chainEndCheck(spec *vocab.ProtocolSpec, hs int, breakLabel string) (asm.Instructions, error) {
+// chainFrame names the registers a chain-end check uses, so the static
+// unroll path and the bpf_loop callback can share one chainEndCheck even
+// though their frames map the offset / window / scratch to different
+// registers. This is what makes quantifier termination uniform across
+// protocols: VLAN ends on its self-dispatch ethertype, MPLS on its s-bit
+// chain-end signal, and both codegen paths run the same check.
+type chainFrame struct {
+	offset, start, end, scalar, dst asm.Register
+}
+
+var (
+	// loopChainFrame: inside the bpf_loop callback the idx is gone, so
+	// R0/R1 are free; R3=post-advance offset, R4=window start, R5=end.
+	loopChainFrame = chainFrame{offset: asm.R3, start: asm.R4, end: asm.R5, scalar: asm.R1, dst: asm.R0}
+	// staticChainFrame: the main frame's host ABI — offsetBase=R4,
+	// window is [R0, R1], R3/R5 are scratch.
+	staticChainFrame = chainFrame{offset: offsetBase, start: asm.R0, end: asm.R1, scalar: asm.R3, dst: asm.R5}
+)
+
+func chainEndCheck(spec *vocab.ProtocolSpec, hs int, fr chainFrame, breakLabel string) (asm.Instructions, error) {
 	if spec.ChainEnd == nil {
 		return nil, nil
 	}
-	byteOff, mask, expected, err := chainEndShape(spec)
+	insns, expected, err := chainEndLoad(spec, hs, fr, breakLabel)
 	if err != nil {
 		return nil, err
 	}
-	// Chain-end byte lives at R4 + R3 + (-hs + byteOff); R3 is
-	// post-advance so the const offset is typically negative. R1 is
-	// free in this callback frame (bpf_loop idx no longer used) — use
-	// it as the scalar scratch.
-	loadByteOff := int32(-hs + byteOff)
-	insns := append(asm.Instructions{}, foldOffsetIntoScalar(asm.R1, asm.R3, loadByteOff, breakLabel)...)
-	insns = append(insns, boundedScalarLoad(asm.R0, asm.R4, asm.R1, asm.R5, asm.Byte, breakLabel)...)
-	if mask != 0xff {
-		insns = append(insns, asm.And.Imm(asm.R0, int32(mask)))
-	}
-	// Break when the loaded value equals the chain-end value. MPLS
-	// declares CHAIN_END_S = 1: "stop iterating when s == 1 (=
-	// bottom of stack)".
-	insns = append(insns, asm.JEq.Imm(asm.R0, int32(expected), breakLabel))
+	// Terminate when the loaded value equals the chain-end value. MPLS
+	// declares CHAIN_END_S = 1: "stop when s == 1 (= bottom of stack)".
+	insns = append(insns, asm.JEq.Imm(fr.dst, expected, breakLabel))
 	return insns, nil
+}
+
+// chainEndRequire is the over-run guard for the last static iteration:
+// after consuming the quantifier's RangeMax headers without an earlier
+// natural end, the final header MUST signal chain-end, otherwise the
+// stack is longer than the quantifier allows and the chain rejects.
+// Inverse of chainEndCheck — jumps to rejectLabel when the signal is
+// *absent*. No-op for protocols without a chain-end signal (their
+// over-run is caught by the next layer's self-dispatch peek instead).
+func chainEndRequire(spec *vocab.ProtocolSpec, hs int, fr chainFrame, rejectLabel string) (asm.Instructions, error) {
+	if spec.ChainEnd == nil {
+		return nil, nil
+	}
+	insns, expected, err := chainEndLoad(spec, hs, fr, rejectLabel)
+	if err != nil {
+		return nil, err
+	}
+	insns = append(insns, asm.JNE.Imm(fr.dst, expected, rejectLabel))
+	return insns, nil
+}
+
+// chainEndLoad emits the load+mask of the just-consumed header's
+// chain-end byte into fr.dst and returns the expected value the caller
+// compares against. The byte lives in the just-consumed header at
+// fr.offset + (-hs + byteOff); the offset is post-advance so the const
+// is typically negative. boundsLabel takes an out-of-window load — for a
+// terminate check that means "treat as end", for an over-run guard
+// "reject", so the caller supplies the right target. Shared by
+// chainEndCheck and chainEndRequire.
+func chainEndLoad(spec *vocab.ProtocolSpec, hs int, fr chainFrame, boundsLabel string) (asm.Instructions, int32, error) {
+	byteOff, mask, expected, err := chainEndShape(spec)
+	if err != nil {
+		return nil, 0, err
+	}
+	loadByteOff := int32(-hs + byteOff)
+	insns := append(asm.Instructions{}, foldOffsetIntoScalar(fr.scalar, fr.offset, loadByteOff, boundsLabel)...)
+	insns = append(insns, boundedScalarLoad(fr.dst, fr.start, fr.scalar, fr.end, asm.Byte, boundsLabel)...)
+	if mask != 0xff {
+		insns = append(insns, asm.And.Imm(fr.dst, int32(mask)))
+	}
+	return insns, int32(expected), nil
 }
 
 // chainEndShape resolves the vocab's CHAIN_END field into (byteOff,
