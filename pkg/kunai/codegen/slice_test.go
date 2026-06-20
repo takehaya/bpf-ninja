@@ -106,6 +106,90 @@ func TestSlicePostAdjustNonAligned(t *testing.T) {
 	}
 }
 
+func TestSubByteWindow(t *testing.T) {
+	cases := []struct {
+		name             string
+		bitOff, width    int
+		byteOff, loadLen int
+		ok               bool
+	}{
+		// byte-clean fields are not our path.
+		{"byte-aligned byte field", 8, 8, 0, 0, false},
+		{"byte-aligned 2-byte field", 16, 16, 0, 0, false},
+		// sub-byte starts / widths.
+		{"ipv4.version", 0, 4, 0, 1, true},
+		{"ipv4.ihl", 4, 4, 0, 1, true},
+		{"ipv4.flags", 48, 3, 6, 1, true},
+		{"ipv4.frag_offset", 51, 13, 6, 2, true},
+		{"tcp.data_offset", 96, 4, 12, 1, true},
+		{"tcp.flags", 103, 9, 12, 2, true},
+		{"ipv6.traffic_class", 4, 8, 0, 2, true},
+		// covering window wider than a single 8-byte LDX → not ours.
+		{"too wide", 1, 64, 0, 0, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			byteOff, loadLen, ok := subByteWindow(c.bitOff, c.width)
+			if ok != c.ok || (ok && (byteOff != c.byteOff || loadLen != c.loadLen)) {
+				t.Errorf("subByteWindow(%d,%d) = (%d,%d,%v), want (%d,%d,%v)",
+					c.bitOff, c.width, byteOff, loadLen, ok, c.byteOff, c.loadLen, c.ok)
+			}
+		})
+	}
+}
+
+// subByteFieldRef builds a FieldRef over a synthetic single-field spec
+// whose field sits at the given header bit offset (padded by a leading
+// filler field) so slicePostAdjust resolves the real geometry.
+func subByteFieldRef(bitOff, width int) *ir.FieldRef {
+	fields := []vocab.Field{}
+	if bitOff > 0 {
+		fields = append(fields, vocab.Field{Name: "_pad", Bits: bitOff})
+	}
+	fields = append(fields, vocab.Field{Name: "f", Bits: width})
+	return &ir.FieldRef{
+		Layer: &ir.LayerInstance{Spec: &vocab.ProtocolSpec{Name: "p", Fields: fields}},
+		Field: &vocab.Field{Name: "f", Bits: width},
+	}
+}
+
+func TestSlicePostAdjustSubByteField(t *testing.T) {
+	cases := []struct {
+		name          string
+		bitOff, width int
+		loadBytes     int
+		shift         int
+		mask          uint64
+	}{
+		{"ipv4.version", 0, 4, 1, 4, 0xf},
+		{"ipv4.ihl", 4, 4, 1, 0, 0xf},
+		{"ipv4.flags", 48, 3, 1, 5, 0x7},
+		{"ipv4.frag_offset", 51, 13, 2, 0, 0x1fff},
+		{"tcp.data_offset", 96, 4, 1, 4, 0xf},
+		{"tcp.flags", 103, 9, 2, 0, 0x1ff},
+		{"ipv6.traffic_class", 4, 8, 2, 4, 0xff},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			ref := subByteFieldRef(c.bitOff, c.width)
+			shift, mask := slicePostAdjust(ref, c.loadBytes)
+			if shift != c.shift || mask != c.mask {
+				t.Errorf("slicePostAdjust = (shift=%d, mask=%#x), want (shift=%d, mask=%#x)",
+					shift, mask, c.shift, c.mask)
+			}
+		})
+	}
+}
+
+// A byte-clean primary field (and an empty/aux ref) must stay a no-op
+// so existing F1–F10 emit is unchanged.
+func TestSlicePostAdjustByteCleanFieldNoOp(t *testing.T) {
+	ref := subByteFieldRef(16, 16) // dport-like: byte-aligned, 2 bytes
+	if shift, mask := slicePostAdjust(ref, 2); shift != 0 || mask != 0 {
+		t.Errorf("byte-clean field: got (shift=%d, mask=%#x), want (0, 0)", shift, mask)
+	}
+}
+
 func TestApplySliceToOffsetByteAligned(t *testing.T) {
 	// Byte-aligned slice on a 16-byte field narrows (off, size).
 	ref := &ir.FieldRef{

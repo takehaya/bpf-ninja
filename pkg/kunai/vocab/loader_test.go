@@ -1789,16 +1789,17 @@ parser P(packet_in pkt, out foo_h hdr) {
 	}
 }
 
-// TestSelectKeyLookaheadRejectsNon8Bit pins the MVP cap: lookahead
-// keys must be exactly 8 bits because codegen only knows how to
-// emit a single-byte LDX for the peek. Wider widths would need
-// multi-byte loads.
-func TestSelectKeyLookaheadRejectsNon8Bit(t *testing.T) {
+// TestSelectKeyLookaheadRejectsUnsupportedWidth pins the lookahead
+// width gate: codegen lowers byte-multiple widths up to 24 bits
+// (8/16/24), so a non-byte-multiple width like bit<12> is rejected
+// with a hint. The accepted widths (incl. the 24-bit Geneve
+// class+type dispatch) are exercised end to end in dsltest.
+func TestSelectKeyLookaheadRejectsUnsupportedWidth(t *testing.T) {
 	src := `header foo_h { bit<8> a; }
 parser P(packet_in pkt, out foo_h hdr) {
 	state start {
 		pkt.extract(hdr);
-		transition select(pkt.lookahead<bit<16>>()) {
+		transition select(pkt.lookahead<bit<12>>()) {
 			0: accept;
 			default: reject;
 		}
@@ -1806,7 +1807,7 @@ parser P(packet_in pkt, out foo_h hdr) {
 }`
 	fsys := fstest.MapFS{"vocab/foo.p4": &fstest.MapFile{Data: []byte(src)}}
 	_, err := Load(fsys, "vocab")
-	if err == nil || !strings.Contains(err.Error(), "must be exactly 8 bits") {
+	if err == nil || !strings.Contains(err.Error(), "must be 8, 16, or 24 bits") {
 		t.Fatalf("err = %v; want bit-width hint", err)
 	}
 }

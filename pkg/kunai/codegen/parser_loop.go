@@ -222,13 +222,22 @@ func emitFillStackSlots(initImm int32, n int, resolve func(int) (int16, error)) 
 // rejects the load as out of packet range. boundedScalarLoad re-runs
 // the end-pointer check on the load register itself, which both hosts
 // accept; the extra check is redundant on the map-value path.
-func (c *pmCtx) emitDynamicAuxSlotPrelude(breakLabel string) (asm.Instructions, error) {
+func (c *pmCtx) emitDynamicAuxSlotPrelude(sel *vocab.SelectOp, breakLabel string) (asm.Instructions, error) {
 	demand := c.queried[c.layer]
 	if len(demand) == 0 {
 		return nil, nil
 	}
-	// R1 = kind byte at scratchStart(R4) + cursor(R3); R3/R4/R5 survive.
-	insns := boundedScalarLoad(asm.R1, asm.R4, asm.R3, asm.R5, asm.Byte, breakLabel)
+	// R1 = the dispatch kind at scratchStart(R4) + cursor(R3); R3/R4/R5
+	// survive. Read it exactly as the dispatch does so the per-option
+	// JNE below compares against the same normalized value — a wide
+	// (e.g. 24-bit Geneve class+type) key needs a multi-byte load and
+	// byte-swap, not a single-byte LDX.
+	shape, err := c.lookaheadKindShape(sel)
+	if err != nil {
+		return nil, err
+	}
+	insns := boundedScalarLoad(asm.R1, asm.R4, asm.R3, asm.R5, shape.loadSize, breakLabel)
+	insns = append(insns, shape.normalize(asm.R1)...)
 	for idx, layout := range demand {
 		slot, err := c.queried.slotForLayer(c.layer, idx+1)
 		if err != nil {
@@ -266,15 +275,18 @@ func (c *pmCtx) emitMultiStateCallback(entry *vocab.ParseState, entryIdx int, cb
 		// which lets the subsequent `pkt + R3` adds verify.
 		asm.JGT.Imm(asm.R3, int32(ScratchBufSize)-1, breakLabel),
 	}
-	// Per-case dispatch over the lookahead<bit<8>>() byte. Use the
+	// Per-case dispatch over the lookahead<bit<N>>() key. Use the
 	// existing emitSelectGeneric machinery with a callback-flavoured
-	// selectAddr that materialises the byte at R4+R3.
+	// selectAddr that materialises the bytes at R4+R3.
 	addr := callbackSelectAddr("tlvcb", breakLabel)
-	// Bound-check the 1-byte peek before any case body runs.
+	// Bound-check the peek (the widest lookahead key's load) before any
+	// case body runs. The per-case bounded load re-checks, but this
+	// coarse guard keeps the cascade off a short tail.
+	peekBytes := selectPeekBytes(entry.Trans.Select)
 	insns = append(insns,
 		asm.Mov.Reg(asm.R0, asm.R4),
 		asm.Add.Reg(asm.R0, asm.R3),
-		asm.Add.Imm(asm.R0, 1),
+		asm.Add.Imm(asm.R0, int32(peekBytes)),
 		asm.JGT.Reg(asm.R0, asm.R5, breakLabel),
 	)
 	// Slot-store prelude must run BEFORE the dispatch cascade, not
@@ -282,7 +294,7 @@ func (c *pmCtx) emitMultiStateCallback(entry *vocab.ParseState, entryIdx int, cb
 	// function of the kind byte alone so the verifier doesn't track
 	// "which case ran × which slot was written" across iters. See
 	// docs/ja/dsl-internals.md §6.5 Mechanism 7.
-	prelude, err := c.emitDynamicAuxSlotPrelude(breakLabel)
+	prelude, err := c.emitDynamicAuxSlotPrelude(entry.Trans.Select, breakLabel)
 	if err != nil {
 		return nil, err
 	}

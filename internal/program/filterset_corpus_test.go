@@ -2,7 +2,6 @@ package program
 
 import (
 	"errors"
-	"regexp"
 	"testing"
 
 	"github.com/cilium/ebpf"
@@ -10,20 +9,19 @@ import (
 	"github.com/takehaya/xdp-ninja/pkg/kunai/codegen"
 )
 
-// vlanLayerRe matches a vlan/qinq layer token in a chain: a layer name
-// always follows a chain separator (`/`, or `(`/`|` inside an
-// alternation), so anchoring on those excludes labels like `@vlan` and
-// longer names like `vxlan` (preceded by `vx`, not a separator). The
-// trailing \b keeps it from matching a hypothetical `vlanfoo`.
-var vlanLayerRe = regexp.MustCompile(`[/(|](vlan|qinq)\b`)
-
-// exprHasVlanLayer reports whether a corpus expression carries a
-// vlan/qinq layer. The tc host rejects these at compile time because
-// the kernel extracts the outer VLAN tag into skb metadata before the
-// program runs (codegen.Capabilities.VlanInMetadata); they compile and
-// load only on XDP, where VLAN is in-band.
-func exprHasVlanLayer(expr string) bool {
-	return vlanLayerRe.MatchString(expr)
+// tcRejectingCorpus lists the VerifierCorpus expressions the tc host
+// rejects at compile time. The tc host extracts the outer VLAN tag into
+// skb metadata before the program runs (codegen.HostLayout.VlanInMetadata),
+// so a vlan/qinq layer read from packet bytes is rejected UNLESS it is
+// absent-able — an optional quantifier whose skip path the byte parser
+// can take. The optional predicate-free forms (D00 vlan?, D01 qinq?/vlan?,
+// D07 vlan? with a tcp predicate) are therefore accepted and loaded at
+// tc; only a mandatory tag or a tag inside an alternation is rejected.
+// See checkHostLayerSupport.
+var tcRejectingCorpus = map[string]bool{
+	"eth/vlan{1,3}/ipv4/tcp":   true, // D04: mandatory tag, no skip path
+	"eth/(vlan|qinq)/ipv4/tcp": true, // E00: tag inside an alternation
+	"eth/((vlan|qinq)|ipv4)":   true, // E03: tag inside an alternation
 }
 
 // VerifierCorpus is a curated set of well-typed kunai expressions that
@@ -131,11 +129,25 @@ var VerifierCorpus = []struct {
 	{"G00", "eth/ipv6/srv6 where any(srv6.segments.addr == fc00::1)"},
 	{"G01", "eth/ipv6/srv6 where any(srv6.segments.addr == 2001:db8::/32)"},
 	{"G02", "eth/ipv4/tcp where tcp.options.MSS.value == 1460"},
+	{"G03", "eth/ipv4/udp/geneve where geneve.options.OVN.egress_port == 42"},
+	{"G04", "eth/ipv4/udp/geneve where geneve.options.GWLB.flow_cookie == 0x12345678"},
 
 	// Capture clauses — exercise output-shape parser, not just chain.
 	{"H00", "eth/ipv4/tcp capture headers+64"},
 	{"H01", "eth/ipv4/tcp capture all"},
 	{"H03", "eth/ipv4/tcp capture absolute 96"},
+
+	// Sub-byte / non-byte-aligned primary field reads — covering-window
+	// load + post-load shift+mask (TCP flags/data_offset, IPv4
+	// version/ihl/flags/frag_offset, IPv6 traffic_class). Packet-level
+	// correctness is in dsltest TestSubByte*; here we pin verifier load.
+	{"I00", "eth/ipv4/tcp where tcp.flags & 0x02 != 0"},
+	{"I01", "eth/ipv4/tcp where tcp.data_offset == 5"},
+	{"I02", "eth/ipv4/tcp where ipv4.version == 4"},
+	{"I03", "eth/ipv4[ihl==5]/tcp"},
+	{"I04", "eth/ipv4/tcp where ipv4.flags & 0x2 != 0"},
+	{"I05", "eth/ipv4/tcp where ipv4.frag_offset == 0"},
+	{"I06", "eth/ipv6/tcp where ipv6.traffic_class == 0"},
 }
 
 // TestFilterCorpusCompiles is the no-root sister of TestFilterSetCompiles:
@@ -154,9 +166,9 @@ func TestFilterCorpusCompiles(t *testing.T) {
 	for _, c := range VerifierCorpus {
 		for _, h := range hosts {
 			t.Run(c.ID+"/"+h.name, func(t *testing.T) {
-				tcVlan := h.progType != ebpf.XDP && exprHasVlanLayer(c.Expr)
+				tcReject := h.progType != ebpf.XDP && tcRejectingCorpus[c.Expr]
 				_, err := compileFilter(c.Expr, true /*useDSL*/, false /*isFexit*/, h.progType)
-				if tcVlan {
+				if tcReject {
 					if !errors.Is(err, codegen.ErrNotImplemented) {
 						t.Fatalf("compile %s (%s): expected tc rejection with ErrNotImplemented (VLAN in skb metadata), got %v", c.ID, h.name, err)
 					}
@@ -190,8 +202,8 @@ func runFilterCorpusMatrix(t *testing.T, hostProg *ebpf.Program, funcName string
 	isTC := funcName == tcFuncName
 	for _, c := range VerifierCorpus {
 		t.Run(c.ID, func(t *testing.T) {
-			if isTC && exprHasVlanLayer(c.Expr) {
-				t.Skipf("%s carries a vlan/qinq layer; the tc host extracts the outer VLAN tag into skb metadata, so it is rejected at compile time (not loadable)", c.ID)
+			if isTC && tcRejectingCorpus[c.Expr] {
+				t.Skipf("%s carries a non-absent-able vlan/qinq layer (mandatory or in an alternation); the tc host rejects it at compile time (not loadable)", c.ID)
 			}
 			loadProbeOrFail(t, hostProg, funcName, c.Expr, false /*exit*/, true /*useDSL*/)
 		})

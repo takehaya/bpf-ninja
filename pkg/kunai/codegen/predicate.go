@@ -134,12 +134,14 @@ func emitIntPredicate(pred *ir.Predicate) (asm.Instructions, error) {
 		return nil, err
 	}
 	hasSlice := pred.Field != nil && pred.Field.Slice != nil
+	subByte := fieldIsSubByte(pred.Field)
 	switch {
-	case hasSlice:
-		// Slice-narrowed load: always bring the register to host
-		// order, then shift+mask. The constant stays in host order
-		// (the user wrote it that way), so we don't apply the
-		// constant-side bswap trick the equality fast-path uses.
+	case hasSlice || subByte:
+		// Slice-narrowed or sub-byte field: the load went through a
+		// covering window, so bring the register to host order then
+		// shift+mask down to the field's bits. The constant stays in
+		// host order (the user wrote it that way), so we don't apply
+		// the constant-side bswap trick the equality fast-path uses.
 		if bytes > 1 {
 			insns = append(insns, asm.HostTo(asm.BE, asm.R3, size))
 		}
@@ -618,10 +620,12 @@ func emitInPredicate(pred *ir.Predicate) (asm.Instructions, error) {
 	dynamic := pred.Field.Aux != nil && pred.Field.Aux.Stack != nil && !pred.Field.Aux.Stack.IsStatic
 	var insns asm.Instructions
 	var bytes int
+	var size asm.Size
 	switch {
 	case dynamic:
 		bytes = pred.Field.Aux.FieldBitWidth / 8
-		size, err := asmSizeFor(bytes)
+		var err error
+		size, err = asmSizeFor(bytes)
 		if err != nil {
 			return nil, err
 		}
@@ -636,7 +640,7 @@ func emitInPredicate(pred *ir.Predicate) (asm.Instructions, error) {
 			return nil, err
 		}
 		bytes = bs
-		size, err := asmSizeFor(bs)
+		size, err = asmSizeFor(bs)
 		if err != nil {
 			return nil, err
 		}
@@ -644,6 +648,17 @@ func emitInPredicate(pred *ir.Predicate) (asm.Instructions, error) {
 			insns = append(insns, emitAuxGating(pred.Field.Aux.Gating, r4Anchor(), dslReject)...)
 		}
 		insns = append(insns, emitBoundedLoad(asm.R3, int16(fieldOff), size, dslReject)...)
+	}
+
+	// Sub-byte field: the load read a covering window, so bring R3 to
+	// host order and narrow it to the field's bits before comparing.
+	// The alternatives then stay in host order (no constant bswap).
+	subByte := fieldIsSubByte(pred.Field)
+	if subByte {
+		if bytes > 1 {
+			insns = append(insns, asm.HostTo(asm.BE, asm.R3, size))
+		}
+		insns = append(insns, emitSliceShiftMask(pred.Field, bytes)...)
 	}
 
 	matchLabel := nextPredicateMatchLabel()
@@ -654,8 +669,9 @@ func emitInPredicate(pred *ir.Predicate) (asm.Instructions, error) {
 		}
 		// Multi-byte fields land in R3 in network-byte order packed
 		// as little-endian; mirror emitIntPredicate by byte-swapping
-		// the constant so a single JEq still matches.
-		if bytes > 1 {
+		// the constant so a single JEq still matches. A sub-byte field
+		// is already host-order after the shift+mask above, so skip it.
+		if bytes > 1 && !subByte {
 			value = swapValueBytes(value, bytes)
 		}
 		if value > 0x7FFFFFFF {

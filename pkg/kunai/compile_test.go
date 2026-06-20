@@ -223,8 +223,8 @@ func TestCompileWhereBoolLitFalse(t *testing.T) {
 
 func TestCompileWhereBareBoolFieldDecay(t *testing.T) {
 	// `where tcp.dport` triggers Int<16> -> Bool decay -> `tcp.dport != 0`.
-	// (tcp.dport is byte-aligned, so codegen handles it without invoking the
-	// not-yet-implemented sub-byte field-load path that would gate flag bits.)
+	// (tcp.dport is byte-aligned; the sub-byte field-load path that gates
+	// flag bits is exercised by TestCompileSubByteField.)
 	insns, err := compileForTest("eth/ipv4/tcp where tcp.dport")
 	if err != nil {
 		t.Fatalf("Compile: %v", err)
@@ -381,6 +381,40 @@ func TestCompileBitSliceNonAligned(t *testing.T) {
 				t.Fatal("expected non-empty instructions")
 			}
 		})
+	}
+}
+
+func TestCompileSubByteField(t *testing.T) {
+	// Non-byte-aligned / sub-byte-sized primary fields read via a
+	// covering window + post-load shift+mask, in both where clauses
+	// and bracket predicates. These were ErrNotImplemented before the
+	// field-load generalization; the bit-extraction math is pinned in
+	// codegen.slice_test.go and the packet-level correctness in
+	// dsltest. Here we only assert they compile to non-empty bytecode.
+	runCompileExprCases(t, []string{
+		"eth/ipv4/tcp where tcp.flags & 0x02 != 0", // SYN, bit<9>@103
+		"eth/ipv4/tcp where tcp.data_offset == 5",  // bit<4>@96
+		"eth/ipv4 where ipv4.version == 4",         // bit<4>@0, shift 4
+		"eth/ipv4 where ipv4.ihl >= 5",             // bit<4>@4, ordered
+		"eth/ipv4 where ipv4.flags & 0x2 != 0",     // DF, bit<3>@48
+		"eth/ipv4 where ipv4.frag_offset == 0",     // bit<13>@51, 2-byte window
+		"eth/ipv6 where ipv6.traffic_class == 0",   // bit<8>@4
+		"eth/ipv4[ihl==5]/tcp",                     // bracket predicate, eq
+		"eth/ipv4[version==4]/tcp",                 // bracket predicate, shift
+		"eth/ipv4[ihl in [5, 6]]/tcp",              // bracket 'in' predicate
+	})
+}
+
+func TestCompileSubByteRawOffsetStillRejected(t *testing.T) {
+	// kunai has no raw byte-offset escape hatch: every field is named
+	// via the P4 vocab. pcap-filter's `tcp[13]` style stays rejected by
+	// design (the §6 reverse gap), even though tcp.flags is now readable.
+	_, err := compileForTest("eth/ipv4/tcp where tcp[13] & 0x02 != 0")
+	if err == nil {
+		t.Fatal("expected raw byte-offset access to be rejected")
+	}
+	if !strings.Contains(err.Error(), "must be qualified") {
+		t.Errorf("err = %v; want 'must be qualified'", err)
 	}
 }
 
@@ -947,18 +981,28 @@ func isHostOwned(ins asm.Instruction) bool {
 	return false
 }
 
-// TestVlanInMetadataRejectsVlanLayers asserts that a host advertising
-// VlanInMetadata (e.g. tc, where the kernel strips the outer VLAN tag
-// into skb metadata before the program runs) rejects any chain with a
-// vlan or qinq layer at compile time, rather than silently parsing the
-// wrong bytes. The same expressions must still compile under the zero
+// TestVlanInMetadataRejectsVlanLayers asserts the VlanInMetadata host
+// policy (e.g. tc, where the kernel strips the outer VLAN tag into skb
+// metadata before the program runs). A vlan/qinq layer that READS the
+// tag from packet bytes is rejected at compile time rather than
+// silently parsing the wrong bytes; an optional, predicate-free tag is
+// accepted, because the byte parser takes its skip path and never reads
+// the stripped tag. Every expression must still compile under the zero
 // (in-band) Capabilities used by XDP and the test harness.
 func TestVlanInMetadataRejectsVlanLayers(t *testing.T) {
 	rejected := []string{
-		"eth/vlan[tci==100]/ipv4/tcp where tcp.dport == 80",
-		"eth/qinq/vlan/ipv4/tcp where tcp.dport == 80",
+		"eth/vlan[tci==100]/ipv4/tcp where tcp.dport == 80", // mandatory + field
+		"eth/qinq/vlan/ipv4/tcp where tcp.dport == 80",      // mandatory QinQ
+		"eth/vlan[tci==100]?/ipv4/tcp",                      // optional but reads tci
+		"eth/(vlan|qinq)/ipv4/tcp",                          // tag in alternation
+	}
+	// Optional, predicate-free tags are matchable at a VlanInMetadata
+	// host: at most one tag survives in the bytes, and the skip path
+	// covers untagged / single-tag / QinQ traffic without reading it.
+	accepted := []string{
 		"eth/vlan?/ipv4/tcp",
-		"eth/(vlan|qinq)/ipv4/tcp",
+		"eth/qinq?/vlan?/ipv4/tcp",
+		"eth/vlan*/ipv4/tcp",
 	}
 	tcCaps := codegen.Capabilities{Host: codegen.HostLayout{VlanInMetadata: true}}
 	for _, expr := range rejected {
@@ -971,7 +1015,16 @@ func TestVlanInMetadataRejectsVlanLayers(t *testing.T) {
 				t.Fatalf("Compile(%q): expected ErrNotImplemented, got %v", expr, err)
 			}
 		})
-		t.Run("allow/"+expr, func(t *testing.T) {
+	}
+	for _, expr := range accepted {
+		t.Run("accept/"+expr, func(t *testing.T) {
+			if _, err := Compile(expr, tcCaps); err != nil {
+				t.Fatalf("Compile(%q) with VlanInMetadata: expected success, got %v", expr, err)
+			}
+		})
+	}
+	for _, expr := range append(append([]string{}, rejected...), accepted...) {
+		t.Run("inband/"+expr, func(t *testing.T) {
 			if _, err := Compile(expr, codegen.Capabilities{}); err != nil {
 				t.Fatalf("Compile(%q) with zero caps: expected success, got %v", expr, err)
 			}

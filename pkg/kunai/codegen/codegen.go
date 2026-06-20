@@ -692,12 +692,32 @@ func checkUnsupported(p *ir.Program) error {
 }
 
 // checkHostLayerSupport rejects chains the target host cannot match by
-// parsing packet bytes. Currently this guards VLAN: when the host has
+// parsing packet bytes. It guards VLAN: when the host has
 // HostLayout.VlanInMetadata set (e.g. tc, where skb_vlan_untag moves the
 // outer tag into skb metadata before the program runs), a vlan or qinq
-// layer in the chain would parse the wrong bytes. We fail at compile
-// time with a clear message instead of silently mis-matching. Reading
-// the tag from skb metadata is future work; see HostLayout.VlanInMetadata.
+// layer read from packet bytes would see the wrong bytes.
+//
+// A vlan/qinq layer is still matchable when it can be ABSENT from the
+// packet bytes — an optional quantifier (`?`, `*`, `{0,m}`) whose
+// zero-occurrence path the byte parser can take. On the post-untag
+// datapath at most one tag remains in the bytes (a single tag goes
+// entirely to metadata; a stacked QinQ frame leaves its inner tag), so
+// `eth/vlan?/...` and `eth/qinq?/vlan?/...` match untagged, single-tag,
+// and QinQ frames without reading the tag the kernel stripped. This is
+// confirmed on a live veth datapath (internal/program
+// TestVlanUntagAtTCIngress) and at the packet level (dsltest
+// TestVlanQuestionMarkOptional).
+//
+// What stays rejected, because it reads a tag the host does not expose
+// in packet bytes:
+//   - a mandatory vlan/qinq layer (no skip path),
+//   - a bracket predicate on the layer (`vlan[tci==100]?`), and
+//   - a vlan/qinq layer inside an alternation (no per-alt skip path).
+//
+// A where-clause or capture that reads a vlan field, or any field past
+// the optional tag, is already rejected upstream as a quantified-layer
+// limitation, so it needs no separate check here. Reading the tag from
+// skb metadata is future work; see HostLayout.VlanInMetadata.
 func checkHostLayerSupport(p *ir.Program, host HostLayout) error {
 	if !host.VlanInMetadata {
 		return nil
@@ -705,20 +725,33 @@ func checkHostLayerSupport(p *ir.Program, host HostLayout) error {
 	isVlan := func(l *ir.LayerInstance) bool {
 		return l != nil && l.Spec != nil && (l.Spec.Name == "vlan" || l.Spec.Name == "qinq")
 	}
+	// absentable reports whether the byte parser can take the layer's
+	// zero-occurrence path, so the tag the kernel moved to metadata is
+	// simply not in the bytes the parser walks.
+	absentable := func(l *ir.LayerInstance) bool {
+		switch l.Quant {
+		case ast.QuantOpt, ast.QuantStar:
+			return true
+		case ast.QuantRange:
+			return l.RangeMin == 0
+		}
+		return false
+	}
 	reject := func(l *ir.LayerInstance) error {
-		return withPos(fmt.Errorf("%w: layer %q cannot be matched at this host: the kernel extracts the outer VLAN tag into skb metadata before the program runs, so it is not present in the packet bytes (matching VLAN from skb metadata is future work)", ErrNotImplemented, l.Spec.Name), l.Pos)
+		return withPos(fmt.Errorf("%w: layer %q cannot be matched at this host: the kernel extracts the outer VLAN tag into skb metadata before the program runs, so it is not present in the packet bytes. Use an optional quantifier (e.g. %s? or qinq?/vlan?) to match tag-flexible traffic without reading the tag, or read the tag from skb metadata (future work)", ErrNotImplemented, l.Spec.Name, l.Spec.Name), l.Pos)
 	}
 	for _, l := range p.Layers {
-		if isVlan(l) {
-			return reject(l)
-		}
-		// vlan/qinq may also appear inside an alternation group, e.g.
-		// eth/(vlan|qinq)/ipv4/tcp; those alternatives are not
-		// top-level p.Layers entries.
+		// vlan/qinq inside an alternation group cannot take a per-alt
+		// skip path in the current codegen; keep rejecting those.
 		for _, alt := range l.Alternation {
 			if isVlan(alt) {
 				return reject(alt)
 			}
+		}
+		// A vlan/qinq layer is rejected unless it can be absent (optional
+		// quantifier) and reads none of its own fields (no predicate).
+		if isVlan(l) && (!absentable(l) || len(l.Predicates) > 0) {
+			return reject(l)
 		}
 	}
 	return nil
@@ -1225,6 +1258,66 @@ func findFieldByteOffset128(spec *vocab.ProtocolSpec, name string) (int, int, er
 	return bitOff / 8, bits / 8, nil
 }
 
+// subByteWindow computes the byte-aligned covering load window for a
+// primary field whose (bitOff, width) is not byte-clean — i.e. the
+// field starts off a byte boundary or its width is not a whole number
+// of bytes. It returns the byte offset to load from and the LDX byte
+// count (1/2/4/8) that covers the field's bits; emitFieldLoad /
+// emitBoundedLoad reads that window and slicePostAdjust narrows R3 to
+// the field bits with a post-load shift + mask. ok is false when the
+// field is already byte-clean (caller uses the normal whole-byte path)
+// or when the covering window would exceed a single 8-byte LDX, where
+// the caller's original "max 8" diagnostic is the right error.
+func subByteWindow(bitOff, width int) (byteOff, loadBytes int, ok bool) {
+	if width <= 0 {
+		return 0, 0, false
+	}
+	if bitOff%8 == 0 && width%8 == 0 {
+		return 0, 0, false
+	}
+	byteOff = bitOff / 8
+	cover := (bitOff%8 + width + 7) / 8
+	loadBytes = nextLDXSize(cover)
+	if loadBytes == 0 {
+		return 0, 0, false
+	}
+	return byteOff, loadBytes, true
+}
+
+// bareSubByteField resolves the header-relative bit geometry of a bare
+// primary field (no slice, no aux) when that geometry is not byte-clean
+// — the field starts off a byte boundary or its width is not a whole
+// number of bytes. ok is false for slice/aux refs, an empty or unknown
+// ref, and byte-clean fields, all of which take the normal whole-byte
+// path. It is the single source of the "is this a sub-byte field, and
+// what are its bits?" question that fieldIsSubByte and slicePostAdjust
+// both ask.
+func bareSubByteField(ref *ir.FieldRef) (bitOff, width int, ok bool) {
+	if ref == nil || ref.Slice != nil || ref.Aux != nil ||
+		ref.Field == nil || ref.Layer == nil || ref.Layer.Spec == nil {
+		return 0, 0, false
+	}
+	bitOff, width, err := findFieldBitOffset(ref.Layer.Spec, ref.Field.Name)
+	if err != nil || (bitOff%8 == 0 && width%8 == 0) {
+		return 0, 0, false
+	}
+	return bitOff, width, true
+}
+
+// fieldIsSubByte reports whether ref's load went through a sub-byte
+// covering window in fieldRefByteOffset, so its value needs a post-load
+// shift + mask before being compared. It mirrors exactly what
+// fieldRefByteOffset produces: a bare non-byte-clean field whose
+// covering window fits a single LDX.
+func fieldIsSubByte(ref *ir.FieldRef) bool {
+	bitOff, width, ok := bareSubByteField(ref)
+	if !ok {
+		return false
+	}
+	_, _, okWin := subByteWindow(bitOff, width)
+	return okWin
+}
+
 // fieldRefByteOffset returns the byte offset (relative to the
 // owning layer's start, anchored on offsetBase at predicate-emit
 // time) and byte width for a FieldRef. Aux references add the aux
@@ -1262,7 +1355,22 @@ func fieldRefByteOffset(ref *ir.FieldRef) (int, int, error) {
 				off = bitOff / 8
 				size = ref.Slice.Bits() / 8
 			} else {
-				return 0, 0, err
+				// No explicit slice: a non-byte-aligned or sub-byte-sized
+				// primary field still loads through a byte-aligned
+				// covering window; slicePostAdjust narrows R3 to the
+				// field's own bits after the load. subByteWindow returns
+				// ok=false for byte-clean fields (handled above) and for
+				// fields whose covering window would exceed 8 bytes, where
+				// the original error is the right diagnostic.
+				bitOff, bits, ferr := findFieldBitOffset(ref.Layer.Spec, ref.Field.Name)
+				if ferr != nil {
+					return 0, 0, ferr
+				}
+				bOff, loadBytes, okWin := subByteWindow(bitOff, bits)
+				if !okWin {
+					return 0, 0, err
+				}
+				off, size = bOff, loadBytes
 			}
 		}
 		return applySliceToOffset(ref, off, size)
@@ -1339,17 +1447,34 @@ func nextLDXSize(cover int) int {
 // position `loadBytes*8 - 1 - (lo - byteStart*8)` in the swapped
 // register. shift = loadBytes*8 - (hi - byteStart*8) drops the bits
 // below the slice; mask = (1<<width) - 1 keeps only the slice bits.
+//
+// The same math applies to a bare (sliceless) primary field whose bit
+// geometry is not byte-clean: its load went through subByteWindow, and
+// here we narrow the covering window down to the field's own bits using
+// the field's intra-byte start (bitOff%8) in place of a slice's Lo.
 func slicePostAdjust(ref *ir.FieldRef, loadBytes int) (shift int, mask uint64) {
-	if ref.Slice == nil {
-		return 0, 0
-	}
-	byteStart := ref.Slice.Lo / 8
 	loadBits := loadBytes * 8
-	hiInLoad := ref.Slice.Hi - byteStart*8
-	width := ref.Slice.Bits()
-	// Default: no adjustment when slice exactly equals the load.
-	if hiInLoad == loadBits && ref.Slice.Lo == byteStart*8 && width == loadBits {
-		return 0, 0
+	// Resolve the field/slice high bit within the loaded window and the
+	// width to keep; both the slice and the bare sub-byte field reduce
+	// to shift = loadBits - hiInLoad and mask = (1<<width)-1.
+	var hiInLoad, width int
+	switch {
+	case ref.Slice != nil:
+		byteStart := ref.Slice.Lo / 8
+		hiInLoad = ref.Slice.Hi - byteStart*8
+		width = ref.Slice.Bits()
+		// A slice that exactly fills the load needs no narrowing.
+		if hiInLoad == loadBits && ref.Slice.Lo == byteStart*8 && width == loadBits {
+			return 0, 0
+		}
+	default:
+		bitOff, w, ok := bareSubByteField(ref)
+		if !ok {
+			return 0, 0
+		}
+		// The covering window starts at the field's byte floor, so the
+		// field's high bit sits at bitOff%8 + width from the window MSB.
+		hiInLoad, width = bitOff%8+w, w
 	}
 	shift = loadBits - hiInLoad
 	mask = (uint64(1) << uint(width)) - 1
