@@ -707,6 +707,64 @@ func BuildEthIPv4UDPGeneve(t testing.TB, vni uint32) []byte {
 	return buf.Bytes()
 }
 
+// GeneveOptionTLV builds one Geneve option TLV (RFC 8926): a 4-byte
+// header (option_class BE16, type, R(3)+opt_data_len(5)) followed by
+// data. data must be a whole number of 4-byte words; opt_data_len is
+// derived as len(data)/4.
+func GeneveOptionTLV(t testing.TB, optClass uint16, optType uint8, data []byte) []byte {
+	t.Helper()
+	if len(data)%4 != 0 {
+		t.Fatalf("GeneveOptionTLV: data len %d is not a multiple of 4", len(data))
+	}
+	tlv := make([]byte, 4)
+	binary.BigEndian.PutUint16(tlv[0:2], optClass)
+	tlv[2] = optType
+	tlv[3] = byte(len(data) / 4) // R bits stay 0
+	return append(tlv, data...)
+}
+
+// BuildEthIPv4UDPGeneveOpts returns Ethernet/IPv4/UDP(6081)/Geneve
+// carrying the concatenated option TLVs. opt_len is set from the total
+// option byte length (which must be a multiple of 4). Used by tests
+// that filter on geneve.options.<NAME>.<field>.
+func BuildEthIPv4UDPGeneveOpts(t testing.TB, vni uint32, opts ...[]byte) []byte {
+	t.Helper()
+	var optBytes []byte
+	for _, o := range opts {
+		optBytes = append(optBytes, o...)
+	}
+	if len(optBytes)%4 != 0 {
+		t.Fatalf("geneve options total %d bytes is not a multiple of 4", len(optBytes))
+	}
+	words := len(optBytes) / 4
+	if words > 0x3F {
+		t.Fatalf("geneve opt_len %d words exceeds the 6-bit field", words)
+	}
+
+	d := Defaults()
+	eth := &layers.Ethernet{SrcMAC: d.SrcMAC, DstMAC: d.DstMAC, EthernetType: layers.EthernetTypeIPv4}
+	v4 := &layers.IPv4{
+		Version: 4, IHL: 5, TTL: 64,
+		SrcIP:    d.SrcIP.To4(),
+		DstIP:    d.DstIP.To4(),
+		Protocol: layers.IPProtocolUDP,
+	}
+	udp := &layers.UDP{SrcPort: 12345, DstPort: 6081}
+	_ = udp.SetNetworkLayerForChecksum(v4)
+
+	geneve := geneveHeader(vni, layers.EthernetTypeIPv4)
+	geneve[0] = byte(words) // version 0, opt_len = words
+	geneve = append(geneve, optBytes...)
+
+	buf := gopacket.NewSerializeBuffer()
+	if err := gopacket.SerializeLayers(buf, gopacket.SerializeOptions{
+		ComputeChecksums: true, FixLengths: true,
+	}, eth, v4, udp, gopacket.Payload(geneve)); err != nil {
+		t.Fatalf("gopacket.SerializeLayers (geneve-opts): %v", err)
+	}
+	return buf.Bytes()
+}
+
 // IPIPOpts describes an Ethernet/IPv4(outer, proto=IPIP)/IPv4(inner)/
 // TCP frame. InnerOptions populate the inner IPv4 header's options
 // (lifting its IHL past 5) so tests can confirm the layered chain

@@ -289,6 +289,15 @@ var corpusLoadOnly = map[string]string{
 	"H00": "capture clause: changes captured output bytes, not the match/reject verdict (which equals eth/ipv4/tcp); capture-byte correctness needs a separate oracle",
 	"H01": "capture clause (capture all): same as H00",
 	"H03": "capture clause (capture absolute 96): same as H00",
+	"G03": "Geneve option TLV walk (OVN egress_port): match/reject correctness is covered packet-level in dsltest TestGeneveOptionOVNEgressPort; this corpus entry only pins verifier load",
+	"G04": "Geneve option TLV walk (AWS GWLB flow_cookie): correctness covered in dsltest TestGeneveOptionGWLBFlowCookie / TestGeneveOptionMultiCase; corpus pins verifier load only",
+	"I00": "sub-byte TCP flags (SYN): correctness covered packet-level in dsltest TestSubByteTCPFlagsSYN (needs TCP-flag control the default builder lacks); corpus pins verifier load only",
+	"I01": "sub-byte TCP data_offset: correctness in dsltest TestSubByteTCPDataOffset; corpus pins verifier load only",
+	"I02": "sub-byte IPv4 version nibble: correctness in dsltest TestSubByteIPv4Version; corpus pins verifier load only",
+	"I03": "sub-byte IPv4 ihl nibble: correctness in dsltest TestSubByteIPv4IHL; corpus pins verifier load only",
+	"I04": "sub-byte IPv4 flags (DF): correctness in dsltest TestSubByteIPv4DontFragment; corpus pins verifier load only",
+	"I05": "sub-byte IPv4 frag_offset: correctness in dsltest TestSubByteIPv4FragOffset; corpus pins verifier load only",
+	"I06": "sub-byte IPv6 traffic_class: correctness in dsltest TestSubByteIPv6TrafficClass; corpus pins verifier load only",
 }
 
 func TestBpfFilterCorpusCorrectness(t *testing.T) {

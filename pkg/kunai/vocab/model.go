@@ -702,8 +702,10 @@ const (
 	SelectKeyField SelectKeyKind = iota
 	// SelectKeyLookahead peeks at bytes the parser has not yet
 	// consumed. The byte offset is non-negative w.r.t. the current
-	// R4 and R4 is unchanged. MVP supports only `bit<8>`
-	// lookaheads (single-byte LDX in codegen).
+	// R4 and R4 is unchanged. Codegen supports byte-multiple widths
+	// up to 24 bits (e.g. a Geneve option class+type discriminator);
+	// the value is loaded as the next power-of-two LDX, byte-swapped,
+	// and shifted/masked to the key width.
 	SelectKeyLookahead
 	// SelectKeyCounterIsZero reads a ParserCounter slot and dispatches
 	// on whether it has reached zero. The matching MatchVal slots are
@@ -720,7 +722,7 @@ type SelectKey struct {
 	// SelectKeyField only.
 	Field FieldRef
 	// SelectKeyLookahead only.
-	Bits int // peek width (MVP cap = 8)
+	Bits int // peek width; byte-multiple, 8/16/24
 	// SelectKeyCounterIsZero only — counter instance name.
 	Counter string
 	Pos     p4lite.Position

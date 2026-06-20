@@ -1090,11 +1090,13 @@ func buildSelect(sel *p4lite.Select, ctx *buildCtx) (*SelectOp, error) {
 			}
 			keys[i] = SelectKey{Kind: SelectKeyField, Field: ref, Pos: k.Pos}
 		case p4lite.SelectKeyLookahead:
-			// Codegen only knows how to single-byte LDX a lookahead
-			// key. Wider widths (multi-byte peeks, sub-byte slicing)
-			// would need a different load shape.
-			if k.Bits != 8 {
-				return nil, fmt.Errorf("%s:%s: `pkt.lookahead<bit<%d>>()` select keys must be exactly 8 bits; for wider peeks, slice the value inside a pkt.advance arg or extract a header first", ctx.source, k.Pos, k.Bits)
+			// Codegen loads a lookahead key as the next power-of-two
+			// LDX, byte-swaps, and shifts/masks to the key width. It
+			// supports byte-multiple widths up to 24 bits (e.g. a
+			// Geneve option class+type discriminator); a 24-bit value
+			// still fits a JNE.Imm case compare.
+			if !allowedLookaheadBits(k.Bits) {
+				return nil, fmt.Errorf("%s:%s: `pkt.lookahead<bit<%d>>()` select keys must be 8, 16, or 24 bits; for other widths, slice the value inside a pkt.advance arg or extract a header first", ctx.source, k.Pos, k.Bits)
 			}
 			keys[i] = SelectKey{Kind: SelectKeyLookahead, Bits: k.Bits, Pos: k.Pos}
 		case p4lite.SelectKeyCounterIsZero:
@@ -1253,24 +1255,32 @@ func IsMultiStateLoopEntry(states []*ParseState, idx int) bool {
 	return true
 }
 
+// allowedLookaheadBits reports whether a lookahead select-key width is
+// one codegen can lower: byte-multiple up to 24 bits (8 = TLV kind
+// byte, 24 = Geneve option class+type). The value is loaded as the
+// next power-of-two LDX, byte-swapped, then shifted/masked.
+func allowedLookaheadBits(bits int) bool {
+	return bits == 8 || bits == 16 || bits == 24
+}
+
 // isMultiStateLoopKeyShape pins the legal key tuples for a multi-state
-// loop entry: one of {Lookahead8}, {CounterIsZero},
-// or {CounterIsZero, Lookahead8} in that order. Foreign shapes
-// (lookahead width != 8, reversed tuple, more than 2 keys) reject so
-// the multi-state codegen invariants stay narrow.
+// loop entry: one of {Lookahead}, {CounterIsZero},
+// or {CounterIsZero, Lookahead} in that order. Foreign shapes
+// (unsupported lookahead width, reversed tuple, more than 2 keys)
+// reject so the multi-state codegen invariants stay narrow.
 func isMultiStateLoopKeyShape(sel *SelectOp) bool {
 	switch len(sel.Keys) {
 	case 1:
 		switch sel.Keys[0].Kind {
 		case SelectKeyLookahead:
-			return sel.Keys[0].Bits == 8
+			return allowedLookaheadBits(sel.Keys[0].Bits)
 		case SelectKeyCounterIsZero:
 			return true
 		}
 	case 2:
 		return sel.Keys[0].Kind == SelectKeyCounterIsZero &&
 			sel.Keys[1].Kind == SelectKeyLookahead &&
-			sel.Keys[1].Bits == 8
+			allowedLookaheadBits(sel.Keys[1].Bits)
 	}
 	return false
 }
