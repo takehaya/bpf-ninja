@@ -352,11 +352,12 @@ func Gen(p *ir.Program, caps Capabilities) (Output, error) {
 	// layer-level mismatch. `where` may include conditions merged in
 	// from per-capture clauses (see computeCapture).
 	if where != nil {
-		whereInsns, err := genCondition(where, caps.Lang, p, qo, dslReject)
+		whereInsns, whereCbs, err := genCondition(where, caps.Lang, p, qo, dslReject)
 		if err != nil {
 			return Output{}, err
 		}
 		insns = append(insns, whereInsns...)
+		callbacks = append(callbacks, whereCbs...)
 	}
 
 	// Accept path: R2=1 and jump over the reject block.
@@ -1613,6 +1614,59 @@ func emitDynamicStackAddress(ref *ir.FieldRef, base layerAnchor, failLabel strin
 		asm.Add.Reg(asm.R5, asm.R3),
 	)
 	return insns, nil
+}
+
+// emitRuntimeAuxElementAddr loads `size` bytes of an aux-stack element
+// field at the bpf_loop runtime index, for use INSIDE an aux-walk
+// callback (genAuxWalkCallback). It mirrors the element-address
+// arithmetic of emitDynamicStackAddress but takes the index from R1
+// (the bpf_loop iteration variable) rather than a primary-header field,
+// and addresses against the callback frame: R2 = &ctx, R4 = scratchStart,
+// R5 = scratchEnd. The element's byte offset from scratch start is
+//
+//	scalar = ctx.layerEntry + OffsetInLayer + R1*ElemSize + fieldByteOff
+//
+// computed in R3, then boundedScalarLoad reads `size` bytes into R0. On
+// return R0 holds the loaded value; R3 is clobbered; R1/R2/R4/R5 are
+// preserved — note this deliberately avoids R2 (= &ctx in the callback)
+// as scratch, unlike ipv6AuxHalfCheck which uses it. The defensive
+// JGE R1,Capacity keeps R1.umax tight for the verifier even though
+// bpf_loop already bounds the index by max_iter.
+func emitRuntimeAuxElementAddr(target *ir.QuantTarget, fieldByteOff int, size asm.Size, failLabel string) asm.Instructions {
+	insns := asm.Instructions{
+		asm.LoadMem(asm.R0, asm.R2, bpfLoopCbCtxLayerEntryField, asm.DWord),
+		asm.Add.Imm(asm.R0, int32(target.OffsetInLayer+fieldByteOff)),
+		asm.Mov.Reg(asm.R3, asm.R1),
+		asm.JGE.Imm(asm.R3, int32(target.Capacity), failLabel),
+		asm.Mul.Imm(asm.R3, int32(target.ElemSize)),
+		asm.Add.Reg(asm.R3, asm.R0),
+	}
+	// boundedScalarLoad writes dst=R0 and reads scalar=R3 (distinct regs).
+	return append(insns, boundedScalarLoad(asm.R0, asm.R4, asm.R3, asm.R5, size, failLabel)...)
+}
+
+// emitRuntimeAuxElementAddrOwner is the owner-option counterpart of
+// emitRuntimeAuxElementAddr: it addresses an aux element inside a TCP/IPv4
+// option (TCP SACK, IPv4 record-route) whose base the parser stashed as a
+// scalar in main-frame slot `ownerSlot`. The element byte offset from
+// scratch start is
+//
+//	scalar = optionBase + offsetAfterOwner + R1*ElemSize + fieldByteOff
+//
+// optionBase is read via the ctx pointer (R2 + mainStackOffsetFromCb),
+// and an absent option (sentinel) jumps to failLabel. Register contract
+// matches the primary helper: loads into R0; R3 scratch; R2/R4/R5 kept.
+func emitRuntimeAuxElementAddrOwner(ownerSlot int16, target *ir.QuantTarget, offsetAfterOwner, fieldByteOff int, size asm.Size, failLabel string) asm.Instructions {
+	insns := asm.Instructions{
+		asm.LoadMem(asm.R0, asm.R2, mainStackOffsetFromCb(ownerSlot), asm.DWord),
+		asm.JEq.Imm(asm.R0, dynamicAuxSentinel, failLabel),
+		asm.Add.Imm(asm.R0, int32(offsetAfterOwner+fieldByteOff)),
+		asm.Mov.Reg(asm.R3, asm.R1),
+		asm.JGE.Imm(asm.R3, int32(target.Capacity), failLabel),
+		asm.Mul.Imm(asm.R3, int32(target.ElemSize)),
+		asm.Add.Reg(asm.R3, asm.R0),
+	}
+	return append(insns, boundedScalarLoad(asm.R0, asm.R4, asm.R3, asm.R5, size, failLabel)...)
 }
 
 // auxLoadAt loads `size` bytes from the addressed aux element at
