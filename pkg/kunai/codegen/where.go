@@ -27,6 +27,12 @@ type whereCtx struct {
 	// uses it to pick a distinct LHS-save slot per level so a nested
 	// bool-eq operand does not clobber an enclosing one.
 	boolEqDepth int
+	// callbacks accumulates bpf_loop callback subprograms emitted while
+	// generating the where clause (currently the aux-walk any()/all()
+	// loop). They are returned out of genCondition and appended to
+	// Output.Callbacks after the main program's return, alongside the
+	// per-layer chain callbacks.
+	callbacks asm.Instructions
 }
 
 func (c *whereCtx) freshLabel(prefix string) string {
@@ -73,10 +79,10 @@ func (c *whereCtx) layerAnchorFor(l *ir.LayerInstance) (layerAnchor, error) {
 // to true and jump to failLabel when it evaluates to false. Errors
 // surface with the condition's source position prefixed so users see
 // which `where` atom blew up.
-func genCondition(w *ir.Condition, lang LangCaps, p *ir.Program, qo queriedOptions, failLabel string) (asm.Instructions, error) {
+func genCondition(w *ir.Condition, lang LangCaps, p *ir.Program, qo queriedOptions, failLabel string) (asm.Instructions, asm.Instructions, error) {
 	ctx := &whereCtx{p: p, lang: lang, anchors: make(map[*ir.LayerInstance]layerAnchor), queried: qo}
 	insns, err := ctx.gen(w, failLabel)
-	return insns, withPos(err, w.Pos)
+	return insns, ctx.callbacks, withPos(err, w.Pos)
 }
 
 func (c *whereCtx) gen(w *ir.Condition, failLabel string) (asm.Instructions, error) {
@@ -250,6 +256,11 @@ func (c *whereCtx) genAny(w *ir.Condition, failLabel string) (asm.Instructions, 
 	if w.QuantTarget == nil {
 		return nil, fmt.Errorf("codegen: any() lacks a resolved iteration target")
 	}
+	if use, err := useBpfLoopAuxWalk(w); err != nil {
+		return nil, err
+	} else if use {
+		return c.genQuantBpfLoop(w, failLabel, true)
+	}
 	matchLabel := c.freshLabel("any_match")
 	insns, err := c.genQuantUnroll(w, matchLabel, failLabel, true)
 	if err != nil {
@@ -268,6 +279,11 @@ func (c *whereCtx) genAny(w *ir.Condition, failLabel string) (asm.Instructions, 
 func (c *whereCtx) genAll(w *ir.Condition, failLabel string) (asm.Instructions, error) {
 	if w.QuantTarget == nil {
 		return nil, fmt.Errorf("codegen: all() lacks a resolved iteration target")
+	}
+	if use, err := useBpfLoopAuxWalk(w); err != nil {
+		return nil, err
+	} else if use {
+		return c.genQuantBpfLoop(w, failLabel, false)
 	}
 	insns, err := c.genQuantUnroll(w, "" /* no per-iter accept */, failLabel, false)
 	if err != nil {
