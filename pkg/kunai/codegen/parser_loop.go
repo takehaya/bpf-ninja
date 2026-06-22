@@ -169,6 +169,78 @@ func (c *pmCtx) emitMultiStateSelfLoop(state *vocab.ParseState, stateIdx int) (a
 	return insns, callback, nil
 }
 
+// isLookaheadOnlyLoop reports whether the multi-state loop entry at
+// stateIdx dispatches on a single lookahead key (the TCP-options shape),
+// not a counter or counter+lookahead tuple (IPv4 / Geneve). Only the
+// lookahead-only shape hits the multi-option verifier-state explosion;
+// counter-driven walks (Geneve's 2-key dispatch) do not.
+func (c *pmCtx) isLookaheadOnlyLoop(stateIdx int) bool {
+	sel := c.machine.States[stateIdx].Trans.Select
+	if sel == nil {
+		return false
+	}
+	return !hasCounterAndKindKeys(sel) && !isCounterIsZeroSelect(sel)
+}
+
+// emitAccPrelude is the accumulator path's per-iteration callback body:
+// for each atom it reloads the stashed kind byte, and when it matches the
+// option's kind, reads the option field at the live cursor, compares to
+// the constant, and on equality ORs the atom's bit into the single
+// accumulator slot. One recorded slot (the bitmask) survives the loop, so
+// the walk converges where N position slots would not. Callback ABI:
+// R3=cursor, R4=scratchStart, R5=scratchEnd, R2=ctx, R0/R1 scratch.
+func (c *pmCtx) emitAccPrelude(sel *vocab.SelectOp, atoms []accAtom, breakLabel string) (asm.Instructions, error) {
+	slot, err := c.accPlan.accSlot(c.queried)
+	if err != nil {
+		return nil, err
+	}
+	shape, err := c.lookaheadKindShape(sel)
+	if err != nil {
+		return nil, err
+	}
+	// Load + normalise the kind byte at the cursor once per iteration and
+	// stash it; reloading per atom is a branch-free LoadMem instead of a
+	// fresh bounded packet read (two JGT branches each), keeping the
+	// callback's branch count down. The stash slot is the select-key
+	// stash, unused by a lookahead-only TLV walk (no variable trail), and
+	// the prelude runs before the dispatch cascade, so it never collides.
+	kindSlot := stashKeySlots[0]
+	insns := boundedScalarLoad(asm.R0, asm.R4, asm.R3, asm.R5, shape.loadSize, breakLabel)
+	insns = append(insns, shape.normalize(asm.R0)...)
+	insns = append(insns, asm.StoreMem(asm.R10, kindSlot, asm.R0, asm.DWord))
+
+	for _, atom := range atoms {
+		size, err := asmSizeFor(atom.width)
+		if err != nil {
+			return nil, err
+		}
+		skip := fmt.Sprintf("%s_acc_skip_%d", c.labelNS, c.selectCounter())
+		// Skip this atom unless the stashed kind matches its option kind.
+		insns = append(insns,
+			asm.LoadMem(asm.R0, asm.R10, kindSlot, asm.DWord),
+			asm.JNE.Imm(asm.R0, int32(atom.layout.DynamicKindByte), skip),
+		)
+		// Read the option field at cursor + fieldByteOff (width bytes).
+		insns = append(insns, foldOffsetIntoScalar(asm.R1, asm.R3, int32(atom.fieldByteOff), breakLabel)...)
+		insns = append(insns, boundedScalarLoad(asm.R0, asm.R4, asm.R1, asm.R5, size, breakLabel)...)
+		// On-wire fields are big-endian; bring multi-byte values to host
+		// integer order so the JNE against the natural constant matches.
+		if atom.width > 1 {
+			insns = append(insns, asm.HostTo(asm.BE, asm.R0, size))
+		}
+		// On a value match, OR the atom's bit into the accumulator slot
+		// (reached via R2 = ctx pointer + main-frame offset).
+		insns = append(insns,
+			asm.JNE.Imm(asm.R0, int32(atom.cmpVal), skip),
+			asm.LoadMem(asm.R0, asm.R2, mainStackOffsetFromCb(slot), asm.DWord),
+			asm.Or.Imm(asm.R0, int32(uint64(1)<<uint(atom.bit))),
+			asm.StoreMem(asm.R2, mainStackOffsetFromCb(slot), asm.R0, asm.DWord),
+			landingNoop(skip),
+		)
+	}
+	return insns, nil
+}
+
 // emitDynamicAuxSentinelInit zero-inits each queried-option slot to
 // dynamicAuxSentinel before the parser machine runs. The TLV-walk
 // callback overwrites the slot only when it actually extracts the
@@ -176,6 +248,23 @@ func (c *pmCtx) emitMultiStateSelfLoop(state *vocab.ParseState, stateIdx int) (a
 // the sentinel to detect "option not present in this packet". Empty
 // when no where / capture clause queries this layer's options.
 func (c *pmCtx) emitDynamicAuxSentinelInit() (asm.Instructions, error) {
+	// Accumulator path: a single slot holds the result bitmask, ORed into
+	// over the walk, so it must start at 0 (not the option-absent sentinel
+	// -1, whose bits would falsely satisfy the mask check).
+	if atoms := c.accPlan.atomsFor(c.layer); atoms != nil {
+		// Zero the single accumulator slot. This runs inline in the entry
+		// state where R0 is the scratch-start pointer, so use R3 as the
+		// scratch register (the same one emitFillStackSlots uses); a Mov
+		// into R0 here would clobber scratchStart and break later loads.
+		slot, err := c.accPlan.accSlot(c.queried)
+		if err != nil {
+			return nil, err
+		}
+		return asm.Instructions{
+			asm.Mov.Imm(asm.R3, 0),
+			asm.StoreMem(asm.R10, slot, asm.R3, asm.DWord),
+		}, nil
+	}
 	demand := c.queried[c.layer]
 	return emitFillStackSlots(dynamicAuxSentinel, len(demand), func(i int) (int16, error) {
 		return c.queried.slotForLayer(c.layer, i+1)
@@ -223,6 +312,13 @@ func emitFillStackSlots(initImm int32, n int, resolve func(int) (int16, error)) 
 // the end-pointer check on the load register itself, which both hosts
 // accept; the extra check is redundant on the map-value path.
 func (c *pmCtx) emitDynamicAuxSlotPrelude(sel *vocab.SelectOp, breakLabel string) (asm.Instructions, error) {
+	// Accumulator path: when an accPlan targets this layer, collect a
+	// result bit per option into a single slot instead of recording N
+	// option positions into N slots (the shape the verifier rejects for
+	// >=2 options). See acc.go and emitAccPrelude.
+	if atoms := c.accPlan.atomsFor(c.layer); atoms != nil {
+		return c.emitAccPrelude(sel, atoms, breakLabel)
+	}
 	demand := c.queried[c.layer]
 	if len(demand) == 0 {
 		return nil, nil

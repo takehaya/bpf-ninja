@@ -115,7 +115,13 @@ func genAlternation(layer *ir.LayerInstance, index int, all []*ir.LayerInstance,
 		// pass too, so the duplicate is dead code at runtime. The
 		// alternative is threading a custom fail label through every
 		// layer emit which is a much larger refactor for marginal gain.
-		altBody, altCbs, err := genLayerInner(alt, index, all, qo)
+		// nil accPlan: an accumulator plan targets a single concrete
+		// parser-machine layer the program queries, never an alternation
+		// member (alt members are distinct LayerInstances and the het-alt
+		// path the resolver flags is incompatible with the TCP-option
+		// shape buildAccPlan accepts). Passing nil keeps such a layer on
+		// the standard per-option path.
+		altBody, altCbs, err := genLayerInner(alt, index, all, qo, nil)
 		if err != nil {
 			return nil, nil, err
 		}

@@ -337,9 +337,18 @@ func Gen(p *ir.Program, caps Capabilities) (Output, error) {
 		asm.Mov.Imm(offsetBase, 0),
 	}
 	qo := collectQueriedOptions(p)
+	// Multi-option accumulator plan: when the whole merged where clause
+	// is a pure conjunction of `<option.field> == <const>` over >=2
+	// distinct dynamic-eligible options of one lookahead-only TLV layer
+	// (TCP options), the parser machine collects a RESULT BIT per leaf
+	// into a single accumulator slot instead of recording N option
+	// positions into N distinct slots (which blows the verifier's state
+	// budget). nil for every other shape; the parser machine then keeps
+	// the existing >=2 reject. See acc.go.
+	plan := buildAccPlan(where, qo)
 	var callbacks asm.Instructions
 	for i, layer := range p.Layers {
-		layerInsns, cb, err := genLayer(layer, i, p.Layers, qo)
+		layerInsns, cb, err := genLayer(layer, i, p.Layers, qo, plan)
 		if err != nil {
 			return Output{}, err
 		}
@@ -351,7 +360,20 @@ func Gen(p *ir.Program, caps Capabilities) (Output, error) {
 	// already materialised. Failure jumps to dslReject just like a
 	// layer-level mismatch. `where` may include conditions merged in
 	// from per-capture clauses (see computeCapture).
-	if where != nil {
+	//
+	// When an accumulator plan is active the whole where clause has been
+	// lowered into per-iteration bit collection inside the parser
+	// machine; the residual where check is a single `(acc & mask) ==
+	// mask` test against the one accumulator slot. An absent option
+	// leaves its bit at 0, so the AND fails and the packet is rejected —
+	// matching the sentinel-absent semantics of the per-option path.
+	if plan != nil {
+		maskCheck, err := emitAccMaskCheck(plan, qo, dslReject)
+		if err != nil {
+			return Output{}, err
+		}
+		insns = append(insns, maskCheck...)
+	} else if where != nil {
 		whereInsns, err := genCondition(where, caps.Lang, p, qo, dslReject)
 		if err != nil {
 			return Output{}, err
@@ -763,19 +785,19 @@ func checkHostLayerSupport(p *ir.Program, host HostLayout) error {
 // value holds any bpf2bpf subprogram instructions the chain codegen
 // needs appended after the main stream — empty for every non-bpf_loop
 // path.
-func genLayer(layer *ir.LayerInstance, index int, all []*ir.LayerInstance, qo queriedOptions) (asm.Instructions, asm.Instructions, error) {
-	insns, callbacks, err := genLayerInner(layer, index, all, qo)
+func genLayer(layer *ir.LayerInstance, index int, all []*ir.LayerInstance, qo queriedOptions, plan *accPlan) (asm.Instructions, asm.Instructions, error) {
+	insns, callbacks, err := genLayerInner(layer, index, all, qo, plan)
 	return insns, callbacks, withPos(err, layer.Pos)
 }
 
-func genLayerInner(layer *ir.LayerInstance, index int, all []*ir.LayerInstance, qo queriedOptions) (asm.Instructions, asm.Instructions, error) {
+func genLayerInner(layer *ir.LayerInstance, index int, all []*ir.LayerInstance, qo queriedOptions, plan *accPlan) (asm.Instructions, asm.Instructions, error) {
 	if layer.Alternation != nil {
 		return genAlternation(layer, index, all, qo)
 	}
 	switch layer.Quant {
 	case ast.QuantOne:
 		if layer.Spec.ParseStateMachine != nil {
-			return genParserMachine(layer, index, all, qo)
+			return genParserMachine(layer, index, all, qo, plan)
 		}
 		insns, err := genStaticLayer(layer, index, all)
 		return insns, nil, err
