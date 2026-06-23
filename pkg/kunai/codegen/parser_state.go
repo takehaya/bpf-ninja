@@ -46,7 +46,7 @@ func genParserMachine(layer *ir.LayerInstance, layerIdx int, all []*ir.LayerInst
 		r4IsRange:    precedingLayersLeaveR4Range(all, layerIdx),
 		queried:      qo,
 		queriedAuxes: buildQueriedAuxNames(qo, layer),
-		accPlan: plan,
+		accPlan:      plan,
 	}
 	// Pre-scan for multi-state self-loops. Each loop entry's siblings
 	// inline into the entry's bpf_loop callback, so the per-state
@@ -120,14 +120,6 @@ type pmCtx struct {
 	// option into a single slot. nil for every program that is not the
 	// supported pure-AND-equality multi-option TCP shape (see acc.go).
 	accPlan *accPlan
-	// accWalkAtoms, when non-nil, restricts the accumulator prelude to a
-	// subset of accPlan.atoms for the N-walks lowering: one walk per
-	// distinct option, carrying that option's queried fields. Keeping each
-	// walk to a single option keeps its callback a cheap single-kind walk
-	// that converges on every kernel, and the walks compose without the
-	// combined callback's multi-kind per-iteration fan-out. nil (default)
-	// emits all atoms in one combined callback.
-	accWalkAtoms []accAtom
 }
 
 // precedingLayersLeaveR4Range scans the layers emitted before idx and
@@ -297,15 +289,12 @@ func (c *pmCtx) emitStateBody(state *vocab.ParseState, stateIdx int, isEntry boo
 		if c.isLookaheadOnlyLoop(stateIdx) && len(c.queried[c.layer]) >= 2 && c.accPlan.atomsFor(c.layer) == nil {
 			return nil, nil, fmt.Errorf("%w: querying %d options of %q in one filter exceeds the verifier's state budget; the accumulator lowering handles up to %d option equalities (a pure AND of `<option>.<field> == <const>`) per filter, so query at most %d options", ErrNotImplemented, len(c.queried[c.layer]), c.spec.Name, accMaxAtoms, accMaxAtoms)
 		}
-		// Accumulator routing: the combined single-callback path carries up
-		// to combinedAccMaxAtoms (=3) option equalities in one bpf_loop —
-		// the matrix-wide ceiling for one callback (4 inline reads exceed
-		// 7.0's budget). Past it, split into one single-option walk per atom
-		// (N-walks), each a cheap converging loop, with the accumulator
-		// canonicalized between walks.
-		if atoms := c.accPlan.atomsFor(c.layer); len(atoms) > combinedAccMaxAtoms {
-			return c.emitMultiStateNWalksAccumulator(state, stateIdx)
-		}
+		// Accumulator queries lower to one combined bpf_loop: the per-
+		// iteration cursor and accumulator forgets (emitAccPrelude /
+		// emitMultiStateCallback) make it converge for any option count, so
+		// a single TLV re-scan carries every queried option. The callback's
+		// branch-count guard is exempted for this converging shape (see
+		// emitMultiStateCallback).
 		return c.emitMultiStateSelfLoop(state, stateIdx)
 	}
 

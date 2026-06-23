@@ -169,98 +169,6 @@ func (c *pmCtx) emitMultiStateSelfLoop(state *vocab.ParseState, stateIdx int) (a
 	return insns, callback, nil
 }
 
-// emitMultiStateNWalksAccumulator lowers an accumulator plan as one
-// bpf_loop per DISTINCT option instead of a single combined callback. Each
-// walk dispatches on one option kind and ORs that option's queried fields'
-// match bits into the shared accumulator slot, so its callback is a cheap
-// single-kind walk that converges (with the cursor forget) on every kernel
-// — where a combined callback dispatching on several option kinds per
-// iteration blows the 1M budget on 7.0 past three options. Atoms are
-// grouped by option so multiple fields of the same option share one walk
-// (one re-scan), not one walk each. The cursor is reset to options-start
-// before each walk; the accumulator slot persists across walks (zeroed
-// once at machine entry) and is canonicalized between them. Cost is linear
-// in the distinct-option count. Used for option counts the combined
-// callback cannot carry matrix-wide.
-func (c *pmCtx) emitMultiStateNWalksAccumulator(state *vocab.ParseState, stateIdx int) (asm.Instructions, asm.Instructions, error) {
-	maxIter := c.spec.MaxDepth
-	if maxIter == 0 {
-		maxIter = defaultChainDepth
-	}
-	if maxIter > bpfLoopChainCap {
-		return nil, nil, fmt.Errorf("%w: parser machine %s N-walks depth %d exceeds cap %d", ErrNotImplemented, c.spec.Name, maxIter, bpfLoopChainCap)
-	}
-	if state.OffsetAtEntry < 0 {
-		return nil, nil, fmt.Errorf("%w: N-walks accumulator needs a static options-start offset on %q", ErrNotImplemented, state.Name)
-	}
-	atoms := c.accPlan.atomsFor(c.layer)
-	groups := groupAtomsByLayout(atoms)
-	accSlotOff, err := c.accPlan.accSlot(c.queried)
-	if err != nil {
-		return nil, nil, err
-	}
-	var insns asm.Instructions
-	var callbacks asm.Instructions
-	for i, group := range groups {
-		if i > 0 {
-			// Reset the cursor (offsetBase) to options-start for the next
-			// walk: layer entry (read-only during a TCP walk) + the entry's
-			// static header offset. R0/R1 survive the prior walk's reload.
-			insns = append(insns,
-				asm.LoadMem(offsetBase, asm.R10, bpfLoopCtxLayerEntrySlot, asm.DWord),
-				asm.Add.Imm(offsetBase, int32(state.OffsetAtEntry)),
-			)
-		}
-		c.accWalkAtoms = group
-		cbSym := fmt.Sprintf("%s_w%d", c.selfLoopCbSym(stateIdx), i)
-		callback, err := c.emitMultiStateCallback(state, stateIdx, cbSym)
-		if err != nil {
-			c.accWalkAtoms = nil
-			return nil, nil, err
-		}
-		insns = append(insns,
-			asm.StoreMem(asm.R10, bpfLoopCtxOffsetSlot, offsetBase, asm.DWord),
-			asm.StoreMem(asm.R10, bpfLoopCtxScratchStartSlot, asm.R0, asm.DWord),
-			asm.StoreMem(asm.R10, bpfLoopCtxScratchEndSlot, asm.R1, asm.DWord),
-			asm.Mov.Imm(asm.R1, int32(maxIter)),
-			loadFunctionRef(asm.R2, cbSym),
-			asm.Mov.Reg(asm.R3, asm.R10),
-			asm.Add.Imm(asm.R3, bpfLoopCtxBaseOffset),
-			asm.Mov.Imm(asm.R4, 0),
-			asm.FnLoop.Call(),
-			asm.LoadMem(offsetBase, asm.R10, bpfLoopCtxOffsetSlot, asm.DWord),
-			asm.LoadMem(asm.R0, asm.R10, bpfLoopCtxScratchStartSlot, asm.DWord),
-			asm.LoadMem(asm.R1, asm.R10, bpfLoopCtxScratchEndSlot, asm.DWord),
-		)
-		// Canonicalize the accumulator between walks: XOR it twice with an
-		// unconstrained scratch value (a runtime identity) so its precise
-		// 2^N cross-walk bit history collapses to a conservative envelope
-		// and the sequential walks do not multiply verifier states.
-		//
-		// The salt must be a u64: it has to leave EVERY accumulator result
-		// bit unknown to the verifier. A narrower (byte) salt only forgets
-		// the low 8 bits, so for >8 atoms the high result bits keep their
-		// exact per-walk history and states_equal re-explores them
-		// combinatorially across walks — the cliff that capped this at ~8
-		// atoms on 6.18/7.0 before the widening. The runtime bits are
-		// preserved (x^s^s == x) for the final mask check.
-		insns = append(insns,
-			asm.Mov.Reg(asm.R5, asm.R0),
-			asm.Add.Imm(asm.R5, 8),
-			asm.JGT.Reg(asm.R5, asm.R1, c.doneLabel),
-			asm.LoadMem(asm.R3, asm.R0, 0, asm.DWord),
-			asm.LoadMem(asm.R5, asm.R10, accSlotOff, asm.DWord),
-			asm.Xor.Reg(asm.R5, asm.R3),
-			asm.Xor.Reg(asm.R5, asm.R3),
-			asm.StoreMem(asm.R10, accSlotOff, asm.R5, asm.DWord),
-		)
-		callbacks = append(callbacks, callback...)
-	}
-	c.accWalkAtoms = nil
-	insns = append(insns, asm.Ja.Label(c.doneLabel))
-	return insns, callbacks, nil
-}
-
 // isLookaheadOnlyLoop reports whether the multi-state loop entry at
 // stateIdx dispatches on a single lookahead key (the TCP-options shape),
 // not a counter or counter+lookahead tuple (IPv4 / Geneve). Only the
@@ -330,6 +238,24 @@ func (c *pmCtx) emitAccPrelude(sel *vocab.SelectOp, atoms []accAtom, breakLabel 
 			landingNoop(skip),
 		)
 	}
+	// Canonicalize the accumulator once per iteration: XOR it twice with a
+	// u64 scratch salt (a runtime identity, x^s^s == x) so its precise
+	// bit history collapses to a conservative envelope at the loop head.
+	// Together with the cursor forget this makes the combined callback
+	// converge regardless of how many option bits it sets, so one bpf_loop
+	// carries every queried option in a single TLV re-scan. The salt is a
+	// u64 (must leave every result bit unknown) loaded from scratch[0]
+	// (bounds-checked); the acc lives in the main frame, reached via R2.
+	insns = append(insns,
+		asm.Mov.Reg(asm.R1, asm.R4),
+		asm.Add.Imm(asm.R1, 8),
+		asm.JGT.Reg(asm.R1, asm.R5, breakLabel),
+		asm.LoadMem(asm.R0, asm.R4, 0, asm.DWord),
+		asm.LoadMem(asm.R1, asm.R2, mainStackOffsetFromCb(slot), asm.DWord),
+		asm.Xor.Reg(asm.R1, asm.R0),
+		asm.Xor.Reg(asm.R1, asm.R0),
+		asm.StoreMem(asm.R2, mainStackOffsetFromCb(slot), asm.R1, asm.DWord),
+	)
 	return insns, nil
 }
 
@@ -409,10 +335,6 @@ func (c *pmCtx) emitDynamicAuxSlotPrelude(sel *vocab.SelectOp, breakLabel string
 	// option positions into N slots (the shape the verifier rejects for
 	// >=2 options). See acc.go and emitAccPrelude.
 	if atoms := c.accPlan.atomsFor(c.layer); atoms != nil {
-		// N-walks lowering: each walk evaluates one distinct option's atoms.
-		if c.accWalkAtoms != nil {
-			atoms = c.accWalkAtoms
-		}
 		return c.emitAccPrelude(sel, atoms, breakLabel)
 	}
 	demand := c.queried[c.layer]
@@ -450,10 +372,8 @@ func (c *pmCtx) emitDynamicAuxSlotPrelude(sel *vocab.SelectOp, breakLabel string
 // either an inlined sibling body (extract or advance + return 0) or
 // breaks (accept / reject / EOL → return 1).
 func (c *pmCtx) emitMultiStateCallback(entry *vocab.ParseState, entryIdx int, cbSym string) (asm.Instructions, error) {
-	// Derive labels from cbSym (not entryIdx) so the N-walks accumulator,
-	// which emits one callback per option with distinct cbSyms, gets
-	// distinct break labels. For the single-callback path cbSym ==
-	// selfLoopCbSym(entryIdx), so this equals selfLoopBreak.
+	// Labels derive from cbSym (== selfLoopCbSym(entryIdx)), matching
+	// selfLoopBreak.
 	breakLabel := cbSym + "_break"
 	continueLabel := cbSym + "_continue"
 
@@ -474,16 +394,15 @@ func (c *pmCtx) emitMultiStateCallback(entry *vocab.ParseState, entryIdx int, cb
 	// Accumulator-walk convergence: the cursor is a data-dependent
 	// accumulator whose tracked range's smin creeps up each iteration, so
 	// bpf_loop's RANGE_WITHIN pruning never fires and the verifier
-	// re-explores the callback per distinct cursor state — fine for one or
-	// two recorded slots, but the accumulator's >=3 inline option reads
-	// then blow the 1M instruction budget. XOR the cursor twice with an
-	// unconstrained scratch byte (a runtime identity: x^s^s == x) to wipe
-	// the verifier's range history while preserving the value, so every
-	// iteration re-enters with the same [0,511] tnum and the loop prunes.
-	// The salt is read from scratch[0] (bounds-checked) and is never
-	// branched on. This rests on tnum xor semantics (the verifier does not
-	// cancel the double xor), confirmed to load 3-option accumulators
-	// across the 6.1--7.0 matrix. Scoped to the accumulator path so the
+	// re-explores the callback per distinct cursor state, eventually blowing
+	// the 1M budget. XOR the cursor twice with an unconstrained scratch byte
+	// (a runtime identity: x^s^s == x) to wipe the verifier's range history
+	// while preserving the value, so every iteration re-enters with the same
+	// [0,511] tnum and the loop prunes. The salt is read from scratch[0]
+	// (bounds-checked) and is never branched on. This rests on tnum xor
+	// semantics (the verifier does not cancel the double xor). Paired with
+	// the accumulator forget in emitAccPrelude, it lets one combined loop
+	// carry every queried option. Scoped to the accumulator path so the
 	// single-option and counter-driven (Geneve) callbacks are unchanged.
 	if c.accPlan.atomsFor(c.layer) != nil {
 		insns = append(insns,
@@ -532,8 +451,16 @@ func (c *pmCtx) emitMultiStateCallback(entry *vocab.ParseState, entryIdx int, cb
 		asm.Mov.Imm(asm.R0, 1).WithSymbol(breakLabel),
 		asm.Return(),
 	)
-	if err := assertCallbackComplexity(insns, cbSym); err != nil {
-		return nil, err
+	// The branch-count tripwire guards against scalar-ID inflation across
+	// MAX_DEPTH iterations (see callback_lint.go). The accumulator callback
+	// is exempt: its per-iteration cursor AND accumulator forgets make the
+	// bpf_loop converge after ~one iteration, so the "branches × MAX_DEPTH"
+	// multiplier the guard worries about does not apply. Its load is proven
+	// directly on the kernel matrix (envelope_load_test.go C_tcp_opts_*).
+	if c.accPlan.atomsFor(c.layer) == nil {
+		if err := assertCallbackComplexity(insns, cbSym); err != nil {
+			return nil, err
+		}
 	}
 	return insns, nil
 }

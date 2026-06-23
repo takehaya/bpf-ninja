@@ -83,10 +83,10 @@ func TestTCPThreeOptionAccumulator(t *testing.T) {
 	r.MustReject(t, Build(t, wsBad), "WS mismatch")
 }
 
-// TestTCPFourOptionAccumulator checks the N-walks path (four option
-// equalities lowered as one single-option walk per atom, accumulator
-// canonicalized between walks). Verifies the canonicalization preserves
-// runtime verdicts: accept iff all four options are present and match.
+// TestTCPFourOptionAccumulator checks four option equalities lowered into
+// the one combined accumulator loop (cursor + accumulator forgets keep it
+// converging). Verifies the forgets preserve runtime verdicts: accept iff
+// all four options are present and match.
 func TestTCPFourOptionAccumulator(t *testing.T) {
 	r := New(t, "eth/ipv4/tcp where tcp.options.MSS.value == 1460 and tcp.options.WS.shift == 7 and tcp.options.SACK_PERM.kind == 4 and tcp.options.TS.tsval == 1")
 
@@ -118,10 +118,9 @@ func TestTCPFourOptionAccumulator(t *testing.T) {
 	r.MustReject(t, Build(t, tsBad), "TS tsval mismatch")
 }
 
-// TestTCPEightOptionAccumulator checks the N-walks path with eight atoms
-// (two fields on each of the four option types) lowered to eight single-
-// option walks. Verifies verdicts stay correct as the walk count and
-// accumulator bit width grow.
+// TestTCPEightOptionAccumulator checks eight atoms (two fields on each of
+// the four option types) in the one combined accumulator loop. Verifies
+// verdicts stay correct as the atom count and accumulator bit width grow.
 func TestTCPEightOptionAccumulator(t *testing.T) {
 	r := New(t, "eth/ipv4/tcp where "+
 		"tcp.options.MSS.value == 1460 and tcp.options.MSS.length == 4 "+
@@ -149,10 +148,10 @@ func TestTCPEightOptionAccumulator(t *testing.T) {
 }
 
 // TestTCPTwelveOptionAccumulator exercises twelve atoms (every field of
-// MSS/WS/TS plus SACK_PERM), which only verify because the between-walks
+// MSS/WS/TS plus SACK_PERM), which only verify because the per-iteration
 // accumulator forget uses a u64 salt — a narrower salt would leave the
-// high result bits' per-walk history precise and explode on 6.18/7.0.
-// Confirms the wide-salt canonicalization still preserves verdicts.
+// high result bits' history precise and explode on 6.18/7.0. Confirms the
+// wide-salt canonicalization still preserves verdicts.
 func TestTCPTwelveOptionAccumulator(t *testing.T) {
 	r := New(t, "eth/ipv4/tcp where "+
 		"tcp.options.MSS.kind == 2 and tcp.options.MSS.length == 4 and tcp.options.MSS.value == 1460 "+

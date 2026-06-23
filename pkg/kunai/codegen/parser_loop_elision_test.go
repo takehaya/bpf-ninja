@@ -140,11 +140,9 @@ func TestTLVWalkCascadeMultiOptionAccumulator(t *testing.T) {
 			reject: false,
 		},
 		{
-			// Four atoms lower via the N-walks path (one single-option walk
-			// per atom): the combined callback caps at combinedAccMaxAtoms
-			// (=3) matrix-wide, so the fourth splits the plan into separate
-			// walks with the accumulator canonicalized between them.
-			name: "pure_and_eq_4opt_nwalks",
+			// Four options lower into the one combined accumulator loop; the
+			// per-iteration cursor and accumulator forgets keep it converging.
+			name: "pure_and_eq_4opt",
 			expr: "eth/ipv4/tcp where " +
 				"tcp.options.MSS.value == 1460 " +
 				"and tcp.options.WS.shift == 7 " +
@@ -154,12 +152,12 @@ func TestTLVWalkCascadeMultiOptionAccumulator(t *testing.T) {
 		},
 		{
 			// Fourteen atoms = every field of every TCP option type, TCP's
-			// maximum constructible query. With the wide (u64) accumulator
-			// forget the N-walks cost stays linear, so it loads; accMaxAtoms
-			// (=16) sits above it, so no realistic TCP query is rejected for
-			// exceeding the cap (the numeric over-cap reject is therefore
-			// unconstructible for TCP; the shape rejects below still exercise
-			// the reject path).
+			// maximum constructible query. The combined accumulator loop with
+			// the u64 accumulator forget carries them all in one re-scan, so
+			// it loads; accMaxAtoms (=16) sits above it, so no realistic TCP
+			// query is rejected for exceeding the cap (the numeric over-cap
+			// reject is therefore unconstructible for TCP; the shape rejects
+			// below still exercise the reject path).
 			name: "pure_and_eq_14opt_max",
 			expr: "eth/ipv4/tcp where " +
 				"tcp.options.MSS.kind == 2 " +

@@ -103,23 +103,16 @@ func buildAccPlan(where *ir.Condition, qo queriedOptions) *accPlan {
 }
 
 // accMaxAtoms bounds how many option-field equality atoms the accumulator
-// lowering folds across one TLV walk (combined callback) or one walk per
-// atom (N-walks). With the wide (u64) accumulator forget between walks the
-// N-walks cost is genuinely linear in the atom count — the full 14-atom
-// TCP query (every field of every option type) loads across the 6.1--7.0
-// matrix — so this is a policy ceiling, not a hard verifier limit. It sits
-// above TCP's maximum constructible query (14) and below the
-// emitAccMaskCheck int32-mask limit (31 bits). See buildAccPlan,
-// emitMultiStateNWalksAccumulator, and the forgets in
-// emitMultiStateCallback / emitMultiStateNWalksAccumulator.
+// lowering folds into one combined bpf_loop callback. With the per-
+// iteration cursor AND accumulator forgets the callback converges
+// regardless of how many option bits it sets, so one loop carries every
+// queried option in a single TLV re-scan — the full 14-atom TCP query
+// (every field of every option type) loads across the 6.1--7.0 matrix.
+// This is a policy ceiling, not a hard verifier limit: it sits above TCP's
+// maximum constructible query (14) and below the emitAccMaskCheck
+// int32-mask limit (31 bits). See buildAccPlan and the forgets in
+// emitMultiStateCallback / emitAccPrelude.
 const accMaxAtoms = 16
-
-// combinedAccMaxAtoms is the largest atom count the combined single-
-// callback accumulator carries in one bpf_loop matrix-wide. Past it, four
-// inline option reads per iteration exceed 7.0's verifier budget even with
-// the cursor forget, so emitStateBody splits the plan into N single-option
-// walks instead.
-const combinedAccMaxAtoms = 3
 
 // flattenPureAnd returns the flat leaf list of a where condition that is
 // a pure conjunction (a tree of ast.WAnd whose leaves are all
@@ -251,26 +244,4 @@ func (p *accPlan) atomsFor(layer *ir.LayerInstance) []accAtom {
 		return nil
 	}
 	return p.atoms
-}
-
-// groupAtomsByLayout buckets atoms by their owning option (layout),
-// preserving first-appearance order. The N-walks lowering emits one walk
-// per group, so multiple queried fields of the same option share a single
-// walk (and a single re-scan of the TLV list) instead of one walk per
-// field — making the walk count scale with the distinct-option count, not
-// the atom count.
-func groupAtomsByLayout(atoms []accAtom) [][]accAtom {
-	var order []*vocab.AuxLayout
-	groups := map[*vocab.AuxLayout][]accAtom{}
-	for _, a := range atoms {
-		if _, ok := groups[a.layout]; !ok {
-			order = append(order, a.layout)
-		}
-		groups[a.layout] = append(groups[a.layout], a)
-	}
-	out := make([][]accAtom, 0, len(order))
-	for _, l := range order {
-		out = append(out, groups[l])
-	}
-	return out
 }
