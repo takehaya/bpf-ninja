@@ -177,3 +177,24 @@ func TestTCPTwelveOptionAccumulator(t *testing.T) {
 	tsecrBad.TCPOptions = []layers.TCPOption{mss, ws, sackPerm, ts(1, 9)}
 	r.MustReject(t, Build(t, tsecrBad), "high-bit (tsecr) mismatch — confirms u64-salt forget did not corrupt bit 11")
 }
+
+// TestTCPAccumulatorLeafForms checks the two operand-shape normalizations
+// in eqLeafToAtom keep the right verdict: a constant on the LHS of a leaf
+// (`1460 == field`) and a negative literal narrowed to the field width
+// (`WS.shift == -1` means shift == 0xff).
+func TestTCPAccumulatorLeafForms(t *testing.T) {
+	r := New(t, "eth/ipv4/tcp where 1460 == tcp.options.MSS.value and tcp.options.WS.shift == -1")
+
+	mss := layers.TCPOption{OptionType: layers.TCPOptionKindMSS, OptionLength: 4, OptionData: []byte{0x05, 0xb4}}
+	ws := func(s byte) layers.TCPOption {
+		return layers.TCPOption{OptionType: layers.TCPOptionKindWindowScale, OptionLength: 3, OptionData: []byte{s}}
+	}
+
+	match := Defaults()
+	match.TCPOptions = []layers.TCPOption{mss, ws(0xff)}
+	r.MustMatch(t, Build(t, match), "MSS=1460 (const on left) AND shift=0xff (== -1)")
+
+	wrongShift := Defaults()
+	wrongShift.TCPOptions = []layers.TCPOption{mss, ws(7)}
+	r.MustReject(t, Build(t, wrongShift), "shift=7 != 0xff, so the -1 leaf fails")
+}

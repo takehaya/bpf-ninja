@@ -154,6 +154,11 @@ func eqLeafToAtom(leaf *ir.Condition, qo queriedOptions) (*ir.LayerInstance, acc
 	if l == nil || r == nil {
 		return nil, accAtom{}, false
 	}
+	// `==` is symmetric and the parser does not canonicalize operand order,
+	// so accept the constant on either side (`<const> == <field>` too).
+	if l.Kind == ast.ArithConst && r.Kind == ast.ArithField {
+		l, r = r, l
+	}
 	if l.Kind != ast.ArithField || r.Kind != ast.ArithConst {
 		return nil, accAtom{}, false
 	}
@@ -191,16 +196,21 @@ func eqLeafToAtom(leaf *ir.Condition, qo queriedOptions) (*ir.LayerInstance, acc
 	default:
 		return nil, accAtom{}, false
 	}
-	// Const must fit int32 (JNE.Imm immediate range), like the normal
-	// arith-compare path narrows it.
-	if r.Const > 0x7FFFFFFF {
+	// Narrow the constant to the field width before the int32 check, the
+	// same way the normal arith path (genArithWithBits) does — so a negative
+	// literal on an unsigned field is accepted (e.g. `WS.shift == -1` means
+	// shift == 0xff). A constant whose high bit is set on a 4-byte field
+	// still rejects: JNE.Imm sign-extends a 32-bit immediate, so the
+	// accumulator cannot compare it correctly and must fall back.
+	cmpVal := r.Const & ((uint64(1) << uint(f.Aux.FieldBitWidth)) - 1)
+	if cmpVal > 0x7FFFFFFF {
 		return nil, accAtom{}, false
 	}
 	return f.Layer, accAtom{
 		layout:       layout,
 		fieldByteOff: f.Aux.FieldBitOff / 8,
 		width:        width,
-		cmpVal:       r.Const,
+		cmpVal:       cmpVal,
 		bit:          0,
 	}, true
 }

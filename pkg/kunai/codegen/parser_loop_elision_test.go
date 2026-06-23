@@ -140,6 +140,25 @@ func TestTLVWalkCascadeMultiOptionAccumulator(t *testing.T) {
 			reject: false,
 		},
 		{
+			// `==` is symmetric: a constant on the left of a leaf must build
+			// the same accumulator as `<field> == <const>`.
+			name: "const_on_left",
+			expr: "eth/ipv4/tcp where " +
+				"1460 == tcp.options.MSS.value " +
+				"and 7 == tcp.options.WS.shift",
+			reject: false,
+		},
+		{
+			// A negative literal on an unsigned field is narrowed to the field
+			// width (WS.shift == -1 means shift == 0xff), so it stays in the
+			// accumulator instead of falling back to the multi-option reject.
+			name: "neg_literal_unsigned_field",
+			expr: "eth/ipv4/tcp where " +
+				"tcp.options.MSS.value == 1460 " +
+				"and tcp.options.WS.shift == -1",
+			reject: false,
+		},
+		{
 			// Four options lower into the one combined accumulator loop; the
 			// per-iteration cursor and accumulator forgets keep it converging.
 			name: "pure_and_eq_4opt",
