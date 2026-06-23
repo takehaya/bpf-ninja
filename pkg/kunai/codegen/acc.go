@@ -87,15 +87,13 @@ func buildAccPlan(where *ir.Condition, qo queriedOptions) *accPlan {
 			return nil
 		}
 	}
-	// Cap the total number of option-field equality atoms. Up to
-	// combinedAccMaxAtoms load as one combined bpf_loop callback; beyond
-	// that (and up to accMaxAtoms) the program lowers to one single-option
-	// walk per atom (N-walks), whose cost is linear in the atom count (the
-	// cursor and accumulator forgets remove the per-iteration fan-out and
-	// the cross-walk 2^N branching respectively). Above accMaxAtoms,
-	// returning nil routes the program to the compile-time reject in
-	// emitStateBody — a clean diagnostic instead of bytecode the verifier
-	// refuses.
+	// Cap the total number of option-field equality atoms. All atoms lower
+	// into one combined bpf_loop callback; the per-iteration cursor and
+	// accumulator forgets (emitMultiStateCallback / emitAccPrelude) make it
+	// converge regardless of the atom count, so the cap is a policy ceiling
+	// (see accMaxAtoms), not a hard verifier limit. Above it, returning nil
+	// routes the program to the compile-time reject in emitStateBody — a
+	// clean diagnostic instead of bytecode the verifier refuses.
 	if len(plan.atoms) > accMaxAtoms {
 		return nil
 	}

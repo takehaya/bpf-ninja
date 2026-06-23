@@ -456,7 +456,8 @@ func (c *pmCtx) emitMultiStateCallback(entry *vocab.ParseState, entryIdx int, cb
 	// is exempt: its per-iteration cursor AND accumulator forgets make the
 	// bpf_loop converge after ~one iteration, so the "branches × MAX_DEPTH"
 	// multiplier the guard worries about does not apply. Its load is proven
-	// directly on the kernel matrix (envelope_load_test.go C_tcp_opts_*).
+	// directly on the kernel matrix (tcp_accumulator_load_test.go,
+	// TestBpfTCPAccumulator{XDP,TC}).
 	if c.accPlan.atomsFor(c.layer) == nil {
 		if err := assertCallbackComplexity(insns, cbSym); err != nil {
 			return nil, err

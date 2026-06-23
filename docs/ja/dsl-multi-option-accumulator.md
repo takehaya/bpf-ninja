@@ -129,7 +129,7 @@ codegen には別途、callback の分岐命令数を静的に数える tripwire
   するか判定)、`accMaxAtoms`、`emitAccMaskCheck`。
 - `pkg/kunai/codegen/parser_loop.go`: `emitMultiStateCallback` (cursor forget +
   分岐ガード免除)、`emitAccPrelude` (atom 評価 + acc forget)。
-- `internal/program/envelope_load_test.go`: `C_tcp_opts_*` で 2/3/4/8/14 atom が
-  6.1〜7.0 の全カーネルで load することを検証 (vimto matrix)。
+- `internal/program/tcp_accumulator_load_test.go`: `TestBpfTCPAccumulator{XDP,TC}`
+  で 2/3/4/8/14 atom が 6.1〜7.0 の全カーネルで load することを検証 (vimto matrix)。
 - `pkg/kunai/dsltest/acc_correctness_test.go`: forget がランタイムの判定結果を
   壊していないこと (一致で match、欠け / 不一致で reject) を検証。

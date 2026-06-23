@@ -287,7 +287,7 @@ func (c *pmCtx) emitStateBody(state *vocab.ParseState, stateIdx int, isEntry boo
 		// verifier will refuse. One option per filter still works on the
 		// normal path.
 		if c.isLookaheadOnlyLoop(stateIdx) && len(c.queried[c.layer]) >= 2 && c.accPlan.atomsFor(c.layer) == nil {
-			return nil, nil, fmt.Errorf("%w: querying %d options of %q in one filter exceeds the verifier's state budget; the accumulator lowering handles up to %d option equalities (a pure AND of `<option>.<field> == <const>`) per filter, so query at most %d options", ErrNotImplemented, len(c.queried[c.layer]), c.spec.Name, accMaxAtoms, accMaxAtoms)
+			return nil, nil, fmt.Errorf("%w: querying %d distinct options of %q in one filter is not supported in this shape; the accumulator lowering handles a pure AND of `<option>.<field> == <const>` equalities (up to %d such atoms, where multiple fields on one option each count), so reduce to at most %d equality atoms", ErrNotImplemented, len(c.queried[c.layer]), c.spec.Name, accMaxAtoms, accMaxAtoms)
 		}
 		// Accumulator queries lower to one combined bpf_loop: the per-
 		// iteration cursor and accumulator forgets (emitAccPrelude /
