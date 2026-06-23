@@ -405,11 +405,14 @@ func TestTLVWalkMultiOptionAccumulatorStructure(t *testing.T) {
 	const wantMask = int64(0b11) // two leaves → bits 0 and 1
 	andOp := asm.And.Imm(asm.R3, 0).OpCode
 	jneOp := asm.JNE.Imm(asm.R3, 0, "").OpCode
+	// emitAccMaskCheck loads the acc slot into R3, ANDs the mask, and JNEs
+	// the mask — all on R3. Match the destination register too so an
+	// unrelated And/JNE pair with the same immediate cannot satisfy this.
 	foundMaskCheck := false
 	for i := 0; i+1 < len(out.Main); i++ {
 		a, b := out.Main[i], out.Main[i+1]
-		if a.OpCode == andOp && a.Constant == wantMask &&
-			b.OpCode == jneOp && b.Constant == wantMask {
+		if a.OpCode == andOp && a.Dst == asm.R3 && a.Constant == wantMask &&
+			b.OpCode == jneOp && b.Dst == asm.R3 && b.Constant == wantMask {
 			foundMaskCheck = true
 			break
 		}
