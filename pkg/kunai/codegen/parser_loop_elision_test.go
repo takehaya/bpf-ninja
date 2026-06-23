@@ -8,10 +8,36 @@ import (
 	"github.com/cilium/ebpf/asm"
 
 	"github.com/takehaya/xdp-ninja/pkg/kunai/dslvocab"
+	"github.com/takehaya/xdp-ninja/pkg/kunai/ir"
 	"github.com/takehaya/xdp-ninja/pkg/kunai/parser"
 	"github.com/takehaya/xdp-ninja/pkg/kunai/resolve"
 	"github.com/takehaya/xdp-ninja/pkg/kunai/vocab"
 )
+
+// TestAccumulatorGatedToLookaheadOnly pins that the accumulator plan is
+// only eligible for lookahead-only TLV walks (TCP options), not counter-
+// driven ones (Geneve), so counter-driven layers keep their native path.
+func TestAccumulatorGatedToLookaheadOnly(t *testing.T) {
+	v, err := dslvocab.Bundled()
+	if err != nil {
+		t.Fatalf("dslvocab.Bundled: %v", err)
+	}
+	for _, c := range []struct {
+		proto string
+		want  bool
+	}{
+		{"tcp", true},     // parse_options dispatches on a lookahead key alone
+		{"geneve", false}, // counter-driven walk (ParserCounter)
+	} {
+		spec := v[c.proto]
+		if spec == nil {
+			t.Fatalf("bundled vocab missing %q", c.proto)
+		}
+		if got := layerOptionWalkIsLookaheadOnly(&ir.LayerInstance{Spec: spec}); got != c.want {
+			t.Errorf("layerOptionWalkIsLookaheadOnly(%s) = %v, want %v", c.proto, got, c.want)
+		}
+	}
+}
 
 // compileBundled drives the full kunai.Compile pipeline (parser →
 // resolve → codegen) against the bundled vocab, but stays in the

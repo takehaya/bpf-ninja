@@ -75,6 +75,15 @@ func buildAccPlan(where *ir.Condition, qo queriedOptions) *accPlan {
 	if plan.layer == nil {
 		return nil
 	}
+	// Scope the accumulator to lookahead-only TLV walks (the TCP-options
+	// shape). A counter-driven walk (Geneve, IPv4 options) has its own
+	// native lowering that already loads multi-option queries; diverting it
+	// here would needlessly apply the kind-dispatch prelude, the cursor/acc
+	// forgets, and the branch-guard exemption, none of which it is designed
+	// for. Mirrors pmCtx.isLookaheadOnlyLoop at the spec level.
+	if !layerOptionWalkIsLookaheadOnly(plan.layer) {
+		return nil
+	}
 	// Require >=2 DISTINCT queried options, and every option the layer
 	// queries must be covered by an eq-leaf — otherwise an un-covered
 	// queried option would still want its own recorded-position slot
@@ -98,6 +107,30 @@ func buildAccPlan(where *ir.Condition, qo queriedOptions) *accPlan {
 		return nil
 	}
 	return plan
+}
+
+// layerOptionWalkIsLookaheadOnly reports whether the layer's TLV option
+// walk dispatches on a lookahead key alone (the TCP-options shape), rather
+// than a counter (Geneve, IPv4 options). The accumulator lowering targets
+// the lookahead-only shape; counter-driven walks keep their native path.
+// Mirrors pmCtx.isLookaheadOnlyLoop, but at the vocab-spec level so
+// buildAccPlan can gate before any parser-machine context exists.
+func layerOptionWalkIsLookaheadOnly(layer *ir.LayerInstance) bool {
+	if layer == nil || layer.Spec == nil || layer.Spec.ParseStateMachine == nil {
+		return false
+	}
+	states := layer.Spec.ParseStateMachine.States
+	for i := range states {
+		if !vocab.IsMultiStateLoopEntry(states, i) {
+			continue
+		}
+		sel := states[i].Trans.Select
+		if sel == nil {
+			return false
+		}
+		return !hasCounterAndKindKeys(sel) && !isCounterIsZeroSelect(sel)
+	}
+	return false
 }
 
 // accMaxAtoms bounds how many option-field equality atoms the accumulator
