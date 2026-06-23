@@ -104,13 +104,15 @@ func buildAccPlan(where *ir.Condition, qo queriedOptions) *accPlan {
 
 // accMaxAtoms bounds how many option-field equality atoms the accumulator
 // lowering folds across one TLV walk (combined callback) or one walk per
-// atom (N-walks) — the largest count verified to load across the 6.1--7.0
-// kernel matrix. The N-walks cost is linear in the atom count, so this is
-// a policy ceiling (well above any realistic TCP query, which has four
-// distinct option types) rather than a hard verifier limit. See
-// buildAccPlan, emitMultiStateNWalksAccumulator, and the forgets in
+// atom (N-walks). With the wide (u64) accumulator forget between walks the
+// N-walks cost is genuinely linear in the atom count — the full 14-atom
+// TCP query (every field of every option type) loads across the 6.1--7.0
+// matrix — so this is a policy ceiling, not a hard verifier limit. It sits
+// above TCP's maximum constructible query (14) and below the
+// emitAccMaskCheck int32-mask limit (31 bits). See buildAccPlan,
+// emitMultiStateNWalksAccumulator, and the forgets in
 // emitMultiStateCallback / emitMultiStateNWalksAccumulator.
-const accMaxAtoms = 8
+const accMaxAtoms = 16
 
 // combinedAccMaxAtoms is the largest atom count the combined single-
 // callback accumulator carries in one bpf_loop matrix-wide. Past it, four

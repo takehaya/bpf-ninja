@@ -118,10 +118,10 @@ func TestTCPFourOptionAccumulator(t *testing.T) {
 	r.MustReject(t, Build(t, tsBad), "TS tsval mismatch")
 }
 
-// TestTCPEightOptionAccumulator checks the N-walks path at the accMaxAtoms
-// ceiling: eight atoms (two fields on each of the four option types) lower
-// to eight single-option walks. Verifies verdicts stay correct as the walk
-// count and accumulator bit width grow.
+// TestTCPEightOptionAccumulator checks the N-walks path with eight atoms
+// (two fields on each of the four option types) lowered to eight single-
+// option walks. Verifies verdicts stay correct as the walk count and
+// accumulator bit width grow.
 func TestTCPEightOptionAccumulator(t *testing.T) {
 	r := New(t, "eth/ipv4/tcp where "+
 		"tcp.options.MSS.value == 1460 and tcp.options.MSS.length == 4 "+
@@ -146,4 +146,35 @@ func TestTCPEightOptionAccumulator(t *testing.T) {
 	tsecrBad := Defaults()
 	tsecrBad.TCPOptions = []layers.TCPOption{mss, ws, sackPerm, ts(1, 9)}
 	r.MustReject(t, Build(t, tsecrBad), "TS tsecr mismatch — its bit stays 0")
+}
+
+// TestTCPTwelveOptionAccumulator exercises twelve atoms (every field of
+// MSS/WS/TS plus SACK_PERM), which only verify because the between-walks
+// accumulator forget uses a u64 salt — a narrower salt would leave the
+// high result bits' per-walk history precise and explode on 6.18/7.0.
+// Confirms the wide-salt canonicalization still preserves verdicts.
+func TestTCPTwelveOptionAccumulator(t *testing.T) {
+	r := New(t, "eth/ipv4/tcp where "+
+		"tcp.options.MSS.kind == 2 and tcp.options.MSS.length == 4 and tcp.options.MSS.value == 1460 "+
+		"and tcp.options.WS.kind == 3 and tcp.options.WS.length == 3 and tcp.options.WS.shift == 7 "+
+		"and tcp.options.TS.kind == 8 and tcp.options.TS.length == 10 and tcp.options.TS.tsval == 1 and tcp.options.TS.tsecr == 2 "+
+		"and tcp.options.SACK_PERM.kind == 4 and tcp.options.SACK_PERM.length == 2")
+
+	mss := layers.TCPOption{OptionType: layers.TCPOptionKindMSS, OptionLength: 4, OptionData: []byte{0x05, 0xb4}}
+	ws := layers.TCPOption{OptionType: layers.TCPOptionKindWindowScale, OptionLength: 3, OptionData: []byte{7}}
+	sackPerm := layers.TCPOption{OptionType: layers.TCPOptionKindSACKPermitted, OptionLength: 2}
+	ts := func(tsval, tsecr uint32) layers.TCPOption {
+		return layers.TCPOption{OptionType: layers.TCPOptionKindTimestamps, OptionLength: 10, OptionData: []byte{
+			byte(tsval >> 24), byte(tsval >> 16), byte(tsval >> 8), byte(tsval),
+			byte(tsecr >> 24), byte(tsecr >> 16), byte(tsecr >> 8), byte(tsecr),
+		}}
+	}
+
+	all := Defaults()
+	all.TCPOptions = []layers.TCPOption{mss, ws, sackPerm, ts(1, 2)}
+	r.MustMatch(t, Build(t, all), "all twelve field equalities hold")
+
+	tsecrBad := Defaults()
+	tsecrBad.TCPOptions = []layers.TCPOption{mss, ws, sackPerm, ts(1, 9)}
+	r.MustReject(t, Build(t, tsecrBad), "high-bit (tsecr) mismatch — confirms u64-salt forget did not corrupt bit 11")
 }

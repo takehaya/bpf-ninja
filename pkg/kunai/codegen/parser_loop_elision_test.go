@@ -153,36 +153,30 @@ func TestTLVWalkCascadeMultiOptionAccumulator(t *testing.T) {
 			reject: false,
 		},
 		{
-			// Eight atoms (two fields on each of the four option types) still
-			// lower via N-walks — the per-walk cost is linear in the atom
-			// count, so this is well within accMaxAtoms (=8).
-			name: "pure_and_eq_8opt_nwalks",
+			// Fourteen atoms = every field of every TCP option type, TCP's
+			// maximum constructible query. With the wide (u64) accumulator
+			// forget the N-walks cost stays linear, so it loads; accMaxAtoms
+			// (=16) sits above it, so no realistic TCP query is rejected for
+			// exceeding the cap (the numeric over-cap reject is therefore
+			// unconstructible for TCP; the shape rejects below still exercise
+			// the reject path).
+			name: "pure_and_eq_14opt_max",
 			expr: "eth/ipv4/tcp where " +
-				"tcp.options.MSS.value == 1460 " +
+				"tcp.options.MSS.kind == 2 " +
 				"and tcp.options.MSS.length == 4 " +
-				"and tcp.options.WS.shift == 7 " +
+				"and tcp.options.MSS.value == 1460 " +
+				"and tcp.options.WS.kind == 3 " +
 				"and tcp.options.WS.length == 3 " +
+				"and tcp.options.WS.shift == 7 " +
 				"and tcp.options.SACK_PERM.kind == 4 " +
 				"and tcp.options.SACK_PERM.length == 2 " +
+				"and tcp.options.TS.kind == 8 " +
+				"and tcp.options.TS.length == 10 " +
 				"and tcp.options.TS.tsval == 1 " +
-				"and tcp.options.TS.tsecr == 2",
+				"and tcp.options.TS.tsecr == 2 " +
+				"and tcp.options.SACK.kind == 5 " +
+				"and tcp.options.SACK.length == 10",
 			reject: false,
-		},
-		{
-			// accMaxAtoms (=8) is the overall ceiling; a ninth atom (a third
-			// field on the MSS option) rejects at compile time.
-			name: "pure_and_eq_9opt_over_cap",
-			expr: "eth/ipv4/tcp where " +
-				"tcp.options.MSS.value == 1460 " +
-				"and tcp.options.MSS.length == 4 " +
-				"and tcp.options.MSS.kind == 2 " +
-				"and tcp.options.WS.shift == 7 " +
-				"and tcp.options.WS.length == 3 " +
-				"and tcp.options.SACK_PERM.kind == 4 " +
-				"and tcp.options.SACK_PERM.length == 2 " +
-				"and tcp.options.TS.tsval == 1 " +
-				"and tcp.options.TS.tsecr == 2",
-			reject: true,
 		},
 		{
 			// A `!=` leaf breaks the pure-AND-equality shape, so the

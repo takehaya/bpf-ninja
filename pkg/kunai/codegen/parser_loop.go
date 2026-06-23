@@ -228,16 +228,23 @@ func (c *pmCtx) emitMultiStateNWalksAccumulator(state *vocab.ParseState, stateId
 			asm.LoadMem(asm.R0, asm.R10, bpfLoopCtxScratchStartSlot, asm.DWord),
 			asm.LoadMem(asm.R1, asm.R10, bpfLoopCtxScratchEndSlot, asm.DWord),
 		)
-		// Canonicalize the accumulator between walks: XOR it twice with a
-		// scratch byte (a runtime identity) so its precise 2^N cross-walk
-		// history collapses to a conservative envelope and the sequential
-		// walks do not multiply verifier states (Codex's "canonicalize hits
-		// too"). The runtime bits are preserved for the final mask check.
+		// Canonicalize the accumulator between walks: XOR it twice with an
+		// unconstrained scratch value (a runtime identity) so its precise
+		// 2^N cross-walk bit history collapses to a conservative envelope
+		// and the sequential walks do not multiply verifier states.
+		//
+		// The salt must be a u64: it has to leave EVERY accumulator result
+		// bit unknown to the verifier. A narrower (byte) salt only forgets
+		// the low 8 bits, so for >8 atoms the high result bits keep their
+		// exact per-walk history and states_equal re-explores them
+		// combinatorially across walks — the cliff that capped this at ~8
+		// atoms on 6.18/7.0 before the widening. The runtime bits are
+		// preserved (x^s^s == x) for the final mask check.
 		insns = append(insns,
 			asm.Mov.Reg(asm.R5, asm.R0),
-			asm.Add.Imm(asm.R5, 1),
+			asm.Add.Imm(asm.R5, 8),
 			asm.JGT.Reg(asm.R5, asm.R1, c.doneLabel),
-			asm.LoadMem(asm.R3, asm.R0, 0, asm.Byte),
+			asm.LoadMem(asm.R3, asm.R0, 0, asm.DWord),
 			asm.LoadMem(asm.R5, asm.R10, accSlotOff, asm.DWord),
 			asm.Xor.Reg(asm.R5, asm.R3),
 			asm.Xor.Reg(asm.R5, asm.R3),
