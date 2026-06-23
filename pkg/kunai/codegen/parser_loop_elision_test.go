@@ -371,10 +371,13 @@ parser F(packet_in pkt, out foo_h hdr, out foo_mss_h mss, out foo_ws_h ws) {
 // instruction stream — the structural signature of how many distinct
 // walk subprograms the program drives.
 func countFnLoop(insns asm.Instructions) int {
-	want := asm.FnLoop.Call().OpCode
+	// Match both the call opcode and the helper ID (Constant): every helper
+	// call shares the same opcode, so comparing the opcode alone would also
+	// count other helpers / bpf2bpf calls.
+	call := asm.FnLoop.Call()
 	n := 0
 	for _, ins := range insns {
-		if ins.OpCode == want {
+		if ins.OpCode == call.OpCode && ins.Constant == call.Constant {
 			n++
 		}
 	}
