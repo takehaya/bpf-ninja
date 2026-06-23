@@ -10,7 +10,6 @@ import (
 	"github.com/takehaya/xdp-ninja/pkg/kunai/vocab"
 )
 
-
 // genParserMachine compiles a non-trivial vocab.ParseStateMachine into
 // BPF instructions. The shape mirrors genStaticLayer for entry-state
 // concerns (bounds, parent dispatch, predicates) and then walks the
@@ -28,7 +27,7 @@ import (
 // bpf2bpf callback that bpf_loop invokes max_iter times. The first
 // iteration runs inline so dispatch and predicates remain in the main
 // stream where the verifier can see them.
-func genParserMachine(layer *ir.LayerInstance, layerIdx int, all []*ir.LayerInstance, qo queriedOptions) (asm.Instructions, asm.Instructions, error) {
+func genParserMachine(layer *ir.LayerInstance, layerIdx int, all []*ir.LayerInstance, qo queriedOptions, plan *accPlan) (asm.Instructions, asm.Instructions, error) {
 	spec := layer.Spec
 	m := spec.ParseStateMachine
 	if m == nil {
@@ -47,6 +46,7 @@ func genParserMachine(layer *ir.LayerInstance, layerIdx int, all []*ir.LayerInst
 		r4IsRange:    precedingLayersLeaveR4Range(all, layerIdx),
 		queried:      qo,
 		queriedAuxes: buildQueriedAuxNames(qo, layer),
+		accPlan:      plan,
 	}
 	// Pre-scan for multi-state self-loops. Each loop entry's siblings
 	// inline into the entry's bpf_loop callback, so the per-state
@@ -113,6 +113,13 @@ type pmCtx struct {
 	// without rebuilding per dispatch site. nil when no options are
 	// queried for this layer.
 	queriedAuxes map[string]bool
+	// accPlan, when non-nil and targeting this layer, switches the
+	// multi-option TLV walk from the per-option position-recording path
+	// (which the verifier rejects for >=2 options) to the accumulator
+	// path: the per-iteration prelude collects a result bit per queried
+	// option into a single slot. nil for every program that is not the
+	// supported pure-AND-equality multi-option TCP shape (see acc.go).
+	accPlan *accPlan
 }
 
 // precedingLayersLeaveR4Range scans the layers emitted before idx and
@@ -259,6 +266,35 @@ func (c *pmCtx) emitStateBody(state *vocab.ParseState, stateIdx int, isEntry boo
 		if c.canFallbackToBulkAdvance(stateIdx) {
 			return c.emitCounterDrivenBulkAdvance(state, stateIdx)
 		}
+		// Querying >=2 options of a lookahead-only TLV layer (TCP
+		// options) records N option positions into N distinct stack
+		// slots; the verifier then tracks the cross-product of which
+		// slot holds which position across the walk and blows its 1M
+		// instruction-processing budget (rejected on every kernel and
+		// host).
+		//
+		// The accumulator lowering (acc.go) sidesteps that for the
+		// supported shape — a pure conjunction of `<option.field> ==
+		// <const>` over the queried options — by collecting one RESULT
+		// BIT per leaf into a single slot instead of N positions into N
+		// slots, so exactly one recorded slot survives and the walk
+		// converges. When the plan is active for this layer take that
+		// path; the per-iteration prelude reads the live option field and
+		// ORs its match bit into the accumulator.
+		//
+		// Without an active plan, reject >=2 lookahead-only at compile
+		// time with a clear diagnostic rather than emit bytecode the
+		// verifier will refuse. One option per filter still works on the
+		// normal path.
+		if c.isLookaheadOnlyLoop(stateIdx) && len(c.queried[c.layer]) >= 2 && c.accPlan.atomsFor(c.layer) == nil {
+			return nil, nil, fmt.Errorf("%w: querying %d distinct options of %q in one filter is supported only as a pure AND of `<option>.<field> == <const>` equalities (at most %d, where multiple fields on one option each count); rewrite the clause to that form — no `!=`, no non-option term mixed in — or query a single option", ErrNotImplemented, len(c.queried[c.layer]), c.spec.Name, accMaxAtoms)
+		}
+		// Accumulator queries lower to one combined bpf_loop: the per-
+		// iteration cursor and accumulator forgets (emitAccPrelude /
+		// emitMultiStateCallback) make it converge for any option count, so
+		// a single TLV re-scan carries every queried option. The callback's
+		// branch-count guard is exempted for this converging shape (see
+		// emitMultiStateCallback).
 		return c.emitMultiStateSelfLoop(state, stateIdx)
 	}
 

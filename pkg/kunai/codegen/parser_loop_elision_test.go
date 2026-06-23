@@ -1,16 +1,43 @@
 package codegen
 
 import (
+	"errors"
 	"testing"
 	"testing/fstest"
 
 	"github.com/cilium/ebpf/asm"
 
 	"github.com/takehaya/xdp-ninja/pkg/kunai/dslvocab"
+	"github.com/takehaya/xdp-ninja/pkg/kunai/ir"
 	"github.com/takehaya/xdp-ninja/pkg/kunai/parser"
 	"github.com/takehaya/xdp-ninja/pkg/kunai/resolve"
 	"github.com/takehaya/xdp-ninja/pkg/kunai/vocab"
 )
+
+// TestAccumulatorGatedToLookaheadOnly pins that the accumulator plan is
+// only eligible for lookahead-only TLV walks (TCP options), not counter-
+// driven ones (Geneve), so counter-driven layers keep their native path.
+func TestAccumulatorGatedToLookaheadOnly(t *testing.T) {
+	v, err := dslvocab.Bundled()
+	if err != nil {
+		t.Fatalf("dslvocab.Bundled: %v", err)
+	}
+	for _, c := range []struct {
+		proto string
+		want  bool
+	}{
+		{"tcp", true},     // parse_options dispatches on a lookahead key alone
+		{"geneve", false}, // counter-driven walk (ParserCounter)
+	} {
+		spec := v[c.proto]
+		if spec == nil {
+			t.Fatalf("bundled vocab missing %q", c.proto)
+		}
+		if got := layerOptionWalkIsLookaheadOnly(&ir.LayerInstance{Spec: spec}); got != c.want {
+			t.Errorf("layerOptionWalkIsLookaheadOnly(%s) = %v, want %v", c.proto, got, c.want)
+		}
+	}
+}
 
 // compileBundled drives the full kunai.Compile pipeline (parser →
 // resolve → codegen) against the bundled vocab, but stays in the
@@ -104,22 +131,138 @@ func TestTLVWalkCascadeElidesUnqueriedKinds(t *testing.T) {
 	}
 }
 
-// TestTLVWalkCascadeElidesAllUnqueriedKinds is the inverse: with
-// every option queried, every kind's JNE must be present (no
-// elision). Catches a regression where caseRedundantWithDefault
-// wrongly elides queried kinds.
-func TestTLVWalkCascadeElidesAllUnqueriedKinds(t *testing.T) {
-	out := compileBundled(t, ""+
-		"eth/ipv4/tcp where "+
-		"tcp.options.MSS.value == 1460 "+
-		"and tcp.options.WS.shift == 7 "+
-		"and tcp.options.SACK_PERM.kind == 4 "+
-		"and tcp.options.TS.tsval == 1")
-	kinds := callbackKindBytes(out.Callbacks)
-	for _, k := range []int64{2, 3, 4, 8} {
-		if !kinds[k] {
-			t.Errorf("kind=%d JNE missing — option is queried, must emit", k)
-		}
+// TestTLVWalkCascadeMultiOptionAccumulator pins the multi-option
+// boundary after the accumulator lowering landed. A pure conjunction of
+// `<option>.<field> == <const>` equalities over >=2 distinct queried TCP
+// options now COMPILES: the per-iteration callback collects one result
+// bit per leaf into a single accumulator slot (one recorded slot, not N
+// option positions), so the walk converges. Shapes the accumulator does
+// not cover still reject at compile time:
+//   - `!=` (or any non-eq op) on an option field,
+//   - mixing a non-option atom (e.g. tcp.dport == 443) into the AND.
+func TestTLVWalkCascadeMultiOptionAccumulator(t *testing.T) {
+	v, err := dslvocab.Bundled()
+	if err != nil {
+		t.Fatalf("dslvocab.Bundled: %v", err)
+	}
+	cases := []struct {
+		name   string
+		expr   string
+		reject bool
+	}{
+		{
+			name: "pure_and_eq_2opt",
+			expr: "eth/ipv4/tcp where " +
+				"tcp.options.MSS.value == 1460 " +
+				"and tcp.options.WS.shift == 7",
+			reject: false,
+		},
+		{
+			name: "pure_and_eq_3opt",
+			expr: "eth/ipv4/tcp where " +
+				"tcp.options.MSS.value == 1460 " +
+				"and tcp.options.WS.shift == 7 " +
+				"and tcp.options.SACK_PERM.kind == 4",
+			reject: false,
+		},
+		{
+			// `==` is symmetric: a constant on the left of a leaf must build
+			// the same accumulator as `<field> == <const>`.
+			name: "const_on_left",
+			expr: "eth/ipv4/tcp where " +
+				"1460 == tcp.options.MSS.value " +
+				"and 7 == tcp.options.WS.shift",
+			reject: false,
+		},
+		{
+			// A negative literal on an unsigned field is narrowed to the field
+			// width (WS.shift == -1 means shift == 0xff), so it stays in the
+			// accumulator instead of falling back to the multi-option reject.
+			name: "neg_literal_unsigned_field",
+			expr: "eth/ipv4/tcp where " +
+				"tcp.options.MSS.value == 1460 " +
+				"and tcp.options.WS.shift == -1",
+			reject: false,
+		},
+		{
+			// Four options lower into the one combined accumulator loop; the
+			// per-iteration cursor and accumulator forgets keep it converging.
+			name: "pure_and_eq_4opt",
+			expr: "eth/ipv4/tcp where " +
+				"tcp.options.MSS.value == 1460 " +
+				"and tcp.options.WS.shift == 7 " +
+				"and tcp.options.SACK_PERM.kind == 4 " +
+				"and tcp.options.TS.tsval == 1",
+			reject: false,
+		},
+		{
+			// Fourteen atoms = every field of every TCP option type, TCP's
+			// maximum constructible query. The combined accumulator loop with
+			// the u64 accumulator forget carries them all in one re-scan, so
+			// it loads; accMaxAtoms (=16) sits above it, so no realistic TCP
+			// query is rejected for exceeding the cap (the numeric over-cap
+			// reject is therefore unconstructible for TCP; the shape rejects
+			// below still exercise the reject path).
+			name: "pure_and_eq_14opt_max",
+			expr: "eth/ipv4/tcp where " +
+				"tcp.options.MSS.kind == 2 " +
+				"and tcp.options.MSS.length == 4 " +
+				"and tcp.options.MSS.value == 1460 " +
+				"and tcp.options.WS.kind == 3 " +
+				"and tcp.options.WS.length == 3 " +
+				"and tcp.options.WS.shift == 7 " +
+				"and tcp.options.SACK_PERM.kind == 4 " +
+				"and tcp.options.SACK_PERM.length == 2 " +
+				"and tcp.options.TS.kind == 8 " +
+				"and tcp.options.TS.length == 10 " +
+				"and tcp.options.TS.tsval == 1 " +
+				"and tcp.options.TS.tsecr == 2 " +
+				"and tcp.options.SACK.kind == 5 " +
+				"and tcp.options.SACK.length == 10",
+			reject: false,
+		},
+		{
+			// A `!=` leaf breaks the pure-AND-equality shape, so the
+			// accumulator is not built and the >=2 reject stands.
+			name: "ne_leaf_rejects",
+			expr: "eth/ipv4/tcp where " +
+				"tcp.options.MSS.value == 1460 " +
+				"and tcp.options.WS.shift != 7",
+			reject: true,
+		},
+		{
+			// Mixing a non-option (primary-header) atom into the AND
+			// leaves both options queried but not all covered by eq-leaves,
+			// so the accumulator is not built and the >=2 reject stands.
+			name: "non_option_atom_rejects",
+			expr: "eth/ipv4/tcp where " +
+				"tcp.dport == 443 " +
+				"and tcp.options.MSS.value == 1460 " +
+				"and tcp.options.WS.shift == 7",
+			reject: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f, err := parser.Parse(tc.expr, "", nil)
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			prog, err := resolve.ResolveWithOptions(f, v, nil, resolve.Options{})
+			if err != nil {
+				t.Fatalf("resolve: %v", err)
+			}
+			_, err = Gen(prog, Capabilities{})
+			if tc.reject {
+				if !errors.Is(err, ErrNotImplemented) {
+					t.Fatalf("expected ErrNotImplemented, got %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("expected success, got %v", err)
+			}
+		})
 	}
 }
 
@@ -221,5 +364,60 @@ parser F(packet_in pkt, out foo_h hdr, out foo_mss_h mss, out foo_ws_h ws) {
 	}
 	if kinds[3] {
 		t.Errorf("WS kind=3 JNE present — extract-only unqueried kind should be elided in 2-key path")
+	}
+}
+
+// countFnLoop returns the number of bpf_loop helper calls in an
+// instruction stream — the structural signature of how many distinct
+// walk subprograms the program drives.
+func countFnLoop(insns asm.Instructions) int {
+	// Match both the call opcode and the helper ID (Constant): every helper
+	// call shares the same opcode, so comparing the opcode alone would also
+	// count other helpers / bpf2bpf calls.
+	call := asm.FnLoop.Call()
+	n := 0
+	for _, ins := range insns {
+		if ins.OpCode == call.OpCode && ins.Constant == call.Constant {
+			n++
+		}
+	}
+	return n
+}
+
+// TestTLVWalkMultiOptionAccumulatorStructure pins the accumulator
+// lowering's structural shape for a pure-AND multi-option TCP query:
+//
+//   - exactly ONE bpf_loop drives the whole TLV walk (the accumulator
+//     keeps the single self-loop — no extra subprogram per option), and
+//   - the residual where clause reduces to a single `(acc & mask) ==
+//     mask` test, i.e. an And.Imm by the full bitmask immediately
+//     followed by a JNE.Imm against the same mask.
+//
+// For two queried options the mask is 0b11 = 3.
+func TestTLVWalkMultiOptionAccumulatorStructure(t *testing.T) {
+	out := compileBundled(t, "eth/ipv4/tcp where tcp.options.MSS.value == 1460 and tcp.options.WS.shift == 7")
+
+	all := append(append(asm.Instructions{}, out.Main...), out.Callbacks...)
+	if got := countFnLoop(all); got != 1 {
+		t.Fatalf("multi-option accumulator must use exactly 1 bpf_loop, got %d", got)
+	}
+
+	const wantMask = int64(0b11) // two leaves → bits 0 and 1
+	andOp := asm.And.Imm(asm.R3, 0).OpCode
+	jneOp := asm.JNE.Imm(asm.R3, 0, "").OpCode
+	// emitAccMaskCheck loads the acc slot into R3, ANDs the mask, and JNEs
+	// the mask — all on R3. Match the destination register too so an
+	// unrelated And/JNE pair with the same immediate cannot satisfy this.
+	foundMaskCheck := false
+	for i := 0; i+1 < len(out.Main); i++ {
+		a, b := out.Main[i], out.Main[i+1]
+		if a.OpCode == andOp && a.Dst == asm.R3 && a.Constant == wantMask &&
+			b.OpCode == jneOp && b.Dst == asm.R3 && b.Constant == wantMask {
+			foundMaskCheck = true
+			break
+		}
+	}
+	if !foundMaskCheck {
+		t.Fatalf("accumulator mask check (And.Imm %d ; JNE.Imm %d) not found in Main", wantMask, wantMask)
 	}
 }
