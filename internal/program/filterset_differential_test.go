@@ -90,6 +90,9 @@ func diffPackets(t *testing.T, id string) [][]byte {
 		// checksum, so the in-place edit is sufficient.
 		const icmpTypeOff = 14 + 20
 		reply := cp(asICMP)(t)
+		if len(reply) <= icmpTypeOff {
+			t.Fatalf("F6: packet is %d bytes, too short for the ICMP type at offset %d (builder/offset drift)", len(reply), icmpTypeOff)
+		}
 		if reply[icmpTypeOff] != 8 {
 			t.Fatalf("F6: expected ICMP type 8 at offset %d, got %d (builder/offset drift)", icmpTypeOff, reply[icmpTypeOff])
 		}
