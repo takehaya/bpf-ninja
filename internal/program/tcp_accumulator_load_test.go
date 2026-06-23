@@ -42,6 +42,9 @@ func accumulatorExprs() []struct{ id, expr string } {
 			"and tcp.options.TS.kind == 8 and tcp.options.TS.length == 10 and tcp.options.TS.tsval == 1 and tcp.options.TS.tsecr == 2 " +
 			"and tcp.options.SACK.kind == 5 and tcp.options.SACK.length == 10"},
 		{"geneve_opts_2", "eth/ipv4/udp/geneve where geneve.options.OVN.egress_port == 42 and geneve.options.GWLB.flow_cookie == 0x12345678"},
+		// Accumulator threaded through an alternation member: the acc slot is
+		// zeroed before the alt so the non-matching (udp) branch loads too.
+		{"tcp_opts_2_in_alt", "eth/ipv4/(tcp|udp) where tcp.options.MSS.value == 1460 and tcp.options.WS.shift == 7"},
 	}
 }
 

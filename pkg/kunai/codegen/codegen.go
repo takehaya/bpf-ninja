@@ -792,7 +792,7 @@ func genLayer(layer *ir.LayerInstance, index int, all []*ir.LayerInstance, qo qu
 
 func genLayerInner(layer *ir.LayerInstance, index int, all []*ir.LayerInstance, qo queriedOptions, plan *accPlan) (asm.Instructions, asm.Instructions, error) {
 	if layer.Alternation != nil {
-		return genAlternation(layer, index, all, qo)
+		return genAlternation(layer, index, all, qo, plan)
 	}
 	switch layer.Quant {
 	case ast.QuantOne:

@@ -50,7 +50,7 @@ var matchedAltReg = asm.R5
 //   - DispatchNoCheck alternatives are rejected (a fall-through alt
 //     would always "win" — semantic noise)
 //   - alt members must use Field dispatch (the guard is a Field check)
-func genAlternation(layer *ir.LayerInstance, index int, all []*ir.LayerInstance, qo queriedOptions) (asm.Instructions, asm.Instructions, error) {
+func genAlternation(layer *ir.LayerInstance, index int, all []*ir.LayerInstance, qo queriedOptions, plan *accPlan) (asm.Instructions, asm.Instructions, error) {
 	if layer.Quant != ast.QuantOne {
 		return nil, nil, fmt.Errorf("%w: quantifier %s on alternation group", ErrNotImplemented, layer.Quant)
 	}
@@ -92,6 +92,30 @@ func genAlternation(layer *ir.LayerInstance, index int, all []*ir.LayerInstance,
 		insns     asm.Instructions
 		callbacks asm.Instructions
 	)
+	// If the accumulator plan targets one of these alternation members,
+	// zero its acc slot before the dispatch. A non-matching branch never
+	// runs that member's parser machine (which is where the slot is
+	// otherwise inited), so without this the post-layer (acc & mask) == mask
+	// check would read an undefined slot on that branch.
+	if plan != nil {
+		for _, alt := range alts {
+			if plan.layer != alt {
+				continue
+			}
+			slot, err := plan.accSlot(qo)
+			if err != nil {
+				return nil, nil, err
+			}
+			// R3 is a scratch register here (the same one
+			// emitDynamicAuxSentinelInit uses); R0/R1 hold the packet
+			// window and must not be clobbered.
+			insns = append(insns,
+				asm.Mov.Imm(asm.R3, 0),
+				asm.StoreMem(asm.R10, slot, asm.R3, asm.DWord),
+			)
+			break
+		}
+	}
 	for i, alt := range alts {
 		altStart := len(insns)
 
@@ -115,17 +139,17 @@ func genAlternation(layer *ir.LayerInstance, index int, all []*ir.LayerInstance,
 		// pass too, so the duplicate is dead code at runtime. The
 		// alternative is threading a custom fail label through every
 		// layer emit which is a much larger refactor for marginal gain.
-		// nil accPlan: the accumulator's plan plumbing and its per-walk
-		// slot zero-init are wired for a top-level parser-machine layer,
-		// not an alternation member. So a multi-option query bound to an
-		// alt member (e.g. `eth/ipv4/(tcp|udp) where tcp.options.MSS.value
-		// == .. and tcp.options.WS.shift == ..`) is rejected at compile
-		// time instead of lowered here; single-option queries on an alt
-		// member are unaffected (they need no plan). Lifting this needs the
-		// acc slot zeroed before the alternation so a non-matching branch
-		// still leaves it defined for the post-layer mask check — a
-		// follow-up, not a fundamental incompatibility.
-		altBody, altCbs, err := genLayerInner(alt, index, all, qo, nil)
+		// Thread the accumulator plan only to the member it targets (e.g.
+		// the tcp member of `(tcp|udp) where tcp.options.MSS.value == ..`);
+		// other members and the non-accumulator case get nil and stay on
+		// the per-option path. The acc slot was zeroed above so a non-
+		// matching branch still leaves it defined for the post-layer mask
+		// check.
+		altPlan := (*accPlan)(nil)
+		if plan != nil && plan.layer == alt {
+			altPlan = plan
+		}
+		altBody, altCbs, err := genLayerInner(alt, index, all, qo, altPlan)
 		if err != nil {
 			return nil, nil, err
 		}

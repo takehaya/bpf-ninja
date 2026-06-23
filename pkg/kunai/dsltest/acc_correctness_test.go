@@ -198,3 +198,28 @@ func TestTCPAccumulatorLeafForms(t *testing.T) {
 	wrongShift.TCPOptions = []layers.TCPOption{mss, ws(7)}
 	r.MustReject(t, Build(t, wrongShift), "shift=7 != 0xff, so the -1 leaf fails")
 }
+
+// TestTCPAccumulatorInAlternation checks the accumulator threaded through an
+// alternation member. The non-matching branch (udp) never runs the tcp
+// option walk, so the acc slot must be zeroed before the alternation for the
+// post-layer mask check to reject it cleanly.
+func TestTCPAccumulatorInAlternation(t *testing.T) {
+	r := New(t, "eth/ipv4/(tcp|udp) where tcp.options.MSS.value == 1460 and tcp.options.WS.shift == 7")
+
+	mss := layers.TCPOption{OptionType: layers.TCPOptionKindMSS, OptionLength: 4, OptionData: []byte{0x05, 0xb4}}
+	ws := func(s byte) layers.TCPOption {
+		return layers.TCPOption{OptionType: layers.TCPOptionKindWindowScale, OptionLength: 3, OptionData: []byte{s}}
+	}
+
+	match := Defaults()
+	match.TCPOptions = []layers.TCPOption{mss, ws(7)}
+	r.MustMatch(t, Build(t, match), "tcp branch: MSS=1460 AND WS=7")
+
+	wsBad := Defaults()
+	wsBad.TCPOptions = []layers.TCPOption{mss, ws(9)}
+	r.MustReject(t, Build(t, wsBad), "tcp branch: WS mismatch")
+
+	// udp branch: the tcp option walk never runs, so the acc slot keeps its
+	// pre-alternation zero and the mask check rejects.
+	r.MustReject(t, BuildEthIPv4UDP(t, 1234, 5678, []byte{0xde, 0xad}), "udp branch: no tcp options")
+}
