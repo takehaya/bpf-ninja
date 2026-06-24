@@ -450,11 +450,13 @@ type SRv6Opts struct {
 	InnerDstPort    uint16
 	// TrailingTLVBytes are optional bytes appended after the segment
 	// list inside the SRH variable region (TLVs). Length MUST be a
-	// multiple of 8 so hdr_ext_len stays whole; the explicit segment
-	// walk in srv6.p4 reaches the next header by consuming the whole
-	// variable region (hdr_ext_len*8 bytes), so trailing TLVs that are
-	// a multiple of 16 bytes are walked as opaque chunks without
-	// desyncing R4 from the next-header position.
+	// multiple of 8 so hdr_ext_len stays whole. The element-driven walk
+	// in srv6.p4 extracts exactly (last_entry+1) segments and codegen
+	// re-anchors the next header to SRH+8+(last_entry+1)*16 (the
+	// segment-list end), so trailing TLVs are NOT consumed: chaining
+	// past a TLV-bearing SRH to the inner layer is unsupported. These
+	// bytes exist so tests can build a TLV-bearing SRH and assert that
+	// limitation while segment queries still match.
 	TrailingTLVBytes []byte
 }
 
@@ -462,8 +464,11 @@ type SRv6Opts struct {
 // of segments = len(opts.Segments); SRH.last_entry = N-1. The SRH
 // variable region after the fixed 8 bytes is N*16 segment bytes plus
 // any opts.TrailingTLVBytes; hdr_ext_len = (region bytes)/8. The
-// explicit segment walk in srv6.p4 consumes the whole region so the
-// inner layer lands at SRH+8 + hdr_ext_len*8.
+// element-driven segment walk in srv6.p4 extracts exactly N segments
+// and codegen re-anchors the next header to SRH+8 + N*16 (the
+// segment-list end), so without trailing TLVs the inner layer lands
+// there; a TLV-bearing SRH leaves the next header past that anchor,
+// so chaining to the inner layer is unsupported.
 func BuildSRv6(t testing.TB, opts SRv6Opts) []byte {
 	t.Helper()
 	if opts.Src == nil {

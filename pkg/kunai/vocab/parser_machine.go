@@ -948,7 +948,7 @@ func lowerCastShiftSkip(target, fieldName string, baseWords, userMask, scaleLog2
 		return nil, nil, fmt.Errorf("%s:%s: %s shift S=%d is sub-byte (codegen advances in whole bytes; require S ≥ 3)", ctx.source, pos, opName, scaleLog2)
 	}
 	if baseWords != 0 && userMask != 0 {
-		return nil, nil, fmt.Errorf("%s:%s: %s combines subtract (-K) and mask (& MASK) forms; only one is supported per advance", ctx.source, pos, opName)
+		return nil, nil, fmt.Errorf("%s:%s: %s combines subtract (-K) and mask (& MASK) forms; only one is supported at a time", ctx.source, pos, opName)
 	}
 	scaleBytes := 1
 	if scaleLog2 >= 3 {

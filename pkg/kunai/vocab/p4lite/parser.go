@@ -193,7 +193,10 @@ func (p *parser) resolveOneMatch(m *Match, boolSlot bool, byName map[string]*Con
 		return p.errorf(m.Pos, "select match references unknown const %q (no such const declared in this file)", m.ConstName)
 	}
 	if c.IsBool {
-		return p.errorf(m.Pos, "select match references bool const %q where an integer match value is required (use a bit<N> const, or the literals true/false for a `<counter>.is_zero()` key)", m.ConstName)
+		if boolSlot {
+			return p.errorf(m.Pos, "select match references bool const %q for a `<counter>.is_zero()` key; named bool consts are not supported here, use the literals true/false", m.ConstName)
+		}
+		return p.errorf(m.Pos, "select match references bool const %q where an integer match value is required (use a bit<N> const)", m.ConstName)
 	}
 	if boolSlot {
 		return p.errorf(m.Pos, "select match references integer const %q for a `<counter>.is_zero()` key, which only matches the literals true/false", m.ConstName)
@@ -752,7 +755,7 @@ func (p *parser) parseCounterSetCall(counter string, startPos Position) (Stmt, e
 	if p.cur.Kind == TokBit {
 		return p.parseCounterSetBareCast(counter, startPos)
 	}
-	adv, err := p.parseAdvanceCastedShiftInner(counter, startPos)
+	adv, err := p.parseAdvanceCastedShiftInner(counter, counter+".set", startPos)
 	if err != nil {
 		return nil, err
 	}
@@ -1084,16 +1087,21 @@ func (p *parser) parseAdvanceCastedShift(obj string, startPos Position) (*Advanc
 	if _, err := p.expect(TokLParen); err != nil {
 		return nil, err
 	}
-	return p.parseAdvanceCastedShiftInner(obj, startPos)
+	return p.parseAdvanceCastedShiftInner(obj, "pkt.advance", startPos)
 }
 
 // parseAdvanceCastedShiftInner parses `(bit<N>) ...) << S` — the
 // shifted cast template with the leading `(` already consumed by the
 // caller (parseAdvanceCastedShift for pkt.advance, parseCounterSetCall
-// for the counter.set shifted form).
-func (p *parser) parseAdvanceCastedShiftInner(obj string, startPos Position) (*AdvanceStmt, error) {
+// for the counter.set shifted form). construct names the surface form
+// for diagnostics ("pkt.advance" or "<counter>.set") so a malformed arg
+// is reported against the construct the author actually wrote.
+func (p *parser) parseAdvanceCastedShiftInner(obj, construct string, startPos Position) (*AdvanceStmt, error) {
 	mismatch := func(pos Position) error {
-		return p.errorf(pos, "pkt.advance must use one of `pkt.advance(((bit<N>)(hdr.<F> - K)) << S)` / `pkt.advance(((bit<N>)pkt.lookahead<bit<M>>()[lo:hi]) << S)` / `pkt.advance(<INT>)`")
+		if construct == "pkt.advance" {
+			return p.errorf(pos, "pkt.advance must use one of `pkt.advance(((bit<N>)(hdr.<F> - K)) << S)` / `pkt.advance(((bit<N>)pkt.lookahead<bit<M>>()[lo:hi]) << S)` / `pkt.advance(<INT>)`")
+		}
+		return p.errorf(pos, "%s must use the casted-shift form `%s(((bit<N>)(hdr.<F> - K)) << S)` or `%s(((bit<N>)(hdr.<F> & MASK)) << S)`", construct, construct, construct)
 	}
 	expectShape := func(k TokenKind) (Token, error) {
 		if p.cur.Kind != k {
