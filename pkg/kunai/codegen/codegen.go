@@ -1670,18 +1670,25 @@ func emitRuntimeAuxElementAddr(target *ir.QuantTarget, fieldByteOff int, size as
 // emitRuntimeAuxElementAddrOwner is the owner-option counterpart of
 // emitRuntimeAuxElementAddr: it addresses an aux element inside a TCP/IPv4
 // option (TCP SACK, IPv4 record-route) whose base the parser stashed as a
-// scalar in main-frame slot `ownerSlot`. The element byte offset from
-// scratch start is
+// scalar in an ownerSlot the main program copies into the ctx layerEntry
+// field before the loop. The element byte offset from scratch start is
 //
 //	scalar = optionBase + offsetAfterOwner + R1*ElemSize + fieldByteOff
 //
-// optionBase is read via the ctx pointer (R2 + mainStackOffsetFromCb),
-// and an absent option (sentinel) jumps to failLabel. Register contract
-// matches the primary helper: loads into R0; R3 scratch; R2/R4/R5 kept.
-func emitRuntimeAuxElementAddrOwner(ownerSlot int16, target *ir.QuantTarget, offsetAfterOwner, fieldByteOff int, size asm.Size, failLabel string) asm.Instructions {
+// optionBase is read from the ctx layerEntry field (R2 + a positive
+// offset, like the primary helper's layer anchor) — never from a negative
+// ctx offset into the parent frame, which kernel 6.6 reads incorrectly
+// from inside a bpf_loop callback. The absent-option sentinel is screened
+// in the main program before the loop (genQuantBpfLoop skips the bpf_loop
+// when the base is the sentinel), so the callback must NOT branch on the
+// base register itself: a compare on the bare base before it feeds the
+// element address makes kernel 6.6 mis-JIT the dependent scratch load (any
+// JEq/JGT on R0-alone reproduces it; a compare on base+offset, as inside
+// boundedScalarLoad, is fine). Register contract matches the primary
+// helper: loads into R0; R3 scratch; R2/R4/R5 kept.
+func emitRuntimeAuxElementAddrOwner(target *ir.QuantTarget, offsetAfterOwner, fieldByteOff int, size asm.Size, failLabel string) asm.Instructions {
 	insns := asm.Instructions{
-		asm.LoadMem(asm.R0, asm.R2, mainStackOffsetFromCb(ownerSlot), asm.DWord),
-		asm.JEq.Imm(asm.R0, dynamicAuxSentinel, failLabel),
+		asm.LoadMem(asm.R0, asm.R2, bpfLoopCbCtxLayerEntryField, asm.DWord),
 		asm.Add.Imm(asm.R0, int32(offsetAfterOwner+fieldByteOff)),
 		asm.Mov.Reg(asm.R3, asm.R1),
 		asm.JGE.Imm(asm.R3, int32(target.Capacity), failLabel),

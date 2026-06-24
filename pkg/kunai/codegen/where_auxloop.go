@@ -119,7 +119,7 @@ func (c *whereCtx) genQuantBpfLoop(w *ir.Condition, failLabel string, anySemanti
 	}
 
 	cbSym := c.freshLabel("auxwalk_cb")
-	cb, err := c.genAuxWalkCallback(w, countSrc, ownerSlot, cbSym, anySemantics)
+	cb, err := c.genAuxWalkCallback(w, countSrc, cbSym, anySemantics)
 	if err != nil {
 		return nil, err
 	}
@@ -131,12 +131,35 @@ func (c *whereCtx) genQuantBpfLoop(w *ir.Condition, failLabel string, anySemanti
 	main := asm.Instructions{
 		asm.StoreMem(asm.R10, bpfLoopCtxScratchStartSlot, asm.R0, asm.DWord),
 		asm.StoreMem(asm.R10, bpfLoopCtxScratchEndSlot, asm.R1, asm.DWord),
-	}
-	main = append(main, emitLayerEntryToReg(anchor, asm.R3)...)
-	main = append(main,
-		asm.StoreMem(asm.R10, bpfLoopCtxLayerEntrySlot, asm.R3, asm.DWord),
 		asm.Mov.Imm(asm.R3, 0),
 		asm.StoreMem(asm.R10, bpfLoopCtxOffsetSlot, asm.R3, asm.DWord), // flag = 0
+	}
+	// Carry the per-element addressing base through the ctx layerEntry
+	// field, a positive-offset ctx slot the callback reads at R2+24.
+	// Primary stacks store the owning layer's start; owner-option stacks
+	// store the option base the parser stashed in ownerSlot, read here in
+	// the main frame. Routing the owner base through the ctx — rather than
+	// letting the callback reach back into the parent frame at a negative
+	// ctx offset — keeps every callback ctx access non-negative.
+	//
+	// The owner base may be the absent-option sentinel. Screen it HERE, in
+	// the main frame, and skip the loop when absent (the flag stays 0, so
+	// any() rejects and all() is vacuously true). The screen must not live
+	// in the callback: a compare on the bare base register there mis-JITs
+	// the dependent scratch load on kernel 6.6 (see
+	// emitRuntimeAuxElementAddrOwner). With the loop skipped, the callback
+	// only ever sees a present option, so it never branches on the base.
+	skipLoop := c.freshLabel("auxwalk_skip")
+	if countSrc.Owner != nil {
+		main = append(main,
+			asm.LoadMem(asm.R3, asm.R10, ownerSlot, asm.DWord),
+			asm.JEq.Imm(asm.R3, dynamicAuxSentinel, skipLoop),
+		)
+	} else {
+		main = append(main, emitLayerEntryToReg(anchor, asm.R3)...)
+	}
+	main = append(main,
+		asm.StoreMem(asm.R10, bpfLoopCtxLayerEntrySlot, asm.R3, asm.DWord),
 		asm.Mov.Imm(asm.R1, int32(target.Capacity)),
 		loadFunctionRef(asm.R2, cbSym),
 		asm.Mov.Reg(asm.R3, asm.R10),
@@ -148,11 +171,16 @@ func (c *whereCtx) genQuantBpfLoop(w *ir.Condition, failLabel string, anySemanti
 	// the flag and branch. offsetBase is not restored: the where clause
 	// addresses fields via scratchStart (R0) + a static/slot offset, not
 	// via the running offsetBase, so the aux walk does not need it back.
-	main = append(main,
+	// An owner walk that skipped the loop lands here with the flag still 0.
+	restore := asm.Instructions{
 		asm.LoadMem(asm.R0, asm.R10, bpfLoopCtxScratchStartSlot, asm.DWord),
 		asm.LoadMem(asm.R1, asm.R10, bpfLoopCtxScratchEndSlot, asm.DWord),
 		asm.LoadMem(asm.R3, asm.R10, bpfLoopCtxOffsetSlot, asm.DWord),
-	)
+	}
+	if countSrc.Owner != nil {
+		restore[0] = restore[0].WithSymbol(skipLoop)
+	}
+	main = append(main, restore...)
 	if anySemantics {
 		main = append(main, asm.JEq.Imm(asm.R3, 0, failLabel)) // no element matched → reject
 	} else {
@@ -180,7 +208,7 @@ func emitLayerEntryToReg(anchor layerAnchor, dst asm.Register) asm.Instructions 
 // R5 = scratchEnd (loaded up front); R0/R3 are scratch. Per iteration:
 // stop at the runtime element count, compare the element field to the
 // literal, and on the decisive element write the ctx flag and break.
-func (c *whereCtx) genAuxWalkCallback(w *ir.Condition, countSrc *quantCountSource, ownerSlot int16, cbSym string, anySemantics bool) (asm.Instructions, error) {
+func (c *whereCtx) genAuxWalkCallback(w *ir.Condition, countSrc *quantCountSource, cbSym string, anySemantics bool) (asm.Instructions, error) {
 	target := w.QuantTarget
 	inner := w.Inner
 	ref := inner.LiteralField // pre-checked by useBpfLoopAuxWalk
@@ -193,12 +221,14 @@ func (c *whereCtx) genAuxWalkCallback(w *ir.Condition, countSrc *quantCountSourc
 	mismatchLabel := cbSym + "_mismatch"
 
 	// load addresses the iterator element field at the runtime index R1.
-	// Primary stacks use the layer-entry anchor; owner-option stacks use
-	// the option base stashed in a dynamic-aux slot (read via ctx).
+	// Both modes read their addressing base from the ctx layerEntry field
+	// (a positive ctx offset): primary stacks carry the owning layer's
+	// start there, owner-option stacks carry the option base the main
+	// program copied in from ownerSlot.
 	var load elemLoader
 	if countSrc.Owner != nil {
 		load = func(off int, size asm.Size, fail string) asm.Instructions {
-			return emitRuntimeAuxElementAddrOwner(ownerSlot, target, ref.Aux.OffsetAfterOwner, fieldByteOff+off, size, fail)
+			return emitRuntimeAuxElementAddrOwner(target, ref.Aux.OffsetAfterOwner, fieldByteOff+off, size, fail)
 		}
 	} else {
 		load = func(off int, size asm.Size, fail string) asm.Instructions {
@@ -212,7 +242,7 @@ func (c *whereCtx) genAuxWalkCallback(w *ir.Condition, countSrc *quantCountSourc
 		first,
 		asm.LoadMem(asm.R5, asm.R2, bpfLoopCbCtxScratchEndField, asm.DWord),
 	}
-	guard, err := auxWalkCountGuard(countSrc, ownerSlot, breakLabel)
+	guard, err := auxWalkCountGuard(countSrc, breakLabel)
 	if err != nil {
 		return nil, err
 	}
@@ -269,14 +299,18 @@ type elemLoader func(fieldByteOff int, size asm.Size, fail string) asm.Instructi
 // (R1) is below the stack's runtime element count, breaking the loop
 // when it is not. Primary stacks read the count from a layer field;
 // owner-option stacks derive it from the option length byte.
-func auxWalkCountGuard(countSrc *quantCountSource, ownerSlot int16, breakLabel string) (asm.Instructions, error) {
+func auxWalkCountGuard(countSrc *quantCountSource, breakLabel string) (asm.Instructions, error) {
 	if countSrc.Owner != nil {
 		// count = (optionLength - SubBefore) >> RShAfter; optionLength is
-		// the byte at optionBase + ByteOff. optionBase scalar lives in the
-		// dynamic-aux slot the parser stashed, read via the ctx pointer.
+		// the byte at optionBase + ByteOff. optionBase scalar is carried in
+		// the ctx layerEntry field (the main program copied it in from the
+		// parser's ownerSlot), read at a positive ctx offset. The absent-
+		// option sentinel is screened in the main program before the loop,
+		// so this must not branch on the bare base (see
+		// emitRuntimeAuxElementAddrOwner: a compare on R0-alone mis-JITs the
+		// dependent load on kernel 6.6).
 		insns := asm.Instructions{
-			asm.LoadMem(asm.R0, asm.R2, mainStackOffsetFromCb(ownerSlot), asm.DWord),
-			asm.JEq.Imm(asm.R0, dynamicAuxSentinel, breakLabel),
+			asm.LoadMem(asm.R0, asm.R2, bpfLoopCbCtxLayerEntryField, asm.DWord),
 			asm.Add.Imm(asm.R0, int32(countSrc.ByteOff)),
 			asm.Mov.Reg(asm.R3, asm.R0),
 		}
