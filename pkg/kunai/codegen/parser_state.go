@@ -79,6 +79,14 @@ func genParserMachine(layer *ir.LayerInstance, layerIdx int, all []*ir.LayerInst
 	// helper call, so a Mov R3,R3 noop here would be !read_ok —
 	// pick R0 which is consistent on both paths.
 	insns = append(insns, asm.Mov.Reg(asm.R0, asm.R0).WithSymbol(pmCtx.doneLabel))
+	// Aux-stack walk layers (SRv6) re-anchor R4 at the next-header
+	// position once every walk path has converged on the done landing.
+	// No-op for every other protocol (returns nil).
+	reanchor, err := pmCtx.emitAuxWalkTailReanchor()
+	if err != nil {
+		return nil, nil, err
+	}
+	insns = append(insns, reanchor...)
 	return insns, callbacks, nil
 }
 
@@ -155,6 +163,21 @@ func layerLeavesR4Range(l *ir.LayerInstance) bool {
 
 func (c *pmCtx) stateLabel(idx int) string {
 	return fmt.Sprintf("%s_%s", c.labelNS, c.machine.States[idx].Name)
+}
+
+// deferPrimaryTail reports whether the variable_tail on headerName
+// should be applied as a post-machine absolute R4 re-anchor instead of
+// inline at extract. True only for the primary header of an aux-stack
+// walk (SRv6): the element-driven segment walk must read the variable
+// region intact, so advancing R4 by the full region at extract time
+// would push the walk's first segment read past the segments. The
+// re-anchor (emitAuxWalkTailReanchor) runs after the walk completes.
+func (c *pmCtx) deferPrimaryTail(headerName string) bool {
+	if headerName != c.spec.HeaderName {
+		return false
+	}
+	_, _, ok := c.spec.AuxWalkSegmentTail()
+	return ok
 }
 
 func (c *pmCtx) selfLoopCbSym(idx int) string {
@@ -324,7 +347,7 @@ func (c *pmCtx) emitStateBody(state *vocab.ParseState, stateIdx int, isEntry boo
 		hs := ex.HeaderSize / 8
 		insns = append(insns, emitAdvance(hs))
 		fixedHs += hs
-		if vt, ok := variableTailFor(c.spec, ex.HeaderName); ok {
+		if vt, ok := variableTailFor(c.spec, ex.HeaderName); ok && !c.deferPrimaryTail(ex.HeaderName) {
 			if state.Trans.Kind == vocab.TransSelect {
 				// Inline ABI: R0/R1 are scratch_start/end, R4 is the
 				// running offset (offsetBase). Use R3 as the load

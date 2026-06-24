@@ -259,14 +259,14 @@ literal        ::= integer | 'true' | 'false'
 
 | Production | parser | 例文 |
 |---|---|---|
-| `const-decl` | `vocab/p4lite/parser.go::parseConst` | `const bit<16> IPV4_ETH_ETHERTYPE = 0x0800;` |
+| `const-decl` | `vocab/p4lite/parser.go::parseConst` | `const bit<16> KUNAI_IPV4_ETH_ETHERTYPE = 0x0800;` |
 
-Dispatch 命名規約は次のとおりです。loader が `vocab/loader.go` 内の regex で classify します。
+Dispatch 命名規約は次のとおりです。loader が `vocab/loader.go` 内の regex で classify します。inter-layer dispatch の const には `KUNAI_` 接頭辞が必須で、loader は接頭辞を剥がしてから regex に掛けます。value-only const (routing_type / option kind 等) と構造 const (`MAX_DEPTH` / `CHAIN_END`) は無印です。
 
 | 名前パターン | regex | 意味 |
 |---|---|---|
-| `<SELF>_<PARENT>_<FIELD>` | `reField` | 親の `field` がこの値のとき自分にディスパッチ |
-| `<SELF>_<PARENT>_NO_CHECK = true` | `reNoCheck` | 検査なしで blind cast |
+| `KUNAI_<SELF>_<PARENT>_<FIELD>` | `reField` | 親の `field` がこの値のとき自分にディスパッチ |
+| `KUNAI_<SELF>_<PARENT>_NO_CHECK = true` | `reNoCheck` | 検査なしで blind cast |
 | `<SELF>_MAX_DEPTH = N` | `reMaxDepth` | bpf_loop chain の上限 (既定 8、最大 64) |
 | `<SELF>_CHAIN_END_<FIELD> = V` | `reChainEnd` | chain 終了条件 (例: MPLS の s-bit) |
 
@@ -346,7 +346,7 @@ header eth_h {
     bit<16> ethertype;
 }
 
-const bool ETH_MPLS_NO_CHECK = true;
+const bool KUNAI_ETH_MPLS_NO_CHECK = true;
 
 parser EthParser(packet_in pkt, out eth_h hdr) {
     state start {

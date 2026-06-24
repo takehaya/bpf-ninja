@@ -194,6 +194,13 @@ type HeaderLength struct {
 	LenShift   int
 	Scale      int
 	Base       int // bytes to subtract (i.e. minimum header size in bytes)
+	// Addend is added to the scaled value (after Base subtraction). Used
+	// by the bare-cast counter.set add form `(bit<N>)(hdr.<F> + K)`
+	// where the counter holds an element count (SRH segments =
+	// last_entry + 1). Zero for the pkt.advance / shifted counter forms.
+	// Base (subtract) and Addend (add) are mutually exclusive in
+	// practice, but the codegen applies whichever is non-zero.
+	Addend int
 }
 
 
@@ -257,6 +264,83 @@ func (p *ProtocolSpec) PrimaryAdvanceSkip() *HeaderLength {
 	return nil
 }
 
+
+// pushedAuxStackName returns the out-param name of the first aux stack
+// the parser machine push-extracts (extract(stack.next)), or ("", false)
+// when the machine pushes none. This is the discriminator that separates
+// SRv6's segment walk (which pushes srv6_seg_h onto the segments stack)
+// from the geneve / ipv4 counter walks (which record single option
+// positions but push no stack). SRv6 pushes `segments`.
+func (p *ProtocolSpec) pushedAuxStackName() (string, bool) {
+	if p.ParseStateMachine == nil {
+		return "", false
+	}
+	for _, st := range p.ParseStateMachine.States {
+		for _, ex := range st.Extracts {
+			if ex.IsStackPush {
+				return ex.StackName, true
+			}
+		}
+	}
+	return "", false
+}
+
+// AuxWalkSegmentTail synthesises the next-header re-anchor descriptor for
+// a counter-driven aux-stack walk from the segment COUNT alone, plus the
+// primary header size in bytes. The next header of such a layer sits at
+// layer_entry + primaryHS + count*ElemSize, where count is the derived
+// stack count (SRv6: last_entry + 1). Per RFC 8754 the SRH variable
+// region equals (Last Entry+1)*16 exactly when no TLVs follow the segment
+// list, so the count yields the next-header offset for every TLV-free
+// SRH. Chaining past a TLV-bearing SRH is unsupported: TLV support is
+// optional per RFC 8754 Section 2, and the element walk leaves R4 at the
+// segment-list end, short of any trailing TLVs.
+//
+// The region reuses the five-tuple emitAuxWalkTailReanchor consumes:
+// region = count*ElemSize + Addend*ElemSize. The count byte is read whole
+// (LenShift 0, no shift); LenMask carries the maximum valid index
+// Capacity-1, which emitAuxWalkTailReanchor enforces as a JGT-reject (an
+// over-cap count is rejected, not wrapped) so the scaled offset stays
+// within a static bound.
+//
+// Returns (nil, 0, false) for any protocol without a pushed aux stack or
+// without a derived stack count: ipv6 / gtp ext stacks self-terminate on
+// next_header and carry no count, so they keep their own tail handling.
+func (p *ProtocolSpec) AuxWalkSegmentTail() (*VariableTailSpec, int, bool) {
+	stack, ok := p.pushedAuxStackName()
+	if !ok {
+		return nil, 0, false
+	}
+	cnt := p.StackCounts[stack]
+	if cnt == nil || p.ParseStateMachine == nil {
+		return nil, 0, false
+	}
+	st := p.ParseStateMachine.StackRefs[stack]
+	if st == nil || st.ElemSize <= 0 || st.Capacity <= 0 {
+		return nil, 0, false
+	}
+	bits := SumBits(p.Fields)
+	if bits%8 != 0 {
+		return nil, 0, false
+	}
+	// Bound the count byte to the exact maximum valid index Capacity-1.
+	// emitAuxWalkTailReanchor turns LenMask into a JGT-reject (not a
+	// bitwise AND), so an over-cap count is rejected outright rather than
+	// wrapped, and the region (count*ElemSize) keeps a static upper bound
+	// (Capacity*ElemSize) the verifier can prove. Using Capacity-1 directly,
+	// rather than rounding up to the next power-of-two mask, enforces the
+	// declared capacity precisely even when Capacity is not a power of two
+	// (a power-of-two mask would let counts in [Capacity, 2^k-1] slip past
+	// the bound check). A valid SRH carries last_entry < Capacity, so it
+	// passes; a malformed over-cap frame is rejected at the re-anchor.
+	return &VariableTailSpec{
+		LenFieldByteOff: cnt.ByteOff,
+		LenMask:         st.Capacity - 1,
+		LenShift:        0,
+		Scale:           st.ElemSize,
+		Base:            cnt.Addend * st.ElemSize,
+	}, bits / 8, true
+}
 
 // IsSelfValidating reports whether the parser block proves the
 // protocol's identity itself — i.e. its `start` state's transition
@@ -348,10 +432,14 @@ type DispatchType int
 
 const (
 	// DispatchField: parent has an identifying field (e.g. ipv4.protocol),
-	// named as <SELF>_<PARENT>_<FIELD> = value.
+	// named as KUNAI_<SELF>_<PARENT>_<FIELD> = value. The KUNAI_ marker is
+	// mandatory and <PARENT> must be a real protocol: a value-only
+	// select-match const (phantom parent) is written *without* KUNAI_ and
+	// folds into the select arm instead of becoming a dispatch edge.
 	DispatchField DispatchType = iota
 	// DispatchNoCheck: blind cast, user-declared trust (e.g. Ethernet
-	// payload of MPLS in EoMPLS), named as <SELF>_<PARENT>_NO_CHECK = true.
+	// payload of MPLS in EoMPLS), named as
+	// KUNAI_<SELF>_<PARENT>_NO_CHECK = true.
 	DispatchNoCheck
 	// DispatchSelfValidating: parent has no Field/NoCheck, but the child's
 	// parser block validates itself via `transition select(...) { ...;

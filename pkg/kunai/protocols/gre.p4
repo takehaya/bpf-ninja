@@ -15,8 +15,8 @@ header gre_h {
 }
 
 // Dispatch from IPv4 / IPv6 via protocol number 47.
-const bit<8> GRE_IPV4_PROTOCOL    = 47;
-const bit<8> GRE_IPV6_NEXT_HEADER = 47;
+const bit<8> KUNAI_GRE_IPV4_PROTOCOL    = 47;
+const bit<8> KUNAI_GRE_IPV6_NEXT_HEADER = 47;
 
 // Flag-triggered optional sub-headers. The flag byte sits at offset 0
 // of gre_h; declaration order (C → K → S) matches the wire layout so

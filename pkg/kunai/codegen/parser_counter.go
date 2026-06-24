@@ -163,10 +163,12 @@ func (c *pmCtx) emitCounterOp(op vocab.CounterOp, fixedHs int, env counterEnv, f
 }
 
 // emitCounterSetValue computes `((header_byte & LenMask) >> LenShift)
-// * Scale - Base` and leaves the result in env.scratchA. Mirrors the
-// scalar-compute prefix of emitVariableTrail; stops before the R4
-// advance because counter set stores the byte count instead of
-// consuming it.
+// * Scale - Base + Addend` and leaves the result in env.scratchA.
+// Mirrors the scalar-compute prefix of emitVariableTrail; stops before
+// the R4 advance because counter set stores the count instead of
+// consuming it. The bare-cast add form (Scale=1, Base=0, Addend>0)
+// yields an element count (SRH segments = last_entry + 1); the shifted
+// forms yield a byte count (Base subtract, Addend=0).
 func emitCounterSetValue(fixedHs int, vt *vocab.HeaderLength, env counterEnv, failLabel string) (asm.Instructions, error) {
 	if vt == nil {
 		return nil, fmt.Errorf("%w: counter set with nil HeaderLength", ErrNotImplemented)
@@ -193,6 +195,12 @@ func emitCounterSetValue(fixedHs int, vt *vocab.HeaderLength, env counterEnv, fa
 			asm.JLT.Imm(env.scratchA, int32(vt.Base), failLabel),
 			asm.Sub.Imm(env.scratchA, int32(vt.Base)),
 		)
+	}
+	if vt.Addend > 0 {
+		// Bare-cast element-count add form (e.g. SRH last_entry + 1).
+		// scratchA holds the field byte (scale=1, no Base), so a plain
+		// Add yields the element count with no underflow risk.
+		insns = append(insns, asm.Add.Imm(env.scratchA, int32(vt.Addend)))
 	}
 	return insns, nil
 }

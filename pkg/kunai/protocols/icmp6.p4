@@ -6,7 +6,7 @@ header icmp6_h {
     bit<16> checksum;
 }
 
-const bit<8> ICMP6_IPV6_NEXT_HEADER = 58;
+const bit<8> KUNAI_ICMP6_IPV6_NEXT_HEADER = 58;
 
 parser Icmp6Parser(packet_in pkt, out icmp6_h hdr) {
     state start {

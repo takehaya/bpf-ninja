@@ -607,8 +607,8 @@ func TestGeneveDispatch(t *testing.T) {
 // TestGeneveInnerIPv4Dispatch covers the F9-style chain where the
 // filter walks past the Geneve fixed header into the inner Ethernet
 // frame and matches on inner IPv4 destination. eth.p4 declares
-// ETH_GENEVE_NO_CHECK so the inner-eth dispatch is accepted by the
-// parser without a constant comparison.
+// KUNAI_ETH_GENEVE_NO_CHECK so the inner-eth dispatch is accepted by
+// the parser without a constant comparison.
 func TestGeneveInnerIPv4Dispatch(t *testing.T) {
 	r := New(t, "eth/ipv4@outer/udp/geneve/eth/ipv4@inner/tcp where inner.dst == 192.168.1.2")
 	r.MustMatch(t, BuildGeneveInnerIPv4TCP(t, GeneveInnerIPv4TCPOpts{}),
@@ -720,6 +720,69 @@ func TestSRv6ThreeSegments(t *testing.T) {
 		InnerNextHeader: 6,
 	})
 	r.MustMatch(t, pkt, "eth/ipv6/srv6 (3 segments)/tcp")
+}
+
+// TestSRv6ChainPastSegmentsFieldRead reads a field PAST the SRH — the
+// inner TCP destination port — over a 3-segment SRH. This is the
+// regression guard for the explicit segment walk reaching the next
+// header at exactly SRH+8 + hdr_ext_len*8: if the walk under- or
+// over-advanced R4, the inner tcp.dport read would land on the wrong
+// bytes and the verdict would flip.
+func TestSRv6ChainPastSegmentsFieldRead(t *testing.T) {
+	r := New(t, "eth/ipv6/srv6/tcp where tcp.dport == 8080")
+	match := BuildSRv6(t, SRv6Opts{
+		Segments: []net.IP{
+			net.ParseIP("fe80::1"),
+			net.ParseIP("fe80::2"),
+			net.ParseIP("fe80::3"),
+		},
+		InnerNextHeader: 6,
+		InnerDstPort:    8080,
+	})
+	r.MustMatch(t, match, "tcp.dport==8080 past a 3-segment SRH")
+
+	miss := BuildSRv6(t, SRv6Opts{
+		Segments: []net.IP{
+			net.ParseIP("fe80::1"),
+			net.ParseIP("fe80::2"),
+			net.ParseIP("fe80::3"),
+		},
+		InnerNextHeader: 6,
+		InnerDstPort:    443,
+	})
+	r.MustReject(t, miss, "tcp.dport==443 must not match the 8080 filter")
+}
+
+// TestSRv6ChainPastTLVBearingSRHUnsupported documents the one SRv6
+// limitation of deriving the next header from the segment count: when the
+// SRH carries trailing TLVs after the segment list, the count-based
+// re-anchor lands R4 at the segment-list end (SRH+8+(last_entry+1)*16),
+// short of the TLVs, so a chain-past filter does not reach the inner TCP.
+// TLV support is optional per RFC 8754 Section 2, so this is an accepted
+// limitation rather than a bug. Segment queries (any()/all(),
+// srv6.segments[N]) stay correct regardless of the trailing TLV: they
+// read the count-bounded segment list, which the TLV does not perturb.
+func TestSRv6ChainPastTLVBearingSRHUnsupported(t *testing.T) {
+	// 16-byte TLV trailer (e.g. a padding/HMAC-shaped TLV).
+	tlv := make([]byte, 16)
+	tlv[0] = 0x06 // arbitrary TLV type
+	tlv[1] = 0x0e // arbitrary TLV length
+	pkt := BuildSRv6(t, SRv6Opts{
+		Segments: []net.IP{
+			net.ParseIP("fe80::1"),
+			net.ParseIP("fe80::2"),
+		},
+		InnerNextHeader:  6,
+		InnerDstPort:     8080,
+		TrailingTLVBytes: tlv,
+	})
+	// Chain-past: R4 stops at the segment-list end, before the 16-byte
+	// TLV, so the inner tcp.dport is not reached and the filter rejects.
+	rChain := New(t, "eth/ipv6/srv6/tcp where tcp.dport == 8080")
+	rChain.MustReject(t, pkt, "chain past a TLV-bearing SRH is unsupported (R4 stops at segment-list end)")
+	// Segment queries are unaffected by the trailing TLV.
+	rSeg := New(t, "eth/ipv6/srv6 where any(srv6.segments.addr == fe80::2)")
+	rSeg.MustMatch(t, pkt, "any() over segments still matches with a trailing TLV present")
 }
 
 // TestIPv4OptionsAdvance exercises IPv4 HDRLEN: an IPv4 frame
@@ -1136,20 +1199,54 @@ func TestIPv6ExtTruncatedHdrExtLen(t *testing.T) {
 // segments_left shouldn't prevent a match — pin the current
 // behaviour so future SRH-aware predicates know what they are
 // observing.
-func TestSRv6MalformedSegmentsMismatch(t *testing.T) {
-	r := New(t, "eth/ipv6/srv6/tcp")
-	pkt := BuildSRv6(t, SRv6Opts{
+// TestSRv6LastEntryIsAuthoritative documents that last_entry drives both
+// the any()/all() count and the next-header re-anchor at
+// SRH+8+(last_entry+1)*16. segments_left stays advisory (codegen never
+// reads it), so a wrong value there does not affect chaining; but a
+// last_entry that overstates the real segment list overshoots the
+// re-anchor, so the chain-past read fails the bounds check and the packet
+// does not match.
+func TestSRv6LastEntryIsAuthoritative(t *testing.T) {
+	// segments_left (SRH byte 3) is advisory: a wrong value is ignored.
+	advisory := BuildSRv6(t, SRv6Opts{
 		Segments:        []net.IP{net.ParseIP("fe80::dead")},
 		InnerNextHeader: 6,
 	})
-	// SRH starts at eth+ipv6 = 54. Bytes 3 (segments_left) and 4
-	// (last_entry) — set both to 7 even though only one segment is
-	// actually present. The variable trail uses hdr_ext_len (byte 1
-	// = 2 = "16-byte segment count of 1"), so we don't touch it; the
-	// counters are advisory.
-	pkt[ethIPv6PrefixSize+3] = 7
-	pkt[ethIPv6PrefixSize+4] = 7
-	r.MustMatch(t, pkt, "srv6 with mismatched segments_left/last_entry still matches")
+	advisory[ethIPv6PrefixSize+3] = 7 // segments_left, never read by codegen
+	New(t, "eth/ipv6/srv6/tcp").MustMatch(t, advisory,
+		"a wrong segments_left does not affect chaining")
+
+	// last_entry (SRH byte 4) is authoritative: claim 8 segments when one
+	// is present, and the re-anchor targets SRH+8+8*16 past the packet.
+	overshoot := BuildSRv6(t, SRv6Opts{
+		Segments:        []net.IP{net.ParseIP("fe80::dead")},
+		InnerNextHeader: 6,
+	})
+	overshoot[ethIPv6PrefixSize+4] = 7 // last_entry overstates the count
+	New(t, "eth/ipv6/srv6/tcp").MustReject(t, overshoot,
+		"an SRH whose last_entry overstates the segment count does not chain")
+}
+
+// TestSRv6ChainPastOverCapSRHRejects pins that a chain past an SRH whose
+// last_entry exceeds the static segment capacity (here a 9-segment SRH,
+// last_entry=8, one past the cap of 8) rejects rather than re-anchoring
+// into the segment list. The next-header re-anchor caps the count with a
+// JGT-reject, so an over-cap last_entry does not wrap (8 & 0x07 == 0) to
+// a small offset that would read segment bytes as the inner layer.
+func TestSRv6ChainPastOverCapSRHRejects(t *testing.T) {
+	overCap := BuildSRv6(t, SRv6Opts{
+		Segments: []net.IP{
+			net.ParseIP("fe80::1"), net.ParseIP("fe80::2"),
+			net.ParseIP("fe80::3"), net.ParseIP("fe80::4"),
+			net.ParseIP("fe80::5"), net.ParseIP("fe80::6"),
+			net.ParseIP("fe80::7"), net.ParseIP("fe80::8"),
+			net.ParseIP("fe80::9"), // last_entry = 8, one past the cap of 8
+		},
+		InnerNextHeader: 6,
+		InnerDstPort:    8080,
+	})
+	New(t, "eth/ipv6/srv6/tcp").MustReject(t, overCap,
+		"a 9-segment SRH exceeds the static segment cap and does not chain")
 }
 
 // TestIPv4AndTCPOptionsAdvance verifies both HDRLEN advances stack

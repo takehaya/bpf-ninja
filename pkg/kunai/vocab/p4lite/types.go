@@ -284,11 +284,15 @@ func (*AdvanceStmt) stmtNode() {}
 type CounterCallKind int
 
 const (
-	// CounterSet is `<counter>.set(((bit<N>)(hdr.<F> - K)) << S)` — load
-	// a header-derived byte count into the counter slot. The arg shares
-	// the AdvanceField cast-and-shift template so the resulting byte
-	// expression is the same one Stage 2 already lowers for trailer
-	// skips.
+	// CounterSet is `<counter>.set(((bit<N>)(hdr.<F> - K)) << S)` /
+	// `<counter>.set(((bit<N>)(hdr.<F> & MASK)) << S)` — load a
+	// header-derived byte count into the counter slot. The shifted forms
+	// share the AdvanceField cast-and-shift template so the resulting
+	// byte expression is the same one Stage 2 already lowers for trailer
+	// skips. A third bare-cast add form, `<counter>.set((bit<N>)(hdr.<F>
+	// + K))`, sets a scale=1 element count (Addend carries +K) — used by
+	// element-driven aux-stack walks where the counter trips once per
+	// pushed entry rather than per byte.
 	CounterSet CounterCallKind = iota
 	// CounterDecrement is `<counter>.decrement(<INT>)` — subtract a
 	// literal byte count from the counter (the value is fixed per
@@ -310,11 +314,22 @@ type CounterCallStmt struct {
 	Pos     Position
 
 	// CounterSet only: shares AdvanceField's cast-and-shift template.
+	// BaseWords (subtract form `- K`) and Mask (mask form `& MASK`) are
+	// mutually exclusive, mirroring AdvanceStmt — the parser sets at
+	// most one. The mask form caps the loaded count so the verifier
+	// sees a static upper bound, matching pkt.advance's masked trailer.
 	BitWidth  int    // the N in `(bit<N>) ...`
 	Target    string // the `hdr` in `hdr.<F>` (parser's `out` parameter)
 	FieldName string // the `<F>` in `hdr.<F>`
-	BaseWords int    // the K subtracted from the field value
+	BaseWords int    // the K subtracted from the field value (subtract form)
+	Mask      int    // the MASK bitwise-AND'd with the field value (mask form). Zero means no mask — the subtract form (BaseWords) or the bare-cast add form (Addend) is in use instead; it does not by itself select the subtract form.
 	ScaleLog2 int    // the S in `<< S` (unit: bits, like AdvanceField)
+	// Addend is the K added to the field value in the bare-cast add form
+	// `(bit<N>)(hdr.<F> + K)` — a scale=1, shift-free counter seed used
+	// by element-driven aux-stack walks (SRH segment count =
+	// last_entry + 1). Mutually exclusive with the subtract/mask shift
+	// form: the bare-cast form sets ScaleLog2=0 and no Mask/BaseWords.
+	Addend int
 
 	// CounterDecrement only. Exactly one of three forms is set:
 	//   - LiteralBytes (literal: pc.decrement(<INT>))
@@ -407,15 +422,24 @@ type Case struct {
 }
 
 // Match is one slot of a select case keyset — a literal integer, a
-// `_` wildcard, or a boolean literal (the latter only meaningful for
-// `<counter>.is_zero()` keys).
+// named integer const, a `_` wildcard, or a boolean literal (the
+// latter only meaningful for `<counter>.is_zero()` keys).
+//
+// A named const arm (`SRV6_ROUTING_TYPE: ...`) parses with ConstName
+// set; a post-parse resolution pass (resolveConstMatches) looks the
+// name up in File.Consts and folds the const's integer value into
+// Value, leaving ConstName only as a diagnostic breadcrumb. Value is
+// the single source of truth for every downstream consumer — they
+// never read ConstName — so a named arm is byte-for-byte equivalent
+// to the integer literal it stands for.
 //
 // BNF: keysetExpression (P4-16 Section 13.6, simpleKeysetExpression
-// alternatives: number, '_', default)
+// alternatives: number, name, '_', default)
 type Match struct {
 	IsWildcard bool   // true for "_"
 	IsBool     bool   // true when Bool/case is `true` or `false`
 	Bool       bool   // valid when IsBool
-	Value      uint64 // valid otherwise
+	Value      uint64 // valid otherwise; folded from the named const after resolution
+	ConstName  string // non-empty before resolution when the arm names a const; kept for diagnostics
 	Pos        Position
 }

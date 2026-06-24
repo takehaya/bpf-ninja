@@ -198,7 +198,7 @@ const (
 
 resolver は子 spec の `SelectDispatchConst(parentName)` method で Field / NoCheck の優先順位で探し、nil なら `spec.IsSelfValidating()` で子の parser block が自己検証可能かを query します。結果がすべて nil なら `no dispatch constant for "foo" under "udp"` エラーになります。
 
-なお dispatch の alt group 対応は意外に難しいところです。`(ipv4|ipv6)/tcp` の場合、tcp は ipv4 と ipv6 両方の親を持ちえます。resolver は `selectAltParentDispatch` で全 alt の dispatch const を収集し、type / field / value / 幅がすべて一致すれば非 alt と同じ単一チェックの fast path に、一致しなければ diverged dispatch (`IsAltDiverged`) として解決します。後者では codegen が alt block の matched-alt-index を読み、alt ごとに別の Field dispatch を emit します。TCP_IPV4_PROTOCOL と TCP_IPV6_NEXT_HEADER は値こそ同じ 6 ですが field が異なるため、diverged 経路に落ちます。
+なお dispatch の alt group 対応は意外に難しいところです。`(ipv4|ipv6)/tcp` の場合、tcp は ipv4 と ipv6 両方の親を持ちえます。resolver は `selectAltParentDispatch` で全 alt の dispatch const を収集し、type / field / value / 幅がすべて一致すれば非 alt と同じ単一チェックの fast path に、一致しなければ diverged dispatch (`IsAltDiverged`) として解決します。後者では codegen が alt block の matched-alt-index を読み、alt ごとに別の Field dispatch を emit します。KUNAI_TCP_IPV4_PROTOCOL と KUNAI_TCP_IPV6_NEXT_HEADER は値こそ同じ 6 ですが field が異なるため、diverged 経路に落ちます。
 
 ### 4. Field reference の resolution
 
@@ -306,11 +306,11 @@ IR (resolved) は次のようになります。
 Program
 ├─ Layers: [
 │    LayerInstance{Spec=eth, Index=0},
-│    LayerInstance{Spec=ipv4, Index=0, Label="outer", Dispatch=Field(IPV4_ETH_ETHERTYPE)},
-│    LayerInstance{Spec=udp,  Index=0, Dispatch=Field(UDP_IPV4_PROTOCOL)},
-│    LayerInstance{Spec=gtp,  Index=0, Dispatch=Field(GTP_UDP_DPORT)},
+│    LayerInstance{Spec=ipv4, Index=0, Label="outer", Dispatch=Field(KUNAI_IPV4_ETH_ETHERTYPE)},
+│    LayerInstance{Spec=udp,  Index=0, Dispatch=Field(KUNAI_UDP_IPV4_PROTOCOL)},
+│    LayerInstance{Spec=gtp,  Index=0, Dispatch=Field(KUNAI_GTP_UDP_DPORT)},
 │    LayerInstance{Spec=ipv4, Index=1, Label="inner", Dispatch=SelfValidating},  ← gtp 後の ipv4 は parser-block 自己検証
-│    LayerInstance{Spec=tcp,  Index=0, Dispatch=Field(TCP_IPV4_PROTOCOL),
+│    LayerInstance{Spec=tcp,  Index=0, Dispatch=Field(KUNAI_TCP_IPV4_PROTOCOL),
 │                              Predicates=[Predicate{Field=FieldRef{tcp, dport}, Op=Eq, Value=443}]},
 │  ]
 ├─ Where: Condition{
@@ -324,7 +324,7 @@ Program
 
 注目点は次のとおりです。
 
-1. inner ipv4 の dispatch は `SelfValidating` です。gtp は IPV4_GTP_* dispatch const を持ちませんが、ipv4 の parser block (`transition select(version) { 4: accept; ... }`) で自己検証されるので resolver が許可します。
+1. inner ipv4 の dispatch は `SelfValidating` です。gtp は KUNAI_IPV4_GTP_* dispatch const を持ちませんが、ipv4 の parser block (`transition select(version) { 4: accept; ... }`) で自己検証されるので resolver が許可します。
 2. Index は auto-assigned です。同 chain に ipv4 が 2 個あり、出現順に 0, 1 が振られます。explicit label と一緒に dual register されます。
 3. field path の解決では、`outer.dst` は LabelTable["outer"] = layers[1] を引いて、`ipv4_h.dst` field の metadata を bind します。`inner.src` も同様です。
 

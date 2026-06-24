@@ -56,7 +56,7 @@ header ipv4_h {
     bit<32> dst;
 }
 
-const bit<16> IPV4_ETH_ETHERTYPE = 0x0800;
+const bit<16> KUNAI_IPV4_ETH_ETHERTYPE = 0x0800;
 // IPV4_MAX_DEPTH = 11: IHL=15 → 40-byte trailer / 4 bytes per
 // iter = 10 iters; +1 absorbs the initial counter-zero check.
 const bit<8>  IPV4_MAX_DEPTH     = 11;
@@ -106,7 +106,7 @@ header tcp_h {
     bit<16> urgent_ptr;
 }
 
-const bit<8> TCP_IPV4_PROTOCOL = 6;
+const bit<8> KUNAI_TCP_IPV4_PROTOCOL = 6;
 
 parser TcpParser(packet_in pkt, out tcp_h hdr) {
     state start {
@@ -214,7 +214,7 @@ header ipv4_opt_router_alert_h {
     bit<16> value;
 }
 
-const bit<16> IPV4_ETH_ETHERTYPE = 0x0800;
+const bit<16> KUNAI_IPV4_ETH_ETHERTYPE = 0x0800;
 // IPV4_PARSER_MAX_DEPTH = 32: bpf_loop chain cap. NOP-heavy worst
 // case (40 single-byte options) truncates at iter 32; mixed real
 // options (Router Alert at 4 B/iter) drain well before that.
@@ -267,7 +267,7 @@ header tcp_h {
     bit<16> urgent_ptr;
 }
 
-const bit<8> TCP_IPV4_PROTOCOL = 6;
+const bit<8> KUNAI_TCP_IPV4_PROTOCOL = 6;
 
 parser TcpParser(packet_in pkt, out tcp_h hdr) {
     state start { pkt.extract(hdr); transition accept; }

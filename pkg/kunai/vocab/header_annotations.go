@@ -322,6 +322,98 @@ func readParserParamCounts(file *p4lite.File, primaryFields []Field, source stri
 	return out, nil
 }
 
+// deriveStackCountsFromCounters synthesises StackCountSpec entries for
+// aux stacks whose runtime element count falls out of an element-driven
+// ParserCounter walk — the mechanism that replaces the explicit
+// @kunai_stack_count annotation. The shape it recognises is fully
+// generic (no protocol name): a state that pushes `extract(<stack>.next)`
+// AND decrements a counter by one element per push, where that counter
+// was seeded by the bare-cast add form `pc.set((bit<N>)(hdr.<F> + K))`
+// (Scale==1). The seed field's byte gives the per-element count base and
+// K the addend (SRH: field=last_entry, K=1 → count = last_entry + 1).
+//
+// Byte-driven counters (Scale==8, e.g. a region-length walk) are
+// skipped: their count is a byte length, not an element count, so they
+// carry no per-stack element semantics. Returns nil when no stack
+// qualifies. Entries here are merged under annotation priority by the
+// caller, so an explicit @kunai_stack_count always wins.
+//
+// The derived count reads the seed byte WHOLE — downstream
+// AuxWalkSegmentTail and the bpf_loop count guard scale a full-byte
+// value, keeping only ByteOff and Addend. A sub-byte or masked seed field
+// (LenShift != 0 || LenMask != 0xFF) would be silently mis-counted (the
+// whole byte read instead of the intended bit slice), yielding a wrong
+// element count and a wrong next-header re-anchor, so it is a loud
+// load-time reject rather than a silent miscompile — consistent with the
+// sub-byte counter.set shift reject in lowerCastShiftSkip.
+func deriveStackCountsFromCounters(machine *ParseStateMachine, source string) (map[string]*StackCountSpec, error) {
+	if machine == nil {
+		return nil, nil
+	}
+	var out map[string]*StackCountSpec
+	for _, st := range machine.States {
+		// Find a stack push and an element-granular decrement in the
+		// same state (the canonical `consume_seg` shape). The decrement
+		// must subtract exactly one (LiteralBytes==1) so the counter
+		// counts elements, not bytes.
+		var stackName, counterName string
+		for _, ex := range st.Extracts {
+			if ex.IsStackPush {
+				stackName = ex.StackName
+				break
+			}
+		}
+		if stackName == "" {
+			continue
+		}
+		for _, op := range st.Counters {
+			if op.Kind == CounterOpDecrement && op.LiteralBytes == 1 {
+				counterName = op.Counter
+				break
+			}
+		}
+		if counterName == "" {
+			continue
+		}
+		// The seeding set op (typically in `start`) for this counter
+		// carries the element-count expression. Require the bare-cast
+		// add form (Scale==1, no Base subtract) so a byte-driven set is
+		// never mistaken for an element count.
+		set := counterSetOp(machine.States, counterName)
+		if set == nil || set.Skip == nil || set.Skip.Scale != 1 || set.Skip.Base != 0 {
+			continue
+		}
+		// The count is read from the seed byte whole; a sub-byte/masked
+		// seed field would be silently mis-counted. Reject it loudly.
+		if set.Skip.LenShift != 0 || set.Skip.LenMask != 0xFF {
+			return nil, fmt.Errorf("%s: counter %q seeding aux stack %q must read a whole-byte element count, but its seed field is sub-byte (byte %d, mask 0x%x, shift %d); use a byte-aligned bit<8> count field", source, counterName, stackName, set.Skip.LenByteOff, set.Skip.LenMask, set.Skip.LenShift)
+		}
+		if out == nil {
+			out = make(map[string]*StackCountSpec)
+		}
+		out[stackName] = &StackCountSpec{
+			ByteOff: set.Skip.LenByteOff,
+			Addend:  set.Skip.Addend,
+		}
+	}
+	return out, nil
+}
+
+// counterSetOp returns the CounterOpSet for the named counter, or nil.
+// Mirrors CounterSetSkipForCounter but returns the whole op so the
+// caller can read both the seed field offset and the addend.
+func counterSetOp(states []*ParseState, counterName string) *CounterOp {
+	for _, s := range states {
+		for i := range s.Counters {
+			op := &s.Counters[i]
+			if op.Kind == CounterOpSet && op.Counter == counterName {
+				return op
+			}
+		}
+	}
+	return nil
+}
+
 // readParserOptionSegment scans the parser block's @-decorators for
 // @kunai_option_segment[name=IDENT]. Returns the declared segment
 // name or the empty string when no override exists; the loader treats

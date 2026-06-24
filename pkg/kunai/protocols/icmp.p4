@@ -6,7 +6,7 @@ header icmp_h {
     bit<16> checksum;
 }
 
-const bit<8> ICMP_IPV4_PROTOCOL = 1;
+const bit<8> KUNAI_ICMP_IPV4_PROTOCOL = 1;
 
 parser IcmpParser(packet_in pkt, out icmp_h hdr) {
     state start {

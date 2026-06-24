@@ -31,7 +31,7 @@ header gtp_ext_h {
 }
 
 // Dispatch from UDP: GTP-U uses destination port 2152.
-const bit<16> GTP_UDP_DPORT = 2152;
+const bit<16> KUNAI_GTP_UDP_DPORT = 2152;
 
 // Cap iterations of the parse_ext self-loop so the verifier accepts
 // the bpf_loop call. Real frames rarely carry more than 1-2 ext

@@ -6,7 +6,7 @@ header qinq_h {
 }
 
 // QinQ is carried directly inside Ethernet.
-const bit<16> QINQ_ETH_ETHERTYPE = 0x88A8;
+const bit<16> KUNAI_QINQ_ETH_ETHERTYPE = 0x88A8;
 
 parser QinqParser(packet_in pkt, out qinq_h hdr) {
     state start {

@@ -32,10 +32,22 @@ func Load(fsys fs.FS, root string) (map[string]*ProtocolSpec, error) {
 	}
 	sort.Strings(names)
 
+	// knownProtos is the set of real protocol names present in this
+	// vocab dir, derived mechanically from the .p4 filenames. It is the
+	// oracle that classifyConsts uses to tell an inter-layer dispatch
+	// edge (`<CHILD>_<PARENT>_<FIELD>` with a real <PARENT>) apart from a
+	// value-only select-match const (`<SELF>_<PHANTOM>_<FIELD>` whose
+	// <PHANTOM> — ROUTING / NH / OPT — is not a protocol). No protocol
+	// name is hard-coded; adding a new <name>.p4 grows this set.
+	knownProtos := make(map[string]bool, len(names))
+	for _, name := range names {
+		knownProtos[strings.ToLower(strings.TrimSuffix(name, ".p4"))] = true
+	}
+
 	out := make(map[string]*ProtocolSpec, len(names))
 	for _, name := range names {
 		full := path.Join(root, name)
-		spec, err := loadFile(fsys, full)
+		spec, err := loadFile(fsys, full, knownProtos)
 		if err != nil {
 			return nil, err
 		}
@@ -50,7 +62,7 @@ func Load(fsys fs.FS, root string) (map[string]*ProtocolSpec, error) {
 	return out, nil
 }
 
-func loadFile(fsys fs.FS, p string) (*ProtocolSpec, error) {
+func loadFile(fsys fs.FS, p string, knownProtos map[string]bool) (*ProtocolSpec, error) {
 	data, err := fs.ReadFile(fsys, p)
 	if err != nil {
 		return nil, fmt.Errorf("read %q: %w", p, err)
@@ -94,7 +106,7 @@ func loadFile(fsys fs.FS, p string) (*ProtocolSpec, error) {
 	for i, f := range primary.Fields {
 		fields[i] = Field{Name: f.Name, Bits: f.Bits}
 	}
-	res, err := classifyConsts(file.Consts, protoName, p)
+	res, err := classifyConsts(file.Consts, protoName, p, knownProtos)
 	if err != nil {
 		return nil, err
 	}
@@ -124,6 +136,22 @@ func loadFile(fsys fs.FS, p string) (*ProtocolSpec, error) {
 	stackCounts, err := readParserParamCounts(file, fields, p)
 	if err != nil {
 		return nil, err
+	}
+	// Derive element counts for aux stacks driven by an element-granular
+	// ParserCounter walk (the annotation-free SRv6 segment path). The
+	// explicit @kunai_stack_count annotation, when present, wins.
+	derivedCounts, err := deriveStackCountsFromCounters(machine, p)
+	if err != nil {
+		return nil, err
+	}
+	for stack, spec := range derivedCounts {
+		if _, annotated := stackCounts[stack]; annotated {
+			continue
+		}
+		if stackCounts == nil {
+			stackCounts = make(map[string]*StackCountSpec)
+		}
+		stackCounts[stack] = spec
 	}
 	spec := &ProtocolSpec{
 		Name:              protoName,
@@ -323,7 +351,7 @@ func buildFlagTriggers(of optFlagConsts, fields []Field, source string) (int, []
 	return of.FlagsByteOffset, triggers, nil
 }
 
-func classifyConsts(cs []*p4lite.Const, protoName, source string) (classifyResult, error) {
+func classifyConsts(cs []*p4lite.Const, protoName, source string, knownProtos map[string]bool) (classifyResult, error) {
 	protoUpper := strings.ToUpper(protoName)
 	res := classifyResult{Consts: make([]DispatchConst, 0, len(cs))}
 	// Reject any duplicate const name regardless of family. Some
@@ -340,10 +368,36 @@ func classifyConsts(cs []*p4lite.Const, protoName, source string) (classifyResul
 			return classifyResult{}, fmt.Errorf("%s: duplicate const %q", source, c.Name)
 		}
 		seenNames[c.Name] = true
-		if !strings.HasPrefix(c.Name, protoUpper+"_") {
+		// KUNAI_ is the authoritative marker for an inter-layer dispatch
+		// edge. A KUNAI_-prefixed const must be a real dispatch:
+		// `KUNAI_<SELF>_<PARENT>_<FIELD>` with a real <PARENT>, or
+		// `KUNAI_<SELF>_<PARENT>_NO_CHECK`. Strip the prefix and hand it to
+		// classifyKunaiConst, which rejects a phantom-parent (value-only)
+		// const — those must be written *without* KUNAI_. The original
+		// c.Name is kept for diagnostics and dup detection.
+		if s, ok := strings.CutPrefix(c.Name, "KUNAI_"); ok {
+			if s == "" {
+				return classifyResult{}, fmt.Errorf("%s: const %q has empty name after the KUNAI_ prefix", source, c.Name)
+			}
+			dc, err := classifyKunaiConst(c, s, protoUpper, source, knownProtos)
+			if err != nil {
+				return classifyResult{}, err
+			}
+			res.Consts = append(res.Consts, *dc)
+			continue
+		}
+		// A bare (non-KUNAI_) const is never a dispatch edge. It is a
+		// structural marker (MAX_DEPTH / CHAIN_END / OPT-flag) or a
+		// value-only select-match value (routing_type / ext / option kind,
+		// parent is a phantom). Run it through the structural families and
+		// the value-only <PARENT>_<FIELD> path; a bare const whose shape
+		// *would* be a dispatch (real parent, or NO_CHECK) is an
+		// enforcement error pointing the author at the KUNAI_ prefix.
+		name := c.Name
+		if !strings.HasPrefix(name, protoUpper+"_") {
 			return classifyResult{}, fmt.Errorf("%s: const %q must begin with %q (self-prefix derived from filename)", source, c.Name, protoUpper+"_")
 		}
-		rest := c.Name[len(protoUpper)+1:]
+		rest := name[len(protoUpper)+1:]
 		if rest == "MAX_DEPTH" {
 			if c.IsBool {
 				return classifyResult{}, fmt.Errorf("%s: MAX_DEPTH const %q must be bit<N>, got bool", source, c.Name)
@@ -360,7 +414,14 @@ func classifyConsts(cs []*p4lite.Const, protoName, source string) (classifyResul
 			res.MaxDepth = int(c.Int)
 			continue
 		}
-		if strings.HasPrefix(rest, "OPT_") {
+		// Only the flag-trigger OPT_ keys are structural. Other OPT_*
+		// names (OPT_EOL, OPT_NOP, OPT_RR, ... — option *kinds*) are
+		// value-only select-match values whose phantom parent is "opt";
+		// they fall through to the reField path below and fold into the
+		// select arm. Without this narrowing a value-only const like
+		// IPV4_OPT_EOL (rest "OPT_EOL") would be mis-routed into the
+		// flag-trigger machinery and rejected.
+		if isOptFlagKey(rest) {
 			if c.IsBool {
 				return classifyResult{}, fmt.Errorf("%s: OPT const %q must be bit<N>, got bool", source, c.Name)
 			}
@@ -387,32 +448,99 @@ func classifyConsts(cs []*p4lite.Const, protoName, source string) (classifyResul
 			}
 			continue
 		}
-		dc := DispatchConst{Name: c.Name}
 		if m := reNoCheck.FindStringSubmatch(rest); m != nil {
-			if !c.IsBool {
-				return classifyResult{}, fmt.Errorf("%s: NO_CHECK const %q must be declared as bool", source, c.Name)
-			}
-			if !c.Bool {
-				return classifyResult{}, fmt.Errorf("%s: NO_CHECK const %q must be true; false has no meaning", source, c.Name)
-			}
-			dc.Type = DispatchNoCheck
-			dc.Parent = strings.ToLower(m[1])
-			dc.Bool = true
-		} else if reSanityName.MatchString(rest) {
+			// NO_CHECK is an inter-layer dispatch edge: it must carry the
+			// KUNAI_ marker. A bare NO_CHECK is an enforcement error.
+			return classifyResult{}, fmt.Errorf("%s: NO_CHECK const %q is an inter-layer dispatch edge — prefix it with KUNAI_ (KUNAI_%s)", source, c.Name, c.Name)
+		}
+		if reSanityName.MatchString(rest) {
 			return classifyResult{}, fmt.Errorf("%s: const %q uses the SANITY family, which has been removed — declare a parser-block `transition select(<field>) { ...; default: reject; }` to self-validate the protocol instead", source, c.Name)
-		} else if m := reField.FindStringSubmatch(rest); m != nil {
+		}
+		if m := reField.FindStringSubmatch(rest); m != nil {
 			if c.IsBool {
 				return classifyResult{}, fmt.Errorf("%s: field-dispatch const %q must be bit<N>, got bool", source, c.Name)
 			}
-			dc.Type = DispatchField
-			dc.Parent = strings.ToLower(m[1])
-			dc.FieldName = strings.ToLower(m[2])
-			dc.Bits = c.Bits
-			dc.Value = c.Int
-		} else {
-			return classifyResult{}, fmt.Errorf("%s: const %q does not match <SELF>_{<PARENT>_<FIELD>|<PARENT>_NO_CHECK|MAX_DEPTH|CHAIN_END_<FIELD>}", source, c.Name)
+			parent := strings.ToLower(m[1])
+			if knownProtos[parent] {
+				// A real parent makes this a dispatch edge, which must
+				// carry the KUNAI_ marker. Loud-fail and point the author
+				// at the prefix.
+				return classifyResult{}, fmt.Errorf("%s: const %q dispatches to layer %q — it is an inter-layer dispatch edge, prefix it with KUNAI_ (KUNAI_%s)", source, c.Name, parent, c.Name)
+			}
+			// Phantom parent: a value-only select-match const (routing_type
+			// / ext / option kind). Validated as bit<N> above; folded into
+			// the select arm by p4lite. Not a dispatch edge, so it does not
+			// enter res.Consts.
+			continue
 		}
-		res.Consts = append(res.Consts, dc)
+		return classifyResult{}, fmt.Errorf("%s: const %q does not match <SELF>_{<PARENT>_<FIELD>|MAX_DEPTH|CHAIN_END_<FIELD>} or KUNAI_<SELF>_{<PARENT>_<FIELD>|<PARENT>_NO_CHECK}", source, c.Name)
 	}
 	return res, nil
+}
+
+// isOptFlagKey reports whether the suffix after "<SELF>_" names one of
+// the structural OPT flag-trigger keys (OPT_FLAGS_BYTE_OFFSET /
+// OPT_TRIGGER_<N> / OPT_LEN_<N>). Every other OPT_* name is a
+// value-only option-kind select value (phantom parent "opt") and must
+// fall through to the value-only <PARENT>_<FIELD> path.
+func isOptFlagKey(rest string) bool {
+	return rest == "OPT_FLAGS_BYTE_OFFSET" ||
+		strings.HasPrefix(rest, "OPT_TRIGGER_") ||
+		strings.HasPrefix(rest, "OPT_LEN_")
+}
+
+// classifyKunaiConst classifies a KUNAI_-prefixed const. The prefix is
+// the authoritative marker for an inter-layer dispatch edge, so the
+// const must be a real dispatch in one of two shapes:
+//
+//	KUNAI_<SELF>_<PARENT>_NO_CHECK = true   (DispatchNoCheck)
+//	KUNAI_<SELF>_<PARENT>_<FIELD>  = value  (DispatchField, real <PARENT>)
+//
+// name is c.Name with the KUNAI_ prefix already stripped. A phantom
+// parent (ROUTING / NH / OPT — not a .p4 in this vocab) or a const with
+// no <PARENT>_<FIELD> shape is a value-only select-match value that must
+// be written *without* KUNAI_; it is rejected here with a diagnostic
+// pointing at the bare name. It returns the dispatch const on success
+// and a non-nil error otherwise.
+func classifyKunaiConst(c *p4lite.Const, name, protoUpper, source string, knownProtos map[string]bool) (*DispatchConst, error) {
+	if !strings.HasPrefix(name, protoUpper+"_") {
+		return nil, fmt.Errorf("%s: const %q must begin with %q (self-prefix derived from filename)", source, c.Name, "KUNAI_"+protoUpper+"_")
+	}
+	rest := name[len(protoUpper)+1:]
+	if m := reNoCheck.FindStringSubmatch(rest); m != nil {
+		if !c.IsBool {
+			return nil, fmt.Errorf("%s: NO_CHECK const %q must be declared as bool", source, c.Name)
+		}
+		if !c.Bool {
+			return nil, fmt.Errorf("%s: NO_CHECK const %q must be true; false has no meaning", source, c.Name)
+		}
+		return &DispatchConst{
+			Name:   c.Name,
+			Type:   DispatchNoCheck,
+			Parent: strings.ToLower(m[1]),
+			Bool:   true,
+		}, nil
+	}
+	m := reField.FindStringSubmatch(rest)
+	if m == nil {
+		return nil, fmt.Errorf("%s: KUNAI_ marks an inter-layer dispatch edge but %q has no <PARENT>_<FIELD> / <PARENT>_NO_CHECK shape — drop the KUNAI_ prefix for a value-only select-match const", source, c.Name)
+	}
+	if c.IsBool {
+		return nil, fmt.Errorf("%s: field-dispatch const %q must be bit<N>, got bool", source, c.Name)
+	}
+	parent := strings.ToLower(m[1])
+	if !knownProtos[parent] {
+		// Phantom parent: this is a value-only select-match value, not a
+		// dispatch edge. KUNAI_ is reserved for dispatch, so reject it and
+		// point the author at the bare name.
+		return nil, fmt.Errorf("%s: KUNAI_ marks an inter-layer dispatch edge; %q has parent %q which is not a protocol — drop the KUNAI_ prefix for a value-only select-match const", source, c.Name, parent)
+	}
+	return &DispatchConst{
+		Name:      c.Name,
+		Type:      DispatchField,
+		Parent:    parent,
+		FieldName: strings.ToLower(m[2]),
+		Bits:      c.Bits,
+		Value:     c.Int,
+	}, nil
 }

@@ -142,11 +142,11 @@ xdp-ninja は non-invasive な XDP 観測ツールです。BPF trampoline (fentr
 2 階層構成です。
 
 - `vocab/p4lite/` は `.p4` ファイル (P4-16 strict subset) を AST 化します。再帰下降で、受理する構文の境界は subset の正規定義である `conformance_test.go` で pin します。
-- `vocab/` は p4lite AST を `ProtocolSpec` に変換します。`loader.go::Load` がエントリで、`classifyConsts` が正規表現で const 名を次のように分類します。
-  - `reField` (`<SELF>_<PARENT>_<FIELD>`)
+- `vocab/` は p4lite AST を `ProtocolSpec` に変換します。`loader.go::Load` がエントリで、`classifyConsts` がまず `KUNAI_` 接頭辞 (inter-layer dispatch のマーカ) の有無で分岐し、残りを正規表現で次のように分類します。dispatch shape (Field / NoCheck) は `KUNAI_` 付きで、構造系 (CHAIN_END / MAX_DEPTH) と value-only は無印です。
+  - `reField` (`KUNAI_<SELF>_<PARENT>_<FIELD>`)
   - `reChainEnd` (`<SELF>_CHAIN_END_<FIELD>`)
   - `reMaxDepth` (`<SELF>_MAX_DEPTH`)
-  - + NoCheck (`<SELF>_<PARENT>_NO_CHECK`)
+  - + NoCheck (`KUNAI_<SELF>_<PARENT>_NO_CHECK`)
   - + Self-validating dispatch (parser-block 自検査)
 - `vocab/parser_machine.go` は aux header layout / gating / stack capacity を `parser_machine` block から抽出します。
 
@@ -283,18 +283,18 @@ const は名前で意味が決まります。
 
 | パターン | 意味 |
 |---|---|
-| `<SELF>_<PARENT>_<FIELD>` | 親 protocol の `field` がこの値のときに自分 (SELF) として展開 |
-| `<SELF>_<PARENT>_NO_CHECK` | 検査せず blind cast (ユーザの記述順を信じる) |
+| `KUNAI_<SELF>_<PARENT>_<FIELD>` | 親 protocol の `field` がこの値のときに自分 (SELF) として展開 |
+| `KUNAI_<SELF>_<PARENT>_NO_CHECK` | 検査せず blind cast (ユーザの記述順を信じる) |
 | `<SELF>_MAX_DEPTH` | bpf_loop chain (`+`/`*`/`{n,m>4}`) のループ上限。未指定なら codegen 既定 (8) |
 | `<SELF>_CHAIN_END_<FIELD>` | chain 終了条件 (例: MPLS s-bit が 1 で終端) |
 
-`<SELF>` は uppercase のファイル名、`<PARENT>` は uppercase の親 protocol 名です。親が Field/NoCheck のいずれも持たず、子が parser block で自己検証する場合 (例: ipv4 の `transition select(hdr.version) { 4: accept; default: reject; }`) は vocab const が不要で、resolver が `DispatchSelfValidating` を合成します。詳細は §3.3 を参照してください。
+`<SELF>` は uppercase のファイル名、`<PARENT>` は uppercase の親 protocol 名です。`KUNAI_` は inter-layer dispatch のマーカで、親レイヤから自分への遷移を表す dispatch const (Field / NoCheck / self-dispatch) にだけ付けます。value-only な select-match 値 (routing_type / option kind / next-header 種別など、親が実在プロトコルでない phantom parent のもの。例: `SRV6_ROUTING_TYPE`、`IPV6_NH_FRAGMENT`) と、`<SELF>_MAX_DEPTH` / `<SELF>_CHAIN_END_<FIELD>` のような構造 const には付けません。loader (`classifyConsts`) はこの規約を強制し、無印の dispatch shape も `KUNAI_` 付きの非 dispatch も loud-reject します。親が Field/NoCheck のいずれも持たず、子が parser block で自己検証する場合 (例: ipv4 の `transition select(hdr.version) { 4: accept; default: reject; }`) は vocab const が不要で、resolver が `DispatchSelfValidating` を合成します。詳細は §3.3 を参照してください。
 
 Field dispatch は一番よく使う形です。
 
 ```p4
-const bit<16> IPV4_ETH_ETHERTYPE  = 0x0800;
-const bit<16> IPV4_VLAN_ETHERTYPE = 0x0800;
+const bit<16> KUNAI_IPV4_ETH_ETHERTYPE  = 0x0800;
+const bit<16> KUNAI_IPV4_VLAN_ETHERTYPE = 0x0800;
 ```
 
 `ipv4` が eth または vlan 経由で来るとき、親の `ethertype` は `0x0800` です。
@@ -321,15 +321,15 @@ parser IPv4Parser(packet_in pkt, out ipv4_h hdr) {
 mpls / gtp / vxlan inner 等の親に次プロトコルを示す field が無くても、子の parser block が `transition select(<primary-field>) { ...; default: reject; }` を持っていれば、resolver が `DispatchSelfValidating` を合成して chain を許可します。boundary では何も emit せず、parser machine の transition select が実行時に reject します。
 
 - 旧 `<SELF>_<PARENT>_SANITY_<TYPE>` / `<SELF>_SANITY_<TYPE>` const family は撤廃されました。legacy 名で declare すると vocab loader が error で reject します。
-- self-validation は標準 P4-16 構文のみで表現するので、vocab が self-contained になります。srv6 の `transition select(routing_type) { 4: accept; default: reject; }` と同じ idiom です。
+- self-validation は標準 P4-16 構文のみで表現するので、vocab が self-contained になります。srv6 の `transition select(hdr.routing_type) { SRV6_ROUTING_TYPE: walk; default: reject; }` と同じ idiom です (`SRV6_ROUTING_TYPE` は値 4 を表す value-only const)。
 - ipv4 のように self-validation (`transition select(version) { 4: skip_options; default: reject; }`) と variable-trailer (`pkt.advance(((bit<32>)(hdr.ihl - 5)) << 5)`) が parser block 内で同居しても、codegen は state graph を順番に消化するため問題ありません。`validateLayoutExclusivity` は両立を許可します。
 - 親が Field/NoCheck/SelfValidating のいずれの dispatch も持たない場合は、resolver が `no dispatch constant for ...` で reject します。
 
 NoCheck dispatch は次のように書きます。
 
 ```p4
-const bool ETH_MPLS_NO_CHECK = true;
-const bool MPLS_MPLS_NO_CHECK = true;
+const bool KUNAI_ETH_MPLS_NO_CHECK = true;
+const bool KUNAI_MPLS_MPLS_NO_CHECK = true;
 ```
 
 EoMPLS や VXLAN inner Ethernet などのように、親と自分の境界に検査機構が無い形です。ユーザが one-liner で順序を明示することで境界を表現します。
@@ -373,18 +373,18 @@ parser MplsParser(packet_in pkt, out mpls_h hdr) {
 判断フローは次のとおりです。
 
 1. 親 protocol に次プロトコルを示すフィールドがあるかを確認します。
-   - ある場合は Field を使い、`<SELF>_<PARENT>_<FIELD> = <value>` と書きます。
+   - ある場合は Field を使い、`KUNAI_<SELF>_<PARENT>_<FIELD> = <value>` と書きます。
 2. 子の primary header に、IPv4 / IPv6 の version や SRv6 の routing_type のような識別可能な field があるかを確認します。
    - ある場合は parser block での自己検証を推奨します。`transition select(hdr.<field>) { <ok>: accept; default: reject; }` と書き、vocab const は不要です。
 3. encapsulation の Ethernet inner などのように、どちらも無い場合に対応します。
-   - NO_CHECK を使い、`<SELF>_<PARENT>_NO_CHECK = true` と書きます。
+   - NO_CHECK を使い、`KUNAI_<SELF>_<PARENT>_NO_CHECK = true` と書きます。
 
 ### 3.4 Self-dispatch (chain 用)
 
-`<SELF>_<SELF>_*` は chain (`+`/`*`/`{n,m}`) のときに iter 1+ で読まれます。
+`KUNAI_<SELF>_<SELF>_*` は chain (`+`/`*`/`{n,m}`) のときに iter 1+ で読まれます。self-dispatch も dispatch edge なので `KUNAI_` を付けます。
 
-- VLAN は `VLAN_VLAN_ETHERTYPE = 0x8100` です。inner VLAN は、外側の ethertype が再び 0x8100 になることで識別します。
-- MPLS は `MPLS_MPLS_NO_CHECK = true` です。label 区切りは無いので blind chain になります。
+- VLAN は `KUNAI_VLAN_VLAN_ETHERTYPE = 0x8100` です。inner VLAN は、外側の ethertype が再び 0x8100 になることで識別します。
+- MPLS は `KUNAI_MPLS_MPLS_NO_CHECK = true` です。label 区切りは無いので blind chain になります。
 
 self-dispatch が無いプロトコルは `+` / `*` / `{n,m}` で chain できず、静的に固定回数しか展開できません。
 
@@ -401,7 +401,7 @@ header foo_h {
 }
 
 // foo は UDP の dport==4444 で識別
-const bit<16> FOO_UDP_DPORT = 4444;
+const bit<16> KUNAI_FOO_UDP_DPORT = 4444;
 
 parser FooParser(packet_in pkt, out foo_h hdr) {
     state start {
@@ -414,7 +414,7 @@ parser FooParser(packet_in pkt, out foo_h hdr) {
 別ファイル `eth.p4` 側に次の const を追加します。
 
 ```p4
-const bool ETH_FOO_NO_CHECK = true;
+const bool KUNAI_ETH_FOO_NO_CHECK = true;
 ```
 
 これで DSL から `eth/ipv4/udp[dport==4444]/foo/eth/ipv4/tcp` が書けます。
@@ -440,10 +440,10 @@ vimto exec -- /tmp/test -test.run TestBpfEntryWithDSLFilter -test.v
 vocab loader エラーは次のとおりです。
 
 ```
-foo.p4: const "FOO_BAR_BAZ_QUX" does not match <SELF>_{<PARENT>_<FIELD>|<PARENT>_NO_CHECK|MAX_DEPTH|CHAIN_END_<FIELD>}
+foo.p4: const "FOO_BAR_BAZ_QUX" does not match <SELF>_{<PARENT>_<FIELD>|MAX_DEPTH|CHAIN_END_<FIELD>} or KUNAI_<SELF>_{<PARENT>_<FIELD>|<PARENT>_NO_CHECK}
 ```
 
-const 名がパターンに一致していません。`<SELF>_` を抜かしている、parent 名のスペルが違うなどが典型です。
+const 名がパターンに一致していません。`<SELF>_` を抜かしている、parent 名のスペルが違うなどが典型です。dispatch const なのに `KUNAI_` を付け忘れていると、より具体的な「is an inter-layer dispatch edge — prefix it with KUNAI_」エラーになります。逆に value-only const (routing_type / option kind 等) に `KUNAI_` を付けると「drop the KUNAI_ prefix for a value-only select-match const」で reject されます。
 
 ```
 foo.p4: const "FOO_BAR_SANITY_NIBBLE" uses the SANITY family, which has been removed — declare a parser-block `transition select(<field>) { ...; default: reject; }` to self-validate the protocol instead
@@ -460,10 +460,10 @@ primary header の名前が `<filename>_h` になっていません。
 resolver エラーは次のとおりです。
 
 ```
-no dispatch constant for "foo" under "udp" (declare FOO_UDP_<FIELD|NO_CHECK> in foo.p4, or have foo.p4 self-validate via a parser-block `transition select(...) { ...; default: reject; }`)
+no dispatch constant for "foo" under "udp" (declare KUNAI_FOO_UDP_<FIELD> or KUNAI_FOO_UDP_NO_CHECK in foo.p4, or have foo.p4 self-validate via a parser-block `transition select(...) { ...; default: reject; }`)
 ```
 
-DSL で `eth/ipv4/udp/foo` を書いたものの、`foo.p4` に `FOO_UDP_*` (Field / NoCheck) も、parser block での自己検証 (`transition select(<primary-field>) { ...; default: reject; }`) も無い状態です。どちらかを宣言します。
+DSL で `eth/ipv4/udp/foo` を書いたものの、`foo.p4` に `KUNAI_FOO_UDP_*` (Field / NoCheck) も、parser block での自己検証 (`transition select(<primary-field>) { ...; default: reject; }`) も無い状態です。どちらかを宣言します。
 
 ```
 alternation alts disagree on dispatch for "tcp" and at least one alt uses self-validating dispatch — codegen only handles diverged Field dispatch (per-alt JNE check)
@@ -474,10 +474,10 @@ alt group 後の layer の dispatch const が alt 間で揃っておらず、か
 codegen エラーは次のとおりです。
 
 ```
-chained "foo" has no self-dispatch const (declare FOO_FOO_<FIELD|NO_CHECK> in foo.p4)
+chained "foo" has no self-dispatch const (declare KUNAI_FOO_FOO_<FIELD> or KUNAI_FOO_FOO_NO_CHECK in foo.p4)
 ```
 
-`foo+` / `foo*` / `foo{n,m>1}` を書いたものの、`foo.p4` に `FOO_FOO_*` self-dispatch がありません。
+`foo+` / `foo*` / `foo{n,m>1}` を書いたものの、`foo.p4` に `KUNAI_FOO_FOO_*` self-dispatch がありません。
 
 parser machine 固有の制約として、codegen が `ErrNotImplemented` で reject するものを次に示します。
 
@@ -706,7 +706,7 @@ eth/mpls+/ipv4/tcp                ; MPLS label stack
 eth/qinq/vlan+/ipv4/tcp           ; QinQ (S-tag + C-tag stack)
 ```
 
-vocab 側は `<SELF>_<PARENT>_<FIELD>` 系の dispatch const で、どこから始まりどこで終わるかを declare します。
+vocab 側は `KUNAI_<SELF>_<PARENT>_<FIELD>` 系の dispatch const で、どこから始まりどこで終わるかを declare します。
 
 #### wrapper + aux header (パターン B/C/D)
 
@@ -883,32 +883,47 @@ DSL での `gtp.opt.exists` は、`parse_opt` state に到達したかを runtim
 
 #### Mechanism 4: aux header stack (SRv6 タイプ、パターン B/C)
 
-P4 の header stack `H[N]` を使います。bundled SRv6 は extract せず `pkt.advance` で trailer を一括スキップし、`@kunai_layout[after=primary]` で base を明示して、stack の bytes は scratch 上の静的アドレス算出から次のように読みます。
+P4 の header stack `H[N]` を使います。bundled SRv6 は注釈ゼロの element-driven walk です。ParserCounter をセグメント数 (`last_entry + 1`) で seed し、`consume_seg` で 1 要素ずつ push しながら counter を 1 減らします。`@kunai_layout` / `@kunai_stack_count` / `@kunai_variable_tail` は一切使いません。要素数も next-header 位置も、この walk の形から loader / codegen が導出します。
 
 ```p4
 // srv6.p4
 header srv6_h     { bit<8> next_header; ... bit<8> last_entry; ... }
 header srv6_seg_h { bit<128> addr; }
 
+// routing_type 4 は SRH を表す value-only const (phantom parent なので KUNAI_ 無し)
+const bit<8> SRV6_ROUTING_TYPE = 4;
+
 parser SRv6Parser(packet_in pkt,
                     out srv6_h        hdr,
-                    @kunai_layout[after=primary]
                     out srv6_seg_h[8] segments) {
+    ParserCounter() pc;
     state start {
         pkt.extract(hdr);
+        pc.set((bit<8>)(hdr.last_entry + 1));   // セグメント数 = last_entry + 1
         transition select(hdr.routing_type) {
-            4:       skip_segments;
-            default: reject;
+            SRV6_ROUTING_TYPE: walk;
+            default:           reject;
         }
     }
-    state skip_segments {
-        pkt.advance(((bit<32>)(hdr.hdr_ext_len & 0x0F)) << 6);
-        transition accept;
+    state walk {
+        transition select(pc.is_zero()) {
+            true:  accept;
+            false: consume_seg;
+        }
+    }
+    state consume_seg {
+        pkt.extract(segments.next);             // 16 byte を 1 個 push
+        pc.decrement(1);                        // 1 要素ぶん減らす
+        transition walk;
     }
 }
 ```
 
-stack の reservation 数 (上の例では 8) は、verifier-safe な loop 上限として codegen が利用します。DSL の `srv6.segments[N].addr` は `layer_entry + 8 (primary) + N × 16 + 0` の静的アドレス算出でロードされ、実 segment 数を実行時に数えない設計です。マスク `0x0F` は、`pkt.advance` 後の R4 が scratch buffer を超えない静的上限を verifier に与えるためのキャップです。
+`pc.set((bit<8>)(hdr.last_entry + 1))` の bare-cast add 形 (scale=1) と `pc.decrement(1)` の組が、この walk を element-driven にします。loader (`deriveStackCountsFromCounters`) は push + element-granular decrement を同じ state に見つけ、seed フィールド (`last_entry`) と addend (`+1`) から `any` / `all` の要素数を `last_entry + 1` と導出します。`@kunai_stack_count` は不要で、明示宣言があればそれが優先される仕組みは残しています。
+
+stack の reservation 数 (上の例では 8) は、verifier-safe な loop 上限として codegen が利用します。DSL の `srv6.segments[N].addr` は `layer_entry + 8 (primary) + N × 16 + 0` の静的アドレス算出でロードされ、scratch 上の bytes を読みます。stack の base は `consume_seg` が push するため push state の layer-entry offset (= `sizeof(srv6_h)` = 8) から自然に決まり、`@kunai_layout` は不要です。
+
+next-header 位置も同じ count から決まります。codegen は walk 収束後に R4 を `layer_entry + 8 + (last_entry+1)*16` へ再アンカーします。TLV を持たない SRH では segment list の末尾がそのまま next header になる (RFC 8754) という性質を使った再アンカーです。逆に TLV 付き SRH を chain で越えるのは非対応で、R4 が segment list の末尾で止まるため、末尾 TLV を持つ SRH の後ろに別レイヤを繋ぐ (`eth/ipv6/srv6/tcp` 等) と next header に届きません。TLV サポートは RFC 8754 Section 2 で optional なので規約準拠の制限です。segment 参照 (`srv6.segments[N]`、`any` / `all`) は末尾 TLV の有無に関わらず正しく動きます。
 
 #### Mechanism 7: TLV options walk (TCP options タイプ、パターン C 可変)
 

@@ -13,7 +13,7 @@ header geneve_h {
 }
 
 // Dispatch from UDP via the IANA-assigned destination port.
-const bit<16> GENEVE_UDP_DPORT = 6081;
+const bit<16> KUNAI_GENEVE_UDP_DPORT = 6081;
 
 // Cap the option-walk bpf_loop iterations. Real Geneve frames carry a
 // handful of options (AWS GWLB uses 3; OVN uses 1), so a small bound
