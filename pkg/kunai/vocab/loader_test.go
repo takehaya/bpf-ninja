@@ -794,15 +794,15 @@ func auxLayoutNames(m map[string]*AuxLayout) []string {
 }
 
 func TestParseStateMachineSrv6(t *testing.T) {
-	// 3 states model the explicit counter-driven segment walk:
+	// 3 states model the element-driven segment walk:
 	//   `start`       extracts the SRH primary, seeds the counter with
-	//                 the region size (= hdr_ext_len, in 8-byte units),
-	//                 and transitions on routing_type==4 (reject else);
+	//                 the segment count (= last_entry + 1), and
+	//                 transitions on routing_type==4 (reject else);
 	//   `walk`        tests pc.is_zero() — accept when drained, else
 	//                 route to consume_seg;
 	//   `consume_seg` extracts one 16-byte segment into the segments
-	//                 stack, decrements the counter by 2 (= one segment
-	//                 in 8-byte units), and loops back to walk.
+	//                 stack, decrements the counter by 1 (= one segment
+	//                 per element), and loops back to walk.
 	specs := loadBundled(t)
 	srv6 := specs["srv6"]
 	if srv6 == nil || srv6.ParseStateMachine == nil {
@@ -820,11 +820,12 @@ func TestParseStateMachineSrv6(t *testing.T) {
 	if start.Trans.Kind != TransSelect {
 		t.Errorf("start transition kind = %v, want TransSelect (routing_type guard)", start.Trans.Kind)
 	}
-	// start seeds pc with the region BYTE count: load hdr_ext_len
-	// (byte 1), mask it to 0x0F (cap = 120 bytes for the verifier), and
-	// scale by 8 (<< 6) — the byte count the walk decrements by 16 per
-	// 16-byte segment, and the exact advance the bulk-advance fallback
-	// takes when no segment field is queried.
+	// start seeds pc with the segment COUNT = last_entry + 1 via the
+	// bare-cast add form `pc.set((bit<8>)(hdr.last_entry + 1))`: load
+	// last_entry (byte 4), scale=1 (no shift, element granularity), and
+	// add 1 (Addend). This element-driven seed is what the loader reads
+	// to derive the any()/all() count; the region BYTE length lives on
+	// the @kunai_variable_tail (hdr_ext_len * 8) instead.
 	if len(start.Counters) != 1 {
 		t.Fatalf("start counter op count = %d, want 1 (pc.set)", len(start.Counters))
 	}
@@ -832,9 +833,9 @@ func TestParseStateMachineSrv6(t *testing.T) {
 	if setOp.Kind != CounterOpSet || setOp.Counter != "pc" {
 		t.Errorf("start counter = %+v, want CounterOpSet on pc", setOp)
 	}
-	wantSkip := HeaderLength{LenByteOff: 1, LenMask: 0x0F, LenShift: 0, Scale: 8, Base: 0}
+	wantSkip := HeaderLength{LenByteOff: 4, LenMask: 0xFF, LenShift: 0, Scale: 1, Base: 0, Addend: 1}
 	if setOp.Skip == nil || *setOp.Skip != wantSkip {
-		t.Errorf("pc.set skip = %+v, want %+v ((hdr_ext_len & 0x0F) * 8 bytes)", setOp.Skip, wantSkip)
+		t.Errorf("pc.set skip = %+v, want %+v (last_entry + 1, element count)", setOp.Skip, wantSkip)
 	}
 
 	walk := machine.States[1]
@@ -868,15 +869,16 @@ func TestParseStateMachineSrv6(t *testing.T) {
 		t.Fatalf("consume_seg counter op count = %d, want 1 (pc.decrement)", len(consume.Counters))
 	}
 	dec := consume.Counters[0]
-	if dec.Kind != CounterOpDecrement || dec.Counter != "pc" || dec.LiteralBytes != 16 {
-		t.Errorf("consume_seg counter = %+v, want CounterOpDecrement pc by 16", dec)
+	if dec.Kind != CounterOpDecrement || dec.Counter != "pc" || dec.LiteralBytes != 1 {
+		t.Errorf("consume_seg counter = %+v, want CounterOpDecrement pc by 1 (one segment per element)", dec)
 	}
 }
 
 // TestSRv6SegmentsStackCount pins that the SRv6 segments aux stack
-// resolves its runtime iteration count from the @kunai_stack_count
-// annotation on the parser parameter (= byte 4 of srv6_h, the
-// last_entry field, plus 1 per the SRv6 spec).
+// resolves its runtime iteration count by DERIVING it from the
+// element-driven ParserCounter walk (no @kunai_stack_count annotation):
+// the loader reads the set seed field (= byte 4 of srv6_h, last_entry)
+// and addend (+1 per the SRv6 spec) off the walk.
 func TestSRv6SegmentsStackCount(t *testing.T) {
 	specs := loadBundled(t)
 	srv6 := specs["srv6"]
@@ -885,7 +887,7 @@ func TestSRv6SegmentsStackCount(t *testing.T) {
 	}
 	cnt, ok := srv6.StackCounts["segments"]
 	if !ok || cnt == nil {
-		t.Fatal("srv6.StackCounts[segments] missing — @kunai_stack_count not consumed")
+		t.Fatal("srv6.StackCounts[segments] missing — counter-derived stack count not synthesised")
 	}
 	// srv6_h layout: next_header(8) + hdr_ext_len(8) + routing_type(8)
 	// + segments_left(8) + last_entry(8) ...  → last_entry at byte 4.

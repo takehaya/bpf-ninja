@@ -838,6 +838,53 @@ func TestParseCounterSetMaskForm(t *testing.T) {
 	}
 }
 
+// TestParseCounterSetBareCastAddForm pins the bare-cast add form
+// `pc.set((bit<N>)(hdr.<F> + K))` — the scale=1, shift-free element
+// count an element-driven aux-stack walk seeds (SRH segments =
+// last_entry + 1). Distinct paren shape from the shifted forms: a
+// single outer paren, no `<< S`, and a `+ K` addend captured in Addend.
+func TestParseCounterSetBareCastAddForm(t *testing.T) {
+	src := `parser P(packet_in pkt, out h_t hdr) {
+		ParserCounter() pc;
+		state s {
+			pc.set((bit<8>)(hdr.last_entry + 1));
+			transition accept;
+		}
+	}`
+	f, err := Parse([]byte(src), "t.p4")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	cs, ok := f.Parsers[0].States[0].Stmts[0].(*CounterCallStmt)
+	if !ok {
+		t.Fatalf("stmt[0] is %T, want *CounterCallStmt", f.Parsers[0].States[0].Stmts[0])
+	}
+	if cs.Op != CounterSet || cs.FieldName != "last_entry" || cs.Addend != 1 ||
+		cs.Mask != 0 || cs.BaseWords != 0 || cs.ScaleLog2 != 0 || cs.BitWidth != 8 {
+		t.Errorf("CounterCallStmt = %+v, want CounterSet last_entry addend=1 scale=0 (bare-cast add form)", *cs)
+	}
+}
+
+// TestParseCounterSetBareCastNoAddend pins the addend-less bare-cast
+// form `pc.set((bit<N>)(hdr.<F>))` (Addend defaults to 0).
+func TestParseCounterSetBareCastNoAddend(t *testing.T) {
+	src := `parser P(packet_in pkt, out h_t hdr) {
+		ParserCounter() pc;
+		state s {
+			pc.set((bit<8>)(hdr.count));
+			transition accept;
+		}
+	}`
+	f, err := Parse([]byte(src), "t.p4")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	cs := f.Parsers[0].States[0].Stmts[0].(*CounterCallStmt)
+	if cs.Op != CounterSet || cs.FieldName != "count" || cs.Addend != 0 || cs.ScaleLog2 != 0 {
+		t.Errorf("CounterCallStmt = %+v, want CounterSet count addend=0 scale=0", *cs)
+	}
+}
+
 func TestParseCounterDecrementRoundTrip(t *testing.T) {
 	src := `parser P(packet_in pkt, out h_t hdr) {
 		ParserCounter() pc;

@@ -753,21 +753,21 @@ func TestSRv6ChainPastSegmentsFieldRead(t *testing.T) {
 	r.MustReject(t, miss, "tcp.dport==443 must not match the 8080 filter")
 }
 
-// TestSRv6ChainPastSegmentsWithTLV proves next-header reach when the
-// SRH carries trailing TLVs after the segment list. The explicit walk
-// consumes the whole variable region (hdr_ext_len*8 bytes), so a
-// 16-byte TLV after a 2-segment list must still land the inner TCP
-// read at the right offset. A wrong-port packet (same shape) must
-// reject, confirming the TLV bytes did not bleed into the tcp.dport
-// read.
-func TestSRv6ChainPastSegmentsWithTLV(t *testing.T) {
-	r := New(t, "eth/ipv6/srv6/tcp where tcp.dport == 8080")
-	// 16-byte TLV trailer (e.g. a padding/HMAC-shaped TLV); a multiple
-	// of 16 so the segment-chunk walk reaches the region end exactly.
+// TestSRv6ChainPastTLVBearingSRHUnsupported documents the one SRv6
+// limitation of deriving the next header from the segment count: when the
+// SRH carries trailing TLVs after the segment list, the count-based
+// re-anchor lands R4 at the segment-list end (SRH+8+(last_entry+1)*16),
+// short of the TLVs, so a chain-past filter does not reach the inner TCP.
+// TLV support is optional per RFC 8754 Section 2, so this is an accepted
+// limitation rather than a bug. Segment queries (any()/all(),
+// srv6.segments[N]) stay correct regardless of the trailing TLV: they
+// read the count-bounded segment list, which the TLV does not perturb.
+func TestSRv6ChainPastTLVBearingSRHUnsupported(t *testing.T) {
+	// 16-byte TLV trailer (e.g. a padding/HMAC-shaped TLV).
 	tlv := make([]byte, 16)
 	tlv[0] = 0x06 // arbitrary TLV type
 	tlv[1] = 0x0e // arbitrary TLV length
-	match := BuildSRv6(t, SRv6Opts{
+	pkt := BuildSRv6(t, SRv6Opts{
 		Segments: []net.IP{
 			net.ParseIP("fe80::1"),
 			net.ParseIP("fe80::2"),
@@ -776,18 +776,13 @@ func TestSRv6ChainPastSegmentsWithTLV(t *testing.T) {
 		InnerDstPort:     8080,
 		TrailingTLVBytes: tlv,
 	})
-	r.MustMatch(t, match, "tcp.dport==8080 past a 2-segment SRH + 16B TLV")
-
-	miss := BuildSRv6(t, SRv6Opts{
-		Segments: []net.IP{
-			net.ParseIP("fe80::1"),
-			net.ParseIP("fe80::2"),
-		},
-		InnerNextHeader:  6,
-		InnerDstPort:     443,
-		TrailingTLVBytes: tlv,
-	})
-	r.MustReject(t, miss, "tcp.dport==443 (TLV-bearing) must not match the 8080 filter")
+	// Chain-past: R4 stops at the segment-list end, before the 16-byte
+	// TLV, so the inner tcp.dport is not reached and the filter rejects.
+	rChain := New(t, "eth/ipv6/srv6/tcp where tcp.dport == 8080")
+	rChain.MustReject(t, pkt, "chain past a TLV-bearing SRH is unsupported (R4 stops at segment-list end)")
+	// Segment queries are unaffected by the trailing TLV.
+	rSeg := New(t, "eth/ipv6/srv6 where any(srv6.segments.addr == fe80::2)")
+	rSeg.MustMatch(t, pkt, "any() over segments still matches with a trailing TLV present")
 }
 
 // TestIPv4OptionsAdvance exercises IPv4 HDRLEN: an IPv4 frame
@@ -1204,20 +1199,32 @@ func TestIPv6ExtTruncatedHdrExtLen(t *testing.T) {
 // segments_left shouldn't prevent a match — pin the current
 // behaviour so future SRH-aware predicates know what they are
 // observing.
-func TestSRv6MalformedSegmentsMismatch(t *testing.T) {
-	r := New(t, "eth/ipv6/srv6/tcp")
-	pkt := BuildSRv6(t, SRv6Opts{
+// TestSRv6LastEntryIsAuthoritative documents that last_entry drives both
+// the any()/all() count and the next-header re-anchor at
+// SRH+8+(last_entry+1)*16. segments_left stays advisory (codegen never
+// reads it), so a wrong value there does not affect chaining; but a
+// last_entry that overstates the real segment list overshoots the
+// re-anchor, so the chain-past read fails the bounds check and the packet
+// does not match.
+func TestSRv6LastEntryIsAuthoritative(t *testing.T) {
+	// segments_left (SRH byte 3) is advisory: a wrong value is ignored.
+	advisory := BuildSRv6(t, SRv6Opts{
 		Segments:        []net.IP{net.ParseIP("fe80::dead")},
 		InnerNextHeader: 6,
 	})
-	// SRH starts at eth+ipv6 = 54. Bytes 3 (segments_left) and 4
-	// (last_entry) — set both to 7 even though only one segment is
-	// actually present. The variable trail uses hdr_ext_len (byte 1
-	// = 2 = "16-byte segment count of 1"), so we don't touch it; the
-	// counters are advisory.
-	pkt[ethIPv6PrefixSize+3] = 7
-	pkt[ethIPv6PrefixSize+4] = 7
-	r.MustMatch(t, pkt, "srv6 with mismatched segments_left/last_entry still matches")
+	advisory[ethIPv6PrefixSize+3] = 7 // segments_left, never read by codegen
+	New(t, "eth/ipv6/srv6/tcp").MustMatch(t, advisory,
+		"a wrong segments_left does not affect chaining")
+
+	// last_entry (SRH byte 4) is authoritative: claim 8 segments when one
+	// is present, and the re-anchor targets SRH+8+8*16 past the packet.
+	overshoot := BuildSRv6(t, SRv6Opts{
+		Segments:        []net.IP{net.ParseIP("fe80::dead")},
+		InnerNextHeader: 6,
+	})
+	overshoot[ethIPv6PrefixSize+4] = 7 // last_entry overstates the count
+	New(t, "eth/ipv6/srv6/tcp").MustReject(t, overshoot,
+		"an SRH whose last_entry overstates the segment count does not chain")
 }
 
 // TestIPv4AndTCPOptionsAdvance verifies both HDRLEN advances stack

@@ -735,7 +735,10 @@ func buildCounter(cs *p4lite.CounterCallStmt, ctx *buildCtx) (CounterOp, error) 
 	}
 	switch cs.Op {
 	case p4lite.CounterSet:
-		skip, h, err := lowerCastShiftSkip(cs.Target, cs.FieldName, cs.BaseWords, cs.Mask, cs.ScaleLog2, cs.Counter+".set", ctx, cs.Pos)
+		// counter.set permits the bare-cast scale=1 add form
+		// (`(bit<N>)(hdr.<F> + K)`) for element counts, so allow a
+		// sub-byte scale here (pkt.advance keeps the S ≥ 3 requirement).
+		skip, h, err := lowerCastShiftSkip(cs.Target, cs.FieldName, cs.BaseWords, cs.Mask, cs.ScaleLog2, cs.Addend, true, cs.Counter+".set", ctx, cs.Pos)
 		if err != nil {
 			return CounterOp{}, err
 		}
@@ -924,7 +927,7 @@ func lookupAuxFieldByteOffset(target, fieldName string, ctx *buildCtx, pos p4lit
 // always wants primary (the layer-entry slot anchors the load),
 // pkt.advance permits aux for the SACK-style option-with-trailing-
 // array shape.
-func lowerCastShiftSkip(target, fieldName string, baseWords, userMask, scaleLog2 int, opName string, ctx *buildCtx, pos p4lite.Position) (*HeaderLength, *p4lite.Header, error) {
+func lowerCastShiftSkip(target, fieldName string, baseWords, userMask, scaleLog2, addend int, allowSubByteScale bool, opName string, ctx *buildCtx, pos p4lite.Position) (*HeaderLength, *p4lite.Header, error) {
 	h, ok := ctx.headerRefs[target]
 	if !ok {
 		return nil, nil, fmt.Errorf("%s:%s: %s target %q is not an `out` header parameter", ctx.source, pos, opName, target)
@@ -937,13 +940,20 @@ func lowerCastShiftSkip(target, fieldName string, baseWords, userMask, scaleLog2
 	if bitInByte+fieldBits > 8 {
 		return nil, nil, fmt.Errorf("%s:%s: %s field %q crosses a byte boundary (bits [%d,%d) — only single-byte fields are supported)", ctx.source, pos, opName, fieldName, bitOff, bitOff+fieldBits)
 	}
-	if scaleLog2 < 3 {
+	// pkt.advance moves R4 in whole bytes, so a sub-byte scale has no
+	// lowering there (require S ≥ 3 = scale ≥ 8). counter.set stores a
+	// scalar count rather than advancing R4, so it permits scale=1
+	// (S=0): the bare-cast element-count form `(bit<N>)(hdr.<F> + K)`.
+	if scaleLog2 < 3 && !allowSubByteScale {
 		return nil, nil, fmt.Errorf("%s:%s: %s shift S=%d is sub-byte (codegen advances in whole bytes; require S ≥ 3)", ctx.source, pos, opName, scaleLog2)
 	}
 	if baseWords != 0 && userMask != 0 {
 		return nil, nil, fmt.Errorf("%s:%s: %s combines subtract (-K) and mask (& MASK) forms; only one is supported per advance", ctx.source, pos, opName)
 	}
-	scaleBytes := 1 << (scaleLog2 - 3)
+	scaleBytes := 1
+	if scaleLog2 >= 3 {
+		scaleBytes = 1 << (scaleLog2 - 3)
+	}
 	lsbShift := 8 - bitInByte - fieldBits
 	mask := ((1 << fieldBits) - 1) << lsbShift
 	if userMask != 0 {
@@ -961,11 +971,12 @@ func lowerCastShiftSkip(target, fieldName string, baseWords, userMask, scaleLog2
 		LenShift:   lsbShift,
 		Scale:      scaleBytes,
 		Base:       baseWords * scaleBytes,
+		Addend:     addend,
 	}, h, nil
 }
 
 func buildAdvanceField(as *p4lite.AdvanceStmt, ctx *buildCtx) (AdvanceOp, error) {
-	skip, _, err := lowerCastShiftSkip(as.Target, as.FieldName, as.BaseWords, as.Mask, as.ScaleLog2, "pkt.advance", ctx, as.Pos)
+	skip, _, err := lowerCastShiftSkip(as.Target, as.FieldName, as.BaseWords, as.Mask, as.ScaleLog2, 0, false, "pkt.advance", ctx, as.Pos)
 	if err != nil {
 		return AdvanceOp{}, err
 	}

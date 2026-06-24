@@ -5,28 +5,34 @@
 // The variable region holds the segment list (16 bytes each) followed
 // by any optional TLVs.
 //
-// The parser walks the variable region explicitly with a counter-driven
-// extract loop modeled on the ipv4.p4 / geneve.p4 option walks. `start`
-// extracts the fixed 8-byte SRH and seeds a ParserCounter with the
-// region size in bytes (= hdr_ext_len * 8; the `<< 6` scales the masked
-// hdr_ext_len by 8). The `walk` state tests the counter; while it is
-// non-zero, `consume_seg` extracts one srv6_seg_h (16 bytes) into the
-// `segments` stack via `pkt.extract(segments.next)` and decrements the
-// counter by 16, terminating when it drains. Because the loop consumes
-// the whole region rather than just the segment list, R4 lands at
-// SRH+8 + hdr_ext_len*8 — the next-header position — even when the SRH
-// carries trailing TLVs (the extra region bytes are walked as opaque
-// 16-byte chunks). This replaces the previous single bulk `pkt.advance`
-// with standard P4 parser constructs; correctness for non-16-byte-
-// aligned trailing TLVs is bounded by the segment stack capacity (8).
+// This definition uses no kunai annotations: both the any()/all()
+// element count and the next-header position derive from the parser's
+// element-driven segment walk. `start` extracts the fixed 8-byte SRH and
+// seeds a ParserCounter with the segment COUNT
+// (`pc.set((bit<8>)(hdr.last_entry + 1))`; RFC 8754: last_entry is the
+// index of the last segment, so the list holds last_entry + 1 entries).
+// `walk` tests the counter and, while non-zero, `consume_seg` extracts
+// one srv6_seg_h (16 bytes) into the `segments` stack via
+// `pkt.extract(segments.next)` and decrements by one. The loader reads
+// the counter's seed field (last_entry) and addend (+1) off this
+// element-granular walk and derives both:
+//
+//   - the any()/all() element count = last_entry + 1, and
+//   - the next-header re-anchor = layer_entry + 8 + (last_entry+1)*16,
+//     emitted as an absolute R4 set after the walk converges.
+//
+// Per RFC 8754 the SRH region equals (last_entry+1)*16 exactly when no
+// TLVs follow the segment list, so the count alone gives the next header
+// for every TLV-free SRH. TLV support is optional per RFC 8754 Section 2;
+// chaining past a TLV-bearing SRH (e.g. `eth/ipv6/srv6/tcp` when the SRH
+// carries a Padding or HMAC TLV) is unsupported here: R4 lands at the
+// segment-list end, short of the trailing TLVs. Segment queries
+// (`srv6.segments[N]`, any()/all()) stay correct regardless of trailing
+// TLVs.
 //
 // The `segments` stack base falls out of the `consume_seg` state's
 // layer-entry offset (= sizeof(srv6_h) = 8), so `srv6.segments[N].addr`
-// and the any()/all() quantifiers read the same bytes as before. The
-// runtime element count for those quantifiers comes from
-// @kunai_stack_count (= last_entry + 1), independent of the walk's loop
-// trip count, so queries stay scoped to the real segment list even when
-// the walk extracts trailing-TLV bytes as extra chunks.
+// and the any()/all() quantifiers read the same bytes as before.
 header srv6_h {
     bit<8>  next_header;
     bit<8>  hdr_ext_len;     // in 8-byte units, excluding the first 8
@@ -63,22 +69,20 @@ extern ParserCounter {
 
 parser SRv6Parser(packet_in pkt,
                     out srv6_h        hdr,
-                    @kunai_stack_count[field=last_entry, offset=1]
                     out srv6_seg_h[8] segments) {
     ParserCounter() pc;
     state start {
         pkt.extract(hdr);
-        // Remaining region in BYTES = hdr_ext_len * 8 (hdr_ext_len is in
-        // 8-byte units and already excludes the fixed 8-byte SRH). The
-        // mask `& 0x0F` caps the count at 15*8 = 120 bytes so the
-        // verifier sees a static upper bound (well-formed SRv6 frames
-        // stay well under it); << 6 scales the masked value by 8 (scale
-        // = 1 << (6-3)). Encoding the counter in bytes — and capping it
-        // — keeps it consistent with the bulk-advance fallback codegen
-        // takes when no srv6.segments field is queried: that path
-        // advances R4 by exactly this masked byte count, matching the
-        // previous single bulk pkt.advance.
-        pc.set(((bit<8>)(hdr.hdr_ext_len & 0x0F)) << 6);
+        // Seed the counter with the segment COUNT = last_entry + 1
+        // (RFC 8754: last_entry is the index of the last segment, so the
+        // list holds last_entry + 1 entries). This bare-cast add form
+        // (scale=1) makes the walk element-driven: it trips once per
+        // pushed segment, so the loader derives the any()/all() element
+        // count from this seed field (last_entry) and addend (+1) — no
+        // @kunai_stack_count annotation needed. The same count also fixes
+        // the next-header position at (last_entry+1)*16 past the segment
+        // base (valid for every TLV-free SRH per RFC 8754).
+        pc.set((bit<8>)(hdr.last_entry + 1));
         // routing_type 4 (KUNAI_SRV6_ROUTING_TYPE) identifies SRH
         // (RFC 8754 Section 2). Older Type-0 source-routing variants are
         // deprecated and out of scope, so every other routing_type is
@@ -88,10 +92,12 @@ parser SRv6Parser(packet_in pkt,
             default:                 reject;
         }
     }
-    // Counter-driven walk over the variable region. Each iteration
-    // extracts one 16-byte segment into the segments stack and
-    // decrements the byte counter by 16; when the counter drains, R4
-    // has reached the next header (past segments + any trailing TLVs).
+    // Element-driven walk over the segment list. Each iteration extracts
+    // one 16-byte segment into the segments stack and decrements the
+    // segment counter by one; when it drains, every segment has been
+    // pushed. R4 is left at the segment-list end; codegen re-anchors it
+    // to the next header at SRH+8 + (last_entry+1)*16 — the segment-list
+    // end, which equals the next header for a TLV-free SRH (RFC 8754).
     state walk {
         transition select(pc.is_zero()) {
             true:  accept;
@@ -100,7 +106,7 @@ parser SRv6Parser(packet_in pkt,
     }
     state consume_seg {
         pkt.extract(segments.next);
-        pc.decrement(16);
+        pc.decrement(1);
         transition walk;
     }
 }

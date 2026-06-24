@@ -738,7 +738,21 @@ func (p *parser) parseCounterSetCall(counter string, startPos Position) (Stmt, e
 	if _, err := p.expect(TokLParen); err != nil {
 		return nil, err
 	}
-	adv, err := p.parseAdvanceCastedShift(counter, startPos)
+	// Two structurally distinct arg shapes share the `set(` opener:
+	//   shifted form: `((bit<N>) ...) << S)`  — second token after the
+	//                 leading `(` is another `(`.
+	//   bare-cast   : `(bit<N>)(hdr.<F> + K))` — second token is `bit`.
+	// The shifted form wraps the cast in an extra paren so the `<< S`
+	// scopes the whole expression; the bare-cast add form drops both the
+	// outer paren and the shift (scale=1). Consume the first `(` and
+	// dispatch on what follows (single-token lookahead only).
+	if _, err := p.expect(TokLParen); err != nil {
+		return nil, err
+	}
+	if p.cur.Kind == TokBit {
+		return p.parseCounterSetBareCast(counter, startPos)
+	}
+	adv, err := p.parseAdvanceCastedShiftInner(counter, startPos)
 	if err != nil {
 		return nil, err
 	}
@@ -754,6 +768,98 @@ func (p *parser) parseCounterSetCall(counter string, startPos Position) (Stmt, e
 		BaseWords: adv.BaseWords,
 		Mask:      adv.Mask,
 		ScaleLog2: adv.ScaleLog2,
+		Pos:       startPos,
+	}, nil
+}
+
+// parseCounterSetBareCast parses the bare-cast add form
+// `bit<N>)(hdr.<F> + K))` (the two leading `(` and the `bit` token's
+// position were already established by parseCounterSetCall, with the
+// cursor sitting on `bit`). This is the scale=1, shift-free counter
+// seed used by element-driven aux-stack walks: the count trips once
+// per pushed entry, so the seed is a small element count
+// (`last_entry + 1`) rather than a byte length. The `+ K` addend is
+// optional; `(bit<N>)(hdr.<F>)` parses with Addend=0.
+//
+// Grammar after the consumed `((`:
+//
+//	bit < N > ) ( hdr . F [ + K ] ) )
+//
+// The trailing two `)` close the cast group and the `set(` opener.
+func (p *parser) parseCounterSetBareCast(counter string, startPos Position) (Stmt, error) {
+	expectShape := func(k TokenKind) (Token, error) {
+		if p.cur.Kind != k {
+			return Token{}, p.errorf(p.cur.Pos, "%s.set bare-cast form must be `(bit<N>)(hdr.<F> + K)` (got %s)", counter, p.cur.Kind)
+		}
+		t := p.cur
+		if err := p.advance(); err != nil {
+			return Token{}, err
+		}
+		return t, nil
+	}
+	// `bit<N>)` — the cast prefix (outer `(` already consumed).
+	if _, err := expectShape(TokBit); err != nil {
+		return nil, err
+	}
+	if _, err := expectShape(TokLAngle); err != nil {
+		return nil, err
+	}
+	nTok, err := expectShape(TokInt)
+	if err != nil {
+		return nil, err
+	}
+	for _, k := range []TokenKind{TokRAngle, TokRParen} {
+		if _, err := expectShape(k); err != nil {
+			return nil, err
+		}
+	}
+	// `(hdr.<F>` — the field operand group opener.
+	if _, err := expectShape(TokLParen); err != nil {
+		return nil, err
+	}
+	hdrTok, err := expectShape(TokIdent)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := expectShape(TokDot); err != nil {
+		return nil, err
+	}
+	fldTok, err := expectShape(TokIdent)
+	if err != nil {
+		return nil, err
+	}
+	// Optional `+ K`.
+	addend := 0
+	if p.cur.Kind == TokPlus {
+		if _, err := expectShape(TokPlus); err != nil {
+			return nil, err
+		}
+		kTok, err := expectShape(TokInt)
+		if err != nil {
+			return nil, err
+		}
+		if kTok.Int > uint64(maxInt32) {
+			return nil, p.errorf(kTok.Pos, "%s.set addend K=%d exceeds the int32 range", counter, kTok.Int)
+		}
+		addend = int(kTok.Int)
+	}
+	// Closing `)` of the operand group, then `)` of `set(`.
+	for _, k := range []TokenKind{TokRParen, TokRParen} {
+		if _, err := expectShape(k); err != nil {
+			return nil, err
+		}
+	}
+	if _, err := p.expect(TokSemi); err != nil {
+		return nil, err
+	}
+	return &CounterCallStmt{
+		Counter:   counter,
+		Op:        CounterSet,
+		BitWidth:  int(nTok.Int),
+		Target:    hdrTok.Value,
+		FieldName: fldTok.Value,
+		ScaleLog2: 0, // scale=1: element count, no byte shift
+		Addend:    addend,
 		Pos:       startPos,
 	}, nil
 }
@@ -971,8 +1077,21 @@ func (p *parser) parseAdvanceLiteral(obj string, startPos Position) (Stmt, error
 // parseAdvanceCastedShift parses the templates that share the
 // `((bit<N>) ...) << S` shape — AdvanceField and AdvanceLookahead.
 // Cursor sits one token past the `pkt.advance(` opener (so on the
-// first inner `(`).
+// first inner `(`). It eats the first `(` and delegates to the
+// inner parser, which is shared with `<counter>.set`'s shifted form
+// (whose caller has already consumed that first `(`).
 func (p *parser) parseAdvanceCastedShift(obj string, startPos Position) (*AdvanceStmt, error) {
+	if _, err := p.expect(TokLParen); err != nil {
+		return nil, err
+	}
+	return p.parseAdvanceCastedShiftInner(obj, startPos)
+}
+
+// parseAdvanceCastedShiftInner parses `(bit<N>) ...) << S` — the
+// shifted cast template with the leading `(` already consumed by the
+// caller (parseAdvanceCastedShift for pkt.advance, parseCounterSetCall
+// for the counter.set shifted form).
+func (p *parser) parseAdvanceCastedShiftInner(obj string, startPos Position) (*AdvanceStmt, error) {
 	mismatch := func(pos Position) error {
 		return p.errorf(pos, "pkt.advance must use one of `pkt.advance(((bit<N>)(hdr.<F> - K)) << S)` / `pkt.advance(((bit<N>)pkt.lookahead<bit<M>>()[lo:hi]) << S)` / `pkt.advance(<INT>)`")
 	}
@@ -986,8 +1105,8 @@ func (p *parser) parseAdvanceCastedShift(obj string, startPos Position) (*Advanc
 		}
 		return t, nil
 	}
-	// Common prefix `((bit<N>)`.
-	for _, k := range []TokenKind{TokLParen, TokLParen, TokBit, TokLAngle} {
+	// Remaining prefix `(bit<N>)` (the outer `(` is already consumed).
+	for _, k := range []TokenKind{TokLParen, TokBit, TokLAngle} {
 		if _, err := expectShape(k); err != nil {
 			return nil, err
 		}

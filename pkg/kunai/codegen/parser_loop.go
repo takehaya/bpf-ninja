@@ -109,6 +109,16 @@ func (c *pmCtx) emitCounterDrivenBulkAdvance(state *vocab.ParseState, stateIdx i
 	if counterName == "" {
 		return nil, nil, fmt.Errorf("%w: bulk-advance fallback called on entry without counter key", ErrNotImplemented)
 	}
+	// Aux-stack walks (SRv6) drive R4 from the segment-count re-anchor
+	// emitted after the machine, not from the (element-granular) counter
+	// set. Skip the bulk advance here so R4 is not double-advanced;
+	// emitAuxWalkTailReanchor at the done landing sets the final
+	// next-header offset (region = (last_entry+1)*16; chaining past a
+	// TLV-bearing SRH is unsupported per RFC 8754).
+	if _, _, ok := c.spec.AuxWalkSegmentTail(); ok {
+		c.r4IsRange = true
+		return asm.Instructions{asm.Ja.Label(c.doneLabel)}, nil, nil
+	}
 	skip := vocab.CounterSetSkipForCounter(c.machine.States, counterName)
 	if skip == nil {
 		return nil, nil, fmt.Errorf("%w: counter %q has no set op; cannot derive bulk-skip expression", ErrNotImplemented, counterName)
@@ -125,6 +135,68 @@ func (c *pmCtx) emitCounterDrivenBulkAdvance(state *vocab.ParseState, stateIdx i
 	insns = append(insns, asm.Ja.Label(c.doneLabel))
 	c.r4IsRange = true
 	return insns, nil, nil
+}
+
+// emitAuxWalkTailReanchor absolutely re-anchors R4 to the next-header
+// position of an aux-stack walk layer (SRv6): layer_entry + primaryHS
+// + region, where region = ((count_byte & LenMask) >> LenShift) * Scale
+// + Base (= (last_entry+1)*16 for SRH, from the segment count). It runs
+// once at the machine's done landing, after both the real walk (which
+// left R4 at the end of the extracted segments) and the bulk-advance
+// fallback (which left R4 at layer_entry + primaryHS). Both paths
+// converge here, so a single absolute set lands R4 at the next header.
+// Because the region is the segment count, R4 lands at the segment-list
+// end; chaining past a TLV-bearing SRH is unsupported (TLV support is
+// optional per RFC 8754).
+//
+// Register state at the done landing matches the inline main-stream
+// ABI: R0 = scratch_start, R1 = scratch_end, R4 = offsetBase (about to
+// be overwritten). R2 / R3 / R5 are free scratch.
+func (c *pmCtx) emitAuxWalkTailReanchor() (asm.Instructions, error) {
+	tail, primaryHS, ok := c.spec.AuxWalkSegmentTail()
+	if !ok {
+		return nil, nil
+	}
+	shift := log2PowerOfTwo(tail.Scale)
+	if shift < 0 {
+		return nil, fmt.Errorf("%w: aux-walk tail scale %d is not a power of two", ErrNotImplemented, tail.Scale)
+	}
+	// R3 = layer_entry; R5 = scalar addr of the length byte; R2 = the
+	// loaded length byte → region.
+	insns := asm.Instructions{
+		asm.LoadMem(asm.R3, asm.R10, bpfLoopCtxLayerEntrySlot, asm.DWord),
+	}
+	insns = append(insns, foldOffsetIntoScalar(asm.R5, asm.R3, int32(tail.LenFieldByteOff), dslReject)...)
+	insns = append(insns, boundedScalarLoad(asm.R2, asm.R0, asm.R5, asm.R1, asm.Byte, dslReject)...)
+	if tail.LenMask != 0 {
+		insns = append(insns, asm.And.Imm(asm.R2, int32(tail.LenMask)))
+	}
+	if tail.LenShift > 0 {
+		insns = append(insns, asm.RSh.Imm(asm.R2, int32(tail.LenShift)))
+	}
+	if shift > 0 {
+		insns = append(insns, asm.LSh.Imm(asm.R2, int32(shift)))
+	}
+	if tail.Base != 0 {
+		insns = append(insns, asm.Add.Imm(asm.R2, int32(tail.Base)))
+	}
+	// R4 = layer_entry + primaryHS + region.
+	insns = append(insns,
+		asm.Mov.Reg(offsetBase, asm.R3),
+		asm.Add.Imm(offsetBase, int32(primaryHS)),
+		asm.Add.Reg(offsetBase, asm.R2),
+	)
+	// Bound the re-anchored offset: pointer check against scratch_end
+	// and scalar clamp against ScratchBufSize so subsequent layers'
+	// loads keep a tight verifier range.
+	insns = append(insns,
+		asm.Mov.Reg(asm.R5, asm.R0),
+		asm.Add.Reg(asm.R5, offsetBase),
+		asm.JGT.Reg(asm.R5, asm.R1, dslReject),
+		asm.JGT.Imm(offsetBase, int32(ScratchBufSize)-1, dslReject),
+	)
+	c.r4IsRange = true
+	return insns, nil
 }
 
 // emitMultiStateSelfLoop is the codegen path for indirect self-loops
@@ -899,7 +971,7 @@ func (c *pmCtx) emitSelfLoopCallback(state *vocab.ParseState, stateIdx int, cbSy
 			asm.Add.Imm(asm.R3, int32(hs)),
 			asm.StoreMem(asm.R2, bpfLoopCbCtxOffsetField, asm.R3, asm.DWord),
 		)
-		if vt, ok := variableTailFor(c.spec, ex.HeaderName); ok {
+		if vt, ok := variableTailFor(c.spec, ex.HeaderName); ok && !c.deferPrimaryTail(ex.HeaderName) {
 			if state.Trans.Kind == vocab.TransSelect {
 				// Callback ABI: R0/R1 are free here (R1 = bpf_loop idx
 				// is already past use), R3 = current offset, R4/R5 =

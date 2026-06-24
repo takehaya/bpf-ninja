@@ -284,11 +284,15 @@ func (*AdvanceStmt) stmtNode() {}
 type CounterCallKind int
 
 const (
-	// CounterSet is `<counter>.set(((bit<N>)(hdr.<F> - K)) << S)` — load
-	// a header-derived byte count into the counter slot. The arg shares
-	// the AdvanceField cast-and-shift template so the resulting byte
-	// expression is the same one Stage 2 already lowers for trailer
-	// skips.
+	// CounterSet is `<counter>.set(((bit<N>)(hdr.<F> - K)) << S)` /
+	// `<counter>.set(((bit<N>)(hdr.<F> & MASK)) << S)` — load a
+	// header-derived byte count into the counter slot. The shifted forms
+	// share the AdvanceField cast-and-shift template so the resulting
+	// byte expression is the same one Stage 2 already lowers for trailer
+	// skips. A third bare-cast add form, `<counter>.set((bit<N>)(hdr.<F>
+	// + K))`, sets a scale=1 element count (Addend carries +K) — used by
+	// element-driven aux-stack walks where the counter trips once per
+	// pushed entry rather than per byte.
 	CounterSet CounterCallKind = iota
 	// CounterDecrement is `<counter>.decrement(<INT>)` — subtract a
 	// literal byte count from the counter (the value is fixed per
@@ -320,6 +324,12 @@ type CounterCallStmt struct {
 	BaseWords int    // the K subtracted from the field value (subtract form)
 	Mask      int    // the MASK bitwise-AND'd with the field value (mask form). Zero = subtract form active.
 	ScaleLog2 int    // the S in `<< S` (unit: bits, like AdvanceField)
+	// Addend is the K added to the field value in the bare-cast add form
+	// `(bit<N>)(hdr.<F> + K)` — a scale=1, shift-free counter seed used
+	// by element-driven aux-stack walks (SRH segment count =
+	// last_entry + 1). Mutually exclusive with the subtract/mask shift
+	// form: the bare-cast form sets ScaleLog2=0 and no Mask/BaseWords.
+	Addend int
 
 	// CounterDecrement only. Exactly one of three forms is set:
 	//   - LiteralBytes (literal: pc.decrement(<INT>))

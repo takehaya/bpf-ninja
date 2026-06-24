@@ -194,6 +194,13 @@ type HeaderLength struct {
 	LenShift   int
 	Scale      int
 	Base       int // bytes to subtract (i.e. minimum header size in bytes)
+	// Addend is added to the scaled value (after Base subtraction). Used
+	// by the bare-cast counter.set add form `(bit<N>)(hdr.<F> + K)`
+	// where the counter holds an element count (SRH segments =
+	// last_entry + 1). Zero for the pkt.advance / shifted counter forms.
+	// Base (subtract) and Addend (add) are mutually exclusive in
+	// practice, but the codegen applies whichever is non-zero.
+	Addend int
 }
 
 
@@ -257,6 +264,81 @@ func (p *ProtocolSpec) PrimaryAdvanceSkip() *HeaderLength {
 	return nil
 }
 
+
+// pushedAuxStackName returns the out-param name of the first aux stack
+// the parser machine push-extracts (extract(stack.next)), or ("", false)
+// when the machine pushes none. This is the discriminator that separates
+// SRv6's segment walk (which pushes srv6_seg_h onto the segments stack)
+// from the geneve / ipv4 counter walks (which record single option
+// positions but push no stack). SRv6 pushes `segments`.
+func (p *ProtocolSpec) pushedAuxStackName() (string, bool) {
+	if p.ParseStateMachine == nil {
+		return "", false
+	}
+	for _, st := range p.ParseStateMachine.States {
+		for _, ex := range st.Extracts {
+			if ex.IsStackPush {
+				return ex.StackName, true
+			}
+		}
+	}
+	return "", false
+}
+
+// AuxWalkSegmentTail synthesises the next-header re-anchor descriptor for
+// a counter-driven aux-stack walk from the segment COUNT alone, plus the
+// primary header size in bytes. The next header of such a layer sits at
+// layer_entry + primaryHS + count*ElemSize, where count is the derived
+// stack count (SRv6: last_entry + 1). Per RFC 8754 the SRH variable
+// region equals (Last Entry+1)*16 exactly when no TLVs follow the segment
+// list, so the count yields the next-header offset for every TLV-free
+// SRH. Chaining past a TLV-bearing SRH is unsupported: TLV support is
+// optional per RFC 8754 Section 2, and the element walk leaves R4 at the
+// segment-list end, short of any trailing TLVs.
+//
+// The region reuses the five-tuple emitAuxWalkTailReanchor consumes:
+// region = ((count_byte & 0) >> 0)*ElemSize + Addend*ElemSize — the count
+// byte read whole and scaled by the element width, with no mask or shift.
+//
+// Returns (nil, 0, false) for any protocol without a pushed aux stack or
+// without a derived stack count: ipv6 / gtp ext stacks self-terminate on
+// next_header and carry no count, so they keep their own tail handling.
+func (p *ProtocolSpec) AuxWalkSegmentTail() (*VariableTailSpec, int, bool) {
+	stack, ok := p.pushedAuxStackName()
+	if !ok {
+		return nil, 0, false
+	}
+	cnt := p.StackCounts[stack]
+	if cnt == nil || p.ParseStateMachine == nil {
+		return nil, 0, false
+	}
+	st := p.ParseStateMachine.StackRefs[stack]
+	if st == nil || st.ElemSize <= 0 || st.Capacity <= 0 {
+		return nil, 0, false
+	}
+	bits := SumBits(p.Fields)
+	if bits%8 != 0 {
+		return nil, 0, false
+	}
+	// Bound the count byte to [0, 2^k-1] where 2^k >= Capacity, so the
+	// region (count*ElemSize) has a static upper bound (~Capacity*ElemSize)
+	// the verifier can prove. A valid SRH carries last_entry < Capacity, so
+	// the mask is identity for it; a malformed over-cap frame is clamped by
+	// the re-anchor's bounds check. Without this cap last_entry spans the
+	// full byte and the verifier rejects the unbounded R4 range.
+	mask := 1
+	for mask < st.Capacity {
+		mask <<= 1
+	}
+	mask--
+	return &VariableTailSpec{
+		LenFieldByteOff: cnt.ByteOff,
+		LenMask:         mask,
+		LenShift:        0,
+		Scale:           st.ElemSize,
+		Base:            cnt.Addend * st.ElemSize,
+	}, bits / 8, true
+}
 
 // IsSelfValidating reports whether the parser block proves the
 // protocol's identity itself — i.e. its `start` state's transition
