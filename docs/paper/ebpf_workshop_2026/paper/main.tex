@@ -1,0 +1,151 @@
+% Submission: 4th eBPF Workshop (eBPF'26), co-located with ACM SOSP 2026
+% Submission deadline: 2026-06-19
+% Format: Research paper, 6 pages body + unlimited references
+% Anonymity: double-blind for review submission
+
+\documentclass[sigconf,review,anonymous]{acmart}
+
+% --- ACM metadata (anonymized for review; restore in camera-ready) ---
+\setcopyright{none}
+\acmConference[eBPF'26]{4th ACM SIGCOMM Workshop on eBPF and Kernel Extensions}{September 29, 2026}{Prague, Czech Republic}
+\acmYear{2026}
+\settopmatter{printacmref=false, printccs=false, printfolios=true}
+
+\citestyle{acmnumeric}
+
+% --- Packages ---
+\usepackage{booktabs}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{pifont}
+\usepackage{xspace}
+\usepackage{graphicx}
+\usepackage[noend]{algpseudocode}
+\usepackage{algorithm}
+
+% --- Scoreboard marks for Table 4 (expressiveness) ---
+% Use \partsym (not \partial) — \partial is the LaTeX kernel math symbol.
+\newcommand{\yes}{\textcolor{green!55!black}{\ding{51}}}        % supported
+\newcommand{\no}{\textcolor{red!70!black}{\ding{55}}}            % unsupported
+\newcommand{\partsym}{\textcolor{orange!85!black}{$\sim$}}       % partial / awkward
+\newcommand{\na}{\textcolor{gray}{\textemdash}}                  % not applicable
+
+% --- Listings style for kunai DSL snippets ---
+\lstdefinestyle{kunai}{
+    basicstyle=\small\ttfamily,
+    columns=fullflexible,
+    breaklines=true,
+    keepspaces=true,
+}
+% Tighten the vertical space above/below code listings.
+\lstset{aboveskip=5pt, belowskip=3pt}
+
+% --- Macros ---
+\newcommand{\kunai}{Kunai\xspace}
+\newcommand{\xdpninja}{xdp-ninja\xspace}
+\newcommand{\TODO}[1]{\textcolor{red}{[TODO: #1]}}
+\newcommand{\figref}[1]{Figure~\ref{#1}}
+
+% Let column slack collect at the bottom instead of being stretched into
+% the gaps around floats (acmart defaults to \flushbottom).
+\raggedbottom
+
+% Allow a little emergency stretch so long texttt identifiers do not
+% poke past the column edge in the narrow two-column measure.
+\setlength{\emergencystretch}{2em}
+
+% Tighten the vertical space around floats and captions; acmart's
+% defaults leave wide gaps between tables/figures and the body text.
+\setlength{\textfloatsep}{10pt plus 2pt minus 2pt}
+\setlength{\floatsep}{8pt plus 2pt minus 2pt}
+\setlength{\intextsep}{10pt plus 2pt minus 2pt}
+\setlength{\dbltextfloatsep}{10pt plus 2pt minus 2pt}
+\setlength{\dblfloatsep}{8pt plus 2pt minus 2pt}
+\setlength{\abovecaptionskip}{4pt}
+\setlength{\belowcaptionskip}{2pt}
+
+% Let a page hold more float area before deferring a float to a later
+% page (the deferral is what leaves large gaps).
+\renewcommand{\topfraction}{0.9}
+\renewcommand{\bottomfraction}{0.8}
+\renewcommand{\textfraction}{0.07}
+\renewcommand{\floatpagefraction}{0.7}
+
+\begin{document}
+
+\title{Kunai: Toward a Verifier-Safe Layered DSL for Nested Encapsulation Packet Filtering on eBPF}
+
+% --- Authors ---
+% NOTE: the `anonymous' class option above suppresses all of the following
+% and prints "Anonymous Author(s)" during review. These four blocks take
+% effect only in the camera-ready (non-anonymous) build. Fill in real
+% names/affiliations/emails before the final version.
+\author{Takeru Hayasaka}
+\affiliation{%
+  \institution{Japan Advanced Institute of Science and Technology}
+  \country{Japan}}
+\additionalaffiliation{%
+  \institution{BBSakura Networks Inc.}
+  \country{Japan}}
+\additionalaffiliation{%
+  \institution{SAKURA internet Inc.}
+  \country{Japan}}
+\email{takeru.hayasaka@jaist.ac.jp}
+
+\author{Satoshi Uda}
+\affiliation{%
+  \institution{Japan Advanced Institute of Science and Technology}
+  \country{Japan}}
+\email{zin@jaist.ac.jp}
+
+\author{Ayako Hayasaka}
+\affiliation{%
+  \institution{Individual}}
+
+\author{Fourth Author}
+\affiliation{%
+  \institution{Kyoto University}
+  \country{Japan}}
+\email{kotani@media.kyoto-u.ac.jp}
+
+\begin{abstract}
+Packet capture and network debugging require selecting the packets
+of interest early, inside the Linux kernel. However, pcap-filter,
+tcpdump's filter language, has no syntax for nested
+encapsulation, repeated occurrences of the same protocol, or the
+variable-length lists and options whose field offsets change from
+packet to packet. Running a filter in the kernel additionally
+requires emitting bytecode that the Linux eBPF verifier accepts, and
+a naive lowering of such filters is rejected. We present \kunai, a packet-filter DSL together with a compiler that
+lowers its expressions to eBPF bytecode. A \kunai expression
+describes a packet's layer structure and field conditions together,
+and resolves each field's offset and type from
+protocol definitions written in a subset of P4. The compiler records
+every header's start offset at run time, bounds each variable-length
+scan by a compile-time constant, and places a verifier-compliant
+bounds check before every packet read. We evaluated \kunai on filters spanning GTP-U, SRv6, Geneve, and TCP
+options. The generated bytecode was accepted by the verifier across
+six kernels (Linux 6.1--7.0) on both the XDP and tc hosts, matched
+and rejected the intended packets, and, where pcap-filter can express
+the filter, ran within a few percent of pcap-filter per packet. These
+results show that \kunai enables the
+Linux kernel to execute filters that pcap-filter cannot express.
+\end{abstract}
+
+\keywords{eBPF, XDP, packet filtering, domain-specific language, P4,
+  kernel verifier, packet capture, network debugging}
+
+\maketitle
+
+\input{sections/01_introduction}
+\input{sections/02_related}
+\input{sections/03_design}
+\input{sections/04_codegen}
+\input{sections/05_evaluation}
+\input{sections/06_limitations}
+\input{sections/07_conclusion}
+
+\bibliographystyle{ACM-Reference-Format}
+\bibliography{refs}
+
+\end{document}

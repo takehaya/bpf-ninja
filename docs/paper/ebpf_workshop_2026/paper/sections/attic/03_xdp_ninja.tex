@@ -1,0 +1,96 @@
+\section{\xdpninja: Non-Invasive XDP Capture}
+\label{sec:xdp-ninja}
+
+\xdpninja is the XDP host adapter for the \kunai library. It attaches
+to running XDP programs at function-entry and function-exit boundaries
+via BPF trampolines~\cite{hoiland2018xdp}, observes packets including
+those the production program drops, and returns the production program
+to its original behaviour on detach. The defining design constraint
+is that the production XDP program is never modified, recompiled, or
+restarted.
+
+\subsection{Design Principle: Non-Invasive Attachment}
+\label{sec:non-invasive}
+
+Production XDP deployments at scale --- Cilium~\cite{cilium_docs},
+Cloudflare's L4 load balancer~\cite{cloudflare_unimog}, and
+Katran~\cite{shukla2020katran} --- represent significant operational
+investment. Modifying or rebuilding them carries non-trivial risk:
+data-path regression, downtime during reload, and re-validation across
+the deployment fleet. The previously dominant XDP-native capture tool,
+\texttt{xdpcap}~\cite{cloudflare2019xdpcap}, requires source-level
+integration of capture hooks; this couples observability work to the
+production deployment cycle and is rejected outright in operational
+contexts where the production XDP source is not available to the
+operator at all.
+
+\xdpninja eliminates this friction with three properties. First,
+production programs remain bit-identical between debugging sessions:
+attach and detach do not touch the production binary. Second,
+performance characteristics revert exactly when \xdpninja detaches,
+because the trampoline disappears. Third, multiple \xdpninja
+instances coexist on the same XDP program; runtime attach/detach is
+the supported workflow.
+
+The constraint shapes the rest of the architecture. \xdpninja cannot
+call \texttt{bpf\_redirect\_map} (only valid from XDP itself), which
+in turn rules out AF\_XDP zero-copy and cpumap dispatch as transports;
+we discuss the resulting trade-off in \S\ref{sec:transport-tradeoff}.
+
+\subsection{Three Attachment Modes}
+\label{sec:attach-modes}
+
+\xdpninja exposes three modes selected at the CLI:
+\begin{description}
+\item[\texttt{entry} (fentry):] observe a packet immediately before
+the production XDP program runs.
+\item[\texttt{exit} (fexit):] observe with the production program's
+verdict (PASS, DROP, TX, REDIRECT) visible as an action atom in
+\kunai's filter (e.g.\ \texttt{where action == XDP\_DROP}).
+\item[\texttt{subfunction} (\texttt{--func}):] attach at any
+\texttt{\_\_noinline} subfunction in the production XDP, observing
+its intermediate state. The function is selected by name, resolved
+at runtime through BTF.
+\end{description}
+The same kunai filter expression compiles for all three modes; only
+the host adapter changes (\S\ref{sec:codegen}).
+
+\subsection{BTF-Based Introspection}
+\label{sec:btf-introspection}
+
+Production XDP binaries embed BPF Type Format (BTF) information for
+function signatures and subfunction layout. \xdpninja resolves
+\texttt{--func} arguments and the trampoline attach target from the
+running kernel's BTF representation of the loaded program; no
+additional build step or sidecar metadata file is required.
+
+\subsection{tcpdump-Compatible CLI}
+\label{sec:cli}
+
+The default output is pcapng to stdout, so \xdpninja drops directly
+into existing capture pipelines:
+\begin{lstlisting}[style=kunai,basicstyle=\footnotesize\ttfamily]
+xdp-ninja -i eth0 \
+   --dsl 'eth/ipv4/tcp where tcp.dport == 443' \
+   | tshark -r -
+\end{lstlisting}
+\texttt{-w}~\textit{file} writes to disk; the binary accepts both kunai
+DSL and (legacy) pcap-filter expressions, with kunai as the default.
+
+\subsection{Beyond XDP: tc Mode}
+\label{sec:tc-mode}
+
+\kunai's compilation target is parametrised by a \texttt{Capabilities}
+interface that abstracts host-specific knowledge: the action-fetcher
+(XDP\_* vs TC\_ACT\_*) and the program-type prologue. We ship a tc
+host adapter alongside the XDP one; it emits \texttt{SCHED\_CLS}
+programs and attaches via TCX (Linux 6.6+) or via fentry/fexit on
+existing tc BPF programs. Both attachment paths preserve the
+non-invasive principle of \S\ref{sec:non-invasive}: nothing in the
+production tc program is changed. We evaluate the tc host alongside
+the XDP host in \S\ref{sec:eval-verifier}.
+
+\TODO{Figure 3 (suggested): three attachment modes diagram. The
+production XDP program is a single box; entry / subfunction / exit
+hooks are arrows that intercept it without modifying the box. Useful
+to anchor \S\ref{sec:attach-modes} visually.}

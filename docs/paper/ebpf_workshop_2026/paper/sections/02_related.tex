@@ -1,0 +1,54 @@
+\section{Related Work}
+\label{sec:related}
+
+Existing packet filters trade expressiveness for in-kernel execution.
+tcpdump/libpcap's pcap-filter descends from the Packet
+Filter~\cite{mogul1987packetfilter} and the BSD Packet
+Filter~\cite{mccanne1993bpf} and runs L2--L4 conditions in the kernel.
+As \S\ref{sec:intro} noted, it has no syntax for repeated protocols or
+for walking variable-length lists such as an SRv6 segment list or TCP
+options by field name; the more expressive Wireshark display
+filter~\cite{wireshark_dfref} runs only in userspace. Tools that capture
+at the XDP layer do not close this gap. xdpcap runs filters in the
+kernel, but its filter language is still
+pcap-filter~\cite{cloudflare2019xdpcap}, inheriting the same limit;
+xdpdump has no in-kernel filter, capturing via fentry/fexit and
+leaving matching to tcpdump~\cite{xdptools_xdpdump}. Neither selects
+packets in the kernel by a field condition past nested encapsulation.
+
+Prior work on encapsulation-aware filters includes NetPDL/NetPFL and
+pFSA/xpFSA. NetPDL/NetPFL connect a description of protocol headers
+with tunnel-aware filter
+expressions~\cite{risso2006netpdl, ciminiera2010netpfl}. pFSA/xpFSA
+represent the order in which headers appear within an encapsulation
+as state transitions and formalize the composition of filters and
+field access~\cite{leogrande2015pfsa, cerrato2018xpfsa}. These share
+our goal of bringing nested encapsulation into the filter expression,
+but do not emit eBPF bytecode for the Linux kernel data path. They
+therefore lack the in-kernel execution this paper requires.
+
+Among combinations of P4 and eBPF, p4c-ebpf and p4c-xdp compile a P4
+data-plane program to Linux eBPF / XDP /
+tc~\cite{p4c_ebpf, tu2018p4cxdp}, and Simon et
+al.~\cite{simon2024honey} embed dynamically loaded eBPF inside a P4
+pipeline.
+These move an entire P4 pipeline to the target rather than returning
+per-packet match/reject from a filter expression; \kunai instead uses P4
+only as a protocol definition, not as a data-plane language~\cite{p4spec}.
+
+We adopt the recent \emph{verifier-safe} goal argued by Solleza et
+al.~\cite{solleza2025verifiersafe}: a kernel-extension DSL should
+compile every well-formed program to bytecode the verifier accepts.
+\kunai is a concrete instance of that position for packet filtering over
+nested encapsulation: rather
+than restricting an existing DSL, we identify the code-generation
+patterns the goal demands when a filter reaches past variable-length
+structure (\S\ref{sec:codegen}).
+
+The work above has separately addressed packet-filter execution, filter
+expression over nested encapsulation, P4-to-eBPF compilation, and the
+goal of verifier-safe lowering. \kunai joins two of these: it brings
+nested encapsulation and variable-length structure into the filter
+expression and compiles the result into bytecode the verifier accepts,
+generalized across the protocols declared in the P4 subset
+(\S\ref{sec:codegen}).
