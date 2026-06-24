@@ -1227,6 +1227,28 @@ func TestSRv6LastEntryIsAuthoritative(t *testing.T) {
 		"an SRH whose last_entry overstates the segment count does not chain")
 }
 
+// TestSRv6ChainPastOverCapSRHRejects pins that a chain past an SRH whose
+// last_entry exceeds the static segment capacity (here a 9-segment SRH,
+// last_entry=8, one past the cap of 8) rejects rather than re-anchoring
+// into the segment list. The next-header re-anchor caps the count with a
+// JGT-reject, so an over-cap last_entry does not wrap (8 & 0x07 == 0) to
+// a small offset that would read segment bytes as the inner layer.
+func TestSRv6ChainPastOverCapSRHRejects(t *testing.T) {
+	overCap := BuildSRv6(t, SRv6Opts{
+		Segments: []net.IP{
+			net.ParseIP("fe80::1"), net.ParseIP("fe80::2"),
+			net.ParseIP("fe80::3"), net.ParseIP("fe80::4"),
+			net.ParseIP("fe80::5"), net.ParseIP("fe80::6"),
+			net.ParseIP("fe80::7"), net.ParseIP("fe80::8"),
+			net.ParseIP("fe80::9"), // last_entry = 8, one past the cap of 8
+		},
+		InnerNextHeader: 6,
+		InnerDstPort:    8080,
+	})
+	New(t, "eth/ipv6/srv6/tcp").MustReject(t, overCap,
+		"a 9-segment SRH exceeds the static segment cap and does not chain")
+}
+
 // TestIPv4AndTCPOptionsAdvance verifies both HDRLEN advances stack
 // correctly: IPv4 options + TCP options together.
 func TestIPv4AndTCPOptionsAdvance(t *testing.T) {

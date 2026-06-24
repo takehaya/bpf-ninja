@@ -169,7 +169,16 @@ func (c *pmCtx) emitAuxWalkTailReanchor() (asm.Instructions, error) {
 	insns = append(insns, foldOffsetIntoScalar(asm.R5, asm.R3, int32(tail.LenFieldByteOff), dslReject)...)
 	insns = append(insns, boundedScalarLoad(asm.R2, asm.R0, asm.R5, asm.R1, asm.Byte, dslReject)...)
 	if tail.LenMask != 0 {
-		insns = append(insns, asm.And.Imm(asm.R2, int32(tail.LenMask)))
+		// The count byte (SRH last_entry) is authoritative but capped at
+		// the static aux capacity. Masking it (last_entry & LenMask)
+		// would silently wrap an over-cap value -- last_entry=8 with mask
+		// 0x07 becomes 0 -- and re-anchor R4 into the middle of the
+		// segment list, so a chain past an over-cap SRH could read
+		// segment bytes as the inner layer instead of rejecting. A
+		// JGT-reject both rejects the over-cap packet and proves
+		// R2 <= LenMask to the verifier, keeping the scaled offset
+		// bounded.
+		insns = append(insns, asm.JGT.Imm(asm.R2, int32(tail.LenMask), dslReject))
 	}
 	if tail.LenShift > 0 {
 		insns = append(insns, asm.RSh.Imm(asm.R2, int32(tail.LenShift)))

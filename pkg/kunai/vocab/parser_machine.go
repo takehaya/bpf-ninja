@@ -948,7 +948,7 @@ func lowerCastShiftSkip(target, fieldName string, baseWords, userMask, scaleLog2
 	// or S=2 has no whole-byte scale (1<<(S-3) would be a negative shift)
 	// and would silently collapse to scale=1, so it stays a loud reject
 	// even when allowSubByteScale is set.
-	if scaleLog2 < 3 && !(allowSubByteScale && scaleLog2 == 0) {
+	if scaleLog2 < 3 && (!allowSubByteScale || scaleLog2 != 0) {
 		return nil, nil, fmt.Errorf("%s:%s: %s shift S=%d is sub-byte (scale must be a whole byte: use S ≥ 3, or the shift-free bare-cast `(bit<N>)(hdr.<F> + K)` element-count form)", ctx.source, pos, opName, scaleLog2)
 	}
 	if baseWords != 0 && userMask != 0 {
