@@ -1,0 +1,223 @@
+\section{Design}
+\label{sec:design}
+
+\subsection{Overview}
+\label{sec:overview}
+
+\figref{fig:arch} shows the overall structure of \kunai. The \kunai
+compiler takes two inputs. The first is a \kunai DSL expression, the
+filter condition written by the user. The second is a set of protocol
+definitions written in a subset of P4, a database of protocol headers
+and parser rules.
+
+The \kunai compiler first interprets the layer-chain: it checks that
+each protocol may connect to the next according to the definitions
+and, when the same protocol appears more than once, binds a label to
+each layer slot. It then resolves field references against the
+protocol definitions, obtaining the layer, offset, and bit width of
+each field. When a reference targets an auxiliary header list or an
+option, the scan target and the information needed to walk it are also
+recorded in the IR. This analysis stage rejects three things: a
+reference to a non-existent field; an unqualified \texttt{proto.field}
+reference, such as \texttt{tcp.dport}, when that protocol appears more
+than once; and a comparison whose type or bit width does not match.
+
+The output of the \kunai compiler is eBPF bytecode that evaluates the
+filter condition against a packet and returns a match/reject result.
+At run time, a host BPF program placed at an attach point such as
+XDP~\cite{hoiland2018xdp}, tc~\cite{tc_man}, or fentry/fexit embeds this bytecode.
+Under this split of responsibilities, the \kunai compiler handles filter-condition
+analysis and bytecode generation, while the host BPF program handles
+attach-point-specific context access and follow-on actions such as
+capture or drop.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.85\columnwidth]{figures/fig_arch.pdf}
+  \caption{Overview of \kunai. From a filter expression and P4
+  protocol definitions, the compiler produces match/reject eBPF
+  bytecode through parse/resolve/codegen, which a host BPF program
+  embeds at an attach point.}
+  \label{fig:arch}
+\end{figure}
+
+\subsection{What the DSL Expresses}
+\label{sec:dsl}
+
+The \kunai DSL describes a packet's layer structure and field
+conditions as a single filter expression; \figref{fig:grammar} shows
+an excerpt of the grammar; the full grammar is available in the
+project repository.\footnote{\url{https://github.com/(redacted for review)}}
+
+\begin{figure}[t]
+\begin{lstlisting}[basicstyle=\footnotesize\ttfamily,breaklines=true,columns=fullflexible]
+filter       ::= layer-chain where-clause?
+layer-chain  ::= layer ('/' layer)*
+layer        ::= layer-atom quantifier?
+layer-atom   ::= proto-name ('@' label)? predicate?
+               | '(' layer ('|' layer)+ ')'
+quantifier   ::= '?' | '+' | '*' | '{' INT '}' | '{' INT ',' INT '}'
+predicate    ::= '[' comparison (',' comparison)* ']'
+where-clause ::= 'where' bool-expr
+bool-expr    ::= comparison | quant-atom
+               | '(' bool-expr ')' | bool-expr bool-op bool-expr
+comparison   ::= field-ref op value
+quant-atom   ::= ('any' | 'all') '(' bool-expr ')'
+field-ref    ::= ident index? ('.' ident index?)*
+\end{lstlisting}
+\caption{Excerpt of the \kunai filter-expression grammar.}
+\label{fig:grammar}
+\end{figure}
+
+A layer-chain lists, with \texttt{/}, the order in which protocols
+appear in the packet, and can also express optional layers,
+repetition, and choice. The \texttt{where} clause is a condition over
+the fields of layers in the chain and of auxiliary headers and lists.
+\kunai resolves a field reference into one of the forms in
+Table~\ref{tab:fieldref}; there, \texttt{<stack>} is not a literal but
+the name of an auxiliary header list given in the protocol definition,
+such as \texttt{segments} or \texttt{exts}.
+
+\begin{table}[htbp]
+  \centering\footnotesize
+  \setlength{\tabcolsep}{4pt}
+  \begin{tabular}{@{}ll@{}}
+    \toprule
+    Reference form (example) & Meaning \\
+    \midrule
+    \texttt{proto.field} (\texttt{tcp.dport}) & primary field of a protocol unique in the chain \\
+    \texttt{label.field} (\texttt{inner.dst}) & field of a layer carrying a label (\texttt{@inner}) \\
+    \texttt{proto.aux.field} & field of an optional or auxiliary header \\
+    \texttt{proto.<stack>[N].field} & static index into an auxiliary header list \\
+    \texttt{proto.<stack>.field} & element being walked in \texttt{any()}/\texttt{all()} \\
+    \texttt{proto.options.NAME.field} & TCP / IPv4 option lookup \\
+    \bottomrule
+  \end{tabular}
+  \caption{Field-reference forms \kunai resolves.}
+  \label{tab:fieldref}
+\end{table}
+
+\kunai interprets a field reference inside a bracket predicate as
+relative to that layer. In the \texttt{where} clause, references name
+the layer explicitly, as in \texttt{proto.field} or
+\texttt{label.field}.
+
+When the same protocol appears more than once in a chain,
+\texttt{proto.field} alone does not determine which layer to read.
+For example, when a chain contains both an outer and an inner IPv4 header,
+\texttt{ipv4.dst} does not uniquely identify which destination field
+is meant. \kunai rejects such a reference before code generation and
+requires a label-qualified reference. A filter on the inner IPv4
+destination of a GTP-U tunnel, for example, is written as follows.
+
+\begin{lstlisting}[style=kunai]
+eth/ipv4@outer/udp/gtp/ipv4@inner/tcp where inner.dst == 10.0.0.1
+\end{lstlisting}
+
+The chain before \texttt{where} lists the layers to traverse, from
+Ethernet through an outer IPv4 header, UDP, GTP, an inner IPv4 header,
+to TCP, and the \texttt{where} clause gives the field condition checked
+once the chain matches, here that the inner IPv4 header's destination
+equals \texttt{10.0.0.1}. Here \texttt{@outer} and \texttt{@inner} distinguish the two IPv4
+layers. Because \texttt{inner.dst} uniquely names the destination
+field of the inner IPv4 header, \kunai can determine which field to read even
+though the same \texttt{ipv4} header appears twice.
+
+Variable-length lists are handled with \texttt{any()} and
+\texttt{all()}. A filter that matches a packet whose SRv6 segment list
+contains a given address, for example, is written as follows.
+
+\begin{lstlisting}[style=kunai]
+eth/ipv6/srv6 where any(srv6.segments.addr == fc00::1)
+\end{lstlisting}
+
+The scan target of \texttt{any()} and \texttt{all()} is the auxiliary
+header list referenced without an index inside the expression, and
+there must be exactly one such target list. The same list may be
+referenced several times; for example,
+\texttt{any(srv6.segments.addr == fc00::1 or srv6.segments.addr ==
+fc00::2)} is valid. An \texttt{any()} or \texttt{all()} that references no un-indexed list, or
+two different ones, is rejected at the analysis stage rather than
+walking one of them. A quantifier that appears to walk two
+lists therefore cannot be written. \kunai evaluates the inner condition
+against each element of the list. The walk requires a field giving the
+element count, the width of each element, a way to advance to the next
+element, and a stop condition; the protocol definition supplies these.
+TCP options and GTP extension headers are handled the same way when
+the protocol definition carries this information.
+
+Through these constructs, the \kunai DSL specifies, within one filter
+expression, the order in which headers appear, the disambiguation of
+repeated protocols, and the target of a variable-length walk. Code generation
+uses this information to translate each field access into an offset
+from the layer's start and a bit width.
+
+\subsection{Protocol Definitions via a P4 Subset}
+\label{sec:p4subset}
+
+\kunai uses a subset of the P4 language to describe protocol headers
+and parser rules~\cite{p4spec}. Because P4 already has syntax for
+protocol headers and parser transitions, existing P4 parser
+descriptions can serve as a reference when writing a protocol
+definition. Using P4 also avoids implementing and maintaining the
+syntax checker, parser, tooling, and specification that a bespoke
+protocol-description language would require.
+
+The P4 subset \kunai handles is limited to the parts that describe
+header layout and parser transitions. \figref{fig:p4srv6} shows the SRv6
+protocol definition; the \texttt{any()} example in \S\ref{sec:dsl}
+and filter F8 in \S\ref{sec:eval} use it.
+
+\begin{figure}[t]
+\begin{lstlisting}[basicstyle=\footnotesize\ttfamily,breaklines=true,columns=fullflexible]
+header srv6_h {
+    bit<8>  next_header;
+    bit<8>  hdr_ext_len;    // in 8-byte units
+    bit<8>  routing_type;   // 4 = SRH
+    bit<8>  segments_left;
+    bit<8>  last_entry;      // index of the last segment
+    // ...                   (flags, tag)
+}
+header srv6_seg_h { bit<128> addr; }
+const bit<8> KUNAI_SRV6_IPV6_NEXT_HEADER = 43;
+const bit<8> SRV6_ROUTING_TYPE = 4;
+extern ParserCounter { /* set, decrement, is_zero */ }
+parser SRv6Parser(packet_in pkt, out srv6_h hdr,
+    out srv6_seg_h[8] segments) {
+  ParserCounter() pc;
+  state start {
+    pkt.extract(hdr);
+    pc.set((bit<8>)(hdr.last_entry + 1));   // segment count
+    transition select(hdr.routing_type) {
+      SRV6_ROUTING_TYPE: walk;  default: reject;
+    }
+  }
+  state walk {
+    transition select(pc.is_zero()) { true: accept; false: consume_seg; }
+  }
+  state consume_seg {
+    pkt.extract(segments.next);   // push one 16-byte segment
+    pc.decrement(1);
+    transition walk;
+  }
+}
+\end{lstlisting}
+\caption{SRv6 protocol definition in the \kunai P4 subset.}
+\label{fig:p4srv6}
+\end{figure}
+
+This definition supplies the information the \kunai compiler needs
+through three constructs. First, the \texttt{header} declarations give
+the offset and bit width of each field. Second, the \texttt{const} and
+\texttt{transition select} give the dispatch from IPv6 to SRv6 and the
+acceptance test on \texttt{routing\_type}. Third, the parser walks the segment list explicitly,
+extracting one element per iteration and counting down from
+\texttt{last\_entry + 1}; the element count and the
+\texttt{segments} base then follow from the walk itself, with no
+kunai annotation. The capacity 8 of
+\texttt{srv6\_\allowbreak seg\_\allowbreak h[8]} bounds the
+iteration count for the verifier.
+
+In this way, a protocol definition describes layout, dispatch, and
+walk metadata within P4 syntax. Adding a protocol definition extends
+the set of supported protocols without changing the compiler itself.

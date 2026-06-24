@@ -1,0 +1,141 @@
+\section{Motivation: Two Structural Limits}
+\label{sec:motivation}
+
+Packet capture has been shaped by tools that assume the kernel network
+stack is a stable observation surface. That assumption no longer
+holds. BPF programs deployed at XDP, TC, socket-filter and cgroup hooks
+now intercept, drop, redirect, or rewrite packets long before they
+reach the surfaces tools like tcpdump can see. We argue that
+the resulting observability gap is structural, not a tooling defect,
+and that closing it requires addressing two limits simultaneously.
+
+\subsection{Two Structural Limits}
+\label{sec:two-limits}
+
+\paragraph{Limit~A: filter expressiveness.}
+pcap-filter, the de-facto packet-filter language since 1993,
+compiles to classic BPF (cBPF). cBPF has no loop primitive, by design:
+the predecessor virtual machine guaranteed termination by forbidding
+backward branches. That decision excludes the structures that
+characterise modern protocols: SRv6 segment lists, IPv6 extension-header
+chains, TCP-option walks, and multi-level tunnels (VXLAN, Geneve, GTP-U,
+MPLS). Recent alternatives are partial fixes:
+\texttt{tc-flower}~\cite{tcflower} matches a single encapsulation level
+via \texttt{enc\_*} keys but offers no expression syntax;
+\texttt{nftables}~\cite{nftables_wiki} is rule-based with rich L3/L4
+plus connection-tracking but no deep encapsulation;
+\texttt{NetPFL}~\cite{ciminiera2010netpfl} addressed tunnel-aware
+filtering but targeted a userspace VM and has been inactive since
+roughly 2013.
+
+\paragraph{Limit~B: attachment-point coverage.}
+The Linux network stack is now a programmable data path: BPF can
+attach at XDP, TC ingress/egress, socket filter, cgroup/skb,
+sock\_ops, sk\_lookup, netfilter BPF, flow\_dissector, and several
+tracing hooks. Production deployments combine multiple hooks --
+Cilium uses XDP, TC, sockops, and cgroup/skb together for Kubernetes
+networking; Cloudflare's L4 load balancer~\cite{cloudflare_unimog} runs
+on XDP; Meta's Katran~\cite{shukla2020katran} runs on XDP. Packets
+that these programs \texttt{XDP\_DROP} never reach AF\_PACKET, so
+tcpdump cannot see them. Existing XDP-aware tools either
+lack filtering (\texttt{xdpdump}~\cite{xdptools_xdpdump}) or require
+in-place hooks compiled into the production program
+(\texttt{xdpcap}~\cite{cloudflare2019xdpcap}). \texttt{pwru}~\cite{cilium_pwru}
+follows packets across kernel functions but produces a trace log, not
+a pcap, and uses pcap-filter so does not address Limit~A.
+
+Limits A and B are not independent: both stem from observability
+infrastructure that pre-dates the BPF-programmable data path. Solving
+either alone leaves a tool that knows where to attach but cannot
+filter, or filters expressively but only at one hook.
+
+\subsection{No Prior System Addresses Both}
+\label{sec:no-prior}
+
+\begin{table*}[t]
+\centering
+\caption{Capability matrix across packet-observation tools (\yes\ supported; \partsym\ partial; \no\ unsupported; \na\ N/A). No existing tool covers both structural limits.}
+\label{tab:tools}
+\small
+\begin{tabular}{@{}l c c c c c c c@{}}
+\toprule
+                                & tcpdump & xdpcap & xdpdump & nft+nflog & tc-flower & pwru & \kunai+\xdpninja \\
+\midrule
+Output: pcap                    & \yes & \yes & \yes & \partsym & \no & \no & \yes \\
+Visible to XDP\_DROP            & \no  & \partsym & \yes & \no & \no & \yes & \yes \\
+Multi-encapsulation chain       & \no  & \no  & \na & \partsym & \partsym & \no & \yes \\
+Variable-length lists / walks   & \no  & \no  & \na & \no & \no & \no & \yes \\
+Expression syntax (where-clause)& \partsym & \partsym & \na & \partsym & \no & \partsym & \yes \\
+Verifier-safe by construction   & \na  & \partsym & \na & \na & \na & \na & \yes \\
+Non-invasive deployment         & \yes & \no  & \yes & \yes & \na & \yes & \yes \\
+\bottomrule
+\end{tabular}
+\end{table*}
+
+Table~\ref{tab:tools} compares seven tools across the two limits. No
+single row covers both. The closest contenders are \texttt{xdpcap}
+(addresses Limit~B for XDP but is invasive and uses cBPF) and
+\texttt{tc-flower} (rich at TC but match-action, not capture, and
+limited to single-level encapsulation). \texttt{pwru} sits in a
+different category --- a kernel-wide tracer, complementary rather than
+competing with capture (\S\ref{sec:related}).
+
+\subsection{Variable-Length Headers Are Now the Norm}
+\label{sec:varlen-norm}
+
+To make Limit~A concrete, we sketch three filtering tasks that defeat
+pcap-filter and modern alternatives but are one line in
+\kunai. The kunai output is a verifier-safe eBPF program (\S\ref{sec:codegen}).
+
+\paragraph{(a) SRv6 segment-list lookup.}
+A 5G or SDN backbone operator wants packets whose Segment Routing
+Header lists a specific SID, say \texttt{fc00::abcd}. pcap-filter
+can identify routing-header type 4 but cannot search the segment array:
+the list length is in the header and cBPF cannot loop. \kunai writes:
+\begin{lstlisting}[style=kunai]
+eth/ipv6/srv6 where any(srv6.segments.addr == fc00::1)
+\end{lstlisting}
+
+\paragraph{(b) GTP-U with optional fields.}
+A 5G core operator wants inner IPv4 destination 10.0.0.1. The GTP
+header carries optional fields gated by presence flags, so a
+fixed-offset filter sees the wrong bytes. \kunai walks the gating:
+\begin{lstlisting}[style=kunai]
+eth/ipv4@outer/udp/gtp/ipv4@inner/tcp where inner.dst == 10.0.0.1
+\end{lstlisting}
+
+\paragraph{(c) Geneve overlay inner IPv4.}
+Container networking (Cilium, GCP, Azure VNet) tunnels traffic in
+Geneve. \texttt{tc-flower}'s \texttt{enc\_*} can match outer
+encapsulation keys, but cannot follow Geneve's transparent inner
+Ethernet to filter on inner L3:
+\begin{lstlisting}[style=kunai]
+eth/ipv4@outer/udp/geneve/eth/ipv4@inner/tcp where inner.dst == 10.0.0.1
+\end{lstlisting}
+
+These are not edge cases. SRv6 is deployed in 5G transport (RFC 8754);
+Geneve and GTP-U are in production at every cloud and mobile
+operator. The filtering need is decade-old; what changed is that the
+toolchain has not kept pace.
+
+\subsection{Roadmap}
+\label{sec:roadmap}
+
+The remainder of the paper addresses both limits as one architecture.
+\S\ref{sec:xdp-ninja} introduces \xdpninja's non-invasive XDP attachment,
+which closes Limit~B for XDP without modifying the production program;
+the same fentry/fexit mechanism applies to TC, which we evaluate in
+\S\ref{sec:eval-verifier}. \S\ref{sec:kunai} presents \kunai's
+layered DSL with a static type system and a P4-derived protocol
+vocabulary, addressing Limit~A. \S\ref{sec:codegen} establishes that
+the generated eBPF is verifier-safe across Linux 6.1--6.18.
+\S\ref{sec:eval} reports expressiveness, codegen overhead,
+end-to-end throughput, and the cross-kernel verifier matrix.
+Throughout, production BPF programs remain bit-identical: this is a
+hard design constraint, not an aspiration, and we discuss its
+trade-offs in \S\ref{sec:transport-tradeoff} and \S\ref{sec:discussion}.
+
+\TODO{Figure 2 (XDP\_DROP illustrative): production XDP program
+DROPs SYN-flood traffic; tcpdump sees nothing on AF\_PACKET
+while \xdpninja captures the SYNs at the XDP entry. Useful early in
+\S\ref{sec:two-limits} as a visual hook for Limit~B.}
