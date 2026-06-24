@@ -364,41 +364,32 @@ func classifyConsts(cs []*p4lite.Const, protoName, source string, knownProtos ma
 			return classifyResult{}, fmt.Errorf("%s: duplicate const %q", source, c.Name)
 		}
 		seenNames[c.Name] = true
-		// KUNAI_ is an optional namespace prefix. It no longer decides
-		// dispatch-vs-value on its own: the parent in the
-		// `<SELF>_<PARENT>_<FIELD>` shape does (see the reField branch).
-		// Strip it here so every downstream classification — self-prefix,
-		// structural families, dispatch — runs on the bare name. The
-		// original c.Name is kept for diagnostics and dup detection.
-		hadKunai := false
-		name := c.Name
-		if s, ok := strings.CutPrefix(name, "KUNAI_"); ok {
-			hadKunai = true
-			name = s
-			if name == "" {
+		// KUNAI_ is the authoritative marker for an inter-layer dispatch
+		// edge. A KUNAI_-prefixed const must be a real dispatch:
+		// `KUNAI_<SELF>_<PARENT>_<FIELD>` with a real <PARENT>, or
+		// `KUNAI_<SELF>_<PARENT>_NO_CHECK`. Strip the prefix and hand it to
+		// classifyKunaiConst, which rejects a phantom-parent (value-only)
+		// const — those must be written *without* KUNAI_. The original
+		// c.Name is kept for diagnostics and dup detection.
+		if s, ok := strings.CutPrefix(c.Name, "KUNAI_"); ok {
+			if s == "" {
 				return classifyResult{}, fmt.Errorf("%s: const %q has empty name after the KUNAI_ prefix", source, c.Name)
 			}
-		}
-		// A KUNAI_-prefixed const is a select-match value, not a
-		// structural marker. Route it straight to the <PARENT>_<FIELD>
-		// classification (parent reality decides dispatch-vs-value) and
-		// skip the MAX_DEPTH / OPT_ / HDRLEN_ / CHAIN_END families, which
-		// only apply to bare self-prefixed structural consts. Without
-		// this short-circuit a value-only const like KUNAI_IPV4_OPT_EOL
-		// (rest "OPT_EOL") would be mis-routed into the OPT_ flag-trigger
-		// machinery. classifyKunaiConst returns (nil, false, nil) when the
-		// const is a phantom-parent value-only const that must not enter
-		// res.Consts.
-		if hadKunai {
-			dc, keep, err := classifyKunaiConst(c, name, protoUpper, source, knownProtos)
+			dc, err := classifyKunaiConst(c, s, protoUpper, source, knownProtos)
 			if err != nil {
 				return classifyResult{}, err
 			}
-			if keep {
-				res.Consts = append(res.Consts, *dc)
-			}
+			res.Consts = append(res.Consts, *dc)
 			continue
 		}
+		// A bare (non-KUNAI_) const is never a dispatch edge. It is a
+		// structural marker (MAX_DEPTH / CHAIN_END / OPT-flag) or a
+		// value-only select-match value (routing_type / ext / option kind,
+		// parent is a phantom). Run it through the structural families and
+		// the value-only <PARENT>_<FIELD> path; a bare const whose shape
+		// *would* be a dispatch (real parent, or NO_CHECK) is an
+		// enforcement error pointing the author at the KUNAI_ prefix.
+		name := c.Name
 		if !strings.HasPrefix(name, protoUpper+"_") {
 			return classifyResult{}, fmt.Errorf("%s: const %q must begin with %q (self-prefix derived from filename)", source, c.Name, protoUpper+"_")
 		}
@@ -419,7 +410,14 @@ func classifyConsts(cs []*p4lite.Const, protoName, source string, knownProtos ma
 			res.MaxDepth = int(c.Int)
 			continue
 		}
-		if strings.HasPrefix(rest, "OPT_") {
+		// Only the flag-trigger OPT_ keys are structural. Other OPT_*
+		// names (OPT_EOL, OPT_NOP, OPT_RR, ... — option *kinds*) are
+		// value-only select-match values whose phantom parent is "opt";
+		// they fall through to the reField path below and fold into the
+		// select arm. Without this narrowing a value-only const like
+		// IPV4_OPT_EOL (rest "OPT_EOL") would be mis-routed into the
+		// flag-trigger machinery and rejected.
+		if isOptFlagKey(rest) {
 			if c.IsBool {
 				return classifyResult{}, fmt.Errorf("%s: OPT const %q must be bit<N>, got bool", source, c.Name)
 			}
@@ -446,82 +444,92 @@ func classifyConsts(cs []*p4lite.Const, protoName, source string, knownProtos ma
 			}
 			continue
 		}
-		dc := DispatchConst{Name: c.Name}
 		if m := reNoCheck.FindStringSubmatch(rest); m != nil {
-			if !c.IsBool {
-				return classifyResult{}, fmt.Errorf("%s: NO_CHECK const %q must be declared as bool", source, c.Name)
-			}
-			if !c.Bool {
-				return classifyResult{}, fmt.Errorf("%s: NO_CHECK const %q must be true; false has no meaning", source, c.Name)
-			}
-			dc.Type = DispatchNoCheck
-			dc.Parent = strings.ToLower(m[1])
-			dc.Bool = true
-		} else if reSanityName.MatchString(rest) {
-			return classifyResult{}, fmt.Errorf("%s: const %q uses the SANITY family, which has been removed — declare a parser-block `transition select(<field>) { ...; default: reject; }` to self-validate the protocol instead", source, c.Name)
-		} else if m := reField.FindStringSubmatch(rest); m != nil {
-			fdc, keep, err := classifyFieldConst(c, m, source, knownProtos)
-			if err != nil {
-				return classifyResult{}, err
-			}
-			if !keep {
-				// Phantom parent: a value-only select-match const written
-				// without the KUNAI_ namespace prefix. Validated as bit<N>
-				// above; folded into the select arm by p4lite. Not a
-				// dispatch edge.
-				continue
-			}
-			dc = *fdc
-		} else {
-			return classifyResult{}, fmt.Errorf("%s: const %q does not match <SELF>_{<PARENT>_<FIELD>|<PARENT>_NO_CHECK|MAX_DEPTH|CHAIN_END_<FIELD>}", source, c.Name)
+			// NO_CHECK is an inter-layer dispatch edge: it must carry the
+			// KUNAI_ marker. A bare NO_CHECK is an enforcement error.
+			return classifyResult{}, fmt.Errorf("%s: NO_CHECK const %q is an inter-layer dispatch edge — prefix it with KUNAI_ (KUNAI_%s)", source, c.Name, c.Name)
 		}
-		res.Consts = append(res.Consts, dc)
+		if reSanityName.MatchString(rest) {
+			return classifyResult{}, fmt.Errorf("%s: const %q uses the SANITY family, which has been removed — declare a parser-block `transition select(<field>) { ...; default: reject; }` to self-validate the protocol instead", source, c.Name)
+		}
+		if m := reField.FindStringSubmatch(rest); m != nil {
+			if c.IsBool {
+				return classifyResult{}, fmt.Errorf("%s: field-dispatch const %q must be bit<N>, got bool", source, c.Name)
+			}
+			parent := strings.ToLower(m[1])
+			if knownProtos[parent] {
+				// A real parent makes this a dispatch edge, which must
+				// carry the KUNAI_ marker. Loud-fail and point the author
+				// at the prefix.
+				return classifyResult{}, fmt.Errorf("%s: const %q dispatches to layer %q — it is an inter-layer dispatch edge, prefix it with KUNAI_ (KUNAI_%s)", source, c.Name, parent, c.Name)
+			}
+			// Phantom parent: a value-only select-match const (routing_type
+			// / ext / option kind). Validated as bit<N> above; folded into
+			// the select arm by p4lite. Not a dispatch edge, so it does not
+			// enter res.Consts.
+			continue
+		}
+		return classifyResult{}, fmt.Errorf("%s: const %q does not match <SELF>_{<PARENT>_<FIELD>|MAX_DEPTH|CHAIN_END_<FIELD>} or KUNAI_<SELF>_{<PARENT>_<FIELD>|<PARENT>_NO_CHECK}", source, c.Name)
 	}
 	return res, nil
 }
 
-// classifyKunaiConst classifies a KUNAI_-prefixed const. The prefix
-// marks a select-match value, so the const is interpreted purely as a
-// `<SELF>_<PARENT>_<FIELD>` shape — never as a MAX_DEPTH / OPT_ /
-// CHAIN_END structural marker. name is c.Name with the KUNAI_ prefix
-// already stripped. It returns (dc, true, nil) for a real inter-layer
-// dispatch edge (parent is a known protocol), (nil, false, nil) for a
-// value-only const (phantom parent, or no <PARENT>_<FIELD> shape at
-// all) that must not enter the dispatch graph, and a non-nil error for
-// a malformed declaration.
-func classifyKunaiConst(c *p4lite.Const, name, protoUpper, source string, knownProtos map[string]bool) (*DispatchConst, bool, error) {
-	if c.IsBool {
-		return nil, false, fmt.Errorf("%s: KUNAI_ const %q must be bit<N>, got bool (select-match values are integers; use true/false literals directly for is_zero() keys)", source, c.Name)
-	}
-	if !strings.HasPrefix(name, protoUpper+"_") {
-		return nil, false, fmt.Errorf("%s: const %q must begin with %q (self-prefix derived from filename)", source, c.Name, "KUNAI_"+protoUpper+"_")
-	}
-	rest := name[len(protoUpper)+1:]
-	m := reField.FindStringSubmatch(rest)
-	if m == nil {
-		// A bare select-match value such as KUNAI_FOO_SPECIAL — no
-		// <PARENT>_<FIELD> shape, so it can never be a dispatch edge.
-		// p4lite folds it into the select arm; nothing to record here.
-		return nil, false, nil
-	}
-	return classifyFieldConst(c, m, source, knownProtos)
+// isOptFlagKey reports whether the suffix after "<SELF>_" names one of
+// the structural OPT flag-trigger keys (OPT_FLAGS_BYTE_OFFSET /
+// OPT_TRIGGER_<N> / OPT_LEN_<N>). Every other OPT_* name is a
+// value-only option-kind select value (phantom parent "opt") and must
+// fall through to the value-only <PARENT>_<FIELD> path.
+func isOptFlagKey(rest string) bool {
+	return rest == "OPT_FLAGS_BYTE_OFFSET" ||
+		strings.HasPrefix(rest, "OPT_TRIGGER_") ||
+		strings.HasPrefix(rest, "OPT_LEN_")
 }
 
-// classifyFieldConst turns a matched `<PARENT>_<FIELD>` const into a
-// DispatchField edge when <PARENT> is a real protocol. When <PARENT> is
-// a phantom (ROUTING / NH / OPT — not a .p4 in this vocab) the const is
-// value-only: it is validated as bit<N> and reported as (nil, false,
-// nil) so the caller folds it into the select arm without adding a
-// dispatch edge. m is the reField submatch ([full, PARENT, FIELD]).
-func classifyFieldConst(c *p4lite.Const, m []string, source string, knownProtos map[string]bool) (*DispatchConst, bool, error) {
+// classifyKunaiConst classifies a KUNAI_-prefixed const. The prefix is
+// the authoritative marker for an inter-layer dispatch edge, so the
+// const must be a real dispatch in one of two shapes:
+//
+//	KUNAI_<SELF>_<PARENT>_NO_CHECK = true   (DispatchNoCheck)
+//	KUNAI_<SELF>_<PARENT>_<FIELD>  = value  (DispatchField, real <PARENT>)
+//
+// name is c.Name with the KUNAI_ prefix already stripped. A phantom
+// parent (ROUTING / NH / OPT — not a .p4 in this vocab) or a const with
+// no <PARENT>_<FIELD> shape is a value-only select-match value that must
+// be written *without* KUNAI_; it is rejected here with a diagnostic
+// pointing at the bare name. It returns the dispatch const on success
+// and a non-nil error otherwise.
+func classifyKunaiConst(c *p4lite.Const, name, protoUpper, source string, knownProtos map[string]bool) (*DispatchConst, error) {
+	if !strings.HasPrefix(name, protoUpper+"_") {
+		return nil, fmt.Errorf("%s: const %q must begin with %q (self-prefix derived from filename)", source, c.Name, "KUNAI_"+protoUpper+"_")
+	}
+	rest := name[len(protoUpper)+1:]
+	if m := reNoCheck.FindStringSubmatch(rest); m != nil {
+		if !c.IsBool {
+			return nil, fmt.Errorf("%s: NO_CHECK const %q must be declared as bool", source, c.Name)
+		}
+		if !c.Bool {
+			return nil, fmt.Errorf("%s: NO_CHECK const %q must be true; false has no meaning", source, c.Name)
+		}
+		return &DispatchConst{
+			Name:   c.Name,
+			Type:   DispatchNoCheck,
+			Parent: strings.ToLower(m[1]),
+			Bool:   true,
+		}, nil
+	}
+	m := reField.FindStringSubmatch(rest)
+	if m == nil {
+		return nil, fmt.Errorf("%s: KUNAI_ marks an inter-layer dispatch edge but %q has no <PARENT>_<FIELD> / <PARENT>_NO_CHECK shape — drop the KUNAI_ prefix for a value-only select-match const", source, c.Name)
+	}
 	if c.IsBool {
-		return nil, false, fmt.Errorf("%s: field-dispatch const %q must be bit<N>, got bool", source, c.Name)
+		return nil, fmt.Errorf("%s: field-dispatch const %q must be bit<N>, got bool", source, c.Name)
 	}
 	parent := strings.ToLower(m[1])
 	if !knownProtos[parent] {
-		// Phantom parent — value-only select-match const. Already
-		// validated as bit<N> above; do not inject a dispatch edge.
-		return nil, false, nil
+		// Phantom parent: this is a value-only select-match value, not a
+		// dispatch edge. KUNAI_ is reserved for dispatch, so reject it and
+		// point the author at the bare name.
+		return nil, fmt.Errorf("%s: KUNAI_ marks an inter-layer dispatch edge; %q has parent %q which is not a protocol — drop the KUNAI_ prefix for a value-only select-match const", source, c.Name, parent)
 	}
 	return &DispatchConst{
 		Name:      c.Name,
@@ -530,5 +538,5 @@ func classifyFieldConst(c *p4lite.Const, m []string, source string, knownProtos 
 		FieldName: strings.ToLower(m[2]),
 		Bits:      c.Bits,
 		Value:     c.Int,
-	}, true, nil
+	}, nil
 }

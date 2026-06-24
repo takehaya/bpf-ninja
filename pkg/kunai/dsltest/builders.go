@@ -609,8 +609,8 @@ func geneveHeader(vni uint32, protocolType layers.EthernetType) []byte {
 // Geneve into the inner Ethernet ("eth/ipv4@outer/udp/geneve/eth/ipv4@inner/tcp").
 // Geneve's protocol_type is set to TransparentEthernetBridging (RFC 5694)
 // so the payload is a full inner Ethernet frame; eth.p4 declares
-// ETH_GENEVE_NO_CHECK so the kunai parser accepts the chain without a
-// dispatch constant check.
+// KUNAI_ETH_GENEVE_NO_CHECK so the kunai parser accepts the chain
+// without a dispatch constant check.
 type GeneveInnerIPv4TCPOpts struct {
 	VNI                        uint32
 	OuterSrcIP, OuterDstIP     net.IP

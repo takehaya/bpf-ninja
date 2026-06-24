@@ -54,12 +54,13 @@ header srv6_seg_h {
 const bit<8> KUNAI_SRV6_IPV6_NEXT_HEADER = 43;
 
 // routing_type 4 identifies SRH (RFC 8754 Section 2). Named so the
-// start-state select arm reads as KUNAI_SRV6_ROUTING_TYPE rather than a
-// bare 4. KUNAI_ is the namespace prefix for these named consts; this
-// one is value-only (no inter-layer dispatch role) because its parent
-// token ROUTING is not a protocol: the loader folds it into the select
-// arm and never treats it as a dispatch edge.
-const bit<8> KUNAI_SRV6_ROUTING_TYPE = 4;
+// start-state select arm reads as SRV6_ROUTING_TYPE rather than a bare
+// 4. This is a value-only select-match const (no inter-layer dispatch
+// role) because its parent token ROUTING is not a protocol, so it is
+// written *without* the KUNAI_ prefix (KUNAI_ is reserved for dispatch
+// edges): the loader folds it into the select arm and never treats it
+// as a dispatch edge.
+const bit<8> SRV6_ROUTING_TYPE = 4;
 
 extern ParserCounter {
     ParserCounter();
@@ -84,12 +85,12 @@ parser SRv6Parser(packet_in pkt,
         // the next-header position at (last_entry+1)*16 past the segment
         // base (valid for every TLV-free SRH per RFC 8754).
         pc.set((bit<8>)(hdr.last_entry + 1));
-        // routing_type 4 (KUNAI_SRV6_ROUTING_TYPE) identifies SRH
+        // routing_type 4 (SRV6_ROUTING_TYPE) identifies SRH
         // (RFC 8754 Section 2). Older Type-0 source-routing variants are
         // deprecated and out of scope, so every other routing_type is
         // rejected.
         transition select(hdr.routing_type) {
-            KUNAI_SRV6_ROUTING_TYPE: walk;
+            SRV6_ROUTING_TYPE: walk;
             default:                 reject;
         }
     }

@@ -88,15 +88,16 @@ const bit<16> KUNAI_IPV4_GRE_PROTOCOL_TYPE = 0x0800;
 // loop entirely.
 
 // IPv4 option kinds dispatched by the walk state (RFC 791 §3.1).
-// KUNAI_ is the namespace prefix for named consts; these are value-only
-// (no inter-layer dispatch role) because their parent token OPT is not
-// a protocol, so the loader folds each into the matching select arm.
+// These are value-only select-match consts (no inter-layer dispatch
+// role) because their parent token OPT is not a protocol, so they are
+// written *without* the KUNAI_ prefix (KUNAI_ is reserved for dispatch
+// edges): the loader folds each into the matching select arm.
 // EOL/NOP are the single-byte options; Record Route and Router Alert
 // are the extracted ones.
-const bit<8> KUNAI_IPV4_OPT_EOL          = 0;   // End of Option List (RFC 791)
-const bit<8> KUNAI_IPV4_OPT_NOP          = 1;   // No Operation (RFC 791)
-const bit<8> KUNAI_IPV4_OPT_RR           = 7;   // Record Route (RFC 791 §3.1)
-const bit<8> KUNAI_IPV4_OPT_ROUTER_ALERT = 148; // Router Alert (RFC 2113)
+const bit<8> IPV4_OPT_EOL          = 0;   // End of Option List (RFC 791)
+const bit<8> IPV4_OPT_NOP          = 1;   // No Operation (RFC 791)
+const bit<8> IPV4_OPT_RR           = 7;   // Record Route (RFC 791 §3.1)
+const bit<8> IPV4_OPT_ROUTER_ALERT = 148; // Router Alert (RFC 2113)
 
 extern ParserCounter {
     ParserCounter();
@@ -146,12 +147,12 @@ parser IPv4Parser(packet_in pkt,
     }
     state walk {
         transition select(pc.is_zero(), pkt.lookahead<bit<8>>()) {
-            (true,  _):                          accept;
-            (false, KUNAI_IPV4_OPT_EOL):         accept;
-            (false, KUNAI_IPV4_OPT_NOP):         parse_nop;
-            (false, KUNAI_IPV4_OPT_RR):          parse_rr;
-            (false, KUNAI_IPV4_OPT_ROUTER_ALERT): parse_router_alert;
-            (false, _):                          reject;
+            (true,  _):                    accept;
+            (false, IPV4_OPT_EOL):         accept;
+            (false, IPV4_OPT_NOP):         parse_nop;
+            (false, IPV4_OPT_RR):          parse_rr;
+            (false, IPV4_OPT_ROUTER_ALERT): parse_router_alert;
+            (false, _):                    reject;
         }
     }
     state parse_nop {

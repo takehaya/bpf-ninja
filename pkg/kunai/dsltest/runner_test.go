@@ -607,8 +607,8 @@ func TestGeneveDispatch(t *testing.T) {
 // TestGeneveInnerIPv4Dispatch covers the F9-style chain where the
 // filter walks past the Geneve fixed header into the inner Ethernet
 // frame and matches on inner IPv4 destination. eth.p4 declares
-// ETH_GENEVE_NO_CHECK so the inner-eth dispatch is accepted by the
-// parser without a constant comparison.
+// KUNAI_ETH_GENEVE_NO_CHECK so the inner-eth dispatch is accepted by
+// the parser without a constant comparison.
 func TestGeneveInnerIPv4Dispatch(t *testing.T) {
 	r := New(t, "eth/ipv4@outer/udp/geneve/eth/ipv4@inner/tcp where inner.dst == 192.168.1.2")
 	r.MustMatch(t, BuildGeneveInnerIPv4TCP(t, GeneveInnerIPv4TCPOpts{}),

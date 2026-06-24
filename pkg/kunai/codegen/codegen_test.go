@@ -804,7 +804,7 @@ func TestGenOptionalLayerRejectsNoDispatch(t *testing.T) {
 
 func TestGenOptionalLayerRejectsNoCheckDispatch(t *testing.T) {
 	noCheck := &vocab.DispatchConst{
-		Type: vocab.DispatchNoCheck, Name: "FOO_BAR_NO_CHECK", Parent: "bar", Bool: true,
+		Type: vocab.DispatchNoCheck, Name: "KUNAI_FOO_BAR_NO_CHECK", Parent: "bar", Bool: true,
 	}
 	eth := &ir.LayerInstance{Spec: ethSpec}
 	opt := &ir.LayerInstance{
@@ -1095,7 +1095,7 @@ func TestGenNoCheckDispatchEmitsNothing(t *testing.T) {
 		vocab.Field{Name: "ethertype", Bits: 16},
 	)
 	noCheck := &vocab.DispatchConst{
-		Type: vocab.DispatchNoCheck, Name: "ETH_MPLS_NO_CHECK", Parent: "mpls", Bool: true,
+		Type: vocab.DispatchNoCheck, Name: "KUNAI_ETH_MPLS_NO_CHECK", Parent: "mpls", Bool: true,
 	}
 	mpls := &ir.LayerInstance{Spec: mplsSpec}
 	innerEth := &ir.LayerInstance{Spec: innerEthSpec, Dispatch: &ir.DispatchChoice{Type: vocab.DispatchNoCheck, Const: noCheck}}
@@ -1121,7 +1121,7 @@ func TestGenNoCheckDispatchEmitsNothing(t *testing.T) {
 
 func TestGenNoCheckRejectsFalseConst(t *testing.T) {
 	noCheck := &vocab.DispatchConst{
-		Type: vocab.DispatchNoCheck, Name: "ETH_MPLS_NO_CHECK", Parent: "mpls", Bool: false,
+		Type: vocab.DispatchNoCheck, Name: "KUNAI_ETH_MPLS_NO_CHECK", Parent: "mpls", Bool: false,
 	}
 	p := ethIPv4TCPProgram()
 	p.Layers[1].Dispatch = &ir.DispatchChoice{Type: vocab.DispatchNoCheck, Const: noCheck}

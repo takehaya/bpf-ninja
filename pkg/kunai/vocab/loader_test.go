@@ -41,9 +41,9 @@ func TestLoadMplsDispatch(t *testing.T) {
 	if !ok || eth.Type != DispatchField || eth.Parent != "eth" || eth.Value != 0x8847 {
 		t.Errorf("KUNAI_MPLS_ETH_ETHERTYPE = %+v", eth)
 	}
-	stack, ok := dc["MPLS_MPLS_NO_CHECK"]
+	stack, ok := dc["KUNAI_MPLS_MPLS_NO_CHECK"]
 	if !ok || stack.Type != DispatchNoCheck || !stack.Bool {
-		t.Errorf("MPLS_MPLS_NO_CHECK = %+v", stack)
+		t.Errorf("KUNAI_MPLS_MPLS_NO_CHECK = %+v", stack)
 	}
 	if mpls.MaxDepth != 8 {
 		t.Errorf("MPLS_MAX_DEPTH: spec.MaxDepth = %d, want 8", mpls.MaxDepth)
@@ -103,12 +103,12 @@ func TestLoadVlanDispatchConstants(t *testing.T) {
 
 func TestLoadCwIsNoCheck(t *testing.T) {
 	cw := loadBundled(t)["cw"]
-	dc, ok := indexByName(cw.Consts)["CW_MPLS_NO_CHECK"]
+	dc, ok := indexByName(cw.Consts)["KUNAI_CW_MPLS_NO_CHECK"]
 	if !ok {
-		t.Fatal("CW_MPLS_NO_CHECK not found")
+		t.Fatal("KUNAI_CW_MPLS_NO_CHECK not found")
 	}
 	if dc.Type != DispatchNoCheck || dc.Parent != "mpls" || !dc.Bool {
-		t.Errorf("CW_MPLS_NO_CHECK = %+v", dc)
+		t.Errorf("KUNAI_CW_MPLS_NO_CHECK = %+v", dc)
 	}
 }
 
@@ -274,9 +274,9 @@ func TestLoadEthMplsNoCheck(t *testing.T) {
 	if eth == nil {
 		t.Fatal("eth not loaded")
 	}
-	dc, ok := indexByName(eth.Consts)["ETH_MPLS_NO_CHECK"]
+	dc, ok := indexByName(eth.Consts)["KUNAI_ETH_MPLS_NO_CHECK"]
 	if !ok {
-		t.Fatal("ETH_MPLS_NO_CHECK not found")
+		t.Fatal("KUNAI_ETH_MPLS_NO_CHECK not found")
 	}
 	if dc.Type != DispatchNoCheck || dc.Parent != "mpls" || !dc.Bool {
 		t.Errorf("no-check const = %+v", dc)
@@ -365,22 +365,25 @@ parser F(packet_in pkt, out foo_h h) { state start { pkt.extract(h); transition 
 	}
 }
 
-// TestLoadMatchValueConstNotDispatch verifies a KUNAI_<NAME> const used
-// only as a select-match value loads cleanly and is NOT promoted into
-// spec.Consts (the dispatch-const list). If it leaked in as a
-// DispatchField, it would inject a phantom Parent="match" edge into
-// SelectDispatchConst and the help dispatch graph.
+// TestLoadMatchValueConstNotDispatch verifies a bare (non-KUNAI_)
+// value-only const with a phantom parent (here OPT, not a protocol)
+// loads cleanly and is NOT promoted into spec.Consts (the dispatch-const
+// list). If it leaked in as a DispatchField, it would inject a phantom
+// Parent="opt" edge into SelectDispatchConst and the help dispatch
+// graph. The OPT_<KIND> name also exercises the loader's OPT_ narrowing:
+// only OPT_FLAGS_BYTE_OFFSET / OPT_TRIGGER_ / OPT_LEN_ are structural;
+// OPT_SPECIAL falls through to the value-only path.
 func TestLoadMatchValueConstNotDispatch(t *testing.T) {
 	fsys := fstest.MapFS{
 		"vocab/foo.p4": &fstest.MapFile{Data: []byte(`
 header foo_h { bit<8> kind; }
-const bit<8> KUNAI_FOO_SPECIAL = 7;
+const bit<8> FOO_OPT_SPECIAL = 7;
 parser F(packet_in pkt, out foo_h h) {
     state start {
         pkt.extract(h);
         transition select(h.kind) {
-            KUNAI_FOO_SPECIAL: accept;
-            default:           reject;
+            FOO_OPT_SPECIAL: accept;
+            default:         reject;
         }
     }
 }
@@ -392,37 +395,63 @@ parser F(packet_in pkt, out foo_h h) {
 	}
 	foo := specs["foo"]
 	for _, c := range foo.Consts {
-		if c.Name == "KUNAI_FOO_SPECIAL" {
-			t.Errorf("KUNAI_ const leaked into spec.Consts as dispatch const: %+v", c)
+		if c.Name == "FOO_OPT_SPECIAL" {
+			t.Errorf("value-only const leaked into spec.Consts as dispatch const: %+v", c)
 		}
-		if c.Parent == "match" {
-			t.Errorf("KUNAI_ const misclassified with phantom Parent=match: %+v", c)
+		if c.Parent == "opt" {
+			t.Errorf("value-only const misclassified with phantom Parent=opt: %+v", c)
 		}
 	}
 	// The match value must have folded into the select arm.
 	m := foo.File.Parsers[0].States[0].Transition.Select.Cases[0].Values[0]
 	if m.Value != 7 {
-		t.Errorf("select arm value = %d, want 7 (folded from KUNAI_FOO_SPECIAL)", m.Value)
+		t.Errorf("select arm value = %d, want 7 (folded from FOO_OPT_SPECIAL)", m.Value)
 	}
 }
 
-// TestLoadRejectsMatchConstAsBool pins that the KUNAI_ category demands
-// an integer const; a bool slips into is_zero() arms as true/false
-// literals, never as a named const.
-func TestLoadRejectsMatchConstAsBool(t *testing.T) {
+// TestLoadRejectsKunaiOnValueOnly pins that the KUNAI_ marker is
+// reserved for inter-layer dispatch edges: a KUNAI_-prefixed const whose
+// parent token is a phantom (here OPT, not a protocol) is rejected with
+// a diagnostic pointing the author at the bare name.
+func TestLoadRejectsKunaiOnValueOnly(t *testing.T) {
 	fsys := fstest.MapFS{
 		"vocab/foo.p4": &fstest.MapFile{Data: []byte(`
 header foo_h { bit<8> kind; }
-const bool KUNAI_FOO_FLAG = true;
+const bit<8> KUNAI_FOO_OPT_SPECIAL = 7;
 parser F(packet_in pkt, out foo_h h) { state start { pkt.extract(h); transition accept; } }
 `)},
 	}
 	_, err := Load(fsys, "vocab")
 	if err == nil {
-		t.Fatal("expected error for bool KUNAI_ const")
+		t.Fatal("expected error for KUNAI_ on a value-only (phantom-parent) const")
 	}
-	if !strings.Contains(err.Error(), "KUNAI_ const") {
-		t.Errorf("error should mention KUNAI_ const: %v", err)
+	if !strings.Contains(err.Error(), "drop the KUNAI_ prefix") {
+		t.Errorf("error should advise dropping the KUNAI_ prefix: %v", err)
+	}
+}
+
+// TestLoadRejectsMatchConstAsBool pins that a KUNAI_ field-dispatch
+// const demands an integer; a bool slips into is_zero() arms as
+// true/false literals, never as a named const.
+func TestLoadRejectsMatchConstAsBool(t *testing.T) {
+	fsys := fstest.MapFS{
+		"vocab/foo.p4": &fstest.MapFile{Data: []byte(`
+header foo_h { bit<8> kind; }
+header bar_h { bit<8> x; }
+const bool KUNAI_FOO_BAR_FLAG = true;
+parser F(packet_in pkt, out foo_h h) { state start { pkt.extract(h); transition accept; } }
+`)},
+		"vocab/bar.p4": &fstest.MapFile{Data: []byte(`
+header bar_h { bit<8> x; }
+parser B(packet_in pkt, out bar_h h) { state start { pkt.extract(h); transition accept; } }
+`)},
+	}
+	_, err := Load(fsys, "vocab")
+	if err == nil {
+		t.Fatal("expected error for bool KUNAI_ field-dispatch const")
+	}
+	if !strings.Contains(err.Error(), "must be bit<N>") {
+		t.Errorf("error should mention bit<N>: %v", err)
 	}
 }
 
@@ -430,8 +459,13 @@ func TestLoadRejectsNoCheckFalse(t *testing.T) {
 	fsys := fstest.MapFS{
 		"vocab/foo.p4": &fstest.MapFile{Data: []byte(`
 header foo_h { bit<8> x; }
-const bool FOO_BAR_NO_CHECK = false;
+header bar_h { bit<8> x; }
+const bool KUNAI_FOO_BAR_NO_CHECK = false;
 parser F(packet_in pkt, out foo_h h) { state start { pkt.extract(h); transition accept; } }
+`)},
+		"vocab/bar.p4": &fstest.MapFile{Data: []byte(`
+header bar_h { bit<8> x; }
+parser B(packet_in pkt, out bar_h h) { state start { pkt.extract(h); transition accept; } }
 `)},
 	}
 	_, err := Load(fsys, "vocab")
@@ -440,6 +474,51 @@ parser F(packet_in pkt, out foo_h h) { state start { pkt.extract(h); transition 
 	}
 	if !strings.Contains(err.Error(), "true") {
 		t.Errorf("error should mention 'true': %v", err)
+	}
+}
+
+// TestLoadRejectsBareNoCheck pins the enforcement: a NO_CHECK const
+// without the KUNAI_ marker is an inter-layer dispatch edge missing its
+// prefix, and the loader points the author at KUNAI_.
+func TestLoadRejectsBareNoCheck(t *testing.T) {
+	fsys := fstest.MapFS{
+		"vocab/foo.p4": &fstest.MapFile{Data: []byte(`
+header foo_h { bit<8> x; }
+const bool FOO_BAR_NO_CHECK = true;
+parser F(packet_in pkt, out foo_h h) { state start { pkt.extract(h); transition accept; } }
+`)},
+	}
+	_, err := Load(fsys, "vocab")
+	if err == nil {
+		t.Fatal("expected error for bare (non-KUNAI_) NO_CHECK")
+	}
+	if !strings.Contains(err.Error(), "KUNAI_") {
+		t.Errorf("error should point at the KUNAI_ prefix: %v", err)
+	}
+}
+
+// TestLoadRejectsBareFieldDispatch pins the enforcement: a bare
+// <SELF>_<PARENT>_<FIELD> with a real parent is an inter-layer dispatch
+// edge that must carry the KUNAI_ marker.
+func TestLoadRejectsBareFieldDispatch(t *testing.T) {
+	fsys := fstest.MapFS{
+		"vocab/foo.p4": &fstest.MapFile{Data: []byte(`
+header foo_h { bit<8> x; }
+header bar_h { bit<8> x; }
+const bit<16> FOO_BAR_ETHERTYPE = 0x0800;
+parser F(packet_in pkt, out foo_h h) { state start { pkt.extract(h); transition accept; } }
+`)},
+		"vocab/bar.p4": &fstest.MapFile{Data: []byte(`
+header bar_h { bit<8> x; }
+parser B(packet_in pkt, out bar_h h) { state start { pkt.extract(h); transition accept; } }
+`)},
+	}
+	_, err := Load(fsys, "vocab")
+	if err == nil {
+		t.Fatal("expected error for bare (non-KUNAI_) field dispatch")
+	}
+	if !strings.Contains(err.Error(), "KUNAI_") {
+		t.Errorf("error should point at the KUNAI_ prefix: %v", err)
 	}
 }
 
@@ -2081,7 +2160,7 @@ func TestLoadParserCounterRoundTrip(t *testing.T) {
 	fsys := fstest.MapFS{
 		"vocab/foo.p4": &fstest.MapFile{Data: []byte(`
 header foo_h { bit<8> ihl; }
-const bit<16> FOO_BAR_ETHERTYPE = 0x0800;
+const bit<16> KUNAI_FOO_BAR_ETHERTYPE = 0x0800;
 
 extern ParserCounter {
     ParserCounter();
@@ -2161,7 +2240,7 @@ func TestLoadParserCounterRejectsUndeclaredName(t *testing.T) {
 	fsys := fstest.MapFS{
 		"vocab/foo.p4": &fstest.MapFile{Data: []byte(`
 header foo_h { bit<8> ihl; }
-const bit<16> FOO_BAR_ETHERTYPE = 0x0800;
+const bit<16> KUNAI_FOO_BAR_ETHERTYPE = 0x0800;
 
 parser F(packet_in pkt, out foo_h h) {
     state start {
@@ -2192,7 +2271,7 @@ func TestLoadParserCounterTupleSelect(t *testing.T) {
 		"vocab/foo.p4": &fstest.MapFile{Data: []byte(`
 header foo_h    { bit<8> ihl; }
 header foo_ra_h { bit<8> kind; bit<8> length; bit<16> value; }
-const bit<16> FOO_BAR_ETHERTYPE = 0x0800;
+const bit<16> KUNAI_FOO_BAR_ETHERTYPE = 0x0800;
 const bit<8>  FOO_MAX_DEPTH = 11;
 
 extern ParserCounter {
@@ -2272,7 +2351,7 @@ func TestLoadParserCounterDecrementFieldExpr(t *testing.T) {
 		"vocab/foo.p4": &fstest.MapFile{Data: []byte(`
 header foo_h    { bit<8> ihl; }
 header foo_rr_h { bit<8> kind; bit<8> length; bit<8> pointer; }
-const bit<16> FOO_BAR_ETHERTYPE = 0x0800;
+const bit<16> KUNAI_FOO_BAR_ETHERTYPE = 0x0800;
 const bit<8>  FOO_MAX_DEPTH = 11;
 
 extern ParserCounter {
@@ -2345,7 +2424,7 @@ func TestLoadParserCounterDecrementFieldExprRejectsPrimary(t *testing.T) {
 	fsys := fstest.MapFS{
 		"vocab/foo.p4": &fstest.MapFile{Data: []byte(`
 header foo_h { bit<8> ihl; }
-const bit<16> FOO_BAR_ETHERTYPE = 0x0800;
+const bit<16> KUNAI_FOO_BAR_ETHERTYPE = 0x0800;
 const bit<8>  FOO_MAX_DEPTH = 11;
 
 extern ParserCounter {
@@ -2390,7 +2469,7 @@ func TestLoadParserCounterRejectsReversedTuple(t *testing.T) {
 	fsys := fstest.MapFS{
 		"vocab/foo.p4": &fstest.MapFile{Data: []byte(`
 header foo_h { bit<8> ihl; }
-const bit<16> FOO_BAR_ETHERTYPE = 0x0800;
+const bit<16> KUNAI_FOO_BAR_ETHERTYPE = 0x0800;
 const bit<8>  FOO_MAX_DEPTH = 4;
 
 extern ParserCounter {

@@ -295,7 +295,7 @@ parser EthParser(packet_in pkt, out eth_h hdr) {
 header foo_h     { bit<8> ihl; bit<24> _pad; }
 header foo_mss_h { bit<8> kind; bit<8> length; bit<16> value; }
 header foo_ws_h  { bit<8> kind; bit<8> length; bit<8> shift;  bit<8> _pad; }
-const bit<16> FOO_ETH_ETHERTYPE = 0x0800;
+const bit<16> KUNAI_FOO_ETH_ETHERTYPE = 0x0800;
 const bit<8>  FOO_PARSER_MAX_DEPTH = 8;
 
 extern ParserCounter {
