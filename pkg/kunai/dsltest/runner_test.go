@@ -722,6 +722,74 @@ func TestSRv6ThreeSegments(t *testing.T) {
 	r.MustMatch(t, pkt, "eth/ipv6/srv6 (3 segments)/tcp")
 }
 
+// TestSRv6ChainPastSegmentsFieldRead reads a field PAST the SRH — the
+// inner TCP destination port — over a 3-segment SRH. This is the
+// regression guard for the explicit segment walk reaching the next
+// header at exactly SRH+8 + hdr_ext_len*8: if the walk under- or
+// over-advanced R4, the inner tcp.dport read would land on the wrong
+// bytes and the verdict would flip.
+func TestSRv6ChainPastSegmentsFieldRead(t *testing.T) {
+	r := New(t, "eth/ipv6/srv6/tcp where tcp.dport == 8080")
+	match := BuildSRv6(t, SRv6Opts{
+		Segments: []net.IP{
+			net.ParseIP("fe80::1"),
+			net.ParseIP("fe80::2"),
+			net.ParseIP("fe80::3"),
+		},
+		InnerNextHeader: 6,
+		InnerDstPort:    8080,
+	})
+	r.MustMatch(t, match, "tcp.dport==8080 past a 3-segment SRH")
+
+	miss := BuildSRv6(t, SRv6Opts{
+		Segments: []net.IP{
+			net.ParseIP("fe80::1"),
+			net.ParseIP("fe80::2"),
+			net.ParseIP("fe80::3"),
+		},
+		InnerNextHeader: 6,
+		InnerDstPort:    443,
+	})
+	r.MustReject(t, miss, "tcp.dport==443 must not match the 8080 filter")
+}
+
+// TestSRv6ChainPastSegmentsWithTLV proves next-header reach when the
+// SRH carries trailing TLVs after the segment list. The explicit walk
+// consumes the whole variable region (hdr_ext_len*8 bytes), so a
+// 16-byte TLV after a 2-segment list must still land the inner TCP
+// read at the right offset. A wrong-port packet (same shape) must
+// reject, confirming the TLV bytes did not bleed into the tcp.dport
+// read.
+func TestSRv6ChainPastSegmentsWithTLV(t *testing.T) {
+	r := New(t, "eth/ipv6/srv6/tcp where tcp.dport == 8080")
+	// 16-byte TLV trailer (e.g. a padding/HMAC-shaped TLV); a multiple
+	// of 16 so the segment-chunk walk reaches the region end exactly.
+	tlv := make([]byte, 16)
+	tlv[0] = 0x06 // arbitrary TLV type
+	tlv[1] = 0x0e // arbitrary TLV length
+	match := BuildSRv6(t, SRv6Opts{
+		Segments: []net.IP{
+			net.ParseIP("fe80::1"),
+			net.ParseIP("fe80::2"),
+		},
+		InnerNextHeader:  6,
+		InnerDstPort:     8080,
+		TrailingTLVBytes: tlv,
+	})
+	r.MustMatch(t, match, "tcp.dport==8080 past a 2-segment SRH + 16B TLV")
+
+	miss := BuildSRv6(t, SRv6Opts{
+		Segments: []net.IP{
+			net.ParseIP("fe80::1"),
+			net.ParseIP("fe80::2"),
+		},
+		InnerNextHeader:  6,
+		InnerDstPort:     443,
+		TrailingTLVBytes: tlv,
+	})
+	r.MustReject(t, miss, "tcp.dport==443 (TLV-bearing) must not match the 8080 filter")
+}
+
 // TestIPv4OptionsAdvance exercises IPv4 HDRLEN: an IPv4 frame
 // with one Record-Route option (option type 7, length 11) lifts IHL
 // to 8 (32-byte header). Codegen must read IHL, multiply by 4,

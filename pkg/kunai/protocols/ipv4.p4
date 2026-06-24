@@ -87,6 +87,16 @@ const bit<16> IPV4_GRE_PROTOCOL_TYPE = 0x0800;
 // §6.5 Mechanism 8 / canFallbackToBulkAdvance) and skip the
 // loop entirely.
 
+// IPv4 option kinds dispatched by the walk state (RFC 791 §3.1).
+// KUNAI_ marks these as value-only consts: the loader folds each into
+// the matching select arm and gives them no inter-layer dispatch role.
+// EOL/NOP are the single-byte options; Record Route and Router Alert
+// are the extracted ones.
+const bit<8> KUNAI_IPV4_OPT_EOL          = 0;   // End of Option List (RFC 791)
+const bit<8> KUNAI_IPV4_OPT_NOP          = 1;   // No Operation (RFC 791)
+const bit<8> KUNAI_IPV4_OPT_RR           = 7;   // Record Route (RFC 791 §3.1)
+const bit<8> KUNAI_IPV4_OPT_ROUTER_ALERT = 148; // Router Alert (RFC 2113)
+
 extern ParserCounter {
     ParserCounter();
     void set(in bit<8> value);
@@ -135,12 +145,12 @@ parser IPv4Parser(packet_in pkt,
     }
     state walk {
         transition select(pc.is_zero(), pkt.lookahead<bit<8>>()) {
-            (true,  _):    accept;
-            (false, 0):    accept;
-            (false, 1):    parse_nop;
-            (false, 7):    parse_rr;
-            (false, 148):  parse_router_alert;
-            (false, _):    reject;
+            (true,  _):                          accept;
+            (false, KUNAI_IPV4_OPT_EOL):         accept;
+            (false, KUNAI_IPV4_OPT_NOP):         parse_nop;
+            (false, KUNAI_IPV4_OPT_RR):          parse_rr;
+            (false, KUNAI_IPV4_OPT_ROUTER_ALERT): parse_router_alert;
+            (false, _):                          reject;
         }
     }
     state parse_nop {

@@ -340,6 +340,25 @@ func classifyConsts(cs []*p4lite.Const, protoName, source string) (classifyResul
 			return classifyResult{}, fmt.Errorf("%s: duplicate const %q", source, c.Name)
 		}
 		seenNames[c.Name] = true
+		// KUNAI_<NAME>: a named integer used purely as a value in a
+		// `transition select(...)` arm (option kinds, routing types,
+		// next-header numbers). The KUNAI_ prefix is the namespace for
+		// these match values; they are intentionally NOT self-prefixed
+		// (the proto is already implied by the file), so this check sits
+		// ahead of the self-prefix requirement below. p4lite folds the
+		// const into Match.Value at parse time, so this category carries
+		// no inter-layer dispatch role — it is deliberately NOT appended
+		// to res.Consts (doing so would inject a phantom Parent/FieldName
+		// into SelectDispatchConst and the help dispatch graph).
+		if name, ok := strings.CutPrefix(c.Name, "KUNAI_"); ok {
+			if c.IsBool {
+				return classifyResult{}, fmt.Errorf("%s: KUNAI_ const %q must be bit<N>, got bool (select-match values are integers; use true/false literals directly for is_zero() keys)", source, c.Name)
+			}
+			if name == "" {
+				return classifyResult{}, fmt.Errorf("%s: KUNAI_ const %q has empty name after the KUNAI_ prefix", source, c.Name)
+			}
+			continue
+		}
 		if !strings.HasPrefix(c.Name, protoUpper+"_") {
 			return classifyResult{}, fmt.Errorf("%s: const %q must begin with %q (self-prefix derived from filename)", source, c.Name, protoUpper+"_")
 		}

@@ -125,7 +125,81 @@ func (p *parser) parseFile() (*File, error) {
 	if len(pending) > 0 {
 		return nil, p.errorf(pending[0].Pos, "annotation @%s has no following declaration to attach to", pending[0].Name)
 	}
+	if err := p.resolveConstMatches(f); err != nil {
+		return nil, err
+	}
 	return f, nil
+}
+
+// resolveConstMatches folds named-const select-match arms into their
+// integer value once the whole file is parsed. A select arm written
+// as `SRV6_ROUTING_TYPE: state;` parses to a Match with ConstName set
+// but Value unknown (the const decl may appear after the parser
+// block). This pass, run from parseFile after all declarations are
+// in hand, looks each name up in File.Consts and stamps the const's
+// Int into Match.Value — making the named arm byte-for-byte identical
+// to the literal it stands for. ConstName is left in place purely for
+// diagnostics; no downstream consumer reads it.
+//
+// Errors, all positioned at the offending arm:
+//   - unknown const name;
+//   - a bool const used in an integer match slot;
+//   - an int const used in a bool slot (a `<counter>.is_zero()` key,
+//     whose arms must be the literals true/false).
+//
+// The bool-slot direction needs the key alignment, so the walk
+// pairs each Case value with its Select key by index.
+func (p *parser) resolveConstMatches(f *File) error {
+	byName := make(map[string]*Const, len(f.Consts))
+	for _, c := range f.Consts {
+		byName[c.Name] = c
+	}
+	for _, par := range f.Parsers {
+		for _, st := range par.States {
+			tr := st.Transition
+			if tr == nil || tr.Kind != TransSelect || tr.Select == nil {
+				continue
+			}
+			sel := tr.Select
+			for ci := range sel.Cases {
+				c := &sel.Cases[ci]
+				for vi := range c.Values {
+					m := &c.Values[vi]
+					boolSlot := vi < len(sel.Keys) &&
+						sel.Keys[vi].Kind == SelectKeyCounterIsZero
+					if err := p.resolveOneMatch(m, boolSlot, byName); err != nil {
+						return err
+					}
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// resolveOneMatch handles a single Match slot. Literals, wildcards and
+// bool literals pass through untouched; only a ConstName arm is
+// resolved. boolSlot is true when the aligned select key is a
+// `<counter>.is_zero()` peek, whose arms must be boolean.
+func (p *parser) resolveOneMatch(m *Match, boolSlot bool, byName map[string]*Const) error {
+	if m.ConstName == "" {
+		// A bool literal landing in an integer slot, or an integer
+		// literal in a bool slot, is a separate concern checked by
+		// downstream codegen; this pass only owns const folding.
+		return nil
+	}
+	c, ok := byName[m.ConstName]
+	if !ok {
+		return p.errorf(m.Pos, "select match references unknown const %q (no such const declared in this file)", m.ConstName)
+	}
+	if c.IsBool {
+		return p.errorf(m.Pos, "select match references bool const %q where an integer match value is required (use a bit<N> const, or the literals true/false for a `<counter>.is_zero()` key)", m.ConstName)
+	}
+	if boolSlot {
+		return p.errorf(m.Pos, "select match references integer const %q for a `<counter>.is_zero()` key, which only matches the literals true/false", m.ConstName)
+	}
+	m.Value = c.Int
+	return nil
 }
 
 // parseAnnotation parses one structured `@name[k=v, ...]` decorator.
@@ -651,10 +725,14 @@ func (p *parser) parseExtractCall(obj string, startPos Position) (Stmt, error) {
 	return es, nil
 }
 
-// parseCounterSetCall handles `<counter>.set(((bit<N>)(hdr.<F> - K)) << S);`.
-// Cursor sits past the `set` token. The arg shares AdvanceField's
-// cast-and-shift template so the byte expression flowing into the
-// counter slot is the same one trailer-skip already lowers. The
+// parseCounterSetCall handles `<counter>.set(((bit<N>)(hdr.<F> - K)) << S);`
+// (subtract form) or `<counter>.set(((bit<N>)(hdr.<F> & MASK)) << S);`
+// (mask form). Cursor sits past the `set` token. The arg shares
+// AdvanceField's cast-and-shift template so the byte expression flowing
+// into the counter slot is the same one trailer-skip already lowers.
+// The mask form lets the counter carry a statically-bounded byte count
+// (e.g. SRH's `(hdr_ext_len & 0x0F) * 8`) so the bulk-advance fallback
+// the counter-driven walk degrades to stays verifier-bounded. The
 // shared core consumes both the closing `)` and the trailing `;`.
 func (p *parser) parseCounterSetCall(counter string, startPos Position) (Stmt, error) {
 	if _, err := p.expect(TokLParen); err != nil {
@@ -665,10 +743,7 @@ func (p *parser) parseCounterSetCall(counter string, startPos Position) (Stmt, e
 		return nil, err
 	}
 	if adv.Kind != AdvanceField {
-		return nil, p.errorf(startPos, "%s.set requires the `((bit<N>)(hdr.<F> - K)) << S` template (lookahead form not supported here)", counter)
-	}
-	if adv.Mask != 0 {
-		return nil, p.errorf(startPos, "%s.set requires the subtract form `(hdr.<F> - K)`; mask form `(hdr.<F> & MASK)` is not supported here (CounterCallStmt has no Mask slot, the mask would be silently dropped)", counter)
+		return nil, p.errorf(startPos, "%s.set requires the `((bit<N>)(hdr.<F> - K)) << S` or `((bit<N>)(hdr.<F> & MASK)) << S` template (lookahead form not supported here)", counter)
 	}
 	return &CounterCallStmt{
 		Counter:   counter,
@@ -677,6 +752,7 @@ func (p *parser) parseCounterSetCall(counter string, startPos Position) (Stmt, e
 		Target:    adv.Target,
 		FieldName: adv.FieldName,
 		BaseWords: adv.BaseWords,
+		Mask:      adv.Mask,
 		ScaleLog2: adv.ScaleLog2,
 		Pos:       startPos,
 	}, nil
@@ -1415,8 +1491,18 @@ func (p *parser) parseMatch() (Match, error) {
 			}
 			return m, nil
 		}
-		return Match{}, p.errorf(p.cur.Pos, "unexpected identifier %q in match (only integers, '_' or true/false supported)", p.cur.Value)
+		// A bare identifier names an integer const declared elsewhere
+		// in the file. The value isn't known until every const is
+		// parsed, so record the name and defer the lookup to
+		// resolveConstMatches (run from parseFile once the whole file
+		// is in hand). Value stays the single source of truth: the
+		// resolution pass folds the const's integer into Value.
+		m := Match{ConstName: p.cur.Value, Pos: startPos}
+		if err := p.advance(); err != nil {
+			return Match{}, err
+		}
+		return m, nil
 	default:
-		return Match{}, p.errorf(p.cur.Pos, "expected integer, '_' or true/false in select match, got %s", p.cur.Kind)
+		return Match{}, p.errorf(p.cur.Pos, "expected integer, named const, '_' or true/false in select match, got %s", p.cur.Kind)
 	}
 }

@@ -735,7 +735,7 @@ func buildCounter(cs *p4lite.CounterCallStmt, ctx *buildCtx) (CounterOp, error) 
 	}
 	switch cs.Op {
 	case p4lite.CounterSet:
-		skip, h, err := lowerCastShiftSkip(cs.Target, cs.FieldName, cs.BaseWords, 0, cs.ScaleLog2, cs.Counter+".set", ctx, cs.Pos)
+		skip, h, err := lowerCastShiftSkip(cs.Target, cs.FieldName, cs.BaseWords, cs.Mask, cs.ScaleLog2, cs.Counter+".set", ctx, cs.Pos)
 		if err != nil {
 			return CounterOp{}, err
 		}

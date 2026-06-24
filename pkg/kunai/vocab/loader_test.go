@@ -184,9 +184,9 @@ func TestLoadSrv6Header(t *testing.T) {
 		}
 	}
 	// segments aux is declared as a stack so resolver can route
-	// `srv6.segments[N].addr` to it. The parser block does not push
-	// to it; the variable trail in codegen advances R4 past all
-	// segments in one statically-bounded skip.
+	// `srv6.segments[N].addr` to it. The parser block pushes one entry
+	// per walk iteration via `pkt.extract(segments.next)`; the stack
+	// base is the push state's layer-entry offset (= 8).
 	if srv6.ParseStateMachine == nil {
 		t.Fatal("expected non-trivial ParseStateMachine after segments declaration")
 	}
@@ -352,7 +352,6 @@ parser F(packet_in pkt, out foo_h h) { state start { pkt.extract(h); transition 
 	}
 }
 
-
 func TestLoadRejectsConstOutsideNamingConvention(t *testing.T) {
 	fsys := fstest.MapFS{
 		"vocab/foo.p4": &fstest.MapFile{Data: []byte(`
@@ -363,6 +362,67 @@ parser F(packet_in pkt, out foo_h h) { state start { pkt.extract(h); transition 
 	}
 	if _, err := Load(fsys, "vocab"); err == nil {
 		t.Fatal("expected error for const not matching any pattern")
+	}
+}
+
+// TestLoadMatchValueConstNotDispatch verifies a KUNAI_<NAME> const used
+// only as a select-match value loads cleanly and is NOT promoted into
+// spec.Consts (the dispatch-const list). If it leaked in as a
+// DispatchField, it would inject a phantom Parent="match" edge into
+// SelectDispatchConst and the help dispatch graph.
+func TestLoadMatchValueConstNotDispatch(t *testing.T) {
+	fsys := fstest.MapFS{
+		"vocab/foo.p4": &fstest.MapFile{Data: []byte(`
+header foo_h { bit<8> kind; }
+const bit<8> KUNAI_FOO_SPECIAL = 7;
+parser F(packet_in pkt, out foo_h h) {
+    state start {
+        pkt.extract(h);
+        transition select(h.kind) {
+            KUNAI_FOO_SPECIAL: accept;
+            default:           reject;
+        }
+    }
+}
+`)},
+	}
+	specs, err := Load(fsys, "vocab")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	foo := specs["foo"]
+	for _, c := range foo.Consts {
+		if c.Name == "KUNAI_FOO_SPECIAL" {
+			t.Errorf("KUNAI_ const leaked into spec.Consts as dispatch const: %+v", c)
+		}
+		if c.Parent == "match" {
+			t.Errorf("KUNAI_ const misclassified with phantom Parent=match: %+v", c)
+		}
+	}
+	// The match value must have folded into the select arm.
+	m := foo.File.Parsers[0].States[0].Transition.Select.Cases[0].Values[0]
+	if m.Value != 7 {
+		t.Errorf("select arm value = %d, want 7 (folded from KUNAI_FOO_SPECIAL)", m.Value)
+	}
+}
+
+// TestLoadRejectsMatchConstAsBool pins that the KUNAI_ category demands
+// an integer const; a bool slips into is_zero() arms as true/false
+// literals, never as a named const.
+func TestLoadRejectsMatchConstAsBool(t *testing.T) {
+	fsys := fstest.MapFS{
+		"vocab/foo.p4": &fstest.MapFile{Data: []byte(`
+header foo_h { bit<8> kind; }
+const bool KUNAI_FOO_FLAG = true;
+parser F(packet_in pkt, out foo_h h) { state start { pkt.extract(h); transition accept; } }
+`)},
+	}
+	_, err := Load(fsys, "vocab")
+	if err == nil {
+		t.Fatal("expected error for bool KUNAI_ const")
+	}
+	if !strings.Contains(err.Error(), "KUNAI_ const") {
+		t.Errorf("error should mention KUNAI_ const: %v", err)
 	}
 }
 
@@ -734,19 +794,25 @@ func auxLayoutNames(m map[string]*AuxLayout) []string {
 }
 
 func TestParseStateMachineSrv6(t *testing.T) {
-	// 2 states: `start` extracts the SRH primary and transitions to
-	// `skip_segments` on routing_type==4 (reject otherwise);
-	// `skip_segments` runs the variable trail via pkt.advance and
-	// accepts.
+	// 3 states model the explicit counter-driven segment walk:
+	//   `start`       extracts the SRH primary, seeds the counter with
+	//                 the region size (= hdr_ext_len, in 8-byte units),
+	//                 and transitions on routing_type==4 (reject else);
+	//   `walk`        tests pc.is_zero() — accept when drained, else
+	//                 route to consume_seg;
+	//   `consume_seg` extracts one 16-byte segment into the segments
+	//                 stack, decrements the counter by 2 (= one segment
+	//                 in 8-byte units), and loops back to walk.
 	specs := loadBundled(t)
 	srv6 := specs["srv6"]
 	if srv6 == nil || srv6.ParseStateMachine == nil {
 		t.Fatal("expected srv6 to have a non-trivial ParseStateMachine")
 	}
 	machine := srv6.ParseStateMachine
-	if len(machine.States) != 2 {
-		t.Fatalf("srv6 state count = %d, want 2 (start + skip_segments)", len(machine.States))
+	if len(machine.States) != 3 {
+		t.Fatalf("srv6 state count = %d, want 3 (start + walk + consume_seg)", len(machine.States))
 	}
+
 	start := machine.States[0]
 	if start.Name != "start" {
 		t.Errorf("states[0].Name = %q, want %q", start.Name, "start")
@@ -754,20 +820,56 @@ func TestParseStateMachineSrv6(t *testing.T) {
 	if start.Trans.Kind != TransSelect {
 		t.Errorf("start transition kind = %v, want TransSelect (routing_type guard)", start.Trans.Kind)
 	}
-	skip := machine.States[1]
-	if skip.Name != "skip_segments" {
-		t.Errorf("states[1].Name = %q, want %q", skip.Name, "skip_segments")
+	// start seeds pc with the region BYTE count: load hdr_ext_len
+	// (byte 1), mask it to 0x0F (cap = 120 bytes for the verifier), and
+	// scale by 8 (<< 6) — the byte count the walk decrements by 16 per
+	// 16-byte segment, and the exact advance the bulk-advance fallback
+	// takes when no segment field is queried.
+	if len(start.Counters) != 1 {
+		t.Fatalf("start counter op count = %d, want 1 (pc.set)", len(start.Counters))
 	}
-	if len(skip.Advances) != 1 {
-		t.Fatalf("skip_segments advance count = %d, want 1", len(skip.Advances))
+	setOp := start.Counters[0]
+	if setOp.Kind != CounterOpSet || setOp.Counter != "pc" {
+		t.Errorf("start counter = %+v, want CounterOpSet on pc", setOp)
 	}
-	adv := skip.Advances[0]
-	if adv.Kind != AdvanceOpField {
-		t.Errorf("advance kind = %v, want AdvanceOpField", adv.Kind)
+	wantSkip := HeaderLength{LenByteOff: 1, LenMask: 0x0F, LenShift: 0, Scale: 8, Base: 0}
+	if setOp.Skip == nil || *setOp.Skip != wantSkip {
+		t.Errorf("pc.set skip = %+v, want %+v ((hdr_ext_len & 0x0F) * 8 bytes)", setOp.Skip, wantSkip)
 	}
-	want := HeaderLength{LenByteOff: 1, LenMask: 0x0F, LenShift: 0, Scale: 8, Base: 0}
-	if adv.Skip == nil || *adv.Skip != want {
-		t.Errorf("skip = %+v, want %+v", adv.Skip, want)
+
+	walk := machine.States[1]
+	if walk.Name != "walk" {
+		t.Errorf("states[1].Name = %q, want %q", walk.Name, "walk")
+	}
+	if walk.Trans.Kind != TransSelect {
+		t.Errorf("walk transition kind = %v, want TransSelect (pc.is_zero guard)", walk.Trans.Kind)
+	}
+	if len(walk.Extracts) != 0 || len(walk.Advances) != 0 {
+		t.Errorf("walk should carry no extracts/advances; got extracts=%d advances=%d", len(walk.Extracts), len(walk.Advances))
+	}
+
+	consume := machine.States[2]
+	if consume.Name != "consume_seg" {
+		t.Errorf("states[2].Name = %q, want %q", consume.Name, "consume_seg")
+	}
+	if len(consume.Extracts) != 1 {
+		t.Fatalf("consume_seg extract count = %d, want 1 (segments.next push)", len(consume.Extracts))
+	}
+	ex := consume.Extracts[0]
+	if !ex.IsStackPush || ex.StackName != "segments" || ex.HeaderName != "srv6_seg_h" {
+		t.Errorf("consume_seg extract = %+v, want stack-push of segments/srv6_seg_h", ex)
+	}
+	// The stack base falls out of the push state's layer-entry offset:
+	// start extracts the 8-byte SRH, so consume_seg sits at byte 8.
+	if consume.OffsetAtEntry != 8 {
+		t.Errorf("consume_seg OffsetAtEntry = %d, want 8 (= sizeof(srv6_h); the segments stack base)", consume.OffsetAtEntry)
+	}
+	if len(consume.Counters) != 1 {
+		t.Fatalf("consume_seg counter op count = %d, want 1 (pc.decrement)", len(consume.Counters))
+	}
+	dec := consume.Counters[0]
+	if dec.Kind != CounterOpDecrement || dec.Counter != "pc" || dec.LiteralBytes != 16 {
+		t.Errorf("consume_seg counter = %+v, want CounterOpDecrement pc by 16", dec)
 	}
 }
 
@@ -870,25 +972,34 @@ parser P(packet_in pkt,
 	}
 }
 
-// TestSRv6SegmentsLayoutAnnotation pins that the SRv6 segments aux
-// stack (= the bundled Mode B / declare-only example) resolves its
-// base byte offset from the parser-parameter @kunai_layout decorator
-// rather than the legacy implicit "primary directly after" fallback.
-func TestSRv6SegmentsLayoutAnnotation(t *testing.T) {
+// TestSRv6SegmentsPushedNotLayoutAnnotated pins that the SRv6 segments
+// aux stack is now a *pushed* stack (extracted via
+// `pkt.extract(segments.next)` in the explicit walk) rather than a
+// declare-only stack anchored by @kunai_layout. The base byte offset is
+// therefore recovered from the push state's layer-entry offset
+// (= sizeof(srv6_h) = 8) by the resolver, not from a StackLayouts entry.
+// Removing @kunai_layout is what keeps the segment base unambiguous now
+// that a parser state physically extracts each entry.
+func TestSRv6SegmentsPushedNotLayoutAnnotated(t *testing.T) {
 	specs := loadBundled(t)
 	srv6 := specs["srv6"]
 	if srv6 == nil {
 		t.Fatal("missing srv6 spec")
 	}
-	layout, ok := srv6.StackLayouts["segments"]
-	if !ok || layout == nil {
-		t.Fatal("srv6.StackLayouts[segments] missing — @kunai_layout not consumed")
+	if _, ok := srv6.StackLayouts["segments"]; ok {
+		t.Error("srv6.StackLayouts[segments] present — @kunai_layout should be gone once the parser pushes the stack")
 	}
-	if layout.After != "primary" {
-		t.Errorf("layout.After = %q, want primary", layout.After)
+	// The stack must be pushed by exactly one state, at byte offset 8.
+	pushOffsets := map[int]bool{}
+	for _, st := range srv6.ParseStateMachine.States {
+		for _, ex := range st.Extracts {
+			if ex.IsStackPush && ex.StackName == "segments" {
+				pushOffsets[st.OffsetAtEntry] = true
+			}
+		}
 	}
-	if layout.BaseByteOff != 8 {
-		t.Errorf("layout.BaseByteOff = %d, want 8 (= sizeof(srv6_h) primary)", layout.BaseByteOff)
+	if len(pushOffsets) != 1 || !pushOffsets[8] {
+		t.Errorf("segments push offsets = %v, want a single push at byte 8 (= sizeof(srv6_h))", pushOffsets)
 	}
 }
 
@@ -1227,7 +1338,6 @@ func TestVariableTrailAbsentForFixedProtocols(t *testing.T) {
 		}
 	}
 }
-
 
 // TestFlagTriggersGRE confirms the bundled GRE vocab declares the
 // C/K/S optional-field triggers in declaration order so codegen
@@ -1967,7 +2077,7 @@ func TestLoadParserCounterRoundTrip(t *testing.T) {
 	// decrement, and a counter-driven select. Foo→Bar dispatch
 	// satisfies the cross-vocab namespace check.
 	fsys := fstest.MapFS{
-		"vocab/foo.p4":  &fstest.MapFile{Data: []byte(`
+		"vocab/foo.p4": &fstest.MapFile{Data: []byte(`
 header foo_h { bit<8> ihl; }
 const bit<16> FOO_BAR_ETHERTYPE = 0x0800;
 

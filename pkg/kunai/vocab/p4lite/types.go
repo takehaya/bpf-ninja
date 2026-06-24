@@ -310,10 +310,15 @@ type CounterCallStmt struct {
 	Pos     Position
 
 	// CounterSet only: shares AdvanceField's cast-and-shift template.
+	// BaseWords (subtract form `- K`) and Mask (mask form `& MASK`) are
+	// mutually exclusive, mirroring AdvanceStmt — the parser sets at
+	// most one. The mask form caps the loaded count so the verifier
+	// sees a static upper bound, matching pkt.advance's masked trailer.
 	BitWidth  int    // the N in `(bit<N>) ...`
 	Target    string // the `hdr` in `hdr.<F>` (parser's `out` parameter)
 	FieldName string // the `<F>` in `hdr.<F>`
-	BaseWords int    // the K subtracted from the field value
+	BaseWords int    // the K subtracted from the field value (subtract form)
+	Mask      int    // the MASK bitwise-AND'd with the field value (mask form). Zero = subtract form active.
 	ScaleLog2 int    // the S in `<< S` (unit: bits, like AdvanceField)
 
 	// CounterDecrement only. Exactly one of three forms is set:
@@ -407,15 +412,24 @@ type Case struct {
 }
 
 // Match is one slot of a select case keyset — a literal integer, a
-// `_` wildcard, or a boolean literal (the latter only meaningful for
-// `<counter>.is_zero()` keys).
+// named integer const, a `_` wildcard, or a boolean literal (the
+// latter only meaningful for `<counter>.is_zero()` keys).
+//
+// A named const arm (`SRV6_ROUTING_TYPE: ...`) parses with ConstName
+// set; a post-parse resolution pass (resolveConstMatches) looks the
+// name up in File.Consts and folds the const's integer value into
+// Value, leaving ConstName only as a diagnostic breadcrumb. Value is
+// the single source of truth for every downstream consumer — they
+// never read ConstName — so a named arm is byte-for-byte equivalent
+// to the integer literal it stands for.
 //
 // BNF: keysetExpression (P4-16 Section 13.6, simpleKeysetExpression
-// alternatives: number, '_', default)
+// alternatives: number, name, '_', default)
 type Match struct {
 	IsWildcard bool   // true for "_"
 	IsBool     bool   // true when Bool/case is `true` or `false`
 	Bool       bool   // valid when IsBool
-	Value      uint64 // valid otherwise
+	Value      uint64 // valid otherwise; folded from the named const after resolution
+	ConstName  string // non-empty before resolution when the arm names a const; kept for diagnostics
 	Pos        Position
 }

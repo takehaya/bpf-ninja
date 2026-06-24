@@ -43,6 +43,15 @@ const bit<16> IPV6_GRE_PROTOCOL_TYPE = 0x86DD;
 // handled correctly.
 const bit<8>  IPV6_IPV6_NEXT_HEADER = 41;
 
+// IPv6 extension-header next_header values (IANA protocol numbers)
+// that the parser chains into ext parsing. KUNAI_ marks them as
+// value-only consts: the loader folds each into the matching select
+// arm and assigns no inter-layer dispatch role (these dispatch to the
+// same protocol's own ext walk, not to a child layer).
+const bit<8>  KUNAI_IPV6_NH_HOP_BY_HOP = 0;  // Hop-by-Hop Options (RFC 8200)
+const bit<8>  KUNAI_IPV6_NH_FRAGMENT   = 44; // Fragment (RFC 8200)
+const bit<8>  KUNAI_IPV6_NH_DEST_OPTS  = 60; // Destination Options (RFC 8200)
+
 // Cap the ext-header chain depth. Real frames almost never carry
 // more than 2 ext headers (HBH + DestOpt is the typical maximum);
 // the verifier needs the loop times the per-iteration max growth
@@ -64,20 +73,20 @@ parser IPv6Parser(packet_in pkt,
     state start {
         pkt.extract(hdr);
         transition select(hdr.version, hdr.next_header) {
-            (6,  0): parse_ext;   // Hop-by-Hop options
-            (6, 44): parse_ext;   // Fragment
-            (6, 60): parse_ext;   // Destination options
-            (6,  _): accept;      // any other inner protocol
-            default: reject;      // version != 6
+            (6, KUNAI_IPV6_NH_HOP_BY_HOP): parse_ext;   // Hop-by-Hop options
+            (6, KUNAI_IPV6_NH_FRAGMENT):   parse_ext;   // Fragment
+            (6, KUNAI_IPV6_NH_DEST_OPTS):  parse_ext;   // Destination options
+            (6, _):                        accept;      // any other inner protocol
+            default:                       reject;      // version != 6
         }
     }
     state parse_ext {
         pkt.extract(exts.next);
         transition select(exts.last.next_header) {
-            0:  parse_ext;
-            44: parse_ext;
-            60: parse_ext;
-            default: accept;
+            KUNAI_IPV6_NH_HOP_BY_HOP: parse_ext;
+            KUNAI_IPV6_NH_FRAGMENT:   parse_ext;
+            KUNAI_IPV6_NH_DEST_OPTS:  parse_ext;
+            default:                  accept;
         }
     }
 }

@@ -448,12 +448,22 @@ type SRv6Opts struct {
 	InnerNextHeader uint8    // protocol for SRH.next_header (e.g. 6=TCP)
 	InnerSrcPort    uint16
 	InnerDstPort    uint16
+	// TrailingTLVBytes are optional bytes appended after the segment
+	// list inside the SRH variable region (TLVs). Length MUST be a
+	// multiple of 8 so hdr_ext_len stays whole; the explicit segment
+	// walk in srv6.p4 reaches the next header by consuming the whole
+	// variable region (hdr_ext_len*8 bytes), so trailing TLVs that are
+	// a multiple of 16 bytes are walked as opaque chunks without
+	// desyncing R4 from the next-header position.
+	TrailingTLVBytes []byte
 }
 
 // BuildSRv6 builds Ethernet+IPv6(NH=43)+SRH+inner-TCP. The number
-// of segments = len(opts.Segments); SRH.last_entry = N-1; SRH bytes
-// after the fixed 8 = N * 16. Codegen consumes these via the
-// variable trail declared by srv6.p4's skip_segments state.
+// of segments = len(opts.Segments); SRH.last_entry = N-1. The SRH
+// variable region after the fixed 8 bytes is N*16 segment bytes plus
+// any opts.TrailingTLVBytes; hdr_ext_len = (region bytes)/8. The
+// explicit segment walk in srv6.p4 consumes the whole region so the
+// inner layer lands at SRH+8 + hdr_ext_len*8.
 func BuildSRv6(t testing.TB, opts SRv6Opts) []byte {
 	t.Helper()
 	if opts.Src == nil {
@@ -474,19 +484,24 @@ func BuildSRv6(t testing.TB, opts SRv6Opts) []byte {
 	if opts.InnerDstPort == 0 {
 		opts.InnerDstPort = 80
 	}
+	if len(opts.TrailingTLVBytes)%8 != 0 {
+		t.Fatalf("BuildSRv6: TrailingTLVBytes length %d is not a multiple of 8", len(opts.TrailingTLVBytes))
+	}
 
 	tcpSeg := stripToTCPSegment(t, net.IPv4(1, 2, 3, 4), net.IPv4(5, 6, 7, 8), opts.InnerSrcPort, opts.InnerDstPort)
 
 	n := len(opts.Segments)
-	srh := make([]byte, 8+n*16)
+	region := n*16 + len(opts.TrailingTLVBytes)
+	srh := make([]byte, 8+region)
 	srh[0] = opts.InnerNextHeader
-	srh[1] = uint8(2 * n) // hdr_ext_len in 8-byte units (each segment = 2 units)
-	srh[2] = 4            // routing_type = SRH
-	srh[3] = uint8(n - 1) // segments_left
-	srh[4] = uint8(n - 1) // last_entry
+	srh[1] = uint8(region / 8) // hdr_ext_len in 8-byte units
+	srh[2] = 4                 // routing_type = SRH
+	srh[3] = uint8(n - 1)      // segments_left
+	srh[4] = uint8(n - 1)      // last_entry
 	for i, seg := range opts.Segments {
 		copy(srh[8+i*16:8+(i+1)*16], seg.To16())
 	}
+	copy(srh[8+n*16:], opts.TrailingTLVBytes)
 
 	out := buildEthIPv6Prefix(t, opts.Src, opts.Dst)
 	patchIPv6NextHeaderAndLen(out, 43, len(srh)+len(tcpSeg))

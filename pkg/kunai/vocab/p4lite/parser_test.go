@@ -812,6 +812,32 @@ func TestParseCounterSetRoundTrip(t *testing.T) {
 	}
 }
 
+// TestParseCounterSetMaskForm pins the mask-form `pc.set` template
+// (`((bit<N>)(hdr.<F> & MASK)) << S`), added so a counter can carry a
+// statically-bounded byte count (e.g. SRH's `(hdr_ext_len & 0x0F) * 8`)
+// the bulk-advance fallback can advance R4 by without the verifier
+// flagging an unbounded skip. Mask and BaseWords are mutually exclusive.
+func TestParseCounterSetMaskForm(t *testing.T) {
+	src := `parser P(packet_in pkt, out h_t hdr) {
+		ParserCounter() pc;
+		state s {
+			pc.set(((bit<8>)(hdr.hdr_ext_len & 0x0f)) << 6);
+			transition accept;
+		}
+	}`
+	f, err := Parse([]byte(src), "t.p4")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	cs, ok := f.Parsers[0].States[0].Stmts[0].(*CounterCallStmt)
+	if !ok {
+		t.Fatalf("stmt[0] is %T, want *CounterCallStmt", f.Parsers[0].States[0].Stmts[0])
+	}
+	if cs.Op != CounterSet || cs.FieldName != "hdr_ext_len" || cs.Mask != 0x0f || cs.BaseWords != 0 || cs.ScaleLog2 != 6 {
+		t.Errorf("CounterCallStmt = %+v, want CounterSet hdr_ext_len mask=0x0f base=0 scale=6", *cs)
+	}
+}
+
 func TestParseCounterDecrementRoundTrip(t *testing.T) {
 	src := `parser P(packet_in pkt, out h_t hdr) {
 		ParserCounter() pc;
@@ -1118,6 +1144,170 @@ func TestParseAnnotationRejects(t *testing.T) {
 			}
 			if !strings.Contains(err.Error(), tc.want) {
 				t.Errorf("err = %q; want substring %q", err.Error(), tc.want)
+			}
+		})
+	}
+}
+
+// TestParseSelectConstMatchResolves verifies a select arm naming a
+// declared integer const folds to that const's value, and a const
+// declared *after* the parser block still resolves (the pass runs once
+// the whole file is parsed). Value is the single source of truth; a
+// named arm must be byte-identical to the literal it replaces.
+func TestParseSelectConstMatchResolves(t *testing.T) {
+	src := `
+const bit<8> KUNAI_P_FOO = 4;
+parser P(packet_in pkt, out h_t hdr) {
+    state start {
+        pkt.extract(hdr);
+        transition select(hdr.a, hdr.b) {
+            (KUNAI_P_FOO, KUNAI_P_BAR): accept;
+            default:                    reject;
+        }
+    }
+}
+const bit<16> KUNAI_P_BAR = 0x1234;
+`
+	f, err := Parse([]byte(src), "t.p4")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	sel := f.Parsers[0].States[0].Transition.Select
+	c0 := sel.Cases[0]
+	if len(c0.Values) != 2 {
+		t.Fatalf("case[0] values=%d, want 2", len(c0.Values))
+	}
+	if c0.Values[0].Value != 4 || c0.Values[0].ConstName != "KUNAI_P_FOO" {
+		t.Errorf("values[0] = %+v, want Value=4 ConstName=KUNAI_P_FOO", c0.Values[0])
+	}
+	if c0.Values[1].Value != 0x1234 || c0.Values[1].ConstName != "KUNAI_P_BAR" {
+		t.Errorf("values[1] = %+v, want Value=0x1234 ConstName=KUNAI_P_BAR", c0.Values[1])
+	}
+	// A named arm and the literal it stands for must be byte-identical
+	// in every field a downstream consumer reads (Value/IsWildcard/
+	// IsBool/Bool). Parse the literal-form equivalent and diff those
+	// fields slot-for-slot.
+	lit := `
+parser P(packet_in pkt, out h_t hdr) {
+    state start {
+        pkt.extract(hdr);
+        transition select(hdr.a, hdr.b) {
+            (4, 0x1234): accept;
+            default:     reject;
+        }
+    }
+}
+`
+	fl, err := Parse([]byte(lit), "t.p4")
+	if err != nil {
+		t.Fatalf("parse literal form: %v", err)
+	}
+	litVals := fl.Parsers[0].States[0].Transition.Select.Cases[0].Values
+	for i := range c0.Values {
+		a, b := c0.Values[i], litVals[i]
+		if a.Value != b.Value || a.IsWildcard != b.IsWildcard || a.IsBool != b.IsBool || a.Bool != b.Bool {
+			t.Errorf("values[%d] named=%+v differs from literal=%+v in a load-bearing field", i, a, b)
+		}
+	}
+}
+
+// TestParseSelectConstMatchSingleValue covers the single-key (non-
+// tuple) select-case form, which parses through a different parseCase
+// branch than the tuple form.
+func TestParseSelectConstMatchSingleValue(t *testing.T) {
+	src := `
+const bit<8> KUNAI_P_SRH = 4;
+parser P(packet_in pkt, out h_t hdr) {
+    state start {
+        pkt.extract(hdr);
+        transition select(hdr.a) {
+            KUNAI_P_SRH: accept;
+            default:     reject;
+        }
+    }
+}
+`
+	f, err := Parse([]byte(src), "t.p4")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	m := f.Parsers[0].States[0].Transition.Select.Cases[0].Values[0]
+	if m.Value != 4 || m.ConstName != "KUNAI_P_SRH" {
+		t.Errorf("match = %+v, want Value=4 ConstName=KUNAI_P_SRH", m)
+	}
+}
+
+// TestParseSelectConstMatchErrors pins the diagnostics the resolution
+// pass emits: unknown const name, a bool const in an integer slot, and
+// an integer const in a `<counter>.is_zero()` bool slot.
+func TestParseSelectConstMatchErrors(t *testing.T) {
+	cases := []struct {
+		name string
+		src  string
+		want string
+	}{
+		{
+			name: "unknown_const",
+			src: `
+parser P(packet_in pkt, out h_t hdr) {
+    state start {
+        pkt.extract(hdr);
+        transition select(hdr.a) {
+            KUNAI_P_NOPE: accept;
+            default:      reject;
+        }
+    }
+}`,
+			want: "unknown const",
+		},
+		{
+			name: "bool_const_in_int_slot",
+			src: `
+const bool KUNAI_P_FLAG = true;
+parser P(packet_in pkt, out h_t hdr) {
+    state start {
+        pkt.extract(hdr);
+        transition select(hdr.a) {
+            KUNAI_P_FLAG: accept;
+            default:      reject;
+        }
+    }
+}`,
+			want: "bool const",
+		},
+		{
+			name: "int_const_in_bool_slot",
+			src: `
+const bit<8> KUNAI_P_X = 1;
+parser P(packet_in pkt, out h_t hdr) {
+    ParserCounter() pc;
+    state start {
+        pkt.extract(hdr);
+        transition select(pc.is_zero()) {
+            KUNAI_P_X: accept;
+            default:   reject;
+        }
+    }
+}`,
+			want: "is_zero()",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Parse([]byte(tc.src), "t.p4")
+			if err == nil {
+				t.Fatalf("expected error, got nil")
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("err = %q; want substring %q", err.Error(), tc.want)
+			}
+			// The error must be positioned (carry a File:Line:Col
+			// prefix from SyntaxError) rather than a bare message.
+			se, ok := err.(*SyntaxError)
+			if !ok {
+				t.Errorf("err type = %T, want *SyntaxError (positioned)", err)
+			} else if se.Pos.Line == 0 {
+				t.Errorf("err has zero position: %+v", se)
 			}
 		})
 	}

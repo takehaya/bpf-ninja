@@ -64,7 +64,7 @@ var FilterSet = []FilterSpec{
 	{ID: "F7", Expr: "eth/ipv4@outer/udp/gtp/ipv4@inner/tcp where inner.dst == 10.0.0.1",
 		WantInsns: 405, Notes: "GTP-U inner IPv4 dst (5G core)"},
 	{ID: "F8", Expr: "eth/ipv6/srv6 where any(srv6.segments.addr == fc00::1)",
-		WantInsns: 316, Notes: "SRv6 segment-list any-quantifier (5G/SDN); bpf_loop callback (flat in capacity)"},
+		WantInsns: 330, Notes: "SRv6 segment-list any-quantifier (5G/SDN); explicit counter-driven segment walk (+14 over the prior bulk-advance), any() read lowered to a bpf_loop callback"},
 	{ID: "F9", Expr: "eth/ipv4@outer/udp/geneve/eth/ipv4@inner/tcp where inner.dst == 10.0.0.1",
 		WantInsns: 351, Notes: "Geneve inner IPv4 dst (Cilium overlay / cloud VPC); inner offset resolved past the opt_len*4 options section via the counter-driven bulk-advance fallback"},
 	{ID: "F10", Expr: "eth/ipv4/tcp where tcp.options.MSS.value == 1460",
