@@ -9,8 +9,8 @@ import (
 )
 
 // genNoCheckDispatch emits nothing: when a vocab declares
-// <SELF>_<PARENT>_NO_CHECK = true the child is trusted to follow the
-// parent without a boundary marker (e.g. EoMPLS payload, inner
+// KUNAI_<SELF>_<PARENT>_NO_CHECK = true the child is trusted to follow
+// the parent without a boundary marker (e.g. EoMPLS payload, inner
 // Ethernet of a pseudowire). The bounds check in genLayer still
 // protects scratch-buffer reads.
 func genNoCheckDispatch(current *ir.LayerInstance) (asm.Instructions, error) {

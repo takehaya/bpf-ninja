@@ -37,13 +37,13 @@ func TestLoadBundledCount(t *testing.T) {
 func TestLoadMplsDispatch(t *testing.T) {
 	mpls := loadBundled(t)["mpls"]
 	dc := indexByName(mpls.Consts)
-	eth, ok := dc["MPLS_ETH_ETHERTYPE"]
+	eth, ok := dc["KUNAI_MPLS_ETH_ETHERTYPE"]
 	if !ok || eth.Type != DispatchField || eth.Parent != "eth" || eth.Value != 0x8847 {
-		t.Errorf("MPLS_ETH_ETHERTYPE = %+v", eth)
+		t.Errorf("KUNAI_MPLS_ETH_ETHERTYPE = %+v", eth)
 	}
-	stack, ok := dc["MPLS_MPLS_NO_CHECK"]
+	stack, ok := dc["KUNAI_MPLS_MPLS_NO_CHECK"]
 	if !ok || stack.Type != DispatchNoCheck || !stack.Bool {
-		t.Errorf("MPLS_MPLS_NO_CHECK = %+v", stack)
+		t.Errorf("KUNAI_MPLS_MPLS_NO_CHECK = %+v", stack)
 	}
 	if mpls.MaxDepth != 8 {
 		t.Errorf("MPLS_MAX_DEPTH: spec.MaxDepth = %d, want 8", mpls.MaxDepth)
@@ -73,42 +73,42 @@ func TestLoadBundledNoPhantomParserDispatch(t *testing.T) {
 func TestLoadGreDispatch(t *testing.T) {
 	gre := loadBundled(t)["gre"]
 	dc := indexByName(gre.Consts)
-	v4, ok := dc["GRE_IPV4_PROTOCOL"]
+	v4, ok := dc["KUNAI_GRE_IPV4_PROTOCOL"]
 	if !ok || v4.Parent != "ipv4" || v4.Value != 47 {
-		t.Errorf("GRE_IPV4_PROTOCOL = %+v", v4)
+		t.Errorf("KUNAI_GRE_IPV4_PROTOCOL = %+v", v4)
 	}
 }
 
 func TestLoadVxlanGenevePorts(t *testing.T) {
 	vxlan := loadBundled(t)["vxlan"]
-	if dc, ok := indexByName(vxlan.Consts)["VXLAN_UDP_DPORT"]; !ok || dc.Value != 4789 {
-		t.Errorf("VXLAN_UDP_DPORT = %+v", dc)
+	if dc, ok := indexByName(vxlan.Consts)["KUNAI_VXLAN_UDP_DPORT"]; !ok || dc.Value != 4789 {
+		t.Errorf("KUNAI_VXLAN_UDP_DPORT = %+v", dc)
 	}
 	geneve := loadBundled(t)["geneve"]
-	if dc, ok := indexByName(geneve.Consts)["GENEVE_UDP_DPORT"]; !ok || dc.Value != 6081 {
-		t.Errorf("GENEVE_UDP_DPORT = %+v", dc)
+	if dc, ok := indexByName(geneve.Consts)["KUNAI_GENEVE_UDP_DPORT"]; !ok || dc.Value != 6081 {
+		t.Errorf("KUNAI_GENEVE_UDP_DPORT = %+v", dc)
 	}
 }
 
 func TestLoadVlanDispatchConstants(t *testing.T) {
 	vlan := loadBundled(t)["vlan"]
-	dc, ok := indexByName(vlan.Consts)["VLAN_ETH_ETHERTYPE"]
+	dc, ok := indexByName(vlan.Consts)["KUNAI_VLAN_ETH_ETHERTYPE"]
 	if !ok {
-		t.Fatal("VLAN_ETH_ETHERTYPE not found")
+		t.Fatal("KUNAI_VLAN_ETH_ETHERTYPE not found")
 	}
 	if dc.Type != DispatchField || dc.Parent != "eth" || dc.Value != 0x8100 {
-		t.Errorf("VLAN_ETH_ETHERTYPE = %+v", dc)
+		t.Errorf("KUNAI_VLAN_ETH_ETHERTYPE = %+v", dc)
 	}
 }
 
 func TestLoadCwIsNoCheck(t *testing.T) {
 	cw := loadBundled(t)["cw"]
-	dc, ok := indexByName(cw.Consts)["CW_MPLS_NO_CHECK"]
+	dc, ok := indexByName(cw.Consts)["KUNAI_CW_MPLS_NO_CHECK"]
 	if !ok {
-		t.Fatal("CW_MPLS_NO_CHECK not found")
+		t.Fatal("KUNAI_CW_MPLS_NO_CHECK not found")
 	}
 	if dc.Type != DispatchNoCheck || dc.Parent != "mpls" || !dc.Bool {
-		t.Errorf("CW_MPLS_NO_CHECK = %+v", dc)
+		t.Errorf("KUNAI_CW_MPLS_NO_CHECK = %+v", dc)
 	}
 }
 
@@ -184,9 +184,9 @@ func TestLoadSrv6Header(t *testing.T) {
 		}
 	}
 	// segments aux is declared as a stack so resolver can route
-	// `srv6.segments[N].addr` to it. The parser block does not push
-	// to it; the variable trail in codegen advances R4 past all
-	// segments in one statically-bounded skip.
+	// `srv6.segments[N].addr` to it. The parser block pushes one entry
+	// per walk iteration via `pkt.extract(segments.next)`; the stack
+	// base is the push state's layer-entry offset (= 8).
 	if srv6.ParseStateMachine == nil {
 		t.Fatal("expected non-trivial ParseStateMachine after segments declaration")
 	}
@@ -221,9 +221,9 @@ func TestLoadIpv4DispatchClassification(t *testing.T) {
 
 func TestLoadGtpUdpDport(t *testing.T) {
 	gtp := loadBundled(t)["gtp"]
-	dc, ok := indexByName(gtp.Consts)["GTP_UDP_DPORT"]
+	dc, ok := indexByName(gtp.Consts)["KUNAI_GTP_UDP_DPORT"]
 	if !ok {
-		t.Fatal("GTP_UDP_DPORT not found")
+		t.Fatal("KUNAI_GTP_UDP_DPORT not found")
 	}
 	if dc.Type != DispatchField || dc.Parent != "udp" || dc.FieldName != "dport" || dc.Value != 2152 {
 		t.Errorf("const = %+v", dc)
@@ -244,8 +244,8 @@ func TestLoadTcpDispatchClassification(t *testing.T) {
 		field     string
 		value     uint64
 	}{
-		{"TCP_IPV4_PROTOCOL", DispatchField, "ipv4", "protocol", 6},
-		{"TCP_IPV6_NEXT_HEADER", DispatchField, "ipv6", "next_header", 6},
+		{"KUNAI_TCP_IPV4_PROTOCOL", DispatchField, "ipv4", "protocol", 6},
+		{"KUNAI_TCP_IPV6_NEXT_HEADER", DispatchField, "ipv6", "next_header", 6},
 	}
 	for _, tc := range cases {
 		dc, ok := byName[tc.constName]
@@ -274,9 +274,9 @@ func TestLoadEthMplsNoCheck(t *testing.T) {
 	if eth == nil {
 		t.Fatal("eth not loaded")
 	}
-	dc, ok := indexByName(eth.Consts)["ETH_MPLS_NO_CHECK"]
+	dc, ok := indexByName(eth.Consts)["KUNAI_ETH_MPLS_NO_CHECK"]
 	if !ok {
-		t.Fatal("ETH_MPLS_NO_CHECK not found")
+		t.Fatal("KUNAI_ETH_MPLS_NO_CHECK not found")
 	}
 	if dc.Type != DispatchNoCheck || dc.Parent != "mpls" || !dc.Bool {
 		t.Errorf("no-check const = %+v", dc)
@@ -352,7 +352,6 @@ parser F(packet_in pkt, out foo_h h) { state start { pkt.extract(h); transition 
 	}
 }
 
-
 func TestLoadRejectsConstOutsideNamingConvention(t *testing.T) {
 	fsys := fstest.MapFS{
 		"vocab/foo.p4": &fstest.MapFile{Data: []byte(`
@@ -366,12 +365,107 @@ parser F(packet_in pkt, out foo_h h) { state start { pkt.extract(h); transition 
 	}
 }
 
+// TestLoadMatchValueConstNotDispatch verifies a bare (non-KUNAI_)
+// value-only const with a phantom parent (here OPT, not a protocol)
+// loads cleanly and is NOT promoted into spec.Consts (the dispatch-const
+// list). If it leaked in as a DispatchField, it would inject a phantom
+// Parent="opt" edge into SelectDispatchConst and the help dispatch
+// graph. The OPT_<KIND> name also exercises the loader's OPT_ narrowing:
+// only OPT_FLAGS_BYTE_OFFSET / OPT_TRIGGER_ / OPT_LEN_ are structural;
+// OPT_SPECIAL falls through to the value-only path.
+func TestLoadMatchValueConstNotDispatch(t *testing.T) {
+	fsys := fstest.MapFS{
+		"vocab/foo.p4": &fstest.MapFile{Data: []byte(`
+header foo_h { bit<8> kind; }
+const bit<8> FOO_OPT_SPECIAL = 7;
+parser F(packet_in pkt, out foo_h h) {
+    state start {
+        pkt.extract(h);
+        transition select(h.kind) {
+            FOO_OPT_SPECIAL: accept;
+            default:         reject;
+        }
+    }
+}
+`)},
+	}
+	specs, err := Load(fsys, "vocab")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	foo := specs["foo"]
+	for _, c := range foo.Consts {
+		if c.Name == "FOO_OPT_SPECIAL" {
+			t.Errorf("value-only const leaked into spec.Consts as dispatch const: %+v", c)
+		}
+		if c.Parent == "opt" {
+			t.Errorf("value-only const misclassified with phantom Parent=opt: %+v", c)
+		}
+	}
+	// The match value must have folded into the select arm.
+	m := foo.File.Parsers[0].States[0].Transition.Select.Cases[0].Values[0]
+	if m.Value != 7 {
+		t.Errorf("select arm value = %d, want 7 (folded from FOO_OPT_SPECIAL)", m.Value)
+	}
+}
+
+// TestLoadRejectsKunaiOnValueOnly pins that the KUNAI_ marker is
+// reserved for inter-layer dispatch edges: a KUNAI_-prefixed const whose
+// parent token is a phantom (here OPT, not a protocol) is rejected with
+// a diagnostic pointing the author at the bare name.
+func TestLoadRejectsKunaiOnValueOnly(t *testing.T) {
+	fsys := fstest.MapFS{
+		"vocab/foo.p4": &fstest.MapFile{Data: []byte(`
+header foo_h { bit<8> kind; }
+const bit<8> KUNAI_FOO_OPT_SPECIAL = 7;
+parser F(packet_in pkt, out foo_h h) { state start { pkt.extract(h); transition accept; } }
+`)},
+	}
+	_, err := Load(fsys, "vocab")
+	if err == nil {
+		t.Fatal("expected error for KUNAI_ on a value-only (phantom-parent) const")
+	}
+	if !strings.Contains(err.Error(), "drop the KUNAI_ prefix") {
+		t.Errorf("error should advise dropping the KUNAI_ prefix: %v", err)
+	}
+}
+
+// TestLoadRejectsMatchConstAsBool pins that a KUNAI_ field-dispatch
+// const demands an integer; a bool slips into is_zero() arms as
+// true/false literals, never as a named const.
+func TestLoadRejectsMatchConstAsBool(t *testing.T) {
+	fsys := fstest.MapFS{
+		"vocab/foo.p4": &fstest.MapFile{Data: []byte(`
+header foo_h { bit<8> kind; }
+header bar_h { bit<8> x; }
+const bool KUNAI_FOO_BAR_FLAG = true;
+parser F(packet_in pkt, out foo_h h) { state start { pkt.extract(h); transition accept; } }
+`)},
+		"vocab/bar.p4": &fstest.MapFile{Data: []byte(`
+header bar_h { bit<8> x; }
+parser B(packet_in pkt, out bar_h h) { state start { pkt.extract(h); transition accept; } }
+`)},
+	}
+	_, err := Load(fsys, "vocab")
+	if err == nil {
+		t.Fatal("expected error for bool KUNAI_ field-dispatch const")
+	}
+	if !strings.Contains(err.Error(), "must be bit<N>") {
+		t.Errorf("error should mention bit<N>: %v", err)
+	}
+}
+
 func TestLoadRejectsNoCheckFalse(t *testing.T) {
 	fsys := fstest.MapFS{
 		"vocab/foo.p4": &fstest.MapFile{Data: []byte(`
 header foo_h { bit<8> x; }
-const bool FOO_BAR_NO_CHECK = false;
+header bar_h { bit<8> x; }
+const bool KUNAI_FOO_BAR_NO_CHECK = false;
 parser F(packet_in pkt, out foo_h h) { state start { pkt.extract(h); transition accept; } }
+`)},
+		"vocab/bar.p4": &fstest.MapFile{Data: []byte(`
+header bar_h { bit<8> x; }
+parser B(packet_in pkt, out bar_h h) { state start { pkt.extract(h); transition accept; } }
 `)},
 	}
 	_, err := Load(fsys, "vocab")
@@ -380,6 +474,51 @@ parser F(packet_in pkt, out foo_h h) { state start { pkt.extract(h); transition 
 	}
 	if !strings.Contains(err.Error(), "true") {
 		t.Errorf("error should mention 'true': %v", err)
+	}
+}
+
+// TestLoadRejectsBareNoCheck pins the enforcement: a NO_CHECK const
+// without the KUNAI_ marker is an inter-layer dispatch edge missing its
+// prefix, and the loader points the author at KUNAI_.
+func TestLoadRejectsBareNoCheck(t *testing.T) {
+	fsys := fstest.MapFS{
+		"vocab/foo.p4": &fstest.MapFile{Data: []byte(`
+header foo_h { bit<8> x; }
+const bool FOO_BAR_NO_CHECK = true;
+parser F(packet_in pkt, out foo_h h) { state start { pkt.extract(h); transition accept; } }
+`)},
+	}
+	_, err := Load(fsys, "vocab")
+	if err == nil {
+		t.Fatal("expected error for bare (non-KUNAI_) NO_CHECK")
+	}
+	if !strings.Contains(err.Error(), "KUNAI_") {
+		t.Errorf("error should point at the KUNAI_ prefix: %v", err)
+	}
+}
+
+// TestLoadRejectsBareFieldDispatch pins the enforcement: a bare
+// <SELF>_<PARENT>_<FIELD> with a real parent is an inter-layer dispatch
+// edge that must carry the KUNAI_ marker.
+func TestLoadRejectsBareFieldDispatch(t *testing.T) {
+	fsys := fstest.MapFS{
+		"vocab/foo.p4": &fstest.MapFile{Data: []byte(`
+header foo_h { bit<8> x; }
+header bar_h { bit<8> x; }
+const bit<16> FOO_BAR_ETHERTYPE = 0x0800;
+parser F(packet_in pkt, out foo_h h) { state start { pkt.extract(h); transition accept; } }
+`)},
+		"vocab/bar.p4": &fstest.MapFile{Data: []byte(`
+header bar_h { bit<8> x; }
+parser B(packet_in pkt, out bar_h h) { state start { pkt.extract(h); transition accept; } }
+`)},
+	}
+	_, err := Load(fsys, "vocab")
+	if err == nil {
+		t.Fatal("expected error for bare (non-KUNAI_) field dispatch")
+	}
+	if !strings.Contains(err.Error(), "KUNAI_") {
+		t.Errorf("error should point at the KUNAI_ prefix: %v", err)
 	}
 }
 
@@ -734,19 +873,25 @@ func auxLayoutNames(m map[string]*AuxLayout) []string {
 }
 
 func TestParseStateMachineSrv6(t *testing.T) {
-	// 2 states: `start` extracts the SRH primary and transitions to
-	// `skip_segments` on routing_type==4 (reject otherwise);
-	// `skip_segments` runs the variable trail via pkt.advance and
-	// accepts.
+	// 3 states model the element-driven segment walk:
+	//   `start`       extracts the SRH primary, seeds the counter with
+	//                 the segment count (= last_entry + 1), and
+	//                 transitions on routing_type==4 (reject else);
+	//   `walk`        tests pc.is_zero() — accept when drained, else
+	//                 route to consume_seg;
+	//   `consume_seg` extracts one 16-byte segment into the segments
+	//                 stack, decrements the counter by 1 (= one segment
+	//                 per element), and loops back to walk.
 	specs := loadBundled(t)
 	srv6 := specs["srv6"]
 	if srv6 == nil || srv6.ParseStateMachine == nil {
 		t.Fatal("expected srv6 to have a non-trivial ParseStateMachine")
 	}
 	machine := srv6.ParseStateMachine
-	if len(machine.States) != 2 {
-		t.Fatalf("srv6 state count = %d, want 2 (start + skip_segments)", len(machine.States))
+	if len(machine.States) != 3 {
+		t.Fatalf("srv6 state count = %d, want 3 (start + walk + consume_seg)", len(machine.States))
 	}
+
 	start := machine.States[0]
 	if start.Name != "start" {
 		t.Errorf("states[0].Name = %q, want %q", start.Name, "start")
@@ -754,27 +899,66 @@ func TestParseStateMachineSrv6(t *testing.T) {
 	if start.Trans.Kind != TransSelect {
 		t.Errorf("start transition kind = %v, want TransSelect (routing_type guard)", start.Trans.Kind)
 	}
-	skip := machine.States[1]
-	if skip.Name != "skip_segments" {
-		t.Errorf("states[1].Name = %q, want %q", skip.Name, "skip_segments")
+	// start seeds pc with the segment COUNT = last_entry + 1 via the
+	// bare-cast add form `pc.set((bit<8>)(hdr.last_entry + 1))`: load
+	// last_entry (byte 4), scale=1 (no shift, element granularity), and
+	// add 1 (Addend). This element-driven seed is what the loader reads
+	// to derive the any()/all() count; the region BYTE length is then
+	// synthesised from that count by AuxWalkSegmentTail ((last_entry+1)*16),
+	// not carried on a @kunai_variable_tail annotation.
+	if len(start.Counters) != 1 {
+		t.Fatalf("start counter op count = %d, want 1 (pc.set)", len(start.Counters))
 	}
-	if len(skip.Advances) != 1 {
-		t.Fatalf("skip_segments advance count = %d, want 1", len(skip.Advances))
+	setOp := start.Counters[0]
+	if setOp.Kind != CounterOpSet || setOp.Counter != "pc" {
+		t.Errorf("start counter = %+v, want CounterOpSet on pc", setOp)
 	}
-	adv := skip.Advances[0]
-	if adv.Kind != AdvanceOpField {
-		t.Errorf("advance kind = %v, want AdvanceOpField", adv.Kind)
+	wantSkip := HeaderLength{LenByteOff: 4, LenMask: 0xFF, LenShift: 0, Scale: 1, Base: 0, Addend: 1}
+	if setOp.Skip == nil || *setOp.Skip != wantSkip {
+		t.Errorf("pc.set skip = %+v, want %+v (last_entry + 1, element count)", setOp.Skip, wantSkip)
 	}
-	want := HeaderLength{LenByteOff: 1, LenMask: 0x0F, LenShift: 0, Scale: 8, Base: 0}
-	if adv.Skip == nil || *adv.Skip != want {
-		t.Errorf("skip = %+v, want %+v", adv.Skip, want)
+
+	walk := machine.States[1]
+	if walk.Name != "walk" {
+		t.Errorf("states[1].Name = %q, want %q", walk.Name, "walk")
+	}
+	if walk.Trans.Kind != TransSelect {
+		t.Errorf("walk transition kind = %v, want TransSelect (pc.is_zero guard)", walk.Trans.Kind)
+	}
+	if len(walk.Extracts) != 0 || len(walk.Advances) != 0 {
+		t.Errorf("walk should carry no extracts/advances; got extracts=%d advances=%d", len(walk.Extracts), len(walk.Advances))
+	}
+
+	consume := machine.States[2]
+	if consume.Name != "consume_seg" {
+		t.Errorf("states[2].Name = %q, want %q", consume.Name, "consume_seg")
+	}
+	if len(consume.Extracts) != 1 {
+		t.Fatalf("consume_seg extract count = %d, want 1 (segments.next push)", len(consume.Extracts))
+	}
+	ex := consume.Extracts[0]
+	if !ex.IsStackPush || ex.StackName != "segments" || ex.HeaderName != "srv6_seg_h" {
+		t.Errorf("consume_seg extract = %+v, want stack-push of segments/srv6_seg_h", ex)
+	}
+	// The stack base falls out of the push state's layer-entry offset:
+	// start extracts the 8-byte SRH, so consume_seg sits at byte 8.
+	if consume.OffsetAtEntry != 8 {
+		t.Errorf("consume_seg OffsetAtEntry = %d, want 8 (= sizeof(srv6_h); the segments stack base)", consume.OffsetAtEntry)
+	}
+	if len(consume.Counters) != 1 {
+		t.Fatalf("consume_seg counter op count = %d, want 1 (pc.decrement)", len(consume.Counters))
+	}
+	dec := consume.Counters[0]
+	if dec.Kind != CounterOpDecrement || dec.Counter != "pc" || dec.LiteralBytes != 1 {
+		t.Errorf("consume_seg counter = %+v, want CounterOpDecrement pc by 1 (one segment per element)", dec)
 	}
 }
 
 // TestSRv6SegmentsStackCount pins that the SRv6 segments aux stack
-// resolves its runtime iteration count from the @kunai_stack_count
-// annotation on the parser parameter (= byte 4 of srv6_h, the
-// last_entry field, plus 1 per the SRv6 spec).
+// resolves its runtime iteration count by DERIVING it from the
+// element-driven ParserCounter walk (no @kunai_stack_count annotation):
+// the loader reads the set seed field (= byte 4 of srv6_h, last_entry)
+// and addend (+1 per the SRv6 spec) off the walk.
 func TestSRv6SegmentsStackCount(t *testing.T) {
 	specs := loadBundled(t)
 	srv6 := specs["srv6"]
@@ -783,7 +967,7 @@ func TestSRv6SegmentsStackCount(t *testing.T) {
 	}
 	cnt, ok := srv6.StackCounts["segments"]
 	if !ok || cnt == nil {
-		t.Fatal("srv6.StackCounts[segments] missing — @kunai_stack_count not consumed")
+		t.Fatal("srv6.StackCounts[segments] missing — counter-derived stack count not synthesised")
 	}
 	// srv6_h layout: next_header(8) + hdr_ext_len(8) + routing_type(8)
 	// + segments_left(8) + last_entry(8) ...  → last_entry at byte 4.
@@ -870,25 +1054,34 @@ parser P(packet_in pkt,
 	}
 }
 
-// TestSRv6SegmentsLayoutAnnotation pins that the SRv6 segments aux
-// stack (= the bundled Mode B / declare-only example) resolves its
-// base byte offset from the parser-parameter @kunai_layout decorator
-// rather than the legacy implicit "primary directly after" fallback.
-func TestSRv6SegmentsLayoutAnnotation(t *testing.T) {
+// TestSRv6SegmentsPushedNotLayoutAnnotated pins that the SRv6 segments
+// aux stack is now a *pushed* stack (extracted via
+// `pkt.extract(segments.next)` in the explicit walk) rather than a
+// declare-only stack anchored by @kunai_layout. The base byte offset is
+// therefore recovered from the push state's layer-entry offset
+// (= sizeof(srv6_h) = 8) by the resolver, not from a StackLayouts entry.
+// Removing @kunai_layout is what keeps the segment base unambiguous now
+// that a parser state physically extracts each entry.
+func TestSRv6SegmentsPushedNotLayoutAnnotated(t *testing.T) {
 	specs := loadBundled(t)
 	srv6 := specs["srv6"]
 	if srv6 == nil {
 		t.Fatal("missing srv6 spec")
 	}
-	layout, ok := srv6.StackLayouts["segments"]
-	if !ok || layout == nil {
-		t.Fatal("srv6.StackLayouts[segments] missing — @kunai_layout not consumed")
+	if _, ok := srv6.StackLayouts["segments"]; ok {
+		t.Error("srv6.StackLayouts[segments] present — @kunai_layout should be gone once the parser pushes the stack")
 	}
-	if layout.After != "primary" {
-		t.Errorf("layout.After = %q, want primary", layout.After)
+	// The stack must be pushed by exactly one state, at byte offset 8.
+	pushOffsets := map[int]bool{}
+	for _, st := range srv6.ParseStateMachine.States {
+		for _, ex := range st.Extracts {
+			if ex.IsStackPush && ex.StackName == "segments" {
+				pushOffsets[st.OffsetAtEntry] = true
+			}
+		}
 	}
-	if layout.BaseByteOff != 8 {
-		t.Errorf("layout.BaseByteOff = %d, want 8 (= sizeof(srv6_h) primary)", layout.BaseByteOff)
+	if len(pushOffsets) != 1 || !pushOffsets[8] {
+		t.Errorf("segments push offsets = %v, want a single push at byte 8 (= sizeof(srv6_h))", pushOffsets)
 	}
 }
 
@@ -1215,10 +1408,11 @@ func specNames(s map[string]*ProtocolSpec) []string {
 // Mechanism 8 (ParserCounter byte-bounded walk) when option-aware
 // extraction landed. TCP is the lone remaining Mechanism-1 user
 // for its data_offset-driven trailer skip. SRv6 declares its
-// variable trail through pkt.advance in srv6.p4's skip_segments
-// state, and Geneve likewise skips its opt_len*4 options section via
-// pkt.advance in geneve.p4's skip_options state, so both are omitted
-// here too.
+// variable trail through a ParserCounter element walk (Mechanism 8,
+// the counter-driven segment extraction that replaced the old
+// skip_segments state), and Geneve skips its opt_len*4 options section
+// via pkt.advance in geneve.p4's skip_options state, so both are
+// omitted here too.
 func TestVariableTrailAbsentForFixedProtocols(t *testing.T) {
 	specs := loadBundled(t)
 	for _, name := range []string{"eth", "ipv4", "ipv6", "udp", "gtp", "vlan", "qinq", "mpls", "gre", "vxlan", "icmp", "icmp6", "cw"} {
@@ -1227,7 +1421,6 @@ func TestVariableTrailAbsentForFixedProtocols(t *testing.T) {
 		}
 	}
 }
-
 
 // TestFlagTriggersGRE confirms the bundled GRE vocab declares the
 // C/K/S optional-field triggers in declaration order so codegen
@@ -1967,9 +2160,9 @@ func TestLoadParserCounterRoundTrip(t *testing.T) {
 	// decrement, and a counter-driven select. Foo→Bar dispatch
 	// satisfies the cross-vocab namespace check.
 	fsys := fstest.MapFS{
-		"vocab/foo.p4":  &fstest.MapFile{Data: []byte(`
+		"vocab/foo.p4": &fstest.MapFile{Data: []byte(`
 header foo_h { bit<8> ihl; }
-const bit<16> FOO_BAR_ETHERTYPE = 0x0800;
+const bit<16> KUNAI_FOO_BAR_ETHERTYPE = 0x0800;
 
 extern ParserCounter {
     ParserCounter();
@@ -2045,11 +2238,166 @@ parser B(packet_in pkt, out bar_h h) { state start { pkt.extract(h); transition 
 	}
 }
 
+// TestLoadParserCounterRejectsSubByteShift pins that a shifted
+// counter.set with a sub-byte shift (S=1 or S=2) is a loud load-time
+// reject rather than a silent collapse to scale=1. Only the shift-free
+// bare-cast element-count form carries scale=1; a whole-byte shifted
+// form needs S >= 3. Regression guard for the allowSubByteScale gate in
+// lowerCastShiftSkip, which must admit ScaleLog2 == 0 only.
+func TestLoadParserCounterRejectsSubByteShift(t *testing.T) {
+	fsys := fstest.MapFS{
+		"vocab/foo.p4": &fstest.MapFile{Data: []byte(`
+header foo_h { bit<8> ihl; }
+const bit<16> KUNAI_FOO_BAR_ETHERTYPE = 0x0800;
+
+extern ParserCounter {
+    ParserCounter();
+    void set(in bit<8> value);
+    void decrement(in bit<8> value);
+    bool is_zero();
+}
+
+parser F(packet_in pkt, out foo_h h) {
+    ParserCounter() pc;
+    state start {
+        pkt.extract(h);
+        pc.set(((bit<8>)(h.ihl - 5)) << 2);
+        transition wait;
+    }
+    state wait {
+        transition select(pc.is_zero()) {
+            true:  accept;
+            false: consume;
+        }
+    }
+    state consume {
+        pkt.advance(8);
+        pc.decrement(1);
+        transition wait;
+    }
+}
+`)},
+		"vocab/bar.p4": &fstest.MapFile{Data: []byte(`
+header bar_h { bit<48> dst; bit<48> src; bit<16> et; }
+parser B(packet_in pkt, out bar_h h) { state start { pkt.extract(h); transition accept; } }
+`)},
+	}
+	_, err := Load(fsys, "vocab")
+	if err == nil || !strings.Contains(err.Error(), "sub-byte") {
+		t.Fatalf("err = %v; want a sub-byte rejection for the `<< 2` counter.set shift", err)
+	}
+}
+
+// TestLoadParserCounterRejectsShiftedScaleOneSeed pins that a shifted
+// counter.set carrying a mask or subtract collapses to a loud reject at
+// S=0 too, not just S=1/S=2. `<< 0` is arithmetically scale=1, but the
+// scale=1 element-count seed must come only from the shift-free bare-cast
+// form `(bit<N>)(hdr.<F> + K)`; a shifted byte-length form must not be
+// able to express it. Regression guard for the userMask/baseWords arm of
+// the allowSubByteScale gate in lowerCastShiftSkip.
+func TestLoadParserCounterRejectsShiftedScaleOneSeed(t *testing.T) {
+	fsys := fstest.MapFS{
+		"vocab/foo.p4": &fstest.MapFile{Data: []byte(`
+header foo_h { bit<8> ihl; }
+const bit<16> KUNAI_FOO_BAR_ETHERTYPE = 0x0800;
+
+extern ParserCounter {
+    ParserCounter();
+    void set(in bit<8> value);
+    void decrement(in bit<8> value);
+    bool is_zero();
+}
+
+parser F(packet_in pkt, out foo_h h) {
+    ParserCounter() pc;
+    state start {
+        pkt.extract(h);
+        pc.set(((bit<8>)(h.ihl - 5)) << 0);
+        transition wait;
+    }
+    state wait {
+        transition select(pc.is_zero()) {
+            true:  accept;
+            false: consume;
+        }
+    }
+    state consume {
+        pkt.advance(8);
+        pc.decrement(1);
+        transition wait;
+    }
+}
+`)},
+		"vocab/bar.p4": &fstest.MapFile{Data: []byte(`
+header bar_h { bit<48> dst; bit<48> src; bit<16> et; }
+parser B(packet_in pkt, out bar_h h) { state start { pkt.extract(h); transition accept; } }
+`)},
+	}
+	_, err := Load(fsys, "vocab")
+	if err == nil || !strings.Contains(err.Error(), "sub-byte") {
+		t.Fatalf("err = %v; want a sub-byte rejection for the `<< 0` subtracting counter.set shift", err)
+	}
+}
+
+// TestLoadParserCounterRejectsSubByteCountSeed pins that an element-driven
+// stack walk (push + decrement(1)) whose counter is seeded from a SUB-BYTE
+// field is a loud load-time reject. deriveStackCountsFromCounters reads the
+// seed byte whole (keeps only ByteOff+Addend), so a nibble-wide count would
+// be silently mis-derived (the whole byte read instead of the nibble) and
+// produce a wrong element count + next-header re-anchor. The bare-cast seed
+// is otherwise valid (scale=1), so the guard lives in the count derivation,
+// not in lowerCastShiftSkip. SRv6's last_entry is a whole byte and stays
+// accepted (covered by the bundled-load tests).
+func TestLoadParserCounterRejectsSubByteCountSeed(t *testing.T) {
+	fsys := fstest.MapFS{
+		"vocab/foo.p4": &fstest.MapFile{Data: []byte(`
+header foo_h { bit<4> count_nib; bit<4> reserved; }
+header foo_seg_h { bit<32> val; }
+const bit<16> KUNAI_FOO_BAR_ETHERTYPE = 0x0800;
+
+extern ParserCounter {
+    ParserCounter();
+    void set(in bit<8> value);
+    void decrement(in bit<8> value);
+    bool is_zero();
+}
+
+parser F(packet_in pkt, out foo_h hdr, out foo_seg_h[8] segs) {
+    ParserCounter() pc;
+    state start {
+        pkt.extract(hdr);
+        pc.set((bit<8>)(hdr.count_nib + 1));
+        transition walk;
+    }
+    state walk {
+        transition select(pc.is_zero()) {
+            true:  accept;
+            false: consume;
+        }
+    }
+    state consume {
+        pkt.extract(segs.next);
+        pc.decrement(1);
+        transition walk;
+    }
+}
+`)},
+		"vocab/bar.p4": &fstest.MapFile{Data: []byte(`
+header bar_h { bit<48> dst; bit<48> src; bit<16> et; }
+parser B(packet_in pkt, out bar_h h) { state start { pkt.extract(h); transition accept; } }
+`)},
+	}
+	_, err := Load(fsys, "vocab")
+	if err == nil || !strings.Contains(err.Error(), "whole-byte") {
+		t.Fatalf("err = %v; want a whole-byte rejection for the sub-byte counter seed", err)
+	}
+}
+
 func TestLoadParserCounterRejectsUndeclaredName(t *testing.T) {
 	fsys := fstest.MapFS{
 		"vocab/foo.p4": &fstest.MapFile{Data: []byte(`
 header foo_h { bit<8> ihl; }
-const bit<16> FOO_BAR_ETHERTYPE = 0x0800;
+const bit<16> KUNAI_FOO_BAR_ETHERTYPE = 0x0800;
 
 parser F(packet_in pkt, out foo_h h) {
     state start {
@@ -2080,7 +2428,7 @@ func TestLoadParserCounterTupleSelect(t *testing.T) {
 		"vocab/foo.p4": &fstest.MapFile{Data: []byte(`
 header foo_h    { bit<8> ihl; }
 header foo_ra_h { bit<8> kind; bit<8> length; bit<16> value; }
-const bit<16> FOO_BAR_ETHERTYPE = 0x0800;
+const bit<16> KUNAI_FOO_BAR_ETHERTYPE = 0x0800;
 const bit<8>  FOO_MAX_DEPTH = 11;
 
 extern ParserCounter {
@@ -2160,7 +2508,7 @@ func TestLoadParserCounterDecrementFieldExpr(t *testing.T) {
 		"vocab/foo.p4": &fstest.MapFile{Data: []byte(`
 header foo_h    { bit<8> ihl; }
 header foo_rr_h { bit<8> kind; bit<8> length; bit<8> pointer; }
-const bit<16> FOO_BAR_ETHERTYPE = 0x0800;
+const bit<16> KUNAI_FOO_BAR_ETHERTYPE = 0x0800;
 const bit<8>  FOO_MAX_DEPTH = 11;
 
 extern ParserCounter {
@@ -2233,7 +2581,7 @@ func TestLoadParserCounterDecrementFieldExprRejectsPrimary(t *testing.T) {
 	fsys := fstest.MapFS{
 		"vocab/foo.p4": &fstest.MapFile{Data: []byte(`
 header foo_h { bit<8> ihl; }
-const bit<16> FOO_BAR_ETHERTYPE = 0x0800;
+const bit<16> KUNAI_FOO_BAR_ETHERTYPE = 0x0800;
 const bit<8>  FOO_MAX_DEPTH = 11;
 
 extern ParserCounter {
@@ -2278,7 +2626,7 @@ func TestLoadParserCounterRejectsReversedTuple(t *testing.T) {
 	fsys := fstest.MapFS{
 		"vocab/foo.p4": &fstest.MapFile{Data: []byte(`
 header foo_h { bit<8> ihl; }
-const bit<16> FOO_BAR_ETHERTYPE = 0x0800;
+const bit<16> KUNAI_FOO_BAR_ETHERTYPE = 0x0800;
 const bit<8>  FOO_MAX_DEPTH = 4;
 
 extern ParserCounter {

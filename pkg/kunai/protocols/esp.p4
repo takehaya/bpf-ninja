@@ -15,8 +15,8 @@ header esp_h {
 }
 
 // IPv4 protocol number 50 / IPv6 next_header 50 (IANA assigned).
-const bit<8> ESP_IPV4_PROTOCOL    = 50;
-const bit<8> ESP_IPV6_NEXT_HEADER = 50;
+const bit<8> KUNAI_ESP_IPV4_PROTOCOL    = 50;
+const bit<8> KUNAI_ESP_IPV6_NEXT_HEADER = 50;
 
 parser EspParser(packet_in pkt, out esp_h hdr) {
     state start {

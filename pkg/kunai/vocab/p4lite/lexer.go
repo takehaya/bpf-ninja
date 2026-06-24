@@ -62,6 +62,7 @@ const (
 	TokEquals
 	TokDot
 	TokMinus
+	TokPlus
 	TokLShift
 	TokAmp
 	TokAt
@@ -143,6 +144,8 @@ func (k TokenKind) String() string {
 		return "'.'"
 	case TokMinus:
 		return "'-'"
+	case TokPlus:
+		return "'+'"
 	case TokLShift:
 		return "'<<'"
 	case TokAmp:
@@ -334,6 +337,8 @@ func (l *Lexer) Next() (Token, error) {
 		return Token{Kind: TokDot, Value: ".", Pos: pos}, nil
 	case '-':
 		return Token{Kind: TokMinus, Value: "-", Pos: pos}, nil
+	case '+':
+		return Token{Kind: TokPlus, Value: "+", Pos: pos}, nil
 	case '&':
 		return Token{Kind: TokAmp, Value: "&", Pos: pos}, nil
 	case '@':

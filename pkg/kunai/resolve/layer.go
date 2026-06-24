@@ -134,7 +134,7 @@ func selectDispatch(spec *vocab.ProtocolSpec, parentName string, pos ast.Positio
 		if spec.IsSelfValidating() {
 			return &ir.DispatchChoice{Type: vocab.DispatchSelfValidating}, nil
 		}
-		return nil, errorf(pos, "no dispatch constant for %q under %q (declare %s_%s_<FIELD|NO_CHECK> in %s.p4, or have %s.p4 self-validate via a parser-block `transition select(...) { ...; default: reject; }`)", spec.Name, parentName, strings.ToUpper(spec.Name), strings.ToUpper(parentName), spec.Name, spec.Name)
+		return nil, errorf(pos, "no dispatch constant for %q under %q (declare KUNAI_%s_%s_<FIELD> or KUNAI_%s_%s_NO_CHECK in %s.p4, or have %s.p4 self-validate via a parser-block `transition select(...) { ...; default: reject; }`)", spec.Name, parentName, strings.ToUpper(spec.Name), strings.ToUpper(parentName), strings.ToUpper(spec.Name), strings.ToUpper(parentName), spec.Name, spec.Name)
 	}
 	return &ir.DispatchChoice{Type: c.Type, Const: c}, nil
 }
@@ -162,7 +162,7 @@ func selectAltParentDispatch(spec *vocab.ProtocolSpec, alts []*ir.LayerInstance,
 	for _, alt := range alts {
 		c := spec.SelectDispatchConst(alt.Spec.Name)
 		if c == nil {
-			return nil, errorf(pos, "no dispatch constant for %q under alternative %q (declare %s_%s_<FIELD|NO_CHECK> in %s.p4, or have %s.p4 self-validate via a parser-block `transition select(...) { ...; default: reject; }`)", spec.Name, alt.Spec.Name, strings.ToUpper(spec.Name), strings.ToUpper(alt.Spec.Name), spec.Name, spec.Name)
+			return nil, errorf(pos, "no dispatch constant for %q under alternative %q (declare KUNAI_%s_%s_<FIELD> or KUNAI_%s_%s_NO_CHECK in %s.p4, or have %s.p4 self-validate via a parser-block `transition select(...) { ...; default: reject; }`)", spec.Name, alt.Spec.Name, strings.ToUpper(spec.Name), strings.ToUpper(alt.Spec.Name), strings.ToUpper(spec.Name), strings.ToUpper(alt.Spec.Name), spec.Name, spec.Name)
 		}
 		altConsts = append(altConsts, c)
 		if representative == nil {

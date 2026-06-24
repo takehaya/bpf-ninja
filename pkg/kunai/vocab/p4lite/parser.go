@@ -125,7 +125,87 @@ func (p *parser) parseFile() (*File, error) {
 	if len(pending) > 0 {
 		return nil, p.errorf(pending[0].Pos, "annotation @%s has no following declaration to attach to", pending[0].Name)
 	}
+	if err := p.resolveConstMatches(f); err != nil {
+		return nil, err
+	}
 	return f, nil
+}
+
+// resolveConstMatches folds named-const select-match arms into their
+// integer value once the whole file is parsed. A select arm written
+// as `SRV6_ROUTING_TYPE: state;` parses to a Match with ConstName set
+// but Value unknown (the const decl may appear after the parser
+// block). This pass, run from parseFile after all declarations are
+// in hand, looks each name up in File.Consts and stamps the const's
+// Int into Match.Value — making the named arm byte-for-byte identical
+// to the literal it stands for. ConstName is left in place purely for
+// diagnostics; no downstream consumer reads it.
+//
+// Errors, all positioned at the offending arm:
+//   - unknown const name;
+//   - a bool const used in an integer match slot;
+//   - a bool const used in a bool slot (a `<counter>.is_zero()` key):
+//     named bool consts are not supported there, use the literals
+//     true/false;
+//   - an int const used in a bool slot (a `<counter>.is_zero()` key,
+//     whose arms must be the literals true/false).
+//
+// The bool-slot direction needs the key alignment, so the walk
+// pairs each Case value with its Select key by index.
+func (p *parser) resolveConstMatches(f *File) error {
+	byName := make(map[string]*Const, len(f.Consts))
+	for _, c := range f.Consts {
+		byName[c.Name] = c
+	}
+	for _, par := range f.Parsers {
+		for _, st := range par.States {
+			tr := st.Transition
+			if tr == nil || tr.Kind != TransSelect || tr.Select == nil {
+				continue
+			}
+			sel := tr.Select
+			for ci := range sel.Cases {
+				c := &sel.Cases[ci]
+				for vi := range c.Values {
+					m := &c.Values[vi]
+					boolSlot := vi < len(sel.Keys) &&
+						sel.Keys[vi].Kind == SelectKeyCounterIsZero
+					if err := p.resolveOneMatch(m, boolSlot, byName); err != nil {
+						return err
+					}
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// resolveOneMatch handles a single Match slot. Literals, wildcards and
+// bool literals pass through untouched; only a ConstName arm is
+// resolved. boolSlot is true when the aligned select key is a
+// `<counter>.is_zero()` peek, whose arms must be boolean.
+func (p *parser) resolveOneMatch(m *Match, boolSlot bool, byName map[string]*Const) error {
+	if m.ConstName == "" {
+		// A bool literal landing in an integer slot, or an integer
+		// literal in a bool slot, is a separate concern checked by
+		// downstream codegen; this pass only owns const folding.
+		return nil
+	}
+	c, ok := byName[m.ConstName]
+	if !ok {
+		return p.errorf(m.Pos, "select match references unknown const %q (no such const declared in this file)", m.ConstName)
+	}
+	if c.IsBool {
+		if boolSlot {
+			return p.errorf(m.Pos, "select match references bool const %q for a `<counter>.is_zero()` key; named bool consts are not supported here, use the literals true/false", m.ConstName)
+		}
+		return p.errorf(m.Pos, "select match references bool const %q where an integer match value is required (use a bit<N> const)", m.ConstName)
+	}
+	if boolSlot {
+		return p.errorf(m.Pos, "select match references integer const %q for a `<counter>.is_zero()` key, which only matches the literals true/false", m.ConstName)
+	}
+	m.Value = c.Int
+	return nil
 }
 
 // parseAnnotation parses one structured `@name[k=v, ...]` decorator.
@@ -651,24 +731,39 @@ func (p *parser) parseExtractCall(obj string, startPos Position) (Stmt, error) {
 	return es, nil
 }
 
-// parseCounterSetCall handles `<counter>.set(((bit<N>)(hdr.<F> - K)) << S);`.
-// Cursor sits past the `set` token. The arg shares AdvanceField's
-// cast-and-shift template so the byte expression flowing into the
-// counter slot is the same one trailer-skip already lowers. The
+// parseCounterSetCall handles `<counter>.set(((bit<N>)(hdr.<F> - K)) << S);`
+// (subtract form) or `<counter>.set(((bit<N>)(hdr.<F> & MASK)) << S);`
+// (mask form). Cursor sits past the `set` token. The arg shares
+// AdvanceField's cast-and-shift template so the byte expression flowing
+// into the counter slot is the same one trailer-skip already lowers.
+// The mask form lets the counter carry a statically-bounded byte count
+// (e.g. SRH's `(hdr_ext_len & 0x0F) * 8`) so the bulk-advance fallback
+// the counter-driven walk degrades to stays verifier-bounded. The
 // shared core consumes both the closing `)` and the trailing `;`.
 func (p *parser) parseCounterSetCall(counter string, startPos Position) (Stmt, error) {
 	if _, err := p.expect(TokLParen); err != nil {
 		return nil, err
 	}
-	adv, err := p.parseAdvanceCastedShift(counter, startPos)
+	// Two structurally distinct arg shapes share the `set(` opener:
+	//   shifted form: `((bit<N>) ...) << S)`  — second token after the
+	//                 leading `(` is another `(`.
+	//   bare-cast   : `(bit<N>)(hdr.<F> + K))` — second token is `bit`.
+	// The shifted form wraps the cast in an extra paren so the `<< S`
+	// scopes the whole expression; the bare-cast add form drops both the
+	// outer paren and the shift (scale=1). Consume the first `(` and
+	// dispatch on what follows (single-token lookahead only).
+	if _, err := p.expect(TokLParen); err != nil {
+		return nil, err
+	}
+	if p.cur.Kind == TokBit {
+		return p.parseCounterSetBareCast(counter, startPos)
+	}
+	adv, err := p.parseAdvanceCastedShiftInner(counter, counter+".set", startPos)
 	if err != nil {
 		return nil, err
 	}
 	if adv.Kind != AdvanceField {
-		return nil, p.errorf(startPos, "%s.set requires the `((bit<N>)(hdr.<F> - K)) << S` template (lookahead form not supported here)", counter)
-	}
-	if adv.Mask != 0 {
-		return nil, p.errorf(startPos, "%s.set requires the subtract form `(hdr.<F> - K)`; mask form `(hdr.<F> & MASK)` is not supported here (CounterCallStmt has no Mask slot, the mask would be silently dropped)", counter)
+		return nil, p.errorf(startPos, "%s.set requires the `((bit<N>)(hdr.<F> - K)) << S` or `((bit<N>)(hdr.<F> & MASK)) << S` template (lookahead form not supported here)", counter)
 	}
 	return &CounterCallStmt{
 		Counter:   counter,
@@ -677,7 +772,100 @@ func (p *parser) parseCounterSetCall(counter string, startPos Position) (Stmt, e
 		Target:    adv.Target,
 		FieldName: adv.FieldName,
 		BaseWords: adv.BaseWords,
+		Mask:      adv.Mask,
 		ScaleLog2: adv.ScaleLog2,
+		Pos:       startPos,
+	}, nil
+}
+
+// parseCounterSetBareCast parses the bare-cast add form
+// `bit<N>)(hdr.<F> + K))` (the two leading `(` and the `bit` token's
+// position were already established by parseCounterSetCall, with the
+// cursor sitting on `bit`). This is the scale=1, shift-free counter
+// seed used by element-driven aux-stack walks: the count trips once
+// per pushed entry, so the seed is a small element count
+// (`last_entry + 1`) rather than a byte length. The `+ K` addend is
+// optional; `(bit<N>)(hdr.<F>)` parses with Addend=0.
+//
+// Grammar after the consumed `((`:
+//
+//	bit < N > ) ( hdr . F [ + K ] ) )
+//
+// The trailing two `)` close the cast group and the `set(` opener.
+func (p *parser) parseCounterSetBareCast(counter string, startPos Position) (Stmt, error) {
+	expectShape := func(k TokenKind) (Token, error) {
+		if p.cur.Kind != k {
+			return Token{}, p.errorf(p.cur.Pos, "%s.set bare-cast form must be `(bit<N>)(hdr.<F> + K)` (got %s)", counter, p.cur.Kind)
+		}
+		t := p.cur
+		if err := p.advance(); err != nil {
+			return Token{}, err
+		}
+		return t, nil
+	}
+	// `bit<N>)` — the cast prefix (outer `(` already consumed).
+	if _, err := expectShape(TokBit); err != nil {
+		return nil, err
+	}
+	if _, err := expectShape(TokLAngle); err != nil {
+		return nil, err
+	}
+	nTok, err := expectShape(TokInt)
+	if err != nil {
+		return nil, err
+	}
+	for _, k := range []TokenKind{TokRAngle, TokRParen} {
+		if _, err := expectShape(k); err != nil {
+			return nil, err
+		}
+	}
+	// `(hdr.<F>` — the field operand group opener.
+	if _, err := expectShape(TokLParen); err != nil {
+		return nil, err
+	}
+	hdrTok, err := expectShape(TokIdent)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := expectShape(TokDot); err != nil {
+		return nil, err
+	}
+	fldTok, err := expectShape(TokIdent)
+	if err != nil {
+		return nil, err
+	}
+	// Optional `+ K`.
+	addend := 0
+	if p.cur.Kind == TokPlus {
+		if _, err := expectShape(TokPlus); err != nil {
+			return nil, err
+		}
+		kTok, err := expectShape(TokInt)
+		if err != nil {
+			return nil, err
+		}
+		if kTok.Int > uint64(maxInt32) {
+			return nil, p.errorf(kTok.Pos, "%s.set addend K=%d exceeds the int32 range", counter, kTok.Int)
+		}
+		addend = int(kTok.Int)
+	}
+	// Closing `)` of the operand group, then `)` of `set(`.
+	for _, k := range []TokenKind{TokRParen, TokRParen} {
+		if _, err := expectShape(k); err != nil {
+			return nil, err
+		}
+	}
+	if _, err := p.expect(TokSemi); err != nil {
+		return nil, err
+	}
+	return &CounterCallStmt{
+		Counter:   counter,
+		Op:        CounterSet,
+		BitWidth:  int(nTok.Int),
+		Target:    hdrTok.Value,
+		FieldName: fldTok.Value,
+		ScaleLog2: 0, // scale=1: element count, no byte shift
+		Addend:    addend,
 		Pos:       startPos,
 	}, nil
 }
@@ -895,10 +1083,28 @@ func (p *parser) parseAdvanceLiteral(obj string, startPos Position) (Stmt, error
 // parseAdvanceCastedShift parses the templates that share the
 // `((bit<N>) ...) << S` shape — AdvanceField and AdvanceLookahead.
 // Cursor sits one token past the `pkt.advance(` opener (so on the
-// first inner `(`).
+// first inner `(`). It eats the first `(` and delegates to the
+// inner parser, which is shared with `<counter>.set`'s shifted form
+// (whose caller has already consumed that first `(`).
 func (p *parser) parseAdvanceCastedShift(obj string, startPos Position) (*AdvanceStmt, error) {
+	if _, err := p.expect(TokLParen); err != nil {
+		return nil, err
+	}
+	return p.parseAdvanceCastedShiftInner(obj, "pkt.advance", startPos)
+}
+
+// parseAdvanceCastedShiftInner parses `(bit<N>) ...) << S` — the
+// shifted cast template with the leading `(` already consumed by the
+// caller (parseAdvanceCastedShift for pkt.advance, parseCounterSetCall
+// for the counter.set shifted form). construct names the surface form
+// for diagnostics ("pkt.advance" or "<counter>.set") so a malformed arg
+// is reported against the construct the author actually wrote.
+func (p *parser) parseAdvanceCastedShiftInner(obj, construct string, startPos Position) (*AdvanceStmt, error) {
 	mismatch := func(pos Position) error {
-		return p.errorf(pos, "pkt.advance must use one of `pkt.advance(((bit<N>)(hdr.<F> - K)) << S)` / `pkt.advance(((bit<N>)pkt.lookahead<bit<M>>()[lo:hi]) << S)` / `pkt.advance(<INT>)`")
+		if construct == "pkt.advance" {
+			return p.errorf(pos, "pkt.advance must use one of `pkt.advance(((bit<N>)(hdr.<F> - K)) << S)` / `pkt.advance(((bit<N>)pkt.lookahead<bit<M>>()[lo:hi]) << S)` / `pkt.advance(<INT>)`")
+		}
+		return p.errorf(pos, "%s must use the casted-shift form `%s(((bit<N>)(hdr.<F> - K)) << S)` or `%s(((bit<N>)(hdr.<F> & MASK)) << S)`", construct, construct, construct)
 	}
 	expectShape := func(k TokenKind) (Token, error) {
 		if p.cur.Kind != k {
@@ -910,8 +1116,8 @@ func (p *parser) parseAdvanceCastedShift(obj string, startPos Position) (*Advanc
 		}
 		return t, nil
 	}
-	// Common prefix `((bit<N>)`.
-	for _, k := range []TokenKind{TokLParen, TokLParen, TokBit, TokLAngle} {
+	// Remaining prefix `(bit<N>)` (the outer `(` is already consumed).
+	for _, k := range []TokenKind{TokLParen, TokBit, TokLAngle} {
 		if _, err := expectShape(k); err != nil {
 			return nil, err
 		}
@@ -1415,8 +1621,18 @@ func (p *parser) parseMatch() (Match, error) {
 			}
 			return m, nil
 		}
-		return Match{}, p.errorf(p.cur.Pos, "unexpected identifier %q in match (only integers, '_' or true/false supported)", p.cur.Value)
+		// A bare identifier names an integer const declared elsewhere
+		// in the file. The value isn't known until every const is
+		// parsed, so record the name and defer the lookup to
+		// resolveConstMatches (run from parseFile once the whole file
+		// is in hand). Value stays the single source of truth: the
+		// resolution pass folds the const's integer into Value.
+		m := Match{ConstName: p.cur.Value, Pos: startPos}
+		if err := p.advance(); err != nil {
+			return Match{}, err
+		}
+		return m, nil
 	default:
-		return Match{}, p.errorf(p.cur.Pos, "expected integer, '_' or true/false in select match, got %s", p.cur.Kind)
+		return Match{}, p.errorf(p.cur.Pos, "expected integer, named const, '_' or true/false in select match, got %s", p.cur.Kind)
 	}
 }

@@ -45,24 +45,24 @@ header ipv4_rr_addr_h {
 }
 
 // Ethernet/VLAN/QinQ select ipv4 via the ethertype.
-const bit<16> IPV4_ETH_ETHERTYPE  = 0x0800;
-const bit<16> IPV4_VLAN_ETHERTYPE = 0x0800;
-const bit<16> IPV4_QINQ_ETHERTYPE = 0x0800;
+const bit<16> KUNAI_IPV4_ETH_ETHERTYPE  = 0x0800;
+const bit<16> KUNAI_IPV4_VLAN_ETHERTYPE = 0x0800;
+const bit<16> KUNAI_IPV4_QINQ_ETHERTYPE = 0x0800;
 
 // SRv6 transports IPv4-in-IPv6 (SRv6 → IPv4 inner): the SRH
 // next_header byte uses IANA protocol number 4 (IPIP).
-const bit<8>  IPV4_SRV6_NEXT_HEADER = 4;
+const bit<8>  KUNAI_IPV4_SRV6_NEXT_HEADER = 4;
 
 // IPv4-in-IPv4 tunneling (IPIP, RFC 2003): the outer ipv4's protocol
 // byte is 4 (IANA "IPIP"). Lets users write `eth/ipv4/ipv4/tcp` to
 // match IPIP frames without resorting to a chain quantifier — each
 // ipv4 layer runs its own parser machine, so IHL>5 / options on the
 // inner ipv4 are handled correctly.
-const bit<8>  IPV4_IPV4_PROTOCOL = 4;
+const bit<8>  KUNAI_IPV4_IPV4_PROTOCOL = 4;
 
 // Under GRE, the protocol_type field carries the EtherType of the
 // payload — IPv4 uses the well-known 0x0800.
-const bit<16> IPV4_GRE_PROTOCOL_TYPE = 0x0800;
+const bit<16> KUNAI_IPV4_GRE_PROTOCOL_TYPE = 0x0800;
 
 // Option-walk loop bound: worst-case trailer is 40 bytes (IHL=15)
 // of NOPs (kind=1, single byte), so up to 40 iterations would drain
@@ -86,6 +86,18 @@ const bit<16> IPV4_GRE_PROTOCOL_TYPE = 0x0800;
 // the demand-driven bulk-advance fallback (see dsl-internals.md
 // §6.5 Mechanism 8 / canFallbackToBulkAdvance) and skip the
 // loop entirely.
+
+// IPv4 option kinds dispatched by the walk state (RFC 791 §3.1).
+// These are value-only select-match consts (no inter-layer dispatch
+// role) because their parent token OPT is not a protocol, so they are
+// written *without* the KUNAI_ prefix (KUNAI_ is reserved for dispatch
+// edges): the loader folds each into the matching select arm.
+// EOL/NOP are the single-byte options; Record Route and Router Alert
+// are the extracted ones.
+const bit<8> IPV4_OPT_EOL          = 0;   // End of Option List (RFC 791)
+const bit<8> IPV4_OPT_NOP          = 1;   // No Operation (RFC 791)
+const bit<8> IPV4_OPT_RR           = 7;   // Record Route (RFC 791 §3.1)
+const bit<8> IPV4_OPT_ROUTER_ALERT = 148; // Router Alert (RFC 2113)
 
 extern ParserCounter {
     ParserCounter();
@@ -135,12 +147,12 @@ parser IPv4Parser(packet_in pkt,
     }
     state walk {
         transition select(pc.is_zero(), pkt.lookahead<bit<8>>()) {
-            (true,  _):    accept;
-            (false, 0):    accept;
-            (false, 1):    parse_nop;
-            (false, 7):    parse_rr;
-            (false, 148):  parse_router_alert;
-            (false, _):    reject;
+            (true,  _):                    accept;
+            (false, IPV4_OPT_EOL):         accept;
+            (false, IPV4_OPT_NOP):         parse_nop;
+            (false, IPV4_OPT_RR):          parse_rr;
+            (false, IPV4_OPT_ROUTER_ALERT): parse_router_alert;
+            (false, _):                    reject;
         }
     }
     state parse_nop {

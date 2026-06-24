@@ -13,12 +13,12 @@ header tcp_h {
 }
 
 // Dual declaration: tcp appears under ipv4.protocol=6 or ipv6.next_header=6.
-const bit<8> TCP_IPV4_PROTOCOL    = 6;
-const bit<8> TCP_IPV6_NEXT_HEADER = 6;
+const bit<8> KUNAI_TCP_IPV4_PROTOCOL    = 6;
+const bit<8> KUNAI_TCP_IPV6_NEXT_HEADER = 6;
 
 // SRv6 dispatches to TCP via the SRH next_header byte (offset 0 of
 // srv6_h). The numeric value matches IPv6's protocol assignment.
-const bit<8> TCP_SRV6_NEXT_HEADER = 6;
+const bit<8> KUNAI_TCP_SRV6_NEXT_HEADER = 6;
 
 
 // === TCP options (RFC 9293, IANA TCP Parameters) ===

@@ -83,11 +83,11 @@ func TestResolveSimpleChain(t *testing.T) {
 		t.Errorf("root layer should have no dispatch: %+v", p.Layers[0].Dispatch)
 	}
 	ipv4Dispatch := p.Layers[1].Dispatch
-	if ipv4Dispatch == nil || ipv4Dispatch.Const.Name != "IPV4_ETH_ETHERTYPE" || ipv4Dispatch.Const.Value != 0x0800 {
+	if ipv4Dispatch == nil || ipv4Dispatch.Const.Name != "KUNAI_IPV4_ETH_ETHERTYPE" || ipv4Dispatch.Const.Value != 0x0800 {
 		t.Errorf("ipv4 dispatch = %+v", ipv4Dispatch)
 	}
 	tcpDispatch := p.Layers[2].Dispatch
-	if tcpDispatch == nil || tcpDispatch.Const.Name != "TCP_IPV4_PROTOCOL" || tcpDispatch.Const.Value != 6 {
+	if tcpDispatch == nil || tcpDispatch.Const.Name != "KUNAI_TCP_IPV4_PROTOCOL" || tcpDispatch.Const.Value != 6 {
 		t.Errorf("tcp dispatch = %+v", tcpDispatch)
 	}
 }
@@ -122,7 +122,7 @@ func TestResolveIPv6Chain(t *testing.T) {
 	p := resolveOK(t, "eth/ipv6/tcp", nil)
 	// tcp is dual-declared; under ipv6 we expect TCP_IPV6_NEXT_HEADER==6.
 	tcp := p.Layers[2].Dispatch
-	if tcp == nil || tcp.Const.Name != "TCP_IPV6_NEXT_HEADER" {
+	if tcp == nil || tcp.Const.Name != "KUNAI_TCP_IPV6_NEXT_HEADER" {
 		t.Errorf("tcp dispatch = %+v", tcp)
 	}
 }
@@ -133,7 +133,7 @@ func TestResolveGtpChainUsesSelfValidating(t *testing.T) {
 	// field and ipv4's parser block validates `version == 4` itself.
 	p := resolveOK(t, "eth/ipv4/udp/gtp/ipv4/tcp", nil)
 	gtp := p.Layers[3].Dispatch
-	if gtp == nil || gtp.Const.Name != "GTP_UDP_DPORT" || gtp.Const.Value != 2152 {
+	if gtp == nil || gtp.Const.Name != "KUNAI_GTP_UDP_DPORT" || gtp.Const.Value != 2152 {
 		t.Errorf("gtp dispatch = %+v", gtp)
 	}
 	innerIPv4 := p.Layers[4].Dispatch

@@ -29,19 +29,30 @@ header ipv6_ext_h {
 }
 
 // Ethernet/VLAN/QinQ select ipv6 via the ethertype.
-const bit<16> IPV6_ETH_ETHERTYPE  = 0x86DD;
-const bit<16> IPV6_VLAN_ETHERTYPE = 0x86DD;
-const bit<16> IPV6_QINQ_ETHERTYPE = 0x86DD;
+const bit<16> KUNAI_IPV6_ETH_ETHERTYPE  = 0x86DD;
+const bit<16> KUNAI_IPV6_VLAN_ETHERTYPE = 0x86DD;
+const bit<16> KUNAI_IPV6_QINQ_ETHERTYPE = 0x86DD;
 
 // Under GRE, dispatch on the EtherType-shaped protocol_type field.
-const bit<16> IPV6_GRE_PROTOCOL_TYPE = 0x86DD;
+const bit<16> KUNAI_IPV6_GRE_PROTOCOL_TYPE = 0x86DD;
 
 // IPv6-in-IPv6 tunneling (RFC 2473): the outer ipv6's next_header is
 // 41 (IANA "IPv6"). Lets users write `eth/ipv6/ipv6/tcp` for v6-in-v6
 // tunnels without resorting to a chain quantifier — each ipv6 layer
 // runs its own parser machine, so ext headers on either layer are
 // handled correctly.
-const bit<8>  IPV6_IPV6_NEXT_HEADER = 41;
+const bit<8>  KUNAI_IPV6_IPV6_NEXT_HEADER = 41;
+
+// IPv6 extension-header next_header values (IANA protocol numbers)
+// that the parser chains into ext parsing. These are value-only
+// select-match consts (no inter-layer dispatch role) because their
+// parent token NH is not a protocol, so they are written *without* the
+// KUNAI_ prefix (KUNAI_ is reserved for dispatch edges): the loader
+// folds each into the matching select arm (they dispatch to the same
+// protocol's own ext walk, not to a child layer).
+const bit<8>  IPV6_NH_HOP_BY_HOP = 0;  // Hop-by-Hop Options (RFC 8200)
+const bit<8>  IPV6_NH_FRAGMENT   = 44; // Fragment (RFC 8200)
+const bit<8>  IPV6_NH_DEST_OPTS  = 60; // Destination Options (RFC 8200)
 
 // Cap the ext-header chain depth. Real frames almost never carry
 // more than 2 ext headers (HBH + DestOpt is the typical maximum);
@@ -64,20 +75,20 @@ parser IPv6Parser(packet_in pkt,
     state start {
         pkt.extract(hdr);
         transition select(hdr.version, hdr.next_header) {
-            (6,  0): parse_ext;   // Hop-by-Hop options
-            (6, 44): parse_ext;   // Fragment
-            (6, 60): parse_ext;   // Destination options
-            (6,  _): accept;      // any other inner protocol
-            default: reject;      // version != 6
+            (6, IPV6_NH_HOP_BY_HOP): parse_ext;   // Hop-by-Hop options
+            (6, IPV6_NH_FRAGMENT):   parse_ext;   // Fragment
+            (6, IPV6_NH_DEST_OPTS):  parse_ext;   // Destination options
+            (6, _):                        accept;      // any other inner protocol
+            default:                       reject;      // version != 6
         }
     }
     state parse_ext {
         pkt.extract(exts.next);
         transition select(exts.last.next_header) {
-            0:  parse_ext;
-            44: parse_ext;
-            60: parse_ext;
-            default: accept;
+            IPV6_NH_HOP_BY_HOP: parse_ext;
+            IPV6_NH_FRAGMENT:   parse_ext;
+            IPV6_NH_DEST_OPTS:  parse_ext;
+            default:                  accept;
         }
     }
 }

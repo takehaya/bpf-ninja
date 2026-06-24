@@ -25,7 +25,8 @@ func staticChainFitsRange(max int) bool {
 // Chain iteration is required because `{n,m>1}` identifies the *next*
 // instance by the previous one, not by the outer parent — so the
 // second and later iterations peek a self-dispatch const that must be
-// declared in the vocab (e.g. VLAN_VLAN_ETHERTYPE, MPLS_MPLS_NO_CHECK).
+// declared in the vocab (e.g. KUNAI_VLAN_VLAN_ETHERTYPE,
+// KUNAI_MPLS_MPLS_NO_CHECK).
 // Iterations below RangeMin fail hard; iterations at or above RangeMin
 // skip to a single chain-done landing so a short stack falls through.
 func genStaticChain(layer *ir.LayerInstance, index int, all []*ir.LayerInstance) (asm.Instructions, error) {
@@ -64,7 +65,7 @@ func genStaticChain(layer *ir.LayerInstance, index int, all []*ir.LayerInstance)
 	selfConst := layer.Spec.SelectDispatchConst(layer.Spec.Name)
 	if selfConst == nil {
 		self := strings.ToUpper(layer.Spec.Name)
-		return nil, fmt.Errorf("%w: chained %q has no self-dispatch const (declare %s_%s_<FIELD|NO_CHECK> in %s.p4)", ErrNotImplemented, layer.Spec.Name, self, self, layer.Spec.Name)
+		return nil, fmt.Errorf("%w: chained %q has no self-dispatch const (declare KUNAI_%s_%s_<FIELD> or KUNAI_%s_%s_NO_CHECK in %s.p4)", ErrNotImplemented, layer.Spec.Name, self, self, self, self, layer.Spec.Name)
 	}
 	// chain iter ≥ 1 skips genStaticLayer / parser machine and only does
 	// extract+advance(hs). For variable-layout protocols (ipv4 IHL,

@@ -14,14 +14,14 @@ header mpls_h {
 // MPLS rides under VLAN and QinQ with the same 0x8847 because the
 // EtherType identifies the *payload* protocol, independent of the
 // outer L2 carrier.
-const bit<16> MPLS_ETH_ETHERTYPE  = 0x8847;
-const bit<16> MPLS_VLAN_ETHERTYPE = 0x8847;
-const bit<16> MPLS_QINQ_ETHERTYPE = 0x8847;
+const bit<16> KUNAI_MPLS_ETH_ETHERTYPE  = 0x8847;
+const bit<16> KUNAI_MPLS_VLAN_ETHERTYPE = 0x8847;
+const bit<16> KUNAI_MPLS_QINQ_ETHERTYPE = 0x8847;
 
 // Stacked MPLS labels: the next label sits immediately after the
 // previous one with no boundary marker. The user opts in by writing
-// `mpls+` or `mpls{n,m}`.
-const bool MPLS_MPLS_NO_CHECK = true;
+// `mpls+` or `mpls{n,m}`. KUNAI_ marks this self-dispatch edge.
+const bool KUNAI_MPLS_MPLS_NO_CHECK = true;
 
 // Default bpf_loop iteration cap for `mpls+` / `mpls*`. Real-world
 // stacks rarely exceed four; eight leaves slack for edge deployments

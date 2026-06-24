@@ -69,7 +69,7 @@ header ipv4_h {
     bit<32> dst;
 }
 
-const bit<16> IPV4_ETH_ETHERTYPE = 0x0800;
+const bit<16> KUNAI_IPV4_ETH_ETHERTYPE = 0x0800;
 
 extern ParserCounter {
     ParserCounter();

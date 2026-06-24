@@ -39,7 +39,7 @@ var (
 		Parent: "eth", FieldName: "ethertype", Bits: 16, Value: 0x8847,
 	}
 	mplsSelfNoCheck = &vocab.DispatchConst{
-		Type: vocab.DispatchNoCheck, Name: "MPLS_MPLS_NO_CHECK",
+		Type: vocab.DispatchNoCheck, Name: "KUNAI_MPLS_MPLS_NO_CHECK",
 		Parent: "mpls", Bool: true,
 	}
 	mplsSpecForChain = func() *vocab.ProtocolSpec {
