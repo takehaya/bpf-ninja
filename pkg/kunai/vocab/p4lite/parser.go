@@ -144,6 +144,9 @@ func (p *parser) parseFile() (*File, error) {
 // Errors, all positioned at the offending arm:
 //   - unknown const name;
 //   - a bool const used in an integer match slot;
+//   - a bool const used in a bool slot (a `<counter>.is_zero()` key):
+//     named bool consts are not supported there, use the literals
+//     true/false;
 //   - an int const used in a bool slot (a `<counter>.is_zero()` key,
 //     whose arms must be the literals true/false).
 //

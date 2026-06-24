@@ -2236,6 +2236,56 @@ parser B(packet_in pkt, out bar_h h) { state start { pkt.extract(h); transition 
 	}
 }
 
+// TestLoadParserCounterRejectsSubByteShift pins that a shifted
+// counter.set with a sub-byte shift (S=1 or S=2) is a loud load-time
+// reject rather than a silent collapse to scale=1. Only the shift-free
+// bare-cast element-count form carries scale=1; a whole-byte shifted
+// form needs S >= 3. Regression guard for the allowSubByteScale gate in
+// lowerCastShiftSkip, which must admit ScaleLog2 == 0 only.
+func TestLoadParserCounterRejectsSubByteShift(t *testing.T) {
+	fsys := fstest.MapFS{
+		"vocab/foo.p4": &fstest.MapFile{Data: []byte(`
+header foo_h { bit<8> ihl; }
+const bit<16> KUNAI_FOO_BAR_ETHERTYPE = 0x0800;
+
+extern ParserCounter {
+    ParserCounter();
+    void set(in bit<8> value);
+    void decrement(in bit<8> value);
+    bool is_zero();
+}
+
+parser F(packet_in pkt, out foo_h h) {
+    ParserCounter() pc;
+    state start {
+        pkt.extract(h);
+        pc.set(((bit<8>)(h.ihl - 5)) << 2);
+        transition wait;
+    }
+    state wait {
+        transition select(pc.is_zero()) {
+            true:  accept;
+            false: consume;
+        }
+    }
+    state consume {
+        pkt.advance(8);
+        pc.decrement(1);
+        transition wait;
+    }
+}
+`)},
+		"vocab/bar.p4": &fstest.MapFile{Data: []byte(`
+header bar_h { bit<48> dst; bit<48> src; bit<16> et; }
+parser B(packet_in pkt, out bar_h h) { state start { pkt.extract(h); transition accept; } }
+`)},
+	}
+	_, err := Load(fsys, "vocab")
+	if err == nil || !strings.Contains(err.Error(), "sub-byte") {
+		t.Fatalf("err = %v; want a sub-byte rejection for the `<< 2` counter.set shift", err)
+	}
+}
+
 func TestLoadParserCounterRejectsUndeclaredName(t *testing.T) {
 	fsys := fstest.MapFS{
 		"vocab/foo.p4": &fstest.MapFile{Data: []byte(`
