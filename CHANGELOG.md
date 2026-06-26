@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.11.0](https://github.com/takehaya/xdp-ninja/compare/v0.10.2...v0.11.0) (2026-06-24)
+
+
+### 🎉 Features
+
+* **codegen:** multi-option TCP where-clauses via a converging accumulator loop ([#40](https://github.com/takehaya/xdp-ninja/issues/40)) ([80bab43](https://github.com/takehaya/xdp-ninja/commit/80bab430492c6ecaa0fbbe67b848510feec123ee))
+* **kunai:** bpf_loop aux-walks, annotation-free SRv6, and the KUNAI_ dispatch convention ([#42](https://github.com/takehaya/xdp-ninja/issues/42)) ([4915d9b](https://github.com/takehaya/xdp-ninja/commit/4915d9bb48435f6eed884d5b5e0774f5dbb29da4))
+* **kunai:** Geneve option-TLV filtering, sub-byte field reads, and optional VLAN at tc ([#38](https://github.com/takehaya/xdp-ninja/issues/38)) ([76bf81c](https://github.com/takehaya/xdp-ninja/commit/76bf81c66cf70c5f1cd6b85153c9107af0a061b2))
+* **vocab:** skip Geneve option section to resolve inner offset ([#36](https://github.com/takehaya/xdp-ninja/issues/36)) ([1db3507](https://github.com/takehaya/xdp-ninja/commit/1db3507a5e4cac3d4dda13cdc2622d6022a142c5))
+
+
+### 🐛 Bug Fixes
+
+* **codegen:** chain-quantifier termination + nested bool-eq, with a packet-level corpus suite ([#37](https://github.com/takehaya/xdp-ninja/issues/37)) ([cad3b19](https://github.com/takehaya/xdp-ninja/commit/cad3b19966758e5c872f0fe088aed0a19e48162d))
+* **resolve:** reject any/all over two distinct aux stacks ([#34](https://github.com/takehaya/xdp-ninja/issues/34)) ([47d01a0](https://github.com/takehaya/xdp-ninja/commit/47d01a0917f940affc044e4563fc8f1a3f2f37a3))
+
 ## [0.10.2](https://github.com/takehaya/xdp-ninja/compare/v0.10.1...v0.10.2) (2026-06-11)
 
 
