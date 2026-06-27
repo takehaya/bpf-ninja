@@ -235,6 +235,21 @@ func BenchmarkFilterSetRun(b *testing.B) {
 	}
 	targetProg := loadDummyXDP(b)
 
+	// F0 baseline: harness floor. The cbpfc row compiles the empty
+	// pcap-filter expression (libpcap emits a single accept-all
+	// instruction), so its per-packet time is the BPF_PROG_TEST_RUN
+	// syscall plus the probe prologue with no real filter work. The
+	// kunai row is the minimal one-layer chain. Reporting Fn as a
+	// delta against F0 removes the ~600 ns syscall floor that
+	// otherwise hides the codegen signal.
+	basePkt := dsltest.BuildEthIPv4TCP(b, 12345, 443)
+	b.Run("F0/kunai", func(b *testing.B) {
+		benchmarkRun(b, targetProg, "eth", basePkt, true)
+	})
+	b.Run("F0/cbpfc", func(b *testing.B) {
+		benchmarkRun(b, targetProg, "", basePkt, false)
+	})
+
 	for _, fs := range FilterSet {
 		pkt := buildPacketForFilter(b, fs)
 
@@ -327,6 +342,13 @@ func buildPacketForFilter(b *testing.B, fs FilterSpec) []byte {
 			TCP:     true,
 		})
 	case "F5":
+		// Expr: icmp.type == 8 (echo request, BuildEthIPv4ICMP default)
+		return dsltest.Build(b, dsltest.PacketOpts{
+			ICMP: true,
+			TCP:  false,
+			UDP:  false,
+		})
+	case "F6":
 		// Expr: eth/qinq/vlan/ipv4/tcp where tcp.dport == 80
 		// (no explicit tci predicate — chain dispatch alone suffices)
 		return dsltest.Build(b, dsltest.PacketOpts{
@@ -334,13 +356,6 @@ func buildPacketForFilter(b *testing.B, fs FilterSpec) []byte {
 			VLAN:    []uint16{200},
 			DstPort: 80,
 			TCP:     true,
-		})
-	case "F6":
-		// Expr: icmp.type == 8 (echo request, BuildEthIPv4ICMP default)
-		return dsltest.Build(b, dsltest.PacketOpts{
-			ICMP: true,
-			TCP:  false,
-			UDP:  false,
 		})
 	case "F7":
 		// Expr: inner.dst == 10.0.0.1 (GTP-U inner IPv4)
