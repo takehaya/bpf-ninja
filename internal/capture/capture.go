@@ -146,11 +146,11 @@ func NewReader(eventsMap *ebpf.Map, _ int) (*Reader, error) {
 // All multi-byte fields are host-endian: BPF stores via asm.StoreMem
 // produce native-endian writes, so readers must use binary.NativeEndian.
 const (
-	MetadataSize    = 16
-	OffsetKernelTs  = 0
-	OffsetAction    = 8
-	OffsetMode      = 12
-	OffsetCapLen    = 14
+	MetadataSize   = 16
+	OffsetKernelTs = 0
+	OffsetAction   = 8
+	OffsetMode     = 12
+	OffsetCapLen   = 14
 )
 
 // RecordKernelTs reads the kernel_ts_ns field from a raw ringbuf record.
@@ -290,6 +290,81 @@ func NewShardedReader(inners []*ebpf.Map) (*Reader, error) {
 	return r, nil
 }
 
+// batchSize is the target batch size: the initial Packet/arena capacity
+// and the drain bound for the default reader (RunShards stops draining
+// and flushes once the batch reaches batchSize). The fast reader
+// (RunShardsFast) drains every committed record in one ReadBatch pass
+// and flushes once afterward, so a single fast-reader batch may exceed
+// batchSize; the arena and Packet slice grow to fit.
+const batchSize = 256
+
+// arenaInitPerPacket sizes the per-shard copy arena: batchSize × this
+// many bytes is pre-allocated so a full default-reader batch of
+// MTU-sized packets fits without reallocating. Larger fast-reader
+// batches grow the arena to a high-water mark and then reuse it.
+const arenaInitPerPacket = 2048
+
+// batchBuilder accumulates a batch of Packets for one shard while
+// owning their payload bytes. ParseRawSample returns a Packet whose
+// Data aliases the source buffer — the cilium/ebpf ringbuf.Record
+// (default reader) or the mmap'd ring (fast reader) — and that backing
+// memory is overwritten by the next read. Because a batch is flushed to
+// sink only after it fills, holding those aliases would hand sink stale
+// bytes. add() therefore copies each payload into a reusable per-shard
+// arena and repoints Data into it. The arena is reset (not freed) on
+// every flush, so steady-state allocation is zero.
+type batchBuilder struct {
+	shardIdx int
+	sink     ShardSink
+	buf      []Packet
+	arena    []byte
+}
+
+func newBatchBuilder(shardIdx int, sink ShardSink) *batchBuilder {
+	return &batchBuilder{
+		shardIdx: shardIdx,
+		sink:     sink,
+		buf:      make([]Packet, 0, batchSize),
+		arena:    make([]byte, 0, batchSize*arenaInitPerPacket),
+	}
+}
+
+// full reports whether the batch has reached batchSize, signalling the
+// drain loop to stop and flush.
+func (b *batchBuilder) full() bool { return len(b.buf) >= cap(b.buf) }
+
+// add copies pkt's payload into the arena, repoints pkt.Data into it,
+// and appends pkt to the batch. add never calls sink, so it is safe to
+// invoke from inside fastrb.Reader.ReadBatch's callback, where flushing
+// would run sink I/O before the consumer position is committed and add
+// ringbuf backpressure on the producer.
+//
+// If the payload does not fit the arena's spare capacity, append grows
+// it. A reallocation does not corrupt payloads already queued in this
+// batch: their Data slices keep the old backing array (with its bytes
+// intact) alive until the batch is flushed. The arena reaches a
+// high-water mark and is reset, not freed, on flush, so steady-state
+// allocation is zero.
+func (b *batchBuilder) add(pkt Packet) {
+	n := len(pkt.Data)
+	start := len(b.arena)
+	b.arena = append(b.arena, pkt.Data...)
+	pkt.Data = b.arena[start : start+n]
+	b.buf = append(b.buf, pkt)
+}
+
+// flush hands the accumulated batch to sink and resets the buffers for
+// reuse. sink must consume (write/copy) every Packet.Data before
+// returning; once flush resets the arena those bytes are recycled.
+func (b *batchBuilder) flush() {
+	if len(b.buf) == 0 {
+		return
+	}
+	_ = b.sink(b.shardIdx, b.buf)
+	b.buf = b.buf[:0]
+	b.arena = b.arena[:0]
+}
+
 // RunShards launches per-shard goroutines pumping into sink. Returns
 // a stop function that drains and joins all shards.
 func (r *Reader) RunShards(sink ShardSink) (stop func(), err error) {
@@ -302,7 +377,7 @@ func (r *Reader) RunShards(sink ShardSink) (stop func(), err error) {
 		go func(shardIdx int, rr *ringbuf.Reader) {
 			pinReaderToCPU(shardIdx)
 			defer func() { doneCh <- struct{}{} }()
-			buf := make([]Packet, 0, 256)
+			bb := newBatchBuilder(shardIdx, sink)
 			var rec ringbuf.Record
 			pollPast := time.Unix(1, 0)
 			for {
@@ -318,15 +393,14 @@ func (r *Reader) RunShards(sink ShardSink) (stop func(), err error) {
 					continue
 				}
 				now := time.Now()
-				pkt, perr := ParseRawSample(rec.RawSample)
-				if perr == nil {
+				if pkt, perr := ParseRawSample(rec.RawSample); perr == nil {
 					if LegacyTimestamp {
 						pkt.Timestamp = now
 					}
-					buf = append(buf, pkt)
+					bb.add(pkt)
 				}
 				rr.SetDeadline(pollPast)
-				for len(buf) < cap(buf) {
+				for !bb.full() {
 					if err := rr.ReadInto(&rec); err != nil {
 						break
 					}
@@ -337,13 +411,10 @@ func (r *Reader) RunShards(sink ShardSink) (stop func(), err error) {
 					if LegacyTimestamp {
 						pkt.Timestamp = now
 					}
-					buf = append(buf, pkt)
+					bb.add(pkt)
 				}
 				rr.SetDeadline(time.Time{})
-				if len(buf) > 0 {
-					_ = sink(shardIdx, buf)
-					buf = buf[:0]
-				}
+				bb.flush()
 			}
 		}(idx, rr)
 	}
@@ -470,7 +541,7 @@ func (r *FastShardedReader) RunShardsFast(sink ShardSink) (stop func(), err erro
 		go func(shardIdx, pinCPU int, rdr *fastrb.Reader) {
 			pinReaderToCPU(pinCPU)
 			defer func() { doneCh <- struct{}{} }()
-			buf := make([]Packet, 0, 256)
+			bb := newBatchBuilder(shardIdx, sink)
 			for {
 				select {
 				case <-stopCh:
@@ -491,12 +562,9 @@ func (r *FastShardedReader) RunShardsFast(sink ShardSink) (stop func(), err erro
 					if LegacyTimestamp {
 						pkt.Timestamp = now
 					}
-					buf = append(buf, pkt)
+					bb.add(pkt)
 				})
-				if len(buf) > 0 {
-					_ = sink(shardIdx, buf)
-					buf = buf[:0]
-				}
+				bb.flush()
 			}
 		}(idx, pinCPU, rdr)
 	}
