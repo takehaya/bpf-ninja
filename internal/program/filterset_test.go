@@ -54,13 +54,13 @@ var FilterSet = []FilterSpec{
 	{ID: "F4", Expr: "eth/vlan[tci==100]/ipv4/tcp where tcp.dport == 80",
 		CBPFCExpr: "vlan 100 and tcp dst port 80",
 		WantInsns: 215, Notes: "VLAN tag (TCI=100) + TCP dst", TCUnsupported: true},
-	{ID: "F5", Expr: "eth/qinq/vlan/ipv4/tcp where tcp.dport == 80",
+	{ID: "F5", Expr: "eth/ipv4/icmp where icmp.type == 8",
+		CBPFCExpr: "icmp[icmptype]==8",
+		WantInsns: 85, Notes: "ICMP echo request"},
+	{ID: "F6", Expr: "eth/qinq/vlan/ipv4/tcp where tcp.dport == 80",
 		// pcap "vlan 100 and vlan 200" is kernel/NIC dependent; intentionally
 		// omitted so the bench does not pretend the comparison is meaningful.
 		WantInsns: 217, Notes: "QinQ S-VLAN + inner C-VLAN via chain", TCUnsupported: true},
-	{ID: "F6", Expr: "eth/ipv4/icmp where icmp.type == 8",
-		CBPFCExpr: "icmp[icmptype]==8",
-		WantInsns: 85, Notes: "ICMP echo request"},
 	{ID: "F7", Expr: "eth/ipv4@outer/udp/gtp/ipv4@inner/tcp where inner.dst == 10.0.0.1",
 		WantInsns: 405, Notes: "GTP-U inner IPv4 dst (5G core)"},
 	{ID: "F8", Expr: "eth/ipv6/srv6 where any(srv6.segments.addr == fc00::1)",

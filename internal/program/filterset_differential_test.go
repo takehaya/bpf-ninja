@@ -1,6 +1,6 @@
 package program
 
-// Differential correctness for the pcap-expressible filters (F1-F4, F6).
+// Differential correctness for the pcap-expressible filters (F1-F5).
 //
 // filterset_corpus_correctness_test.go asserts match/reject against
 // hand-written expectations: the oracle is the author's own intent, so a
@@ -83,7 +83,7 @@ func diffPackets(t *testing.T, id string) [][]byte {
 			cp(func(o *dt.PacketOpts) { o.VLAN = []uint16{200}; o.DstPort = 80 })(t),   // reject: vlan tag
 			cp(func(o *dt.PacketOpts) { o.DstPort = 80 })(t),                           // reject: no tag
 		}
-	case "F6": // icmp[icmptype] == 8
+	case "F5": // icmp[icmptype] == 8
 		// The builder always emits ICMP echo request (type 8). Patch the
 		// type byte for a reject case. Frame is eth(14)/ipv4 ihl=5(20)/icmp,
 		// so the ICMP type is at offset 34; neither engine checks the ICMP
@@ -91,10 +91,10 @@ func diffPackets(t *testing.T, id string) [][]byte {
 		const icmpTypeOff = 14 + 20
 		reply := cp(asICMP)(t)
 		if len(reply) <= icmpTypeOff {
-			t.Fatalf("F6: packet is %d bytes, too short for the ICMP type at offset %d (builder/offset drift)", len(reply), icmpTypeOff)
+			t.Fatalf("F5: packet is %d bytes, too short for the ICMP type at offset %d (builder/offset drift)", len(reply), icmpTypeOff)
 		}
 		if reply[icmpTypeOff] != 8 {
-			t.Fatalf("F6: expected ICMP type 8 at offset %d, got %d (builder/offset drift)", icmpTypeOff, reply[icmpTypeOff])
+			t.Fatalf("F5: expected ICMP type 8 at offset %d, got %d (builder/offset drift)", icmpTypeOff, reply[icmpTypeOff])
 		}
 		reply[icmpTypeOff] = 0 // echo reply
 		return [][]byte{
@@ -108,7 +108,7 @@ func diffPackets(t *testing.T, id string) [][]byte {
 }
 
 // TestBpfFilterSetDifferential cross-checks every pcap-expressible filter
-// (F1-F4, F6) against libpcap on the same packets, giving an independent
+// (F1-F5) against libpcap on the same packets, giving an independent
 // reference beyond the hand-built expectations of the corpus suite.
 func TestBpfFilterSetDifferential(t *testing.T) {
 	if os.Getuid() != 0 {
@@ -116,7 +116,7 @@ func TestBpfFilterSetDifferential(t *testing.T) {
 	}
 	for _, fs := range FilterSet {
 		if fs.CBPFCExpr == "" {
-			continue // F5, F7-F10: pcap-filter cannot express these
+			continue // F6, F7-F10: pcap-filter cannot express these
 		}
 		fs := fs
 		t.Run(fs.ID, func(t *testing.T) {
