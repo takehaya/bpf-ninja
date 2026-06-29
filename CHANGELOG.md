@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.11.1](https://github.com/takehaya/xdp-ninja/compare/v0.11.0...v0.11.1) (2026-06-29)
+
+
+### 🐛 Bug Fixes
+
+* **capture:** copy packet payload into a per-shard arena to stop batch aliasing ([#43](https://github.com/takehaya/xdp-ninja/issues/43)) ([24463fa](https://github.com/takehaya/xdp-ninja/commit/24463fa83805e3fa90440b40563a662d8b9c5bd1))
+
+
+### 📝 Documentation
+
+* **todo:** drop resolved items from the backlog ([#46](https://github.com/takehaya/xdp-ninja/issues/46)) ([7dc9016](https://github.com/takehaya/xdp-ninja/commit/7dc9016d762955e597630bb13e0b3c8189422736))
+
 ## [0.11.0](https://github.com/takehaya/xdp-ninja/compare/v0.10.2...v0.11.0) (2026-06-24)
 
 
