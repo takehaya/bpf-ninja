@@ -1,0 +1,3 @@
+mode,captured_pkts,pps_Mpps,nic_rx_delta_Mpps,trex_tx_mpps,file_MB
+tc-entry,102368095,3.41,10.59,117.248,7419.6
+tc-exit,4207868,0.14,10.76,117.294,305.0

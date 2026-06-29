@@ -1,0 +1,8 @@
+label,filter,captured_pkts,pps_Mpps,nic_rx_delta_Mpps,nic_drop_delta_Mpps,trex_tx_mpps,file_MB,bytes_per_pkt
+no_filter,"<none>",431599963,14.39,87.75,29.35,117.105,31282.0,76.0
+eth_root,"eth",424058760,14.14,80.79,36.33,117.118,30735.5,76.0
+eth_ipv4,"eth/ipv4",424376470,14.15,70.33,46.71,117.034,30758.5,76.0
+eth_ipv4_udp,"eth/ipv4/udp",429404406,14.31,67.81,49.30,117.112,31122.9,76.0
+eth_ipv4_tcp_0pct,"eth/ipv4/tcp",0,0.00,98.89,18.13,117.018,0.0,
+udp_dport80_0pct,"eth/ipv4/udp[dport==80]",0,0.00,101.34,15.79,117.121,0.0,
+udp_dport9_100pct,"eth/ipv4/udp[dport==9]",431410146,14.38,69.97,47.07,117.036,31268.3,76.0

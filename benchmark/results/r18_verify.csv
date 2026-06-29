@@ -1,0 +1,4 @@
+cell,output_path,format,captured_pkts,pps_Mpps,file_size_MB,expected_size_MB,ratio_actual_vs_expected,trex_tx_mpps
+R18-A,/dev/shm/r18a.raw,raw,527987352,17.60,24135.4,40282.2,0.60,117.129
+R18-B,/dev/shm/r18b.pcapng,pcap-ng,0,0.00,0.0,0.0,n/a,117.122
+R18-C,/var/tmp/r18/r18c.raw,raw,430877032,14.36,31229.6,32873.3,0.95,117.306

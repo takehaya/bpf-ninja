@@ -1,0 +1,37 @@
+# T-Rex stateless profile: 64B packets, mixed match/no-match for F1.
+# Generator side. Builds two streams:
+#   - match: TCP dst port 443
+#   - nomatch: TCP dst port 80
+# Mix ratio is set by the run script (1% match for production-realistic,
+# 50% match for worst-case stress).
+#
+# Adjust src_ip / dst_ip / src_mac / dst_mac to your testbed.
+#
+# Week 4 task: validate this YAML loads in T-Rex stl mode.
+
+duration: 300
+
+streams:
+  - name: f1_match
+    isg: 1
+    rate:
+      type: pps
+      value: 14_880_000   # 64B at 100 GbE = ~148.8 Mpps line rate; will be scaled
+
+    packet:
+      binary: |-
+        ethernet { src_mac: "00:11:22:33:44:55", dst_mac: "00:aa:bb:cc:dd:ee" }
+        ipv4     { src: "10.0.0.1", dst: "10.0.0.2", ttl: 64 }
+        tcp      { sport: 12345, dport: 443, syn: true }
+      pad_to: 64
+
+  - name: f1_nomatch
+    rate:
+      type: pps
+      value: 14_880_000
+    packet:
+      binary: |-
+        ethernet { src_mac: "00:11:22:33:44:55", dst_mac: "00:aa:bb:cc:dd:ee" }
+        ipv4     { src: "10.0.0.1", dst: "10.0.0.2", ttl: 64 }
+        tcp      { sport: 12345, dport: 80, syn: true }
+      pad_to: 64

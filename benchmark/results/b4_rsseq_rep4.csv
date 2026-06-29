@@ -1,0 +1,7 @@
+cell,path,stream,dur,xdp_total,xdp_matched,xdp_mpps,nic_rx_mpps
+accept_icmp,accept_all,icmp,20,1372499068,1372499068,68.62,117.31
+cbpfc_F5,cbpfc,icmp,20,1250704960,1250704960,62.54,117.31
+kunai_F5,kunai,icmp,20,1202869564,1202869564,60.14,117.31
+accept_tcp443,accept_all,tcp443,20,1884898026,1884898026,94.24,117.31
+cbpfc_F1,cbpfc,tcp443,20,1842855098,1842855098,92.14,117.31
+kunai_F1,kunai,tcp443,20,1820123786,1820123786,91.01,117.31

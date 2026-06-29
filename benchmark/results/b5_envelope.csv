@@ -1,0 +1,17 @@
+axis,param,insns,regime
+A_chaincap,1,216,unroll
+A_chaincap,2,233,unroll
+A_chaincap,3,249,unroll
+A_chaincap,4,265,unroll
+A_chaincap,5,254,bpf_loop
+A_chaincap,6,254,bpf_loop
+A_chaincap,7,254,bpf_loop
+A_chaincap,8,254,bpf_loop
+B_auxwalks,1,332,bpf_loop
+B_auxwalks,2,400,bpf_loop
+B_auxwalks,3,468,bpf_loop
+B_auxwalks,4,536,bpf_loop
+B_auxwalks,5,604,bpf_loop
+B_auxwalks,6,672,bpf_loop
+B_auxwalks,7,740,bpf_loop
+B_auxwalks,8,808,bpf_loop

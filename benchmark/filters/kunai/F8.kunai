@@ -1,0 +1,1 @@
+eth/ipv6/srv6 where any(srv6.segments.addr == fc00::1)

@@ -1,0 +1,16 @@
+target,observer,prefetch,captured_pkts,pps_Mpps,nic_rx_delta_Mpps,trex_tx_mpps,trex_rx_mpps,file_MB
+prod_pass,baseline,n/a,0,0.00,11.01,117.187,0.0,0.0
+prod_pass,ninja-entry,no,90737993,3.02,14.22,117.206,0.0,6576.6
+prod_pass,ninja-entry,yes,0,0.00,11.01,117.203,0.0,0.0
+prod_drop_all,baseline,n/a,0,0.00,108.40,117.309,0.0,0.0
+prod_drop_all,ninja-entry,no,429251105,14.31,89.73,117.295,0.0,31111.8
+prod_drop_all,ninja-entry,yes,433821083,14.46,87.23,117.258,0.0,31443.0
+prod_drop443,baseline,n/a,0,0.00,11.05,117.27,0.0,0.0
+prod_drop443,ninja-entry,no,18818049,0.63,10.77,117.309,0.0,1363.9
+prod_drop443,ninja-entry,yes,53585562,1.79,10.67,117.136,0.0,3883.8
+prod_tx_reflect,baseline,n/a,0,0.00,18.92,117.221,15.622,0.0
+prod_tx_reflect,ninja-entry,no,257643098,8.59,16.16,117.31,-129.849,18673.8
+prod_tx_reflect,ninja-entry,yes,271790688,9.06,15.98,117.251,13.167,19699.2
+prod_rewrite_dst,baseline,n/a,0,0.00,36.71,117.139,0.0,0.0
+prod_rewrite_dst,ninja-entry,no,109360181,3.65,35.82,117.305,0.0,7926.3
+prod_rewrite_dst,ninja-entry,yes,124388743,4.15,35.78,117.213,0.0,9015.6

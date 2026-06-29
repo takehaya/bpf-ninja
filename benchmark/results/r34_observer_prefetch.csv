@@ -1,0 +1,7 @@
+cell,observer,prefetch,filter,rep,duration_s,trex_tx_mpps,trex_rx_mpps,ninja_captured
+A,baseline,n/a,NONE,1,60,117.279,15.523,0
+B,ninja-entry,no,eth/ipv4/udp,1,60,117.178,15.396,0
+C,ninja-entry,yes,eth/ipv4/udp,1,60,117.299,-45.29,0
+A,baseline,n/a,NONE,2,60,117.175,15.582,0
+B,ninja-entry,no,eth/ipv4/udp,2,60,117.297,15.438,0
+C,ninja-entry,yes,eth/ipv4/udp,2,60,117.234,26.295,0

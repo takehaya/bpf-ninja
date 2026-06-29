@@ -1,0 +1,3 @@
+# F10 TCP option MSS == 1460: pcap-filter で書けるが offset 計算が impractical。
+# data_offset から options 領域の base を算出 → MSS option を walk する必要、書き手依存。
+tcp[((tcp[12]&0xf0)>>2):4] == 0x02041000

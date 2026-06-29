@@ -1,0 +1,6 @@
+capturing (prog "prod_drop_all" id=259155 on enp138s0f0np0, mode=entry, sharded raw-dump, 64 shards via fastrb (mmap bypass), wall_offset_ns=1774133386321731282)...
+
+437079316 packets captured (raw-dump)
+latency-sample n=437111 (ns): p50=2640101 p90=12497941 p99=22661065 p99.9=26245113596 p99.99=30841478383 max=30908129803
+latency-sample: 437111 samples → /home/ocxma/private/xdp-ninja/benchmark/results/r42_latency_samples.tsv
+warning: closing writer: close /var/tmp/r42/r42.raw: file already closed

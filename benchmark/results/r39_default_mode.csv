@@ -1,0 +1,4 @@
+label,captured_pkts,pps_Mpps,nic_rx_delta_Mpps,trex_tx_mpps,file_MB
+default_pcapng,292340601,9.74,89.16,117.244,25649.4
+pcapng_fastrb,291287718,9.71,95.70,117.263,25557.0
+optimised_raw,441958395,14.73,87.71,117.278,32032.8

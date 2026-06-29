@@ -1,0 +1,6 @@
+experiment,packet,duration_s,captured,pps,rx_drop_delta,trex_tx_mpps
+bench-drop+rb1024,64,60,478776662,7979611,235436,21.389
+bench-drop+inmem512,64,60,0,0,318692599,21.388
+bench-drop+null-output,64,60,0,0,0,21.411
+peak-null-15s,64,15,0,0,0,21.283
+bench-drop+null+rb16384,64,60,0,0,0,21.401

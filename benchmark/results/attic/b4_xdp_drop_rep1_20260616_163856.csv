@@ -1,0 +1,3 @@
+cell,path,stream,filter,duration_s,xdp_total,xdp_matched,xdp_mpps,trex_tx_mpps,nic_rx_mpps
+floor,floor,udp64,"",30,1486896172,1486896172,49.56,49.563,49.56
+accept_udp64,accept_all,udp64,"",30,1485969615,1485969615,49.53,49.534,49.53

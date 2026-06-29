@@ -1,0 +1,3 @@
+target,captured_pkts,pps_Mpps,nic_rx_delta_Mpps,nic_drop_delta_Mpps,trex_tx_mpps,file_MB
+prod_pass_entry,73344906,2.44,10.71,0.63,117.027,5316.0
+xdp_native_pass,128359620,4.28,10.54,0.63,117.031,9303.4
