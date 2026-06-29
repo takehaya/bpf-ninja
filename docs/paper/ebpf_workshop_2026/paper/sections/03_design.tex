@@ -4,40 +4,36 @@
 \subsection{Overview}
 \label{sec:overview}
 
-\figref{fig:arch} shows the overall structure of \kunai. The \kunai
-compiler takes two inputs. The first is a \kunai DSL expression, the
-filter condition written by the user. The second is a set of protocol
-definitions written in a subset of P4, a database of protocol headers
-and parser rules.
+\kunai combines expressive packet filtering with verifier-safe
+execution through three components: a protocol-aware filter language,
+protocol definitions written in a subset of P4, and verifier-safe code
+generation. The filter language describes packet structure and field
+conditions, the protocol definitions describe protocol layouts, parser
+transitions, and variable-length structures, and the code-generation
+stage combines both to produce verifier-accepted eBPF bytecode.
+\figref{fig:arch} shows the overall structure.
 
-The \kunai compiler first interprets the layer-chain: it checks that
-each protocol may connect to the next according to the definitions
-and, when the same protocol appears more than once, binds a label to
-each layer slot. It then resolves field references against the
-protocol definitions, obtaining the layer, offset, and bit width of
-each field. When a reference targets an auxiliary header list or an
-option, the scan target and the information needed to walk it are also
-recorded in the IR. This analysis stage rejects three things: a
-reference to a non-existent field; an unqualified \texttt{proto.field}
-reference, such as \texttt{tcp.dport}, when that protocol appears more
-than once; and a comparison whose type or bit width does not match.
+The compiler takes two inputs, a \kunai filter expression and a set of
+protocol definitions written in a subset of P4. It first validates the
+layer-chain, resolves field references against the protocol
+definitions, and records the information required for later code
+generation, rejecting references to non-existent fields, ambiguous
+references to repeated protocols, and comparisons whose types do not
+match.
 
-The output of the \kunai compiler is eBPF bytecode that evaluates the
-filter condition against a packet and returns a match/reject result.
-At run time, a host BPF program placed at an attach point such as
-XDP~\cite{hoiland2018xdp}, tc~\cite{tc_man}, or fentry/fexit embeds this bytecode.
-Under this split of responsibilities, the \kunai compiler handles filter-condition
-analysis and bytecode generation, while the host BPF program handles
+The compiler then generates eBPF bytecode that evaluates the filter
+condition and returns a match/reject result. A host BPF program
+placed at an attach point such as XDP~\cite{hoiland2018xdp},
+tc~\cite{tc_man}, or fentry/fexit embeds this bytecode. Under this
+split of responsibilities, \kunai handles filter analysis and
+bytecode generation, while the host program handles
 attach-point-specific context access and follow-on actions such as
 capture or drop.
 
 \begin{figure}[t]
   \centering
-  \includegraphics[width=0.85\columnwidth]{figures/fig_arch.pdf}
-  \caption{Overview of \kunai. From a filter expression and P4
-  protocol definitions, the compiler produces match/reject eBPF
-  bytecode through parse/resolve/codegen, which a host BPF program
-  embeds at an attach point.}
+  \includegraphics[width=0.8\columnwidth]{figures/fig_arch.pdf}
+  \caption{Overview of \kunai.}
   \label{fig:arch}
 \end{figure}
 
@@ -50,7 +46,7 @@ an excerpt of the grammar; the full grammar is available in the
 project repository.\footnote{\url{https://github.com/(redacted for review)}}
 
 \begin{figure}[t]
-\begin{lstlisting}[basicstyle=\footnotesize\ttfamily,breaklines=true,columns=fullflexible]
+\begin{lstlisting}[basicstyle=\scriptsize\ttfamily,breaklines=true,columns=fullflexible]
 filter       ::= layer-chain where-clause?
 layer-chain  ::= layer ('/' layer)*
 layer        ::= layer-atom quantifier?
@@ -155,69 +151,46 @@ from the layer's start and a bit width.
 \subsection{Protocol Definitions via a P4 Subset}
 \label{sec:p4subset}
 
-\kunai uses a subset of the P4 language to describe protocol headers
-and parser rules~\cite{p4spec}. Because P4 already has syntax for
-protocol headers and parser transitions, existing P4 parser
-descriptions can serve as a reference when writing a protocol
-definition. Using P4 also avoids implementing and maintaining the
-syntax checker, parser, tooling, and specification that a bespoke
-protocol-description language would require.
+\kunai describes protocol headers and parser rules in a subset of
+P4~\cite{p4spec,doenges2021petr4,bosshart2014p4}. Existing P4
+descriptions then serve as a reference, and \kunai avoids building the
+syntax checker, parser, and tooling that a bespoke protocol-description
+language~\cite{mccann2000packettypes,pang2006binpac} would require.
 
 The P4 subset \kunai handles is limited to the parts that describe
-header layout and parser transitions. \figref{fig:p4srv6} shows the SRv6
-protocol definition; the \texttt{any()} example in \S\ref{sec:dsl}
-and filter F8 in \S\ref{sec:eval} use it.
+header layout and parser transitions. \figref{fig:p4srv6} gives the
+SRv6 definition, used by the \texttt{any()} example in \S\ref{sec:dsl}
+and filter F8 in \S\ref{sec:eval}.
 
 \begin{figure}[t]
-\begin{lstlisting}[basicstyle=\footnotesize\ttfamily,breaklines=true,columns=fullflexible]
-header srv6_h {
-    bit<8>  next_header;
-    bit<8>  hdr_ext_len;    // in 8-byte units
-    bit<8>  routing_type;   // 4 = SRH
-    bit<8>  segments_left;
-    bit<8>  last_entry;      // index of the last segment
-    // ...                   (flags, tag)
-}
-header srv6_seg_h { bit<128> addr; }
-const bit<8> KUNAI_SRV6_IPV6_NEXT_HEADER = 43;
-const bit<8> SRV6_ROUTING_TYPE = 4;
-extern ParserCounter { /* set, decrement, is_zero */ }
+\begin{lstlisting}[basicstyle=\scriptsize\ttfamily,breaklines=true,columns=fullflexible]
+// headers, extern ParserCounter, const SRV6_ROUTING_TYPE elided
+const bit<8> KUNAI_SRV6_IPV6_NEXT_HEADER = 43;   // IPv6 -> SRv6
 parser SRv6Parser(packet_in pkt, out srv6_h hdr,
-    out srv6_seg_h[8] segments) {
+                  out srv6_seg_h[8] segments) {
   ParserCounter() pc;
   state start {
     pkt.extract(hdr);
     pc.set((bit<8>)(hdr.last_entry + 1));   // segment count
     transition select(hdr.routing_type) {
-      SRV6_ROUTING_TYPE: walk;  default: reject;
-    }
-  }
+      SRV6_ROUTING_TYPE: walk;  default: reject; } }
   state walk {
-    transition select(pc.is_zero()) { true: accept; false: consume_seg; }
-  }
+    transition select(pc.is_zero()) { true: accept; false: consume_seg; } }
   state consume_seg {
     pkt.extract(segments.next);   // push one 16-byte segment
-    pc.decrement(1);
-    transition walk;
-  }
-}
+    pc.decrement(1);  transition walk; } }
 \end{lstlisting}
 \caption{SRv6 protocol definition in the \kunai P4 subset.}
 \label{fig:p4srv6}
 \end{figure}
 
-This definition supplies the information the \kunai compiler needs
-through three constructs. First, the \texttt{header} declarations give
-the offset and bit width of each field. Second, the \texttt{const} and
-\texttt{transition select} give the dispatch from IPv6 to SRv6 and the
-acceptance test on \texttt{routing\_type}. Third, the parser walks the segment list explicitly,
-extracting one element per iteration and counting down from
-\texttt{last\_entry + 1}; the element count and the
-\texttt{segments} base then follow from the walk itself, with no
-kunai annotation. The capacity 8 of
-\texttt{srv6\_\allowbreak seg\_\allowbreak h[8]} bounds the
-iteration count for the verifier.
-
-In this way, a protocol definition describes layout, dispatch, and
-walk metadata within P4 syntax. Adding a protocol definition extends
+A definition gives \texttt{header} layouts, a \texttt{transition
+select} dispatch such as IPv6 to SRv6 on \texttt{routing\_type}, and a
+parser walk over a variable-length list. For SRv6 the
+\texttt{ParserCounter} is seeded with \texttt{last\_entry + 1} and one
+16-byte segment is extracted per iteration, so the element count and
+the \texttt{segments} base follow from the walk itself with no \kunai
+annotation, and the array capacity bounds the iteration count for the
+verifier. In this way, a protocol definition describes layout,
+dispatch, and walk metadata within P4 syntax, and adding one extends
 the set of supported protocols without changing the compiler itself.

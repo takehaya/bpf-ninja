@@ -162,3 +162,6 @@ __pycache__/
 
 # Paper build snapshots (regenerable from the .tex sources)
 docs/paper/ebpf_workshop_2026/paper/kunai_*.pdf
+
+# Review memos stay local: working notes, never tracked in git
+docs/paper/ebpf_workshop_2026/review_memo/
