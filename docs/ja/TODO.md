@@ -37,9 +37,6 @@
 
 ## 機能
 
-- [x] `-p <prog-id>` でプログラム ID から直接アタッチ
-- [x] 統合テストの自動化 (`scripts/test/run_tests.sh`)
-
 - [ ] pcapng の Interface Description Block に XDP プログラム情報を記録
   - プログラム名、ID、mode (entry/exit) などをメタデータとして埋め込む
 
