@@ -1,0 +1,3 @@
+# F7 GTP inner IPv4: pcap-filter で書けない (GTP optional fields で offset 不定、ループ無し)。
+# 比較対象は udp port 2152 のみ。
+udp port 2152

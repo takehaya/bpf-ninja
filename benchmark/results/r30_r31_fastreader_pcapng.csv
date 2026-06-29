@@ -1,0 +1,4 @@
+label,mode,fastrb,fast_pcapng_env,storage,captured_pkts,duration_s,pps_Mpps
+R30_pcapng_fastrb,entry,yes,no,nvme_ssd,301181146,30,10.04
+R30b_pcapng_fastrb_fastngwriter,entry,yes,yes,nvme_ssd,303122038,30,10.10
+R31_nulloutput_fastrb,entry,yes,no,none,1625653059,30,54.19

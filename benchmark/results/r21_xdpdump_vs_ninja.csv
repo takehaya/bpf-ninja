@@ -1,0 +1,3 @@
+tool,output_format,captured_pkts,pps_Mpps,file_size_MB,bytes_per_pkt,trex_tx_mpps,extra
+xdp-ninja-entry,pcapng,4546192,0.15,398.9,92.0,117.077,fentry
+xdpdump,pcap,154863296,5.16,11224.4,76.0,117.124,fentry

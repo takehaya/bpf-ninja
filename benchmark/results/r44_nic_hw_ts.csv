@@ -1,0 +1,3 @@
+label,rx_hwts,captured_pkts,pps_Mpps,nic_rx_delta_Mpps,trex_tx_mpps,latency_p50_us,latency_p99_ms,latency_max_ms,note
+sw_ts,no,401015299,13.37,86.79,117.246,10081.365,24.365115,30237.213137,
+hw_ts,yes,420360560,14.01,85.22,117.288,47199241.064,47213.897834,78679.892399,

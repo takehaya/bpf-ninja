@@ -1,0 +1,9 @@
+depth,filter,captured_pkts,pps_Mpps,nic_rx_delta_Mpps,trex_tx_mpps,file_MB
+0,<none>,432611129,14.42,87.10,117.247,31355.3
+1,eth,428038736,14.27,79.11,117.211,31023.9
+2,eth/ipv4,428042190,14.27,71.36,117.171,31024.2
+3,eth/ipv4/udp,427426984,14.25,70.97,117.262,30979.6
+4,eth/ipv4/udp/vxlan,0,0.00,100.33,117.244,0.0
+5,eth/ipv4/udp/vxlan/eth,0,0.00,101.42,117.254,0.0
+6,eth/ipv4/udp/vxlan/eth/ipv4,0,0.00,91.85,117.153,0.0
+7,eth/ipv4/udp/vxlan/eth/ipv4/tcp,0,0.00,92.76,117.208,0.0

@@ -1,0 +1,16 @@
+filter,path,wall_ns,insns
+F1,dsl,26960,199
+F1,cbpfc,38175,42
+F2,dsl,29157,209
+F2,cbpfc,29958,36
+F3,dsl,42936,338
+F3,cbpfc,27789,23
+F4,dsl,30786,215
+F4,cbpfc,54689,51
+F6,dsl,30133,217
+F5,dsl,13589,85
+F5,cbpfc,27394,31
+F7,dsl,56886,405
+F8,dsl,52816,332
+F9,dsl,50176,351
+F10,dsl,32280,231

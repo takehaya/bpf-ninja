@@ -1,0 +1,6 @@
+suite,host,kernels,loads_per_kernel,excluded_per_kernel,total_loads,verdict,notes
+filterset,XDP,5,10,0,50,pass,F1-F10 canonical filter set
+filterset,tc,5,8,2,40,pass,F4/F5 excluded because outer VLAN is skb metadata at tc
+corpus,XDP,5,68,0,340,pass,curated verifier corpus
+corpus,tc,5,62,6,310,pass,VLAN/qinq corpus entries excluded at tc
+total,all,5,148,8,740,pass,all generated programs accepted without manual edits

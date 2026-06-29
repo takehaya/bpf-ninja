@@ -1,0 +1,4 @@
+tool,output,captured_pkts,pps_Mpps,nic_rx_delta_Mpps,trex_tx_mpps,file_MB
+xdpcap,nvme,89565,0.0030,10.90,117.275,8.2
+xdp-ninja,nvme_pcapng,23757473,0.79,10.65,117.283,2084.4
+xdp-ninja,nvme_raw_opt,128988595,4.30,10.54,117.239,9349.0

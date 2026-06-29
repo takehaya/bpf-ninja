@@ -1,0 +1,3 @@
+config,duration_s,trex_tx_pps,trex_opackets,observer_captured,pps,rss_kb_at_end
+default,300,21774452,6543141732,281901822,939672,6468
+opt-out,300,21768594,6549012885,33874314,112914,6928

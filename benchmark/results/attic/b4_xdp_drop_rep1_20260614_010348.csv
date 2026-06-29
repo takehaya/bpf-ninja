@@ -1,0 +1,10 @@
+cell,path,stream,filter,duration_s,xdp_total,xdp_matched,xdp_mpps,trex_tx_mpps,nic_rx_mpps
+floor,floor,udp64,"",30,3473004236,3473004236,115.77,117.294,117.29
+accept_udp64,accept_all,udp64,"",30,3288931159,3288931159,109.63,117.298,117.30
+accept_tcp443,accept_all,tcp443,"",30,3322016927,3322016927,110.73,117.217,117.22
+accept_gtpu,accept_all,gtpu,"",30,3147052396,3147052396,104.90,109.764,109.76
+accept_srv6,accept_all,srv6,"",30,1888401662,1888401662,62.95,81.252,81.25
+cbpfc_F1,cbpfc,tcp443,"tcp dst port 443",30,3260025233,3260025233,108.67,117.284,117.28
+kunai_F1,kunai,tcp443,"eth/ipv4/tcp where tcp.dport == 443",30,3233725024,3233725024,107.79,117.223,117.22
+kunai_F7,kunai,gtpu,"eth/ipv4@outer/udp/gtp/ipv4@inner/tcp where inner.dst == 10.0.0.1",30,2917160455,2917160455,97.24,109.76,109.76
+kunai_F8,kunai,srv6,"eth/ipv6/srv6 where any(srv6.segments.addr == fc00::1)",30,1813148743,1813148743,60.44,81.253,81.25

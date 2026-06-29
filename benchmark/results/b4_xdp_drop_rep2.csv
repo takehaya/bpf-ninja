@@ -1,0 +1,28 @@
+cell,path,stream,filter,duration_s,xdp_total,xdp_matched,xdp_mpps,trex_tx_mpps,nic_rx_mpps
+floor,floor,udp64,"",30,3477296146,3477296146,115.91,117.307,117.31
+accept_udp64,accept_all,udp64,"",30,3215155153,3215155153,107.17,117.307,117.31
+accept_tcp443,accept_all,tcp443,"",30,3214164543,3214164543,107.14,117.31,117.31
+accept_tcp80,accept_all,tcp80,"",30,3198584332,3198584332,106.62,117.308,117.31
+accept_ipv6tcp,accept_all,ipv6tcp,"",30,2990114586,2990114586,99.67,117.305,117.30
+accept_vlan,accept_all,vlan,"",30,3201568092,3201568092,106.72,117.304,117.30
+accept_qinq,accept_all,qinq,"",30,3198438303,3198438303,106.61,117.294,117.29
+accept_icmp,accept_all,icmp,"",30,3485484169,3485484169,116.18,117.308,117.31
+accept_gtpu,accept_all,gtpu,"",30,2998746853,2998746853,99.96,109.765,109.76
+accept_srv6,accept_all,srv6,"",30,1807689094,1807689094,60.26,81.251,81.25
+accept_geneve,accept_all,geneve,"",30,2690163900,2690163900,89.67,94.795,94.79
+accept_tcpmss,accept_all,tcpmss,"",30,3212716578,3212716578,107.09,117.305,117.31
+cbpfc_F1,cbpfc,tcp443,"tcp dst port 443",30,3179756226,3179756226,105.99,117.31,117.31
+kunai_F1,kunai,tcp443,"eth/ipv4/tcp where tcp.dport == 443",30,3162143967,3162143967,105.40,117.311,117.31
+cbpfc_F2,cbpfc,tcp80,"src net 10.0.0.0/8 and tcp dst port 80",30,3165032373,3165032373,105.50,117.304,117.30
+kunai_F2,kunai,tcp80,"eth/ipv4[src==10.0.0.0/8]/tcp where tcp.dport == 80",30,3142934187,3142934187,104.76,117.305,117.31
+cbpfc_F3,cbpfc,ipv6tcp,"src net 2001:db8::/32 and tcp",30,2979482696,2979482696,99.32,117.309,117.31
+kunai_F3,kunai,ipv6tcp,"eth/ipv6[src==2001:db8::/32]/tcp",30,2945076931,2945076931,98.17,117.307,117.31
+cbpfc_F4,cbpfc,vlan,"vlan 100 and tcp dst port 80",30,3161218266,3161218266,105.37,117.302,117.30
+kunai_F4,kunai,vlan,"eth/vlan[tci==100]/ipv4/tcp where tcp.dport == 80",30,3141712353,3141712353,104.72,117.308,117.31
+kunai_F6,kunai,qinq,"eth/qinq/vlan/ipv4/tcp where tcp.dport == 80",30,3141377417,3141377417,104.71,117.306,117.31
+cbpfc_F5,cbpfc,icmp,"icmp[icmptype]==8",30,3485225432,3485225432,116.17,117.305,117.30
+kunai_F5,kunai,icmp,"eth/ipv4/icmp where icmp.type == 8",30,3483675724,3483675724,116.12,117.308,117.31
+kunai_F7,kunai,gtpu,"eth/ipv4@outer/udp/gtp/ipv4@inner/tcp where inner.dst == 10.0.0.1",30,2836465326,2836465326,94.55,109.759,109.76
+kunai_F8,kunai,srv6,"eth/ipv6/srv6 where any(srv6.segments.addr == fc00::1)",30,1687057452,1687057452,56.24,81.25,81.25
+kunai_F9,kunai,geneve,"eth/ipv4@outer/udp/geneve/eth/ipv4@inner/tcp where inner.dst == 10.0.0.1",30,2561890591,2561890591,85.40,94.796,94.80
+kunai_F10,kunai,tcpmss,"eth/ipv4/tcp where tcp.options.MSS.value == 1460",30,3087181873,3087181873,102.91,117.197,117.20

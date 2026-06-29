@@ -1,0 +1,24 @@
+cell,path,stream,filter,duration_s,xdp_total,xdp_matched,xdp_mpps,trex_tx_mpps,nic_rx_mpps
+floor,floor,udp64,"",30,3470740552,3470740552,115.69,117.296,117.30
+accept_udp64,accept_all,udp64,"",30,3263533238,3263533238,108.78,117.293,117.29
+accept_tcp443,accept_all,tcp443,"",30,3270477788,3270477788,109.02,117.28,117.28
+accept_tcp80,accept_all,tcp80,"",30,3243271513,3243271513,108.11,117.284,117.28
+accept_ipv6tcp,accept_all,ipv6tcp,"",30,3038510664,3038510664,101.28,117.289,117.29
+accept_vlan,accept_all,vlan,"",30,3248017921,3248017921,108.27,117.299,117.30
+accept_qinq,accept_all,qinq,"",30,3247276465,3247276465,108.24,117.293,117.29
+accept_icmp,accept_all,icmp,"",30,3475336774,3475336774,115.84,117.302,117.30
+accept_gtpu,accept_all,gtpu,"",30,3127955153,3127955153,104.27,109.749,109.75
+accept_srv6,accept_all,srv6,"",30,1839398101,1839398101,61.31,81.241,81.24
+accept_geneve,accept_all,geneve,"",30,2716271175,2716271175,90.54,94.789,94.79
+accept_tcpmss,accept_all,tcpmss,"",30,3269728827,3269728827,108.99,117.301,117.30
+cbpfc_F1,cbpfc,tcp443,"tcp dst port 443",30,3243962058,3243962058,108.13,117.296,117.30
+kunai_F1,kunai,tcp443,"eth/ipv4/tcp where tcp.dport == 443",30,3220435664,3220435664,107.35,117.302,117.30
+kunai_F2,kunai,tcp80,"eth/ipv4[src==10.0.0.0/8]/tcp where tcp.dport == 80",30,3194980648,3194980648,106.50,117.294,117.29
+kunai_F3,kunai,ipv6tcp,"eth/ipv6[src==2001:db8::/32]/tcp",30,3006892371,3006892371,100.23,117.291,117.29
+kunai_F4,kunai,vlan,"eth/vlan[tci==100]/ipv4/tcp where tcp.dport == 80",30,3183416219,3183416219,106.11,117.311,117.31
+kunai_F5,kunai,qinq,"eth/qinq/vlan/ipv4/tcp where tcp.dport == 80",30,3185727925,3185727925,106.19,117.305,117.30
+kunai_F6,kunai,icmp,"eth/ipv4/icmp where icmp.type == 8",30,3476023457,3476023457,115.87,117.306,117.31
+kunai_F7,kunai,gtpu,"eth/ipv4@outer/udp/gtp/ipv4@inner/tcp where inner.dst == 10.0.0.1",30,2947337257,2947337257,98.24,109.753,109.75
+kunai_F8,kunai,srv6,"eth/ipv6/srv6 where any(srv6.segments.addr == fc00::1)",30,1763393054,1763393054,58.78,81.18,81.18
+kunai_F9,kunai,geneve,"eth/ipv4@outer/udp/geneve/eth/ipv4@inner/tcp where inner.dst == 10.0.0.1",30,2600243847,2600243847,86.67,94.786,94.79
+kunai_F10,kunai,tcpmss,"eth/ipv4/tcp where tcp.options.MSS.value == 1460",30,3146976899,3146976899,104.90,117.313,117.31

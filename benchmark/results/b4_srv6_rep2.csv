@@ -1,0 +1,3 @@
+cell,path,stream,filter,duration_s,xdp_total,xdp_matched,xdp_mpps,trex_tx_mpps,nic_rx_mpps
+accept_srv6,accept_all,srv6,"",30,1817914836,1817914836,60.60,81.251,81.25
+kunai_F8,kunai,srv6,"eth/ipv6/srv6 where any(srv6.segments.addr == fc00::1)",30,1684863765,1684863765,56.16,81.25,81.25

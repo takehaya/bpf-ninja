@@ -153,3 +153,12 @@ docs/ja/dsl-followups.md
 # AI assistant instruction files (kept local, untracked)
 /CLAUDE.md
 /AGENTS.md
+
+issues/**
+
+# Python bytecode caches in the benchmark / trex tooling
+__pycache__/
+*.pyc
+
+# Paper build snapshots (regenerable from the .tex sources)
+docs/paper/ebpf_workshop_2026/paper/kunai_*.pdf

@@ -1,0 +1,4 @@
+pkt_size,captured_pkts,pps_Mpps,nic_rx_delta_Mpps,trex_tx_mpps,file_MB,bytes_per_pkt
+64,423270089,14.11,86.81,117.25,30678.3,76.0
+imix,457664546,15.26,32.69,32.746,33171.2,76.0
+1500,226752818,7.56,8.20,8.205,16434.9,76.0

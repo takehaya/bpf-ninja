@@ -1,0 +1,2 @@
+# QinQ inner VLAN: pcap-filter "vlan 100 and vlan 200" の動作はカーネル/NIC 依存で破綻気味。tc-flower の cvlan_id でのみ確実。
+vlan 100 and vlan 200

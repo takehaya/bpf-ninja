@@ -1,0 +1,15 @@
+- version: 2
+  port_limit: 2
+  interfaces: ["8a:00.0", "8a:00.1"]
+  port_bandwidth_gb: 100
+  port_info:
+    - src_mac: "40:a6:b7:82:cd:d8"
+      dest_mac: "40:a6:b7:95:a2:d0"
+    - src_mac: "40:a6:b7:82:cd:d9"
+      dest_mac: "40:a6:b7:95:a2:d1"
+  platform:
+    master_thread_id: 0
+    latency_thread_id: 1
+    dual_if:
+      - socket: 0
+        threads: [2, 3, 4, 5, 6, 7, 8, 9]

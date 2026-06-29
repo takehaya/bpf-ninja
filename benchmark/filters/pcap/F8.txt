@@ -1,0 +1,3 @@
+# F8 SRv6 segment list any: pcap-filter で書けない (segment list 可変長、ループ無し)。
+# 比較対象は IPv6 routing header 識別のみ (type 4 を抽出するだけ)。
+ip6 and ip6[6] == 43

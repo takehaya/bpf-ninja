@@ -1,0 +1,3 @@
+phase,cpu_pct,rss_kb,user_cpu_pct,system_cpu_pct
+idle,0.01,6988,0.00,16752
+loaded,%CPU,6988,%usr,%guest

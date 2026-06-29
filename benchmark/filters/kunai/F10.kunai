@@ -1,0 +1,1 @@
+eth/ipv4/tcp where tcp.options.MSS.value == 1460
