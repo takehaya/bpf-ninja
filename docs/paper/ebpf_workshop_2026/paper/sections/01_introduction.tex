@@ -1,65 +1,72 @@
 \section{Introduction}
 \label{sec:intro}
 
-Packet capture is a basic operation in debugging and fault analysis
-of network systems. As link bandwidth and traffic volume grow,
-forwarding every packet to user space for storage no longer scales.
-A capture tool must therefore select only the packets relevant to its
-purpose early, inside the kernel. The de-facto language for this
-selection has been tcpdump/libpcap's
-pcap-filter~\cite{pcapfilter_man, mccanne1993bpf}.
+Packet capture is a fundamental tool for debugging, troubleshooting,
+and fault analysis of network systems. As link bandwidth and traffic
+volume continue to increase, a software capture that forwards every
+packet to user space for storage no longer scales~\cite{braun2010capture}. A capture tool must therefore select only
+the packets relevant to its purpose as early as possible, ideally
+inside the kernel datapath~\cite{papadogiannakis2013scap}. The de-facto language for this purpose has
+long been tcpdump/libpcap’s
+pcap-filter~\cite{pcapfilter_man,mccanne1993bpf}.
 
-pcap-filter expresses conditions on L2--L4 header
-fields. It has, however, no syntax for nested encapsulation,
-repeated occurrences of the same protocol, or lists and options
-whose length varies from packet to packet. In the inner IPv4 of a
-GTP-U or Geneve tunnel, an SRv6 segment list, or TCP options, the
-offset of the target field changes per
-packet~\cite{gtp_3gpp, rfc8754, rfc8926, rfc9293}. These
-encapsulations are common rather than exceptional: GTP-U carries
-mobile user-plane traffic, SRv6 and Geneve underlie datacenter and WAN
-overlays, and TCP options such as MSS and window scaling appear on the
-SYN of nearly every connection. A kernel capture tool therefore
-encounters them. Filter languages
-that can follow these structures by field name exist; the
-Wireshark display filter~\cite{wireshark_dfref} is one. These
-languages, however, evaluate a fully parsed packet held in user-space memory, where any
-field can be read by random access; the kernel data path offers no
-such parsed view and requires every read to be proven in bounds.
-These languages therefore cannot run early in the data path. User studies of packet-analysis tools likewise
-report protocol coverage and the expressiveness of the filter
-language as open problems~\cite{sultana2024survey}.
+Packet structures whose field locations cannot be determined
+statically are common in modern networks. Examples include the inner
+headers of GRE, GTP-U, and Geneve tunnels, repeated occurrences of the
+same protocol, and variable-length structures such as SRv6 segment
+lists and TCP options~\cite{rfc2784,gtp_3gpp,rfc8754,rfc8926,rfc9293}. In these
+cases, the location of the target field depends on packet contents and
+changes from packet to packet.
 
-Expressiveness alone is not enough. To run such a filter inside the
-kernel, it must also be compiled to eBPF bytecode that the verifier
-accepts~\cite{kernel_verifier, ebpf_loops, gershuni2019prevail}.
-Compilers from P4 to eBPF, such as p4c-xdp~\cite{tu2018p4cxdp},
-already emit verifier-accepted code, but they lower fixed protocol
-pipelines rather than filter expressions whose target field sits past
-nested encapsulation or along a variable-length list. For such a field
-the offset is not known until run time, and a naive lowering reads at a
-position the verifier cannot prove in bounds. The bytecode is
-therefore rejected. To our knowledge, no system offers both field-name
-expressiveness over these structures and a form the in-kernel verifier
-accepts.
+Existing packet-filter languages provide limited support for such
+structures. pcap-filter expresses conditions over fixed L2–L4 header
+fields, but it cannot naturally express nested encapsulation,
+repeated protocol occurrences, or variable-length protocol structures.
+More expressive languages such as the Wireshark display
+filter~\cite{wireshark_dfref} can express conditions over nested
+encapsulation and variable-length structures. However, they operate on
+parsed packets in user-space memory and cannot execute directly in the
+kernel datapath. Existing tools thus leave a gap, and user studies of
+packet-analysis tools identify protocol coverage and filter
+expressiveness as open problems~\cite{sultana2024survey}.
 
-We present \kunai, a filter DSL and compiler that meets both
-requirements. \kunai describes a packet's layer structure as a
-\emph{layer-chain} and resolves the offset and type of each field
-from protocol definitions written in a subset of P4~\cite{p4spec},
-then lowers the filter expression to eBPF bytecode. It records each
-header's start offset at run time, bounds every variable-length scan by
-a compile-time constant, and places a verifier-compliant bounds check
-before every packet read. The verifier therefore accepts the generated
-code; we describe the code generation in \S\ref{sec:codegen}. We use the term
-\emph{verifier-safe} in the sense of Solleza et
-al.~\cite{solleza2025verifiersafe}: a well-formed filter should compile
-to bytecode the verifier accepts. We establish it empirically across
-six kernels (\S\ref{sec:eval}).
+To execute a filter inside
+the Linux kernel, it must also be compiled into eBPF bytecode that the
+verifier accepts~\cite{kernel_verifier,ebpf_loops,gershuni2019prevail}.
+The verifier requires every packet access to be proven safe. For
+fields located behind nested encapsulation or variable-length
+structures, the required offset is often known only at run time. As a
+result, a naive lowering produces packet accesses whose range the
+verifier cannot prove, causing the generated bytecode to be rejected.
 
-We show that filters spanning GTP-U and
-SRv6 were expressible in \kunai, that the generated bytecode was
-accepted by the verifier across six kernels (Linux 6.1--7.0) on
-both the XDP and tc hosts, that it matched and rejected packets as
-intended, and that its per-packet cost stayed within a few percent of
-pcap-filter's where both can express it.
+Even verifier-aware P4-to-eBPF compilers such as
+p4c-xdp~\cite{tu2018p4cxdp} target fixed protocol pipelines rather than
+filter expressions over arbitrary encapsulation. Existing systems thus
+provide either expressive packet descriptions or verifier-accepted
+execution, but not both.
+
+We present \kunai, a verifier-safe packet-filter DSL and compiler for
+nested encapsulation and variable-length protocol structures. \kunai
+describes packet structure and filter conditions through a
+protocol-aware \emph{layer-chain} representation and resolves field
+references using protocol definitions written in a subset of
+P4~\cite{p4spec}.
+
+The compiler lowers dynamic packet accesses into forms that the
+verifier can prove safe. It records the start offset of each parsed
+header during packet traversal and lowers every variable-length walk
+into a compile-time bounded form. These code-generation patterns
+translate field references beyond nested encapsulation and
+variable-length structures into verifier-accepted eBPF bytecode. We
+use the term \emph{verifier-safe} in the sense of Solleza et
+al.~\cite{solleza2025verifiersafe}: a well-formed filter should
+compile to bytecode that the verifier accepts.
+
+We evaluated \kunai on filters spanning GTP-U, SRv6, Geneve, and TCP
+options. The generated bytecode was accepted by the verifier across
+six Linux kernel versions (6.1–7.0) on both the XDP and tc attach points,
+matched and rejected packets as intended, and incurred only modest
+overhead relative to pcap-filter where equivalent filters could be
+expressed. These results showed that such packet filters compiled into
+verifier-accepted eBPF programs that matched and rejected packets as
+intended.

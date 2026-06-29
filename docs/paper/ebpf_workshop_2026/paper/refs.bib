@@ -17,12 +17,13 @@
   year         = {2021}
 }
 
-@inproceedings{begel1999bpfplus,
-  author    = {Andrew Begel and Steven McCanne and Susan L.\ Graham},
-  title     = {{BPF+}: Exploiting Global Data-flow Optimization in a Generalized Packet Filter Architecture},
-  booktitle = {Proc.\ ACM SIGCOMM},
-  year      = {1999}
+@misc{bpf_prog_test_run,
+  author       = {{eBPF Docs}},
+  title        = {The {BPF\_PROG\_TEST\_RUN} command},
+  howpublished = {\url{https://docs.ebpf.io/linux/syscall/BPF_PROG_TEST_RUN/}},
+  year         = {2024}
 }
+
 
 @article{risso2006netpdl,
   author  = {Fulvio Risso and Mario Baldi},
@@ -32,58 +33,36 @@
 }
 
 @inproceedings{ciminiera2010netpfl,
-  author    = {Luigi Ciminiera and Mario Baldi and Riccardo Sisto and Fulvio Risso},
-  title     = {Tunnel-aware Filter Languages: {NetPFL}},
+  author    = {Luigi Ciminiera and Marco Leogrande and Ju Liu and Fulvio Risso and Olivier Morandi},
+  title     = {A Tunnel-Aware Language for Network Packet Filtering},
   booktitle = {Proc.\ IEEE GLOBECOM},
   year      = {2010}
 }
 
-@article{risso2018xpfsa,
-  author  = {Fulvio Risso and others},
-  title   = {{xpFSA}: Encapsulation-aware Filtering with Finite-State Automata},
-  journal = {Computer Networks},
-  year    = {2018}
+@inproceedings{mccann2000packettypes,
+  author    = {Peter J. McCann and Satish Chandra},
+  title     = {Packet Types: Abstract Specifications of Network Protocol Messages},
+  booktitle = {Proc.\ ACM SIGCOMM},
+  pages     = {321--333},
+  year      = {2000},
+  doi       = {10.1145/347059.347563}
 }
 
-@inproceedings{bos2004ffpf,
-  author    = {Herbert Bos and others},
-  title     = {{FFPF}: Fairly Fast Packet Filters},
-  booktitle = {Proc.\ USENIX OSDI},
-  year      = {2004}
+@inproceedings{pang2006binpac,
+  author    = {Ruoming Pang and Vern Paxson and Robin Sommer and Larry L. Peterson},
+  title     = {{binpac}: A Yacc for Writing Application Protocol Parsers},
+  booktitle = {Proc.\ ACM Internet Measurement Conference (IMC)},
+  pages     = {289--300},
+  year      = {2006},
+  doi       = {10.1145/1177080.1177119}
 }
+
+
 
 % --- XDP capture / observability tools ---
 
-@misc{cloudflare2019xdpcap,
-  author       = {Cloudflare},
-  title        = {{xdpcap}: {XDP} Packet Capture},
-  howpublished = {Blog post / GitHub: cloudflare/xdpcap},
-  year         = {2019}
-}
 
-@misc{xdptools_xdpdump,
-  author       = {The {XDP} Project},
-  title        = {{xdpdump} (xdp-tools)},
-  howpublished = {\url{https://github.com/xdp-project/xdp-tools}}
-}
 
-@misc{bpftrace,
-  author       = {{IO Visor Project}},
-  title        = {{bpftrace}: High-level tracing language for {Linux eBPF}},
-  howpublished = {\url{https://bpftrace.org/}}
-}
-
-@misc{nftables_wiki,
-  author       = {{Netfilter Project}},
-  title        = {nftables wiki: logging packets},
-  howpublished = {\url{https://wiki.nftables.org/}}
-}
-
-@misc{tcflower,
-  author       = {{iproute2 maintainers}},
-  title        = {tc-flower(8): flow based traffic control filter},
-  howpublished = {man page}
-}
 
 @misc{tc_man,
   author       = {{iproute2 project}},
@@ -91,11 +70,6 @@
   howpublished = {Linux man page}
 }
 
-@misc{dpdk_dumpcap,
-  author       = {{DPDK Project}},
-  title        = {{DPDK} packet capture framework (\texttt{dpdk-dumpcap}, \texttt{dpdk-pdump})},
-  howpublished = {\url{https://www.dpdk.org/}}
-}
 
 % --- XDP / production deployments (motivation) ---
 
@@ -106,31 +80,30 @@
   year      = {2018}
 }
 
-@inproceedings{shukla2020katran,
-  author    = {Nikita Shukla and others},
-  title     = {{Katran}: A High-Performance Layer-4 Load Balancer based on {XDP} at Meta},
-  booktitle = {Proc.\ USENIX NSDI},
-  year      = {2020}
+@inproceedings{braun2010capture,
+  author    = {Lothar Braun and Alexander Didebulidze and Nils Kammenhuber and Georg Carle},
+  title     = {Comparing and Improving Current Packet Capturing Solutions Based on Commodity Hardware},
+  booktitle = {Proc.\ ACM Internet Measurement Conference (IMC)},
+  year      = {2010}
 }
 
-@misc{cilium_docs,
-  author       = {Cilium},
-  title        = {Cilium Documentation -- {eBPF}-based Networking, Observability, Security},
-  howpublished = {\url{https://docs.cilium.io/}}
+@inproceedings{papadogiannakis2013scap,
+  author    = {Antonis Papadogiannakis and Michalis Polychronakis and Evangelos P. Markatos},
+  title     = {{Scap}: Stream-Oriented Network Traffic Capture and Analysis for High-Speed Networks},
+  booktitle = {Proc.\ ACM Internet Measurement Conference (IMC)},
+  pages     = {441--454},
+  year      = {2013},
+  doi       = {10.1145/2504730.2504750}
 }
 
-@misc{cloudflare_unimog,
-  author       = {Cloudflare},
-  title        = {{Unimog}: {XDP}-based {L4} Load Balancer},
-  howpublished = {Blog post},
-  year         = {2020}
-}
+
+
 
 % --- eBPF DSLs and verification ---
 
 @inproceedings{tu2018p4cxdp,
-  author    = {William Tu and others},
-  title     = {{p4c-xdp}: Compiling {P4} to {XDP}},
+  author    = {Fabian Ruffy and Mihai Budiu and William Tu},
+  title     = {{P4C-XDP}: Programming the {Linux} Kernel Forwarding Plane Using {P4}},
   booktitle = {Linux Plumbers Conference},
   year      = {2018}
 }
@@ -161,35 +134,55 @@
 }
 
 @inproceedings{vishwanathan2022tristate,
-  author    = {Harishankar Vishwanathan and others},
+  author    = {Harishankar Vishwanathan and Matan Shachnai and Srinivas Narayana and Santosh Nagarakatte},
   title     = {Sound, Precise, and Fast Abstract Interpretation with Tristate Numbers},
-  booktitle = {Proc.\ ACM PLDI},
-  year      = {2022}
+  booktitle = {Proc.\ IEEE/ACM International Symposium on Code Generation and Optimization (CGO)},
+  year      = {2022},
+  doi       = {10.1109/CGO53902.2022.9741267}
 }
+
 
 % --- P4 language formal semantics ---
 
 @misc{p4spec,
-  year         = {2023},
+  year         = {2024},
   author       = {{P4 Language Consortium}},
-  title        = {{P4-16} Language Specification},
-  howpublished = {\url{https://p4.org/p4-spec/docs/P4-16-v1.2.5.pdf}}
+  title        = {{P4-16} Language Specification, Version 1.2.5},
+  howpublished = {\url{https://p4.org/wp-content/uploads/sites/53/2024/10/P4-16-spec-v1.2.5.pdf}}
 }
 
-@inproceedings{doenges2021petr4,
-  author    = {Ryan Doenges and others},
-  title     = {{Petr4}: Formal Foundations for {P4} Data Planes},
-  booktitle = {Proc.\ ACM PLDI},
-  year      = {2021}
+@article{bosshart2014p4,
+  author  = {Pat Bosshart and Dan Daly and Glen Gibb and Martin Izzard and Nick McKeown and Jennifer Rexford and Cole Schlesinger and Dan Talayco and Amin Vahdat and George Varghese and David Walker},
+  title   = {{P4}: Programming Protocol-Independent Packet Processors},
+  journal = {ACM SIGCOMM Computer Communication Review},
+  volume  = {44},
+  number  = {3},
+  pages   = {87--95},
+  year    = {2014},
+  doi     = {10.1145/2656877.2656890}
 }
+
+@article{doenges2021petr4,
+  author    = {Ryan Doenges and Mina Tahmasbi Arashloo and Santiago Bautista and Alexander Chang and Newton Ni and Samwise Parkinson and Rudy Peterson and Alaia Solko-Breslin and Amanda Xu and Nate Foster},
+  title     = {Petr4: Formal Foundations for {P4} Data Planes},
+  journal   = {Proc.\ ACM on Programming Languages},
+  volume    = {5},
+  number    = {POPL},
+  year      = {2021},
+  doi       = {10.1145/3434322}
+}
+
 
 % --- Added for the reframed draft (hand_draft_ja_reviewed) ---
 
 @article{sultana2024survey,
-  author  = {Noa Sultana and others},
+  author  = {Nik Sultana and Hyunsuk Bang and Elena Yulaeva and Ricky K. P. Mok and Kc Claffy and Richard Mortier},
   title   = {A Survey on Packet Filtering},
   journal = {ACM SIGCOMM Computer Communication Review},
-  year    = {2024}
+  volume  = {54},
+  number  = {3},
+  year    = {2024},
+  doi     = {10.1145/3711992.3711994}
 }
 
 @misc{pcapfilter_man,
@@ -199,12 +192,6 @@
   howpublished = {\url{https://man7.org/linux/man-pages/man7/pcap-filter.7.html}}
 }
 
-@inproceedings{mogul1987packetfilter,
-  author    = {Jeffrey C.\ Mogul and Richard F.\ Rashid and Michael J.\ Accetta},
-  title     = {The Packet Filter: An Efficient Mechanism for User-level Network Code},
-  booktitle = {Proc.\ ACM SOSP},
-  year      = {1987}
-}
 
 @article{leogrande2015pfsa,
   author  = {Marco Leogrande and Fulvio Risso and Luigi Ciminiera},
@@ -255,6 +242,13 @@
   howpublished = {3GPP Technical Specification}
 }
 
+@misc{rfc2784,
+  author       = {D.\ Farinacci and others},
+  title        = {Generic Routing Encapsulation ({GRE})},
+  howpublished = {{RFC} 2784},
+  year         = {2000}
+}
+
 @misc{rfc8754,
   author       = {C.\ Filsfils and others},
   title        = {{IPv6} Segment Routing Header ({SRH})},
@@ -288,4 +282,12 @@
   author       = {{Linux Kernel Documentation}},
   title        = {{BPF} Instruction Set Architecture ({ISA})},
   howpublished = {\url{https://docs.kernel.org/bpf/standardization/instruction-set.html}}
+}
+
+@misc{bpf_cpuv4,
+  author       = {Yonghong Song},
+  title        = {{bpf}: Support new insns from cpu v4},
+  howpublished = {Linux kernel patch series, merged in 6.6},
+  year         = {2023},
+  note         = {\url{https://lwn.net/Articles/936824/}}
 }
