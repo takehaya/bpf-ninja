@@ -130,9 +130,9 @@ cat docs/paper/ebpf_workshop_2026/old/filter-set.md
 - **回し方**: `BENCHTIME=3s bash benchmark/microbench/run.sh`（root 不要、compile するだけ）。
 - **データ**: **`benchmark/results/b1_insns.csv`** — 列は `filter,path,wall_ns,insns`。`path` は `dsl`（Kunai）か `cbpfc`。`insns` が命令数、`wall_ns` は **compile 時間**（実行時間ではない。実行時間は b2/b4）。
 - **図**: `paper/figures/fig_insns.{tex,pdf}`（図4）が b1_insns.csv の insns を棒グラフ化。
-- 本文の「Kunai は cbpfc の 2.7〜14.7 倍、F7-F10 は 231〜450 命令」はこの csv。命令数は決定的なので `filterset_test.go` の `WantInsns` pin と一致する（ずれたら test 失敗）。
+- 本文の「Kunai は cbpfc の 2.7〜14.7 倍、F7-F10 は 231〜405 命令」はこの csv。命令数は決定的なので `filterset_test.go` の `WantInsns` pin と一致する（ずれたら test 失敗）。
 
-> 注意: codegen を変えると命令数が動く。PR #36 で F8 425→450 等が変わったため、b1 を再測定し図4 も再ビルドした。
+> 注意: codegen を変えると命令数が動く。PR #42 で F8 が bpf_loop 化し 450→332 に減ったため、b1 を再測定し図4 も再ビルドした。
 
 ---
 
@@ -155,8 +155,8 @@ cat docs/paper/ebpf_workshop_2026/old/filter-set.md
 
 ### 本文の数字との対応
 
-- 「baseline 608-610 ns」= b2_runtime_stats.csv の F0 行（kunai 609.8 / cbpfc 607.7）。
-- 「各 filter の増分は最大 +13 ns/pkt、baseline の 3% 未満」= 各 filter の mean − F0 mean の最大（F9）。
+- 「baseline 611-614 ns」= b2_runtime_stats.csv の F0 行（kunai 614.2 / cbpfc 611.3）。
+- 「各 filter の増分は最大 +13 ns/pkt、baseline の約 2.0%」= 各 filter の mean − F0 mean の最大（F8）。
 - 「Kunai と cbpfc の差は標準偏差と同程度で分離できない」= 共通 filter（F1-F4,F6）の kunai/cbpfc 差（≤7.4 ns）が sd（最大 11.7 ns）と同オーダー。
 
 > PR #36 後の 2026-06-13 に再測定済。
@@ -187,16 +187,16 @@ syscall 計測ではなく、**実際の NIC に line rate の traffic を流し
 
 ### 本文の数字との対応（b4_xdp_drop_stats.csv）
 
-- window copy 固定費 約 6%: `fixed%:window_copy_udp64` = −5.87 ± 0.27
-- F7-F10 は accept-all 比 4〜5% 低下、最大 F7 5.3%:
-  - `cost%:kunai_F7_vs_accept_gtpu` = −5.28 ± 0.36
-  - `cost%:kunai_F8_vs_accept_srv6` = −3.94 ± 0.13
-  - `cost%:kunai_F9_vs_accept_geneve` = −4.41 ± 0.07
-  - `cost%:kunai_F10_vs_accept_tcpmss` = −3.91 ± 0.08
-- 共通 filter F1 の Kunai vs cbpfc 差 0.6%: `gap%:kunai_F1_vs_cbpfc_F1` = −0.59 ± 0.17
-- 生 mpps（floor 115.7、accept_udp64 108.9 など）も同 csv の `mpps:*` 行にある。
+- window copy 固定費 約 7.7%: `fixed%:window_copy_udp64` = −7.70 ± 0.16
+- F7-F10 は accept-all 比 3.9〜7.3% 低下、最大 F8 7.3%:
+  - `cost%:kunai_F7_vs_accept_gtpu` = −6.04 ± 0.25
+  - `cost%:kunai_F8_vs_accept_srv6` = −7.25 ± 0.26
+  - `cost%:kunai_F9_vs_accept_geneve` = −4.89 ± 0.24
+  - `cost%:kunai_F10_vs_accept_tcpmss` = −3.91 ± 0.15
+- 共通 filter F1 の Kunai vs cbpfc 差 0.6%: `gap%:kunai_F1_vs_cbpfc_F1` = −0.59 ± 0.14
+- 生 mpps（floor 115.91、accept_udp64 106.98 など）も同 csv の `mpps:*` 行にある。
 
-> n=5 は 2026-06-14 の再計測（F9/F10 を datapath に追加）。旧 n=2（最悪 F7 −7.3%）は外れ値で `results/attic/` に退避。
+> n=10 は 2026-06-26 の full re-measure（cbpfc_F2/F3/F4/F6 を datapath にも追加、同一セッション）。旧 rep は `results/attic/` に退避。
 
 ---
 
@@ -204,12 +204,12 @@ syscall 計測ではなく、**実際の NIC に line rate の traffic を流し
 
 | 本文の記述 | 出どころ |
 |---|---|
-| F1-F10 の命令数（199…450） | `benchmark/results/b1_insns.csv` / `filterset_test.go` の `WantInsns` |
+| F1-F10 の命令数（199…405） | `benchmark/results/b1_insns.csv` / `filterset_test.go` の `WantInsns` |
 | Kunai は cbpfc の 2.7〜14.7 倍 | `b1_insns.csv`（dsl/cbpfc 比） |
 | 5 kernel × 2 host で 740 受理、tc で 8 除外 | `benchmark/results/verifier_matrix.csv` |
 | match/reject すべて期待どおり | `pkg/kunai/dsltest/` のテスト pass/fail（CSV なし） |
-| baseline 608-610 ns、最大増分 +13 ns/pkt | `benchmark/results/b2_runtime_stats.csv` |
-| line rate で F7-F10 が 4〜5%（最大 F7 5.3%）、F1 差 0.6%、copy 6% | `benchmark/results/b4_xdp_drop_stats.csv` |
+| baseline 611-614 ns、最大増分 +13 ns/pkt | `benchmark/results/b2_runtime_stats.csv` |
+| line rate で F7-F10 が 3.9〜7.3%（最大 F8 7.3%）、F1-F4 差 0.6〜1.3pp、copy 7.7% | `benchmark/results/b4_xdp_drop_stats.csv` |
 | 図4（命令数） | `paper/figures/fig_insns.{tex,pdf}` ← b1 |
 | 図5（測定 topology） | `paper/figures/fig_topology.{tex,pdf}` |
 
