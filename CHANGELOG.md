@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.13.1](https://github.com/takehaya/xdp-ninja/compare/v0.13.0...v0.13.1) (2026-07-01)
+
+
+### 🐛 Bug Fixes
+
+* **capture:** round per-shard ringbuf size to a power of two ([#51](https://github.com/takehaya/xdp-ninja/issues/51)) ([7bf1c3d](https://github.com/takehaya/xdp-ninja/commit/7bf1c3d09a9fccd2775f582a88a0ad6ffa01cdd8))
+
 ## [0.13.0](https://github.com/takehaya/xdp-ninja/compare/v0.12.0...v0.13.0) (2026-07-01)
 
 
