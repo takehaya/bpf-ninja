@@ -370,3 +370,63 @@ func TestScanRedirectMapDevMapHash(t *testing.T) {
 		t.Errorf("ProgID = %d, want %d", got.ProgID, uint32(wantID))
 	}
 }
+
+// TestScanProgArraySkipsEmptySlot verifies that a sparse PROG_ARRAY (only
+// some slots populated) does not abort discovery on the empty slots, which
+// enumerate as id 0.
+func TestScanProgArraySkipsEmptySlot(t *testing.T) {
+	testutil.SkipIfNotRoot(t)
+
+	// A tiny XDP program to serve as the single populated tail-call target.
+	target, err := ebpf.NewProgram(&ebpf.ProgramSpec{
+		Name: "tc_target",
+		Type: ebpf.XDP,
+		Instructions: asm.Instructions{
+			asm.Mov.Imm(asm.R0, 2), // XDP_PASS
+			asm.Return(),
+		},
+		License: "GPL",
+	})
+	if err != nil {
+		t.Fatalf("target prog: %v", err)
+	}
+	t.Cleanup(func() { _ = target.Close() })
+	tInfo, _ := target.Info()
+	wantID, ok := tInfo.ID()
+	if !ok {
+		t.Fatal("target program has no ID")
+	}
+
+	progArray, err := ebpf.NewMap(&ebpf.MapSpec{
+		Type:       ebpf.ProgramArray,
+		KeySize:    4,
+		ValueSize:  4,
+		MaxEntries: 4, // slots 0,1,3 stay empty
+	})
+	if err != nil {
+		t.Skipf("creating PROG_ARRAY: %v", err)
+	}
+	t.Cleanup(func() { _ = progArray.Close() })
+
+	if err := progArray.Put(uint32(2), uint32(target.FD())); err != nil {
+		t.Skipf("populating PROG_ARRAY: %v", err)
+	}
+
+	targets, err := scanMapForPrograms(progArray, 0)
+	if err != nil {
+		t.Fatalf("scanMapForPrograms on sparse PROG_ARRAY: %v", err)
+	}
+	if len(targets) != 1 {
+		t.Fatalf("expected 1 target, got %d: %+v", len(targets), targets)
+	}
+	got := targets[0]
+	if got.Via != "tailcall" {
+		t.Errorf("Via = %q, want tailcall", got.Via)
+	}
+	if got.Key != 2 {
+		t.Errorf("Key = %d, want 2", got.Key)
+	}
+	if got.ProgID != uint32(wantID) {
+		t.Errorf("ProgID = %d, want %d", got.ProgID, uint32(wantID))
+	}
+}

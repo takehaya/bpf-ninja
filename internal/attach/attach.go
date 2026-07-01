@@ -223,12 +223,16 @@ func scanMapForPrograms(m *ebpf.Map, mapID ebpf.MapID) ([]ProgTarget, error) {
 }
 
 // scanProgArray reads tail-call targets from a PROG_ARRAY. Values are the
-// target program IDs.
+// target program IDs. Array-backed maps enumerate every slot, so unset
+// entries surface as id 0 and are skipped.
 func scanProgArray(m *ebpf.Map, mapID ebpf.MapID) ([]ProgTarget, error) {
 	var targets []ProgTarget
 	var key, val uint32
 	iter := m.Iterate()
 	for iter.Next(&key, &val) {
+		if val == 0 {
+			continue // empty tail-call slot
+		}
 		t, err := resolveProgTarget("tailcall", key, val)
 		if err != nil {
 			return nil, err
