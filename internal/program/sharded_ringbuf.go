@@ -10,6 +10,7 @@ package program
 
 import (
 	"fmt"
+	"math/bits"
 	"runtime"
 	"sync"
 
@@ -17,14 +18,27 @@ import (
 	"github.com/cilium/ebpf/asm"
 )
 
+// shardRingbufSize returns the per-shard BPF ringbuf byte size for a total
+// budget split across numCPUs shards. A BPF_MAP_TYPE_RINGBUF requires its
+// byte size to be a power of two (and a multiple of PAGE_SIZE; any power of
+// two >= 4096 satisfies that), so an even division like 4 MiB / 6 =
+// 699050 is rejected by the kernel. Floor each shard at 64 KiB, then round
+// down to the nearest power of two so the size is always valid regardless
+// of CPU count.
+func shardRingbufSize(total uint32, numCPUs int) uint32 {
+	perShard := max(total/uint32(numCPUs), 65536)
+	return uint32(1) << (bits.Len32(perShard) - 1)
+}
+
 // createShardedRingbuf builds the outer ARRAY_OF_MAPS + per-CPU inner
 // RingBuf pair used by every attach mode. label is a short prefix
 // ("xdp", "entry", "exit") that shows up in the map name for bpftool
 // readability.
 //
-// Total ringbuf capacity = RingbufSize MiB split evenly across CPUs,
-// floored at 64 KiB per shard so we always have at least one page of
-// data area on systems with > 1024 CPUs.
+// Total ringbuf capacity = RingbufSize split evenly across CPUs, floored
+// at 64 KiB per shard and rounded down to a power of two (see
+// shardRingbufSize) so the per-shard size is a valid BPF ringbuf byte
+// size on any CPU count, not just powers of two.
 //
 // On error the caller receives no half-built state: any inner created
 // before the failure is closed before returning. Inner maps are
@@ -32,7 +46,7 @@ import (
 // 100s-of-µs range; 64 CPUs serial takes ~tens of ms.
 func createShardedRingbuf(label string) (outer *ebpf.Map, inners []*ebpf.Map, err error) {
 	numCPUs := runtime.NumCPU()
-	innerSize := max(RingbufSize/uint32(numCPUs), 65536)
+	innerSize := shardRingbufSize(RingbufSize, numCPUs)
 	innerSpec := &ebpf.MapSpec{
 		Name: fmt.Sprintf("ninja_%s_rb_in", label), Type: ebpf.RingBuf, MaxEntries: innerSize,
 	}
