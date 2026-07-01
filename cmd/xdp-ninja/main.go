@@ -532,9 +532,15 @@ func runArgEchoLoop(cmd *cli.Command, probe *program.Probe, funcName string) err
 	var stopped atomic.Bool
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(sigCh)
+	done := make(chan struct{})
+	defer close(done) // let the signal goroutine exit when the loop returns
 	go func() {
-		<-sigCh
-		stopped.Store(true)
+		select {
+		case <-sigCh:
+			stopped.Store(true)
+		case <-done:
+		}
 	}()
 
 	count := int64(cmd.Int("count"))

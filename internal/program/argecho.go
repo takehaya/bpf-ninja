@@ -41,6 +41,12 @@ func LoadArgEcho(
 	if len(echoParams) == 0 {
 		return nil, fmt.Errorf("--arg-echo requires at least one filterable integer parameter (see --list-params)")
 	}
+	// One record is len(params)*8 bytes; it must fit in the ring (with head
+	// room for the 8-byte record header) or bpf_ringbuf_reserve always
+	// fails and nothing prints. In practice params is tiny; guard anyway.
+	if recordSize := len(echoParams) * 8; recordSize >= EchoRingSize {
+		return nil, fmt.Errorf("--arg-echo: %d params (%d B/record) exceed the %d B echo ring", len(echoParams), recordSize, EchoRingSize)
+	}
 
 	if _, err := validateTracingTarget(targetProg); err != nil {
 		return nil, err
