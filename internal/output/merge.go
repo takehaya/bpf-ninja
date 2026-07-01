@@ -40,7 +40,7 @@ func (h *mergeHeap) Pop() any {
 // MergeShardFiles merges <basePath>.cpu0..cpu(numShards-1) into a single
 // time-ordered pcap-ng written to basePath. Missing or empty shard files
 // are skipped. The shard files are left in place.
-func MergeShardFiles(basePath string, numShards int, isFexit bool) error {
+func MergeShardFiles(basePath string, numShards int, isFexit bool) (err error) {
 	var closers []*os.File
 	var readers []*pcapgo.NgReader
 	defer func() {
@@ -73,7 +73,13 @@ func MergeShardFiles(basePath string, numShards int, isFexit bool) error {
 	if err != nil {
 		return err
 	}
-	defer func() { _ = out.Close() }()
+	// Surface a Close (flush) failure — a short write / disk-full must not
+	// let a truncated merge be reported as success.
+	defer func() {
+		if cerr := out.Close(); cerr != nil && err == nil {
+			err = fmt.Errorf("closing merged file: %w", cerr)
+		}
+	}()
 
 	h := &mergeHeap{}
 	for i, r := range readers {

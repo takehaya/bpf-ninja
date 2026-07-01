@@ -574,6 +574,18 @@ func captureLoopSharded(cmd *cli.Command, inners []*ebpf.Map, isFexit bool, labe
 	writers := make([]*output.Writer, len(inners))
 	var sharedW *output.Writer
 	var sharedMu sync.Mutex
+	// Registered before opening any writer so a mid-loop open failure still
+	// closes the writers already created (no fd leak on partial setup).
+	defer func() {
+		if sharedW != nil {
+			_ = sharedW.Close()
+		}
+		for _, w := range writers {
+			if w != nil {
+				_ = w.Close()
+			}
+		}
+	}()
 	if !null {
 		if stdoutMerge {
 			w, err := output.NewWriter("", isFexit)
@@ -591,16 +603,6 @@ func captureLoopSharded(cmd *cli.Command, inners []*ebpf.Map, isFexit bool, labe
 			}
 		}
 	}
-	defer func() {
-		if sharedW != nil {
-			_ = sharedW.Close()
-		}
-		for _, w := range writers {
-			if w != nil {
-				_ = w.Close()
-			}
-		}
-	}()
 
 	// Pick the write strategy once: null = drop, stdout = one writer
 	// serialized by sharedMu, -w = mutex-free per-CPU writer. Keeps the
