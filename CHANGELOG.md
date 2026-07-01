@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.0](https://github.com/takehaya/xdp-ninja/compare/v0.11.1...v0.12.0) (2026-07-01)
+
+
+### 🎉 Features
+
+* **attach:** list CPUMAP/DEVMAP redirect targets in --list-progs ([#47](https://github.com/takehaya/xdp-ninja/issues/47)) ([c5a7595](https://github.com/takehaya/xdp-ninja/commit/c5a75958242ef7e7500cecf02da708c1b164682d))
+
 ## [0.11.1](https://github.com/takehaya/xdp-ninja/compare/v0.11.0...v0.11.1) (2026-06-29)
 
 
