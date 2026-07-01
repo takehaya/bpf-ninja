@@ -370,7 +370,8 @@ func run(ctx context.Context, cmd *cli.Command) error {
 	}
 	defer func() { _ = info.Program.Close() }()
 
-	// --list-progs: show tail call targets, then exit
+	// --list-progs: show reachable programs (tail calls +
+	// CPUMAP/DEVMAP redirect targets), then exit
 	if cmd.Bool("list-progs") {
 		fmt.Fprintf(os.Stderr, "id=%-6d %s\n", info.ProgID, info.FuncName)
 

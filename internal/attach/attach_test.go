@@ -310,3 +310,63 @@ func TestScanRedirectMapDevMap(t *testing.T) {
 		t.Errorf("ProgID = %d, want %d", got.ProgID, uint32(wantID))
 	}
 }
+
+// TestScanRedirectMapDevMapHash covers the DEVMAP_HASH routing branch.
+// Like DEVMAP and CPUMAP, DEVMAP_HASH requires key_size == 4 (u32 keys),
+// so the shared uint32 iteration in scanRedirectMap applies. The value
+// layout (bpf_devmap_val) is identical to DEVMAP.
+func TestScanRedirectMapDevMapHash(t *testing.T) {
+	prog := loadDevMapProg(t)
+
+	progInfo, err := prog.Info()
+	if err != nil {
+		t.Fatalf("prog info: %v", err)
+	}
+	wantID, ok := progInfo.ID()
+	if !ok {
+		t.Fatal("program has no ID")
+	}
+
+	lo, err := net.InterfaceByName("lo")
+	if err != nil {
+		t.Skipf("looking up loopback: %v", err)
+	}
+
+	devmap, err := ebpf.NewMap(&ebpf.MapSpec{
+		Type:       ebpf.DevMapHash,
+		KeySize:    4,
+		ValueSize:  8,
+		MaxEntries: 4,
+	})
+	if err != nil {
+		t.Skipf("creating DEVMAP_HASH (kernel may lack support): %v", err)
+	}
+	t.Cleanup(func() { _ = devmap.Close() })
+
+	val := make([]byte, 8)
+	binary.NativeEndian.PutUint32(val[0:4], uint32(lo.Index))
+	binary.NativeEndian.PutUint32(val[4:8], uint32(prog.FD()))
+	// DEVMAP_HASH keys are arbitrary u32; use a non-zero sparse key.
+	const key = uint32(42)
+	if err := devmap.Put(key, val); err != nil {
+		t.Skipf("populating DEVMAP_HASH with program (device may not support XDP): %v", err)
+	}
+
+	targets, err := scanMapForPrograms(devmap, 0)
+	if err != nil {
+		t.Fatalf("scanMapForPrograms: %v", err)
+	}
+	if len(targets) != 1 {
+		t.Fatalf("expected 1 target, got %d: %+v", len(targets), targets)
+	}
+	got := targets[0]
+	if got.Via != "devmap_hash" {
+		t.Errorf("Via = %q, want devmap_hash", got.Via)
+	}
+	if got.Key != key {
+		t.Errorf("Key = %d, want %d", got.Key, key)
+	}
+	if got.ProgID != uint32(wantID) {
+		t.Errorf("ProgID = %d, want %d", got.ProgID, uint32(wantID))
+	}
+}
