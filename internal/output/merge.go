@@ -85,9 +85,14 @@ func MergeShardFiles(basePath string, numShards int, isFexit bool) error {
 		}
 	}()
 
+	// One reusable buffer per shard. The heap holds at most one item per
+	// shard at a time, and a shard's next packet is only read after its
+	// current item has been popped and written, so overwriting the buffer
+	// is safe and avoids a per-packet allocation across the whole merge.
+	bufs := make([][]byte, len(readers))
 	h := &mergeHeap{}
 	for i, r := range readers {
-		if it, ok := nextItem(r, i); ok {
+		if it, ok := nextItem(r, i, &bufs[i]); ok {
 			heap.Push(h, it)
 		}
 	}
@@ -100,7 +105,7 @@ func MergeShardFiles(basePath string, numShards int, isFexit bool) error {
 		if err := out.Write(capture.Packet{Timestamp: it.ts, Data: it.data, Action: it.action}); err != nil {
 			return fmt.Errorf("writing merged packet: %w", err)
 		}
-		if next, ok := nextItem(readers[it.idx], it.idx); ok {
+		if next, ok := nextItem(readers[it.idx], it.idx, &bufs[it.idx]); ok {
 			heap.Push(h, next)
 		}
 	}
@@ -117,15 +122,20 @@ func MergeShardFiles(basePath string, numShards int, isFexit bool) error {
 	return nil
 }
 
-// nextItem reads the next packet from a shard reader. Returns ok=false at
-// EOF (or on any read error, which ends that shard's contribution). The
-// packet bytes are copied because pcapgo reuses its read buffer.
-func nextItem(r *pcapgo.NgReader, idx int) (mergeItem, bool) {
+// nextItem reads the next packet from a shard reader into the shard's
+// reusable buffer *buf (grown as needed). Returns ok=false at EOF (or on
+// any read error, which ends that shard's contribution). The bytes are
+// copied out because pcapgo reuses its own internal read buffer.
+func nextItem(r *pcapgo.NgReader, idx int, buf *[]byte) (mergeItem, bool) {
 	data, ci, err := r.ReadPacketData()
 	if err != nil {
 		return mergeItem{}, false
 	}
-	cp := make([]byte, len(data))
-	copy(cp, data)
-	return mergeItem{ts: ci.Timestamp, data: cp, action: uint32(ci.InterfaceIndex), idx: idx}, true
+	if cap(*buf) < len(data) {
+		*buf = make([]byte, len(data))
+	} else {
+		*buf = (*buf)[:len(data)]
+	}
+	copy(*buf, data)
+	return mergeItem{ts: ci.Timestamp, data: *buf, action: uint32(ci.InterfaceIndex), idx: idx}, true
 }

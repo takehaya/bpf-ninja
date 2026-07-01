@@ -515,12 +515,10 @@ func resolveFilterSyntax(cmd *cli.Command) (useDSL bool, err error) {
 // sharded path is the only live path; captureLoopSharded owns the
 // per-shard writer lifecycle.
 //
-// We still call output.NewWriter(basePath, isFexit) here to ensure
-// the base path exists as a valid (SHB-only) pcap-ng file. Single-
-// file consumers (`tcpdump -r out.pcap`) point at the base path; the
-// per-CPU `.cpuN` companions hold the actual packets and are merged
-// offline via `xdp-ninja convert`. Integration tests
-// (run_pcap_test) rely on the base file's existence.
+// For `-w path`, packets land in per-CPU `path.cpuN` shard files during
+// capture; afterward output.MergeShardFiles merges them into a single
+// time-ordered pcap-ng at `path` (the shards are left in place). Integration
+// tests (run_pcap_test) read the `.cpuN` shards.
 func runCaptureLoop(cmd *cli.Command, probe *program.Probe, isFexit bool, label string) error {
 	defer func() {
 		if cerr := probe.Close(); cerr != nil {
@@ -554,9 +552,11 @@ func runCaptureLoop(cmd *cli.Command, probe *program.Probe, isFexit bool, label 
 	return nil
 }
 
-// captureLoopSharded: per-CPU shard goroutines, each writes to its
-// own pcap file (no mutex). --null-output skips file writes for
-// benchmarking; --raw-dump switches to the raw-bytes path.
+// captureLoopSharded: per-CPU shard goroutines. With -w each shard writes
+// its own .cpuN pcap file with no mutex (the high-throughput path); to
+// stdout all shards funnel into one writer serialized by a mutex.
+// --null-output skips file writes for benchmarking; --raw-dump switches to
+// the raw-bytes path.
 func captureLoopSharded(cmd *cli.Command, inners []*ebpf.Map, isFexit bool, label string) error {
 	basePath := cmd.String("write")
 	null := cmd.Bool("null-output")
