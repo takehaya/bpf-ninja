@@ -530,15 +530,28 @@ func runCaptureLoop(cmd *cli.Command, probe *program.Probe, isFexit bool, label 
 	if len(probe.InnerMaps) == 0 {
 		return fmt.Errorf("probe has no inner ringbufs — sharded ringbuf hoist (R22) should populate them for every attach mode")
 	}
-	// Create a base-path SHB-only marker file when -w is set, so
-	// downstream tools that expect a single file at that path see a
-	// readable pcap-ng even though packets land in per-CPU shards.
-	writer, err := output.NewWriter(cmd.String("write"), isFexit)
-	if err != nil {
+	if err := captureLoopSharded(cmd, probe.InnerMaps, isFexit, label); err != nil {
 		return err
 	}
-	_ = writer.Close()
-	return captureLoopSharded(cmd, probe.InnerMaps, isFexit, label)
+
+	// After capture, merge the per-CPU shard files into a single
+	// time-ordered pcap-ng at the base path, so `-w out.pcap` yields one
+	// ready-to-use file (the .cpuN shards are left in place). Only the
+	// normal pcap path produces shard files; --raw-dump has its own
+	// offline `convert`, --null-output writes nothing, and stdout is
+	// already a single merged stream.
+	basePath := cmd.String("write")
+	if basePath != "" && !cmd.Bool("raw-dump") && !cmd.Bool("null-output") {
+		// captureLoopSharded returns on Ctrl-C (or -c). Announce the
+		// post-capture merge so the pause isn't mistaken for a hang.
+		fmt.Fprintf(os.Stderr, "merging %d shard(s) into %s ...\n", len(probe.InnerMaps), basePath)
+		if err := output.MergeShardFiles(basePath, len(probe.InnerMaps), isFexit); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: merging shards into %s: %v\n", basePath, err)
+		} else {
+			fmt.Fprintf(os.Stderr, "merged into %s (per-CPU .cpuN kept)\n", basePath)
+		}
+	}
+	return nil
 }
 
 // captureLoopSharded: per-CPU shard goroutines, each writes to its
@@ -552,28 +565,63 @@ func captureLoopSharded(cmd *cli.Command, inners []*ebpf.Map, isFexit bool, labe
 		return captureLoopShardedRaw(cmd, inners, label, basePath)
 	}
 
+	// stdout (no -w) merges every shard into a single pcap-ng stream,
+	// serialized by sharedMu so no per-core packets are dropped. With -w
+	// each shard writes its own mutex-free .cpuN file (the high-throughput
+	// path); merge offline with mergecap.
+	stdoutMerge := basePath == "" && !null
+
 	writers := make([]*output.Writer, len(inners))
+	var sharedW *output.Writer
+	var sharedMu sync.Mutex
 	if !null {
-		for i := range inners {
-			var path string
-			if basePath != "" {
-				path = fmt.Sprintf("%s.cpu%d", basePath, i)
-			} else if i > 0 {
-				continue
-			}
-			w, err := output.NewWriter(path, isFexit)
+		if stdoutMerge {
+			w, err := output.NewWriter("", isFexit)
 			if err != nil {
-				return fmt.Errorf("opening per-CPU writer %d: %w", i, err)
+				return fmt.Errorf("opening stdout writer: %w", err)
 			}
-			writers[i] = w
-		}
-		defer func() {
-			for _, w := range writers {
-				if w != nil {
-					_ = w.Close()
+			sharedW = w
+		} else {
+			for i := range inners {
+				w, err := output.NewWriter(fmt.Sprintf("%s.cpu%d", basePath, i), isFexit)
+				if err != nil {
+					return fmt.Errorf("opening per-CPU writer %d: %w", i, err)
 				}
+				writers[i] = w
 			}
-		}()
+		}
+	}
+	defer func() {
+		if sharedW != nil {
+			_ = sharedW.Close()
+		}
+		for _, w := range writers {
+			if w != nil {
+				_ = w.Close()
+			}
+		}
+	}()
+
+	// Pick the write strategy once: null = drop, stdout = one writer
+	// serialized by sharedMu, -w = mutex-free per-CPU writer. Keeps the
+	// shared/per-CPU/null distinction out of the per-batch hot path.
+	var writeShard func(shardIdx int, pkts []capture.Packet) error
+	switch {
+	case null:
+		writeShard = func(int, []capture.Packet) error { return nil }
+	case sharedW != nil:
+		writeShard = func(_ int, pkts []capture.Packet) error {
+			sharedMu.Lock()
+			defer sharedMu.Unlock()
+			return sharedW.WriteBatch(pkts)
+		}
+	default:
+		writeShard = func(shardIdx int, pkts []capture.Packet) error {
+			if writers[shardIdx] != nil {
+				return writers[shardIdx].WriteBatch(pkts)
+			}
+			return nil
+		}
 	}
 
 	fastReader := cmd.Bool("fast-reader")
@@ -586,13 +634,11 @@ func captureLoopSharded(cmd *cli.Command, inners []*ebpf.Map, isFexit bool, labe
 		if count > 0 && captured.Load() >= count {
 			return nil
 		}
-		if !null && writers[shardIdx] != nil {
-			if err := writers[shardIdx].WriteBatch(pkts); err != nil {
-				writeErrCount.Add(1)
-				if firstWriteErr.Load() == nil {
-					msg := fmt.Sprintf("shard %d: %v", shardIdx, err)
-					firstWriteErr.CompareAndSwap(nil, &msg)
-				}
+		if err := writeShard(shardIdx, pkts); err != nil {
+			writeErrCount.Add(1)
+			if firstWriteErr.Load() == nil {
+				msg := fmt.Sprintf("shard %d: %v", shardIdx, err)
+				firstWriteErr.CompareAndSwap(nil, &msg)
 			}
 		}
 		captured.Add(int64(len(pkts)))

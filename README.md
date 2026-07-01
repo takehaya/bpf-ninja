@@ -108,16 +108,18 @@ sudo xdp-ninja --cbpf -i eth0 "host 10.0.0.1 and tcp port 80"
 
 ### Sharded output
 
-For high-rate captures, xdp-ninja uses a per-CPU sharded ringbuf and writes one pcap-ng file per CPU. With `-w capture.pcap`:
+For high-rate captures, xdp-ninja uses a per-CPU sharded ringbuf and each CPU writes its own pcap-ng file with no lock. With `-w capture.pcap`:
 
 ```
-capture.pcap          # SHB+IDB marker (0 packets — for single-file consumers)
-capture.pcap.cpu0     # CPU 0 packets
-capture.pcap.cpu1     # CPU 1 packets
+capture.pcap          # all shards merged, time-ordered (ready to use)
+capture.pcap.cpu0     # CPU 0 packets (kept)
+capture.pcap.cpu1     # CPU 1 packets (kept)
 ...
 ```
 
-Read a single shard with `tcpdump -r capture.pcap.cpu0`, or merge all shards with `mergecap -w merged.pcap capture.pcap.cpu*` (from the Wireshark toolkit). `xdp-ninja convert` handles `--raw-dump` `.raw` shards, not pcap-ng shards.
+When capture stops (Ctrl-C or `-c`), xdp-ninja merges the per-CPU shards into `capture.pcap` as a single time-ordered pcap-ng, so the base path is ready to open directly (`tcpdump -r capture.pcap`). The `.cpuN` shards are left in place; you can also read one with `tcpdump -r capture.pcap.cpu0` or merge them yourself with `mergecap -w merged.pcap capture.pcap.cpu*`. `xdp-ninja convert` handles `--raw-dump` `.raw` shards, not pcap-ng shards.
+
+Without `-w` (streaming to stdout), all CPUs are merged into a single pcap-ng stream (serialized), so `sudo xdp-ninja ... | tcpdump -r -` shows every core's packets. Use `-w` for high-rate captures — stdout serialization is for the interactive path.
 
 ### Performance flags (high-rate captures)
 
