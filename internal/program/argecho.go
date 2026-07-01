@@ -53,8 +53,10 @@ func LoadArgEcho(
 	}
 	label, attachType := tracingLabel(isFexit)
 
+	// Keep names within the 15-char BPF object-name limit so bpftool shows
+	// them intact: "nj_entry_echo" (13) / "nj_exit_echo" (12).
 	ring, err := ebpf.NewMap(&ebpf.MapSpec{
-		Name: fmt.Sprintf("ninja_%s_echo", label), Type: ebpf.RingBuf, MaxEntries: EchoRingSize,
+		Name: fmt.Sprintf("nj_%s_echo", label), Type: ebpf.RingBuf, MaxEntries: EchoRingSize,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("creating arg-echo ringbuf: %w", err)
@@ -67,8 +69,11 @@ func LoadArgEcho(
 		maps:       []*ebpf.Map{ring},
 	}
 
+	// "njecho_entry" (12) / "njecho_exit" (11): distinct from the capture
+	// probe's "xdp_ninja_entry"/"xdp_ninja_exit" and within the 15-char
+	// BPF name limit (so the distinguishing name isn't truncated away).
 	insns := buildArgEchoInsns(ring.FD(), argFilters, echoParams)
-	if err := attachTracingProbe(probe, targetProg, fmt.Sprintf("xdp_ninja_%s_e", label), funcName, attachType, insns); err != nil {
+	if err := attachTracingProbe(probe, targetProg, fmt.Sprintf("njecho_%s", label), funcName, attachType, insns); err != nil {
 		return nil, err
 	}
 	return probe, nil
