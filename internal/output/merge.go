@@ -40,7 +40,7 @@ func (h *mergeHeap) Pop() any {
 // MergeShardFiles merges <basePath>.cpu0..cpu(numShards-1) into a single
 // time-ordered pcap-ng written to basePath. Missing or empty shard files
 // are skipped. The shard files are left in place.
-func MergeShardFiles(basePath string, numShards int, isFexit bool) (err error) {
+func MergeShardFiles(basePath string, numShards int, isFexit bool) error {
 	var closers []*os.File
 	var readers []*pcapgo.NgReader
 	defer func() {
@@ -69,15 +69,19 @@ func MergeShardFiles(basePath string, numShards int, isFexit bool) (err error) {
 		readers = append(readers, r)
 	}
 
-	out, err := NewWriter(basePath, isFexit)
+	// Write to a temp file and rename on success so a mid-merge failure
+	// (disk full / short write) never leaves a truncated base file over the
+	// still-valid per-CPU shards — the merge is atomic.
+	tmpPath := basePath + ".merging"
+	out, err := NewWriter(tmpPath, isFexit)
 	if err != nil {
 		return err
 	}
-	// Surface a Close (flush) failure — a short write / disk-full must not
-	// let a truncated merge be reported as success.
+	committed := false
 	defer func() {
-		if cerr := out.Close(); cerr != nil && err == nil {
-			err = fmt.Errorf("closing merged file: %w", cerr)
+		if !committed {
+			_ = out.Close()
+			_ = os.Remove(tmpPath)
 		}
 	}()
 
@@ -100,6 +104,16 @@ func MergeShardFiles(basePath string, numShards int, isFexit bool) (err error) {
 			heap.Push(h, next)
 		}
 	}
+
+	// Flush+close the temp before renaming so all bytes are on disk; a
+	// close (flush) failure must fail the merge, not silently truncate.
+	if err := out.Close(); err != nil {
+		return fmt.Errorf("closing merged file: %w", err)
+	}
+	if err := os.Rename(tmpPath, basePath); err != nil {
+		return fmt.Errorf("renaming merged file into place: %w", err)
+	}
+	committed = true
 	return nil
 }
 
