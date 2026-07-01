@@ -433,3 +433,124 @@ func TestScanProgArraySkipsEmptySlot(t *testing.T) {
 		t.Errorf("ProgID = %d, want %d", got.ProgID, uint32(wantID))
 	}
 }
+
+// TestWalkReachableProgramsTransitive builds a two-stage dispatch chain
+// (dispatcher -> CPUMAP -> mid -> PROG_ARRAY -> leaf) and verifies the
+// walk descends through both hops, deduping and assigning depths.
+func TestWalkReachableProgramsTransitive(t *testing.T) {
+	testutil.SkipIfNotRoot(t)
+
+	// leaf: final tail-call target.
+	leaf, err := ebpf.NewProgram(&ebpf.ProgramSpec{
+		Name:         "leaf_prog",
+		Type:         ebpf.XDP,
+		Instructions: asm.Instructions{asm.Mov.Imm(asm.R0, 2), asm.Return()},
+		License:      "GPL",
+	})
+	if err != nil {
+		t.Fatalf("leaf prog: %v", err)
+	}
+	t.Cleanup(func() { _ = leaf.Close() })
+	leafInfo, _ := leaf.Info()
+	leafID, ok := leafInfo.ID()
+	if !ok {
+		t.Fatal("leaf has no ID")
+	}
+
+	progArray, err := ebpf.NewMap(&ebpf.MapSpec{
+		Type: ebpf.ProgramArray, KeySize: 4, ValueSize: 4, MaxEntries: 4,
+	})
+	if err != nil {
+		t.Skipf("prog array: %v", err)
+	}
+	t.Cleanup(func() { _ = progArray.Close() })
+	if err := progArray.Put(uint32(1), uint32(leaf.FD())); err != nil {
+		t.Skipf("prog array put: %v", err)
+	}
+
+	// mid: a CPUMAP-eligible program that references the PROG_ARRAY.
+	mid, err := ebpf.NewProgram(&ebpf.ProgramSpec{
+		Name:       "mid_jump",
+		Type:       ebpf.XDP,
+		AttachType: ebpf.AttachXDPCPUMap,
+		Instructions: asm.Instructions{
+			asm.LoadMapPtr(asm.R1, progArray.FD()),
+			asm.Mov.Imm(asm.R0, 2),
+			asm.Return(),
+		},
+		License: "GPL",
+	})
+	if err != nil {
+		t.Skipf("mid prog (kernel may lack BPF_XDP_CPUMAP): %v", err)
+	}
+	t.Cleanup(func() { _ = mid.Close() })
+	midInfo, _ := mid.Info()
+	midID, ok := midInfo.ID()
+	if !ok {
+		t.Fatal("mid has no ID")
+	}
+
+	cpumap, err := ebpf.NewMap(&ebpf.MapSpec{
+		Type: ebpf.CPUMap, KeySize: 4, ValueSize: 8, MaxEntries: 2,
+	})
+	if err != nil {
+		t.Skipf("cpumap: %v", err)
+	}
+	t.Cleanup(func() { _ = cpumap.Close() })
+	cval := make([]byte, 8)
+	binary.NativeEndian.PutUint32(cval[0:4], 192)
+	binary.NativeEndian.PutUint32(cval[4:8], uint32(mid.FD()))
+	// two slots -> same mid prog, must collapse to one entry.
+	if err := cpumap.Put(uint32(0), cval); err != nil {
+		t.Skipf("cpumap put: %v", err)
+	}
+	if err := cpumap.Put(uint32(1), cval); err != nil {
+		t.Skipf("cpumap put: %v", err)
+	}
+
+	dispatcher, err := ebpf.NewProgram(&ebpf.ProgramSpec{
+		Name: "root_dispatch",
+		Type: ebpf.XDP,
+		Instructions: asm.Instructions{
+			asm.LoadMapPtr(asm.R1, cpumap.FD()),
+			asm.Mov.Imm(asm.R0, 2),
+			asm.Return(),
+		},
+		License: "GPL",
+	})
+	if err != nil {
+		t.Fatalf("dispatcher prog: %v", err)
+	}
+	t.Cleanup(func() { _ = dispatcher.Close() })
+	dInfo, _ := dispatcher.Info()
+	dID, _ := dInfo.ID()
+
+	progs, err := WalkReachablePrograms(dispatcher, uint32(dID))
+	if err != nil {
+		t.Fatalf("WalkReachablePrograms: %v", err)
+	}
+
+	byID := map[uint32]ReachableProgram{}
+	for _, p := range progs {
+		byID[p.ProgID] = p
+	}
+
+	m, ok := byID[uint32(midID)]
+	if !ok {
+		t.Fatalf("mid (id=%d) not reached; got %+v", uint32(midID), progs)
+	}
+	if m.Via != "cpumap" || m.Depth != 1 || m.ParentID != uint32(dID) {
+		t.Errorf("mid edge = %+v, want via=cpumap depth=1 parent=%d", m, uint32(dID))
+	}
+	if len(m.Keys) != 2 || m.Keys[0] != 0 || m.Keys[1] != 1 {
+		t.Errorf("mid keys = %v, want [0 1] (collapsed CPUMAP slots)", m.Keys)
+	}
+
+	l, ok := byID[uint32(leafID)]
+	if !ok {
+		t.Fatalf("leaf (id=%d) not reached transitively; got %+v", uint32(leafID), progs)
+	}
+	if l.Via != "tailcall" || l.Depth != 2 || l.ParentID != uint32(midID) {
+		t.Errorf("leaf edge = %+v, want via=tailcall depth=2 parent=%d", l, uint32(midID))
+	}
+}

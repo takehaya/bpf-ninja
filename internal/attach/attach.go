@@ -4,6 +4,7 @@ package attach
 import (
 	"encoding/binary"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/cilium/ebpf"
@@ -198,6 +199,100 @@ func ListReachablePrograms(prog *ebpf.Program) ([]ProgTarget, error) {
 	}
 
 	return targets, nil
+}
+
+// ReachableProgram is a program reachable from a root program, deduped so
+// each program id appears once. Via/Keys/ParentID describe the first edge
+// that reached it; Depth is its distance from the root (root children are
+// depth 1). Keys collects every parent map key that reaches it (e.g. all
+// per-CPU CPUMAP slots), sorted ascending.
+type ReachableProgram struct {
+	ProgID   uint32
+	ProgName string
+	Via      string
+	Keys     []uint32
+	Depth    int
+	ParentID uint32
+}
+
+// WalkReachablePrograms transitively follows tail-call and redirect-map
+// edges from root, returning every reachable program deduped by id in
+// breadth-first order. This descends through multi-stage dispatchers (e.g.
+// cpu_dispatch -> CPUMAP -> entry_jump -> PROG_ARRAY -> handler), unlike
+// ListReachablePrograms which only reports the direct (one-hop) targets.
+// The root program is not closed; programs opened while descending are.
+func WalkReachablePrograms(root *ebpf.Program, rootID uint32) ([]ReachableProgram, error) {
+	type item struct {
+		id    uint32
+		prog  *ebpf.Program
+		depth int
+		owns  bool // close after scanning (children we opened by id)
+	}
+
+	visited := map[uint32]bool{rootID: true}
+	var out []ReachableProgram
+	queue := []item{{id: rootID, prog: root, depth: 0}}
+
+	for len(queue) > 0 {
+		cur := queue[0]
+		queue = queue[1:]
+
+		targets, err := ListReachablePrograms(cur.prog)
+		if cur.owns {
+			_ = cur.prog.Close()
+		}
+		if err != nil {
+			return nil, fmt.Errorf("walking program id=%d: %w", cur.id, err)
+		}
+
+		for _, g := range groupTargets(targets) {
+			if visited[g.ProgID] {
+				continue
+			}
+			visited[g.ProgID] = true
+
+			g.Depth = cur.depth + 1
+			g.ParentID = cur.id
+			out = append(out, g)
+
+			child, err := ebpf.NewProgramFromID(ebpf.ProgramID(g.ProgID))
+			if err != nil {
+				continue // recorded, but can't descend into it
+			}
+			queue = append(queue, item{id: g.ProgID, prog: child, depth: cur.depth + 1, owns: true})
+		}
+	}
+
+	return out, nil
+}
+
+// groupTargets collapses one program's direct targets by (via, program id),
+// merging the map keys so a program reached through many slots (e.g. a
+// per-CPU CPUMAP) becomes a single entry with all keys.
+func groupTargets(targets []ProgTarget) []ReachableProgram {
+	type gk struct {
+		via string
+		id  uint32
+	}
+	var order []gk
+	byKey := map[gk]*ReachableProgram{}
+	for _, t := range targets {
+		k := gk{t.Via, t.ProgID}
+		g, ok := byKey[k]
+		if !ok {
+			g = &ReachableProgram{ProgID: t.ProgID, ProgName: t.ProgName, Via: t.Via}
+			byKey[k] = g
+			order = append(order, k)
+		}
+		g.Keys = append(g.Keys, t.Key)
+	}
+	out := make([]ReachableProgram, 0, len(order))
+	for _, k := range order {
+		g := byKey[k]
+		slices.Sort(g.Keys)
+		out = append(out, *g)
+	}
+	return out
 }
 
 // scanMapForPrograms extracts program targets from a single map, routing
