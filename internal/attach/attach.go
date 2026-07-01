@@ -192,7 +192,7 @@ func ListReachablePrograms(prog *ebpf.Program) ([]ProgTarget, error) {
 		found, err := scanMapForPrograms(m, mapID)
 		_ = m.Close()
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("scanning map %d: %w", mapID, err)
 		}
 		targets = append(targets, found...)
 	}
@@ -252,17 +252,17 @@ func scanProgArray(m *ebpf.Map, mapID ebpf.MapID) ([]ProgTarget, error) {
 // have a 4-byte value and carry no program.
 //
 // CPUMAP, DEVMAP and DEVMAP_HASH all use 4-byte u32 keys (the kernel
-// enforces key_size == 4). The key and value are read as raw byte
-// buffers sized from the map info and decoded explicitly, so an
-// unexpected key/value width can't silently truncate or misread.
+// enforces key_size == 4); any other key width is an unexpected layout we
+// don't decode. The value is read as a byte buffer sized from map info so
+// a shorter (pre-attached-program) layout carries no program.
 func scanRedirectMap(m *ebpf.Map, mapID ebpf.MapID, via string, keySize, valueSize uint32) ([]ProgTarget, error) {
 	const progIDOffset = 4
-	if keySize < 4 || valueSize < progIDOffset+4 {
+	if keySize != 4 || valueSize < progIDOffset+4 {
 		return nil, nil
 	}
 
 	var targets []ProgTarget
-	key := make([]byte, int(keySize))
+	var key uint32
 	val := make([]byte, int(valueSize))
 	iter := m.Iterate()
 	for iter.Next(&key, &val) {
@@ -270,8 +270,7 @@ func scanRedirectMap(m *ebpf.Map, mapID ebpf.MapID, via string, keySize, valueSi
 		if progID == 0 {
 			continue // entry has no attached program
 		}
-		mapKey := binary.NativeEndian.Uint32(key[:4])
-		t, err := resolveProgTarget(via, mapKey, progID)
+		t, err := resolveProgTarget(via, key, progID)
 		if err != nil {
 			return nil, err
 		}
