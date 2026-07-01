@@ -78,6 +78,59 @@ func TestMergeShardFiles(t *testing.T) {
 	}
 }
 
+// TestMergeShardFilesFexitPreservesAction verifies that in fexit mode the
+// merged base keeps each packet's per-action interface (xdp:PASS/DROP/...),
+// i.e. the source interface index survives the merge rather than collapsing
+// to interface 0.
+func TestMergeShardFilesFexitPreservesAction(t *testing.T) {
+	dir := t.TempDir()
+	base := filepath.Join(dir, "exit.pcap")
+	epoch := time.Unix(1700000000, 0).UTC()
+
+	// shard 0: two packets with actions 2 (PASS) and 1 (DROP).
+	w0, err := NewWriter(base+".cpu0", true) // isFexit
+	if err != nil {
+		t.Fatalf("NewWriter fexit: %v", err)
+	}
+	if err := w0.Write(capture.Packet{Timestamp: epoch.Add(1 * time.Second), Data: make([]byte, 20), Action: 2}); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if err := w0.Write(capture.Packet{Timestamp: epoch.Add(3 * time.Second), Data: make([]byte, 20), Action: 1}); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if err := w0.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	if err := MergeShardFiles(base, 1, true); err != nil {
+		t.Fatalf("MergeShardFiles fexit: %v", err)
+	}
+
+	f, err := os.Open(base)
+	if err != nil {
+		t.Fatalf("open merged: %v", err)
+	}
+	defer func() { _ = f.Close() }()
+	r, err := pcapgo.NewNgReader(f, pcapgo.DefaultNgReaderOptions)
+	if err != nil {
+		t.Fatalf("NgReader: %v", err)
+	}
+
+	var ifaces []int
+	for {
+		_, ci, err := r.ReadPacketData()
+		if err != nil {
+			break
+		}
+		ifaces = append(ifaces, ci.InterfaceIndex)
+	}
+	// interface index == action (identity map in initExitMode): 2 then 1.
+	want := []int{2, 1}
+	if len(ifaces) != len(want) || ifaces[0] != want[0] || ifaces[1] != want[1] {
+		t.Fatalf("merged interface indices = %v, want %v (action interface lost)", ifaces, want)
+	}
+}
+
 // TestMergeShardFilesEmpty verifies merging when no shard files exist
 // produces a valid (empty) pcap-ng rather than erroring.
 func TestMergeShardFilesEmpty(t *testing.T) {

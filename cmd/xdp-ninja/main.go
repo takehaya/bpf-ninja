@@ -568,7 +568,7 @@ func captureLoopSharded(cmd *cli.Command, inners []*ebpf.Map, isFexit bool, labe
 	// stdout (no -w) merges every shard into a single pcap-ng stream,
 	// serialized by sharedMu so no per-core packets are dropped. With -w
 	// each shard writes its own mutex-free .cpuN file (the high-throughput
-	// path); merge offline with mergecap.
+	// path); runCaptureLoop merges those into the base path after capture.
 	stdoutMerge := basePath == "" && !null
 
 	writers := make([]*output.Writer, len(inners))

@@ -16,9 +16,10 @@ import (
 )
 
 type mergeItem struct {
-	ts   time.Time
-	data []byte
-	idx  int // which shard reader to pull the next packet from
+	ts     time.Time
+	data   []byte
+	action uint32 // source interface index = XDP action (fexit); preserved on write
+	idx    int    // which shard reader to pull the next packet from
 }
 
 // mergeHeap is a min-heap on packet timestamp.
@@ -59,8 +60,10 @@ func MergeShardFiles(basePath string, numShards int, isFexit bool) error {
 		}
 		r, err := pcapgo.NewNgReader(f, pcapgo.DefaultNgReaderOptions)
 		if err != nil {
+			// A truncated / 0-byte shard (e.g. from a crash mid-write)
+			// shouldn't abort the whole merge — skip it, as documented.
 			_ = f.Close()
-			return fmt.Errorf("reading shard %s: %w", p, err)
+			continue
 		}
 		closers = append(closers, f)
 		readers = append(readers, r)
@@ -81,7 +84,10 @@ func MergeShardFiles(basePath string, numShards int, isFexit bool) error {
 
 	for h.Len() > 0 {
 		it := heap.Pop(h).(mergeItem)
-		if err := out.Write(capture.Packet{Timestamp: it.ts, Data: it.data}); err != nil {
+		// Action carries the source interface index so fexit merges keep
+		// the per-action interface (xdp:PASS/DROP/...); output.Writer maps
+		// action->interface identically to how the shards were written.
+		if err := out.Write(capture.Packet{Timestamp: it.ts, Data: it.data, Action: it.action}); err != nil {
 			return fmt.Errorf("writing merged packet: %w", err)
 		}
 		if next, ok := nextItem(readers[it.idx], it.idx); ok {
@@ -101,5 +107,5 @@ func nextItem(r *pcapgo.NgReader, idx int) (mergeItem, bool) {
 	}
 	cp := make([]byte, len(data))
 	copy(cp, data)
-	return mergeItem{ts: ci.Timestamp, data: cp, idx: idx}, true
+	return mergeItem{ts: ci.Timestamp, data: cp, action: uint32(ci.InterfaceIndex), idx: idx}, true
 }
