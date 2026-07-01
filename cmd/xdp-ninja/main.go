@@ -63,7 +63,7 @@ var flags = []cli.Flag{
 	},
 	&cli.BoolFlag{
 		Name:  "list-progs",
-		Usage: "list programs reachable from the target: tail calls + CPUMAP/DEVMAP redirect targets, then exit",
+		Usage: "list programs reachable from the target: tail calls + CPUMAP/DEVMAP/DEVMAP_HASH redirect targets (followed transitively), then exit",
 	},
 	&cli.StringSliceFlag{
 		Name:  "arg-filter",
@@ -371,17 +371,28 @@ func run(ctx context.Context, cmd *cli.Command) error {
 	defer func() { _ = info.Program.Close() }()
 
 	// --list-progs: show reachable programs (tail calls +
-	// CPUMAP/DEVMAP redirect targets), then exit
+	// CPUMAP/DEVMAP/DEVMAP_HASH redirect targets, followed
+	// transitively), then exit
 	if cmd.Bool("list-progs") {
 		fmt.Fprintf(os.Stderr, "id=%-6d %s\n", info.ProgID, info.FuncName)
 
-		targets, err := attach.ListReachablePrograms(info.Program)
+		progs, err := attach.WalkReachablePrograms(info.Program, info.ProgID)
 		if err != nil {
 			return err
 		}
-		for _, t := range targets {
-			fmt.Fprintf(os.Stderr, "id=%-6d %s (%s[%d])\n", t.ProgID, t.ProgName, t.Via, t.Key)
+		byParent := map[uint32][]attach.ReachableProgram{}
+		for _, p := range progs {
+			byParent[p.ParentID] = append(byParent[p.ParentID], p)
 		}
+		var printTree func(parent uint32, indent string)
+		printTree = func(parent uint32, indent string) {
+			for _, c := range byParent[parent] {
+				fmt.Fprintf(os.Stderr, "%sid=%-6d %s (%s[%s])\n",
+					indent, c.ProgID, c.ProgName, c.Via, formatKeyRanges(c.Keys))
+				printTree(c.ProgID, indent+"  ")
+			}
+		}
+		printTree(info.ProgID, "  ")
 		return nil
 	}
 
@@ -959,6 +970,32 @@ func loadProbe(isFexit bool, info *attach.ProgInfo, filterExpr string, argFilter
 	return program.LoadEntry(info.Program, info.FuncName, filterExpr, argFilters, useDSL)
 }
 
+
+// formatKeyRanges renders a sorted key list compactly, collapsing runs of
+// consecutive keys: [0,1,2,3] -> "0-3", [0,1,3,4,5] -> "0-1,3-5".
+func formatKeyRanges(keys []uint32) string {
+	if len(keys) == 0 {
+		return ""
+	}
+	rng := func(a, b uint32) string {
+		if a == b {
+			return fmt.Sprintf("%d", a)
+		}
+		return fmt.Sprintf("%d-%d", a, b)
+	}
+	var parts []string
+	start, prev := keys[0], keys[0]
+	for _, k := range keys[1:] {
+		if k == prev+1 {
+			prev = k
+			continue
+		}
+		parts = append(parts, rng(start, prev))
+		start, prev = k, k
+	}
+	parts = append(parts, rng(start, prev))
+	return strings.Join(parts, ",")
+}
 
 func logVerbose(cmd *cli.Command, format string, args ...any) {
 	if cmd.Bool("verbose") {
