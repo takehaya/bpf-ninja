@@ -2,6 +2,7 @@ package attach
 
 import (
 	"encoding/binary"
+	"net"
 	"strings"
 	"testing"
 
@@ -229,5 +230,83 @@ func TestListReachableProgramsCPUMap(t *testing.T) {
 	}
 	if found.Key != 0 {
 		t.Errorf("Key = %d, want 0", found.Key)
+	}
+}
+
+// loadDevMapProg loads an XDP program eligible to be attached to a DEVMAP
+// entry (expected_attach_type BPF_XDP_DEVMAP).
+func loadDevMapProg(t *testing.T) *ebpf.Program {
+	t.Helper()
+	testutil.SkipIfNotRoot(t)
+
+	spec, err := ebpf.LoadCollectionSpec(testutil.CompileBPFSource(t, testutil.XDPSubfuncSource))
+	if err != nil {
+		t.Fatalf("loading collection spec: %v", err)
+	}
+	spec.Programs["xdp_subfunc_test"].AttachType = ebpf.AttachXDPDevMap
+
+	var objs struct {
+		Prog *ebpf.Program `ebpf:"xdp_subfunc_test"`
+	}
+	if err := spec.LoadAndAssign(&objs, nil); err != nil {
+		t.Skipf("loading DEVMAP XDP program (kernel may lack BPF_XDP_DEVMAP): %v", err)
+	}
+	t.Cleanup(func() { _ = objs.Prog.Close() })
+	return objs.Prog
+}
+
+// TestScanRedirectMapDevMap verifies that a downstream XDP program attached
+// to a DEVMAP entry is discovered. The value layout (bpf_devmap_val) puts
+// the program id at the same offset 4 as CPUMAP; the entry targets the
+// loopback interface.
+func TestScanRedirectMapDevMap(t *testing.T) {
+	prog := loadDevMapProg(t)
+
+	progInfo, err := prog.Info()
+	if err != nil {
+		t.Fatalf("prog info: %v", err)
+	}
+	wantID, ok := progInfo.ID()
+	if !ok {
+		t.Fatal("program has no ID")
+	}
+
+	lo, err := net.InterfaceByName("lo")
+	if err != nil {
+		t.Skipf("looking up loopback: %v", err)
+	}
+
+	devmap, err := ebpf.NewMap(&ebpf.MapSpec{
+		Type:       ebpf.DevMap,
+		KeySize:    4,
+		ValueSize:  8,
+		MaxEntries: 1,
+	})
+	if err != nil {
+		t.Skipf("creating DEVMAP (kernel may lack support): %v", err)
+	}
+	t.Cleanup(func() { _ = devmap.Close() })
+
+	// value layout: struct bpf_devmap_val { u32 ifindex; u32 bpf_prog.fd }
+	val := make([]byte, 8)
+	binary.NativeEndian.PutUint32(val[0:4], uint32(lo.Index))
+	binary.NativeEndian.PutUint32(val[4:8], uint32(prog.FD()))
+	if err := devmap.Put(uint32(0), val); err != nil {
+		t.Skipf("populating DEVMAP with program (device may not support XDP): %v", err)
+	}
+
+	targets, err := scanMapForPrograms(devmap, 0)
+	if err != nil {
+		t.Fatalf("scanMapForPrograms: %v", err)
+	}
+	if len(targets) != 1 {
+		t.Fatalf("expected 1 target, got %d: %+v", len(targets), targets)
+	}
+	got := targets[0]
+	if got.Via != "devmap" {
+		t.Errorf("Via = %q, want devmap", got.Via)
+	}
+	if got.ProgID != uint32(wantID) {
+		t.Errorf("ProgID = %d, want %d", got.ProgID, uint32(wantID))
 	}
 }
