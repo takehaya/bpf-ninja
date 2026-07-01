@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.13.0](https://github.com/takehaya/xdp-ninja/compare/v0.12.0...v0.13.0) (2026-07-01)
+
+
+### 🎉 Features
+
+* **attach:** follow redirect/tail-call chains transitively in --list-progs ([#49](https://github.com/takehaya/xdp-ninja/issues/49)) ([b4e2f2a](https://github.com/takehaya/xdp-ninja/commit/b4e2f2a8afc452d2d2d3c27adca640e212eedc92))
+
 ## [0.12.0](https://github.com/takehaya/xdp-ninja/compare/v0.11.1...v0.12.0) (2026-07-01)
 
 
