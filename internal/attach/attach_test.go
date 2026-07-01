@@ -1,8 +1,13 @@
 package attach
 
 import (
+	"encoding/binary"
 	"strings"
 	"testing"
+
+	"github.com/cilium/ebpf"
+	"github.com/cilium/ebpf/asm"
+	"github.com/takehaya/xdp-ninja/internal/testutil"
 )
 
 func TestFindXDPProgramNoInterface(t *testing.T) {
@@ -50,5 +55,179 @@ func TestValidateSubfuncNotFound(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "process_packet") {
 		t.Errorf("error should list available functions, got: %v", err)
+	}
+}
+
+// loadCPUMapProg loads an XDP program eligible to be attached to a CPUMAP
+// entry (expected_attach_type BPF_XDP_CPUMAP).
+func loadCPUMapProg(t *testing.T) *ebpf.Program {
+	t.Helper()
+	testutil.SkipIfNotRoot(t)
+
+	spec, err := ebpf.LoadCollectionSpec(testutil.CompileBPFSource(t, testutil.XDPSubfuncSource))
+	if err != nil {
+		t.Fatalf("loading collection spec: %v", err)
+	}
+	spec.Programs["xdp_subfunc_test"].AttachType = ebpf.AttachXDPCPUMap
+
+	var objs struct {
+		Prog *ebpf.Program `ebpf:"xdp_subfunc_test"`
+	}
+	if err := spec.LoadAndAssign(&objs, nil); err != nil {
+		t.Skipf("loading CPUMAP XDP program (kernel may lack BPF_XDP_CPUMAP): %v", err)
+	}
+	t.Cleanup(func() { _ = objs.Prog.Close() })
+	return objs.Prog
+}
+
+// TestScanRedirectMapCPUMap verifies that a downstream XDP program
+// attached to a CPUMAP entry is discovered via the redirect_map path.
+func TestScanRedirectMapCPUMap(t *testing.T) {
+	prog := loadCPUMapProg(t)
+
+	progInfo, err := prog.Info()
+	if err != nil {
+		t.Fatalf("prog info: %v", err)
+	}
+	wantID, ok := progInfo.ID()
+	if !ok {
+		t.Fatal("program has no ID")
+	}
+
+	// value layout: struct bpf_cpumap_val { u32 qsize; u32 bpf_prog.fd }
+	cpumap, err := ebpf.NewMap(&ebpf.MapSpec{
+		Type:       ebpf.CPUMap,
+		KeySize:    4,
+		ValueSize:  8,
+		MaxEntries: 1,
+	})
+	if err != nil {
+		t.Skipf("creating CPUMAP (kernel may lack support): %v", err)
+	}
+	t.Cleanup(func() { _ = cpumap.Close() })
+
+	val := make([]byte, 8)
+	binary.NativeEndian.PutUint32(val[0:4], 192) // qsize
+	binary.NativeEndian.PutUint32(val[4:8], uint32(prog.FD()))
+	if err := cpumap.Put(uint32(0), val); err != nil {
+		t.Skipf("populating CPUMAP with program (kernel may lack support): %v", err)
+	}
+
+	targets, err := scanMapForPrograms(cpumap, 0)
+	if err != nil {
+		t.Fatalf("scanMapForPrograms: %v", err)
+	}
+	if len(targets) != 1 {
+		t.Fatalf("expected 1 target, got %d: %+v", len(targets), targets)
+	}
+	got := targets[0]
+	if got.Via != "cpumap" {
+		t.Errorf("Via = %q, want cpumap", got.Via)
+	}
+	if got.Key != 0 {
+		t.Errorf("Key = %d, want 0", got.Key)
+	}
+	if got.ProgID != uint32(wantID) {
+		t.Errorf("ProgID = %d, want %d", got.ProgID, uint32(wantID))
+	}
+}
+
+// TestScanRedirectMapSkipsEmptyEntry verifies that a CPUMAP entry with no
+// attached program (prog id 0) yields no target.
+func TestScanRedirectMapSkipsEmptyEntry(t *testing.T) {
+	testutil.SkipIfNotRoot(t)
+
+	cpumap, err := ebpf.NewMap(&ebpf.MapSpec{
+		Type:       ebpf.CPUMap,
+		KeySize:    4,
+		ValueSize:  8,
+		MaxEntries: 1,
+	})
+	if err != nil {
+		t.Skipf("creating CPUMAP (kernel may lack support): %v", err)
+	}
+	t.Cleanup(func() { _ = cpumap.Close() })
+
+	val := make([]byte, 8)
+	binary.NativeEndian.PutUint32(val[0:4], 192) // qsize, no program
+	if err := cpumap.Put(uint32(0), val); err != nil {
+		t.Skipf("populating CPUMAP: %v", err)
+	}
+
+	targets, err := scanMapForPrograms(cpumap, 0)
+	if err != nil {
+		t.Fatalf("scanMapForPrograms: %v", err)
+	}
+	if len(targets) != 0 {
+		t.Fatalf("expected 0 targets for empty entry, got %d: %+v", len(targets), targets)
+	}
+}
+
+// TestListReachableProgramsCPUMap exercises the full discovery path: a
+// dispatcher XDP program references a CPUMAP, and ListReachablePrograms
+// walks prog.Info().MapIDs() to surface the downstream program attached
+// to that CPUMAP entry.
+func TestListReachableProgramsCPUMap(t *testing.T) {
+	down := loadCPUMapProg(t)
+	downInfo, err := down.Info()
+	if err != nil {
+		t.Fatalf("downstream prog info: %v", err)
+	}
+	wantID, ok := downInfo.ID()
+	if !ok {
+		t.Fatal("downstream program has no ID")
+	}
+
+	cpumap, err := ebpf.NewMap(&ebpf.MapSpec{
+		Type:       ebpf.CPUMap,
+		KeySize:    4,
+		ValueSize:  8,
+		MaxEntries: 1,
+	})
+	if err != nil {
+		t.Skipf("creating CPUMAP (kernel may lack support): %v", err)
+	}
+	t.Cleanup(func() { _ = cpumap.Close() })
+
+	val := make([]byte, 8)
+	binary.NativeEndian.PutUint32(val[0:4], 192) // qsize
+	binary.NativeEndian.PutUint32(val[4:8], uint32(down.FD()))
+	if err := cpumap.Put(uint32(0), val); err != nil {
+		t.Skipf("populating CPUMAP with program: %v", err)
+	}
+
+	// Minimal dispatcher: load the CPUMAP pointer (creating the used_map
+	// relationship that surfaces it in MapIDs), then XDP_PASS.
+	dispatcher, err := ebpf.NewProgram(&ebpf.ProgramSpec{
+		Type: ebpf.XDP,
+		Instructions: asm.Instructions{
+			asm.LoadMapPtr(asm.R1, cpumap.FD()),
+			asm.Mov.Imm(asm.R0, 2), // XDP_PASS
+			asm.Return(),
+		},
+		License: "GPL",
+	})
+	if err != nil {
+		t.Fatalf("loading dispatcher program: %v", err)
+	}
+	t.Cleanup(func() { _ = dispatcher.Close() })
+
+	targets, err := ListReachablePrograms(dispatcher)
+	if err != nil {
+		t.Fatalf("ListReachablePrograms: %v", err)
+	}
+
+	var found *ProgTarget
+	for i := range targets {
+		if targets[i].Via == "cpumap" && targets[i].ProgID == uint32(wantID) {
+			found = &targets[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("downstream cpumap program (id=%d) not discovered; got %+v", uint32(wantID), targets)
+	}
+	if found.Key != 0 {
+		t.Errorf("Key = %d, want 0", found.Key)
 	}
 }

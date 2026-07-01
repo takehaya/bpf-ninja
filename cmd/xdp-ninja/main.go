@@ -63,7 +63,7 @@ var flags = []cli.Flag{
 	},
 	&cli.BoolFlag{
 		Name:  "list-progs",
-		Usage: "list tail call targets reachable from the target program and exit",
+		Usage: "list programs reachable from the target: tail calls + CPUMAP/DEVMAP redirect targets, then exit",
 	},
 	&cli.StringSliceFlag{
 		Name:  "arg-filter",
@@ -374,12 +374,12 @@ func run(ctx context.Context, cmd *cli.Command) error {
 	if cmd.Bool("list-progs") {
 		fmt.Fprintf(os.Stderr, "id=%-6d %s\n", info.ProgID, info.FuncName)
 
-		targets, err := attach.ListTailCallTargets(info.Program)
+		targets, err := attach.ListReachablePrograms(info.Program)
 		if err != nil {
 			return err
 		}
 		for _, t := range targets {
-			fmt.Fprintf(os.Stderr, "id=%-6d %s (tailcall[%d])\n", t.ProgID, t.ProgName, t.Index)
+			fmt.Fprintf(os.Stderr, "id=%-6d %s (%s[%d])\n", t.ProgID, t.ProgName, t.Via, t.Key)
 		}
 		return nil
 	}

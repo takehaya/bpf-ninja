@@ -2,6 +2,7 @@
 package attach
 
 import (
+	"encoding/binary"
 	"fmt"
 	"strings"
 
@@ -156,16 +157,21 @@ func FindXDPProgram(ifaceName string) (*ProgInfo, error) {
 	}, nil
 }
 
-// TailCallTarget holds information about a program in a PROG_ARRAY map.
-type TailCallTarget struct {
-	Index    uint32
+// ProgTarget describes a program reachable from another program: a
+// tail-call target in a PROG_ARRAY, or an XDP program attached to a
+// CPUMAP / DEVMAP entry the program can bpf_redirect_map() into.
+type ProgTarget struct {
+	Via      string // "tailcall", "cpumap", "devmap", or "devmap_hash"
+	Key      uint32 // map key: tail-call index, CPU id, or devmap key
 	ProgID   uint32
 	ProgName string
 }
 
-// ListTailCallTargets finds all tail call targets reachable from the given program
-// by scanning its PROG_ARRAY maps.
-func ListTailCallTargets(prog *ebpf.Program) ([]TailCallTarget, error) {
+// ListReachablePrograms scans the maps referenced by prog for downstream
+// programs: tail-call targets in PROG_ARRAY maps, plus XDP programs
+// attached to CPUMAP / DEVMAP / DEVMAP_HASH entries (the redirect_map
+// datapath). Entries without an attached program are skipped.
+func ListReachablePrograms(prog *ebpf.Program) ([]ProgTarget, error) {
 	info, err := prog.Info()
 	if err != nil {
 		return nil, fmt.Errorf("getting program info: %w", err)
@@ -176,56 +182,116 @@ func ListTailCallTargets(prog *ebpf.Program) ([]TailCallTarget, error) {
 		return nil, nil
 	}
 
-	var targets []TailCallTarget
+	var targets []ProgTarget
 	for _, mapID := range mapIDs {
 		m, err := ebpf.NewMapFromID(mapID)
 		if err != nil {
 			return nil, fmt.Errorf("opening map %d: %w", mapID, err)
 		}
 
-		mapInfo, err := m.Info()
-		if err != nil {
-			_ = m.Close()
-			return nil, fmt.Errorf("getting map %d info: %w", mapID, err)
-		}
-		if mapInfo.Type != ebpf.ProgramArray {
-			_ = m.Close()
-			continue
-		}
-
-		// Iterate PROG_ARRAY entries
-		var key, val uint32
-		iter := m.Iterate()
-		for iter.Next(&key, &val) {
-			progID := val
-			targetProg, err := ebpf.NewProgramFromID(ebpf.ProgramID(progID))
-			if err != nil {
-				_ = m.Close()
-				return nil, fmt.Errorf("opening tail call target (id=%d): %w", progID, err)
-			}
-
-			targetInfo, err := targetProg.Info()
-			if err != nil {
-				_ = targetProg.Close()
-				_ = m.Close()
-				return nil, fmt.Errorf("getting tail call target info (id=%d): %w", progID, err)
-			}
-
-			targets = append(targets, TailCallTarget{
-				Index:    key,
-				ProgID:   progID,
-				ProgName: targetInfo.Name,
-			})
-			_ = targetProg.Close()
-		}
-		if err := iter.Err(); err != nil {
-			_ = m.Close()
-			return nil, fmt.Errorf("iterating program array map %d: %w", mapID, err)
-		}
+		found, err := scanMapForPrograms(m, mapID)
 		_ = m.Close()
+		if err != nil {
+			return nil, err
+		}
+		targets = append(targets, found...)
 	}
 
 	return targets, nil
+}
+
+// scanMapForPrograms extracts program targets from a single map, routing
+// on its type. Non-dispatch maps yield nothing.
+func scanMapForPrograms(m *ebpf.Map, mapID ebpf.MapID) ([]ProgTarget, error) {
+	mapInfo, err := m.Info()
+	if err != nil {
+		return nil, fmt.Errorf("getting map %d info: %w", mapID, err)
+	}
+
+	switch mapInfo.Type {
+	case ebpf.ProgramArray:
+		return scanProgArray(m, mapID)
+	case ebpf.CPUMap:
+		return scanRedirectMap(m, mapID, "cpumap", mapInfo.ValueSize)
+	case ebpf.DevMap:
+		return scanRedirectMap(m, mapID, "devmap", mapInfo.ValueSize)
+	case ebpf.DevMapHash:
+		return scanRedirectMap(m, mapID, "devmap_hash", mapInfo.ValueSize)
+	default:
+		return nil, nil
+	}
+}
+
+// scanProgArray reads tail-call targets from a PROG_ARRAY. Values are the
+// target program IDs.
+func scanProgArray(m *ebpf.Map, mapID ebpf.MapID) ([]ProgTarget, error) {
+	var targets []ProgTarget
+	var key, val uint32
+	iter := m.Iterate()
+	for iter.Next(&key, &val) {
+		t, err := resolveProgTarget("tailcall", key, val)
+		if err != nil {
+			return nil, err
+		}
+		targets = append(targets, *t)
+	}
+	if err := iter.Err(); err != nil {
+		return nil, fmt.Errorf("iterating program array map %d: %w", mapID, err)
+	}
+	return targets, nil
+}
+
+// scanRedirectMap reads the downstream XDP program attached to each
+// CPUMAP / DEVMAP entry. Both bpf_cpumap_val and bpf_devmap_val lay out
+// the attached program id as the u32 at offset 4 (a union bpf_prog after
+// a leading u32 qsize / ifindex). Maps created before that field existed
+// have a 4-byte value and carry no program.
+func scanRedirectMap(m *ebpf.Map, mapID ebpf.MapID, via string, valueSize uint32) ([]ProgTarget, error) {
+	const progIDOffset = 4
+	if valueSize < progIDOffset+4 {
+		return nil, nil
+	}
+
+	var targets []ProgTarget
+	var key uint32
+	val := make([]byte, valueSize)
+	iter := m.Iterate()
+	for iter.Next(&key, &val) {
+		progID := binary.NativeEndian.Uint32(val[progIDOffset : progIDOffset+4])
+		if progID == 0 {
+			continue // entry has no attached program
+		}
+		t, err := resolveProgTarget(via, key, progID)
+		if err != nil {
+			return nil, err
+		}
+		targets = append(targets, *t)
+	}
+	if err := iter.Err(); err != nil {
+		return nil, fmt.Errorf("iterating %s map %d: %w", via, mapID, err)
+	}
+	return targets, nil
+}
+
+// resolveProgTarget opens the target program to read its name.
+func resolveProgTarget(via string, key, progID uint32) (*ProgTarget, error) {
+	targetProg, err := ebpf.NewProgramFromID(ebpf.ProgramID(progID))
+	if err != nil {
+		return nil, fmt.Errorf("opening %s target (id=%d): %w", via, progID, err)
+	}
+	defer func() { _ = targetProg.Close() }()
+
+	targetInfo, err := targetProg.Info()
+	if err != nil {
+		return nil, fmt.Errorf("getting %s target info (id=%d): %w", via, progID, err)
+	}
+
+	return &ProgTarget{
+		Via:      via,
+		Key:      key,
+		ProgID:   progID,
+		ProgName: targetInfo.Name,
+	}, nil
 }
 
 // FuncInfo holds metadata about a BTF function in a BPF program.
