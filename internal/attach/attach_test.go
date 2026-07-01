@@ -2,6 +2,7 @@ package attach
 
 import (
 	"encoding/binary"
+	"fmt"
 	"net"
 	"strings"
 	"testing"
@@ -552,5 +553,108 @@ func TestWalkReachableProgramsTransitive(t *testing.T) {
 	}
 	if l.Via != "tailcall" || l.Depth != 2 || l.ParentID != uint32(midID) {
 		t.Errorf("leaf edge = %+v, want via=tailcall depth=2 parent=%d", l, uint32(midID))
+	}
+}
+
+// tailProgVia builds a tiny XDP program that references map m (so m shows
+// up in its MapIDs), used to chain tail-call stages in tests.
+func tailProgVia(t *testing.T, name string, m *ebpf.Map) *ebpf.Program {
+	t.Helper()
+	p, err := ebpf.NewProgram(&ebpf.ProgramSpec{
+		Name: name,
+		Type: ebpf.XDP,
+		Instructions: asm.Instructions{
+			asm.LoadMapPtr(asm.R1, m.FD()),
+			asm.Mov.Imm(asm.R0, 2),
+			asm.Return(),
+		},
+		License: "GPL",
+	})
+	if err != nil {
+		t.Fatalf("prog %s: %v", name, err)
+	}
+	t.Cleanup(func() { _ = p.Close() })
+	return p
+}
+
+func newProgArray(t *testing.T) *ebpf.Map {
+	t.Helper()
+	m, err := ebpf.NewMap(&ebpf.MapSpec{
+		Type: ebpf.ProgramArray, KeySize: 4, ValueSize: 4, MaxEntries: 4,
+	})
+	if err != nil {
+		t.Skipf("prog array: %v", err)
+	}
+	t.Cleanup(func() { _ = m.Close() })
+	return m
+}
+
+// TestWalkReachableProgramsDeepChain proves the walk has no depth cap: a
+// 5-stage tail-call chain (root -> p1 -> p2 -> p3 -> p4 -> p5) is fully
+// discovered, each at the expected depth.
+func TestWalkReachableProgramsDeepChain(t *testing.T) {
+	testutil.SkipIfNotRoot(t)
+
+	const stages = 5
+
+	// Build from the leaf backwards so each stage can reference the map
+	// holding the already-loaded next stage.
+	leafArray := newProgArray(t)
+	leaf, err := ebpf.NewProgram(&ebpf.ProgramSpec{
+		Name:         "stage5",
+		Type:         ebpf.XDP,
+		Instructions: asm.Instructions{asm.Mov.Imm(asm.R0, 2), asm.Return()},
+		License:      "GPL",
+	})
+	if err != nil {
+		t.Fatalf("leaf: %v", err)
+	}
+	t.Cleanup(func() { _ = leaf.Close() })
+	if err := leafArray.Put(uint32(0), uint32(leaf.FD())); err != nil {
+		t.Skipf("leaf array put: %v", err)
+	}
+
+	// wantDepth[progID] = expected depth from root.
+	wantDepth := map[uint32]int{}
+	li, _ := leaf.Info()
+	if id, ok := li.ID(); ok {
+		wantDepth[uint32(id)] = stages
+	}
+
+	// next stage references the current stage's array; wire successively.
+	curArray := leafArray
+	for s := stages - 1; s >= 1; s-- {
+		prog := tailProgVia(t, fmt.Sprintf("stage%d", s), curArray)
+		pi, _ := prog.Info()
+		if id, ok := pi.ID(); ok {
+			wantDepth[uint32(id)] = s
+		}
+		arr := newProgArray(t)
+		if err := arr.Put(uint32(1), uint32(prog.FD())); err != nil {
+			t.Skipf("stage%d array put: %v", s, err)
+		}
+		curArray = arr
+	}
+
+	root := tailProgVia(t, "stage0_root", curArray)
+	ri, _ := root.Info()
+	rootID, _ := ri.ID()
+
+	progs, err := WalkReachablePrograms(root, uint32(rootID))
+	if err != nil {
+		t.Fatalf("WalkReachablePrograms: %v", err)
+	}
+
+	gotDepth := map[uint32]int{}
+	for _, p := range progs {
+		gotDepth[p.ProgID] = p.Depth
+	}
+	if len(gotDepth) != stages {
+		t.Fatalf("discovered %d programs, want %d: %+v", len(gotDepth), stages, progs)
+	}
+	for id, want := range wantDepth {
+		if gotDepth[id] != want {
+			t.Errorf("prog id=%d depth = %d, want %d", id, gotDepth[id], want)
+		}
 	}
 }
