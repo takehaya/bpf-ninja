@@ -13,6 +13,7 @@ import (
 	"github.com/cloudflare/cbpfc"
 	"github.com/google/gopacket/layers"
 	"github.com/google/gopacket/pcap"
+	"github.com/takehaya/xdp-ninja/internal/attach"
 	"github.com/takehaya/xdp-ninja/internal/filter"
 	"github.com/takehaya/xdp-ninja/pkg/kunai"
 	"github.com/takehaya/xdp-ninja/pkg/kunai/codegen"
@@ -27,9 +28,16 @@ type Probe struct {
 	InnerMaps []*ebpf.Map // non-nil only in per-CPU sharded mode
 	IsFexit   bool
 	Warnings  []string // resolver / codegen non-fatal notices; CLI prints to stderr
-	maps      []*ebpf.Map
-	prog      *ebpf.Program
-	link      link.Link
+
+	// --arg-echo diagnostic mode: non-nil EchoRing means this probe emits
+	// the target function's integer args (EchoParams, in order) to a
+	// dedicated ringbuf instead of capturing packets.
+	EchoRing   *ebpf.Map
+	EchoParams []attach.FuncParamInfo
+
+	maps []*ebpf.Map
+	prog *ebpf.Program
+	link link.Link
 }
 
 // Program returns the underlying tracing program. Exposed so that

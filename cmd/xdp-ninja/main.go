@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/binary"
 	"fmt"
 	"os"
 	"os/signal"
@@ -19,6 +20,7 @@ import (
 
 	"github.com/takehaya/xdp-ninja/internal/attach"
 	"github.com/takehaya/xdp-ninja/internal/capture"
+	"github.com/takehaya/xdp-ninja/internal/capture/fastrb"
 	"github.com/takehaya/xdp-ninja/internal/filter"
 	"github.com/takehaya/xdp-ninja/internal/output"
 	"github.com/takehaya/xdp-ninja/internal/program"
@@ -72,6 +74,10 @@ var flags = []cli.Flag{
 	&cli.BoolFlag{
 		Name:  "list-params",
 		Usage: "list filterable parameters for the target function (requires --func) and exit",
+	},
+	&cli.BoolFlag{
+		Name:  "arg-echo",
+		Usage: "diagnostic: print the target function's integer args for each call (gated by --arg-filter if set) instead of capturing packets; requires --func; combine with -c N to stop after N",
 	},
 	&cli.BoolFlag{
 		Name:  "cbpf",
@@ -412,7 +418,7 @@ func run(ctx context.Context, cmd *cli.Command) error {
 	// --func: override target function name.
 	// Open BTF once and share across validation and parameter extraction.
 	funcName := cmd.String("func")
-	needParams := cmd.Bool("list-params") || len(cmd.StringSlice("arg-filter")) > 0
+	needParams := cmd.Bool("list-params") || len(cmd.StringSlice("arg-filter")) > 0 || cmd.Bool("arg-echo")
 	var params []attach.FuncParamInfo
 	if funcName != "" {
 		spec, err := attach.BTFSpec(info.Program)
@@ -434,6 +440,9 @@ func run(ctx context.Context, cmd *cli.Command) error {
 	} else if needParams {
 		if cmd.Bool("list-params") {
 			return fmt.Errorf("--list-params requires --func")
+		}
+		if cmd.Bool("arg-echo") {
+			return fmt.Errorf("--arg-echo requires --func")
 		}
 		return fmt.Errorf("--arg-filter requires --func")
 	}
@@ -467,6 +476,18 @@ func run(ctx context.Context, cmd *cli.Command) error {
 		}
 	}
 
+	// --arg-echo: emit the function's integer args instead of capturing
+	// packets. Reuses the parsed argFilters as a gate and the resolved
+	// integer params as the echo set.
+	if cmd.Bool("arg-echo") {
+		probe, err := program.LoadArgEcho(info.Program, info.FuncName, argFilters, params, isFexit)
+		if err != nil {
+			return err
+		}
+		printProbeWarnings(probe)
+		return runArgEchoLoop(cmd, probe, info.FuncName)
+	}
+
 	filterExpr := strings.Join(cmd.Args().Slice(), " ")
 	logVerbose(cmd, "found XDP program %q (id=%d)", info.FuncName, info.ProgID)
 	if filterExpr != "" {
@@ -488,6 +509,104 @@ func run(ctx context.Context, cmd *cli.Command) error {
 		label = fmt.Sprintf("%s on %s", label, info.IfaceName)
 	}
 	return runCaptureLoop(cmd, probe, isFexit, fmt.Sprintf("%s, mode=%s", label, mode))
+}
+
+// runArgEchoLoop reads the probe's dedicated arg-echo ringbuf and prints
+// one line per matched call, collapsing runs of identical arg tuples into
+// a single "(xN)" line. Honors -c/--count (0 = until SIGINT).
+func runArgEchoLoop(cmd *cli.Command, probe *program.Probe, funcName string) error {
+	defer func() {
+		if cerr := probe.Close(); cerr != nil {
+			fmt.Fprintf(os.Stderr, "warning: closing probe: %v\n", cerr)
+		}
+	}()
+
+	// Use the in-tree fastrb reader (mmap + epoll) rather than
+	// cilium/ebpf's ringbuf.Reader, consistent with the capture path.
+	rd, err := fastrb.New(probe.EchoRing.FD(), program.EchoRingSize)
+	if err != nil {
+		return fmt.Errorf("opening arg-echo ringbuf: %w", err)
+	}
+	defer func() { _ = rd.Close() }()
+
+	var stopped atomic.Bool
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		<-sigCh
+		stopped.Store(true)
+	}()
+
+	count := int64(cmd.Int("count"))
+	params := probe.EchoParams
+	recSize := len(params) * 8
+
+	fmt.Fprintf(os.Stderr, "arg-echo on %s (%d param(s)); Ctrl-C to stop\n", funcName, len(params))
+
+	var seen int64
+	var lastLine string
+	var repeat int
+	flush := func() {
+		if repeat == 0 {
+			return
+		}
+		if repeat > 1 {
+			fmt.Fprintf(os.Stderr, "%s (x%d)\n", lastLine, repeat)
+		} else {
+			fmt.Fprintln(os.Stderr, lastLine)
+		}
+		repeat = 0
+	}
+
+	for !stopped.Load() {
+		// Short timeout so a Ctrl-C between records is noticed promptly.
+		n, werr := rd.WaitForData(250)
+		if werr != nil {
+			return fmt.Errorf("waiting on arg-echo ringbuf: %w", werr)
+		}
+		if n == 0 {
+			continue // timeout, re-check stop flag
+		}
+		reachedCount := false
+		rd.ReadBatch(func(rec []byte) {
+			if reachedCount || len(rec) < recSize {
+				return
+			}
+			line := formatEchoArgs(funcName, params, rec)
+			if repeat > 0 && line == lastLine {
+				repeat++
+			} else {
+				flush()
+				lastLine = line
+				repeat = 1
+			}
+			seen++
+			if count > 0 && seen >= count {
+				reachedCount = true
+			}
+		})
+		if reachedCount {
+			break
+		}
+	}
+	flush()
+	return nil
+}
+
+// formatEchoArgs renders one echo record as "func: name=DEC (0xHEX) ...".
+func formatEchoArgs(funcName string, params []attach.FuncParamInfo, raw []byte) string {
+	var b strings.Builder
+	b.WriteString(funcName)
+	b.WriteByte(':')
+	for i, p := range params {
+		v := binary.NativeEndian.Uint64(raw[i*8 : i*8+8])
+		if p.Signed {
+			fmt.Fprintf(&b, " %s=%d (0x%x)", p.Name, int64(v), v)
+		} else {
+			fmt.Fprintf(&b, " %s=%d (0x%x)", p.Name, v, v)
+		}
+	}
+	return b.String()
 }
 
 // printProbeWarnings drains non-fatal resolver / codegen notices the
@@ -530,15 +649,28 @@ func runCaptureLoop(cmd *cli.Command, probe *program.Probe, isFexit bool, label 
 	if len(probe.InnerMaps) == 0 {
 		return fmt.Errorf("probe has no inner ringbufs — sharded ringbuf hoist (R22) should populate them for every attach mode")
 	}
-	// Create a base-path SHB-only marker file when -w is set, so
-	// downstream tools that expect a single file at that path see a
-	// readable pcap-ng even though packets land in per-CPU shards.
-	writer, err := output.NewWriter(cmd.String("write"), isFexit)
-	if err != nil {
+	if err := captureLoopSharded(cmd, probe.InnerMaps, isFexit, label); err != nil {
 		return err
 	}
-	_ = writer.Close()
-	return captureLoopSharded(cmd, probe.InnerMaps, isFexit, label)
+
+	// After capture, merge the per-CPU shard files into a single
+	// time-ordered pcap-ng at the base path, so `-w out.pcap` yields one
+	// ready-to-use file (the .cpuN shards are left in place). Only the
+	// normal pcap path produces shard files; --raw-dump has its own
+	// offline `convert`, --null-output writes nothing, and stdout is
+	// already a single merged stream.
+	basePath := cmd.String("write")
+	if basePath != "" && !cmd.Bool("raw-dump") && !cmd.Bool("null-output") {
+		// captureLoopSharded returns on Ctrl-C (or -c). Announce the
+		// post-capture merge so the pause isn't mistaken for a hang.
+		fmt.Fprintf(os.Stderr, "merging %d shard(s) into %s ...\n", len(probe.InnerMaps), basePath)
+		if err := output.MergeShardFiles(basePath, len(probe.InnerMaps), isFexit); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: merging shards into %s: %v\n", basePath, err)
+		} else {
+			fmt.Fprintf(os.Stderr, "merged into %s (per-CPU .cpuN kept)\n", basePath)
+		}
+	}
+	return nil
 }
 
 // captureLoopSharded: per-CPU shard goroutines, each writes to its
@@ -552,28 +684,39 @@ func captureLoopSharded(cmd *cli.Command, inners []*ebpf.Map, isFexit bool, labe
 		return captureLoopShardedRaw(cmd, inners, label, basePath)
 	}
 
+	// stdout (no -w) merges every shard into a single pcap-ng stream,
+	// serialized by sharedMu so no per-core packets are dropped. With -w
+	// each shard writes its own mutex-free .cpuN file (the high-throughput
+	// path); merge offline with mergecap.
+	stdoutMerge := basePath == "" && !null
+
 	writers := make([]*output.Writer, len(inners))
+	var sharedW *output.Writer
+	var sharedMu sync.Mutex
 	if !null {
-		for i := range inners {
-			var path string
-			if basePath != "" {
-				path = fmt.Sprintf("%s.cpu%d", basePath, i)
-			} else if i > 0 {
-				continue
-			}
-			w, err := output.NewWriter(path, isFexit)
+		if stdoutMerge {
+			w, err := output.NewWriter("", isFexit)
 			if err != nil {
-				return fmt.Errorf("opening per-CPU writer %d: %w", i, err)
+				return fmt.Errorf("opening stdout writer: %w", err)
 			}
-			writers[i] = w
-		}
-		defer func() {
-			for _, w := range writers {
-				if w != nil {
-					_ = w.Close()
+			sharedW = w
+			defer func() { _ = sharedW.Close() }()
+		} else {
+			for i := range inners {
+				w, err := output.NewWriter(fmt.Sprintf("%s.cpu%d", basePath, i), isFexit)
+				if err != nil {
+					return fmt.Errorf("opening per-CPU writer %d: %w", i, err)
 				}
+				writers[i] = w
 			}
-		}()
+			defer func() {
+				for _, w := range writers {
+					if w != nil {
+						_ = w.Close()
+					}
+				}
+			}()
+		}
 	}
 
 	fastReader := cmd.Bool("fast-reader")
@@ -586,11 +729,19 @@ func captureLoopSharded(cmd *cli.Command, inners []*ebpf.Map, isFexit bool, labe
 		if count > 0 && captured.Load() >= count {
 			return nil
 		}
-		if !null && writers[shardIdx] != nil {
-			if err := writers[shardIdx].WriteBatch(pkts); err != nil {
+		if !null {
+			var werr error
+			if sharedW != nil {
+				sharedMu.Lock()
+				werr = sharedW.WriteBatch(pkts)
+				sharedMu.Unlock()
+			} else if writers[shardIdx] != nil {
+				werr = writers[shardIdx].WriteBatch(pkts)
+			}
+			if werr != nil {
 				writeErrCount.Add(1)
 				if firstWriteErr.Load() == nil {
-					msg := fmt.Sprintf("shard %d: %v", shardIdx, err)
+					msg := fmt.Sprintf("shard %d: %v", shardIdx, werr)
 					firstWriteErr.CompareAndSwap(nil, &msg)
 				}
 			}
