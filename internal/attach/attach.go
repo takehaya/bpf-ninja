@@ -184,13 +184,14 @@ func ListReachablePrograms(prog *ebpf.Program) ([]ProgTarget, error) {
 	}
 
 	var targets []ProgTarget
+	cache := progNameCache{}
 	for _, mapID := range mapIDs {
 		m, err := ebpf.NewMapFromID(mapID)
 		if err != nil {
 			return nil, fmt.Errorf("opening map %d: %w", mapID, err)
 		}
 
-		found, err := scanMapForPrograms(m, mapID)
+		found, err := scanMapForPrograms(m, mapID, cache)
 		_ = m.Close()
 		if err != nil {
 			return nil, fmt.Errorf("scanning map %d: %w", mapID, err)
@@ -297,7 +298,7 @@ func groupTargets(targets []ProgTarget) []ReachableProgram {
 
 // scanMapForPrograms extracts program targets from a single map, routing
 // on its type. Non-dispatch maps yield nothing.
-func scanMapForPrograms(m *ebpf.Map, mapID ebpf.MapID) ([]ProgTarget, error) {
+func scanMapForPrograms(m *ebpf.Map, mapID ebpf.MapID, cache progNameCache) ([]ProgTarget, error) {
 	mapInfo, err := m.Info()
 	if err != nil {
 		return nil, fmt.Errorf("getting map %d info: %w", mapID, err)
@@ -305,13 +306,13 @@ func scanMapForPrograms(m *ebpf.Map, mapID ebpf.MapID) ([]ProgTarget, error) {
 
 	switch mapInfo.Type {
 	case ebpf.ProgramArray:
-		return scanProgArray(m, mapID)
+		return scanProgArray(m, mapID, cache)
 	case ebpf.CPUMap:
-		return scanRedirectMap(m, mapID, "cpumap", mapInfo.KeySize, mapInfo.ValueSize)
+		return scanRedirectMap(m, mapID, "cpumap", mapInfo.KeySize, mapInfo.ValueSize, cache)
 	case ebpf.DevMap:
-		return scanRedirectMap(m, mapID, "devmap", mapInfo.KeySize, mapInfo.ValueSize)
+		return scanRedirectMap(m, mapID, "devmap", mapInfo.KeySize, mapInfo.ValueSize, cache)
 	case ebpf.DevMapHash:
-		return scanRedirectMap(m, mapID, "devmap_hash", mapInfo.KeySize, mapInfo.ValueSize)
+		return scanRedirectMap(m, mapID, "devmap_hash", mapInfo.KeySize, mapInfo.ValueSize, cache)
 	default:
 		return nil, nil
 	}
@@ -320,7 +321,7 @@ func scanMapForPrograms(m *ebpf.Map, mapID ebpf.MapID) ([]ProgTarget, error) {
 // scanProgArray reads tail-call targets from a PROG_ARRAY. Values are the
 // target program IDs. Array-backed maps enumerate every slot, so unset
 // entries surface as id 0 and are skipped.
-func scanProgArray(m *ebpf.Map, mapID ebpf.MapID) ([]ProgTarget, error) {
+func scanProgArray(m *ebpf.Map, mapID ebpf.MapID, cache progNameCache) ([]ProgTarget, error) {
 	var targets []ProgTarget
 	var key, val uint32
 	iter := m.Iterate()
@@ -328,7 +329,7 @@ func scanProgArray(m *ebpf.Map, mapID ebpf.MapID) ([]ProgTarget, error) {
 		if val == 0 {
 			continue // empty tail-call slot
 		}
-		t, err := resolveProgTarget("tailcall", key, val)
+		t, err := resolveProgTarget("tailcall", key, val, cache)
 		if err != nil {
 			return nil, err
 		}
@@ -350,7 +351,7 @@ func scanProgArray(m *ebpf.Map, mapID ebpf.MapID) ([]ProgTarget, error) {
 // enforces key_size == 4); any other key width is an unexpected layout we
 // don't decode. The value is read as a byte buffer sized from map info so
 // a shorter (pre-attached-program) layout carries no program.
-func scanRedirectMap(m *ebpf.Map, mapID ebpf.MapID, via string, keySize, valueSize uint32) ([]ProgTarget, error) {
+func scanRedirectMap(m *ebpf.Map, mapID ebpf.MapID, via string, keySize, valueSize uint32, cache progNameCache) ([]ProgTarget, error) {
 	const progIDOffset = 4
 	if keySize != 4 || valueSize < progIDOffset+4 {
 		return nil, nil
@@ -365,7 +366,7 @@ func scanRedirectMap(m *ebpf.Map, mapID ebpf.MapID, via string, keySize, valueSi
 		if progID == 0 {
 			continue // entry has no attached program
 		}
-		t, err := resolveProgTarget(via, key, progID)
+		t, err := resolveProgTarget(via, key, progID, cache)
 		if err != nil {
 			return nil, err
 		}
@@ -377,24 +378,41 @@ func scanRedirectMap(m *ebpf.Map, mapID ebpf.MapID, via string, keySize, valueSi
 	return targets, nil
 }
 
-// resolveProgTarget opens the target program to read its name.
-func resolveProgTarget(via string, key, progID uint32) (*ProgTarget, error) {
-	targetProg, err := ebpf.NewProgramFromID(ebpf.ProgramID(progID))
-	if err != nil {
-		return nil, fmt.Errorf("opening %s target (id=%d): %w", via, progID, err)
-	}
-	defer func() { _ = targetProg.Close() }()
+// progNameCache memoizes program id -> name so a single scan doesn't
+// re-open the same program once per map entry. Maps that point many keys
+// at one program (per-CPU CPUMAPs, repeated tail-call slots) otherwise
+// cost one bpf_prog_get_fd_by_id + BPF_OBJ_GET_INFO syscall pair each.
+type progNameCache map[uint32]string
 
-	targetInfo, err := targetProg.Info()
-	if err != nil {
-		return nil, fmt.Errorf("getting %s target info (id=%d): %w", via, progID, err)
+func (c progNameCache) name(progID uint32) (string, error) {
+	if n, ok := c[progID]; ok {
+		return n, nil
 	}
+	prog, err := ebpf.NewProgramFromID(ebpf.ProgramID(progID))
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = prog.Close() }()
 
+	info, err := prog.Info()
+	if err != nil {
+		return "", err
+	}
+	c[progID] = info.Name
+	return info.Name, nil
+}
+
+// resolveProgTarget resolves the target program's name (via the cache).
+func resolveProgTarget(via string, key, progID uint32, cache progNameCache) (*ProgTarget, error) {
+	name, err := cache.name(progID)
+	if err != nil {
+		return nil, fmt.Errorf("resolving %s target (id=%d): %w", via, progID, err)
+	}
 	return &ProgTarget{
 		Via:      via,
 		Key:      key,
 		ProgID:   progID,
-		ProgName: targetInfo.Name,
+		ProgName: name,
 	}, nil
 }
 

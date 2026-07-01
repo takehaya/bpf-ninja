@@ -115,7 +115,7 @@ func TestScanRedirectMapCPUMap(t *testing.T) {
 		t.Skipf("populating CPUMAP with program (kernel may lack support): %v", err)
 	}
 
-	targets, err := scanMapForPrograms(cpumap, 0)
+	targets, err := scanMapForPrograms(cpumap, 0, progNameCache{})
 	if err != nil {
 		t.Fatalf("scanMapForPrograms: %v", err)
 	}
@@ -156,7 +156,7 @@ func TestScanRedirectMapSkipsEmptyEntry(t *testing.T) {
 		t.Skipf("populating CPUMAP: %v", err)
 	}
 
-	targets, err := scanMapForPrograms(cpumap, 0)
+	targets, err := scanMapForPrograms(cpumap, 0, progNameCache{})
 	if err != nil {
 		t.Fatalf("scanMapForPrograms: %v", err)
 	}
@@ -296,7 +296,7 @@ func TestScanRedirectMapDevMap(t *testing.T) {
 		t.Skipf("populating DEVMAP with program (device may not support XDP): %v", err)
 	}
 
-	targets, err := scanMapForPrograms(devmap, 0)
+	targets, err := scanMapForPrograms(devmap, 0, progNameCache{})
 	if err != nil {
 		t.Fatalf("scanMapForPrograms: %v", err)
 	}
@@ -353,7 +353,7 @@ func TestScanRedirectMapDevMapHash(t *testing.T) {
 		t.Skipf("populating DEVMAP_HASH with program (device may not support XDP): %v", err)
 	}
 
-	targets, err := scanMapForPrograms(devmap, 0)
+	targets, err := scanMapForPrograms(devmap, 0, progNameCache{})
 	if err != nil {
 		t.Fatalf("scanMapForPrograms: %v", err)
 	}
@@ -416,7 +416,7 @@ func TestScanProgArraySkipsEmptySlot(t *testing.T) {
 		t.Skipf("populating PROG_ARRAY: %v", err)
 	}
 
-	targets, err := scanMapForPrograms(progArray, 0)
+	targets, err := scanMapForPrograms(progArray, 0, progNameCache{})
 	if err != nil {
 		t.Fatalf("scanMapForPrograms on sparse PROG_ARRAY: %v", err)
 	}

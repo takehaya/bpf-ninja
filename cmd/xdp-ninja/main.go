@@ -63,7 +63,7 @@ var flags = []cli.Flag{
 	},
 	&cli.BoolFlag{
 		Name:  "list-progs",
-		Usage: "list programs reachable from the target: tail calls + CPUMAP/DEVMAP redirect targets, then exit",
+		Usage: "list programs reachable from the target: tail calls + CPUMAP/DEVMAP/DEVMAP_HASH redirect targets (followed transitively), then exit",
 	},
 	&cli.StringSliceFlag{
 		Name:  "arg-filter",
@@ -371,7 +371,8 @@ func run(ctx context.Context, cmd *cli.Command) error {
 	defer func() { _ = info.Program.Close() }()
 
 	// --list-progs: show reachable programs (tail calls +
-	// CPUMAP/DEVMAP redirect targets), then exit
+	// CPUMAP/DEVMAP/DEVMAP_HASH redirect targets, followed
+	// transitively), then exit
 	if cmd.Bool("list-progs") {
 		fmt.Fprintf(os.Stderr, "id=%-6d %s\n", info.ProgID, info.FuncName)
 
