@@ -212,11 +212,11 @@ func scanMapForPrograms(m *ebpf.Map, mapID ebpf.MapID) ([]ProgTarget, error) {
 	case ebpf.ProgramArray:
 		return scanProgArray(m, mapID)
 	case ebpf.CPUMap:
-		return scanRedirectMap(m, mapID, "cpumap", mapInfo.ValueSize)
+		return scanRedirectMap(m, mapID, "cpumap", mapInfo.KeySize, mapInfo.ValueSize)
 	case ebpf.DevMap:
-		return scanRedirectMap(m, mapID, "devmap", mapInfo.ValueSize)
+		return scanRedirectMap(m, mapID, "devmap", mapInfo.KeySize, mapInfo.ValueSize)
 	case ebpf.DevMapHash:
-		return scanRedirectMap(m, mapID, "devmap_hash", mapInfo.ValueSize)
+		return scanRedirectMap(m, mapID, "devmap_hash", mapInfo.KeySize, mapInfo.ValueSize)
 	default:
 		return nil, nil
 	}
@@ -250,22 +250,28 @@ func scanProgArray(m *ebpf.Map, mapID ebpf.MapID) ([]ProgTarget, error) {
 // the attached program id as the u32 at offset 4 (a union bpf_prog after
 // a leading u32 qsize / ifindex). Maps created before that field existed
 // have a 4-byte value and carry no program.
-func scanRedirectMap(m *ebpf.Map, mapID ebpf.MapID, via string, valueSize uint32) ([]ProgTarget, error) {
+//
+// CPUMAP, DEVMAP and DEVMAP_HASH all use 4-byte u32 keys (the kernel
+// enforces key_size == 4). The key and value are read as raw byte
+// buffers sized from the map info and decoded explicitly, so an
+// unexpected key/value width can't silently truncate or misread.
+func scanRedirectMap(m *ebpf.Map, mapID ebpf.MapID, via string, keySize, valueSize uint32) ([]ProgTarget, error) {
 	const progIDOffset = 4
-	if valueSize < progIDOffset+4 {
+	if keySize < 4 || valueSize < progIDOffset+4 {
 		return nil, nil
 	}
 
 	var targets []ProgTarget
-	var key uint32
-	val := make([]byte, valueSize)
+	key := make([]byte, int(keySize))
+	val := make([]byte, int(valueSize))
 	iter := m.Iterate()
 	for iter.Next(&key, &val) {
 		progID := binary.NativeEndian.Uint32(val[progIDOffset : progIDOffset+4])
 		if progID == 0 {
 			continue // entry has no attached program
 		}
-		t, err := resolveProgTarget(via, key, progID)
+		mapKey := binary.NativeEndian.Uint32(key[:4])
+		t, err := resolveProgTarget(via, mapKey, progID)
 		if err != nil {
 			return nil, err
 		}
