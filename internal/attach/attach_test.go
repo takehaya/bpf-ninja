@@ -391,7 +391,10 @@ func TestScanProgArraySkipsEmptySlot(t *testing.T) {
 		t.Fatalf("target prog: %v", err)
 	}
 	t.Cleanup(func() { _ = target.Close() })
-	tInfo, _ := target.Info()
+	tInfo, err := target.Info()
+	if err != nil {
+		t.Fatalf("target prog info: %v", err)
+	}
 	wantID, ok := tInfo.ID()
 	if !ok {
 		t.Fatal("target program has no ID")
