@@ -396,27 +396,29 @@ DSL / tcpdump の両方とも `--mode xdp` で完全に load 可能です。kuna
 R22 以降、ringbuf は per-CPU shard (`BPF_MAP_TYPE_ARRAY_OF_MAPS` の inner は個別の `BPF_MAP_TYPE_RINGBUF`) で構成されます。user-space 側も shard ごとに 1 goroutine + 1 file で受けるので、`-w path.pcap` を指定したときの出力は次のようになります。
 
 ```
-path.pcap         ← SHB+IDB のみの marker file (0 packets)
-path.pcap.cpu0    ← CPU 0 が受けた packets
-path.pcap.cpu1    ← CPU 1 が受けた packets
+path.pcap         ← 全 shard を時刻順にマージした単一 pcap-ng (そのまま使える)
+path.pcap.cpu0    ← CPU 0 が受けた packets (残置)
+path.pcap.cpu1    ← CPU 1 が受けた packets (残置)
 ...
 path.pcap.cpuN    ← (N = nproc - 1)
 ```
 
-`tcpdump -r path.pcap` は marker を読むだけで packets は出ません。各 `cpuN` ファイルは独立した valid pcap-ng として開けます。
+キャプチャ停止時 (Ctrl-C または `-c`) に、xdp-ninja は per-CPU shard を時刻順に k-way マージして base の `path.pcap` を単一 pcap-ng として書き出します。停止直後に `merging N shard(s) into path.pcap ...` と表示されるので、そこがマージ中です。`tcpdump -r path.pcap` でそのまま全パケットを時刻順に読めます。`.cpuN` は残るので、個別に読む・自分で mergecap することもできます。
 
 ```bash
+# base をそのまま読む (全 CPU 分・時刻順)
+tcpdump -r path.pcap
+
 # CPU 12 が受けた分だけ読む
 tcpdump -r path.pcap.cpu12
 
-# 全 shard を mergecap でまとめる
+# 自分で mergecap したい場合 (base と同等)
 mergecap -w merged.pcap path.pcap.cpu*
-
-# 確認: shard ごとの packet count
-for f in path.pcap.cpu*; do echo "$(basename $f): $(tcpdump -r $f 2>/dev/null | wc -l)"; done
 ```
 
-注意点として、`xdp-ninja convert` は `--raw-dump` 用の `.raw` を pcap-ng に変換するサブコマンドで、`.cpuN` pcap-ng shards は処理しません。shards をまとめたい場合は wireshark 同梱の `mergecap` を使います。raw-dump path (`--raw-dump -w foo.raw`) を使う場合は `.cpuN` 分割が同じ命名規則で起こり、`xdp-ninja convert -i foo.raw.cpu0 ...` で 1 個ずつ pcap-ng に変換できます。
+`-w` を付けない場合 (stdout ストリーミング) は、全 CPU を 1 本の pcap-ng ストリームに直列化してマージするので、`sudo xdp-ninja ... | tcpdump -r -` で全コア分が見えます。高レートでは `-w` を使ってください (stdout 直列化はインタラクティブ経路向け)。
+
+注意点として、`xdp-ninja convert` は `--raw-dump` 用の `.raw` を pcap-ng に変換するサブコマンドで、`.cpuN` pcap-ng shards は処理しません。raw-dump path (`--raw-dump -w foo.raw`) を使う場合は `.cpuN` 分割が同じ命名規則で起こり、`xdp-ninja convert -i foo.raw.cpu0 ...` で 1 個ずつ pcap-ng に変換できます (raw-dump は自動マージの対象外)。
 
 ## Performance flags
 
