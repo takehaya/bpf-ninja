@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"runtime"
 	"testing"
+	"time"
 
 	"github.com/cilium/ebpf"
 
@@ -95,23 +96,41 @@ func progInfoFor(t *testing.T, prog *ebpf.Program, funcName string) *attach.Prog
 
 // drainMarkers reads every shard of the probe's ringbuf and collects the
 // first payload byte (the per-source marker) of each captured record.
-func drainMarkers(t *testing.T, probe *Probe) map[byte]int {
+// Records from a synchronous BPF_PROG_TEST_RUN are committed before Run
+// returns, but retry briefly anyway so a slow/contended CI runner can't
+// flake the drain; wantMarkers is the number of distinct markers expected.
+func drainMarkers(t *testing.T, probe *Probe, wantMarkers int) map[byte]int {
 	t.Helper()
 	markers := map[byte]int{}
 	innerSize := int(shardRingbufSize(RingbufSize, runtime.NumCPU()))
+	readers := make([]*fastrb.Reader, len(probe.InnerMaps))
 	for i, m := range probe.InnerMaps {
 		rd, err := fastrb.New(m.FD(), innerSize)
 		if err != nil {
 			t.Fatalf("fastrb on shard %d: %v", i, err)
 		}
-		rd.ReadBatch(func(rec []byte) {
-			if len(rec) > metadataSize { // metadata + at least 1 payload byte
-				markers[rec[metadataSize]]++
-			}
-		})
-		_ = rd.Close()
+		readers[i] = rd
 	}
-	return markers
+	defer func() {
+		for _, rd := range readers {
+			_ = rd.Close()
+		}
+	}()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		for _, rd := range readers {
+			rd.ReadBatch(func(rec []byte) {
+				if len(rec) > metadataSize { // metadata + at least 1 payload byte
+					markers[rec[metadataSize]]++
+				}
+			})
+		}
+		if len(markers) >= wantMarkers || time.Now().After(deadline) {
+			return markers
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 }
 
 // runWithMarker test-runs an XDP program with a packet whose first byte is
@@ -159,7 +178,7 @@ func TestBpfMultiAttachEntryPrograms(t *testing.T) {
 	runWithMarker(t, progA, 0xAA)
 	runWithMarker(t, progB, 0xBB)
 
-	markers := drainMarkers(t, probe)
+	markers := drainMarkers(t, probe, 2)
 	if markers[0xAA] == 0 || markers[0xBB] == 0 {
 		t.Fatalf("expected events from both programs in the shared ringbuf, got markers %v", markers)
 	}
@@ -204,7 +223,7 @@ func TestBpfMultiAttachNoinlineAcrossPrograms(t *testing.T) {
 	runWithMarker(t, progV4, 0x44)
 	runWithMarker(t, progV6, 0x66)
 
-	markers := drainMarkers(t, probe)
+	markers := drainMarkers(t, probe, 2)
 	if markers[0x44] == 0 || markers[0x66] == 0 {
 		t.Fatalf("expected events from both noinline copies in the shared ringbuf, got markers %v", markers)
 	}
