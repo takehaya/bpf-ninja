@@ -411,7 +411,11 @@ func run(ctx context.Context, cmd *cli.Command) error {
 	// --list-funcs: print available BTF functions per target and exit
 	if cmd.Bool("list-funcs") {
 		for _, info := range infos {
-			funcs, err := attach.ListFuncs(info.Program)
+			spec, err := info.BTFSpecCached()
+			if err != nil {
+				return fmt.Errorf("program (id=%d): %w", info.ProgID, err)
+			}
+			funcs, err := attach.ListFuncsFromSpec(spec)
 			if err != nil {
 				return err
 			}
