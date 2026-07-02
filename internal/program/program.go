@@ -13,6 +13,7 @@ import (
 	"github.com/cloudflare/cbpfc"
 	"github.com/google/gopacket/layers"
 	"github.com/google/gopacket/pcap"
+	"github.com/takehaya/xdp-ninja/internal/attach"
 	"github.com/takehaya/xdp-ninja/internal/filter"
 	"github.com/takehaya/xdp-ninja/pkg/kunai"
 	"github.com/takehaya/xdp-ninja/pkg/kunai/codegen"
@@ -27,9 +28,16 @@ type Probe struct {
 	InnerMaps []*ebpf.Map // non-nil only in per-CPU sharded mode
 	IsFexit   bool
 	Warnings  []string // resolver / codegen non-fatal notices; CLI prints to stderr
-	maps      []*ebpf.Map
-	prog      *ebpf.Program
-	link      link.Link
+
+	// --arg-echo diagnostic mode: non-nil EchoRing means this probe emits
+	// the target function's integer args (EchoParams, in order) to a
+	// dedicated ringbuf instead of capturing packets.
+	EchoRing   *ebpf.Map
+	EchoParams []attach.FuncParamInfo
+
+	maps []*ebpf.Map
+	prog *ebpf.Program
+	link link.Link
 }
 
 // Program returns the underlying tracing program. Exposed so that
@@ -74,13 +82,9 @@ func LoadExit(targetProg *ebpf.Program, funcName string, filterExpr string, argF
 }
 
 func loadProbe(targetProg *ebpf.Program, funcName string, filterExpr string, argFilters []filter.ArgFilter, isFexit, useDSL bool) (*Probe, error) {
-	info, err := targetProg.Info()
+	progType, err := validateTracingTarget(targetProg)
 	if err != nil {
-		return nil, fmt.Errorf("reading target program info: %w", err)
-	}
-	progType := info.Type
-	if progType != ebpf.XDP && progType != ebpf.SchedCLS && progType != ebpf.SchedACT {
-		return nil, fmt.Errorf("target program type %s is not supported (need XDP, SchedCLS, or SchedACT)", progType)
+		return nil, err
 	}
 
 	filterOut, err := compileFilter(filterExpr, useDSL, isFexit, progType)
@@ -91,12 +95,7 @@ func loadProbe(targetProg *ebpf.Program, funcName string, filterExpr string, arg
 		filterOut.Capture.MaxCapLen = SnaplenOverride
 	}
 
-	label := "entry"
-	attachType := ebpf.AttachTraceFEntry
-	if isFexit {
-		label = "exit"
-		attachType = ebpf.AttachTraceFExit
-	}
+	label, attachType := tracingLabel(isFexit)
 
 	outerMap, innerMaps, err := createShardedRingbuf(label)
 	if err != nil {
@@ -133,25 +132,58 @@ func loadProbe(targetProg *ebpf.Program, funcName string, filterExpr string, arg
 		_ = probe.Close()
 		return nil, err
 	}
+	if err := attachTracingProbe(probe, targetProg, fmt.Sprintf("xdp_ninja_%s", label), funcName, attachType, insns); err != nil {
+		return nil, err
+	}
+	return probe, nil
+}
+
+// validateTracingTarget checks targetProg is a type xdp-ninja can attach a
+// fentry/fexit probe to, returning its program type.
+func validateTracingTarget(targetProg *ebpf.Program) (ebpf.ProgramType, error) {
+	info, err := targetProg.Info()
+	if err != nil {
+		return 0, fmt.Errorf("reading target program info: %w", err)
+	}
+	pt := info.Type
+	if pt != ebpf.XDP && pt != ebpf.SchedCLS && pt != ebpf.SchedACT {
+		return 0, fmt.Errorf("target program type %s is not supported (need XDP, SchedCLS, or SchedACT)", pt)
+	}
+	return pt, nil
+}
+
+// tracingLabel maps entry/exit to the short label (used in map/program
+// names) and the BPF tracing attach type.
+func tracingLabel(isFexit bool) (string, ebpf.AttachType) {
+	if isFexit {
+		return "exit", ebpf.AttachTraceFExit
+	}
+	return "entry", ebpf.AttachTraceFEntry
+}
+
+// attachTracingProbe loads insns as a Tracing program named `name`,
+// attaches it to funcName on targetProg, and records prog+link on probe.
+// On failure it closes probe (unwinding any maps already registered).
+// Shared by loadProbe (capture) and LoadArgEcho (diagnostic).
+func attachTracingProbe(probe *Probe, targetProg *ebpf.Program, name, funcName string, attachType ebpf.AttachType, insns asm.Instructions) error {
 	prog, err := ebpf.NewProgram(&ebpf.ProgramSpec{
-		Name: fmt.Sprintf("xdp_ninja_%s", label), Type: ebpf.Tracing, AttachType: attachType,
+		Name: name, Type: ebpf.Tracing, AttachType: attachType,
 		AttachTo: funcName, AttachTarget: targetProg,
 		Instructions: insns, License: "GPL",
 	})
 	if err != nil {
 		_ = probe.Close()
-		return nil, fmt.Errorf("loading %s program: %w", label, err)
+		return fmt.Errorf("loading %s program: %w", name, err)
 	}
 	probe.prog = prog
 
 	l, err := link.AttachTracing(link.TracingOptions{Program: prog, AttachType: attachType})
 	if err != nil {
 		_ = probe.Close()
-		return nil, fmt.Errorf("attaching %s: %w", label, err)
+		return fmt.Errorf("attaching %s: %w", name, err)
 	}
 	probe.link = l
-
-	return probe, nil
+	return nil
 }
 
 // --- Filter compilation ---
@@ -597,6 +629,33 @@ func captureWithRingbuf(eventsFD int, isFexit bool, maxCapLen int) asm.Instructi
 //
 // For each filter, we load the argument value and compare it.
 // If any filter doesn't match, we jump to "exit".
+// emitArgLoad loads a size-byte integer arg at base+offset into dst,
+// sign-extending sub-word signed values to 64-bit. Byte/Half/Word loads
+// zero-extend into dst; for signed params the LSh/ArSh pair widens the
+// sign bit so JSLT/JSGT comparisons and int64 rendering are correct (e.g.
+// int8 -1 loaded as 0xFF becomes 0xFFFFFFFFFFFFFFFF). Shared by the
+// arg-filter gate and the arg-echo emitter so the sign-extend invariant
+// lives in one place.
+func emitArgLoad(dst, base asm.Register, offset int16, size uint32, signed bool) asm.Instructions {
+	var loadSize asm.Size
+	switch size {
+	case 1:
+		loadSize = asm.Byte
+	case 2:
+		loadSize = asm.Half
+	case 4:
+		loadSize = asm.Word
+	default:
+		loadSize = asm.DWord
+	}
+	insns := asm.Instructions{asm.LoadMem(dst, base, offset, loadSize)}
+	if signed && size < 8 {
+		shift := int32((8 - size) * 8)
+		insns = append(insns, asm.LSh.Imm(dst, shift), asm.ArSh.Imm(dst, shift))
+	}
+	return insns
+}
+
 func buildArgFilter(filters []filter.ArgFilter) asm.Instructions {
 	if len(filters) == 0 {
 		return nil
@@ -608,30 +667,7 @@ func buildArgFilter(filters []filter.ArgFilter) asm.Instructions {
 
 	for _, f := range filters {
 		offset := int16(f.ParamIndex * 8)
-
-		var loadSize asm.Size
-		switch f.ParamSize {
-		case 1:
-			loadSize = asm.Byte
-		case 2:
-			loadSize = asm.Half
-		case 4:
-			loadSize = asm.Word
-		default:
-			loadSize = asm.DWord
-		}
-		insns = append(insns, asm.LoadMem(asm.R3, asm.R2, offset, loadSize))
-
-		// Byte/Half/Word loads zero-extend into R3. For signed parameters we must
-		// sign-extend to 64-bit so that JSLT/JSGT comparisons work correctly
-		// (e.g. int8 -1 is loaded as 0xFF and must become 0xFFFFFFFFFFFFFFFF).
-		if f.Signed && f.ParamSize < 8 {
-			shift := int32((8 - f.ParamSize) * 8) // bits to shift
-			insns = append(insns,
-				asm.LSh.Imm(asm.R3, shift),
-				asm.ArSh.Imm(asm.R3, shift),
-			)
-		}
+		insns = append(insns, emitArgLoad(asm.R3, asm.R2, offset, f.ParamSize, f.Signed)...)
 
 		// Select unsigned or signed jump ops based on parameter signedness.
 		jLT, jGT := asm.JLT, asm.JGT

@@ -420,6 +420,26 @@ mergecap -w merged.pcap path.pcap.cpu*
 
 注意点として、`xdp-ninja convert` は `--raw-dump` 用の `.raw` を pcap-ng に変換するサブコマンドで、`.cpuN` pcap-ng shards は処理しません。raw-dump path (`--raw-dump -w foo.raw`) を使う場合は `.cpuN` 分割が同じ命名規則で起こり、`xdp-ninja convert -i foo.raw.cpu0 ...` で 1 個ずつ pcap-ng に変換できます (raw-dump は自動マージの対象外)。
 
+## 関数引数の値を覗く (`--arg-echo`)
+
+`--func` で狙ったサブ関数の整数引数が、実際にどんな値で呼ばれているかを見る診断モードです。`--arg-filter "imsi=..."` が当たらないとき、「そもそも引数にどんな値が乗っているか」を確認するのに使います (例: IMSI が 10 進なのか TBCD なのか)。パケットキャプチャはせず、引数だけを専用 ringbuf に流して表示します。
+
+```bash
+# 対象関数の絞り込み可能な整数引数を確認
+sudo xdp-ninja -p 1661 --func pgwu_capture_point_ul --list-params
+#   imsi  [8 bytes, unsigned, arg index 1]
+#   teid  [4 bytes, unsigned, arg index 2]
+
+# 1 回だけ観測して終了 (-c 1)
+sudo xdp-ninja -p 1661 --func pgwu_capture_point_ul --arg-echo -c 1
+#   pgwu_capture_point_ul: imsi=901040010000005 (0x3337db9b97685) teid=12345 (0x3039)
+```
+
+- `--func` 必須。表示対象は `--list-params` が挙げる整数引数 (10 進と 16 進を併記)。
+- `--arg-filter` と併用すると、その述語に**マッチした呼び出しだけ**を表示します。値の当たりを付けてから絞り込む、という使い方ができます。
+- 連続して同じ引数タプルが来た場合は 1 行に畳んで `(xN)` と表示します。`-c N` で N 件表示したら終了、無指定なら Ctrl-C まで。
+- リーダは capture path と同じ in-tree の `fastrb` (mmap + epoll) を使います。
+
 ## Performance flags
 
 高 rate capture (>1 Mpps 級) で使う flag 群です。通常用途では既定値で十分です。
