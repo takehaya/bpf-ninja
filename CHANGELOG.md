@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.14.0](https://github.com/takehaya/xdp-ninja/compare/v0.13.1...v0.14.0) (2026-07-02)
+
+
+### 🎉 Features
+
+* **capture:** merge per-CPU shards into a single pcap-ng file ([#53](https://github.com/takehaya/xdp-ninja/issues/53)) ([e40929c](https://github.com/takehaya/xdp-ninja/commit/e40929c485364f714bcccd78b2c139492461df60))
+
 ## [0.13.1](https://github.com/takehaya/xdp-ninja/compare/v0.13.0...v0.13.1) (2026-07-01)
 
 
