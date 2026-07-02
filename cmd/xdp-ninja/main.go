@@ -1166,6 +1166,9 @@ func findTargets(cmd *cli.Command, isTC bool) ([]*attach.ProgInfo, error) {
 	var infos []*attach.ProgInfo
 	seen := map[uint32]bool{}
 	for _, id := range progIDs {
+		if id <= 0 {
+			return nil, fmt.Errorf("invalid prog-id %d: must be a positive BPF program ID", id)
+		}
 		pid := uint32(id)
 		if seen[pid] {
 			continue
