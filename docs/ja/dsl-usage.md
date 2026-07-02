@@ -420,6 +420,27 @@ mergecap -w merged.pcap path.pcap.cpu*
 
 注意点として、`xdp-ninja convert` は `--raw-dump` 用の `.raw` を pcap-ng に変換するサブコマンドで、`.cpuN` pcap-ng shards は処理しません。raw-dump path (`--raw-dump -w foo.raw`) を使う場合は `.cpuN` 分割が同じ命名規則で起こり、`xdp-ninja convert -i foo.raw.cpu0 ...` で 1 個ずつ pcap-ng に変換できます (raw-dump は自動マージの対象外)。
 
+## 複数の (プログラム, 関数) に同時アタッチする
+
+`-p` と `--func` はどちらも繰り返し指定できます。各 `--func` は、指定した全プログラムのうち **BTF にその関数を持つものすべて**にアタッチされます (無いプログラムはスキップ。どのプログラムにも無い関数名はエラー)。`--func` を省略した場合は各プログラムの entry 関数が対象です。
+
+多段 dispatcher (cpu_dispatch → CPUMAP → 方向別ハンドラ) では capture point が方向ごとに別プログラムへ散り、さらに noinline サブ関数は呼び出し元プログラムごとに実体を持ちます (例: `pgwu_capture_point_dl` が v4/v6 ハンドラ両方に入る)。UL + DL v4 + DL v6 の全網羅は従来3回の起動が必要でしたが、1回で張れます。
+
+```bash
+# --list-progs で dispatcher から末端の prog ID を洗い出し
+sudo xdp-ninja -i ens2f0 --list-progs
+
+# UL + DL (v4/v6 両実体) を1回でアタッチ。--func pgwu_capture_point_dl は
+# 1610/1611 の両方に、_ul は 1614 だけにマッチする
+sudo xdp-ninja -p 1610 -p 1611 -p 1614 \
+  --func pgwu_capture_point_ul --func pgwu_capture_point_dl \
+  --arg-filter "imsi=999990000000001" -w all.pcap
+```
+
+- 全アタッチポイントが **1本の共有 ringbuf** に emit するので、出力は通常どおり 1 つの pcap に時刻順で入ります (`-w` なら終了時マージ、stdout なら直列化ストリーム)。
+- `--arg-filter` は関数ごとに BTF を引いて検証・解決されます。同じ param 名が関数によって別の引数位置にあっても正しく効きます。指定した param を持たない関数が混ざるとエラーになります。
+- XDP と tc のターゲット混在は不可 (別々に起動してください)。`--arg-echo` は単一 (プログラム, 関数) のみ。
+
 ## 関数引数の値を覗く (`--arg-echo`)
 
 `--func` で狙ったサブ関数の整数引数が、実際にどんな値で呼ばれているかを見る診断モードです。`--arg-filter "imsi=..."` が当たらないとき、「そもそも引数にどんな値が乗っているか」を確認するのに使います (例: IMSI が 10 進なのか TBCD なのか)。パケットキャプチャはせず、引数だけを専用 ringbuf に流して表示します。

@@ -22,6 +22,26 @@ type ProgInfo struct {
 	FuncName  string // BTF-resolved entry function name
 	IfaceName string
 	Type      ebpf.ProgramType
+
+	// Spec is the program's parsed BTF, cached by the Find* constructors
+	// (parsing is the expensive part of BTFSpec) so downstream lookups —
+	// target resolution, param extraction — don't re-parse per call.
+	// May be nil for hand-built ProgInfos; use BTFSpecCached.
+	Spec *btf.Spec
+}
+
+// BTFSpecCached returns the cached BTF spec, opening and caching it on
+// first use for ProgInfos constructed without one.
+func (p *ProgInfo) BTFSpecCached() (*btf.Spec, error) {
+	if p.Spec != nil {
+		return p.Spec, nil
+	}
+	spec, err := BTFSpec(p.Program)
+	if err != nil {
+		return nil, err
+	}
+	p.Spec = spec
+	return spec, nil
 }
 
 // FindXDPProgramByID gets an XDP program by its BPF program ID. The
@@ -62,7 +82,7 @@ func FindBPFProgramByID(progID uint32) (*ProgInfo, error) {
 		return nil, fmt.Errorf("program (id=%d) type %s is not supported (need XDP, SchedCLS, or SchedACT)", progID, progType)
 	}
 
-	funcName, err := resolveEntryFunc(prog, progID)
+	funcName, spec, err := resolveEntryFunc(prog, progID)
 	if err != nil {
 		_ = prog.Close()
 		return nil, err
@@ -73,6 +93,7 @@ func FindBPFProgramByID(progID uint32) (*ProgInfo, error) {
 		Program:  prog,
 		FuncName: funcName,
 		Type:     progType,
+		Spec:     spec,
 	}, nil
 }
 
@@ -143,7 +164,7 @@ func FindXDPProgram(ifaceName string) (*ProgInfo, error) {
 		return nil, fmt.Errorf("getting XDP program (id=%d): %w", xdp.ProgId, err)
 	}
 
-	funcName, err := resolveEntryFunc(prog, xdp.ProgId)
+	funcName, spec, err := resolveEntryFunc(prog, xdp.ProgId)
 	if err != nil {
 		_ = prog.Close()
 		return nil, err
@@ -155,6 +176,7 @@ func FindXDPProgram(ifaceName string) (*ProgInfo, error) {
 		FuncName:  funcName,
 		IfaceName: ifaceName,
 		Type:      ebpf.XDP,
+		Spec:      spec,
 	}, nil
 }
 
@@ -567,22 +589,22 @@ func ListFuncsFromSpec(spec *btf.Spec) ([]FuncInfo, error) {
 //     and a btf.Func starts with that prefix — but only if exactly one matches
 //  3. Single Func: BTF has exactly one Func entry
 //  4. Error: ambiguous or no match
-func resolveEntryFunc(prog *ebpf.Program, progID uint32) (string, error) {
+func resolveEntryFunc(prog *ebpf.Program, progID uint32) (string, *btf.Spec, error) {
 	info, err := prog.Info()
 	if err != nil {
-		return "", fmt.Errorf("program id=%d: getting info: %w", progID, err)
+		return "", nil, fmt.Errorf("program id=%d: getting info: %w", progID, err)
 	}
 	progName := info.Name
 
 	spec, err := BTFSpec(prog)
 	if err != nil {
-		return "", fmt.Errorf("program %q (id=%d): %w", progName, progID, err)
+		return "", nil, fmt.Errorf("program %q (id=%d): %w", progName, progID, err)
 	}
 
 	// 1. Exact match
 	var fn *btf.Func
 	if err := spec.TypeByName(progName, &fn); err == nil {
-		return fn.Name, nil
+		return fn.Name, spec, nil
 	}
 
 	// Collect all Func entries
@@ -597,7 +619,7 @@ func resolveEntryFunc(prog *ebpf.Program, progID uint32) (string, error) {
 	}
 
 	if len(funcs) == 0 {
-		return "", fmt.Errorf("program %q (id=%d): no btf.Func found in BTF", progName, progID)
+		return "", nil, fmt.Errorf("program %q (id=%d): no btf.Func found in BTF", progName, progID)
 	}
 
 	// 2. Prefix match (prog name may be truncated to 15 chars by kernel)
@@ -609,10 +631,10 @@ func resolveEntryFunc(prog *ebpf.Program, progID uint32) (string, error) {
 			}
 		}
 		if len(matches) == 1 {
-			return matches[0], nil
+			return matches[0], spec, nil
 		}
 		if len(matches) > 1 {
-			return "", fmt.Errorf(
+			return "", nil, fmt.Errorf(
 				"program %q (id=%d): ambiguous BTF function name (truncated prog name matches %d funcs: %v)",
 				progName, progID, len(matches), matches,
 			)
@@ -621,11 +643,11 @@ func resolveEntryFunc(prog *ebpf.Program, progID uint32) (string, error) {
 
 	// 3. Single Func
 	if len(funcs) == 1 {
-		return funcs[0], nil
+		return funcs[0], spec, nil
 	}
 
 	// 4. Ambiguous
-	return "", fmt.Errorf(
+	return "", nil, fmt.Errorf(
 		"program %q (id=%d): cannot resolve entry function from BTF (%d candidates: %v)",
 		progName, progID, len(funcs), funcs,
 	)

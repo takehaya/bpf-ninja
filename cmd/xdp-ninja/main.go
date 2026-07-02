@@ -39,9 +39,9 @@ var flags = []cli.Flag{
 		Name: "interface", Aliases: []string{"i"},
 		Usage: "network interface to capture on",
 	},
-	&cli.IntFlag{
+	&cli.IntSliceFlag{
 		Name: "prog-id", Aliases: []string{"p"},
-		Usage: "BPF program ID to attach to (use instead of -i for multi-prog setups)",
+		Usage: "BPF program ID to attach to (use instead of -i for multi-prog setups); repeatable to attach several programs in one run",
 	},
 	&cli.StringFlag{
 		Name: "write", Aliases: []string{"w"},
@@ -55,9 +55,9 @@ var flags = []cli.Flag{
 		Name: "count", Aliases: []string{"c"},
 		Usage: "exit after capturing N packets (0 = unlimited)",
 	},
-	&cli.StringFlag{
+	&cli.StringSliceFlag{
 		Name:  "func",
-		Usage: "attach to a specific __noinline subfunction (by BTF name) instead of the entry function",
+		Usage: "attach to a specific __noinline subfunction (by BTF name) instead of the entry function; repeatable, and each func attaches in every target program whose BTF has it",
 	},
 	&cli.BoolFlag{
 		Name:  "list-funcs",
@@ -370,126 +370,142 @@ func run(ctx context.Context, cmd *cli.Command) error {
 		return runXDPNative(cmd)
 	}
 
-	info, err := findTarget(cmd, isTC)
+	infos, err := findTargets(cmd, isTC)
 	if err != nil {
 		return err
 	}
-	defer func() { _ = info.Program.Close() }()
+	defer func() {
+		for _, in := range infos {
+			_ = in.Program.Close()
+		}
+	}()
 
 	// --list-progs: show reachable programs (tail calls +
 	// CPUMAP/DEVMAP/DEVMAP_HASH redirect targets, followed
-	// transitively), then exit
+	// transitively) for each target, then exit
 	if cmd.Bool("list-progs") {
-		fmt.Fprintf(os.Stderr, "id=%-6d %s\n", info.ProgID, info.FuncName)
+		for _, info := range infos {
+			fmt.Fprintf(os.Stderr, "id=%-6d %s\n", info.ProgID, info.FuncName)
 
-		progs, err := attach.WalkReachablePrograms(info.Program, info.ProgID)
-		if err != nil {
-			return err
-		}
-		byParent := map[uint32][]attach.ReachableProgram{}
-		for _, p := range progs {
-			byParent[p.ParentID] = append(byParent[p.ParentID], p)
-		}
-		var printTree func(parent uint32, indent string)
-		printTree = func(parent uint32, indent string) {
-			for _, c := range byParent[parent] {
-				fmt.Fprintf(os.Stderr, "%sid=%-6d %s (%s[%s])\n",
-					indent, c.ProgID, c.ProgName, c.Via, formatKeyRanges(c.Keys))
-				printTree(c.ProgID, indent+"  ")
-			}
-		}
-		printTree(info.ProgID, "  ")
-		return nil
-	}
-
-	// --list-funcs: print available BTF functions and exit
-	if cmd.Bool("list-funcs") {
-		funcs, err := attach.ListFuncs(info.Program)
-		if err != nil {
-			return err
-		}
-		fmt.Fprintf(os.Stderr, "BTF functions in program (id=%d):\n", info.ProgID)
-		for _, f := range funcs {
-			fmt.Fprintf(os.Stderr, "  %-40s [%s]\n", f.Name, f.Linkage)
-		}
-		return nil
-	}
-
-	// --func: override target function name.
-	// Open BTF once and share across validation and parameter extraction.
-	funcName := cmd.String("func")
-	needParams := cmd.Bool("list-params") || len(cmd.StringSlice("arg-filter")) > 0 || cmd.Bool("arg-echo")
-	var params []attach.FuncParamInfo
-	if funcName != "" {
-		spec, err := attach.BTFSpec(info.Program)
-		if err != nil {
-			return fmt.Errorf("program (id=%d): %w", info.ProgID, err)
-		}
-		if err := attach.ValidateSubfuncFromSpec(spec, info.ProgID, funcName); err != nil {
-			return err
-		}
-		logVerbose(cmd, "overriding entry function with --func %q", funcName)
-		info.FuncName = funcName
-
-		if needParams {
-			params, err = attach.GetFuncParamsFromSpec(spec, funcName)
+			progs, err := attach.WalkReachablePrograms(info.Program, info.ProgID)
 			if err != nil {
 				return err
 			}
-		}
-	} else if needParams {
-		if cmd.Bool("list-params") {
-			return fmt.Errorf("--list-params requires --func")
-		}
-		if cmd.Bool("arg-echo") {
-			return fmt.Errorf("--arg-echo requires --func")
-		}
-		return fmt.Errorf("--arg-filter requires --func")
-	}
-
-	// --list-params: show filterable parameters, then exit
-	if cmd.Bool("list-params") {
-		fmt.Fprintf(os.Stderr, "Filterable parameters for %s (id=%d):\n", funcName, info.ProgID)
-		if len(params) == 0 {
-			fmt.Fprintf(os.Stderr, "  (none - only integer parameters after the first argument are supported)\n")
-		}
-		for _, p := range params {
-			signStr := "unsigned"
-			if p.Signed {
-				signStr = "signed"
+			byParent := map[uint32][]attach.ReachableProgram{}
+			for _, p := range progs {
+				byParent[p.ParentID] = append(byParent[p.ParentID], p)
 			}
-			fmt.Fprintf(os.Stderr, "  %-20s [%d bytes, %s, arg index %d]\n", p.Name, p.Size, signStr, p.Index)
+			var printTree func(parent uint32, indent string)
+			printTree = func(parent uint32, indent string) {
+				for _, c := range byParent[parent] {
+					fmt.Fprintf(os.Stderr, "%sid=%-6d %s (%s[%s])\n",
+						indent, c.ProgID, c.ProgName, c.Via, formatKeyRanges(c.Keys))
+					printTree(c.ProgID, indent+"  ")
+				}
+			}
+			printTree(info.ProgID, "  ")
 		}
 		return nil
 	}
 
-	// --arg-filter: parse and validate argument filters
-	var argFilters []filter.ArgFilter
-	if argFilterExprs := cmd.StringSlice("arg-filter"); len(argFilterExprs) > 0 {
-		var err error
-		argFilters, err = filter.ParseAndValidateFilters(argFilterExprs, params)
-		if err != nil {
-			return err
+	// --list-funcs: print available BTF functions per target and exit
+	if cmd.Bool("list-funcs") {
+		for _, info := range infos {
+			funcs, err := attach.ListFuncs(info.Program)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(os.Stderr, "BTF functions in program (id=%d):\n", info.ProgID)
+			for _, f := range funcs {
+				fmt.Fprintf(os.Stderr, "  %-40s [%s]\n", f.Name, f.Linkage)
+			}
 		}
-		for _, f := range argFilters {
-			logVerbose(cmd, "arg filter: %s", f.String())
+		return nil
+	}
+
+	// Resolve the concrete (program, func) attach pairs: each --func
+	// attaches in every target program whose BTF carries it (noinline
+	// subfuncs get one copy per calling program); without --func each
+	// program contributes its entry function.
+	funcNames := cmd.StringSlice("func")
+	needParams := cmd.Bool("list-params") || len(cmd.StringSlice("arg-filter")) > 0 || cmd.Bool("arg-echo")
+	if len(funcNames) == 0 && needParams {
+		switch {
+		case cmd.Bool("list-params"):
+			return fmt.Errorf("--list-params requires --func")
+		case cmd.Bool("arg-echo"):
+			return fmt.Errorf("--arg-echo requires --func")
+		default:
+			return fmt.Errorf("--arg-filter requires --func")
+		}
+	}
+	targets, err := attach.ResolveTargets(infos, funcNames)
+	if err != nil {
+		return err
+	}
+	for _, t := range targets {
+		logVerbose(cmd, "attach target: prog id=%d func=%q", t.ProgID, t.FuncName)
+	}
+
+	// --list-params: show filterable parameters per attach pair, then exit.
+	// Params were resolved once from each program's cached BTF during
+	// ResolveTargets.
+	if cmd.Bool("list-params") {
+		for _, t := range targets {
+			fmt.Fprintf(os.Stderr, "Filterable parameters for %s (id=%d):\n", t.FuncName, t.ProgID)
+			if len(t.Params) == 0 {
+				fmt.Fprintf(os.Stderr, "  (none - only integer parameters after the first argument are supported)\n")
+			}
+			for _, p := range t.Params {
+				signStr := "unsigned"
+				if p.Signed {
+					signStr = "signed"
+				}
+				fmt.Fprintf(os.Stderr, "  %-20s [%d bytes, %s, arg index %d]\n", p.Name, p.Size, signStr, p.Index)
+			}
+		}
+		return nil
+	}
+
+	// --arg-filter: validate and resolve per target — the same param name
+	// can sit at a different arg index (or width) in different funcs, so
+	// each attach pair gets filters bound to its own BTF param layout.
+	var argFilters [][]filter.ArgFilter
+	if argFilterExprs := cmd.StringSlice("arg-filter"); len(argFilterExprs) > 0 {
+		argFilters = make([][]filter.ArgFilter, len(targets))
+		for i, t := range targets {
+			fs, err := filter.ParseAndValidateFilters(argFilterExprs, t.Params)
+			if err != nil {
+				return fmt.Errorf("func %s (id=%d): %w", t.FuncName, t.ProgID, err)
+			}
+			argFilters[i] = fs
+			for _, f := range fs {
+				logVerbose(cmd, "arg filter on %s: %s", t.FuncName, f.String())
+			}
 		}
 	}
 
 	// --arg-echo: emit the function's integer args instead of capturing
-	// packets. Reuses the parsed argFilters as a gate and the resolved
-	// integer params as the echo set.
+	// packets. Single-target diagnostic — with multiple attach pairs the
+	// interleaved output would be ambiguous, so require exactly one.
 	if cmd.Bool("arg-echo") {
-		probe, err := program.LoadArgEcho(info.Program, info.FuncName, argFilters, params, isFexit)
+		if len(targets) != 1 {
+			return fmt.Errorf("--arg-echo supports exactly one (program, func) target; %d resolved", len(targets))
+		}
+		t := targets[0]
+		var af []filter.ArgFilter
+		if argFilters != nil {
+			af = argFilters[0]
+		}
+		probe, err := program.LoadArgEcho(t.Program, t.FuncName, af, t.Params, isFexit)
 		if err != nil {
 			return err
 		}
 		printProbeWarnings(probe)
-		return runArgEchoLoop(cmd, probe, info.FuncName)
+		return runArgEchoLoop(cmd, probe, t.FuncName)
 	}
 
 	filterExpr := strings.Join(cmd.Args().Slice(), " ")
-	logVerbose(cmd, "found XDP program %q (id=%d)", info.FuncName, info.ProgID)
 	if filterExpr != "" {
 		logVerbose(cmd, "filter: %s", filterExpr)
 	}
@@ -498,15 +514,29 @@ func run(ctx context.Context, cmd *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	probe, err := loadProbe(isFexit, info, filterExpr, argFilters, useDSL)
+	var probe *program.Probe
+	if isFexit {
+		probe, err = program.LoadMultiExit(targets, filterExpr, argFilters, useDSL)
+	} else {
+		probe, err = program.LoadMultiEntry(targets, filterExpr, argFilters, useDSL)
+	}
 	if err != nil {
 		return err
 	}
 	printProbeWarnings(probe)
 
-	label := fmt.Sprintf("prog %q id=%d", info.FuncName, info.ProgID)
-	if info.IfaceName != "" {
-		label = fmt.Sprintf("%s on %s", label, info.IfaceName)
+	var label string
+	if len(targets) == 1 {
+		label = fmt.Sprintf("prog %q id=%d", targets[0].FuncName, targets[0].ProgID)
+		if infos[0].IfaceName != "" {
+			label = fmt.Sprintf("%s on %s", label, infos[0].IfaceName)
+		}
+	} else {
+		names := make([]string, len(targets))
+		for i, t := range targets {
+			names[i] = fmt.Sprintf("%s@%d", t.FuncName, t.ProgID)
+		}
+		label = fmt.Sprintf("%d attach points: %s", len(targets), strings.Join(names, ", "))
 	}
 	return runCaptureLoop(cmd, probe, isFexit, fmt.Sprintf("%s, mode=%s", label, mode))
 }
@@ -1091,10 +1121,10 @@ func validateXDPNativeFlags(cmd *cli.Command) error {
 	if cmd.String("interface") == "" {
 		return fmt.Errorf("--mode xdp requires -i <interface>")
 	}
-	if cmd.Int("prog-id") != 0 {
+	if len(cmd.IntSlice("prog-id")) > 0 {
 		return fmt.Errorf("--mode xdp does not accept -p (the program is xdp-ninja itself, not an existing one)")
 	}
-	if cmd.String("func") != "" {
+	if len(cmd.StringSlice("func")) > 0 {
 		return fmt.Errorf("--func is only valid with --mode entry/exit (no BTF subfunction concept in xdp-native)")
 	}
 	if len(cmd.StringSlice("arg-filter")) > 0 {
@@ -1106,37 +1136,57 @@ func validateXDPNativeFlags(cmd *cli.Command) error {
 	return nil
 }
 
-func findTarget(cmd *cli.Command, isTC bool) (*attach.ProgInfo, error) {
+// findTargets resolves `-p` (repeatable) or `-i` (single) into the target
+// programs. Multiple programs come only from repeated -p; an interface
+// still resolves to the single XDP program attached to it.
+func findTargets(cmd *cli.Command, isTC bool) ([]*attach.ProgInfo, error) {
 	ifaceName := cmd.String("interface")
-	progID := cmd.Int("prog-id")
+	progIDs := cmd.IntSlice("prog-id")
 
-	if ifaceName != "" && progID != 0 {
+	if ifaceName != "" && len(progIDs) > 0 {
 		return nil, fmt.Errorf("specify either -i or -p, not both")
 	}
-	if ifaceName == "" && progID == 0 {
+	if ifaceName == "" && len(progIDs) == 0 {
 		return nil, fmt.Errorf("specify -i <interface> or -p <prog-id>")
 	}
 
-	if isTC {
-		// tc clsact targets are addressed by program ID — no
-		// interface-based clsact qdisc walk wired up yet.
-		if ifaceName != "" {
+	if ifaceName != "" {
+		if isTC {
+			// tc clsact targets are addressed by program ID — no
+			// interface-based clsact qdisc walk wired up yet.
 			return nil, fmt.Errorf("--mode tc-* requires -p <prog-id>; interface-based tc target lookup is not implemented")
 		}
-		return attach.FindBPFProgramByID(uint32(progID))
+		info, err := attach.FindXDPProgram(ifaceName)
+		if err != nil {
+			return nil, err
+		}
+		return []*attach.ProgInfo{info}, nil
 	}
 
-	if progID != 0 {
-		return attach.FindXDPProgramByID(uint32(progID))
+	var infos []*attach.ProgInfo
+	seen := map[uint32]bool{}
+	for _, id := range progIDs {
+		pid := uint32(id)
+		if seen[pid] {
+			continue
+		}
+		seen[pid] = true
+		var info *attach.ProgInfo
+		var err error
+		if isTC {
+			info, err = attach.FindBPFProgramByID(pid)
+		} else {
+			info, err = attach.FindXDPProgramByID(pid)
+		}
+		if err != nil {
+			for _, prev := range infos {
+				_ = prev.Program.Close()
+			}
+			return nil, err
+		}
+		infos = append(infos, info)
 	}
-	return attach.FindXDPProgram(ifaceName)
-}
-
-func loadProbe(isFexit bool, info *attach.ProgInfo, filterExpr string, argFilters []filter.ArgFilter, useDSL bool) (*program.Probe, error) {
-	if isFexit {
-		return program.LoadExit(info.Program, info.FuncName, filterExpr, argFilters, useDSL)
-	}
-	return program.LoadEntry(info.Program, info.FuncName, filterExpr, argFilters, useDSL)
+	return infos, nil
 }
 
 

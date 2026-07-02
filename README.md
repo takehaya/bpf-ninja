@@ -64,6 +64,13 @@ sudo xdp-ninja -i eth0 --list-funcs
 
 # Attach to a specific __noinline subfunction (entry/exit only)
 sudo xdp-ninja -i eth0 --func process_packet | tcpdump -n -r -
+
+# Attach several (program, func) pairs in one run: -p and --func are
+# repeatable, and each func attaches in every listed program whose BTF
+# has it. All attach points share one ringbuf and merge into one pcap.
+# (e.g. UL + DL capture points living in separate per-direction programs)
+sudo xdp-ninja -p 1610 -p 1611 -p 1614 \
+  --func pgwu_capture_point_ul --func pgwu_capture_point_dl -w all.pcap
 ```
 
 ### Filter syntax
