@@ -74,7 +74,7 @@ var flags = []cli.Flag{
 	},
 	&cli.StringSliceFlag{
 		Name:  "set",
-		Usage: "define a named match set backed by a pinned BPF hash map: NAME=/sys/fs/bpf/path[,key(field=arg:param,...)]; reference it with --arg-filter @NAME. Entries are managed at runtime via `xdp-ninja set` (no re-attach needed)",
+		Usage: "define a named match set backed by a pinned BPF hash map: NAME=/sys/fs/bpf/path[,key(field=arg:param,...)]; reference it with --arg-filter @NAME (function arg) or the DSL predicate layer[field in @NAME] (packet field). Entries are managed at runtime via `xdp-ninja set` (no re-attach needed)",
 	},
 	&cli.BoolFlag{
 		Name:  "list-params",
