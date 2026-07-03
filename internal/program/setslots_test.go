@@ -79,6 +79,27 @@ func TestPktSetSlotsOnlyReferencedConsumeBudget(t *testing.T) {
 	}
 }
 
+func TestPktSetSlotsKeepsWiderKeysAligned(t *testing.T) {
+	// Allocate a u32-key set first, then a u64-key set. The u64 slot must
+	// stay 8-aligned so kunai's DWord store isn't verifier-rejected.
+	sets := []*setmap.Set{
+		setWithKey("small", 4, []setmap.KeyField{{Name: "teid", Off: 0, Size: 4}}),
+		setWithKey("wide", 8, []setmap.KeyField{{Name: "sid", Off: 0, Size: 8}}),
+	}
+	p := newPktSetSlots(sets)
+	p.SlotFor("small", "teid")
+	off, size, ok := p.SlotFor("wide", "sid")
+	if !ok {
+		t.Fatal("wide set should fit")
+	}
+	if size != 8 {
+		t.Fatalf("size = %d, want 8", size)
+	}
+	if off%8 != 0 {
+		t.Errorf("u64 slot %d is not 8-aligned (DWord store would be rejected)", off)
+	}
+}
+
 func TestPktSetSlotsUnknownSetOrField(t *testing.T) {
 	p := newPktSetSlots([]*setmap.Set{setWithKey("a", 4, []setmap.KeyField{{Name: "teid", Off: 0, Size: 4}})})
 	if p.HasSet("nope") {

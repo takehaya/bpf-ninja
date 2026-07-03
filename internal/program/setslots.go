@@ -83,7 +83,13 @@ func (p *pktSetSlots) SlotFor(setName, fieldName string) (off int16, size int, o
 		return 0, 0, false
 	}
 	if !s.allocated {
-		base := p.cursor - int16(s.def.KeySize)
+		// Round the allocation up to 8 so every buffer base stays
+		// 8-aligned (cursor starts at the 8-aligned pktSetKeyTop). A key
+		// field is laid out at a natural offset within its key, so an
+		// 8-aligned base keeps every extracted-field StoreMem naturally
+		// aligned — an unaligned DWord store would be verifier-rejected.
+		alloc := (int16(s.def.KeySize) + 7) &^ 7
+		base := p.cursor - alloc
 		if base < pktSetKeyFloor {
 			if p.err == nil {
 				p.err = fmt.Errorf("set @%s: combined packet-key width exceeds the %d-byte budget", setName, int(pktSetKeyTop-pktSetKeyFloor))
