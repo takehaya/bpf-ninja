@@ -79,6 +79,35 @@ func TestPktSetSlotsOnlyReferencedConsumeBudget(t *testing.T) {
 	}
 }
 
+func TestPktSetSlotsPacksToBudgetWithoutRounding(t *testing.T) {
+	// A 12-byte u32-only composite (align 4) + a 4-byte u32 key fit
+	// exactly in the 16-byte region; base alignment must not round each
+	// buffer up to 8 and spuriously overflow.
+	sets := []*setmap.Set{
+		setWithKey("big", 12, []setmap.KeyField{
+			{Name: "a", Off: 0, Size: 4}, {Name: "b", Off: 4, Size: 4}, {Name: "c", Off: 8, Size: 4},
+		}),
+		setWithKey("small", 4, []setmap.KeyField{{Name: "d", Off: 0, Size: 4}}),
+	}
+	p := newPktSetSlots(sets)
+	offBig, _, okBig := p.SlotFor("big", "a")
+	offSmall, _, okSmall := p.SlotFor("small", "d")
+	if !okBig || !okSmall {
+		t.Fatalf("both should fit: big=%v small=%v", okBig, okSmall)
+	}
+	if p.allocErr() != nil {
+		t.Fatalf("unexpected allocErr: %v", p.allocErr())
+	}
+	for _, off := range []int16{offBig, offSmall} {
+		if off < pktSetKeyFloor || off >= pktSetKeyTop {
+			t.Errorf("slot %d outside host region [%d,%d)", off, pktSetKeyFloor, pktSetKeyTop)
+		}
+		if off%4 != 0 {
+			t.Errorf("u32 slot %d not 4-aligned", off)
+		}
+	}
+}
+
 func TestPktSetSlotsKeepsWiderKeysAligned(t *testing.T) {
 	// Allocate a u32-key set first, then a u64-key set. The u64 slot must
 	// stay 8-aligned so kunai's DWord store isn't verifier-rejected.

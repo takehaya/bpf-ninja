@@ -65,6 +65,19 @@ func newPktSetSlots(sets []*setmap.Set) *pktSetSlots {
 // can surface a clear message instead of a downstream codegen error.
 func (p *pktSetSlots) allocErr() error { return p.err }
 
+// keyAlign is the alignment a key buffer needs: its widest field width
+// (each field sits at a natural offset within the key, so an aligned base
+// keeps every field aligned). Fields are 1/2/4/8 bytes; defaults to 1.
+func keyAlign(def *setmap.Definition) int16 {
+	align := int16(1)
+	for _, f := range def.Fields {
+		if int16(f.Size) > align {
+			align = int16(f.Size)
+		}
+	}
+	return align
+}
+
 // HasSet reports whether name was declared with --set.
 func (p *pktSetSlots) HasSet(name string) bool {
 	_, ok := p.sets[name]
@@ -83,13 +96,13 @@ func (p *pktSetSlots) SlotFor(setName, fieldName string) (off int16, size int, o
 		return 0, 0, false
 	}
 	if !s.allocated {
-		// Round the allocation up to 8 so every buffer base stays
-		// 8-aligned (cursor starts at the 8-aligned pktSetKeyTop). A key
-		// field is laid out at a natural offset within its key, so an
-		// 8-aligned base keeps every extracted-field StoreMem naturally
-		// aligned — an unaligned DWord store would be verifier-rejected.
-		alloc := (int16(s.def.KeySize) + 7) &^ 7
-		base := p.cursor - alloc
+		// A key field is laid out at a natural offset within its key, so
+		// aligning the base down to the key's widest field width keeps
+		// every extracted-field StoreMem naturally aligned (an unaligned
+		// DWord store would be verifier-rejected) while packing tighter
+		// than rounding the whole key up to 8.
+		align := keyAlign(s.def)
+		base := (p.cursor - int16(s.def.KeySize)) &^ (align - 1)
 		if base < pktSetKeyFloor {
 			if p.err == nil {
 				p.err = fmt.Errorf("set @%s: combined packet-key width exceeds the %d-byte budget", setName, int(pktSetKeyTop-pktSetKeyFloor))
