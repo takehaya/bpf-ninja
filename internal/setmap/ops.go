@@ -135,6 +135,11 @@ func Create(path, keySchema, valueSchema string, maxEntries uint32) error {
 		return fmt.Errorf("--value: %w", err)
 	}
 	valFields, valSize := layout(valSpecs)
+	// The value is a single integer tag (add/list round-trip it as one
+	// number); a multi-field or odd-width value has no tag semantics.
+	if len(valFields) != 1 || !validFieldSize(valSize) {
+		return fmt.Errorf("--value must be a single u8/u16/u32/u64 tag field, got %q", valueSchema)
+	}
 
 	m, err := ebpf.NewMap(&ebpf.MapSpec{
 		Name: "xdpninja_set", Type: ebpf.Hash,
@@ -240,6 +245,18 @@ func putUint(buf []byte, v uint64) {
 	}
 }
 
+// tagWidth returns the value byte width, which must be a single 1/2/4/8-byte
+// integer for the tag to round-trip through putUint/getUint. `set create`
+// enforces this; the guard also covers externally-created maps with an
+// odd or multi-field value.
+func (d *Definition) tagWidth() (uint32, error) {
+	w := d.Map.ValueSize()
+	if !validFieldSize(w) {
+		return 0, fmt.Errorf("map value is %d bytes; tag add/list needs a single u8/u16/u32/u64 value", w)
+	}
+	return w, nil
+}
+
 // Add inserts (or updates) one entry. The value is the tag zero-extended
 // to the map's value size (default tag 1 = plain presence).
 func (d *Definition) Add(values map[string]uint64, tag uint64) error {
@@ -247,13 +264,15 @@ func (d *Definition) Add(values map[string]uint64, tag uint64) error {
 	if err != nil {
 		return err
 	}
-	valSize := d.Map.ValueSize()
-	if valSize < 8 && tag >= 1<<(8*valSize) {
-		return fmt.Errorf("tag %d does not fit the map's %d-byte value", tag, valSize)
+	w, err := d.tagWidth()
+	if err != nil {
+		return err
 	}
-	val := make([]byte, int(valSize))
-	n := min(len(val), 8)
-	putUint(val[:n], tag)
+	if w < 8 && tag >= 1<<(8*w) {
+		return fmt.Errorf("tag %d does not fit the map's %d-byte value", tag, w)
+	}
+	val := make([]byte, int(w))
+	putUint(val, tag)
 	return d.Map.Put(key, val)
 }
 
@@ -267,18 +286,21 @@ func (d *Definition) Delete(values map[string]uint64) error {
 }
 
 // List writes all entries as `field=value ... tag=N` lines.
-func (d *Definition) List(w io.Writer) error {
+func (d *Definition) List(out io.Writer) error {
+	tagW, err := d.tagWidth()
+	if err != nil {
+		return err
+	}
 	key := make([]byte, int(d.KeySize))
-	val := make([]byte, int(d.Map.ValueSize()))
+	val := make([]byte, int(tagW))
 	iter := d.Map.Iterate()
 	for iter.Next(&key, &val) {
 		var parts []string
 		for _, f := range d.Fields {
 			parts = append(parts, fmt.Sprintf("%s=%d", f.Name, getUint(key[f.Off:f.Off+f.Size])))
 		}
-		n := min(len(val), 8)
-		parts = append(parts, fmt.Sprintf("tag=%d", getUint(val[:n])))
-		_, _ = fmt.Fprintln(w, strings.Join(parts, " "))
+		parts = append(parts, fmt.Sprintf("tag=%d", getUint(val)))
+		_, _ = fmt.Fprintln(out, strings.Join(parts, " "))
 	}
 	return iter.Err()
 }

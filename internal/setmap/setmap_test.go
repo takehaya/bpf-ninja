@@ -160,3 +160,9 @@ func TestCreateRejectsReservedKeyField(t *testing.T) {
 		t.Errorf("reserved-key err = %v", err)
 	}
 }
+
+func TestCreateRejectsMultiFieldValue(t *testing.T) {
+	if err := Create("/sys/fs/bpf/unused", "imsi:u64", "a:u8,b:u16", 8); err == nil || !strings.Contains(err.Error(), "single") {
+		t.Errorf("multi-field value err = %v, want 'single ... tag'", err)
+	}
+}
