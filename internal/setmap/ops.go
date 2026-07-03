@@ -119,6 +119,13 @@ func Create(path, keySchema, valueSchema string, maxEntries uint32) error {
 	if keySize > MaxKeySize {
 		return fmt.Errorf("key size %d exceeds the %d-byte limit", keySize, MaxKeySize)
 	}
+	// "tag" is reserved for the value assignment in `set add`, so a key
+	// field of that name could never be addressed on the CLI.
+	for _, f := range keyFields {
+		if f.Name == reservedTagName {
+			return fmt.Errorf("key field name %q is reserved (used for the value in `set add`)", f.Name)
+		}
+	}
 
 	if valueSchema == "" {
 		valueSchema = "tag:u32"
@@ -145,6 +152,10 @@ func Create(path, keySchema, valueSchema string, maxEntries uint32) error {
 	return nil
 }
 
+// reservedTagName is the field=value key that `set add`/`del` treat as
+// the entry value (tag) rather than a key field.
+const reservedTagName = "tag"
+
 // ParseFieldValues parses `field=value` CLI args (decimal or 0x hex) and
 // splits off the reserved `tag=` value assignment.
 func ParseFieldValues(args []string) (fields map[string]uint64, tag uint64, hasTag bool, err error) {
@@ -158,7 +169,7 @@ func ParseFieldValues(args []string) (fields map[string]uint64, tag uint64, hasT
 		if perr != nil {
 			return nil, 0, false, fmt.Errorf("argument %q: %w", a, perr)
 		}
-		if name == "tag" {
+		if name == reservedTagName {
 			tag, hasTag = v, true
 			continue
 		}
@@ -186,7 +197,7 @@ func parseUint(s string) (uint64, error) {
 // Padding is zeroed — hash maps hash all key_size bytes, so a non-zero
 // pad byte would make lookups silently miss.
 func (d *Definition) BuildKey(values map[string]uint64) ([]byte, error) {
-	key := make([]byte, d.KeySize)
+	key := make([]byte, int(d.KeySize))
 	used := map[string]bool{}
 	for _, f := range d.Fields {
 		v, ok := values[f.Name]
@@ -240,7 +251,7 @@ func (d *Definition) Add(values map[string]uint64, tag uint64) error {
 	if valSize < 8 && tag >= 1<<(8*valSize) {
 		return fmt.Errorf("tag %d does not fit the map's %d-byte value", tag, valSize)
 	}
-	val := make([]byte, valSize)
+	val := make([]byte, int(valSize))
 	n := min(len(val), 8)
 	putUint(val[:n], tag)
 	return d.Map.Put(key, val)
@@ -257,8 +268,8 @@ func (d *Definition) Delete(values map[string]uint64) error {
 
 // List writes all entries as `field=value ... tag=N` lines.
 func (d *Definition) List(w io.Writer) error {
-	key := make([]byte, d.KeySize)
-	val := make([]byte, d.Map.ValueSize())
+	key := make([]byte, int(d.KeySize))
+	val := make([]byte, int(d.Map.ValueSize()))
 	iter := d.Map.Iterate()
 	for iter.Next(&key, &val) {
 		var parts []string
