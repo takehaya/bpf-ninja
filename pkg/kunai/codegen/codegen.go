@@ -258,6 +258,11 @@ const dslReject = "dsl_reject"
 //   - host: any subset of [-1, KunaiStackTop+1]; xdp-ninja uses -48
 //     for the saved tracing args pointer.
 //
+// The host may additionally use slots at or below this line *strictly
+// before* jumping into the filter (temporal reuse): xdp-ninja's set
+// filters build their map-lookup key at -57..-120, which is dead by the
+// time the filter body (the owner of this region at runtime) executes.
+//
 // The TestZeroCapsIsHostAgnostic regression check asserts that a
 // zero-Capabilities filter never touches any slot above this line.
 const KunaiStackTop = int16(-56)
