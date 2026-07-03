@@ -17,6 +17,16 @@ func (r *resolver) resolveBracketPredicate(ap *ast.Predicate, layer *ir.LayerIns
 	if field.Aux != nil && field.Aux.Stack != nil && field.Aux.Stack.IsIterator {
 		return nil, errorf(ap.Pos, "auxiliary header stack %q needs an index inside a bracket predicate (use `[N]` or wrap in `any(...)` / `all(...)`)", field.Aux.OutParam)
 	}
+	// `in @set` extracts the field into a host key buffer that the host
+	// looks up unconditionally after the filter. That is only correct if
+	// the predicate is always evaluated on the accept path, so the owning
+	// layer must be mandatory: a `?` / `*` / `+` / `{n,m}` layer that is
+	// absent would leave the buffer unwritten and the lookup would match
+	// the wrong (zeroed) key. (Alternation members are rejected in
+	// resolveAlternation.)
+	if ap.Kind == ast.PredInSet && layer.Quant != ast.QuantOne {
+		return nil, errorf(ap.Pos, "`in @%s` is only supported on a mandatory layer; %q here is optional/repeated (quantifier %s)", ap.SetName, layer.Spec.Name, layer.Quant)
+	}
 	// Bracket-predicate fit check: integer literal must fit the
 	// field's declared bit width (dsl-types.md §7.2). Delegated to
 	// the typing helper so the same rule is in one place.

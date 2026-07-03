@@ -495,6 +495,7 @@ sudo xdp-ninja -i eth0 --mode xdp --set "flows=/sys/fs/bpf/flows" \
 - **エンディアン**: パケットは network order、`set add` は host order で書きますが、ツールが変換を合わせるので**利用者は普段どおりの数値で `set add` するだけ**です。
 - **キー幅の上限**: パケット由来キーはホストスタックの空き領域を使うため、**合計 16 バイトまで** (TEID=4 / IMSI=8 / TEID+IMSI=12 は可)。1 フィールドは 8 バイトまで (16B の SRv6 SID 単体は後日対応)。
 - `@NAME` は他の bracket 条件・レイヤ条件と AND。`in @NAME` は bracket predicate 専用で、`where` 句の中では使えません。
+- `in @NAME` は**必ず通るレイヤ**(quantifier なしの `QuantOne`)にのみ書けます。`vlan[...]?` のような optional / 繰り返しレイヤや alternation の枝 (`(vlan[...]|qinq)`) は、そのレイヤが不在でもフィルタが成立しうるため、抽出が走らずキーが未書き込みになる可能性があり reject されます。
 - 引数由来 (`--arg-filter @NAME`) は entry/exit 専用のまま。パケット由来 (DSL `@NAME`) は entry/exit と `--mode xdp` の両方で動きます。
 
 ## 関数引数の値を覗く (`--arg-echo`)
