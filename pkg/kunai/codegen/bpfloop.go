@@ -114,7 +114,7 @@ const bpfLoopChainCap = 32
 // static path in chain.go; tightening this loop's over-run to match is a
 // follow-up. Non-chain-end protocols (VLAN) bound both ends via their
 // self-dispatch peek.
-func genBpfLoopChain(layer *ir.LayerInstance, index int, all []*ir.LayerInstance) (asm.Instructions, asm.Instructions, error) {
+func genBpfLoopChain(layer *ir.LayerInstance, index int, all []*ir.LayerInstance, pc *predCtx) (asm.Instructions, asm.Instructions, error) {
 	rangeMin, _ := chainBounds(layer)
 	if rangeMin == 0 && index == 0 {
 		return nil, nil, fmt.Errorf("%w: `*` on the first layer has no parent to peek", ErrNotImplemented)
@@ -151,7 +151,7 @@ func genBpfLoopChain(layer *ir.LayerInstance, index int, all []*ir.LayerInstance
 		// Whole-chain skip: peek the parent dispatch; on mismatch
 		// jump past every iteration (including the bpf_loop call and
 		// its reload) so offsetBase stays put for the next layer.
-		body, err := emitPeekedIterZero(layer, index, all, chainDone)
+		body, err := emitPeekedIterZero(layer, index, all, chainDone, pc)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -159,7 +159,7 @@ func genBpfLoopChain(layer *ir.LayerInstance, index int, all []*ir.LayerInstance
 	} else {
 		// `+` / `{n,m}` with n ≥ 1: iteration 0 is a mandatory
 		// parent-dispatched layer identical to a QuantOne.
-		first, err := genStaticLayer(layer, index, all)
+		first, err := genStaticLayer(layer, index, all, pc)
 		if err != nil {
 			return nil, nil, err
 		}

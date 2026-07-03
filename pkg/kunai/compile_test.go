@@ -123,14 +123,87 @@ func TestCompileIPv4OrderedRejected(t *testing.T) {
 	}
 }
 
-func TestCompileInSetNotYetWired(t *testing.T) {
-	// The `in @set` predicate parses and resolves, but codegen + host
-	// map lookup land in a later commit, so Compile gates it for now.
+func TestCompileInSetNeedsHostSupport(t *testing.T) {
+	// Without a SetSlotResolver the host does not support set matching,
+	// so `in @set` is rejected (zero Capabilities).
 	_, err := Compile("eth/ipv4/udp/gtp[teid in @teids]", codegen.Capabilities{})
 	if !errors.Is(err, codegen.ErrNotImplemented) {
-		t.Fatalf("expected ErrNotImplemented for `in @set`, got %v", err)
+		t.Fatalf("expected ErrNotImplemented for `in @set` without host support, got %v", err)
 	}
 }
+
+// fakeSetSlots is a test SetSlotResolver: set "teids" has a 4-byte "teid"
+// key field at host slot R10-40.
+type fakeSetSlots struct{}
+
+func (fakeSetSlots) HasSet(name string) bool { return name == "teids" }
+func (fakeSetSlots) SlotFor(set, field string) (int16, int, bool) {
+	if set == "teids" && field == "teid" {
+		return -40, 4, true
+	}
+	return 0, 0, false
+}
+
+func TestCompileInSetExtractsToSlotStayingMapAgnostic(t *testing.T) {
+	caps := codegen.Capabilities{Lang: codegen.LangCaps{SetSlots: fakeSetSlots{}}}
+	out, err := Compile("eth/ipv4/udp/gtp[teid in @teids]", caps)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	// The host is told which field went to which slot.
+	if len(out.Extractions) != 1 {
+		t.Fatalf("extractions = %+v, want 1", out.Extractions)
+	}
+	if ex := out.Extractions[0]; ex.SetName != "teids" || ex.FieldName != "teid" || ex.StackOff != -40 || ex.StoreSize != 4 {
+		t.Errorf("extraction = %+v", ex)
+	}
+
+	insns := out.Instructions()
+	// Invariant: kunai never emits a map lookup — the host does that.
+	for _, ins := range insns {
+		if ins.OpCode.JumpOp() == asm.Call && ins.Src != asm.PseudoCall && ins.Constant == int64(asm.FnMapLookupElem) {
+			t.Fatal("codegen emitted FnMapLookupElem; kunai must stay map-agnostic")
+		}
+	}
+	// The extracted field is stored into the host slot (R10-40).
+	var stored bool
+	for _, ins := range insns {
+		if ins.Dst == asm.R10 && ins.OpCode.Class().IsStore() && int16(ins.Offset) == -40 {
+			stored = true
+		}
+	}
+	if !stored {
+		t.Error("no store of the extracted field to host slot R10-40")
+	}
+	// Byte-order contract: a multi-byte field is byte-swapped to host
+	// order (BPF_END, not BSwap) so the stored key matches `set add`.
+	swapOp := asm.HostTo(asm.BE, asm.R3, asm.Word).OpCode
+	var swapped bool
+	for _, ins := range insns {
+		if ins.OpCode == swapOp {
+			swapped = true
+		}
+	}
+	if !swapped {
+		t.Error("no HostTo(BE) byte-swap before the slot store (byte-order would mismatch the map key)")
+	}
+}
+
+func TestCompileInSetRejectsSlotInsideKunaiRegion(t *testing.T) {
+	// A host that hands back a slot in kunai's own stack range must be
+	// rejected — the extraction would be clobbered mid-filter.
+	caps := codegen.Capabilities{Lang: codegen.LangCaps{SetSlots: badSlot{}}}
+	_, err := Compile("eth/ipv4/udp/gtp[teid in @teids]", caps)
+	if err == nil || !strings.Contains(err.Error(), "kunai's stack region") {
+		t.Fatalf("expected kunai-region rejection, got %v", err)
+	}
+}
+
+// badSlot returns an offset inside kunai's stack region (<= KunaiStackTop).
+type badSlot struct{}
+
+func (badSlot) HasSet(name string) bool                            { return name == "teids" }
+func (badSlot) SlotFor(_, _ string) (off int16, size int, ok bool) { return -200, 4, true }
 
 func TestCompileVlanOptionalSucceeds(t *testing.T) {
 	// `?` quantifier + real vlan vocab — verifies end-to-end path.

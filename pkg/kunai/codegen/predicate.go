@@ -20,9 +20,12 @@ import (
 // The field lookup is delegated to each emit* so the byte/bit-level
 // constraints can differ — IPv6 is 128 bits which findFieldByteOffset
 // rejects, and MAC is 6 bytes which asmSizeFor rejects.
-func genPredicate(pred *ir.Predicate) (asm.Instructions, error) {
+func genPredicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, error) {
 	if pred.Unsupported != "" {
 		return nil, fmt.Errorf("%w: %s", ErrNotImplemented, pred.Unsupported)
+	}
+	if pred.Kind == ast.PredInSet {
+		return emitInSetPredicate(pred, pc)
 	}
 	if pred.Kind == ast.PredIn {
 		return emitInPredicate(pred)
@@ -162,6 +165,97 @@ func emitIntPredicate(pred *ir.Predicate) (asm.Instructions, error) {
 	return insns, nil
 }
 
+// predCtx threads the host's set-slot resolver and an extraction
+// accumulator through the predicate emitters. It is nil-safe: a nil
+// predCtx (or a nil Sets) means the host does not support `in @set`.
+type predCtx struct {
+	sets SetSlotResolver
+	out  *[]ExtractSlot
+}
+
+// emitInSetPredicate lowers `field in @set` for architecture B: it does
+// NOT emit a map lookup (kunai stays map-agnostic). Instead it extracts
+// the packet field into the host-owned R10 slot the SetSlotResolver
+// designates, so the host can look the pinned map up against those bytes
+// after the filter returns. The atom never affects the verdict — only a
+// layer that cannot be reached fails, via the shared dslReject the field
+// load already jumps to.
+//
+// Byte order (correctness-critical): `set add` writes the key value in
+// native byte order (setmap.BuildKey/putUint use binary.NativeEndian).
+// emitBoundedLoad packs network-order packet bytes into R3 as a host-LE
+// integer, so a multi-byte field is byte-reversed relative to its
+// numeric value. HostTo(BE) brings R3 to the numeric value in host
+// order; StoreMem then writes it native-endian, matching the map key.
+func emitInSetPredicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, error) {
+	if pc == nil || pc.sets == nil {
+		return nil, fmt.Errorf("%w: `in @%s` needs a host that supports set matching", ErrNotImplemented, pred.SetName)
+	}
+	if !pc.sets.HasSet(pred.SetName) {
+		return nil, fmt.Errorf("unknown set @%s (declare it with --set %s=/sys/fs/bpf/...)", pred.SetName, pred.SetName)
+	}
+	if pred.Field == nil || pred.Field.Field == nil {
+		return nil, fmt.Errorf("codegen: in-set predicate missing field reference")
+	}
+	// Implicit name match: the DSL field name is the set's key field name.
+	fieldName := pred.Field.Field.Name
+	slotOff, slotSize, ok := pc.sets.SlotFor(pred.SetName, fieldName)
+	if !ok {
+		return nil, fmt.Errorf("set @%s has no key field %q (check `xdp-ninja set schema`)", pred.SetName, fieldName)
+	}
+	// The extraction is written during the filter and read after it, so
+	// the slot must live in the host region, never kunai's stack range.
+	if slotOff <= KunaiStackTop {
+		return nil, fmt.Errorf("codegen: set slot %d for @%s.%s is inside kunai's stack region (must be > %d)", slotOff, pred.SetName, fieldName, KunaiStackTop)
+	}
+
+	fieldOff, bytes, err := fieldRefByteOffset(pred.Field)
+	if err != nil {
+		return nil, err
+	}
+	if bytes > 8 {
+		return nil, fmt.Errorf("%w: set key field %q is %d bytes; packet-field extraction supports up to 8 (16-byte keys such as SRv6 SID are a follow-up)", ErrNotImplemented, fieldName, bytes)
+	}
+	if bytes > slotSize {
+		return nil, fmt.Errorf("packet field %q (%d bytes) is wider than set @%s key field %q (%d bytes)", fieldName, bytes, pred.SetName, fieldName, slotSize)
+	}
+	size, err := asmSizeFor(bytes)
+	if err != nil {
+		return nil, err
+	}
+
+	var insns asm.Instructions
+	// Single-aux fields gate on presence just like emitIntPredicate;
+	// iterator-stack (dynamic) aux fields are rejected at resolve time.
+	if pred.Field.Aux != nil {
+		insns = append(insns, emitAuxGating(pred.Field.Aux.Gating, r4Anchor(), dslReject)...)
+	}
+	insns = append(insns, emitBoundedLoad(asm.R3, int16(fieldOff), size, dslReject)...)
+
+	// Normalize the register to the field's numeric value in host order.
+	hasSlice := pred.Field.Slice != nil
+	subByte := fieldIsSubByte(pred.Field)
+	switch {
+	case hasSlice || subByte:
+		if bytes > 1 {
+			insns = append(insns, asm.HostTo(asm.BE, asm.R3, size))
+		}
+		insns = append(insns, emitSliceShiftMask(pred.Field, bytes)...)
+	case bytes > 1:
+		insns = append(insns, asm.HostTo(asm.BE, asm.R3, size))
+	}
+	// Store native-endian into the host key slot (matches `set add`).
+	insns = append(insns, asm.StoreMem(asm.R10, slotOff, asm.R3, size))
+
+	if pc.out != nil {
+		*pc.out = append(*pc.out, ExtractSlot{
+			SetName: pred.SetName, FieldName: fieldName,
+			StackOff: slotOff, StoreSize: bytes,
+		})
+	}
+	return insns, nil
+}
+
 // swapValueBytes reverses the low `bytes` bytes of v so an LE-loaded
 // register can be compared against the native-order constant with a
 // single JEq/JNE. e.g. 443 (0x01BB) over 2 bytes → 0xBB01.
@@ -292,15 +386,15 @@ func ipv6AuxHalfCheck(loadAt auxLoadAt, chunkOff int, mask, host uint64, failLab
 // literal` where op ∈ {<, ≤, >, ≥} and field is a 128-bit IPv6
 // address (F3). Algorithm:
 //
-//   load + host-swap high half of field into R3
-//   reg-cmp R3 against literal high:
-//     - if `op` is "strictly more permissive" (e.g. < and field<lit) → match
-//     - if `op` is "strictly impossible" (e.g. < and field>lit) → fail
-//     - if equal → fall through to low check
-//   load + host-swap low half of field into R3
-//   reg-cmp R3 against literal low (same op as the original):
-//     - on miss → fail
-//     - on match → success
+//	load + host-swap high half of field into R3
+//	reg-cmp R3 against literal high:
+//	  - if `op` is "strictly more permissive" (e.g. < and field<lit) → match
+//	  - if `op` is "strictly impossible" (e.g. < and field>lit) → fail
+//	  - if equal → fall through to low check
+//	load + host-swap low half of field into R3
+//	reg-cmp R3 against literal low (same op as the original):
+//	  - on miss → fail
+//	  - on match → success
 //
 // Match success falls through to the next predicate; mismatches jump
 // to dslReject. We use a per-predicate match landing so the early

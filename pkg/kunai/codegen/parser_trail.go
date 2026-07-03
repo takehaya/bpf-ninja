@@ -9,7 +9,6 @@ import (
 	"github.com/takehaya/xdp-ninja/pkg/kunai/vocab"
 )
 
-
 // variableTailSkip describes a header whose total wire size depends
 // on a length field embedded in its fixed prefix. The codegen
 // emits the fixed-prefix extract first, then a "tail skip" of

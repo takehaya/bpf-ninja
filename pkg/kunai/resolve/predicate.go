@@ -57,11 +57,9 @@ func (r *resolver) resolveBracketPredicate(ap *ast.Predicate, layer *ir.LayerIns
 	if ap.Kind == ast.PredHas {
 		rp.Unsupported = "'has' predicate not yet implemented"
 	}
-	if ap.Kind == ast.PredInSet {
-		// Field is bound and the aux/iterator guards above have run; the
-		// codegen + host map-lookup wiring lands in a later commit.
-		rp.Unsupported = "'in @set' predicate not yet wired"
-	}
+	// PredInSet is wired in codegen (emitInSetPredicate); it needs the
+	// host's SetSlotResolver, which the resolver does not carry, so its
+	// set-existence / field checks happen there, not here.
 	return rp, nil
 }
 

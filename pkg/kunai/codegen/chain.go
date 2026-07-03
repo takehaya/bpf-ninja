@@ -29,7 +29,7 @@ func staticChainFitsRange(max int) bool {
 // KUNAI_MPLS_MPLS_NO_CHECK).
 // Iterations below RangeMin fail hard; iterations at or above RangeMin
 // skip to a single chain-done landing so a short stack falls through.
-func genStaticChain(layer *ir.LayerInstance, index int, all []*ir.LayerInstance) (asm.Instructions, error) {
+func genStaticChain(layer *ir.LayerInstance, index int, all []*ir.LayerInstance, pc *predCtx) (asm.Instructions, error) {
 	if layer.RangeMax < 0 {
 		return nil, fmt.Errorf("%w: open-ended quantifier {%d,} on %q needs bpf_loop chain codegen", ErrNotImplemented, layer.RangeMin, layer.Spec.Name)
 	}
@@ -45,7 +45,7 @@ func genStaticChain(layer *ir.LayerInstance, index int, all []*ir.LayerInstance)
 		return nil, err
 	}
 
-	first, err := genStaticLayer(layer, index, all)
+	first, err := genStaticLayer(layer, index, all, pc)
 	if err != nil {
 		return nil, err
 	}
@@ -81,8 +81,11 @@ func genStaticChain(layer *ir.LayerInstance, index int, all []*ir.LayerInstance)
 		Dispatch: &ir.DispatchChoice{Type: selfConst.Type, Const: selfConst},
 	}
 	// Predicates are identical across iterations; emit once and append
-	// the same slice from each iteration.
-	preds, err := emitPredicates(layer.Predicates)
+	// the same slice from each iteration. Use a no-accumulate predCtx so
+	// an `in @set` extraction records its host slot only once (genStaticLayer
+	// above already did); the store asm still replays each iteration.
+	replayPC := &predCtx{sets: pc.sets}
+	preds, err := emitPredicates(layer.Predicates, replayPC)
 	if err != nil {
 		return nil, err
 	}

@@ -179,6 +179,14 @@ type Output struct {
 	Callbacks asm.Instructions
 	Capture   CaptureInfo
 
+	// Extractions lists the packet fields the filter body stored into
+	// host stack slots for `field in @set` predicates. The host reads
+	// these back to know which pinned map to look up against which slot,
+	// after the filter returns. nil when the chain has no `in @set`.
+	// No map/FD/BTF here — only a set-name label, the R10 slot, and the
+	// stored width — so kunai stays map-agnostic.
+	Extractions []ExtractSlot
+
 	// Warnings is the list of non-fatal notices the resolver and
 	// codegen accumulate during compile. Callers (xdp-ninja CLI etc.)
 	// typically surface them on stderr. Until kunai 1.0 the slice is
@@ -186,6 +194,17 @@ type Output struct {
 	// patch releases (see pkg/kunai/README.md). The zero value (nil)
 	// means "no warnings".
 	Warnings []string
+}
+
+// ExtractSlot records one `field in @set` extraction: codegen stored the
+// packet field's value (host byte order, StoreSize bytes) at R10+StackOff,
+// for the pinned set named SetName's key field FieldName. The host builds
+// its lookup key from these slots.
+type ExtractSlot struct {
+	SetName   string
+	FieldName string
+	StackOff  int16
+	StoreSize int
 }
 
 // Instructions returns Main concatenated with Callbacks. Callers
@@ -352,8 +371,10 @@ func Gen(p *ir.Program, caps Capabilities) (Output, error) {
 	// the existing >=2 reject. See acc.go.
 	plan := buildAccPlan(where, qo)
 	var callbacks asm.Instructions
+	var extractions []ExtractSlot
+	pc := &predCtx{sets: caps.Lang.SetSlots, out: &extractions}
 	for i, layer := range p.Layers {
-		layerInsns, cb, err := genLayer(layer, i, p.Layers, qo, plan)
+		layerInsns, cb, err := genLayer(layer, i, p.Layers, qo, plan, pc)
 		if err != nil {
 			return Output{}, err
 		}
@@ -396,10 +417,11 @@ func Gen(p *ir.Program, caps Capabilities) (Output, error) {
 	)
 
 	return Output{
-		Main:      insns,
-		Callbacks: callbacks,
-		Capture:   capInfo,
-		Warnings:  cloneWarnings(p.Warnings),
+		Main:        insns,
+		Callbacks:   callbacks,
+		Capture:     capInfo,
+		Extractions: extractions,
+		Warnings:    cloneWarnings(p.Warnings),
 	}, nil
 }
 
@@ -657,10 +679,10 @@ func emitBounds(hs int, failLabel string) asm.Instructions {
 // one's compiled comparison. Stopping at the first ErrNotImplemented
 // keeps the error message close to the offending predicate; the
 // per-predicate Pos is attached so users see line:col.
-func emitPredicates(preds []*ir.Predicate) (asm.Instructions, error) {
+func emitPredicates(preds []*ir.Predicate, pc *predCtx) (asm.Instructions, error) {
 	var out asm.Instructions
 	for _, pred := range preds {
-		pi, err := genPredicate(pred)
+		pi, err := genPredicate(pred, pc)
 		if err != nil {
 			return nil, withPos(err, pred.Pos)
 		}
@@ -791,33 +813,33 @@ func checkHostLayerSupport(p *ir.Program, host HostLayout) error {
 // value holds any bpf2bpf subprogram instructions the chain codegen
 // needs appended after the main stream — empty for every non-bpf_loop
 // path.
-func genLayer(layer *ir.LayerInstance, index int, all []*ir.LayerInstance, qo queriedOptions, plan *accPlan) (asm.Instructions, asm.Instructions, error) {
-	insns, callbacks, err := genLayerInner(layer, index, all, qo, plan)
+func genLayer(layer *ir.LayerInstance, index int, all []*ir.LayerInstance, qo queriedOptions, plan *accPlan, pc *predCtx) (asm.Instructions, asm.Instructions, error) {
+	insns, callbacks, err := genLayerInner(layer, index, all, qo, plan, pc)
 	return insns, callbacks, withPos(err, layer.Pos)
 }
 
-func genLayerInner(layer *ir.LayerInstance, index int, all []*ir.LayerInstance, qo queriedOptions, plan *accPlan) (asm.Instructions, asm.Instructions, error) {
+func genLayerInner(layer *ir.LayerInstance, index int, all []*ir.LayerInstance, qo queriedOptions, plan *accPlan, pc *predCtx) (asm.Instructions, asm.Instructions, error) {
 	if layer.Alternation != nil {
-		return genAlternation(layer, index, all, qo, plan)
+		return genAlternation(layer, index, all, qo, plan, pc)
 	}
 	switch layer.Quant {
 	case ast.QuantOne:
 		if layer.Spec.ParseStateMachine != nil {
-			return genParserMachine(layer, index, all, qo, plan)
+			return genParserMachine(layer, index, all, qo, plan, pc)
 		}
-		insns, err := genStaticLayer(layer, index, all)
+		insns, err := genStaticLayer(layer, index, all, pc)
 		return insns, nil, err
 	case ast.QuantOpt:
-		insns, err := genOptionalLayer(layer, index, all)
+		insns, err := genOptionalLayer(layer, index, all, pc)
 		return insns, nil, err
 	case ast.QuantRange:
 		if staticChainFitsRange(layer.RangeMax) {
-			insns, err := genStaticChain(layer, index, all)
+			insns, err := genStaticChain(layer, index, all, pc)
 			return insns, nil, err
 		}
-		return genBpfLoopChain(layer, index, all)
+		return genBpfLoopChain(layer, index, all, pc)
 	case ast.QuantPlus, ast.QuantStar:
-		return genBpfLoopChain(layer, index, all)
+		return genBpfLoopChain(layer, index, all, pc)
 	}
 	return nil, nil, fmt.Errorf("%w: quantifier %s on layer %q", ErrNotImplemented, layer.Quant, layer.Spec.Name)
 }
@@ -825,7 +847,7 @@ func genLayerInner(layer *ir.LayerInstance, index int, all []*ir.LayerInstance, 
 // genStaticLayer emits the bounds check, dispatch check, predicates,
 // and R4 advancement for a layer that is always present. Failure of
 // any check jumps to dslReject.
-func genStaticLayer(layer *ir.LayerInstance, index int, all []*ir.LayerInstance) (asm.Instructions, error) {
+func genStaticLayer(layer *ir.LayerInstance, index int, all []*ir.LayerInstance, pc *predCtx) (asm.Instructions, error) {
 	hs, err := headerSize(layer.Spec)
 	if err != nil {
 		return nil, err
@@ -841,7 +863,7 @@ func genStaticLayer(layer *ir.LayerInstance, index int, all []*ir.LayerInstance)
 		insns = append(insns, di...)
 	}
 
-	preds, err := emitPredicates(layer.Predicates)
+	preds, err := emitPredicates(layer.Predicates, pc)
 	if err != nil {
 		return nil, err
 	}
@@ -939,7 +961,7 @@ func variableTailSkipFromHeaderLength(vs *vocab.HeaderLength) variableTailSkip {
 // next layer with R4 pointing at the right place. DispatchNoCheck is
 // rejected because there is no way to detect absence when the vocab
 // says "don't look".
-func genOptionalLayer(layer *ir.LayerInstance, index int, all []*ir.LayerInstance) (asm.Instructions, error) {
+func genOptionalLayer(layer *ir.LayerInstance, index int, all []*ir.LayerInstance, pc *predCtx) (asm.Instructions, error) {
 	if index == 0 {
 		return nil, fmt.Errorf("%w: the first layer cannot be optional", ErrNotImplemented)
 	}
@@ -951,7 +973,7 @@ func genOptionalLayer(layer *ir.LayerInstance, index int, all []*ir.LayerInstanc
 	}
 
 	skipLabel := fmt.Sprintf("dsl_skip_%d", index)
-	body, err := emitPeekedIterZero(layer, index, all, skipLabel)
+	body, err := emitPeekedIterZero(layer, index, all, skipLabel, pc)
 	if err != nil {
 		return nil, err
 	}
@@ -972,7 +994,7 @@ func genOptionalLayer(layer *ir.LayerInstance, index int, all []*ir.LayerInstanc
 // emitBounds has already validated, so it is safe; and skipping the
 // current layer's bounds check on the absent path avoids spurious
 // dslReject when an optional layer is simply not there.
-func emitPeekedIterZero(layer *ir.LayerInstance, index int, all []*ir.LayerInstance, peekFailLabel string) (asm.Instructions, error) {
+func emitPeekedIterZero(layer *ir.LayerInstance, index int, all []*ir.LayerInstance, peekFailLabel string, pc *predCtx) (asm.Instructions, error) {
 	if index == 0 || layer.Dispatch == nil {
 		return nil, fmt.Errorf("%w: peeked iter-0 on %q requires a parent dispatch", ErrNotImplemented, layer.Spec.Name)
 	}
@@ -984,7 +1006,7 @@ func emitPeekedIterZero(layer *ir.LayerInstance, index int, all []*ir.LayerInsta
 	if err != nil {
 		return nil, err
 	}
-	preds, err := emitPredicates(layer.Predicates)
+	preds, err := emitPredicates(layer.Predicates, pc)
 	if err != nil {
 		return nil, err
 	}
