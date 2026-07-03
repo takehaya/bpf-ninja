@@ -795,9 +795,11 @@ func emitSetFilters(sets []filter.SetFilter) asm.Instructions {
 		// no callee-saved register is free — R6-R9 hold the capture prelude).
 		insns = append(insns, asm.LoadMem(asm.R2, asm.R10, -48, asm.DWord))
 		for _, f := range s.Fields {
-			// Load at param width (zero-extends; ParamSize <= FieldSize is
-			// enforced at resolve time), store at field width into the buffer.
-			insns = append(insns, emitArgLoad(asm.R3, asm.R2, int16(f.ParamIdx*8), f.ParamSize, false)...)
+			// Load at param width, sign-extending signed params so a
+			// narrow negative arg fills the wider key field the same way a
+			// signed value written into the map would (ParamSize <=
+			// FieldSize is enforced at resolve time); store at field width.
+			insns = append(insns, emitArgLoad(asm.R3, asm.R2, int16(f.ParamIdx*8), f.ParamSize, f.ParamSigned)...)
 			insns = append(insns, asm.StoreMem(asm.R10, int16(setKeyBase+int(f.FieldOff)), asm.R3, asmSizeFor(f.FieldSize)))
 		}
 

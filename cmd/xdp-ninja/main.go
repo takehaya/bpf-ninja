@@ -485,11 +485,20 @@ func run(ctx context.Context, cmd *cli.Command) error {
 			s.Def.Close()
 		}
 	}()
+	if len(cmd.StringSlice("set")) > 0 && cmd.Bool("arg-echo") {
+		// Reject before opening any pinned map (which can fail).
+		return fmt.Errorf("--set is not supported with --arg-echo")
+	}
+	seenSet := map[string]bool{}
 	for _, spec := range cmd.StringSlice("set") {
 		ref, err := setmap.ParseSetSpec(spec)
 		if err != nil {
 			return err
 		}
+		if seenSet[ref.Name] {
+			return fmt.Errorf("--set %q: set name %q defined more than once", spec, ref.Name)
+		}
+		seenSet[ref.Name] = true
 		s, err := setmap.OpenSet(ref)
 		if err != nil {
 			return err
