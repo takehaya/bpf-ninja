@@ -9,7 +9,6 @@ import (
 	"github.com/takehaya/xdp-ninja/pkg/kunai/vocab/p4lite"
 )
 
-
 // emitTransitionWithSelfRewrite lowers a TransitionOp at the inline
 // (non-callback) site. Terminal kinds jump to the layer's done/reject
 // landings; direct/select jumps go to state labels. selfLabel is the

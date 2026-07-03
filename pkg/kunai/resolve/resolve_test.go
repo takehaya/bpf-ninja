@@ -327,9 +327,10 @@ func TestResolvePredicateHasMarksUnsupported(t *testing.T) {
 	}
 }
 
-func TestResolvePredicateInSetBindsAndMarksUnsupported(t *testing.T) {
-	// The field binds (so field-name errors surface here) but codegen +
-	// host map lookup are wired in a later commit, so it's Unsupported.
+func TestResolvePredicateInSetBinds(t *testing.T) {
+	// The field binds (so field-name errors surface here); set existence
+	// and the host slot are validated at codegen (it holds the resolver),
+	// so resolve does NOT flag PredInSet Unsupported.
 	p := resolveOK(t, "eth/ipv4/udp/gtp[teid in @teids]", nil)
 	pr := p.Layers[3].Predicates[0]
 	if pr.Kind != ast.PredInSet || pr.SetName != "teids" {
@@ -338,8 +339,8 @@ func TestResolvePredicateInSetBindsAndMarksUnsupported(t *testing.T) {
 	if pr.Field == nil || pr.Field.Field == nil || pr.Field.Field.Name != "teid" {
 		t.Errorf("field not bound: %+v", pr.Field)
 	}
-	if pr.Unsupported == "" {
-		t.Error("PredInSet should be Unsupported until wired")
+	if pr.Unsupported != "" {
+		t.Errorf("PredInSet should not be Unsupported at resolve, got %q", pr.Unsupported)
 	}
 }
 
