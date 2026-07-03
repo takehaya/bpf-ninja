@@ -1,6 +1,7 @@
 package program
 
 import (
+	"encoding/binary"
 	"fmt"
 	"os"
 	"testing"
@@ -46,12 +47,9 @@ char _license[] SEC("license") = "GPL";
 func runWithKey(t *testing.T, prog *ebpf.Program, imsi uint64, teid uint32) {
 	t.Helper()
 	in := make([]byte, 64)
-	for i := range 8 {
-		in[i] = byte(imsi >> (8 * i))
-	}
-	for i := range 4 {
-		in[8+i] = byte(teid >> (8 * i))
-	}
+	// Native-endian, matching how the target reads *(u64*)data / *(u32*).
+	binary.NativeEndian.PutUint64(in[0:8], imsi)
+	binary.NativeEndian.PutUint32(in[8:12], teid)
 	if _, err := prog.Run(&ebpf.RunOptions{Data: in}); err != nil {
 		t.Fatalf("test-run: %v", err)
 	}
