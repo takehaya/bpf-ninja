@@ -7,7 +7,8 @@ import (
 
 // parseWhereClause handles the "where <or_expr>" portion of a filter.
 // The caller must ensure p.cur.Kind == TokWhere before invoking.
-//   where_clause := "where" or_expr
+//
+//	where_clause := "where" or_expr
 func (p *parser) parseWhereClause() (*ast.WhereExpr, error) {
 	if _, err := p.expect(lexer.TokWhere); err != nil {
 		return nil, err
@@ -208,7 +209,8 @@ func (p *parser) parseActionAtom(startPos ast.Position) (*ast.WhereExpr, error) 
 }
 
 // cmp_or_bool_atom := (network_literal cmp_op arith_expr)
-//                   | arith_expr (cmp_op (arith_expr | network_literal))?
+//
+//	| arith_expr (cmp_op (arith_expr | network_literal))?
 //
 // dsl-types.md §6.2 makes comparisons fully symmetric in their
 // operands, so we first try to read the LHS in lexer value mode: if

@@ -327,6 +327,26 @@ func TestResolvePredicateHasMarksUnsupported(t *testing.T) {
 	}
 }
 
+func TestResolvePredicateInSetBindsAndMarksUnsupported(t *testing.T) {
+	// The field binds (so field-name errors surface here) but codegen +
+	// host map lookup are wired in a later commit, so it's Unsupported.
+	p := resolveOK(t, "eth/ipv4/udp/gtp[teid in @teids]", nil)
+	pr := p.Layers[3].Predicates[0]
+	if pr.Kind != ast.PredInSet || pr.SetName != "teids" {
+		t.Fatalf("pred = %+v", pr)
+	}
+	if pr.Field == nil || pr.Field.Field == nil || pr.Field.Field.Name != "teid" {
+		t.Errorf("field not bound: %+v", pr.Field)
+	}
+	if pr.Unsupported == "" {
+		t.Error("PredInSet should be Unsupported until wired")
+	}
+}
+
+func TestResolvePredicateInSetUnknownFieldErrors(t *testing.T) {
+	resolveErr(t, "eth/ipv4/udp/gtp[nope in @teids]", nil, "no field")
+}
+
 func TestResolveAlternationResolves(t *testing.T) {
 	// Alternatives resolve (each is a valid protocol) and the group
 	// is not flagged Unsupported because codegen can emit it.
@@ -381,7 +401,6 @@ func TestResolveAlternationNestedFlattens(t *testing.T) {
 		})
 	}
 }
-
 
 func TestResolveAlternationFollowedLayerAgreesOnDispatch(t *testing.T) {
 	// IPv4 sits under either VLAN or QinQ via ethertype==0x0800 — the
@@ -567,7 +586,6 @@ func TestResolveWhereRejectsUnknownAction(t *testing.T) {
 	// XDP_* whitelist.
 	resolveErr(t, "eth/ipv4/tcp where action == SOMETHING_ELSE", xdpTestActions, "unknown action")
 }
-
 
 func TestResolveWhereArithWithLabels(t *testing.T) {
 	expr := "eth/ipv4@outer/udp/gtp/ipv4@inner/tcp where outer.total_length == inner.total_length + 36"
@@ -764,7 +782,6 @@ func TestResolveStrictArithLintOffByDefault(t *testing.T) {
 	// the typed-OK / silent-wrap contract from §6.1 stays intact.
 	resolveOK(t, "eth/ipv4/tcp where tcp.dport + tcp.sport > 100", nil)
 }
-
 
 func TestResolveAllExamples(t *testing.T) {
 	// Each entry lists: (expr, should resolve?). Examples that require

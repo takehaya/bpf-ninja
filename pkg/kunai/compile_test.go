@@ -123,6 +123,15 @@ func TestCompileIPv4OrderedRejected(t *testing.T) {
 	}
 }
 
+func TestCompileInSetNotYetWired(t *testing.T) {
+	// The `in @set` predicate parses and resolves, but codegen + host
+	// map lookup land in a later commit, so Compile gates it for now.
+	_, err := Compile("eth/ipv4/udp/gtp[teid in @teids]", codegen.Capabilities{})
+	if !errors.Is(err, codegen.ErrNotImplemented) {
+		t.Fatalf("expected ErrNotImplemented for `in @set`, got %v", err)
+	}
+}
+
 func TestCompileVlanOptionalSucceeds(t *testing.T) {
 	// `?` quantifier + real vlan vocab — verifies end-to-end path.
 	insns, err := compileForTest("eth/vlan?/ipv4/tcp")

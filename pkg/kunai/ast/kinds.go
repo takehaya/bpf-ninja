@@ -191,9 +191,10 @@ func (k WhereKind) String() string {
 type PredKind int
 
 const (
-	PredCmp PredKind = iota // field op value
-	PredIn                  // field in [v1, v2, ...]
-	PredHas                 // field has FLAG
+	PredCmp   PredKind = iota // field op value
+	PredIn                    // field in [v1, v2, ...]
+	PredHas                   // field has FLAG
+	PredInSet                 // field in @name (pinned-map set)
 )
 
 func (k PredKind) String() string {
@@ -204,6 +205,8 @@ func (k PredKind) String() string {
 		return "in"
 	case PredHas:
 		return "has"
+	case PredInSet:
+		return "in-set"
 	}
 	return fmt.Sprintf("PredKind(%d)", int(k))
 }

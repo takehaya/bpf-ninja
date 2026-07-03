@@ -125,6 +125,32 @@ func TestParseHas(t *testing.T) {
 	}
 }
 
+func TestParseInSet(t *testing.T) {
+	f := mustParse(t, "eth/ipv4/udp/gtp[teid in @teids]")
+	pred := f.Layers[3].Predicates[0]
+	if pred.Kind != ast.PredInSet || pred.SetName != "teids" {
+		t.Fatalf("pred = %+v", pred)
+	}
+	if pred.Field.String() != "teid" {
+		t.Errorf("field = %q", pred.Field.String())
+	}
+}
+
+func TestParseInSetCompositeCommaList(t *testing.T) {
+	// A composite key is comma-separated inside one bracket, reusing the
+	// existing predicate list — not chained [a][b].
+	f := mustParse(t, "eth/ipv4/udp/gtp[teid in @flows, imsi in @flows]")
+	preds := f.Layers[3].Predicates
+	if len(preds) != 2 {
+		t.Fatalf("preds = %d", len(preds))
+	}
+	for i, want := range []string{"teid", "imsi"} {
+		if preds[i].Kind != ast.PredInSet || preds[i].SetName != "flows" || preds[i].Field.String() != want {
+			t.Errorf("pred[%d] = %+v", i, preds[i])
+		}
+	}
+}
+
 func TestParseLabel(t *testing.T) {
 	f := mustParse(t, "eth/ipv4@outer/udp/vxlan[vni==100]/ipv4@inner/tcp[dport==80]")
 	if got := f.Layers[1].Label; got != "outer" {

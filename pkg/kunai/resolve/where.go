@@ -218,7 +218,6 @@ func (r *resolver) findQuantTarget(c *ir.Condition, pos ast.Position) (*ir.Quant
 	}, nil
 }
 
-
 // resolveArith converts an ast.ArithExpr to ir.ArithExpr, binding every
 // field reference to its owning layer.
 func (r *resolver) resolveArith(a *ast.ArithExpr) (*ir.ArithExpr, error) {
