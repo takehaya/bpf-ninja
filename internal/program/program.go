@@ -100,7 +100,7 @@ func loadProbe(targetProg *ebpf.Program, funcName string, filterExpr string, arg
 		return nil, err
 	}
 	targets := []attach.Target{{Program: targetProg, FuncName: funcName, Type: progType}}
-	return loadMulti(targets, filterExpr, [][]filter.ArgFilter{argFilters}, isFexit, useDSL)
+	return loadMulti(targets, filterExpr, []filter.TargetFilters{{Args: argFilters}}, isFexit, useDSL)
 }
 
 // LoadMultiEntry attaches one fentry per (program, func) target, all
@@ -108,28 +108,29 @@ func loadProbe(targetProg *ebpf.Program, funcName string, filterExpr string, arg
 // dispatcher's per-direction capture points (UL + DL v4 + DL v6) are
 // captured in one run and merge into one time-ordered pcap.
 //
-// argFilters is parallel to targets (nil, or one slice per target): the
+// filters is parallel to targets (nil, or one entry per target): the
 // same param name can sit at a different arg index in different funcs, so
-// filters must be resolved against each target's own BTF params.
-func LoadMultiEntry(targets []attach.Target, filterExpr string, argFilters [][]filter.ArgFilter, useDSL bool) (*Probe, error) {
-	return loadMulti(targets, filterExpr, argFilters, false, useDSL)
+// arg filters and set-key bindings must be resolved against each target's
+// own BTF params.
+func LoadMultiEntry(targets []attach.Target, filterExpr string, filters []filter.TargetFilters, useDSL bool) (*Probe, error) {
+	return loadMulti(targets, filterExpr, filters, false, useDSL)
 }
 
 // LoadMultiExit is LoadMultiEntry for fexit (sees the return action).
-func LoadMultiExit(targets []attach.Target, filterExpr string, argFilters [][]filter.ArgFilter, useDSL bool) (*Probe, error) {
-	return loadMulti(targets, filterExpr, argFilters, true, useDSL)
+func LoadMultiExit(targets []attach.Target, filterExpr string, filters []filter.TargetFilters, useDSL bool) (*Probe, error) {
+	return loadMulti(targets, filterExpr, filters, true, useDSL)
 }
 
 // loadMulti builds the shared capture infrastructure once (filter compile,
 // sharded ringbuf, scratch map — all of which depend only on the program
 // type, not the individual target) and then attaches one tracing program
 // per (target prog, func) pair against it.
-func loadMulti(targets []attach.Target, filterExpr string, argFilters [][]filter.ArgFilter, isFexit, useDSL bool) (*Probe, error) {
+func loadMulti(targets []attach.Target, filterExpr string, filters []filter.TargetFilters, isFexit, useDSL bool) (*Probe, error) {
 	if len(targets) == 0 {
 		return nil, fmt.Errorf("no attach targets")
 	}
-	if argFilters != nil && len(argFilters) != len(targets) {
-		return nil, fmt.Errorf("argFilters length %d does not match %d targets", len(argFilters), len(targets))
+	if filters != nil && len(filters) != len(targets) {
+		return nil, fmt.Errorf("filters length %d does not match %d targets", len(filters), len(targets))
 	}
 	progType := targets[0].Type
 	for _, t := range targets[1:] {
@@ -185,11 +186,11 @@ func loadMulti(targets []attach.Target, filterExpr string, argFilters [][]filter
 	// only on progType and the shared maps, but arg-filter offsets are
 	// resolved against each target func's own BTF param layout.
 	for i, t := range targets {
-		var af []filter.ArgFilter
-		if argFilters != nil {
-			af = argFilters[i]
+		var tf filter.TargetFilters
+		if filters != nil {
+			tf = filters[i]
 		}
-		insns, err := buildTracingInsns(filterOut, af, outerMap.FD(), scratchFD, isFexit, progType)
+		insns, err := buildTracingInsns(filterOut, tf, outerMap.FD(), scratchFD, isFexit, progType)
 		if err != nil {
 			_ = probe.Close()
 			return nil, err
@@ -336,6 +337,9 @@ func compileFilter(expr string, useDSL, isFexit bool, progType ebpf.ProgramType)
 //   -16: map lookup の key
 //   -24: scratch buffer ポインタ (フィルタ時のみ)
 //   -48: tracing args ポインタの退避
+//   -57..-120: set filter のキーバッファ (emitSetFilters; runFilter の
+//              前で死ぬ。kunai は KunaiStackTop=-56 以深を所有するが
+//              それは runFilter 内のみ live — phase ordering で共存)
 //
 // bpf_xdp_output を使うことで:
 //   - パケットデータはカーネルが xdp_buff から直接コピー (bpf_probe_read_kernel 不要)
@@ -441,14 +445,15 @@ const (
 	metadataSize = 16
 )
 
-func buildTracingInsns(filterOut codegen.Output, argFilters []filter.ArgFilter, eventsFD, scratchFD int, isFexit bool, progType ebpf.ProgramType) (asm.Instructions, error) {
+func buildTracingInsns(filterOut codegen.Output, tf filter.TargetFilters, eventsFD, scratchFD int, isFexit bool, progType ebpf.ProgramType) (asm.Instructions, error) {
 	var insns asm.Instructions
 	prelude, err := loadPacketPointers(progType)
 	if err != nil {
 		return nil, err
 	}
 	insns = append(insns, prelude...)
-	insns = append(insns, buildArgFilter(argFilters)...)
+	insns = append(insns, buildArgFilter(tf.Args)...)
+	insns = append(insns, emitSetFilters(tf.Sets)...)
 	insns = append(insns, runFilter(filterOut.Main, scratchFD, filterScanLen(filterOut))...)
 	insns = append(insns, captureWithRingbuf(eventsFD, isFexit, filterOut.Capture.MaxCapLen)...)
 	insns = append(insns, asm.Mov.Imm(asm.R0, 0).WithSymbol("exit"), asm.Return())
@@ -701,23 +706,25 @@ func captureWithRingbuf(eventsFD int, isFexit bool, maxCapLen int) asm.Instructi
 // arg-filter gate and the arg-echo emitter so the sign-extend invariant
 // lives in one place.
 func emitArgLoad(dst, base asm.Register, offset int16, size uint32, signed bool) asm.Instructions {
-	var loadSize asm.Size
-	switch size {
-	case 1:
-		loadSize = asm.Byte
-	case 2:
-		loadSize = asm.Half
-	case 4:
-		loadSize = asm.Word
-	default:
-		loadSize = asm.DWord
-	}
-	insns := asm.Instructions{asm.LoadMem(dst, base, offset, loadSize)}
+	insns := asm.Instructions{asm.LoadMem(dst, base, offset, asmSizeFor(size))}
 	if signed && size < 8 {
 		shift := int32((8 - size) * 8)
 		insns = append(insns, asm.LSh.Imm(dst, shift), asm.ArSh.Imm(dst, shift))
 	}
 	return insns
+}
+
+// asmSizeFor maps a 1/2/4/8-byte width to the matching load/store size.
+func asmSizeFor(n uint32) asm.Size {
+	switch n {
+	case 1:
+		return asm.Byte
+	case 2:
+		return asm.Half
+	case 4:
+		return asm.Word
+	}
+	return asm.DWord
 }
 
 func buildArgFilter(filters []filter.ArgFilter) asm.Instructions {
@@ -753,6 +760,70 @@ func buildArgFilter(filters []filter.ArgFilter) asm.Instructions {
 	}
 
 	return insns
+}
+
+// setKeyBase is the stack offset of the set-filter key buffer:
+// fp-120..fp-57, sized for setmap.MaxKeySize (64 B). It is written and
+// consumed strictly before runFilter jumps into the packet filter, whose
+// kunai codegen owns everything at/below KunaiStackTop (-56) — temporal
+// reuse, not a partition (see the stack layout comment above).
+const setKeyBase = -120
+
+// emitSetFilters emits one pinned-map membership check per set filter:
+// zero the key buffer (hash maps hash every key byte including padding,
+// and the verifier requires the full key range initialized), build each
+// key field from the target function's args, then bpf_map_lookup_elem —
+// a NULL result jumps to "exit" (skip capture), so multiple sets and
+// plain arg-filters AND together naturally.
+func emitSetFilters(sets []filter.SetFilter) asm.Instructions {
+	var insns asm.Instructions
+	for _, s := range sets {
+		// Only zero the key buffer when the fields leave padding gaps: hash
+		// maps hash every key byte, and the verifier requires the full key
+		// range initialized. Gapless keys (every scalar key, and structs
+		// that tile [0,KeySize)) have every byte overwritten by the field
+		// stores below, so the zeroing is pure per-packet waste there.
+		if keyHasGaps(s) {
+			// No 64-bit store-immediate in the BPF ISA — zero via a register.
+			insns = append(insns, asm.Mov.Imm(asm.R3, 0))
+			for off := 0; off < int(s.KeySize); off += 8 {
+				insns = append(insns, asm.StoreMem(asm.R10, int16(setKeyBase+off), asm.R3, asm.DWord))
+			}
+		}
+
+		// R2 = tracing args ptr (reload per set: lookup clobbers R0-R5, and
+		// no callee-saved register is free — R6-R9 hold the capture prelude).
+		insns = append(insns, asm.LoadMem(asm.R2, asm.R10, -48, asm.DWord))
+		for _, f := range s.Fields {
+			// Load at param width (zero-extends; ParamSize <= FieldSize is
+			// enforced at resolve time), store at field width into the buffer.
+			insns = append(insns, emitArgLoad(asm.R3, asm.R2, int16(f.ParamIdx*8), f.ParamSize, false)...)
+			insns = append(insns, asm.StoreMem(asm.R10, int16(setKeyBase+int(f.FieldOff)), asm.R3, asmSizeFor(f.FieldSize)))
+		}
+
+		insns = append(insns,
+			asm.LoadMapPtr(asm.R1, s.Map.FD()),
+			asm.Mov.Reg(asm.R2, asm.R10),
+			asm.Add.Imm(asm.R2, setKeyBase),
+			asm.FnMapLookupElem.Call(),
+			asm.JEq.Imm(asm.R0, 0, "exit"),
+		)
+	}
+	return insns
+}
+
+// keyHasGaps reports whether the set's key has any byte not covered by a
+// field (padding), which must be zeroed for a correct hash lookup. Fields
+// are laid out in ascending offset order by resolution.
+func keyHasGaps(s filter.SetFilter) bool {
+	var covered uint32
+	for _, f := range s.Fields {
+		if f.FieldOff != covered {
+			return true // hole before this field
+		}
+		covered += f.FieldSize
+	}
+	return covered != s.KeySize // trailing padding
 }
 
 // appendCmpJump appends a conditional jump-to-exit comparing R3 against value.

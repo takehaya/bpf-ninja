@@ -24,6 +24,7 @@ import (
 	"github.com/takehaya/xdp-ninja/internal/filter"
 	"github.com/takehaya/xdp-ninja/internal/output"
 	"github.com/takehaya/xdp-ninja/internal/program"
+	"github.com/takehaya/xdp-ninja/internal/setmap"
 )
 
 // Set via -ldflags "-X main.version=... -X main.commit=... -X main.date=... -X main.builtBy=..."
@@ -69,7 +70,11 @@ var flags = []cli.Flag{
 	},
 	&cli.StringSliceFlag{
 		Name:  "arg-filter",
-		Usage: "filter by function argument value (requires --func); format: param=value, param>=val, param<=val, param=min..max",
+		Usage: "filter by function argument value (requires --func); format: param=value, param>=val, param<=val, param=min..max, or @NAME to match against a --set pinned-map set",
+	},
+	&cli.StringSliceFlag{
+		Name:  "set",
+		Usage: "define a named match set backed by a pinned BPF hash map: NAME=/sys/fs/bpf/path[,key(field=arg:param,...)]; reference it with --arg-filter @NAME. Entries are managed at runtime via `xdp-ninja set` (no re-attach needed)",
 	},
 	&cli.BoolFlag{
 		Name:  "list-params",
@@ -256,7 +261,7 @@ Examples:
   xdp-ninja -i eth0 -w out.pcap`,
 		Flags:                 flags,
 		Action:                run,
-		Commands:              []*cli.Command{convertCommand},
+		Commands:              []*cli.Command{convertCommand, setCommand},
 		EnableShellCompletion: true,
 	}
 
@@ -471,35 +476,72 @@ func run(ctx context.Context, cmd *cli.Command) error {
 		return nil
 	}
 
-	// --arg-filter: validate and resolve per target — the same param name
-	// can sit at a different arg index (or width) in different funcs, so
-	// each attach pair gets filters bound to its own BTF param layout.
-	var argFilters [][]filter.ArgFilter
-	if argFilterExprs := cmd.StringSlice("arg-filter"); len(argFilterExprs) > 0 {
-		argFilters = make([][]filter.ArgFilter, len(targets))
+	// --set: open the named pinned-map sets. The CLI owns the map handles;
+	// they must stay open until the tracing programs are loaded (the
+	// kernel then holds its own reference).
+	var sets []*setmap.Set
+	defer func() {
+		for _, s := range sets {
+			s.Def.Close()
+		}
+	}()
+	for _, spec := range cmd.StringSlice("set") {
+		ref, err := setmap.ParseSetSpec(spec)
+		if err != nil {
+			return err
+		}
+		s, err := setmap.OpenSet(ref)
+		if err != nil {
+			return err
+		}
+		sets = append(sets, s)
+		logVerbose(cmd, "set %q: %s (key %d B, %d field(s))", s.Name, s.Path, s.Def.KeySize, len(s.Def.Fields))
+	}
+
+	// --arg-filter: split "@NAME" set references from plain expressions,
+	// then validate and resolve both per target — the same param name can
+	// sit at a different arg index (or width) in different funcs, so each
+	// attach pair gets filters bound to its own BTF param layout.
+	setRefs, plainExprs := filter.SplitFilterExprs(cmd.StringSlice("arg-filter"))
+	var filters []filter.TargetFilters
+	if len(plainExprs) > 0 || len(setRefs) > 0 {
+		filters = make([]filter.TargetFilters, len(targets))
 		for i, t := range targets {
-			fs, err := filter.ParseAndValidateFilters(argFilterExprs, t.Params)
-			if err != nil {
-				return fmt.Errorf("func %s (id=%d): %w", t.FuncName, t.ProgID, err)
+			if len(plainExprs) > 0 {
+				fs, err := filter.ParseAndValidateFilters(plainExprs, t.Params)
+				if err != nil {
+					return fmt.Errorf("func %s (id=%d): %w", t.FuncName, t.ProgID, err)
+				}
+				filters[i].Args = fs
+				for _, f := range fs {
+					logVerbose(cmd, "arg filter on %s: %s", t.FuncName, f.String())
+				}
 			}
-			argFilters[i] = fs
-			for _, f := range fs {
-				logVerbose(cmd, "arg filter on %s: %s", t.FuncName, f.String())
+			if len(setRefs) > 0 {
+				sf, err := filter.ResolveSetFilters(sets, setRefs, t.Params)
+				if err != nil {
+					return fmt.Errorf("func %s (id=%d): %w", t.FuncName, t.ProgID, err)
+				}
+				filters[i].Sets = sf
 			}
 		}
 	}
 
 	// --arg-echo: emit the function's integer args instead of capturing
 	// packets. Single-target diagnostic — with multiple attach pairs the
-	// interleaved output would be ambiguous, so require exactly one.
+	// interleaved output would be ambiguous, so require exactly one; set
+	// references are not supported on this path in v1.
 	if cmd.Bool("arg-echo") {
 		if len(targets) != 1 {
 			return fmt.Errorf("--arg-echo supports exactly one (program, func) target; %d resolved", len(targets))
 		}
+		if len(setRefs) > 0 {
+			return fmt.Errorf("--arg-echo does not support set references (@%s); use plain --arg-filter expressions", setRefs[0])
+		}
 		t := targets[0]
 		var af []filter.ArgFilter
-		if argFilters != nil {
-			af = argFilters[0]
+		if filters != nil {
+			af = filters[0].Args
 		}
 		probe, err := program.LoadArgEcho(t.Program, t.FuncName, af, t.Params, isFexit)
 		if err != nil {
@@ -520,9 +562,9 @@ func run(ctx context.Context, cmd *cli.Command) error {
 	}
 	var probe *program.Probe
 	if isFexit {
-		probe, err = program.LoadMultiExit(targets, filterExpr, argFilters, useDSL)
+		probe, err = program.LoadMultiExit(targets, filterExpr, filters, useDSL)
 	} else {
-		probe, err = program.LoadMultiEntry(targets, filterExpr, argFilters, useDSL)
+		probe, err = program.LoadMultiEntry(targets, filterExpr, filters, useDSL)
 	}
 	if err != nil {
 		return err
@@ -1133,6 +1175,9 @@ func validateXDPNativeFlags(cmd *cli.Command) error {
 	}
 	if len(cmd.StringSlice("arg-filter")) > 0 {
 		return fmt.Errorf("--arg-filter is only valid with --mode entry/exit (no tracing args in xdp-native)")
+	}
+	if len(cmd.StringSlice("set")) > 0 {
+		return fmt.Errorf("--set is only valid with --mode entry/exit (set matching keys off tracing args)")
 	}
 	if cmd.Bool("list-funcs") || cmd.Bool("list-progs") || cmd.Bool("list-params") {
 		return fmt.Errorf("--list-* flags are only valid with --mode entry/exit")

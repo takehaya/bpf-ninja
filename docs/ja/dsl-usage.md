@@ -441,6 +441,37 @@ sudo xdp-ninja -p 1610 -p 1611 -p 1614 \
 - `--arg-filter` は関数ごとに BTF を引いて検証・解決されます。同じ param 名が関数によって別の引数位置にあっても正しく効きます。指定した param を持たない関数が混ざるとエラーになります。
 - XDP と tc のターゲット混在は不可 (別々に起動してください)。`--arg-echo` は単一 (プログラム, 関数) のみ。
 
+## 集合マッチ (`--set` / `--arg-filter @NAME`)
+
+`--arg-filter "imsi=X"` は値を命令列に焼き込むため、値を変えるたびに re-attach が要ります。**pinned BPF hash map を「集合」として参照**すると、購読者リスト(IMSI 群など)をパケットごとの O(1) lookup で照合でき、**エントリの追加・削除はキャプチャ中でも即時反映**されます (re-attach 不要)。
+
+map の**キーが照合する値そのもの** (スカラ or struct 複合キー)、value は小さな tag です。複合キーのフィールド間は AND (1 lookup)、OR はエントリを複数入れて表現します (集合=直和)。部分キーは不可です。
+
+```bash
+# 1) 集合を作る (BTF 付き hash map を pin)
+sudo xdp-ninja set create /sys/fs/bpf/flows --key "imsi:u64,teid:u32" --max-entries 1024
+
+# 2) エントリ投入 (フィールド名で指定。幅・パディングはツールが保証)
+sudo xdp-ninja set add /sys/fs/bpf/flows imsi=999990000000001 teid=0x3039 tag=1
+
+# 3) キャプチャ (--set で名前を付け、@NAME で参照)
+sudo xdp-ninja -p 1661 --func pgwu_capture_point_ul \
+  --set "flows=/sys/fs/bpf/flows" --arg-filter "@flows" -w out.pcap
+
+# 4) キャプチャ中でも出し入れできる
+sudo xdp-ninja set add /sys/fs/bpf/flows imsi=999990000000777 teid=100
+sudo xdp-ninja set del /sys/fs/bpf/flows imsi=999990000000001 teid=0x3039
+sudo xdp-ninja set list /sys/fs/bpf/flows
+sudo xdp-ninja set schema /sys/fs/bpf/flows
+```
+
+- **キーの対応付け**: 既定はキーの BTF フィールド名と fentry 引数名の同名一致。名前が違うときは `--set "flows=/sys/fs/bpf/flows,key(imsi=arg:subscriber,teid=arg:teid)"` と明示します (`()` は bash メタ文字なのでクオート必須)。
+- `@NAME` は他の `--arg-filter` と AND 合成。`--set` は複数定義できます。
+- 引数がキーのフィールドより広い場合 (u64 引数 → u32 フィールド) は切り詰めになるためエラーです。
+- 外部で作った pinned map も、hash 型で BTF キー (整数 or 整数のみの struct、各 1/2/4/8B、キー全体 64B 以下) を持っていれば参照できます。BTF 無しの map は `set create` で作り直してください。
+- 外部から直接書く場合 (bpftool 等) は**パディングのゼロ埋めが必須**です (hash はキー全バイトをハッシュするため、パディングが非ゼロだと永遠に一致しません)。`xdp-ninja set add` はこれを自動で保証します。
+- スキーマ (キー幅・オフセット) は `set schema` で確認できます。`bpftool map dump pinned <path>` もフィールド名付きで整形表示されます (合成 BTF の効能)。
+
 ## 関数引数の値を覗く (`--arg-echo`)
 
 `--func` で狙ったサブ関数の整数引数が、実際にどんな値で呼ばれているかを見る診断モードです。`--arg-filter "imsi=..."` が当たらないとき、「そもそも引数にどんな値が乗っているか」を確認するのに使います (例: IMSI が 10 進なのか TBCD なのか)。パケットキャプチャはせず、引数だけを専用 ringbuf に流して表示します。
