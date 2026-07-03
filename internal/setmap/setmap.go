@@ -108,6 +108,16 @@ func ParseSetSpec(s string) (SpecRef, error) {
 			continue
 		}
 		field, source, hasSource := strings.Cut(ent, "=")
+		field = strings.TrimSpace(field)
+		source = strings.TrimSpace(source)
+		if field == "" {
+			return ref, fmt.Errorf("--set %q: empty key field name in %q", s, ent)
+		}
+		for _, prev := range ref.Mapping {
+			if prev.Field == field {
+				return ref, fmt.Errorf("--set %q: key field %q mapped twice", s, field)
+			}
+		}
 		if !hasSource {
 			source = "arg:" + field // shorthand: key(imsi) = key(imsi=arg:imsi)
 		}
@@ -133,7 +143,7 @@ func OpenSet(ref SpecRef) (*Set, error) {
 	if err != nil {
 		return nil, fmt.Errorf("set %q: %w", ref.Name, err)
 	}
-	if def.IsScalar && len(ref.Mapping) == 1 {
+	if def.IsScalar && def.Fields[0].Name == scalarUnnamed && len(ref.Mapping) == 1 {
 		def.Fields[0].Name = ref.Mapping[0].Field
 	}
 	return &Set{SpecRef: ref, Def: def}, nil
@@ -188,7 +198,17 @@ func describe(m *ebpf.Map) (*Definition, error) {
 			if !validFieldSize(it.Size) {
 				return nil, fmt.Errorf("key field %s: size %d is not 1/2/4/8", mem.Name, it.Size)
 			}
-			def.Fields = append(def.Fields, KeyField{Name: mem.Name, Off: mem.Offset.Bytes(), Size: it.Size})
+			off := mem.Offset.Bytes()
+			// emitSetFilters stores each field with a naturally-aligned,
+			// in-bounds store; reject layouts (e.g. __attribute__((packed)))
+			// that would otherwise produce a misaligned or OOB stack write.
+			if off%it.Size != 0 {
+				return nil, fmt.Errorf("key field %s: offset %d is not aligned to its %d-byte width (packed keys are not supported)", mem.Name, off, it.Size)
+			}
+			if off+it.Size > def.KeySize {
+				return nil, fmt.Errorf("key field %s: extends past the %d-byte key", mem.Name, def.KeySize)
+			}
+			def.Fields = append(def.Fields, KeyField{Name: mem.Name, Off: off, Size: it.Size})
 		}
 		if len(def.Fields) == 0 {
 			return nil, fmt.Errorf("key struct %s has no fields", t.Name)
@@ -199,14 +219,18 @@ func describe(m *ebpf.Map) (*Definition, error) {
 	return def, nil
 }
 
+// scalarUnnamed is the placeholder name for a bare-integer key with no
+// typedef; OpenSet may rename it from the --set key(...) mapping.
+const scalarUnnamed = "key"
+
 // scalarKeyName picks a match name for a bare-integer key: the typedef
 // name when the key is declared through one (typedef __u64 imsi_t), else
-// the generic "key" (which then requires an explicit key(...) mapping).
+// scalarUnnamed (which then requires an explicit key(...) mapping).
 func scalarKeyName(t btf.Type) string {
 	if td, ok := t.(*btf.Typedef); ok {
 		return td.Name
 	}
-	return "key"
+	return scalarUnnamed
 }
 
 func validFieldSize(n uint32) bool {

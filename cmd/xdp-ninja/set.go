@@ -53,7 +53,11 @@ var setCreateCmd = &cli.Command{
 		if err != nil {
 			return err
 		}
-		if err := setmap.Create(path, cmd.String("key"), cmd.String("value"), uint32(cmd.Int("max-entries"))); err != nil {
+		maxEntries := cmd.Int("max-entries")
+		if maxEntries <= 0 {
+			return fmt.Errorf("--max-entries must be positive, got %d", maxEntries)
+		}
+		if err := setmap.Create(path, cmd.String("key"), cmd.String("value"), uint32(maxEntries)); err != nil {
 			return err
 		}
 		fmt.Fprintf(os.Stderr, "created %s (key: %s, value: %s, max_entries: %d)\n",

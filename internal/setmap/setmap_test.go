@@ -134,3 +134,29 @@ func TestParseFieldValues(t *testing.T) {
 		t.Errorf("dup err = %v", err)
 	}
 }
+
+func TestParseSetSpecTrimAndDup(t *testing.T) {
+	// whitespace-polluted field/source get trimmed
+	ref, err := ParseSetSpec("s=/p,key( imsi = arg:imsi )")
+	if err != nil {
+		t.Fatalf("ParseSetSpec trim: %v", err)
+	}
+	if ref.Mapping[0].Field != "imsi" || ref.Mapping[0].Source != "arg:imsi" {
+		t.Errorf("trimmed mapping = %+v", ref.Mapping[0])
+	}
+	// duplicate field mapping is rejected
+	if _, err := ParseSetSpec("s=/p,key(imsi=arg:a,imsi=arg:b)"); err == nil || !strings.Contains(err.Error(), "twice") {
+		t.Errorf("dup field err = %v", err)
+	}
+	// empty field name
+	if _, err := ParseSetSpec("s=/p,key(=arg:imsi)"); err == nil || !strings.Contains(err.Error(), "empty key field") {
+		t.Errorf("empty field err = %v", err)
+	}
+}
+
+func TestCreateRejectsReservedAndBadMaxEntries(t *testing.T) {
+	// A "tag" key field can never be addressed by `set add`.
+	if err := Create("/sys/fs/bpf/unused", "tag:u32", "", 8); err == nil || !strings.Contains(err.Error(), "reserved") {
+		t.Errorf("reserved-key err = %v", err)
+	}
+}
