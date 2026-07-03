@@ -154,7 +154,7 @@ func TestParseSetSpecTrimAndDup(t *testing.T) {
 	}
 }
 
-func TestCreateRejectsReservedAndBadMaxEntries(t *testing.T) {
+func TestCreateRejectsReservedKeyField(t *testing.T) {
 	// A "tag" key field can never be addressed by `set add`.
 	if err := Create("/sys/fs/bpf/unused", "tag:u32", "", 8); err == nil || !strings.Contains(err.Error(), "reserved") {
 		t.Errorf("reserved-key err = %v", err)
