@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.15.0](https://github.com/takehaya/xdp-ninja/compare/v0.14.0...v0.15.0) (2026-07-03)
+
+
+### 🎉 Features
+
+* **attach:** attach multiple (program, func) pairs in one run ([#56](https://github.com/takehaya/xdp-ninja/issues/56)) ([61aca63](https://github.com/takehaya/xdp-ninja/commit/61aca63deb864f26a2d0d2fc41b576d39c646747))
+
 ## [0.14.0](https://github.com/takehaya/xdp-ninja/compare/v0.13.1...v0.14.0) (2026-07-02)
 
 
