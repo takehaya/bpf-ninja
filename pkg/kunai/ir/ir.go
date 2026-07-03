@@ -17,8 +17,8 @@ import (
 // Program is the top-level resolved filter.
 type Program struct {
 	Layers   []*LayerInstance
-	Where    *Condition        // nil when no top-level where
-	Captures []*CaptureClause  // 0 or more
+	Where    *Condition       // nil when no top-level where
+	Captures []*CaptureClause // 0 or more
 
 	// LabelTable maps label text to layer. It includes both
 	// user-provided "@label" names and auto-generated names of the
@@ -115,6 +115,7 @@ type Predicate struct {
 	Value    *ast.Value   // PredCmp
 	List     []*ast.Value // PredIn
 	FlagName string       // PredHas
+	SetName  string       // PredInSet ("@name" reference)
 
 	Unsupported string
 
@@ -129,14 +130,14 @@ type Predicate struct {
 //
 // When Aux is non-nil, Field references one entry of an auxiliary
 // header (e.g. gtp_opt_h.next_ext). Codegen must:
-//   1. Optionally evaluate Aux.Gating to decide whether the aux is
-//      present on this packet's path. A failed gate means the field
-//      does not exist for this packet — predicate codegen treats
-//      that as "match fails", consistent with `proto.aux.exists`
-//      being false.
-//   2. Read the field at offset (Aux.OffsetInLayer + Field's bit
-//      window) anchored on the layer-entry slot, not R4 (which has
-//      advanced past the layer by the time predicates run).
+//  1. Optionally evaluate Aux.Gating to decide whether the aux is
+//     present on this packet's path. A failed gate means the field
+//     does not exist for this packet — predicate codegen treats
+//     that as "match fails", consistent with `proto.aux.exists`
+//     being false.
+//  2. Read the field at offset (Aux.OffsetInLayer + Field's bit
+//     window) anchored on the layer-entry slot, not R4 (which has
+//     advanced past the layer by the time predicates run).
 type FieldRef struct {
 	Layer *LayerInstance
 	Field *vocab.Field
@@ -197,10 +198,10 @@ func (r *FieldRef) EffectiveBits() int {
 // OffsetInLayer + index*ElemSize where index comes from
 // Stack.Static or Stack.Dynamic depending on Stack.IsStatic.
 type AuxRef struct {
-	OutParam      string         // parser out parameter name (e.g. "opt", "segments")
-	HeaderName    string         // aux header type name (e.g. "gtp_opt_h", "srv6_seg_h")
-	OffsetInLayer int            // bytes from layer-entry slot to aux start (for stacks: base of stack)
-	HeaderSize    int            // bytes; element size when Stack != nil
+	OutParam      string // parser out parameter name (e.g. "opt", "segments")
+	HeaderName    string // aux header type name (e.g. "gtp_opt_h", "srv6_seg_h")
+	OffsetInLayer int    // bytes from layer-entry slot to aux start (for stacks: base of stack)
+	HeaderSize    int    // bytes; element size when Stack != nil
 	Gating        *vocab.AuxGating
 	// FieldBitOff / FieldBitWidth give the field's window inside the
 	// aux header (or per-entry stack header), in bits (matches
@@ -228,7 +229,7 @@ type AuxRef struct {
 // variable of an enclosing any/all quantifier — codegen substitutes
 // the loop iteration index for the offset compute.
 type StackIndex struct {
-	Capacity   int       // declared array size from `out <type>[N]` (= verifier-safe upper bound)
+	Capacity   int // declared array size from `out <type>[N]` (= verifier-safe upper bound)
 	IsStatic   bool
 	Static     uint64    // when IsStatic
 	Dynamic    *FieldRef // when !IsStatic && !IsIterator; primary-header field of the same layer
@@ -308,8 +309,8 @@ type Condition struct {
 // ArithExpr is a resolved arithmetic expression (used inside where).
 type ArithExpr struct {
 	Kind  ast.ArithKind
-	Const uint64     // ArithConst
-	Field *FieldRef  // ArithField
+	Const uint64    // ArithConst
+	Field *FieldRef // ArithField
 
 	Op    ast.ArithOp
 	Left  *ArithExpr

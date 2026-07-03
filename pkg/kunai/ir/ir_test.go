@@ -22,12 +22,12 @@ func TestBuildMinimalProgram(t *testing.T) {
 		Fields:     []vocab.Field{{Name: "dport", Bits: 16}},
 	}
 	dispatch := &vocab.DispatchConst{
-		Type:   vocab.DispatchField,
-		Name:   "TCP_IPV4_PROTOCOL",
-		Parent: "ipv4",
+		Type:      vocab.DispatchField,
+		Name:      "TCP_IPV4_PROTOCOL",
+		Parent:    "ipv4",
 		FieldName: "protocol",
-		Bits:   8,
-		Value:  6,
+		Bits:      8,
+		Value:     6,
 	}
 	ethLayer := &LayerInstance{Spec: &vocab.ProtocolSpec{Name: "eth", HeaderName: "eth_h"}}
 	ipv4Layer := &LayerInstance{Spec: ipv4Spec}

@@ -159,7 +159,6 @@ func exprMaxFieldBits(e *ir.ArithExpr) int {
 	return 0
 }
 
-
 // uintFitsBits reports whether a uint64 literal fits in the unsigned
 // range [0, 2^bits). Negative literals reach this helper as their
 // 2's-complement uint64 representation, in which case the fit check

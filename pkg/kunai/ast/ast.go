@@ -143,6 +143,7 @@ type Predicate struct {
 	Value    *Value   // PredCmp
 	List     []*Value // PredIn
 	FlagName string   // PredHas
+	SetName  string   // PredInSet ("@name" reference)
 	Pos      Position
 }
 

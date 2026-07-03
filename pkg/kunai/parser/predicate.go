@@ -42,6 +42,20 @@ func (p *parser) parsePredicate() (*ast.Predicate, error) {
 		if err := p.advance(); err != nil {
 			return nil, err
 		}
+		// "in @name" references a pinned-map set; "in [v1, v2, ...]" is a
+		// value list. The "@" disambiguates before we enter value mode.
+		if p.cur.Kind == lexer.TokAt {
+			if err := p.advance(); err != nil {
+				return nil, err
+			}
+			name, err := p.expect(lexer.TokIdent)
+			if err != nil {
+				return nil, err
+			}
+			pred.Kind = ast.PredInSet
+			pred.SetName = name.Text
+			return pred, nil
+		}
 		list, err := p.parseValueList()
 		if err != nil {
 			return nil, err
