@@ -22,7 +22,9 @@ import (
 	"golang.org/x/net/bpf"
 )
 
-// Probe は fentry または fexit の1つのトレーシングポイント。
+// Probe は fentry/fexit のトレーシングポイント群。単一ターゲットなら
+// progs/links は1要素、multi-attach (複数の (prog, func) ペア) では
+// 各ペアに1本ずつ載り、全プローブが同じ sharded ringbuf に emit する。
 type Probe struct {
 	EventsMap *ebpf.Map
 	InnerMaps []*ebpf.Map // non-nil only in per-CPU sharded mode
@@ -35,29 +37,38 @@ type Probe struct {
 	EchoRing   *ebpf.Map
 	EchoParams []attach.FuncParamInfo
 
-	maps []*ebpf.Map
-	prog *ebpf.Program
-	link link.Link
+	maps  []*ebpf.Map
+	progs []*ebpf.Program // one per attached (target prog, func) pair
+	links []link.Link     // parallel to progs
 }
 
-// Program returns the underlying tracing program. Exposed so that
+// Program returns the first underlying tracing program. Exposed so that
 // benchmarks (E2 / B2) can call Program.Test() to measure the per-
 // packet runtime cost of the filter via BPF_PROG_TEST_RUN. Not
 // intended for general callers — production code should manipulate
 // the probe through Close() / EventsMap.
 func (p *Probe) Program() *ebpf.Program {
-	return p.prog
+	if len(p.progs) == 0 {
+		return nil
+	}
+	return p.progs[0]
+}
+
+// AttachCount reports how many (target prog, func) pairs this probe is
+// attached to.
+func (p *Probe) AttachCount() int {
+	return len(p.links)
 }
 
 func (p *Probe) Close() error {
 	var errs []error
-	if p.link != nil {
-		if err := p.link.Close(); err != nil {
+	for _, l := range p.links {
+		if err := l.Close(); err != nil {
 			errs = append(errs, err)
 		}
 	}
-	if p.prog != nil {
-		if err := p.prog.Close(); err != nil {
+	for _, pr := range p.progs {
+		if err := pr.Close(); err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -71,6 +82,8 @@ func (p *Probe) Close() error {
 
 // LoadEntry は fentry (前段) probe を作成してアタッチする。
 // useDSL=true のとき filterExpr は xdp-ninja DSL として解釈される。
+// 単一ターゲット用の互換ラッパ (bare *ebpf.Program から Target を合成
+// して loadMulti に委譲)。本番 CLI 経路は LoadMultiEntry/Exit を使う。
 func LoadEntry(targetProg *ebpf.Program, funcName string, filterExpr string, argFilters []filter.ArgFilter, useDSL bool) (*Probe, error) {
 	return loadProbe(targetProg, funcName, filterExpr, argFilters, false, useDSL)
 }
@@ -85,6 +98,47 @@ func loadProbe(targetProg *ebpf.Program, funcName string, filterExpr string, arg
 	progType, err := validateTracingTarget(targetProg)
 	if err != nil {
 		return nil, err
+	}
+	targets := []attach.Target{{Program: targetProg, FuncName: funcName, Type: progType}}
+	return loadMulti(targets, filterExpr, [][]filter.ArgFilter{argFilters}, isFexit, useDSL)
+}
+
+// LoadMultiEntry attaches one fentry per (program, func) target, all
+// emitting into a single shared sharded ringbuf, so a multi-stage
+// dispatcher's per-direction capture points (UL + DL v4 + DL v6) are
+// captured in one run and merge into one time-ordered pcap.
+//
+// argFilters is parallel to targets (nil, or one slice per target): the
+// same param name can sit at a different arg index in different funcs, so
+// filters must be resolved against each target's own BTF params.
+func LoadMultiEntry(targets []attach.Target, filterExpr string, argFilters [][]filter.ArgFilter, useDSL bool) (*Probe, error) {
+	return loadMulti(targets, filterExpr, argFilters, false, useDSL)
+}
+
+// LoadMultiExit is LoadMultiEntry for fexit (sees the return action).
+func LoadMultiExit(targets []attach.Target, filterExpr string, argFilters [][]filter.ArgFilter, useDSL bool) (*Probe, error) {
+	return loadMulti(targets, filterExpr, argFilters, true, useDSL)
+}
+
+// loadMulti builds the shared capture infrastructure once (filter compile,
+// sharded ringbuf, scratch map — all of which depend only on the program
+// type, not the individual target) and then attaches one tracing program
+// per (target prog, func) pair against it.
+func loadMulti(targets []attach.Target, filterExpr string, argFilters [][]filter.ArgFilter, isFexit, useDSL bool) (*Probe, error) {
+	if len(targets) == 0 {
+		return nil, fmt.Errorf("no attach targets")
+	}
+	if argFilters != nil && len(argFilters) != len(targets) {
+		return nil, fmt.Errorf("argFilters length %d does not match %d targets", len(argFilters), len(targets))
+	}
+	progType := targets[0].Type
+	for _, t := range targets[1:] {
+		if t.Type != progType {
+			return nil, fmt.Errorf("mixed target program types (%s and %s)", progType, t.Type)
+		}
+	}
+	if progType != ebpf.XDP && progType != ebpf.SchedCLS && progType != ebpf.SchedACT {
+		return nil, fmt.Errorf("target program type %s is not supported (need XDP, SchedCLS, or SchedACT)", progType)
 	}
 
 	filterOut, err := compileFilter(filterExpr, useDSL, isFexit, progType)
@@ -127,13 +181,22 @@ func loadProbe(targetProg *ebpf.Program, funcName string, filterExpr string, arg
 		scratchFD = scratchMap.FD()
 	}
 
-	insns, err := buildTracingInsns(filterOut, argFilters, outerMap.FD(), scratchFD, isFexit, progType)
-	if err != nil {
-		_ = probe.Close()
-		return nil, err
-	}
-	if err := attachTracingProbe(probe, targetProg, fmt.Sprintf("xdp_ninja_%s", label), funcName, attachType, insns); err != nil {
-		return nil, err
+	// Instructions are built per target: the packet-filter part depends
+	// only on progType and the shared maps, but arg-filter offsets are
+	// resolved against each target func's own BTF param layout.
+	for i, t := range targets {
+		var af []filter.ArgFilter
+		if argFilters != nil {
+			af = argFilters[i]
+		}
+		insns, err := buildTracingInsns(filterOut, af, outerMap.FD(), scratchFD, isFexit, progType)
+		if err != nil {
+			_ = probe.Close()
+			return nil, err
+		}
+		if err := attachTracingProbe(probe, t.Program, fmt.Sprintf("xdp_ninja_%s", label), t.FuncName, attachType, insns); err != nil {
+			return nil, err
+		}
 	}
 	return probe, nil
 }
@@ -162,9 +225,10 @@ func tracingLabel(isFexit bool) (string, ebpf.AttachType) {
 }
 
 // attachTracingProbe loads insns as a Tracing program named `name`,
-// attaches it to funcName on targetProg, and records prog+link on probe.
-// On failure it closes probe (unwinding any maps already registered).
-// Shared by loadProbe (capture) and LoadArgEcho (diagnostic).
+// attaches it to funcName on targetProg, and appends prog+link to probe.
+// Callable multiple times to build up a multi-attach probe; on failure it
+// closes probe (unwinding maps and any attaches already made).
+// Shared by loadMulti (capture) and LoadArgEcho (diagnostic).
 func attachTracingProbe(probe *Probe, targetProg *ebpf.Program, name, funcName string, attachType ebpf.AttachType, insns asm.Instructions) error {
 	prog, err := ebpf.NewProgram(&ebpf.ProgramSpec{
 		Name: name, Type: ebpf.Tracing, AttachType: attachType,
@@ -173,16 +237,16 @@ func attachTracingProbe(probe *Probe, targetProg *ebpf.Program, name, funcName s
 	})
 	if err != nil {
 		_ = probe.Close()
-		return fmt.Errorf("loading %s program: %w", name, err)
+		return fmt.Errorf("loading %s (%s) program: %w", name, funcName, err)
 	}
-	probe.prog = prog
+	probe.progs = append(probe.progs, prog)
 
 	l, err := link.AttachTracing(link.TracingOptions{Program: prog, AttachType: attachType})
 	if err != nil {
 		_ = probe.Close()
-		return fmt.Errorf("attaching %s: %w", name, err)
+		return fmt.Errorf("attaching %s to %s: %w", name, funcName, err)
 	}
-	probe.link = l
+	probe.links = append(probe.links, l)
 	return nil
 }
 
