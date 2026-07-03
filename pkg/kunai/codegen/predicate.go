@@ -216,8 +216,12 @@ func emitInSetPredicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, erro
 	if bytes > 8 {
 		return nil, fmt.Errorf("%w: set key field %q is %d bytes; packet-field extraction supports up to 8 (16-byte keys such as SRv6 SID are a follow-up)", ErrNotImplemented, fieldName, bytes)
 	}
-	if bytes > slotSize {
-		return nil, fmt.Errorf("packet field %q (%d bytes) is wider than set @%s key field %q (%d bytes)", fieldName, bytes, pred.SetName, fieldName, slotSize)
+	// Require an exact width match: a narrower packet field would only
+	// write a prefix of the key (relying on zero-fill), which silently
+	// matches just zero-extended entries — a mis-configuration trap.
+	// Size the set key field to the packet field's width.
+	if bytes != slotSize {
+		return nil, fmt.Errorf("packet field %q is %d bytes but set @%s key field %q is %d bytes; widths must match (create the set with a matching field type)", fieldName, bytes, pred.SetName, fieldName, slotSize)
 	}
 	size, err := asmSizeFor(bytes)
 	if err != nil {
