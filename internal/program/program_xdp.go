@@ -24,6 +24,7 @@ import (
 	"github.com/cilium/ebpf/btf"
 	"github.com/cilium/ebpf/link"
 	"github.com/takehaya/xdp-ninja/internal/attach"
+	"github.com/takehaya/xdp-ninja/internal/setmap"
 	"github.com/takehaya/xdp-ninja/pkg/kunai/codegen"
 )
 
@@ -54,11 +55,18 @@ const (
 //
 // Caller is responsible for ensuring no XDP program is already
 // attached (see attach.InspectInterface) before calling.
-func LoadXDPNative(state *attach.InterfaceState, filterExpr string, useDSL bool) (*Probe, error) {
+func LoadXDPNative(state *attach.InterfaceState, filterExpr string, useDSL bool, sets []*setmap.Set) (*Probe, error) {
 	// isFexit=false so kunai gets zero Capabilities — XDP-native has
 	// no observed action atom (the program decides the action, doesn't
 	// read one), same shape fentry uses.
-	out, err := compileFilter(filterExpr, useDSL, false, ebpf.XDP)
+	var slots *pktSetSlots
+	if len(sets) > 0 {
+		var err error
+		if slots, err = newPktSetSlots(sets); err != nil {
+			return nil, err
+		}
+	}
+	out, err := compileFilterWithSlots(filterExpr, useDSL, false, ebpf.XDP, slots)
 	if err != nil {
 		return nil, err
 	}
@@ -77,7 +85,7 @@ func LoadXDPNative(state *attach.InterfaceState, filterExpr string, useDSL bool)
 		maps:      append([]*ebpf.Map{outerMap}, innerMaps...),
 	}
 
-	insns := buildXDPNativeInsns(out, outerMap.FD())
+	insns := buildXDPNativeInsns(out, outerMap.FD(), slots)
 	spec := &ebpf.ProgramSpec{
 		Name:         "xdp_ninja_native",
 		Type:         ebpf.XDP,
@@ -138,10 +146,18 @@ func LoadXDPNative(state *attach.InterfaceState, filterExpr string, useDSL bool)
 //	R9 = pkt_len      (set in prologue)
 //
 // The filter output lands at "filter_result" with R2 = 1 (match) or 0.
-func buildXDPNativeInsns(filterOut codegen.Output, eventsFD int) asm.Instructions {
+func buildXDPNativeInsns(filterOut codegen.Output, eventsFD int, slots *pktSetSlots) asm.Instructions {
 	var insns asm.Instructions
 	insns = append(insns, loadXDPPacketPointers()...)
+	// DSL `field in @set`: zero the key buffer, let the filter extract the
+	// packet fields into it, then look each referenced set up (miss →
+	// skip capture). ANDs with the kunai verdict runFilterDirect produced.
+	refs := referencedSets(filterOut.Extractions)
+	insns = append(insns, emitPktSetKeyZeroing(refs)...)
 	insns = append(insns, runFilterDirect(filterOut.Main)...)
+	if slots != nil {
+		insns = append(insns, slots.emitPktSetLookups(refs)...)
+	}
 	insns = append(insns, captureXDPNative(eventsFD, filterOut.Capture.MaxCapLen)...)
 	finalAction := xdpPass
 	if XDPNativeBenchDrop {
@@ -163,10 +179,10 @@ func buildXDPNativeInsns(filterOut codegen.Output, eventsFD int) asm.Instruction
 // recognises — loaded as 4-byte values, treated as PTR_TO_PACKET.
 func loadXDPPacketPointers() asm.Instructions {
 	return asm.Instructions{
-		asm.Mov.Reg(asm.R6, asm.R1),               // R6 = ctx (xdp_md *)
-		asm.LoadMem(asm.R7, asm.R6, 0, asm.Word),  // R7 = ctx->data
-		asm.LoadMem(asm.R8, asm.R6, 4, asm.Word),  // R8 = ctx->data_end
-		asm.Mov.Reg(asm.R9, asm.R8),               // R9 = pkt_len
+		asm.Mov.Reg(asm.R6, asm.R1),              // R6 = ctx (xdp_md *)
+		asm.LoadMem(asm.R7, asm.R6, 0, asm.Word), // R7 = ctx->data
+		asm.LoadMem(asm.R8, asm.R6, 4, asm.Word), // R8 = ctx->data_end
+		asm.Mov.Reg(asm.R9, asm.R8),              // R9 = pkt_len
 		asm.Sub.Reg(asm.R9, asm.R7),
 	}
 }
@@ -291,4 +307,3 @@ func captureXDPNative(eventsFD int, maxCapLen int) asm.Instructions {
 	}...)
 	return insns
 }
-

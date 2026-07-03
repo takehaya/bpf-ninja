@@ -103,7 +103,7 @@ func loadXDPNativeOrFail(t *testing.T, expr string, useDSL bool) {
 		t.Fatalf("populating outer map: %v", err)
 	}
 
-	insns := buildXDPNativeInsns(out, outerMap.FD())
+	insns := buildXDPNativeInsns(out, outerMap.FD(), nil)
 	prog, err := ebpf.NewProgram(&ebpf.ProgramSpec{
 		Name:         "xdp_ninja_native_test",
 		Type:         ebpf.XDP,

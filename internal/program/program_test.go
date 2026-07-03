@@ -76,7 +76,7 @@ func TestBuildTracingInsns(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// FD==0 は実際のmapではないが、命令生成のテストには十分
-			insns, err := buildTracingInsns(codegen.Output{Main: tt.filter}, filter.TargetFilters{}, 0, 0, tt.isFexit, ebpf.XDP)
+			insns, err := buildTracingInsns(codegen.Output{Main: tt.filter}, filter.TargetFilters{}, 0, 0, tt.isFexit, ebpf.XDP, nil)
 			if err != nil {
 				t.Fatalf("buildTracingInsns: %v", err)
 			}
@@ -95,7 +95,7 @@ func TestBuildTracingInsns(t *testing.T) {
 
 func TestBuildTracingInsnsLabels(t *testing.T) {
 	filterInsns := dummyFilter()
-	insns, err := buildTracingInsns(codegen.Output{Main: filterInsns}, filter.TargetFilters{}, 0, 0, false, ebpf.XDP)
+	insns, err := buildTracingInsns(codegen.Output{Main: filterInsns}, filter.TargetFilters{}, 0, 0, false, ebpf.XDP, nil)
 	if err != nil {
 		t.Fatalf("buildTracingInsns: %v", err)
 	}
