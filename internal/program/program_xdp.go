@@ -97,7 +97,7 @@ func LoadXDPNative(state *attach.InterfaceState, filterExpr string, useDSL bool)
 		_ = probe.Close()
 		return nil, fmt.Errorf("loading XDP program: %w", err)
 	}
-	probe.prog = prog
+	probe.progs = append(probe.progs, prog)
 
 	l, err := link.AttachXDP(link.XDPOptions{
 		Program:   prog,
@@ -107,7 +107,7 @@ func LoadXDPNative(state *attach.InterfaceState, filterExpr string, useDSL bool)
 		_ = probe.Close()
 		return nil, fmt.Errorf("attaching XDP: %w", err)
 	}
-	probe.link = l
+	probe.links = append(probe.links, l)
 
 	return probe, nil
 }
