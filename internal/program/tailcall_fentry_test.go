@@ -8,7 +8,8 @@ import (
 )
 
 // tailcallSubfuncSource sets up a tail call chain:
-//   xdp_dispatcher → tail call → xdp_leaf → bpf2bpf call → process_in_leaf
+//
+//	xdp_dispatcher → tail call → xdp_leaf → bpf2bpf call → process_in_leaf
 const tailcallSubfuncSource = `
 #include <linux/bpf.h>
 #include <bpf/bpf_helpers.h>

@@ -489,22 +489,9 @@ func run(ctx context.Context, cmd *cli.Command) error {
 		// Reject before opening any pinned map (which can fail).
 		return fmt.Errorf("--set is not supported with --arg-echo")
 	}
-	seenSet := map[string]bool{}
-	for _, spec := range cmd.StringSlice("set") {
-		ref, err := setmap.ParseSetSpec(spec)
-		if err != nil {
-			return err
-		}
-		if seenSet[ref.Name] {
-			return fmt.Errorf("--set %q: set name %q defined more than once", spec, ref.Name)
-		}
-		seenSet[ref.Name] = true
-		s, err := setmap.OpenSet(ref)
-		if err != nil {
-			return err
-		}
-		sets = append(sets, s)
-		logVerbose(cmd, "set %q: %s (key %d B, %d field(s))", s.Name, s.Path, s.Def.KeySize, len(s.Def.Fields))
+	var setErr error
+	if sets, setErr = openDeclaredSets(cmd); setErr != nil {
+		return setErr
 	}
 
 	// --arg-filter: split "@NAME" set references from plain expressions,
@@ -571,9 +558,9 @@ func run(ctx context.Context, cmd *cli.Command) error {
 	}
 	var probe *program.Probe
 	if isFexit {
-		probe, err = program.LoadMultiExit(targets, filterExpr, filters, useDSL)
+		probe, err = program.LoadMultiExit(targets, filterExpr, filters, useDSL, sets)
 	} else {
-		probe, err = program.LoadMultiEntry(targets, filterExpr, filters, useDSL)
+		probe, err = program.LoadMultiEntry(targets, filterExpr, filters, useDSL, sets)
 	}
 	if err != nil {
 		return err
@@ -981,8 +968,8 @@ func captureLoopShardedRaw(cmd *cli.Command, inners []*ebpf.Map, label, basePath
 	// shardCounts[shardIdx].n++; only one shard goroutine ever
 	// writes its own slot, and the final reader runs after stop().
 	type paddedCounter struct {
-		n   int64
-		_   [56]byte
+		n int64
+		_ [56]byte
 	}
 	shardCounts := make([]paddedCounter, len(inners))
 	var captured atomic.Int64
@@ -1131,8 +1118,46 @@ func reportLatencySamples(outputPath string) {
 
 // runXDPNative handles --mode xdp: xdp-ninja is itself the XDP
 // program on the netdev (no fentry/fexit piggybacking).
+// openDeclaredSets parses and opens every --set spec, rejecting duplicate
+// names. The caller owns the returned handles (defer Def.Close) until the
+// program is loaded. On error it returns whatever opened so far so the
+// caller's deferred close still runs.
+func openDeclaredSets(cmd *cli.Command) ([]*setmap.Set, error) {
+	var sets []*setmap.Set
+	seen := map[string]bool{}
+	for _, spec := range cmd.StringSlice("set") {
+		ref, err := setmap.ParseSetSpec(spec)
+		if err != nil {
+			return sets, err
+		}
+		if seen[ref.Name] {
+			return sets, fmt.Errorf("--set %q: set name %q defined more than once", spec, ref.Name)
+		}
+		seen[ref.Name] = true
+		s, err := setmap.OpenSet(ref)
+		if err != nil {
+			return sets, err
+		}
+		sets = append(sets, s)
+		logVerbose(cmd, "set %q: %s (key %d B, %d field(s))", s.Name, s.Path, s.Def.KeySize, len(s.Def.Fields))
+	}
+	return sets, nil
+}
+
 func runXDPNative(cmd *cli.Command) error {
 	if err := validateXDPNativeFlags(cmd); err != nil {
+		return err
+	}
+
+	// DSL `layer[field in @NAME]` extracts packet fields into a host key
+	// buffer and looks the pinned set up after the filter; open the sets.
+	sets, err := openDeclaredSets(cmd)
+	defer func() {
+		for _, s := range sets {
+			s.Def.Close()
+		}
+	}()
+	if err != nil {
 		return err
 	}
 
@@ -1161,7 +1186,7 @@ func runXDPNative(cmd *cli.Command) error {
 
 	logVerbose(cmd, "attaching xdp-ninja as native XDP on %s (filter: %s)", ifaceName, filterExpr)
 
-	probe, err := program.LoadXDPNative(state, filterExpr, useDSL)
+	probe, err := program.LoadXDPNative(state, filterExpr, useDSL, sets)
 	if err != nil {
 		return err
 	}
@@ -1185,8 +1210,11 @@ func validateXDPNativeFlags(cmd *cli.Command) error {
 	if len(cmd.StringSlice("arg-filter")) > 0 {
 		return fmt.Errorf("--arg-filter is only valid with --mode entry/exit (no tracing args in xdp-native)")
 	}
-	if len(cmd.StringSlice("set")) > 0 {
-		return fmt.Errorf("--set is only valid with --mode entry/exit (set matching keys off tracing args)")
+	if len(cmd.StringSlice("set")) > 0 && len(cmd.StringSlice("arg-filter")) > 0 {
+		// arg-filter is already rejected above; this guards the case where
+		// a future relaxation lets both through. DSL `@set` (packet-field
+		// extraction) is fine on xdp-native and handled in runXDPNative.
+		return fmt.Errorf("--set with --arg-filter needs tracing args (--mode entry/exit); use DSL `layer[field in @NAME]` on xdp-native")
 	}
 	if cmd.Bool("list-funcs") || cmd.Bool("list-progs") || cmd.Bool("list-params") {
 		return fmt.Errorf("--list-* flags are only valid with --mode entry/exit")
@@ -1249,7 +1277,6 @@ func findTargets(cmd *cli.Command, isTC bool) ([]*attach.ProgInfo, error) {
 	}
 	return infos, nil
 }
-
 
 // formatKeyRanges renders a sorted key list compactly, collapsing runs of
 // consecutive keys: [0,1,2,3] -> "0-3", [0,1,3,4,5] -> "0-1,3-5".
