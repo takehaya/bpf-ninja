@@ -348,6 +348,17 @@ func TestResolvePredicateInSetUnknownFieldErrors(t *testing.T) {
 	resolveErr(t, "eth/ipv4/udp/gtp[nope in @teids]", nil, "no field")
 }
 
+func TestResolvePredicateInSetRejectsOptionalLayer(t *testing.T) {
+	// An optional layer may be absent, leaving the host key buffer
+	// unwritten while the filter still accepts — reject `in @set` there.
+	resolveErr(t, "eth/vlan[tci in @vlans]?/ipv4/tcp", nil, "mandatory layer")
+}
+
+func TestResolvePredicateInSetRejectsAlternationMember(t *testing.T) {
+	// An alternation branch may not be taken; reject `in @set` inside one.
+	resolveErr(t, "eth/(vlan[tci in @vlans]|qinq)/ipv4/tcp", nil, "alternation")
+}
+
 func TestResolveAlternationResolves(t *testing.T) {
 	// Alternatives resolve (each is a valid protocol) and the group
 	// is not flagged Unsupported because codegen can emit it.

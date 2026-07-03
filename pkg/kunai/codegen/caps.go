@@ -64,14 +64,17 @@ type LangCaps struct {
 	// SetSlots resolves a `field in @name` predicate to the R10 stack
 	// slot where codegen must store the extracted packet field, so the
 	// host can look it up in its pinned map after the filter returns.
-	// nil disables `in @set` atoms: both the resolver (atom validity)
-	// and codegen treat them as an error. See SetSlotResolver.
+	// nil disables `in @set`: the resolver still binds the field and
+	// checks placement, but codegen rejects the atom with
+	// ErrNotImplemented (the set/field/slot validation needs the
+	// resolver, which only codegen holds). See SetSlotResolver.
 	SetSlots SetSlotResolver
 }
 
 // HasSetAtoms reports whether the lang caps configure a set-slot
-// resolver. Used by the resolver to short-circuit `field in @name`
-// validation when the host has not opted in. Parallels HasActionAtoms.
+// resolver. Parallels HasActionAtoms. Note: unlike action atoms
+// (validated in the resolver), `in @set` is validated in codegen, which
+// is where SetSlots is consulted.
 func (l LangCaps) HasSetAtoms() bool {
 	return l.SetSlots != nil
 }
