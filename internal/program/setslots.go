@@ -146,9 +146,12 @@ func (p *pktSetSlots) emitPktSetKeyZeroing(referenced []string) asm.Instructions
 		return nil // nothing allocated
 	}
 	// The region [-40,-24) is two 8-aligned dwords: [-40,-32) and
-	// [-32,-24). Emit only the dword(s) the used span touches, keeping
-	// stores dword-aligned and inside the region (a base may not be
-	// 8-aligned, so a store from `lowest` directly could overrun -24).
+	// [-32,-24). Stores must be dword-aligned and inside the region (a
+	// base may not be 8-aligned, so a store from `lowest` directly could
+	// overrun -24). The upper dword [-32,-24) is always in use: the
+	// topmost buffer always ends exactly at -24 (KeySize is a multiple of
+	// its alignment and -24 is aligned, so base = -24 - KeySize), so we
+	// always emit it; the lower dword only when the span reaches it.
 	insns := asm.Instructions{asm.Mov.Imm(asm.R3, 0)}
 	if lowest < pktSetKeyFloor+8 { // spans into the lower dword
 		insns = append(insns, asm.StoreMem(asm.R10, pktSetKeyFloor, asm.R3, asm.DWord))
