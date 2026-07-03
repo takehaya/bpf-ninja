@@ -146,16 +146,17 @@ func loadMulti(targets []attach.Target, filterExpr string, filters []filter.Targ
 	// DSL `field in @set` extracts packet fields into a host key buffer;
 	// build the slot resolver so kunai emits the extraction stores.
 	var slots *pktSetSlots
-	var err error
 	if len(sets) > 0 {
-		if slots, err = newPktSetSlots(sets); err != nil {
-			return nil, err
-		}
+		slots = newPktSetSlots(sets)
 	}
 	filterOut, err := compileFilterWithSlots(filterExpr, useDSL, isFexit, progType, slots)
+	if slots != nil && slots.allocErr() != nil {
+		return nil, slots.allocErr() // clearer than the downstream codegen error
+	}
 	if err != nil {
 		return nil, err
 	}
+	pktRefs := referencedSets(filterOut.Extractions)
 	if SnaplenOverride > 0 {
 		filterOut.Capture.MaxCapLen = SnaplenOverride
 	}
@@ -200,7 +201,7 @@ func loadMulti(targets []attach.Target, filterExpr string, filters []filter.Targ
 		if filters != nil {
 			tf = filters[i]
 		}
-		insns, err := buildTracingInsns(filterOut, tf, outerMap.FD(), scratchFD, isFexit, progType, slots)
+		insns, err := buildTracingInsns(filterOut, tf, outerMap.FD(), scratchFD, isFexit, progType, slots, pktRefs)
 		if err != nil {
 			_ = probe.Close()
 			return nil, err
@@ -468,7 +469,7 @@ const (
 	metadataSize = 16
 )
 
-func buildTracingInsns(filterOut codegen.Output, tf filter.TargetFilters, eventsFD, scratchFD int, isFexit bool, progType ebpf.ProgramType, slots *pktSetSlots) (asm.Instructions, error) {
+func buildTracingInsns(filterOut codegen.Output, tf filter.TargetFilters, eventsFD, scratchFD int, isFexit bool, progType ebpf.ProgramType, slots *pktSetSlots, pktRefs []string) (asm.Instructions, error) {
 	var insns asm.Instructions
 	prelude, err := loadPacketPointers(progType)
 	if err != nil {
@@ -480,11 +481,12 @@ func buildTracingInsns(filterOut codegen.Output, tf filter.TargetFilters, events
 	// DSL `field in @set`: zero the packet-key buffer, run the filter
 	// (kunai extracts fields into it), then look each referenced set up
 	// (miss → skip capture). ANDs with arg filters and the kunai verdict.
-	refs := referencedSets(filterOut.Extractions)
-	insns = append(insns, emitPktSetKeyZeroing(refs)...)
+	if slots != nil {
+		insns = append(insns, slots.emitPktSetKeyZeroing(pktRefs)...)
+	}
 	insns = append(insns, runFilter(filterOut.Main, scratchFD, filterScanLen(filterOut))...)
 	if slots != nil {
-		insns = append(insns, slots.emitPktSetLookups(refs)...)
+		insns = append(insns, slots.emitPktSetLookups(pktRefs)...)
 	}
 	insns = append(insns, captureWithRingbuf(eventsFD, isFexit, filterOut.Capture.MaxCapLen)...)
 	insns = append(insns, asm.Mov.Imm(asm.R0, 0).WithSymbol("exit"), asm.Return())
@@ -834,15 +836,24 @@ func emitSetFilters(sets []filter.SetFilter) asm.Instructions {
 			insns = append(insns, asm.StoreMem(asm.R10, int16(setKeyBase+int(f.FieldOff)), asm.R3, asmSizeFor(f.FieldSize)))
 		}
 
-		insns = append(insns,
-			asm.LoadMapPtr(asm.R1, s.Map.FD()),
-			asm.Mov.Reg(asm.R2, asm.R10),
-			asm.Add.Imm(asm.R2, setKeyBase),
-			asm.FnMapLookupElem.Call(),
-			asm.JEq.Imm(asm.R0, 0, "exit"),
-		)
+		insns = append(insns, emitSetLookup(s.Map.FD(), setKeyBase)...)
 	}
 	return insns
+}
+
+// emitSetLookup emits the shared membership tail: look the pinned map
+// (mapFD) up with the key at R10+keyOff; a NULL result jumps to "exit"
+// (skip capture), so stacked lookups AND together. Clobbers R0-R5.
+// Shared by the arg-based emitSetFilters and the packet-based
+// emitPktSetLookups (setslots.go).
+func emitSetLookup(mapFD int, keyOff int16) asm.Instructions {
+	return asm.Instructions{
+		asm.LoadMapPtr(asm.R1, mapFD),
+		asm.Mov.Reg(asm.R2, asm.R10),
+		asm.Add.Imm(asm.R2, int32(keyOff)),
+		asm.FnMapLookupElem.Call(),
+		asm.JEq.Imm(asm.R0, 0, "exit"),
+	}
 }
 
 // keyHasGaps reports whether the set's key has any byte not covered by a

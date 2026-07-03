@@ -61,12 +61,12 @@ func LoadXDPNative(state *attach.InterfaceState, filterExpr string, useDSL bool,
 	// read one), same shape fentry uses.
 	var slots *pktSetSlots
 	if len(sets) > 0 {
-		var err error
-		if slots, err = newPktSetSlots(sets); err != nil {
-			return nil, err
-		}
+		slots = newPktSetSlots(sets)
 	}
 	out, err := compileFilterWithSlots(filterExpr, useDSL, false, ebpf.XDP, slots)
+	if slots != nil && slots.allocErr() != nil {
+		return nil, slots.allocErr()
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -153,7 +153,9 @@ func buildXDPNativeInsns(filterOut codegen.Output, eventsFD int, slots *pktSetSl
 	// packet fields into it, then look each referenced set up (miss →
 	// skip capture). ANDs with the kunai verdict runFilterDirect produced.
 	refs := referencedSets(filterOut.Extractions)
-	insns = append(insns, emitPktSetKeyZeroing(refs)...)
+	if slots != nil {
+		insns = append(insns, slots.emitPktSetKeyZeroing(refs)...)
+	}
 	insns = append(insns, runFilterDirect(filterOut.Main)...)
 	if slots != nil {
 		insns = append(insns, slots.emitPktSetLookups(refs)...)

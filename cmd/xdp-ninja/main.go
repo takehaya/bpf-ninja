@@ -1210,12 +1210,9 @@ func validateXDPNativeFlags(cmd *cli.Command) error {
 	if len(cmd.StringSlice("arg-filter")) > 0 {
 		return fmt.Errorf("--arg-filter is only valid with --mode entry/exit (no tracing args in xdp-native)")
 	}
-	if len(cmd.StringSlice("set")) > 0 && len(cmd.StringSlice("arg-filter")) > 0 {
-		// arg-filter is already rejected above; this guards the case where
-		// a future relaxation lets both through. DSL `@set` (packet-field
-		// extraction) is fine on xdp-native and handled in runXDPNative.
-		return fmt.Errorf("--set with --arg-filter needs tracing args (--mode entry/exit); use DSL `layer[field in @NAME]` on xdp-native")
-	}
+	// --set is valid on xdp-native for DSL `layer[field in @NAME]` (packet
+	// extraction). arg-filter @NAME (which needs tracing args) is already
+	// rejected by the --arg-filter check above.
 	if cmd.Bool("list-funcs") || cmd.Bool("list-progs") || cmd.Bool("list-params") {
 		return fmt.Errorf("--list-* flags are only valid with --mode entry/exit")
 	}
