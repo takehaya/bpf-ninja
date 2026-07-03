@@ -40,9 +40,16 @@ jobs:
       contents: write
       packages: write
     steps:
+      # Check out the exact tag release-please just created, not the branch
+      # HEAD. Both point at the same commit, but pinning the ref makes
+      # goreleaser's `git describe` deterministic: otherwise it can race the
+      # just-pushed tag and resolve the previous release as "current",
+      # failing with "git tag vX.Y.Z was not made against commit ...".
       - uses: actions/checkout@v5
         with:
+          ref: ${{ needs.release-please.outputs.tag_name }}
           fetch-depth: 0
+          fetch-tags: true
 
       - uses: actions/setup-go@v6
         with:
