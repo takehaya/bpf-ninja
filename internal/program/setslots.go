@@ -35,50 +35,64 @@ const (
 )
 
 // pktSetSlots implements codegen.SetSlotResolver over the opened --set
-// definitions, allocating each referenced set a key buffer in the shared
-// [-40, -24) region.
+// definitions. Slots are allocated lazily on first SlotFor call, so only
+// the sets the DSL actually extracts fields from consume the 16-byte
+// budget (arg-filter-only sets, matched separately, cost nothing here).
 type pktSetSlots struct {
-	defs map[string]*setmap.Definition
-	base map[string]int16 // set name → R10 offset of its key buffer
+	sets   map[string]*setSlot
+	cursor int16 // next free offset, allocated downward from pktSetKeyTop
+	err    error // first over-budget allocation, surfaced by allocErr()
 }
 
-// newPktSetSlots allocates a key-buffer slot for every provided set and
-// returns the resolver, or an error if the combined key width exceeds the
-// 16-byte packet-extraction budget.
-func newPktSetSlots(sets []*setmap.Set) (*pktSetSlots, error) {
-	p := &pktSetSlots{
-		defs: make(map[string]*setmap.Definition, len(sets)),
-		base: make(map[string]int16, len(sets)),
-	}
-	cursor := pktSetKeyTop
-	for _, s := range sets {
-		cursor -= int16(s.Def.KeySize)
-		if cursor < pktSetKeyFloor {
-			return nil, fmt.Errorf("set @%s: combined key width exceeds the %d-byte packet-extraction budget", s.Name, int(pktSetKeyTop-pktSetKeyFloor))
-		}
-		p.defs[s.Name] = s.Def
-		p.base[s.Name] = cursor
-	}
-	return p, nil
+type setSlot struct {
+	def       *setmap.Definition
+	base      int16 // R10 offset of the key buffer; 0 until allocated
+	allocated bool
 }
+
+// newPktSetSlots wraps the opened sets in a resolver; nothing is allocated
+// until codegen queries a set via SlotFor.
+func newPktSetSlots(sets []*setmap.Set) *pktSetSlots {
+	p := &pktSetSlots{sets: make(map[string]*setSlot, len(sets)), cursor: pktSetKeyTop}
+	for _, s := range sets {
+		p.sets[s.Name] = &setSlot{def: s.Def}
+	}
+	return p
+}
+
+// allocErr returns the first over-budget error hit during compile-time
+// SlotFor calls (SlotFor itself can only signal ok=false), so the loader
+// can surface a clear message instead of a downstream codegen error.
+func (p *pktSetSlots) allocErr() error { return p.err }
 
 // HasSet reports whether name was declared with --set.
 func (p *pktSetSlots) HasSet(name string) bool {
-	_, ok := p.defs[name]
+	_, ok := p.sets[name]
 	return ok
 }
 
-// SlotFor returns the R10 slot and width for one key field of a set.
+// SlotFor returns the R10 slot and width for one key field of a set,
+// allocating the set's key buffer on first use.
 func (p *pktSetSlots) SlotFor(setName, fieldName string) (off int16, size int, ok bool) {
-	def, ok := p.defs[setName]
+	s, ok := p.sets[setName]
 	if !ok {
 		return 0, 0, false
 	}
-	f, ok := def.Field(fieldName)
+	f, ok := s.def.Field(fieldName)
 	if !ok {
 		return 0, 0, false
 	}
-	return p.base[setName] + int16(f.Off), int(f.Size), true
+	if !s.allocated {
+		base := p.cursor - int16(s.def.KeySize)
+		if base < pktSetKeyFloor {
+			if p.err == nil {
+				p.err = fmt.Errorf("set @%s: combined packet-key width exceeds the %d-byte budget", setName, int(pktSetKeyTop-pktSetKeyFloor))
+			}
+			return 0, 0, false
+		}
+		s.base, s.allocated, p.cursor = base, true, base
+	}
+	return s.base + int16(f.Off), int(f.Size), true
 }
 
 // referencedSets returns the distinct set names the compiled filter
@@ -96,38 +110,43 @@ func referencedSets(extractions []codegen.ExtractSlot) []string {
 	return order
 }
 
-// emitPktSetKeyZeroing zeroes the whole [-40, -24) key-buffer region
-// before the filter runs, so padding bytes a field store does not cover
-// stay zero (hash maps hash every key byte; setmap.BuildKey zero-pads to
-// match). Two dword stores cover the 16-byte region. No-op when nothing
-// references a set.
-func emitPktSetKeyZeroing(referenced []string) asm.Instructions {
-	if len(referenced) == 0 {
-		return nil
+// emitPktSetKeyZeroing zeroes the allocated key-buffer span before the
+// filter runs, so padding bytes a field store does not cover stay zero
+// (hash maps hash every key byte; setmap.BuildKey zero-pads to match).
+// Only the dwords covering the sets actually used are emitted (a single
+// u32/u64 key touches one dword, not the whole 16-byte region). No-op
+// when nothing references a set.
+func (p *pktSetSlots) emitPktSetKeyZeroing(referenced []string) asm.Instructions {
+	lowest := pktSetKeyTop
+	for _, name := range referenced {
+		if s := p.sets[name]; s != nil && s.allocated && s.base < lowest {
+			lowest = s.base
+		}
 	}
-	return asm.Instructions{
-		asm.Mov.Imm(asm.R3, 0),
-		asm.StoreMem(asm.R10, pktSetKeyFloor, asm.R3, asm.DWord),   // [-40,-32)
-		asm.StoreMem(asm.R10, pktSetKeyFloor+8, asm.R3, asm.DWord), // [-32,-24)
+	if lowest >= pktSetKeyTop {
+		return nil // nothing allocated
 	}
+	// The region [-40,-24) is two 8-aligned dwords: [-40,-32) and
+	// [-32,-24). Emit only the dword(s) the used span touches, keeping
+	// stores dword-aligned and inside the region (a base may not be
+	// 8-aligned, so a store from `lowest` directly could overrun -24).
+	insns := asm.Instructions{asm.Mov.Imm(asm.R3, 0)}
+	if lowest < pktSetKeyFloor+8 { // spans into the lower dword
+		insns = append(insns, asm.StoreMem(asm.R10, pktSetKeyFloor, asm.R3, asm.DWord))
+	}
+	insns = append(insns, asm.StoreMem(asm.R10, pktSetKeyFloor+8, asm.R3, asm.DWord))
+	return insns
 }
 
 // emitPktSetLookups emits one pinned-map membership check per referenced
 // set, against the key buffer kunai populated during the filter. A miss
 // jumps to "exit" (skip capture); all sets AND together, and AND with the
-// kunai verdict that already ran. Reload of R-registers is unnecessary:
-// this runs after the filter body, before capture.
+// kunai verdict that already ran.
 func (p *pktSetSlots) emitPktSetLookups(referenced []string) asm.Instructions {
 	var insns asm.Instructions
 	for _, name := range referenced {
-		def := p.defs[name]
-		insns = append(insns,
-			asm.LoadMapPtr(asm.R1, def.Map.FD()),
-			asm.Mov.Reg(asm.R2, asm.R10),
-			asm.Add.Imm(asm.R2, int32(p.base[name])),
-			asm.FnMapLookupElem.Call(),
-			asm.JEq.Imm(asm.R0, 0, "exit"),
-		)
+		s := p.sets[name]
+		insns = append(insns, emitSetLookup(s.def.Map.FD(), s.base)...)
 	}
 	return insns
 }

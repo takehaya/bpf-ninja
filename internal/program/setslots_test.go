@@ -13,16 +13,14 @@ func setWithKey(name string, keySize uint32, fields []setmap.KeyField) *setmap.S
 	}
 }
 
-func TestNewPktSetSlotsAllocatesDistinctBuffers(t *testing.T) {
+func TestPktSetSlotsAllocatesDistinctBuffersLazily(t *testing.T) {
 	sets := []*setmap.Set{
 		setWithKey("a", 8, []setmap.KeyField{{Name: "teid", Off: 0, Size: 4}, {Name: "mt", Off: 4, Size: 1}}),
 		setWithKey("b", 4, []setmap.KeyField{{Name: "sid", Off: 0, Size: 4}}),
 	}
-	p, err := newPktSetSlots(sets)
-	if err != nil {
-		t.Fatalf("newPktSetSlots: %v", err)
-	}
-	// Both sets sit inside the host region [-40,-24) and don't overlap.
+	p := newPktSetSlots(sets)
+	// SlotFor allocates on first use; both sets land inside [-40,-24) and
+	// don't overlap.
 	offA, szA, okA := p.SlotFor("a", "teid")
 	offB, _, okB := p.SlotFor("b", "sid")
 	if !okA || !okB {
@@ -44,24 +42,45 @@ func TestNewPktSetSlotsAllocatesDistinctBuffers(t *testing.T) {
 	if offMT != offA+4 {
 		t.Errorf("mt slot = %d, want %d", offMT, offA+4)
 	}
+	if err := p.allocErr(); err != nil {
+		t.Errorf("unexpected allocErr: %v", err)
+	}
 }
 
-func TestNewPktSetSlotsRejectsOverBudget(t *testing.T) {
+func TestPktSetSlotsRejectsOverBudget(t *testing.T) {
 	// Two 16-byte keys = 32 bytes > the 16-byte packet-extraction budget.
 	sets := []*setmap.Set{
 		setWithKey("a", 16, []setmap.KeyField{{Name: "k", Off: 0, Size: 8}}),
 		setWithKey("b", 16, []setmap.KeyField{{Name: "k", Off: 0, Size: 8}}),
 	}
-	if _, err := newPktSetSlots(sets); err == nil {
-		t.Fatal("expected over-budget error")
+	p := newPktSetSlots(sets)
+	p.SlotFor("a", "k") // fits
+	if _, _, ok := p.SlotFor("b", "k"); ok {
+		t.Fatal("second 16-byte set should not fit the budget")
+	}
+	if p.allocErr() == nil {
+		t.Fatal("expected over-budget allocErr")
+	}
+}
+
+func TestPktSetSlotsOnlyReferencedConsumeBudget(t *testing.T) {
+	// An arg-filter-only set (never queried via SlotFor) must not consume
+	// the packet-key budget, so a 16-byte packet set still fits.
+	sets := []*setmap.Set{
+		setWithKey("argonly", 16, []setmap.KeyField{{Name: "k", Off: 0, Size: 8}}),
+		setWithKey("pkt", 16, []setmap.KeyField{{Name: "k", Off: 0, Size: 8}}),
+	}
+	p := newPktSetSlots(sets)
+	if _, _, ok := p.SlotFor("pkt", "k"); !ok {
+		t.Fatal("packet set should fit when the arg-only set is not queried")
+	}
+	if p.allocErr() != nil {
+		t.Errorf("unexpected allocErr: %v", p.allocErr())
 	}
 }
 
 func TestPktSetSlotsUnknownSetOrField(t *testing.T) {
-	p, err := newPktSetSlots([]*setmap.Set{setWithKey("a", 4, []setmap.KeyField{{Name: "teid", Off: 0, Size: 4}})})
-	if err != nil {
-		t.Fatalf("newPktSetSlots: %v", err)
-	}
+	p := newPktSetSlots([]*setmap.Set{setWithKey("a", 4, []setmap.KeyField{{Name: "teid", Off: 0, Size: 4}})})
 	if p.HasSet("nope") {
 		t.Error("HasSet(nope) should be false")
 	}
