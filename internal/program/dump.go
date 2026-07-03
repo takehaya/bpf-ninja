@@ -7,6 +7,7 @@ import (
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/asm"
+	"github.com/takehaya/xdp-ninja/internal/filter"
 	"github.com/takehaya/xdp-ninja/pkg/kunai/codegen"
 )
 
@@ -106,7 +107,7 @@ func renderFull(buf *strings.Builder, out codegen.Output, mode string, isFexit, 
 		shape = "XDP-native program"
 	} else {
 		var err error
-		insns, err = buildTracingInsns(out, nil, 0, 0, isFexit, ebpf.XDP)
+		insns, err = buildTracingInsns(out, filter.TargetFilters{}, 0, 0, isFexit, ebpf.XDP)
 		if err != nil {
 			return err
 		}
