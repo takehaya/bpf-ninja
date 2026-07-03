@@ -189,6 +189,21 @@ func TestCompileInSetExtractsToSlotStayingMapAgnostic(t *testing.T) {
 	}
 }
 
+// wideSlot returns an 8-byte slot for teid, wider than gtp.teid (4 bytes),
+// to exercise the exact-width-match rejection.
+type wideSlot struct{}
+
+func (wideSlot) HasSet(name string) bool                            { return name == "teids" }
+func (wideSlot) SlotFor(_, _ string) (off int16, size int, ok bool) { return -40, 8, true }
+
+func TestCompileInSetRejectsWidthMismatch(t *testing.T) {
+	caps := codegen.Capabilities{Lang: codegen.LangCaps{SetSlots: wideSlot{}}}
+	_, err := Compile("eth/ipv4/udp/gtp[teid in @teids]", caps)
+	if err == nil || !strings.Contains(err.Error(), "widths must match") {
+		t.Fatalf("expected width-mismatch rejection, got %v", err)
+	}
+}
+
 func TestCompileInSetRejectsSlotInsideKunaiRegion(t *testing.T) {
 	// A host that hands back a slot in kunai's own stack range must be
 	// rejected — the extraction would be clobbered mid-filter.

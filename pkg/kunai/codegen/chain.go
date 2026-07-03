@@ -84,7 +84,11 @@ func genStaticChain(layer *ir.LayerInstance, index int, all []*ir.LayerInstance,
 	// the same slice from each iteration. Use a no-accumulate predCtx so
 	// an `in @set` extraction records its host slot only once (genStaticLayer
 	// above already did); the store asm still replays each iteration.
-	replayPC := &predCtx{sets: pc.sets}
+	// nil-safe: a nil pc (host without set support) stays nil.
+	var replayPC *predCtx
+	if pc != nil {
+		replayPC = &predCtx{sets: pc.sets}
+	}
 	preds, err := emitPredicates(layer.Predicates, replayPC)
 	if err != nil {
 		return nil, err
