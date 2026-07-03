@@ -24,16 +24,22 @@ type FieldSpec struct {
 // ParseSchema parses "imsi:u64,teid:u32" into field specs.
 func ParseSchema(s string) ([]FieldSpec, error) {
 	var out []FieldSpec
+	seen := map[string]bool{}
 	for ent := range strings.SplitSeq(s, ",") {
 		ent = strings.TrimSpace(ent)
 		if ent == "" {
 			continue
 		}
 		name, typ, ok := strings.Cut(ent, ":")
+		name = strings.TrimSpace(name)
 		if !ok || name == "" {
 			return nil, fmt.Errorf("schema entry %q: want name:type (e.g. imsi:u64)", ent)
 		}
-		size, err := typeSize(typ)
+		if seen[name] {
+			return nil, fmt.Errorf("duplicate field name %q in schema", name)
+		}
+		seen[name] = true
+		size, err := typeSize(strings.TrimSpace(typ))
 		if err != nil {
 			return nil, fmt.Errorf("schema entry %q: %w", ent, err)
 		}

@@ -6,6 +6,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"math"
 	"os"
 
 	"github.com/urfave/cli/v3"
@@ -54,8 +55,8 @@ var setCreateCmd = &cli.Command{
 			return err
 		}
 		maxEntries := cmd.Int("max-entries")
-		if maxEntries <= 0 {
-			return fmt.Errorf("--max-entries must be positive, got %d", maxEntries)
+		if maxEntries <= 0 || maxEntries > math.MaxUint32 {
+			return fmt.Errorf("--max-entries must be in 1..%d, got %d", math.MaxUint32, maxEntries)
 		}
 		if err := setmap.Create(path, cmd.String("key"), cmd.String("value"), uint32(maxEntries)); err != nil {
 			return err
