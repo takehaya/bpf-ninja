@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.16.0](https://github.com/takehaya/xdp-ninja/compare/v0.15.0...v0.16.0) (2026-07-03)
+
+
+### 🎉 Features
+
+* **filter:** pinned-map match sets (--set / @NAME + set subcommand) ([#58](https://github.com/takehaya/xdp-ninja/issues/58)) ([7de0eaa](https://github.com/takehaya/xdp-ninja/commit/7de0eaa490cbbcaa142f5cee3fd979be3a4aad38))
+
 ## [0.15.0](https://github.com/takehaya/xdp-ninja/compare/v0.14.0...v0.15.0) (2026-07-03)
 
 
