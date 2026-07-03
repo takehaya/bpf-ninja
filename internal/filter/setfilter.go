@@ -19,12 +19,13 @@ import (
 // SetKeyField binds one key-struct member to a fentry arg of one target
 // function.
 type SetKeyField struct {
-	FieldName string // BTF member name in the key struct
-	FieldOff  uint32 // byte offset within the key
-	FieldSize uint32 // 1/2/4/8
-	ParamName string
-	ParamIdx  int // per-target arg index
-	ParamSize uint32
+	FieldName   string // BTF member name in the key struct
+	FieldOff    uint32 // byte offset within the key
+	FieldSize   uint32 // 1/2/4/8
+	ParamName   string
+	ParamIdx    int // per-target arg index
+	ParamSize   uint32
+	ParamSigned bool // sign-extend a narrow signed arg into the key field
 }
 
 // SetFilter is one "@NAME" reference resolved against one target's
@@ -110,7 +111,7 @@ func ResolveSetFilters(sets []*setmap.Set, refs []string, params []attach.FuncPa
 			}
 			sf.Fields = append(sf.Fields, SetKeyField{
 				FieldName: f.Name, FieldOff: f.Off, FieldSize: f.Size,
-				ParamName: paramName, ParamIdx: p.Index, ParamSize: p.Size,
+				ParamName: paramName, ParamIdx: p.Index, ParamSize: p.Size, ParamSigned: p.Signed,
 			})
 		}
 		out = append(out, sf)
