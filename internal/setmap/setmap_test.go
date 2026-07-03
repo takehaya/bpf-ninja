@@ -166,3 +166,9 @@ func TestCreateRejectsMultiFieldValue(t *testing.T) {
 		t.Errorf("multi-field value err = %v, want 'single ... tag'", err)
 	}
 }
+
+func TestParseSchemaRejectsDuplicateField(t *testing.T) {
+	if _, err := ParseSchema("imsi:u64,imsi:u32"); err == nil || !strings.Contains(err.Error(), "duplicate") {
+		t.Errorf("dup field err = %v, want 'duplicate'", err)
+	}
+}
