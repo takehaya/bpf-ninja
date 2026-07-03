@@ -80,6 +80,13 @@ sudo xdp-ninja set create /sys/fs/bpf/subs --key "imsi:u64"
 sudo xdp-ninja set add /sys/fs/bpf/subs imsi=901040010000005
 sudo xdp-ninja -p 1661 --func pgwu_capture_point_ul \
   --set "subs=/sys/fs/bpf/subs" --arg-filter "@subs" -w subs.pcap
+
+# Key the set off a PACKET field instead of a function arg — for values
+# that live in the packet (GTP TEID, SRv6 SID). Works on fentry and xdp.
+sudo xdp-ninja set create /sys/fs/bpf/teids --key "teid:u32"
+sudo xdp-ninja set add /sys/fs/bpf/teids teid=0x3039
+sudo xdp-ninja -p 1661 --set "teids=/sys/fs/bpf/teids" \
+  'eth/ipv4/udp/gtp[teid in @teids]' -w teids.pcap
 ```
 
 ### Filter syntax

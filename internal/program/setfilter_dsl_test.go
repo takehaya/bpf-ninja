@@ -120,3 +120,45 @@ func TestBpfDSLSetMatchPacketField(t *testing.T) {
 		t.Fatalf("markers after runtime delete = %v, want no 0x77", markers)
 	}
 }
+
+// TestBpfDSLSetMatchCompositeKey covers a composite key written
+// comma-separated in one bracket: gtp[teid in @f, msg_type in @f]. Both
+// fields must match one entry (AND within the key) for capture.
+func TestBpfDSLSetMatchCompositeKey(t *testing.T) {
+	testutil.SkipIfNotRoot(t)
+
+	pin := fmt.Sprintf("/sys/fs/bpf/xdpninja_dslcomp_%d", os.Getpid())
+	if err := setmap.Create(pin, "teid:u32,msg_type:u8", "", 16); err != nil {
+		t.Skipf("creating pinned set map: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Remove(pin) })
+
+	set, err := setmap.OpenSet(setmap.SpecRef{Name: "flows", Path: pin})
+	if err != nil {
+		t.Fatalf("OpenSet: %v", err)
+	}
+	t.Cleanup(set.Def.Close)
+
+	// gtpPacket uses msg_type 0xFF; add exactly (teid, 0xFF).
+	const teid = uint32(0x11223344)
+	if err := set.Def.Add(map[string]uint64{"teid": uint64(teid), "msg_type": 0xFF}, 1); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	prog := loadXDPByName(t, dslSetTargetSrc, "xdp_gtp_target")
+	targets := []attach.Target{{Program: prog, FuncName: "xdp_gtp_target", Type: ebpf.XDP}}
+	probe, err := LoadMultiEntry(targets, "eth/ipv4/udp/gtp[teid in @flows, msg_type in @flows]", nil, true, []*setmap.Set{set})
+	if err != nil {
+		t.Fatalf("LoadMultiEntry composite: %v", err)
+	}
+	defer func() { _ = probe.Close() }()
+
+	// Matching (teid, msg_type=0xFF) is captured; a different teid with the
+	// same msg_type is not (the composite key differs).
+	runGTP(t, prog, 0x44, teid)       // (0x11223344, 0xFF) — member
+	runGTP(t, prog, 0x55, 0x55667788) // (other teid, 0xFF) — non-member
+	markers := drainMarkers(t, probe, 1)
+	if markers[0x44] != 1 || markers[0x55] != 0 {
+		t.Fatalf("markers = %v, want one 0x44 and no 0x55", markers)
+	}
+}

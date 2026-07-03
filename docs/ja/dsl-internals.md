@@ -584,6 +584,20 @@ action atom (`action == NAME`) では、codegen は `caps.Lang.ActionFetcher.Emi
 
 eBPF の LDX は x86 上で little-endian で読みます。packet bytes は network order (BE) です。runtime BSwap を avoid するため、codegen 時に定数を byte-swap して LE 形式で immediate に埋めます。`==` / `!=` の単純比較が 1 命令で済みます。`<` や `>` 等の ordered 比較は意味的に LE にできないので、runtime BSwap を入れます。
 
+### 4.9 pinned-map 集合照合 (`layer[field in @NAME]`)
+
+パケットフィールドを pinned BPF hash map に集合照合する述語です。設計の要点は **kunai は map を一切知らない不変条件を保つ** ことです (codegen は `FnMapLookupElem` / `LoadMapPtr` を emit せず、`Output` に map 参照を持たない)。実現は 2 段構成です (host adapter 境界の典型例)。
+
+- **kunai 側 (`predicate.go::emitInSetPredicate`)**: フィールドを境界チェック付きで load し、`HostTo(BE)` で数値 (host order) に正規化して、**host が指定した R10 スロットに store** します。map lookup は emit しません。set atom は verdict に影響させず (レイヤ到達失敗時のみ `dslReject`)、抽出したスロットは `Output.Extractions` (`{SetName, FieldName, StackOff, StoreSize}`) で host に返します。host はスロット offset を `codegen.SetSlotResolver` (`caps.Lang.SetSlots`、`ActionFetcher` と同型の注入面) で渡します。返すのは int16 offset と幅だけで、map/FD/BTF は渡りません。
+- **host 側 (`internal/program/setslots.go`)**: filter 実行後に、そのスロットのバイト列をキーに `FnMapLookupElem` を emit し、miss なら capture skip します (`emitPktSetLookups`)。事前に buffer を zero 埋めして pad を 0 に保ちます (`emitPktSetKeyZeroing`)。
+
+制約は次のとおりです。
+
+- **エンディアン契約**: `set add` は host order (`setmap.BuildKey` の `binary.NativeEndian`)、パケットは network order。kunai の `HostTo(BE)` 正規化 + host の native store で両者を一致させます。ここがずれると全 miss します (差分テスト `TestBpfDSLSetMatchPacketField` が守ります)。
+- **スタック**: 抽出スロットは filter 実行中に書かれ filter 後に読まれるため、kunai 領域 `[-56, ...)` には置けません。host 領域 `[-40, -24)` (両 attach path で空きの 16B) を使うので、**合計キー幅は 16 バイトまで**、1 フィールド 8 バイトまでです。
+- **構文**: bracket predicate 専用 (`where` 句では不可)。bracket は layer の連言に必ず入るので、`@set` は構造的にトップレベル AND になり、v1 の「集合は AND」と一致します。複合キーは 1 つの角括弧にカンマ併記します。
+- iterator-stack (`any`/`all` の aux) 上のフィールドは resolver が拒否します (last-write-wins になるため)。
+
 ## 5. P4-16 互換性
 
 `pkg/kunai/vocab/p4lite/` は、xdp-ninja の vocab loader が `.p4` ファイルを読むための P4-16 の限定サブセットのパーサです。

@@ -472,6 +472,31 @@ sudo xdp-ninja set schema /sys/fs/bpf/flows
 - 外部から直接書く場合 (bpftool 等) は**パディングのゼロ埋めが必須**です (hash はキー全バイトをハッシュするため、パディングが非ゼロだと永遠に一致しません)。`xdp-ninja set add` はこれを自動で保証します。
 - スキーマ (キー幅・オフセット) は `set schema` で確認できます。`bpftool map dump pinned <path>` もフィールド名付きで整形表示されます (合成 BTF の効能)。
 
+### パケットフィールドで照合する (DSL `layer[field in @NAME]`)
+
+`--arg-filter @NAME` はキーを **fentry 引数**から作ります。照合したい値がパケット内にある場合 (GTP TEID、SRv6 SID など、dispatcher が引数で渡してくれない値) は、DSL の bracket predicate で**パケットフィールドを直接キーにできます**。
+
+```bash
+# 集合は同じ (キー = 照合する値)
+sudo xdp-ninja set create /sys/fs/bpf/teids --key "teid:u32"
+sudo xdp-ninja set add    /sys/fs/bpf/teids teid=0x3039
+
+# DSL でパケットの gtp.teid を集合照合 (fentry でも --mode xdp でも動く)
+sudo xdp-ninja -p 1661 --set "teids=/sys/fs/bpf/teids" \
+  'eth/ipv4/udp/gtp[teid in @teids]' -w out.pcap
+
+# 複合キーは 1 つの角括弧にカンマ併記 (エントリ内は AND)
+sudo xdp-ninja set create /sys/fs/bpf/flows --key "teid:u32,msg_type:u8"
+sudo xdp-ninja -i eth0 --mode xdp --set "flows=/sys/fs/bpf/flows" \
+  'eth/ipv4/udp/gtp[teid in @flows, msg_type in @flows]'
+```
+
+- **同名一致**: DSL のフィールド名が集合キーのフィールド名になります (`gtp[teid in @teids]` は集合キー `teid` を引く)。
+- **エンディアン**: パケットは network order、`set add` は host order で書きますが、ツールが変換を合わせるので**利用者は普段どおりの数値で `set add` するだけ**です。
+- **キー幅の上限**: パケット由来キーはホストスタックの空き領域を使うため、**合計 16 バイトまで** (TEID=4 / IMSI=8 / TEID+IMSI=12 は可)。1 フィールドは 8 バイトまで (16B の SRv6 SID 単体は後日対応)。
+- `@NAME` は他の bracket 条件・レイヤ条件と AND。`in @NAME` は bracket predicate 専用で、`where` 句の中では使えません。
+- 引数由来 (`--arg-filter @NAME`) は entry/exit 専用のまま。パケット由来 (DSL `@NAME`) は entry/exit と `--mode xdp` の両方で動きます。
+
 ## 関数引数の値を覗く (`--arg-echo`)
 
 `--func` で狙ったサブ関数の整数引数が、実際にどんな値で呼ばれているかを見る診断モードです。`--arg-filter "imsi=..."` が当たらないとき、「そもそも引数にどんな値が乗っているか」を確認するのに使います (例: IMSI が 10 進なのか TBCD なのか)。パケットキャプチャはせず、引数だけを専用 ringbuf に流して表示します。
