@@ -315,7 +315,12 @@ func MatchProgramsByName(rootID uint32, rootName string, reachable []ReachablePr
 			if c.name == "" {
 				continue
 			}
-			if c.name == want || strings.HasPrefix(want, c.name) {
+			// Exact match, or a prefix match only when the candidate is at
+			// the kernel truncation limit (>=15). Gating the prefix branch on
+			// length mirrors the BTF-func matcher below and avoids a genuinely
+			// short name (e.g. "xdp_pass") falsely matching a longer requested
+			// name for a different program.
+			if c.name == want || (len(c.name) >= 15 && strings.HasPrefix(want, c.name)) {
 				hits = append(hits, c)
 			}
 		}
@@ -336,6 +341,59 @@ func MatchProgramsByName(rootID uint32, rootName string, reachable []ReachablePr
 		}
 	}
 	return out, nil
+}
+
+// ResolveXDPTargetsByName resolves --prog-name values into attach targets:
+// it finds the interface's root XDP program, walks its reachable tree, maps
+// the names to program IDs, and opens each matched program. It owns the
+// whole transaction so callers never juggle program handles on a partial
+// failure — on any error every handle opened here (including the root) is
+// closed. The returned ProgInfos are the caller's to close on success.
+func ResolveXDPTargetsByName(ifaceName string, names []string) ([]*ProgInfo, error) {
+	root, err := FindXDPProgram(ifaceName)
+	if err != nil {
+		return nil, err
+	}
+	pi, err := root.Program.Info()
+	if err != nil {
+		_ = root.Program.Close()
+		return nil, fmt.Errorf("getting root program info: %w", err)
+	}
+	reachable, err := WalkReachablePrograms(root.Program, root.ProgID)
+	if err != nil {
+		_ = root.Program.Close()
+		return nil, err
+	}
+	ids, err := MatchProgramsByName(root.ProgID, pi.Name, reachable, names)
+	if err != nil {
+		_ = root.Program.Close()
+		return nil, err
+	}
+
+	var infos []*ProgInfo
+	rootUsed := false
+	for _, id := range ids {
+		if id == root.ProgID {
+			infos = append(infos, root)
+			rootUsed = true
+			continue
+		}
+		info, err := FindXDPProgramByID(id)
+		if err != nil {
+			for _, prev := range infos {
+				if prev != root {
+					_ = prev.Program.Close()
+				}
+			}
+			_ = root.Program.Close()
+			return nil, err
+		}
+		infos = append(infos, info)
+	}
+	if !rootUsed {
+		_ = root.Program.Close()
+	}
+	return infos, nil
 }
 
 // progCand is one (id, name) candidate for name-based program matching.

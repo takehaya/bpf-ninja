@@ -690,6 +690,12 @@ func TestMatchProgramsByName(t *testing.T) {
 		t.Errorf("prefix got %v, want [99]", got)
 	}
 
+	// A genuinely short name (not truncated) must NOT falsely match a longer
+	// requested name for a different program.
+	if _, err := MatchProgramsByName(1600, root, reach, []string{"upf_ul_v4_extra"}); err == nil || !strings.Contains(err.Error(), "no reachable program") {
+		t.Errorf("short-name false match: %v", err)
+	}
+
 	// Unknown name errors and lists the available names.
 	if _, err := MatchProgramsByName(1600, root, reach, []string{"nope"}); err == nil || !strings.Contains(err.Error(), "no reachable program") {
 		t.Errorf("unknown: %v", err)

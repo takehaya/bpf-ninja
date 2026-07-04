@@ -408,12 +408,12 @@ func run(ctx context.Context, cmd *cli.Command) error {
 			if asJSON {
 				jt := progsTargetJSON{ID: info.ProgID, Func: info.FuncName, Reachable: []progNodeJSON{}}
 				if withFuncs {
-					jt.Funcs = listNodeFuncs(info.ProgID, info)
+					jt.Funcs = funcsToJSON(fetchNodeFuncs(info.ProgID, info))
 				}
 				for _, p := range progs {
 					n := progNodeJSON{ID: p.ProgID, Name: p.ProgName, Via: p.Via, Keys: p.Keys, Depth: p.Depth, Parent: p.ParentID}
 					if withFuncs {
-						n.Funcs = listNodeFuncs(p.ProgID, nil)
+						n.Funcs = funcsToJSON(fetchNodeFuncs(p.ProgID, nil))
 					}
 					jt.Reachable = append(jt.Reachable, n)
 				}
@@ -1309,21 +1309,14 @@ func findTargets(cmd *cli.Command, isTC bool) ([]*attach.ProgInfo, error) {
 			// interface-based clsact qdisc walk wired up yet.
 			return nil, fmt.Errorf("--mode tc-* requires -p <prog-id>; interface-based tc target lookup is not implemented")
 		}
-		root, err := attach.FindXDPProgram(ifaceName)
+		if len(progNames) > 0 {
+			return attach.ResolveXDPTargetsByName(ifaceName, progNames)
+		}
+		info, err := attach.FindXDPProgram(ifaceName)
 		if err != nil {
 			return nil, err
 		}
-		if len(progNames) == 0 {
-			return []*attach.ProgInfo{root}, nil
-		}
-		// Resolve names against the root plus its reachable tree, then open
-		// the matched programs by ID (the root handle is reused if it matches).
-		ids, err := resolveProgNames(root, progNames)
-		if err != nil {
-			_ = root.Program.Close()
-			return nil, err
-		}
-		return openXDPByIDs(root, ids)
+		return []*attach.ProgInfo{info}, nil
 	}
 
 	var infos []*attach.ProgInfo
@@ -1361,29 +1354,29 @@ func findTargets(cmd *cli.Command, isTC bool) ([]*attach.ProgInfo, error) {
 // node without BTF (or that fails to open) yields no funcs rather than an
 // error, so one unreadable node does not abort the whole listing.
 func fetchNodeFuncs(progID uint32, root *attach.ProgInfo) []attach.FuncInfo {
-	info := root
-	if info == nil {
-		opened, err := attach.FindXDPProgramByID(progID)
+	if root != nil {
+		// Borrowed handle: reuse its cached BTF spec (loaded during
+		// ResolveTargets) instead of reopening.
+		spec, err := root.BTFSpecCached()
 		if err != nil {
 			return nil
 		}
-		defer func() { _ = opened.Program.Close() }()
-		info = opened
+		funcs, err := attach.ListFuncsFromSpec(spec)
+		if err != nil {
+			return nil
+		}
+		return funcs
 	}
-	spec, err := info.BTFSpecCached()
+	opened, err := attach.FindXDPProgramByID(progID)
 	if err != nil {
 		return nil
 	}
-	funcs, err := attach.ListFuncsFromSpec(spec)
+	defer func() { _ = opened.Program.Close() }()
+	funcs, err := attach.ListFuncs(opened.Program)
 	if err != nil {
 		return nil
 	}
 	return funcs
-}
-
-// listNodeFuncs is fetchNodeFuncs in the JSON shape.
-func listNodeFuncs(progID uint32, root *attach.ProgInfo) []funcJSON {
-	return funcsToJSON(fetchNodeFuncs(progID, root))
 }
 
 // printNodeFuncs prints a node's BTF functions indented under it (text mode).
@@ -1391,50 +1384,6 @@ func printNodeFuncs(progID uint32, root *attach.ProgInfo, indent string) {
 	for _, f := range fetchNodeFuncs(progID, root) {
 		fmt.Fprintf(os.Stderr, "%s%-40s [%s]\n", indent, f.Name, f.Linkage)
 	}
-}
-
-// resolveProgNames maps --prog-name values to program IDs against the root
-// program and its reachable tree. The root's kernel name comes from its
-// program info; reachable node names come from the tree walk.
-func resolveProgNames(root *attach.ProgInfo, names []string) ([]uint32, error) {
-	pi, err := root.Program.Info()
-	if err != nil {
-		return nil, fmt.Errorf("getting root program info: %w", err)
-	}
-	reachable, err := attach.WalkReachablePrograms(root.Program, root.ProgID)
-	if err != nil {
-		return nil, err
-	}
-	return attach.MatchProgramsByName(root.ProgID, pi.Name, reachable, names)
-}
-
-// openXDPByIDs opens each program ID as an attach target, reusing the
-// already-open root handle when its ID is in the set. On error every handle
-// opened here is closed; the caller owns root.
-func openXDPByIDs(root *attach.ProgInfo, ids []uint32) ([]*attach.ProgInfo, error) {
-	var infos []*attach.ProgInfo
-	rootUsed := false
-	for _, id := range ids {
-		if id == root.ProgID {
-			infos = append(infos, root)
-			rootUsed = true
-			continue
-		}
-		info, err := attach.FindXDPProgramByID(id)
-		if err != nil {
-			for _, prev := range infos {
-				if prev != root {
-					_ = prev.Program.Close()
-				}
-			}
-			return nil, err
-		}
-		infos = append(infos, info)
-	}
-	if !rootUsed {
-		_ = root.Program.Close()
-	}
-	return infos, nil
 }
 
 // formatKeyRanges renders a sorted key list compactly, collapsing runs of
