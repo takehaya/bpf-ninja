@@ -17,24 +17,26 @@ type funcJSON struct {
 	Linkage string `json:"linkage"`
 }
 
-// progNodeJSON is one node of a program's reachable tree. Funcs is populated
-// only when --list-funcs is combined with --list-progs.
+// progNodeJSON is one node of a program's reachable tree. Funcs is a pointer
+// so the combined --list-funcs view can emit "funcs": [] (requested, none
+// found) distinctly from omitting the key (funcs not requested at all).
 type progNodeJSON struct {
-	ID     uint32     `json:"id"`
-	Name   string     `json:"name,omitempty"`
-	Via    string     `json:"via,omitempty"`
-	Keys   []uint32   `json:"keys,omitempty"`
-	Depth  int        `json:"depth,omitempty"`
-	Parent uint32     `json:"parent,omitempty"`
-	Funcs  []funcJSON `json:"funcs,omitempty"`
+	ID     uint32      `json:"id"`
+	Name   string      `json:"name,omitempty"`
+	Via    string      `json:"via,omitempty"`
+	Keys   []uint32    `json:"keys,omitempty"`
+	Depth  int         `json:"depth,omitempty"`
+	Parent uint32      `json:"parent,omitempty"`
+	Funcs  *[]funcJSON `json:"funcs,omitempty"`
 }
 
 // progsTargetJSON is one -p / -i target: its entry (root) plus the reachable
-// tree. Funcs is the root's functions when --list-funcs is combined.
+// tree. Funcs is the root's functions when --list-funcs is combined; a
+// pointer for the same present-but-empty vs absent distinction as the nodes.
 type progsTargetJSON struct {
 	ID        uint32         `json:"id"`
 	Func      string         `json:"func"`
-	Funcs     []funcJSON     `json:"funcs,omitempty"`
+	Funcs     *[]funcJSON    `json:"funcs,omitempty"`
 	Reachable []progNodeJSON `json:"reachable"`
 }
 

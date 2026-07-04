@@ -393,6 +393,13 @@ func run(ctx context.Context, cmd *cli.Command) error {
 		}
 	}()
 
+	// --json only shapes the --list-* output; on a normal capture run it
+	// would silently do nothing while pcap still streamed to stdout. Reject
+	// it early so a JSON-consuming pipeline fails loudly instead.
+	if cmd.Bool("json") && !cmd.Bool("list-progs") && !cmd.Bool("list-funcs") && !cmd.Bool("list-params") {
+		return fmt.Errorf("--json only applies to --list-progs / --list-funcs / --list-params")
+	}
+
 	// --list-progs: show reachable programs (tail calls +
 	// CPUMAP/DEVMAP/DEVMAP_HASH redirect targets, followed
 	// transitively) for each target, then exit
@@ -408,12 +415,14 @@ func run(ctx context.Context, cmd *cli.Command) error {
 			if asJSON {
 				jt := progsTargetJSON{ID: info.ProgID, Func: info.FuncName, Reachable: []progNodeJSON{}}
 				if withFuncs {
-					jt.Funcs = funcsToJSON(fetchNodeFuncs(info.ProgID, info))
+					f := funcsToJSON(fetchNodeFuncs(info.ProgID, info))
+					jt.Funcs = &f
 				}
 				for _, p := range progs {
 					n := progNodeJSON{ID: p.ProgID, Name: p.ProgName, Via: p.Via, Keys: p.Keys, Depth: p.Depth, Parent: p.ParentID}
 					if withFuncs {
-						n.Funcs = funcsToJSON(fetchNodeFuncs(p.ProgID, nil))
+						f := funcsToJSON(fetchNodeFuncs(p.ProgID, nil))
+						n.Funcs = &f
 					}
 					jt.Reachable = append(jt.Reachable, n)
 				}
