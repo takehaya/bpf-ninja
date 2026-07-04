@@ -890,26 +890,11 @@ func emitSetLookup(mapFD int, keyOff int16, tagSize int) asm.Instructions {
 	// so the full-width store into tagSlot is correct for every width.
 	if tagSize > 0 {
 		insns = append(insns,
-			asm.LoadMem(asm.R1, asm.R0, 0, tagLoadSize(tagSize)),
+			asm.LoadMem(asm.R1, asm.R0, 0, asmSizeFor(uint32(tagSize))),
 			asm.StoreMem(asm.R10, tagSlot, asm.R1, asm.DWord),
 		)
 	}
 	return insns
-}
-
-// tagLoadSize maps a map value width (1/2/4/8) to the asm load size used to
-// pull the tag out of the looked-up value.
-func tagLoadSize(width int) asm.Size {
-	switch {
-	case width >= 8:
-		return asm.DWord
-	case width >= 4:
-		return asm.Word
-	case width == 2:
-		return asm.Half
-	default:
-		return asm.Byte
-	}
 }
 
 // keyHasGaps reports whether the set's key has any byte not covered by a

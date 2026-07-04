@@ -853,7 +853,9 @@ func captureLoopSharded(cmd *cli.Command, inners []*ebpf.Map, isFexit bool, labe
 	if rawDump {
 		return captureLoopShardedRaw(cmd, inners, label, basePath)
 	}
-	if cmd.Bool("split-by-tag") && !null {
+	if cmd.Bool("split-by-tag") {
+		// run() already rejected --split-by-tag with stdout / --raw-dump /
+		// --null-output, so basePath is a real file here.
 		return captureLoopShardedSplit(cmd, inners, isFexit, label, basePath)
 	}
 

@@ -150,9 +150,9 @@ func (w *Writer) Write(pkt capture.Packet) error {
 			ci.InterfaceIndex = id
 		}
 	}
-	// Serialize with the stdout flusher goroutine (Flush also holds flushMu)
-	// so writes and periodic flushes don't race on the pcapng buffer. For
-	// file writers there is no flusher, so this lock is uncontended.
+	// Serialize with the periodic flusher goroutine (Flush also holds
+	// flushMu) so writes and flushes don't race on the pcapng buffer. It is
+	// uncontended for writers with no flusher (plain -w, non-split).
 	w.flushMu.Lock()
 	defer w.flushMu.Unlock()
 	if err := w.pcapWriter.WritePacket(ci, pkt.Data); err != nil {
@@ -176,7 +176,7 @@ func (w *Writer) WriteBatch(pkts []capture.Packet) error {
 		return nil
 	}
 	// One lock for the whole batch (see Write): mutual exclusion with the
-	// stdout flusher; uncontended for file writers.
+	// periodic flusher; uncontended for writers with no flusher.
 	w.flushMu.Lock()
 	defer w.flushMu.Unlock()
 	var ci gopacket.CaptureInfo
