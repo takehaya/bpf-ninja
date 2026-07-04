@@ -10,12 +10,19 @@ import (
 // two-part `<aux>.<field>` / `<aux>.exists` for auxiliary access,
 // always scoped to the owning layer.
 func (r *resolver) resolveBracketPredicate(ap *ast.Predicate, layer *ir.LayerInstance) (*ir.Predicate, error) {
-	field, err := resolveUnqualifiedField(ap.Field, layer)
+	field, err := r.resolveUnqualifiedField(ap.Field, layer)
 	if err != nil {
 		return nil, err
 	}
 	if field.Aux != nil && field.Aux.Stack != nil && field.Aux.Stack.IsIterator {
 		return nil, errorf(ap.Pos, "auxiliary header stack %q needs an index inside a bracket predicate (use `[N]` or wrap in `any(...)` / `all(...)`)", field.Aux.OutParam)
+	}
+	// A bracket predicate reads a single field at a compile-time-constant
+	// offset, so only a static `[N]` index is addressable. A dynamic index
+	// (`segments[srv6.last_entry]`) needs a runtime offset computation that
+	// only the `where` clause emits.
+	if field.Aux != nil && field.Aux.Stack != nil && !field.Aux.Stack.IsStatic {
+		return nil, errorf(ap.Pos, "auxiliary header stack %q takes a constant index inside a bracket predicate (a dynamic index needs a `where` clause)", field.Aux.OutParam)
 	}
 	// `in @set` extracts the field into a host key buffer that the host
 	// looks up unconditionally after the filter. That is only correct if
@@ -92,9 +99,11 @@ func rejectBareIdentValue(v *ast.Value) error {
 // layer's headers. Single-segment paths bind to the primary header
 // (the existing `tcp[dport == 443]` shape). Two-segment paths
 // `<aux>.<field>` or `<aux>.exists` bind to one of the layer's
-// auxiliary headers (e.g. `gtp[opt.next_ext == 0]`). Anything
-// deeper belongs in a `where` clause and is rejected here.
-func resolveUnqualifiedField(fp *ast.FieldPath, layer *ir.LayerInstance) (*ir.FieldRef, error) {
+// auxiliary headers (e.g. `gtp[opt.next_ext == 0]`); a static index
+// `<stack>[N].<field>` (e.g. `srv6[segments[0].addr in @sids]`) binds
+// to a fixed element of an aux header stack, mirroring the `where`
+// clause. Anything deeper belongs in a `where` clause and is rejected.
+func (r *resolver) resolveUnqualifiedField(fp *ast.FieldPath, layer *ir.LayerInstance) (*ir.FieldRef, error) {
 	if fp == nil || len(fp.Parts) == 0 {
 		return nil, errorf(ast.Position{}, "empty field path")
 	}
@@ -115,7 +124,14 @@ func resolveUnqualifiedField(fp *ast.FieldPath, layer *ir.LayerInstance) (*ir.Fi
 		}
 		ref = &ir.FieldRef{Layer: layer, Field: f}
 	case 2:
-		ref, err = resolveAuxField(layer, fp.Parts[0], fp.Parts[1], fp)
+		// `<stack>[N].<field>` binds a fixed stack element; the bare
+		// `<aux>.<field>` (no index) routes to the single-aux / iterator
+		// resolver as before.
+		if hasIndexAt(fp, 0) {
+			ref, err = r.resolveAuxStackField(layer, fp.Parts[0], indexAt(fp, 0), fp.Parts[1], fp)
+		} else {
+			ref, err = resolveAuxField(layer, fp.Parts[0], fp.Parts[1], fp)
+		}
 		if err != nil {
 			return nil, err
 		}

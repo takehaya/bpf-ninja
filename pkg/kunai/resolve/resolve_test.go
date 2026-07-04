@@ -284,6 +284,32 @@ func TestResolveAuxStackRejectsSinglePath(t *testing.T) {
 	resolveErr(t, "eth/ipv4/udp/gtp[exts.next_ext==0]/ipv4/tcp", nil, "needs an index")
 }
 
+func TestResolveBracketStaticStackIndex(t *testing.T) {
+	// `srv6[segments[0].addr == ...]`: a constant index binds a fixed
+	// stack element, mirroring `where srv6.segments[0].addr == ...`.
+	p := resolveOK(t, "eth/ipv6/srv6[segments[0].addr==fc00::1]", nil)
+	srv6 := p.Layers[2]
+	if len(srv6.Predicates) != 1 {
+		t.Fatalf("expected 1 predicate on srv6, got %d", len(srv6.Predicates))
+	}
+	aux := srv6.Predicates[0].Field.Aux
+	if aux == nil || aux.Stack == nil {
+		t.Fatalf("expected an aux-stack field ref, got %+v", srv6.Predicates[0].Field)
+	}
+	if !aux.Stack.IsStatic || aux.Stack.Static != 0 || aux.Stack.IsIterator {
+		t.Errorf("stack index = %+v, want IsStatic=true Static=0", aux.Stack)
+	}
+	if aux.OutParam != "segments" || aux.FieldBitWidth != 128 {
+		t.Errorf("aux = %+v, want segments/128", aux)
+	}
+}
+
+func TestResolveBracketRejectsDynamicStackIndex(t *testing.T) {
+	// A dynamic index needs a runtime offset compute that only the
+	// where clause emits; inside a bracket it is rejected.
+	resolveErr(t, "eth/ipv6/srv6[segments[srv6.last_entry].addr==fc00::1]", nil, "constant index")
+}
+
 func TestResolveQuantSameStackMultipleRefs(t *testing.T) {
 	// any()/all() require exactly one iteration *target* stack, not
 	// exactly one textual reference. The same stack may appear more
