@@ -101,7 +101,7 @@ header mpls_h {
 
 const は名前のパターンによって loader の `vocab/loader.go::classifyConsts` が分類します。`<SELF>` はファイル名の uppercase、`<PARENT>` は親プロトコル名の uppercase で underscore を含まない単一トークン、`<FIELD>` は親 primary header のフィールド名の uppercase で underscore を含められます。
 
-`KUNAI_` は inter-layer dispatch のマーカです。親レイヤから自分へ遷移する dispatch const (Field / NoCheck / self-dispatch) には `KUNAI_` を付け、それ以外の value-only const と構造 const には付けません。value-only とは、select-match の値そのものを表す const のことで、routing_type や option kind、next-header 種別など、親が実在プロトコルでない (phantom parent) ものを指します (例: `SRV6_ROUTING_TYPE`、`IPV4_OPT_RR`、`IPV6_NH_FRAGMENT`)。これらは parser block の select arm に畳み込まれるだけで dispatch edge ではないので無印にします。`<SELF>_MAX_DEPTH` / `<SELF>_CHAIN_END_<FIELD>` / `<SELF>_OPT_*` のような構造 const も同様に無印です。loader はこの規約を強制します。dispatch の形 (実在親への Field / NO_CHECK) なのに `KUNAI_` が無いとエラーになり、逆に `KUNAI_` 付きで親が非プロトコルだとエラーになります。
+`KUNAI_` は inter-layer dispatch のマーカです。親レイヤから自分へ遷移する dispatch const (Field / NoCheck / self-dispatch) には `KUNAI_` を付け、それ以外の value-only const と構造 const には付けません。value-only とは、select-match の値そのものを表す const のことで、routing_type や option kind、next-header 種別など、親が実在プロトコルでない phantom parent のものを指します。たとえば `SRV6_ROUTING_TYPE`、`IPV4_OPT_RR`、`IPV6_NH_FRAGMENT` がこれにあたります。これらは parser block の select arm に畳み込まれるだけで dispatch edge ではないので無印にします。`<SELF>_MAX_DEPTH` / `<SELF>_CHAIN_END_<FIELD>` / `<SELF>_OPT_*` のような構造 const も同様に無印です。loader はこの規約を強制します。dispatch の形 (実在親への Field / NO_CHECK) なのに `KUNAI_` が無いとエラーになり、逆に `KUNAI_` 付きで親が非プロトコルだとエラーになります。
 
 | パターン | 型 | 意味 |
 |---|---|---|
@@ -328,11 +328,11 @@ parser SRv6Parser(packet_in pkt,
 }
 ```
 
-- `pc.set((bit<8>)(hdr.<F> + K))` の bare-cast add 形 (scale=1) が、walk を element-driven にします。1 セグメント push ごとに counter が 1 減るので、`any` / `all` の要素数を loader が seed フィールド (`last_entry`) と addend (`+1`) から導出します。`@kunai_stack_count` は不要です。
+- `pc.set((bit<8>)(hdr.<F> + K))` の bare-cast add 形 (scale=1) が、walk を element-driven にします。1 セグメント push ごとに counter が 1 減るので、`any` / `all` の要素数を loader が seed フィールドの `last_entry` と addend の `+1` から導出します。`@kunai_stack_count` は不要です。
 - 同じ count から next-header 位置も決まります。codegen は walk 収束後に R4 を `layer_entry + 8 + (last_entry+1)*16` へ再アンカーします。これは TLV を持たない SRH では segment list の末尾がそのまま next header になる (RFC 8754) という性質を使っています。
 - `consume_seg` がスタックを push するので、`@kunai_layout` も不要です。スタックの base は push state の layer-entry offset (= `sizeof(srv6_h)` = 8) から自然に決まります。
-- TLV 付き SRH を chain で越えるのは非対応です。R4 が segment list の末尾で止まるため、Padding や HMAC のような末尾 TLV を持つ SRH の後ろに別レイヤを繋ぐ (`eth/ipv6/srv6/tcp` 等) と next header に届きません。TLV サポートは RFC 8754 Section 2 で optional なので、規約準拠の制限です。segment 参照 (`srv6.segments[N]`、`any` / `all`) は末尾 TLV の有無に関わらず正しく動きます。
-- `routing_type 4` は `SRV6_ROUTING_TYPE` という value-only const で名付けます。phantom parent (`ROUTING`) なので `KUNAI_` は付けません (§5)。loader は select arm に畳み込むだけで dispatch edge とは扱いません。
+- TLV 付き SRH を chain で越えるのは非対応です。R4 が segment list の末尾で止まるため、Padding や HMAC のような末尾 TLV を持つ SRH の後ろに `eth/ipv6/srv6/tcp` のように別レイヤを繋ぐと next header に届きません。TLV サポートは RFC 8754 Section 2 で optional なので、規約準拠の制限です。`srv6.segments[N]` や `any` / `all` といった segment 参照は末尾 TLV の有無に関わらず正しく動きます。
+- `routing_type 4` は `SRV6_ROUTING_TYPE` という value-only const で名付けます。phantom parent の `ROUTING` なので `KUNAI_` は付けません。詳しくは §5 を参照してください。loader は select arm に畳み込むだけで dispatch edge とは扱いません。
 
 ### 7.5 GTP 型の gated single aux
 
@@ -584,8 +584,8 @@ make p4c-check                                          # P4-16 互換
 
 ## 関連ドキュメント
 
-- [`dsl-internals.md` §3](./dsl-internals.md#3-vocab-開発ガイド)。dispatch type の設計判断など概念面のサマリ
-- [`dsl-internals.md` §5](./dsl-internals.md#5-p4-16-互換性)。p4lite と P4-16 の互換性監査
-- [`dsl-internals.md` §6](./dsl-internals.md#6-可変長構造の分類と表現)。可変長 8 機構の分類、設計議論、codegen 上の扱い
-- [`dsl-grammar.md`](./dsl-grammar.md)。filter 式と p4lite の formal EBNF
-- [`dsl-usage.md`](./dsl-usage.md)。対応プロトコル一覧を含むユーザー向け CLI ガイド
+- [`dsl-internals.md` §3](./dsl-internals.md#3-vocab-開発ガイド)。dispatch type の設計判断など概念面をまとめています
+- [`dsl-internals.md` §5](./dsl-internals.md#5-p4-16-互換性)。p4lite と P4-16 の互換性を監査しています
+- [`dsl-internals.md` §6](./dsl-internals.md#6-可変長構造の分類と表現)。可変長 8 機構の分類、設計議論、codegen 上の扱いを説明しています
+- [`dsl-grammar.md`](./dsl-grammar.md)。filter 式と p4lite の formal EBNF を定義しています
+- [`dsl-usage.md`](./dsl-usage.md)。対応プロトコル一覧を含むユーザー向けの CLI ガイドです

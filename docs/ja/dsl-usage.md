@@ -416,15 +416,15 @@ tcpdump -r path.pcap.cpu12
 mergecap -w merged.pcap path.pcap.cpu*
 ```
 
-`-w` を付けない場合 (stdout ストリーミング) は、全 CPU を 1 本の pcap-ng ストリームに直列化してマージするので、`sudo xdp-ninja ... | tcpdump -r -` で全コア分が見えます。高レートでは `-w` を使ってください (stdout 直列化はインタラクティブ経路向け)。
+`-w` を付けない場合 (stdout ストリーミング) は、全 CPU を 1 本の pcap-ng ストリームに直列化してマージするので、`sudo xdp-ninja ... | tcpdump -r -` で全コア分が見えます。高レートでは `-w` を使ってください。stdout の直列化はインタラクティブ経路向けです。
 
-注意点として、`xdp-ninja convert` は `--raw-dump` 用の `.raw` を pcap-ng に変換するサブコマンドで、`.cpuN` pcap-ng shards は処理しません。raw-dump path (`--raw-dump -w foo.raw`) を使う場合は `.cpuN` 分割が同じ命名規則で起こり、`xdp-ninja convert -i foo.raw.cpu0 ...` で 1 個ずつ pcap-ng に変換できます (raw-dump は自動マージの対象外)。
+注意点として、`xdp-ninja convert` は `--raw-dump` 用の `.raw` を pcap-ng に変換するサブコマンドで、`.cpuN` pcap-ng shards は処理しません。raw-dump path (`--raw-dump -w foo.raw`) を使う場合は `.cpuN` 分割が同じ命名規則で起こり、`xdp-ninja convert -i foo.raw.cpu0 ...` で 1 個ずつ pcap-ng に変換できます。raw-dump は自動マージの対象外です。
 
 ## 複数の (プログラム, 関数) に同時アタッチする
 
-`-p` と `--func` はどちらも繰り返し指定できます。各 `--func` は、指定した全プログラムのうち **BTF にその関数を持つものすべて**にアタッチされます (無いプログラムはスキップ。どのプログラムにも無い関数名はエラー)。`--func` を省略した場合は各プログラムの entry 関数が対象です。
+`-p` と `--func` はどちらも繰り返し指定できます。各 `--func` は、指定した全プログラムのうち BTF にその関数を持つものすべてにアタッチされます。関数を持たないプログラムはスキップされ、どのプログラムにも無い関数名はエラーになります。`--func` を省略した場合は各プログラムの entry 関数が対象です。
 
-多段 dispatcher (cpu_dispatch → CPUMAP → 方向別ハンドラ) では capture point が方向ごとに別プログラムへ散り、さらに noinline サブ関数は呼び出し元プログラムごとに実体を持ちます (例: `pgwu_capture_point_dl` が v4/v6 ハンドラ両方に入る)。UL + DL v4 + DL v6 の全網羅は従来3回の起動が必要でしたが、1回で張れます。
+多段 dispatcher (cpu_dispatch → CPUMAP → 方向別ハンドラ) では capture point が方向ごとに別プログラムへ散り、さらに noinline サブ関数は呼び出し元プログラムごとに実体を持ちます。たとえば `pgwu_capture_point_dl` は v4/v6 ハンドラ両方に入ります。UL + DL v4 + DL v6 の全網羅は従来3回の起動が必要でしたが、1回で張れます。
 
 ### `--list-progs` で到達可能プログラムを洗い出す
 
@@ -446,15 +446,15 @@ sudo xdp-ninja -p 1610 -p 1611 -p 1614 \
   --arg-filter "imsi=999990000000001" -w all.pcap
 ```
 
-- 全アタッチポイントが **1本の共有 ringbuf** に emit するので、出力は通常どおり 1 つの pcap に時刻順で入ります (`-w` なら終了時マージ、stdout なら直列化ストリーム)。
+- 全アタッチポイントが 1本の共有 ringbuf に emit するので、出力は通常どおり 1 つの pcap に時刻順で入ります (`-w` なら終了時マージ、stdout なら直列化ストリーム)。
 - `--arg-filter` は関数ごとに BTF を引いて検証・解決されます。同じ param 名が関数によって別の引数位置にあっても正しく効きます。指定した param を持たない関数が混ざるとエラーになります。
 - XDP と tc のターゲット混在は不可 (別々に起動してください)。`--arg-echo` は単一 (プログラム, 関数) のみ。
 
 ## 集合マッチ (`--set` / `--arg-filter @NAME`)
 
-`--arg-filter "imsi=X"` は値を命令列に焼き込むため、値を変えるたびに re-attach が要ります。**pinned BPF hash map を「集合」として参照**すると、購読者リスト(IMSI 群など)をパケットごとの O(1) lookup で照合でき、**エントリの追加・削除はキャプチャ中でも即時反映**されます (re-attach 不要)。
+`--arg-filter "imsi=X"` は値を命令列に焼き込むため、値を変えるたびに re-attach が要ります。pinned BPF hash map を集合として参照すると、IMSI 群などの購読者リストをパケットごとの O(1) lookup で照合でき、エントリの追加・削除はキャプチャ中でも即時反映されます。この場合は re-attach が不要です。
 
-map の**キーが照合する値そのもの** (スカラ or struct 複合キー)、value は小さな tag です。複合キーのフィールド間は AND (1 lookup)、OR はエントリを複数入れて表現します (集合=直和)。部分キーは不可です。
+map のキーが照合する値そのもので、スカラまたは struct 複合キーになります。value は小さな tag です。複合キーのフィールド間は AND で 1 lookup し、OR はエントリを複数入れて表現します。すなわち集合は直和です。部分キーは不可です。
 
 ```bash
 # 1) 集合を作る (BTF 付き hash map を pin)
@@ -474,12 +474,12 @@ sudo xdp-ninja set list /sys/fs/bpf/flows
 sudo xdp-ninja set schema /sys/fs/bpf/flows
 ```
 
-- **キーの対応付け**: 既定はキーの BTF フィールド名と fentry 引数名の同名一致。名前が違うときは `--set "flows=/sys/fs/bpf/flows,key(imsi=arg:subscriber,teid=arg:teid)"` と明示します (`()` は bash メタ文字なのでクオート必須)。
-- `@NAME` は他の `--arg-filter` と AND 合成。`--set` は複数定義できます。
-- 引数がキーのフィールドより広い場合 (u64 引数 → u32 フィールド) は切り詰めになるためエラーです。
+- キーの対応付けは、既定ではキーの BTF フィールド名と fentry 引数名を同名で一致させます。名前が違うときは `--set "flows=/sys/fs/bpf/flows,key(imsi=arg:subscriber,teid=arg:teid)"` と明示します。`()` は bash のメタ文字なのでクオートが必須です。
+- `@NAME` は他の `--arg-filter` と AND で合成されます。`--set` は複数定義できます。
+- 引数がキーのフィールドより広い場合、たとえば u64 引数を u32 フィールドに入れる場合は切り詰めになるためエラーです。
 - 外部で作った pinned map も、hash 型で BTF キー (整数 or 整数のみの struct、各 1/2/4/8B、キー全体 64B 以下) を持っていれば参照できます。BTF 無しの map は `set create` で作り直してください。
-- 外部から直接書く場合 (bpftool 等) は**パディングのゼロ埋めが必須**です (hash はキー全バイトをハッシュするため、パディングが非ゼロだと永遠に一致しません)。`xdp-ninja set add` はこれを自動で保証します。
-- スキーマ (キー幅・オフセット) は `set schema` で確認できます。`bpftool map dump pinned <path>` もフィールド名付きで整形表示されます (合成 BTF の効能)。
+- bpftool などで外部から直接書く場合は、パディングのゼロ埋めが必須です。hash はキー全バイトをハッシュするため、パディングが非ゼロだと永遠に一致しません。`xdp-ninja set add` はこれを自動で保証します。
+- スキーマとしてキー幅やオフセットは `set schema` で確認できます。`bpftool map dump pinned <path>` も、合成 BTF のおかげでフィールド名付きで整形表示されます。
 
 ### DSL `layer[field in @NAME]` でパケットフィールドを照合する
 
@@ -509,7 +509,7 @@ sudo xdp-ninja -i eth0 --mode xdp --set "flows=/sys/fs/bpf/flows" \
 
 ## 関数引数の値を覗く (`--arg-echo`)
 
-`--func` で狙ったサブ関数の整数引数が、実際にどんな値で呼ばれているかを見る診断モードです。`--arg-filter "imsi=..."` が当たらないとき、「そもそも引数にどんな値が乗っているか」を確認するのに使います (例: IMSI が 10 進なのか TBCD なのか)。パケットキャプチャはせず、引数だけを専用 ringbuf に流して表示します。
+`--func` で狙ったサブ関数の整数引数が、実際にどんな値で呼ばれているかを見る診断モードです。`--arg-filter "imsi=..."` が当たらないとき、そもそも引数にどんな値が乗っているかを確認するのに使います。たとえば IMSI が 10 進なのか TBCD なのかを見分けられます。パケットキャプチャはせず、引数だけを専用 ringbuf に流して表示します。
 
 ```bash
 # 対象関数の絞り込み可能な整数引数を確認
@@ -522,9 +522,9 @@ sudo xdp-ninja -p 1661 --func pgwu_capture_point_ul --arg-echo -c 1
 #   pgwu_capture_point_ul: imsi=999990000000001 (0x38d7c50ba9c01) teid=12345 (0x3039)
 ```
 
-- `--func` 必須。表示対象は `--list-params` が挙げる整数引数 (10 進と 16 進を併記)。
-- `--arg-filter` と併用すると、その述語に**マッチした呼び出しだけ**を表示します。値の当たりを付けてから絞り込む、という使い方ができます。
-- 連続して同じ引数タプルが来た場合は 1 行に畳んで `(xN)` と表示します。`-c N` で N 件表示したら終了、無指定なら Ctrl-C まで。
+- `--func` は必須です。表示対象は `--list-params` が挙げる整数引数で、10 進と 16 進を併記します。
+- `--arg-filter` と併用すると、その述語にマッチした呼び出しだけを表示します。値の当たりを付けてから絞り込むという使い方ができます。
+- 連続して同じ引数タプルが来た場合は 1 行に畳んで `(xN)` と表示します。`-c N` を付けると N 件表示したところで終了し、無指定なら Ctrl-C まで続きます。
 - リーダは capture path と同じ in-tree の `fastrb` (mmap + epoll) を使います。
 
 ## Performance flags
@@ -580,7 +580,7 @@ xdp-ninja --dump-asm full --mode exit "eth/ipv4/tcp where action == XDP_DROP"
 
 DSL の parse error / type error も同じ経路を通るので、`--dump-asm filter` は構文/型のサニティチェックにも使えます。load 前に stderr に error を出して exit 1 します。
 
-## 仕組みのざっくり
+## 仕組みの概要
 
 1. one-liner を AST → IR に解決します。vocab に照らして protocol/field/dispatch をバインドします。
    - 同時に型システムが異幅 cmp の widening、リテラルの fit-check、Bool/Action/CIDR の文脈チェックを行います ([`dsl-types.md`](./dsl-types.md))。

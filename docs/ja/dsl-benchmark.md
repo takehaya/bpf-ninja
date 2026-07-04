@@ -1,6 +1,6 @@
 # DSL ベンチ方法論
 
-xdp-ninja の DSL (default) と legacy cbpfc (`--cbpf`、tcpdump 構文) を比べたい人向けです。本ドキュメントは再現手順を残すのが目的で、環境依存性が高すぎるため特定環境の数値は載せません。
+xdp-ninja のデフォルトである DSL と、legacy cbpfc (`--cbpf` の tcpdump 構文) を比べたい人向けです。本ドキュメントは再現手順を残すのが目的で、環境依存性が高すぎるため特定環境の数値は載せません。
 
 ## 何を測るか
 
@@ -52,7 +52,7 @@ BenchmarkCompile/dsl/TCP_443-64        49881    4615 ns/op   32.00 insns/op
 傾向は次のとおりです。
 
 - コンパイル時間は DSL のほうが速いです。cbpfc は cBPF → eBPF の純粋トランスパイラで、libpcap 経由のパース → cBPF byte-code → eBPF 命令変換と段が多く、起動コストが見えてきます。DSL は AST → IR → codegen の 3 段ですが、各段が軽量です。
-- 生成命令数は式によって逆転します。簡単な `icmp` (L2 + L3 のみのフィルタ) は cbpfc が短くなります。`tcp port 443` のように L2/L3/L4 の bounds と dispatch を全部展開する式では、cBPF の絶対オフセットアクセスを 1:1 で eBPF に展開するため、cbpfc 側のほうが冗長になる傾向があります。
+- 生成命令数は式によって逆転します。L2 と L3 だけの簡単な `icmp` フィルタは cbpfc が短くなります。`tcp port 443` のように L2/L3/L4 の bounds と dispatch を全部展開する式では、cBPF の絶対オフセットアクセスを 1:1 で eBPF に展開するため、cbpfc 側のほうが冗長になる傾向があります。
 - これらは kernel ホットパスではない数値です。フィルタは load 時に 1 度しかコンパイルされないので、μs オーダーの差は実利用に影響しません。本命は C 軸 (per-packet PPS) です。
 
 cbpfc が読めない式 (MPLS+、VXLAN inner など) は DSL でしか測れません。逆に DSL が読めない式 (tcpdump の `dst host net 10.0.0.0/24`) は cbpfc でしか測れません。同じフィルタを両方で書けるケースだけ、A/B 比較に意味があります。
