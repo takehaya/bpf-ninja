@@ -726,6 +726,39 @@ sudo xdp-ninja set list   /sys/fs/bpf/sids     # dst=fc00::1 tag=1
 sudo xdp-ninja set schema /sys/fs/bpf/sids     # dst  ipv6  offset 0
 ```
 
+## tag ごとに pcap を出し分ける (`--split-by-tag`)
+
+set の value すなわち tag を使って、マッチしたパケットを tag ごとに別々の pcap へ振り分けられます。`-w out.pcap` に `--split-by-tag` を足すと、tag=1 に当たったパケットは `out.1.pcap`、tag=2 は `out.2.pcap` へ流れます。拡張子の手前に tag を差し込む形なので、`out.pcap` が `out.1.pcap` になります。
+
+購読者ごとに tag を分けて入れておく例が次のものです。
+
+```bash
+PIN=/sys/fs/bpf/subs
+sudo xdp-ninja set create $PIN --key "imsi:u64"
+sudo xdp-ninja set add    $PIN imsi=999990000000001 tag=1
+sudo xdp-ninja set add    $PIN imsi=999990000000777 tag=2
+
+sudo xdp-ninja -i eth0 --mode xdp --set "subs=$PIN" \
+  --split-by-tag -w out.pcap \
+  'eth/ipv4/udp/gtp[imsi in @subs]'
+```
+
+出し分けはロックフリーの per-CPU 書き込みをそのまま使うため、キャプチャ中はシャードごとに `out.cpu0.1.pcap` や `out.cpu1.2.pcap` のような live ファイルが生えます。これらは 1 秒ごとに flush するので、実行中でも `cp` や tcpdump や Wireshark で取り出せます。map から entry を消してその tag への書き込みが止まれば、約 1 秒で対応するファイルがディスク上で完結します。
+
+Ctrl-C などでクリーンに終了すると、per-CPU の tag ファイルを tag ごとに時刻順でまとめて `out.1.pcap` や `out.2.pcap` を作ります。per-CPU ファイルはそのまま残します。途中で kill されたときは合算が走らないので、残った per-CPU ファイルを後から `xdp-ninja merge` でまとめられます。
+
+```bash
+sudo xdp-ninja merge --base out.pcap        # out.cpuN.<tag> を out.<tag> にまとめる
+sudo xdp-ninja merge --base out.pcap --fexit  # --mode exit / tc-exit で録った場合
+```
+
+注意点は次のとおりです。
+
+- `-w` が必須です。stdout は 1 本のストリームなのでファイルに分割できません。`--raw-dump` や `--null-output` との併用もできません。
+- set にマッチしなかったパケットや set を 1 つも使わないフィルタでは tag が 0 になり、`out.0.pcap` に入ります。
+- 複数の set を参照するフィルタでは、ソース順で最後にマッチした set の tag を採用します。
+- tag の value 幅を `--value "tag:u64"` などで 8 バイトにした場合、出し分けに使うのは下位 32 ビットです。
+
 ## 仕組みの概要
 
 1. one-liner を AST → IR に解決します。vocab に照らして protocol/field/dispatch をバインドします。
