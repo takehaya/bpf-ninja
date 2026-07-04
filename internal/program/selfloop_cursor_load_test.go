@@ -25,8 +25,9 @@ func TestBpfSelfLoopCursorClampEntryLoad(t *testing.T) {
 	host := loadDummyXDP(t)
 	for _, expr := range selfLoopCursorExprs {
 		t.Run(expr, func(t *testing.T) {
-			probe := loadProbeOrFail(t, host, xdpFuncName, expr, false /*exit*/, true /*useDSL*/)
-			_ = probe.Close()
+			// loadProbeOrFail registers t.Cleanup(probe.Close); loading
+			// past the verifier is the whole assertion here.
+			loadProbeOrFail(t, host, xdpFuncName, expr, false /*exit*/, true /*useDSL*/)
 		})
 	}
 }
