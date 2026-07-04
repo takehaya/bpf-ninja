@@ -65,14 +65,21 @@ func newPktSetSlots(sets []*setmap.Set) *pktSetSlots {
 // can surface a clear message instead of a downstream codegen error.
 func (p *pktSetSlots) allocErr() error { return p.err }
 
-// keyAlign is the alignment a key buffer needs: its widest field width
-// (each field sits at a natural offset within the key, so an aligned base
-// keeps every field aligned). Fields are 1/2/4/8 bytes; defaults to 1.
+// keyAlign is the alignment a key buffer needs so every field's store is
+// naturally aligned: the widest field width, capped at 8. The cap matters
+// for a 16-byte field (an IPv6 SID), which kunai stores as two aligned
+// DWords — those need only 8-alignment, and pktSetKeyFloor (-40) is
+// 8-aligned but not 16-aligned, so aligning the base to 16 would push it
+// below the floor and spuriously overflow the 16-byte budget.
 func keyAlign(def *setmap.Definition) int16 {
 	align := int16(1)
 	for _, f := range def.Fields {
-		if int16(f.Size) > align {
-			align = int16(f.Size)
+		w := int16(f.Size)
+		if w > 8 {
+			w = 8
+		}
+		if w > align {
+			align = w
 		}
 	}
 	return align
