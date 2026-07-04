@@ -641,7 +641,7 @@ sudo xdp-ninja set add  $PIN imsi=999990000000777 teid=100 tag=9  # 上書き
 sudo xdp-ninja set list $PIN | grep 999990000000777              # tag=9 になる
 ```
 
-value 型は既定で `tag:u32` です。1/2/4/8 バイトの単一整数なら `set create --value "tag:u16"` のように変えられます。tag は数値専用で、`ipv6` はキー側だけの型です。
+value 型は既定で `tag:u32` です。1/2/4/8 バイトの単一整数なら `set create` に `--value "tag:u16"` を付けて変えられます。tag は数値専用で、`ipv6` はキー側だけの型です。
 
 ### 複数の値を照合する
 
@@ -685,6 +685,8 @@ sudo bpftool map dump pinned $PIN
         "value": 2
     }, ...
 ```
+
+出力の見え方は bpftool のバージョンに依存します。上の JSON 風表示は libbpf ベースの新しい bpftool の既定です。古い bpftool ではフィールドを並べた素のテキストになることがあります。
 
 bpftool で直接書き込む場合は、パディングのゼロ埋めが必須です。hash はキー全バイトをハッシュするので、パディングが非ゼロだと永遠に一致しません。`xdp-ninja set add` はこのゼロ埋めを自動で保証するため、手で書くより安全です。外部で作った pinned map も、hash 型で BTF キーを持てば `set list` / `set schema` で読めます。
 
