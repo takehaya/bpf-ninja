@@ -591,6 +591,113 @@ xdp-ninja --dump-asm full --mode exit "eth/ipv4/tcp where action == XDP_DROP"
 
 DSL の parse error / type error も同じ経路を通るので、`--dump-asm filter` は構文/型のサニティチェックにも使えます。load 前に stderr に error を出して exit 1 します。
 
+## Hand-test として `set` map を手元で叩く
+
+`set` サブコマンドはキャプチャのターゲットが無くても単体で動きます。map を作ってエントリを出し入れし、`set list` / `set schema` で読み戻すだけで、集合まわりの配線を手元で確認できます。root と bpffs のマウントが要ります。
+
+### ライフサイクルをひととおり流す
+
+```bash
+PIN=/sys/fs/bpf/xdpninja_handtest
+
+# 1) 作る (BTF 付き hash map を pin。value は既定で u32 の tag)
+sudo xdp-ninja set create $PIN --key "imsi:u64,teid:u32" --max-entries 1024
+
+# 2) 入れる (フィールド名で指定。tag は value)
+sudo xdp-ninja set add $PIN imsi=999990000000001 teid=0x3039 tag=1
+sudo xdp-ninja set add $PIN imsi=999990000000777 teid=100    tag=2
+
+# 3) 読み戻す
+sudo xdp-ninja set list   $PIN
+sudo xdp-ninja set schema $PIN
+
+# 4) 消す
+sudo xdp-ninja set del  $PIN imsi=999990000000001 teid=0x3039
+sudo xdp-ninja set list $PIN
+```
+
+`set list` は各エントリを `field=value ... tag=N` の形で印字します。`set schema` はキーのレイアウトを出します。
+
+```text
+$ sudo xdp-ninja set list $PIN
+imsi=999990000000777 teid=100 tag=2
+imsi=999990000000001 teid=12345 tag=1
+
+$ sudo xdp-ninja set schema $PIN
+hash map: key 16 B, value 4 B, max_entries 1024
+  imsi                 u64   offset 0
+  teid                 u32   offset 8
+note: entries must zero all padding bytes (hash covers the full key)
+```
+
+`teid=0x3039` は 16 進で入れても `set list` では 10 進の 12345 で出ます。入力は 10 進でも `0x` 付き 16 進でも構いません。
+
+### value すなわち tag を出し入れする
+
+value はエントリごとの小さな tag です。`tag=N` を省くと存在マーカーの 1 が入ります。`set add` で同じキーに別の tag を入れると上書きになります。読み戻しは `set list` の `tag=N` 列です。
+
+```bash
+sudo xdp-ninja set add  $PIN imsi=999990000000777 teid=100 tag=9  # 上書き
+sudo xdp-ninja set list $PIN | grep 999990000000777              # tag=9 になる
+```
+
+value 型は既定で `tag:u32` です。1/2/4/8 バイトの単一整数なら `set create --value "tag:u16"` のように変えられます。tag は数値専用で、`ipv6` はキー側だけの型です。
+
+### 複数の値を照合する
+
+複合キーはフィールド間が AND で 1 lookup です。OR はエントリを複数入れて表現します。すなわち集合は直和です。
+
+```bash
+# (imsi=A かつ teid=X) または (imsi=B かつ teid=Y) を照合したい
+sudo xdp-ninja set add $PIN imsi=A_value teid=0x1000 tag=1
+sudo xdp-ninja set add $PIN imsi=B_value teid=0x2000 tag=1
+```
+
+複数の集合を 1 つのフィルタで組み合わせることもできます。`--set` は複数定義でき、DSL では `layer[a in @s1, b in @s2]` のようにカンマ併記します。ブラケット内のカンマは AND なので、両方がそれぞれの集合に当たったときだけ通ります。
+
+```bash
+sudo xdp-ninja set create /sys/fs/bpf/src --key "sport:u16"
+sudo xdp-ninja set create /sys/fs/bpf/dst --key "dport:u16"
+sudo xdp-ninja set add /sys/fs/bpf/src sport=1111
+sudo xdp-ninja set add /sys/fs/bpf/dst dport=443
+sudo xdp-ninja -i eth0 --mode xdp \
+  --set "src=/sys/fs/bpf/src" --set "dst=/sys/fs/bpf/dst" \
+  'eth/ipv4/tcp[sport in @src, dport in @dst]'
+```
+
+どのエントリが効いているかは、フィルタを流しながら別ターミナルで `set list` を叩けば確認できます。エントリの追加・削除はキャプチャ中でも即時反映され、re-attach は要りません。
+
+### bpftool で map を直接覗く
+
+合成した BTF のおかげで、`bpftool map dump` はフィールド名付きで整形表示されます。`set list` と突き合わせて配線を確認できます。
+
+```bash
+sudo bpftool map dump pinned $PIN
+```
+
+```text
+[{
+        "key": {
+            "imsi": 999990000000777,
+            "teid": 100
+        },
+        "value": 2
+    }, ...
+```
+
+bpftool で直接書き込む場合は、パディングのゼロ埋めが必須です。hash はキー全バイトをハッシュするので、パディングが非ゼロだと永遠に一致しません。`xdp-ninja set add` はこのゼロ埋めを自動で保証するため、手で書くより安全です。外部で作った pinned map も、hash 型で BTF キーを持てば `set list` / `set schema` で読めます。
+
+### 16 バイトの SID キーを確認する
+
+`ipv6` 型のキーは IPv6 リテラルで出し入れし、`set list` でも IPv6 表記で戻ります。
+
+```bash
+sudo xdp-ninja set create /sys/fs/bpf/sids --key "dst:ipv6"
+sudo xdp-ninja set add    /sys/fs/bpf/sids dst=fc00::1
+sudo xdp-ninja set list   /sys/fs/bpf/sids     # dst=fc00::1 tag=1
+sudo xdp-ninja set schema /sys/fs/bpf/sids     # dst  ipv6  offset 0
+```
+
 ## 仕組みの概要
 
 1. one-liner を AST → IR に解決します。vocab に照らして protocol/field/dispatch をバインドします。
