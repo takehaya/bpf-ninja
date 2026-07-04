@@ -135,4 +135,3 @@ func TestGenAlternationRejectsFirstLayer(t *testing.T) {
 		t.Fatalf("err = %v; want ErrNotImplemented for first-layer alt group", err)
 	}
 }
-

@@ -166,7 +166,7 @@ func TestBpfMultiAttachEntryPrograms(t *testing.T) {
 		t.Fatalf("resolved %d targets, want 2: %+v", len(targets), targets)
 	}
 
-	probe, err := LoadMultiEntry(targets, "", nil, true)
+	probe, err := LoadMultiEntry(targets, "", nil, true, nil)
 	if err != nil {
 		t.Fatalf("LoadMultiEntry: %v", err)
 	}
@@ -211,7 +211,7 @@ func TestBpfMultiAttachNoinlineAcrossPrograms(t *testing.T) {
 		}
 	}
 
-	probe, err := LoadMultiEntry(targets, "", nil, true)
+	probe, err := LoadMultiEntry(targets, "", nil, true, nil)
 	if err != nil {
 		t.Fatalf("LoadMultiEntry: %v", err)
 	}

@@ -96,7 +96,7 @@ func TestBpfSetFilterLookupAndRuntimeUpdate(t *testing.T) {
 	}
 
 	targets := []attach.Target{{Program: prog, FuncName: "set_capture_pt", Type: ebpf.XDP}}
-	probe, err := LoadMultiEntry(targets, "", []filter.TargetFilters{{Sets: sf}}, true)
+	probe, err := LoadMultiEntry(targets, "", []filter.TargetFilters{{Sets: sf}}, true, nil)
 	if err != nil {
 		t.Fatalf("LoadMultiEntry with set filter: %v", err)
 	}
@@ -173,7 +173,7 @@ func TestBpfSetFilterScalarKey(t *testing.T) {
 	}
 
 	targets := []attach.Target{{Program: prog, FuncName: "set_capture_pt", Type: ebpf.XDP}}
-	probe, err := LoadMultiEntry(targets, "", []filter.TargetFilters{{Sets: sf}}, true)
+	probe, err := LoadMultiEntry(targets, "", []filter.TargetFilters{{Sets: sf}}, true, nil)
 	if err != nil {
 		t.Fatalf("LoadMultiEntry: %v", err)
 	}

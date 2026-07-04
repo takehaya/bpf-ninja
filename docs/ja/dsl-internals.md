@@ -584,6 +584,20 @@ action atom (`action == NAME`) では、codegen は `caps.Lang.ActionFetcher.Emi
 
 eBPF の LDX は x86 上で little-endian で読みます。packet bytes は network order (BE) です。runtime BSwap を avoid するため、codegen 時に定数を byte-swap して LE 形式で immediate に埋めます。`==` / `!=` の単純比較が 1 命令で済みます。`<` や `>` 等の ordered 比較は意味的に LE にできないので、runtime BSwap を入れます。
 
+### 4.9 pinned-map 集合照合 (`layer[field in @NAME]`)
+
+パケットフィールドを pinned BPF hash map に集合照合する述語です。設計の要点は、kunai が map を一切知らない不変条件を保つことにあります。codegen は `FnMapLookupElem` や `LoadMapPtr` を emit せず、`Output` にも map 参照を持ちません。実現は host adapter 境界の典型例となる 2 段構成です。
+
+- kunai 側の `predicate.go::emitInSetPredicate` は、フィールドを境界チェック付きで load し、`HostTo(BE)` で host order の数値に正規化してから、host が指定した R10 スロットに store します。map lookup は emit しません。set atom は verdict に影響させず、レイヤ到達に失敗したときだけ `dslReject` へ飛びます。抽出したスロットは `{SetName, FieldName, StackOff, StoreSize}` を並べた `Output.Extractions` で host に返します。host はスロット offset を `codegen.SetSlotResolver` で渡します。これは `caps.Lang.SetSlots` に置く `ActionFetcher` と同型の注入面で、返すのは int16 offset と幅だけであり、map や FD や BTF は渡りません。
+- host 側の `internal/program/setslots.go` は、filter 実行後にそのスロットのバイト列をキーとして `FnMapLookupElem` を emit し、miss なら capture を skip します。この処理は `emitPktSetLookups` にあります。事前に `emitPktSetKeyZeroing` で buffer を zero 埋めし、pad を 0 に保ちます。
+
+制約は次のとおりです。
+
+- エンディアン契約があります。`set add` は `setmap.BuildKey` の `binary.NativeEndian` により host order で書き、パケットは network order です。kunai の `HostTo(BE)` 正規化と host の native store で両者を一致させます。ここがずれると全 miss するので、差分テストの `TestBpfDSLSetMatchPacketField` が守ります。
+- スタックに制約があります。抽出スロットは filter 実行中に書かれ filter 後に読まれるため、kunai 領域の `[-56, ...)` には置けません。両 attach path で空いている 16 バイトの host 領域 `[-40, -24)` を使うので、合計キー幅は 16 バイトまで、1 フィールドは 8 バイトまでです。
+- 構文は bracket predicate 専用で、`where` 句では使えません。bracket は layer の連言に必ず入るので、`@set` は構造的にトップレベルの AND になり、v1 の集合は AND という意味論と一致します。複合キーは 1 つの角括弧にカンマ併記します。
+- `any` や `all` の aux にあたる iterator-stack 上のフィールドは、last-write-wins になるため resolver が拒否します。
+
 ## 5. P4-16 互換性
 
 `pkg/kunai/vocab/p4lite/` は、xdp-ninja の vocab loader が `.p4` ファイルを読むための P4-16 の限定サブセットのパーサです。

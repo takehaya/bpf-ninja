@@ -27,7 +27,7 @@ import (
 // bpf2bpf callback that bpf_loop invokes max_iter times. The first
 // iteration runs inline so dispatch and predicates remain in the main
 // stream where the verifier can see them.
-func genParserMachine(layer *ir.LayerInstance, layerIdx int, all []*ir.LayerInstance, qo queriedOptions, plan *accPlan) (asm.Instructions, asm.Instructions, error) {
+func genParserMachine(layer *ir.LayerInstance, layerIdx int, all []*ir.LayerInstance, qo queriedOptions, plan *accPlan, pc *predCtx) (asm.Instructions, asm.Instructions, error) {
 	spec := layer.Spec
 	m := spec.ParseStateMachine
 	if m == nil {
@@ -47,6 +47,7 @@ func genParserMachine(layer *ir.LayerInstance, layerIdx int, all []*ir.LayerInst
 		queried:      qo,
 		queriedAuxes: buildQueriedAuxNames(qo, layer),
 		accPlan:      plan,
+		pc:           pc,
 	}
 	// Pre-scan for multi-state self-loops. Each loop entry's siblings
 	// inline into the entry's bpf_loop callback, so the per-state
@@ -128,6 +129,10 @@ type pmCtx struct {
 	// option into a single slot. nil for every program that is not the
 	// supported pure-AND-equality multi-option TCP shape (see acc.go).
 	accPlan *accPlan
+	// pc threads the host set-slot resolver + extraction accumulator so
+	// bracket `field in @set` predicates on this layer can emit their
+	// host-slot store. nil-safe.
+	pc *predCtx
 }
 
 // precedingLayersLeaveR4Range scans the layers emitted before idx and
@@ -338,7 +343,7 @@ func (c *pmCtx) emitStateBody(state *vocab.ParseState, stateIdx int, isEntry boo
 		}
 		insns = append(insns, exInsns...)
 		if isEntry && i == 0 {
-			preds, err := emitPredicates(c.layer.Predicates)
+			preds, err := emitPredicates(c.layer.Predicates, c.pc)
 			if err != nil {
 				return nil, nil, err
 			}

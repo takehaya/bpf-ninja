@@ -8,7 +8,8 @@ import (
 // parseCaptureClause handles "capture <spec> (where <expr>)?". The
 // where-clause portion is implemented in an upcoming commit; until
 // then we reject it with a clear message so users know it is coming.
-//   capture_clause := "capture" capture_spec where_clause?
+//
+//	capture_clause := "capture" capture_spec where_clause?
 func (p *parser) parseCaptureClause() (*ast.CaptureClause, error) {
 	startPos := p.cur.Pos
 	if _, err := p.expect(lexer.TokCapture); err != nil {
@@ -30,10 +31,11 @@ func (p *parser) parseCaptureClause() (*ast.CaptureClause, error) {
 }
 
 // capture_spec := "all"
-//                | "headers" ("+" INT)?
-//                | "absolute" INT
-//                | IDENT ("+" INT)?              # layer label or protocol name
-//                | field_path ("," field_path)*  # CapFields (MVP-unsupported)
+//
+//	| "headers" ("+" INT)?
+//	| "absolute" INT
+//	| IDENT ("+" INT)?              # layer label or protocol name
+//	| field_path ("," field_path)*  # CapFields (MVP-unsupported)
 //
 // "absolute" is a contextual keyword (only special inside capture).
 // A label literally named "absolute" can still be referenced via
