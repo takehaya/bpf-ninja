@@ -349,7 +349,11 @@ func (d *Definition) List(out io.Writer) error {
 	for iter.Next(&key, &val) {
 		var parts []string
 		for _, f := range d.Fields {
-			parts = append(parts, fmt.Sprintf("%s=%d", f.Name, getUint(key[f.Off:f.Off+f.Size])))
+			if f.IsBytes {
+				parts = append(parts, fmt.Sprintf("%s=%s", f.Name, net.IP(key[f.Off:f.Off+f.Size]).String()))
+			} else {
+				parts = append(parts, fmt.Sprintf("%s=%d", f.Name, getUint(key[f.Off:f.Off+f.Size])))
+			}
 		}
 		parts = append(parts, fmt.Sprintf("tag=%d", getUint(val)))
 		_, _ = fmt.Fprintln(out, strings.Join(parts, " "))
@@ -376,7 +380,7 @@ func (d *Definition) Schema(w io.Writer) {
 	_, _ = fmt.Fprintf(w, "hash map: key %d B, value %d B, max_entries %d\n",
 		d.KeySize, d.Map.ValueSize(), d.Map.MaxEntries())
 	for _, f := range d.Fields {
-		_, _ = fmt.Fprintf(w, "  %-20s u%-3d offset %d\n", f.Name, f.Size*8, f.Off)
+		_, _ = fmt.Fprintf(w, "  %-20s %-5s offset %d\n", f.Name, f.typeName(), f.Off)
 	}
 	_, _ = fmt.Fprintf(w, "note: entries must zero all padding bytes (hash covers the full key)\n")
 }

@@ -219,10 +219,9 @@ func TestParseSchemaRejectsDuplicateField(t *testing.T) {
 	}
 }
 
-// TestIPv6BTFRoundTrip pins that the synthesize side (fieldType, __u8[16]
-// array) and the describe side (resolveFieldType) agree: a map created
-// with an ipv6 key reads back as a 16-byte byte-string scalar field.
-func TestIPv6BTFRoundTrip(t *testing.T) {
+// newIPv6SetMap creates an in-memory hash map with a single ipv6 SID key.
+func newIPv6SetMap(t *testing.T) *ebpf.Map {
+	t.Helper()
 	if os.Geteuid() != 0 {
 		t.Skip("needs root to create a BPF map")
 	}
@@ -236,9 +235,15 @@ func TestIPv6BTFRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewMap: %v", err)
 	}
-	defer func() { _ = m.Close() }()
+	t.Cleanup(func() { _ = m.Close() })
+	return m
+}
 
-	def, err := describe(m)
+// TestIPv6BTFRoundTrip pins that the synthesize side (fieldType, __u8[16]
+// array) and the describe side (resolveFieldType) agree: a map created
+// with an ipv6 key reads back as a 16-byte byte-string scalar field.
+func TestIPv6BTFRoundTrip(t *testing.T) {
+	def, err := describe(newIPv6SetMap(t))
 	if err != nil {
 		t.Fatalf("describe: %v", err)
 	}
@@ -247,5 +252,29 @@ func TestIPv6BTFRoundTrip(t *testing.T) {
 	}
 	if f := def.Fields[0]; f.Name != "sid" || f.Size != 16 || f.Off != 0 || !f.IsBytes {
 		t.Errorf("field = %+v, want {sid 16 off0 bytes}", f)
+	}
+}
+
+// TestIPv6AddListSchema round-trips an SRv6 SID through Add / List /
+// Schema and checks it renders as an IPv6 literal, not a number.
+func TestIPv6AddListSchema(t *testing.T) {
+	def, err := describe(newIPv6SetMap(t))
+	if err != nil {
+		t.Fatalf("describe: %v", err)
+	}
+	if err := def.Add(map[string]string{"sid": "fc00::1"}, 1); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	var list bytes.Buffer
+	if err := def.List(&list); err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if got := list.String(); !strings.Contains(got, "sid=fc00::1 tag=1") {
+		t.Errorf("List = %q, want to contain 'sid=fc00::1 tag=1'", got)
+	}
+	var schema bytes.Buffer
+	def.Schema(&schema)
+	if got := schema.String(); !strings.Contains(got, "sid") || !strings.Contains(got, "ipv6") {
+		t.Errorf("Schema = %q, want sid + ipv6", got)
 	}
 }
