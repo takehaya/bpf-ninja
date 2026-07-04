@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.17.0](https://github.com/takehaya/xdp-ninja/compare/v0.16.0...v0.17.0) (2026-07-04)
+
+
+### 🎉 Features
+
+* **kunai:** DSL packet-field set matching (layer[field in @NAME]) ([#61](https://github.com/takehaya/xdp-ninja/issues/61)) ([e2dd172](https://github.com/takehaya/xdp-ninja/commit/e2dd172b2d7055982f83cdc6648008148451ff1d))
+
+
+### 📝 Documentation
+
+* naturalize the internal-reference Japanese docs (natural-ja) ([#63](https://github.com/takehaya/xdp-ninja/issues/63)) ([8ac3ffd](https://github.com/takehaya/xdp-ninja/commit/8ac3ffdf90d934ffa71a1b0d515c7627723a2dc8))
+* naturalize the user-facing Japanese guides (natural-ja) ([#62](https://github.com/takehaya/xdp-ninja/issues/62)) ([98633e4](https://github.com/takehaya/xdp-ninja/commit/98633e4908793315e26e4dfa4dec782dec340c8f))
+
 ## [0.16.0](https://github.com/takehaya/xdp-ninja/compare/v0.15.0...v0.16.0) (2026-07-03)
 
 
