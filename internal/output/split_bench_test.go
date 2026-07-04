@@ -15,7 +15,7 @@ import (
 // pcapng buffers), not disk — the total bytes written are identical between
 // plain and split, so disk cost is not the delta.
 //
-// Run: go test -bench=BenchmarkSplit -benchmem ./internal/output/
+// Run: go test -run '^$' -bench 'BenchmarkPlain|BenchmarkSplit' -benchmem ./internal/output/
 //
 // Naming: BenchmarkPlain is the flag OFF baseline (one writer). BenchmarkSplit*
 // is the flag ON; the TagsN suffix is the number of DISTINCT tags (1/4/16),
@@ -61,6 +61,7 @@ func interleaved(numTags int) func(i int) uint32 {
 }
 
 func reportPerPkt(b *testing.B) {
+	b.StopTimer() // exclude this reporting from the measured duration
 	b.ReportMetric(float64(b.Elapsed().Nanoseconds())/float64(b.N*benchBatch), "ns/pkt")
 }
 
@@ -98,6 +99,11 @@ func benchmarkSplit(b *testing.B, tag func(i int) uint32) {
 		return w
 	}
 	pkts := benchPackets(benchBatch, tag)
+	// Warm up every tag's writer before timing so the one-time os.Create +
+	// pcapng-header init is not charged to the measured write loop.
+	for i := range pkts {
+		writerFor(pkts[i].Tag)
+	}
 	b.ReportAllocs()
 	b.ResetTimer()
 	for range b.N {
