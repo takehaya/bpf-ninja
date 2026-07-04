@@ -252,11 +252,13 @@ func (d *Definition) BuildKey(values map[string]string) ([]byte, error) {
 		if f.IsBytes {
 			// ipv6: a network-order 16-byte address, copied verbatim so it
 			// matches the wire bytes kunai extracts (never endianness-flipped).
-			ip := net.ParseIP(raw).To16()
-			if ip == nil {
-				return nil, fmt.Errorf("key field %s: invalid IPv6 address %q", f.Name, raw)
+			// Reject an IPv4 literal (net.ParseIP would silently widen it to
+			// an IPv4-mapped ::ffff:a.b.c.d, an unexpected key).
+			parsed := net.ParseIP(raw)
+			if parsed == nil || parsed.To4() != nil {
+				return nil, fmt.Errorf("key field %s: %q is not an IPv6 address", f.Name, raw)
 			}
-			copy(key[f.Off:f.Off+f.Size], ip)
+			copy(key[f.Off:f.Off+f.Size], parsed.To16())
 		} else {
 			v, perr := parseUint(raw)
 			if perr != nil {

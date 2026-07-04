@@ -149,8 +149,12 @@ func TestBuildKeyIPv6NetworkOrder(t *testing.T) {
 		t.Errorf("key = %x, want %x", key, want)
 	}
 	// invalid literal
-	if _, err := def.BuildKey(map[string]string{"sid": "nope"}); err == nil || !strings.Contains(err.Error(), "invalid IPv6") {
+	if _, err := def.BuildKey(map[string]string{"sid": "nope"}); err == nil || !strings.Contains(err.Error(), "not an IPv6") {
 		t.Errorf("invalid-IP err = %v", err)
+	}
+	// an IPv4 literal must not be silently widened to ::ffff:a.b.c.d
+	if _, err := def.BuildKey(map[string]string{"sid": "1.2.3.4"}); err == nil || !strings.Contains(err.Error(), "not an IPv6") {
+		t.Errorf("IPv4-reject err = %v", err)
 	}
 }
 
