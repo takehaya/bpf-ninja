@@ -428,12 +428,12 @@ mergecap -w merged.pcap path.pcap.cpu*
 
 ### `--list-progs` で到達可能プログラムを洗い出す
 
-`--list-progs` は、起点プログラム (`-i` の XDP または `-p` の ID) から**到達できるプログラムを推移的に**辿って一覧します。辿るエッジは 2 種類です。
+`--list-progs` は、起点プログラムから到達できるプログラムを推移的に辿って一覧します。起点は `-i` の XDP か `-p` の ID です。辿るエッジは次の 2 種類です。
 
-- **tail call**: `PROG_ARRAY` (`bpf_tail_call`) のエントリ先。
-- **redirect**: `CPUMAP` / `DEVMAP` / `DEVMAP_HASH` のエントリに attach された XDP プログラム (`bpf_redirect_map()` の飛び先)。
+- tail call は、`bpf_tail_call` が使う `PROG_ARRAY` のエントリ先です。
+- redirect は、`CPUMAP` / `DEVMAP` / `DEVMAP_HASH` のエントリに attach された XDP プログラム、すなわち `bpf_redirect_map()` の飛び先です。
 
-さらにその先も同様に辿るので、`cpu_dispatch → CPUMAP[0..N] → 方向別ハンドラ → (別の redirect)` のような多段構成でも、末端の実プログラム ID までまとめて出ます。出力の prog ID を `-p` に渡してアタッチします。
+さらにその先も同様に辿るので、`cpu_dispatch → CPUMAP[0..N] → 方向別ハンドラ` から別の redirect へ続くような多段構成でも、末端の実プログラム ID までまとめて出ます。出力された prog ID を `-p` に渡してアタッチします。
 
 ```bash
 # --list-progs で dispatcher から末端の prog ID を推移的に洗い出し
@@ -481,9 +481,9 @@ sudo xdp-ninja set schema /sys/fs/bpf/flows
 - 外部から直接書く場合 (bpftool 等) は**パディングのゼロ埋めが必須**です (hash はキー全バイトをハッシュするため、パディングが非ゼロだと永遠に一致しません)。`xdp-ninja set add` はこれを自動で保証します。
 - スキーマ (キー幅・オフセット) は `set schema` で確認できます。`bpftool map dump pinned <path>` もフィールド名付きで整形表示されます (合成 BTF の効能)。
 
-### パケットフィールドで照合する (DSL `layer[field in @NAME]`)
+### DSL `layer[field in @NAME]` でパケットフィールドを照合する
 
-`--arg-filter @NAME` はキーを **fentry 引数**から作ります。照合したい値がパケット内にある場合 (GTP TEID、SRv6 SID など、dispatcher が引数で渡してくれない値) は、DSL の bracket predicate で**パケットフィールドを直接キーにできます**。
+`--arg-filter @NAME` はキーを fentry 引数から作ります。GTP TEID や SRv6 SID のように、照合したい値が引数ではなくパケット内にあり dispatcher が渡してくれない場合は、DSL の bracket predicate でパケットフィールドをそのままキーにできます。
 
 ```bash
 # 集合は同じ (キー = 照合する値)
@@ -500,12 +500,12 @@ sudo xdp-ninja -i eth0 --mode xdp --set "flows=/sys/fs/bpf/flows" \
   'eth/ipv4/udp/gtp[teid in @flows, msg_type in @flows]'
 ```
 
-- **同名一致**: DSL のフィールド名が集合キーのフィールド名になります (`gtp[teid in @teids]` は集合キー `teid` を引く)。
-- **エンディアン**: パケットは network order、`set add` は host order で書きますが、ツールが変換を合わせるので**利用者は普段どおりの数値で `set add` するだけ**です。
-- **キー幅の上限**: パケット由来キーはホストスタックの空き領域を使うため、**合計 16 バイトまで** (TEID=4 / IMSI=8 / TEID+IMSI=12 は可)。1 フィールドは 8 バイトまで (16B の SRv6 SID 単体は後日対応)。
-- `@NAME` は他の bracket 条件・レイヤ条件と AND。`in @NAME` は bracket predicate 専用で、`where` 句の中では使えません。
-- `in @NAME` は**必ず通るレイヤ**(quantifier なしの `QuantOne`)にのみ書けます。`vlan[...]?` のような optional / 繰り返しレイヤや alternation の枝 (`(vlan[...]|qinq)`) は、そのレイヤが不在でもフィルタが成立しうるため、抽出が走らずキーが未書き込みになる可能性があり reject されます。
-- 引数由来 (`--arg-filter @NAME`) は entry/exit 専用のまま。パケット由来 (DSL `@NAME`) は entry/exit と `--mode xdp` の両方で動きます。
+- 同名一致します。DSL のフィールド名がそのまま集合キーのフィールド名になり、`gtp[teid in @teids]` は集合キー `teid` を引きます。
+- エンディアンはツールが吸収します。パケットは network order、`set add` は host order で書きますが、変換をツールが合わせるので、利用者は普段どおりの数値で `set add` するだけで済みます。
+- キー幅には上限があります。パケット由来キーはホストスタックの空き領域を使うため、合計 16 バイトまでです。TEID の 4 バイト、IMSI の 8 バイト、TEID と IMSI を合わせた 12 バイトはいずれも収まります。1 フィールドは 8 バイトまでで、16 バイトの SRv6 SID を単体で扱うのは後日対応とします。
+- `@NAME` は他の bracket 条件やレイヤ条件と AND で合成します。`in @NAME` は bracket predicate 専用で、`where` 句の中では使えません。
+- `in @NAME` は必ず通るレイヤ、すなわち quantifier のない `QuantOne` のレイヤにのみ書けます。`vlan[...]?` のような optional や繰り返しのレイヤ、`(vlan[...]|qinq)` のような alternation の枝は、そのレイヤが不在でもフィルタが成立しうるため、抽出が走らずキーが未書き込みになる可能性があり、reject されます。
+- 引数由来の `--arg-filter @NAME` は entry/exit 専用のままです。パケット由来の DSL `@NAME` は entry/exit と `--mode xdp` の両方で動きます。
 
 ## 関数引数の値を覗く (`--arg-echo`)
 

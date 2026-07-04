@@ -586,17 +586,17 @@ eBPF の LDX は x86 上で little-endian で読みます。packet bytes は net
 
 ### 4.9 pinned-map 集合照合 (`layer[field in @NAME]`)
 
-パケットフィールドを pinned BPF hash map に集合照合する述語です。設計の要点は **kunai は map を一切知らない不変条件を保つ** ことです (codegen は `FnMapLookupElem` / `LoadMapPtr` を emit せず、`Output` に map 参照を持たない)。実現は 2 段構成です (host adapter 境界の典型例)。
+パケットフィールドを pinned BPF hash map に集合照合する述語です。設計の要点は、kunai が map を一切知らない不変条件を保つことにあります。codegen は `FnMapLookupElem` や `LoadMapPtr` を emit せず、`Output` にも map 参照を持ちません。実現は host adapter 境界の典型例となる 2 段構成です。
 
-- **kunai 側 (`predicate.go::emitInSetPredicate`)**: フィールドを境界チェック付きで load し、`HostTo(BE)` で数値 (host order) に正規化して、**host が指定した R10 スロットに store** します。map lookup は emit しません。set atom は verdict に影響させず (レイヤ到達失敗時のみ `dslReject`)、抽出したスロットは `Output.Extractions` (`{SetName, FieldName, StackOff, StoreSize}`) で host に返します。host はスロット offset を `codegen.SetSlotResolver` (`caps.Lang.SetSlots`、`ActionFetcher` と同型の注入面) で渡します。返すのは int16 offset と幅だけで、map/FD/BTF は渡りません。
-- **host 側 (`internal/program/setslots.go`)**: filter 実行後に、そのスロットのバイト列をキーに `FnMapLookupElem` を emit し、miss なら capture skip します (`emitPktSetLookups`)。事前に buffer を zero 埋めして pad を 0 に保ちます (`emitPktSetKeyZeroing`)。
+- kunai 側の `predicate.go::emitInSetPredicate` は、フィールドを境界チェック付きで load し、`HostTo(BE)` で host order の数値に正規化してから、host が指定した R10 スロットに store します。map lookup は emit しません。set atom は verdict に影響させず、レイヤ到達に失敗したときだけ `dslReject` へ飛びます。抽出したスロットは `{SetName, FieldName, StackOff, StoreSize}` を並べた `Output.Extractions` で host に返します。host はスロット offset を `codegen.SetSlotResolver` で渡します。これは `caps.Lang.SetSlots` に置く `ActionFetcher` と同型の注入面で、返すのは int16 offset と幅だけであり、map や FD や BTF は渡りません。
+- host 側の `internal/program/setslots.go` は、filter 実行後にそのスロットのバイト列をキーとして `FnMapLookupElem` を emit し、miss なら capture を skip します。この処理は `emitPktSetLookups` にあります。事前に `emitPktSetKeyZeroing` で buffer を zero 埋めし、pad を 0 に保ちます。
 
 制約は次のとおりです。
 
-- **エンディアン契約**: `set add` は host order (`setmap.BuildKey` の `binary.NativeEndian`)、パケットは network order。kunai の `HostTo(BE)` 正規化 + host の native store で両者を一致させます。ここがずれると全 miss します (差分テスト `TestBpfDSLSetMatchPacketField` が守ります)。
-- **スタック**: 抽出スロットは filter 実行中に書かれ filter 後に読まれるため、kunai 領域 `[-56, ...)` には置けません。host 領域 `[-40, -24)` (両 attach path で空きの 16B) を使うので、**合計キー幅は 16 バイトまで**、1 フィールド 8 バイトまでです。
-- **構文**: bracket predicate 専用 (`where` 句では不可)。bracket は layer の連言に必ず入るので、`@set` は構造的にトップレベル AND になり、v1 の「集合は AND」と一致します。複合キーは 1 つの角括弧にカンマ併記します。
-- iterator-stack (`any`/`all` の aux) 上のフィールドは resolver が拒否します (last-write-wins になるため)。
+- エンディアン契約があります。`set add` は `setmap.BuildKey` の `binary.NativeEndian` により host order で書き、パケットは network order です。kunai の `HostTo(BE)` 正規化と host の native store で両者を一致させます。ここがずれると全 miss するので、差分テストの `TestBpfDSLSetMatchPacketField` が守ります。
+- スタックに制約があります。抽出スロットは filter 実行中に書かれ filter 後に読まれるため、kunai 領域の `[-56, ...)` には置けません。両 attach path で空いている 16 バイトの host 領域 `[-40, -24)` を使うので、合計キー幅は 16 バイトまで、1 フィールドは 8 バイトまでです。
+- 構文は bracket predicate 専用で、`where` 句では使えません。bracket は layer の連言に必ず入るので、`@set` は構造的にトップレベルの AND になり、v1 の集合は AND という意味論と一致します。複合キーは 1 つの角括弧にカンマ併記します。
+- `any` や `all` の aux にあたる iterator-stack 上のフィールドは、last-write-wins になるため resolver が拒否します。
 
 ## 5. P4-16 互換性
 
