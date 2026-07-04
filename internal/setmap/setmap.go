@@ -30,9 +30,13 @@ type KeyField struct {
 	Name    string
 	Off     uint32 // byte offset within the key
 	Size    uint32 // 1, 2, 4, 8, or 16 (ipv6)
-	Align   uint32 // natural alignment: Size for ints, 1 for the ipv6 array
 	IsBytes bool   // network-order byte string (ipv6): copied verbatim
 }
+
+// Align is the field's layout/store alignment: its width for numeric
+// fields, 8 for a 16-byte ipv6 field (extracted as two 8-byte DWord
+// stores, which need an 8-aligned offset).
+func (f KeyField) Align() uint32 { return fieldAlign(f.Size, f.IsBytes) }
 
 // Definition is an opened set map plus its resolved key schema.
 type Definition struct {
@@ -182,32 +186,33 @@ func describe(m *ebpf.Map) (*Definition, error) {
 	def := &Definition{Map: m, KeySize: m.KeySize()}
 	switch t := btf.UnderlyingType(keyType).(type) {
 	case *btf.Int, *btf.Array:
-		size, align, isBytes, ok := resolveFieldType(keyType)
+		size, isBytes, ok := resolveFieldType(keyType)
 		if !ok {
 			return nil, fmt.Errorf("scalar key BTF %s is not a supported key field (u8/u16/u32/u64 or __u8[16])", keyType)
 		}
-		def.Fields = []KeyField{{Name: scalarKeyName(keyType), Off: 0, Size: size, Align: align, IsBytes: isBytes}}
+		def.Fields = []KeyField{{Name: scalarKeyName(keyType), Off: 0, Size: size, IsBytes: isBytes}}
 		def.IsScalar = true
 	case *btf.Struct:
 		for _, mem := range t.Members {
 			if mem.BitfieldSize != 0 {
 				return nil, fmt.Errorf("key field %s: bitfields are not supported", mem.Name)
 			}
-			size, align, isBytes, ok := resolveFieldType(mem.Type)
+			size, isBytes, ok := resolveFieldType(mem.Type)
 			if !ok {
 				return nil, fmt.Errorf("key field %s: only u8/u16/u32/u64 or __u8[16] fields are supported (got %s)", mem.Name, mem.Type)
 			}
-			off := mem.Offset.Bytes()
+			f := KeyField{Name: mem.Name, Off: mem.Offset.Bytes(), Size: size, IsBytes: isBytes}
 			// The extraction stores each field with a naturally-aligned,
-			// in-bounds store; reject layouts (e.g. __attribute__((packed)))
-			// that would otherwise produce a misaligned or OOB stack write.
-			if off%align != 0 {
-				return nil, fmt.Errorf("key field %s: offset %d is not aligned to %d (packed keys are not supported)", mem.Name, off, align)
+			// in-bounds store; reject layouts (e.g. __attribute__((packed)),
+			// or an ipv6 member not at an 8-aligned offset) that would
+			// otherwise produce a misaligned or OOB stack write.
+			if f.Off%f.Align() != 0 {
+				return nil, fmt.Errorf("key field %s: offset %d is not aligned to %d (packed keys are not supported)", mem.Name, f.Off, f.Align())
 			}
-			if off+size > def.KeySize {
+			if f.Off+f.Size > def.KeySize {
 				return nil, fmt.Errorf("key field %s: extends past the %d-byte key", mem.Name, def.KeySize)
 			}
-			def.Fields = append(def.Fields, KeyField{Name: mem.Name, Off: off, Size: size, Align: align, IsBytes: isBytes})
+			def.Fields = append(def.Fields, f)
 		}
 		if len(def.Fields) == 0 {
 			return nil, fmt.Errorf("key struct %s has no fields", t.Name)
@@ -222,18 +227,18 @@ func describe(m *ebpf.Map) (*Definition, error) {
 // unsigned integer, or a `__u8[16]` array (an IPv6 address / SRv6 SID,
 // treated as a network-order byte string). Must stay in lockstep with
 // fieldType (the synthesis side) — the round-trip test guards it.
-func resolveFieldType(t btf.Type) (size, align uint32, isBytes, ok bool) {
+func resolveFieldType(t btf.Type) (size uint32, isBytes, ok bool) {
 	switch u := btf.UnderlyingType(t).(type) {
 	case *btf.Int:
 		if validValueFieldSize(u.Size) { // 1/2/4/8 — a __u128 int is not a key field
-			return u.Size, u.Size, false, true
+			return u.Size, false, true
 		}
 	case *btf.Array:
 		if el, isInt := btf.UnderlyingType(u.Type).(*btf.Int); isInt && el.Size == 1 && u.Nelems == 16 {
-			return 16, 1, true, true
+			return 16, true, true
 		}
 	}
-	return 0, 0, false, false
+	return 0, false, false
 }
 
 // scalarUnnamed is the placeholder name for a bare-integer key with no

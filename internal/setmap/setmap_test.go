@@ -127,7 +127,7 @@ func TestParseSchemaIPv6(t *testing.T) {
 	if len(specs) != 1 {
 		t.Fatalf("specs = %+v", specs)
 	}
-	if f := specs[0]; f.Name != "sid" || f.Size != 16 || f.Align != 1 || !f.IsBytes {
+	if f := specs[0]; f.Name != "sid" || f.Size != 16 || !f.IsBytes {
 		t.Errorf("spec = %+v, want {sid 16 align1 bytes}", f)
 	}
 }
@@ -135,7 +135,7 @@ func TestParseSchemaIPv6(t *testing.T) {
 func TestBuildKeyIPv6NetworkOrder(t *testing.T) {
 	def := &Definition{
 		KeySize: 16,
-		Fields:  []KeyField{{Name: "sid", Off: 0, Size: 16, Align: 1, IsBytes: true}},
+		Fields:  []KeyField{{Name: "sid", Off: 0, Size: 16, IsBytes: true}},
 	}
 	key, err := def.BuildKey(map[string]string{"sid": "fc00::1"})
 	if err != nil {
@@ -225,7 +225,7 @@ func newIPv6SetMap(t *testing.T) *ebpf.Map {
 	if os.Geteuid() != 0 {
 		t.Skip("needs root to create a BPF map")
 	}
-	fields, size := layout([]FieldSpec{{Name: "sid", Size: 16, Align: 1, IsBytes: true}})
+	fields, size := layout([]FieldSpec{{Name: "sid", Size: 16, IsBytes: true}})
 	m, err := ebpf.NewMap(&ebpf.MapSpec{
 		Name: "xdpninja_sidtest", Type: ebpf.Hash,
 		KeySize: size, ValueSize: 4, MaxEntries: 4,

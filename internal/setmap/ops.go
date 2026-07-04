@@ -20,8 +20,18 @@ import (
 type FieldSpec struct {
 	Name    string
 	Size    uint32
-	Align   uint32 // natural alignment: Size for ints, 1 for the ipv6 byte array
-	IsBytes bool   // network-order byte string (ipv6): copied, never putUint'd
+	IsBytes bool // network-order byte string (ipv6): copied, never putUint'd
+}
+
+// fieldAlign is a field's layout/store alignment: its width for a numeric
+// field, but 8 for a 16-byte ipv6 field — kunai extracts it as two 8-byte
+// DWord stores, which require an 8-aligned offset. (This is the store
+// granularity, not the C `unsigned char[16]` type alignment of 1.)
+func fieldAlign(size uint32, isBytes bool) uint32 {
+	if isBytes {
+		return 8
+	}
+	return size
 }
 
 // ParseSchema parses "imsi:u64,teid:u32" into field specs.
@@ -42,11 +52,11 @@ func ParseSchema(s string) ([]FieldSpec, error) {
 			return nil, fmt.Errorf("duplicate field name %q in schema", name)
 		}
 		seen[name] = true
-		size, align, isBytes, err := typeKind(strings.TrimSpace(typ))
+		size, isBytes, err := typeKind(strings.TrimSpace(typ))
 		if err != nil {
 			return nil, fmt.Errorf("schema entry %q: %w", ent, err)
 		}
-		out = append(out, FieldSpec{Name: name, Size: size, Align: align, IsBytes: isBytes})
+		out = append(out, FieldSpec{Name: name, Size: size, IsBytes: isBytes})
 	}
 	if len(out) == 0 {
 		return nil, fmt.Errorf("empty schema")
@@ -54,25 +64,24 @@ func ParseSchema(s string) ([]FieldSpec, error) {
 	return out, nil
 }
 
-// typeKind resolves a schema type token to its width, natural alignment,
-// and whether it is a network-order byte string. `ipv6` is a 16-byte
-// address (an SRv6 SID): align 1, byte-string semantics, distinct from a
-// numeric u128 because it is copied verbatim in wire order, never
-// endianness-converted.
-func typeKind(t string) (size, align uint32, isBytes bool, err error) {
+// typeKind resolves a schema type token to its width and whether it is a
+// network-order byte string. `ipv6` is a 16-byte address (an SRv6 SID):
+// byte-string semantics, distinct from a numeric u128 because it is copied
+// verbatim in wire order, never endianness-converted.
+func typeKind(t string) (size uint32, isBytes bool, err error) {
 	switch t {
 	case "u8":
-		return 1, 1, false, nil
+		return 1, false, nil
 	case "u16":
-		return 2, 2, false, nil
+		return 2, false, nil
 	case "u32":
-		return 4, 4, false, nil
+		return 4, false, nil
 	case "u64":
-		return 8, 8, false, nil
+		return 8, false, nil
 	case "ipv6":
-		return 16, 1, true, nil
+		return 16, true, nil
 	}
-	return 0, 0, false, fmt.Errorf("unsupported type %q (u8/u16/u32/u64/ipv6)", t)
+	return 0, false, fmt.Errorf("unsupported type %q (u8/u16/u32/u64/ipv6)", t)
 }
 
 // layout assigns naturally-aligned offsets and returns the padded total
@@ -83,11 +92,12 @@ func layout(fields []FieldSpec) ([]KeyField, uint32) {
 	var cur, maxAlign uint32
 	maxAlign = 1
 	for _, f := range fields {
-		if f.Align > maxAlign {
-			maxAlign = f.Align
+		align := fieldAlign(f.Size, f.IsBytes)
+		if align > maxAlign {
+			maxAlign = align
 		}
-		cur = (cur + f.Align - 1) &^ (f.Align - 1)
-		out = append(out, KeyField{Name: f.Name, Off: cur, Size: f.Size, Align: f.Align, IsBytes: f.IsBytes})
+		cur = (cur + align - 1) &^ (align - 1)
+		out = append(out, KeyField{Name: f.Name, Off: cur, Size: f.Size, IsBytes: f.IsBytes})
 		cur += f.Size
 	}
 	total := (cur + maxAlign - 1) &^ (maxAlign - 1)
@@ -242,11 +252,11 @@ func (d *Definition) BuildKey(values map[string]string) ([]byte, error) {
 		if f.IsBytes {
 			// ipv6: a network-order 16-byte address, copied verbatim so it
 			// matches the wire bytes kunai extracts (never endianness-flipped).
-			ip := net.ParseIP(raw)
-			if ip == nil || ip.To16() == nil {
+			ip := net.ParseIP(raw).To16()
+			if ip == nil {
 				return nil, fmt.Errorf("key field %s: invalid IPv6 address %q", f.Name, raw)
 			}
-			copy(key[f.Off:f.Off+f.Size], ip.To16())
+			copy(key[f.Off:f.Off+f.Size], ip)
 		} else {
 			v, perr := parseUint(raw)
 			if perr != nil {

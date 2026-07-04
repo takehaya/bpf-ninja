@@ -19,7 +19,7 @@ func TestPktSetSlotsSixteenByteKeyFits(t *testing.T) {
 	// is not rounded to a 16 boundary (which would land at -48, below the
 	// floor). The two DWord stores at -40/-32 are 8-aligned.
 	sets := []*setmap.Set{
-		setWithKey("sids", 16, []setmap.KeyField{{Name: "sid", Off: 0, Size: 16}}),
+		setWithKey("sids", 16, []setmap.KeyField{{Name: "sid", Off: 0, Size: 16, IsBytes: true}}),
 	}
 	p := newPktSetSlots(sets)
 	off, size, ok := p.SlotFor("sids", "sid")

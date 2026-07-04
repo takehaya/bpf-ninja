@@ -224,9 +224,8 @@ func emitInSetPredicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, erro
 	if err != nil {
 		return nil, err
 	}
-	if bytes != 16 && bytes > 8 {
-		return nil, fmt.Errorf("%w: set key field %q is %d bytes; packet-field extraction supports 1/2/4/8 (numeric) or 16 (ipv6)", ErrNotImplemented, fieldName, bytes)
-	}
+	// bytes is 1/2/4/8 (the fieldRefByteOffset path rejects wider) or 16
+	// (the is128 path), so no explicit 9..15 guard is needed here.
 	// Require an exact width match: a narrower packet field would only
 	// write a prefix of the key (relying on zero-fill), which silently
 	// matches just zero-extended entries — a mis-configuration trap.
