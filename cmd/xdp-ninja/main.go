@@ -509,7 +509,7 @@ func run(ctx context.Context, cmd *cli.Command) error {
 		var jsonOut []paramsTargetJSON
 		for _, t := range targets {
 			if asJSON {
-				jt := paramsTargetJSON{Func: t.FuncName, ID: t.ProgID}
+				jt := paramsTargetJSON{Func: t.FuncName, ID: t.ProgID, Params: []paramJSON{}}
 				for _, p := range t.Params {
 					jt.Params = append(jt.Params, paramJSON{Name: p.Name, Index: p.Index, Size: p.Size, Signed: p.Signed})
 				}
@@ -1349,30 +1349,28 @@ func findTargets(cmd *cli.Command, isTC bool) ([]*attach.ProgInfo, error) {
 }
 
 // fetchNodeFuncs resolves the BTF functions of one reachable-tree node for
-// the combined --list-progs --list-funcs view. root is non-nil only for the
-// already-open root program; other nodes are opened by ID and closed here. A
-// node without BTF (or that fails to open) yields no funcs rather than an
-// error, so one unreadable node does not abort the whole listing.
+// the combined --list-progs --list-funcs view. root is the already-open node
+// (its handle is borrowed); a nil root means open the program by ID and close
+// it here. A node without BTF (or that fails to open) yields no funcs rather
+// than an error, so one unreadable node does not abort the whole listing.
 func fetchNodeFuncs(progID uint32, root *attach.ProgInfo) []attach.FuncInfo {
-	if root != nil {
-		// Borrowed handle: reuse its cached BTF spec (loaded during
-		// ResolveTargets) instead of reopening.
-		spec, err := root.BTFSpecCached()
+	info := root
+	if info == nil {
+		opened, err := attach.FindXDPProgramByID(progID)
 		if err != nil {
 			return nil
 		}
-		funcs, err := attach.ListFuncsFromSpec(spec)
-		if err != nil {
-			return nil
-		}
-		return funcs
+		defer func() { _ = opened.Program.Close() }()
+		info = opened
 	}
-	opened, err := attach.FindXDPProgramByID(progID)
+	// Both the borrowed root and a fresh FindXDPProgramByID cache their
+	// parsed BTF, so BTFSpecCached reuses it rather than re-parsing (which a
+	// bare attach.ListFuncs(prog) would do).
+	spec, err := info.BTFSpecCached()
 	if err != nil {
 		return nil
 	}
-	defer func() { _ = opened.Program.Close() }()
-	funcs, err := attach.ListFuncs(opened.Program)
+	funcs, err := attach.ListFuncsFromSpec(spec)
 	if err != nil {
 		return nil
 	}

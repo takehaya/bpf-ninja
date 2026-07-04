@@ -294,9 +294,11 @@ func WalkReachablePrograms(root *ebpf.Program, rootID uint32) ([]ReachableProgra
 // name instead of a numeric ID. The candidate pool is the root plus every
 // reachable node; rootName/reachable names come from the kernel, which
 // truncates program names to 15 chars (BPF_OBJ_NAME_LEN-1). A requested
-// name matches a candidate when the candidate name is a prefix of it (so a
+// name matches a candidate when they are equal, or when the candidate is at
+// the truncation length (>=15) and is a prefix of the requested name (so a
 // full name like "upf_capture_point_dl" matches the truncated
-// "upf_capture_poi"), or when they are equal.
+// "upf_capture_poi"). A shorter candidate must match exactly, so an
+// untruncated short name cannot falsely prefix a different program's name.
 //
 // Each requested name must resolve to exactly one program. An ambiguous
 // name (several candidates) or an unknown one returns an error naming the
