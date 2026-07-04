@@ -600,10 +600,10 @@ DSL の parse error / type error も同じ経路を通るので、`--dump-asm fi
 ```bash
 PIN=/sys/fs/bpf/xdpninja_handtest
 
-# 1) 作る (BTF 付き hash map を pin。value は既定で u32 の tag)
+# 1) BTF 付き hash map を作って pin する。value は既定で u32 の tag
 sudo xdp-ninja set create $PIN --key "imsi:u64,teid:u32" --max-entries 1024
 
-# 2) 入れる (フィールド名で指定。tag は value)
+# 2) フィールド名でエントリを入れる。tag が value
 sudo xdp-ninja set add $PIN imsi=999990000000001 teid=0x3039 tag=1
 sudo xdp-ninja set add $PIN imsi=999990000000777 teid=100    tag=2
 
@@ -616,7 +616,7 @@ sudo xdp-ninja set del  $PIN imsi=999990000000001 teid=0x3039
 sudo xdp-ninja set list $PIN
 ```
 
-`set list` は各エントリを `field=value ... tag=N` の形で印字します。`set schema` はキーのレイアウトを出します。
+`set list` は各エントリを `field=value ... tag=N` の形で印字します。`set schema` はキーのレイアウトを出します。並び順は hash map の iterate 順なので、実行ごとやカーネルごとに例と違って見えることがあります。
 
 ```text
 $ sudo xdp-ninja set list $PIN
