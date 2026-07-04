@@ -137,6 +137,12 @@ func (w *Writer) initExitMode(dest io.Writer) error {
 
 // Write outputs a captured packet.
 func (w *Writer) Write(pkt capture.Packet) error {
+	// Serialize with the periodic flusher goroutine (Flush also holds
+	// flushMu) so writes and flushes don't race on the pcapng buffer or, for
+	// the fast writer, the shared outer bufio. Uncontended for writers with
+	// no flusher (plain -w, non-split), so the lock is ~free there.
+	w.flushMu.Lock()
+	defer w.flushMu.Unlock()
 	if w.fastWriter != nil {
 		return w.fastWriter.WritePacket(pkt.Timestamp, pkt.Data)
 	}
@@ -150,11 +156,6 @@ func (w *Writer) Write(pkt capture.Packet) error {
 			ci.InterfaceIndex = id
 		}
 	}
-	// Serialize with the stdout flusher goroutine (Flush also holds flushMu)
-	// so writes and periodic flushes don't race on the pcapng buffer. For
-	// file writers there is no flusher, so this lock is uncontended.
-	w.flushMu.Lock()
-	defer w.flushMu.Unlock()
 	if err := w.pcapWriter.WritePacket(ci, pkt.Data); err != nil {
 		return fmt.Errorf("writing pcap packet: %w", err)
 	}
@@ -166,6 +167,10 @@ func (w *Writer) WriteBatch(pkts []capture.Packet) error {
 	if len(pkts) == 0 {
 		return nil
 	}
+	// One lock for the whole batch (see Write): mutual exclusion with the
+	// periodic flusher; uncontended for writers with no flusher.
+	w.flushMu.Lock()
+	defer w.flushMu.Unlock()
 	if w.fastWriter != nil {
 		for i := range pkts {
 			p := &pkts[i]
@@ -175,10 +180,6 @@ func (w *Writer) WriteBatch(pkts []capture.Packet) error {
 		}
 		return nil
 	}
-	// One lock for the whole batch (see Write): mutual exclusion with the
-	// stdout flusher; uncontended for file writers.
-	w.flushMu.Lock()
-	defer w.flushMu.Unlock()
 	var ci gopacket.CaptureInfo
 	for i := range pkts {
 		p := &pkts[i]
@@ -239,11 +240,29 @@ func (w *Writer) Close() error {
 // `xdp-ninja ... | tcpdump -r -`) need to see data before the
 // pcapgo bufio fills, otherwise they appear stuck.
 func (w *Writer) startStdoutFlusher() {
+	w.startFlusher(stdoutFlushInterval)
+}
+
+// EnablePeriodicFlush starts a background flusher on a file writer so its
+// on-disk pcap-ng stays current within interval — a reader can copy or tail
+// the file mid-capture and, once writes to it stop, it is complete after at
+// most one interval. No-op if a flusher is already running (stdout writers
+// start one in NewWriter).
+func (w *Writer) EnablePeriodicFlush(interval time.Duration) {
+	if w.flushStop != nil {
+		return
+	}
+	w.startFlusher(interval)
+}
+
+// startFlusher runs a ticker goroutine that Flush()es every interval until
+// Close stops it. Flush holds flushMu, so it never races the writes.
+func (w *Writer) startFlusher(interval time.Duration) {
 	w.flushStop = make(chan struct{})
 	w.flushDone = make(chan struct{})
 	go func() {
 		defer close(w.flushDone)
-		ticker := time.NewTicker(stdoutFlushInterval)
+		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {
 			select {

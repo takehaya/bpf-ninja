@@ -149,6 +149,9 @@ func LoadXDPNative(state *attach.InterfaceState, filterExpr string, useDSL bool,
 func buildXDPNativeInsns(filterOut codegen.Output, eventsFD int, slots *pktSetSlots) asm.Instructions {
 	var insns asm.Instructions
 	insns = append(insns, loadXDPPacketPointers()...)
+	// Default the tag to 0 before any set lookup can overwrite it, so a
+	// captured packet that matched no set (or a set-less filter) reports 0.
+	insns = append(insns, emitTagSlotZero()...)
 	// DSL `field in @set`: zero the key buffer, let the filter extract the
 	// packet fields into it, then look each referenced set up (miss →
 	// skip capture). ANDs with the kunai verdict runFilterDirect produced.
@@ -216,11 +219,12 @@ func runFilterDirect(filter asm.Instructions) asm.Instructions {
 // tells userspace how many of the trailing payload bytes are real.
 // XDP-native always reports action = XDP_PASS (= 2) and mode = 2.
 //
-// Metadata layout matches capture.MetadataSize (16 B) — see
+// Metadata layout matches capture.MetadataSize (20 B) — see
 // internal/capture/capture.go for the wire format.
 //
 // Local stack slots used here (R10 negative offsets):
 //
+//	-8:  u64 tag slot (low 32 bits = set-map value, 0 if none)
 //	-16: u32 cpu_id (scratch for outer-map lookup)
 //	-32: reserved-slot ptr (PTR_TO_MEM, mem_size = metadataSize + maxCapLen)
 //	-40: u32 saved copy_size
@@ -267,7 +271,7 @@ func captureXDPNative(eventsFD int, maxCapLen int) asm.Instructions {
 		asm.LoadMem(asm.R1, asm.R10, -48, asm.DWord),
 		asm.StoreMem(asm.R0, 0, asm.R1, asm.DWord),
 
-		// --- Write remaining metadata into slot[8..16] ---
+		// --- Write action/mode/pad into slot[8..14] (caplen 14, tag 16 later) ---
 		asm.StoreImm(asm.R0, 8, int64(xdpPass), asm.Word),
 		asm.StoreImm(asm.R0, 12, int64(xdpModeNative), asm.Byte),
 		asm.StoreImm(asm.R0, 13, 0, asm.Byte),
@@ -284,8 +288,14 @@ func captureXDPNative(eventsFD int, maxCapLen int) asm.Instructions {
 		asm.Mov.Imm(asm.R3, int32(maxCapLen)),
 		asm.StoreMem(asm.R0, 14, asm.R3, asm.Half).WithSymbol("xn_cap_ok"),
 
-		// --- bpf_xdp_load_bytes(ctx, 0, R0+16, copy_size) ---
-		// XDP-aware bounded read; dst = slot + metadataSize (= 16).
+		// --- Write tag metadata into slot[16..20] (0 unless a set matched) ---
+		// Before the copy-skip guard below so a zero-length packet still
+		// carries its tag. tagSlot is 8 bytes; the low 32 go into the field.
+		asm.LoadMem(asm.R1, asm.R10, tagSlot, asm.DWord),
+		asm.StoreMem(asm.R0, 16, asm.R1, asm.Word),
+
+		// --- bpf_xdp_load_bytes(ctx, 0, R0+20, copy_size) ---
+		// XDP-aware bounded read; dst = slot + metadataSize (= 20).
 		// Helper requires Linux 5.18+, which our verifier matrix
 		// (6.1+) satisfies.
 		//
@@ -299,7 +309,7 @@ func captureXDPNative(eventsFD int, maxCapLen int) asm.Instructions {
 		asm.Mov.Reg(asm.R1, asm.R6),                                           // ctx
 		asm.Mov.Imm(asm.R2, 0),                                                // offset
 		asm.Mov.Reg(asm.R4, asm.R3),                                           // copy_size (umin=1)
-		asm.Mov.Reg(asm.R3, asm.R0), asm.Add.Imm(asm.R3, int32(metadataSize)), // dst = slot+16
+		asm.Mov.Reg(asm.R3, asm.R0), asm.Add.Imm(asm.R3, int32(metadataSize)), // dst = slot+20
 		asm.FnXdpLoadBytes.Call(),
 
 		// --- bpf_ringbuf_submit(reservation_ptr, flags) ---

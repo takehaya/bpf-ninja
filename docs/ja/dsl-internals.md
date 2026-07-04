@@ -598,6 +598,23 @@ eBPF の LDX は x86 上で little-endian で読みます。packet bytes は net
 - 構文は bracket predicate 専用で、`where` 句では使えません。bracket は layer の連言に必ず入るので、`@set` は構造的にトップレベルの AND になり、v1 の集合は AND という意味論と一致します。複合キーは 1 つの角括弧にカンマ併記します。
 - `any` や `all` の aux にあたる iterator-stack 上のフィールドは、last-write-wins になるため resolver が拒否します。
 
+### 4.10 キャプチャレコードのメタデータ
+
+`captureWithRingbuf` と `captureXDPNative` は ringbuf スロットの先頭に 20 バイトのメタデータヘッダを置き、その後ろにパケット本体を続けます。正典は `internal/capture/capture.go` のコメントで、capture 側の `MetadataSize` と program 側の `metadataSize` は `TestMetadataSizeMatchesCapture` が同期を保証します。
+
+レイアウトは次のとおりです。全フィールドはホストエンディアンで、BPF の store がネイティブエンディアンで書くため、ユーザー空間は `binary.NativeEndian` で読みます。
+
+| offset | size | field | 意味 |
+| --- | --- | --- | --- |
+| 0 | 8 | kernel_ts_ns | ingest 時の `bpf_ktime_get_ns` または HW rx timestamp |
+| 8 | 4 | action | XDP action。fexit のみ有効で、fentry と xdp-native は固定値 |
+| 12 | 1 | mode | 0 が entry、1 が exit、2 が xdp-native |
+| 13 | 1 | _pad | 予約 |
+| 14 | 2 | caplen | コピー済みパケット長 |
+| 16 | 4 | tag | マッチした set エントリの value。set 未マッチや set 無しのときは 0 |
+
+tag は set lookup がヒットしたときに host スタックの専用スロット経由で書きます。複数の set をまたぐときはソース順で最後にマッチした set の value が入ります。value 幅が 8 バイトのときは下位 32 ビットだけを載せます。この tag を使ってパケットを set の value ごとに別々の pcap へ振り分ける機能が CLI の `--split-by-tag` で、詳細は [`dsl-usage.md`](./dsl-usage.md) を参照してください。
+
 ## 5. P4-16 互換性
 
 `pkg/kunai/vocab/p4lite/` は、xdp-ninja の vocab loader が `.p4` ファイルを読むための P4-16 の限定サブセットのパーサです。

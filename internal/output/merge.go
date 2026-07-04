@@ -41,6 +41,20 @@ func (h *mergeHeap) Pop() any {
 // time-ordered pcap-ng written to basePath. Missing or empty shard files
 // are skipped. The shard files are left in place.
 func MergeShardFiles(basePath string, numShards int, isFexit bool) error {
+	inPaths := make([]string, numShards)
+	for i := range numShards {
+		inPaths[i] = fmt.Sprintf("%s.cpu%d", basePath, i)
+	}
+	return mergeFiles(inPaths, basePath, isFexit)
+}
+
+// mergeFiles k-way merges the given pcap-ng input files (each already in
+// timestamp order) into a single time-ordered pcap-ng at outPath, written
+// atomically via a temp file + rename. Missing or unreadable inputs are
+// skipped so a crashed shard never aborts the merge. Inputs are left in
+// place. Shared by MergeShardFiles, the tag-split merge, and the `merge`
+// subcommand.
+func mergeFiles(inPaths []string, outPath string, isFexit bool) error {
 	var closers []*os.File
 	var readers []*pcapgo.NgReader
 	defer func() {
@@ -49,8 +63,7 @@ func MergeShardFiles(basePath string, numShards int, isFexit bool) error {
 		}
 	}()
 
-	for i := range numShards {
-		p := fmt.Sprintf("%s.cpu%d", basePath, i)
+	for _, p := range inPaths {
 		f, err := os.Open(p)
 		if err != nil {
 			if os.IsNotExist(err) {
@@ -72,7 +85,7 @@ func MergeShardFiles(basePath string, numShards int, isFexit bool) error {
 	// Write to a temp file and rename on success so a mid-merge failure
 	// (disk full / short write) never leaves a truncated base file over the
 	// still-valid per-CPU shards — the merge is atomic.
-	tmpPath := basePath + ".merging"
+	tmpPath := outPath + ".merging"
 	out, err := NewWriter(tmpPath, isFexit)
 	if err != nil {
 		return err
@@ -115,7 +128,7 @@ func MergeShardFiles(basePath string, numShards int, isFexit bool) error {
 	if err := out.Close(); err != nil {
 		return fmt.Errorf("closing merged file: %w", err)
 	}
-	if err := os.Rename(tmpPath, basePath); err != nil {
+	if err := os.Rename(tmpPath, outPath); err != nil {
 		return fmt.Errorf("renaming merged file into place: %w", err)
 	}
 	committed = true
