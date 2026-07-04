@@ -964,6 +964,15 @@ func (c *pmCtx) emitSelfLoopCallback(state *vocab.ParseState, stateIdx int, cbSy
 		first,
 		asm.LoadMem(asm.R4, asm.R2, bpfLoopCbCtxScratchStartField, asm.DWord),
 		asm.LoadMem(asm.R5, asm.R2, bpfLoopCbCtxScratchEndField, asm.DWord),
+		// R3 (the running cursor) was spilled to the bpf_loop ctx, so the
+		// verifier re-enters this callback with R3 an unbounded scalar.
+		// Pin its upper bound against ScratchBufSize before the window +
+		// R3 pointer arithmetic below; otherwise kernels through ~6.6
+		// reject `pkt/map_value + register with unbounded min value`
+		// (newer verifiers accept it via the following bounds check).
+		// Mirrors emitMultiStateCallback; the cursor never legitimately
+		// reaches ScratchBufSize, so on the surviving path R3 ∈ [0, cap).
+		asm.JGT.Imm(asm.R3, int32(ScratchBufSize)-1, breakLabel),
 	}
 
 	stashAddr := callbackSelectAddr("cb_case", breakLabel)
