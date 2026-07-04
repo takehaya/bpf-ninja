@@ -658,3 +658,46 @@ func TestWalkReachableProgramsDeepChain(t *testing.T) {
 		}
 	}
 }
+
+func TestMatchProgramsByName(t *testing.T) {
+	// Root plus a reachable tree; names are kernel-truncated (<=15 chars).
+	root := "cpu_dispatch"
+	reach := []ReachableProgram{
+		{ProgID: 1610, ProgName: "upf_dl_v4"},
+		{ProgID: 1611, ProgName: "upf_dl_v6"},
+		{ProgID: 1614, ProgName: "upf_ul_v4"},
+		{ProgID: 99, ProgName: "upf_capture_poi"}, // truncated form of upf_capture_point_dl
+		{ProgID: 88, ProgName: "dup_name"},
+		{ProgID: 89, ProgName: "dup_name"}, // same name -> ambiguous
+		{ProgID: 42, ProgName: ""},         // nameless, never matches
+	}
+
+	// Exact match on the root and a leaf.
+	got, err := MatchProgramsByName(1600, root, reach, []string{"cpu_dispatch", "upf_ul_v4"})
+	if err != nil {
+		t.Fatalf("exact: %v", err)
+	}
+	if len(got) != 2 || got[0] != 1600 || got[1] != 1614 {
+		t.Errorf("exact got %v, want [1600 1614]", got)
+	}
+
+	// A full (untruncated) name matches its truncated candidate by prefix.
+	got, err = MatchProgramsByName(1600, root, reach, []string{"upf_capture_point_dl"})
+	if err != nil {
+		t.Fatalf("prefix: %v", err)
+	}
+	if len(got) != 1 || got[0] != 99 {
+		t.Errorf("prefix got %v, want [99]", got)
+	}
+
+	// Unknown name errors and lists the available names.
+	if _, err := MatchProgramsByName(1600, root, reach, []string{"nope"}); err == nil || !strings.Contains(err.Error(), "no reachable program") {
+		t.Errorf("unknown: %v", err)
+	}
+
+	// Two programs share a (truncated) name, so the name is ambiguous and
+	// the error lists both ids for the user to disambiguate with -p.
+	if _, err := MatchProgramsByName(1600, root, reach, []string{"dup_name"}); err == nil || !strings.Contains(err.Error(), "ambiguous") {
+		t.Errorf("ambiguous: %v", err)
+	}
+}

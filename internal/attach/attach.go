@@ -289,6 +289,74 @@ func WalkReachablePrograms(root *ebpf.Program, rootID uint32) ([]ReachableProgra
 	return out, nil
 }
 
+// MatchProgramsByName resolves human-readable program names to program IDs
+// against the reachable set of a root program, so a target can be picked by
+// name instead of a numeric ID. The candidate pool is the root plus every
+// reachable node; rootName/reachable names come from the kernel, which
+// truncates program names to 15 chars (BPF_OBJ_NAME_LEN-1). A requested
+// name matches a candidate when the candidate name is a prefix of it (so a
+// full name like "upf_capture_point_dl" matches the truncated
+// "upf_capture_poi"), or when they are equal.
+//
+// Each requested name must resolve to exactly one program. An ambiguous
+// name (several candidates) or an unknown one returns an error naming the
+// candidates / the available names, so the caller can disambiguate.
+func MatchProgramsByName(rootID uint32, rootName string, reachable []ReachableProgram, names []string) ([]uint32, error) {
+	cands := []progCand{{rootID, rootName}}
+	for _, r := range reachable {
+		cands = append(cands, progCand{r.ProgID, r.ProgName})
+	}
+
+	var out []uint32
+	seen := map[uint32]bool{}
+	for _, want := range names {
+		var hits []progCand
+		for _, c := range cands {
+			if c.name == "" {
+				continue
+			}
+			if c.name == want || strings.HasPrefix(want, c.name) {
+				hits = append(hits, c)
+			}
+		}
+		switch len(hits) {
+		case 0:
+			return nil, fmt.Errorf("no reachable program matches name %q; available: %s", want, availableNames(cands))
+		case 1:
+			if !seen[hits[0].id] {
+				seen[hits[0].id] = true
+				out = append(out, hits[0].id)
+			}
+		default:
+			var ids []string
+			for _, h := range hits {
+				ids = append(ids, fmt.Sprintf("%q(id=%d)", h.name, h.id))
+			}
+			return nil, fmt.Errorf("program name %q is ambiguous, matches: %s (select by -p <id>)", want, strings.Join(ids, ", "))
+		}
+	}
+	return out, nil
+}
+
+// progCand is one (id, name) candidate for name-based program matching.
+type progCand struct {
+	id   uint32
+	name string
+}
+
+// availableNames lists the distinct non-empty candidate names for an error.
+func availableNames(cands []progCand) string {
+	seen := map[string]bool{}
+	var names []string
+	for _, c := range cands {
+		if c.name != "" && !seen[c.name] {
+			seen[c.name] = true
+			names = append(names, c.name)
+		}
+	}
+	return strings.Join(names, ", ")
+}
+
 // groupTargets collapses one program's direct targets by (via, program id),
 // merging the map keys so a program reached through many slots (e.g. a
 // per-CPU CPUMAP) becomes a single entry with all keys.

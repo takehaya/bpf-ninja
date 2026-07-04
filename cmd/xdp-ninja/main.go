@@ -44,6 +44,10 @@ var flags = []cli.Flag{
 		Name: "prog-id", Aliases: []string{"p"},
 		Usage: "BPF program ID to attach to (use instead of -i for multi-prog setups); repeatable to attach several programs in one run",
 	},
+	&cli.StringSliceFlag{
+		Name:  "prog-name",
+		Usage: "select target program(s) by name instead of ID (requires -i); resolved against the interface's reachable program tree, so you skip looking up numeric IDs. Repeatable. Kernel program names are truncated to 15 chars; a full name matches by prefix",
+	},
 	&cli.StringFlag{
 		Name: "write", Aliases: []string{"w"},
 		Usage: "write packets to pcap file instead of stdout",
@@ -1204,6 +1208,9 @@ func validateXDPNativeFlags(cmd *cli.Command) error {
 	if len(cmd.IntSlice("prog-id")) > 0 {
 		return fmt.Errorf("--mode xdp does not accept -p (the program is xdp-ninja itself, not an existing one)")
 	}
+	if len(cmd.StringSlice("prog-name")) > 0 {
+		return fmt.Errorf("--mode xdp does not accept --prog-name (the program is xdp-ninja itself, not an existing one)")
+	}
 	if len(cmd.StringSlice("func")) > 0 {
 		return fmt.Errorf("--func is only valid with --mode entry/exit (no BTF subfunction concept in xdp-native)")
 	}
@@ -1225,12 +1232,21 @@ func validateXDPNativeFlags(cmd *cli.Command) error {
 func findTargets(cmd *cli.Command, isTC bool) ([]*attach.ProgInfo, error) {
 	ifaceName := cmd.String("interface")
 	progIDs := cmd.IntSlice("prog-id")
+	progNames := cmd.StringSlice("prog-name")
 
 	if ifaceName != "" && len(progIDs) > 0 {
 		return nil, fmt.Errorf("specify either -i or -p, not both")
 	}
 	if ifaceName == "" && len(progIDs) == 0 {
 		return nil, fmt.Errorf("specify -i <interface> or -p <prog-id>")
+	}
+	if len(progNames) > 0 {
+		if ifaceName == "" {
+			return nil, fmt.Errorf("--prog-name requires -i <interface> (names resolve against the interface's reachable program tree)")
+		}
+		if isTC {
+			return nil, fmt.Errorf("--prog-name is XDP-only; select tc clsact targets with -p <prog-id>")
+		}
 	}
 
 	if ifaceName != "" {
@@ -1239,11 +1255,21 @@ func findTargets(cmd *cli.Command, isTC bool) ([]*attach.ProgInfo, error) {
 			// interface-based clsact qdisc walk wired up yet.
 			return nil, fmt.Errorf("--mode tc-* requires -p <prog-id>; interface-based tc target lookup is not implemented")
 		}
-		info, err := attach.FindXDPProgram(ifaceName)
+		root, err := attach.FindXDPProgram(ifaceName)
 		if err != nil {
 			return nil, err
 		}
-		return []*attach.ProgInfo{info}, nil
+		if len(progNames) == 0 {
+			return []*attach.ProgInfo{root}, nil
+		}
+		// Resolve names against the root plus its reachable tree, then open
+		// the matched programs by ID (the root handle is reused if it matches).
+		ids, err := resolveProgNames(root, progNames)
+		if err != nil {
+			_ = root.Program.Close()
+			return nil, err
+		}
+		return openXDPByIDs(root, ids)
 	}
 
 	var infos []*attach.ProgInfo
@@ -1271,6 +1297,50 @@ func findTargets(cmd *cli.Command, isTC bool) ([]*attach.ProgInfo, error) {
 			return nil, err
 		}
 		infos = append(infos, info)
+	}
+	return infos, nil
+}
+
+// resolveProgNames maps --prog-name values to program IDs against the root
+// program and its reachable tree. The root's kernel name comes from its
+// program info; reachable node names come from the tree walk.
+func resolveProgNames(root *attach.ProgInfo, names []string) ([]uint32, error) {
+	pi, err := root.Program.Info()
+	if err != nil {
+		return nil, fmt.Errorf("getting root program info: %w", err)
+	}
+	reachable, err := attach.WalkReachablePrograms(root.Program, root.ProgID)
+	if err != nil {
+		return nil, err
+	}
+	return attach.MatchProgramsByName(root.ProgID, pi.Name, reachable, names)
+}
+
+// openXDPByIDs opens each program ID as an attach target, reusing the
+// already-open root handle when its ID is in the set. On error every handle
+// opened here is closed; the caller owns root.
+func openXDPByIDs(root *attach.ProgInfo, ids []uint32) ([]*attach.ProgInfo, error) {
+	var infos []*attach.ProgInfo
+	rootUsed := false
+	for _, id := range ids {
+		if id == root.ProgID {
+			infos = append(infos, root)
+			rootUsed = true
+			continue
+		}
+		info, err := attach.FindXDPProgramByID(id)
+		if err != nil {
+			for _, prev := range infos {
+				if prev != root {
+					_ = prev.Program.Close()
+				}
+			}
+			return nil, err
+		}
+		infos = append(infos, info)
+	}
+	if !rootUsed {
+		_ = root.Program.Close()
 	}
 	return infos, nil
 }
