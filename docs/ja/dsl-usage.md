@@ -424,7 +424,7 @@ mergecap -w merged.pcap path.pcap.cpu*
 
 `-p` と `--func` はどちらも繰り返し指定できます。各 `--func` は、指定した全プログラムのうち BTF にその関数を持つものすべてにアタッチされます。関数を持たないプログラムはスキップされ、どのプログラムにも無い関数名はエラーになります。`--func` を省略した場合は各プログラムの entry 関数が対象です。
 
-多段 dispatcher (cpu_dispatch → CPUMAP → 方向別ハンドラ) では capture point が方向ごとに別プログラムへ散り、さらに noinline サブ関数は呼び出し元プログラムごとに実体を持ちます。たとえば `pgwu_capture_point_dl` は v4/v6 ハンドラ両方に入ります。UL + DL v4 + DL v6 の全網羅は従来3回の起動が必要でしたが、1回で張れます。
+モバイルコアの UPF を例にすると、上り (UL) と下り (DL) の capture point が別プログラムに分かれ、さらに多段 dispatcher (cpu_dispatch → CPUMAP → 方向別ハンドラ) を通ります。ここで `--func upf_capture_point_dl` が複数プログラムに当たる理由は、noinline サブ関数が呼び出し元プログラムごとに 1 コピーずつコンパイルされるからです。DL の実体が IPv4 ハンドラ (id 1610) と IPv6 ハンドラ (id 1611) の両方にあれば、関数名 1 つで両方へ張れます。UL + DL v4 + DL v6 の全網羅は従来3回の起動が必要でしたが、1回で済みます。
 
 ### `--list-progs` で到達可能プログラムを洗い出す
 
@@ -433,17 +433,42 @@ mergecap -w merged.pcap path.pcap.cpu*
 - tail call は、`bpf_tail_call` が使う `PROG_ARRAY` のエントリ先です。
 - redirect は、`CPUMAP` / `DEVMAP` / `DEVMAP_HASH` のエントリに attach された XDP プログラム、すなわち `bpf_redirect_map()` の飛び先です。
 
-さらにその先も同様に辿るので、`cpu_dispatch → CPUMAP[0..N] → 方向別ハンドラ` から別の redirect へ続くような多段構成でも、末端の実プログラム ID までまとめて出ます。出力された prog ID を `-p` に渡してアタッチします。
+さらにその先も同様に辿るので、`cpu_dispatch → CPUMAP[0..N] → 方向別ハンドラ` から別の redirect へ続くような多段構成でも、末端の実プログラム ID までまとめて出ます。
 
 ```bash
 # --list-progs で dispatcher から末端の prog ID を推移的に洗い出し
 sudo xdp-ninja -i ens2f0 --list-progs
 
-# UL + DL (v4/v6 両実体) を1回でアタッチ。--func pgwu_capture_point_dl は
+# UL + DL (v4/v6 両実体) を1回でアタッチ。--func upf_capture_point_dl は
 # 1610/1611 の両方に、_ul は 1614 だけにマッチする
 sudo xdp-ninja -p 1610 -p 1611 -p 1614 \
-  --func pgwu_capture_point_ul --func pgwu_capture_point_dl \
+  --func upf_capture_point_ul --func upf_capture_point_dl \
   --arg-filter "imsi=999990000000001" -w all.pcap
+```
+
+### ID の代わりに名前で選ぶ (`--prog-name`)
+
+`--list-progs` の出力から prog ID を控えてコピペするのが面倒なときは、`--prog-name` で名前から選べます。`-i` の到達ツリーに対して名前解決するので、ID を調べずに済みます。func 側は従来どおり `--func` を使います。
+
+```bash
+# ID の代わりに名前で選ぶ (-i の到達ツリーから解決)
+sudo xdp-ninja -i ens2f0 --prog-name upf_dl_v4 --prog-name upf_dl_v6 \
+  --func upf_capture_point_dl --arg-filter "imsi=999990000000001" -w dl.pcap
+```
+
+- カーネル上のプログラム名は 15 文字までに切り詰められるので、長い名前は前方一致で解決します。同じ切り詰め名のプログラムが複数あると曖昧としてエラーになるので、その場合は `-p <id>` を使います。
+- `--prog-name` は `-i` 専用です。`--mode xdp` や tc 系では使えません。
+
+### list 出力を JSON で得る (`--json`)
+
+`--json` を付けると、`--list-progs` / `--list-funcs` / `--list-params` の結果をテキストではなく JSON で stdout に出せます。jq などに渡して自動処理したいときに便利です。`--list-progs` と `--list-funcs` を同時に渡すと、到達ツリーの各プログラムにその BTF 関数一覧もぶら下がります。
+
+```bash
+# 到達ツリーを JSON で
+sudo xdp-ninja -i ens2f0 --list-progs --json | jq '.[].reachable[].name'
+
+# 到達ツリー + 各プログラムの BTF 関数を JSON で一括取得
+sudo xdp-ninja -i ens2f0 --list-progs --list-funcs --json | jq '.[].reachable[] | {name, funcs}'
 ```
 
 - 全アタッチポイントが 1本の共有 ringbuf に emit するので、出力は通常どおり 1 つの pcap に時刻順で入ります (`-w` なら終了時マージ、stdout なら直列化ストリーム)。
@@ -464,7 +489,7 @@ sudo xdp-ninja set create /sys/fs/bpf/flows --key "imsi:u64,teid:u32" --max-entr
 sudo xdp-ninja set add /sys/fs/bpf/flows imsi=999990000000001 teid=0x3039 tag=1
 
 # 3) キャプチャ (--set で名前を付け、@NAME で参照)
-sudo xdp-ninja -p 1661 --func pgwu_capture_point_ul \
+sudo xdp-ninja -p 1661 --func upf_capture_point_ul \
   --set "flows=/sys/fs/bpf/flows" --arg-filter "@flows" -w out.pcap
 
 # 4) キャプチャ中でも出し入れできる
@@ -524,13 +549,13 @@ sudo xdp-ninja -i eth0 --mode xdp --set "sids=/sys/fs/bpf/sids" \
 
 ```bash
 # 対象関数の絞り込み可能な整数引数を確認
-sudo xdp-ninja -p 1661 --func pgwu_capture_point_ul --list-params
+sudo xdp-ninja -p 1661 --func upf_capture_point_ul --list-params
 #   imsi  [8 bytes, unsigned, arg index 1]
 #   teid  [4 bytes, unsigned, arg index 2]
 
 # 1 回だけ観測して終了 (-c 1)
-sudo xdp-ninja -p 1661 --func pgwu_capture_point_ul --arg-echo -c 1
-#   pgwu_capture_point_ul: imsi=999990000000001 (0x38d7c50ba9c01) teid=12345 (0x3039)
+sudo xdp-ninja -p 1661 --func upf_capture_point_ul --arg-echo -c 1
+#   upf_capture_point_ul: imsi=999990000000001 (0x38d7c50ba9c01) teid=12345 (0x3039)
 ```
 
 - `--func` は必須です。表示対象は `--list-params` が挙げる整数引数で、10 進と 16 進を併記します。

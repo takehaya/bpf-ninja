@@ -3,7 +3,7 @@
 // fentry/fexit probe can attach to. Multi-stage dispatchers (cpu_dispatch →
 // CPUMAP → per-direction handlers) put capture points in separate programs,
 // and noinline subfunctions get one copy per calling program (e.g. a
-// `pgwu_capture_point_dl` in both the v4 and the v6 handler), so covering
+// `upf_capture_point_dl` in both the v4 and the v6 handler), so covering
 // UL+DL takes several attaches in one run.
 package attach
 
