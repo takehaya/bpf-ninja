@@ -262,3 +262,47 @@ func TestBpfDSLSetMatchIPv6Dst(t *testing.T) {
 		t.Fatalf("markers after runtime delete = %v, want no 0x77", markers)
 	}
 }
+
+// TestBpfDSLSetMatchSRv6SegmentLoads verifier-loads the srv6 segment set
+// filter. Unlike ipv6[dst] (a primary-header field), srv6[segments[N].addr]
+// runs the SRH segment walk, a parser-machine self-loop that does not
+// execute in the fentry scratch-buffer path (the same limitation the gtp
+// note above calls out), so this asserts the extraction VERIFIES on the CI
+// kernel matrix rather than capturing. The packet-level match is proven by
+// TestAuxStackSrv6SegmentsStaticIndexBracket in pkg/kunai/dsltest (native
+// XDP), and the raw-byte store shape by the codegen unit tests.
+func TestBpfDSLSetMatchSRv6SegmentLoads(t *testing.T) {
+	testutil.SkipIfNotRoot(t)
+
+	pin := fmt.Sprintf("/sys/fs/bpf/xdpninja_dslseg_%d", os.Getpid())
+	if err := setmap.Create(pin, "sid:ipv6", "", 16); err != nil {
+		t.Skipf("creating pinned ipv6 set map: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Remove(pin) })
+
+	set, err := setmap.OpenSet(setmap.SpecRef{Name: "sids", Path: pin})
+	if err != nil {
+		t.Fatalf("OpenSet: %v", err)
+	}
+	t.Cleanup(set.Def.Close)
+
+	// Byte-order differential (host side, no BPF): the SID wire bytes equal
+	// the key BuildKey writes, so the raw extraction store and `set add`
+	// agree with no swap.
+	const memberSID = "fc00::1"
+	key, err := set.Def.BuildKey(map[string]string{"sid": memberSID})
+	if err != nil {
+		t.Fatalf("BuildKey: %v", err)
+	}
+	if !bytes.Equal(key, net.ParseIP(memberSID).To16()) {
+		t.Fatalf("key %x != wire bytes %x (byte-order mismatch)", key, net.ParseIP(memberSID).To16())
+	}
+
+	prog := loadXDPByName(t, dslSetTargetSrc, "xdp_set_e2e_target")
+	targets := []attach.Target{{Program: prog, FuncName: "xdp_set_e2e_target", Type: ebpf.XDP}}
+	probe, err := LoadMultiEntry(targets, "eth/ipv6/srv6[segments[0].addr in @sids]", nil, true, []*setmap.Set{set})
+	if err != nil {
+		t.Fatalf("LoadMultiEntry with srv6 segment set: %v", err)
+	}
+	_ = probe.Close()
+}

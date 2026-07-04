@@ -187,6 +187,56 @@ type predCtx struct {
 // integer, so a multi-byte field is byte-reversed relative to its
 // numeric value. HostTo(BE) brings R3 to the numeric value in host
 // order; StoreMem then writes it native-endian, matching the map key.
+// field128RawOffset returns the byte offset of a 16-byte (128-bit) field
+// to be extracted as raw wire bytes, and ok=true when the field is one:
+// a primary-header field (ipv6.dst) or a static aux-stack element
+// (srv6.segments[N].addr). It is the width-relaxed 128-bit sibling of
+// fieldRefByteOffset (which caps aux/primary fields at 8 bytes). ok=false
+// means "not a 16-byte field" (the caller falls back to the <=8 path); a
+// non-nil error means a 16-byte field that cannot be extracted (a
+// non-byte-aligned or dynamic-index aux stack).
+func field128RawOffset(ref *ir.FieldRef) (off int, ok bool, err error) {
+	if ref.Slice != nil {
+		return 0, false, nil
+	}
+	if ref.Aux == nil {
+		if ref.Field == nil || ref.Field.Bits != 128 {
+			return 0, false, nil
+		}
+		o, _, e := findFieldByteOffset128(ref.Layer.Spec, ref.Field.Name)
+		return o, true, e
+	}
+	if ref.Aux.FieldBitWidth != 128 {
+		return 0, false, nil
+	}
+	o, err := auxStaticByteOffset(ref.Aux)
+	if err != nil {
+		return 0, false, err
+	}
+	return o, true, nil
+}
+
+// auxStaticByteOffset folds an aux field's constant byte offset within its
+// layer: OffsetInLayer + FieldBitOff/8, plus Static*HeaderSize for a static
+// aux-stack element (srv6.segments[N]). It errors on a non-byte-aligned
+// field or a dynamic stack index, which needs a runtime address compute
+// (R5) that a constant-offset caller cannot express. This is the same fold
+// fieldRefByteOffset (codegen.go) and auxLoadEmitter apply inline; kept as a
+// helper so the 128-bit raw-copy path shares one definition of the formula.
+func auxStaticByteOffset(aux *ir.AuxRef) (int, error) {
+	if aux.FieldBitOff%8 != 0 {
+		return 0, fmt.Errorf("%w: aux field %s (%s) starts at bit %d (not byte-aligned)", ErrNotImplemented, aux.OutParam, aux.HeaderName, aux.FieldBitOff)
+	}
+	off := aux.OffsetInLayer + aux.FieldBitOff/8
+	if aux.Stack != nil {
+		if !aux.Stack.IsStatic {
+			return 0, fmt.Errorf("%w: dynamic aux stack index needs a runtime offset (use a constant index)", ErrNotImplemented)
+		}
+		off += int(aux.Stack.Static) * aux.HeaderSize
+	}
+	return off, nil
+}
+
 func emitInSetPredicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, error) {
 	if pc == nil || pc.sets == nil {
 		return nil, fmt.Errorf("%w: `in @%s` needs a host that supports set matching", ErrNotImplemented, pred.SetName)
@@ -209,20 +259,21 @@ func emitInSetPredicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, erro
 		return nil, fmt.Errorf("codegen: set slot %d for @%s.%s is inside kunai's stack region (must be > %d)", slotOff, pred.SetName, fieldName, KunaiStackTop)
 	}
 
-	// A bare 128-bit primary field (ipv6.src / ipv6.dst = an SRv6 SID) is
-	// 16 bytes, which fieldRefByteOffset rejects (single-load only). Use
-	// the width-relaxed 128-bit helper and take the two-DWord store path.
-	is128 := pred.Field.Aux == nil && pred.Field.Slice == nil &&
-		pred.Field.Field != nil && pred.Field.Field.Bits == 128
-	var fieldOff, bytes int
-	var err error
-	if is128 {
-		fieldOff, bytes, err = findFieldByteOffset128(pred.Field.Layer.Spec, pred.Field.Field.Name)
-	} else {
-		fieldOff, bytes, err = fieldRefByteOffset(pred.Field)
-	}
+	// A 16-byte (128-bit) field is rejected by fieldRefByteOffset (which
+	// caps at a single <=8-byte load), so resolve its offset separately and
+	// take the two-DWord store path. This covers a primary field
+	// (ipv6.dst = the active SRv6 SID) and a static aux-stack element
+	// (srv6.segments[N].addr = a specific SID in the SRH list).
+	fieldOff, is128, err := field128RawOffset(pred.Field)
 	if err != nil {
 		return nil, err
+	}
+	bytes := 16
+	if !is128 {
+		fieldOff, bytes, err = fieldRefByteOffset(pred.Field)
+		if err != nil {
+			return nil, err
+		}
 	}
 	// bytes is 1/2/4/8 (the fieldRefByteOffset path rejects wider) or 16
 	// (the is128 path), so no explicit 9..15 guard is needed here.
@@ -245,6 +296,13 @@ func emitInSetPredicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, erro
 	// later "unify the store path" refactor — it would reverse the SID on
 	// a little-endian host and silently break every IPv6 match.
 	if bytes == 16 {
+		// A static aux-stack element (srv6.segments[N].addr) gates on
+		// presence just like the <=8 aux path; a primary field has no aux
+		// and emitAuxGating is skipped. Dynamic/iterator stacks are rejected
+		// at resolve time and in field128RawOffset.
+		if pred.Field.Aux != nil {
+			insns = append(insns, emitAuxGating(pred.Field.Aux.Gating, r4Anchor(), dslReject)...)
+		}
 		insns = append(insns, emitBoundedLoad(asm.R3, int16(fieldOff), asm.DWord, dslReject)...)
 		insns = append(insns, asm.StoreMem(asm.R10, slotOff, asm.R3, asm.DWord))
 		insns = append(insns, emitBoundedLoad(asm.R3, int16(fieldOff+8), asm.DWord, dslReject)...)
