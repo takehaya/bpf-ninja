@@ -70,7 +70,7 @@ sudo xdp-ninja -i eth0 --func process_packet | tcpdump -n -r -
 # has it. All attach points share one ringbuf and merge into one pcap.
 # (e.g. UL + DL capture points living in separate per-direction programs)
 sudo xdp-ninja -p 1610 -p 1611 -p 1614 \
-  --func pgwu_capture_point_ul --func pgwu_capture_point_dl -w all.pcap
+  --func upf_capture_point_ul --func upf_capture_point_dl -w all.pcap
 
 # Match against a runtime-updatable set (pinned BPF hash map): the map
 # key IS the value to match; entries added/removed while capturing take
@@ -78,7 +78,7 @@ sudo xdp-ninja -p 1610 -p 1611 -p 1614 \
 # `xdp-ninja set` (schema comes from the map's BTF).
 sudo xdp-ninja set create /sys/fs/bpf/subs --key "imsi:u64"
 sudo xdp-ninja set add /sys/fs/bpf/subs imsi=999990000000001
-sudo xdp-ninja -p 1661 --func pgwu_capture_point_ul \
+sudo xdp-ninja -p 1661 --func upf_capture_point_ul \
   --set "subs=/sys/fs/bpf/subs" --arg-filter "@subs" -w subs.pcap
 
 # Key the set off a PACKET field instead of a function arg — for values
