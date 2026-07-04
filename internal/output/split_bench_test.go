@@ -49,9 +49,10 @@ func nullWriter(b *testing.B) *Writer {
 
 // clustered: same-tag packets arrive contiguously (the common case — one
 // set-map value's flows batch together). numTags contiguous runs per batch.
+// Scale-based so tags stay in [0, numTags) for any numTags in [1, benchBatch]
+// (an even divisor is not required, and there is no division by numTags).
 func clustered(numTags int) func(i int) uint32 {
-	run := benchBatch / numTags
-	return func(i int) uint32 { return uint32(i / run) }
+	return func(i int) uint32 { return uint32(i * numTags / benchBatch) }
 }
 
 // interleaved: tags round-robin per packet (worst case — every packet is its
@@ -95,6 +96,10 @@ func benchmarkSplit(b *testing.B, tag func(i int) uint32) {
 			return w
 		}
 		w := nullWriter(b)
+		// Mirror captureLoopShardedSplit: each live file gets a periodic
+		// flusher, so its ~1 Hz flushMu contention is part of the measurement
+		// (the per-WriteBatch flushMu lock is already on every write).
+		w.EnablePeriodicFlush(time.Second)
 		writers[t] = w
 		return w
 	}
