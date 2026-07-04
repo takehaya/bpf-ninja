@@ -8,6 +8,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"net"
 	"strconv"
 	"strings"
 
@@ -17,8 +18,20 @@ import (
 
 // FieldSpec is one `name:type` element of a --key/--value schema string.
 type FieldSpec struct {
-	Name string
-	Size uint32
+	Name    string
+	Size    uint32
+	IsBytes bool // network-order byte string (ipv6): copied, never putUint'd
+}
+
+// fieldAlign is a field's layout/store alignment: its width for a numeric
+// field, but 8 for a 16-byte ipv6 field — kunai extracts it as two 8-byte
+// DWord stores, which require an 8-aligned offset. (This is the store
+// granularity, not the C `unsigned char[16]` type alignment of 1.)
+func fieldAlign(size uint32, isBytes bool) uint32 {
+	if isBytes {
+		return 8
+	}
+	return size
 }
 
 // ParseSchema parses "imsi:u64,teid:u32" into field specs.
@@ -39,11 +52,11 @@ func ParseSchema(s string) ([]FieldSpec, error) {
 			return nil, fmt.Errorf("duplicate field name %q in schema", name)
 		}
 		seen[name] = true
-		size, err := typeSize(strings.TrimSpace(typ))
+		size, isBytes, err := typeKind(strings.TrimSpace(typ))
 		if err != nil {
 			return nil, fmt.Errorf("schema entry %q: %w", ent, err)
 		}
-		out = append(out, FieldSpec{Name: name, Size: size})
+		out = append(out, FieldSpec{Name: name, Size: size, IsBytes: isBytes})
 	}
 	if len(out) == 0 {
 		return nil, fmt.Errorf("empty schema")
@@ -51,18 +64,24 @@ func ParseSchema(s string) ([]FieldSpec, error) {
 	return out, nil
 }
 
-func typeSize(t string) (uint32, error) {
+// typeKind resolves a schema type token to its width and whether it is a
+// network-order byte string. `ipv6` is a 16-byte address (an SRv6 SID):
+// byte-string semantics, distinct from a numeric u128 because it is copied
+// verbatim in wire order, never endianness-converted.
+func typeKind(t string) (size uint32, isBytes bool, err error) {
 	switch t {
 	case "u8":
-		return 1, nil
+		return 1, false, nil
 	case "u16":
-		return 2, nil
+		return 2, false, nil
 	case "u32":
-		return 4, nil
+		return 4, false, nil
 	case "u64":
-		return 8, nil
+		return 8, false, nil
+	case "ipv6":
+		return 16, true, nil
 	}
-	return 0, fmt.Errorf("unsupported type %q (u8/u16/u32/u64)", t)
+	return 0, false, fmt.Errorf("unsupported type %q (u8/u16/u32/u64/ipv6)", t)
 }
 
 // layout assigns naturally-aligned offsets and returns the padded total
@@ -73,12 +92,12 @@ func layout(fields []FieldSpec) ([]KeyField, uint32) {
 	var cur, maxAlign uint32
 	maxAlign = 1
 	for _, f := range fields {
-		align := f.Size
+		align := fieldAlign(f.Size, f.IsBytes)
 		if align > maxAlign {
 			maxAlign = align
 		}
 		cur = (cur + align - 1) &^ (align - 1)
-		out = append(out, KeyField{Name: f.Name, Off: cur, Size: f.Size})
+		out = append(out, KeyField{Name: f.Name, Off: cur, Size: f.Size, IsBytes: f.IsBytes})
 		cur += f.Size
 	}
 	total := (cur + maxAlign - 1) &^ (maxAlign - 1)
@@ -90,13 +109,25 @@ func intType(size uint32) *btf.Int {
 	return &btf.Int{Name: fmt.Sprintf("__u%d", size*8), Size: size, Encoding: btf.Unsigned}
 }
 
+// fieldType is the BTF type for one key field: an unsigned integer for
+// numeric fields, or a `__u8[N]` array for byte-string (ipv6) fields. The
+// array form is faithful to C's `struct in6_addr` (unsigned char[16]),
+// is alignment-1, and prints in memory (= network) order in bpftool,
+// unlike a __u128 integer which tools would render byte-reversed.
+func fieldType(f KeyField) btf.Type {
+	if f.IsBytes {
+		return &btf.Array{Index: intType(4), Type: intType(1), Nelems: f.Size}
+	}
+	return intType(f.Size)
+}
+
 // synthesizeStruct builds the BTF struct for a schema.
 func synthesizeStruct(name string, fields []KeyField, size uint32) *btf.Struct {
 	st := &btf.Struct{Name: name, Size: size}
 	for _, f := range fields {
 		st.Members = append(st.Members, btf.Member{
 			Name:   f.Name,
-			Type:   intType(f.Size),
+			Type:   fieldType(f),
 			Offset: btf.Bits(f.Off * 8),
 		})
 	}
@@ -108,7 +139,7 @@ func synthesizeStruct(name string, fields []KeyField, size uint32) *btf.Struct {
 // works); anything else becomes a struct named structName.
 func synthesizeType(structName string, fields []KeyField, size uint32) btf.Type {
 	if len(fields) == 1 && fields[0].Off == 0 && fields[0].Size == size {
-		return &btf.Typedef{Name: fields[0].Name, Type: intType(size)}
+		return &btf.Typedef{Name: fields[0].Name, Type: fieldType(fields[0])}
 	}
 	return synthesizeStruct(structName, fields, size)
 }
@@ -142,8 +173,9 @@ func Create(path, keySchema, valueSchema string, maxEntries uint32) error {
 	}
 	valFields, valSize := layout(valSpecs)
 	// The value is a single integer tag (add/list round-trip it as one
-	// number); a multi-field or odd-width value has no tag semantics.
-	if len(valFields) != 1 || !validFieldSize(valSize) {
+	// number); a multi-field, odd-width, or ipv6 value has no tag
+	// semantics. ipv6 is a key-only type.
+	if len(valFields) != 1 || valFields[0].IsBytes || !validValueFieldSize(valSize) {
 		return fmt.Errorf("--value must be a single u8/u16/u32/u64 tag field, got %q", valueSchema)
 	}
 
@@ -167,27 +199,29 @@ func Create(path, keySchema, valueSchema string, maxEntries uint32) error {
 // the entry value (tag) rather than a key field.
 const reservedTagName = "tag"
 
-// ParseFieldValues parses `field=value` CLI args (decimal or 0x hex) and
-// splits off the reserved `tag=` value assignment.
-func ParseFieldValues(args []string) (fields map[string]uint64, tag uint64, hasTag bool, err error) {
-	fields = map[string]uint64{}
+// ParseFieldValues splits `field=value` CLI args, keeping each key field's
+// value as a raw string (BuildKey parses it per the schema, since only the
+// schema knows whether a field is numeric or an IPv6 address). The
+// reserved `tag=` assignment is always numeric, so it is parsed here.
+func ParseFieldValues(args []string) (fields map[string]string, tag uint64, hasTag bool, err error) {
+	fields = map[string]string{}
 	for _, a := range args {
 		name, vs, ok := strings.Cut(a, "=")
 		if !ok || name == "" || vs == "" {
 			return nil, 0, false, fmt.Errorf("argument %q: want field=value", a)
 		}
-		v, perr := parseUint(vs)
-		if perr != nil {
-			return nil, 0, false, fmt.Errorf("argument %q: %w", a, perr)
-		}
 		if name == reservedTagName {
+			v, perr := parseUint(vs)
+			if perr != nil {
+				return nil, 0, false, fmt.Errorf("argument %q: %w", a, perr)
+			}
 			tag, hasTag = v, true
 			continue
 		}
 		if _, dup := fields[name]; dup {
 			return nil, 0, false, fmt.Errorf("field %q given twice", name)
 		}
-		fields[name] = v
+		fields[name] = vs
 	}
 	return fields, tag, hasTag, nil
 }
@@ -207,18 +241,34 @@ func parseUint(s string) (uint64, error) {
 // every provided name must be a key field; values must fit their field.
 // Padding is zeroed — hash maps hash all key_size bytes, so a non-zero
 // pad byte would make lookups silently miss.
-func (d *Definition) BuildKey(values map[string]uint64) ([]byte, error) {
+func (d *Definition) BuildKey(values map[string]string) ([]byte, error) {
 	key := make([]byte, int(d.KeySize))
 	used := map[string]bool{}
 	for _, f := range d.Fields {
-		v, ok := values[f.Name]
+		raw, ok := values[f.Name]
 		if !ok {
-			return nil, fmt.Errorf("missing key field %s (u%d at offset %d) — partial keys are not supported", f.Name, f.Size*8, f.Off)
+			return nil, fmt.Errorf("missing key field %s (%s at offset %d) — partial keys are not supported", f.Name, f.typeName(), f.Off)
 		}
-		if f.Size < 8 && v >= 1<<(8*f.Size) {
-			return nil, fmt.Errorf("value %d does not fit key field %s (u%d)", v, f.Name, f.Size*8)
+		if f.IsBytes {
+			// ipv6: a network-order 16-byte address, copied verbatim so it
+			// matches the wire bytes kunai extracts (never endianness-flipped).
+			// Reject an IPv4 literal (net.ParseIP would silently widen it to
+			// an IPv4-mapped ::ffff:a.b.c.d, an unexpected key).
+			parsed := net.ParseIP(raw)
+			if parsed == nil || parsed.To4() != nil {
+				return nil, fmt.Errorf("key field %s: %q is not an IPv6 address", f.Name, raw)
+			}
+			copy(key[f.Off:f.Off+f.Size], parsed.To16())
+		} else {
+			v, perr := parseUint(raw)
+			if perr != nil {
+				return nil, fmt.Errorf("key field %s: %w", f.Name, perr)
+			}
+			if f.Size < 8 && v >= 1<<(8*f.Size) {
+				return nil, fmt.Errorf("value %d does not fit key field %s (u%d)", v, f.Name, f.Size*8)
+			}
+			putUint(key[f.Off:f.Off+f.Size], v)
 		}
-		putUint(key[f.Off:f.Off+f.Size], v)
 		used[f.Name] = true
 	}
 	for name := range values {
@@ -229,10 +279,18 @@ func (d *Definition) BuildKey(values map[string]uint64) ([]byte, error) {
 	return key, nil
 }
 
+// typeName renders a key field's schema type token (u8/…/u64 or ipv6).
+func (f KeyField) typeName() string {
+	if f.IsBytes {
+		return "ipv6"
+	}
+	return fmt.Sprintf("u%d", f.Size*8)
+}
+
 func (d *Definition) fieldNames() string {
 	names := make([]string, len(d.Fields))
 	for i, f := range d.Fields {
-		names[i] = fmt.Sprintf("%s:u%d", f.Name, f.Size*8)
+		names[i] = f.Name + ":" + f.typeName()
 	}
 	return strings.Join(names, ", ")
 }
@@ -257,7 +315,7 @@ func putUint(buf []byte, v uint64) {
 // odd or multi-field value.
 func (d *Definition) tagWidth() (uint32, error) {
 	w := d.Map.ValueSize()
-	if !validFieldSize(w) {
+	if !validValueFieldSize(w) {
 		return 0, fmt.Errorf("map value is %d bytes; tag add/list needs a single u8/u16/u32/u64 value", w)
 	}
 	return w, nil
@@ -265,7 +323,7 @@ func (d *Definition) tagWidth() (uint32, error) {
 
 // Add inserts (or updates) one entry. The value is the tag zero-extended
 // to the map's value size (default tag 1 = plain presence).
-func (d *Definition) Add(values map[string]uint64, tag uint64) error {
+func (d *Definition) Add(values map[string]string, tag uint64) error {
 	key, err := d.BuildKey(values)
 	if err != nil {
 		return err
@@ -283,7 +341,7 @@ func (d *Definition) Add(values map[string]uint64, tag uint64) error {
 }
 
 // Delete removes one entry.
-func (d *Definition) Delete(values map[string]uint64) error {
+func (d *Definition) Delete(values map[string]string) error {
 	key, err := d.BuildKey(values)
 	if err != nil {
 		return err
@@ -303,7 +361,11 @@ func (d *Definition) List(out io.Writer) error {
 	for iter.Next(&key, &val) {
 		var parts []string
 		for _, f := range d.Fields {
-			parts = append(parts, fmt.Sprintf("%s=%d", f.Name, getUint(key[f.Off:f.Off+f.Size])))
+			if f.IsBytes {
+				parts = append(parts, fmt.Sprintf("%s=%s", f.Name, net.IP(key[f.Off:f.Off+f.Size]).String()))
+			} else {
+				parts = append(parts, fmt.Sprintf("%s=%d", f.Name, getUint(key[f.Off:f.Off+f.Size])))
+			}
 		}
 		parts = append(parts, fmt.Sprintf("tag=%d", getUint(val)))
 		_, _ = fmt.Fprintln(out, strings.Join(parts, " "))
@@ -330,7 +392,7 @@ func (d *Definition) Schema(w io.Writer) {
 	_, _ = fmt.Fprintf(w, "hash map: key %d B, value %d B, max_entries %d\n",
 		d.KeySize, d.Map.ValueSize(), d.Map.MaxEntries())
 	for _, f := range d.Fields {
-		_, _ = fmt.Fprintf(w, "  %-20s u%-3d offset %d\n", f.Name, f.Size*8, f.Off)
+		_, _ = fmt.Fprintf(w, "  %-20s %-5s offset %d\n", f.Name, f.typeName(), f.Off)
 	}
 	_, _ = fmt.Fprintf(w, "note: entries must zero all padding bytes (hash covers the full key)\n")
 }

@@ -27,10 +27,16 @@ const MaxKeySize = 64
 // KeyField is one member of the set's key schema, resolved from the
 // map's BTF key type.
 type KeyField struct {
-	Name string
-	Off  uint32 // byte offset within the key
-	Size uint32 // 1, 2, 4 or 8
+	Name    string
+	Off     uint32 // byte offset within the key
+	Size    uint32 // 1, 2, 4, 8, or 16 (ipv6)
+	IsBytes bool   // network-order byte string (ipv6): copied verbatim
 }
+
+// Align is the field's layout/store alignment: its width for numeric
+// fields, 8 for a 16-byte ipv6 field (extracted as two 8-byte DWord
+// stores, which need an 8-aligned offset).
+func (f KeyField) Align() uint32 { return fieldAlign(f.Size, f.IsBytes) }
 
 // Definition is an opened set map plus its resolved key schema.
 type Definition struct {
@@ -179,44 +185,60 @@ func describe(m *ebpf.Map) (*Definition, error) {
 
 	def := &Definition{Map: m, KeySize: m.KeySize()}
 	switch t := btf.UnderlyingType(keyType).(type) {
-	case *btf.Int:
-		if !validFieldSize(t.Size) {
-			return nil, fmt.Errorf("scalar key size %d is not 1/2/4/8", t.Size)
+	case *btf.Int, *btf.Array:
+		size, isBytes, ok := resolveFieldType(keyType)
+		if !ok {
+			return nil, fmt.Errorf("scalar key BTF %s is not a supported key field (u8/u16/u32/u64 or __u8[16])", keyType)
 		}
-		name := scalarKeyName(keyType)
-		def.Fields = []KeyField{{Name: name, Off: 0, Size: t.Size}}
+		def.Fields = []KeyField{{Name: scalarKeyName(keyType), Off: 0, Size: size, IsBytes: isBytes}}
 		def.IsScalar = true
 	case *btf.Struct:
 		for _, mem := range t.Members {
 			if mem.BitfieldSize != 0 {
 				return nil, fmt.Errorf("key field %s: bitfields are not supported", mem.Name)
 			}
-			it, ok := btf.UnderlyingType(mem.Type).(*btf.Int)
+			size, isBytes, ok := resolveFieldType(mem.Type)
 			if !ok {
-				return nil, fmt.Errorf("key field %s: only integer fields are supported (got %s)", mem.Name, mem.Type)
+				return nil, fmt.Errorf("key field %s: only u8/u16/u32/u64 or __u8[16] fields are supported (got %s)", mem.Name, mem.Type)
 			}
-			if !validFieldSize(it.Size) {
-				return nil, fmt.Errorf("key field %s: size %d is not 1/2/4/8", mem.Name, it.Size)
+			f := KeyField{Name: mem.Name, Off: mem.Offset.Bytes(), Size: size, IsBytes: isBytes}
+			// The extraction stores each field with a naturally-aligned,
+			// in-bounds store; reject layouts (e.g. __attribute__((packed)),
+			// or an ipv6 member not at an 8-aligned offset) that would
+			// otherwise produce a misaligned or OOB stack write.
+			if f.Off%f.Align() != 0 {
+				return nil, fmt.Errorf("key field %s: offset %d is not aligned to %d (packed keys are not supported)", mem.Name, f.Off, f.Align())
 			}
-			off := mem.Offset.Bytes()
-			// emitSetFilters stores each field with a naturally-aligned,
-			// in-bounds store; reject layouts (e.g. __attribute__((packed)))
-			// that would otherwise produce a misaligned or OOB stack write.
-			if off%it.Size != 0 {
-				return nil, fmt.Errorf("key field %s: offset %d is not aligned to its %d-byte width (packed keys are not supported)", mem.Name, off, it.Size)
-			}
-			if off+it.Size > def.KeySize {
+			if f.Off+f.Size > def.KeySize {
 				return nil, fmt.Errorf("key field %s: extends past the %d-byte key", mem.Name, def.KeySize)
 			}
-			def.Fields = append(def.Fields, KeyField{Name: mem.Name, Off: off, Size: it.Size})
+			def.Fields = append(def.Fields, f)
 		}
 		if len(def.Fields) == 0 {
 			return nil, fmt.Errorf("key struct %s has no fields", t.Name)
 		}
 	default:
-		return nil, fmt.Errorf("key BTF type %s is not a struct or integer", keyType)
+		return nil, fmt.Errorf("key BTF type %s is not a struct, integer, or byte array", keyType)
 	}
 	return def, nil
+}
+
+// resolveFieldType classifies a key field's BTF type: a 1/2/4/8-byte
+// unsigned integer, or a `__u8[16]` array (an IPv6 address / SRv6 SID,
+// treated as a network-order byte string). Must stay in lockstep with
+// fieldType (the synthesis side) — the round-trip test guards it.
+func resolveFieldType(t btf.Type) (size uint32, isBytes, ok bool) {
+	switch u := btf.UnderlyingType(t).(type) {
+	case *btf.Int:
+		if validValueFieldSize(u.Size) { // 1/2/4/8 — a __u128 int is not a key field
+			return u.Size, false, true
+		}
+	case *btf.Array:
+		if el, isInt := btf.UnderlyingType(u.Type).(*btf.Int); isInt && el.Size == 1 && u.Nelems == 16 {
+			return 16, true, true
+		}
+	}
+	return 0, false, false
 }
 
 // scalarUnnamed is the placeholder name for a bare-integer key with no
@@ -233,7 +255,10 @@ func scalarKeyName(t btf.Type) string {
 	return scalarUnnamed
 }
 
-func validFieldSize(n uint32) bool {
+// validValueFieldSize gates a value (tag) field width: the tag round-trips
+// through putUint/getUint as a uint64, so only 1/2/4/8. The key side uses
+// resolveFieldType, which additionally admits the 16-byte ipv6 array.
+func validValueFieldSize(n uint32) bool {
 	return n == 1 || n == 2 || n == 4 || n == 8
 }
 

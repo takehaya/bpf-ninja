@@ -38,7 +38,7 @@ var setCreateCmd = &cli.Command{
 	Flags: []cli.Flag{
 		&cli.StringFlag{
 			Name: "key", Required: true,
-			Usage: "key schema, e.g. \"imsi:u64,teid:u32\" (types: u8/u16/u32/u64; fields are laid out with natural alignment)",
+			Usage: "key schema, e.g. \"imsi:u64,teid:u32\" (types: u8/u16/u32/u64, or ipv6 for a 16-byte address / SRv6 SID; numeric fields align to their width, ipv6 to 8)",
 		},
 		&cli.StringFlag{
 			Name: "value", Value: "tag:u32",
@@ -141,7 +141,7 @@ func setOpen(cmd *cli.Command) (*setmap.Definition, error) {
 
 // setOpenWithFields opens the map and parses the trailing field=value
 // args (with the optional tag=N split off).
-func setOpenWithFields(cmd *cli.Command) (*setmap.Definition, map[string]uint64, uint64, error) {
+func setOpenWithFields(cmd *cli.Command) (*setmap.Definition, map[string]string, uint64, error) {
 	def, err := setOpen(cmd)
 	if err != nil {
 		return nil, nil, 0, err

@@ -65,14 +65,16 @@ func newPktSetSlots(sets []*setmap.Set) *pktSetSlots {
 // can surface a clear message instead of a downstream codegen error.
 func (p *pktSetSlots) allocErr() error { return p.err }
 
-// keyAlign is the alignment a key buffer needs: its widest field width
-// (each field sits at a natural offset within the key, so an aligned base
-// keeps every field aligned). Fields are 1/2/4/8 bytes; defaults to 1.
+// keyAlign is the alignment a key buffer base needs so every field's store
+// is naturally aligned: the widest field store-alignment (KeyField.Align,
+// which is <= 8 for every field — a 16-byte ipv6 field aligns to 8, not
+// 16, since it is stored as two DWords). Aligning to 8 rather than 16
+// matters because pktSetKeyFloor (-40) is 8- but not 16-aligned.
 func keyAlign(def *setmap.Definition) int16 {
 	align := int16(1)
 	for _, f := range def.Fields {
-		if int16(f.Size) > align {
-			align = int16(f.Size)
+		if a := int16(f.Align()); a > align {
+			align = a
 		}
 	}
 	return align
@@ -91,8 +93,16 @@ func (p *pktSetSlots) SlotFor(setName, fieldName string) (off int16, size int, o
 	if !ok {
 		return 0, 0, false
 	}
-	f, ok := s.def.Field(fieldName)
-	if !ok {
+	// A scalar set has a single key field whose name is just a label, so
+	// the DSL field it is matched against need not share that name (e.g.
+	// `ipv6[dst in @sids]` against a `sid:ipv6` scalar key). Mirrors the
+	// arg-based scalar-positional rule.
+	var f setmap.KeyField
+	if s.def.IsScalar {
+		f = s.def.Fields[0]
+	} else if kf, found := s.def.Field(fieldName); found {
+		f = kf
+	} else {
 		return 0, 0, false
 	}
 	if !s.allocated {

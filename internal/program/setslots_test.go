@@ -13,6 +13,34 @@ func setWithKey(name string, keySize uint32, fields []setmap.KeyField) *setmap.S
 	}
 }
 
+func TestPktSetSlotsSixteenByteKeyFits(t *testing.T) {
+	// A lone 16-byte SID key must allocate at base -40 (filling the whole
+	// [-40,-24) budget) and not overflow: keyAlign caps at 8, so the base
+	// is not rounded to a 16 boundary (which would land at -48, below the
+	// floor). The two DWord stores at -40/-32 are 8-aligned.
+	sets := []*setmap.Set{
+		setWithKey("sids", 16, []setmap.KeyField{{Name: "sid", Off: 0, Size: 16, IsBytes: true}}),
+	}
+	p := newPktSetSlots(sets)
+	off, size, ok := p.SlotFor("sids", "sid")
+	if !ok {
+		t.Fatalf("16-byte key should fit; allocErr=%v", p.allocErr())
+	}
+	if off != pktSetKeyFloor {
+		t.Errorf("base = %d, want %d", off, pktSetKeyFloor)
+	}
+	if size != 16 {
+		t.Errorf("size = %d, want 16", size)
+	}
+	if off%8 != 0 {
+		t.Errorf("base %d not 8-aligned (DWord stores would be rejected)", off)
+	}
+	// Zeroing covers the full 16-byte region (both dwords).
+	if got := len(p.emitPktSetKeyZeroing([]string{"sids"})); got != 3 { // Mov + 2 dword stores
+		t.Errorf("zeroing insns = %d, want 3 (mov + 2 dword stores)", got)
+	}
+}
+
 func TestPktSetSlotsAllocatesDistinctBuffersLazily(t *testing.T) {
 	sets := []*setmap.Set{
 		setWithKey("a", 8, []setmap.KeyField{{Name: "teid", Off: 0, Size: 4}, {Name: "mt", Off: 4, Size: 1}}),
