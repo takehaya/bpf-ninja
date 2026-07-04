@@ -264,7 +264,7 @@ literal        ::= integer | 'true' | 'false'
 |---|---|---|
 | `const-decl` | `vocab/p4lite/parser.go::parseConst` | `const bit<16> KUNAI_IPV4_ETH_ETHERTYPE = 0x0800;` |
 
-Dispatch 命名規約は次のとおりです。loader が `vocab/loader.go` 内の regex で classify します。inter-layer dispatch の const には `KUNAI_` 接頭辞が必須で、loader は接頭辞を剥がしてから regex に掛けます。value-only const (routing_type / option kind 等) と構造 const (`MAX_DEPTH` / `CHAIN_END`) は無印です。
+Dispatch 命名規約は次のとおりです。loader が `vocab/loader.go` 内の regex で classify します。inter-layer dispatch の const には `KUNAI_` 接頭辞が必須で、loader は接頭辞を剥がしてから regex に掛けます。routing_type や option kind のような value-only const と、`MAX_DEPTH` や `CHAIN_END` のような構造 const は無印です。
 
 | 名前パターン | regex | 意味 |
 |---|---|---|
