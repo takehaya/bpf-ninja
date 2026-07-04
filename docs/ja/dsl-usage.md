@@ -498,11 +498,17 @@ sudo xdp-ninja -p 1661 --set "teids=/sys/fs/bpf/teids" \
 sudo xdp-ninja set create /sys/fs/bpf/flows --key "teid:u32,msg_type:u8"
 sudo xdp-ninja -i eth0 --mode xdp --set "flows=/sys/fs/bpf/flows" \
   'eth/ipv4/udp/gtp[teid in @flows, msg_type in @flows]'
+
+# 128bit の SRv6 SID (= IPv6 宛先) を照合する。キー型は ipv6、値は IPv6 リテラル
+sudo xdp-ninja set create /sys/fs/bpf/sids --key "dst:ipv6"
+sudo xdp-ninja set add    /sys/fs/bpf/sids dst=fc00::1
+sudo xdp-ninja -i eth0 --mode xdp --set "sids=/sys/fs/bpf/sids" \
+  'eth/ipv6[dst in @sids]'
 ```
 
-- 同名一致します。DSL のフィールド名がそのまま集合キーのフィールド名になり、`gtp[teid in @teids]` は集合キー `teid` を引きます。
-- エンディアンはツールが吸収します。パケットは network order、`set add` は host order で書きますが、変換をツールが合わせるので、利用者は普段どおりの数値で `set add` するだけで済みます。
-- キー幅には上限があります。パケット由来キーはホストスタックの空き領域を使うため、合計 16 バイトまでです。TEID の 4 バイト、IMSI の 8 バイト、TEID と IMSI を合わせた 12 バイトはいずれも収まります。1 フィールドは 8 バイトまでで、16 バイトの SRv6 SID を単体で扱うのは後日対応とします。
+- 同名一致します。DSL のフィールド名がそのまま集合キーのフィールド名になり、`gtp[teid in @teids]` は集合キー `teid` を引きます。ただしスカラ集合、つまりフィールドが 1 個のキーは名前がラベルにすぎないので、`ipv6[dst in @sids]` を `sid:ipv6` のようにフィールド名が違うキーへ当てても照合できます。
+- エンディアンはツールが吸収します。数値フィールドはパケットが network order、`set add` は host order で書きますが変換をツールが合わせるので、利用者は普段どおりの数値で `set add` するだけで済みます。`ipv6` フィールドは IPv6 アドレスのバイト列そのものが値なので、パケットも `set add fc00::1` も同じ network order のまま照合します。
+- キー幅には上限があります。パケット由来キーはホストスタックの空き領域を使うため、合計 16 バイトまでです。TEID の 4 バイト、IMSI の 8 バイト、TEID と IMSI を合わせた 12 バイト、SRv6 SID の 16 バイトはいずれも収まります。数値フィールドは 1 個 8 バイトまで、`ipv6` フィールドは 16 バイトで、16 バイトのキーはそれ 1 個で予算を使い切ります。
 - `@NAME` は他の bracket 条件やレイヤ条件と AND で合成します。`in @NAME` は bracket predicate 専用で、`where` 句の中では使えません。
 - `in @NAME` は必ず通るレイヤ、すなわち quantifier のない `QuantOne` のレイヤにのみ書けます。`vlan[...]?` のような optional や繰り返しのレイヤ、`(vlan[...]|qinq)` のような alternation の枝は、そのレイヤが不在でもフィルタが成立しうるため、抽出が走らずキーが未書き込みになる可能性があり、reject されます。
 - 引数由来の `--arg-filter @NAME` は entry/exit 専用のままです。パケット由来の DSL `@NAME` は entry/exit と `--mode xdp` の両方で動きます。

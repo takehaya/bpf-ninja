@@ -98,8 +98,16 @@ func (p *pktSetSlots) SlotFor(setName, fieldName string) (off int16, size int, o
 	if !ok {
 		return 0, 0, false
 	}
-	f, ok := s.def.Field(fieldName)
-	if !ok {
+	// A scalar set has a single key field whose name is just a label, so
+	// the DSL field it is matched against need not share that name (e.g.
+	// `ipv6[dst in @sids]` against a `sid:ipv6` scalar key). Mirrors the
+	// arg-based scalar-positional rule.
+	var f setmap.KeyField
+	if s.def.IsScalar {
+		f = s.def.Fields[0]
+	} else if kf, found := s.def.Field(fieldName); found {
+		f = kf
+	} else {
 		return 0, 0, false
 	}
 	if !s.allocated {

@@ -87,6 +87,12 @@ sudo xdp-ninja set create /sys/fs/bpf/teids --key "teid:u32"
 sudo xdp-ninja set add /sys/fs/bpf/teids teid=0x3039
 sudo xdp-ninja -p 1661 --set "teids=/sys/fs/bpf/teids" \
   'eth/ipv4/udp/gtp[teid in @teids]' -w teids.pcap
+
+# A 128-bit SRv6 SID (the IPv6 destination): key type "ipv6", value an IPv6 literal
+sudo xdp-ninja set create /sys/fs/bpf/sids --key "dst:ipv6"
+sudo xdp-ninja set add /sys/fs/bpf/sids dst=fc00::1
+sudo xdp-ninja -i eth0 --mode xdp --set "sids=/sys/fs/bpf/sids" \
+  'eth/ipv6[dst in @sids]'
 ```
 
 ### Filter syntax

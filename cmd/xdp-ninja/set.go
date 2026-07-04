@@ -38,7 +38,7 @@ var setCreateCmd = &cli.Command{
 	Flags: []cli.Flag{
 		&cli.StringFlag{
 			Name: "key", Required: true,
-			Usage: "key schema, e.g. \"imsi:u64,teid:u32\" (types: u8/u16/u32/u64; fields are laid out with natural alignment)",
+			Usage: "key schema, e.g. \"imsi:u64,teid:u32\" (types: u8/u16/u32/u64, or ipv6 for a 16-byte address / SRv6 SID; fields are laid out with natural alignment)",
 		},
 		&cli.StringFlag{
 			Name: "value", Value: "tag:u32",

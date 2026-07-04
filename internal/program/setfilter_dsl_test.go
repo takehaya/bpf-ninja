@@ -1,8 +1,10 @@
 package program
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
+	"net"
 	"os"
 	"testing"
 
@@ -162,5 +164,97 @@ func TestBpfDSLSetMatchCompositeKey(t *testing.T) {
 	markers := drainMarkers(t, probe, 1)
 	if markers[0x44] != 1 || markers[0x55] != 0 {
 		t.Fatalf("markers = %v, want one 0x44 and no 0x55", markers)
+	}
+}
+
+// ipv6Packet builds an eth/ipv6 frame: byte 0 is a per-run marker, and the
+// IPv6 destination (an SRv6 active SID) is written network-order at bytes
+// 38..54 (ipv6 header offset 24) so the DSL extraction sees the wire bytes.
+func ipv6Packet(marker byte, dst net.IP) []byte {
+	p := make([]byte, 64)
+	p[0] = marker
+	binary.BigEndian.PutUint16(p[12:14], 0x86DD) // ethertype IPv6
+	p[14] = 0x60                                 // IPv6 version 6
+	p[20] = 59                                   // next header = No Next Header
+	copy(p[38:54], dst.To16())                   // ipv6 dst = SID (network order)
+	return p
+}
+
+func runIPv6(t *testing.T, prog *ebpf.Program, marker byte, dst string) {
+	t.Helper()
+	if _, err := prog.Run(&ebpf.RunOptions{Data: ipv6Packet(marker, net.ParseIP(dst))}); err != nil {
+		t.Fatalf("test-run: %v", err)
+	}
+}
+
+// TestBpfDSLSetMatchIPv6Dst is the end-to-end for a 16-byte packet-field
+// key: ipv6[dst in @sids] matches the IPv6 destination (an SRv6 active
+// SID) against a pinned set keyed by an ipv6 field. It also locks the
+// byte-order contract via a differential check and covers runtime updates.
+func TestBpfDSLSetMatchIPv6Dst(t *testing.T) {
+	testutil.SkipIfNotRoot(t)
+
+	pin := fmt.Sprintf("/sys/fs/bpf/xdpninja_dslsid_%d", os.Getpid())
+	if err := setmap.Create(pin, "sid:ipv6", "", 16); err != nil {
+		t.Skipf("creating pinned ipv6 set map: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Remove(pin) })
+
+	set, err := setmap.OpenSet(setmap.SpecRef{Name: "sids", Path: pin})
+	if err != nil {
+		t.Fatalf("OpenSet: %v", err)
+	}
+	t.Cleanup(set.Def.Close)
+
+	const memberSID = "fc00::1"
+
+	// Differential: the wire bytes of the member SID must equal the key
+	// BuildKey writes for it (extraction side vs add side agree, no swap).
+	key, err := set.Def.BuildKey(map[string]string{"sid": memberSID})
+	if err != nil {
+		t.Fatalf("BuildKey: %v", err)
+	}
+	if !bytes.Equal(key, net.ParseIP(memberSID).To16()) {
+		t.Fatalf("key %x != wire bytes %x (byte-order mismatch)", key, net.ParseIP(memberSID).To16())
+	}
+
+	if err := set.Def.Add(map[string]string{"sid": memberSID}, 1); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	prog := loadXDPByName(t, dslSetTargetSrc, "xdp_set_e2e_target")
+	targets := []attach.Target{{Program: prog, FuncName: "xdp_set_e2e_target", Type: ebpf.XDP}}
+	probe, err := LoadMultiEntry(targets, "eth/ipv6[dst in @sids]", nil, true, []*setmap.Set{set})
+	if err != nil {
+		t.Fatalf("LoadMultiEntry with ipv6 set: %v", err)
+	}
+	defer func() { _ = probe.Close() }()
+
+	// Membership gates capture: fc00::1 is a member, fc00::2 is not.
+	runIPv6(t, prog, 0x44, memberSID) // member, captured
+	runIPv6(t, prog, 0x55, "fc00::2") // non-member, dropped
+	markers := drainMarkers(t, probe, 1)
+	if markers[0x44] != 1 {
+		t.Fatalf("markers = %v, want one 0x44 (member SID captured)", markers)
+	}
+	if markers[0x55] != 0 {
+		t.Fatalf("markers = %v: non-member SID was captured", markers)
+	}
+
+	// Runtime add / delete without re-attach.
+	const addedSID = "2001:db8::9"
+	if err := set.Def.Add(map[string]string{"sid": addedSID}, 2); err != nil {
+		t.Fatalf("runtime Add: %v", err)
+	}
+	runIPv6(t, prog, 0x66, addedSID)
+	if markers = drainMarkers(t, probe, 1); markers[0x66] != 1 {
+		t.Fatalf("markers after runtime add = %v, want one 0x66", markers)
+	}
+	if err := set.Def.Delete(map[string]string{"sid": addedSID}); err != nil {
+		t.Fatalf("runtime Delete: %v", err)
+	}
+	runIPv6(t, prog, 0x77, addedSID)
+	if markers = drainMarkers(t, probe, 0); markers[0x77] != 0 {
+		t.Fatalf("markers after runtime delete = %v, want no 0x77", markers)
 	}
 }
