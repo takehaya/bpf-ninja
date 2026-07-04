@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.18.0](https://github.com/takehaya/xdp-ninja/compare/v0.17.0...v0.18.0) (2026-07-04)
+
+
+### 🎉 Features
+
+* 128-bit (IPv6/SRv6 SID) packet-field set matching (ipv6[dst in [@sids](https://github.com/sids)]) ([#67](https://github.com/takehaya/xdp-ninja/issues/67)) ([bd718d5](https://github.com/takehaya/xdp-ninja/commit/bd718d5ceb852cee26ec22d3fc0e05ecf5cf8b59))
+* static [N] aux-stack index in bracket predicates (srv6[segments[0].addr in [@sids](https://github.com/sids)]) ([#68](https://github.com/takehaya/xdp-ninja/issues/68)) ([a73346a](https://github.com/takehaya/xdp-ninja/commit/a73346ad1bc510035afc4159a4f4e6ce73eb9b6e))
+
+
+### 🐛 Bug Fixes
+
+* **kunai:** clamp parser-machine self-loop cursor (gtp entry-mode on kernels &lt;=6.6) ([#65](https://github.com/takehaya/xdp-ninja/issues/65)) ([81c7f35](https://github.com/takehaya/xdp-ninja/commit/81c7f35f5c36ea90576457c8d4c166cea046cc4a))
+
 ## [0.17.0](https://github.com/takehaya/xdp-ninja/compare/v0.16.0...v0.17.0) (2026-07-04)
 
 
