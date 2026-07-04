@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
@@ -951,6 +952,12 @@ func captureLoopShardedSplit(cmd *cli.Command, inners []*ebpf.Map, isFexit bool,
 		}
 		w, err := output.NewWriter(output.TagShardPath(basePath, shardIdx, tag), isFexit)
 		if err != nil {
+			// Splitting opens one file (and fd) per distinct tag per CPU, so
+			// a large tag cardinality can exhaust the fd limit mid-capture;
+			// surface that cause instead of a bare "too many open files".
+			if errors.Is(err, syscall.EMFILE) || errors.Is(err, syscall.ENFILE) {
+				return nil, fmt.Errorf("%w — --split-by-tag opens one file per (CPU, tag); raise `ulimit -n` or reduce the number of distinct tags", err)
+			}
 			return nil, err
 		}
 		// Keep the live file current so it is complete within a second of
