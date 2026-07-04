@@ -886,9 +886,13 @@ func emitSetLookup(mapFD int, keyOff int16, tagSize int) asm.Instructions {
 		asm.FnMapLookupElem.Call(),
 		asm.JEq.Imm(asm.R0, 0, "exit"),
 	}
-	// R0 = value ptr (non-NULL past the jump). Narrow loads zero-extend R1,
-	// so the full-width store into tagSlot is correct for every width.
-	if tagSize > 0 {
+	// R0 = value ptr (non-NULL past the jump). Read the tag only for the
+	// exact loadable widths; an externally-pinned map with an odd value
+	// size (3/5/6/7) would otherwise over-read (asmSizeFor rounds up to
+	// DWord) and fail the verifier. Odd-sized values leave tagSlot at 0.
+	// Narrow loads zero-extend R1, so the DWord store is correct for all.
+	switch tagSize {
+	case 1, 2, 4, 8:
 		insns = append(insns,
 			asm.LoadMem(asm.R1, asm.R0, 0, asmSizeFor(uint32(tagSize))),
 			asm.StoreMem(asm.R10, tagSlot, asm.R1, asm.DWord),

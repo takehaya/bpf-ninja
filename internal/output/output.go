@@ -137,6 +137,12 @@ func (w *Writer) initExitMode(dest io.Writer) error {
 
 // Write outputs a captured packet.
 func (w *Writer) Write(pkt capture.Packet) error {
+	// Serialize with the periodic flusher goroutine (Flush also holds
+	// flushMu) so writes and flushes don't race on the pcapng buffer or, for
+	// the fast writer, the shared outer bufio. Uncontended for writers with
+	// no flusher (plain -w, non-split), so the lock is ~free there.
+	w.flushMu.Lock()
+	defer w.flushMu.Unlock()
 	if w.fastWriter != nil {
 		return w.fastWriter.WritePacket(pkt.Timestamp, pkt.Data)
 	}
@@ -150,11 +156,6 @@ func (w *Writer) Write(pkt capture.Packet) error {
 			ci.InterfaceIndex = id
 		}
 	}
-	// Serialize with the periodic flusher goroutine (Flush also holds
-	// flushMu) so writes and flushes don't race on the pcapng buffer. It is
-	// uncontended for writers with no flusher (plain -w, non-split).
-	w.flushMu.Lock()
-	defer w.flushMu.Unlock()
 	if err := w.pcapWriter.WritePacket(ci, pkt.Data); err != nil {
 		return fmt.Errorf("writing pcap packet: %w", err)
 	}
@@ -166,6 +167,10 @@ func (w *Writer) WriteBatch(pkts []capture.Packet) error {
 	if len(pkts) == 0 {
 		return nil
 	}
+	// One lock for the whole batch (see Write): mutual exclusion with the
+	// periodic flusher; uncontended for writers with no flusher.
+	w.flushMu.Lock()
+	defer w.flushMu.Unlock()
 	if w.fastWriter != nil {
 		for i := range pkts {
 			p := &pkts[i]
@@ -175,10 +180,6 @@ func (w *Writer) WriteBatch(pkts []capture.Packet) error {
 		}
 		return nil
 	}
-	// One lock for the whole batch (see Write): mutual exclusion with the
-	// periodic flusher; uncontended for writers with no flusher.
-	w.flushMu.Lock()
-	defer w.flushMu.Unlock()
 	var ci gopacket.CaptureInfo
 	for i := range pkts {
 		p := &pkts[i]
