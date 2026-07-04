@@ -1280,9 +1280,10 @@ func validateXDPNativeFlags(cmd *cli.Command) error {
 	return nil
 }
 
-// findTargets resolves `-p` (repeatable) or `-i` (single) into the target
-// programs. Multiple programs come only from repeated -p; an interface
-// still resolves to the single XDP program attached to it.
+// findTargets resolves `-p` (repeatable) or `-i` into the target programs.
+// Several programs come from repeated -p, or from -i with --prog-name (which
+// picks named programs out of the interface's reachable tree); a bare -i
+// resolves to just the single XDP program attached to the interface.
 func findTargets(cmd *cli.Command, isTC bool) ([]*attach.ProgInfo, error) {
 	ifaceName := cmd.String("interface")
 	progIDs := cmd.IntSlice("prog-id")
@@ -1356,16 +1357,19 @@ func findTargets(cmd *cli.Command, isTC bool) ([]*attach.ProgInfo, error) {
 func fetchNodeFuncs(progID uint32, root *attach.ProgInfo) []attach.FuncInfo {
 	info := root
 	if info == nil {
-		opened, err := attach.FindXDPProgramByID(progID)
+		// Open by generic program ID, not XDP-specific: BTF is type-agnostic,
+		// and a reachable node may be a tc (or other) program whose functions
+		// should still be listed.
+		opened, err := attach.FindBPFProgramByID(progID)
 		if err != nil {
 			return nil
 		}
 		defer func() { _ = opened.Program.Close() }()
 		info = opened
 	}
-	// Both the borrowed root and a fresh FindXDPProgramByID cache their
-	// parsed BTF, so BTFSpecCached reuses it rather than re-parsing (which a
-	// bare attach.ListFuncs(prog) would do).
+	// Both the borrowed root and a fresh Find* cache their parsed BTF, so
+	// BTFSpecCached reuses it rather than re-parsing (which a bare
+	// attach.ListFuncs(prog) would do).
 	spec, err := info.BTFSpecCached()
 	if err != nil {
 		return nil
