@@ -77,7 +77,7 @@ func TestBpfDSLSetMatchPacketField(t *testing.T) {
 	t.Cleanup(set.Def.Close)
 
 	const memberPort = uint16(0x01BB) // 443
-	if err := set.Def.Add(map[string]uint64{"dport": uint64(memberPort)}, 1); err != nil {
+	if err := set.Def.Add(map[string]string{"dport": fmt.Sprintf("%d", memberPort)}, 1); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 
@@ -104,7 +104,7 @@ func TestBpfDSLSetMatchPacketField(t *testing.T) {
 
 	// (b) runtime add takes effect without re-attach.
 	const addedPort = uint16(8080)
-	if err := set.Def.Add(map[string]uint64{"dport": uint64(addedPort)}, 2); err != nil {
+	if err := set.Def.Add(map[string]string{"dport": fmt.Sprintf("%d", addedPort)}, 2); err != nil {
 		t.Fatalf("runtime Add: %v", err)
 	}
 	runTCP(t, prog, 0x66, 1234, addedPort)
@@ -114,7 +114,7 @@ func TestBpfDSLSetMatchPacketField(t *testing.T) {
 	}
 
 	// (c) runtime delete stops matching.
-	if err := set.Def.Delete(map[string]uint64{"dport": uint64(addedPort)}); err != nil {
+	if err := set.Def.Delete(map[string]string{"dport": fmt.Sprintf("%d", addedPort)}); err != nil {
 		t.Fatalf("runtime Delete: %v", err)
 	}
 	runTCP(t, prog, 0x77, 1234, addedPort)
@@ -143,7 +143,7 @@ func TestBpfDSLSetMatchCompositeKey(t *testing.T) {
 	t.Cleanup(set.Def.Close)
 
 	const sport, dport = uint16(1111), uint16(443)
-	if err := set.Def.Add(map[string]uint64{"sport": uint64(sport), "dport": uint64(dport)}, 1); err != nil {
+	if err := set.Def.Add(map[string]string{"sport": fmt.Sprintf("%d", sport), "dport": fmt.Sprintf("%d", dport)}, 1); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 

@@ -141,7 +141,7 @@ func setOpen(cmd *cli.Command) (*setmap.Definition, error) {
 
 // setOpenWithFields opens the map and parses the trailing field=value
 // args (with the optional tag=N split off).
-func setOpenWithFields(cmd *cli.Command) (*setmap.Definition, map[string]uint64, uint64, error) {
+func setOpenWithFields(cmd *cli.Command) (*setmap.Definition, map[string]string, uint64, error) {
 	def, err := setOpen(cmd)
 	if err != nil {
 		return nil, nil, 0, err

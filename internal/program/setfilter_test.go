@@ -79,7 +79,7 @@ func TestBpfSetFilterLookupAndRuntimeUpdate(t *testing.T) {
 	}
 
 	const inImsi, inTeid = uint64(0x1111222233334444), uint32(0x3039)
-	if err := def.Add(map[string]uint64{"imsi": inImsi, "teid": uint64(inTeid)}, 1); err != nil {
+	if err := def.Add(map[string]string{"imsi": fmt.Sprintf("%d", inImsi), "teid": fmt.Sprintf("%d", inTeid)}, 1); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 
@@ -116,7 +116,7 @@ func TestBpfSetFilterLookupAndRuntimeUpdate(t *testing.T) {
 
 	// (b) runtime add: no re-attach, next call is captured.
 	const newImsi = uint64(0x00000000000000aa)
-	if err := def.Add(map[string]uint64{"imsi": newImsi, "teid": uint64(inTeid)}, 2); err != nil {
+	if err := def.Add(map[string]string{"imsi": fmt.Sprintf("%d", newImsi), "teid": fmt.Sprintf("%d", inTeid)}, 2); err != nil {
 		t.Fatalf("runtime Add: %v", err)
 	}
 	runWithKey(t, prog, newImsi, inTeid)
@@ -126,7 +126,7 @@ func TestBpfSetFilterLookupAndRuntimeUpdate(t *testing.T) {
 	}
 
 	// (c) runtime delete: the same key stops matching.
-	if err := def.Delete(map[string]uint64{"imsi": newImsi, "teid": uint64(inTeid)}); err != nil {
+	if err := def.Delete(map[string]string{"imsi": fmt.Sprintf("%d", newImsi), "teid": fmt.Sprintf("%d", inTeid)}); err != nil {
 		t.Fatalf("runtime Delete: %v", err)
 	}
 	runWithKey(t, prog, newImsi, inTeid)
@@ -157,7 +157,7 @@ func TestBpfSetFilterScalarKey(t *testing.T) {
 	}
 
 	const member = uint64(0x00000000000000bb)
-	if err := def.Add(map[string]uint64{"imsi": member}, 1); err != nil {
+	if err := def.Add(map[string]string{"imsi": fmt.Sprintf("%d", member)}, 1); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 

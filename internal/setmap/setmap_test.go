@@ -1,8 +1,12 @@
 package setmap
 
 import (
+	"bytes"
+	"os"
 	"strings"
 	"testing"
+
+	"github.com/cilium/ebpf"
 )
 
 func TestParseSetSpec(t *testing.T) {
@@ -87,7 +91,7 @@ func TestBuildKeyPaddingAndErrors(t *testing.T) {
 		},
 	}
 
-	key, err := def.BuildKey(map[string]uint64{"imsi": 0x0102030405060708, "teid": 0x3039})
+	key, err := def.BuildKey(map[string]string{"imsi": "0x0102030405060708", "teid": "0x3039"})
 	if err != nil {
 		t.Fatalf("BuildKey: %v", err)
 	}
@@ -102,16 +106,58 @@ func TestBuildKeyPaddingAndErrors(t *testing.T) {
 	}
 
 	// partial key → error naming the missing field
-	if _, err := def.BuildKey(map[string]uint64{"imsi": 1}); err == nil || !strings.Contains(err.Error(), "teid") {
+	if _, err := def.BuildKey(map[string]string{"imsi": "1"}); err == nil || !strings.Contains(err.Error(), "teid") {
 		t.Errorf("partial key err = %v, want mention of teid", err)
 	}
 	// unknown field
-	if _, err := def.BuildKey(map[string]uint64{"imsi": 1, "teid": 2, "bogus": 3}); err == nil || !strings.Contains(err.Error(), "bogus") {
+	if _, err := def.BuildKey(map[string]string{"imsi": "1", "teid": "2", "bogus": "3"}); err == nil || !strings.Contains(err.Error(), "bogus") {
 		t.Errorf("unknown field err = %v, want mention of bogus", err)
 	}
 	// value too wide for field
-	if _, err := def.BuildKey(map[string]uint64{"imsi": 1, "teid": 1 << 40}); err == nil || !strings.Contains(err.Error(), "does not fit") {
+	if _, err := def.BuildKey(map[string]string{"imsi": "1", "teid": "1099511627776"}); err == nil || !strings.Contains(err.Error(), "does not fit") {
 		t.Errorf("overflow err = %v, want 'does not fit'", err)
+	}
+}
+
+func TestParseSchemaIPv6(t *testing.T) {
+	specs, err := ParseSchema("sid:ipv6")
+	if err != nil {
+		t.Fatalf("ParseSchema: %v", err)
+	}
+	if len(specs) != 1 {
+		t.Fatalf("specs = %+v", specs)
+	}
+	if f := specs[0]; f.Name != "sid" || f.Size != 16 || f.Align != 1 || !f.IsBytes {
+		t.Errorf("spec = %+v, want {sid 16 align1 bytes}", f)
+	}
+}
+
+func TestBuildKeyIPv6NetworkOrder(t *testing.T) {
+	def := &Definition{
+		KeySize: 16,
+		Fields:  []KeyField{{Name: "sid", Off: 0, Size: 16, Align: 1, IsBytes: true}},
+	}
+	key, err := def.BuildKey(map[string]string{"sid": "fc00::1"})
+	if err != nil {
+		t.Fatalf("BuildKey: %v", err)
+	}
+	// Network order, verbatim: fc 00 00 ... 00 01 (matches wire bytes).
+	want := make([]byte, 16)
+	want[0] = 0xfc
+	want[15] = 0x01
+	if !bytes.Equal(key, want) {
+		t.Errorf("key = %x, want %x", key, want)
+	}
+	// invalid literal
+	if _, err := def.BuildKey(map[string]string{"sid": "nope"}); err == nil || !strings.Contains(err.Error(), "invalid IPv6") {
+		t.Errorf("invalid-IP err = %v", err)
+	}
+}
+
+func TestCreateRejectsIPv6Value(t *testing.T) {
+	// ipv6 is a key-only type; the value guard runs before map creation.
+	if err := Create("/sys/fs/bpf/unused", "sid:ipv6", "tag:ipv6", 8); err == nil || !strings.Contains(err.Error(), "single u8/u16/u32/u64 tag") {
+		t.Errorf("ipv6 value err = %v", err)
 	}
 }
 
@@ -120,7 +166,7 @@ func TestParseFieldValues(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseFieldValues: %v", err)
 	}
-	if fields["imsi"] != 999990000000001 || fields["teid"] != 0x3039 {
+	if fields["imsi"] != "999990000000001" || fields["teid"] != "0x3039" {
 		t.Errorf("fields = %v", fields)
 	}
 	if !hasTag || tag != 7 {
@@ -170,5 +216,36 @@ func TestCreateRejectsMultiFieldValue(t *testing.T) {
 func TestParseSchemaRejectsDuplicateField(t *testing.T) {
 	if _, err := ParseSchema("imsi:u64,imsi:u32"); err == nil || !strings.Contains(err.Error(), "duplicate") {
 		t.Errorf("dup field err = %v, want 'duplicate'", err)
+	}
+}
+
+// TestIPv6BTFRoundTrip pins that the synthesize side (fieldType, __u8[16]
+// array) and the describe side (resolveFieldType) agree: a map created
+// with an ipv6 key reads back as a 16-byte byte-string scalar field.
+func TestIPv6BTFRoundTrip(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("needs root to create a BPF map")
+	}
+	fields, size := layout([]FieldSpec{{Name: "sid", Size: 16, Align: 1, IsBytes: true}})
+	m, err := ebpf.NewMap(&ebpf.MapSpec{
+		Name: "xdpninja_sidtest", Type: ebpf.Hash,
+		KeySize: size, ValueSize: 4, MaxEntries: 4,
+		Key:   synthesizeType("xdpninja_set_key", fields, size),
+		Value: intType(4),
+	})
+	if err != nil {
+		t.Fatalf("NewMap: %v", err)
+	}
+	defer func() { _ = m.Close() }()
+
+	def, err := describe(m)
+	if err != nil {
+		t.Fatalf("describe: %v", err)
+	}
+	if !def.IsScalar || len(def.Fields) != 1 {
+		t.Fatalf("def = %+v, want a single scalar field", def)
+	}
+	if f := def.Fields[0]; f.Name != "sid" || f.Size != 16 || f.Off != 0 || !f.IsBytes {
+		t.Errorf("field = %+v, want {sid 16 off0 bytes}", f)
 	}
 }
