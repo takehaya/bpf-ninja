@@ -209,12 +209,23 @@ func emitInSetPredicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, erro
 		return nil, fmt.Errorf("codegen: set slot %d for @%s.%s is inside kunai's stack region (must be > %d)", slotOff, pred.SetName, fieldName, KunaiStackTop)
 	}
 
-	fieldOff, bytes, err := fieldRefByteOffset(pred.Field)
+	// A bare 128-bit primary field (ipv6.src / ipv6.dst = an SRv6 SID) is
+	// 16 bytes, which fieldRefByteOffset rejects (single-load only). Use
+	// the width-relaxed 128-bit helper and take the two-DWord store path.
+	is128 := pred.Field.Aux == nil && pred.Field.Slice == nil &&
+		pred.Field.Field != nil && pred.Field.Field.Bits == 128
+	var fieldOff, bytes int
+	var err error
+	if is128 {
+		fieldOff, bytes, err = findFieldByteOffset128(pred.Field.Layer.Spec, pred.Field.Field.Name)
+	} else {
+		fieldOff, bytes, err = fieldRefByteOffset(pred.Field)
+	}
 	if err != nil {
 		return nil, err
 	}
-	if bytes > 8 {
-		return nil, fmt.Errorf("%w: set key field %q is %d bytes; packet-field extraction supports up to 8 (16-byte keys such as SRv6 SID are a follow-up)", ErrNotImplemented, fieldName, bytes)
+	if bytes != 16 && bytes > 8 {
+		return nil, fmt.Errorf("%w: set key field %q is %d bytes; packet-field extraction supports 1/2/4/8 (numeric) or 16 (ipv6)", ErrNotImplemented, fieldName, bytes)
 	}
 	// Require an exact width match: a narrower packet field would only
 	// write a prefix of the key (relying on zero-fill), which silently
@@ -223,12 +234,35 @@ func emitInSetPredicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, erro
 	if bytes != slotSize {
 		return nil, fmt.Errorf("packet field %q is %d bytes but set @%s key field %q is %d bytes; widths must match (create the set with a matching field type)", fieldName, bytes, pred.SetName, fieldName, slotSize)
 	}
+
+	var insns asm.Instructions
+
+	// 16-byte (IPv6 address / SID): store the raw network-order bytes.
+	// Unlike the <=8 numeric path below, this is an identity byte copy —
+	// emitBoundedLoad (LE load) then StoreMem (LE store) preserves wire
+	// byte order, so NO HostTo is applied. `set add sid=fc00::1` writes
+	// the same net.ParseIP().To16() bytes verbatim (setmap copies, not
+	// putUint), so the key matches. Do not add a byte-swap here in any
+	// later "unify the store path" refactor — it would reverse the SID on
+	// a little-endian host and silently break every IPv6 match.
+	if bytes == 16 {
+		insns = append(insns, emitBoundedLoad(asm.R3, int16(fieldOff), asm.DWord, dslReject)...)
+		insns = append(insns, asm.StoreMem(asm.R10, slotOff, asm.R3, asm.DWord))
+		insns = append(insns, emitBoundedLoad(asm.R3, int16(fieldOff+8), asm.DWord, dslReject)...)
+		insns = append(insns, asm.StoreMem(asm.R10, slotOff+8, asm.R3, asm.DWord))
+		if pc.out != nil {
+			*pc.out = append(*pc.out, ExtractSlot{
+				SetName: pred.SetName, FieldName: fieldName,
+				StackOff: slotOff, StoreSize: 16,
+			})
+		}
+		return insns, nil
+	}
+
 	size, err := asmSizeFor(bytes)
 	if err != nil {
 		return nil, err
 	}
-
-	var insns asm.Instructions
 	// Single-aux fields gate on presence just like emitIntPredicate;
 	// iterator-stack (dynamic) aux fields are rejected at resolve time.
 	if pred.Field.Aux != nil {

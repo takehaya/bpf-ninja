@@ -220,6 +220,63 @@ type badSlot struct{}
 func (badSlot) HasSet(name string) bool                            { return name == "teids" }
 func (badSlot) SlotFor(_, _ string) (off int16, size int, ok bool) { return -200, 4, true }
 
+// sidSlot is a 16-byte set key field at -40 for the ipv6.dst SID path.
+type sidSlot struct{}
+
+func (sidSlot) HasSet(name string) bool { return name == "sids" }
+func (sidSlot) SlotFor(set, field string) (off int16, size int, ok bool) {
+	if set == "sids" && field == "dst" {
+		return -40, 16, true
+	}
+	return 0, 0, false
+}
+
+func TestCompileInSetIPv6DstRawByteStore(t *testing.T) {
+	caps := codegen.Capabilities{Lang: codegen.LangCaps{SetSlots: sidSlot{}}}
+	out, err := Compile("eth/ipv6[dst in @sids]", caps)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	if len(out.Extractions) != 1 {
+		t.Fatalf("extractions = %+v, want 1", out.Extractions)
+	}
+	if ex := out.Extractions[0]; ex.SetName != "sids" || ex.FieldName != "dst" || ex.StackOff != -40 || ex.StoreSize != 16 {
+		t.Errorf("extraction = %+v", ex)
+	}
+
+	insns := out.Instructions()
+	// Both 8-byte halves are stored to the host slot: R10-40 and R10-32.
+	var loAt40, hiAt32 bool
+	for _, ins := range insns {
+		if ins.Dst == asm.R10 && ins.OpCode.Class().IsStore() && ins.OpCode.Size() == asm.DWord {
+			switch int16(ins.Offset) {
+			case -40:
+				loAt40 = true
+			case -32:
+				hiAt32 = true
+			}
+		}
+	}
+	if !loAt40 || !hiAt32 {
+		t.Errorf("want DWord stores at -40 and -32, got lo=%v hi=%v", loAt40, hiAt32)
+	}
+	// Byte-order: a 16-byte address is a raw wire-byte copy — NO HostTo.
+	for _, sz := range []asm.Size{asm.Word, asm.DWord, asm.Half} {
+		swapOp := asm.HostTo(asm.BE, asm.R3, sz).OpCode
+		for _, ins := range insns {
+			if ins.OpCode == swapOp {
+				t.Fatal("16-byte extraction emitted HostTo(BE); it must copy raw network-order bytes")
+			}
+		}
+	}
+	// Map-agnostic invariant still holds.
+	for _, ins := range insns {
+		if ins.OpCode.JumpOp() == asm.Call && ins.Src != asm.PseudoCall && ins.Constant == int64(asm.FnMapLookupElem) {
+			t.Fatal("codegen emitted FnMapLookupElem; kunai must stay map-agnostic")
+		}
+	}
+}
+
 func TestCompileVlanOptionalSucceeds(t *testing.T) {
 	// `?` quantifier + real vlan vocab — verifies end-to-end path.
 	insns, err := compileForTest("eth/vlan?/ipv4/tcp")
