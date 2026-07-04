@@ -198,8 +198,8 @@ EOF
 clang -O2 -g -target bpf -c /tmp/xdp_subfunc.c -o /tmp/xdp_subfunc.o
 ```
 
-> **注意:** `__noinline` サブ関数の body は `ctx->data` 等にアクセスする非自明な処理が必要。
-> `return 2;` だけの trivial な body は `clang -O2` で定数畳み込みされ、bpf2bpf call ごと消える。
+> 注意点として、`__noinline` サブ関数の body は `ctx->data` 等にアクセスする非自明な処理が必要になる。
+> `return 2;` だけの trivial な body は `clang -O2` で定数畳み込みされ、bpf2bpf call ごと消えてしまう。
 
 ### 2.2 環境構築
 
@@ -267,7 +267,7 @@ sudo ./xdp-ninja -i vtest0 --func classify_packet --mode exit -v | tcpdump -n -r
 sudo ./xdp-ninja -i vtest0 --func no_such_func
 ```
 
-期待: 利用可能な関数名を含むエラーメッセージ。
+期待: 利用可能な関数名を含むエラーメッセージが表示される。
 
 ### 2.8 クリーンアップ
 
@@ -544,7 +544,7 @@ Filterable parameters for process_packet (id=XXXX):
 sudo ./xdp-ninja -i vtest0 --list-params
 ```
 
-期待: `--list-params requires --func` エラー。
+期待: `--list-params requires --func` というエラーになる。
 
 ### 4.5 完全一致フィルタ（マッチ）
 
@@ -607,7 +607,7 @@ sudo ./xdp-ninja -i vtest0 --func process_packet --arg-filter "tunnel_id=42" "ic
 sudo ./xdp-ninja -i vtest0 --func process_packet --arg-filter "no_such=42"
 ```
 
-期待: 利用可能なパラメータ名を含むエラーメッセージ。
+期待: 利用可能なパラメータ名を含むエラーメッセージが表示される。
 
 ### 4.12 `--arg-filter` を `--func` なしで実行（エラー）
 
@@ -615,7 +615,7 @@ sudo ./xdp-ninja -i vtest0 --func process_packet --arg-filter "no_such=42"
 sudo ./xdp-ninja -i vtest0 --arg-filter "tunnel_id=42"
 ```
 
-期待: `--arg-filter requires --func` エラー。
+期待: `--arg-filter requires --func` というエラーになる。
 
 ### 4.13 クリーンアップ
 
