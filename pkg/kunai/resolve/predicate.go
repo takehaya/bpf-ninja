@@ -14,15 +14,16 @@ func (r *resolver) resolveBracketPredicate(ap *ast.Predicate, layer *ir.LayerIns
 	if err != nil {
 		return nil, err
 	}
-	if field.Aux != nil && field.Aux.Stack != nil && field.Aux.Stack.IsIterator {
-		return nil, errorf(ap.Pos, "auxiliary header stack %q needs an index inside a bracket predicate (use `[N]` or wrap in `any(...)` / `all(...)`)", field.Aux.OutParam)
-	}
 	// A bracket predicate reads a single field at a compile-time-constant
-	// offset, so only a static `[N]` index is addressable. A dynamic index
-	// (`segments[srv6.last_entry]`) needs a runtime offset computation that
-	// only the `where` clause emits.
-	if field.Aux != nil && field.Aux.Stack != nil && !field.Aux.Stack.IsStatic {
-		return nil, errorf(ap.Pos, "auxiliary header stack %q takes a constant index inside a bracket predicate (a dynamic index needs a `where` clause)", field.Aux.OutParam)
+	// offset, so a stack access must carry a static `[N]` index. The
+	// index-less iterator form (`any()/all()`) and a dynamic index
+	// (`segments[srv6.last_entry]`, a runtime offset only `where` emits) are
+	// both non-static; branch only for the more specific diagnostic.
+	if stk := field.Aux; stk != nil && stk.Stack != nil && !stk.Stack.IsStatic {
+		if stk.Stack.IsIterator {
+			return nil, errorf(ap.Pos, "auxiliary header stack %q needs an index inside a bracket predicate (use `[N]` or wrap in `any(...)` / `all(...)`)", stk.OutParam)
+		}
+		return nil, errorf(ap.Pos, "auxiliary header stack %q takes a constant index inside a bracket predicate (a dynamic index needs a `where` clause)", stk.OutParam)
 	}
 	// `in @set` extracts the field into a host key buffer that the host
 	// looks up unconditionally after the filter. That is only correct if

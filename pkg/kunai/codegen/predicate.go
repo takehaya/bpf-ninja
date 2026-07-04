@@ -209,21 +209,32 @@ func field128RawOffset(ref *ir.FieldRef) (off int, ok bool, err error) {
 	if ref.Aux.FieldBitWidth != 128 {
 		return 0, false, nil
 	}
-	if ref.Aux.FieldBitOff%8 != 0 {
-		return 0, false, fmt.Errorf("%w: aux field %s.%s starts at bit %d (not byte-aligned)", ErrNotImplemented, ref.Aux.OutParam, ref.Field.Name, ref.Aux.FieldBitOff)
-	}
-	// Same fold as fieldRefByteOffset's aux branch: aux base + field window
-	// + Static*ElemSize. A dynamic index needs a runtime address compute
-	// (R5), which the raw-copy store path does not do, so it is rejected
-	// (resolve already blocks it inside a bracket).
-	o := ref.Aux.OffsetInLayer + ref.Aux.FieldBitOff/8
-	if ref.Aux.Stack != nil {
-		if !ref.Aux.Stack.IsStatic {
-			return 0, false, fmt.Errorf("%w: dynamic aux stack index in set extraction (use a constant index)", ErrNotImplemented)
-		}
-		o += int(ref.Aux.Stack.Static) * ref.Aux.HeaderSize
+	o, err := auxStaticByteOffset(ref.Aux)
+	if err != nil {
+		return 0, false, err
 	}
 	return o, true, nil
+}
+
+// auxStaticByteOffset folds an aux field's constant byte offset within its
+// layer: OffsetInLayer + FieldBitOff/8, plus Static*HeaderSize for a static
+// aux-stack element (srv6.segments[N]). It errors on a non-byte-aligned
+// field or a dynamic stack index, which needs a runtime address compute
+// (R5) that a constant-offset caller cannot express. This is the same fold
+// fieldRefByteOffset (codegen.go) and auxLoadEmitter apply inline; kept as a
+// helper so the 128-bit raw-copy path shares one definition of the formula.
+func auxStaticByteOffset(aux *ir.AuxRef) (int, error) {
+	if aux.FieldBitOff%8 != 0 {
+		return 0, fmt.Errorf("%w: aux field %s starts at bit %d (not byte-aligned)", ErrNotImplemented, aux.OutParam, aux.FieldBitOff)
+	}
+	off := aux.OffsetInLayer + aux.FieldBitOff/8
+	if aux.Stack != nil {
+		if !aux.Stack.IsStatic {
+			return 0, fmt.Errorf("%w: dynamic aux stack index needs a runtime offset (use a constant index)", ErrNotImplemented)
+		}
+		off += int(aux.Stack.Static) * aux.HeaderSize
+	}
+	return off, nil
 }
 
 func emitInSetPredicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, error) {
@@ -254,13 +265,11 @@ func emitInSetPredicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, erro
 	// (ipv6.dst = the active SRv6 SID) and a static aux-stack element
 	// (srv6.segments[N].addr = a specific SID in the SRH list).
 	fieldOff, is128, err := field128RawOffset(pred.Field)
-	var bytes int
 	if err != nil {
 		return nil, err
 	}
-	if is128 {
-		bytes = 16
-	} else {
+	bytes := 16
+	if !is128 {
 		fieldOff, bytes, err = fieldRefByteOffset(pred.Field)
 		if err != nil {
 			return nil, err
