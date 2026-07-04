@@ -27,10 +27,10 @@ func TestSplitSliceIntoLDXChunks(t *testing.T) {
 		{32, []chunk{{0, 32}}},
 		{56, []chunk{{0, 32}, {32, 48}, {48, 56}}}, // 4 + 2 + 1
 		{64, []chunk{{0, 64}}},
-		{72, []chunk{{0, 64}, {64, 72}}},        // 8 + 1 byte
-		{80, []chunk{{0, 64}, {64, 80}}},        // 8 + 2
+		{72, []chunk{{0, 64}, {64, 72}}},           // 8 + 1 byte
+		{80, []chunk{{0, 64}, {64, 80}}},           // 8 + 2
 		{88, []chunk{{0, 64}, {64, 80}, {80, 88}}}, // 8 + 2 + 1
-		{96, []chunk{{0, 64}, {64, 96}}},        // 8 + 4
+		{96, []chunk{{0, 64}, {64, 96}}},           // 8 + 4
 		{104, []chunk{{0, 64}, {64, 96}, {96, 104}}},
 		{112, []chunk{{0, 64}, {64, 96}, {96, 112}}},
 		{120, []chunk{{0, 64}, {64, 96}, {96, 112}, {112, 120}}},
@@ -69,13 +69,13 @@ func TestUintFitsBits(t *testing.T) {
 		{443, 16, true},
 		{99999, 16, false},
 		// Negative literals stored as 2's complement.
-		{^uint64(0), 8, true},          // -1 fits any width
+		{^uint64(0), 8, true}, // -1 fits any width
 		{^uint64(0), 16, true},
-		{^uint64(127), 8, true},        // -128 fits int8 range
-		{^uint64(128), 8, false},       // -129 doesn't fit signed int8
-		{^uint64(128), 16, true},       // -129 fits int16
-		{^uint64(32767), 16, true},     // -32768 fits int16
-		{^uint64(32768), 16, false},    // -32769 doesn't
+		{^uint64(127), 8, true},     // -128 fits int8 range
+		{^uint64(128), 8, false},    // -129 doesn't fit signed int8
+		{^uint64(128), 16, true},    // -129 fits int16
+		{^uint64(32767), 16, true},  // -32768 fits int16
+		{^uint64(32768), 16, false}, // -32769 doesn't
 		// 64-bit and wider always succeed (no narrowing happens).
 		{^uint64(0), 64, true},
 	}
@@ -185,9 +185,9 @@ func TestAttachSliceValidation(t *testing.T) {
 		Field: &vocab.Field{Name: "src", Bits: 128},
 	}
 	cases := []struct {
-		name        string
-		idx         *ast.IndexExpr
-		wantError   string
+		name      string
+		idx       *ast.IndexExpr
+		wantError string
 	}{
 		{"exceeds-128", &ast.IndexExpr{IsSlice: true, SliceLo: 0, SliceHi: 200}, "exceeds field width"},
 		{"width-over-128", &ast.IndexExpr{IsSlice: true, SliceLo: 0, SliceHi: 129}, "exceeds field width"},

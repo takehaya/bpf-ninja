@@ -18,9 +18,9 @@ import (
 
 // tcAcceptedVlanExprs load & verify at the tc clsact host.
 var tcAcceptedVlanExprs = []string{
-	"eth/vlan?/ipv4/tcp",            // optional single tag
-	"eth/qinq?/vlan?/ipv4/tcp",      // recommended tag-flexible pattern
-	"eth/vlan*/ipv4/tcp",            // zero-or-more (bpf_loop)
+	"eth/vlan?/ipv4/tcp",             // optional single tag
+	"eth/qinq?/vlan?/ipv4/tcp",       // recommended tag-flexible pattern
+	"eth/vlan*/ipv4/tcp",             // zero-or-more (bpf_loop)
 	"eth/vlan?/ipv4/tcp[dport==443]", // optional tag + predicate on a later layer
 }
 

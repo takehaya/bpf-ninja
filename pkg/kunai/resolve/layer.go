@@ -93,6 +93,16 @@ func (r *resolver) resolveAlternation(al *ast.Layer, parent *ir.LayerInstance) (
 		if err != nil {
 			return nil, err
 		}
+		// `in @set` on an alternation member is unsafe: the branch may not
+		// be taken, leaving the host key buffer unwritten while the filter
+		// still accepts, so the unconditional lookup would match the wrong
+		// key. Reject here (the per-layer Quant check does not catch it,
+		// since alt members are QuantOne).
+		for _, p := range alt.Predicates {
+			if p.Kind == ast.PredInSet {
+				return nil, errorf(p.Pos, "`in @%s` is not supported inside an alternation (%q may not be on the matched path)", p.SetName, alt.Spec.Name)
+			}
+		}
 		alts = append(alts, alt)
 	}
 	return &ir.LayerInstance{

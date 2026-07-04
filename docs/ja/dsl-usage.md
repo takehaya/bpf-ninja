@@ -426,8 +426,17 @@ mergecap -w merged.pcap path.pcap.cpu*
 
 多段 dispatcher (cpu_dispatch → CPUMAP → 方向別ハンドラ) では capture point が方向ごとに別プログラムへ散り、さらに noinline サブ関数は呼び出し元プログラムごとに実体を持ちます (例: `pgwu_capture_point_dl` が v4/v6 ハンドラ両方に入る)。UL + DL v4 + DL v6 の全網羅は従来3回の起動が必要でしたが、1回で張れます。
 
+### `--list-progs` で到達可能プログラムを洗い出す
+
+`--list-progs` は、起点プログラムから到達できるプログラムを推移的に辿って一覧します。起点は `-i` の XDP か `-p` の ID です。辿るエッジは次の 2 種類です。
+
+- tail call は、`bpf_tail_call` が使う `PROG_ARRAY` のエントリ先です。
+- redirect は、`CPUMAP` / `DEVMAP` / `DEVMAP_HASH` のエントリに attach された XDP プログラム、すなわち `bpf_redirect_map()` の飛び先です。
+
+さらにその先も同様に辿るので、`cpu_dispatch → CPUMAP[0..N] → 方向別ハンドラ` から別の redirect へ続くような多段構成でも、末端の実プログラム ID までまとめて出ます。出力された prog ID を `-p` に渡してアタッチします。
+
 ```bash
-# --list-progs で dispatcher から末端の prog ID を洗い出し
+# --list-progs で dispatcher から末端の prog ID を推移的に洗い出し
 sudo xdp-ninja -i ens2f0 --list-progs
 
 # UL + DL (v4/v6 両実体) を1回でアタッチ。--func pgwu_capture_point_dl は
@@ -471,6 +480,32 @@ sudo xdp-ninja set schema /sys/fs/bpf/flows
 - 外部で作った pinned map も、hash 型で BTF キー (整数 or 整数のみの struct、各 1/2/4/8B、キー全体 64B 以下) を持っていれば参照できます。BTF 無しの map は `set create` で作り直してください。
 - 外部から直接書く場合 (bpftool 等) は**パディングのゼロ埋めが必須**です (hash はキー全バイトをハッシュするため、パディングが非ゼロだと永遠に一致しません)。`xdp-ninja set add` はこれを自動で保証します。
 - スキーマ (キー幅・オフセット) は `set schema` で確認できます。`bpftool map dump pinned <path>` もフィールド名付きで整形表示されます (合成 BTF の効能)。
+
+### DSL `layer[field in @NAME]` でパケットフィールドを照合する
+
+`--arg-filter @NAME` はキーを fentry 引数から作ります。GTP TEID や SRv6 SID のように、照合したい値が引数ではなくパケット内にあり dispatcher が渡してくれない場合は、DSL の bracket predicate でパケットフィールドをそのままキーにできます。
+
+```bash
+# 集合は同じ (キー = 照合する値)
+sudo xdp-ninja set create /sys/fs/bpf/teids --key "teid:u32"
+sudo xdp-ninja set add    /sys/fs/bpf/teids teid=0x3039
+
+# DSL でパケットの gtp.teid を集合照合 (fentry でも --mode xdp でも動く)
+sudo xdp-ninja -p 1661 --set "teids=/sys/fs/bpf/teids" \
+  'eth/ipv4/udp/gtp[teid in @teids]' -w out.pcap
+
+# 複合キーは 1 つの角括弧にカンマ併記 (エントリ内は AND)
+sudo xdp-ninja set create /sys/fs/bpf/flows --key "teid:u32,msg_type:u8"
+sudo xdp-ninja -i eth0 --mode xdp --set "flows=/sys/fs/bpf/flows" \
+  'eth/ipv4/udp/gtp[teid in @flows, msg_type in @flows]'
+```
+
+- 同名一致します。DSL のフィールド名がそのまま集合キーのフィールド名になり、`gtp[teid in @teids]` は集合キー `teid` を引きます。
+- エンディアンはツールが吸収します。パケットは network order、`set add` は host order で書きますが、変換をツールが合わせるので、利用者は普段どおりの数値で `set add` するだけで済みます。
+- キー幅には上限があります。パケット由来キーはホストスタックの空き領域を使うため、合計 16 バイトまでです。TEID の 4 バイト、IMSI の 8 バイト、TEID と IMSI を合わせた 12 バイトはいずれも収まります。1 フィールドは 8 バイトまでで、16 バイトの SRv6 SID を単体で扱うのは後日対応とします。
+- `@NAME` は他の bracket 条件やレイヤ条件と AND で合成します。`in @NAME` は bracket predicate 専用で、`where` 句の中では使えません。
+- `in @NAME` は必ず通るレイヤ、すなわち quantifier のない `QuantOne` のレイヤにのみ書けます。`vlan[...]?` のような optional や繰り返しのレイヤ、`(vlan[...]|qinq)` のような alternation の枝は、そのレイヤが不在でもフィルタが成立しうるため、抽出が走らずキーが未書き込みになる可能性があり、reject されます。
+- 引数由来の `--arg-filter @NAME` は entry/exit 専用のままです。パケット由来の DSL `@NAME` は entry/exit と `--mode xdp` の両方で動きます。
 
 ## 関数引数の値を覗く (`--arg-echo`)
 

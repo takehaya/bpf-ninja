@@ -62,12 +62,14 @@ resolver / codegen が enforce する MVP 制約は次のとおりです。
 ```ebnf
 predicate      ::= '[' field-path op value ']'
                  | '[' field-path 'in' value-list ']'      (* F7: integer 値の OR-chain *)
+                 | '[' field-path 'in' '@' set-name ']'    (* pinned-map 集合照合 *)
                  | '[' field-path 'has' flag-name ']'      (* F6 bitwise & で superseded *)
 field-path     ::= field-name ('.' field-name)*            (* aux access: <aux>.<field> *)
 field-name     ::= [a-z] [a-z0-9_]*
 op             ::= '==' | '!=' | '<' | '<=' | '>' | '>='
 value          ::= integer | ipv4 | ipv4-cidr | ipv6 | ipv6-cidr | mac
 value-list     ::= '[' value (',' value)* ']'
+set-name       ::= [a-z] [a-z0-9_]*                        (* --set NAME= で宣言した集合 *)
 flag-name      ::= [A-Z] [A-Z0-9_]*
 integer        ::= '-'? ('0x' [0-9a-fA-F]+ | [0-9]+)        (* 値域: [-2^63, 2^64) *)
 ipv4           ::= INT '.' INT '.' INT '.' INT              (* 各 INT: 0..255、zero-prefix 拒否 *)
@@ -81,6 +83,7 @@ mac            ::= [0-9a-fA-F]{2} (':' [0-9a-fA-F]{2}){5}   (* colon 区切り 6
 |---|---|---|
 | `predicate` (cmp) | `predicate.go::parsePredicate` | `[dport==443]`, `[src!=fe80::1]`, `[opt.next_ext == 0]` |
 | `predicate` (in) | `predicate.go::parsePredicate` (`PredIn` branch) | `[dport in [80, 443]]` *(codegen reject)* |
+| `predicate` (in @set) | `predicate.go::parsePredicate` (`PredInSet` branch) | `gtp[teid in @teids]`、複合キーは `gtp[teid in @f, imsi in @f]` |
 | `predicate` (has) | `predicate.go::parsePredicate` (`PredHas` branch) | `[flags has SYN]` *(codegen reject)* |
 | `field-path` (1-part) | `predicate.go::parseFieldPath` | `dport` / `src` |
 | `field-path` (2-part = aux) | `predicate.go::parseFieldPath` | `opt.next_ext` (gtp の auxiliary header field) |

@@ -15,6 +15,7 @@ import (
 	"github.com/google/gopacket/pcap"
 	"github.com/takehaya/xdp-ninja/internal/attach"
 	"github.com/takehaya/xdp-ninja/internal/filter"
+	"github.com/takehaya/xdp-ninja/internal/setmap"
 	"github.com/takehaya/xdp-ninja/pkg/kunai"
 	"github.com/takehaya/xdp-ninja/pkg/kunai/codegen"
 	tchost "github.com/takehaya/xdp-ninja/pkg/kunai/host/tc"
@@ -100,7 +101,7 @@ func loadProbe(targetProg *ebpf.Program, funcName string, filterExpr string, arg
 		return nil, err
 	}
 	targets := []attach.Target{{Program: targetProg, FuncName: funcName, Type: progType}}
-	return loadMulti(targets, filterExpr, []filter.TargetFilters{{Args: argFilters}}, isFexit, useDSL)
+	return loadMulti(targets, filterExpr, []filter.TargetFilters{{Args: argFilters}}, isFexit, useDSL, nil)
 }
 
 // LoadMultiEntry attaches one fentry per (program, func) target, all
@@ -112,20 +113,20 @@ func loadProbe(targetProg *ebpf.Program, funcName string, filterExpr string, arg
 // same param name can sit at a different arg index in different funcs, so
 // arg filters and set-key bindings must be resolved against each target's
 // own BTF params.
-func LoadMultiEntry(targets []attach.Target, filterExpr string, filters []filter.TargetFilters, useDSL bool) (*Probe, error) {
-	return loadMulti(targets, filterExpr, filters, false, useDSL)
+func LoadMultiEntry(targets []attach.Target, filterExpr string, filters []filter.TargetFilters, useDSL bool, sets []*setmap.Set) (*Probe, error) {
+	return loadMulti(targets, filterExpr, filters, false, useDSL, sets)
 }
 
 // LoadMultiExit is LoadMultiEntry for fexit (sees the return action).
-func LoadMultiExit(targets []attach.Target, filterExpr string, filters []filter.TargetFilters, useDSL bool) (*Probe, error) {
-	return loadMulti(targets, filterExpr, filters, true, useDSL)
+func LoadMultiExit(targets []attach.Target, filterExpr string, filters []filter.TargetFilters, useDSL bool, sets []*setmap.Set) (*Probe, error) {
+	return loadMulti(targets, filterExpr, filters, true, useDSL, sets)
 }
 
 // loadMulti builds the shared capture infrastructure once (filter compile,
 // sharded ringbuf, scratch map — all of which depend only on the program
 // type, not the individual target) and then attaches one tracing program
 // per (target prog, func) pair against it.
-func loadMulti(targets []attach.Target, filterExpr string, filters []filter.TargetFilters, isFexit, useDSL bool) (*Probe, error) {
+func loadMulti(targets []attach.Target, filterExpr string, filters []filter.TargetFilters, isFexit, useDSL bool, sets []*setmap.Set) (*Probe, error) {
 	if len(targets) == 0 {
 		return nil, fmt.Errorf("no attach targets")
 	}
@@ -142,10 +143,20 @@ func loadMulti(targets []attach.Target, filterExpr string, filters []filter.Targ
 		return nil, fmt.Errorf("target program type %s is not supported (need XDP, SchedCLS, or SchedACT)", progType)
 	}
 
-	filterOut, err := compileFilter(filterExpr, useDSL, isFexit, progType)
+	// DSL `field in @set` extracts packet fields into a host key buffer;
+	// build the slot resolver so kunai emits the extraction stores.
+	var slots *pktSetSlots
+	if len(sets) > 0 {
+		slots = newPktSetSlots(sets)
+	}
+	filterOut, err := compileFilterWithSlots(filterExpr, useDSL, isFexit, progType, slots)
+	if slots != nil && slots.allocErr() != nil {
+		return nil, slots.allocErr() // clearer than the downstream codegen error
+	}
 	if err != nil {
 		return nil, err
 	}
+	pktRefs := referencedSets(filterOut.Extractions)
 	if SnaplenOverride > 0 {
 		filterOut.Capture.MaxCapLen = SnaplenOverride
 	}
@@ -190,7 +201,7 @@ func loadMulti(targets []attach.Target, filterExpr string, filters []filter.Targ
 		if filters != nil {
 			tf = filters[i]
 		}
-		insns, err := buildTracingInsns(filterOut, tf, outerMap.FD(), scratchFD, isFexit, progType)
+		insns, err := buildTracingInsns(filterOut, tf, outerMap.FD(), scratchFD, isFexit, progType, slots, pktRefs)
 		if err != nil {
 			_ = probe.Close()
 			return nil, err
@@ -264,6 +275,13 @@ func attachTracingProbe(probe *Probe, targetProg *ebpf.Program, name, funcName s
 // pkg/kunai/codegen/codegen.go (KunaiStackTop and the package doc).
 
 func compileFilter(expr string, useDSL, isFexit bool, progType ebpf.ProgramType) (codegen.Output, error) {
+	return compileFilterWithSlots(expr, useDSL, isFexit, progType, nil)
+}
+
+// compileFilterWithSlots is compileFilter plus a DSL set-slot resolver:
+// when non-nil it lets `field in @set` predicates extract packet fields
+// into host stack slots (the host does the map lookup afterward).
+func compileFilterWithSlots(expr string, useDSL, isFexit bool, progType ebpf.ProgramType, slots *pktSetSlots) (codegen.Output, error) {
 	// Empty expression == capture everything: no filter to compile,
 	// callers wrap the zero Output with their own prologue/epilogue.
 	// Centralised here so attach modes (entry/exit/xdp/tc-*) don't
@@ -293,6 +311,12 @@ func compileFilter(expr string, useDSL, isFexit bool, progType ebpf.ProgramType)
 				caps = xdphost.FexitCapabilities()
 			}
 			// XDP entry keeps zero caps: VLAN is in-band at XDP.
+		}
+		// DSL `field in @set`: hand kunai the host slot resolver so it can
+		// extract packet fields into the host key buffer (host does the map
+		// lookup after the filter — kunai stays map-agnostic).
+		if slots != nil {
+			caps.Lang.SetSlots = slots
 		}
 		out, err := kunai.Compile(expr, caps)
 		if err != nil {
@@ -445,7 +469,7 @@ const (
 	metadataSize = 16
 )
 
-func buildTracingInsns(filterOut codegen.Output, tf filter.TargetFilters, eventsFD, scratchFD int, isFexit bool, progType ebpf.ProgramType) (asm.Instructions, error) {
+func buildTracingInsns(filterOut codegen.Output, tf filter.TargetFilters, eventsFD, scratchFD int, isFexit bool, progType ebpf.ProgramType, slots *pktSetSlots, pktRefs []string) (asm.Instructions, error) {
 	var insns asm.Instructions
 	prelude, err := loadPacketPointers(progType)
 	if err != nil {
@@ -454,7 +478,16 @@ func buildTracingInsns(filterOut codegen.Output, tf filter.TargetFilters, events
 	insns = append(insns, prelude...)
 	insns = append(insns, buildArgFilter(tf.Args)...)
 	insns = append(insns, emitSetFilters(tf.Sets)...)
+	// DSL `field in @set`: zero the packet-key buffer, run the filter
+	// (kunai extracts fields into it), then look each referenced set up
+	// (miss → skip capture). ANDs with arg filters and the kunai verdict.
+	if slots != nil {
+		insns = append(insns, slots.emitPktSetKeyZeroing(pktRefs)...)
+	}
 	insns = append(insns, runFilter(filterOut.Main, scratchFD, filterScanLen(filterOut))...)
+	if slots != nil {
+		insns = append(insns, slots.emitPktSetLookups(pktRefs)...)
+	}
 	insns = append(insns, captureWithRingbuf(eventsFD, isFexit, filterOut.Capture.MaxCapLen)...)
 	insns = append(insns, asm.Mov.Imm(asm.R0, 0).WithSymbol("exit"), asm.Return())
 	// bpf2bpf subprograms (currently only DSL bpf_loop chain
@@ -803,15 +836,24 @@ func emitSetFilters(sets []filter.SetFilter) asm.Instructions {
 			insns = append(insns, asm.StoreMem(asm.R10, int16(setKeyBase+int(f.FieldOff)), asm.R3, asmSizeFor(f.FieldSize)))
 		}
 
-		insns = append(insns,
-			asm.LoadMapPtr(asm.R1, s.Map.FD()),
-			asm.Mov.Reg(asm.R2, asm.R10),
-			asm.Add.Imm(asm.R2, setKeyBase),
-			asm.FnMapLookupElem.Call(),
-			asm.JEq.Imm(asm.R0, 0, "exit"),
-		)
+		insns = append(insns, emitSetLookup(s.Map.FD(), setKeyBase)...)
 	}
 	return insns
+}
+
+// emitSetLookup emits the shared membership tail: look the pinned map
+// (mapFD) up with the key at R10+keyOff; a NULL result jumps to "exit"
+// (skip capture), so stacked lookups AND together. Clobbers R0-R5.
+// Shared by the arg-based emitSetFilters and the packet-based
+// emitPktSetLookups (setslots.go).
+func emitSetLookup(mapFD int, keyOff int16) asm.Instructions {
+	return asm.Instructions{
+		asm.LoadMapPtr(asm.R1, mapFD),
+		asm.Mov.Reg(asm.R2, asm.R10),
+		asm.Add.Imm(asm.R2, int32(keyOff)),
+		asm.FnMapLookupElem.Call(),
+		asm.JEq.Imm(asm.R0, 0, "exit"),
+	}
 }
 
 // keyHasGaps reports whether the set's key has any byte not covered by a

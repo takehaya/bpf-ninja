@@ -60,6 +60,23 @@ type LangCaps struct {
 	// XDP fexit reads stack[-48] then args[1]); host adapter packages
 	// provide ready-made implementations.
 	ActionFetcher ActionFetcher
+
+	// SetSlots resolves a `field in @name` predicate to the R10 stack
+	// slot where codegen must store the extracted packet field, so the
+	// host can look it up in its pinned map after the filter returns.
+	// nil disables `in @set`: the resolver still binds the field and
+	// checks placement, but codegen rejects the atom with
+	// ErrNotImplemented (the set/field/slot validation needs the
+	// resolver, which only codegen holds). See SetSlotResolver.
+	SetSlots SetSlotResolver
+}
+
+// HasSetAtoms reports whether the lang caps configure a set-slot
+// resolver. Parallels HasActionAtoms. Note: unlike action atoms
+// (validated in the resolver), `in @set` is validated in codegen, which
+// is where SetSlots is consulted.
+func (l LangCaps) HasSetAtoms() bool {
+	return l.SetSlots != nil
 }
 
 // HasActionAtoms reports whether the lang caps configure an action map
@@ -93,4 +110,20 @@ type HostLayout struct {
 // as a u32 (zero-extended from however the host stores it).
 type ActionFetcher interface {
 	EmitFetch(dst asm.Register) asm.Instructions
+}
+
+// SetSlotResolver maps a `field in @name` predicate to a host-owned
+// stack slot. kunai extracts the packet field and stores it there;
+// the host looks up its pinned map against those bytes after the filter
+// returns. kunai stays map-agnostic: the resolver returns only an R10
+// offset and width, never a map, FD, or BTF.
+//
+// The returned off MUST be in the host region (> KunaiStackTop, i.e.
+// closer to 0), because the extraction is written during the filter and
+// read after it; codegen rejects a slot inside kunai's own stack range.
+// size is the field width in bytes (1/2/4/8). ok is false for an unknown
+// set or a field the set's key does not contain.
+type SetSlotResolver interface {
+	SlotFor(setName, fieldName string) (off int16, size int, ok bool)
+	HasSet(setName string) bool
 }

@@ -707,9 +707,9 @@ func TestGenCaptureWhereAndsWithTopLevel(t *testing.T) {
 func TestGenCaptureMultipleClausesTakeMaxAndAndWheres(t *testing.T) {
 	p := ethIPv4TCPProgram()
 	p.Captures = []*ir.CaptureClause{
-		{Kind: ast.CapHeaders},                   // 54
-		{Kind: ast.CapHeadersPlus, Extra: 128},   // 54 + 128 = 182
-		{Kind: ast.CapHeadersPlus, Extra: 32},    // 86
+		{Kind: ast.CapHeaders},                 // 54
+		{Kind: ast.CapHeadersPlus, Extra: 128}, // 54 + 128 = 182
+		{Kind: ast.CapHeadersPlus, Extra: 32},  // 86
 	}
 	out, err := Gen(p, Capabilities{})
 	if err != nil {
@@ -1130,7 +1130,6 @@ func TestGenNoCheckRejectsFalseConst(t *testing.T) {
 		t.Fatal("expected error for NO_CHECK=false const reaching codegen")
 	}
 }
-
 
 func TestGenPredicateRejectsInt32Overflow(t *testing.T) {
 	// The resolver catches "does not fit in the field" (99999 in 16-bit

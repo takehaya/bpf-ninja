@@ -167,5 +167,3 @@ func assertCounterStoreToR10(stream asm.Instructions, slot int16) error {
 	}
 	return errors.New("no StoreMem to expected counter slot")
 }
-
-

@@ -8,7 +8,8 @@ import (
 const maxAltDepth = 16
 
 // parseLayerChain parses one or more layer_items separated by "/".
-//   layer_chain := layer_item ("/" layer_item)*
+//
+//	layer_chain := layer_item ("/" layer_item)*
 func (p *parser) parseLayerChain() ([]*ast.Layer, error) {
 	first, err := p.parseLayerItem()
 	if err != nil {
@@ -29,7 +30,8 @@ func (p *parser) parseLayerChain() ([]*ast.Layer, error) {
 }
 
 // parseLayerItem wraps a layer_atom with an optional quantifier.
-//   layer_item := layer_atom quantifier?
+//
+//	layer_item := layer_atom quantifier?
 func (p *parser) parseLayerItem() (*ast.Layer, error) {
 	layer, err := p.parseLayerAtom()
 	if err != nil {
@@ -113,7 +115,8 @@ func (p *parser) parseQuantRange(layer *ast.Layer) error {
 
 // parseLayerAtom is the fundamental layer unit: either a single
 // protocol leaf or a parenthesised alternation group.
-//   layer_atom := proto_leaf | "(" layer_alt ")"
+//
+//	layer_atom := proto_leaf | "(" layer_alt ")"
 func (p *parser) parseLayerAtom() (*ast.Layer, error) {
 	startPos := p.cur.Pos
 	switch p.cur.Kind {
@@ -162,7 +165,8 @@ func (p *parser) parseProtoLeaf(startPos ast.Position) (*ast.Layer, error) {
 
 // parseLayerAltGroup expects the leading "(" to still be the current
 // token; it consumes it and everything through the matching ")".
-//   layer_alt := layer_item ("|" layer_item)+
+//
+//	layer_alt := layer_item ("|" layer_item)+
 func (p *parser) parseLayerAltGroup(startPos ast.Position) (*ast.Layer, error) {
 	if p.depth >= maxAltDepth {
 		return nil, p.errorf(startPos, "alternation too deeply nested (max %d)", maxAltDepth)
