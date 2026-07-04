@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.19.0](https://github.com/takehaya/xdp-ninja/compare/v0.18.0...v0.19.0) (2026-07-04)
+
+
+### 🎉 Features
+
+* **cli:** --prog-name, --json for list-*, and combined list-progs/list-funcs ([#71](https://github.com/takehaya/xdp-ninja/issues/71)) ([16a7825](https://github.com/takehaya/xdp-ninja/commit/16a782564aa33331ca69f2903b42f5ea2814a5e5))
+* split capture into per-tag pcaps with --split-by-tag ([#72](https://github.com/takehaya/xdp-ninja/issues/72)) ([84c36e2](https://github.com/takehaya/xdp-ninja/commit/84c36e28c978c7ee26f776fdeb66f0557f317062))
+
+
+### 📝 Documentation
+
+* **usage:** hand-test walkthrough for the set map CLI ([#69](https://github.com/takehaya/xdp-ninja/issues/69)) ([6b5407d](https://github.com/takehaya/xdp-ninja/commit/6b5407dcb340541fcf76007aea57526e02b9e855))
+
 ## [0.18.0](https://github.com/takehaya/xdp-ninja/compare/v0.17.0...v0.18.0) (2026-07-04)
 
 
