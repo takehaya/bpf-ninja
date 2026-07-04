@@ -1,6 +1,6 @@
 # xdp-ninja DSL ドキュメント
 
-xdp-ninja の filter 式 (DSL) のドキュメント index です。tcpdump 構文 (legacy `--cbpf`) で書きにくい多段カプセル化 (GTP-U / MPLS / VXLAN / SRv6 など) を、プロトコルスタックの形のまま書けるのが目的です。DSL は xdp-ninja の default filter syntax です。
+xdp-ninja の filter 式である DSL のドキュメント index です。GTP-U や MPLS、VXLAN、SRv6 のような多段カプセル化は legacy の `--cbpf` が使う tcpdump 構文では書きにくいので、これをプロトコルスタックの形のまま書けるようにするのが目的です。DSL は xdp-ninja の default filter syntax です。
 
 ## 役割別にどこから読むか
 
@@ -44,9 +44,9 @@ filter expr  →  AST  →  IR (vocab 解決済)  →  asm.Instructions  →  ci
 ```
 
 - `eth/ipv4/tcp[dport==443]` 風の layer chain が書けます。各 layer は vocab `.p4` ファイル (`pkg/kunai/protocols/*.p4`) で定義された protocol です。
-- vocab は p4lite (P4-16 の strict subset) を Go 側の `pkg/kunai/vocab/p4lite/` で parse します。p4c で標準パースできるのが目標です (詳細は internals §5)。
+- vocab は P4-16 の strict subset である p4lite を Go 側の `pkg/kunai/vocab/p4lite/` で parse します。p4c で標準パースできるのが目標です。詳しくは internals §5 を参照してください。
 - 出力は cilium/ebpf の `asm.Instructions` で、target portable な eBPF subprogram です。kunai コアは XDP / tc 等の host 知識を持たず、host adapter は `pkg/kunai/host/<name>/` サブパッケージに局所化しています。`host/xdp` は XDP fentry/fexit、`host/tc` は TC clsact fentry/fexit です。
-- caller (`internal/program/program.go`) は `kunai.Compile(expr, caps)` に host capability (`xdphost.FexitCapabilities()` / `tchost.FexitCapabilities()` 等) を渡すことで host を選びます。zero `Capabilities` だと target-agnostic な filter (action atom 不可) が出ます。
+- caller (`internal/program/program.go`) は `kunai.Compile(expr, caps)` に host capability (`xdphost.FexitCapabilities()` / `tchost.FexitCapabilities()` 等) を渡すことで host を選びます。zero `Capabilities` だと、action atom を使えない target-agnostic な filter が出ます。
 
 ## 関連コード
 
