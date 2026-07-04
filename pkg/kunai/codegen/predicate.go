@@ -225,7 +225,7 @@ func field128RawOffset(ref *ir.FieldRef) (off int, ok bool, err error) {
 // helper so the 128-bit raw-copy path shares one definition of the formula.
 func auxStaticByteOffset(aux *ir.AuxRef) (int, error) {
 	if aux.FieldBitOff%8 != 0 {
-		return 0, fmt.Errorf("%w: aux field %s starts at bit %d (not byte-aligned)", ErrNotImplemented, aux.OutParam, aux.FieldBitOff)
+		return 0, fmt.Errorf("%w: aux field %s (%s) starts at bit %d (not byte-aligned)", ErrNotImplemented, aux.OutParam, aux.HeaderName, aux.FieldBitOff)
 	}
 	off := aux.OffsetInLayer + aux.FieldBitOff/8
 	if aux.Stack != nil {

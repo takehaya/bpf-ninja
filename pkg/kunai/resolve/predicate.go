@@ -23,7 +23,7 @@ func (r *resolver) resolveBracketPredicate(ap *ast.Predicate, layer *ir.LayerIns
 		if stk.Stack.IsIterator {
 			return nil, errorf(ap.Pos, "auxiliary header stack %q needs an index inside a bracket predicate (use `[N]` or wrap in `any(...)` / `all(...)`)", stk.OutParam)
 		}
-		return nil, errorf(ap.Pos, "auxiliary header stack %q takes a constant index inside a bracket predicate (a dynamic index needs a `where` clause)", stk.OutParam)
+		return nil, errorf(ap.Pos, "auxiliary header stack %q requires a constant index inside a bracket predicate (a dynamic index needs a `where` clause)", stk.OutParam)
 	}
 	// `in @set` extracts the field into a host key buffer that the host
 	// looks up unconditionally after the filter. That is only correct if
