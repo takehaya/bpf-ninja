@@ -182,7 +182,11 @@ func ipv6Packet(marker byte, dst net.IP) []byte {
 
 func runIPv6(t *testing.T, prog *ebpf.Program, marker byte, dst string) {
 	t.Helper()
-	if _, err := prog.Run(&ebpf.RunOptions{Data: ipv6Packet(marker, net.ParseIP(dst))}); err != nil {
+	ip := net.ParseIP(dst)
+	if ip == nil {
+		t.Fatalf("invalid test IPv6 %q", dst)
+	}
+	if _, err := prog.Run(&ebpf.RunOptions{Data: ipv6Packet(marker, ip)}); err != nil {
 		t.Fatalf("test-run: %v", err)
 	}
 }
