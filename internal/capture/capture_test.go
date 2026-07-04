@@ -6,7 +6,7 @@ import (
 )
 
 func TestParsePacket(t *testing.T) {
-	// metadata (16B): kernel_ts=12345, action=2 (PASS), mode=1 (exit), pad=0, caplen=4
+	// metadata (20B): kernel_ts=12345, action=2 (PASS), mode=1 (exit), pad=0, caplen=4, tag=7
 	pktData := []byte{0xde, 0xad, 0xbe, 0xef}
 
 	raw := make([]byte, MetadataSize+len(pktData))
@@ -15,6 +15,7 @@ func TestParsePacket(t *testing.T) {
 	raw[12] = 1                                                     // mode = exit
 	raw[13] = 0                                                     // pad
 	binary.NativeEndian.PutUint16(raw[14:16], uint16(len(pktData))) // caplen
+	binary.NativeEndian.PutUint32(raw[16:20], 7)                    // tag
 	copy(raw[MetadataSize:], pktData)
 
 	pkt, err := ParseRawSample(raw)
@@ -27,6 +28,9 @@ func TestParsePacket(t *testing.T) {
 	}
 	if pkt.Mode != 1 {
 		t.Errorf("Mode = %d, want 1", pkt.Mode)
+	}
+	if pkt.Tag != 7 {
+		t.Errorf("Tag = %d, want 7", pkt.Tag)
 	}
 	if pkt.CapLen != uint16(len(pktData)) {
 		t.Errorf("CapLen = %d, want %d", pkt.CapLen, len(pktData))
@@ -63,7 +67,7 @@ func TestParsePacketCaplenTrim(t *testing.T) {
 }
 
 func TestParsePacketTooShort(t *testing.T) {
-	raw := make([]byte, 3) // less than MetadataSize (16)
+	raw := make([]byte, 3) // less than MetadataSize (20)
 	_, err := ParseRawSample(raw)
 	if err == nil {
 		t.Fatal("expected error for short sample, got nil")

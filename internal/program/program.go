@@ -365,14 +365,12 @@ func compileFilterWithSlots(expr string, useDSL, isFexit bool, progType ebpf.Pro
 //              前で死ぬ。kunai は KunaiStackTop=-56 以深を所有するが
 //              それは runFilter 内のみ live — phase ordering で共存)
 //
-// bpf_xdp_output を使うことで:
-//   - パケットデータはカーネルが xdp_buff から直接コピー (bpf_probe_read_kernel 不要)
-//   - per-CPU event buffer map が不要
-//   - メタデータ (action, mode) だけスタック上に構築
-//
-// perf event のデータフォーマット (ユーザーランドで受け取る):
-//   [metadata (8B)] [パケットデータ (カーネルが自動付加)]
-//   metadata: u32 action + u8 mode + u8 _pad[3]
+// 実際の on-wire フォーマットの正典は internal/capture/capture.go の
+// コメント。現行は ringbuf reserve/submit で 20B のメタデータヘッダを
+// パケットの前に置く:
+//   [metadata (20B)] [パケットデータ (caplen B)]
+//   metadata: u64 kernel_ts_ns + u32 action + u8 mode + u8 _pad
+//             + u16 caplen + u32 tag
 
 // scratchBufSize is an alias for codegen.ScratchBufSize so this file's
 // existing references (map size, runFilter caps) keep their concise
@@ -466,7 +464,7 @@ const (
 	defaultCapLen = DefaultCapLen
 	// Must stay in sync with capture.MetadataSize; asserted by
 	// TestMetadataSizeMatchesCapture in metadata_size_test.go.
-	metadataSize = 16
+	metadataSize = 20
 )
 
 func buildTracingInsns(filterOut codegen.Output, tf filter.TargetFilters, eventsFD, scratchFD int, isFexit bool, progType ebpf.ProgramType, slots *pktSetSlots, pktRefs []string) (asm.Instructions, error) {
@@ -476,6 +474,9 @@ func buildTracingInsns(filterOut codegen.Output, tf filter.TargetFilters, events
 		return nil, err
 	}
 	insns = append(insns, prelude...)
+	// Default the tag to 0 before any set lookup can overwrite it, so a
+	// captured packet that matched no set (or a set-less filter) reports 0.
+	insns = append(insns, emitTagSlotZero()...)
 	insns = append(insns, buildArgFilter(tf.Args)...)
 	insns = append(insns, emitSetFilters(tf.Sets)...)
 	// DSL `field in @set`: zero the packet-key buffer, run the filter
@@ -634,6 +635,7 @@ func runFilter(filter asm.Instructions, scratchFD, scanLen int) asm.Instructions
 //
 // Local stack slots used here:
 //
+//	stack[-8]  = u64 tag slot (low 32 bits = set-map value, 0 if none)
 //	stack[-32] = reserved-slot ptr (PTR_TO_MEM, mem_size = metadataSize + maxCapLen)
 //	stack[-40] = u32 saved copy_size (preserved across the
 //	             bpf_probe_read_kernel call, which clobbers R0..R5)
@@ -698,7 +700,14 @@ func captureWithRingbuf(eventsFD int, isFexit bool, maxCapLen int) asm.Instructi
 		asm.StoreMem(asm.R0, 14, asm.R3, asm.Half),
 	)
 
-	// --- bpf_probe_read_kernel(R0 + 16, copy_size, packet_ptr) ---
+	// --- Write tag metadata at slot[16..20] (0 unless a set matched) ---
+	// tagSlot is a full 8-byte slot; the low 32 bits go into the u32 field.
+	insns = append(insns,
+		asm.LoadMem(asm.R1, asm.R10, tagSlot, asm.DWord),
+		asm.StoreMem(asm.R0, 16, asm.R1, asm.Word),
+	)
+
+	// --- bpf_probe_read_kernel(R0 + 20, copy_size, packet_ptr) ---
 	insns = append(insns,
 		asm.Mov.Reg(asm.R1, asm.R0), asm.Add.Imm(asm.R1, int32(metadataSize)),
 		asm.Mov.Reg(asm.R2, asm.R3),
@@ -836,23 +845,70 @@ func emitSetFilters(sets []filter.SetFilter) asm.Instructions {
 			insns = append(insns, asm.StoreMem(asm.R10, int16(setKeyBase+int(f.FieldOff)), asm.R3, asmSizeFor(f.FieldSize)))
 		}
 
-		insns = append(insns, emitSetLookup(s.Map.FD(), setKeyBase)...)
+		insns = append(insns, emitSetLookup(s.Map.FD(), setKeyBase, int(s.Map.ValueSize()))...)
 	}
 	return insns
 }
 
+// tagSlot holds the matched set's value (the tag) between the set lookup
+// and the capture epilogue that writes it into the metadata. It is a full
+// 8-byte slot at -8 (a sub-register 4-byte stack fill is rejected by the
+// 6.1 verifier as "invalid size of register fill"), used by nobody else:
+// clear of the pkt-key buffer ([-40,-24)), the epilogue slots
+// (-16/-32/-40/-48/-56), and kunai's region (KunaiStackTop=-56). Always
+// zeroed in the prelude so the no-set path yields tag 0.
+const tagSlot = -8
+
+// emitTagSlotZero defaults tagSlot to 0 (no 64-bit store-immediate in the
+// BPF ISA, so zero via a register).
+func emitTagSlotZero() asm.Instructions {
+	return asm.Instructions{
+		asm.Mov.Imm(asm.R3, 0),
+		asm.StoreMem(asm.R10, tagSlot, asm.R3, asm.DWord),
+	}
+}
+
 // emitSetLookup emits the shared membership tail: look the pinned map
 // (mapFD) up with the key at R10+keyOff; a NULL result jumps to "exit"
-// (skip capture), so stacked lookups AND together. Clobbers R0-R5.
-// Shared by the arg-based emitSetFilters and the packet-based
-// emitPktSetLookups (setslots.go).
-func emitSetLookup(mapFD int, keyOff int16) asm.Instructions {
-	return asm.Instructions{
+// (skip capture), so stacked lookups AND together. On a hit it copies the
+// map value (the tag, tagSize bytes at value offset 0) into tagSlot so the
+// capture epilogue can carry it out; stacked lookups store in source order,
+// so the last matched set wins. tagSize is the map's value width (1/2/4/8);
+// narrow loads zero-extend and an 8-byte value keeps only its low 32 bits
+// when written to the u32 metadata field. Clobbers R0-R5. Shared by the
+// arg-based emitSetFilters and the packet-based emitPktSetLookups
+// (setslots.go).
+func emitSetLookup(mapFD int, keyOff int16, tagSize int) asm.Instructions {
+	insns := asm.Instructions{
 		asm.LoadMapPtr(asm.R1, mapFD),
 		asm.Mov.Reg(asm.R2, asm.R10),
 		asm.Add.Imm(asm.R2, int32(keyOff)),
 		asm.FnMapLookupElem.Call(),
 		asm.JEq.Imm(asm.R0, 0, "exit"),
+	}
+	// R0 = value ptr (non-NULL past the jump). Narrow loads zero-extend R1,
+	// so the full-width store into tagSlot is correct for every width.
+	if tagSize > 0 {
+		insns = append(insns,
+			asm.LoadMem(asm.R1, asm.R0, 0, tagLoadSize(tagSize)),
+			asm.StoreMem(asm.R10, tagSlot, asm.R1, asm.DWord),
+		)
+	}
+	return insns
+}
+
+// tagLoadSize maps a map value width (1/2/4/8) to the asm load size used to
+// pull the tag out of the looked-up value.
+func tagLoadSize(width int) asm.Size {
+	switch {
+	case width >= 8:
+		return asm.DWord
+	case width >= 4:
+		return asm.Word
+	case width == 2:
+		return asm.Half
+	default:
+		return asm.Byte
 	}
 }
 

@@ -96,6 +96,7 @@ type Packet struct {
 	Action    uint32 // XDP action (fexit only)
 	Mode      uint8  // 0=entry(fentry), 1=exit(fexit), 2=xdp-native
 	CapLen    uint16 // bytes the BPF side actually copied into Data
+	Tag       uint32 // set-map value of the matched entry (0 when no set matched)
 }
 
 // XDP actions for display.
@@ -135,22 +136,24 @@ func NewReader(eventsMap *ebpf.Map, _ int) (*Reader, error) {
 
 // Ringbuf record layout emitted by captureWithRingbuf / captureXDPNative:
 //
-//	RawSample = [metadata (16B)] [packet bytes (caplen B)] [trailing slack]
+//	RawSample = [metadata (20B)] [packet bytes (caplen B)] [trailing slack]
 //	metadata:
 //	  u64 kernel_ts_ns (offset 0)  — bpf_ktime_get_ns() at packet ingest
 //	  u32 action       (offset 8)
 //	  u8  mode         (offset 12)
 //	  u8  _pad         (offset 13)
 //	  u16 caplen       (offset 14)
+//	  u32 tag          (offset 16) — set-map value of the matched entry, 0 if none
 //
 // All multi-byte fields are host-endian: BPF stores via asm.StoreMem
 // produce native-endian writes, so readers must use binary.NativeEndian.
 const (
-	MetadataSize   = 16
+	MetadataSize   = 20
 	OffsetKernelTs = 0
 	OffsetAction   = 8
 	OffsetMode     = 12
 	OffsetCapLen   = 14
+	OffsetTag      = 16
 )
 
 // RecordKernelTs reads the kernel_ts_ns field from a raw ringbuf record.
@@ -262,6 +265,7 @@ func ParseRawSample(raw []byte) (Packet, error) {
 		Action:    binary.NativeEndian.Uint32(raw[OffsetAction : OffsetAction+4]),
 		Mode:      raw[OffsetMode],
 		CapLen:    caplen,
+		Tag:       binary.NativeEndian.Uint32(raw[OffsetTag : OffsetTag+4]),
 		Data:      raw[MetadataSize:end],
 	}, nil
 }
