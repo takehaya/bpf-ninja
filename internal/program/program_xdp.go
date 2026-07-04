@@ -271,7 +271,7 @@ func captureXDPNative(eventsFD int, maxCapLen int) asm.Instructions {
 		asm.LoadMem(asm.R1, asm.R10, -48, asm.DWord),
 		asm.StoreMem(asm.R0, 0, asm.R1, asm.DWord),
 
-		// --- Write remaining metadata into slot[8..14] ---
+		// --- Write action/mode/pad into slot[8..14] (caplen 14, tag 16 later) ---
 		asm.StoreImm(asm.R0, 8, int64(xdpPass), asm.Word),
 		asm.StoreImm(asm.R0, 12, int64(xdpModeNative), asm.Byte),
 		asm.StoreImm(asm.R0, 13, 0, asm.Byte),

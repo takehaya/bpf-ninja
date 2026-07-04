@@ -2,6 +2,7 @@ package output
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -40,20 +41,24 @@ func TagMergedPath(base string, tag uint32) string {
 
 // MergeTagShards discovers every <stem>.cpu<N>.<tag><ext> shard file left by
 // a split capture and merges the shards of each tag into <stem>.<tag><ext>.
-// Discovery is by glob, so it works whether the capture shut down cleanly
-// (in-process) or was killed and is being reconciled later by the `merge`
-// subcommand. The shard files are left in place.
+// Discovery reads the output directory and matches names with a regex, so a
+// -w path containing glob metacharacters (`[`, `?`, ...) is handled
+// correctly. It works whether the capture shut down cleanly (in-process) or
+// was killed and is being reconciled later by the `merge` subcommand. The
+// shard files are left in place.
 func MergeTagShards(basePath string, isFexit bool) error {
-	stem, ext := splitStem(basePath)
-	re := regexp.MustCompile(`^` + regexp.QuoteMeta(stem) + `\.cpu\d+\.(\d+)` + regexp.QuoteMeta(ext) + `$`)
+	ext := filepath.Ext(basePath)
+	dir := filepath.Dir(basePath)
+	baseStem := strings.TrimSuffix(filepath.Base(basePath), ext)
+	re := regexp.MustCompile(`^` + regexp.QuoteMeta(baseStem) + `\.cpu\d+\.(\d+)` + regexp.QuoteMeta(ext) + `$`)
 
-	matches, err := filepath.Glob(stem + ".cpu*")
+	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return fmt.Errorf("globbing shard files: %w", err)
+		return fmt.Errorf("reading output directory %s: %w", dir, err)
 	}
 	tagFiles := map[uint32][]string{}
-	for _, m := range matches {
-		sm := re.FindStringSubmatch(m)
+	for _, e := range entries {
+		sm := re.FindStringSubmatch(e.Name())
 		if sm == nil {
 			continue
 		}
@@ -61,7 +66,7 @@ func MergeTagShards(basePath string, isFexit bool) error {
 		if err != nil {
 			continue
 		}
-		tagFiles[uint32(tag)] = append(tagFiles[uint32(tag)], m)
+		tagFiles[uint32(tag)] = append(tagFiles[uint32(tag)], filepath.Join(dir, e.Name()))
 	}
 
 	tags := make([]uint32, 0, len(tagFiles))

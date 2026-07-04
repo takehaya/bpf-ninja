@@ -86,6 +86,41 @@ func TestMergeTagShards(t *testing.T) {
 	}
 }
 
+// TestMergeTagShardsGlobMeta checks that a -w base path containing glob
+// metacharacters (which filepath.Glob would misinterpret) still discovers
+// and merges its shards, since discovery reads the directory instead.
+func TestMergeTagShardsGlobMeta(t *testing.T) {
+	dir := t.TempDir()
+	base := filepath.Join(dir, "cap[1]?.pcap") // '[' and '?' are glob metachars
+	epoch := time.Unix(1700000000, 0).UTC()
+
+	writeShardFile(t, TagShardPath(base, 0, 3), epoch, []int{1, 2})
+
+	if err := MergeTagShards(base, false); err != nil {
+		t.Fatalf("MergeTagShards: %v", err)
+	}
+	merged := TagMergedPath(base, 3)
+	f, err := os.Open(merged)
+	if err != nil {
+		t.Fatalf("open merged %s: %v", merged, err)
+	}
+	defer func() { _ = f.Close() }()
+	r, err := pcapgo.NewNgReader(f, pcapgo.DefaultNgReaderOptions)
+	if err != nil {
+		t.Fatalf("NgReader: %v", err)
+	}
+	n := 0
+	for {
+		if _, _, err := r.ReadPacketData(); err != nil {
+			break
+		}
+		n++
+	}
+	if n != 2 {
+		t.Errorf("merged packet count = %d, want 2", n)
+	}
+}
+
 func equalInts(a, b []int) bool {
 	if len(a) != len(b) {
 		return false
