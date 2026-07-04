@@ -239,11 +239,29 @@ func (w *Writer) Close() error {
 // `xdp-ninja ... | tcpdump -r -`) need to see data before the
 // pcapgo bufio fills, otherwise they appear stuck.
 func (w *Writer) startStdoutFlusher() {
+	w.startFlusher(stdoutFlushInterval)
+}
+
+// EnablePeriodicFlush starts a background flusher on a file writer so its
+// on-disk pcap-ng stays current within interval — a reader can copy or tail
+// the file mid-capture and, once writes to it stop, it is complete after at
+// most one interval. No-op if a flusher is already running (stdout writers
+// start one in NewWriter).
+func (w *Writer) EnablePeriodicFlush(interval time.Duration) {
+	if w.flushStop != nil {
+		return
+	}
+	w.startFlusher(interval)
+}
+
+// startFlusher runs a ticker goroutine that Flush()es every interval until
+// Close stops it. Flush holds flushMu, so it never races the writes.
+func (w *Writer) startFlusher(interval time.Duration) {
 	w.flushStop = make(chan struct{})
 	w.flushDone = make(chan struct{})
 	go func() {
 		defer close(w.flushDone)
-		ticker := time.NewTicker(stdoutFlushInterval)
+		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {
 			select {

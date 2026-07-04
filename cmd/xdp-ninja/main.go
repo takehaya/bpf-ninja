@@ -147,6 +147,10 @@ var flags = []cli.Flag{
 		Usage: "dump ringbuf records verbatim to per-CPU .raw files; reconstruct standard pcap-ng offline via `xdp-ninja convert`",
 	},
 	&cli.BoolFlag{
+		Name:  "split-by-tag",
+		Usage: "route matched packets to a separate pcap per set-map value (tag): -w out.pcap yields out.<tag>.pcap. requires -w (not stdout); live per-CPU files are flushed each second so they can be pulled mid-capture",
+	},
+	&cli.BoolFlag{
 		Name:  "fast-reader",
 		Usage: "use the in-tree mmap+atomic batch ringbuf reader instead of cilium/ebpf's per-record API; supported in both --raw-dump and pcap-ng paths",
 	},
@@ -269,7 +273,7 @@ Examples:
   xdp-ninja -i eth0 -w out.pcap`,
 		Flags:                 flags,
 		Action:                run,
-		Commands:              []*cli.Command{convertCommand, setCommand},
+		Commands:              []*cli.Command{convertCommand, setCommand, mergeCommand},
 		EnableShellCompletion: true,
 	}
 
@@ -327,6 +331,19 @@ func run(ctx context.Context, cmd *cli.Command) error {
 	if mib := cmd.Int("in-memory-buffer"); mib > 0 {
 		if !cmd.Bool("raw-dump") {
 			return fmt.Errorf("--in-memory-buffer requires --raw-dump")
+		}
+	}
+	if cmd.Bool("split-by-tag") {
+		// Splitting routes packets into per-tag files, so it needs a file
+		// base to derive names from; stdout is a single stream, and the
+		// raw/null paths do not produce pcap files to split.
+		switch {
+		case cmd.String("write") == "":
+			return fmt.Errorf("--split-by-tag requires -w <path> (stdout is a single stream and cannot be split)")
+		case cmd.Bool("raw-dump"):
+			return fmt.Errorf("--split-by-tag cannot be combined with --raw-dump")
+		case cmd.Bool("null-output"):
+			return fmt.Errorf("--split-by-tag cannot be combined with --null-output")
 		}
 	}
 	if cmd.Bool("rx-hwts") {
@@ -802,11 +819,23 @@ func runCaptureLoop(cmd *cli.Command, probe *program.Probe, isFexit bool, label 
 	if basePath != "" && !cmd.Bool("raw-dump") && !cmd.Bool("null-output") {
 		// captureLoopSharded returns on Ctrl-C (or -c). Announce the
 		// post-capture merge so the pause isn't mistaken for a hang.
-		fmt.Fprintf(os.Stderr, "merging %d shard(s) into %s ...\n", len(probe.InnerMaps), basePath)
-		if err := output.MergeShardFiles(basePath, len(probe.InnerMaps), isFexit); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: merging shards into %s: %v\n", basePath, err)
+		if cmd.Bool("split-by-tag") {
+			// Split capture wrote <base>.cpuN.<tag> files; merge each tag's
+			// shards into <base>.<tag>. A kill skips this — `xdp-ninja merge`
+			// reconciles the leftover per-CPU files later.
+			fmt.Fprintf(os.Stderr, "merging per-CPU tag shards for %s ...\n", basePath)
+			if err := output.MergeTagShards(basePath, isFexit); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: merging tag shards for %s: %v\n", basePath, err)
+			} else {
+				fmt.Fprintf(os.Stderr, "merged per tag (per-CPU .cpuN.<tag> kept)\n")
+			}
 		} else {
-			fmt.Fprintf(os.Stderr, "merged into %s (per-CPU .cpuN kept)\n", basePath)
+			fmt.Fprintf(os.Stderr, "merging %d shard(s) into %s ...\n", len(probe.InnerMaps), basePath)
+			if err := output.MergeShardFiles(basePath, len(probe.InnerMaps), isFexit); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: merging shards into %s: %v\n", basePath, err)
+			} else {
+				fmt.Fprintf(os.Stderr, "merged into %s (per-CPU .cpuN kept)\n", basePath)
+			}
 		}
 	}
 	return nil
@@ -823,6 +852,9 @@ func captureLoopSharded(cmd *cli.Command, inners []*ebpf.Map, isFexit bool, labe
 	rawDump := cmd.Bool("raw-dump")
 	if rawDump {
 		return captureLoopShardedRaw(cmd, inners, label, basePath)
+	}
+	if cmd.Bool("split-by-tag") && !null {
+		return captureLoopShardedSplit(cmd, inners, isFexit, label, basePath)
 	}
 
 	// stdout (no -w) merges every shard into a single pcap-ng stream,
@@ -886,7 +918,77 @@ func captureLoopSharded(cmd *cli.Command, inners []*ebpf.Map, isFexit bool, labe
 		}
 	}
 
+	return pumpShards(cmd, inners, label, writeShard)
+}
+
+// captureLoopShardedSplit is the --split-by-tag path: each shard writes a
+// live pcap per tag it sees (<base>.cpu<N>.<tag><ext>), lazily opened on
+// first sight and flushed every second so a reader can pull a tag's file
+// mid-capture. Each shard's tag->writer map is owned by its own goroutine,
+// so there is no lock on the write path. runCaptureLoop merges the per-CPU
+// tag files into <base>.<tag><ext> on a clean shutdown.
+func captureLoopShardedSplit(cmd *cli.Command, inners []*ebpf.Map, isFexit bool, label, basePath string) error {
+	// One tag->writer map per shard; only ever touched by that shard's
+	// goroutine (writeShard runs single-threaded per shardIdx).
+	shardWriters := make([]map[uint32]*output.Writer, len(inners))
+	for i := range shardWriters {
+		shardWriters[i] = map[uint32]*output.Writer{}
+	}
+	defer func() {
+		for _, m := range shardWriters {
+			for _, w := range m {
+				_ = w.Close()
+			}
+		}
+	}()
+
+	writerFor := func(shardIdx int, tag uint32) (*output.Writer, error) {
+		m := shardWriters[shardIdx]
+		if w := m[tag]; w != nil {
+			return w, nil
+		}
+		w, err := output.NewWriter(output.TagShardPath(basePath, shardIdx, tag), isFexit)
+		if err != nil {
+			return nil, err
+		}
+		// Keep the live file current so it is complete within a second of
+		// the last write (e.g. after its set entry is removed).
+		w.EnablePeriodicFlush(time.Second)
+		m[tag] = w
+		return w, nil
+	}
+
+	writeShard := func(shardIdx int, pkts []capture.Packet) error {
+		// Write same-tag runs as batches; packets from one set-map value
+		// tend to arrive together, so this stays close to WriteBatch cost.
+		for i := 0; i < len(pkts); {
+			tag := pkts[i].Tag
+			j := i + 1
+			for j < len(pkts) && pkts[j].Tag == tag {
+				j++
+			}
+			w, err := writerFor(shardIdx, tag)
+			if err != nil {
+				return err
+			}
+			if err := w.WriteBatch(pkts[i:j]); err != nil {
+				return err
+			}
+			i = j
+		}
+		return nil
+	}
+
+	return pumpShards(cmd, inners, label, writeShard)
+}
+
+// pumpShards runs the per-shard reader, handing each batch to writeShard,
+// until SIGINT/SIGTERM (or the -c count is reached). Write errors are
+// counted and the first is reported at the end rather than aborting the
+// capture. Shared by the plain and split-by-tag pcap paths.
+func pumpShards(cmd *cli.Command, inners []*ebpf.Map, label string, writeShard func(int, []capture.Packet) error) error {
 	fastReader := cmd.Bool("fast-reader")
+	null := cmd.Bool("null-output")
 	count := int64(cmd.Int("count"))
 	var captured atomic.Int64
 	var writeErrCount atomic.Int64
