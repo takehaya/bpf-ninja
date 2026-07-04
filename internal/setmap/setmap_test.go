@@ -128,7 +128,7 @@ func TestParseSchemaIPv6(t *testing.T) {
 		t.Fatalf("specs = %+v", specs)
 	}
 	if f := specs[0]; f.Name != "sid" || f.Size != 16 || !f.IsBytes {
-		t.Errorf("spec = %+v, want {sid 16 align1 bytes}", f)
+		t.Errorf("spec = %+v, want {sid, size 16, bytes}", f)
 	}
 }
 
