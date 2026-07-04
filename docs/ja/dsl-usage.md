@@ -467,8 +467,8 @@ sudo xdp-ninja -i ens2f0 --prog-name upf_dl_v4 --prog-name upf_dl_v6 \
 # 到達ツリーを JSON で
 sudo xdp-ninja -i ens2f0 --list-progs --json | jq '.[].reachable[].name'
 
-# 到達ツリー + 各プログラムの BTF 関数を一括で
-sudo xdp-ninja -i ens2f0 --list-progs --list-funcs
+# 到達ツリー + 各プログラムの BTF 関数を JSON で一括取得
+sudo xdp-ninja -i ens2f0 --list-progs --list-funcs --json | jq '.[].reachable[] | {name, funcs}'
 ```
 
 - 全アタッチポイントが 1本の共有 ringbuf に emit するので、出力は通常どおり 1 つの pcap に時刻順で入ります (`-w` なら終了時マージ、stdout なら直列化ストリーム)。
