@@ -281,6 +281,26 @@ func TestAuxStackSrv6SegmentsStaticIndex(t *testing.T) {
 	r.MustReject(t, mismatch, "first segment != fc00::1 (= fc00::beef)")
 }
 
+// TestAuxStackSrv6SegmentsStaticIndexBracket pins the same static-index
+// segment access written as a bracket predicate,
+// `srv6[segments[0].addr == fc00::1]`, which now resolves the same way the
+// where form does. Proves the bracket path lands on the right packet
+// bytes at the packet level (the offset fold is correct).
+func TestAuxStackSrv6SegmentsStaticIndexBracket(t *testing.T) {
+	r := New(t, "eth/ipv6/srv6[segments[0].addr == fc00::1]/tcp")
+	matchPkt := BuildSRv6(t, SRv6Opts{
+		Segments:        []net.IP{net.ParseIP("fc00::1")},
+		InnerNextHeader: 6,
+	})
+	r.MustMatch(t, matchPkt, "first segment == fc00::1 (bracket form)")
+
+	mismatch := BuildSRv6(t, SRv6Opts{
+		Segments:        []net.IP{net.ParseIP("fc00::beef")},
+		InnerNextHeader: 6,
+	})
+	r.MustReject(t, mismatch, "first segment != fc00::1 (= fc00::beef)")
+}
+
 // TestAuxStackSrv6SegmentsStaticCIDRMatch pins the static-stack +
 // IPv6 CIDR aux combination — `srv6.segments[0].addr == fc00::/16`
 // emits the same R5 = layer_anchor + OffsetInLayer + Static*ElemSize
