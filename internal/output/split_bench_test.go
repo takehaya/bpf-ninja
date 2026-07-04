@@ -1,6 +1,7 @@
 package output
 
 import (
+	"os"
 	"testing"
 	"time"
 
@@ -21,6 +22,9 @@ import (
 // is the flag ON; the TagsN suffix is the number of DISTINCT tags (1/4/16),
 // not a batch count, and Clustered/Interleaved is how those tags are ordered
 // within a batch (contiguous same-tag runs vs per-packet round-robin).
+//
+// Each benchmark pins XDP_NINJA_FAST_PCAPNG off so it measures the default
+// pcapng writer regardless of the caller's environment.
 
 const benchBatch = 256
 
@@ -40,12 +44,16 @@ func benchPackets(n int, tag func(i int) uint32) []capture.Packet {
 
 func nullWriter(b *testing.B) *Writer {
 	b.Helper()
-	w, err := NewWriter("/dev/null", false)
+	w, err := NewWriter(os.DevNull, false)
 	if err != nil {
 		b.Fatalf("NewWriter: %v", err)
 	}
 	return w
 }
+
+// pinStdWriter forces the default pcapng writer so the measurement does not
+// depend on whether the caller exported XDP_NINJA_FAST_PCAPNG.
+func pinStdWriter(b *testing.B) { b.Setenv("XDP_NINJA_FAST_PCAPNG", "") }
 
 // clustered: same-tag packets arrive contiguously (the common case — one
 // set-map value's flows batch together). numTags contiguous runs per batch.
@@ -69,6 +77,7 @@ func reportPerPkt(b *testing.B) {
 // BenchmarkPlain is the non-split baseline: one writer, one WriteBatch per
 // batch.
 func BenchmarkPlain(b *testing.B) {
+	pinStdWriter(b)
 	w := nullWriter(b)
 	defer func() { _ = w.Close() }()
 	pkts := benchPackets(benchBatch, func(int) uint32 { return 0 })
@@ -85,6 +94,7 @@ func BenchmarkPlain(b *testing.B) {
 // benchmarkSplit mirrors captureLoopShardedSplit.writeShard: run-length group
 // the batch by tag and WriteBatch each run into its per-tag writer.
 func benchmarkSplit(b *testing.B, tag func(i int) uint32) {
+	pinStdWriter(b)
 	writers := map[uint32]*Writer{}
 	defer func() {
 		for _, w := range writers {
