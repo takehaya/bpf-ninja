@@ -426,8 +426,17 @@ mergecap -w merged.pcap path.pcap.cpu*
 
 多段 dispatcher (cpu_dispatch → CPUMAP → 方向別ハンドラ) では capture point が方向ごとに別プログラムへ散り、さらに noinline サブ関数は呼び出し元プログラムごとに実体を持ちます (例: `pgwu_capture_point_dl` が v4/v6 ハンドラ両方に入る)。UL + DL v4 + DL v6 の全網羅は従来3回の起動が必要でしたが、1回で張れます。
 
+### `--list-progs` で到達可能プログラムを洗い出す
+
+`--list-progs` は、起点プログラム (`-i` の XDP または `-p` の ID) から**到達できるプログラムを推移的に**辿って一覧します。辿るエッジは 2 種類です。
+
+- **tail call**: `PROG_ARRAY` (`bpf_tail_call`) のエントリ先。
+- **redirect**: `CPUMAP` / `DEVMAP` / `DEVMAP_HASH` のエントリに attach された XDP プログラム (`bpf_redirect_map()` の飛び先)。
+
+さらにその先も同様に辿るので、`cpu_dispatch → CPUMAP[0..N] → 方向別ハンドラ → (別の redirect)` のような多段構成でも、末端の実プログラム ID までまとめて出ます。出力の prog ID を `-p` に渡してアタッチします。
+
 ```bash
-# --list-progs で dispatcher から末端の prog ID を洗い出し
+# --list-progs で dispatcher から末端の prog ID を推移的に洗い出し
 sudo xdp-ninja -i ens2f0 --list-progs
 
 # UL + DL (v4/v6 両実体) を1回でアタッチ。--func pgwu_capture_point_dl は
