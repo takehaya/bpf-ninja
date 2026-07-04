@@ -72,6 +72,10 @@ var flags = []cli.Flag{
 		Name:  "list-progs",
 		Usage: "list programs reachable from the target: tail calls + CPUMAP/DEVMAP/DEVMAP_HASH redirect targets (followed transitively), then exit",
 	},
+	&cli.BoolFlag{
+		Name:  "json",
+		Usage: "emit --list-progs / --list-funcs / --list-params output as JSON on stdout instead of human-readable text on stderr",
+	},
 	&cli.StringSliceFlag{
 		Name:  "arg-filter",
 		Usage: "filter by function argument value (requires --func); format: param=value, param>=val, param<=val, param=min..max, or @NAME to match against a --set pinned-map set",
@@ -393,12 +397,32 @@ func run(ctx context.Context, cmd *cli.Command) error {
 	// CPUMAP/DEVMAP/DEVMAP_HASH redirect targets, followed
 	// transitively) for each target, then exit
 	if cmd.Bool("list-progs") {
+		asJSON := cmd.Bool("json")
+		withFuncs := cmd.Bool("list-funcs")
+		var jsonOut []progsTargetJSON
 		for _, info := range infos {
-			fmt.Fprintf(os.Stderr, "id=%-6d %s\n", info.ProgID, info.FuncName)
-
 			progs, err := attach.WalkReachablePrograms(info.Program, info.ProgID)
 			if err != nil {
 				return err
+			}
+			if asJSON {
+				jt := progsTargetJSON{ID: info.ProgID, Func: info.FuncName, Reachable: []progNodeJSON{}}
+				if withFuncs {
+					jt.Funcs = listNodeFuncs(info.ProgID, info)
+				}
+				for _, p := range progs {
+					n := progNodeJSON{ID: p.ProgID, Name: p.ProgName, Via: p.Via, Keys: p.Keys, Depth: p.Depth, Parent: p.ParentID}
+					if withFuncs {
+						n.Funcs = listNodeFuncs(p.ProgID, nil)
+					}
+					jt.Reachable = append(jt.Reachable, n)
+				}
+				jsonOut = append(jsonOut, jt)
+				continue
+			}
+			fmt.Fprintf(os.Stderr, "id=%-6d %s\n", info.ProgID, info.FuncName)
+			if withFuncs {
+				printNodeFuncs(info.ProgID, info, "    ")
 			}
 			byParent := map[uint32][]attach.ReachableProgram{}
 			for _, p := range progs {
@@ -409,16 +433,26 @@ func run(ctx context.Context, cmd *cli.Command) error {
 				for _, c := range byParent[parent] {
 					fmt.Fprintf(os.Stderr, "%sid=%-6d %s (%s[%s])\n",
 						indent, c.ProgID, c.ProgName, c.Via, formatKeyRanges(c.Keys))
+					if withFuncs {
+						printNodeFuncs(c.ProgID, nil, indent+"    ")
+					}
 					printTree(c.ProgID, indent+"  ")
 				}
 			}
 			printTree(info.ProgID, "  ")
 		}
+		if asJSON {
+			return emitJSON(jsonOut)
+		}
 		return nil
 	}
 
-	// --list-funcs: print available BTF functions per target and exit
+	// --list-funcs: print available BTF functions per target and exit.
+	// (When combined with --list-progs, the funcs are printed per reachable
+	// node in the list-progs handler above, which returns first.)
 	if cmd.Bool("list-funcs") {
+		asJSON := cmd.Bool("json")
+		var jsonOut []funcsTargetJSON
 		for _, info := range infos {
 			spec, err := info.BTFSpecCached()
 			if err != nil {
@@ -428,10 +462,17 @@ func run(ctx context.Context, cmd *cli.Command) error {
 			if err != nil {
 				return err
 			}
+			if asJSON {
+				jsonOut = append(jsonOut, funcsTargetJSON{ID: info.ProgID, Funcs: funcsToJSON(funcs)})
+				continue
+			}
 			fmt.Fprintf(os.Stderr, "BTF functions in program (id=%d):\n", info.ProgID)
 			for _, f := range funcs {
 				fmt.Fprintf(os.Stderr, "  %-40s [%s]\n", f.Name, f.Linkage)
 			}
+		}
+		if asJSON {
+			return emitJSON(jsonOut)
 		}
 		return nil
 	}
@@ -464,7 +505,17 @@ func run(ctx context.Context, cmd *cli.Command) error {
 	// Params were resolved once from each program's cached BTF during
 	// ResolveTargets.
 	if cmd.Bool("list-params") {
+		asJSON := cmd.Bool("json")
+		var jsonOut []paramsTargetJSON
 		for _, t := range targets {
+			if asJSON {
+				jt := paramsTargetJSON{Func: t.FuncName, ID: t.ProgID}
+				for _, p := range t.Params {
+					jt.Params = append(jt.Params, paramJSON{Name: p.Name, Index: p.Index, Size: p.Size, Signed: p.Signed})
+				}
+				jsonOut = append(jsonOut, jt)
+				continue
+			}
 			fmt.Fprintf(os.Stderr, "Filterable parameters for %s (id=%d):\n", t.FuncName, t.ProgID)
 			if len(t.Params) == 0 {
 				fmt.Fprintf(os.Stderr, "  (none - only integer parameters after the first argument are supported)\n")
@@ -476,6 +527,9 @@ func run(ctx context.Context, cmd *cli.Command) error {
 				}
 				fmt.Fprintf(os.Stderr, "  %-20s [%d bytes, %s, arg index %d]\n", p.Name, p.Size, signStr, p.Index)
 			}
+		}
+		if asJSON {
+			return emitJSON(jsonOut)
 		}
 		return nil
 	}
@@ -1299,6 +1353,44 @@ func findTargets(cmd *cli.Command, isTC bool) ([]*attach.ProgInfo, error) {
 		infos = append(infos, info)
 	}
 	return infos, nil
+}
+
+// fetchNodeFuncs resolves the BTF functions of one reachable-tree node for
+// the combined --list-progs --list-funcs view. root is non-nil only for the
+// already-open root program; other nodes are opened by ID and closed here. A
+// node without BTF (or that fails to open) yields no funcs rather than an
+// error, so one unreadable node does not abort the whole listing.
+func fetchNodeFuncs(progID uint32, root *attach.ProgInfo) []attach.FuncInfo {
+	info := root
+	if info == nil {
+		opened, err := attach.FindXDPProgramByID(progID)
+		if err != nil {
+			return nil
+		}
+		defer func() { _ = opened.Program.Close() }()
+		info = opened
+	}
+	spec, err := info.BTFSpecCached()
+	if err != nil {
+		return nil
+	}
+	funcs, err := attach.ListFuncsFromSpec(spec)
+	if err != nil {
+		return nil
+	}
+	return funcs
+}
+
+// listNodeFuncs is fetchNodeFuncs in the JSON shape.
+func listNodeFuncs(progID uint32, root *attach.ProgInfo) []funcJSON {
+	return funcsToJSON(fetchNodeFuncs(progID, root))
+}
+
+// printNodeFuncs prints a node's BTF functions indented under it (text mode).
+func printNodeFuncs(progID uint32, root *attach.ProgInfo, indent string) {
+	for _, f := range fetchNodeFuncs(progID, root) {
+		fmt.Fprintf(os.Stderr, "%s%-40s [%s]\n", indent, f.Name, f.Linkage)
+	}
 }
 
 // resolveProgNames maps --prog-name values to program IDs against the root
