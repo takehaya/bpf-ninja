@@ -645,12 +645,13 @@ value 型は既定で `tag:u32` です。1/2/4/8 バイトの単一整数なら 
 
 ### 複数の値を照合する
 
-複合キーはフィールド間が AND で 1 lookup です。OR はエントリを複数入れて表現します。すなわち集合は直和です。
+複合キーはフィールド間が AND で 1 lookup です。OR は同じ集合にエントリを複数入れて表現します。各エントリは独立した 1 つのキーで、マッチはそのいずれかに当たるかどうかです。
 
 ```bash
-# (imsi=A かつ teid=X) または (imsi=B かつ teid=Y) を照合したい
-sudo xdp-ninja set add $PIN imsi=A_value teid=0x1000 tag=1
-sudo xdp-ninja set add $PIN imsi=B_value teid=0x2000 tag=1
+# (imsi=999990000000001 かつ teid=0x1000) または
+# (imsi=999990000000777 かつ teid=0x2000) を照合したい
+sudo xdp-ninja set add $PIN imsi=999990000000001 teid=0x1000 tag=1
+sudo xdp-ninja set add $PIN imsi=999990000000777 teid=0x2000 tag=1
 ```
 
 複数の集合を 1 つのフィルタで組み合わせることもできます。`--set` は複数定義でき、DSL では `layer[a in @s1, b in @s2]` のようにカンマ併記します。ブラケット内のカンマは AND なので、両方がそれぞれの集合に当たったときだけ通ります。
@@ -665,7 +666,7 @@ sudo xdp-ninja -i eth0 --mode xdp \
   'eth/ipv4/tcp[sport in @src, dport in @dst]'
 ```
 
-どのエントリが効いているかは、フィルタを流しながら別ターミナルで `set list` を叩けば確認できます。エントリの追加・削除はキャプチャ中でも即時反映され、re-attach は要りません。
+いま集合に何が入っているかは、フィルタを流しながら別ターミナルで `set list` を叩けば確認できます。`set list` は map のエントリ一覧で、マッチしたエントリを名指しするものではありません。エントリの追加・削除はキャプチャ中でも即時反映され、re-attach は要りません。
 
 ### bpftool で map を直接覗く
 
