@@ -250,7 +250,18 @@ func ensureAsyncPreemptDisabled() {
 
 func main() {
 	ensureAsyncPreemptDisabled()
-	app := &cli.Command{
+	app := newRootCommand()
+
+	if err := app.Run(context.Background(), os.Args); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+// newRootCommand builds the top-level CLI. Extracted from main so tests can
+// assert its parsing behaviour (see TestSetFlagNotCommaSplit).
+func newRootCommand() *cli.Command {
+	return &cli.Command{
 		Name:      "xdp-ninja",
 		Version:   fmt.Sprintf("%s, commit %s, built at %s, built by %s", version, commit, date, builtBy),
 		Usage:     "capture packets at XDP time (fentry/fexit observer or standalone XDP)",
@@ -277,16 +288,13 @@ Examples:
 		Commands:              []*cli.Command{convertCommand, setCommand, mergeCommand},
 		EnableShellCompletion: true,
 		// Do not split slice-flag values on commas. --set carries a key
-		// mapping whose own syntax uses commas (NAME=/path,key(f1=arg:p1,f2)),
-		// which the default separator would tear apart. Repeatable flags
-		// (--set, --func, --prog-name, --arg-filter) still take one value per
-		// occurrence; pass them multiple times instead of comma-joining.
+		// mapping whose own syntax uses commas
+		// (NAME=/path,key(f1=arg:p1,f2=arg:p2)), which the default separator
+		// would tear apart. Every root slice flag (--set, --func,
+		// --prog-name, --arg-filter, --prog-id/-p) therefore takes one value
+		// per occurrence; pass them multiple times instead of comma-joining.
+		// Subcommands keep the default separator.
 		DisableSliceFlagSeparator: true,
-	}
-
-	if err := app.Run(context.Background(), os.Args); err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
 	}
 }
 
