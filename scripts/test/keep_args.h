@@ -14,11 +14,13 @@
 #ifndef XDP_NINJA_KEEP_ARGS_H
 #define XDP_NINJA_KEEP_ARGS_H
 
-// barrier_var は変数をレジスタに固定し「使用済み」にする。未使用引数が ABI から
-// 落ちて fentry/fexit (xdp-ninja の arg-filter 等) で読めなくなるのを防ぐ。
-// libbpf (bpf_helpers.h) が同名マクロを提供していればそれを使う。
+// barrier_var は変数をレジスタに読み込んで「使用済み」にし、未使用引数が ABI
+// から落ちて fentry/fexit (xdp-ninja の arg-filter 等) で読めなくなるのを防ぐ。
+// 入力専用の制約なので const 修飾された引数でもコンパイルが通る (ABI に残す目的
+// にはこれで十分)。libbpf (bpf_helpers.h)
+// が同名マクロを提供していればそれを使う。
 #ifndef barrier_var
-#define barrier_var(var) asm volatile("" : "=r"(var) : "0"(var))
+#define barrier_var(var) asm volatile("" : : "r"(var))
 #endif
 
 // KEEP_ARGS は可変長の各変数へ barrier_var を自動展開する。
@@ -39,6 +41,11 @@
 #define KA_PICK(_1, _2, _3, _4, _5, N, ...) N
 #define FOR_EACH(f, ...)                                                       \
   KA_PICK(__VA_ARGS__, KA_5, KA_4, KA_3, KA_2, KA_1)(f, __VA_ARGS__)
-#define KEEP_ARGS(...) FOR_EACH(barrier_var, __VA_ARGS__)
+// do/while(0) で単一文にまとめ、`if (...) KEEP_ARGS(...); else ...` のような
+// 文脈でも安全にする。
+#define KEEP_ARGS(...)                                                         \
+  do {                                                                         \
+    FOR_EACH(barrier_var, __VA_ARGS__)                                         \
+  } while (0)
 
 #endif /* XDP_NINJA_KEEP_ARGS_H */
