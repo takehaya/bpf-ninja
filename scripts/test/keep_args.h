@@ -25,27 +25,30 @@
 
 // KEEP_ARGS は可変長の各変数へ barrier_var を自動展開する。
 // BPF の関数引数上限は 5 (r1..r5) なので最大 5 個。
-#define KA_1(f, a) f(a);
-#define KA_2(f, a, ...)                                                        \
+// 内部の補助マクロは XN_ 接頭辞で名前空間を切り、FOR_EACH のような汎用名が他
+// ヘッダ (linux/bpf.h や bpf_helpers.h 等) と衝突するのを避ける。
+#define XN_KA_1(f, a) f(a);
+#define XN_KA_2(f, a, ...)                                                     \
   f(a);                                                                        \
-  KA_1(f, __VA_ARGS__)
-#define KA_3(f, a, ...)                                                        \
+  XN_KA_1(f, __VA_ARGS__)
+#define XN_KA_3(f, a, ...)                                                     \
   f(a);                                                                        \
-  KA_2(f, __VA_ARGS__)
-#define KA_4(f, a, ...)                                                        \
+  XN_KA_2(f, __VA_ARGS__)
+#define XN_KA_4(f, a, ...)                                                     \
   f(a);                                                                        \
-  KA_3(f, __VA_ARGS__)
-#define KA_5(f, a, ...)                                                        \
+  XN_KA_3(f, __VA_ARGS__)
+#define XN_KA_5(f, a, ...)                                                     \
   f(a);                                                                        \
-  KA_4(f, __VA_ARGS__)
-#define KA_PICK(_1, _2, _3, _4, _5, N, ...) N
-#define FOR_EACH(f, ...)                                                       \
-  KA_PICK(__VA_ARGS__, KA_5, KA_4, KA_3, KA_2, KA_1)(f, __VA_ARGS__)
+  XN_KA_4(f, __VA_ARGS__)
+#define XN_KA_PICK(_1, _2, _3, _4, _5, N, ...) N
+#define XN_KA_FOR_EACH(f, ...)                                                 \
+  XN_KA_PICK(__VA_ARGS__, XN_KA_5, XN_KA_4, XN_KA_3, XN_KA_2, XN_KA_1)         \
+  (f, __VA_ARGS__)
 // do/while(0) で単一文にまとめ、`if (...) KEEP_ARGS(...); else ...` のような
 // 文脈でも安全にする。
 #define KEEP_ARGS(...)                                                         \
   do {                                                                         \
-    FOR_EACH(barrier_var, __VA_ARGS__)                                         \
+    XN_KA_FOR_EACH(barrier_var, __VA_ARGS__)                                   \
   } while (0)
 
 #endif /* XDP_NINJA_KEEP_ARGS_H */
