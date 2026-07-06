@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.19.1](https://github.com/takehaya/xdp-ninja/compare/v0.19.0...v0.19.1) (2026-07-06)
+
+
+### 🐛 Bug Fixes
+
+* **cli:** stop comma-splitting root slice flags so --set key(...) works ([#74](https://github.com/takehaya/xdp-ninja/issues/74)) ([be2d194](https://github.com/takehaya/xdp-ninja/commit/be2d194e87e1d98e443511d56a4c073b13c9f3b6))
+
 ## [0.19.0](https://github.com/takehaya/xdp-ninja/compare/v0.18.0...v0.19.0) (2026-07-04)
 
 
