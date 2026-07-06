@@ -276,6 +276,12 @@ Examples:
 		Action:                run,
 		Commands:              []*cli.Command{convertCommand, setCommand, mergeCommand},
 		EnableShellCompletion: true,
+		// Do not split slice-flag values on commas. --set carries a key
+		// mapping whose own syntax uses commas (NAME=/path,key(f1=arg:p1,f2)),
+		// which the default separator would tear apart. Repeatable flags
+		// (--set, --func, --prog-name, --arg-filter) still take one value per
+		// occurrence; pass them multiple times instead of comma-joining.
+		DisableSliceFlagSeparator: true,
 	}
 
 	if err := app.Run(context.Background(), os.Args); err != nil {
