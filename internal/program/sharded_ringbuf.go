@@ -95,9 +95,33 @@ func createShardedRingbuf(label string) (outer *ebpf.Map, inners []*ebpf.Map, er
 	if err != nil {
 		return nil, nil, fmt.Errorf("creating outer array_of_maps: %w", err)
 	}
+	// Populate the outer entries in parallel. Each fd-map update ends in a
+	// kernel synchronize_rcu(); under heavy softirq load (the exact moment
+	// you want to attach a capture) one grace period stretched to ~1.5s in
+	// our measurements, so populating numCPUs entries serially waited that
+	// many grace periods back to back (~96s for 64 CPUs). Concurrent Puts
+	// share grace periods, collapsing the cost to roughly a single GP. See
+	// docs/ja/attach-under-load-rcu-finding.md for the measured numbers.
+	//
+	// Concurrent Put on one shared outer map is safe: each Put is a
+	// stateless BPF_MAP_UPDATE_ELEM syscall that marshals its own key/value
+	// and only reads the map fd, so there is no shared Go state to race, and
+	// the syscall releases its P so the goroutines actually sleep in the
+	// kernel's synchronize_rcu at the same time (that is what merges the
+	// grace periods). Distinct indices mean no in-kernel update conflicts.
+	putErrs := make([]error, len(inners))
+	var putWg sync.WaitGroup
 	for i, inner := range inners {
-		if err := outer.Put(uint32(i), inner); err != nil {
-			return nil, nil, fmt.Errorf("populating outer[%d]: %w", i, err)
+		putWg.Add(1)
+		go func(i int, inner *ebpf.Map) {
+			defer putWg.Done()
+			putErrs[i] = outer.Put(uint32(i), inner)
+		}(i, inner)
+	}
+	putWg.Wait()
+	for i, perr := range putErrs {
+		if perr != nil {
+			return nil, nil, fmt.Errorf("populating outer[%d]: %w", i, perr)
 		}
 	}
 	success = true
