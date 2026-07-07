@@ -274,6 +274,59 @@ test_argfilter() {
     [[ "$ranm" -eq 1 && "$rann" -eq 1 && "$cmatch" -ge 3 && "$cnomatch" -eq 0 ]]
 }
 
+# Exercises arg-based pinned-map set matching (--set NAME=/path,key(field=arg:param)
+# + --arg-filter @NAME) against capture_point's pkt_len. A `ping -s 100` yields a
+# deterministic 142-byte frame that the set matches by membership; swapping the
+# set to a length no frame carries proves the lookup actually gates capture. The
+# comma inside key(...) also exercises the root slice-flag no-split fix (#74).
+test_argfilter_set() {
+    local pin=/sys/fs/bpf/argcap_lens_test
+    rm -f "$pin" 2>/dev/null || true
+    "$SCRIPT_DIR/cleanup_argcap.sh" 2>/dev/null || true
+    local setup_out
+    if ! setup_out=$("$SCRIPT_DIR/setup_argcap.sh" 2>&1); then
+        echo "setup_argcap failed: $setup_out" >&2
+        "$SCRIPT_DIR/cleanup_argcap.sh" 2>/dev/null || true
+        return 1
+    fi
+    if ! "$BINARY" set create "$pin" --key "pkt_len:u32" >/dev/null 2>&1 \
+        || ! "$BINARY" set add "$pin" pkt_len=142 >/dev/null 2>&1; then
+        echo "set create/add failed" >&2
+        rm -f "$pin" 2>/dev/null || true
+        "$SCRIPT_DIR/cleanup_argcap.sh" 2>/dev/null || true
+        return 1
+    fi
+
+    local errm=$(mktemp)
+    timeout 12 "$BINARY" -i va0 --func capture_point --set "LENS=$pin,key(pkt_len=arg:pkt_len)" --arg-filter "@LENS" -c 3 > /dev/null 2>"$errm" &
+    local pm=$!
+    sleep 2
+    ip netns exec xdpargtest ping -c 5 -s 100 -W 1 10.99.0.1 >/dev/null 2>&1 || true
+    wait $pm 2>/dev/null || true
+    local cmatch=$(capture_count "$errm")
+
+    # Swap the set to a length no frame carries; membership should now miss.
+    "$BINARY" set del "$pin" pkt_len=142 >/dev/null 2>&1 || true
+    "$BINARY" set add "$pin" pkt_len=12345 >/dev/null 2>&1 || true
+    local errn=$(mktemp)
+    timeout 6 "$BINARY" -i va0 --func capture_point --set "LENS=$pin,key(pkt_len=arg:pkt_len)" --arg-filter "@LENS" > /dev/null 2>"$errn" &
+    local pn=$!
+    sleep 1
+    ip netns exec xdpargtest ping -c 3 -s 100 -W 1 10.99.0.1 >/dev/null 2>&1 || true
+    sleep 2
+    kill $pn 2>/dev/null; wait $pn 2>/dev/null || true
+    local cnomatch=$(capture_count "$errn")
+
+    local ranm=0 rann=0
+    grep -q "packets captured" "$errm" && ranm=1
+    grep -q "packets captured" "$errn" && rann=1
+
+    echo "argfilter_set match=$cmatch nomatch=$cnomatch ranm=$ranm rann=$rann stderr_m=$(cat "$errm") stderr_n=$(cat "$errn")" >&2
+    rm -f "$errm" "$errn" "$pin"
+    "$SCRIPT_DIR/cleanup_argcap.sh" 2>/dev/null || true
+    [[ "$ranm" -eq 1 && "$rann" -eq 1 && "$cmatch" -ge 3 && "$cnomatch" -eq 0 ]]
+}
+
 test_graceful_shutdown() {
     require_bpftool || return 1
     local prog_id_before=$(bpftool prog show name xdp_pass 2>/dev/null | head -1 | awk '{print $1}' | tr -d ':')
@@ -320,6 +373,7 @@ run_test "dsl_exit_action"         test_dsl_exit_action
 run_test "dsl_tc_entry"            test_dsl_tc_entry
 run_test "dsl_tc_exit_action"      test_dsl_tc_exit_action
 run_test "argfilter"               test_argfilter
+run_test "argfilter_set"           test_argfilter_set
 run_test "graceful_shutdown"       test_graceful_shutdown
 
 echo ""
