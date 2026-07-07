@@ -261,10 +261,17 @@ test_argfilter() {
     kill $pn 2>/dev/null; wait $pn 2>/dev/null || true
     local cnomatch=$(capture_count "$errn")
 
-    echo "argfilter match=$cmatch nomatch=$cnomatch stderr_m=$(cat "$errm") stderr_n=$(cat "$errn")" >&2
+    # Both runs must reach the normal shutdown ("N packets captured");
+    # otherwise a crash/parse error before capture would leave cnomatch=0 and
+    # false-pass the nomatch half.
+    local ranm=0 rann=0
+    grep -q "packets captured" "$errm" && ranm=1
+    grep -q "packets captured" "$errn" && rann=1
+
+    echo "argfilter match=$cmatch nomatch=$cnomatch ranm=$ranm rann=$rann stderr_m=$(cat "$errm") stderr_n=$(cat "$errn")" >&2
     rm -f "$errm" "$errn"
     "$SCRIPT_DIR/cleanup_argcap.sh" 2>/dev/null || true
-    [[ "$cmatch" -ge 3 && "$cnomatch" -eq 0 ]]
+    [[ "$ranm" -eq 1 && "$rann" -eq 1 && "$cmatch" -ge 3 && "$cnomatch" -eq 0 ]]
 }
 
 test_graceful_shutdown() {
