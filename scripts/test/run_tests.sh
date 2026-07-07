@@ -237,8 +237,9 @@ test_dsl_tc_exit_action() {
 # rather than always/never matching.
 test_argfilter() {
     "$SCRIPT_DIR/cleanup_argcap.sh" 2>/dev/null || true
-    if ! "$SCRIPT_DIR/setup_argcap.sh" >/dev/null 2>&1; then
-        echo "setup_argcap failed" >&2
+    local setup_out
+    if ! setup_out=$("$SCRIPT_DIR/setup_argcap.sh" 2>&1); then
+        echo "setup_argcap failed: $setup_out" >&2
         "$SCRIPT_DIR/cleanup_argcap.sh" 2>/dev/null || true
         return 1
     fi
