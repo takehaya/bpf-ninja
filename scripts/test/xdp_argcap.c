@@ -23,7 +23,9 @@ SEC("xdp")
 int xdp_argcap(struct xdp_md *ctx) {
   void *data = (void *)(long)ctx->data;
   void *data_end = (void *)(long)ctx->data_end;
-  capture_point(ctx, (__u32)(data_end - data));
+  // char* (not void*) subtraction: a byte-sized ptrdiff in standard C,
+  // avoiding the void*-arithmetic GNU extension (-Wpointer-arith).
+  capture_point(ctx, (__u32)((char *)data_end - (char *)data));
   return XDP_PASS;
 }
 
