@@ -12,10 +12,15 @@
 // amd64), and packet data + 4-byte trailer are written through the
 // same outer bufio.Writer that the rest of output.Writer uses.
 //
-// On-wire format is bit-identical to gopacket's NgWriter for an
-// SHB (Section Header Block) + single IDB (Interface Description
-// Block) + sequence of EPBs (Enhanced Packet Blocks); tcpdump -r
-// and Wireshark consume it without modification.
+// On-wire format is a valid pcap-ng — SHB (Section Header Block) +
+// single IDB (Interface Description Block) + sequence of EPBs (Enhanced
+// Packet Blocks); tcpdump -r and Wireshark consume it without
+// modification. It is not byte-identical to gopacket's NgWriter:
+// gopacket writes optional descriptive strings (shb_os / shb_hardware /
+// shb_userappl in the SHB, if_name in the IDB) that carry no packet data
+// and that this writer omits. Every EPB — timestamps, caplen, packet
+// bytes — matches, so both files read back to the same packets
+// (TestFastNgWriter* in output pin this).
 
 package output
 

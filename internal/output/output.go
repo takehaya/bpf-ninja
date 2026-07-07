@@ -37,7 +37,7 @@ const stdoutFlushInterval = time.Millisecond
 // Writer writes captured packets in pcapng format.
 type Writer struct {
 	pcapWriter *pcapgo.NgWriter
-	fastWriter *FastNgWriter // alternative to pcapWriter when env XDP_NINJA_FAST_PCAPNG=1
+	fastWriter *FastNgWriter // default for non-fexit; env XDP_NINJA_FAST_PCAPNG=0 falls back to pcapWriter
 	bufWriter  *bufio.Writer // non-nil only when wrapping an *os.File
 	file       *os.File      // non-nil only when writing to a file (not stdout)
 	actionToID map[uint32]int
@@ -67,7 +67,12 @@ func NewWriter(path string, isFexit bool) (*Writer, error) {
 	}
 
 	var err error
-	useFast := os.Getenv("XDP_NINJA_FAST_PCAPNG") == "1" && !isFexit
+	// FastNgWriter is the default hot-path writer (~18% faster per packet
+	// than gopacket's NgWriter, benchmarked); it emits packet-equivalent
+	// pcap-ng (see TestFastNgWriterEquivalent). Exit mode still needs the
+	// gopacket writer for its per-action multi-interface layout. Set
+	// XDP_NINJA_FAST_PCAPNG=0 to force the gopacket writer.
+	useFast := os.Getenv("XDP_NINJA_FAST_PCAPNG") != "0" && !isFexit
 	if useFast {
 		w.fastWriter, err = NewFastNgWriter(dest)
 	} else if isFexit {
