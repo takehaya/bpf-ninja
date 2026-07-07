@@ -230,6 +230,42 @@ test_dsl_tc_exit_action() {
     run_count_test 3 --mode tc-exit -p "$pid_t" -c 3 "eth/ipv4/icmp where action == TC_ACT_OK"
 }
 
+# Exercises --func subfunction attach + --arg-filter argument reading against
+# xdp_argcap, whose capture_point(ctx, pkt_len) uses KEEP_ARGS to keep pkt_len
+# on the ABI. A real ping frame (~98 B) satisfies pkt_len>=60 (match) but none
+# is >=200 (nomatch); requiring both proves the argument value is actually read
+# rather than always/never matching.
+test_argfilter() {
+    "$SCRIPT_DIR/cleanup_argcap.sh" 2>/dev/null || true
+    if ! "$SCRIPT_DIR/setup_argcap.sh" >/dev/null 2>&1; then
+        echo "setup_argcap failed" >&2
+        "$SCRIPT_DIR/cleanup_argcap.sh" 2>/dev/null || true
+        return 1
+    fi
+
+    local errm=$(mktemp)
+    timeout 10 "$BINARY" -i va0 --func capture_point --arg-filter "pkt_len>=60" -c 3 > /dev/null 2>"$errm" &
+    local pm=$!
+    sleep 2
+    ip netns exec xdpargtest ping -c 5 -W 1 10.99.0.1 >/dev/null 2>&1 || true
+    wait $pm 2>/dev/null || true
+    local cmatch=$(capture_count "$errm")
+
+    local errn=$(mktemp)
+    timeout 6 "$BINARY" -i va0 --func capture_point --arg-filter "pkt_len>=200" > /dev/null 2>"$errn" &
+    local pn=$!
+    sleep 1
+    ip netns exec xdpargtest ping -c 3 -W 1 10.99.0.1 >/dev/null 2>&1 || true
+    sleep 2
+    kill $pn 2>/dev/null; wait $pn 2>/dev/null || true
+    local cnomatch=$(capture_count "$errn")
+
+    echo "argfilter match=$cmatch nomatch=$cnomatch stderr_m=$(cat "$errm") stderr_n=$(cat "$errn")" >&2
+    rm -f "$errm" "$errn"
+    "$SCRIPT_DIR/cleanup_argcap.sh" 2>/dev/null || true
+    [[ "$cmatch" -ge 3 && "$cnomatch" -eq 0 ]]
+}
+
 test_graceful_shutdown() {
     require_bpftool || return 1
     local prog_id_before=$(bpftool prog show name xdp_pass 2>/dev/null | head -1 | awk '{print $1}' | tr -d ':')
@@ -275,6 +311,7 @@ run_test "dsl_capture_headers"     test_dsl_capture_headers
 run_test "dsl_exit_action"         test_dsl_exit_action
 run_test "dsl_tc_entry"            test_dsl_tc_entry
 run_test "dsl_tc_exit_action"      test_dsl_tc_exit_action
+run_test "argfilter"               test_argfilter
 run_test "graceful_shutdown"       test_graceful_shutdown
 
 echo ""
