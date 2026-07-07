@@ -24,7 +24,7 @@ int xdp_argcap(struct xdp_md *ctx) {
   void *data = (void *)(long)ctx->data;
   void *data_end = (void *)(long)ctx->data_end;
   capture_point(ctx, (__u32)(data_end - data));
-  return 2; /* XDP_PASS */
+  return XDP_PASS;
 }
 
 char _license[] SEC("license") = "GPL";

@@ -1,7 +1,7 @@
 #!/bin/bash
 # Sets up an XDP program with a __noinline capture point on va0, for testing
 # xdp-ninja --func + --arg-filter. Traffic sent to 10.99.0.1 runs the program,
-# which calls capture_point(pkt_len).
+# which calls capture_point(ctx, pkt_len).
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
