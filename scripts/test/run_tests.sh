@@ -306,8 +306,13 @@ test_argfilter_set() {
     local cmatch=$(capture_count "$errm")
 
     # Swap the set to a length no frame carries; membership should now miss.
-    "$BINARY" set del "$pin" pkt_len=142 >/dev/null 2>&1 || true
-    "$BINARY" set add "$pin" pkt_len=12345 >/dev/null 2>&1 || true
+    # Track the swap so an empty set (a failed re-add) cannot false-pass the
+    # nomatch half — it must genuinely hold a non-matching entry.
+    local swapped=0
+    if "$BINARY" set del "$pin" pkt_len=142 >/dev/null 2>&1 \
+        && "$BINARY" set add "$pin" pkt_len=12345 >/dev/null 2>&1; then
+        swapped=1
+    fi
     local errn=$(mktemp)
     timeout 6 "$BINARY" -i va0 --func capture_point --set "LENS=$pin,key(pkt_len=arg:pkt_len)" --arg-filter "@LENS" > /dev/null 2>"$errn" &
     local pn=$!
@@ -321,10 +326,10 @@ test_argfilter_set() {
     grep -q "packets captured" "$errm" && ranm=1
     grep -q "packets captured" "$errn" && rann=1
 
-    echo "argfilter_set match=$cmatch nomatch=$cnomatch ranm=$ranm rann=$rann stderr_m=$(cat "$errm") stderr_n=$(cat "$errn")" >&2
+    echo "argfilter_set match=$cmatch nomatch=$cnomatch swapped=$swapped ranm=$ranm rann=$rann stderr_m=$(cat "$errm") stderr_n=$(cat "$errn")" >&2
     rm -f "$errm" "$errn" "$pin"
     "$SCRIPT_DIR/cleanup_argcap.sh" 2>/dev/null || true
-    [[ "$ranm" -eq 1 && "$rann" -eq 1 && "$cmatch" -ge 3 && "$cnomatch" -eq 0 ]]
+    [[ "$swapped" -eq 1 && "$ranm" -eq 1 && "$rann" -eq 1 && "$cmatch" -ge 3 && "$cnomatch" -eq 0 ]]
 }
 
 test_graceful_shutdown() {
