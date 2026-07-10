@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"strconv"
 	"strings"
 
@@ -193,6 +194,95 @@ func Create(path, keySchema, valueSchema string, maxEntries uint32) error {
 		return fmt.Errorf("pinning at %s: %w", path, err)
 	}
 	return nil
+}
+
+// Resize changes a pinned set map's capacity. BPF maps cannot change
+// max_entries in place, so this creates a new map with the same key/value
+// BTF (reused from the old map, so externally-created maps keep their
+// names and types), copies every entry, and atomically replaces the pin
+// via rename(2) on bpffs. Returns the old capacity and the entry count.
+//
+// Two caveats, by construction:
+//   - A running capture holds the old map's fd from attach time; the new
+//     capacity takes effect from the next attach, not for live sessions.
+//   - Entries added to the old map between the copy and the pin swap are
+//     lost. Resize while no writer is active.
+func Resize(path string, newMax uint32) (oldMax uint32, copied int, err error) {
+	m, err := ebpf.LoadPinnedMap(path, nil)
+	if err != nil {
+		return 0, 0, fmt.Errorf("opening pinned map %s: %w", path, err)
+	}
+	defer func() { _ = m.Close() }()
+	if m.Type() != ebpf.Hash {
+		return 0, 0, fmt.Errorf("%s: map type %s is not supported (need hash)", path, m.Type())
+	}
+	oldMax = m.MaxEntries()
+	if oldMax == newMax {
+		return oldMax, 0, nil
+	}
+
+	// Count first so a shrink below the live entry count fails up front
+	// instead of erroring out mid-copy with a half-populated new map.
+	entries, err := dumpEntries(m)
+	if err != nil {
+		return 0, 0, fmt.Errorf("%s: reading entries: %w", path, err)
+	}
+	if uint64(len(entries)) > uint64(newMax) {
+		return 0, 0, fmt.Errorf("%s holds %d entries; cannot shrink to %d", path, len(entries), newMax)
+	}
+
+	keyBTF, valueBTF, err := mapBTFTypes(m)
+	if err != nil {
+		return 0, 0, fmt.Errorf("%s: %w", path, err)
+	}
+	info, err := m.Info()
+	if err != nil {
+		return 0, 0, fmt.Errorf("%s: map info: %w", path, err)
+	}
+	next, err := ebpf.NewMap(&ebpf.MapSpec{
+		Name: info.Name, Type: m.Type(), Flags: m.Flags(),
+		KeySize: m.KeySize(), ValueSize: m.ValueSize(), MaxEntries: newMax,
+		Key: keyBTF, Value: valueBTF,
+	})
+	if err != nil {
+		return 0, 0, fmt.Errorf("creating resized map: %w", err)
+	}
+	defer func() { _ = next.Close() }()
+	for _, ent := range entries {
+		if perr := next.Put(ent.key, ent.value); perr != nil {
+			return 0, 0, fmt.Errorf("copying entry: %w", perr)
+		}
+	}
+
+	// bpffs rejects pin names containing '.' with EPERM (bpf_lookup
+	// reserves the dot), so the temporary name uses an underscore suffix.
+	tmp := path + "_resize_tmp"
+	if err := next.Pin(tmp); err != nil {
+		return 0, 0, fmt.Errorf("pinning at %s: %w", tmp, err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = next.Unpin()
+		return 0, 0, fmt.Errorf("replacing pin %s: %w", path, err)
+	}
+	return oldMax, len(entries), nil
+}
+
+// rawEntry is one key/value pair captured verbatim (no schema decoding).
+type rawEntry struct{ key, value []byte }
+
+// dumpEntries snapshots every entry of the map as raw bytes.
+func dumpEntries(m *ebpf.Map) ([]rawEntry, error) {
+	var out []rawEntry
+	key := make([]byte, int(m.KeySize()))
+	val := make([]byte, int(m.ValueSize()))
+	iter := m.Iterate()
+	for iter.Next(&key, &val) {
+		out = append(out, rawEntry{
+			key:   append([]byte(nil), key...),
+			value: append([]byte(nil), val...),
+		})
+	}
+	return out, iter.Err()
 }
 
 // reservedTagName is the field=value key that `set add`/`del` treat as

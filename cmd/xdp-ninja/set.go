@@ -27,8 +27,9 @@ Examples:
   xdp-ninja set add    /sys/fs/bpf/flows imsi=999990000000001 teid=0x3039 tag=1
   xdp-ninja set del    /sys/fs/bpf/flows imsi=999990000000001 teid=0x3039
   xdp-ninja set list   /sys/fs/bpf/flows
-  xdp-ninja set schema /sys/fs/bpf/flows`,
-	Commands: []*cli.Command{setCreateCmd, setAddCmd, setDelCmd, setListCmd, setSchemaCmd},
+  xdp-ninja set schema /sys/fs/bpf/flows
+  xdp-ninja set resize /sys/fs/bpf/flows --max-entries 4096`,
+	Commands: []*cli.Command{setCreateCmd, setAddCmd, setDelCmd, setListCmd, setSchemaCmd, setResizeCmd},
 }
 
 var setCreateCmd = &cli.Command{
@@ -63,6 +64,45 @@ var setCreateCmd = &cli.Command{
 		}
 		fmt.Fprintf(os.Stderr, "created %s (key: %s, value: %s, max_entries: %d)\n",
 			path, cmd.String("key"), cmd.String("value"), cmd.Int("max-entries"))
+		return nil
+	},
+}
+
+var setResizeCmd = &cli.Command{
+	Name:      "resize",
+	Usage:     "change a set's capacity (copies entries into a new map, swaps the pin)",
+	ArgsUsage: "<pin-path>",
+	Description: `BPF maps cannot change max_entries in place, so resize creates a new
+map with the same key/value BTF, copies every entry, and atomically
+replaces the pin. A running capture keeps the old map from attach time;
+the new capacity takes effect from the next attach. Entries added
+between the copy and the swap are lost, so resize while no writer is
+active.`,
+	Flags: []cli.Flag{
+		&cli.IntFlag{
+			Name: "max-entries", Required: true,
+			Usage: "new map capacity",
+		},
+	},
+	Action: func(_ context.Context, cmd *cli.Command) error {
+		path, err := setPathArg(cmd)
+		if err != nil {
+			return err
+		}
+		maxEntries := cmd.Int("max-entries")
+		if maxEntries <= 0 || maxEntries > math.MaxUint32 {
+			return fmt.Errorf("--max-entries must be in 1..%d, got %d", math.MaxUint32, maxEntries)
+		}
+		oldMax, copied, err := setmap.Resize(path, uint32(maxEntries))
+		if err != nil {
+			return err
+		}
+		if oldMax == uint32(maxEntries) {
+			fmt.Fprintf(os.Stderr, "%s already has max_entries %d, nothing to do\n", path, oldMax)
+			return nil
+		}
+		fmt.Fprintf(os.Stderr, "resized %s (max_entries: %d -> %d, copied %d entries)\n",
+			path, oldMax, maxEntries, copied)
 		return nil
 	},
 }

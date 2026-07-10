@@ -267,28 +267,40 @@ func validValueFieldSize(n uint32) bool {
 // package), so read struct bpf_map_info via a raw BPF_OBJ_GET_INFO_BY_FD
 // and look the type up in the handle's spec.
 func mapKeyBTF(m *ebpf.Map) (btf.Type, error) {
-	keyTypeID, err := mapKeyBTFTypeID(m.FD())
+	key, _, err := mapBTFTypes(m)
+	return key, err
+}
+
+// mapBTFTypes returns the map's BTF key and value types.
+func mapBTFTypes(m *ebpf.Map) (key, value btf.Type, err error) {
+	keyTypeID, valueTypeID, err := mapBTFTypeIDs(m.FD())
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if keyTypeID == 0 {
-		return nil, fmt.Errorf("map has no key BTF; create it with `xdp-ninja set create` (or load it with BTF key/value types)")
+		return nil, nil, fmt.Errorf("map has no key BTF; create it with `xdp-ninja set create` (or load it with BTF key/value types)")
 	}
 
 	h, err := m.Handle()
 	if err != nil {
-		return nil, fmt.Errorf("map BTF handle: %w", err)
+		return nil, nil, fmt.Errorf("map BTF handle: %w", err)
 	}
 	defer func() { _ = h.Close() }()
 	spec, err := h.Spec(nil)
 	if err != nil {
-		return nil, fmt.Errorf("reading map BTF: %w", err)
+		return nil, nil, fmt.Errorf("reading map BTF: %w", err)
 	}
-	t, err := spec.TypeByID(btf.TypeID(keyTypeID))
+	key, err = spec.TypeByID(btf.TypeID(keyTypeID))
 	if err != nil {
-		return nil, fmt.Errorf("resolving key type id %d: %w", keyTypeID, err)
+		return nil, nil, fmt.Errorf("resolving key type id %d: %w", keyTypeID, err)
 	}
-	return t, nil
+	if valueTypeID != 0 {
+		value, err = spec.TypeByID(btf.TypeID(valueTypeID))
+		if err != nil {
+			return nil, nil, fmt.Errorf("resolving value type id %d: %w", valueTypeID, err)
+		}
+	}
+	return key, value, nil
 }
 
 // bpfMapInfo mirrors the leading fields of UAPI struct bpf_map_info up to
@@ -322,8 +334,9 @@ type bpfObjGetInfoByFDAttr struct {
 
 const bpfObjGetInfoByFD = 15 // BPF_OBJ_GET_INFO_BY_FD
 
-// mapKeyBTFTypeID reads btf_key_type_id from bpf_map_info.
-func mapKeyBTFTypeID(fd int) (uint32, error) {
+// mapBTFTypeIDs reads btf_key_type_id and btf_value_type_id from
+// bpf_map_info.
+func mapBTFTypeIDs(fd int) (keyID, valueID uint32, err error) {
 	var info bpfMapInfo
 	attr := bpfObjGetInfoByFDAttr{
 		BpfFD:   uint32(fd),
@@ -333,7 +346,7 @@ func mapKeyBTFTypeID(fd int) (uint32, error) {
 	_, _, errno := unix.Syscall(unix.SYS_BPF, bpfObjGetInfoByFD,
 		uintptr(unsafe.Pointer(&attr)), unsafe.Sizeof(attr))
 	if errno != 0 {
-		return 0, fmt.Errorf("BPF_OBJ_GET_INFO_BY_FD: %w", errno)
+		return 0, 0, fmt.Errorf("BPF_OBJ_GET_INFO_BY_FD: %w", errno)
 	}
-	return info.BTFKeyTypeID, nil
+	return info.BTFKeyTypeID, info.BTFValueTypeID, nil
 }

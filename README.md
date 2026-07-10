@@ -80,6 +80,10 @@ sudo xdp-ninja set create /sys/fs/bpf/subs --key "imsi:u64"
 sudo xdp-ninja set add /sys/fs/bpf/subs imsi=999990000000001
 sudo xdp-ninja -p 1661 --func upf_capture_point_ul \
   --set "subs=/sys/fs/bpf/subs" --arg-filter "@subs" -w subs.pcap
+# Capacity defaults to 1024 (set create --max-entries); grow it later
+# with `set resize` (entries and schema are preserved, takes effect
+# from the next attach)
+sudo xdp-ninja set resize /sys/fs/bpf/subs --max-entries 4096
 
 # Key the set off a PACKET field instead of a function arg — for values
 # that live in the packet (GTP TEID, SRv6 SID). Works on fentry and xdp.
