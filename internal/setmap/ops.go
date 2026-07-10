@@ -6,9 +6,12 @@ package setmap
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
+	"os"
 	"strconv"
 	"strings"
 
@@ -193,6 +196,117 @@ func Create(path, keySchema, valueSchema string, maxEntries uint32) error {
 		return fmt.Errorf("pinning at %s: %w", path, err)
 	}
 	return nil
+}
+
+// Resize changes a pinned set map's capacity. BPF maps cannot change
+// max_entries in place, so this creates a new map with the same key/value
+// BTF (reused from the old map, so externally-created maps keep their
+// names and types), copies every entry, and atomically replaces the pin
+// via rename(2) on bpffs. Returns the old capacity and the entry count.
+//
+// Two caveats, by construction:
+//   - A running capture holds the old map's fd from attach time; the new
+//     capacity takes effect from the next attach, not for live sessions.
+//   - Entries added to the old map between the copy and the pin swap are
+//     lost. Resize while no writer is active.
+func Resize(path string, newMax uint32) (oldMax uint32, copied int, err error) {
+	m, err := ebpf.LoadPinnedMap(path, nil)
+	if err != nil {
+		return 0, 0, fmt.Errorf("opening pinned map %s: %w", path, err)
+	}
+	defer func() { _ = m.Close() }()
+	if m.Type() != ebpf.Hash {
+		return 0, 0, fmt.Errorf("%s: map type %s is not supported (need hash)", path, m.Type())
+	}
+	oldMax = m.MaxEntries()
+	if oldMax == newMax {
+		return oldMax, 0, nil
+	}
+
+	// Count first so a shrink below the live entry count fails up front
+	// instead of erroring out mid-copy with a half-populated new map. A
+	// separate counting pass (rather than snapshotting the entries) keeps
+	// memory flat for large sets; the copy below streams a second pass.
+	count, err := countEntries(m)
+	if err != nil {
+		return 0, 0, fmt.Errorf("%s: reading entries: %w", path, err)
+	}
+	if count > uint64(newMax) {
+		return 0, 0, fmt.Errorf("%s holds %d entries; cannot shrink to %d", path, count, newMax)
+	}
+
+	// The temporary pin name avoids '.' — bpffs rejects dotted pin names
+	// with EPERM (bpf_lookup reserves the dot). It is deterministic, so a
+	// leftover from a crashed resize (or a concurrent one) would fail the
+	// Pin below with a bare EEXIST; surface it with a recovery hint.
+	tmp := path + "_resize_tmp"
+	if _, serr := os.Stat(tmp); serr == nil {
+		return 0, 0, fmt.Errorf("%s exists (crashed or concurrent resize?); remove it and retry", tmp)
+	} else if !errors.Is(serr, fs.ErrNotExist) {
+		return 0, 0, fmt.Errorf("checking %s: %w", tmp, serr)
+	}
+
+	keyBTF, valueBTF, err := mapBTFTypes(m)
+	if err != nil {
+		return 0, 0, fmt.Errorf("%s: %w", path, err)
+	}
+	info, err := m.Info()
+	if err != nil {
+		return 0, 0, fmt.Errorf("%s: map info: %w", path, err)
+	}
+	next, err := ebpf.NewMap(&ebpf.MapSpec{
+		Name: info.Name, Type: m.Type(), Flags: m.Flags(),
+		KeySize: m.KeySize(), ValueSize: m.ValueSize(), MaxEntries: newMax,
+		Key: keyBTF, Value: valueBTF,
+	})
+	if err != nil {
+		return 0, 0, fmt.Errorf("creating resized map: %w", err)
+	}
+	defer func() { _ = next.Close() }()
+	copied, err = copyEntries(m, next)
+	if err != nil {
+		return 0, 0, fmt.Errorf("%s: copying entries: %w", path, err)
+	}
+
+	if err := next.Pin(tmp); err != nil {
+		return 0, 0, fmt.Errorf("pinning at %s: %w", tmp, err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		err = fmt.Errorf("replacing pin %s: %w", path, err)
+		if uerr := next.Unpin(); uerr != nil {
+			err = errors.Join(err, fmt.Errorf("cleaning up %s (remove it before retrying): %w", tmp, uerr))
+		}
+		return 0, 0, err
+	}
+	return oldMax, copied, nil
+}
+
+// countEntries walks the map without retaining anything.
+func countEntries(m *ebpf.Map) (uint64, error) {
+	var n uint64
+	key := make([]byte, int(m.KeySize()))
+	val := make([]byte, int(m.ValueSize()))
+	iter := m.Iterate()
+	for iter.Next(&key, &val) {
+		n++
+	}
+	return n, iter.Err()
+}
+
+// copyEntries streams every entry of src into dst as raw bytes (no schema
+// decoding), one at a time so memory stays flat for large sets.
+func copyEntries(src, dst *ebpf.Map) (int, error) {
+	var n int
+	key := make([]byte, int(src.KeySize()))
+	val := make([]byte, int(src.ValueSize()))
+	iter := src.Iterate()
+	for iter.Next(&key, &val) {
+		if err := dst.Put(key, val); err != nil {
+			return n, err
+		}
+		n++
+	}
+	return n, iter.Err()
 }
 
 // reservedTagName is the field=value key that `set add`/`del` treat as

@@ -482,7 +482,8 @@ sudo xdp-ninja -i ens2f0 --list-progs --list-funcs --json | jq '.[].reachable[] 
 map のキーが照合する値そのもので、スカラまたは struct 複合キーになります。value は小さな tag です。複合キーのフィールド間は AND で 1 lookup し、OR はエントリを複数入れて表現します。すなわち集合は直和です。部分キーは不可です。
 
 ```bash
-# 1) 集合を作る (BTF 付き hash map を pin)
+# 1) 集合を作る (BTF 付き hash map を pin)。--max-entries は省略可で既定 1024、
+#    1〜2^32-1 で指定できる
 sudo xdp-ninja set create /sys/fs/bpf/flows --key "imsi:u64,teid:u32" --max-entries 1024
 
 # 2) エントリ投入 (フィールド名で指定。幅・パディングはツールが保証)
@@ -497,7 +498,12 @@ sudo xdp-ninja set add /sys/fs/bpf/flows imsi=999990000000777 teid=100
 sudo xdp-ninja set del /sys/fs/bpf/flows imsi=999990000000001 teid=0x3039
 sudo xdp-ninja set list /sys/fs/bpf/flows
 sudo xdp-ninja set schema /sys/fs/bpf/flows
+
+# 5) 容量が足りなくなったら resize (エントリと BTF スキーマは保たれる)
+sudo xdp-ninja set resize /sys/fs/bpf/flows --max-entries 4096
 ```
+
+`set resize` は BPF map の容量を後から変えられない制約を、同じスキーマの新 map を作ってエントリを全コピーし pin を差し替えることで回避します。実行中のキャプチャは attach 時の旧 map を掴んだままなので、新しい容量は次回 attach から有効です。コピーと差し替えの間に旧 map へ入れたエントリは失われるため、resize は `set add` を止めてから行ってください。
 
 - キーの対応付けは、既定ではキーの BTF フィールド名と fentry 引数名を同名で一致させます。名前が違うときは `--set "flows=/sys/fs/bpf/flows,key(imsi=arg:subscriber,teid=arg:teid)"` と明示します。`()` は bash のメタ文字なのでクオートが必須です。
 - `@NAME` は他の `--arg-filter` と AND で合成されます。`--set` は複数定義できます。
