@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.20.0](https://github.com/takehaya/xdp-ninja/compare/v0.19.1...v0.20.0) (2026-07-10)
+
+
+### 🎉 Features
+
+* **setmap:** add `set resize` to change a pinned set's capacity ([#80](https://github.com/takehaya/xdp-ninja/issues/80)) ([37e5ee9](https://github.com/takehaya/xdp-ninja/commit/37e5ee9b32b5b5e3af477d492fc9afc088f32fe2))
+
+
+### 🐛 Bug Fixes
+
+* **program:** parallelize outer array_of_maps Put to survive attach under load ([#79](https://github.com/takehaya/xdp-ninja/issues/79)) ([4686074](https://github.com/takehaya/xdp-ninja/commit/468607453c4c5d9d58f291b8c624c955891690ee))
+
 ## [0.19.1](https://github.com/takehaya/xdp-ninja/compare/v0.19.0...v0.19.1) (2026-07-06)
 
 
