@@ -6,8 +6,10 @@ package setmap
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"os"
 	"strconv"
@@ -240,6 +242,8 @@ func Resize(path string, newMax uint32) (oldMax uint32, copied int, err error) {
 	tmp := path + "_resize_tmp"
 	if _, serr := os.Stat(tmp); serr == nil {
 		return 0, 0, fmt.Errorf("%s exists (crashed or concurrent resize?); remove it and retry", tmp)
+	} else if !errors.Is(serr, fs.ErrNotExist) {
+		return 0, 0, fmt.Errorf("checking %s: %w", tmp, serr)
 	}
 
 	keyBTF, valueBTF, err := mapBTFTypes(m)
@@ -268,8 +272,11 @@ func Resize(path string, newMax uint32) (oldMax uint32, copied int, err error) {
 		return 0, 0, fmt.Errorf("pinning at %s: %w", tmp, err)
 	}
 	if err := os.Rename(tmp, path); err != nil {
-		_ = next.Unpin()
-		return 0, 0, fmt.Errorf("replacing pin %s: %w", path, err)
+		err = fmt.Errorf("replacing pin %s: %w", path, err)
+		if uerr := next.Unpin(); uerr != nil {
+			err = errors.Join(err, fmt.Errorf("cleaning up %s (remove it before retrying): %w", tmp, uerr))
+		}
+		return 0, 0, err
 	}
 	return oldMax, copied, nil
 }
