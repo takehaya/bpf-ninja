@@ -113,6 +113,27 @@ func TestResizeShrinkBelowCountFails(t *testing.T) {
 	}
 }
 
+// TestResizeLeftoverTmpPinFails verifies a leftover temporary pin (from a
+// crashed or concurrent resize) is reported with a recovery hint instead
+// of a bare EEXIST from the pin syscall.
+func TestResizeLeftoverTmpPinFails(t *testing.T) {
+	testutil.SkipIfNotRoot(t)
+
+	pin := fmt.Sprintf("/sys/fs/bpf/xdpninja_tmppin_%d", os.Getpid())
+	if err := Create(pin, "teid:u32", "", 16); err != nil {
+		t.Skipf("creating pinned set map (bpffs unavailable?): %v", err)
+	}
+	t.Cleanup(func() { _ = os.Remove(pin) })
+	if err := Create(pin+"_resize_tmp", "teid:u32", "", 16); err != nil {
+		t.Fatalf("creating leftover tmp pin: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Remove(pin + "_resize_tmp") })
+
+	if _, _, err := Resize(pin, 32); err == nil || !strings.Contains(err.Error(), "remove it and retry") {
+		t.Fatalf("Resize = %v, want a leftover-tmp error with a recovery hint", err)
+	}
+}
+
 // TestResizeSameCapacityNoop verifies a same-capacity resize succeeds
 // without touching the map.
 func TestResizeSameCapacityNoop(t *testing.T) {
