@@ -2,6 +2,8 @@ package output
 
 import (
 	"bytes"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -13,7 +15,9 @@ import (
 )
 
 // writePacketsToFile writes pkts through a fresh Writer at path. fast selects
-// the FastNgWriter (XDP_NINJA_FAST_PCAPNG=1) vs the gopacket NgWriter default.
+// the FastNgWriter (XDP_NINJA_FAST_PCAPNG=1, the default) vs the gopacket
+// NgWriter (XDP_NINJA_FAST_PCAPNG=0); both are set explicitly so the test
+// does not depend on the ambient default.
 func writePacketsToFile(t *testing.T, path string, pkts []capture.Packet, fast bool) {
 	t.Helper()
 	if fast {
@@ -47,7 +51,9 @@ func testPackets() []capture.Packet {
 	return []capture.Packet{mk(0, 64), mk(1, 65), mk(2, 128), mk(3, 1), mk(4, 1500), mk(5, 60)}
 }
 
-// readbackPackets reads every packet from a pcap-ng file.
+// readbackPackets reads every packet from a pcap-ng file. Only a clean EOF
+// ends the read — any other error is a decode failure and fails the test,
+// so a corrupt file cannot pass as a short-but-equal packet list.
 func readbackPackets(t *testing.T, path string) []capture.Packet {
 	t.Helper()
 	f, err := os.Open(path)
@@ -62,8 +68,11 @@ func readbackPackets(t *testing.T, path string) []capture.Packet {
 	var out []capture.Packet
 	for {
 		data, ci, err := r.ReadPacketData()
-		if err != nil {
+		if errors.Is(err, io.EOF) {
 			return out
+		}
+		if err != nil {
+			t.Fatalf("ReadPacketData(%s) after %d packets: %v", path, len(out), err)
 		}
 		cp := make([]byte, len(data))
 		copy(cp, data)
