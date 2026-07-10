@@ -51,9 +51,10 @@ func nullWriter(b *testing.B) *Writer {
 	return w
 }
 
-// pinStdWriter forces the default pcapng writer so the measurement does not
-// depend on whether the caller exported XDP_NINJA_FAST_PCAPNG.
-func pinStdWriter(b *testing.B) { b.Setenv("XDP_NINJA_FAST_PCAPNG", "") }
+// pinStdWriter forces the gopacket NgWriter (XDP_NINJA_FAST_PCAPNG=0) so the
+// split-overhead measurement stays on one writer regardless of the process
+// env or the default (which is now the FastNgWriter).
+func pinStdWriter(b *testing.B) { b.Setenv("XDP_NINJA_FAST_PCAPNG", "0") }
 
 // clustered: same-tag packets arrive contiguously (the common case — one
 // set-map value's flows batch together). numTags contiguous runs per batch.
