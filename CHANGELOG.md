@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.20.0](https://github.com/takehaya/xdp-ninja/compare/v0.19.1...v0.20.0) (2026-07-10)
+
+
+### 🎉 Features
+
+* **setmap:** add `set resize` to change a pinned set's capacity ([#80](https://github.com/takehaya/xdp-ninja/issues/80)) ([37e5ee9](https://github.com/takehaya/xdp-ninja/commit/37e5ee9b32b5b5e3af477d492fc9afc088f32fe2))
+
 ## [0.19.1](https://github.com/takehaya/xdp-ninja/compare/v0.19.0...v0.19.1) (2026-07-06)
 
 
