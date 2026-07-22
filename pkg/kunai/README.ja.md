@@ -154,7 +154,7 @@ vocabulary のパースは `dslvocab.Bundled()` 内で `sync.Once` により **p
 
 ## 関連プロジェクト
 
-- [bpf-ninja](https://github.com/takehaya/bpf-ninja) — 本パッケージのメイン consumer である非侵襲 XDP 観測ツール
+- [bpf-ninja](https://github.com/takehaya/bpf-ninja) — 本パッケージのメイン consumer である非侵襲 BPF 観測ツール (XDP / tc-bpf フックポイント)
 - [cilium/ebpf](https://github.com/cilium/ebpf) — codegen のターゲットである BPF アセンブラ / ローダ
 - [cloudflare/cbpfc](https://github.com/cloudflare/cbpfc) — 代替の classical-BPF (tcpdump 構文) コンパイラ。bpf-ninja は `--cbpf` 指定時の legacy 経路で使う
 - [p4lang/p4c](https://github.com/p4lang/p4c) — 公式 P4 コンパイラ。`.p4` vocab ファイルが P4-16 内に収まっていることを CI で検証するのに使う

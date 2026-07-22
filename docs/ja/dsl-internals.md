@@ -18,7 +18,7 @@ bpf-ninja DSL の設計動機、全体アーキテクチャ、codegen ABI、voca
 
 ### 1.1 背景
 
-bpf-ninja は non-invasive な XDP 観測ツールです。BPF trampoline (fentry / fexit) で本番 XDP プログラムにアタッチし、target を改変せずに pcap を取得します。
+bpf-ninja は non-invasive な BPF 観測ツールです。BPF trampoline (fentry / fexit) で本番の XDP / tc-bpf プログラムにアタッチし、target を改変せずに pcap を取得します。
 
 既存のフィルタ実装は cbpfc (Cloudflare の cBPF→eBPF transpiler) で tcpdump 構文を解釈します。しかし、次の課題があります。
 
