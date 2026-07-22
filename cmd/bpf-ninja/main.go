@@ -264,7 +264,7 @@ func newRootCommand() *cli.Command {
 	return &cli.Command{
 		Name:      "bpf-ninja",
 		Version:   fmt.Sprintf("%s, commit %s, built at %s, built by %s", version, commit, date, builtBy),
-		Usage:     "capture packets at XDP time (fentry/fexit observer or standalone XDP)",
+		Usage:     "capture packets at BPF hook points (XDP / tc-bpf fentry/fexit observer, or standalone XDP)",
 		ArgsUsage: "[filter expression]",
 		Description: `Outputs pcap (pcapng) to stdout. Pipe to tcpdump, wireshark, etc.
 

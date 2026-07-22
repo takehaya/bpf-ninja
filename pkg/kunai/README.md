@@ -195,7 +195,7 @@ Vocabulary parsing is memoised: `dslvocab.Bundled()` (in `pkg/kunai/dslvocab/`) 
 
 ## Related projects
 
-- [bpf-ninja](https://github.com/takehaya/bpf-ninja) — non-invasive XDP observability tool that is the primary consumer of this package.
+- [bpf-ninja](https://github.com/takehaya/bpf-ninja) — non-invasive BPF observability tool (XDP and tc-bpf hook points) that is the primary consumer of this package.
 - [cilium/ebpf](https://github.com/cilium/ebpf) — the BPF assembler / loader the codegen targets.
 - [cloudflare/cbpfc](https://github.com/cloudflare/cbpfc) — alternative classical-BPF (tcpdump syntax) compiler, used by bpf-ninja when `--cbpf` is set (legacy fallback).
 - [p4lang/p4c](https://github.com/p4lang/p4c) — official P4 compiler, used in CI to verify our `.p4` vocab files stay within P4-16.
