@@ -47,16 +47,6 @@ type Writer struct {
 	flushMu   sync.Mutex
 }
 
-// fastPcapngEnv reads the FastNgWriter opt-out, preferring the current
-// BPF_NINJA_FAST_PCAPNG and falling back to the pre-rename
-// XDP_NINJA_FAST_PCAPNG so existing setups keep working.
-func fastPcapngEnv() string {
-	if v, ok := os.LookupEnv("BPF_NINJA_FAST_PCAPNG"); ok {
-		return v
-	}
-	return os.Getenv("XDP_NINJA_FAST_PCAPNG")
-}
-
 // NewWriter creates a pcapng writer. If path is empty, writes to stdout.
 // In exit mode, creates one pcapng interface per XDP action so that
 // Wireshark displays the action as the interface name.
@@ -81,9 +71,8 @@ func NewWriter(path string, isFexit bool) (*Writer, error) {
 	// than gopacket's NgWriter, benchmarked); it emits packet-equivalent
 	// pcap-ng (see TestFastNgWriterEquivalent). Exit mode still needs the
 	// gopacket writer for its per-action multi-interface layout. Set
-	// BPF_NINJA_FAST_PCAPNG=0 to force the gopacket writer. The pre-rename
-	// XDP_NINJA_FAST_PCAPNG is still honored when the new name is unset.
-	useFast := fastPcapngEnv() != "0" && !isFexit
+	// BPF_NINJA_FAST_PCAPNG=0 to force the gopacket writer.
+	useFast := os.Getenv("BPF_NINJA_FAST_PCAPNG") != "0" && !isFexit
 	if useFast {
 		w.fastWriter, err = NewFastNgWriter(dest)
 	} else if isFexit {

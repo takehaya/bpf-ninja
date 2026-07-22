@@ -1,7 +1,7 @@
 # bpf-ninja
 
 > [!NOTE]
-> This project was renamed from **xdp-ninja** (July 2026): the tool has outgrown XDP — it also observes tc-bpf programs, and more BPF hook points are planned. GitHub redirects the old repository URL, but the Go module path changed to `github.com/takehaya/bpf-ninja`, so `go install` / imports need the new path. The `XDP_NINJA_FAST_PCAPNG` environment variable is still honored alongside the new `BPF_NINJA_FAST_PCAPNG`.
+> This project was renamed from **xdp-ninja** (July 2026): the tool has outgrown XDP — it also observes tc-bpf programs, and more BPF hook points are planned. GitHub redirects the old repository URL, but the Go module path changed to `github.com/takehaya/bpf-ninja`, so `go install` / imports need the new path. Environment variables are now `BPF_NINJA_*` (the old `XDP_NINJA_*` names are no longer read).
 
 bpf-ninja captures packets at BPF hook points — XDP today, tc-bpf too, with more planned. `tcpdump` runs below XDP and can't show what XDP or tc-bpf did to the packet, and cBPF filters can't walk into VXLAN / GTP / MPLS / SRv6 inner headers. Attach via fentry/fexit to a running XDP without modifying it, or `--mode xdp` for standalone capture on a netdev. Filters use the built-in DSL by default — chains like `eth/ipv4/udp/vxlan/eth/ipv4/tcp`. Plain tcpdump syntax via [cbpfc](https://github.com/cloudflare/cbpfc) is still accepted via `--cbpf`, kept for backwards compatibility and planned to retire once the DSL surface stabilises. Output is pcap (pcapng) to stdout.🥷
 
