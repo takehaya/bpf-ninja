@@ -87,7 +87,7 @@ func LoadXDPNative(state *attach.InterfaceState, filterExpr string, useDSL bool,
 
 	insns := buildXDPNativeInsns(out, outerMap.FD(), slots)
 	spec := &ebpf.ProgramSpec{
-		Name:         "bpf_ninja_native",
+		Name:         "bpfninja_native",
 		Type:         ebpf.XDP,
 		Instructions: insns,
 		License:      "GPL",

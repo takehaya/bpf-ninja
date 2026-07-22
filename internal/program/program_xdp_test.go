@@ -105,7 +105,7 @@ func loadXDPNativeOrFail(t *testing.T, expr string, useDSL bool) {
 
 	insns := buildXDPNativeInsns(out, outerMap.FD(), nil)
 	prog, err := ebpf.NewProgram(&ebpf.ProgramSpec{
-		Name:         "bpf_ninja_native_test",
+		Name:         "bpfninja_ntvtst",
 		Type:         ebpf.XDP,
 		Instructions: insns,
 		License:      "GPL",
