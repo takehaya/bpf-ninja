@@ -1,6 +1,6 @@
 # DSL 文法定義
 
-xdp-ninja の DSL は filter 式 DSL と p4lite vocab DSL の 2 言語で構成されます。本ドキュメントには、両者の formal EBNF と、各 production rule に対応する parser 関数 / 例文を載せています。
+bpf-ninja の DSL は filter 式 DSL と p4lite vocab DSL の 2 言語で構成されます。本ドキュメントには、両者の formal EBNF と、各 production rule に対応する parser 関数 / 例文を載せています。
 
 文法を変更したら、このドキュメントと該当 parser コード、さらに将来は `pkg/kunai/parser/grammar_test.go` の例文表を同時更新する規律でメンテナンスします。
 

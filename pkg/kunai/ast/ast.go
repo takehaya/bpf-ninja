@@ -1,4 +1,4 @@
-// Package ast defines the AST produced by xdp-ninja's one-liner DSL
+// Package ast defines the AST produced by bpf-ninja's one-liner DSL
 // parser. It carries no semantics beyond shape: a Layer knows its
 // protocol name but not whether that protocol exists in the loaded
 // vocabulary; a Predicate knows its operator and value kind but not

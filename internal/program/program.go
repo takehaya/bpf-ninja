@@ -13,13 +13,13 @@ import (
 	"github.com/cloudflare/cbpfc"
 	"github.com/google/gopacket/layers"
 	"github.com/google/gopacket/pcap"
-	"github.com/takehaya/xdp-ninja/internal/attach"
-	"github.com/takehaya/xdp-ninja/internal/filter"
-	"github.com/takehaya/xdp-ninja/internal/setmap"
-	"github.com/takehaya/xdp-ninja/pkg/kunai"
-	"github.com/takehaya/xdp-ninja/pkg/kunai/codegen"
-	tchost "github.com/takehaya/xdp-ninja/pkg/kunai/host/tc"
-	xdphost "github.com/takehaya/xdp-ninja/pkg/kunai/host/xdp"
+	"github.com/takehaya/bpf-ninja/internal/attach"
+	"github.com/takehaya/bpf-ninja/internal/filter"
+	"github.com/takehaya/bpf-ninja/internal/setmap"
+	"github.com/takehaya/bpf-ninja/pkg/kunai"
+	"github.com/takehaya/bpf-ninja/pkg/kunai/codegen"
+	tchost "github.com/takehaya/bpf-ninja/pkg/kunai/host/tc"
+	xdphost "github.com/takehaya/bpf-ninja/pkg/kunai/host/xdp"
 	"golang.org/x/net/bpf"
 )
 
@@ -82,7 +82,7 @@ func (p *Probe) Close() error {
 }
 
 // LoadEntry は fentry (前段) probe を作成してアタッチする。
-// useDSL=true のとき filterExpr は xdp-ninja DSL として解釈される。
+// useDSL=true のとき filterExpr は bpf-ninja DSL として解釈される。
 // 単一ターゲット用の互換ラッパ (bare *ebpf.Program から Target を合成
 // して loadMulti に委譲)。本番 CLI 経路は LoadMultiEntry/Exit を使う。
 func LoadEntry(targetProg *ebpf.Program, funcName string, filterExpr string, argFilters []filter.ArgFilter, useDSL bool) (*Probe, error) {
@@ -90,7 +90,7 @@ func LoadEntry(targetProg *ebpf.Program, funcName string, filterExpr string, arg
 }
 
 // LoadExit は fexit (後段) probe を作成してアタッチする。
-// useDSL=true のとき filterExpr は xdp-ninja DSL として解釈される。
+// useDSL=true のとき filterExpr は bpf-ninja DSL として解釈される。
 func LoadExit(targetProg *ebpf.Program, funcName string, filterExpr string, argFilters []filter.ArgFilter, useDSL bool) (*Probe, error) {
 	return loadProbe(targetProg, funcName, filterExpr, argFilters, true, useDSL)
 }
@@ -206,14 +206,14 @@ func loadMulti(targets []attach.Target, filterExpr string, filters []filter.Targ
 			_ = probe.Close()
 			return nil, err
 		}
-		if err := attachTracingProbe(probe, t.Program, fmt.Sprintf("xdp_ninja_%s", label), t.FuncName, attachType, insns); err != nil {
+		if err := attachTracingProbe(probe, t.Program, fmt.Sprintf("bpf_ninja_%s", label), t.FuncName, attachType, insns); err != nil {
 			return nil, err
 		}
 	}
 	return probe, nil
 }
 
-// validateTracingTarget checks targetProg is a type xdp-ninja can attach a
+// validateTracingTarget checks targetProg is a type bpf-ninja can attach a
 // fentry/fexit probe to, returning its program type.
 func validateTracingTarget(targetProg *ebpf.Program) (ebpf.ProgramType, error) {
 	info, err := targetProg.Info()
@@ -268,7 +268,7 @@ func attachTracingProbe(probe *Probe, targetProg *ebpf.Program, name, funcName s
 // end, filter sets R2 and ends at "filter_result"):
 //
 //   useDSL=false: tcpdump expression → cBPF → eBPF via cbpfc (default)
-//   useDSL=true:  xdp-ninja DSL → eBPF via kunai.Compile
+//   useDSL=true:  bpf-ninja DSL → eBPF via kunai.Compile
 //
 // See docs/ja/dsl-overview.md for the DSL doc index. The codegen
 // ABI this wrapper plugs into is documented in
@@ -292,7 +292,7 @@ func compileFilterWithSlots(expr string, useDSL, isFexit bool, progType ebpf.Pro
 	if useDSL {
 		// fexit attaches see the host retval at args[1] (XDP action
 		// or TC verdict, ABI shared); fentry has no action value yet,
-		// so action atoms are disabled. The xdp-ninja host wrapper saves
+		// so action atoms are disabled. The bpf-ninja host wrapper saves
 		// the tracing args ptr at stack[-48] in either case, which is
 		// exactly the ABI both FexitFetcher implementations expect.
 		// The tc host also carries VlanInMetadata in both entry and
@@ -497,7 +497,7 @@ func buildTracingInsns(filterOut codegen.Output, tf filter.TargetFilters, events
 	// for the outer program in that case — tag the first tracing
 	// insn with codegen's canonical func proto.
 	if len(filterOut.Callbacks) > 0 {
-		insns[0] = btf.WithFuncMetadata(insns[0], codegen.MainFilterFuncBTF("xdp_ninja_filter"))
+		insns[0] = btf.WithFuncMetadata(insns[0], codegen.MainFilterFuncBTF("bpf_ninja_filter"))
 		insns = append(insns, filterOut.Callbacks...)
 	}
 	return insns, nil

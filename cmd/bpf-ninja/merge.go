@@ -1,4 +1,4 @@
-// xdp-ninja merge: reconcile the per-CPU tag shard files left by a
+// bpf-ninja merge: reconcile the per-CPU tag shard files left by a
 // --split-by-tag capture into one pcap-ng per tag. A clean shutdown merges
 // automatically; this subcommand handles the case where the capture was
 // killed and the <base>.cpuN.<tag> files are still lying around.
@@ -11,7 +11,7 @@ import (
 
 	"github.com/urfave/cli/v3"
 
-	"github.com/takehaya/xdp-ninja/internal/output"
+	"github.com/takehaya/bpf-ninja/internal/output"
 )
 
 var mergeFlags = []cli.Flag{
@@ -35,8 +35,8 @@ capture was killed and the per-CPU files still need reconciling. The shard
 files are left in place.
 
 Examples:
-  xdp-ninja merge --base out.pcap
-  xdp-ninja merge -b out.pcap --fexit`,
+  bpf-ninja merge --base out.pcap
+  bpf-ninja merge -b out.pcap --fexit`,
 	Flags:  mergeFlags,
 	Action: runMerge,
 }

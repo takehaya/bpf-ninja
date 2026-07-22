@@ -1,7 +1,7 @@
 // keep_args.h — fentry/fexit で読めるように関数引数を ABI に残すヘルパ。
 //
 // 未使用の引数はコンパイラが ABI (r1..r5) から落とすことがある。そうなると
-// xdp-ninja の fentry/fexit 観測 (--arg-filter など) がその引数を読めなくなる。
+// bpf-ninja の fentry/fexit 観測 (--arg-filter など) がその引数を読めなくなる。
 // KEEP_ARGS(a, b, ...) を関数本体の先頭に置くと各引数を「使用済み」に固定し、
 // ABI から落ちるのを防ぐ。対象プログラムの .c に #include して使う。
 //
@@ -11,11 +11,11 @@
 //       KEEP_ARGS(imsi, teid);
 //       return 0;
 //   }
-#ifndef XDP_NINJA_KEEP_ARGS_H
-#define XDP_NINJA_KEEP_ARGS_H
+#ifndef BPF_NINJA_KEEP_ARGS_H
+#define BPF_NINJA_KEEP_ARGS_H
 
 // barrier_var は変数をレジスタに読み込んで「使用済み」にし、未使用引数が ABI
-// から落ちて fentry/fexit (xdp-ninja の arg-filter 等) で読めなくなるのを防ぐ。
+// から落ちて fentry/fexit (bpf-ninja の arg-filter 等) で読めなくなるのを防ぐ。
 // 入力専用の制約なので const 修飾された引数でもコンパイルが通る (ABI に残す目的
 // にはこれで十分)。libbpf (bpf_helpers.h)
 // が同名マクロを提供していればそれを使う。
@@ -51,4 +51,4 @@
     XN_KA_FOR_EACH(barrier_var, __VA_ARGS__)                                   \
   } while (0)
 
-#endif /* XDP_NINJA_KEEP_ARGS_H */
+#endif /* BPF_NINJA_KEEP_ARGS_H */

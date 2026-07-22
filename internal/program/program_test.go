@@ -6,8 +6,8 @@ import (
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/asm"
 
-	"github.com/takehaya/xdp-ninja/internal/filter"
-	"github.com/takehaya/xdp-ninja/pkg/kunai/codegen"
+	"github.com/takehaya/bpf-ninja/internal/filter"
+	"github.com/takehaya/bpf-ninja/pkg/kunai/codegen"
 )
 
 func TestCompileFilter(t *testing.T) {

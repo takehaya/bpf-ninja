@@ -26,7 +26,7 @@ import (
 	"github.com/google/gopacket/pcap"
 	"golang.org/x/net/bpf"
 
-	dt "github.com/takehaya/xdp-ninja/pkg/kunai/dsltest"
+	dt "github.com/takehaya/bpf-ninja/pkg/kunai/dsltest"
 )
 
 // compilePcapVM compiles a pcap-filter expression to cBPF via libpcap

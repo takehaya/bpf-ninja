@@ -1,4 +1,4 @@
-// `xdp-ninja set` subcommands: manage pinned-map match sets by field
+// `bpf-ninja set` subcommands: manage pinned-map match sets by field
 // name. BTF carries the key schema, so nobody hand-assembles zero-padded
 // native-endian hex the way `bpftool map update key hex ...` requires.
 package main
@@ -11,7 +11,7 @@ import (
 
 	"github.com/urfave/cli/v3"
 
-	"github.com/takehaya/xdp-ninja/internal/setmap"
+	"github.com/takehaya/bpf-ninja/internal/setmap"
 )
 
 var setCommand = &cli.Command{
@@ -23,12 +23,12 @@ references it with --set NAME=/path + --arg-filter @NAME; entries added
 or deleted here take effect immediately, without re-attaching.
 
 Examples:
-  xdp-ninja set create /sys/fs/bpf/flows --key "imsi:u64,teid:u32"
-  xdp-ninja set add    /sys/fs/bpf/flows imsi=999990000000001 teid=0x3039 tag=1
-  xdp-ninja set del    /sys/fs/bpf/flows imsi=999990000000001 teid=0x3039
-  xdp-ninja set list   /sys/fs/bpf/flows
-  xdp-ninja set schema /sys/fs/bpf/flows
-  xdp-ninja set resize /sys/fs/bpf/flows --max-entries 4096`,
+  bpf-ninja set create /sys/fs/bpf/flows --key "imsi:u64,teid:u32"
+  bpf-ninja set add    /sys/fs/bpf/flows imsi=999990000000001 teid=0x3039 tag=1
+  bpf-ninja set del    /sys/fs/bpf/flows imsi=999990000000001 teid=0x3039
+  bpf-ninja set list   /sys/fs/bpf/flows
+  bpf-ninja set schema /sys/fs/bpf/flows
+  bpf-ninja set resize /sys/fs/bpf/flows --max-entries 4096`,
 	Commands: []*cli.Command{setCreateCmd, setAddCmd, setDelCmd, setListCmd, setSchemaCmd, setResizeCmd},
 }
 

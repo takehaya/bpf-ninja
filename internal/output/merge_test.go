@@ -8,7 +8,7 @@ import (
 
 	"github.com/google/gopacket/pcapgo"
 
-	"github.com/takehaya/xdp-ninja/internal/capture"
+	"github.com/takehaya/bpf-ninja/internal/capture"
 )
 
 // writeShardFile writes a single-shard pcap-ng with packets at the given

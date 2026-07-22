@@ -62,7 +62,7 @@ func FindXDPProgramByID(progID uint32) (*ProgInfo, error) {
 }
 
 // FindBPFProgramByID gets a BPF program by ID, accepting XDP /
-// SchedCLS / SchedACT — the program types xdp-ninja can attach a
+// SchedCLS / SchedACT — the program types bpf-ninja can attach a
 // fentry/fexit probe to. Returns the resolved entry func name and the
 // program type so the caller can route to the correct host adapter.
 func FindBPFProgramByID(progID uint32) (*ProgInfo, error) {

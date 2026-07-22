@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/takehaya/xdp-ninja/internal/attach"
+	"github.com/takehaya/bpf-ninja/internal/attach"
 )
 
 // funcJSON is one BTF function of a program.

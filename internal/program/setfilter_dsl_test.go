@@ -10,9 +10,9 @@ import (
 
 	"github.com/cilium/ebpf"
 
-	"github.com/takehaya/xdp-ninja/internal/attach"
-	"github.com/takehaya/xdp-ninja/internal/setmap"
-	"github.com/takehaya/xdp-ninja/internal/testutil"
+	"github.com/takehaya/bpf-ninja/internal/attach"
+	"github.com/takehaya/bpf-ninja/internal/setmap"
+	"github.com/takehaya/bpf-ninja/internal/testutil"
 )
 
 // dslSetTargetSrc is a passthrough XDP program: the DSL filter runs on
@@ -66,7 +66,7 @@ func runTCP(t *testing.T, prog *ebpf.Program, marker byte, sport, dport uint16) 
 func TestBpfDSLSetMatchPacketField(t *testing.T) {
 	testutil.SkipIfNotRoot(t)
 
-	pin := fmt.Sprintf("/sys/fs/bpf/xdpninja_dslset_%d", os.Getpid())
+	pin := fmt.Sprintf("/sys/fs/bpf/bpfninja_dslset_%d", os.Getpid())
 	if err := setmap.Create(pin, "dport:u16", "", 16); err != nil {
 		t.Skipf("creating pinned set map (bpffs unavailable?): %v", err)
 	}
@@ -132,7 +132,7 @@ func TestBpfDSLSetMatchPacketField(t *testing.T) {
 func TestBpfDSLSetMatchCompositeKey(t *testing.T) {
 	testutil.SkipIfNotRoot(t)
 
-	pin := fmt.Sprintf("/sys/fs/bpf/xdpninja_dslcomp_%d", os.Getpid())
+	pin := fmt.Sprintf("/sys/fs/bpf/bpfninja_dslcomp_%d", os.Getpid())
 	if err := setmap.Create(pin, "sport:u16,dport:u16", "", 16); err != nil {
 		t.Skipf("creating pinned set map: %v", err)
 	}
@@ -198,7 +198,7 @@ func runIPv6(t *testing.T, prog *ebpf.Program, marker byte, dst string) {
 func TestBpfDSLSetMatchIPv6Dst(t *testing.T) {
 	testutil.SkipIfNotRoot(t)
 
-	pin := fmt.Sprintf("/sys/fs/bpf/xdpninja_dslsid_%d", os.Getpid())
+	pin := fmt.Sprintf("/sys/fs/bpf/bpfninja_dslsid_%d", os.Getpid())
 	if err := setmap.Create(pin, "sid:ipv6", "", 16); err != nil {
 		t.Skipf("creating pinned ipv6 set map: %v", err)
 	}
@@ -274,7 +274,7 @@ func TestBpfDSLSetMatchIPv6Dst(t *testing.T) {
 func TestBpfDSLSetMatchSRv6SegmentLoads(t *testing.T) {
 	testutil.SkipIfNotRoot(t)
 
-	pin := fmt.Sprintf("/sys/fs/bpf/xdpninja_dslseg_%d", os.Getpid())
+	pin := fmt.Sprintf("/sys/fs/bpf/bpfninja_dslseg_%d", os.Getpid())
 	if err := setmap.Create(pin, "sid:ipv6", "", 16); err != nil {
 		t.Skipf("creating pinned ipv6 set map: %v", err)
 	}

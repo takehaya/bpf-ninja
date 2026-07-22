@@ -5,8 +5,8 @@ import (
 
 	"github.com/cilium/ebpf/asm"
 
-	"github.com/takehaya/xdp-ninja/pkg/kunai/vocab"
-	"github.com/takehaya/xdp-ninja/pkg/kunai/vocab/p4lite"
+	"github.com/takehaya/bpf-ninja/pkg/kunai/vocab"
+	"github.com/takehaya/bpf-ninja/pkg/kunai/vocab/p4lite"
 )
 
 // emitTransitionWithSelfRewrite lowers a TransitionOp at the inline

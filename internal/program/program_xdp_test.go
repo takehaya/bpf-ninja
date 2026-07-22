@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	"github.com/cilium/ebpf"
-	"github.com/takehaya/xdp-ninja/internal/testutil"
+	"github.com/takehaya/bpf-ninja/internal/testutil"
 )
 
 // xdpNativeFilterExprs covers the kunai/cbpfc shapes the XDP-native
@@ -105,7 +105,7 @@ func loadXDPNativeOrFail(t *testing.T, expr string, useDSL bool) {
 
 	insns := buildXDPNativeInsns(out, outerMap.FD(), nil)
 	prog, err := ebpf.NewProgram(&ebpf.ProgramSpec{
-		Name:         "xdp_ninja_native_test",
+		Name:         "bpf_ninja_native_test",
 		Type:         ebpf.XDP,
 		Instructions: insns,
 		License:      "GPL",

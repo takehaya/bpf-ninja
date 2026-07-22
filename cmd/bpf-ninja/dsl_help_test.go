@@ -15,7 +15,7 @@ func TestPrintDSLHelpIncludesGrammarAndVocab(t *testing.T) {
 
 	// Grammar header and syntax keywords should always be present.
 	for _, want := range []string{
-		"xdp-ninja DSL — quick reference",
+		"bpf-ninja DSL — quick reference",
 		"Syntax:",
 		"layer-chain",
 		"capture-clause",

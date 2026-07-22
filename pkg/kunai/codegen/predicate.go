@@ -7,8 +7,8 @@ import (
 
 	"github.com/cilium/ebpf/asm"
 
-	"github.com/takehaya/xdp-ninja/pkg/kunai/ast"
-	"github.com/takehaya/xdp-ninja/pkg/kunai/ir"
+	"github.com/takehaya/bpf-ninja/pkg/kunai/ast"
+	"github.com/takehaya/bpf-ninja/pkg/kunai/ir"
 )
 
 // genPredicate emits the comparison asm for one "field op value" entry.
@@ -251,7 +251,7 @@ func emitInSetPredicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, erro
 	fieldName := pred.Field.Field.Name
 	slotOff, slotSize, ok := pc.sets.SlotFor(pred.SetName, fieldName)
 	if !ok {
-		return nil, fmt.Errorf("set @%s has no key field %q (check `xdp-ninja set schema`)", pred.SetName, fieldName)
+		return nil, fmt.Errorf("set @%s has no key field %q (check `bpf-ninja set schema`)", pred.SetName, fieldName)
 	}
 	// The extraction is written during the filter and read after it, so
 	// the slot must live in the host region, never kunai's stack range.

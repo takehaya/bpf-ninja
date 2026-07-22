@@ -12,8 +12,8 @@ import (
 
 	"github.com/cilium/ebpf"
 
-	"github.com/takehaya/xdp-ninja/internal/attach"
-	"github.com/takehaya/xdp-ninja/internal/setmap"
+	"github.com/takehaya/bpf-ninja/internal/attach"
+	"github.com/takehaya/bpf-ninja/internal/setmap"
 )
 
 // SetKeyField binds one key-struct member to a fentry arg of one target

@@ -14,7 +14,7 @@ cpumap で全コアへパケットを分散するデータパス（対象の XDP
 それには、データパスの cpumap 幅を狭めてコアを空ける必要がある。
 RSS や IRQ affinity や taskset では空けられない。
 cpumap の kthread は redirect 先 CPU ごとに立つので、cpumap が全 64 コアを対象にする限り、どのコアにも kthread が載るからである。
-この幅を狭める手段は対象データパス側の設定（本件では `PGWU_XDP_DISPATCH_CPUS`）にあり、xdp-ninja 単独や OS 設定では代替できない。
+この幅を狭める手段は対象データパス側の設定（本件では `PGWU_XDP_DISPATCH_CPUS`）にあり、bpf-ninja 単独や OS 設定では代替できない。
 
 ## 測定
 

@@ -1,5 +1,5 @@
 // Package p4lite is a minimal Go-native subset parser for P4-16 used
-// internally by xdp-ninja's DSL vocabulary loader.
+// internally by bpf-ninja's DSL vocabulary loader.
 //
 // Only the MVP subset is accepted: `header`, `const`, `parser` with
 // `state` / `transition` / `transition select` (supports tuple match and

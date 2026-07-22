@@ -19,13 +19,13 @@ import (
 	"github.com/cilium/ebpf"
 	"github.com/urfave/cli/v3"
 
-	"github.com/takehaya/xdp-ninja/internal/attach"
-	"github.com/takehaya/xdp-ninja/internal/capture"
-	"github.com/takehaya/xdp-ninja/internal/capture/fastrb"
-	"github.com/takehaya/xdp-ninja/internal/filter"
-	"github.com/takehaya/xdp-ninja/internal/output"
-	"github.com/takehaya/xdp-ninja/internal/program"
-	"github.com/takehaya/xdp-ninja/internal/setmap"
+	"github.com/takehaya/bpf-ninja/internal/attach"
+	"github.com/takehaya/bpf-ninja/internal/capture"
+	"github.com/takehaya/bpf-ninja/internal/capture/fastrb"
+	"github.com/takehaya/bpf-ninja/internal/filter"
+	"github.com/takehaya/bpf-ninja/internal/output"
+	"github.com/takehaya/bpf-ninja/internal/program"
+	"github.com/takehaya/bpf-ninja/internal/setmap"
 )
 
 // Set via -ldflags "-X main.version=... -X main.commit=... -X main.date=... -X main.builtBy=..."
@@ -83,7 +83,7 @@ var flags = []cli.Flag{
 	},
 	&cli.StringSliceFlag{
 		Name:  "set",
-		Usage: "define a named match set backed by a pinned BPF hash map: NAME=/sys/fs/bpf/path[,key(field=arg:param,...)]; reference it with --arg-filter @NAME (function arg) or the DSL predicate layer[field in @NAME] (packet field). Entries are managed at runtime via `xdp-ninja set` (no re-attach needed)",
+		Usage: "define a named match set backed by a pinned BPF hash map: NAME=/sys/fs/bpf/path[,key(field=arg:param,...)]; reference it with --arg-filter @NAME (function arg) or the DSL predicate layer[field in @NAME] (packet field). Entries are managed at runtime via `bpf-ninja set` (no re-attach needed)",
 	},
 	&cli.BoolFlag{
 		Name:  "list-params",
@@ -99,7 +99,7 @@ var flags = []cli.Flag{
 	},
 	&cli.BoolFlag{
 		Name:  "dsl-help",
-		Usage: "print the xdp-ninja DSL grammar + bundled protocol list and exit (pass a protocol name as positional arg to inspect its fields, e.g. `--dsl-help ipv4`)",
+		Usage: "print the bpf-ninja DSL grammar + bundled protocol list and exit (pass a protocol name as positional arg to inspect its fields, e.g. `--dsl-help ipv4`)",
 	},
 	&cli.StringFlag{
 		Name:  "dump-asm",
@@ -145,7 +145,7 @@ var flags = []cli.Flag{
 	},
 	&cli.BoolFlag{
 		Name:  "raw-dump",
-		Usage: "dump ringbuf records verbatim to per-CPU .raw files; reconstruct standard pcap-ng offline via `xdp-ninja convert`",
+		Usage: "dump ringbuf records verbatim to per-CPU .raw files; reconstruct standard pcap-ng offline via `bpf-ninja convert`",
 	},
 	&cli.BoolFlag{
 		Name:  "split-by-tag",
@@ -166,7 +166,7 @@ var flags = []cli.Flag{
 	&cli.IntFlag{
 		Name:  "rx-cores",
 		Value: 0,
-		Usage: "split-core capture: if >0, RX/capture is assumed confined to cores 0..N-1 (set the NIC to N queues yourself via `ethtool -L combined N`); xdp-ninja runs N consumer goroutines pinned to cores N..2N-1, off the RX softirqs. pair with --busy-poll --no-wakeup",
+		Usage: "split-core capture: if >0, RX/capture is assumed confined to cores 0..N-1 (set the NIC to N queues yourself via `ethtool -L combined N`); bpf-ninja runs N consumer goroutines pinned to cores N..2N-1, off the RX softirqs. pair with --busy-poll --no-wakeup",
 	},
 	&cli.IntFlag{
 		Name:  "in-memory-buffer",
@@ -262,7 +262,7 @@ func main() {
 // assert its parsing behaviour (see TestSetFlagNotCommaSplit).
 func newRootCommand() *cli.Command {
 	return &cli.Command{
-		Name:      "xdp-ninja",
+		Name:      "bpf-ninja",
 		Version:   fmt.Sprintf("%s, commit %s, built at %s, built by %s", version, commit, date, builtBy),
 		Usage:     "capture packets at XDP time (fentry/fexit observer or standalone XDP)",
 		ArgsUsage: "[filter expression]",
@@ -276,13 +276,13 @@ Modes (--mode):
   xdp       attach as the primary XDP on the netdev (no existing XDP needed)
 
 Examples:
-  xdp-ninja -i eth0 | tcpdump -n -r -
-  xdp-ninja -i eth0 "eth/ipv4[dst==10.0.0.1]" | tcpdump -r -
-  xdp-ninja -i eth0 --mode exit | tcpdump -r -
-  xdp-ninja --mode xdp -i eth0 "eth/ipv4/tcp[dport==443]" | tcpdump -r -
-  xdp-ninja --cbpf --mode xdp -i eth0 "tcp port 443" | tcpdump -r -   # legacy pcap syntax
-  xdp-ninja -p 42 | tcpdump -n -r -
-  xdp-ninja -i eth0 -w out.pcap`,
+  bpf-ninja -i eth0 | tcpdump -n -r -
+  bpf-ninja -i eth0 "eth/ipv4[dst==10.0.0.1]" | tcpdump -r -
+  bpf-ninja -i eth0 --mode exit | tcpdump -r -
+  bpf-ninja --mode xdp -i eth0 "eth/ipv4/tcp[dport==443]" | tcpdump -r -
+  bpf-ninja --cbpf --mode xdp -i eth0 "tcp port 443" | tcpdump -r -   # legacy pcap syntax
+  bpf-ninja -p 42 | tcpdump -n -r -
+  bpf-ninja -i eth0 -w out.pcap`,
 		Flags:                 flags,
 		Action:                run,
 		Commands:              []*cli.Command{convertCommand, setCommand, mergeCommand},
@@ -836,7 +836,7 @@ func runCaptureLoop(cmd *cli.Command, probe *program.Probe, isFexit bool, label 
 		// post-capture merge so the pause isn't mistaken for a hang.
 		if cmd.Bool("split-by-tag") {
 			// Split capture wrote <base>.cpuN.<tag> files; merge each tag's
-			// shards into <base>.<tag>. A kill skips this — `xdp-ninja merge`
+			// shards into <base>.<tag>. A kill skips this — `bpf-ninja merge`
 			// reconciles the leftover per-CPU files later.
 			fmt.Fprintf(os.Stderr, "merging per-CPU tag shards for %s ...\n", basePath)
 			if err := output.MergeTagShards(basePath, isFexit); err != nil {
@@ -1308,7 +1308,7 @@ func reportLatencySamples(outputPath string) {
 	fmt.Fprintf(os.Stderr, "latency-sample: %d samples → %s\n", len(all), outputPath)
 }
 
-// runXDPNative handles --mode xdp: xdp-ninja is itself the XDP
+// runXDPNative handles --mode xdp: bpf-ninja is itself the XDP
 // program on the netdev (no fentry/fexit piggybacking).
 // openDeclaredSets parses and opens every --set spec, rejecting duplicate
 // names. The caller owns the returned handles (defer Def.Close) until the
@@ -1376,7 +1376,7 @@ func runXDPNative(cmd *cli.Command) error {
 		)
 	}
 
-	logVerbose(cmd, "attaching xdp-ninja as native XDP on %s (filter: %s)", ifaceName, filterExpr)
+	logVerbose(cmd, "attaching bpf-ninja as native XDP on %s (filter: %s)", ifaceName, filterExpr)
 
 	probe, err := program.LoadXDPNative(state, filterExpr, useDSL, sets)
 	if err != nil {
@@ -1394,10 +1394,10 @@ func validateXDPNativeFlags(cmd *cli.Command) error {
 		return fmt.Errorf("--mode xdp requires -i <interface>")
 	}
 	if len(cmd.IntSlice("prog-id")) > 0 {
-		return fmt.Errorf("--mode xdp does not accept -p (the program is xdp-ninja itself, not an existing one)")
+		return fmt.Errorf("--mode xdp does not accept -p (the program is bpf-ninja itself, not an existing one)")
 	}
 	if len(cmd.StringSlice("prog-name")) > 0 {
-		return fmt.Errorf("--mode xdp does not accept --prog-name (the program is xdp-ninja itself, not an existing one)")
+		return fmt.Errorf("--mode xdp does not accept --prog-name (the program is bpf-ninja itself, not an existing one)")
 	}
 	if len(cmd.StringSlice("func")) > 0 {
 		return fmt.Errorf("--func is only valid with --mode entry/exit (no BTF subfunction concept in xdp-native)")

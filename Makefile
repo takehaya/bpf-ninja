@@ -1,11 +1,11 @@
 .PHONY: build clean test test-unit test-bpf test-integration test-all vet goreleaser
 .PHONY: install-lint-tools lint lint-ci p4c-check
 
-BINARY = xdp-ninja
+BINARY = bpf-ninja
 DIFF_FROM_BRANCH_NAME ?= main
 
 build:
-	go build -o $(BINARY) ./cmd/xdp-ninja/
+	go build -o $(BINARY) ./cmd/bpf-ninja/
 
 vet:
 	go vet ./...

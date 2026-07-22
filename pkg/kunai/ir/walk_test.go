@@ -3,7 +3,7 @@ package ir
 import (
 	"testing"
 
-	"github.com/takehaya/xdp-ninja/pkg/kunai/ast"
+	"github.com/takehaya/bpf-ninja/pkg/kunai/ast"
 )
 
 // TestWalkConditionFieldRefsCoversBoolBranches pins the invariant

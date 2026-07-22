@@ -231,9 +231,9 @@ func newIPv6SetMap(t *testing.T) *ebpf.Map {
 	}
 	fields, size := layout([]FieldSpec{{Name: "sid", Size: 16, IsBytes: true}})
 	m, err := ebpf.NewMap(&ebpf.MapSpec{
-		Name: "xdpninja_sidtest", Type: ebpf.Hash,
+		Name: "bpfninja_sidtest", Type: ebpf.Hash,
 		KeySize: size, ValueSize: 4, MaxEntries: 4,
-		Key:   synthesizeType("xdpninja_set_key", fields, size),
+		Key:   synthesizeType("bpfninja_set_key", fields, size),
 		Value: intType(4),
 	})
 	if err != nil {

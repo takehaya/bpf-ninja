@@ -14,7 +14,7 @@ package program
 import (
 	"testing"
 
-	"github.com/takehaya/xdp-ninja/internal/testutil"
+	"github.com/takehaya/bpf-ninja/internal/testutil"
 )
 
 func TestBpfXDPNativeFilterSet(t *testing.T) {

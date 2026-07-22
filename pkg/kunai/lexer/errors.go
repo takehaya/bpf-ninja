@@ -3,7 +3,7 @@ package lexer
 import (
 	"fmt"
 
-	"github.com/takehaya/xdp-ninja/pkg/kunai/ast"
+	"github.com/takehaya/bpf-ninja/pkg/kunai/ast"
 )
 
 // SyntaxError is the error returned by the lexer (and re-used by the

@@ -15,8 +15,8 @@ import (
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/asm"
 
-	"github.com/takehaya/xdp-ninja/internal/attach"
-	"github.com/takehaya/xdp-ninja/internal/filter"
+	"github.com/takehaya/bpf-ninja/internal/attach"
+	"github.com/takehaya/bpf-ninja/internal/filter"
 )
 
 // EchoRingSize is the byte capacity of the arg-echo ringbuf. 64 KiB is a
@@ -70,7 +70,7 @@ func LoadArgEcho(
 	}
 
 	// "njecho_entry" (12) / "njecho_exit" (11): distinct from the capture
-	// probe's "xdp_ninja_entry"/"xdp_ninja_exit" and within the 15-char
+	// probe's "bpf_ninja_entry"/"bpf_ninja_exit" and within the 15-char
 	// BPF name limit (so the distinguishing name isn't truncated away).
 	insns := buildArgEchoInsns(ring.FD(), argFilters, echoParams)
 	if err := attachTracingProbe(probe, targetProg, fmt.Sprintf("njecho_%s", label), funcName, attachType, insns); err != nil {

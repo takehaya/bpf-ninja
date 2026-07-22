@@ -7,8 +7,8 @@ import (
 
 	"github.com/cilium/ebpf/asm"
 
-	"github.com/takehaya/xdp-ninja/pkg/kunai/codegen"
-	xdphost "github.com/takehaya/xdp-ninja/pkg/kunai/host/xdp"
+	"github.com/takehaya/bpf-ninja/pkg/kunai/codegen"
+	xdphost "github.com/takehaya/bpf-ninja/pkg/kunai/host/xdp"
 )
 
 // compileForTest wraps Compile with the zero Capabilities so most

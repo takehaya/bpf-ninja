@@ -1,4 +1,4 @@
-// xdp-ninja convert: offline converter for the --raw-dump output.
+// bpf-ninja convert: offline converter for the --raw-dump output.
 // Reads `*.W<offset>.cpu<N>.raw` files and emits a single pcap-ng via
 // FastNgWriter. Records are streamed in per-file order; the BPF
 // kernel timestamps make each per-CPU file strictly monotonic, and
@@ -19,8 +19,8 @@ import (
 
 	"github.com/urfave/cli/v3"
 
-	"github.com/takehaya/xdp-ninja/internal/capture"
-	"github.com/takehaya/xdp-ninja/internal/output"
+	"github.com/takehaya/bpf-ninja/internal/capture"
+	"github.com/takehaya/bpf-ninja/internal/output"
 )
 
 var convertFlags = []cli.Flag{
@@ -41,9 +41,9 @@ var convertCommand = &cli.Command{
 pcap-ng file that tcpdump / Wireshark / tshark can read directly.
 
 Examples:
-  xdp-ninja convert -r 'session.W*.cpu*.raw' -o session.pcapng
-  xdp-ninja convert -r in.cpu0.raw -r in.cpu1.raw -o out.pcapng
-  xdp-ninja convert -r 'session.W*.cpu*.raw'   # to stdout`,
+  bpf-ninja convert -r 'session.W*.cpu*.raw' -o session.pcapng
+  bpf-ninja convert -r in.cpu0.raw -r in.cpu1.raw -o out.pcapng
+  bpf-ninja convert -r 'session.W*.cpu*.raw'   # to stdout`,
 	Flags:  convertFlags,
 	Action: runConvert,
 }

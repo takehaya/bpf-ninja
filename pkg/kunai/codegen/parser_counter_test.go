@@ -8,9 +8,9 @@ import (
 
 	"github.com/cilium/ebpf/asm"
 
-	"github.com/takehaya/xdp-ninja/pkg/kunai/parser"
-	"github.com/takehaya/xdp-ninja/pkg/kunai/resolve"
-	"github.com/takehaya/xdp-ninja/pkg/kunai/vocab"
+	"github.com/takehaya/bpf-ninja/pkg/kunai/parser"
+	"github.com/takehaya/bpf-ninja/pkg/kunai/resolve"
+	"github.com/takehaya/bpf-ninja/pkg/kunai/vocab"
 )
 
 // TestParserCounterSlotAllocation pins the slot offsets the codegen

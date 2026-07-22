@@ -1,4 +1,4 @@
-// Package kunai exposes the P4-based filter DSL for xdp-ninja.
+// Package kunai exposes the P4-based filter DSL for bpf-ninja.
 //
 // Structure:
 //   - ast, lexer, parser: one-liner DSL front end
@@ -13,11 +13,11 @@
 package kunai
 
 import (
-	"github.com/takehaya/xdp-ninja/pkg/kunai/codegen"
-	"github.com/takehaya/xdp-ninja/pkg/kunai/dslvocab"
-	"github.com/takehaya/xdp-ninja/pkg/kunai/parser"
-	"github.com/takehaya/xdp-ninja/pkg/kunai/resolve"
-	"github.com/takehaya/xdp-ninja/pkg/kunai/vocab"
+	"github.com/takehaya/bpf-ninja/pkg/kunai/codegen"
+	"github.com/takehaya/bpf-ninja/pkg/kunai/dslvocab"
+	"github.com/takehaya/bpf-ninja/pkg/kunai/parser"
+	"github.com/takehaya/bpf-ninja/pkg/kunai/resolve"
+	"github.com/takehaya/bpf-ninja/pkg/kunai/vocab"
 )
 
 // Compile parses a DSL expression against the bundled protocol

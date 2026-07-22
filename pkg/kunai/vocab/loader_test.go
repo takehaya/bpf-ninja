@@ -5,8 +5,8 @@ import (
 	"testing"
 	"testing/fstest"
 
-	"github.com/takehaya/xdp-ninja/pkg/kunai/protocols"
-	"github.com/takehaya/xdp-ninja/pkg/kunai/vocab/p4lite"
+	"github.com/takehaya/bpf-ninja/pkg/kunai/protocols"
+	"github.com/takehaya/bpf-ninja/pkg/kunai/vocab/p4lite"
 )
 
 // loadBundled loads the baked-in vocabulary exactly as production code will.

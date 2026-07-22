@@ -3,10 +3,10 @@ package codegen
 import (
 	"testing"
 
-	"github.com/takehaya/xdp-ninja/pkg/kunai/ast"
-	"github.com/takehaya/xdp-ninja/pkg/kunai/dslvocab"
-	"github.com/takehaya/xdp-ninja/pkg/kunai/ir"
-	"github.com/takehaya/xdp-ninja/pkg/kunai/vocab"
+	"github.com/takehaya/bpf-ninja/pkg/kunai/ast"
+	"github.com/takehaya/bpf-ninja/pkg/kunai/dslvocab"
+	"github.com/takehaya/bpf-ninja/pkg/kunai/ir"
+	"github.com/takehaya/bpf-ninja/pkg/kunai/vocab"
 )
 
 // auxRefForOption returns a synthesized AuxRef + Layer pair that

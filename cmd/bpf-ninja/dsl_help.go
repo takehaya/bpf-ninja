@@ -3,7 +3,7 @@ package main
 import (
 	"io"
 
-	"github.com/takehaya/xdp-ninja/pkg/kunai"
+	"github.com/takehaya/bpf-ninja/pkg/kunai"
 )
 
 const xdpNinjaHelpFooter = `
@@ -12,7 +12,7 @@ filter syntax). For tcpdump/cBPF syntax, add --cbpf.
 
   Full reference: docs/ja/dsl-usage.md
   Formal grammar: docs/ja/dsl-grammar.md
-  Per-protocol fields: xdp-ninja --dsl-help <proto>
+  Per-protocol fields: bpf-ninja --dsl-help <proto>
 
 `
 
@@ -21,7 +21,7 @@ filter syntax). For tcpdump/cBPF syntax, add --cbpf.
 // it stays under ~80 columns and skips deep details users get from
 // docs/ja/dsl-usage.md.
 func printDSLHelp(w io.Writer) error {
-	if _, err := io.WriteString(w, "xdp-ninja DSL — quick reference\n\n"); err != nil {
+	if _, err := io.WriteString(w, "bpf-ninja DSL — quick reference\n\n"); err != nil {
 		return err
 	}
 	if _, err := io.WriteString(w, kunai.SyntaxHelp); err != nil {

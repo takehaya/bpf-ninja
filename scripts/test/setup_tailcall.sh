@@ -3,7 +3,7 @@
 # Prints the dispatcher program ID on stdout.
 #
 # fentry/fexit trampolines only fire for the directly-attached XDP program
-# (the dispatcher), not for tail call targets. So xdp-ninja -p should
+# (the dispatcher), not for tail call targets. So bpf-ninja -p should
 # target the dispatcher ID to capture packets.
 set -e
 

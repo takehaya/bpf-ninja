@@ -6,7 +6,7 @@ package vocab
 import (
 	"fmt"
 
-	"github.com/takehaya/xdp-ninja/pkg/kunai/vocab/p4lite"
+	"github.com/takehaya/bpf-ninja/pkg/kunai/vocab/p4lite"
 )
 
 // ProtocolSpec is the in-memory representation of one .p4 protocol file

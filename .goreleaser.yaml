@@ -5,13 +5,13 @@ before:
   hooks:
     - go mod tidy
 builds:
-  - id: xdp-ninja
-    binary: xdp-ninja
-    main: ./cmd/xdp-ninja
+  - id: bpf-ninja
+    binary: bpf-ninja
+    main: ./cmd/bpf-ninja
     goos: [linux]
     goarch: [amd64]
 archives:
-  - id: xdp-ninja
+  - id: bpf-ninja
     formats: ['tar.gz']
     name_template: >-
       {{ .ProjectName }}_
@@ -33,6 +33,6 @@ changelog:
 release:
   github:
     owner: takehaya
-    name: xdp-ninja
+    name: bpf-ninja
   draft: false
   prerelease: auto

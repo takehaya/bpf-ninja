@@ -17,7 +17,7 @@ func parseSetFlags(t *testing.T, args ...string) []string {
 		got = c.StringSlice("set")
 		return nil
 	}
-	if err := app.Run(context.Background(), append([]string{"xdp-ninja"}, args...)); err != nil {
+	if err := app.Run(context.Background(), append([]string{"bpf-ninja"}, args...)); err != nil {
 		t.Fatalf("run %v: %v", args, err)
 	}
 	return got

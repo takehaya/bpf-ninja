@@ -1,8 +1,8 @@
 package resolve
 
 import (
-	"github.com/takehaya/xdp-ninja/pkg/kunai/ast"
-	"github.com/takehaya/xdp-ninja/pkg/kunai/ir"
+	"github.com/takehaya/bpf-ninja/pkg/kunai/ast"
+	"github.com/takehaya/bpf-ninja/pkg/kunai/ir"
 )
 
 // checkLiteralWidthShape pins the network-literal RHS (or LHS) to a

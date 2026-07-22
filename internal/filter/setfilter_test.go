@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/takehaya/xdp-ninja/internal/attach"
-	"github.com/takehaya/xdp-ninja/internal/setmap"
+	"github.com/takehaya/bpf-ninja/internal/attach"
+	"github.com/takehaya/bpf-ninja/internal/setmap"
 )
 
 func flowSet(mapping []setmap.MapEntry) *setmap.Set {

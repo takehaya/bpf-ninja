@@ -12,7 +12,7 @@ import (
 
 	"github.com/google/gopacket/pcapgo"
 
-	"github.com/takehaya/xdp-ninja/internal/capture"
+	"github.com/takehaya/bpf-ninja/internal/capture"
 )
 
 type mergeItem struct {

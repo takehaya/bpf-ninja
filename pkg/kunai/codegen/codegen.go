@@ -69,9 +69,9 @@ import (
 	"github.com/cilium/ebpf/asm"
 	"github.com/cilium/ebpf/btf"
 
-	"github.com/takehaya/xdp-ninja/pkg/kunai/ast"
-	"github.com/takehaya/xdp-ninja/pkg/kunai/ir"
-	"github.com/takehaya/xdp-ninja/pkg/kunai/vocab"
+	"github.com/takehaya/bpf-ninja/pkg/kunai/ast"
+	"github.com/takehaya/bpf-ninja/pkg/kunai/ir"
+	"github.com/takehaya/bpf-ninja/pkg/kunai/vocab"
 )
 
 // PositionedError prepends an ast.Position (line:col) to an existing
@@ -188,7 +188,7 @@ type Output struct {
 	Extractions []ExtractSlot
 
 	// Warnings is the list of non-fatal notices the resolver and
-	// codegen accumulate during compile. Callers (xdp-ninja CLI etc.)
+	// codegen accumulate during compile. Callers (bpf-ninja CLI etc.)
 	// typically surface them on stderr. Until kunai 1.0 the slice is
 	// considered internal — its exact wording may change between
 	// patch releases (see pkg/kunai/README.md). The zero value (nil)
@@ -274,11 +274,11 @@ const dslReject = "dsl_reject"
 //     TCP option (raise dynamicAuxMaxSlotsPerLayer past 5) or a 7th
 //     deep-chain layer requires reducing the dynamic aux stride or
 //     restructuring the slot allocator.
-//   - host: any subset of [-1, KunaiStackTop+1]; xdp-ninja uses -48
+//   - host: any subset of [-1, KunaiStackTop+1]; bpf-ninja uses -48
 //     for the saved tracing args pointer.
 //
 // The host may additionally use slots at or below this line *strictly
-// before* jumping into the filter (temporal reuse): xdp-ninja's set
+// before* jumping into the filter (temporal reuse): bpf-ninja's set
 // filters build their map-lookup key at -57..-120, which is dead by the
 // time the filter body (the owner of this region at runtime) executes.
 //
@@ -454,7 +454,7 @@ var (
 // fentry/fexit — the real context comes from AttachTarget — but BTF
 // requires the entry to exist. The name is host-supplied so the
 // kunai library stays target-agnostic; pass the host product name
-// (e.g. "xdp_ninja_filter") so verifier logs identify the wrapper.
+// (e.g. "bpf_ninja_filter") so verifier logs identify the wrapper.
 func MainFilterFuncBTF(name string) *btf.Func {
 	return &btf.Func{
 		Name:    name,

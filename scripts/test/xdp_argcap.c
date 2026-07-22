@@ -1,12 +1,12 @@
-// XDP program with a __noinline capture point, used to test xdp-ninja's
+// XDP program with a __noinline capture point, used to test bpf-ninja's
 // --func subfunction attach + --arg-filter argument reading.
 //
 // capture_point(ctx, pkt_len) mirrors a real datapath capture point: the
-// first argument is the context pointer (which xdp-ninja treats as the
+// first argument is the context pointer (which bpf-ninja treats as the
 // implicit ctx and does not expose), and pkt_len is the filterable arg that
 // --arg-filter reads. pkt_len is otherwise unused, so KEEP_ARGS (keep_args.h)
 // is what keeps it on the ABI — without it the compiler would drop the dead
-// argument and xdp-ninja could not read it.
+// argument and bpf-ninja could not read it.
 
 #include <linux/bpf.h>
 

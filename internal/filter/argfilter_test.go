@@ -3,7 +3,7 @@ package filter
 import (
 	"testing"
 
-	"github.com/takehaya/xdp-ninja/internal/attach"
+	"github.com/takehaya/bpf-ninja/internal/attach"
 )
 
 func TestParseArgFilter(t *testing.T) {

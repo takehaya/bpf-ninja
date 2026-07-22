@@ -1,5 +1,5 @@
 // p4lite/parser.go — recursive-descent parser for the strict subset
-// of P4-16 the xdp-ninja vocab loader consumes.
+// of P4-16 the bpf-ninja vocab loader consumes.
 //
 // Spec reference: P4-16 Language Specification v1.2.5
 //

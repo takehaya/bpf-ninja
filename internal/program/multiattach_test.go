@@ -8,9 +8,9 @@ import (
 
 	"github.com/cilium/ebpf"
 
-	"github.com/takehaya/xdp-ninja/internal/attach"
-	"github.com/takehaya/xdp-ninja/internal/capture/fastrb"
-	"github.com/takehaya/xdp-ninja/internal/testutil"
+	"github.com/takehaya/bpf-ninja/internal/attach"
+	"github.com/takehaya/bpf-ninja/internal/capture/fastrb"
+	"github.com/takehaya/bpf-ninja/internal/testutil"
 )
 
 // multiXDPSource builds a distinct XDP program whose entry function is

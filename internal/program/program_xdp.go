@@ -1,7 +1,7 @@
 // Package program — XDP-native attach path.
 //
 // Unlike the fentry/fexit modes (LoadEntry / LoadExit), this attach
-// type makes xdp-ninja itself the XDP program on the netdev. Used
+// type makes bpf-ninja itself the XDP program on the netdev. Used
 // when no XDP is already there and the user just wants packet capture
 // without piggybacking on someone else's program.
 //
@@ -23,9 +23,9 @@ import (
 	"github.com/cilium/ebpf/asm"
 	"github.com/cilium/ebpf/btf"
 	"github.com/cilium/ebpf/link"
-	"github.com/takehaya/xdp-ninja/internal/attach"
-	"github.com/takehaya/xdp-ninja/internal/setmap"
-	"github.com/takehaya/xdp-ninja/pkg/kunai/codegen"
+	"github.com/takehaya/bpf-ninja/internal/attach"
+	"github.com/takehaya/bpf-ninja/internal/setmap"
+	"github.com/takehaya/bpf-ninja/pkg/kunai/codegen"
 )
 
 // XDPNativeBenchDrop toggles the --mode xdp action: when true, captured
@@ -48,7 +48,7 @@ const (
 	xdpDrop int32 = 1
 )
 
-// LoadXDPNative builds and attaches xdp-ninja as a native XDP program
+// LoadXDPNative builds and attaches bpf-ninja as a native XDP program
 // on the named interface. Matched packets are captured (always
 // XDP_PASS); other packets pass through untouched. Empty filterExpr
 // captures every packet.
@@ -87,7 +87,7 @@ func LoadXDPNative(state *attach.InterfaceState, filterExpr string, useDSL bool,
 
 	insns := buildXDPNativeInsns(out, outerMap.FD(), slots)
 	spec := &ebpf.ProgramSpec{
-		Name:         "xdp_ninja_native",
+		Name:         "bpf_ninja_native",
 		Type:         ebpf.XDP,
 		Instructions: insns,
 		License:      "GPL",
@@ -173,7 +173,7 @@ func buildXDPNativeInsns(filterOut codegen.Output, eventsFD int, slots *pktSetSl
 		asm.Return(),
 	)
 	if len(filterOut.Callbacks) > 0 {
-		insns[0] = btf.WithFuncMetadata(insns[0], codegen.MainFilterFuncBTF("xdp_ninja_filter"))
+		insns[0] = btf.WithFuncMetadata(insns[0], codegen.MainFilterFuncBTF("bpf_ninja_filter"))
 		insns = append(insns, filterOut.Callbacks...)
 	}
 	return insns

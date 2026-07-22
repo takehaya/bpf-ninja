@@ -12,7 +12,7 @@ import (
 	"github.com/cilium/ebpf/ringbuf"
 	"golang.org/x/sys/unix"
 
-	"github.com/takehaya/xdp-ninja/internal/capture/fastrb"
+	"github.com/takehaya/bpf-ninja/internal/capture/fastrb"
 )
 
 // WallOffsetNs is wall_clock_ns − CLOCK_MONOTONIC_ns measured once at

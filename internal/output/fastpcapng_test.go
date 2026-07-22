@@ -11,19 +11,19 @@ import (
 
 	"github.com/google/gopacket/pcapgo"
 
-	"github.com/takehaya/xdp-ninja/internal/capture"
+	"github.com/takehaya/bpf-ninja/internal/capture"
 )
 
 // writePacketsToFile writes pkts through a fresh Writer at path. fast selects
-// the FastNgWriter (XDP_NINJA_FAST_PCAPNG=1, the default) vs the gopacket
-// NgWriter (XDP_NINJA_FAST_PCAPNG=0); both are set explicitly so the test
+// the FastNgWriter (BPF_NINJA_FAST_PCAPNG=1, the default) vs the gopacket
+// NgWriter (BPF_NINJA_FAST_PCAPNG=0); both are set explicitly so the test
 // does not depend on the ambient default.
 func writePacketsToFile(t *testing.T, path string, pkts []capture.Packet, fast bool) {
 	t.Helper()
 	if fast {
-		t.Setenv("XDP_NINJA_FAST_PCAPNG", "1")
+		t.Setenv("BPF_NINJA_FAST_PCAPNG", "1")
 	} else {
-		t.Setenv("XDP_NINJA_FAST_PCAPNG", "0")
+		t.Setenv("BPF_NINJA_FAST_PCAPNG", "0")
 	}
 	w, err := NewWriter(path, false)
 	if err != nil {

@@ -1,4 +1,4 @@
-module github.com/takehaya/xdp-ninja
+module github.com/takehaya/bpf-ninja
 
 go 1.25.5
 

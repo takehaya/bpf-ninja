@@ -8,13 +8,13 @@
 # docs/ja/dsl-followups.md P0-4 for context.
 #
 # Usage:    ./scripts/p4c-check.sh
-# Env:      P4C_CHECK_IMAGE  (default: xdp-ninja-p4c-check:local)
+# Env:      P4C_CHECK_IMAGE  (default: bpf-ninja-p4c-check:local)
 # Requires: docker
 
 set -euo pipefail
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
-IMG="${P4C_CHECK_IMAGE:-xdp-ninja-p4c-check:local}"
+IMG="${P4C_CHECK_IMAGE:-bpf-ninja-p4c-check:local}"
 
 if ! command -v docker >/dev/null 2>&1; then
     echo "error: docker not found in PATH" >&2

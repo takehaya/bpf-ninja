@@ -4,12 +4,12 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/takehaya/xdp-ninja/pkg/kunai/ast"
-	"github.com/takehaya/xdp-ninja/pkg/kunai/dslvocab"
-	xdphost "github.com/takehaya/xdp-ninja/pkg/kunai/host/xdp"
-	"github.com/takehaya/xdp-ninja/pkg/kunai/ir"
-	"github.com/takehaya/xdp-ninja/pkg/kunai/parser"
-	"github.com/takehaya/xdp-ninja/pkg/kunai/vocab"
+	"github.com/takehaya/bpf-ninja/pkg/kunai/ast"
+	"github.com/takehaya/bpf-ninja/pkg/kunai/dslvocab"
+	xdphost "github.com/takehaya/bpf-ninja/pkg/kunai/host/xdp"
+	"github.com/takehaya/bpf-ninja/pkg/kunai/ir"
+	"github.com/takehaya/bpf-ninja/pkg/kunai/parser"
+	"github.com/takehaya/bpf-ninja/pkg/kunai/vocab"
 )
 
 func loadVocab(t *testing.T) map[string]*vocab.ProtocolSpec {

@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/takehaya/xdp-ninja/pkg/kunai/ast"
-	"github.com/takehaya/xdp-ninja/pkg/kunai/ir"
+	"github.com/takehaya/bpf-ninja/pkg/kunai/ast"
+	"github.com/takehaya/bpf-ninja/pkg/kunai/ir"
 )
 
 func TestPositionedErrorAttachesLineCol(t *testing.T) {

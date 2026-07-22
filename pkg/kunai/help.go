@@ -6,9 +6,9 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/takehaya/xdp-ninja/pkg/kunai/dslvocab"
-	"github.com/takehaya/xdp-ninja/pkg/kunai/vocab"
-	"github.com/takehaya/xdp-ninja/pkg/kunai/vocab/p4lite"
+	"github.com/takehaya/bpf-ninja/pkg/kunai/dslvocab"
+	"github.com/takehaya/bpf-ninja/pkg/kunai/vocab"
+	"github.com/takehaya/bpf-ninja/pkg/kunai/vocab/p4lite"
 )
 
 // SyntaxHelp is a short EBNF-style grammar of the DSL, suitable for

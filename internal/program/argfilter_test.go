@@ -4,9 +4,9 @@ import (
 	"testing"
 
 	"github.com/cilium/ebpf"
-	"github.com/takehaya/xdp-ninja/internal/attach"
-	"github.com/takehaya/xdp-ninja/internal/filter"
-	"github.com/takehaya/xdp-ninja/internal/testutil"
+	"github.com/takehaya/bpf-ninja/internal/attach"
+	"github.com/takehaya/bpf-ninja/internal/filter"
+	"github.com/takehaya/bpf-ninja/internal/testutil"
 )
 
 // argFilterTestSource defines a noinline function with an extra u32 parameter.

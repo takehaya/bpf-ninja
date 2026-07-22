@@ -6,7 +6,7 @@ import (
 
 	"github.com/cilium/ebpf/asm"
 
-	"github.com/takehaya/xdp-ninja/pkg/kunai/vocab"
+	"github.com/takehaya/bpf-ninja/pkg/kunai/vocab"
 )
 
 // variableTailSkip describes a header whose total wire size depends
