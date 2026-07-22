@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.21.0](https://github.com/takehaya/bpf-ninja/compare/v0.20.0...v0.21.0) (2026-07-22)
+
+
+### ⚠ BREAKING CHANGES
+
+* the Go module path is now github.com/takehaya/bpf-ninja (GitHub redirects the repository URL, but Go imports do not follow redirects), the binary and cmd/ directory are renamed, and new set maps are created under the bpfninja_ object name. The XDP_NINJA_FAST_PCAPNG environment variable keeps working as a fallback for BPF_NINJA_FAST_PCAPNG. CHANGELOG.md keeps historical entries under the old name.
+
+### 🎉 Features
+
+* rename the project to bpf-ninja ([#83](https://github.com/takehaya/bpf-ninja/issues/83)) ([08893d4](https://github.com/takehaya/bpf-ninja/commit/08893d405c8356d4e742f784a368cae9ed63a7ae))
+
+
+### 🔧 Miscellaneous Chores
+
+* **release:** bump minor for pre-1.0 breaking changes ([2bec945](https://github.com/takehaya/bpf-ninja/commit/2bec945da7f297c77674d1e9c8dc8dfcfabeaf18))
+
 ## [0.20.0](https://github.com/takehaya/bpf-ninja/compare/v0.19.1...v0.20.0) (2026-07-10)
 
 
