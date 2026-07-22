@@ -5,7 +5,7 @@
 
 ### ⚠ BREAKING CHANGES
 
-* the Go module path is now github.com/takehaya/bpf-ninja (GitHub redirects the repository URL, but Go imports do not follow redirects), the binary and cmd/ directory are renamed, and new set maps are created under the bpfninja_ object name. The XDP_NINJA_FAST_PCAPNG environment variable keeps working as a fallback for BPF_NINJA_FAST_PCAPNG. CHANGELOG.md keeps historical entries under the old name.
+* the Go module path is now github.com/takehaya/bpf-ninja (GitHub redirects the repository URL, but Go imports do not follow redirects), the binary and cmd/ directory are renamed, and new set maps are created under the bpfninja_ object name. The XDP_NINJA_* environment variables are no longer read; use BPF_NINJA_*. CHANGELOG.md keeps historical entries under the old name.
 
 ### 🎉 Features
 
