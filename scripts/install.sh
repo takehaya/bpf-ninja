@@ -9,7 +9,9 @@ set -euo pipefail
 REPO="takehaya/bpf-ninja"
 BIN_DIR="/usr/local/bin"
 
-VERSION="${BPF_NINJA_VERSION:-}"
+# BPF_NINJA_VERSION selects a release; the pre-rename XDP_NINJA_VERSION
+# is still honored so existing automation keeps working.
+VERSION="${BPF_NINJA_VERSION:-${XDP_NINJA_VERSION:-}}"
 if [ "${1:-}" = "--version" ] && [ -n "${2:-}" ]; then
   VERSION="$2"
   shift 2
