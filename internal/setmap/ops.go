@@ -1,4 +1,4 @@
-// Management operations behind `xdp-ninja set ...`: create a pinned set
+// Management operations behind `bpf-ninja set ...`: create a pinned set
 // map with synthesized BTF, and add/delete/list entries by field name so
 // nobody has to hand-assemble zero-padded little-endian hex like bpftool
 // requires (the exact error class behind the IMSI-encoding saga).
@@ -183,10 +183,10 @@ func Create(path, keySchema, valueSchema string, maxEntries uint32) error {
 	}
 
 	m, err := ebpf.NewMap(&ebpf.MapSpec{
-		Name: "xdpninja_set", Type: ebpf.Hash,
+		Name: "bpfninja_set", Type: ebpf.Hash,
 		KeySize: keySize, ValueSize: valSize, MaxEntries: maxEntries,
-		Key:   synthesizeType("xdpninja_set_key", keyFields, keySize),
-		Value: synthesizeType("xdpninja_set_val", valFields, valSize),
+		Key:   synthesizeType("bpfninja_set_key", keyFields, keySize),
+		Value: synthesizeType("bpfninja_set_val", valFields, valSize),
 	})
 	if err != nil {
 		return fmt.Errorf("creating map: %w", err)

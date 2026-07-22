@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/takehaya/xdp-ninja/pkg/kunai/vocab/p4lite"
+	"github.com/takehaya/bpf-ninja/pkg/kunai/vocab/p4lite"
 )
 
 // MVP caps for parser-state-machine compilation. These bound the

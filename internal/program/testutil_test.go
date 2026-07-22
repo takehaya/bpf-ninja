@@ -13,9 +13,9 @@ import (
 	"time"
 
 	"github.com/cilium/ebpf"
-	"github.com/takehaya/xdp-ninja/internal/capture"
-	"github.com/takehaya/xdp-ninja/internal/filter"
-	"github.com/takehaya/xdp-ninja/internal/testutil"
+	"github.com/takehaya/bpf-ninja/internal/capture"
+	"github.com/takehaya/bpf-ninja/internal/filter"
+	"github.com/takehaya/bpf-ninja/internal/testutil"
 	"github.com/vishvananda/netlink"
 )
 
@@ -80,7 +80,7 @@ char _license[] SEC("license") = "GPL";
 
 // loadDummyTC compiles and loads a minimal tc clsact program with
 // BTF — peer of loadDummyXDP. The classifier returns TC_ACT_OK; the
-// xdp-ninja observer attaches as fentry/fexit and the dummy never
+// bpf-ninja observer attaches as fentry/fexit and the dummy never
 // sees real traffic in unit tests, so the stub body suffices.
 func loadDummyTC(t testing.TB) *ebpf.Program {
 	t.Helper()
@@ -210,7 +210,7 @@ func countEvents(t *testing.T, targetProg *ebpf.Program, funcName, iface, pingTa
 
 	// EventsMap is now the outer ARRAY_OF_MAPS (R22 sharded-ringbuf
 	// hoist); fan out to per-CPU inner ringbufs via the sharded
-	// reader so this exercises the same path as `xdp-ninja --mode
+	// reader so this exercises the same path as `bpf-ninja --mode
 	// {entry,exit}` does in production.
 	sr, err := capture.NewShardedReader(probe.InnerMaps)
 	if err != nil {

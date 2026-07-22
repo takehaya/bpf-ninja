@@ -1,8 +1,8 @@
 package parser
 
 import (
-	"github.com/takehaya/xdp-ninja/pkg/kunai/ast"
-	"github.com/takehaya/xdp-ninja/pkg/kunai/lexer"
+	"github.com/takehaya/bpf-ninja/pkg/kunai/ast"
+	"github.com/takehaya/bpf-ninja/pkg/kunai/lexer"
 )
 
 const maxAltDepth = 16

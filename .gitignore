@@ -130,7 +130,7 @@ $RECYCLE.BIN/
 # End of https://www.toptal.com/developers/gitignore/api/linux,windows,macos,go,c++
 
 # Project binary
-/xdp-ninja
+/bpf-ninja
 
 # Undo overly broad rules above that catch Go project files
 !go.mod

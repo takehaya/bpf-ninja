@@ -27,7 +27,7 @@ func dslHintFor(expr string) string {
 		if pcapQualifiers[t] {
 			return fmt.Sprintf("this looks like tcpdump/pcap-filter syntax. "+
 				"either run with --cbpf to enable the legacy syntax (e.g., "+
-				"'--cbpf \"%s\"'), or convert to kunai DSL (see 'xdp-ninja "+
+				"'--cbpf \"%s\"'), or convert to kunai DSL (see 'bpf-ninja "+
 				"--dsl-help' for examples)", expr)
 		}
 	}
@@ -36,10 +36,10 @@ func dslHintFor(expr string) string {
 	// means the user forgot the chain root. Suggest adding eth/...
 	if !strings.ContainsAny(expr, "/[(@") {
 		return fmt.Sprintf("DSL chains start from a packet entry layer. "+
-			"try 'eth/ipv4/%s' or see 'xdp-ninja --dsl-help' for the "+
+			"try 'eth/ipv4/%s' or see 'bpf-ninja --dsl-help' for the "+
 			"layer-chain grammar", strings.TrimSpace(expr))
 	}
 
-	return "run 'xdp-ninja --dsl-help' for grammar + examples, or " +
+	return "run 'bpf-ninja --dsl-help' for grammar + examples, or " +
 		"'--dump-asm filter <expr>' to inspect what the compiler produced"
 }

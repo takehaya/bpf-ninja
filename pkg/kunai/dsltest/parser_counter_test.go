@@ -7,7 +7,7 @@ import (
 
 	"github.com/google/gopacket/layers"
 
-	"github.com/takehaya/xdp-ninja/pkg/kunai/vocab"
+	"github.com/takehaya/bpf-ninja/pkg/kunai/vocab"
 )
 
 // counterVocab loads a minimal eth/ipv4/tcp vocabulary where ipv4

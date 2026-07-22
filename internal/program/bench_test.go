@@ -8,7 +8,7 @@ import (
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/asm"
 	"github.com/google/gopacket/layers"
-	"github.com/takehaya/xdp-ninja/pkg/kunai/dsltest"
+	"github.com/takehaya/bpf-ninja/pkg/kunai/dsltest"
 )
 
 // Compile benchmarks that compare the cbpfc and DSL paths on

@@ -3,7 +3,7 @@ package program
 import (
 	"testing"
 
-	"github.com/takehaya/xdp-ninja/internal/setmap"
+	"github.com/takehaya/bpf-ninja/internal/setmap"
 )
 
 func setWithKey(name string, keySize uint32, fields []setmap.KeyField) *setmap.Set {

@@ -6,7 +6,7 @@ import (
 
 	"github.com/cilium/ebpf/asm"
 
-	"github.com/takehaya/xdp-ninja/pkg/kunai/ir"
+	"github.com/takehaya/bpf-ninja/pkg/kunai/ir"
 )
 
 // staticChainCap is the {n,m} m upper bound the unroll path accepts.

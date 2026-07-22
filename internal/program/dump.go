@@ -7,8 +7,8 @@ import (
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/asm"
-	"github.com/takehaya/xdp-ninja/internal/filter"
-	"github.com/takehaya/xdp-ninja/pkg/kunai/codegen"
+	"github.com/takehaya/bpf-ninja/internal/filter"
+	"github.com/takehaya/bpf-ninja/pkg/kunai/codegen"
 )
 
 // DumpScope selects how much of the eBPF program DumpAsm renders.
@@ -18,7 +18,7 @@ const (
 	// DumpScopeFilter renders just the kunai/cbpfc filter output —
 	// Main + Callbacks + CaptureInfo. Useful for hand-testing a DSL
 	// or tcpdump expression in isolation; nothing about the surrounding
-	// xdp-ninja wrapper is shown.
+	// bpf-ninja wrapper is shown.
 	DumpScopeFilter DumpScope = "filter"
 
 	// DumpScopeFull renders the full tracing program that loadProbe

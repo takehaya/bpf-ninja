@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/takehaya/xdp-ninja/internal/capture"
+	"github.com/takehaya/bpf-ninja/internal/capture"
 )
 
 func TestRawDumpWriter_HeaderAndRecord(t *testing.T) {

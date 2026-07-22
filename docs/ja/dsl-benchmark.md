@@ -1,6 +1,6 @@
 # DSL ベンチ方法論
 
-xdp-ninja のデフォルトである DSL と、legacy cbpfc (`--cbpf` の tcpdump 構文) を比べたい人向けです。本ドキュメントは再現手順を残すのが目的で、環境依存性が高すぎるため特定環境の数値は載せません。
+bpf-ninja のデフォルトである DSL と、legacy cbpfc (`--cbpf` の tcpdump 構文) を比べたい人向けです。本ドキュメントは再現手順を残すのが目的で、環境依存性が高すぎるため特定環境の数値は載せません。
 
 ## 何を測るか
 
@@ -98,25 +98,25 @@ sudo ip netns exec testns iperf3 -s &
 sudo iperf3 -c 10.0.0.2 -t 30 -P 4
 ```
 
-### 3. xdp-ninja を走らせて pps を測定
+### 3. bpf-ninja を走らせて pps を測定
 
 3 パターンを同条件で比較します。
 
 ```bash
 # (A) Filter 無し (= XDP_PASS のみ)
 sudo perf stat -e cycles,instructions,cache-misses,task-clock -- \
-  timeout 30 xdp-ninja -i veth0 -c 0 > /dev/null
+  timeout 30 bpf-ninja -i veth0 -c 0 > /dev/null
 
 # (B) cbpfc filter 経由 (--cbpf で legacy 構文に切替)
 sudo perf stat -e cycles,instructions,cache-misses,task-clock -- \
-  timeout 30 xdp-ninja --cbpf -i veth0 -c 0 "tcp port 443" > /dev/null
+  timeout 30 bpf-ninja --cbpf -i veth0 -c 0 "tcp port 443" > /dev/null
 
 # (C) DSL filter 経由
 sudo perf stat -e cycles,instructions,cache-misses,task-clock -- \
-  timeout 30 xdp-ninja -i veth0 -c 0 "eth/ipv4/tcp[dport==443]" > /dev/null
+  timeout 30 bpf-ninja -i veth0 -c 0 "eth/ipv4/tcp[dport==443]" > /dev/null
 ```
 
-`xdp-ninja` の stderr に `N packets captured` が出ます。30 秒走らせて、N/30 が実効 pps になります。`perf stat` の `cycles` / `instructions` は kernel-side オーバーヘッドの目安です。
+`bpf-ninja` の stderr に `N packets captured` が出ます。30 秒走らせて、N/30 が実効 pps になります。`perf stat` の `cycles` / `instructions` は kernel-side オーバーヘッドの目安です。
 
 ### 4. 解釈
 
@@ -136,7 +136,7 @@ sudo perf stat -e cycles,instructions,cache-misses,task-clock -- \
 `--mode exit` を加えると、trampoline で XDP の戻り値も観測します。fentry よりわずかに重いですが、filter 自体の比較性質は変わりません。
 
 ```bash
-sudo xdp-ninja -i veth0 --mode exit -c 0 \
+sudo bpf-ninja -i veth0 --mode exit -c 0 \
   "eth/ipv4/tcp where action == XDP_DROP" > /dev/null
 ```
 
@@ -161,7 +161,7 @@ C 軸で DSL が cbpfc より重く見える典型ケースは次のとおりで
 
 `docs/ja/` 配下に数値付きのレポートを書きたいときは、次のようにまとめます。
 
-- 環境 (kernel uname -r、CPU、NIC、xdp-ninja コミット) を冒頭に固定する
+- 環境 (kernel uname -r、CPU、NIC、bpf-ninja コミット) を冒頭に固定する
 - 同じハードで cbpfc/DSL/baseline を順番ではなくインターリーブで測定する (温度ドリフト緩和)
 - 標準偏差 / 95% CI を出す。1 回計測の数値は当てにならない
 - フィルタ式は同義のものだけ並べる (DSL でしか書けない式は別表)

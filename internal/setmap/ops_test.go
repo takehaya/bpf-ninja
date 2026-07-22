@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/takehaya/xdp-ninja/internal/testutil"
+	"github.com/takehaya/bpf-ninja/internal/testutil"
 )
 
 // TestResizeGrowPreservesEntriesAndSchema is the end-to-end for `set
@@ -17,7 +17,7 @@ import (
 func TestResizeGrowPreservesEntriesAndSchema(t *testing.T) {
 	testutil.SkipIfNotRoot(t)
 
-	pin := fmt.Sprintf("/sys/fs/bpf/xdpninja_resize_%d", os.Getpid())
+	pin := fmt.Sprintf("/sys/fs/bpf/bpfninja_resize_%d", os.Getpid())
 	if err := Create(pin, "imsi:u64,teid:u32", "", 16); err != nil {
 		t.Skipf("creating pinned set map (bpffs unavailable?): %v", err)
 	}
@@ -81,7 +81,7 @@ func TestResizeGrowPreservesEntriesAndSchema(t *testing.T) {
 func TestResizeShrinkBelowCountFails(t *testing.T) {
 	testutil.SkipIfNotRoot(t)
 
-	pin := fmt.Sprintf("/sys/fs/bpf/xdpninja_shrink_%d", os.Getpid())
+	pin := fmt.Sprintf("/sys/fs/bpf/bpfninja_shrink_%d", os.Getpid())
 	if err := Create(pin, "teid:u32", "", 16); err != nil {
 		t.Skipf("creating pinned set map (bpffs unavailable?): %v", err)
 	}
@@ -119,7 +119,7 @@ func TestResizeShrinkBelowCountFails(t *testing.T) {
 func TestResizeLeftoverTmpPinFails(t *testing.T) {
 	testutil.SkipIfNotRoot(t)
 
-	pin := fmt.Sprintf("/sys/fs/bpf/xdpninja_tmppin_%d", os.Getpid())
+	pin := fmt.Sprintf("/sys/fs/bpf/bpfninja_tmppin_%d", os.Getpid())
 	if err := Create(pin, "teid:u32", "", 16); err != nil {
 		t.Skipf("creating pinned set map (bpffs unavailable?): %v", err)
 	}
@@ -139,7 +139,7 @@ func TestResizeLeftoverTmpPinFails(t *testing.T) {
 func TestResizeSameCapacityNoop(t *testing.T) {
 	testutil.SkipIfNotRoot(t)
 
-	pin := fmt.Sprintf("/sys/fs/bpf/xdpninja_noop_%d", os.Getpid())
+	pin := fmt.Sprintf("/sys/fs/bpf/bpfninja_noop_%d", os.Getpid())
 	if err := Create(pin, "teid:u32", "", 16); err != nil {
 		t.Skipf("creating pinned set map (bpffs unavailable?): %v", err)
 	}

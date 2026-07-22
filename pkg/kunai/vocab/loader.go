@@ -9,7 +9,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/takehaya/xdp-ninja/pkg/kunai/vocab/p4lite"
+	"github.com/takehaya/bpf-ninja/pkg/kunai/vocab/p4lite"
 )
 
 // Load reads every *.p4 file directly under root in the given file

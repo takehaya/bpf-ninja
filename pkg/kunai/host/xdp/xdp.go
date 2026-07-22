@@ -14,7 +14,7 @@ package xdp
 import (
 	"github.com/cilium/ebpf/asm"
 
-	"github.com/takehaya/xdp-ninja/pkg/kunai/codegen"
+	"github.com/takehaya/bpf-ninja/pkg/kunai/codegen"
 )
 
 // Actions matches the XDP return values defined in
@@ -33,7 +33,7 @@ var Actions = map[string]int32{
 // fexit on an XDP program. It assumes the host wrapper saved the BPF
 // tracing args pointer at stack[-48] at program entry and that
 // args[1] is the XDP retval slot — both invariants are met by the
-// xdp-ninja host program (see internal/program/program.go).
+// bpf-ninja host program (see internal/program/program.go).
 //
 // Different host wrappers with a different stack ABI should provide
 // their own fetcher rather than reusing this one.

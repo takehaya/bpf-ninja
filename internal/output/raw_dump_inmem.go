@@ -11,7 +11,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"github.com/takehaya/xdp-ninja/internal/capture"
+	"github.com/takehaya/bpf-ninja/internal/capture"
 )
 
 // InMemoryRawDumpWriter writes raw ringbuf records into a

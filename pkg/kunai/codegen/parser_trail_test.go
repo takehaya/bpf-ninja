@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/takehaya/xdp-ninja/pkg/kunai/vocab"
+	"github.com/takehaya/bpf-ninja/pkg/kunai/vocab"
 )
 
 // TestVariableTailForPanicsOnUnresolvedWriteBack pins the loader-bug

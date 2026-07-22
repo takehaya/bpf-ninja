@@ -4,7 +4,7 @@
 
 `kunai` は一行のパケットフィルタ DSL を target-portable な eBPF 命令列にコンパイルする小さな Go ライブラリ。プロトコルヘッダの記述には P4 風の vocabulary ファイルを使う。
 
-[xdp-ninja](https://github.com/takehaya/xdp-ninja) から切り出されたもので、その default DSL filter モードの実体だが、パッケージ自体は self-contained。public surface に XDP 固有の依存はなく、連続したパケットバイト列のウィンドウを露出するホストであれば tracing / fentry / fexit / tc / userspace BPF など何にでも組み込める。
+[bpf-ninja](https://github.com/takehaya/bpf-ninja) から切り出されたもので、その default DSL filter モードの実体だが、パッケージ自体は self-contained。public surface に XDP 固有の依存はなく、連続したパケットバイト列のウィンドウを露出するホストであれば tracing / fentry / fexit / tc / userspace BPF など何にでも組み込める。
 
 > **ステータス**: pre-1.0。public API は小さい (`Compile` 1 つ) が、surface が安定するまでは変動しうる。1.0 までは minor バージョン間で breaking change があり得る。
 
@@ -32,7 +32,7 @@ eth/ipv4/tcp where tcp.options.MSS.value == 1460                        # TCP op
 ## インストール
 
 ```bash
-go get github.com/takehaya/xdp-ninja/pkg/kunai
+go get github.com/takehaya/bpf-ninja/pkg/kunai
 ```
 
 Go 1.25+ が必要。
@@ -47,8 +47,8 @@ import (
 
     "github.com/cilium/ebpf"
     "github.com/cilium/ebpf/asm"
-    "github.com/takehaya/xdp-ninja/pkg/kunai"
-    "github.com/takehaya/xdp-ninja/pkg/kunai/codegen"
+    "github.com/takehaya/bpf-ninja/pkg/kunai"
+    "github.com/takehaya/bpf-ninja/pkg/kunai/codegen"
 )
 
 func main() {
@@ -76,13 +76,13 @@ func main() {
 }
 ```
 
-完全な動作例 (XDP fentry/fexit attach + perf-event capture) は親リポジトリ xdp-ninja の [`internal/program/program.go`](https://github.com/takehaya/xdp-ninja/blob/main/internal/program/program.go) を参照。
+完全な動作例 (XDP fentry/fexit attach + perf-event capture) は親リポジトリ bpf-ninja の [`internal/program/program.go`](https://github.com/takehaya/bpf-ninja/blob/main/internal/program/program.go) を参照。
 
 ## アーキテクチャ (一段落)
 
 パイプラインは `expr → AST → IR → asm.Instructions`。AST は手書きの再帰下降パーサで構築、IR は vocab 解決済みの layer instance を保持し、すべてのフィールド参照を具体的な `*vocab.ProtocolSpec` にバインドする。codegen は IR を [cilium/ebpf](https://github.com/cilium/ebpf) の `asm.Instructions` に lower し、各 layer 境界で verifier-safe な bounds check を emit する。可変長 quantifier (`+`, `*`, `{n,m>4}`) と parser machine の self-loop は `bpf_loop` ヘルパ呼び出しを bpf2bpf subprogram に対して emit するため、**Linux 5.17+** が必要。predicate codegen は BPF_END byte-swap family を使うので BSWAP (`0xd7`、6.6+) には依存しない。CI matrix は `vimto` で 6.1 / 6.6 / 6.12 / 6.18 を gating。quantifier / parser-machine self-loop を含まない chain ならさらに古い kernel でも動作する。
 
-formal な EBNF は [`docs/ja/dsl-grammar.md`](https://github.com/takehaya/xdp-ninja/blob/main/docs/ja/dsl-grammar.md) にある。コード側のエントリポイント: `pkg/kunai/codegen/codegen.go` (compile pipeline + ABI)、`pkg/kunai/vocab/p4lite/` (P4-16 strict subset parser)、 `pkg/kunai/codegen/` の `parser_state.go` / `parser_trail.go` / `parser_select.go` / `parser_loop.go` 4 ファイル (可変長 header codegen — review 容易性のため機能境界で split)。
+formal な EBNF は [`docs/ja/dsl-grammar.md`](https://github.com/takehaya/bpf-ninja/blob/main/docs/ja/dsl-grammar.md) にある。コード側のエントリポイント: `pkg/kunai/codegen/codegen.go` (compile pipeline + ABI)、`pkg/kunai/vocab/p4lite/` (P4-16 strict subset parser)、 `pkg/kunai/codegen/` の `parser_state.go` / `parser_trail.go` / `parser_select.go` / `parser_loop.go` 4 ファイル (可変長 header codegen — review 容易性のため機能境界で split)。
 
 ## API
 
@@ -121,7 +121,7 @@ type CaptureInfo struct {
 ホストは `Capabilities` 値を構築して kunai を自分の BPF attach point に接続する。kunai コアは host 固有 helper を持たず、canonical adapter は [`host/`](./host/) サブパッケージに置かれる。XDP fexit 例:
 
 ```go
-import xdphost "github.com/takehaya/xdp-ninja/pkg/kunai/host/xdp"
+import xdphost "github.com/takehaya/bpf-ninja/pkg/kunai/host/xdp"
 
 caps := xdphost.FexitCapabilities()
 out, err := kunai.Compile(expr, caps)
@@ -147,18 +147,18 @@ vocabulary のパースは `dslvocab.Bundled()` 内で `sync.Once` により **p
 
 ## バージョニングと安定性
 
-- public API: `kunai.Compile`, `kunai.CompileWithVocab` (カスタム vocab 受入)、 `kunai.SyntaxHelp` / `kunai.ExamplesHelp` / `kunai.WriteProtocolCatalogue` / `kunai.WriteProtocolHelp` (xdp-ninja の `--dsl-help` 用)、 `codegen.Capabilities`、 `codegen.ActionFetcher`、 `codegen.Output`、 `codegen.CaptureInfo`、 `codegen.MainFilterFuncBTF` (host wrapper 用)、 `codegen.PositionedError` (位置情報付きエラー型)、 `host/xdp` / `host/tc` adapter パッケージ、上記のエラー型
+- public API: `kunai.Compile`, `kunai.CompileWithVocab` (カスタム vocab 受入)、 `kunai.SyntaxHelp` / `kunai.ExamplesHelp` / `kunai.WriteProtocolCatalogue` / `kunai.WriteProtocolHelp` (bpf-ninja の `--dsl-help` 用)、 `codegen.Capabilities`、 `codegen.ActionFetcher`、 `codegen.Output`、 `codegen.CaptureInfo`、 `codegen.MainFilterFuncBTF` (host wrapper 用)、 `codegen.PositionedError` (位置情報付きエラー型)、 `host/xdp` / `host/tc` adapter パッケージ、上記のエラー型
 - それ以外 (AST node、IR 型、vocab loader 内部、parser 内部、`dslvocab.Bundled` キャッシュ) は予告なく変更される可能性あり
 - `pkg/kunai/dsltest` (gopacket-based packet-level harness) は **experimental**。1.0 までは `Runner` API / packet builder を予告なく変更する可能性あり。下流 test が依存する場合は tag 固定推奨
 - プロトコル vocabulary は public surface の一部として扱う — 新プロトコル追加は非破壊変更、リネーム/削除は破壊変更
 
 ## 関連プロジェクト
 
-- [xdp-ninja](https://github.com/takehaya/xdp-ninja) — 本パッケージのメイン consumer である非侵襲 XDP 観測ツール
+- [bpf-ninja](https://github.com/takehaya/bpf-ninja) — 本パッケージのメイン consumer である非侵襲 BPF 観測ツール (XDP / tc-bpf フックポイント)
 - [cilium/ebpf](https://github.com/cilium/ebpf) — codegen のターゲットである BPF アセンブラ / ローダ
-- [cloudflare/cbpfc](https://github.com/cloudflare/cbpfc) — 代替の classical-BPF (tcpdump 構文) コンパイラ。xdp-ninja は `--cbpf` 指定時の legacy 経路で使う
+- [cloudflare/cbpfc](https://github.com/cloudflare/cbpfc) — 代替の classical-BPF (tcpdump 構文) コンパイラ。bpf-ninja は `--cbpf` 指定時の legacy 経路で使う
 - [p4lang/p4c](https://github.com/p4lang/p4c) — 公式 P4 コンパイラ。`.p4` vocab ファイルが P4-16 内に収まっていることを CI で検証するのに使う
 
 ## ライセンス
 
-親リポジトリ xdp-ninja と同じ。
+親リポジトリ bpf-ninja と同じ。

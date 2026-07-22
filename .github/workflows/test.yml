@@ -21,7 +21,7 @@ jobs:
         run: sudo apt-get update -qq && sudo apt-get install -y libpcap-dev
 
       - name: Build
-        run: go build -o xdp-ninja ./cmd/xdp-ninja/
+        run: go build -o bpf-ninja ./cmd/bpf-ninja/
 
       - name: Vet
         run: go vet ./...
@@ -58,7 +58,7 @@ jobs:
           which bpftool || (echo "bpftool not found, installing from linux-tools-common" && sudo apt-get install -y linux-tools-common) || true
 
       - name: Build
-        run: go build -o xdp-ninja ./cmd/xdp-ninja/
+        run: go build -o bpf-ninja ./cmd/bpf-ninja/
 
       - name: Integration Tests
         run: sudo scripts/test/run_tests.sh

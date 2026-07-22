@@ -1,6 +1,6 @@
 // Package output — RawDumpWriter: --raw-dump path's writer. Writes
 // ringbuf records verbatim to a per-CPU file with a 32 B header;
-// `xdp-ninja convert` reconstructs standard pcap-ng offline.
+// `bpf-ninja convert` reconstructs standard pcap-ng offline.
 //
 // On-disk layout per file:
 //
@@ -21,7 +21,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/takehaya/xdp-ninja/internal/capture"
+	"github.com/takehaya/bpf-ninja/internal/capture"
 )
 
 var (
@@ -101,7 +101,7 @@ func rawRecordPayloadLen(raw []byte) int {
 }
 
 // RawDumpWriter writes raw ringbuf records to a per-CPU file. The
-// caller embeds W<wall_offset_ns> in the path so `xdp-ninja convert`
+// caller embeds W<wall_offset_ns> in the path so `bpf-ninja convert`
 // can group per-session files by glob pattern.
 type RawDumpWriter struct {
 	file *os.File

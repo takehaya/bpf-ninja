@@ -26,7 +26,7 @@ import (
 
 	"github.com/google/gopacket/layers"
 
-	dt "github.com/takehaya/xdp-ninja/pkg/kunai/dsltest"
+	dt "github.com/takehaya/bpf-ninja/pkg/kunai/dsltest"
 )
 
 type pktFn = func(testing.TB) []byte

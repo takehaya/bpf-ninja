@@ -18,15 +18,15 @@ import (
 	"github.com/cilium/ebpf/asm"
 	"github.com/cilium/ebpf/btf"
 
-	"github.com/takehaya/xdp-ninja/pkg/kunai"
-	"github.com/takehaya/xdp-ninja/pkg/kunai/codegen"
-	"github.com/takehaya/xdp-ninja/pkg/kunai/vocab"
+	"github.com/takehaya/bpf-ninja/pkg/kunai"
+	"github.com/takehaya/bpf-ninja/pkg/kunai/codegen"
+	"github.com/takehaya/bpf-ninja/pkg/kunai/vocab"
 )
 
 // skipIfNotRoot skips when the test is not running as root (the
 // BPF_PROG_TEST_RUN ioctl requires CAP_SYS_ADMIN). Inlined here so
 // pkg/kunai/dsltest stays self-contained and can be vendored as a
-// kunai-test helper without pulling in xdp-ninja-internal packages.
+// kunai-test helper without pulling in bpf-ninja-internal packages.
 func skipIfNotRoot(t *testing.T) {
 	t.Helper()
 	if os.Getuid() != 0 {

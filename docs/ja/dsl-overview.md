@@ -1,6 +1,6 @@
-# xdp-ninja DSL ドキュメント
+# bpf-ninja DSL ドキュメント
 
-xdp-ninja の filter 式である DSL のドキュメント index です。GTP-U や MPLS、VXLAN、SRv6 のような多段カプセル化は legacy の `--cbpf` が使う tcpdump 構文では書きにくいので、これをプロトコルスタックの形のまま書けるようにするのが目的です。DSL は xdp-ninja の default filter syntax です。
+bpf-ninja の filter 式である DSL のドキュメント index です。GTP-U や MPLS、VXLAN、SRv6 のような多段カプセル化は legacy の `--cbpf` が使う tcpdump 構文では書きにくいので、これをプロトコルスタックの形のまま書けるようにするのが目的です。DSL は bpf-ninja の default filter syntax です。
 
 ## 役割別にどこから読むか
 
@@ -55,4 +55,4 @@ filter expr  →  AST  →  IR (vocab 解決済)  →  asm.Instructions  →  ci
 - Host adapter: `pkg/kunai/host/xdp/` (XDP fentry/fexit) + `pkg/kunai/host/tc/` (TC clsact fentry/fexit、sk_buff data/len offset を BTF で実行時解決)。新 host を追加するときは `host/<name>/` を並べます
 - ABI 契約 (kunai ↔ host): `pkg/kunai/codegen/codegen.go` の package doc + `KunaiStackTop` constant
 - 既存 fentry/fexit との接続: `internal/program/program.go::compileFilter`
-- CLI 入口: `cmd/xdp-ninja/main.go` の `resolveFilterSyntax()` (DSL がデフォルト、`--cbpf` で legacy)
+- CLI 入口: `cmd/bpf-ninja/main.go` の `resolveFilterSyntax()` (DSL がデフォルト、`--cbpf` で legacy)

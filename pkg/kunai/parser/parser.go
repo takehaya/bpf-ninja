@@ -8,8 +8,8 @@ package parser
 import (
 	"fmt"
 
-	"github.com/takehaya/xdp-ninja/pkg/kunai/ast"
-	"github.com/takehaya/xdp-ninja/pkg/kunai/lexer"
+	"github.com/takehaya/bpf-ninja/pkg/kunai/ast"
+	"github.com/takehaya/bpf-ninja/pkg/kunai/lexer"
 )
 
 // Parse reads expr and returns the parsed filter. file is attached to

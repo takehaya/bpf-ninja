@@ -3,7 +3,7 @@ package lexer
 import (
 	"fmt"
 
-	"github.com/takehaya/xdp-ninja/pkg/kunai/ast"
+	"github.com/takehaya/bpf-ninja/pkg/kunai/ast"
 )
 
 // TokenKind enumerates the token varieties produced by the one-liner lexer.

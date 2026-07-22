@@ -6,7 +6,7 @@ import (
 
 	"github.com/cilium/ebpf"
 
-	"github.com/takehaya/xdp-ninja/pkg/kunai/codegen"
+	"github.com/takehaya/bpf-ninja/pkg/kunai/codegen"
 )
 
 // FilterSpec is one row of the paper's evaluation matrix

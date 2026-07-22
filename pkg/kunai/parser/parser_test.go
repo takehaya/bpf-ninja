@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/takehaya/xdp-ninja/pkg/kunai/ast"
+	"github.com/takehaya/bpf-ninja/pkg/kunai/ast"
 )
 
 func mustParse(t *testing.T, expr string) *ast.Filter {

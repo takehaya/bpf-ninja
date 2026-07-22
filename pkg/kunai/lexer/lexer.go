@@ -1,4 +1,4 @@
-// Package lexer tokenises xdp-ninja's one-liner DSL.
+// Package lexer tokenises bpf-ninja's one-liner DSL.
 //
 // The lexer has two modes:
 //
@@ -16,7 +16,7 @@ import (
 	"fmt"
 	"strconv"
 
-	"github.com/takehaya/xdp-ninja/pkg/kunai/ast"
+	"github.com/takehaya/bpf-ninja/pkg/kunai/ast"
 )
 
 // Lexer is a single-threaded byte-level scanner over DSL source.

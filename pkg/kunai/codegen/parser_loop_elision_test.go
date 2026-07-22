@@ -7,11 +7,11 @@ import (
 
 	"github.com/cilium/ebpf/asm"
 
-	"github.com/takehaya/xdp-ninja/pkg/kunai/dslvocab"
-	"github.com/takehaya/xdp-ninja/pkg/kunai/ir"
-	"github.com/takehaya/xdp-ninja/pkg/kunai/parser"
-	"github.com/takehaya/xdp-ninja/pkg/kunai/resolve"
-	"github.com/takehaya/xdp-ninja/pkg/kunai/vocab"
+	"github.com/takehaya/bpf-ninja/pkg/kunai/dslvocab"
+	"github.com/takehaya/bpf-ninja/pkg/kunai/ir"
+	"github.com/takehaya/bpf-ninja/pkg/kunai/parser"
+	"github.com/takehaya/bpf-ninja/pkg/kunai/resolve"
+	"github.com/takehaya/bpf-ninja/pkg/kunai/vocab"
 )
 
 // TestAccumulatorGatedToLookaheadOnly pins that the accumulator plan is

@@ -278,7 +278,7 @@ func mapBTFTypes(m *ebpf.Map) (key, value btf.Type, err error) {
 		return nil, nil, err
 	}
 	if keyTypeID == 0 {
-		return nil, nil, fmt.Errorf("map has no key BTF; create it with `xdp-ninja set create` (or load it with BTF key/value types)")
+		return nil, nil, fmt.Errorf("map has no key BTF; create it with `bpf-ninja set create` (or load it with BTF key/value types)")
 	}
 
 	h, err := m.Handle()

@@ -1,6 +1,6 @@
 package ir
 
-import "github.com/takehaya/xdp-ninja/pkg/kunai/ast"
+import "github.com/takehaya/bpf-ninja/pkg/kunai/ast"
 
 // WalkConditionFieldRefs invokes fn on every FieldRef reachable
 // from c — LiteralField, BoolField (WAtomBoolExists), fields inside

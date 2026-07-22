@@ -9,8 +9,8 @@ package dslvocab
 import (
 	"sync"
 
-	"github.com/takehaya/xdp-ninja/pkg/kunai/protocols"
-	"github.com/takehaya/xdp-ninja/pkg/kunai/vocab"
+	"github.com/takehaya/bpf-ninja/pkg/kunai/protocols"
+	"github.com/takehaya/bpf-ninja/pkg/kunai/vocab"
 )
 
 // Bundled returns the loaded vocabulary, memoized on first success.

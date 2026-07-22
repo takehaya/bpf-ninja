@@ -9,7 +9,7 @@ import (
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/asm"
-	"github.com/takehaya/xdp-ninja/internal/testutil"
+	"github.com/takehaya/bpf-ninja/internal/testutil"
 )
 
 func TestFindXDPProgramNoInterface(t *testing.T) {

@@ -1,34 +1,37 @@
-# xdp-ninja
+# bpf-ninja
 
-xdp-ninja captures packets at XDP-time. `tcpdump` runs below XDP and can't show what XDP did to the packet, and cBPF filters can't walk into VXLAN / GTP / MPLS / SRv6 inner headers. Attach via fentry/fexit to a running XDP without modifying it, or `--mode xdp` for standalone capture on a netdev. Filters use the built-in DSL by default — chains like `eth/ipv4/udp/vxlan/eth/ipv4/tcp`. Plain tcpdump syntax via [cbpfc](https://github.com/cloudflare/cbpfc) is still accepted via `--cbpf`, kept for backwards compatibility and planned to retire once the DSL surface stabilises. Output is pcap (pcapng) to stdout.🥷
+> [!NOTE]
+> This project was renamed from **xdp-ninja** (July 2026): the tool has outgrown XDP — it also observes tc-bpf programs, and more BPF hook points are planned. GitHub redirects the old repository URL, but the Go module path changed to `github.com/takehaya/bpf-ninja`, so `go install` / imports need the new path. Environment variables are now `BPF_NINJA_*` (the old `XDP_NINJA_*` names are no longer read).
+
+bpf-ninja captures packets at BPF hook points — XDP today, tc-bpf too, with more planned. `tcpdump` runs below XDP and can't show what XDP or tc-bpf did to the packet, and cBPF filters can't walk into VXLAN / GTP / MPLS / SRv6 inner headers. Attach via fentry/fexit to a running XDP without modifying it, or `--mode xdp` for standalone capture on a netdev. Filters use the built-in DSL by default — chains like `eth/ipv4/udp/vxlan/eth/ipv4/tcp`. Plain tcpdump syntax via [cbpfc](https://github.com/cloudflare/cbpfc) is still accepted via `--cbpf`, kept for backwards compatibility and planned to retire once the DSL surface stabilises. Output is pcap (pcapng) to stdout.🥷
 
 ## Install
 
 ```bash
 # One-liner (downloads pre-built binary from GitHub Releases, requires jq)
-curl -fsSL https://raw.githubusercontent.com/takehaya/xdp-ninja/main/scripts/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/takehaya/bpf-ninja/main/scripts/install.sh | sudo bash
 
 # Specific version
-curl -fsSL https://raw.githubusercontent.com/takehaya/xdp-ninja/main/scripts/install.sh | sudo bash -s -- --version v0.1.0
+curl -fsSL https://raw.githubusercontent.com/takehaya/bpf-ninja/main/scripts/install.sh | sudo bash -s -- --version v0.1.0
 
 # Or via go install (requires Go + libpcap-dev)
-go install github.com/takehaya/xdp-ninja/cmd/xdp-ninja@latest
+go install github.com/takehaya/bpf-ninja/cmd/bpf-ninja@latest
 
 # Or build from source
-git clone https://github.com/takehaya/xdp-ninja.git
-cd xdp-ninja
+git clone https://github.com/takehaya/bpf-ninja.git
+cd bpf-ninja
 make build
 ```
 
 ## Modes
 
-xdp-ninja supports five attach modes via `--mode`:
+bpf-ninja supports five attach modes via `--mode`:
 
 | Mode | Attach via | Existing program needed | Sees return action | Typical use |
 |---|---|---|---|---|
 | `entry` (default) | fentry on the target XDP | yes (with BTF) | no — packet only | observe what reaches the production XDP |
 | `exit` | fexit on the target XDP | yes (with BTF) | yes (`XDP_PASS`/`DROP`/...) | observe what the XDP decided; filter on action |
-| `xdp` | attach as the primary XDP on the netdev | no — fails if one is attached | n/a (xdp-ninja decides; always returns `XDP_PASS`) | capture on a netdev with no XDP, no BTF needed |
+| `xdp` | attach as the primary XDP on the netdev | no — fails if one is attached | n/a (bpf-ninja decides; always returns `XDP_PASS`) | capture on a netdev with no XDP, no BTF needed |
 | `tc-entry` | fentry on a TC clsact filter program | yes (a tc-bpf program with BTF) | no — skb only | observe what reaches a TC ingress/egress filter |
 | `tc-exit` | fexit on a TC clsact filter program | yes (same) | yes (`TC_ACT_OK`/`SHOT`/...) | observe the TC verdict; filter on `action == TC_ACT_SHOT` etc. |
 
@@ -38,64 +41,64 @@ xdp-ninja supports five attach modes via `--mode`:
 
 ```bash
 # Default: observe via fentry on whatever XDP is attached to eth0
-sudo xdp-ninja -i eth0 | tcpdump -n -r -
+sudo bpf-ninja -i eth0 | tcpdump -n -r -
 
 # Filter (DSL is the default — no flag needed)
-sudo xdp-ninja -i eth0 "eth/ipv4/tcp[dport==80]" | tcpdump -n -r -
+sudo bpf-ninja -i eth0 "eth/ipv4/tcp[dport==80]" | tcpdump -n -r -
 
 # fexit — filter on the XDP return action
-sudo xdp-ninja -i eth0 --mode exit "eth/ipv4/tcp where action == XDP_DROP"
+sudo bpf-ninja -i eth0 --mode exit "eth/ipv4/tcp where action == XDP_DROP"
 
 # Standalone XDP attach (no existing XDP needed)
-sudo xdp-ninja --mode xdp -i eth0 "eth/ipv4/tcp[dport==443]" | tcpdump -n -r -
+sudo bpf-ninja --mode xdp -i eth0 "eth/ipv4/tcp[dport==443]" | tcpdump -n -r -
 
 # Legacy tcpdump/cBPF syntax (--cbpf opt-in, prints a deprecation notice)
-sudo xdp-ninja --cbpf -i eth0 "host 10.0.0.1 and tcp port 80" | tcpdump -n -r -
+sudo bpf-ninja --cbpf -i eth0 "host 10.0.0.1 and tcp port 80" | tcpdump -n -r -
 
 # Write to pcap file, stop after 100 packets
 # (output is sharded across per-CPU files; see "Sharded output" below)
-sudo xdp-ninja -i eth0 -w capture.pcap -c 100
+sudo bpf-ninja -i eth0 -w capture.pcap -c 100
 
 # Attach by BPF program ID (for multi-prog / libxdp setups)
-sudo xdp-ninja -p 42 | tcpdump -n -r -
+sudo bpf-ninja -p 42 | tcpdump -n -r -
 
 # List BTF functions in the target program
-sudo xdp-ninja -i eth0 --list-funcs
+sudo bpf-ninja -i eth0 --list-funcs
 
 # Attach to a specific __noinline subfunction (entry/exit only)
-sudo xdp-ninja -i eth0 --func process_packet | tcpdump -n -r -
+sudo bpf-ninja -i eth0 --func process_packet | tcpdump -n -r -
 
 # Attach several (program, func) pairs in one run: -p and --func are
 # repeatable, and each func attaches in every listed program whose BTF
 # has it. All attach points share one ringbuf and merge into one pcap.
 # (e.g. UL + DL capture points living in separate per-direction programs)
-sudo xdp-ninja -p 1610 -p 1611 -p 1614 \
+sudo bpf-ninja -p 1610 -p 1611 -p 1614 \
   --func upf_capture_point_ul --func upf_capture_point_dl -w all.pcap
 
 # Match against a runtime-updatable set (pinned BPF hash map): the map
 # key IS the value to match; entries added/removed while capturing take
 # effect immediately, no re-attach. Manage entries by field name via
-# `xdp-ninja set` (schema comes from the map's BTF).
-sudo xdp-ninja set create /sys/fs/bpf/subs --key "imsi:u64"
-sudo xdp-ninja set add /sys/fs/bpf/subs imsi=999990000000001
-sudo xdp-ninja -p 1661 --func upf_capture_point_ul \
+# `bpf-ninja set` (schema comes from the map's BTF).
+sudo bpf-ninja set create /sys/fs/bpf/subs --key "imsi:u64"
+sudo bpf-ninja set add /sys/fs/bpf/subs imsi=999990000000001
+sudo bpf-ninja -p 1661 --func upf_capture_point_ul \
   --set "subs=/sys/fs/bpf/subs" --arg-filter "@subs" -w subs.pcap
 # Capacity defaults to 1024 (set create --max-entries); grow it later
 # with `set resize` (entries and schema are preserved, takes effect
 # from the next attach)
-sudo xdp-ninja set resize /sys/fs/bpf/subs --max-entries 4096
+sudo bpf-ninja set resize /sys/fs/bpf/subs --max-entries 4096
 
 # Key the set off a PACKET field instead of a function arg — for values
 # that live in the packet (GTP TEID, SRv6 SID). Works on fentry and xdp.
-sudo xdp-ninja set create /sys/fs/bpf/teids --key "teid:u32"
-sudo xdp-ninja set add /sys/fs/bpf/teids teid=0x3039
-sudo xdp-ninja -p 1661 --set "teids=/sys/fs/bpf/teids" \
+sudo bpf-ninja set create /sys/fs/bpf/teids --key "teid:u32"
+sudo bpf-ninja set add /sys/fs/bpf/teids teid=0x3039
+sudo bpf-ninja -p 1661 --set "teids=/sys/fs/bpf/teids" \
   'eth/ipv4/udp/gtp[teid in @teids]' -w teids.pcap
 
 # A 128-bit SRv6 SID (the IPv6 destination): key type "ipv6", value an IPv6 literal
-sudo xdp-ninja set create /sys/fs/bpf/sids --key "dst:ipv6"
-sudo xdp-ninja set add /sys/fs/bpf/sids dst=fc00::1
-sudo xdp-ninja -i eth0 --mode xdp --set "sids=/sys/fs/bpf/sids" \
+sudo bpf-ninja set create /sys/fs/bpf/sids --key "dst:ipv6"
+sudo bpf-ninja set add /sys/fs/bpf/sids dst=fc00::1
+sudo bpf-ninja -i eth0 --mode xdp --set "sids=/sys/fs/bpf/sids" \
   'eth/ipv6[dst in @sids]'
 ```
 
@@ -105,43 +108,43 @@ The filter expression is interpreted as the built-in DSL by default. Write it as
 
 ```bash
 # IPv4/TCP, dport 443
-sudo xdp-ninja -i eth0 "eth/ipv4/tcp[dport==443]"
+sudo bpf-ninja -i eth0 "eth/ipv4/tcp[dport==443]"
 
 # Up to 3 VLAN tags before IPv4
-sudo xdp-ninja -i eth0 "eth/vlan{1,3}/ipv4/tcp"
+sudo bpf-ninja -i eth0 "eth/vlan{1,3}/ipv4/tcp"
 
 # MPLS label stack (terminates at the s-bit)
-sudo xdp-ninja -i eth0 "eth/mpls+/ipv4/tcp"
+sudo bpf-ninja -i eth0 "eth/mpls+/ipv4/tcp"
 
 # VXLAN inner IPv4/TCP
-sudo xdp-ninja -i eth0 "eth/ipv4/udp/vxlan/eth/ipv4/tcp"
+sudo bpf-ninja -i eth0 "eth/ipv4/udp/vxlan/eth/ipv4/tcp"
 
 # Capture only headers + 64 bytes when the inner TCP dport > 1024
-sudo xdp-ninja -i eth0 \
+sudo bpf-ninja -i eth0 \
   "eth/ipv4/tcp capture headers+64 where tcp.dport > 1024"
 
 # fexit: filter on the XDP return action
-sudo xdp-ninja -i eth0 --mode exit \
+sudo bpf-ninja -i eth0 --mode exit \
   "eth/ipv4/tcp where action == XDP_DROP"
 ```
 
-Run `xdp-ninja --dsl-help` for the grammar + bundled protocol catalogue, or `xdp-ninja --dsl-help <proto>` (e.g. `--dsl-help ipv4`) to see a protocol's field list, dispatch parents/children, and any variable-layout note.
+Run `bpf-ninja --dsl-help` for the grammar + bundled protocol catalogue, or `bpf-ninja --dsl-help <proto>` (e.g. `--dsl-help ipv4`) to see a protocol's field list, dispatch parents/children, and any variable-layout note.
 
 User-facing CLI guide: [docs/ja/dsl-usage.md](./docs/ja/dsl-usage.md). Internal architecture, codegen ABI, vocab authoring, and P4-16 conformance: [docs/ja/dsl-internals.md](./docs/ja/dsl-internals.md). Formal grammar (EBNF): [docs/ja/dsl-grammar.md](./docs/ja/dsl-grammar.md). Index: [docs/ja/dsl-overview.md](./docs/ja/dsl-overview.md).
 
-xdp-ninja's `.p4` vocab files are a strict subset of P4-16 (see internals §5). They are NOT a full p4c-compatible program: the bundled fragments declare only `header` / `const` / `parser` blocks (no `action` / `table` / `control` / `apply` / `extern`).
+bpf-ninja's `.p4` vocab files are a strict subset of P4-16 (see internals §5). They are NOT a full p4c-compatible program: the bundled fragments declare only `header` / `const` / `parser` blocks (no `action` / `table` / `control` / `apply` / `extern`).
 
 #### Legacy: tcpdump syntax (`--cbpf`)
 
 Pass `--cbpf` to interpret the filter expression as tcpdump syntax and compile it to eBPF via [cbpfc](https://github.com/cloudflare/cbpfc). Kept for backwards compatibility. Each invocation prints a deprecation notice on stderr; the flag is expected to retire once the DSL surface stabilises.
 
 ```bash
-sudo xdp-ninja --cbpf -i eth0 "host 10.0.0.1 and tcp port 80"
+sudo bpf-ninja --cbpf -i eth0 "host 10.0.0.1 and tcp port 80"
 ```
 
 ### Sharded output
 
-For high-rate captures, xdp-ninja uses a per-CPU sharded ringbuf and each CPU writes its own pcap-ng file with no lock. With `-w capture.pcap`:
+For high-rate captures, bpf-ninja uses a per-CPU sharded ringbuf and each CPU writes its own pcap-ng file with no lock. With `-w capture.pcap`:
 
 ```
 capture.pcap          # all shards merged, time-ordered (ready to use)
@@ -150,9 +153,9 @@ capture.pcap.cpu1     # CPU 1 packets (kept)
 ...
 ```
 
-When capture stops (Ctrl-C or `-c`), xdp-ninja merges the per-CPU shards into `capture.pcap` as a single time-ordered pcap-ng, so the base path is ready to open directly (`tcpdump -r capture.pcap`). The `.cpuN` shards are left in place; you can also read one with `tcpdump -r capture.pcap.cpu0` or merge them yourself with `mergecap -w merged.pcap capture.pcap.cpu*`. `xdp-ninja convert` handles `--raw-dump` `.raw` shards, not pcap-ng shards.
+When capture stops (Ctrl-C or `-c`), bpf-ninja merges the per-CPU shards into `capture.pcap` as a single time-ordered pcap-ng, so the base path is ready to open directly (`tcpdump -r capture.pcap`). The `.cpuN` shards are left in place; you can also read one with `tcpdump -r capture.pcap.cpu0` or merge them yourself with `mergecap -w merged.pcap capture.pcap.cpu*`. `bpf-ninja convert` handles `--raw-dump` `.raw` shards, not pcap-ng shards.
 
-Without `-w` (streaming to stdout), all CPUs are merged into a single pcap-ng stream (serialized), so `sudo xdp-ninja ... | tcpdump -r -` shows every core's packets. Use `-w` for high-rate captures — stdout serialization is for the interactive path.
+Without `-w` (streaming to stdout), all CPUs are merged into a single pcap-ng stream (serialized), so `sudo bpf-ninja ... | tcpdump -r -` shows every core's packets. Use `-w` for high-rate captures — stdout serialization is for the interactive path.
 
 ### Performance flags (high-rate captures)
 
@@ -162,7 +165,7 @@ Without `-w` (streaming to stdout), all CPUs are merged into a single pcap-ng st
 | `--fast-reader` | mmap+atomic ringbuf reader (lower CPU than cilium/ebpf generic) |
 | `--no-wakeup` | Suppress eventfd wake per submit. Trades p50 latency for throughput. **Requires `--fast-reader`** |
 | `--ringbuf-size MB` | Per-CPU ringbuf size (default 16 MB) |
-| `--raw-dump` | Raw bytes path; convert offline with `xdp-ninja convert` |
+| `--raw-dump` | Raw bytes path; convert offline with `bpf-ninja convert` |
 | `--rx-cores N` | Split-core: pin ringbuf consumers to cores `N..2N-1`, off the RX softirqs (set the NIC to `N` queues yourself via `ethtool -L combined N`). +30% on `-w` output. **Requires `--fast-reader`**; pair with `--busy-poll --no-wakeup` |
 | `--busy-poll` | Spin the fast-reader shards instead of sleeping in `epoll_wait`. Burns a core per shard. **Requires `--fast-reader`** |
 | `--null-output` | Drop output entirely (bench only) |
@@ -177,13 +180,13 @@ High-rate tuning — which lever in which order, and what doesn't work: [docs/ja
 
 ```bash
 # Just the filter body (kunai/cbpfc Main + Callbacks + CaptureInfo)
-xdp-ninja --dump-asm filter "eth/ipv4/tcp where tcp.dport == 443"
-xdp-ninja --dump-asm filter --cbpf "tcp port 443"     # legacy tcpdump syntax
+bpf-ninja --dump-asm filter "eth/ipv4/tcp where tcp.dport == 443"
+bpf-ninja --dump-asm filter --cbpf "tcp port 443"     # legacy tcpdump syntax
 
 # Wrapped program with prologue/epilogue (mode-aware)
-xdp-ninja --dump-asm full --mode entry "eth/ipv4/tcp[dport==443]"
-xdp-ninja --dump-asm full --mode exit  "eth/ipv4/tcp where action == XDP_DROP"
-xdp-ninja --dump-asm full --mode xdp --cbpf "tcp port 443"
+bpf-ninja --dump-asm full --mode entry "eth/ipv4/tcp[dport==443]"
+bpf-ninja --dump-asm full --mode exit  "eth/ipv4/tcp where action == XDP_DROP"
+bpf-ninja --dump-asm full --mode xdp --cbpf "tcp port 443"
 ```
 
 Use this to sanity-check DSL parse/type errors, inspect codegen output, or verify the wrapped program shape per mode.
@@ -195,7 +198,7 @@ You can use `--func` to attach fentry/fexit to a `__noinline` subfunction inside
 Use `--list-funcs` to discover available functions:
 
 ```bash
-sudo xdp-ninja -i eth0 --list-funcs
+sudo bpf-ninja -i eth0 --list-funcs
 ```
 
 Both global and static `__noinline` subfunctions work:
@@ -257,7 +260,7 @@ Common:
 Mode-specific:
 
 - **`--mode entry` / `exit`**: an XDP program already attached to the target interface, with BTF.
-- **`--mode xdp`**: no XDP attached to the interface (xdp-ninja becomes the XDP program).
+- **`--mode xdp`**: no XDP attached to the interface (bpf-ninja becomes the XDP program).
 - **`--mode tc-entry` / `tc-exit`**: a tc clsact filter program already loaded with BTF; target by `-p <progID>`.
 - **DSL with chain quantifier (`+`, `*`, `{n,m>4}`), parser-machine self-loop (variable-length headers like IPv6 ext / GTP options / SRv6 segments), or alternation (`(a|b)`)**: kernel 5.17+ (uses `bpf_loop` + bpf2bpf subprograms). Plain DSL chains and `--cbpf` filters work on 5.8+.
 
@@ -269,7 +272,7 @@ sudo apt install libpcap-dev clang
 sudo dnf install libpcap-devel clang
 ```
 
-`clang` is only needed for running BPF load tests locally; not required for using xdp-ninja itself.
+`clang` is only needed for running BPF load tests locally; not required for using bpf-ninja itself.
 
 ## Development
 
@@ -342,7 +345,7 @@ vimto -kernel :6.6 exec -- go test -v -count 1 -timeout 5m ./internal/program/ -
 
 ## Acknowledgements
 
-xdp-ninja's design was inspired by the following projects:
+bpf-ninja's design was inspired by the following projects:
 
 - [xdp-dump](https://github.com/xdp-project/xdp-tools/blob/main/xdp-dump/README.org) (xdp-tools) — fentry/fexit trampoline approach for tracing XDP programs
 - [xdpcap](https://github.com/cloudflare/xdpcap) (Cloudflare) — tcpdump filter compilation via cBPF→eBPF ([cbpfc](https://github.com/cloudflare/cbpfc)), and the overall architecture of capturing XDP packets to pcap

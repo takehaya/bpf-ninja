@@ -54,7 +54,7 @@ jobs:
         with:
           context: docker/p4c-check
           load: true
-          tags: xdp-ninja-p4c-check:local
+          tags: bpf-ninja-p4c-check:local
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -72,4 +72,4 @@ jobs:
             p4c-cache-
 
       - name: Run parse-check
-        run: docker run --rm -v "$PWD:/work" xdp-ninja-p4c-check:local
+        run: docker run --rm -v "$PWD:/work" bpf-ninja-p4c-check:local

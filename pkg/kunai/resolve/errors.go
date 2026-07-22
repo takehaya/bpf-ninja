@@ -3,8 +3,8 @@ package resolve
 import (
 	"fmt"
 
-	"github.com/takehaya/xdp-ninja/pkg/kunai/ast"
-	"github.com/takehaya/xdp-ninja/pkg/kunai/lexer"
+	"github.com/takehaya/bpf-ninja/pkg/kunai/ast"
+	"github.com/takehaya/bpf-ninja/pkg/kunai/lexer"
 )
 
 // ResolveError is emitted for semantic problems (unknown protocol,

@@ -3,7 +3,7 @@ package vocab
 import (
 	"fmt"
 
-	"github.com/takehaya/xdp-ninja/pkg/kunai/vocab/p4lite"
+	"github.com/takehaya/bpf-ninja/pkg/kunai/vocab/p4lite"
 )
 
 // Annotation names recognised by the loader. Hoisting these to

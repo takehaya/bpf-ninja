@@ -15,7 +15,7 @@ import (
 	"github.com/google/gopacket/layers"
 	"github.com/google/gopacket/pcapgo"
 
-	"github.com/takehaya/xdp-ninja/internal/capture"
+	"github.com/takehaya/bpf-ninja/internal/capture"
 )
 
 // fileBufSize is the outer bufio.Writer capacity sitting between the
@@ -28,7 +28,7 @@ import (
 const fileBufSize = 1 << 20
 
 // stdoutFlushInterval bounds the time pcap consumers piped from
-// xdp-ninja's stdout (e.g. `xdp-ninja ... | tcpdump -r -`) wait for
+// bpf-ninja's stdout (e.g. `bpf-ninja ... | tcpdump -r -`) wait for
 // the producer's bufio to fill before seeing data. 1 ms is well
 // below interactive-feel thresholds and orders of magnitude smaller
 // than per-packet write costs we removed.
@@ -37,7 +37,7 @@ const stdoutFlushInterval = time.Millisecond
 // Writer writes captured packets in pcapng format.
 type Writer struct {
 	pcapWriter *pcapgo.NgWriter
-	fastWriter *FastNgWriter // default for non-fexit; env XDP_NINJA_FAST_PCAPNG=0 falls back to pcapWriter
+	fastWriter *FastNgWriter // default for non-fexit; env BPF_NINJA_FAST_PCAPNG=0 falls back to pcapWriter
 	bufWriter  *bufio.Writer // non-nil only when wrapping an *os.File
 	file       *os.File      // non-nil only when writing to a file (not stdout)
 	actionToID map[uint32]int
@@ -71,8 +71,8 @@ func NewWriter(path string, isFexit bool) (*Writer, error) {
 	// than gopacket's NgWriter, benchmarked); it emits packet-equivalent
 	// pcap-ng (see TestFastNgWriterEquivalent). Exit mode still needs the
 	// gopacket writer for its per-action multi-interface layout. Set
-	// XDP_NINJA_FAST_PCAPNG=0 to force the gopacket writer.
-	useFast := os.Getenv("XDP_NINJA_FAST_PCAPNG") != "0" && !isFexit
+	// BPF_NINJA_FAST_PCAPNG=0 to force the gopacket writer.
+	useFast := os.Getenv("BPF_NINJA_FAST_PCAPNG") != "0" && !isFexit
 	if useFast {
 		w.fastWriter, err = NewFastNgWriter(dest)
 	} else if isFexit {
@@ -242,7 +242,7 @@ func (w *Writer) Close() error {
 
 // startStdoutFlusher starts a background goroutine that calls Flush()
 // every stdoutFlushInterval. Pipe consumers (e.g.
-// `xdp-ninja ... | tcpdump -r -`) need to see data before the
+// `bpf-ninja ... | tcpdump -r -`) need to see data before the
 // pcapgo bufio fills, otherwise they appear stuck.
 func (w *Writer) startStdoutFlusher() {
 	w.startFlusher(stdoutFlushInterval)

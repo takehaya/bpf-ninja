@@ -22,7 +22,7 @@ sudo ip link set dev veth0 xdp obj "$SCRIPT_DIR/xdp_pass.o" sec xdp
 
 # Attach dummy TC clsact classifier so --mode tc-{entry,exit} has a
 # fentry/fexit target. tc qdisc + filter is per-direction (ingress);
-# xdp-ninja attaches as a tracing observer, not a forwarder.
+# bpf-ninja attaches as a tracing observer, not a forwarder.
 sudo tc qdisc add dev veth0 clsact
 sudo tc filter add dev veth0 ingress bpf direct-action obj "$SCRIPT_DIR/tc_pass.o" sec classifier
 

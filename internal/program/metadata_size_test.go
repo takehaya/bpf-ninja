@@ -3,7 +3,7 @@ package program
 import (
 	"testing"
 
-	"github.com/takehaya/xdp-ninja/internal/capture"
+	"github.com/takehaya/bpf-ninja/internal/capture"
 )
 
 // TestMetadataSizeMatchesCapture pins the program-side metadataSize

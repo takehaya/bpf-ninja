@@ -5,7 +5,7 @@ import (
 
 	"github.com/cilium/ebpf/asm"
 
-	"github.com/takehaya/xdp-ninja/pkg/kunai/ir"
+	"github.com/takehaya/bpf-ninja/pkg/kunai/ir"
 )
 
 // genNoCheckDispatch emits nothing: when a vocab declares

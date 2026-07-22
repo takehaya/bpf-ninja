@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/takehaya/xdp-ninja/pkg/kunai/ast"
+	"github.com/takehaya/bpf-ninja/pkg/kunai/ast"
 )
 
 func lexAll(t *testing.T, src string) []Token {

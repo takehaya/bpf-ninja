@@ -1,8 +1,8 @@
 package resolve
 
 import (
-	"github.com/takehaya/xdp-ninja/pkg/kunai/ast"
-	"github.com/takehaya/xdp-ninja/pkg/kunai/ir"
+	"github.com/takehaya/bpf-ninja/pkg/kunai/ast"
+	"github.com/takehaya/bpf-ninja/pkg/kunai/ir"
 )
 
 // resolveCapture binds a capture clause, including the optional

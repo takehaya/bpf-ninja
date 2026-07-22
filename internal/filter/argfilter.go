@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/takehaya/xdp-ninja/internal/attach"
+	"github.com/takehaya/bpf-ninja/internal/attach"
 )
 
 // ArgFilterOp represents the comparison operator for an argument filter.

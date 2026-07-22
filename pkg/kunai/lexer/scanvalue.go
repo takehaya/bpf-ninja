@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/takehaya/xdp-ninja/pkg/kunai/ast"
+	"github.com/takehaya/bpf-ninja/pkg/kunai/ast"
 )
 
 // classifyValue turns a value-mode run of characters into a typed

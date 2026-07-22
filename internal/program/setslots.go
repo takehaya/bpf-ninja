@@ -12,8 +12,8 @@ import (
 
 	"github.com/cilium/ebpf/asm"
 
-	"github.com/takehaya/xdp-ninja/internal/setmap"
-	"github.com/takehaya/xdp-ninja/pkg/kunai/codegen"
+	"github.com/takehaya/bpf-ninja/internal/setmap"
+	"github.com/takehaya/bpf-ninja/pkg/kunai/codegen"
 )
 
 // The packet-field key buffer lives in the host stack region [-40, -24),

@@ -4,7 +4,7 @@ import (
 	"testing"
 
 	"github.com/cilium/ebpf"
-	"github.com/takehaya/xdp-ninja/internal/testutil"
+	"github.com/takehaya/bpf-ninja/internal/testutil"
 )
 
 // tailcallSubfuncSource sets up a tail call chain:

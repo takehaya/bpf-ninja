@@ -4,7 +4,7 @@
 
 `kunai` is a small Go library that compiles a one-liner packet-filter DSL into target-portable eBPF instructions, using P4-flavoured vocabulary files to describe protocol headers.
 
-It was extracted from [xdp-ninja](https://github.com/takehaya/xdp-ninja) and is the engine behind its default DSL filter mode, but the package is self-contained: it has no XDP-specific dependencies in its public surface and can be wired into any tracing / fentry / fexit / tc / userspace BPF host that exposes a contiguous packet-bytes window.
+It was extracted from [bpf-ninja](https://github.com/takehaya/bpf-ninja) and is the engine behind its default DSL filter mode, but the package is self-contained: it has no XDP-specific dependencies in its public surface and can be wired into any tracing / fentry / fexit / tc / userspace BPF host that exposes a contiguous packet-bytes window.
 
 > **Status**: pre-1.0. The public API is small (one `Compile` call) but may shift as the surface stabilises. Expect breaking changes between minor versions until 1.0.
 
@@ -32,7 +32,7 @@ The output is **target-agnostic**: it assumes only a contiguous packet window be
 ## Installation
 
 ```bash
-go get github.com/takehaya/xdp-ninja/pkg/kunai
+go get github.com/takehaya/bpf-ninja/pkg/kunai
 ```
 
 Requires Go 1.25+.
@@ -47,8 +47,8 @@ import (
 
     "github.com/cilium/ebpf"
     "github.com/cilium/ebpf/asm"
-    "github.com/takehaya/xdp-ninja/pkg/kunai"
-    "github.com/takehaya/xdp-ninja/pkg/kunai/codegen"
+    "github.com/takehaya/bpf-ninja/pkg/kunai"
+    "github.com/takehaya/bpf-ninja/pkg/kunai/codegen"
 )
 
 func main() {
@@ -76,13 +76,13 @@ func main() {
 }
 ```
 
-For a complete worked example (XDP fentry/fexit attach + perf-event capture), see [`internal/program/program.go`](https://github.com/takehaya/xdp-ninja/blob/main/internal/program/program.go) in the parent xdp-ninja repo.
+For a complete worked example (XDP fentry/fexit attach + perf-event capture), see [`internal/program/program.go`](https://github.com/takehaya/bpf-ninja/blob/main/internal/program/program.go) in the parent bpf-ninja repo.
 
 ## Architecture (one paragraph)
 
 The pipeline is `expr → AST → IR → asm.Instructions`. The AST is built by a hand-written recursive-descent parser; the IR holds vocabulary-resolved layer instances and binds every field reference to a concrete `*vocab.ProtocolSpec`; codegen lowers the IR to [cilium/ebpf](https://github.com/cilium/ebpf) `asm.Instructions` with verifier-safe bounds checks at every layer boundary. Variable-length quantifiers (`+`, `*`, `{n,m>4}`) and parser-machine self-loops emit a `bpf_loop` helper call into a bpf2bpf subprogram, which lands in **Linux 5.17**. Predicate codegen sticks to the BPF_END byte-swap family so it does not require BSWAP (`0xd7`, 6.6+). CI gates the matrix on 6.1 / 6.6 / 6.12 / 6.18 (`vimto`); chains without quantifiers or parser-machine self-loops can run on even older kernels.
 
-The formal EBNF lives in [`docs/ja/dsl-grammar.md`](https://github.com/takehaya/xdp-ninja/blob/main/docs/ja/dsl-grammar.md). Code-level entry points: `pkg/kunai/codegen/codegen.go` (compile pipeline + ABI), `pkg/kunai/vocab/p4lite/` (P4-16 strict subset parser), and the `parser_state.go` / `parser_trail.go` / `parser_select.go` / `parser_loop.go` quartet under `pkg/kunai/codegen/` (variable-length header codegen — split for review readability).
+The formal EBNF lives in [`docs/ja/dsl-grammar.md`](https://github.com/takehaya/bpf-ninja/blob/main/docs/ja/dsl-grammar.md). Code-level entry points: `pkg/kunai/codegen/codegen.go` (compile pipeline + ABI), `pkg/kunai/vocab/p4lite/` (P4-16 strict subset parser), and the `parser_state.go` / `parser_trail.go` / `parser_select.go` / `parser_loop.go` quartet under `pkg/kunai/codegen/` (variable-length header codegen — split for review readability).
 
 ## API
 
@@ -140,7 +140,7 @@ ringbuf and copy from the packet. A non-zero value comes from an
 explicit `capture` clause (e.g. `capture headers` → 54 B,
 `capture headers+64` → 118 B, `capture absolute 96` → 96 B). When the
 DSL omits the `capture` clause entirely, the value stays at zero and
-the host is expected to fall back to its own default — `xdp-ninja`
+the host is expected to fall back to its own default — `bpf-ninja`
 uses `DefaultCapLen = 1500` to match libpcap / tcpdump's full-packet
 behaviour. The no-clause case is sugar for `capture all`; users who
 want the ringbuf-reservation throughput win must opt in explicitly
@@ -162,7 +162,7 @@ optimisation via `capture headers`.
 The host wires kunai to its specific BPF attach point by constructing a `Capabilities` value. The kunai core ships no host-specific helpers; canonical adapters live under [`host/`](./host/) sub-packages. For an XDP fexit attach point:
 
 ```go
-import xdphost "github.com/takehaya/xdp-ninja/pkg/kunai/host/xdp"
+import xdphost "github.com/takehaya/bpf-ninja/pkg/kunai/host/xdp"
 
 caps := xdphost.FexitCapabilities()
 out, err := kunai.Compile(expr, caps)
@@ -188,18 +188,18 @@ Vocabulary parsing is memoised: `dslvocab.Bundled()` (in `pkg/kunai/dslvocab/`) 
 
 ## Versioning & stability
 
-- Public API: `kunai.Compile`, `kunai.CompileWithVocab` (custom-vocab variant), `kunai.SyntaxHelp` / `kunai.ExamplesHelp` / `kunai.WriteProtocolCatalogue` / `kunai.WriteProtocolHelp` (used by xdp-ninja's `--dsl-help`), `codegen.Capabilities`, `codegen.ActionFetcher`, `codegen.Output`, `codegen.CaptureInfo`, `codegen.MainFilterFuncBTF` (host wrapper helper), `codegen.PositionedError` (source-position-aware error type), the `host/xdp` and `host/tc` adapter packages, and the error types listed above.
+- Public API: `kunai.Compile`, `kunai.CompileWithVocab` (custom-vocab variant), `kunai.SyntaxHelp` / `kunai.ExamplesHelp` / `kunai.WriteProtocolCatalogue` / `kunai.WriteProtocolHelp` (used by bpf-ninja's `--dsl-help`), `codegen.Capabilities`, `codegen.ActionFetcher`, `codegen.Output`, `codegen.CaptureInfo`, `codegen.MainFilterFuncBTF` (host wrapper helper), `codegen.PositionedError` (source-position-aware error type), the `host/xdp` and `host/tc` adapter packages, and the error types listed above.
 - Everything else (AST nodes, IR types, vocab loader internals, parser internals, the `dslvocab.Bundled` cache) may change without notice.
 - `pkg/kunai/dsltest` (the gopacket-based packet-level harness) is **experimental** until 1.0 — its `Runner` API and packet builders may change without notice. Pin a tagged version if downstream tests depend on it.
 - The protocol vocabulary is treated as part of the public surface — adding new protocols is non-breaking; renaming or removing one is a breaking change.
 
 ## Related projects
 
-- [xdp-ninja](https://github.com/takehaya/xdp-ninja) — non-invasive XDP observability tool that is the primary consumer of this package.
+- [bpf-ninja](https://github.com/takehaya/bpf-ninja) — non-invasive BPF observability tool (XDP and tc-bpf hook points) that is the primary consumer of this package.
 - [cilium/ebpf](https://github.com/cilium/ebpf) — the BPF assembler / loader the codegen targets.
-- [cloudflare/cbpfc](https://github.com/cloudflare/cbpfc) — alternative classical-BPF (tcpdump syntax) compiler, used by xdp-ninja when `--cbpf` is set (legacy fallback).
+- [cloudflare/cbpfc](https://github.com/cloudflare/cbpfc) — alternative classical-BPF (tcpdump syntax) compiler, used by bpf-ninja when `--cbpf` is set (legacy fallback).
 - [p4lang/p4c](https://github.com/p4lang/p4c) — official P4 compiler, used in CI to verify our `.p4` vocab files stay within P4-16.
 
 ## License
 
-Same as the parent xdp-ninja repository.
+Same as the parent bpf-ninja repository.

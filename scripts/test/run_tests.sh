@@ -3,7 +3,7 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
-BINARY="$PROJECT_DIR/xdp-ninja"
+BINARY="$PROJECT_DIR/bpf-ninja"
 PASS=0
 FAIL=0
 
@@ -48,7 +48,7 @@ require_bpftool() {
 }
 
 capture_count() {
-    # xdp-ninja の stderr から "N packets captured" を抽出
+    # bpf-ninja の stderr から "N packets captured" を抽出
     grep -oP '\d+(?= packets captured)' "$1" 2>/dev/null || echo 0
 }
 
@@ -75,8 +75,8 @@ read_any_shard() {
     return 1
 }
 
-# run_count_test <expected-min> <xdp-ninja-args...>
-# Runs xdp-ninja with the given args in the background, sends 5 pings
+# run_count_test <expected-min> <bpf-ninja-args...>
+# Runs bpf-ninja with the given args in the background, sends 5 pings
 # from the test netns, and asserts the captured packet count is at
 # least <expected-min>.
 run_count_test() {
@@ -93,8 +93,8 @@ run_count_test() {
     [[ "$count" -ge "$expected" ]]
 }
 
-# run_nomatch_test <xdp-ninja-args...>
-# Runs a short-lived xdp-ninja that the ping traffic should not match,
+# run_nomatch_test <bpf-ninja-args...>
+# Runs a short-lived bpf-ninja that the ping traffic should not match,
 # then asserts zero captures. Uses kill+wait because the binary would
 # otherwise block on -c until timeout.
 run_nomatch_test() {
@@ -110,7 +110,7 @@ run_nomatch_test() {
     [[ "$count" -eq 0 ]]
 }
 
-# run_pcap_test <xdp-ninja-args...>
+# run_pcap_test <bpf-ninja-args...>
 # Captures to a pcap file and asserts at least one shard contains a
 # packet (the base $pcap is SHB+IDBs only after R22).
 run_pcap_test() {
@@ -352,7 +352,7 @@ test_graceful_shutdown() {
 echo "Checking binary..."
 if [[ ! -x "$BINARY" ]]; then
     red "Binary not found: $BINARY"
-    red "Run 'go build -o xdp-ninja ./cmd/xdp-ninja/' first"
+    red "Run 'go build -o bpf-ninja ./cmd/bpf-ninja/' first"
     exit 1
 fi
 

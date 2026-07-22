@@ -580,7 +580,7 @@ make p4c-check                                          # P4-16 互換
 "eth/ipv4/udp/wg where wg.msg_type == 4",
 ```
 
-`make test-bpf` で verifier を通し、`pkg/kunai/dsltest/` に gopacket でフレームを組む accept / reject テストを追加します。既存の `runner_test.go` のパターンを踏襲してください。これで `xdp-ninja -i eth0 'eth/ipv4/udp/wg where wg.msg_type == 1'` と書けるようになります。
+`make test-bpf` で verifier を通し、`pkg/kunai/dsltest/` に gopacket でフレームを組む accept / reject テストを追加します。既存の `runner_test.go` のパターンを踏襲してください。これで `bpf-ninja -i eth0 'eth/ipv4/udp/wg where wg.msg_type == 1'` と書けるようになります。
 
 ## 関連ドキュメント
 

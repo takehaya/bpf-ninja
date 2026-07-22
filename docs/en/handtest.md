@@ -1,6 +1,6 @@
-# Manual Test: xdp-ninja Packet Capture
+# Manual Test: bpf-ninja Packet Capture
 
-Step-by-step manual verification of xdp-ninja features.
+Step-by-step manual verification of bpf-ninja features.
 Starting from basic fentry/fexit on entry functions,
 progressing through `--func` subfunction probing, and tail call environments.
 
@@ -13,8 +13,8 @@ progressing through `--func` subfunction probing, and tail call environments.
 ## 0. Build
 
 ```bash
-cd /path/to/xdp-ninja
-go build -o xdp-ninja ./cmd/xdp-ninja/
+cd /path/to/bpf-ninja
+go build -o bpf-ninja ./cmd/bpf-ninja/
 ```
 
 ---
@@ -67,7 +67,7 @@ sudo ip netns exec nstest ping -c 3 10.77.0.1
 Terminal 1:
 
 ```bash
-sudo ./xdp-ninja -i vtest0 -v | tcpdump -n -r -
+sudo ./bpf-ninja -i vtest0 -v | tcpdump -n -r -
 ```
 
 Terminal 2:
@@ -81,7 +81,7 @@ Expected: ICMP packets are captured.
 ### 1.4 fexit (Capture After XDP Processing)
 
 ```bash
-sudo ./xdp-ninja -i vtest0 --mode exit -v | tcpdump -n -r -
+sudo ./bpf-ninja -i vtest0 --mode exit -v | tcpdump -n -r -
 ```
 
 Expected: ICMP packets are captured.
@@ -90,10 +90,10 @@ Expected: ICMP packets are captured.
 
 ```bash
 # Matching filter
-sudo ./xdp-ninja -i vtest0 "icmp" -v | tcpdump -n -r -
+sudo ./bpf-ninja -i vtest0 "icmp" -v | tcpdump -n -r -
 
 # Non-matching filter
-sudo ./xdp-ninja -i vtest0 "tcp port 80" -v -c 3 | tcpdump -n -r -
+sudo ./bpf-ninja -i vtest0 "tcp port 80" -v -c 3 | tcpdump -n -r -
 ```
 
 Expected: The icmp filter captures packets; tcp port 80 results in `0 packets captured`.
@@ -101,7 +101,7 @@ Expected: The icmp filter captures packets; tcp port 80 results in `0 packets ca
 ### 1.6 Pcap File Output
 
 ```bash
-sudo ./xdp-ninja -i vtest0 -w /tmp/capture.pcap -c 5 &
+sudo ./bpf-ninja -i vtest0 -w /tmp/capture.pcap -c 5 &
 sudo ip netns exec nstest ping -c 5 10.77.0.1
 wait
 tcpdump -n -r /tmp/capture.pcap
@@ -226,7 +226,7 @@ sudo ip netns exec nstest ping -c 3 10.77.0.1
 ### 2.3 List Functions with `--list-funcs`
 
 ```bash
-sudo ./xdp-ninja -i vtest0 --list-funcs
+sudo ./bpf-ninja -i vtest0 --list-funcs
 ```
 
 Expected output:
@@ -241,7 +241,7 @@ BTF functions in program (id=XXXX):
 ### 2.4 fentry on `classify_packet` (global)
 
 ```bash
-sudo ./xdp-ninja -i vtest0 --func classify_packet -v | tcpdump -n -r -
+sudo ./bpf-ninja -i vtest0 --func classify_packet -v | tcpdump -n -r -
 ```
 
 Expected: ICMP packets are captured.
@@ -249,7 +249,7 @@ Expected: ICMP packets are captured.
 ### 2.5 fentry on `parse_headers` (static)
 
 ```bash
-sudo ./xdp-ninja -i vtest0 --func parse_headers -v | tcpdump -n -r -
+sudo ./bpf-ninja -i vtest0 --func parse_headers -v | tcpdump -n -r -
 ```
 
 Expected: Packets are captured as well.
@@ -257,7 +257,7 @@ Expected: Packets are captured as well.
 ### 2.6 fexit on Subfunction
 
 ```bash
-sudo ./xdp-ninja -i vtest0 --func classify_packet --mode exit -v | tcpdump -n -r -
+sudo ./bpf-ninja -i vtest0 --func classify_packet --mode exit -v | tcpdump -n -r -
 ```
 
 Expected: Packets are captured.
@@ -265,7 +265,7 @@ Expected: Packets are captured.
 ### 2.7 Non-existent Function Name (Error)
 
 ```bash
-sudo ./xdp-ninja -i vtest0 --func no_such_func
+sudo ./bpf-ninja -i vtest0 --func no_such_func
 ```
 
 Expected: Error message listing available functions.
@@ -413,7 +413,7 @@ sudo ip netns exec nstest ping -c 3 10.77.0.1
 ### 3.3 Discover Tail Call Targets with `--list-progs`
 
 ```bash
-sudo ./xdp-ninja -i vtest0 --list-progs
+sudo ./bpf-ninja -i vtest0 --list-progs
 ```
 
 Expected output:
@@ -426,13 +426,13 @@ id=YYYY   xdp_leaf (tailcall[0])
 ### 3.4 List Leaf's Subfunctions
 
 ```bash
-sudo ./xdp-ninja -p $LEAF_ID --list-funcs
+sudo ./bpf-ninja -p $LEAF_ID --list-funcs
 ```
 
 ### 3.5 fentry on Subfunction (Via Tail Call)
 
 ```bash
-sudo ./xdp-ninja -p $LEAF_ID --func classify_packet -v | tcpdump -n -r -
+sudo ./bpf-ninja -p $LEAF_ID --func classify_packet -v | tcpdump -n -r -
 ```
 
 Expected: ICMP packets are captured.
@@ -441,7 +441,7 @@ The bpf2bpf call inside the tail-called program goes through its trampoline norm
 ### 3.6 fexit on Subfunction
 
 ```bash
-sudo ./xdp-ninja -p $LEAF_ID --func classify_packet --mode exit -v | tcpdump -n -r -
+sudo ./bpf-ninja -p $LEAF_ID --func classify_packet --mode exit -v | tcpdump -n -r -
 ```
 
 Expected: Packets are captured.
@@ -449,7 +449,7 @@ Expected: Packets are captured.
 ### 3.7 Direct Attach to Tail Call Target Entry (Does Not Fire)
 
 ```bash
-sudo ./xdp-ninja -p $LEAF_ID -v -c 3 | tcpdump -n -r -
+sudo ./bpf-ninja -p $LEAF_ID -v -c 3 | tcpdump -n -r -
 ```
 
 Expected: `0 packets captured`.
@@ -530,7 +530,7 @@ sudo ip netns exec nstest ping -c 3 10.77.0.1
 ### 4.3 List Filterable Parameters with `--list-params`
 
 ```bash
-sudo ./xdp-ninja -i vtest0 --func process_packet --list-params
+sudo ./bpf-ninja -i vtest0 --func process_packet --list-params
 ```
 
 Expected output:
@@ -543,7 +543,7 @@ Filterable parameters for process_packet (id=XXXX):
 ### 4.4 `--list-params` Without `--func` (Error)
 
 ```bash
-sudo ./xdp-ninja -i vtest0 --list-params
+sudo ./bpf-ninja -i vtest0 --list-params
 ```
 
 Expected: `--list-params requires --func` error.
@@ -551,7 +551,7 @@ Expected: `--list-params requires --func` error.
 ### 4.5 Exact Match Filter (Hit)
 
 ```bash
-sudo ./xdp-ninja -i vtest0 --func process_packet --arg-filter "tunnel_id=42" -v | tcpdump -n -r -
+sudo ./bpf-ninja -i vtest0 --func process_packet --arg-filter "tunnel_id=42" -v | tcpdump -n -r -
 ```
 
 Expected: Packets are captured since tunnel_id=42.
@@ -559,7 +559,7 @@ Expected: Packets are captured since tunnel_id=42.
 ### 4.6 Exact Match Filter (Miss)
 
 ```bash
-sudo ./xdp-ninja -i vtest0 --func process_packet --arg-filter "tunnel_id=99" -v -c 3 | tcpdump -n -r -
+sudo ./bpf-ninja -i vtest0 --func process_packet --arg-filter "tunnel_id=99" -v -c 3 | tcpdump -n -r -
 ```
 
 Expected: `0 packets captured`.
@@ -568,29 +568,29 @@ Expected: `0 packets captured`.
 
 ```bash
 # Hit (42 is within 40..50)
-sudo ./xdp-ninja -i vtest0 --func process_packet --arg-filter "tunnel_id=40..50" -v | tcpdump -n -r -
+sudo ./bpf-ninja -i vtest0 --func process_packet --arg-filter "tunnel_id=40..50" -v | tcpdump -n -r -
 
 # Miss (42 is outside 100..200)
-sudo ./xdp-ninja -i vtest0 --func process_packet --arg-filter "tunnel_id=100..200" -v -c 3 | tcpdump -n -r -
+sudo ./bpf-ninja -i vtest0 --func process_packet --arg-filter "tunnel_id=100..200" -v -c 3 | tcpdump -n -r -
 ```
 
 ### 4.8 Comparison Filters
 
 ```bash
 # >= (42 >= 40 → hit)
-sudo ./xdp-ninja -i vtest0 --func process_packet --arg-filter "tunnel_id>=40" -v | tcpdump -n -r -
+sudo ./bpf-ninja -i vtest0 --func process_packet --arg-filter "tunnel_id>=40" -v | tcpdump -n -r -
 
 # <= (42 <= 50 → hit)
-sudo ./xdp-ninja -i vtest0 --func process_packet --arg-filter "tunnel_id<=50" -v | tcpdump -n -r -
+sudo ./bpf-ninja -i vtest0 --func process_packet --arg-filter "tunnel_id<=50" -v | tcpdump -n -r -
 
 # >= (42 >= 100 → miss)
-sudo ./xdp-ninja -i vtest0 --func process_packet --arg-filter "tunnel_id>=100" -v -c 3 | tcpdump -n -r -
+sudo ./bpf-ninja -i vtest0 --func process_packet --arg-filter "tunnel_id>=100" -v -c 3 | tcpdump -n -r -
 ```
 
 ### 4.9 Hexadecimal Values
 
 ```bash
-sudo ./xdp-ninja -i vtest0 --func process_packet --arg-filter "tunnel_id=0x2a" -v | tcpdump -n -r -
+sudo ./bpf-ninja -i vtest0 --func process_packet --arg-filter "tunnel_id=0x2a" -v | tcpdump -n -r -
 ```
 
 Expected: Packets are captured since 0x2a = 42.
@@ -598,7 +598,7 @@ Expected: Packets are captured since 0x2a = 42.
 ### 4.10 Combined with Packet Filter
 
 ```bash
-sudo ./xdp-ninja -i vtest0 --func process_packet --arg-filter "tunnel_id=42" "icmp" -v | tcpdump -n -r -
+sudo ./bpf-ninja -i vtest0 --func process_packet --arg-filter "tunnel_id=42" "icmp" -v | tcpdump -n -r -
 ```
 
 Expected: Only packets matching both the argument filter and the packet filter are captured.
@@ -606,7 +606,7 @@ Expected: Only packets matching both the argument filter and the packet filter a
 ### 4.11 Non-existent Parameter Name (Error)
 
 ```bash
-sudo ./xdp-ninja -i vtest0 --func process_packet --arg-filter "no_such=42"
+sudo ./bpf-ninja -i vtest0 --func process_packet --arg-filter "no_such=42"
 ```
 
 Expected: Error message listing available parameter names.
@@ -614,7 +614,7 @@ Expected: Error message listing available parameter names.
 ### 4.12 `--arg-filter` Without `--func` (Error)
 
 ```bash
-sudo ./xdp-ninja -i vtest0 --arg-filter "tunnel_id=42"
+sudo ./bpf-ninja -i vtest0 --arg-filter "tunnel_id=42"
 ```
 
 Expected: `--arg-filter requires --func` error.

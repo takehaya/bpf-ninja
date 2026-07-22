@@ -8,10 +8,10 @@ import (
 
 	"github.com/cilium/ebpf"
 
-	"github.com/takehaya/xdp-ninja/internal/attach"
-	"github.com/takehaya/xdp-ninja/internal/filter"
-	"github.com/takehaya/xdp-ninja/internal/setmap"
-	"github.com/takehaya/xdp-ninja/internal/testutil"
+	"github.com/takehaya/bpf-ninja/internal/attach"
+	"github.com/takehaya/bpf-ninja/internal/filter"
+	"github.com/takehaya/bpf-ninja/internal/setmap"
+	"github.com/takehaya/bpf-ninja/internal/testutil"
 )
 
 // setTargetSrc derives the capture-point args from packet bytes so each
@@ -63,7 +63,7 @@ func runWithKey(t *testing.T, prog *ebpf.Program, imsi uint64, teid uint32) {
 func TestBpfSetFilterLookupAndRuntimeUpdate(t *testing.T) {
 	testutil.SkipIfNotRoot(t)
 
-	pin := fmt.Sprintf("/sys/fs/bpf/xdpninja_settest_%d", os.Getpid())
+	pin := fmt.Sprintf("/sys/fs/bpf/bpfninja_settest_%d", os.Getpid())
 	if err := setmap.Create(pin, "imsi:u64,teid:u32", "", 16); err != nil {
 		t.Skipf("creating pinned set map (bpffs unavailable?): %v", err)
 	}
@@ -141,7 +141,7 @@ func TestBpfSetFilterLookupAndRuntimeUpdate(t *testing.T) {
 func TestBpfSetFilterScalarKey(t *testing.T) {
 	testutil.SkipIfNotRoot(t)
 
-	pin := fmt.Sprintf("/sys/fs/bpf/xdpninja_setscalar_%d", os.Getpid())
+	pin := fmt.Sprintf("/sys/fs/bpf/bpfninja_setscalar_%d", os.Getpid())
 	if err := setmap.Create(pin, "imsi:u64", "", 16); err != nil {
 		t.Skipf("creating pinned set map: %v", err)
 	}
