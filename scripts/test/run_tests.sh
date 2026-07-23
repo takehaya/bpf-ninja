@@ -423,7 +423,7 @@ test_argfilter_set() {
 # the process exit 0 on its own (no signal), and the merged per-tag file
 # must stay near the cap (batch-granular overshoot allowed).
 test_split_max_bytes_per_tag() {
-    local pin=/sys/fs/bpf/bpfninja_capset_test
+    local pin=/sys/fs/bpf/bpfninja_capset_$$
     local cap=300
     rm -f "$pin" 2>/dev/null || true
     if ! "$BINARY" set create "$pin" --key "type:u8" >/dev/null 2>&1 \

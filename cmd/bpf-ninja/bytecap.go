@@ -97,6 +97,7 @@ func (c *byteCaps) anyCapped() bool {
 // traffic on the packet side, so it never participates in the exit
 // decision (as documented).
 func unionSetTags(sets []*setmap.Set) ([]uint32, error) {
+	seen := map[uint32]bool{}
 	var tags []uint32
 	for _, s := range sets {
 		t, err := s.Def.Tags()
@@ -104,7 +105,8 @@ func unionSetTags(sets []*setmap.Set) ([]uint32, error) {
 			return nil, err
 		}
 		for _, tag := range t {
-			if tag != 0 {
+			if tag != 0 && !seen[tag] {
+				seen[tag] = true
 				tags = append(tags, tag)
 			}
 		}
