@@ -1141,6 +1141,12 @@ func captureLoopShardedSplit(cmd *cli.Command, inners []*ebpf.Map, cfg output.Co
 				if e.ctr != nil && caps.addTag(e.ctr, n) {
 					fmt.Fprintf(os.Stderr, "tag %d capped at %d bytes (--max-bytes-per-tag %d)\n",
 						tag, e.ctr.bytes.Load(), caps.perTagLimit)
+					// Release this shard's fd right away instead of on
+					// the next sighting — traffic may stop here. Other
+					// shards close theirs when they next see the tag
+					// (their writers are not ours to touch).
+					_ = e.w.Close()
+					e.w = nil
 				}
 				if caps.totalLimit > 0 {
 					caps.addTotal(n)
@@ -1220,7 +1226,11 @@ func pumpShards(cmd *cli.Command, inners []*ebpf.Map, label string, writeShard f
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 	defer signal.Stop(sig)
 
-	if count > 0 || caps != nil {
+	// Poll only when something can actually end the capture early;
+	// per-tag caps alone (no --exit-when-capped) stop individual tags
+	// but never the process, so that case keeps the blocking wait.
+	needPoll := count > 0 || exitWhenCapped || (caps != nil && caps.totalLimit > 0)
+	if needPoll {
 		// Same 10 ms poll as -c; the set-map iteration for
 		// --exit-when-capped costs syscalls, so it runs at ~500 ms and
 		// only after at least one tag has actually capped.

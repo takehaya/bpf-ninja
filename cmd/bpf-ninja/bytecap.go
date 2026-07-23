@@ -67,9 +67,10 @@ func (c *byteCaps) addTag(ctr *tagCounter, n uint64) bool {
 }
 
 // addTotal adds n bytes to the aggregate counter and reports whether the
-// --max-bytes limit has been reached.
+// --max-bytes limit has been reached (always false when that limit is
+// off).
 func (c *byteCaps) addTotal(n uint64) bool {
-	return c.total.Add(n) >= c.totalLimit
+	return c.total.Add(n) >= c.totalLimit && c.totalLimit > 0
 }
 
 func (c *byteCaps) totalReached() bool {
@@ -92,7 +93,9 @@ func (c *byteCaps) anyCapped() bool {
 // unionSetTags collects the tags of every entry currently present in
 // the given sets. --exit-when-capped compares this live view against
 // the capped counters, so entries added or removed at runtime are
-// honored.
+// honored. Tag 0 is dropped: it is indistinguishable from unmatched
+// traffic on the packet side, so it never participates in the exit
+// decision (as documented).
 func unionSetTags(sets []*setmap.Set) ([]uint32, error) {
 	var tags []uint32
 	for _, s := range sets {
@@ -100,7 +103,11 @@ func unionSetTags(sets []*setmap.Set) ([]uint32, error) {
 		if err != nil {
 			return nil, err
 		}
-		tags = append(tags, t...)
+		for _, tag := range t {
+			if tag != 0 {
+				tags = append(tags, tag)
+			}
+		}
 	}
 	return tags, nil
 }

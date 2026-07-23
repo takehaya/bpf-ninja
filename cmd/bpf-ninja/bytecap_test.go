@@ -89,7 +89,9 @@ func TestTotalReached(t *testing.T) {
 
 	// perTag-only caps never report total reached.
 	p := newByteCaps(100, 0)
-	p.addTotal(1 << 40)
+	if p.addTotal(1 << 40) {
+		t.Fatal("addTotal reported reached with totalLimit = 0")
+	}
 	if p.totalReached() {
 		t.Fatal("totalReached with totalLimit = 0")
 	}
