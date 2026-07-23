@@ -15,11 +15,10 @@ import (
 	"github.com/google/gopacket/pcap"
 	"github.com/takehaya/bpf-ninja/internal/attach"
 	"github.com/takehaya/bpf-ninja/internal/filter"
+	"github.com/takehaya/bpf-ninja/internal/hook"
 	"github.com/takehaya/bpf-ninja/internal/setmap"
 	"github.com/takehaya/bpf-ninja/pkg/kunai"
 	"github.com/takehaya/bpf-ninja/pkg/kunai/codegen"
-	tchost "github.com/takehaya/bpf-ninja/pkg/kunai/host/tc"
-	xdphost "github.com/takehaya/bpf-ninja/pkg/kunai/host/xdp"
 	"golang.org/x/net/bpf"
 )
 
@@ -139,8 +138,8 @@ func loadMulti(targets []attach.Target, filterExpr string, filters []filter.Targ
 			return nil, fmt.Errorf("mixed target program types (%s and %s)", progType, t.Type)
 		}
 	}
-	if progType != ebpf.XDP && progType != ebpf.SchedCLS && progType != ebpf.SchedACT {
-		return nil, fmt.Errorf("target program type %s is not supported (need XDP, SchedCLS, or SchedACT)", progType)
+	if _, ok := hook.ByProgramType(progType); !ok {
+		return nil, hook.UnsupportedTypeError(progType)
 	}
 
 	// DSL `field in @set` extracts packet fields into a host key buffer;
@@ -221,8 +220,8 @@ func validateTracingTarget(targetProg *ebpf.Program) (ebpf.ProgramType, error) {
 		return 0, fmt.Errorf("reading target program info: %w", err)
 	}
 	pt := info.Type
-	if pt != ebpf.XDP && pt != ebpf.SchedCLS && pt != ebpf.SchedACT {
-		return 0, fmt.Errorf("target program type %s is not supported (need XDP, SchedCLS, or SchedACT)", pt)
+	if _, ok := hook.ByProgramType(pt); !ok {
+		return 0, hook.UnsupportedTypeError(pt)
 	}
 	return pt, nil
 }
@@ -294,23 +293,16 @@ func compileFilterWithSlots(expr string, useDSL, isFexit bool, progType ebpf.Pro
 		// or TC verdict, ABI shared); fentry has no action value yet,
 		// so action atoms are disabled. The bpf-ninja host wrapper saves
 		// the tracing args ptr at stack[-48] in either case, which is
-		// exactly the ABI both FexitFetcher implementations expect.
-		// The tc host also carries VlanInMetadata in both entry and
-		// fexit caps, because the kernel strips the outer VLAN tag into
-		// skb metadata before either attach point runs.
+		// exactly the ABI every FexitFetcher implementation expects.
+		// Per-hook capability details (action vocab, VLAN layout) live
+		// in the internal/hook registry entries.
 		var caps codegen.Capabilities
-		switch progType {
-		case ebpf.SchedCLS, ebpf.SchedACT:
+		if h, ok := hook.ByProgramType(progType); ok {
 			if isFexit {
-				caps = tchost.FexitCapabilities()
+				caps = h.FexitCaps()
 			} else {
-				caps = tchost.EntryCapabilities()
+				caps = h.EntryCaps()
 			}
-		case ebpf.XDP:
-			if isFexit {
-				caps = xdphost.FexitCapabilities()
-			}
-			// XDP entry keeps zero caps: VLAN is in-band at XDP.
 		}
 		// DSL `field in @set`: hand kunai the host slot resolver so it can
 		// extract packet fields into the host key buffer (host does the map
@@ -506,41 +498,15 @@ func buildTracingInsns(filterOut codegen.Output, tf filter.TargetFilters, events
 // loadPacketPointers は tracing args の args[0] (= host-specific
 // packet ctx) から packet 先頭・末尾・長さを host 別に読み出す。
 // trusted pointer (BTF 型付き) として trampoline が保証してくれる。
+// host 別の実体は internal/hook の各 PacketPrologue。
 //
 // 終了時: R6=ctx, R7=data, R8=data_end, R9=pkt_len, stack[-48]=args
 func loadPacketPointers(progType ebpf.ProgramType) (asm.Instructions, error) {
-	prelude := asm.Instructions{
-		asm.StoreMem(asm.R10, -48, asm.R1, asm.DWord),
-		asm.LoadMem(asm.R6, asm.R1, 0, asm.DWord),
+	h, ok := hook.ByProgramType(progType)
+	if !ok {
+		return nil, hook.UnsupportedTypeError(progType)
 	}
-	switch progType {
-	case ebpf.XDP:
-		// args[0] は kernel struct xdp_buff *。 data @ +0, data_end
-		// @ +8 (どちらも 8B pointer、 ABI 安定なので hardcode)。
-		return append(prelude,
-			asm.LoadMem(asm.R7, asm.R6, 0, asm.DWord),
-			asm.LoadMem(asm.R8, asm.R6, 8, asm.DWord),
-			asm.Mov.Reg(asm.R9, asm.R8),
-			asm.Sub.Reg(asm.R9, asm.R7),
-		), nil
-	case ebpf.SchedCLS, ebpf.SchedACT:
-		// args[0] は kernel struct sk_buff * (BPF が見せる
-		// __sk_buff のラッパ rewrite は fexit context で発火しない)。
-		// member offset は kernel version で動くので runtime BTF
-		// resolve が必要。 data_end は sk_buff にないので
-		// data + len で計算。
-		dataOff, lenOff, err := skBuffPacketOffsets()
-		if err != nil {
-			return nil, fmt.Errorf("resolving struct sk_buff offsets via BTF: %w", err)
-		}
-		return append(prelude,
-			asm.LoadMem(asm.R7, asm.R6, int16(dataOff), asm.DWord), // R7 = skb->data
-			asm.LoadMem(asm.R9, asm.R6, int16(lenOff), asm.Word),   // R9 = skb->len
-			asm.Mov.Reg(asm.R8, asm.R7),
-			asm.Add.Reg(asm.R8, asm.R9), // R8 = data + len
-		), nil
-	}
-	return nil, fmt.Errorf("unsupported program type %s", progType)
+	return h.PacketPrologue()
 }
 
 // ObserverPrefetch, when true, makes runFilter always probe_read the

@@ -9,6 +9,7 @@ import (
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/btf"
+	"github.com/takehaya/bpf-ninja/internal/hook"
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netlink/nl"
 )
@@ -77,9 +78,9 @@ func FindBPFProgramByID(progID uint32) (*ProgInfo, error) {
 		return nil, fmt.Errorf("reading program info (id=%d): %w", progID, err)
 	}
 	progType := progInfo.Type
-	if progType != ebpf.XDP && progType != ebpf.SchedCLS && progType != ebpf.SchedACT {
+	if _, ok := hook.ByProgramType(progType); !ok {
 		_ = prog.Close()
-		return nil, fmt.Errorf("program (id=%d) type %s is not supported (need XDP, SchedCLS, or SchedACT)", progID, progType)
+		return nil, fmt.Errorf("program (id=%d): %w", progID, hook.UnsupportedTypeError(progType))
 	}
 
 	funcName, spec, err := resolveEntryFunc(prog, progID)
