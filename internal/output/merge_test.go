@@ -149,19 +149,32 @@ func TestMergeShardFilesFexitPreservesAction(t *testing.T) {
 }
 
 // TestMergeShardFilesEmpty verifies merging when no shard files exist
-// produces a valid (empty) pcap-ng rather than erroring.
+// produces a valid (empty) pcap-ng rather than erroring — in both the
+// entry layout and the exit layout, where the per-verdict interfaces
+// would normally be seeded from the (absent) shard files.
 func TestMergeShardFilesEmpty(t *testing.T) {
-	dir := t.TempDir()
-	base := filepath.Join(dir, "none.pcap")
-	if err := MergeShardFiles(base, 4, Config{}); err != nil {
-		t.Fatalf("MergeShardFiles with no shards: %v", err)
+	cases := []struct {
+		name string
+		cfg  Config
+	}{
+		{"entry", Config{}},
+		{"fexit no seed", Config{IsFexit: true}},
 	}
-	f, err := os.Open(base)
-	if err != nil {
-		t.Fatalf("open merged: %v", err)
-	}
-	defer func() { _ = f.Close() }()
-	if _, err := pcapgo.NewNgReader(f, pcapgo.DefaultNgReaderOptions); err != nil {
-		t.Fatalf("merged empty file is not valid pcap-ng: %v", err)
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dir := t.TempDir()
+			base := filepath.Join(dir, "none.pcap")
+			if err := MergeShardFiles(base, 4, c.cfg); err != nil {
+				t.Fatalf("MergeShardFiles with no shards: %v", err)
+			}
+			f, err := os.Open(base)
+			if err != nil {
+				t.Fatalf("open merged: %v", err)
+			}
+			defer func() { _ = f.Close() }()
+			if _, err := pcapgo.NewNgReader(f, pcapgo.DefaultNgReaderOptions); err != nil {
+				t.Fatalf("merged empty file is not valid pcap-ng: %v", err)
+			}
+		})
 	}
 }

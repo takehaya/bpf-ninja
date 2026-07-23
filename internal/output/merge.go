@@ -99,9 +99,11 @@ func mergeFiles(inPaths []string, outPath string, cfg Config) error {
 		}
 	}
 	if cfg.IsFexit && len(cfg.Actions) == 0 {
-		// Nothing usable to seed from (all inputs missing/unreadable):
-		// behave like the readerless merge below and produce no output.
-		return nil
+		// Nothing usable to seed from (all inputs missing/unreadable),
+		// so there are no packets either: drop to the plain single-
+		// interface layout and still produce a valid empty pcap-ng at
+		// outPath, matching the non-fexit readerless behavior.
+		cfg = Config{LinkType: cfg.LinkType}
 	}
 
 	// Write to a temp file and rename on success so a mid-merge failure

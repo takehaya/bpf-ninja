@@ -166,10 +166,10 @@ func addChainRootWarning(p *ir.Program, f *ast.Filter, opts Options) {
 			return
 		case "eth":
 			p.Warnings = append(p.Warnings,
-				"chain root is 'eth' but this attach point has no Ethernet header in the packet bytes; start the chain at 'ipv4/...' or 'ipv6/...'. Use --dump-asm filter to inspect the generated BPF.")
+				"chain root is 'eth' but this attach point has no Ethernet header in the packet bytes; start the chain at 'ipv4/...' or 'ipv6/...'. Use --dump-asm filter (with --dump-hook matching the attach point) to inspect the generated BPF.")
 		default:
 			p.Warnings = append(p.Warnings, fmt.Sprintf(
-				"chain root %q is not 'ipv4' or 'ipv6'; this attach point's packet bytes start at the network header. Use --dump-asm filter to inspect the generated BPF.",
+				"chain root %q is not 'ipv4' or 'ipv6'; this attach point's packet bytes start at the network header. Use --dump-asm filter (with --dump-hook matching the attach point) to inspect the generated BPF.",
 				root.ProtoName,
 			))
 		}
