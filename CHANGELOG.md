@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.22.0](https://github.com/takehaya/bpf-ninja/compare/v0.21.0...v0.22.0) (2026-07-23)
+
+
+### 🎉 Features
+
+* add per-tag and aggregate output byte caps ([#86](https://github.com/takehaya/bpf-ninja/issues/86)) ([#88](https://github.com/takehaya/bpf-ninja/issues/88)) ([fe070e0](https://github.com/takehaya/bpf-ninja/commit/fe070e0209ff85a89e8748a06bc53dc1102c7fa4))
+* generalize attach-target hooks and add cgroup-skb support ([#85](https://github.com/takehaya/bpf-ninja/issues/85)) ([bf0ac09](https://github.com/takehaya/bpf-ninja/commit/bf0ac099d6fb25a9345cfb669b4746028ae84a3c))
+
 ## [0.21.0](https://github.com/takehaya/bpf-ninja/compare/v0.20.0...v0.21.0) (2026-07-22)
 
 
