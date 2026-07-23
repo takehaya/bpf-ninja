@@ -51,6 +51,10 @@ var flags = []cli.Flag{
 		Usage: "select target program(s) by name instead of ID (requires -i); resolved against the interface's reachable program tree, so you skip looking up numeric IDs. Repeatable. Kernel program names are truncated to 15 chars; a full name matches by prefix",
 	},
 	&cli.StringFlag{
+		Name:  "cgroup",
+		Usage: "capture on the cgroup-skb program(s) attached to this cgroup v2 path (enumerated via BPF_PROG_QUERY, ingress + egress); alternative to -i / -p",
+	},
+	&cli.StringFlag{
 		Name: "write", Aliases: []string{"w"},
 		Usage: "write packets to pcap file instead of stdout",
 	},
@@ -1441,6 +1445,9 @@ func validateXDPNativeFlags(cmd *cli.Command) error {
 	if len(cmd.StringSlice("prog-name")) > 0 {
 		return fmt.Errorf("--mode xdp does not accept --prog-name (the program is bpf-ninja itself, not an existing one)")
 	}
+	if cmd.String("cgroup") != "" {
+		return fmt.Errorf("--mode xdp does not accept --cgroup (it attaches to a netdev, not a cgroup)")
+	}
 	if len(cmd.StringSlice("func")) > 0 {
 		return fmt.Errorf("--func is only valid with --mode entry/exit (no BTF subfunction concept in xdp-native)")
 	}
@@ -1469,15 +1476,26 @@ func findTargets(cmd *cli.Command) ([]*attach.ProgInfo, error) {
 	ifaceName := cmd.String("interface")
 	progIDs := cmd.IntSlice("prog-id")
 	progNames := cmd.StringSlice("prog-name")
+	cgroupPath := cmd.String("cgroup")
 
-	if ifaceName != "" && len(progIDs) > 0 {
-		return nil, fmt.Errorf("specify either -i or -p, not both")
+	selectors := 0
+	for _, set := range []bool{ifaceName != "", len(progIDs) > 0, cgroupPath != ""} {
+		if set {
+			selectors++
+		}
 	}
-	if ifaceName == "" && len(progIDs) == 0 {
-		return nil, fmt.Errorf("specify -i <interface> or -p <prog-id>")
+	if selectors > 1 {
+		return nil, fmt.Errorf("specify only one of -i, -p, or --cgroup")
+	}
+	if selectors == 0 {
+		return nil, fmt.Errorf("specify -i <interface>, -p <prog-id>, or --cgroup <path>")
 	}
 	if len(progNames) > 0 && ifaceName == "" {
 		return nil, fmt.Errorf("--prog-name requires -i <interface> (names resolve against the interface's reachable program tree)")
+	}
+
+	if cgroupPath != "" {
+		return attach.FindCgroupSKBPrograms(cgroupPath)
 	}
 
 	if ifaceName != "" {

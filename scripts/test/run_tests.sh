@@ -230,6 +230,93 @@ test_dsl_tc_exit_action() {
     run_count_test 3 --mode exit -p "$pid_t" -c 3 "eth/ipv4/icmp where action == TC_ACT_OK"
 }
 
+# --- cgroup-skb hook (setup.sh attaches cgroup_pass to a scratch
+# cgroup; skipped when cgroup2 / bpffs / bpftool support is missing).
+# The observed traffic is ping over loopback run from INSIDE the
+# scratch cgroup: cgroup-skb fires per-socket, so the pinging process
+# itself must be a cgroup member (veth traffic from the netns would
+# not traverse it). Packet bytes start at the IP header (no Ethernet),
+# hence the ipv4-rooted DSL and the LINKTYPE_RAW assertion.
+CGROUP_TEST_DIR=/sys/fs/cgroup/bpfninja-test
+
+require_cgroup_target() {
+    require_bpftool || return 1
+    if ! bpftool cgroup show "$CGROUP_TEST_DIR" 2>/dev/null | grep -q cgroup_pass; then
+        echo "skipping: cgroup_pass not attached (no cgroup2/bpffs?)" >&2
+        return 1
+    fi
+}
+
+cgroup_prog_id() {
+    bpftool cgroup show "$CGROUP_TEST_DIR" 2>/dev/null | awk '/cgroup_pass/ {print $1; exit}'
+}
+
+# send_cgroup_packets <count>: ping loopback from a shell placed into
+# the scratch cgroup, generating ICMP through the cgroup-skb hook.
+send_cgroup_packets() {
+    sudo sh -c "echo \$\$ > '$CGROUP_TEST_DIR/cgroup.procs'; ping -c $1 -W 1 127.0.0.1" >/dev/null 2>&1 || true
+}
+
+# run_cgroup_count_test <expected-min> <bpf-ninja-args...>
+run_cgroup_count_test() {
+    local expected=$1
+    shift
+    local err=$(mktemp)
+    timeout 10 "$BINARY" "$@" > /dev/null 2>"$err" &
+    local pid=$!
+    sleep 2
+    send_cgroup_packets 5
+    wait $pid 2>/dev/null || true
+    local count=$(capture_count "$err")
+    rm -f "$err"
+    [[ "$count" -ge "$expected" ]]
+}
+
+test_dsl_cgroup_entry() {
+    require_cgroup_target || return 1
+    local pid_c=$(cgroup_prog_id)
+    [[ -n "$pid_c" ]] || { echo "cgroup_pass program id not found" >&2; return 1; }
+    run_cgroup_count_test 3 -p "$pid_c" -c 3 "ipv4/icmp"
+}
+
+test_dsl_cgroup_exit_action() {
+    require_cgroup_target || return 1
+    local pid_c=$(cgroup_prog_id)
+    [[ -n "$pid_c" ]] || { echo "cgroup_pass program id not found" >&2; return 1; }
+    run_cgroup_count_test 3 --mode exit -p "$pid_c" -c 3 "ipv4/icmp where action == SK_PASS"
+}
+
+test_cgroup_path_selector() {
+    require_cgroup_target || return 1
+    run_cgroup_count_test 3 --cgroup "$CGROUP_TEST_DIR" -c 3 "ipv4/icmp"
+}
+
+# Asserts the pcap-ng written for a cgroup-skb capture carries
+# LINKTYPE_RAW (101), not Ethernet — packets start at the IP header.
+test_cgroup_pcap_linktype_raw() {
+    require_cgroup_target || return 1
+    local pid_c=$(cgroup_prog_id)
+    [[ -n "$pid_c" ]] || { echo "cgroup_pass program id not found" >&2; return 1; }
+    local pcap=$(mktemp --suffix=.pcap)
+    local err=$(mktemp)
+    timeout 10 "$BINARY" -w "$pcap" -p "$pid_c" -c 3 "ipv4/icmp" 2>"$err" &
+    local pid=$!
+    sleep 2
+    send_cgroup_packets 5
+    wait $pid 2>/dev/null || true
+    local ok=1
+    for shard in "$pcap".cpu*; do
+        [[ -e "$shard" ]] || continue
+        # tcpdump names DLT 101 "RAW (Raw IP)" in its -r banner (stderr).
+        if tcpdump -r "$shard" -c 1 2>&1 | grep -qi "RAW"; then
+            ok=0
+            break
+        fi
+    done
+    rm -f "$pcap" "$pcap".cpu* "$err"
+    [[ $ok -eq 0 ]]
+}
+
 # Exercises --func subfunction attach + --arg-filter argument reading against
 # xdp_argcap, whose capture_point(ctx, pkt_len) uses KEEP_ARGS to keep pkt_len
 # on the ABI. A real ping frame (~98 B) satisfies pkt_len>=60 (match) but none
@@ -377,6 +464,10 @@ run_test "dsl_capture_headers"     test_dsl_capture_headers
 run_test "dsl_exit_action"         test_dsl_exit_action
 run_test "dsl_tc_entry"            test_dsl_tc_entry
 run_test "dsl_tc_exit_action"      test_dsl_tc_exit_action
+run_test "dsl_cgroup_entry"        test_dsl_cgroup_entry
+run_test "dsl_cgroup_exit_action"  test_dsl_cgroup_exit_action
+run_test "cgroup_path_selector"    test_cgroup_path_selector
+run_test "cgroup_pcap_linktype"    test_cgroup_pcap_linktype_raw
 run_test "argfilter"               test_argfilter
 run_test "argfilter_set"           test_argfilter_set
 run_test "graceful_shutdown"       test_graceful_shutdown

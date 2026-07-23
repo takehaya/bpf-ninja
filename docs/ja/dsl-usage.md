@@ -22,7 +22,9 @@ sudo bpf-ninja -i veth0 "eth/ipv4/tcp[dport==443]"
 | `exit` | fexit trampoline | 必須 (BTF 付) | ○ (`XDP_PASS`/`TC_ACT_OK`/...) | 判断結果を観測する。`where action == XDP_DROP` 等で絞れる |
 | `xdp` | netdev に直接 attach | 不要 (既に attach されているとエラー) | n/a (常に `XDP_PASS`) | XDP が attach されていない netdev の standalone capture |
 
-hook 種別 (XDP / TC clsact) は指定不要です。ターゲットプログラムの型から自動判別されます。`-p <progID>` はどの対応型でも受け付け、`-i <iface>` は interface の XDP プログラムを引きます。TC clsact filter (`tc filter add ... direction ingress/egress` で張ったもの) も fentry/fexit の対象にできますが、TC clsact qdisc の interface walk は未配線のため、target 指定は `-p <progID>` のみです。
+hook 種別 (XDP / TC clsact / cgroup-skb) は指定不要です。ターゲットプログラムの型から自動判別されます。`-p <progID>` はどの対応型でも受け付け、`-i <iface>` は interface の XDP プログラムを引き、`--cgroup <path>` は cgroup v2 パスに attach された cgroup-skb プログラムを列挙します (BPF_PROG_QUERY、ingress + egress)。TC clsact filter (`tc filter add ... direction ingress/egress` で張ったもの) も fentry/fexit の対象にできますが、TC clsact qdisc の interface walk は未配線のため、target 指定は `-p <progID>` のみです。
+
+cgroup-skb ターゲットには注意点が 2 つあります。パケットは network header (L3) 始まりで Ethernet ヘッダを含まないため、DSL チェインは `ipv4/...` または `ipv6/...` を起点にします (`eth/...` は警告付きで誤 parse になります)。pcap-ng 出力も LINKTYPE_RAW になり、Wireshark / tcpdump はバージョン nibble から v4/v6 を自動判定します。
 
 旧 `--mode tc-entry` / `tc-exit` は `entry` / `exit` の deprecated alias として残っています (stderr に警告が出ます)。
 
@@ -186,8 +188,9 @@ SRv6 segments のような parent-count 系には自動 count guard が入り、
 |---|---|
 | XDP プログラム (fexit) | `XDP_ABORTED`, `XDP_DROP`, `XDP_PASS`, `XDP_TX`, `XDP_REDIRECT` |
 | TC clsact プログラム (fexit) | `TC_ACT_UNSPEC` (-1), `TC_ACT_OK`, `TC_ACT_RECLASSIFY`, `TC_ACT_SHOT`, `TC_ACT_PIPE`, `TC_ACT_STOLEN`, `TC_ACT_QUEUED`, `TC_ACT_REPEAT`, `TC_ACT_REDIRECT`, `TC_ACT_TRAP` |
+| cgroup-skb プログラム (fexit) | `SK_DROP` (0), `SK_PASS` (1)。egress 専用の 2/3 (輻輳通知付き drop) は uapi 名が無いため atom は無く、pcap 側では `cgroup-skb:UNKNOWN(n)` interface に落ちます |
 
-host adapter ごとの定数表は `pkg/kunai/host/xdp/xdp.go` / `pkg/kunai/host/tc/tc.go` の `FexitCapabilities()` を参照してください。新 host を足すときは `Capabilities.Lang` に同 shape の `Action map[string]int32` + `ActionFetcher` を提供します。
+host adapter ごとの定数表は `pkg/kunai/host/xdp/xdp.go` / `pkg/kunai/host/tc/tc.go` / `pkg/kunai/host/cgroupskb/cgroupskb.go` の `FexitCapabilities()` を参照してください。新 host を足すときは `Capabilities.Lang` に同 shape の `Action map[string]int32` + `ActionFetcher` を提供します。
 
 ### Capture 節
 
