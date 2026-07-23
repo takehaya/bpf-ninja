@@ -45,14 +45,14 @@ filter expr  →  AST  →  IR (vocab 解決済)  →  asm.Instructions  →  ci
 
 - `eth/ipv4/tcp[dport==443]` 風の layer chain が書けます。各 layer は vocab `.p4` ファイル (`pkg/kunai/protocols/*.p4`) で定義された protocol です。
 - vocab は P4-16 の strict subset である p4lite を Go 側の `pkg/kunai/vocab/p4lite/` で parse します。p4c で標準パースできるのが目標です。詳しくは internals §5 を参照してください。
-- 出力は cilium/ebpf の `asm.Instructions` で、target portable な eBPF subprogram です。kunai コアは XDP / tc 等の host 知識を持たず、host adapter は `pkg/kunai/host/<name>/` サブパッケージに局所化しています。`host/xdp` は XDP fentry/fexit、`host/tc` は TC clsact fentry/fexit です。
-- caller (`internal/program/program.go`) は `kunai.Compile(expr, caps)` に host capability (`xdphost.FexitCapabilities()` / `tchost.FexitCapabilities()` 等) を渡すことで host を選びます。zero `Capabilities` だと、action atom を使えない target-agnostic な filter が出ます。
+- 出力は cilium/ebpf の `asm.Instructions` で、target portable な eBPF subprogram です。kunai コアは XDP / tc 等の host 知識を持たず、host adapter は `pkg/kunai/host/<name>/` サブパッケージに局所化しています。`host/xdp` は XDP fentry/fexit、`host/tc` は TC clsact fentry/fexit、`host/cgroupskb` は cgroup-skb fentry/fexit (L3 始まりの packet window) です。
+- caller (`internal/program/program.go`) は `kunai.Compile(expr, caps)` に host capability (`xdphost.FexitCapabilities()` / `tchost.FexitCapabilities()` 等) を渡すことで host を選びます。どの host caps を使うかは `internal/hook` の registry がターゲットプログラムの型から決めます。zero `Capabilities` だと、action atom を使えない target-agnostic な filter が出ます。
 
 ## 関連コード
 
 - DSL 本体: `pkg/kunai/`
 - Vocab: `pkg/kunai/protocols/*.p4`
-- Host adapter: `pkg/kunai/host/xdp/` (XDP fentry/fexit) + `pkg/kunai/host/tc/` (TC clsact fentry/fexit、sk_buff data/len offset を BTF で実行時解決)。新 host を追加するときは `host/<name>/` を並べます
+- Host adapter: `pkg/kunai/host/xdp/` (XDP fentry/fexit) + `pkg/kunai/host/tc/` (TC clsact fentry/fexit、sk_buff data/len offset を BTF で実行時解決) + `pkg/kunai/host/cgroupskb/` (cgroup-skb fentry/fexit、SK_DROP/SK_PASS + L3 始まり layout)。新 host を追加するときは `host/<name>/` を並べ、`internal/hook` に記述子を 1 個足します
 - ABI 契約 (kunai ↔ host): `pkg/kunai/codegen/codegen.go` の package doc + `KunaiStackTop` constant
 - 既存 fentry/fexit との接続: `internal/program/program.go::compileFilter`
 - CLI 入口: `cmd/bpf-ninja/main.go` の `resolveFilterSyntax()` (DSL がデフォルト、`--cbpf` で legacy)

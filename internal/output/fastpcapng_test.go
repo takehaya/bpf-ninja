@@ -25,7 +25,7 @@ func writePacketsToFile(t *testing.T, path string, pkts []capture.Packet, fast b
 	} else {
 		t.Setenv("BPF_NINJA_FAST_PCAPNG", "0")
 	}
-	w, err := NewWriter(path, false)
+	w, err := NewWriter(path, Config{})
 	if err != nil {
 		t.Fatalf("NewWriter(fast=%v): %v", fast, err)
 	}

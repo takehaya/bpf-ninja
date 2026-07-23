@@ -3,7 +3,7 @@
 > [!NOTE]
 > This project was renamed from **xdp-ninja** (July 2026): the tool has outgrown XDP — it also observes tc-bpf programs, and more BPF hook points are planned. GitHub redirects the old repository URL, but the Go module path changed to `github.com/takehaya/bpf-ninja`, so `go install` / imports need the new path. Environment variables are now `BPF_NINJA_*` (the old `XDP_NINJA_*` names are no longer read).
 
-bpf-ninja captures packets at BPF hook points — XDP today, tc-bpf too, with more planned. `tcpdump` runs below XDP and can't show what XDP or tc-bpf did to the packet, and cBPF filters can't walk into VXLAN / GTP / MPLS / SRv6 inner headers. Attach via fentry/fexit to a running XDP without modifying it, or `--mode xdp` for standalone capture on a netdev. Filters use the built-in DSL by default — chains like `eth/ipv4/udp/vxlan/eth/ipv4/tcp`. Plain tcpdump syntax via [cbpfc](https://github.com/cloudflare/cbpfc) is still accepted via `--cbpf`, kept for backwards compatibility and planned to retire once the DSL surface stabilises. Output is pcap (pcapng) to stdout.🥷
+bpf-ninja captures packets at BPF hook points — XDP, tc-bpf, and cgroup-skb, with more planned. `tcpdump` runs below XDP and can't show what XDP or tc-bpf did to the packet, and cBPF filters can't walk into VXLAN / GTP / MPLS / SRv6 inner headers. Attach via fentry/fexit to a running XDP without modifying it, or `--mode xdp` for standalone capture on a netdev. Filters use the built-in DSL by default — chains like `eth/ipv4/udp/vxlan/eth/ipv4/tcp`. Plain tcpdump syntax via [cbpfc](https://github.com/cloudflare/cbpfc) is still accepted via `--cbpf`, kept for backwards compatibility and planned to retire once the DSL surface stabilises. Output is pcap (pcapng) to stdout.🥷
 
 ## Install
 
@@ -25,17 +25,23 @@ make build
 
 ## Modes
 
-bpf-ninja supports five attach modes via `--mode`:
+`--mode` selects the capture point; the hook kind (XDP, TC clsact, cgroup-skb) is auto-detected from the target program's type:
 
 | Mode | Attach via | Existing program needed | Sees return action | Typical use |
 |---|---|---|---|---|
-| `entry` (default) | fentry on the target XDP | yes (with BTF) | no — packet only | observe what reaches the production XDP |
-| `exit` | fexit on the target XDP | yes (with BTF) | yes (`XDP_PASS`/`DROP`/...) | observe what the XDP decided; filter on action |
+| `entry` (default) | fentry on the target program | yes (with BTF) | no — packet only | observe what reaches the production program |
+| `exit` | fexit on the target program | yes (with BTF) | yes (`XDP_PASS` / `TC_ACT_OK` / `SK_PASS` / ...) | observe the verdict; filter on `action == ...` |
 | `xdp` | attach as the primary XDP on the netdev | no — fails if one is attached | n/a (bpf-ninja decides; always returns `XDP_PASS`) | capture on a netdev with no XDP, no BTF needed |
-| `tc-entry` | fentry on a TC clsact filter program | yes (a tc-bpf program with BTF) | no — skb only | observe what reaches a TC ingress/egress filter |
-| `tc-exit` | fexit on a TC clsact filter program | yes (same) | yes (`TC_ACT_OK`/`SHOT`/...) | observe the TC verdict; filter on `action == TC_ACT_SHOT` etc. |
 
-`entry`/`exit` and `tc-entry`/`tc-exit` are non-invasive: the target program is unmodified, attach is via BPF trampoline. `xdp` is the standalone path for "I just want to capture, there's nothing else here". The `tc-*` modes today expect the target by `-p <progID>` only (interface lookup for TC clsact is not yet wired).
+Supported hooks and how to name the target:
+
+| Hook | Target selection | Notes |
+|---|---|---|
+| XDP | `-i <iface>` (interface's XDP) or `-p <progID>` | |
+| TC clsact | `-p <progID>` only (interface lookup for clsact is not yet wired) | |
+| cgroup-skb | `--cgroup <cgroup v2 path>` (enumerates attached programs) or `-p <progID>` | packet bytes start at the IP header — root DSL chains at `ipv4`/`ipv6`, pcap-ng is LINKTYPE_RAW |
+
+`entry`/`exit` are non-invasive: the target program is unmodified, attach is via BPF trampoline. `xdp` is the standalone path for "I just want to capture, there's nothing else here". `tc-entry`/`tc-exit` remain as deprecated aliases for `entry`/`exit`.
 
 ## Usage
 
@@ -59,8 +65,14 @@ sudo bpf-ninja --cbpf -i eth0 "host 10.0.0.1 and tcp port 80" | tcpdump -n -r -
 # (output is sharded across per-CPU files; see "Sharded output" below)
 sudo bpf-ninja -i eth0 -w capture.pcap -c 100
 
-# Attach by BPF program ID (for multi-prog / libxdp setups)
+# Attach by BPF program ID — works for XDP, tc clsact, and cgroup-skb
+# programs alike (the hook is auto-detected from the program type)
 sudo bpf-ninja -p 42 | tcpdump -n -r -
+
+# cgroup-skb: capture on whatever is attached to a cgroup v2 path.
+# Packets start at the IP header, so chains root at ipv4/ipv6.
+sudo bpf-ninja --cgroup /sys/fs/cgroup/my-service "ipv4/tcp[dport==443]" | tcpdump -n -r -
+sudo bpf-ninja --cgroup /sys/fs/cgroup/my-service --mode exit "ipv4/tcp where action == SK_DROP"
 
 # List BTF functions in the target program
 sudo bpf-ninja -i eth0 --list-funcs
@@ -231,22 +243,24 @@ int parse_headers(struct xdp_md *ctx) {
 
 | Option | Description | Modes |
 |---|---|---|
-| `-i, --interface` | Network interface to capture on | entry, exit, xdp |
-| `-p, --prog-id` | BPF program ID to attach to (alternative to `-i`) | entry, exit, tc-entry, tc-exit |
-| `--mode` | `entry` (default), `exit`, `xdp`, `tc-entry`, `tc-exit` | — |
+| `-i, --interface` | Network interface to capture on (XDP hook) | entry, exit, xdp |
+| `-p, --prog-id` | BPF program ID to attach to — any supported hook, auto-detected (alternative to `-i`) | entry, exit |
+| `--cgroup` | cgroup v2 path; targets the cgroup-skb program(s) attached to it (alternative to `-i` / `-p`) | entry, exit |
+| `--mode` | `entry` (default), `exit`, `xdp` (`tc-entry`/`tc-exit` are deprecated aliases) | — |
 | `-w, --write` | Write to pcap file instead of stdout | all |
 | `-c, --count` | Stop after N packets (0 = unlimited) | all |
 | `-v, --verbose` | Verbose output to stderr | all |
 | `--cbpf` | Use the legacy tcpdump/cBPF syntax (compiled via cbpfc); default is the built-in DSL. Prints a deprecation notice when used. | all |
 | `--dsl-help` | Print the DSL grammar + bundled protocol catalogue and exit (no `-i`/`-p` required) | — |
 | `--dump-asm` | Print compiled eBPF asm and exit. Values: `filter` (kunai/cbpfc body only) \| `full` (wrapped program). No `-i`/`-p` required | — |
-| `--func` | Attach to a specific `__noinline` subfunction by BTF name | entry, exit, tc-entry, tc-exit |
-| `--list-funcs` | List available BTF functions in the target program and exit | entry, exit, tc-entry, tc-exit |
-| `--list-progs` | List tail call targets reachable from the target program and exit | entry, exit, tc-entry, tc-exit |
-| `--list-params` | List filterable parameters for `--func` (requires `--func`) | entry, exit, tc-entry, tc-exit |
-| `--arg-filter` | Filter by function argument value (requires `--func`); format: `param=value`, `param>=val`, `param<=val`, `param=min..max` | entry, exit, tc-entry, tc-exit |
+| `--dump-hook` | Hook whose capabilities/prologue `--dump-asm` renders: `xdp` (default) \| `tc` \| `cgroup-skb` (offline compiles have no target program to auto-detect from) | — |
+| `--func` | Attach to a specific `__noinline` subfunction by BTF name | entry, exit |
+| `--list-funcs` | List available BTF functions in the target program and exit | entry, exit |
+| `--list-progs` | List tail call targets reachable from the target program and exit | entry, exit |
+| `--list-params` | List filterable parameters for `--func` (requires `--func`) | entry, exit |
+| `--arg-filter` | Filter by function argument value (requires `--func`); format: `param=value`, `param>=val`, `param<=val`, `param=min..max` | entry, exit |
 
-Specify either `-i` or `-p`, not both.
+Specify exactly one of `-i`, `-p`, or `--cgroup`.
 
 ## Prerequisites
 
@@ -259,9 +273,8 @@ Common:
 
 Mode-specific:
 
-- **`--mode entry` / `exit`**: an XDP program already attached to the target interface, with BTF.
+- **`--mode entry` / `exit`**: a target BPF program (XDP, tc clsact, or cgroup-skb) already loaded with BTF. With `-i`, an XDP program attached to the interface; tc targets go by `-p <progID>`; cgroup-skb targets by `--cgroup <path>` or `-p`.
 - **`--mode xdp`**: no XDP attached to the interface (bpf-ninja becomes the XDP program).
-- **`--mode tc-entry` / `tc-exit`**: a tc clsact filter program already loaded with BTF; target by `-p <progID>`.
 - **DSL with chain quantifier (`+`, `*`, `{n,m>4}`), parser-machine self-loop (variable-length headers like IPv6 ext / GTP options / SRv6 segments), or alternation (`(a|b)`)**: kernel 5.17+ (uses `bpf_loop` + bpf2bpf subprograms). Plain DSL chains and `--cbpf` filters work on 5.8+.
 
 ```bash

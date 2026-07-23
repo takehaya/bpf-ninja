@@ -102,6 +102,17 @@ type HostLayout struct {
 	// layer at compile time rather than silently parsing the wrong
 	// bytes. Reading the tag from skb metadata is future work.
 	VlanInMetadata bool
+
+	// PacketStartsAtL3 declares that the host presents packet bytes
+	// starting at the network (L3) header — there is no Ethernet
+	// header in the window the filter parses. This is the case at
+	// cgroup-skb attach points, where skb->data points at the IP
+	// header. Codegen offsets are chain-root-relative either way; the
+	// flag only flips the resolver's chain-root advice, warning on an
+	// `eth/...` root (which would misparse) instead of on a non-eth
+	// root. The zero value (false) keeps the L2 expectation — correct
+	// for XDP and tc.
+	PacketStartsAtL3 bool
 }
 
 // ActionFetcher loads the current action value into a register so the

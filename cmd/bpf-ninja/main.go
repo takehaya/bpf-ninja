@@ -23,6 +23,7 @@ import (
 	"github.com/takehaya/bpf-ninja/internal/capture"
 	"github.com/takehaya/bpf-ninja/internal/capture/fastrb"
 	"github.com/takehaya/bpf-ninja/internal/filter"
+	"github.com/takehaya/bpf-ninja/internal/hook"
 	"github.com/takehaya/bpf-ninja/internal/output"
 	"github.com/takehaya/bpf-ninja/internal/program"
 	"github.com/takehaya/bpf-ninja/internal/setmap"
@@ -50,12 +51,16 @@ var flags = []cli.Flag{
 		Usage: "select target program(s) by name instead of ID (requires -i); resolved against the interface's reachable program tree, so you skip looking up numeric IDs. Repeatable. Kernel program names are truncated to 15 chars; a full name matches by prefix",
 	},
 	&cli.StringFlag{
+		Name:  "cgroup",
+		Usage: "capture on the cgroup-skb program(s) attached to this cgroup v2 path (enumerated via BPF_PROG_QUERY, ingress + egress); alternative to -i / -p",
+	},
+	&cli.StringFlag{
 		Name: "write", Aliases: []string{"w"},
 		Usage: "write packets to pcap file instead of stdout",
 	},
 	&cli.StringFlag{
 		Name: "mode", Value: "entry",
-		Usage: "capture point: entry / exit (XDP fentry/fexit observer), tc-entry / tc-exit (tc clsact fentry/fexit observer), or xdp (attach as native XDP)",
+		Usage: "capture point: entry / exit (fentry/fexit observer on the target program — the hook kind is auto-detected from the program type), or xdp (attach as native XDP). tc-entry / tc-exit are deprecated aliases for entry / exit",
 	},
 	&cli.IntFlag{
 		Name: "count", Aliases: []string{"c"},
@@ -104,6 +109,10 @@ var flags = []cli.Flag{
 	&cli.StringFlag{
 		Name:  "dump-asm",
 		Usage: "compile the filter and print the resulting eBPF asm without loading; values: filter (kunai/cbpfc Main + Callbacks) | full (wrapped tracing program)",
+	},
+	&cli.StringFlag{
+		Name:  "dump-hook",
+		Usage: "hook whose capabilities/prologue --dump-asm renders (no target program exists to auto-detect from): xdp | tc | cgroup-skb (default xdp; deprecated --mode tc-* aliases imply tc)",
 	},
 	&cli.BoolFlag{
 		Name: "verbose", Aliases: []string{"v"},
@@ -269,11 +278,14 @@ func newRootCommand() *cli.Command {
 		Description: `Outputs pcap (pcapng) to stdout. Pipe to tcpdump, wireshark, etc.
 
 Modes (--mode):
-  entry     fentry on the existing XDP — observe packets before the program runs (default)
-  exit      fexit on the existing XDP — observe action returned (filter on XDP_PASS/DROP/...)
-  tc-entry  fentry on a tc clsact program (specify target via -p)
-  tc-exit   fexit on a tc clsact program (filter on TC_ACT_OK/SHOT/...)
+  entry     fentry observer — see packets before the target program runs (default)
+  exit      fexit observer — also see the verdict returned (filter on XDP_PASS / TC_ACT_OK / ...)
   xdp       attach as the primary XDP on the netdev (no existing XDP needed)
+
+The hook kind (XDP, tc clsact, ...) is auto-detected from the target
+program's type: -p <prog-id> works for any supported program, -i looks
+up the interface's XDP program. tc-entry / tc-exit remain as deprecated
+aliases for entry / exit.
 
 Examples:
   bpf-ninja -i eth0 | tcpdump -n -r -
@@ -281,7 +293,8 @@ Examples:
   bpf-ninja -i eth0 --mode exit | tcpdump -r -
   bpf-ninja --mode xdp -i eth0 "eth/ipv4/tcp[dport==443]" | tcpdump -r -
   bpf-ninja --cbpf --mode xdp -i eth0 "tcp port 443" | tcpdump -r -   # legacy pcap syntax
-  bpf-ninja -p 42 | tcpdump -n -r -
+  bpf-ninja -p 42 | tcpdump -n -r -                  # XDP or tc program, auto-detected
+  bpf-ninja -p 42 --mode exit "eth/ipv4 where action == TC_ACT_SHOT"  # tc verdict filter
   bpf-ninja -i eth0 -w out.pcap`,
 		Flags:                 flags,
 		Action:                run,
@@ -386,20 +399,31 @@ func run(ctx context.Context, cmd *cli.Command) error {
 	}
 
 	mode := cmd.String("mode")
-	var isFexit, isXDPNative, isTC bool
+	// The hook kind (xdp / tc / ...) is auto-detected from the target
+	// program's type; --mode only picks the capture point. dumpHook is
+	// the one place a hook must be named explicitly, because --dump-asm
+	// compiles without a target program to detect from.
+	dumpHook := hook.Kind(cmd.String("dump-hook"))
+	var isFexit, isXDPNative bool
 	switch mode {
 	case "entry":
 	case "exit":
 		isFexit = true
-	case "tc-entry":
-		isTC = true
-	case "tc-exit":
-		isTC = true
-		isFexit = true
+	case "tc-entry", "tc-exit":
+		newMode := strings.TrimPrefix(mode, "tc-")
+		fmt.Fprintf(os.Stderr, "warning: --mode %s is deprecated; the hook is auto-detected from the target program, use --mode %s\n", mode, newMode)
+		if dumpHook == "" {
+			dumpHook = hook.KindTC
+		}
+		mode = newMode
+		isFexit = mode == "exit"
 	case "xdp":
 		isXDPNative = true
 	default:
-		return fmt.Errorf("invalid mode %q: must be entry, exit, tc-entry, tc-exit, or xdp", mode)
+		return fmt.Errorf("invalid mode %q: must be entry, exit, or xdp (tc-entry / tc-exit are deprecated aliases)", mode)
+	}
+	if dumpHook == "" {
+		dumpHook = hook.KindXDP
 	}
 
 	if scope := cmd.String("dump-asm"); scope != "" {
@@ -408,14 +432,14 @@ func run(ctx context.Context, cmd *cli.Command) error {
 		if err != nil {
 			return err
 		}
-		return program.DumpAsm(os.Stdout, program.DumpScope(scope), filterExpr, useDSL, mode)
+		return program.DumpAsm(os.Stdout, program.DumpScope(scope), filterExpr, useDSL, mode, dumpHook)
 	}
 
 	if isXDPNative {
 		return runXDPNative(cmd)
 	}
 
-	infos, err := findTargets(cmd, isTC)
+	infos, err := findTargets(cmd)
 	if err != nil {
 		return err
 	}
@@ -679,7 +703,28 @@ func run(ctx context.Context, cmd *cli.Command) error {
 		}
 		label = fmt.Sprintf("%d attach points: %s", len(targets), strings.Join(names, ", "))
 	}
-	return runCaptureLoop(cmd, probe, isFexit, fmt.Sprintf("%s, mode=%s", label, mode))
+	h, ok := hook.ByProgramType(targets[0].Type)
+	if !ok {
+		return hook.UnsupportedTypeError(targets[0].Type)
+	}
+	return runCaptureLoop(cmd, probe, outputConfigFor(h, isFexit), fmt.Sprintf("%s, mode=%s", label, mode))
+}
+
+// outputConfigFor renders a hook descriptor into the writer layout for
+// one capture run (per-verdict interfaces in exit mode, link type).
+func outputConfigFor(h *hook.Hook, isFexit bool) output.Config {
+	cfg := output.Config{
+		IsFexit:  isFexit,
+		LinkType: h.LinkType,
+		HookName: string(h.Kind),
+	}
+	if isFexit {
+		cfg.Actions = make([]output.ActionName, len(h.Actions))
+		for i, a := range h.Actions {
+			cfg.Actions[i] = output.ActionName{Value: a.Value, Name: a.Name}
+		}
+	}
+	return cfg
 }
 
 // runArgEchoLoop reads the probe's dedicated arg-echo ringbuf and prints
@@ -811,7 +856,7 @@ func resolveFilterSyntax(cmd *cli.Command) (useDSL bool, err error) {
 // capture; afterward output.MergeShardFiles merges them into a single
 // time-ordered pcap-ng at `path` (the shards are left in place). Integration
 // tests (run_pcap_test) read the `.cpuN` shards.
-func runCaptureLoop(cmd *cli.Command, probe *program.Probe, isFexit bool, label string) error {
+func runCaptureLoop(cmd *cli.Command, probe *program.Probe, cfg output.Config, label string) error {
 	defer func() {
 		if cerr := probe.Close(); cerr != nil {
 			fmt.Fprintf(os.Stderr, "warning: closing probe: %v\n", cerr)
@@ -820,7 +865,7 @@ func runCaptureLoop(cmd *cli.Command, probe *program.Probe, isFexit bool, label 
 	if len(probe.InnerMaps) == 0 {
 		return fmt.Errorf("probe has no inner ringbufs — sharded ringbuf hoist (R22) should populate them for every attach mode")
 	}
-	if err := captureLoopSharded(cmd, probe.InnerMaps, isFexit, label); err != nil {
+	if err := captureLoopSharded(cmd, probe.InnerMaps, cfg, label); err != nil {
 		return err
 	}
 
@@ -839,14 +884,14 @@ func runCaptureLoop(cmd *cli.Command, probe *program.Probe, isFexit bool, label 
 			// shards into <base>.<tag>. A kill skips this — `bpf-ninja merge`
 			// reconciles the leftover per-CPU files later.
 			fmt.Fprintf(os.Stderr, "merging per-CPU tag shards for %s ...\n", basePath)
-			if err := output.MergeTagShards(basePath, isFexit); err != nil {
+			if err := output.MergeTagShards(basePath, cfg); err != nil {
 				fmt.Fprintf(os.Stderr, "warning: merging tag shards for %s: %v\n", basePath, err)
 			} else {
 				fmt.Fprintf(os.Stderr, "merged per tag (per-CPU .cpuN.<tag> kept)\n")
 			}
 		} else {
 			fmt.Fprintf(os.Stderr, "merging %d shard(s) into %s ...\n", len(probe.InnerMaps), basePath)
-			if err := output.MergeShardFiles(basePath, len(probe.InnerMaps), isFexit); err != nil {
+			if err := output.MergeShardFiles(basePath, len(probe.InnerMaps), cfg); err != nil {
 				fmt.Fprintf(os.Stderr, "warning: merging shards into %s: %v\n", basePath, err)
 			} else {
 				fmt.Fprintf(os.Stderr, "merged into %s (per-CPU .cpuN kept)\n", basePath)
@@ -861,7 +906,7 @@ func runCaptureLoop(cmd *cli.Command, probe *program.Probe, isFexit bool, label 
 // stdout all shards funnel into one writer serialized by a mutex.
 // --null-output skips file writes for benchmarking; --raw-dump switches to
 // the raw-bytes path.
-func captureLoopSharded(cmd *cli.Command, inners []*ebpf.Map, isFexit bool, label string) error {
+func captureLoopSharded(cmd *cli.Command, inners []*ebpf.Map, cfg output.Config, label string) error {
 	basePath := cmd.String("write")
 	null := cmd.Bool("null-output")
 	rawDump := cmd.Bool("raw-dump")
@@ -871,7 +916,7 @@ func captureLoopSharded(cmd *cli.Command, inners []*ebpf.Map, isFexit bool, labe
 	if cmd.Bool("split-by-tag") {
 		// run() already rejected --split-by-tag with stdout / --raw-dump /
 		// --null-output, so basePath is a real file here.
-		return captureLoopShardedSplit(cmd, inners, isFexit, label, basePath)
+		return captureLoopShardedSplit(cmd, inners, cfg, label, basePath)
 	}
 
 	// stdout (no -w) merges every shard into a single pcap-ng stream,
@@ -897,14 +942,14 @@ func captureLoopSharded(cmd *cli.Command, inners []*ebpf.Map, isFexit bool, labe
 	}()
 	if !null {
 		if stdoutMerge {
-			w, err := output.NewWriter("", isFexit)
+			w, err := output.NewWriter("", cfg)
 			if err != nil {
 				return fmt.Errorf("opening stdout writer: %w", err)
 			}
 			sharedW = w
 		} else {
 			for i := range inners {
-				w, err := output.NewWriter(fmt.Sprintf("%s.cpu%d", basePath, i), isFexit)
+				w, err := output.NewWriter(fmt.Sprintf("%s.cpu%d", basePath, i), cfg)
 				if err != nil {
 					return fmt.Errorf("opening per-CPU writer %d: %w", i, err)
 				}
@@ -944,7 +989,7 @@ func captureLoopSharded(cmd *cli.Command, inners []*ebpf.Map, isFexit bool, labe
 // mid-capture. Each shard's tag->writer map is owned by its own goroutine,
 // so there is no lock on the write path. runCaptureLoop merges the per-CPU
 // tag files into <base>.<tag><ext> on a clean shutdown.
-func captureLoopShardedSplit(cmd *cli.Command, inners []*ebpf.Map, isFexit bool, label, basePath string) error {
+func captureLoopShardedSplit(cmd *cli.Command, inners []*ebpf.Map, cfg output.Config, label, basePath string) error {
 	// One tag->writer map per shard; only ever touched by that shard's
 	// goroutine (writeShard runs single-threaded per shardIdx).
 	shardWriters := make([]map[uint32]*output.Writer, len(inners))
@@ -964,7 +1009,7 @@ func captureLoopShardedSplit(cmd *cli.Command, inners []*ebpf.Map, isFexit bool,
 		if w := m[tag]; w != nil {
 			return w, nil
 		}
-		w, err := output.NewWriter(output.TagShardPath(basePath, shardIdx, tag), isFexit)
+		w, err := output.NewWriter(output.TagShardPath(basePath, shardIdx, tag), cfg)
 		if err != nil {
 			// Splitting opens one file (and fd) per distinct tag per CPU, so
 			// a large tag cardinality can exhaust the fd limit mid-capture;
@@ -1383,7 +1428,8 @@ func runXDPNative(cmd *cli.Command) error {
 		return err
 	}
 	printProbeWarnings(probe)
-	return runCaptureLoop(cmd, probe, false, fmt.Sprintf("xdp-native on %s", ifaceName))
+	xdpHook, _ := hook.ByName(hook.KindXDP)
+	return runCaptureLoop(cmd, probe, outputConfigFor(xdpHook, false), fmt.Sprintf("xdp-native on %s", ifaceName))
 }
 
 // validateXDPNativeFlags rejects flags that don't apply to --mode xdp
@@ -1398,6 +1444,9 @@ func validateXDPNativeFlags(cmd *cli.Command) error {
 	}
 	if len(cmd.StringSlice("prog-name")) > 0 {
 		return fmt.Errorf("--mode xdp does not accept --prog-name (the program is bpf-ninja itself, not an existing one)")
+	}
+	if cmd.String("cgroup") != "" {
+		return fmt.Errorf("--mode xdp does not accept --cgroup (it attaches to a netdev, not a cgroup)")
 	}
 	if len(cmd.StringSlice("func")) > 0 {
 		return fmt.Errorf("--func is only valid with --mode entry/exit (no BTF subfunction concept in xdp-native)")
@@ -1418,32 +1467,38 @@ func validateXDPNativeFlags(cmd *cli.Command) error {
 // Several programs come from repeated -p, or from -i with --prog-name (which
 // picks named programs out of the interface's reachable tree); a bare -i
 // resolves to just the single XDP program attached to the interface.
-func findTargets(cmd *cli.Command, isTC bool) ([]*attach.ProgInfo, error) {
+//
+// -p accepts any program type the hook registry supports — the hook kind
+// is detected from the opened program, not from a flag. -i remains an
+// XDP lookup (there is no interface-based clsact qdisc walk yet; select
+// tc targets with -p <prog-id>).
+func findTargets(cmd *cli.Command) ([]*attach.ProgInfo, error) {
 	ifaceName := cmd.String("interface")
 	progIDs := cmd.IntSlice("prog-id")
 	progNames := cmd.StringSlice("prog-name")
+	cgroupPath := cmd.String("cgroup")
 
-	if ifaceName != "" && len(progIDs) > 0 {
-		return nil, fmt.Errorf("specify either -i or -p, not both")
-	}
-	if ifaceName == "" && len(progIDs) == 0 {
-		return nil, fmt.Errorf("specify -i <interface> or -p <prog-id>")
-	}
-	if len(progNames) > 0 {
-		if ifaceName == "" {
-			return nil, fmt.Errorf("--prog-name requires -i <interface> (names resolve against the interface's reachable program tree)")
+	selectors := 0
+	for _, set := range []bool{ifaceName != "", len(progIDs) > 0, cgroupPath != ""} {
+		if set {
+			selectors++
 		}
-		if isTC {
-			return nil, fmt.Errorf("--prog-name is XDP-only; select tc clsact targets with -p <prog-id>")
-		}
+	}
+	if selectors > 1 {
+		return nil, fmt.Errorf("specify only one of -i, -p, or --cgroup")
+	}
+	if selectors == 0 {
+		return nil, fmt.Errorf("specify -i <interface>, -p <prog-id>, or --cgroup <path>")
+	}
+	if len(progNames) > 0 && ifaceName == "" {
+		return nil, fmt.Errorf("--prog-name requires -i <interface> (names resolve against the interface's reachable program tree)")
+	}
+
+	if cgroupPath != "" {
+		return attach.FindCgroupSKBPrograms(cgroupPath)
 	}
 
 	if ifaceName != "" {
-		if isTC {
-			// tc clsact targets are addressed by program ID — no
-			// interface-based clsact qdisc walk wired up yet.
-			return nil, fmt.Errorf("--mode tc-* requires -p <prog-id>; interface-based tc target lookup is not implemented")
-		}
 		if len(progNames) > 0 {
 			return attach.ResolveXDPTargetsByName(ifaceName, progNames)
 		}
@@ -1465,13 +1520,7 @@ func findTargets(cmd *cli.Command, isTC bool) ([]*attach.ProgInfo, error) {
 			continue
 		}
 		seen[pid] = true
-		var info *attach.ProgInfo
-		var err error
-		if isTC {
-			info, err = attach.FindBPFProgramByID(pid)
-		} else {
-			info, err = attach.FindXDPProgramByID(pid)
-		}
+		info, err := attach.FindBPFProgramByID(pid)
 		if err != nil {
 			for _, prev := range infos {
 				_ = prev.Program.Close()

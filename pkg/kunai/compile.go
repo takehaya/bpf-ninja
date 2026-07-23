@@ -57,7 +57,9 @@ func CompileWithVocab(expr string, v map[string]*vocab.ProtocolSpec, caps codege
 	if err != nil {
 		return codegen.Output{}, err
 	}
-	prog, err := resolve.Resolve(f, v, caps.Lang.Action)
+	prog, err := resolve.ResolveWithOptions(f, v, caps.Lang.Action, resolve.Options{
+		PacketStartsAtL3: caps.Host.PacketStartsAtL3,
+	})
 	if err != nil {
 		return codegen.Output{}, err
 	}

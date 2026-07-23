@@ -83,6 +83,7 @@ func TestFilterSetCompiles(t *testing.T) {
 	}{
 		{"XDP", ebpf.XDP},
 		{"tc", ebpf.SchedCLS},
+		{"cgroup-skb", ebpf.CGroupSKB},
 	}
 
 	for _, fs := range FilterSet {

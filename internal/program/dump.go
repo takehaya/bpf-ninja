@@ -8,6 +8,7 @@ import (
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/asm"
 	"github.com/takehaya/bpf-ninja/internal/filter"
+	"github.com/takehaya/bpf-ninja/internal/hook"
 	"github.com/takehaya/bpf-ninja/pkg/kunai/codegen"
 )
 
@@ -33,20 +34,29 @@ const (
 // scope picks between filter-only ("filter") and the wrapped program
 // ("full"). mode picks the wrapper shape: "entry"/"exit" for the
 // fentry/fexit tracing wrapper, "xdp" for the XDP-native wrapper.
-// Mode is ignored when scope == DumpScopeFilter except that it
-// drives the Capabilities passed to the kunai compile (exit enables
-// the action atom).
-func DumpAsm(w io.Writer, scope DumpScope, expr string, useDSL bool, mode string) error {
+// kind names the hook whose capabilities and prologue to render —
+// there is no target program to auto-detect it from here, so the CLI
+// passes --dump-hook (default xdp). Mode is ignored when scope ==
+// DumpScopeFilter except that it drives the Capabilities passed to
+// the kunai compile (exit enables the action atom).
+func DumpAsm(w io.Writer, scope DumpScope, expr string, useDSL bool, mode string, kind hook.Kind) error {
 	if expr == "" {
 		return fmt.Errorf("--dump-asm requires a filter expression")
 	}
 
+	h, ok := hook.ByName(kind)
+	if !ok {
+		return fmt.Errorf("--dump-hook: unknown hook %q", kind)
+	}
 	isFexit := mode == "exit"
 	isXDPNative := mode == "xdp"
+	if isXDPNative && h.Kind != hook.KindXDP {
+		return fmt.Errorf("--mode xdp is XDP-native; it cannot combine with --dump-hook %s", kind)
+	}
 
 	// xdp-native uses zero Capabilities (no observed action atom),
 	// same shape as fentry — compileFilter(_, _, false) covers both.
-	out, err := compileFilter(expr, useDSL, isFexit, ebpf.XDP)
+	out, err := compileFilter(expr, useDSL, isFexit, h.ProgTypes[0])
 	if err != nil {
 		return err
 	}
@@ -56,7 +66,7 @@ func DumpAsm(w io.Writer, scope DumpScope, expr string, useDSL bool, mode string
 	case DumpScopeFilter, "":
 		renderFilter(&buf, out, useDSL, mode)
 	case DumpScopeFull:
-		if err := renderFull(&buf, out, mode, isFexit, isXDPNative); err != nil {
+		if err := renderFull(&buf, out, mode, isFexit, isXDPNative, h.ProgTypes[0]); err != nil {
 			return err
 		}
 	default:
@@ -97,7 +107,7 @@ func renderFilter(buf *strings.Builder, out codegen.Output, useDSL bool, mode st
 	}
 }
 
-func renderFull(buf *strings.Builder, out codegen.Output, mode string, isFexit, isXDPNative bool) error {
+func renderFull(buf *strings.Builder, out codegen.Output, mode string, isFexit, isXDPNative bool, progType ebpf.ProgramType) error {
 	var (
 		insns asm.Instructions
 		shape string
@@ -107,7 +117,7 @@ func renderFull(buf *strings.Builder, out codegen.Output, mode string, isFexit, 
 		shape = "XDP-native program"
 	} else {
 		var err error
-		insns, err = buildTracingInsns(out, filter.TargetFilters{}, 0, 0, isFexit, ebpf.XDP, nil, nil)
+		insns, err = buildTracingInsns(out, filter.TargetFilters{}, 0, 0, isFexit, progType, nil, nil)
 		if err != nil {
 			return err
 		}

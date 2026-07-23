@@ -34,13 +34,53 @@ const fileBufSize = 1 << 20
 // than per-packet write costs we removed.
 const stdoutFlushInterval = time.Millisecond
 
+// ActionName pairs a verdict value with its pcap-ng interface name
+// (e.g. "xdp:DROP"). Signed verdicts are stored as their uint32 bit
+// pattern. The hook registry (internal/hook) is the source of these;
+// output only renders them.
+type ActionName struct {
+	Value uint32
+	Name  string
+}
+
+// Config selects the writer layout for one capture run. The zero value
+// is the fentry Ethernet layout.
+type Config struct {
+	// IsFexit selects the exit-mode layout: one pcap-ng interface per
+	// verdict (Actions) so Wireshark shows the verdict as the
+	// interface name.
+	IsFexit bool
+
+	// LinkType is the pcap-ng link type; the zero value means Ethernet.
+	LinkType layers.LinkType
+
+	// Actions lists the exit-mode verdict interfaces in creation order.
+	// Required when IsFexit is set (the shard merge fills it from its
+	// input files when left empty).
+	Actions []ActionName
+
+	// HookName prefixes lazily-added interfaces for verdicts outside
+	// Actions ("<HookName>:UNKNOWN(<n>)").
+	HookName string
+}
+
+// linkTypeOrDefault resolves the zero value to Ethernet.
+func (c Config) linkTypeOrDefault() layers.LinkType {
+	if c.LinkType == 0 {
+		return layers.LinkTypeEthernet
+	}
+	return c.LinkType
+}
+
 // Writer writes captured packets in pcapng format.
 type Writer struct {
+	cfg        Config
 	pcapWriter *pcapgo.NgWriter
 	fastWriter *FastNgWriter // default for non-fexit; env BPF_NINJA_FAST_PCAPNG=0 falls back to pcapWriter
 	bufWriter  *bufio.Writer // non-nil only when wrapping an *os.File
 	file       *os.File      // non-nil only when writing to a file (not stdout)
 	actionToID map[uint32]int
+	nameToID   map[string]int // exit mode: interface name → id, for the shard merge
 
 	flushStop chan struct{}
 	flushDone chan struct{}
@@ -48,11 +88,14 @@ type Writer struct {
 }
 
 // NewWriter creates a pcapng writer. If path is empty, writes to stdout.
-// In exit mode, creates one pcapng interface per XDP action so that
-// Wireshark displays the action as the interface name.
-func NewWriter(path string, isFexit bool) (*Writer, error) {
+// In exit mode (cfg.IsFexit), creates one pcapng interface per verdict in
+// cfg.Actions so that Wireshark displays the verdict as the interface name.
+func NewWriter(path string, cfg Config) (*Writer, error) {
+	if cfg.IsFexit && len(cfg.Actions) == 0 {
+		return nil, fmt.Errorf("exit-mode writer needs at least one action interface (Config.Actions)")
+	}
 	var dest io.Writer
-	w := &Writer{}
+	w := &Writer{cfg: cfg}
 
 	if path != "" {
 		f, err := os.Create(path)
@@ -72,13 +115,13 @@ func NewWriter(path string, isFexit bool) (*Writer, error) {
 	// pcap-ng (see TestFastNgWriterEquivalent). Exit mode still needs the
 	// gopacket writer for its per-action multi-interface layout. Set
 	// BPF_NINJA_FAST_PCAPNG=0 to force the gopacket writer.
-	useFast := os.Getenv("BPF_NINJA_FAST_PCAPNG") != "0" && !isFexit
+	useFast := os.Getenv("BPF_NINJA_FAST_PCAPNG") != "0" && !cfg.IsFexit
 	if useFast {
-		w.fastWriter, err = NewFastNgWriter(dest)
-	} else if isFexit {
+		w.fastWriter, err = NewFastNgWriter(dest, cfg.linkTypeOrDefault())
+	} else if cfg.IsFexit {
 		err = w.initExitMode(dest)
 	} else {
-		w.pcapWriter, err = pcapgo.NewNgWriter(dest, layers.LinkTypeEthernet)
+		w.pcapWriter, err = pcapgo.NewNgWriter(dest, cfg.linkTypeOrDefault())
 	}
 	if err != nil {
 		if w.file != nil {
@@ -96,48 +139,79 @@ func NewWriter(path string, isFexit bool) (*Writer, error) {
 	return w, nil
 }
 
-// initExitMode creates one pcapng interface per XDP action (ABORTED..REDIRECT).
+// initExitMode creates one pcapng interface per verdict in cfg.Actions
+// (e.g. xdp:ABORTED..xdp:REDIRECT, or tc:TC_ACT_UNSPEC..tc:TC_ACT_TRAP).
 func (w *Writer) initExitMode(dest io.Writer) error {
-	actions := []struct {
-		id   uint32
-		name string
-	}{
-		{0, "xdp:ABORTED"},
-		{1, "xdp:DROP"},
-		{2, "xdp:PASS"},
-		{3, "xdp:TX"},
-		{4, "xdp:REDIRECT"},
-	}
-
-	first := pcapgo.NgInterface{
-		Name:                actions[0].name,
-		LinkType:            layers.LinkTypeEthernet,
-		TimestampResolution: 9,
-		SnapLength:          0,
-		OS:                  runtime.GOOS,
-	}
-	pw, err := pcapgo.NewNgWriterInterface(dest, first, pcapgo.DefaultNgWriterOptions)
+	actions := w.cfg.Actions
+	pw, err := pcapgo.NewNgWriterInterface(dest, w.ngInterface(actions[0].Name), pcapgo.DefaultNgWriterOptions)
 	if err != nil {
 		return err
 	}
 
-	w.actionToID = map[uint32]int{actions[0].id: 0}
+	w.actionToID = map[uint32]int{actions[0].Value: 0}
+	w.nameToID = map[string]int{actions[0].Name: 0}
 	for _, a := range actions[1:] {
-		id, err := pw.AddInterface(pcapgo.NgInterface{
-			Name:                a.name,
-			LinkType:            layers.LinkTypeEthernet,
-			TimestampResolution: 9,
-			SnapLength:          0,
-			OS:                  runtime.GOOS,
-		})
+		id, err := pw.AddInterface(w.ngInterface(a.Name))
 		if err != nil {
 			return err
 		}
-		w.actionToID[a.id] = id
+		w.actionToID[a.Value] = id
+		w.nameToID[a.Name] = id
 	}
 
 	w.pcapWriter = pw
 	return nil
+}
+
+// ngInterface builds the pcap-ng interface block shared by every
+// exit-mode interface: same link type, only the name differs.
+func (w *Writer) ngInterface(name string) pcapgo.NgInterface {
+	return pcapgo.NgInterface{
+		Name:                name,
+		LinkType:            w.cfg.linkTypeOrDefault(),
+		TimestampResolution: 9,
+		SnapLength:          0,
+		OS:                  runtime.GOOS,
+	}
+}
+
+// ifaceIDForAction maps a verdict value to its pcap-ng interface id,
+// lazily adding a "<hook>:UNKNOWN(<n>)" interface for verdicts outside
+// the configured set (e.g. cgroup-skb egress congestion codes) so no
+// packet is ever silently attributed to the wrong verdict. Falls back
+// to interface 0 if the lazy add fails (a malformed file would be worse).
+func (w *Writer) ifaceIDForAction(action uint32) int {
+	if id, ok := w.actionToID[action]; ok {
+		return id
+	}
+	prefix := w.cfg.HookName
+	if prefix == "" {
+		prefix = "verdict"
+	}
+	name := fmt.Sprintf("%s:UNKNOWN(%d)", prefix, int32(action))
+	id, err := w.pcapWriter.AddInterface(w.ngInterface(name))
+	if err != nil {
+		id = 0
+	}
+	w.actionToID[action] = id
+	w.nameToID[name] = id
+	return id
+}
+
+// ifaceIDByName maps an interface name to this writer's interface id,
+// lazily adding it when unseen. Used by the shard merge, which matches
+// interfaces by name rather than by verdict value (shards may carry
+// lazily-added unknown-verdict interfaces at arbitrary indices).
+func (w *Writer) ifaceIDByName(name string) int {
+	if id, ok := w.nameToID[name]; ok {
+		return id
+	}
+	id, err := w.pcapWriter.AddInterface(w.ngInterface(name))
+	if err != nil {
+		id = 0
+	}
+	w.nameToID[name] = id
+	return id
 }
 
 // Write outputs a captured packet.
@@ -157,11 +231,30 @@ func (w *Writer) Write(pkt capture.Packet) error {
 		Length:        len(pkt.Data),
 	}
 	if w.actionToID != nil {
-		if id, ok := w.actionToID[pkt.Action]; ok {
-			ci.InterfaceIndex = id
-		}
+		ci.InterfaceIndex = w.ifaceIDForAction(pkt.Action)
 	}
 	if err := w.pcapWriter.WritePacket(ci, pkt.Data); err != nil {
+		return fmt.Errorf("writing pcap packet: %w", err)
+	}
+	return nil
+}
+
+// writePacketIface writes one packet to an explicit pcap-ng interface
+// id, bypassing the verdict→interface mapping. Only the shard merge
+// uses this (it resolves interfaces by name via ifaceIDByName).
+func (w *Writer) writePacketIface(ts time.Time, data []byte, ifaceID int) error {
+	w.flushMu.Lock()
+	defer w.flushMu.Unlock()
+	if w.fastWriter != nil {
+		return w.fastWriter.WritePacket(ts, data)
+	}
+	ci := gopacket.CaptureInfo{
+		Timestamp:      ts,
+		CaptureLength:  len(data),
+		Length:         len(data),
+		InterfaceIndex: ifaceID,
+	}
+	if err := w.pcapWriter.WritePacket(ci, data); err != nil {
 		return fmt.Errorf("writing pcap packet: %w", err)
 	}
 	return nil
@@ -193,9 +286,7 @@ func (w *Writer) WriteBatch(pkts []capture.Packet) error {
 		ci.Length = len(p.Data)
 		ci.InterfaceIndex = 0
 		if w.actionToID != nil {
-			if id, ok := w.actionToID[p.Action]; ok {
-				ci.InterfaceIndex = id
-			}
+			ci.InterfaceIndex = w.ifaceIDForAction(p.Action)
 		}
 		if err := w.pcapWriter.WritePacket(ci, p.Data); err != nil {
 			return fmt.Errorf("writing pcap packet: %w", err)

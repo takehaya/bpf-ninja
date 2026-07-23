@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+
+	"github.com/takehaya/bpf-ninja/internal/hook"
 )
 
 // TestDumpAsmFilter checks that DumpAsm in filter scope renders the
@@ -56,7 +58,7 @@ func TestDumpAsmFilter(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			var buf bytes.Buffer
-			if err := DumpAsm(&buf, DumpScopeFilter, tc.expr, tc.useDSL, tc.mode); err != nil {
+			if err := DumpAsm(&buf, DumpScopeFilter, tc.expr, tc.useDSL, tc.mode, hook.KindXDP); err != nil {
 				t.Fatalf("DumpAsm: %v", err)
 			}
 			got := buf.String()
@@ -74,7 +76,7 @@ func TestDumpAsmFilter(t *testing.T) {
 // the bpf_xdp_output epilogue, with map FDs left at 0.
 func TestDumpAsmFull(t *testing.T) {
 	var buf bytes.Buffer
-	if err := DumpAsm(&buf, DumpScopeFull, "eth/ipv4/tcp", true, "exit"); err != nil {
+	if err := DumpAsm(&buf, DumpScopeFull, "eth/ipv4/tcp", true, "exit", hook.KindXDP); err != nil {
 		t.Fatalf("DumpAsm full: %v", err)
 	}
 	got := buf.String()
@@ -100,7 +102,7 @@ func TestDumpAsmFull(t *testing.T) {
 // FnRingbufSubmit epilogue) instead of the tracing wrapper.
 func TestDumpAsmFullXDP(t *testing.T) {
 	var buf bytes.Buffer
-	if err := DumpAsm(&buf, DumpScopeFull, "tcp port 443", false, "xdp"); err != nil {
+	if err := DumpAsm(&buf, DumpScopeFull, "tcp port 443", false, "xdp", hook.KindXDP); err != nil {
 		t.Fatalf("DumpAsm full xdp: %v", err)
 	}
 	got := buf.String()
@@ -162,7 +164,7 @@ func TestDumpAsmErrors(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			var buf bytes.Buffer
-			err := DumpAsm(&buf, tc.scope, tc.expr, tc.useDSL, "entry")
+			err := DumpAsm(&buf, tc.scope, tc.expr, tc.useDSL, "entry", hook.KindXDP)
 			if err == nil {
 				t.Fatalf("expected error containing %q, got nil", tc.wantSub)
 			}

@@ -11,15 +11,13 @@ import (
 	"time"
 
 	"github.com/google/gopacket/pcapgo"
-
-	"github.com/takehaya/bpf-ninja/internal/capture"
 )
 
 type mergeItem struct {
-	ts     time.Time
-	data   []byte
-	action uint32 // source interface index = XDP action (fexit); preserved on write
-	idx    int    // which shard reader to pull the next packet from
+	ts       time.Time
+	data     []byte
+	srcIface int // source-file interface index; mapped to the output by name (fexit)
+	idx      int // which shard reader to pull the next packet from
 }
 
 // mergeHeap is a min-heap on packet timestamp.
@@ -40,12 +38,12 @@ func (h *mergeHeap) Pop() any {
 // MergeShardFiles merges <basePath>.cpu0..cpu(numShards-1) into a single
 // time-ordered pcap-ng written to basePath. Missing or empty shard files
 // are skipped. The shard files are left in place.
-func MergeShardFiles(basePath string, numShards int, isFexit bool) error {
+func MergeShardFiles(basePath string, numShards int, cfg Config) error {
 	inPaths := make([]string, numShards)
 	for i := range numShards {
 		inPaths[i] = fmt.Sprintf("%s.cpu%d", basePath, i)
 	}
-	return mergeFiles(inPaths, basePath, isFexit)
+	return mergeFiles(inPaths, basePath, cfg)
 }
 
 // mergeFiles k-way merges the given pcap-ng input files (each already in
@@ -54,7 +52,7 @@ func MergeShardFiles(basePath string, numShards int, isFexit bool) error {
 // skipped so a crashed shard never aborts the merge. Inputs are left in
 // place. Shared by MergeShardFiles, the tag-split merge, and the `merge`
 // subcommand.
-func mergeFiles(inPaths []string, outPath string, isFexit bool) error {
+func mergeFiles(inPaths []string, outPath string, cfg Config) error {
 	var closers []*os.File
 	var readers []*pcapgo.NgReader
 	defer func() {
@@ -82,11 +80,37 @@ func mergeFiles(inPaths []string, outPath string, isFexit bool) error {
 		readers = append(readers, r)
 	}
 
+	// Exit-mode merge with no configured verdict interfaces (the
+	// standalone `bpf-ninja merge` subcommand does not know the hook):
+	// seed the output layout from the first input's interface table so
+	// the merged file keeps the shards' interface names whatever hook
+	// wrote them.
+	if cfg.IsFexit && len(cfg.Actions) == 0 && len(readers) > 0 {
+		r := readers[0]
+		for i := range r.NInterfaces() {
+			intf, ierr := r.Interface(i)
+			if ierr != nil {
+				break
+			}
+			cfg.Actions = append(cfg.Actions, ActionName{Value: uint32(i), Name: intf.Name})
+			if cfg.LinkType == 0 {
+				cfg.LinkType = intf.LinkType
+			}
+		}
+	}
+	if cfg.IsFexit && len(cfg.Actions) == 0 {
+		// Nothing usable to seed from (all inputs missing/unreadable),
+		// so there are no packets either: drop to the plain single-
+		// interface layout and still produce a valid empty pcap-ng at
+		// outPath, matching the non-fexit readerless behavior.
+		cfg = Config{LinkType: cfg.LinkType}
+	}
+
 	// Write to a temp file and rename on success so a mid-merge failure
 	// (disk full / short write) never leaves a truncated base file over the
 	// still-valid per-CPU shards — the merge is atomic.
 	tmpPath := outPath + ".merging"
-	out, err := NewWriter(tmpPath, isFexit)
+	out, err := NewWriter(tmpPath, cfg)
 	if err != nil {
 		return err
 	}
@@ -110,12 +134,34 @@ func mergeFiles(inPaths []string, outPath string, isFexit bool) error {
 		}
 	}
 
+	// Exit-mode interface mapping is by NAME, not index: each shard may
+	// have lazily added unknown-verdict interfaces in its own encounter
+	// order, so the same index can mean different verdicts across shards.
+	// ifaceMap caches source-index → output-id per reader.
+	ifaceMap := make([]map[int]int, len(readers))
+	outIface := func(rIdx, srcIdx int) int {
+		if !cfg.IsFexit {
+			return 0
+		}
+		m := ifaceMap[rIdx]
+		if m == nil {
+			m = map[int]int{}
+			ifaceMap[rIdx] = m
+		}
+		if id, ok := m[srcIdx]; ok {
+			return id
+		}
+		id := 0
+		if intf, ierr := readers[rIdx].Interface(srcIdx); ierr == nil {
+			id = out.ifaceIDByName(intf.Name)
+		}
+		m[srcIdx] = id
+		return id
+	}
+
 	for h.Len() > 0 {
 		it := heap.Pop(h).(mergeItem)
-		// Action carries the source interface index so fexit merges keep
-		// the per-action interface (xdp:PASS/DROP/...); output.Writer maps
-		// action->interface identically to how the shards were written.
-		if err := out.Write(capture.Packet{Timestamp: it.ts, Data: it.data, Action: it.action}); err != nil {
+		if err := out.writePacketIface(it.ts, it.data, outIface(it.idx, it.srcIface)); err != nil {
 			return fmt.Errorf("writing merged packet: %w", err)
 		}
 		if next, ok := nextItem(readers[it.idx], it.idx, &bufs[it.idx]); ok {
@@ -150,5 +196,5 @@ func nextItem(r *pcapgo.NgReader, idx int, buf *[]byte) (mergeItem, bool) {
 		*buf = (*buf)[:len(data)]
 	}
 	copy(*buf, data)
-	return mergeItem{ts: ci.Timestamp, data: *buf, action: uint32(ci.InterfaceIndex), idx: idx}, true
+	return mergeItem{ts: ci.Timestamp, data: *buf, srcIface: ci.InterfaceIndex, idx: idx}, true
 }
