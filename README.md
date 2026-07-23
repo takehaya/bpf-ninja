@@ -262,7 +262,7 @@ int parse_headers(struct xdp_md *ctx) {
 | `--split-by-tag` | Route matched packets to one pcap per set-map value (tag): `-w out.pcap` yields `out.<tag>.pcap` (requires `-w`) | all |
 | `--max-bytes-per-tag` | Stop writing a tag's output once its bytes across all per-CPU shards reach N; other tags continue (requires `--split-by-tag`) | all |
 | `--max-bytes` | Stop the whole capture once total output bytes reach N (works with or without `--split-by-tag`) | all |
-| `--exit-when-capped` | Exit 0 once every tag currently in the `--set` map(s) is capped (requires `--max-bytes-per-tag`) | all |
+| `--exit-when-capped` | Exit 0 once every tag currently in the `--set` map(s) is capped (requires `--max-bytes-per-tag` and at least one `--set`) | all |
 
 Specify exactly one of `-i`, `-p`, or `--cgroup`.
 
