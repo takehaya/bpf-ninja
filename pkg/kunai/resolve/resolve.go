@@ -45,7 +45,7 @@ type Options struct {
 	// PacketStartsAtL3 mirrors codegen.HostLayout.PacketStartsAtL3:
 	// the host's packet window begins at the network header, so the
 	// chain-root advice flips — an `eth/...` root would misparse and
-	// draws the warning, while ipv4/ipv6 roots are the expected entry.
+	// draw the warning, while ipv4/ipv6 roots are the expected entry.
 	PacketStartsAtL3 bool
 }
 
