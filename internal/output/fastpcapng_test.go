@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/gopacket/layers"
 	"github.com/google/gopacket/pcapgo"
 
 	"github.com/takehaya/bpf-ninja/internal/capture"
@@ -106,6 +107,27 @@ func TestFastNgWriterEquivalent(t *testing.T) {
 		}
 		if !bytes.Equal(fast[i].Data, std[i].Data) {
 			t.Fatalf("packet %d: data mismatch (fast %d vs std %d bytes)", i, len(fast[i].Data), len(std[i].Data))
+		}
+	}
+}
+
+// TestEPBSizeMatchesWritePacket pins EPBSize (the --max-bytes* accounting
+// unit) to the actual byte delta WritePacket produces, across every
+// padding remainder.
+func TestEPBSizeMatchesWritePacket(t *testing.T) {
+	var buf bytes.Buffer
+	fw, err := NewFastNgWriter(&buf, layers.LinkTypeEthernet)
+	if err != nil {
+		t.Fatalf("NewFastNgWriter: %v", err)
+	}
+	ts := time.Unix(1700000000, 123456789)
+	for caplen := 0; caplen <= 7; caplen++ {
+		before := buf.Len()
+		if err := fw.WritePacket(ts, make([]byte, caplen)); err != nil {
+			t.Fatalf("WritePacket(caplen=%d): %v", caplen, err)
+		}
+		if got, want := buf.Len()-before, EPBSize(caplen); got != want {
+			t.Fatalf("caplen %d: wrote %d bytes, EPBSize says %d", caplen, got, want)
 		}
 	}
 }

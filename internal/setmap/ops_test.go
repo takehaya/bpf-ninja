@@ -3,6 +3,7 @@ package setmap
 import (
 	"fmt"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -151,6 +152,55 @@ func TestResizeSameCapacityNoop(t *testing.T) {
 	}
 	if oldMax != 16 || copied != 0 {
 		t.Fatalf("Resize = (oldMax %d, copied %d), want (16, 0)", oldMax, copied)
+	}
+}
+
+// TestTagsRoundTrip verifies Tags returns exactly the tag of every live
+// entry (duplicates included) and tracks runtime add/delete — the view
+// --exit-when-capped polls.
+func TestTagsRoundTrip(t *testing.T) {
+	testutil.SkipIfNotRoot(t)
+
+	pin := fmt.Sprintf("/sys/fs/bpf/bpfninja_tags_%d", os.Getpid())
+	if err := Create(pin, "imsi:u64", "", 16); err != nil {
+		t.Skipf("creating pinned set map (bpffs unavailable?): %v", err)
+	}
+	t.Cleanup(func() { _ = os.Remove(pin) })
+
+	def, err := Open(pin)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(def.Close)
+
+	sortedTags := func() []uint32 {
+		tags, err := def.Tags()
+		if err != nil {
+			t.Fatalf("Tags: %v", err)
+		}
+		slices.Sort(tags)
+		return tags
+	}
+
+	if got := sortedTags(); len(got) != 0 {
+		t.Fatalf("Tags on empty map = %v, want empty", got)
+	}
+
+	entries := map[string]uint64{"1001": 1, "1002": 2, "1003": 2}
+	for imsi, tag := range entries {
+		if err := def.Add(map[string]string{"imsi": imsi}, tag); err != nil {
+			t.Fatalf("Add(%s): %v", imsi, err)
+		}
+	}
+	if got, want := sortedTags(), []uint32{1, 2, 2}; fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("Tags = %v, want %v", got, want)
+	}
+
+	if err := def.Delete(map[string]string{"imsi": "1002"}); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if got, want := sortedTags(), []uint32{1, 2}; fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("Tags after delete = %v, want %v", got, want)
 	}
 }
 

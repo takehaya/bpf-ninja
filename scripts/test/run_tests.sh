@@ -419,6 +419,62 @@ test_argfilter_set() {
     [[ "$swapped" -eq 1 && "$ranm" -eq 1 && "$rann" -eq 1 && "$cmatch" -ge 3 && "$cnomatch" -eq 0 ]]
 }
 
+# --max-bytes-per-tag + --exit-when-capped: a tiny per-tag cap must make
+# the process exit 0 on its own (no signal), and the merged per-tag file
+# must stay near the cap (batch-granular overshoot allowed).
+test_split_max_bytes_per_tag() {
+    local pin=/sys/fs/bpf/bpfninja_capset_test
+    local cap=300
+    rm -f "$pin" 2>/dev/null || true
+    if ! "$BINARY" set create "$pin" --key "type:u8" >/dev/null 2>&1 \
+        || ! "$BINARY" set add "$pin" type=8 tag=1 >/dev/null 2>&1; then
+        echo "set create/add failed" >&2
+        rm -f "$pin" 2>/dev/null || true
+        return 1
+    fi
+
+    local pcap=$(mktemp --suffix=.pcap)
+    local err=$(mktemp)
+    timeout 15 "$BINARY" -i veth0 --set "caps=$pin" --split-by-tag \
+        --max-bytes-per-tag "$cap" --exit-when-capped \
+        -w "$pcap" 'eth/ipv4/icmp[type in @caps]' > /dev/null 2>"$err" &
+    local pid=$!
+    sleep 2
+    ip netns exec xdptest ping -c 40 -i 0.1 -W 1 10.0.0.1 >/dev/null 2>&1 || true
+    wait $pid
+    local rc=$?
+
+    local merged="${pcap%.pcap}.1.pcap"
+    local size=0
+    [[ -f "$merged" ]] && size=$(stat -c %s "$merged")
+    local capped=0
+    grep -q "capped" "$err" && capped=1
+    echo "split_cap rc=$rc size=$size capped=$capped stderr=$(cat "$err")" >&2
+    rm -f "$pcap" "${pcap%.pcap}".*.pcap "$pcap".cpu* "$err" "$pin"
+    # 4 KiB slack: the cap is enforced per ringbuf batch per shard, plus
+    # the merged file's fixed pcap-ng headers.
+    [[ $rc -eq 0 && $capped -eq 1 && $size -gt 0 && $size -le $((cap + 4096)) ]]
+}
+
+# --max-bytes (no split): the aggregate cap must stop the capture by
+# itself with exit 0.
+test_max_bytes_total() {
+    local pcap=$(mktemp --suffix=.pcap)
+    local err=$(mktemp)
+    timeout 15 "$BINARY" -i veth0 --max-bytes 300 -w "$pcap" icmp > /dev/null 2>"$err" &
+    local pid=$!
+    sleep 2
+    ip netns exec xdptest ping -c 40 -i 0.1 -W 1 10.0.0.1 >/dev/null 2>&1 || true
+    wait $pid
+    local rc=$?
+    local count=$(capture_count "$err")
+    local reached=0
+    grep -q "total output cap reached" "$err" && reached=1
+    echo "max_bytes rc=$rc count=$count reached=$reached stderr=$(cat "$err")" >&2
+    rm -f "$pcap" "$pcap".cpu* "$err"
+    [[ $rc -eq 0 && $reached -eq 1 && $count -gt 0 ]]
+}
+
 test_graceful_shutdown() {
     require_bpftool || return 1
     local prog_id_before=$(bpftool prog show name xdp_pass 2>/dev/null | head -1 | awk '{print $1}' | tr -d ':')
@@ -470,6 +526,8 @@ run_test "cgroup_path_selector"    test_cgroup_path_selector
 run_test "cgroup_pcap_linktype"    test_cgroup_pcap_linktype_raw
 run_test "argfilter"               test_argfilter
 run_test "argfilter_set"           test_argfilter_set
+run_test "split_max_bytes_per_tag" test_split_max_bytes_per_tag
+run_test "max_bytes_total"         test_max_bytes_total
 run_test "graceful_shutdown"       test_graceful_shutdown
 
 echo ""
