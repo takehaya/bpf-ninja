@@ -381,7 +381,8 @@ DSL の `layer-chain` は grammar 上 root を制約しませんが、operationa
 
 例外は次のとおりです。
 
-- `--mode tc-entry` の clsact では、入り口で既に L2 解析済みの場合があり、短い chain で問題ありません。
+- tc clsact ターゲット (fentry) では、入り口で既に L2 解析済みの場合があり、短い chain で問題ありません。
+- cgroup-skb ターゲットでは packet が network header (L3) 始まりなので、`ipv4/...` / `ipv6/...` 起点が正しい chain です (`eth` 起点は逆に warning)。
 - vocab 学習目的で、自前 testing として特定 protocol だけ codegen を確認したい時は、短 chain も valid です。
 
 root が `eth` 以外の短 chain は resolver で warning が出ますが、compile は通ります。
