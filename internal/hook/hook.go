@@ -22,8 +22,9 @@ import (
 type Kind string
 
 const (
-	KindXDP Kind = "xdp"
-	KindTC  Kind = "tc"
+	KindXDP       Kind = "xdp"
+	KindTC        Kind = "tc"
+	KindCgroupSKB Kind = "cgroup-skb"
 )
 
 // Hook describes one attach-target kind.
@@ -64,7 +65,7 @@ type ActionName struct {
 
 // registry lists all supported hooks. Order defines the wording of
 // SupportedLabel (and therefore user-facing error messages).
-var registry = []*Hook{xdpHook, tcHook}
+var registry = []*Hook{xdpHook, tcHook, cgroupSKBHook}
 
 // ByProgramType finds the hook covering pt. The single lookup replaces
 // the per-site `pt == XDP || pt == SchedCLS || ...` supported-type checks.

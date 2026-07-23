@@ -101,6 +101,39 @@ func loadDummyTC(t testing.TB) *ebpf.Program {
 	return objs.Prog
 }
 
+const cgroupSKBFuncName = "cgroup_skb_pass_test"
+
+const cgroupSKBPassSource = `
+#include <linux/bpf.h>
+#define SEC(NAME) __attribute__((section(NAME), used))
+SEC("cgroup_skb/ingress")
+int cgroup_skb_pass_test(struct __sk_buff *skb) { return 1; }
+char _license[] SEC("license") = "GPL";
+`
+
+// loadDummyCgroupSKB compiles and loads a minimal cgroup-skb program
+// with BTF — peer of loadDummyTC. Returns SK_PASS (1); the observer
+// attaches as fentry/fexit, so no cgroup attachment is needed for the
+// verifier-load matrix.
+func loadDummyCgroupSKB(t testing.TB) *ebpf.Program {
+	t.Helper()
+	testutil.SkipIfNotRoot(t)
+
+	spec, err := ebpf.LoadCollectionSpec(testutil.CompileBPFSource(t, cgroupSKBPassSource))
+	if err != nil {
+		t.Fatalf("loading collection spec: %v", err)
+	}
+
+	var objs struct {
+		Prog *ebpf.Program `ebpf:"cgroup_skb_pass_test"`
+	}
+	if err := spec.LoadAndAssign(&objs, nil); err != nil {
+		t.Fatalf("loading cgroup-skb program: %v", err)
+	}
+	t.Cleanup(func() { _ = objs.Prog.Close() })
+	return objs.Prog
+}
+
 // loadDummyXDP compiles and loads a minimal XDP_PASS program with BTF.
 func loadDummyXDP(t testing.TB) *ebpf.Program {
 	t.Helper()

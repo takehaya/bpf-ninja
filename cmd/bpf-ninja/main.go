@@ -108,7 +108,7 @@ var flags = []cli.Flag{
 	},
 	&cli.StringFlag{
 		Name:  "dump-hook",
-		Usage: "hook whose capabilities/prologue --dump-asm renders (no target program exists to auto-detect from): xdp | tc (default xdp; deprecated --mode tc-* aliases imply tc)",
+		Usage: "hook whose capabilities/prologue --dump-asm renders (no target program exists to auto-detect from): xdp | tc | cgroup-skb (default xdp; deprecated --mode tc-* aliases imply tc)",
 	},
 	&cli.BoolFlag{
 		Name: "verbose", Aliases: []string{"v"},

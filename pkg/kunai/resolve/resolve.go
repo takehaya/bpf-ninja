@@ -41,6 +41,12 @@ type Options struct {
 	// default so the existing typed-OK / silent-wrap behaviour stays
 	// the contract for unaware callers.
 	StrictArithLint bool
+
+	// PacketStartsAtL3 mirrors codegen.HostLayout.PacketStartsAtL3:
+	// the host's packet window begins at the network header, so the
+	// chain-root advice flips — an `eth/...` root would misparse and
+	// draws the warning, while ipv4/ipv6 roots are the expected entry.
+	PacketStartsAtL3 bool
 }
 
 // Resolve walks an AST filter, binds every symbolic reference to the
@@ -129,19 +135,21 @@ func (r *resolver) resolveFilter(f *ast.Filter) (*ir.Program, error) {
 		LabelTable: r.labels,
 		Pos:        f.Pos,
 	}
-	addChainRootWarning(p, f)
+	addChainRootWarning(p, f, r.opts)
 	markRuntimeOffsetLayers(p)
 	return p, nil
 }
 
 // addChainRootWarning appends a notice to p.Warnings when the chain's
-// first protocol is not "eth". Standard L2 packet entry expects an
-// `eth/...` root, so a non-eth root is almost always a typo (e.g.
-// `tcp` instead of `eth/ipv4/tcp`) — but it can be legitimate for
-// callers that attach to a non-Ethernet datapath, so it stays a
+// root protocol does not match the host's packet entry point. For the
+// default L2 layout a non-eth root is almost always a typo (e.g. `tcp`
+// instead of `eth/ipv4/tcp`); for an L3-start host (PacketStartsAtL3)
+// the polarity flips — an `eth/...` root would misparse because the
+// window has no Ethernet header, and ipv4/ipv6 are the expected roots.
+// Either way it can be legitimate for unusual datapaths, so it stays a
 // warning rather than an error. Skips alternation-group roots and
 // empty chains; both are handled by other passes.
-func addChainRootWarning(p *ir.Program, f *ast.Filter) {
+func addChainRootWarning(p *ir.Program, f *ast.Filter, opts Options) {
 	if p == nil || len(f.Layers) == 0 {
 		return
 	}
@@ -149,7 +157,25 @@ func addChainRootWarning(p *ir.Program, f *ast.Filter) {
 	if root.Kind == ast.LayerAltGroup {
 		return
 	}
-	if root.ProtoName == "" || root.ProtoName == "eth" {
+	if root.ProtoName == "" {
+		return
+	}
+	if opts.PacketStartsAtL3 {
+		switch root.ProtoName {
+		case "ipv4", "ipv6":
+			return
+		case "eth":
+			p.Warnings = append(p.Warnings,
+				"chain root is 'eth' but this attach point has no Ethernet header in the packet bytes; start the chain at 'ipv4/...' or 'ipv6/...'. Use --dump-asm filter to inspect the generated BPF.")
+		default:
+			p.Warnings = append(p.Warnings, fmt.Sprintf(
+				"chain root %q is not 'ipv4' or 'ipv6'; this attach point's packet bytes start at the network header. Use --dump-asm filter to inspect the generated BPF.",
+				root.ProtoName,
+			))
+		}
+		return
+	}
+	if root.ProtoName == "eth" {
 		return
 	}
 	p.Warnings = append(p.Warnings, fmt.Sprintf(

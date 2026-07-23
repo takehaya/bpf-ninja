@@ -324,7 +324,14 @@ func compileFilterWithSlots(expr string, useDSL, isFexit bool, progType ebpf.Pro
 		}
 		return out, nil
 	}
-	rawInsns, err := pcap.CompileBPFFilter(layers.LinkTypeEthernet, 65535, expr)
+	// Compile against the hook's link type: on an L3-start hook
+	// (LinkTypeRaw) libpcap then resolves `ip` / `tcp port 80` at the
+	// right offsets and rejects L2 atoms like `ether host` on its own.
+	linkType := layers.LinkTypeEthernet
+	if h, ok := hook.ByProgramType(progType); ok {
+		linkType = h.LinkType
+	}
+	rawInsns, err := pcap.CompileBPFFilter(linkType, 65535, expr)
 	if err != nil {
 		return codegen.Output{}, fmt.Errorf("compiling filter %q: %w", expr, err)
 	}

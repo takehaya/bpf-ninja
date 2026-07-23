@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/cilium/ebpf"
+	cgskbhost "github.com/takehaya/bpf-ninja/pkg/kunai/host/cgroupskb"
 	tchost "github.com/takehaya/bpf-ninja/pkg/kunai/host/tc"
 	xdphost "github.com/takehaya/bpf-ninja/pkg/kunai/host/xdp"
 )
@@ -18,7 +19,7 @@ func TestByProgramType(t *testing.T) {
 		{ebpf.XDP, KindXDP, true},
 		{ebpf.SchedCLS, KindTC, true},
 		{ebpf.SchedACT, KindTC, true},
-		{ebpf.CGroupSKB, "", false},
+		{ebpf.CGroupSKB, KindCgroupSKB, true},
 		{ebpf.SocketFilter, "", false},
 	}
 	for _, c := range cases {
@@ -34,7 +35,7 @@ func TestByProgramType(t *testing.T) {
 }
 
 func TestByName(t *testing.T) {
-	for _, k := range []Kind{KindXDP, KindTC} {
+	for _, k := range []Kind{KindXDP, KindTC, KindCgroupSKB} {
 		h, ok := ByName(k)
 		if !ok || h.Kind != k {
 			t.Errorf("ByName(%s) = %v, %v", k, h, ok)
@@ -59,6 +60,7 @@ func TestHookActionsMatchHostVocab(t *testing.T) {
 	}{
 		{KindXDP, xdphost.Actions, func(k string) string { return "xdp:" + strings.TrimPrefix(k, "XDP_") }},
 		{KindTC, tchost.Actions, func(k string) string { return "tc:" + k }},
+		{KindCgroupSKB, cgskbhost.Actions, func(k string) string { return "cgroup-skb:" + k }},
 	}
 	for _, c := range cases {
 		h, ok := ByName(c.hook)

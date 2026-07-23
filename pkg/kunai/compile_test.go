@@ -8,6 +8,7 @@ import (
 	"github.com/cilium/ebpf/asm"
 
 	"github.com/takehaya/bpf-ninja/pkg/kunai/codegen"
+	cgskbhost "github.com/takehaya/bpf-ninja/pkg/kunai/host/cgroupskb"
 	xdphost "github.com/takehaya/bpf-ninja/pkg/kunai/host/xdp"
 )
 
@@ -1248,3 +1249,60 @@ func TestVlanInMetadataRejectsVlanLayers(t *testing.T) {
 
 // Cache correctness for dslvocab.Bundled is covered in its own
 // package; Compile merely threads the call through.
+
+// TestCompileCgroupSKBHost pins the cgroup-skb host adapter surface:
+// SK_* action atoms resolve at fexit, and the L3-start layout flips
+// the chain-root advice (warn on eth roots, stay silent on ipv4/ipv6).
+func TestCompileCgroupSKBHost(t *testing.T) {
+	t.Run("action atoms", func(t *testing.T) {
+		out, err := Compile("ipv4/tcp where action == SK_DROP", cgskbhost.FexitCapabilities())
+		if err != nil {
+			t.Fatalf("Compile: %v", err)
+		}
+		if len(out.Main) == 0 {
+			t.Fatal("empty instructions")
+		}
+	})
+	t.Run("action atoms rejected at entry", func(t *testing.T) {
+		_, err := Compile("ipv4/tcp where action == SK_DROP", cgskbhost.EntryCapabilities())
+		if err == nil {
+			t.Fatal("expected entry-caps compile to reject the action atom")
+		}
+	})
+	t.Run("ipv4 root has no warning", func(t *testing.T) {
+		out, err := Compile("ipv4/tcp", cgskbhost.EntryCapabilities())
+		if err != nil {
+			t.Fatalf("Compile: %v", err)
+		}
+		if len(out.Warnings) != 0 {
+			t.Fatalf("unexpected warnings: %v", out.Warnings)
+		}
+	})
+	t.Run("eth root warns", func(t *testing.T) {
+		out, err := Compile("eth/ipv4/tcp", cgskbhost.EntryCapabilities())
+		if err != nil {
+			t.Fatalf("Compile: %v", err)
+		}
+		if len(out.Warnings) != 1 || !strings.Contains(out.Warnings[0], "no Ethernet header") {
+			t.Fatalf("expected the L3-start eth-root warning, got %v", out.Warnings)
+		}
+	})
+	t.Run("vlan layer rejected", func(t *testing.T) {
+		_, err := Compile("eth/vlan/ipv4/tcp", cgskbhost.EntryCapabilities())
+		if !errors.Is(err, codegen.ErrNotImplemented) {
+			t.Fatalf("expected ErrNotImplemented for vlan on cgroup-skb, got %v", err)
+		}
+	})
+}
+
+// TestCompileL2HostRootWarningUnchanged pins the default polarity: with
+// the zero Capabilities a non-eth root still draws the L2 advice.
+func TestCompileL2HostRootWarningUnchanged(t *testing.T) {
+	out, err := Compile("ipv4/tcp", codegen.Capabilities{})
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	if len(out.Warnings) != 1 || !strings.Contains(out.Warnings[0], "is not 'eth'") {
+		t.Fatalf("expected the L2 non-eth-root warning, got %v", out.Warnings)
+	}
+}

@@ -161,6 +161,7 @@ func TestFilterCorpusCompiles(t *testing.T) {
 	}{
 		{"XDP", ebpf.XDP},
 		{"tc", ebpf.SchedCLS},
+		{"cgroup-skb", ebpf.CGroupSKB},
 	}
 
 	for _, c := range VerifierCorpus {

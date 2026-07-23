@@ -258,3 +258,37 @@ func TestBpfEntryWithDSLFilterTC(t *testing.T) {
 func TestBpfExitWithDSLFilterTC(t *testing.T) {
 	runFilterMatrix(t, loadDummyTC(t), tcFuncName, dslTCExitExprs, true, true)
 }
+
+// dslCgroupSKBEntryExprs is the cgroup-skb fentry-side DSL matrix.
+// The packet window starts at the network header (no Ethernet framing),
+// so chains root at ipv4/ipv6. The context-loading path is the same
+// skb prologue as tc (runtime BTF-resolved sk_buff offsets); the
+// matrix pins the L3-rooted chain shapes on it, including a
+// parser-machine (bpf_loop) path and an option-walk predicate.
+var dslCgroupSKBEntryExprs = []string{
+	"ipv4/tcp",
+	"ipv4/udp",
+	"ipv6/tcp",
+	"ipv4/tcp[dport==443]",
+	"ipv4/tcp where tcp.dport == 443",
+	"ipv4/tcp capture headers+64",
+	"ipv4/udp/gtp/ipv4/tcp",
+	"ipv6/srv6/tcp",
+	"ipv4/tcp where tcp.options.MSS.value == 1460",
+}
+
+// dslCgroupSKBExitExprs covers the cgroup-skb fexit-side action atoms
+// (SK_DROP=0 / SK_PASS=1).
+var dslCgroupSKBExitExprs = []string{
+	"ipv4/tcp",
+	"ipv4/tcp where action == SK_DROP",
+	"ipv4/tcp where action == SK_PASS or action == SK_DROP",
+}
+
+func TestBpfEntryWithDSLFilterCgroupSKB(t *testing.T) {
+	runFilterMatrix(t, loadDummyCgroupSKB(t), cgroupSKBFuncName, dslCgroupSKBEntryExprs, false, true)
+}
+
+func TestBpfExitWithDSLFilterCgroupSKB(t *testing.T) {
+	runFilterMatrix(t, loadDummyCgroupSKB(t), cgroupSKBFuncName, dslCgroupSKBExitExprs, true, true)
+}
