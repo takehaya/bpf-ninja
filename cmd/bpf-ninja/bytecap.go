@@ -27,7 +27,7 @@ type byteCaps struct {
 	totalLimit  uint64
 	total       atomic.Uint64
 
-	mu   sync.Mutex // guards tags inserts; lookups after the fast path miss
+	mu   sync.Mutex // guards all tags map access (insert, lookup, iteration)
 	tags map[uint32]*tagCounter
 }
 
