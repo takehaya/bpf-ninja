@@ -140,6 +140,14 @@ func (fw *FastNgWriter) writeIDB(linkType uint16) error {
 // slice depending on packet length.
 var epbZeroPad = [3]byte{0, 0, 0}
 
+// EPBSize returns the on-disk size of one Enhanced Packet Block for a
+// packet of caplen bytes: 32 bytes of framing plus the data padded to a
+// 4-byte boundary. Byte-cap accounting (--max-bytes*) uses this so its
+// notion of "output bytes" matches what WritePacket emits.
+func EPBSize(caplen int) int {
+	return 32 + (caplen+3)&^3
+}
+
 // WritePacket emits one Enhanced Packet Block.
 //
 //	Block Type:                0x00000006  (4 B)
@@ -158,11 +166,8 @@ var epbZeroPad = [3]byte{0, 0, 0}
 // with padding). The outer bufio.Writer coalesces them.
 func (fw *FastNgWriter) WritePacket(ts time.Time, data []byte) error {
 	caplen := uint32(len(data))
-	pad := uint32(0)
-	if r := caplen & 3; r != 0 {
-		pad = 4 - r
-	}
-	totalLen := 32 + caplen + pad
+	totalLen := uint32(EPBSize(len(data)))
+	pad := totalLen - 32 - caplen
 
 	tsNs := uint64(ts.UnixNano())
 

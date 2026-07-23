@@ -769,6 +769,22 @@ sudo bpf-ninja merge --base out.pcap --fexit  # --mode exit で録った場合
 - tag の value 幅を `--value "tag:u64"` などで 8 バイトにした場合、出し分けに使うのは下位 32 ビットです。
 - live ファイルは CPU ごと tag ごとに 1 本開くので、tag の種類が多いとファイルディスクリプタを消費します。種類が多い運用では `ulimit -n` を上げてください。上限に達すると起動途中でその旨のエラーを出します。
 
+### tag ごとの出力サイズ上限 (`--max-bytes-per-tag`)
+
+`--split-by-tag` と組み合わせて、tag 単位の出力バイト上限を指定できます。ある tag の出力 (per-CPU shard の合計) が上限に達すると、その tag への書き込みだけを止めて他の tag はそのまま録り続けます。
+
+```bash
+sudo bpf-ninja -i eth0 --mode xdp --set "subs=$PIN" \
+  --split-by-tag --max-bytes-per-tag 104857600 \
+  --exit-when-capped -w out.pcap \
+  'eth/ipv4/udp/gtp[imsi in @subs]'
+```
+
+- 上限のカウント対象は pcap-ng の packet block バイトで、ファイルごとの固定ヘッダは含みません。判定は ringbuf バッチ単位なので、shard あたり最大 1 バッチぶんの超過があり得ます。
+- 上限に達した tag の live ファイルは閉じてファイルディスクリプタを解放します。到達を検知した CPU の分は即時に、他の CPU の分は次にその tag のパケットを見た時点で閉じます。到達直後にその tag のトラフィックが止まった場合、他 CPU の分は終了時まで開いたままになることがあります。set map の entry には触りません。カーネル側のマッチは続き、ユーザー空間で捨てます。
+- `--exit-when-capped` を足すと、set map に現存する全 tag が上限に達した時点で自動的に exit 0 します。通常のシャットダウンと同じく per-CPU ファイルの合算まで行うので、待っている呼び出し側はそのまま完成した `out.<tag>.pcap` を回収できます。tag 0 (set 不一致) は判定に参加しません。
+- プロセス全体の上限は `--max-bytes` です。こちらは `--split-by-tag` 無しでも使えて、到達すると `-c` と同じ経路でキャプチャ全体を止めて exit 0 します。
+
 ## 仕組みの概要
 
 1. one-liner を AST → IR に解決します。vocab に照らして protocol/field/dispatch をバインドします。

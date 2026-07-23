@@ -160,6 +160,18 @@ var flags = []cli.Flag{
 		Name:  "split-by-tag",
 		Usage: "route matched packets to a separate pcap per set-map value (tag): -w out.pcap yields out.<tag>.pcap. requires -w (not stdout); live per-CPU files are flushed each second so they can be pulled mid-capture",
 	},
+	&cli.IntFlag{
+		Name:  "max-bytes-per-tag",
+		Usage: "with --split-by-tag: stop writing a tag's output once its bytes summed across all per-CPU shards reach N (pcap-ng packet-block bytes; per-file headers excluded). Enforced per ringbuf batch, so a tag can overshoot by up to one batch per shard. Other tags keep capturing; the BPF set map is never modified",
+	},
+	&cli.IntFlag{
+		Name:  "max-bytes",
+		Usage: "stop the whole capture once total output bytes reach N (pcap-ng packet-block bytes; per-file headers excluded, batch-granular like --max-bytes-per-tag). Works with or without --split-by-tag; the shards are merged and the process exits 0 as with -c",
+	},
+	&cli.BoolFlag{
+		Name:  "exit-when-capped",
+		Usage: "with --max-bytes-per-tag and --set: exit 0 once every tag currently present in the set map(s) has reached its cap (tag 0 = unmatched traffic does not participate)",
+	},
 	&cli.BoolFlag{
 		Name:  "fast-reader",
 		Usage: "use the in-tree mmap+atomic batch ringbuf reader instead of cilium/ebpf's per-record API; supported in both --raw-dump and pcap-ng paths",
@@ -372,6 +384,30 @@ func run(ctx context.Context, cmd *cli.Command) error {
 			return fmt.Errorf("--split-by-tag cannot be combined with --raw-dump")
 		case cmd.Bool("null-output"):
 			return fmt.Errorf("--split-by-tag cannot be combined with --null-output")
+		}
+	}
+	if cmd.Int("max-bytes-per-tag") < 0 || cmd.Int("max-bytes") < 0 {
+		return fmt.Errorf("--max-bytes-per-tag / --max-bytes must be >= 0")
+	}
+	if cmd.Int("max-bytes-per-tag") > 0 && !cmd.Bool("split-by-tag") {
+		return fmt.Errorf("--max-bytes-per-tag requires --split-by-tag (the cap is per tag file)")
+	}
+	if cmd.Int("max-bytes-per-tag") > 0 || cmd.Int("max-bytes") > 0 {
+		// The caps count pcap-ng bytes at the writer; the raw and null
+		// paths never reach that writer.
+		switch {
+		case cmd.Bool("raw-dump"):
+			return fmt.Errorf("--max-bytes-per-tag / --max-bytes cannot be combined with --raw-dump")
+		case cmd.Bool("null-output"):
+			return fmt.Errorf("--max-bytes-per-tag / --max-bytes cannot be combined with --null-output")
+		}
+	}
+	if cmd.Bool("exit-when-capped") {
+		switch {
+		case cmd.Int("max-bytes-per-tag") <= 0:
+			return fmt.Errorf("--exit-when-capped requires --max-bytes-per-tag")
+		case len(cmd.StringSlice("set")) == 0:
+			return fmt.Errorf("--exit-when-capped requires at least one --set (it exits when every tag in the set map(s) is capped)")
 		}
 	}
 	if cmd.Bool("rx-hwts") {
@@ -707,7 +743,7 @@ func run(ctx context.Context, cmd *cli.Command) error {
 	if !ok {
 		return hook.UnsupportedTypeError(targets[0].Type)
 	}
-	return runCaptureLoop(cmd, probe, outputConfigFor(h, isFexit), fmt.Sprintf("%s, mode=%s", label, mode))
+	return runCaptureLoop(cmd, probe, outputConfigFor(h, isFexit), fmt.Sprintf("%s, mode=%s", label, mode), sets)
 }
 
 // outputConfigFor renders a hook descriptor into the writer layout for
@@ -856,7 +892,7 @@ func resolveFilterSyntax(cmd *cli.Command) (useDSL bool, err error) {
 // capture; afterward output.MergeShardFiles merges them into a single
 // time-ordered pcap-ng at `path` (the shards are left in place). Integration
 // tests (run_pcap_test) read the `.cpuN` shards.
-func runCaptureLoop(cmd *cli.Command, probe *program.Probe, cfg output.Config, label string) error {
+func runCaptureLoop(cmd *cli.Command, probe *program.Probe, cfg output.Config, label string, sets []*setmap.Set) error {
 	defer func() {
 		if cerr := probe.Close(); cerr != nil {
 			fmt.Fprintf(os.Stderr, "warning: closing probe: %v\n", cerr)
@@ -865,7 +901,7 @@ func runCaptureLoop(cmd *cli.Command, probe *program.Probe, cfg output.Config, l
 	if len(probe.InnerMaps) == 0 {
 		return fmt.Errorf("probe has no inner ringbufs — sharded ringbuf hoist (R22) should populate them for every attach mode")
 	}
-	if err := captureLoopSharded(cmd, probe.InnerMaps, cfg, label); err != nil {
+	if err := captureLoopSharded(cmd, probe.InnerMaps, cfg, label, sets); err != nil {
 		return err
 	}
 
@@ -906,17 +942,20 @@ func runCaptureLoop(cmd *cli.Command, probe *program.Probe, cfg output.Config, l
 // stdout all shards funnel into one writer serialized by a mutex.
 // --null-output skips file writes for benchmarking; --raw-dump switches to
 // the raw-bytes path.
-func captureLoopSharded(cmd *cli.Command, inners []*ebpf.Map, cfg output.Config, label string) error {
+func captureLoopSharded(cmd *cli.Command, inners []*ebpf.Map, cfg output.Config, label string, sets []*setmap.Set) error {
 	basePath := cmd.String("write")
 	null := cmd.Bool("null-output")
 	rawDump := cmd.Bool("raw-dump")
 	if rawDump {
 		return captureLoopShardedRaw(cmd, inners, label, basePath)
 	}
+	// nil unless --max-bytes-per-tag / --max-bytes is set (run() already
+	// rejected them with --raw-dump / --null-output).
+	caps := newByteCaps(uint64(cmd.Int("max-bytes-per-tag")), uint64(cmd.Int("max-bytes")))
 	if cmd.Bool("split-by-tag") {
 		// run() already rejected --split-by-tag with stdout / --raw-dump /
 		// --null-output, so basePath is a real file here.
-		return captureLoopShardedSplit(cmd, inners, cfg, label, basePath)
+		return captureLoopShardedSplit(cmd, inners, cfg, label, basePath, caps, sets)
 	}
 
 	// stdout (no -w) merges every shard into a single pcap-ng stream,
@@ -969,18 +1008,41 @@ func captureLoopSharded(cmd *cli.Command, inners []*ebpf.Map, cfg output.Config,
 		writeShard = func(_ int, pkts []capture.Packet) error {
 			sharedMu.Lock()
 			defer sharedMu.Unlock()
-			return sharedW.WriteBatch(pkts)
+			if err := sharedW.WriteBatch(pkts); err != nil {
+				return err
+			}
+			if caps != nil {
+				caps.addTotal(epbBytes(pkts))
+			}
+			return nil
 		}
 	default:
 		writeShard = func(shardIdx int, pkts []capture.Packet) error {
-			if writers[shardIdx] != nil {
-				return writers[shardIdx].WriteBatch(pkts)
+			if writers[shardIdx] == nil {
+				return nil
+			}
+			if err := writers[shardIdx].WriteBatch(pkts); err != nil {
+				return err
+			}
+			if caps != nil {
+				caps.addTotal(epbBytes(pkts))
 			}
 			return nil
 		}
 	}
 
-	return pumpShards(cmd, inners, label, writeShard)
+	return pumpShards(cmd, inners, label, writeShard, caps, sets)
+}
+
+// epbBytes sums the on-disk pcap-ng size of a batch, matching what the
+// fast writer emits (the gopacket / fexit layout differs by a few option
+// bytes per block — the caps are batch-granular anyway).
+func epbBytes(pkts []capture.Packet) uint64 {
+	var n uint64
+	for i := range pkts {
+		n += uint64(output.EPBSize(len(pkts[i].Data)))
+	}
+	return n
 }
 
 // captureLoopShardedSplit is the --split-by-tag path: each shard writes a
@@ -989,26 +1051,44 @@ func captureLoopSharded(cmd *cli.Command, inners []*ebpf.Map, cfg output.Config,
 // mid-capture. Each shard's tag->writer map is owned by its own goroutine,
 // so there is no lock on the write path. runCaptureLoop merges the per-CPU
 // tag files into <base>.<tag><ext> on a clean shutdown.
-func captureLoopShardedSplit(cmd *cli.Command, inners []*ebpf.Map, cfg output.Config, label, basePath string) error {
+func captureLoopShardedSplit(cmd *cli.Command, inners []*ebpf.Map, cfg output.Config, label, basePath string, caps *byteCaps, sets []*setmap.Set) error {
 	// One tag->writer map per shard; only ever touched by that shard's
-	// goroutine (writeShard runs single-threaded per shardIdx).
-	shardWriters := make([]map[uint32]*output.Writer, len(inners))
+	// goroutine (writeShard runs single-threaded per shardIdx). The entry
+	// caches the tag's shared byte counter so the write path never takes
+	// the byteCaps lock.
+	type tagShard struct {
+		w   *output.Writer
+		ctr *tagCounter // non-nil only with --max-bytes-per-tag
+	}
+	shardWriters := make([]map[uint32]*tagShard, len(inners))
 	for i := range shardWriters {
-		shardWriters[i] = map[uint32]*output.Writer{}
+		shardWriters[i] = map[uint32]*tagShard{}
 	}
 	defer func() {
 		for _, m := range shardWriters {
-			for _, w := range m {
-				_ = w.Close()
+			for _, e := range m {
+				if e.w != nil {
+					_ = e.w.Close()
+				}
 			}
 		}
 	}()
 
-	writerFor := func(shardIdx int, tag uint32) (*output.Writer, error) {
+	perTag := caps != nil && caps.perTagLimit > 0
+	entryFor := func(shardIdx int, tag uint32) *tagShard {
 		m := shardWriters[shardIdx]
-		if w := m[tag]; w != nil {
-			return w, nil
+		if e := m[tag]; e != nil {
+			return e
 		}
+		e := &tagShard{}
+		if perTag {
+			e.ctr = caps.counterFor(tag)
+		}
+		m[tag] = e
+		return e
+	}
+
+	openWriter := func(shardIdx int, tag uint32) (*output.Writer, error) {
 		w, err := output.NewWriter(output.TagShardPath(basePath, shardIdx, tag), cfg)
 		if err != nil {
 			// Splitting opens one file (and fd) per distinct tag per CPU, so
@@ -1022,7 +1102,6 @@ func captureLoopShardedSplit(cmd *cli.Command, inners []*ebpf.Map, cfg output.Co
 		// Keep the live file current so it is complete within a second of
 		// the last write (e.g. after its set entry is removed).
 		w.EnablePeriodicFlush(time.Second)
-		m[tag] = w
 		return w, nil
 	}
 
@@ -1035,35 +1114,72 @@ func captureLoopShardedSplit(cmd *cli.Command, inners []*ebpf.Map, cfg output.Co
 			for j < len(pkts) && pkts[j].Tag == tag {
 				j++
 			}
-			w, err := writerFor(shardIdx, tag)
-			if err != nil {
+			e := entryFor(shardIdx, tag)
+			if e.ctr != nil && e.ctr.capped.Load() {
+				// Capped (possibly by another shard): drop the run and
+				// release the fd. capped is one-way, so the writer is
+				// never reopened (NewWriter would truncate the file).
+				if e.w != nil {
+					_ = e.w.Close()
+					e.w = nil
+				}
+				i = j
+				continue
+			}
+			if e.w == nil {
+				w, err := openWriter(shardIdx, tag)
+				if err != nil {
+					return err
+				}
+				e.w = w
+			}
+			if err := e.w.WriteBatch(pkts[i:j]); err != nil {
 				return err
 			}
-			if err := w.WriteBatch(pkts[i:j]); err != nil {
-				return err
+			if caps != nil {
+				n := epbBytes(pkts[i:j])
+				if e.ctr != nil && caps.addTag(e.ctr, n) {
+					fmt.Fprintf(os.Stderr, "tag %d capped at %d bytes (--max-bytes-per-tag %d)\n",
+						tag, e.ctr.bytes.Load(), caps.perTagLimit)
+					// Release this shard's fd right away instead of on
+					// the next sighting — traffic may stop here. Other
+					// shards close theirs when they next see the tag
+					// (their writers are not ours to touch).
+					_ = e.w.Close()
+					e.w = nil
+				}
+				if caps.totalLimit > 0 {
+					caps.addTotal(n)
+				}
 			}
 			i = j
 		}
 		return nil
 	}
 
-	return pumpShards(cmd, inners, label, writeShard)
+	return pumpShards(cmd, inners, label, writeShard, caps, sets)
 }
 
 // pumpShards runs the per-shard reader, handing each batch to writeShard,
 // until SIGINT/SIGTERM (or the -c count is reached). Write errors are
 // counted and the first is reported at the end rather than aborting the
 // capture. Shared by the plain and split-by-tag pcap paths.
-func pumpShards(cmd *cli.Command, inners []*ebpf.Map, label string, writeShard func(int, []capture.Packet) error) error {
+func pumpShards(cmd *cli.Command, inners []*ebpf.Map, label string, writeShard func(int, []capture.Packet) error, caps *byteCaps, sets []*setmap.Set) error {
 	fastReader := cmd.Bool("fast-reader")
 	null := cmd.Bool("null-output")
 	count := int64(cmd.Int("count"))
+	exitWhenCapped := cmd.Bool("exit-when-capped")
 	var captured atomic.Int64
 	var writeErrCount atomic.Int64
 	var firstWriteErr atomic.Pointer[string]
 
 	sink := func(shardIdx int, pkts []capture.Packet) error {
 		if count > 0 && captured.Load() >= count {
+			return nil
+		}
+		if caps != nil && caps.totalReached() {
+			// --max-bytes hit: stop writing while the poll loop below
+			// notices and shuts the shards down.
 			return nil
 		}
 		if err := writeShard(shardIdx, pkts); err != nil {
@@ -1110,16 +1226,45 @@ func pumpShards(cmd *cli.Command, inners []*ebpf.Map, label string, writeShard f
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 	defer signal.Stop(sig)
 
-	if count > 0 {
-		for {
+	// Poll only when something can actually end the capture early;
+	// per-tag caps alone (no --exit-when-capped) stop individual tags
+	// but never the process, so that case keeps the blocking wait.
+	needPoll := count > 0 || exitWhenCapped || (caps != nil && caps.totalLimit > 0)
+	if needPoll {
+		// Same 10 ms poll as -c; the set-map iteration for
+		// --exit-when-capped costs syscalls, so it runs at ~500 ms and
+		// only after at least one tag has actually capped.
+		tagsErrWarned := false
+		for it := 0; ; it++ {
 			select {
 			case <-sig:
 				stop()
 				goto done
 			default:
-				if captured.Load() >= count {
+				if count > 0 && captured.Load() >= count {
 					stop()
 					goto done
+				}
+				if caps != nil && caps.totalReached() {
+					fmt.Fprintf(os.Stderr, "\ntotal output cap reached (--max-bytes %d); stopping\n", caps.totalLimit)
+					stop()
+					goto done
+				}
+				if exitWhenCapped && it%50 == 0 && caps != nil && caps.anyCapped() {
+					tags, err := unionSetTags(sets)
+					switch {
+					case err != nil:
+						// Never exit early on a map read failure; the
+						// capture itself is unaffected.
+						if !tagsErrWarned {
+							fmt.Fprintf(os.Stderr, "warning: --exit-when-capped: reading set map tags: %v (will keep capturing)\n", err)
+							tagsErrWarned = true
+						}
+					case caps.allCapped(tags):
+						fmt.Fprintf(os.Stderr, "\nall %d set tag(s) capped (--exit-when-capped); stopping\n", len(tags))
+						stop()
+						goto done
+					}
 				}
 				time.Sleep(10 * time.Millisecond)
 			}
@@ -1429,7 +1574,7 @@ func runXDPNative(cmd *cli.Command) error {
 	}
 	printProbeWarnings(probe)
 	xdpHook, _ := hook.ByName(hook.KindXDP)
-	return runCaptureLoop(cmd, probe, outputConfigFor(xdpHook, false), fmt.Sprintf("xdp-native on %s", ifaceName))
+	return runCaptureLoop(cmd, probe, outputConfigFor(xdpHook, false), fmt.Sprintf("xdp-native on %s", ifaceName), sets)
 }
 
 // validateXDPNativeFlags rejects flags that don't apply to --mode xdp

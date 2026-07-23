@@ -487,6 +487,25 @@ func (d *Definition) List(out io.Writer) error {
 	return iter.Err()
 }
 
+// Tags returns the tag value of every entry currently in the map,
+// truncated to uint32 to match the tag width the capture path sees
+// (Packet.Tag). Order is unspecified; duplicates are possible when
+// multiple keys share a tag.
+func (d *Definition) Tags() ([]uint32, error) {
+	tagW, err := d.tagWidth()
+	if err != nil {
+		return nil, err
+	}
+	key := make([]byte, int(d.KeySize))
+	val := make([]byte, int(tagW))
+	var tags []uint32
+	iter := d.Map.Iterate()
+	for iter.Next(&key, &val) {
+		tags = append(tags, uint32(getUint(val)))
+	}
+	return tags, iter.Err()
+}
+
 func getUint(buf []byte) uint64 {
 	switch len(buf) {
 	case 1:
