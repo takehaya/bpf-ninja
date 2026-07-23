@@ -48,7 +48,7 @@ func TestMergeTagShards(t *testing.T) {
 	// A plain (non-tag) shard file must not be swept into any tag.
 	writeShardFile(t, base+".cpu0", epoch, []int{9})
 
-	if err := MergeTagShards(base, false); err != nil {
+	if err := MergeTagShards(base, Config{}); err != nil {
 		t.Fatalf("MergeTagShards: %v", err)
 	}
 
@@ -96,7 +96,7 @@ func TestMergeTagShardsGlobMeta(t *testing.T) {
 
 	writeShardFile(t, TagShardPath(base, 0, 3), epoch, []int{1, 2})
 
-	if err := MergeTagShards(base, false); err != nil {
+	if err := MergeTagShards(base, Config{}); err != nil {
 		t.Fatalf("MergeTagShards: %v", err)
 	}
 	merged := TagMergedPath(base, 3)

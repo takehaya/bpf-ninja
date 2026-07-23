@@ -11,11 +11,28 @@ import (
 	"github.com/takehaya/bpf-ninja/internal/capture"
 )
 
+// xdpExitConfig is the exit-mode layout the XDP hook produces
+// (mirrors internal/hook without importing it — output stays below hook
+// in the layering, tests included).
+func xdpExitConfig() Config {
+	return Config{
+		IsFexit:  true,
+		HookName: "xdp",
+		Actions: []ActionName{
+			{Value: 0, Name: "xdp:ABORTED"},
+			{Value: 1, Name: "xdp:DROP"},
+			{Value: 2, Name: "xdp:PASS"},
+			{Value: 3, Name: "xdp:TX"},
+			{Value: 4, Name: "xdp:REDIRECT"},
+		},
+	}
+}
+
 // writeShardFile writes a single-shard pcap-ng with packets at the given
 // second offsets from base, each a minimal 20-byte frame.
 func writeShardFile(t *testing.T, path string, base time.Time, secs []int) {
 	t.Helper()
-	w, err := NewWriter(path, false)
+	w, err := NewWriter(path, Config{})
 	if err != nil {
 		t.Fatalf("NewWriter(%s): %v", path, err)
 	}
@@ -44,7 +61,7 @@ func TestMergeShardFiles(t *testing.T) {
 	writeShardFile(t, base+".cpu2", epoch, []int{2, 4})
 
 	// numShards=3 so .cpu1 (nonexistent) exercises the skip path.
-	if err := MergeShardFiles(base, 3, false); err != nil {
+	if err := MergeShardFiles(base, 3, Config{}); err != nil {
 		t.Fatalf("MergeShardFiles: %v", err)
 	}
 
@@ -88,7 +105,7 @@ func TestMergeShardFilesFexitPreservesAction(t *testing.T) {
 	epoch := time.Unix(1700000000, 0).UTC()
 
 	// shard 0: two packets with actions 2 (PASS) and 1 (DROP).
-	w0, err := NewWriter(base+".cpu0", true) // isFexit
+	w0, err := NewWriter(base+".cpu0", xdpExitConfig())
 	if err != nil {
 		t.Fatalf("NewWriter fexit: %v", err)
 	}
@@ -102,7 +119,7 @@ func TestMergeShardFilesFexitPreservesAction(t *testing.T) {
 		t.Fatalf("close: %v", err)
 	}
 
-	if err := MergeShardFiles(base, 1, true); err != nil {
+	if err := MergeShardFiles(base, 1, xdpExitConfig()); err != nil {
 		t.Fatalf("MergeShardFiles fexit: %v", err)
 	}
 
@@ -136,7 +153,7 @@ func TestMergeShardFilesFexitPreservesAction(t *testing.T) {
 func TestMergeShardFilesEmpty(t *testing.T) {
 	dir := t.TempDir()
 	base := filepath.Join(dir, "none.pcap")
-	if err := MergeShardFiles(base, 4, false); err != nil {
+	if err := MergeShardFiles(base, 4, Config{}); err != nil {
 		t.Fatalf("MergeShardFiles with no shards: %v", err)
 	}
 	f, err := os.Open(base)

@@ -46,7 +46,7 @@ func TagMergedPath(base string, tag uint32) string {
 // correctly. It works whether the capture shut down cleanly (in-process) or
 // was killed and is being reconciled later by the `merge` subcommand. The
 // shard files are left in place.
-func MergeTagShards(basePath string, isFexit bool) error {
+func MergeTagShards(basePath string, cfg Config) error {
 	ext := filepath.Ext(basePath)
 	dir := filepath.Dir(basePath)
 	baseStem := strings.TrimSuffix(filepath.Base(basePath), ext)
@@ -78,7 +78,7 @@ func MergeTagShards(basePath string, isFexit bool) error {
 	for _, tag := range tags {
 		files := tagFiles[tag]
 		slices.Sort(files) // deterministic input order across shards
-		if err := mergeFiles(files, TagMergedPath(basePath, tag), isFexit); err != nil {
+		if err := mergeFiles(files, TagMergedPath(basePath, tag), cfg); err != nil {
 			return fmt.Errorf("merging tag %d: %w", tag, err)
 		}
 	}

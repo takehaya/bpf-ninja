@@ -93,19 +93,10 @@ func init() {
 type Packet struct {
 	Timestamp time.Time
 	Data      []byte
-	Action    uint32 // XDP action (fexit only)
+	Action    uint32 // hook verdict: XDP action / TC verdict (fexit only)
 	Mode      uint8  // 0=entry(fentry), 1=exit(fexit), 2=xdp-native
 	CapLen    uint16 // bytes the BPF side actually copied into Data
 	Tag       uint32 // set-map value of the matched entry (0 when no set matched)
-}
-
-// XDP actions for display.
-var XDPActionNames = map[uint32]string{
-	0: "ABORTED",
-	1: "DROP",
-	2: "PASS",
-	3: "TX",
-	4: "REDIRECT",
 }
 
 // Reader reads captured packets from the ringbuf.

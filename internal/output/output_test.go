@@ -5,7 +5,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/gopacket/layers"
 	"github.com/google/gopacket/pcapgo"
 
 	"github.com/takehaya/bpf-ninja/internal/capture"
@@ -19,13 +18,13 @@ var testPktData = []byte{
 	0xde, 0xad, 0xbe, 0xef, // payload
 }
 
-func newTestWriter(buf *bytes.Buffer, mode string) *Writer {
-	w := &Writer{}
+func newTestWriter(buf *bytes.Buffer, cfg Config) *Writer {
+	w := &Writer{cfg: cfg}
 	var err error
-	if mode == "exit" {
+	if cfg.IsFexit {
 		err = w.initExitMode(buf)
 	} else {
-		w.pcapWriter, err = pcapgo.NewNgWriter(buf, layers.LinkTypeEthernet)
+		w.pcapWriter, err = pcapgo.NewNgWriter(buf, cfg.linkTypeOrDefault())
 	}
 	if err != nil {
 		panic(err)
@@ -35,7 +34,7 @@ func newTestWriter(buf *bytes.Buffer, mode string) *Writer {
 
 func TestExitModeInterfaces(t *testing.T) {
 	var buf bytes.Buffer
-	w := newTestWriter(&buf, "exit")
+	w := newTestWriter(&buf, xdpExitConfig())
 
 	// Write one packet per action (0-4)
 	for action := uint32(0); action <= 4; action++ {
@@ -90,7 +89,7 @@ func TestExitModeInterfaces(t *testing.T) {
 
 func TestExitModeUnknownAction(t *testing.T) {
 	var buf bytes.Buffer
-	w := newTestWriter(&buf, "exit")
+	w := newTestWriter(&buf, xdpExitConfig())
 
 	pkt := capture.Packet{
 		Timestamp: time.Unix(1000000, 0),
@@ -110,18 +109,94 @@ func TestExitModeUnknownAction(t *testing.T) {
 		t.Fatalf("NewNgReader: %v", err)
 	}
 
+	// An out-of-table verdict gets its own lazily-added interface rather
+	// than being silently attributed to interface 0.
 	_, ci, err := r.ReadPacketData()
 	if err != nil {
 		t.Fatalf("ReadPacketData: %v", err)
 	}
-	if ci.InterfaceIndex != 0 {
-		t.Errorf("InterfaceIndex = %d, want 0 (fallback)", ci.InterfaceIndex)
+	if ci.InterfaceIndex != 5 {
+		t.Errorf("InterfaceIndex = %d, want 5 (lazy unknown-verdict interface)", ci.InterfaceIndex)
+	}
+	iface, err := r.Interface(5)
+	if err != nil {
+		t.Fatalf("Interface(5): %v", err)
+	}
+	if iface.Name != "xdp:UNKNOWN(99)" {
+		t.Errorf("Interface(5).Name = %q, want %q", iface.Name, "xdp:UNKNOWN(99)")
+	}
+}
+
+// tcExitConfig mirrors the tc hook's exit layout, including the signed
+// TC_ACT_UNSPEC verdict stored as its uint32 bit pattern.
+func tcExitConfig() Config {
+	return Config{
+		IsFexit:  true,
+		HookName: "tc",
+		Actions: []ActionName{
+			{Value: uint32(0xffffffff), Name: "tc:TC_ACT_UNSPEC"},
+			{Value: 0, Name: "tc:TC_ACT_OK"},
+			{Value: 1, Name: "tc:TC_ACT_RECLASSIFY"},
+			{Value: 2, Name: "tc:TC_ACT_SHOT"},
+		},
+	}
+}
+
+// TestExitModeTCInterfaces pins the fix for the old behavior where
+// tc-exit reused the hardcoded xdp interface table: TC_ACT_UNSPEC (-1)
+// must land on its own named interface, and TC_ACT_OK must not be
+// labeled as an XDP action.
+func TestExitModeTCInterfaces(t *testing.T) {
+	var buf bytes.Buffer
+	w := newTestWriter(&buf, tcExitConfig())
+
+	for _, action := range []uint32{0xffffffff /* -1 */, 0, 2} {
+		pkt := capture.Packet{
+			Timestamp: time.Unix(1000000, 0),
+			Data:      testPktData,
+			Action:    action,
+			Mode:      1,
+		}
+		if err := w.Write(pkt); err != nil {
+			t.Fatalf("Write action=%d: %v", int32(action), err)
+		}
+	}
+	if err := w.Flush(); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+
+	r, err := pcapgo.NewNgReader(&buf, pcapgo.DefaultNgReaderOptions)
+	if err != nil {
+		t.Fatalf("NewNgReader: %v", err)
+	}
+	wantIfaces := []int{0 /* UNSPEC */, 1 /* OK */, 3 /* SHOT */}
+	for i, want := range wantIfaces {
+		_, ci, err := r.ReadPacketData()
+		if err != nil {
+			t.Fatalf("ReadPacketData %d: %v", i, err)
+		}
+		if ci.InterfaceIndex != want {
+			t.Errorf("packet %d: InterfaceIndex = %d, want %d", i, ci.InterfaceIndex, want)
+		}
+	}
+	wantNames := []string{"tc:TC_ACT_UNSPEC", "tc:TC_ACT_OK", "tc:TC_ACT_RECLASSIFY", "tc:TC_ACT_SHOT"}
+	if r.NInterfaces() != len(wantNames) {
+		t.Fatalf("NInterfaces = %d, want %d", r.NInterfaces(), len(wantNames))
+	}
+	for i, name := range wantNames {
+		iface, err := r.Interface(i)
+		if err != nil {
+			t.Fatalf("Interface(%d): %v", i, err)
+		}
+		if iface.Name != name {
+			t.Errorf("Interface(%d).Name = %q, want %q", i, iface.Name, name)
+		}
 	}
 }
 
 func TestEntryModeUnchanged(t *testing.T) {
 	var buf bytes.Buffer
-	w := newTestWriter(&buf, "entry")
+	w := newTestWriter(&buf, Config{})
 
 	if w.actionToID != nil {
 		t.Fatal("actionToID should be nil in entry mode")

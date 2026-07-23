@@ -9,10 +9,12 @@ package hook
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/asm"
+	"github.com/google/gopacket/layers"
 	"github.com/takehaya/bpf-ninja/pkg/kunai/codegen"
 )
 
@@ -41,6 +43,23 @@ type Hook struct {
 	// and fexit compiles respectively (action atoms, packet layout).
 	EntryCaps func() codegen.Capabilities
 	FexitCaps func() codegen.Capabilities
+
+	// Actions lists the hook's verdict values in pcap-ng interface
+	// creation order, with their display names (exit mode writes one
+	// interface per verdict so Wireshark shows the verdict as the
+	// interface name). Signed verdicts are stored as their uint32 bit
+	// pattern (TC_ACT_UNSPEC = 0xffffffff).
+	Actions []ActionName
+
+	// LinkType is the pcap-ng link type of the packet bytes this hook
+	// observes (Ethernet for xdp/tc; raw IP for L3-start hooks).
+	LinkType layers.LinkType
+}
+
+// ActionName pairs a verdict value with its pcap-ng interface name.
+type ActionName struct {
+	Value uint32
+	Name  string
 }
 
 // registry lists all supported hooks. Order defines the wording of
@@ -51,10 +70,8 @@ var registry = []*Hook{xdpHook, tcHook}
 // the per-site `pt == XDP || pt == SchedCLS || ...` supported-type checks.
 func ByProgramType(pt ebpf.ProgramType) (*Hook, bool) {
 	for _, h := range registry {
-		for _, t := range h.ProgTypes {
-			if t == pt {
-				return h, true
-			}
+		if slices.Contains(h.ProgTypes, pt) {
+			return h, true
 		}
 	}
 	return nil, false

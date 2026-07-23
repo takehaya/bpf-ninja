@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/google/gopacket/layers"
 	"github.com/urfave/cli/v3"
 
 	"github.com/takehaya/bpf-ninja/internal/capture"
@@ -95,7 +96,10 @@ func runConvert(ctx context.Context, cmd *cli.Command) error {
 	bw := bufio.NewWriterSize(sink, 1<<20)
 	defer func() { _ = bw.Flush() }()
 
-	fastW, err := output.NewFastNgWriter(bw)
+	// Raw dumps carry no hook identity in their header today, so the
+	// offline convert always renders Ethernet framing (all raw-dump
+	// capable hooks are L2 hooks).
+	fastW, err := output.NewFastNgWriter(bw, layers.LinkTypeEthernet)
 	if err != nil {
 		return fmt.Errorf("creating pcap-ng writer: %w", err)
 	}

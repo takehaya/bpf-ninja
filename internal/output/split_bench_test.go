@@ -44,7 +44,7 @@ func benchPackets(n int, tag func(i int) uint32) []capture.Packet {
 
 func nullWriter(b *testing.B) *Writer {
 	b.Helper()
-	w, err := NewWriter(os.DevNull, false)
+	w, err := NewWriter(os.DevNull, Config{})
 	if err != nil {
 		b.Fatalf("NewWriter: %v", err)
 	}

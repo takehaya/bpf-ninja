@@ -5,6 +5,7 @@ import (
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/asm"
+	"github.com/google/gopacket/layers"
 	tchost "github.com/takehaya/bpf-ninja/pkg/kunai/host/tc"
 )
 
@@ -17,6 +18,21 @@ var tcHook = &Hook{
 	// before either attach point runs.
 	EntryCaps: tchost.EntryCapabilities,
 	FexitCaps: tchost.FexitCapabilities,
+	// Mirrors tchost.Actions (uapi/linux/pkt_cls.h); consistency is
+	// asserted by TestHookActionsMatchHostVocab.
+	Actions: []ActionName{
+		{Value: uint32(0xffffffff), Name: "tc:TC_ACT_UNSPEC"}, // -1
+		{Value: 0, Name: "tc:TC_ACT_OK"},
+		{Value: 1, Name: "tc:TC_ACT_RECLASSIFY"},
+		{Value: 2, Name: "tc:TC_ACT_SHOT"},
+		{Value: 3, Name: "tc:TC_ACT_PIPE"},
+		{Value: 4, Name: "tc:TC_ACT_STOLEN"},
+		{Value: 5, Name: "tc:TC_ACT_QUEUED"},
+		{Value: 6, Name: "tc:TC_ACT_REPEAT"},
+		{Value: 7, Name: "tc:TC_ACT_REDIRECT"},
+		{Value: 8, Name: "tc:TC_ACT_TRAP"},
+	},
+	LinkType: layers.LinkTypeEthernet,
 }
 
 // skbPacketPrologue reads the packet window from a kernel

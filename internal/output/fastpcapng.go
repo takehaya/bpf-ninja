@@ -29,6 +29,8 @@ import (
 	"fmt"
 	"io"
 	"time"
+
+	"github.com/google/gopacket/layers"
 )
 
 // pcap-ng block types (RFC draft, IETF opsawg-pcapng).
@@ -40,9 +42,6 @@ const (
 	shbByteOrderMagic = 0x1A2B3C4D
 	shbVersionMajor   = 1
 	shbVersionMinor   = 0
-
-	// LinkType: LINKTYPE_ETHERNET (1).
-	linkTypeEthernet = 1
 
 	// Timestamp resolution: nanoseconds, encoded in IDB option
 	// if_tsresol = 9 (i.e. 10^-9). Default is 10^-6 (microseconds);
@@ -66,12 +65,12 @@ type FastNgWriter struct {
 // Caller writes packets via WritePacket. The IDB has timestamp
 // resolution = nanoseconds (matches gopacket pcapgo default of
 // TimestampResolution: 9).
-func NewFastNgWriter(w io.Writer) (*FastNgWriter, error) {
+func NewFastNgWriter(w io.Writer, linkType layers.LinkType) (*FastNgWriter, error) {
 	fw := &FastNgWriter{w: w}
 	if err := fw.writeSHB(); err != nil {
 		return nil, err
 	}
-	if err := fw.writeIDB(linkTypeEthernet); err != nil {
+	if err := fw.writeIDB(uint16(linkType)); err != nil {
 		return nil, err
 	}
 	return fw, nil
