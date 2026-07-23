@@ -21,7 +21,7 @@ var mergeFlags = []cli.Flag{
 	},
 	&cli.BoolFlag{
 		Name:  "fexit",
-		Usage: "the shards came from --mode exit / tc-exit (they carry a per-action pcap-ng interface); set this so the merged file keeps the same interfaces",
+		Usage: "the shards came from --mode exit (they carry a per-verdict pcap-ng interface); set this so the merged file keeps the same interfaces",
 	},
 }
 

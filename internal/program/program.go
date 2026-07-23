@@ -133,13 +133,20 @@ func loadMulti(targets []attach.Target, filterExpr string, filters []filter.Targ
 		return nil, fmt.Errorf("filters length %d does not match %d targets", len(filters), len(targets))
 	}
 	progType := targets[0].Type
-	for _, t := range targets[1:] {
-		if t.Type != progType {
-			return nil, fmt.Errorf("mixed target program types (%s and %s)", progType, t.Type)
-		}
-	}
-	if _, ok := hook.ByProgramType(progType); !ok {
+	h, ok := hook.ByProgramType(progType)
+	if !ok {
 		return nil, hook.UnsupportedTypeError(progType)
+	}
+	// Same-hook, not same-progType: SchedCLS and SchedACT targets share
+	// the tc hook (identical prologue and capabilities) and may mix.
+	for _, t := range targets[1:] {
+		th, tok := hook.ByProgramType(t.Type)
+		if !tok {
+			return nil, hook.UnsupportedTypeError(t.Type)
+		}
+		if th != h {
+			return nil, fmt.Errorf("mixed target hooks (%s and %s); attach one bpf-ninja per hook", h.Kind, th.Kind)
+		}
 	}
 
 	// DSL `field in @set` extracts packet fields into a host key buffer;
@@ -283,7 +290,7 @@ func compileFilter(expr string, useDSL, isFexit bool, progType ebpf.ProgramType)
 func compileFilterWithSlots(expr string, useDSL, isFexit bool, progType ebpf.ProgramType, slots *pktSetSlots) (codegen.Output, error) {
 	// Empty expression == capture everything: no filter to compile,
 	// callers wrap the zero Output with their own prologue/epilogue.
-	// Centralised here so attach modes (entry/exit/xdp/tc-*) don't
+	// Centralised here so attach modes (entry/exit/xdp) don't
 	// each reimplement the empty-filter policy and drift apart.
 	if expr == "" {
 		return codegen.Output{}, nil

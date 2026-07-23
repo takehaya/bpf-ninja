@@ -213,21 +213,21 @@ tc_prog_id() {
     bpftool prog show name tc_pass 2>/dev/null | head -1 | awk '{print $1}' | tr -d ':'
 }
 
-# Dummy tc clsact classifier returns TC_ACT_OK (=0); --mode tc-entry
-# and --mode tc-exit attach as fentry/fexit observers and capture
+# Dummy tc clsact classifier returns TC_ACT_OK (=0); --mode entry
+# and --mode exit attach as fentry/fexit observers and capture
 # packets on each ingress event.
 test_dsl_tc_entry() {
     require_bpftool || return 1
     local pid_t=$(tc_prog_id)
     [[ -n "$pid_t" ]] || { echo "tc_pass program not found" >&2; return 1; }
-    run_count_test 3 --mode tc-entry -p "$pid_t" -c 3 "eth/ipv4/icmp"
+    run_count_test 3 --mode entry -p "$pid_t" -c 3 "eth/ipv4/icmp"
 }
 
 test_dsl_tc_exit_action() {
     require_bpftool || return 1
     local pid_t=$(tc_prog_id)
     [[ -n "$pid_t" ]] || { echo "tc_pass program not found" >&2; return 1; }
-    run_count_test 3 --mode tc-exit -p "$pid_t" -c 3 "eth/ipv4/icmp where action == TC_ACT_OK"
+    run_count_test 3 --mode exit -p "$pid_t" -c 3 "eth/ipv4/icmp where action == TC_ACT_OK"
 }
 
 # Exercises --func subfunction attach + --arg-filter argument reading against

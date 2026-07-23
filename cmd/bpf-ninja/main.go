@@ -56,7 +56,7 @@ var flags = []cli.Flag{
 	},
 	&cli.StringFlag{
 		Name: "mode", Value: "entry",
-		Usage: "capture point: entry / exit (XDP fentry/fexit observer), tc-entry / tc-exit (tc clsact fentry/fexit observer), or xdp (attach as native XDP)",
+		Usage: "capture point: entry / exit (fentry/fexit observer on the target program — the hook kind is auto-detected from the program type), or xdp (attach as native XDP). tc-entry / tc-exit are deprecated aliases for entry / exit",
 	},
 	&cli.IntFlag{
 		Name: "count", Aliases: []string{"c"},
@@ -105,6 +105,10 @@ var flags = []cli.Flag{
 	&cli.StringFlag{
 		Name:  "dump-asm",
 		Usage: "compile the filter and print the resulting eBPF asm without loading; values: filter (kunai/cbpfc Main + Callbacks) | full (wrapped tracing program)",
+	},
+	&cli.StringFlag{
+		Name:  "dump-hook",
+		Usage: "hook whose capabilities/prologue --dump-asm renders (no target program exists to auto-detect from): xdp | tc (default xdp; deprecated --mode tc-* aliases imply tc)",
 	},
 	&cli.BoolFlag{
 		Name: "verbose", Aliases: []string{"v"},
@@ -270,11 +274,14 @@ func newRootCommand() *cli.Command {
 		Description: `Outputs pcap (pcapng) to stdout. Pipe to tcpdump, wireshark, etc.
 
 Modes (--mode):
-  entry     fentry on the existing XDP — observe packets before the program runs (default)
-  exit      fexit on the existing XDP — observe action returned (filter on XDP_PASS/DROP/...)
-  tc-entry  fentry on a tc clsact program (specify target via -p)
-  tc-exit   fexit on a tc clsact program (filter on TC_ACT_OK/SHOT/...)
+  entry     fentry observer — see packets before the target program runs (default)
+  exit      fexit observer — also see the verdict returned (filter on XDP_PASS / TC_ACT_OK / ...)
   xdp       attach as the primary XDP on the netdev (no existing XDP needed)
+
+The hook kind (XDP, tc clsact, ...) is auto-detected from the target
+program's type: -p <prog-id> works for any supported program, -i looks
+up the interface's XDP program. tc-entry / tc-exit remain as deprecated
+aliases for entry / exit.
 
 Examples:
   bpf-ninja -i eth0 | tcpdump -n -r -
@@ -282,7 +289,8 @@ Examples:
   bpf-ninja -i eth0 --mode exit | tcpdump -r -
   bpf-ninja --mode xdp -i eth0 "eth/ipv4/tcp[dport==443]" | tcpdump -r -
   bpf-ninja --cbpf --mode xdp -i eth0 "tcp port 443" | tcpdump -r -   # legacy pcap syntax
-  bpf-ninja -p 42 | tcpdump -n -r -
+  bpf-ninja -p 42 | tcpdump -n -r -                  # XDP or tc program, auto-detected
+  bpf-ninja -p 42 --mode exit "eth/ipv4 where action == TC_ACT_SHOT"  # tc verdict filter
   bpf-ninja -i eth0 -w out.pcap`,
 		Flags:                 flags,
 		Action:                run,
@@ -387,20 +395,31 @@ func run(ctx context.Context, cmd *cli.Command) error {
 	}
 
 	mode := cmd.String("mode")
-	var isFexit, isXDPNative, isTC bool
+	// The hook kind (xdp / tc / ...) is auto-detected from the target
+	// program's type; --mode only picks the capture point. dumpHook is
+	// the one place a hook must be named explicitly, because --dump-asm
+	// compiles without a target program to detect from.
+	dumpHook := hook.Kind(cmd.String("dump-hook"))
+	var isFexit, isXDPNative bool
 	switch mode {
 	case "entry":
 	case "exit":
 		isFexit = true
-	case "tc-entry":
-		isTC = true
-	case "tc-exit":
-		isTC = true
-		isFexit = true
+	case "tc-entry", "tc-exit":
+		newMode := strings.TrimPrefix(mode, "tc-")
+		fmt.Fprintf(os.Stderr, "warning: --mode %s is deprecated; the hook is auto-detected from the target program, use --mode %s\n", mode, newMode)
+		if dumpHook == "" {
+			dumpHook = hook.KindTC
+		}
+		mode = newMode
+		isFexit = mode == "exit"
 	case "xdp":
 		isXDPNative = true
 	default:
-		return fmt.Errorf("invalid mode %q: must be entry, exit, tc-entry, tc-exit, or xdp", mode)
+		return fmt.Errorf("invalid mode %q: must be entry, exit, or xdp (tc-entry / tc-exit are deprecated aliases)", mode)
+	}
+	if dumpHook == "" {
+		dumpHook = hook.KindXDP
 	}
 
 	if scope := cmd.String("dump-asm"); scope != "" {
@@ -409,14 +428,14 @@ func run(ctx context.Context, cmd *cli.Command) error {
 		if err != nil {
 			return err
 		}
-		return program.DumpAsm(os.Stdout, program.DumpScope(scope), filterExpr, useDSL, mode)
+		return program.DumpAsm(os.Stdout, program.DumpScope(scope), filterExpr, useDSL, mode, dumpHook)
 	}
 
 	if isXDPNative {
 		return runXDPNative(cmd)
 	}
 
-	infos, err := findTargets(cmd, isTC)
+	infos, err := findTargets(cmd)
 	if err != nil {
 		return err
 	}
@@ -1441,7 +1460,12 @@ func validateXDPNativeFlags(cmd *cli.Command) error {
 // Several programs come from repeated -p, or from -i with --prog-name (which
 // picks named programs out of the interface's reachable tree); a bare -i
 // resolves to just the single XDP program attached to the interface.
-func findTargets(cmd *cli.Command, isTC bool) ([]*attach.ProgInfo, error) {
+//
+// -p accepts any program type the hook registry supports — the hook kind
+// is detected from the opened program, not from a flag. -i remains an
+// XDP lookup (there is no interface-based clsact qdisc walk yet; select
+// tc targets with -p <prog-id>).
+func findTargets(cmd *cli.Command) ([]*attach.ProgInfo, error) {
 	ifaceName := cmd.String("interface")
 	progIDs := cmd.IntSlice("prog-id")
 	progNames := cmd.StringSlice("prog-name")
@@ -1452,21 +1476,11 @@ func findTargets(cmd *cli.Command, isTC bool) ([]*attach.ProgInfo, error) {
 	if ifaceName == "" && len(progIDs) == 0 {
 		return nil, fmt.Errorf("specify -i <interface> or -p <prog-id>")
 	}
-	if len(progNames) > 0 {
-		if ifaceName == "" {
-			return nil, fmt.Errorf("--prog-name requires -i <interface> (names resolve against the interface's reachable program tree)")
-		}
-		if isTC {
-			return nil, fmt.Errorf("--prog-name is XDP-only; select tc clsact targets with -p <prog-id>")
-		}
+	if len(progNames) > 0 && ifaceName == "" {
+		return nil, fmt.Errorf("--prog-name requires -i <interface> (names resolve against the interface's reachable program tree)")
 	}
 
 	if ifaceName != "" {
-		if isTC {
-			// tc clsact targets are addressed by program ID — no
-			// interface-based clsact qdisc walk wired up yet.
-			return nil, fmt.Errorf("--mode tc-* requires -p <prog-id>; interface-based tc target lookup is not implemented")
-		}
 		if len(progNames) > 0 {
 			return attach.ResolveXDPTargetsByName(ifaceName, progNames)
 		}
@@ -1488,13 +1502,7 @@ func findTargets(cmd *cli.Command, isTC bool) ([]*attach.ProgInfo, error) {
 			continue
 		}
 		seen[pid] = true
-		var info *attach.ProgInfo
-		var err error
-		if isTC {
-			info, err = attach.FindBPFProgramByID(pid)
-		} else {
-			info, err = attach.FindXDPProgramByID(pid)
-		}
+		info, err := attach.FindBPFProgramByID(pid)
 		if err != nil {
 			for _, prev := range infos {
 				_ = prev.Program.Close()
