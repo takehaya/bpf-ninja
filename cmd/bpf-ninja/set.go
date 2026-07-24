@@ -126,11 +126,17 @@ var setDelCmd = &cli.Command{
 	Usage:     "delete one entry (full key required)",
 	ArgsUsage: "<pin-path> field=value ...",
 	Action: func(_ context.Context, cmd *cli.Command) error {
-		def, fields, _, err := setOpenWithFields(cmd)
+		def, fields, val, err := setOpenWithFields(cmd)
 		if err != nil {
 			return err
 		}
 		defer def.Close()
+		// del identifies an entry by its key alone; silently ignoring a
+		// value assignment (a typoed `add`, or a templated arg list)
+		// would fake success.
+		if val.HasTag || val.HasMaxBytes {
+			return fmt.Errorf("set del takes key fields only (tag= / max-bytes= have no meaning on delete)")
+		}
 		return def.Delete(fields)
 	},
 }

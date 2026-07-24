@@ -482,20 +482,41 @@ func (d *Definition) Add(values map[string]string, ev EntryValue) error {
 		return fmt.Errorf("this map's value has no %s field (created with a plain tag value); recreate it with --value %q to use per-entry caps",
 			ValFieldMaxBytes, DefaultValueSchema)
 	}
+	if ev.HasMaxBytes && ev.MaxBytes > 0 && ev.Tag == 0 {
+		return fmt.Errorf("tag 0 is the unmatched-traffic tag and can never be cap-enforced; give the entry a non-zero tag")
+	}
 	val := make([]byte, int(d.Map.ValueSize()))
 	putField(val, tf, ev.Tag)
 	if hasMax {
 		putField(val, mf, ev.MaxBytes)
 	}
-	// An update must not silently reactivate an entry the capture
-	// process parked: carry the existing state over — but only while the
-	// tag stays the same. Re-tagging an entry assigns it to a new job,
-	// which starts active like any fresh entry. (There is no CLI to flip
-	// state back — finalized tags are single-use by design.)
-	if sf, hasState := d.ValField(ValFieldState); hasState {
+	// Both value fields are sticky across an update of the SAME tag: the
+	// state must not be silently reset (it would reactivate an entry the
+	// capture process parked), and an omitted max-bytes= must not
+	// silently clear an existing cap (explicit max-bytes=0 is the way to
+	// uncap — HasMaxBytes distinguishes the two). Re-tagging assigns the
+	// entry to a new job, which starts active like any fresh entry, with
+	// whatever cap this Add carries. (There is no CLI to flip state back
+	// — finalized tags are single-use by design.)
+	sf, hasState := d.ValField(ValFieldState)
+	if hasState || hasMax {
 		old := make([]byte, int(d.Map.ValueSize()))
-		if err := d.Map.Lookup(key, &old); err == nil && getField(old, tf) == ev.Tag {
-			putField(val, sf, getField(old, sf))
+		switch err := d.Map.Lookup(key, &old); {
+		case err == nil:
+			if getField(old, tf) == ev.Tag {
+				if hasState {
+					putField(val, sf, getField(old, sf))
+				}
+				if hasMax && !ev.HasMaxBytes {
+					putField(val, mf, getField(old, mf))
+				}
+			}
+		case errors.Is(err, ebpf.ErrKeyNotExist):
+			// fresh entry: state active, cap as given
+		default:
+			// A transient lookup failure must not silently reactivate a
+			// parked entry or drop its cap — surface it instead.
+			return fmt.Errorf("reading existing entry before update: %w", err)
 		}
 	}
 	return d.Map.Put(key, val)
@@ -584,25 +605,6 @@ func (d *Definition) TagInfos() ([]TagInfo, error) {
 		infos = append(infos, info)
 	}
 	return infos, iter.Err()
-}
-
-// Tags returns the tag of every ACTIVE entry (state 0; every entry on
-// layouts without a state field), truncated to uint32 to match the tag
-// width the capture path sees (Packet.Tag). Non-active entries stopped
-// matching in BPF, so for quiesce/exit decisions they are equivalent to
-// deleted ones.
-func (d *Definition) Tags() ([]uint32, error) {
-	infos, err := d.TagInfos()
-	if err != nil {
-		return nil, err
-	}
-	var tags []uint32
-	for _, in := range infos {
-		if in.State == StateActive {
-			tags = append(tags, in.Tag)
-		}
-	}
-	return tags, nil
 }
 
 // SetState rewrites the state field of every entry carrying tag,

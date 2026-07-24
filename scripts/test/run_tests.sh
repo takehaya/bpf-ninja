@@ -492,13 +492,52 @@ test_cap_finalize_flow() {
     local alive=0
     kill -0 $pid 2>/dev/null && alive=1
     local finalized=0
-    "$BINARY" set list "$pin" 2>/dev/null | grep -q "type=8 tag=1 state=finalized" && finalized=1
+    "$BINARY" set list "$pin" 2>/dev/null | grep -Eq "tag=1 .*state=finalized" && finalized=1
+    local size=0
+    [[ -f "$merged" ]] && size=$(stat -c %s "$merged")
     kill -INT $pid 2>/dev/null; wait $pid 2>/dev/null
     local rc=$?
 
-    echo "cap_finalize appeared=$appeared alive=$alive finalized=$finalized rc=$rc list=$("$BINARY" set list "$pin" 2>/dev/null) stderr=$(cat "$err")" >&2
+    echo "cap_finalize appeared=$appeared alive=$alive finalized=$finalized size=$size rc=$rc list=$("$BINARY" set list "$pin" 2>/dev/null) stderr=$(cat "$err")" >&2
     rm -f "$pcap" "${pcap%.pcap}".*.pcap "$pcap".cpu* "$err" "$pin"
-    [[ $appeared -eq 1 && $alive -eq 1 && $finalized -eq 1 && $rc -eq 0 ]]
+    # Same cap + batch + header slack as test_split_per_entry_cap.
+    [[ $appeared -eq 1 && $alive -eq 1 && $finalized -eq 1 && $rc -eq 0 && $size -gt 0 && $size -le $((300 + 4096)) ]]
+}
+
+# All three flags composed: the cap must park the entry, the finalizer
+# must produce the ack AND stamp state=finalized BEFORE the process
+# exits 0 on its own — finalized is the guaranteed terminal state, so a
+# collector polling `set list` never hangs after the exit.
+test_cap_finalize_exit() {
+    local pin=/sys/fs/bpf/bpfninja_capfx_$$
+    rm -f "$pin" 2>/dev/null || true
+    if ! "$BINARY" set create "$pin" --key "type:u8" >/dev/null 2>&1 \
+        || ! "$BINARY" set add "$pin" type=8 tag=1 max-bytes=300 >/dev/null 2>&1; then
+        echo "set create/add failed" >&2
+        rm -f "$pin" 2>/dev/null || true
+        return 1
+    fi
+
+    local pcap=$(mktemp --suffix=.pcap)
+    local merged="${pcap%.pcap}.1.pcap"
+    local err=$(mktemp)
+    timeout 30 "$BINARY" -i veth0 --set "caps=$pin" --split-by-tag \
+        --finalize-on-del --exit-when-capped \
+        -w "$pcap" 'eth/ipv4/icmp[type in @caps]' > /dev/null 2>"$err" &
+    local pid=$!
+    sleep 2
+    ip netns exec xdptest ping -c 60 -i 0.1 -W 1 10.0.0.1 >/dev/null 2>&1 || true
+    wait $pid
+    local rc=$?
+
+    local appeared=0
+    [[ -f "$merged" ]] && appeared=1
+    local finalized=0
+    "$BINARY" set list "$pin" 2>/dev/null | grep -Eq "tag=1 .*state=finalized" && finalized=1
+
+    echo "cap_finalize_exit rc=$rc appeared=$appeared finalized=$finalized list=$("$BINARY" set list "$pin" 2>/dev/null) stderr=$(cat "$err")" >&2
+    rm -f "$pcap" "${pcap%.pcap}".*.pcap "$pcap".cpu* "$err" "$pin"
+    [[ $rc -eq 0 && $appeared -eq 1 && $finalized -eq 1 ]]
 }
 
 # --finalize-on-del: removing a tag's set entry must produce the merged
@@ -614,6 +653,7 @@ run_test "argfilter"               test_argfilter
 run_test "argfilter_set"           test_argfilter_set
 run_test "split_per_entry_cap"     test_split_per_entry_cap
 run_test "cap_finalize_flow"       test_cap_finalize_flow
+run_test "cap_finalize_exit"       test_cap_finalize_exit
 run_test "finalize_on_del"         test_finalize_on_del
 run_test "max_bytes_total"         test_max_bytes_total
 run_test "graceful_shutdown"       test_graceful_shutdown

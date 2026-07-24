@@ -805,10 +805,14 @@ sudo bpf-ninja -i eth0 --mode xdp --set "subs=$PIN" \
 - 上限のカウント対象は pcap-ng の packet block バイトで、ファイルごとの固定ヘッダは含みません。判定は ringbuf バッチ単位なので、shard あたり最大 1 バッチぶんの超過があり得ます。
 - record が運ぶのは tag だけなので、上限は実質 **tag 単位**です。同じ tag を共有する entry は 1 つの予算を共有します。entry ごとに違う上限が付いている場合は大きい方が有効で、上限なし (0) の entry が 1 つでもあればその tag は上限なしになります。
 - 上限はキャプチャ中でも `set add` の上書きで変更でき、約 1 秒で反映されます。ただし一度上限に達した tag は、後から上限を引き上げても再開しません。
+- `set add` で既存 entry を更新するとき、`max-bytes=` を**省略しても既存の上限は維持されます** (state と同じ扱い)。上限を外すには明示的に `max-bytes=0` を指定します。tag を変えた更新は新しいジョブへの割り当てとみなし、state も上限もこの `set add` の指定どおりに始まります。
 - 上限に達した tag の live ファイルは閉じてファイルディスクリプタを解放します。到達を検知した CPU の分は即時に、他の CPU の分は次にその tag のパケットを見た時点で閉じます。
-- `--exit-when-capped` を足すと、**上限を持つ全 entry** が到達した時点で自動的に exit 0 します。上限なしの entry と tag 0 (set 不一致) は判定に参加しません。通常のシャットダウンと同じく per-CPU ファイルの合算まで行うので、待っている呼び出し側はそのまま完成した `out.<tag>.pcap` を回収できます。
-- `--finalize-on-del` と併用すると、上限に達した tag は entry の `state` が `capped` に書き換わってカーネル側のマッチも止まり、そのまま静止 → 合算の経路に入って `out.<tag>.pcap` が生成され、最後に `state=finalized` になります。entry 自体は消えないので、`set list` で「どのキー (imsi 等) のジョブがどこまで進んだか」を追えます。`--finalize-on-del` 無しの場合は state に触らず、従来通りユーザー空間で捨てるだけです。
-- プロセス全体の上限は `--max-bytes` フラグです。こちらは `--split-by-tag` 無しでも使えて、到達すると `-c` と同じ経路でキャプチャ全体を止めて exit 0 します。
+- `--exit-when-capped` を足すと、**上限を持つ全 entry** が到達した時点で自動的に exit 0 します。上限なしの entry と tag 0 (set 不一致) は判定に参加しません。通常のシャットダウンと同じく per-CPU ファイルの合算まで行うので、待っている呼び出し側はそのまま完成した `out.<tag>.pcap` を回収できます。前回実行の残りで最初から全 entry が capped/finalized の map に対して起動した場合は、録るものが無いので即座に exit 0 します。
+- `--finalize-on-del` と併用すると、上限に達した tag は entry の `state` が `capped` に書き換わってカーネル側のマッチも止まり、そのまま静止 → 合算の経路に入って `out.<tag>.pcap` が生成され、最後に `state=finalized` になります。**`--exit-when-capped` の exit はこの finalize の完了を待つ**ので、プロセスが exit 0 した時点で上限付き全 tag の ack ファイルと `state=finalized` が揃っていることが保証されます (cap 到達から exit まで数秒かかります)。entry 自体は消えないので、`set list` で「どのキー (imsi 等) のジョブがどこまで進んだか」を追えます。`--finalize-on-del` 無しの場合は state に触らず、従来通りユーザー空間で捨てるだけです。
+- state は pinned map に**プロセスを跨いで残ります**。capped/finalized の entry は次のキャプチャでもマッチしないので、同じコマンドを再実行しても該当 tag は何も録れません。キーを新しいジョブとして使い直すには `set add ... tag=<新しい番号>` で tag を振り直します (同じ tag への復帰手段は意図的にありません)。
+- キャプチャプロセスと `set add` は map の value を無同期で読み書きします (last-writer-wins)。state の書き込みが競合で失われても毎秒の巡回で自動修復されますが、`set add` の上限変更がまれに 1 回失われる可能性はあります (再実行すれば反映されます)。
+- プロセス全体の上限は `--max-bytes` フラグです。こちらは `--split-by-tag` 無しでも使えて、到達すると `-c` と同じ経路でキャプチャ全体を止めて exit 0 します。逆に、entry に `max-bytes` を付けても `--split-by-tag` 無しのキャプチャでは強制されません (起動時に警告を出します)。
+- 外部ツールで作った pinned map の value が struct の場合、認識できる layout (`tag[,state,max_bytes]`) 以外は open 時にエラーになります (0.22 までは value の BTF を見ていませんでした)。単一整数 value は従来どおり開けます。
 
 ## 仕組みの概要
 

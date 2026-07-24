@@ -966,10 +966,23 @@ func captureLoopSharded(cmd *cli.Command, inners []*ebpf.Map, cfg output.Config,
 	if rawDump {
 		return captureLoopShardedRaw(cmd, inners, label, basePath)
 	}
-	// Per-entry caps can only apply on the split path with sets to read
-	// them from; the aggregate --max-bytes works everywhere pcap-ng does
-	// (run() already rejected it with --raw-dump / --null-output).
-	perTagPossible := cmd.Bool("split-by-tag") && len(sets) > 0
+	// Per-entry caps can only apply on the split path, and only when at
+	// least one attached map's value layout carries a max_bytes field —
+	// a pinned map's layout is static for the life of the capture (even
+	// `set resize` reuses the old BTF verbatim), so legacy-layout and
+	// capless deployments keep the flag-era quiet path: no per-batch
+	// accounting, no wakeup poll, no ~1s map iteration. The aggregate
+	// --max-bytes works everywhere pcap-ng does (run() already rejected
+	// it with --raw-dump / --null-output).
+	perTagPossible := false
+	if cmd.Bool("split-by-tag") {
+		for _, s := range sets {
+			if _, ok := s.Def.ValField(setmap.ValFieldMaxBytes); ok {
+				perTagPossible = true
+				break
+			}
+		}
+	}
 	caps := newByteCaps(perTagPossible, uint64(cmd.Int("max-bytes")))
 	if cmd.Bool("split-by-tag") {
 		// run() already rejected --split-by-tag with stdout / --raw-dump /
@@ -1194,7 +1207,10 @@ func captureLoopShardedSplit(cmd *cli.Command, inners []*ebpf.Map, cfg output.Co
 			if caps != nil {
 				n := epbBytes(pkts[i:j])
 				if e.ctr != nil && caps.addTag(e.ctr, n) {
-					fmt.Fprintf(os.Stderr, "tag %d capped at %d bytes (entry max-bytes %d)\n",
+					// The printed limit is the effective per-tag reduction
+					// (see effectiveLimits), not necessarily any single
+					// entry's max-bytes value.
+					fmt.Fprintf(os.Stderr, "tag %d capped at %d bytes (effective max-bytes %d)\n",
 						tag, e.ctr.bytes.Load(), e.ctr.limit.Load())
 					// Release this shard's fd right away instead of on
 					// the next sighting — traffic may stop here. Other
@@ -1253,11 +1269,30 @@ func pumpShards(cmd *cli.Command, inners []*ebpf.Map, label string, writeShard f
 
 	// Seed the per-entry cap limits BEFORE the shard readers start, so
 	// not even the first batch of a busy tag is accounted against an
-	// unseeded (uncapped) limit.
-	if caps != nil && caps.perTag {
+	// unseeded (uncapped) limit. The same startup snapshot powers the
+	// misconfiguration diagnostics: caps moved from a validated flag to
+	// map data, so silently-unenforced budgets deserve one stderr line
+	// while the operator is still watching.
+	if len(sets) > 0 {
 		if infos, err := unionTagInfos(sets); err == nil {
-			caps.refreshLimits(infos)
-		} else {
+			perTagOn := caps != nil && caps.perTag
+			if perTagOn {
+				caps.refreshLimits(infos)
+			}
+			hasCapEntry := false
+			for _, in := range infos {
+				if in.Tag != 0 && in.MaxBytes > 0 {
+					hasCapEntry = true
+					break
+				}
+			}
+			if hasCapEntry && !perTagOn {
+				fmt.Fprintf(os.Stderr, "warning: set entries carry max-bytes caps, but per-entry caps are only enforced with --split-by-tag on a cap-capable map layout — they will be ignored in this run\n")
+			}
+			if exitWhenCapped && !hasCapEntry {
+				fmt.Fprintf(os.Stderr, "warning: no set entry currently carries max-bytes; --exit-when-capped will not trigger until one is added\n")
+			}
+		} else if caps != nil && caps.perTag {
 			fmt.Fprintf(os.Stderr, "warning: reading set map entries: %v (per-entry caps start unenforced)\n", err)
 		}
 	}
@@ -1298,13 +1333,14 @@ func pumpShards(cmd *cli.Command, inners []*ebpf.Map, label string, writeShard f
 	// Poll only when something can actually end the capture early or
 	// needs a periodic decision (per-entry caps need the ~1s snapshot
 	// to refresh limits and park capped entries).
-	needPoll := count > 0 || exitWhenCapped || fin != nil || caps != nil
+	needSnapshot := exitWhenCapped || fin != nil || (caps != nil && caps.perTag)
+	needPoll := count > 0 || caps != nil || needSnapshot
 	if needPoll {
 		// Same 10 ms poll as -c; the set-map iteration costs syscalls,
-		// so one shared snapshot per ~1 s feeds the limit refresh, the
-		// state transitions, the exit decision, and the finalizer.
-		tagsErrWarned := false
-		parked := map[uint32]bool{}
+		// so one shared ~1s lifecycle tick handles the limit refresh,
+		// the state transitions, the exit decision, and the finalizer
+		// (see capLifecycle.tick for the ordering contract).
+		lc := newCapLifecycle(caps, fin, sets, cmd.String("write"), exitWhenCapped)
 		for it := 0; ; it++ {
 			select {
 			case <-sig:
@@ -1320,66 +1356,9 @@ func pumpShards(cmd *cli.Command, inners []*ebpf.Map, label string, writeShard f
 					stop()
 					goto done
 				}
-				if it%100 == 0 && (exitWhenCapped || fin != nil || (caps != nil && caps.perTag)) {
-					infos, err := unionTagInfos(sets)
-					if err != nil {
-						// Never exit or finalize on a map read failure;
-						// the capture itself is unaffected.
-						if !tagsErrWarned {
-							fmt.Fprintf(os.Stderr, "warning: reading set map entries: %v (will keep capturing)\n", err)
-							tagsErrWarned = true
-						}
-					} else {
-						if caps != nil && caps.perTag {
-							caps.refreshLimits(infos)
-						}
-						// Park newly capped tags: state=capped stops the
-						// kernel-side match and (with --finalize-on-del)
-						// hands the tag to the quiesce → finalize path.
-						// The entry stays in the map, so `set list` keeps
-						// showing which key the tag belonged to.
-						if fin != nil && caps != nil {
-							for _, tag := range caps.cappedTags() {
-								if parked[tag] {
-									continue
-								}
-								// Only mark parked once every set updated
-								// cleanly; a failed SetState is retried on
-								// the next cycle so the kernel-side match
-								// does not keep running unparked.
-								ok := true
-								for _, s := range sets {
-									if _, serr := s.Def.SetState(tag, setmap.StateCapped); serr != nil {
-										fmt.Fprintf(os.Stderr, "warning: parking capped tag %d: %v (will retry)\n", tag, serr)
-										ok = false
-									}
-								}
-								if ok {
-									parked[tag] = true
-									fmt.Fprintf(os.Stderr, "tag %d parked (state=capped)\n", tag)
-								}
-							}
-						}
-						if exitWhenCapped && caps != nil && caps.anyCapped() && caps.allCapped(infos) {
-							fmt.Fprintf(os.Stderr, "\nevery capped entry reached its max-bytes (--exit-when-capped); stopping\n")
-							stop()
-							goto done
-						}
-						if fin != nil {
-							for _, tag := range fin.step(activeTags(infos)) {
-								if err := fin.finalize(tag); err != nil {
-									fmt.Fprintf(os.Stderr, "warning: %v\n", err)
-									continue
-								}
-								for _, s := range sets {
-									if _, serr := s.Def.SetState(tag, setmap.StateFinalized); serr != nil {
-										fmt.Fprintf(os.Stderr, "warning: marking tag %d finalized: %v\n", tag, serr)
-									}
-								}
-								fmt.Fprintf(os.Stderr, "tag %d finalized -> %s\n", tag, output.TagMergedPath(cmd.String("write"), tag))
-							}
-						}
-					}
+				if needSnapshot && it%100 == 0 && lc.tick() {
+					stop()
+					goto done
 				}
 				time.Sleep(10 * time.Millisecond)
 			}

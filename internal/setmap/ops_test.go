@@ -155,9 +155,26 @@ func TestResizeSameCapacityNoop(t *testing.T) {
 	}
 }
 
-// TestTagsRoundTrip verifies Tags returns exactly the tag of every live
-// entry (duplicates included) and tracks runtime add/delete — the view
-// --exit-when-capped polls.
+// activeTagsOf reduces TagInfos to the tags of ACTIVE entries — the
+// view the capture process's poll loop derives for quiesce decisions.
+func activeTagsOf(t *testing.T, def *Definition) []uint32 {
+	t.Helper()
+	infos, err := def.TagInfos()
+	if err != nil {
+		t.Fatalf("TagInfos: %v", err)
+	}
+	var tags []uint32
+	for _, in := range infos {
+		if in.State == StateActive {
+			tags = append(tags, in.Tag)
+		}
+	}
+	return tags
+}
+
+// TestTagsRoundTrip verifies TagInfos returns exactly the tag of every
+// live entry (duplicates included) and tracks runtime add/delete — the
+// view the poll loop's snapshot is built from.
 func TestTagsRoundTrip(t *testing.T) {
 	testutil.SkipIfNotRoot(t)
 
@@ -174,10 +191,7 @@ func TestTagsRoundTrip(t *testing.T) {
 	t.Cleanup(def.Close)
 
 	sortedTags := func() []uint32 {
-		tags, err := def.Tags()
-		if err != nil {
-			t.Fatalf("Tags: %v", err)
-		}
+		tags := activeTagsOf(t, def)
 		slices.Sort(tags)
 		return tags
 	}
@@ -268,12 +282,8 @@ func TestExtendedValueLayout(t *testing.T) {
 	if n, err := def.SetState(1, StateCapped); err != nil || n != 1 {
 		t.Fatalf("SetState = (%d, %v), want (1, nil)", n, err)
 	}
-	tags, err := def.Tags()
-	if err != nil {
-		t.Fatalf("Tags: %v", err)
-	}
-	if len(tags) != 1 || tags[0] != 2 {
-		t.Fatalf("active Tags = %v, want [2]", tags)
+	if tags := activeTagsOf(t, def); len(tags) != 1 || tags[0] != 2 {
+		t.Fatalf("active tags = %v, want [2]", tags)
 	}
 	list.Reset()
 	if err := def.List(&list); err != nil {
@@ -298,6 +308,34 @@ func TestExtendedValueLayout(t *testing.T) {
 	}
 	if !strings.Contains(list.String(), "imsi=1001 tag=1 state=capped max-bytes=8192") {
 		t.Fatalf("update reset the parked state: %q", list.String())
+	}
+
+	// An omitted max-bytes on an update is sticky too: re-asserting
+	// membership must not silently clear the budget. Explicit 0 uncaps.
+	if err := def.Add(map[string]string{"imsi": "1001"}, EntryValue{Tag: 1}); err != nil {
+		t.Fatalf("Add update without max-bytes: %v", err)
+	}
+	list.Reset()
+	if err := def.List(&list); err != nil {
+		t.Fatalf("List after cap-less update: %v", err)
+	}
+	if !strings.Contains(list.String(), "imsi=1001 tag=1 state=capped max-bytes=8192") {
+		t.Fatalf("cap-less update cleared the cap or state: %q", list.String())
+	}
+	if err := def.Add(map[string]string{"imsi": "1001"}, EntryValue{Tag: 1, HasMaxBytes: true}); err != nil {
+		t.Fatalf("Add explicit max-bytes=0: %v", err)
+	}
+	list.Reset()
+	if err := def.List(&list); err != nil {
+		t.Fatalf("List after uncap: %v", err)
+	}
+	if !strings.Contains(list.String(), "imsi=1001 tag=1 state=capped max-bytes=unlimited") {
+		t.Fatalf("explicit max-bytes=0 did not uncap: %q", list.String())
+	}
+
+	// A cap on tag 0 can never be enforced; reject it at the source.
+	if err := def.Add(map[string]string{"imsi": "1003"}, EntryValue{Tag: 0, MaxBytes: 10, HasMaxBytes: true}); err == nil || !strings.Contains(err.Error(), "tag 0") {
+		t.Fatalf("cap on tag 0 = %v, want rejection", err)
 	}
 
 	// Re-tagging assigns the entry to a new job: state starts active.

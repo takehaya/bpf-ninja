@@ -299,6 +299,9 @@ func resolveValueSchema(valueType btf.Type, valSize uint32) ([]KeyField, error) 
 		if !validValueFieldSize(t.Size) {
 			return nil, fmt.Errorf("scalar value BTF %s is not a supported tag width (u8/u16/u32/u64)", valueType)
 		}
+		if t.Size != valSize {
+			return nil, fmt.Errorf("value BTF size %d does not match the map's value size %d", t.Size, valSize)
+		}
 		return []KeyField{{Name: ValFieldTag, Off: 0, Size: t.Size}}, nil
 	case *btf.Struct:
 		var fields []KeyField
@@ -307,7 +310,15 @@ func resolveValueSchema(valueType btf.Type, valSize uint32) ([]KeyField, error) 
 			if !ok || isBytes || mem.BitfieldSize != 0 {
 				return nil, fmt.Errorf("value field %s: only u8/u16/u32/u64 fields are supported", mem.Name)
 			}
-			fields = append(fields, KeyField{Name: mem.Name, Off: mem.Offset.Bytes(), Size: size})
+			f := KeyField{Name: mem.Name, Off: mem.Offset.Bytes(), Size: size}
+			// The kernel enforces BTF-type-size == value_size when a map
+			// is created with BTF, so for pinned maps this cannot fire —
+			// it is defense in depth so getField/putField can never
+			// slice-panic if that invariant is ever bypassed.
+			if f.Off+f.Size > valSize {
+				return nil, fmt.Errorf("value field %s (offset %d, size %d) extends past the %d-byte value", f.Name, f.Off, f.Size, valSize)
+			}
+			fields = append(fields, f)
 		}
 		if err := validateValueFields(fields); err != nil {
 			return nil, err
@@ -327,7 +338,12 @@ func validateValueFields(fields []KeyField) error {
 	if !validValueFieldSize(fields[0].Size) {
 		return fmt.Errorf("value field %q must be u8/u16/u32/u64", ValFieldTag)
 	}
+	seen := map[string]bool{ValFieldTag: true}
 	for _, f := range fields[1:] {
+		if seen[f.Name] {
+			return fmt.Errorf("value field %q appears twice", f.Name)
+		}
+		seen[f.Name] = true
 		switch f.Name {
 		case ValFieldState:
 			if f.Size != 1 {

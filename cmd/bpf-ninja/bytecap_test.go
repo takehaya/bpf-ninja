@@ -53,7 +53,7 @@ func TestAddTagUncappedNeverCaps(t *testing.T) {
 	if c.addTag(ctr, 1<<40) {
 		t.Fatal("uncapped tag reported a cap transition")
 	}
-	if ctr.capped.Load() || c.anyCapped() {
+	if ctr.capped.Load() || c.isCapped(3) {
 		t.Fatal("uncapped tag marked capped")
 	}
 }
@@ -94,6 +94,19 @@ func TestRefreshLimitsRuntimeCap(t *testing.T) {
 	c.refreshLimits([]setmap.TagInfo{{Tag: 5, MaxBytes: 400}})
 	if !c.addTag(ctr, 1) {
 		t.Fatal("no transition once a runtime cap dropped below the running total")
+	}
+	// capped is one-way: raising the limit afterwards does not resume.
+	c.refreshLimits([]setmap.TagInfo{{Tag: 5, MaxBytes: 1 << 40}})
+	if !ctr.capped.Load() || c.addTag(ctr, 1) {
+		t.Fatal("raising the limit after capped resumed the tag")
+	}
+	// A cap REMOVED at runtime (entry re-added uncapped) stops future
+	// transitions for a not-yet-capped tag.
+	other := c.counterFor(6)
+	c.refreshLimits([]setmap.TagInfo{{Tag: 6, MaxBytes: 100}})
+	c.refreshLimits([]setmap.TagInfo{{Tag: 6, MaxBytes: 0}})
+	if c.addTag(other, 1<<40) || other.capped.Load() {
+		t.Fatal("runtime uncap did not apply")
 	}
 	// Tag 0 never gets a counter from refresh.
 	c.refreshLimits([]setmap.TagInfo{{Tag: 0, MaxBytes: 1}})
@@ -162,15 +175,29 @@ func TestTotalReached(t *testing.T) {
 	}
 }
 
-func TestAllCapped(t *testing.T) {
-	c := newByteCaps(true, 0)
+// exitReadyOn runs exitReady the way tick does: hasActive derived from
+// the snapshot, everActive accumulated across calls.
+func exitReadyOn(lc *capLifecycle, infos []setmap.TagInfo) bool {
+	hasActive := map[uint32]bool{}
+	for _, in := range infos {
+		if in.Tag != 0 && in.State == setmap.StateActive {
+			hasActive[in.Tag] = true
+			lc.everActive[in.Tag] = true
+		}
+	}
+	return lc.exitReady(infos, hasActive)
+}
 
-	if c.allCapped(nil) {
-		t.Fatal("allCapped(empty) must be false (nothing participates = keep running)")
+func TestExitReadyWithoutFinalizer(t *testing.T) {
+	c := newByteCaps(true, 0)
+	lc := newCapLifecycle(c, nil, nil, "", true)
+
+	if exitReadyOn(lc, nil) {
+		t.Fatal("empty snapshot must not be ready (nothing participates)")
 	}
 	// Only uncapped entries: nothing participates.
-	if c.allCapped([]setmap.TagInfo{{Tag: 1}, {Tag: 2}}) {
-		t.Fatal("uncapped-only snapshot reported all-capped")
+	if exitReadyOn(lc, []setmap.TagInfo{{Tag: 1}, {Tag: 2}}) {
+		t.Fatal("uncapped-only snapshot reported ready")
 	}
 
 	infos := []setmap.TagInfo{
@@ -181,37 +208,74 @@ func TestAllCapped(t *testing.T) {
 	}
 	c.refreshLimits(infos)
 	c.addTag(c.counterFor(1), 10)
-	if c.allCapped(infos) {
-		t.Fatal("tag 2 still active+uncapped but reported all-capped")
+	if exitReadyOn(lc, infos) {
+		t.Fatal("tag 2 still active+uncapped but reported ready")
 	}
 	c.addTag(c.counterFor(2), 10)
-	if !c.allCapped(infos) {
-		t.Fatal("all capped entries reached their cap but not reported")
+	if !exitReadyOn(lc, infos) {
+		t.Fatal("all capped entries reached their cap but not ready")
 	}
 
-	// A parked entry (state != active) counts as satisfied even without
-	// a local counter.
+	// A fully-parked participating tag counts as settled even without a
+	// local counter — a capture started against a pre-parked map exits
+	// immediately instead of idling forever.
 	parked := []setmap.TagInfo{
-		{Tag: 1, MaxBytes: 10},
 		{Tag: 9, MaxBytes: 10, State: setmap.StateCapped},
 	}
-	if !c.allCapped(parked) {
-		t.Fatal("parked entry not treated as capped")
+	fresh := newCapLifecycle(c, nil, nil, "", true)
+	if !exitReadyOn(fresh, parked) {
+		t.Fatal("pre-parked-only map did not exit")
 	}
 
-	// Mixed capped/uncapped entries on one tag: the tag is effectively
-	// uncapped and must NOT participate — otherwise the exit could never
-	// come (its counter can never cap).
+	// Mixed capped/uncapped entries on one tag: effectively uncapped,
+	// must not participate (its counter can never cap).
 	mixed := []setmap.TagInfo{
 		{Tag: 1, MaxBytes: 10},
 		{Tag: 5, MaxBytes: 10},
 		{Tag: 5, MaxBytes: 0},
 	}
-	if !c.allCapped(mixed) {
+	if !exitReadyOn(lc, mixed) {
 		t.Fatal("effectively-uncapped mixed tag blocked the exit")
 	}
-	if c.allCapped([]setmap.TagInfo{{Tag: 5, MaxBytes: 10}, {Tag: 5}}) {
-		t.Fatal("only-mixed snapshot has no participant and must be false")
+	if exitReadyOn(lc, []setmap.TagInfo{{Tag: 5, MaxBytes: 10}, {Tag: 5}}) {
+		t.Fatal("only-mixed snapshot has no participant and must not be ready")
+	}
+}
+
+// With --finalize-on-del the exit must wait for the ack: a capped tag
+// that was active this run is settled only once merged, so
+// state=finalized is the guaranteed terminal state.
+func TestExitReadyWaitsForFinalize(t *testing.T) {
+	c := newByteCaps(true, 0)
+	fin := newTestFinalizer(t, 1)
+	lc := newCapLifecycle(c, fin, nil, "", true)
+
+	infos := []setmap.TagInfo{{Tag: 4, MaxBytes: 10}}
+	c.refreshLimits(infos)
+	c.addTag(c.counterFor(4), 10) // capped, entry still active
+
+	if exitReadyOn(lc, infos) {
+		t.Fatal("exited while the capped tag was still active (before park)")
+	}
+	// Parked (no active entry) but not merged yet: still waiting.
+	parkedInfos := []setmap.TagInfo{{Tag: 4, MaxBytes: 10, State: setmap.StateCapped}}
+	if exitReadyOn(lc, parkedInfos) {
+		t.Fatal("exited before the finalizer produced the ack")
+	}
+	// Ack produced: now ready.
+	fin.stateFor(4)
+	fin.markMerged(4)
+	if !exitReadyOn(lc, parkedInfos) {
+		t.Fatal("not ready after the tag finalized")
+	}
+
+	// A tag parked before this run ever saw it active is not this run's
+	// job: settled immediately even with the finalizer on.
+	fresh := newCapLifecycle(c, newTestFinalizer(t, 1), nil, "", true)
+	pre := []setmap.TagInfo{{Tag: 8, MaxBytes: 10, State: setmap.StateFinalized}}
+	c.refreshLimits(pre)
+	if !exitReadyOn(fresh, pre) {
+		t.Fatal("pre-finalized map did not exit with the finalizer on")
 	}
 }
 
