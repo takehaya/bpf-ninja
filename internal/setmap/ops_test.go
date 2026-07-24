@@ -299,6 +299,18 @@ func TestExtendedValueLayout(t *testing.T) {
 	if !strings.Contains(list.String(), "imsi=1001 tag=1 state=capped max-bytes=8192") {
 		t.Fatalf("update reset the parked state: %q", list.String())
 	}
+
+	// Re-tagging assigns the entry to a new job: state starts active.
+	if err := def.Add(map[string]string{"imsi": "1001"}, EntryValue{Tag: 9}); err != nil {
+		t.Fatalf("Add re-tag: %v", err)
+	}
+	list.Reset()
+	if err := def.List(&list); err != nil {
+		t.Fatalf("List after re-tag: %v", err)
+	}
+	if !strings.Contains(list.String(), "imsi=1001 tag=9 state=active") {
+		t.Fatalf("re-tag kept the parked state: %q", list.String())
+	}
 }
 
 // TestLegacyValueLayoutCompat pins the pre-#89 behavior: a plain u32

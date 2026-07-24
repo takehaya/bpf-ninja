@@ -359,7 +359,7 @@ func ParseFieldValues(args []string) (fields map[string]string, val EntryValue, 
 			continue
 		case reservedMaxBytesName, ValFieldMaxBytes:
 			if val.HasMaxBytes {
-				return nil, val, fmt.Errorf("%s= given twice", reservedMaxBytesName)
+				return nil, val, fmt.Errorf("%s= given twice (max-bytes and max_bytes are the same assignment)", name)
 			}
 			v, perr := parseUint(vs)
 			if perr != nil {
@@ -488,11 +488,13 @@ func (d *Definition) Add(values map[string]string, ev EntryValue) error {
 		putField(val, mf, ev.MaxBytes)
 	}
 	// An update must not silently reactivate an entry the capture
-	// process parked: carry the existing state over. (There is no CLI to
-	// flip state back — finalized tags are single-use by design.)
+	// process parked: carry the existing state over — but only while the
+	// tag stays the same. Re-tagging an entry assigns it to a new job,
+	// which starts active like any fresh entry. (There is no CLI to flip
+	// state back — finalized tags are single-use by design.)
 	if sf, hasState := d.ValField(ValFieldState); hasState {
 		old := make([]byte, int(d.Map.ValueSize()))
-		if err := d.Map.Lookup(key, &old); err == nil {
+		if err := d.Map.Lookup(key, &old); err == nil && getField(old, tf) == ev.Tag {
 			putField(val, sf, getField(old, sf))
 		}
 	}
