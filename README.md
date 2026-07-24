@@ -260,7 +260,7 @@ int parse_headers(struct xdp_md *ctx) {
 | `--list-params` | List filterable parameters for `--func` (requires `--func`) | entry, exit |
 | `--arg-filter` | Filter by function argument value (requires `--func`); format: `param=value`, `param>=val`, `param<=val`, `param=min..max` | entry, exit |
 | `--split-by-tag` | Route matched packets to one pcap per set-map value (tag): `-w out.pcap` yields `out.<tag>.pcap` (requires `-w`) | all |
-| `--max-bytes` | Stop the whole capture once total output bytes reach N (works with or without `--split-by-tag`). Per-tag caps live on the set entries: `set add ... max-bytes=N` (0 / omitted = uncapped) | all |
+| `--max-bytes` | Stop the whole capture once total output bytes reach N (works with or without `--split-by-tag`). Per-tag caps live on the set entries: `set add ... max-bytes=N` (0 / omitted = uncapped; entries sharing a tag share one budget — an uncapped entry makes the tag uncapped, otherwise the largest cap wins) | all |
 | `--exit-when-capped` | Exit 0 once every entry that has a per-entry cap reached it; uncapped entries don't participate (requires `--split-by-tag` and at least one `--set`) | all |
 | `--finalize-on-del` | When a tag's last set entry is removed, merge its shards into `out.<tag>.pcap` while capturing continues — the file appearing is the completion ack (requires `--split-by-tag` and at least one `--set`) | all |
 

@@ -145,24 +145,34 @@ func (c *byteCaps) anyCapped() bool {
 	return false
 }
 
-// allCapped reports whether every entry that HAS a cap has reached it
-// (either its counter capped, or the entry already parked in a
-// non-active state). Uncapped entries and tag 0 never participate; with
-// no participating entry at all the answer is false — the capture keeps
-// running.
+// allCapped reports whether every tag whose EFFECTIVE limit is capped
+// has reached it (either its counter capped, or all of its entries
+// already parked in a non-active state). Participation follows the
+// same effectiveLimits reduction as enforcement — a tag with a mixed
+// capped/uncapped entry set is effectively uncapped, so it must not
+// participate (its counter could never cap and the exit would never
+// come). Tag 0 never participates; with no participating tag at all
+// the answer is false — the capture keeps running.
 func (c *byteCaps) allCapped(infos []setmap.TagInfo) bool {
+	limits := effectiveLimits(infos)
+	hasActive := map[uint32]bool{}
+	for _, in := range infos {
+		if in.State == setmap.StateActive {
+			hasActive[in.Tag] = true
+		}
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	participating := false
-	for _, in := range infos {
-		if in.Tag == 0 || in.MaxBytes == 0 {
+	for tag, lim := range limits {
+		if lim == 0 {
 			continue
 		}
 		participating = true
-		if in.State != setmap.StateActive {
-			continue // already parked (capped/finalized)
+		if !hasActive[tag] {
+			continue // fully parked (capped/finalized)
 		}
-		ctr := c.tags[in.Tag]
+		ctr := c.tags[tag]
 		if ctr == nil || !ctr.capped.Load() {
 			return false
 		}

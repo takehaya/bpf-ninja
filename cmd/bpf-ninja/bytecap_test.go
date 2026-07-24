@@ -198,6 +198,21 @@ func TestAllCapped(t *testing.T) {
 	if !c.allCapped(parked) {
 		t.Fatal("parked entry not treated as capped")
 	}
+
+	// Mixed capped/uncapped entries on one tag: the tag is effectively
+	// uncapped and must NOT participate — otherwise the exit could never
+	// come (its counter can never cap).
+	mixed := []setmap.TagInfo{
+		{Tag: 1, MaxBytes: 10},
+		{Tag: 5, MaxBytes: 10},
+		{Tag: 5, MaxBytes: 0},
+	}
+	if !c.allCapped(mixed) {
+		t.Fatal("effectively-uncapped mixed tag blocked the exit")
+	}
+	if c.allCapped([]setmap.TagInfo{{Tag: 5, MaxBytes: 10}, {Tag: 5}}) {
+		t.Fatal("only-mixed snapshot has no participant and must be false")
+	}
 }
 
 func TestActiveTags(t *testing.T) {
