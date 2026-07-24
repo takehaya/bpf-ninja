@@ -203,6 +203,35 @@ func TestFinalizeFailureRetries(t *testing.T) {
 	}
 }
 
+// closeAll must flush+close writers still registered (a tag caught
+// between its stop sign and its close+merge at shutdown) and leave the
+// registry empty so nothing is closed twice.
+func TestCloseAllFlushesRemaining(t *testing.T) {
+	f := newTestFinalizer(t, 1)
+	path := output.TagShardPath(f.basePath, 0, 6)
+	w, err := output.NewWriter(path, output.Config{})
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+	if err := w.WriteBatch(testutilPackets()); err != nil {
+		t.Fatalf("WriteBatch: %v", err)
+	}
+	f.register(6, 0, w)
+
+	f.closeAll()
+	n, err := countPcapPackets(path)
+	if err != nil {
+		t.Fatalf("reading shard after closeAll: %v", err)
+	}
+	if n != 2 {
+		t.Fatalf("shard packet count = %d, want 2 (buffer not flushed)", n)
+	}
+	// Registry drained: finalize must not double-close.
+	if err := f.finalize(6); err != nil {
+		t.Fatalf("finalize after closeAll: %v", err)
+	}
+}
+
 // finalize must close registered writers (flushing their buffers) and
 // merge the shard contents into the per-tag file.
 func TestFinalizeClosesWritersAndMerges(t *testing.T) {

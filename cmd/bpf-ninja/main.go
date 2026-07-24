@@ -1090,12 +1090,17 @@ func captureLoopShardedSplit(cmd *cli.Command, inners []*ebpf.Map, cfg output.Co
 		shardWriters[i] = map[uint32]*tagShard{}
 	}
 	defer func() {
+		// With the finalizer active its registry is the ground truth for
+		// not-yet-closed writers: it excludes what finalize already
+		// closed, but still covers a tag whose stop sign was raised and
+		// then the process was signalled before its close+merge cycle.
+		if fin != nil {
+			fin.closeAll()
+			return
+		}
 		for _, m := range shardWriters {
 			for _, e := range m {
-				// Finalized tags' writers were already closed by the
-				// finalizer (via its registry); closing again would
-				// just error on the closed file.
-				if e.w != nil && (e.st == nil || !e.st.finalized.Load()) {
+				if e.w != nil {
 					_ = e.w.Close()
 				}
 			}

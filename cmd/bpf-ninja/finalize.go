@@ -90,6 +90,25 @@ func (f *tagFinalizer) register(tag uint32, shardIdx int, w *output.Writer) {
 	ws[shardIdx] = w
 }
 
+// closeAll flushes and closes every writer still registered. Shutdown
+// cleanup calls this instead of walking the shard maps when the
+// finalizer is active: the registry is the ground truth for
+// not-yet-closed writers, so a tag caught between its stop sign and its
+// close+merge (e.g. SIGINT in that window) still gets flushed, and
+// writers the finalizer already closed are not touched again.
+func (f *tagFinalizer) closeAll() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for tag, ws := range f.writers {
+		for _, w := range ws {
+			if w != nil {
+				_ = w.Close()
+			}
+		}
+		delete(f.writers, tag)
+	}
+}
+
 // deregister clears a shard's writer slot when the shard closes it
 // itself (the capped path), so finalize never double-closes.
 func (f *tagFinalizer) deregister(tag uint32, shardIdx int) {
