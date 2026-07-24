@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.23.0](https://github.com/takehaya/bpf-ninja/compare/v0.22.0...v0.23.0) (2026-07-24)
+
+
+### ⚠ BREAKING CHANGES
+
+* the process-global --max-bytes-per-tag flag is removed. Per-tag caps now live on the set entries:
+
+### 🎉 Features
+
+* finalize a tag's output when its last set entry is removed ([#90](https://github.com/takehaya/bpf-ninja/issues/90)) ([#91](https://github.com/takehaya/bpf-ninja/issues/91)) ([a0bf27b](https://github.com/takehaya/bpf-ninja/commit/a0bf27b8d15c3f096308cd6cb69fb97e28582aa9))
+* move per-tag byte caps to set entries; add entry state lifecycle ([#89](https://github.com/takehaya/bpf-ninja/issues/89)) ([#93](https://github.com/takehaya/bpf-ninja/issues/93)) ([346e435](https://github.com/takehaya/bpf-ninja/commit/346e435f906d914fc230b0eb5383542225be052f))
+
 ## [0.22.0](https://github.com/takehaya/bpf-ninja/compare/v0.21.0...v0.22.0) (2026-07-23)
 
 
