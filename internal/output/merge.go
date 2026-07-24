@@ -46,6 +46,21 @@ func MergeShardFiles(basePath string, numShards int, cfg Config) error {
 	return mergeFiles(inPaths, basePath, cfg)
 }
 
+// MergeOneTagShards merges one tag's per-CPU shard files
+// (<stem>.cpu0..cpu(numShards-1).<tag><ext>) into <stem>.<tag><ext>,
+// written atomically via temp + rename. Missing shards (CPUs that never
+// saw the tag) are skipped; with no readable shard at all the output is
+// a valid empty pcap-ng, so the merged file still appears as the
+// completion ack for a tag that captured nothing. Shards are left in
+// place. Used by --finalize-on-del while the capture keeps running.
+func MergeOneTagShards(basePath string, numShards int, tag uint32, cfg Config) error {
+	inPaths := make([]string, numShards)
+	for i := range numShards {
+		inPaths[i] = TagShardPath(basePath, i, tag)
+	}
+	return mergeFiles(inPaths, TagMergedPath(basePath, tag), cfg)
+}
+
 // mergeFiles k-way merges the given pcap-ng input files (each already in
 // timestamp order) into a single time-ordered pcap-ng at outPath, written
 // atomically via a temp file + rename. Missing or unreadable inputs are

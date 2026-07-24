@@ -169,6 +169,10 @@ var flags = []cli.Flag{
 		Usage: "stop the whole capture once total output bytes reach N (pcap-ng packet-block bytes; per-file headers excluded, batch-granular like --max-bytes-per-tag). Works with or without --split-by-tag; the shards are merged and the process exits 0 as with -c",
 	},
 	&cli.BoolFlag{
+		Name:  "finalize-on-del",
+		Usage: "with --split-by-tag and --set: when a tag's last set entry is removed and its ringbuf backlog has drained (one quiet poll cycle), flush+close its per-CPU shards and merge them into <stem>.<tag><ext> while the capture keeps running — the merged file appearing is the completion ack. Finalized tags are single-use: records for a re-added entry are dropped with a warning",
+	},
+	&cli.BoolFlag{
 		Name:  "exit-when-capped",
 		Usage: "with --max-bytes-per-tag and --set: exit 0 once every tag currently present in the set map(s) has reached its cap (tag 0 = unmatched traffic does not participate)",
 	},
@@ -408,6 +412,14 @@ func run(ctx context.Context, cmd *cli.Command) error {
 			return fmt.Errorf("--exit-when-capped requires --max-bytes-per-tag")
 		case len(cmd.StringSlice("set")) == 0:
 			return fmt.Errorf("--exit-when-capped requires at least one --set (it exits when every tag in the set map(s) is capped)")
+		}
+	}
+	if cmd.Bool("finalize-on-del") {
+		switch {
+		case !cmd.Bool("split-by-tag"):
+			return fmt.Errorf("--finalize-on-del requires --split-by-tag (it finalizes per-tag files)")
+		case len(cmd.StringSlice("set")) == 0:
+			return fmt.Errorf("--finalize-on-del requires at least one --set (entry removal is the finalize signal)")
 		}
 	}
 	if cmd.Bool("rx-hwts") {
@@ -955,7 +967,11 @@ func captureLoopSharded(cmd *cli.Command, inners []*ebpf.Map, cfg output.Config,
 	if cmd.Bool("split-by-tag") {
 		// run() already rejected --split-by-tag with stdout / --raw-dump /
 		// --null-output, so basePath is a real file here.
-		return captureLoopShardedSplit(cmd, inners, cfg, label, basePath, caps, sets)
+		var fin *tagFinalizer
+		if cmd.Bool("finalize-on-del") {
+			fin = newTagFinalizer(basePath, cfg, len(inners))
+		}
+		return captureLoopShardedSplit(cmd, inners, cfg, label, basePath, caps, sets, fin)
 	}
 
 	// stdout (no -w) merges every shard into a single pcap-ng stream,
@@ -1031,7 +1047,7 @@ func captureLoopSharded(cmd *cli.Command, inners []*ebpf.Map, cfg output.Config,
 		}
 	}
 
-	return pumpShards(cmd, inners, label, writeShard, caps, sets)
+	return pumpShards(cmd, inners, label, writeShard, caps, sets, nil)
 }
 
 // epbBytes sums the on-disk pcap-ng size of a batch, matching what the
@@ -1051,14 +1067,15 @@ func epbBytes(pkts []capture.Packet) uint64 {
 // mid-capture. Each shard's tag->writer map is owned by its own goroutine,
 // so there is no lock on the write path. runCaptureLoop merges the per-CPU
 // tag files into <base>.<tag><ext> on a clean shutdown.
-func captureLoopShardedSplit(cmd *cli.Command, inners []*ebpf.Map, cfg output.Config, label, basePath string, caps *byteCaps, sets []*setmap.Set) error {
+func captureLoopShardedSplit(cmd *cli.Command, inners []*ebpf.Map, cfg output.Config, label, basePath string, caps *byteCaps, sets []*setmap.Set, fin *tagFinalizer) error {
 	// One tag->writer map per shard; only ever touched by that shard's
 	// goroutine (writeShard runs single-threaded per shardIdx). The entry
-	// caches the tag's shared byte counter so the write path never takes
-	// the byteCaps lock.
+	// caches the tag's shared byte counter and finalize state so the
+	// write path never takes the byteCaps / finalizer lock.
 	type tagShard struct {
 		w   *output.Writer
-		ctr *tagCounter // non-nil only with --max-bytes-per-tag
+		ctr *tagCounter  // non-nil only with --max-bytes-per-tag
+		st  *tagFinState // non-nil only with --finalize-on-del
 	}
 	shardWriters := make([]map[uint32]*tagShard, len(inners))
 	for i := range shardWriters {
@@ -1067,7 +1084,10 @@ func captureLoopShardedSplit(cmd *cli.Command, inners []*ebpf.Map, cfg output.Co
 	defer func() {
 		for _, m := range shardWriters {
 			for _, e := range m {
-				if e.w != nil {
+				// Finalized tags' writers were already closed by the
+				// finalizer (via its registry); closing again would
+				// just error on the closed file.
+				if e.w != nil && (e.st == nil || !e.st.finalized.Load()) {
 					_ = e.w.Close()
 				}
 			}
@@ -1083,6 +1103,9 @@ func captureLoopShardedSplit(cmd *cli.Command, inners []*ebpf.Map, cfg output.Co
 		e := &tagShard{}
 		if perTag {
 			e.ctr = caps.counterFor(tag)
+		}
+		if fin != nil {
+			e.st = fin.stateFor(tag)
 		}
 		m[tag] = e
 		return e
@@ -1115,6 +1138,16 @@ func captureLoopShardedSplit(cmd *cli.Command, inners []*ebpf.Map, cfg output.Co
 				j++
 			}
 			e := entryFor(shardIdx, tag)
+			if e.st != nil && e.st.finalized.Load() {
+				// Finalized (its set entry was removed and it quiesced):
+				// its writers belong to the finalizer now, which closed
+				// them before merging. Records can only appear here if
+				// the entry was re-added after finalize — drop them.
+				e.w = nil
+				warnDropped(tag, e.st)
+				i = j
+				continue
+			}
 			if e.ctr != nil && e.ctr.capped.Load() {
 				// Capped (possibly by another shard): drop the run and
 				// release the fd. capped is one-way, so the writer is
@@ -1122,6 +1155,9 @@ func captureLoopShardedSplit(cmd *cli.Command, inners []*ebpf.Map, cfg output.Co
 				if e.w != nil {
 					_ = e.w.Close()
 					e.w = nil
+					if fin != nil {
+						fin.deregister(tag, shardIdx)
+					}
 				}
 				i = j
 				continue
@@ -1132,9 +1168,17 @@ func captureLoopShardedSplit(cmd *cli.Command, inners []*ebpf.Map, cfg output.Co
 					return err
 				}
 				e.w = w
+				if fin != nil {
+					fin.register(tag, shardIdx, w)
+				}
 			}
 			if err := e.w.WriteBatch(pkts[i:j]); err != nil {
 				return err
+			}
+			if e.st != nil {
+				// After the write, so a quiesce cycle can't miss an
+				// in-flight batch.
+				e.st.activity.Add(1)
 			}
 			if caps != nil {
 				n := epbBytes(pkts[i:j])
@@ -1147,6 +1191,9 @@ func captureLoopShardedSplit(cmd *cli.Command, inners []*ebpf.Map, cfg output.Co
 					// (their writers are not ours to touch).
 					_ = e.w.Close()
 					e.w = nil
+					if fin != nil {
+						fin.deregister(tag, shardIdx)
+					}
 				}
 				if caps.totalLimit > 0 {
 					caps.addTotal(n)
@@ -1157,14 +1204,14 @@ func captureLoopShardedSplit(cmd *cli.Command, inners []*ebpf.Map, cfg output.Co
 		return nil
 	}
 
-	return pumpShards(cmd, inners, label, writeShard, caps, sets)
+	return pumpShards(cmd, inners, label, writeShard, caps, sets, fin)
 }
 
 // pumpShards runs the per-shard reader, handing each batch to writeShard,
 // until SIGINT/SIGTERM (or the -c count is reached). Write errors are
 // counted and the first is reported at the end rather than aborting the
 // capture. Shared by the plain and split-by-tag pcap paths.
-func pumpShards(cmd *cli.Command, inners []*ebpf.Map, label string, writeShard func(int, []capture.Packet) error, caps *byteCaps, sets []*setmap.Set) error {
+func pumpShards(cmd *cli.Command, inners []*ebpf.Map, label string, writeShard func(int, []capture.Packet) error, caps *byteCaps, sets []*setmap.Set, fin *tagFinalizer) error {
 	fastReader := cmd.Bool("fast-reader")
 	null := cmd.Bool("null-output")
 	count := int64(cmd.Int("count"))
@@ -1226,14 +1273,15 @@ func pumpShards(cmd *cli.Command, inners []*ebpf.Map, label string, writeShard f
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 	defer signal.Stop(sig)
 
-	// Poll only when something can actually end the capture early;
-	// per-tag caps alone (no --exit-when-capped) stop individual tags
-	// but never the process, so that case keeps the blocking wait.
-	needPoll := count > 0 || exitWhenCapped || (caps != nil && caps.totalLimit > 0)
+	// Poll only when something can actually end the capture early or
+	// needs a periodic decision; per-tag caps alone (no
+	// --exit-when-capped) stop individual tags but never the process,
+	// so that case keeps the blocking wait.
+	needPoll := count > 0 || exitWhenCapped || fin != nil || (caps != nil && caps.totalLimit > 0)
 	if needPoll {
-		// Same 10 ms poll as -c; the set-map iteration for
-		// --exit-when-capped costs syscalls, so it runs at ~500 ms and
-		// only after at least one tag has actually capped.
+		// Same 10 ms poll as -c; the set-map iterations for
+		// --exit-when-capped / --finalize-on-del cost syscalls, so they
+		// run at ~500 ms / ~1 s cadence.
 		tagsErrWarned := false
 		for it := 0; ; it++ {
 			select {
@@ -1264,6 +1312,25 @@ func pumpShards(cmd *cli.Command, inners []*ebpf.Map, label string, writeShard f
 						fmt.Fprintf(os.Stderr, "\nall %d set tag(s) capped (--exit-when-capped); stopping\n", len(tags))
 						stop()
 						goto done
+					}
+				}
+				if fin != nil && it%100 == 0 {
+					tags, err := unionSetTags(sets)
+					if err != nil {
+						// Keep capturing; without the union view no tag
+						// can quiesce, so nothing is finalized wrongly.
+						if !tagsErrWarned {
+							fmt.Fprintf(os.Stderr, "warning: --finalize-on-del: reading set map tags: %v (will keep capturing)\n", err)
+							tagsErrWarned = true
+						}
+					} else {
+						for _, tag := range fin.step(tags) {
+							if err := fin.finalize(tag); err != nil {
+								fmt.Fprintf(os.Stderr, "warning: %v\n", err)
+							} else {
+								fmt.Fprintf(os.Stderr, "tag %d finalized -> %s\n", tag, output.TagMergedPath(cmd.String("write"), tag))
+							}
+						}
 					}
 				}
 				time.Sleep(10 * time.Millisecond)
