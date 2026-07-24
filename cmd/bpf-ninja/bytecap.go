@@ -24,8 +24,8 @@ type tagCounter struct {
 // after a tag capped does not resume it.
 //
 // The record only carries a u32 tag, so a cap is effectively per TAG:
-// entries sharing a tag share one budget (last writer wins on the
-// limit), matching the last-match-wins tag semantics.
+// entries sharing a tag share one budget, reduced deterministically by
+// effectiveLimits (an uncapped entry dominates, else the largest cap).
 //
 // Accounting is deliberately approximate: bytes are added per same-tag
 // run after a successful WriteBatch, so a tag can overshoot its cap by

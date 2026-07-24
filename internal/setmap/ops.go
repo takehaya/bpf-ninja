@@ -487,6 +487,15 @@ func (d *Definition) Add(values map[string]string, ev EntryValue) error {
 	if hasMax {
 		putField(val, mf, ev.MaxBytes)
 	}
+	// An update must not silently reactivate an entry the capture
+	// process parked: carry the existing state over. (There is no CLI to
+	// flip state back — finalized tags are single-use by design.)
+	if sf, hasState := d.ValField(ValFieldState); hasState {
+		old := make([]byte, int(d.Map.ValueSize()))
+		if err := d.Map.Lookup(key, &old); err == nil {
+			putField(val, sf, getField(old, sf))
+		}
+	}
 	return d.Map.Put(key, val)
 }
 

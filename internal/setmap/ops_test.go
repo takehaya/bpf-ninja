@@ -286,6 +286,19 @@ func TestExtendedValueLayout(t *testing.T) {
 	if n, err := def.SetState(1, StateCapped); err != nil || n != 0 {
 		t.Fatalf("SetState repeat = (%d, %v), want (0, nil)", n, err)
 	}
+
+	// An Add-update (e.g. raising the cap) must not reactivate a parked
+	// entry: the state carries over.
+	if err := def.Add(map[string]string{"imsi": "1001"}, EntryValue{Tag: 1, MaxBytes: 8192, HasMaxBytes: true}); err != nil {
+		t.Fatalf("Add update: %v", err)
+	}
+	list.Reset()
+	if err := def.List(&list); err != nil {
+		t.Fatalf("List after update: %v", err)
+	}
+	if !strings.Contains(list.String(), "imsi=1001 tag=1 state=capped max-bytes=8192") {
+		t.Fatalf("update reset the parked state: %q", list.String())
+	}
 }
 
 // TestLegacyValueLayoutCompat pins the pre-#89 behavior: a plain u32

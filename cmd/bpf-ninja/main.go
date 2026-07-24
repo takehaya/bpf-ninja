@@ -1251,6 +1251,17 @@ func pumpShards(cmd *cli.Command, inners []*ebpf.Map, label string, writeShard f
 		return nil
 	}
 
+	// Seed the per-entry cap limits BEFORE the shard readers start, so
+	// not even the first batch of a busy tag is accounted against an
+	// unseeded (uncapped) limit.
+	if caps != nil && caps.perTag {
+		if infos, err := unionTagInfos(sets); err == nil {
+			caps.refreshLimits(infos)
+		} else {
+			fmt.Fprintf(os.Stderr, "warning: reading set map entries: %v (per-entry caps start unenforced)\n", err)
+		}
+	}
+
 	var stop func()
 	readerLabel := "ringbuf.Reader"
 	if fastReader {
@@ -1283,16 +1294,6 @@ func pumpShards(cmd *cli.Command, inners []*ebpf.Map, label string, writeShard f
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 	defer signal.Stop(sig)
-
-	// Seed the per-entry cap limits before any traffic so a busy tag
-	// cannot blow past its cap during the first poll interval.
-	if caps != nil && caps.perTag {
-		if infos, err := unionTagInfos(sets); err == nil {
-			caps.refreshLimits(infos)
-		} else {
-			fmt.Fprintf(os.Stderr, "warning: reading set map entries: %v (per-entry caps start unenforced)\n", err)
-		}
-	}
 
 	// Poll only when something can actually end the capture early or
 	// needs a periodic decision (per-entry caps need the ~1s snapshot
@@ -1342,13 +1343,21 @@ func pumpShards(cmd *cli.Command, inners []*ebpf.Map, label string, writeShard f
 								if parked[tag] {
 									continue
 								}
-								parked[tag] = true
+								// Only mark parked once every set updated
+								// cleanly; a failed SetState is retried on
+								// the next cycle so the kernel-side match
+								// does not keep running unparked.
+								ok := true
 								for _, s := range sets {
 									if _, serr := s.Def.SetState(tag, setmap.StateCapped); serr != nil {
-										fmt.Fprintf(os.Stderr, "warning: parking capped tag %d: %v\n", tag, serr)
+										fmt.Fprintf(os.Stderr, "warning: parking capped tag %d: %v (will retry)\n", tag, serr)
+										ok = false
 									}
 								}
-								fmt.Fprintf(os.Stderr, "tag %d parked (state=capped)\n", tag)
+								if ok {
+									parked[tag] = true
+									fmt.Fprintf(os.Stderr, "tag %d parked (state=capped)\n", tag)
+								}
 							}
 						}
 						if exitWhenCapped && caps != nil && caps.anyCapped() && caps.allCapped(infos) {
