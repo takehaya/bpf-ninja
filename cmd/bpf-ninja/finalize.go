@@ -128,6 +128,21 @@ func (f *tagFinalizer) step(union []uint32) []uint32 {
 	return done
 }
 
+// finalizedTags returns the tags finalized during this run, for the
+// shutdown merge to skip: their per-tag file is a consumed completion
+// ack and must not be recreated after the collector took it.
+func (f *tagFinalizer) finalizedTags() map[uint32]bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	done := map[uint32]bool{}
+	for tag, st := range f.tags {
+		if st.finalized.Load() {
+			done[tag] = true
+		}
+	}
+	return done
+}
+
 // finalize flushes and closes the tag's remaining shard writers, then
 // merges its shards into the per-tag file (atomic temp + rename). Safe
 // to run from the poll goroutine: the tag is quiesced, so no shard will

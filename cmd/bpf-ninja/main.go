@@ -913,7 +913,13 @@ func runCaptureLoop(cmd *cli.Command, probe *program.Probe, cfg output.Config, l
 	if len(probe.InnerMaps) == 0 {
 		return fmt.Errorf("probe has no inner ringbufs — sharded ringbuf hoist (R22) should populate them for every attach mode")
 	}
-	if err := captureLoopSharded(cmd, probe.InnerMaps, cfg, label, sets); err != nil {
+	// Built here (not in the capture loop) so the shutdown merge below can
+	// skip the tags already finalized mid-run.
+	var fin *tagFinalizer
+	if cmd.Bool("split-by-tag") && cmd.Bool("finalize-on-del") {
+		fin = newTagFinalizer(cmd.String("write"), cfg, len(probe.InnerMaps))
+	}
+	if err := captureLoopSharded(cmd, probe.InnerMaps, cfg, label, sets, fin); err != nil {
 		return err
 	}
 
@@ -930,9 +936,15 @@ func runCaptureLoop(cmd *cli.Command, probe *program.Probe, cfg output.Config, l
 		if cmd.Bool("split-by-tag") {
 			// Split capture wrote <base>.cpuN.<tag> files; merge each tag's
 			// shards into <base>.<tag>. A kill skips this — `bpf-ninja merge`
-			// reconciles the leftover per-CPU files later.
+			// reconciles the leftover per-CPU files later. Tags finalized
+			// mid-run (--finalize-on-del) are skipped: their per-tag file
+			// is a consumed ack the collector may have already taken.
+			var skip map[uint32]bool
+			if fin != nil {
+				skip = fin.finalizedTags()
+			}
 			fmt.Fprintf(os.Stderr, "merging per-CPU tag shards for %s ...\n", basePath)
-			if err := output.MergeTagShards(basePath, cfg); err != nil {
+			if err := output.MergeTagShards(basePath, cfg, skip); err != nil {
 				fmt.Fprintf(os.Stderr, "warning: merging tag shards for %s: %v\n", basePath, err)
 			} else {
 				fmt.Fprintf(os.Stderr, "merged per tag (per-CPU .cpuN.<tag> kept)\n")
@@ -954,7 +966,7 @@ func runCaptureLoop(cmd *cli.Command, probe *program.Probe, cfg output.Config, l
 // stdout all shards funnel into one writer serialized by a mutex.
 // --null-output skips file writes for benchmarking; --raw-dump switches to
 // the raw-bytes path.
-func captureLoopSharded(cmd *cli.Command, inners []*ebpf.Map, cfg output.Config, label string, sets []*setmap.Set) error {
+func captureLoopSharded(cmd *cli.Command, inners []*ebpf.Map, cfg output.Config, label string, sets []*setmap.Set, fin *tagFinalizer) error {
 	basePath := cmd.String("write")
 	null := cmd.Bool("null-output")
 	rawDump := cmd.Bool("raw-dump")
@@ -967,10 +979,6 @@ func captureLoopSharded(cmd *cli.Command, inners []*ebpf.Map, cfg output.Config,
 	if cmd.Bool("split-by-tag") {
 		// run() already rejected --split-by-tag with stdout / --raw-dump /
 		// --null-output, so basePath is a real file here.
-		var fin *tagFinalizer
-		if cmd.Bool("finalize-on-del") {
-			fin = newTagFinalizer(basePath, cfg, len(inners))
-		}
 		return captureLoopShardedSplit(cmd, inners, cfg, label, basePath, caps, sets, fin)
 	}
 
@@ -1172,13 +1180,16 @@ func captureLoopShardedSplit(cmd *cli.Command, inners []*ebpf.Map, cfg output.Co
 					fin.register(tag, shardIdx, w)
 				}
 			}
+			if e.st != nil {
+				// Before the write, so the quiesce poll sees a stalled
+				// in-flight batch as activity and stays conservative
+				// (finalize's Close also serializes with WriteBatch on
+				// the writer's flushMu, so a raced batch is still
+				// flushed before the merge).
+				e.st.activity.Add(1)
+			}
 			if err := e.w.WriteBatch(pkts[i:j]); err != nil {
 				return err
-			}
-			if e.st != nil {
-				// After the write, so a quiesce cycle can't miss an
-				// in-flight batch.
-				e.st.activity.Add(1)
 			}
 			if caps != nil {
 				n := epbBytes(pkts[i:j])

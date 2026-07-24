@@ -71,6 +71,9 @@ func TestStepTwoCycleQuiesce(t *testing.T) {
 	if done := f.step(nil); len(done) != 0 {
 		t.Fatalf("finalized twice: %v", done)
 	}
+	if got := f.finalizedTags(); len(got) != 1 || !got[7] {
+		t.Fatalf("finalizedTags = %v, want {7}", got)
+	}
 }
 
 // Records arriving between the two cycles (draining ringbuf backlog)

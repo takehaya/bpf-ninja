@@ -48,7 +48,7 @@ func TestMergeTagShards(t *testing.T) {
 	// A plain (non-tag) shard file must not be swept into any tag.
 	writeShardFile(t, base+".cpu0", epoch, []int{9})
 
-	if err := MergeTagShards(base, Config{}); err != nil {
+	if err := MergeTagShards(base, Config{}, nil); err != nil {
 		t.Fatalf("MergeTagShards: %v", err)
 	}
 
@@ -86,6 +86,28 @@ func TestMergeTagShards(t *testing.T) {
 	}
 }
 
+// TestMergeTagShardsSkip checks that tags in the skip set are left
+// untouched: a tag finalized mid-run (--finalize-on-del) must not have
+// its consumed ack file recreated by the shutdown merge.
+func TestMergeTagShardsSkip(t *testing.T) {
+	dir := t.TempDir()
+	base := filepath.Join(dir, "out.pcap")
+	epoch := time.Unix(1700000000, 0).UTC()
+
+	writeShardFile(t, TagShardPath(base, 0, 1), epoch, []int{1})
+	writeShardFile(t, TagShardPath(base, 0, 2), epoch, []int{2})
+
+	if err := MergeTagShards(base, Config{}, map[uint32]bool{1: true}); err != nil {
+		t.Fatalf("MergeTagShards: %v", err)
+	}
+	if _, err := os.Stat(TagMergedPath(base, 1)); err == nil {
+		t.Error("skipped tag 1 was merged anyway")
+	}
+	if _, err := os.Stat(TagMergedPath(base, 2)); err != nil {
+		t.Errorf("tag 2 not merged: %v", err)
+	}
+}
+
 // TestMergeTagShardsGlobMeta checks that a -w base path containing glob
 // metacharacters (which filepath.Glob would misinterpret) still discovers
 // and merges its shards, since discovery reads the directory instead.
@@ -96,7 +118,7 @@ func TestMergeTagShardsGlobMeta(t *testing.T) {
 
 	writeShardFile(t, TagShardPath(base, 0, 3), epoch, []int{1, 2})
 
-	if err := MergeTagShards(base, Config{}); err != nil {
+	if err := MergeTagShards(base, Config{}, nil); err != nil {
 		t.Fatalf("MergeTagShards: %v", err)
 	}
 	merged := TagMergedPath(base, 3)
