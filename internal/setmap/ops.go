@@ -348,6 +348,9 @@ func ParseFieldValues(args []string) (fields map[string]string, val EntryValue, 
 		}
 		switch name {
 		case reservedTagName:
+			if val.HasTag {
+				return nil, val, fmt.Errorf("%s= given twice", reservedTagName)
+			}
 			v, perr := parseUint(vs)
 			if perr != nil {
 				return nil, val, fmt.Errorf("argument %q: %w", a, perr)
@@ -355,6 +358,9 @@ func ParseFieldValues(args []string) (fields map[string]string, val EntryValue, 
 			val.Tag, val.HasTag = v, true
 			continue
 		case reservedMaxBytesName, ValFieldMaxBytes:
+			if val.HasMaxBytes {
+				return nil, val, fmt.Errorf("%s= given twice", reservedMaxBytesName)
+			}
 			v, perr := parseUint(vs)
 			if perr != nil {
 				return nil, val, fmt.Errorf("argument %q: %w", a, perr)
@@ -459,25 +465,27 @@ func getField(val []byte, f KeyField) uint64    { return getUint(val[f.Off : f.O
 
 // Add inserts (or updates) one entry: the tag (default 1 = plain
 // presence), state active, and — when the layout carries it — the
-// per-entry byte cap (0 = uncapped).
-func (d *Definition) Add(values map[string]string, tag, maxBytes uint64) error {
+// per-entry byte cap (0 = uncapped). An explicit max-bytes= on a
+// layout without the field is an error even for 0, so a caller cannot
+// believe a cap (or its removal) took effect when it was ignored.
+func (d *Definition) Add(values map[string]string, ev EntryValue) error {
 	key, err := d.BuildKey(values)
 	if err != nil {
 		return err
 	}
 	tf := d.TagField()
-	if tf.Size < 8 && tag >= 1<<(8*tf.Size) {
-		return fmt.Errorf("tag %d does not fit the map's %d-byte tag field", tag, tf.Size)
+	if tf.Size < 8 && ev.Tag >= 1<<(8*tf.Size) {
+		return fmt.Errorf("tag %d does not fit the map's %d-byte tag field", ev.Tag, tf.Size)
 	}
 	mf, hasMax := d.ValField(ValFieldMaxBytes)
-	if maxBytes > 0 && !hasMax {
+	if ev.HasMaxBytes && !hasMax {
 		return fmt.Errorf("this map's value has no %s field (created with a plain tag value); recreate it with --value %q to use per-entry caps",
 			ValFieldMaxBytes, DefaultValueSchema)
 	}
 	val := make([]byte, int(d.Map.ValueSize()))
-	putField(val, tf, tag)
+	putField(val, tf, ev.Tag)
 	if hasMax {
-		putField(val, mf, maxBytes)
+		putField(val, mf, ev.MaxBytes)
 	}
 	return d.Map.Put(key, val)
 }

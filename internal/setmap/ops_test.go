@@ -32,7 +32,7 @@ func TestResizeGrowPreservesEntriesAndSchema(t *testing.T) {
 		err := def.Add(map[string]string{
 			"imsi": fmt.Sprintf("%d", 999990000000001+i),
 			"teid": fmt.Sprintf("%d", 0x1000+i),
-		}, uint64(i+1), 0)
+		}, EntryValue{Tag: uint64(i + 1)})
 		if err != nil {
 			def.Close()
 			t.Fatalf("Add: %v", err)
@@ -93,7 +93,7 @@ func TestResizeShrinkBelowCountFails(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 	for i := range 3 {
-		if err := def.Add(map[string]string{"teid": fmt.Sprintf("%d", i+1)}, 1, 0); err != nil {
+		if err := def.Add(map[string]string{"teid": fmt.Sprintf("%d", i+1)}, EntryValue{Tag: 1}); err != nil {
 			def.Close()
 			t.Fatalf("Add: %v", err)
 		}
@@ -188,7 +188,7 @@ func TestTagsRoundTrip(t *testing.T) {
 
 	entries := map[string]uint64{"1001": 1, "1002": 2, "1003": 2}
 	for imsi, tag := range entries {
-		if err := def.Add(map[string]string{"imsi": imsi}, tag, 0); err != nil {
+		if err := def.Add(map[string]string{"imsi": imsi}, EntryValue{Tag: tag}); err != nil {
 			t.Fatalf("Add(%s): %v", imsi, err)
 		}
 	}
@@ -233,10 +233,10 @@ func TestExtendedValueLayout(t *testing.T) {
 		t.Fatalf("max_bytes field = %+v ok=%v, want off 8 size 8", f, ok)
 	}
 
-	if err := def.Add(map[string]string{"imsi": "1001"}, 1, 4096); err != nil {
+	if err := def.Add(map[string]string{"imsi": "1001"}, EntryValue{Tag: 1, MaxBytes: 4096, HasMaxBytes: true}); err != nil {
 		t.Fatalf("Add capped: %v", err)
 	}
-	if err := def.Add(map[string]string{"imsi": "1002"}, 2, 0); err != nil {
+	if err := def.Add(map[string]string{"imsi": "1002"}, EntryValue{Tag: 2}); err != nil {
 		t.Fatalf("Add uncapped: %v", err)
 	}
 
@@ -309,11 +309,16 @@ func TestLegacyValueLayoutCompat(t *testing.T) {
 	if def.StateOff() != -1 {
 		t.Fatalf("StateOff = %d, want -1", def.StateOff())
 	}
-	if err := def.Add(map[string]string{"imsi": "1001"}, 3, 0); err != nil {
+	if err := def.Add(map[string]string{"imsi": "1001"}, EntryValue{Tag: 3}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
-	if err := def.Add(map[string]string{"imsi": "1002"}, 4, 100); err == nil || !strings.Contains(err.Error(), ValFieldMaxBytes) {
+	if err := def.Add(map[string]string{"imsi": "1002"}, EntryValue{Tag: 4, MaxBytes: 100, HasMaxBytes: true}); err == nil || !strings.Contains(err.Error(), ValFieldMaxBytes) {
 		t.Fatalf("Add with cap on legacy layout = %v, want max_bytes error", err)
+	}
+	// An explicit max-bytes=0 must error too: silently dropping it would
+	// let a caller believe a cap removal took effect.
+	if err := def.Add(map[string]string{"imsi": "1002"}, EntryValue{Tag: 4, HasMaxBytes: true}); err == nil || !strings.Contains(err.Error(), ValFieldMaxBytes) {
+		t.Fatalf("Add with explicit max-bytes=0 on legacy layout = %v, want max_bytes error", err)
 	}
 	if n, err := def.SetState(3, StateCapped); err != nil || n != 0 {
 		t.Fatalf("SetState on legacy layout = (%d, %v), want (0, nil)", n, err)

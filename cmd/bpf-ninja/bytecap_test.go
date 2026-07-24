@@ -58,6 +58,33 @@ func TestAddTagUncappedNeverCaps(t *testing.T) {
 	}
 }
 
+func TestEffectiveLimits(t *testing.T) {
+	// Shared-tag entries must reduce deterministically whatever the
+	// iteration order: 0 (uncapped) dominates, otherwise the max wins.
+	infos := []setmap.TagInfo{
+		{Tag: 1, MaxBytes: 100},
+		{Tag: 1, MaxBytes: 200},
+		{Tag: 2, MaxBytes: 300},
+		{Tag: 2, MaxBytes: 0},
+		{Tag: 3, MaxBytes: 0},
+		{Tag: 3, MaxBytes: 50},
+		{Tag: 0, MaxBytes: 42},
+	}
+	for range 2 { // forward and (via map re-iteration) arbitrary orders
+		got := effectiveLimits(infos)
+		if got[1] != 200 || got[2] != 0 || got[3] != 0 {
+			t.Fatalf("effectiveLimits = %v, want {1:200 2:0 3:0}", got)
+		}
+		if _, hasZero := got[0]; hasZero {
+			t.Fatal("tag 0 got a limit")
+		}
+		// reverse the slice to simulate a different iteration order
+		for i, j := 0, len(infos)-1; i < j; i, j = i+1, j-1 {
+			infos[i], infos[j] = infos[j], infos[i]
+		}
+	}
+}
+
 func TestRefreshLimitsRuntimeCap(t *testing.T) {
 	c := newByteCaps(true, 0)
 	ctr := c.counterFor(5)

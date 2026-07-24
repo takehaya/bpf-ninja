@@ -79,7 +79,7 @@ func TestBpfDSLSetMatchPacketField(t *testing.T) {
 	t.Cleanup(set.Def.Close)
 
 	const memberPort = uint16(0x01BB) // 443
-	if err := set.Def.Add(map[string]string{"dport": fmt.Sprintf("%d", memberPort)}, 1, 0); err != nil {
+	if err := set.Def.Add(map[string]string{"dport": fmt.Sprintf("%d", memberPort)}, setmap.EntryValue{Tag: 1}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 
@@ -106,7 +106,7 @@ func TestBpfDSLSetMatchPacketField(t *testing.T) {
 
 	// (b) runtime add takes effect without re-attach.
 	const addedPort = uint16(8080)
-	if err := set.Def.Add(map[string]string{"dport": fmt.Sprintf("%d", addedPort)}, 2, 0); err != nil {
+	if err := set.Def.Add(map[string]string{"dport": fmt.Sprintf("%d", addedPort)}, setmap.EntryValue{Tag: 2}); err != nil {
 		t.Fatalf("runtime Add: %v", err)
 	}
 	runTCP(t, prog, 0x66, 1234, addedPort)
@@ -145,7 +145,7 @@ func TestBpfDSLSetMatchCompositeKey(t *testing.T) {
 	t.Cleanup(set.Def.Close)
 
 	const sport, dport = uint16(1111), uint16(443)
-	if err := set.Def.Add(map[string]string{"sport": fmt.Sprintf("%d", sport), "dport": fmt.Sprintf("%d", dport)}, 1, 0); err != nil {
+	if err := set.Def.Add(map[string]string{"sport": fmt.Sprintf("%d", sport), "dport": fmt.Sprintf("%d", dport)}, setmap.EntryValue{Tag: 1}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 
@@ -222,7 +222,7 @@ func TestBpfDSLSetMatchIPv6Dst(t *testing.T) {
 		t.Fatalf("key %x != wire bytes %x (byte-order mismatch)", key, net.ParseIP(memberSID).To16())
 	}
 
-	if err := set.Def.Add(map[string]string{"sid": memberSID}, 1, 0); err != nil {
+	if err := set.Def.Add(map[string]string{"sid": memberSID}, setmap.EntryValue{Tag: 1}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 
@@ -247,7 +247,7 @@ func TestBpfDSLSetMatchIPv6Dst(t *testing.T) {
 
 	// Runtime add / delete without re-attach.
 	const addedSID = "2001:db8::9"
-	if err := set.Def.Add(map[string]string{"sid": addedSID}, 2, 0); err != nil {
+	if err := set.Def.Add(map[string]string{"sid": addedSID}, setmap.EntryValue{Tag: 2}); err != nil {
 		t.Fatalf("runtime Add: %v", err)
 	}
 	runIPv6(t, prog, 0x66, addedSID)

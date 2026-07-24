@@ -188,6 +188,13 @@ func TestParseFieldValues(t *testing.T) {
 	if _, val, err := ParseFieldValues([]string{"max_bytes=42"}); err != nil || !val.HasMaxBytes || val.MaxBytes != 42 {
 		t.Errorf("max_bytes alias: val=%+v err=%v", val, err)
 	}
+	// Duplicate value assignments are mistakes, not overrides.
+	if _, _, err := ParseFieldValues([]string{"tag=1", "tag=2"}); err == nil || !strings.Contains(err.Error(), "twice") {
+		t.Errorf("dup tag err = %v", err)
+	}
+	if _, _, err := ParseFieldValues([]string{"max-bytes=1", "max_bytes=2"}); err == nil || !strings.Contains(err.Error(), "twice") {
+		t.Errorf("dup max-bytes err = %v", err)
+	}
 	if _, _, err := ParseFieldValues([]string{"imsi"}); err == nil {
 		t.Error("expected error for missing =value")
 	}
@@ -285,7 +292,7 @@ func TestIPv6AddListSchema(t *testing.T) {
 	if err != nil {
 		t.Fatalf("describe: %v", err)
 	}
-	if err := def.Add(map[string]string{"sid": "fc00::1"}, 1, 0); err != nil {
+	if err := def.Add(map[string]string{"sid": "fc00::1"}, EntryValue{Tag: 1}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 	var list bytes.Buffer

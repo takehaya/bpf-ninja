@@ -117,7 +117,7 @@ var setAddCmd = &cli.Command{
 			return err
 		}
 		defer def.Close()
-		return def.Add(fields, val.Tag, val.MaxBytes)
+		return def.Add(fields, val)
 	},
 }
 

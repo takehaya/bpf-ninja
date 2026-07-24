@@ -65,14 +65,35 @@ func (c *byteCaps) counterFor(tag uint32) *tagCounter {
 	return ctr
 }
 
-// refreshLimits pulls each entry's max-bytes into the tag counters.
-// Entries without a cap (or legacy layouts) store 0 = uncapped.
-func (c *byteCaps) refreshLimits(infos []setmap.TagInfo) {
+// effectiveLimits reduces a snapshot to one deterministic limit per
+// tag. Map iteration order is unstable, so entries sharing a tag must
+// not race on "last seen wins": an uncapped entry (0) makes the whole
+// tag uncapped (0 = no limit, the most permissive), otherwise the
+// largest cap wins. Tag 0 is excluded.
+func effectiveLimits(infos []setmap.TagInfo) map[uint32]uint64 {
+	limits := map[uint32]uint64{}
 	for _, in := range infos {
 		if in.Tag == 0 {
 			continue
 		}
-		c.counterFor(in.Tag).limit.Store(in.MaxBytes)
+		cur, seen := limits[in.Tag]
+		switch {
+		case !seen:
+			limits[in.Tag] = in.MaxBytes
+		case cur == 0 || in.MaxBytes == 0:
+			limits[in.Tag] = 0
+		case in.MaxBytes > cur:
+			limits[in.Tag] = in.MaxBytes
+		}
+	}
+	return limits
+}
+
+// refreshLimits pulls the snapshot's effective per-tag caps into the
+// tag counters (0 = uncapped, including legacy layouts).
+func (c *byteCaps) refreshLimits(infos []setmap.TagInfo) {
+	for tag, lim := range effectiveLimits(infos) {
+		c.counterFor(tag).limit.Store(lim)
 	}
 }
 
