@@ -159,13 +159,13 @@ func Create(path, keySchema, valueSchema string, maxEntries uint32) error {
 	if keySize > MaxKeySize {
 		return fmt.Errorf("key size %d exceeds the %d-byte limit", keySize, MaxKeySize)
 	}
-	// "tag" / "max-bytes" are reserved for the value assignment in
-	// `set add`, so a key field of those names could never be addressed
-	// on the CLI ("state" is reserved too, for symmetry with the value
-	// layout).
+	// "tag" / "max-bytes" are reserved as `set add` value assignments,
+	// and "state" / "max_bytes" collide with the extended value layout's
+	// field names in `set list` output — none of them can name a key
+	// field without becoming unaddressable or ambiguous on the CLI.
 	for _, f := range keyFields {
 		if f.Name == reservedTagName || f.Name == reservedMaxBytesName || f.Name == ValFieldMaxBytes || f.Name == ValFieldState {
-			return fmt.Errorf("key field name %q is reserved (used for the value in `set add`)", f.Name)
+			return fmt.Errorf("key field name %q is reserved (it is a value assignment or value-layout field name)", f.Name)
 		}
 	}
 
