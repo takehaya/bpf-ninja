@@ -50,9 +50,10 @@ func newTestFinalizer(t *testing.T, shards int) *tagFinalizer {
 	return newTagFinalizer(base, output.Config{}, shards)
 }
 
-// A tag must survive one full quiet cycle after leaving the union
-// before it finalizes: cycle 1 makes it a candidate, cycle 2 confirms.
-func TestStepTwoCycleQuiesce(t *testing.T) {
+// Quiesce takes two quiet cycles (candidate, then stop sign), and the
+// close+merge runs one cycle after the stop sign. A tag whose merge has
+// not succeeded yet is returned again; after markMerged it stops.
+func TestStepQuiesceCycles(t *testing.T) {
 	f := newTestFinalizer(t, 2)
 	st := f.stateFor(7)
 
@@ -62,17 +63,28 @@ func TestStepTwoCycleQuiesce(t *testing.T) {
 	if done := f.step(nil); len(done) != 0 {
 		t.Fatalf("finalized on the first quiet cycle: %v", done)
 	}
-	if done := f.step(nil); len(done) != 1 || done[0] != 7 {
-		t.Fatalf("second quiet cycle = %v, want [7]", done)
+	if done := f.step(nil); len(done) != 0 {
+		t.Fatalf("close scheduled in the stop-sign cycle: %v", done)
 	}
 	if !st.finalized.Load() {
-		t.Fatal("finalized flag not set")
+		t.Fatal("stop sign not raised after the second quiet cycle")
 	}
+	if done := f.step(nil); len(done) != 1 || done[0] != 7 {
+		t.Fatalf("cycle after the stop sign = %v, want [7]", done)
+	}
+	// Merge has not succeeded: keep retrying, and don't skip at shutdown.
+	if done := f.step(nil); len(done) != 1 || done[0] != 7 {
+		t.Fatalf("unmerged tag not retried: %v", done)
+	}
+	if got := f.mergedTags(); len(got) != 0 {
+		t.Fatalf("mergedTags before merge = %v, want empty", got)
+	}
+	f.markMerged(7)
 	if done := f.step(nil); len(done) != 0 {
-		t.Fatalf("finalized twice: %v", done)
+		t.Fatalf("merged tag still returned: %v", done)
 	}
-	if got := f.finalizedTags(); len(got) != 1 || !got[7] {
-		t.Fatalf("finalizedTags = %v, want {7}", got)
+	if got := f.mergedTags(); len(got) != 1 || !got[7] {
+		t.Fatalf("mergedTags = %v, want {7}", got)
 	}
 }
 
@@ -82,13 +94,14 @@ func TestStepActivityResetsCandidate(t *testing.T) {
 	f := newTestFinalizer(t, 1)
 	st := f.stateFor(3)
 
-	f.step(nil)       // candidate at activity 0
+	f.step(nil)        // candidate at activity 0
 	st.activity.Add(1) // backlog drained a batch
 	if done := f.step(nil); len(done) != 0 {
 		t.Fatalf("finalized despite activity during the cycle: %v", done)
 	}
+	f.step(nil) // quiet again -> stop sign
 	if done := f.step(nil); len(done) != 1 || done[0] != 3 {
-		t.Fatalf("quiet re-cycle = %v, want [3]", done)
+		t.Fatalf("post-stop-sign cycle = %v, want [3]", done)
 	}
 }
 
@@ -103,6 +116,7 @@ func TestStepReappearanceResetsCandidate(t *testing.T) {
 		t.Fatalf("finalized while back in the union: %v", done)
 	}
 	f.step(nil) // candidate again
+	f.step(nil) // stop sign
 	if done := f.step(nil); len(done) != 1 || done[0] != 5 {
 		t.Fatalf("post-re-removal cycles = %v, want [5]", done)
 	}
@@ -115,11 +129,14 @@ func TestStepUnionSeenAndTagZero(t *testing.T) {
 
 	f.step([]uint32{9}) // tag 9 exists only in the set map
 	f.step(nil)
+	f.step(nil) // stop sign
 	if done := f.step(nil); len(done) != 1 || done[0] != 9 {
 		t.Fatalf("union-seen tag = %v, want [9]", done)
 	}
+	f.markMerged(9)
 
 	f.stateFor(0) // traffic with no set match
+	f.step(nil)
 	f.step(nil)
 	if done := f.step(nil); len(done) != 0 {
 		t.Fatalf("tag 0 finalized: %v", done)
@@ -140,6 +157,49 @@ func TestFinalizeZeroTrafficProducesFile(t *testing.T) {
 	}
 	if info.Size() == 0 {
 		t.Fatal("merged file is empty (want a valid pcap-ng header)")
+	}
+}
+
+// A failed merge must leave the tag un-merged (retried by step, not
+// skipped at shutdown) and succeed once the cause clears.
+func TestFinalizeFailureRetries(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "gone")
+	f := &tagFinalizer{
+		basePath: filepath.Join(missing, "out.pcap"),
+		cfg:      output.Config{},
+		tags:     map[uint32]*tagFinState{},
+		writers:  map[uint32][]*output.Writer{},
+		pending:  map[uint32]uint64{},
+		closing:  map[uint32]uint64{},
+	}
+	f.stateFor(4)
+	f.step(nil)
+	f.step(nil) // stop sign
+	if done := f.step(nil); len(done) != 1 || done[0] != 4 {
+		t.Fatalf("step = %v, want [4]", done)
+	}
+
+	if err := f.finalize(4); err == nil {
+		t.Fatal("finalize into a missing directory succeeded")
+	}
+	if got := f.mergedTags(); len(got) != 0 {
+		t.Fatalf("failed merge marked as merged: %v", got)
+	}
+	if done := f.step(nil); len(done) != 1 || done[0] != 4 {
+		t.Fatalf("failed tag not retried: %v", done)
+	}
+
+	if err := os.Mkdir(missing, 0o755); err != nil {
+		t.Fatalf("Mkdir: %v", err)
+	}
+	if err := f.finalize(4); err != nil {
+		t.Fatalf("finalize after the cause cleared: %v", err)
+	}
+	if got := f.mergedTags(); len(got) != 1 || !got[4] {
+		t.Fatalf("mergedTags = %v, want {4}", got)
+	}
+	if done := f.step(nil); len(done) != 0 {
+		t.Fatalf("merged tag still retried: %v", done)
 	}
 }
 

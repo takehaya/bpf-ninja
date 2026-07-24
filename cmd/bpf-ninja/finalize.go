@@ -15,7 +15,8 @@ import (
 // the write path.
 type tagFinState struct {
 	activity  atomic.Uint64 // bumped once per written same-tag run
-	finalized atomic.Bool   // set by the finalizer; shards then drop the tag
+	finalized atomic.Bool   // stop sign: set by the finalizer; shards then drop the tag
+	merged    atomic.Bool   // set only after close+merge succeeded (the ack file exists)
 	warned    atomic.Bool   // one "dropping re-added tag" warning per tag
 }
 
@@ -29,15 +30,22 @@ type tagFinState struct {
 // from the ringbuf just before `set del` may still be in flight during
 // the first cycle; a second cycle with unchanged activity proves the
 // backlog for that tag has drained (the kernel stopped matching at del).
+// The close+merge then runs one cycle after the finalized stop sign is
+// raised: a shard that passed its finalized check just before the flag
+// flipped finishes that write long before the close (which also
+// serializes with in-flight writes on the writer's flushMu), so nothing
+// written can be missed by the merge.
 type tagFinalizer struct {
 	basePath  string
 	cfg       output.Config
 	numShards int
 
 	mu      sync.Mutex
-	tags    map[uint32]*tagFinState        // every tag ever seen (traffic or set union)
-	writers map[uint32][]*output.Writer    // open shard writers per tag; index = shard
-	pending map[uint32]uint64              // finalize candidates: tag -> activity at first eligible cycle
+	cycle   uint64                      // step() counter, for the one-cycle close delay
+	tags    map[uint32]*tagFinState     // every tag ever seen (traffic or set union)
+	writers map[uint32][]*output.Writer // open shard writers per tag; index = shard
+	pending map[uint32]uint64           // finalize candidates: tag -> activity at first eligible cycle
+	closing map[uint32]uint64           // stop sign raised: tag -> cycle it was raised (merge retried until it succeeds)
 }
 
 func newTagFinalizer(basePath string, cfg output.Config, numShards int) *tagFinalizer {
@@ -48,6 +56,7 @@ func newTagFinalizer(basePath string, cfg output.Config, numShards int) *tagFina
 		tags:      map[uint32]*tagFinState{},
 		writers:   map[uint32][]*output.Writer{},
 		pending:   map[uint32]uint64{},
+		closing:   map[uint32]uint64{},
 	}
 }
 
@@ -92,15 +101,20 @@ func (f *tagFinalizer) deregister(tag uint32, shardIdx int) {
 }
 
 // step runs one poll cycle against the live set-map tag union and
-// returns the tags that just became quiesced, in ascending order. A tag
-// is quiesced when it is absent from the union for two consecutive
-// cycles with unchanged activity. Tags reappearing in the union (or
-// still receiving records) drop out of the candidate set. Union-seen
-// tags are registered too, so a tag whose entry is removed before any
-// traffic still finalizes (to an empty pcap-ng).
+// returns the tags whose close+merge should run now, in ascending
+// order. A tag quiesces when it is absent from the union for two
+// consecutive cycles with unchanged activity; that raises the
+// finalized stop sign (shards drop the tag from then on) and the tag is
+// returned one cycle later, once any write that raced the flag has
+// drained. Tags reappearing in the union (or still receiving records)
+// drop out of the candidate set. Union-seen tags are registered too, so
+// a tag whose entry is removed before any traffic still finalizes (to
+// an empty pcap-ng). A tag whose finalize failed (merged still false)
+// is returned again on every later cycle until it succeeds.
 func (f *tagFinalizer) step(union []uint32) []uint32 {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.cycle++
 
 	live := map[uint32]bool{}
 	for _, tag := range union {
@@ -108,7 +122,6 @@ func (f *tagFinalizer) step(union []uint32) []uint32 {
 		f.stateForLocked(tag)
 	}
 
-	var done []uint32
 	for tag, st := range f.tags {
 		if tag == 0 || st.finalized.Load() || live[tag] {
 			delete(f.pending, tag)
@@ -119,24 +132,42 @@ func (f *tagFinalizer) step(union []uint32) []uint32 {
 		if wasPending && prev == act {
 			st.finalized.Store(true)
 			delete(f.pending, tag)
-			done = append(done, tag)
+			f.closing[tag] = f.cycle
 			continue
 		}
 		f.pending[tag] = act
+	}
+
+	var done []uint32
+	for tag, flagged := range f.closing {
+		if f.cycle > flagged {
+			done = append(done, tag)
+		}
 	}
 	slices.Sort(done)
 	return done
 }
 
-// finalizedTags returns the tags finalized during this run, for the
-// shutdown merge to skip: their per-tag file is a consumed completion
-// ack and must not be recreated after the collector took it.
-func (f *tagFinalizer) finalizedTags() map[uint32]bool {
+// markMerged records a successful close+merge; the tag leaves the retry
+// set and the shutdown merge will skip it.
+func (f *tagFinalizer) markMerged(tag uint32) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.stateForLocked(tag).merged.Store(true)
+	delete(f.closing, tag)
+}
+
+// mergedTags returns the tags whose ack file was successfully produced
+// during this run, for the shutdown merge to skip: a consumed ack must
+// not be recreated after the collector took it. Tags that quiesced but
+// whose merge kept failing are NOT skipped — the shutdown merge is
+// their last chance to produce the file.
+func (f *tagFinalizer) mergedTags() map[uint32]bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	done := map[uint32]bool{}
 	for tag, st := range f.tags {
-		if st.finalized.Load() {
+		if st.merged.Load() {
 			done[tag] = true
 		}
 	}
@@ -145,9 +176,11 @@ func (f *tagFinalizer) finalizedTags() map[uint32]bool {
 
 // finalize flushes and closes the tag's remaining shard writers, then
 // merges its shards into the per-tag file (atomic temp + rename). Safe
-// to run from the poll goroutine: the tag is quiesced, so no shard will
-// touch these writers again, and shards drop any re-added tag's records
-// after the finalized flag flipped in step.
+// to run from the poll goroutine: the stop sign was raised a full cycle
+// earlier, so no shard will touch these writers again, and shards drop
+// any re-added tag's records. On success the tag is marked merged; on
+// failure it stays in the retry set (writers are gone either way, so a
+// retry only re-runs the merge).
 func (f *tagFinalizer) finalize(tag uint32) error {
 	f.mu.Lock()
 	ws := f.writers[tag]
@@ -166,8 +199,9 @@ func (f *tagFinalizer) finalize(tag uint32) error {
 		errs = append(errs, err)
 	}
 	if len(errs) > 0 {
-		return fmt.Errorf("finalizing tag %d: %v", tag, errs)
+		return fmt.Errorf("finalizing tag %d (will retry): %v", tag, errs)
 	}
+	f.markMerged(tag)
 	return nil
 }
 

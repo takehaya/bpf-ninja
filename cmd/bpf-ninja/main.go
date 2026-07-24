@@ -170,7 +170,7 @@ var flags = []cli.Flag{
 	},
 	&cli.BoolFlag{
 		Name:  "finalize-on-del",
-		Usage: "with --split-by-tag and --set: when a tag's last set entry is removed and its ringbuf backlog has drained (two consecutive quiet ~1s poll cycles), flush+close its per-CPU shards and merge them into <stem>.<tag><ext> while the capture keeps running — the merged file appearing is the completion ack. Finalized tags are single-use: records for a re-added entry are dropped with a warning",
+		Usage: "with --split-by-tag and --set: when a tag's last set entry is removed and its ringbuf backlog has drained (two quiet ~1s poll cycles, closed and merged on the following cycle, ~3-4s total), flush+close its per-CPU shards and merge them into <stem>.<tag><ext> while the capture keeps running — the merged file appearing is the completion ack. Finalized tags are single-use: records for a re-added entry are dropped with a warning",
 	},
 	&cli.BoolFlag{
 		Name:  "exit-when-capped",
@@ -941,7 +941,7 @@ func runCaptureLoop(cmd *cli.Command, probe *program.Probe, cfg output.Config, l
 			// is a consumed ack the collector may have already taken.
 			var skip map[uint32]bool
 			if fin != nil {
-				skip = fin.finalizedTags()
+				skip = fin.mergedTags()
 			}
 			fmt.Fprintf(os.Stderr, "merging per-CPU tag shards for %s ...\n", basePath)
 			if err := output.MergeTagShards(basePath, cfg, skip); err != nil {
