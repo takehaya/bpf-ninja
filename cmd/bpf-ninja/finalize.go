@@ -214,11 +214,15 @@ func (f *tagFinalizer) finalize(tag uint32) error {
 			}
 		}
 	}
-	if err := output.MergeOneTagShards(f.basePath, f.numShards, tag, f.cfg); err != nil {
-		errs = append(errs, err)
-	}
 	if len(errs) > 0 {
-		return fmt.Errorf("finalizing tag %d (will retry): %v", tag, errs)
+		// A failed Close means a shard's final flush may not have hit
+		// disk — don't publish an ack knowingly missing data. The retry
+		// cycle re-runs the merge (the writers are gone either way) and
+		// publishes whatever the shards hold then.
+		return fmt.Errorf("finalizing tag %d (will retry): closing shard writers: %v", tag, errs)
+	}
+	if err := output.MergeOneTagShards(f.basePath, f.numShards, tag, f.cfg); err != nil {
+		return fmt.Errorf("finalizing tag %d (will retry): %v", tag, err)
 	}
 	f.markMerged(tag)
 	return nil

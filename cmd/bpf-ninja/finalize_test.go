@@ -164,14 +164,7 @@ func TestFinalizeZeroTrafficProducesFile(t *testing.T) {
 // skipped at shutdown) and succeed once the cause clears.
 func TestFinalizeFailureRetries(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "gone")
-	f := &tagFinalizer{
-		basePath: filepath.Join(missing, "out.pcap"),
-		cfg:      output.Config{},
-		tags:     map[uint32]*tagFinState{},
-		writers:  map[uint32][]*output.Writer{},
-		pending:  map[uint32]uint64{},
-		closing:  map[uint32]uint64{},
-	}
+	f := newTagFinalizer(filepath.Join(missing, "out.pcap"), output.Config{}, 1)
 	f.stateFor(4)
 	f.step(nil)
 	f.step(nil) // stop sign
