@@ -48,7 +48,7 @@ func runMerge(_ context.Context, cmd *cli.Command) error {
 	}
 	// No hook flag here: for --fexit shards the merge seeds its verdict
 	// interfaces from the shard files themselves, whichever hook wrote them.
-	if err := output.MergeTagShards(base, output.Config{IsFexit: cmd.Bool("fexit")}); err != nil {
+	if err := output.MergeTagShards(base, output.Config{IsFexit: cmd.Bool("fexit")}, nil); err != nil {
 		return fmt.Errorf("merging tag shards for %s: %w", base, err)
 	}
 	return nil

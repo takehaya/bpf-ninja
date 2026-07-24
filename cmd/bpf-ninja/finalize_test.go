@@ -1,0 +1,271 @@
+package main
+
+import (
+	"io"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"github.com/google/gopacket/pcapgo"
+
+	"github.com/takehaya/bpf-ninja/internal/capture"
+	"github.com/takehaya/bpf-ninja/internal/output"
+)
+
+// testutilPackets returns two tiny timestamp-ordered packets.
+func testutilPackets() []capture.Packet {
+	base := time.Unix(1700000000, 0)
+	return []capture.Packet{
+		{Timestamp: base, Data: []byte{1, 2, 3, 4}},
+		{Timestamp: base.Add(time.Millisecond), Data: []byte{5, 6, 7, 8}},
+	}
+}
+
+func countPcapPackets(path string) (int, error) {
+	fh, err := os.Open(path)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = fh.Close() }()
+	r, err := pcapgo.NewNgReader(fh, pcapgo.DefaultNgReaderOptions)
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for {
+		if _, _, err := r.ReadPacketData(); err != nil {
+			if err == io.EOF {
+				return n, nil
+			}
+			return n, err
+		}
+		n++
+	}
+}
+
+func newTestFinalizer(t *testing.T, shards int) *tagFinalizer {
+	t.Helper()
+	base := filepath.Join(t.TempDir(), "out.pcap")
+	return newTagFinalizer(base, output.Config{}, shards)
+}
+
+// Quiesce takes two quiet cycles (candidate, then stop sign), and the
+// close+merge runs one cycle after the stop sign. A tag whose merge has
+// not succeeded yet is returned again; after markMerged it stops.
+func TestStepQuiesceCycles(t *testing.T) {
+	f := newTestFinalizer(t, 2)
+	st := f.stateFor(7)
+
+	if done := f.step([]uint32{7}); len(done) != 0 {
+		t.Fatalf("finalized while still in the union: %v", done)
+	}
+	if done := f.step(nil); len(done) != 0 {
+		t.Fatalf("finalized on the first quiet cycle: %v", done)
+	}
+	if done := f.step(nil); len(done) != 0 {
+		t.Fatalf("close scheduled in the stop-sign cycle: %v", done)
+	}
+	if !st.finalized.Load() {
+		t.Fatal("stop sign not raised after the second quiet cycle")
+	}
+	if done := f.step(nil); len(done) != 1 || done[0] != 7 {
+		t.Fatalf("cycle after the stop sign = %v, want [7]", done)
+	}
+	// Merge has not succeeded: keep retrying, and don't skip at shutdown.
+	if done := f.step(nil); len(done) != 1 || done[0] != 7 {
+		t.Fatalf("unmerged tag not retried: %v", done)
+	}
+	if got := f.mergedTags(); len(got) != 0 {
+		t.Fatalf("mergedTags before merge = %v, want empty", got)
+	}
+	f.markMerged(7)
+	if done := f.step(nil); len(done) != 0 {
+		t.Fatalf("merged tag still returned: %v", done)
+	}
+	if got := f.mergedTags(); len(got) != 1 || !got[7] {
+		t.Fatalf("mergedTags = %v, want {7}", got)
+	}
+}
+
+// Records arriving between the two cycles (draining ringbuf backlog)
+// must reset the candidate.
+func TestStepActivityResetsCandidate(t *testing.T) {
+	f := newTestFinalizer(t, 1)
+	st := f.stateFor(3)
+
+	f.step(nil)        // candidate at activity 0
+	st.activity.Add(1) // backlog drained a batch
+	if done := f.step(nil); len(done) != 0 {
+		t.Fatalf("finalized despite activity during the cycle: %v", done)
+	}
+	f.step(nil) // quiet again -> stop sign
+	if done := f.step(nil); len(done) != 1 || done[0] != 3 {
+		t.Fatalf("post-stop-sign cycle = %v, want [3]", done)
+	}
+}
+
+// A tag re-added to the union while pending must drop out of the
+// candidate set and start over after the next removal.
+func TestStepReappearanceResetsCandidate(t *testing.T) {
+	f := newTestFinalizer(t, 1)
+	f.stateFor(5)
+
+	f.step(nil) // candidate
+	if done := f.step([]uint32{5}); len(done) != 0 {
+		t.Fatalf("finalized while back in the union: %v", done)
+	}
+	f.step(nil) // candidate again
+	f.step(nil) // stop sign
+	if done := f.step(nil); len(done) != 1 || done[0] != 5 {
+		t.Fatalf("post-re-removal cycles = %v, want [5]", done)
+	}
+}
+
+// Union-seen tags (registered via step, no traffic) finalize too, so a
+// zero-traffic tag still produces its ack file. Tag 0 never does.
+func TestStepUnionSeenAndTagZero(t *testing.T) {
+	f := newTestFinalizer(t, 1)
+
+	f.step([]uint32{9}) // tag 9 exists only in the set map
+	f.step(nil)
+	f.step(nil) // stop sign
+	if done := f.step(nil); len(done) != 1 || done[0] != 9 {
+		t.Fatalf("union-seen tag = %v, want [9]", done)
+	}
+	f.markMerged(9)
+
+	f.stateFor(0) // traffic with no set match
+	f.step(nil)
+	f.step(nil)
+	if done := f.step(nil); len(done) != 0 {
+		t.Fatalf("tag 0 finalized: %v", done)
+	}
+}
+
+// finalize with no open writers (zero-traffic tag) must still produce a
+// valid merged file — the completion ack.
+func TestFinalizeZeroTrafficProducesFile(t *testing.T) {
+	f := newTestFinalizer(t, 4)
+	if err := f.finalize(9); err != nil {
+		t.Fatalf("finalize: %v", err)
+	}
+	merged := output.TagMergedPath(f.basePath, 9)
+	info, err := os.Stat(merged)
+	if err != nil {
+		t.Fatalf("merged file missing: %v", err)
+	}
+	if info.Size() == 0 {
+		t.Fatal("merged file is empty (want a valid pcap-ng header)")
+	}
+}
+
+// A failed merge must leave the tag un-merged (retried by step, not
+// skipped at shutdown) and succeed once the cause clears.
+func TestFinalizeFailureRetries(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "gone")
+	f := newTagFinalizer(filepath.Join(missing, "out.pcap"), output.Config{}, 1)
+	f.stateFor(4)
+	f.step(nil)
+	f.step(nil) // stop sign
+	if done := f.step(nil); len(done) != 1 || done[0] != 4 {
+		t.Fatalf("step = %v, want [4]", done)
+	}
+
+	if err := f.finalize(4); err == nil {
+		t.Fatal("finalize into a missing directory succeeded")
+	}
+	if got := f.mergedTags(); len(got) != 0 {
+		t.Fatalf("failed merge marked as merged: %v", got)
+	}
+	if done := f.step(nil); len(done) != 1 || done[0] != 4 {
+		t.Fatalf("failed tag not retried: %v", done)
+	}
+
+	if err := os.Mkdir(missing, 0o755); err != nil {
+		t.Fatalf("Mkdir: %v", err)
+	}
+	if err := f.finalize(4); err != nil {
+		t.Fatalf("finalize after the cause cleared: %v", err)
+	}
+	if got := f.mergedTags(); len(got) != 1 || !got[4] {
+		t.Fatalf("mergedTags = %v, want {4}", got)
+	}
+	if done := f.step(nil); len(done) != 0 {
+		t.Fatalf("merged tag still retried: %v", done)
+	}
+}
+
+// closeAll must flush+close writers still registered (a tag caught
+// between its stop sign and its close+merge at shutdown) and leave the
+// registry empty so nothing is closed twice.
+func TestCloseAllFlushesRemaining(t *testing.T) {
+	f := newTestFinalizer(t, 1)
+	path := output.TagShardPath(f.basePath, 0, 6)
+	w, err := output.NewWriter(path, output.Config{})
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+	if err := w.WriteBatch(testutilPackets()); err != nil {
+		t.Fatalf("WriteBatch: %v", err)
+	}
+	f.register(6, 0, w)
+
+	f.closeAll()
+	n, err := countPcapPackets(path)
+	if err != nil {
+		t.Fatalf("reading shard after closeAll: %v", err)
+	}
+	if n != 2 {
+		t.Fatalf("shard packet count = %d, want 2 (buffer not flushed)", n)
+	}
+	// Registry drained: finalize must not double-close.
+	if err := f.finalize(6); err != nil {
+		t.Fatalf("finalize after closeAll: %v", err)
+	}
+}
+
+// finalize must close registered writers (flushing their buffers) and
+// merge the shard contents into the per-tag file.
+func TestFinalizeClosesWritersAndMerges(t *testing.T) {
+	f := newTestFinalizer(t, 2)
+	pkts := testutilPackets()
+
+	for shard := range 2 {
+		w, err := output.NewWriter(output.TagShardPath(f.basePath, shard, 1), output.Config{})
+		if err != nil {
+			t.Fatalf("NewWriter shard %d: %v", shard, err)
+		}
+		if err := w.WriteBatch(pkts[shard : shard+1]); err != nil {
+			t.Fatalf("WriteBatch shard %d: %v", shard, err)
+		}
+		f.register(1, shard, w)
+	}
+
+	if err := f.finalize(1); err != nil {
+		t.Fatalf("finalize: %v", err)
+	}
+	merged := output.TagMergedPath(f.basePath, 1)
+	n, err := countPcapPackets(merged)
+	if err != nil {
+		t.Fatalf("reading merged file: %v", err)
+	}
+	if n != 2 {
+		t.Fatalf("merged packet count = %d, want 2", n)
+	}
+
+	// deregistered slots must not be double-closed: register one writer,
+	// deregister it, close it ourselves, then finalize.
+	w, err := output.NewWriter(output.TagShardPath(f.basePath, 0, 2), output.Config{})
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+	f.register(2, 0, w)
+	f.deregister(2, 0)
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if err := f.finalize(2); err != nil {
+		t.Fatalf("finalize after deregister: %v", err)
+	}
+}

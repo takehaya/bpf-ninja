@@ -456,6 +456,47 @@ test_split_max_bytes_per_tag() {
     [[ $rc -eq 0 && $capped -eq 1 && $size -gt 0 && $size -le $((cap + 4096)) ]]
 }
 
+# --finalize-on-del: removing a tag's set entry must produce the merged
+# out.<tag>.pcap while the process keeps running (the completion ack),
+# and the process must still shut down cleanly afterwards.
+test_finalize_on_del() {
+    local pin=/sys/fs/bpf/bpfninja_finset_$$
+    rm -f "$pin" 2>/dev/null || true
+    if ! "$BINARY" set create "$pin" --key "type:u8" >/dev/null 2>&1 \
+        || ! "$BINARY" set add "$pin" type=8 tag=1 >/dev/null 2>&1; then
+        echo "set create/add failed" >&2
+        rm -f "$pin" 2>/dev/null || true
+        return 1
+    fi
+
+    local pcap=$(mktemp --suffix=.pcap)
+    local merged="${pcap%.pcap}.1.pcap"
+    local err=$(mktemp)
+    timeout 20 "$BINARY" -i veth0 --set "caps=$pin" --split-by-tag \
+        --finalize-on-del -w "$pcap" 'eth/ipv4/icmp[type in @caps]' > /dev/null 2>"$err" &
+    local pid=$!
+    sleep 2
+    send_packets 5
+    "$BINARY" set del "$pin" type=8 >/dev/null 2>&1
+
+    # The ack file should appear within a few quiesce cycles (~1s each).
+    local appeared=0
+    for _ in $(seq 1 8); do
+        [[ -f "$merged" ]] && { appeared=1; break; }
+        sleep 1
+    done
+    local alive=0
+    kill -0 $pid 2>/dev/null && alive=1
+    local pkts=0
+    [[ $appeared -eq 1 ]] && pkts=$(tcpdump -r "$merged" 2>/dev/null | wc -l)
+    kill -INT $pid 2>/dev/null; wait $pid 2>/dev/null
+    local rc=$?
+
+    echo "finalize_on_del appeared=$appeared alive=$alive pkts=$pkts rc=$rc stderr=$(cat "$err")" >&2
+    rm -f "$pcap" "${pcap%.pcap}".*.pcap "$pcap".cpu* "$err" "$pin"
+    [[ $appeared -eq 1 && $alive -eq 1 && $pkts -ge 3 && $rc -eq 0 ]]
+}
+
 # --max-bytes (no split): the aggregate cap must stop the capture by
 # itself with exit 0.
 test_max_bytes_total() {
@@ -527,6 +568,7 @@ run_test "cgroup_pcap_linktype"    test_cgroup_pcap_linktype_raw
 run_test "argfilter"               test_argfilter
 run_test "argfilter_set"           test_argfilter_set
 run_test "split_max_bytes_per_tag" test_split_max_bytes_per_tag
+run_test "finalize_on_del"         test_finalize_on_del
 run_test "max_bytes_total"         test_max_bytes_total
 run_test "graceful_shutdown"       test_graceful_shutdown
 

@@ -45,8 +45,10 @@ func TagMergedPath(base string, tag uint32) string {
 // -w path containing glob metacharacters (`[`, `?`, ...) is handled
 // correctly. It works whether the capture shut down cleanly (in-process) or
 // was killed and is being reconciled later by the `merge` subcommand. The
-// shard files are left in place.
-func MergeTagShards(basePath string, cfg Config) error {
+// shard files are left in place. Tags in skip (may be nil) are left alone —
+// --finalize-on-del already merged them mid-run and their per-tag file is a
+// consumed completion ack that must not reappear at shutdown.
+func MergeTagShards(basePath string, cfg Config, skip map[uint32]bool) error {
 	ext := filepath.Ext(basePath)
 	dir := filepath.Dir(basePath)
 	baseStem := strings.TrimSuffix(filepath.Base(basePath), ext)
@@ -63,7 +65,7 @@ func MergeTagShards(basePath string, cfg Config) error {
 			continue
 		}
 		tag, err := strconv.ParseUint(sm[1], 10, 32)
-		if err != nil {
+		if err != nil || skip[uint32(tag)] {
 			continue
 		}
 		tagFiles[uint32(tag)] = append(tagFiles[uint32(tag)], filepath.Join(dir, e.Name()))

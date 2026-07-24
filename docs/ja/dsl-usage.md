@@ -769,6 +769,25 @@ sudo bpf-ninja merge --base out.pcap --fexit  # --mode exit で録った場合
 - tag の value 幅を `--value "tag:u64"` などで 8 バイトにした場合、出し分けに使うのは下位 32 ビットです。
 - live ファイルは CPU ごと tag ごとに 1 本開くので、tag の種類が多いとファイルディスクリプタを消費します。種類が多い運用では `ulimit -n` を上げてください。上限に達すると起動途中でその旨のエラーを出します。
 
+### set del で tag の出力を完成させる (`--finalize-on-del`)
+
+常駐プロセス 1 個で複数のキャプチャジョブを多重化する運用向けに、entry の削除を「この tag は終わり」の合図として使えます。`--finalize-on-del` を付けると、ある tag の entry が全 watch set から消え、かつ ringbuf の残りが掃けたと確認できた時点で、その tag の per-CPU ファイルを flush して閉じ、プロセスを止めずに `out.<tag>.pcap` へ合算します。合算は一時ファイルに書いてから rename するので、**`out.<tag>.pcap` の出現がそのまま完了の合図**です。呼び出し側の流れは `set del` → ファイルを待つ (inotify や stat) → 回収、だけになります。
+
+```bash
+sudo bpf-ninja -i eth0 --mode xdp --set "subs=$PIN" \
+  --split-by-tag --finalize-on-del -w out.pcap \
+  'eth/ipv4/udp/gtp[imsi in @subs]'
+
+# 別シェルから: ジョブ終了 = entry を消してファイルを待つ
+sudo bpf-ninja set del $PIN imsi=999990000000001
+until [ -f out.1.pcap ]; do sleep 0.1; done
+```
+
+- 静止判定は約 1 秒周期のポーリングで行い、2 周期の無活動で書き込みを止め、その次の周期で close と合算を実行します。削除の直前に ringbuf へ入った record も取りこぼしません。`set del` からファイル出現まではおおむね 3〜4 秒です。合算がディスク要因などで失敗した場合は成功するまで毎周期やり直し、それでも駄目なら終了時の合算で最後にもう一度試します。
+- 完成した tag は使い切りです。同じ tag の entry を後から add し直しても record は捨てられ、stderr に 1 回警告が出ます。`out.<tag>.pcap` は変わりません。
+- 1 パケットも来なかった tag も、entry の削除後に空の (ヘッダだけの) `out.<tag>.pcap` を作ります。合図としては同じに扱えます。ただし entry の存在をポーリングで観測する前 (追加から 1 秒未満) に消した場合は検知できません。
+- `--split-by-tag` と `--set` が必須です。tag 0 (set 不一致) は対象になりません。per-CPU の shard ファイルは合算後もそのまま残ります。
+
 ### tag ごとの出力サイズ上限 (`--max-bytes-per-tag`)
 
 `--split-by-tag` と組み合わせて、tag 単位の出力バイト上限を指定できます。ある tag の出力 (per-CPU shard の合計) が上限に達すると、その tag への書き込みだけを止めて他の tag はそのまま録り続けます。
