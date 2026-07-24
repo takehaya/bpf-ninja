@@ -1290,7 +1290,11 @@ func pumpShards(cmd *cli.Command, inners []*ebpf.Map, label string, writeShard f
 				fmt.Fprintf(os.Stderr, "warning: set entries carry max-bytes caps, but per-entry caps are only enforced with --split-by-tag on a cap-capable map layout — they will be ignored in this run\n")
 			}
 			if exitWhenCapped && !hasCapEntry {
-				fmt.Fprintf(os.Stderr, "warning: no set entry currently carries max-bytes; --exit-when-capped will not trigger until one is added\n")
+				if perTagOn {
+					fmt.Fprintf(os.Stderr, "warning: no set entry currently carries max-bytes; --exit-when-capped will not trigger until one is added\n")
+				} else {
+					fmt.Fprintf(os.Stderr, "warning: no attached set layout can carry max-bytes (plain tag value); --exit-when-capped can never trigger in this run — recreate the map with the default --value layout to use per-entry caps\n")
+				}
 			}
 		} else if caps != nil && caps.perTag {
 			fmt.Fprintf(os.Stderr, "warning: reading set map entries: %v (per-entry caps start unenforced)\n", err)

@@ -359,7 +359,9 @@ func ParseFieldValues(args []string) (fields map[string]string, val EntryValue, 
 			continue
 		case reservedMaxBytesName, ValFieldMaxBytes:
 			if val.HasMaxBytes {
-				return nil, val, fmt.Errorf("%s= given twice (max-bytes and max_bytes are the same assignment)", name)
+				// Always name the documented spelling so the message is
+				// stable whichever alias order the user typed.
+				return nil, val, fmt.Errorf("%s= given twice (max_bytes= is the same assignment)", reservedMaxBytesName)
 			}
 			v, perr := parseUint(vs)
 			if perr != nil {
