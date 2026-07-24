@@ -159,27 +159,31 @@ func Create(path, keySchema, valueSchema string, maxEntries uint32) error {
 	if keySize > MaxKeySize {
 		return fmt.Errorf("key size %d exceeds the %d-byte limit", keySize, MaxKeySize)
 	}
-	// "tag" is reserved for the value assignment in `set add`, so a key
-	// field of that name could never be addressed on the CLI.
+	// "tag" / "max-bytes" are reserved for the value assignment in
+	// `set add`, so a key field of those names could never be addressed
+	// on the CLI ("state" is reserved too, for symmetry with the value
+	// layout).
 	for _, f := range keyFields {
-		if f.Name == reservedTagName {
+		if f.Name == reservedTagName || f.Name == reservedMaxBytesName || f.Name == ValFieldMaxBytes || f.Name == ValFieldState {
 			return fmt.Errorf("key field name %q is reserved (used for the value in `set add`)", f.Name)
 		}
 	}
 
 	if valueSchema == "" {
-		valueSchema = "tag:u32"
+		valueSchema = DefaultValueSchema
 	}
 	valSpecs, err := ParseSchema(valueSchema)
 	if err != nil {
 		return fmt.Errorf("--value: %w", err)
 	}
 	valFields, valSize := layout(valSpecs)
-	// The value is a single integer tag (add/list round-trip it as one
-	// number); a multi-field, odd-width, or ipv6 value has no tag
-	// semantics. ipv6 is a key-only type.
-	if len(valFields) != 1 || valFields[0].IsBytes || !validValueFieldSize(valSize) {
-		return fmt.Errorf("--value must be a single u8/u16/u32/u64 tag field, got %q", valueSchema)
+	// Two recognized shapes: a single integer tag (legacy, any field
+	// name), or the extended `tag[,state,max_bytes]` struct. ipv6 is a
+	// key-only type.
+	if len(valFields) == 1 && !valFields[0].IsBytes && validValueFieldSize(valSize) {
+		// legacy single-scalar tag
+	} else if err := validateValueFields(valFields); err != nil {
+		return fmt.Errorf("--value %q: %w", valueSchema, err)
 	}
 
 	m, err := ebpf.NewMap(&ebpf.MapSpec{
@@ -309,35 +313,61 @@ func copyEntries(src, dst *ebpf.Map) (int, error) {
 	return n, iter.Err()
 }
 
-// reservedTagName is the field=value key that `set add`/`del` treat as
-// the entry value (tag) rather than a key field.
-const reservedTagName = "tag"
+// reservedTagName / reservedMaxBytesName are the field=value keys that
+// `set add`/`del` treat as value assignments rather than key fields.
+const (
+	reservedTagName      = "tag"
+	reservedMaxBytesName = "max-bytes"
+)
+
+// DefaultValueSchema is the value layout `set create` uses when --value
+// is omitted: the extended struct carrying the tag, the entry state
+// (active/capped/finalized) and the per-entry byte cap (0 = uncapped).
+const DefaultValueSchema = "tag:u32,state:u8,max_bytes:u64"
+
+// EntryValue is the parsed value side of one `set add`: the tag plus
+// the optional per-entry byte cap (0 = uncapped).
+type EntryValue struct {
+	Tag         uint64
+	MaxBytes    uint64
+	HasTag      bool
+	HasMaxBytes bool
+}
 
 // ParseFieldValues splits `field=value` CLI args, keeping each key field's
 // value as a raw string (BuildKey parses it per the schema, since only the
 // schema knows whether a field is numeric or an IPv6 address). The
-// reserved `tag=` assignment is always numeric, so it is parsed here.
-func ParseFieldValues(args []string) (fields map[string]string, tag uint64, hasTag bool, err error) {
+// reserved `tag=` / `max-bytes=` assignments are always numeric, so they
+// are parsed here.
+func ParseFieldValues(args []string) (fields map[string]string, val EntryValue, err error) {
 	fields = map[string]string{}
 	for _, a := range args {
 		name, vs, ok := strings.Cut(a, "=")
 		if !ok || name == "" || vs == "" {
-			return nil, 0, false, fmt.Errorf("argument %q: want field=value", a)
+			return nil, val, fmt.Errorf("argument %q: want field=value", a)
 		}
-		if name == reservedTagName {
+		switch name {
+		case reservedTagName:
 			v, perr := parseUint(vs)
 			if perr != nil {
-				return nil, 0, false, fmt.Errorf("argument %q: %w", a, perr)
+				return nil, val, fmt.Errorf("argument %q: %w", a, perr)
 			}
-			tag, hasTag = v, true
+			val.Tag, val.HasTag = v, true
+			continue
+		case reservedMaxBytesName, ValFieldMaxBytes:
+			v, perr := parseUint(vs)
+			if perr != nil {
+				return nil, val, fmt.Errorf("argument %q: %w", a, perr)
+			}
+			val.MaxBytes, val.HasMaxBytes = v, true
 			continue
 		}
 		if _, dup := fields[name]; dup {
-			return nil, 0, false, fmt.Errorf("field %q given twice", name)
+			return nil, val, fmt.Errorf("field %q given twice", name)
 		}
 		fields[name] = vs
 	}
-	return fields, tag, hasTag, nil
+	return fields, val, nil
 }
 
 // parseUint is a deliberate copy of filter.parseValue (hex/dec): filter
@@ -423,34 +453,32 @@ func putUint(buf []byte, v uint64) {
 	}
 }
 
-// tagWidth returns the value byte width, which must be a single 1/2/4/8-byte
-// integer for the tag to round-trip through putUint/getUint. `set create`
-// enforces this; the guard also covers externally-created maps with an
-// odd or multi-field value.
-func (d *Definition) tagWidth() (uint32, error) {
-	w := d.Map.ValueSize()
-	if !validValueFieldSize(w) {
-		return 0, fmt.Errorf("map value is %d bytes; tag add/list needs a single u8/u16/u32/u64 value", w)
-	}
-	return w, nil
-}
+// putField / getField access one value field inside a full value buffer.
+func putField(val []byte, f KeyField, v uint64) { putUint(val[f.Off:f.Off+f.Size], v) }
+func getField(val []byte, f KeyField) uint64    { return getUint(val[f.Off : f.Off+f.Size]) }
 
-// Add inserts (or updates) one entry. The value is the tag zero-extended
-// to the map's value size (default tag 1 = plain presence).
-func (d *Definition) Add(values map[string]string, tag uint64) error {
+// Add inserts (or updates) one entry: the tag (default 1 = plain
+// presence), state active, and — when the layout carries it — the
+// per-entry byte cap (0 = uncapped).
+func (d *Definition) Add(values map[string]string, tag, maxBytes uint64) error {
 	key, err := d.BuildKey(values)
 	if err != nil {
 		return err
 	}
-	w, err := d.tagWidth()
-	if err != nil {
-		return err
+	tf := d.TagField()
+	if tf.Size < 8 && tag >= 1<<(8*tf.Size) {
+		return fmt.Errorf("tag %d does not fit the map's %d-byte tag field", tag, tf.Size)
 	}
-	if w < 8 && tag >= 1<<(8*w) {
-		return fmt.Errorf("tag %d does not fit the map's %d-byte value", tag, w)
+	mf, hasMax := d.ValField(ValFieldMaxBytes)
+	if maxBytes > 0 && !hasMax {
+		return fmt.Errorf("this map's value has no %s field (created with a plain tag value); recreate it with --value %q to use per-entry caps",
+			ValFieldMaxBytes, DefaultValueSchema)
 	}
-	val := make([]byte, int(w))
-	putUint(val, tag)
+	val := make([]byte, int(d.Map.ValueSize()))
+	putField(val, tf, tag)
+	if hasMax {
+		putField(val, mf, maxBytes)
+	}
 	return d.Map.Put(key, val)
 }
 
@@ -463,14 +491,26 @@ func (d *Definition) Delete(values map[string]string) error {
 	return d.Map.Delete(key)
 }
 
-// List writes all entries as `field=value ... tag=N` lines.
-func (d *Definition) List(out io.Writer) error {
-	tagW, err := d.tagWidth()
-	if err != nil {
-		return err
+// stateName renders a state byte for `set list`.
+func stateName(s uint8) string {
+	switch s {
+	case StateActive:
+		return "active"
+	case StateCapped:
+		return "capped"
+	case StateFinalized:
+		return "finalized"
 	}
+	return fmt.Sprintf("%d", s)
+}
+
+// List writes all entries as `field=value ... tag=N [state=S]
+// [max-bytes=M]` lines (the value columns follow the map's layout).
+func (d *Definition) List(out io.Writer) error {
+	sf, hasState := d.ValField(ValFieldState)
+	mf, hasMax := d.ValField(ValFieldMaxBytes)
 	key := make([]byte, int(d.KeySize))
-	val := make([]byte, int(tagW))
+	val := make([]byte, int(d.Map.ValueSize()))
 	iter := d.Map.Iterate()
 	for iter.Next(&key, &val) {
 		var parts []string
@@ -481,29 +521,96 @@ func (d *Definition) List(out io.Writer) error {
 				parts = append(parts, fmt.Sprintf("%s=%d", f.Name, getUint(key[f.Off:f.Off+f.Size])))
 			}
 		}
-		parts = append(parts, fmt.Sprintf("tag=%d", getUint(val)))
+		parts = append(parts, fmt.Sprintf("tag=%d", getField(val, d.TagField())))
+		if hasState {
+			parts = append(parts, fmt.Sprintf("state=%s", stateName(uint8(getField(val, sf)))))
+		}
+		if hasMax {
+			if mb := getField(val, mf); mb > 0 {
+				parts = append(parts, fmt.Sprintf("max-bytes=%d", mb))
+			} else {
+				parts = append(parts, "max-bytes=unlimited")
+			}
+		}
 		_, _ = fmt.Fprintln(out, strings.Join(parts, " "))
 	}
 	return iter.Err()
 }
 
-// Tags returns the tag value of every entry currently in the map,
-// truncated to uint32 to match the tag width the capture path sees
-// (Packet.Tag). Order is unspecified; duplicates are possible when
-// multiple keys share a tag.
+// TagInfo is one entry's value side, as seen by the capture process.
+type TagInfo struct {
+	Tag      uint32
+	State    uint8
+	MaxBytes uint64 // 0 = uncapped
+}
+
+// TagInfos returns the value of every entry currently in the map.
+// Order is unspecified; duplicates are possible when multiple keys
+// share a tag. Layouts without state/max_bytes report active/uncapped.
+func (d *Definition) TagInfos() ([]TagInfo, error) {
+	sf, hasState := d.ValField(ValFieldState)
+	mf, hasMax := d.ValField(ValFieldMaxBytes)
+	key := make([]byte, int(d.KeySize))
+	val := make([]byte, int(d.Map.ValueSize()))
+	var infos []TagInfo
+	iter := d.Map.Iterate()
+	for iter.Next(&key, &val) {
+		info := TagInfo{Tag: uint32(getField(val, d.TagField()))}
+		if hasState {
+			info.State = uint8(getField(val, sf))
+		}
+		if hasMax {
+			info.MaxBytes = getField(val, mf)
+		}
+		infos = append(infos, info)
+	}
+	return infos, iter.Err()
+}
+
+// Tags returns the tag of every ACTIVE entry (state 0; every entry on
+// layouts without a state field), truncated to uint32 to match the tag
+// width the capture path sees (Packet.Tag). Non-active entries stopped
+// matching in BPF, so for quiesce/exit decisions they are equivalent to
+// deleted ones.
 func (d *Definition) Tags() ([]uint32, error) {
-	tagW, err := d.tagWidth()
+	infos, err := d.TagInfos()
 	if err != nil {
 		return nil, err
 	}
-	key := make([]byte, int(d.KeySize))
-	val := make([]byte, int(tagW))
 	var tags []uint32
+	for _, in := range infos {
+		if in.State == StateActive {
+			tags = append(tags, in.Tag)
+		}
+	}
+	return tags, nil
+}
+
+// SetState rewrites the state field of every entry carrying tag,
+// returning how many entries were updated. Layouts without a state
+// field update nothing. Used by the capture process to advance a
+// capped tag through capped → finalized without deleting the entry
+// (so `set list` keeps showing which key the tag belonged to).
+func (d *Definition) SetState(tag uint32, state uint8) (int, error) {
+	sf, hasState := d.ValField(ValFieldState)
+	if !hasState {
+		return 0, nil
+	}
+	key := make([]byte, int(d.KeySize))
+	val := make([]byte, int(d.Map.ValueSize()))
+	updated := 0
 	iter := d.Map.Iterate()
 	for iter.Next(&key, &val) {
-		tags = append(tags, uint32(getUint(val)))
+		if uint32(getField(val, d.TagField())) != tag || uint8(getField(val, sf)) == state {
+			continue
+		}
+		putField(val, sf, uint64(state))
+		if err := d.Map.Put(key, val); err != nil {
+			return updated, err
+		}
+		updated++
 	}
-	return tags, iter.Err()
+	return updated, iter.Err()
 }
 
 func getUint(buf []byte) uint64 {

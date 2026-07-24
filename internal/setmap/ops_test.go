@@ -32,7 +32,7 @@ func TestResizeGrowPreservesEntriesAndSchema(t *testing.T) {
 		err := def.Add(map[string]string{
 			"imsi": fmt.Sprintf("%d", 999990000000001+i),
 			"teid": fmt.Sprintf("%d", 0x1000+i),
-		}, uint64(i+1))
+		}, uint64(i+1), 0)
 		if err != nil {
 			def.Close()
 			t.Fatalf("Add: %v", err)
@@ -93,7 +93,7 @@ func TestResizeShrinkBelowCountFails(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 	for i := range 3 {
-		if err := def.Add(map[string]string{"teid": fmt.Sprintf("%d", i+1)}, 1); err != nil {
+		if err := def.Add(map[string]string{"teid": fmt.Sprintf("%d", i+1)}, 1, 0); err != nil {
 			def.Close()
 			t.Fatalf("Add: %v", err)
 		}
@@ -188,7 +188,7 @@ func TestTagsRoundTrip(t *testing.T) {
 
 	entries := map[string]uint64{"1001": 1, "1002": 2, "1003": 2}
 	for imsi, tag := range entries {
-		if err := def.Add(map[string]string{"imsi": imsi}, tag); err != nil {
+		if err := def.Add(map[string]string{"imsi": imsi}, tag, 0); err != nil {
 			t.Fatalf("Add(%s): %v", imsi, err)
 		}
 	}
@@ -201,6 +201,129 @@ func TestTagsRoundTrip(t *testing.T) {
 	}
 	if got, want := sortedTags(), []uint32{1, 2}; fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("Tags after delete = %v, want %v", got, want)
+	}
+}
+
+// TestExtendedValueLayout is the end-to-end for the default
+// tag/state/max_bytes value: create, re-open (BTF round-trip), add with
+// and without a cap, list rendering, TagInfos, the active-only Tags
+// view, and SetState transitions.
+func TestExtendedValueLayout(t *testing.T) {
+	testutil.SkipIfNotRoot(t)
+
+	pin := fmt.Sprintf("/sys/fs/bpf/bpfninja_extval_%d", os.Getpid())
+	if err := Create(pin, "imsi:u64", "", 16); err != nil {
+		t.Skipf("creating pinned set map (bpffs unavailable?): %v", err)
+	}
+	t.Cleanup(func() { _ = os.Remove(pin) })
+
+	def, err := Open(pin)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(def.Close)
+
+	if def.TagWidth() != 4 {
+		t.Fatalf("TagWidth = %d, want 4", def.TagWidth())
+	}
+	if def.StateOff() != 4 {
+		t.Fatalf("StateOff = %d, want 4", def.StateOff())
+	}
+	if f, ok := def.ValField(ValFieldMaxBytes); !ok || f.Off != 8 || f.Size != 8 {
+		t.Fatalf("max_bytes field = %+v ok=%v, want off 8 size 8", f, ok)
+	}
+
+	if err := def.Add(map[string]string{"imsi": "1001"}, 1, 4096); err != nil {
+		t.Fatalf("Add capped: %v", err)
+	}
+	if err := def.Add(map[string]string{"imsi": "1002"}, 2, 0); err != nil {
+		t.Fatalf("Add uncapped: %v", err)
+	}
+
+	var list strings.Builder
+	if err := def.List(&list); err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	want := sortedLines("imsi=1001 tag=1 state=active max-bytes=4096\nimsi=1002 tag=2 state=active max-bytes=unlimited")
+	if got := sortedLines(list.String()); got != want {
+		t.Fatalf("List =\n%s\nwant\n%s", got, want)
+	}
+
+	infos, err := def.TagInfos()
+	if err != nil {
+		t.Fatalf("TagInfos: %v", err)
+	}
+	byTag := map[uint32]TagInfo{}
+	for _, in := range infos {
+		byTag[in.Tag] = in
+	}
+	if in := byTag[1]; in.MaxBytes != 4096 || in.State != StateActive {
+		t.Fatalf("tag 1 info = %+v", in)
+	}
+	if in := byTag[2]; in.MaxBytes != 0 {
+		t.Fatalf("tag 2 info = %+v", in)
+	}
+
+	// Park tag 1: it must leave the active Tags view but stay listed.
+	if n, err := def.SetState(1, StateCapped); err != nil || n != 1 {
+		t.Fatalf("SetState = (%d, %v), want (1, nil)", n, err)
+	}
+	tags, err := def.Tags()
+	if err != nil {
+		t.Fatalf("Tags: %v", err)
+	}
+	if len(tags) != 1 || tags[0] != 2 {
+		t.Fatalf("active Tags = %v, want [2]", tags)
+	}
+	list.Reset()
+	if err := def.List(&list); err != nil {
+		t.Fatalf("List after park: %v", err)
+	}
+	if !strings.Contains(list.String(), "imsi=1001 tag=1 state=capped") {
+		t.Fatalf("parked entry not listed: %q", list.String())
+	}
+	// Idempotent: same state again updates nothing.
+	if n, err := def.SetState(1, StateCapped); err != nil || n != 0 {
+		t.Fatalf("SetState repeat = (%d, %v), want (0, nil)", n, err)
+	}
+}
+
+// TestLegacyValueLayoutCompat pins the pre-#89 behavior: a plain u32
+// tag value still opens, adds, and lists — with caps rejected and every
+// entry reported active/uncapped.
+func TestLegacyValueLayoutCompat(t *testing.T) {
+	testutil.SkipIfNotRoot(t)
+
+	pin := fmt.Sprintf("/sys/fs/bpf/bpfninja_legacyval_%d", os.Getpid())
+	if err := Create(pin, "imsi:u64", "tag:u32", 16); err != nil {
+		t.Skipf("creating pinned set map (bpffs unavailable?): %v", err)
+	}
+	t.Cleanup(func() { _ = os.Remove(pin) })
+
+	def, err := Open(pin)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(def.Close)
+
+	if def.StateOff() != -1 {
+		t.Fatalf("StateOff = %d, want -1", def.StateOff())
+	}
+	if err := def.Add(map[string]string{"imsi": "1001"}, 3, 0); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if err := def.Add(map[string]string{"imsi": "1002"}, 4, 100); err == nil || !strings.Contains(err.Error(), ValFieldMaxBytes) {
+		t.Fatalf("Add with cap on legacy layout = %v, want max_bytes error", err)
+	}
+	if n, err := def.SetState(3, StateCapped); err != nil || n != 0 {
+		t.Fatalf("SetState on legacy layout = (%d, %v), want (0, nil)", n, err)
+	}
+	infos, err := def.TagInfos()
+	if err != nil {
+		t.Fatalf("TagInfos: %v", err)
+	}
+	if len(infos) != 1 || infos[0] != (TagInfo{Tag: 3}) {
+		t.Fatalf("TagInfos = %+v, want [{3 0 0}]", infos)
 	}
 }
 

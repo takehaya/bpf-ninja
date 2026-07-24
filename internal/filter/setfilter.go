@@ -32,10 +32,12 @@ type SetKeyField struct {
 // params. Map is borrowed from the setmap.Set (the CLI owns its
 // lifetime); it must stay open until the tracing program is loaded.
 type SetFilter struct {
-	SetName string
-	Map     *ebpf.Map
-	KeySize uint32
-	Fields  []SetKeyField
+	SetName  string
+	Map      *ebpf.Map
+	KeySize  uint32
+	Fields   []SetKeyField
+	TagWidth uint32 // value tag field width (1/2/4/8)
+	StateOff int    // value state field offset, -1 = layout has none
 }
 
 // TargetFilters is everything --arg-filter produced for one attach
@@ -95,7 +97,10 @@ func ResolveSetFilters(sets []*setmap.Set, refs []string, params []attach.FuncPa
 			srcFor[m.Field] = m.Source
 		}
 
-		sf := SetFilter{SetName: s.Name, Map: s.Def.Map, KeySize: s.Def.KeySize}
+		sf := SetFilter{
+			SetName: s.Name, Map: s.Def.Map, KeySize: s.Def.KeySize,
+			TagWidth: s.Def.TagWidth(), StateOff: s.Def.StateOff(),
+		}
 		for _, f := range s.Def.Fields {
 			src, ok := srcFor[f.Name]
 			if !ok {

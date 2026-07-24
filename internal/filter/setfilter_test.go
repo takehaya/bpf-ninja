@@ -17,6 +17,7 @@ func flowSet(mapping []setmap.MapEntry) *setmap.Set {
 				{Name: "imsi", Off: 0, Size: 8},
 				{Name: "teid", Off: 8, Size: 4},
 			},
+			ValFields: []setmap.KeyField{{Name: setmap.ValFieldTag, Off: 0, Size: 4}},
 		},
 	}
 }
@@ -102,9 +103,10 @@ func TestResolveSetFiltersScalarPositional(t *testing.T) {
 	set := &setmap.Set{
 		SpecRef: setmap.SpecRef{Name: "subs", Mapping: []setmap.MapEntry{{Field: "imsi", Source: "arg:imsi"}}},
 		Def: &setmap.Definition{
-			KeySize:  8,
-			Fields:   []setmap.KeyField{{Name: "imsi", Off: 0, Size: 8}},
-			IsScalar: true,
+			KeySize:   8,
+			Fields:    []setmap.KeyField{{Name: "imsi", Off: 0, Size: 8}},
+			IsScalar:  true,
+			ValFields: []setmap.KeyField{{Name: setmap.ValFieldTag, Off: 0, Size: 4}},
 		},
 	}
 	sf, err := ResolveSetFilters([]*setmap.Set{set}, []string{"subs"}, ulParams)

@@ -3,22 +3,25 @@ package main
 import (
 	"sync"
 	"testing"
+
+	"github.com/takehaya/bpf-ninja/internal/setmap"
 )
 
 func TestNewByteCapsNilWhenOff(t *testing.T) {
-	if c := newByteCaps(0, 0); c != nil {
-		t.Fatalf("newByteCaps(0, 0) = %v, want nil", c)
+	if c := newByteCaps(false, 0); c != nil {
+		t.Fatalf("newByteCaps(false, 0) = %v, want nil", c)
 	}
-	if c := newByteCaps(1, 0); c == nil {
-		t.Fatal("newByteCaps(1, 0) = nil, want non-nil")
+	if c := newByteCaps(true, 0); c == nil {
+		t.Fatal("newByteCaps(true, 0) = nil, want non-nil")
 	}
-	if c := newByteCaps(0, 1); c == nil {
-		t.Fatal("newByteCaps(0, 1) = nil, want non-nil")
+	if c := newByteCaps(false, 1); c == nil {
+		t.Fatal("newByteCaps(false, 1) = nil, want non-nil")
 	}
 }
 
 func TestAddTagCapTransitionOnce(t *testing.T) {
-	c := newByteCaps(100, 0)
+	c := newByteCaps(true, 0)
+	c.refreshLimits([]setmap.TagInfo{{Tag: 7, MaxBytes: 100}})
 	ctr := c.counterFor(7)
 	if c.counterFor(7) != ctr {
 		t.Fatal("counterFor returned a different counter for the same tag")
@@ -39,10 +42,45 @@ func TestAddTagCapTransitionOnce(t *testing.T) {
 	if !ctr.capped.Load() {
 		t.Fatal("capped flag not sticky")
 	}
+	if got := c.cappedTags(); len(got) != 1 || got[0] != 7 {
+		t.Fatalf("cappedTags = %v, want [7]", got)
+	}
+}
+
+func TestAddTagUncappedNeverCaps(t *testing.T) {
+	c := newByteCaps(true, 0)
+	ctr := c.counterFor(3) // no refreshLimits: limit stays 0 = uncapped
+	if c.addTag(ctr, 1<<40) {
+		t.Fatal("uncapped tag reported a cap transition")
+	}
+	if ctr.capped.Load() || c.anyCapped() {
+		t.Fatal("uncapped tag marked capped")
+	}
+}
+
+func TestRefreshLimitsRuntimeCap(t *testing.T) {
+	c := newByteCaps(true, 0)
+	ctr := c.counterFor(5)
+	c.addTag(ctr, 500)
+
+	// A cap added at runtime applies on the next write.
+	c.refreshLimits([]setmap.TagInfo{{Tag: 5, MaxBytes: 400}})
+	if !c.addTag(ctr, 1) {
+		t.Fatal("no transition once a runtime cap dropped below the running total")
+	}
+	// Tag 0 never gets a counter from refresh.
+	c.refreshLimits([]setmap.TagInfo{{Tag: 0, MaxBytes: 1}})
+	c.mu.Lock()
+	_, hasZero := c.tags[0]
+	c.mu.Unlock()
+	if hasZero {
+		t.Fatal("refreshLimits created a counter for tag 0")
+	}
 }
 
 func TestAddTagConcurrentSingleTransition(t *testing.T) {
-	c := newByteCaps(1000, 0)
+	c := newByteCaps(true, 0)
+	c.refreshLimits([]setmap.TagInfo{{Tag: 1, MaxBytes: 1000}})
 	ctr := c.counterFor(1)
 
 	const goroutines = 8
@@ -73,7 +111,7 @@ func TestAddTagConcurrentSingleTransition(t *testing.T) {
 }
 
 func TestTotalReached(t *testing.T) {
-	c := newByteCaps(0, 100)
+	c := newByteCaps(false, 100)
 	if c.totalReached() {
 		t.Fatal("totalReached before any bytes")
 	}
@@ -88,7 +126,7 @@ func TestTotalReached(t *testing.T) {
 	}
 
 	// perTag-only caps never report total reached.
-	p := newByteCaps(100, 0)
+	p := newByteCaps(true, 0)
 	if p.addTotal(1 << 40) {
 		t.Fatal("addTotal reported reached with totalLimit = 0")
 	}
@@ -98,41 +136,53 @@ func TestTotalReached(t *testing.T) {
 }
 
 func TestAllCapped(t *testing.T) {
-	c := newByteCaps(10, 0)
+	c := newByteCaps(true, 0)
 
 	if c.allCapped(nil) {
-		t.Fatal("allCapped(empty) must be false (no live tags = keep running)")
+		t.Fatal("allCapped(empty) must be false (nothing participates = keep running)")
+	}
+	// Only uncapped entries: nothing participates.
+	if c.allCapped([]setmap.TagInfo{{Tag: 1}, {Tag: 2}}) {
+		t.Fatal("uncapped-only snapshot reported all-capped")
 	}
 
+	infos := []setmap.TagInfo{
+		{Tag: 1, MaxBytes: 10},
+		{Tag: 2, MaxBytes: 10},
+		{Tag: 3}, // uncapped: never participates
+		{Tag: 0, MaxBytes: 10},
+	}
+	c.refreshLimits(infos)
 	c.addTag(c.counterFor(1), 10)
-	if !c.allCapped([]uint32{1}) {
-		t.Fatal("single capped tag not reported as all-capped")
+	if c.allCapped(infos) {
+		t.Fatal("tag 2 still active+uncapped but reported all-capped")
 	}
-	// A live tag with no traffic yet has no counter: not capped.
-	if c.allCapped([]uint32{1, 2}) {
-		t.Fatal("unseen tag counted as capped")
+	c.addTag(c.counterFor(2), 10)
+	if !c.allCapped(infos) {
+		t.Fatal("all capped entries reached their cap but not reported")
 	}
-	c.addTag(c.counterFor(2), 5)
-	if c.allCapped([]uint32{1, 2}) {
-		t.Fatal("uncapped tag counted as capped")
+
+	// A parked entry (state != active) counts as satisfied even without
+	// a local counter.
+	parked := []setmap.TagInfo{
+		{Tag: 1, MaxBytes: 10},
+		{Tag: 9, MaxBytes: 10, State: setmap.StateCapped},
 	}
-	c.addTag(c.counterFor(2), 5)
-	if !c.allCapped([]uint32{1, 2}) {
-		t.Fatal("all tags capped but not reported")
+	if !c.allCapped(parked) {
+		t.Fatal("parked entry not treated as capped")
 	}
 }
 
-func TestAnyCapped(t *testing.T) {
-	c := newByteCaps(10, 0)
-	if c.anyCapped() {
-		t.Fatal("anyCapped with no counters")
+func TestActiveTags(t *testing.T) {
+	infos := []setmap.TagInfo{
+		{Tag: 1},
+		{Tag: 1}, // dup
+		{Tag: 2, State: setmap.StateCapped},
+		{Tag: 3, State: setmap.StateFinalized},
+		{Tag: 0},
 	}
-	c.addTag(c.counterFor(1), 5)
-	if c.anyCapped() {
-		t.Fatal("anyCapped with only uncapped counters")
-	}
-	c.addTag(c.counterFor(1), 5)
-	if !c.anyCapped() {
-		t.Fatal("anyCapped false after a tag capped")
+	got := activeTags(infos)
+	if len(got) != 1 || got[0] != 1 {
+		t.Fatalf("activeTags = %v, want [1]", got)
 	}
 }

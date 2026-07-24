@@ -160,27 +160,38 @@ func TestBuildKeyIPv6NetworkOrder(t *testing.T) {
 
 func TestCreateRejectsIPv6Value(t *testing.T) {
 	// ipv6 is a key-only type; the value guard runs before map creation.
-	if err := Create("/sys/fs/bpf/unused", "sid:ipv6", "tag:ipv6", 8); err == nil || !strings.Contains(err.Error(), "single u8/u16/u32/u64 tag") {
+	if err := Create("/sys/fs/bpf/unused", "sid:ipv6", "tag:ipv6", 8); err == nil || !strings.Contains(err.Error(), "must be u8/u16/u32/u64") {
 		t.Errorf("ipv6 value err = %v", err)
+	}
+	// An extended-layout struct may only carry the recognized fields.
+	if err := Create("/sys/fs/bpf/unused", "sid:ipv6", "tag:u32,bogus:u64", 8); err == nil || !strings.Contains(err.Error(), "unrecognized value field") {
+		t.Errorf("bogus value field err = %v", err)
 	}
 }
 
 func TestParseFieldValues(t *testing.T) {
-	fields, tag, hasTag, err := ParseFieldValues([]string{"imsi=999990000000001", "teid=0x3039", "tag=7"})
+	fields, val, err := ParseFieldValues([]string{"imsi=999990000000001", "teid=0x3039", "tag=7", "max-bytes=1048576"})
 	if err != nil {
 		t.Fatalf("ParseFieldValues: %v", err)
 	}
 	if fields["imsi"] != "999990000000001" || fields["teid"] != "0x3039" {
 		t.Errorf("fields = %v", fields)
 	}
-	if !hasTag || tag != 7 {
-		t.Errorf("tag = %d hasTag=%v, want 7 true", tag, hasTag)
+	if !val.HasTag || val.Tag != 7 {
+		t.Errorf("tag = %d hasTag=%v, want 7 true", val.Tag, val.HasTag)
+	}
+	if !val.HasMaxBytes || val.MaxBytes != 1048576 {
+		t.Errorf("max-bytes = %d hasMaxBytes=%v, want 1048576 true", val.MaxBytes, val.HasMaxBytes)
 	}
 
-	if _, _, _, err := ParseFieldValues([]string{"imsi"}); err == nil {
+	// The BTF field spelling max_bytes= is accepted as an alias.
+	if _, val, err := ParseFieldValues([]string{"max_bytes=42"}); err != nil || !val.HasMaxBytes || val.MaxBytes != 42 {
+		t.Errorf("max_bytes alias: val=%+v err=%v", val, err)
+	}
+	if _, _, err := ParseFieldValues([]string{"imsi"}); err == nil {
 		t.Error("expected error for missing =value")
 	}
-	if _, _, _, err := ParseFieldValues([]string{"a=1", "a=2"}); err == nil || !strings.Contains(err.Error(), "twice") {
+	if _, _, err := ParseFieldValues([]string{"a=1", "a=2"}); err == nil || !strings.Contains(err.Error(), "twice") {
 		t.Errorf("dup err = %v", err)
 	}
 }
@@ -212,8 +223,16 @@ func TestCreateRejectsReservedKeyField(t *testing.T) {
 }
 
 func TestCreateRejectsMultiFieldValue(t *testing.T) {
-	if err := Create("/sys/fs/bpf/unused", "imsi:u64", "a:u8,b:u16", 8); err == nil || !strings.Contains(err.Error(), "single") {
-		t.Errorf("multi-field value err = %v, want 'single ... tag'", err)
+	// A multi-field value must follow the recognized extended layout:
+	// `tag` first, then only state/max_bytes.
+	if err := Create("/sys/fs/bpf/unused", "imsi:u64", "a:u8,b:u16", 8); err == nil || !strings.Contains(err.Error(), `must start with a "tag" field`) {
+		t.Errorf("multi-field value err = %v, want 'must start with a \"tag\" field'", err)
+	}
+	if err := Create("/sys/fs/bpf/unused", "imsi:u64", "tag:u32,state:u16", 8); err == nil || !strings.Contains(err.Error(), `"state" must be u8`) {
+		t.Errorf("wide state err = %v, want '\"state\" must be u8'", err)
+	}
+	if err := Create("/sys/fs/bpf/unused", "imsi:u64", "tag:u32,max_bytes:u32", 8); err == nil || !strings.Contains(err.Error(), `"max_bytes" must be u64`) {
+		t.Errorf("narrow max_bytes err = %v, want '\"max_bytes\" must be u64'", err)
 	}
 }
 
@@ -266,7 +285,7 @@ func TestIPv6AddListSchema(t *testing.T) {
 	if err != nil {
 		t.Fatalf("describe: %v", err)
 	}
-	if err := def.Add(map[string]string{"sid": "fc00::1"}, 1); err != nil {
+	if err := def.Add(map[string]string{"sid": "fc00::1"}, 1, 0); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 	var list bytes.Buffer

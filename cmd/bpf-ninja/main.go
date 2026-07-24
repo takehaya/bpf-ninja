@@ -161,12 +161,8 @@ var flags = []cli.Flag{
 		Usage: "route matched packets to a separate pcap per set-map value (tag): -w out.pcap yields out.<tag>.pcap. requires -w (not stdout); live per-CPU files are flushed each second so they can be pulled mid-capture",
 	},
 	&cli.IntFlag{
-		Name:  "max-bytes-per-tag",
-		Usage: "with --split-by-tag: stop writing a tag's output once its bytes summed across all per-CPU shards reach N (pcap-ng packet-block bytes; per-file headers excluded). Enforced per ringbuf batch, so a tag can overshoot by up to one batch per shard. Other tags keep capturing; the BPF set map is never modified",
-	},
-	&cli.IntFlag{
 		Name:  "max-bytes",
-		Usage: "stop the whole capture once total output bytes reach N (pcap-ng packet-block bytes; per-file headers excluded, batch-granular like --max-bytes-per-tag). Works with or without --split-by-tag; the shards are merged and the process exits 0 as with -c",
+		Usage: "stop the whole capture once total output bytes reach N (pcap-ng packet-block bytes; per-file headers excluded, batch-granular). Works with or without --split-by-tag; the shards are merged and the process exits 0 as with -c. Per-tag caps moved to the set entries: `set add ... max-bytes=N` (0 / omitted = uncapped)",
 	},
 	&cli.BoolFlag{
 		Name:  "finalize-on-del",
@@ -174,7 +170,7 @@ var flags = []cli.Flag{
 	},
 	&cli.BoolFlag{
 		Name:  "exit-when-capped",
-		Usage: "with --max-bytes-per-tag and --set: exit 0 once every tag currently present in the set map(s) has reached its cap (tag 0 = unmatched traffic does not participate)",
+		Usage: "with --split-by-tag and --set: exit 0 once every entry that has a per-entry cap (`set add ... max-bytes=N`) reached it; uncapped entries and tag 0 do not participate",
 	},
 	&cli.BoolFlag{
 		Name:  "fast-reader",
@@ -390,28 +386,25 @@ func run(ctx context.Context, cmd *cli.Command) error {
 			return fmt.Errorf("--split-by-tag cannot be combined with --null-output")
 		}
 	}
-	if cmd.Int("max-bytes-per-tag") < 0 || cmd.Int("max-bytes") < 0 {
-		return fmt.Errorf("--max-bytes-per-tag / --max-bytes must be >= 0")
+	if cmd.Int("max-bytes") < 0 {
+		return fmt.Errorf("--max-bytes must be >= 0")
 	}
-	if cmd.Int("max-bytes-per-tag") > 0 && !cmd.Bool("split-by-tag") {
-		return fmt.Errorf("--max-bytes-per-tag requires --split-by-tag (the cap is per tag file)")
-	}
-	if cmd.Int("max-bytes-per-tag") > 0 || cmd.Int("max-bytes") > 0 {
-		// The caps count pcap-ng bytes at the writer; the raw and null
+	if cmd.Int("max-bytes") > 0 {
+		// The cap counts pcap-ng bytes at the writer; the raw and null
 		// paths never reach that writer.
 		switch {
 		case cmd.Bool("raw-dump"):
-			return fmt.Errorf("--max-bytes-per-tag / --max-bytes cannot be combined with --raw-dump")
+			return fmt.Errorf("--max-bytes cannot be combined with --raw-dump")
 		case cmd.Bool("null-output"):
-			return fmt.Errorf("--max-bytes-per-tag / --max-bytes cannot be combined with --null-output")
+			return fmt.Errorf("--max-bytes cannot be combined with --null-output")
 		}
 	}
 	if cmd.Bool("exit-when-capped") {
 		switch {
-		case cmd.Int("max-bytes-per-tag") <= 0:
-			return fmt.Errorf("--exit-when-capped requires --max-bytes-per-tag")
+		case !cmd.Bool("split-by-tag"):
+			return fmt.Errorf("--exit-when-capped requires --split-by-tag (per-entry caps apply to per-tag files)")
 		case len(cmd.StringSlice("set")) == 0:
-			return fmt.Errorf("--exit-when-capped requires at least one --set (it exits when every tag in the set map(s) is capped)")
+			return fmt.Errorf("--exit-when-capped requires at least one --set (caps come from `set add ... max-bytes=N` entries)")
 		}
 	}
 	if cmd.Bool("finalize-on-del") {
@@ -973,9 +966,11 @@ func captureLoopSharded(cmd *cli.Command, inners []*ebpf.Map, cfg output.Config,
 	if rawDump {
 		return captureLoopShardedRaw(cmd, inners, label, basePath)
 	}
-	// nil unless --max-bytes-per-tag / --max-bytes is set (run() already
-	// rejected them with --raw-dump / --null-output).
-	caps := newByteCaps(uint64(cmd.Int("max-bytes-per-tag")), uint64(cmd.Int("max-bytes")))
+	// Per-entry caps can only apply on the split path with sets to read
+	// them from; the aggregate --max-bytes works everywhere pcap-ng does
+	// (run() already rejected it with --raw-dump / --null-output).
+	perTagPossible := cmd.Bool("split-by-tag") && len(sets) > 0
+	caps := newByteCaps(perTagPossible, uint64(cmd.Int("max-bytes")))
 	if cmd.Bool("split-by-tag") {
 		// run() already rejected --split-by-tag with stdout / --raw-dump /
 		// --null-output, so basePath is a real file here.
@@ -1082,7 +1077,7 @@ func captureLoopShardedSplit(cmd *cli.Command, inners []*ebpf.Map, cfg output.Co
 	// write path never takes the byteCaps / finalizer lock.
 	type tagShard struct {
 		w   *output.Writer
-		ctr *tagCounter  // non-nil only with --max-bytes-per-tag
+		ctr *tagCounter  // non-nil only when per-entry caps can apply (split + sets)
 		st  *tagFinState // non-nil only with --finalize-on-del
 	}
 	shardWriters := make([]map[uint32]*tagShard, len(inners))
@@ -1107,7 +1102,7 @@ func captureLoopShardedSplit(cmd *cli.Command, inners []*ebpf.Map, cfg output.Co
 		}
 	}()
 
-	perTag := caps != nil && caps.perTagLimit > 0
+	perTag := caps != nil && caps.perTag
 	entryFor := func(shardIdx int, tag uint32) *tagShard {
 		m := shardWriters[shardIdx]
 		if e := m[tag]; e != nil {
@@ -1199,8 +1194,8 @@ func captureLoopShardedSplit(cmd *cli.Command, inners []*ebpf.Map, cfg output.Co
 			if caps != nil {
 				n := epbBytes(pkts[i:j])
 				if e.ctr != nil && caps.addTag(e.ctr, n) {
-					fmt.Fprintf(os.Stderr, "tag %d capped at %d bytes (--max-bytes-per-tag %d)\n",
-						tag, e.ctr.bytes.Load(), caps.perTagLimit)
+					fmt.Fprintf(os.Stderr, "tag %d capped at %d bytes (entry max-bytes %d)\n",
+						tag, e.ctr.bytes.Load(), e.ctr.limit.Load())
 					// Release this shard's fd right away instead of on
 					// the next sighting — traffic may stop here. Other
 					// shards close theirs when they next see the tag
@@ -1289,16 +1284,26 @@ func pumpShards(cmd *cli.Command, inners []*ebpf.Map, label string, writeShard f
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 	defer signal.Stop(sig)
 
+	// Seed the per-entry cap limits before any traffic so a busy tag
+	// cannot blow past its cap during the first poll interval.
+	if caps != nil && caps.perTag {
+		if infos, err := unionTagInfos(sets); err == nil {
+			caps.refreshLimits(infos)
+		} else {
+			fmt.Fprintf(os.Stderr, "warning: reading set map entries: %v (per-entry caps start unenforced)\n", err)
+		}
+	}
+
 	// Poll only when something can actually end the capture early or
-	// needs a periodic decision; per-tag caps alone (no
-	// --exit-when-capped) stop individual tags but never the process,
-	// so that case keeps the blocking wait.
-	needPoll := count > 0 || exitWhenCapped || fin != nil || (caps != nil && caps.totalLimit > 0)
+	// needs a periodic decision (per-entry caps need the ~1s snapshot
+	// to refresh limits and park capped entries).
+	needPoll := count > 0 || exitWhenCapped || fin != nil || caps != nil
 	if needPoll {
-		// Same 10 ms poll as -c; the set-map iterations for
-		// --exit-when-capped / --finalize-on-del cost syscalls, so they
-		// run at ~500 ms / ~1 s cadence.
+		// Same 10 ms poll as -c; the set-map iteration costs syscalls,
+		// so one shared snapshot per ~1 s feeds the limit refresh, the
+		// state transitions, the exit decision, and the finalizer.
 		tagsErrWarned := false
+		parked := map[uint32]bool{}
 		for it := 0; ; it++ {
 			select {
 			case <-sig:
@@ -1314,36 +1319,54 @@ func pumpShards(cmd *cli.Command, inners []*ebpf.Map, label string, writeShard f
 					stop()
 					goto done
 				}
-				if exitWhenCapped && it%50 == 0 && caps != nil && caps.anyCapped() {
-					tags, err := unionSetTags(sets)
-					switch {
-					case err != nil:
-						// Never exit early on a map read failure; the
-						// capture itself is unaffected.
-						if !tagsErrWarned {
-							fmt.Fprintf(os.Stderr, "warning: --exit-when-capped: reading set map tags: %v (will keep capturing)\n", err)
-							tagsErrWarned = true
-						}
-					case caps.allCapped(tags):
-						fmt.Fprintf(os.Stderr, "\nall %d set tag(s) capped (--exit-when-capped); stopping\n", len(tags))
-						stop()
-						goto done
-					}
-				}
-				if fin != nil && it%100 == 0 {
-					tags, err := unionSetTags(sets)
+				if it%100 == 0 && (exitWhenCapped || fin != nil || (caps != nil && caps.perTag)) {
+					infos, err := unionTagInfos(sets)
 					if err != nil {
-						// Keep capturing; without the union view no tag
-						// can quiesce, so nothing is finalized wrongly.
+						// Never exit or finalize on a map read failure;
+						// the capture itself is unaffected.
 						if !tagsErrWarned {
-							fmt.Fprintf(os.Stderr, "warning: --finalize-on-del: reading set map tags: %v (will keep capturing)\n", err)
+							fmt.Fprintf(os.Stderr, "warning: reading set map entries: %v (will keep capturing)\n", err)
 							tagsErrWarned = true
 						}
 					} else {
-						for _, tag := range fin.step(tags) {
-							if err := fin.finalize(tag); err != nil {
-								fmt.Fprintf(os.Stderr, "warning: %v\n", err)
-							} else {
+						if caps != nil && caps.perTag {
+							caps.refreshLimits(infos)
+						}
+						// Park newly capped tags: state=capped stops the
+						// kernel-side match and (with --finalize-on-del)
+						// hands the tag to the quiesce → finalize path.
+						// The entry stays in the map, so `set list` keeps
+						// showing which key the tag belonged to.
+						if fin != nil && caps != nil {
+							for _, tag := range caps.cappedTags() {
+								if parked[tag] {
+									continue
+								}
+								parked[tag] = true
+								for _, s := range sets {
+									if _, serr := s.Def.SetState(tag, setmap.StateCapped); serr != nil {
+										fmt.Fprintf(os.Stderr, "warning: parking capped tag %d: %v\n", tag, serr)
+									}
+								}
+								fmt.Fprintf(os.Stderr, "tag %d parked (state=capped)\n", tag)
+							}
+						}
+						if exitWhenCapped && caps != nil && caps.anyCapped() && caps.allCapped(infos) {
+							fmt.Fprintf(os.Stderr, "\nevery capped entry reached its max-bytes (--exit-when-capped); stopping\n")
+							stop()
+							goto done
+						}
+						if fin != nil {
+							for _, tag := range fin.step(activeTags(infos)) {
+								if err := fin.finalize(tag); err != nil {
+									fmt.Fprintf(os.Stderr, "warning: %v\n", err)
+									continue
+								}
+								for _, s := range sets {
+									if _, serr := s.Def.SetState(tag, setmap.StateFinalized); serr != nil {
+										fmt.Fprintf(os.Stderr, "warning: marking tag %d finalized: %v\n", tag, serr)
+									}
+								}
 								fmt.Fprintf(os.Stderr, "tag %d finalized -> %s\n", tag, output.TagMergedPath(cmd.String("write"), tag))
 							}
 						}
