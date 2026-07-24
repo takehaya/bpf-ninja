@@ -170,7 +170,7 @@ var flags = []cli.Flag{
 	},
 	&cli.BoolFlag{
 		Name:  "finalize-on-del",
-		Usage: "with --split-by-tag and --set: when a tag's last set entry is removed and its ringbuf backlog has drained (one quiet poll cycle), flush+close its per-CPU shards and merge them into <stem>.<tag><ext> while the capture keeps running — the merged file appearing is the completion ack. Finalized tags are single-use: records for a re-added entry are dropped with a warning",
+		Usage: "with --split-by-tag and --set: when a tag's last set entry is removed and its ringbuf backlog has drained (two consecutive quiet ~1s poll cycles), flush+close its per-CPU shards and merge them into <stem>.<tag><ext> while the capture keeps running — the merged file appearing is the completion ack. Finalized tags are single-use: records for a re-added entry are dropped with a warning",
 	},
 	&cli.BoolFlag{
 		Name:  "exit-when-capped",
