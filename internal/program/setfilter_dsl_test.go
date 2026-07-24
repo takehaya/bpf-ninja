@@ -6,11 +6,14 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"runtime"
 	"testing"
+	"time"
 
 	"github.com/cilium/ebpf"
 
 	"github.com/takehaya/bpf-ninja/internal/attach"
+	"github.com/takehaya/bpf-ninja/internal/capture/fastrb"
 	"github.com/takehaya/bpf-ninja/internal/setmap"
 	"github.com/takehaya/bpf-ninja/internal/testutil"
 )
@@ -79,7 +82,7 @@ func TestBpfDSLSetMatchPacketField(t *testing.T) {
 	t.Cleanup(set.Def.Close)
 
 	const memberPort = uint16(0x01BB) // 443
-	if err := set.Def.Add(map[string]string{"dport": fmt.Sprintf("%d", memberPort)}, 1); err != nil {
+	if err := set.Def.Add(map[string]string{"dport": fmt.Sprintf("%d", memberPort)}, setmap.EntryValue{Tag: 1}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 
@@ -106,7 +109,7 @@ func TestBpfDSLSetMatchPacketField(t *testing.T) {
 
 	// (b) runtime add takes effect without re-attach.
 	const addedPort = uint16(8080)
-	if err := set.Def.Add(map[string]string{"dport": fmt.Sprintf("%d", addedPort)}, 2); err != nil {
+	if err := set.Def.Add(map[string]string{"dport": fmt.Sprintf("%d", addedPort)}, setmap.EntryValue{Tag: 2}); err != nil {
 		t.Fatalf("runtime Add: %v", err)
 	}
 	runTCP(t, prog, 0x66, 1234, addedPort)
@@ -123,6 +126,113 @@ func TestBpfDSLSetMatchPacketField(t *testing.T) {
 	markers = drainMarkers(t, probe, 0)
 	if markers[0x77] != 0 {
 		t.Fatalf("markers after runtime delete = %v, want no 0x77", markers)
+	}
+
+	// (d) parking (state=capped) is a KERNEL-side miss: the entry stays
+	// in the map but stops matching — the behavior the per-entry cap
+	// lifecycle depends on. Userspace discard would mask a wrong state
+	// offset here, so this asserts at the BPF level; reactivating
+	// resumes matching (the state load really reads the state byte).
+	if n, err := set.Def.SetState(1, setmap.StateCapped); err != nil || n != 1 {
+		t.Fatalf("SetState(capped) = (%d, %v), want (1, nil)", n, err)
+	}
+	runTCP(t, prog, 0x88, 1234, memberPort)
+	markers = drainMarkers(t, probe, 0)
+	if markers[0x88] != 0 {
+		t.Fatalf("markers after park = %v: parked entry still matched in BPF", markers)
+	}
+	if _, err := set.Def.SetState(1, setmap.StateActive); err != nil {
+		t.Fatalf("SetState(active): %v", err)
+	}
+	runTCP(t, prog, 0x99, 1234, memberPort)
+	markers = drainMarkers(t, probe, 1)
+	if markers[0x99] != 1 {
+		t.Fatalf("markers after reactivate = %v, want one 0x99", markers)
+	}
+}
+
+// TestBpfDSLSetLegacyScalarValue pins the pre-0.23 value layout at the
+// BPF level: a plain `tag:u16` value (no state field → no state check
+// emitted, narrow tag width → 2-byte load) must still match and carry
+// its tag into the record's metadata.
+func TestBpfDSLSetLegacyScalarValue(t *testing.T) {
+	testutil.SkipIfNotRoot(t)
+
+	pin := fmt.Sprintf("/sys/fs/bpf/bpfninja_dsllegacy_%d", os.Getpid())
+	if err := setmap.Create(pin, "dport:u16", "tag:u16", 16); err != nil {
+		t.Skipf("creating pinned set map (bpffs unavailable?): %v", err)
+	}
+	t.Cleanup(func() { _ = os.Remove(pin) })
+
+	set, err := setmap.OpenSet(setmap.SpecRef{Name: "ports", Path: pin})
+	if err != nil {
+		t.Fatalf("OpenSet: %v", err)
+	}
+	t.Cleanup(set.Def.Close)
+	if set.Def.StateOff() != -1 || set.Def.TagWidth() != 2 {
+		t.Fatalf("legacy layout resolved as (stateOff %d, tagWidth %d), want (-1, 2)", set.Def.StateOff(), set.Def.TagWidth())
+	}
+
+	const memberPort = uint16(443)
+	const wantTag = uint64(7)
+	if err := set.Def.Add(map[string]string{"dport": fmt.Sprintf("%d", memberPort)}, setmap.EntryValue{Tag: wantTag}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	prog := loadXDPByName(t, dslSetTargetSrc, "xdp_set_e2e_target")
+	targets := []attach.Target{{Program: prog, FuncName: "xdp_set_e2e_target", Type: ebpf.XDP}}
+	probe, err := LoadMultiEntry(targets, "eth/ipv4/tcp[dport in @ports]", nil, true, []*setmap.Set{set})
+	if err != nil {
+		t.Fatalf("LoadMultiEntry with legacy-value set: %v", err)
+	}
+	defer func() { _ = probe.Close() }()
+
+	runTCP(t, prog, 0xAA, 1234, memberPort)
+	runTCP(t, prog, 0xBB, 1234, 80) // non-member
+
+	tags := drainMarkerTags(t, probe, 1)
+	if got, ok := tags[0xAA]; !ok || got != uint32(wantTag) {
+		t.Fatalf("tags = %v, want marker 0xAA with tag %d (narrow tag load)", tags, wantTag)
+	}
+	if _, ok := tags[0xBB]; ok {
+		t.Fatalf("tags = %v: non-member captured on legacy layout", tags)
+	}
+}
+
+// drainMarkerTags reads captured records like drainMarkers but returns
+// marker → record tag (metadata offset 16, u32), for asserting the tag
+// the BPF set lookup copied out.
+func drainMarkerTags(t *testing.T, probe *Probe, wantMarkers int) map[byte]uint32 {
+	t.Helper()
+	tags := map[byte]uint32{}
+	innerSize := int(shardRingbufSize(RingbufSize, runtime.NumCPU()))
+	readers := make([]*fastrb.Reader, len(probe.InnerMaps))
+	for i, m := range probe.InnerMaps {
+		rd, err := fastrb.New(m.FD(), innerSize)
+		if err != nil {
+			t.Fatalf("fastrb on shard %d: %v", i, err)
+		}
+		readers[i] = rd
+	}
+	defer func() {
+		for _, rd := range readers {
+			_ = rd.Close()
+		}
+	}()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		for _, rd := range readers {
+			rd.ReadBatch(func(rec []byte) {
+				if len(rec) > metadataSize {
+					tags[rec[metadataSize]] = binary.NativeEndian.Uint32(rec[16:20])
+				}
+			})
+		}
+		if len(tags) >= wantMarkers || time.Now().After(deadline) {
+			return tags
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
 
@@ -145,7 +255,7 @@ func TestBpfDSLSetMatchCompositeKey(t *testing.T) {
 	t.Cleanup(set.Def.Close)
 
 	const sport, dport = uint16(1111), uint16(443)
-	if err := set.Def.Add(map[string]string{"sport": fmt.Sprintf("%d", sport), "dport": fmt.Sprintf("%d", dport)}, 1); err != nil {
+	if err := set.Def.Add(map[string]string{"sport": fmt.Sprintf("%d", sport), "dport": fmt.Sprintf("%d", dport)}, setmap.EntryValue{Tag: 1}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 
@@ -222,7 +332,7 @@ func TestBpfDSLSetMatchIPv6Dst(t *testing.T) {
 		t.Fatalf("key %x != wire bytes %x (byte-order mismatch)", key, net.ParseIP(memberSID).To16())
 	}
 
-	if err := set.Def.Add(map[string]string{"sid": memberSID}, 1); err != nil {
+	if err := set.Def.Add(map[string]string{"sid": memberSID}, setmap.EntryValue{Tag: 1}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 
@@ -247,7 +357,7 @@ func TestBpfDSLSetMatchIPv6Dst(t *testing.T) {
 
 	// Runtime add / delete without re-attach.
 	const addedSID = "2001:db8::9"
-	if err := set.Def.Add(map[string]string{"sid": addedSID}, 2); err != nil {
+	if err := set.Def.Add(map[string]string{"sid": addedSID}, setmap.EntryValue{Tag: 2}); err != nil {
 		t.Fatalf("runtime Add: %v", err)
 	}
 	runIPv6(t, prog, 0x66, addedSID)

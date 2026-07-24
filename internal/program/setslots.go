@@ -178,7 +178,7 @@ func (p *pktSetSlots) emitPktSetLookups(referenced []string) asm.Instructions {
 	var insns asm.Instructions
 	for _, name := range referenced {
 		s := p.sets[name]
-		insns = append(insns, emitSetLookup(s.def.Map.FD(), s.base, int(s.def.Map.ValueSize()))...)
+		insns = append(insns, emitSetLookup(s.def.Map.FD(), s.base, int(s.def.TagWidth()), s.def.StateOff())...)
 	}
 	return insns
 }

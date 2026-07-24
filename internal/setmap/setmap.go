@@ -38,12 +38,68 @@ type KeyField struct {
 // stores, which need an 8-aligned offset).
 func (f KeyField) Align() uint32 { return fieldAlign(f.Size, f.IsBytes) }
 
-// Definition is an opened set map plus its resolved key schema.
+// Definition is an opened set map plus its resolved key and value
+// schemas.
 type Definition struct {
 	Map      *ebpf.Map
 	KeySize  uint32
 	Fields   []KeyField
 	IsScalar bool // key is a bare integer (single pseudo-field)
+
+	// ValFields is the value schema: a single scalar tag (legacy layout,
+	// any field name), or a `tag` field at offset 0 plus the recognized
+	// optional fields `state` (u8) and `max_bytes` (u64).
+	ValFields []KeyField
+}
+
+// Reserved value field names (the extended value layout).
+const (
+	ValFieldTag      = "tag"
+	ValFieldState    = "state"
+	ValFieldMaxBytes = "max_bytes"
+)
+
+// Entry states stored in the value's `state` field. Non-active entries
+// stop matching in BPF; the capture process advances active → capped →
+// finalized when --finalize-on-del composes with per-entry caps.
+const (
+	StateActive    uint8 = 0
+	StateCapped    uint8 = 1
+	StateFinalized uint8 = 2
+)
+
+// TagField returns the value's tag field. Legacy single-scalar layouts
+// expose their lone field as the tag whatever its name. A Definition
+// built without ValFields (hand-constructed, e.g. in tests) falls back
+// to treating the whole value as the tag.
+func (d *Definition) TagField() KeyField {
+	if len(d.ValFields) == 0 {
+		return KeyField{Name: ValFieldTag, Off: 0, Size: d.Map.ValueSize()}
+	}
+	return d.ValFields[0]
+}
+
+// TagWidth is the byte width of the tag field (1/2/4/8) — what the BPF
+// set lookup loads into the record's tag slot.
+func (d *Definition) TagWidth() uint32 { return d.TagField().Size }
+
+// StateOff returns the byte offset of the value's `state` field, or -1
+// when the layout has none — the form the BPF set lookup consumes.
+func (d *Definition) StateOff() int {
+	if f, ok := d.ValField(ValFieldState); ok {
+		return int(f.Off)
+	}
+	return -1
+}
+
+// ValField returns the named value field, if the layout has it.
+func (d *Definition) ValField(name string) (KeyField, bool) {
+	for _, f := range d.ValFields {
+		if f.Name == name {
+			return f, true
+		}
+	}
+	return KeyField{}, false
 }
 
 // Close releases the map handle. The pin (and the map, while pinned or
@@ -178,12 +234,15 @@ func describe(m *ebpf.Map) (*Definition, error) {
 		return nil, fmt.Errorf("key size %d exceeds the %d-byte limit", m.KeySize(), MaxKeySize)
 	}
 
-	keyType, err := mapKeyBTF(m)
+	keyType, valueType, err := mapBTFTypes(m)
 	if err != nil {
 		return nil, err
 	}
 
 	def := &Definition{Map: m, KeySize: m.KeySize()}
+	if def.ValFields, err = resolveValueSchema(valueType, m.ValueSize()); err != nil {
+		return nil, err
+	}
 	switch t := btf.UnderlyingType(keyType).(type) {
 	case *btf.Int, *btf.Array:
 		size, isBytes, ok := resolveFieldType(keyType)
@@ -221,6 +280,85 @@ func describe(m *ebpf.Map) (*Definition, error) {
 		return nil, fmt.Errorf("key BTF type %s is not a struct, integer, or byte array", keyType)
 	}
 	return def, nil
+}
+
+// resolveValueSchema classifies the map's value layout. A scalar (or a
+// missing value type, for externally-created maps) is the legacy
+// single-tag layout. A struct must be `tag` at offset 0 plus optionally
+// `state` (u8) and `max_bytes` (u64) — validateValueFields enforces the
+// same shape Create accepts, so open and create stay in lockstep.
+func resolveValueSchema(valueType btf.Type, valSize uint32) ([]KeyField, error) {
+	if valueType == nil {
+		if !validValueFieldSize(valSize) {
+			return nil, fmt.Errorf("value size %d is not a supported tag width (u8/u16/u32/u64)", valSize)
+		}
+		return []KeyField{{Name: ValFieldTag, Off: 0, Size: valSize}}, nil
+	}
+	switch t := btf.UnderlyingType(valueType).(type) {
+	case *btf.Int:
+		if !validValueFieldSize(t.Size) {
+			return nil, fmt.Errorf("scalar value BTF %s is not a supported tag width (u8/u16/u32/u64)", valueType)
+		}
+		if t.Size != valSize {
+			return nil, fmt.Errorf("value BTF size %d does not match the map's value size %d", t.Size, valSize)
+		}
+		return []KeyField{{Name: ValFieldTag, Off: 0, Size: t.Size}}, nil
+	case *btf.Struct:
+		var fields []KeyField
+		for _, mem := range t.Members {
+			size, isBytes, ok := resolveFieldType(mem.Type)
+			if !ok || isBytes || mem.BitfieldSize != 0 {
+				return nil, fmt.Errorf("value field %s: only u8/u16/u32/u64 fields are supported", mem.Name)
+			}
+			f := KeyField{Name: mem.Name, Off: mem.Offset.Bytes(), Size: size}
+			// The kernel enforces BTF-type-size == value_size when a map
+			// is created with BTF, so for pinned maps this cannot fire —
+			// it is defense in depth so getField/putField can never
+			// slice-panic if that invariant is ever bypassed.
+			if f.Off+f.Size > valSize {
+				return nil, fmt.Errorf("value field %s (offset %d, size %d) extends past the %d-byte value", f.Name, f.Off, f.Size, valSize)
+			}
+			fields = append(fields, f)
+		}
+		if err := validateValueFields(fields); err != nil {
+			return nil, err
+		}
+		return fields, nil
+	}
+	return nil, fmt.Errorf("value BTF type %s is not an integer or struct", valueType)
+}
+
+// validateValueFields enforces the recognized extended value layout:
+// `tag` (1/2/4/8) at offset 0, then any of `state` (u8) and `max_bytes`
+// (u64). Shared by Create and the open path.
+func validateValueFields(fields []KeyField) error {
+	if len(fields) == 0 || fields[0].Name != ValFieldTag || fields[0].Off != 0 {
+		return fmt.Errorf("value struct must start with a %q field at offset 0", ValFieldTag)
+	}
+	if !validValueFieldSize(fields[0].Size) {
+		return fmt.Errorf("value field %q must be u8/u16/u32/u64", ValFieldTag)
+	}
+	seen := map[string]bool{ValFieldTag: true}
+	for _, f := range fields[1:] {
+		if seen[f.Name] {
+			return fmt.Errorf("value field %q appears twice", f.Name)
+		}
+		seen[f.Name] = true
+		switch f.Name {
+		case ValFieldState:
+			if f.Size != 1 {
+				return fmt.Errorf("value field %q must be u8", ValFieldState)
+			}
+		case ValFieldMaxBytes:
+			if f.Size != 8 {
+				return fmt.Errorf("value field %q must be u64", ValFieldMaxBytes)
+			}
+		default:
+			return fmt.Errorf("unrecognized value field %q (only %q, %q, %q are supported)",
+				f.Name, ValFieldTag, ValFieldState, ValFieldMaxBytes)
+		}
+	}
+	return nil
 }
 
 // resolveFieldType classifies a key field's BTF type: a 1/2/4/8-byte
@@ -262,16 +400,10 @@ func validValueFieldSize(n uint32) bool {
 	return n == 1 || n == 2 || n == 4 || n == 8
 }
 
-// mapKeyBTF returns the map's BTF key type. cilium/ebpf exposes the map's
-// BTF handle but not btf_key_type_id (it lives in the internal sys
-// package), so read struct bpf_map_info via a raw BPF_OBJ_GET_INFO_BY_FD
-// and look the type up in the handle's spec.
-func mapKeyBTF(m *ebpf.Map) (btf.Type, error) {
-	key, _, err := mapBTFTypes(m)
-	return key, err
-}
-
-// mapBTFTypes returns the map's BTF key and value types.
+// mapBTFTypes returns the map's BTF key and value types. cilium/ebpf
+// exposes the map's BTF handle but not btf_key_type_id (it lives in the
+// internal sys package), so read struct bpf_map_info via a raw
+// BPF_OBJ_GET_INFO_BY_FD and look the types up in the handle's spec.
 func mapBTFTypes(m *ebpf.Map) (key, value btf.Type, err error) {
 	keyTypeID, valueTypeID, err := mapBTFTypeIDs(m.FD())
 	if err != nil {

@@ -42,8 +42,8 @@ var setCreateCmd = &cli.Command{
 			Usage: "key schema, e.g. \"imsi:u64,teid:u32\" (types: u8/u16/u32/u64, or ipv6 for a 16-byte address / SRv6 SID; numeric fields align to their width, ipv6 to 8)",
 		},
 		&cli.StringFlag{
-			Name: "value", Value: "tag:u32",
-			Usage: "value schema (default a u32 tag)",
+			Name: "value", Value: setmap.DefaultValueSchema,
+			Usage: "value schema: the default carries the tag, the entry state (active/capped/finalized), and the per-entry byte cap (`set add ... max-bytes=N`, 0 = uncapped); \"tag:u32\" gives the pre-0.23 plain-tag layout (no caps, no state)",
 		},
 		&cli.IntFlag{
 			Name: "max-entries", Value: 1024,
@@ -109,15 +109,15 @@ active.`,
 
 var setAddCmd = &cli.Command{
 	Name:      "add",
-	Usage:     "insert or update one entry (full key required)",
-	ArgsUsage: "<pin-path> field=value ... [tag=N]",
+	Usage:     "insert or update one entry (full key required); max-bytes=0 or omitted = uncapped",
+	ArgsUsage: "<pin-path> field=value ... [tag=N] [max-bytes=N]",
 	Action: func(_ context.Context, cmd *cli.Command) error {
-		def, fields, tag, err := setOpenWithFields(cmd)
+		def, fields, val, err := setOpenWithFields(cmd)
 		if err != nil {
 			return err
 		}
 		defer def.Close()
-		return def.Add(fields, tag)
+		return def.Add(fields, val)
 	},
 }
 
@@ -126,11 +126,17 @@ var setDelCmd = &cli.Command{
 	Usage:     "delete one entry (full key required)",
 	ArgsUsage: "<pin-path> field=value ...",
 	Action: func(_ context.Context, cmd *cli.Command) error {
-		def, fields, _, err := setOpenWithFields(cmd)
+		def, fields, val, err := setOpenWithFields(cmd)
 		if err != nil {
 			return err
 		}
 		defer def.Close()
+		// del identifies an entry by its key alone; silently ignoring a
+		// value assignment (a typoed `add`, or a templated arg list)
+		// would fake success.
+		if val.HasTag || val.HasMaxBytes {
+			return fmt.Errorf("set del takes key fields only (tag= / max-bytes= have no meaning on delete)")
+		}
 		return def.Delete(fields)
 	},
 }
@@ -180,19 +186,19 @@ func setOpen(cmd *cli.Command) (*setmap.Definition, error) {
 }
 
 // setOpenWithFields opens the map and parses the trailing field=value
-// args (with the optional tag=N split off).
-func setOpenWithFields(cmd *cli.Command) (*setmap.Definition, map[string]string, uint64, error) {
+// args (with the optional tag=N / max-bytes=N split off).
+func setOpenWithFields(cmd *cli.Command) (*setmap.Definition, map[string]string, setmap.EntryValue, error) {
 	def, err := setOpen(cmd)
 	if err != nil {
-		return nil, nil, 0, err
+		return nil, nil, setmap.EntryValue{}, err
 	}
-	fields, tag, hasTag, err := setmap.ParseFieldValues(cmd.Args().Tail())
+	fields, val, err := setmap.ParseFieldValues(cmd.Args().Tail())
 	if err != nil {
 		def.Close()
-		return nil, nil, 0, err
+		return nil, nil, setmap.EntryValue{}, err
 	}
-	if !hasTag {
-		tag = 1 // presence marker
+	if !val.HasTag {
+		val.Tag = 1 // presence marker
 	}
-	return def, fields, tag, nil
+	return def, fields, val, nil
 }

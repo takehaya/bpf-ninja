@@ -675,7 +675,7 @@ sudo bpf-ninja set add  $PIN imsi=999990000000777 teid=100 tag=9  # 上書き
 sudo bpf-ninja set list $PIN | grep 999990000000777              # tag=9 になる
 ```
 
-value 型は既定で `tag:u32` です。1/2/4/8 バイトの単一整数なら `set create` に `--value "tag:u16"` を付けて変えられます。tag は数値専用で、`ipv6` はキー側だけの型です。
+value 型は既定で `tag:u32,state:u8,max_bytes:u64` の struct です。`tag` に加えて、entry の状態 (`state`: active / capped / finalized、キャプチャプロセスが cap 到達や finalize 完了で書き換えます) と、entry ごとの出力バイト上限 (`max_bytes`: `set add ... max-bytes=N` で指定、省略または 0 = 無制限) を持ちます。`--value "tag:u16"` のような 1/2/4/8 バイトの単一整数も従来通り使えますが、その map では cap と state は使えません。tag は数値専用で、`ipv6` はキー側だけの型です。
 
 ### 複数の値を照合する
 
@@ -788,21 +788,31 @@ until [ -f out.1.pcap ]; do sleep 0.1; done
 - 1 パケットも来なかった tag も、entry の削除後に空の (ヘッダだけの) `out.<tag>.pcap` を作ります。合図としては同じに扱えます。ただし entry の存在をポーリングで観測する前 (追加から 1 秒未満) に消した場合は検知できません。
 - `--split-by-tag` と `--set` が必須です。tag 0 (set 不一致) は対象になりません。per-CPU の shard ファイルは合算後もそのまま残ります。
 
-### tag ごとの出力サイズ上限 (`--max-bytes-per-tag`)
+### entry ごとの出力サイズ上限 (`set add ... max-bytes=N`)
 
-`--split-by-tag` と組み合わせて、tag 単位の出力バイト上限を指定できます。ある tag の出力 (per-CPU shard の合計) が上限に達すると、その tag への書き込みだけを止めて他の tag はそのまま録り続けます。
+出力バイト上限は entry (すなわち tag) 単位で set map に持たせます。`set add` に `max-bytes=N` を付けると、その tag の出力 (per-CPU shard の合計) が N に達した時点でその tag への書き込みだけが止まり、他の tag はそのまま録り続けます。上限は entry ごとに別々の値にでき、省略または 0 なら無制限です。ジョブごとに予算が違う多重化運用がフラグ 1 個では表現できなかったため、v0.22.0 の `--max-bytes-per-tag` フラグはこの方式に置き換えて廃止しました。
 
 ```bash
+sudo bpf-ninja set add $PIN imsi=999990000000001 tag=1 max-bytes=104857600
+sudo bpf-ninja set add $PIN imsi=999990000000777 tag=2 max-bytes=10485760
+sudo bpf-ninja set add $PIN imsi=999990000000042 tag=3      # 上限なし
+
 sudo bpf-ninja -i eth0 --mode xdp --set "subs=$PIN" \
-  --split-by-tag --max-bytes-per-tag 104857600 \
-  --exit-when-capped -w out.pcap \
+  --split-by-tag --exit-when-capped -w out.pcap \
   'eth/ipv4/udp/gtp[imsi in @subs]'
 ```
 
 - 上限のカウント対象は pcap-ng の packet block バイトで、ファイルごとの固定ヘッダは含みません。判定は ringbuf バッチ単位なので、shard あたり最大 1 バッチぶんの超過があり得ます。
-- 上限に達した tag の live ファイルは閉じてファイルディスクリプタを解放します。到達を検知した CPU の分は即時に、他の CPU の分は次にその tag のパケットを見た時点で閉じます。到達直後にその tag のトラフィックが止まった場合、他 CPU の分は終了時まで開いたままになることがあります。set map の entry には触りません。カーネル側のマッチは続き、ユーザー空間で捨てます。
-- `--exit-when-capped` を足すと、set map に現存する全 tag が上限に達した時点で自動的に exit 0 します。通常のシャットダウンと同じく per-CPU ファイルの合算まで行うので、待っている呼び出し側はそのまま完成した `out.<tag>.pcap` を回収できます。tag 0 (set 不一致) は判定に参加しません。
-- プロセス全体の上限は `--max-bytes` です。こちらは `--split-by-tag` 無しでも使えて、到達すると `-c` と同じ経路でキャプチャ全体を止めて exit 0 します。
+- record が運ぶのは tag だけなので、上限は実質 **tag 単位**です。同じ tag を共有する entry は 1 つの予算を共有します。entry ごとに違う上限が付いている場合は大きい方が有効で、上限なし (0) の entry が 1 つでもあればその tag は上限なしになります。
+- 上限はキャプチャ中でも `set add` の上書きで変更でき、約 1 秒で反映されます。ただし一度上限に達した tag は、後から上限を引き上げても再開しません。
+- `set add` で既存 entry を更新するとき、`max-bytes=` を**省略しても既存の上限は維持されます** (state と同じ扱い)。上限を外すには明示的に `max-bytes=0` を指定します。tag を変えた更新は新しいジョブへの割り当てとみなし、state も上限もこの `set add` の指定どおりに始まります。
+- 上限に達した tag の live ファイルは閉じてファイルディスクリプタを解放します。到達を検知した CPU の分は即時に、他の CPU の分は次にその tag のパケットを見た時点で閉じます。
+- `--exit-when-capped` を足すと、**上限を持つ全 entry** が到達した時点で自動的に exit 0 します。上限なしの entry と tag 0 (set 不一致) は判定に参加しません。通常のシャットダウンと同じく per-CPU ファイルの合算まで行うので、待っている呼び出し側はそのまま完成した `out.<tag>.pcap` を回収できます。前回実行の残りで最初から全 entry が capped/finalized の map に対して起動した場合は、録るものが無いので即座に exit 0 します。
+- `--finalize-on-del` と併用すると、上限に達した tag は entry の `state` が `capped` に書き換わってカーネル側のマッチも止まり、そのまま静止 → 合算の経路に入って `out.<tag>.pcap` が生成され、最後に `state=finalized` になります。**`--exit-when-capped` の exit はこの finalize の完了を待つ**ので、プロセスが exit 0 した時点で上限付き全 tag の ack ファイルと `state=finalized` が揃っていることが保証されます (cap 到達から exit まで数秒かかります)。entry 自体は消えないので、`set list` で「どのキー (imsi 等) のジョブがどこまで進んだか」を追えます。`--finalize-on-del` 無しの場合は state に触らず、従来通りユーザー空間で捨てるだけです。
+- state は pinned map に**プロセスを跨いで残ります**。capped/finalized の entry は次のキャプチャでもマッチしないので、同じコマンドを再実行しても該当 tag は何も録れません。キーを新しいジョブとして使い直すには `set add ... tag=<新しい番号>` で tag を振り直します (同じ tag への復帰手段は意図的にありません)。
+- キャプチャプロセスと `set add` は map の value を無同期で読み書きします (last-writer-wins)。state の書き込みが競合で失われても毎秒の巡回で自動修復されますが、`set add` の上限変更がまれに 1 回失われる可能性はあります (再実行すれば反映されます)。
+- プロセス全体の上限は `--max-bytes` フラグです。こちらは `--split-by-tag` 無しでも使えて、到達すると `-c` と同じ経路でキャプチャ全体を止めて exit 0 します。逆に、entry に `max-bytes` を付けても `--split-by-tag` 無しのキャプチャでは強制されません (起動時に警告を出します)。
+- 外部ツールで作った pinned map の value が struct の場合、認識できる layout (`tag[,state,max_bytes]`) 以外は open 時にエラーになります (0.22 までは value の BTF を見ていませんでした)。単一整数 value は従来どおり開けます。
 
 ## 仕組みの概要
 

@@ -825,7 +825,7 @@ func emitSetFilters(sets []filter.SetFilter) asm.Instructions {
 			insns = append(insns, asm.StoreMem(asm.R10, int16(setKeyBase+int(f.FieldOff)), asm.R3, asmSizeFor(f.FieldSize)))
 		}
 
-		insns = append(insns, emitSetLookup(s.Map.FD(), setKeyBase, int(s.Map.ValueSize()))...)
+		insns = append(insns, emitSetLookup(s.Map.FD(), setKeyBase, int(s.TagWidth), s.StateOff)...)
 	}
 	return insns
 }
@@ -850,21 +850,31 @@ func emitTagSlotZero() asm.Instructions {
 
 // emitSetLookup emits the shared membership tail: look the pinned map
 // (mapFD) up with the key at R10+keyOff; a NULL result jumps to "exit"
-// (skip capture), so stacked lookups AND together. On a hit it copies the
-// map value (the tag, tagSize bytes at value offset 0) into tagSlot so the
-// capture epilogue can carry it out; stacked lookups store in source order,
-// so the last matched set wins. tagSize is the map's value width (1/2/4/8);
-// narrow loads zero-extend and an 8-byte value keeps only its low 32 bits
+// (skip capture), so stacked lookups AND together. When the value layout
+// carries a state field (stateOff >= 0), a non-active entry (state != 0,
+// i.e. capped/finalized) is treated as a miss too — the kernel stops
+// producing records the moment the capture process parks the entry,
+// without the entry being deleted. On a hit it copies the tag (tagSize
+// bytes at value offset 0) into tagSlot so the capture epilogue can
+// carry it out; stacked lookups store in source order, so the last
+// matched set wins. tagSize is the value's tag field width (1/2/4/8);
+// narrow loads zero-extend and an 8-byte tag keeps only its low 32 bits
 // when written to the u32 metadata field. Clobbers R0-R5. Shared by the
 // arg-based emitSetFilters and the packet-based emitPktSetLookups
 // (setslots.go).
-func emitSetLookup(mapFD int, keyOff int16, tagSize int) asm.Instructions {
+func emitSetLookup(mapFD int, keyOff int16, tagSize, stateOff int) asm.Instructions {
 	insns := asm.Instructions{
 		asm.LoadMapPtr(asm.R1, mapFD),
 		asm.Mov.Reg(asm.R2, asm.R10),
 		asm.Add.Imm(asm.R2, int32(keyOff)),
 		asm.FnMapLookupElem.Call(),
 		asm.JEq.Imm(asm.R0, 0, "exit"),
+	}
+	if stateOff >= 0 {
+		insns = append(insns,
+			asm.LoadMem(asm.R1, asm.R0, int16(stateOff), asm.Byte),
+			asm.JNE.Imm(asm.R1, 0, "exit"),
+		)
 	}
 	// R0 = value ptr (non-NULL past the jump). Read the tag only for the
 	// exact loadable widths; an externally-pinned map with an odd value

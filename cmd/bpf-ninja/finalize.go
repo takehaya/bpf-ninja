@@ -176,6 +176,15 @@ func (f *tagFinalizer) markMerged(tag uint32) {
 	delete(f.closing, tag)
 }
 
+// isMerged reports whether this run successfully produced the tag's
+// ack file (close+merge completed).
+func (f *tagFinalizer) isMerged(tag uint32) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	st := f.tags[tag]
+	return st != nil && st.merged.Load()
+}
+
 // mergedTags returns the tags whose ack file was successfully produced
 // during this run, for the shutdown merge to skip: a consumed ack must
 // not be recreated after the collector took it. Tags that quiesced but
