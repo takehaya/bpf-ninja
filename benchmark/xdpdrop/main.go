@@ -23,8 +23,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/takehaya/xdp-ninja/internal/attach"
-	"github.com/takehaya/xdp-ninja/internal/program"
+	"github.com/takehaya/bpf-ninja/internal/attach"
+	"github.com/takehaya/bpf-ninja/internal/program"
 )
 
 func main() {

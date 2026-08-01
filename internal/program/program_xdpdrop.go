@@ -26,8 +26,8 @@ import (
 	"github.com/cilium/ebpf/asm"
 	"github.com/cilium/ebpf/btf"
 	"github.com/cilium/ebpf/link"
-	"github.com/takehaya/xdp-ninja/internal/attach"
-	"github.com/takehaya/xdp-ninja/pkg/kunai/codegen"
+	"github.com/takehaya/bpf-ninja/internal/attach"
+	"github.com/takehaya/bpf-ninja/pkg/kunai/codegen"
 )
 
 const (
