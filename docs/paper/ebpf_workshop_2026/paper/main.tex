@@ -12,7 +12,7 @@
 \setcopyright{none}
 \acmConference[eBPF'26]{4th ACM SIGCOMM Workshop on eBPF and Kernel Extensions}{September 29, 2026}{Prague, Czech Republic}
 \acmYear{2026}
-\settopmatter{printacmref=false, printccs=false, printfolios=true}
+\settopmatter{printacmref=true, printccs=true, printfolios=true}
 
 \citestyle{acmnumeric}
 
@@ -112,6 +112,36 @@ matched and rejected the intended packets, and, where pcap-filter can
 express the filter, ran within a few percent of pcap-filter in
 per-packet processing cost.
 \end{abstract}
+
+\begin{CCSXML}
+<ccs2012>
+<concept>
+<concept_id>10003033.10003099.10003105</concept_id>
+<concept_desc>Networks~Network monitoring</concept_desc>
+<concept_significance>500</concept_significance>
+</concept>
+<concept>
+<concept_id>10011007.10011006.10011050.10011017</concept_id>
+<concept_desc>Software and its engineering~Domain specific languages</concept_desc>
+<concept_significance>500</concept_significance>
+</concept>
+<concept>
+<concept_id>10011007.10011006.10011041</concept_id>
+<concept_desc>Software and its engineering~Compilers</concept_desc>
+<concept_significance>300</concept_significance>
+</concept>
+<concept>
+<concept_id>10003033.10003034.10003038</concept_id>
+<concept_desc>Networks~Programming interfaces</concept_desc>
+<concept_significance>300</concept_significance>
+</concept>
+</ccs2012>
+\end{CCSXML}
+
+\ccsdesc[500]{Networks~Network monitoring}
+\ccsdesc[500]{Software and its engineering~Domain specific languages}
+\ccsdesc[300]{Software and its engineering~Compilers}
+\ccsdesc[300]{Networks~Programming interfaces}
 
 \keywords{eBPF, XDP, packet filtering, domain-specific language, P4,
   kernel verifier, packet capture, network debugging}
