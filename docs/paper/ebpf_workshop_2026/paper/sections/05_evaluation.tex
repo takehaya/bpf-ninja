@@ -144,12 +144,11 @@ limit.
 Program size does not bound the verifier's own work, so the last
 column of Table~\ref{tab:filterset} lists each filter's verifier cost,
 the number of instructions the verifier processes before accepting the
-load. This count grows with path exploration rather than with the
-program, and it also moves with the kernel version itself, by two
-orders of magnitude for F10 across the six kernels of
-\S\ref{sec:eval-accept}, so the table reports the largest value
-observed. The peak is about 207k for the option walk of F10, a fifth
-of the one-million limit, while the \texttt{bpf\_loop} walk of F8
+load. This count grows with path exploration, and it also moves with
+the kernel version itself, by two orders of magnitude for F10 across
+the six kernels of \S\ref{sec:eval-accept}, so the table reports the
+largest value observed. The peak is about 207k for the option walk of
+F10, a fifth of that limit, while the \texttt{bpf\_loop} walk of F8
 stays near 4k on every kernel and the pcap-filter baselines stay below
 300.
 

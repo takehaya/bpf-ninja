@@ -96,18 +96,18 @@ steps, each emitted by its own generator.
 \end{algorithm}
 
 \kunai fills in this skeleton in two ways, chosen by the structure
-rather than the protocol. The choice is made when the protocol
-definition is loaded, by the shape of its parser states rather than by
-any per-protocol rule. A loop qualifies as a counted aux-list walk
+rather than the protocol. The compiler classifies each parser loop by
+the shape of its states when it loads the protocol definition. A loop
+qualifies as a counted aux-list walk
 when it extracts elements with \texttt{pkt.extract(stack.next)} under
 a \texttt{ParserCounter} seeded from a whole-byte header field and
 decremented once per element, so the seed field gives the run-time
 count, as \texttt{last\_entry + 1} does for SRv6 in
 \figref{fig:p4srv6}. It qualifies as a TLV self-loop when its
 \texttt{select} dispatches on a \texttt{lookahead} of the kind byte,
-optionally with a byte-count counter as in IPv4 options and Geneve. A
-multi-state parser cycle matching neither shape is rejected at load
-time rather than compiled to a wrong walk.
+optionally with a byte-count counter as in IPv4 options and Geneve.
+The compiler rejects a multi-state parser cycle matching neither shape
+at load time rather than compiling it to a wrong walk.
 
 A \emph{counted aux-list walk} handles a list
 of fixed-size elements with a run-time count, such as the SRv6 segment

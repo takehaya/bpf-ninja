@@ -102,8 +102,8 @@ tcpdump's filter language, has no syntax for nested
 encapsulation, repeated occurrences of the same protocol, or the
 variable-length lists and options whose field offsets change from
 packet to packet. Running such an expressive filter in the kernel
-also requires bytecode that the Linux eBPF verifier accepts, and a
-naive lowering is rejected. We present \kunai, a packet-filter DSL
+also requires bytecode that the Linux eBPF verifier accepts, and the
+verifier rejects a naive lowering. We present \kunai, a packet-filter DSL
 together with a compiler that lowers its expressions to eBPF
 bytecode. A \kunai expression describes a packet's layer structure
 and field conditions together, and resolves each field's offset and
