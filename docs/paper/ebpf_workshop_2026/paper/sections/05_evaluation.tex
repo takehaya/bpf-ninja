@@ -136,7 +136,11 @@ packet. A chain quantifier adds about 16 instructions per unit of cap
 before it flattens into a \texttt{bpf\_loop} callback, and each stacked
 SRv6 segment walk adds about 68. Even eight stacked walks stay near 800
 instructions, far below the verifier's roughly one-million-instruction
-limit.
+limit. The instructions the verifier processes at load time grow with
+path exploration rather than program size. Across the six kernels of
+\S\ref{sec:eval-accept} this count peaks at about 207k for the option
+walk of F10, a fifth of that limit, and the \texttt{bpf\_loop} walk of
+F8 stays near 4k on every kernel.
 
 To see whether this appears at run time, we sent traffic over
 100\,GbE to a device under test (DUT) running a native XDP program
