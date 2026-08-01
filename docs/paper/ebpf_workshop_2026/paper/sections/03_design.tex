@@ -13,8 +13,7 @@ transitions, and variable-length structures, and the code-generation
 stage combines both to produce verifier-accepted eBPF bytecode.
 \figref{fig:arch} shows the overall structure.
 
-The compiler takes two inputs, a \kunai filter expression and a set of
-protocol definitions written in a subset of P4. It first validates the
+The compiler first validates the
 layer-chain, resolves field references against the protocol
 definitions, and records the information required for later code
 generation, rejecting references to non-existent fields, ambiguous
@@ -25,9 +24,8 @@ The compiler then generates eBPF bytecode that evaluates the filter
 condition and returns a match/reject result. A host BPF program
 placed at an attach point such as XDP~\cite{hoiland2018xdp},
 tc~\cite{tc_man}, or fentry/fexit embeds this bytecode. Under this
-split of responsibilities, \kunai handles filter analysis and
-bytecode generation, while the host program handles
-attach-point-specific context access and follow-on actions such as
+split, \kunai handles filter analysis and bytecode generation, and
+the host handles context access and follow-on actions such as
 capture or drop.
 
 \begin{figure}[t]
@@ -110,13 +108,11 @@ destination of a GTP-U tunnel, for example, is written as follows.
 eth/ipv4@outer/udp/gtp/ipv4@inner/tcp where inner.dst == 10.0.0.1
 \end{lstlisting}
 
-The chain before \texttt{where} lists the layers to traverse, from
-Ethernet through an outer IPv4 header, UDP, GTP, an inner IPv4 header,
-to TCP, and the \texttt{where} clause gives the field condition checked
-once the chain matches, here that the inner IPv4 header's destination
-equals \texttt{10.0.0.1}. Here \texttt{@outer} and \texttt{@inner} distinguish the two IPv4
-layers. Because \texttt{inner.dst} uniquely names the destination
-field of the inner IPv4 header, \kunai can determine which field to read even
+The chain before \texttt{where} lists the layers to traverse, and the
+\texttt{where} clause gives the field condition checked once the chain
+matches. Because \texttt{@outer} and \texttt{@inner} distinguish the
+two IPv4 layers, \texttt{inner.dst} uniquely names the inner
+destination field, and \kunai can determine which field to read even
 though the same \texttt{ipv4} header appears twice.
 
 Variable-length lists are handled with \texttt{any()} and
@@ -134,9 +130,10 @@ referenced several times; for example,
 \texttt{any(srv6.segments.addr == fc00::1 or srv6.segments.addr ==
 fc00::2)} is valid. An \texttt{any()} or \texttt{all()} that references no un-indexed list, or
 two different ones, is rejected at the analysis stage rather than
-walking one of them. A quantifier that appears to walk two
-lists therefore cannot be written. \kunai evaluates the inner condition
-against each element of the list. The walk requires a field giving the
+walking one of them. \kunai evaluates the inner condition as a whole
+against one element at a time. \texttt{any(P and Q)} therefore holds
+only when a single element satisfies both \texttt{P} and \texttt{Q},
+and \texttt{all()} applies the same element-wise rule. The walk requires a field giving the
 element count, the width of each element, a way to advance to the next
 element, and a stop condition; the protocol definition supplies these.
 TCP options and GTP extension headers are handled the same way when

@@ -21,17 +21,14 @@ Linux data path. p4c-ebpf and p4c-xdp compile P4 programs into
 eBPF for Linux targets such as XDP and
 tc~\cite{p4c_ebpf,tu2018p4cxdp}. Simon et
 al.~\cite{simon2024honey} further combine P4 pipelines with
-dynamically loaded eBPF programs. These systems generate
-verifier-accepted eBPF programs for fixed protocol pipelines.
-They do not address packet-filter expressions whose target fields
-may appear behind nested encapsulation or within variable-length
-protocol structures.
+dynamically loaded eBPF programs. These systems target fixed protocol
+pipelines rather than filter expressions whose target fields may
+appear behind nested encapsulation or within variable-length
+structures.
 
 Recent work has argued that DSL compilers targeting the Linux
 kernel should satisfy a verifier-safe
 property~\cite{solleza2025verifiersafe}: every well-formed program
-should compile into bytecode that the verifier accepts. Solleza et
-al.~\cite{solleza2025verifiersafe} characterize this verifier-safe goal,
-but do not address packet
-filtering over nested encapsulation and variable-length protocol
-structures.
+should compile into bytecode that the verifier accepts. They do not
+address packet filtering over nested encapsulation and
+variable-length structures.

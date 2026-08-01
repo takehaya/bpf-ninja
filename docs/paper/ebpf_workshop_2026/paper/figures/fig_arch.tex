@@ -44,12 +44,12 @@
   {capture /\\[-2pt] drop / pass};
 
 % --- arrows ---
-\draw[arr] (expr.east)  -| (parse.north);
-\draw[arr] (vocab.east) -| (resolve.south);
+\draw[arr] (expr.east)  -- ($(compiler.west |- expr.east)$);
+\draw[arr] (vocab.east) -- ($(compiler.west |- vocab.east)$);
 \draw[arr] (parse) -- (resolve);
 \draw[arr] (resolve) -- (codegen);
-\draw[arr] (codegen.south) |- ($(compiler.south)+(0,-8)$) -| (bc.north)
-      node[pos=0.25, above=0.3mm, font=\footnotesize] {generate};
+\draw[arr] (codegen.south) -- ++(0,-8) -| (bc.north)
+      node[pos=0.75, right=1mm, font=\footnotesize] {generate};
 \draw[arr] (bc.west) -- node[above=0.3mm, font=\footnotesize] {embed} (hostprog.east);
 \draw[arr] (hostprog.west) -- node[above=0.3mm, font=\footnotesize] {match} (act.east);
 

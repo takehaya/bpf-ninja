@@ -60,7 +60,8 @@ def main():
     def lab(m):
         return "0.0" if abs(m) < 0.05 else f"{m:.1f}"
 
-    fig, ax = plt.subplots(figsize=(7.0, 3.0))
+    plt.rcParams.update({"font.size": 8})
+    fig, ax = plt.subplots(figsize=(3.5, 1.7))
     w = 0.38
     for i in range(1, 11):
         kc = f"kunai_F{i}"
@@ -70,11 +71,15 @@ def main():
             pm, ps = ms(pc)
             ax.bar(i - 0.2, km, w, yerr=ks, color=KUNAI_C, capsize=2, error_kw={"lw": 0.8})
             ax.bar(i + 0.2, pm, w, yerr=ps, color=PCAP_C, capsize=2, error_kw={"lw": 0.8})
-            ax.text(i - 0.2, km + ks + 0.12, lab(km), ha="center", va="bottom", fontsize=6)
-            ax.text(i + 0.2, pm + ps + 0.12, lab(pm), ha="center", va="bottom", fontsize=6)
+            if lab(km) == lab(pm) and abs(km) < 0.05 and abs(pm) < 0.05:
+                ax.text(i, max(km + ks, pm + ps) + 0.12, lab(km),
+                        ha="center", va="bottom", fontsize=7)
+            else:
+                ax.text(i - 0.26, km + ks + 0.12, lab(km), ha="center", va="bottom", fontsize=7)
+                ax.text(i + 0.26, pm + ps + 0.12, lab(pm), ha="center", va="bottom", fontsize=7)
         else:
             ax.bar(i, km, w * 1.4, yerr=ks, color=KUNAI_C, capsize=2, error_kw={"lw": 0.8})
-            ax.text(i, km + ks + 0.12, lab(km), ha="center", va="bottom", fontsize=6)
+            ax.text(i, km + ks + 0.12, lab(km), ha="center", va="bottom", fontsize=7)
 
     ax.set_xticks(range(1, 11))
     ax.set_xticklabels([f"F{i}" for i in range(1, 11)])

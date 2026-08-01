@@ -34,25 +34,25 @@
 \draw[arr] (8.0,1.0) -- (8.0,0.92);
 
 % legend for variable-length headers
-\node[font=\footnotesize, anchor=west] at (8.35,0.45) {$^*$ length varies per packet};
+\node[font=\footnotesize, anchor=west] at (0,-2.45) {$^*$ length varies per packet};
 
 % --- dashed drops from each layer start onto a bus, then into the stack box ---
 \foreach \x in {0, 1.1, 2.8, 3.7, 5.1, 6.8} {
-  \draw[slot] (\x,0) -- (\x,-0.95);
+  \draw[slot] (\x,0) -- (\x,-0.7);
 }
-\draw[slot] (0,-0.95) -- (6.8,-0.95);
+\draw[slot] (0,-0.7) -- (6.8,-0.7);
 \node[draw, rounded corners=2pt, fill=blue!10, minimum height=8mm, align=center]
-  (stack) at (3.4,-2.0)
+  (stack) at (3.4,-1.55)
   {\footnotesize BPF stack slots\quad \texttt{layer\_start[$\ell$]}\\[-1pt]
    \footnotesize written while walking the chain};
-\draw[slot, -{Stealth[length=1.8mm]}] (3.4,-0.95) -- (stack.north);
+\draw[slot, -{Stealth[length=1.8mm]}] (3.4,-0.7) -- (stack.north);
 
 % --- example bounds-checked access ---
-\node[font=\footnotesize, align=left, anchor=west] (acc) at (0,-3.3)
-  {\texttt{where inner.dst == ...}\;$\Rightarrow$\;
-   \texttt{load32(data + layer\_start[ipv4@inner] + 16)}\;
-   after check \texttt{ptr + 4 $\le$ data\_end}};
-\draw[arr, red!60!black] (6.55,-3.05) .. controls (7.3,-1.6) and (7.1,-0.6) .. (6.6,0.0);
+\node[font=\footnotesize, align=left, anchor=west] (acc) at (0,-3.25)
+  {\texttt{where inner.dst == ...}\;$\Rightarrow$\\
+   \quad\texttt{load32(data + layer\_start[ipv4@inner] + 16)}\\
+   \quad after check \texttt{ptr + 4 $\le$ data\_end}};
+\draw[arr, red!60!black] (5.7,-2.95) .. controls (7.2,-1.9) and (7.0,-0.6) .. (6.6,0.0);
 
 \end{tikzpicture}
 \end{document}
