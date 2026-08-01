@@ -9,9 +9,15 @@
 \pagestyle{plain}
 
 % --- ACM metadata (anonymized for review; restore in camera-ready) ---
-\setcopyright{none}
-\acmConference[eBPF'26]{4th ACM SIGCOMM Workshop on eBPF and Kernel Extensions}{September 29, 2026}{Prague, Czech Republic}
-\acmYear{2026}
+\acmYear{2026}\copyrightyear{2026}
+\acmConference[eBPF '26]{4th Workshop on eBPF and Kernel Extensions}{September 29--October 2, 2026}{Prague, Czech Republic}
+\acmBooktitle{4th Workshop on eBPF and Kernel Extensions (eBPF '26), September 29--October 2, 2026, Prague, Czech Republic}
+\acmDOI{10.1145/3837779.3838166}
+\acmISBN{979-8-4007-2911-9/26/09}
+
+% \setcopyright{none}
+% \acmConference[eBPF'26]{4th ACM SIGCOMM Workshop on eBPF and Kernel Extensions}{September 29, 2026}{Prague, Czech Republic}
+% \acmYear{2026}
 \settopmatter{printacmref=true, printccs=true, printfolios=true}
 
 \citestyle{acmnumeric}
@@ -115,37 +121,34 @@ per-packet processing cost.
 
 \begin{CCSXML}
 <ccs2012>
-<concept>
-<concept_id>10003033.10003099.10003105</concept_id>
-<concept_desc>Networks~Network monitoring</concept_desc>
-<concept_significance>500</concept_significance>
-</concept>
-<concept>
-<concept_id>10011007.10011006.10011050.10011017</concept_id>
-<concept_desc>Software and its engineering~Domain specific languages</concept_desc>
-<concept_significance>500</concept_significance>
-</concept>
-<concept>
-<concept_id>10011007.10011006.10011041</concept_id>
-<concept_desc>Software and its engineering~Compilers</concept_desc>
-<concept_significance>300</concept_significance>
-</concept>
-<concept>
-<concept_id>10003033.10003034.10003038</concept_id>
-<concept_desc>Networks~Programming interfaces</concept_desc>
-<concept_significance>300</concept_significance>
-</concept>
-</ccs2012>
+   <concept>
+       <concept_id>10003033.10003099.10003105</concept_id>
+       <concept_desc>Networks~Network monitoring</concept_desc>
+       <concept_significance>500</concept_significance>
+       </concept>
+   <concept>
+       <concept_id>10011007.10011006.10011050.10011017</concept_id>
+       <concept_desc>Software and its engineering~Domain specific languages</concept_desc>
+       <concept_significance>500</concept_significance>
+       </concept>
+   <concept>
+       <concept_id>10011007.10011006.10011041</concept_id>
+       <concept_desc>Software and its engineering~Compilers</concept_desc>
+       <concept_significance>300</concept_significance>
+       </concept>
+ </ccs2012>
 \end{CCSXML}
 
 \ccsdesc[500]{Networks~Network monitoring}
 \ccsdesc[500]{Software and its engineering~Domain specific languages}
 \ccsdesc[300]{Software and its engineering~Compilers}
-\ccsdesc[300]{Networks~Programming interfaces}
 
 \keywords{eBPF, XDP, packet filtering, domain-specific language, P4,
   kernel verifier, packet capture, network debugging}
 
+% The single flattened \author string carries layout superscripts; feed
+% the ACM reference format and PDF metadata a clean name list instead.
+\gdef\authors{Takeru Hayasaka\and Satoshi Uda\and Ayako Hayasaka\and Daisuke Kotani}
 \maketitle
 \renewcommand{\shortauthors}{Hayasaka et al.}
 
