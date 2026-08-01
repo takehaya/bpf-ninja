@@ -23,26 +23,29 @@ pcap-filter baseline in the rest of the evaluation.
 
 \begin{table*}[t]
   \centering\small
-  \begin{tabular}{@{}llrr@{}}
+  \begin{tabular}{@{}llrrr@{}}
     \toprule
-    ID & \kunai expression & \kunai & pcap-filter \\
+    ID & \kunai expression & \kunai & pcap-filter & verifier \\
     \midrule
-    F1  & \texttt{eth/ipv4/tcp where tcp.dport == 443} & 199 & 42 \\
-    F2  & \texttt{eth/ipv4[src==10.0.0.0/8]/tcp where tcp.dport == 80} & 209 & 36 \\
-    F3  & \texttt{eth/ipv6[src==2001:db8::/32]/tcp} & 339 & 23 \\
-    F4  & \texttt{eth/vlan[tci==100]/ipv4/tcp where tcp.dport == 80} & 215 & 51 \\
-    F5  & \texttt{eth/ipv4/icmp where icmp.type == 8} & 85 & 31 \\
-    F6  & \texttt{eth/qinq/vlan/ipv4/tcp where tcp.dport == 80} & 217 & \na \\
-    F7  & \texttt{eth/ipv4@outer/udp/gtp/ipv4@inner/tcp where inner.dst == 10.0.0.1} & 406 & \na \\
-    F8  & \texttt{eth/ipv6/srv6 where any(srv6.segments.addr == fc00::1)} & 333 & \na \\
-    F9  & \texttt{eth/ipv4@outer/udp/geneve/eth/ipv4@inner/tcp where inner.dst == 10.0.0.1} & 351 & \na \\
-    F10 & \texttt{eth/ipv4/tcp where tcp.options.MSS.value == 1460} & 231 & \na \\
+    F1  & \texttt{eth/ipv4/tcp where tcp.dport == 443} & 199 & 42 & 8,137 \\
+    F2  & \texttt{eth/ipv4[src==10.0.0.0/8]/tcp where tcp.dport == 80} & 209 & 36 & 8,159 \\
+    F3  & \texttt{eth/ipv6[src==2001:db8::/32]/tcp} & 339 & 23 & 18,595 \\
+    F4  & \texttt{eth/vlan[tci==100]/ipv4/tcp where tcp.dport == 80} & 215 & 51 & 8,177 \\
+    F5  & \texttt{eth/ipv4/icmp where icmp.type == 8} & 85 & 31 & 315 \\
+    F6  & \texttt{eth/qinq/vlan/ipv4/tcp where tcp.dport == 80} & 217 & \na & 8,181 \\
+    F7  & \texttt{eth/ipv4@outer/udp/gtp/ipv4@inner/tcp where inner.dst == 10.0.0.1} & 406 & \na & 89,173 \\
+    F8  & \texttt{eth/ipv6/srv6 where any(srv6.segments.addr == fc00::1)} & 333 & \na & 3,987 \\
+    F9  & \texttt{eth/ipv4@outer/udp/geneve/eth/ipv4@inner/tcp where inner.dst == 10.0.0.1} & 351 & \na & 7,706 \\
+    F10 & \texttt{eth/ipv4/tcp where tcp.options.MSS.value == 1460} & 231 & \na & 206,733 \\
     \bottomrule
   \end{tabular}
-  \caption{Evaluation filter set and raw eBPF instruction counts.
-  F7--F10 target nested headers and variable-length structures. The
-  pcap-filter column is the eBPF compiled from each filter via cBPF;
-  \na\ marks those pcap-filter cannot express.}
+  \caption{Evaluation filter set, raw eBPF instruction counts, and
+  verifier load cost. F7--F10 target nested headers and
+  variable-length structures. The pcap-filter column is the eBPF
+  compiled from each filter via cBPF;
+  \na\ marks those pcap-filter cannot express. The verifier column is
+  the largest number of instructions the verifier processes for the
+  loaded probe across the six kernels of \S\ref{sec:eval-accept}.}
   \label{tab:filterset}
 \end{table*}
 
@@ -136,11 +139,19 @@ packet. A chain quantifier adds about 16 instructions per unit of cap
 before it flattens into a \texttt{bpf\_loop} callback, and each stacked
 SRv6 segment walk adds about 68. Even eight stacked walks stay near 800
 instructions, far below the verifier's roughly one-million-instruction
-limit. The instructions the verifier processes at load time grow with
-path exploration rather than program size. Across the six kernels of
-\S\ref{sec:eval-accept} this count peaks at about 207k for the option
-walk of F10, a fifth of that limit, and the \texttt{bpf\_loop} walk of
-F8 stays near 4k on every kernel.
+limit.
+
+Program size does not bound the verifier's own work, so the last
+column of Table~\ref{tab:filterset} lists each filter's verifier cost,
+the number of instructions the verifier processes before accepting the
+load. This count grows with path exploration rather than with the
+program, and it also moves with the kernel version itself, by two
+orders of magnitude for F10 across the six kernels of
+\S\ref{sec:eval-accept}, so the table reports the largest value
+observed. The peak is about 207k for the option walk of F10, a fifth
+of the one-million limit, while the \texttt{bpf\_loop} walk of F8
+stays near 4k on every kernel and the pcap-filter baselines stay below
+300.
 
 To see whether this appears at run time, we sent traffic over
 100\,GbE to a device under test (DUT) running a native XDP program
