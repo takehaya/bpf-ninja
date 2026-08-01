@@ -6,11 +6,8 @@
 
 \kunai combines expressive packet filtering with verifier-safe
 execution through three components: a protocol-aware filter language,
-protocol definitions written in a subset of P4, and verifier-safe code
-generation. The filter language describes packet structure and field
-conditions, the protocol definitions describe protocol layouts, parser
-transitions, and variable-length structures, and the code-generation
-stage combines both to produce verifier-accepted eBPF bytecode.
+protocol definitions written in a subset of P4, and a code-generation
+stage that combines both to produce verifier-accepted eBPF bytecode.
 \figref{fig:arch} shows the overall structure.
 
 The compiler first validates the
@@ -41,7 +38,7 @@ capture or drop.
 The \kunai DSL describes a packet's layer structure and field
 conditions as a single filter expression; \figref{fig:grammar} shows
 an excerpt of the grammar; the full grammar is available in the
-project repository.\footnote{\url{https://github.com/(redacted for review)}}
+project repository.\footnote{\url{https://github.com/takehaya/bpf-ninja}}
 
 \begin{figure}[t]
 \begin{lstlisting}[basicstyle=\scriptsize\ttfamily,breaklines=true,columns=fullflexible]
@@ -91,10 +88,9 @@ such as \texttt{segments} or \texttt{exts}.
   \label{tab:fieldref}
 \end{table}
 
-\kunai interprets a field reference inside a bracket predicate as
-relative to that layer. In the \texttt{where} clause, references name
-the layer explicitly, as in \texttt{proto.field} or
-\texttt{label.field}.
+A field reference inside a bracket predicate is relative to that
+layer, and \texttt{where}-clause references name the layer
+explicitly.
 
 When the same protocol appears more than once in a chain,
 \texttt{proto.field} alone does not determine which layer to read.
