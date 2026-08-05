@@ -160,21 +160,37 @@ and filter F8 in \S\ref{sec:eval}.
 
 \begin{figure}[t]
 \begin{lstlisting}[basicstyle=\scriptsize\ttfamily,breaklines=true,columns=fullflexible]
-// headers, extern ParserCounter, const SRV6_ROUTING_TYPE elided
-const bit<8> KUNAI_SRV6_IPV6_NEXT_HEADER = 43;   // IPv6 -> SRv6
+// headers, extern ParserCounter,
+// const SRV6_ROUTING_TYPE elided
+const bit<8> KUNAI_SRV6_IPV6_NEXT_HEADER = 43;
+
 parser SRv6Parser(packet_in pkt, out srv6_h hdr,
                   out srv6_seg_h[8] segments) {
   ParserCounter() pc;
+
   state start {
     pkt.extract(hdr);
-    pc.set((bit<8>)(hdr.last_entry + 1));   // segment count
+    pc.set((bit<8>)(hdr.last_entry + 1));
     transition select(hdr.routing_type) {
-      SRV6_ROUTING_TYPE: walk;  default: reject; } }
+      SRV6_ROUTING_TYPE: walk;
+      default: reject;
+    }
+  }
+
   state walk {
-    transition select(pc.is_zero()) { true: accept; false: consume_seg; } }
+    transition select(pc.is_zero()) {
+      true: accept;
+      false: consume_seg;
+    }
+  }
+
   state consume_seg {
-    pkt.extract(segments.next);   // push one 16-byte segment
-    pc.decrement(1);  transition walk; } }
+    // push one 16-byte segment
+    pkt.extract(segments.next);
+    pc.decrement(1);
+    transition walk;
+  }
+}
 \end{lstlisting}
 \caption{SRv6 protocol definition in the \kunai P4 subset.}
 \label{fig:p4srv6}
