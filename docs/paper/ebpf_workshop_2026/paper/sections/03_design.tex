@@ -38,7 +38,7 @@ capture or drop.
 The \kunai DSL describes a packet's layer structure and field
 conditions as a single filter expression; \figref{fig:grammar} shows
 an excerpt of the grammar; the full grammar is available in the
-project repository.\footnote{\url{https://github.com/takehaya/bpf-ninja}}
+project repository.\footnote{\url{https://github.com/takehaya/bpf-ninja/tree/main/pkg/kunai}}
 
 \begin{figure}[t]
 \begin{lstlisting}[basicstyle=\scriptsize\ttfamily,breaklines=true,columns=fullflexible]
@@ -132,7 +132,10 @@ two different ones, is rejected at the analysis stage rather than
 walking one of them. \kunai evaluates the inner condition as a whole
 against one element at a time. \texttt{any(P and Q)} therefore holds
 only when a single element satisfies both \texttt{P} and \texttt{Q},
-and \texttt{all()} applies the same element-wise rule. The walk requires a field giving the
+and \texttt{all()} applies the same element-wise rule. A conjunction
+of separate quantifiers, \texttt{any(P) and any(Q)}, expresses the
+other reading, where different elements may satisfy each predicate.
+The walk requires a field giving the
 element count, the width of each element, a way to advance to the next
 element, and a stop condition; the protocol definition supplies these.
 TCP options and GTP extension headers are handled the same way when
