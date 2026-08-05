@@ -4,7 +4,11 @@
 \kunai is a DSL specialized for packet filtering rather than a
 general-purpose eBPF language. Stateful filtering, deep packet
 inspection, and aggregation are out of scope, and the P4 subset
-covers only header layout and parser transitions.
+covers only header layout and parser transitions. Structure detection
+also relies on parser idioms such as the counter walk of
+\S\ref{sec:bounded}. A definition language with explicit structure
+declarations would remove this detection step, and we chose P4 syntax
+so that existing P4 descriptions and tooling carry over.
 
 We establish verifier acceptance empirically, without a formal
 guarantee~\cite{vishwanathan2022tristate}. Acceptance for an arbitrary
