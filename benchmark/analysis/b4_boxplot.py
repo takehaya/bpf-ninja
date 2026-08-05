@@ -61,7 +61,7 @@ def main():
         return "0.0" if abs(m) < 0.05 else f"{m:.1f}"
 
     plt.rcParams.update({"font.size": 8})
-    fig, ax = plt.subplots(figsize=(3.5, 1.7))
+    fig, ax = plt.subplots(figsize=(3.5, 2.2))
     w = 0.38
     for i in range(1, 11):
         kc = f"kunai_F{i}"
