@@ -104,12 +104,15 @@ destination of a GTP-U tunnel, for example, is written as follows.
 eth/ipv4@outer/udp/gtp/ipv4@inner/tcp where inner.dst == 10.0.0.1
 \end{lstlisting}
 
-The chain before \texttt{where} lists the layers to traverse, and the
-\texttt{where} clause gives the field condition checked once the chain
-matches. Because \texttt{@outer} and \texttt{@inner} distinguish the
-two IPv4 layers, \texttt{inner.dst} uniquely names the inner
-destination field, and \kunai can determine which field to read even
-though the same \texttt{ipv4} header appears twice.
+The chain before \texttt{where} lists the layers to traverse, from
+Ethernet through an outer IPv4 header, UDP, GTP, an inner IPv4 header,
+to TCP, and the \texttt{where} clause gives the field condition checked
+once the chain matches, here that the inner IPv4 header's destination
+equals \texttt{10.0.0.1}. Here \texttt{@outer} and \texttt{@inner}
+distinguish the two IPv4 layers. Because \texttt{inner.dst} uniquely
+names the destination field of the inner IPv4 header, \kunai can
+determine which field to read even though the same \texttt{ipv4}
+header appears twice.
 
 Variable-length lists are handled with \texttt{any()} and
 \texttt{all()}. A filter that matches a packet whose SRv6 segment list
