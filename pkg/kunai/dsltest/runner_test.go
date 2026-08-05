@@ -1158,6 +1158,32 @@ func TestTCPOptionLookupSACKBlockAllQuantifier(t *testing.T) {
 	r.MustReject(t, Build(t, zero), "block 0.right = 0 fails the all() predicate")
 }
 
+// TestTCPOptionLookupSACKBlockAnyConjunction pins the same-element
+// semantics of a boolean body inside any(): any(P and Q) holds only
+// when a single block satisfies both predicates. The discriminating
+// packet has one block satisfying only P and another satisfying only
+// Q; it must reject under any(P and Q) and match under the
+// two-quantifier form any(P) and any(Q), which reads across blocks.
+func TestTCPOptionLookupSACKBlockAnyConjunction(t *testing.T) {
+	same := New(t, "eth/ipv4/tcp where any(tcp.options.SACK.blocks.left == 0x100 and tcp.options.SACK.blocks.right == 0x200)")
+
+	split := Defaults()
+	split.TCPOptions = []layers.TCPOption{
+		sackOption([2]uint32{0x100, 0x999}, [2]uint32{0x888, 0x200}),
+	}
+	same.MustReject(t, Build(t, split), "P and Q hold only on different blocks: any(P and Q) must not match")
+
+	joint := Defaults()
+	joint.TCPOptions = []layers.TCPOption{
+		sackOption([2]uint32{0x100, 0x200}),
+	}
+	same.MustMatch(t, Build(t, joint), "one block satisfies both predicates")
+
+	two := New(t, "eth/ipv4/tcp where any(tcp.options.SACK.blocks.left == 0x100) and any(tcp.options.SACK.blocks.right == 0x200)")
+	two.MustMatch(t, Build(t, split), "separate quantifiers may be satisfied by different blocks")
+	two.MustMatch(t, Build(t, joint), "a single block satisfying both also satisfies both quantifiers")
+}
+
 // TestTCPOptionsMaxDataOffset drives data_offset=15 (maximum),
 // lifting the TCP header to 60 B = 40 B of options. Mirror of the
 // IPv4 max-IHL stress test for the TCP HDRLEN path.
