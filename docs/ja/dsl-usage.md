@@ -572,6 +572,32 @@ sudo bpf-ninja -p 1661 --func upf_capture_point_ul --arg-echo -c 1
 - 連続して同じ引数タプルが来た場合は 1 行に畳んで `(xN)` と表示します。`-c N` を付けると N 件表示したところで終了し、無指定なら Ctrl-C まで続きます。
 - リーダは capture path と同じ in-tree の `fastrb` (mmap + epoll) を使います。
 
+## capture point の書き方 (`--arg-filter` が当たらないとき)
+
+`--func` で狙う capture point を自作するときは、引数を関数本体で「使って」おく必要があります。本体が空の capture point だと、コンパイラは未使用の引数を呼び出し規約 (r1..r5) から落とすことがあります。BTF の関数シグネチャはそのまま残るため `--list-params` は正しく表示され、アタッチもキャプチャも成功します。しかし fentry/fexit の trampoline が保存するのはレジスタの実体なので、bpf-ninja が読むのは呼び出し元が残した無関係な値になります。
+
+この状態の症状は次のように見えます。
+
+- フィルタ無しのキャプチャは動く。`--list-params` も正しい。
+- `--arg-filter "imsi=<真値>"` や `--arg-filter @SET` の完全一致が 1 件も当たらない。
+- 範囲比較 (`imsi>=...`) だと桁だけ合う値でマッチしたりしなかったりする。呼び出し元のレジスタに残っていたのが目的の値の計算途中の断片だと、こういう「惜しい」挙動になります。
+
+疑わしいときは、まず `--arg-echo` で trampoline が実際に保存した値を見てください。datapath 側のデバッグ出力と食い違っていれば、引数が ABI から落ちています。
+
+対策は、対象プログラム側で引数を ABI に固定することです。リポジトリ同梱の `include/keep_args.h` の `KEEP_ARGS()` を関数本体の先頭に置きます。
+
+```c
+#include "keep_args.h"
+
+__attribute__((noinline))
+int upf_capture_point_ul(struct xdp_md *ctx, __u64 imsi, __u32 teid) {
+    KEEP_ARGS(ctx, imsi, teid);
+    return 0;
+}
+```
+
+`KEEP_ARGS` は各引数をレジスタ入力の空 asm に通すだけで、命令は 1 つも増えません。libbpf の `bpf_helpers.h` が入っている環境なら、同等の `barrier_var()` を引数ごとに並べても同じです。
+
 ## Performance flags
 
 高 rate capture (>1 Mpps 級) で使う flag 群です。通常用途では既定値で十分です。
