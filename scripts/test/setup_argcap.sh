@@ -8,10 +8,12 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 OBJ="$SCRIPT_DIR/xdp_argcap.o"
 
 # Compile (needs sudo because the test dir may be root-owned). -I so the
-# program's #include "keep_args.h" resolves; -g so BTF carries the
-# capture_point func_info and its pkt_len parameter name.
-clang -O2 -g -target bpf -I "$SCRIPT_DIR" -c "$SCRIPT_DIR/xdp_argcap.c" -o "$OBJ" 2>/dev/null || \
-    sudo clang -O2 -g -target bpf -I "$SCRIPT_DIR" -c "$SCRIPT_DIR/xdp_argcap.c" -o "$OBJ"
+# program's #include "keep_args.h" resolves (the header ships user-facing
+# in include/); -g so BTF carries the capture_point func_info and its
+# pkt_len parameter name.
+INCLUDE_DIR="$SCRIPT_DIR/../../include"
+clang -O2 -g -target bpf -I "$INCLUDE_DIR" -c "$SCRIPT_DIR/xdp_argcap.c" -o "$OBJ" 2>/dev/null || \
+    sudo clang -O2 -g -target bpf -I "$INCLUDE_DIR" -c "$SCRIPT_DIR/xdp_argcap.c" -o "$OBJ"
 
 # Create netns + veth
 sudo ip netns add xdpargtest
