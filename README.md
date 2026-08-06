@@ -237,6 +237,20 @@ int parse_headers(struct xdp_md *ctx) {
 
 > **Note:** The subfunction must have a non-trivial body (e.g. access `ctx->data`). A trivial body like `return 2;` will be constant-folded by `clang -O2`, eliminating the bpf2bpf call entirely.
 
+> **Note:** Arguments you want to read with `--arg-filter` / `--arg-echo` must be *used* by the subfunction body. `clang -O2` drops unused arguments from the calling convention even though BTF still lists them, so the fentry trampoline saves whatever stale value the caller left in that register — `--list-params` looks fine, unfiltered capture works, but exact matches never hit. Pin the arguments with `KEEP_ARGS()` from [`include/keep_args.h`](include/keep_args.h) (zero instructions, it only marks them as used):
+>
+> ```c
+> #include "keep_args.h"
+>
+> __attribute__((noinline))
+> int capture_point(struct xdp_md *ctx, __u64 imsi, __u32 teid) {
+>     KEEP_ARGS(ctx, imsi, teid);
+>     return 0;
+> }
+> ```
+>
+> If an exact `--arg-filter` never matches, check the value the trampoline actually saved with `--arg-echo` first.
+
 `--func`, `--list-funcs`, `--list-progs`, `--list-params`, and `--arg-filter` only apply to `entry`/`exit` modes (xdp-native has no tracing args or BTF subfunction concept).
 
 ## Options
