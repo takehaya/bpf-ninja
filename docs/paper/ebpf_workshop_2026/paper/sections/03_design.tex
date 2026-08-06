@@ -36,8 +36,8 @@ capture or drop.
 \label{sec:dsl}
 
 The \kunai DSL describes a packet's layer structure and field
-conditions as a single filter expression; \figref{fig:grammar} shows
-an excerpt of the grammar; the full grammar is available in the
+conditions as a single filter expression. \figref{fig:grammar} shows
+an excerpt of the grammar, and the full grammar is available in the
 project repository.\footnote{\url{https://github.com/takehaya/bpf-ninja/tree/main/pkg/kunai}}
 
 \begin{figure}[t]
@@ -65,7 +65,7 @@ appear in the packet, and can also express optional layers,
 repetition, and choice. The \texttt{where} clause is a condition over
 the fields of layers in the chain and of auxiliary headers and lists.
 \kunai resolves a field reference into one of the forms in
-Table~\ref{tab:fieldref}; there, \texttt{<stack>} is not a literal but
+Table~\ref{tab:fieldref}. There, \texttt{<stack>} is not a literal but
 the name of an auxiliary header list given in the protocol definition,
 such as \texttt{segments} or \texttt{exts}.
 
@@ -125,21 +125,24 @@ eth/ipv6/srv6 where any(srv6.segments.addr == fc00::1)
 The scan target of \texttt{any()} and \texttt{all()} is the auxiliary
 header list referenced without an index inside the expression, and
 there must be exactly one such target list. The same list may be
-referenced several times; for example,
+referenced several times. For example,
 \texttt{any(srv6.segments.addr == fc00::1 or srv6.segments.addr ==
 fc00::2)} is valid. An \texttt{any()} or \texttt{all()} that references no un-indexed list, or
 two different ones, is rejected at the analysis stage rather than
-walking one of them. \kunai evaluates the inner condition as a whole
+walking one of them.
+
+\kunai evaluates the inner condition as a whole
 against one element at a time. \texttt{any(P and Q)} therefore holds
 only when a single element satisfies both \texttt{P} and \texttt{Q},
 and \texttt{all()} applies the same element-wise rule. A conjunction
 of separate quantifiers, \texttt{any(P) and any(Q)}, expresses the
 other reading, where different elements may satisfy each predicate.
+
 The walk requires a field giving the
 element count, the width of each element, a way to advance to the next
-element, and a stop condition; the protocol definition supplies these.
-TCP options and GTP extension headers are handled the same way when
-the protocol definition carries this information.
+element, and a stop condition, all of which the protocol definition
+supplies. TCP options and GTP extension headers are handled the same
+way when the protocol definition carries this information.
 
 Through these constructs, the \kunai DSL specifies, within one filter
 expression, the order in which headers appear, the disambiguation of

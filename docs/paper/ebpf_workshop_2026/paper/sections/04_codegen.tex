@@ -70,10 +70,10 @@ within a fixed threshold is unrolled in place. A larger or unbounded one
 is lowered to a
 \texttt{bpf\_loop} callback with a constant
 bound~\cite{bpf_loop_helper}, whose size no longer grows with the
-bound; this case covers a parser-machine self-loop, an unbounded chain
+bound. This case covers a parser-machine self-loop, an unbounded chain
 quantifier, and a chain or aux-list walk past the threshold.
 
-Algorithm~\ref{alg:walk} gives the shared skeleton; the two lowerings
+Algorithm~\ref{alg:walk} gives the shared skeleton. The two lowerings
 below fill in its \textsc{stop}, \textsc{stride}, and \textsc{step}
 steps, each emitted by its own generator.
 
@@ -97,19 +97,19 @@ steps, each emitted by its own generator.
 
 \kunai fills in this skeleton in two ways, chosen by the structure
 rather than the protocol. The compiler classifies each parser loop by
-the shape of its states when it loads the protocol definition. A loop
-qualifies as a counted aux-list walk
+the shape of its states when it loads the protocol definition. A
+chain walk over stacked headers such as MPLS needs no loop
+classification, since the protocol definition declares the
+bottom-of-stack sentinel as a chain-end constant and the quantifier
+bound caps the walk. A loop qualifies as a counted aux-list walk
 when it extracts elements with \texttt{pkt.extract(stack.next)} under
 a \texttt{ParserCounter} seeded from a whole-byte header field and
 decremented once per element, so the seed field gives the run-time
 count, as \texttt{last\_entry + 1} does for SRv6 in
 \figref{fig:p4srv6}. It qualifies as a TLV self-loop when its
 \texttt{select} dispatches on a \texttt{lookahead} of the kind byte,
-optionally with a byte-count counter as in IPv4 options and Geneve. A
-chain walk over stacked headers such as MPLS needs no loop
-classification: the protocol definition declares the bottom-of-stack
-sentinel as a chain-end constant, and the quantifier bound caps the
-walk. The compiler rejects a multi-state parser cycle matching
+optionally with a byte-count counter as in IPv4 options and Geneve.
+The compiler rejects a multi-state parser cycle matching
 neither shape at load time rather than compiling it to a wrong walk.
 
 A \emph{counted aux-list walk} handles a list
