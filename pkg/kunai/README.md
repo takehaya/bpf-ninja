@@ -26,8 +26,9 @@ eth/ipv4/tcp where tcp.options.MSS.value == 1460                        # TCP op
 - A main eBPF instruction stream that writes `1` (accept) or `0` (reject) into `R2`.
 - Optional bpf2bpf callback subprograms (used internally by the `+`/`*`/`{n,m}` chain quantifiers, which lower to `bpf_loop`).
 - A `CaptureInfo` describing how many bytes of each packet the host should hand to perf-buffer / ring-buffer output.
+- An `Extractions` list naming the packet fields the filter staged into stack slots for `field in @set` predicates, and a `Warnings` list of non-fatal compile notices.
 
-The output is **target-agnostic**: it assumes only a contiguous packet window between two registers and a small set of working registers. Callers wrap it in a host-specific prologue (load packet pointers, copy into a scratch buffer, etc.) — see [`codegen/codegen.go`](./codegen/codegen.go) package doc for the exact ABI.
+The output is **target-agnostic**: it assumes only a contiguous packet window between two registers and a small set of working registers. Callers wrap it in a host-specific prologue (load packet pointers, copy into a scratch buffer, etc.). See the [`codegen/codegen.go`](./codegen/codegen.go) package doc for the exact ABI.
 
 ## Installation
 
@@ -80,13 +81,13 @@ For a complete worked example (XDP fentry/fexit attach + perf-event capture), se
 
 ## Architecture (one paragraph)
 
-The pipeline is `expr → AST → IR → asm.Instructions`. The AST is built by a hand-written recursive-descent parser; the IR holds vocabulary-resolved layer instances and binds every field reference to a concrete `*vocab.ProtocolSpec`; codegen lowers the IR to [cilium/ebpf](https://github.com/cilium/ebpf) `asm.Instructions` with verifier-safe bounds checks at every layer boundary. Variable-length quantifiers (`+`, `*`, `{n,m>4}`) and parser-machine self-loops emit a `bpf_loop` helper call into a bpf2bpf subprogram, which lands in **Linux 5.17**. Predicate codegen sticks to the BPF_END byte-swap family so it does not require BSWAP (`0xd7`, 6.6+). CI gates the matrix on 6.1 / 6.6 / 6.12 / 6.18 (`vimto`); chains without quantifiers or parser-machine self-loops can run on even older kernels.
+The pipeline is `expr → AST → IR → asm.Instructions`. The AST is built by a hand-written recursive-descent parser; the IR holds vocabulary-resolved layer instances and binds every field reference to a concrete `*vocab.ProtocolSpec`; codegen lowers the IR to [cilium/ebpf](https://github.com/cilium/ebpf) `asm.Instructions` with verifier-safe bounds checks at every layer boundary. Variable-length quantifiers (`+`, `*`, `{n,m>4}`) and parser-machine self-loops emit a `bpf_loop` helper call into a bpf2bpf subprogram, which lands in **Linux 5.17**. Predicate codegen sticks to the BPF_END byte-swap family so it does not require BSWAP (`0xd7`, 6.6+). CI gates the matrix on 6.1 / 6.6 / 6.12 / 6.15 / 6.18 / 7.0 (`vimto`); chains without quantifiers or parser-machine self-loops can run on even older kernels.
 
-The formal EBNF lives in [`docs/ja/dsl-grammar.md`](https://github.com/takehaya/bpf-ninja/blob/main/docs/ja/dsl-grammar.md). Code-level entry points: `pkg/kunai/codegen/codegen.go` (compile pipeline + ABI), `pkg/kunai/vocab/p4lite/` (P4-16 strict subset parser), and the `parser_state.go` / `parser_trail.go` / `parser_select.go` / `parser_loop.go` quartet under `pkg/kunai/codegen/` (variable-length header codegen — split for review readability).
+The formal EBNF lives in [`docs/ja/dsl-grammar.md`](https://github.com/takehaya/bpf-ninja/blob/main/docs/ja/dsl-grammar.md). Code-level entry points: `pkg/kunai/codegen/codegen.go` (compile pipeline + ABI), `pkg/kunai/vocab/p4lite/` (P4-16 strict subset parser), and the `parser_state.go` / `parser_trail.go` / `parser_select.go` / `parser_loop.go` quartet under `pkg/kunai/codegen/` (variable-length header codegen, split for review readability).
 
 ## API
 
-The public surface is intentionally tiny. Sub-packages are exported but considered semi-internal — they are needed to type the return value of `Compile` and to author custom vocabulary files at runtime, not as a programming surface.
+The public surface is intentionally tiny. Sub-packages are exported but considered semi-internal: they exist to type the return value of `Compile` and to author custom vocabulary files at runtime, not as a programming surface.
 
 ```go
 // kunai
@@ -112,12 +113,20 @@ type LangCaps struct {
     // ActionFetcher emits insns that load the action u32 into R3.
     // Required iff Action is non-nil.
     ActionFetcher ActionFetcher
+    // SetSlots resolves a `field in @set` predicate to the R10 stack
+    // slot the filter stores the extracted field into.
+    // nil disables `in @set` atoms.
+    SetSlots SetSlotResolver
 }
 
 type HostLayout struct {
     // VlanInMetadata: the kernel pre-extracted the outer VLAN tag into
     // skb metadata (tc), so vlan/qinq layers are rejected at compile.
     VlanInMetadata bool
+    // PacketStartsAtL3: the packet window begins at the network header
+    // (cgroup-skb), so the resolver warns on an `eth/...` chain root
+    // instead of on a non-eth one.
+    PacketStartsAtL3 bool
 }
 
 type ActionFetcher interface {
@@ -125,9 +134,11 @@ type ActionFetcher interface {
 }
 
 type Output struct {
-    Main      asm.Instructions
-    Callbacks asm.Instructions  // bpf2bpf subprograms (if any)
-    Capture   CaptureInfo
+    Main        asm.Instructions
+    Callbacks   asm.Instructions // bpf2bpf subprograms (if any)
+    Capture     CaptureInfo
+    Extractions []ExtractSlot    // stack slots staged for `in @set` map lookups
+    Warnings    []string         // non-fatal resolver / codegen notices
 }
 type CaptureInfo struct {
     MaxCapLen       int  // 0 = caller default (host falls back to its DefaultCapLen)
@@ -140,26 +151,26 @@ ringbuf and copy from the packet. A non-zero value comes from an
 explicit `capture` clause (e.g. `capture headers` → 54 B,
 `capture headers+64` → 118 B, `capture absolute 96` → 96 B). When the
 DSL omits the `capture` clause entirely, the value stays at zero and
-the host is expected to fall back to its own default — `bpf-ninja`
+the host is expected to fall back to its own default. `bpf-ninja`
 uses `DefaultCapLen = 1500` to match libpcap / tcpdump's full-packet
 behaviour. The no-clause case is sugar for `capture all`; users who
 want the ringbuf-reservation throughput win must opt in explicitly
 with `capture headers` (or shrink via the host's CLI `--snaplen`).
 
 `FilterMinPrefix` is the maximum byte offset the compiled filter
-reads from the packet — chain's natural header prefix sum combined
-with the merged where-clause's rightmost field-end. The tracing
+reads from the packet: the chain's natural header prefix sum combined
+with the merged where-clause's rightmost field end. The tracing
 host (LoadEntry / LoadExit) uses it to size the
 `bpf_probe_read_kernel` into its per-CPU scratch map, so simple
 filters (e.g. `eth/ipv4/tcp where tcp.dport == 443` → 54 B) avoid
 copying the conservative `ScratchBufSize` per packet. Zero means
-the analyser bailed (quantified chain, het-alt) and the host
+the analyser bailed (quantified chain, heterogeneous alternation) and the host
 should fall back to the full scratch read. **`FilterMinPrefix` is
 independent of `MaxCapLen`**: the scratch-read optimisation always
 applies, whether or not the user opted into the ringbuf-reservation
 optimisation via `capture headers`.
 
-The host wires kunai to its specific BPF attach point by constructing a `Capabilities` value. The kunai core ships no host-specific helpers; canonical adapters live under [`host/`](./host/) sub-packages. For an XDP fexit attach point:
+The host wires kunai to its specific BPF attach point by constructing a `Capabilities` value. The kunai core ships no host-specific helpers; canonical adapters live under [`host/`](./host/): `host/xdp`, `host/tc`, and `host/cgroupskb`. For an XDP fexit attach point:
 
 ```go
 import xdphost "github.com/takehaya/bpf-ninja/pkg/kunai/host/xdp"
@@ -180,25 +191,25 @@ Errors are returned as-is from each phase. Recognise them with `errors.As`/`erro
 
 The library ships with 17 baked-in protocol definitions: `eth`, `vlan`, `qinq`, `cw`, `mpls`, `ipv4`, `ipv6`, `tcp`, `udp`, `icmp`, `icmp6`, `gre`, `esp`, `vxlan`, `geneve`, `gtp`, `srv6`. They live as `.p4` files under [`protocols/`](./protocols/) and are embedded at build time via `//go:embed`.
 
-To add a new protocol, drop a `<name>.p4` file into `protocols/` and follow the dispatch-constant naming convention. The loader's regex tables in [`pkg/kunai/vocab/loader.go`](./vocab/loader.go) (search for `classifyConsts` and `re*` regexes) are the authoritative reference — any malformed name is rejected at startup.
+To add a new protocol, drop a `<name>.p4` file into `protocols/` and follow the dispatch-constant naming convention. The loader's regex tables in [`pkg/kunai/vocab/loader.go`](./vocab/loader.go) (search for `classifyConsts` and `re*` regexes) are the authoritative reference. Any malformed name is rejected at startup.
 
-The `.p4` files are a strict subset of P4-16 syntax — they pass the official `p4c --parse-only` (CI verifies this on every change). See `docker/p4c-check/` in the parent repo for the test harness.
+The `.p4` files are a strict subset of P4-16 syntax: they pass the official `p4c --parse-only`, and CI verifies this on every change. See `docker/p4c-check/` in the parent repo for the test harness.
 
-Vocabulary parsing is memoised: `dslvocab.Bundled()` (in `pkg/kunai/dslvocab/`) wraps `vocab.Load` with `sync.Once`, so the 17 `.p4` files are parsed once per process and every subsequent `kunai.Compile()` call reuses the cached `ProtocolSpec` map. There is no persistent (on-disk / build-time) cache — parsing the bundled set takes microseconds and is dwarfed by BPF program load, so the in-memory cache is sufficient.
+Vocabulary parsing is memoised: `dslvocab.Bundled()` (in `pkg/kunai/dslvocab/`) wraps `vocab.Load` with `sync.Once`, so the 17 `.p4` files are parsed once per process and every subsequent `kunai.Compile()` call reuses the cached `ProtocolSpec` map. There is no persistent on-disk or build-time cache: parsing the bundled set takes microseconds and is dwarfed by BPF program load, so the in-memory cache is sufficient.
 
 ## Versioning & stability
 
-- Public API: `kunai.Compile`, `kunai.CompileWithVocab` (custom-vocab variant), `kunai.SyntaxHelp` / `kunai.ExamplesHelp` / `kunai.WriteProtocolCatalogue` / `kunai.WriteProtocolHelp` (used by bpf-ninja's `--dsl-help`), `codegen.Capabilities`, `codegen.ActionFetcher`, `codegen.Output`, `codegen.CaptureInfo`, `codegen.MainFilterFuncBTF` (host wrapper helper), `codegen.PositionedError` (source-position-aware error type), the `host/xdp` and `host/tc` adapter packages, and the error types listed above.
+- Public API: `kunai.Compile`, `kunai.CompileWithVocab` (custom-vocab variant), `kunai.SyntaxHelp` / `kunai.ExamplesHelp` / `kunai.WriteProtocolCatalogue` / `kunai.WriteProtocolHelp` (used by bpf-ninja's `--dsl-help`), `codegen.Capabilities` with its `LexCaps` / `LangCaps` / `HostLayout` / `SetSlotResolver` components, `codegen.ActionFetcher`, `codegen.Output` with `CaptureInfo` / `ExtractSlot`, `codegen.MainFilterFuncBTF` (host wrapper helper), `codegen.PositionedError` (source-position-aware error type), the `host/xdp`, `host/tc`, and `host/cgroupskb` adapter packages, and the error types listed above.
 - Everything else (AST nodes, IR types, vocab loader internals, parser internals, the `dslvocab.Bundled` cache) may change without notice.
-- `pkg/kunai/dsltest` (the gopacket-based packet-level harness) is **experimental** until 1.0 — its `Runner` API and packet builders may change without notice. Pin a tagged version if downstream tests depend on it.
-- The protocol vocabulary is treated as part of the public surface — adding new protocols is non-breaking; renaming or removing one is a breaking change.
+- `pkg/kunai/dsltest` (the gopacket-based packet-level harness) is **experimental** until 1.0: its `Runner` API and packet builders may change without notice. Pin a tagged version if downstream tests depend on it.
+- The protocol vocabulary is treated as part of the public surface: adding new protocols is non-breaking, while renaming or removing one is a breaking change.
 
 ## Related projects
 
-- [bpf-ninja](https://github.com/takehaya/bpf-ninja) — non-invasive BPF observability tool (XDP and tc-bpf hook points) that is the primary consumer of this package.
-- [cilium/ebpf](https://github.com/cilium/ebpf) — the BPF assembler / loader the codegen targets.
-- [cloudflare/cbpfc](https://github.com/cloudflare/cbpfc) — alternative classical-BPF (tcpdump syntax) compiler, used by bpf-ninja when `--cbpf` is set (legacy fallback).
-- [p4lang/p4c](https://github.com/p4lang/p4c) — official P4 compiler, used in CI to verify our `.p4` vocab files stay within P4-16.
+- [bpf-ninja](https://github.com/takehaya/bpf-ninja): non-invasive BPF observability tool (XDP, tc, and cgroup-skb hook points) that is the primary consumer of this package.
+- [cilium/ebpf](https://github.com/cilium/ebpf): the BPF assembler / loader the codegen targets.
+- [cloudflare/cbpfc](https://github.com/cloudflare/cbpfc): alternative classical-BPF (tcpdump syntax) compiler, used by bpf-ninja when `--cbpf` is set (legacy fallback).
+- [p4lang/p4c](https://github.com/p4lang/p4c): official P4 compiler, used in CI to verify our `.p4` vocab files stay within P4-16.
 
 ## License
 
