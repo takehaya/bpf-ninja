@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.23.1](https://github.com/takehaya/bpf-ninja/compare/v0.23.0...v0.23.1) (2026-08-09)
+
+
+### 📝 Documentation
+
+* **kunai:** refresh READMEs against current code and prose style ([#99](https://github.com/takehaya/bpf-ninja/issues/99)) ([eb9f598](https://github.com/takehaya/bpf-ninja/commit/eb9f598a06cb4728e36ea5c13ea30051aa3e0df7))
+* **protocols:** correct the stale s-bit comment in mpls.p4 ([#98](https://github.com/takehaya/bpf-ninja/issues/98)) ([c321815](https://github.com/takehaya/bpf-ninja/commit/c321815a29f27bd8234eb8683c1c47f69416af7d))
+
 ## [0.23.0](https://github.com/takehaya/bpf-ninja/compare/v0.22.0...v0.23.0) (2026-07-24)
 
 
