@@ -131,12 +131,14 @@ fc00::2)} is valid. An \texttt{any()} or \texttt{all()} that references no un-in
 two different ones, is rejected at the analysis stage rather than
 walking one of them.
 
-\kunai evaluates the inner condition as a whole
-against one element at a time. \texttt{any(P and Q)} therefore holds
-only when a single element satisfies both \texttt{P} and \texttt{Q},
-and \texttt{all()} applies the same element-wise rule. A conjunction
-of separate quantifiers, \texttt{any(P) and any(Q)}, expresses the
-other reading, where different elements may satisfy each predicate.
+\texttt{any(E)} holds when some element of the list satisfies the
+whole inner condition \texttt{E}, and \texttt{all(E)} holds when
+every element does, where \texttt{E} may combine comparisons with
+\texttt{and}, \texttt{or}, and \texttt{not}. \texttt{any(P and Q)}
+therefore holds only when a single element satisfies both \texttt{P}
+and \texttt{Q}. A conjunction of separate quantifiers, \texttt{any(P)
+and any(Q)}, expresses the other reading, where different elements may
+satisfy each predicate.
 
 The walk requires a field giving the
 element count, the width of each element, a way to advance to the next
