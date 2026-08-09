@@ -1,7 +1,8 @@
 // MPLS label entry (RFC 3032). Each entry is 32 bits and a stack is
 // represented in the DSL via repetition (e.g. `mpls+`). The s bit
-// marks the bottom of the stack, but the resolver/codegen rely on
-// quantifier counts rather than peeking at s for now.
+// marks the bottom of the stack; it is declared below as
+// MPLS_CHAIN_END_S, and chain codegen masks it out of each consumed
+// label to end the walk early (see encodeChainEndField).
 header mpls_h {
     bit<20> label;
     bit<3>  tc;
