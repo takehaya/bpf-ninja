@@ -1,15 +1,20 @@
-# attic/ — 本文から外れた旧セクション
+# attic: sections retired from the body
 
-2026-05-18 の scope-narrow (engineering 寄りに絞る判断、 `../../PAPER_OUTLINE.md`
-冒頭参照) で `main.tex` の `\input` 対象から外れたファイル。 削除せず保存。
+Files dropped from the `\input` list of `main.tex` when the paper was
+narrowed to its engineering core (2026-05-18). Kept for a possible
+extended version.
 
-- `02_motivation.tex` — Motivation 節。 内容は §1 Introduction と §2 Related に
-  merge 済。
-- `03_xdp_ninja.tex` — xdp-ninja Architecture 節。 §5 (06_evaluation.tex) 冒頭に
-  圧縮吸収済。
-- `A_formal_types.tex` — 形式型システム appendix の TODO スタブ。 内容は 2 本目
-  論文 (P2A、 `../../STRATEGY.md` 参照) の素材。
-- `B_codegen_examples.tex` — codegen 詳細例の TODO スタブ。
-- `C_mesobench.tex` — mesobench 詳細の TODO スタブ。
+- `02_motivation.tex`: motivation section, merged into Sec 1 and
+  Sec 2.
+- `03_xdp_ninja.tex`: host-tool architecture section, absorbed into
+  the opening of Sec 5.
+- `A_formal_types.tex`: stub for a formal type-system appendix,
+  material for a follow-up paper.
+- `B_codegen_examples.tex`: stub for detailed codegen examples.
+- `C_mesobench.tex`: stub for detailed microbenchmarks.
+- `D_reproducibility.tex`: stub for a reproducibility appendix.
+- `_visibility_matrix_table.tex`: generated table for the retired
+  visibility-matrix figure.
 
-これらは `main.tex` から参照されていないので、 ビルド・ページ数に影響しない。
+Nothing here is referenced by `main.tex`, so these files do not
+affect the build or the page count.
