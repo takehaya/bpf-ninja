@@ -131,9 +131,9 @@ fc00::2)} is valid. An \texttt{any()} or \texttt{all()} that references no un-in
 two different ones, is rejected at the analysis stage rather than
 walking one of them.
 
-\texttt{any(E)} holds when some element of the list satisfies the
-whole inner condition \texttt{E}, and \texttt{all(E)} holds when
-every element does, where \texttt{E} may combine comparisons with
+\texttt{any(E)} holds when at least one element of the list satisfies
+the whole inner condition \texttt{E}, and \texttt{all(E)} holds when
+all elements do, where \texttt{E} may combine comparisons with
 \texttt{and}, \texttt{or}, and \texttt{not}. \texttt{any(P and Q)}
 therefore holds only when a single element satisfies both \texttt{P}
 and \texttt{Q}. A conjunction of separate quantifiers, \texttt{any(P)
