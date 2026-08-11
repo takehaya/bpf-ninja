@@ -22,7 +22,10 @@ structures. pcap-filter expresses conditions over fixed L2--L4 header
 fields, but it cannot naturally express nested encapsulation,
 repeated protocol occurrences, or variable-length protocol structures.
 In Wireshark terms, this is a limitation of the capture filter, whose
-language is pcap-filter. A user who
+language is pcap-filter. The display filter~\cite{wireshark_dfref}
+shows that such conditions are expressible, but it runs over dissected
+packets in user space after capture, leaving that expressiveness
+outside the kernel. A user who
 needs an early in-kernel selection must therefore fall back to a
 broader capture filter and discard the excess later. Such tools leave
 a gap, and user studies of
