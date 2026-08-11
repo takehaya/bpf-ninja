@@ -24,6 +24,12 @@
 
 \citestyle{acmnumeric}
 
+% Keep the running-header-to-text span within the 229mm the format
+% checker measures: sigplan derives textheight from the fixed 1in
+% top/bottom margins, so a larger bottom margin (51 lines, 622pt) is
+% the knob. Body still ends on page 7.
+\geometry{bottom=99pt}
+
 % --- Packages ---
 \usepackage{booktabs}
 \usepackage{listings}
