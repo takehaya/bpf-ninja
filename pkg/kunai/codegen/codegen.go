@@ -498,13 +498,33 @@ func emitFieldDispatchCheck(
 	if err != nil {
 		return nil, err
 	}
-	expected := int32(byteSwap(c.Value, fieldBytes))
 	insns := append(asm.Instructions{}, setupAddr...)
-	insns = append(insns,
-		asm.LoadMem(dst, dst, int16(fieldOff-parentHS), size),
-		asm.JNE.Imm(dst, expected, failLabel),
-	)
+	insns = append(insns, asm.LoadMem(dst, dst, int16(fieldOff-parentHS), size))
+	insns = append(insns, emitDispatchValueMatch(dst, c, fieldBytes, failLabel)...)
 	return insns, nil
+}
+
+// emitDispatchValueMatch emits the value-comparison tail of a field
+// dispatch check; dst already holds the loaded field bytes. The common
+// single-value const keeps the historical one-JNE shape (existing
+// vocabs stay byte-identical). A const with AltValues accepts any of
+// its declared values: JEq to a shared ok-landing for all but the last
+// value, then the usual JNE to failLabel for the last.
+func emitDispatchValueMatch(dst asm.Register, c *vocab.DispatchConst, fieldBytes int, failLabel string) asm.Instructions {
+	if len(c.AltValues) == 0 {
+		return asm.Instructions{asm.JNE.Imm(dst, int32(byteSwap(c.Value, fieldBytes)), failLabel)}
+	}
+	values := append([]uint64{c.Value}, c.AltValues...)
+	okLabel := nextAltDispatchLabel("multiok")
+	insns := make(asm.Instructions, 0, len(values)+1)
+	for _, v := range values[:len(values)-1] {
+		insns = append(insns, asm.JEq.Imm(dst, int32(byteSwap(v, fieldBytes)), okLabel))
+	}
+	insns = append(insns,
+		asm.JNE.Imm(dst, int32(byteSwap(values[len(values)-1], fieldBytes)), failLabel),
+		landingNoop(okLabel),
+	)
+	return insns
 }
 
 // emitFieldDispatchCheckBounded is the PTR_TO_PACKET-safe counterpart
@@ -546,10 +566,9 @@ func emitFieldDispatchCheckBounded(
 	if err != nil {
 		return nil, err
 	}
-	expected := int32(byteSwap(c.Value, fieldBytes))
 	insns := foldOffsetIntoScalar(scalar, offsetReg, int32(fieldOff+byteOff), failLabel)
 	insns = append(insns, boundedScalarLoad(dst, asm.R0, scalar, asm.R1, size, failLabel)...)
-	insns = append(insns, asm.JNE.Imm(dst, expected, failLabel))
+	insns = append(insns, emitDispatchValueMatch(dst, c, fieldBytes, failLabel)...)
 	return insns, nil
 }
 

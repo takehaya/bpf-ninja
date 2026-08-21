@@ -269,6 +269,7 @@ Dispatch 命名規約は次のとおりです。loader が `vocab/loader.go` 内
 | 名前パターン | regex | 意味 |
 |---|---|---|
 | `KUNAI_<SELF>_<PARENT>_<FIELD>` | `reField` | 親の `field` がこの値のとき自分にディスパッチ |
+| `KUNAI_<SELF>_<PARENT>_<FIELD>_ALT[n]` | `reField` + `reAltDispatch` | 同じ edge の追加受理値。base const の `AltValues` にマージされ、いずれかの値に一致すればディスパッチする (例: VXLAN の IANA 4789 と Linux 旧来値 8472)。`_alt` はフィールド名の末尾として予約 |
 | `KUNAI_<SELF>_<PARENT>_NO_CHECK = true` | `reNoCheck` | 検査なしで blind cast |
 | `<SELF>_MAX_DEPTH = N` | `reMaxDepth` | bpf_loop chain の上限 (既定 8、最大 64) |
 | `<SELF>_CHAIN_END_<FIELD> = V` | `reChainEnd` | chain 終了条件 (例: MPLS の s-bit) |
