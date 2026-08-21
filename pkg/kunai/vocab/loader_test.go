@@ -2666,3 +2666,84 @@ parser B(packet_in pkt, out bar_h h) { state start { pkt.extract(h); transition 
 		t.Errorf("expected 'no lowering for' diagnostic, got %v", err)
 	}
 }
+
+// TestLoadVxlanAltPort pins the bundled vxlan vocab's dual-port
+// dispatch: the Linux legacy port 8472 (Cilium / flannel default)
+// folds into KUNAI_VXLAN_UDP_DPORT's AltValues and the _ALT const
+// itself does not survive as a separate dispatch edge.
+func TestLoadVxlanAltPort(t *testing.T) {
+	vxlan := loadBundled(t)["vxlan"]
+	dc, ok := indexByName(vxlan.Consts)["KUNAI_VXLAN_UDP_DPORT"]
+	if !ok || dc.Value != 4789 {
+		t.Fatalf("KUNAI_VXLAN_UDP_DPORT = %+v", dc)
+	}
+	if len(dc.AltValues) != 1 || dc.AltValues[0] != 8472 {
+		t.Errorf("AltValues = %v, want [8472]", dc.AltValues)
+	}
+	if _, ok := indexByName(vxlan.Consts)["KUNAI_VXLAN_UDP_DPORT_ALT"]; ok {
+		t.Error("_ALT const must be folded into the base, not kept as its own edge")
+	}
+}
+
+// altVocabFS builds a two-protocol vocab where foo dispatches under
+// bar with the given const block, for the alt-dispatch error tests.
+func altVocabFS(consts string) fstest.MapFS {
+	return fstest.MapFS{
+		"vocab/bar.p4": &fstest.MapFile{Data: []byte(`
+header bar_h { bit<8> x; }
+parser B(packet_in pkt, out bar_h h) { state start { pkt.extract(h); transition accept; } }
+`)},
+		"vocab/foo.p4": &fstest.MapFile{Data: []byte(`
+header foo_h { bit<8> y; }
+` + consts + `
+parser F(packet_in pkt, out foo_h h) { state start { pkt.extract(h); transition accept; } }
+`)},
+	}
+}
+
+func TestLoadAltDispatchMerges(t *testing.T) {
+	specs, err := Load(altVocabFS(`
+const bit<8> KUNAI_FOO_BAR_X = 1;
+const bit<8> KUNAI_FOO_BAR_X_ALT = 2;
+const bit<8> KUNAI_FOO_BAR_X_ALT2 = 3;
+`), "vocab")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	dc := specs["foo"].SelectDispatchConst("bar")
+	if dc == nil || dc.Value != 1 {
+		t.Fatalf("SelectDispatchConst = %+v", dc)
+	}
+	if len(dc.AltValues) != 2 || dc.AltValues[0] != 2 || dc.AltValues[1] != 3 {
+		t.Errorf("AltValues = %v, want [2 3]", dc.AltValues)
+	}
+}
+
+func TestLoadAltDispatchWithoutBase(t *testing.T) {
+	_, err := Load(altVocabFS(`
+const bit<8> KUNAI_FOO_BAR_X_ALT = 2;
+`), "vocab")
+	if err == nil || !strings.Contains(err.Error(), "no base") {
+		t.Errorf("expected 'no base' error, got %v", err)
+	}
+}
+
+func TestLoadAltDispatchDuplicateValue(t *testing.T) {
+	_, err := Load(altVocabFS(`
+const bit<8> KUNAI_FOO_BAR_X = 1;
+const bit<8> KUNAI_FOO_BAR_X_ALT = 1;
+`), "vocab")
+	if err == nil || !strings.Contains(err.Error(), "duplicates value") {
+		t.Errorf("expected duplicate-value error, got %v", err)
+	}
+}
+
+func TestLoadAltDispatchBitsMismatch(t *testing.T) {
+	_, err := Load(altVocabFS(`
+const bit<8> KUNAI_FOO_BAR_X = 1;
+const bit<16> KUNAI_FOO_BAR_X_ALT = 2;
+`), "vocab")
+	if err == nil || !strings.Contains(err.Error(), "bit<") {
+		t.Errorf("expected width-mismatch error, got %v", err)
+	}
+}

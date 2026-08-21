@@ -236,6 +236,11 @@ var (
 	reSanityName = regexp.MustCompile(`^(?:[A-Z0-9_]+_)?SANITY_[A-Z0-9_]+$`)
 	reChainEnd   = regexp.MustCompile(`^CHAIN_END_([A-Z0-9_]+)$`)
 	reField      = regexp.MustCompile(`^([A-Z0-9]+)_([A-Z0-9_]+)$`)
+	// reAltDispatch matches the lowercase FieldName a `..._ALT[n]`
+	// dispatch const parses into ("dport_alt", "dport_alt2", ...);
+	// m[1] is the base field the alt value folds into. `_alt` is
+	// therefore a reserved suffix in dispatch-field position.
+	reAltDispatch = regexp.MustCompile(`^([a-z0-9_]+)_alt[0-9]*$`)
 )
 
 // classifyResult bundles the per-protocol metadata classifyConsts
@@ -475,7 +480,57 @@ func classifyConsts(cs []*p4lite.Const, protoName, source string, knownProtos ma
 		}
 		return classifyResult{}, fmt.Errorf("%s: const %q does not match <SELF>_{<PARENT>_<FIELD>|MAX_DEPTH|CHAIN_END_<FIELD>} or KUNAI_<SELF>_{<PARENT>_<FIELD>|<PARENT>_NO_CHECK}", source, c.Name)
 	}
+	if err := mergeAltDispatchConsts(&res, source); err != nil {
+		return classifyResult{}, err
+	}
 	return res, nil
+}
+
+// mergeAltDispatchConsts folds `KUNAI_<SELF>_<PARENT>_<FIELD>_ALT[n]`
+// consts into the AltValues of their base `KUNAI_<SELF>_<PARENT>_<FIELD>`
+// const, so one dispatch edge can accept several field values (e.g.
+// VXLAN over the IANA port 4789 and the Linux legacy port 8472).
+// classifyKunaiConst has already parsed the alt const as a regular
+// field dispatch whose FieldName carries the `_alt[n]` suffix; here we
+// strip the suffix, locate the base const with the same parent and
+// field, and move the value across. An alt without a base, a width
+// mismatch, or a value already accepted on the edge is a load error.
+func mergeAltDispatchConsts(res *classifyResult, source string) error {
+	var alts []*DispatchConst
+	kept := res.Consts[:0]
+	for i := range res.Consts {
+		c := res.Consts[i]
+		if c.Type == DispatchField {
+			if m := reAltDispatch.FindStringSubmatch(c.FieldName); m != nil {
+				c.FieldName = m[1]
+				alts = append(alts, &c)
+				continue
+			}
+		}
+		kept = append(kept, c)
+	}
+	res.Consts = kept
+	for _, a := range alts {
+		var base *DispatchConst
+		for i := range res.Consts {
+			c := &res.Consts[i]
+			if c.Type == DispatchField && c.Parent == a.Parent && c.FieldName == a.FieldName {
+				base = c
+				break
+			}
+		}
+		if base == nil {
+			return fmt.Errorf("%s: alt dispatch const %q has no base KUNAI_ const for parent %q field %q to fold into", source, a.Name, a.Parent, a.FieldName)
+		}
+		if base.Bits != a.Bits {
+			return fmt.Errorf("%s: alt dispatch const %q is bit<%d> but base %q is bit<%d>", source, a.Name, a.Bits, base.Name, base.Bits)
+		}
+		if a.Value == base.Value || slices.Contains(base.AltValues, a.Value) {
+			return fmt.Errorf("%s: alt dispatch const %q duplicates value %d already accepted on edge %q", source, a.Name, a.Value, base.Name)
+		}
+		base.AltValues = append(base.AltValues, a.Value)
+	}
+	return nil
 }
 
 // isOptFlagKey reports whether the suffix after "<SELF>_" names one of

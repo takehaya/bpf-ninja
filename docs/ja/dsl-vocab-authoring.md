@@ -106,6 +106,7 @@ const は名前のパターンによって loader の `vocab/loader.go::classify
 | パターン | 型 | 意味 |
 |---|---|---|
 | `KUNAI_<SELF>_<PARENT>_<FIELD>` | `bit<N>` | Field dispatch。親の `field` がこの値のとき自分として展開する |
+| `KUNAI_<SELF>_<PARENT>_<FIELD>_ALT[n]` | `bit<N>`、base と同幅 | 同じ edge の追加受理値。base の `AltValues` にマージされ、いずれかに一致すれば展開する。base 無し・幅違い・値重複はロードエラー。例: `KUNAI_VXLAN_UDP_DPORT_ALT = 8472` (Cilium / flannel の Linux 旧来 port) |
 | `KUNAI_<SELF>_<PARENT>_NO_CHECK` | `bool`、true 固定 | NoCheck dispatch。検査せず blind cast する |
 | `<SELF>_MAX_DEPTH` | `bit<N>`、1..64 | chain quantifier や parser self-loop など bpf_loop 系の反復上限。未宣言なら既定 8 |
 | `<SELF>_CHAIN_END_<FIELD>` | `bit<N>` | chain 終了条件。1 プロトコル 1 個まで。`<FIELD>` は primary に存在すること |

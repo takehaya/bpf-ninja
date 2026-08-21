@@ -64,6 +64,7 @@ package codegen
 import (
 	"errors"
 	"fmt"
+	"math"
 	"sync/atomic"
 
 	"github.com/cilium/ebpf/asm"
@@ -498,11 +499,50 @@ func emitFieldDispatchCheck(
 	if err != nil {
 		return nil, err
 	}
-	expected := int32(byteSwap(c.Value, fieldBytes))
+	match, err := emitDispatchValueMatch(dst, c, fieldBytes, failLabel)
+	if err != nil {
+		return nil, err
+	}
 	insns := append(asm.Instructions{}, setupAddr...)
+	insns = append(insns, asm.LoadMem(dst, dst, int16(fieldOff-parentHS), size))
+	insns = append(insns, match...)
+	return insns, nil
+}
+
+// emitDispatchValueMatch emits the value-comparison tail of a field
+// dispatch check; dst already holds the loaded field bytes. The common
+// single-value const keeps the historical one-JNE shape (existing
+// vocabs stay byte-identical). A const with AltValues accepts any of
+// its declared values: JEq to a shared ok-landing for all but the last
+// value, then the usual JNE to failLabel for the last.
+//
+// Every compare is a sign-extending JEq/JNE.Imm against a zero-
+// extended load, so a byte-swapped value with the top bit set (only
+// reachable via a 4-byte dispatch field — no bundled vocab has one)
+// could never match; such values are rejected loudly instead of
+// miscompiling. The register-based compare the predicates use
+// (cmpRegEqU32) is not safe here: R5 is live in the bounded and
+// bpf_loop-callback dispatch contexts.
+func emitDispatchValueMatch(dst asm.Register, c *vocab.DispatchConst, fieldBytes int, failLabel string) (asm.Instructions, error) {
+	swapped := make([]int32, 0, 1+len(c.AltValues))
+	for _, v := range append([]uint64{c.Value}, c.AltValues...) {
+		le := byteSwap(v, fieldBytes)
+		if le > math.MaxInt32 {
+			return nil, fmt.Errorf("%w: dispatch const %q value %#x byte-swaps to %#x, which does not fit the sign-extended JEq/JNE immediate", ErrNotImplemented, c.Name, v, le)
+		}
+		swapped = append(swapped, int32(le))
+	}
+	if len(swapped) == 1 {
+		return asm.Instructions{asm.JNE.Imm(dst, swapped[0], failLabel)}, nil
+	}
+	okLabel := nextAltDispatchLabel("multiok")
+	insns := make(asm.Instructions, 0, len(swapped)+1)
+	for _, le := range swapped[:len(swapped)-1] {
+		insns = append(insns, asm.JEq.Imm(dst, le, okLabel))
+	}
 	insns = append(insns,
-		asm.LoadMem(dst, dst, int16(fieldOff-parentHS), size),
-		asm.JNE.Imm(dst, expected, failLabel),
+		asm.JNE.Imm(dst, swapped[len(swapped)-1], failLabel),
+		landingNoop(okLabel),
 	)
 	return insns, nil
 }
@@ -546,10 +586,13 @@ func emitFieldDispatchCheckBounded(
 	if err != nil {
 		return nil, err
 	}
-	expected := int32(byteSwap(c.Value, fieldBytes))
+	match, err := emitDispatchValueMatch(dst, c, fieldBytes, failLabel)
+	if err != nil {
+		return nil, err
+	}
 	insns := foldOffsetIntoScalar(scalar, offsetReg, int32(fieldOff+byteOff), failLabel)
 	insns = append(insns, boundedScalarLoad(dst, asm.R0, scalar, asm.R1, size, failLabel)...)
-	insns = append(insns, asm.JNE.Imm(dst, expected, failLabel))
+	insns = append(insns, match...)
 	return insns, nil
 }
 
