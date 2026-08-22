@@ -2680,8 +2680,8 @@ func TestLoadVxlanAltPort(t *testing.T) {
 	if len(dc.AltValues) != 1 || dc.AltValues[0] != 8472 {
 		t.Errorf("AltValues = %v, want [8472]", dc.AltValues)
 	}
-	if _, ok := indexByName(vxlan.Consts)["KUNAI_VXLAN_UDP_DPORT_ALT"]; ok {
-		t.Error("_ALT const must be folded into the base, not kept as its own edge")
+	if _, ok := indexByName(vxlan.Consts)["KUNAI_VXLAN_UDP_DPORT_ALT_LINUX_LEGACY"]; ok {
+		t.Error("_ALT_<NAME> const must be folded into the base, not kept as its own edge")
 	}
 }
 
@@ -2705,7 +2705,7 @@ func TestLoadAltDispatchMerges(t *testing.T) {
 	specs, err := Load(altVocabFS(`
 const bit<8> KUNAI_FOO_BAR_X = 1;
 const bit<8> KUNAI_FOO_BAR_X_ALT = 2;
-const bit<8> KUNAI_FOO_BAR_X_ALT2 = 3;
+const bit<8> KUNAI_FOO_BAR_X_ALT_VENDOR_B = 3;
 `), "vocab")
 	if err != nil {
 		t.Fatalf("Load: %v", err)
@@ -2745,5 +2745,15 @@ const bit<16> KUNAI_FOO_BAR_X_ALT = 2;
 `), "vocab")
 	if err == nil || !strings.Contains(err.Error(), "bit<") {
 		t.Errorf("expected width-mismatch error, got %v", err)
+	}
+}
+
+func TestLoadAltDispatchRejectsNumberedSuffix(t *testing.T) {
+	_, err := Load(altVocabFS(`
+const bit<8> KUNAI_FOO_BAR_X = 1;
+const bit<8> KUNAI_FOO_BAR_X_ALT2 = 2;
+`), "vocab")
+	if err == nil || !strings.Contains(err.Error(), "_ALT_<NAME>") {
+		t.Errorf("expected numbered-suffix rejection pointing at _ALT_<NAME>, got %v", err)
 	}
 }

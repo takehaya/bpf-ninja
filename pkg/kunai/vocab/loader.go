@@ -236,11 +236,16 @@ var (
 	reSanityName = regexp.MustCompile(`^(?:[A-Z0-9_]+_)?SANITY_[A-Z0-9_]+$`)
 	reChainEnd   = regexp.MustCompile(`^CHAIN_END_([A-Z0-9_]+)$`)
 	reField      = regexp.MustCompile(`^([A-Z0-9]+)_([A-Z0-9_]+)$`)
-	// reAltDispatch matches the lowercase FieldName a `..._ALT[n]`
-	// dispatch const parses into ("dport_alt", "dport_alt2", ...);
-	// m[1] is the base field the alt value folds into. `_alt` is
-	// therefore a reserved suffix in dispatch-field position.
-	reAltDispatch = regexp.MustCompile(`^([a-z0-9_]+)_alt[0-9]*$`)
+	// reAltDispatch matches the lowercase FieldName a `..._ALT` or
+	// `..._ALT_<NAME>` dispatch const parses into ("dport_alt",
+	// "dport_alt_linux_legacy", ...); m[1] is the base field the alt
+	// value folds into, and <NAME> documents where the value comes
+	// from. `_alt` is therefore a reserved suffix in dispatch-field
+	// position. A numbered `_ALT<n>` shape is rejected with its own
+	// diagnostic (reAltNumbered) — a number cannot say what the value
+	// means, a name can.
+	reAltDispatch = regexp.MustCompile(`^(.+)_alt(?:_[a-z0-9][a-z0-9_]*)?$`)
+	reAltNumbered = regexp.MustCompile(`^.+_alt[0-9]+$`)
 )
 
 // classifyResult bundles the per-protocol metadata classifyConsts
@@ -486,10 +491,13 @@ func classifyConsts(cs []*p4lite.Const, protoName, source string, knownProtos ma
 	return res, nil
 }
 
-// mergeAltDispatchConsts folds `KUNAI_<SELF>_<PARENT>_<FIELD>_ALT[n]`
-// consts into the AltValues of their base `KUNAI_<SELF>_<PARENT>_<FIELD>`
-// const, so one dispatch edge can accept several field values (e.g.
-// VXLAN over the IANA port 4789 and the Linux legacy port 8472).
+// mergeAltDispatchConsts folds `KUNAI_<SELF>_<PARENT>_<FIELD>_ALT` and
+// `..._ALT_<NAME>` consts into the AltValues of their base
+// `KUNAI_<SELF>_<PARENT>_<FIELD>` const, so one dispatch edge can
+// accept several field values (e.g. VXLAN over the IANA port 4789 and
+// the Linux legacy port 8472). <NAME> is purely documentary — it says
+// where the value comes from — and P4's identifier uniqueness keeps
+// alts apart; a numbered `_ALT<n>` is rejected in favor of a name.
 // classifyKunaiConst has already parsed the alt const as a regular
 // field dispatch whose FieldName carries the `_alt[n]` suffix; here we
 // strip the suffix, locate the base const with the same parent and
@@ -501,6 +509,9 @@ func mergeAltDispatchConsts(res *classifyResult, source string) error {
 	for i := range res.Consts {
 		c := res.Consts[i]
 		if c.Type == DispatchField {
+			if reAltNumbered.MatchString(c.FieldName) {
+				return fmt.Errorf("%s: alt dispatch const %q uses a numbered _ALT<n> suffix — name the value instead (_ALT_<NAME>, e.g. _ALT_LINUX_LEGACY) so the vocab says what it is", source, c.Name)
+			}
 			if m := reAltDispatch.FindStringSubmatch(c.FieldName); m != nil {
 				c.FieldName = m[1]
 				alts = append(alts, &c)
