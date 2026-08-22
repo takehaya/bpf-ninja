@@ -470,6 +470,12 @@ type DispatchConst struct {
 	Bits      int    // width of the constant; Field only
 	Value     uint64 // integer value; Field only
 	Bool      bool   // truth value; NoCheck only (must be true to be valid)
+	// AltValues holds additional accepted values for the same dispatch
+	// edge, folded in from `KUNAI_<SELF>_<PARENT>_<FIELD>_ALT[n]`
+	// consts (e.g. VXLAN's IANA 4789 plus the Linux legacy 8472). The
+	// dispatch check passes when the field equals Value or any entry
+	// here. Field only; empty for the common single-value edge.
+	AltValues []uint64
 }
 
 // --- Parse state machine (within-protocol structure) ---

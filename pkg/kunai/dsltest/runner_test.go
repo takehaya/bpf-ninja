@@ -612,7 +612,9 @@ func TestQinQLeaf(t *testing.T) {
 func TestVXLANDispatch(t *testing.T) {
 	r := New(t, "eth/ipv4/udp/vxlan")
 	r.MustMatch(t, BuildEthIPv4UDPVXLAN(t, 0x010203), "vxlan dispatch + extract")
+	r.MustMatch(t, BuildEthIPv4UDPVXLANPort(t, 0x010203, 8472), "vxlan over the Linux legacy port 8472 (AltValues dispatch) must also match")
 	r.MustReject(t, BuildEthIPv4UDP(t, 12345, 53, []byte("dns")), "non-vxlan UDP (dport=53) must reject vxlan filter")
+	r.MustReject(t, BuildEthIPv4UDPVXLANPort(t, 0x010203, 4790), "off-by-one port 4790 must reject both dispatch values")
 }
 
 // TestGeneveDispatch exercises the geneve vocab: UDP dport 6081 +

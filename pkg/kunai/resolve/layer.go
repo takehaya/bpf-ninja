@@ -2,6 +2,7 @@ package resolve
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/takehaya/bpf-ninja/pkg/kunai/ast"
@@ -205,7 +206,8 @@ func selectAltParentDispatch(spec *vocab.ProtocolSpec, alts []*ir.LayerInstance,
 }
 
 func altDispatchAgrees(a, b *vocab.DispatchConst) bool {
-	return a.Type == b.Type && a.FieldName == b.FieldName && a.Value == b.Value && a.Bits == b.Bits
+	return a.Type == b.Type && a.FieldName == b.FieldName && a.Value == b.Value && a.Bits == b.Bits &&
+		slices.Equal(a.AltValues, b.AltValues)
 }
 
 func autoKey(proto string, index int) string {

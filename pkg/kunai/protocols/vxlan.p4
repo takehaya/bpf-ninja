@@ -7,8 +7,13 @@ header vxlan_h {
     bit<8>  reserved2;
 }
 
-// Dispatch from UDP via the IANA-assigned destination port.
+// Dispatch from UDP via the IANA-assigned destination port, plus the
+// Linux kernel's pre-IANA default 8472 that Cilium and flannel still
+// ship as their VXLAN default. The _ALT_<NAME> suffix folds the extra
+// value into the same dispatch edge (vocab/loader.go
+// mergeAltDispatchConsts); the name documents where it comes from.
 const bit<16> KUNAI_VXLAN_UDP_DPORT = 4789;
+const bit<16> KUNAI_VXLAN_UDP_DPORT_ALT_LINUX_LEGACY = 8472;
 
 parser VxlanParser(packet_in pkt, out vxlan_h hdr) {
     state start {

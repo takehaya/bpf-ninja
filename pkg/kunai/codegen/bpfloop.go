@@ -454,10 +454,13 @@ func chainFieldPeek(spec *vocab.ProtocolSpec, selfConst *vocab.DispatchConst, hs
 	if err != nil {
 		return nil, err
 	}
-	expected := int32(byteSwap(selfConst.Value, fieldBytes))
+	match, err := emitDispatchValueMatch(asm.R0, selfConst, fieldBytes, breakLabel)
+	if err != nil {
+		return nil, err
+	}
 	insns := append(asm.Instructions{}, foldOffsetIntoScalar(asm.R1, asm.R3, loadByteOff, breakLabel)...)
 	insns = append(insns, boundedScalarLoad(asm.R0, asm.R4, asm.R1, asm.R5, size, breakLabel)...)
-	insns = append(insns, asm.JNE.Imm(asm.R0, expected, breakLabel))
+	insns = append(insns, match...)
 	return insns, nil
 }
 

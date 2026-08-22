@@ -520,6 +520,13 @@ func BuildSRv6(t testing.TB, opts SRv6Opts) []byte {
 // `extract; transition accept` so this exercises dispatch + extract;
 // inner Ethernet support is not declared in the vocab.
 func BuildEthIPv4UDPVXLAN(t testing.TB, vni uint32) []byte {
+	return BuildEthIPv4UDPVXLANPort(t, vni, 4789)
+}
+
+// BuildEthIPv4UDPVXLANPort is BuildEthIPv4UDPVXLAN with an explicit
+// outer UDP destination port, for the dual-port dispatch tests (IANA
+// 4789 vs the Linux legacy 8472 that Cilium / flannel default to).
+func BuildEthIPv4UDPVXLANPort(t testing.TB, vni uint32, dport uint16) []byte {
 	t.Helper()
 	d := Defaults()
 	eth := &layers.Ethernet{SrcMAC: d.SrcMAC, DstMAC: d.DstMAC, EthernetType: layers.EthernetTypeIPv4}
@@ -529,7 +536,7 @@ func BuildEthIPv4UDPVXLAN(t testing.TB, vni uint32) []byte {
 		DstIP:    d.DstIP.To4(),
 		Protocol: layers.IPProtocolUDP,
 	}
-	udp := &layers.UDP{SrcPort: 12345, DstPort: 4789}
+	udp := &layers.UDP{SrcPort: 12345, DstPort: layers.UDPPort(dport)}
 	_ = udp.SetNetworkLayerForChecksum(v4)
 	vx := &layers.VXLAN{ValidIDFlag: true, VNI: vni}
 	buf := gopacket.NewSerializeBuffer()
