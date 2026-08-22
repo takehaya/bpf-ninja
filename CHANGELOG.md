@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.24.0](https://github.com/takehaya/bpf-ninja/compare/v0.23.1...v0.24.0) (2026-08-22)
+
+
+### 🎉 Features
+
+* **kunai:** accept multiple dispatch values per edge via _ALT consts ([#101](https://github.com/takehaya/bpf-ninja/issues/101)) ([e2b2a05](https://github.com/takehaya/bpf-ninja/commit/e2b2a05199ff27dab8ff08793c30ff407d29acc4))
+
 ## [0.23.1](https://github.com/takehaya/bpf-ninja/compare/v0.23.0...v0.23.1) (2026-08-09)
 
 
