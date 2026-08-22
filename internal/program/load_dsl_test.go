@@ -292,3 +292,37 @@ func TestBpfEntryWithDSLFilterCgroupSKB(t *testing.T) {
 func TestBpfExitWithDSLFilterCgroupSKB(t *testing.T) {
 	runFilterMatrix(t, loadDummyCgroupSKB(t), cgroupSKBFuncName, dslCgroupSKBExitExprs, true, true)
 }
+
+// dslNetfilterEntryExprs is the netfilter fentry-side DSL matrix. Like
+// cgroup-skb the packet window starts at the network header (chains
+// root at ipv4/ipv6); the context differs — the prologue derefs
+// bpf_nf_ctx->skb before the shared sk_buff window loads — so the
+// matrix re-pins the same L3-rooted shapes on that prologue, including
+// a parser-machine (bpf_loop) path and an option-walk predicate.
+var dslNetfilterEntryExprs = []string{
+	"ipv4/tcp",
+	"ipv4/udp",
+	"ipv6/tcp",
+	"ipv4/tcp[dport==443]",
+	"ipv4/tcp where tcp.dport == 443",
+	"ipv4/tcp capture headers+64",
+	"ipv4/udp/gtp/ipv4/tcp",
+	"ipv6/srv6/tcp",
+	"ipv4/tcp where tcp.options.MSS.value == 1460",
+}
+
+// dslNetfilterExitExprs covers the netfilter fexit-side action atoms
+// (NF_DROP=0 / NF_ACCEPT=1).
+var dslNetfilterExitExprs = []string{
+	"ipv4/tcp",
+	"ipv4/tcp where action == NF_DROP",
+	"ipv4/tcp where action == NF_ACCEPT or action == NF_DROP",
+}
+
+func TestBpfEntryWithDSLFilterNetfilter(t *testing.T) {
+	runFilterMatrix(t, loadDummyNetfilter(t), netfilterFuncName, dslNetfilterEntryExprs, false, true)
+}
+
+func TestBpfExitWithDSLFilterNetfilter(t *testing.T) {
+	runFilterMatrix(t, loadDummyNetfilter(t), netfilterFuncName, dslNetfilterExitExprs, true, true)
+}

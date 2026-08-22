@@ -6,6 +6,7 @@ import (
 
 	"github.com/cilium/ebpf"
 	cgskbhost "github.com/takehaya/bpf-ninja/pkg/kunai/host/cgroupskb"
+	nfhost "github.com/takehaya/bpf-ninja/pkg/kunai/host/netfilter"
 	tchost "github.com/takehaya/bpf-ninja/pkg/kunai/host/tc"
 	xdphost "github.com/takehaya/bpf-ninja/pkg/kunai/host/xdp"
 )
@@ -61,6 +62,7 @@ func TestHookActionsMatchHostVocab(t *testing.T) {
 		{KindXDP, xdphost.Actions, func(k string) string { return "xdp:" + strings.TrimPrefix(k, "XDP_") }},
 		{KindTC, tchost.Actions, func(k string) string { return "tc:" + k }},
 		{KindCgroupSKB, cgskbhost.Actions, func(k string) string { return "cgroup-skb:" + k }},
+		{KindNetfilter, nfhost.Actions, func(k string) string { return "netfilter:" + k }},
 	}
 	for _, c := range cases {
 		h, ok := ByName(c.hook)
