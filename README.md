@@ -3,7 +3,7 @@
 > [!NOTE]
 > This project was renamed from **xdp-ninja** (July 2026): the tool has outgrown XDP — it also observes tc-bpf programs, and more BPF hook points are planned. GitHub redirects the old repository URL, but the Go module path changed to `github.com/takehaya/bpf-ninja`, so `go install` / imports need the new path. Environment variables are now `BPF_NINJA_*` (the old `XDP_NINJA_*` names are no longer read).
 
-bpf-ninja captures packets at BPF hook points — XDP, tc-bpf, and cgroup-skb, with more planned. `tcpdump` runs below XDP and can't show what XDP or tc-bpf did to the packet, and cBPF filters can't walk into VXLAN / GTP / MPLS / SRv6 inner headers. Attach via fentry/fexit to a running XDP without modifying it, or `--mode xdp` for standalone capture on a netdev. Filters use the built-in DSL by default — chains like `eth/ipv4/udp/vxlan/eth/ipv4/tcp`. Plain tcpdump syntax via [cbpfc](https://github.com/cloudflare/cbpfc) is still accepted via `--cbpf`, kept for backwards compatibility and planned to retire once the DSL surface stabilises. Output is pcap (pcapng) to stdout.🥷
+bpf-ninja captures packets at BPF hook points — XDP, tc-bpf, cgroup-skb, and netfilter, with more planned. `tcpdump` runs below XDP and can't show what XDP or tc-bpf did to the packet, and cBPF filters can't walk into VXLAN / GTP / MPLS / SRv6 inner headers. Attach via fentry/fexit to a running XDP without modifying it, or `--mode xdp` for standalone capture on a netdev. Filters use the built-in DSL by default — chains like `eth/ipv4/udp/vxlan/eth/ipv4/tcp`. Plain tcpdump syntax via [cbpfc](https://github.com/cloudflare/cbpfc) is still accepted via `--cbpf`, kept for backwards compatibility and planned to retire once the DSL surface stabilises. Output is pcap (pcapng) to stdout.🥷
 
 ## Install
 
@@ -25,7 +25,7 @@ make build
 
 ## Modes
 
-`--mode` selects the capture point; the hook kind (XDP, TC clsact, cgroup-skb) is auto-detected from the target program's type:
+`--mode` selects the capture point; the hook kind (XDP, TC clsact, cgroup-skb, netfilter) is auto-detected from the target program's type:
 
 | Mode | Attach via | Existing program needed | Sees return action | Typical use |
 |---|---|---|---|---|
@@ -40,6 +40,7 @@ Supported hooks and how to name the target:
 | XDP | `-i <iface>` (interface's XDP) or `-p <progID>` | |
 | TC clsact | `-p <progID>` only (interface lookup for clsact is not yet wired) | |
 | cgroup-skb | `--cgroup <cgroup v2 path>` (enumerates attached programs) or `-p <progID>` | packet bytes start at the IP header — root DSL chains at `ipv4`/`ipv6`, pcap-ng is LINKTYPE_RAW |
+| netfilter | `-p <progID>` (kernel 6.4+, programs attached to NF_INET_* hooks via bpf_link) | packet bytes start at the IP header, same L3-start notes as cgroup-skb; exit-mode verdicts are `NF_DROP` / `NF_ACCEPT` |
 
 `entry`/`exit` are non-invasive: the target program is unmodified, attach is via BPF trampoline. `xdp` is the standalone path for "I just want to capture, there's nothing else here". `tc-entry`/`tc-exit` remain as deprecated aliases for `entry`/`exit`.
 
@@ -65,7 +66,7 @@ sudo bpf-ninja --cbpf -i eth0 "host 10.0.0.1 and tcp port 80" | tcpdump -n -r -
 # (output is sharded across per-CPU files; see "Sharded output" below)
 sudo bpf-ninja -i eth0 -w capture.pcap -c 100
 
-# Attach by BPF program ID — works for XDP, tc clsact, and cgroup-skb
+# Attach by BPF program ID — works for XDP, tc clsact, cgroup-skb, and netfilter
 # programs alike (the hook is auto-detected from the program type)
 sudo bpf-ninja -p 42 | tcpdump -n -r -
 
@@ -267,7 +268,7 @@ int parse_headers(struct xdp_md *ctx) {
 | `--cbpf` | Use the legacy tcpdump/cBPF syntax (compiled via cbpfc); default is the built-in DSL. Prints a deprecation notice when used. | all |
 | `--dsl-help` | Print the DSL grammar + bundled protocol catalogue and exit (no `-i`/`-p` required) | — |
 | `--dump-asm` | Print compiled eBPF asm and exit. Values: `filter` (kunai/cbpfc body only) \| `full` (wrapped program). No `-i`/`-p` required | — |
-| `--dump-hook` | Hook whose capabilities/prologue `--dump-asm` renders: `xdp` (default) \| `tc` \| `cgroup-skb` (offline compiles have no target program to auto-detect from) | — |
+| `--dump-hook` | Hook whose capabilities/prologue `--dump-asm` renders: `xdp` (default) \| `tc` \| `cgroup-skb` \| `netfilter` (offline compiles have no target program to auto-detect from) | — |
 | `--func` | Attach to a specific `__noinline` subfunction by BTF name | entry, exit |
 | `--list-funcs` | List available BTF functions in the target program and exit | entry, exit |
 | `--list-progs` | List tail call targets reachable from the target program and exit | entry, exit |
@@ -291,7 +292,7 @@ Common:
 
 Mode-specific:
 
-- **`--mode entry` / `exit`**: a target BPF program (XDP, tc clsact, or cgroup-skb) already loaded with BTF. With `-i`, an XDP program attached to the interface; tc targets go by `-p <progID>`; cgroup-skb targets by `--cgroup <path>` or `-p`.
+- **`--mode entry` / `exit`**: a target BPF program (XDP, tc clsact, cgroup-skb, or netfilter) already loaded with BTF. With `-i`, an XDP program attached to the interface; tc targets go by `-p <progID>`; cgroup-skb targets by `--cgroup <path>` or `-p`.
 - **`--mode xdp`**: no XDP attached to the interface (bpf-ninja becomes the XDP program).
 - **DSL with chain quantifier (`+`, `*`, `{n,m>4}`), parser-machine self-loop (variable-length headers like IPv6 ext / GTP options / SRv6 segments), or alternation (`(a|b)`)**: kernel 5.17+ (uses `bpf_loop` + bpf2bpf subprograms). Plain DSL chains and `--cbpf` filters work on 5.8+.
 
