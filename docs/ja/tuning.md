@@ -52,6 +52,8 @@ bpf-ninja の capture スループットには、設定では越えられない�
 
 --no-wakeup は BPF_RB_NO_WAKEUP を全 submit に立て、reader を起こす eventfd を止めます。スループットは上がりますが、代わりに p50 のレイテンシが悪化します。おおよそ 100µs から 2.6ms 程度まで悪化し、polling の床が 1ms になります。--fast-reader が必須です。レイテンシより総量を優先する場面で使ってください。
 
+このフラグは高レート専用の節約ではありません。むしろ低レートのほうが効きます。レートが低いと consumer は submit のたびに寝ているので、observer は毎パケット wakeup を送ることになり、その IPI と起床のコストが observer 自身の実行時間に乗ります。実測では cgroup-skb の観測 (loopback、0.2 Mpps 級) で observer の per-packet コストがデフォルト約 3.3µs、--fast-reader --no-wakeup で約 123ns と、25 倍の差になりました。高レートでは consumer が起きたままになるので wakeup は自然に発火しなくなり、この差は消えます。つまり observer を常駐させて張りっぱなしにする低トラフィックな用途こそ、--fast-reader --no-wakeup を検討してください。observer の実コストは bpf_stats (sysctl kernel.bpf_stats_enabled=1 のうえで bpftool prog show の run_time_ns / run_cnt) で直接確認できます。
+
 ### 3.6 split-core でコアを分離する
 
 -w の実出力でレートが --null-output の半分近くまで落ちるときに効きます。原因は、producer である RX softirq と consumer の結合です。寝ている consumer を起こす経路が RX softirq に背圧をかけ、結果として両方が遅くなります。
