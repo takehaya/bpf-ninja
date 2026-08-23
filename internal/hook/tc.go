@@ -39,16 +39,23 @@ var tcHook = &Hook{
 // struct sk_buff * (the kernel struct, NOT the BPF-rewritten __sk_buff
 // view — that rewrite does not fire in tracing context). Member offsets
 // drift across kernel versions, so they are resolved from kernel BTF at
-// runtime. sk_buff has no data_end member; it is computed as data + len.
+// runtime. sk_buff has no data_end member; it is computed as data plus
+// the LINEAR head length `len - data_len` (skb_headlen()), not the
+// total `len`: a GRO/GSO or fragmented skb keeps `data_len` bytes in
+// frags, and a flat probe_read from `data` past the head would copy
+// unrelated kernel memory into the capture. The window (and therefore
+// caplen) is clamped to the head; frag bytes are not captured.
 func skbPacketPrologue() (asm.Instructions, error) {
-	dataOff, lenOff, err := skBuffPacketOffsets()
+	dataOff, lenOff, dataLenOff, err := skBuffPacketOffsets()
 	if err != nil {
 		return nil, fmt.Errorf("resolving struct sk_buff offsets via BTF: %w", err)
 	}
 	return append(tracingPrelude(),
-		asm.LoadMem(asm.R7, asm.R6, int16(dataOff), asm.DWord), // R7 = skb->data
-		asm.LoadMem(asm.R9, asm.R6, int16(lenOff), asm.Word),   // R9 = skb->len
+		asm.LoadMem(asm.R7, asm.R6, int16(dataOff), asm.DWord),   // R7 = skb->data
+		asm.LoadMem(asm.R9, asm.R6, int16(lenOff), asm.Word),     // R9 = skb->len
+		asm.LoadMem(asm.R8, asm.R6, int16(dataLenOff), asm.Word), // R8 = skb->data_len
+		asm.Sub.Reg(asm.R9, asm.R8),                              // R9 = linear head length
 		asm.Mov.Reg(asm.R8, asm.R7),
-		asm.Add.Reg(asm.R8, asm.R9), // R8 = data + len
+		asm.Add.Reg(asm.R8, asm.R9), // R8 = data + headlen
 	), nil
 }

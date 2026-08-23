@@ -34,25 +34,29 @@ var netfilterHook = &Hook{
 
 // nfPacketPrologue reads the packet window from a netfilter program's
 // `struct bpf_nf_ctx` context: one extra pointer hop (ctx->skb, offset
-// resolved from kernel BTF) in front of the same sk_buff data/len loads
-// the tc and cgroup-skb hooks use. R6 keeps the original ctx per the
-// PacketPrologue contract; R7 is used as the skb scratch (skb->len is
-// read before R7 is overwritten with skb->data).
+// resolved from kernel BTF) in front of the same sk_buff window loads
+// the tc and cgroup-skb hooks use. Like skbPacketPrologue the window
+// is clamped to the linear head `len - data_len`; see that function
+// for why. R6 keeps the original ctx per the PacketPrologue contract;
+// R7 is the skb scratch (len and data_len are read before R7 is
+// overwritten with skb->data).
 func nfPacketPrologue() (asm.Instructions, error) {
 	skbOff, err := nfCtxSkbOffset()
 	if err != nil {
 		return nil, fmt.Errorf("resolving struct bpf_nf_ctx offsets via BTF: %w", err)
 	}
-	dataOff, lenOff, err := skBuffPacketOffsets()
+	dataOff, lenOff, dataLenOff, err := skBuffPacketOffsets()
 	if err != nil {
 		return nil, fmt.Errorf("resolving struct sk_buff offsets via BTF: %w", err)
 	}
 	return append(tracingPrelude(),
-		asm.LoadMem(asm.R7, asm.R6, int16(skbOff), asm.DWord),  // R7 = ctx->skb
-		asm.LoadMem(asm.R9, asm.R7, int16(lenOff), asm.Word),   // R9 = skb->len
-		asm.LoadMem(asm.R7, asm.R7, int16(dataOff), asm.DWord), // R7 = skb->data
+		asm.LoadMem(asm.R7, asm.R6, int16(skbOff), asm.DWord),    // R7 = ctx->skb
+		asm.LoadMem(asm.R9, asm.R7, int16(lenOff), asm.Word),     // R9 = skb->len
+		asm.LoadMem(asm.R8, asm.R7, int16(dataLenOff), asm.Word), // R8 = skb->data_len
+		asm.Sub.Reg(asm.R9, asm.R8),                              // R9 = linear head length
+		asm.LoadMem(asm.R7, asm.R7, int16(dataOff), asm.DWord),   // R7 = skb->data
 		asm.Mov.Reg(asm.R8, asm.R7),
-		asm.Add.Reg(asm.R8, asm.R9), // R8 = data + len
+		asm.Add.Reg(asm.R8, asm.R9), // R8 = data + headlen
 	), nil
 }
 

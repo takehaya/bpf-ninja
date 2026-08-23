@@ -149,7 +149,7 @@ type CaptureInfo struct {
 
 `FilterMinPrefix` は、コンパイル済みフィルタがパケットから読む最大バイトオフセットです。chain の自然なヘッダ prefix 長と、マージ済み where 節の最右フィールド末尾を合成した値になります。tracing ホストの LoadEntry / LoadExit はこれを使って per-CPU scratch map への `bpf_probe_read_kernel` の読み取り量を決めるので、`eth/ipv4/tcp where tcp.dport == 443` のような単純なフィルタは 54 B だけを読み、保守的な `ScratchBufSize` 分のコピーを避けられます。0 は解析を断念したことを意味します。quantifier 付き chain や heterogeneous alternation がこれに当たり、ホストは scratch 全読みに fallback します。`FilterMinPrefix` は `MaxCapLen` から独立です。scratch 読みの最適化は、ユーザーが `capture headers` で ringbuf 側の最適化に opt-in したかどうかに関わらず常に効きます。
 
-ホストは `Capabilities` 値を構築して、kunai を自分の BPF attach point に接続します。kunai コアはホスト固有の helper を持たず、canonical adapter は [`host/`](./host/) 以下のサブパッケージにあります。現在は `host/xdp`、`host/tc`、`host/cgroupskb` の 3 つです。XDP fexit の場合は次のように書きます。
+ホストは `Capabilities` 値を構築して、kunai を自分の BPF attach point に接続します。kunai コアはホスト固有の helper を持たず、canonical adapter は [`host/`](./host/) 以下のサブパッケージにあります。現在は `host/xdp`、`host/tc`、`host/cgroupskb`、`host/netfilter` の 4 つです。XDP fexit の場合は次のように書きます。
 
 ```go
 import xdphost "github.com/takehaya/bpf-ninja/pkg/kunai/host/xdp"
@@ -178,7 +178,7 @@ vocabulary のパース結果は、`pkg/kunai/dslvocab/` の `dslvocab.Bundled()
 
 ## バージョニングと安定性
 
-- public API は次のとおりです。`kunai.Compile`、カスタム vocab を受け入れる `kunai.CompileWithVocab`、bpf-ninja の `--dsl-help` が使う `kunai.SyntaxHelp` / `kunai.ExamplesHelp` / `kunai.WriteProtocolCatalogue` / `kunai.WriteProtocolHelp`、`codegen.Capabilities` とその構成要素 `LexCaps` / `LangCaps` / `HostLayout` / `SetSlotResolver`、`codegen.ActionFetcher`、`codegen.Output` と `CaptureInfo` / `ExtractSlot`、host wrapper 用の `codegen.MainFilterFuncBTF`、位置情報付きエラー型の `codegen.PositionedError`、`host/xdp` / `host/tc` / `host/cgroupskb` の adapter パッケージ、上記のエラー型です。
+- public API は次のとおりです。`kunai.Compile`、カスタム vocab を受け入れる `kunai.CompileWithVocab`、bpf-ninja の `--dsl-help` が使う `kunai.SyntaxHelp` / `kunai.ExamplesHelp` / `kunai.WriteProtocolCatalogue` / `kunai.WriteProtocolHelp`、`codegen.Capabilities` とその構成要素 `LexCaps` / `LangCaps` / `HostLayout` / `SetSlotResolver`、`codegen.ActionFetcher`、`codegen.Output` と `CaptureInfo` / `ExtractSlot`、host wrapper 用の `codegen.MainFilterFuncBTF`、位置情報付きエラー型の `codegen.PositionedError`、`host/xdp` / `host/tc` / `host/cgroupskb` / `host/netfilter` の adapter パッケージ、上記のエラー型です。
 - それ以外の AST node、IR 型、vocab loader 内部、parser 内部、`dslvocab.Bundled` キャッシュは、予告なく変わる可能性があります。
 - gopacket ベースのパケットレベルハーネス `pkg/kunai/dsltest` は experimental です。1.0 までは `Runner` API と packet builder を予告なく変更する可能性があるので、下流のテストが依存する場合は tag を固定してください。
 - プロトコル vocabulary は public surface の一部として扱います。新プロトコルの追加は非破壊変更、リネームや削除は破壊変更です。

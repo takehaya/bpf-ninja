@@ -170,7 +170,7 @@ independent of `MaxCapLen`**: the scratch-read optimisation always
 applies, whether or not the user opted into the ringbuf-reservation
 optimisation via `capture headers`.
 
-The host wires kunai to its specific BPF attach point by constructing a `Capabilities` value. The kunai core ships no host-specific helpers; canonical adapters live under [`host/`](./host/): `host/xdp`, `host/tc`, and `host/cgroupskb`. For an XDP fexit attach point:
+The host wires kunai to its specific BPF attach point by constructing a `Capabilities` value. The kunai core ships no host-specific helpers; canonical adapters live under [`host/`](./host/): `host/xdp`, `host/tc`, `host/cgroupskb`, and `host/netfilter`. For an XDP fexit attach point:
 
 ```go
 import xdphost "github.com/takehaya/bpf-ninja/pkg/kunai/host/xdp"
@@ -199,14 +199,14 @@ Vocabulary parsing is memoised: `dslvocab.Bundled()` (in `pkg/kunai/dslvocab/`) 
 
 ## Versioning & stability
 
-- Public API: `kunai.Compile`, `kunai.CompileWithVocab` (custom-vocab variant), `kunai.SyntaxHelp` / `kunai.ExamplesHelp` / `kunai.WriteProtocolCatalogue` / `kunai.WriteProtocolHelp` (used by bpf-ninja's `--dsl-help`), `codegen.Capabilities` with its `LexCaps` / `LangCaps` / `HostLayout` / `SetSlotResolver` components, `codegen.ActionFetcher`, `codegen.Output` with `CaptureInfo` / `ExtractSlot`, `codegen.MainFilterFuncBTF` (host wrapper helper), `codegen.PositionedError` (source-position-aware error type), the `host/xdp`, `host/tc`, and `host/cgroupskb` adapter packages, and the error types listed above.
+- Public API: `kunai.Compile`, `kunai.CompileWithVocab` (custom-vocab variant), `kunai.SyntaxHelp` / `kunai.ExamplesHelp` / `kunai.WriteProtocolCatalogue` / `kunai.WriteProtocolHelp` (used by bpf-ninja's `--dsl-help`), `codegen.Capabilities` with its `LexCaps` / `LangCaps` / `HostLayout` / `SetSlotResolver` components, `codegen.ActionFetcher`, `codegen.Output` with `CaptureInfo` / `ExtractSlot`, `codegen.MainFilterFuncBTF` (host wrapper helper), `codegen.PositionedError` (source-position-aware error type), the `host/xdp`, `host/tc`, `host/cgroupskb`, and `host/netfilter` adapter packages, and the error types listed above.
 - Everything else (AST nodes, IR types, vocab loader internals, parser internals, the `dslvocab.Bundled` cache) may change without notice.
 - `pkg/kunai/dsltest` (the gopacket-based packet-level harness) is **experimental** until 1.0: its `Runner` API and packet builders may change without notice. Pin a tagged version if downstream tests depend on it.
 - The protocol vocabulary is treated as part of the public surface: adding new protocols is non-breaking, while renaming or removing one is a breaking change.
 
 ## Related projects
 
-- [bpf-ninja](https://github.com/takehaya/bpf-ninja): non-invasive BPF observability tool (XDP, tc, and cgroup-skb hook points) that is the primary consumer of this package.
+- [bpf-ninja](https://github.com/takehaya/bpf-ninja): non-invasive BPF observability tool (XDP, tc, cgroup-skb, and netfilter hook points) that is the primary consumer of this package.
 - [cilium/ebpf](https://github.com/cilium/ebpf): the BPF assembler / loader the codegen targets.
 - [cloudflare/cbpfc](https://github.com/cloudflare/cbpfc): alternative classical-BPF (tcpdump syntax) compiler, used by bpf-ninja when `--cbpf` is set (legacy fallback).
 - [p4lang/p4c](https://github.com/p4lang/p4c): official P4 compiler, used in CI to verify our `.p4` vocab files stay within P4-16.
