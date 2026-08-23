@@ -12,9 +12,11 @@ package program
 // The test sends a known 0xA5 byte pattern over loopback TCP inside a
 // scratch cgroup with a pass-all cgroup-skb egress program attached and
 // captures with a dport filter. Assertions:
-//   (1) at least one record's IP total length exceeds its caplen,
-//       proving a non-linear skb was actually exercised (guard against
-//       the test silently passing on a linear-only path), and
+//   (1) at least one record's IP total length exceeds its caplen
+//       while caplen is below the snaplen limit, proving the window
+//       was cut by the head clamp and not by snaplen, i.e. a
+//       non-linear skb was actually exercised (guard against the test
+//       silently passing on a linear-only path), and
 //   (2) every captured byte after the TCP header equals the pattern.
 // On the unclamped code (2) fails with overwhelming probability: the
 // bytes past the head are whatever the kernel heap held.
@@ -181,8 +183,12 @@ func TestLinearHeadClampAtCgroupSKB(t *testing.T) {
 				records++
 				ihl := int(pkt[0]&0x0f) * 4
 				totLen := int(binary.BigEndian.Uint16(pkt[2:4]))
-				if totLen > caplen {
-					nonLinear++ // packet longer than the clamped window
+				// caplen == DefaultCapLen would mean the snaplen limit
+				// cut the record, which a fully linear GSO packet also
+				// produces; only a window shorter than both the packet
+				// and the snaplen proves the head clamp fired.
+				if totLen > caplen && caplen < DefaultCapLen {
+					nonLinear++
 				}
 				if len(pkt) < ihl+20 {
 					return
