@@ -26,7 +26,7 @@ hook 種別 (XDP / TC clsact / cgroup-skb / netfilter) は指定不要です。�
 
 cgroup-skb ターゲットには注意点が 2 つあります。パケットは network header (L3) 始まりで Ethernet ヘッダを含まないため、DSL チェインは `ipv4/...` または `ipv6/...` を起点にします (`eth/...` は警告付きで誤 parse になります)。pcap-ng 出力も LINKTYPE_RAW になり、Wireshark / tcpdump はバージョン nibble から v4/v6 を自動判定します。
 
-netfilter ターゲット (BPF_PROG_TYPE_NETFILTER、カーネル 6.4+) も同じく L3 始まりで、cgroup-skb と同じ注意点が当てはまります。target 指定は `-p <progID>` のみで、exit mode の verdict は `where action == NF_DROP / NF_ACCEPT` で絞れます (カーネルが netfilter BPF の返り値をこの 2 値に制限しているため、これで全 verdict です)。
+netfilter ターゲット (BPF_PROG_TYPE_NETFILTER、カーネル 6.4+) も同じく L3 始まりで、cgroup-skb と同じ注意点が当てはまります。target 指定は `-p <progID>` のみで、exit mode の verdict は `where action == NF_DROP` または `where action == NF_ACCEPT` で絞れます (両方拾うなら `or` でつなぎます) (カーネルが netfilter BPF の返り値をこの 2 値に制限しているため、これで全 verdict です)。
 
 旧 `--mode tc-entry` / `tc-exit` は `entry` / `exit` の deprecated alias として残っています (stderr に警告が出ます)。
 

@@ -1,8 +1,8 @@
 // Package netfilter provides kunai host adapters for hosts attached as
 // fentry / fexit on a netfilter (BPF_PROG_TYPE_NETFILTER, kernel 6.4+)
 // program. Importing this package is the canonical way to enable
-// netfilter specific DSL atoms (currently `where action ==
-// NF_DROP/NF_ACCEPT`) in a kunai filter; the kunai core itself holds no
+// netfilter specific DSL atoms (currently `where action == NF_DROP`
+// and `where action == NF_ACCEPT`) in a kunai filter; the kunai core itself holds no
 // netfilter knowledge — see pkg/kunai/codegen/caps.go for the
 // Capabilities contract this package conforms to.
 //
