@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.25.0](https://github.com/takehaya/bpf-ninja/compare/v0.24.0...v0.25.0) (2026-08-23)
+
+
+### 🎉 Features
+
+* **hook:** add netfilter (BPF_PROG_TYPE_NETFILTER) hook adapter ([#103](https://github.com/takehaya/bpf-ninja/issues/103)) ([0cc5a2b](https://github.com/takehaya/bpf-ninja/commit/0cc5a2b8dc00354d8b951ddf68c4a530ee3ec2d0))
+
+
+### 📝 Documentation
+
+* **tuning:** note the per-packet wakeup cost at low capture rates ([#104](https://github.com/takehaya/bpf-ninja/issues/104)) ([918ef58](https://github.com/takehaya/bpf-ninja/commit/918ef588033c9d74faffa34c3224dccc746997e3))
+
 ## [0.24.0](https://github.com/takehaya/bpf-ninja/compare/v0.23.1...v0.24.0) (2026-08-22)
 
 
