@@ -573,10 +573,18 @@ func runFilter(filter asm.Instructions, scratchFD, scanLen int) asm.Instructions
 		asm.JEq.Imm(asm.R0, 0, "exit"),
 		asm.StoreMem(asm.R10, -24, asm.R0, asm.DWord),
 
-		// ヘッダコピー: bpf_probe_read_kernel(scratch, scanLen, data)
+		// ヘッダコピー: bpf_probe_read_kernel(scratch, min(pkt_len, scanLen), data)。
+		// コピー長を R9 (線形ヘッド長) でもクランプする。固定 scanLen の
+		// ままだとヘッドが scanLen より短い skb で先の kernel メモリを読み、
+		// 読み先が unmapped だと helper が失敗して scratch 全体が
+		// ゼロ化され、本物のヘッダまで消えて filter が false negative
+		// になる。probe_read_kernel は size 0 も許容する
+		// (ARG_CONST_SIZE_OR_ZERO) ので下限のガードは不要。
 		asm.Mov.Reg(asm.R1, asm.R0),
+		asm.Mov.Reg(asm.R2, asm.R9),
+		asm.JLE.Imm(asm.R2, int32(scanLen), "copy_len_ok"),
 		asm.Mov.Imm(asm.R2, int32(scanLen)),
-		asm.Mov.Reg(asm.R3, asm.R7),
+		asm.Mov.Reg(asm.R3, asm.R7).WithSymbol("copy_len_ok"),
 		asm.FnProbeReadKernel.Call(),
 
 		// R0 = scratch 先頭, R1 = scratch + min(pkt_len, scanLen)
