@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/cilium/ebpf"
+	"github.com/cilium/ebpf/features"
 	"github.com/takehaya/bpf-ninja/internal/capture"
 	"github.com/takehaya/bpf-ninja/internal/filter"
 	"github.com/takehaya/bpf-ninja/internal/testutil"
@@ -312,4 +313,54 @@ func loadProbeOrFail(t *testing.T, xdpProg *ebpf.Program, funcName, filterExpr s
 	}
 	t.Cleanup(func() { _ = probe.Close() })
 	return probe
+}
+
+const netfilterFuncName = "netfilter_pass_test"
+
+// struct bpf_nf_ctx must be a REAL struct definition (not a forward
+// declaration): the tracing trampoline types the observer's args[0]
+// by resolving the target BTF's ctx type name against the kernel's
+// ctx_convert table, and a FWD kind fails the struct check — args[0]
+// then degrades to an untyped scalar and the prologue's ctx->skb read
+// is rejected. Mirrors real netfilter programs, which compile against
+// vmlinux.h and carry the full definition.
+const netfilterPassSource = `
+#include <linux/bpf.h>
+#define SEC(NAME) __attribute__((section(NAME), used))
+struct nf_hook_state;
+struct sk_buff;
+struct bpf_nf_ctx {
+	const struct nf_hook_state *state;
+	struct sk_buff *skb;
+};
+SEC("netfilter")
+int netfilter_pass_test(struct bpf_nf_ctx *ctx) { return 1; }
+char _license[] SEC("license") = "GPL";
+`
+
+// loadDummyNetfilter compiles and loads a minimal netfilter program
+// with BTF — peer of loadDummyCgroupSKB. Returns NF_ACCEPT (1); the
+// observer attaches as fentry/fexit, so no nf_hook link is needed for
+// the verifier-load matrix. Skips on kernels without
+// BPF_PROG_TYPE_NETFILTER (< 6.4).
+func loadDummyNetfilter(t testing.TB) *ebpf.Program {
+	t.Helper()
+	testutil.SkipIfNotRoot(t)
+	if err := features.HaveProgramType(ebpf.Netfilter); errors.Is(err, ebpf.ErrNotSupported) {
+		t.Skipf("BPF_PROG_TYPE_NETFILTER not supported by this kernel (need 6.4+)")
+	}
+
+	spec, err := ebpf.LoadCollectionSpec(testutil.CompileBPFSource(t, netfilterPassSource))
+	if err != nil {
+		t.Fatalf("loading collection spec: %v", err)
+	}
+
+	var objs struct {
+		Prog *ebpf.Program `ebpf:"netfilter_pass_test"`
+	}
+	if err := spec.LoadAndAssign(&objs, nil); err != nil {
+		t.Fatalf("loading netfilter program: %v", err)
+	}
+	t.Cleanup(func() { _ = objs.Prog.Close() })
+	return objs.Prog
 }
