@@ -654,7 +654,7 @@ pre-squash backup として、161 commit の細かい history を `pre-squash-ba
 
 ### 9.4 follow-up 項目
 
-`dsl-followups.md` に登録される後続作業のうち、本書の決定に直接由来するものは次のとおりです。
+本書の決定に直接由来する後続作業は次のとおりです。
 
 | # | 項目 | 由来 |
 |---|---|---|
@@ -678,7 +678,6 @@ pre-squash backup として、161 commit の細かい history を `pre-squash-ba
 - [`dsl-grammar.md`](./dsl-grammar.md) (formal EBNF + 例文。本書の具象構文側)
 - [`dsl-internals.md`](./dsl-internals.md) (内部実装ノート、ABI、vocab 開発ガイド)
 - [`dsl-usage.md`](./dsl-usage.md) (エンドユーザー向け CLI ガイド)
-- [`dsl-followups.md`](./dsl-followups.md) (残課題リスト。F1-F13 / 完了状態 / 未着手項目)
 
 # Part II. 形式仕様 (構文論 + 操作的意味論)
 
@@ -1133,7 +1132,7 @@ op_c(n, v_n) = b                             ───────────�
   ⟨w[x ↦ stack[i]], σ⟩ ⇓_P true                ⟨w[x ↦ stack[i]], σ⟩ ⇓_P true
 ─────────────────────────────                ─────────────────────────────
 ⟨any(w), σ⟩ ⇓_P true                         ⟨all(w), σ⟩ ⇓_P true
-                                             
+
 (空 stack のとき: any ⇓ false, all ⇓ true)
 ```
 

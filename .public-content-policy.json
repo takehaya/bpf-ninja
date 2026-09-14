@@ -1,0 +1,12 @@
+{
+  "history_baseline": "92deed292f4f169b11155f7b275b6fef54e61b71",
+  "forbidden_paths": [
+    "private/",
+    "docs/paper/",
+    "docs/ja/old/",
+    "issues/",
+    "docs/ja/dsl-followups.md",
+    "docs/ja/TODO.md",
+    "docs/ja/idea.md"
+  ]
+}

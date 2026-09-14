@@ -2,6 +2,9 @@
 pre-commit:
   parallel: true
   commands:
+    public-content:
+      run: python3 scripts/check-public-content.py --index
+
     trailing-whitespace:
       glob: "**/*"
       exclude:
@@ -53,7 +56,7 @@ pre-commit:
       run: |
         failed=0
         for f in {staged_files}; do
-          if ! jq -e empty "$f" >/dev/null 2>&1; then
+          if ! jq empty "$f" >/dev/null 2>&1; then
             echo "JSON parse error in $f"
             jq empty "$f"
             failed=1
@@ -76,6 +79,12 @@ pre-commit:
     clang-format:
       glob: "**/*.{c,h}"
       run: clang-format -i {staged_files}
+
+pre-push:
+  commands:
+    public-content:
+      run: python3 scripts/check-public-content.py --pre-push
+      use_stdin: true
 
 commit-msg:
   commands:

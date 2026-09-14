@@ -1,0 +1,27 @@
+name: Public content
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  public-content:
+    if: github.event.deleted != true
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Test the publication guard
+        run: python3 -m unittest discover -s scripts/tests -p 'test_public_content.py'
+
+      - name: Check commits to be published
+        env:
+          CONTENT_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          CONTENT_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: python3 scripts/check-public-content.py --head "$CONTENT_HEAD" --base "$CONTENT_BASE"

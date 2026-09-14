@@ -681,7 +681,7 @@ tag は set lookup がヒットしたときに host スタックの専用スロ�
 
 ### 5.5 動作確認
 
-`pkg/kunai/protocols/*.p4` は、本物の p4c で `--parse-only` を通過するように CI (`.github/workflows/p4c-check.yml`) で検証しています。ローカルでは `make p4c-check` または `./scripts/p4c-check.sh` を使います。詳細は [`dsl-followups.md`](./dsl-followups.md) P0-4 を参照してください。
+`pkg/kunai/protocols/*.p4` は、本物の p4c で `--parse-only` を通過するように CI (`.github/workflows/p4c-check.yml`) で検証しています。ローカルでは `make p4c-check` または `./scripts/p4c-check.sh` を使います。CI と同じ検査をこのコマンドで実行できます。
 
 加えて `go test ./pkg/kunai/vocab/...` が `dslvocab.Bundled` 経由で全 `.p4` を 1 度パースしているので、Go test が通れば、全 vocab が p4lite subset (= P4-16 の strict subset) に収まることの二重確認になります。
 
@@ -1020,7 +1020,7 @@ callback の per-iter 構造 (Phase 2 retry 設計) は次のとおりです。
 4. Lifted slot-store prelude として、kind byte を R1 に load し、where / capture が query した option ごとに `JNE R1, kindByte, .skip; StoreMem R2, slot, R3; .skip:` を flat に並べます。slot は main frame の per-LayerInstance アドレスで、callback からは `R2 + (slot - bpfLoopCtxOffsetSlot)` (`mainStackOffsetFromCb` helper) で reach します。
 5. cascade dispatch を行います。kind 比較の後、各 case body で extract / advance と R3 store-back を実施します。
 
-prelude を cascade の outside に置くのが重要です。per-iter の slot 状態は kind byte だけの関数になり、verifier が、どの case が走ったかとどの slot が変わったかの組み合わせを per-iter で track せずに済みます。これが 6.12+ の 1M-insn 限界に収まる根拠です。per-case slot store で実施した失敗パターンは、`dsl-followups.md` B-3 の 2026-05-04 試行記録に残してあります。
+prelude を cascade の outside に置くのが重要です。per-iter の slot 状態は kind byte だけの関数になり、verifier が、どの case が走ったかとどの slot が変わったかの組み合わせを per-iter で track せずに済みます。これが 6.12+ の 1M-insn 限界に収まる根拠です。
 
 Demand-driven 割当では、codegen は `collectQueriedOptions(p)` (`pkg/kunai/codegen/option_demand.go`) で program 全体の where、各 layer の bracket predicate、各 capture を walk し、参照された (layer, option) ペアだけ slot を割り当てます。`where tcp.options.MSS.value == 1460` だけなら slot は 1 個です (per-layer × per-aux で最大 5 まで、`dynamicAuxMaxSlotsPerLayer` = TCP の queryable kind 数)。layer entry では `emitDynamicAuxSentinelInit` が各 slot を sentinel `-1` で zero-init します。extract されなかった option は sentinel のまま残り、where 評価で reject されます。
 
@@ -1123,7 +1123,7 @@ mechanism 1 / 7 と相補的な点は次のとおりです。
 | trailer end alignment | ◎ (bulk advance) | × (EOL で中位置停止) | ◎ (counter exhaustion で末尾) |
 | per-element extract | × (bulk skip のみ) | ◎ (kind ごと aux) | △ (counter walk 自体は extract なし、7 と併用) |
 
-production vocab は mechanism 1 / 7 のままで、E2E 検証は `pkg/kunai/dsltest/parser_counter_test.go` の合成 IPv4 vocab を使います。検証ケースは、IHL=5 の fast path、IHL=6/7 (1-2 iter)、IHL=15 (10 iter、`IPV4_MAX_DEPTH = 11`) です。bundled 移行のスコープと動機は `dsl-followups.md` B-2 / B-5 を参照してください。
+production vocab は mechanism 1 / 7 のままで、E2E 検証は `pkg/kunai/dsltest/parser_counter_test.go` の合成 IPv4 vocab を使います。検証ケースは、IHL=5 の fast path、IHL=6/7 (1-2 iter)、IHL=15 (10 iter、`IPV4_MAX_DEPTH = 11`) です。
 
 ### 6.6 DSL access の体系
 
@@ -1155,7 +1155,7 @@ implementation 詳細は、`pkg/kunai/codegen/parser_state.go` の state graph e
 
 ## 7. 制限と将来拡張
 
-詳細は [`dsl-followups.md`](./dsl-followups.md) を参照してください。本節では制約マップだけを簡潔に列挙します。
+本節では現在の制約を簡潔に列挙します。
 
 ### 7.1 現状の MVP 制限
 
@@ -1186,5 +1186,4 @@ implementation 詳細は、`pkg/kunai/codegen/parser_state.go` の state graph e
 - [`dsl-overview.md`](./dsl-overview.md): index
 - [`dsl-usage.md`](./dsl-usage.md): ユーザー向け CLI ガイド
 - [`dsl-grammar.md`](./dsl-grammar.md): formal EBNF + 例文
-- [`dsl-followups.md`](./dsl-followups.md): 残作業
 - [`dsl-benchmark.md`](./dsl-benchmark.md): ベンチ方法論

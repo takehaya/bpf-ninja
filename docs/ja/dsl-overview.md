@@ -14,7 +14,6 @@ bpf-ninja の filter 式である DSL のドキュメント index です。GTP-U
 | 型 / 演算子の意味を知りたい (異幅 cmp、bit-slice、Bool、CIDR、各種 literal) | [`dsl-types.md` Part I](./dsl-types.md) (実装者向け実用仕様) |
 | 形式仕様を読みたい (抽象構文、typing judgments、操作的意味論) | [`dsl-types.md` Part II](./dsl-types.md#part-ii-形式仕様-構文論--操作的意味論) (§11-§15) |
 | 中身をレビューしたい (codegen / verifier) | [`dsl-internals.md` §2.3-§2.5](./dsl-internals.md#23-パッケージごとのツアー-依存順leaf--root) (パッケージ別ツアー + キー概念 + チェックリスト) |
-| 何が残っているか見たい | [`dsl-followups.md`](./dsl-followups.md) |
 | 性能比較したい | [`dsl-benchmark.md`](./dsl-benchmark.md) |
 | 設計思想を物語形式で読みたい (連載 3 部作) | [`kunai-overview-article.md`](./kunai-overview-article.md) → [`kunai-dsl-deepdive.md`](./kunai-dsl-deepdive.md) → [`kunai-codegen-deepdive.md`](./kunai-codegen-deepdive.md) |
 
@@ -27,7 +26,6 @@ bpf-ninja の filter 式である DSL のドキュメント index です。GTP-U
 | [`dsl-types.md`](./dsl-types.md) | 言語仕様書 Part I (型・widening・fit check・エラーカタログ・実装ステージング) + Part II (抽象構文・typing rules・操作的意味論・soundness sketch) | ~1340 |
 | [`dsl-internals.md`](./dsl-internals.md) | 設計動機 / アーキテクチャ / パッケージ別ツアー / codegen ABI / vocab 開発ガイド / P4-16 互換性 / レビューチェックリスト | ~960 |
 | [`dsl-vocab-authoring.md`](./dsl-vocab-authoring.md) | vocab 開発の hands-on ガイド。.p4 の書き方全規約 (const / parser block / annotation)、可変長 8 機構の書き分け、loader 制約早見表、テスト手順、実例 walkthrough | ~570 |
-| [`dsl-followups.md`](./dsl-followups.md) | 残作業 (P0 完 / P1 完 / P2 / B / P3 / P4 階層) | ~470 |
 | [`dsl-benchmark.md`](./dsl-benchmark.md) | cbpfc vs DSL のベンチ方法論 | ~160 |
 | [`kunai-overview-article.md`](./kunai-overview-article.md) | 連載 3 部作の第 1 回。なぜ kunai を作ったか / DSL で書ける式 / 全体アーキ (読み物) | ~250 |
 | [`kunai-dsl-deepdive.md`](./kunai-dsl-deepdive.md) | 連載 3 部作の第 2 回。lexer / parser / resolver の実装読み込み (読み物) | ~340 |
