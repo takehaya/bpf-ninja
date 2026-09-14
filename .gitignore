@@ -162,3 +162,9 @@ __pycache__/
 
 # Claude-specific instructions stay local; AGENTS.md is shared via Git.
 /CLAUDE.md
+
+# Workshop publication contains the selected paper artifacts only.
+/docs/publications/ebpf_workshop_2026/old
+/docs/publications/ebpf_workshop_2026/review_memo
+/docs/publications/ebpf_workshop_2026/slides
+/docs/publications/ebpf_workshop_2026/paper/sections/attic

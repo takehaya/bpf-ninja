@@ -7,6 +7,10 @@
     "issues/",
     "docs/ja/dsl-followups.md",
     "docs/ja/TODO.md",
-    "docs/ja/idea.md"
+    "docs/ja/idea.md",
+    "docs/publications/ebpf_workshop_2026/old/",
+    "docs/publications/ebpf_workshop_2026/review_memo/",
+    "docs/publications/ebpf_workshop_2026/slides/",
+    "docs/publications/ebpf_workshop_2026/paper/sections/attic/"
   ]
 }
