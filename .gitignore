@@ -160,6 +160,5 @@ dist
 /docs/ja/idea.md
 __pycache__/
 
-# AI assistant instruction files (kept local, untracked)
+# Claude-specific instructions stay local; AGENTS.md is shared via Git.
 /CLAUDE.md
-/AGENTS.md
