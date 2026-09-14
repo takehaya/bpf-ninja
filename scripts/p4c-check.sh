@@ -5,7 +5,7 @@
 # a specific upstream tag. The image bakes in a libboost-iostreams
 # workaround and copies in the wrapper script that iterates each
 # .p4 vocab file with `#include <core.p4>` prepended. See
-# docs/ja/dsl-followups.md P0-4 for context.
+# docs/ja/dsl-internals.md for context.
 #
 # Usage:    ./scripts/p4c-check.sh
 # Env:      P4C_CHECK_IMAGE  (default: bpf-ninja-p4c-check:local)

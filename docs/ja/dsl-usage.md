@@ -858,5 +858,4 @@ sudo bpf-ninja -i eth0 --mode xdp --set "subs=$PIN" \
 - [dsl-overview.md](./dsl-overview.md): DSL ドキュメント index
 - [dsl-grammar.md](./dsl-grammar.md): formal EBNF + 例文
 - [dsl-types.md](./dsl-types.md): 型システム (型・暗黙変換・widening・fit check・エラーカタログ)
-- [dsl-followups.md](./dsl-followups.md): 残作業
 - vocab 一覧: `pkg/kunai/protocols/*.p4`
