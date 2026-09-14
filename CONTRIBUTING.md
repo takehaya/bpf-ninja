@@ -4,6 +4,13 @@ Keep user guides, architecture documentation, and reproducible public examples
 in this repository. Keep unpublished drafts, internal issue notes, review memos,
 and raw research data in a separate private repository.
 
+For maintainers, the private repository is `bpf-ninja-private`, checked out
+alongside `bpf-ninja`. From this public repository's root, start with
+`../bpf-ninja-private/README.md`; it identifies the storage locations and links
+to `docs/private-document-workflow.md` inside the private repository. Follow
+that workflow when creating, moving, or preparing publication of private
+documents. The private repository requires access granted to its collaborators.
+
 The reserved private paths are listed in `.public-content-policy.json` and
 excluded by `.gitignore`. Published papers and talks belong under
 `docs/publications/<name>/`. Prepare a separate public version and copy only
