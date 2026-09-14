@@ -308,8 +308,7 @@ sudo dnf install libpcap-devel clang
 
 ## Development
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution checks and the location
-of the maintainers' private document repository and its workflow.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution checks.
 
 ### Build
 
