@@ -7,6 +7,9 @@ DSL for Nested Encapsulation Packet Filtering on eBPF**.
 - `data/`: measurements used by the evaluation; see the [data guide](data/README.md).
 - `analysis/`: figure generation and numerical summaries.
 
+The paper PDF will be added after formal publication, together with the final
+citation and DOI link. The sources below can already be built locally.
+
 ## Build the paper
 
 From the repository root:
