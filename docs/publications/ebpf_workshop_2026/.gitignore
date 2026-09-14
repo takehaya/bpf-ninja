@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.aux
+*.bbl
+*.blg
+*.fdb_latexmk
+*.fls
+*.log
+*.out
+*.synctex.gz
+/paper/main.pdf
+/paper/kunai-ebpf26-camera-ready-src.tar.gz
