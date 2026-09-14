@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.25.1](https://github.com/takehaya/bpf-ninja/compare/v0.25.0...v0.25.1) (2026-09-14)
+
+
+### 📝 Documentation
+
+* clarify where private documents live ([#108](https://github.com/takehaya/bpf-ninja/issues/108)) ([626f85e](https://github.com/takehaya/bpf-ninja/commit/626f85ec512655c38945cf8d22c04b68cc2a5c65))
+* remove private workspace locations from public guides ([#109](https://github.com/takehaya/bpf-ninja/issues/109)) ([5b8f2b6](https://github.com/takehaya/bpf-ninja/commit/5b8f2b6b3e4f4508d3270e0a3410554f5a493d58))
+* track shared agent instructions ([#110](https://github.com/takehaya/bpf-ninja/issues/110)) ([c05dfc2](https://github.com/takehaya/bpf-ninja/commit/c05dfc2148a84d24c0ddf90848d4474c524a07a8))
+
+
+### 🔧 Miscellaneous Chores
+
+* **docs:** separate private material and guard public content ([#106](https://github.com/takehaya/bpf-ninja/issues/106)) ([b87f0cb](https://github.com/takehaya/bpf-ninja/commit/b87f0cb31fc984f504d6a4c8504769e583e6a964))
+
 ## [0.25.0](https://github.com/takehaya/bpf-ninja/compare/v0.24.0...v0.25.0) (2026-08-23)
 
 
