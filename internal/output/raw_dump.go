@@ -4,7 +4,7 @@
 //
 // On-disk layout per file:
 //
-//	[ 0..16] magic "XNINJA-RAW-V1\0\0\0"
+//	[ 0..16] magic "XNINJA-RAW-V2\0\0\0" (V2: 28-byte record metadata with the frame identity; V1 had 20)
 //	[16..20] u32 endian magic 0x12345678 (big-endian on wire)
 //	[20..28] u64 wall_offset_ns LE — wall_clock - clock_monotonic
 //	[28..32] u32 reserved
@@ -25,7 +25,7 @@ import (
 )
 
 var (
-	RawDumpMagic       = []byte("XNINJA-RAW-V1\x00\x00\x00") // 16 bytes
+	RawDumpMagic       = []byte("XNINJA-RAW-V2\x00\x00\x00") // 16 bytes
 	RawDumpEndianMagic = uint32(0x12345678)
 )
 

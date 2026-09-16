@@ -396,6 +396,32 @@ sudo bpf-ninja --mode xdp -i eth0 "eth/ipv4/tcp[dport==443]"
 
 DSL / tcpdump の両方とも `--mode xdp` で完全に load 可能です。kunai codegen が packet-pointer-safe な bound check を emit する設計で、F14 として完了済みです。IPv4 / IPv6 / alternation / 各種 quantifier / capture / where のすべてで verifier 通過を確認しています。詳細は `internal/program/program_xdp_test.go::xdpNativeDSLExprs` を参照してください。
 
+## 入口と出口の両方に一致した packet だけを取る (`--mode` を 2 回)
+
+`--mode` は繰り返せる。`--mode entry` と `--mode exit` を両方書くと、同じプログラムの入口 (fentry) と出口 (fexit) に同時に付き、**両方の条件に一致した packet だけ**を出す。式は `--mode` ごとに 1 つ (引用符で囲んで) 続ける。
+入口の条件はプログラムが受け取ったままの packet に対して、出口の条件はプログラムが返した後の packet (decap や書き換えの後) と判定 (`where action == ...`) に対して評価する。
+
+```bash
+# decap 後に捨てられた packet を、decap 前の姿 (outer header 付き) と decap 後の姿の両方で
+sudo bpf-ninja -i eth0 \
+  --mode entry "eth/ipv4/udp[dport==6081]" \
+  --mode exit  "eth/ipv4/tcp where action == XDP_DROP" \
+  -w both.pcapng
+
+# 同じ条件で、decap 前の姿だけ
+sudo bpf-ninja -i eth0 --mode entry "eth/ipv4/udp[dport==6081]" --mode exit "eth where action == XDP_DROP" --emit entry
+```
+
+- `--mode` が 1 つなら従来どおり (位置引数を空白でつないだものが式)。2 つなら式は `--mode` と同じ数だけ (それぞれ 1 引数)、または 0 個 (両方とも無条件)。
+- 入口の姿は出口の判定が出るまで CPU ごとの一時領域 (hold) に取り置き、出口で両方の条件が揃ったときだけ ring に出す。入口の条件に一致した packet にはこの取り置きのコピーが掛かる (`--emit exit` を除く)。入口の条件を空にすると全 packet を取り置くので警告が出る。
+- `--emit both` (既定) は入口の姿と出口の姿を 2 record (同じ id、同じ判定付き)、`--emit entry` は入口の姿だけ、`--emit exit` は出口の姿だけ (取り置きは印だけで一番安い)。`--emit` は `--mode` が 2 つのときだけ書ける。迷ったら `both`。
+- 対象は 1 つの関数に限る (`--func` の複数指定や複数プログラムとの併用は不可)。PREEMPT_RT の kernel は対象外。
+- 出口の式は「出口で見える layout」に対して書く。上の例で対象が outer UDP を剥がすなら、出口では inner の Ethernet が先頭に来ているので `eth/ipv4/tcp` と書く。同じ packet でも入口と出口で式が変わるのは、実際に header が変わっているからである。
+- pcap-ng の layout は exit mode と同じ verdict ごとの interface (`xdp:DROP`, `xdp:PASS`, ...) に、入口 record 用の `xdp:entry` を足したもの。
+- すべての record に `epb_packetid` option (pcap-ng 標準の「同じ packet を別の interface で見た印」) として、その hook の packet identity が入る。XDP なら `xdp_buff->data_hard_start` (frame buffer の先頭)、tc / cgroup-skb なら `sk_buff` のアドレス、netfilter なら `bpf_nf_ctx->skb`。同じ実行の入口と出口では値が変わらず、同じ CPU でその buffer が使われている間は他の packet が載らないので、同じ shard (CPU) 内で「同じ id を持つ直前の entry record」がその packet の入口の姿になる。buffer は解放後に再利用されるので、時間をまたいで id が一意なわけではない。
+- raw-dump (`--raw-dump`) の record metadata は 28 byte になり、offset 20 に identity が入る (形式 V2。V1 の dump は `convert` で読めない)。
+- `--fast-reader` の split 出力を `merge` した pcap-ng は gopacket の reader を通るので `epb_packetid` が落ちる。対応づけが要るときは shard ごとの pcap-ng か raw-dump を使う。
+
 ## 出力ファイルレイアウト (per-CPU sharded)
 
 R22 以降、ringbuf は per-CPU shard (`BPF_MAP_TYPE_ARRAY_OF_MAPS` の inner は個別の `BPF_MAP_TYPE_RINGBUF`) で構成されます。user-space 側も shard ごとに 1 goroutine + 1 file で受けるので、`-w path.pcap` を指定したときの出力は次のようになります。

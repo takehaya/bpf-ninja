@@ -62,6 +62,13 @@ type Config struct {
 	// HookName prefixes lazily-added interfaces for verdicts outside
 	// Actions ("<HookName>:UNKNOWN(<n>)").
 	HookName string
+
+	// MultiPoint selects the entry+exit layout of one run: the verdict
+	// interfaces of exit mode plus one "<HookName>:entry" interface for
+	// entry records (Packet.Mode == 0), and every EPB carries
+	// epb_packetid = Packet.Frame so the entry and exit records of one
+	// invocation can be paired. Implies IsFexit.
+	MultiPoint bool
 }
 
 // linkTypeOrDefault resolves the zero value to Ethernet.
@@ -81,6 +88,7 @@ type Writer struct {
 	file       *os.File      // non-nil only when writing to a file (not stdout)
 	actionToID map[uint32]int
 	nameToID   map[string]int // exit mode: interface name → id, for the shard merge
+	entryID    int            // multi-point: interface id of entry records
 
 	flushStop chan struct{}
 	flushDone chan struct{}
@@ -116,7 +124,9 @@ func NewWriter(path string, cfg Config) (*Writer, error) {
 	// gopacket writer for its per-action multi-interface layout. Set
 	// BPF_NINJA_FAST_PCAPNG=0 to force the gopacket writer.
 	useFast := os.Getenv("BPF_NINJA_FAST_PCAPNG") != "0" && !cfg.IsFexit
-	if useFast {
+	if cfg.MultiPoint {
+		err = w.initMultiPoint(dest)
+	} else if useFast {
 		w.fastWriter, err = NewFastNgWriter(dest, cfg.linkTypeOrDefault())
 	} else if cfg.IsFexit {
 		err = w.initExitMode(dest)
@@ -163,6 +173,47 @@ func (w *Writer) initExitMode(dest io.Writer) error {
 	return nil
 }
 
+// initMultiPoint creates the verdict interfaces plus an entry interface
+// on the fast writer (gopacket's NgWriter cannot emit EPB options, and
+// the pairing id is an EPB option).
+func (w *Writer) initMultiPoint(dest io.Writer) error {
+	names := make([]string, 0, len(w.cfg.Actions)+1)
+	w.actionToID = map[uint32]int{}
+	w.nameToID = map[string]int{}
+	for i, a := range w.cfg.Actions {
+		names = append(names, a.Name)
+		w.actionToID[a.Value] = i
+		w.nameToID[a.Name] = i
+	}
+	entryName := w.cfg.HookName + ":entry"
+	names = append(names, entryName)
+	w.entryID = len(names) - 1
+	w.nameToID[entryName] = w.entryID
+	fw, err := NewFastNgWriterIfaces(dest, w.cfg.linkTypeOrDefault(), names)
+	if err != nil {
+		return err
+	}
+	w.fastWriter = fw
+	return nil
+}
+
+// addInterface appends a named interface on whichever writer is active.
+func (w *Writer) addInterface(name string) (int, error) {
+	if w.fastWriter != nil {
+		return w.fastWriter.AddInterface(name)
+	}
+	return w.pcapWriter.AddInterface(w.ngInterface(name))
+}
+
+// ifaceIDForPacket routes a record to its interface: entry records to
+// the entry interface in multi-point mode, everything else by verdict.
+func (w *Writer) ifaceIDForPacket(pkt *capture.Packet) int {
+	if w.cfg.MultiPoint && pkt.Mode == 0 {
+		return w.entryID
+	}
+	return w.ifaceIDForAction(pkt.Action)
+}
+
 // ngInterface builds the pcap-ng interface block shared by every
 // exit-mode interface: same link type, only the name differs.
 func (w *Writer) ngInterface(name string) pcapgo.NgInterface {
@@ -189,7 +240,7 @@ func (w *Writer) ifaceIDForAction(action uint32) int {
 		prefix = "verdict"
 	}
 	name := fmt.Sprintf("%s:UNKNOWN(%d)", prefix, int32(action))
-	id, err := w.pcapWriter.AddInterface(w.ngInterface(name))
+	id, err := w.addInterface(name)
 	if err != nil {
 		id = 0
 	}
@@ -206,7 +257,7 @@ func (w *Writer) ifaceIDByName(name string) int {
 	if id, ok := w.nameToID[name]; ok {
 		return id
 	}
-	id, err := w.pcapWriter.AddInterface(w.ngInterface(name))
+	id, err := w.addInterface(name)
 	if err != nil {
 		id = 0
 	}
@@ -223,6 +274,9 @@ func (w *Writer) Write(pkt capture.Packet) error {
 	w.flushMu.Lock()
 	defer w.flushMu.Unlock()
 	if w.fastWriter != nil {
+		if w.cfg.MultiPoint {
+			return w.fastWriter.WritePacketID(pkt.Timestamp, pkt.Data, w.ifaceIDForPacket(&pkt), pkt.Frame)
+		}
 		return w.fastWriter.WritePacket(pkt.Timestamp, pkt.Data)
 	}
 	ci := gopacket.CaptureInfo{
@@ -246,6 +300,11 @@ func (w *Writer) writePacketIface(ts time.Time, data []byte, ifaceID int) error 
 	w.flushMu.Lock()
 	defer w.flushMu.Unlock()
 	if w.fastWriter != nil {
+		if w.cfg.MultiPoint {
+			// Shard merge re-reads pcap-ng through gopacket, which drops
+			// EPB options, so the packet id is 0 here (raw-dump keeps it).
+			return w.fastWriter.WritePacketID(ts, data, ifaceID, 0)
+		}
 		return w.fastWriter.WritePacket(ts, data)
 	}
 	ci := gopacket.CaptureInfo{
@@ -272,7 +331,13 @@ func (w *Writer) WriteBatch(pkts []capture.Packet) error {
 	if w.fastWriter != nil {
 		for i := range pkts {
 			p := &pkts[i]
-			if err := w.fastWriter.WritePacket(p.Timestamp, p.Data); err != nil {
+			var err error
+			if w.cfg.MultiPoint {
+				err = w.fastWriter.WritePacketID(p.Timestamp, p.Data, w.ifaceIDForPacket(p), p.Frame)
+			} else {
+				err = w.fastWriter.WritePacket(p.Timestamp, p.Data)
+			}
+			if err != nil {
 				return err
 			}
 		}

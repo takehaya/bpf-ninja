@@ -29,7 +29,11 @@ type Probe struct {
 	EventsMap *ebpf.Map
 	InnerMaps []*ebpf.Map // non-nil only in per-CPU sharded mode
 	IsFexit   bool
-	Warnings  []string // resolver / codegen non-fatal notices; CLI prints to stderr
+	// MultiPoint is set when entry and exit stages were attached in one
+	// run (LoadMultiPoint with >1 stage): records of both modes share the
+	// ringbuf and the writer keys entry records to their own interface.
+	MultiPoint bool
+	Warnings   []string // resolver / codegen non-fatal notices; CLI prints to stderr
 
 	// --arg-echo diagnostic mode: non-nil EchoRing means this probe emits
 	// the target function's integer args (EchoParams, in order) to a
@@ -126,8 +130,49 @@ func LoadMultiExit(targets []attach.Target, filterExpr string, filters []filter.
 // type, not the individual target) and then attaches one tracing program
 // per (target prog, func) pair against it.
 func loadMulti(targets []attach.Target, filterExpr string, filters []filter.TargetFilters, isFexit, useDSL bool, sets []*setmap.Set) (*Probe, error) {
+	return LoadMultiPoint(targets, []Stage{{IsFexit: isFexit, Expr: filterExpr}}, filters, useDSL, sets, EmitBoth)
+}
+
+// Stage is one capture point on the same set of targets — the entry
+// (fentry) or the exit (fexit) of each target function — with its own
+// filter expression. The entry expression is evaluated against the
+// packet as the program received it; the exit expression against the
+// packet as the program left it (after adjust_head, encap, decap, …)
+// plus the verdict (`where action == …`).
+type Stage struct {
+	IsFexit bool
+	Expr    string
+}
+
+// LoadMultiPoint attaches the given stages of every target into one
+// shared sharded ringbuf.
+//
+// One stage is the plain entry or exit capture. Two stages (entry and
+// exit) are a gated capture: a packet is emitted only if it matched the
+// entry filter as the program received it AND the exit filter as the
+// program left it (plus the verdict). The entry image is kept in a
+// per-CPU hold slot until the exit decides (see gated.go); emit selects
+// whether the entry image, the exit image, or both are emitted. Both
+// records carry the verdict and the same Packet.Frame identity
+// (hook.Identity) and land in the same per-CPU shard, entry first.
+func LoadMultiPoint(targets []attach.Target, stages []Stage, filters []filter.TargetFilters, useDSL bool, sets []*setmap.Set, emit Emit) (*Probe, error) {
 	if len(targets) == 0 {
 		return nil, fmt.Errorf("no attach targets")
+	}
+	if len(stages) == 0 {
+		return nil, fmt.Errorf("no capture stages")
+	}
+	gated := len(stages) > 1
+	if gated {
+		if len(stages) != 2 || stages[0].IsFexit == stages[1].IsFexit {
+			return nil, fmt.Errorf("a gated capture takes exactly one entry and one exit stage")
+		}
+		if stages[0].IsFexit { // entry first, so comp[0] is the entry stage
+			stages = []Stage{stages[1], stages[0]}
+		}
+		if len(targets) != 1 {
+			return nil, fmt.Errorf("a gated (entry + exit) capture takes exactly one target function; the per-CPU hold cannot follow nested or multi-stage targets")
+		}
 	}
 	if filters != nil && len(filters) != len(targets) {
 		return nil, fmt.Errorf("filters length %d does not match %d targets", len(filters), len(targets))
@@ -149,25 +194,41 @@ func loadMulti(targets []attach.Target, filterExpr string, filters []filter.Targ
 		}
 	}
 
-	// DSL `field in @set` extracts packet fields into a host key buffer;
-	// build the slot resolver so kunai emits the extraction stores.
-	var slots *pktSetSlots
-	if len(sets) > 0 {
-		slots = newPktSetSlots(sets)
+	// One compile per stage: entry and exit see different packet
+	// layouts and capabilities (the verdict only exists at exit).
+	type compiled struct {
+		out     codegen.Output
+		slots   *pktSetSlots
+		pktRefs []string
 	}
-	filterOut, err := compileFilterWithSlots(filterExpr, useDSL, isFexit, progType, slots)
-	if slots != nil && slots.allocErr() != nil {
-		return nil, slots.allocErr() // clearer than the downstream codegen error
-	}
-	if err != nil {
-		return nil, err
-	}
-	pktRefs := referencedSets(filterOut.Extractions)
-	if SnaplenOverride > 0 {
-		filterOut.Capture.MaxCapLen = SnaplenOverride
+	comp := make([]compiled, len(stages))
+	var anyFexit, anyMain bool
+	for i, st := range stages {
+		// DSL `field in @set` extracts packet fields into a host key buffer;
+		// build the slot resolver so kunai emits the extraction stores.
+		var slots *pktSetSlots
+		if len(sets) > 0 {
+			slots = newPktSetSlots(sets)
+		}
+		out, err := compileFilterWithSlots(st.Expr, useDSL, st.IsFexit, progType, slots)
+		if slots != nil && slots.allocErr() != nil {
+			return nil, slots.allocErr() // clearer than the downstream codegen error
+		}
+		if err != nil {
+			return nil, err
+		}
+		if SnaplenOverride > 0 {
+			out.Capture.MaxCapLen = SnaplenOverride
+		}
+		comp[i] = compiled{out: out, slots: slots, pktRefs: referencedSets(out.Extractions)}
+		anyFexit = anyFexit || st.IsFexit
+		anyMain = anyMain || len(out.Main) > 0
 	}
 
-	label, attachType := tracingLabel(isFexit)
+	label, _ := tracingLabel(anyFexit)
+	if gated {
+		label = "gated"
+	}
 
 	outerMap, innerMaps, err := createShardedRingbuf(label)
 	if err != nil {
@@ -175,18 +236,43 @@ func loadMulti(targets []attach.Target, filterExpr string, filters []filter.Targ
 	}
 
 	probe := &Probe{
-		EventsMap: outerMap, InnerMaps: innerMaps, IsFexit: isFexit,
-		Warnings: filterOut.Warnings,
-		maps:     append([]*ebpf.Map{outerMap}, innerMaps...),
+		EventsMap: outerMap, InnerMaps: innerMaps,
+		IsFexit: anyFexit, MultiPoint: gated,
+		maps: append([]*ebpf.Map{outerMap}, innerMaps...),
+	}
+	for _, c := range comp {
+		probe.Warnings = append(probe.Warnings, c.out.Warnings...)
+	}
+
+	// Gated capture: the per-CPU hold slot carrying the entry image
+	// (header only when just the exit image is emitted).
+	holdFD := 0
+	entryCapLen := 0
+	if gated {
+		entryCapLen = comp[0].out.Capture.MaxCapLen
+		if entryCapLen <= 0 {
+			entryCapLen = defaultCapLen
+		}
+		holdMap, err := ebpf.NewMap(&ebpf.MapSpec{
+			Name: "ninja_gated_hold", Type: ebpf.PerCPUArray,
+			KeySize: 4, ValueSize: uint32(holdValueSize(emit, entryCapLen)), MaxEntries: 1,
+		})
+		if err != nil {
+			_ = probe.Close()
+			return nil, fmt.Errorf("creating hold map: %w", err)
+		}
+		probe.maps = append(probe.maps, holdMap)
+		holdFD = holdMap.FD()
 	}
 
 	// Filter scratch buffer: kunai/cBPF eval cannot read xdp_buff packet
 	// memory as a scalar region, so runFilter copies a 256-byte prefix
 	// into PTR_TO_MAP_VALUE first. Output staging is no longer needed
 	// here — the bpf_ringbuf_reserve+submit path writes the metadata +
-	// packet bytes directly into the reserved ring slot.
+	// packet bytes directly into the reserved ring slot. Stages run
+	// sequentially on a CPU, so one per-CPU scratch serves all of them.
 	scratchFD := 0
-	if len(filterOut.Main) > 0 {
+	if anyMain {
 		scratchMap, err := ebpf.NewMap(&ebpf.MapSpec{
 			Name: fmt.Sprintf("ninja_%s_sc", label), Type: ebpf.PerCPUArray,
 			KeySize: 4, ValueSize: scratchBufSize, MaxEntries: 1,
@@ -199,21 +285,34 @@ func loadMulti(targets []attach.Target, filterExpr string, filters []filter.Targ
 		scratchFD = scratchMap.FD()
 	}
 
-	// Instructions are built per target: the packet-filter part depends
-	// only on progType and the shared maps, but arg-filter offsets are
-	// resolved against each target func's own BTF param layout.
+	// Instructions are built per (target, stage): the packet-filter part
+	// depends only on progType and the shared maps, but arg-filter
+	// offsets are resolved against each target func's own BTF param
+	// layout, and each stage has its own filter and attach type.
 	for i, t := range targets {
 		var tf filter.TargetFilters
 		if filters != nil {
 			tf = filters[i]
 		}
-		insns, err := buildTracingInsns(filterOut, tf, outerMap.FD(), scratchFD, isFexit, progType, slots, pktRefs)
-		if err != nil {
-			_ = probe.Close()
-			return nil, err
-		}
-		if err := attachTracingProbe(probe, t.Program, fmt.Sprintf("bpf_ninja_%s", label), t.FuncName, attachType, insns); err != nil {
-			return nil, err
+		for si, st := range stages {
+			stLabel, attachType := tracingLabel(st.IsFexit)
+			var insns asm.Instructions
+			var err error
+			switch {
+			case gated && !st.IsFexit:
+				insns, err = buildGatedEntryInsns(comp[si].out, tf, holdFD, scratchFD, progType, comp[si].slots, comp[si].pktRefs, emit, entryCapLen)
+			case gated:
+				insns, err = buildGatedExitInsns(comp[si].out, tf, outerMap.FD(), holdFD, scratchFD, progType, comp[si].slots, comp[si].pktRefs, emit, entryCapLen)
+			default:
+				insns, err = buildTracingInsns(comp[si].out, tf, outerMap.FD(), scratchFD, st.IsFexit, progType, comp[si].slots, comp[si].pktRefs)
+			}
+			if err != nil {
+				_ = probe.Close()
+				return nil, err
+			}
+			if err := attachTracingProbe(probe, t.Program, fmt.Sprintf("bpf_ninja_%s", stLabel), t.FuncName, attachType, insns); err != nil {
+				return nil, err
+			}
 		}
 	}
 	return probe, nil
@@ -470,16 +569,56 @@ const (
 	defaultCapLen = DefaultCapLen
 	// Must stay in sync with capture.MetadataSize; asserted by
 	// TestMetadataSizeMatchesCapture in metadata_size_test.go.
-	metadataSize = 20
+	metadataSize = 28
 )
 
 func buildTracingInsns(filterOut codegen.Output, tf filter.TargetFilters, eventsFD, scratchFD int, isFexit bool, progType ebpf.ProgramType, slots *pktSetSlots, pktRefs []string) (asm.Instructions, error) {
-	var insns asm.Instructions
-	prelude, err := loadPacketPointers(progType)
+	h, ok := hook.ByProgramType(progType)
+	if !ok {
+		return nil, hook.UnsupportedTypeError(progType)
+	}
+	insns, err := buildFilterGate(filterOut, tf, scratchFD, progType, slots, pktRefs)
 	if err != nil {
 		return nil, err
 	}
-	insns = append(insns, prelude...)
+	identity, err := h.Identity(asm.R1)
+	if err != nil {
+		return nil, err
+	}
+	insns = append(insns, captureWithRingbuf(eventsFD, isFexit, filterOut.Capture.MaxCapLen, identity)...)
+	insns = append(insns, asm.Mov.Imm(asm.R0, 0).WithSymbol("exit"), asm.Return())
+	// bpf2bpf subprograms (currently only DSL bpf_loop chain
+	// callbacks) live after the tracing body so they sit past the
+	// program's final Return. The kernel also needs BTF func_info
+	// for the outer program in that case — tag the first tracing
+	// insn with codegen's canonical func proto.
+	if len(filterOut.Callbacks) > 0 {
+		insns[0] = btf.WithFuncMetadata(insns[0], codegen.MainFilterFuncBTF("bpf_ninja_filter"))
+		insns = append(insns, filterOut.Callbacks...)
+	}
+	return insns, nil
+}
+
+// buildFilterGate is the front half of every tracing program: the
+// hook prologue followed by buildFilterBody. Falls through on match;
+// every miss jumps to the "exit" label the caller must define.
+func buildFilterGate(filterOut codegen.Output, tf filter.TargetFilters, scratchFD int, progType ebpf.ProgramType, slots *pktSetSlots, pktRefs []string) (asm.Instructions, error) {
+	insns, err := loadPacketPointers(progType)
+	if err != nil {
+		return nil, err
+	}
+	body, err := buildFilterBody(filterOut, tf, scratchFD, slots, pktRefs)
+	if err != nil {
+		return nil, err
+	}
+	return append(insns, body...), nil
+}
+
+// buildFilterBody is the filter part of the gate (no prologue): tag
+// reset, arg filters, set filters, the kunai/cBPF filter and the DSL set
+// lookups. Assumes R6=ctx, R7=data, R8=data_end, R9=len from the prologue.
+func buildFilterBody(filterOut codegen.Output, tf filter.TargetFilters, scratchFD int, slots *pktSetSlots, pktRefs []string) (asm.Instructions, error) {
+	var insns asm.Instructions
 	// Default the tag to 0 before any set lookup can overwrite it, so a
 	// captured packet that matched no set (or a set-less filter) reports 0.
 	insns = append(insns, emitTagSlotZero()...)
@@ -494,17 +633,6 @@ func buildTracingInsns(filterOut codegen.Output, tf filter.TargetFilters, events
 	insns = append(insns, runFilter(filterOut.Main, scratchFD, filterScanLen(filterOut))...)
 	if slots != nil {
 		insns = append(insns, slots.emitPktSetLookups(pktRefs)...)
-	}
-	insns = append(insns, captureWithRingbuf(eventsFD, isFexit, filterOut.Capture.MaxCapLen)...)
-	insns = append(insns, asm.Mov.Imm(asm.R0, 0).WithSymbol("exit"), asm.Return())
-	// bpf2bpf subprograms (currently only DSL bpf_loop chain
-	// callbacks) live after the tracing body so they sit past the
-	// program's final Return. The kernel also needs BTF func_info
-	// for the outer program in that case — tag the first tracing
-	// insn with codegen's canonical func proto.
-	if len(filterOut.Callbacks) > 0 {
-		insns[0] = btf.WithFuncMetadata(insns[0], codegen.MainFilterFuncBTF("bpf_ninja_filter"))
-		insns = append(insns, filterOut.Callbacks...)
 	}
 	return insns, nil
 }
@@ -633,7 +761,7 @@ func runFilter(filter asm.Instructions, scratchFD, scanLen int) asm.Instructions
 // as an immediate, never a register-derived value. See
 // docs/paper/PLAN_bpf_ringbuf risk register entry "Verifier rejects
 // bpf_ringbuf_reserve with non-constant size".
-func captureWithRingbuf(eventsFD int, isFexit bool, maxCapLen int) asm.Instructions {
+func captureWithRingbuf(eventsFD int, isFexit bool, maxCapLen int, identity asm.Instructions) asm.Instructions {
 	if maxCapLen <= 0 {
 		maxCapLen = defaultCapLen
 	}
@@ -660,6 +788,10 @@ func captureWithRingbuf(eventsFD int, isFexit bool, maxCapLen int) asm.Instructi
 		asm.LoadMem(asm.R1, asm.R10, -56, asm.DWord),
 		asm.StoreMem(asm.R0, 0, asm.R1, asm.DWord),
 	)
+
+	// --- Write frame identity into slot[20..28] (hook.Identity → R1) ---
+	insns = append(insns, identity...)
+	insns = append(insns, asm.StoreMem(asm.R0, 20, asm.R1, asm.DWord))
 
 	// --- Write action+mode metadata at slot[8..14] ---
 	if isFexit {

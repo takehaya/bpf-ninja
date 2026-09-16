@@ -58,9 +58,13 @@ var flags = []cli.Flag{
 		Name: "write", Aliases: []string{"w"},
 		Usage: "write packets to pcap file instead of stdout",
 	},
+	&cli.StringSliceFlag{
+		Name: "mode", Value: []string{"entry"},
+		Usage: "capture point: entry / exit (fentry/fexit observer on the target program — the hook kind is auto-detected from the program type), or xdp (attach as native XDP). Repeatable, one quoted filter after each: `--mode entry EXPR --mode exit EXPR` captures both points in one run — the entry filter sees the packet as the program received it, the exit filter as it left it (after decap / rewrite) plus the verdict; records share one ring, entry records go to the <hook>:entry pcap-ng interface, and every record carries epb_packetid = frame identity so the entry and exit records of one invocation pair up. tc-entry / tc-exit are deprecated aliases for entry / exit",
+	},
 	&cli.StringFlag{
-		Name: "mode", Value: "entry",
-		Usage: "capture point: entry / exit (fentry/fexit observer on the target program — the hook kind is auto-detected from the program type), or xdp (attach as native XDP). tc-entry / tc-exit are deprecated aliases for entry / exit",
+		Name: "emit", Value: "both",
+		Usage: "with two --mode (entry + exit) — which records to emit for a packet that matched both filters: both (entry image and exit image, same epb_packetid), entry (only the image as the program received it, selected by the verdict), exit (only the image as it left; cheapest, no entry copy). Not allowed with a single --mode",
 	},
 	&cli.IntFlag{
 		Name: "count", Aliases: []string{"c"},
@@ -307,6 +311,10 @@ Examples:
   bpf-ninja --cbpf --mode xdp -i eth0 "tcp port 443" | tcpdump -r -   # legacy pcap syntax
   bpf-ninja -p 42 | tcpdump -n -r -                  # XDP or tc program, auto-detected
   bpf-ninja -p 42 --mode exit "eth/ipv4 where action == TC_ACT_SHOT"  # tc verdict filter
+  bpf-ninja -i eth0 --mode entry "eth/ipv4/udp[dport==6081]" --mode exit "eth/ipv4/tcp where action == XDP_DROP" -w both.pcapng
+      # gated: only packets matching BOTH; entry image (outer header) + exit image, paired by epb_packetid
+  bpf-ninja -i eth0 --mode entry "eth/ipv4/udp[dport==6081]" --mode exit "eth where action == XDP_DROP" --emit entry
+      # the pre-decap header of packets the program dropped, and nothing else
   bpf-ninja -i eth0 -w out.pcap`,
 		Flags:                 flags,
 		Action:                run,
@@ -439,35 +447,56 @@ func run(ctx context.Context, cmd *cli.Command) error {
 		capture.LatencySamplePeriod = int64(period)
 	}
 
-	mode := cmd.String("mode")
+	modes := cmd.StringSlice("mode")
+	if !cmd.IsSet("mode") || len(modes) == 0 {
+		modes = []string{"entry"}
+	}
 	// The hook kind (xdp / tc / ...) is auto-detected from the target
-	// program's type; --mode only picks the capture point. dumpHook is
+	// program's type; --mode only picks the capture point(s). dumpHook is
 	// the one place a hook must be named explicitly, because --dump-asm
 	// compiles without a target program to detect from.
 	dumpHook := hook.Kind(cmd.String("dump-hook"))
 	var isFexit, isXDPNative bool
-	switch mode {
-	case "entry":
-	case "exit":
-		isFexit = true
-	case "tc-entry", "tc-exit":
-		newMode := strings.TrimPrefix(mode, "tc-")
-		fmt.Fprintf(os.Stderr, "warning: --mode %s is deprecated; the hook is auto-detected from the target program, use --mode %s\n", mode, newMode)
-		if dumpHook == "" {
-			dumpHook = hook.KindTC
+	for i, m := range modes {
+		switch m {
+		case "entry":
+		case "exit":
+			isFexit = true
+		case "tc-entry", "tc-exit":
+			newMode := strings.TrimPrefix(m, "tc-")
+			fmt.Fprintf(os.Stderr, "warning: --mode %s is deprecated; the hook is auto-detected from the target program, use --mode %s\n", m, newMode)
+			if dumpHook == "" {
+				dumpHook = hook.KindTC
+			}
+			modes[i] = newMode
+			if newMode == "exit" {
+				isFexit = true
+			}
+		case "xdp":
+			isXDPNative = true
+		default:
+			return fmt.Errorf("invalid mode %q: must be entry, exit, or xdp (tc-entry / tc-exit are deprecated aliases)", m)
 		}
-		mode = newMode
-		isFexit = mode == "exit"
-	case "xdp":
-		isXDPNative = true
-	default:
-		return fmt.Errorf("invalid mode %q: must be entry, exit, or xdp (tc-entry / tc-exit are deprecated aliases)", mode)
 	}
+	if len(modes) > 1 {
+		if isXDPNative {
+			return fmt.Errorf("--mode xdp cannot be combined with other modes")
+		}
+		if modes[0] == modes[1] || len(modes) > 2 {
+			return fmt.Errorf("--mode accepts entry and exit at most once each (got %s)", strings.Join(modes, ", "))
+		}
+	}
+	// mode is the single capture point for the paths that take exactly
+	// one (--dump-asm, native XDP) and the run label otherwise.
+	mode := strings.Join(modes, "+")
 	if dumpHook == "" {
 		dumpHook = hook.KindXDP
 	}
 
 	if scope := cmd.String("dump-asm"); scope != "" {
+		if len(modes) > 1 {
+			return fmt.Errorf("--dump-asm renders one capture point; pass a single --mode")
+		}
 		filterExpr := strings.Join(cmd.Args().Slice(), " ")
 		useDSL, err := resolveFilterSyntax(cmd)
 		if err != nil {
@@ -711,21 +740,53 @@ func run(ctx context.Context, cmd *cli.Command) error {
 		return runArgEchoLoop(cmd, probe, t.FuncName)
 	}
 
-	filterExpr := strings.Join(cmd.Args().Slice(), " ")
-	if filterExpr != "" {
-		logVerbose(cmd, "filter: %s", filterExpr)
+	// One capture stage per --mode. A single mode takes the positional
+	// words joined as its filter (unquoted `tcp port 80` still works);
+	// two modes (entry + exit) take one quoted filter each, in --mode
+	// order (urfave keeps flags and positionals interleaved in order), or
+	// none at all, and capture only packets matching both; --emit picks
+	// the records.
+	emit, err := program.ParseEmit(cmd.String("emit"))
+	if err != nil {
+		return err
 	}
+	if cmd.IsSet("emit") && len(modes) < 2 {
+		return fmt.Errorf("--emit only applies with two --mode (entry + exit); a single --mode always emits its own records")
+	}
+	args := cmd.Args().Slice()
+	var stages []program.Stage
+	if len(modes) == 1 {
+		filterExpr := strings.Join(args, " ")
+		if filterExpr != "" {
+			logVerbose(cmd, "filter: %s", filterExpr)
+		}
+		stages = []program.Stage{{IsFexit: isFexit, Expr: filterExpr}}
+	} else {
+		if len(args) != 0 && len(args) != len(modes) {
+			return fmt.Errorf("with %d --mode flags give one quoted filter after each --mode (or none); got %d positional arguments", len(modes), len(args))
+		}
+		for i, m := range modes {
+			expr := ""
+			if len(args) > 0 {
+				expr = args[i]
+			}
+			logVerbose(cmd, "%s filter: %s", m, expr)
+			stages = append(stages, program.Stage{IsFexit: m == "exit", Expr: expr})
+		}
+	}
+	multiPoint := len(stages) > 1
 
 	useDSL, err := resolveFilterSyntax(cmd)
 	if err != nil {
 		return err
 	}
-	var probe *program.Probe
-	if isFexit {
-		probe, err = program.LoadMultiExit(targets, filterExpr, filters, useDSL, sets)
-	} else {
-		probe, err = program.LoadMultiEntry(targets, filterExpr, filters, useDSL, sets)
+	if multiPoint {
+		if stages[0].Expr == "" && stages[1].Expr == "" || (stages[0].Expr == "" && !stages[0].IsFexit) {
+			fmt.Fprintf(os.Stderr, "warning: no entry filter — every packet is copied into the hold slot until its exit verdict is known\n")
+		}
+		logVerbose(cmd, "gated capture: entry AND exit, emit=%s", emit)
 	}
+	probe, err := program.LoadMultiPoint(targets, stages, filters, useDSL, sets, emit)
 	if err != nil {
 		return err
 	}
@@ -748,7 +809,9 @@ func run(ctx context.Context, cmd *cli.Command) error {
 	if !ok {
 		return hook.UnsupportedTypeError(targets[0].Type)
 	}
-	return runCaptureLoop(cmd, probe, outputConfigFor(h, isFexit), fmt.Sprintf("%s, mode=%s", label, mode), sets)
+	cfg := outputConfigFor(h, isFexit)
+	cfg.MultiPoint = multiPoint
+	return runCaptureLoop(cmd, probe, cfg, fmt.Sprintf("%s, mode=%s", label, mode), sets)
 }
 
 // outputConfigFor renders a hook descriptor into the writer layout for

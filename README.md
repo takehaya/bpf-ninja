@@ -44,6 +44,12 @@ Supported hooks and how to name the target:
 
 `entry`/`exit` are non-invasive: the target program is unmodified, attach is via BPF trampoline. `xdp` is the standalone path for "I just want to capture, there's nothing else here". `tc-entry`/`tc-exit` remain as deprecated aliases for `entry`/`exit`.
 
+`--mode` is repeatable: `--mode entry EXPR --mode exit EXPR` captures **only the packets that match both** — the entry filter on the packet as the program received it, the exit filter on the packet as the program left it (after decap / rewrite) plus the verdict. The entry image is held in a per-CPU slot until the verdict is known, so you can ask for "the pre-decap header of every packet the program dropped" without exporting anything else. `--emit both` (default) writes the entry and the exit image, `--emit entry` / `--emit exit` just one; entry records go to a `<hook>:entry` pcap-ng interface and every record carries `epb_packetid` = the hook's packet identity (XDP: `xdp_buff->data_hard_start`, skb hooks: the `sk_buff` pointer) so the two images of one invocation pair up:
+
+```bash
+sudo bpf-ninja -i eth0 --mode entry "eth/ipv4/udp[dport==6081]" --mode exit "eth/ipv4/tcp where action == XDP_DROP" -w both.pcapng
+```
+
 ## Usage
 
 ```bash
@@ -261,7 +267,8 @@ int parse_headers(struct xdp_md *ctx) {
 | `-i, --interface` | Network interface to capture on (XDP hook) | entry, exit, xdp |
 | `-p, --prog-id` | BPF program ID to attach to — any supported hook, auto-detected (alternative to `-i`) | entry, exit |
 | `--cgroup` | cgroup v2 path; targets the cgroup-skb program(s) attached to it (alternative to `-i` / `-p`) | entry, exit |
-| `--mode` | `entry` (default), `exit`, `xdp` (`tc-entry`/`tc-exit` are deprecated aliases) | — |
+| `--mode` | `entry` (default), `exit`, `xdp` (`tc-entry`/`tc-exit` are deprecated aliases). Repeatable with one quoted filter after each: `--mode entry EXPR --mode exit EXPR` captures only packets matching both, with paired records (`epb_packetid`) | — |
+| `--emit` | With two `--mode`: `both` (default), `entry`, or `exit` — which image(s) to write for a packet that matched both filters | entry+exit |
 | `-w, --write` | Write to pcap file instead of stdout | all |
 | `-c, --count` | Stop after N packets (0 = unlimited) | all |
 | `-v, --verbose` | Verbose output to stderr | all |

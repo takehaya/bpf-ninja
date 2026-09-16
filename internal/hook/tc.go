@@ -13,6 +13,7 @@ var tcHook = &Hook{
 	Kind:           KindTC,
 	ProgTypes:      []ebpf.ProgramType{ebpf.SchedCLS, ebpf.SchedACT},
 	PacketPrologue: skbPacketPrologue,
+	Identity:       skbIdentity,
 	// The tc host carries VlanInMetadata in both entry and fexit caps,
 	// because the kernel strips the outer VLAN tag into skb metadata
 	// before either attach point runs.
@@ -45,6 +46,14 @@ var tcHook = &Hook{
 // frags, and a flat probe_read from `data` past the head would copy
 // unrelated kernel memory into the capture. The window (and therefore
 // caplen) is clamped to the head; frag bytes are not captured.
+// skbIdentity uses the sk_buff pointer itself (R6 = ctx): the object
+// is not replaced while the program runs, so it pairs the entry and
+// exit records of one invocation. (skb->head is not used here because
+// bpf_skb_adjust_room and friends can reallocate it mid-program.)
+func skbIdentity(dst asm.Register) (asm.Instructions, error) {
+	return asm.Instructions{asm.Mov.Reg(dst, asm.R6)}, nil
+}
+
 func skbPacketPrologue() (asm.Instructions, error) {
 	dataOff, lenOff, dataLenOff, err := skBuffPacketOffsets()
 	if err != nil {
