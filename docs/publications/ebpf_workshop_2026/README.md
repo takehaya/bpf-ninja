@@ -3,12 +3,24 @@
 Source and measurement artifacts for **Kunai: Toward a Verifier-Safe Layered
 DSL for Nested Encapsulation Packet Filtering on eBPF**.
 
+[ACM Digital Library](https://dl.acm.org/doi/10.1145/3837779.3838166)
+· [DOI](https://doi.org/10.1145/3837779.3838166)
+· [BibTeX](CITATION.bib)
+
 - `paper/`: camera-ready LaTeX source, bibliography, and figure PDFs.
 - `data/`: measurements used by the evaluation; see the [data guide](data/README.md).
 - `analysis/`: figure generation and numerical summaries.
 
-The paper PDF will be added after formal publication, together with the final
-citation and DOI link. The sources below can already be built locally.
+The paper PDF will be added after formal publication. The sources below can
+already be built locally.
+
+## Citation
+
+Takeru Hayasaka, Satoshi Uda, Ayako Hayasaka, and Daisuke Kotani. 2026.
+Kunai: Toward a Verifier-Safe Layered DSL for Nested Encapsulation Packet
+Filtering on eBPF. In *Proceedings of the 4th Workshop on eBPF and Kernel
+Extensions* (eBPF '26), 75–82. ACM.
+[https://doi.org/10.1145/3837779.3838166](https://doi.org/10.1145/3837779.3838166).
 
 ## Build the paper
 
