@@ -479,11 +479,11 @@ func compileFilterWithSlots(expr string, useDSL, isFexit bool, progType ebpf.Pro
 //              それは runFilter 内のみ live — phase ordering で共存)
 //
 // 実際の on-wire フォーマットの正典は internal/capture/capture.go の
-// コメント。現行は ringbuf reserve/submit で 20B のメタデータヘッダを
+// コメント。現行は ringbuf reserve/submit で 28B のメタデータヘッダを
 // パケットの前に置く:
-//   [metadata (20B)] [パケットデータ (caplen B)]
+//   [metadata (28B)] [パケットデータ (caplen B)]
 //   metadata: u64 kernel_ts_ns + u32 action + u8 mode + u8 _pad
-//             + u16 caplen + u32 tag
+//             + u16 caplen + u32 tag + u64 frame (packet id、offset 20)
 
 // scratchBufSize is an alias for codegen.ScratchBufSize so this file's
 // existing references (map size, runFilter caps) keep their concise

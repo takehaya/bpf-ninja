@@ -509,6 +509,17 @@ func run(ctx context.Context, cmd *cli.Command) error {
 	if len(modes) > 1 && cmd.Bool("arg-echo") {
 		return fmt.Errorf("--arg-echo takes a single --mode (it attaches one probe and prints its args; no gated capture)")
 	}
+	// The raw id only reaches an output that carries packet ids: the
+	// gated pcap-ng layout (epb_packetid) or raw-dump records. Native XDP
+	// has no identity source (xdp_md exposes no data_hard_start).
+	if cmd.Bool("raw-frame-id") {
+		switch {
+		case isXDPNative:
+			return fmt.Errorf("--raw-frame-id is not available with --mode xdp (xdp_md exposes no frame identity)")
+		case len(modes) < 2 && !cmd.Bool("raw-dump"):
+			return fmt.Errorf("--raw-frame-id needs an output that carries packet ids: two --mode (entry + exit) or --raw-dump")
+		}
+	}
 
 	if scope := cmd.String("dump-asm"); scope != "" {
 		if len(modes) > 1 {
