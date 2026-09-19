@@ -443,8 +443,8 @@ func run(ctx context.Context, cmd *cli.Command) error {
 
 	if snaplen := cmd.Int("snaplen"); snaplen > 0 {
 		program.SnaplenOverride = int(snaplen)
-		program.FrameIDRaw = cmd.Bool("raw-frame-id")
 	}
+	program.FrameIDRaw = cmd.Bool("raw-frame-id")
 	if cmd.Bool("observer-prefetch") {
 		program.ObserverPrefetch = true
 	}
@@ -505,6 +505,9 @@ func run(ctx context.Context, cmd *cli.Command) error {
 	}
 	if cmd.IsSet("emit") && len(modes) < 2 {
 		return fmt.Errorf("--emit only applies with two --mode (entry + exit); a single --mode always emits its own records")
+	}
+	if len(modes) > 1 && cmd.Bool("arg-echo") {
+		return fmt.Errorf("--arg-echo takes a single --mode (it attaches one probe and prints its args; no gated capture)")
 	}
 
 	if scope := cmd.String("dump-asm"); scope != "" {

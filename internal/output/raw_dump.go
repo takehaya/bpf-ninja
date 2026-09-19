@@ -134,7 +134,7 @@ func (w *RawDumpWriter) writeHeader(wallOffsetNs uint64) error {
 }
 
 // WriteRaw splats a single ringbuf record into the bufio'd file,
-// trimming the kernel's fixed reservation down to (16 + caplen) so
+// trimming the kernel's fixed reservation down to (capture.MetadataSize + caplen) so
 // on-disk records are self-delimiting.
 func (w *RawDumpWriter) WriteRaw(raw []byte) error {
 	if len(raw) < capture.MetadataSize {
