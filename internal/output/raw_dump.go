@@ -9,7 +9,7 @@
 //	[20..28] u64 wall_offset_ns LE — wall_clock - clock_monotonic
 //	[28..32] u32 reserved
 //	[32..  ] sequence of ringbuf records, each
-//	          [16 B metadata + caplen B data] (no padding)
+//	          [capture.MetadataSize (28) B metadata + caplen B data] (no padding)
 //
 // Filename convention: <basePath>.W<wall_offset_ns>.cpu<N>.raw
 

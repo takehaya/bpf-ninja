@@ -418,8 +418,9 @@ sudo bpf-ninja -i eth0 --mode entry "eth/ipv4/udp[dport==6081]" --mode exit "eth
 - 対象は 1 つの関数に限る (`--func` の複数指定や複数プログラムとの併用は不可)。PREEMPT_RT の kernel は対象外。
 - 出口の式は「出口で見える layout」に対して書く。上の例で対象が outer UDP を剥がすなら、出口では inner の Ethernet が先頭に来ているので `eth/ipv4/tcp` と書く。同じ packet でも入口と出口で式が変わるのは、実際に header が変わっているからである。
 - pcap-ng の layout は exit mode と同じ verdict ごとの interface (`xdp:DROP`, `xdp:PASS`, ...) に、入口 record 用の `xdp:entry` を足したもの。
-- すべての record に `epb_packetid` option (pcap-ng 標準の「同じ packet を別の interface で見た印」) として、その hook の packet identity が入る。XDP なら `xdp_buff->data_hard_start` (frame buffer の先頭)、tc / cgroup-skb なら `sk_buff` のアドレス、netfilter なら `bpf_nf_ctx->skb`。同じ実行の入口と出口では値が変わらず、同じ CPU でその buffer が使われている間は他の packet が載らないので、同じ shard (CPU) 内で「同じ id を持つ直前の entry record」がその packet の入口の姿になる。buffer は解放後に再利用されるので、時間をまたいで id が一意なわけではない。
-- raw-dump (`--raw-dump`) の record metadata は 28 byte になり、offset 20 に identity が入る (形式 V2。V1 の dump は `convert` で読めない)。
+- すべての record に `epb_packetid` option (pcap-ng 標準の「同じ packet を別の interface で見た印」) が入る。既定の値は「CPU 番号 << 48 | その CPU で入口の条件に一致した通し番号」で、同じ実行の入口と出口の record が同じ値を持つ。kernel のアドレスは含まない。
+- kernel 内では、入口と出口の対応づけの確認に hook の packet identity (XDP なら `xdp_buff->data_hard_start`、tc / cgroup-skb なら `sk_buff` のアドレス、netfilter なら `bpf_nf_ctx->skb`) を使う。`--raw-frame-id` を付けるとこの生のアドレスを `epb_packetid` に出す。kernel のアドレスがファイルに残るので、hook をまたいだ buffer の追跡を調べる研究用途に限る。
+- raw-dump (`--raw-dump`) の record metadata は 28 byte になり、offset 20 に packet id が入る (形式 V2。V1 の dump は `convert` で読めない)。
 - `--fast-reader` の split 出力を `merge` した pcap-ng は gopacket の reader を通るので `epb_packetid` が落ちる。対応づけが要るときは shard ごとの pcap-ng か raw-dump を使う。
 
 ## 出力ファイルレイアウト (per-CPU sharded)

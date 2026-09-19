@@ -205,6 +205,16 @@ func (w *Writer) addInterface(name string) (int, error) {
 	return w.pcapWriter.AddInterface(w.ngInterface(name))
 }
 
+// EPBSize is the on-disk size of one record this writer emits for a
+// packet of caplen bytes: the multi-point layout adds the epb_packetid
+// option to every EPB. Byte-cap accounting uses it.
+func (w *Writer) EPBSize(caplen int) int {
+	if w.cfg.MultiPoint {
+		return EPBSizeID(caplen)
+	}
+	return EPBSize(caplen)
+}
+
 // ifaceIDForPacket routes a record to its interface: entry records to
 // the entry interface in multi-point mode, everything else by verdict.
 func (w *Writer) ifaceIDForPacket(pkt *capture.Packet) int {

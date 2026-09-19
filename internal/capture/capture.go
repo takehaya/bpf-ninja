@@ -97,10 +97,12 @@ type Packet struct {
 	Mode      uint8  // 0=entry(fentry), 1=exit(fexit), 2=xdp-native
 	CapLen    uint16 // bytes the BPF side actually copied into Data
 	Tag       uint32 // set-map value of the matched entry (0 when no set matched)
-	// Frame is the hook's packet identity (XDP: xdp_buff->data_hard_start;
-	// skb hooks: the sk_buff pointer; xdp-native: 0). Together with the
-	// shard (CPU) and record order it pairs an entry record with the exit
-	// record of the same invocation.
+	// Frame is the record's packet id. Gated (entry + exit) captures set
+	// it to an opaque (cpu << 48 | per-CPU sequence) shared by the entry
+	// and exit images of one invocation; single-stage and xdp-native
+	// records carry 0. With --raw-frame-id it is the hook's raw identity
+	// instead (XDP: xdp_buff->data_hard_start; skb hooks: the sk_buff
+	// pointer), i.e. a kernel address — research use only.
 	Frame uint64
 }
 
@@ -140,7 +142,7 @@ func NewReader(eventsMap *ebpf.Map, _ int) (*Reader, error) {
 //	  u8  _pad         (offset 13)
 //	  u16 caplen       (offset 14)
 //	  u32 tag          (offset 16) — set-map value of the matched entry, 0 if none
-//	  u64 frame        (offset 20) — packet identity (buffer address), see Packet.Frame
+//	  u64 frame        (offset 20) — packet id, see Packet.Frame
 //
 // All multi-byte fields are host-endian: BPF stores via asm.StoreMem
 // produce native-endian writes, so readers must use binary.NativeEndian.

@@ -294,7 +294,15 @@ func LoadMultiPoint(targets []attach.Target, stages []Stage, filters []filter.Ta
 		if filters != nil {
 			tf = filters[i]
 		}
-		for si, st := range stages {
+		// Gated: attach the fexit first so no fentry can fill the hold
+		// before its consumer exists (otherwise the first fexit after
+		// attach could pair a stale entry image with a later packet).
+		order := []int{0, 1}[:len(stages)]
+		if gated {
+			order = []int{1, 0}
+		}
+		for _, si := range order {
+			st := stages[si]
 			stLabel, attachType := tracingLabel(st.IsFexit)
 			var insns asm.Instructions
 			var err error
@@ -495,6 +503,16 @@ const DefaultCapLen = 1500
 // compile chain has no callsite-level cap-override hook today.
 var SnaplenOverride int
 
+// FrameIDRaw, when true, makes every record's packet id the hook's raw
+// identity (XDP: xdp_buff->data_hard_start, skb hooks: the sk_buff
+// pointer) — a kernel address, which then lands in pcap-ng epb_packetid
+// and raw-dump files. Off by default: single-stage records carry 0 and
+// gated (entry + exit) records carry an opaque (cpu << 48 | seq) id that
+// pairs the two images of one invocation just as well. The raw form is
+// for research on buffer identity across hooks (the same address shows
+// up as skb->head after XDP_PASS), never needed for pairing.
+var FrameIDRaw bool
+
 // BPF_RB_NO_WAKEUP skips the eventfd write that wakes a poll'ing
 // consumer on every bpf_ringbuf_submit. Safe only when the consumer
 // polls periodically; required when the producer rate is very high
@@ -581,11 +599,13 @@ func buildTracingInsns(filterOut codegen.Output, tf filter.TargetFilters, events
 	if err != nil {
 		return nil, err
 	}
-	identity, err := h.Identity(asm.R1)
-	if err != nil {
-		return nil, err
+	packetID := asm.Instructions{asm.Mov.Imm(asm.R1, 0)}
+	if FrameIDRaw {
+		if packetID, err = h.Identity(asm.R1); err != nil {
+			return nil, err
+		}
 	}
-	insns = append(insns, captureWithRingbuf(eventsFD, isFexit, filterOut.Capture.MaxCapLen, identity)...)
+	insns = append(insns, captureWithRingbuf(eventsFD, isFexit, filterOut.Capture.MaxCapLen, packetID)...)
 	insns = append(insns, asm.Mov.Imm(asm.R0, 0).WithSymbol("exit"), asm.Return())
 	// bpf2bpf subprograms (currently only DSL bpf_loop chain
 	// callbacks) live after the tracing body so they sit past the

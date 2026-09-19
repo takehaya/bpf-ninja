@@ -42,7 +42,10 @@ import (
 //	                 has not consumed it yet
 //	24  u32 tag      set-map value
 //	28  u32 _pad
-//	32  u8  bytes[maxCapLen]  (only when the entry image is emitted)
+//	32  u64 seq      per-CPU count of matched entries; (cpu << 48 | seq) is
+//	                 the opaque packet id both records carry (no kernel
+//	                 address leaves the kernel unless --raw-frame-id)
+//	40  u8  bytes[maxCapLen]  (only when the entry image is emitted)
 
 // Emit selects which records a gated (entry + exit) capture emits for a
 // packet that matched both stages.
@@ -91,7 +94,8 @@ const (
 	holdCapLen = 20
 	holdValid  = 22
 	holdTag    = 24
-	holdHdr    = 32
+	holdSeq    = 32
+	holdHdr    = 40
 )
 
 // holdValueSize is the per-CPU hold slot size for an entry snaplen.
@@ -152,6 +156,10 @@ func buildGatedEntryInsns(filterOut codegen.Output, tf filter.TargetFilters, hol
 		asm.StoreImm(asm.R8, holdValid, 1, asm.Half),
 		asm.LoadMem(asm.R1, asm.R10, tagSlot, asm.DWord),
 		asm.StoreMem(asm.R8, holdTag, asm.R1, asm.Word),
+		// seq++ : the opaque per-CPU packet id of this invocation
+		asm.LoadMem(asm.R1, asm.R8, holdSeq, asm.DWord),
+		asm.Add.Imm(asm.R1, 1),
+		asm.StoreMem(asm.R8, holdSeq, asm.R1, asm.DWord),
 	)
 	if emit != EmitExit {
 		insns = append(insns,
@@ -206,11 +214,33 @@ func buildGatedExitInsns(filterOut codegen.Output, tf filter.TargetFilters, even
 	}
 	insns = append(insns, gate...)
 
+	// --- packet id for both records, stashed at stack[-24] (dead after
+	// the filter). Default: opaque (cpu << 48 | hold.seq); --raw-frame-id:
+	// the hook identity itself (a kernel address, research use).
+	if FrameIDRaw {
+		insns = append(insns, identity...)
+		insns = append(insns, asm.StoreMem(asm.R10, -24, asm.R1, asm.DWord))
+	} else {
+		insns = append(insns,
+			asm.FnGetSmpProcessorId.Call(),
+			asm.LSh.Imm(asm.R0, 48),
+			asm.StoreMem(asm.R10, -24, asm.R0, asm.DWord),
+		)
+		insns = append(insns, emitHoldLookup(holdFD)...)
+		insns = append(insns,
+			asm.LoadMem(asm.R1, asm.R0, holdSeq, asm.DWord),
+			asm.LoadMem(asm.R2, asm.R10, -24, asm.DWord),
+			asm.Or.Reg(asm.R1, asm.R2),
+			asm.StoreMem(asm.R10, -24, asm.R1, asm.DWord),
+		)
+	}
+	packetID := asm.Instructions{asm.LoadMem(asm.R1, asm.R10, -24, asm.DWord)}
+
 	if emit != EmitExit {
-		insns = append(insns, captureFromHold(eventsFD, holdFD, entryCapLen)...)
+		insns = append(insns, captureFromHold(eventsFD, holdFD, entryCapLen, packetID)...)
 	}
 	if emit != EmitEntry {
-		insns = append(insns, captureWithRingbuf(eventsFD, true, filterOut.Capture.MaxCapLen, identity)...)
+		insns = append(insns, captureWithRingbuf(eventsFD, true, filterOut.Capture.MaxCapLen, packetID)...)
 	}
 	insns = append(insns, asm.Mov.Imm(asm.R0, 0).WithSymbol("exit"), asm.Return())
 	if len(filterOut.Callbacks) > 0 {
@@ -221,10 +251,11 @@ func buildGatedExitInsns(filterOut codegen.Output, tf filter.TargetFilters, even
 }
 
 // captureFromHold emits the entry image kept in the hold slot as a
-// mode-0 record stamped with the exit verdict (args[1]) and the hold's
-// timestamp, tag and frame identity. Same ring/stack conventions as
+// mode-0 record stamped with the exit verdict (args[1]), the hold's
+// timestamp and tag, and the packet id loaded by packetID (→ R1; must
+// not clobber R0/R6..R9). Same ring/stack conventions as
 // captureWithRingbuf (stack[-16] cpu key, stack[-32] reserved slot).
-func captureFromHold(eventsFD, holdFD int, entryCapLen int) asm.Instructions {
+func captureFromHold(eventsFD, holdFD int, entryCapLen int, packetID asm.Instructions) asm.Instructions {
 	reserveSize := int32(metadataSize + entryCapLen)
 	insns := emitHoldLookup(holdFD)
 	insns = append(insns,
@@ -249,12 +280,15 @@ func captureFromHold(eventsFD, holdFD int, entryCapLen int) asm.Instructions {
 		asm.JLE.Imm(asm.R3, int32(entryCapLen), "gx_cap_ok"),
 		asm.Mov.Imm(asm.R3, int32(entryCapLen)),
 		asm.StoreMem(asm.R0, 14, asm.R3, asm.Half).WithSymbol("gx_cap_ok"),
-		// tag, frame
+		// tag
 		asm.LoadMem(asm.R1, asm.R8, holdTag, asm.Word),
 		asm.StoreMem(asm.R0, 16, asm.R1, asm.Word),
-		asm.LoadMem(asm.R1, asm.R8, holdFrame, asm.DWord),
+	)
+	// packet id
+	insns = append(insns, packetID...)
+	insns = append(insns,
 		asm.StoreMem(asm.R0, 20, asm.R1, asm.DWord),
-		// bpf_probe_read_kernel(slot + 28, caplen, hold + 32)
+		// bpf_probe_read_kernel(slot + 28, caplen, hold + 40)
 		asm.Mov.Reg(asm.R1, asm.R0), asm.Add.Imm(asm.R1, int32(metadataSize)),
 		asm.Mov.Reg(asm.R2, asm.R3),
 		asm.Mov.Reg(asm.R3, asm.R8), asm.Add.Imm(asm.R3, holdHdr),

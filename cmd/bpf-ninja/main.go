@@ -60,11 +60,15 @@ var flags = []cli.Flag{
 	},
 	&cli.StringSliceFlag{
 		Name: "mode", Value: []string{"entry"},
-		Usage: "capture point: entry / exit (fentry/fexit observer on the target program — the hook kind is auto-detected from the program type), or xdp (attach as native XDP). Repeatable, one quoted filter after each: `--mode entry EXPR --mode exit EXPR` captures both points in one run — the entry filter sees the packet as the program received it, the exit filter as it left it (after decap / rewrite) plus the verdict; records share one ring, entry records go to the <hook>:entry pcap-ng interface, and every record carries epb_packetid = frame identity so the entry and exit records of one invocation pair up. tc-entry / tc-exit are deprecated aliases for entry / exit",
+		Usage: "capture point: entry / exit (fentry/fexit observer on the target program — the hook kind is auto-detected from the program type), or xdp (attach as native XDP). Repeatable, one quoted filter after each: `--mode entry EXPR --mode exit EXPR` captures both points in one run — the entry filter sees the packet as the program received it, the exit filter as it left it (after decap / rewrite) plus the verdict; records share one ring, entry records go to the <hook>:entry pcap-ng interface, and every record carries an epb_packetid shared by the two images of one invocation so they pair up. tc-entry / tc-exit are deprecated aliases for entry / exit",
 	},
 	&cli.StringFlag{
 		Name: "emit", Value: "both",
 		Usage: "with two --mode (entry + exit) — which records to emit for a packet that matched both filters: both (entry image and exit image, same epb_packetid), entry (only the image as the program received it, selected by the verdict), exit (only the image as it left; cheapest, no entry copy). Not allowed with a single --mode",
+	},
+	&cli.BoolFlag{
+		Name:  "raw-frame-id",
+		Usage: "use the hook's raw packet identity (XDP: xdp_buff->data_hard_start, skb hooks: the sk_buff pointer) as the record's packet id instead of the opaque per-invocation id. That is a kernel address and it lands in pcap-ng epb_packetid and raw-dump files; research use only",
 	},
 	&cli.IntFlag{
 		Name: "count", Aliases: []string{"c"},
@@ -439,6 +443,7 @@ func run(ctx context.Context, cmd *cli.Command) error {
 
 	if snaplen := cmd.Int("snaplen"); snaplen > 0 {
 		program.SnaplenOverride = int(snaplen)
+		program.FrameIDRaw = cmd.Bool("raw-frame-id")
 	}
 	if cmd.Bool("observer-prefetch") {
 		program.ObserverPrefetch = true
@@ -491,6 +496,15 @@ func run(ctx context.Context, cmd *cli.Command) error {
 	mode := strings.Join(modes, "+")
 	if dumpHook == "" {
 		dumpHook = hook.KindXDP
+	}
+	// --emit is validated here, before the --dump-asm / --mode xdp /
+	// --arg-echo early returns, so a stray value never passes silently.
+	emit, err := program.ParseEmit(cmd.String("emit"))
+	if err != nil {
+		return err
+	}
+	if cmd.IsSet("emit") && len(modes) < 2 {
+		return fmt.Errorf("--emit only applies with two --mode (entry + exit); a single --mode always emits its own records")
 	}
 
 	if scope := cmd.String("dump-asm"); scope != "" {
@@ -746,13 +760,6 @@ func run(ctx context.Context, cmd *cli.Command) error {
 	// order (urfave keeps flags and positionals interleaved in order), or
 	// none at all, and capture only packets matching both; --emit picks
 	// the records.
-	emit, err := program.ParseEmit(cmd.String("emit"))
-	if err != nil {
-		return err
-	}
-	if cmd.IsSet("emit") && len(modes) < 2 {
-		return fmt.Errorf("--emit only applies with two --mode (entry + exit); a single --mode always emits its own records")
-	}
 	args := cmd.Args().Slice()
 	var stages []program.Stage
 	if len(modes) == 1 {
@@ -781,8 +788,10 @@ func run(ctx context.Context, cmd *cli.Command) error {
 		return err
 	}
 	if multiPoint {
-		if stages[0].Expr == "" && stages[1].Expr == "" || (stages[0].Expr == "" && !stages[0].IsFexit) {
-			fmt.Fprintf(os.Stderr, "warning: no entry filter — every packet is copied into the hold slot until its exit verdict is known\n")
+		for _, st := range stages {
+			if !st.IsFexit && st.Expr == "" && emit != program.EmitExit {
+				fmt.Fprintf(os.Stderr, "warning: no entry filter — every packet is copied into the hold slot until its exit verdict is known\n")
+			}
 		}
 		logVerbose(cmd, "gated capture: entry AND exit, emit=%s", emit)
 	}
@@ -1107,7 +1116,7 @@ func captureLoopSharded(cmd *cli.Command, inners []*ebpf.Map, cfg output.Config,
 				return err
 			}
 			if caps != nil {
-				caps.addTotal(epbBytes(pkts))
+				caps.addTotal(epbBytes(sharedW, pkts))
 			}
 			return nil
 		}
@@ -1120,7 +1129,7 @@ func captureLoopSharded(cmd *cli.Command, inners []*ebpf.Map, cfg output.Config,
 				return err
 			}
 			if caps != nil {
-				caps.addTotal(epbBytes(pkts))
+				caps.addTotal(epbBytes(writers[shardIdx], pkts))
 			}
 			return nil
 		}
@@ -1129,13 +1138,14 @@ func captureLoopSharded(cmd *cli.Command, inners []*ebpf.Map, cfg output.Config,
 	return pumpShards(cmd, inners, label, writeShard, caps, sets, nil)
 }
 
-// epbBytes sums the on-disk pcap-ng size of a batch, matching what the
-// fast writer emits (the gopacket / fexit layout differs by a few option
-// bytes per block — the caps are batch-granular anyway).
-func epbBytes(pkts []capture.Packet) uint64 {
+// epbBytes sums the on-disk pcap-ng size of a batch as the given writer
+// emits it (the multi-point layout carries an epb_packetid option per
+// block; the gopacket / fexit layout differs by a few option bytes per
+// block — the caps are batch-granular anyway).
+func epbBytes(w *output.Writer, pkts []capture.Packet) uint64 {
 	var n uint64
 	for i := range pkts {
-		n += uint64(output.EPBSize(len(pkts[i].Data)))
+		n += uint64(w.EPBSize(len(pkts[i].Data)))
 	}
 	return n
 }
@@ -1268,7 +1278,7 @@ func captureLoopShardedSplit(cmd *cli.Command, inners []*ebpf.Map, cfg output.Co
 				return err
 			}
 			if caps != nil {
-				n := epbBytes(pkts[i:j])
+				n := epbBytes(e.w, pkts[i:j])
 				if e.ctr != nil && caps.addTag(e.ctr, n) {
 					// The printed limit is the effective per-tag reduction
 					// (see effectiveLimits), not necessarily any single
