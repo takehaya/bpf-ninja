@@ -417,6 +417,7 @@ sudo bpf-ninja -i eth0 --mode entry "eth/ipv4/udp[dport==6081]" --mode exit "eth
 - `--emit both` (既定) は入口の姿と出口の姿を 2 record (同じ id、同じ判定付き)、`--emit entry` は入口の姿だけ、`--emit exit` は出口の姿だけ (取り置きは印だけで一番安い)。`--emit` は `--mode` が 2 つのときだけ書ける。迷ったら `both`。
 - 対象は 1 つの関数に限る (`--func` の複数指定や複数プログラムとの併用は不可)。`--split-by-tag` と `--arg-echo` は併用できない。PREEMPT_RT の kernel は対象外 (起動時に警告が出る)。
 - `-c` は record 数で数える。`--emit both` なら 1 packet で 2 record なので、`-c 10` は 5 組。
+- ring が詰まると、入口 record だけ書けて出口 record の確保に失敗することがある (出口側の reserve が後)。対の無い入口 record は取りこぼしとして扱い、判定の証拠にしない。
 - 出口の式は「出口で見える layout」に対して書く。上の例で対象が outer UDP を剥がすなら、出口では inner の Ethernet が先頭に来ているので `eth/ipv4/tcp` と書く。同じ packet でも入口と出口で式が変わるのは、実際に header が変わっているからである。
 - pcap-ng の layout は exit mode と同じ verdict ごとの interface (`xdp:DROP`, `xdp:PASS`, ...) に、入口 record 用の `xdp:entry` を足したもの。
 - すべての record に `epb_packetid` option (pcap-ng 標準の「同じ packet を別の interface で見た印」) が入る。既定の値は「CPU 番号 << 48 | その CPU で入口の条件に一致した通し番号」で、同じ実行の入口と出口の record が同じ値を持つ。kernel のアドレスは含まない。
