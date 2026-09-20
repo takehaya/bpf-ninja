@@ -14,14 +14,25 @@ import (
 )
 
 // TestBpfMultiPointLoad verifies that a gated entry + exit capture
-// passes the verifier for every --emit form, on XDP and tc targets, and
-// attaches both probes.
+// passes the verifier for every --emit form on every hook, and attaches
+// both probes. Targets are built inside each case so a hook the kernel
+// lacks (netfilter < 6.4) skips only its own row.
 func TestBpfMultiPointLoad(t *testing.T) {
-	xdp := []attach.Target{{Program: loadDummyXDP(t), FuncName: xdpFuncName, Type: ebpf.XDP}}
-	tc := []attach.Target{{Program: loadDummyTC(t), FuncName: tcFuncName, Type: ebpf.SchedCLS}}
+	xdp := func(t testing.TB) []attach.Target {
+		return []attach.Target{{Program: loadDummyXDP(t), FuncName: xdpFuncName, Type: ebpf.XDP}}
+	}
+	tc := func(t testing.TB) []attach.Target {
+		return []attach.Target{{Program: loadDummyTC(t), FuncName: tcFuncName, Type: ebpf.SchedCLS}}
+	}
+	cgroup := func(t testing.TB) []attach.Target {
+		return []attach.Target{{Program: loadDummyCgroupSKB(t), FuncName: cgroupSKBFuncName, Type: ebpf.CGroupSKB}}
+	}
+	netfilter := func(t testing.TB) []attach.Target {
+		return []attach.Target{{Program: loadDummyNetfilter(t), FuncName: netfilterFuncName, Type: ebpf.Netfilter}}
+	}
 	cases := []struct {
 		name        string
-		targets     []attach.Target
+		targets     func(testing.TB) []attach.Target
 		entry, exit string
 		dsl         bool
 		emit        Emit
@@ -33,11 +44,13 @@ func TestBpfMultiPointLoad(t *testing.T) {
 		{"dsl-exit", xdp, "eth/ipv4/udp[dport==6081]", "eth/ipv4/tcp where action == XDP_DROP", true, EmitExit},
 		{"no-entry-filter", xdp, "", "eth/ipv4/icmp where action == XDP_PASS", true, EmitEntry},
 		{"tc-both", tc, "eth/ipv4/tcp", "eth/ipv4/tcp where action == TC_ACT_SHOT", true, EmitBoth},
+		{"cgroup-skb-both", cgroup, "ipv4/tcp", "ipv4/tcp where action == SK_DROP", true, EmitBoth},
+		{"netfilter-entry", netfilter, "ipv4/tcp", "ipv4/tcp where action == NF_DROP", true, EmitEntry},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			stages := []Stage{{Expr: tc.entry}, {IsFexit: true, Expr: tc.exit}}
-			probe, err := LoadMultiPoint(tc.targets, stages, nil, tc.dsl, nil, tc.emit)
+			probe, err := LoadMultiPoint(tc.targets(t), stages, nil, tc.dsl, nil, tc.emit)
 			if err != nil {
 				t.Fatalf("LoadMultiPoint: %v", err)
 			}

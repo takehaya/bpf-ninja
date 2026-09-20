@@ -676,9 +676,12 @@ EOF
 }
 check_multipoint_pcap() {
     # args: want_entries want_drops want_paired files...
+    # want_paired '-' = a merged file: ids are not carried, so only
+    # interfaces and sizes are checked.
     python3 - "$@" <<'EOF'
 import struct, sys
 entries = drops = other = paired = 0
+check_ids = sys.argv[3] != '-'
 bad = []
 for fn in sys.argv[4:]:
     b = open(fn, 'rb').read(); ifaces = []; off = 0; last_entry = None
@@ -704,15 +707,15 @@ for fn in sys.argv[4:]:
             name = ifaces[iface] if iface < len(ifaces) else '?'
             if name.endswith(':entry'):
                 entries += 1; last_entry = pid
-                if caplen != 104 or pid == 0: bad.append(('entry', fn, caplen, pid))
+                if caplen != 104 or (check_ids and pid == 0): bad.append(('entry', fn, caplen, pid))
             elif name.endswith(':DROP'):
                 drops += 1
-                if caplen != 62 or pid == 0: bad.append(('drop', fn, caplen, pid))
+                if caplen != 62 or (check_ids and pid == 0): bad.append(('drop', fn, caplen, pid))
                 elif pid == last_entry: paired += 1  # --emit exit has no entry record to pair with
             else:
                 other += 1; bad.append(('other', fn, name))
         off += total
-want_entries = int(sys.argv[1]); want_drops = int(sys.argv[2]); want_paired = int(sys.argv[3])
+want_entries = int(sys.argv[1]); want_drops = int(sys.argv[2]); want_paired = int(sys.argv[3]) if check_ids else paired
 print(f"entry={entries} drop={drops} other={other} paired={paired} bad={bad[:3]}")
 sys.exit(0 if (entries == want_entries and drops == want_drops and other == 0 and paired == want_paired and not bad) else 1)
 EOF
@@ -729,10 +732,12 @@ run_multipoint_case() {
     send_multipoint_frames
     wait $pid 2>/dev/null || true
     local out
-    # Only the per-CPU shard files: the merged base file goes through
-    # gopacket's reader, which drops the epb_packetid option.
+    # The per-CPU shard files carry the packet ids; the merged base file
+    # goes through gopacket's reader (which drops the epb_packetid
+    # option) but must still hold every record on the right interface.
     out=$(check_multipoint_pcap "$we" "$wd" "$wp" "$pcap".cpu* 2>&1)
     local result=$?
+    [[ $result -eq 0 ]] && { out=$(check_multipoint_pcap "$we" "$wd" - "$pcap" 2>&1); result=$?; }
     [[ $result -ne 0 ]] && { echo "$out"; cat "$err"; }
     rm -f "$pcap" "$pcap".cpu* "$err"
     return $result
