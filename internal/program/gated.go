@@ -30,6 +30,13 @@ import (
 // current invocation's. PREEMPT_RT with CONFIG_PREEMPT_RT_NEEDS_BH_LOCK
 // off is out of scope (a higher-priority NAPI thread can interleave).
 //
+// A tail call in the target does not skip its fexit: the tail-called
+// program returns into the caller's trampoline (the return address
+// survives the jump; the kernel keeps tail_call_cnt across it with
+// BPF_TRAMP_F_TAIL_CALL_CTX), so the hold is consumed with the verdict
+// of the whole chain. Attaching to a tail-call *target* fires neither
+// probe (its prologue is skipped), so no hold is written there either.
+//
 // Both programs keep the hold pointer in R8 for their whole body: the
 // prologue's data_end is never read on the tracing path (see
 // hook.PacketPrologue), and R8 is callee-saved across helper calls.
