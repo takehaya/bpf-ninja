@@ -36,6 +36,14 @@ var tcHook = &Hook{
 	LinkType: layers.LinkTypeEthernet,
 }
 
+// skbIdentity uses the sk_buff pointer itself (R6 = ctx): the object
+// is not replaced while the program runs, so it pairs the entry and
+// exit records of one invocation. (skb->head is not used here because
+// bpf_skb_adjust_room and friends can reallocate it mid-program.)
+func skbIdentity(dst asm.Register) (asm.Instructions, error) {
+	return asm.Instructions{asm.Mov.Reg(dst, asm.R6)}, nil
+}
+
 // skbPacketPrologue reads the packet window from a kernel
 // struct sk_buff * (the kernel struct, NOT the BPF-rewritten __sk_buff
 // view — that rewrite does not fire in tracing context). Member offsets
@@ -46,14 +54,6 @@ var tcHook = &Hook{
 // frags, and a flat probe_read from `data` past the head would copy
 // unrelated kernel memory into the capture. The window (and therefore
 // caplen) is clamped to the head; frag bytes are not captured.
-// skbIdentity uses the sk_buff pointer itself (R6 = ctx): the object
-// is not replaced while the program runs, so it pairs the entry and
-// exit records of one invocation. (skb->head is not used here because
-// bpf_skb_adjust_room and friends can reallocate it mid-program.)
-func skbIdentity(dst asm.Register) (asm.Instructions, error) {
-	return asm.Instructions{asm.Mov.Reg(dst, asm.R6)}, nil
-}
-
 func skbPacketPrologue() (asm.Instructions, error) {
 	dataOff, lenOff, dataLenOff, err := skBuffPacketOffsets()
 	if err != nil {

@@ -60,15 +60,11 @@ var flags = []cli.Flag{
 	},
 	&cli.StringSliceFlag{
 		Name: "mode", Value: []string{"entry"},
-		Usage: "capture point: entry / exit (fentry/fexit observer on the target program — the hook kind is auto-detected from the program type), or xdp (attach as native XDP). Repeatable, one quoted filter after each: `--mode entry EXPR --mode exit EXPR` captures both points in one run — the entry filter sees the packet as the program received it, the exit filter as it left it (after decap / rewrite) plus the verdict; records share one ring, entry records go to the <hook>:entry pcap-ng interface, and every record carries an epb_packetid shared by the two images of one invocation so they pair up. tc-entry / tc-exit are deprecated aliases for entry / exit",
+		Usage: "capture point: entry / exit (fentry/fexit observer on the target program, hook auto-detected) or xdp (attach as native XDP). Repeatable with one quoted filter after each: `--mode entry EXPR --mode exit EXPR` captures only the packets that match both (see README). tc-entry / tc-exit are deprecated aliases",
 	},
 	&cli.StringFlag{
 		Name: "emit", Value: "both",
-		Usage: "with two --mode (entry + exit) — which records to emit for a packet that matched both filters: both (entry image and exit image, same epb_packetid), entry (only the image as the program received it, selected by the verdict), exit (only the image as it left; cheapest, no entry copy). Not allowed with a single --mode",
-	},
-	&cli.BoolFlag{
-		Name:  "raw-frame-id",
-		Usage: "use the hook's raw packet identity (XDP: xdp_buff->data_hard_start, skb hooks: the sk_buff pointer) as the record's packet id instead of the opaque per-invocation id. That is a kernel address and it lands in pcap-ng epb_packetid and raw-dump files; research use only",
+		Usage: "with two --mode: which image(s) to write for a packet that matched both filters — both, entry, or exit",
 	},
 	&cli.IntFlag{
 		Name: "count", Aliases: []string{"c"},
@@ -427,24 +423,9 @@ func run(ctx context.Context, cmd *cli.Command) error {
 			return fmt.Errorf("--finalize-on-del requires at least one --set (entry removal is the finalize signal)")
 		}
 	}
-	if cmd.Bool("rx-hwts") {
-		if cmd.String("mode") != "xdp" {
-			return fmt.Errorf("--rx-hwts requires --mode xdp (kfunc only available on XDP-native)")
-		}
-		if err := program.ResolveHWTimestampKfunc(); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: --rx-hwts requested but kfunc unavailable (%v); falling back to software bpf_ktime_get_ns\n", err)
-		} else {
-			// ice xdp_metadata_rx_timestamp returns wall-clock-aligned
-			// ns (PHC initialised to system time at driver load), so
-			// ParseRawSample must NOT add the monotonic→wall offset.
-			capture.WallOffsetNs = 0
-		}
-	}
-
 	if snaplen := cmd.Int("snaplen"); snaplen > 0 {
 		program.SnaplenOverride = int(snaplen)
 	}
-	program.FrameIDRaw = cmd.Bool("raw-frame-id")
 	if cmd.Bool("observer-prefetch") {
 		program.ObserverPrefetch = true
 	}
@@ -453,9 +434,6 @@ func run(ctx context.Context, cmd *cli.Command) error {
 	}
 
 	modes := cmd.StringSlice("mode")
-	if !cmd.IsSet("mode") || len(modes) == 0 {
-		modes = []string{"entry"}
-	}
 	// The hook kind (xdp / tc / ...) is auto-detected from the target
 	// program's type; --mode only picks the capture point(s). dumpHook is
 	// the one place a hook must be named explicitly, because --dump-asm
@@ -483,12 +461,21 @@ func run(ctx context.Context, cmd *cli.Command) error {
 			return fmt.Errorf("invalid mode %q: must be entry, exit, or xdp (tc-entry / tc-exit are deprecated aliases)", m)
 		}
 	}
+	// Two modes (entry + exit) take one quoted filter after each --mode
+	// (urfave keeps flags and positionals interleaved in order), or none.
+	args := cmd.Args().Slice()
 	if len(modes) > 1 {
-		if isXDPNative {
+		switch {
+		case isXDPNative:
 			return fmt.Errorf("--mode xdp cannot be combined with other modes")
-		}
-		if modes[0] == modes[1] || len(modes) > 2 {
+		case modes[0] == modes[1] || len(modes) > 2:
 			return fmt.Errorf("--mode accepts entry and exit at most once each (got %s)", strings.Join(modes, ", "))
+		case len(args) != 0 && len(args) != len(modes):
+			return fmt.Errorf("with %d --mode flags give one quoted filter after each --mode (or none); got %d positional arguments", len(modes), len(args))
+		case cmd.Bool("arg-echo"):
+			return fmt.Errorf("--arg-echo takes a single --mode (it attaches one probe and prints its args; no gated capture)")
+		case cmd.Bool("split-by-tag"):
+			return fmt.Errorf("--split-by-tag takes a single --mode (per-tag files use the single-point layout)")
 		}
 	}
 	// mode is the single capture point for the paths that take exactly
@@ -506,18 +493,17 @@ func run(ctx context.Context, cmd *cli.Command) error {
 	if cmd.IsSet("emit") && len(modes) < 2 {
 		return fmt.Errorf("--emit only applies with two --mode (entry + exit); a single --mode always emits its own records")
 	}
-	if len(modes) > 1 && cmd.Bool("arg-echo") {
-		return fmt.Errorf("--arg-echo takes a single --mode (it attaches one probe and prints its args; no gated capture)")
-	}
-	// The raw id only reaches an output that carries packet ids: the
-	// gated pcap-ng layout (epb_packetid) or raw-dump records. Native XDP
-	// has no identity source (xdp_md exposes no data_hard_start).
-	if cmd.Bool("raw-frame-id") {
-		switch {
-		case isXDPNative:
-			return fmt.Errorf("--raw-frame-id is not available with --mode xdp (xdp_md exposes no frame identity)")
-		case len(modes) < 2 && !cmd.Bool("raw-dump"):
-			return fmt.Errorf("--raw-frame-id needs an output that carries packet ids: two --mode (entry + exit) or --raw-dump")
+	if cmd.Bool("rx-hwts") {
+		if !isXDPNative {
+			return fmt.Errorf("--rx-hwts requires --mode xdp (kfunc only available on XDP-native)")
+		}
+		if err := program.ResolveHWTimestampKfunc(); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: --rx-hwts requested but kfunc unavailable (%v); falling back to software bpf_ktime_get_ns\n", err)
+		} else {
+			// ice xdp_metadata_rx_timestamp returns wall-clock-aligned
+			// ns (PHC initialised to system time at driver load), so
+			// ParseRawSample must NOT add the monotonic→wall offset.
+			capture.WallOffsetNs = 0
 		}
 	}
 
@@ -770,11 +756,7 @@ func run(ctx context.Context, cmd *cli.Command) error {
 
 	// One capture stage per --mode. A single mode takes the positional
 	// words joined as its filter (unquoted `tcp port 80` still works);
-	// two modes (entry + exit) take one quoted filter each, in --mode
-	// order (urfave keeps flags and positionals interleaved in order), or
-	// none at all, and capture only packets matching both; --emit picks
-	// the records.
-	args := cmd.Args().Slice()
+	// two modes take one filter each (validated above).
 	var stages []program.Stage
 	if len(modes) == 1 {
 		filterExpr := strings.Join(args, " ")
@@ -783,9 +765,6 @@ func run(ctx context.Context, cmd *cli.Command) error {
 		}
 		stages = []program.Stage{{IsFexit: isFexit, Expr: filterExpr}}
 	} else {
-		if len(args) != 0 && len(args) != len(modes) {
-			return fmt.Errorf("with %d --mode flags give one quoted filter after each --mode (or none); got %d positional arguments", len(modes), len(args))
-		}
 		for i, m := range modes {
 			expr := ""
 			if len(args) > 0 {
@@ -807,7 +786,10 @@ func run(ctx context.Context, cmd *cli.Command) error {
 				fmt.Fprintf(os.Stderr, "warning: no entry filter — every packet is copied into the hold slot until its exit verdict is known\n")
 			}
 		}
-		logVerbose(cmd, "gated capture: entry AND exit, emit=%s", emit)
+		if rt, err := os.ReadFile("/sys/kernel/realtime"); err == nil && strings.TrimSpace(string(rt)) == "1" {
+			fmt.Fprintf(os.Stderr, "warning: PREEMPT_RT kernel: the per-CPU hold of a gated capture assumes the fentry and fexit of one invocation run back to back; pairs may be dropped\n")
+		}
+		logVerbose(cmd, "gated capture: entry AND exit, emit=%s", cmd.String("emit"))
 	}
 	probe, err := program.LoadMultiPoint(targets, stages, filters, useDSL, sets, emit)
 	if err != nil {

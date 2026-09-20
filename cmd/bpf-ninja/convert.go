@@ -137,7 +137,7 @@ func convertFile(path string, fastW *output.FastNgWriter) (int, error) {
 	}
 	if !bytes.Equal(hdr[0:16], output.RawDumpMagic) {
 		if bytes.HasPrefix(hdr[0:16], []byte("XNINJA-RAW-V1")) {
-			return 0, fmt.Errorf("raw dump is format V1 (20-byte record metadata); this build reads V2 (28-byte, with frame identity) — convert it with a bpf-ninja release before the multi-point capture change")
+			return 0, fmt.Errorf("raw dump is format V1 (20-byte record metadata); this build reads V2 (28-byte, with the packet id) — convert it with a bpf-ninja release before the multi-point capture change")
 		}
 		return 0, fmt.Errorf("magic mismatch: got %q, want %q", hdr[0:16], output.RawDumpMagic)
 	}

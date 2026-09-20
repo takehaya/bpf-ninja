@@ -80,30 +80,10 @@ func NewFastNgWriter(w io.Writer, linkType layers.LinkType) (*FastNgWriter, erro
 	if err := fw.writeSHB(); err != nil {
 		return nil, err
 	}
-	if err := fw.writeIDB(uint16(linkType)); err != nil {
+	if err := fw.writeIDB(uint16(linkType), ""); err != nil {
 		return nil, err
 	}
 	fw.nIfaces = 1
-	return fw, nil
-}
-
-// NewFastNgWriterIfaces creates a writer with SHB + one named IDB per
-// entry of names (interface ids 0..len-1, in order), all with the same
-// link type. Packets are written with WritePacketID so each EPB names
-// its interface and carries an epb_packetid.
-func NewFastNgWriterIfaces(w io.Writer, linkType layers.LinkType, names []string) (*FastNgWriter, error) {
-	if len(names) == 0 {
-		return nil, fmt.Errorf("fast pcap-ng writer: need at least one interface name")
-	}
-	fw := &FastNgWriter{w: w, linkType: uint16(linkType)}
-	if err := fw.writeSHB(); err != nil {
-		return nil, err
-	}
-	for _, n := range names {
-		if _, err := fw.AddInterface(n); err != nil {
-			return nil, err
-		}
-	}
 	return fw, nil
 }
 
@@ -111,40 +91,12 @@ func NewFastNgWriterIfaces(w io.Writer, linkType layers.LinkType, names []string
 // allows IDBs anywhere in a section, so this is valid mid-stream (used
 // for lazily-added unknown-verdict interfaces).
 func (fw *FastNgWriter) AddInterface(name string) (int, error) {
-	if err := fw.writeIDBNamed(fw.linkType, name); err != nil {
+	if err := fw.writeIDB(fw.linkType, name); err != nil {
 		return 0, err
 	}
 	id := fw.nIfaces
 	fw.nIfaces++
 	return id, nil
-}
-
-// writeIDBNamed is writeIDB plus an if_name option (code 2, value
-// padded to 4 bytes) in front of if_tsresol.
-func (fw *FastNgWriter) writeIDBNamed(linkType uint16, name string) error {
-	namePad := (len(name) + 3) &^ 3
-	total := 16 + 4 + namePad + 8 + 4 + 4
-	b := make([]byte, total)
-	binary.LittleEndian.PutUint32(b[0:4], blkIDB)
-	binary.LittleEndian.PutUint32(b[4:8], uint32(total))
-	binary.LittleEndian.PutUint16(b[8:10], linkType)
-	binary.LittleEndian.PutUint16(b[10:12], 0) // reserved
-	binary.LittleEndian.PutUint32(b[12:16], 0) // snaplen = unlimited
-	o := 16
-	binary.LittleEndian.PutUint16(b[o:o+2], idbOptIfName)
-	binary.LittleEndian.PutUint16(b[o+2:o+4], uint16(len(name)))
-	copy(b[o+4:], name)
-	o += 4 + namePad
-	binary.LittleEndian.PutUint16(b[o:o+2], idbOptIfTsresol)
-	binary.LittleEndian.PutUint16(b[o+2:o+4], 1)
-	b[o+4] = idbTsresolNs
-	o += 8
-	binary.LittleEndian.PutUint16(b[o:o+2], optEndOfOpt)
-	binary.LittleEndian.PutUint16(b[o+2:o+4], 0)
-	o += 4
-	binary.LittleEndian.PutUint32(b[o:o+4], uint32(total))
-	_, err := fw.w.Write(b)
-	return err
 }
 
 // writeSHB emits a Section Header Block with no options.
@@ -171,8 +123,9 @@ func (fw *FastNgWriter) writeSHB() error {
 	return err
 }
 
-// writeIDB emits an Interface Description Block with one option:
-// if_tsresol = 9 (nanosecond timestamps).
+// writeIDB emits an Interface Description Block: an if_name option
+// (code 2, value padded to 4 bytes; omitted when name is empty), then
+// if_tsresol = 9 (nanosecond timestamps) and opt_endofopt.
 //
 //	Block Type:         0x00000001   (4 B)
 //	Block Total Length: variable     (4 B)
@@ -180,29 +133,43 @@ func (fw *FastNgWriter) writeSHB() error {
 //	Reserved:           0            (2 B)
 //	SnapLen:            0 (= no limit) (4 B)
 //	Options:
+//	  opt_if_name (named only):
+//	    code = 2, length = len(name), value padded → 4 + pad4(len) bytes
 //	  opt_tsresol:
 //	    code = 9, length = 1, value = 9, padding = 3 → 8 bytes
 //	  opt_endofopt:
 //	    code = 0, length = 0 → 4 bytes
 //	Block Total Length: variable     (4 B, repeated)
-//	Total: 16 + 8 + 4 + 4 = 32 bytes
-func (fw *FastNgWriter) writeIDB(linkType uint16) error {
-	var b [32]byte
+//	Total: 16 + 8 + 4 + 4 = 32 bytes unnamed (pinned by
+//	TestFastNgWriterEquivalent), plus the if_name option when named.
+func (fw *FastNgWriter) writeIDB(linkType uint16, name string) error {
+	namePad := (len(name) + 3) &^ 3
+	total := 16 + 8 + 4 + 4
+	if name != "" {
+		total += 4 + namePad
+	}
+	b := make([]byte, total)
 	binary.LittleEndian.PutUint32(b[0:4], blkIDB)
-	binary.LittleEndian.PutUint32(b[4:8], 32)
+	binary.LittleEndian.PutUint32(b[4:8], uint32(total))
 	binary.LittleEndian.PutUint16(b[8:10], linkType)
 	binary.LittleEndian.PutUint16(b[10:12], 0) // reserved
 	binary.LittleEndian.PutUint32(b[12:16], 0) // snaplen = unlimited
-	// opt if_tsresol: code=9, length=1, value=9, padding 3
-	binary.LittleEndian.PutUint16(b[16:18], idbOptIfTsresol)
-	binary.LittleEndian.PutUint16(b[18:20], 1)
-	b[20] = idbTsresolNs
-	// b[21..23] zeroed by default
-	// opt endofopt: code=0, length=0
-	binary.LittleEndian.PutUint16(b[24:26], 0)
-	binary.LittleEndian.PutUint16(b[26:28], 0)
-	binary.LittleEndian.PutUint32(b[28:32], 32)
-	_, err := fw.w.Write(b[:])
+	o := 16
+	if name != "" {
+		binary.LittleEndian.PutUint16(b[o:o+2], idbOptIfName)
+		binary.LittleEndian.PutUint16(b[o+2:o+4], uint16(len(name)))
+		copy(b[o+4:], name)
+		o += 4 + namePad
+	}
+	binary.LittleEndian.PutUint16(b[o:o+2], idbOptIfTsresol)
+	binary.LittleEndian.PutUint16(b[o+2:o+4], 1)
+	b[o+4] = idbTsresolNs
+	o += 8
+	binary.LittleEndian.PutUint16(b[o:o+2], optEndOfOpt)
+	binary.LittleEndian.PutUint16(b[o+2:o+4], 0)
+	o += 4
+	binary.LittleEndian.PutUint32(b[o:o+4], uint32(total))
+	_, err := fw.w.Write(b)
 	return err
 }
 

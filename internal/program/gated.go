@@ -3,9 +3,7 @@ package program
 import (
 	"fmt"
 
-	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/asm"
-	"github.com/cilium/ebpf/btf"
 
 	"github.com/takehaya/bpf-ninja/internal/filter"
 	"github.com/takehaya/bpf-ninja/internal/hook"
@@ -22,7 +20,7 @@ import (
 // decides. Nothing is written into the packet.
 //
 // Why a plain per-CPU slot is enough (no id, no lock): on a non-RT
-// kernel a driver's NAPI poll runs the XDP program for one packet to
+// kernel a driver's NAPI poll runs the program for one packet to
 // completion — fentry(N), program, fexit(N) — with bottom halves off,
 // BPF programs cannot sleep, and the trampoline runs both probes on the
 // same CPU. So whatever fexit(N) finds in this CPU's slot was written by
@@ -32,20 +30,21 @@ import (
 // current invocation's. PREEMPT_RT with CONFIG_PREEMPT_RT_NEEDS_BH_LOCK
 // off is out of scope (a higher-priority NAPI thread can interleave).
 //
+// Both programs keep the hold pointer in R8 for their whole body: the
+// prologue's data_end is never read on the tracing path (see
+// hook.PacketPrologue), and R8 is callee-saved across helper calls.
+//
 // Hold slot layout (per-CPU array, one entry):
 //
 //	 0  u64 ts_ns    entry timestamp (becomes the entry record's timestamp)
 //	 8  u64 frame    hook identity at entry (sanity-checked at exit)
-//	16  u32 pkt_len
-//	20  u16 caplen   bytes actually copied
-//	22  u16 valid    1 = written by the fentry of an invocation whose fexit
+//	16  u16 caplen   bytes actually copied
+//	18  u16 valid    1 = written by the fentry of an invocation whose fexit
 //	                 has not consumed it yet
-//	24  u32 tag      set-map value
-//	28  u32 _pad
-//	32  u64 seq      per-CPU count of matched entries; (cpu << 48 | seq) is
-//	                 the opaque packet id both records carry (no kernel
-//	                 address leaves the kernel unless --raw-frame-id)
-//	40  u8  bytes[maxCapLen]  (only when the entry image is emitted)
+//	20  u32 tag      set-map value
+//	24  u64 seq      per-CPU count of matched entries; (cpu << 48 | seq) is
+//	                 the opaque packet id both records carry
+//	32  u8  bytes[entryCapLen]  (absent when only the exit image is emitted)
 
 // Emit selects which records a gated (entry + exit) capture emits for a
 // packet that matched both stages.
@@ -53,7 +52,7 @@ type Emit uint8
 
 const (
 	// EmitBoth emits the entry image and the exit image, both stamped
-	// with the verdict and the same frame identity.
+	// with the verdict and the same packet id.
 	EmitBoth Emit = iota
 	// EmitEntry emits only the entry image (as the program received the
 	// packet), selected by the exit verdict.
@@ -77,36 +76,17 @@ func ParseEmit(s string) (Emit, error) {
 	return 0, fmt.Errorf("invalid --emit %q: must be both, entry, or exit", s)
 }
 
-func (e Emit) String() string {
-	switch e {
-	case EmitEntry:
-		return "entry"
-	case EmitExit:
-		return "exit"
-	}
-	return "both"
-}
-
 const (
 	holdTs     = 0
 	holdFrame  = 8
-	holdPktLen = 16
-	holdCapLen = 20
-	holdValid  = 22
-	holdTag    = 24
-	holdSeq    = 32
-	holdHdr    = 40
+	holdCapLen = 16
+	holdValid  = 18
+	holdTag    = 20
+	holdSeq    = 24
+	holdHdr    = 32
 )
 
-// holdValueSize is the per-CPU hold slot size for an entry snaplen.
-func holdValueSize(emit Emit, entryCapLen int) int {
-	if emit == EmitExit {
-		return holdHdr
-	}
-	return holdHdr + entryCapLen
-}
-
-// emitHoldLookup loads the per-CPU hold slot pointer into R0 (jumping to
+// emitHoldLookup loads the per-CPU hold slot pointer into R8 (jumping to
 // "exit" if the lookup fails, which cannot happen for an array with one
 // entry but the verifier needs the check). Uses stack[-16] as the key.
 func emitHoldLookup(holdFD int) asm.Instructions {
@@ -116,18 +96,15 @@ func emitHoldLookup(holdFD int) asm.Instructions {
 		asm.Mov.Reg(asm.R2, asm.R10), asm.Add.Imm(asm.R2, -16),
 		asm.FnMapLookupElem.Call(),
 		asm.JEq.Imm(asm.R0, 0, "exit"),
+		asm.Mov.Reg(asm.R8, asm.R0),
 	}
 }
 
 // buildGatedEntryInsns is the fentry half: filter gate, then on match
 // write the hold slot (and the entry bytes unless only the exit image is
 // wanted). Never emits to the ring.
-func buildGatedEntryInsns(filterOut codegen.Output, tf filter.TargetFilters, holdFD, scratchFD int, progType ebpf.ProgramType, slots *pktSetSlots, pktRefs []string, emit Emit, entryCapLen int) (asm.Instructions, error) {
-	h, ok := hook.ByProgramType(progType)
-	if !ok {
-		return nil, hook.UnsupportedTypeError(progType)
-	}
-	insns, err := buildFilterGate(filterOut, tf, scratchFD, progType, slots, pktRefs)
+func buildGatedEntryInsns(h *hook.Hook, filterOut codegen.Output, tf filter.TargetFilters, holdFD, scratchFD int, slots *pktSetSlots, pktRefs []string, emit Emit, entryCapLen int) (asm.Instructions, error) {
+	insns, err := buildFilterGate(h, filterOut, tf, scratchFD, slots, pktRefs)
 	if err != nil {
 		return nil, err
 	}
@@ -135,19 +112,14 @@ func buildGatedEntryInsns(filterOut codegen.Output, tf filter.TargetFilters, hol
 	if err != nil {
 		return nil, err
 	}
-
 	insns = append(insns, emitHoldLookup(holdFD)...)
 	insns = append(insns,
-		// R8 (data_end) is dead after the filter; keep the hold pointer
-		// there across helper calls (callee-saved).
-		asm.Mov.Reg(asm.R8, asm.R0),
 		asm.FnKtimeGetNs.Call(),
 		asm.StoreMem(asm.R8, holdTs, asm.R0, asm.DWord),
 	)
 	insns = append(insns, identity...)
 	insns = append(insns,
 		asm.StoreMem(asm.R8, holdFrame, asm.R1, asm.DWord),
-		asm.StoreMem(asm.R8, holdPktLen, asm.R9, asm.Word),
 		// caplen = min(pkt_len, entryCapLen)
 		asm.Mov.Reg(asm.R3, asm.R9),
 		asm.JLE.Imm(asm.R3, int32(entryCapLen), "gh_cap_ok"),
@@ -163,34 +135,25 @@ func buildGatedEntryInsns(filterOut codegen.Output, tf filter.TargetFilters, hol
 	)
 	if emit != EmitExit {
 		insns = append(insns,
-			// bpf_probe_read_kernel(hold + 32, caplen, data)
+			// bpf_probe_read_kernel(hold + holdHdr, caplen, data)
 			asm.Mov.Reg(asm.R1, asm.R8), asm.Add.Imm(asm.R1, holdHdr),
 			asm.Mov.Reg(asm.R2, asm.R3),
 			asm.Mov.Reg(asm.R3, asm.R7),
 			asm.FnProbeReadKernel.Call(),
 		)
 	}
-	insns = append(insns, asm.Mov.Imm(asm.R0, 0).WithSymbol("exit"), asm.Return())
-	if len(filterOut.Callbacks) > 0 {
-		insns[0] = btf.WithFuncMetadata(insns[0], codegen.MainFilterFuncBTF("bpf_ninja_filter"))
-		insns = append(insns, filterOut.Callbacks...)
-	}
-	return insns, nil
+	return finishProgram(insns, filterOut, 0), nil
 }
 
 // buildGatedExitInsns is the fexit half: consume the hold slot (bail out
 // cheaply when the entry stage did not match), run the exit filter, and
 // on match emit the entry image from the hold and/or the exit image.
-func buildGatedExitInsns(filterOut codegen.Output, tf filter.TargetFilters, eventsFD, holdFD, scratchFD int, progType ebpf.ProgramType, slots *pktSetSlots, pktRefs []string, emit Emit, entryCapLen int) (asm.Instructions, error) {
-	h, ok := hook.ByProgramType(progType)
-	if !ok {
-		return nil, hook.UnsupportedTypeError(progType)
-	}
+func buildGatedExitInsns(h *hook.Hook, filterOut codegen.Output, tf filter.TargetFilters, eventsFD, holdFD, scratchFD int, slots *pktSetSlots, pktRefs []string, emit Emit, entryCapLen int) (asm.Instructions, error) {
 	identity, err := h.Identity(asm.R1)
 	if err != nil {
 		return nil, err
 	}
-	insns, err := loadPacketPointers(progType)
+	insns, err := h.PacketPrologue()
 	if err != nil {
 		return nil, err
 	}
@@ -198,71 +161,55 @@ func buildGatedExitInsns(filterOut codegen.Output, tf filter.TargetFilters, even
 	// --- consume the hold before any filter work ---
 	insns = append(insns, emitHoldLookup(holdFD)...)
 	insns = append(insns,
-		asm.LoadMem(asm.R2, asm.R0, holdValid, asm.Half),
+		asm.LoadMem(asm.R2, asm.R8, holdValid, asm.Half),
 		asm.JEq.Imm(asm.R2, 0, "exit"),               // entry stage did not match: nothing to do
-		asm.StoreImm(asm.R0, holdValid, 0, asm.Half), // consume, whatever happens below
-		asm.LoadMem(asm.R2, asm.R0, holdFrame, asm.DWord),
+		asm.StoreImm(asm.R8, holdValid, 0, asm.Half), // consume, whatever happens below
+		asm.LoadMem(asm.R2, asm.R8, holdFrame, asm.DWord),
 	)
 	insns = append(insns, identity...)
 	insns = append(insns,
 		asm.JNE.Reg(asm.R1, asm.R2, "exit"), // stale slot (missed fentry, RT interleave): drop it
 	)
 
-	gate, err := buildFilterBody(filterOut, tf, scratchFD, slots, pktRefs)
+	body, err := buildFilterBody(filterOut, tf, scratchFD, slots, pktRefs)
 	if err != nil {
 		return nil, err
 	}
-	insns = append(insns, gate...)
+	insns = append(insns, body...)
 
-	// --- packet id for both records, stashed at stack[-24] (dead after
-	// the filter). Default: opaque (cpu << 48 | hold.seq); --raw-frame-id:
-	// the hook identity itself (a kernel address, research use).
-	if FrameIDRaw {
-		insns = append(insns, identity...)
-		insns = append(insns, asm.StoreMem(asm.R10, -24, asm.R1, asm.DWord))
-	} else {
-		insns = append(insns,
-			asm.FnGetSmpProcessorId.Call(),
-			asm.LSh.Imm(asm.R0, 48),
-			asm.StoreMem(asm.R10, -24, asm.R0, asm.DWord),
-		)
-		insns = append(insns, emitHoldLookup(holdFD)...)
-		insns = append(insns,
-			asm.LoadMem(asm.R1, asm.R0, holdSeq, asm.DWord),
-			asm.LoadMem(asm.R2, asm.R10, -24, asm.DWord),
-			asm.Or.Reg(asm.R1, asm.R2),
-			asm.StoreMem(asm.R10, -24, asm.R1, asm.DWord),
-		)
-	}
-	packetID := asm.Instructions{asm.LoadMem(asm.R1, asm.R10, -24, asm.DWord)}
+	// --- packet id for both records: cpu << 48 | hold.seq, parked in
+	// R6 (ctx is not read again after the filter) ---
+	insns = append(insns,
+		asm.FnGetSmpProcessorId.Call(),
+		asm.LSh.Imm(asm.R0, 48),
+		asm.LoadMem(asm.R6, asm.R8, holdSeq, asm.DWord),
+		asm.Or.Reg(asm.R6, asm.R0),
+	)
+	packetID := asm.Instructions{asm.Mov.Reg(asm.R1, asm.R6)}
 
 	if emit != EmitExit {
-		insns = append(insns, captureFromHold(eventsFD, holdFD, entryCapLen, packetID)...)
+		insns = append(insns, captureFromHold(eventsFD, entryCapLen, packetID)...)
 	}
 	if emit != EmitEntry {
+		// ponytail: a failed reserve here leaves the entry record just
+		// submitted without its exit twin; reserve both slots before
+		// submitting either if pairs must be atomic under ring pressure.
 		insns = append(insns, captureWithRingbuf(eventsFD, true, filterOut.Capture.MaxCapLen, packetID)...)
 	}
-	insns = append(insns, asm.Mov.Imm(asm.R0, 0).WithSymbol("exit"), asm.Return())
-	if len(filterOut.Callbacks) > 0 {
-		insns[0] = btf.WithFuncMetadata(insns[0], codegen.MainFilterFuncBTF("bpf_ninja_filter"))
-		insns = append(insns, filterOut.Callbacks...)
-	}
-	return insns, nil
+	return finishProgram(insns, filterOut, 0), nil
 }
 
-// captureFromHold emits the entry image kept in the hold slot as a
+// captureFromHold emits the entry image kept in the hold slot (R8) as a
 // mode-0 record stamped with the exit verdict (args[1]), the hold's
 // timestamp and tag, and the packet id loaded by packetID (→ R1; must
 // not clobber R0/R6..R9). Same ring/stack conventions as
 // captureWithRingbuf (stack[-16] cpu key, stack[-32] reserved slot).
-func captureFromHold(eventsFD, holdFD int, entryCapLen int, packetID asm.Instructions) asm.Instructions {
+func captureFromHold(eventsFD, entryCapLen int, packetID asm.Instructions) asm.Instructions {
 	reserveSize := int32(metadataSize + entryCapLen)
-	insns := emitHoldLookup(holdFD)
-	insns = append(insns,
-		asm.Mov.Reg(asm.R8, asm.R0), // hold pointer, callee-saved across helpers
+	insns := asm.Instructions{
 		asm.FnGetSmpProcessorId.Call(),
 		asm.StoreMem(asm.R10, -16, asm.R0, asm.Word),
-	)
+	}
 	insns = append(insns, emitShardedRBReserve(eventsFD, reserveSize)...)
 	insns = append(insns,
 		// ts = hold.ts
@@ -284,11 +231,10 @@ func captureFromHold(eventsFD, holdFD int, entryCapLen int, packetID asm.Instruc
 		asm.LoadMem(asm.R1, asm.R8, holdTag, asm.Word),
 		asm.StoreMem(asm.R0, 16, asm.R1, asm.Word),
 	)
-	// packet id
 	insns = append(insns, packetID...)
 	insns = append(insns,
 		asm.StoreMem(asm.R0, 20, asm.R1, asm.DWord),
-		// bpf_probe_read_kernel(slot + 28, caplen, hold + 40)
+		// bpf_probe_read_kernel(slot + metadataSize, caplen, hold + holdHdr)
 		asm.Mov.Reg(asm.R1, asm.R0), asm.Add.Imm(asm.R1, int32(metadataSize)),
 		asm.Mov.Reg(asm.R2, asm.R3),
 		asm.Mov.Reg(asm.R3, asm.R8), asm.Add.Imm(asm.R3, holdHdr),

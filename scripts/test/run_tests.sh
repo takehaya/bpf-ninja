@@ -639,7 +639,7 @@ echo "Setting up test environment..."
 # is parsed by hand because this tshark has no frame.packet_id field.
 MP_IF=ddmp0; MP_PEER=ddmp1; MP_NS=ddmptest
 setup_multipoint() {
-    clang -O2 -g -target bpf -c "$SCRIPT_DIR/decap_drop.c" -o "$SCRIPT_DIR/decap_drop.o" 2>/dev/null || return 1
+    clang -O2 -g -target bpf -c "$SCRIPT_DIR/decap_drop.c" -o "$SCRIPT_DIR/decap_drop.o" || { echo "FAIL: compiling decap_drop.c" >&2; return 1; }
     cleanup_multipoint
     ip netns add $MP_NS || return 1
     ip link add $MP_IF type veth peer name $MP_PEER || return 1
@@ -738,7 +738,7 @@ run_multipoint_case() {
     return $result
 }
 test_multipoint_pairs() {
-    setup_multipoint || { echo "skipping: multipoint veth/xdp setup failed" >&2; cleanup_multipoint; return 1; }
+    setup_multipoint || { echo "FAIL: multipoint veth/xdp setup" >&2; cleanup_multipoint; return 1; }
     local rc=0
     run_multipoint_case 10 5 5 5 || rc=1                        # --emit both (default): 5 entry + 5 exit, paired
     run_multipoint_case 5 5 0 0 --emit entry || rc=1            # only the pre-decap images of the 5 dropped packets

@@ -39,6 +39,9 @@ type Hook struct {
 	// PacketPrologue emits the tracing-program prelude that loads the
 	// packet window from the target's context. Contract on exit:
 	// R6=ctx, R7=data, R8=data_end, R9=pkt_len, stack[-48]=args ptr.
+	// The filter body leaves R6..R9 untouched. R8 is never read after
+	// the prologue on the tracing path (filters scan a scratch copy
+	// bounded by R9), so capture epilogues may reuse it.
 	PacketPrologue func() (asm.Instructions, error)
 
 	// EntryCaps / FexitCaps are the kunai host capabilities for fentry
@@ -47,14 +50,14 @@ type Hook struct {
 	FexitCaps func() codegen.Capabilities
 
 	// Identity emits instructions that load this hook's packet identity
-	// into dst from the ctx in R6 (valid after PacketPrologue, and still
-	// valid at capture time because R6 survives the filter body). The
-	// identity is the address of the buffer the packet sits in: it is
-	// unchanged between the entry and exit of one invocation (XDP's
+	// into dst from the ctx in R6 (valid anywhere after PacketPrologue).
+	// The identity is the address of the buffer the packet sits in: it
+	// is unchanged between the entry and exit of one invocation (XDP's
 	// data_hard_start is not moved by adjust_head; an sk_buff object is
-	// not replaced while its program runs), so userspace can pair an
-	// entry record with the exit record of the same invocation by
-	// (cpu, identity, order). Must not clobber R0 or R6..R9.
+	// not replaced while its program runs). The gated capture uses it
+	// in-kernel to check that the hold slot written at entry belongs to
+	// the current invocation; it never leaves the kernel. Must not
+	// clobber R0 or R6..R9.
 	Identity func(dst asm.Register) (asm.Instructions, error)
 
 	// Actions lists the hook's verdict values in pcap-ng interface

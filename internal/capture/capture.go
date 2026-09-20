@@ -97,13 +97,11 @@ type Packet struct {
 	Mode      uint8  // 0=entry(fentry), 1=exit(fexit), 2=xdp-native
 	CapLen    uint16 // bytes the BPF side actually copied into Data
 	Tag       uint32 // set-map value of the matched entry (0 when no set matched)
-	// Frame is the record's packet id. Gated (entry + exit) captures set
-	// it to an opaque (cpu << 48 | per-CPU sequence) shared by the entry
-	// and exit images of one invocation; single-stage and xdp-native
-	// records carry 0. With --raw-frame-id it is the hook's raw identity
-	// instead (XDP: xdp_buff->data_hard_start; skb hooks: the sk_buff
-	// pointer), i.e. a kernel address — research use only.
-	Frame uint64
+	// PacketID pairs the entry and exit records of one invocation in a
+	// gated (entry + exit) capture: an opaque cpu << 48 | per-CPU
+	// sequence, never a kernel address. Single-stage and xdp-native
+	// records carry 0.
+	PacketID uint64
 }
 
 // Reader reads captured packets from the ringbuf.
@@ -142,7 +140,7 @@ func NewReader(eventsMap *ebpf.Map, _ int) (*Reader, error) {
 //	  u8  _pad         (offset 13)
 //	  u16 caplen       (offset 14)
 //	  u32 tag          (offset 16) — set-map value of the matched entry, 0 if none
-//	  u64 frame        (offset 20) — packet id, see Packet.Frame
+//	  u64 packet_id    (offset 20) — see Packet.PacketID
 //
 // All multi-byte fields are host-endian: BPF stores via asm.StoreMem
 // produce native-endian writes, so readers must use binary.NativeEndian.
@@ -153,7 +151,7 @@ const (
 	OffsetMode     = 12
 	OffsetCapLen   = 14
 	OffsetTag      = 16
-	OffsetFrame    = 20
+	OffsetPacketID = 20
 )
 
 // RecordKernelTs reads the kernel_ts_ns field from a raw ringbuf record.
@@ -266,7 +264,7 @@ func ParseRawSample(raw []byte) (Packet, error) {
 		Mode:      raw[OffsetMode],
 		CapLen:    caplen,
 		Tag:       binary.NativeEndian.Uint32(raw[OffsetTag : OffsetTag+4]),
-		Frame:     binary.NativeEndian.Uint64(raw[OffsetFrame : OffsetFrame+8]),
+		PacketID:  binary.NativeEndian.Uint64(raw[OffsetPacketID : OffsetPacketID+8]),
 		Data:      raw[MetadataSize:end],
 	}, nil
 }

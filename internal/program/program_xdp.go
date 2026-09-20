@@ -21,7 +21,6 @@ import (
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/asm"
-	"github.com/cilium/ebpf/btf"
 	"github.com/cilium/ebpf/link"
 	"github.com/takehaya/bpf-ninja/internal/attach"
 	"github.com/takehaya/bpf-ninja/internal/setmap"
@@ -168,15 +167,7 @@ func buildXDPNativeInsns(filterOut codegen.Output, eventsFD int, slots *pktSetSl
 	if XDPNativeBenchDrop {
 		finalAction = xdpDrop
 	}
-	insns = append(insns,
-		asm.Mov.Imm(asm.R0, finalAction).WithSymbol("exit"),
-		asm.Return(),
-	)
-	if len(filterOut.Callbacks) > 0 {
-		insns[0] = btf.WithFuncMetadata(insns[0], codegen.MainFilterFuncBTF("bpf_ninja_filter"))
-		insns = append(insns, filterOut.Callbacks...)
-	}
-	return insns
+	return finishProgram(insns, filterOut, finalAction)
 }
 
 // loadXDPPacketPointers sets up R6=ctx, R7=data, R8=data_end, R9=pkt_len.
@@ -294,7 +285,7 @@ func captureXDPNative(eventsFD int, maxCapLen int) asm.Instructions {
 		asm.LoadMem(asm.R1, asm.R10, tagSlot, asm.DWord),
 		asm.StoreMem(asm.R0, 16, asm.R1, asm.Word),
 
-		// --- frame identity slot[20..28] = 0: xdp_md exposes no
+		// --- packet id slot[20..28] = 0: xdp_md exposes no
 		// data_hard_start and native mode has no exit record to pair.
 		// Two 32-bit immediate stores: cilium/ebpf cannot marshal an
 		// 8-byte StoreImm (the immediate is 32-bit).
