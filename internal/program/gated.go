@@ -155,7 +155,7 @@ func buildGatedEntryInsns(h *hook.Hook, filterOut codegen.Output, tf filter.Targ
 // buildGatedExitInsns is the fexit half: consume the hold slot (bail out
 // cheaply when the entry stage did not match), run the exit filter, and
 // on match emit the entry image from the hold and/or the exit image.
-func buildGatedExitInsns(h *hook.Hook, filterOut codegen.Output, tf filter.TargetFilters, eventsFD, holdFD, scratchFD int, slots *pktSetSlots, pktRefs []string, emit Emit, entryCapLen int) (asm.Instructions, error) {
+func buildGatedExitInsns(h *hook.Hook, filterOut codegen.Output, tf filter.TargetFilters, eventsFD, holdFD, statsFD, scratchFD int, slots *pktSetSlots, pktRefs []string, emit Emit, entryCapLen int) (asm.Instructions, error) {
 	identity, err := h.Identity(asm.R1)
 	if err != nil {
 		return nil, err
@@ -195,15 +195,15 @@ func buildGatedExitInsns(h *hook.Hook, filterOut codegen.Output, tf filter.Targe
 	packetID := asm.Instructions{asm.Mov.Reg(asm.R1, asm.R6)}
 
 	if emit != EmitExit {
-		insns = append(insns, captureFromHold(eventsFD, entryCapLen, packetID)...)
+		insns = append(insns, captureFromHold(eventsFD, statsFD, entryCapLen, packetID)...)
 	}
 	if emit != EmitEntry {
 		// ponytail: a failed reserve here leaves the entry record just
 		// submitted without its exit twin; reserve both slots before
 		// submitting either if pairs must be atomic under ring pressure.
-		insns = append(insns, captureWithRingbuf(eventsFD, true, filterOut.Capture.MaxCapLen, packetID)...)
+		insns = append(insns, captureWithRingbuf(eventsFD, statsFD, true, filterOut.Capture.MaxCapLen, packetID)...)
 	}
-	return finishProgram(insns, filterOut, 0), nil
+	return finishProgram(appendRBFailCounter(insns, statsFD), filterOut, 0), nil
 }
 
 // captureFromHold emits the entry image kept in the hold slot (R8) as a
@@ -211,13 +211,13 @@ func buildGatedExitInsns(h *hook.Hook, filterOut codegen.Output, tf filter.Targe
 // timestamp and tag, and the packet id loaded by packetID (→ R1; must
 // not clobber R0/R6..R9). Same ring/stack conventions as
 // captureWithRingbuf (stack[-16] cpu key, stack[-32] reserved slot).
-func captureFromHold(eventsFD, entryCapLen int, packetID asm.Instructions) asm.Instructions {
+func captureFromHold(eventsFD, statsFD, entryCapLen int, packetID asm.Instructions) asm.Instructions {
 	reserveSize := int32(metadataSize + entryCapLen)
 	insns := asm.Instructions{
 		asm.FnGetSmpProcessorId.Call(),
 		asm.StoreMem(asm.R10, -16, asm.R0, asm.Word),
 	}
-	insns = append(insns, emitShardedRBReserve(eventsFD, reserveSize)...)
+	insns = append(insns, emitShardedRBReserve(eventsFD, statsFD, reserveSize)...)
 	insns = append(insns,
 		// ts = hold.ts
 		asm.LoadMem(asm.R1, asm.R8, holdTs, asm.DWord),

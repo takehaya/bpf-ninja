@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"runtime"
+	"sync/atomic"
 	"time"
 
 	"github.com/cilium/ebpf"
@@ -301,6 +302,11 @@ func NewShardedReader(inners []*ebpf.Map) (*Reader, error) {
 // batchSize; the arena and Packet slice grow to fit.
 const batchSize = 256
 
+// LeftoverAtStop counts records that were still committed in the rings
+// when stop() was called and were drained on shutdown (default reader
+// only). Reported by the CLI for export accounting.
+var LeftoverAtStop atomic.Int64
+
 // arenaInitPerPacket sizes the per-shard copy arena: batchSize × this
 // many bytes is pre-allocated so a full default-reader batch of
 // MTU-sized packets fits without reallocating. Larger fast-reader
@@ -374,6 +380,7 @@ func (r *Reader) RunShards(sink ShardSink) (stop func(), err error) {
 	if len(r.shardReaders) == 0 {
 		return nil, errors.New("no shards")
 	}
+	pastDeadline := time.Unix(1, 0)
 	stopCh := make(chan struct{})
 	doneCh := make(chan struct{}, len(r.shardReaders))
 	for idx, rr := range r.shardReaders {
@@ -386,9 +393,30 @@ func (r *Reader) RunShards(sink ShardSink) (stop func(), err error) {
 			for {
 				select {
 				case <-stopCh:
+					// Final non-blocking drain: records already committed
+					// by the producer are delivered (and counted in
+					// LeftoverAtStop) instead of being abandoned.
+					rr.SetDeadline(pastDeadline)
+					for {
+						if err := rr.ReadInto(&rec); err != nil {
+							break
+						}
+						if pkt, perr := ParseRawSample(rec.RawSample); perr == nil {
+							LeftoverAtStop.Add(1)
+							bb.add(pkt)
+							if bb.full() {
+								bb.flush()
+							}
+						}
+					}
+					bb.flush()
 					return
 				default:
 				}
+				// Bounded block so a stop request is noticed within
+				// ~100 ms: a deadline set from stop() would not wake a
+				// reader already parked in epoll_wait.
+				rr.SetDeadline(time.Now().Add(100 * time.Millisecond))
 				if err := rr.ReadInto(&rec); err != nil {
 					if errors.Is(err, ringbuf.ErrClosed) {
 						return
@@ -423,11 +451,13 @@ func (r *Reader) RunShards(sink ShardSink) (stop func(), err error) {
 	}
 	stop = func() {
 		close(stopCh)
-		for _, rr := range r.shardReaders {
-			_ = rr.Close()
-		}
+		// Readers block at most ~100 ms, then see stopCh and run their
+		// final drain; close the maps only after every shard is done.
 		for range r.shardReaders {
 			<-doneCh
+		}
+		for _, rr := range r.shardReaders {
+			_ = rr.Close()
 		}
 	}
 	return stop, nil

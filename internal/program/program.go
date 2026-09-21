@@ -28,8 +28,11 @@ import (
 type Probe struct {
 	EventsMap *ebpf.Map
 	InnerMaps []*ebpf.Map // non-nil only in per-CPU sharded mode
-	IsFexit   bool
-	Warnings  []string // resolver / codegen non-fatal notices; CLI prints to stderr
+	// StatsMap is a 1-entry per-CPU u64 array; [0] counts bpf_ringbuf_reserve
+	// failures (ring full → record dropped at the producer). Tracing modes only.
+	StatsMap *ebpf.Map
+	IsFexit  bool
+	Warnings []string // resolver / codegen non-fatal notices; CLI prints to stderr
 
 	// --arg-echo diagnostic mode: non-nil EchoRing means this probe emits
 	// the target function's integer args (EchoParams, in order) to a
@@ -191,6 +194,20 @@ func LoadMultiPoint(targets []attach.Target, stages []Stage, filters []filter.Ta
 		probe.Warnings = append(probe.Warnings, c.out.Warnings...)
 	}
 
+	// Export accounting: producer-side drops (NULL reserve) are counted
+	// here so the CLI can balance observer runs against records read.
+	statsMap, err := ebpf.NewMap(&ebpf.MapSpec{
+		Name: fmt.Sprintf("ninja_%s_st", label), Type: ebpf.PerCPUArray,
+		KeySize: 4, ValueSize: 8, MaxEntries: 1,
+	})
+	if err != nil {
+		_ = probe.Close()
+		return nil, fmt.Errorf("creating stats map: %w", err)
+	}
+	probe.StatsMap = statsMap
+	probe.maps = append(probe.maps, statsMap)
+	statsFD := statsMap.FD()
+
 	// Gated capture: the per-CPU hold slot carrying the entry image
 	// (header only when just the exit image is emitted).
 	holdFD := 0
@@ -258,9 +275,9 @@ func LoadMultiPoint(targets []attach.Target, stages []Stage, filters []filter.Ta
 			case gated && !st.IsFexit:
 				insns, err = buildGatedEntryInsns(h, c.out, tf, holdFD, scratchFD, c.slots, c.pktRefs, emit, entryCapLen)
 			case gated:
-				insns, err = buildGatedExitInsns(h, c.out, tf, outerMap.FD(), holdFD, scratchFD, c.slots, c.pktRefs, emit, entryCapLen)
+				insns, err = buildGatedExitInsns(h, c.out, tf, outerMap.FD(), holdFD, statsFD, scratchFD, c.slots, c.pktRefs, emit, entryCapLen)
 			default:
-				insns, err = buildTracingInsns(c.out, tf, outerMap.FD(), scratchFD, st.IsFexit, progType, c.slots, c.pktRefs)
+				insns, err = buildTracingInsns(c.out, tf, outerMap.FD(), scratchFD, statsFD, st.IsFexit, progType, c.slots, c.pktRefs)
 			}
 			if err != nil {
 				_ = probe.Close()
@@ -528,7 +545,7 @@ const (
 	metadataSize = 28
 )
 
-func buildTracingInsns(filterOut codegen.Output, tf filter.TargetFilters, eventsFD, scratchFD int, isFexit bool, progType ebpf.ProgramType, slots *pktSetSlots, pktRefs []string) (asm.Instructions, error) {
+func buildTracingInsns(filterOut codegen.Output, tf filter.TargetFilters, eventsFD, scratchFD, statsFD int, isFexit bool, progType ebpf.ProgramType, slots *pktSetSlots, pktRefs []string) (asm.Instructions, error) {
 	h, ok := hook.ByProgramType(progType)
 	if !ok {
 		return nil, hook.UnsupportedTypeError(progType)
@@ -539,8 +556,22 @@ func buildTracingInsns(filterOut codegen.Output, tf filter.TargetFilters, events
 	}
 	// Single-stage records carry packet id 0.
 	packetID := asm.Instructions{asm.Mov.Imm(asm.R1, 0)}
-	insns = append(insns, captureWithRingbuf(eventsFD, isFexit, filterOut.Capture.MaxCapLen, packetID)...)
-	return finishProgram(insns, filterOut, 0), nil
+	insns = append(insns, captureWithRingbuf(eventsFD, statsFD, isFexit, filterOut.Capture.MaxCapLen, packetID)...)
+	return finishProgram(appendRBFailCounter(insns, statsFD), filterOut, 0), nil
+}
+
+// appendRBFailCounter closes a capture body that reserved ring slots:
+// the success path jumps over the "rb_fail" block, which counts a NULL
+// bpf_ringbuf_reserve in stats[0] and falls through to "exit". Emitted
+// only with a stats map (statsFD > 0); emitShardedRBReserve then jumps
+// to "rb_fail" instead of "exit". Without one the block would be
+// unreachable, which the verifier rejects.
+func appendRBFailCounter(insns asm.Instructions, statsFD int) asm.Instructions {
+	if statsFD <= 0 {
+		return insns
+	}
+	insns = append(insns, asm.Ja.Label("exit"))
+	return append(insns, emitRBFailCounter(statsFD)...)
 }
 
 // finishProgram appends the tail every generated program shares: the
@@ -706,7 +737,7 @@ func runFilter(filter asm.Instructions, scratchFD, scanLen int) asm.Instructions
 // as an immediate, never a register-derived value. See
 // docs/paper/PLAN_bpf_ringbuf risk register entry "Verifier rejects
 // bpf_ringbuf_reserve with non-constant size".
-func captureWithRingbuf(eventsFD int, isFexit bool, maxCapLen int, packetID asm.Instructions) asm.Instructions {
+func captureWithRingbuf(eventsFD, statsFD int, isFexit bool, maxCapLen int, packetID asm.Instructions) asm.Instructions {
 	if maxCapLen <= 0 {
 		maxCapLen = defaultCapLen
 	}
@@ -727,7 +758,7 @@ func captureWithRingbuf(eventsFD int, isFexit bool, maxCapLen int, packetID asm.
 		asm.FnGetSmpProcessorId.Call(),
 		asm.StoreMem(asm.R10, -16, asm.R0, asm.Word),
 	}
-	insns = append(insns, emitShardedRBReserve(eventsFD, reserveSize)...)
+	insns = append(insns, emitShardedRBReserve(eventsFD, statsFD, reserveSize)...)
 	insns = append(insns,
 		// --- Write kernel_ts_ns into slot[0..8] ---
 		asm.LoadMem(asm.R1, asm.R10, -56, asm.DWord),
