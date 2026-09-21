@@ -80,54 +80,46 @@ func (p *Probe) Close() error {
 	return errors.Join(errs...)
 }
 
-// LoadEntry は fentry (前段) probe を作成してアタッチする。
-// useDSL=true のとき filterExpr は bpf-ninja DSL として解釈される。
-// 単一ターゲット用の互換ラッパ (bare *ebpf.Program から Target を合成
-// して loadMulti に委譲)。本番 CLI 経路は LoadMultiEntry/Exit を使う。
-func LoadEntry(targetProg *ebpf.Program, funcName string, filterExpr string, argFilters []filter.ArgFilter, useDSL bool) (*Probe, error) {
-	return loadProbe(targetProg, funcName, filterExpr, argFilters, false, useDSL)
+// Stage is one capture point on the same set of targets — the entry
+// (fentry) or the exit (fexit) of each target function — with its own
+// filter expression. The entry expression is evaluated against the
+// packet as the program received it; the exit expression against the
+// packet as the program left it (after adjust_head, encap, decap, …)
+// plus the verdict (`where action == …`).
+type Stage struct {
+	IsFexit bool
+	Expr    string
 }
 
-// LoadExit は fexit (後段) probe を作成してアタッチする。
-// useDSL=true のとき filterExpr は bpf-ninja DSL として解釈される。
-func LoadExit(targetProg *ebpf.Program, funcName string, filterExpr string, argFilters []filter.ArgFilter, useDSL bool) (*Probe, error) {
-	return loadProbe(targetProg, funcName, filterExpr, argFilters, true, useDSL)
-}
-
-func loadProbe(targetProg *ebpf.Program, funcName string, filterExpr string, argFilters []filter.ArgFilter, isFexit, useDSL bool) (*Probe, error) {
-	progType, err := validateTracingTarget(targetProg)
-	if err != nil {
-		return nil, err
-	}
-	targets := []attach.Target{{Program: targetProg, FuncName: funcName, Type: progType}}
-	return loadMulti(targets, filterExpr, []filter.TargetFilters{{Args: argFilters}}, isFexit, useDSL, nil)
-}
-
-// LoadMultiEntry attaches one fentry per (program, func) target, all
-// emitting into a single shared sharded ringbuf, so a multi-stage
-// dispatcher's per-direction capture points (UL + DL v4 + DL v6) are
-// captured in one run and merge into one time-ordered pcap.
+// LoadMultiPoint attaches the given stages of every target into one
+// shared sharded ringbuf.
 //
-// filters is parallel to targets (nil, or one entry per target): the
-// same param name can sit at a different arg index in different funcs, so
-// arg filters and set-key bindings must be resolved against each target's
-// own BTF params.
-func LoadMultiEntry(targets []attach.Target, filterExpr string, filters []filter.TargetFilters, useDSL bool, sets []*setmap.Set) (*Probe, error) {
-	return loadMulti(targets, filterExpr, filters, false, useDSL, sets)
-}
-
-// LoadMultiExit is LoadMultiEntry for fexit (sees the return action).
-func LoadMultiExit(targets []attach.Target, filterExpr string, filters []filter.TargetFilters, useDSL bool, sets []*setmap.Set) (*Probe, error) {
-	return loadMulti(targets, filterExpr, filters, true, useDSL, sets)
-}
-
-// loadMulti builds the shared capture infrastructure once (filter compile,
-// sharded ringbuf, scratch map — all of which depend only on the program
-// type, not the individual target) and then attaches one tracing program
-// per (target prog, func) pair against it.
-func loadMulti(targets []attach.Target, filterExpr string, filters []filter.TargetFilters, isFexit, useDSL bool, sets []*setmap.Set) (*Probe, error) {
+// One stage is the plain entry or exit capture. Two stages (entry and
+// exit) are a gated capture: a packet is emitted only if it matched the
+// entry filter as the program received it AND the exit filter as the
+// program left it (plus the verdict). The entry image is kept in a
+// per-CPU hold slot until the exit decides (see gated.go); emit selects
+// whether the entry image, the exit image, or both are emitted. Both
+// records carry the verdict and the same Packet.PacketID and land in
+// the same per-CPU shard, entry first.
+func LoadMultiPoint(targets []attach.Target, stages []Stage, filters []filter.TargetFilters, useDSL bool, sets []*setmap.Set, emit Emit) (*Probe, error) {
 	if len(targets) == 0 {
 		return nil, fmt.Errorf("no attach targets")
+	}
+	if len(stages) == 0 {
+		return nil, fmt.Errorf("no capture stages")
+	}
+	gated := len(stages) > 1
+	if gated {
+		if len(stages) != 2 || stages[0].IsFexit == stages[1].IsFexit {
+			return nil, fmt.Errorf("a gated capture takes exactly one entry and one exit stage")
+		}
+		if stages[0].IsFexit { // entry first, so comp[0] is the entry stage
+			stages = []Stage{stages[1], stages[0]}
+		}
+		if len(targets) != 1 {
+			return nil, fmt.Errorf("a gated (entry + exit) capture takes exactly one target function; the per-CPU hold cannot follow nested or multi-stage targets")
+		}
 	}
 	if filters != nil && len(filters) != len(targets) {
 		return nil, fmt.Errorf("filters length %d does not match %d targets", len(filters), len(targets))
@@ -149,25 +141,41 @@ func loadMulti(targets []attach.Target, filterExpr string, filters []filter.Targ
 		}
 	}
 
-	// DSL `field in @set` extracts packet fields into a host key buffer;
-	// build the slot resolver so kunai emits the extraction stores.
-	var slots *pktSetSlots
-	if len(sets) > 0 {
-		slots = newPktSetSlots(sets)
+	// One compile per stage: entry and exit see different packet
+	// layouts and capabilities (the verdict only exists at exit).
+	type compiled struct {
+		out     codegen.Output
+		slots   *pktSetSlots
+		pktRefs []string
 	}
-	filterOut, err := compileFilterWithSlots(filterExpr, useDSL, isFexit, progType, slots)
-	if slots != nil && slots.allocErr() != nil {
-		return nil, slots.allocErr() // clearer than the downstream codegen error
-	}
-	if err != nil {
-		return nil, err
-	}
-	pktRefs := referencedSets(filterOut.Extractions)
-	if SnaplenOverride > 0 {
-		filterOut.Capture.MaxCapLen = SnaplenOverride
+	comp := make([]compiled, len(stages))
+	var anyFexit, anyMain bool
+	for i, st := range stages {
+		// DSL `field in @set` extracts packet fields into a host key buffer;
+		// build the slot resolver so kunai emits the extraction stores.
+		var slots *pktSetSlots
+		if len(sets) > 0 {
+			slots = newPktSetSlots(sets)
+		}
+		out, err := compileFilterWithSlots(st.Expr, useDSL, st.IsFexit, progType, slots)
+		if slots != nil && slots.allocErr() != nil {
+			return nil, slots.allocErr() // clearer than the downstream codegen error
+		}
+		if err != nil {
+			return nil, err
+		}
+		if SnaplenOverride > 0 {
+			out.Capture.MaxCapLen = SnaplenOverride
+		}
+		comp[i] = compiled{out: out, slots: slots, pktRefs: referencedSets(out.Extractions)}
+		anyFexit = anyFexit || st.IsFexit
+		anyMain = anyMain || len(out.Main) > 0
 	}
 
-	label, attachType := tracingLabel(isFexit)
+	label, _ := tracingLabel(anyFexit)
+	if gated {
+		label = "gated"
+	}
 
 	outerMap, innerMaps, err := createShardedRingbuf(label)
 	if err != nil {
@@ -175,18 +183,47 @@ func loadMulti(targets []attach.Target, filterExpr string, filters []filter.Targ
 	}
 
 	probe := &Probe{
-		EventsMap: outerMap, InnerMaps: innerMaps, IsFexit: isFexit,
-		Warnings: filterOut.Warnings,
-		maps:     append([]*ebpf.Map{outerMap}, innerMaps...),
+		EventsMap: outerMap, InnerMaps: innerMaps,
+		IsFexit: anyFexit,
+		maps:    append([]*ebpf.Map{outerMap}, innerMaps...),
+	}
+	for _, c := range comp {
+		probe.Warnings = append(probe.Warnings, c.out.Warnings...)
+	}
+
+	// Gated capture: the per-CPU hold slot carrying the entry image
+	// (header only when just the exit image is emitted).
+	holdFD := 0
+	entryCapLen := 0
+	if gated {
+		entryCapLen = comp[0].out.Capture.MaxCapLen
+		if entryCapLen <= 0 {
+			entryCapLen = defaultCapLen
+		}
+		holdSize := holdHdr
+		if emit != EmitExit {
+			holdSize += entryCapLen
+		}
+		holdMap, err := ebpf.NewMap(&ebpf.MapSpec{
+			Name: "ninja_gated_hold", Type: ebpf.PerCPUArray,
+			KeySize: 4, ValueSize: uint32(holdSize), MaxEntries: 1,
+		})
+		if err != nil {
+			_ = probe.Close()
+			return nil, fmt.Errorf("creating hold map: %w", err)
+		}
+		probe.maps = append(probe.maps, holdMap)
+		holdFD = holdMap.FD()
 	}
 
 	// Filter scratch buffer: kunai/cBPF eval cannot read xdp_buff packet
 	// memory as a scalar region, so runFilter copies a 256-byte prefix
 	// into PTR_TO_MAP_VALUE first. Output staging is no longer needed
 	// here — the bpf_ringbuf_reserve+submit path writes the metadata +
-	// packet bytes directly into the reserved ring slot.
+	// packet bytes directly into the reserved ring slot. Stages run
+	// sequentially on a CPU, so one per-CPU scratch serves all of them.
 	scratchFD := 0
-	if len(filterOut.Main) > 0 {
+	if anyMain {
 		scratchMap, err := ebpf.NewMap(&ebpf.MapSpec{
 			Name: fmt.Sprintf("ninja_%s_sc", label), Type: ebpf.PerCPUArray,
 			KeySize: 4, ValueSize: scratchBufSize, MaxEntries: 1,
@@ -199,21 +236,39 @@ func loadMulti(targets []attach.Target, filterExpr string, filters []filter.Targ
 		scratchFD = scratchMap.FD()
 	}
 
-	// Instructions are built per target: the packet-filter part depends
-	// only on progType and the shared maps, but arg-filter offsets are
-	// resolved against each target func's own BTF param layout.
+	// Instructions are built per (target, stage): the packet-filter part
+	// depends only on progType and the shared maps, but arg-filter
+	// offsets are resolved against each target func's own BTF param
+	// layout, and each stage has its own filter and attach type.
 	for i, t := range targets {
 		var tf filter.TargetFilters
 		if filters != nil {
 			tf = filters[i]
 		}
-		insns, err := buildTracingInsns(filterOut, tf, outerMap.FD(), scratchFD, isFexit, progType, slots, pktRefs)
-		if err != nil {
-			_ = probe.Close()
-			return nil, err
-		}
-		if err := attachTracingProbe(probe, t.Program, fmt.Sprintf("bpf_ninja_%s", label), t.FuncName, attachType, insns); err != nil {
-			return nil, err
+		// Gated: stages are ordered entry, exit; attach the fexit first
+		// so no fentry can fill the hold before its consumer exists
+		// (otherwise the first fexit after attach could pair a stale
+		// entry image with a later packet).
+		for si := len(stages) - 1; si >= 0; si-- {
+			st, c := stages[si], comp[si]
+			stLabel, attachType := tracingLabel(st.IsFexit)
+			var insns asm.Instructions
+			var err error
+			switch {
+			case gated && !st.IsFexit:
+				insns, err = buildGatedEntryInsns(h, c.out, tf, holdFD, scratchFD, c.slots, c.pktRefs, emit, entryCapLen)
+			case gated:
+				insns, err = buildGatedExitInsns(h, c.out, tf, outerMap.FD(), holdFD, scratchFD, c.slots, c.pktRefs, emit, entryCapLen)
+			default:
+				insns, err = buildTracingInsns(c.out, tf, outerMap.FD(), scratchFD, st.IsFexit, progType, c.slots, c.pktRefs)
+			}
+			if err != nil {
+				_ = probe.Close()
+				return nil, err
+			}
+			if err := attachTracingProbe(probe, t.Program, fmt.Sprintf("bpf_ninja_%s", stLabel), t.FuncName, attachType, insns); err != nil {
+				return nil, err
+			}
 		}
 	}
 	return probe, nil
@@ -372,11 +427,11 @@ func compileFilterWithSlots(expr string, useDSL, isFexit bool, progType ebpf.Pro
 //              それは runFilter 内のみ live — phase ordering で共存)
 //
 // 実際の on-wire フォーマットの正典は internal/capture/capture.go の
-// コメント。現行は ringbuf reserve/submit で 20B のメタデータヘッダを
+// コメント。現行は ringbuf reserve/submit で 28B のメタデータヘッダを
 // パケットの前に置く:
-//   [metadata (20B)] [パケットデータ (caplen B)]
+//   [metadata (28B)] [パケットデータ (caplen B)]
 //   metadata: u64 kernel_ts_ns + u32 action + u8 mode + u8 _pad
-//             + u16 caplen + u32 tag
+//             + u16 caplen + u32 tag + u64 packet_id (offset 20)
 
 // scratchBufSize is an alias for codegen.ScratchBufSize so this file's
 // existing references (map size, runFilter caps) keep their concise
@@ -470,16 +525,59 @@ const (
 	defaultCapLen = DefaultCapLen
 	// Must stay in sync with capture.MetadataSize; asserted by
 	// TestMetadataSizeMatchesCapture in metadata_size_test.go.
-	metadataSize = 20
+	metadataSize = 28
 )
 
 func buildTracingInsns(filterOut codegen.Output, tf filter.TargetFilters, eventsFD, scratchFD int, isFexit bool, progType ebpf.ProgramType, slots *pktSetSlots, pktRefs []string) (asm.Instructions, error) {
-	var insns asm.Instructions
-	prelude, err := loadPacketPointers(progType)
+	h, ok := hook.ByProgramType(progType)
+	if !ok {
+		return nil, hook.UnsupportedTypeError(progType)
+	}
+	insns, err := buildFilterGate(h, filterOut, tf, scratchFD, slots, pktRefs)
 	if err != nil {
 		return nil, err
 	}
-	insns = append(insns, prelude...)
+	// Single-stage records carry packet id 0.
+	packetID := asm.Instructions{asm.Mov.Imm(asm.R1, 0)}
+	insns = append(insns, captureWithRingbuf(eventsFD, isFexit, filterOut.Capture.MaxCapLen, packetID)...)
+	return finishProgram(insns, filterOut, 0), nil
+}
+
+// finishProgram appends the tail every generated program shares: the
+// "exit" label returning ret, then the bpf2bpf subprograms (currently
+// only DSL bpf_loop chain callbacks) past that final Return. The
+// kernel also needs BTF func_info for the outer program in that case,
+// so the first insn is tagged with codegen's canonical func proto.
+func finishProgram(insns asm.Instructions, filterOut codegen.Output, ret int32) asm.Instructions {
+	insns = append(insns, asm.Mov.Imm(asm.R0, ret).WithSymbol("exit"), asm.Return())
+	if len(filterOut.Callbacks) > 0 {
+		insns[0] = btf.WithFuncMetadata(insns[0], codegen.MainFilterFuncBTF("bpf_ninja_filter"))
+		insns = append(insns, filterOut.Callbacks...)
+	}
+	return insns
+}
+
+// buildFilterGate is the front half of every tracing program: the
+// hook prologue (args[0] = the host packet ctx, a trusted BTF pointer
+// the trampoline guarantees) followed by buildFilterBody. Falls through
+// on match; every miss jumps to the "exit" label the caller must define.
+func buildFilterGate(h *hook.Hook, filterOut codegen.Output, tf filter.TargetFilters, scratchFD int, slots *pktSetSlots, pktRefs []string) (asm.Instructions, error) {
+	insns, err := h.PacketPrologue()
+	if err != nil {
+		return nil, err
+	}
+	body, err := buildFilterBody(filterOut, tf, scratchFD, slots, pktRefs)
+	if err != nil {
+		return nil, err
+	}
+	return append(insns, body...), nil
+}
+
+// buildFilterBody is the filter part of the gate (no prologue): tag
+// reset, arg filters, set filters, the kunai/cBPF filter and the DSL set
+// lookups. Assumes R6=ctx, R7=data, R8=data_end, R9=len from the prologue.
+func buildFilterBody(filterOut codegen.Output, tf filter.TargetFilters, scratchFD int, slots *pktSetSlots, pktRefs []string) (asm.Instructions, error) {
+	var insns asm.Instructions
 	// Default the tag to 0 before any set lookup can overwrite it, so a
 	// captured packet that matched no set (or a set-less filter) reports 0.
 	insns = append(insns, emitTagSlotZero()...)
@@ -495,32 +593,7 @@ func buildTracingInsns(filterOut codegen.Output, tf filter.TargetFilters, events
 	if slots != nil {
 		insns = append(insns, slots.emitPktSetLookups(pktRefs)...)
 	}
-	insns = append(insns, captureWithRingbuf(eventsFD, isFexit, filterOut.Capture.MaxCapLen)...)
-	insns = append(insns, asm.Mov.Imm(asm.R0, 0).WithSymbol("exit"), asm.Return())
-	// bpf2bpf subprograms (currently only DSL bpf_loop chain
-	// callbacks) live after the tracing body so they sit past the
-	// program's final Return. The kernel also needs BTF func_info
-	// for the outer program in that case — tag the first tracing
-	// insn with codegen's canonical func proto.
-	if len(filterOut.Callbacks) > 0 {
-		insns[0] = btf.WithFuncMetadata(insns[0], codegen.MainFilterFuncBTF("bpf_ninja_filter"))
-		insns = append(insns, filterOut.Callbacks...)
-	}
 	return insns, nil
-}
-
-// loadPacketPointers は tracing args の args[0] (= host-specific
-// packet ctx) から packet 先頭・末尾・長さを host 別に読み出す。
-// trusted pointer (BTF 型付き) として trampoline が保証してくれる。
-// host 別の実体は internal/hook の各 PacketPrologue。
-//
-// 終了時: R6=ctx, R7=data, R8=data_end, R9=pkt_len, stack[-48]=args
-func loadPacketPointers(progType ebpf.ProgramType) (asm.Instructions, error) {
-	h, ok := hook.ByProgramType(progType)
-	if !ok {
-		return nil, hook.UnsupportedTypeError(progType)
-	}
-	return h.PacketPrologue()
 }
 
 // ObserverPrefetch, when true, makes runFilter always probe_read the
@@ -633,7 +706,7 @@ func runFilter(filter asm.Instructions, scratchFD, scanLen int) asm.Instructions
 // as an immediate, never a register-derived value. See
 // docs/paper/PLAN_bpf_ringbuf risk register entry "Verifier rejects
 // bpf_ringbuf_reserve with non-constant size".
-func captureWithRingbuf(eventsFD int, isFexit bool, maxCapLen int) asm.Instructions {
+func captureWithRingbuf(eventsFD int, isFexit bool, maxCapLen int, packetID asm.Instructions) asm.Instructions {
 	if maxCapLen <= 0 {
 		maxCapLen = defaultCapLen
 	}
@@ -660,6 +733,10 @@ func captureWithRingbuf(eventsFD int, isFexit bool, maxCapLen int) asm.Instructi
 		asm.LoadMem(asm.R1, asm.R10, -56, asm.DWord),
 		asm.StoreMem(asm.R0, 0, asm.R1, asm.DWord),
 	)
+
+	// --- Write the packet id into slot[20..28] (packetID → R1) ---
+	insns = append(insns, packetID...)
+	insns = append(insns, asm.StoreMem(asm.R0, 20, asm.R1, asm.DWord))
 
 	// --- Write action+mode metadata at slot[8..14] ---
 	if isFexit {

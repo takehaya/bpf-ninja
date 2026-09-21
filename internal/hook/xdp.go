@@ -16,6 +16,7 @@ var xdpHook = &Hook{
 	// in-band at XDP so no layout flags apply either.
 	EntryCaps: func() codegen.Capabilities { return codegen.Capabilities{} },
 	FexitCaps: xdphost.FexitCapabilities,
+	Identity:  xdpIdentity,
 	// Interface names predate the registry ("xdp:DROP", not
 	// "xdp:XDP_DROP") — kept for pcap-consumer compatibility.
 	Actions: []ActionName{
@@ -26,6 +27,14 @@ var xdpHook = &Hook{
 		{Value: 4, Name: "xdp:REDIRECT"},
 	},
 	LinkType: layers.LinkTypeEthernet,
+}
+
+// xdpIdentity loads xdp_buff->data_hard_start (offset 24: data,
+// data_end, data_meta, data_hard_start — ABI-stable). It is the start
+// of the frame buffer, invariant across bpf_xdp_adjust_head/tail, and
+// for native XDP_PASS it becomes skb->head of the resulting skb.
+func xdpIdentity(dst asm.Register) (asm.Instructions, error) {
+	return asm.Instructions{asm.LoadMem(dst, asm.R6, 24, asm.DWord)}, nil
 }
 
 // xdpPacketPrologue reads the packet window from a kernel

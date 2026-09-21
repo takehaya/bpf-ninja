@@ -68,6 +68,9 @@ func MergeOneTagShards(basePath string, numShards int, tag uint32, cfg Config) e
 // place. Shared by MergeShardFiles, the tag-split merge, and the `merge`
 // subcommand.
 func mergeFiles(inPaths []string, outPath string, cfg Config) error {
+	// Inputs are re-read through gopacket, which drops EPB options, so
+	// a merged file never carries packet ids: use the plain layout.
+	cfg.MultiPoint = false
 	var closers []*os.File
 	var readers []*pcapgo.NgReader
 	defer func() {

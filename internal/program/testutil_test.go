@@ -14,8 +14,10 @@ import (
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/features"
+	"github.com/takehaya/bpf-ninja/internal/attach"
 	"github.com/takehaya/bpf-ninja/internal/capture"
 	"github.com/takehaya/bpf-ninja/internal/filter"
+	"github.com/takehaya/bpf-ninja/internal/setmap"
 	"github.com/takehaya/bpf-ninja/internal/testutil"
 	"github.com/vishvananda/netlink"
 )
@@ -363,4 +365,43 @@ func loadDummyNetfilter(t testing.TB) *ebpf.Program {
 	}
 	t.Cleanup(func() { _ = objs.Prog.Close() })
 	return objs.Prog
+}
+
+// Single-stage wrappers over LoadMultiPoint (the only production entry
+// point). LoadEntry / LoadExit synthesize the attach.Target from a bare
+// *ebpf.Program; LoadMultiEntry takes explicit targets.
+func LoadEntry(targetProg *ebpf.Program, funcName string, filterExpr string, argFilters []filter.ArgFilter, useDSL bool) (*Probe, error) {
+	return loadProbe(targetProg, funcName, filterExpr, argFilters, false, useDSL)
+}
+
+// LoadExit は fexit (後段) probe を作成してアタッチする。
+// useDSL=true のとき filterExpr は bpf-ninja DSL として解釈される。
+func LoadExit(targetProg *ebpf.Program, funcName string, filterExpr string, argFilters []filter.ArgFilter, useDSL bool) (*Probe, error) {
+	return loadProbe(targetProg, funcName, filterExpr, argFilters, true, useDSL)
+}
+
+func loadProbe(targetProg *ebpf.Program, funcName string, filterExpr string, argFilters []filter.ArgFilter, isFexit, useDSL bool) (*Probe, error) {
+	progType, err := validateTracingTarget(targetProg)
+	if err != nil {
+		return nil, err
+	}
+	targets := []attach.Target{{Program: targetProg, FuncName: funcName, Type: progType}}
+	return loadMulti(targets, filterExpr, []filter.TargetFilters{{Args: argFilters}}, isFexit, useDSL, nil)
+}
+
+// LoadMultiEntry attaches one fentry per (program, func) target, all
+// emitting into a single shared sharded ringbuf, so a multi-stage
+// dispatcher's per-direction capture points (UL + DL v4 + DL v6) are
+// captured in one run and merge into one time-ordered pcap.
+//
+// filters is parallel to targets (nil, or one entry per target): the
+// same param name can sit at a different arg index in different funcs, so
+// arg filters and set-key bindings must be resolved against each target's
+// own BTF params.
+func LoadMultiEntry(targets []attach.Target, filterExpr string, filters []filter.TargetFilters, useDSL bool, sets []*setmap.Set) (*Probe, error) {
+	return loadMulti(targets, filterExpr, filters, false, useDSL, sets)
+}
+
+func loadMulti(targets []attach.Target, filterExpr string, filters []filter.TargetFilters, isFexit, useDSL bool, sets []*setmap.Set) (*Probe, error) {
+	return LoadMultiPoint(targets, []Stage{{IsFexit: isFexit, Expr: filterExpr}}, filters, useDSL, sets, EmitBoth)
 }

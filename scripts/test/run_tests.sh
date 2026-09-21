@@ -625,6 +625,133 @@ if [[ ! -x "$BINARY" ]]; then
 fi
 
 echo "Setting up test environment..."
+
+# --- multi-point capture (--mode entry EXPR --mode exit EXPR in one run) ---
+# Own veth pair with a decap+drop XDP program (decap_drop.c). Two
+# --mode are a gated capture: only packets matching the entry filter
+# AND the exit filter are emitted. Sent: 5 x A (encap, inner dport 80
+# -> DROP), 5 x B (encap, inner dport 443 -> PASS), 5 x C (no encap).
+# Expected with the default --emit both: 5 entry records (outer
+# header, 104 B, verdict DROP) each immediately followed by its exit
+# record (decapsulated inner frame, 62 B) with the same epb_packetid;
+# B never appears (exit filter wants DROP), C never appears (entry
+# filter wants UDP 6081). Frames are hand-built (no scapy); the pcap-ng
+# is parsed by hand because this tshark has no frame.packet_id field.
+MP_IF=ddmp0; MP_PEER=ddmp1; MP_NS=ddmptest
+setup_multipoint() {
+    clang -O2 -g -target bpf -c "$SCRIPT_DIR/decap_drop.c" -o "$SCRIPT_DIR/decap_drop.o" || { echo "FAIL: compiling decap_drop.c" >&2; return 1; }
+    cleanup_multipoint
+    ip netns add $MP_NS || return 1
+    ip link add $MP_IF type veth peer name $MP_PEER || return 1
+    ip link set $MP_PEER netns $MP_NS || return 1
+    ip link set $MP_IF up && ip netns exec $MP_NS ip link set $MP_PEER up || return 1
+    ip link set dev $MP_IF xdp obj "$SCRIPT_DIR/decap_drop.o" sec xdp || return 1
+}
+cleanup_multipoint() {
+    ip link del $MP_IF 2>/dev/null || true
+    ip netns del $MP_NS 2>/dev/null || true
+}
+send_multipoint_frames() {
+    ip netns exec $MP_NS python3 - "$MP_PEER" <<'EOF'
+import socket, struct, sys
+def csum(h):
+    s = sum(struct.unpack('!%dH' % (len(h)//2), h)); s = (s >> 16) + (s & 0xffff); s += s >> 16
+    return (~s) & 0xffff
+def ipv4(src, dst, proto, payload):
+    h = struct.pack('!BBHHHBBH4s4s', 0x45, 0, 20 + len(payload), 0, 0, 64, proto, 0, socket.inet_aton(src), socket.inet_aton(dst))
+    return h[:10] + struct.pack('!H', csum(h)) + h[12:] + payload
+def udp(sp, dp, payload): return struct.pack('!HHHH', sp, dp, 8 + len(payload), 0) + payload
+def tcp(sp, dp): return struct.pack('!HHIIBBHHH', sp, dp, 1, 0, 0x50, 0x02, 1024, 0, 0) + b'\x00' * 8  # 20 B header + 8 B payload
+def eth(payload): return b'\x02\x00\x00\x00\x00\x02' + b'\x02\x00\x00\x00\x00\x01' + b'\x08\x00' + payload
+inner_drop = eth(ipv4('10.1.0.1', '10.1.0.2', 6, tcp(40000, 80)))    # inner TCP dport 80 -> DROP
+inner_pass = eth(ipv4('10.1.0.1', '10.1.0.2', 6, tcp(40000, 443)))   # inner TCP dport 443 -> PASS
+A = eth(ipv4('10.0.0.2', '10.0.0.1', 17, udp(1234, 6081, inner_drop)))
+B = eth(ipv4('10.0.0.2', '10.0.0.1', 17, udp(1234, 6081, inner_pass)))
+C = eth(ipv4('10.0.0.2', '10.0.0.1', 17, udp(1234, 9, b'x' * 40)))    # no encap -> entry filter miss
+assert len(A) == 104 and len(inner_drop) == 62
+s = socket.socket(socket.AF_PACKET, socket.SOCK_RAW); s.bind((sys.argv[1], 0))
+for _ in range(5):
+    for f in (A, B, C): s.send(f)
+EOF
+}
+check_multipoint_pcap() {
+    # args: want_entries want_drops want_paired files...
+    # want_paired '-' = a merged file: ids are not carried, so only
+    # interfaces and sizes are checked.
+    python3 - "$@" <<'EOF'
+import struct, sys
+entries = drops = other = paired = 0
+check_ids = sys.argv[3] != '-'
+bad = []
+for fn in sys.argv[4:]:
+    b = open(fn, 'rb').read(); ifaces = []; off = 0; last_entry = None
+    while off + 12 <= len(b):
+        typ, total = struct.unpack_from('<II', b, off)
+        if total < 12: break
+        if typ == 1:  # IDB: if_name option (code 2)
+            o = off + 16; name = ''
+            while o + 4 <= off + total - 4:
+                code, l = struct.unpack_from('<HH', b, o)
+                if code == 0: break
+                if code == 2: name = b[o + 4:o + 4 + l].decode()
+                o += 4 + ((l + 3) & ~3)
+            ifaces.append(name)
+        elif typ == 6:  # EPB: epb_packetid option (code 5)
+            iface, _, _, caplen, _ = struct.unpack_from('<IIIII', b, off + 8)
+            o = off + 28 + ((caplen + 3) & ~3); pid = 0
+            while o + 4 <= off + total - 4:
+                code, l = struct.unpack_from('<HH', b, o)
+                if code == 0: break
+                if code == 5 and l == 8: pid = struct.unpack_from('<Q', b, o + 4)[0]
+                o += 4 + ((l + 3) & ~3)
+            name = ifaces[iface] if iface < len(ifaces) else '?'
+            if name.endswith(':entry'):
+                entries += 1; last_entry = pid
+                if caplen != 104 or (check_ids and pid == 0): bad.append(('entry', fn, caplen, pid))
+            elif name.endswith(':DROP'):
+                drops += 1
+                if caplen != 62 or (check_ids and pid == 0): bad.append(('drop', fn, caplen, pid))
+                elif pid == last_entry: paired += 1  # --emit exit has no entry record to pair with
+            else:
+                other += 1; bad.append(('other', fn, name))
+        off += total
+want_entries = int(sys.argv[1]); want_drops = int(sys.argv[2]); want_paired = int(sys.argv[3]) if check_ids else paired
+print(f"entry={entries} drop={drops} other={other} paired={paired} bad={bad[:3]}")
+sys.exit(0 if (entries == want_entries and drops == want_drops and other == 0 and paired == want_paired and not bad) else 1)
+EOF
+}
+# run_multipoint_case <count> <want_entries> <want_drops> <want_paired> [extra bpf-ninja args...]
+run_multipoint_case() {
+    local count=$1 we=$2 wd=$3 wp=$4
+    shift 4
+    local pcap=$(mktemp --suffix=.pcapng)
+    local err=$(mktemp)
+    timeout 15 "$BINARY" -i $MP_IF --mode entry "eth/ipv4/udp[dport==6081]" --mode exit "eth/ipv4/tcp where action == XDP_DROP" "$@" -w "$pcap" -c "$count" 2>"$err" &
+    local pid=$!
+    sleep 2
+    send_multipoint_frames
+    wait $pid 2>/dev/null || true
+    local out
+    # The per-CPU shard files carry the packet ids; the merged base file
+    # goes through gopacket's reader (which drops the epb_packetid
+    # option) but must still hold every record on the right interface.
+    out=$(check_multipoint_pcap "$we" "$wd" "$wp" "$pcap".cpu* 2>&1)
+    local result=$?
+    [[ $result -eq 0 ]] && { out=$(check_multipoint_pcap "$we" "$wd" - "$pcap" 2>&1); result=$?; }
+    [[ $result -ne 0 ]] && { echo "$out"; cat "$err"; }
+    rm -f "$pcap" "$pcap".cpu* "$err"
+    return $result
+}
+test_multipoint_pairs() {
+    setup_multipoint || { echo "FAIL: multipoint veth/xdp setup" >&2; cleanup_multipoint; return 1; }
+    local rc=0
+    run_multipoint_case 10 5 5 5 || rc=1                        # --emit both (default): 5 entry + 5 exit, paired
+    run_multipoint_case 5 5 0 0 --emit entry || rc=1            # only the pre-decap images of the 5 dropped packets
+    run_multipoint_case 5 0 5 0 --emit exit || rc=1             # only the decapsulated images (paired=0: no entry record precedes)
+    cleanup_multipoint
+    [[ $rc -eq 0 ]]
+}
+
 "$SCRIPT_DIR/cleanup.sh" 2>/dev/null || true
 "$SCRIPT_DIR/setup.sh" || { red "Setup failed"; exit 1; }
 
@@ -657,6 +784,7 @@ run_test "cap_finalize_exit"       test_cap_finalize_exit
 run_test "finalize_on_del"         test_finalize_on_del
 run_test "max_bytes_total"         test_max_bytes_total
 run_test "graceful_shutdown"       test_graceful_shutdown
+run_test "multipoint_pairs"        test_multipoint_pairs
 
 echo ""
 echo "Cleaning up..."

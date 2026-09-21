@@ -4,12 +4,12 @@
 //
 // On-disk layout per file:
 //
-//	[ 0..16] magic "XNINJA-RAW-V1\0\0\0"
+//	[ 0..16] magic "XNINJA-RAW-V2\0\0\0" (V2: 28-byte record metadata with the packet id; V1 had 20)
 //	[16..20] u32 endian magic 0x12345678 (big-endian on wire)
 //	[20..28] u64 wall_offset_ns LE — wall_clock - clock_monotonic
 //	[28..32] u32 reserved
 //	[32..  ] sequence of ringbuf records, each
-//	          [16 B metadata + caplen B data] (no padding)
+//	          [capture.MetadataSize (28) B metadata + caplen B data] (no padding)
 //
 // Filename convention: <basePath>.W<wall_offset_ns>.cpu<N>.raw
 
@@ -25,7 +25,7 @@ import (
 )
 
 var (
-	RawDumpMagic       = []byte("XNINJA-RAW-V1\x00\x00\x00") // 16 bytes
+	RawDumpMagic       = []byte("XNINJA-RAW-V2\x00\x00\x00") // 16 bytes
 	RawDumpEndianMagic = uint32(0x12345678)
 )
 
@@ -134,7 +134,7 @@ func (w *RawDumpWriter) writeHeader(wallOffsetNs uint64) error {
 }
 
 // WriteRaw splats a single ringbuf record into the bufio'd file,
-// trimming the kernel's fixed reservation down to (16 + caplen) so
+// trimming the kernel's fixed reservation down to (capture.MetadataSize + caplen) so
 // on-disk records are self-delimiting.
 func (w *RawDumpWriter) WriteRaw(raw []byte) error {
 	if len(raw) < capture.MetadataSize {

@@ -58,9 +58,13 @@ var flags = []cli.Flag{
 		Name: "write", Aliases: []string{"w"},
 		Usage: "write packets to pcap file instead of stdout",
 	},
+	&cli.StringSliceFlag{
+		Name: "mode", Value: []string{"entry"},
+		Usage: "capture point: entry / exit (fentry/fexit observer on the target program, hook auto-detected) or xdp (attach as native XDP). Repeatable with one quoted filter after each: `--mode entry EXPR --mode exit EXPR` captures only the packets that match both (see README). tc-entry / tc-exit are deprecated aliases",
+	},
 	&cli.StringFlag{
-		Name: "mode", Value: "entry",
-		Usage: "capture point: entry / exit (fentry/fexit observer on the target program — the hook kind is auto-detected from the program type), or xdp (attach as native XDP). tc-entry / tc-exit are deprecated aliases for entry / exit",
+		Name: "emit", Value: "both",
+		Usage: "with two --mode: which image(s) to write for a packet that matched both filters — both, entry, or exit",
 	},
 	&cli.IntFlag{
 		Name: "count", Aliases: []string{"c"},
@@ -307,6 +311,10 @@ Examples:
   bpf-ninja --cbpf --mode xdp -i eth0 "tcp port 443" | tcpdump -r -   # legacy pcap syntax
   bpf-ninja -p 42 | tcpdump -n -r -                  # XDP or tc program, auto-detected
   bpf-ninja -p 42 --mode exit "eth/ipv4 where action == TC_ACT_SHOT"  # tc verdict filter
+  bpf-ninja -i eth0 --mode entry "eth/ipv4/udp[dport==6081]" --mode exit "eth/ipv4/tcp where action == XDP_DROP" -w both.pcapng
+      # gated: only packets matching BOTH; entry image (outer header) + exit image, paired by epb_packetid
+  bpf-ninja -i eth0 --mode entry "eth/ipv4/udp[dport==6081]" --mode exit "eth where action == XDP_DROP" --emit entry
+      # the pre-decap header of packets the program dropped, and nothing else
   bpf-ninja -i eth0 -w out.pcap`,
 		Flags:                 flags,
 		Action:                run,
@@ -415,8 +423,78 @@ func run(ctx context.Context, cmd *cli.Command) error {
 			return fmt.Errorf("--finalize-on-del requires at least one --set (entry removal is the finalize signal)")
 		}
 	}
+	if snaplen := cmd.Int("snaplen"); snaplen > 0 {
+		program.SnaplenOverride = int(snaplen)
+	}
+	if cmd.Bool("observer-prefetch") {
+		program.ObserverPrefetch = true
+	}
+	if period := cmd.Int("latency-sample-period"); period > 0 {
+		capture.LatencySamplePeriod = int64(period)
+	}
+
+	modes := cmd.StringSlice("mode")
+	// The hook kind (xdp / tc / ...) is auto-detected from the target
+	// program's type; --mode only picks the capture point(s). dumpHook is
+	// the one place a hook must be named explicitly, because --dump-asm
+	// compiles without a target program to detect from.
+	dumpHook := hook.Kind(cmd.String("dump-hook"))
+	var isFexit, isXDPNative bool
+	for i, m := range modes {
+		switch m {
+		case "entry":
+		case "exit":
+			isFexit = true
+		case "tc-entry", "tc-exit":
+			newMode := strings.TrimPrefix(m, "tc-")
+			fmt.Fprintf(os.Stderr, "warning: --mode %s is deprecated; the hook is auto-detected from the target program, use --mode %s\n", m, newMode)
+			if dumpHook == "" {
+				dumpHook = hook.KindTC
+			}
+			modes[i] = newMode
+			if newMode == "exit" {
+				isFexit = true
+			}
+		case "xdp":
+			isXDPNative = true
+		default:
+			return fmt.Errorf("invalid mode %q: must be entry, exit, or xdp (tc-entry / tc-exit are deprecated aliases)", m)
+		}
+	}
+	// Two modes (entry + exit) take one quoted filter after each --mode
+	// (urfave keeps flags and positionals interleaved in order), or none.
+	args := cmd.Args().Slice()
+	if len(modes) > 1 {
+		switch {
+		case isXDPNative:
+			return fmt.Errorf("--mode xdp cannot be combined with other modes")
+		case modes[0] == modes[1] || len(modes) > 2:
+			return fmt.Errorf("--mode accepts entry and exit at most once each (got %s)", strings.Join(modes, ", "))
+		case len(args) != 0 && len(args) != len(modes):
+			return fmt.Errorf("with %d --mode flags give one quoted filter after each --mode (or none); got %d positional arguments", len(modes), len(args))
+		case cmd.Bool("arg-echo"):
+			return fmt.Errorf("--arg-echo takes a single --mode (it attaches one probe and prints its args; no gated capture)")
+		case cmd.Bool("split-by-tag"):
+			return fmt.Errorf("--split-by-tag takes a single --mode (per-tag files use the single-point layout)")
+		}
+	}
+	// mode is the single capture point for the paths that take exactly
+	// one (--dump-asm, native XDP) and the run label otherwise.
+	mode := strings.Join(modes, "+")
+	if dumpHook == "" {
+		dumpHook = hook.KindXDP
+	}
+	// --emit is validated here, before the --dump-asm / --mode xdp /
+	// --arg-echo early returns, so a stray value never passes silently.
+	emit, err := program.ParseEmit(cmd.String("emit"))
+	if err != nil {
+		return err
+	}
+	if cmd.IsSet("emit") && len(modes) < 2 {
+		return fmt.Errorf("--emit only applies with two --mode (entry + exit); a single --mode always emits its own records")
+	}
 	if cmd.Bool("rx-hwts") {
-		if cmd.String("mode") != "xdp" {
+		if !isXDPNative {
 			return fmt.Errorf("--rx-hwts requires --mode xdp (kfunc only available on XDP-native)")
 		}
 		if err := program.ResolveHWTimestampKfunc(); err != nil {
@@ -429,45 +507,10 @@ func run(ctx context.Context, cmd *cli.Command) error {
 		}
 	}
 
-	if snaplen := cmd.Int("snaplen"); snaplen > 0 {
-		program.SnaplenOverride = int(snaplen)
-	}
-	if cmd.Bool("observer-prefetch") {
-		program.ObserverPrefetch = true
-	}
-	if period := cmd.Int("latency-sample-period"); period > 0 {
-		capture.LatencySamplePeriod = int64(period)
-	}
-
-	mode := cmd.String("mode")
-	// The hook kind (xdp / tc / ...) is auto-detected from the target
-	// program's type; --mode only picks the capture point. dumpHook is
-	// the one place a hook must be named explicitly, because --dump-asm
-	// compiles without a target program to detect from.
-	dumpHook := hook.Kind(cmd.String("dump-hook"))
-	var isFexit, isXDPNative bool
-	switch mode {
-	case "entry":
-	case "exit":
-		isFexit = true
-	case "tc-entry", "tc-exit":
-		newMode := strings.TrimPrefix(mode, "tc-")
-		fmt.Fprintf(os.Stderr, "warning: --mode %s is deprecated; the hook is auto-detected from the target program, use --mode %s\n", mode, newMode)
-		if dumpHook == "" {
-			dumpHook = hook.KindTC
-		}
-		mode = newMode
-		isFexit = mode == "exit"
-	case "xdp":
-		isXDPNative = true
-	default:
-		return fmt.Errorf("invalid mode %q: must be entry, exit, or xdp (tc-entry / tc-exit are deprecated aliases)", mode)
-	}
-	if dumpHook == "" {
-		dumpHook = hook.KindXDP
-	}
-
 	if scope := cmd.String("dump-asm"); scope != "" {
+		if len(modes) > 1 {
+			return fmt.Errorf("--dump-asm renders one capture point; pass a single --mode")
+		}
 		filterExpr := strings.Join(cmd.Args().Slice(), " ")
 		useDSL, err := resolveFilterSyntax(cmd)
 		if err != nil {
@@ -711,21 +754,44 @@ func run(ctx context.Context, cmd *cli.Command) error {
 		return runArgEchoLoop(cmd, probe, t.FuncName)
 	}
 
-	filterExpr := strings.Join(cmd.Args().Slice(), " ")
-	if filterExpr != "" {
-		logVerbose(cmd, "filter: %s", filterExpr)
+	// One capture stage per --mode. A single mode takes the positional
+	// words joined as its filter (unquoted `tcp port 80` still works);
+	// two modes take one filter each (validated above).
+	var stages []program.Stage
+	if len(modes) == 1 {
+		filterExpr := strings.Join(args, " ")
+		if filterExpr != "" {
+			logVerbose(cmd, "filter: %s", filterExpr)
+		}
+		stages = []program.Stage{{IsFexit: isFexit, Expr: filterExpr}}
+	} else {
+		for i, m := range modes {
+			expr := ""
+			if len(args) > 0 {
+				expr = args[i]
+			}
+			logVerbose(cmd, "%s filter: %s", m, expr)
+			stages = append(stages, program.Stage{IsFexit: m == "exit", Expr: expr})
+		}
 	}
+	multiPoint := len(stages) > 1
 
 	useDSL, err := resolveFilterSyntax(cmd)
 	if err != nil {
 		return err
 	}
-	var probe *program.Probe
-	if isFexit {
-		probe, err = program.LoadMultiExit(targets, filterExpr, filters, useDSL, sets)
-	} else {
-		probe, err = program.LoadMultiEntry(targets, filterExpr, filters, useDSL, sets)
+	if multiPoint {
+		for _, st := range stages {
+			if !st.IsFexit && st.Expr == "" && emit != program.EmitExit {
+				fmt.Fprintf(os.Stderr, "warning: no entry filter — every packet is copied into the hold slot until its exit verdict is known\n")
+			}
+		}
+		if rt, err := os.ReadFile("/sys/kernel/realtime"); err == nil && strings.TrimSpace(string(rt)) == "1" {
+			fmt.Fprintf(os.Stderr, "warning: PREEMPT_RT kernel: the per-CPU hold of a gated capture assumes the fentry and fexit of one invocation run back to back; pairs may be dropped\n")
+		}
+		logVerbose(cmd, "gated capture: entry AND exit, emit=%s", cmd.String("emit"))
 	}
+	probe, err := program.LoadMultiPoint(targets, stages, filters, useDSL, sets, emit)
 	if err != nil {
 		return err
 	}
@@ -748,7 +814,9 @@ func run(ctx context.Context, cmd *cli.Command) error {
 	if !ok {
 		return hook.UnsupportedTypeError(targets[0].Type)
 	}
-	return runCaptureLoop(cmd, probe, outputConfigFor(h, isFexit), fmt.Sprintf("%s, mode=%s", label, mode), sets)
+	cfg := outputConfigFor(h, isFexit)
+	cfg.MultiPoint = multiPoint
+	return runCaptureLoop(cmd, probe, cfg, fmt.Sprintf("%s, mode=%s", label, mode), sets)
 }
 
 // outputConfigFor renders a hook descriptor into the writer layout for
@@ -1044,7 +1112,7 @@ func captureLoopSharded(cmd *cli.Command, inners []*ebpf.Map, cfg output.Config,
 				return err
 			}
 			if caps != nil {
-				caps.addTotal(epbBytes(pkts))
+				caps.addTotal(epbBytes(sharedW, pkts))
 			}
 			return nil
 		}
@@ -1057,7 +1125,7 @@ func captureLoopSharded(cmd *cli.Command, inners []*ebpf.Map, cfg output.Config,
 				return err
 			}
 			if caps != nil {
-				caps.addTotal(epbBytes(pkts))
+				caps.addTotal(epbBytes(writers[shardIdx], pkts))
 			}
 			return nil
 		}
@@ -1066,13 +1134,14 @@ func captureLoopSharded(cmd *cli.Command, inners []*ebpf.Map, cfg output.Config,
 	return pumpShards(cmd, inners, label, writeShard, caps, sets, nil)
 }
 
-// epbBytes sums the on-disk pcap-ng size of a batch, matching what the
-// fast writer emits (the gopacket / fexit layout differs by a few option
-// bytes per block — the caps are batch-granular anyway).
-func epbBytes(pkts []capture.Packet) uint64 {
+// epbBytes sums the on-disk pcap-ng size of a batch as the given writer
+// emits it (the multi-point layout carries an epb_packetid option per
+// block; the gopacket / fexit layout differs by a few option bytes per
+// block — the caps are batch-granular anyway).
+func epbBytes(w *output.Writer, pkts []capture.Packet) uint64 {
 	var n uint64
 	for i := range pkts {
-		n += uint64(output.EPBSize(len(pkts[i].Data)))
+		n += uint64(w.EPBSize(len(pkts[i].Data)))
 	}
 	return n
 }
@@ -1205,7 +1274,7 @@ func captureLoopShardedSplit(cmd *cli.Command, inners []*ebpf.Map, cfg output.Co
 				return err
 			}
 			if caps != nil {
-				n := epbBytes(pkts[i:j])
+				n := epbBytes(e.w, pkts[i:j])
 				if e.ctr != nil && caps.addTag(e.ctr, n) {
 					// The printed limit is the effective per-tag reduction
 					// (see effectiveLimits), not necessarily any single

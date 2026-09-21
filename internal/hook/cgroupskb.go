@@ -15,6 +15,7 @@ var cgroupSKBHook = &Hook{
 	// network (L3) header — no Ethernet framing — hence LinkTypeRaw
 	// and the L3-start host capabilities.
 	PacketPrologue: skbPacketPrologue,
+	Identity:       skbIdentity,
 	EntryCaps:      cgskbhost.EntryCapabilities,
 	FexitCaps:      cgskbhost.FexitCapabilities,
 	// Mirrors cgskbhost.Actions; consistency is asserted by
