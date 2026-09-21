@@ -75,4 +75,29 @@ func TestBpfReserveFailAccounting(t *testing.T) {
 		t.Fatalf("read %d + reserve_fail %d != %d runs", read, fails, runs)
 	}
 	t.Logf("read=%d reserve_fail=%d", read, fails)
+
+	// Detach stops the producer: further invocations neither fill the
+	// ring nor bump the counter (the ring is full again after the
+	// reader stopped, so without the detach every run would count).
+	if err := probe.Detach(); err != nil {
+		t.Fatalf("Detach: %v", err)
+	}
+	if n := probe.AttachCount(); n != 0 {
+		t.Fatalf("AttachCount after Detach = %d, want 0", n)
+	}
+	for range 10 {
+		if _, err := prog.Run(&ebpf.RunOptions{Data: frame}); err != nil {
+			t.Fatalf("test-run target: %v", err)
+		}
+	}
+	if err := probe.StatsMap.Lookup(uint32(0), &per); err != nil {
+		t.Fatalf("stats lookup: %v", err)
+	}
+	var after uint64
+	for _, v := range per {
+		after += v
+	}
+	if after != fails {
+		t.Fatalf("reserve_fail after Detach = %d, want unchanged %d", after, fails)
+	}
 }

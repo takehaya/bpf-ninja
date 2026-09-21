@@ -63,6 +63,20 @@ func (p *Probe) AttachCount() int {
 	return len(p.links)
 }
 
+// Detach unlinks every tracing probe (the BPF programs stop running)
+// while keeping the maps open, so the rings can be drained and the
+// counters read with nothing still producing. Close frees the rest.
+func (p *Probe) Detach() error {
+	var errs []error
+	for _, l := range p.links {
+		if err := l.Close(); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	p.links = nil
+	return errors.Join(errs...)
+}
+
 func (p *Probe) Close() error {
 	var errs []error
 	for _, l := range p.links {
@@ -563,11 +577,11 @@ func buildTracingInsns(filterOut codegen.Output, tf filter.TargetFilters, events
 // appendRBFailCounter closes a capture body that reserved ring slots:
 // the success path jumps over the "rb_fail" block, which counts a NULL
 // bpf_ringbuf_reserve in stats[0] and falls through to "exit". Emitted
-// only with a stats map (statsFD > 0); emitShardedRBReserve then jumps
-// to "rb_fail" instead of "exit". Without one the block would be
-// unreachable, which the verifier rejects.
+// only with a stats map (statsFD >= 0; -1 = none); emitShardedRBReserve
+// then jumps to "rb_fail" instead of "exit". Without one the block
+// would be unreachable, which the verifier rejects.
 func appendRBFailCounter(insns asm.Instructions, statsFD int) asm.Instructions {
-	if statsFD <= 0 {
+	if statsFD < 0 {
 		return insns
 	}
 	insns = append(insns, asm.Ja.Label("exit"))

@@ -307,6 +307,19 @@ const batchSize = 256
 // only). Reported by the CLI for export accounting.
 var LeftoverAtStop atomic.Int64
 
+// StopProducers, when set by the CLI, detaches the BPF programs that
+// feed the rings. Every reader's stop() calls it first, so the final
+// drain has a fixed boundary (nothing is committed after it starts)
+// and the export counters are final when they are read.
+var StopProducers func()
+
+func stopProducers() {
+	if StopProducers != nil {
+		StopProducers()
+		StopProducers = nil
+	}
+}
+
 // arenaInitPerPacket sizes the per-shard copy arena: batchSize × this
 // many bytes is pre-allocated so a full default-reader batch of
 // MTU-sized packets fits without reallocating. Larger fast-reader
@@ -450,6 +463,7 @@ func (r *Reader) RunShards(sink ShardSink) (stop func(), err error) {
 		}(idx, rr)
 	}
 	stop = func() {
+		stopProducers()
 		close(stopCh)
 		// Readers block at most ~100 ms, then see stopCh and run their
 		// final drain; close the maps only after every shard is done.
@@ -499,6 +513,7 @@ func (r *Reader) RunRawShards(rawSink RawShardSink) (stop func(), err error) {
 		}(idx, rr)
 	}
 	stop = func() {
+		stopProducers()
 		close(stopCh)
 		for _, rr := range r.shardReaders {
 			_ = rr.Close()
@@ -602,6 +617,7 @@ func (r *FastShardedReader) RunShardsFast(sink ShardSink) (stop func(), err erro
 		}(idx, pinCPU, rdr)
 	}
 	stop = func() {
+		stopProducers()
 		close(stopCh)
 		for i := 0; i < launched; i++ {
 			<-doneCh
@@ -690,6 +706,7 @@ func (r *FastShardedReader) RunRawShardsFast(rawSink RawShardSink) (stop func(),
 		}(idx, pinCPU, rdr)
 	}
 	stop = func() {
+		stopProducers()
 		close(stopCh)
 		for i := 0; i < launched; i++ {
 			<-doneCh

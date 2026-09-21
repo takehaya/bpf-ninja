@@ -993,6 +993,13 @@ func runCaptureLoop(cmd *cli.Command, probe *program.Probe, cfg output.Config, l
 	if len(probe.InnerMaps) == 0 {
 		return fmt.Errorf("probe has no inner ringbufs — sharded ringbuf hoist (R22) should populate them for every attach mode")
 	}
+	// The reader's stop() detaches the probes before its final drain, so
+	// the drain ends and the export stats below are final.
+	capture.StopProducers = func() {
+		if err := probe.Detach(); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: detaching probe: %v\n", err)
+		}
+	}
 	// Built here (not in the capture loop) so the shutdown merge below can
 	// skip the tags already finalized mid-run.
 	var fin *tagFinalizer
