@@ -68,12 +68,14 @@ func (p *Probe) AttachCount() int {
 // counters read with nothing still producing. Close frees the rest.
 func (p *Probe) Detach() error {
 	var errs []error
+	var failed []link.Link // kept so Close can retry and report them
 	for _, l := range p.links {
 		if err := l.Close(); err != nil {
 			errs = append(errs, err)
+			failed = append(failed, l)
 		}
 	}
-	p.links = nil
+	p.links = failed
 	return errors.Join(errs...)
 }
 

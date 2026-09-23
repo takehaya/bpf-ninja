@@ -303,8 +303,9 @@ func NewShardedReader(inners []*ebpf.Map) (*Reader, error) {
 const batchSize = 256
 
 // LeftoverAtStop counts records that were still committed in the rings
-// when stop() was called and were drained on shutdown (default reader
-// only). Reported by the CLI for export accounting.
+// when stop() was called and were drained on shutdown (the default
+// readers RunShards and RunRawShards; the fast readers do not drain).
+// Reported by the CLI for export accounting.
 var LeftoverAtStop atomic.Int64
 
 // StopProducers, when set by the CLI, detaches the BPF programs that
@@ -491,6 +492,7 @@ func (r *Reader) RunRawShards(rawSink RawShardSink) (stop func(), err error) {
 	}
 	stopCh := make(chan struct{})
 	doneCh := make(chan struct{}, len(r.shardReaders))
+	pastDeadline := time.Unix(1, 0)
 	for idx, rr := range r.shardReaders {
 		go func(shardIdx int, rr *ringbuf.Reader) {
 			pinReaderToCPU(shardIdx)
@@ -499,9 +501,22 @@ func (r *Reader) RunRawShards(rawSink RawShardSink) (stop func(), err error) {
 			for {
 				select {
 				case <-stopCh:
+					// Final non-blocking drain, as in RunShards: records
+					// committed before the producers were detached reach
+					// the sink and are counted in LeftoverAtStop.
+					rr.SetDeadline(pastDeadline)
+					for {
+						if err := rr.ReadInto(&rec); err != nil {
+							break
+						}
+						LeftoverAtStop.Add(1)
+						_ = rawSink(shardIdx, rec.RawSample)
+					}
 					return
 				default:
 				}
+				// Bounded block so a stop request is noticed within ~100 ms.
+				rr.SetDeadline(time.Now().Add(100 * time.Millisecond))
 				if err := rr.ReadInto(&rec); err != nil {
 					if errors.Is(err, ringbuf.ErrClosed) {
 						return
@@ -515,11 +530,11 @@ func (r *Reader) RunRawShards(rawSink RawShardSink) (stop func(), err error) {
 	stop = func() {
 		stopProducers()
 		close(stopCh)
-		for _, rr := range r.shardReaders {
-			_ = rr.Close()
-		}
 		for range r.shardReaders {
 			<-doneCh
+		}
+		for _, rr := range r.shardReaders {
+			_ = rr.Close()
 		}
 	}
 	return stop, nil
