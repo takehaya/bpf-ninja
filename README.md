@@ -395,4 +395,4 @@ bpf-ninja's design was inspired by the following projects:
 
 bpf-ninja is licensed under the [Apache License 2.0](LICENSE).
 
-The eBPF programs that bpf-ninja generates and loads into the kernel declare the `GPL` license, which the kernel requires for fentry/fexit attachment and GPL-only helpers.
+The eBPF programs that bpf-ninja generates and loads into the kernel declare the `GPL` license because they call GPL-only kernel helpers.
