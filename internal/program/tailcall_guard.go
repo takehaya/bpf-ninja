@@ -10,16 +10,22 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// Linux 7.0 rejects a second fentry/fexit attach to an XDP program that
-// performs a tail call: the attach returns EBUSY, and releasing the
-// first link can then fail its trampoline unlink
-// (WARN_ON_ONCE in bpf_tracing_link_release), after which the next
-// execution of the target faults in __bpf_prog_enter_recur. That took
-// the lab host down on 2026-09-21 and is reproducible in a VM on 7.0
-// and 7.2-rc2; 6.6, 6.12 and 6.18 attach both probes fine. A gated
-// capture always needs two attaches, so refuse it up front on an
-// affected kernel rather than walk into the failure.
-const tailCallGuardMinMajor = 7
+// On an affected kernel a second fentry/fexit attach to an XDP program
+// that performs a tail call returns EBUSY, and releasing the first link
+// then fails its trampoline unlink (WARN_ON_ONCE in
+// bpf_tracing_link_release), after which the next execution of the
+// target faults in __bpf_prog_enter_recur. That took a lab host down on
+// 2026-09-21 and reproduces in a VM on 7.0 and 7.2-rc2; 6.6, 6.12 and
+// 6.18 attach both probes fine.
+//
+// Upstream is CVE-2026-92485: the verifier assigned
+// tr->flags = BPF_TRAMP_F_TAIL_CALL_CTX without preserving
+// BPF_TRAMP_F_CALL_ORIG, so the trampoline poked the target's nop with
+// a jmp instead of a call and could not restore it. Fixed in 7.2.6 and
+// 7.3-rc1 (48a0209d8da0, 61aaa8782bec).
+//
+// A gated capture always needs two attaches, so refuse it up front on
+// an affected kernel rather than walk into the failure.
 
 // leadingInt reads the digits at the start of s ("2" from "2-rc2",
 // "0" from "0-btf-fixed+"). ok is false when there are none.
@@ -35,28 +41,55 @@ func leadingInt(s string) (int, bool) {
 	return n, err == nil
 }
 
-// kernelAtLeast reports whether the running kernel is at least
-// major.minor. The release comes from uname(2), so a restricted /proc
-// cannot hide it, and each component is read as its leading digits so
-// a suffix like "7.2-rc2" still compares. A release it cannot parse
-// reads as affected: this gates a check whose failure mode is a kernel
-// panic, so an unknown version refuses rather than proceeds.
-func kernelAtLeast(major, minor int) bool {
+// kernelVersion returns the running kernel's major, minor and patch.
+// The release comes from uname(2), so a restricted /proc cannot hide
+// it, and each component is read as its leading digits so a suffix
+// like "7.2-rc2" or "7.2.0-rc2-btf-fixed+" still parses. ok is false
+// when the release cannot be read or parsed.
+func kernelVersion() (major, minor, patch int, ok bool) {
 	var u unix.Utsname
 	if err := unix.Uname(&u); err != nil {
-		return true
+		return 0, 0, 0, false
 	}
-	release := unix.ByteSliceToString(u.Release[:])
-	parts := strings.SplitN(release, ".", 3)
+	parts := strings.SplitN(unix.ByteSliceToString(u.Release[:]), ".", 3)
 	if len(parts) < 2 {
-		return true
+		return 0, 0, 0, false
 	}
-	gotMajor, ok1 := leadingInt(parts[0])
-	gotMinor, ok2 := leadingInt(parts[1])
+	major, ok1 := leadingInt(parts[0])
+	minor, ok2 := leadingInt(parts[1])
 	if !ok1 || !ok2 {
-		return true
+		return 0, 0, 0, false
 	}
-	return gotMajor > major || (gotMajor == major && gotMinor >= minor)
+	if len(parts) > 2 {
+		patch, _ = leadingInt(parts[2]) // absent or odd reads as 0
+	}
+	return major, minor, patch, true
+}
+
+// kernelHasTailCallAttachBug reports whether the running kernel carries
+// CVE-2026-92485. The window is 7.0 up to the 7.2.6 / 7.3-rc1 fix:
+// below 7.0 both attaches were measured to work, and a release that
+// cannot be parsed counts as affected, since the failure mode here is a
+// kernel panic.
+func kernelHasTailCallAttachBug() bool {
+	return tailCallAttachBugIn(kernelVersion())
+}
+
+// tailCallAttachBugIn is the version test, split out so it can be
+// checked without the kernel it runs on.
+func tailCallAttachBugIn(major, minor, patch int, ok bool) bool {
+	switch {
+	case !ok:
+		return true
+	case major < 7:
+		return false
+	case major > 7, minor > 2:
+		return false // 7.3-rc1 and later carry the fix
+	case minor == 2 && patch >= 6:
+		return false // 7.2.6 and later carry the fix
+	default:
+		return true // 7.0, 7.1, 7.2.0 .. 7.2.5
+	}
 }
 
 // performsTailCall reports whether prog can reach a bpf_tail_call. It
@@ -101,10 +134,10 @@ func performsTailCall(prog *ebpf.Program) bool {
 // checkGatedTailCallTarget refuses a gated capture whose target can
 // tail-call on a kernel where the second attach is rejected.
 func checkGatedTailCallTarget(prog *ebpf.Program, funcName string) error {
-	if !kernelAtLeast(tailCallGuardMinMajor, 0) || !performsTailCall(prog) {
+	if !kernelHasTailCallAttachBug() || !performsTailCall(prog) {
 		return nil
 	}
-	return fmt.Errorf("%s performs tail calls, and this kernel (or one whose version could not be read) rejects the second fentry/fexit attach such a program needs for a gated (entry + exit) capture; "+
+	return fmt.Errorf("%s performs tail calls, and this kernel rejects the second fentry/fexit attach such a program needs for a gated (entry + exit) capture (CVE-2026-92485, fixed in 7.2.6 and 7.3-rc1); "+
 		"the failure can leave the trampoline inconsistent and panic the machine, so bpf-ninja stops here. "+
-		"Capture one point at a time (a single --mode), or run the gated capture on a kernel up to 6.18", funcName)
+		"Capture one point at a time (a single --mode), or use a kernel that carries the fix", funcName)
 }
