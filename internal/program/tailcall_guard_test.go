@@ -50,3 +50,27 @@ func TestKernelAtLeast(t *testing.T) {
 		t.Error("kernelAtLeast(99, 0) = true, want false")
 	}
 }
+
+// TestLeadingInt pins the release-component parsing the guard relies
+// on: a suffix straight after the number must still compare, since a
+// release like 7.2-rc2 would otherwise disable the guard on an
+// affected kernel.
+func TestLeadingInt(t *testing.T) {
+	for _, tc := range []struct {
+		in   string
+		want int
+		ok   bool
+	}{
+		{"7", 7, true},
+		{"2-rc2", 2, true},
+		{"0-btf-fixed+", 0, true},
+		{"18", 18, true},
+		{"rc2", 0, false},
+		{"", 0, false},
+	} {
+		got, ok := leadingInt(tc.in)
+		if got != tc.want || ok != tc.ok {
+			t.Errorf("leadingInt(%q) = %d, %v; want %d, %v", tc.in, got, ok, tc.want, tc.ok)
+		}
+	}
+}

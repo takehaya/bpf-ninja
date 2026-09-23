@@ -2,12 +2,12 @@ package program
 
 import (
 	"fmt"
-	"os"
 	"strconv"
 	"strings"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/asm"
+	"golang.org/x/sys/unix"
 )
 
 // Linux 7.0 rejects a second fentry/fexit attach to an XDP program that
@@ -21,22 +21,40 @@ import (
 // affected kernel rather than walk into the failure.
 const tailCallGuardMinMajor = 7
 
+// leadingInt reads the digits at the start of s ("2" from "2-rc2",
+// "0" from "0-btf-fixed+"). ok is false when there are none.
+func leadingInt(s string) (int, bool) {
+	end := 0
+	for end < len(s) && s[end] >= '0' && s[end] <= '9' {
+		end++
+	}
+	if end == 0 {
+		return 0, false
+	}
+	n, err := strconv.Atoi(s[:end])
+	return n, err == nil
+}
+
 // kernelAtLeast reports whether the running kernel is at least
-// major.minor. An unparsable release reads as "older" so the guard
-// never blocks a capture on a version it cannot judge.
+// major.minor. The release comes from uname(2), so a restricted /proc
+// cannot hide it, and each component is read as its leading digits so
+// a suffix like "7.2-rc2" still compares. A release it cannot parse
+// reads as affected: this gates a check whose failure mode is a kernel
+// panic, so an unknown version refuses rather than proceeds.
 func kernelAtLeast(major, minor int) bool {
-	b, err := os.ReadFile("/proc/sys/kernel/osrelease")
-	if err != nil {
-		return false
+	var u unix.Utsname
+	if err := unix.Uname(&u); err != nil {
+		return true
 	}
-	parts := strings.SplitN(strings.TrimSpace(string(b)), ".", 3)
+	release := unix.ByteSliceToString(u.Release[:])
+	parts := strings.SplitN(release, ".", 3)
 	if len(parts) < 2 {
-		return false
+		return true
 	}
-	gotMajor, err1 := strconv.Atoi(parts[0])
-	gotMinor, err2 := strconv.Atoi(parts[1])
-	if err1 != nil || err2 != nil {
-		return false
+	gotMajor, ok1 := leadingInt(parts[0])
+	gotMinor, ok2 := leadingInt(parts[1])
+	if !ok1 || !ok2 {
+		return true
 	}
 	return gotMajor > major || (gotMajor == major && gotMinor >= minor)
 }
@@ -86,7 +104,7 @@ func checkGatedTailCallTarget(prog *ebpf.Program, funcName string) error {
 	if !kernelAtLeast(tailCallGuardMinMajor, 0) || !performsTailCall(prog) {
 		return nil
 	}
-	return fmt.Errorf("%s performs tail calls, and this kernel rejects the second fentry/fexit attach such a program needs for a gated (entry + exit) capture; "+
+	return fmt.Errorf("%s performs tail calls, and this kernel (or one whose version could not be read) rejects the second fentry/fexit attach such a program needs for a gated (entry + exit) capture; "+
 		"the failure can leave the trampoline inconsistent and panic the machine, so bpf-ninja stops here. "+
 		"Capture one point at a time (a single --mode), or run the gated capture on a kernel up to 6.18", funcName)
 }
