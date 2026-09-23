@@ -107,6 +107,8 @@ type Packet struct {
 
 // Reader reads captured packets from the ringbuf.
 type Reader struct {
+	shutdown
+
 	reader *ringbuf.Reader
 	rec    ringbuf.Record
 
@@ -302,22 +304,41 @@ func NewShardedReader(inners []*ebpf.Map) (*Reader, error) {
 // batchSize; the arena and Packet slice grow to fit.
 const batchSize = 256
 
-// LeftoverAtStop counts records that were still committed in the rings
-// when stop() was called and were drained on shutdown (the default
-// readers RunShards and RunRawShards; the fast readers do not drain).
-// Reported by the CLI for export accounting.
-var LeftoverAtStop atomic.Int64
+// shutdown is the stop-time contract shared by the readers: detach the
+// producers first, then drain what they had already committed. Held per
+// reader, so two captures in one process cannot stop or count each
+// other.
+type shutdown struct {
+	// onStop detaches the BPF programs feeding these rings. stop()
+	// calls it once, before the shards wind down, so the final drain
+	// has a fixed boundary and the counters are final when read. A
+	// non-nil error means producers may still be running, and the
+	// drain is skipped rather than chasing a moving ring.
+	onStop func() error
 
-// StopProducers, when set by the CLI, detaches the BPF programs that
-// feed the rings. Every reader's stop() calls it first, so the final
-// drain has a fixed boundary (nothing is committed after it starts)
-// and the export counters are final when they are read.
-var StopProducers func()
+	leftover atomic.Int64
+	drain    atomic.Bool
+}
 
-func stopProducers() {
-	if StopProducers != nil {
-		StopProducers()
-		StopProducers = nil
+// SetOnStop installs the producer-detach hook, which stop() runs before
+// the shards wind down. Set it before starting the shards.
+func (s *shutdown) SetOnStop(f func() error) { s.onStop = f }
+
+// LeftoverAtStop reports the records that were still committed in the
+// rings at stop() and were drained on shutdown. Only the default
+// readers drain; the fast readers leave it at zero.
+func (s *shutdown) LeftoverAtStop() int64 { return s.leftover.Load() }
+
+// begin runs the stop hook and decides whether the shards may drain.
+func (s *shutdown) begin() {
+	s.drain.Store(true)
+	if s.onStop == nil {
+		return
+	}
+	err := s.onStop()
+	s.onStop = nil
+	if err != nil {
+		s.drain.Store(false)
 	}
 }
 
@@ -407,19 +428,21 @@ func (r *Reader) RunShards(sink ShardSink) (stop func(), err error) {
 			for {
 				select {
 				case <-stopCh:
-					// Final non-blocking drain: records already committed
-					// by the producer are delivered (and counted in
-					// LeftoverAtStop) instead of being abandoned.
-					rr.SetDeadline(pastDeadline)
-					for {
-						if err := rr.ReadInto(&rec); err != nil {
-							break
-						}
-						if pkt, perr := ParseRawSample(rec.RawSample); perr == nil {
-							LeftoverAtStop.Add(1)
-							bb.add(pkt)
-							if bb.full() {
-								bb.flush()
+					// Final non-blocking drain: records the producers
+					// committed before they were detached are delivered
+					// and counted, instead of being abandoned.
+					if r.drain.Load() {
+						rr.SetDeadline(pastDeadline)
+						for {
+							if err := rr.ReadInto(&rec); err != nil {
+								break
+							}
+							if pkt, perr := ParseRawSample(rec.RawSample); perr == nil {
+								r.leftover.Add(1)
+								bb.add(pkt)
+								if bb.full() {
+									bb.flush()
+								}
 							}
 						}
 					}
@@ -464,7 +487,7 @@ func (r *Reader) RunShards(sink ShardSink) (stop func(), err error) {
 		}(idx, rr)
 	}
 	stop = func() {
-		stopProducers()
+		r.begin()
 		close(stopCh)
 		// Readers block at most ~100 ms, then see stopCh and run their
 		// final drain; close the maps only after every shard is done.
@@ -501,16 +524,16 @@ func (r *Reader) RunRawShards(rawSink RawShardSink) (stop func(), err error) {
 			for {
 				select {
 				case <-stopCh:
-					// Final non-blocking drain, as in RunShards: records
-					// committed before the producers were detached reach
-					// the sink and are counted in LeftoverAtStop.
-					rr.SetDeadline(pastDeadline)
-					for {
-						if err := rr.ReadInto(&rec); err != nil {
-							break
+					// Final non-blocking drain, as in RunShards.
+					if r.drain.Load() {
+						rr.SetDeadline(pastDeadline)
+						for {
+							if err := rr.ReadInto(&rec); err != nil {
+								break
+							}
+							r.leftover.Add(1)
+							_ = rawSink(shardIdx, rec.RawSample)
 						}
-						LeftoverAtStop.Add(1)
-						_ = rawSink(shardIdx, rec.RawSample)
 					}
 					return
 				default:
@@ -528,7 +551,7 @@ func (r *Reader) RunRawShards(rawSink RawShardSink) (stop func(), err error) {
 		}(idx, rr)
 	}
 	stop = func() {
-		stopProducers()
+		r.begin()
 		close(stopCh)
 		for range r.shardReaders {
 			<-doneCh
@@ -548,6 +571,8 @@ func (r *Reader) RunRawShards(rawSink RawShardSink) (stop func(), err error) {
 // NewShardedReader on the same maps (they would race on the
 // consumer-position page).
 type FastShardedReader struct {
+	shutdown
+
 	readers []*fastrb.Reader
 }
 
@@ -632,7 +657,7 @@ func (r *FastShardedReader) RunShardsFast(sink ShardSink) (stop func(), err erro
 		}(idx, pinCPU, rdr)
 	}
 	stop = func() {
-		stopProducers()
+		r.begin()
 		close(stopCh)
 		for i := 0; i < launched; i++ {
 			<-doneCh
@@ -721,7 +746,7 @@ func (r *FastShardedReader) RunRawShardsFast(rawSink RawShardSink) (stop func(),
 		}(idx, pinCPU, rdr)
 	}
 	stop = func() {
-		stopProducers()
+		r.begin()
 		close(stopCh)
 		for i := 0; i < launched; i++ {
 			<-doneCh

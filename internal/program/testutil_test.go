@@ -58,6 +58,48 @@ func dumpVerifierStats(t *testing.T, label string, ve *ebpf.VerifierError) {
 	}
 }
 
+const tailCallFuncName = "xdp_tail_caller_test"
+
+// tailCallSource is an XDP program that holds a PROG_ARRAY and tail
+// calls into it, i.e. the shape the gated-capture guard refuses on
+// kernels that reject a second fentry/fexit attach to such a program.
+const tailCallSource = `
+#include <linux/bpf.h>
+#define SEC(NAME) __attribute__((section(NAME), used))
+#define __uint(name, val) int (*name)[val]
+#define __type(name, val) typeof(val) *name
+static long (*bpf_tail_call)(void *ctx, void *map, __u32 index) = (void *)12;
+struct {
+	__uint(type, BPF_MAP_TYPE_PROG_ARRAY);
+	__uint(max_entries, 1);
+	__type(key, __u32);
+	__type(value, __u32);
+} tc_jmp SEC(".maps");
+SEC("xdp")
+int xdp_tail_caller_test(struct xdp_md *ctx) { bpf_tail_call(ctx, &tc_jmp, 0); return 2; }
+char _license[] SEC("license") = "GPL";
+`
+
+// loadTailCallXDP loads tailCallSource, returning the program and its
+// prog array.
+func loadTailCallXDP(t testing.TB) (*ebpf.Program, *ebpf.Map) {
+	t.Helper()
+	testutil.SkipIfNotRoot(t)
+	spec, err := ebpf.LoadCollectionSpec(testutil.CompileBPFSource(t, tailCallSource))
+	if err != nil {
+		t.Fatalf("loading collection spec: %v", err)
+	}
+	var objs struct {
+		Prog *ebpf.Program `ebpf:"xdp_tail_caller_test"`
+		Jmp  *ebpf.Map     `ebpf:"tc_jmp"`
+	}
+	if err := spec.LoadAndAssign(&objs, nil); err != nil {
+		t.Fatalf("loading tail-call program: %v", err)
+	}
+	t.Cleanup(func() { _ = objs.Prog.Close(); _ = objs.Jmp.Close() })
+	return objs.Prog, objs.Jmp
+}
+
 const xdpFuncName = "xdp_pass_test"
 
 const xdpPassSource = `

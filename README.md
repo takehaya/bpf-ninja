@@ -46,6 +46,8 @@ Supported hooks and how to name the target:
 
 `--mode` is repeatable: `--mode entry EXPR --mode exit EXPR` captures **only the packets that match both** — the entry filter on the packet as the program received it, the exit filter on the packet as the program left it (after decap / rewrite) plus the verdict. The entry image is held in a per-CPU slot until the verdict is known, so you can ask for "the pre-decap header of every packet the program dropped" without exporting anything else. `--emit both` (default) writes the entry and the exit image, `--emit entry` / `--emit exit` just one. Entry records go to a `<hook>:entry` pcap-ng interface and every record carries an opaque `epb_packetid` (CPU + per-CPU sequence, no kernel address) shared by the two images of one invocation so they pair up. `-c` counts records (`-c 10` with `--emit both` is 5 pairs); `merge` and `convert` output drops the id, so pair on the per-CPU shard files or the raw-dump. Under ring pressure an entry record can appear without its exit twin (the exit-side reservation failed after the entry was written), so treat an unpaired entry as a drop, not as a verdict:
 
+
+A gated capture attaches two probes to the target, which Linux 7.0 refuses when the target performs tail calls (Cilium and Katran's inline decap do). bpf-ninja stops with an explanation instead of attempting it, because the failed attach can leave the kernel's trampoline inconsistent. Capture one point at a time there, or use a kernel up to 6.18.
 ```bash
 sudo bpf-ninja -i eth0 --mode entry "eth/ipv4/udp[dport==6081]" --mode exit "eth/ipv4/tcp where action == XDP_DROP" -w both.pcapng
 ```

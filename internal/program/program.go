@@ -139,6 +139,9 @@ func LoadMultiPoint(targets []attach.Target, stages []Stage, filters []filter.Ta
 		if len(targets) != 1 {
 			return nil, fmt.Errorf("a gated (entry + exit) capture takes exactly one target function; the per-CPU hold cannot follow nested or multi-stage targets")
 		}
+		if err := checkGatedTailCallTarget(targets[0].Program, targets[0].FuncName); err != nil {
+			return nil, err
+		}
 	}
 	if filters != nil && len(filters) != len(targets) {
 		return nil, fmt.Errorf("filters length %d does not match %d targets", len(filters), len(targets))
