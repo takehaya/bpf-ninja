@@ -26,11 +26,14 @@ func TestBpfGatedRefusesTailCallTarget(t *testing.T) {
 	}
 	_ = probe.Close()
 
-	_, err = LoadMultiPoint([]attach.Target{{Program: tailer, FuncName: tailCallFuncName, Type: ebpf.XDP}},
+	guarded, err := LoadMultiPoint([]attach.Target{{Program: tailer, FuncName: tailCallFuncName, Type: ebpf.XDP}},
 		stages, nil, true, nil, EmitBoth)
+	if guarded != nil {
+		t.Cleanup(func() { _ = guarded.Close() })
+	}
 	switch {
 	case kernelAtLeast(tailCallGuardMinMajor, 0):
-		if err == nil || !strings.Contains(err.Error(), "performs tail calls") {
+		if err == nil || !strings.Contains(err.Error(), "tail call") {
 			t.Fatalf("gated capture on a tail-calling target: err = %v, want the tail-call refusal", err)
 		}
 	case err != nil:

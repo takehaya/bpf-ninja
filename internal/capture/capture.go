@@ -433,11 +433,19 @@ func (r *Reader) RunShards(sink ShardSink) (stop func(), err error) {
 					// and counted, instead of being abandoned.
 					if r.drain.Load() {
 						rr.SetDeadline(pastDeadline)
+						drainedAt := time.Now()
 						for {
 							if err := rr.ReadInto(&rec); err != nil {
 								break
 							}
 							if pkt, perr := ParseRawSample(rec.RawSample); perr == nil {
+								if LegacyTimestamp {
+									// One userland stamp for the whole
+									// drain, as the loop below takes one
+									// per batch: the output must not mix
+									// timestamp modes at shutdown.
+									pkt.Timestamp = drainedAt
+								}
 								r.leftover.Add(1)
 								bb.add(pkt)
 								if bb.full() {

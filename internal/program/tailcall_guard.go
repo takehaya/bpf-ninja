@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/cilium/ebpf"
+	"github.com/cilium/ebpf/asm"
 )
 
 // Linux 7.0 rejects a second fentry/fexit attach to an XDP program that
@@ -18,12 +19,6 @@ import (
 // and 7.2-rc2; 6.6, 6.12 and 6.18 attach both probes fine. A gated
 // capture always needs two attaches, so refuse it up front on an
 // affected kernel rather than walk into the failure.
-//
-// ponytail: the target is judged by "references a PROG_ARRAY", which
-// is what the kernel's tail-call machinery needs but does not prove a
-// tail call is reachable. A program that holds a prog array and never
-// calls into it is refused too; narrow this by walking the
-// instructions if that ever matters.
 const tailCallGuardMinMajor = 7
 
 // kernelAtLeast reports whether the running kernel is at least
@@ -46,14 +41,27 @@ func kernelAtLeast(major, minor int) bool {
 	return gotMajor > major || (gotMajor == major && gotMinor >= minor)
 }
 
-// referencesProgArray reports whether prog holds a PROG_ARRAY, i.e. it
-// can tail-call. Errors read as "no": the guard must not turn a
-// permission problem into a refused capture.
-func referencesProgArray(prog *ebpf.Program) bool {
+// performsTailCall reports whether prog can reach a bpf_tail_call. It
+// reads the translated instructions when the kernel exposes them
+// (subprograms included) and otherwise falls back to "holds a
+// PROG_ARRAY", the map a tail call needs. Errors read as "no": the
+// guard must not turn a permission problem into a refused capture.
+func performsTailCall(prog *ebpf.Program) bool {
 	info, err := prog.Info()
 	if err != nil {
 		return false
 	}
+	if insns, err := info.Instructions(); err == nil {
+		for i := range insns {
+			if insns[i].IsBuiltinCall() && asm.BuiltinFunc(insns[i].Constant) == asm.FnTailCall {
+				return true
+			}
+		}
+		return false
+	}
+	// kptr_restrict and friends hide the instructions; fall back to the
+	// map, which over-refuses a program that holds a prog array without
+	// ever calling into it.
 	ids, ok := info.MapIDs()
 	if !ok {
 		return false
@@ -75,7 +83,7 @@ func referencesProgArray(prog *ebpf.Program) bool {
 // checkGatedTailCallTarget refuses a gated capture whose target can
 // tail-call on a kernel where the second attach is rejected.
 func checkGatedTailCallTarget(prog *ebpf.Program, funcName string) error {
-	if !kernelAtLeast(tailCallGuardMinMajor, 0) || !referencesProgArray(prog) {
+	if !kernelAtLeast(tailCallGuardMinMajor, 0) || !performsTailCall(prog) {
 		return nil
 	}
 	return fmt.Errorf("%s performs tail calls, and this kernel rejects the second fentry/fexit attach such a program needs for a gated (entry + exit) capture; "+
