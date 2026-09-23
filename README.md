@@ -390,3 +390,9 @@ bpf-ninja's design was inspired by the following projects:
 
 - [xdp-dump](https://github.com/xdp-project/xdp-tools/blob/main/xdp-dump/README.org) (xdp-tools) — fentry/fexit trampoline approach for tracing XDP programs
 - [xdpcap](https://github.com/cloudflare/xdpcap) (Cloudflare) — tcpdump filter compilation via cBPF→eBPF ([cbpfc](https://github.com/cloudflare/cbpfc)), and the overall architecture of capturing XDP packets to pcap
+
+## License
+
+bpf-ninja is licensed under the [Apache License 2.0](LICENSE).
+
+The eBPF programs that bpf-ninja generates and loads into the kernel declare the `GPL` license, which the kernel requires for fentry/fexit attachment and GPL-only helpers.
