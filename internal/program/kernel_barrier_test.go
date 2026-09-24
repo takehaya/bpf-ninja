@@ -2,6 +2,8 @@ package program
 
 import (
 	"fmt"
+	"golang.org/x/sys/unix"
+	"runtime"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -30,12 +32,16 @@ static long await_release(__u32 index, void *ctx) {
  __u32 key=1; volatile __u32 *release=lookup(&control,&key);
  return release && *release;
 }
+static long await_round(__u32 index, void *ctx) {
+ loop(8388608,await_release,0,0);
+ return await_release(0,0);
+}
 SEC("xdp") int held_producer(struct xdp_md *ctx) {
  __u64 *record=reserve(&events,24,0); if (!record) return 0;
  record[0]=record[1]=record[2]=0;
  __u32 key=0; volatile __u32 *entered=lookup(&control,&key);
  if (entered) *entered=1;
- loop(8388608,await_release,0,0);
+ loop(8,await_round,0,0);
  key=1; volatile __u32 *release=lookup(&control,&key);
  if (!release || !*release) { key=2; __u32 *expired=lookup(&control,&key); if(expired) *expired=1; }
  submit(record,0); return 2;
@@ -45,6 +51,25 @@ char _license[] SEC("license")="GPL";
 
 func TestBpfKernelBarrierWaitsForBusyRecord(t *testing.T) {
 	testutil.SkipIfNotRoot(t)
+	// The controller must remain runnable while the non-sleepable producer
+	// occupies its CPU. Keep them on distinct CPUs from the allowed mask.
+	var allowed unix.CPUSet
+	if err := unix.SchedGetaffinity(0, &allowed); err != nil {
+		t.Fatal(err)
+	}
+	var cpus []int
+	for cpu := 0; cpu < 1024; cpu++ {
+		if allowed.IsSet(cpu) {
+			cpus = append(cpus, cpu)
+		}
+	}
+	if len(cpus) < 2 {
+		t.Fatal("controlled in-flight producer test requires two allowed CPUs")
+	}
+	var controllerCPU, producerCPU unix.CPUSet
+	controllerCPU.Set(cpus[0])
+	producerCPU.Set(cpus[1])
+
 	spec, err := ebpf.LoadCollectionSpec(testutil.CompileBPFSource(t, heldProducerSource))
 	if err != nil {
 		t.Fatal(err)
@@ -52,6 +77,21 @@ func TestBpfKernelBarrierWaitsForBusyRecord(t *testing.T) {
 	for _, fast := range []bool{false, true} {
 		for _, tag := range []bool{false, true} {
 			t.Run(fmt.Sprintf("fast=%v/tag=%v", fast, tag), func(t *testing.T) {
+				runtime.LockOSThread()
+				defer runtime.UnlockOSThread()
+				var previous unix.CPUSet
+				if err := unix.SchedGetaffinity(0, &previous); err != nil {
+					t.Fatal(err)
+				}
+				if err := unix.SchedSetaffinity(0, &controllerCPU); err != nil {
+					t.Fatal(err)
+				}
+				defer func() {
+					if err := unix.SchedSetaffinity(0, &previous); err != nil {
+						t.Error(err)
+					}
+				}()
+
 				col, err := ebpf.NewCollection(spec)
 				if err != nil {
 					t.Fatal(err)
@@ -95,6 +135,18 @@ func TestBpfKernelBarrierWaitsForBusyRecord(t *testing.T) {
 				}
 				runDone := make(chan error, 1)
 				go func() {
+					runtime.LockOSThread()
+					defer runtime.UnlockOSThread()
+					var previous unix.CPUSet
+					if err := unix.SchedGetaffinity(0, &previous); err != nil {
+						runDone <- err
+						return
+					}
+					if err := unix.SchedSetaffinity(0, &producerCPU); err != nil {
+						runDone <- err
+						return
+					}
+					defer func() { _ = unix.SchedSetaffinity(0, &previous) }()
 					_, err := col.Programs["held_producer"].Run(&ebpf.RunOptions{Data: make([]byte, 64)})
 					runDone <- err
 				}()
