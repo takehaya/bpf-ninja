@@ -103,10 +103,25 @@ func callbackCounterEnv() counterEnv {
 	}
 }
 
+// counterHeaderDistance anchors field decrements to the named extraction,
+// which may follow the primary header or another auxiliary extraction.
+func counterHeaderDistance(op vocab.CounterOp, extracts []vocab.ExtractOp, primaryDistance int) (int, error) {
+	if op.Kind != vocab.CounterOpDecrement || op.DecrementFieldName == "" {
+		return primaryDistance, nil
+	}
+	distance := 0
+	for i := len(extracts) - 1; i >= 0; i-- {
+		distance += extracts[i].HeaderSize / 8
+		if extracts[i].OutParam == op.DecrementTarget {
+			return distance, nil
+		}
+	}
+	return 0, fmt.Errorf("%w: counter decrement target %q must be extracted in the same state", ErrNotImplemented, op.DecrementTarget)
+}
+
 // emitCounterOp lowers one CounterOp under a given register/ABI env.
 // fixedHs is the byte distance from the just-extracted header start
-// to the current R4 (= layer's primary header size for set; ignored
-// otherwise). failLabel is the destination on bounds-check failure
+// to the current cursor (primary header for set, named aux for decrement). failLabel is the destination on bounds-check failure
 // (dslReject inline, breakLabel inside a callback).
 func (c *pmCtx) emitCounterOp(op vocab.CounterOp, fixedHs int, env counterEnv, failLabel string) (asm.Instructions, error) {
 	slot, err := c.counterSlot(op.Counter)

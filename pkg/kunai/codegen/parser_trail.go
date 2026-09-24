@@ -129,7 +129,7 @@ type trailEnv struct {
 // Verifier safety invariants the emitted sequence relies on:
 //
 //   - The pre-extract length byte is bounds checked before loading.
-//     The resulting scalar offset is checked against ScratchBufSize-1
+//     The resulting scalar offset is checked against ScratchBufSize
 //     before its pointer is checked against the materialised packet end.
 //     LenMask extracts wire-format bits; it must not truncate a length
 //     merely to fit a verifier or iteration budget.
@@ -200,7 +200,7 @@ func emitVariableTrail(fixedHs int, vt variableTailSkip, env trailEnv, failLabel
 		// Bound the scalar sum before forming a map-value pointer. A pointer
 		// comparison alone cannot establish the verifier's map access range.
 		asm.Add.Reg(env.offset, env.lenReg),
-		asm.JGT.Imm(env.offset, int32(ScratchBufSize)-1, failLabel),
+		asm.JGT.Imm(env.offset, int32(ScratchBufSize), failLabel),
 		asm.Mov.Reg(env.addrReg, env.scratchStart),
 		asm.Add.Reg(env.addrReg, env.offset),
 		asm.JGT.Reg(env.addrReg, env.scratchEnd, failLabel),

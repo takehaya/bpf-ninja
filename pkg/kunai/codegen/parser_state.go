@@ -393,7 +393,11 @@ func (c *pmCtx) emitStateBody(state *vocab.ParseState, stateIdx int, isEntry boo
 	// the count from a primary-header byte at `R4 - fixedHs +
 	// LenByteOff`.
 	for _, op := range state.Counters {
-		body, err := c.emitCounterOp(op, fixedHs, inlineCounterEnv(), dslReject)
+		distance, err := counterHeaderDistance(op, state.Extracts, fixedHs)
+		if err != nil {
+			return nil, nil, err
+		}
+		body, err := c.emitCounterOp(op, distance, inlineCounterEnv(), dslReject)
 		if err != nil {
 			return nil, nil, err
 		}

@@ -46,6 +46,10 @@ type ActionName struct {
 // Config selects the writer layout for one capture run. The zero value
 // is the fentry Ethernet layout.
 type Config struct {
+	// OnError is called once on the first write or flush failure, including
+	// background flushes. It must not block or call back into this Writer.
+	OnError func(error)
+
 	// IsFexit selects the exit-mode layout: one pcap-ng interface per
 	// verdict (Actions) so Wireshark shows the verdict as the
 	// interface name.
@@ -341,8 +345,11 @@ func (w *Writer) WriteBatch(pkts []capture.Packet) (err error) {
 // remember is called with flushMu held. A failed buffered write is terminal:
 // retrying after Close cannot recover bytes discarded by the underlying writer.
 func (w *Writer) remember(err error) error {
-	if w.failure == nil {
+	if w.failure == nil && err != nil {
 		w.failure = err
+		if w.cfg.OnError != nil {
+			w.cfg.OnError(err)
+		}
 	}
 	return w.failure
 }
@@ -424,7 +431,9 @@ func (w *Writer) startFlusher(interval time.Duration) {
 			case <-w.flushStop:
 				return
 			case <-ticker.C:
-				_ = w.Flush()
+				if w.Flush() != nil {
+					return
+				}
 			}
 		}
 	}()

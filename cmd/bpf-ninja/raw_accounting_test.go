@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,6 +16,7 @@ import (
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/asm"
 	"github.com/takehaya/bpf-ninja/internal/capture"
+	"github.com/takehaya/bpf-ninja/internal/output"
 	"github.com/takehaya/bpf-ninja/internal/testutil"
 	"github.com/urfave/cli/v3"
 )
@@ -88,6 +90,13 @@ func TestBpfRawAccountingOnSignal(t *testing.T) {
 	}
 	if err := app.Run(context.Background(), []string{"bpf-ninja", "--fast-reader=" + mode}); err != nil {
 		t.Fatal(err)
+	}
+	st, err := os.Stat(fmt.Sprintf("%s.W%d.cpu0.raw", base, capture.WallOffsetNs))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := int64(output.RawDumpHeaderSize + 7*24); st.Size() != want {
+		t.Fatalf("raw file size=%d want=%d", st.Size(), want)
 	}
 	if ctl.stats.Consumed.Load() != 7 || ctl.written.Load() != 7 {
 		t.Fatalf("consumed=%d written=%d", ctl.stats.Consumed.Load(), ctl.written.Load())

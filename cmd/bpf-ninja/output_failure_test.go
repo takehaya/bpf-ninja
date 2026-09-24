@@ -28,7 +28,7 @@ func TestBpfOutputFailureStopsCapture(t *testing.T) {
 	testutil.SkipIfNotRoot(t)
 	mode := os.Getenv("BPF_NINJA_OUTPUT_FAILURE_CHILD")
 	if mode == "" {
-		for _, mode := range []string{"write", "close", "raw", "malformed"} {
+		for _, mode := range []string{"write", "close", "raw", "malformed", "flush"} {
 			for _, fast := range []bool{false, true} {
 				t.Run(fmt.Sprintf("%s/fast=%v", mode, fast), func(t *testing.T) {
 					ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -71,6 +71,9 @@ func TestBpfOutputFailureStopsCapture(t *testing.T) {
 	}
 	base := filepath.Join(t.TempDir(), "out.pcap")
 	path := base + ".cpu0"
+	if mode == "flush" {
+		path = output.TagShardPath(base, 0, 0)
+	}
 	if mode == "raw" {
 		path = fmt.Sprintf("%s.W%d.cpu0.raw", base, capture.WallOffsetNs)
 	}
@@ -91,8 +94,11 @@ func TestBpfOutputFailureStopsCapture(t *testing.T) {
 		return captureLoopSharded(c, []*ebpf.Map{m}, output.Config{}, "test", nil, nil, ctl)
 	}
 	args := []string{"bpf-ninja", "--fast-reader=" + os.Getenv("BPF_NINJA_OUTPUT_FAST"), "-w", base}
-	if mode != "write" {
+	if mode != "write" && mode != "flush" {
 		args = append(args, "-c", "1")
+	}
+	if mode == "flush" {
+		args = append(args, "--split-by-tag")
 	}
 	if mode == "raw" {
 		args = append(args, "--raw-dump")

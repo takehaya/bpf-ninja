@@ -166,7 +166,7 @@ var flags = []cli.Flag{
 	},
 	&cli.BoolFlag{
 		Name:  "finalize-on-del",
-		Usage: "with --split-by-tag and --set: when a tag's last set entry is removed and its ringbuf backlog has drained (two quiet ~1s poll cycles, closed and merged on the following cycle, ~3-4s total), flush+close its per-CPU shards and merge them into <stem>.<tag><ext> while the capture keeps running — the merged file appearing is the completion ack. Finalized tags are single-use: records for a re-added entry are dropped with a warning",
+		Usage: "with --split-by-tag and --set: when a tag's last set entry is removed and a kernel grace period and reader drain barrier have completed, flush+close its per-CPU shards and merge them into <stem>.<tag><ext> while the capture keeps running — the merged file appearing is the completion ack. Finalized tags are single-use: re-added entries with that tag stay blocked",
 	},
 	&cli.BoolFlag{
 		Name:  "exit-when-capped",
@@ -972,6 +972,7 @@ func runCaptureLoop(cmd *cli.Command, probe *program.Probe, cfg output.Config, l
 func captureLoopSharded(cmd *cli.Command, inners []*ebpf.Map, cfg output.Config, label string, sets []*setmap.Set, fin *tagFinalizer, controls ...*captureControl) (retErr error) {
 	ctl := controlOrNew(controls)
 	controls = []*captureControl{ctl}
+	cfg.OnError = ctl.outputErr.record
 	basePath := cmd.String("write")
 	null := cmd.Bool("null-output")
 	rawDump := cmd.Bool("raw-dump")
@@ -1100,6 +1101,7 @@ func epbBytes(pkts []capture.Packet) uint64 {
 func captureLoopShardedSplit(cmd *cli.Command, inners []*ebpf.Map, cfg output.Config, label, basePath string, caps *byteCaps, sets []*setmap.Set, fin *tagFinalizer, controls ...*captureControl) (retErr error) {
 	ctl := controlOrNew(controls)
 	controls = []*captureControl{ctl}
+	cfg.OnError = ctl.outputErr.record
 	// One tag->writer map per shard; only ever touched by that shard's
 	// goroutine (writeShard runs single-threaded per shardIdx). The entry
 	// caches the tag's shared byte counter and finalize state so the
@@ -1273,7 +1275,7 @@ func pumpShards(cmd *cli.Command, inners []*ebpf.Map, label string, writeShard f
 	count := int64(cmd.Int("count"))
 	exitWhenCapped := cmd.Bool("exit-when-capped")
 	var captured atomic.Int64
-	failure := newOutputFailure()
+	failure := ctl.outputErr
 
 	sink := func(shardIdx int, pkts []capture.Packet) error {
 		if count > 0 {
@@ -1524,7 +1526,7 @@ func captureLoopShardedRaw(cmd *cli.Command, inners []*ebpf.Map, label, basePath
 	shardCounts := make([]paddedCounter, len(inners))
 	var captured atomic.Int64
 
-	failure := newOutputFailure()
+	failure := ctl.outputErr
 	var rawSink capture.RawShardSink
 	if count > 0 {
 		rawSink = func(shardIdx int, raw []byte) error {

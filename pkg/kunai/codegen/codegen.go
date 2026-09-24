@@ -332,6 +332,8 @@ func Gen(p *ir.Program, caps Capabilities) (Output, error) {
 		return Output{}, err
 	}
 
+	where = foldBooleanConstants(where)
+
 	// `where false` short-circuit: a filter whose where clause is
 	// constant-false never accepts a packet, so emit a minimal
 	// always-reject program and skip the chain entirely. Without

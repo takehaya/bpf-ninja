@@ -202,7 +202,7 @@ func (c *pmCtx) emitAuxWalkTailReanchor() (asm.Instructions, error) {
 		asm.Mov.Reg(asm.R5, asm.R0),
 		asm.Add.Reg(asm.R5, offsetBase),
 		asm.JGT.Reg(asm.R5, asm.R1, dslReject),
-		asm.JGT.Imm(offsetBase, int32(ScratchBufSize)-1, dslReject),
+		asm.JGT.Imm(offsetBase, int32(ScratchBufSize), dslReject),
 	)
 	c.r4IsRange = true
 	return insns, nil
@@ -510,9 +510,10 @@ func (c *pmCtx) emitMultiStateCallback(entry *vocab.ParseState, entryIdx int, cb
 		// R3 came from a stack spill, so the verifier re-enters this
 		// callback with R3 marked as an unbounded scalar. Pin its
 		// upper bound against ScratchBufSize before any pkt-pointer
-		// arithmetic; on the surviving path R3 ∈ [0, ScratchBufSize),
+		// arithmetic; a cursor equal to ScratchBufSize may finish a region.
+		// On the surviving path R3 ∈ [0, ScratchBufSize],
 		// which lets the subsequent `pkt + R3` adds verify.
-		asm.JGT.Imm(asm.R3, int32(ScratchBufSize)-1, rejectLabel),
+		asm.JGT.Imm(asm.R3, int32(ScratchBufSize), rejectLabel),
 	}
 	if c.regionCounter != "" {
 		slot, err := c.counterSlot(c.regionCounter)
@@ -1080,7 +1081,11 @@ func (c *pmCtx) emitSiblingCallbackBody(sib *vocab.ParseState, breakLabel string
 		if op.Kind == vocab.CounterOpSet {
 			return nil, fmt.Errorf("%w: counter set inside multi-state self-loop sibling %q is not supported (declare it in the loop's pre-entry state)", ErrNotImplemented, sib.Name)
 		}
-		body, err := c.emitCounterOp(op, totalHs, callbackCounterEnv(), breakLabel)
+		distance, err := counterHeaderDistance(op, sib.Extracts, totalHs)
+		if err != nil {
+			return nil, err
+		}
+		body, err := c.emitCounterOp(op, distance, callbackCounterEnv(), breakLabel)
 		if err != nil {
 			return nil, err
 		}

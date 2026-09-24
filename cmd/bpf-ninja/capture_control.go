@@ -13,13 +13,18 @@ type captureControl struct {
 	blockTag    func(uint32) error
 	barrier     func() func() (bool, error)
 	stats       *capture.SessionStats
+	outputErr   *outputFailure
 }
 
 func controlOrNew(cs []*captureControl) *captureControl {
+	c := &captureControl{}
 	if len(cs) > 0 {
-		return cs[0]
+		c = cs[0]
 	}
-	return &captureControl{}
+	if c.outputErr == nil {
+		c.outputErr = newOutputFailure()
+	}
+	return c
 }
 func (c *captureControl) stopBeforeDrain(stop func(), readerErr func() error, failure *outputFailure) func() {
 	return func() {

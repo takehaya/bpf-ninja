@@ -86,6 +86,7 @@ func genCondition(w *ir.Condition, lang LangCaps, p *ir.Program, qo queriedOptio
 }
 
 func (c *whereCtx) gen(w *ir.Condition, failLabel string) (asm.Instructions, error) {
+	w = foldBooleanConstants(w)
 	if w == nil {
 		return nil, nil
 	}
@@ -214,6 +215,7 @@ func (c *whereCtx) genBoolEq(w *ir.Condition, failLabel string) (asm.Instruction
 // Used by genBoolEq so each operand of a Bool == Bool comparison is
 // emitted exactly once.
 func (c *whereCtx) genConditionAsBool(cond *ir.Condition) (asm.Instructions, error) {
+	cond = foldBooleanConstants(cond)
 	// A constant needs no branch diamond: its untaken arm would be
 	// structurally unreachable and rejected by the BPF verifier.
 	if cond != nil && cond.Kind == ast.WAtomBoolLit {
