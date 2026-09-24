@@ -33,4 +33,12 @@ func (c *Cursor) Produced() uint64 {
 func (c *Cursor) Consumed() uint64 {
 	return atomic.LoadUint64((*uint64)(unsafe.Pointer(&c.consumer[0])))
 }
-func (c *Cursor) Close() error { return errors.Join(unix.Munmap(c.consumer), unix.Munmap(c.producer)) }
+func (c *Cursor) Close() error {
+	if c.consumer == nil {
+		return nil
+	}
+	err := errors.Join(unix.Munmap(c.consumer), unix.Munmap(c.producer))
+	c.consumer = nil
+	c.producer = nil
+	return err
+}

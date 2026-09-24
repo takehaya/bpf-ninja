@@ -29,8 +29,7 @@ import (
 type Probe struct {
 	EventsMap *ebpf.Map
 	InnerMaps []*ebpf.Map // non-nil only in per-CPU sharded mode
-	// StatsMap is a 1-entry per-CPU u64 array; [0] counts bpf_ringbuf_reserve
-	// failures (ring full → record dropped at the producer). Tracing modes only.
+	// StatsMap contains per-CPU export outcome counters (see ExportStats).
 	StatsMap   *ebpf.Map
 	closedTags *ebpf.Map
 	IsFexit    bool
@@ -217,16 +216,11 @@ func loadMulti(targets []attach.Target, filterExpr string, filters []filter.Targ
 	// into PTR_TO_MAP_VALUE first. Output staging is no longer needed
 	// here — the bpf_ringbuf_reserve+submit path writes the metadata +
 	// packet bytes directly into the reserved ring slot.
-	statsMap, err := ebpf.NewMap(&ebpf.MapSpec{
-		Name: fmt.Sprintf("ninja_%s_st", label), Type: ebpf.PerCPUArray,
-		KeySize: 4, ValueSize: 8, MaxEntries: 1,
-	})
-	if err != nil {
+	if err := probe.initExportStats(); err != nil {
 		_ = probe.Close()
-		return nil, fmt.Errorf("creating stats map: %w", err)
+		return nil, err
 	}
-	probe.StatsMap = statsMap
-	probe.maps = append(probe.maps, statsMap)
+	statsMap := probe.StatsMap
 
 	scratchFD := 0
 	if len(filterOut.Main) > 0 {
@@ -566,8 +560,7 @@ func buildTracingInsns(filterOut codegen.Output, tf filter.TargetFilters, events
 		insns = append(insns, emitTagBarrier(gateFDs[0])...)
 	}
 	insns = append(insns, captureWithRingbuf(eventsFD, statsFD, isFexit, filterOut.Capture.MaxCapLen)...)
-	insns = append(insns, asm.Ja.Label("exit")) // success path skips the fail counter
-	insns = append(insns, emitRBFailCounter(statsFD)...)
+	insns = append(insns, emitExportTerminals(statsFD)...)
 	insns = append(insns, asm.Mov.Imm(asm.R0, 0).WithSymbol("exit"), asm.Return())
 	// bpf2bpf subprograms (currently only DSL bpf_loop chain
 	// callbacks) live after the tracing body so they sit past the
@@ -772,6 +765,7 @@ func captureWithRingbuf(eventsFD, statsFD int, isFexit bool, maxCapLen int) asm.
 		asm.Mov.Reg(asm.R2, asm.R3),
 		asm.Mov.Reg(asm.R3, asm.R7),
 		asm.FnProbeReadKernel.Call(),
+		asm.JNE.Imm(asm.R0, 0, "rb_copy_fail"),
 	)
 
 	// --- bpf_ringbuf_submit(reservation_ptr, RingbufSubmitFlags) ---

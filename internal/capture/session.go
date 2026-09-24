@@ -13,10 +13,12 @@ type SessionStats struct {
 	Malformed        atomic.Uint64
 	DrainedAtStop    atomic.Uint64
 	AffinityFailures atomic.Uint64
+	warning          sync.Once
 }
 
 type shardSession struct {
 	stopCh       chan struct{}
+	failure      chan struct{}
 	cursors      []*fastrb.Cursor
 	final        []uint64
 	acknowledged []atomic.Uint64
@@ -28,7 +30,7 @@ type shardSession struct {
 }
 
 func newShardSession(cursors []*fastrb.Cursor) *shardSession {
-	return &shardSession{stopCh: make(chan struct{}), cursors: cursors, final: make([]uint64, len(cursors)), acknowledged: make([]atomic.Uint64, len(cursors))}
+	return &shardSession{stopCh: make(chan struct{}), failure: make(chan struct{}), cursors: cursors, final: make([]uint64, len(cursors)), acknowledged: make([]atomic.Uint64, len(cursors))}
 }
 func (s *shardSession) fail(err error) {
 	if err == nil {
@@ -37,6 +39,7 @@ func (s *shardSession) fail(err error) {
 	s.mu.Lock()
 	if s.err == nil {
 		s.err = err
+		close(s.failure)
 	}
 	s.mu.Unlock()
 }

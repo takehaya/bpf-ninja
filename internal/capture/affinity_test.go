@@ -25,9 +25,9 @@ func TestReaderCPUsSeparatePlacementFromShardIDs(t *testing.T) {
 	}
 }
 func TestReaderAffinityFailureIsRecorded(t *testing.T) {
-	before := ReaderAffinityFailures()
-	pinReaderToCPU(-1)
-	if ReaderAffinityFailures() != before+1 {
+	var first, second SessionStats
+	first.pinReaderToCPU(-1)
+	if first.AffinityFailures.Load() != 1 || second.AffinityFailures.Load() != 0 {
 		t.Fatal("pin error not recorded")
 	}
 }

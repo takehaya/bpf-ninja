@@ -80,8 +80,8 @@ func TestBpfShardsUnderRestrictedAffinity(t *testing.T) {
 		t.Fatalf("CPU ID %d has no shard: observer has %d usable CPU, map has %d entries", cpu, runtime.NumCPU(), len(inners))
 	}
 	insns := asm.Instructions{asm.FnGetSmpProcessorId.Call(), asm.StoreMem(asm.R10, -16, asm.R0, asm.Word)}
-	insns = append(insns, emitShardedRBReserve(outer.FD(), 0, 8)...)
-	insns = append(insns, asm.LoadMem(asm.R1, asm.R10, -16, asm.Word), asm.StoreMem(asm.R0, 0, asm.R1, asm.DWord), asm.Mov.Reg(asm.R1, asm.R0), asm.Mov.Imm(asm.R2, 0), asm.FnRingbufSubmit.Call(), asm.Mov.Imm(asm.R0, 2).WithSymbol("exit"), asm.Return())
+	insns = append(insns, emitShardedRBReserve(outer.FD(), 0, 24)...)
+	insns = append(insns, asm.LoadMem(asm.R1, asm.R10, -16, asm.Word), asm.StoreMem(asm.R0, 20, asm.R1, asm.Word), asm.Mov.Imm(asm.R2, 0), asm.StoreMem(asm.R0, 0, asm.R2, asm.DWord), asm.StoreMem(asm.R0, 8, asm.R2, asm.DWord), asm.StoreMem(asm.R0, 16, asm.R2, asm.Word), asm.StoreImm(asm.R0, 14, 4, asm.Half), asm.Mov.Reg(asm.R1, asm.R0), asm.Mov.Imm(asm.R2, 0), asm.FnRingbufSubmit.Call(), asm.Mov.Imm(asm.R0, 2).WithSymbol("exit"), asm.Return())
 	prog, err := ebpf.NewProgram(&ebpf.ProgramSpec{Name: "cpu_shard_test", Type: ebpf.XDP, License: "GPL", Instructions: insns})
 	if err != nil {
 		t.Fatal(err)
@@ -97,7 +97,7 @@ func TestBpfShardsUnderRestrictedAffinity(t *testing.T) {
 			defer func() { capture.SplitCoreRX = 0 }()
 			records := make(chan int, 8)
 			sink := func(shard int, rec []byte) error {
-				if len(rec) != 8 || binary.NativeEndian.Uint64(rec) != uint64(shard) {
+				if len(rec) != 24 || binary.NativeEndian.Uint32(rec[20:]) != uint32(shard) {
 					t.Errorf("shard %d: CPU record %x", shard, rec)
 				}
 				records <- shard

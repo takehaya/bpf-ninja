@@ -234,7 +234,13 @@ func ParseRawSample(raw []byte) (Packet, error) {
 
 	kernelTs := RecordKernelTs(raw)
 	caplen := RecordCapLen(raw)
-	end := min(MetadataSize+int(caplen), len(raw))
+	end := MetadataSize + int(caplen)
+	if end > len(raw) {
+		return Packet{}, fmt.Errorf("sample caplen %d exceeds payload %d", caplen, len(raw)-MetadataSize)
+	}
+	if raw[OffsetMode] > 2 {
+		return Packet{}, fmt.Errorf("invalid capture mode %d", raw[OffsetMode])
+	}
 	return Packet{
 		Timestamp: time.Unix(0, int64(kernelTs+WallOffsetNs)),
 		Action:    binary.NativeEndian.Uint32(raw[OffsetAction : OffsetAction+4]),
@@ -247,10 +253,36 @@ func ParseRawSample(raw []byte) (Packet, error) {
 
 // Close closes the reader.
 func (r *Reader) Close() error {
-	if r.reader != nil {
-		return r.reader.Close()
+	if r.session != nil {
+		r.session.stop()
+		return r.session.Err()
 	}
-	return nil
+	var errs []error
+	if r.reader != nil {
+		errs = append(errs, r.reader.Close())
+	}
+	for _, rr := range r.shardReaders {
+		errs = append(errs, rr.Close())
+	}
+	for _, c := range r.cursors {
+		errs = append(errs, c.Close())
+	}
+	return errors.Join(errs...)
+}
+
+func (r *FastShardedReader) Close() error {
+	if r.session != nil {
+		r.session.stop()
+		return r.session.Err()
+	}
+	var errs []error
+	for _, rr := range r.readers {
+		errs = append(errs, rr.Close())
+	}
+	for _, c := range r.cursors {
+		errs = append(errs, c.Close())
+	}
+	return errors.Join(errs...)
 }
 
 // NewShardedReader opens one ringbuf.Reader per inner map.
@@ -365,7 +397,7 @@ func (r *Reader) RunShards(sink ShardSink) (func(), error) {
 		pkt, err := ParseRawSample(raw)
 		if err != nil {
 			r.session.stats.Malformed.Add(1)
-			return nil
+			return err
 		}
 		if LegacyTimestamp {
 			pkt.Timestamp = time.Now()
@@ -389,6 +421,7 @@ func (r *Reader) run(sink RawShardSink, flush func(int) error) (func(), error) {
 	}
 	cpus, err := readerCPUs(len(r.shardReaders))
 	if err != nil {
+		_ = r.Close()
 		return nil, err
 	}
 	r.session = newShardSession(r.cursors)
@@ -398,7 +431,9 @@ func (r *Reader) run(sink RawShardSink, flush func(int) error) (func(), error) {
 		go func(i int, rr *ringbuf.Reader) {
 			defer s.done.Done()
 			defer func() { s.fail(rr.Close()) }()
-			pinReaderToCPU(cpus[i])
+			s.stats.pinReaderToCPU(cpus[i])
+			var consumed, drained uint64
+			defer func() { s.stats.Consumed.Add(consumed); s.stats.DrainedAtStop.Add(drained) }()
 			var rec ringbuf.Record
 			for {
 				draining := s.stopping()
@@ -421,9 +456,9 @@ func (r *Reader) run(sink RawShardSink, flush func(int) error) (func(), error) {
 						return
 					}
 					n++
-					s.stats.Consumed.Add(1)
+					consumed++
 					if draining {
-						s.stats.DrainedAtStop.Add(1)
+						drained++
 					}
 					s.fail(sink(i, rec.RawSample))
 					rr.SetDeadline(pollPastDeadline)
@@ -448,7 +483,13 @@ type RawShardSink func(shardIdx int, raw []byte) error
 // goroutines pump ringbuf records into rawSink without ParseRawSample
 // or batch buffering.
 func (r *Reader) RunRawShards(sink RawShardSink) (func(), error) {
-	return r.run(sink, func(int) error { return nil })
+	return r.run(func(i int, raw []byte) error {
+		if _, err := ParseRawSample(raw); err != nil {
+			r.session.stats.Malformed.Add(1)
+			return err
+		}
+		return sink(i, raw)
+	}, func(int) error { return nil })
 }
 
 // FastShardedReader is the cilium/ebpf-bypass variant of the
@@ -513,7 +554,7 @@ func (r *FastShardedReader) RunShardsFast(sink ShardSink) (func(), error) {
 		pkt, err := ParseRawSample(raw)
 		if err != nil {
 			r.session.stats.Malformed.Add(1)
-			return nil
+			return err
 		}
 		if LegacyTimestamp {
 			pkt.Timestamp = time.Now()
@@ -532,7 +573,13 @@ func (r *FastShardedReader) Stats() *SessionStats {
 func (r *FastShardedReader) Err() error { return r.session.Err() }
 
 func (r *FastShardedReader) RunRawShardsFast(sink RawShardSink) (func(), error) {
-	return r.run(sink, func(int) error { return nil })
+	return r.run(func(i int, raw []byte) error {
+		if _, err := ParseRawSample(raw); err != nil {
+			r.session.stats.Malformed.Add(1)
+			return err
+		}
+		return sink(i, raw)
+	}, func(int) error { return nil })
 }
 
 func (r *FastShardedReader) run(sink RawShardSink, flush func(int) error) (func(), error) {
@@ -541,6 +588,7 @@ func (r *FastShardedReader) run(sink RawShardSink, flush func(int) error) (func(
 	}
 	cpus, err := readerCPUs(len(r.readers))
 	if err != nil {
+		_ = r.Close()
 		return nil, err
 	}
 	r.session = newShardSession(r.cursors)
@@ -553,7 +601,9 @@ func (r *FastShardedReader) run(sink RawShardSink, flush func(int) error) (func(
 		go func(i int, rr *fastrb.Reader) {
 			defer s.done.Done()
 			defer func() { s.fail(rr.Close()) }()
-			pinReaderToCPU(cpus[i])
+			s.stats.pinReaderToCPU(cpus[i])
+			var consumed, drained uint64
+			defer func() { s.stats.Consumed.Add(consumed); s.stats.DrainedAtStop.Add(drained) }()
 			var seen int64
 			var samples []int64
 			defer func() {
@@ -570,9 +620,9 @@ func (r *FastShardedReader) run(sink RawShardSink, flush func(int) error) (func(
 					}
 				}
 				rr.ReadBatch(func(raw []byte) {
-					s.stats.Consumed.Add(1)
+					consumed++
 					if draining {
-						s.stats.DrainedAtStop.Add(1)
+						drained++
 					}
 					s.fail(sink(i, raw))
 					if LatencySamplePeriod > 0 {
@@ -595,3 +645,16 @@ func (r *FastShardedReader) run(sink RawShardSink, flush func(int) error) (func(
 
 func (r *Reader) Barrier() func() (bool, error)            { return r.session.Barrier() }
 func (r *FastShardedReader) Barrier() func() (bool, error) { return r.session.Barrier() }
+
+func (r *Reader) Failures() <-chan struct{} {
+	if r.session == nil {
+		return nil
+	}
+	return r.session.failure
+}
+func (r *FastShardedReader) Failures() <-chan struct{} {
+	if r.session == nil {
+		return nil
+	}
+	return r.session.failure
+}

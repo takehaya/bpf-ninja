@@ -224,3 +224,16 @@ func TestBatchBuilderArenaOverflow(t *testing.T) {
 		}
 	}
 }
+
+func TestParsePacketRejectsMalformedMetadata(t *testing.T) {
+	raw := make([]byte, MetadataSize)
+	binary.NativeEndian.PutUint16(raw[OffsetCapLen:], 1)
+	if _, err := ParseRawSample(raw); err == nil {
+		t.Fatal("oversized caplen accepted")
+	}
+	binary.NativeEndian.PutUint16(raw[OffsetCapLen:], 0)
+	raw[OffsetMode] = 3
+	if _, err := ParseRawSample(raw); err == nil {
+		t.Fatal("unknown mode accepted")
+	}
+}

@@ -5,18 +5,9 @@ import (
 	"os"
 	"runtime"
 	"slices"
-	"sync"
-	"sync/atomic"
 
 	"golang.org/x/sys/unix"
 )
-
-var affinityFailures atomic.Uint64
-var affinityWarning sync.Once
-
-// ReaderAffinityFailures reports unsuccessful pin attempts. Readers continue
-// on their inherited allowed mask, so an offline CPU does not lose its shard.
-func ReaderAffinityFailures() uint64 { return affinityFailures.Load() }
 
 func readerCPUs(shards int) ([]int, error) {
 	if DisableCPUAffinity {
@@ -63,7 +54,7 @@ func planReaderCPUs(shards int, allowed []int, split int) ([]int, error) {
 
 // A successful pin keeps the thread locked until the reader exits. A failed
 // pin leaves the inherited mask intact and releases the thread to the runtime.
-func pinReaderToCPU(cpu int) {
+func (stats *SessionStats) pinReaderToCPU(cpu int) {
 	if DisableCPUAffinity {
 		return
 	}
@@ -80,8 +71,8 @@ func pinReaderToCPU(cpu int) {
 		}
 	}
 	if err != nil {
-		affinityFailures.Add(1)
-		affinityWarning.Do(func() {
+		stats.AffinityFailures.Add(1)
+		stats.warning.Do(func() {
 			fmt.Fprintf(os.Stderr, "warning: reader CPU pinning failed; continuing on allowed CPUs: %v\n", err)
 		})
 	}

@@ -392,3 +392,5 @@ bpf-ninja's design was inspired by the following projects:
 
 - [xdp-dump](https://github.com/xdp-project/xdp-tools/blob/main/xdp-dump/README.org) (xdp-tools) — fentry/fexit trampoline approach for tracing XDP programs
 - [xdpcap](https://github.com/cloudflare/xdpcap) (Cloudflare) — tcpdump filter compilation via cBPF→eBPF ([cbpfc](https://github.com/cloudflare/cbpfc)), and the overall architecture of capturing XDP packets to pcap
+
+Capture shutdown, per-tag acknowledgements, output limits and the `capture status=...` counters are described in [Capture completion](docs/capture-lifecycle.md).

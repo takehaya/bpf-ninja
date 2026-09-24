@@ -93,7 +93,11 @@ func LoadXDPNative(state *attach.InterfaceState, filterExpr string, useDSL bool,
 			return nil, err
 		}
 	}
-	insns := buildXDPNativeInsns(out, outerMap.FD(), slots, gateFD)
+	if err := probe.initExportStats(); err != nil {
+		_ = probe.Close()
+		return nil, err
+	}
+	insns := buildXDPNativeInsns(out, outerMap.FD(), slots, gateFD, probe.StatsMap.FD())
 	spec := &ebpf.ProgramSpec{
 		Name:         "bpfninja_native",
 		Type:         ebpf.XDP,
@@ -174,7 +178,12 @@ func buildXDPNativeInsns(filterOut codegen.Output, eventsFD int, slots *pktSetSl
 	if len(gateFDs) > 0 {
 		insns = append(insns, emitTagBarrier(gateFDs[0])...)
 	}
-	insns = append(insns, captureXDPNative(eventsFD, filterOut.Capture.MaxCapLen)...)
+	statsFD := 0
+	if len(gateFDs) > 1 {
+		statsFD = gateFDs[1]
+	}
+	insns = append(insns, captureXDPNative(eventsFD, filterOut.Capture.MaxCapLen, statsFD)...)
+	insns = append(insns, emitExportTerminals(statsFD)...)
 	finalAction := xdpPass
 	if XDPNativeBenchDrop {
 		finalAction = xdpDrop
@@ -240,7 +249,7 @@ func runFilterDirect(filter asm.Instructions) asm.Instructions {
 //	-32: reserved-slot ptr (PTR_TO_MEM, mem_size = metadataSize + maxCapLen)
 //	-40: u32 saved copy_size
 //	-48: u64 kernel_ts_ns (saved bpf_ktime_get_ns return)
-func captureXDPNative(eventsFD int, maxCapLen int) asm.Instructions {
+func captureXDPNative(eventsFD int, maxCapLen int, statsFD int) asm.Instructions {
 	if maxCapLen <= 0 {
 		maxCapLen = defaultCapLen
 	}
@@ -275,7 +284,7 @@ func captureXDPNative(eventsFD int, maxCapLen int) asm.Instructions {
 			asm.StoreMem(asm.R10, -16, asm.R0, asm.Word),
 		)
 	}
-	insns = append(insns, emitShardedRBReserve(eventsFD, 0, reserveSize)...)
+	insns = append(insns, emitShardedRBReserve(eventsFD, statsFD, reserveSize)...)
 	insns = append(insns, asm.Instructions{
 
 		// --- Write kernel_ts_ns into slot[0..8] ---
@@ -322,6 +331,7 @@ func captureXDPNative(eventsFD int, maxCapLen int) asm.Instructions {
 		asm.Mov.Reg(asm.R4, asm.R3),                                           // copy_size (umin=1)
 		asm.Mov.Reg(asm.R3, asm.R0), asm.Add.Imm(asm.R3, int32(metadataSize)), // dst = slot+20
 		asm.FnXdpLoadBytes.Call(),
+		asm.JNE.Imm(asm.R0, 0, "rb_copy_fail"),
 
 		// --- bpf_ringbuf_submit(reservation_ptr, flags) ---
 		asm.LoadMem(asm.R1, asm.R10, -32, asm.DWord).WithSymbol("xn_skip_load"),
