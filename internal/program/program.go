@@ -31,9 +31,10 @@ type Probe struct {
 	InnerMaps []*ebpf.Map // non-nil only in per-CPU sharded mode
 	// StatsMap is a 1-entry per-CPU u64 array; [0] counts bpf_ringbuf_reserve
 	// failures (ring full → record dropped at the producer). Tracing modes only.
-	StatsMap *ebpf.Map
-	IsFexit  bool
-	Warnings []string // resolver / codegen non-fatal notices; CLI prints to stderr
+	StatsMap   *ebpf.Map
+	closedTags *ebpf.Map
+	IsFexit    bool
+	Warnings   []string // resolver / codegen non-fatal notices; CLI prints to stderr
 
 	// --arg-echo diagnostic mode: non-nil EchoRing means this probe emits
 	// the target function's integer args (EchoParams, in order) to a
@@ -241,6 +242,19 @@ func loadMulti(targets []attach.Target, filterExpr string, filters []filter.Targ
 		scratchFD = scratchMap.FD()
 	}
 
+	gateFD := 0
+	hasSets := len(sets) > 0
+	for _, tf := range filters {
+		hasSets = hasSets || len(tf.Sets) > 0
+	}
+	if hasSets {
+		gateFD, err = probe.initTagBarrier()
+		if err != nil {
+			_ = probe.Close()
+			return nil, err
+		}
+	}
+
 	// Instructions are built per target: the packet-filter part depends
 	// only on progType and the shared maps, but arg-filter offsets are
 	// resolved against each target func's own BTF param layout.
@@ -257,7 +271,7 @@ func loadMulti(targets []attach.Target, filterExpr string, filters []filter.Targ
 				return nil, fmt.Errorf("fexit target %s: %w", t.FuncName, err)
 			}
 		}
-		insns, err := buildTracingInsns(filterOut, tf, outerMap.FD(), scratchFD, statsMap.FD(), isFexit, returnOffset, progType, slots, pktRefs)
+		insns, err := buildTracingInsns(filterOut, tf, outerMap.FD(), scratchFD, statsMap.FD(), isFexit, returnOffset, progType, slots, pktRefs, gateFD)
 		if err != nil {
 			_ = probe.Close()
 			return nil, err
@@ -519,7 +533,7 @@ const (
 	metadataSize = 20
 )
 
-func buildTracingInsns(filterOut codegen.Output, tf filter.TargetFilters, eventsFD, scratchFD, statsFD int, isFexit bool, returnOffset int16, progType ebpf.ProgramType, slots *pktSetSlots, pktRefs []string) (asm.Instructions, error) {
+func buildTracingInsns(filterOut codegen.Output, tf filter.TargetFilters, eventsFD, scratchFD, statsFD int, isFexit bool, returnOffset int16, progType ebpf.ProgramType, slots *pktSetSlots, pktRefs []string, gateFDs ...int) (asm.Instructions, error) {
 	var insns asm.Instructions
 	prelude, err := loadPacketPointers(progType)
 	if err != nil {
@@ -547,6 +561,9 @@ func buildTracingInsns(filterOut codegen.Output, tf filter.TargetFilters, events
 	insns = append(insns, runFilter(filterOut.Main, scratchFD, filterScanLen(filterOut))...)
 	if slots != nil {
 		insns = append(insns, slots.emitPktSetLookups(pktRefs)...)
+	}
+	if len(gateFDs) > 0 {
+		insns = append(insns, emitTagBarrier(gateFDs[0])...)
 	}
 	insns = append(insns, captureWithRingbuf(eventsFD, statsFD, isFexit, filterOut.Capture.MaxCapLen)...)
 	insns = append(insns, asm.Ja.Label("exit")) // success path skips the fail counter

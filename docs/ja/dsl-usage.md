@@ -803,6 +803,9 @@ sudo bpf-ninja merge --base out.pcap --fexit  # --mode exit で録った場合
 
 常駐プロセス 1 個で複数のキャプチャジョブを多重化する運用向けに、entry の削除を「この tag は終わり」の合図として使えます。`--finalize-on-del` を付けると、ある tag の entry が全 watch set から消え、かつ ringbuf の残りが掃けたと確認できた時点で、その tag の per-CPU ファイルを flush して閉じ、プロセスを止めずに `out.<tag>.pcap` へ合算します。合算は一時ファイルに書いてから rename するので、**`out.<tag>.pcap` の出現がそのまま完了の合図**です。呼び出し側の流れは `set del` → ファイルを待つ (inotify や stat) → 回収、だけになります。
 
+
+完了判定は無通信の秒数では決めません。削除を検出したtagをcapture専用mapで停止し、実行中のBPF処理が完了するまで待ってから各ringのproducer位置を記録します。全shardがその位置まで読み、writer登録・書き込みを終えたことを確認して合算します。別tagの保存が遅れている場合も、未処理レコードを残したまま完了通知を出しません。停止処理を始めたtagは同一capture中に再利用できず、set entryを再追加しても再開しません。停止tagは最大65,536個保持し、上限や同期処理の失敗はエラーとして報告します。
+
 ```bash
 sudo bpf-ninja -i eth0 --mode xdp --set "subs=$PIN" \
   --split-by-tag --finalize-on-del -w out.pcap \

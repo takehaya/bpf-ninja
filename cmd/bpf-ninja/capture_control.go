@@ -4,8 +4,10 @@ import "github.com/takehaya/bpf-ninja/internal/capture"
 
 // One control belongs to one probe/capture, including all its shards.
 type captureControl struct {
-	quiesce func() error
-	stats   *capture.SessionStats
+	quiesce  func() error
+	blockTag func(uint32) error
+	barrier  func() func() (bool, error)
+	stats    *capture.SessionStats
 }
 
 func controlOrNew(cs []*captureControl) *captureControl {

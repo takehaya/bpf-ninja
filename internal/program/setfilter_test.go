@@ -134,6 +134,26 @@ func TestBpfSetFilterLookupAndRuntimeUpdate(t *testing.T) {
 	if markers[0xaa] != 0 {
 		t.Fatalf("markers after runtime delete = %v, want no 0xaa event", markers)
 	}
+
+	// A finalization tombstone survives a re-add of the still-valid set key.
+	if err := probe.BlockTag(1); err != nil {
+		t.Fatal(err)
+	}
+	if err := def.Add(map[string]string{"imsi": fmt.Sprintf("%d", inImsi), "teid": fmt.Sprintf("%d", inTeid)}, setmap.EntryValue{Tag: 1}); err != nil {
+		t.Fatal(err)
+	}
+	runWithKey(t, prog, inImsi, inTeid)
+	if got := drainMarkers(t, probe, 0); len(got) != 0 {
+		t.Fatalf("blocked tag reopened: %v", got)
+	}
+	// The tombstone does not pause unrelated tags.
+	if err := def.Add(map[string]string{"imsi": fmt.Sprintf("%d", newImsi), "teid": fmt.Sprintf("%d", inTeid)}, setmap.EntryValue{Tag: 2}); err != nil {
+		t.Fatal(err)
+	}
+	runWithKey(t, prog, newImsi, inTeid)
+	if got := drainMarkers(t, probe, 1); got[0xaa] != 1 {
+		t.Fatalf("unrelated tag blocked: %v", got)
+	}
 }
 
 // TestBpfSetFilterScalarKey covers the scalar (bare u64) key path,

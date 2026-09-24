@@ -16,18 +16,19 @@ type SessionStats struct {
 }
 
 type shardSession struct {
-	stopCh  chan struct{}
-	cursors []*fastrb.Cursor
-	final   []uint64
-	done    sync.WaitGroup
-	once    sync.Once
-	stats   SessionStats
-	mu      sync.Mutex
-	err     error
+	stopCh       chan struct{}
+	cursors      []*fastrb.Cursor
+	final        []uint64
+	acknowledged []atomic.Uint64
+	done         sync.WaitGroup
+	once         sync.Once
+	stats        SessionStats
+	mu           sync.Mutex
+	err          error
 }
 
 func newShardSession(cursors []*fastrb.Cursor) *shardSession {
-	return &shardSession{stopCh: make(chan struct{}), cursors: cursors, final: make([]uint64, len(cursors))}
+	return &shardSession{stopCh: make(chan struct{}), cursors: cursors, final: make([]uint64, len(cursors)), acknowledged: make([]atomic.Uint64, len(cursors))}
 }
 func (s *shardSession) fail(err error) {
 	if err == nil {
@@ -62,3 +63,25 @@ func (s *shardSession) stop() {
 		}
 	})
 }
+
+// Barrier snapshots every producer position. A shard publishes its consumed
+// position only after the sink (including writer registration) has returned.
+// Polling completion is nonblocking, so SIGINT/errors can still stop capture.
+func (s *shardSession) Barrier() func() (bool, error) {
+	targets := make([]uint64, len(s.cursors))
+	for i, c := range s.cursors {
+		targets[i] = c.Produced()
+	}
+	return func() (bool, error) {
+		if err := s.Err(); err != nil {
+			return false, err
+		}
+		for i, n := range targets {
+			if s.acknowledged[i].Load() < n {
+				return false, nil
+			}
+		}
+		return true, nil
+	}
+}
+func (s *shardSession) acknowledge(i int) { s.acknowledged[i].Store(s.cursors[i].Consumed()) }

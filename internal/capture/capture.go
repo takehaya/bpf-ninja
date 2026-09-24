@@ -429,6 +429,7 @@ func (r *Reader) run(sink RawShardSink, flush func(int) error) (func(), error) {
 					rr.SetDeadline(pollPastDeadline)
 				}
 				s.fail(flush(i))
+				s.acknowledge(i)
 				if draining && r.cursors[i].Consumed() >= s.final[i] {
 					return
 				}
@@ -582,6 +583,7 @@ func (r *FastShardedReader) run(sink RawShardSink, flush func(int) error) (func(
 					}
 				})
 				s.fail(flush(i))
+				s.acknowledge(i)
 				if draining && r.cursors[i].Consumed() >= s.final[i] {
 					return
 				}
@@ -590,3 +592,6 @@ func (r *FastShardedReader) run(sink RawShardSink, flush func(int) error) (func(
 	}
 	return s.stop, nil
 }
+
+func (r *Reader) Barrier() func() (bool, error)            { return r.session.Barrier() }
+func (r *FastShardedReader) Barrier() func() (bool, error) { return r.session.Barrier() }

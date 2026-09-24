@@ -1,6 +1,8 @@
 package main
 
 import (
+	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -47,99 +49,61 @@ func countPcapPackets(path string) (int, error) {
 func newTestFinalizer(t *testing.T, shards int) *tagFinalizer {
 	t.Helper()
 	base := filepath.Join(t.TempDir(), "out.pcap")
-	return newTagFinalizer(base, output.Config{}, shards)
+	f := newTagFinalizer(base, output.Config{}, shards)
+	f.begin = func(uint32) (func() (bool, error), error) { return func() (bool, error) { return true, nil }, nil }
+	return f
 }
 
-// Quiesce takes two quiet cycles (candidate, then stop sign), and the
-// close+merge runs one cycle after the stop sign. A tag whose merge has
-// not succeeded yet is returned again; after markMerged it stops.
-func TestStepQuiesceCycles(t *testing.T) {
+// An arbitrarily delayed reader must prevent the stop sign and ack, even
+// when there is no observed activity for many lifecycle polls.
+func TestStepWaitsForAcknowledgement(t *testing.T) {
 	f := newTestFinalizer(t, 2)
+	ready := false
+	calls := 0
+	f.begin = func(tag uint32) (func() (bool, error), error) {
+		calls++
+		return func() (bool, error) { return ready, nil }, nil
+	}
 	st := f.stateFor(7)
-
-	if done := f.step([]uint32{7}); len(done) != 0 {
-		t.Fatalf("finalized while still in the union: %v", done)
+	if done := f.step([]uint32{7}); len(done) != 0 || calls != 0 {
+		t.Fatal("blocked live tag")
 	}
-	if done := f.step(nil); len(done) != 0 {
-		t.Fatalf("finalized on the first quiet cycle: %v", done)
+	for range 100 {
+		if done := f.step(nil); len(done) != 0 || st.finalized.Load() {
+			t.Fatal("quiet poll replaced barrier")
+		}
 	}
-	if done := f.step(nil); len(done) != 0 {
-		t.Fatalf("close scheduled in the stop-sign cycle: %v", done)
+	if calls != 1 {
+		t.Fatalf("barrier started %d times", calls)
+	}
+	// Once the tombstone exists, a re-add must not cancel or reopen the tag.
+	f.step([]uint32{7})
+	ready = true
+	if done := f.step([]uint32{7}); len(done) != 1 || done[0] != 7 {
+		t.Fatalf("ack=%v", done)
 	}
 	if !st.finalized.Load() {
-		t.Fatal("stop sign not raised after the second quiet cycle")
+		t.Fatal("stop sign absent after acknowledgement")
 	}
-	if done := f.step(nil); len(done) != 1 || done[0] != 7 {
-		t.Fatalf("cycle after the stop sign = %v, want [7]", done)
-	}
-	// Merge has not succeeded: keep retrying, and don't skip at shutdown.
-	if done := f.step(nil); len(done) != 1 || done[0] != 7 {
-		t.Fatalf("unmerged tag not retried: %v", done)
-	}
-	if got := f.mergedTags(); len(got) != 0 {
-		t.Fatalf("mergedTags before merge = %v, want empty", got)
+	if done := f.step(nil); len(done) != 1 {
+		t.Fatal("merge retry lost")
 	}
 	f.markMerged(7)
 	if done := f.step(nil); len(done) != 0 {
-		t.Fatalf("merged tag still returned: %v", done)
-	}
-	if got := f.mergedTags(); len(got) != 1 || !got[7] {
-		t.Fatalf("mergedTags = %v, want {7}", got)
+		t.Fatal("merged tag retried")
 	}
 }
 
-// Records arriving between the two cycles (draining ringbuf backlog)
-// must reset the candidate.
-func TestStepActivityResetsCandidate(t *testing.T) {
-	f := newTestFinalizer(t, 1)
-	st := f.stateFor(3)
-
-	f.step(nil)        // candidate at activity 0
-	st.activity.Add(1) // backlog drained a batch
-	if done := f.step(nil); len(done) != 0 {
-		t.Fatalf("finalized despite activity during the cycle: %v", done)
-	}
-	f.step(nil) // quiet again -> stop sign
-	if done := f.step(nil); len(done) != 1 || done[0] != 3 {
-		t.Fatalf("post-stop-sign cycle = %v, want [3]", done)
-	}
-}
-
-// A tag re-added to the union while pending must drop out of the
-// candidate set and start over after the next removal.
-func TestStepReappearanceResetsCandidate(t *testing.T) {
-	f := newTestFinalizer(t, 1)
-	f.stateFor(5)
-
-	f.step(nil) // candidate
-	if done := f.step([]uint32{5}); len(done) != 0 {
-		t.Fatalf("finalized while back in the union: %v", done)
-	}
-	f.step(nil) // candidate again
-	f.step(nil) // stop sign
-	if done := f.step(nil); len(done) != 1 || done[0] != 5 {
-		t.Fatalf("post-re-removal cycles = %v, want [5]", done)
-	}
-}
-
-// Union-seen tags (registered via step, no traffic) finalize too, so a
-// zero-traffic tag still produces its ack file. Tag 0 never does.
 func TestStepUnionSeenAndTagZero(t *testing.T) {
 	f := newTestFinalizer(t, 1)
-
-	f.step([]uint32{9}) // tag 9 exists only in the set map
-	f.step(nil)
-	f.step(nil) // stop sign
+	f.step([]uint32{9})
+	f.stateFor(0)
 	if done := f.step(nil); len(done) != 1 || done[0] != 9 {
-		t.Fatalf("union-seen tag = %v, want [9]", done)
+		t.Fatalf("done=%v", done)
 	}
 	f.markMerged(9)
-
-	f.stateFor(0) // traffic with no set match
-	f.step(nil)
-	f.step(nil)
 	if done := f.step(nil); len(done) != 0 {
-		t.Fatalf("tag 0 finalized: %v", done)
+		t.Fatal("tag zero finalized")
 	}
 }
 
@@ -164,7 +128,8 @@ func TestFinalizeZeroTrafficProducesFile(t *testing.T) {
 // skipped at shutdown) and succeed once the cause clears.
 func TestFinalizeFailureRetries(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "gone")
-	f := newTagFinalizer(filepath.Join(missing, "out.pcap"), output.Config{}, 1)
+	f := newTestFinalizer(t, 1)
+	f.basePath = filepath.Join(missing, "out.pcap")
 	f.stateFor(4)
 	f.step(nil)
 	f.step(nil) // stop sign
@@ -317,5 +282,33 @@ func TestCloseAllFailureRemainsTerminal(t *testing.T) {
 	}
 	if lc.exitReady(nil, nil) {
 		t.Fatal("terminal failure treated as successful cap exit")
+	}
+}
+
+func TestStepBarrierFailureNeverAcknowledges(t *testing.T) {
+	for _, atStart := range []bool{false, true} {
+		f := newTestFinalizer(t, 1)
+		failure := fmt.Errorf("injected barrier failure")
+		f.begin = func(uint32) (func() (bool, error), error) {
+			if atStart {
+				return nil, failure
+			}
+			return func() (bool, error) { return false, failure }, nil
+		}
+		f.stateFor(7)
+		for range 5 {
+			if done := f.step(nil); len(done) != 0 {
+				t.Fatal("failed barrier acknowledged")
+			}
+		}
+		if !errors.Is(f.Err(), failure) {
+			t.Fatalf("error=%v", f.Err())
+		}
+		if err := f.finalize(7); !errors.Is(err, failure) {
+			t.Fatalf("finalize=%v", err)
+		}
+		if _, err := os.Stat(output.TagMergedPath(f.basePath, 7)); !os.IsNotExist(err) {
+			t.Fatal("ack exists")
+		}
 	}
 }

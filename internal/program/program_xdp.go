@@ -85,7 +85,15 @@ func LoadXDPNative(state *attach.InterfaceState, filterExpr string, useDSL bool,
 		maps:      append([]*ebpf.Map{outerMap}, innerMaps...),
 	}
 
-	insns := buildXDPNativeInsns(out, outerMap.FD(), slots)
+	gateFD := 0
+	if len(sets) > 0 {
+		gateFD, err = probe.initTagBarrier()
+		if err != nil {
+			_ = probe.Close()
+			return nil, err
+		}
+	}
+	insns := buildXDPNativeInsns(out, outerMap.FD(), slots, gateFD)
 	spec := &ebpf.ProgramSpec{
 		Name:         "bpfninja_native",
 		Type:         ebpf.XDP,
@@ -146,7 +154,7 @@ func LoadXDPNative(state *attach.InterfaceState, filterExpr string, useDSL bool,
 //	R9 = pkt_len      (set in prologue)
 //
 // The filter output lands at "filter_result" with R2 = 1 (match) or 0.
-func buildXDPNativeInsns(filterOut codegen.Output, eventsFD int, slots *pktSetSlots) asm.Instructions {
+func buildXDPNativeInsns(filterOut codegen.Output, eventsFD int, slots *pktSetSlots, gateFDs ...int) asm.Instructions {
 	var insns asm.Instructions
 	insns = append(insns, loadXDPPacketPointers()...)
 	// Default the tag to 0 before any set lookup can overwrite it, so a
@@ -162,6 +170,9 @@ func buildXDPNativeInsns(filterOut codegen.Output, eventsFD int, slots *pktSetSl
 	insns = append(insns, runFilterDirect(filterOut.Main)...)
 	if slots != nil {
 		insns = append(insns, slots.emitPktSetLookups(refs)...)
+	}
+	if len(gateFDs) > 0 {
+		insns = append(insns, emitTagBarrier(gateFDs[0])...)
 	}
 	insns = append(insns, captureXDPNative(eventsFD, filterOut.Capture.MaxCapLen)...)
 	finalAction := xdpPass

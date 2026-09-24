@@ -938,7 +938,7 @@ func runCaptureLoop(cmd *cli.Command, probe *program.Probe, cfg output.Config, l
 	if cmd.Bool("split-by-tag") && cmd.Bool("finalize-on-del") {
 		fin = newTagFinalizer(cmd.String("write"), cfg, len(probe.InnerMaps))
 	}
-	ctl := &captureControl{quiesce: probe.Quiesce}
+	ctl := &captureControl{quiesce: probe.Quiesce, blockTag: probe.BlockTag}
 	if err := captureLoopSharded(cmd, probe.InnerMaps, cfg, label, sets, fin, ctl); err != nil {
 		return err
 	}
@@ -1229,14 +1229,7 @@ func captureLoopShardedSplit(cmd *cli.Command, inners []*ebpf.Map, cfg output.Co
 					fin.register(tag, shardIdx, w)
 				}
 			}
-			if e.st != nil {
-				// Before the write, so the quiesce poll sees a stalled
-				// in-flight batch as activity and stays conservative
-				// (finalize's Close also serializes with WriteBatch on
-				// the writer's flushMu, so a raced batch is still
-				// flushed before the merge).
-				e.st.activity.Add(1)
-			}
+
 			if err := e.w.WriteBatch(pkts[i:j]); err != nil {
 				if fin != nil {
 					fin.fail(tag, err)
@@ -1354,6 +1347,7 @@ func pumpShards(cmd *cli.Command, inners []*ebpf.Map, label string, writeShard f
 		}
 		stop, err = fr.RunShardsFast(sink)
 		readerErr = fr.Err
+		ctl.barrier = fr.Barrier
 		ctl.stats = fr.Stats()
 		if err != nil {
 			return err
@@ -1366,6 +1360,7 @@ func pumpShards(cmd *cli.Command, inners []*ebpf.Map, label string, writeShard f
 		}
 		stop, err = r.RunShards(sink)
 		readerErr = r.Err
+		ctl.barrier = r.Barrier
 		ctl.stats = r.Stats()
 		if err != nil {
 			return err
@@ -1373,6 +1368,17 @@ func pumpShards(cmd *cli.Command, inners []*ebpf.Map, label string, writeShard f
 	}
 
 	stop = ctl.stopBeforeDrain(stop, readerErr, failure)
+	if fin != nil {
+		fin.begin = func(tag uint32) (func() (bool, error), error) {
+			if ctl.blockTag == nil || ctl.barrier == nil {
+				return nil, fmt.Errorf("capture has no tag barrier")
+			}
+			if err := ctl.blockTag(tag); err != nil {
+				return nil, err
+			}
+			return ctl.barrier(), nil
+		}
+	}
 	mode := "sharded"
 	if null {
 		mode = "sharded null-output"
@@ -1546,6 +1552,7 @@ func captureLoopShardedRaw(cmd *cli.Command, inners []*ebpf.Map, label, basePath
 		}
 		stop, err = fr.RunRawShardsFast(rawSink)
 		readerErr = fr.Err
+		ctl.barrier = fr.Barrier
 		ctl.stats = fr.Stats()
 		if err != nil {
 			return err
@@ -1557,6 +1564,7 @@ func captureLoopShardedRaw(cmd *cli.Command, inners []*ebpf.Map, label, basePath
 		}
 		stop, err = r.RunRawShards(rawSink)
 		readerErr = r.Err
+		ctl.barrier = r.Barrier
 		ctl.stats = r.Stats()
 		if err != nil {
 			return err
