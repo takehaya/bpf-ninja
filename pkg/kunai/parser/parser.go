@@ -39,6 +39,7 @@ type parser struct {
 	preCurSnap     lexer.Snapshot // lexer state at the start of the byte run that produced p.cur; used by speculative re-reads (e.g. LHS network-literal probing in `where`)
 	file           string
 	depth          int             // alternation nesting depth
+	exprDepth      int             // recursive where expression calls, including Boolean equality and not
 	parenDepth     int             // `(` nesting in where / arith expressions; guarded by maxParenDepth to keep recursive descent off the OS stack on fuzz inputs like `((((...))))`
 	reservedLabels map[string]bool // host-supplied @label rejection set
 }

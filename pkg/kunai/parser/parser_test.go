@@ -565,12 +565,12 @@ func TestParseWhereNetworkLiteralOnLHS(t *testing.T) {
 }
 
 // TestParseWhereLHSLiteralBailReplay pins the bail/replay invariant
-// of tryLeadingNetworkLiteralCmp: when the LHS isn't a network
+// of tryNetworkLiteral: when the LHS isn't a network
 // literal, the lexer must be restored exactly so the fallback arith
 // path sees the same multi-byte token the entry call had.
 // Hex and decimal integer LHS exercise multi-byte token boundaries —
 // a silent off-by-one in lexer.Restore/Next replay would consume the
-// wrong bytes and parseArithExpr would fail or read a different value.
+// wrong bytes and the integer primary would read a different value.
 func TestParseWhereLHSLiteralBailReplay(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -627,8 +627,7 @@ func TestParseWhereLHSLiteralBailReplay(t *testing.T) {
 
 func TestParseWhereNetworkLiteralLHSOrderedRejected(t *testing.T) {
 	// Per dsl-types.md §6.2 network literals only support ==/!=. The
-	// ordered comparison falls through to the arith path which then
-	// fails because `10.0.0.1` is not a valid arith expression head.
+	// comparison is rejected before lowering to the arithmetic AST.
 	mustFail(t, "eth/ipv4/tcp where 10.0.0.1 < ipv4.dst", "")
 }
 

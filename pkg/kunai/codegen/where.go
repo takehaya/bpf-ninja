@@ -214,6 +214,15 @@ func (c *whereCtx) genBoolEq(w *ir.Condition, failLabel string) (asm.Instruction
 // Used by genBoolEq so each operand of a Bool == Bool comparison is
 // emitted exactly once.
 func (c *whereCtx) genConditionAsBool(cond *ir.Condition) (asm.Instructions, error) {
+	// A constant needs no branch diamond: its untaken arm would be
+	// structurally unreachable and rejected by the BPF verifier.
+	if cond != nil && cond.Kind == ast.WAtomBoolLit {
+		var value int32
+		if cond.BoolLitValue {
+			value = 1
+		}
+		return asm.Instructions{asm.Mov.Imm(asm.R3, value)}, nil
+	}
 	falsyLabel := c.freshLabel("bool_zero")
 	doneLabel := c.freshLabel("bool_done")
 	inner, err := c.gen(cond, falsyLabel)
