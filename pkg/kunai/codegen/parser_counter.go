@@ -132,7 +132,9 @@ func (c *pmCtx) emitCounterOp(op vocab.CounterOp, fixedHs int, env counterEnv, f
 			insns = append(insns, foldOffsetIntoScalar(env.scratchB, env.offset, loadByteOff, failLabel)...)
 			insns = append(insns, boundedScalarLoad(env.scratchA, env.scratchStart, env.scratchB, env.scratchEnd, asm.Byte, failLabel)...)
 			insns = append(insns,
+				asm.JLT.Imm(env.scratchA, int32(op.DecrementLookaheadByteOff+1), failLabel),
 				asm.LoadMem(env.scratchB, env.stackBase, resolvedSlot, asm.DWord),
+				asm.JLT.Reg(env.scratchB, env.scratchA, failLabel),
 				asm.Sub.Reg(env.scratchB, env.scratchA),
 				asm.StoreMem(env.stackBase, resolvedSlot, env.scratchB, asm.DWord),
 			)
@@ -148,6 +150,7 @@ func (c *pmCtx) emitCounterOp(op vocab.CounterOp, fixedHs int, env counterEnv, f
 			insns = append(insns, boundedScalarLoad(env.scratchA, env.scratchStart, env.scratchB, env.scratchEnd, asm.Byte, failLabel)...)
 			insns = append(insns,
 				asm.LoadMem(env.scratchB, env.stackBase, resolvedSlot, asm.DWord),
+				asm.JLT.Reg(env.scratchB, env.scratchA, failLabel),
 				asm.Sub.Reg(env.scratchB, env.scratchA),
 				asm.StoreMem(env.stackBase, resolvedSlot, env.scratchB, asm.DWord),
 			)
@@ -155,6 +158,7 @@ func (c *pmCtx) emitCounterOp(op vocab.CounterOp, fixedHs int, env counterEnv, f
 		}
 		return asm.Instructions{
 			asm.LoadMem(env.scratchA, env.stackBase, resolvedSlot, asm.DWord),
+			asm.JLT.Imm(env.scratchA, int32(op.LiteralBytes), failLabel),
 			asm.Sub.Imm(env.scratchA, int32(op.LiteralBytes)),
 			asm.StoreMem(env.stackBase, resolvedSlot, env.scratchA, asm.DWord),
 		}, nil

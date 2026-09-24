@@ -970,7 +970,7 @@ header tcp_opt_ws_h        { bit<8> kind; bit<8> length; bit<8>  shift; }
 header tcp_opt_sack_perm_h { bit<8> kind; bit<8> length; }
 header tcp_opt_ts_h        { bit<8> kind; bit<8> length; bit<32> tsval; bit<32> tsecr; }
 
-const bit<8> TCP_PARSER_MAX_DEPTH = 32;
+const bit<8> TCP_MAX_DEPTH = 40;
 
 parser TcpParser(packet_in pkt,
                    out tcp_h               hdr,
@@ -978,30 +978,34 @@ parser TcpParser(packet_in pkt,
                    out tcp_opt_ws_h        ws,
                    out tcp_opt_sack_perm_h sack_perm,
                    out tcp_opt_ts_h        ts) {
+    ParserCounter() pc; // extern 宣言は tcp.p4 を参照
     state start {
         pkt.extract(hdr);
+        pc.set(((bit<8>)(hdr.data_offset - 5)) << 5);
         transition select(hdr.data_offset) {
             5:       accept;
             default: parse_options;
         }
     }
     state parse_options {
-        transition select(pkt.lookahead<bit<8>>()) {
-            0:       accept;       // EOL
-            1:       parse_nop;
-            2:       parse_mss;
-            3:       parse_ws;
-            4:       parse_sack_perm;
-            8:       parse_ts;
-            default: parse_unknown_opt;
+        transition select(pc.is_zero(), pkt.lookahead<bit<8>>()) {
+            (true, _):  accept;
+            (false, 0): accept;       // EOL
+            (false, 1):       parse_nop;
+            (false, 2):       parse_mss;
+            (false, 3):       parse_ws;
+            (false, 4):       parse_sack_perm;
+            (false, 8):       parse_ts;
+            (false, _): parse_unknown_opt;
         }
     }
-    state parse_nop          { pkt.advance(8);         transition parse_options; }
-    state parse_mss          { pkt.extract(mss);       transition parse_options; }
-    state parse_ws           { pkt.extract(ws);        transition parse_options; }
-    state parse_sack_perm    { pkt.extract(sack_perm); transition parse_options; }
-    state parse_ts           { pkt.extract(ts);        transition parse_options; }
+    state parse_nop          { pkt.advance(8); pc.decrement(1); transition parse_options; }
+    state parse_mss          { pkt.extract(mss); pc.decrement(4); transition select(mss.length) { 4: parse_options; default: reject; } }
+    state parse_ws           { pkt.extract(ws); pc.decrement(3); transition select(ws.length) { 3: parse_options; default: reject; } }
+    state parse_sack_perm    { pkt.extract(sack_perm); pc.decrement(2); transition select(sack_perm.length) { 2: parse_options; default: reject; } }
+    state parse_ts           { pkt.extract(ts); pc.decrement(10); transition select(ts.length) { 10: parse_options; default: reject; } }
     state parse_unknown_opt {
+        pc.decrement((bit<8>)pkt.lookahead<bit<16>>()[7:0]);
         pkt.advance(((bit<32>)pkt.lookahead<bit<16>>()[7:0]) << 3);
         transition parse_options;
     }
@@ -1012,15 +1016,13 @@ option の identity (kind 値) は parser block の `transition select` case lab
 
 Codegen 経路では、`parse_options → parse_<kind> → parse_options` の cycle を `IsMultiStateLoopEntry` predicate (`pkg/kunai/vocab/parser_machine.go`) が検出し、`emitMultiStateSelfLoop` (`pkg/kunai/codegen/parser_loop.go`) が bpf_loop callback に下ろします。
 
-callback の per-iter 構造 (Phase 2 retry 設計) は次のとおりです。
+TCP の option walk は `data_offset` から求めた header end に制限します。5 未満の data_offset、packet end を越す宣言長、option end を越す読み取り・advance、0/1 の TLV 長を拒否します。EOL と領域末尾は正常終了で、不正長による終了とは別の経路です。最大 40 個の NOP を処理できるよう反復上限は 40 です。
 
-1. ctx slot から `R3 = current option offset` / `R4 = scratchStart` / `R5 = scratchEnd` を再 load します。
-2. `JGT R3, ScratchBufSize-1, breakLabel` で R3 の上限を pin し、verifier が stack spill 越しに失う bound を取り戻します。
-3. `R0 = R4 + R3 + 1; JGT R0, R5, breakLabel` で、次 1 byte の peek bound check を行います。
-4. Lifted slot-store prelude として、kind byte を R1 に load し、where / capture が query した option ごとに `JNE R1, kindByte, .skip; StoreMem R2, slot, R3; .skip:` を flat に並べます。slot は main frame の per-LayerInstance アドレスで、callback からは `R2 + (slot - bpfLoopCtxOffsetSlot)` (`mainStackOffsetFromCb` helper) で reach します。
-5. cascade dispatch を行います。kind 比較の後、各 case body で extract / advance と R3 store-back を実施します。
+各 sibling の counter decrement と消費 byte 数が一致すると証明できる場合、codegen は残量 counter を不変の終了位置へ変換します。callback は option end と実際の packet end の両方を検査し、固定長 option の length 検証後は共通の advance を使います。未問い合わせの既知 option も、walk を実行する場合には length を検証します。option を一つも参照しない filter は既存の bulk advance を使うため、TCP 全体の宣言長は検査しますが個々の option の形式までは検証しません。
 
-prelude を cascade の outside に置くのが重要です。per-iter の slot 状態は kind byte だけの関数になり、verifier が、どの case が走ったかとどの slot が変わったかの組み合わせを per-iter で track せずに済みます。これが 6.12+ の 1M-insn 限界に収まる根拠です。
+callback は kind ごとの slot-store prelude を dispatch の前に置きます。これだけでは Linux 6.6 / 6.15 で cursor と終了位置の比較による探索増加を抑えられないため、既存 accumulator と同じ二重 XOR による cursor の値追跡緩和を使います。実行時の値は変わりませんが、verifier が二重 XOR を相殺しない性質への依存が残ります。branch 数だけでは保証できないため、6.1 / 6.6 / 6.12 / 6.15 / 6.18 / 7.0 の packet・program load 試験で互換性を検査します。
+
+`pkt.lookahead` を使う counter decrement は `pkt.advance` より前に記述します。逆順は loader が診断します。これは対応する TLV sibling の制約であり、P4-lite の任意の statement 順序を保持する一般的な保証ではありません。
 
 Demand-driven 割当では、codegen は `collectQueriedOptions(p)` (`pkg/kunai/codegen/option_demand.go`) で program 全体の where、各 layer の bracket predicate、各 capture を walk し、参照された (layer, option) ペアだけ slot を割り当てます。`where tcp.options.MSS.value == 1460` だけなら slot は 1 個です (per-layer × per-aux で最大 5 まで、`dynamicAuxMaxSlotsPerLayer` = TCP の queryable kind 数)。layer entry では `emitDynamicAuxSentinelInit` が各 slot を sentinel `-1` で zero-init します。extract されなかった option は sentinel のまま残り、where 評価で reject されます。
 

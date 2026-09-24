@@ -45,7 +45,8 @@
 //   - Untouched: R6, R7, R8 are callee-saved from kunai's
 //     perspective. The host typically uses them to hold
 //     attach-point-specific pointers (e.g. xdp_buff / data /
-//     data_end) but kunai never reads or writes them.
+//     data_end). The main stream preserves them. TLV callbacks may use
+//     R6/R7 locally; the BPF call ABI preserves the caller's values.
 //
 // # Action atoms (host capability)
 //

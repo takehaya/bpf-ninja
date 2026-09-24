@@ -94,6 +94,8 @@ func genParserMachine(layer *ir.LayerInstance, layerIdx int, all []*ir.LayerInst
 // pmCtx threads compile-time state (specs, layer index, label
 // namespace) through the per-state emitters.
 type pmCtx struct {
+	// regionCounter is represented by an immutable end within a proven TLV loop.
+	regionCounter      string
 	spec               *vocab.ProtocolSpec
 	machine            *vocab.ParseStateMachine
 	layerIdx           int
@@ -294,7 +296,7 @@ func (c *pmCtx) emitStateBody(state *vocab.ParseState, stateIdx int, isEntry boo
 		if c.canFallbackToBulkAdvance(stateIdx) {
 			return c.emitCounterDrivenBulkAdvance(state, stateIdx)
 		}
-		// Querying >=2 options of a lookahead-only TLV layer (TCP
+		// Querying >=2 options of a length-byte TLV layer (TCP
 		// options) records N option positions into N distinct stack
 		// slots; the verifier then tracks the cross-product of which
 		// slot holds which position across the walk and blows its 1M
@@ -310,11 +312,11 @@ func (c *pmCtx) emitStateBody(state *vocab.ParseState, stateIdx int, isEntry boo
 		// path; the per-iteration prelude reads the live option field and
 		// ORs its match bit into the accumulator.
 		//
-		// Without an active plan, reject >=2 lookahead-only at compile
+		// Without an active plan, reject >=2 length-byte options at compile
 		// time with a clear diagnostic rather than emit bytecode the
 		// verifier will refuse. One option per filter still works on the
 		// normal path.
-		if c.isLookaheadOnlyLoop(stateIdx) && len(c.queried[c.layer]) >= 2 && c.accPlan.atomsFor(c.layer) == nil {
+		if c.isLengthByteOptionLoop(stateIdx) && len(c.queried[c.layer]) >= 2 && c.accPlan.atomsFor(c.layer) == nil {
 			return nil, nil, fmt.Errorf("%w: querying %d distinct options of %q in one filter is supported only as a pure AND of `<option>.<field> == <const>` equalities (at most %d, where multiple fields on one option each count); rewrite the clause to that form — no `!=`, no non-option term mixed in — or query a single option", ErrNotImplemented, len(c.queried[c.layer]), c.spec.Name, accMaxAtoms)
 		}
 		// Accumulator queries lower to one combined bpf_loop: the per-

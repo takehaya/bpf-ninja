@@ -1046,7 +1046,7 @@ func BuildIPv6WithExts(t testing.TB, opts IPv6WithExtsOpts) []byte {
 	for i, ex := range opts.Exts {
 		nh := opts.FinalNextHeader
 		if i+1 < len(opts.Exts) {
-			nh = opts.Exts[i+1].NextHeader
+			nh = ex.NextHeader
 		}
 		extLen := int(ex.HdrExtLen)*8 + 8
 		buf := make([]byte, extLen)

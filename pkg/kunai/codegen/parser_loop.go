@@ -208,6 +208,10 @@ func (c *pmCtx) emitAuxWalkTailReanchor() (asm.Instructions, error) {
 	return insns, nil
 }
 
+// Parser TLV regions include TCP's 40 single-byte options. Keep their
+// iteration budget separate from encapsulation-chain depth.
+const parserTLVLoopCap = 64
+
 // emitMultiStateSelfLoop is the codegen path for indirect self-loops
 // (TLV walks). The state body is a single-byte lookahead dispatch
 // over sibling states; each sibling does one extract or advance,
@@ -223,8 +227,8 @@ func (c *pmCtx) emitMultiStateSelfLoop(state *vocab.ParseState, stateIdx int) (a
 	if maxIter == 0 {
 		maxIter = defaultChainDepth
 	}
-	if maxIter > bpfLoopChainCap {
-		return nil, nil, fmt.Errorf("%w: parser machine %s multi-state self-loop depth %d exceeds cap %d", ErrNotImplemented, c.spec.Name, maxIter, bpfLoopChainCap)
+	if maxIter > parserTLVLoopCap {
+		return nil, nil, fmt.Errorf("%w: parser machine %s multi-state self-loop depth %d exceeds cap %d", ErrNotImplemented, c.spec.Name, maxIter, parserTLVLoopCap)
 	}
 	cbSym := c.selfLoopCbSym(stateIdx)
 	callback, err := c.emitMultiStateCallback(state, stateIdx, cbSym)
@@ -232,7 +236,24 @@ func (c *pmCtx) emitMultiStateSelfLoop(state *vocab.ParseState, stateIdx int) (a
 		return nil, nil, err
 	}
 
-	insns := asm.Instructions{
+	var insns asm.Instructions
+	regionCounter := c.cursorCounter(state)
+	if regionCounter != "" {
+		slot, err := c.counterSlot(regionCounter)
+		if err != nil {
+			return nil, nil, err
+		}
+		insns = append(insns,
+			asm.LoadMem(asm.R3, asm.R10, slot, asm.DWord),
+			asm.JGT.Imm(asm.R3, ScratchBufSize, dslReject),
+			asm.Add.Reg(asm.R3, offsetBase),
+			asm.JGT.Imm(asm.R3, ScratchBufSize, dslReject),
+			asm.Mov.Reg(asm.R5, asm.R0), asm.Add.Reg(asm.R5, asm.R3),
+			asm.JGT.Reg(asm.R5, asm.R1, dslReject),
+			asm.StoreMem(asm.R10, slot, asm.R3, asm.DWord),
+		)
+	}
+	insns = append(insns,
 		asm.StoreMem(asm.R10, bpfLoopCtxOffsetSlot, offsetBase, asm.DWord),
 		asm.StoreMem(asm.R10, bpfLoopCtxScratchStartSlot, asm.R0, asm.DWord),
 		asm.StoreMem(asm.R10, bpfLoopCtxScratchEndSlot, asm.R1, asm.DWord),
@@ -245,22 +266,38 @@ func (c *pmCtx) emitMultiStateSelfLoop(state *vocab.ParseState, stateIdx int) (a
 		asm.LoadMem(offsetBase, asm.R10, bpfLoopCtxOffsetSlot, asm.DWord),
 		asm.LoadMem(asm.R0, asm.R10, bpfLoopCtxScratchStartSlot, asm.DWord),
 		asm.LoadMem(asm.R1, asm.R10, bpfLoopCtxScratchEndSlot, asm.DWord),
-		asm.Ja.Label(c.doneLabel),
+		asm.JGT.Imm(offsetBase, ScratchBufSize, dslReject),
+	)
+	if hasCounterAndKindKeys(state.Trans.Select) {
+		slot, err := c.counterSlot(state.Trans.Select.Keys[0].Counter)
+		if err != nil {
+			return nil, nil, err
+		}
+		if regionCounter != "" {
+			insns = append(insns, asm.LoadMem(offsetBase, asm.R10, slot, asm.DWord))
+		} else {
+			insns = append(insns,
+				asm.LoadMem(asm.R3, asm.R10, slot, asm.DWord),
+				asm.JGT.Imm(asm.R3, ScratchBufSize, dslReject),
+				asm.Add.Reg(offsetBase, asm.R3),
+				asm.JGT.Imm(offsetBase, ScratchBufSize, dslReject),
+				asm.Mov.Reg(asm.R3, asm.R0), asm.Add.Reg(asm.R3, offsetBase),
+				asm.JGT.Reg(asm.R3, asm.R1, dslReject),
+			)
+		}
 	}
+	insns = append(insns, asm.Ja.Label(c.doneLabel))
 	return insns, callback, nil
 }
 
-// isLookaheadOnlyLoop reports whether the multi-state loop entry at
-// stateIdx dispatches on a single lookahead key (the TCP-options shape),
-// not a counter or counter+lookahead tuple (IPv4 / Geneve). Only the
-// lookahead-only shape hits the multi-option verifier-state explosion;
-// counter-driven walks (Geneve's 2-key dispatch) do not.
-func (c *pmCtx) isLookaheadOnlyLoop(stateIdx int) bool {
+// isLengthByteOptionLoop identifies TLV walks eligible for the shared
+// multi-option accumulator, with or without a region counter.
+func (c *pmCtx) isLengthByteOptionLoop(stateIdx int) bool {
 	sel := c.machine.States[stateIdx].Trans.Select
 	if sel == nil {
 		return false
 	}
-	return !hasCounterAndKindKeys(sel) && !isCounterIsZeroSelect(sel)
+	return lengthByteOptionLoop(c.machine.States, sel)
 }
 
 // emitAccPrelude is the accumulator path's per-iteration callback body:
@@ -283,7 +320,7 @@ func (c *pmCtx) emitAccPrelude(sel *vocab.SelectOp, atoms []accAtom, breakLabel 
 	// stash it; reloading per atom is a branch-free LoadMem instead of a
 	// fresh bounded packet read (two JGT branches each), keeping the
 	// callback's branch count down. The stash slot is the select-key
-	// stash, unused by a lookahead-only TLV walk (no variable trail), and
+	// stash, reused before the dispatch cascade starts, and
 	// the prelude runs before the dispatch cascade, so it never collides.
 	kindSlot := stashKeySlots[0]
 	insns := boundedScalarLoad(asm.R0, asm.R4, asm.R3, asm.R5, shape.loadSize, breakLabel)
@@ -453,10 +490,15 @@ func (c *pmCtx) emitDynamicAuxSlotPrelude(sel *vocab.SelectOp, breakLabel string
 // either an inlined sibling body (extract or advance + return 0) or
 // breaks (accept / reject / EOL → return 1).
 func (c *pmCtx) emitMultiStateCallback(entry *vocab.ParseState, entryIdx int, cbSym string) (asm.Instructions, error) {
+	previousCounter := c.regionCounter
+	c.regionCounter = c.cursorCounter(entry)
+	defer func() { c.regionCounter = previousCounter }()
+
 	// Labels derive from cbSym (== selfLoopCbSym(entryIdx)), matching
 	// selfLoopBreak.
 	breakLabel := cbSym + "_break"
 	continueLabel := cbSym + "_continue"
+	rejectLabel := cbSym + "_reject"
 
 	first := asm.LoadMem(asm.R3, asm.R2, bpfLoopCbCtxOffsetField, asm.DWord).WithSymbol(cbSym)
 	first = btf.WithFuncMetadata(first, chainCallbackFunc(cbSym))
@@ -470,8 +512,46 @@ func (c *pmCtx) emitMultiStateCallback(entry *vocab.ParseState, entryIdx int, cb
 		// upper bound against ScratchBufSize before any pkt-pointer
 		// arithmetic; on the surviving path R3 ∈ [0, ScratchBufSize),
 		// which lets the subsequent `pkt + R3` adds verify.
-		asm.JGT.Imm(asm.R3, int32(ScratchBufSize)-1, breakLabel),
+		asm.JGT.Imm(asm.R3, int32(ScratchBufSize)-1, rejectLabel),
 	}
+	if c.regionCounter != "" {
+		slot, err := c.counterSlot(c.regionCounter)
+		if err != nil {
+			return nil, err
+		}
+		insns = append(insns,
+			asm.LoadMem(asm.R1, asm.R2, mainStackOffsetFromCb(slot), asm.DWord),
+			asm.JGT.Imm(asm.R1, ScratchBufSize, rejectLabel),
+			asm.JGT.Reg(asm.R3, asm.R1, rejectLabel),
+			asm.JEq.Reg(asm.R3, asm.R1, breakLabel),
+			asm.Add.Reg(asm.R1, asm.R4),
+			asm.Mov.Reg(asm.R5, asm.R1),
+		)
+	} else if hasCounterAndKindKeys(entry.Trans.Select) {
+		zeroLabel := breakLabel
+		switch counterTrueTargetFor2Key(entry.Trans.Select) {
+		case vocab.StateAccept:
+		case vocab.StateReject:
+			zeroLabel = rejectLabel
+		default:
+			return nil, fmt.Errorf("%w: counter/kind loop requires a terminal zero-counter target", ErrNotImplemented)
+		}
+		slot, err := c.counterSlot(entry.Trans.Select.Keys[0].Counter)
+		if err != nil {
+			return nil, err
+		}
+		insns = append(insns,
+			asm.LoadMem(asm.R1, asm.R2, mainStackOffsetFromCb(slot), asm.DWord),
+			asm.JEq.Imm(asm.R1, 0, zeroLabel),
+			asm.JGT.Imm(asm.R1, ScratchBufSize, rejectLabel),
+			asm.Add.Reg(asm.R1, asm.R3),
+			asm.JGT.Imm(asm.R1, ScratchBufSize, rejectLabel),
+			asm.Add.Reg(asm.R1, asm.R4),
+			asm.JGT.Reg(asm.R1, asm.R5, rejectLabel),
+			asm.Mov.Reg(asm.R5, asm.R1),
+		)
+	}
+
 	// Accumulator-walk convergence: the cursor is a data-dependent
 	// accumulator whose tracked range's smin creeps up each iteration, so
 	// bpf_loop's RANGE_WITHIN pruning never fires and the verifier
@@ -483,39 +563,44 @@ func (c *pmCtx) emitMultiStateCallback(entry *vocab.ParseState, entryIdx int, cb
 	// (bounds-checked) and is never branched on. This rests on tnum xor
 	// semantics (the verifier does not cancel the double xor). Paired with
 	// the accumulator forget in emitAccPrelude, it lets one combined loop
-	// carry every queried option. Scoped to the accumulator path so the
-	// single-option and counter-driven (Geneve) callbacks are unchanged.
-	if c.accPlan.atomsFor(c.layer) != nil {
+	// carry every queried option. Proven immutable
+	// byte-region callbacks use it as well: their cursor/end comparison
+	// otherwise makes every iteration precise on Linux 6.6 and 6.15.
+	// Counter-only (Geneve) callbacks do not need it.
+	if c.accPlan.atomsFor(c.layer) != nil || c.regionCounter != "" {
 		insns = append(insns,
 			asm.Mov.Reg(asm.R0, asm.R4),
 			asm.Add.Imm(asm.R0, 1),
-			asm.JGT.Reg(asm.R0, asm.R5, breakLabel),
+			asm.JGT.Reg(asm.R0, asm.R5, rejectLabel),
 			asm.LoadMem(asm.R0, asm.R4, 0, asm.Byte),
 			asm.Xor.Reg(asm.R3, asm.R0),
 			asm.Xor.Reg(asm.R3, asm.R0),
-			asm.JGT.Imm(asm.R3, int32(ScratchBufSize)-1, breakLabel),
+			asm.JGT.Imm(asm.R3, int32(ScratchBufSize)-1, rejectLabel),
 		)
 	}
 	// Per-case dispatch over the lookahead<bit<N>>() key. Use the
 	// existing emitSelectGeneric machinery with a callback-flavoured
 	// selectAddr that materialises the bytes at R4+R3.
-	addr := callbackSelectAddr("tlvcb", breakLabel)
+	addr := callbackSelectAddr("tlvcb", rejectLabel)
 	// Bound-check the peek (the widest lookahead key's load) before any
 	// case body runs. The per-case bounded load re-checks, but this
 	// coarse guard keeps the cascade off a short tail.
-	peekBytes := selectPeekBytes(entry.Trans.Select)
-	insns = append(insns,
-		asm.Mov.Reg(asm.R0, asm.R4),
-		asm.Add.Reg(asm.R0, asm.R3),
-		asm.Add.Imm(asm.R0, int32(peekBytes)),
-		asm.JGT.Reg(asm.R0, asm.R5, breakLabel),
-	)
+	if !hasCounterAndKindKeys(entry.Trans.Select) {
+		peekBytes := selectPeekBytes(entry.Trans.Select)
+		insns = append(insns,
+			asm.Mov.Reg(asm.R0, asm.R4),
+			asm.Add.Reg(asm.R0, asm.R3),
+			asm.Add.Imm(asm.R0, int32(peekBytes)),
+			asm.JGT.Reg(asm.R0, asm.R5, rejectLabel),
+		)
+	}
+
 	// Slot-store prelude must run BEFORE the dispatch cascade, not
 	// inside the case bodies — the per-iter slot value has to be a
 	// function of the kind byte alone so the verifier doesn't track
 	// "which case ran × which slot was written" across iters. See
 	// docs/ja/dsl-internals.md §6.5 Mechanism 7.
-	prelude, err := c.emitDynamicAuxSlotPrelude(entry.Trans.Select, breakLabel)
+	prelude, err := c.emitDynamicAuxSlotPrelude(entry.Trans.Select, rejectLabel)
 	if err != nil {
 		return nil, err
 	}
@@ -527,11 +612,28 @@ func (c *pmCtx) emitMultiStateCallback(entry *vocab.ParseState, entryIdx int, cb
 	insns = append(insns, dispatch...)
 
 	insns = append(insns,
-		asm.Mov.Imm(asm.R0, 0).WithSymbol(continueLabel),
-		asm.Return(),
-		asm.Mov.Imm(asm.R0, 1).WithSymbol(breakLabel),
-		asm.Return(),
+		asm.Mov.Imm(asm.R0, 0).WithSymbol(continueLabel), asm.Return(),
+		asm.Mov.Imm(asm.R0, -1).WithSymbol(rejectLabel),
+		asm.StoreMem(asm.R2, bpfLoopCbCtxOffsetField, asm.R0, asm.DWord),
+		asm.Mov.Imm(asm.R0, 1).WithSymbol(breakLabel), asm.Return(),
 	)
+	if hasCounterAndKindKeys(entry.Trans.Select) {
+		// R5 bounds the declared region; native packet loads also require
+		// a direct comparison with data_end. R6 is local to the callback:
+		// the BPF call ABI preserves the caller's R6 across the invocation.
+		bounded := make(asm.Instructions, 0, len(insns)*2)
+		for _, ins := range insns {
+			bounded = append(bounded, ins)
+			if ins.OpCode == asm.LoadMemOp(asm.DWord) && ins.Dst == asm.R5 && ins.Src == asm.R2 && ins.Offset == bpfLoopCbCtxScratchEndField {
+				bounded = append(bounded, asm.Mov.Reg(asm.R6, asm.R5))
+			}
+			if ins.OpCode == asm.JGT.Reg(asm.R0, asm.R5, "").OpCode && ins.Src == asm.R5 {
+				bounded = append(bounded, asm.JGT.Reg(ins.Dst, asm.R6, ins.Reference()))
+			}
+		}
+		insns = bounded
+	}
+
 	// The branch-count tripwire guards against scalar-ID inflation across
 	// MAX_DEPTH iterations (see callback_lint.go). The accumulator callback
 	// is exempt: its per-iteration cursor AND accumulator forgets make the
@@ -652,7 +754,8 @@ func (c *pmCtx) defaultIsLengthByteAdvance(defaultIdx int) bool {
 //
 // Conditions (all must hold):
 //   - Target is a sibling state (not accept/reject).
-//   - Target has zero manual Advances (any kind), zero CounterOps.
+//   - Target has no manual advance and at most one literal counter decrement
+//     equal to its extraction size.
 //   - Target has at least one ExtractOp; no extract is a stack push;
 //     no extracted aux is in c.queriedAuxes.
 //
@@ -677,11 +780,23 @@ func (c *pmCtx) caseRedundantWithDefault(targetIdx int) bool {
 	if target == nil {
 		return false
 	}
-	if len(target.Advances) > 0 || len(target.Counters) > 0 {
+	if len(target.Advances) > 0 || target.Trans.Kind != vocab.TransDirect {
 		return false
 	}
 	if len(target.Extracts) == 0 {
 		return false
+	}
+	if len(target.Counters) > 0 {
+		if len(target.Counters) != 1 || target.Counters[0].Kind != vocab.CounterOpDecrement || target.Counters[0].LiteralBytes == 0 {
+			return false
+		}
+		total := 0
+		for _, ex := range target.Extracts {
+			total += ex.HeaderSize / 8
+		}
+		if target.Counters[0].LiteralBytes != total {
+			return false
+		}
 	}
 	for _, ex := range target.Extracts {
 		if ex.IsStackPush {
@@ -729,7 +844,15 @@ func (c *pmCtx) emitMultiStateCounterKindDispatch(entry *vocab.ParseState, entry
 		return nil, err
 	}
 
-	insns := append(asm.Instructions{}, probe...)
+	var insns asm.Instructions
+	if c.regionCounter == "" {
+		insns = append(insns, probe...)
+	}
+	// All arms inspect the same discriminator; read it once with bounds.
+	insns = append(insns, boundedScalarLoad(asm.R0, asm.R4, asm.R3, asm.R5, kindShape.loadSize, c.selfLoopCbSym(entryIdx)+"_reject")...)
+	insns = append(insns, kindShape.normalize(asm.R0)...)
+	insns = append(insns, asm.StoreMem(asm.R10, stashKeySlots[kindIdx], asm.R0, asm.DWord))
+	kindAddr := selectAddr{dst: asm.R0, fromStash: true, stashR10: asm.R10, stashSlots: stashKeySlots}
 
 	// The counter-false default (`(false, _)`) needs locating ahead
 	// of the case loop so the elision check sees the right fall-
@@ -747,6 +870,9 @@ func (c *pmCtx) emitMultiStateCounterKindDispatch(entry *vocab.ParseState, entry
 		}
 	}
 	defaultElidable := c.defaultIsLengthByteAdvance(counterFalseDefaultTarget)
+	defaultLabel := fmt.Sprintf("%s_default_%d", c.labelNS, c.selectCounter())
+	sharedLengthLabel := defaultLabel + "_length"
+	shareLength := c.regionCounter != "" && defaultElidable
 
 	// Walk counter-false cases. Concrete kinds emit JNE; wildcard
 	// kind already captured above. Counter-true cases are deferred
@@ -761,11 +887,30 @@ func (c *pmCtx) emitMultiStateCounterKindDispatch(entry *vocab.ParseState, entry
 		if kv.IsWildcard {
 			continue
 		}
-		if defaultElidable && c.caseRedundantWithDefault(kase.Target) {
+		if defaultElidable && c.caseRedundantWithDefault(kase.Target) && c.machine.States[kase.Target].Trans.Kind == vocab.TransDirect {
 			continue
 		}
 		caseSkip := fmt.Sprintf("%s_%s_%d_skip", c.labelNS, addr.labelTag, c.selectCounter())
-		insns = append(insns, emitKeyCompare(addr, kindShape, kindIdx, kv.Value, caseSkip)...)
+		insns = append(insns, emitKeyCompare(kindAddr, kindShape, kindIdx, kv.Value, caseSkip)...)
+		if defaultElidable && c.fixedOptionLengthCheck(kase.Target, counterFalseDefaultTarget) {
+			sib := c.machine.States[kase.Target]
+			if shareLength {
+				insns = append(insns, asm.Mov.Imm(asm.R7, int32(sib.Extracts[0].HeaderSize/8)), asm.Ja.Label(sharedLengthLabel), landingNoop(caseSkip))
+				continue
+			}
+			shape, err := c.resolveSelectKey(sib.Trans.Select.Keys[0])
+			if err != nil {
+				return nil, err
+			}
+			shape.byteOffsetFromR4 += sib.Extracts[0].HeaderSize / 8
+			insns = append(insns, emitKeyCompare(addr, shape, 0, uint64(sib.Extracts[0].HeaderSize/8), c.selfLoopCbSym(entryIdx)+"_reject")...)
+			insns = append(insns, asm.Ja.Label(defaultLabel), landingNoop(caseSkip))
+			continue
+		}
+		if shareLength && c.sameLengthAdvance(kase.Target, counterFalseDefaultTarget) {
+			insns = append(insns, asm.Ja.Label(defaultLabel), landingNoop(caseSkip))
+			continue
+		}
 		body, err := c.emitMultiStateCaseBody(kase.Target, entryIdx, breakLabel, continueLabel)
 		if err != nil {
 			return nil, err
@@ -773,12 +918,21 @@ func (c *pmCtx) emitMultiStateCounterKindDispatch(entry *vocab.ParseState, entry
 		insns = append(insns, body...)
 		insns = append(insns, landingNoop(caseSkip))
 	}
-	defaultBody, err := c.emitMultiStateCaseBody(counterFalseDefaultTarget, entryIdx, breakLabel, continueLabel)
+	insns = append(insns, landingNoop(defaultLabel))
+	var defaultBody asm.Instructions
+	if shareLength {
+		defaultBody = c.emitSharedLengthAdvance(counterFalseDefaultTarget, sharedLengthLabel, continueLabel, c.selfLoopCbSym(entryIdx)+"_reject")
+	} else {
+		defaultBody, err = c.emitMultiStateCaseBody(counterFalseDefaultTarget, entryIdx, breakLabel, continueLabel)
+	}
 	if err != nil {
 		return nil, err
 	}
 	insns = append(insns, defaultBody...)
 
+	if c.regionCounter != "" {
+		return insns, nil
+	}
 	insns = append(insns, landingNoop(counterTrueLabel))
 	trueTarget := counterTrueTargetFor2Key(sel)
 	trueBody, err := c.emitMultiStateCaseBody(trueTarget, entryIdx, breakLabel, continueLabel)
@@ -858,15 +1012,31 @@ func counterIsZeroFalseTarget(sel *vocab.SelectOp) int {
 // performs: break for accept / reject targets, or inline the
 // sibling state's extracts and advances and Ja continueLabel.
 func (c *pmCtx) emitMultiStateCaseBody(target, entryIdx int, breakLabel, continueLabel string) (asm.Instructions, error) {
-	if target == vocab.StateAccept || target == vocab.StateReject {
+	if target == vocab.StateReject {
+		return asm.Instructions{asm.Ja.Label(c.selfLoopCbSym(entryIdx) + "_reject")}, nil
+	}
+	if target == vocab.StateAccept {
 		return asm.Instructions{asm.Ja.Label(breakLabel)}, nil
 	}
 	sib := c.machine.States[target]
-	body, err := c.emitSiblingCallbackBody(sib, breakLabel)
+	body, err := c.emitSiblingCallbackBody(sib, c.selfLoopCbSym(entryIdx)+"_reject")
 	if err != nil {
 		return nil, err
 	}
-	body = append(body, asm.Ja.Label(continueLabel))
+	if sib.Trans.Kind == vocab.TransSelect {
+		trans, err := c.emitSelectGeneric(sib.Trans.Select, callbackSelectAddr("validate", c.selfLoopCbSym(entryIdx)+"_reject"), func(target int) string {
+			if target == entryIdx {
+				return continueLabel
+			}
+			return c.selfLoopCbSym(entryIdx) + "_reject"
+		})
+		if err != nil {
+			return nil, err
+		}
+		body = append(body, trans...)
+	} else {
+		body = append(body, asm.Ja.Label(continueLabel))
+	}
 	return body, nil
 }
 
@@ -891,6 +1061,30 @@ func (c *pmCtx) emitSiblingCallbackBody(sib *vocab.ParseState, breakLabel string
 			asm.StoreMem(asm.R2, bpfLoopCbCtxOffsetField, asm.R3, asm.DWord),
 		)
 		totalHs += hs
+	}
+	for _, op := range sib.Counters {
+		if op.Counter == c.regionCounter && op.Kind == vocab.CounterOpDecrement {
+			if op.DecrementLookaheadByteOffR {
+				insns = append(insns, foldOffsetIntoScalar(asm.R0, asm.R3, int32(op.DecrementLookaheadByteOff), breakLabel)...)
+				insns = append(insns, boundedScalarLoad(asm.R1, asm.R4, asm.R0, asm.R5, asm.Byte, breakLabel)...)
+				insns = append(insns, asm.JLT.Imm(asm.R1, int32(op.DecrementLookaheadByteOff+1), breakLabel))
+			}
+			continue
+		}
+		// CounterOpSet reads a primary-header byte at fixedHs-relative
+		// offset; sibling iterations run with R3 anchored at the
+		// per-iter cursor, not at primary-end, so a set here would
+		// silently mis-anchor the load. The MVP rejects it loudly so
+		// future migrations have to put pc.set in the start (or pre-
+		// loop) state where the anchor is well-defined.
+		if op.Kind == vocab.CounterOpSet {
+			return nil, fmt.Errorf("%w: counter set inside multi-state self-loop sibling %q is not supported (declare it in the loop's pre-entry state)", ErrNotImplemented, sib.Name)
+		}
+		body, err := c.emitCounterOp(op, totalHs, callbackCounterEnv(), breakLabel)
+		if err != nil {
+			return nil, err
+		}
+		insns = append(insns, body...)
 	}
 	for _, adv := range sib.Advances {
 		switch adv.Kind {
@@ -927,22 +1121,7 @@ func (c *pmCtx) emitSiblingCallbackBody(sib *vocab.ParseState, breakLabel string
 			return nil, fmt.Errorf("%w: multi-state callback sibling advance kind %d not yet supported", ErrNotImplemented, adv.Kind)
 		}
 	}
-	for _, op := range sib.Counters {
-		// CounterOpSet reads a primary-header byte at fixedHs-relative
-		// offset; sibling iterations run with R3 anchored at the
-		// per-iter cursor, not at primary-end, so a set here would
-		// silently mis-anchor the load. The MVP rejects it loudly so
-		// future migrations have to put pc.set in the start (or pre-
-		// loop) state where the anchor is well-defined.
-		if op.Kind == vocab.CounterOpSet {
-			return nil, fmt.Errorf("%w: counter set inside multi-state self-loop sibling %q is not supported (declare it in the loop's pre-entry state)", ErrNotImplemented, sib.Name)
-		}
-		body, err := c.emitCounterOp(op, 0, callbackCounterEnv(), breakLabel)
-		if err != nil {
-			return nil, err
-		}
-		insns = append(insns, body...)
-	}
+
 	return insns, nil
 }
 
@@ -1103,4 +1282,43 @@ func transitionRefsState(t vocab.TransitionOp, stateIdx int) bool {
 func (c *pmCtx) selectCounter() int {
 	c.selectCounterValue++
 	return c.selectCounterValue
+}
+
+// fixedOptionLengthCheck proves that a validated fixed-size extraction and
+// decrement consumes exactly the same bytes as the fallback length advance.
+func (c *pmCtx) fixedOptionLengthCheck(idx, fallback int) bool {
+	if idx < 0 || fallback < 0 {
+		return false
+	}
+	st, def := c.machine.States[idx], c.machine.States[fallback]
+	if len(st.Extracts) != 1 || len(st.Advances) != 0 || len(st.Counters) != 1 || len(def.Counters) != 1 || st.Trans.Kind != vocab.TransSelect {
+		return false
+	}
+	if st.Extracts[0].IsStackPush || len(def.Advances) != 1 {
+		return false
+	}
+	if _, ok := variableTailFor(c.spec, st.Extracts[0].HeaderName); ok {
+		return false
+	}
+	adv := def.Advances[0]
+	if adv.Kind != vocab.AdvanceOpLookahead || adv.Skip == nil {
+		return false
+	}
+	skip := adv.Skip
+	if skip.Scale != 1 || skip.Base != 0 || skip.Addend != 0 || skip.LenShift != 0 || skip.LenMask != 0xff {
+		return false
+	}
+	op := st.Counters[0]
+	dop := def.Counters[0]
+	sel := st.Trans.Select
+	hs := st.Extracts[0].HeaderSize / 8
+	if op.Kind != vocab.CounterOpDecrement || op.LiteralBytes != hs || op.Counter != dop.Counter || !dop.DecrementLookaheadByteOffR || skip.LenByteOff != dop.DecrementLookaheadByteOff {
+		return false
+	}
+	if len(sel.Keys) != 1 || len(sel.Cases) != 1 || sel.Default != vocab.StateReject {
+		return false
+	}
+	k := sel.Keys[0]
+	v := sel.Cases[0].Values[0]
+	return k.Kind == vocab.SelectKeyField && k.Field.BitWidth == 8 && k.Field.BitOffset%8 == 0 && k.Field.BitOffset/8 == dop.DecrementLookaheadByteOff && !v.IsWildcard && !v.IsBool && v.Value == uint64(hs)
 }

@@ -141,3 +141,26 @@ parser P(packet_in pkt, out foo_h hdr, out foo_opt_h opt) {
 		t.Errorf("err = %q; want 'span multiple bytes'", err.Error())
 	}
 }
+
+func TestLookaheadDecrementAfterAdvanceRejected(t *testing.T) {
+	src := `header foo_h { bit<8> length; }
+extern ParserCounter {
+ ParserCounter();
+ void set(in bit<8> value);
+ void decrement(in bit<8> value);
+ bool is_zero();
+}
+parser P(packet_in pkt, out foo_h hdr) {
+ ParserCounter() pc;
+ state start {
+  pkt.extract(hdr);
+  pkt.advance(8);
+  pc.decrement((bit<8>)pkt.lookahead<bit<16>>()[7:0]);
+  transition accept;
+ }
+}`
+	err := loadGatingP4(t, src)
+	if err == nil || !strings.Contains(err.Error(), "lookahead counter decrement must precede pkt.advance") {
+		t.Fatalf("expected operation-order diagnostic, got %v", err)
+	}
+}
