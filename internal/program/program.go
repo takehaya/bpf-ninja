@@ -28,8 +28,11 @@ import (
 type Probe struct {
 	EventsMap *ebpf.Map
 	InnerMaps []*ebpf.Map // non-nil only in per-CPU sharded mode
-	IsFexit   bool
-	Warnings  []string // resolver / codegen non-fatal notices; CLI prints to stderr
+	// StatsMap is a 1-entry per-CPU u64 array; [0] counts bpf_ringbuf_reserve
+	// failures (ring full → record dropped at the producer). Tracing modes only.
+	StatsMap *ebpf.Map
+	IsFexit  bool
+	Warnings []string // resolver / codegen non-fatal notices; CLI prints to stderr
 
 	// --arg-echo diagnostic mode: non-nil EchoRing means this probe emits
 	// the target function's integer args (EchoParams, in order) to a
@@ -185,6 +188,17 @@ func loadMulti(targets []attach.Target, filterExpr string, filters []filter.Targ
 	// into PTR_TO_MAP_VALUE first. Output staging is no longer needed
 	// here — the bpf_ringbuf_reserve+submit path writes the metadata +
 	// packet bytes directly into the reserved ring slot.
+	statsMap, err := ebpf.NewMap(&ebpf.MapSpec{
+		Name: fmt.Sprintf("ninja_%s_st", label), Type: ebpf.PerCPUArray,
+		KeySize: 4, ValueSize: 8, MaxEntries: 1,
+	})
+	if err != nil {
+		_ = probe.Close()
+		return nil, fmt.Errorf("creating stats map: %w", err)
+	}
+	probe.StatsMap = statsMap
+	probe.maps = append(probe.maps, statsMap)
+
 	scratchFD := 0
 	if len(filterOut.Main) > 0 {
 		scratchMap, err := ebpf.NewMap(&ebpf.MapSpec{
@@ -215,7 +229,7 @@ func loadMulti(targets []attach.Target, filterExpr string, filters []filter.Targ
 				return nil, fmt.Errorf("fexit target %s: %w", t.FuncName, err)
 			}
 		}
-		insns, err := buildTracingInsns(filterOut, tf, outerMap.FD(), scratchFD, isFexit, returnOffset, progType, slots, pktRefs)
+		insns, err := buildTracingInsns(filterOut, tf, outerMap.FD(), scratchFD, statsMap.FD(), isFexit, returnOffset, progType, slots, pktRefs)
 		if err != nil {
 			_ = probe.Close()
 			return nil, err
@@ -477,7 +491,7 @@ const (
 	metadataSize = 20
 )
 
-func buildTracingInsns(filterOut codegen.Output, tf filter.TargetFilters, eventsFD, scratchFD int, isFexit bool, returnOffset int16, progType ebpf.ProgramType, slots *pktSetSlots, pktRefs []string) (asm.Instructions, error) {
+func buildTracingInsns(filterOut codegen.Output, tf filter.TargetFilters, eventsFD, scratchFD, statsFD int, isFexit bool, returnOffset int16, progType ebpf.ProgramType, slots *pktSetSlots, pktRefs []string) (asm.Instructions, error) {
 	var insns asm.Instructions
 	prelude, err := loadPacketPointers(progType)
 	if err != nil {
@@ -506,7 +520,9 @@ func buildTracingInsns(filterOut codegen.Output, tf filter.TargetFilters, events
 	if slots != nil {
 		insns = append(insns, slots.emitPktSetLookups(pktRefs)...)
 	}
-	insns = append(insns, captureWithRingbuf(eventsFD, isFexit, filterOut.Capture.MaxCapLen)...)
+	insns = append(insns, captureWithRingbuf(eventsFD, statsFD, isFexit, filterOut.Capture.MaxCapLen)...)
+	insns = append(insns, asm.Ja.Label("exit")) // success path skips the fail counter
+	insns = append(insns, emitRBFailCounter(statsFD)...)
 	insns = append(insns, asm.Mov.Imm(asm.R0, 0).WithSymbol("exit"), asm.Return())
 	// bpf2bpf subprograms (currently only DSL bpf_loop chain
 	// callbacks) live after the tracing body so they sit past the
@@ -644,7 +660,7 @@ func runFilter(filter asm.Instructions, scratchFD, scanLen int) asm.Instructions
 // as an immediate, never a register-derived value. See
 // docs/paper/PLAN_bpf_ringbuf risk register entry "Verifier rejects
 // bpf_ringbuf_reserve with non-constant size".
-func captureWithRingbuf(eventsFD int, isFexit bool, maxCapLen int) asm.Instructions {
+func captureWithRingbuf(eventsFD, statsFD int, isFexit bool, maxCapLen int) asm.Instructions {
 	if maxCapLen <= 0 {
 		maxCapLen = defaultCapLen
 	}
@@ -665,7 +681,7 @@ func captureWithRingbuf(eventsFD int, isFexit bool, maxCapLen int) asm.Instructi
 		asm.FnGetSmpProcessorId.Call(),
 		asm.StoreMem(asm.R10, -16, asm.R0, asm.Word),
 	}
-	insns = append(insns, emitShardedRBReserve(eventsFD, reserveSize)...)
+	insns = append(insns, emitShardedRBReserve(eventsFD, statsFD, reserveSize)...)
 	insns = append(insns,
 		// --- Write kernel_ts_ns into slot[0..8] ---
 		asm.LoadMem(asm.R1, asm.R10, -56, asm.DWord),

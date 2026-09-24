@@ -56,6 +56,11 @@ sudo bpf-ninja -i eth0 "eth/ipv4/tcp[dport==80]" | tcpdump -n -r -
 # fexit — filter on the XDP return action
 sudo bpf-ninja -i eth0 --mode exit "eth/ipv4/tcp where action == XDP_DROP"
 
+sudo bpf-ninja -i eth0 
+  --mode entry "eth/ipv4/tcp"
+  --mode exit "eth/ipv4/tcp where action == XDP_DROP"
+
+
 # Standalone XDP attach (no existing XDP needed)
 sudo bpf-ninja --mode xdp -i eth0 "eth/ipv4/tcp[dport==443]" | tcpdump -n -r -
 
@@ -135,6 +140,10 @@ sudo bpf-ninja -i eth0 "eth/ipv4/udp/vxlan/eth/ipv4/tcp"
 # Capture only headers + 64 bytes when the inner TCP dport > 1024
 sudo bpf-ninja -i eth0 \
   "eth/ipv4/tcp capture headers+64 where tcp.dport > 1024"
+
+udp dst port 2152 and
+udp[25] = 6 and
+udp[32:4] = 0x0a000001
 
 # fexit: filter on the XDP return action
 sudo bpf-ninja -i eth0 --mode exit \

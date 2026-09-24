@@ -264,7 +264,7 @@ func captureXDPNative(eventsFD int, maxCapLen int) asm.Instructions {
 			asm.StoreMem(asm.R10, -16, asm.R0, asm.Word),
 		)
 	}
-	insns = append(insns, emitShardedRBReserve(eventsFD, reserveSize)...)
+	insns = append(insns, emitShardedRBReserve(eventsFD, 0, reserveSize)...)
 	insns = append(insns, asm.Instructions{
 
 		// --- Write kernel_ts_ns into slot[0..8] ---

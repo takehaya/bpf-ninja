@@ -80,7 +80,7 @@ func TestBpfShardsUnderRestrictedAffinity(t *testing.T) {
 		t.Fatalf("CPU ID %d has no shard: observer has %d usable CPU, map has %d entries", cpu, runtime.NumCPU(), len(inners))
 	}
 	insns := asm.Instructions{asm.FnGetSmpProcessorId.Call(), asm.StoreMem(asm.R10, -16, asm.R0, asm.Word)}
-	insns = append(insns, emitShardedRBReserve(outer.FD(), 8)...)
+	insns = append(insns, emitShardedRBReserve(outer.FD(), 0, 8)...)
 	insns = append(insns, asm.LoadMem(asm.R1, asm.R10, -16, asm.Word), asm.StoreMem(asm.R0, 0, asm.R1, asm.DWord), asm.Mov.Reg(asm.R1, asm.R0), asm.Mov.Imm(asm.R2, 0), asm.FnRingbufSubmit.Call(), asm.Mov.Imm(asm.R0, 2).WithSymbol("exit"), asm.Return())
 	prog, err := ebpf.NewProgram(&ebpf.ProgramSpec{Name: "cpu_shard_test", Type: ebpf.XDP, License: "GPL", Instructions: insns})
 	if err != nil {

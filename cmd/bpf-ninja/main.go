@@ -878,6 +878,25 @@ func formatEchoArgs(funcName string, params []attach.FuncParamInfo, raw []byte) 
 // printProbeWarnings drains non-fatal resolver / codegen notices the
 // kunai DSL pipeline attached to the probe (typically about chain-
 // root conventions) onto stderr.
+// printExportStats reports producer-side ring-full drops (from the
+// probe's per-CPU stats map) and records drained at shutdown, so the
+// chain "observer runs → reserve ok → read → written" can be balanced.
+func printExportStats(probe *program.Probe) {
+	if probe.StatsMap == nil {
+		return
+	}
+	var per []uint64
+	if err := probe.StatsMap.Lookup(uint32(0), &per); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: reading export stats: %v\n", err)
+		return
+	}
+	var fails uint64
+	for _, v := range per {
+		fails += v
+	}
+	fmt.Fprintf(os.Stderr, "export stats: ringbuf_reserve_fail=%d drained_at_stop=%d\n", fails, capture.LeftoverAtStop.Load())
+}
+
 func printProbeWarnings(probe *program.Probe) {
 	for _, w := range probe.Warnings {
 		fmt.Fprintln(os.Stderr, "warning:", w)
@@ -922,6 +941,7 @@ func runCaptureLoop(cmd *cli.Command, probe *program.Probe, cfg output.Config, l
 	if err := captureLoopSharded(cmd, probe.InnerMaps, cfg, label, sets, fin); err != nil {
 		return err
 	}
+	printExportStats(probe)
 
 	// After capture, merge the per-CPU shard files into a single
 	// time-ordered pcap-ng at the base path, so `-w out.pcap` yields one
