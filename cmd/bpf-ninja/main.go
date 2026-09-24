@@ -1386,11 +1386,11 @@ func pumpShards(cmd *cli.Command, inners []*ebpf.Map, label string, writeShard f
 	if null {
 		mode = "sharded null-output"
 	}
-	fmt.Fprintf(os.Stderr, "capturing (%s, %s, %d shards via %s)...\n", label, mode, len(inners), readerLabel)
-
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 	defer signal.Stop(sig)
+
+	fmt.Fprintf(os.Stderr, "capturing (%s, %s, %d shards via %s)...\n", label, mode, len(inners), readerLabel)
 
 	// Poll only when something can actually end the capture early or
 	// needs a periodic decision (per-entry caps need the ~1s snapshot
@@ -1544,7 +1544,6 @@ func captureLoopShardedRaw(cmd *cli.Command, inners []*ebpf.Map, label, basePath
 				return err
 			}
 			shardCounts[shardIdx].n++
-			shardCounts[shardIdx].n++
 			return nil
 		}
 	}
@@ -1596,12 +1595,12 @@ func captureLoopShardedRaw(cmd *cli.Command, inners []*ebpf.Map, label, basePath
 	if fastReader {
 		readerLabel = "fastrb (mmap bypass)"
 	}
-	fmt.Fprintf(os.Stderr, "capturing (%s, sharded raw-dump, %d shards via %s, wall_offset_ns=%d)...\n",
-		label, len(inners), readerLabel, offset)
-
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 	defer signal.Stop(sig)
+
+	fmt.Fprintf(os.Stderr, "capturing (%s, sharded raw-dump, %d shards via %s, wall_offset_ns=%d)...\n",
+		label, len(inners), readerLabel, offset)
 
 	if count > 0 {
 		for {

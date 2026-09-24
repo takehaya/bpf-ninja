@@ -39,7 +39,7 @@ func captureReport(k program.ExportStats, statsErr, errorResult error, c *captur
 	if discarded > 0 {
 		status = "discarded"
 	}
-	if statsErr != nil || errorResult != nil || bad > 0 || unconfirmed > 0 || k.ReserveFail+k.LookupMiss+k.CopyFail > 0 || k.Submitted != read {
+	if statsErr != nil || errorResult != nil || bad > 0 || unconfirmed > 0 || written+limited+discarded+bad > read || k.ReserveFail+k.LookupMiss+k.CopyFail > 0 || k.Submitted != read {
 		status = "incomplete"
 	}
 	producer := fmt.Sprintf("selected=%d exported=%d ringbuf_reserve_fail=%d lookup_miss=%d copy_fail=%d", k.Submitted+k.ReserveFail+k.LookupMiss+k.CopyFail, k.Submitted, k.ReserveFail, k.LookupMiss, k.CopyFail)
