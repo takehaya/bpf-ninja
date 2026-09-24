@@ -44,7 +44,8 @@ type Value struct {
 	Raw  string // original text; always filled, used for error messages
 
 	// ValInt
-	Int uint64
+	Int      uint64
+	Negative bool // explicitly signed literal; never inferred from the high bit
 
 	// ValIPv4 (and ValCIDR when AF==4)
 	V4 [4]byte

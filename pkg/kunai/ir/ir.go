@@ -308,9 +308,10 @@ type Condition struct {
 
 // ArithExpr is a resolved arithmetic expression (used inside where).
 type ArithExpr struct {
-	Kind  ast.ArithKind
-	Const uint64    // ArithConst
-	Field *FieldRef // ArithField
+	Kind     ast.ArithKind
+	Const    uint64    // ArithConst
+	Negative bool      // explicitly signed literal; never inferred from the high bit
+	Field    *FieldRef // ArithField
 
 	Op    ast.ArithOp
 	Left  *ArithExpr

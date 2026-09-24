@@ -255,7 +255,7 @@ func (p *parser) parseWherePrimary() (whereValue, error) {
 		if n > uint64(1)<<63 {
 			return v, p.errorf(pos, "negative literal -%d exceeds the supported range [-2^63, 0)", n)
 		}
-		v.arith = &ast.ArithExpr{Kind: ast.ArithConst, Const: ^n + 1, Pos: pos}
+		v.arith = &ast.ArithExpr{Kind: ast.ArithConst, Const: ^n + 1, Negative: true, Pos: pos}
 		return v, p.advance()
 	}
 	// Network literals share initial structural tokens with fields and integers.

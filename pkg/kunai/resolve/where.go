@@ -228,6 +228,7 @@ func (r *resolver) resolveArith(a *ast.ArithExpr) (*ir.ArithExpr, error) {
 	switch a.Kind {
 	case ast.ArithConst:
 		out.Const = a.Const
+		out.Negative = a.Negative
 	case ast.ArithField:
 		ref, err := r.resolveQualifiedField(a.Field)
 		if err != nil {

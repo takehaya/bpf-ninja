@@ -154,7 +154,7 @@ func buildInt(raw string, pos ast.Position) (*ast.Value, error) {
 			return nil, fmt.Errorf("invalid integer %q: %v", raw, err)
 		}
 		// #nosec G115 — intentional reinterpretation as uint64.
-		return &ast.Value{Kind: ast.ValInt, Raw: raw, Int: uint64(signed), Pos: pos}, nil
+		return &ast.Value{Kind: ast.ValInt, Raw: raw, Int: uint64(signed), Negative: true, Pos: pos}, nil
 	}
 	v, err := strconv.ParseUint(raw, 0, 64)
 	if err != nil {

@@ -200,8 +200,9 @@ type WhereExpr struct {
 type ArithExpr struct {
 	Kind ArithKind
 
-	Const uint64     // ArithConst
-	Field *FieldPath // ArithField
+	Const    uint64     // ArithConst
+	Negative bool       // explicitly signed literal; never inferred from the high bit
+	Field    *FieldPath // ArithField
 
 	// ArithBinOp
 	Op    ArithOp
