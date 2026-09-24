@@ -51,6 +51,10 @@ type Config struct {
 	// interface name.
 	IsFexit bool
 
+	// RawReturn labels explicit function returns by their u32 bit pattern,
+	// without interpreting them as enclosing-hook verdicts.
+	RawReturn bool
+
 	// LinkType is the pcap-ng link type; the zero value means Ethernet.
 	LinkType layers.LinkType
 
@@ -193,6 +197,9 @@ func (w *Writer) ifaceIDForAction(action uint32) int {
 		prefix = "verdict"
 	}
 	name := fmt.Sprintf("%s:UNKNOWN(%d)", prefix, int32(action))
+	if w.cfg.RawReturn {
+		name = fmt.Sprintf("return:0x%08x", action)
+	}
 	id, err := w.pcapWriter.AddInterface(w.ngInterface(name))
 	if err != nil {
 		_ = w.remember(err)

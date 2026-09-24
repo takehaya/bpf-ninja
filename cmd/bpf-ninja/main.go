@@ -748,7 +748,14 @@ func run(ctx context.Context, cmd *cli.Command) error {
 	if !ok {
 		return hook.UnsupportedTypeError(targets[0].Type)
 	}
-	return runCaptureLoop(cmd, probe, outputConfigFor(h, isFexit), fmt.Sprintf("%s, mode=%s", label, mode), sets)
+	cfg := outputConfigFor(h, isFexit)
+	if isFexit && len(cmd.StringSlice("func")) > 0 {
+		// Explicit capture points can return application values unrelated to
+		// the enclosing hook's verdict. Keep their raw bits in the pcap name.
+		cfg.RawReturn = true
+		cfg.Actions = []output.ActionName{{Value: 0, Name: "return:0x00000000"}}
+	}
+	return runCaptureLoop(cmd, probe, cfg, fmt.Sprintf("%s, mode=%s", label, mode), sets)
 }
 
 // outputConfigFor renders a hook descriptor into the writer layout for

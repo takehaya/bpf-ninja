@@ -25,7 +25,8 @@ def allowed_skip(package, test, output, kernel):
     if kernel and test == "TestBpfTailcallSubfunc":
         return "veth not supported on this kernel" in output
     if kernel == "6.1" and test in {
-        "TestBpfEntryWithDSLFilterNetfilter", "TestBpfExitWithDSLFilterNetfilter"
+        "TestBpfEntryWithDSLFilterNetfilter", "TestBpfExitWithDSLFilterNetfilter",
+        "TestBpfFexitReturnLayoutNetfilter"
     }:
         return "BPF_PROG_TYPE_NETFILTER not supported" in output
     return False

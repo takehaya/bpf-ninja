@@ -207,7 +207,15 @@ func loadMulti(targets []attach.Target, filterExpr string, filters []filter.Targ
 		if filters != nil {
 			tf = filters[i]
 		}
-		insns, err := buildTracingInsns(filterOut, tf, outerMap.FD(), scratchFD, isFexit, progType, slots, pktRefs)
+		var returnOffset int16
+		if isFexit {
+			returnOffset, err = fexitReturnOffset(t.Program, t.FuncName)
+			if err != nil {
+				_ = probe.Close()
+				return nil, fmt.Errorf("fexit target %s: %w", t.FuncName, err)
+			}
+		}
+		insns, err := buildTracingInsns(filterOut, tf, outerMap.FD(), scratchFD, isFexit, returnOffset, progType, slots, pktRefs)
 		if err != nil {
 			_ = probe.Close()
 			return nil, err
@@ -296,17 +304,13 @@ func compileFilterWithSlots(expr string, useDSL, isFexit bool, progType ebpf.Pro
 		return codegen.Output{}, nil
 	}
 	if useDSL {
-		// fexit attaches see the host retval at args[1] (XDP action
-		// or TC verdict, ABI shared); fentry has no action value yet,
-		// so action atoms are disabled. The bpf-ninja host wrapper saves
-		// the tracing args ptr at stack[-48] in either case, which is
-		// exactly the ABI every FexitFetcher implementation expects.
-		// Per-hook capability details (action vocab, VLAN layout) live
-		// in the internal/hook registry entries.
+		// Per-target wrappers save the BTF-derived return in one canonical
+		// slot, allowing mixed arities to share this filter compilation.
 		var caps codegen.Capabilities
 		if h, ok := hook.ByProgramType(progType); ok {
 			if isFexit {
 				caps = h.FexitCaps()
+				caps.Lang.ActionFetcher = savedReturnFetcher{}
 			} else {
 				caps = h.EntryCaps()
 			}
@@ -362,8 +366,8 @@ func compileFilterWithSlots(expr string, useDSL, isFexit bool, progType ebpf.Pro
 //   R9 = パケット長
 //
 // スタックレイアウト (R10 からの負オフセット):
-//   -8:  metadata: u32 action
-//   -12: metadata: u8 mode + u8 _pad[3]
+//   -8:  matched tag (u64 slot)
+//   -12: canonical fexit return value (u32)
 //   -16: map lookup の key
 //   -24: scratch buffer ポインタ (フィルタ時のみ)
 //   -48: tracing args ポインタの退避
@@ -473,13 +477,20 @@ const (
 	metadataSize = 20
 )
 
-func buildTracingInsns(filterOut codegen.Output, tf filter.TargetFilters, eventsFD, scratchFD int, isFexit bool, progType ebpf.ProgramType, slots *pktSetSlots, pktRefs []string) (asm.Instructions, error) {
+func buildTracingInsns(filterOut codegen.Output, tf filter.TargetFilters, eventsFD, scratchFD int, isFexit bool, returnOffset int16, progType ebpf.ProgramType, slots *pktSetSlots, pktRefs []string) (asm.Instructions, error) {
 	var insns asm.Instructions
 	prelude, err := loadPacketPointers(progType)
 	if err != nil {
 		return nil, err
 	}
 	insns = append(insns, prelude...)
+	if isFexit {
+		insns = append(insns,
+			asm.LoadMem(asm.R2, asm.R10, -48, asm.DWord),
+			asm.LoadMem(asm.R2, asm.R2, returnOffset, asm.Word),
+			asm.StoreMem(asm.R10, savedReturnSlot, asm.R2, asm.Word),
+		)
+	}
 	// Default the tag to 0 before any set lookup can overwrite it, so a
 	// captured packet that matched no set (or a set-less filter) reports 0.
 	insns = append(insns, emitTagSlotZero()...)
@@ -619,7 +630,7 @@ func runFilter(filter asm.Instructions, scratchFD, scanLen int) asm.Instructions
 //	R7 = data start
 //	R8 = data_end
 //	R9 = pkt_len
-//	stack[-48] = saved tracing args ptr (for fexit action lookup)
+//	stack[-12] = canonical fexit action; stack[-48] = saved tracing args ptr
 //
 // Local stack slots used here:
 //
@@ -664,8 +675,7 @@ func captureWithRingbuf(eventsFD int, isFexit bool, maxCapLen int) asm.Instructi
 	// --- Write action+mode metadata at slot[8..14] ---
 	if isFexit {
 		insns = append(insns,
-			asm.LoadMem(asm.R2, asm.R10, -48, asm.DWord),
-			asm.LoadMem(asm.R2, asm.R2, 8, asm.DWord), // args[1] = XDP action
+			asm.LoadMem(asm.R2, asm.R10, savedReturnSlot, asm.Word),
 			asm.StoreMem(asm.R0, 8, asm.R2, asm.Word),
 			asm.StoreImm(asm.R0, 12, 1, asm.Byte), // mode = 1 (exit)
 		)

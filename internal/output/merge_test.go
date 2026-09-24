@@ -217,3 +217,42 @@ func TestMergeRejectsDamagedShardAndPreservesOutput(t *testing.T) {
 		})
 	}
 }
+
+func TestMergeRawFunctionReturnNames(t *testing.T) {
+	base := filepath.Join(t.TempDir(), "return.pcap")
+	cfg := Config{IsFexit: true, RawReturn: true, Actions: []ActionName{{Value: 0, Name: "return:0x00000000"}}}
+	w, err := NewWriter(base+".cpu0", cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, value := range []uint32{2, 99, 0xffffffff} {
+		if err := w.Write(capture.Packet{Timestamp: time.Now(), Data: []byte{1}, Action: value}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := MergeShardFiles(base, 1, cfg); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Open(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+	r, err := pcapgo.NewNgReader(f, pcapgo.DefaultNgReaderOptions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"return:0x00000002", "return:0x00000063", "return:0xffffffff"} {
+		_, ci, err := r.ReadPacketData()
+		if err != nil {
+			t.Fatal(err)
+		}
+		iface, err := r.Interface(ci.InterfaceIndex)
+		if err != nil || iface.Name != name {
+			t.Fatalf("interface = %+v, %v, want %s", iface, err, name)
+		}
+	}
+}

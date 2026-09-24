@@ -28,15 +28,11 @@ var Actions = map[string]int32{
 	"NF_ACCEPT": 1,
 }
 
-// FexitFetcher returns a codegen.ActionFetcher for hosts attached as
-// fexit on a netfilter program. It assumes the host wrapper saved the
-// BPF tracing args pointer at stack[-48] at program entry and that
-// args[1] is the verdict slot — the same tracing-args ABI as the xdp,
-// tc, and cgroup-skb fetchers, met by the bpf-ninja host program (see
-// internal/program/program.go).
-//
-// Different host wrappers with a different stack ABI should provide
-// their own fetcher rather than reusing this one.
+// FexitFetcher is the default adapter for a single-context-parameter entry
+// function: the wrapper saves args at fp-48 and the return sits at args+8.
+// Wrappers for arbitrary subfunctions must supply an ActionFetcher matching
+// their target ABI. bpf-ninja overrides this with a canonical saved-return slot
+// populated from each target's BTF prototype, so mixed arities can share filters.
 func FexitFetcher() codegen.ActionFetcher { return fexitFetcher{} }
 
 type fexitFetcher struct{}

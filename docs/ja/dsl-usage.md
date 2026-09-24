@@ -861,3 +861,20 @@ sudo bpf-ninja -i eth0 --mode xdp --set "subs=$PIN" \
 - [dsl-grammar.md](./dsl-grammar.md): formal EBNF + 例文
 - [dsl-types.md](./dsl-types.md): 型システム (型・暗黙変換・widening・fit check・エラーカタログ)
 - vocab 一覧: `pkg/kunai/protocols/*.p4`
+
+### 明示した関数のfexit戻り値
+
+`--mode exit --func NAME` は、各対象関数のBTF prototypeから戻り値の位置を求めます。
+異なる引数数の関数を複数指定しても、DSLの `action` とpcap metadataは同じ実戻り値を使います。
+packet captureで対応するprototypeは、先頭がcontext pointer、引数が1〜5個の
+scalar/pointer（各8byte以下）、戻り値が32bit integer/enumのものです。
+void・pointer・64bit戻り値やaggregate引数は、誤った値に切り詰めず明示的にエラーにします。
+
+`--func` を明示したexit出力では、interface名は `return:0x00000002` のような生の
+32bit値になります。helperの戻り値が同じ数値でも、呼び出し元の最終XDP/TC verdictを
+意味するとは限らないためです。DSLの `action == XDP_PASS` 等の定数は引き続き数値比較であり、
+その関数の戻り値が当該定数と等しいことを検査します。`--func` を指定しないentrypointの
+exit出力は従来のhook verdict名を使います。
+
+`--dump-asm full` は対象未解決のため、1引数のreturn offset `+8` をplaceholderとして表示します。
+実際のattachでは対象ごとのBTFから解決します。
