@@ -30,7 +30,7 @@ test-unit:
 
 test-bpf:
 	sudo env "PATH=$(PATH)" "HOME=$(HOME)" "GOPATH=$$(go env GOPATH)" "GOMODCACHE=$$(go env GOMODCACHE)" \
-		go test -v -count 1 -timeout 5m ./internal/program/ -run TestBpf
+		python3 scripts/test/privileged.py
 
 test-bench-run:
 	sudo env "PATH=$(PATH)" "HOME=$(HOME)" "GOPATH=$$(go env GOPATH)" "GOMODCACHE=$$(go env GOMODCACHE)" \

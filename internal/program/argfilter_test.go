@@ -10,7 +10,7 @@ import (
 )
 
 // argFilterTestSource defines a noinline function with an extra u32 parameter.
-// The parameter value is derived from packet data so we can control it via ping.
+// Compiler barriers keep both ctx and filter_id in the actual call ABI.
 const argFilterTestSource = `
 #include <linux/bpf.h>
 #include <bpf/bpf_helpers.h>
@@ -19,14 +19,17 @@ const argFilterTestSource = `
 
 __attribute__((noinline))
 int process_with_id(struct xdp_md *ctx, __u32 filter_id) {
-    volatile __u32 id = filter_id; // prevent optimization
+    asm volatile("" : "+r"(ctx), "+r"(filter_id));
+    volatile __u32 id = filter_id;
     return (id > 0) ? 2 : 1;
 }
 
 SEC("xdp")
 int xdp_argfilter_test(struct xdp_md *ctx) {
     // Always pass 42 as the filter_id
-    return process_with_id(ctx, 42);
+    __u32 id = 42;
+    asm volatile("" : "+r"(id));
+    return process_with_id(ctx, id);
 }
 
 char _license[] SEC("license") = "GPL";
@@ -52,23 +55,10 @@ func loadArgFilterTestCollection(t *testing.T) *ebpf.Program {
 	return objs.XDP
 }
 
-// setupVethForArgFilter creates a veth pair and attaches the given XDP program.
-func setupVethForArgFilter(t *testing.T, xdpProg *ebpf.Program) string {
-	t.Helper()
-	return setupVeth(t, xdpProg, "argtest0", "argtest1", "10.88.0.1", "10.88.0.2")
-}
-
-// countArgFilterEvents attaches fentry with arg filters, sends packets, and counts events.
-func countArgFilterEvents(t *testing.T, targetProg *ebpf.Program, funcName, iface string, argFilters []filter.ArgFilter) int {
-	t.Helper()
-	return countEvents(t, targetProg, funcName, iface, "10.88.0.2", false, argFilters, 3, 3)
-}
-
-// TestArgFilter verifies that argument filtering works correctly.
+// TestBpfArgFilter verifies that argument filtering works correctly.
 // The noinline function process_with_id is always called with filter_id=42.
-func TestArgFilter(t *testing.T) {
+func TestBpfArgFilter(t *testing.T) {
 	xdpProg := loadArgFilterTestCollection(t)
-	iface := setupVethForArgFilter(t, xdpProg)
 
 	// First verify we can get the function parameters
 	params, err := attach.GetFuncParams(xdpProg, "process_with_id")
@@ -81,7 +71,7 @@ func TestArgFilter(t *testing.T) {
 	}
 
 	if len(params) == 0 {
-		t.Skip("No filterable parameters found (BTF may not include parameter names)")
+		t.Fatal("fixture lost its filterable parameters")
 	}
 
 	// Find the filter_id parameter
@@ -93,13 +83,13 @@ func TestArgFilter(t *testing.T) {
 		}
 	}
 	if filterIDParam == nil {
-		t.Skip("filter_id parameter not found in BTF")
+		t.Fatal("fixture lost filter_id in BTF")
 	}
 
 	t.Run("no_filter", func(t *testing.T) {
-		count := countArgFilterEvents(t, xdpProg, "process_with_id", iface, nil)
-		if count == 0 {
-			t.Fatal("expected events without filter, got 0")
+		count := countEventsTestRun(t, xdpProg, "process_with_id", nil, 3)
+		if count != 3 {
+			t.Fatalf("expected 3 events without filter, got %d", count)
 		}
 		t.Logf("received %d events (no filter)", count)
 	})
@@ -137,9 +127,9 @@ func TestArgFilter(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			count := countArgFilterEvents(t, xdpProg, "process_with_id", iface, tt.filters)
-			if tt.wantHit && count == 0 {
-				t.Fatalf("expected events with filter %v, got 0", tt.filters[0].String())
+			count := countEventsTestRun(t, xdpProg, "process_with_id", tt.filters, 3)
+			if tt.wantHit && count != 3 {
+				t.Fatalf("expected 3 events with filter %v, got %d", tt.filters[0].String(), count)
 			}
 			if !tt.wantHit && count != 0 {
 				t.Fatalf("expected 0 events with filter %v, got %d", tt.filters[0].String(), count)
