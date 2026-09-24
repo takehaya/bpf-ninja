@@ -23,7 +23,7 @@ run_test() {
     if [[ $rc -eq 0 ]]; then
         green "PASS"
         PASS=$((PASS + 1))
-    elif [[ $rc -eq 77 ]]; then
+    elif [[ $rc -eq 77 && ${CI:-} != true && ${CI:-} != 1 ]]; then
         echo "SKIP ($output)"
         SKIP=$((SKIP + 1))
     else
@@ -49,27 +49,10 @@ require_bpftool() {
     bpftool prog show >/dev/null
 }
 
-# read_any_shard <base-pcap-path> [match-pattern]
-# After R22 (sharded ringbuf hoist), packets land in $base.cpuN per-CPU
-# files; the base $pcap is a SHB+IDBs marker only. This walks the shards
-# and returns 0 on the first one that contains at least one packet (and
-# optionally matches `match-pattern` in the tshark frame.interface_name
-# field). Returns 1 if no shard satisfies the check.
-read_any_shard() {
-    local base=$1
-    local pattern=${2:-}
-    local checker=tcpdump
-    command -v tshark &>/dev/null && checker=tshark
-    for shard in "$base".cpu*; do
-        [[ -e "$shard" ]] || continue
-        if [[ -n "$pattern" && $checker == tshark ]]; then
-            tshark -r "$shard" -c 1 -T fields -e frame.interface_name 2>/dev/null \
-                | grep -q "$pattern" && return 0
-        else
-            tcpdump -r "$shard" -c 1 >/dev/null 2>&1 && return 0
-        fi
-    done
-    return 1
+# Always inspect the final merged file. Python's independent pcap-ng reader
+# enforces packet count, lengths, link type, and (when requested) action names.
+assert_pcap() {
+    python3 "$SCRIPT_DIR/assert_pcap.py" "$@"
 }
 
 # run_count_test <expected-min> <bpf-ninja-args...>
@@ -106,14 +89,16 @@ run_nomatch_test() {
 }
 
 # run_pcap_test <bpf-ninja-args...>
-# Captures to a pcap file and asserts at least one shard contains a
-# packet (the base $pcap is SHB+IDBs only after R22).
+# Captures to a final merged pcap and checks every record.
 run_pcap_test() {
     local pcap err result=1
+    local checks=()
+    [[ -z ${PCAP_CAPLEN:-} ]] || checks+=(--caplen "$PCAP_CAPLEN")
+    [[ -z ${PCAP_INTERFACE:-} ]] || checks+=(--interface "$PCAP_INTERFACE")
     pcap=$(mktemp --suffix=.pcap)
     err=$(mktemp)
     if capture_run "$err" count send_packets 5 -w "$pcap" "$@"; then
-        read_any_shard "$pcap" && result=0
+        assert_pcap "$pcap" --count "$(capture_count "$err")" --min-count 3 "${checks[@]}" && result=0
     fi
     [[ $result -eq 0 ]] || cat "$err" >&2
     rm -f "$pcap" "$pcap".cpu* "$err"
@@ -168,7 +153,7 @@ test_exit_pcap_action() {
     pcap=$(mktemp --suffix=.pcap)
     err=$(mktemp)
     if capture_run "$err" count send_packets 5 -i veth0 --mode exit -w "$pcap" -c 3; then
-        read_any_shard "$pcap" "xdp:" && result=0
+        assert_pcap "$pcap" --count "$(capture_count "$err")" --min-count 3 --interface xdp:PASS && result=0
     fi
     [[ $result -eq 0 ]] || cat "$err" >&2
     rm -f "$pcap" "$pcap".cpu* "$err"
@@ -178,7 +163,9 @@ test_exit_pcap_action() {
 test_dsl_entry_filter_match()    { run_count_test 3 -i veth0 -c 3 "eth/ipv4/icmp"; }
 test_dsl_entry_predicate_match() { run_count_test 3 -i veth0 -c 3 "eth/ipv4/icmp[type==8]"; }
 test_dsl_entry_filter_nomatch()  { run_nomatch_test -i veth0 "eth/ipv4/tcp"; }
-test_dsl_capture_headers()       { run_pcap_test -i veth0 -c 3 "eth/ipv4/icmp capture headers+32"; }
+# Bundled icmp_h is the 4-byte common header: Ethernet 14 + IPv4 20
+# + ICMP common 4 + requested payload 32 = 70 bytes.
+test_dsl_capture_headers()       { PCAP_CAPLEN=70 run_pcap_test -i veth0 -c 3 "eth/ipv4/icmp capture headers+32"; }
 
 # Dummy XDP returns XDP_PASS (=2); this exercises the fexit action atom
 # codegen against a known return value.
@@ -206,7 +193,7 @@ test_dsl_tc_exit_action() {
     require_bpftool || return $?
     local pid_t=$(tc_prog_id)
     [[ -n "$pid_t" ]] || { echo "tc_pass program not found" >&2; return 1; }
-    run_count_test 3 --mode exit -p "$pid_t" -c 3 "eth/ipv4/icmp where action == TC_ACT_OK"
+    PCAP_INTERFACE=tc:TC_ACT_OK run_pcap_test --mode exit -p "$pid_t" -c 3 "eth/ipv4/icmp where action == TC_ACT_OK"
 }
 
 # --- cgroup-skb hook (setup.sh attaches cgroup_pass to a scratch
@@ -282,14 +269,7 @@ test_cgroup_pcap_linktype_raw() {
         return 1
     fi
     local ok=1
-    for shard in "$pcap".cpu*; do
-        [[ -e "$shard" ]] || continue
-        # tcpdump names DLT 101 "RAW (Raw IP)" in its -r banner (stderr).
-        if tcpdump -r "$shard" -c 1 2>&1 | grep -qi "RAW"; then
-            ok=0
-            break
-        fi
-    done
+    assert_pcap "$pcap" --count "$(capture_count "$err")" --min-count 3 --linktype 101 && ok=0
     rm -f "$pcap" "$pcap".cpu* "$err"
     [[ $ok -eq 0 ]]
 }
@@ -410,10 +390,12 @@ test_split_per_entry_cap() {
     local capped=0
     grep -q "capped" "$err" && capped=1
     echo "split_cap rc=$rc size=$size capped=$capped stderr=$(cat "$err")" >&2
+    local content_ok=0
+    assert_pcap "$merged" --min-count 1 --caplen 98 && content_ok=1
     rm -f "$pcap" "${pcap%.pcap}".*.pcap "$pcap".cpu* "$err" "$pin"
     # 4 KiB slack: the cap is enforced per ringbuf batch per shard, plus
     # the merged file's fixed pcap-ng headers.
-    [[ $rc -eq 0 && $capped -eq 1 && $size -gt 0 && $size -le $((cap + 4096)) ]]
+    [[ $content_ok -eq 1 && $rc -eq 0 && $capped -eq 1 && $size -gt 0 && $size -le $((cap + 4096)) ]]
 }
 
 # Per-entry cap composed with --finalize-on-del: the cap must park the
@@ -458,9 +440,11 @@ test_cap_finalize_flow() {
     local rc=$?
 
     echo "cap_finalize appeared=$appeared alive=$alive finalized=$finalized size=$size rc=$rc list=$("$BINARY" set list "$pin" 2>/dev/null) stderr=$(cat "$err")" >&2
+    local content_ok=0
+    assert_pcap "$merged" --min-count 1 --caplen 98 && content_ok=1
     rm -f "$pcap" "${pcap%.pcap}".*.pcap "$pcap".cpu* "$err" "$pin"
     # Same cap + batch + header slack as test_split_per_entry_cap.
-    [[ $appeared -eq 1 && $alive -eq 1 && $finalized -eq 1 && $rc -eq 0 && $size -gt 0 && $size -le $((300 + 4096)) ]]
+    [[ $content_ok -eq 1 && $appeared -eq 1 && $alive -eq 1 && $finalized -eq 1 && $rc -eq 0 && $size -gt 0 && $size -le $((300 + 4096)) ]]
 }
 
 # All three flags composed: the cap must park the entry, the finalizer
@@ -495,8 +479,10 @@ test_cap_finalize_exit() {
     "$BINARY" set list "$pin" 2>/dev/null | grep -Eq "tag=1 .*state=finalized" && finalized=1
 
     echo "cap_finalize_exit rc=$rc appeared=$appeared finalized=$finalized list=$("$BINARY" set list "$pin" 2>/dev/null) stderr=$(cat "$err")" >&2
+    local content_ok=0
+    assert_pcap "$merged" --min-count 1 --caplen 98 && content_ok=1
     rm -f "$pcap" "${pcap%.pcap}".*.pcap "$pcap".cpu* "$err" "$pin"
-    [[ $rc -eq 0 && $appeared -eq 1 && $finalized -eq 1 ]]
+    [[ $content_ok -eq 1 && $rc -eq 0 && $appeared -eq 1 && $finalized -eq 1 ]]
 }
 
 # --finalize-on-del: removing a tag's set entry must produce the merged
@@ -536,8 +522,10 @@ test_finalize_on_del() {
     local rc=$?
 
     echo "finalize_on_del appeared=$appeared alive=$alive pkts=$pkts rc=$rc stderr=$(cat "$err")" >&2
+    local content_ok=0
+    assert_pcap "$merged" --min-count 1 --caplen 98 && content_ok=1
     rm -f "$pcap" "${pcap%.pcap}".*.pcap "$pcap".cpu* "$err" "$pin"
-    [[ $appeared -eq 1 && $alive -eq 1 && $pkts -ge 3 && $rc -eq 0 ]]
+    [[ $content_ok -eq 1 && $appeared -eq 1 && $alive -eq 1 && $pkts -ge 3 && $rc -eq 0 ]]
 }
 
 # --max-bytes (no split): the aggregate cap must stop the capture by
@@ -555,8 +543,10 @@ test_max_bytes_total() {
     local reached=0
     grep -q "total output cap reached" "$err" && reached=1
     echo "max_bytes rc=$rc count=$count reached=$reached stderr=$(cat "$err")" >&2
+    local content_ok=0
+    assert_pcap "$pcap" --count "$count" --min-count 1 && content_ok=1
     rm -f "$pcap" "$pcap".cpu* "$err"
-    [[ $rc -eq 0 && $reached -eq 1 && $count -gt 0 ]]
+    [[ $content_ok -eq 1 && $rc -eq 0 && $reached -eq 1 && $count -gt 0 ]]
 }
 
 test_graceful_shutdown() {
