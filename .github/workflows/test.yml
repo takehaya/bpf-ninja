@@ -17,8 +17,8 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Install libpcap-dev
-        run: sudo apt-get update -qq && sudo apt-get install -y libpcap-dev
+      - name: Install test dependencies
+        run: sudo apt-get update -qq && sudo apt-get install -y libpcap-dev clang
 
       - name: Build
         run: go build -o bpf-ninja ./cmd/bpf-ninja/
@@ -28,6 +28,9 @@ jobs:
 
       - name: Unit Tests
         run: go test ./...
+
+      - name: Script Tests
+        run: python3 -m unittest discover -s scripts/tests
 
       # Short fuzz gate (30s × 2 targets) to extend the seed corpus
       # past `go test`'s seed-only run. Caches a fail to ./fuzz/ —
