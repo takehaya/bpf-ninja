@@ -187,7 +187,7 @@ var flags = []cli.Flag{
 	&cli.IntFlag{
 		Name:  "rx-cores",
 		Value: 0,
-		Usage: "split-core capture: if >0, RX/capture is assumed confined to cores 0..N-1 (set the NIC to N queues yourself via `ethtool -L combined N`); bpf-ninja runs N consumer goroutines pinned to cores N..2N-1, off the RX softirqs. pair with --busy-poll --no-wakeup",
+		Usage: "pin all shard readers to permitted CPU IDs >=N; every producer shard is drained. requires --fast-reader; configure RX affinity separately",
 	},
 	&cli.IntFlag{
 		Name:  "in-memory-buffer",

@@ -607,11 +607,11 @@ int upf_capture_point_ul(struct xdp_md *ctx, __u64 imsi, __u32 teid) {
 | Flag | 既定 | 効果 / 注意 |
 |---|---|---|
 | `--snaplen N` | 0 (= MaxCapLen or DefaultCapLen=1500) | 1 packet あたりの保存 byte 数を CLI から強制上書きする。DSL の `capture` 句より優先 |
-| `--ringbuf-size MB` | 16 | per-CPU ringbuf 1 個あたりの size を指定する。storage 帯域が追いつかない時は増やす |
+| `--ringbuf-size MB` | 64 | 全 shard のデータ容量の予算。possible CPU ID 範囲へ分配し、各 shard は最低64KiB・2の冪へ調整する |
 | `--fast-reader` | off | mmap+atomic 直叩きの fastrb reader を使う。cilium/ebpf の generic reader より低 CPU かつ高 throughput |
 | `--no-wakeup` | off | `BPF_RB_NO_WAKEUP` を全 submit に立てる。reader 側の epoll wake が無くなり throughput が上がるが、1ms polling 床により p50 latency が 100µs → ~2.6ms に悪化する。`--fast-reader` 必須 |
 | `--observer-prefetch` | off | filter scratch を 512 B に強制する。R12 の ice driver で L1-dcache prefetch が効くケース向けの opt-in |
-| `--rx-cores N` | 0 (off) | split-core capture を行う。利用者が `ethtool -L combined N` で NIC queue 数を N にし、RX/capture が core `0..N-1` に閉じている前提で、consumer goroutine を core `N..2N-1` に pin して RX softirq から分離する。`-w` 出力時の producer-consumer 結合を断ち、32/32 split で capture rate が 30% 向上する。`--fast-reader` 必須、`--busy-poll --no-wakeup` と併用 |
+| `--rx-cores N` | 0 (off) | 全 shard の reader を、許可された CPU ID のうち N 以上へ分散する。該当 CPU がなければ起動エラー。RX affinity は別途設定する。`--fast-reader` 必須 |
 | `--busy-poll` | off | fastrb shard を `epoll_wait` で寝かさず `ReadBatch` で spin させる。consumer が常時 drain するので wake が不要になる。shard ごとに 1 core を消費する。`--fast-reader` 必須、`--no-wakeup` と対 |
 | `--in-memory-buffer MB` | 0 (off) | raw-dump 出力先を mmap 上の `MAP_POPULATE` バッファに置く。NVMe write が bottleneck な時に隠せる |
 | `--null-output` | off | bench 用に、出力 file を一切開かず reader の CPU コストだけ測る |

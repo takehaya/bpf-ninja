@@ -5,7 +5,6 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"runtime"
 	"time"
 
 	"github.com/cilium/ebpf"
@@ -34,12 +33,9 @@ var LegacyTimestamp bool
 // the RX softirq. Burns a core per shard. Set via --busy-poll.
 var BusyPoll bool
 
-// SplitCoreRX, when > 0, puts the fast-reader in split-core mode: it
-// assumes RX/capture is confined to cores 0..SplitCoreRX-1 (the caller
-// sets the NIC queue count to SplitCoreRX via `ethtool -L`), runs only
-// the first SplitCoreRX shard readers, and pins reader i to core
-// SplitCoreRX+i — the upper core half — so a --busy-poll spin does not
-// steal cycles from the RX softirqs. Set via --rx-cores.
+// SplitCoreRX, when > 0, pins readers to allowed CPU IDs >= SplitCoreRX.
+// Every producer shard is still drained, even if NIC steering sends traffic
+// to an unexpected CPU. Set via --rx-cores.
 var SplitCoreRX int
 
 // DisableCPUAffinity, when true, skips pinning each per-shard reader
@@ -65,21 +61,6 @@ var LatencySamplePeriod int64
 // shard goroutine appends only to its own index (no atomic / lock
 // needed); the caller reads after stop() drains all readers.
 var LatencySamples [][]int64
-
-// pinReaderToCPU pins the calling goroutine's OS thread to cpu. Best-
-// effort: ignores SchedSetaffinity errors (e.g. cgroup restrictions).
-// LockOSThread without a matching Unlock terminates the thread when
-// the goroutine exits, keeping the pinned affinity from leaking back
-// into the runtime's thread pool.
-func pinReaderToCPU(cpu int) {
-	if DisableCPUAffinity {
-		return
-	}
-	runtime.LockOSThread()
-	var set unix.CPUSet
-	set.Set(cpu)
-	_ = unix.SchedSetaffinity(0, &set)
-}
 
 func init() {
 	var ts unix.Timespec
@@ -366,11 +347,15 @@ func (r *Reader) RunShards(sink ShardSink) (stop func(), err error) {
 	if len(r.shardReaders) == 0 {
 		return nil, errors.New("no shards")
 	}
+	cpus, err := readerCPUs(len(r.shardReaders))
+	if err != nil {
+		return nil, err
+	}
 	stopCh := make(chan struct{})
 	doneCh := make(chan struct{}, len(r.shardReaders))
 	for idx, rr := range r.shardReaders {
 		go func(shardIdx int, rr *ringbuf.Reader) {
-			pinReaderToCPU(shardIdx)
+			pinReaderToCPU(cpus[shardIdx])
 			defer func() { doneCh <- struct{}{} }()
 			bb := newBatchBuilder(shardIdx, sink)
 			var rec ringbuf.Record
@@ -437,11 +422,15 @@ func (r *Reader) RunRawShards(rawSink RawShardSink) (stop func(), err error) {
 	if len(r.shardReaders) == 0 {
 		return nil, errors.New("no shards")
 	}
+	cpus, err := readerCPUs(len(r.shardReaders))
+	if err != nil {
+		return nil, err
+	}
 	stopCh := make(chan struct{})
 	doneCh := make(chan struct{}, len(r.shardReaders))
 	for idx, rr := range r.shardReaders {
 		go func(shardIdx int, rr *ringbuf.Reader) {
-			pinReaderToCPU(shardIdx)
+			pinReaderToCPU(cpus[shardIdx])
 			defer func() { doneCh <- struct{}{} }()
 			var rec ringbuf.Record
 			for {
@@ -513,25 +502,15 @@ func (r *FastShardedReader) RunShardsFast(sink ShardSink) (stop func(), err erro
 	if len(r.readers) == 0 {
 		return nil, errors.New("no shards")
 	}
+	cpus, err := readerCPUs(len(r.readers))
+	if err != nil {
+		return nil, err
+	}
 	stopCh := make(chan struct{})
 	doneCh := make(chan struct{}, len(r.readers))
 	launched := 0
 	for idx, rdr := range r.readers {
-		// Split-core mode: only shards 0..SplitCoreRX-1 are fed (RX
-		// confined to cores 0..SplitCoreRX-1 via ethtool -L); pin
-		// their readers to the upper core half so the busy-poll spin
-		// does not contend with the RX softirqs.
-		if SplitCoreRX > 0 && idx >= SplitCoreRX {
-			break
-		}
-		pinCPU := idx
-		if SplitCoreRX > 0 {
-			// Consumers occupy cores [SplitCoreRX, NumCPU); spread the
-			// SplitCoreRX reader goroutines across them (more than one
-			// per core when RX takes the larger share).
-			consumerCores := max(runtime.NumCPU()-SplitCoreRX, 1)
-			pinCPU = SplitCoreRX + idx%consumerCores
-		}
+		pinCPU := cpus[idx]
 		launched++
 		go func(shardIdx, pinCPU int, rdr *fastrb.Reader) {
 			pinReaderToCPU(pinCPU)
@@ -592,20 +571,15 @@ func (r *FastShardedReader) RunRawShardsFast(rawSink RawShardSink) (stop func(),
 	if LatencySamplePeriod > 0 {
 		LatencySamples = make([][]int64, len(r.readers))
 	}
+	cpus, err := readerCPUs(len(r.readers))
+	if err != nil {
+		return nil, err
+	}
 	stopCh := make(chan struct{})
 	doneCh := make(chan struct{}, len(r.readers))
 	launched := 0
 	for idx, rdr := range r.readers {
-		// Split-core mode: see RunShardsFast — only shards
-		// 0..SplitCoreRX-1 run, pinned to the upper core half.
-		if SplitCoreRX > 0 && idx >= SplitCoreRX {
-			break
-		}
-		pinCPU := idx
-		if SplitCoreRX > 0 {
-			consumerCores := max(runtime.NumCPU()-SplitCoreRX, 1)
-			pinCPU = SplitCoreRX + idx%consumerCores
-		}
+		pinCPU := cpus[idx]
 		launched++
 		go func(shardIdx, pinCPU int, rdr *fastrb.Reader) {
 			pinReaderToCPU(pinCPU)

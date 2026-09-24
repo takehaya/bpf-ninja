@@ -11,7 +11,6 @@ package program
 import (
 	"fmt"
 	"math/bits"
-	"runtime"
 	"sync"
 
 	"github.com/cilium/ebpf"
@@ -45,7 +44,10 @@ func shardRingbufSize(total uint32, numCPUs int) uint32 {
 // created in parallel because each ebpf.NewMap is a syscall in the
 // 100s-of-µs range; 64 CPUs serial takes ~tens of ms.
 func createShardedRingbuf(label string) (outer *ebpf.Map, inners []*ebpf.Map, err error) {
-	numCPUs := runtime.NumCPU()
+	numCPUs, err := possibleCPUSlots()
+	if err != nil {
+		return nil, nil, err
+	}
 	innerSize := shardRingbufSize(RingbufSize, numCPUs)
 	innerSpec := &ebpf.MapSpec{
 		Name: fmt.Sprintf("ninja_%s_rb_in", label), Type: ebpf.RingBuf, MaxEntries: innerSize,

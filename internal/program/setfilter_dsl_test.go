@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"runtime"
 	"testing"
 	"time"
 
@@ -205,10 +204,9 @@ func TestBpfDSLSetLegacyScalarValue(t *testing.T) {
 func drainMarkerTags(t *testing.T, probe *Probe, wantMarkers int) map[byte]uint32 {
 	t.Helper()
 	tags := map[byte]uint32{}
-	innerSize := int(shardRingbufSize(RingbufSize, runtime.NumCPU()))
 	readers := make([]*fastrb.Reader, len(probe.InnerMaps))
 	for i, m := range probe.InnerMaps {
-		rd, err := fastrb.New(m.FD(), innerSize)
+		rd, err := fastrb.New(m.FD(), int(m.MaxEntries()))
 		if err != nil {
 			t.Fatalf("fastrb on shard %d: %v", i, err)
 		}

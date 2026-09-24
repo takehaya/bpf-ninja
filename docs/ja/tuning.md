@@ -40,7 +40,7 @@ bpf-ninja の capture スループットには、設定では越えられない�
 
 ### 3.3 --ringbuf-size を増やす
 
---ringbuf-size は per-CPU の ring 1 個あたりの容量で、既定値は 16 MB です。瞬間的な burst で取りこぼすなら増やしてください。snaplen を下げる方が経済的ですが、両方とも効きます。
+--ringbuf-size は全 shard のデータ容量の予算で、既定値は 64 MiB です。possible CPU ID の範囲へ分配し、各 shard は最低64KiB・2の冪へ調整するため、指定値と実際の合計は一致しない場合があります。瞬間的な burst で取りこぼすなら増やしてください。snaplen を下げる方が経済的ですが、両方とも効きます。
 
 ### 3.4 --raw-dump で出力経路を軽くする
 
@@ -61,7 +61,7 @@ bpf-ninja の capture スループットには、設定では越えられない�
 コアを分離する手順は次のとおりです。
 
 1. NIC の queue を N に固定します。ethtool -L combined N を実行します。実行のタイミングについては下の注意を必ず読んでください。これで RX と capture が core 0 から N-1 に閉じます。
-2. --rx-cores N を指定すると、consumer の goroutine が core N から 2N-1 に pin され、RX softirq のコアから外れます。
+2. --rx-cores N は全 shard の reader を、許可された CPU ID のうち N 以上へ分散します。RX affinity は別に設定します。NIC queue 数だけでは RX の CPU は決まりません。
 3. --busy-poll と --no-wakeup を指定すると、consumer が epoll_wait で寝なくなり、常時 drain して wakeup が不要になります。
 
 コアを半分ずつに分ける対称な分割が最も効きます。たとえば 64 コアなら 32 と 32 に分けます。RX 側のコアを増やす非対称な分割はむしろ逆効果になります。busy-poll の spinner が出すメモリトラフィックが、レイテンシ律速の RX をかき乱すからです。実測では -w の出力が 30% 向上しました。
