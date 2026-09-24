@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"runtime"
+	"sync/atomic"
 	"time"
 
 	"github.com/cilium/ebpf"
@@ -106,6 +107,8 @@ type Packet struct {
 
 // Reader reads captured packets from the ringbuf.
 type Reader struct {
+	shutdown
+
 	reader *ringbuf.Reader
 	rec    ringbuf.Record
 
@@ -301,6 +304,44 @@ func NewShardedReader(inners []*ebpf.Map) (*Reader, error) {
 // batchSize; the arena and Packet slice grow to fit.
 const batchSize = 256
 
+// shutdown is the stop-time contract shared by the readers: detach the
+// producers first, then drain what they had already committed. Held per
+// reader, so two captures in one process cannot stop or count each
+// other.
+type shutdown struct {
+	// onStop detaches the BPF programs feeding these rings. stop()
+	// calls it once, before the shards wind down, so the final drain
+	// has a fixed boundary and the counters are final when read. A
+	// non-nil error means producers may still be running, and the
+	// drain is skipped rather than chasing a moving ring.
+	onStop func() error
+
+	leftover atomic.Int64
+	drain    atomic.Bool
+}
+
+// SetOnStop installs the producer-detach hook, which stop() runs before
+// the shards wind down. Set it before starting the shards.
+func (s *shutdown) SetOnStop(f func() error) { s.onStop = f }
+
+// LeftoverAtStop reports the records that were still committed in the
+// rings at stop() and were drained on shutdown. Only the default
+// readers drain; the fast readers leave it at zero.
+func (s *shutdown) LeftoverAtStop() int64 { return s.leftover.Load() }
+
+// begin runs the stop hook and decides whether the shards may drain.
+func (s *shutdown) begin() {
+	s.drain.Store(true)
+	if s.onStop == nil {
+		return
+	}
+	err := s.onStop()
+	s.onStop = nil
+	if err != nil {
+		s.drain.Store(false)
+	}
+}
+
 // arenaInitPerPacket sizes the per-shard copy arena: batchSize × this
 // many bytes is pre-allocated so a full default-reader batch of
 // MTU-sized packets fits without reallocating. Larger fast-reader
@@ -374,6 +415,7 @@ func (r *Reader) RunShards(sink ShardSink) (stop func(), err error) {
 	if len(r.shardReaders) == 0 {
 		return nil, errors.New("no shards")
 	}
+	pastDeadline := time.Unix(1, 0)
 	stopCh := make(chan struct{})
 	doneCh := make(chan struct{}, len(r.shardReaders))
 	for idx, rr := range r.shardReaders {
@@ -386,9 +428,40 @@ func (r *Reader) RunShards(sink ShardSink) (stop func(), err error) {
 			for {
 				select {
 				case <-stopCh:
+					// Final non-blocking drain: records the producers
+					// committed before they were detached are delivered
+					// and counted, instead of being abandoned.
+					if r.drain.Load() {
+						rr.SetDeadline(pastDeadline)
+						drainedAt := time.Now()
+						for {
+							if err := rr.ReadInto(&rec); err != nil {
+								break
+							}
+							if pkt, perr := ParseRawSample(rec.RawSample); perr == nil {
+								if LegacyTimestamp {
+									// One userland stamp for the whole
+									// drain, as the loop below takes one
+									// per batch: the output must not mix
+									// timestamp modes at shutdown.
+									pkt.Timestamp = drainedAt
+								}
+								r.leftover.Add(1)
+								bb.add(pkt)
+								if bb.full() {
+									bb.flush()
+								}
+							}
+						}
+					}
+					bb.flush()
 					return
 				default:
 				}
+				// Bounded block so a stop request is noticed within
+				// ~100 ms: a deadline set from stop() would not wake a
+				// reader already parked in epoll_wait.
+				rr.SetDeadline(time.Now().Add(100 * time.Millisecond))
 				if err := rr.ReadInto(&rec); err != nil {
 					if errors.Is(err, ringbuf.ErrClosed) {
 						return
@@ -422,12 +495,15 @@ func (r *Reader) RunShards(sink ShardSink) (stop func(), err error) {
 		}(idx, rr)
 	}
 	stop = func() {
+		r.begin()
 		close(stopCh)
-		for _, rr := range r.shardReaders {
-			_ = rr.Close()
-		}
+		// Readers block at most ~100 ms, then see stopCh and run their
+		// final drain; close the maps only after every shard is done.
 		for range r.shardReaders {
 			<-doneCh
+		}
+		for _, rr := range r.shardReaders {
+			_ = rr.Close()
 		}
 	}
 	return stop, nil
@@ -447,6 +523,7 @@ func (r *Reader) RunRawShards(rawSink RawShardSink) (stop func(), err error) {
 	}
 	stopCh := make(chan struct{})
 	doneCh := make(chan struct{}, len(r.shardReaders))
+	pastDeadline := time.Unix(1, 0)
 	for idx, rr := range r.shardReaders {
 		go func(shardIdx int, rr *ringbuf.Reader) {
 			pinReaderToCPU(shardIdx)
@@ -455,9 +532,22 @@ func (r *Reader) RunRawShards(rawSink RawShardSink) (stop func(), err error) {
 			for {
 				select {
 				case <-stopCh:
+					// Final non-blocking drain, as in RunShards.
+					if r.drain.Load() {
+						rr.SetDeadline(pastDeadline)
+						for {
+							if err := rr.ReadInto(&rec); err != nil {
+								break
+							}
+							r.leftover.Add(1)
+							_ = rawSink(shardIdx, rec.RawSample)
+						}
+					}
 					return
 				default:
 				}
+				// Bounded block so a stop request is noticed within ~100 ms.
+				rr.SetDeadline(time.Now().Add(100 * time.Millisecond))
 				if err := rr.ReadInto(&rec); err != nil {
 					if errors.Is(err, ringbuf.ErrClosed) {
 						return
@@ -469,12 +559,13 @@ func (r *Reader) RunRawShards(rawSink RawShardSink) (stop func(), err error) {
 		}(idx, rr)
 	}
 	stop = func() {
+		r.begin()
 		close(stopCh)
-		for _, rr := range r.shardReaders {
-			_ = rr.Close()
-		}
 		for range r.shardReaders {
 			<-doneCh
+		}
+		for _, rr := range r.shardReaders {
+			_ = rr.Close()
 		}
 	}
 	return stop, nil
@@ -488,6 +579,8 @@ func (r *Reader) RunRawShards(rawSink RawShardSink) (stop func(), err error) {
 // NewShardedReader on the same maps (they would race on the
 // consumer-position page).
 type FastShardedReader struct {
+	shutdown
+
 	readers []*fastrb.Reader
 }
 
@@ -572,6 +665,7 @@ func (r *FastShardedReader) RunShardsFast(sink ShardSink) (stop func(), err erro
 		}(idx, pinCPU, rdr)
 	}
 	stop = func() {
+		r.begin()
 		close(stopCh)
 		for i := 0; i < launched; i++ {
 			<-doneCh
@@ -660,6 +754,7 @@ func (r *FastShardedReader) RunRawShardsFast(rawSink RawShardSink) (stop func(),
 		}(idx, pinCPU, rdr)
 	}
 	stop = func() {
+		r.begin()
 		close(stopCh)
 		for i := 0; i < launched; i++ {
 			<-doneCh

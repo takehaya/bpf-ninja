@@ -117,7 +117,7 @@ func renderFull(buf *strings.Builder, out codegen.Output, mode string, isFexit, 
 		shape = "XDP-native program"
 	} else {
 		var err error
-		insns, err = buildTracingInsns(out, filter.TargetFilters{}, 0, 0, isFexit, progType, nil, nil)
+		insns, err = buildTracingInsns(out, filter.TargetFilters{}, 0, 0, -1, isFexit, progType, nil, nil)
 		if err != nil {
 			return err
 		}
