@@ -668,6 +668,9 @@ func buildState(s *p4lite.State, ctx *buildCtx) (*ParseState, error) {
 	for _, stmt := range s.Stmts {
 		switch v := stmt.(type) {
 		case *p4lite.ExtractStmt:
+			if len(ps.Advances) > 0 || len(ps.Counters) > 0 {
+				return nil, fmt.Errorf("%s:%s: pkt.extract must precede counter operations and pkt.advance in a state", ctx.source, v.Pos)
+			}
 			op, err := buildExtract(v, ctx)
 			if err != nil {
 				return nil, err
@@ -681,6 +684,9 @@ func buildState(s *p4lite.State, ctx *buildCtx) (*ParseState, error) {
 			if err != nil {
 				return nil, err
 			}
+			if len(ps.Advances) > 0 && (op.Kind == AdvanceOpField || ps.Advances[0].Kind == AdvanceOpField) {
+				return nil, fmt.Errorf("%s:%s: field-based pkt.advance requires its own state", ctx.source, v.Pos)
+			}
 			ps.Advances = append(ps.Advances, op)
 		case *p4lite.CounterCallStmt:
 			op, err := buildCounter(v, ctx)
@@ -692,6 +698,11 @@ func buildState(s *p4lite.State, ctx *buildCtx) (*ParseState, error) {
 			// reading another option's length.
 			if op.DecrementLookaheadByteOffR && len(ps.Advances) != 0 {
 				return nil, fmt.Errorf("%s:%s: lookahead counter decrement must precede pkt.advance", ctx.source, v.Pos)
+			}
+			// A literal decrement commutes with advances. Other counters read
+			// cursor/header-relative bytes and must keep the canonical order.
+			if len(ps.Advances) > 0 && (op.Kind != CounterOpDecrement || op.DecrementTarget != "") {
+				return nil, fmt.Errorf("%s:%s: cursor-dependent counter operation must precede pkt.advance", ctx.source, v.Pos)
 			}
 			ps.Counters = append(ps.Counters, op)
 		default:
@@ -1534,7 +1545,7 @@ func isTrivialMachine(states []*ParseState, entryIdx int, primary *p4lite.Header
 		return false
 	}
 	s := states[0]
-	if s.Name != "start" || len(s.Extracts) != 1 {
+	if s.Name != "start" || len(s.Extracts) != 1 || len(s.Advances) != 0 || len(s.Counters) != 0 {
 		return false
 	}
 	ex := s.Extracts[0]

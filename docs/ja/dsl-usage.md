@@ -881,3 +881,5 @@ exit出力は従来のhook verdict名を使います。
 
 `--dump-asm full` は対象未解決のため、1引数のreturn offset `+8` をplaceholderとして表示します。
 実際のattachでは対象ごとのBTFから解決します。
+
+P4-liteの1つのstate内では、`extract` → counter操作 → `advance` の順を基本とします。順序に依存しない定数の`decrement`は`advance`の後にも書けます。`lookahead`やheader fieldを読むcounter操作はcursor移動前に評価され、inline stateとloop callbackで共通です。`advance`やcounter操作の後に`extract`する記述、field依存counterを`advance`後に置く記述、field依存`advance`を他の`advance`と同じstateに置く記述は未対応として拒否します。必要な場合はstateを分けてください。1 stateだけのparserでも追加のcounter・advance操作は省略しません。

@@ -388,6 +388,18 @@ func (c *pmCtx) emitStateBody(state *vocab.ParseState, stateIdx int, isEntry boo
 		}
 	}
 
+	// Counter ops precede advances, matching the supported source order. fixedHs is
+	// the byte distance from layer-entry to R4 — counter set loads
+	// the count from a primary-header byte at `R4 - fixedHs +
+	// LenByteOff`.
+	for _, op := range state.Counters {
+		body, err := c.emitCounterOp(op, fixedHs, inlineCounterEnv(), dslReject)
+		if err != nil {
+			return nil, nil, err
+		}
+		insns = append(insns, body...)
+	}
+
 	// Per-AdvanceOp emit: pkt.advance(...) has three template
 	// variants the loader has already lowered. Field and Lookahead
 	// templates share the variableTailSkip path; they differ only in
@@ -432,18 +444,6 @@ func (c *pmCtx) emitStateBody(state *vocab.ParseState, stateIdx int, isEntry boo
 		default:
 			return nil, nil, fmt.Errorf("%w: unknown AdvanceOp kind %d", ErrNotImplemented, adv.Kind)
 		}
-	}
-
-	// Counter ops live after Extracts/Advances. fixedHs (running) is
-	// the byte distance from layer-entry to R4 — counter set loads
-	// the count from a primary-header byte at `R4 - fixedHs +
-	// LenByteOff`.
-	for _, op := range state.Counters {
-		body, err := c.emitCounterOp(op, fixedHs, inlineCounterEnv(), dslReject)
-		if err != nil {
-			return nil, nil, err
-		}
-		insns = append(insns, body...)
 	}
 
 	// Only the inline non-stash path reads R4 live; stash mode pre-
