@@ -78,3 +78,11 @@ func TestLiteral64BitBoundaries(t *testing.T) {
 		}
 	}
 }
+
+func TestSliceLiteralFit(t *testing.T) {
+	for _, value := range []string{"256", "0x100", "-129", "-0x81"} {
+		for _, expr := range []string{"eth/ipv4/tcp[dport[8:16] == " + value + "]", "eth/ipv4/tcp[dport[8:16] in [" + value + "]]", "eth/ipv4/tcp where tcp.dport[8:16] == " + value} {
+			resolveErr(t, expr, nil, "does not fit")
+		}
+	}
+}

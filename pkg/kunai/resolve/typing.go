@@ -38,7 +38,7 @@ func checkLiteralWidthShape(ref *ir.FieldRef, v *ast.Value, pos ast.Position) er
 // checkBracketIntFit covers the bracket-predicate variant of the
 // literal narrow check (dsl-types.md §7.2 row "Bracket predicate"):
 // `tcp[dport == V]` rejects V whose value cannot be narrowed to the
-// field's declared bit width. The fit predicate is shared with the
+// field's effective (possibly sliced) bit width. The fit predicate is shared with the
 // arith-context check (literalFitsBits) so signed-extended negative
 // literals (e.g. `dport == -1` ⇒ stored as 0xffff..ff) are accepted
 // when they would land in the field's `[-2^(N-1), 2^N)` range
@@ -49,7 +49,7 @@ func checkBracketIntFit(field *ir.FieldRef, v *ast.Value, layerName string, pos 
 	if v == nil || v.Kind != ast.ValInt || field.Field == nil {
 		return nil
 	}
-	bits := field.Field.Bits
+	bits := field.EffectiveBits()
 	if literalFitsBits(v.Int, v.Negative, bits) {
 		return nil
 	}
