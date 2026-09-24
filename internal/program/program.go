@@ -5,6 +5,7 @@ package program
 import (
 	"errors"
 	"fmt"
+	"sync"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/asm"
@@ -40,6 +41,11 @@ type Probe struct {
 	EchoRing   *ebpf.Map
 	EchoParams []attach.FuncParamInfo
 
+	detachOnce sync.Once
+	detachErr  error
+	closeOnce  sync.Once
+	closeErr   error
+
 	maps  []*ebpf.Map
 	progs []*ebpf.Program // one per attached (target prog, func) pair
 	links []link.Link     // parallel to progs
@@ -63,24 +69,46 @@ func (p *Probe) AttachCount() int {
 	return len(p.links)
 }
 
+// Quiesce detaches all producers and waits for preexisting non-sleepable BPF
+// invocations before readers take their final watermark. Maps stay open.
+func (p *Probe) Quiesce() error {
+	p.detachOnce.Do(func() {
+		var errs []error
+		for _, l := range p.links {
+			errs = append(errs, l.Close())
+		}
+		errs = append(errs, p.Barrier())
+		p.detachErr = errors.Join(errs...)
+	})
+	return p.detachErr
+}
+
+// Barrier uses the map-in-map update syscall's RCU grace period. Linux's
+// maybe_wait_bpf_programs waits for running BPF invocations before returning.
+// Replacing slot zero with the same map preserves its contents and all routes.
+// Our tracing and XDP programs are non-sleepable (never BPF_F_SLEEPABLE).
+func (p *Probe) Barrier() error {
+	if p.EventsMap == nil || len(p.InnerMaps) == 0 {
+		return nil
+	}
+	if err := p.EventsMap.Update(uint32(0), p.InnerMaps[0], ebpf.UpdateAny); err != nil {
+		return fmt.Errorf("waiting for BPF producers: %w", err)
+	}
+	return nil
+}
+
 func (p *Probe) Close() error {
-	var errs []error
-	for _, l := range p.links {
-		if err := l.Close(); err != nil {
-			errs = append(errs, err)
+	p.closeOnce.Do(func() {
+		errs := []error{p.Quiesce()}
+		for _, pr := range p.progs {
+			errs = append(errs, pr.Close())
 		}
-	}
-	for _, pr := range p.progs {
-		if err := pr.Close(); err != nil {
-			errs = append(errs, err)
+		for _, m := range p.maps {
+			errs = append(errs, m.Close())
 		}
-	}
-	for _, m := range p.maps {
-		if err := m.Close(); err != nil {
-			errs = append(errs, err)
-		}
-	}
-	return errors.Join(errs...)
+		p.closeErr = errors.Join(errs...)
+	})
+	return p.closeErr
 }
 
 // LoadEntry は fentry (前段) probe を作成してアタッチする。

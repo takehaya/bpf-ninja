@@ -138,7 +138,9 @@ func TestBatchBuilderOwnsPayload(t *testing.T) {
 			src[i] = 0
 		}
 	}
-	bb.flush()
+	if err := bb.flush(); err != nil {
+		t.Fatal(err)
+	}
 
 	if len(got) != len(fills) {
 		t.Fatalf("got %d packets, want %d", len(got), len(fills))
@@ -201,7 +203,9 @@ func TestBatchBuilderArenaOverflow(t *testing.T) {
 		t.Fatalf("arena cap = %d, want > 32 (append should have grown it)", cap(bb.arena))
 	}
 
-	bb.flush()
+	if err := bb.flush(); err != nil {
+		t.Fatal(err)
+	}
 
 	if sinkCalls != 1 {
 		t.Fatalf("sink called %d times, want 1 (single explicit flush)", sinkCalls)

@@ -5,7 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"sync/atomic"
+	"os"
 	"time"
 
 	"github.com/cilium/ebpf"
@@ -86,6 +86,8 @@ type Reader struct {
 	reader *ringbuf.Reader
 	rec    ringbuf.Record
 
+	session      *shardSession
+	cursors      []*fastrb.Cursor
 	shardReaders []*ringbuf.Reader
 }
 
@@ -264,6 +266,19 @@ func NewShardedReader(inners []*ebpf.Map) (*Reader, error) {
 		}
 		r.shardReaders = append(r.shardReaders, rr)
 	}
+	for _, m := range inners {
+		c, err := fastrb.NewCursor(m.FD())
+		if err != nil {
+			for _, rr := range r.shardReaders {
+				_ = rr.Close()
+			}
+			for _, c := range r.cursors {
+				_ = c.Close()
+			}
+			return nil, err
+		}
+		r.cursors = append(r.cursors, c)
+	}
 	return r, nil
 }
 
@@ -274,11 +289,6 @@ func NewShardedReader(inners []*ebpf.Map) (*Reader, error) {
 // and flushes once afterward, so a single fast-reader batch may exceed
 // batchSize; the arena and Packet slice grow to fit.
 const batchSize = 256
-
-// LeftoverAtStop counts records that were still committed in the rings
-// when stop() was called and were drained on shutdown (default reader
-// only). Reported by the CLI for export accounting.
-var LeftoverAtStop atomic.Int64
 
 // arenaInitPerPacket sizes the per-shard copy arena: batchSize × this
 // many bytes is pre-allocated so a full default-reader batch of
@@ -311,10 +321,6 @@ func newBatchBuilder(shardIdx int, sink ShardSink) *batchBuilder {
 	}
 }
 
-// full reports whether the batch has reached batchSize, signalling the
-// drain loop to stop and flush.
-func (b *batchBuilder) full() bool { return len(b.buf) >= cap(b.buf) }
-
 // add copies pkt's payload into the arena, repoints pkt.Data into it,
 // and appends pkt to the batch. add never calls sink, so it is safe to
 // invoke from inside fastrb.Reader.ReadBatch's callback, where flushing
@@ -338,18 +344,46 @@ func (b *batchBuilder) add(pkt Packet) {
 // flush hands the accumulated batch to sink and resets the buffers for
 // reuse. sink must consume (write/copy) every Packet.Data before
 // returning; once flush resets the arena those bytes are recycled.
-func (b *batchBuilder) flush() {
+func (b *batchBuilder) flush() error {
 	if len(b.buf) == 0 {
-		return
+		return nil
 	}
-	_ = b.sink(b.shardIdx, b.buf)
+	err := b.sink(b.shardIdx, b.buf)
 	b.buf = b.buf[:0]
 	b.arena = b.arena[:0]
+	return err
 }
 
 // RunShards launches per-shard goroutines pumping into sink. Returns
 // a stop function that drains and joins all shards.
-func (r *Reader) RunShards(sink ShardSink) (stop func(), err error) {
+func (r *Reader) RunShards(sink ShardSink) (func(), error) {
+	builders := make([]*batchBuilder, len(r.shardReaders))
+	for i := range builders {
+		builders[i] = newBatchBuilder(i, sink)
+	}
+	return r.run(func(i int, raw []byte) error {
+		pkt, err := ParseRawSample(raw)
+		if err != nil {
+			r.session.stats.Malformed.Add(1)
+			return nil
+		}
+		if LegacyTimestamp {
+			pkt.Timestamp = time.Now()
+		}
+		builders[i].add(pkt)
+		return nil
+	}, func(i int) error { return builders[i].flush() })
+}
+
+func (r *Reader) Stats() *SessionStats {
+	if r.session == nil {
+		return nil
+	}
+	return &r.session.stats
+}
+func (r *Reader) Err() error { return r.session.Err() }
+
+func (r *Reader) run(sink RawShardSink, flush func(int) error) (func(), error) {
 	if len(r.shardReaders) == 0 {
 		return nil, errors.New("no shards")
 	}
@@ -357,87 +391,51 @@ func (r *Reader) RunShards(sink ShardSink) (stop func(), err error) {
 	if err != nil {
 		return nil, err
 	}
-	pastDeadline := time.Unix(1, 0)
-	stopCh := make(chan struct{})
-	doneCh := make(chan struct{}, len(r.shardReaders))
-	for idx, rr := range r.shardReaders {
-		go func(shardIdx int, rr *ringbuf.Reader) {
-			pinReaderToCPU(cpus[shardIdx])
-			defer func() { doneCh <- struct{}{} }()
-			bb := newBatchBuilder(shardIdx, sink)
+	r.session = newShardSession(r.cursors)
+	s := r.session
+	for i, rr := range r.shardReaders {
+		s.done.Add(1)
+		go func(i int, rr *ringbuf.Reader) {
+			defer s.done.Done()
+			defer func() { s.fail(rr.Close()) }()
+			pinReaderToCPU(cpus[i])
 			var rec ringbuf.Record
-			pollPast := time.Unix(1, 0)
 			for {
-				select {
-				case <-stopCh:
-					// Final non-blocking drain: records already committed
-					// by the producer are delivered (and counted in
-					// LeftoverAtStop) instead of being abandoned.
-					rr.SetDeadline(pastDeadline)
-					for {
-						if err := rr.ReadInto(&rec); err != nil {
+				draining := s.stopping()
+				// Bounded polling also observes NO_WAKEUP submissions. Once producers
+				// quiesce, a past deadline drains all committed records before EOF.
+				if draining {
+					rr.SetDeadline(pollPastDeadline)
+				} else {
+					rr.SetDeadline(time.Now().Add(time.Millisecond))
+				}
+				n := 0
+				for n < batchSize {
+					err := rr.ReadInto(&rec)
+					if err != nil {
+						if errors.Is(err, os.ErrDeadlineExceeded) {
 							break
 						}
-						if pkt, perr := ParseRawSample(rec.RawSample); perr == nil {
-							LeftoverAtStop.Add(1)
-							bb.add(pkt)
-							if bb.full() {
-								bb.flush()
-							}
-						}
-					}
-					bb.flush()
-					return
-				default:
-				}
-				// Bounded block so a stop request is noticed within
-				// ~100 ms: a deadline set from stop() would not wake a
-				// reader already parked in epoll_wait.
-				rr.SetDeadline(time.Now().Add(100 * time.Millisecond))
-				if err := rr.ReadInto(&rec); err != nil {
-					if errors.Is(err, ringbuf.ErrClosed) {
+						s.fail(err)
+						s.fail(flush(i))
 						return
 					}
-					continue
+					n++
+					s.stats.Consumed.Add(1)
+					if draining {
+						s.stats.DrainedAtStop.Add(1)
+					}
+					s.fail(sink(i, rec.RawSample))
+					rr.SetDeadline(pollPastDeadline)
 				}
-				now := time.Now()
-				if pkt, perr := ParseRawSample(rec.RawSample); perr == nil {
-					if LegacyTimestamp {
-						pkt.Timestamp = now
-					}
-					bb.add(pkt)
+				s.fail(flush(i))
+				if draining && r.cursors[i].Consumed() >= s.final[i] {
+					return
 				}
-				rr.SetDeadline(pollPast)
-				for !bb.full() {
-					if err := rr.ReadInto(&rec); err != nil {
-						break
-					}
-					pkt, perr := ParseRawSample(rec.RawSample)
-					if perr != nil {
-						continue
-					}
-					if LegacyTimestamp {
-						pkt.Timestamp = now
-					}
-					bb.add(pkt)
-				}
-				rr.SetDeadline(time.Time{})
-				bb.flush()
 			}
-		}(idx, rr)
+		}(i, rr)
 	}
-	stop = func() {
-		close(stopCh)
-		// Readers block at most ~100 ms, then see stopCh and run their
-		// final drain; close the maps only after every shard is done.
-		for range r.shardReaders {
-			<-doneCh
-		}
-		for _, rr := range r.shardReaders {
-			_ = rr.Close()
-		}
-	}
-	return stop, nil
+	return s.stop, nil
 }
 
 // RawShardSink processes a single ringbuf record for one per-CPU
@@ -448,47 +446,8 @@ type RawShardSink func(shardIdx int, raw []byte) error
 // RunRawShards is the raw-bytes twin of RunShards: per-shard
 // goroutines pump ringbuf records into rawSink without ParseRawSample
 // or batch buffering.
-func (r *Reader) RunRawShards(rawSink RawShardSink) (stop func(), err error) {
-	if len(r.shardReaders) == 0 {
-		return nil, errors.New("no shards")
-	}
-	cpus, err := readerCPUs(len(r.shardReaders))
-	if err != nil {
-		return nil, err
-	}
-	stopCh := make(chan struct{})
-	doneCh := make(chan struct{}, len(r.shardReaders))
-	for idx, rr := range r.shardReaders {
-		go func(shardIdx int, rr *ringbuf.Reader) {
-			pinReaderToCPU(cpus[shardIdx])
-			defer func() { doneCh <- struct{}{} }()
-			var rec ringbuf.Record
-			for {
-				select {
-				case <-stopCh:
-					return
-				default:
-				}
-				if err := rr.ReadInto(&rec); err != nil {
-					if errors.Is(err, ringbuf.ErrClosed) {
-						return
-					}
-					continue
-				}
-				_ = rawSink(shardIdx, rec.RawSample)
-			}
-		}(idx, rr)
-	}
-	stop = func() {
-		close(stopCh)
-		for _, rr := range r.shardReaders {
-			_ = rr.Close()
-		}
-		for range r.shardReaders {
-			<-doneCh
-		}
-	}
-	return stop, nil
+func (r *Reader) RunRawShards(sink RawShardSink) (func(), error) {
+	return r.run(sink, func(int) error { return nil })
 }
 
 // FastShardedReader is the cilium/ebpf-bypass variant of the
@@ -499,6 +458,8 @@ func (r *Reader) RunRawShards(rawSink RawShardSink) (stop func(), err error) {
 // NewShardedReader on the same maps (they would race on the
 // consumer-position page).
 type FastShardedReader struct {
+	session *shardSession
+	cursors []*fastrb.Cursor
 	readers []*fastrb.Reader
 }
 
@@ -515,7 +476,21 @@ func NewFastShardedReader(inners []*ebpf.Map) (*FastShardedReader, error) {
 		}
 		rs = append(rs, r)
 	}
-	return &FastShardedReader{readers: rs}, nil
+	r := &FastShardedReader{readers: rs}
+	for _, m := range inners {
+		c, err := fastrb.NewCursor(m.FD())
+		if err != nil {
+			for _, rr := range rs {
+				_ = rr.Close()
+			}
+			for _, c := range r.cursors {
+				_ = c.Close()
+			}
+			return nil, err
+		}
+		r.cursors = append(r.cursors, c)
+	}
+	return r, nil
 }
 
 // RunShardsFast is the parsed-Packet twin of RunRawShardsFast.
@@ -528,7 +503,38 @@ func NewFastShardedReader(inners []*ebpf.Map) (*FastShardedReader, error) {
 // but the read side avoids the per-record ringbuf.Record alloc and
 // the epoll wakeup the kernel skips when BPF_RB_NO_WAKEUP is set on
 // the producer side.
-func (r *FastShardedReader) RunShardsFast(sink ShardSink) (stop func(), err error) {
+func (r *FastShardedReader) RunShardsFast(sink ShardSink) (func(), error) {
+	builders := make([]*batchBuilder, len(r.readers))
+	for i := range builders {
+		builders[i] = newBatchBuilder(i, sink)
+	}
+	return r.run(func(i int, raw []byte) error {
+		pkt, err := ParseRawSample(raw)
+		if err != nil {
+			r.session.stats.Malformed.Add(1)
+			return nil
+		}
+		if LegacyTimestamp {
+			pkt.Timestamp = time.Now()
+		}
+		builders[i].add(pkt)
+		return nil
+	}, func(i int) error { return builders[i].flush() })
+}
+
+func (r *FastShardedReader) Stats() *SessionStats {
+	if r.session == nil {
+		return nil
+	}
+	return &r.session.stats
+}
+func (r *FastShardedReader) Err() error { return r.session.Err() }
+
+func (r *FastShardedReader) RunRawShardsFast(sink RawShardSink) (func(), error) {
+	return r.run(sink, func(int) error { return nil })
+}
+
+func (r *FastShardedReader) run(sink RawShardSink, flush func(int) error) (func(), error) {
 	if len(r.readers) == 0 {
 		return nil, errors.New("no shards")
 	}
@@ -536,133 +542,51 @@ func (r *FastShardedReader) RunShardsFast(sink ShardSink) (stop func(), err erro
 	if err != nil {
 		return nil, err
 	}
-	stopCh := make(chan struct{})
-	doneCh := make(chan struct{}, len(r.readers))
-	launched := 0
-	for idx, rdr := range r.readers {
-		pinCPU := cpus[idx]
-		launched++
-		go func(shardIdx, pinCPU int, rdr *fastrb.Reader) {
-			pinReaderToCPU(pinCPU)
-			defer func() { doneCh <- struct{}{} }()
-			bb := newBatchBuilder(shardIdx, sink)
-			for {
-				select {
-				case <-stopCh:
-					return
-				default:
-				}
-				if !BusyPoll {
-					if _, err := rdr.WaitForData(shardPollTimeoutMs); err != nil {
-						return
-					}
-				}
-				now := time.Now()
-				rdr.ReadBatch(func(record []byte) {
-					pkt, perr := ParseRawSample(record)
-					if perr != nil {
-						return
-					}
-					if LegacyTimestamp {
-						pkt.Timestamp = now
-					}
-					bb.add(pkt)
-				})
-				bb.flush()
-			}
-		}(idx, pinCPU, rdr)
-	}
-	stop = func() {
-		close(stopCh)
-		for i := 0; i < launched; i++ {
-			<-doneCh
-		}
-		for _, rdr := range r.readers {
-			_ = rdr.Close()
-		}
-	}
-	return stop, nil
-}
-
-// RunRawShardsFast launches per-shard goroutines that mmap-read the
-// ringbufs directly and call rawSink for each record. Shape matches
-// RunRawShards so the caller can drop-in switch via a flag.
-//
-// When LatencySamplePeriod > 0, every Nth record per shard has its
-// BPF-submit→reader-read latency (mono_now − record.kernel_ts)
-// appended to LatencySamples[shardIdx]. The wall→mono offset is
-// WallOffsetNs (init time); we re-derive mono_now per sample by
-// subtracting it from time.Now().UnixNano() to avoid a
-// clock_gettime syscall on the hot path.
-func (r *FastShardedReader) RunRawShardsFast(rawSink RawShardSink) (stop func(), err error) {
-	if len(r.readers) == 0 {
-		return nil, errors.New("no shards")
-	}
+	r.session = newShardSession(r.cursors)
+	s := r.session
 	if LatencySamplePeriod > 0 {
 		LatencySamples = make([][]int64, len(r.readers))
 	}
-	cpus, err := readerCPUs(len(r.readers))
-	if err != nil {
-		return nil, err
-	}
-	stopCh := make(chan struct{})
-	doneCh := make(chan struct{}, len(r.readers))
-	launched := 0
-	for idx, rdr := range r.readers {
-		pinCPU := cpus[idx]
-		launched++
-		go func(shardIdx, pinCPU int, rdr *fastrb.Reader) {
-			pinReaderToCPU(pinCPU)
-			defer func() { doneCh <- struct{}{} }()
+	for i, rr := range r.readers {
+		s.done.Add(1)
+		go func(i int, rr *fastrb.Reader) {
+			defer s.done.Done()
+			defer func() { s.fail(rr.Close()) }()
+			pinReaderToCPU(cpus[i])
 			var seen int64
-			period := LatencySamplePeriod
-			wallOffset := int64(WallOffsetNs)
-			var localSamples []int64
-			if period > 0 {
-				localSamples = make([]int64, 0, 4096)
-			}
-			for {
-				select {
-				case <-stopCh:
-					if period > 0 {
-						LatencySamples[shardIdx] = localSamples
-					}
-					return
-				default:
+			var samples []int64
+			defer func() {
+				if LatencySamplePeriod > 0 {
+					LatencySamples[i] = samples
 				}
-				// Bounds stopCh-check latency under idle traffic;
-				// on the saturated hot path EpollWait returns
-				// immediately because data is always ready.
-				if !BusyPoll {
-					if _, err := rdr.WaitForData(shardPollTimeoutMs); err != nil {
-						if period > 0 {
-							LatencySamples[shardIdx] = localSamples
-						}
+			}()
+			for {
+				draining := s.stopping()
+				if !draining && !BusyPoll {
+					if _, err := rr.WaitForData(shardPollTimeoutMs); err != nil {
+						s.fail(err)
 						return
 					}
 				}
-				rdr.ReadBatch(func(record []byte) {
-					_ = rawSink(shardIdx, record)
-					if period > 0 {
-						if seen%period == 0 && len(record) >= 8 {
-							monoNow := time.Now().UnixNano() - wallOffset
-							recordTs := int64(binary.NativeEndian.Uint64(record[0:8]))
-							localSamples = append(localSamples, monoNow-recordTs)
+				rr.ReadBatch(func(raw []byte) {
+					s.stats.Consumed.Add(1)
+					if draining {
+						s.stats.DrainedAtStop.Add(1)
+					}
+					s.fail(sink(i, raw))
+					if LatencySamplePeriod > 0 {
+						if seen%LatencySamplePeriod == 0 && len(raw) >= 8 {
+							samples = append(samples, time.Now().UnixNano()-int64(WallOffsetNs)-int64(RecordKernelTs(raw)))
 						}
 						seen++
 					}
 				})
+				s.fail(flush(i))
+				if draining && r.cursors[i].Consumed() >= s.final[i] {
+					return
+				}
 			}
-		}(idx, pinCPU, rdr)
+		}(i, rr)
 	}
-	stop = func() {
-		close(stopCh)
-		for i := 0; i < launched; i++ {
-			<-doneCh
-		}
-		for _, rdr := range r.readers {
-			_ = rdr.Close()
-		}
-	}
-	return stop, nil
+	return s.stop, nil
 }
