@@ -211,7 +211,9 @@ func TestCloseAllFlushesRemaining(t *testing.T) {
 	}
 	f.register(6, 0, w)
 
-	f.closeAll()
+	if err := f.closeAll(); err != nil {
+		t.Fatal(err)
+	}
 	n, err := countPcapPackets(path)
 	if err != nil {
 		t.Fatalf("reading shard after closeAll: %v", err)
@@ -267,5 +269,53 @@ func TestFinalizeClosesWritersAndMerges(t *testing.T) {
 	}
 	if err := f.finalize(2); err != nil {
 		t.Fatalf("finalize after deregister: %v", err)
+	}
+}
+
+// Buffered bytes lost on flush must never turn into a zero-packet ack on retry.
+func TestFinalizeFlushFailureNeverAcknowledges(t *testing.T) {
+	f := newTestFinalizer(t, 1)
+	w, err := output.NewWriter("/dev/full", output.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.WriteBatch(testutilPackets()); err != nil {
+		t.Fatal(err)
+	}
+	f.register(23, 0, w)
+	for attempt := range 3 {
+		if err := f.finalize(23); err == nil {
+			t.Fatalf("attempt %d acknowledged failed flush", attempt)
+		}
+		if f.isMerged(23) {
+			t.Fatal("failed tag marked merged")
+		}
+		if _, err := os.Stat(output.TagMergedPath(f.basePath, 23)); !os.IsNotExist(err) {
+			t.Fatalf("ack exists or unexpected stat error: %v", err)
+		}
+	}
+}
+
+func TestCloseAllFailureRemainsTerminal(t *testing.T) {
+	f := newTestFinalizer(t, 1)
+	w, err := output.NewWriter("/dev/full", output.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.register(7, 0, w)
+	for range 3 {
+		if err := f.closeAll(); err == nil {
+			t.Fatal("shutdown lost output failure")
+		}
+		if err := f.finalize(7); err == nil {
+			t.Fatal("shutdown failure became successful finalize")
+		}
+	}
+	lc := newCapLifecycle(nil, f, nil, f.basePath, true)
+	if !lc.tick() {
+		t.Fatal("terminal failure did not stop capture")
+	}
+	if lc.exitReady(nil, nil) {
+		t.Fatal("terminal failure treated as successful cap exit")
 	}
 }

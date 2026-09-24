@@ -6,7 +6,9 @@ package output
 
 import (
 	"container/heap"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"time"
 
@@ -36,8 +38,7 @@ func (h *mergeHeap) Pop() any {
 }
 
 // MergeShardFiles merges <basePath>.cpu0..cpu(numShards-1) into a single
-// time-ordered pcap-ng written to basePath. Missing or empty shard files
-// are skipped. The shard files are left in place.
+// time-ordered pcap-ng written to basePath. Missing shard files are skipped; malformed files fail the merge. The shard files are left in place.
 func MergeShardFiles(basePath string, numShards int, cfg Config) error {
 	inPaths := make([]string, numShards)
 	for i := range numShards {
@@ -49,7 +50,7 @@ func MergeShardFiles(basePath string, numShards int, cfg Config) error {
 // MergeOneTagShards merges one tag's per-CPU shard files
 // (<stem>.cpu0..cpu(numShards-1).<tag><ext>) into <stem>.<tag><ext>,
 // written atomically via temp + rename. Missing shards (CPUs that never
-// saw the tag) are skipped; with no readable shard at all the output is
+// saw the tag) are skipped; with no shard files at all the output is
 // a valid empty pcap-ng, so the merged file still appears as the
 // completion ack for a tag that captured nothing. Shards are left in
 // place. Used by --finalize-on-del while the capture keeps running.
@@ -63,8 +64,8 @@ func MergeOneTagShards(basePath string, numShards int, tag uint32, cfg Config) e
 
 // mergeFiles k-way merges the given pcap-ng input files (each already in
 // timestamp order) into a single time-ordered pcap-ng at outPath, written
-// atomically via a temp file + rename. Missing or unreadable inputs are
-// skipped so a crashed shard never aborts the merge. Inputs are left in
+// atomically via a temp file + rename. Only missing inputs are skipped. Malformed headers or packets fail the
+// merge without publishing a partial output. Inputs are left in
 // place. Shared by MergeShardFiles, the tag-split merge, and the `merge`
 // subcommand.
 func mergeFiles(inPaths []string, outPath string, cfg Config) error {
@@ -84,12 +85,18 @@ func mergeFiles(inPaths []string, outPath string, cfg Config) error {
 			}
 			return fmt.Errorf("opening shard %s: %w", p, err)
 		}
+		if err := validatePcapBlocks(f); err != nil {
+			_ = f.Close()
+			return fmt.Errorf("validating shard %s: %w", p, err)
+		}
+		if _, err := f.Seek(0, io.SeekStart); err != nil {
+			_ = f.Close()
+			return err
+		}
 		r, err := pcapgo.NewNgReader(f, pcapgo.DefaultNgReaderOptions)
 		if err != nil {
-			// A truncated / 0-byte shard (e.g. from a crash mid-write)
-			// shouldn't abort the whole merge — skip it, as documented.
 			_ = f.Close()
-			continue
+			return fmt.Errorf("reading shard %s header: %w", p, err)
 		}
 		closers = append(closers, f)
 		readers = append(readers, r)
@@ -144,8 +151,10 @@ func mergeFiles(inPaths []string, outPath string, cfg Config) error {
 	bufs := make([][]byte, len(readers))
 	h := &mergeHeap{}
 	for i, r := range readers {
-		if it, ok := nextItem(r, i, &bufs[i]); ok {
+		if it, err := nextItem(r, i, &bufs[i]); err == nil {
 			heap.Push(h, it)
+		} else if !errors.Is(err, io.EOF) {
+			return fmt.Errorf("reading shard packet: %w", err)
 		}
 	}
 
@@ -179,8 +188,10 @@ func mergeFiles(inPaths []string, outPath string, cfg Config) error {
 		if err := out.writePacketIface(it.ts, it.data, outIface(it.idx, it.srcIface)); err != nil {
 			return fmt.Errorf("writing merged packet: %w", err)
 		}
-		if next, ok := nextItem(readers[it.idx], it.idx, &bufs[it.idx]); ok {
+		if next, err := nextItem(readers[it.idx], it.idx, &bufs[it.idx]); err == nil {
 			heap.Push(h, next)
+		} else if !errors.Is(err, io.EOF) {
+			return fmt.Errorf("reading shard packet: %w", err)
 		}
 	}
 
@@ -197,13 +208,12 @@ func mergeFiles(inPaths []string, outPath string, cfg Config) error {
 }
 
 // nextItem reads the next packet from a shard reader into the shard's
-// reusable buffer *buf (grown as needed). Returns ok=false at EOF (or on
-// any read error, which ends that shard's contribution). The bytes are
+// reusable buffer *buf (grown as needed), preserving EOF and read errors. Bytes are
 // copied out because pcapgo reuses its own internal read buffer.
-func nextItem(r *pcapgo.NgReader, idx int, buf *[]byte) (mergeItem, bool) {
+func nextItem(r *pcapgo.NgReader, idx int, buf *[]byte) (mergeItem, error) {
 	data, ci, err := r.ReadPacketData()
 	if err != nil {
-		return mergeItem{}, false
+		return mergeItem{}, err
 	}
 	if cap(*buf) < len(data) {
 		*buf = make([]byte, len(data))
@@ -211,5 +221,5 @@ func nextItem(r *pcapgo.NgReader, idx int, buf *[]byte) (mergeItem, bool) {
 		*buf = (*buf)[:len(data)]
 	}
 	copy(*buf, data)
-	return mergeItem{ts: ci.Timestamp, data: *buf, srcIface: ci.InterfaceIndex, idx: idx}, true
+	return mergeItem{ts: ci.Timestamp, data: *buf, srcIface: ci.InterfaceIndex, idx: idx}, nil
 }

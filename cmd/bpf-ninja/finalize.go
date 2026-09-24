@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"slices"
@@ -45,6 +46,7 @@ type tagFinalizer struct {
 	tags    map[uint32]*tagFinState     // every tag ever seen (traffic or set union)
 	writers map[uint32][]*output.Writer // open shard writers per tag; index = shard
 	pending map[uint32]uint64           // finalize candidates: tag -> activity at first eligible cycle
+	failed  map[uint32]error            // terminal persistence failures: never publish an ack
 	closing map[uint32]uint64           // stop sign raised: tag -> cycle it was raised (merge retried until it succeeds)
 }
 
@@ -57,6 +59,7 @@ func newTagFinalizer(basePath string, cfg output.Config, numShards int) *tagFina
 		writers:   map[uint32][]*output.Writer{},
 		pending:   map[uint32]uint64{},
 		closing:   map[uint32]uint64{},
+		failed:    map[uint32]error{},
 	}
 }
 
@@ -96,17 +99,47 @@ func (f *tagFinalizer) register(tag uint32, shardIdx int, w *output.Writer) {
 // not-yet-closed writers, so a tag caught between its stop sign and its
 // close+merge (e.g. SIGINT in that window) still gets flushed, and
 // writers the finalizer already closed are not touched again.
-func (f *tagFinalizer) closeAll() {
+func (f *tagFinalizer) closeAll() error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	for tag, ws := range f.writers {
 		for _, w := range ws {
 			if w != nil {
-				_ = w.Close()
+				if err := w.Close(); err != nil {
+					f.failLocked(tag, err)
+				}
 			}
 		}
 		delete(f.writers, tag)
 	}
+	return f.errLocked()
+}
+
+// fail records a terminal output failure, distinct from a retryable merge error.
+func (f *tagFinalizer) fail(tag uint32, err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.failLocked(tag, err)
+}
+
+func (f *tagFinalizer) failLocked(tag uint32, err error) {
+	if err != nil && f.failed[tag] == nil {
+		f.failed[tag] = fmt.Errorf("tag %d output failed: %w", tag, err)
+	}
+}
+
+func (f *tagFinalizer) Err() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.errLocked()
+}
+
+func (f *tagFinalizer) errLocked() error {
+	var errs []error
+	for _, err := range f.failed {
+		errs = append(errs, err)
+	}
+	return errors.Join(errs...)
 }
 
 // deregister clears a shard's writer slot when the shard closes it
@@ -172,6 +205,9 @@ func (f *tagFinalizer) step(union []uint32) []uint32 {
 func (f *tagFinalizer) markMerged(tag uint32) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.failed[tag] != nil {
+		return
+	}
 	f.stateForLocked(tag).merged.Store(true)
 	delete(f.closing, tag)
 }
@@ -207,10 +243,18 @@ func (f *tagFinalizer) mergedTags() map[uint32]bool {
 // to run from the poll goroutine: the stop sign was raised a full cycle
 // earlier, so no shard will touch these writers again, and shards drop
 // any re-added tag's records. On success the tag is marked merged; on
-// failure it stays in the retry set (writers are gone either way, so a
-// retry only re-runs the merge).
+// merge failure it stays in the retry set. Writer failures are terminal
+// and are retained even after the registry has been emptied.
 func (f *tagFinalizer) finalize(tag uint32) error {
 	f.mu.Lock()
+	if err := f.failed[tag]; err != nil {
+		f.mu.Unlock()
+		return err
+	}
+	if st := f.tags[tag]; st != nil && st.merged.Load() {
+		f.mu.Unlock()
+		return nil
+	}
 	ws := f.writers[tag]
 	delete(f.writers, tag)
 	f.mu.Unlock()
@@ -224,11 +268,9 @@ func (f *tagFinalizer) finalize(tag uint32) error {
 		}
 	}
 	if len(errs) > 0 {
-		// A failed Close means a shard's final flush may not have hit
-		// disk — don't publish an ack knowingly missing data. The retry
-		// cycle re-runs the merge (the writers are gone either way) and
-		// publishes whatever the shards hold then.
-		return fmt.Errorf("finalizing tag %d (will retry): closing shard writers: %v", tag, errs)
+		err := fmt.Errorf("closing tag %d shard writers: %w", tag, errors.Join(errs...))
+		f.fail(tag, err)
+		return err
 	}
 	if err := output.MergeOneTagShards(f.basePath, f.numShards, tag, f.cfg); err != nil {
 		return fmt.Errorf("finalizing tag %d (will retry): %v", tag, err)

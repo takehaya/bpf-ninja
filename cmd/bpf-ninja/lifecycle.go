@@ -61,6 +61,9 @@ func newCapLifecycle(caps *byteCaps, fin *tagFinalizer, sets []*setmap.Set, base
 // A snapshot read failure warns once and skips the cycle: nothing is
 // parked, finalized, or exited on missing data.
 func (l *capLifecycle) tick() (exitNow bool) {
+	if l.fin != nil && l.fin.Err() != nil {
+		return true
+	}
 	infos, err := unionTagInfos(l.sets)
 	if err != nil {
 		if !l.errWarned {
@@ -116,6 +119,9 @@ func (l *capLifecycle) tick() (exitNow bool) {
 		}
 	}
 
+	if l.fin != nil && l.fin.Err() != nil {
+		return true
+	}
 	if l.exitWhenCapped && l.caps != nil && l.exitReady(infos, hasActive) {
 		fmt.Fprintf(os.Stderr, "\nevery entry with a max-bytes cap reached it (--exit-when-capped); stopping\n")
 		return true
@@ -133,6 +139,9 @@ func (l *capLifecycle) tick() (exitNow bool) {
 // started against a fully pre-parked map exits right away instead of
 // idling forever). No participating tag at all = not ready.
 func (l *capLifecycle) exitReady(infos []setmap.TagInfo, hasActive map[uint32]bool) bool {
+	if l.fin != nil && l.fin.Err() != nil {
+		return false
+	}
 	participating := false
 	for tag, lim := range effectiveLimits(infos) {
 		if lim == 0 {
