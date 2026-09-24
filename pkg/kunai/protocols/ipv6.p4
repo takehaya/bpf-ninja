@@ -14,13 +14,13 @@ header ipv6_h {
 // IPv6 ext header share this fixed shape; the variable-length tail
 // is `hdr_ext_len * 8` more bytes consumed by @kunai_variable_tail.
 // Fragment (44) is the lone exception with hdr_ext_len always 0,
-// keeping the fixed-formula valid. Mask 0x03 caps the runtime advance
-// at 24 bytes per iteration so the verifier sees a static upper
-// bound; well-formed HBH/Fragment/DestOpt stay under that cap.
+// keeping the fixed-formula valid. Preserve all eight length bits;
+// the generated packet-window and scalar bounds checks reject an
+// extension that exceeds the available scratch window.
 // @kunai_writeback keeps ipv6.next_header in sync with the chain
 // tail's next_header so the next layer's dispatch (tcp/udp/icmp6/...)
 // sees the inner protocol rather than the first ext type.
-@kunai_variable_tail[len_field=hdr_ext_len, scale=8, mask=0x03]
+@kunai_variable_tail[len_field=hdr_ext_len, scale=8, mask=0xff]
 @kunai_writeback[source=next_header, parent=ipv6.next_header]
 header ipv6_ext_h {
     bit<8>  next_header;
@@ -54,12 +54,9 @@ const bit<8>  IPV6_NH_HOP_BY_HOP = 0;  // Hop-by-Hop Options (RFC 8200)
 const bit<8>  IPV6_NH_FRAGMENT   = 44; // Fragment (RFC 8200)
 const bit<8>  IPV6_NH_DEST_OPTS  = 60; // Destination Options (RFC 8200)
 
-// Cap the ext-header chain depth. Real frames almost never carry
-// more than 2 ext headers (HBH + DestOpt is the typical maximum);
-// the verifier needs the loop times the per-iteration max growth
-// (8 fixed + ≤24 variable per iter from @kunai_variable_tail on
-// ipv6_ext_h above) to stay within the 256-byte scratch buffer, so
-// 4 iterations is the conservative ceiling.
+// Bound the number of extension headers independently of their byte lengths.
+// Each iteration checks the complete header against the available packet
+// window; the length must never be masked down to meet this resource budget.
 const bit<8> IPV6_MAX_DEPTH = 4;
 
 // Self-validating parser: the start state's tuple-select rejects on

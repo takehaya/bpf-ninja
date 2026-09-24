@@ -1232,10 +1232,8 @@ func TestIPv6ExtTruncatedHdrExtLen(t *testing.T) {
 		Exts:            []IPv6Ext{{NextHeader: 6, HdrExtLen: 1, Options: bytes16("hbh1")}},
 	})
 	// First ext sits at eth(14)+ipv6(40)=54. Byte 1 is hdr_ext_len.
-	// Crank it to 0xFF so the per-iter advance ((0xFF<<3)+8 capped by
-	// LenMask=0x03 = 32 B) still pushes past packet end across iters.
-	// Even with the cap, 4 iterations × 32 = 128 B exceeds the 1-ext
-	// frame's payload, so bounds JGT must fire on iter 1.
+	// Claim 2048 bytes, far beyond the actual packet. The complete
+	// eight-bit length must be checked without wrapping its offset.
 	pkt[ethIPv6PrefixSize+1] = 0xFF
 	r.MustReject(t, pkt, "ipv6 ext with oversized hdr_ext_len")
 }
