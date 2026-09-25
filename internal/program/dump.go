@@ -113,11 +113,11 @@ func renderFull(buf *strings.Builder, out codegen.Output, mode string, isFexit, 
 		shape string
 	)
 	if isXDPNative {
-		insns = buildXDPNativeInsns(out, 0, nil)
+		insns = buildXDPNativeInsns(out, 0, nil, 0, 0)
 		shape = "XDP-native program"
 	} else {
 		var err error
-		insns, err = buildTracingInsns(out, filter.TargetFilters{}, 0, 0, 0, isFexit, 8, progType, nil, nil)
+		insns, err = buildTracingInsns(out, filter.TargetFilters{}, 0, 0, 0, isFexit, 8, progType, nil, nil, 0)
 		if err != nil {
 			return err
 		}

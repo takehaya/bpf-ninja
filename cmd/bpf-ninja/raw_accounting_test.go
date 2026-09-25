@@ -82,7 +82,7 @@ func TestBpfRawAccountingOnSignal(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	ctl := &captureControl{}
+	ctl := &captureControl{outputErr: newOutputFailure()}
 	base := filepath.Join(t.TempDir(), "capture")
 	app := newRootCommand()
 	app.Action = func(_ context.Context, c *cli.Command) error {

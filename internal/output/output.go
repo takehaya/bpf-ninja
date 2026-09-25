@@ -301,41 +301,8 @@ func (w *Writer) ifaceIDByName(name string) int {
 }
 
 // Write outputs a captured packet.
-func (w *Writer) Write(pkt capture.Packet) (err error) {
-	// Serialize with the periodic flusher goroutine (Flush also holds
-	// flushMu) so writes and flushes don't race on the pcapng buffer or, for
-	// the fast writer, the shared outer bufio. Uncontended for writers with
-	// no flusher (plain -w, non-split), so the lock is ~free there.
-	w.flushMu.Lock()
-	defer w.flushMu.Unlock()
-	defer func() { err = w.remember(err) }()
-	if w.failure != nil {
-		return w.failure
-	}
-	if w.closed {
-		return os.ErrClosed
-	}
-	if w.fastWriter != nil {
-		if w.cfg.MultiPoint {
-			return w.fastWriter.WritePacketID(pkt.Timestamp, pkt.Data, w.ifaceIDForPacket(&pkt), pkt.PacketID)
-		}
-		return w.fastWriter.WritePacket(pkt.Timestamp, pkt.Data)
-	}
-	ci := gopacket.CaptureInfo{
-		Timestamp:     pkt.Timestamp,
-		CaptureLength: len(pkt.Data),
-		Length:        len(pkt.Data),
-	}
-	if w.actionToID != nil {
-		ci.InterfaceIndex = w.ifaceIDForAction(pkt.Action)
-		if w.failure != nil {
-			return w.failure
-		}
-	}
-	if err := w.pcapWriter.WritePacket(ci, pkt.Data); err != nil {
-		return fmt.Errorf("writing pcap packet: %w", err)
-	}
-	return nil
+func (w *Writer) Write(pkt capture.Packet) error {
+	return w.WriteBatch([]capture.Packet{pkt})
 }
 
 // writePacketIface writes one packet to an explicit pcap-ng interface
@@ -371,7 +338,7 @@ func (w *Writer) WriteBatch(pkts []capture.Packet) (err error) {
 	if len(pkts) == 0 {
 		return nil
 	}
-	// One lock for the whole batch (see Write): mutual exclusion with the
+	// One lock for the whole batch: mutual exclusion with the
 	// periodic flusher; uncontended for writers with no flusher.
 	w.flushMu.Lock()
 	defer w.flushMu.Unlock()

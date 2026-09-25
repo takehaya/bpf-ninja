@@ -77,9 +77,12 @@ def packets(path):
                 linktype, snaplen, name = interfaces[iface]
                 if snaplen and caplen > snaplen:
                     raise ValueError("packet exceeds interface snaplen")
-                options(body[20+((caplen+3) & ~3):], endian)
+                opts = options(body[20+((caplen+3) & ~3):], endian)
+                packet_id = opts.get(5, b"\0"*8)
+                if len(packet_id) != 8:
+                    raise ValueError("invalid packet ID option length")
                 yield {"caplen": caplen, "linktype": linktype, "interface": name,
-                       "data": body[20:20+caplen]}
+                       "data": body[20:20+caplen], "packet_id": struct.unpack(endian+"Q", packet_id)[0]}
             elif kind not in {0x0a0d0d0a, 5}:
                 raise ValueError(f"unexpected block type {kind}")
 

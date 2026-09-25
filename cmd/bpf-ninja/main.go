@@ -975,7 +975,7 @@ func resolveFilterSyntax(cmd *cli.Command) (useDSL bool, err error) {
 // time-ordered pcap-ng at `path` (the shards are left in place). Integration
 // tests (run_pcap_test) read the `.cpuN` shards.
 func runCaptureLoop(cmd *cli.Command, probe *program.Probe, cfg output.Config, label string, sets []*setmap.Set) (retErr error) {
-	ctl := &captureControl{quiesce: probe.Quiesce, blockTag: probe.BlockTag}
+	ctl := &captureControl{quiesce: probe.Quiesce, blockTag: probe.BlockTag, outputErr: newOutputFailure()}
 	defer func() {
 		retErr = errors.Join(retErr, probe.Quiesce())
 		kernel, statsErr := probe.ExportStats()
@@ -1039,15 +1039,13 @@ func runCaptureLoop(cmd *cli.Command, probe *program.Probe, cfg output.Config, l
 // stdout all shards funnel into one writer serialized by a mutex.
 // --null-output skips file writes for benchmarking; --raw-dump switches to
 // the raw-bytes path.
-func captureLoopSharded(cmd *cli.Command, inners []*ebpf.Map, cfg output.Config, label string, sets []*setmap.Set, fin *tagFinalizer, controls ...*captureControl) (retErr error) {
-	ctl := controlOrNew(controls)
-	controls = []*captureControl{ctl}
+func captureLoopSharded(cmd *cli.Command, inners []*ebpf.Map, cfg output.Config, label string, sets []*setmap.Set, fin *tagFinalizer, ctl *captureControl) (retErr error) {
 	cfg.OnError = ctl.outputErr.record
 	basePath := cmd.String("write")
 	null := cmd.Bool("null-output")
 	rawDump := cmd.Bool("raw-dump")
 	if rawDump {
-		return captureLoopShardedRaw(cmd, inners, label, basePath, controls...)
+		return captureLoopShardedRaw(cmd, inners, label, basePath, ctl)
 	}
 	// Per-entry caps can only apply on the split path, and only when at
 	// least one attached map's value layout carries a max_bytes field —
@@ -1070,7 +1068,7 @@ func captureLoopSharded(cmd *cli.Command, inners []*ebpf.Map, cfg output.Config,
 	if cmd.Bool("split-by-tag") {
 		// run() already rejected --split-by-tag with stdout / --raw-dump /
 		// --null-output, so basePath is a real file here.
-		return captureLoopShardedSplit(cmd, inners, cfg, label, basePath, caps, sets, fin, controls...)
+		return captureLoopShardedSplit(cmd, inners, cfg, label, basePath, caps, sets, fin, ctl)
 	}
 
 	// stdout (no -w) merges every shard into a single pcap-ng stream,
@@ -1148,7 +1146,7 @@ func captureLoopSharded(cmd *cli.Command, inners []*ebpf.Map, cfg output.Config,
 		}
 	}
 
-	return pumpShards(cmd, inners, label, writeShard, caps, sets, nil, controls...)
+	return pumpShards(cmd, inners, label, writeShard, caps, sets, nil, ctl)
 }
 
 // epbBytes sums the on-disk pcap-ng size of a batch as the given writer
@@ -1169,9 +1167,7 @@ func epbBytes(w *output.Writer, pkts []capture.Packet) uint64 {
 // mid-capture. Each shard's tag->writer map is owned by its own goroutine,
 // so there is no lock on the write path. runCaptureLoop merges the per-CPU
 // tag files into <base>.<tag><ext> on a clean shutdown.
-func captureLoopShardedSplit(cmd *cli.Command, inners []*ebpf.Map, cfg output.Config, label, basePath string, caps *byteCaps, sets []*setmap.Set, fin *tagFinalizer, controls ...*captureControl) (retErr error) {
-	ctl := controlOrNew(controls)
-	controls = []*captureControl{ctl}
+func captureLoopShardedSplit(cmd *cli.Command, inners []*ebpf.Map, cfg output.Config, label, basePath string, caps *byteCaps, sets []*setmap.Set, fin *tagFinalizer, ctl *captureControl) (retErr error) {
 	cfg.OnError = ctl.outputErr.record
 	// One tag->writer map per shard; only ever touched by that shard's
 	// goroutine (writeShard runs single-threaded per shardIdx). The entry
@@ -1332,14 +1328,13 @@ func captureLoopShardedSplit(cmd *cli.Command, inners []*ebpf.Map, cfg output.Co
 		return nil
 	}
 
-	return pumpShards(cmd, inners, label, writeShard, caps, sets, fin, controls...)
+	return pumpShards(cmd, inners, label, writeShard, caps, sets, fin, ctl)
 }
 
 // pumpShards runs the per-shard reader, handing each batch to writeShard,
 // until SIGINT/SIGTERM, a limit, or an output failure. The first write
 // failure stops the capture and is returned to the caller.
-func pumpShards(cmd *cli.Command, inners []*ebpf.Map, label string, writeShard func(int, []capture.Packet) error, caps *byteCaps, sets []*setmap.Set, fin *tagFinalizer, controls ...*captureControl) error {
-	ctl := controlOrNew(controls)
+func pumpShards(cmd *cli.Command, inners []*ebpf.Map, label string, writeShard func(int, []capture.Packet) error, caps *byteCaps, sets []*setmap.Set, fin *tagFinalizer, ctl *captureControl) error {
 
 	fastReader := cmd.Bool("fast-reader")
 	null := cmd.Bool("null-output")
@@ -1480,26 +1475,20 @@ func pumpShards(cmd *cli.Command, inners []*ebpf.Map, label string, writeShard f
 			select {
 			case <-readerFailure:
 				failure.record(readerErr())
-				stop()
 				goto done
 			case <-failure.done:
-				stop()
 				goto done
 			case <-sig:
-				stop()
 				goto done
 			default:
 				if count > 0 && captured.Load() >= count {
-					stop()
 					goto done
 				}
 				if caps != nil && caps.totalReached() {
 					fmt.Fprintf(os.Stderr, "\ntotal output cap reached (--max-bytes %d); stopping\n", caps.totalLimit)
-					stop()
 					goto done
 				}
 				if needSnapshot && it%100 == 0 && lc.tick() {
-					stop()
 					goto done
 				}
 				time.Sleep(10 * time.Millisecond)
@@ -1510,14 +1499,13 @@ func pumpShards(cmd *cli.Command, inners []*ebpf.Map, label string, writeShard f
 		case <-sig:
 		case <-readerFailure:
 			failure.record(readerErr())
-			stop()
 			goto done
 		case <-failure.done:
 		}
-		stop()
 	}
 
 done:
+	stop()
 	fmt.Fprintf(os.Stderr, "\n%d packets captured\n", ctl.written.Load()+ctl.nullRecords.Load())
 	if fin != nil {
 		return errors.Join(failure.err(), fin.Err())
@@ -1529,8 +1517,7 @@ done:
 // splat ringbuf record bytes verbatim into
 // <basePath>.W<wall_offset_ns>.cpu<N>.raw files; offline conversion
 // happens via the convert subcommand.
-func captureLoopShardedRaw(cmd *cli.Command, inners []*ebpf.Map, label, basePath string, controls ...*captureControl) (retErr error) {
-	ctl := controlOrNew(controls)
+func captureLoopShardedRaw(cmd *cli.Command, inners []*ebpf.Map, label, basePath string, ctl *captureControl) (retErr error) {
 
 	if basePath == "" {
 		return fmt.Errorf("--raw-dump requires -w <path> (per-CPU files are not streamable to stdout)")
@@ -1680,17 +1667,13 @@ func captureLoopShardedRaw(cmd *cli.Command, inners []*ebpf.Map, label, basePath
 			select {
 			case <-readerFailure:
 				failure.record(readerErr())
-				stop()
 				goto done
 			case <-failure.done:
-				stop()
 				goto done
 			case <-sig:
-				stop()
 				goto done
 			default:
 				if captured.Load() >= count {
-					stop()
 					goto done
 				}
 				time.Sleep(10 * time.Millisecond)
@@ -1701,14 +1684,13 @@ func captureLoopShardedRaw(cmd *cli.Command, inners []*ebpf.Map, label, basePath
 		case <-sig:
 		case <-readerFailure:
 			failure.record(readerErr())
-			stop()
 			goto done
 		case <-failure.done:
 		}
-		stop()
 	}
 
 done:
+	stop()
 	var total uint64
 	for i := range shardCounts {
 		total += uint64(shardCounts[i].n)

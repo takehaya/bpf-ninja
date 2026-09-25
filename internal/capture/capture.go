@@ -299,9 +299,7 @@ func NewShardedReader(inners []*ebpf.Map) (*Reader, error) {
 	for i, m := range inners {
 		rr, err := ringbuf.NewReader(m)
 		if err != nil {
-			for _, prev := range r.shardReaders {
-				_ = prev.Close()
-			}
+			_ = r.Close()
 			return nil, fmt.Errorf("creating shard reader %d: %w", i, err)
 		}
 		r.shardReaders = append(r.shardReaders, rr)
@@ -309,12 +307,7 @@ func NewShardedReader(inners []*ebpf.Map) (*Reader, error) {
 	for _, m := range inners {
 		c, err := fastrb.NewCursor(m.FD())
 		if err != nil {
-			for _, rr := range r.shardReaders {
-				_ = rr.Close()
-			}
-			for _, c := range r.cursors {
-				_ = c.Close()
-			}
+			_ = r.Close()
 			return nil, err
 		}
 		r.cursors = append(r.cursors, c)
@@ -515,27 +508,19 @@ type FastShardedReader struct {
 
 // NewFastShardedReader mmaps each inner ringbuf map directly.
 func NewFastShardedReader(inners []*ebpf.Map) (*FastShardedReader, error) {
-	rs := make([]*fastrb.Reader, 0, len(inners))
+	r := &FastShardedReader{readers: make([]*fastrb.Reader, 0, len(inners))}
 	for i, m := range inners {
-		r, err := fastrb.New(m.FD(), int(m.MaxEntries()))
+		rr, err := fastrb.New(m.FD(), int(m.MaxEntries()))
 		if err != nil {
-			for _, prev := range rs {
-				_ = prev.Close()
-			}
+			_ = r.Close()
 			return nil, fmt.Errorf("inner %d: %w", i, err)
 		}
-		rs = append(rs, r)
+		r.readers = append(r.readers, rr)
 	}
-	r := &FastShardedReader{readers: rs}
 	for _, m := range inners {
 		c, err := fastrb.NewCursor(m.FD())
 		if err != nil {
-			for _, rr := range rs {
-				_ = rr.Close()
-			}
-			for _, c := range r.cursors {
-				_ = c.Close()
-			}
+			_ = r.Close()
 			return nil, err
 		}
 		r.cursors = append(r.cursors, c)

@@ -85,11 +85,11 @@ func TestBpfOutputFailureStopsCapture(t *testing.T) {
 	}(); err != nil {
 		t.Fatal(err)
 	}
-	ctl := &captureControl{}
+	ctl := &captureControl{outputErr: newOutputFailure()}
 	app := newRootCommand()
 	app.Action = func(_ context.Context, c *cli.Command) error {
 		if mode == "write" {
-			return pumpShards(c, []*ebpf.Map{m}, "test", func(int, []capture.Packet) error { return syscall.ENOSPC }, nil, nil, nil)
+			return pumpShards(c, []*ebpf.Map{m}, "test", func(int, []capture.Packet) error { return syscall.ENOSPC }, nil, nil, nil, ctl)
 		}
 		return captureLoopSharded(c, []*ebpf.Map{m}, output.Config{}, "test", nil, nil, ctl)
 	}

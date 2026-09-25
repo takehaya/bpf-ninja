@@ -16,16 +16,6 @@ type captureControl struct {
 	outputErr   *outputFailure
 }
 
-func controlOrNew(cs []*captureControl) *captureControl {
-	c := &captureControl{}
-	if len(cs) > 0 {
-		c = cs[0]
-	}
-	if c.outputErr == nil {
-		c.outputErr = newOutputFailure()
-	}
-	return c
-}
 func (c *captureControl) stopBeforeDrain(stop func(), readerErr func() error, failure *outputFailure) func() {
 	return func() {
 		if c.quiesce != nil {

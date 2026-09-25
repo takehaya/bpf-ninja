@@ -11,14 +11,14 @@ module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 
 
-def fixture(endian="<", linktype=1, name=b"xdp:PASS", payload=b"abcd"):
+def fixture(endian="<", linktype=1, name=b"xdp:PASS", payload=b"abcd", packet_options=b""):
     def block(kind, body):
         size = len(body)+12
         return struct.pack(endian+"II", kind, size)+body+struct.pack(endian+"I", size)
     shb = block(0x0a0d0d0a, struct.pack(endian+"IHHq", 0x1a2b3c4d, 1, 0, -1))
     option = struct.pack(endian+"HH", 2, len(name))+name+b"\0"*((-len(name)) % 4)
     idb = block(1, struct.pack(endian+"HHI", linktype, 0, 65535)+option+b"\0"*4)
-    epb = block(6, struct.pack(endian+"IIIII", 0, 0, 1, len(payload), len(payload))+payload+b"\0"*((-len(payload)) % 4))
+    epb = block(6, struct.pack(endian+"IIIII", 0, 0, 1, len(payload), len(payload))+payload+b"\0"*((-len(payload)) % 4)+packet_options)
     return shb+idb, epb
 
 
@@ -49,6 +49,18 @@ class PcapAssertions(unittest.TestCase):
         for kwargs in ({"count": 2}, {"caplen": 3}, {"interface": "xdp:DROP"}, {"linktype": 101}):
             with self.assertRaises(ValueError):
                 module.check(self.path, **kwargs)
+
+    def test_packet_ids_and_invalid_option_width(self):
+        for endian in ("<", ">"):
+            for packet_id in (0, 3 << 48 | 42):
+                opts = struct.pack(endian+"HHQ", 5, 8, packet_id)
+                self.path.write_bytes(b"".join(fixture(endian, packet_options=opts)))
+                self.assertEqual(list(module.packets(self.path))[0]["packet_id"], packet_id)
+            self.path.write_bytes(b"".join(fixture(endian)))
+            self.assertEqual(list(module.packets(self.path))[0]["packet_id"], 0)
+            self.path.write_bytes(b"".join(fixture(endian, packet_options=struct.pack(endian+"HHI", 5, 4, 42))))
+            with self.assertRaisesRegex(ValueError, "packet ID option length"):
+                list(module.packets(self.path))
 
     def test_multipoint_checker_rejects_truncated_blocks_and_wrong_linktype(self):
         script = path.with_name("run_tests.sh").read_text()

@@ -593,7 +593,7 @@ const (
 	metadataSize = 28
 )
 
-func buildTracingInsns(filterOut codegen.Output, tf filter.TargetFilters, eventsFD, scratchFD, statsFD int, isFexit bool, returnOffset int16, progType ebpf.ProgramType, slots *pktSetSlots, pktRefs []string, gateFDs ...int) (asm.Instructions, error) {
+func buildTracingInsns(filterOut codegen.Output, tf filter.TargetFilters, eventsFD, scratchFD, statsFD int, isFexit bool, returnOffset int16, progType ebpf.ProgramType, slots *pktSetSlots, pktRefs []string, gateFD int) (asm.Instructions, error) {
 	h, ok := hook.ByProgramType(progType)
 	if !ok {
 		return nil, hook.UnsupportedTypeError(progType)
@@ -602,9 +602,7 @@ func buildTracingInsns(filterOut codegen.Output, tf filter.TargetFilters, events
 	if err != nil {
 		return nil, err
 	}
-	if len(gateFDs) > 0 {
-		insns = append(insns, emitTagBarrier(gateFDs[0])...)
-	}
+	insns = append(insns, emitTagBarrier(gateFD)...)
 	// Single-stage records carry packet id 0.
 	packetID := asm.Instructions{asm.Mov.Imm(asm.R1, 0)}
 	insns = append(insns, captureWithRingbuf(eventsFD, statsFD, isFexit, filterOut.Capture.MaxCapLen, packetID)...)
@@ -777,11 +775,7 @@ func runFilter(filter asm.Instructions, scratchFD, scanLen int) asm.Instructions
 // as an immediate, never a register-derived value. See
 // docs/paper/PLAN_bpf_ringbuf risk register entry "Verifier rejects
 // bpf_ringbuf_reserve with non-constant size".
-func captureWithRingbuf(eventsFD, statsFD int, isFexit bool, maxCapLen int, packetIDs ...asm.Instructions) asm.Instructions {
-	packetID := asm.Instructions{asm.Mov.Imm(asm.R1, 0)}
-	if len(packetIDs) > 0 {
-		packetID = packetIDs[0]
-	}
+func captureWithRingbuf(eventsFD, statsFD int, isFexit bool, maxCapLen int, packetID asm.Instructions) asm.Instructions {
 	if maxCapLen <= 0 {
 		maxCapLen = defaultCapLen
 	}

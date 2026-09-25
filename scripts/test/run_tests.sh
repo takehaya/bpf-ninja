@@ -148,17 +148,7 @@ test_tailcall_dispatcher() {
     [[ "$count" -ge 3 ]]
 }
 
-test_exit_pcap_action() {
-    local pcap err result=1
-    pcap=$(mktemp --suffix=.pcap)
-    err=$(mktemp)
-    if capture_run "$err" count send_packets 5 -i veth0 --mode exit -w "$pcap" -c 3; then
-        assert_pcap "$pcap" --count "$(capture_count "$err")" --min-count 3 --interface xdp:PASS && result=0
-    fi
-    [[ $result -eq 0 ]] || cat "$err" >&2
-    rm -f "$pcap" "$pcap".cpu* "$err"
-    return "$result"
-}
+test_exit_pcap_action() { PCAP_INTERFACE=xdp:PASS run_pcap_test -i veth0 --mode exit -c 3; }
 
 test_dsl_entry_filter_match()    { run_count_test 3 -i veth0 -c 3 "eth/ipv4/icmp"; }
 test_dsl_entry_predicate_match() { run_count_test 3 -i veth0 -c 3 "eth/ipv4/icmp[type==8]"; }
@@ -626,47 +616,27 @@ check_multipoint_pcap() {
     # args: want_entries want_drops want_paired files...
     # want_paired '-' = a merged file: ids are not carried, so only
     # interfaces and sizes are checked.
-    local file
-    for file in "${@:4}"; do
-        python3 "$SCRIPT_DIR/assert_pcap.py" "$file" --min-count 0 --linktype 1 || return 1
-    done
-    python3 - "$@" <<'EOF'
-import struct, sys
+    python3 - "$SCRIPT_DIR" "$@" <<'EOF'
+import sys
+sys.path.insert(0, sys.argv.pop(1))
+from assert_pcap import packets
 entries = drops = other = paired = 0
 check_ids = sys.argv[3] != '-'
 bad = []
 for fn in sys.argv[4:]:
-    b = open(fn, 'rb').read(); ifaces = []; off = 0; last_entry = None
-    while off + 12 <= len(b):
-        typ, total = struct.unpack_from('<II', b, off)
-        if total < 12: break
-        if typ == 1:  # IDB: if_name option (code 2)
-            o = off + 16; name = ''
-            while o + 4 <= off + total - 4:
-                code, l = struct.unpack_from('<HH', b, o)
-                if code == 0: break
-                if code == 2: name = b[o + 4:o + 4 + l].decode()
-                o += 4 + ((l + 3) & ~3)
-            ifaces.append(name)
-        elif typ == 6:  # EPB: epb_packetid option (code 5)
-            iface, _, _, caplen, _ = struct.unpack_from('<IIIII', b, off + 8)
-            o = off + 28 + ((caplen + 3) & ~3); pid = 0
-            while o + 4 <= off + total - 4:
-                code, l = struct.unpack_from('<HH', b, o)
-                if code == 0: break
-                if code == 5 and l == 8: pid = struct.unpack_from('<Q', b, o + 4)[0]
-                o += 4 + ((l + 3) & ~3)
-            name = ifaces[iface] if iface < len(ifaces) else '?'
-            if name.endswith(':entry'):
-                entries += 1; last_entry = pid
-                if caplen != 104 or (check_ids and pid == 0): bad.append(('entry', fn, caplen, pid))
-            elif name.endswith(':DROP'):
-                drops += 1
-                if caplen != 62 or (check_ids and pid == 0): bad.append(('drop', fn, caplen, pid))
-                elif pid == last_entry: paired += 1  # --emit exit has no entry record to pair with
-            else:
-                other += 1; bad.append(('other', fn, name))
-        off += total
+    last_entry = None
+    for packet in packets(fn):
+        if packet['linktype'] != 1: raise ValueError('expected Ethernet linktype')
+        caplen, pid, name = packet['caplen'], packet['packet_id'], packet['interface']
+        if name.endswith(':entry'):
+            entries += 1; last_entry = pid
+            if caplen != 104 or (check_ids and pid == 0): bad.append(('entry', fn, caplen, pid))
+        elif name.endswith(':DROP'):
+            drops += 1
+            if caplen != 62 or (check_ids and pid == 0): bad.append(('drop', fn, caplen, pid))
+            elif pid == last_entry: paired += 1  # --emit exit has no entry record to pair with
+        else:
+            other += 1; bad.append(('other', fn, name))
 want_entries = int(sys.argv[1]); want_drops = int(sys.argv[2]); want_paired = int(sys.argv[3]) if check_ids else paired
 print(f"entry={entries} drop={drops} other={other} paired={paired} bad={bad[:3]}")
 sys.exit(0 if (entries == want_entries and drops == want_drops and other == 0 and paired == want_paired and not bad) else 1)
