@@ -68,7 +68,6 @@ RawSample = [ metadata 28B ] [ packet bytes (caplen B) ] [ trailing slack ]
 |   13   |  1   | _pad         | 0                                                     |
 |   14   |  2   | caplen       | 後続パケット領域のうち実際に有効なバイト数             |
 |   16   |  4   | tag          | マッチした set エントリの value、set 未マッチや set 無しなら 0 |
-
 |   20   |  8   | packet_id    | gated entry/exit の対応 ID。それ以外は 0 |
 
 注意点は次のとおりです。
