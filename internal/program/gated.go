@@ -51,7 +51,9 @@ import (
 //	20  u32 tag      set-map value
 //	24  u64 seq      per-CPU count of matched entries; (cpu << 48 | seq) is
 //	                 the opaque packet id both records carry
-//	32  u8  bytes[entryCapLen]  (absent when only the exit image is emitted)
+//	32  u32 copy_error  entry snapshot error, checked after exit selection
+//	36  u32 padding
+//	40  u8  bytes[entryCapLen]  (absent when only the exit image is emitted)
 
 // Emit selects which records a gated (entry + exit) capture emits for a
 // packet that matched both stages.
@@ -84,13 +86,14 @@ func ParseEmit(s string) (Emit, error) {
 }
 
 const (
-	holdTs     = 0
-	holdFrame  = 8
-	holdCapLen = 16
-	holdValid  = 18
-	holdTag    = 20
-	holdSeq    = 24
-	holdHdr    = 32
+	holdTs      = 0
+	holdFrame   = 8
+	holdCapLen  = 16
+	holdValid   = 18
+	holdTag     = 20
+	holdSeq     = 24
+	holdCopyErr = 32
+	holdHdr     = 40
 )
 
 // emitHoldLookup loads the per-CPU hold slot pointer into R8 (jumping to
@@ -134,6 +137,7 @@ func buildGatedEntryInsns(h *hook.Hook, filterOut codegen.Output, tf filter.Targ
 		asm.Mov.Imm(asm.R3, int32(entryCapLen)),
 		asm.StoreMem(asm.R8, holdCapLen, asm.R3, asm.Half).WithSymbol("gh_cap_ok"),
 		asm.StoreImm(asm.R8, holdValid, 1, asm.Half),
+		asm.StoreImm(asm.R8, holdCopyErr, 0, asm.Word),
 		asm.LoadMem(asm.R1, asm.R10, tagSlot, asm.DWord),
 		asm.StoreMem(asm.R8, holdTag, asm.R1, asm.Word),
 		// seq++ : the opaque per-CPU packet id of this invocation
@@ -148,6 +152,7 @@ func buildGatedEntryInsns(h *hook.Hook, filterOut codegen.Output, tf filter.Targ
 			asm.Mov.Reg(asm.R2, asm.R3),
 			asm.Mov.Reg(asm.R3, asm.R7),
 			asm.FnProbeReadKernel.Call(),
+			asm.StoreMem(asm.R8, holdCopyErr, asm.R0, asm.Word),
 		)
 	}
 	return finishProgram(insns, filterOut, 0), nil
@@ -190,6 +195,12 @@ func buildGatedExitInsns(h *hook.Hook, filterOut codegen.Output, tf filter.Targe
 		// The entry image may carry a different set tag from the exit image.
 		// A tombstone for either image prevents later export of that tag.
 		insns = append(insns, asm.LoadMem(asm.R1, asm.R8, holdTag, asm.Word), asm.StoreMem(asm.R10, -16, asm.R1, asm.Word), asm.LoadMapPtr(asm.R1, gateFD), asm.Mov.Reg(asm.R2, asm.R10), asm.Add.Imm(asm.R2, -16), asm.FnMapLookupElem.Call(), asm.JNE.Imm(asm.R0, 0, "exit"))
+	}
+
+	if emit != EmitExit {
+		// Count a failed entry snapshot only after both filters selected this
+		// invocation. No ring record has been reserved, so skip the discard path.
+		insns = append(insns, asm.LoadMem(asm.R1, asm.R8, holdCopyErr, asm.Word), asm.JNE.Imm(asm.R1, 0, "rb_copy_count"))
 	}
 
 	// --- packet id for both records: cpu << 48 | hold.seq, parked in

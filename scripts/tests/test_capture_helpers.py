@@ -78,13 +78,16 @@ class CaptureHelperTests(unittest.TestCase):
         self.exercise("deadline-summary", False, "run_count_test")
 
     def test_skip_requires_explicit_status(self):
-        result = subprocess.run(["bash", "-c", '''source "$1"
+        for ci, failures, skips in (("false", 1, 1), ("true", 2, 0)):
+            with self.subTest(ci=ci):
+                result = subprocess.run(["bash", "-c", '''source "$1"
             run_test injected bash -c 'echo skipping; exit 1'
             [[ $FAIL -eq 1 && $SKIP -eq 0 ]] || exit 1
             run_test optional bash -c 'exit 77'
-            [[ $FAIL -eq 1 && $SKIP -eq 1 ]]
-            ''', "test", str(RUNNER)], text=True, capture_output=True, timeout=5)
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            [[ $FAIL -eq $2 && $SKIP -eq $3 ]]
+            ''', "test", str(RUNNER), str(failures), str(skips)],
+                    env=dict(os.environ, CI=ci), text=True, capture_output=True, timeout=5)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
 
 if __name__ == "__main__":

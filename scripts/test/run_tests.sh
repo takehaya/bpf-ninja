@@ -626,6 +626,10 @@ check_multipoint_pcap() {
     # args: want_entries want_drops want_paired files...
     # want_paired '-' = a merged file: ids are not carried, so only
     # interfaces and sizes are checked.
+    local file
+    for file in "${@:4}"; do
+        python3 "$SCRIPT_DIR/assert_pcap.py" "$file" --min-count 0 --linktype 1 || return 1
+    done
     python3 - "$@" <<'EOF'
 import struct, sys
 entries = drops = other = paired = 0

@@ -56,9 +56,16 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y libpcap-dev libbpf-dev clang tcpdump gcc-multilib
-          sudo apt-get install -y linux-tools-$(uname -r) || sudo apt-get install -y linux-tools-generic || true
-          # Verify bpftool is available
-          which bpftool || (echo "bpftool not found, installing from linux-tools-common" && sudo apt-get install -y linux-tools-common) || true
+          sudo apt-get install -y linux-tools-generic
+          # The /usr/sbin wrapper requires tools matching the runner kernel.
+          # Use the packaged binary directly, including on Azure kernels.
+          for tool in /usr/lib/linux-tools/*/bpftool; do
+            if "$tool" version; then
+              sudo install -m 755 "$tool" /usr/local/sbin/bpftool
+              break
+            fi
+          done
+          sudo bpftool version
 
       - name: Build
         run: go build -o bpf-ninja ./cmd/bpf-ninja/

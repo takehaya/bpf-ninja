@@ -1,6 +1,7 @@
 import importlib.util
 from pathlib import Path
 import struct
+import subprocess
 import tempfile
 import unittest
 
@@ -48,3 +49,25 @@ class PcapAssertions(unittest.TestCase):
         for kwargs in ({"count": 2}, {"caplen": 3}, {"interface": "xdp:DROP"}, {"linktype": 101}):
             with self.assertRaises(ValueError):
                 module.check(self.path, **kwargs)
+
+    def test_multipoint_checker_rejects_truncated_blocks_and_wrong_linktype(self):
+        script = path.with_name("run_tests.sh").read_text()
+        start = script.index("check_multipoint_pcap() {")
+        end = script.index("\n# run_multipoint_case", start)
+        command = 'SCRIPT_DIR=$1\nshift\n' + script[start:end] + '\ncheck_multipoint_pcap 1 0 - "$@"'
+        header, packet = fixture(name=b"xdp:entry", payload=b"x"*104)
+        wrong_header, wrong_packet = fixture(linktype=101, name=b"xdp:entry", payload=b"x"*104)
+        cases = (
+            (header+packet, True),
+            (header+packet[:-4], False),
+            (header+packet[:-4]+b"\0"*4, False),
+            (wrong_header+wrong_packet, False),
+        )
+        for contents, valid in cases:
+            with self.subTest(valid=valid, size=len(contents)):
+                self.path.write_bytes(contents)
+                result = subprocess.run(
+                    ["bash", "-c", command, "pcap-check", str(path.parent), str(self.path)],
+                    capture_output=True, text=True,
+                )
+                self.assertEqual(result.returncode == 0, valid, result.stdout+result.stderr)

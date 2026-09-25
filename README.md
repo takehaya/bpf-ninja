@@ -191,13 +191,13 @@ Without `-w` (streaming to stdout), all CPUs are merged into a single pcap-ng st
 | `--busy-poll` | Spin the fast-reader shards instead of sleeping in `epoll_wait`. Burns a core per shard. **Requires `--fast-reader`** |
 | `--null-output` | Drop output entirely (bench only) |
 
-On exit every entry/exit capture prints one accounting line to stderr:
-
-```
-export stats: ringbuf_reserve_fail=N drained_at_stop=M
-```
-
-`N` records were dropped at the producer because that CPU's ring was full (`bpf_ringbuf_reserve` returned NULL; raise `--ringbuf-size` or move the reader off the RX core). `M` records were still committed in the rings when the capture stopped and were drained before exit (default reader only). Together with the written count this balances the chain observer runs → reserved → read → written.
+On exit, capture prints a `capture status=...` line to stderr for both readers.
+It reports selected export attempts, submitted records, reserve/lookup/copy
+failures, consumed and written records, intentional limits, and records drained
+after producers stop. A producer or output failure makes the status `incomplete`.
+Filter and parse rejections are explicitly unmeasured; the counters do not measure
+all observed packets. See [Capture completion](docs/capture-lifecycle.md) for the
+fields and the scope of `complete`.
 
 Detailed flag reference + DSL `capture` clause's snaplen trade-off: [docs/ja/dsl-usage.md](./docs/ja/dsl-usage.md#performance-flags).
 

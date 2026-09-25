@@ -423,7 +423,7 @@ sudo bpf-ninja -i eth0 --mode entry "eth/ipv4/udp[dport==6081]" --mode exit "eth
 - pcap-ng の layout は exit mode と同じ verdict ごとの interface (`xdp:DROP`, `xdp:PASS`, ...) に、入口 record 用の `xdp:entry` を足したもの。
 - すべての record に `epb_packetid` option (pcap-ng 標準の「同じ packet を別の interface で見た印」) が入る。既定の値は「CPU 番号 << 48 | その CPU で入口の条件に一致した通し番号」で、同じ実行の入口と出口の record が同じ値を持つ。kernel のアドレスは含まない。
 - kernel 内では、取り置いた内容が同じ実行のものかを hook の packet identity (XDP なら `xdp_buff->data_hard_start`、tc / cgroup-skb なら `sk_buff` のアドレス、netfilter なら `bpf_nf_ctx->skb`) で確認する。この値は kernel の外には出ない。
-- raw-dump (`--raw-dump`) の record metadata は 28 byte になり、offset 20 に packet id が入る (形式 V2。V1 の dump は `convert` で読めない)。
+- raw-dump (`--raw-dump`) の record metadata は 28 byte になり、offset 20 に packet id が入る (形式 V3。V1/V2 の dump は `convert` で読めない)。
 - `merge` した pcap-ng と `convert` で raw-dump から起こした pcap-ng には `epb_packetid` が入らない (どちらも id を持たない書き出し経路を通る)。対応づけが要るときは shard ごとの pcap-ng か raw-dump そのものを使う。
 
 ## 出力ファイルレイアウト (per-CPU sharded)

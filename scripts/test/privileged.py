@@ -26,7 +26,7 @@ def allowed_skip(package, test, output, kernel):
         return "veth not supported on this kernel" in output
     if kernel == "6.1" and test in {
         "TestBpfEntryWithDSLFilterNetfilter", "TestBpfExitWithDSLFilterNetfilter",
-        "TestBpfFexitReturnLayoutNetfilter"
+        "TestBpfFexitReturnLayoutNetfilter", "TestBpfMultiPointLoad/netfilter-entry"
     }:
         return "BPF_PROG_TYPE_NETFILTER not supported" in output
     return False

@@ -32,3 +32,10 @@ class AuditTests(unittest.TestCase):
                   {"Package": package, "Test": test, "Action": "pass"},
                   {"Package": package, "Action": "pass"}]
         self.assertTrue(module.audit(events, {(package, test)}, "6.12"))
+
+    def test_multipoint_netfilter_skip_is_specific(self):
+        test = "TestBpfMultiPointLoad/netfilter-entry"
+        reason = "BPF_PROG_TYPE_NETFILTER not supported"
+        self.assertTrue(module.allowed_skip(module.PROGRAM, test, reason, "6.1"))
+        for name, message, kernel in ((test, reason, "6.6"), (test, "verifier failure", "6.1"), ("TestBpfMultiPointLoad", reason, "6.1")):
+            self.assertFalse(module.allowed_skip(module.PROGRAM, name, message, kernel))

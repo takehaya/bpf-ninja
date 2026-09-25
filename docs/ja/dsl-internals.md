@@ -600,7 +600,7 @@ eBPF の LDX は x86 上で little-endian で読みます。packet bytes は net
 
 ### 4.10 キャプチャレコードのメタデータ
 
-`captureWithRingbuf` と `captureXDPNative` は ringbuf スロットの先頭に 20 バイトのメタデータヘッダを置き、その後ろにパケット本体を続けます。正典は `internal/capture/capture.go` のコメントで、capture 側の `MetadataSize` と program 側の `metadataSize` は `TestMetadataSizeMatchesCapture` が同期を保証します。
+`captureWithRingbuf` と `captureXDPNative` は ringbuf スロットの先頭に 28 バイトのメタデータヘッダを置き、その後ろにパケット本体を続けます。正典は `internal/capture/capture.go` のコメントで、capture 側の `MetadataSize` と program 側の `metadataSize` は `TestMetadataSizeMatchesCapture` が同期を保証します。
 
 レイアウトは次のとおりです。全フィールドはホストエンディアンで、BPF の store がネイティブエンディアンで書くため、ユーザー空間は `binary.NativeEndian` で読みます。
 
@@ -612,6 +612,7 @@ eBPF の LDX は x86 上で little-endian で読みます。packet bytes は net
 | 13 | 1 | _pad | 予約 |
 | 14 | 2 | caplen | コピー済みパケット長 |
 | 16 | 4 | tag | マッチした set エントリの value。set 未マッチや set 無しのときは 0 |
+| 20 | 8 | packet_id | gated entry/exit の対応 ID。それ以外は 0 |
 
 tag は set lookup がヒットしたときに host スタックの専用スロット経由で書きます。複数の set をまたぐときはソース順で最後にマッチした set の value が入ります。value 幅が 8 バイトのときは下位 32 ビットだけを載せます。この tag を使ってパケットを set の value ごとに別々の pcap へ振り分ける機能が CLI の `--split-by-tag` で、詳細は [`dsl-usage.md`](./dsl-usage.md) を参照してください。
 
