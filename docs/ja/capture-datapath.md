@@ -63,7 +63,7 @@ RawSample = [ metadata 28B ] [ packet bytes (caplen B) ] [ trailing slack ]
 | offset | size | field        | 内容                                                  |
 |:------:|:----:|:-------------|:------------------------------------------------------|
 |   0    |  8   | kernel_ts_ns | `bpf_ktime_get_ns()` の値、CLOCK_MONOTONIC            |
-|   8    |  4   | action       | XDP return action、fexit のみ有効で entry と native は固定 |
+|   8    |  4   | action       | 対象プログラムの戻り値。単独 entry と native は固定 |
 |   12   |  1   | mode         | 0=entry/fentry, 1=exit/fexit, 2=xdp-native            |
 |   13   |  1   | _pad         | 0                                                     |
 |   14   |  2   | caplen       | 後続パケット領域のうち実際に有効なバイト数             |
@@ -76,7 +76,7 @@ RawSample = [ metadata 28B ] [ packet bytes (caplen B) ] [ trailing slack ]
 - 全マルチバイトフィールドはホストエンディアンです。BPF 側は `asm.StoreMem` でネイティブエンディアンに書くので、reader は `binary.NativeEndian` で読みます。
 - スロットは常に `metadataSize + maxCapLen` バイト予約されますが、producer が書くのは `28 + caplen` バイトだけです。残りの slack は未初期化メモリですが、submit すると予約全体が consumer から見えます。reader は `caplen` を信じてそこまでだけを読みます。
 - `tag` は set lookup がヒットしたときにマッチしたエントリの value が入ります。複数の set をまたぐときはソース順で最後にマッチした set の value になります。CLI の `--split-by-tag` はこの tag を使ってパケットを tag ごとに別々の pcap へ振り分けます。
-- `action` が意味を持つのは fexit だけです。fexit は XDP プログラムの戻り値である DROP/PASS/TX/REDIRECT を観測できるので、`where action == XDP_DROP` のような述語が書けます。fentry はまだ戻り値が決まっていないので action は無効です。
+- 単独の fexit と gated capture は対象プログラムの戻り値を観測できるので、exit 側で `where action == XDP_DROP` のような述語が書けます。gated capture は exit の判定後に取り置いた entry 画像を出すため、その entry record にも最終の戻り値が入ります。単独の fentry はまだ戻り値が決まっていないので action は無効です。
 
 ## ステージ③ per-CPU sharded ringbuf
 

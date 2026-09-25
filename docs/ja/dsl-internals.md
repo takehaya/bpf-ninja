@@ -607,7 +607,7 @@ eBPF の LDX は x86 上で little-endian で読みます。packet bytes は net
 | offset | size | field | 意味 |
 | --- | --- | --- | --- |
 | 0 | 8 | kernel_ts_ns | ingest 時の `bpf_ktime_get_ns` または HW rx timestamp |
-| 8 | 4 | action | XDP action。fexit のみ有効で、fentry と xdp-native は固定値 |
+| 8 | 4 | action | 対象プログラムの戻り値。gated entry にも有効で、単独 fentry と xdp-native は固定値 |
 | 12 | 1 | mode | 0 が entry、1 が exit、2 が xdp-native |
 | 13 | 1 | _pad | 予約 |
 | 14 | 2 | caplen | コピー済みパケット長 |
