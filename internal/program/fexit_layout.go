@@ -76,3 +76,7 @@ func fexitPrototypeOffset(proto *btf.FuncProto) (int16, error) {
 	}
 	return int16(len(proto.Params) * 8), nil
 }
+
+func loadSavedReturn(offset int16) asm.Instructions {
+	return asm.Instructions{asm.LoadMem(asm.R2, asm.R10, -48, asm.DWord), asm.LoadMem(asm.R2, asm.R2, offset, asm.Word), asm.StoreMem(asm.R10, savedReturnSlot, asm.R2, asm.Word)}
+}

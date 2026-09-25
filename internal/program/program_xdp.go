@@ -21,7 +21,6 @@ import (
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/asm"
-	"github.com/cilium/ebpf/btf"
 	"github.com/cilium/ebpf/link"
 	"github.com/takehaya/bpf-ninja/internal/attach"
 	"github.com/takehaya/bpf-ninja/internal/setmap"
@@ -188,15 +187,7 @@ func buildXDPNativeInsns(filterOut codegen.Output, eventsFD int, slots *pktSetSl
 	if XDPNativeBenchDrop {
 		finalAction = xdpDrop
 	}
-	insns = append(insns,
-		asm.Mov.Imm(asm.R0, finalAction).WithSymbol("exit"),
-		asm.Return(),
-	)
-	if len(filterOut.Callbacks) > 0 {
-		insns[0] = btf.WithFuncMetadata(insns[0], codegen.MainFilterFuncBTF("bpf_ninja_filter"))
-		insns = append(insns, filterOut.Callbacks...)
-	}
-	return insns
+	return finishProgram(insns, filterOut, finalAction)
 }
 
 // loadXDPPacketPointers sets up R6=ctx, R7=data, R8=data_end, R9=pkt_len.
@@ -239,7 +230,7 @@ func runFilterDirect(filter asm.Instructions) asm.Instructions {
 // tells userspace how many of the trailing payload bytes are real.
 // XDP-native always reports action = XDP_PASS (= 2) and mode = 2.
 //
-// Metadata layout matches capture.MetadataSize (20 B) — see
+// Metadata layout matches capture.MetadataSize (28 B) — see
 // internal/capture/capture.go for the wire format.
 //
 // Local stack slots used here (R10 negative offsets):
@@ -314,8 +305,15 @@ func captureXDPNative(eventsFD int, maxCapLen int, statsFD int) asm.Instructions
 		asm.LoadMem(asm.R1, asm.R10, tagSlot, asm.DWord),
 		asm.StoreMem(asm.R0, 16, asm.R1, asm.Word),
 
-		// --- bpf_xdp_load_bytes(ctx, 0, R0+20, copy_size) ---
-		// XDP-aware bounded read; dst = slot + metadataSize (= 20).
+		// --- packet id slot[20..28] = 0: xdp_md exposes no
+		// data_hard_start and native mode has no exit record to pair.
+		// Two 32-bit immediate stores: cilium/ebpf cannot marshal an
+		// 8-byte StoreImm (the immediate is 32-bit).
+		asm.StoreImm(asm.R0, 20, 0, asm.Word),
+		asm.StoreImm(asm.R0, 24, 0, asm.Word),
+
+		// --- bpf_xdp_load_bytes(ctx, 0, R0+28, copy_size) ---
+		// XDP-aware bounded read; dst = slot + metadataSize (= 28).
 		// Helper requires Linux 5.18+, which our verifier matrix
 		// (6.1+) satisfies.
 		//
@@ -329,7 +327,7 @@ func captureXDPNative(eventsFD int, maxCapLen int, statsFD int) asm.Instructions
 		asm.Mov.Reg(asm.R1, asm.R6),                                           // ctx
 		asm.Mov.Imm(asm.R2, 0),                                                // offset
 		asm.Mov.Reg(asm.R4, asm.R3),                                           // copy_size (umin=1)
-		asm.Mov.Reg(asm.R3, asm.R0), asm.Add.Imm(asm.R3, int32(metadataSize)), // dst = slot+20
+		asm.Mov.Reg(asm.R3, asm.R0), asm.Add.Imm(asm.R3, int32(metadataSize)), // dst = slot+28
 		asm.FnXdpLoadBytes.Call(),
 		asm.JNE.Imm(asm.R0, 0, "rb_copy_fail"),
 

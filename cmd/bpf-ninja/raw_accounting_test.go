@@ -69,8 +69,8 @@ func TestBpfRawAccountingOnSignal(t *testing.T) {
 	}
 	defer func() { _ = m.Close() }()
 	p, err := ebpf.NewProgram(&ebpf.ProgramSpec{Type: ebpf.XDP, License: "GPL", Instructions: asm.Instructions{
-		asm.LoadMapPtr(asm.R1, m.FD()), asm.Mov.Imm(asm.R2, 24), asm.Mov.Imm(asm.R3, 0), asm.FnRingbufReserve.Call(), asm.JEq.Imm(asm.R0, 0, "exit"),
-		asm.Mov.Imm(asm.R2, 0), asm.StoreMem(asm.R0, 0, asm.R2, asm.DWord), asm.StoreMem(asm.R0, 8, asm.R2, asm.DWord), asm.StoreMem(asm.R0, 16, asm.R2, asm.DWord), asm.StoreImm(asm.R0, 14, 4, asm.Half),
+		asm.LoadMapPtr(asm.R1, m.FD()), asm.Mov.Imm(asm.R2, 32), asm.Mov.Imm(asm.R3, 0), asm.FnRingbufReserve.Call(), asm.JEq.Imm(asm.R0, 0, "exit"),
+		asm.Mov.Imm(asm.R2, 0), asm.StoreMem(asm.R0, 0, asm.R2, asm.DWord), asm.StoreMem(asm.R0, 8, asm.R2, asm.DWord), asm.StoreMem(asm.R0, 16, asm.R2, asm.DWord), asm.StoreMem(asm.R0, 24, asm.R2, asm.DWord), asm.StoreImm(asm.R0, 14, 4, asm.Half),
 		asm.Mov.Reg(asm.R1, asm.R0), asm.Mov.Imm(asm.R2, 0), asm.FnRingbufSubmit.Call(), asm.Mov.Imm(asm.R0, 2).WithSymbol("exit"), asm.Return(),
 	}})
 	if err != nil {
@@ -95,7 +95,7 @@ func TestBpfRawAccountingOnSignal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := int64(output.RawDumpHeaderSize + 7*24); st.Size() != want {
+	if want := int64(output.RawDumpHeaderSize + 7*32); st.Size() != want {
 		t.Fatalf("raw file size=%d want=%d", st.Size(), want)
 	}
 	if ctl.stats.Consumed.Load() != 7 || ctl.written.Load() != 7 {

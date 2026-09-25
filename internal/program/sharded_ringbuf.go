@@ -153,7 +153,7 @@ func createShardedRingbuf(label string) (outer *ebpf.Map, inners []*ebpf.Map, er
 // the "exit" symbol the caller is responsible for emitting.
 //
 // statsFD > 0 routes a NULL reserve (ring full) to the "rb_fail" symbol
-// instead, which the caller emits via emitRBFailCounter so the drop is
+// instead, which the caller emits via emitExportTerminals so the drop is
 // counted; statsFD == 0 keeps the silent jump to "exit".
 func emitShardedRBReserve(eventsFD, statsFD int, reserveSize int32) asm.Instructions {
 	failSym := "exit"

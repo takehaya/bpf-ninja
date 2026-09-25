@@ -79,6 +79,11 @@ type Packet struct {
 	Mode      uint8  // 0=entry(fentry), 1=exit(fexit), 2=xdp-native
 	CapLen    uint16 // bytes the BPF side actually copied into Data
 	Tag       uint32 // set-map value of the matched entry (0 when no set matched)
+	// PacketID pairs the entry and exit records of one invocation in a
+	// gated (entry + exit) capture: an opaque cpu << 48 | per-CPU
+	// sequence, never a kernel address. Single-stage and xdp-native
+	// records carry 0.
+	PacketID uint64
 }
 
 // Reader reads captured packets from the ringbuf.
@@ -111,7 +116,7 @@ func NewReader(eventsMap *ebpf.Map, _ int) (*Reader, error) {
 
 // Ringbuf record layout emitted by captureWithRingbuf / captureXDPNative:
 //
-//	RawSample = [metadata (20B)] [packet bytes (caplen B)] [trailing slack]
+//	RawSample = [metadata (28B)] [packet bytes (caplen B)] [trailing slack]
 //	metadata:
 //	  u64 kernel_ts_ns (offset 0)  — bpf_ktime_get_ns() at packet ingest
 //	  u32 action       (offset 8)
@@ -119,16 +124,18 @@ func NewReader(eventsMap *ebpf.Map, _ int) (*Reader, error) {
 //	  u8  _pad         (offset 13)
 //	  u16 caplen       (offset 14)
 //	  u32 tag          (offset 16) — set-map value of the matched entry, 0 if none
+//	  u64 packet_id    (offset 20) — see Packet.PacketID
 //
 // All multi-byte fields are host-endian: BPF stores via asm.StoreMem
 // produce native-endian writes, so readers must use binary.NativeEndian.
 const (
-	MetadataSize   = 20
+	MetadataSize   = 28
 	OffsetKernelTs = 0
 	OffsetAction   = 8
 	OffsetMode     = 12
 	OffsetCapLen   = 14
 	OffsetTag      = 16
+	OffsetPacketID = 20
 )
 
 // RecordKernelTs reads the kernel_ts_ns field from a raw ringbuf record.
@@ -247,6 +254,7 @@ func ParseRawSample(raw []byte) (Packet, error) {
 		Mode:      raw[OffsetMode],
 		CapLen:    caplen,
 		Tag:       binary.NativeEndian.Uint32(raw[OffsetTag : OffsetTag+4]),
+		PacketID:  binary.NativeEndian.Uint64(raw[OffsetPacketID : OffsetPacketID+8]),
 		Data:      raw[MetadataSize:end],
 	}, nil
 }

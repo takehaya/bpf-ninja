@@ -20,6 +20,7 @@ var netfilterHook = &Hook{
 	// The hook sits at the IP layer: skb->data points at the network
 	// (L3) header, hence LinkTypeRaw and the L3-start capabilities.
 	PacketPrologue: nfPacketPrologue,
+	Identity:       nfIdentity,
 	EntryCaps:      nfhost.EntryCapabilities,
 	FexitCaps:      nfhost.FexitCapabilities,
 	// Mirrors nfhost.Actions; consistency is asserted by
@@ -30,6 +31,16 @@ var netfilterHook = &Hook{
 		{Value: 1, Name: "netfilter:NF_ACCEPT"},
 	},
 	LinkType: layers.LinkTypeRaw,
+}
+
+// nfIdentity loads ctx->skb (R6 is the bpf_nf_ctx; the prologue
+// overwrote R7 with skb->data, so the skb pointer is re-read here).
+func nfIdentity(dst asm.Register) (asm.Instructions, error) {
+	skbOff, err := nfCtxSkbOffset()
+	if err != nil {
+		return nil, fmt.Errorf("resolving struct bpf_nf_ctx offsets via BTF: %w", err)
+	}
+	return asm.Instructions{asm.LoadMem(dst, asm.R6, int16(skbOff), asm.DWord)}, nil
 }
 
 // nfPacketPrologue reads the packet window from a netfilter program's

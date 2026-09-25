@@ -229,3 +229,59 @@ func TestBpfFexitReturnLayoutNetfilter(t *testing.T) {
 		return unix.Sendto(fd, []byte("fexit-return-layout"), 0, destination)
 	})
 }
+
+// Multi-point entry and exit images use the same BTF-derived return slot,
+// including an observed subfunction with extra arguments.
+func TestBpfGatedFexitReturnLayout(t *testing.T) {
+	testutil.SkipIfNotRoot(t)
+	spec, err := ebpf.LoadCollectionSpec(testutil.CompileBPFSource(t, fexitLayoutSource))
+	if err != nil {
+		t.Fatal(err)
+	}
+	col, err := ebpf.NewCollection(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer col.Close()
+	target := col.Programs["layout_target"]
+	for _, emit := range []Emit{EmitBoth, EmitEntry, EmitExit} {
+		t.Run(fmt.Sprint(emit), func(t *testing.T) {
+			probe, err := LoadMultiPoint([]attach.Target{{Program: target, FuncName: "two", Type: ebpf.XDP}}, []Stage{{Expr: "eth"}, {Expr: "eth where action == XDP_PASS", IsFexit: true}}, nil, true, nil, emit)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = probe.Close() }()
+			if _, err := target.Run(&ebpf.RunOptions{Data: tcpPacket(0x99, 1234, 443)}); err != nil {
+				t.Fatal(err)
+			}
+			if err := probe.Quiesce(); err != nil {
+				t.Fatal(err)
+			}
+			records := 0
+			for _, m := range probe.InnerMaps {
+				r, err := fastrb.New(m.FD(), int(m.MaxEntries()))
+				if err != nil {
+					t.Fatal(err)
+				}
+				r.ReadBatch(func(raw []byte) {
+					records++
+					if action := binary.NativeEndian.Uint32(raw[8:12]); action != 2 {
+						t.Errorf("action=%d want actual return2, not argument99", action)
+					}
+				})
+				_ = r.Close()
+			}
+			want := 1
+			if emit == EmitBoth {
+				want = 2
+			}
+			stats, err := probe.ExportStats()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if records != want || stats.Submitted != uint64(want) || stats.CopyFail+stats.LookupMiss+stats.ReserveFail != 0 {
+				t.Fatalf("records=%d stats=%+v want=%d", records, stats, want)
+			}
+		})
+	}
+}

@@ -44,6 +44,14 @@ Supported hooks and how to name the target:
 
 `entry`/`exit` are non-invasive: the target program is unmodified, attach is via BPF trampoline. `xdp` is the standalone path for "I just want to capture, there's nothing else here". `tc-entry`/`tc-exit` remain as deprecated aliases for `entry`/`exit`.
 
+`--mode` is repeatable: `--mode entry EXPR --mode exit EXPR` captures **only the packets that match both** — the entry filter on the packet as the program received it, the exit filter on the packet as the program left it (after decap / rewrite) plus the verdict. The entry image is held in a per-CPU slot until the verdict is known, so you can ask for "the pre-decap header of every packet the program dropped" without exporting anything else. `--emit both` (default) writes the entry and the exit image, `--emit entry` / `--emit exit` just one. Entry records go to a `<hook>:entry` pcap-ng interface and every record carries an opaque `epb_packetid` (CPU + per-CPU sequence, no kernel address) shared by the two images of one invocation so they pair up. `-c` counts records (`-c 10` with `--emit both` is 5 pairs); `merge` and `convert` output drops the id, so pair on the per-CPU shard files or the raw-dump. Under ring pressure an entry record can appear without its exit twin (the exit-side reservation failed after the entry was written), so treat an unpaired entry as a drop, not as a verdict:
+
+
+A gated capture attaches two probes to the target, which kernels in the CVE-2026-92485 window (7.0 up to the 7.2.6 / 7.3-rc1 fix) refuse when the target performs tail calls, as Cilium and Katran's inline decap do. bpf-ninja stops with an explanation instead of attempting it, because the failed attach can leave the kernel's trampoline inconsistent and panic the machine. Capture one point at a time there, or use a kernel that carries the fix.
+```bash
+sudo bpf-ninja -i eth0 --mode entry "eth/ipv4/udp[dport==6081]" --mode exit "eth/ipv4/tcp where action == XDP_DROP" -w both.pcapng
+```
+
 ## Usage
 
 ```bash
@@ -183,6 +191,14 @@ Without `-w` (streaming to stdout), all CPUs are merged into a single pcap-ng st
 | `--busy-poll` | Spin the fast-reader shards instead of sleeping in `epoll_wait`. Burns a core per shard. **Requires `--fast-reader`** |
 | `--null-output` | Drop output entirely (bench only) |
 
+On exit every entry/exit capture prints one accounting line to stderr:
+
+```
+export stats: ringbuf_reserve_fail=N drained_at_stop=M
+```
+
+`N` records were dropped at the producer because that CPU's ring was full (`bpf_ringbuf_reserve` returned NULL; raise `--ringbuf-size` or move the reader off the RX core). `M` records were still committed in the rings when the capture stopped and were drained before exit (default reader only). Together with the written count this balances the chain observer runs → reserved → read → written.
+
 Detailed flag reference + DSL `capture` clause's snaplen trade-off: [docs/ja/dsl-usage.md](./docs/ja/dsl-usage.md#performance-flags).
 
 High-rate tuning — which lever in which order, and what doesn't work: [docs/ja/tuning.md](./docs/ja/tuning.md).
@@ -261,7 +277,8 @@ int parse_headers(struct xdp_md *ctx) {
 | `-i, --interface` | Network interface to capture on (XDP hook) | entry, exit, xdp |
 | `-p, --prog-id` | BPF program ID to attach to — any supported hook, auto-detected (alternative to `-i`) | entry, exit |
 | `--cgroup` | cgroup v2 path; targets the cgroup-skb program(s) attached to it (alternative to `-i` / `-p`) | entry, exit |
-| `--mode` | `entry` (default), `exit`, `xdp` (`tc-entry`/`tc-exit` are deprecated aliases) | — |
+| `--mode` | `entry` (default), `exit`, `xdp` (`tc-entry`/`tc-exit` are deprecated aliases). Repeatable: `--mode entry EXPR --mode exit EXPR` captures only packets matching both (see Modes above) | — |
+| `--emit` | With two `--mode`: `both` (default), `entry`, or `exit` — which image(s) to write for a packet that matched both filters | entry+exit |
 | `-w, --write` | Write to pcap file instead of stdout | all |
 | `-c, --count` | Stop after N packets (0 = unlimited) | all |
 | `-v, --verbose` | Verbose output to stderr | all |
@@ -385,3 +402,8 @@ bpf-ninja's design was inspired by the following projects:
 - [xdpcap](https://github.com/cloudflare/xdpcap) (Cloudflare) — tcpdump filter compilation via cBPF→eBPF ([cbpfc](https://github.com/cloudflare/cbpfc)), and the overall architecture of capturing XDP packets to pcap
 
 Capture shutdown, per-tag acknowledgements, output limits and the `capture status=...` counters are described in [Capture completion](docs/capture-lifecycle.md).
+## License
+
+bpf-ninja is licensed under the [Apache License 2.0](LICENSE).
+
+The eBPF programs that bpf-ninja generates and loads into the kernel declare the `GPL` license because they call GPL-only kernel helpers.

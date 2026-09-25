@@ -37,8 +37,8 @@ static long await_round(__u32 index, void *ctx) {
  return await_release(0,0);
 }
 SEC("xdp") int held_producer(struct xdp_md *ctx) {
- __u64 *record=reserve(&events,24,0); if (!record) return 0;
- record[0]=record[1]=record[2]=0;
+ __u64 *record=reserve(&events,32,0); if (!record) return 0;
+ record[0]=record[1]=record[2]=record[3]=0;
  __u32 key=0; volatile __u32 *entered=lookup(&control,&key);
  if (entered) *entered=1;
  loop(8,await_round,0,0);
