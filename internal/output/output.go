@@ -46,10 +46,18 @@ type ActionName struct {
 // Config selects the writer layout for one capture run. The zero value
 // is the fentry Ethernet layout.
 type Config struct {
+	// OnError is called once on the first write or flush failure, including
+	// background flushes. It must not block or call back into this Writer.
+	OnError func(error)
+
 	// IsFexit selects the exit-mode layout: one pcap-ng interface per
 	// verdict (Actions) so Wireshark shows the verdict as the
 	// interface name.
 	IsFexit bool
+
+	// RawReturn labels explicit function returns by their u32 bit pattern,
+	// without interpreting them as enclosing-hook verdicts.
+	RawReturn bool
 
 	// LinkType is the pcap-ng link type; the zero value means Ethernet.
 	LinkType layers.LinkType
@@ -93,6 +101,10 @@ type Writer struct {
 	flushStop chan struct{}
 	flushDone chan struct{}
 	flushMu   sync.Mutex
+	failure   error // first write/flush failure; protected by flushMu
+	closed    bool
+	closeOnce sync.Once
+	closeErr  error
 }
 
 // NewWriter creates a pcapng writer. If path is empty, writes to stdout.
@@ -247,8 +259,8 @@ func (w *Writer) ngInterface(name string) pcapgo.NgInterface {
 // ifaceIDForAction maps a verdict value to its pcap-ng interface id,
 // lazily adding a "<hook>:UNKNOWN(<n>)" interface for verdicts outside
 // the configured set (e.g. cgroup-skb egress congestion codes) so no
-// packet is ever silently attributed to the wrong verdict. Falls back
-// to interface 0 if the lazy add fails (a malformed file would be worse).
+// packet is ever silently attributed to the wrong verdict. A failed interface
+// write is retained as a terminal error and prevents further packet writes.
 func (w *Writer) ifaceIDForAction(action uint32) int {
 	if id, ok := w.actionToID[action]; ok {
 		return id
@@ -258,8 +270,12 @@ func (w *Writer) ifaceIDForAction(action uint32) int {
 		prefix = "verdict"
 	}
 	name := fmt.Sprintf("%s:UNKNOWN(%d)", prefix, int32(action))
+	if w.cfg.RawReturn {
+		name = fmt.Sprintf("return:0x%08x", action)
+	}
 	id, err := w.addInterface(name)
 	if err != nil {
+		_ = w.remember(err)
 		id = 0
 	}
 	w.actionToID[action] = id
@@ -277,6 +293,7 @@ func (w *Writer) ifaceIDByName(name string) int {
 	}
 	id, err := w.addInterface(name)
 	if err != nil {
+		_ = w.remember(err)
 		id = 0
 	}
 	w.nameToID[name] = id
@@ -285,38 +302,22 @@ func (w *Writer) ifaceIDByName(name string) int {
 
 // Write outputs a captured packet.
 func (w *Writer) Write(pkt capture.Packet) error {
-	// Serialize with the periodic flusher goroutine (Flush also holds
-	// flushMu) so writes and flushes don't race on the pcapng buffer or, for
-	// the fast writer, the shared outer bufio. Uncontended for writers with
-	// no flusher (plain -w, non-split), so the lock is ~free there.
-	w.flushMu.Lock()
-	defer w.flushMu.Unlock()
-	if w.fastWriter != nil {
-		if w.cfg.MultiPoint {
-			return w.fastWriter.WritePacketID(pkt.Timestamp, pkt.Data, w.ifaceIDForPacket(&pkt), pkt.PacketID)
-		}
-		return w.fastWriter.WritePacket(pkt.Timestamp, pkt.Data)
-	}
-	ci := gopacket.CaptureInfo{
-		Timestamp:     pkt.Timestamp,
-		CaptureLength: len(pkt.Data),
-		Length:        len(pkt.Data),
-	}
-	if w.actionToID != nil {
-		ci.InterfaceIndex = w.ifaceIDForAction(pkt.Action)
-	}
-	if err := w.pcapWriter.WritePacket(ci, pkt.Data); err != nil {
-		return fmt.Errorf("writing pcap packet: %w", err)
-	}
-	return nil
+	return w.WriteBatch([]capture.Packet{pkt})
 }
 
 // writePacketIface writes one packet to an explicit pcap-ng interface
 // id, bypassing the verdict→interface mapping. Only the shard merge
 // uses this (it resolves interfaces by name via ifaceIDByName).
-func (w *Writer) writePacketIface(ts time.Time, data []byte, ifaceID int) error {
+func (w *Writer) writePacketIface(ts time.Time, data []byte, ifaceID int) (err error) {
 	w.flushMu.Lock()
 	defer w.flushMu.Unlock()
+	defer func() { err = w.remember(err) }()
+	if w.failure != nil {
+		return w.failure
+	}
+	if w.closed {
+		return os.ErrClosed
+	}
 	if w.fastWriter != nil {
 		return w.fastWriter.WritePacket(ts, data)
 	}
@@ -333,14 +334,21 @@ func (w *Writer) writePacketIface(ts time.Time, data []byte, ifaceID int) error 
 }
 
 // WriteBatch writes multiple packets in one call.
-func (w *Writer) WriteBatch(pkts []capture.Packet) error {
+func (w *Writer) WriteBatch(pkts []capture.Packet) (err error) {
 	if len(pkts) == 0 {
 		return nil
 	}
-	// One lock for the whole batch (see Write): mutual exclusion with the
+	// One lock for the whole batch: mutual exclusion with the
 	// periodic flusher; uncontended for writers with no flusher.
 	w.flushMu.Lock()
 	defer w.flushMu.Unlock()
+	defer func() { err = w.remember(err) }()
+	if w.failure != nil {
+		return w.failure
+	}
+	if w.closed {
+		return os.ErrClosed
+	}
 	if w.fastWriter != nil {
 		for i := range pkts {
 			p := &pkts[i]
@@ -365,6 +373,9 @@ func (w *Writer) WriteBatch(pkts []capture.Packet) error {
 		ci.InterfaceIndex = 0
 		if w.actionToID != nil {
 			ci.InterfaceIndex = w.ifaceIDForAction(p.Action)
+			if w.failure != nil {
+				return w.failure
+			}
 		}
 		if err := w.pcapWriter.WritePacket(ci, p.Data); err != nil {
 			return fmt.Errorf("writing pcap packet: %w", err)
@@ -376,37 +387,59 @@ func (w *Writer) WriteBatch(pkts []capture.Packet) error {
 // Flush forces both the pcapng inner buffer and (when present) the
 // outer file bufio to drain to the underlying io.Writer / file.
 // Safe to call concurrently with the stdout flusher goroutine.
+// remember is called with flushMu held. A failed buffered write is terminal:
+// retrying after Close cannot recover bytes discarded by the underlying writer.
+func (w *Writer) remember(err error) error {
+	if w.failure == nil && err != nil {
+		w.failure = err
+		if w.cfg.OnError != nil {
+			w.cfg.OnError(err)
+		}
+	}
+	return w.failure
+}
+
 func (w *Writer) Flush() error {
 	w.flushMu.Lock()
 	defer w.flushMu.Unlock()
+	if w.closed {
+		return w.closeErr
+	}
+	return w.flushLocked()
+}
+
+func (w *Writer) flushLocked() error {
+	if w.failure != nil {
+		return w.failure
+	}
 	if w.pcapWriter != nil {
 		if err := w.pcapWriter.Flush(); err != nil {
-			return err
+			return w.remember(err)
 		}
 	}
 	if w.bufWriter != nil {
-		return w.bufWriter.Flush()
+		return w.remember(w.bufWriter.Flush())
 	}
 	return nil
 }
 
-// Close flushes and closes resources.
+// Close returns the same result on every call, including concurrent callers.
 func (w *Writer) Close() error {
-	if w.flushStop != nil {
-		close(w.flushStop)
-		<-w.flushDone
-		w.flushStop, w.flushDone = nil, nil
-	}
-	var errs []error
-	if err := w.Flush(); err != nil {
-		errs = append(errs, err)
-	}
-	if w.file != nil {
-		if err := w.file.Close(); err != nil {
-			errs = append(errs, err)
+	w.closeOnce.Do(func() {
+		if w.flushStop != nil {
+			close(w.flushStop)
+			<-w.flushDone
 		}
-	}
-	return errors.Join(errs...)
+		w.flushMu.Lock()
+		defer w.flushMu.Unlock()
+		err := w.flushLocked()
+		if w.file != nil {
+			err = errors.Join(err, w.file.Close())
+		}
+		w.closeErr = err
+		w.closed = true
+	})
+	return w.closeErr
 }
 
 // startStdoutFlusher starts a background goroutine that calls Flush()
@@ -443,7 +476,9 @@ func (w *Writer) startFlusher(interval time.Duration) {
 			case <-w.flushStop:
 				return
 			case <-ticker.C:
-				_ = w.Flush()
+				if w.Flush() != nil {
+					return
+				}
 			}
 		}
 	}()

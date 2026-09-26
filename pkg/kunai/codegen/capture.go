@@ -88,6 +88,28 @@ func inferFilterMinPrefix(p *ir.Program, where *ir.Condition) (prefix int) {
 			prefix = 0
 		}
 	}()
+	// Primary header sizes do not bound parser lookaheads, option-region
+	// end checks, or fields after variable advances. Until those bounds are
+	// statically proven, use the existing full scratch-window fallback.
+	// In particular, validating an unqueried TCP option region still needs
+	// its end to fit R1; copying only the 20-byte TCP prefix rejects it.
+	var needsFullWindow func(*ir.LayerInstance) bool
+	needsFullWindow = func(l *ir.LayerInstance) bool {
+		if l.NeedsRuntimeOffset || l.Quant != ast.QuantOne {
+			return true
+		}
+		for _, alt := range l.Alternation {
+			if needsFullWindow(alt) {
+				return true
+			}
+		}
+		return l.Spec != nil && (l.Spec.ParseStateMachine != nil || len(l.Spec.FlagTriggers) > 0)
+	}
+	for _, layer := range p.Layers {
+		if needsFullWindow(layer) {
+			return 0
+		}
+	}
 	if n, err := prefixHeaderSizeMaxAlt(p, nil, "filter min prefix"); err == nil {
 		prefix = n
 	}

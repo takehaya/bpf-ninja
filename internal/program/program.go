@@ -5,6 +5,7 @@ package program
 import (
 	"errors"
 	"fmt"
+	"sync"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/asm"
@@ -28,17 +29,22 @@ import (
 type Probe struct {
 	EventsMap *ebpf.Map
 	InnerMaps []*ebpf.Map // non-nil only in per-CPU sharded mode
-	// StatsMap is a 1-entry per-CPU u64 array; [0] counts bpf_ringbuf_reserve
-	// failures (ring full → record dropped at the producer). Tracing modes only.
-	StatsMap *ebpf.Map
-	IsFexit  bool
-	Warnings []string // resolver / codegen non-fatal notices; CLI prints to stderr
+	// StatsMap contains per-CPU export outcome counters (see ExportStats).
+	StatsMap   *ebpf.Map
+	closedTags *ebpf.Map
+	IsFexit    bool
+	Warnings   []string // resolver / codegen non-fatal notices; CLI prints to stderr
 
 	// --arg-echo diagnostic mode: non-nil EchoRing means this probe emits
 	// the target function's integer args (EchoParams, in order) to a
 	// dedicated ringbuf instead of capturing packets.
 	EchoRing   *ebpf.Map
 	EchoParams []attach.FuncParamInfo
+
+	detachOnce sync.Once
+	detachErr  error
+	closeOnce  sync.Once
+	closeErr   error
 
 	maps  []*ebpf.Map
 	progs []*ebpf.Program // one per attached (target prog, func) pair
@@ -63,40 +69,50 @@ func (p *Probe) AttachCount() int {
 	return len(p.links)
 }
 
-// Detach unlinks every tracing probe (the BPF programs stop running)
-// while keeping the maps open, so the rings can be drained and the
-// counters read with nothing still producing. Close frees the rest.
-func (p *Probe) Detach() error {
-	var errs []error
-	var failed []link.Link // kept so Close can retry and report them
-	for _, l := range p.links {
-		if err := l.Close(); err != nil {
-			errs = append(errs, err)
-			failed = append(failed, l)
+// Quiesce detaches all producers and waits for preexisting non-sleepable BPF
+// invocations before readers take their final watermark. Maps stay open.
+func (p *Probe) Quiesce() error {
+	p.detachOnce.Do(func() {
+		var errs []error
+		for _, l := range p.links {
+			errs = append(errs, l.Close())
 		}
+		p.links = nil
+		errs = append(errs, p.Barrier())
+		p.detachErr = errors.Join(errs...)
+	})
+	return p.detachErr
+}
+
+// Detach stops producers while retaining maps for reader drain.
+func (p *Probe) Detach() error { return p.Quiesce() }
+
+// Barrier uses the map-in-map update syscall's RCU grace period. Linux's
+// maybe_wait_bpf_programs waits for running BPF invocations before returning.
+// Replacing slot zero with the same map preserves its contents and all routes.
+// Our tracing and XDP programs are non-sleepable (never BPF_F_SLEEPABLE).
+func (p *Probe) Barrier() error {
+	if p.EventsMap == nil || len(p.InnerMaps) == 0 {
+		return nil
 	}
-	p.links = failed
-	return errors.Join(errs...)
+	if err := p.EventsMap.Update(uint32(0), p.InnerMaps[0], ebpf.UpdateAny); err != nil {
+		return fmt.Errorf("waiting for BPF producers: %w", err)
+	}
+	return nil
 }
 
 func (p *Probe) Close() error {
-	var errs []error
-	for _, l := range p.links {
-		if err := l.Close(); err != nil {
-			errs = append(errs, err)
+	p.closeOnce.Do(func() {
+		errs := []error{p.Quiesce()}
+		for _, pr := range p.progs {
+			errs = append(errs, pr.Close())
 		}
-	}
-	for _, pr := range p.progs {
-		if err := pr.Close(); err != nil {
-			errs = append(errs, err)
+		for _, m := range p.maps {
+			errs = append(errs, m.Close())
 		}
-	}
-	for _, m := range p.maps {
-		if err := m.Close(); err != nil {
-			errs = append(errs, err)
-		}
-	}
-	return errors.Join(errs...)
+		p.closeErr = errors.Join(errs...)
+	})
+	return p.closeErr
 }
 
 // Stage is one capture point on the same set of targets — the entry
@@ -108,6 +124,11 @@ func (p *Probe) Close() error {
 type Stage struct {
 	IsFexit bool
 	Expr    string
+}
+
+// LoadMultiExit observes the exit of each target with a shared filter.
+func LoadMultiExit(targets []attach.Target, expr string, filters []filter.TargetFilters, useDSL bool, sets []*setmap.Set) (*Probe, error) {
+	return LoadMultiPoint(targets, []Stage{{Expr: expr, IsFexit: true}}, filters, useDSL, sets, EmitBoth)
 }
 
 // LoadMultiPoint attaches the given stages of every target into one
@@ -213,19 +234,11 @@ func LoadMultiPoint(targets []attach.Target, stages []Stage, filters []filter.Ta
 		probe.Warnings = append(probe.Warnings, c.out.Warnings...)
 	}
 
-	// Export accounting: producer-side drops (NULL reserve) are counted
-	// here so the CLI can balance observer runs against records read.
-	statsMap, err := ebpf.NewMap(&ebpf.MapSpec{
-		Name: fmt.Sprintf("ninja_%s_st", label), Type: ebpf.PerCPUArray,
-		KeySize: 4, ValueSize: 8, MaxEntries: 1,
-	})
-	if err != nil {
+	if err := probe.initExportStats(); err != nil {
 		_ = probe.Close()
-		return nil, fmt.Errorf("creating stats map: %w", err)
+		return nil, err
 	}
-	probe.StatsMap = statsMap
-	probe.maps = append(probe.maps, statsMap)
-	statsFD := statsMap.FD()
+	statsFD := probe.StatsMap.FD()
 
 	// Gated capture: the per-CPU hold slot carrying the entry image
 	// (header only when just the exit image is emitted).
@@ -272,10 +285,22 @@ func LoadMultiPoint(targets []attach.Target, stages []Stage, filters []filter.Ta
 		scratchFD = scratchMap.FD()
 	}
 
-	// Instructions are built per (target, stage): the packet-filter part
-	// depends only on progType and the shared maps, but arg-filter
-	// offsets are resolved against each target func's own BTF param
-	// layout, and each stage has its own filter and attach type.
+	gateFD := 0
+	hasSets := len(sets) > 0
+	for _, tf := range filters {
+		hasSets = hasSets || len(tf.Sets) > 0
+	}
+	if hasSets {
+		gateFD, err = probe.initTagBarrier()
+		if err != nil {
+			_ = probe.Close()
+			return nil, err
+		}
+	}
+
+	// Instructions are built per target: the packet-filter part depends
+	// only on progType and the shared maps, but arg-filter offsets are
+	// resolved against each target func's own BTF param layout.
 	for i, t := range targets {
 		var tf filter.TargetFilters
 		if filters != nil {
@@ -288,15 +313,23 @@ func LoadMultiPoint(targets []attach.Target, stages []Stage, filters []filter.Ta
 		for si := len(stages) - 1; si >= 0; si-- {
 			st, c := stages[si], comp[si]
 			stLabel, attachType := tracingLabel(st.IsFexit)
+			var returnOffset int16
+			if st.IsFexit {
+				returnOffset, err = fexitReturnOffset(t.Program, t.FuncName)
+				if err != nil {
+					_ = probe.Close()
+					return nil, fmt.Errorf("fexit target %s: %w", t.FuncName, err)
+				}
+			}
 			var insns asm.Instructions
 			var err error
 			switch {
 			case gated && !st.IsFexit:
-				insns, err = buildGatedEntryInsns(h, c.out, tf, holdFD, scratchFD, c.slots, c.pktRefs, emit, entryCapLen)
+				insns, err = buildGatedEntryInsns(h, c.out, tf, holdFD, scratchFD, c.slots, c.pktRefs, emit, entryCapLen, gateFD)
 			case gated:
-				insns, err = buildGatedExitInsns(h, c.out, tf, outerMap.FD(), holdFD, statsFD, scratchFD, c.slots, c.pktRefs, emit, entryCapLen)
+				insns, err = buildGatedExitInsns(h, c.out, tf, outerMap.FD(), holdFD, statsFD, scratchFD, c.slots, c.pktRefs, emit, entryCapLen, returnOffset, gateFD)
 			default:
-				insns, err = buildTracingInsns(c.out, tf, outerMap.FD(), scratchFD, statsFD, st.IsFexit, progType, c.slots, c.pktRefs)
+				insns, err = buildTracingInsns(c.out, tf, outerMap.FD(), scratchFD, statsFD, st.IsFexit, returnOffset, progType, c.slots, c.pktRefs, gateFD)
 			}
 			if err != nil {
 				_ = probe.Close()
@@ -387,17 +420,13 @@ func compileFilterWithSlots(expr string, useDSL, isFexit bool, progType ebpf.Pro
 		return codegen.Output{}, nil
 	}
 	if useDSL {
-		// fexit attaches see the host retval at args[1] (XDP action
-		// or TC verdict, ABI shared); fentry has no action value yet,
-		// so action atoms are disabled. The bpf-ninja host wrapper saves
-		// the tracing args ptr at stack[-48] in either case, which is
-		// exactly the ABI every FexitFetcher implementation expects.
-		// Per-hook capability details (action vocab, VLAN layout) live
-		// in the internal/hook registry entries.
+		// Per-target wrappers save the BTF-derived return in one canonical
+		// slot, allowing mixed arities to share this filter compilation.
 		var caps codegen.Capabilities
 		if h, ok := hook.ByProgramType(progType); ok {
 			if isFexit {
 				caps = h.FexitCaps()
+				caps.Lang.ActionFetcher = savedReturnFetcher{}
 			} else {
 				caps = h.EntryCaps()
 			}
@@ -453,8 +482,8 @@ func compileFilterWithSlots(expr string, useDSL, isFexit bool, progType ebpf.Pro
 //   R9 = パケット長
 //
 // スタックレイアウト (R10 からの負オフセット):
-//   -8:  metadata: u32 action
-//   -12: metadata: u8 mode + u8 _pad[3]
+//   -8:  matched tag (u64 slot)
+//   -12: canonical fexit return value (u32)
 //   -16: map lookup の key
 //   -24: scratch buffer ポインタ (フィルタ時のみ)
 //   -48: tracing args ポインタの退避
@@ -564,33 +593,20 @@ const (
 	metadataSize = 28
 )
 
-func buildTracingInsns(filterOut codegen.Output, tf filter.TargetFilters, eventsFD, scratchFD, statsFD int, isFexit bool, progType ebpf.ProgramType, slots *pktSetSlots, pktRefs []string) (asm.Instructions, error) {
+func buildTracingInsns(filterOut codegen.Output, tf filter.TargetFilters, eventsFD, scratchFD, statsFD int, isFexit bool, returnOffset int16, progType ebpf.ProgramType, slots *pktSetSlots, pktRefs []string, gateFD int) (asm.Instructions, error) {
 	h, ok := hook.ByProgramType(progType)
 	if !ok {
 		return nil, hook.UnsupportedTypeError(progType)
 	}
-	insns, err := buildFilterGate(h, filterOut, tf, scratchFD, slots, pktRefs)
+	insns, err := buildFilterGate(h, filterOut, tf, scratchFD, slots, pktRefs, isFexit, returnOffset)
 	if err != nil {
 		return nil, err
 	}
+	insns = append(insns, emitTagBarrier(gateFD)...)
 	// Single-stage records carry packet id 0.
 	packetID := asm.Instructions{asm.Mov.Imm(asm.R1, 0)}
 	insns = append(insns, captureWithRingbuf(eventsFD, statsFD, isFexit, filterOut.Capture.MaxCapLen, packetID)...)
-	return finishProgram(appendRBFailCounter(insns, statsFD), filterOut, 0), nil
-}
-
-// appendRBFailCounter closes a capture body that reserved ring slots:
-// the success path jumps over the "rb_fail" block, which counts a NULL
-// bpf_ringbuf_reserve in stats[0] and falls through to "exit". Emitted
-// only with a stats map (statsFD >= 0; -1 = none); emitShardedRBReserve
-// then jumps to "rb_fail" instead of "exit". Without one the block
-// would be unreachable, which the verifier rejects.
-func appendRBFailCounter(insns asm.Instructions, statsFD int) asm.Instructions {
-	if statsFD < 0 {
-		return insns
-	}
-	insns = append(insns, asm.Ja.Label("exit"))
-	return append(insns, emitRBFailCounter(statsFD)...)
+	return finishProgram(append(insns, emitExportTerminals(statsFD)...), filterOut, 0), nil
 }
 
 // finishProgram appends the tail every generated program shares: the
@@ -611,10 +627,13 @@ func finishProgram(insns asm.Instructions, filterOut codegen.Output, ret int32) 
 // hook prologue (args[0] = the host packet ctx, a trusted BTF pointer
 // the trampoline guarantees) followed by buildFilterBody. Falls through
 // on match; every miss jumps to the "exit" label the caller must define.
-func buildFilterGate(h *hook.Hook, filterOut codegen.Output, tf filter.TargetFilters, scratchFD int, slots *pktSetSlots, pktRefs []string) (asm.Instructions, error) {
+func buildFilterGate(h *hook.Hook, filterOut codegen.Output, tf filter.TargetFilters, scratchFD int, slots *pktSetSlots, pktRefs []string, isFexit bool, returnOffset int16) (asm.Instructions, error) {
 	insns, err := h.PacketPrologue()
 	if err != nil {
 		return nil, err
+	}
+	if isFexit {
+		insns = append(insns, loadSavedReturn(returnOffset)...)
 	}
 	body, err := buildFilterBody(filterOut, tf, scratchFD, slots, pktRefs)
 	if err != nil {
@@ -742,7 +761,7 @@ func runFilter(filter asm.Instructions, scratchFD, scanLen int) asm.Instructions
 //	R7 = data start
 //	R8 = data_end
 //	R9 = pkt_len
-//	stack[-48] = saved tracing args ptr (for fexit action lookup)
+//	stack[-12] = canonical fexit action; stack[-48] = saved tracing args ptr
 //
 // Local stack slots used here:
 //
@@ -791,8 +810,7 @@ func captureWithRingbuf(eventsFD, statsFD int, isFexit bool, maxCapLen int, pack
 	// --- Write action+mode metadata at slot[8..14] ---
 	if isFexit {
 		insns = append(insns,
-			asm.LoadMem(asm.R2, asm.R10, -48, asm.DWord),
-			asm.LoadMem(asm.R2, asm.R2, 8, asm.DWord), // args[1] = XDP action
+			asm.LoadMem(asm.R2, asm.R10, savedReturnSlot, asm.Word),
 			asm.StoreMem(asm.R0, 8, asm.R2, asm.Word),
 			asm.StoreImm(asm.R0, 12, 1, asm.Byte), // mode = 1 (exit)
 		)
@@ -828,6 +846,7 @@ func captureWithRingbuf(eventsFD, statsFD int, isFexit bool, maxCapLen int, pack
 		asm.Mov.Reg(asm.R2, asm.R3),
 		asm.Mov.Reg(asm.R3, asm.R7),
 		asm.FnProbeReadKernel.Call(),
+		asm.JNE.Imm(asm.R0, 0, "rb_copy_fail"),
 	)
 
 	// --- bpf_ringbuf_submit(reservation_ptr, RingbufSubmitFlags) ---

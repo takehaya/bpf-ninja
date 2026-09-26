@@ -51,7 +51,9 @@ import (
 //	20  u32 tag      set-map value
 //	24  u64 seq      per-CPU count of matched entries; (cpu << 48 | seq) is
 //	                 the opaque packet id both records carry
-//	32  u8  bytes[entryCapLen]  (absent when only the exit image is emitted)
+//	32  u32 copy_error  entry snapshot error, checked after exit selection
+//	36  u32 padding
+//	40  u8  bytes[entryCapLen]  (absent when only the exit image is emitted)
 
 // Emit selects which records a gated (entry + exit) capture emits for a
 // packet that matched both stages.
@@ -84,13 +86,14 @@ func ParseEmit(s string) (Emit, error) {
 }
 
 const (
-	holdTs     = 0
-	holdFrame  = 8
-	holdCapLen = 16
-	holdValid  = 18
-	holdTag    = 20
-	holdSeq    = 24
-	holdHdr    = 32
+	holdTs      = 0
+	holdFrame   = 8
+	holdCapLen  = 16
+	holdValid   = 18
+	holdTag     = 20
+	holdSeq     = 24
+	holdCopyErr = 32
+	holdHdr     = 40
 )
 
 // emitHoldLookup loads the per-CPU hold slot pointer into R8 (jumping to
@@ -110,11 +113,12 @@ func emitHoldLookup(holdFD int) asm.Instructions {
 // buildGatedEntryInsns is the fentry half: filter gate, then on match
 // write the hold slot (and the entry bytes unless only the exit image is
 // wanted). Never emits to the ring.
-func buildGatedEntryInsns(h *hook.Hook, filterOut codegen.Output, tf filter.TargetFilters, holdFD, scratchFD int, slots *pktSetSlots, pktRefs []string, emit Emit, entryCapLen int) (asm.Instructions, error) {
-	insns, err := buildFilterGate(h, filterOut, tf, scratchFD, slots, pktRefs)
+func buildGatedEntryInsns(h *hook.Hook, filterOut codegen.Output, tf filter.TargetFilters, holdFD, scratchFD int, slots *pktSetSlots, pktRefs []string, emit Emit, entryCapLen int, gateFD int) (asm.Instructions, error) {
+	insns, err := buildFilterGate(h, filterOut, tf, scratchFD, slots, pktRefs, false, 0)
 	if err != nil {
 		return nil, err
 	}
+	insns = append(insns, emitTagBarrier(gateFD)...)
 	identity, err := h.Identity(asm.R1)
 	if err != nil {
 		return nil, err
@@ -133,6 +137,7 @@ func buildGatedEntryInsns(h *hook.Hook, filterOut codegen.Output, tf filter.Targ
 		asm.Mov.Imm(asm.R3, int32(entryCapLen)),
 		asm.StoreMem(asm.R8, holdCapLen, asm.R3, asm.Half).WithSymbol("gh_cap_ok"),
 		asm.StoreImm(asm.R8, holdValid, 1, asm.Half),
+		asm.StoreImm(asm.R8, holdCopyErr, 0, asm.Word),
 		asm.LoadMem(asm.R1, asm.R10, tagSlot, asm.DWord),
 		asm.StoreMem(asm.R8, holdTag, asm.R1, asm.Word),
 		// seq++ : the opaque per-CPU packet id of this invocation
@@ -147,6 +152,7 @@ func buildGatedEntryInsns(h *hook.Hook, filterOut codegen.Output, tf filter.Targ
 			asm.Mov.Reg(asm.R2, asm.R3),
 			asm.Mov.Reg(asm.R3, asm.R7),
 			asm.FnProbeReadKernel.Call(),
+			asm.StoreMem(asm.R8, holdCopyErr, asm.R0, asm.Word),
 		)
 	}
 	return finishProgram(insns, filterOut, 0), nil
@@ -155,7 +161,7 @@ func buildGatedEntryInsns(h *hook.Hook, filterOut codegen.Output, tf filter.Targ
 // buildGatedExitInsns is the fexit half: consume the hold slot (bail out
 // cheaply when the entry stage did not match), run the exit filter, and
 // on match emit the entry image from the hold and/or the exit image.
-func buildGatedExitInsns(h *hook.Hook, filterOut codegen.Output, tf filter.TargetFilters, eventsFD, holdFD, statsFD, scratchFD int, slots *pktSetSlots, pktRefs []string, emit Emit, entryCapLen int) (asm.Instructions, error) {
+func buildGatedExitInsns(h *hook.Hook, filterOut codegen.Output, tf filter.TargetFilters, eventsFD, holdFD, statsFD, scratchFD int, slots *pktSetSlots, pktRefs []string, emit Emit, entryCapLen int, returnOffset int16, gateFD int) (asm.Instructions, error) {
 	identity, err := h.Identity(asm.R1)
 	if err != nil {
 		return nil, err
@@ -165,6 +171,7 @@ func buildGatedExitInsns(h *hook.Hook, filterOut codegen.Output, tf filter.Targe
 		return nil, err
 	}
 
+	insns = append(insns, loadSavedReturn(returnOffset)...)
 	// --- consume the hold before any filter work ---
 	insns = append(insns, emitHoldLookup(holdFD)...)
 	insns = append(insns,
@@ -183,6 +190,18 @@ func buildGatedExitInsns(h *hook.Hook, filterOut codegen.Output, tf filter.Targe
 		return nil, err
 	}
 	insns = append(insns, body...)
+	insns = append(insns, emitTagBarrier(gateFD)...)
+	if gateFD > 0 {
+		// The entry image may carry a different set tag from the exit image.
+		// A tombstone for either image prevents later export of that tag.
+		insns = append(insns, asm.LoadMem(asm.R1, asm.R8, holdTag, asm.Word), asm.StoreMem(asm.R10, -16, asm.R1, asm.Word), asm.LoadMapPtr(asm.R1, gateFD), asm.Mov.Reg(asm.R2, asm.R10), asm.Add.Imm(asm.R2, -16), asm.FnMapLookupElem.Call(), asm.JNE.Imm(asm.R0, 0, "exit"))
+	}
+
+	if emit != EmitExit {
+		// Count a failed entry snapshot only after both filters selected this
+		// invocation. No ring record has been reserved, so skip the discard path.
+		insns = append(insns, asm.LoadMem(asm.R1, asm.R8, holdCopyErr, asm.Word), asm.JNE.Imm(asm.R1, 0, "rb_copy_count"))
+	}
 
 	// --- packet id for both records: cpu << 48 | hold.seq, parked in
 	// R6 (ctx is not read again after the filter) ---
@@ -196,6 +215,10 @@ func buildGatedExitInsns(h *hook.Hook, filterOut codegen.Output, tf filter.Targe
 
 	if emit != EmitExit {
 		insns = append(insns, captureFromHold(eventsFD, statsFD, entryCapLen, packetID)...)
+		if emit == EmitBoth && statsFD > 0 {
+			count := emitExportCounter(statsFD, statSubmitted, "hold_submitted")
+			insns = append(insns, count[:len(count)-1]...)
+		}
 	}
 	if emit != EmitEntry {
 		// ponytail: a failed reserve here leaves the entry record just
@@ -203,7 +226,7 @@ func buildGatedExitInsns(h *hook.Hook, filterOut codegen.Output, tf filter.Targe
 		// submitting either if pairs must be atomic under ring pressure.
 		insns = append(insns, captureWithRingbuf(eventsFD, statsFD, true, filterOut.Capture.MaxCapLen, packetID)...)
 	}
-	return finishProgram(appendRBFailCounter(insns, statsFD), filterOut, 0), nil
+	return finishProgram(append(insns, emitExportTerminals(statsFD)...), filterOut, 0), nil
 }
 
 // captureFromHold emits the entry image kept in the hold slot (R8) as a
@@ -223,8 +246,7 @@ func captureFromHold(eventsFD, statsFD, entryCapLen int, packetID asm.Instructio
 		asm.LoadMem(asm.R1, asm.R8, holdTs, asm.DWord),
 		asm.StoreMem(asm.R0, 0, asm.R1, asm.DWord),
 		// action = args[1] (the verdict this fexit sees), mode = 0 (entry image)
-		asm.LoadMem(asm.R2, asm.R10, -48, asm.DWord),
-		asm.LoadMem(asm.R2, asm.R2, 8, asm.DWord),
+		asm.LoadMem(asm.R2, asm.R10, savedReturnSlot, asm.Word),
 		asm.StoreMem(asm.R0, 8, asm.R2, asm.Word),
 		asm.StoreImm(asm.R0, 12, 0, asm.Byte),
 		asm.StoreImm(asm.R0, 13, 0, asm.Byte),
@@ -246,6 +268,7 @@ func captureFromHold(eventsFD, statsFD, entryCapLen int, packetID asm.Instructio
 		asm.Mov.Reg(asm.R2, asm.R3),
 		asm.Mov.Reg(asm.R3, asm.R8), asm.Add.Imm(asm.R3, holdHdr),
 		asm.FnProbeReadKernel.Call(),
+		asm.JNE.Imm(asm.R0, 0, "rb_copy_fail"),
 		// submit
 		asm.LoadMem(asm.R1, asm.R10, -32, asm.DWord),
 		asm.Mov.Imm(asm.R2, int32(RingbufSubmitFlags)),

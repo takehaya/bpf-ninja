@@ -9,6 +9,8 @@ on:
       - '**.go'
       - '**.p4'
       - '.github/workflows/bpf_load_test.yaml'
+      - 'scripts/test/**'
+      - 'Makefile'
   pull_request:
     branches: [main]
     paths:
@@ -16,6 +18,8 @@ on:
       - '**.go'
       - '**.p4'
       - '.github/workflows/bpf_load_test.yaml'
+      - 'scripts/test/**'
+      - 'Makefile'
 
 jobs:
   bpf-load-test:
@@ -47,7 +51,7 @@ jobs:
           go-version-file: ./go.mod
 
       - name: Install libpcap-dev
-        run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends libpcap-dev gcc-multilib
+        run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends libpcap-dev libbpf-dev clang gcc-multilib
 
       - name: Cache vimto binary
         uses: actions/cache@v4
@@ -106,8 +110,8 @@ jobs:
       - name: Run BPF load test
         run: |
           set -o pipefail
-          vimto -sudo -kernel :${{ matrix.kernel }} -- \
-            go test -v -count 1 -timeout 5m ./internal/program/ -run TestBpf \
+          python3 scripts/test/privileged.py --kernel ${{ matrix.kernel }} \
+            --log bpf_load_kernel_${{ matrix.kernel }}.jsonl \
             2>&1 | tee bpf_load_kernel_${{ matrix.kernel }}.log
 
       # E4 verifier matrix: extract the per-(filter, host) verdict from
@@ -142,12 +146,5 @@ jobs:
           path: |
             verifier_matrix_kernel_${{ matrix.kernel }}.csv
             bpf_load_kernel_${{ matrix.kernel }}.log
+            bpf_load_kernel_${{ matrix.kernel }}.jsonl
           retention-days: 30
-
-      # dsltest exercises the full DSL → eBPF pipeline end-to-end via
-      # BPF_PROG_TEST_RUN against gopacket-built frames. Adding it here
-      # gives ParserCounter (and any future codegen shape introduced
-      # via synthetic vocabs in dsltest) the same 4-kernel verifier
-      # coverage as the bundled-vocab paths above.
-      - name: Run DSL E2E test
-        run: vimto -sudo -kernel :${{ matrix.kernel }} -- go test -v -count 1 -timeout 5m ./pkg/kunai/dsltest/

@@ -86,6 +86,8 @@ func TestVlanUntagAtTCIngress(t *testing.T) {
 			asm.LSh.Imm(asm.R3, 8),
 			asm.LoadMem(asm.R9, asm.R7, 13, asm.Byte),
 			asm.Or.Reg(asm.R3, asm.R9),
+			// Background IPv6/ARP must not overwrite this fixture's record.
+			asm.JNE.Imm(asm.R3, 0x0800, "out"),
 			asm.StoreMem(asm.R0, 0, asm.R3, asm.Word),
 			asm.LoadMem(asm.R4, asm.R6, skbVlanPresent, asm.Word),
 			asm.StoreMem(asm.R0, 4, asm.R4, asm.Word),

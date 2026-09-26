@@ -571,7 +571,7 @@ func assignStateOffsets(states []*ParseState, entryIdx int, source string) error
 				continue
 			}
 			if succ >= 0 && succ < len(states) && IsMultiStateLoopEntry(states, succ) &&
-				s.Trans.Kind == TransDirect && s.Trans.Target == succ {
+				IsMultiStateLoopSibling(states, fr.idx) && LoopSiblingTarget(s) == succ {
 				// Multi-state self-loop entry (TLV walk parse_options
 				// shape): a direct edge from a sibling back to the
 				// entry is the per-iteration loop-back, which the
@@ -668,6 +668,9 @@ func buildState(s *p4lite.State, ctx *buildCtx) (*ParseState, error) {
 	for _, stmt := range s.Stmts {
 		switch v := stmt.(type) {
 		case *p4lite.ExtractStmt:
+			if len(ps.Advances) > 0 || len(ps.Counters) > 0 {
+				return nil, fmt.Errorf("%s:%s: pkt.extract must precede counter operations and pkt.advance in a state", ctx.source, v.Pos)
+			}
 			op, err := buildExtract(v, ctx)
 			if err != nil {
 				return nil, err
@@ -681,11 +684,25 @@ func buildState(s *p4lite.State, ctx *buildCtx) (*ParseState, error) {
 			if err != nil {
 				return nil, err
 			}
+			if len(ps.Advances) > 0 && (op.Kind == AdvanceOpField || ps.Advances[0].Kind == AdvanceOpField) {
+				return nil, fmt.Errorf("%s:%s: field-based pkt.advance requires its own state", ctx.source, v.Pos)
+			}
 			ps.Advances = append(ps.Advances, op)
 		case *p4lite.CounterCallStmt:
 			op, err := buildCounter(v, ctx)
 			if err != nil {
 				return nil, err
+			}
+			// Callback lowering evaluates cursor-dependent decrements before
+			// advances. Reject the opposite source order rather than silently
+			// reading another option's length.
+			if op.DecrementLookaheadByteOffR && len(ps.Advances) != 0 {
+				return nil, fmt.Errorf("%s:%s: lookahead counter decrement must precede pkt.advance", ctx.source, v.Pos)
+			}
+			// A literal decrement commutes with advances. Other counters read
+			// cursor/header-relative bytes and must keep the canonical order.
+			if len(ps.Advances) > 0 && (op.Kind != CounterOpDecrement || op.DecrementTarget != "") {
+				return nil, fmt.Errorf("%s:%s: cursor-dependent counter operation must precede pkt.advance", ctx.source, v.Pos)
 			}
 			ps.Counters = append(ps.Counters, op)
 		default:
@@ -1216,6 +1233,34 @@ func resolveFieldRef(keyPath string, ctx *buildCtx, pos p4lite.Position) (FieldR
 	return FieldRef{}, fmt.Errorf("%s:%s: select key %q references unknown parser parameter %q", ctx.source, pos, keyPath, head)
 }
 
+// LoopSiblingTarget returns the unique loop continuation of a sibling.
+// A field select may reject malformed extracted headers before continuing.
+func LoopSiblingTarget(s *ParseState) int {
+	if s.Trans.Kind == TransDirect {
+		return s.Trans.Target
+	}
+	if s.Trans.Kind != TransSelect || s.Trans.Select == nil || len(s.Extracts) != 1 || len(s.Advances) != 0 {
+		return -1
+	}
+	sel := s.Trans.Select
+	if sel.Default != StateReject {
+		return -1
+	}
+	for _, k := range sel.Keys {
+		if k.Kind != SelectKeyField || k.Field.HeaderName != s.Extracts[0].HeaderName {
+			return -1
+		}
+	}
+	target := -1
+	for _, c := range sel.Cases {
+		if c.Target < 0 || (target >= 0 && target != c.Target) {
+			return -1
+		}
+		target = c.Target
+	}
+	return target
+}
+
 // IsMultiStateLoopEntry reports whether `idx` is the entry of an
 // indirect (multi-state) self-loop suitable for the TLV-walk codegen
 // path. The shape is:
@@ -1230,8 +1275,9 @@ func resolveFieldRef(keyPath string, ctx *buildCtx, pos p4lite.Position) (FieldR
 //     termination + per-iter kind dispatch — the canonical TNA form
 //     for byte-bounded TLV walks like IPv4 options).
 //   - Every case (including default) targets either accept/reject
-//     OR a "sibling" state whose only transition is a TransDirect
-//     back to the entry. Sibling bodies inline into the callback.
+//     OR a sibling that returns to the entry directly or after a
+//     field-select validation with a reject default. Sibling bodies inline
+//     into the callback.
 //
 // Loader and codegen both branch on this shape — the loader to skip
 // cycle-internal edges in assignStateOffsets and to relax the gating
@@ -1260,7 +1306,7 @@ func IsMultiStateLoopEntry(states []*ParseState, idx int) bool {
 			return false
 		}
 		sib := states[target]
-		return sib.Trans.Kind == TransDirect && sib.Trans.Target == idx
+		return LoopSiblingTarget(sib) == idx
 	}
 	if !check(sel.Default) {
 		return false
@@ -1329,10 +1375,7 @@ func IsMultiStateLoopSibling(states []*ParseState, idx int) bool {
 		return false
 	}
 	s := states[idx]
-	if s.Trans.Kind != TransDirect {
-		return false
-	}
-	target := s.Trans.Target
+	target := LoopSiblingTarget(s)
 	if target < 0 || target >= len(states) {
 		return false
 	}
@@ -1365,10 +1408,7 @@ func dispatchKindForSibling(states []*ParseState, siblingIdx int) (uint64, bool)
 		return 0, false
 	}
 	s := states[siblingIdx]
-	if s.Trans.Kind != TransDirect {
-		return 0, false
-	}
-	entryIdx := s.Trans.Target
+	entryIdx := LoopSiblingTarget(s)
 	if entryIdx < 0 || entryIdx >= len(states) {
 		return 0, false
 	}
@@ -1505,7 +1545,7 @@ func isTrivialMachine(states []*ParseState, entryIdx int, primary *p4lite.Header
 		return false
 	}
 	s := states[0]
-	if s.Name != "start" || len(s.Extracts) != 1 {
+	if s.Name != "start" || len(s.Extracts) != 1 || len(s.Advances) != 0 || len(s.Counters) != 0 {
 		return false
 	}
 	ex := s.Extracts[0]

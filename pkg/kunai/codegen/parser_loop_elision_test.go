@@ -14,10 +14,9 @@ import (
 	"github.com/takehaya/bpf-ninja/pkg/kunai/vocab"
 )
 
-// TestAccumulatorGatedToLookaheadOnly pins that the accumulator plan is
-// only eligible for lookahead-only TLV walks (TCP options), not counter-
-// driven ones (Geneve), so counter-driven layers keep their native path.
-func TestAccumulatorGatedToLookaheadOnly(t *testing.T) {
+// The accumulator is retained for length-byte option walks (TCP), while
+// other counter-driven formats (Geneve) keep their own lowering.
+func TestAccumulatorGatedToLengthByteWalk(t *testing.T) {
 	v, err := dslvocab.Bundled()
 	if err != nil {
 		t.Fatalf("dslvocab.Bundled: %v", err)
@@ -26,15 +25,15 @@ func TestAccumulatorGatedToLookaheadOnly(t *testing.T) {
 		proto string
 		want  bool
 	}{
-		{"tcp", true},     // parse_options dispatches on a lookahead key alone
+		{"tcp", true},     // counter + kind, with a length-byte fallback
 		{"geneve", false}, // counter-driven walk (ParserCounter)
 	} {
 		spec := v[c.proto]
 		if spec == nil {
 			t.Fatalf("bundled vocab missing %q", c.proto)
 		}
-		if got := layerOptionWalkIsLookaheadOnly(&ir.LayerInstance{Spec: spec}); got != c.want {
-			t.Errorf("layerOptionWalkIsLookaheadOnly(%s) = %v, want %v", c.proto, got, c.want)
+		if got := layerOptionWalkHasLengthByte(&ir.LayerInstance{Spec: spec}); got != c.want {
+			t.Errorf("layerOptionWalkHasLengthByte(%s) = %v, want %v", c.proto, got, c.want)
 		}
 	}
 }
@@ -82,51 +81,14 @@ func callbackKindBytes(insns asm.Instructions) map[int64]bool {
 	return kinds
 }
 
-// TestTLVWalkCascadeElidesUnqueriedKinds pins B-2a-2 mitigation (d).
-// Compiling with one queried option (MSS) must elide the cascade
-// arms for the four unqueried kinds (WS, SACK_PERM, SACK, TS) — they
-// fall through to the parse_unknown_opt-equivalent default, which
-// the verifier on kernel 6.12 can coalesce. See
-// docs/ja/dsl-followups.md mitigation (d).
-//
-// The earlier ordinal `len(one.Callbacks) < len(all.Callbacks)`
-// metric was too weak: it would pass even if caseRedundantWithDefault
-// were stubbed to `return false` (no elision at all), because the
-// per-option slot-store prelude grows with the queried set
-// independently of dispatch elision. The kind-byte JNE.Imm scan
-// here pins both directions atomically (queried kind present, elided
-// kinds absent).
-func TestTLVWalkCascadeElidesUnqueriedKinds(t *testing.T) {
+// Fixed-length validation is observable even for an unqueried option.
+// Sharing the length advance must retain those discriminator checks.
+func TestTLVWalkRetainsOptionLengthValidation(t *testing.T) {
 	out := compileBundled(t, "eth/ipv4/tcp where tcp.options.MSS.value == 1460")
 	kinds := callbackKindBytes(out.Callbacks)
-
-	// Elision predicate (caseRedundantWithDefault) requires the case
-	// target to have ≥1 ExtractOp + zero manual advances. Kind cases:
-	//   MSS (2)       — queried, must emit
-	//   WS (3)        — extract+no-advance, unqueried → ELIDED
-	//   SACK_PERM (4) — extract+no-advance, unqueried → ELIDED
-	//   SACK (5)      — no extract + lookahead advance → NOT elided
-	//                   (rule 3 fails on len(Extracts) == 0; the
-	//                   conservative guard preserves the dispatched-
-	//                   but-not-extracted shape that B-4 R1 relies on,
-	//                   pinned by owner_bound_invariant_test.go)
-	//   TS (8)        — extract+no-advance, unqueried → ELIDED
-	const (
-		mssKind  int64 = 2
-		wsKind   int64 = 3
-		sackPerm int64 = 4
-		sackKind int64 = 5
-		tsKind   int64 = 8
-	)
-	if !kinds[mssKind] {
-		t.Errorf("MSS kind=%d JNE missing — queried kind must always emit", mssKind)
-	}
-	if !kinds[sackKind] {
-		t.Errorf("SACK kind=%d JNE missing — no-extract sibling must stay (rule 3 failure preserves dispatched-but-not-extracted shape)", sackKind)
-	}
-	for _, k := range []int64{wsKind, sackPerm, tsKind} {
-		if kinds[k] {
-			t.Errorf("kind=%d JNE present — extract-only unqueried kind should be elided", k)
+	for _, kind := range []int64{2, 3, 4, 5, 8} {
+		if !kinds[kind] {
+			t.Errorf("option kind %d validation was elided", kind)
 		}
 	}
 }

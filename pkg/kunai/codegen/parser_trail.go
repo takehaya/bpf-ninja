@@ -15,17 +15,9 @@ import (
 //
 //	extra_bytes = base + ((loaded_len_byte & LenMask) << log2(scale))
 //
-// past the fixed prefix. LenMask caps the variable advance per
-// iteration so the verifier can propagate a static upper bound on
-// the running offset; without it the verifier rejects the next
-// iteration's load as potentially out of scratch range.
-//
-// For IPv6 extension headers (RFC 8200) the canonical formula is
-// total = (hdr_ext_len + 1) * 8 — Scale=8, Base=0. The MVP cap of
-// LenMask=0x03 truncates the chain to ext headers ≤ 32 bytes,
-// which covers every well-formed HBH/Fragment/DestOpt seen in
-// practice; widening the cap requires either a larger scratch
-// buffer or a reduced max-depth.
+// past the fixed prefix. LenMask extracts the length's wire-format bits.
+// IPv6 uses all eight bits of hdr_ext_len: total = (hdr_ext_len + 1) * 8.
+// The scalar and packet bounds reject lengths outside the scratch window.
 //
 // WriteBack opts into IPv6's "next_header" carry-forward pattern:
 // after each ext-header iteration the codegen copies a byte from
@@ -136,10 +128,11 @@ type trailEnv struct {
 //
 // Verifier safety invariants the emitted sequence relies on:
 //
-//   - The pre-extract length byte sits at a known byte offset within
-//     scratch; LenMask × Scale × bpf_loop iter cap stays under
-//     ScratchBufSize so the per-iteration scalar JGT against
-//     ScratchBufSize-1 propagates a tight bound.
+//   - The pre-extract length byte is bounds checked before loading.
+//     The resulting scalar offset is checked against ScratchBufSize
+//     before its pointer is checked against the materialised packet end.
+//     LenMask extracts wire-format bits; it must not truncate a length
+//     merely to fit a verifier or iteration budget.
 //   - In the callback path env.scratchStart / scratchEnd come from
 //     the bpf_loop ctx pointer (R2). The kernel guarantees R2 is
 //     non-NULL on callback entry — verifier accepts the deref
@@ -163,6 +156,7 @@ func emitVariableTrail(fixedHs int, vt variableTailSkip, env trailEnv, failLabel
 		insns = append(insns, boundedScalarLoad(env.addrReg, env.scratchStart, env.lenReg, env.scratchEnd, asm.Byte, failLabel)...)
 		insns = append(insns, env.loadLayerEntry...)
 		insns = append(insns,
+			asm.JGT.Imm(env.lenReg, int32(ScratchBufSize-wb.ParentByteOff-1), failLabel),
 			asm.Add.Reg(env.lenReg, env.scratchStart),
 			asm.StoreMem(env.lenReg, int16(wb.ParentByteOff), env.addrReg, asm.Byte),
 		)
@@ -203,16 +197,13 @@ func emitVariableTrail(fixedHs int, vt variableTailSkip, env trailEnv, failLabel
 		insns = append(insns, asm.Add.Imm(env.lenReg, int32(vt.Base)))
 	}
 	insns = append(insns,
+		// Bound the scalar sum before forming a map-value pointer. A pointer
+		// comparison alone cannot establish the verifier's map access range.
+		asm.Add.Reg(env.offset, env.lenReg),
+		asm.JGT.Imm(env.offset, int32(ScratchBufSize), failLabel),
 		asm.Mov.Reg(env.addrReg, env.scratchStart),
 		asm.Add.Reg(env.addrReg, env.offset),
-		asm.Add.Reg(env.addrReg, env.lenReg),
 		asm.JGT.Reg(env.addrReg, env.scratchEnd, failLabel),
-		asm.Add.Reg(env.offset, env.lenReg),
-		// Narrow offset's static range so subsequent layers' loads
-		// stay within the verifier's view of the scratch buffer.
-		// The pointer bound check above already enforces this at
-		// runtime; the scalar JGT is the verifier-friendly restate.
-		asm.JGT.Imm(env.offset, int32(ScratchBufSize)-1, failLabel),
 	)
 	insns = append(insns, env.storeOffsetBack...)
 	return insns, nil

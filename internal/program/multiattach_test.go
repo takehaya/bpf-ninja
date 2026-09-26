@@ -2,7 +2,6 @@ package program
 
 import (
 	"fmt"
-	"runtime"
 	"testing"
 	"time"
 
@@ -102,10 +101,9 @@ func progInfoFor(t *testing.T, prog *ebpf.Program, funcName string) *attach.Prog
 func drainMarkers(t *testing.T, probe *Probe, wantMarkers int) map[byte]int {
 	t.Helper()
 	markers := map[byte]int{}
-	innerSize := int(shardRingbufSize(RingbufSize, runtime.NumCPU()))
 	readers := make([]*fastrb.Reader, len(probe.InnerMaps))
 	for i, m := range probe.InnerMaps {
-		rd, err := fastrb.New(m.FD(), innerSize)
+		rd, err := fastrb.New(m.FD(), int(m.MaxEntries()))
 		if err != nil {
 			t.Fatalf("fastrb on shard %d: %v", i, err)
 		}

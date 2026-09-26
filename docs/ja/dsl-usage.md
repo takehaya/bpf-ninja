@@ -637,11 +637,11 @@ int upf_capture_point_ul(struct xdp_md *ctx, __u64 imsi, __u32 teid) {
 | Flag | 既定 | 効果 / 注意 |
 |---|---|---|
 | `--snaplen N` | 0 (= MaxCapLen or DefaultCapLen=1500) | 1 packet あたりの保存 byte 数を CLI から強制上書きする。DSL の `capture` 句より優先 |
-| `--ringbuf-size MB` | 16 | per-CPU ringbuf 1 個あたりの size を指定する。storage 帯域が追いつかない時は増やす |
+| `--ringbuf-size MB` | 64 | 全 shard のデータ容量の予算。possible CPU ID 範囲へ分配し、各 shard は最低64KiB・2の冪へ調整する |
 | `--fast-reader` | off | mmap+atomic 直叩きの fastrb reader を使う。cilium/ebpf の generic reader より低 CPU かつ高 throughput |
 | `--no-wakeup` | off | `BPF_RB_NO_WAKEUP` を全 submit に立てる。reader 側の epoll wake が無くなり throughput が上がるが、1ms polling 床により p50 latency が 100µs → ~2.6ms に悪化する。`--fast-reader` 必須 |
 | `--observer-prefetch` | off | filter scratch を 512 B に強制する。R12 の ice driver で L1-dcache prefetch が効くケース向けの opt-in |
-| `--rx-cores N` | 0 (off) | split-core capture を行う。利用者が `ethtool -L combined N` で NIC queue 数を N にし、RX/capture が core `0..N-1` に閉じている前提で、consumer goroutine を core `N..2N-1` に pin して RX softirq から分離する。`-w` 出力時の producer-consumer 結合を断ち、32/32 split で capture rate が 30% 向上する。`--fast-reader` 必須、`--busy-poll --no-wakeup` と併用 |
+| `--rx-cores N` | 0 (off) | 全 shard の reader を、許可された CPU ID のうち N 以上へ分散する。該当 CPU がなければ起動エラー。RX affinity は別途設定する。`--fast-reader` 必須 |
 | `--busy-poll` | off | fastrb shard を `epoll_wait` で寝かさず `ReadBatch` で spin させる。consumer が常時 drain するので wake が不要になる。shard ごとに 1 core を消費する。`--fast-reader` 必須、`--no-wakeup` と対 |
 | `--in-memory-buffer MB` | 0 (off) | raw-dump 出力先を mmap 上の `MAP_POPULATE` バッファに置く。NVMe write が bottleneck な時に隠せる |
 | `--null-output` | off | bench 用に、出力 file を一切開かず reader の CPU コストだけ測る |
@@ -827,9 +827,14 @@ sudo bpf-ninja merge --base out.pcap --fexit  # --mode exit で録った場合
 - tag の value 幅を `--value "tag:u64"` などで 8 バイトにした場合、出し分けに使うのは下位 32 ビットです。
 - live ファイルは CPU ごと tag ごとに 1 本開くので、tag の種類が多いとファイルディスクリプタを消費します。種類が多い運用では `ulimit -n` を上げてください。上限に達すると起動途中でその旨のエラーを出します。
 
+出力の write / flush / close に失敗した場合は非ゼロで終了し、不完全な shard を成功した合算結果として公開しません。`--finalize-on-del` の失敗した tag は再試行でも完了通知や `state=finalized` に変わりません。元の shard は調査・救出用に残ります。保存済み shard が正常で合算先の作成だけが失敗した場合は再試行できます。`merge` は欠けた shard は許容しますが、存在する shard の破損・切り詰めはエラーにします。完了はバッファの flush と close、合算ファイルの rename までを意味し、電源断への耐久性を保証する fsync は含みません。
+
 ### set del で tag の出力を完成させる (`--finalize-on-del`)
 
 常駐プロセス 1 個で複数のキャプチャジョブを多重化する運用向けに、entry の削除を「この tag は終わり」の合図として使えます。`--finalize-on-del` を付けると、ある tag の entry が全 watch set から消え、かつ ringbuf の残りが掃けたと確認できた時点で、その tag の per-CPU ファイルを flush して閉じ、プロセスを止めずに `out.<tag>.pcap` へ合算します。合算は一時ファイルに書いてから rename するので、**`out.<tag>.pcap` の出現がそのまま完了の合図**です。呼び出し側の流れは `set del` → ファイルを待つ (inotify や stat) → 回収、だけになります。
+
+
+完了判定は無通信の秒数では決めません。削除を検出したtagをcapture専用mapで停止し、実行中のBPF処理が完了するまで待ってから各ringのproducer位置を記録します。全shardがその位置まで読み、writer登録・書き込みを終えたことを確認して合算します。別tagの保存が遅れている場合も、未処理レコードを残したまま完了通知を出しません。停止処理を始めたtagは同一capture中に再利用できず、set entryを再追加しても再開しません。停止tagは最大65,536個保持し、上限や同期処理の失敗はエラーとして報告します。
 
 ```bash
 sudo bpf-ninja -i eth0 --mode xdp --set "subs=$PIN" \
@@ -889,3 +894,22 @@ sudo bpf-ninja -i eth0 --mode xdp --set "subs=$PIN" \
 - [dsl-grammar.md](./dsl-grammar.md): formal EBNF + 例文
 - [dsl-types.md](./dsl-types.md): 型システム (型・暗黙変換・widening・fit check・エラーカタログ)
 - vocab 一覧: `pkg/kunai/protocols/*.p4`
+
+### 明示した関数のfexit戻り値
+
+`--mode exit --func NAME` は、各対象関数のBTF prototypeから戻り値の位置を求めます。
+異なる引数数の関数を複数指定しても、DSLの `action` とpcap metadataは同じ実戻り値を使います。
+packet captureで対応するprototypeは、先頭がcontext pointer、引数が1〜5個の
+scalar/pointer（各8byte以下）、戻り値が32bit integer/enumのものです。
+void・pointer・64bit戻り値やaggregate引数は、誤った値に切り詰めず明示的にエラーにします。
+
+`--func` を明示したexit出力では、interface名は `return:0x00000002` のような生の
+32bit値になります。helperの戻り値が同じ数値でも、呼び出し元の最終XDP/TC verdictを
+意味するとは限らないためです。DSLの `action == XDP_PASS` 等の定数は引き続き数値比較であり、
+その関数の戻り値が当該定数と等しいことを検査します。`--func` を指定しないentrypointの
+exit出力は従来のhook verdict名を使います。
+
+`--dump-asm full` は対象未解決のため、1引数のreturn offset `+8` をplaceholderとして表示します。
+実際のattachでは対象ごとのBTFから解決します。
+
+P4-liteの1つのstate内では、`extract` → counter操作 → `advance` の順を基本とします。順序に依存しない定数の`decrement`は`advance`の後にも書けます。`lookahead`やheader fieldを読むcounter操作はcursor移動前に評価され、inline stateとloop callbackで共通です。`advance`やcounter操作の後に`extract`する記述、field依存counterを`advance`後に置く記述、field依存`advance`を他の`advance`と同じstateに置く記述は未対応として拒否します。必要な場合はstateを分けてください。1 stateだけのparserでも追加のcounter・advance操作は省略しません。

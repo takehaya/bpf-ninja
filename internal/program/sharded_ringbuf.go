@@ -11,7 +11,6 @@ package program
 import (
 	"fmt"
 	"math/bits"
-	"runtime"
 	"sync"
 
 	"github.com/cilium/ebpf"
@@ -45,7 +44,10 @@ func shardRingbufSize(total uint32, numCPUs int) uint32 {
 // created in parallel because each ebpf.NewMap is a syscall in the
 // 100s-of-µs range; 64 CPUs serial takes ~tens of ms.
 func createShardedRingbuf(label string) (outer *ebpf.Map, inners []*ebpf.Map, err error) {
-	numCPUs := runtime.NumCPU()
+	numCPUs, err := possibleCPUSlots()
+	if err != nil {
+		return nil, nil, err
+	}
 	innerSize := shardRingbufSize(RingbufSize, numCPUs)
 	innerSpec := &ebpf.MapSpec{
 		Name: fmt.Sprintf("ninja_%s_rb_in", label), Type: ebpf.RingBuf, MaxEntries: innerSize,
@@ -150,19 +152,21 @@ func createShardedRingbuf(label string) (outer *ebpf.Map, inners []*ebpf.Map, er
 // On either map_lookup or ringbuf_reserve returning NULL, jumps to
 // the "exit" symbol the caller is responsible for emitting.
 //
-// statsFD >= 0 routes a NULL reserve (ring full) to the "rb_fail" symbol
-// instead, which the caller emits via emitRBFailCounter so the drop is
-// counted; statsFD < 0 (no stats map) keeps the silent jump to "exit".
+// statsFD > 0 routes a NULL reserve (ring full) to the "rb_fail" symbol
+// instead, which the caller emits via emitExportTerminals so the drop is
+// counted; statsFD == 0 keeps the silent jump to "exit".
 func emitShardedRBReserve(eventsFD, statsFD int, reserveSize int32) asm.Instructions {
 	failSym := "exit"
-	if statsFD >= 0 {
+	lookupSym := "exit"
+	if statsFD > 0 {
 		failSym = "rb_fail"
+		lookupSym = "rb_lookup_fail"
 	}
 	return asm.Instructions{
 		asm.LoadMapPtr(asm.R1, eventsFD),
 		asm.Mov.Reg(asm.R2, asm.R10), asm.Add.Imm(asm.R2, -16),
 		asm.FnMapLookupElem.Call(),
-		asm.JEq.Imm(asm.R0, 0, "exit"),
+		asm.JEq.Imm(asm.R0, 0, lookupSym),
 
 		asm.Mov.Reg(asm.R1, asm.R0),
 		asm.Mov.Imm(asm.R2, reserveSize),
@@ -170,22 +174,5 @@ func emitShardedRBReserve(eventsFD, statsFD int, reserveSize int32) asm.Instruct
 		asm.FnRingbufReserve.Call(),
 		asm.JEq.Imm(asm.R0, 0, failSym),
 		asm.StoreMem(asm.R10, -32, asm.R0, asm.DWord),
-	}
-}
-
-// emitRBFailCounter emits the "rb_fail" block: bump stats[0] (per-CPU
-// u64 reserve-failure counter) and fall through to "exit". stack[-16]
-// (the dead cpu_id slot) is reused as the u32 key. Must be placed
-// immediately before the "exit" symbol.
-func emitRBFailCounter(statsFD int) asm.Instructions {
-	return asm.Instructions{
-		asm.StoreImm(asm.R10, -16, 0, asm.Word).WithSymbol("rb_fail"),
-		asm.LoadMapPtr(asm.R1, statsFD),
-		asm.Mov.Reg(asm.R2, asm.R10), asm.Add.Imm(asm.R2, -16),
-		asm.FnMapLookupElem.Call(),
-		asm.JEq.Imm(asm.R0, 0, "exit"),
-		asm.LoadMem(asm.R1, asm.R0, 0, asm.DWord),
-		asm.Add.Imm(asm.R1, 1),
-		asm.StoreMem(asm.R0, 0, asm.R1, asm.DWord),
 	}
 }

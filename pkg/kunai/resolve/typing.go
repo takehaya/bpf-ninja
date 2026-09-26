@@ -38,8 +38,8 @@ func checkLiteralWidthShape(ref *ir.FieldRef, v *ast.Value, pos ast.Position) er
 // checkBracketIntFit covers the bracket-predicate variant of the
 // literal narrow check (dsl-types.md §7.2 row "Bracket predicate"):
 // `tcp[dport == V]` rejects V whose value cannot be narrowed to the
-// field's declared bit width. The fit predicate is shared with the
-// arith-context check (uintFitsBits) so signed-extended negative
+// field's effective (possibly sliced) bit width. The fit predicate is shared with the
+// arith-context check (literalFitsBits) so signed-extended negative
 // literals (e.g. `dport == -1` ⇒ stored as 0xffff..ff) are accepted
 // when they would land in the field's `[-2^(N-1), 2^N)` range
 // (dsl-types.md §7.3). Returns nil if the predicate is not a shape
@@ -49,8 +49,8 @@ func checkBracketIntFit(field *ir.FieldRef, v *ast.Value, layerName string, pos 
 	if v == nil || v.Kind != ast.ValInt || field.Field == nil {
 		return nil
 	}
-	bits := field.Field.Bits
-	if uintFitsBits(v.Int, bits) {
+	bits := field.EffectiveBits()
+	if literalFitsBits(v.Int, v.Negative, bits) {
 		return nil
 	}
 	fieldName := field.Field.Name
@@ -95,7 +95,7 @@ func checkArithExpr(e *ir.ArithExpr, bits int) error {
 	}
 	switch e.Kind {
 	case ast.ArithConst:
-		if !uintFitsBits(e.Const, bits) {
+		if !literalFitsBits(e.Const, e.Negative, bits) {
 			return errFitInArith(e.Pos, e.Const, bits)
 		}
 	case ast.ArithField:
@@ -159,31 +159,18 @@ func exprMaxFieldBits(e *ir.ArithExpr) int {
 	return 0
 }
 
-// uintFitsBits reports whether a uint64 literal fits in the unsigned
-// range [0, 2^bits). Negative literals reach this helper as their
-// 2's-complement uint64 representation, in which case the fit check
-// passes when the original signed value lies in [-2^(bits-1), 0).
-// We approximate by accepting any value where the high bits beyond
-// the target width are either all zero or all one (= a sign-extended
-// negative). Both intents are consistent with dsl-types.md §7.3.
-func uintFitsBits(v uint64, bits int) bool {
+// literalFitsBits distinguishes signed source literals from positive values
+// sharing the same uint64 bit pattern. The lexer/parser already enforce the
+// signed 64-bit lower bound; narrowing must preserve that sign explicitly.
+func literalFitsBits(v uint64, negative bool, bits int) bool {
 	if bits <= 0 || bits >= 64 {
 		return true
 	}
-	mask := uint64(1)<<bits - 1
-	low := v & mask
-	high := v >> bits
-	if high == 0 {
-		return true
+	if negative {
+		// -0 is valid too. Reinterpretation avoids negating MinInt64.
+		return int64(v) >= -(int64(1)<<(bits-1)) && int64(v) <= 0
 	}
-	// Sign-extended negative literal: high bits must equal the
-	// complement of the mask (all ones above the target width AND
-	// the sign bit set in the low half).
-	signBit := uint64(1) << (bits - 1)
-	if low&signBit == 0 {
-		return false
-	}
-	return high == ^uint64(0)>>bits
+	return v < uint64(1)<<bits
 }
 
 func isZeroLiteral(e *ir.ArithExpr) bool {

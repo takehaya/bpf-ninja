@@ -5,10 +5,27 @@ import (
 	"github.com/takehaya/bpf-ninja/pkg/kunai/lexer"
 )
 
-// parseWhereClause handles the "where <or_expr>" portion of a filter.
-// The caller must ensure p.cur.Kind == TokWhere before invoking.
-//
-//	where_clause := "where" or_expr
+// whereValue retains the operand type while parsing. In particular, grouping
+// an integer is not a Boolean context. Only logical operators, Boolean equality
+// and the completed where clause request an Int-to-Bool conversion.
+// The public AST remains unchanged: these temporary values are lowered to its
+// existing arithmetic, literal-comparison and Boolean nodes.
+type whereValue struct {
+	arith   *ast.ArithExpr
+	boolean *ast.WhereExpr
+	literal *ast.Value
+	pos     ast.Position
+}
+
+const (
+	precOr  = 1
+	precAnd = 2
+	precNot = 3
+	precCmp = 4
+	precAdd = 5
+	precMul = 6
+)
+
 func (p *parser) parseWhereClause() (*ast.WhereExpr, error) {
 	if _, err := p.expect(lexer.TokWhere); err != nil {
 		return nil, err
@@ -16,178 +33,275 @@ func (p *parser) parseWhereClause() (*ast.WhereExpr, error) {
 	return p.parseOrExpr()
 }
 
-// or_expr := and_expr ("or" and_expr)*
 func (p *parser) parseOrExpr() (*ast.WhereExpr, error) {
-	left, err := p.parseAndExpr()
+	value, err := p.parseWhereExpr(precOr)
 	if err != nil {
 		return nil, err
 	}
-	for p.cur.Kind == lexer.TokOr {
-		pos := p.cur.Pos
-		if err := p.advance(); err != nil {
-			return nil, err
-		}
-		right, err := p.parseAndExpr()
-		if err != nil {
-			return nil, err
-		}
-		left = &ast.WhereExpr{Kind: ast.WOr, Left: left, Right: right, Pos: pos}
-	}
-	return left, nil
+	return p.whereBool(value)
 }
 
-// and_expr := not_expr ("and" not_expr)*
-func (p *parser) parseAndExpr() (*ast.WhereExpr, error) {
-	left, err := p.parseNotExpr()
+func (p *parser) whereBool(v whereValue) (*ast.WhereExpr, error) {
+	if v.boolean != nil {
+		return v.boolean, nil
+	}
+	if v.arith == nil {
+		return nil, p.errorf(v.pos, "network literal requires a field comparison")
+	}
+	return &ast.WhereExpr{Kind: ast.WAtomArith, ArithL: v.arith, Op: ast.CmpNeq,
+		ArithR: &ast.ArithExpr{Kind: ast.ArithConst, Pos: v.pos}, Pos: v.pos}, nil
+}
+
+func wherePrecedence(k lexer.TokenKind) int {
+	switch k {
+	case lexer.TokOr:
+		return precOr
+	case lexer.TokAnd:
+		return precAnd
+	case lexer.TokEqEq, lexer.TokNeq, lexer.TokLt, lexer.TokLe, lexer.TokGt, lexer.TokGe:
+		return precCmp
+	case lexer.TokPlus, lexer.TokMinus, lexer.TokPipe, lexer.TokCaret:
+		return precAdd
+	case lexer.TokStar, lexer.TokSlash, lexer.TokPercent, lexer.TokAmp, lexer.TokShl, lexer.TokShr:
+		return precMul
+	}
+	return 0
+}
+
+// parseWhereExpr uses the DSL's existing precedence: bitwise |/^ are additive,
+// and &/shifts are multiplicative. Integer comparisons cannot be chained;
+// Boolean equality retains its right-associative Boolean-atom RHS.
+func (p *parser) parseWhereExpr(minPrec int) (whereValue, error) {
+	if p.exprDepth >= maxParenDepth*4 {
+		return whereValue{}, p.errorf(p.cur.Pos, "expression nesting too deep")
+	}
+	p.exprDepth++
+	defer func() { p.exprDepth-- }()
+	left, err := p.parseWherePrimary()
 	if err != nil {
-		return nil, err
+		return whereValue{}, err
 	}
-	for p.cur.Kind == lexer.TokAnd {
-		pos := p.cur.Pos
+	for {
+		if p.cur.Kind == lexer.TokIn {
+			return whereValue{}, p.errorf(p.cur.Pos, "'in' is only valid in bracket predicates (`proto[field in [...]]`); inside `where` use a chain of `or` (`field == v1 or field == v2`) instead")
+		}
+		token := p.cur
+		prec := wherePrecedence(token.Kind)
+		if prec < minPrec {
+			return left, nil
+		}
+		nextPrec := prec + 1
+		boolComparison := prec == precCmp && left.boolean != nil
+		if boolComparison {
+			nextPrec = prec
+		}
 		if err := p.advance(); err != nil {
-			return nil, err
+			return whereValue{}, err
 		}
-		right, err := p.parseNotExpr()
+		right, err := p.parseWhereExpr(nextPrec)
 		if err != nil {
-			return nil, err
+			return whereValue{}, err
 		}
-		left = &ast.WhereExpr{Kind: ast.WAnd, Left: left, Right: right, Pos: pos}
+		left, err = p.combineWhere(left, token, right)
+		if err != nil {
+			return whereValue{}, err
+		}
+		if prec == precCmp && !boolComparison {
+			if _, chained := cmpOpFor(p.cur.Kind); chained {
+				return whereValue{}, p.errorf(p.cur.Pos, "chained comparison not supported; use 'and' to combine")
+			}
+		}
 	}
-	return left, nil
 }
 
-// not_expr := "not" not_expr | atom
-func (p *parser) parseNotExpr() (*ast.WhereExpr, error) {
-	if p.cur.Kind == lexer.TokNot {
-		pos := p.cur.Pos
-		if err := p.advance(); err != nil {
-			return nil, err
-		}
-		inner, err := p.parseNotExpr()
+func (p *parser) combineWhere(left whereValue, token lexer.Token, right whereValue) (whereValue, error) {
+	result := whereValue{pos: left.pos}
+	if token.Kind == lexer.TokAnd || token.Kind == lexer.TokOr {
+		l, err := p.whereBool(left)
 		if err != nil {
-			return nil, err
+			return result, err
 		}
-		return &ast.WhereExpr{Kind: ast.WNot, Inner: inner, Pos: pos}, nil
+		r, err := p.whereBool(right)
+		if err != nil {
+			return result, err
+		}
+		kind := ast.WAnd
+		if token.Kind == lexer.TokOr {
+			kind = ast.WOr
+		}
+		result.boolean = &ast.WhereExpr{Kind: kind, Left: l, Right: r, Pos: token.Pos}
+		return result, nil
 	}
-	return p.parseWhereAtom()
+	if op, ok := cmpOpFor(token.Kind); ok {
+		if left.literal != nil || right.literal != nil {
+			if op != ast.CmpEq && op != ast.CmpNeq {
+				return result, p.errorf(token.Pos, "ordered comparison %s not allowed for network literals", op)
+			}
+			field, lit := left.arith, right.literal
+			side := "left"
+			if left.literal != nil {
+				field, lit, side = right.arith, left.literal, "right"
+			}
+			if field == nil || field.Kind != ast.ArithField {
+				return result, p.errorf(token.Pos, "%s-hand side of network-literal comparison must be a single field path; got an arithmetic expression", side)
+			}
+			result.boolean = &ast.WhereExpr{Kind: ast.WAtomLiteralCmp, LiteralField: field.Field, LiteralOp: op, LiteralValue: lit, Pos: left.pos}
+			return result, nil
+		}
+		if left.boolean != nil || right.boolean != nil {
+			if op != ast.CmpEq && op != ast.CmpNeq {
+				return result, p.errorf(token.Pos, "ordered comparison %s not allowed for Bool (Bool supports only == and !=)", op)
+			}
+			l, err := p.whereBool(left)
+			if err != nil {
+				return result, err
+			}
+			r, err := p.whereBool(right)
+			if err != nil {
+				return result, err
+			}
+			result.boolean = &ast.WhereExpr{Kind: ast.WAtomBoolEq, BoolL: l, BoolR: r, BoolEqOp: op, Pos: left.pos}
+		} else {
+			result.boolean = &ast.WhereExpr{Kind: ast.WAtomArith, ArithL: left.arith, Op: op, ArithR: right.arith, Pos: left.pos}
+		}
+		return result, nil
+	}
+	if left.arith == nil || right.arith == nil {
+		return result, p.errorf(token.Pos, "arithmetic operator %s requires integer operands", token.Kind)
+	}
+	var op ast.ArithOp
+	switch token.Kind {
+	case lexer.TokPlus:
+		op = ast.ArithAdd
+	case lexer.TokMinus:
+		op = ast.ArithSub
+	case lexer.TokPipe:
+		op = ast.ArithOr
+	case lexer.TokCaret:
+		op = ast.ArithXor
+	case lexer.TokStar:
+		op = ast.ArithMul
+	case lexer.TokSlash:
+		op = ast.ArithDiv
+	case lexer.TokPercent:
+		op = ast.ArithMod
+	case lexer.TokAmp:
+		op = ast.ArithAnd
+	case lexer.TokShl:
+		op = ast.ArithShl
+	case lexer.TokShr:
+		op = ast.ArithShr
+	}
+	result.arith = &ast.ArithExpr{Kind: ast.ArithBinOp, Op: op, Left: left.arith, Right: right.arith, Pos: token.Pos}
+	return result, nil
 }
 
-// atom := "(" or_expr ")" | bool_atom | action_atom | quant_atom | arith_cmp
-//
-// bool_atom covers bare 'true'/'false' literals and aux-exists; an
-// Int<N> field path that ends without a comparison op is also a Bool
-// atom (Int -> Bool coerce per dsl-types.md §5.4) and is recognised
-// inside parseCmpOrBoolAtom by the absence of a trailing op.
-//
-// quant_atom is `any( inner )` or `all( inner )` where inner is a
-// where expression that references an aux header stack (e.g.
-// `srv6.segments.addr == fc00::1`). The resolver locates the
-// iteration target inside the inner expression and codegen emits a
-// bpf_loop wrapper.
-func (p *parser) parseWhereAtom() (*ast.WhereExpr, error) {
-	startPos := p.cur.Pos
+func (p *parser) parseWherePrimary() (whereValue, error) {
+	pos := p.cur.Pos
+	v := whereValue{pos: pos}
 	switch p.cur.Kind {
 	case lexer.TokLParen:
-		if p.parenDepth >= maxParenDepth {
-			return nil, p.errorf(p.cur.Pos, "expression nesting too deep (limit: %d)", maxParenDepth)
-		}
-		p.parenDepth++
+		return p.parseWhereGroup()
+	case lexer.TokNot:
 		if err := p.advance(); err != nil {
-			p.parenDepth--
-			return nil, err
+			return v, err
 		}
-		inner, err := p.parseOrExpr()
+		inner, err := p.parseWhereExpr(precNot)
 		if err != nil {
-			p.parenDepth--
-			return nil, err
+			return v, err
 		}
-		if _, err := p.expect(lexer.TokRParen); err != nil {
-			p.parenDepth--
-			return nil, err
-		}
-		p.parenDepth--
-		return p.maybeBoolEqTail(startPos, inner)
-	case lexer.TokAction:
-		return p.parseActionAtom(startPos)
-	case lexer.TokAny:
-		left, err := p.parseQuantAtom(startPos, ast.WAny)
+		b, err := p.whereBool(inner)
 		if err != nil {
-			return nil, err
+			return v, err
 		}
-		return p.maybeBoolEqTail(startPos, left)
-	case lexer.TokAll:
-		left, err := p.parseQuantAtom(startPos, ast.WAll)
-		if err != nil {
-			return nil, err
-		}
-		return p.maybeBoolEqTail(startPos, left)
+		v.boolean = &ast.WhereExpr{Kind: ast.WNot, Inner: b, Pos: pos}
+		return v, nil
 	case lexer.TokTrue, lexer.TokFalse:
-		return p.parseBoolLitAtom(startPos)
+		v.boolean = &ast.WhereExpr{Kind: ast.WAtomBoolLit, BoolLitValue: p.cur.Kind == lexer.TokTrue, Pos: pos}
+		return v, p.advance()
+	case lexer.TokAction:
+		var err error
+		v.boolean, err = p.parseActionAtom(pos)
+		return v, err
+	case lexer.TokAny, lexer.TokAll:
+		kind := ast.WAny
+		if p.cur.Kind == lexer.TokAll {
+			kind = ast.WAll
+		}
+		if err := p.advance(); err != nil {
+			return v, err
+		}
+		if p.cur.Kind != lexer.TokLParen {
+			return v, p.errorf(p.cur.Pos, "expected '(', got %s (%q)", p.cur.Kind, p.cur.Text)
+		}
+		inner, err := p.parseWhereGroup()
+		if err != nil {
+			return v, err
+		}
+		b, err := p.whereBool(inner)
+		if err != nil {
+			return v, err
+		}
+		v.boolean = &ast.WhereExpr{Kind: kind, Inner: b, Pos: pos}
+		return v, nil
+	case lexer.TokMinus:
+		if err := p.advance(); err != nil {
+			return v, err
+		}
+		if p.cur.Kind != lexer.TokInt {
+			return v, p.errorf(p.cur.Pos, "expected integer literal after unary '-', got %s", p.cur.Kind)
+		}
+		n := p.cur.Int
+		if n > uint64(1)<<63 {
+			return v, p.errorf(pos, "negative literal -%d exceeds the supported range [-2^63, 0)", n)
+		}
+		v.arith = &ast.ArithExpr{Kind: ast.ArithConst, Const: ^n + 1, Negative: true, Pos: pos}
+		return v, p.advance()
 	}
-	return p.parseCmpOrBoolAtom(startPos)
+	// Network literals share initial structural tokens with fields and integers.
+	// Re-read just this primary in value mode, restoring it on a miss.
+	if lit, ok, err := p.tryNetworkLiteral(p.preCurSnap); err != nil {
+		return v, err
+	} else if ok {
+		v.literal = lit
+		return v, nil
+	}
+	switch p.cur.Kind {
+	case lexer.TokInt:
+		v.arith = &ast.ArithExpr{Kind: ast.ArithConst, Const: p.cur.Int, Pos: pos}
+		return v, p.advance()
+	case lexer.TokIdent:
+		field, err := p.parseFieldPath()
+		if err != nil {
+			return v, err
+		}
+		if fieldPathEndsWithExists(field) {
+			v.boolean = &ast.WhereExpr{Kind: ast.WAtomBoolExists, BoolField: stripExistsTail(field), Pos: pos}
+		} else {
+			v.arith = &ast.ArithExpr{Kind: ast.ArithField, Field: field, Pos: pos}
+		}
+		return v, nil
+	}
+	return v, p.errorf(pos, "expected integer, field path, Boolean or '(' in expression, got %s", p.cur.Kind)
 }
 
-// parseBoolLitAtom consumes a bare 'true' or 'false' bool literal and
-// optionally the right-hand side of a `Bool == Bool` / `Bool != Bool`
-// comparison.
-func (p *parser) parseBoolLitAtom(startPos ast.Position) (*ast.WhereExpr, error) {
-	val := p.cur.Kind == lexer.TokTrue
-	if err := p.advance(); err != nil {
-		return nil, err
-	}
-	lit := &ast.WhereExpr{Kind: ast.WAtomBoolLit, BoolLitValue: val, Pos: startPos}
-	return p.maybeBoolEqTail(startPos, lit)
-}
-
-// maybeBoolEqTail wraps a freshly-built Bool atom in a WAtomBoolEq when
-// the next token is `==` / `!=`. Other comparison operators on Bool
-// values (ordered cmp) are rejected with a clear error so the user
-// sees the spec violation early.
-func (p *parser) maybeBoolEqTail(startPos ast.Position, left *ast.WhereExpr) (*ast.WhereExpr, error) {
-	op, ok := cmpOpFor(p.cur.Kind)
-	if !ok {
-		return left, nil
-	}
-	if op != ast.CmpEq && op != ast.CmpNeq {
-		return nil, p.errorf(p.cur.Pos, "ordered comparison %s not allowed for Bool (Bool supports only == and !=)", op)
-	}
-	if err := p.advance(); err != nil {
-		return nil, err
-	}
-	right, err := p.parseWhereAtom()
-	if err != nil {
-		return nil, err
-	}
-	return &ast.WhereExpr{Kind: ast.WAtomBoolEq, BoolL: left, BoolR: right, BoolEqOp: op, Pos: startPos}, nil
-}
-
-// quant_atom := ("any"|"all") "(" or_expr ")"
-func (p *parser) parseQuantAtom(startPos ast.Position, kind ast.WhereKind) (*ast.WhereExpr, error) {
-	if err := p.advance(); err != nil { // consume 'any' / 'all'
-		return nil, err
-	}
-	if p.cur.Kind != lexer.TokLParen {
-		return nil, p.errorf(p.cur.Pos, "expected '(', got %s (%q)", p.cur.Kind, p.cur.Text)
-	}
+func (p *parser) parseWhereGroup() (whereValue, error) {
 	if p.parenDepth >= maxParenDepth {
-		return nil, p.errorf(p.cur.Pos, "expression nesting too deep (limit: %d)", maxParenDepth)
+		return whereValue{}, p.errorf(p.cur.Pos, "expression nesting too deep (limit: %d)", maxParenDepth)
 	}
 	p.parenDepth++
+	defer func() { p.parenDepth-- }()
 	if _, err := p.expect(lexer.TokLParen); err != nil {
-		p.parenDepth--
-		return nil, err
+		return whereValue{}, err
 	}
-	inner, err := p.parseOrExpr()
+	inner, err := p.parseWhereExpr(precOr)
 	if err != nil {
-		p.parenDepth--
-		return nil, err
+		return whereValue{}, err
 	}
 	if _, err := p.expect(lexer.TokRParen); err != nil {
-		p.parenDepth--
-		return nil, err
+		return whereValue{}, err
 	}
-	p.parenDepth--
-	return &ast.WhereExpr{Kind: kind, Inner: inner, Pos: startPos}, nil
+	return inner, nil
 }
 
 // action_atom := "action" "==" IDENT
@@ -206,135 +320,6 @@ func (p *parser) parseActionAtom(startPos ast.Position) (*ast.WhereExpr, error) 
 		return nil, err
 	}
 	return &ast.WhereExpr{Kind: ast.WAtomAction, ActionValue: ident.Text, Pos: startPos}, nil
-}
-
-// cmp_or_bool_atom := (network_literal cmp_op arith_expr)
-//
-//	| arith_expr (cmp_op (arith_expr | network_literal))?
-//
-// dsl-types.md §6.2 makes comparisons fully symmetric in their
-// operands, so we first try to read the LHS in lexer value mode: if
-// it classifies as a network literal AND is followed by `==` / `!=`,
-// we commit to the literal-LHS form. Otherwise the lexer is rolled
-// back and we fall through to the legacy arith path, which already
-// handles the field-LHS / literal-RHS shape.
-//
-// When NOT followed by a comparison operator, the LHS is treated as a
-// bare Bool atom: a field path ending in `.exists` becomes
-// WAtomBoolExists, any other Int<N>-typed field becomes a Bool decay
-// (WAtomArith with `field != 0`) so the resolver can apply the §5.4
-// coercion.
-func (p *parser) parseCmpOrBoolAtom(startPos ast.Position) (*ast.WhereExpr, error) {
-	if lit, op, ok, err := p.tryLeadingNetworkLiteralCmp(); err != nil {
-		return nil, err
-	} else if ok {
-		right, err := p.parseArithExpr()
-		if err != nil {
-			return nil, err
-		}
-		if !isFieldPath(right) {
-			return nil, p.errorf(startPos, "right-hand side of literal-on-left comparison must be a single field path; got an arithmetic expression")
-		}
-		if _, chained := cmpOpFor(p.cur.Kind); chained {
-			return nil, p.errorf(p.cur.Pos, "chained comparison not supported; use 'and' to combine")
-		}
-		return &ast.WhereExpr{
-			Kind:         ast.WAtomLiteralCmp,
-			LiteralField: right.Field,
-			LiteralOp:    op,
-			LiteralValue: lit,
-			Pos:          startPos,
-		}, nil
-	}
-	left, err := p.parseArithExpr()
-	if err != nil {
-		return nil, err
-	}
-	if p.cur.Kind == lexer.TokIn {
-		// `in` is a bracket-predicate operator only. Surfacing the
-		// usual "expected ')'" from the enclosing scope hides what
-		// the user got wrong; nudge them at the source position.
-		return nil, p.errorf(p.cur.Pos, "'in' is only valid in bracket predicates (`proto[field in [...]]`); inside `where` use a chain of `or` (`field == v1 or field == v2`) instead")
-	}
-	op, ok := cmpOpFor(p.cur.Kind)
-	if !ok {
-		// No comparison operator: treat as bare Bool atom.
-		atom, err := p.bareBoolAtomFromArith(startPos, left)
-		if err != nil {
-			return nil, err
-		}
-		return p.maybeBoolEqTail(startPos, atom)
-	}
-	// Snapshot the lexer position right after the op — at this point
-	// p.cur is still the op token but the lexer's internal cursor is
-	// already past it. Saving here lets us roll back to "just past
-	// the op" and re-scan in value mode if the structural advance
-	// turns out to be a network literal.
-	postOpSnap := p.lex.Save()
-	if err := p.advance(); err != nil {
-		return nil, err
-	}
-
-	if (op == ast.CmpEq || op == ast.CmpNeq) && isFieldPath(left) {
-		lit, ok, err := p.tryNetworkLiteral(postOpSnap)
-		if err != nil {
-			return nil, err
-		}
-		if ok {
-			if _, chained := cmpOpFor(p.cur.Kind); chained {
-				return nil, p.errorf(p.cur.Pos, "chained comparison not supported; use 'and' to combine")
-			}
-			return &ast.WhereExpr{
-				Kind:         ast.WAtomLiteralCmp,
-				LiteralField: left.Field,
-				LiteralOp:    op,
-				LiteralValue: lit,
-				Pos:          startPos,
-			}, nil
-		}
-	}
-
-	right, err := p.parseArithExpr()
-	if err != nil {
-		return nil, err
-	}
-	// Chained comparison rejection.
-	if _, chained := cmpOpFor(p.cur.Kind); chained {
-		return nil, p.errorf(p.cur.Pos, "chained comparison not supported; use 'and' to combine")
-	}
-	return &ast.WhereExpr{
-		Kind:   ast.WAtomArith,
-		ArithL: left,
-		Op:     op,
-		ArithR: right,
-		Pos:    startPos,
-	}, nil
-}
-
-// bareBoolAtomFromArith converts an arith expression that appears in
-// where-atom position without a trailing comparison operator into the
-// matching Bool atom kind. Field paths ending in `.exists` become
-// WAtomBoolExists; any other Int<N> field decays to a Bool by being
-// wrapped in `arith != 0` (the resolver materialises the coercion).
-// Numeric literals appearing bare are rejected as ambiguous.
-func (p *parser) bareBoolAtomFromArith(startPos ast.Position, e *ast.ArithExpr) (*ast.WhereExpr, error) {
-	if e == nil {
-		return nil, p.errorf(startPos, "internal: nil arith expression in where atom")
-	}
-	if e.Kind == ast.ArithField && e.Field != nil && fieldPathEndsWithExists(e.Field) {
-		stripped := stripExistsTail(e.Field)
-		return &ast.WhereExpr{Kind: ast.WAtomBoolExists, BoolField: stripped, Pos: startPos}, nil
-	}
-	// Bool decay path: rewrite as `<expr> != 0` so existing arith codegen
-	// handles the non-zero check.
-	zero := &ast.ArithExpr{Kind: ast.ArithConst, Const: 0, Pos: startPos}
-	return &ast.WhereExpr{
-		Kind:   ast.WAtomArith,
-		ArithL: e,
-		Op:     ast.CmpNeq,
-		ArithR: zero,
-		Pos:    startPos,
-	}, nil
 }
 
 func fieldPathEndsWithExists(fp *ast.FieldPath) bool {
@@ -359,68 +344,8 @@ func stripExistsTail(fp *ast.FieldPath) *ast.FieldPath {
 	return out
 }
 
-// isFieldPath reports whether the arith expression is a single field
-// reference (no arithmetic operators). Used to gate the network-
-// literal short-circuit: `tcp.dport == 443` allows fallback to arith,
-// but `tcp.dport + 1 == 444` does not (the LHS is an arith tree).
-func isFieldPath(a *ast.ArithExpr) bool {
-	return a != nil && a.Kind == ast.ArithField
-}
-
-// tryLeadingNetworkLiteralCmp probes the start of a where atom for a
-// `<network-literal> ⨀ ...` shape. It rewinds the lexer to just before
-// p.cur, re-reads the same byte run in value mode, and accepts only
-// when the value classifies as a network literal AND is followed by
-// `==` / `!=` (D5: ordered cmp on network literals is reject). On
-// commit, p.cur lands on the first token of the RHS expression.
-//
-// On miss the lexer is restored to its entry state (lex position
-// past p.cur, p.cur unchanged) so the caller can run the legacy arith
-// path without observing any side effects.
-func (p *parser) tryLeadingNetworkLiteralCmp() (*ast.Value, ast.CmpOp, bool, error) {
-	preSnap := p.preCurSnap
-	savedCur := p.cur
-
-	bail := func() (*ast.Value, ast.CmpOp, bool, error) {
-		// Replay the structural Next() so the lexer ends up exactly
-		// where it was on entry; restore p.cur so the caller can run
-		// the legacy arith path without observing any side effects.
-		p.lex.Restore(preSnap)
-		if _, rerr := p.lex.Next(); rerr != nil {
-			return nil, 0, false, rerr
-		}
-		p.cur = savedCur
-		return nil, 0, false, nil
-	}
-
-	p.lex.Restore(preSnap)
-	tok, err := p.lex.NextValue()
-	if err != nil || tok.Kind != lexer.TokValue || !isNetworkLiteralKind(tok.Value.Kind) {
-		return bail()
-	}
-
-	opTok, err := p.lex.Next()
-	if err != nil {
-		return nil, 0, false, err
-	}
-	op, ok := cmpOpFor(opTok.Kind)
-	if !ok || (op != ast.CmpEq && op != ast.CmpNeq) {
-		// Network literals support only ==/!= per dsl-types.md §6.2.
-		return bail()
-	}
-
-	if err := p.advance(); err != nil {
-		return nil, 0, false, err
-	}
-	return tok.Value, op, true, nil
-}
-
-// tryNetworkLiteral re-reads the RHS in value mode from the post-op
-// snapshot. On match, the lexer / p.cur are both advanced past the
-// literal so the caller can continue parsing whatever comes after.
-// On miss (RHS is integer arith / not a network literal), both the
-// lexer and p.cur are restored to their post-`advance()` state so
-// the caller can fall through to `parseArithExpr` cleanly.
+// tryNetworkLiteral re-reads a primary in value mode and restores structural
+// lexer state on a miss. On success it advances past the complete literal.
 func (p *parser) tryNetworkLiteral(snap lexer.Snapshot) (*ast.Value, bool, error) {
 	p.lex.Restore(snap)
 	tok, err := p.lex.NextValue()
@@ -445,153 +370,4 @@ func (p *parser) tryNetworkLiteral(snap lexer.Snapshot) (*ast.Value, bool, error
 
 func isNetworkLiteralKind(k ast.ValueKind) bool {
 	return k == ast.ValIPv4 || k == ast.ValIPv6 || k == ast.ValMAC || k == ast.ValCIDR
-}
-
-// arith_expr := arith_term (("+"|"-"|"|"|"^") arith_term)*
-//
-// `|` and `^` (bitwise OR / XOR) join `+` / `-` at the same
-// precedence — they're additive in the lattice sense and treating
-// them at this level mirrors the way users write masked equality
-// (`(flags >> 4) & 0x0f | extra_bit == val`).
-func (p *parser) parseArithExpr() (*ast.ArithExpr, error) {
-	left, err := p.parseArithTerm()
-	if err != nil {
-		return nil, err
-	}
-	for {
-		var op ast.ArithOp
-		switch p.cur.Kind {
-		case lexer.TokPlus:
-			op = ast.ArithAdd
-		case lexer.TokMinus:
-			op = ast.ArithSub
-		case lexer.TokPipe:
-			op = ast.ArithOr
-		case lexer.TokCaret:
-			op = ast.ArithXor
-		default:
-			return left, nil
-		}
-		pos := p.cur.Pos
-		if err := p.advance(); err != nil {
-			return nil, err
-		}
-		right, err := p.parseArithTerm()
-		if err != nil {
-			return nil, err
-		}
-		left = &ast.ArithExpr{Kind: ast.ArithBinOp, Op: op, Left: left, Right: right, Pos: pos}
-	}
-}
-
-// arith_term := arith_fac (("*"|"/"|"%"|"&"|"<<"|">>") arith_fac)*
-//
-// Bitwise `&` and the shifts `<<` / `>>` sit at the same
-// precedence as `*` / `/` / `%`. This is a deliberate
-// simplification of C: it keeps the natural flag idiom
-// `tcp.flags & 0x12 == 0x12` parens-free, and shift-with-mask
-// patterns like `flags >> 4 & 1` reading left-to-right at one
-// precedence. `|` / `^` live one level up (arith_expr) since they
-// behave more like additive on the truth-value side.
-func (p *parser) parseArithTerm() (*ast.ArithExpr, error) {
-	left, err := p.parseArithFac()
-	if err != nil {
-		return nil, err
-	}
-	for {
-		var op ast.ArithOp
-		switch p.cur.Kind {
-		case lexer.TokStar:
-			op = ast.ArithMul
-		case lexer.TokSlash:
-			op = ast.ArithDiv
-		case lexer.TokPercent:
-			op = ast.ArithMod
-		case lexer.TokAmp:
-			op = ast.ArithAnd
-		case lexer.TokShl:
-			op = ast.ArithShl
-		case lexer.TokShr:
-			op = ast.ArithShr
-		default:
-			return left, nil
-		}
-		pos := p.cur.Pos
-		if err := p.advance(); err != nil {
-			return nil, err
-		}
-		right, err := p.parseArithFac()
-		if err != nil {
-			return nil, err
-		}
-		left = &ast.ArithExpr{Kind: ast.ArithBinOp, Op: op, Left: left, Right: right, Pos: pos}
-	}
-}
-
-// arith_fac := "-"? INT | field_path | "(" arith_expr ")"
-//
-// Unary minus is permitted only directly in front of an integer
-// literal. The negated value is stored as its 2's-complement uint64
-// (Const = ^v + 1) so the resolver's typing pass can narrow it to
-// any target Int<N> per dsl-types.md §4.1.
-func (p *parser) parseArithFac() (*ast.ArithExpr, error) {
-	startPos := p.cur.Pos
-	if p.cur.Kind == lexer.TokMinus {
-		// Look ahead: only an integer literal may follow a unary minus.
-		// The structural lexer doesn't peek across positions, so we
-		// just advance and require TokInt next.
-		if err := p.advance(); err != nil {
-			return nil, err
-		}
-		if p.cur.Kind != lexer.TokInt {
-			return nil, p.errorf(p.cur.Pos, "expected integer literal after unary '-', got %s", p.cur.Kind)
-		}
-		v := p.cur.Int
-		if err := p.advance(); err != nil {
-			return nil, err
-		}
-		// 2's-complement negation: -v = ^v + 1 (mod 2^64). Reject
-		// values that overflow signed int64 since they cannot have
-		// originated from a literal in [-2^63, 0).
-		if v > uint64(1)<<63 {
-			return nil, p.errorf(startPos, "negative literal -%d exceeds the supported range [-2^63, 0)", v)
-		}
-		neg := ^v + 1
-		return &ast.ArithExpr{Kind: ast.ArithConst, Const: neg, Pos: startPos}, nil
-	}
-	switch p.cur.Kind {
-	case lexer.TokInt:
-		v := p.cur.Int
-		if err := p.advance(); err != nil {
-			return nil, err
-		}
-		return &ast.ArithExpr{Kind: ast.ArithConst, Const: v, Pos: startPos}, nil
-	case lexer.TokIdent:
-		field, err := p.parseFieldPath()
-		if err != nil {
-			return nil, err
-		}
-		return &ast.ArithExpr{Kind: ast.ArithField, Field: field, Pos: startPos}, nil
-	case lexer.TokLParen:
-		if p.parenDepth >= maxParenDepth {
-			return nil, p.errorf(p.cur.Pos, "expression nesting too deep (limit: %d)", maxParenDepth)
-		}
-		p.parenDepth++
-		if err := p.advance(); err != nil {
-			p.parenDepth--
-			return nil, err
-		}
-		inner, err := p.parseArithExpr()
-		if err != nil {
-			p.parenDepth--
-			return nil, err
-		}
-		if _, err := p.expect(lexer.TokRParen); err != nil {
-			p.parenDepth--
-			return nil, err
-		}
-		p.parenDepth--
-		return inner, nil
-	}
-	return nil, p.errorf(startPos, "expected integer, field path, or '(' in arithmetic expression, got %s", p.cur.Kind)
 }

@@ -1,9 +1,10 @@
 #!/bin/bash
 set -uo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
-BINARY="$PROJECT_DIR/bpf-ninja"
+BINARY="${BINARY:-$PROJECT_DIR/bpf-ninja}"
+source "$SCRIPT_DIR/capture_helpers.sh"
 PASS=0
 FAIL=0
 
@@ -22,8 +23,8 @@ run_test() {
     if [[ $rc -eq 0 ]]; then
         green "PASS"
         PASS=$((PASS + 1))
-    elif echo "$output" | grep -q "skipping"; then
-        echo "SKIP"
+    elif [[ $rc -eq 77 && ${CI:-} != true && ${CI:-} != 1 ]]; then
+        echo "SKIP ($output)"
         SKIP=$((SKIP + 1))
     else
         red "FAIL"
@@ -37,42 +38,21 @@ run_test() {
 # --- helpers ---
 
 send_packets() {
-    ip netns exec xdptest ping -c "$1" -W 1 10.0.0.1 >/dev/null 2>&1 || true
+    ip netns exec xdptest ping -c "$1" -W 1 10.0.0.1 >/dev/null 2>&1
 }
 
 require_bpftool() {
-    if ! bpftool prog show &>/dev/null; then
-        echo "skipping: bpftool not working" >&2
-        return 1
+    if ! command -v bpftool >/dev/null; then
+        echo "skipping: bpftool not installed" >&2
+        return 77
     fi
+    bpftool prog show >/dev/null
 }
 
-capture_count() {
-    # bpf-ninja の stderr から "N packets captured" を抽出
-    grep -oP '\d+(?= packets captured)' "$1" 2>/dev/null || echo 0
-}
-
-# read_any_shard <base-pcap-path> [match-pattern]
-# After R22 (sharded ringbuf hoist), packets land in $base.cpuN per-CPU
-# files; the base $pcap is a SHB+IDBs marker only. This walks the shards
-# and returns 0 on the first one that contains at least one packet (and
-# optionally matches `match-pattern` in the tshark frame.interface_name
-# field). Returns 1 if no shard satisfies the check.
-read_any_shard() {
-    local base=$1
-    local pattern=${2:-}
-    local checker=tcpdump
-    command -v tshark &>/dev/null && checker=tshark
-    for shard in "$base".cpu*; do
-        [[ -e "$shard" ]] || continue
-        if [[ -n "$pattern" && $checker == tshark ]]; then
-            tshark -r "$shard" -c 1 -T fields -e frame.interface_name 2>/dev/null \
-                | grep -q "$pattern" && return 0
-        else
-            tcpdump -r "$shard" -c 1 >/dev/null 2>&1 && return 0
-        fi
-    done
-    return 1
+# Always inspect the final merged file. Python's independent pcap-ng reader
+# enforces packet count, lengths, link type, and (when requested) action names.
+assert_pcap() {
+    python3 "$SCRIPT_DIR/assert_pcap.py" "$@"
 }
 
 # run_count_test <expected-min> <bpf-ninja-args...>
@@ -80,17 +60,16 @@ read_any_shard() {
 # from the test netns, and asserts the captured packet count is at
 # least <expected-min>.
 run_count_test() {
-    local expected=$1
+    local expected=$1 err count result=1
     shift
-    local err=$(mktemp)
-    timeout 10 "$BINARY" "$@" > /dev/null 2>"$err" &
-    local pid=$!
-    sleep 2
-    send_packets 5
-    wait $pid 2>/dev/null || true
-    local count=$(capture_count "$err")
+    err=$(mktemp)
+    if capture_run "$err" count send_packets 5 "$@"; then
+        count=$(capture_count "$err")
+        [[ "$count" -ge "$expected" ]] && result=0
+    fi
+    [[ $result -eq 0 ]] || cat "$err" >&2
     rm -f "$err"
-    [[ "$count" -ge "$expected" ]]
+    return "$result"
 }
 
 # run_nomatch_test <bpf-ninja-args...>
@@ -98,65 +77,56 @@ run_count_test() {
 # then asserts zero captures. Uses kill+wait because the binary would
 # otherwise block on -c until timeout.
 run_nomatch_test() {
-    local err=$(mktemp)
-    timeout 5 "$BINARY" "$@" > /dev/null 2>"$err" &
-    local pid=$!
-    sleep 1
-    send_packets 3
-    sleep 2
-    kill $pid 2>/dev/null; wait $pid 2>/dev/null || true
-    local count=$(capture_count "$err")
+    local err count result=1
+    err=$(mktemp)
+    if capture_run "$err" signal send_packets 3 "$@"; then
+        count=$(capture_count "$err")
+        [[ "$count" -eq 0 ]] && result=0
+    fi
+    [[ $result -eq 0 ]] || cat "$err" >&2
     rm -f "$err"
-    [[ "$count" -eq 0 ]]
+    return "$result"
 }
 
 # run_pcap_test <bpf-ninja-args...>
-# Captures to a pcap file and asserts at least one shard contains a
-# packet (the base $pcap is SHB+IDBs only after R22).
+# Captures to a final merged pcap and checks every record.
 run_pcap_test() {
-    local pcap=$(mktemp --suffix=.pcap)
-    local err=$(mktemp)
-    timeout 10 "$BINARY" -w "$pcap" "$@" 2>"$err" &
-    local pid=$!
-    sleep 2
-    send_packets 5
-    wait $pid 2>/dev/null || true
-    read_any_shard "$pcap"
-    local result=$?
+    local pcap err result=1
+    local checks=()
+    [[ -z ${PCAP_CAPLEN:-} ]] || checks+=(--caplen "$PCAP_CAPLEN")
+    [[ -z ${PCAP_INTERFACE:-} ]] || checks+=(--interface "$PCAP_INTERFACE")
+    pcap=$(mktemp --suffix=.pcap)
+    err=$(mktemp)
+    if capture_run "$err" count send_packets 5 -w "$pcap" "$@"; then
+        assert_pcap "$pcap" --count "$(capture_count "$err")" --min-count 3 "${checks[@]}" && result=0
+    fi
+    [[ $result -eq 0 ]] || cat "$err" >&2
     rm -f "$pcap" "$pcap".cpu* "$err"
-    [[ $result -eq 0 ]]
+    return "$result"
 }
 
 # --- tests ---
 
 test_entry_no_filter()      { run_count_test 3 -i veth0 -c 3; }
-test_entry_filter_match()   { run_count_test 3 -i veth0 -c 3 "icmp"; }
-test_entry_filter_nomatch() { run_nomatch_test -i veth0 "tcp port 80"; }
+test_entry_filter_match()   { run_count_test 3 --cbpf -i veth0 -c 3 "icmp"; }
+test_entry_filter_nomatch() { run_nomatch_test --cbpf -i veth0 "tcp port 80"; }
 test_exit_capture()         { run_count_test 3 -i veth0 --mode exit -c 3; }
 test_pcap_output()          { run_pcap_test -i veth0 -c 3; }
 
 test_prog_id() {
-    require_bpftool || return 1
-    local prog_id=$(bpftool prog show name xdp_pass 2>/dev/null | head -1 | awk '{print $1}' | tr -d ':')
-    if [[ -z "$prog_id" ]]; then
-        echo "bpftool could not find xdp_pass" >&2
-        return 1
-    fi
+    require_bpftool || return $?
+    local prog_id
+    prog_id=$(bpftool prog show name xdp_pass 2>/dev/null | head -1 | awk '{print $1}' | tr -d ':')
+    [[ -n "$prog_id" ]] || { echo "xdp_pass not found" >&2; return 1; }
+    run_count_test 3 -p "$prog_id" -c 3
+}
 
-    local err=$(mktemp)
-    timeout 10 "$BINARY" -p "$prog_id" -c 3 > /dev/null 2>"$err" &
-    local pid=$!
-    sleep 2
-    send_packets 5
-    wait $pid 2>/dev/null || true
-    local count=$(capture_count "$err")
-    echo "prog_id=$prog_id count=$count stderr=$(cat "$err")" >&2
-    rm -f "$err"
-    [[ "$count" -ge 3 ]]
+send_tailcall_packets() {
+    ip netns exec xdptctest ping -c "$1" -W 1 10.98.0.1 >/dev/null 2>&1
 }
 
 test_tailcall_dispatcher() {
-    require_bpftool || return 1
+    require_bpftool || return $?
     "$SCRIPT_DIR/cleanup_tailcall.sh" 2>/dev/null || true
     local setup_out
     setup_out=$("$SCRIPT_DIR/setup_tailcall.sh" 2>&1)
@@ -168,38 +138,24 @@ test_tailcall_dispatcher() {
     fi
 
     local err=$(mktemp)
-    timeout 10 "$BINARY" -p "$disp_id" -c 3 > /dev/null 2>"$err" &
-    local pid=$!
-    sleep 2
-    ip netns exec xdptctest ping -c 5 -W 1 10.98.0.1 >/dev/null 2>&1 || true
-    wait $pid 2>/dev/null || true
-    local count=$(capture_count "$err")
+    local count=-1
+    if capture_run "$err" count send_tailcall_packets 5 -p "$disp_id" -c 3; then
+        count=$(capture_count "$err")
+    fi
     echo "disp_id=$disp_id count=$count stderr=$(cat "$err")" >&2
     rm -f "$err"
     "$SCRIPT_DIR/cleanup_tailcall.sh" 2>/dev/null || true
     [[ "$count" -ge 3 ]]
 }
 
-test_exit_pcap_action() {
-    local pcap=$(mktemp --suffix=.pcap)
-    local err=$(mktemp)
-    timeout 10 "$BINARY" -i veth0 --mode exit -w "$pcap" -c 3 2>"$err" &
-    local pid=$!
-    sleep 2
-    send_packets 5
-    wait $pid 2>/dev/null || true
-    # tshark がいれば xdp:* interface name 込みで検証、 無ければ単なる
-    # parse 可能性 fallback (cpuN shard の 1 つでも 1 packet あれば pass)。
-    read_any_shard "$pcap" "xdp:"
-    local result=$?
-    rm -f "$pcap" "$pcap".cpu* "$err"
-    [[ $result -eq 0 ]]
-}
+test_exit_pcap_action() { PCAP_INTERFACE=xdp:PASS run_pcap_test -i veth0 --mode exit -c 3; }
 
 test_dsl_entry_filter_match()    { run_count_test 3 -i veth0 -c 3 "eth/ipv4/icmp"; }
 test_dsl_entry_predicate_match() { run_count_test 3 -i veth0 -c 3 "eth/ipv4/icmp[type==8]"; }
 test_dsl_entry_filter_nomatch()  { run_nomatch_test -i veth0 "eth/ipv4/tcp"; }
-test_dsl_capture_headers()       { run_pcap_test -i veth0 -c 3 "eth/ipv4/icmp capture headers+32"; }
+# Bundled icmp_h is the 4-byte common header: Ethernet 14 + IPv4 20
+# + ICMP common 4 + requested payload 32 = 70 bytes.
+test_dsl_capture_headers()       { PCAP_CAPLEN=70 run_pcap_test -i veth0 -c 3 "eth/ipv4/icmp capture headers+32"; }
 
 # Dummy XDP returns XDP_PASS (=2); this exercises the fexit action atom
 # codegen against a known return value.
@@ -217,17 +173,17 @@ tc_prog_id() {
 # and --mode exit attach as fentry/fexit observers and capture
 # packets on each ingress event.
 test_dsl_tc_entry() {
-    require_bpftool || return 1
+    require_bpftool || return $?
     local pid_t=$(tc_prog_id)
     [[ -n "$pid_t" ]] || { echo "tc_pass program not found" >&2; return 1; }
     run_count_test 3 --mode entry -p "$pid_t" -c 3 "eth/ipv4/icmp"
 }
 
 test_dsl_tc_exit_action() {
-    require_bpftool || return 1
+    require_bpftool || return $?
     local pid_t=$(tc_prog_id)
     [[ -n "$pid_t" ]] || { echo "tc_pass program not found" >&2; return 1; }
-    run_count_test 3 --mode exit -p "$pid_t" -c 3 "eth/ipv4/icmp where action == TC_ACT_OK"
+    PCAP_INTERFACE=tc:TC_ACT_OK run_pcap_test --mode exit -p "$pid_t" -c 3 "eth/ipv4/icmp where action == TC_ACT_OK"
 }
 
 # --- cgroup-skb hook (setup.sh attaches cgroup_pass to a scratch
@@ -240,10 +196,10 @@ test_dsl_tc_exit_action() {
 CGROUP_TEST_DIR=/sys/fs/cgroup/bpfninja-test
 
 require_cgroup_target() {
-    require_bpftool || return 1
+    require_bpftool || return $?
     if ! bpftool cgroup show "$CGROUP_TEST_DIR" 2>/dev/null | grep -q cgroup_pass; then
         echo "skipping: cgroup_pass not attached (no cgroup2/bpffs?)" >&2
-        return 1
+        return 77
     fi
 }
 
@@ -254,65 +210,56 @@ cgroup_prog_id() {
 # send_cgroup_packets <count>: ping loopback from a shell placed into
 # the scratch cgroup, generating ICMP through the cgroup-skb hook.
 send_cgroup_packets() {
-    sudo sh -c "echo \$\$ > '$CGROUP_TEST_DIR/cgroup.procs'; ping -c $1 -W 1 127.0.0.1" >/dev/null 2>&1 || true
+    sudo sh -c "echo \$\$ > '$CGROUP_TEST_DIR/cgroup.procs'; ping -c $1 -W 1 127.0.0.1" >/dev/null 2>&1
 }
 
 # run_cgroup_count_test <expected-min> <bpf-ninja-args...>
 run_cgroup_count_test() {
-    local expected=$1
+    local expected=$1 err count result=1
     shift
-    local err=$(mktemp)
-    timeout 10 "$BINARY" "$@" > /dev/null 2>"$err" &
-    local pid=$!
-    sleep 2
-    send_cgroup_packets 5
-    wait $pid 2>/dev/null || true
-    local count=$(capture_count "$err")
+    err=$(mktemp)
+    if capture_run "$err" count send_cgroup_packets 5 "$@"; then
+        count=$(capture_count "$err")
+        [[ "$count" -ge "$expected" ]] && result=0
+    fi
+    [[ $result -eq 0 ]] || cat "$err" >&2
     rm -f "$err"
-    [[ "$count" -ge "$expected" ]]
+    return "$result"
 }
 
 test_dsl_cgroup_entry() {
-    require_cgroup_target || return 1
+    require_cgroup_target || return $?
     local pid_c=$(cgroup_prog_id)
     [[ -n "$pid_c" ]] || { echo "cgroup_pass program id not found" >&2; return 1; }
     run_cgroup_count_test 3 -p "$pid_c" -c 3 "ipv4/icmp"
 }
 
 test_dsl_cgroup_exit_action() {
-    require_cgroup_target || return 1
+    require_cgroup_target || return $?
     local pid_c=$(cgroup_prog_id)
     [[ -n "$pid_c" ]] || { echo "cgroup_pass program id not found" >&2; return 1; }
     run_cgroup_count_test 3 --mode exit -p "$pid_c" -c 3 "ipv4/icmp where action == SK_PASS"
 }
 
 test_cgroup_path_selector() {
-    require_cgroup_target || return 1
+    require_cgroup_target || return $?
     run_cgroup_count_test 3 --cgroup "$CGROUP_TEST_DIR" -c 3 "ipv4/icmp"
 }
 
 # Asserts the pcap-ng written for a cgroup-skb capture carries
 # LINKTYPE_RAW (101), not Ethernet — packets start at the IP header.
 test_cgroup_pcap_linktype_raw() {
-    require_cgroup_target || return 1
+    require_cgroup_target || return $?
     local pid_c=$(cgroup_prog_id)
     [[ -n "$pid_c" ]] || { echo "cgroup_pass program id not found" >&2; return 1; }
     local pcap=$(mktemp --suffix=.pcap)
     local err=$(mktemp)
-    timeout 10 "$BINARY" -w "$pcap" -p "$pid_c" -c 3 "ipv4/icmp" 2>"$err" &
-    local pid=$!
-    sleep 2
-    send_cgroup_packets 5
-    wait $pid 2>/dev/null || true
+    if ! capture_run "$err" count send_cgroup_packets 5 -w "$pcap" -p "$pid_c" -c 3 "ipv4/icmp"; then
+        rm -f "$pcap" "$pcap".cpu* "$err"
+        return 1
+    fi
     local ok=1
-    for shard in "$pcap".cpu*; do
-        [[ -e "$shard" ]] || continue
-        # tcpdump names DLT 101 "RAW (Raw IP)" in its -r banner (stderr).
-        if tcpdump -r "$shard" -c 1 2>&1 | grep -qi "RAW"; then
-            ok=0
-            break
-        fi
-    done
+    assert_pcap "$pcap" --count "$(capture_count "$err")" --min-count 3 --linktype 101 && ok=0
     rm -f "$pcap" "$pcap".cpu* "$err"
     [[ $ok -eq 0 ]]
 }
@@ -322,6 +269,14 @@ test_cgroup_pcap_linktype_raw() {
 # on the ABI. A real ping frame (~98 B) satisfies pkt_len>=60 (match) but none
 # is >=200 (nomatch); requiring both proves the argument value is actually read
 # rather than always/never matching.
+send_arg_packets() {
+    ip netns exec xdpargtest ping -c "$1" -W 1 10.99.0.1 >/dev/null 2>&1
+}
+
+send_arg_set_packets() {
+    ip netns exec xdpargtest ping -c "$1" -s 100 -W 1 10.99.0.1 >/dev/null 2>&1
+}
+
 test_argfilter() {
     "$SCRIPT_DIR/cleanup_argcap.sh" 2>/dev/null || true
     local setup_out
@@ -331,34 +286,19 @@ test_argfilter() {
         return 1
     fi
 
-    local errm=$(mktemp)
-    timeout 10 "$BINARY" -i va0 --func capture_point --arg-filter "pkt_len>=60" -c 3 > /dev/null 2>"$errm" &
-    local pm=$!
-    sleep 2
-    ip netns exec xdpargtest ping -c 5 -W 1 10.99.0.1 >/dev/null 2>&1 || true
-    wait $pm 2>/dev/null || true
-    local cmatch=$(capture_count "$errm")
-
-    local errn=$(mktemp)
-    timeout 6 "$BINARY" -i va0 --func capture_point --arg-filter "pkt_len>=200" > /dev/null 2>"$errn" &
-    local pn=$!
-    sleep 1
-    ip netns exec xdpargtest ping -c 3 -W 1 10.99.0.1 >/dev/null 2>&1 || true
-    sleep 2
-    kill $pn 2>/dev/null; wait $pn 2>/dev/null || true
-    local cnomatch=$(capture_count "$errn")
-
-    # Both runs must reach the normal shutdown ("N packets captured");
-    # otherwise a crash/parse error before capture would leave cnomatch=0 and
-    # false-pass the nomatch half.
-    local ranm=0 rann=0
-    grep -q "packets captured" "$errm" && ranm=1
-    grep -q "packets captured" "$errn" && rann=1
-
-    echo "argfilter match=$cmatch nomatch=$cnomatch ranm=$ranm rann=$rann stderr_m=$(cat "$errm") stderr_n=$(cat "$errn")" >&2
+    local errm errn cmatch=-1 cnomatch=-1
+    errm=$(mktemp)
+    errn=$(mktemp)
+    if capture_run "$errm" count send_arg_packets 5 -i va0 --func capture_point --arg-filter "pkt_len>=60" -c 3; then
+        cmatch=$(capture_count "$errm")
+    fi
+    if capture_run "$errn" signal send_arg_packets 3 -i va0 --func capture_point --arg-filter "pkt_len>=200"; then
+        cnomatch=$(capture_count "$errn")
+    fi
+    echo "argfilter match=$cmatch nomatch=$cnomatch stderr_m=$(cat "$errm") stderr_n=$(cat "$errn")" >&2
     rm -f "$errm" "$errn"
     "$SCRIPT_DIR/cleanup_argcap.sh" 2>/dev/null || true
-    [[ "$ranm" -eq 1 && "$rann" -eq 1 && "$cmatch" -ge 3 && "$cnomatch" -eq 0 ]]
+    [[ "$cmatch" -ge 3 && "$cnomatch" -eq 0 ]]
 }
 
 # Exercises arg-based pinned-map set matching (--set NAME=/path,key(field=arg:param)
@@ -384,13 +324,12 @@ test_argfilter_set() {
         return 1
     fi
 
-    local errm=$(mktemp)
-    timeout 12 "$BINARY" -i va0 --func capture_point --set "LENS=$pin,key(pkt_len=arg:pkt_len)" --arg-filter "@LENS" -c 3 > /dev/null 2>"$errm" &
-    local pm=$!
-    sleep 2
-    ip netns exec xdpargtest ping -c 5 -s 100 -W 1 10.99.0.1 >/dev/null 2>&1 || true
-    wait $pm 2>/dev/null || true
-    local cmatch=$(capture_count "$errm")
+    local errm errn cmatch=-1 cnomatch=-1
+    errm=$(mktemp)
+    errn=$(mktemp)
+    if capture_run "$errm" count send_arg_set_packets 5 -i va0 --func capture_point --set "LENS=$pin,key(pkt_len=arg:pkt_len)" --arg-filter "@LENS" -c 3; then
+        cmatch=$(capture_count "$errm")
+    fi
 
     # Swap the set to a length no frame carries; membership should now miss.
     # Track the swap so an empty set (a failed re-add) cannot false-pass the
@@ -400,23 +339,13 @@ test_argfilter_set() {
         && "$BINARY" set add "$pin" pkt_len=12345 >/dev/null 2>&1; then
         swapped=1
     fi
-    local errn=$(mktemp)
-    timeout 6 "$BINARY" -i va0 --func capture_point --set "LENS=$pin,key(pkt_len=arg:pkt_len)" --arg-filter "@LENS" > /dev/null 2>"$errn" &
-    local pn=$!
-    sleep 1
-    ip netns exec xdpargtest ping -c 3 -s 100 -W 1 10.99.0.1 >/dev/null 2>&1 || true
-    sleep 2
-    kill $pn 2>/dev/null; wait $pn 2>/dev/null || true
-    local cnomatch=$(capture_count "$errn")
-
-    local ranm=0 rann=0
-    grep -q "packets captured" "$errm" && ranm=1
-    grep -q "packets captured" "$errn" && rann=1
-
-    echo "argfilter_set match=$cmatch nomatch=$cnomatch swapped=$swapped ranm=$ranm rann=$rann stderr_m=$(cat "$errm") stderr_n=$(cat "$errn")" >&2
+    if capture_run "$errn" signal send_arg_set_packets 3 -i va0 --func capture_point --set "LENS=$pin,key(pkt_len=arg:pkt_len)" --arg-filter "@LENS"; then
+        cnomatch=$(capture_count "$errn")
+    fi
+    echo "argfilter_set match=$cmatch nomatch=$cnomatch swapped=$swapped stderr_m=$(cat "$errm") stderr_n=$(cat "$errn")" >&2
     rm -f "$errm" "$errn" "$pin"
     "$SCRIPT_DIR/cleanup_argcap.sh" 2>/dev/null || true
-    [[ "$swapped" -eq 1 && "$ranm" -eq 1 && "$rann" -eq 1 && "$cmatch" -ge 3 && "$cnomatch" -eq 0 ]]
+    [[ "$swapped" -eq 1 && "$cmatch" -ge 3 && "$cnomatch" -eq 0 ]]
 }
 
 # Per-entry cap (`set add ... max-bytes=N`) + --exit-when-capped: a tiny
@@ -451,10 +380,12 @@ test_split_per_entry_cap() {
     local capped=0
     grep -q "capped" "$err" && capped=1
     echo "split_cap rc=$rc size=$size capped=$capped stderr=$(cat "$err")" >&2
+    local content_ok=0
+    assert_pcap "$merged" --min-count 1 --caplen 98 && content_ok=1
     rm -f "$pcap" "${pcap%.pcap}".*.pcap "$pcap".cpu* "$err" "$pin"
     # 4 KiB slack: the cap is enforced per ringbuf batch per shard, plus
     # the merged file's fixed pcap-ng headers.
-    [[ $rc -eq 0 && $capped -eq 1 && $size -gt 0 && $size -le $((cap + 4096)) ]]
+    [[ $content_ok -eq 1 && $rc -eq 0 && $capped -eq 1 && $size -gt 0 && $size -le $((cap + 4096)) ]]
 }
 
 # Per-entry cap composed with --finalize-on-del: the cap must park the
@@ -499,9 +430,11 @@ test_cap_finalize_flow() {
     local rc=$?
 
     echo "cap_finalize appeared=$appeared alive=$alive finalized=$finalized size=$size rc=$rc list=$("$BINARY" set list "$pin" 2>/dev/null) stderr=$(cat "$err")" >&2
+    local content_ok=0
+    assert_pcap "$merged" --min-count 1 --caplen 98 && content_ok=1
     rm -f "$pcap" "${pcap%.pcap}".*.pcap "$pcap".cpu* "$err" "$pin"
     # Same cap + batch + header slack as test_split_per_entry_cap.
-    [[ $appeared -eq 1 && $alive -eq 1 && $finalized -eq 1 && $rc -eq 0 && $size -gt 0 && $size -le $((300 + 4096)) ]]
+    [[ $content_ok -eq 1 && $appeared -eq 1 && $alive -eq 1 && $finalized -eq 1 && $rc -eq 0 && $size -gt 0 && $size -le $((300 + 4096)) ]]
 }
 
 # All three flags composed: the cap must park the entry, the finalizer
@@ -536,8 +469,10 @@ test_cap_finalize_exit() {
     "$BINARY" set list "$pin" 2>/dev/null | grep -Eq "tag=1 .*state=finalized" && finalized=1
 
     echo "cap_finalize_exit rc=$rc appeared=$appeared finalized=$finalized list=$("$BINARY" set list "$pin" 2>/dev/null) stderr=$(cat "$err")" >&2
+    local content_ok=0
+    assert_pcap "$merged" --min-count 1 --caplen 98 && content_ok=1
     rm -f "$pcap" "${pcap%.pcap}".*.pcap "$pcap".cpu* "$err" "$pin"
-    [[ $rc -eq 0 && $appeared -eq 1 && $finalized -eq 1 ]]
+    [[ $content_ok -eq 1 && $rc -eq 0 && $appeared -eq 1 && $finalized -eq 1 ]]
 }
 
 # --finalize-on-del: removing a tag's set entry must produce the merged
@@ -577,8 +512,10 @@ test_finalize_on_del() {
     local rc=$?
 
     echo "finalize_on_del appeared=$appeared alive=$alive pkts=$pkts rc=$rc stderr=$(cat "$err")" >&2
+    local content_ok=0
+    assert_pcap "$merged" --min-count 1 --caplen 98 && content_ok=1
     rm -f "$pcap" "${pcap%.pcap}".*.pcap "$pcap".cpu* "$err" "$pin"
-    [[ $appeared -eq 1 && $alive -eq 1 && $pkts -ge 3 && $rc -eq 0 ]]
+    [[ $content_ok -eq 1 && $appeared -eq 1 && $alive -eq 1 && $pkts -ge 3 && $rc -eq 0 ]]
 }
 
 # --max-bytes (no split): the aggregate cap must stop the capture by
@@ -596,19 +533,17 @@ test_max_bytes_total() {
     local reached=0
     grep -q "total output cap reached" "$err" && reached=1
     echo "max_bytes rc=$rc count=$count reached=$reached stderr=$(cat "$err")" >&2
+    local content_ok=0
+    assert_pcap "$pcap" --count "$count" --min-count 1 && content_ok=1
     rm -f "$pcap" "$pcap".cpu* "$err"
-    [[ $rc -eq 0 && $reached -eq 1 && $count -gt 0 ]]
+    [[ $content_ok -eq 1 && $rc -eq 0 && $reached -eq 1 && $count -gt 0 ]]
 }
 
 test_graceful_shutdown() {
-    require_bpftool || return 1
+    require_bpftool || return $?
     local prog_id_before=$(bpftool prog show name xdp_pass 2>/dev/null | head -1 | awk '{print $1}' | tr -d ':')
 
-    timeout 5 "$BINARY" -i veth0 -c 1 > /dev/null 2>/dev/null &
-    local pid=$!
-    sleep 2
-    send_packets 3
-    wait $pid 2>/dev/null || true
+    run_count_test 1 -i veth0 -c 1 || return 1
 
     local prog_id_after=$(bpftool prog show name xdp_pass 2>/dev/null | head -1 | awk '{print $1}' | tr -d ':')
     echo "before=$prog_id_before after=$prog_id_after" >&2
@@ -616,6 +551,9 @@ test_graceful_shutdown() {
 }
 
 # --- main ---
+
+# Sourcing exposes helpers for fault-injection tests without network setup.
+[[ ${BASH_SOURCE[0]} == "$0" ]] || return 0
 
 echo "Checking binary..."
 if [[ ! -x "$BINARY" ]]; then
@@ -678,43 +616,27 @@ check_multipoint_pcap() {
     # args: want_entries want_drops want_paired files...
     # want_paired '-' = a merged file: ids are not carried, so only
     # interfaces and sizes are checked.
-    python3 - "$@" <<'EOF'
-import struct, sys
+    python3 - "$SCRIPT_DIR" "$@" <<'EOF'
+import sys
+sys.path.insert(0, sys.argv.pop(1))
+from assert_pcap import packets
 entries = drops = other = paired = 0
 check_ids = sys.argv[3] != '-'
 bad = []
 for fn in sys.argv[4:]:
-    b = open(fn, 'rb').read(); ifaces = []; off = 0; last_entry = None
-    while off + 12 <= len(b):
-        typ, total = struct.unpack_from('<II', b, off)
-        if total < 12: break
-        if typ == 1:  # IDB: if_name option (code 2)
-            o = off + 16; name = ''
-            while o + 4 <= off + total - 4:
-                code, l = struct.unpack_from('<HH', b, o)
-                if code == 0: break
-                if code == 2: name = b[o + 4:o + 4 + l].decode()
-                o += 4 + ((l + 3) & ~3)
-            ifaces.append(name)
-        elif typ == 6:  # EPB: epb_packetid option (code 5)
-            iface, _, _, caplen, _ = struct.unpack_from('<IIIII', b, off + 8)
-            o = off + 28 + ((caplen + 3) & ~3); pid = 0
-            while o + 4 <= off + total - 4:
-                code, l = struct.unpack_from('<HH', b, o)
-                if code == 0: break
-                if code == 5 and l == 8: pid = struct.unpack_from('<Q', b, o + 4)[0]
-                o += 4 + ((l + 3) & ~3)
-            name = ifaces[iface] if iface < len(ifaces) else '?'
-            if name.endswith(':entry'):
-                entries += 1; last_entry = pid
-                if caplen != 104 or (check_ids and pid == 0): bad.append(('entry', fn, caplen, pid))
-            elif name.endswith(':DROP'):
-                drops += 1
-                if caplen != 62 or (check_ids and pid == 0): bad.append(('drop', fn, caplen, pid))
-                elif pid == last_entry: paired += 1  # --emit exit has no entry record to pair with
-            else:
-                other += 1; bad.append(('other', fn, name))
-        off += total
+    last_entry = None
+    for packet in packets(fn):
+        if packet['linktype'] != 1: raise ValueError('expected Ethernet linktype')
+        caplen, pid, name = packet['caplen'], packet['packet_id'], packet['interface']
+        if name.endswith(':entry'):
+            entries += 1; last_entry = pid
+            if caplen != 104 or (check_ids and pid == 0): bad.append(('entry', fn, caplen, pid))
+        elif name.endswith(':DROP'):
+            drops += 1
+            if caplen != 62 or (check_ids and pid == 0): bad.append(('drop', fn, caplen, pid))
+            elif pid == last_entry: paired += 1  # --emit exit has no entry record to pair with
+        else:
+            other += 1; bad.append(('other', fn, name))
 want_entries = int(sys.argv[1]); want_drops = int(sys.argv[2]); want_paired = int(sys.argv[3]) if check_ids else paired
 print(f"entry={entries} drop={drops} other={other} paired={paired} bad={bad[:3]}")
 sys.exit(0 if (entries == want_entries and drops == want_drops and other == 0 and paired == want_paired and not bad) else 1)
@@ -726,11 +648,10 @@ run_multipoint_case() {
     shift 4
     local pcap=$(mktemp --suffix=.pcapng)
     local err=$(mktemp)
-    timeout 15 "$BINARY" -i $MP_IF --mode entry "eth/ipv4/udp[dport==6081]" --mode exit "eth/ipv4/tcp where action == XDP_DROP" "$@" -w "$pcap" -c "$count" 2>"$err" &
-    local pid=$!
-    sleep 2
-    send_multipoint_frames
-    wait $pid 2>/dev/null || true
+    if ! CAPTURE_TIMEOUT=15 capture_run "$err" count send_multipoint_frames 5 -i "$MP_IF" --mode entry "eth/ipv4/udp[dport==6081]" --mode exit "eth/ipv4/tcp where action == XDP_DROP" "$@" -w "$pcap" -c "$count"; then
+        rm -f "$pcap" "$pcap".cpu* "$err"
+        return 1
+    fi
     local out
     # The per-CPU shard files carry the packet ids; the merged base file
     # goes through gopacket's reader (which drops the epb_packetid

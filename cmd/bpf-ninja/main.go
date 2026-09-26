@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"github.com/cilium/ebpf"
 	"os"
 	"os/signal"
 	"runtime/pprof"
@@ -169,7 +170,7 @@ var flags = []cli.Flag{
 	},
 	&cli.BoolFlag{
 		Name:  "finalize-on-del",
-		Usage: "with --split-by-tag and --set: when a tag's last set entry is removed and its ringbuf backlog has drained (two quiet ~1s poll cycles, closed and merged on the following cycle, ~3-4s total), flush+close its per-CPU shards and merge them into <stem>.<tag><ext> while the capture keeps running — the merged file appearing is the completion ack. Finalized tags are single-use: records for a re-added entry are dropped with a warning",
+		Usage: "with --split-by-tag and --set: when a tag's last set entry is removed and a kernel grace period and reader drain barrier have completed, flush+close its per-CPU shards and merge them into <stem>.<tag><ext> while the capture keeps running — the merged file appearing is the completion ack. Finalized tags are single-use: re-added entries with that tag stay blocked",
 	},
 	&cli.BoolFlag{
 		Name:  "exit-when-capped",
@@ -190,7 +191,7 @@ var flags = []cli.Flag{
 	&cli.IntFlag{
 		Name:  "rx-cores",
 		Value: 0,
-		Usage: "split-core capture: if >0, RX/capture is assumed confined to cores 0..N-1 (set the NIC to N queues yourself via `ethtool -L combined N`); bpf-ninja runs N consumer goroutines pinned to cores N..2N-1, off the RX softirqs. pair with --busy-poll --no-wakeup",
+		Usage: "pin all shard readers to permitted CPU IDs >=N; every producer shard is drained. requires --fast-reader; configure RX affinity separately",
 	},
 	&cli.IntFlag{
 		Name:  "in-memory-buffer",
@@ -814,6 +815,12 @@ func run(ctx context.Context, cmd *cli.Command) error {
 		return hook.UnsupportedTypeError(targets[0].Type)
 	}
 	cfg := outputConfigFor(h, isFexit)
+	if isFexit && len(cmd.StringSlice("func")) > 0 {
+		// Explicit capture points can return application values unrelated to
+		// the enclosing hook's verdict. Keep their raw bits in the pcap name.
+		cfg.RawReturn = true
+		cfg.Actions = []output.ActionName{{Value: 0, Name: "return:0x00000000"}}
+	}
 	cfg.MultiPoint = multiPoint
 	return runCaptureLoop(cmd, probe, cfg, fmt.Sprintf("%s, mode=%s", label, mode), sets)
 }
@@ -938,25 +945,9 @@ func formatEchoArgs(funcName string, params []attach.FuncParamInfo, raw []byte) 
 // printProbeWarnings drains non-fatal resolver / codegen notices the
 // kunai DSL pipeline attached to the probe (typically about chain-
 // root conventions) onto stderr.
-// printExportStats reports producer-side ring-full drops (from the
-// probe's per-CPU stats map) and records drained at shutdown, so the
-// chain "observer runs → reserve ok → read → written" can be balanced.
-func printExportStats(probe *program.Probe, drained int64) {
-	if probe.StatsMap == nil {
-		return
-	}
-	var per []uint64
-	if err := probe.StatsMap.Lookup(uint32(0), &per); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: reading export stats: %v\n", err)
-		return
-	}
-	var fails uint64
-	for _, v := range per {
-		fails += v
-	}
-	fmt.Fprintf(os.Stderr, "export stats: ringbuf_reserve_fail=%d drained_at_stop=%d\n", fails, drained)
-}
-
+// printProbeWarnings drains non-fatal resolver / codegen notices the
+// kunai DSL pipeline attached to the probe (typically about chain-
+// root conventions) onto stderr.
 func printProbeWarnings(probe *program.Probe) {
 	for _, w := range probe.Warnings {
 		fmt.Fprintln(os.Stderr, "warning:", w)
@@ -983,12 +974,15 @@ func resolveFilterSyntax(cmd *cli.Command) (useDSL bool, err error) {
 // capture; afterward output.MergeShardFiles merges them into a single
 // time-ordered pcap-ng at `path` (the shards are left in place). Integration
 // tests (run_pcap_test) read the `.cpuN` shards.
-func runCaptureLoop(cmd *cli.Command, probe *program.Probe, cfg output.Config, label string, sets []*setmap.Set) error {
+func runCaptureLoop(cmd *cli.Command, probe *program.Probe, cfg output.Config, label string, sets []*setmap.Set) (retErr error) {
+	ctl := &captureControl{quiesce: probe.Quiesce, blockTag: probe.BlockTag, outputErr: newOutputFailure()}
 	defer func() {
-		if cerr := probe.Close(); cerr != nil {
-			fmt.Fprintf(os.Stderr, "warning: closing probe: %v\n", cerr)
-		}
+		retErr = errors.Join(retErr, probe.Quiesce())
+		kernel, statsErr := probe.ExportStats()
+		retErr = errors.Join(retErr, statsErr, probe.Close())
+		fmt.Fprintln(os.Stderr, captureReport(kernel, statsErr, retErr, ctl))
 	}()
+
 	if len(probe.InnerMaps) == 0 {
 		return fmt.Errorf("probe has no inner ringbufs — sharded ringbuf hoist (R22) should populate them for every attach mode")
 	}
@@ -998,7 +992,7 @@ func runCaptureLoop(cmd *cli.Command, probe *program.Probe, cfg output.Config, l
 	if cmd.Bool("split-by-tag") && cmd.Bool("finalize-on-del") {
 		fin = newTagFinalizer(cmd.String("write"), cfg, len(probe.InnerMaps))
 	}
-	if err := captureLoopSharded(cmd, probe, cfg, label, sets, fin); err != nil {
+	if err := captureLoopSharded(cmd, probe.InnerMaps, cfg, label, sets, fin, ctl); err != nil {
 		return err
 	}
 
@@ -1024,14 +1018,14 @@ func runCaptureLoop(cmd *cli.Command, probe *program.Probe, cfg output.Config, l
 			}
 			fmt.Fprintf(os.Stderr, "merging per-CPU tag shards for %s ...\n", basePath)
 			if err := output.MergeTagShards(basePath, cfg, skip); err != nil {
-				fmt.Fprintf(os.Stderr, "warning: merging tag shards for %s: %v\n", basePath, err)
+				return fmt.Errorf("merging tag shards for %s: %w", basePath, err)
 			} else {
 				fmt.Fprintf(os.Stderr, "merged per tag (per-CPU .cpuN.<tag> kept)\n")
 			}
 		} else {
 			fmt.Fprintf(os.Stderr, "merging %d shard(s) into %s ...\n", len(probe.InnerMaps), basePath)
 			if err := output.MergeShardFiles(basePath, len(probe.InnerMaps), cfg); err != nil {
-				fmt.Fprintf(os.Stderr, "warning: merging shards into %s: %v\n", basePath, err)
+				return fmt.Errorf("merging shards into %s: %w", basePath, err)
 			} else {
 				fmt.Fprintf(os.Stderr, "merged into %s (per-CPU .cpuN kept)\n", basePath)
 			}
@@ -1045,13 +1039,13 @@ func runCaptureLoop(cmd *cli.Command, probe *program.Probe, cfg output.Config, l
 // stdout all shards funnel into one writer serialized by a mutex.
 // --null-output skips file writes for benchmarking; --raw-dump switches to
 // the raw-bytes path.
-func captureLoopSharded(cmd *cli.Command, probe *program.Probe, cfg output.Config, label string, sets []*setmap.Set, fin *tagFinalizer) error {
-	inners := probe.InnerMaps
+func captureLoopSharded(cmd *cli.Command, inners []*ebpf.Map, cfg output.Config, label string, sets []*setmap.Set, fin *tagFinalizer, ctl *captureControl) (retErr error) {
+	cfg.OnError = ctl.outputErr.record
 	basePath := cmd.String("write")
 	null := cmd.Bool("null-output")
 	rawDump := cmd.Bool("raw-dump")
 	if rawDump {
-		return captureLoopShardedRaw(cmd, probe, label, basePath)
+		return captureLoopShardedRaw(cmd, inners, label, basePath, ctl)
 	}
 	// Per-entry caps can only apply on the split path, and only when at
 	// least one attached map's value layout carries a max_bytes field —
@@ -1074,7 +1068,7 @@ func captureLoopSharded(cmd *cli.Command, probe *program.Probe, cfg output.Confi
 	if cmd.Bool("split-by-tag") {
 		// run() already rejected --split-by-tag with stdout / --raw-dump /
 		// --null-output, so basePath is a real file here.
-		return captureLoopShardedSplit(cmd, probe, cfg, label, basePath, caps, sets, fin)
+		return captureLoopShardedSplit(cmd, inners, cfg, label, basePath, caps, sets, fin, ctl)
 	}
 
 	// stdout (no -w) merges every shard into a single pcap-ng stream,
@@ -1090,11 +1084,11 @@ func captureLoopSharded(cmd *cli.Command, probe *program.Probe, cfg output.Confi
 	// closes the writers already created (no fd leak on partial setup).
 	defer func() {
 		if sharedW != nil {
-			_ = sharedW.Close()
+			retErr = errors.Join(retErr, sharedW.Close())
 		}
 		for _, w := range writers {
 			if w != nil {
-				_ = w.Close()
+				retErr = errors.Join(retErr, w.Close())
 			}
 		}
 	}()
@@ -1122,7 +1116,7 @@ func captureLoopSharded(cmd *cli.Command, probe *program.Probe, cfg output.Confi
 	var writeShard func(shardIdx int, pkts []capture.Packet) error
 	switch {
 	case null:
-		writeShard = func(int, []capture.Packet) error { return nil }
+		writeShard = func(_ int, pkts []capture.Packet) error { ctl.nullRecords.Add(uint64(len(pkts))); return nil }
 	case sharedW != nil:
 		writeShard = func(_ int, pkts []capture.Packet) error {
 			sharedMu.Lock()
@@ -1130,6 +1124,7 @@ func captureLoopSharded(cmd *cli.Command, probe *program.Probe, cfg output.Confi
 			if err := sharedW.WriteBatch(pkts); err != nil {
 				return err
 			}
+			ctl.written.Add(uint64(len(pkts)))
 			if caps != nil {
 				caps.addTotal(epbBytes(sharedW, pkts))
 			}
@@ -1143,6 +1138,7 @@ func captureLoopSharded(cmd *cli.Command, probe *program.Probe, cfg output.Confi
 			if err := writers[shardIdx].WriteBatch(pkts); err != nil {
 				return err
 			}
+			ctl.written.Add(uint64(len(pkts)))
 			if caps != nil {
 				caps.addTotal(epbBytes(writers[shardIdx], pkts))
 			}
@@ -1150,7 +1146,7 @@ func captureLoopSharded(cmd *cli.Command, probe *program.Probe, cfg output.Confi
 		}
 	}
 
-	return pumpShards(cmd, probe, label, writeShard, caps, sets, nil)
+	return pumpShards(cmd, inners, label, writeShard, caps, sets, nil, ctl)
 }
 
 // epbBytes sums the on-disk pcap-ng size of a batch as the given writer
@@ -1171,8 +1167,8 @@ func epbBytes(w *output.Writer, pkts []capture.Packet) uint64 {
 // mid-capture. Each shard's tag->writer map is owned by its own goroutine,
 // so there is no lock on the write path. runCaptureLoop merges the per-CPU
 // tag files into <base>.<tag><ext> on a clean shutdown.
-func captureLoopShardedSplit(cmd *cli.Command, probe *program.Probe, cfg output.Config, label, basePath string, caps *byteCaps, sets []*setmap.Set, fin *tagFinalizer) error {
-	inners := probe.InnerMaps
+func captureLoopShardedSplit(cmd *cli.Command, inners []*ebpf.Map, cfg output.Config, label, basePath string, caps *byteCaps, sets []*setmap.Set, fin *tagFinalizer, ctl *captureControl) (retErr error) {
+	cfg.OnError = ctl.outputErr.record
 	// One tag->writer map per shard; only ever touched by that shard's
 	// goroutine (writeShard runs single-threaded per shardIdx). The entry
 	// caches the tag's shared byte counter and finalize state so the
@@ -1192,13 +1188,13 @@ func captureLoopShardedSplit(cmd *cli.Command, probe *program.Probe, cfg output.
 		// closed, but still covers a tag whose stop sign was raised and
 		// then the process was signalled before its close+merge cycle.
 		if fin != nil {
-			fin.closeAll()
+			retErr = errors.Join(retErr, fin.closeAll())
 			return
 		}
 		for _, m := range shardWriters {
 			for _, e := range m {
 				if e.w != nil {
-					_ = e.w.Close()
+					retErr = errors.Join(retErr, e.w.Close())
 				}
 			}
 		}
@@ -1255,15 +1251,22 @@ func captureLoopShardedSplit(cmd *cli.Command, probe *program.Probe, cfg output.
 				// the entry was re-added after finalize — drop them.
 				e.w = nil
 				warnDropped(tag, e.st)
+				ctl.limited.Add(uint64(j - i))
 				i = j
 				continue
 			}
 			if e.ctr != nil && e.ctr.capped.Load() {
+				ctl.limited.Add(uint64(j - i))
 				// Capped (possibly by another shard): drop the run and
 				// release the fd. capped is one-way, so the writer is
 				// never reopened (NewWriter would truncate the file).
 				if e.w != nil {
-					_ = e.w.Close()
+					if err := e.w.Close(); err != nil {
+						if fin != nil {
+							fin.fail(tag, err)
+						}
+						return err
+					}
 					e.w = nil
 					if fin != nil {
 						fin.deregister(tag, shardIdx)
@@ -1275,6 +1278,9 @@ func captureLoopShardedSplit(cmd *cli.Command, probe *program.Probe, cfg output.
 			if e.w == nil {
 				w, err := openWriter(shardIdx, tag)
 				if err != nil {
+					if fin != nil {
+						fin.fail(tag, err)
+					}
 					return err
 				}
 				e.w = w
@@ -1282,17 +1288,14 @@ func captureLoopShardedSplit(cmd *cli.Command, probe *program.Probe, cfg output.
 					fin.register(tag, shardIdx, w)
 				}
 			}
-			if e.st != nil {
-				// Before the write, so the quiesce poll sees a stalled
-				// in-flight batch as activity and stays conservative
-				// (finalize's Close also serializes with WriteBatch on
-				// the writer's flushMu, so a raced batch is still
-				// flushed before the merge).
-				e.st.activity.Add(1)
-			}
+
 			if err := e.w.WriteBatch(pkts[i:j]); err != nil {
+				if fin != nil {
+					fin.fail(tag, err)
+				}
 				return err
 			}
+			ctl.written.Add(uint64(j - i))
 			if caps != nil {
 				n := epbBytes(e.w, pkts[i:j])
 				if e.ctr != nil && caps.addTag(e.ctr, n) {
@@ -1305,7 +1308,12 @@ func captureLoopShardedSplit(cmd *cli.Command, probe *program.Probe, cfg output.
 					// the next sighting — traffic may stop here. Other
 					// shards close theirs when they next see the tag
 					// (their writers are not ours to touch).
-					_ = e.w.Close()
+					if err := e.w.Close(); err != nil {
+						if fin != nil {
+							fin.fail(tag, err)
+						}
+						return err
+					}
 					e.w = nil
 					if fin != nil {
 						fin.deregister(tag, shardIdx)
@@ -1320,40 +1328,46 @@ func captureLoopShardedSplit(cmd *cli.Command, probe *program.Probe, cfg output.
 		return nil
 	}
 
-	return pumpShards(cmd, probe, label, writeShard, caps, sets, fin)
+	return pumpShards(cmd, inners, label, writeShard, caps, sets, fin, ctl)
 }
 
 // pumpShards runs the per-shard reader, handing each batch to writeShard,
-// until SIGINT/SIGTERM (or the -c count is reached). Write errors are
-// counted and the first is reported at the end rather than aborting the
-// capture. Shared by the plain and split-by-tag pcap paths.
-func pumpShards(cmd *cli.Command, probe *program.Probe, label string, writeShard func(int, []capture.Packet) error, caps *byteCaps, sets []*setmap.Set, fin *tagFinalizer) error {
-	inners := probe.InnerMaps
+// until SIGINT/SIGTERM, a limit, or an output failure. The first write
+// failure stops the capture and is returned to the caller.
+func pumpShards(cmd *cli.Command, inners []*ebpf.Map, label string, writeShard func(int, []capture.Packet) error, caps *byteCaps, sets []*setmap.Set, fin *tagFinalizer, ctl *captureControl) error {
+
 	fastReader := cmd.Bool("fast-reader")
 	null := cmd.Bool("null-output")
 	count := int64(cmd.Int("count"))
 	exitWhenCapped := cmd.Bool("exit-when-capped")
 	var captured atomic.Int64
-	var writeErrCount atomic.Int64
-	var firstWriteErr atomic.Pointer[string]
+	failure := ctl.outputErr
 
 	sink := func(shardIdx int, pkts []capture.Packet) error {
-		if count > 0 && captured.Load() >= count {
-			return nil
+		if count > 0 {
+			n := claimPackets(&captured, count, int64(len(pkts)))
+			ctl.limited.Add(uint64(len(pkts)) - uint64(n))
+			pkts = pkts[:n]
+			if n == 0 {
+				return nil
+			}
 		}
 		if caps != nil && caps.totalReached() {
+			ctl.limited.Add(uint64(len(pkts)))
 			// --max-bytes hit: stop writing while the poll loop below
 			// notices and shuts the shards down.
 			return nil
 		}
-		if err := writeShard(shardIdx, pkts); err != nil {
-			writeErrCount.Add(1)
-			if firstWriteErr.Load() == nil {
-				msg := fmt.Sprintf("shard %d: %v", shardIdx, err)
-				firstWriteErr.CompareAndSwap(nil, &msg)
-			}
+		if failure.err() != nil {
+			return failure.err()
 		}
-		captured.Add(int64(len(pkts)))
+		if err := writeShard(shardIdx, pkts); err != nil {
+			failure.record(fmt.Errorf("writing shard %d: %w", shardIdx, err))
+			return err
+		}
+		if count <= 0 {
+			captured.Add(int64(len(pkts)))
+		}
 		return nil
 	}
 
@@ -1391,51 +1405,60 @@ func pumpShards(cmd *cli.Command, probe *program.Probe, label string, writeShard
 		}
 	}
 
-	detach := func() error {
-		if err := probe.Detach(); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: detaching probe: %v (skipping the final drain)\n", err)
-			return err
-		}
-		return nil
-	}
 	var stop func()
-	drained := func() int64 { return 0 }
-	defer func() { printExportStats(probe, drained()) }()
+	var readerErr func() error
+	var readerFailure <-chan struct{}
 	readerLabel := "ringbuf.Reader"
 	if fastReader {
 		fr, err := capture.NewFastShardedReader(inners)
 		if err != nil {
 			return err
 		}
-		fr.SetOnStop(detach)
 		stop, err = fr.RunShardsFast(sink)
+		readerErr = fr.Err
+		readerFailure = fr.Failures()
+		ctl.barrier = fr.Barrier
+		ctl.stats = fr.Stats()
 		if err != nil {
 			return err
 		}
-		drained = fr.LeftoverAtStop
 		readerLabel = "fastrb (mmap bypass)"
 	} else {
 		r, err := capture.NewShardedReader(inners)
 		if err != nil {
 			return err
 		}
-		r.SetOnStop(detach)
 		stop, err = r.RunShards(sink)
+		readerErr = r.Err
+		readerFailure = r.Failures()
+		ctl.barrier = r.Barrier
+		ctl.stats = r.Stats()
 		if err != nil {
 			return err
 		}
-		drained = r.LeftoverAtStop
 	}
 
+	stop = ctl.stopBeforeDrain(stop, readerErr, failure)
+	if fin != nil {
+		fin.begin = func(tag uint32) (func() (bool, error), error) {
+			if ctl.blockTag == nil || ctl.barrier == nil {
+				return nil, fmt.Errorf("capture has no tag barrier")
+			}
+			if err := ctl.blockTag(tag); err != nil {
+				return nil, err
+			}
+			return ctl.barrier(), nil
+		}
+	}
 	mode := "sharded"
 	if null {
 		mode = "sharded null-output"
 	}
-	fmt.Fprintf(os.Stderr, "capturing (%s, %s, %d shards via %s)...\n", label, mode, len(inners), readerLabel)
-
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 	defer signal.Stop(sig)
+
+	fmt.Fprintf(os.Stderr, "capturing (%s, %s, %d shards via %s)...\n", label, mode, len(inners), readerLabel)
 
 	// Poll only when something can actually end the capture early or
 	// needs a periodic decision (per-entry caps need the ~1s snapshot
@@ -1450,49 +1473,52 @@ func pumpShards(cmd *cli.Command, probe *program.Probe, label string, writeShard
 		lc := newCapLifecycle(caps, fin, sets, cmd.String("write"), exitWhenCapped)
 		for it := 0; ; it++ {
 			select {
+			case <-readerFailure:
+				failure.record(readerErr())
+				goto done
+			case <-failure.done:
+				goto done
 			case <-sig:
-				stop()
 				goto done
 			default:
 				if count > 0 && captured.Load() >= count {
-					stop()
 					goto done
 				}
 				if caps != nil && caps.totalReached() {
 					fmt.Fprintf(os.Stderr, "\ntotal output cap reached (--max-bytes %d); stopping\n", caps.totalLimit)
-					stop()
 					goto done
 				}
 				if needSnapshot && it%100 == 0 && lc.tick() {
-					stop()
 					goto done
 				}
 				time.Sleep(10 * time.Millisecond)
 			}
 		}
 	} else {
-		<-sig
-		stop()
+		select {
+		case <-sig:
+		case <-readerFailure:
+			failure.record(readerErr())
+			goto done
+		case <-failure.done:
+		}
 	}
 
 done:
-	fmt.Fprintf(os.Stderr, "\n%d packets captured\n", captured.Load())
-	if n := writeErrCount.Load(); n > 0 {
-		first := "?"
-		if p := firstWriteErr.Load(); p != nil {
-			first = *p
-		}
-		fmt.Fprintf(os.Stderr, "warning: %d WriteBatch errors; first: %s\n", n, first)
+	stop()
+	fmt.Fprintf(os.Stderr, "\n%d packets captured\n", ctl.written.Load()+ctl.nullRecords.Load())
+	if fin != nil {
+		return errors.Join(failure.err(), fin.Err())
 	}
-	return nil
+	return failure.err()
 }
 
 // captureLoopShardedRaw is the --raw-dump variant: per-CPU goroutines
 // splat ringbuf record bytes verbatim into
 // <basePath>.W<wall_offset_ns>.cpu<N>.raw files; offline conversion
 // happens via the convert subcommand.
-func captureLoopShardedRaw(cmd *cli.Command, probe *program.Probe, label, basePath string) error {
-	inners := probe.InnerMaps
+func captureLoopShardedRaw(cmd *cli.Command, inners []*ebpf.Map, label, basePath string, ctl *captureControl) (retErr error) {
+
 	if basePath == "" {
 		return fmt.Errorf("--raw-dump requires -w <path> (per-CPU files are not streamable to stdout)")
 	}
@@ -1539,7 +1565,7 @@ func captureLoopShardedRaw(cmd *cli.Command, probe *program.Probe, label, basePa
 	defer func() {
 		for _, w := range writers {
 			if w != nil {
-				_ = w.Close()
+				retErr = errors.Join(retErr, w.Close())
 			}
 		}
 	}()
@@ -1558,94 +1584,118 @@ func captureLoopShardedRaw(cmd *cli.Command, probe *program.Probe, label, basePa
 	shardCounts := make([]paddedCounter, len(inners))
 	var captured atomic.Int64
 
+	failure := ctl.outputErr
 	var rawSink capture.RawShardSink
 	if count > 0 {
 		rawSink = func(shardIdx int, raw []byte) error {
-			if captured.Load() >= count {
+			if claimPackets(&captured, count, 1) == 0 {
+				ctl.limited.Add(1)
 				return nil
 			}
 			if err := writers[shardIdx].WriteRaw(raw); err != nil {
 				return err
 			}
-			captured.Add(1)
+			shardCounts[shardIdx].n++
 			return nil
 		}
 	} else {
 		rawSink = func(shardIdx int, raw []byte) error {
+			if err := writers[shardIdx].WriteRaw(raw); err != nil {
+				return err
+			}
 			shardCounts[shardIdx].n++
-			return writers[shardIdx].WriteRaw(raw)
+			return nil
 		}
 	}
 
-	detach := func() error {
-		if err := probe.Detach(); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: detaching probe: %v (skipping the final drain)\n", err)
-			return err
+	writeRaw := rawSink
+	rawSink = func(shardIdx int, raw []byte) error {
+		if failure.err() != nil {
+			return failure.err()
 		}
-		return nil
+		err := writeRaw(shardIdx, raw)
+		if err != nil {
+			failure.record(fmt.Errorf("writing raw shard %d: %w", shardIdx, err))
+		}
+		return err
 	}
 	var stop func()
-	drained := func() int64 { return 0 }
-	defer func() { printExportStats(probe, drained()) }()
+	var readerErr func() error
+	var readerFailure <-chan struct{}
 	if fastReader {
 		fr, err := capture.NewFastShardedReader(inners)
 		if err != nil {
 			return err
 		}
-		fr.SetOnStop(detach)
 		stop, err = fr.RunRawShardsFast(rawSink)
+		readerErr = fr.Err
+		readerFailure = fr.Failures()
+		ctl.barrier = fr.Barrier
+		ctl.stats = fr.Stats()
 		if err != nil {
 			return err
 		}
-		drained = fr.LeftoverAtStop
 	} else {
 		r, err := capture.NewShardedReader(inners)
 		if err != nil {
 			return err
 		}
-		r.SetOnStop(detach)
 		stop, err = r.RunRawShards(rawSink)
+		readerErr = r.Err
+		readerFailure = r.Failures()
+		ctl.barrier = r.Barrier
+		ctl.stats = r.Stats()
 		if err != nil {
 			return err
 		}
-		drained = r.LeftoverAtStop
 	}
 
+	stop = ctl.stopBeforeDrain(stop, readerErr, failure)
 	readerLabel := "ringbuf.Reader"
 	if fastReader {
 		readerLabel = "fastrb (mmap bypass)"
 	}
-	fmt.Fprintf(os.Stderr, "capturing (%s, sharded raw-dump, %d shards via %s, wall_offset_ns=%d)...\n",
-		label, len(inners), readerLabel, offset)
-
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 	defer signal.Stop(sig)
 
+	fmt.Fprintf(os.Stderr, "capturing (%s, sharded raw-dump, %d shards via %s, wall_offset_ns=%d)...\n",
+		label, len(inners), readerLabel, offset)
+
 	if count > 0 {
 		for {
 			select {
+			case <-readerFailure:
+				failure.record(readerErr())
+				goto done
+			case <-failure.done:
+				goto done
 			case <-sig:
-				stop()
 				goto done
 			default:
 				if captured.Load() >= count {
-					stop()
 					goto done
 				}
 				time.Sleep(10 * time.Millisecond)
 			}
 		}
 	} else {
-		<-sig
-		stop()
+		select {
+		case <-sig:
+		case <-readerFailure:
+			failure.record(readerErr())
+			goto done
+		case <-failure.done:
+		}
 	}
 
 done:
-	total := captured.Load()
+	stop()
+	var total uint64
 	for i := range shardCounts {
-		total += shardCounts[i].n
+		total += uint64(shardCounts[i].n)
 	}
+	ctl.written.Store(total)
 	// Close writers eagerly so flushAll() runs before we print the
 	// durability summary; the deferred Close becomes a no-op for
 	// nil'd slots.
@@ -1655,7 +1705,7 @@ done:
 			continue
 		}
 		if cerr := w.Close(); cerr != nil {
-			fmt.Fprintf(os.Stderr, "warning: shard %d close: %v\n", i, cerr)
+			retErr = errors.Join(retErr, fmt.Errorf("closing raw shard %d: %w", i, cerr))
 		}
 		if r, ok := w.(output.AnomalyReporter); ok {
 			anomalies.Add(r.Anomalies())
@@ -1664,6 +1714,7 @@ done:
 	}
 	fmt.Fprintf(os.Stderr, "\n%d packets captured (raw-dump)\n", total)
 	if anomalies.Any() {
+		retErr = errors.Join(retErr, fmt.Errorf("raw output lost data: flush_errors=%d short_writes=%d bytes_lost=%d", anomalies.FlushErrors, anomalies.ShortWrites, anomalies.BytesLost))
 		fmt.Fprintf(os.Stderr,
 			"warning: write-path anomalies: flush_errors=%d short_writes=%d bytes_lost=%d (%.1f MiB)\n",
 			anomalies.FlushErrors, anomalies.ShortWrites, anomalies.BytesLost,
@@ -1672,7 +1723,7 @@ done:
 	if capture.LatencySamplePeriod > 0 {
 		reportLatencySamples(cmd.String("latency-sample-output"))
 	}
-	return nil
+	return errors.Join(retErr, failure.err())
 }
 
 // reportLatencySamples drains capture.LatencySamples (filled by the

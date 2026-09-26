@@ -178,3 +178,81 @@ func TestMergeShardFilesEmpty(t *testing.T) {
 		})
 	}
 }
+
+func TestMergeRejectsDamagedShardAndPreservesOutput(t *testing.T) {
+	for _, damage := range []string{"empty", "header", "packet"} {
+		t.Run(damage, func(t *testing.T) {
+			base := filepath.Join(t.TempDir(), "out.pcap")
+			shard := base + ".cpu0"
+			writeShardFile(t, shard, time.Unix(1700000000, 0), []int{1, 2})
+			original, err := os.ReadFile(shard)
+			if err != nil {
+				t.Fatal(err)
+			}
+			n := 0
+			if damage == "header" {
+				n = 10
+			}
+			if damage == "packet" {
+				n = len(original) - 5
+			}
+			if err := os.WriteFile(shard, original[:n], 0600); err != nil {
+				t.Fatal(err)
+			}
+			ack := []byte("previous acknowledged output")
+			if err := os.WriteFile(base, ack, 0600); err != nil {
+				t.Fatal(err)
+			}
+			if err := MergeShardFiles(base, 1, Config{}); err == nil {
+				t.Fatal("damaged shard acknowledged")
+			}
+			got, err := os.ReadFile(base)
+			if err != nil || string(got) != string(ack) {
+				t.Fatalf("existing output changed: %q, %v", got, err)
+			}
+			got, err = os.ReadFile(shard)
+			if err != nil || len(got) != n {
+				t.Fatalf("source shard changed: length %d, %v", len(got), err)
+			}
+		})
+	}
+}
+
+func TestMergeRawFunctionReturnNames(t *testing.T) {
+	base := filepath.Join(t.TempDir(), "return.pcap")
+	cfg := Config{IsFexit: true, RawReturn: true, Actions: []ActionName{{Value: 0, Name: "return:0x00000000"}}}
+	w, err := NewWriter(base+".cpu0", cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, value := range []uint32{2, 99, 0xffffffff} {
+		if err := w.Write(capture.Packet{Timestamp: time.Now(), Data: []byte{1}, Action: value}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := MergeShardFiles(base, 1, cfg); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Open(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+	r, err := pcapgo.NewNgReader(f, pcapgo.DefaultNgReaderOptions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"return:0x00000002", "return:0x00000063", "return:0xffffffff"} {
+		_, ci, err := r.ReadPacketData()
+		if err != nil {
+			t.Fatal(err)
+		}
+		iface, err := r.Interface(ci.InterfaceIndex)
+		if err != nil || iface.Name != name {
+			t.Fatalf("interface = %+v, %v, want %s", iface, err, name)
+		}
+	}
+}

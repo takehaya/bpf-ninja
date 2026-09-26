@@ -185,19 +185,19 @@ Without `-w` (streaming to stdout), all CPUs are merged into a single pcap-ng st
 | `--snaplen N` | Cap per-packet capture bytes (CLI override). Default = full packet (1500 B), libpcap-equivalent |
 | `--fast-reader` | mmap+atomic ringbuf reader (lower CPU than cilium/ebpf generic) |
 | `--no-wakeup` | Suppress eventfd wake per submit. Trades p50 latency for throughput. **Requires `--fast-reader`** |
-| `--ringbuf-size MB` | Per-CPU ringbuf size (default 16 MB) |
+| `--ringbuf-size MB` | Total ringbuf data budget (default 64 MiB); divided across possible CPU IDs, with a 64 KiB minimum per shard |
 | `--raw-dump` | Raw bytes path; convert offline with `bpf-ninja convert` |
-| `--rx-cores N` | Split-core: pin ringbuf consumers to cores `N..2N-1`, off the RX softirqs (set the NIC to `N` queues yourself via `ethtool -L combined N`). +30% on `-w` output. **Requires `--fast-reader`**; pair with `--busy-poll --no-wakeup` |
+| `--rx-cores N` | Pin readers to permitted CPU IDs at or above `N`. All producer shards are drained. **Requires `--fast-reader`**; configure RX affinity separately. |
 | `--busy-poll` | Spin the fast-reader shards instead of sleeping in `epoll_wait`. Burns a core per shard. **Requires `--fast-reader`** |
 | `--null-output` | Drop output entirely (bench only) |
 
-On exit every entry/exit capture prints one accounting line to stderr:
-
-```
-export stats: ringbuf_reserve_fail=N drained_at_stop=M
-```
-
-`N` records were dropped at the producer because that CPU's ring was full (`bpf_ringbuf_reserve` returned NULL; raise `--ringbuf-size` or move the reader off the RX core). `M` records were still committed in the rings when the capture stopped and were drained before exit (default reader only). Together with the written count this balances the chain observer runs → reserved → read → written.
+On exit, capture prints a `capture status=...` line to stderr for both readers.
+It reports selected export attempts, submitted records, reserve/lookup/copy
+failures, consumed and written records, intentional limits, and records drained
+after producers stop. A producer or output failure makes the status `incomplete`.
+Filter and parse rejections are explicitly unmeasured; the counters do not measure
+all observed packets. See [Capture completion](docs/capture-lifecycle.md) for the
+fields and the scope of `complete`.
 
 Detailed flag reference + DSL `capture` clause's snaplen trade-off: [docs/ja/dsl-usage.md](./docs/ja/dsl-usage.md#performance-flags).
 
@@ -401,6 +401,7 @@ bpf-ninja's design was inspired by the following projects:
 - [xdp-dump](https://github.com/xdp-project/xdp-tools/blob/main/xdp-dump/README.org) (xdp-tools) — fentry/fexit trampoline approach for tracing XDP programs
 - [xdpcap](https://github.com/cloudflare/xdpcap) (Cloudflare) — tcpdump filter compilation via cBPF→eBPF ([cbpfc](https://github.com/cloudflare/cbpfc)), and the overall architecture of capturing XDP packets to pcap
 
+Capture shutdown, per-tag acknowledgements, output limits and the `capture status=...` counters are described in [Capture completion](docs/capture-lifecycle.md).
 ## License
 
 bpf-ninja is licensed under the [Apache License 2.0](LICENSE).

@@ -445,6 +445,7 @@ func TestWalkReachableProgramsTransitive(t *testing.T) {
 	leaf, err := ebpf.NewProgram(&ebpf.ProgramSpec{
 		Name:         "leaf_prog",
 		Type:         ebpf.XDP,
+		AttachType:   ebpf.AttachXDPCPUMap,
 		Instructions: asm.Instructions{asm.Mov.Imm(asm.R0, 2), asm.Return()},
 		License:      "GPL",
 	})

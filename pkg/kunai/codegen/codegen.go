@@ -45,7 +45,8 @@
 //   - Untouched: R6, R7, R8 are callee-saved from kunai's
 //     perspective. The host typically uses them to hold
 //     attach-point-specific pointers (e.g. xdp_buff / data /
-//     data_end) but kunai never reads or writes them.
+//     data_end). The main stream preserves them. TLV callbacks may use
+//     R6/R7 locally; the BPF call ABI preserves the caller's values.
 //
 // # Action atoms (host capability)
 //
@@ -330,6 +331,8 @@ func Gen(p *ir.Program, caps Capabilities) (Output, error) {
 	if err != nil {
 		return Output{}, err
 	}
+
+	where = foldBooleanConstants(where)
 
 	// `where false` short-circuit: a filter whose where clause is
 	// constant-false never accepts a packet, so emit a minimal
@@ -619,22 +622,16 @@ func emitVarParentDispatchBounded(spec *vocab.ProtocolSpec, c *vocab.DispatchCon
 // with the field's within-layer byte offset as the immediate.
 const offsetBase = asm.R4
 
-// emitBoundedLoad emits a packet-pointer-safe `size`-byte load at
-// R0+offsetBase+off into dst. The end+JGT+LoadMem(-size) pattern
-// is mandatory on PTR_TO_PACKET (verifier rejects through a packet
-// pointer + scalar without an explicit bound check) and harmless on
-// PTR_TO_MAP_VALUE (the JGT is redundant against the static map
-// bound).
+// emitBoundedLoad reads R0+offsetBase+off without changing offsetBase or
+// other scratch registers. Fold into a scalar first: pointer comparisons alone
+// do not prove a ranged map-value access stays inside ScratchBufSize.
 func emitBoundedLoad(dst asm.Register, off int16, size asm.Size, failLabel string) asm.Instructions {
-	sizeBytes := int32(size.Sizeof())
-	return asm.Instructions{
-		asm.Mov.Reg(asm.R3, asm.R0),
-		asm.Add.Reg(asm.R3, offsetBase),
-		asm.Add.Imm(asm.R3, int32(off)+sizeBytes),
-		asm.JGT.Reg(asm.R3, asm.R1, failLabel),
-		asm.Sub.Imm(asm.R3, sizeBytes),
-		asm.LoadMem(dst, asm.R3, 0, size),
+	insns := foldOffsetIntoScalar(asm.R3, offsetBase, int32(off), failLabel)
+	insns = append(insns, boundedScalarLoad(asm.R3, asm.R0, asm.R3, asm.R1, size, failLabel)...)
+	if dst != asm.R3 {
+		insns = append(insns, asm.Mov.Reg(dst, asm.R3))
 	}
+	return insns
 }
 
 // foldOffsetIntoScalar emits the scalar-arithmetic preamble that lets
@@ -687,14 +684,19 @@ func foldOffsetIntoScalar(dst, src asm.Register, off int32, failLabel string) as
 // hook path which uses a per-CPU map_value scratch.
 func boundedScalarLoad(dst, scratchStart, scalar, scratchEnd asm.Register, size asm.Size, failLabel string) asm.Instructions {
 	sizeBytes := int32(size.Sizeof())
-	return asm.Instructions{
-		asm.JGT.Imm(scalar, int32(ScratchBufSize)-sizeBytes, failLabel),
-		asm.Mov.Reg(dst, scratchStart),
-		asm.Add.Reg(dst, scalar),
+	insns := asm.Instructions{asm.JGT.Imm(scalar, int32(ScratchBufSize)-sizeBytes, failLabel)}
+	if dst == scalar {
+		// Preserve the offset when the caller reuses its scalar as the
+		// address/result register. No other scratch register is needed.
+		insns = append(insns, asm.Add.Reg(dst, scratchStart))
+	} else {
+		insns = append(insns, asm.Mov.Reg(dst, scratchStart), asm.Add.Reg(dst, scalar))
+	}
+	return append(insns,
 		asm.Add.Imm(dst, sizeBytes),
 		asm.JGT.Reg(dst, scratchEnd, failLabel),
 		asm.LoadMem(dst, dst, int16(-sizeBytes), size),
-	}
+	)
 }
 
 // landingNoop builds a self-Mov that carries `label` so a Ja into
@@ -1626,17 +1628,8 @@ func emitAuxGating(g *vocab.AuxGating, base layerAnchor, failLabel string) asm.I
 //     trailing LDX uses field byte offset within the aux, no extra
 //     base addition required.
 //
-// Bounds invariant: this helper does not emit an explicit
-// `R5+fieldBytes ≤ R1` check. The verifier accepts the LDX from R5
-// because (a) the index byte is narrowed by JGE.Imm to < Capacity,
-// (b) the multiplier and OffsetInLayer are constants, and (c) the
-// owning layer's outer bounds (emitted by genStaticLayer or the
-// parser machine) cover the full stack envelope —
-// `Capacity * HeaderSize + OffsetInLayer` bytes — so R5 stays
-// within the validated window. Adding a stack to a vocab without
-// extending those outer bounds will let R5 escape; the
-// ScratchBufSize sizing contract in the package doc must then be
-// re-verified.
+// The computed element offset is checked against both ScratchBufSize and
+// the materialised packet end before exposing its address to callers.
 func emitDynamicStackAddress(ref *ir.FieldRef, base layerAnchor, failLabel string) (asm.Instructions, error) {
 	if ref == nil || ref.Aux == nil || ref.Aux.Stack == nil || ref.Aux.Stack.IsStatic {
 		return nil, fmt.Errorf("codegen: emitDynamicStackAddress called on non-dynamic ref")
@@ -1661,34 +1654,19 @@ func emitDynamicStackAddress(ref *ir.FieldRef, base layerAnchor, failLabel strin
 	if ref.Aux.HeaderSize <= 0 || ref.Aux.HeaderSize > 127 {
 		return nil, fmt.Errorf("%w: dynamic stack element size %d outside 1..127", ErrNotImplemented, ref.Aux.HeaderSize)
 	}
-	// Compute R3 = scratch address of the layer's primary-header
-	// start, then read the index byte from primary[idxByteOff]. For
-	// slot anchors we load the layer-entry offset into R5 first so
-	// the post-multiply addition can reuse it without a second slot
-	// read; abs / R4 anchors keep the entry offset implicitly in
-	// AbsOffset / R4 and add it twice.
-	insns := asm.Instructions{}
-	switch {
-	case base.UseR4:
-		insns = append(insns,
-			asm.Mov.Reg(asm.R3, asm.R0),
-			asm.Add.Reg(asm.R3, offsetBase),
-		)
-	case base.UseSlot:
-		insns = append(insns,
-			asm.LoadMem(asm.R5, asm.R10, base.SlotOff, asm.DWord),
-			asm.Mov.Reg(asm.R3, asm.R0),
-			asm.Add.Reg(asm.R3, asm.R5),
-		)
-	default:
-		insns = append(insns,
-			asm.Mov.Reg(asm.R3, asm.R0),
-			asm.Add.Imm(asm.R3, int32(base.AbsOffset)),
-		)
+	// Read the index through the same scalar and packet bounds as fields.
+	// Preserve a slot-based layer offset in R5 for the element calculation.
+	var insns asm.Instructions
+	if base.UseSlot {
+		insns = append(insns, asm.LoadMem(asm.R5, asm.R10, base.SlotOff, asm.DWord))
+		insns = append(insns, foldOffsetIntoScalar(asm.R3, asm.R5, int32(idxByteOff), failLabel)...)
+	} else if base.UseR4 {
+		insns = append(insns, foldOffsetIntoScalar(asm.R3, offsetBase, int32(idxByteOff), failLabel)...)
+	} else {
+		insns = append(insns, asm.Mov.Imm(asm.R3, int32(base.AbsOffset+idxByteOff)))
 	}
-	// Load index byte from primary header at offset idxByteOff.
+	insns = append(insns, boundedScalarLoad(asm.R3, asm.R0, asm.R3, asm.R1, asm.Byte, failLabel)...)
 	insns = append(insns,
-		asm.LoadMem(asm.R3, asm.R3, int16(idxByteOff), asm.Byte),
 		asm.JGE.Imm(asm.R3, int32(stack.Capacity), failLabel),
 		asm.Mul.Imm(asm.R3, int32(ref.Aux.HeaderSize)),
 		asm.Add.Imm(asm.R3, int32(ref.Aux.OffsetInLayer)),
@@ -1702,8 +1680,12 @@ func emitDynamicStackAddress(ref *ir.FieldRef, base layerAnchor, failLabel strin
 		insns = append(insns, asm.Add.Imm(asm.R3, int32(base.AbsOffset)))
 	}
 	insns = append(insns,
+		asm.JGT.Imm(asm.R3, int32(ScratchBufSize-ref.Aux.HeaderSize), failLabel),
 		asm.Mov.Reg(asm.R5, asm.R0),
 		asm.Add.Reg(asm.R5, asm.R3),
+		asm.Mov.Reg(asm.R3, asm.R5),
+		asm.Add.Imm(asm.R3, int32(ref.Aux.HeaderSize)),
+		asm.JGT.Reg(asm.R3, asm.R1, failLabel),
 	)
 	return insns, nil
 }
@@ -1926,13 +1908,9 @@ func emitFieldLoad(anchor layerAnchor, fieldOff int, size asm.Size) asm.Instruct
 	sizeBytes := int32(size.Sizeof())
 	switch {
 	case anchor.UseSlot:
-		return asm.Instructions{
-			asm.LoadMem(asm.R3, asm.R10, anchor.SlotOff, asm.DWord),
-			asm.Add.Reg(asm.R3, asm.R0),
-			asm.Add.Imm(asm.R3, int32(fieldOff)+sizeBytes), // R3 = end-of-access
-			asm.JGT.Reg(asm.R3, asm.R1, dslReject),
-			asm.LoadMem(asm.R3, asm.R3, int16(-sizeBytes), size), // load at R3 - size
-		}
+		insns := asm.Instructions{asm.LoadMem(asm.R3, asm.R10, anchor.SlotOff, asm.DWord)}
+		insns = append(insns, foldOffsetIntoScalar(asm.R3, asm.R3, int32(fieldOff), dslReject)...)
+		return append(insns, boundedScalarLoad(asm.R3, asm.R0, asm.R3, asm.R1, size, dslReject)...)
 	case anchor.UseR4:
 		return emitBoundedLoad(asm.R3, int16(fieldOff), size, dslReject)
 	default:

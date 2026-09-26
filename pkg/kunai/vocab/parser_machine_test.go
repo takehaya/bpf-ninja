@@ -141,3 +141,54 @@ parser P(packet_in pkt, out foo_h hdr, out foo_opt_h opt) {
 		t.Errorf("err = %q; want 'span multiple bytes'", err.Error())
 	}
 }
+
+func TestLookaheadDecrementAfterAdvanceRejected(t *testing.T) {
+	src := `header foo_h { bit<8> length; }
+extern ParserCounter {
+ ParserCounter();
+ void set(in bit<8> value);
+ void decrement(in bit<8> value);
+ bool is_zero();
+}
+parser P(packet_in pkt, out foo_h hdr) {
+ ParserCounter() pc;
+ state start {
+  pkt.extract(hdr);
+  pkt.advance(8);
+  pc.decrement((bit<8>)pkt.lookahead<bit<16>>()[7:0]);
+  transition accept;
+ }
+}`
+	err := loadGatingP4(t, src)
+	if err == nil || !strings.Contains(err.Error(), "lookahead counter decrement must precede pkt.advance") {
+		t.Fatalf("expected operation-order diagnostic, got %v", err)
+	}
+}
+
+func TestParserOperationOrderRejected(t *testing.T) {
+	prefix := `header foo_h { bit<8> length; }
+ extern ParserCounter { ParserCounter(); void set(in bit<8> value); void decrement(in bit<8> value); bool is_zero(); }
+ parser P(packet_in pkt, out foo_h hdr) { ParserCounter() pc; state start { `
+	for _, body := range []string{
+		`pkt.advance(8); pkt.extract(hdr);`,
+		`pc.decrement((bit<8>)pkt.lookahead<bit<16>>()[7:0]); pkt.extract(hdr);`,
+		`pc.decrement(1); pkt.extract(hdr);`,
+		`pkt.extract(hdr); pkt.advance(8); pc.set((bit<8>)(hdr.length + 0));`,
+	} {
+		if err := loadGatingP4(t, prefix+body+` transition accept; } }`); err == nil || !strings.Contains(err.Error(), "must precede") {
+			t.Fatalf("body=%s error=%v", body, err)
+		}
+	}
+}
+
+func TestSingleStateOperationsNotElided(t *testing.T) {
+	src := `header foo_h { bit<8> length; }
+ parser P(packet_in pkt, out foo_h hdr) { state start { pkt.extract(hdr); pkt.advance(16); transition accept; } }`
+	v, err := Load(fstest.MapFS{"vocab/foo.p4": {Data: []byte(src)}}, "vocab")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v["foo"].ParseStateMachine == nil {
+		t.Fatal("advance disappeared in trivial parser shortcut")
+	}
+}

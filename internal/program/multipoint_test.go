@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/cilium/ebpf"
 
@@ -108,19 +107,20 @@ func runGatedTestRun(t *testing.T, entry, exit string, emit Emit, frames [][]byt
 			t.Fatalf("test-run target: %v", err)
 		}
 	}
-	// Wait for the expected count, then a little longer to catch strays
-	// (the "nothing must be emitted" cases rely on that grace period).
-	deadline := time.Now().Add(2 * time.Second)
-	for want > 0 && time.Now().Before(deadline) {
-		mu.Lock()
-		n := total
-		mu.Unlock()
-		if n >= want {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
+	if err := probe.Quiesce(); err != nil {
+		t.Fatal(err)
 	}
-	time.Sleep(300 * time.Millisecond)
+	stop()
+	if err := sr.Err(); err != nil {
+		t.Fatal(err)
+	}
+	stats, err := probe.ExportStats()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Submitted != uint64(want) || stats.ReserveFail+stats.LookupMiss+stats.CopyFail != 0 {
+		t.Fatalf("export stats=%+v want submitted=%d", stats, want)
+	}
 	mu.Lock()
 	defer mu.Unlock()
 	if total != want {

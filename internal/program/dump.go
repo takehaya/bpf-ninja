@@ -113,15 +113,15 @@ func renderFull(buf *strings.Builder, out codegen.Output, mode string, isFexit, 
 		shape string
 	)
 	if isXDPNative {
-		insns = buildXDPNativeInsns(out, 0, nil)
+		insns = buildXDPNativeInsns(out, 0, nil, 0, 0)
 		shape = "XDP-native program"
 	} else {
 		var err error
-		insns, err = buildTracingInsns(out, filter.TargetFilters{}, 0, 0, -1, isFexit, progType, nil, nil)
+		insns, err = buildTracingInsns(out, filter.TargetFilters{}, 0, 0, 0, isFexit, 8, progType, nil, nil, 0)
 		if err != nil {
 			return err
 		}
-		shape = "tracing program"
+		shape = "tracing program (return offset +8 is a one-parameter placeholder; live attach resolves BTF)"
 	}
 
 	fmt.Fprintf(buf, "=== Full %s (mode=%s, target=<not-resolved>, map FDs=0 placeholder) ===\n\n", shape, mode)

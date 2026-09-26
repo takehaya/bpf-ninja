@@ -17,8 +17,8 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Install libpcap-dev
-        run: sudo apt-get update -qq && sudo apt-get install -y libpcap-dev
+      - name: Install test dependencies
+        run: sudo apt-get update -qq && sudo apt-get install -y libpcap-dev clang
 
       - name: Build
         run: go build -o bpf-ninja ./cmd/bpf-ninja/
@@ -28,6 +28,9 @@ jobs:
 
       - name: Unit Tests
         run: go test ./...
+
+      - name: Script Tests
+        run: python3 -m unittest discover -s scripts/tests
 
       # Short fuzz gate (30s × 2 targets) to extend the seed corpus
       # past `go test`'s seed-only run. Caches a fail to ./fuzz/ —
@@ -53,12 +56,25 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y libpcap-dev libbpf-dev clang tcpdump gcc-multilib
-          sudo apt-get install -y linux-tools-$(uname -r) || sudo apt-get install -y linux-tools-generic || true
-          # Verify bpftool is available
-          which bpftool || (echo "bpftool not found, installing from linux-tools-common" && sudo apt-get install -y linux-tools-common) || true
+          sudo apt-get install -y linux-tools-generic
+          # The /usr/sbin wrapper requires tools matching the runner kernel.
+          # Use the packaged binary directly, including on Azure kernels.
+          for tool in /usr/lib/linux-tools/*/bpftool; do
+            if "$tool" version; then
+              sudo install -m 755 "$tool" /usr/local/sbin/bpftool
+              break
+            fi
+          done
+          sudo bpftool version
 
       - name: Build
         run: go build -o bpf-ninja ./cmd/bpf-ninja/
 
+      - name: Mount bpffs for privileged tests
+        run: mountpoint -q /sys/fs/bpf || sudo mount -t bpf bpf /sys/fs/bpf
+
+      - name: Privileged Go suites (required datapath and attach coverage)
+        run: make test-bpf
+
       - name: Integration Tests
-        run: sudo scripts/test/run_tests.sh
+        run: sudo env CI=true scripts/test/run_tests.sh

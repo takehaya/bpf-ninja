@@ -56,33 +56,17 @@ func chunksEqual(a, b []chunk) bool {
 	return true
 }
 
-func TestUintFitsBits(t *testing.T) {
-	cases := []struct {
-		v    uint64
-		bits int
-		ok   bool
-	}{
-		// Positive values within the unsigned range.
-		{0, 8, true},
-		{255, 8, true},
-		{256, 8, false},
-		{443, 16, true},
-		{99999, 16, false},
-		// Negative literals stored as 2's complement.
-		{^uint64(0), 8, true}, // -1 fits any width
-		{^uint64(0), 16, true},
-		{^uint64(127), 8, true},     // -128 fits int8 range
-		{^uint64(128), 8, false},    // -129 doesn't fit signed int8
-		{^uint64(128), 16, true},    // -129 fits int16
-		{^uint64(32767), 16, true},  // -32768 fits int16
-		{^uint64(32768), 16, false}, // -32769 doesn't
-		// 64-bit and wider always succeed (no narrowing happens).
-		{^uint64(0), 64, true},
-	}
-	for _, c := range cases {
-		got := uintFitsBits(c.v, c.bits)
-		if got != c.ok {
-			t.Errorf("uintFitsBits(%#x, %d) = %v, want %v", c.v, c.bits, got, c.ok)
+func TestLiteralFitsBitsDistinguishesSign(t *testing.T) {
+	for _, bits := range []int{8, 16, 32, 64} {
+		if !literalFitsBits(^uint64(0), true, bits) {
+			t.Errorf("-1 rejected for %d bits", bits)
+		}
+		if got := literalFitsBits(^uint64(0), false, bits); got != (bits == 64) {
+			t.Errorf("max unsigned for %d bits: %v", bits, got)
+		}
+		min := uint64(1) << 63
+		if got := literalFitsBits(min, true, bits); got != (bits == 64) {
+			t.Errorf("min signed for %d bits: %v", bits, got)
 		}
 	}
 }

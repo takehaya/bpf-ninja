@@ -32,7 +32,7 @@ type accAtom struct {
 // reduces to a single `(acc & mask) == mask` check.
 //
 // nil when the program is not eligible — callers fall back to the
-// existing compile-time reject for >=2 lookahead-only options.
+// existing compile-time reject for >=2 length-byte options.
 type accPlan struct {
 	layer *ir.LayerInstance
 	atoms []accAtom
@@ -75,13 +75,9 @@ func buildAccPlan(where *ir.Condition, qo queriedOptions) *accPlan {
 	if plan.layer == nil {
 		return nil
 	}
-	// Scope the accumulator to lookahead-only TLV walks (the TCP-options
-	// shape). A counter-driven walk (Geneve, IPv4 options) has its own
-	// native lowering that already loads multi-option queries; diverting it
-	// here would needlessly apply the kind-dispatch prelude, the cursor/acc
-	// forgets, and the branch-guard exemption, none of which it is designed
-	// for. Mirrors pmCtx.isLookaheadOnlyLoop at the spec level.
-	if !layerOptionWalkIsLookaheadOnly(plan.layer) {
+	// Length-byte TLV walks retain the accumulator when a byte counter bounds
+	// the region. Counter walks with another discriminator keep their path.
+	if !layerOptionWalkHasLengthByte(plan.layer) {
 		return nil
 	}
 	// Require >=2 DISTINCT queried options, and every option the layer
@@ -109,13 +105,9 @@ func buildAccPlan(where *ir.Condition, qo queriedOptions) *accPlan {
 	return plan
 }
 
-// layerOptionWalkIsLookaheadOnly reports whether the layer's TLV option
-// walk dispatches on a lookahead key alone (the TCP-options shape), rather
-// than a counter (Geneve, IPv4 options). The accumulator lowering targets
-// the lookahead-only shape; counter-driven walks keep their native path.
-// Mirrors pmCtx.isLookaheadOnlyLoop, but at the vocab-spec level so
-// buildAccPlan can gate before any parser-machine context exists.
-func layerOptionWalkIsLookaheadOnly(layer *ir.LayerInstance) bool {
+// layerOptionWalkHasLengthByte recognizes the TLV fallback shared by
+// single-option and accumulator queries, including counter-bounded TCP.
+func layerOptionWalkHasLengthByte(layer *ir.LayerInstance) bool {
 	if layer == nil || layer.Spec == nil || layer.Spec.ParseStateMachine == nil {
 		return false
 	}
@@ -128,7 +120,7 @@ func layerOptionWalkIsLookaheadOnly(layer *ir.LayerInstance) bool {
 		if sel == nil {
 			return false
 		}
-		return !hasCounterAndKindKeys(sel) && !isCounterIsZeroSelect(sel)
+		return lengthByteOptionLoop(states, sel)
 	}
 	return false
 }
@@ -285,4 +277,23 @@ func (p *accPlan) atomsFor(layer *ir.LayerInstance) []accAtom {
 		return nil
 	}
 	return p.atoms
+}
+
+// lengthByteOptionLoop recognizes option walks whose fallback consumes a
+// byte-sized TLV length. Counter-bounded TCP retains the accumulator lowering.
+func lengthByteOptionLoop(states []*vocab.ParseState, sel *vocab.SelectOp) bool {
+	if sel == nil {
+		return false
+	}
+	idx := sel.Default
+	for _, cs := range sel.Cases {
+		if len(cs.Values) == 2 && cs.Values[1].IsWildcard && !cs.Values[0].IsWildcard && cs.Values[0].IsBool && !cs.Values[0].Bool {
+			idx = cs.Target
+		}
+	}
+	if idx < 0 || idx >= len(states) {
+		return false
+	}
+	st := states[idx]
+	return len(st.Extracts) == 0 && len(st.Advances) == 1 && st.Advances[0].Kind == vocab.AdvanceOpLookahead
 }

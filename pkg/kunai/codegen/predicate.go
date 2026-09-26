@@ -76,14 +76,14 @@ func genPredicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, error) {
 // matching the verifier-walk floor we promise.
 func emitIntPredicate(pred *ir.Predicate) (asm.Instructions, error) {
 	value := pred.Value.Int
-	// Narrow the literal to the field's declared width before the
+	// Narrow the literal to the field's effective (possibly sliced) width before the
 	// immediate-range check. The resolver's fit-check (typing.go:
-	// uintFitsBits) accepts signed-extended negatives (`-1` stored
+	// literalFitsBits) accepts signed-extended negatives (`-1` stored
 	// as 0xffff..ff), and at codegen we only ever compare the low
 	// `bits` bits of the field anyway, so masking here is the
 	// correct narrowing per dsl-types.md §4.1 / §7.3.
 	if pred.Field != nil && pred.Field.Field != nil {
-		fieldBits := pred.Field.Field.Bits
+		fieldBits := pred.Field.EffectiveBits()
 		if fieldBits > 0 && fieldBits < 64 {
 			value &= (uint64(1) << fieldBits) - 1
 		}
@@ -801,7 +801,7 @@ func emitInPredicate(pred *ir.Predicate) (asm.Instructions, error) {
 	if pred.Field == nil || pred.Field.Field == nil {
 		return nil, fmt.Errorf("codegen: 'in' predicate missing field reference")
 	}
-	fieldBits := pred.Field.Field.Bits
+	fieldBits := pred.Field.EffectiveBits()
 	if fieldBits <= 0 || fieldBits > 64 {
 		return nil, fmt.Errorf("%w: 'in' on bit<%d> field — only ≤ bit<64> wired", ErrNotImplemented, fieldBits)
 	}
@@ -842,7 +842,7 @@ func emitInPredicate(pred *ir.Predicate) (asm.Instructions, error) {
 	// Sub-byte field: the load read a covering window, so bring R3 to
 	// host order and narrow it to the field's bits before comparing.
 	// The alternatives then stay in host order (no constant bswap).
-	subByte := fieldIsSubByte(pred.Field)
+	subByte := fieldIsSubByte(pred.Field) || pred.Field.Slice != nil
 	if subByte {
 		if bytes > 1 {
 			insns = append(insns, asm.HostTo(asm.BE, asm.R3, size))

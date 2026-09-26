@@ -2,6 +2,7 @@
 package testutil
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -17,9 +18,17 @@ func SkipIfNotRoot(t testing.TB) {
 }
 
 // CompileBPFSource compiles a BPF C source string to an object file with BTF.
-// Skips the test if clang is not available.
+// Missing clang is optional locally, but a failure in CI. Compilation failures
+// are always test failures, including an installed compiler without BPF support.
 func CompileBPFSource(t testing.TB, source string) string {
 	t.Helper()
+	clang, err := exec.LookPath("clang")
+	if err != nil {
+		if errors.Is(err, exec.ErrNotFound) && os.Getenv("CI") != "true" && os.Getenv("CI") != "1" {
+			t.Skipf("clang not installed: %v", err)
+		}
+		t.Fatalf("finding required clang: %v", err)
+	}
 	dir := t.TempDir()
 	srcFile := filepath.Join(dir, "xdp.c")
 	objFile := filepath.Join(dir, "xdp.o")
@@ -27,9 +36,9 @@ func CompileBPFSource(t testing.TB, source string) string {
 		t.Fatalf("writing source: %v", err)
 	}
 
-	out, err := exec.Command("clang", "-O2", "-g", "-target", "bpf", "-c", srcFile, "-o", objFile).CombinedOutput()
+	out, err := exec.Command(clang, "-O2", "-g", "-target", "bpf", "-c", srcFile, "-o", objFile).CombinedOutput()
 	if err != nil {
-		t.Skipf("clang not available: %v\n%s", err, out)
+		t.Fatalf("compiling BPF source: %v\n%s", err, out)
 	}
 	return objFile
 }

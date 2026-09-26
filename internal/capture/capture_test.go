@@ -142,7 +142,9 @@ func TestBatchBuilderOwnsPayload(t *testing.T) {
 			src[i] = 0
 		}
 	}
-	bb.flush()
+	if err := bb.flush(); err != nil {
+		t.Fatal(err)
+	}
 
 	if len(got) != len(fills) {
 		t.Fatalf("got %d packets, want %d", len(got), len(fills))
@@ -205,7 +207,9 @@ func TestBatchBuilderArenaOverflow(t *testing.T) {
 		t.Fatalf("arena cap = %d, want > 32 (append should have grown it)", cap(bb.arena))
 	}
 
-	bb.flush()
+	if err := bb.flush(); err != nil {
+		t.Fatal(err)
+	}
 
 	if sinkCalls != 1 {
 		t.Fatalf("sink called %d times, want 1 (single explicit flush)", sinkCalls)
@@ -222,5 +226,18 @@ func TestBatchBuilderArenaOverflow(t *testing.T) {
 				t.Fatalf("packet %d byte %d = %#x, want %#x (survived realloc)", i, j, b, byte(i+1))
 			}
 		}
+	}
+}
+
+func TestParsePacketRejectsMalformedMetadata(t *testing.T) {
+	raw := make([]byte, MetadataSize)
+	binary.NativeEndian.PutUint16(raw[OffsetCapLen:], 1)
+	if _, err := ParseRawSample(raw); err == nil {
+		t.Fatal("oversized caplen accepted")
+	}
+	binary.NativeEndian.PutUint16(raw[OffsetCapLen:], 0)
+	raw[OffsetMode] = 3
+	if _, err := ParseRawSample(raw); err == nil {
+		t.Fatal("unknown mode accepted")
 	}
 }

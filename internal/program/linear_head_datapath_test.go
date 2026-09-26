@@ -29,7 +29,6 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -149,10 +148,9 @@ func TestLinearHeadClampAtCgroupSKB(t *testing.T) {
 	<-done
 
 	// Drain and check every captured record.
-	innerSize := int(shardRingbufSize(RingbufSize, runtime.NumCPU()))
 	readers := make([]*fastrb.Reader, len(probe.InnerMaps))
 	for i, m := range probe.InnerMaps {
-		rd, err := fastrb.New(m.FD(), innerSize)
+		rd, err := fastrb.New(m.FD(), int(m.MaxEntries()))
 		if err != nil {
 			t.Fatalf("fastrb on shard %d: %v", i, err)
 		}

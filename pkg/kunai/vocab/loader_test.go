@@ -1212,7 +1212,7 @@ func TestIPv6ExtHeaderAnnotations(t *testing.T) {
 	if !ok || ann == nil {
 		t.Fatal("ipv6_ext_h has no HeaderAnnotations")
 	}
-	wantVT := &VariableTailSpec{LenFieldByteOff: 1, LenMask: 0x03, LenShift: 0, Scale: 8, Base: 0}
+	wantVT := &VariableTailSpec{LenFieldByteOff: 1, LenMask: 0xFF, LenShift: 0, Scale: 8, Base: 0}
 	if ann.VariableTail == nil || *ann.VariableTail != *wantVT {
 		t.Errorf("VariableTail = %+v, want %+v", ann.VariableTail, wantVT)
 	}
