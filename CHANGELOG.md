@@ -1,5 +1,32 @@
 # Changelog
 
+## [0.26.0](https://github.com/takehaya/bpf-ninja/compare/v0.25.0...v0.26.0) (2026-09-26)
+
+
+### 🎉 Features
+
+* **capture:** export accounting, and a guard for the 7.0 tail-call attach failure ([#113](https://github.com/takehaya/bpf-ninja/issues/113)) ([45e365a](https://github.com/takehaya/bpf-ninja/commit/45e365a8ef2733245c63e663359adfe6869451c9))
+* **capture:** gated entry+exit capture (repeatable --mode, --emit) ([#112](https://github.com/takehaya/bpf-ninja/issues/112)) ([2fa4279](https://github.com/takehaya/bpf-ninja/commit/2fa427910b14b3cb4e7dac6799d71d79216baab5))
+
+
+### 🐛 Bug Fixes
+
+* harden DSL matching and capture completion accounting ([#115](https://github.com/takehaya/bpf-ninja/issues/115)) ([97be2b6](https://github.com/takehaya/bpf-ninja/commit/97be2b658b5086c5a6baf700ed776193c1c04044))
+
+
+### 📝 Documentation
+
+* add Apache License 2.0 ([#114](https://github.com/takehaya/bpf-ninja/issues/114)) ([2263498](https://github.com/takehaya/bpf-ninja/commit/22634988d8806461b7d95680317b1dc2a8136ef4))
+* clarify where private documents live ([#108](https://github.com/takehaya/bpf-ninja/issues/108)) ([626f85e](https://github.com/takehaya/bpf-ninja/commit/626f85ec512655c38945cf8d22c04b68cc2a5c65))
+* publish workshop paper sources and measurement artifacts ([#111](https://github.com/takehaya/bpf-ninja/issues/111)) ([a65fa43](https://github.com/takehaya/bpf-ninja/commit/a65fa433727947af3ea3179710b49ac5165becd8))
+* remove private workspace locations from public guides ([#109](https://github.com/takehaya/bpf-ninja/issues/109)) ([5b8f2b6](https://github.com/takehaya/bpf-ninja/commit/5b8f2b6b3e4f4508d3270e0a3410554f5a493d58))
+* track shared agent instructions ([#110](https://github.com/takehaya/bpf-ninja/issues/110)) ([c05dfc2](https://github.com/takehaya/bpf-ninja/commit/c05dfc2148a84d24c0ddf90848d4474c524a07a8))
+
+
+### 🔧 Miscellaneous Chores
+
+* **docs:** separate private material and guard public content ([#106](https://github.com/takehaya/bpf-ninja/issues/106)) ([b87f0cb](https://github.com/takehaya/bpf-ninja/commit/b87f0cb31fc984f504d6a4c8504769e583e6a964))
+
 ## [0.25.0](https://github.com/takehaya/bpf-ninja/compare/v0.24.0...v0.25.0) (2026-08-23)
 
 
