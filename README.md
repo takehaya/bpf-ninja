@@ -394,6 +394,11 @@ sudo apt install qemu-system-x86
 vimto -kernel :6.6 exec -- go test -v -count 1 -timeout 5m ./internal/program/ -run TestBpf
 ```
 
+## Publications
+
+- [eBPF Workshop 2026: Kunai](docs/publications/ebpf_workshop_2026/README.md) —
+  paper source, figures, measurement data, and build instructions.
+
 ## Acknowledgements
 
 bpf-ninja's design was inspired by the following projects:
