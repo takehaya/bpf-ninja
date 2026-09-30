@@ -54,11 +54,13 @@ where
     | [(name, none)] => spec.field? name
     | _ => none
 
-private def checkEdge (V : Vocab) (child parent : String) (alt : Bool) : Except String Unit :=
+private def checkEdge (V : Vocab) (child parent : String) (alt optional : Bool) : Except String Unit :=
   match V.edge? child parent, V.proto? child with
   | some ⟨_, _, .field ..⟩, _ => pure ()
   | some ⟨_, _, .noCheck⟩, _ =>
-    if alt then throw s!"alternative {child} needs a field dispatch under {parent}" else pure ()
+    if alt then throw s!"alternative {child} needs a field dispatch under {parent}"
+    else if optional then throw s!"optional {child} with no-check dispatch cannot detect absence"
+    else pure ()
   | none, some spec =>
     if alt then throw s!"alternative {child} needs a field dispatch under {parent}"
     else if spec.requires.isEmpty then throw s!"no dispatch constant for {child} under {parent}"
@@ -75,7 +77,7 @@ private def checkProtoLayer (c : Ctx) (i : Nat) (p : ProtoLayer) (alt : Bool) : 
   let fuel := m.getD spec.maxDepth
   if fuel > chainCap then throw s!"chain depth {fuel} exceeds {chainCap}"
   if n > fuel then throw "iteration bound below the quantifier minimum"
-  for parent in possibleParents c.layers i do checkEdge c.V p.name parent alt
+  for parent in possibleParents c.layers i do checkEdge c.V p.name parent alt (n == 0)
   for ρ in p.preds do checkPred spec ρ
 
 -- Structural iteration (`List.forIn`) rather than `[0:n]`, whose

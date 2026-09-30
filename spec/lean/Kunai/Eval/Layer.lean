@@ -36,9 +36,17 @@ def dispatch (c : Ctx) (st : State) (child : String) : Disp :=
       | none => .illTyped s!"dispatch field {parent.proto}.{f} is not declared"
     | none =>
       match c.V.proto? child with
-      | some spec => if spec.requires.isEmpty
-          then .illTyped s!"no dispatch constant for {child} under {parent.proto}"
-          else .ok
+      | some spec =>
+        if spec.requires.isEmpty then .illTyped s!"no dispatch constant for {child} under {parent.proto}"
+        else
+          -- D-017: with no parent constant, self-validation is the dispatch. A readable
+          -- header that fails it is a miss; an unreadable one falls through to bounds.
+          let probe : Inst := ⟨child, st.cursor, spec.fixedLen⟩
+          let failed := spec.requires.any fun (f, v) =>
+            match (spec.field? f).bind (readField c.P probe) with
+            | some n => n != v
+            | none => false
+          if failed then .miss else .ok
       | none => .illTyped s!"unknown protocol {child}"
 
 /-- Bracket field: a single segment naming a field of the layer's own header. -/
@@ -76,7 +84,8 @@ def extract (c : Ctx) (st : State) (p : ProtoLayer) : Except LayerFail State := 
   -- [E-Layer-Proto-1-Fail-Bounds] on the fixed header
   if st.cursor + spec.fixedLen > c.P.length then throw .bounds
   let fixed : Inst := ⟨p.name, st.cursor, spec.fixedLen⟩
-  -- parser-block self validation (`select(version) { 4: …; default: reject }`), §14.4: ⊥ ↦ Fail-Pred (D-017)
+  -- parser-block self validation under a parent constant: the parent already named this
+  -- protocol, so a failing header is broken, not absent (D-017: Fail-Pred, like D-005)
   for (f, v) in spec.requires do
     if ((spec.field? f).bind (readField c.P fixed)) != some v then throw .pred
   -- total_bytes(p, P, π): declared header length (D-016: below the fixed header ⇒ reject)

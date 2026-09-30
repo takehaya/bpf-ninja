@@ -21,7 +21,7 @@ Status values: 提案中 (implemented as recommended, awaiting sign-off) /
 - 候補: (a) greedy 確定 / (b) バックトラック
 - 現行 Go 実装の挙動: greedy。`eth/mpls{1,8}/mpls/ipv4/tcp` (3 ラベル) → reject、`eth/mpls{1,2}/ipv4/tcp` (3 ラベル) → reject (2 個消費後 ipv4 を 3 個目のラベルで parse して version 不一致)。
 - 推奨: (a)。BPF で backtracking は現実的でなく、§13.5 の k の決め方 (最初の失敗で停止) も greedy を含意する。resolver に到達不能警告を出す issue を起票する。
-- 状態: 提案中
+- 状態: 承認済 (2026-10-01)
 - 反映先: `Eval/Layer.lean` `iterate`, vectors `quant-greedy-unreachable`, `quant-range-greedy-overrun`
 
 ## D-003: 不在レイヤの field 参照
@@ -29,7 +29,15 @@ Status values: 提案中 (implemented as recommended, awaiting sign-off) /
 - 候補: (a) 比較 (atom) は false / (b) filter は reject / (c) 型エラー
 - 現行 Go 実装の挙動: **コンパイル時 `ErrNotImplemented`** ("where-clause field on quantified layer" / "past quantified layer")。`eth/vlan?/ipv4/tcp where tcp.dport == 80` は通る (ipv4 が可変長 slot 境界になるため)。`README.ja.md:18` の例 `eth/mpls{1,8}/ipv4/tcp where ipv4.total_length > 100` は **コンパイルできない** (要修正)。
 - 推奨: (a)。atom 単位で false にする。(b) は `not (vlan.tci == 1)` を書けなくし、(c) は実装制限を仕様に昇格させる。ユーザー決定 (2026-10-01): 仕様は純粋に書き、Go の制限は vector の `goStatus: notImplemented` で表す。注意: `not (vlan.tci == 1)` は不在時に true になる。
-- 状態: 承認済 (2026-10-01、フラグ分離の方針のみ。(a) 自体は提案中)
+- 状態: 承認済 (2026-10-01)。不在時の真理値表:
+
+  | パケット | `vlan.tci == 10` | `vlan.tci != 10` | `not (vlan.tci == 10)` |
+  |---|---|---|---|
+  | vlan あり、tci=10 | true | false | false |
+  | vlan あり、tci=20 | false | true | true |
+  | vlan なし | false | false | true |
+
+  無い layer への比較はどの演算子でも false。「あって tci≠10」は `!=`、「無いか、あっても≠10」は `not (==)` と書き分ける。
 - 反映先: `Eval/Where.lean` `loadField` (`none`), `evalWhere` `.arith`/`.litCmp` (`| pure false`), vectors `where-absent-layer-false`, `where-absent-layer-not`, `where-past-quantified-ok`
 
 ## D-004: alternation の順序と重なり
@@ -37,7 +45,7 @@ Status values: 提案中 (implemented as recommended, awaiting sign-off) /
 - 候補: (a) 先勝ち commit (後続枝は試さない) / (b) 一意一致を要求 / (c) 失敗時に次の枝を試す
 - 現行 Go 実装の挙動: (a)。`eth/(vlan|qinq)/ipv4/tcp` と `(qinq|vlan)` はどちらも vlan パケットに accept、`(vlan[tci == 200]|qinq)` は tci=100 で reject (predicate 失敗後に qinq を試さない)。同一 proto を 2 枝に書く `(ipv4[ttl == 1]|ipv4[ttl == 255])` は **ロード時に "duplicate symbol" で失敗** (Go bug、issue)。同サイズ制約は `codegen/alternation.go` に無く、`dsl-grammar.md:56` / `dsl-usage.md:257` もサイズ差を許す。
 - 推奨: (a)。§13 に [E-Layer-Alt-First] を追加し、T-LayerAlt の uniform-size 制約は削除する (dsl-types.md 修正提案)。
-- 状態: 提案中
+- 状態: 承認済 (2026-10-01)
 - 反映先: `Eval/Layer.lean` `evalAlt`, vectors `alt-first`, `alt-second`, `alt-none`, `alt-first-pred-fails`
 
 ## D-005: `?` の skip 条件と Range-Step の停止条件
@@ -82,7 +90,7 @@ Status values: 提案中 (implemented as recommended, awaiting sign-off) /
 ## D-010: alternation の評価規則が §13 に無い
 - 論点: §13 には `alt(L̄)` の E-rule が無い (T-LayerAlt のみ)。
 - 推奨: [E-Layer-Alt-First] を追加 (D-004)。枝は field dispatch 必須 (NO_CHECK / self-validating 枝は illTyped)、quantifier 不可、root 不可 (いずれも Go の `validateAlternatives` と同じ)。
-- 状態: 提案中
+- 状態: 承認済 (2026-10-01)
 - 反映先: `Eval/Layer.lean` `evalAlt`, vector `alt-root-illtyped`
 
 ## D-011: bracket `in` の規則が §13 に無い
@@ -128,10 +136,11 @@ Status values: 提案中 (implemented as recommended, awaiting sign-off) /
 
 ## D-017: self-validation (parser-block reject) の失敗種別
 - 論点: `select(version) { 4: …; default: reject }` の ⊥ を dispatch miss と見るか predicate 失敗と見るか (`ipv4?` の skip 判定に影響)。
-- 現行 Go 実装の挙動: `eth/ipv4/tcp` に version=5 → reject。`eth/ipv4?/tcp` は **verifier で load 失敗** ("math between map_value pointer and register with unbounded min value") — Go bug、issue。
-- 推奨: §14.4 のとおり Fail-Pred 系統 (skip しない)。
-- 状態: 提案中
-- 反映先: `Eval/Layer.lean` `extract` (`requires`), vector `chain-ipv4-version5`
+- 候補: (a) 常に Fail-Pred (§14.4 の記述) / (b) 常に dispatch miss (skip) / (c) 親 const が無く自己検証が唯一の dispatch のときだけ miss、親 const があるときは Fail-Pred
+- 現行 Go 実装の挙動: `eth/ipv4/tcp` に version=5 → reject。`eth/ipv4?/tcp` は **verifier で load 失敗** ("math between map_value pointer and register with unbounded min value")、issue 4。`eth/mpls/ipv4?/tcp` はコンパイルできる。
+- 推奨: (c)。`mpls/ipv4?` では version が「次は ipv4 か」を判定する唯一の材料なので miss (skip) が自然。`eth/ipv4?` では ethertype がすでに ipv4 と言っているので、version≠4 は破損であり D-005 と同じく ✗。
+- 状態: 承認済 (2026-10-01、案 c)
+- 反映先: `Eval/Layer.lean` `dispatch` (edge 無し + `requires` を dispatch 段階で検査), `extract` (`requires`), vectors `quant-selfvalidating-skip`, `quant-selfvalidating-broken` (goStatus mismatch), `typ-no-dispatch-after-skip`, `dsl-types.md` §13.5
 
 ## D-018: quantified layer のラベル再束縛
 - 論点: `mpls@m{1,8}` は反復ごとに `m` を束縛し直す。
@@ -144,13 +153,14 @@ Status values: 提案中 (implemented as recommended, awaiting sign-off) /
 - 論点: §6.3 は short-circuit、§13.8 [E-W-And]/[E-W-Or] は両辺評価。差が出るのは第 2 項が reject (D-006) するとき。
 - 現行 Go 実装の挙動: codegen は jump による short-circuit。Phase 2 の範囲では観測不能 (primary field は chain で bounds 済)。
 - 推奨: 両辺を評価するが、第 1 項で結果が決まるなら第 2 項の動的 reject は無視する (short-circuit と同じ結果)。型エラーは隠さない。
-- 状態: 提案中
+- 状態: 承認済 (2026-10-01)
 - 反映先: `Eval/Where.lean` `logic`
 
 ## D-020: capture の対象 layer が不在
 - 論点: `eth/vlan?/ipv4 capture vlan` で vlan が無いとき。
-- 推奨: その capture 句は省く (gate false と同じ)。
-- 状態: 提案中
+- 候補: (a) その capture 句だけ省く / (b) reject (D-021 と揃える)
+- 推奨: (a)。`capture vlan+8 capture ipv4+8` のように複数句を並べれば「vlan があれば vlan+8、無ければ ipv4+8」が書けるので、省く方が表現力がある。Go は `?` 以降の `capture <layer>` が `ErrNotImplemented` で、実装時に再確認する。
+- 状態: 承認済 (2026-10-01、案 a)
 - 反映先: `Eval/Where.lean` `evalCapture` `.toLayer`
 
 ## D-021: per-capture `where` の合成
@@ -185,5 +195,6 @@ Status values: 提案中 (implemented as recommended, awaiting sign-off) /
 4. `eth/ipv4?/tcp` が verifier で落ちる (D-017)。
 5. `{0,1}` が `ErrNotImplemented` (D-005)。
 6. 到達不能 chain `mpls{1,8}/mpls` に警告が無い (D-002)。
+   (各 issue の本文は `issues/` に置く。公開リポジトリには含めない。)
 7. `dsl-types.md` §13.9 の wrap 記述 (D-015) と `%` の 0 除算 (D-022) が実装と異なる、§11/T-LayerAlt の uniform-size 制約が grammar/usage と矛盾 (D-004)、§13.6 の capture gate が grammar/usage と矛盾 (D-021)。
 8. bpf_loop 経路が反復途中の bounds 失敗を「停止」と扱い、peek 経路 (`?`, `*`) の reject と一致しない (D-005)。

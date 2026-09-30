@@ -715,7 +715,7 @@ Part I は、どこに何の check を入れるかという実装者向け実用
 F  ::= ⟨L̄, w?, c̄⟩                                         filter
 
 L  ::= proto(p, ℓ?, q, π̄)                                  単一 protocol layer
-     | alt(L̄)                                              alternation (同サイズ)
+     | alt(L̄)                                              alternation (2〜4 枝、各枝は proto、サイズは異なってよい)
 
 q  ::= 1 | ? | + | * | {n,m}                               quantifier (n,m ∈ ℕ)
 
@@ -918,9 +918,12 @@ proto(p, ℓ?, q, π̄):
 
 [T-LayerAlt]
 ∀ L ∈ L̄. Γ ⊢ L : LayerOK
-∀ L, L' ∈ L̄. byte_size(L) = byte_size(L')        (uniform-size 制約)
+∀ L ∈ L̄. L = proto(p, ℓ?, 1, π̄)  かつ  親から p への Field dispatch const が存在
+alt(L̄) は chain の先頭ではない
 ────────────────────────────────────────────────
 Γ ⊢ alt(L̄) : LayerOK
+
+(枝のサイズは異なってよい。以前の uniform-size 制約は `dsl-grammar.md` / `dsl-usage.md` / 実装と食い違っていたため撤回、D-004)
 
 
 [T-Filter]
@@ -1016,6 +1019,20 @@ inst = layer-instance-of(p, π)
 ─────────────────────────────
 ⟨L, σ⟩ ⇓_P ✗
 ```
+
+[E-Layer-Alt-First]                           ; D-004 / D-010
+L̄ = L_1 · … · L_k
+∃ i. parent_dispatch(p_i, σ, P) = ok  かつ  ∀ j < i. parent_dispatch(p_j, σ, P) = miss
+⟨L_i, σ⟩ ⇓_P r                                ; 採用した枝の結果がそのまま alt の結果 (後続の枝は試さない)
+─────────────────────────────────────────────
+⟨alt(L̄), σ⟩ ⇓_P r
+
+[E-Layer-Alt-None]
+∀ i. parent_dispatch(p_i, σ, P) = miss
+─────────────────────────────────────────────
+⟨alt(L̄), σ⟩ ⇓_P ✗
+
+`parent_dispatch(p, σ, P)` は、親 layer の dispatch const が Field なら親のその field の値で判定し、NO_CHECK なら常に ok、const が無く p が self-validating (parser block が `default: reject` を持つ) なら p のヘッダ自身の検査 (ipv4 の `version == 4` など) で判定します (D-017)。親 const があるうえでヘッダ自身の検査に失敗した場合は miss ではなく [E-Layer-Proto-1-Fail-Pred] です。NO_CHECK の下に `?` / `*` / `{0,m}` を置くことは不在を検出できないため型エラーです。
 
 ### 13.5 Quantifier
 
@@ -1151,6 +1168,8 @@ op_c(n, v_n) = b                             ───────────�
 ```
 [E-A-Const]                          [E-A-Field]
                                      load(f, σ, P) = n                   ; aux 抽出済を含む field load
+                                                                         ; f の layer が σ に無い (? / * で skip) とき、
+                                                                         ; f を含む atom は false (D-003)
 ─────────────────────                ───────────────────────
 ⟨const(n), σ⟩ ⇓_P n                  ⟨field(f), σ⟩ ⇓_P n
 

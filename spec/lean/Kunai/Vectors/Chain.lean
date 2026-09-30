@@ -149,6 +149,21 @@ vector quantPredFirstFail := {
 vector quantPredAllHold := {
   id := "quant-pred-all-hold", ast := { layers := mplsPred 8 .lt (.range 1 (some 8)) }, packet := mpls3,
   expected := .accept [] }
+vector quantSelfValidSkip := {
+  id := "quant-selfvalidating-skip", ast := { layers := [P "eth", P "mpls", Pq "ipv4" .opt] },
+  packet := eth 0x8847 ++ mpls 5 1 ++ ipv6 6 ++ tcp 1 80, expected := .accept [],
+  note := "D-017: no parent constant for ipv4 under mpls, so version = 6 is a dispatch miss and ipv4? skips" }
+vector quantSelfValidBroken := {
+  id := "quant-selfvalidating-broken", ast := { layers := [P "eth", Pq "ipv4" .opt] },
+  packet := eth 0x0800 ++ ipv4 6 (version := 5) ++ tcp 12345 80 ++ payload 5, expected := .reject, goStatus := .mismatch,
+  note := "D-017: eth.ethertype already says ipv4, so version = 5 is a broken header, not absence; Go fails the verifier" }
+vector typOptionalAfterSkip := {
+  id := "typ-no-dispatch-after-skip", ast := { layers := [P "eth", Pq "ipv4" .opt, P "tcp"] }, goStatus := .mismatch,
+  expected := .illTyped "no dispatch constant for tcp under eth",
+  note := "if ipv4 is skipped, tcp sits under eth with no constant; Go compiles this and then fails the verifier (issue 4)" }
+vector typOptionalNoCheck := {
+  id := "typ-optional-nocheck", ast := { layers := [P "eth", P "ipv4", P "udp", P "vxlan", Pq "eth" .opt, P "ipv4", P "tcp"] },
+  packet := vxlanPkt, expected := .illTyped "optional eth with no-check dispatch cannot detect absence" }
 vector quantFirstOptional := {
   id := "quant-first-optional", ast := { layers := [Pq "vlan" .opt, P "ipv4"] },
   expected := .illTyped "the first layer cannot be optional" }
@@ -198,7 +213,7 @@ def chainVectors : List Vector := [
   quantOptPresent, quantOptAbsent, quantOptPredHolds, quantOptPredFails, quantOptBounds, quantRangeMidTrunc, quantRange01Bounds,
   quantStarBounds, quantMplsRange, quantMplsPlus, quantMplsStarZero, quantMplsMinUnmet, quantChainEnd,
   quantGreedyOverrun, quantGreedyUnreachable, quantPredMidFail, quantPredMidFailStatic, quantPredFirstFail,
-  quantPredAllHold, quantFirstOptional,
+  quantPredAllHold, quantSelfValidSkip, quantSelfValidBroken, typOptionalAfterSkip, typOptionalNoCheck, quantFirstOptional,
   altFirst, altSecond, altNone, altFirstPredFails, altRoot, altNoCheck,
   hostTcVlanMandatory, hostTcVlanOpt, hostL3Root, hostL3EthRoot]
 
