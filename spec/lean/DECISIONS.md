@@ -61,14 +61,14 @@ Status values: 提案中 (implemented as recommended, awaiting sign-off) /
 - 候補: (a) reject / (b) false
 - 現行 Go 実装の挙動: reject (`ranged_predicate_test.go:20` "truncated TCP predicate field")。Phase 2 の範囲 (primary field のみ) では chain の bounds 検査が先に効くため到達不能。
 - 推奨: (a)。
-- 状態: 提案中
+- 状態: 承認済 (2026-10-01、一括)
 - 反映先: `Eval/Where.lean` `loadField` (`throw .reject`)。vector は Phase 5 (aux field) で追加
 
 ## D-007: `any` / `all` の空 stack
 - 論点: §13.8 注記どおり any → false, all → true。
 - 現行 Go 実装の挙動: 同じ (`dsl-types.md:1136`, §6.5)。
 - 推奨: 採用。Phase 2 では stack を扱わないため `any`/`all` は `illTyped "unsupported: aux stacks"`。
-- 状態: 提案中 (実装は Phase 5)
+- 状態: 承認済 (2026-10-01、一括) (実装は Phase 5)
 - 反映先: `Eval/Where.lean` `evalWhere` `.any`/`.all`
 
 ## D-008: host により意味が変わる箇所
@@ -76,7 +76,7 @@ Status values: 提案中 (implemented as recommended, awaiting sign-off) /
 - 候補: (a) illTyped / (b) バイト列上で評価して結果に任せる
 - 現行 Go 実装の挙動: 警告のみ。`Compile("eth/ipv4", {PacketStartsAtL3: true})` はエラーなし。
 - 推奨: (b)。警告は意味論の外。cursor 0 から評価し、L3 パケットに `eth` を当てれば普通に reject される。
-- 状態: 提案中
+- 状態: 承認済 (2026-10-01、一括)
 - 反映先: `Eval.lean` (host は dispatch に関与しない), vectors `host-l3-ipv4-root`, `host-l3-eth-root`
 
 ## D-009: 算術の幅 (定数同士)
@@ -84,7 +84,7 @@ Status values: 提案中 (implemented as recommended, awaiting sign-off) /
 - 候補: (a) 64 / (b) 文脈 (兄弟 operand) の幅、無ければ 64
 - 現行 Go 実装の挙動: 定数は兄弟 field の幅で fit-check される ("value 256 does not fit in bit<8> (in arithmetic context)")。定数同士は fold (`300 > 200` → true)。`-1 == 255` は `ErrNotImplemented` (int32 immediate)。
 - 推奨: (b) を narrow (fit check) に使い、演算自体は D-015 により 64 bit。
-- 状態: 提案中
+- 状態: 承認済 (2026-10-01、一括)
 - 反映先: `Eval/Where.lean` `sideWidths`, `evalArith` `.const`, vectors `where-literal-fit-ttl`, `where-const-fold`
 
 ## D-010: alternation の評価規則が §13 に無い
@@ -97,27 +97,27 @@ Status values: 提案中 (implemented as recommended, awaiting sign-off) /
 - 論点: §13.7 は [E-Pred-Cmp] のみ。`in [v…]`, `in @set`, `range` の規則が無い。
 - 現行 Go 実装の挙動: `in [80, 8000..8080]` は `ErrNotImplemented` (range)、`in @set` は SetSlots が要る。
 - 推奨: `in [v…]` = いずれかの v と `==`。range は `lo ≤ n ≤ hi`。`in @set` は Phase 2 では illTyped。
-- 状態: 提案中
+- 状態: 承認済 (2026-10-01、一括)
 - 反映先: `Eval/Layer.lean` `evalPred`, vectors `pred-in-list`, `pred-in-range` (goStatus notImplemented)
 
 ## D-012: Phase 2 のプロトコル簡略化
 - 論点: vocab を手で写す際に落としたもの。
 - 内容: ipv6 拡張ヘッダ (next_header ∈ {0,44,60} で Go は `ipv6_ext_h` を walk し cursor が進む)、ipv4 options の kind 検査 (Go は EOL/NOP/RR/RA 以外を reject; Lean は IHL 分を読み飛ばすだけ)、tcp options の walk (Go は MSS/WS/SACK/TS の length 検査で reject しうる)、srv6/gre/gtp/geneve/qinq/esp/icmp。vector はこれらを踏まないパケットだけを使う (ipv4 options は NOP、tcp options は NOP)。
-- 状態: 提案中 (Phase 5 で解消)
+- 状態: 承認済 (2026-10-01、一括) (Phase 5 で解消)
 - 反映先: `Vocab.lean`
 
 ## D-013: 同一 proto が複数ある chain での無ラベル参照
 - 論点: `eth/ipv4/ipv4/tcp where ipv4.ttl` や `eth/mpls{1,8}/… where mpls.label` の解決。
 - 現行 Go 実装の挙動: 静的重複は "protocol is ambiguous (2 instances); qualify with an @label"。量化 layer は D-003 の `ErrNotImplemented`。
 - 推奨: 静的に 2 個以上になりうる (重複、または上限 ≠ 1 の quantifier) なら illTyped。ラベルは `Λ ⊕ {ℓ ↦ inst}` どおり最後の束縛が勝つ。
-- 状態: 提案中
+- 状態: 承認済 (2026-10-01、一括)
 - 反映先: `Eval/Where.lean` `staticCount`, `resolveRef`, vectors `where-ambiguous`, `where-label-inner-outer`
 
 ## D-014: shift 量
 - 論点: `<<` / `>>` の RHS が 64 以上のとき。
 - 現行 Go 実装の挙動: BPF の masked shift (64 bit ALU なので `& 63`)。`ipv4.ttl << 65 == 0` → false (= `<< 1`)。
 - 推奨: `b % 64`。
-- 状態: 提案中
+- 状態: 承認済 (2026-10-01、一括)
 - 反映先: `Eval/Where.lean` `binop`
 
 ## D-015: 算術の wrap 幅 (§13.9 と実装の食い違い)
@@ -131,7 +131,7 @@ Status values: 提案中 (implemented as recommended, awaiting sign-off) /
 - 論点: ipv4 `ihl < 5`, tcp `data_offset < 5`。
 - 現行 Go 実装の挙動: reject (`ihl=4` → reject、`tcp_boundary_test.go:75` n<5 reject)。
 - 推奨: reject (Fail-Pred 系統)。
-- 状態: 提案中
+- 状態: 承認済 (2026-10-01、一括)
 - 反映先: `Eval/Layer.lean` `extract` (`if l < spec.fixedLen then throw .pred`), vectors `chain-ipv4-ihl4`, `chain-tcp-dataoffset4`
 
 ## D-017: self-validation (parser-block reject) の失敗種別
@@ -146,7 +146,7 @@ Status values: 提案中 (implemented as recommended, awaiting sign-off) /
 - 論点: `mpls@m{1,8}` は反復ごとに `m` を束縛し直す。
 - 現行 Go 実装の挙動: `where m.label` は `ErrNotImplemented`。
 - 推奨: `Λ ⊕` どおり最後の束縛が勝つ (D-013)。
-- 状態: 提案中
+- 状態: 承認済 (2026-10-01、一括)
 - 反映先: `Eval/Layer.lean` `extract` (labels に cons), `Eval/Where.lean` `resolveRef`
 
 ## D-019: `and` / `or` の評価順
@@ -184,7 +184,7 @@ Status values: 提案中 (implemented as recommended, awaiting sign-off) /
 - `and_comm_where` / `or_comm_where`: 両辺が Stop しない (reject / illTyped を投げない) という仮定付きで成立 (`Laws.lean`)。仮定なしでは D-019 の short-circuit により非対称。
 - `bracket_eq_where` (`…/p[f op v]` ≡ `…/p where p.f op v`): **未証明**。両者は `cmpValue` / `narrowInt` を共有するので p が chain 内で一意・非量化・root 以外なら一致するはずだが、`extract` の Fail-Pred と `evalWhere` の false を `eval` の reject に結び付ける証明が長く、Phase 4 では見送った。vector `pred-cmp` / `where-cmp-ops` などで個別に一致を確認している。
 - `prefix_independence` / `filterMinPrefix`: 未着手。
-- 状態: 提案中
+- 状態: 承認済 (2026-10-01、一括)
 - 反映先: `Laws.lean`
 
 ## Go 側への issue 候補 (この作業では変更しない)
