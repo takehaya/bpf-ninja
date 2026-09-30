@@ -168,6 +168,15 @@ Status values: 提案中 (implemented as recommended, awaiting sign-off) /
 - 状態: 提案中
 - 反映先: `Eval/Where.lean` `binop` `.mod`, vector `where-mod-by-zero-dynamic`
 
+## D-023: 証明できなかった等式 (Phase 4)
+- `opt_eq_range` (`L?` ≡ `L{0,1}`): **不成立**。D-005 のとおり `?` は bounds 失敗で ✗、`{0,1}` は k=0 で ✓。`Laws.lean: opt_ne_range01` に反例を証明として残した。仕様の穴か意図した非対称かはユーザー判断 (Range-Step の停止条件から bounds を外せば一致する)。
+- `alt_comm`: **不成立** (先勝ち)。`Laws.lean: alt_order_matters`。
+- `and_comm_where` / `or_comm_where`: 両辺が Stop しない (reject / illTyped を投げない) という仮定付きで成立 (`Laws.lean`)。仮定なしでは D-019 の short-circuit により非対称。
+- `bracket_eq_where` (`…/p[f op v]` ≡ `…/p where p.f op v`): **未証明**。両者は `cmpValue` / `narrowInt` を共有するので p が chain 内で一意・非量化・root 以外なら一致するはずだが、`extract` の Fail-Pred と `evalWhere` の false を `eval` の reject に結び付ける証明が長く、Phase 4 では見送った。vector `pred-cmp` / `where-cmp-ops` などで個別に一致を確認している。
+- `prefix_independence` / `filterMinPrefix`: 未着手。
+- 状態: 提案中
+- 反映先: `Laws.lean`
+
 ## Go 側への issue 候補 (この作業では変更しない)
 
 1. bpf_loop 経路の quantifier predicate が初回反復にしか適用されない (D-001)。

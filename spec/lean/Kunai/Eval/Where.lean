@@ -115,7 +115,7 @@ def evalArith (c : Ctx) (st : State) (ctx : Nat) : Arith → Except Stop (Option
 /-- Strict evaluation of both operands (E-W-And/Or premises), but a dynamic
 `reject` in the second operand is short-circuited when the first already
 decides (D-019); type errors are never hidden. -/
-private def logic (a : Bool) (decided : Bool) (r : Except Stop Bool) (k : Bool → Bool) : Except Stop Bool :=
+def logic (a : Bool) (decided : Bool) (r : Except Stop Bool) (k : Bool → Bool) : Except Stop Bool :=
   match r with
   | .ok b => pure (k b)
   | .error .reject => if a == decided then pure (k a) else throw .reject
