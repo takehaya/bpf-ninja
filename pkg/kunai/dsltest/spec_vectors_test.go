@@ -50,14 +50,16 @@ func TestSpecVectors(t *testing.T) {
 			}
 			_, err := kunai.Compile(v.Expr, caps())
 			switch {
-			case v.Expected.Kind == "illTyped":
-				if err == nil {
-					t.Fatalf("Compile(%q) succeeded; Lean: illTyped %q", v.Expr, v.Expected.Reason)
-				}
-				return
 			case v.GoStatus == "notImplemented":
 				if !errors.Is(err, codegen.ErrNotImplemented) {
 					t.Fatalf("Compile(%q) = %v; want ErrNotImplemented (%s)", v.Expr, err, v.Note)
+				}
+				return
+			case v.Expected.Kind == "illTyped":
+				// The resolver must reject it; an ErrNotImplemented is an
+				// implementation limit and belongs under goStatus notImplemented.
+				if err == nil || errors.Is(err, codegen.ErrNotImplemented) {
+					t.Fatalf("Compile(%q) = %v; Lean: illTyped %q", v.Expr, err, v.Expected.Reason)
 				}
 				return
 			case err != nil:

@@ -13,8 +13,8 @@ structure Host where
   vlanInMetadata : Bool := false
   /-- Symbolic action names the host declares (`LangCaps.Action`); empty on entry hosts. -/
   actions : List (String × Nat) := []
-  /-- Observed action value (fexit only). -/
-  action : Option Nat := none
+  /-- Observed action value (fexit only; ignored when `actions` is empty). -/
+  action : Nat := 0
   deriving Repr, BEq, DecidableEq
 
 inductive HostKind
@@ -41,7 +41,7 @@ def cgroupSkbActions : List (String × Nat) := [("SK_DROP", 0), ("SK_PASS", 1)]
 def netfilterActions : List (String × Nat) := [("NF_DROP", 0), ("NF_ACCEPT", 1)]
 
 /-- Static host parameters; `action` is supplied per vector. -/
-def HostKind.host (k : HostKind) (action : Option Nat := none) : Host :=
+def HostKind.host (k : HostKind) (action : Nat := 0) : Host :=
   match k with
   | .xdp_entry => {}
   | .xdp_exit => { actions := xdpActions, action }

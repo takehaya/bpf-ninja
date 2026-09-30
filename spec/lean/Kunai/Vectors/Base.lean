@@ -29,7 +29,7 @@ structure Vector where
   id : String
   ast : Filter
   host : HostKind := .xdp_entry
-  action : Option Nat := none
+  action : Nat := 0
   packet : Packet := Pkt.ethIPv4TCP
   expected : Result
   goStatus : GoStatus := .ok
@@ -53,7 +53,7 @@ def Result.toJson : Result → Json
 open Lean in
 def Vector.toJson (v : Vector) : Json :=
   Json.mkObj [("id", v.id), ("expr", v.ast.text), ("ast", v.ast.toJson),
-    ("host", v.host.text), ("action", match v.action with | some a => (a : Json) | none => Json.null),
+    ("host", v.host.text), ("action", (v.action : Json)),
     ("packet", hexOfBytes v.packet), ("expected", v.expected.toJson),
     ("goStatus", v.goStatus.text), ("note", v.note)]
 

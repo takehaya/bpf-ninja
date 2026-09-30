@@ -171,3 +171,4 @@ __pycache__/
 
 # Lean build artifacts (spec/lean)
 /spec/lean/.lake/
+/pkg/kunai/dsltest/testdata/*.tmp

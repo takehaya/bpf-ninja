@@ -85,7 +85,7 @@ Status values: 提案中 (implemented as recommended, awaiting sign-off) /
 - 現行 Go 実装の挙動: 定数は兄弟 field の幅で fit-check される ("value 256 does not fit in bit<8> (in arithmetic context)")。定数同士は fold (`300 > 200` → true)。`-1 == 255` は `ErrNotImplemented` (int32 immediate)。
 - 推奨: (b) を narrow (fit check) に使い、演算自体は D-015 により 64 bit。
 - 状態: 承認済 (2026-10-01、一括)
-- 反映先: `Eval/Where.lean` `sideWidths`, `evalArith` `.const`, vectors `where-literal-fit-ttl`, `where-const-fold`
+- 反映先: `Eval/Where.lean` `sideWidths`, `evalArith` `.const`, vectors `typ-literal-fit`, `typ-literal-fit-arith`, `where-const-fold`
 
 ## D-010: alternation の評価規則が §13 に無い
 - 論点: §13 には `alt(L̄)` の E-rule が無い (T-LayerAlt のみ)。

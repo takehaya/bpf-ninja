@@ -58,7 +58,7 @@ vector synPredIn := {
 vector synPredInset := {
   id := "syn-pred-inset",
   ast := { layers := [P "eth", .proto { name := "ipv4", preds := [.inSet (f "src") "blocklist"] }] },
-  expected := .illTyped "unsupported: in @set" }
+  expected := .illTyped "unsupported: in @set", goStatus := .notImplemented }
 
 vector synPredValues := {
   id := "syn-pred-values",

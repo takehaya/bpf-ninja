@@ -124,11 +124,11 @@ vector actionEntry := {
   id := "where-action-entry-host", ast := W (.action "XDP_DROP"),
   expected := .illTyped "`action ==` is not available on this host" }
 vector actionHit := {
-  id := "host-xdp-exit-action-hit", host := .xdp_exit, action := some 1, ast := W (.action "XDP_DROP"), expected := .accept [] }
+  id := "host-xdp-exit-action-hit", host := .xdp_exit, action := 1, ast := W (.action "XDP_DROP"), expected := .accept [] }
 vector actionMiss := {
-  id := "host-xdp-exit-action-miss", host := .xdp_exit, action := some 2, ast := W (.action "XDP_DROP"), expected := .reject }
+  id := "host-xdp-exit-action-miss", host := .xdp_exit, action := 2, ast := W (.action "XDP_DROP"), expected := .reject }
 vector actionUnknown := {
-  id := "host-xdp-exit-action-unknown", host := .xdp_exit, action := some 1, ast := W (.action "TC_ACT_OK"),
+  id := "host-xdp-exit-action-unknown", host := .xdp_exit, action := 1, ast := W (.action "TC_ACT_OK"),
   expected := .illTyped "unknown action TC_ACT_OK" }
 
 -- Bracket predicates (§13.7, D-011) -------------------------------------------
@@ -206,7 +206,7 @@ vector typPredIdent := {
   id := "typ-pred-ident", ast := tcpPred (.cmp (f "flags") .eq (.ident "SYN")),
   expected := .illTyped "unsupported: identifier literal SYN" }
 vector typInSet := {
-  id := "typ-pred-inset", ast := tcpPred (.inSet (f "dport") "ports"), expected := .illTyped "unsupported: in @set" }
+  id := "typ-pred-inset", ast := tcpPred (.inSet (f "dport") "ports"), expected := .illTyped "unsupported: in @set", goStatus := .notImplemented }
 vector typAny := {
   id := "typ-any-unsupported", ast := W (.any (cmp dport .eq (k 1))), expected := .illTyped "unsupported: aux stacks (Phase 5)" }
 vector typExists := {

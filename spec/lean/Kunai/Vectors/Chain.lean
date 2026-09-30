@@ -163,10 +163,17 @@ vector typOptionalAfterSkip := {
   note := "if ipv4 is skipped, tcp sits under eth with no constant; Go compiles this and then fails the verifier (issue 4)" }
 vector typOptionalNoCheck := {
   id := "typ-optional-nocheck", ast := { layers := [P "eth", P "ipv4", P "udp", P "vxlan", Pq "eth" .opt, P "ipv4", P "tcp"] },
-  packet := vxlanPkt, expected := .illTyped "optional eth with no-check dispatch cannot detect absence" }
+  packet := vxlanPkt, expected := .illTyped "optional eth with no-check dispatch cannot detect absence", goStatus := .notImplemented }
+vector quantSelfEdgeStar := {
+  id := "quant-self-edge-star", ast := { layers := [P "eth", P "mpls", Pq "mpls" .star, P "ipv4", P "tcp"] },
+  packet := mpls3, expected := .accept [], note := "NO_CHECK self-edge with CHAIN_END: the s bit detects absence" }
+vector quantSelfEdgeOpt := {
+  id := "quant-self-edge-opt", ast := { layers := [P "eth", P "mpls", Pq "mpls" .opt, P "ipv4", P "tcp"] },
+  packet := mpls1, expected := .accept [], goStatus := .notImplemented,
+  note := "skips on the s bit of the first label; Go has no peek path for NO_CHECK" }
 vector quantFirstOptional := {
   id := "quant-first-optional", ast := { layers := [Pq "vlan" .opt, P "ipv4"] },
-  expected := .illTyped "the first layer cannot be optional" }
+  expected := .illTyped "the first layer cannot be optional", goStatus := .notImplemented }
 
 -- Alternation (D-004, D-010) -----------------------------------------------
 
@@ -185,18 +192,18 @@ vector altFirstPredFails := {
   note := "[E-Layer-Alt-First]: the first alternative commits; Go fails to load (duplicate symbol)" }
 vector altRoot := {
   id := "alt-root-illtyped", ast := { layers := [.alt [{ name := "ipv4" }, { name := "ipv6" }], P "tcp"] },
-  packet := l3Pkt, expected := .illTyped "alternation cannot be the first layer" }
+  packet := l3Pkt, expected := .illTyped "alternation cannot be the first layer", goStatus := .notImplemented }
 vector altNoCheck := {
   id := "alt-nocheck-illtyped",
   ast := { layers := [P "eth", P "mpls", .alt [{ name := "eth" }, { name := "ipv4" }]] }, packet := mpls1,
-  expected := .illTyped "alternative eth needs a field dispatch under mpls" }
+  expected := .illTyped "alternative eth needs a field dispatch under mpls", goStatus := .notImplemented }
 
 -- Host (D-008) -----------------------------------------------------------------
 
 vector hostTcVlanMandatory := {
   id := "host-tc-vlan-mandatory", host := .tc_entry,
   ast := { layers := [P "eth", P "vlan", P "ipv4", P "tcp"] }, packet := vlanPkt,
-  expected := .illTyped "vlan is in metadata on this host; the layer must be optional" }
+  expected := .illTyped "vlan is in metadata on this host; the layer must be optional", goStatus := .notImplemented }
 vector hostTcVlanOpt := {
   id := "host-tc-vlan-optional", host := .tc_entry, ast := { layers := vlanOpt }, expected := .accept [] }
 vector hostL3Root := {
@@ -213,7 +220,7 @@ def chainVectors : List Vector := [
   quantOptPresent, quantOptAbsent, quantOptPredHolds, quantOptPredFails, quantOptBounds, quantRangeMidTrunc, quantRange01Bounds,
   quantStarBounds, quantMplsRange, quantMplsPlus, quantMplsStarZero, quantMplsMinUnmet, quantChainEnd,
   quantGreedyOverrun, quantGreedyUnreachable, quantPredMidFail, quantPredMidFailStatic, quantPredFirstFail,
-  quantPredAllHold, quantSelfValidSkip, quantSelfValidBroken, typOptionalAfterSkip, typOptionalNoCheck, quantFirstOptional,
+  quantPredAllHold, quantSelfValidSkip, quantSelfValidBroken, typOptionalAfterSkip, typOptionalNoCheck, quantSelfEdgeStar, quantSelfEdgeOpt, quantFirstOptional,
   altFirst, altSecond, altNone, altFirstPredFails, altRoot, altNoCheck,
   hostTcVlanMandatory, hostTcVlanOpt, hostL3Root, hostL3EthRoot]
 

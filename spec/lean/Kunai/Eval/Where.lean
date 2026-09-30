@@ -142,8 +142,7 @@ def evalWhere (c : Ctx) (st : State) : Where → Except Stop Bool
   | .action a => do
     if c.H.actions.isEmpty then throw (.illTyped "`action ==` is not available on this host")
     let some (_, v) := c.H.actions.find? (·.1 == a) | throw (.illTyped s!"unknown action {a}")
-    let some actual := c.H.action | throw (.illTyped "no observed action supplied")
-    pure (actual == v)
+    pure (c.H.action == v)
   | .any _ => throw (.illTyped "unsupported: aux stacks (Phase 5)")
   | .all _ => throw (.illTyped "unsupported: aux stacks (Phase 5)")
   | .boolLit b => pure b

@@ -57,9 +57,11 @@ where
 private def checkEdge (V : Vocab) (child parent : String) (alt optional : Bool) : Except String Unit :=
   match V.edge? child parent, V.proto? child with
   | some ⟨_, _, .field ..⟩, _ => pure ()
-  | some ⟨_, _, .noCheck⟩, _ =>
+  | some ⟨_, _, .noCheck⟩, spec? =>
+    -- A NO_CHECK self-edge with a CHAIN_END rule (mpls `s == 1`) does detect absence.
+    let selfEnd := child == parent && (spec?.bind (·.chainEnd)).isSome
     if alt then throw s!"alternative {child} needs a field dispatch under {parent}"
-    else if optional then throw s!"optional {child} with no-check dispatch cannot detect absence"
+    else if optional && !selfEnd then throw s!"optional {child} with no-check dispatch cannot detect absence"
     else pure ()
   | none, some spec =>
     if alt then throw s!"alternative {child} needs a field dispatch under {parent}"
@@ -119,7 +121,6 @@ private def checkWhere (c : Ctx) : Where → Except String Unit
   | .action a => do
     if c.H.actions.isEmpty then throw "`action ==` is not available on this host"
     if (c.H.actions.find? (·.1 == a)).isNone then throw s!"unknown action {a}"
-    if c.H.action.isNone then throw "no observed action supplied"
   | .any _ | .all _ => throw "unsupported: aux stacks (Phase 5)"
   | .boolLit _ => pure ()
   | .fieldExists _ => throw "unsupported: aux exists (Phase 5)"

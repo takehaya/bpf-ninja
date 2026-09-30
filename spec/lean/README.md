@@ -66,7 +66,9 @@ means every vector agrees with the evaluator.
 The Go side runs `TestSpecASTRoundTrip` (printer → parser → JSON) and
 `TestSpecVectors` (compile expectations; with root, `Runner.Match` on
 `xdp_entry` vectors). Other hosts are compile-only until the runner accepts
-`Capabilities`.
+`Capabilities`, and only the verdict is compared: the `captures` ranges in
+the JSON are not checked against the BPF program yet (`Runner.Match` returns
+the verdict only).
 
 ## DECISIONS.md
 

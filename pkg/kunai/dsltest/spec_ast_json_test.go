@@ -22,7 +22,7 @@ type specVector struct {
 	Expr     string          `json:"expr"`
 	AST      json.RawMessage `json:"ast"`
 	Host     string          `json:"host"`
-	Action   *int64          `json:"action"`
+	Action   int64           `json:"action"`
 	Packet   string          `json:"packet"` // hex
 	Expected specResult      `json:"expected"`
 	GoStatus string          `json:"goStatus"` // ok | notImplemented | mismatch
