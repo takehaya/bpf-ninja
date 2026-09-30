@@ -1031,7 +1031,7 @@ proto(p, ?, π̄) は最大 1 回:
 [E-Quant-Range-Step {n,m}]                    ; q = {n,m},  n ≤ m
 σ_0 = σ
 ∀ i ∈ [0, k).  ⟨L(1), σ_i⟩ ⇓_P σ_{i+1} ✓
-i = k で extract 失敗 (parent_dispatch miss / bounds 越え) または k = m で停止
+i = k で parent_dispatch(p, σ_k, P) = miss または k = m で停止
 n ≤ k ≤ m
 ─────────────────────────────────────────────
 ⟨L({n,m}), σ⟩ ⇓_P σ_k ✓
@@ -1043,11 +1043,20 @@ n ≤ k ≤ m
 ⟨L({n,m}), σ⟩ ⇓_P ✗
 
 
+[E-Quant-Range-Fail-Extract {n,m}]
+∃ i < m.  ∀ j < i. ⟨L(1), σ_j⟩ ⇓_P σ_{j+1} ✓
+parent_dispatch(p, σ_i, P) = ok   かつ   ⟨L(1), σ_i⟩ ⇓_P ✗      ; bounds 越え、または predicate 失敗
+─────────────────────────────────────────────
+⟨L({n,m}), σ⟩ ⇓_P ✗
+
+
 [E-Quant-Plus]    ≡  L({1, m_chain})            ; m_chain は chain bound 由来の上限
 [E-Quant-Star]    ≡  L({0, m_chain})
 ```
 
 ここで `m_chain` は、vocab + chain 全体形の静的 chain 解析から導かれる iteration 上限です。実装は `pkg/kunai/codegen/` の `chainCap` 計算で同等です。
+
+反復を止めるのは parent_dispatch の miss だけです。dispatch が一致したうえで L(1) が失敗した場合 (bounds 越え、bracket predicate の不成立) は、`?` の case B と同じく skip にはならず、layer 全体が ✗ になります (`spec/lean/DECISIONS.md` D-001, D-005)。したがって `L?` ≡ `L{0,1}` です (`spec/lean/Kunai/Laws.lean: opt_eq_range`)。
 
 実装対応としては、`+` / `*` / `{n,m>4}` は `pkg/kunai/codegen/loop_*.go` で `bpf_loop` + bpf2bpf callback として emit し、`{n,m≤4}` は静的に unroll します。
 
@@ -1059,10 +1068,11 @@ n ≤ k ≤ m
 captures : list of (offset_start, offset_end, view)
   view ⊆ P[offset_start..offset_end]
 
-eval-captures(c̄, σ, P) = [eval-cap(c, σ, P) | c ∈ c̄, gate(c, σ) = true]
+eval-captures(c̄, σ, P) = [eval-cap(c, σ, P) | c ∈ c̄]          ; ∀ c ∈ c̄. gate(c, σ) = true のときのみ
+                                                                 ; いずれかの gate が false なら ⟨F, P⟩ ⇓ reject
 
 gate(cap(spec, ε),  σ)         = true
-gate(cap(spec, w),  σ)         = ⟨w, σ⟩ ⇓_P true             ; per-capture where 句
+gate(cap(spec, w),  σ)         = ⟨w, σ⟩ ⇓_P true             ; per-capture where 句。filter 全体の where と AND 合成 (D-021)
 
 eval-cap(cap(all, _), σ, P)             = (0, |P|, P)
 eval-cap(cap(headers, _), σ, P)         = (0, π_now, P[..π_now])              ; π_now = chain 終了時の cursor
@@ -1147,12 +1157,15 @@ op_c(n, v_n) = b                             ───────────�
 
 [E-A-BinOp]
 ⟨e₁, σ⟩ ⇓_P n₁    ⟨e₂, σ⟩ ⇓_P n₂
-op_a ∈ {+, −, *}: r = (n₁ op_a n₂) mod 2^max(width(e₁), width(e₂))
+op_a ∈ {+, −, *, &, |, ^}: r = (n₁ op_a n₂) mod 2^64                      ; Int<64> で計算 (D-015)
 op_a = /:  r = n₂ ≠ 0 ? ⌊n₁ / n₂⌋ : 0                                    ; 動的 0 → 0 (BPF 既定)
-op_a = %:  r = n₂ ≠ 0 ? n₁ mod n₂ : 0
+op_a = %:  r = n₂ ≠ 0 ? n₁ mod n₂ : n₁                                   ; 動的 0 → 被除数 (BPF 既定、D-022)
+op_a ∈ {<<, >>}: shift 量は n₂ mod 64                                    ; BPF の masked shift (D-014)
 ──────────────────────────────────────────────
 ⟨binop(op_a, e₁, e₂), σ⟩ ⇓_P r
 ```
+
+算術は operand の宣言幅にかかわらず Int<64> で行い、`max(width(e₁), width(e₂))` は literal narrow (§7.3 の fit check) にだけ使います。`ipv4.ttl + 1` は ttl = 255 のとき 256 であり、0 には巻き戻りません。64 bit を超える field を含む算術は `spec/lean` の対象外です。
 
 ## 14. p4lite parser machine の意味論
 

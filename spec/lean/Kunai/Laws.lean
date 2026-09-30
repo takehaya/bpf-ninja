@@ -52,13 +52,18 @@ theorem or_comm_where (c : Ctx) (st : State) (a b : Where) (x y : Bool)
     evalWhere c st (.or a b) = evalWhere c st (.or b a) := by
   simp [evalWhere, ha, hb, bind, Except.bind, logic, Bool.or_comm]
 
-/-- `?` is NOT `{0,1}`: on a truncated vlan header `?` rejects (D-005) while
-`{0,1}` stops with k = 0 and accepts. Vectors `quant-opt-bounds-reject` /
-`quant-range01-bounds-skip`. -/
-theorem opt_ne_range01 :
-    eval {} vocab { layers := [P "eth", Pq "vlan" .opt] } (vlanPkt.take 16)
-      ≠ eval {} vocab { layers := [P "eth", Pq "vlan" (.range 0 (some 1))] } (vlanPkt.take 16) := by
-  decide
+/-- `proto?` ≡ `proto{0,1}` (D-005): both skip on a dispatch miss only. -/
+theorem opt_eq_range (c : Ctx) (st : State) (p : ProtoLayer) :
+    evalProtoLayer c st { p with quant := .opt }
+      = evalProtoLayer c st { p with quant := .range 0 (some 1) } := by
+  unfold evalProtoLayer
+  cases c.V.proto? p.name with
+  | none => rfl
+  | some spec =>
+    simp only [quantBounds, extract_quant, bind, Except.bind, chainCap, Option.getD, iterate]
+    cases h : extract c st p with
+    | ok st' => simp; rfl
+    | error e => cases e <;> simp <;> rfl
 
 /-- Alternation order matters when dispatch overlaps (D-004): the first
 matching alternative commits. Vector `alt-first-pred-fails`. -/

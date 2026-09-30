@@ -106,14 +106,17 @@ vector quantOptPredFails := {
 vector quantOptBounds := {
   id := "quant-opt-bounds-reject", ast := { layers := [P "eth", Pq "vlan" .opt] },
   packet := vlanPkt.take 16, expected := .reject, note := "D-005: case B needs a dispatch miss; bounds failure is ✗" }
+vector quantRangeMidTrunc := {
+  id := "quant-range-truncated-mid-chain", ast := { layers := [P "eth", Pq "mpls" (.range 1 (some 8))] },
+  packet := (eth 0x8847 ++ mpls 5 0 ++ mpls 6 0).take 20, expected := .reject, goStatus := .mismatch,
+  note := "D-005: the 2nd label is cut after 2 bytes ⇒ ✗; Go's bpf_loop path stops at k = 1 and accepts" }
 vector quantRange01Bounds := {
   id := "quant-range01-bounds-skip", ast := { layers := [P "eth", Pq "vlan" (.range 0 (some 1))] },
-  packet := vlanPkt.take 16, expected := .accept [], goStatus := .notImplemented,
-  note := "D-005: [E-Quant-Range-Step] stops on bounds with k = 0 ≥ n; so `?` ≢ `{0,1}`" }
+  packet := vlanPkt.take 16, expected := .reject, goStatus := .notImplemented,
+  note := "D-005: bounds failure is ✗ for every quantifier; `?` ≡ `{0,1}` (Laws.lean: opt_eq_range)" }
 vector quantStarBounds := {
   id := "quant-star-bounds-skip", ast := { layers := [P "eth", Pq "vlan" .star] },
-  packet := vlanPkt.take 16, expected := .accept [], goStatus := .mismatch,
-  note := "D-005: same as {0,1} in the spec; Go rejects" }
+  packet := vlanPkt.take 16, expected := .reject, note := "D-005: dispatch matched, header truncated ⇒ ✗" }
 vector quantMplsRange := {
   id := "quant-mpls-range", ast := { layers := mplsRange 1 (some 8) }, packet := mpls3, expected := .accept [] }
 vector quantMplsPlus := {
@@ -192,7 +195,7 @@ def chainVectors : List Vector := [
   chainAccept, chainUDPMiss, chainIPv6Miss, chainTruncIPv4, chainTruncTCP, chainExact, chainIHL6, chainIHL6Trunc,
   chainIHL4, chainVersion5, chainDoff8, chainDoff4, chainDoff8Trunc, chainVlan, chainVlanMissing, chainIPv6,
   chainVxlan, chainVxlanAlt, chainMplsSingle, chainMplsSingleOverrun,
-  quantOptPresent, quantOptAbsent, quantOptPredHolds, quantOptPredFails, quantOptBounds, quantRange01Bounds,
+  quantOptPresent, quantOptAbsent, quantOptPredHolds, quantOptPredFails, quantOptBounds, quantRangeMidTrunc, quantRange01Bounds,
   quantStarBounds, quantMplsRange, quantMplsPlus, quantMplsStarZero, quantMplsMinUnmet, quantChainEnd,
   quantGreedyOverrun, quantGreedyUnreachable, quantPredMidFail, quantPredMidFailStatic, quantPredFirstFail,
   quantPredAllHold, quantFirstOptional,

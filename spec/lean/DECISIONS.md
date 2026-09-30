@@ -13,7 +13,7 @@ Status values: 提案中 (implemented as recommended, awaiting sign-off) /
 - 候補: (a) 停止して k 反復で成功 / (b) ✗
 - 現行 Go 実装の挙動: **経路により異なる。** 静的 unroll (`{1,3}`, m ≤ 4) は (b): `eth/mpls[label == 5]{1,3}/ipv4/tcp` にラベル 5,6,7 → reject。bpf_loop 経路 (`{1,8}`, `+`) は predicate を **初回反復にしか適用しない**: 同じパケットで `{1,8}` → accept、`[label == 6]{1,8}` → reject、`[label == 7]{1,8}` → reject。(a) でも (b) でもない。`codegen/chain.go:83-133` vs `codegen/bpfloop.go`。
 - 推奨: (b)。predicate は「その layer のすべてのインスタンスが満たすべき条件」と読むのが `vlan[tci==100]?` の既存挙動 (`vlan_tagflex_test.go:42-54`) と整合する。bpf_loop 経路は issue として報告する (Go の挙動は変えない)。
-- 状態: 提案中
+- 状態: 承認済 (2026-10-01)
 - 反映先: `Eval/Layer.lean` `iterate` (`.error .pred => throw e`), vectors `quant-pred-mid-fail` (goStatus mismatch), `quant-pred-mid-fail-static`, `quant-pred-first-fail`, `quant-pred-all-hold`
 
 ## D-002: greedy / バックトラック無し
@@ -40,13 +40,13 @@ Status values: 提案中 (implemented as recommended, awaiting sign-off) /
 - 状態: 提案中
 - 反映先: `Eval/Layer.lean` `evalAlt`, vectors `alt-first`, `alt-second`, `alt-none`, `alt-first-pred-fails`
 
-## D-005: `?` の skip 条件
-- 論点: [E-Quant-Optional] case B は dispatch miss だけを skip にしている。dispatch は一致するが bounds で L(1) が失敗する場合は skip か ✗ か。
-- 候補: (a) skip (`{0,1}` と同じ) / (b) ✗
-- 現行 Go 実装の挙動: (b)。`eth/vlan?` に eth + vlan 2 バイトのパケット → reject (`codegen.go:1040-1062` `emitPeekedIterZero` は親の dispatch field だけを peek する)。`{0,1}` は **`ErrNotImplemented`** ("quantifier {0,1} with min < 1 ... needs bpf_loop chain codegen") で比較できない。`vlan*` は同じパケットで reject。
-- 推奨: (b) を仕様に明記する。結果として `?` ≢ `{0,1}` (Range-Step は bounds で k=0 停止 ✓)。`Laws.lean` の `opt_eq_range` は不成立で、反例を vector に残す。あるいは Range-Step の停止条件から bounds を外して両者を揃える案もある (要判断)。
-- 状態: 提案中
-- 反映先: `Eval/Layer.lean` `evalProtoLayer` `.opt`, vectors `quant-opt-bounds-reject`, `quant-range01-bounds-skip` (goStatus notImplemented)
+## D-005: `?` の skip 条件と Range-Step の停止条件
+- 論点: [E-Quant-Optional] case B は dispatch miss だけを skip にしている。dispatch は一致するが bounds で L(1) が失敗する場合は skip か ✗ か。また [E-Quant-Range-Step] は bounds 失敗を停止条件に含めているため、文字どおりだと `?` ≢ `{0,1}` になる。
+- 候補: (1) 仕様書どおり非対称のまま (`?` は ✗、`{0,1}` / `*` は k=0 ✓) / (2) Range-Step の停止条件から bounds を外し、すべての quantifier で「skip / 停止は dispatch miss のみ、bounds 失敗は ✗」に揃える
+- 現行 Go 実装の挙動: **経路により異なる。** `eth/vlan?` も `eth/vlan*` も eth + vlan 2 バイトのパケットを reject (`codegen.go:1040-1062` は親の dispatch field だけを peek し、以後の bounded load 失敗は `dslReject`)。一方 bpf_loop 経路は反復途中の bounds 失敗を「そこで停止」と扱う: `eth/mpls{1,8}` に 2 個目のラベルが 2 バイトで切れたパケット → accept (k=1)。`{0,1}` は `ErrNotImplemented`。案 1 でも案 2 でも Go のどちらかの経路とは食い違う。
+- 推奨: (2)。dispatch が一致しているのにヘッダが壊れているパケットを accept するのは説明できず、Go の実測とも一致し、`?` ≡ `{0,1}` が定理になる。
+- 状態: 承認済 (2026-10-01、案 2)
+- 反映先: `Eval/Layer.lean` `iterate` (bounds は `throw`), `Laws.lean: opt_eq_range`, vectors `quant-opt-bounds-reject`, `quant-range01-bounds-skip` (goStatus notImplemented), `quant-star-bounds-skip`, `quant-range-truncated-mid-chain` (goStatus mismatch), `dsl-types.md` §13.5
 
 ## D-006: 切り詰めパケットと where
 - 論点: chain は通ったが where の field が packet 末尾を越える場合。
@@ -115,8 +115,8 @@ Status values: 提案中 (implemented as recommended, awaiting sign-off) /
 ## D-015: 算術の wrap 幅 (§13.9 と実装の食い違い)
 - 論点: §13.9 は `+ − *` を `mod 2^max(width(e₁), width(e₂))` で wrap すると書く。
 - 現行 Go 実装の挙動: **wrap しない。** 64 bit レジスタで計算し定数だけ narrow する。`eth/ipv4/tcp where ipv4.ttl + 1 > 200` は ttl=255 で **true** (§13.9 では (255+1) mod 256 = 0 で false)。`ipv4.ttl + 1 == 0` → false。
-- 推奨: 実装に合わせて §13.9 を「Int<64> で計算、定数は文脈幅で fit-check」に改める。BPF の自然な挙動で、per-node wrap をコード生成する利点が無い。64 bit を超える field (ipv6 src/dst) を含む算術は illTyped (Go も eq/ne の比較しか対応しない)。
-- 状態: 提案中 (Lean は推奨案で実装済)
+- 推奨: 実装に合わせて §13.9 を「Int<64> で計算、定数は文脈幅で fit-check」に改める。BPF の自然な挙動で、per-node wrap をコード生成する利点が無い。64 bit を超える field (ipv6 src/dst) を含む算術は Lean では未対応 (Go はコンパイルする; vector `typ-arith-128` は mismatch)。
+- 状態: 承認済 (2026-10-01)
 - 反映先: `Eval/Where.lean` `binop` (64 bit), vectors `where-arith-no-wrap`, `where-arith-ops`
 
 ## D-016: 宣言ヘッダ長が固定部より短い
@@ -158,18 +158,18 @@ Status values: 提案中 (implemented as recommended, awaiting sign-off) /
 - 候補: (a) gate (句を省く) / (b) AND (false なら reject)
 - 現行 Go 実装の挙動: (b)。`eth/ipv4/tcp capture all where tcp.dport == 1` は dport=80 のパケットを reject。
 - 推奨: (b)。grammar / usage と実装が一致しており、§13.6 の `eval-captures` を「すべての gate が true のときのみ accept」に直す。
-- 状態: 提案中
+- 状態: 承認済 (2026-10-01)
 - 反映先: `Eval/Where.lean` `evalCapture` (`throw .reject`), vectors `cap-where-false-rejects`, `cap-where-true`, `syn-capture`
 
 ## D-022: `%` の 0 除算
 - 論点: §13.9 は `%` の n₂ = 0 で 0 を返すとする。
 - 現行 Go 実装の挙動: BPF の `MOD` 定義どおり **被除数を返す** (`tcp.dport % ipv4.ttl == 0` は ttl=0, dport=80 で false)。`/` の 0 除算は 0 (一致)。
 - 推奨: BPF に合わせ `n₁` を返す。§13.9 を修正。
-- 状態: 提案中
+- 状態: 承認済 (2026-10-01)
 - 反映先: `Eval/Where.lean` `binop` `.mod`, vector `where-mod-by-zero-dynamic`
 
 ## D-023: 証明できなかった等式 (Phase 4)
-- `opt_eq_range` (`L?` ≡ `L{0,1}`): **不成立**。D-005 のとおり `?` は bounds 失敗で ✗、`{0,1}` は k=0 で ✓。`Laws.lean: opt_ne_range01` に反例を証明として残した。仕様の穴か意図した非対称かはユーザー判断 (Range-Step の停止条件から bounds を外せば一致する)。
+- `opt_eq_range` (`L?` ≡ `L{0,1}`): D-005 案 2 の採用後に **成立** (`Laws.lean: opt_eq_range`)。案 1 のままなら不成立だった。
 - `alt_comm`: **不成立** (先勝ち)。`Laws.lean: alt_order_matters`。
 - `and_comm_where` / `or_comm_where`: 両辺が Stop しない (reject / illTyped を投げない) という仮定付きで成立 (`Laws.lean`)。仮定なしでは D-019 の short-circuit により非対称。
 - `bracket_eq_where` (`…/p[f op v]` ≡ `…/p where p.f op v`): **未証明**。両者は `cmpValue` / `narrowInt` を共有するので p が chain 内で一意・非量化・root 以外なら一致するはずだが、`extract` の Fail-Pred と `evalWhere` の false を `eval` の reject に結び付ける証明が長く、Phase 4 では見送った。vector `pred-cmp` / `where-cmp-ops` などで個別に一致を確認している。
@@ -186,3 +186,4 @@ Status values: 提案中 (implemented as recommended, awaiting sign-off) /
 5. `{0,1}` が `ErrNotImplemented` (D-005)。
 6. 到達不能 chain `mpls{1,8}/mpls` に警告が無い (D-002)。
 7. `dsl-types.md` §13.9 の wrap 記述 (D-015) と `%` の 0 除算 (D-022) が実装と異なる、§11/T-LayerAlt の uniform-size 制約が grammar/usage と矛盾 (D-004)、§13.6 の capture gate が grammar/usage と矛盾 (D-021)。
+8. bpf_loop 経路が反復途中の bounds 失敗を「停止」と扱い、peek 経路 (`?`, `*`) の reject と一致しない (D-005)。

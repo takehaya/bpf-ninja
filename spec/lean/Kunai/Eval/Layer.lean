@@ -105,14 +105,14 @@ def quantBounds : Quant → Nat × Option Nat
   | .range n m => (n, m)
 
 /-- E-Quant-Range-Step / E-Quant-Range-Fail: greedy, no backtracking (D-002).
-A predicate failure fails the layer (D-001). -/
+Only a dispatch miss stops the iteration; a bounds failure (D-005) or a
+predicate failure (D-001) fails the layer, exactly as for `?`. -/
 def iterate (c : Ctx) (p : ProtoLayer) (n : Nat) : Nat → Nat → State → Except LayerFail State
   | 0, k, st => if k < n then throw (.illTyped "iteration bound below the quantifier minimum") else pure st
   | fuel + 1, k, st =>
     match extract c st p with
     | .ok st' => iterate c p n fuel (k + 1) st'
     | .error .dispMiss => if k < n then throw .dispMiss else pure st
-    | .error .bounds => if k < n then throw .bounds else pure st
     | .error e => throw e
 
 /-- `L(q)` for one protocol layer. -/
@@ -124,7 +124,7 @@ def evalProtoLayer (c : Ctx) (st : State) (p : ProtoLayer) : Except LayerFail St
   match p.quant with
   | .one => extract c st p
   | .opt =>
-    -- [E-Quant-Optional]: case B skips on dispatch miss only (D-005)
+    -- [E-Quant-Optional]: case B skips on dispatch miss only; `?` ≡ `{0,1}` (Laws.lean: opt_eq_range)
     match extract c st p with
     | .error .dispMiss => pure st
     | r => r
