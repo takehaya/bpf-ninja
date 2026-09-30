@@ -1,2 +1,4 @@
--- Kunai DSL formal specification. Modules are added per phase.
-import Kunai.Smoke
+import Kunai.Syntax
+import Kunai.Print
+import Kunai.Json
+import Kunai.Vectors
