@@ -1,4 +1,8 @@
 import Kunai.Syntax
 import Kunai.Print
 import Kunai.Json
+import Kunai.Packet
+import Kunai.Vocab
+import Kunai.Host
+import Kunai.Eval
 import Kunai.Vectors

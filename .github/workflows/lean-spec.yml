@@ -1,0 +1,34 @@
+---
+name: Lean spec
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "spec/lean/**"
+      - "pkg/kunai/dsltest/testdata/spec_vectors.json"
+      - ".github/workflows/lean-spec.yml"
+  pull_request:
+    paths:
+      - "spec/lean/**"
+      - "pkg/kunai/dsltest/testdata/spec_vectors.json"
+      - ".github/workflows/lean-spec.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  lean:
+    name: build and check vector drift
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: leanprover/lean-action@v1
+        with:
+          lake-package-directory: spec/lean
+          use-github-cache: true
+          test: false
+      - name: Regenerate vectors and compare
+        run: |
+          spec/lean/.lake/build/bin/gen > /tmp/spec_vectors.json
+          diff -u pkg/kunai/dsltest/testdata/spec_vectors.json /tmp/spec_vectors.json

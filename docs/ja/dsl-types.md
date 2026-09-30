@@ -1283,7 +1283,7 @@ Compile が成功した filter F は任意の packet P に対して spec の意�
 
 ### 15.3 Proof sketch (各 sub-claim の方針)
 
-完全な機械証明は、Coq / Agda などの形式メタ言語の選定も含めて将来課題ですが、人間レベルの sketch を共有しておきます。
+§11 と §13 は Lean 4 で実行可能な全域関数として `spec/lean/` に書き直してあります (§15.4)。Codegen soundness と verifier 通過性の機械証明は将来課題で、以下は人間レベルの sketch です。
 
 #### Type soundness (resolver、構造帰納)
 
@@ -1345,7 +1345,7 @@ BPF verifier の通過性は kernel に委ねられますが、kunai は次の�
 | Type soundness の §12 rule 全網羅 (D8 一元化) | ✅ 完了 (resolve/typing.go + typing_errors.go に集約、ordered cmp on Bool/network literal の resolver-side defense in depth も完備) |
 | Codegen soundness の lemma-style 証明 | 未着手 (sketch のみ) |
 | Verifier acceptance の formal property | 未着手 (経験的検証のみ) |
-| Mechanical proof framework 選定 | 未着手 |
+| Mechanical proof framework 選定 | ✅ Lean 4 (`spec/lean/`)。§11 抽象構文と §13 意味論を全域関数 `Kunai.eval` として実装し、golden vector を `pkg/kunai/dsltest/testdata/spec_vectors.json` に書き出して実機 BPF と照合する。対象は構文論と意味論のみで、BPF 命令列・verifier は対象外。§13 が未定義だった挙動と実装との食い違いは `spec/lean/DECISIONS.md` に記録 |
 
 #### 既知の verifier corner case
 

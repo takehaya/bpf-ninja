@@ -18,10 +18,21 @@ const specVectorsPath = "testdata/spec_vectors.json"
 // specVector mirrors spec/lean/Kunai/Vectors.lean (Vector.toJson).
 // Fields the Go side does not use are left out; encoding/json skips them.
 type specVector struct {
-	ID   string          `json:"id"`
-	Expr string          `json:"expr"`
-	AST  json.RawMessage `json:"ast"`
-	Note string          `json:"note"`
+	ID       string          `json:"id"`
+	Expr     string          `json:"expr"`
+	AST      json.RawMessage `json:"ast"`
+	Host     string          `json:"host"`
+	Action   *int64          `json:"action"`
+	Packet   string          `json:"packet"` // hex
+	Expected specResult      `json:"expected"`
+	GoStatus string          `json:"goStatus"` // ok | notImplemented | mismatch
+	Note     string          `json:"note"`
+}
+
+type specResult struct {
+	Kind     string     `json:"kind"` // accept | reject | illTyped
+	Captures [][2]int64 `json:"captures"`
+	Reason   string     `json:"reason"`
 }
 
 func loadSpecVectors(t testing.TB) []specVector {
