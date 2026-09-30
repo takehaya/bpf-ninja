@@ -40,8 +40,10 @@ func genParserMachine(layer *ir.LayerInstance, layerIdx int, all []*ir.LayerInst
 		layerIdx:     layerIdx,
 		layer:        layer,
 		all:          all,
-		labelNS:      fmt.Sprintf("dsl_pm_%s_%d", spec.Name, layerIdx),
-		doneLabel:    fmt.Sprintf("dsl_pm_%s_%d_done", spec.Name, layerIdx),
+		// (name, Index) is unique across the program; layerIdx alone
+		// collides when alternatives of one group share a protocol.
+		labelNS:      fmt.Sprintf("dsl_pm_%s_%d_%d", spec.Name, layerIdx, layer.Index),
+		doneLabel:    fmt.Sprintf("dsl_pm_%s_%d_%d_done", spec.Name, layerIdx, layer.Index),
 		absorbed:     map[int]bool{},
 		r4IsRange:    precedingLayersLeaveR4Range(all, layerIdx),
 		queried:      qo,

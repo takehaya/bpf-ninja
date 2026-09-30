@@ -936,7 +936,7 @@ func genStaticLayer(layer *ir.LayerInstance, index int, all []*ir.LayerInstance,
 	}
 	insns = append(insns, emitAdvance(hs))
 	if len(layer.Spec.FlagTriggers) > 0 {
-		flags, err := emitFlagTriggers(hs, layer.Spec.FlagsByteOffset, layer.Spec.FlagTriggers, dslReject)
+		flags, err := emitFlagTriggers(fmt.Sprintf("dsl_l%d_%d", index, layer.Index), hs, layer.Spec.FlagsByteOffset, layer.Spec.FlagTriggers, dslReject)
 		if err != nil {
 			return nil, err
 		}
@@ -961,14 +961,14 @@ func genStaticLayer(layer *ir.LayerInstance, index int, all []*ir.LayerInstance,
 // reorders the advance / triggers sequence in genStaticLayer, this
 // helper must change to match (or split into a "read flag byte" /
 // "emit triggers" pair).
-func emitFlagTriggers(fixedHs, flagsByteOff int, triggers []vocab.FlagTrigger, failLabel string) (asm.Instructions, error) {
+func emitFlagTriggers(ns string, fixedHs, flagsByteOff int, triggers []vocab.FlagTrigger, failLabel string) (asm.Instructions, error) {
 	insns := asm.Instructions{
 		asm.Mov.Reg(asm.R5, asm.R0),
 		asm.Add.Reg(asm.R5, offsetBase),
 		asm.LoadMem(asm.R5, asm.R5, int16(-fixedHs+flagsByteOff), asm.Byte),
 	}
 	for i, tr := range triggers {
-		skipLabel := fmt.Sprintf("dsl_flag_skip_%d_%s", i, tr.Name)
+		skipLabel := fmt.Sprintf("%s_flag_skip_%d_%s", ns, i, tr.Name)
 		insns = append(insns,
 			asm.Mov.Reg(asm.R3, asm.R5),
 			asm.And.Imm(asm.R3, int32(tr.BitMask)),
@@ -1007,14 +1007,8 @@ func variableTailSkipFromHeaderLength(vs *vocab.HeaderLength) variableTailSkip {
 // rejected because there is no way to detect absence when the vocab
 // says "don't look".
 func genOptionalLayer(layer *ir.LayerInstance, index int, all []*ir.LayerInstance, pc *predCtx) (asm.Instructions, error) {
-	if index == 0 {
-		return nil, fmt.Errorf("%w: the first layer cannot be optional", ErrNotImplemented)
-	}
-	if layer.Dispatch == nil {
-		return nil, fmt.Errorf("%w: optional layer %q has no dispatch to peek", ErrNotImplemented, layer.Spec.Name)
-	}
-	if layer.Dispatch.Type == vocab.DispatchNoCheck {
-		return nil, fmt.Errorf("%w: optional %q with no-check dispatch cannot detect absence", ErrNotImplemented, layer.Spec.Name)
+	if err := optionalLayerGuard(layer, index); err != nil {
+		return nil, err
 	}
 
 	skipLabel := fmt.Sprintf("dsl_skip_%d", index)
@@ -1024,6 +1018,31 @@ func genOptionalLayer(layer *ir.LayerInstance, index int, all []*ir.LayerInstanc
 	}
 	body = append(body, landingNoop(skipLabel))
 	return body, nil
+}
+
+// optionalLayerGuard lists the shapes the peek-and-skip path cannot
+// express. It is shared by `?` and `{0,m}` (chain.go). Variable-length
+// and parser-machine layers are refused because the peek path runs
+// neither the parser machine nor the layer-entry slot store, so a
+// following layer would read an unset slot (verifier rejection at best).
+// Self-validating layers have no parent field to peek for absence.
+func optionalLayerGuard(layer *ir.LayerInstance, index int) error {
+	if index == 0 {
+		return fmt.Errorf("%w: the first layer cannot be optional", ErrNotImplemented)
+	}
+	if layer.Dispatch == nil {
+		return fmt.Errorf("%w: optional layer %q has no dispatch to peek", ErrNotImplemented, layer.Spec.Name)
+	}
+	switch layer.Dispatch.Type {
+	case vocab.DispatchNoCheck:
+		return fmt.Errorf("%w: optional %q with no-check dispatch cannot detect absence", ErrNotImplemented, layer.Spec.Name)
+	case vocab.DispatchSelfValidating:
+		return fmt.Errorf("%w: optional %q is self-validating under its parent; there is no dispatch field to peek for absence", ErrNotImplemented, layer.Spec.Name)
+	}
+	if layer.Spec.HasVariableLayout() || layer.Spec.ParseStateMachine != nil {
+		return fmt.Errorf("%w: optional %q has a variable-length header or parser machine; the skip path cannot run its parser", ErrNotImplemented, layer.Spec.Name)
+	}
+	return nil
 }
 
 // emitPeekedIterZero emits a single-layer block with a peek-style

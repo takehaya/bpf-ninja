@@ -104,7 +104,10 @@ const bpfLoopChainCap = 32
 // pre-loop check accepts a single-header stack as a valid natural end.
 // Under-run is bounded for the bounded `{n,m>staticChainCap}` shape too:
 // the pre-loop check rejects a single-header stack when RangeMin > 1, and
-// the post-loop RangeMin floor rejects a multi-header under-run. The one
+// the post-loop RangeMin floor rejects a multi-header under-run. Every
+// iteration runs the layer's bounds check and bracket predicates; a
+// failure there rejects the packet rather than ending the chain (D-001 /
+// D-005 in spec/lean/DECISIONS.md). The one
 // remaining gap is over-run — a stack longer than RangeMax is not rejected
 // on the s-bit (the iteration cap stops consuming but the last header's
 // s-bit is never required), so it leans on the next layer's
@@ -139,7 +142,7 @@ func genBpfLoopChain(layer *ir.LayerInstance, index int, all []*ir.LayerInstance
 	}
 
 	cbSym := fmt.Sprintf("dsl_chain_cb_%d", index)
-	callback, err := genBpfLoopCallback(layer.Spec, selfConst, hs, cbSym)
+	callback, err := genBpfLoopCallback(layer, selfConst, hs, cbSym, pc)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -203,20 +206,30 @@ func genBpfLoopChain(layer *ir.LayerInstance, index int, all []*ir.LayerInstance
 	)
 
 	if rangeMin > 1 {
-		// R0 now holds the iteration count the loop ran (0..loopIter).
-		// Combined with the pre-loop iteration already at index 0 the
-		// total must meet RangeMin.
+		// R0 now holds bpf_loop's return value: the number of callback
+		// iterations that ran, including the one that broke. A chain-end
+		// protocol (MPLS) breaks after consuming its header, so R0 headers
+		// were consumed in the loop; a self-dispatch protocol (VLAN) breaks
+		// before consuming, so only R0-1 were. Add the pre-loop iteration
+		// and require RangeMin.
 		threshold := int32(rangeMin - 1)
+		if layer.Spec.ChainEnd == nil {
+			threshold = int32(rangeMin)
+		}
 		mainInsns = append(mainInsns, asm.JLT.Imm(asm.R0, threshold, dslReject))
 	}
 
 	// Reload the registers the helper clobbered. ctx.offset holds the
 	// advanced offsetBase; scratch_start/end are unchanged but must be
 	// re-loaded because the verifier dropped type info during the call.
+	// A callback reject stores -1 into ctx.offset (see genBpfLoopCallback),
+	// which the unsigned compare against ScratchBufSize catches; it also
+	// gives the verifier an upper bound on offsetBase.
 	mainInsns = append(mainInsns,
 		asm.LoadMem(offsetBase, asm.R10, bpfLoopCtxOffsetSlot, asm.DWord),
 		asm.LoadMem(asm.R0, asm.R10, bpfLoopCtxScratchStartSlot, asm.DWord),
 		asm.LoadMem(asm.R1, asm.R10, bpfLoopCtxScratchEndSlot, asm.DWord),
+		asm.JGT.Imm(offsetBase, ScratchBufSize, dslReject),
 	)
 
 	if optionalChain || layer.Spec.ChainEnd != nil {
@@ -237,8 +250,18 @@ func genBpfLoopChain(layer *ir.LayerInstance, index int, all []*ir.LayerInstance
 // per iteration. The first instruction carries the callback's Symbol
 // (so main's PseudoFunc load resolves) plus btf.Func metadata
 // (required for bpf2bpf).
-func genBpfLoopCallback(spec *vocab.ProtocolSpec, selfConst *vocab.DispatchConst, hs int, cbSym string) (asm.Instructions, error) {
+//
+// Only a self-dispatch miss ends the chain (break). Once the dispatch has
+// admitted the next header, a truncated header or a failed bracket
+// predicate rejects the packet: the callback stores -1 into ctx.offset and
+// breaks, and the main program's post-loop offset check turns that into
+// dslReject (same protocol as the parser-machine callback). This matches
+// the static unroll path in chain.go, which runs bounds and predicates on
+// every iteration.
+func genBpfLoopCallback(layer *ir.LayerInstance, selfConst *vocab.DispatchConst, hs int, cbSym string, pc *predCtx) (asm.Instructions, error) {
+	spec := layer.Spec
 	breakLabel := cbSym + "_break"
+	rejectLabel := cbSym + "_reject"
 
 	first := asm.LoadMem(asm.R3, asm.R2, bpfLoopCbCtxOffsetField, asm.DWord).WithSymbol(cbSym)
 	first = btf.WithFuncMetadata(first, chainCallbackFunc(cbSym))
@@ -247,12 +270,8 @@ func genBpfLoopCallback(spec *vocab.ProtocolSpec, selfConst *vocab.DispatchConst
 		first,
 		asm.LoadMem(asm.R4, asm.R2, bpfLoopCbCtxScratchStartField, asm.DWord),
 		asm.LoadMem(asm.R5, asm.R2, bpfLoopCbCtxScratchEndField, asm.DWord),
-
-		// Bounds: scratch_start + offset + hs > scratch_end → break
-		asm.Mov.Reg(asm.R0, asm.R4),
-		asm.Add.Reg(asm.R0, asm.R3),
-		asm.Add.Imm(asm.R0, int32(hs)),
-		asm.JGT.Reg(asm.R0, asm.R5, breakLabel),
+		// Pin ctx.offset so pointer arithmetic below stays bounded.
+		asm.JGT.Imm(asm.R3, int32(ScratchBufSize), rejectLabel),
 	}
 
 	if selfConst.Type == vocab.DispatchField {
@@ -262,8 +281,24 @@ func genBpfLoopCallback(spec *vocab.ProtocolSpec, selfConst *vocab.DispatchConst
 		}
 		insns = append(insns, peek...)
 	}
-	// DispatchNoCheck contributes zero instructions — bounds alone
-	// decides whether to continue.
+	// DispatchNoCheck contributes zero instructions: every iteration is
+	// admitted until the chain-end signal (or the iteration cap).
+
+	// Bounds: the admitted header must be present in full, else reject.
+	insns = append(insns,
+		asm.Mov.Reg(asm.R0, asm.R4),
+		asm.Add.Reg(asm.R0, asm.R3),
+		asm.Add.Imm(asm.R0, int32(hs)),
+		asm.JGT.Reg(asm.R0, asm.R5, rejectLabel),
+	)
+
+	if len(layer.Predicates) > 0 {
+		preds, err := callbackPredicates(layer, rejectLabel, pc)
+		if err != nil {
+			return nil, err
+		}
+		insns = append(insns, preds...)
+	}
 
 	insns = append(insns,
 		asm.Add.Imm(asm.R3, int32(hs)),
@@ -277,12 +312,55 @@ func genBpfLoopCallback(spec *vocab.ProtocolSpec, selfConst *vocab.DispatchConst
 	insns = append(insns,
 		asm.Mov.Imm(asm.R0, 0), // continue
 		asm.Return(),
+		asm.Mov.Imm(asm.R0, -1).WithSymbol(rejectLabel), // reject: poison ctx.offset, then break
+		asm.StoreMem(asm.R2, bpfLoopCbCtxOffsetField, asm.R0, asm.DWord),
 		asm.Mov.Imm(asm.R0, 1).WithSymbol(breakLabel), // break
 		asm.Return(),
 	)
 	if err := assertCallbackComplexity(insns, cbSym); err != nil {
 		return nil, err
 	}
+	return insns, nil
+}
+
+// callbackPredicates replays the layer's bracket predicates inside the
+// bpf_loop callback. The predicate emitters assume the main frame's
+// register layout (R0 = scratch start, R1 = scratch end, R4 = layer
+// offset, R2/R3/R5 scratch), so the callback frame (R2 = ctx, R3 =
+// offset, R4/R5 = window) is swapped in and out around them, with ctx
+// parked in the callee-local R6. Their dslReject jumps are retargeted at
+// the callback's reject label. Predicates that spill to the main stack
+// (`in @set` slots) are not replayable from the callback frame.
+func callbackPredicates(layer *ir.LayerInstance, rejectLabel string, pc *predCtx) (asm.Instructions, error) {
+	var replayPC *predCtx
+	if pc != nil {
+		replayPC = &predCtx{sets: pc.sets}
+	}
+	preds, err := emitPredicates(layer.Predicates, replayPC)
+	if err != nil {
+		return nil, err
+	}
+	for i := range preds {
+		if preds[i].Dst == asm.R10 || preds[i].Src == asm.R10 {
+			return nil, fmt.Errorf("%w: bracket predicate on chained %q uses the main stack (e.g. `in @set`); not replayable inside the bpf_loop callback", ErrNotImplemented, layer.Spec.Name)
+		}
+		if preds[i].Reference() == dslReject {
+			preds[i] = preds[i].WithReference(rejectLabel)
+		}
+	}
+	insns := asm.Instructions{
+		asm.Mov.Reg(asm.R6, asm.R2),
+		asm.Mov.Reg(asm.R0, asm.R4),
+		asm.Mov.Reg(asm.R1, asm.R5),
+		asm.Mov.Reg(asm.R4, asm.R3),
+	}
+	insns = append(insns, preds...)
+	insns = append(insns,
+		asm.Mov.Reg(asm.R2, asm.R6),
+		asm.LoadMem(asm.R3, asm.R2, bpfLoopCbCtxOffsetField, asm.DWord),
+		asm.LoadMem(asm.R4, asm.R2, bpfLoopCbCtxScratchStartField, asm.DWord),
+		asm.LoadMem(asm.R5, asm.R2, bpfLoopCbCtxScratchEndField, asm.DWord),
+	)
 	return insns, nil
 }
 

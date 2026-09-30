@@ -189,12 +189,16 @@ Status values: 提案中 (implemented as recommended, awaiting sign-off) /
 
 ## Go 側への issue 候補 (この作業では変更しない)
 
-1. bpf_loop 経路の quantifier predicate が初回反復にしか適用されない (D-001)。
-2. `README.ja.md:18` の例 `eth/mpls{1,8}/ipv4/tcp where ipv4.total_length > 100` がコンパイルできない (D-003)。
-3. 同一 proto を含む alternation `(ipv4[…]|ipv4[…])` がロード時 "duplicate symbol" (D-004)。
-4. `eth/ipv4?/tcp` が verifier で落ちる (D-017)。
-5. `{0,1}` が `ErrNotImplemented` (D-005)。
-6. 到達不能 chain `mpls{1,8}/mpls` に警告が無い (D-002)。
-   (各 issue の本文は `issues/` に置く。公開リポジトリには含めない。)
-7. `dsl-types.md` §13.9 の wrap 記述 (D-015) と `%` の 0 除算 (D-022) が実装と異なる、§11/T-LayerAlt の uniform-size 制約が grammar/usage と矛盾 (D-004)、§13.6 の capture gate が grammar/usage と矛盾 (D-021)。
-8. bpf_loop 経路が反復途中の bounds 失敗を「停止」と扱い、peek 経路 (`?`, `*`) の reject と一致しない (D-005)。
+`fix/kunai-spec-conformance` で対応済みのものは ✅、残りは `issues/` に本文がある。
+
+1. ✅ bpf_loop 経路の quantifier predicate が初回反復にしか適用されない (D-001) — callback が毎反復 predicate を replay。
+2. ✅ `README.ja.md:18` の例がコンパイルできない (D-003) — 例を差し替え。量化 layer 以降の where field 参照自体は未実装のまま。
+3. ✅ 同一 proto を含む alternation がロード時 "duplicate symbol" (D-004) — ラベル名に layer Index を含めた。
+4. ✅ `eth/ipv4?/tcp` が verifier で落ちる (D-017) — 可変長 / self-validating な optional layer は `ErrNotImplemented` に。skip の実装 (D-017 案 c) は未着手。
+5. ✅ `{0,1}` が `ErrNotImplemented` (D-005) — `{0,m}` (m ≤ 4) は `?` の peek 経路 + 静的 unroll。
+6. ✅ 到達不能 chain `mpls{1,8}/mpls` に警告が無い (D-002) — resolver が警告を出す。
+7. ✅ `dsl-types.md` の記述 (D-004, D-015, D-021, D-022) — `feat/lean-spec` で修正済。
+8. ✅ bpf_loop 経路が反復途中の bounds 失敗を「停止」と扱う (D-005) — dispatch 一致後の bounds 失敗は reject。
+9. bpf_loop 経路の RangeMin 判定が VLAN (self-dispatch で停止) で 1 つずれていた — 8 と同時に修正済 ✅。
+
+残: 量化 layer 以降の where field 参照 (D-003 の実装)、self-validating / 可変長 layer の `?` (D-017 案 c の実装)。

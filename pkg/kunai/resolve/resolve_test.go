@@ -118,6 +118,29 @@ func TestChainRootWarning(t *testing.T) {
 	}
 }
 
+func TestUnreachableChainWarning(t *testing.T) {
+	for _, expr := range []string{"eth/mpls{1,8}/mpls/ipv4/tcp", "eth/vlan+/vlan/ipv4/tcp", "eth/mpls*/mpls"} {
+		p := resolveOK(t, expr, nil)
+		found := false
+		for _, w := range p.Warnings {
+			if strings.Contains(w, "never backtrack") {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("%s: expected unreachable-chain warning, got %v", expr, p.Warnings)
+		}
+	}
+	for _, expr := range []string{"eth/mpls{1,8}/ipv4/tcp", "eth/vlan+/ipv4/tcp", "eth/vlan/vlan/ipv4/tcp"} {
+		p := resolveOK(t, expr, nil)
+		for _, w := range p.Warnings {
+			if strings.Contains(w, "never backtrack") {
+				t.Errorf("%s: unexpected warning %q", expr, w)
+			}
+		}
+	}
+}
+
 func TestResolveIPv6Chain(t *testing.T) {
 	p := resolveOK(t, "eth/ipv6/tcp", nil)
 	// tcp is dual-declared; under ipv6 we expect TCP_IPV6_NEXT_HEADER==6.
