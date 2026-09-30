@@ -1,0 +1,9 @@
+name = "kunai"
+defaultTargets = ["Kunai", "gen"]
+
+[[lean_lib]]
+name = "Kunai"
+
+[[lean_exe]]
+name = "gen"
+root = "Main"
