@@ -96,7 +96,13 @@ func genParserMachine(layer *ir.LayerInstance, layerIdx int, all []*ir.LayerInst
 	// (now free) bpf_loop offset slot, reload the entry offset from the
 	// layer-entry slot, re-establish its bounds, and restore R4 after.
 	if len(layer.Predicates) > 0 && pmHasWriteBack(spec) {
-		preds, err := emitPredicates(layer.Predicates, pc)
+		// Post-walk, the push counts are final: let a static index into a
+		// push-counted stack be guarded like a where clause does.
+		pcPost := &predCtx{stackCount: func(f *ir.FieldRef) (int16, bool) { return qo.stackCountSlot(f.Layer, f.Aux.OutParam) }}
+		if pc != nil {
+			pcPost.sets, pcPost.out = pc.sets, pc.out
+		}
+		preds, err := emitPredicates(layer.Predicates, pcPost)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -361,8 +367,8 @@ func (c *pmCtx) emitStateBody(state *vocab.ParseState, stateIdx int, isEntry boo
 		// time with a clear diagnostic rather than emit bytecode the
 		// verifier will refuse. One option per filter still works on the
 		// normal path.
-		if c.isLengthByteOptionLoop(stateIdx) && len(c.queried[c.layer]) >= 2 && c.accPlan.atomsFor(c.layer) == nil {
-			return nil, nil, fmt.Errorf("%w: querying %d distinct options of %q in one filter is supported only as a pure AND of `<option>.<field> == <const>` equalities (at most %d, where multiple fields on one option each count); rewrite the clause to that form — no `!=`, no non-option term mixed in — or query a single option", ErrNotImplemented, len(c.queried[c.layer]), c.spec.Name, accMaxAtoms)
+		if options := c.queried.optionDemand(c.layer); c.isLengthByteOptionLoop(stateIdx) && len(options) >= 2 && c.accPlan.atomsFor(c.layer) == nil {
+			return nil, nil, fmt.Errorf("%w: querying %d distinct options of %q in one filter is supported only as a pure AND of `<option>.<field> == <const>` equalities (at most %d, where multiple fields on one option each count); rewrite the clause to that form — no `!=`, no non-option term mixed in — or query a single option", ErrNotImplemented, len(options), c.spec.Name, accMaxAtoms)
 		}
 		// Accumulator queries lower to one combined bpf_loop: the per-
 		// iteration cursor and accumulator forgets (emitAccPrelude /
@@ -434,6 +440,11 @@ func (c *pmCtx) emitStateBody(state *vocab.ParseState, stateIdx int, isEntry boo
 			insns = append(insns, tail...)
 			c.r4IsRange = true
 		}
+		// Count the push once the whole entry (fixed part and tail) is in
+		// bounds — the same point the self-loop callback counts at.
+		insns = append(insns, c.emitStackPushCount(ex, asm.R3,
+			func(slot int16) asm.Instruction { return asm.LoadMem(asm.R3, asm.R10, slot, asm.DWord) },
+			func(slot int16) asm.Instruction { return asm.StoreMem(asm.R10, slot, asm.R3, asm.DWord) })...)
 	}
 
 	// Counter ops precede advances, matching the supported source order. fixedHs is

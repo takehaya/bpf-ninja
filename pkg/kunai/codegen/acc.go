@@ -87,7 +87,7 @@ func buildAccPlan(where *ir.Condition, qo queriedOptions) *accPlan {
 	if len(seen) < 2 {
 		return nil
 	}
-	for _, layout := range qo[plan.layer] {
+	for _, layout := range qo.optionDemand(plan.layer) {
 		if !seen[layout] {
 			return nil
 		}

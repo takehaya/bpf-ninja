@@ -57,8 +57,9 @@ func (c *pmCtx) emitSelfLoop(state *vocab.ParseState, stateIdx int) (asm.Instruc
 //     options) need iter-level kind dispatch and have no static
 //     bulk-skip equivalent.
 //  2. No options for this layer are queried by the program. When
-//     `len(c.queried[c.layer]) == 0`, no per-option position
-//     recording is needed, so the bpf_loop's only job is to advance
+//     `len(c.queried.optionDemand(c.layer)) == 0` (push count slots do
+//     not count: nothing records a position for them), no per-option
+//     position recording is needed, so the bpf_loop's only job is to advance
 //     R4 past the trailer — which the bulk-advance path does in
 //     ~10 insns instead of dragging in a bpf_loop subprogram and
 //     its 32-iter verifier exploration.
@@ -83,7 +84,7 @@ func (c *pmCtx) canFallbackToBulkAdvance(stateIdx int) bool {
 	if !hasCounter {
 		return false
 	}
-	return len(c.queried[c.layer]) == 0
+	return len(c.queried.optionDemand(c.layer)) == 0
 }
 
 // emitCounterDrivenBulkAdvance lowers a counter-driven multi-state
@@ -384,10 +385,25 @@ func (c *pmCtx) emitAccPrelude(sel *vocab.SelectOp, atoms []accAtom, breakLabel 
 // the sentinel to detect "option not present in this packet". Empty
 // when no where / capture clause queries this layer's options.
 func (c *pmCtx) emitDynamicAuxSentinelInit() (asm.Instructions, error) {
-	// Accumulator path: a single slot holds the result bitmask, ORed into
-	// over the walk, so it must start at 0 (not the option-absent sentinel
-	// -1, whose bits would falsely satisfy the mask check).
+	// Option slots start at the absent sentinel; stack count slots at 0.
+	var options, counts []int
+	for i, layout := range c.queried[c.layer] {
+		if isStackCountLayout(c.layer, layout) {
+			counts = append(counts, i)
+		} else {
+			options = append(options, i)
+		}
+	}
+	zero, err := emitFillStackSlots(0, len(counts), func(i int) (int16, error) {
+		return c.queried.slotForLayer(c.layer, counts[i]+1)
+	})
+	if err != nil {
+		return nil, err
+	}
 	if atoms := c.accPlan.atomsFor(c.layer); atoms != nil {
+		// Accumulator path: a single slot holds the result bitmask, ORed
+		// into over the walk, so it must start at 0 (not the option-absent
+		// sentinel -1, whose bits would falsely satisfy the mask check).
 		// Zero the single accumulator slot. This runs inline in the entry
 		// state where R0 is the scratch-start pointer, so use R3 as the
 		// scratch register (the same one emitFillStackSlots uses); a Mov
@@ -396,15 +412,33 @@ func (c *pmCtx) emitDynamicAuxSentinelInit() (asm.Instructions, error) {
 		if err != nil {
 			return nil, err
 		}
-		return asm.Instructions{
+		return append(asm.Instructions{
 			asm.Mov.Imm(asm.R3, 0),
 			asm.StoreMem(asm.R10, slot, asm.R3, asm.DWord),
-		}, nil
+		}, zero...), nil
 	}
-	demand := c.queried[c.layer]
-	return emitFillStackSlots(dynamicAuxSentinel, len(demand), func(i int) (int16, error) {
-		return c.queried.slotForLayer(c.layer, i+1)
+	insns, err := emitFillStackSlots(dynamicAuxSentinel, len(options), func(i int) (int16, error) {
+		return c.queried.slotForLayer(c.layer, options[i]+1)
 	})
+	if err != nil {
+		return nil, err
+	}
+	return append(insns, zero...), nil
+}
+
+// emitStackPushCount bumps the push count slot of an `extract(stack.next)`
+// when a where / capture clause demanded it. `load` reads the slot into
+// `reg` and `store` writes it back: the inline body addresses the slot
+// from R10, the self-loop callback through the ctx pointer R2.
+func (c *pmCtx) emitStackPushCount(ex vocab.ExtractOp, reg asm.Register, load func(int16) asm.Instruction, store func(int16) asm.Instruction) asm.Instructions {
+	if !ex.IsStackPush {
+		return nil
+	}
+	slot, ok := c.queried.stackCountSlot(c.layer, ex.OutParam)
+	if !ok {
+		return nil
+	}
+	return asm.Instructions{load(slot), asm.Add.Imm(reg, 1), store(slot)}
 }
 
 // emitFillStackSlots writes initImm into n stack slots resolved by
@@ -456,7 +490,7 @@ func (c *pmCtx) emitDynamicAuxSlotPrelude(sel *vocab.SelectOp, breakLabel string
 		return c.emitAccPrelude(sel, atoms, breakLabel)
 	}
 	demand := c.queried[c.layer]
-	if len(demand) == 0 {
+	if len(c.queried.optionDemand(c.layer)) == 0 {
 		return nil, nil
 	}
 	// R1 = the dispatch kind at scratchStart(R4) + cursor(R3); R3/R4/R5
@@ -471,6 +505,9 @@ func (c *pmCtx) emitDynamicAuxSlotPrelude(sel *vocab.SelectOp, breakLabel string
 	insns := boundedScalarLoad(asm.R1, asm.R4, asm.R3, asm.R5, shape.loadSize, breakLabel)
 	insns = append(insns, shape.normalize(asm.R1)...)
 	for idx, layout := range demand {
+		if isStackCountLayout(c.layer, layout) {
+			continue // counted at the push, not dispatched on a kind byte
+		}
 		slot, err := c.queried.slotForLayer(c.layer, idx+1)
 		if err != nil {
 			return nil, err
@@ -1204,6 +1241,15 @@ func (c *pmCtx) emitSelfLoopCallback(state *vocab.ParseState, stateIdx int, cbSy
 			}
 			insns = append(insns, tail...)
 		}
+		// Count the push once the whole entry (fixed part and tail) is in
+		// bounds, so a truncated last entry is not counted as present.
+		insns = append(insns, c.emitStackPushCount(ex, asm.R0,
+			func(slot int16) asm.Instruction {
+				return asm.LoadMem(asm.R0, asm.R2, mainStackOffsetFromCb(slot), asm.DWord)
+			},
+			func(slot int16) asm.Instruction {
+				return asm.StoreMem(asm.R2, mainStackOffsetFromCb(slot), asm.R0, asm.DWord)
+			})...)
 	}
 
 	transInsns, err := c.emitCallbackTransition(state.Trans, stateIdx, breakLabel, continueLabel, stashAddr)

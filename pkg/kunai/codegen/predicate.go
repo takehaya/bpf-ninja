@@ -36,23 +36,50 @@ func genPredicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, error) {
 	if pred.Value == nil {
 		return nil, fmt.Errorf("codegen: nil predicate value")
 	}
+	// A static index into a push-counted stack is absent past the pushed
+	// entries (D-031): guard it against the count slot when the predicate
+	// runs after the walk, refuse it when it runs before (the count is
+	// still 0 there and the entry would read the bytes after the stack).
+	var guard asm.Instructions
+	if needsPushCount(pred.Field) {
+		var slot int16
+		ok := false
+		if pc != nil && pc.stackCount != nil {
+			slot, ok = pc.stackCount(pred.Field)
+		}
+		if !ok {
+			return nil, fmt.Errorf("%w: bracket predicate on %s.%s indexes a stack whose entries are counted by the parser walk that runs after the predicate; move the comparison to a where clause", ErrNotImplemented, pred.Field.Layer.Spec.Name, pred.Field.Aux.OutParam)
+		}
+		guard = asm.Instructions{
+			asm.LoadMem(asm.R3, asm.R10, slot, asm.DWord),
+			asm.JLE.Imm(asm.R3, int32(pred.Field.Aux.Stack.Static), dslReject),
+		}
+	}
 
+	var insns asm.Instructions
+	var err error
 	switch pred.Value.Kind {
 	case ast.ValInt:
-		return emitIntPredicate(pred)
+		insns, err = emitIntPredicate(pred)
 	case ast.ValIPv4:
-		return emitIPv4Predicate(pred)
+		insns, err = emitIPv4Predicate(pred)
 	case ast.ValIPv6:
-		return emitIPv6Predicate(pred)
+		insns, err = emitIPv6Predicate(pred)
 	case ast.ValMAC:
-		return emitMACPredicate(pred)
+		insns, err = emitMACPredicate(pred)
 	case ast.ValCIDR:
 		if pred.Value.AF == 4 {
-			return emitIPv4CIDRPredicate(pred)
+			insns, err = emitIPv4CIDRPredicate(pred)
+		} else {
+			insns, err = emitIPv6CIDRPredicate(pred)
 		}
-		return emitIPv6CIDRPredicate(pred)
+	default:
+		return nil, fmt.Errorf("%w: predicate value type %s", ErrNotImplemented, pred.Value.Kind)
 	}
-	return nil, fmt.Errorf("%w: predicate value type %s", ErrNotImplemented, pred.Value.Kind)
+	if err != nil {
+		return nil, err
+	}
+	return append(guard, insns...), nil
 }
 
 // emitIntPredicate handles `field op INTEGER`. The field is read LE
@@ -171,6 +198,11 @@ func emitIntPredicate(pred *ir.Predicate) (asm.Instructions, error) {
 type predCtx struct {
 	sets SetSlotResolver
 	out  *[]ExtractSlot
+	// stackCount resolves the push count slot of a push-counted stack
+	// (option_demand.go needsPushCount). Set only where the predicates
+	// run after the parser walk (write-back protocols, D-032), since the
+	// count is final only then; nil means such an index cannot be guarded.
+	stackCount func(*ir.FieldRef) (int16, bool)
 }
 
 // emitInSetPredicate lowers `field in @set` for architecture B: it does

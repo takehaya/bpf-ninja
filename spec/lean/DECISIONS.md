@@ -227,9 +227,10 @@ Status values: 提案中 (implemented as recommended, awaiting sign-off) /
 ## D-029: option の検証は常に行う
 - 論点: `eth/ipv4/tcp` (option を参照しない filter) に壊れた option を持つパケット。
 - 現行 Go 実装の挙動: option を参照しない filter は walk を省略し (bulk advance)、accept。参照すると同じパケットが reject。
-- 推奨: 仕様では parser machine は常に走る (⊥ なら reject)。filter の書き方で verdict が変わる現状は実装都合として issue。
-- 状態: 承認済 (2026-10-01、一括)
-- 反映先: `Eval/Layer.lean` `extract`, vector `tcp-opt-malformed-no-query` (goStatus mismatch)
+- 推奨: 仕様では parser machine は常に走る (⊥ なら reject)。
+- 状態: 承認済 (2026-10-01、一括)。Go 側は 2026-10-01 に「意図的な逸脱として維持」で確定 (option を filter する時に初めて読む)。
+- Go の逸脱: option を参照しない filter は option 領域を walk せず宣言長 (IHL / data_offset / opt_len) だけ進む (demand-driven walk、`canFallbackToBulkAdvance`)。差が出るのは「option 領域が壊れている、かつその layer の option を参照していない」filter だけで、Go が余計に accept する方向 (誤って reject する方向には倒れない)。常時 walk に変えると全 pin が約 2 倍 (F1 143→340、F7 349→643、F9 293→653)、GTP/Geneve の二重 ipv4 chain で verifier 予算のリスク、ipv4 の MAX_DEPTH 到達時の R4 補正も要る。壊れた option を弾きたい filter はその layer の option を 1 つ参照すれば walk が走る。
+- 反映先: `Eval/Layer.lean` `extract`, vectors `tcp-opt-malformed-no-query`, `chain-ipv4-ihl6/flip34` (goStatus mismatch のまま維持: 既知の逸脱として機械可読に残す), `docs/ja/dsl-types.md` §14.5, `docs/ja/dsl-internals.md`
 
 ## D-030: option の「視認」と重複
 - 論点: `parse_sack` / `parse_rr` は `extract` せず lookahead で長さ分 advance するため、§14 の α には SACK / RR の view が入らない。しかし `tcp.options.SACK.blocks[0]` は参照できる。
@@ -281,13 +282,14 @@ Status values: 提案中 (implemented as recommended, awaiting sign-off) /
 8. ✅ bpf_loop 経路が反復途中の bounds 失敗を「停止」と扱う (D-005) — dispatch 一致後の bounds 失敗は reject。
 9. bpf_loop 経路の RangeMin 判定が VLAN (self-dispatch で停止) で 1 つずれていた — 8 と同時に修正済 ✅。
 
-10. bpf_loop 経路が反復上限で chain-end 信号を要求しない (D-024)。
+10. ✅ bpf_loop 経路が反復上限で chain-end 信号を要求しない (D-024) — ループ後に最後の header の end 信号を要求 (`fix/kunai-spec-conformance-3`)。
 
 11. ✅ 抽出されなかった option の field 参照が filter 全体を reject する (D-027) — atom が false になるよう fail label を通した (`fix/kunai-spec-conformance-2`)。
-12. option を参照しない filter は option を検証しない (D-029) — 未着手 (bulk advance の設計変更が必要)。
-13. ◐ 静的 index が count を見ない・`!=` が範囲外で true (D-031) — count source のある stack (srv6, SACK, RR) は修正。count source の無い stack (ipv6.exts, gtp.exts) の `all` は未着手 (push 数を記録する slot が必要)。
+12. ✗ option を参照しない filter は option を検証しない (D-029) — やらない (2026-10-01 決定)。demand-driven walk は設計判断として維持し、仕様との差は D-029 に記録。vectors は mismatch のまま。
+13. ✅ 静的 index が count を見ない・`!=` が範囲外で true (D-031) — count source のある stack (srv6, SACK, RR) は #120 で修正。parser machine が push する stack (ipv6.exts, gtp.exts) は push 数を数える demand slot を導入 (`fix/kunai-spec-conformance-3`): 静的 index・動的 index・any/all の unroll がそれを guard に使う。bracket predicate は walk 後に評価される proto (write-back あり: ipv6) では同じ guard、walk 前に評価される proto (gtp) では `ErrNotImplemented` (Go 単体テスト; Lean 側は issue 17 のため vector 化できない)。可変長 ext header の `exts[i]` addressing (`base + i*ElemSize`) は別件のまま (vector `ipv6-exts-index-after-long-ext`, goStatus mismatch)。
 14. ✅ bracket predicate が write-back 前の値を見る (D-032) — write-back を持つ proto は walk 後に評価。
 15. ✅ `tcp.options.X.exists` を実装。
 16. ◐ `eth/mpls*/ipv4/tcp` が ARP を accept する (D-034) — skip された layer の後の dispatch は実行時の親 (grandparent) に対して行う。optional が連続する形は、全ての実行時の親で dispatch が同じ読みになる場合だけ受け付け (`eth/qinq?/vlan?/ipv4`)、それ以外 (`eth/vlan?/mpls?/ipv4`) は `ErrNotImplemented`。一般の chain は未着手。
+17. (spec 側) Lean の bracket predicate は primary header の field しか型付けしない (`Check.lean` `bracketSpec` → "unknown field")。Go の DSL は aux field と定数 index の stack (`srv6[segments[0].addr == fc00::1]`, `tcp[options.MSS.value == 1460]`, `dsl-usage.md` §bracket) を許す。§13.4 の bracket 評価を aux view 込みに拡張し、vector を追加する (Phase 5 の残り)。
 
 残: 量化 layer 以降の where field 参照 (D-003 の実装)、self-validating / 可変長 layer の `?` (D-017 案 c の実装)、NO_CHECK 自己 edge の optional (`mpls/mpls*`)。

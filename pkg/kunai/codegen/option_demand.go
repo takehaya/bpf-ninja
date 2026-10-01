@@ -47,7 +47,10 @@ func collectQueriedOptions(p *ir.Program) queriedOptions {
 	}
 	for layer, layouts := range qo {
 		sort.Slice(layouts, func(i, j int) bool {
-			return layouts[i].DynamicKindByte < layouts[j].DynamicKindByte
+			if layouts[i].DynamicKindByte != layouts[j].DynamicKindByte {
+				return layouts[i].DynamicKindByte < layouts[j].DynamicKindByte
+			}
+			return layouts[i].OutParam < layouts[j].OutParam
 		})
 		qo[layer] = layouts
 	}
@@ -103,9 +106,13 @@ func dynamicAuxLayoutOf(f *ir.FieldRef) *vocab.AuxLayout {
 
 // record adds a dynamic-eligible aux reference to the layer's
 // demand list, deduping. Static auxes and primary-header refs are
-// silently dropped — they ride the static-offset path.
+// silently dropped — they ride the static-offset path. A reference
+// into a push-counted stack records that stack's count slot instead.
 func (qo queriedOptions) record(f *ir.FieldRef) {
 	layout := dynamicAuxLayoutOf(f)
+	if layout == nil {
+		layout = qo.stackCountLayout(f)
+	}
 	if layout == nil {
 		return
 	}
@@ -113,6 +120,78 @@ func (qo queriedOptions) record(f *ir.FieldRef) {
 		return
 	}
 	qo[f.Layer] = append(qo[f.Layer], layout)
+}
+
+// needsPushCount reports whether a stack reference can only learn how
+// many entries the packet carries from the parser machine itself: a
+// top-level out-stack (`extract(exts.next)` in ipv6 / gtp) with no
+// @kunai_stack_count field and no owner option. Such a stack gets a
+// demand slot that the machine increments on every push (spec D-031:
+// an entry past the pushed count is absent).
+func needsPushCount(f *ir.FieldRef) bool {
+	if f == nil || f.Aux == nil || f.Aux.Stack == nil || f.Aux.OwnerOption != nil || f.Layer == nil || f.Layer.Spec == nil {
+		return false
+	}
+	machine := f.Layer.Spec.ParseStateMachine
+	return machine != nil && isPushedStack(machine, f.Aux.OutParam) && f.Layer.Spec.StackCounts[f.Aux.OutParam] == nil
+}
+
+// isPushedStack reports whether `name` is an out-stack the machine pushes
+// onto. The loader lists out-stacks in StackRefs and never in AuxLayouts
+// (pinned by vocab's loader tests), so the two name spaces are disjoint;
+// the AuxLayouts check keeps that assumption explicit.
+func isPushedStack(machine *vocab.ParseStateMachine, name string) bool {
+	return machine.StackRefs[name] != nil && machine.AuxLayouts[name] == nil
+}
+
+// stackCountLayout returns the layer's demand entry for the push count
+// of the stack `f` indexes, synthesizing it on first use. The loader
+// never lists an out-stack in AuxLayouts (stacks live in StackRefs), so
+// a demand entry whose OutParam names a stack is a count slot — see
+// isStackCountLayout.
+func (qo queriedOptions) stackCountLayout(f *ir.FieldRef) *vocab.AuxLayout {
+	if !needsPushCount(f) {
+		return nil
+	}
+	for _, l := range qo[f.Layer] {
+		if l.OutParam == f.Aux.OutParam {
+			return l
+		}
+	}
+	st := f.Layer.Spec.ParseStateMachine.StackRefs[f.Aux.OutParam]
+	return &vocab.AuxLayout{OutParam: f.Aux.OutParam, HeaderName: st.HeaderName, HeaderRef: st.HeaderRef, HeaderSize: st.ElemSize}
+}
+
+// isStackCountLayout reports whether a demand entry is a stack's push
+// count rather than an option's position: its slot starts at 0 and the
+// machine adds one per push, instead of starting at the absent sentinel
+// and recording the cursor when the option's kind byte matches.
+func isStackCountLayout(layer *ir.LayerInstance, layout *vocab.AuxLayout) bool {
+	machine := layer.Spec.ParseStateMachine
+	return machine != nil && isPushedStack(machine, layout.OutParam)
+}
+
+// optionDemand is the layer's demand list without its stack count
+// entries: the options whose positions the TLV walk records.
+func (qo queriedOptions) optionDemand(layer *ir.LayerInstance) []*vocab.AuxLayout {
+	var out []*vocab.AuxLayout
+	for _, l := range qo[layer] {
+		if !isStackCountLayout(layer, l) {
+			out = append(out, l)
+		}
+	}
+	return out
+}
+
+// stackCountSlot returns the slot holding the push count of `stack` in
+// `layer`, when a where / capture clause demanded it.
+func (qo queriedOptions) stackCountSlot(layer *ir.LayerInstance, stack string) (int16, bool) {
+	for _, l := range qo[layer] {
+		if l.OutParam == stack && isStackCountLayout(layer, l) {
+			return qo.dynamicAuxSlotForLayout(layer, l)
+		}
+	}
+	return 0, false
 }
 
 // dynamicAuxSlotForLayout returns the stack slot reserved for a

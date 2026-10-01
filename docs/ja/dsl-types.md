@@ -1301,6 +1301,8 @@ bundled の `.p4` は §14.2 の規則に無い構文を使います。`spec/lea
 
 where 側: 抽出されなかった option / 範囲外の stack index を含む atom は false (D-027, D-031)。`any`/`all` は抽出した要素数 (owner-bound stack は owner の length byte から) を範囲とする。
 
+実装との既知の差 (D-029): Go codegen は、その layer の option を where / capture / bracket predicate のどこも参照しない filter では option 領域を walk せず、宣言長 (ipv4 の IHL、tcp の data_offset、geneve の opt_len) だけ進みます。したがって kind 不明や長さ 0 の壊れた option を持つパケットは、仕様では ⊥ ですが Go では accept されます。差が出るのはこの「壊れた option かつ未参照」の組み合わせだけで、Go が余計に通す方向にしか倒れません。壊れた option を弾きたい filter は、その layer の option を 1 つ参照すれば walk が走ります。
+
 ## 15. 実装との対応 (Soundness sketch)
 
 ### 15.1 各実装ステージ ↔ 形式仕様

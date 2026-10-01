@@ -904,6 +904,23 @@ func TestCompileConsecutiveOptionalsNeedEquivalentDispatch(t *testing.T) {
 	}
 }
 
+// TestCompileBracketOnPushCountedStack pins that a bracket predicate
+// indexing a stack the parser machine pushes onto is refused when the
+// predicate runs before the walk (gtp: no write-back), since the push
+// count it would need is not final yet (D-031); the where form and the
+// post-walk bracket (ipv6) compile.
+func TestCompileBracketOnPushCountedStack(t *testing.T) {
+	_, err := compileForTest("eth/ipv4/udp/gtp[exts[0].next_ext == 1]/ipv4/tcp")
+	if !errors.Is(err, codegen.ErrNotImplemented) || !strings.Contains(err.Error(), "where clause") {
+		t.Fatalf("expected codegen.ErrNotImplemented pointing at a where clause, got %v", err)
+	}
+	for _, expr := range []string{"eth/ipv4/udp/gtp/ipv4/tcp where gtp.exts[0].next_ext == 1", "eth/ipv6[exts[1].next_header == 6]/tcp"} {
+		if _, err := compileForTest(expr); err != nil {
+			t.Fatalf("%s must compile: %v", expr, err)
+		}
+	}
+}
+
 func TestCompileAlternationDivergentSize(t *testing.T) {
 	// P3-12: `eth/(ipv4|ipv6)/tcp` is the canonical user-facing alt
 	// case. ipv4 and ipv6 differ in header size (20 vs 40 bytes) AND
