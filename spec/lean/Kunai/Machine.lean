@@ -34,8 +34,8 @@ structure LenExpr where
   deriving Repr, BEq, DecidableEq
 
 def LenExpr.apply (e : LenExpr) (b : Nat) : Option Nat :=
-  let v := ((b &&& e.mask) >>> e.shift) * e.scale + e.addend
-  if v < e.base then none else some (v - e.base)
+  let v := ((b &&& e.mask) >>> e.shift) * e.scale
+  if v < e.base then none else some (v - e.base + e.addend)
 
 inductive AdvanceOp
   | literal (bytes : Nat)

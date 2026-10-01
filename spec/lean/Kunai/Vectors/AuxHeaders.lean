@@ -205,7 +205,22 @@ vector sackNoSighting := {
   packet := eth 0x0800 ++ ipv4 6 ++ tcp 12345 80 (dataOffset := 6) (options := mssOpt 1460) ++ [5, 10] ++ be 4 100 ++ be 4 200, expected := .reject,
   note := "the payload after the option region starts with a SACK-shaped kind byte; the walk ended on the counter, so no sighting" }
 
+-- Quantifier stack identity and absent layers (review findings) ------------------
+
+vector srv6AnyLabel := {
+  id := "srv6-segments-any-label",
+  ast := { layers := [P "eth", P "ipv6", .proto { name := "srv6", label := some "sr" }, P "tcp"],
+           cond := some (.any (.and (.litCmp ⟨[("sr", none), ("segments", none), ("addr", none)]⟩ .eq (.ipv6 s1))
+                                   (.litCmp segIter .ne (.ipv6 s2)))) },
+  packet := srv6Two, expected := .accept [], note := "`sr.segments` and `srv6.segments` are the same stack" }
+vector srv6AllAbsent := {
+  id := "srv6-all-absent-layer",
+  ast := { layers := [P "eth", P "ipv6", Pq "srv6" .opt, P "tcp"], cond := some (.all (.litCmp segIter .ne (.ipv6 s1))) },
+  packet := ipv6TCP, expected := .reject, goStatus := .notImplemented,
+  note := "D-003: a quantifier over an absent layer is false, not vacuously true; Go: optional variable-length layer not implemented" }
+
 def auxVectors : List Vector := [
+  srv6AnyLabel, srv6AllAbsent,
   rrNoSighting, sackNoSighting,
   grePlain, greKey, greKeySeq, greAllFlags, greKeyTruncated,
   tcpMss, tcpMssMiss, tcpMssAbsent, tcpMssAbsentNot, tcpMssAfterNop, tcpUnknownSkipped, tcpUnknownLen0, tcpUnknownLen1,

@@ -39,6 +39,16 @@ def staticProto (c : Ctx) (head : String) : Except Stop String :=
       | 1 => pure head
       | _ => throw (.illTyped s!"protocol {head} is ambiguous; qualify with an @label")
 
+/-- The one name for a layer: its label when it has one, else the protocol
+name. A label and the protocol name of the same layer denote the same stack. -/
+def canonicalHead (c : Ctx) (head : String) : Except Stop String := do
+  if (labelProto c.layers head).isSome then pure head
+  else
+    let p ← staticProto c head
+    pure ((c.layers.findSome? fun
+      | .proto q => if q.name == p then some (q.label.getD p) else none
+      | .alt _ => none).getD p)
+
 /-- Runtime instance for a reference head; `none` when the layer was skipped (D-003). -/
 private def resolveRef (c : Ctx) (st : State) (head : String) : Except Stop (Option Inst) := do
   let p ← staticProto c head
@@ -207,7 +217,7 @@ private def refView (c : Ctx) (env : IterEnv) (inst : Inst) (r : Ref) : Except S
       | some (.nat i) => pure i
       | some (.field parts) => indexValue c inst r parts
       | _ =>
-        match env.find? (·.1 == (r.proto, stack)) with
+        match env.find? (·.1 == (← canonicalHead c r.head, stack)) with
         | some (_, i) => pure i
         | none => throw (.illTyped s!"index-less stack reference {r.proto}.{stack} outside any/all")
     pure ((stackEntries c.P inst m sd)[i]?.map fun v => (v.off, v.len))
@@ -305,22 +315,23 @@ references inside it (nested quantifiers included, as the resolver does):
 `bound` names stacks an enclosing quantifier already iterates. -/
 def quantStack (c : Ctx) (bound : List (String × String)) (w : Where) : Except Stop (String × String) := do
   let refs ← w.paths.mapM (resolvePath c)
-  let iters : List (String × String) := refs.filterMap fun r => match r.aux with
-    | .stackEntry s none => some (r.proto, s)
-    | _ => none
+  let iters : List (String × String) ← refs.filterMapM fun r => match r.aux with
+    | .stackEntry s none => do pure (some (← canonicalHead c r.head, s))
+    | _ => pure none
   match iters.eraseDups.filter (!bound.contains ·) with
   | [one] => pure one
   | [] => throw (.illTyped "any/all needs exactly one index-less stack reference")
   | _ => throw (.illTyped "any/all iterates a single aux header stack")
 
-/-- Number of entries of `stack` on the instance bound to `head` (0 if the
-layer is absent). -/
-def stackCount (c : Ctx) (st : State) (head stack : String) : Except Stop Nat := do
-  let some inst ← resolveRef c st head | pure 0
-  let some spec := c.V.proto? inst.proto | pure 0
-  let some m := spec.machine | pure 0
-  let some sd := m.stack? stack | pure 0
-  pure (stackEntries c.P inst m sd).length
+/-- Number of entries of `stack` on the instance bound to `head`; `none`
+when the layer is absent (then the quantifier is false, like any other atom
+on an absent layer, D-003). -/
+def stackCount (c : Ctx) (st : State) (head stack : String) : Except Stop (Option Nat) := do
+  let some inst ← resolveRef c st head | pure none
+  let some spec := c.V.proto? inst.proto | pure (some 0)
+  let some m := spec.machine | pure (some 0)
+  let some sd := m.stack? stack | pure (some 0)
+  pure (some (stackEntries c.P inst m sd).length)
 
 /-- §13.8. Atoms on an absent layer, option, or stack entry are false (D-003,
 D-027). `env` binds the iteration variables of enclosing `any`/`all`. -/
@@ -347,13 +358,14 @@ def evalWhere (c : Ctx) (st : State) (env : IterEnv) : Where → Except Stop Boo
     pure (c.H.action == v)
   | .any w => do
     -- E-W-Any: ∃ i < count(stack). ⟨w[x ↦ stack[i]], σ⟩ ⇓ true (empty stack: false, D-007)
-    let (proto, stack) ← quantStack c (env.map (·.1)) w
-    let n ← stackCount c st proto stack
-    (List.range n).anyM fun i => evalWhere c st (((proto, stack), i) :: env) w
+    let (head, stack) ← quantStack c (env.map (·.1)) w
+    let some n ← stackCount c st head stack | pure false
+    (List.range n).anyM fun i => evalWhere c st (((head, stack), i) :: env) w
   | .all w => do
-    let (proto, stack) ← quantStack c (env.map (·.1)) w
-    let n ← stackCount c st proto stack
-    (List.range n).allM fun i => evalWhere c st (((proto, stack), i) :: env) w
+    -- E-W-All over the extracted entries; an absent layer makes it false (D-003), not vacuously true
+    let (head, stack) ← quantStack c (env.map (·.1)) w
+    let some n ← stackCount c st head stack | pure false
+    (List.range n).allM fun i => evalWhere c st (((head, stack), i) :: env) w
   | .boolLit b => pure b
   | .fieldExists f => do
     -- E-W-Exists: the aux header was extracted (`(LayerInst × AuxName) ∈ dom(α)`).

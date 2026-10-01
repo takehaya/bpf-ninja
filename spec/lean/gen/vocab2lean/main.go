@@ -7,8 +7,10 @@ package main
 
 import (
 	"fmt"
+	"maps"
 	"os"
-	"sort"
+	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/takehaya/bpf-ninja/pkg/kunai/dslvocab"
@@ -22,11 +24,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-	names := make([]string, 0, len(specs))
-	for n := range specs {
-		names = append(names, n)
-	}
-	sort.Strings(names)
+	names := slices.Sorted(maps.Keys(specs))
 
 	var b strings.Builder
 	b.WriteString("import Kunai.Vocab\n\n")
@@ -55,7 +53,7 @@ func joinIndent(items []string, indent int) string {
 	return strings.Join(out, ",\n") + "\n"
 }
 
-func str(s string) string { return fmt.Sprintf("%q", s) }
+func str(s string) string { return strconv.Quote(s) }
 
 func fieldsLean(fs []vocab.Field) string {
 	parts := make([]string, 0, len(fs))
@@ -190,14 +188,7 @@ func edgesLean(s *vocab.ProtocolSpec) []string {
 	return out
 }
 
-func sortedKeys[V any](m map[string]V) []string {
-	ks := make([]string, 0, len(m))
-	for k := range m {
-		ks = append(ks, k)
-	}
-	sort.Strings(ks)
-	return ks
-}
+func sortedKeys[V any](m map[string]V) []string { return slices.Sorted(maps.Keys(m)) }
 
 func target(t int) string {
 	switch t {

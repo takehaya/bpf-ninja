@@ -67,7 +67,7 @@ Status values: 提案中 (implemented as recommended, awaiting sign-off) /
 ## D-007: `any` / `all` の空 stack
 - 論点: §13.8 注記どおり any → false, all → true。
 - 現行 Go 実装の挙動: 同じ (`dsl-types.md:1136`, §6.5)。
-- 推奨: 採用。Phase 2 では stack を扱わないため `any`/`all` は `illTyped "unsupported: aux stacks"`。
+- 推奨: 採用。空 stack は「layer はあるが要素が 0」のとき。layer 自体が無い (skip された optional) ときは D-003 と同じく `any` も `all` も false (vector `srv6-all-absent-layer`)。
 - 状態: 承認済 (2026-10-01、一括) (実装は Phase 5)
 - 反映先: `Eval/Where.lean` `evalWhere` `.any`/`.all`
 

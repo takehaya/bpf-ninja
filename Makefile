@@ -41,14 +41,14 @@ test-integration: build
 
 test-all: test-unit test-bpf test-integration
 
-lean-build: ## Build the Lean 4 spec (needs elan; not part of test-unit)
+lean-build: lean-vocab ## Build the Lean 4 spec (needs elan; not part of test-unit)
 	cd spec/lean && lake build
 
 lean-vocab: ## Regenerate spec/lean/Kunai/VocabData.lean from the bundled .p4 vocabulary
 	go run ./spec/lean/gen/vocab2lean > spec/lean/Kunai/VocabData.lean.tmp \
 		&& mv spec/lean/Kunai/VocabData.lean.tmp spec/lean/Kunai/VocabData.lean
 
-lean-gen: lean-vocab lean-build ## Regenerate pkg/kunai/dsltest/testdata/spec_vectors.json from the Lean spec
+lean-gen: lean-build ## Regenerate pkg/kunai/dsltest/testdata/spec_vectors.json from the Lean spec
 	mkdir -p pkg/kunai/dsltest/testdata
 	spec/lean/.lake/build/bin/gen > pkg/kunai/dsltest/testdata/spec_vectors.json.tmp \
 		&& mv pkg/kunai/dsltest/testdata/spec_vectors.json.tmp pkg/kunai/dsltest/testdata/spec_vectors.json

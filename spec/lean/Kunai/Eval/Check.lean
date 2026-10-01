@@ -103,7 +103,7 @@ under an `any`/`all` that binds that stack. -/
 private def checkRef (c : Ctx) (bound : List (String × String)) (f : FieldPath) : Except String Ref := do
   let r ← stop (resolvePath c f)
   if let .stackEntry s none := r.aux then
-    if !bound.contains (r.proto, s) then throw s!"index-less stack reference {r.proto}.{s} outside any/all"
+    if !bound.contains (← stop (canonicalHead c r.head), s) then throw s!"index-less stack reference {r.proto}.{s} outside any/all"
   pure r
 
 private def checkArith (c : Ctx) (bound : List (String × String)) (ctx : Nat) : Arith → Except String Unit
