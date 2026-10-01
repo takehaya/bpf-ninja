@@ -695,18 +695,24 @@ func TestCompileWhereIPv6Arith128(t *testing.T) {
 	}
 }
 
-func TestCompileWhereIPv6MulStaged(t *testing.T) {
-	// F5 boundary: multiplication on Int<128> in the where path stays
-	// staged — bit-slice (F11) covers the practical IPv6 manipulation
-	// cases. Ordered cmp (F3) and field+field add/sub (F4) are no
-	// longer staged; see TestCompileWhereIPv6OrderedCmp /
-	// TestCompileWhereIPv6FieldFieldArith.
-	_, err := compileForTest("eth/ipv6/tcp where ipv6.src * 2 == ipv6.dst")
-	if err == nil {
-		t.Fatal("Compile: expected ErrNotImplemented for Int<128> mul")
+func TestCompileWhereIPv6MulIllTyped(t *testing.T) {
+	// Above 64 bits only + and - are defined (dsl-types.md §13.9): `*`
+	// was dropped in favour of bit slices (F5/F11), and bitwise / div /
+	// mod / shifts have no 128-bit codegen. The resolver rejects them as
+	// a typing error, not as an implementation limit.
+	for _, expr := range []string{
+		"eth/ipv6/tcp where ipv6.src * 2 == ipv6.dst",
+		"eth/ipv6/tcp where ipv6.src & 1 == 1",
+		"eth/ipv6/tcp where ipv6.src >> 64 == 0",
+	} {
+		_, err := compileForTest(expr)
+		if err == nil || errors.Is(err, codegen.ErrNotImplemented) {
+			t.Errorf("Compile(%q) = %v; want a resolver error", expr, err)
+		}
 	}
-	if !errors.Is(err, codegen.ErrNotImplemented) {
-		t.Fatalf("err = %v; want ErrNotImplemented", err)
+	// A 64-bit slice of the same field keeps every operator.
+	if _, err := compileForTest("eth/ipv6/tcp where ipv6.src[64:128] * 2 == ipv6.dst[64:128]"); err != nil {
+		t.Errorf("slice arithmetic: %v", err)
 	}
 }
 

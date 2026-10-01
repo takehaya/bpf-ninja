@@ -1188,9 +1188,16 @@ func (c *whereCtx) genArith128(e *ir.ArithExpr) (asm.Instructions, error) {
 		}
 		return nil, fmt.Errorf("%w: bit<128> arith RHS shape %v not supported (only field or const)", ErrNotImplemented, e.Right.Kind)
 	case ast.ArithConst:
-		// Const-only arith expression at width > 64 is unusual but
-		// we materialise it as (0, const). The const has been
-		// resolver-narrowed to int32 territory upstream.
+		// A constant at width > 64 is (0, const); the resolver fit-checked
+		// it against Int<128>, so only the low half can be non-zero, and
+		// a value above int32 needs the 64-bit load (Mov.Imm would
+		// sign-extend it).
+		if e.Const > 0x7FFFFFFF {
+			return asm.Instructions{
+				asm.Mov.Imm(asm.R3, 0),
+				asm.LoadImm(asm.R5, int64(e.Const), asm.DWord),
+			}, nil
+		}
 		return asm.Instructions{
 			asm.Mov.Imm(asm.R3, 0),
 			asm.Mov.Imm(asm.R5, int32(e.Const)),
@@ -1212,29 +1219,46 @@ func (c *whereCtx) genArith128(e *ir.ArithExpr) (asm.Instructions, error) {
 //
 // Sub mirrors the relation: borrow ⇔ orig < const, checked before
 // the subtraction so the test sees the unwrapped low half.
+//
+// A constant above the int32 immediate range goes through R2 (caller-
+// saved scratch, free inside the where pipeline) with the register forms
+// of the same three instructions.
 func (c *whereCtx) genArith128FieldOpConst(e *ir.ArithExpr) (asm.Instructions, error) {
 	imm := e.Right.Const
-	if imm > 0x7FFFFFFF {
-		return nil, fmt.Errorf("%w: bit<128> arith const exceeds int32 immediate range", ErrNotImplemented)
-	}
 	leftInsns, err := c.genArith128(e.Left)
 	if err != nil {
 		return nil, err
 	}
 	insns := append(asm.Instructions{}, leftInsns...)
+	wide := imm > 0x7FFFFFFF
+	if wide {
+		insns = append(insns, asm.LoadImm(asm.R2, int64(imm), asm.DWord))
+	}
+	alu := func(op asm.ALUOp) asm.Instruction {
+		if wide {
+			return op.Reg(asm.R5, asm.R2)
+		}
+		return op.Imm(asm.R5, int32(imm))
+	}
+	geConst := func(label string) asm.Instruction {
+		if wide {
+			return asm.JGE.Reg(asm.R5, asm.R2, label)
+		}
+		return asm.JGE.Imm(asm.R5, int32(imm), label)
+	}
 	switch e.Op {
 	case ast.ArithAdd:
-		insns = append(insns, asm.Add.Imm(asm.R5, int32(imm)))
+		insns = append(insns, alu(asm.Add))
 		noCarry := c.freshLabel("v128_nocarry")
-		insns = append(insns, asm.JGE.Imm(asm.R5, int32(imm), noCarry))
+		insns = append(insns, geConst(noCarry))
 		insns = append(insns, asm.Add.Imm(asm.R3, 1))
 		insns = append(insns, landingNoop(noCarry))
 	case ast.ArithSub:
 		noBorrow := c.freshLabel("v128_noborrow")
-		insns = append(insns, asm.JGE.Imm(asm.R5, int32(imm), noBorrow))
+		insns = append(insns, geConst(noBorrow))
 		insns = append(insns, asm.Sub.Imm(asm.R3, 1))
 		insns = append(insns, landingNoop(noBorrow))
-		insns = append(insns, asm.Sub.Imm(asm.R5, int32(imm)))
+		insns = append(insns, alu(asm.Sub))
 	}
 	return insns, nil
 }

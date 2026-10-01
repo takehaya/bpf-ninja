@@ -247,11 +247,68 @@ vector typExists := {
 vector typAuxPath := {
   id := "typ-aux-path-unsupported", ast := W (cmp (.field ⟨[("tcp", none), ("options", none), ("mss", none)]⟩) .eq (k 1)),
   expected := .illTyped "tcp.options needs an option name and a field" }
-vector typArith128 := {
-  id := "typ-arith-128",
-  ast := { layers := [P "eth", P "ipv6", P "tcp"], cond := some (cmp (.bin .add (fld "ipv6" "src") (k 1)) .eq (k 1)) },
-  packet := ipv6TCP, expected := .illTyped "unsupported: arithmetic on fields wider than 64 bits",
-  goStatus := .mismatch, note := "Go compiles 128-bit arithmetic; not modelled here" }
+-- 128-bit arithmetic (D-035): `+` and `-` modulo 2^128, comparisons at 128 bits,
+-- every other operator ill-typed.
+def v6pkt (src dst : Nat) : Packet := eth 0x86DD ++ ipv6 6 (src := src) (dst := dst) ++ tcp 12345 80 ++ payload 5
+def W6 (w : Where) : Filter := { layers := [P "eth", P "ipv6", P "tcp"], cond := some w }
+def src6 : Arith := fld "ipv6" "src"
+def dst6 : Arith := fld "ipv6" "dst"
+def lowOnes : Nat := 2 ^ 64 - 1
+vector arith128AddConst := {
+  id := "arith-128-add-const", ast := W6 (cmp (.bin .add src6 (k 1)) .eq dst6), packet := ipv6TCP,
+  expected := .accept [], note := "fc00::1 + 1 = fc00::2" }
+vector arith128SubConst := {
+  id := "arith-128-sub-const", ast := W6 (cmp (.bin .sub dst6 (k 1)) .eq src6), packet := ipv6TCP, expected := .accept [] }
+vector arith128AddCarry := {
+  id := "arith-128-add-carry", ast := W6 (cmp (.bin .add src6 (k 1)) .eq dst6),
+  packet := v6pkt (0xfc00 * 2 ^ 112 + lowOnes) (0xfc00 * 2 ^ 112 + 2 ^ 64), expected := .accept [],
+  note := "the carry crosses from the low 64-bit half into the high one" }
+vector arith128AddWrap := {
+  id := "arith-128-add-wrap", ast := W6 (cmp (.bin .add src6 (k 1)) .eq dst6), packet := v6pkt (2 ^ 128 - 1) 0,
+  expected := .accept [], note := "D-035: 2^128 - 1 + 1 wraps to 0" }
+vector arith128SubBorrow := {
+  id := "arith-128-sub-borrow", ast := W6 (cmp (.bin .sub src6 (k 1)) .eq dst6),
+  packet := v6pkt (0xfc00 * 2 ^ 112 + 2 ^ 64) (0xfc00 * 2 ^ 112 + lowOnes), expected := .accept [],
+  note := "the borrow crosses from the low half into the high one" }
+vector arith128SubWrap := {
+  id := "arith-128-sub-wrap", ast := W6 (cmp (.bin .sub src6 (k 1)) .eq dst6), packet := v6pkt 0 (2 ^ 128 - 1),
+  expected := .accept [], note := "0 - 1 wraps to 2^128 - 1" }
+vector arith128AddMiss := {
+  id := "arith-128-add-miss", ast := W6 (cmp (.bin .add src6 (k 1)) .eq dst6), packet := v6pkt 1 3, expected := .reject }
+vector arith128FieldAddField := {
+  id := "arith-128-field-add-field", ast := W6 (cmp (.bin .add src6 dst6) .eq (k 3)), packet := v6pkt 1 2, expected := .accept [] }
+vector arith128FieldAddFieldCarry := {
+  id := "arith-128-field-add-field-carry", ast := W6 (cmp (.bin .add src6 dst6) .gt src6), packet := v6pkt lowOnes 1,
+  expected := .accept [], note := "2^64 - 1 + 1 = 2^64: the carry reaches the high half, so the sum exceeds src" }
+vector arith128FieldSubField := {
+  id := "arith-128-field-sub-field", ast := W6 (cmp (.bin .sub src6 dst6) .eq (k 2)), packet := v6pkt 3 1, expected := .accept [] }
+vector arith128FieldSubFieldBorrow := {
+  id := "arith-128-field-sub-field-borrow", ast := W6 (cmp (.bin .sub src6 dst6) .eq (k lowOnes)), packet := v6pkt (2 ^ 64) 1,
+  expected := .accept [], note := "2^64 - 1 borrows from the high half" }
+vector arith128AddWideConst := {
+  id := "arith-128-add-wide-const", ast := W6 (cmp (.bin .add src6 (k (2 ^ 32))) .eq dst6), packet := v6pkt 1 (2 ^ 32 + 1),
+  expected := .accept [], note := "a constant above int32 as the addend" }
+vector arith128SubWideConstBorrow := {
+  id := "arith-128-sub-wide-const-borrow", ast := W6 (cmp (.bin .sub src6 (k (2 ^ 32))) .eq dst6), packet := v6pkt (2 ^ 64) (2 ^ 64 - 2 ^ 32),
+  expected := .accept [], note := "a constant above int32 as the subtrahend, with a borrow from the high half" }
+vector arith128CmpWideConst := {
+  id := "arith-128-cmp-wide-const", ast := W6 (cmp (.bin .add src6 dst6) .eq (k (2 ^ 32))), packet := v6pkt (2 ^ 32 - 1) 1,
+  expected := .accept [], note := "a constant above int32 on the comparison side" }
+vector arith128Lt := {
+  id := "arith-128-lt", ast := W6 (cmp src6 .lt dst6), packet := ipv6TCP, expected := .accept [] }
+vector arith128GeMiss := {
+  id := "arith-128-ge-miss", ast := W6 (cmp src6 .ge dst6), packet := ipv6TCP, expected := .reject }
+vector arith128LtHighHalf := {
+  id := "arith-128-lt-high-half", ast := W6 (cmp src6 .lt dst6), packet := v6pkt lowOnes (2 ^ 64),
+  expected := .accept [], note := "the high half decides before the low half" }
+vector typArith128Mul := {
+  id := "typ-arith-128-mul", ast := W6 (cmp (.bin .mul src6 (k 2)) .eq dst6), packet := ipv6TCP,
+  expected := .illTyped "unsupported: only + and - are defined on fields wider than 64 bits",
+  note := "D-035: Go dropped * on Int<128> (F5); the spec makes it ill-typed" }
+vector typArith128Band := {
+  id := "typ-arith-128-band", ast := W6 (cmp (.bin .band src6 (k 1)) .eq (k 1)), packet := ipv6TCP,
+  expected := .illTyped "unsupported: only + and - are defined on fields wider than 64 bits",
+  note := "D-035: bitwise operators too; a CIDR literal covers prefix tests" }
 
 def whereVectors : List Vector := [
   whereCmpOps, whereLitIPv4, whereCIDRIn, whereCIDRNe, whereCIDR0, whereMAC, whereIPv6CIDR, whereIPv6Eq,
@@ -264,6 +321,9 @@ def whereVectors : List Vector := [
   predCmp, predCmpMiss, predInList, predInListMiss, predInRange, typPredInRangeWide, typPredCmpRange, predInRangeMiss, predNegative, predIPv4,
   capAll, capWhereFalse, capWhereTrue, capLabel, capAbsent, capPresent,
   typUnknownProto, typNoDispatch, typNotInChain, typUnknownField, typFit, typFitArith, typWidthIPv6, typCIDRWidth,
-  typPredIdent, typInSet, typAny, typExists, typAuxPath, typArith128]
+  typPredIdent, typInSet, typAny, typExists, typAuxPath,
+  arith128AddConst, arith128SubConst, arith128AddCarry, arith128AddWrap, arith128SubBorrow, arith128SubWrap, arith128AddMiss,
+  arith128FieldAddField, arith128FieldAddFieldCarry, arith128FieldSubField, arith128FieldSubFieldBorrow, arith128AddWideConst, arith128SubWideConstBorrow, arith128CmpWideConst,
+  arith128Lt, arith128GeMiss, arith128LtHighHalf, typArith128Mul, typArith128Band]
 
 end Kunai

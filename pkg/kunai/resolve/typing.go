@@ -119,6 +119,12 @@ func checkArithExpr(e *ir.ArithExpr, bits int) error {
 		if (e.Op == ast.ArithDiv || e.Op == ast.ArithMod) && isZeroLiteral(e.Right) {
 			return errStaticDivZero(e.Pos, e.Op)
 		}
+		// Above 64 bits only `+` and `-` are defined (dsl-types.md §13.9):
+		// `*` on Int<128> was dropped in favour of bit slices, and the
+		// rest has no use that a CIDR literal or a slice does not cover.
+		if w := exprMaxFieldBits(e); w > 64 && e.Op != ast.ArithAdd && e.Op != ast.ArithSub {
+			return errorf(e.Pos, "%s on Int<%d>: only + and - are defined on fields wider than 64 bits (use a bit slice `field[lo:hi]` or a CIDR literal)", e.Op, w)
+		}
 		if err := checkArithExpr(e.Left, bits); err != nil {
 			return err
 		}

@@ -385,7 +385,7 @@ bitwise op は通常の C と同様に `&` を mul-class、`|`/`^` を add-class
 |---|---|---|
 | `tcp.dport + 1` | `Int<16>` mod 2¹⁶ | dport=65535 のとき結果 0 (wrap) |
 | `tcp.dport + ipv4.ttl` | `Int<16>` (widen) | |
-| `ipv6.src + 1` | `Int<128>` mod 2¹²⁸ | (`field op const` の codegen は実装済、ただし verifier-load は staged。§9 参照) |
+| `ipv6.src + 1` | `Int<128>` mod 2¹²⁸ | 64 bit 超は `+` `-` のみ (§13.9) |
 | `ipv4.total_length - 20` | `Int<16>` mod 2¹⁶ | total=10 のとき結果 65526 (wrap) |
 | `tcp.window * 2` | `Int<16>` mod 2¹⁶ | overflow は silent wrap |
 | `tcp.flags & 0x12` | `Int<9>` (TCP flags は 9 bit) | bitwise AND |
@@ -621,8 +621,8 @@ dsl codegen is not yet fully implemented: value V exceeds int32 immediate range 
 | `==`, `!=` | ✅ 既存 (single load) | ✅ 既存 (dual load。IPv6 cmp 経路 / F4) |
 | `<`, `≤`, `>`, `≥` | ✅ 既存 | ✅ bracket / where-arith 両方実装 (F3、`emitIPv6OrderedCmp` + `genArithCompare128` ordered branch、register-pair lex compare) |
 | `+`, `-` | ✅ 既存 | ✅ where 経路で完全実装 (F4。`field op const`、`field op field` 両方、stack-bridged carry / borrow) |
-| `*` | ✅ 既存 | ❌ 廃止 (F11 bit-slice で代替) |
-| `/`, `%` | ✅ 既存 | ⏳ 当面実装しない (software loop、需要薄) |
+| `*` | ✅ 既存 | ❌ 型エラー (D-035。F11 bit-slice で代替) |
+| `/`, `%`, `&`, `\|`, `^`, `<<`, `>>` | ✅ 既存 | ❌ 型エラー (D-035。bit slice か CIDR literal で書く) |
 | bit-slice `field[lo:hi]` | ✅ 任意 bit 範囲 (single LDX + bswap + shift+mask、F11/F13) | ✅ byte-aligned 端点に限り cmp 可 (F12 で resolver desugar) |
 
 未実装分は codegen が `ErrNotImplemented` を返します。型では well-typed、codegen で `not yet implemented` という分離です。
@@ -1180,15 +1180,19 @@ op_c(n, v_n) = b                             ───────────�
 
 [E-A-BinOp]
 ⟨e₁, σ⟩ ⇓_P n₁    ⟨e₂, σ⟩ ⇓_P n₂
+w = max(width(e₁), width(e₂)) ≤ 64:
 op_a ∈ {+, −, *, &, |, ^}: r = (n₁ op_a n₂) mod 2^64                      ; Int<64> で計算 (D-015)
 op_a = /:  r = n₂ ≠ 0 ? ⌊n₁ / n₂⌋ : 0                                    ; 動的 0 → 0 (BPF 既定)
 op_a = %:  r = n₂ ≠ 0 ? n₁ mod n₂ : n₁                                   ; 動的 0 → 被除数 (BPF 既定、D-022)
 op_a ∈ {<<, >>}: shift 量は n₂ mod 64                                    ; BPF の masked shift (D-014)
+w > 64:
+op_a ∈ {+, −}: r = (n₁ op_a n₂) mod 2^w                                  ; Int<128> は 2 word で計算 (D-035)
+op_a ∉ {+, −}: ill-typed                                                 ; §9.1、bit slice か CIDR literal で書く
 ──────────────────────────────────────────────
 ⟨binop(op_a, e₁, e₂), σ⟩ ⇓_P r
 ```
 
-算術は operand の宣言幅にかかわらず Int<64> で行い、`max(width(e₁), width(e₂))` は literal narrow (§7.3 の fit check) にだけ使います。`ipv4.ttl + 1` は ttl = 255 のとき 256 であり、0 には巻き戻りません。64 bit を超える field を含む算術は `spec/lean` の対象外です。
+64 bit までの算術は operand の宣言幅にかかわらず Int<64> で行い、`max(width(e₁), width(e₂))` は literal narrow (§7.3 の fit check) にだけ使います。`ipv4.ttl + 1` は ttl = 255 のとき 256 であり、0 には巻き戻りません。64 bit を超える field (ipv6 の src / dst) を含む算術は `+` と `-` だけが定義され、2^128 で巻き戻ります (D-035)。比較は幅に関係なく値どうしの比較です。
 
 ## 14. p4lite parser machine の意味論
 
