@@ -918,6 +918,30 @@ func TestCompileWhereOnQuantifiedLayers(t *testing.T) {
 	}
 }
 
+// TestCompileCaptureUpperBoundOverQuantifiers pins that capture lengths
+// over quantified layers are the compile-time upper bound (every instance
+// the quantifier allows), which the host clamps with the packet length.
+func TestCompileCaptureUpperBoundOverQuantifiers(t *testing.T) {
+	for _, tc := range []struct {
+		expr string
+		want int
+	}{
+		{"eth/vlan?/ipv4/tcp capture headers", 14 + 4 + 20 + 20},
+		{"eth/vlan?/ipv4/tcp capture vlan", 14 + 4},
+		{"eth/mpls{1,3}/ipv4/tcp capture headers", 14 + 3*4 + 20 + 20},
+		{"eth/mpls+/ipv4/tcp capture headers", 14 + 8*4 + 20 + 20}, // MPLS_MAX_DEPTH = 8
+		{"eth/mpls@m+/ipv4/tcp capture m+8", 14 + 8*4 + 8},
+	} {
+		out, err := Compile(tc.expr, codegen.Capabilities{})
+		if err != nil {
+			t.Fatalf("%s: %v", tc.expr, err)
+		}
+		if out.Capture.MaxCapLen != tc.want {
+			t.Errorf("%s: MaxCapLen = %d, want %d", tc.expr, out.Capture.MaxCapLen, tc.want)
+		}
+	}
+}
+
 // TestCompileConsecutiveOptionalsNeedEquivalentDispatch pins the D-034
 // limit of the static-parent dispatch after consecutive optional layers:
 // it is sound only when every runtime parent dispatches the layer the
@@ -1283,6 +1307,7 @@ func TestVlanInMetadataRejectsVlanLayers(t *testing.T) {
 		"eth/vlan[tci==100]?/ipv4/tcp",                      // optional but reads tci
 		"eth/(vlan|qinq)/ipv4/tcp",                          // tag in alternation
 		"eth/vlan?/ipv4/tcp where vlan.tci == 100",          // where reads the tag
+		"eth/vlan?/ipv4/tcp capture vlan",                   // capture targets the tag
 	}
 	// Optional, predicate-free tags are matchable at a VlanInMetadata
 	// host: at most one tag survives in the bytes, and the skip path

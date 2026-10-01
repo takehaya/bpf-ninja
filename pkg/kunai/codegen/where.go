@@ -1561,6 +1561,55 @@ func prefixHeaderSizeMaxAlt(p *ir.Program, until *ir.LayerInstance, reason strin
 	return prefixHeaderSize(p, until, reason, maxAltPrefixSize)
 }
 
+// prefixHeaderSizeUpper bounds the bytes the layers before `until` (all
+// of them when nil) can span: the largest alternation member and every
+// instance a quantifier allows (layerMaxInstances) count. Capture lengths
+// use it; where-clause addressing keeps prefixHeaderSize, whose static
+// prefix must be exact.
+func prefixHeaderSizeUpper(p *ir.Program, until *ir.LayerInstance, reason string) (int, error) {
+	total := 0
+	for _, l := range p.Layers {
+		if l == until {
+			return total, nil
+		}
+		var hs int
+		var err error
+		if l.Alternation != nil {
+			hs, err = maxAltPrefixSize(l.Alternation, reason)
+		} else {
+			hs, err = headerSize(l.Spec)
+		}
+		if err != nil {
+			return 0, err
+		}
+		n, err := layerMaxInstances(l)
+		if err != nil {
+			return 0, err
+		}
+		total += n * hs
+	}
+	if until != nil {
+		return 0, fmt.Errorf("codegen: %s target layer not in program", reason)
+	}
+	return total, nil
+}
+
+// layerMaxInstances is the most headers a layer can match: one for a
+// plain or `?` layer, the quantifier's upper bound otherwise, with the
+// chain's iteration cap standing in for an open bound.
+func layerMaxInstances(l *ir.LayerInstance) (int, error) {
+	switch l.Quant {
+	case ast.QuantRange:
+		if l.RangeMax >= 0 {
+			return l.RangeMax, nil
+		}
+		return chainMaxIter(l)
+	case ast.QuantPlus, ast.QuantStar:
+		return chainMaxIter(l)
+	}
+	return 1, nil
+}
+
 // uniformAltPrefixSize is the strict altReducer: every alt must agree
 // on size, otherwise ErrNotImplemented. Used by where, paired with
 // the slot-anchor path (resolver marks layers past a het-alt to use

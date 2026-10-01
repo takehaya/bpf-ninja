@@ -196,7 +196,11 @@ vector capLabel := {
 vector capAbsent := {
   id := "cap-absent-layer",
   ast := { layers := vlanOpt, captures := [{ spec := .toLayer "vlan" 0 }] },
-  expected := .accept [], goStatus := .notImplemented, note := "D-020" }
+  expected := .accept [], note := "D-020: the clause is dropped; Go captures its compile-time upper bound (18 bytes) instead, the verdict agrees" }
+vector capPresent := {
+  id := "cap-present-layer",
+  ast := { layers := vlanOpt, captures := [{ spec := .toLayer "vlan" 0 }] }, packet := vlanPkt,
+  expected := .accept [(14, 18)] }
 
 -- Typing (§12) ------------------------------------------------------------------
 
@@ -248,7 +252,7 @@ def whereVectors : List Vector := [
   whereLabelRepeatedLast, whereLabelRepeatedFirstMiss, whereRepeatedUnlabelled, wherePastQuantified, whereLabels, whereAmbiguous,
   actionEntry, actionHit, actionMiss, actionUnknown,
   predCmp, predCmpMiss, predInList, predInListMiss, predInRange, predNegative, predIPv4,
-  capAll, capWhereFalse, capWhereTrue, capLabel, capAbsent,
+  capAll, capWhereFalse, capWhereTrue, capLabel, capAbsent, capPresent,
   typUnknownProto, typNoDispatch, typNotInChain, typUnknownField, typFit, typFitArith, typWidthIPv6, typCIDRWidth,
   typPredIdent, typInSet, typAny, typExists, typAuxPath, typArith128]
 

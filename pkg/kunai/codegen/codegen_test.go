@@ -720,7 +720,11 @@ func TestGenCaptureRejectsFieldList(t *testing.T) {
 	}
 }
 
-func TestGenCaptureRejectsQuantifiedChain(t *testing.T) {
+// TestGenCaptureUpperBoundOverOptional pins that a capture over an
+// optional layer sizes MaxCapLen for the present case (eth 14 + vlan 4 +
+// 16): the host clamps with the packet length, so a skipped tag only
+// over-captures (D-020).
+func TestGenCaptureUpperBoundOverOptional(t *testing.T) {
 	vlanSpec := newSpec("vlan", "vlan_h",
 		vocab.Field{Name: "tci", Bits: 16},
 		vocab.Field{Name: "ethertype", Bits: 16},
@@ -739,9 +743,12 @@ func TestGenCaptureRejectsQuantifiedChain(t *testing.T) {
 		Layers:   []*ir.LayerInstance{eth, vlan},
 		Captures: []*ir.CaptureClause{{Kind: ast.CapHeadersPlus, Extra: 16}},
 	}
-	_, err := Gen(p, Capabilities{})
-	if !errors.Is(err, ErrNotImplemented) {
-		t.Fatalf("err = %v; want ErrNotImplemented", err)
+	out, err := Gen(p, Capabilities{})
+	if err != nil {
+		t.Fatalf("Gen: %v", err)
+	}
+	if out.Capture.MaxCapLen != 14+4+16 {
+		t.Fatalf("MaxCapLen = %d; want %d", out.Capture.MaxCapLen, 14+4+16)
 	}
 }
 
