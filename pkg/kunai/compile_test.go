@@ -962,7 +962,7 @@ func TestCompileCaptureUpperBoundOverQuantifiers(t *testing.T) {
 // continuation of a chain-end protocol (`mpls/mpls?`, `mpls/mpls*`) is
 // accepted: the previous label's s bit stands in for the dispatch peek.
 func TestCompileOptionalSelfEdgeWithChainEnd(t *testing.T) {
-	for _, expr := range []string{"eth/mpls/mpls?/ipv4/tcp", "eth/mpls/mpls*/ipv4/tcp", "eth/mpls/mpls{0,3}/ipv4/tcp"} {
+	for _, expr := range []string{"eth/mpls/mpls?/ipv4/tcp", "eth/mpls/mpls*/ipv4/tcp", "eth/mpls/mpls{0,3}/ipv4/tcp", "eth/mpls/mpls?/mpls?/ipv4/tcp"} {
 		if _, err := compileForTest(expr); err != nil {
 			t.Errorf("%s: %v", expr, err)
 		}

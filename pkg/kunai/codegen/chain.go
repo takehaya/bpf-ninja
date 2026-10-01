@@ -128,20 +128,14 @@ func genStaticChain(layer *ir.LayerInstance, index int, all []*ir.LayerInstance,
 		// so far). Below RangeMin a chain-end means the stack is shorter
 		// than the quantifier requires (under-run) → reject; at or above
 		// RangeMin it is a valid natural end → terminate the chain and fall
-		// through to the next layer. Both termination mechanisms share the
-		// target: chainEndCheck (the MPLS s-bit, the same check the bpf_loop
-		// path runs) and genDispatch's fail path (VLAN's self-dispatch peek,
-		// for which chainEndCheck is a no-op).
+		// through to the next layer. genDispatch's fail path covers both
+		// termination mechanisms: the chain-end signal of the previous
+		// header (the MPLS s-bit, the same check the bpf_loop path runs)
+		// and the self-dispatch peek (VLAN's ethertype).
 		target := dslReject
 		if i >= layer.RangeMin {
 			target = chainDone
 		}
-		endCheck, err := chainEndCheck(layer.Spec, hs, staticChainFrame, target)
-		if err != nil {
-			return nil, err
-		}
-		insns = append(insns, endCheck...)
-
 		dispatch, err := genDispatch(selfLayer, layer, hs, selfRange, selfRange, target)
 		if err != nil {
 			return nil, err

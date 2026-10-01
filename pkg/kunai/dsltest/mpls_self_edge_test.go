@@ -21,4 +21,24 @@ func TestMplsOptionalSelfEdge(t *testing.T) {
 	star.MustMatch(t, mpls(16), "one label")
 	star.MustMatch(t, mpls(16, 17, 18, 19), "four labels")
 	star.MustReject(t, mpls(), "no label: the mandatory first one is missing")
+
+	rng := New(t, "eth/mpls/mpls{0,3}/ipv4/tcp")
+	rng.MustMatch(t, mpls(16), "one label: zero optional labels")
+	rng.MustMatch(t, mpls(16, 17), "two labels")
+	rng.MustMatch(t, mpls(16, 17, 18, 19), "four labels: three optional")
+	rng.MustReject(t, mpls(16, 17, 18, 19, 20), "five labels: over-run")
+
+	// Each `mpls?` is "zero or one label ending the stack" (D-024): a
+	// label it consumes must carry the s bit, so three labels over-run
+	// the first optional even though a second optional follows.
+	two := New(t, "eth/mpls/mpls?/mpls?/ipv4/tcp")
+	two.MustMatch(t, mpls(16), "one label: both optionals read the first label's s bit")
+	two.MustMatch(t, mpls(16, 17), "two labels")
+	two.MustReject(t, mpls(16, 17, 18), "three labels: the first optional's label does not end the stack")
+
+	// A mandatory self edge misses too once the previous label ended the
+	// stack: `mpls/mpls` needs two labels (spec parent_dispatch).
+	mandatory := New(t, "eth/mpls/mpls/ipv4/tcp")
+	mandatory.MustMatch(t, mpls(16, 17), "two labels")
+	mandatory.MustReject(t, mpls(16), "one label: the second mpls has no label to match")
 }

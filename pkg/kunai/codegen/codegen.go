@@ -1199,9 +1199,8 @@ func optionalLayerGuard(layer *ir.LayerInstance, index int, all []*ir.LayerInsta
 
 // selfEdgeWithChainEnd reports whether `layer` continues a chain of its
 // own protocol whose headers carry an end signal (`mpls/mpls?`,
-// `mpls/mpls*`): the NO_CHECK self edge then detects absence through the
-// previous header's chain-end field (spec: parent_dispatch is a miss once
-// the previous instance signalled end).
+// `mpls/mpls*`): a NO_CHECK self edge then still detects absence, through
+// the previous header's chain-end field that genDispatch checks.
 func selfEdgeWithChainEnd(layer, parent *ir.LayerInstance) bool {
 	return parent != nil && parent.Alternation == nil && parent.Spec == layer.Spec && layer.Spec.ChainEnd != nil
 }
@@ -1227,14 +1226,9 @@ func emitPeekedIterZero(layer *ir.LayerInstance, index int, all []*ir.LayerInsta
 	if err != nil {
 		return nil, err
 	}
-	var peek asm.Instructions
-	if selfEdgeWithChainEnd(layer, all[index-1]) {
-		// The previous header of the same protocol ends at R4: its
-		// chain-end signal (the MPLS s bit) means this layer is absent.
-		peek, err = chainEndCheck(layer.Spec, hs, staticChainFrame, peekFailLabel)
-	} else {
-		peek, err = genLayerDispatch(layer, all[index-1], precedingLayersLeaveR4Range(all, index), precedingLayersLeaveR4Range(all, index-1), peekFailLabel)
-	}
+	// For a self edge of a chain-end protocol the dispatch is the previous
+	// header's end signal (genDispatch), so `mpls/mpls?` peeks the s bit.
+	peek, err := genLayerDispatch(layer, all[index-1], precedingLayersLeaveR4Range(all, index), precedingLayersLeaveR4Range(all, index-1), peekFailLabel)
 	if err != nil {
 		return nil, err
 	}
@@ -1259,18 +1253,37 @@ func emitPeekedIterZero(layer *ir.LayerInstance, index int, all []*ir.LayerInsta
 }
 
 func genDispatch(current, parent *ir.LayerInstance, parentHS int, r4IsRange, parentEntryIsRange bool, failLabel string) (asm.Instructions, error) {
+	// A self edge of a chain-end protocol misses once the previous header
+	// signalled end (spec parent_dispatch: `ended ⇒ miss`, checked before
+	// the edge itself): the MPLS s bit of the label ending at R4 says no
+	// further label follows. Every lowering that dispatches against a
+	// same-protocol parent inherits it here.
+	var pre asm.Instructions
+	if parent != nil && parent.Alternation == nil && parent.Spec == current.Spec && current.Spec.ChainEnd != nil {
+		var err error
+		pre, err = chainEndCheck(current.Spec, parentHS, staticChainFrame, failLabel)
+		if err != nil {
+			return nil, err
+		}
+	}
+	var edge asm.Instructions
+	var err error
 	switch current.Dispatch.Type {
 	case vocab.DispatchField:
-		return genFieldDispatch(current, parent, parentHS, r4IsRange, parentEntryIsRange, failLabel)
+		edge, err = genFieldDispatch(current, parent, parentHS, r4IsRange, parentEntryIsRange, failLabel)
 	case vocab.DispatchNoCheck:
-		return genNoCheckDispatch(current)
+		edge, err = genNoCheckDispatch(current)
 	case vocab.DispatchSelfValidating:
 		// Boundary emits nothing: the child's parser machine validates
 		// the layer via its `transition select(...) { ...; default:
 		// reject; }`, so we delegate the check entirely to the parser.
-		return nil, nil
+	default:
+		return nil, fmt.Errorf("codegen: unknown dispatch type %v", current.Dispatch.Type)
 	}
-	return nil, fmt.Errorf("codegen: unknown dispatch type %v", current.Dispatch.Type)
+	if err != nil {
+		return nil, err
+	}
+	return append(pre, edge...), nil
 }
 
 // genLayerDispatch is the call-site wrapper for layer-level dispatch
