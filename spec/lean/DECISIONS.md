@@ -8,6 +8,11 @@ on the commit this file was added in. Vector ids refer to `Kunai/Vectors/*.lean`
 Status values: 提案中 (implemented as recommended, awaiting sign-off) /
 承認済 (date).
 
+One entry per open point, numbered `D-NNN`. Each records the question, the
+candidates, what the Go implementation does today (with the test or code that
+shows it), the recommendation, the status, and where the decision is reflected.
+Entries are never deleted; a rejected candidate stays in the log.
+
 ## D-001: quantifier 途中の predicate 失敗
 - 論点: `mpls[label==5]{1,8}` で 2 回目の反復の predicate が false のとき、(a) そこで反復を止め k=1 で成功、(b) layer 全体 ✗。§13.5 [E-Quant-Range-Step] の停止条件は dispatch miss / bounds のみで predicate 失敗を含まない。
 - 候補: (a) 停止して k 反復で成功 / (b) ✗
