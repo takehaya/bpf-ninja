@@ -189,6 +189,14 @@ vector quantSelfEdgeOpt := {
   id := "quant-self-edge-opt", ast := { layers := [P "eth", P "mpls", Pq "mpls" .opt, P "ipv4", P "tcp"] },
   packet := mpls1, expected := .accept [], goStatus := .notImplemented,
   note := "skips on the s bit of the first label; Go has no peek path for NO_CHECK" }
+vector absentConsecutiveEthertype := {
+  id := "absent-consecutive-ethertype", ast := { layers := [P "eth", Pq "qinq" .opt, Pq "vlan" .opt, P "ipv4", P "tcp"] },
+  packet := vlanPkt, expected := .accept [],
+  note := "D-034: qinq absent, vlan present; ipv4 dispatches on vlan.ethertype (Go: same bytes as eth/qinq, static-parent read is sound)" }
+vector absentConsecutiveSelfValid := {
+  id := "absent-consecutive-selfvalidating", ast := { layers := [P "eth", Pq "vlan" .opt, Pq "mpls" .opt, P "ipv4", P "tcp"] },
+  packet := vlanPkt, expected := .accept [], goStatus := .notImplemented,
+  note := "D-034: vlan present, mpls absent; ipv4 dispatches on vlan.ethertype. Go: ipv4 self-validates under mpls but not under vlan, so the static-parent read is refused" }
 vector quantFirstOptional := {
   id := "quant-first-optional", ast := { layers := [Pq "vlan" .opt, P "ipv4"] },
   expected := .illTyped "the first layer cannot be optional", goStatus := .notImplemented }
@@ -238,7 +246,8 @@ def chainVectors : List Vector := [
   quantOptPresent, quantOptAbsent, quantOptPredHolds, quantOptPredFails, quantOptBounds, quantRangeMidTrunc, quantRange01Bounds,
   quantStarBounds, quantMplsRange, quantMplsPlus, quantMplsStarZero, quantMplsMinUnmet, quantChainEnd,
   quantGreedyOverrun, quantOverrunBounded, quantOverrunOpen, quantExactBound, quantOptMplsOverrun, quantOptMplsOne, quantGreedyUnreachable, quantPredMidFail, quantPredMidFailStatic, quantPredFirstFail,
-  quantPredAllHold, quantSelfValidSkip, quantSelfValidBroken, typOptionalAfterSkip, typOptionalNoCheck, quantSelfEdgeStar, quantSelfEdgeOpt, quantFirstOptional,
+  quantPredAllHold, quantSelfValidSkip, quantSelfValidBroken, typOptionalAfterSkip, typOptionalNoCheck, quantSelfEdgeStar, quantSelfEdgeOpt,
+  absentConsecutiveEthertype, absentConsecutiveSelfValid, quantFirstOptional,
   altFirst, altSecond, altNone, altFirstPredFails, altRoot, altNoCheck,
   hostTcVlanMandatory, hostTcVlanOpt, hostL3Root, hostL3EthRoot]
 

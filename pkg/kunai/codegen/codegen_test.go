@@ -86,7 +86,6 @@ var (
 	}
 )
 
-
 func ethIPv4TCPProgram() *ir.Program {
 	eth := &ir.LayerInstance{Spec: ethSpec}
 	ipv4 := &ir.LayerInstance{Spec: ipv4Spec, Dispatch: &ir.DispatchChoice{Type: vocab.DispatchField, Const: ipv4EthertypeConst}}
@@ -1251,8 +1250,14 @@ func TestGenOptionalEqualsRange01(t *testing.T) {
 		t.Fatalf("mpls? emits %d insns, mpls{0,1} emits %d; expected the same lowering", len(opt), len(rng))
 	}
 	for i := range opt {
-		if opt[i].OpCode != rng[i].OpCode {
-			t.Fatalf("insn %d differs: %v vs %v", i, opt[i], rng[i])
+		if a, b := insnKey(opt[i]), insnKey(rng[i]); a != b {
+			t.Fatalf("insn %d differs: %s vs %s", i, a, b)
 		}
 	}
+}
+
+// insnKey renders an instruction with its label and jump target so two
+// streams compare on everything but metadata identity.
+func insnKey(ins asm.Instruction) string {
+	return fmt.Sprintf("%v sym=%q ref=%q", ins, ins.Symbol(), ins.Reference())
 }

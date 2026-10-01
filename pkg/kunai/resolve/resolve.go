@@ -144,18 +144,6 @@ func (r *resolver) resolveFilter(f *ast.Filter) (*ir.Program, error) {
 	return p, nil
 }
 
-// absentable reports whether a layer may match zero headers (`?`, `*`,
-// `{0,m}`), so the layer after it can meet an earlier layer as its parent.
-func absentable(l *ir.LayerInstance) bool {
-	switch l.Quant {
-	case ast.QuantOpt, ast.QuantStar:
-		return true
-	case ast.QuantRange:
-		return l.RangeMin == 0
-	}
-	return false
-}
-
 // checkRuntimeParents requires a dispatch (constant or self-validation)
 // from every layer that can precede a layer at run time, not only from
 // its static predecessor: §13.4 evaluates parent_dispatch against σ, and
@@ -164,7 +152,7 @@ func absentable(l *ir.LayerInstance) bool {
 func checkRuntimeParents(p *ir.Program, f *ast.Filter) error {
 	for i := 2; i < len(p.Layers) && i < len(f.Layers); i++ {
 		cur := p.Layers[i]
-		if cur.Alternation != nil || !absentable(p.Layers[i-1]) {
+		if cur.Alternation != nil || !p.Layers[i-1].Absentable() {
 			continue
 		}
 		for j := i - 2; j >= 0; j-- {
@@ -175,7 +163,7 @@ func checkRuntimeParents(p *ir.Program, f *ast.Filter) error {
 			if _, err := selectDispatch(cur.Spec, prev.Spec.Name, f.Layers[i].Pos); err != nil {
 				return err
 			}
-			if !absentable(prev) {
+			if !prev.Absentable() {
 				break
 			}
 		}

@@ -317,7 +317,11 @@ func (c *pmCtx) emitEntryDispatch() (asm.Instructions, error) {
 	if err != nil {
 		return nil, err
 	}
-	return append(di, dispatchJoin(c.layerIdx, c.all)...), nil
+	join, err := dispatchJoin(c.layerIdx, c.all)
+	if err != nil {
+		return nil, err
+	}
+	return append(di, join...), nil
 }
 
 // emitStateBody emits one state's extracts + transition. When the

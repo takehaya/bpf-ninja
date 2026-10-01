@@ -76,10 +76,7 @@ func genStaticChain(layer *ir.LayerInstance, index int, all []*ir.LayerInstance,
 			return nil, err
 		}
 		insns = append(insns, overRun...)
-		if optional {
-			return withAbsentEdge(insns, absentLabel, index, all)
-		}
-		return insns, nil
+		return chainLanding(insns, layer, optional, chainDone, absentLabel, index, all)
 	}
 
 	selfConst := layer.Spec.SelectDispatchConst(layer.Spec.Name)
@@ -157,12 +154,18 @@ func genStaticChain(layer *ir.LayerInstance, index int, all []*ir.LayerInstance,
 		return nil, err
 	}
 	insns = append(insns, overRun...)
+	return chainLanding(insns, layer, optional, chainDone, absentLabel, index, all)
+}
 
-	if layer.RangeMin < layer.RangeMax {
-		// Landing for any in-range iteration that hit its natural chain-end
-		// (or, for self-dispatch protocols, missed its self-dispatch peek):
-		// falls through to the next layer with offsetBase still pointing
-		// past the last successful iteration.
+// chainLanding closes a static chain. chainDone is where an in-range
+// iteration ≥ 1 that hit its natural chain-end (or, for self-dispatch
+// protocols, missed its self-dispatch peek) falls through to the next
+// layer with offsetBase still past the last successful iteration; for an
+// optional chain the iteration-0 peek miss lands there too, unless the
+// absent edge has its own block that dispatches the next layer against
+// the grandparent (D-034).
+func chainLanding(insns asm.Instructions, layer *ir.LayerInstance, optional bool, chainDone, absentLabel string, index int, all []*ir.LayerInstance) (asm.Instructions, error) {
+	if (layer.RangeMax > 1 && layer.RangeMin < layer.RangeMax) || (optional && absentLabel == chainDone) {
 		insns = append(insns, landingNoop(chainDone))
 	}
 	if optional && absentLabel != chainDone {

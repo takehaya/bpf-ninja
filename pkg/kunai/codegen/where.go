@@ -396,14 +396,21 @@ func (c *whereCtx) genQuantIterBody(inner *ir.Condition, target *ir.QuantTarget,
 // stack index it reads (`srv6.segments[2].addr`, `tcp.options.SACK.blocks[1]`):
 // an entry past the stack's runtime count is absent, so the atom is false
 // for `==`, `!=`, ordered compares and arithmetic alike (spec D-031).
-// Stacks without a count source keep their capacity-only bounds.
+// Stacks without a count source keep their capacity-only bounds. An
+// entry referenced more than once in the atom is guarded once.
 func (c *whereCtx) withStackGuards(w *ir.Condition, failLabel string, body func(*ir.Condition, string) (asm.Instructions, error)) (asm.Instructions, error) {
 	var guards asm.Instructions
 	var walkErr error
+	guarded := map[string]bool{}
 	ir.WalkConditionFieldRefs(w, func(ref *ir.FieldRef) {
 		if walkErr != nil || ref == nil || ref.Aux == nil || ref.Aux.Stack == nil || !ref.Aux.Stack.IsStatic {
 			return
 		}
+		key := fmt.Sprintf("%p/%s/%d", ref.Layer, ref.Aux.OutParam, ref.Aux.Stack.Static)
+		if guarded[key] {
+			return
+		}
+		guarded[key] = true
 		src, err := refCountSource(ref)
 		if err != nil || src == nil {
 			walkErr = err
