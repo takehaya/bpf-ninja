@@ -57,9 +57,23 @@ func NeedsParentCascade(layers []*LayerInstance, i int) (needed bool, parents []
 	if len(parents) == 0 || AbsentEdgeApplies(layers, i-1) {
 		return false, parents, altReached, nil
 	}
+	alike, err := RuntimeParentsDispatchAlike(layers, i, cur.Spec)
+	if err != nil {
+		return false, nil, false, err
+	}
+	return !alike, parents, altReached, nil
+}
+
+// RuntimeParentsDispatchAlike reports whether every layer that can
+// precede layer `i` at run time dispatches `child` the same way as the
+// static predecessor does: the listed parents and, when the walk ran into
+// an alternation, each of its members (vocab.DispatchEquivalentFor).
+func RuntimeParentsDispatchAlike(layers []*LayerInstance, i int, child *vocab.ProtocolSpec) (bool, error) {
+	parents, altReached := RuntimeParents(layers, i)
+	if len(parents) == 0 {
+		return true, nil
+	}
 	static := layers[parents[0]]
-	// The other candidates: the remaining listed parents and, when the walk
-	// ran into an alternation, every member of that group.
 	others := make([]*vocab.ProtocolSpec, 0, len(parents))
 	for _, j := range parents[1:] {
 		others = append(others, layers[j].Spec)
@@ -70,13 +84,13 @@ func NeedsParentCascade(layers []*LayerInstance, i int) (needed bool, parents []
 		}
 	}
 	for _, other := range others {
-		same, err := static.Spec.DispatchEquivalentFor(cur.Spec, other)
+		same, err := static.Spec.DispatchEquivalentFor(child, other)
 		if err != nil {
-			return false, nil, false, err
+			return false, err
 		}
 		if !same {
-			return true, parents, altReached, nil
+			return false, nil
 		}
 	}
-	return false, parents, altReached, nil
+	return true, nil
 }

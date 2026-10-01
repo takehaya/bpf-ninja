@@ -4,8 +4,8 @@
 package vocab
 
 import (
-	"slices"
 	"fmt"
+	"slices"
 
 	"github.com/takehaya/bpf-ninja/pkg/kunai/vocab/p4lite"
 )
@@ -210,7 +210,6 @@ type HeaderLength struct {
 	Addend int
 }
 
-
 // FlagTrigger names one optional fixed-length field gated by a flag
 // bit in the primary header. Codegen emits roughly
 //
@@ -270,7 +269,6 @@ func (p *ProtocolSpec) PrimaryAdvanceSkip() *HeaderLength {
 	}
 	return nil
 }
-
 
 // pushedAuxStackName returns the out-param name of the first aux stack
 // the parser machine push-extracts (extract(stack.next)), or ("", false)
@@ -866,6 +864,33 @@ type FieldRef struct {
 // Returns nil when no const matches; the resolver then checks
 // IsSelfValidating to decide whether to synthesize a
 // DispatchSelfValidating choice or surface a "no dispatch" error.
+func (s *ProtocolSpec) SelectDispatchConst(parentName string) *DispatchConst {
+	var field, nocheck *DispatchConst
+	for i := range s.Consts {
+		c := &s.Consts[i]
+		if c.Parent != parentName {
+			continue
+		}
+		switch c.Type {
+		case DispatchField:
+			if field == nil {
+				field = c
+			}
+		case DispatchNoCheck:
+			if nocheck == nil {
+				nocheck = c
+			}
+		}
+	}
+	switch {
+	case field != nil:
+		return field
+	case nocheck != nil:
+		return nocheck
+	}
+	return nil
+}
+
 // DispatchEquivalentFor reports whether `child` dispatches the same way
 // under this (fixed-layout) parent and under `other`: both
 // self-validating, both no-check, or the same field constant read at the
@@ -912,31 +937,4 @@ func (s *ProtocolSpec) DispatchEquivalentFor(child, other *ProtocolSpec) (bool, 
 		return false, err
 	}
 	return ta == tb && wa == wb, nil
-}
-
-func (s *ProtocolSpec) SelectDispatchConst(parentName string) *DispatchConst {
-	var field, nocheck *DispatchConst
-	for i := range s.Consts {
-		c := &s.Consts[i]
-		if c.Parent != parentName {
-			continue
-		}
-		switch c.Type {
-		case DispatchField:
-			if field == nil {
-				field = c
-			}
-		case DispatchNoCheck:
-			if nocheck == nil {
-				nocheck = c
-			}
-		}
-	}
-	switch {
-	case field != nil:
-		return field
-	case nocheck != nil:
-		return nocheck
-	}
-	return nil
 }

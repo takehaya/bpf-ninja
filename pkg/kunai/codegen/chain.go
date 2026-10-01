@@ -54,7 +54,7 @@ func genStaticChain(layer *ir.LayerInstance, index int, all []*ir.LayerInstance,
 	// The absent edge (`{0,m}` with no header) gets its own label when it
 	// must dispatch the next layer against the grandparent (D-034).
 	absentLabel := chainDone
-	if absentEdgeApplies(index, all) {
+	if ir.AbsentEdgeApplies(all, index) {
 		absentLabel = fmt.Sprintf("dsl_absent_%d", index)
 	}
 	// A marked optional layer's entry slot reads "absent" until a present

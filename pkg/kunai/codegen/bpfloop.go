@@ -150,7 +150,7 @@ func genBpfLoopChain(layer *ir.LayerInstance, index int, all []*ir.LayerInstance
 	// The absent edge (`*` with no header) gets its own label when it must
 	// dispatch the next layer against the grandparent (D-034).
 	absentLabel := chainDone
-	if optionalChain && absentEdgeApplies(index, all) {
+	if optionalChain && ir.AbsentEdgeApplies(all, index) {
 		absentLabel = fmt.Sprintf("dsl_absent_%d", index)
 	}
 	// A marked `*` / `{0,m}` layer's entry slot reads "absent" until a

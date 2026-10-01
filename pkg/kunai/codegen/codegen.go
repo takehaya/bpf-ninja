@@ -263,8 +263,10 @@ const dslReject = "dsl_reject"
 //     ctx (2 slots × 8 bytes, parserCounterSlotsBase = -216).
 //   - kunai: per-layer entry slots at -224 .. -224-8*N (where N <
 //     whereLayerEntrySlotCap = 7), allocated lazily when the
-//     resolver marks a layer NeedsRuntimeOffset (= where / capture
-//     references it past a heterogeneous-size alt). Worst-case
+//     resolver marks a layer NeedsRuntimeOffset (a where / capture
+//     clause references it past a heterogeneous-size alt or a
+//     quantified layer, or a later layer's dispatch tests whether this
+//     optional matched). Worst-case
 //     bottom is -272 (slot 6 at -272 writing [-272, -264)); total
 //     kunai stack consumption above the dynamic-aux region is
 //     bounded by KunaiStackTop − 272 = 216 bytes.
@@ -1015,11 +1017,6 @@ func variableTailSkipFromHeaderLength(vs *vocab.HeaderLength) variableTailSkip {
 	}
 }
 
-// absentEdgeApplies is ir.AbsentEdgeApplies in this file's argument order.
-func absentEdgeApplies(index int, all []*ir.LayerInstance) bool {
-	return ir.AbsentEdgeApplies(all, index)
-}
-
 // dispatchJoinLabel marks the point in layer `index` just after its own
 // (static-parent) dispatch; the absent edge of an absentable predecessor
 // joins here after dispatching against the grandparent instead.
@@ -1028,7 +1025,7 @@ func dispatchJoinLabel(index int) string { return fmt.Sprintf("dsl_disp_join_%d"
 // dispatchJoin follows a layer's static-parent dispatch: it emits the
 // landing an absentable predecessor's absent edge joins at.
 func dispatchJoin(index int, all []*ir.LayerInstance) (asm.Instructions, error) {
-	if index >= 1 && absentEdgeApplies(index-1, all) {
+	if index >= 1 && ir.AbsentEdgeApplies(all, index-1) {
 		return asm.Instructions{asm.Mov.Reg(asm.R0, asm.R0).WithSymbol(dispatchJoinLabel(index))}, nil
 	}
 	return nil, nil
@@ -1037,7 +1034,7 @@ func dispatchJoin(index int, all []*ir.LayerInstance) (asm.Instructions, error) 
 // genParentDispatch emits the dispatch of layer `index` against whichever
 // layer precedes it at run time (§13.4 parent_dispatch(p, σ, P)). With a
 // plain predecessor that is the static parent. After an absentable layer
-// whose absent edge carries its own dispatch (absentEdgeApplies) the
+// whose absent edge carries its own dispatch (ir.AbsentEdgeApplies) the
 // static dispatch is still right on the present path. Otherwise — a run
 // of consecutive optionals, or a quantified layer after an optional one —
 // the runtime parent is the nearest candidate that matched: when every
@@ -1119,9 +1116,8 @@ func dispatchVia(current, parent *ir.LayerInstance, r4IsRange, parentEntryIsRang
 	return genDispatch(via, parent, hs, r4IsRange, parentEntryIsRange, failLabel)
 }
 
-
 // withAbsentEdge wraps an absentable layer's instructions when its absent
-// edge applies (absentEdgeApplies). `present` is the layer body whose peek
+// edge applies (ir.AbsentEdgeApplies). `present` is the layer body whose peek
 // jumps to `peekFail` when the layer is absent. The absent path lands on
 // its own block that bounds-checks the next layer, dispatches it against
 // the grandparent (the actual runtime parent, §13.4 parent_dispatch(p, σ,
@@ -1129,7 +1125,7 @@ func dispatchVia(current, parent *ir.LayerInstance, r4IsRange, parentEntryIsRang
 // path skips that block. When the next layer has no dispatch constant for
 // the grandparent and does not self-validate, the absent path rejects.
 func withAbsentEdge(present asm.Instructions, peekFail string, index int, all []*ir.LayerInstance) (asm.Instructions, error) {
-	if !absentEdgeApplies(index, all) {
+	if !ir.AbsentEdgeApplies(all, index) {
 		return nil, fmt.Errorf("codegen: absent edge of layer %d does not apply (chain codegen bug)", index)
 	}
 	gp, next := all[index-1], all[index+1]
@@ -2122,7 +2118,7 @@ func emitLayerEntryStore(layer *ir.LayerInstance) (asm.Instructions, error) {
 	if !layer.NeedsRuntimeOffset {
 		return nil, nil
 	}
-	slot, err := whereLayerEntrySlot(layer.LayerPos)
+	slot, err := layerEntrySlotOf(layer)
 	if err != nil {
 		return nil, err
 	}
@@ -2137,7 +2133,7 @@ func emitLayerEntrySentinel(layer *ir.LayerInstance) (asm.Instructions, error) {
 	if !layer.NeedsRuntimeOffset || !layer.Absentable() {
 		return nil, nil
 	}
-	slot, err := whereLayerEntrySlot(layer.LayerPos)
+	slot, err := layerEntrySlotOf(layer)
 	if err != nil {
 		return nil, err
 	}
@@ -2154,11 +2150,22 @@ func emitLayerEntryStoreFromCb(layer *ir.LayerInstance) (asm.Instructions, error
 	if !layer.NeedsRuntimeOffset {
 		return nil, nil
 	}
-	slot, err := whereLayerEntrySlot(layer.LayerPos)
+	slot, err := layerEntrySlotOf(layer)
 	if err != nil {
 		return nil, err
 	}
 	return asm.Instructions{asm.StoreMem(asm.R2, mainStackOffsetFromCb(slot), asm.R3, asm.DWord)}, nil
+}
+
+// layerEntrySlotOf names the layer in whereLayerEntrySlot's cap error, so a
+// chain whose optionals sit past the slotted positions (runtime-parent
+// dispatch, where references) reads as a limit on that layer.
+func layerEntrySlotOf(layer *ir.LayerInstance) (int16, error) {
+	slot, err := whereLayerEntrySlot(layer.LayerPos)
+	if err != nil {
+		return 0, fmt.Errorf("%w (layer %s at chain position %d needs a runtime entry slot: it is referenced by a where / capture clause, or its presence decides a later layer's dispatch)", err, layer.DisplayName(), layer.LayerPos+1)
+	}
+	return slot, nil
 }
 
 func whereLayerEntrySlot(layerPos int) (int16, error) {

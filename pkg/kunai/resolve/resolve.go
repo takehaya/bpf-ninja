@@ -162,7 +162,7 @@ func markCascadeParents(p *ir.Program) error {
 	for i := range p.Layers {
 		needed, parents, _, err := ir.NeedsParentCascade(p.Layers, i)
 		if err != nil {
-			return errorf(p.Layers[i].Pos, "%v", err)
+			return errorf(p.Layers[i].Pos, "%v", err) // ResolveError carries a message, not a cause
 		}
 		if !needed {
 			continue
