@@ -625,7 +625,7 @@ dsl codegen is not yet fully implemented: value V exceeds int32 immediate range 
 | `/`, `%`, `&`, `\|`, `^`, `<<`, `>>` | ✅ 既存 | ❌ 型エラー (D-035。bit slice か CIDR literal で書く) |
 | bit-slice `field[lo:hi]` | ✅ 任意 bit 範囲 (single LDX + bswap + shift+mask、F11/F13) | ✅ byte-aligned 端点に限り cmp 可 (F12 で resolver desugar) |
 
-未実装分は codegen が `ErrNotImplemented` を返します。型では well-typed、codegen で `not yet implemented` という分離です。
+表の ❌ は型エラー (resolver が拒否) です。型としては well-typed でも codegen が配線していない形 (`Int<128>` の operand に入れ子の binop や左側の定数、bit slice と `Int<128>` 全体の混在、aux field の `Int<128>` 算術) は `ErrNotImplemented` を返します。
 
 Literal narrow (§4.1 / §7.3) について、負数を 2's complement で uint64 化したものを含む整数リテラルは、codegen の最終 emit 直前に対象 field の幅 N でマスクされます。`tcp.dport == -1` ⇒ 比較 immediate = `0xffff` (Int<16> narrow) となります。これにより signed-extended 値が int32 immediate 範囲に収まります。実装は bracket predicate 用 (`codegen/predicate.go::emitIntPredicate`) と where arith cmp 用 (`codegen/where.go::genArithWithBits`、target bits は両 operand の field 最大幅から計算) の 2 箇所です。
 

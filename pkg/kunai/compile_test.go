@@ -706,13 +706,19 @@ func TestCompileWhereIPv6MulIllTyped(t *testing.T) {
 		"eth/ipv6/tcp where ipv6.src >> 64 == 0",
 	} {
 		_, err := compileForTest(expr)
-		if err == nil || errors.Is(err, codegen.ErrNotImplemented) {
-			t.Errorf("Compile(%q) = %v; want a resolver error", expr, err)
+		if err == nil || !strings.Contains(err.Error(), "only + and - are defined") {
+			t.Errorf("Compile(%q) = %v; want the §13.9 operator error", expr, err)
 		}
 	}
 	// A 64-bit slice of the same field keeps every operator.
 	if _, err := compileForTest("eth/ipv6/tcp where ipv6.src[64:128] * 2 == ipv6.dst[64:128]"); err != nil {
 		t.Errorf("slice arithmetic: %v", err)
+	}
+	// A slice next to a full Int<128> operand lands in the 128-bit pipeline,
+	// which does not narrow it: refused rather than loading the whole field.
+	_, err := compileForTest("eth/ipv6/tcp where ipv6.src[64:128] + ipv6.dst == 1")
+	if !errors.Is(err, codegen.ErrNotImplemented) {
+		t.Errorf("slice next to Int<128>: err = %v; want ErrNotImplemented", err)
 	}
 }
 

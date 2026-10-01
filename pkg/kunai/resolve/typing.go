@@ -75,9 +75,11 @@ func checkBracketIntFit(field *ir.FieldRef, v *ast.Value, layerName string, pos 
 }
 
 // typing.go implements the static type checks defined by
-// docs/ja/dsl-types.md. Per D0 (b+1) the resolver enforces fit-check
-// and division-by-zero rules; codegen separately reports
-// ErrNotImplemented for staged operations on Int<N> with N > 64.
+// docs/ja/dsl-types.md. Per D0 (b+1) the resolver enforces fit-check,
+// division-by-zero and the operator set above 64 bits (§13.9: + and -
+// only); codegen separately reports ErrNotImplemented for the Int<128>
+// operand shapes it has not wired (nested binops, a constant on the left,
+// a bit slice next to a full Int<128> operand).
 
 // checkArithCondition runs all type-related validations against a
 // resolved WAtomArith condition: literal fit checks against the

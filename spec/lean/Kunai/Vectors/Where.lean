@@ -291,6 +291,16 @@ vector arith128AddWideConst := {
 vector arith128SubWideConstBorrow := {
   id := "arith-128-sub-wide-const-borrow", ast := W6 (cmp (.bin .sub src6 (k (2 ^ 32))) .eq dst6), packet := v6pkt (2 ^ 64) (2 ^ 64 - 2 ^ 32),
   expected := .accept [], note := "a constant above int32 as the subtrahend, with a borrow from the high half" }
+vector arith128AddNegConst := {
+  id := "arith-128-add-neg-const", ast := W6 (cmp (.bin .add src6 (k (-1))) .eq dst6),
+  packet := v6pkt 0xfc000000000000000000000000000002 0xfc000000000000000000000000000001, expected := .accept [],
+  note := "-1 narrows to 2^128 - 1 (§7.3), so src + -1 is src - 1" }
+vector arith128SubNegConst := {
+  id := "arith-128-sub-neg-const", ast := W6 (cmp (.bin .sub src6 (k (-1))) .eq dst6), packet := ipv6TCP,
+  expected := .accept [], note := "src - -1 is src + 1" }
+vector arith128CmpNegConst := {
+  id := "arith-128-cmp-neg-const", ast := W6 (cmp src6 .eq (k (-1))), packet := v6pkt (2 ^ 128 - 1) 0,
+  expected := .accept [], note := "a negative literal compared at 128 bits is all ones in both halves" }
 vector arith128CmpWideConst := {
   id := "arith-128-cmp-wide-const", ast := W6 (cmp (.bin .add src6 dst6) .eq (k (2 ^ 32))), packet := v6pkt (2 ^ 32 - 1) 1,
   expected := .accept [], note := "a constant above int32 on the comparison side" }
@@ -323,7 +333,8 @@ def whereVectors : List Vector := [
   typUnknownProto, typNoDispatch, typNotInChain, typUnknownField, typFit, typFitArith, typWidthIPv6, typCIDRWidth,
   typPredIdent, typInSet, typAny, typExists, typAuxPath,
   arith128AddConst, arith128SubConst, arith128AddCarry, arith128AddWrap, arith128SubBorrow, arith128SubWrap, arith128AddMiss,
-  arith128FieldAddField, arith128FieldAddFieldCarry, arith128FieldSubField, arith128FieldSubFieldBorrow, arith128AddWideConst, arith128SubWideConstBorrow, arith128CmpWideConst,
+  arith128FieldAddField, arith128FieldAddFieldCarry, arith128FieldSubField, arith128FieldSubFieldBorrow, arith128AddWideConst, arith128SubWideConstBorrow,
+  arith128AddNegConst, arith128SubNegConst, arith128CmpNegConst, arith128CmpWideConst,
   arith128Lt, arith128GeMiss, arith128LtHighHalf, typArith128Mul, typArith128Band]
 
 end Kunai
