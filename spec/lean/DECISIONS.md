@@ -292,7 +292,7 @@ Entries are never deleted; a rejected candidate stays in the log.
 
 11. ✅ 抽出されなかった option の field 参照が filter 全体を reject する (D-027) — atom が false になるよう fail label を通した (`fix/kunai-spec-conformance-2`)。
 12. ✗ option を参照しない filter は option を検証しない (D-029) — やらない (2026-10-01 決定)。demand-driven walk は設計判断として維持し、仕様との差は D-029 に記録。vectors は mismatch のまま。
-13. ✅ 静的 index が count を見ない・`!=` が範囲外で true (D-031) — count source のある stack (srv6, SACK, RR) は #120、parser machine が push する stack (ipv6.exts, gtp.exts) は push 数を数える demand slot で #121。可変長 ext header の `exts[i]` は読む側で手前の entry を辿って位置を出す (`fix/kunai-spec-conformance-4`, vectors `ipv6-exts-index-after-long-ext`, `ipv6-exts-any-after-long-ext`)。可変長 entry への動的 index は `ErrNotImplemented` (`ipv6-exts-dynamic-index-var-len`)。
+13. ✅ 静的 index が count を見ない・`!=` が範囲外で true (D-031) — count source のある stack (srv6, SACK, RR) は #120、parser machine が push する stack (ipv6.exts, gtp.exts) は push 数を数える demand slot で #121。可変長 ext header の `exts[i]` は読む側で手前の entry を辿って位置を出す (`fix/kunai-spec-conformance-4`, vectors `ipv6-exts-index-after-long-ext`, `ipv6-exts-any-after-long-ext`)。可変長 entry への動的 index も、push 上限まで展開した walk を index の段で止めて読む (PR #131, vectors `ipv6-exts-dynamic-index-var-len*`, `gtp-ext-dynamic-index`)。
 14. ✅ bracket predicate が write-back 前の値を見る (D-032) — write-back を持つ proto は walk 後に評価。
 15. ✅ `tcp.options.X.exists` を実装。
 16. ✅ `eth/mpls*/ipv4/tcp` が ARP を accept する (D-034) — skip された layer の後の dispatch は実行時の親に対して行う。1 つの optional は absent edge で grandparent に dispatch (#120)、連続する optional は各 optional の entry slot (不在 sentinel) を近い順に試す cascade で実行時の親を選ぶ (`fix/kunai-consecutive-optionals`, vectors `absent-consecutive-*`)。全候補で dispatch が同じ読みになる形 (`eth/qinq?/vlan?/ipv4`) は従来どおり静的 1 回。

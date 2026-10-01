@@ -21,7 +21,7 @@ def srv6Hdr (next lastEntry : Nat) : Packet :=
   [UInt8.ofNat next, UInt8.ofNat (2 * (lastEntry + 1)), 4, 0, UInt8.ofNat lastEntry, 0, 0, 0]
 def srv6Pkt (lastEntry : Nat) (segs : List Nat) : Packet :=
   eth 0x86DD ++ ipv6 43 ++ srv6Hdr 6 lastEntry ++ (segs.map (be 16)).flatten ++ tcp 12345 80 ++ payload 5
-def gtpHdr (flags : Nat) : Packet := [UInt8.ofNat (0x30 + flags), 0xff] ++ be 2 28 ++ be 4 1
+def gtpHdr (flags : Nat) (msgType : Nat := 0xff) : Packet := [UInt8.ofNat (0x30 + flags), UInt8.ofNat msgType] ++ be 2 28 ++ be 4 1
 def gtpOpt (nextExt : Nat) : Packet := be 2 7 ++ [0, UInt8.ofNat nextExt]
 def gtpExt (extType nextExt : Nat) (extLength : Nat := 1) : Packet :=
   [UInt8.ofNat extLength] ++ be 2 extType ++ [UInt8.ofNat nextExt] ++ List.replicate (4 * (extLength - 1)) 0
@@ -214,6 +214,11 @@ vector gtpOptField := {
   id := "gtp-opt-field", ast := { layers := gtpL, cond := some (cmp gtpNextExt .eq (k 0)) }, packet := gtpPkt (gtpHdr 2 ++ gtpOpt 0), expected := .accept [] }
 vector gtpOptFieldAbsent := {
   id := "gtp-opt-field-absent", ast := { layers := gtpL, cond := some (cmp gtpNextExt .eq (k 0)) }, packet := gtpPkt (gtpHdr 0), expected := .reject, note := "D-027" }
+vector gtpExtDynamicIndex := {
+  id := "gtp-ext-dynamic-index",
+  ast := { layers := gtpL, cond := some (cmp (Arith.field ⟨[("gtp", none), ("exts", some (.field ["gtp", "msg_type"])), ("ext_type", none)]⟩) .eq (k 2)) },
+  packet := gtpPkt (gtpHdr 4 (msgType := 1) ++ gtpOpt 0x85 ++ gtpExt 1 0x85 (extLength := 2) ++ gtpExt 2 0), expected := .accept [],
+  note := "msg_type = 1 indexes the second extension behind an 8-byte first one (variable-length walk, scale 4 with min_total)" }
 vector gtpExtLongFirst := {
   id := "gtp-ext-after-long-ext",
   ast := { layers := gtpL, cond := some (cmp (Arith.field ⟨[("gtp", none), ("exts", some (.nat 1)), ("ext_type", none)]⟩) .eq (k 2)) },
@@ -295,7 +300,7 @@ def auxVectors : List Vector := [
   ipv6ExtsBracket, ipv6ExtsBracketAbsent, ipv6ExtsBracketLong, ipv6ExtsBracketDynamic, ipv6ExtsBracketIter, ipv6ExtsBracketInAbsent, ipv6ExtsBracketInLong, ipv6ExtsSliceLong, ipv6ExtsBracketSliceLong, gtpExtsBracket, ipv6ExtsIndexAbsent,
   ipv6NextHeaderWhere, ipv6NextHeaderBracket, ipv6FiveExts, ipv6SixExts, ipv6AnyExts, ipv6AllExts,
   srv6Chain, srv6Static, srv6Dynamic, srv6Any, srv6All, srv6AllCidr, srv6IndexAbsent, srv6OverCap, srv6AtCap,
-  gtpPlain, gtpOptExists, gtpOptAbsent, gtpOptField, gtpOptFieldAbsent, gtpExtLongFirst, gtpExtLengthZero, gtpExtStack,
+  gtpPlain, gtpOptExists, gtpOptAbsent, gtpOptField, gtpOptFieldAbsent, gtpExtDynamicIndex, gtpExtLongFirst, gtpExtLengthZero, gtpExtStack,
   ipv4RrStatic, ipv4RrAny, ipv4RrArith]
 
 end Kunai
