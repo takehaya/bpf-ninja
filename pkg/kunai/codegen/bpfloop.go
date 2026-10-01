@@ -107,16 +107,11 @@ const bpfLoopChainCap = 32
 // the post-loop RangeMin floor rejects a multi-header under-run. Every
 // iteration runs the layer's bounds check and bracket predicates; a
 // failure there rejects the packet rather than ending the chain (D-001 /
-// D-005 in spec/lean/DECISIONS.md). The one
-// remaining gap is over-run — a stack longer than RangeMax is not rejected
-// on the s-bit (the iteration cap stops consuming but the last header's
-// s-bit is never required), so it leans on the next layer's
-// self-validation to reject the mis-parse: masked in practice, never
-// reproduced as a false-accept, but not the primary guard. The common
-// bounded MPLS quantifiers (m ≤ staticChainCap) take the fully-guarded
-// static path in chain.go; tightening this loop's over-run to match is a
-// follow-up. Non-chain-end protocols (VLAN) bound both ends via their
-// self-dispatch peek.
+// D-005 in spec/lean/DECISIONS.md). Over-run is bounded as on the static
+// path: the header consumed by the last callback iteration must signal
+// chain-end, else the stack is deeper than RangeMax (or MAX_DEPTH for
+// `+` / `*`) allows and the packet rejects (D-024). Non-chain-end
+// protocols (VLAN) bound both ends via their self-dispatch peek.
 func genBpfLoopChain(layer *ir.LayerInstance, index int, all []*ir.LayerInstance, pc *predCtx) (asm.Instructions, asm.Instructions, error) {
 	rangeMin, _ := chainBounds(layer)
 	if rangeMin == 0 {
@@ -244,6 +239,18 @@ func genBpfLoopChain(layer *ir.LayerInstance, index int, all []*ir.LayerInstance
 			asm.JLT.Imm(asm.R5, int32((rangeMin-1)*hs), dslReject),
 		)
 	}
+
+	// Over-run (D-024): whichever way the loop ended — the chain-end
+	// signal, or the iteration cap (RangeMax, or MAX_DEPTH for `+` / `*`)
+	// — the last consumed header must signal end, else a header the
+	// quantifier disallows follows. The static path's chainEndRequire;
+	// no-op for self-dispatch protocols. The pre-loop skip below bypasses
+	// it, having already seen the signal.
+	overRun, err := chainEndRequire(layer.Spec, hs, staticChainFrame, dslReject)
+	if err != nil {
+		return nil, nil, err
+	}
+	mainInsns = append(mainInsns, overRun...)
 
 	if optionalChain || layer.Spec.ChainEnd != nil {
 		// Landing for paths that jump past the bpf_loop call: the `*`

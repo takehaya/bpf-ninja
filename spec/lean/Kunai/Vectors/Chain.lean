@@ -139,8 +139,8 @@ vector quantOverrunBounded := {
 vector quantOverrunOpen := {
   id := "quant-overrun-open", ast := { layers := [P "eth", Pq "mpls" .plus] },
   packet := eth 0x8847 ++ mpls 1 0 ++ mpls 2 0 ++ mpls 3 0 ++ mpls 4 0 ++ mpls 5 0 ++ mpls 6 0 ++ mpls 7 0 ++ mpls 8 0 ++ mpls 9 1,
-  expected := .reject, goStatus := .mismatch,
-  note := "D-024: 9 labels exceed MPLS_MAX_DEPTH = 8 and the 8th has s = 0; Go's bpf_loop path does not require the end signal at the cap" }
+  expected := .reject,
+  note := "D-024: 9 labels exceed MPLS_MAX_DEPTH = 8 and the 8th has s = 0; the bpf_loop path requires the end signal at the cap too" }
 vector quantExactBound := {
   id := "quant-exact-bound", ast := { layers := [P "eth", Pq "mpls" (.range 1 (some 3))] }, packet := mpls3,
   expected := .accept [], note := "3 labels, the 3rd has s = 1: bound reached with the end signal" }

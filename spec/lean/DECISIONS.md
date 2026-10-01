@@ -281,7 +281,7 @@ Status values: 提案中 (implemented as recommended, awaiting sign-off) /
 8. ✅ bpf_loop 経路が反復途中の bounds 失敗を「停止」と扱う (D-005) — dispatch 一致後の bounds 失敗は reject。
 9. bpf_loop 経路の RangeMin 判定が VLAN (self-dispatch で停止) で 1 つずれていた — 8 と同時に修正済 ✅。
 
-10. bpf_loop 経路が反復上限で chain-end 信号を要求しない (D-024)。
+10. ✅ bpf_loop 経路が反復上限で chain-end 信号を要求しない (D-024) — ループ後に最後の header の end 信号を要求 (`fix/kunai-spec-conformance-3`)。
 
 11. ✅ 抽出されなかった option の field 参照が filter 全体を reject する (D-027) — atom が false になるよう fail label を通した (`fix/kunai-spec-conformance-2`)。
 12. option を参照しない filter は option を検証しない (D-029) — 未着手 (bulk advance の設計変更が必要)。
