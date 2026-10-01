@@ -32,7 +32,7 @@ Entries are never deleted; a rejected candidate stays in the log.
 ## D-003: 不在レイヤの field 参照
 - 論点: `eth/vlan?/ipv4 where vlan.tci == 10` で vlan が無いとき。
 - 候補: (a) 比較 (atom) は false / (b) filter は reject / (c) 型エラー
-- 現行 Go 実装の挙動 (2026-10-01 時点): **コンパイル時 `ErrNotImplemented`** ("where-clause field on quantified layer" / "past quantified layer")。→ `fix/kunai-where-quantified` で実装: 量化 layer は entry slot に「不在」または最後の instance の開始を記録し、where の atom は slot が不在なら false へ飛ぶ。`eth/vlan?/ipv4/tcp where tcp.dport == 80` は通る (ipv4 が可変長 slot 境界になるため)。`README.ja.md:18` の例 `eth/mpls{1,8}/ipv4/tcp where ipv4.total_length > 100` は当初コンパイルできなかった (例を差し替え済) が、この実装で通るようになった (`TestCompileWhereOnQuantifiedLayers`)。
+- 現行 Go 実装の挙動 (2026-10-01 時点): **コンパイル時 `ErrNotImplemented`** ("where-clause field on quantified layer" / "past quantified layer")。→ PR #126 で実装 (`TestCompileWhereOnQuantifiedLayers`, `dsltest/absent_layer_test.go`): 量化 layer は entry slot に「不在」または最後の instance の開始を記録し、where の atom は slot が不在なら false へ飛ぶ。`eth/vlan?/ipv4/tcp where tcp.dport == 80` は通る (ipv4 が可変長 slot 境界になるため)。`README.ja.md:18` の例 `eth/mpls{1,8}/ipv4/tcp where ipv4.total_length > 100` は当初コンパイルできなかった (例を差し替え済) が、この実装で通るようになった (`TestCompileWhereOnQuantifiedLayers`)。
 - 推奨: (a)。atom 単位で false にする。(b) は `not (vlan.tci == 1)` を書けなくし、(c) は実装制限を仕様に昇格させる。ユーザー決定 (2026-10-01): 仕様は純粋に書き、Go の制限は vector の `goStatus: notImplemented` で表す。注意: `not (vlan.tci == 1)` は不在時に true になる。
 - 状態: 承認済 (2026-10-01)。不在時の真理値表:
 
@@ -113,7 +113,7 @@ Entries are never deleted; a rejected candidate stays in the log.
 
 ## D-013: 同一 proto が複数ある chain での無ラベル参照
 - 論点: `eth/ipv4/ipv4/tcp where ipv4.ttl` や `eth/mpls{1,8}/… where mpls.label` の解決。
-- 現行 Go 実装の挙動: 静的重複は "protocol is ambiguous (2 instances); qualify with an @label"。量化 layer は D-003 の `ErrNotImplemented` だった → `fix/kunai-where-quantified` で `lookupByQualifier` が上限 ≠ 1 の量化 layer を複数扱いにし、同じ ambiguous エラー (vector `where-repeated-unlabelled`)。
+- 現行 Go 実装の挙動: 静的重複は "protocol is ambiguous (2 instances); qualify with an @label"。量化 layer は D-003 の `ErrNotImplemented` だった → PR #126 で `lookupByQualifier` が上限 ≠ 1 の量化 layer を複数扱いにし、同じ ambiguous エラー (vector `where-repeated-unlabelled`)。
 - 推奨: 静的に 2 個以上になりうる (重複、または上限 ≠ 1 の quantifier) なら illTyped。ラベルは `Λ ⊕ {ℓ ↦ inst}` どおり最後の束縛が勝つ。
 - 状態: 承認済 (2026-10-01、一括)
 - 反映先: `Eval/Where.lean` `staticCount`, `resolveRef`, vectors `where-ambiguous`, `where-label-inner-outer`
@@ -149,7 +149,7 @@ Entries are never deleted; a rejected candidate stays in the log.
 
 ## D-018: quantified layer のラベル再束縛
 - 論点: `mpls@m{1,8}` は反復ごとに `m` を束縛し直す。
-- 現行 Go 実装の挙動: `where m.label` は `ErrNotImplemented` だった → `fix/kunai-where-quantified` で実装: 静的 unroll の各反復と bpf_loop callback が entry slot を上書きし、最後の instance が残る (vectors `where-label-repeated-last`, `-first-miss`)。
+- 現行 Go 実装の挙動: `where m.label` は `ErrNotImplemented` だった → PR #126 で実装: 静的 unroll の各反復と bpf_loop callback が entry slot を上書きし、最後の instance が残る (vectors `where-label-repeated-last`, `-first-miss`)。
 - 推奨: `Λ ⊕` どおり最後の束縛が勝つ (D-013)。
 - 状態: 承認済 (2026-10-01、一括)
 - 反映先: `Eval/Layer.lean` `extract` (labels に cons), `Eval/Where.lean` `resolveRef`
@@ -167,7 +167,7 @@ Entries are never deleted; a rejected candidate stays in the log.
 - 推奨: (a)。`capture vlan+8 capture ipv4+8` のように複数句を並べれば「vlan があれば vlan+8、無ければ ipv4+8」が書けるので、省く方が表現力がある。Go は `?` 以降の `capture <layer>` が `ErrNotImplemented` で、実装時に再確認する。
 - 状態: 承認済 (2026-10-01、案 a)
 - 反映先: `Eval/Where.lean` `evalCapture` `.toLayer`
-- Go (`fix/kunai-where-quantified`): capture 長は compile 時の上限 (全 instance がある場合、`prefixHeaderSizeUpper`)。対象 layer が無いときは句を落とせず上限分を capture する (verdict は一致、vectors `cap-absent-layer`, `cap-present-layer`)。
+- Go (PR #126): capture 長は compile 時の上限 (全 instance がある場合、`prefixHeaderSizeUpper`)。対象 layer が無いときは句を落とせず上限分を capture する (verdict は一致、vectors `cap-absent-layer`, `cap-present-layer`)。
 
 ## D-021: per-capture `where` の合成
 - 論点: §13.6 は `gate(c, σ) = false` なら capture 句を省くだけ (verdict は変えない) と読める。`dsl-grammar.md:219` / `dsl-usage.md:217` は「filter 全体の where と AND 合成」。

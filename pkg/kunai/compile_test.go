@@ -920,8 +920,8 @@ func TestCompileWhereOnQuantifiedLayers(t *testing.T) {
 	// has no matched-member check on where reads, so it stays refused
 	// even behind an optional layer.
 	_, err = compileForTest("eth/vlan?/(ipv4|ipv6)/tcp where ipv4.ttl == 64")
-	if !errors.Is(err, codegen.ErrNotImplemented) {
-		t.Fatalf("het-alt member after an optional layer: expected ErrNotImplemented, got %v", err)
+	if !errors.Is(err, codegen.ErrNotImplemented) || !strings.Contains(err.Error(), "heterogeneous-size alternation") {
+		t.Fatalf("het-alt member after an optional layer: expected ErrNotImplemented naming the alternation, got %v", err)
 	}
 	// Capturing an alternation member behind an optional layer sizes the
 	// bound from the member itself.

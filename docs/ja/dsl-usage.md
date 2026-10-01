@@ -147,7 +147,8 @@ eth/ipv4/tcp where action == XDP_DROP            # exit mode 限定
 
 - `?` / `{0,1}` の layer (`eth/vlan?/ipv4/tcp where vlan.tci == 100`): layer が無いパケットでは、その field を含む atom は **false** になります (`==` も `!=` も)。「無い、または 100 でない」は `not (vlan.tci == 100)` と書きます。
 - `{n,m>1}` / `+` / `*` の layer は複数 header にマッチしうるので、素の proto 名では ambiguous エラーになります。`@label` を付けると**最後にマッチした header** を指します (`eth/mpls@m{1,8}/ipv4/tcp where m.label == 7`)。
-- 量化 layer の後ろの layer (`eth/vlan?/ipv4/tcp where ipv4.ttl == 64`) は普通に参照できます。offset は実行時に解決されます。
+- 量化 layer の後ろの layer (`eth/vlan?/ipv4/tcp where ipv4.ttl == 64`) は普通に参照できます。offset は実行時に解決されます (実行時 offset で参照できるのは chain の先頭から 7 層目までで、8 層目以降は `ErrNotImplemented`)。
+- 大きさの異なる alternation (`(ipv4|ipv6)`) の中の layer は、量化 layer の後ろにあっても where から参照できません (どちらがマッチしたかの判定が where 側に無いため)。
 - `any` / `all` の対象 stack を持つ layer が無いときは、どちらも false です (空 stack の場合とは違います)。
 
 あるプロトコルにどんな aux / stack / options が露出しているか調べたいときは、`bpf-ninja --dsl-help <proto>` で full reference を出せます。たとえば `--dsl-help srv6` では `segments[0..7]` stack の field と access pattern が、`--dsl-help gtp` では `opt` aux + `exts[0..7]` stack が、`--dsl-help tcp` では options walk の named entries が一覧されます。

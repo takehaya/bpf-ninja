@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"slices"
+	"strings"
 
 	"github.com/cilium/ebpf/asm"
 
@@ -67,6 +68,12 @@ func (c *whereCtx) layerAnchorFor(l *ir.LayerInstance) (layerAnchor, error) {
 		anchor layerAnchor
 		err    error
 	)
+	if group := c.hetAltGroupOf(l); group != nil {
+		// Members of a heterogeneous alternation share one entry slot and
+		// where reads have no matched-member check, so a field of the
+		// member that did not match would read the other member's bytes.
+		return layerAnchor{}, fmt.Errorf("%w: where-clause field on %q inside the alternation %s: reading a member of a heterogeneous-size alternation is not supported", ErrNotImplemented, l.Spec.Name, altGroupText(group))
+	}
 	if l != nil && l.NeedsRuntimeOffset {
 		var slot int16
 		slot, err = whereLayerEntrySlot(l.LayerPos)
@@ -85,6 +92,28 @@ func (c *whereCtx) layerAnchorFor(l *ir.LayerInstance) (layerAnchor, error) {
 	}
 	c.anchors[l] = anchor
 	return anchor, nil
+}
+
+// hetAltGroupOf returns the heterogeneous alternation group `l` belongs
+// to, or nil.
+func (c *whereCtx) hetAltGroupOf(l *ir.LayerInstance) *ir.LayerInstance {
+	if c.p == nil {
+		return nil
+	}
+	for _, g := range c.p.Layers {
+		if ir.IsHeterogeneousAlt(g) && slices.Contains(g.Alternation, l) {
+			return g
+		}
+	}
+	return nil
+}
+
+func altGroupText(g *ir.LayerInstance) string {
+	names := make([]string, 0, len(g.Alternation))
+	for _, a := range g.Alternation {
+		names = append(names, a.Spec.Name)
+	}
+	return "(" + strings.Join(names, "|") + ")"
 }
 
 // genCondition emits instructions that fall through when w evaluates
@@ -335,25 +364,35 @@ func (c *whereCtx) genAll(w *ir.Condition, failLabel string) (asm.Instructions, 
 // atoms then skip their own guard (presentLayers). The guard also keeps
 // the aux bpf_loop walk from seeding its ctx with the absent sentinel.
 func (c *whereCtx) withQuantLayerGuard(w *ir.Condition, failLabel string, body func() (asm.Instructions, error)) (asm.Instructions, error) {
-	layer := w.QuantTarget.Layer
-	guard, err := c.absentLayerGuard(layer, failLabel)
-	if err != nil {
-		return nil, err
-	}
-	if guard != nil {
+	// The target layer first, then every other absentable layer the body
+	// reads: guarded once here rather than once per unrolled iteration.
+	layers := []*ir.LayerInstance{w.QuantTarget.Layer}
+	ir.WalkConditionFieldRefs(w.Inner, func(ref *ir.FieldRef) {
+		if ref != nil && ref.Layer != nil && !slices.Contains(layers, ref.Layer) {
+			layers = append(layers, ref.Layer)
+		}
+	})
+	var guards asm.Instructions
+	for _, layer := range layers {
+		guard, err := c.absentLayerGuard(layer, failLabel)
+		if err != nil {
+			return nil, err
+		}
+		if guard == nil {
+			continue
+		}
+		guards = append(guards, guard...)
 		if c.presentLayers == nil {
 			c.presentLayers = map[*ir.LayerInstance]bool{}
 		}
-		if !c.presentLayers[layer] {
-			c.presentLayers[layer] = true
-			defer delete(c.presentLayers, layer)
-		}
+		c.presentLayers[layer] = true
+		defer delete(c.presentLayers, layer)
 	}
 	insns, err := body()
 	if err != nil {
 		return nil, err
 	}
-	return append(guard, insns...), nil
+	return append(guards, insns...), nil
 }
 
 // hasAbsentableLayer reports whether any layer of the program can match
@@ -1526,7 +1565,7 @@ func arithALUOp(op ast.ArithOp) (asm.ALUOp, error) {
 // layerAbsoluteOffset returns the scratch-buffer byte offset at which
 // target's header begins.
 func layerAbsoluteOffset(target *ir.LayerInstance, p *ir.Program) (int, error) {
-	return prefixHeaderSize(p, target, "where-clause field", uniformAltPrefixSize)
+	return prefixHeaderSize(p, target, "where-clause field", uniformAltPrefixSize, exactInstances)
 }
 
 // prefixHeaderSize sums header sizes of p.Layers up to (but not
@@ -1545,42 +1584,60 @@ func layerAbsoluteOffset(target *ir.LayerInstance, p *ir.Program) (int, error) {
 //   - maxAltPrefixSize: returns the largest member's size; used by
 //     capture, which over-captures by a few bytes when the smaller
 //     alt fired rather than refusing the chain.
-func prefixHeaderSize(p *ir.Program, until *ir.LayerInstance, reason string, altReducer func([]*ir.LayerInstance, string) (int, error)) (int, error) {
+func prefixHeaderSize(p *ir.Program, until *ir.LayerInstance, reason string, altReducer func([]*ir.LayerInstance, string) (int, error), instances func(*ir.LayerInstance, string) (int, error)) (int, error) {
 	total := 0
 	for _, l := range p.Layers {
-		if l == until {
-			if l.Quant != ast.QuantOne {
-				return 0, fmt.Errorf("%w: %s on quantified layer %q", ErrNotImplemented, reason, l.Spec.Name)
+		// An alternation member as the target: the prefix stops before
+		// its group (every member starts there).
+		if l == until || slices.Contains(l.Alternation, until) {
+			if l == until {
+				if _, err := instances(l, reason+" on"); err != nil {
+					return 0, err
+				}
 			}
 			return total, nil
 		}
-		if l.Quant != ast.QuantOne {
-			return 0, fmt.Errorf("%w: %s past quantified layer %q", ErrNotImplemented, reason, l.Spec.Name)
-		}
-		if l.Alternation != nil {
-			altHs, err := altReducer(l.Alternation, reason)
-			if err != nil {
-				return 0, err
-			}
-			total += altHs
-			continue
-		}
-		hs, err := headerSize(l.Spec)
+		n, err := instances(l, reason+" past")
 		if err != nil {
 			return 0, err
 		}
-		total += hs
+		var hs int
+		if l.Alternation != nil {
+			hs, err = altReducer(l.Alternation, reason)
+		} else {
+			hs, err = headerSize(l.Spec)
+		}
+		if err != nil {
+			return 0, err
+		}
+		total += n * hs
 	}
 	if until != nil {
-		return 0, fmt.Errorf("codegen: %s references layer %q which is not in program", reason, until.Spec.Name)
+		return 0, fmt.Errorf("codegen: %s references layer %q which is not in program", reason, layerName(until))
 	}
 	return total, nil
+}
+
+// exactInstances is the where-side quantifier policy: a static prefix
+// needs every layer to match exactly one header. `what` is the reason
+// plus "on" / "past" for the diagnostic.
+func exactInstances(l *ir.LayerInstance, what string) (int, error) {
+	if l.Quant != ast.QuantOne {
+		return 0, fmt.Errorf("%w: %s quantified layer %q", ErrNotImplemented, what, l.Spec.Name)
+	}
+	return 1, nil
+}
+
+// upperInstances is the capture-side policy: every instance a
+// quantifier allows counts (layerMaxInstances).
+func upperInstances(l *ir.LayerInstance, _ string) (int, error) {
+	return layerMaxInstances(l)
 }
 
 // prefixHeaderSizeMaxAlt is the capture-side wrapper that rounds
 // heterogeneous alts up to their largest member instead of erroring.
 func prefixHeaderSizeMaxAlt(p *ir.Program, until *ir.LayerInstance, reason string) (int, error) {
-	return prefixHeaderSize(p, until, reason, maxAltPrefixSize)
+	return prefixHeaderSize(p, until, reason, maxAltPrefixSize, exactInstances)
 }
 
 // prefixHeaderSizeUpper bounds the bytes the layers before `until` (all
@@ -1589,33 +1646,7 @@ func prefixHeaderSizeMaxAlt(p *ir.Program, until *ir.LayerInstance, reason strin
 // use it; where-clause addressing keeps prefixHeaderSize, whose static
 // prefix must be exact.
 func prefixHeaderSizeUpper(p *ir.Program, until *ir.LayerInstance, reason string) (int, error) {
-	total := 0
-	for _, l := range p.Layers {
-		// An alternation member as the target: the prefix stops before
-		// its group; the caller adds the member's own size.
-		if l == until || slices.Contains(l.Alternation, until) {
-			return total, nil
-		}
-		var hs int
-		var err error
-		if l.Alternation != nil {
-			hs, err = maxAltPrefixSize(l.Alternation, reason)
-		} else {
-			hs, err = headerSize(l.Spec)
-		}
-		if err != nil {
-			return 0, err
-		}
-		n, err := layerMaxInstances(l)
-		if err != nil {
-			return 0, err
-		}
-		total += n * hs
-	}
-	if until != nil {
-		return 0, fmt.Errorf("codegen: %s target layer %q not in program", reason, layerName(until))
-	}
-	return total, nil
+	return prefixHeaderSize(p, until, reason, maxAltPrefixSize, upperInstances)
 }
 
 // layerMaxInstances is the most headers a layer can match: one for a
