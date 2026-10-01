@@ -57,6 +57,12 @@ func genStaticChain(layer *ir.LayerInstance, index int, all []*ir.LayerInstance,
 	if absentEdgeApplies(index, all) {
 		absentLabel = fmt.Sprintf("dsl_absent_%d", index)
 	}
+	// A marked optional layer's entry slot reads "absent" until a present
+	// iteration overwrites it (D-003); the absent path never writes again.
+	sentinel, err := emitLayerEntrySentinel(layer)
+	if err != nil {
+		return nil, err
+	}
 	var first asm.Instructions
 	if optional {
 		first, err = emitPeekedIterZero(layer, index, all, absentLabel, pc)
@@ -66,7 +72,8 @@ func genStaticChain(layer *ir.LayerInstance, index int, all []*ir.LayerInstance,
 	if err != nil {
 		return nil, err
 	}
-	insns := append(asm.Instructions{}, first...)
+	insns := append(asm.Instructions{}, sentinel...)
+	insns = append(insns, first...)
 	if layer.RangeMax == 1 {
 		// One header at most. For a chain-end protocol it must signal
 		// end, else an (RangeMax+1)-th header follows that the quantifier
@@ -142,6 +149,11 @@ func genStaticChain(layer *ir.LayerInstance, index int, all []*ir.LayerInstance,
 		insns = append(insns, dispatch...)
 		insns = append(insns, emitBounds(hs, dslReject)...)
 		insns = append(insns, preds...)
+		entry, err := emitLayerEntryStore(layer)
+		if err != nil {
+			return nil, err
+		}
+		insns = append(insns, entry...)
 		insns = append(insns, emitAdvance(hs))
 	}
 

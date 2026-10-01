@@ -922,18 +922,11 @@ func genStaticLayer(layer *ir.LayerInstance, index int, all []*ir.LayerInstance,
 		// read/write ordering invariant.
 		insns = append(insns, asm.StoreMem(asm.R10, bpfLoopCtxLayerEntrySlot, offsetBase, asm.DWord))
 	}
-	if layer.NeedsRuntimeOffset {
-		// Resolver flagged this layer as referenced by where / capture
-		// past a heterogeneous-size alt. Store R4 (= layer entry byte
-		// offset within scratch) into the per-layer slot so downstream
-		// where / capture / option-walk loads can address through it
-		// instead of the (now-runtime-variable) R0+static_prefix.
-		slotEntry, err := whereLayerEntrySlot(layer.LayerPos)
-		if err != nil {
-			return nil, err
-		}
-		insns = append(insns, asm.StoreMem(asm.R10, slotEntry, offsetBase, asm.DWord))
+	entry, err := emitLayerEntryStore(layer)
+	if err != nil {
+		return nil, err
 	}
+	insns = append(insns, entry...)
 	insns = append(insns, emitAdvance(hs))
 	if len(layer.Spec.FlagTriggers) > 0 {
 		flags, err := emitFlagTriggers(fmt.Sprintf("dsl_l%d_%d", index, layer.Index), hs, layer.Spec.FlagsByteOffset, layer.Spec.FlagTriggers, dslReject)
@@ -1209,10 +1202,15 @@ func emitPeekedIterZero(layer *ir.LayerInstance, index int, all []*ir.LayerInsta
 	if err != nil {
 		return nil, err
 	}
+	entry, err := emitLayerEntryStore(layer)
+	if err != nil {
+		return nil, err
+	}
 	var out asm.Instructions
 	out = append(out, peek...)
 	out = append(out, emitBounds(hs, dslReject)...)
 	out = append(out, preds...)
+	out = append(out, entry...)
 	out = append(out, emitAdvance(hs))
 	return out, nil
 }
@@ -2059,6 +2057,61 @@ func slotAnchor(slot int16) layerAnchor {
 // either a slot-stride redesign or arith depth rollback.
 const whereLayerEntrySlotBase = int16(-224)
 const whereLayerEntrySlotCap = 7
+
+// layerEntryAbsent is the value a quantified layer's entry slot holds when
+// the layer matched zero headers (D-003): the layer's sentinel store
+// writes it before the first peek, and every present iteration overwrites
+// it with the instance start. Same value as dynamicAuxSentinel, kept apart
+// because the two slot families are read by different guards.
+const layerEntryAbsent = int32(-1)
+
+// emitLayerEntryStore records R4 (= the start of the layer instance
+// being emitted) in the layer's per-layer entry slot, when the resolver
+// marked the layer as referenced at a runtime offset (NeedsRuntimeOffset).
+// Quantified layers store on every present iteration, so the slot ends up
+// holding the last instance (D-018). Empty for unmarked layers.
+func emitLayerEntryStore(layer *ir.LayerInstance) (asm.Instructions, error) {
+	if !layer.NeedsRuntimeOffset {
+		return nil, nil
+	}
+	slot, err := whereLayerEntrySlot(layer.LayerPos)
+	if err != nil {
+		return nil, err
+	}
+	return asm.Instructions{asm.StoreMem(asm.R10, slot, offsetBase, asm.DWord)}, nil
+}
+
+// emitLayerEntrySentinel marks a marked absentable layer's entry slot as
+// absent before its first peek; a present iteration overwrites it
+// (emitLayerEntryStore). R3 is scratch here. Empty unless the layer is
+// marked and can match zero headers.
+func emitLayerEntrySentinel(layer *ir.LayerInstance) (asm.Instructions, error) {
+	if !layer.NeedsRuntimeOffset || !layer.Absentable() {
+		return nil, nil
+	}
+	slot, err := whereLayerEntrySlot(layer.LayerPos)
+	if err != nil {
+		return nil, err
+	}
+	return asm.Instructions{
+		asm.Mov.Imm(asm.R3, layerEntryAbsent),
+		asm.StoreMem(asm.R10, slot, asm.R3, asm.DWord),
+	}, nil
+}
+
+// emitLayerEntryStoreFromCb is emitLayerEntryStore for the bpf_loop chain
+// callback, where R2 is the ctx pointer into the main frame and R3 the
+// start of the instance being consumed.
+func emitLayerEntryStoreFromCb(layer *ir.LayerInstance) (asm.Instructions, error) {
+	if !layer.NeedsRuntimeOffset {
+		return nil, nil
+	}
+	slot, err := whereLayerEntrySlot(layer.LayerPos)
+	if err != nil {
+		return nil, err
+	}
+	return asm.Instructions{asm.StoreMem(asm.R2, mainStackOffsetFromCb(slot), asm.R3, asm.DWord)}, nil
+}
 
 func whereLayerEntrySlot(layerPos int) (int16, error) {
 	if layerPos < 0 || layerPos >= whereLayerEntrySlotCap {
