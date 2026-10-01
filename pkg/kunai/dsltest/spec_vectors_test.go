@@ -29,15 +29,18 @@ var specHostCaps = map[string]func() codegen.Capabilities{
 
 // TestSpecVectors checks the Go implementation against the Lean semantics.
 // Without root only parsing and the illTyped/notImplemented compile
-// expectations run; with root, xdp_entry vectors are matched against the
-// real BPF program. A vector with goStatus "mismatch" is a documented
+// expectations run; with root, every vector is matched against the real
+// BPF program, compiled for the vector's host and, for an exit host, with
+// the vector's action as the traced program's return value. A vector with goStatus "mismatch" is a documented
 // divergence (see spec/lean/DECISIONS.md): it is logged, not asserted.
 func TestSpecVectors(t *testing.T) { runSpecVectors(t, loadSpecVectors(t)) }
 
 // TestSpecVectorsGenerated runs the mutated vectors (truncations and byte
 // flips of the golden packets); their verdicts come from the Lean
 // evaluator at generation time.
-func TestSpecVectorsGenerated(t *testing.T) { runSpecVectors(t, loadSpecVectorsFrom(t, specVectorsGenPath)) }
+func TestSpecVectorsGenerated(t *testing.T) {
+	runSpecVectors(t, loadSpecVectorsFrom(t, specVectorsGenPath))
+}
 
 func runSpecVectors(t *testing.T, vectors []specVector) {
 	root := os.Getuid() == 0
@@ -72,15 +75,15 @@ func runSpecVectors(t *testing.T, vectors []specVector) {
 			case err != nil:
 				t.Fatalf("Compile(%q): %v", v.Expr, err)
 			}
-			if !root || v.Host != "xdp_entry" {
-				return // other hosts: compile-only until the runner takes Capabilities
+			if !root {
+				return
 			}
 			pkt, err := hex.DecodeString(v.Packet)
 			if err != nil {
 				t.Fatalf("packet hex: %v", err)
 			}
 			want := v.Expected.Kind == "accept"
-			if got := New(t, v.Expr).Match(t, pkt); got != want {
+			if got := NewOn(t, v.Expr, Host{Caps: caps(), Action: v.Action}).Match(t, pkt); got != want {
 				t.Fatalf("%q on %d-byte packet: got match=%v, Lean says %s. %s", v.Expr, len(pkt), got, v.Expected.Kind, v.Note)
 			}
 		})

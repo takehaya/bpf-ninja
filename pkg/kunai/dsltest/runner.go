@@ -57,15 +57,34 @@ type Runner struct {
 	expr       string
 }
 
-// New compiles dslExpr against the bundled vocabulary and loads the
-// resulting filter into a standalone XDP wrapper. Skips the test
-// when not running as root (BPF_PROG_TEST_RUN requires CAP_SYS_ADMIN).
-// Verifier failures are reported as t.Fatalf so the test surfaces
-// the kernel's diagnostic log, not a generic "load failed".
+// Host is the attachment the runner emulates. Caps shapes the compiled
+// filter (packet layout, action vocabulary, VLAN in metadata); Action is
+// the return value of the wrapped program that an exit-host filter reads
+// through its ActionFetcher. The filter only ever sees the scratch copy
+// of the packet, so every host runs on the same XDP wrapper.
+type Host struct {
+	Caps   codegen.Capabilities
+	Action int64
+}
+
+// New compiles dslExpr against the bundled vocabulary for the default
+// host (XDP entry) and loads the resulting filter into a standalone XDP
+// wrapper. Skips the test when not running as root (BPF_PROG_TEST_RUN
+// requires CAP_SYS_ADMIN). Verifier failures are reported as t.Fatalf so
+// the test surfaces the kernel's diagnostic log, not a generic "load
+// failed".
 func New(t *testing.T, dslExpr string) *Runner {
 	t.Helper()
-	return newWithCompiler(t, dslExpr, func() (codegen.Output, error) {
-		return kunai.Compile(dslExpr, codegen.Capabilities{})
+	return NewOn(t, dslExpr, Host{})
+}
+
+// NewOn is New for another host: the filter is compiled with h.Caps, and
+// for an exit host the wrapper fakes the traced program's return value
+// as h.Action.
+func NewOn(t *testing.T, dslExpr string, h Host) *Runner {
+	t.Helper()
+	return newWithCompiler(t, dslExpr, h, func() (codegen.Output, error) {
+		return kunai.Compile(dslExpr, h.Caps)
 	})
 }
 
@@ -74,12 +93,12 @@ func New(t *testing.T, dslExpr string) *Runner {
 // without having to add them to the bundled vocab.
 func NewWithVocab(t *testing.T, dslExpr string, v map[string]*vocab.ProtocolSpec) *Runner {
 	t.Helper()
-	return newWithCompiler(t, dslExpr, func() (codegen.Output, error) {
+	return newWithCompiler(t, dslExpr, Host{}, func() (codegen.Output, error) {
 		return kunai.CompileWithVocab(dslExpr, v, codegen.Capabilities{})
 	})
 }
 
-func newWithCompiler(t *testing.T, dslExpr string, compile func() (codegen.Output, error)) *Runner {
+func newWithCompiler(t *testing.T, dslExpr string, h Host, compile func() (codegen.Output, error)) *Runner {
 	t.Helper()
 	skipIfNotRoot(t)
 
@@ -99,7 +118,7 @@ func newWithCompiler(t *testing.T, dslExpr string, compile func() (codegen.Outpu
 		t.Fatalf("create scratch map: %v", err)
 	}
 
-	insns := buildXDPWrapper(out, scratch.FD())
+	insns := buildXDPWrapper(out, scratch.FD(), h)
 	prog, err := ebpf.NewProgram(&ebpf.ProgramSpec{
 		Name:         "dslt_filter",
 		Type:         ebpf.XDP,
@@ -167,10 +186,18 @@ func (r *Runner) MustReject(t *testing.T, pkt []byte, why string) {
 // kunai filter ABI, run the filter, then translate R2 into XDP_PASS
 // / XDP_DROP. Stack layout for the wrapper itself stays inside
 // (-1, codegen.KunaiStackTop) so it cannot collide with kunai.
-func buildXDPWrapper(filterOut codegen.Output, scratchFD int) asm.Instructions {
+//
+// An exit-host filter reads the traced program's return value the way
+// the bpf-ninja fexit wrappers present it: a pointer to the tracing
+// args block saved at fp-48, with the return value in args[1] (see the
+// host packages' FexitFetcher). The wrapper fakes that block at fp-40
+// with h.Action in args[1].
+func buildXDPWrapper(filterOut codegen.Output, scratchFD int, h Host) asm.Instructions {
 	const (
 		stackKey     = int16(-16)
 		stackScratch = int16(-24)
+		stackArgs    = int16(-40) // args[0] at -40, args[1] at -32
+		stackArgsPtr = int16(-48)
 	)
 
 	insns := asm.Instructions{
@@ -191,6 +218,21 @@ func buildXDPWrapper(filterOut codegen.Output, scratchFD int) asm.Instructions {
 		asm.FnMapLookupElem.Call(),
 		asm.JEq.Imm(asm.R0, 0, "drop"),
 		asm.StoreMem(asm.R10, stackScratch, asm.R0, asm.DWord),
+	}
+
+	if h.Caps.Lang.ActionFetcher != nil {
+		insns = append(insns,
+			asm.Mov.Imm(asm.R2, 0),
+			asm.StoreMem(asm.R10, stackArgs, asm.R2, asm.DWord),
+			asm.Mov.Imm(asm.R2, int32(h.Action)),
+			asm.StoreMem(asm.R10, stackArgs+8, asm.R2, asm.DWord),
+			asm.Mov.Reg(asm.R2, asm.R10),
+			asm.Add.Imm(asm.R2, int32(stackArgs)),
+			asm.StoreMem(asm.R10, stackArgsPtr, asm.R2, asm.DWord),
+		)
+	}
+
+	insns = append(insns,
 
 		// Compute capped copy length: min(pkt_len, scratchSize). The
 		// verifier rejects bpf_xdp_load_bytes when R4's umin can be
@@ -222,7 +264,7 @@ func buildXDPWrapper(filterOut codegen.Output, scratchFD int) asm.Instructions {
 		asm.JLE.Imm(asm.R1, int32(scratchSize), "filter_len_ok"),
 		asm.Mov.Imm(asm.R1, int32(scratchSize)),
 		asm.Add.Reg(asm.R1, asm.R0).WithSymbol("filter_len_ok"),
-	}
+	)
 
 	insns = append(insns, filterOut.Main...)
 
