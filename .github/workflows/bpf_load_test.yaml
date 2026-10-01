@@ -12,7 +12,6 @@ on:
       - 'scripts/test/**'
       - 'Makefile'
   pull_request:
-    branches: [main]
     paths:
       - 'go.*'
       - '**.go'

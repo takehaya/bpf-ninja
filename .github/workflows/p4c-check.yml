@@ -31,7 +31,6 @@ on:
       - 'scripts/p4c-check.sh'
       - '.github/workflows/p4c-check.yml'
   pull_request:
-    branches: [main]
     paths:
       - 'pkg/kunai/protocols/**.p4'
       - 'pkg/kunai/vocab/**'
