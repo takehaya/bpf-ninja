@@ -301,6 +301,14 @@ vector arith128SubNegConst := {
 vector arith128CmpNegConst := {
   id := "arith-128-cmp-neg-const", ast := W6 (cmp src6 .eq (k (-1))), packet := v6pkt (2 ^ 128 - 1) 0,
   expected := .accept [], note := "a negative literal compared at 128 bits is all ones in both halves" }
+vector arith128MixedWidthAdd := {
+  id := "arith-128-mixed-width-add", ast := W6 (cmp (.bin .add src6 (fld "tcp" "dport")) .eq (k 80)), packet := v6pkt 0 0,
+  expected := .accept [], goStatus := .notImplemented,
+  note := "Int<128> + Int<16> widens to 128 bits (§5.2); Go does not zero-extend a narrower field into its register pair" }
+vector arith128MixedWidthMul := {
+  id := "arith-128-mixed-width-mul", ast := W6 (cmp src6 .eq (.bin .mul (fld "tcp" "dport") (k 2))), packet := v6pkt 160 0,
+  expected := .accept [], goStatus := .notImplemented,
+  note := "the * node is 16 bits wide and well-typed; the 128-bit comparison around it is not wired in Go" }
 vector arith128CmpWideConst := {
   id := "arith-128-cmp-wide-const", ast := W6 (cmp (.bin .add src6 dst6) .eq (k (2 ^ 32))), packet := v6pkt (2 ^ 32 - 1) 1,
   expected := .accept [], note := "a constant above int32 on the comparison side" }
@@ -334,7 +342,8 @@ def whereVectors : List Vector := [
   typPredIdent, typInSet, typAny, typExists, typAuxPath,
   arith128AddConst, arith128SubConst, arith128AddCarry, arith128AddWrap, arith128SubBorrow, arith128SubWrap, arith128AddMiss,
   arith128FieldAddField, arith128FieldAddFieldCarry, arith128FieldSubField, arith128FieldSubFieldBorrow, arith128AddWideConst, arith128SubWideConstBorrow,
-  arith128AddNegConst, arith128SubNegConst, arith128CmpNegConst, arith128CmpWideConst,
+  arith128AddNegConst, arith128SubNegConst, arith128CmpNegConst,
+  arith128MixedWidthAdd, arith128MixedWidthMul, arith128CmpWideConst,
   arith128Lt, arith128GeMiss, arith128LtHighHalf, typArith128Mul, typArith128Band]
 
 end Kunai

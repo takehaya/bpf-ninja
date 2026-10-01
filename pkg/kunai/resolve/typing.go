@@ -78,8 +78,8 @@ func checkBracketIntFit(field *ir.FieldRef, v *ast.Value, layerName string, pos 
 // docs/ja/dsl-types.md. Per D0 (b+1) the resolver enforces fit-check,
 // division-by-zero and the operator set above 64 bits (§13.9: + and -
 // only); codegen separately reports ErrNotImplemented for the Int<128>
-// operand shapes it has not wired (nested binops, a constant on the left,
-// a bit slice next to a full Int<128> operand).
+// operand shapes it has not wired (a binop on the right of ±, a narrower
+// field or a bit slice next to an Int<128> operand, aux fields).
 
 // checkArithCondition runs all type-related validations against a
 // resolved WAtomArith condition: literal fit checks against the
