@@ -1101,6 +1101,11 @@ func dispatchEquivalent(child, a, b *vocab.ProtocolSpec) (bool, error) {
 	if ca.Type != cb.Type {
 		return false, nil
 	}
+	// The self edge of a chain-end protocol also reads the previous
+	// header's end signal, which a different parent does not have.
+	if child.ChainEnd != nil && (a == child) != (b == child) {
+		return false, nil
+	}
 	if ca.Type != vocab.DispatchField {
 		return true, nil
 	}
@@ -1259,7 +1264,10 @@ func genDispatch(current, parent *ir.LayerInstance, parentHS int, r4IsRange, par
 	// further label follows. Every lowering that dispatches against a
 	// same-protocol parent inherits it here.
 	var pre asm.Instructions
-	if parent != nil && parent.Alternation == nil && parent.Spec == current.Spec && current.Spec.ChainEnd != nil {
+	if selfEdgeWithChainEnd(current, parent) {
+		if parent.Spec.HasVariableLayout() {
+			return nil, fmt.Errorf("%w: %q follows a variable-length %q; the chain-end signal of the previous header cannot be located from the cursor", ErrNotImplemented, current.Spec.Name, parent.Spec.Name)
+		}
 		var err error
 		pre, err = chainEndCheck(current.Spec, parentHS, staticChainFrame, failLabel)
 		if err != nil {
@@ -1316,6 +1324,16 @@ func genLayerDispatch(current, prev *ir.LayerInstance, r4IsRange, parentEntryIsR
 		return genFieldDispatchAltDiverged(current, prev.Alternation, r4IsRange, parentEntryIsRange, failLabel)
 	}
 	parent := dispatchParent(prev)
+	if prev.Alternation != nil && current.Spec.ChainEnd != nil {
+		// The chain-end pre-check reads the previous header at R4 minus
+		// the parent's size; a group mixing the child's protocol with
+		// others leaves that header unknown at compile time.
+		for _, alt := range prev.Alternation {
+			if (alt.Spec == current.Spec) != (parent.Spec == current.Spec) {
+				return nil, fmt.Errorf("%w: %q after the alternation %s mixes a self edge with other parents", ErrNotImplemented, current.Spec.Name, prev.DisplayName())
+			}
+		}
+	}
 	parentHS, err := headerSize(parent.Spec)
 	if err != nil {
 		return nil, err
