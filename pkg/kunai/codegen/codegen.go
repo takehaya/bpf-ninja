@@ -1771,7 +1771,8 @@ func emitAuxGating(g *vocab.AuxGating, base layerAnchor, failLabel string) asm.I
 //     every layer.
 //
 // failLabel is where the bounds check jumps when the runtime index
-// reaches the stack's declared capacity. R3 is also clobbered; R5
+// reaches the stack's declared capacity. R3 is also clobbered (and R2
+// when emitDynamicStackAddressCounted is given a count slot); R5
 // remains live until the next emitter that touches it.
 //
 // MVP constraints:

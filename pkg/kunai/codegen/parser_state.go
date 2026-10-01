@@ -96,7 +96,13 @@ func genParserMachine(layer *ir.LayerInstance, layerIdx int, all []*ir.LayerInst
 	// (now free) bpf_loop offset slot, reload the entry offset from the
 	// layer-entry slot, re-establish its bounds, and restore R4 after.
 	if len(layer.Predicates) > 0 && pmHasWriteBack(spec) {
-		preds, err := emitPredicates(layer.Predicates, pc)
+		// Post-walk, the push counts are final: let a static index into a
+		// push-counted stack be guarded like a where clause does.
+		pcPost := &predCtx{stackCount: func(f *ir.FieldRef) (int16, bool) { return qo.stackCountSlot(f.Layer, f.Aux.OutParam) }}
+		if pc != nil {
+			pcPost.sets, pcPost.out = pc.sets, pc.out
+		}
+		preds, err := emitPredicates(layer.Predicates, pcPost)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -401,9 +407,6 @@ func (c *pmCtx) emitStateBody(state *vocab.ParseState, stateIdx int, isEntry boo
 		}
 		hs := ex.HeaderSize / 8
 		insns = append(insns, emitAdvance(hs))
-		insns = append(insns, c.emitStackPushCount(ex, asm.R3,
-			func(slot int16) asm.Instruction { return asm.LoadMem(asm.R3, asm.R10, slot, asm.DWord) },
-			func(slot int16) asm.Instruction { return asm.StoreMem(asm.R10, slot, asm.R3, asm.DWord) })...)
 		fixedHs += hs
 		if vt, ok := variableTailFor(c.spec, ex.HeaderName); ok && !c.deferPrimaryTail(ex.HeaderName) {
 			if state.Trans.Kind == vocab.TransSelect {
@@ -437,6 +440,11 @@ func (c *pmCtx) emitStateBody(state *vocab.ParseState, stateIdx int, isEntry boo
 			insns = append(insns, tail...)
 			c.r4IsRange = true
 		}
+		// Count the push once the whole entry (fixed part and tail) is in
+		// bounds — the same point the self-loop callback counts at.
+		insns = append(insns, c.emitStackPushCount(ex, asm.R3,
+			func(slot int16) asm.Instruction { return asm.LoadMem(asm.R3, asm.R10, slot, asm.DWord) },
+			func(slot int16) asm.Instruction { return asm.StoreMem(asm.R10, slot, asm.R3, asm.DWord) })...)
 	}
 
 	// Counter ops precede advances, matching the supported source order. fixedHs is

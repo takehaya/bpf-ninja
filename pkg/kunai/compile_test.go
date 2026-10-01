@@ -905,16 +905,19 @@ func TestCompileConsecutiveOptionalsNeedEquivalentDispatch(t *testing.T) {
 }
 
 // TestCompileBracketOnPushCountedStack pins that a bracket predicate
-// indexing a stack the parser machine pushes onto (ipv6.exts) is refused:
-// bracket predicates cannot consult the push count a where clause uses
-// to treat a missing entry as absent (D-031).
+// indexing a stack the parser machine pushes onto is refused when the
+// predicate runs before the walk (gtp: no write-back), since the push
+// count it would need is not final yet (D-031); the where form and the
+// post-walk bracket (ipv6) compile.
 func TestCompileBracketOnPushCountedStack(t *testing.T) {
-	_, err := compileForTest("eth/ipv6[exts[1].next_header == 6]/tcp")
+	_, err := compileForTest("eth/ipv4/udp/gtp[exts[0].next_ext == 1]/ipv4/tcp")
 	if !errors.Is(err, codegen.ErrNotImplemented) || !strings.Contains(err.Error(), "where clause") {
 		t.Fatalf("expected codegen.ErrNotImplemented pointing at a where clause, got %v", err)
 	}
-	if _, err := compileForTest("eth/ipv6/tcp where ipv6.exts[1].next_header == 6"); err != nil {
-		t.Fatalf("the where form must compile: %v", err)
+	for _, expr := range []string{"eth/ipv4/udp/gtp/ipv4/tcp where gtp.exts[0].next_ext == 1", "eth/ipv6[exts[1].next_header == 6]/tcp"} {
+		if _, err := compileForTest(expr); err != nil {
+			t.Fatalf("%s must compile: %v", expr, err)
+		}
 	}
 }
 

@@ -85,6 +85,10 @@ vector ipv6ExtsIndex := {
   id := "ipv6-exts-index", ast := { layers := ipv6L, cond := some (cmp exts0 .eq (k 60)) }, packet := twoExts, expected := .accept [] }
 vector ipv6ExtsIndex1 := {
   id := "ipv6-exts-index-1", ast := { layers := ipv6L, cond := some (cmp exts1 .eq (k 6)) }, packet := twoExts, expected := .accept [] }
+vector ipv6ExtsIndexAfterLong := {
+  id := "ipv6-exts-index-after-long-ext", ast := { layers := ipv6L, cond := some (cmp exts1 .eq (k 6)) },
+  packet := ipv6With 0 (ipv6Ext 60 (len := 1) ++ ipv6Ext 6), expected := .accept [], goStatus := .mismatch,
+  note := "entry 1 starts after the 16-byte first ext; Go addresses exts[i] at base + i*8 and reads inside the first ext (issue 13, variable-length ext addressing)" }
 vector ipv6ExtsIndexAbsent := {
   id := "ipv6-exts-index-absent", ast := { layers := ipv6L, cond := some (cmp exts1 .eq (k 6)) }, packet := ipv6With 0 (ipv6Ext 6) (sport := 0x0600),
   expected := .reject, note := "D-031: entry 1 was not extracted ⇒ false (Go: the push count slot guards the static index; tcp.sport = 0x0600 would otherwise look like next_header 6)" }
@@ -224,7 +228,7 @@ def auxVectors : List Vector := [
   tcpMss, tcpMssMiss, tcpMssAbsent, tcpMssAbsentNot, tcpMssAfterNop, tcpUnknownSkipped, tcpUnknownLen0, tcpUnknownLen1,
   tcpOptCross, tcpEol, tcpMssDup, tcpMssBadLen, tcpMssExists, tcpMssExistsNot, tcpSackBlock, tcpSackAny, tcpSackAll,
   tcpSackAbsentAny, tcpMalformedNoQuery,
-  ipv6Hbh, ipv6TwoExts, ipv6ExtLong, ipv6ExtTooLong, ipv6ExtsIndex, ipv6ExtsIndex1, ipv6ExtsIndexAbsent,
+  ipv6Hbh, ipv6TwoExts, ipv6ExtLong, ipv6ExtTooLong, ipv6ExtsIndex, ipv6ExtsIndex1, ipv6ExtsIndexAfterLong, ipv6ExtsIndexAbsent,
   ipv6NextHeaderWhere, ipv6NextHeaderBracket, ipv6FiveExts, ipv6SixExts, ipv6AnyExts, ipv6AllExts,
   srv6Chain, srv6Static, srv6Dynamic, srv6Any, srv6All, srv6AllCidr, srv6IndexAbsent, srv6OverCap, srv6AtCap,
   gtpPlain, gtpOptExists, gtpOptAbsent, gtpOptField, gtpOptFieldAbsent, gtpExtStack,

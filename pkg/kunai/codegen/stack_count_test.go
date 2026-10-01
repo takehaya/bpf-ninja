@@ -22,8 +22,17 @@ func TestPushCountedStackGuards(t *testing.T) {
 		}
 		return n
 	}
-	isGuard := func(ins asm.Instruction) bool {
-		return ins.OpCode == asm.JLE.Imm(asm.R3, 0, "").OpCode && ins.Dst == asm.R3
+	// A count guard is `R3 = *(count slot); JLE R3, idx`.
+	guards := func(insns asm.Instructions) int {
+		n := 0
+		for i := 0; i+1 < len(insns); i++ {
+			ld, jle := insns[i], insns[i+1]
+			if ld.OpCode == asm.LoadMem(asm.R3, asm.R10, 0, asm.DWord).OpCode && ld.Dst == asm.R3 && ld.Src == asm.R10 &&
+				jle.OpCode == asm.JLE.Imm(asm.R3, 0, "").OpCode && jle.Dst == asm.R3 {
+				n++
+			}
+		}
+		return n
 	}
 	// A push increment is `reg = *(slot); reg += 1; *(slot) = reg`.
 	increments := func(insns asm.Instructions, reg asm.Register) int {
@@ -41,7 +50,7 @@ func TestPushCountedStackGuards(t *testing.T) {
 	}
 
 	all := compileBundled(t, "eth/ipv6/tcp where all(ipv6.exts.next_header != 1)")
-	if got := count(all.Main, isGuard); got != 8 {
+	if got := guards(all.Main); got != 8 {
 		t.Errorf("all(): %d count guards in main, want one per unrolled entry (8)", got)
 	}
 	if got := increments(all.Main, asm.R3); got != 1 {
@@ -55,8 +64,16 @@ func TestPushCountedStackGuards(t *testing.T) {
 	}
 
 	static := compileBundled(t, "eth/ipv6/tcp where ipv6.exts[1].next_header == 6")
-	if got := count(static.Main, isGuard); got != 1 {
+	if got := guards(static.Main); got != 1 {
 		t.Errorf("static index: %d count guards, want 1", got)
+	}
+
+	// ipv6 evaluates bracket predicates after the walk (write-back), so a
+	// bracket index is guarded the same way; gtp evaluates them before the
+	// walk and refuses the shape (compile_test.go).
+	bracket := compileBundled(t, "eth/ipv6[exts[1].next_header == 6]/tcp")
+	if got := guards(bracket.Main); got != 1 {
+		t.Errorf("bracket index: %d count guards, want 1", got)
 	}
 
 	// A dynamic index is bounded by the count too: `JGE idx, count`.
@@ -70,7 +87,7 @@ func TestPushCountedStackGuards(t *testing.T) {
 	// gtp.exts: the first push happens in a non-entry state (parse_opt →
 	// parse_ext), so the inline increment sits past the entry state.
 	gtp := compileBundled(t, "eth/ipv4/udp/gtp/ipv4/tcp where all(gtp.exts.next_ext != 1)")
-	if got := count(gtp.Main, isGuard); got != 8 {
+	if got := guards(gtp.Main); got != 8 {
 		t.Errorf("gtp all(): %d count guards, want 8", got)
 	}
 	if got := increments(gtp.Main, asm.R3); got != 1 {

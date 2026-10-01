@@ -57,8 +57,9 @@ func (c *pmCtx) emitSelfLoop(state *vocab.ParseState, stateIdx int) (asm.Instruc
 //     options) need iter-level kind dispatch and have no static
 //     bulk-skip equivalent.
 //  2. No options for this layer are queried by the program. When
-//     `len(c.queried[c.layer]) == 0`, no per-option position
-//     recording is needed, so the bpf_loop's only job is to advance
+//     `len(c.queried.optionDemand(c.layer)) == 0` (push count slots do
+//     not count: nothing records a position for them), no per-option
+//     position recording is needed, so the bpf_loop's only job is to advance
 //     R4 past the trailer — which the bulk-advance path does in
 //     ~10 insns instead of dragging in a bpf_loop subprogram and
 //     its 32-iter verifier exploration.
@@ -384,9 +385,6 @@ func (c *pmCtx) emitAccPrelude(sel *vocab.SelectOp, atoms []accAtom, breakLabel 
 // the sentinel to detect "option not present in this packet". Empty
 // when no where / capture clause queries this layer's options.
 func (c *pmCtx) emitDynamicAuxSentinelInit() (asm.Instructions, error) {
-	// Accumulator path: a single slot holds the result bitmask, ORed into
-	// over the walk, so it must start at 0 (not the option-absent sentinel
-	// -1, whose bits would falsely satisfy the mask check).
 	// Option slots start at the absent sentinel; stack count slots at 0.
 	var options, counts []int
 	for i, layout := range c.queried[c.layer] {
@@ -403,6 +401,9 @@ func (c *pmCtx) emitDynamicAuxSentinelInit() (asm.Instructions, error) {
 		return nil, err
 	}
 	if atoms := c.accPlan.atomsFor(c.layer); atoms != nil {
+		// Accumulator path: a single slot holds the result bitmask, ORed
+		// into over the walk, so it must start at 0 (not the option-absent
+		// sentinel -1, whose bits would falsely satisfy the mask check).
 		// Zero the single accumulator slot. This runs inline in the entry
 		// state where R0 is the scratch-start pointer, so use R3 as the
 		// scratch register (the same one emitFillStackSlots uses); a Mov
