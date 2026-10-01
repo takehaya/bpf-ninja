@@ -976,10 +976,29 @@ func TestCompileOptionalSelfEdgeWithChainEnd(t *testing.T) {
 // `eth/qinq?/vlan?/ipv4` keeps one static read (ethertype sits in the
 // last two bytes of eth, qinq and vlan alike).
 func TestCompileConsecutiveOptionals(t *testing.T) {
-	for _, expr := range []string{"eth/vlan?/mpls?/ipv4/tcp", "eth/qinq?/vlan?/mpls?/ipv4/tcp", "eth/vlan?/mpls{1,3}/ipv4/tcp"} {
+	for _, expr := range []string{
+		"eth/vlan?/mpls?/ipv4/tcp",
+		"eth/qinq?/vlan?/mpls?/ipv4/tcp",
+		"eth/vlan?/mpls{1,3}/ipv4/tcp",
+		"eth/mpls?/mpls+/ipv4/tcp", // quantified after optional: cascade on the self edge
+		// a uniform run needs no slot, so a deep chain stays under the slot cap
+		"eth/ipv4/udp/vxlan/eth/ipv4/udp/vxlan/eth/qinq?/vlan?/ipv4/tcp",
+	} {
 		if _, err := compileForTest(expr); err != nil {
 			t.Errorf("%s: %v", expr, err)
 		}
+	}
+	// An alternation among the runtime parents keeps the static rule, so
+	// a non-uniform dispatch behind it is refused rather than misread.
+	for _, expr := range []string{"eth/(vlan|qinq)/mpls?/ipv4/tcp", "eth/(vlan|qinq)/mpls?/mpls?/ipv4/tcp"} {
+		if _, err := compileForTest(expr); !errors.Is(err, codegen.ErrNotImplemented) {
+			t.Errorf("%s: expected ErrNotImplemented, got %v", expr, err)
+		}
+	}
+	// An alternation after optionals needs a field dispatch for every
+	// member under every runtime parent: a type error from the resolver.
+	if _, err := compileForTest("eth/vlan?/mpls?/(ipv4|ipv6)/tcp"); err == nil || errors.Is(err, codegen.ErrNotImplemented) || !strings.Contains(err.Error(), "needs a field dispatch") {
+		t.Errorf("alternation after optionals: expected a resolver error, got %v", err)
 	}
 }
 

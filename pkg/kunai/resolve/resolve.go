@@ -147,26 +147,33 @@ func (r *resolver) resolveFilter(f *ast.Filter) (*ir.Program, error) {
 		return nil, err
 	}
 	markRuntimeOffsetLayers(p)
-	markConsecutiveAbsentables(p)
+	if err := markCascadeParents(p); err != nil {
+		return nil, err
+	}
 	return p, nil
 }
 
-// markConsecutiveAbsentables makes every absentable layer in a run of two
-// or more consecutive absentable layers record its presence
-// (NeedsRuntimeOffset): the layer after such a run, and each optional
-// layer inside it, has several possible runtime parents, and codegen
-// picks the dispatch by testing which of them matched (D-034).
-func markConsecutiveAbsentables(p *ir.Program) {
-	for i, l := range p.Layers {
-		if l == nil || !l.Absentable() {
+// markCascadeParents makes the optional layers whose presence codegen
+// must test record it (NeedsRuntimeOffset): a layer that follows several
+// possible runtime parents dispatching it differently
+// (ir.NeedsParentCascade, D-034) picks its dispatch by testing those
+// optionals' entry slots. Runs whose parents dispatch alike need no slot.
+func markCascadeParents(p *ir.Program) error {
+	for i := range p.Layers {
+		needed, parents, _, err := ir.NeedsParentCascade(p.Layers, i)
+		if err != nil {
+			return errorf(p.Layers[i].Pos, "%v", err)
+		}
+		if !needed {
 			continue
 		}
-		prevAbsentable := i > 0 && p.Layers[i-1].Absentable()
-		nextAbsentable := i+1 < len(p.Layers) && p.Layers[i+1].Absentable()
-		if prevAbsentable || nextAbsentable {
-			l.NeedsRuntimeOffset = true
+		for _, j := range parents {
+			if p.Layers[j].Absentable() {
+				p.Layers[j].NeedsRuntimeOffset = true
+			}
 		}
 	}
+	return nil
 }
 
 // checkChainShape rejects chain shapes the typing rules exclude (§12,

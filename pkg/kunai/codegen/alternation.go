@@ -57,6 +57,22 @@ func genAlternation(layer *ir.LayerInstance, index int, all []*ir.LayerInstance,
 	if index == 0 {
 		return nil, nil, fmt.Errorf("%w: alternation as the first layer has no parent to dispatch from", ErrNotImplemented)
 	}
+	// The member guards read the static parent; after optional layers
+	// that dispatch the members differently the guard would be unsound.
+	if parents, _ := ir.RuntimeParents(all, index); len(parents) > 1 {
+		static := all[parents[0]]
+		for _, alt := range layer.Alternation {
+			for _, j := range parents[1:] {
+				same, err := static.Spec.DispatchEquivalentFor(alt.Spec, all[j].Spec)
+				if err != nil {
+					return nil, nil, err
+				}
+				if !same {
+					return nil, nil, fmt.Errorf("%w: alternation %s after optional layers whose dispatch of %q differs", ErrNotImplemented, layer.DisplayName(), alt.Spec.Name)
+				}
+			}
+		}
+	}
 	alts := layer.Alternation
 	if len(alts) < 2 {
 		return nil, nil, fmt.Errorf("%w: alternation needs at least two alternatives, got %d", ErrNotImplemented, len(alts))

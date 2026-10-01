@@ -4,6 +4,7 @@
 package vocab
 
 import (
+	"slices"
 	"fmt"
 
 	"github.com/takehaya/bpf-ninja/pkg/kunai/vocab/p4lite"
@@ -865,6 +866,54 @@ type FieldRef struct {
 // Returns nil when no const matches; the resolver then checks
 // IsSelfValidating to decide whether to synthesize a
 // DispatchSelfValidating choice or surface a "no dispatch" error.
+// DispatchEquivalentFor reports whether `child` dispatches the same way
+// under this (fixed-layout) parent and under `other`: both
+// self-validating, both no-check, or the same field constant read at the
+// same offset from the parent's end — the bytes a static-parent dispatch
+// reads once the cursor sits after whichever parent matched. A self edge
+// of a chain-end protocol also reads the previous header's end signal,
+// which another parent does not have.
+func (s *ProtocolSpec) DispatchEquivalentFor(child, other *ProtocolSpec) (bool, error) {
+	ca, cb := child.SelectDispatchConst(s.Name), child.SelectDispatchConst(other.Name)
+	if ca == nil || cb == nil {
+		return ca == nil && cb == nil, nil
+	}
+	if ca.Type != cb.Type {
+		return false, nil
+	}
+	if child.ChainEnd != nil && (s == child) != (other == child) {
+		return false, nil
+	}
+	if ca.Type != DispatchField {
+		return true, nil
+	}
+	if ca.Value != cb.Value || ca.Bits != cb.Bits || !slices.Equal(ca.AltValues, cb.AltValues) {
+		return false, nil
+	}
+	if s.HasVariableLayout() || other.HasVariableLayout() {
+		return false, nil
+	}
+	tail := func(p *ProtocolSpec, c *DispatchConst) (int, int, error) {
+		bitOff, bits, ok := BitOffsetIn(p.Fields, c.FieldName)
+		if !ok {
+			return 0, 0, fmt.Errorf("vocab: dispatch field %s.%s not found", p.Name, c.FieldName)
+		}
+		if bitOff%8 != 0 || bits%8 != 0 {
+			return 0, 0, fmt.Errorf("vocab: dispatch field %s.%s is not byte-aligned", p.Name, c.FieldName)
+		}
+		return bitOff/8 - SumBits(p.Fields)/8, bits / 8, nil
+	}
+	ta, wa, err := tail(s, ca)
+	if err != nil {
+		return false, err
+	}
+	tb, wb, err := tail(other, cb)
+	if err != nil {
+		return false, err
+	}
+	return ta == tb && wa == wb, nil
+}
+
 func (s *ProtocolSpec) SelectDispatchConst(parentName string) *DispatchConst {
 	var field, nocheck *DispatchConst
 	for i := range s.Consts {
