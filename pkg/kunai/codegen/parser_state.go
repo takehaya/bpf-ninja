@@ -319,7 +319,7 @@ func (c *pmCtx) emitEntryDispatch() (asm.Instructions, error) {
 	if c.layerIdx == 0 || c.layer.Dispatch == nil {
 		return nil, nil
 	}
-	di, err := genLayerDispatch(c.layer, c.all[c.layerIdx-1], c.r4IsRange, precedingLayersLeaveR4Range(c.all, c.layerIdx-1), dslReject)
+	di, err := genParentDispatch(c.layer, c.layerIdx, c.all, c.r4IsRange, precedingLayersLeaveR4Range(c.all, c.layerIdx-1), dslReject)
 	if err != nil {
 		return nil, err
 	}

@@ -147,7 +147,33 @@ func (r *resolver) resolveFilter(f *ast.Filter) (*ir.Program, error) {
 		return nil, err
 	}
 	markRuntimeOffsetLayers(p)
+	if err := markCascadeParents(p); err != nil {
+		return nil, err
+	}
 	return p, nil
+}
+
+// markCascadeParents makes the optional layers whose presence codegen
+// must test record it (NeedsRuntimeOffset): a layer that follows several
+// possible runtime parents dispatching it differently
+// (ir.NeedsParentCascade, D-034) picks its dispatch by testing those
+// optionals' entry slots. Runs whose parents dispatch alike need no slot.
+func markCascadeParents(p *ir.Program) error {
+	for i := range p.Layers {
+		needed, parents, _, err := ir.NeedsParentCascade(p.Layers, i)
+		if err != nil {
+			return errorf(p.Layers[i].Pos, "%v", err) // ResolveError carries a message, not a cause
+		}
+		if !needed {
+			continue
+		}
+		for _, j := range parents {
+			if p.Layers[j].Absentable() {
+				p.Layers[j].NeedsRuntimeOffset = true
+			}
+		}
+	}
+	return nil
 }
 
 // checkChainShape rejects chain shapes the typing rules exclude (§12,
