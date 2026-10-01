@@ -9,12 +9,30 @@ import Kunai.Print
 -/
 namespace Kunai
 
-/-- A matched layer instance: protocol and byte range `[off, off+len)`. -/
+/-- An extracted aux header (`AuxView` in §13.1): an option, or one stack
+entry (`stackIdx = some k`), at `[off, off+len)` in the packet. -/
+structure AuxView where
+  outParam : String
+  header : String
+  stackIdx : Option Nat := none
+  off : Nat
+  len : Nat
+  deriving Repr, BEq, DecidableEq
+
+/-- A matched layer instance: protocol and byte range `[off, off+len)`,
+its aux views (`α` restricted to this layer), and the bytes the parser
+wrote back into its primary header (`@kunai_writeback`). -/
 structure Inst where
   proto : String
   off : Nat
   len : Nat
+  aux : List AuxView := []
+  patches : List (Nat × Nat) := []
   deriving Repr, BEq, DecidableEq
+
+/-- The packet as this layer's parser left it: write-backs applied. -/
+def patched (P : Packet) (patches : List (Nat × Nat)) : Packet :=
+  patches.foldl (fun acc (i, v) => acc.set i (UInt8.ofNat v)) P
 
 /-- `σ = ⟨π, α, Λ⟩` without `α` (aux, Phase 5). `insts` is the resolved
 chain in order; `labels` is `Λ`, most recent binding first (`Λ ⊕ {ℓ ↦ inst}`). -/
@@ -57,7 +75,7 @@ structure Ctx where
 def chainCap : Nat := 32
 
 def readField (P : Packet) (inst : Inst) (f : FieldSpec) : Option Nat :=
-  readBits P (inst.off * 8 + f.bitOff) f.width
+  readBits (patched P inst.patches) (inst.off * 8 + f.bitOff) f.width
 
 def cmpNat (op : CmpOp) (a b : Nat) : Bool :=
   match op with

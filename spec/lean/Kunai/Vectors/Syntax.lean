@@ -116,7 +116,7 @@ vector synWhereAnyAll := {
         (.any (.arith (.field ⟨[("srv6", none), ("segments", some (.field ["x"])), ("addr", none)]⟩) .ne (.const 0)))
         (.all (.arith (.field ⟨[("srv6", none), ("segments", some (.nat 0)), ("addr", some (.slice 0 32))]⟩)
                       .eq (.const 1)))) },
-  expected := .illTyped "unknown protocol srv6", goStatus := .mismatch, note := "srv6 is outside the Phase 2 vocabulary (D-012)" }
+  expected := .illTyped "unsupported: aux stacks (Phase 5)", note := "Go rejects it too (index-less stack ref must be qualified)" }
 
 vector synWhereBool := {
   id := "syn-where-bool",

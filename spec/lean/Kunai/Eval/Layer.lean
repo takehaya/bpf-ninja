@@ -1,4 +1,5 @@
 import Kunai.Eval.Core
+import Kunai.Eval.Machine
 
 /-!
 # Layers and chains (§13.3–§13.5, plus alternation)
@@ -41,10 +42,10 @@ def dispatch (c : Ctx) (st : State) (child : String) : Disp :=
         else
           -- D-017: with no parent constant, self-validation is the dispatch. A readable
           -- header that fails it is a miss; an unreadable one falls through to bounds.
-          let probe : Inst := ⟨child, st.cursor, spec.fixedLen⟩
-          let failed := spec.requires.any fun (f, v) =>
+          let probe : Inst := { proto := child, off := st.cursor, len := spec.fixedLen }
+          let failed := spec.requires.any fun (f, vs) =>
             match (spec.field? f).bind (readField c.P probe) with
-            | some n => n != v
+            | some n => !vs.contains n
             | none => false
           if failed then .miss else .ok
       | none => .illTyped s!"unknown protocol {child}"
@@ -83,11 +84,13 @@ def extract (c : Ctx) (st : State) (p : ProtoLayer) : Except LayerFail State := 
   | .ok => pure ()
   -- [E-Layer-Proto-1-Fail-Bounds] on the fixed header
   if st.cursor + spec.fixedLen > c.P.length then throw .bounds
-  let fixed : Inst := ⟨p.name, st.cursor, spec.fixedLen⟩
+  let fixed : Inst := { proto := p.name, off := st.cursor, len := spec.fixedLen }
   -- parser-block self validation under a parent constant: the parent already named this
   -- protocol, so a failing header is broken, not absent (D-017: Fail-Pred, like D-005)
-  for (f, v) in spec.requires do
-    if ((spec.field? f).bind (readField c.P fixed)) != some v then throw .pred
+  for (f, vs) in spec.requires do
+    match (spec.field? f).bind (readField c.P fixed) with
+    | some n => if !vs.contains n then throw .pred
+    | none => throw .pred
   -- total_bytes(p, P, π): declared header length (D-016: below the fixed header ⇒ reject)
   let len ← match spec.lenRule with
     | none => pure spec.fixedLen
@@ -95,10 +98,21 @@ def extract (c : Ctx) (st : State) (p : ProtoLayer) : Except LayerFail State := 
       match readBytes c.P (st.cursor + r.byteOff) 1 with
       | none => throw .bounds
       | some b =>
-        let l := ((b &&& r.mask) >>> r.shift) * r.scale
-        if l < spec.fixedLen then throw .pred else pure l
+        match r.apply b with
+        | some extra => pure (spec.fixedLen + extra)
+        | none => throw .pred
   if st.cursor + len > c.P.length then throw .bounds
-  let inst : Inst := ⟨p.name, st.cursor, len⟩
+  -- aux-extract(p, π, P, α) (§14.4): the parser machine walks options,
+  -- extension headers, and stacks; ⊥ is Fail-Pred. The layer spans the
+  -- declared length or whatever the machine consumed, whichever is longer.
+  let (len, aux, patches) ← match spec.machine with
+    | none => pure (len, [], [])
+    | some m =>
+      match runMachine c.P spec m st.cursor with
+      | .ok ψ => pure (max len (ψ.cursor - st.cursor), ψ.views, ψ.patches)
+      | .error .reject => throw .pred
+      | .error (.illTyped r) => throw (.illTyped r)
+  let inst : Inst := { proto := p.name, off := st.cursor, len, aux, patches }
   -- [E-Layer-Proto-1-Fail-Pred]
   for ρ in p.preds do
     match evalPred c spec inst ρ with

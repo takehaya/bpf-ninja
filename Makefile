@@ -1,5 +1,5 @@
 .PHONY: build clean test test-unit test-bpf test-integration test-all vet goreleaser
-.PHONY: install-lint-tools lint lint-ci p4c-check lean-build lean-gen
+.PHONY: install-lint-tools lint lint-ci p4c-check lean-build lean-gen lean-vocab
 
 BINARY = bpf-ninja
 DIFF_FROM_BRANCH_NAME ?= main
@@ -43,6 +43,10 @@ test-all: test-unit test-bpf test-integration
 
 lean-build: ## Build the Lean 4 spec (needs elan; not part of test-unit)
 	cd spec/lean && lake build
+
+lean-vocab: ## Regenerate spec/lean/Kunai/VocabData.lean from the bundled .p4 vocabulary
+	go run ./spec/lean/gen/vocab2lean > spec/lean/Kunai/VocabData.lean.tmp \
+		&& mv spec/lean/Kunai/VocabData.lean.tmp spec/lean/Kunai/VocabData.lean
 
 lean-gen: lean-build ## Regenerate pkg/kunai/dsltest/testdata/spec_vectors.json from the Lean spec
 	mkdir -p pkg/kunai/dsltest/testdata
