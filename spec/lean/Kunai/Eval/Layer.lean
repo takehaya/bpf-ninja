@@ -105,6 +105,15 @@ def extract (c : Ctx) (st : State) (p : ProtoLayer) : Except LayerFail State := 
   -- aux-extract(p, π, P, α) (§14.4): the parser machine walks options,
   -- extension headers, and stacks; ⊥ is Fail-Pred. The layer spans the
   -- declared length or whatever the machine consumed, whichever is longer.
+  -- Flag-gated optional words (gre C/K/S, `<SELF>_OPT_TRIGGER_*`): each set
+  -- flag adds its bytes after the fixed header, in declaration order.
+  let len ← match spec.flagTriggers with
+    | [] => pure len
+    | ts =>
+      match readBytes c.P (st.cursor + spec.flagsByteOff) 1 with
+      | none => throw .bounds
+      | some flags => pure (ts.foldl (fun acc t => if flags &&& t.bitMask != 0 then acc + t.lenBytes else acc) len)
+  if st.cursor + len > c.P.length then throw .bounds
   let (len, aux, patches) ← match spec.machine with
     | none => pure (len, [], [])
     | some m =>

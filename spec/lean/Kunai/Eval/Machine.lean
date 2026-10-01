@@ -139,9 +139,11 @@ latest sighting wins. -/
 private def sightOptions (m : Machine) (ψ : MState) (keys : List (SelectKey × Option KeyVal)) : MState :=
   keys.foldl (fun ψ (k, v) =>
     match k, v with
-    | .lookahead _, some (.nat n) =>
+    | .lookahead bits, some (.nat n) =>
       m.options.foldl (fun ψ o =>
-        if o.kindByte == some n then
+        -- an 8-bit kind byte is only sighted by an 8-bit lookahead, a wider
+        -- kind (geneve class+type) only by a lookahead of its own width
+        if o.kindByte == some n && (if n < 256 then bits == 8 else bits > 8) then
           let bytes := ((m.header? o.header).map (·.bytes)).getD 0
           { ψ with views := ψ.views ++ [{ outParam := o.outParam, header := o.header, off := ψ.cursor, len := bytes }] }
         else ψ) ψ

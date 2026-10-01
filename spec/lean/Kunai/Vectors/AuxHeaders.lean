@@ -172,7 +172,28 @@ vector ipv4RrAny := {
 vector ipv4RrArith := {
   id := "ipv4-rr-arith", ast := { layers := chain3, cond := some (cmp (rr (.nat 0)) .eq (k 0x0a000009)) }, packet := rrPkt, expected := .accept [] }
 
+-- GRE flag-gated options ---------------------------------------------------------
+
+/-- GRE header: flags/version then protocol type, plus one 4-byte word per set flag (C, K, S). -/
+def greHdr (flags : Nat) (words : List Nat) : Packet := be 2 flags ++ be 2 0x0800 ++ (words.map (be 4)).flatten
+def grePkt (gre : Packet) : Packet := eth 0x0800 ++ ipv4 47 ++ gre ++ ipv4 6 ++ tcp 12345 80 ++ payload 5
+def greL : List Layer := [P "eth", P "ipv4", P "gre", P "ipv4", P "tcp"]
+
+vector grePlain := {
+  id := "gre-plain", ast := { layers := greL }, packet := grePkt (greHdr 0 []), expected := .accept [] }
+vector greKey := {
+  id := "gre-key", ast := { layers := greL }, packet := grePkt (greHdr 0x2000 [42]), expected := .accept [],
+  note := "GRE_OPT_TRIGGER_K: the K flag adds a 4-byte key before the payload" }
+vector greKeySeq := {
+  id := "gre-key-seq", ast := { layers := greL, cond := some (cmp dport .eq (k 80)) }, packet := grePkt (greHdr 0x3000 [42, 7]), expected := .accept [] }
+vector greAllFlags := {
+  id := "gre-c-k-s", ast := { layers := greL }, packet := grePkt (greHdr 0xb000 [0, 42, 7]), expected := .accept [] }
+vector greKeyTruncated := {
+  id := "gre-key-truncated", ast := { layers := greL }, packet := (eth 0x0800 ++ ipv4 47 ++ greHdr 0x2000 []).take 36, expected := .reject,
+  note := "K set but the key word is missing" }
+
 def auxVectors : List Vector := [
+  grePlain, greKey, greKeySeq, greAllFlags, greKeyTruncated,
   tcpMss, tcpMssMiss, tcpMssAbsent, tcpMssAbsentNot, tcpMssAfterNop, tcpUnknownSkipped, tcpUnknownLen0, tcpUnknownLen1,
   tcpOptCross, tcpEol, tcpMssDup, tcpMssBadLen, tcpMssExists, tcpMssExistsNot, tcpSackBlock, tcpSackAny, tcpSackAll,
   tcpSackAbsentAny, tcpMalformedNoQuery,

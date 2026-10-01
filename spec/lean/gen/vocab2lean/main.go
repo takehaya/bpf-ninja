@@ -95,14 +95,6 @@ func protoLean(s *vocab.ProtocolSpec) string {
 	if s.OptionSegment != "" && s.OptionSegment != "options" {
 		parts = append(parts, "optionSegment := "+str(s.OptionSegment))
 	}
-	if len(s.StackCounts) > 0 {
-		var sc []string
-		for _, k := range sortedKeys(s.StackCounts) {
-			c := s.StackCounts[k]
-			sc = append(sc, fmt.Sprintf("(%s, %d, %d)", str(k), c.ByteOff, c.Addend))
-		}
-		parts = append(parts, "stackCounts := ["+strings.Join(sc, ", ")+"]")
-	}
 	if len(s.FlagTriggers) > 0 {
 		var ft []string
 		for _, t := range s.FlagTriggers {

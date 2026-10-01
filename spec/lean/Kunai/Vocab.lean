@@ -35,8 +35,6 @@ structure ProtoSpec where
   machine : Option Machine := none
   /-- Reserved path segment for option lookups (`tcp.options.MSS.value`). -/
   optionSegment : String := "options"
-  /-- Stack element counts from a primary byte: `(stack, byteOff, addend)`. -/
-  stackCounts : List (String × Nat × Nat) := []
   flagsByteOff : Nat := 0
   flagTriggers : List FlagTrigger := []
   deriving Repr, BEq, DecidableEq

@@ -79,9 +79,9 @@ by well-founded recursion, which `decide` cannot unfold). -/
 def lowerAscii (s : String) : String :=
   String.ofList (s.toList.map fun c => if 'A' ≤ c && c ≤ 'Z' then Char.ofNat (c.toNat + 32) else c)
 
-/-- Header type an out parameter extracts (`hdr`, options, stacks). -/
-def outParamHeader? (m : Machine) (outParam : String) : Option String :=
-  m.states.findSome? fun s => (s.extracts.find? (·.outParam == outParam)).map (·.header)
+/-- The option declaration of an out parameter (never the primary header). -/
+def option? (m : Machine) (outParam : String) : Option OptionDecl :=
+  m.options.find? (·.outParam == outParam)
 
 private def fieldOf (m : Machine) (header fieldName : String) : Except Stop FieldSpec := do
   let some h := m.header? header | throw (.illTyped s!"unknown header {header}")
@@ -96,10 +96,19 @@ private def applySlice (fs : FieldSpec) (idx : Option Index) : Except Stop (Opti
     else throw (.illTyped s!"bit-slice [{lo}:{hi}] exceeds field width bit<{fs.width}>")
   | some _ => throw (.illTyped s!"field {fs.name} does not take an index")
 
-private def checkIndex (sd : StackDecl) : Option Index → Except Stop Unit
+/-- A dynamic stack index must be a primary field of the same protocol. -/
+private def checkDynamicIndex (c : Ctx) (proto : String) (spec : ProtoSpec) (parts : List String) : Except Stop FieldSpec := do
+  let [ih, fieldName] := parts | throw (.illTyped s!"dynamic index {String.intercalate "." parts} must be <proto>.<field>")
+  let ip ← staticProto c ih
+  if ip != proto then throw (.illTyped s!"dynamic index {ih}.{fieldName} must be a primary field of {proto}")
+  let some fs := spec.field? fieldName | throw (.illTyped s!"unknown field {proto}.{fieldName}")
+  pure fs
+
+private def checkIndex (c : Ctx) (proto : String) (spec : ProtoSpec) (sd : StackDecl) : Option Index → Except Stop Unit
   | some (.nat i) => if i < sd.capacity then pure () else throw (.illTyped s!"stack index {i} exceeds capacity {sd.capacity}")
   | some (.slice ..) => throw (.illTyped s!"stack {sd.name} does not take a bit-slice")
-  | _ => pure ()
+  | some (.field parts) => discard <| checkDynamicIndex c proto spec parts
+  | none => pure ()
 
 /-- Static resolution of a field path (T-FieldPrim, T-FieldAux, T-FieldStackStatic). -/
 def resolvePath (c : Ctx) (f : FieldPath) : Except Stop Ref := do
@@ -116,26 +125,28 @@ def resolvePath (c : Ctx) (f : FieldPath) : Except Stop Ref := do
     match rest with
     | [(x, xIdx), (fieldName, fIdx)] =>
       if let some sd := m.stack? x then
-        checkIndex sd xIdx
+        checkIndex c proto spec sd xIdx
         let fs ← fieldOf m sd.header fieldName
         pure { head, proto, spec, aux := .stackEntry x xIdx, field := fs, slice := ← applySlice fs fIdx }
       else if x == spec.optionSegment then throw (.illTyped s!"{proto}.{x} needs an option name and a field")
       else
-        let some h := outParamHeader? m x | throw (.illTyped s!"unknown auxiliary header {proto}.{x}")
+        let some o := option? m x | throw (.illTyped s!"unknown auxiliary header {proto}.{x}")
         if xIdx.isSome then throw (.illTyped s!"{proto}.{x} does not take an index")
-        let fs ← fieldOf m h fieldName
+        let fs ← fieldOf m o.header fieldName
         pure { head, proto, spec, aux := .option x, field := fs, slice := ← applySlice fs fIdx }
     | [(seg, none), (name, none), (fieldName, fIdx)] =>
       if seg != spec.optionSegment then throw (.illTyped s!"unsupported: field path {f.text}")
       let opt := lowerAscii name
-      let some h := outParamHeader? m opt | throw (.illTyped s!"unknown option {proto}.{seg}.{name}")
-      let fs ← fieldOf m h fieldName
+      -- `<proto>.options.NAME` names a TLV option (one with a kind byte).
+      let some o := option? m opt | throw (.illTyped s!"unknown option {proto}.{seg}.{name}")
+      if o.kindByte.isNone then throw (.illTyped s!"{proto}.{seg}.{name} is not a TLV option")
+      let fs ← fieldOf m o.header fieldName
       pure { head, proto, spec, aux := .option opt, field := fs, slice := ← applySlice fs fIdx }
     | [(seg, none), (name, none), (stack, sIdx), (fieldName, fIdx)] =>
       if seg != spec.optionSegment then throw (.illTyped s!"unsupported: field path {f.text}")
       let some sd := m.stack? stack | throw (.illTyped s!"unknown stack {proto}.{stack}")
       if sd.ownerOption != lowerAscii name then throw (.illTyped s!"stack {stack} does not belong to option {name}")
-      checkIndex sd sIdx
+      checkIndex c proto spec sd sIdx
       let fs ← fieldOf m sd.header fieldName
       pure { head, proto, spec, aux := .stackEntry stack sIdx, field := fs, slice := ← applySlice fs fIdx }
     | _ => throw (.illTyped s!"unsupported: field path {f.text}")
@@ -152,24 +163,22 @@ def resolveExists (c : Ctx) (f : FieldPath) : Except Stop (String × String) := 
       if seg == spec.optionSegment then pure (lowerAscii name) else throw (.illTyped s!"unsupported: {f.text}.exists")
     | _ => throw (.illTyped s!"unsupported: {f.text}.exists")
   if (m.stack? opt).isSome then throw (.illTyped s!"{proto}.{opt} is a stack; use any/all")
-  if (outParamHeader? m opt).isNone then throw (.illTyped s!"unknown auxiliary header {proto}.{opt}")
+  let some o := option? m opt | throw (.illTyped s!"unknown auxiliary header {proto}.{opt}")
+  if rest.length == 2 && o.kindByte.isNone then throw (.illTyped s!"{proto}.{opt} is not a TLV option")
   pure (head, opt)
-
-/-- Static field of a path: its protocol and (slice-adjusted) field spec. -/
-def staticField (c : Ctx) (f : FieldPath) : Except Stop (String × FieldSpec) := do
-  let r ← resolvePath c f
-  pure (r.proto, { r.field with width := r.width })
 
 /-- Entries of a stack on an instance: pushed entries from the parser, or an
 owner-bound stack laid out after its owner option's header, whose count
 comes from the owner's length byte. -/
-def stackEntries (P : Packet) (inst : Inst) (sd : StackDecl) : List AuxView :=
+def stackEntries (P : Packet) (inst : Inst) (m : Machine) (sd : StackDecl) : List AuxView :=
   if sd.ownerOption == "" then stackViews inst.aux sd.name
   else
     match latestView inst.aux sd.ownerOption with
     | none => []
     | some owner =>
-      match readBytes P (owner.off + 1) 1 with
+      -- The owner option's `length` field counts the option including its header.
+      let lenField := (m.header? owner.header).bind fun h => h.fields.find? (·.name == "length")
+      match lenField.bind fun lf => readBits P (owner.off * 8 + lf.bitOff) lf.width with
       | none => []
       | some lenByte =>
         let count := if lenByte < sd.offsetAfterOwner then 0 else (lenByte - sd.offsetAfterOwner) / sd.elemBytes
@@ -178,11 +187,9 @@ def stackEntries (P : Packet) (inst : Inst) (sd : StackDecl) : List AuxView :=
             off := owner.off + sd.offsetAfterOwner + i * sd.elemBytes, len := sd.elemBytes }
 
 /-- Dynamic index value: a primary field of the same layer. -/
-private def indexValue (c : Ctx) (inst : Inst) (r : Ref) (f : FieldPath) : Except Stop Nat := do
-  let ir ← resolvePath c f
-  if ir.aux != .primary || ir.proto != r.proto then
-    throw (.illTyped s!"dynamic index {f.text} must be a primary field of {r.proto}")
-  match readField c.P inst ir.field with
+private def indexValue (c : Ctx) (inst : Inst) (r : Ref) (parts : List String) : Except Stop Nat := do
+  let fs ← checkDynamicIndex c r.proto r.spec parts
+  match readField c.P inst fs with
   | some n => pure n
   | none => throw .reject
 
@@ -197,12 +204,12 @@ private def refView (c : Ctx) (env : IterEnv) (inst : Inst) (r : Ref) : Except S
     let some sd := m.stack? stack | throw (.illTyped s!"unknown stack {stack}")
     let i ← match idx with
       | some (.nat i) => pure i
-      | some (.field parts) => indexValue c inst r (FieldPath.ofParts parts)
+      | some (.field parts) => indexValue c inst r parts
       | _ =>
         match env.find? (·.1 == stack) with
         | some (_, i) => pure i
         | none => throw (.illTyped s!"index-less stack reference {r.proto}.{stack} outside any/all")
-    pure ((stackEntries c.P inst sd)[i]?.map fun v => (v.off, v.len))
+    pure ((stackEntries c.P inst m sd)[i]?.map fun v => (v.off, v.len))
 
 /-- E-A-Field: `load(f, σ, P)`. `none` = the layer, option, or entry is
 absent (D-003, D-027); a field past the end of the packet rejects (D-006). -/
@@ -284,8 +291,7 @@ def Where.paths : Where → List FieldPath
   | .not w => w.paths
   | .arith l _ r => arithPaths l ++ arithPaths r
   | .litCmp f _ _ => [f]
-  | .fieldExists f => [f]
-  | .any _ | .all _ | .action _ | .boolLit _ => []
+  | .fieldExists _ | .any _ | .all _ | .action _ | .boolLit _ => []
 where
   arithPaths : Arith → List FieldPath
     | .const _ => []
@@ -311,7 +317,7 @@ def stackCount (c : Ctx) (st : State) (head stack : String) : Except Stop Nat :=
   let some spec := c.V.proto? inst.proto | pure 0
   let some m := spec.machine | pure 0
   let some sd := m.stack? stack | pure 0
-  pure (stackEntries c.P inst sd).length
+  pure (stackEntries c.P inst m sd).length
 
 /-- §13.8. Atoms on an absent layer, option, or stack entry are false (D-003,
 D-027). `env` binds the iteration variables of enclosing `any`/`all`. -/

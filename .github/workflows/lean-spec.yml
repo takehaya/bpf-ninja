@@ -7,11 +7,13 @@ on:
     paths:
       - "spec/lean/**"
       - "pkg/kunai/dsltest/testdata/spec_vectors*.json"
+      - "pkg/kunai/protocols/**"
       - ".github/workflows/lean-spec.yml"
   pull_request:
     paths:
       - "spec/lean/**"
       - "pkg/kunai/dsltest/testdata/spec_vectors*.json"
+      - "pkg/kunai/protocols/**"
       - ".github/workflows/lean-spec.yml"
 
 permissions:
@@ -23,6 +25,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Check the generated vocabulary against the .p4 files
+        run: go run ./spec/lean/gen/vocab2lean | diff -u spec/lean/Kunai/VocabData.lean -
       - uses: leanprover/lean-action@v1
         with:
           lake-package-directory: spec/lean
