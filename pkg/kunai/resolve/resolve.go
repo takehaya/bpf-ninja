@@ -136,8 +136,41 @@ func (r *resolver) resolveFilter(f *ast.Filter) (*ir.Program, error) {
 		Pos:        f.Pos,
 	}
 	addChainRootWarning(p, f, r.opts)
+	addUnreachableChainWarning(p)
 	markRuntimeOffsetLayers(p)
 	return p, nil
+}
+
+// addUnreachableChainWarning flags a quantified layer immediately
+// followed by the same protocol (`mpls{1,8}/mpls`, `vlan+/vlan`).
+// Quantifiers are greedy and never backtrack, so the repeated layer has
+// nothing left to match: for a chain-end protocol (MPLS s-bit) and for any
+// open-ended quantifier the following layer is unreachable; for a bounded
+// `{n,m}` on a self-dispatch protocol (VLAN) it only matches stacks deeper
+// than m. Alternation groups are left alone.
+func addUnreachableChainWarning(p *ir.Program) {
+	for i := 0; i+1 < len(p.Layers); i++ {
+		l, next := p.Layers[i], p.Layers[i+1]
+		if l.Alternation != nil || next.Alternation != nil || l.Spec == nil || next.Spec == nil {
+			continue
+		}
+		if l.Quant != ast.QuantPlus && l.Quant != ast.QuantStar && l.Quant != ast.QuantRange {
+			continue
+		}
+		if l.Spec.Name != next.Spec.Name {
+			continue
+		}
+		// A bounded {n,m} on a self-dispatch protocol (no chain-end signal)
+		// can still leave headers for the follower when the stack is deeper
+		// than m; only chain-end protocols and open-ended quantifiers make
+		// the follower unreachable.
+		if l.Quant == ast.QuantRange && l.RangeMax >= 0 && l.Spec.ChainEnd == nil {
+			continue
+		}
+		p.Warnings = append(p.Warnings, fmt.Sprintf(
+			"%q is quantified and immediately followed by another %q; quantifiers are greedy and never backtrack, so the second %q is unreachable (or only matches stacks deeper than the quantifier's upper bound). Fold it into the quantifier (e.g. `%s{n+1,m+1}`).",
+			l.Spec.Name, next.Spec.Name, next.Spec.Name, l.Spec.Name))
+	}
 }
 
 // addChainRootWarning appends a notice to p.Warnings when the chain's

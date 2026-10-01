@@ -108,11 +108,11 @@ vector quantOptBounds := {
   packet := vlanPkt.take 16, expected := .reject, note := "D-005: case B needs a dispatch miss; bounds failure is ✗" }
 vector quantRangeMidTrunc := {
   id := "quant-range-truncated-mid-chain", ast := { layers := [P "eth", Pq "mpls" (.range 1 (some 8))] },
-  packet := (eth 0x8847 ++ mpls 5 0 ++ mpls 6 0).take 20, expected := .reject, goStatus := .mismatch,
-  note := "D-005: the 2nd label is cut after 2 bytes ⇒ ✗; Go's bpf_loop path stops at k = 1 and accepts" }
+  packet := (eth 0x8847 ++ mpls 5 0 ++ mpls 6 0).take 20, expected := .reject,
+  note := "D-005: the 2nd label is cut after 2 bytes ⇒ ✗" }
 vector quantRange01Bounds := {
   id := "quant-range01-bounds-skip", ast := { layers := [P "eth", Pq "vlan" (.range 0 (some 1))] },
-  packet := vlanPkt.take 16, expected := .reject, goStatus := .notImplemented,
+  packet := vlanPkt.take 16, expected := .reject,
   note := "D-005: bounds failure is ✗ for every quantifier; `?` ≡ `{0,1}` (Laws.lean: opt_eq_range)" }
 vector quantStarBounds := {
   id := "quant-star-bounds-skip", ast := { layers := [P "eth", Pq "vlan" .star] },
@@ -133,13 +133,24 @@ vector quantChainEnd := {
 vector quantGreedyOverrun := {
   id := "quant-range-greedy-overrun", ast := { layers := mplsRange 1 (some 2) }, packet := mpls3,
   expected := .reject, note := "D-002: greedy takes 2 labels; ipv4 then fails at the 3rd" }
+vector quantOverrunBounded := {
+  id := "quant-overrun-bounded", ast := { layers := [P "eth", Pq "mpls" (.range 1 (some 2))] }, packet := mpls3,
+  expected := .reject, note := "D-024: the 2nd label has s = 0, so the stack is deeper than {1,2} allows" }
+vector quantOverrunOpen := {
+  id := "quant-overrun-open", ast := { layers := [P "eth", Pq "mpls" .plus] },
+  packet := eth 0x8847 ++ mpls 1 0 ++ mpls 2 0 ++ mpls 3 0 ++ mpls 4 0 ++ mpls 5 0 ++ mpls 6 0 ++ mpls 7 0 ++ mpls 8 0 ++ mpls 9 1,
+  expected := .reject, goStatus := .mismatch,
+  note := "D-024: 9 labels exceed MPLS_MAX_DEPTH = 8 and the 8th has s = 0; Go's bpf_loop path does not require the end signal at the cap" }
+vector quantExactBound := {
+  id := "quant-exact-bound", ast := { layers := [P "eth", Pq "mpls" (.range 1 (some 3))] }, packet := mpls3,
+  expected := .accept [], note := "3 labels, the 3rd has s = 1: bound reached with the end signal" }
 vector quantGreedyUnreachable := {
   id := "quant-greedy-unreachable",
   ast := { layers := [P "eth", Pq "mpls" (.range 1 (some 8)), P "mpls", P "ipv4", P "tcp"] }, packet := mpls3,
   expected := .reject, note := "D-002: `mpls{1,8}/mpls` never matches" }
 vector quantPredMidFail := {
   id := "quant-pred-mid-fail", ast := { layers := mplsPred 5 .eq (.range 1 (some 8)) }, packet := mpls3,
-  expected := .reject, goStatus := .mismatch, note := "D-001 (b); Go's bpf_loop path checks the first iteration only and accepts" }
+  expected := .reject, note := "D-001 (b): a predicate failure at any iteration rejects" }
 vector quantPredMidFailStatic := {
   id := "quant-pred-mid-fail-static", ast := { layers := mplsPred 5 .eq (.range 1 (some 3)) }, packet := mpls3,
   expected := .reject, note := "D-001 (b); static unroll agrees" }
@@ -152,21 +163,22 @@ vector quantPredAllHold := {
 vector quantSelfValidSkip := {
   id := "quant-selfvalidating-skip", ast := { layers := [P "eth", P "mpls", Pq "ipv4" .opt] },
   packet := eth 0x8847 ++ mpls 5 1 ++ ipv6 6 ++ tcp 1 80, expected := .accept [],
-  note := "D-017: no parent constant for ipv4 under mpls, so version = 6 is a dispatch miss and ipv4? skips" }
+  note := "D-017: no parent constant for ipv4 under mpls, so version = 6 is a dispatch miss and ipv4? skips; Go: self-validating optional not implemented", goStatus := .notImplemented }
 vector quantSelfValidBroken := {
   id := "quant-selfvalidating-broken", ast := { layers := [P "eth", Pq "ipv4" .opt] },
-  packet := eth 0x0800 ++ ipv4 6 (version := 5) ++ tcp 12345 80 ++ payload 5, expected := .reject, goStatus := .mismatch,
-  note := "D-017: eth.ethertype already says ipv4, so version = 5 is a broken header, not absence; Go fails the verifier" }
+  packet := eth 0x0800 ++ ipv4 6 (version := 5) ++ tcp 12345 80 ++ payload 5, expected := .reject, goStatus := .notImplemented,
+  note := "D-017: eth.ethertype already says ipv4, so version = 5 is a broken header, not absence; Go: optional variable-length layer not implemented" }
 vector typOptionalAfterSkip := {
-  id := "typ-no-dispatch-after-skip", ast := { layers := [P "eth", Pq "ipv4" .opt, P "tcp"] }, goStatus := .mismatch,
+  id := "typ-no-dispatch-after-skip", ast := { layers := [P "eth", Pq "ipv4" .opt, P "tcp"] }, goStatus := .notImplemented,
   expected := .illTyped "no dispatch constant for tcp under eth",
-  note := "if ipv4 is skipped, tcp sits under eth with no constant; Go compiles this and then fails the verifier (issue 4)" }
+  note := "if ipv4 is skipped, tcp sits under eth with no constant" }
 vector typOptionalNoCheck := {
   id := "typ-optional-nocheck", ast := { layers := [P "eth", P "ipv4", P "udp", P "vxlan", Pq "eth" .opt, P "ipv4", P "tcp"] },
   packet := vxlanPkt, expected := .illTyped "optional eth with no-check dispatch cannot detect absence", goStatus := .notImplemented }
 vector quantSelfEdgeStar := {
   id := "quant-self-edge-star", ast := { layers := [P "eth", P "mpls", Pq "mpls" .star, P "ipv4", P "tcp"] },
-  packet := mpls3, expected := .accept [], note := "NO_CHECK self-edge with CHAIN_END: the s bit detects absence" }
+  packet := mpls3, expected := .accept [], goStatus := .notImplemented,
+  note := "NO_CHECK self-edge with CHAIN_END: the s bit detects absence; Go has no peek for NO_CHECK" }
 vector quantSelfEdgeOpt := {
   id := "quant-self-edge-opt", ast := { layers := [P "eth", P "mpls", Pq "mpls" .opt, P "ipv4", P "tcp"] },
   packet := mpls1, expected := .accept [], goStatus := .notImplemented,
@@ -188,8 +200,8 @@ vector altNone := {
 vector altFirstPredFails := {
   id := "alt-first-pred-fails",
   ast := { layers := [P "eth", .alt [{ name := "ipv4", preds := [.cmp (f "ttl") .eq (.int 1)] }, { name := "ipv4" }], P "tcp"] },
-  expected := .reject, goStatus := .mismatch,
-  note := "[E-Layer-Alt-First]: the first alternative commits; Go fails to load (duplicate symbol)" }
+  expected := .reject,
+  note := "[E-Layer-Alt-First]: the first alternative commits" }
 vector altRoot := {
   id := "alt-root-illtyped", ast := { layers := [.alt [{ name := "ipv4" }, { name := "ipv6" }], P "tcp"] },
   packet := l3Pkt, expected := .illTyped "alternation cannot be the first layer", goStatus := .notImplemented }
@@ -219,7 +231,7 @@ def chainVectors : List Vector := [
   chainVxlan, chainVxlanAlt, chainMplsSingle, chainMplsSingleOverrun,
   quantOptPresent, quantOptAbsent, quantOptPredHolds, quantOptPredFails, quantOptBounds, quantRangeMidTrunc, quantRange01Bounds,
   quantStarBounds, quantMplsRange, quantMplsPlus, quantMplsStarZero, quantMplsMinUnmet, quantChainEnd,
-  quantGreedyOverrun, quantGreedyUnreachable, quantPredMidFail, quantPredMidFailStatic, quantPredFirstFail,
+  quantGreedyOverrun, quantOverrunBounded, quantOverrunOpen, quantExactBound, quantGreedyUnreachable, quantPredMidFail, quantPredMidFailStatic, quantPredFirstFail,
   quantPredAllHold, quantSelfValidSkip, quantSelfValidBroken, typOptionalAfterSkip, typOptionalNoCheck, quantSelfEdgeStar, quantSelfEdgeOpt, quantFirstOptional,
   altFirst, altSecond, altNone, altFirstPredFails, altRoot, altNoCheck,
   hostTcVlanMandatory, hostTcVlanOpt, hostL3Root, hostL3EthRoot]

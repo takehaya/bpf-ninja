@@ -36,8 +36,11 @@ func genStaticChain(layer *ir.LayerInstance, index int, all []*ir.LayerInstance,
 	if layer.RangeMax > staticChainCap {
 		return nil, fmt.Errorf("%w: {%d,%d} on %q exceeds static-unroll cap %d; bpf_loop chain codegen will cover this", ErrNotImplemented, layer.RangeMin, layer.RangeMax, layer.Spec.Name, staticChainCap)
 	}
-	if layer.RangeMin < 1 {
-		return nil, fmt.Errorf("%w: quantifier {%d,%d} with min < 1 on %q needs bpf_loop chain codegen", ErrNotImplemented, layer.RangeMin, layer.RangeMax, layer.Spec.Name)
+	optional := layer.RangeMin == 0
+	if optional {
+		if err := optionalLayerGuard(layer, index); err != nil {
+			return nil, err
+		}
 	}
 
 	hs, err := headerSize(layer.Spec)
@@ -45,13 +48,21 @@ func genStaticChain(layer *ir.LayerInstance, index int, all []*ir.LayerInstance,
 		return nil, err
 	}
 
-	first, err := genStaticLayer(layer, index, all, pc)
+	chainDone := fmt.Sprintf("dsl_chain_done_%d", index)
+	// Iteration 0: mandatory when RangeMin ≥ 1; for `{0,m}` it is the
+	// same peek-and-skip block as `?` (`{0,1}` ≡ `?`), landing on chainDone.
+	var first asm.Instructions
+	if optional {
+		first, err = emitPeekedIterZero(layer, index, all, chainDone, pc)
+	} else {
+		first, err = genStaticLayer(layer, index, all, pc)
+	}
 	if err != nil {
 		return nil, err
 	}
 	insns := append(asm.Instructions{}, first...)
 	if layer.RangeMax == 1 {
-		// One mandatory header. For a chain-end protocol it must signal
+		// One header at most. For a chain-end protocol it must signal
 		// end, else an (RangeMax+1)-th header follows that the quantifier
 		// disallows — reject. No-op for self-dispatch protocols.
 		overRun, err := chainEndRequire(layer.Spec, hs, staticChainFrame, dslReject)
@@ -59,6 +70,9 @@ func genStaticChain(layer *ir.LayerInstance, index int, all []*ir.LayerInstance,
 			return nil, err
 		}
 		insns = append(insns, overRun...)
+		if optional {
+			insns = append(insns, landingNoop(chainDone))
+		}
 		return insns, nil
 	}
 
@@ -94,7 +108,6 @@ func genStaticChain(layer *ir.LayerInstance, index int, all []*ir.LayerInstance,
 		return nil, err
 	}
 
-	chainDone := fmt.Sprintf("dsl_chain_done_%d", index)
 	// Self-repeating layer: the dispatch parent is this same layer, so
 	// R4-range and parent-entry-range both reduce to "did anything
 	// before this layer leave R4 a range scalar". Computed once outside

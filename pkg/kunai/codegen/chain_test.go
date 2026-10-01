@@ -170,13 +170,24 @@ func TestGenOpenEndedChainUsesBpfLoop(t *testing.T) {
 	}
 }
 
-func TestGenStaticChainRejectsZeroMin(t *testing.T) {
-	// `{0,3}` would need bpf_loop semantics (the whole chain can be
-	// skipped); outside the static-unroll scope.
-	p := vlanChainProgram(0, 3)
-	_, err := Gen(p, Capabilities{})
-	if !errors.Is(err, ErrNotImplemented) {
-		t.Fatalf("err = %v; want ErrNotImplemented for {0,3}", err)
+func TestGenStaticChainZeroMinUsesPeek(t *testing.T) {
+	// `{0,m}` (m ≤ staticChainCap) is the `?` peek-and-skip block followed
+	// by the unroll; the whole chain skips on a parent dispatch miss.
+	for _, max := range []int{1, 3} {
+		p := vlanChainProgram(0, max)
+		out, err := Gen(p, Capabilities{})
+		if err != nil {
+			t.Fatalf("{0,%d}: Gen: %v", max, err)
+		}
+		found := false
+		for _, ins := range out.Main {
+			if strings.HasPrefix(ins.Symbol(), "dsl_chain_done_") {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("{0,%d}: missing chain-done landing", max)
+		}
 	}
 }
 
