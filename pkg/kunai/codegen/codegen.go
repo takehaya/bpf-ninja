@@ -1414,14 +1414,20 @@ func genFieldDispatchAltDiverged(current *ir.LayerInstance, altParents []*ir.Lay
 	return insns, nil
 }
 
-var altDispatchLabelCounter atomic.Uint64
+// labelCounter numbers the labels freshLabel hands out. Atomic so
+// concurrent Compile() calls produce non-colliding labels even though
+// label uniqueness is only required within a single instruction stream.
+var labelCounter atomic.Uint64
 
-// nextAltDispatchLabel returns a process-unique alt-diverged dispatch
-// label in the `dsl_altdisp_<role>_<n>` shape. Atomic so concurrent
-// Compile() calls produce non-colliding labels even though label
-// uniqueness is only required within a single instruction stream.
+// freshLabel returns a process-unique `dsl_<prefix>_<n>` label.
+func freshLabel(prefix string) string {
+	return fmt.Sprintf("dsl_%s_%d", prefix, labelCounter.Add(1))
+}
+
+// nextAltDispatchLabel returns an alt-diverged dispatch label in the
+// `dsl_altdisp_<role>_<n>` shape.
 func nextAltDispatchLabel(role string) string {
-	return fmt.Sprintf("dsl_altdisp_%s_%d", role, altDispatchLabelCounter.Add(1))
+	return freshLabel("altdisp_" + role)
 }
 
 // genFieldDispatch emits the check that parent.<field> == value.
@@ -1834,50 +1840,20 @@ func emitAuxGating(g *vocab.AuxGating, base layerAnchor, failLabel string) asm.I
 // countSlot, when it names a push count slot, bounds the index by the
 // pushed entries as well: an index at or past them jumps to failLabel
 // (the entry is absent, spec D-031) instead of reading the bytes after
-// the stack.
+// the stack. Entries with a variable tail take
+// emitDynamicVarTailStackAddress instead (no constant stride).
 func emitDynamicStackAddressCounted(ref *ir.FieldRef, base layerAnchor, countSlot *int16, failLabel string) (asm.Instructions, error) {
 	if ref == nil || ref.Aux == nil || ref.Aux.Stack == nil || ref.Aux.Stack.IsStatic {
 		return nil, fmt.Errorf("codegen: emitDynamicStackAddressCounted called on non-dynamic ref")
 	}
-	stack := ref.Aux.Stack
-	if stack.Dynamic == nil {
-		return nil, fmt.Errorf("codegen: dynamic stack index has no source field")
-	}
-	if stack.Dynamic.Aux != nil {
-		return nil, fmt.Errorf("%w: dynamic index source must be a primary-header field", ErrNotImplemented)
-	}
-	if stack.Dynamic.Layer != ref.Layer {
-		return nil, fmt.Errorf("%w: dynamic index source must live on the same layer as the stack", ErrNotImplemented)
-	}
-	idxByteOff, idxBytes, err := findFieldByteOffset(stack.Dynamic.Layer.Spec, stack.Dynamic.Field.Name)
+	idxByteOff, err := dynamicIndexSource(ref)
 	if err != nil {
 		return nil, err
-	}
-	if idxBytes != 1 {
-		return nil, fmt.Errorf("%w: dynamic index source %s.%s is %d bytes (only 1-byte sources supported)", ErrNotImplemented, stack.Dynamic.Layer.Spec.Name, stack.Dynamic.Field.Name, idxBytes)
 	}
 	if ref.Aux.HeaderSize <= 0 || ref.Aux.HeaderSize > 127 {
 		return nil, fmt.Errorf("%w: dynamic stack element size %d outside 1..127", ErrNotImplemented, ref.Aux.HeaderSize)
 	}
-	// Read the index through the same scalar and packet bounds as fields.
-	// Preserve a slot-based layer offset in R5 for the element calculation.
-	var insns asm.Instructions
-	if base.UseSlot {
-		insns = append(insns, asm.LoadMem(asm.R5, asm.R10, base.SlotOff, asm.DWord))
-		insns = append(insns, foldOffsetIntoScalar(asm.R3, asm.R5, int32(idxByteOff), failLabel)...)
-	} else if base.UseR4 {
-		insns = append(insns, foldOffsetIntoScalar(asm.R3, offsetBase, int32(idxByteOff), failLabel)...)
-	} else {
-		insns = append(insns, asm.Mov.Imm(asm.R3, int32(base.AbsOffset+idxByteOff)))
-	}
-	insns = append(insns, boundedScalarLoad(asm.R3, asm.R0, asm.R3, asm.R1, asm.Byte, failLabel)...)
-	insns = append(insns, asm.JGE.Imm(asm.R3, int32(stack.Capacity), failLabel))
-	if countSlot != nil {
-		insns = append(insns,
-			asm.LoadMem(asm.R2, asm.R10, *countSlot, asm.DWord),
-			asm.JGE.Reg(asm.R3, asm.R2, failLabel),
-		)
-	}
+	insns := emitDynamicIndexRead(ref, base, idxByteOff, countSlot, failLabel)
 	insns = append(insns,
 		asm.Mul.Imm(asm.R3, int32(ref.Aux.HeaderSize)),
 		asm.Add.Imm(asm.R3, int32(ref.Aux.OffsetInLayer)),
@@ -1890,15 +1866,7 @@ func emitDynamicStackAddressCounted(ref *ir.FieldRef, base layerAnchor, countSlo
 	default:
 		insns = append(insns, asm.Add.Imm(asm.R3, int32(base.AbsOffset)))
 	}
-	insns = append(insns,
-		asm.JGT.Imm(asm.R3, int32(ScratchBufSize-ref.Aux.HeaderSize), failLabel),
-		asm.Mov.Reg(asm.R5, asm.R0),
-		asm.Add.Reg(asm.R5, asm.R3),
-		asm.Mov.Reg(asm.R3, asm.R5),
-		asm.Add.Imm(asm.R3, int32(ref.Aux.HeaderSize)),
-		asm.JGT.Reg(asm.R3, asm.R1, failLabel),
-	)
-	return insns, nil
+	return append(insns, emitExposeEntry(ref, failLabel)...), nil
 }
 
 // emitRuntimeAuxElementAddr loads `size` bytes of an aux-stack element
@@ -2203,18 +2171,156 @@ func emitFieldLoad(anchor layerAnchor, fieldOff int, size asm.Size) asm.Instruct
 	}
 }
 
+// dynamicIndexSource validates a dynamic stack index's source field (a
+// 1-byte primary field of the same layer) and returns its byte offset.
+func dynamicIndexSource(ref *ir.FieldRef) (int, error) {
+	stack := ref.Aux.Stack
+	if stack.Dynamic == nil {
+		return 0, fmt.Errorf("codegen: dynamic stack index has no source field")
+	}
+	if stack.Dynamic.Aux != nil {
+		return 0, fmt.Errorf("%w: dynamic index source must be a primary-header field", ErrNotImplemented)
+	}
+	if stack.Dynamic.Layer != ref.Layer {
+		return 0, fmt.Errorf("%w: dynamic index source must live on the same layer as the stack", ErrNotImplemented)
+	}
+	idxByteOff, idxBytes, err := findFieldByteOffset(stack.Dynamic.Layer.Spec, stack.Dynamic.Field.Name)
+	if err != nil {
+		return 0, err
+	}
+	if idxBytes != 1 {
+		return 0, fmt.Errorf("%w: dynamic index source %s.%s is %d bytes (only 1-byte sources supported)", ErrNotImplemented, stack.Dynamic.Layer.Spec.Name, stack.Dynamic.Field.Name, idxBytes)
+	}
+	return idxByteOff, nil
+}
+
+// emitDynamicIndexRead reads a dynamic stack index into R3 through the
+// same scalar and packet bounds as a field, then bounds it by the stack's
+// capacity and, when countSlot names a push count slot, by the pushed
+// entries (an index at or past them is absent, D-031). With a slot anchor
+// the layer offset stays in R5 for the caller's address arithmetic.
+func emitDynamicIndexRead(ref *ir.FieldRef, base layerAnchor, idxByteOff int, countSlot *int16, failLabel string) asm.Instructions {
+	var insns asm.Instructions
+	if base.UseSlot {
+		insns = append(insns, asm.LoadMem(asm.R5, asm.R10, base.SlotOff, asm.DWord))
+		insns = append(insns, foldOffsetIntoScalar(asm.R3, asm.R5, int32(idxByteOff), failLabel)...)
+	} else if base.UseR4 {
+		insns = append(insns, foldOffsetIntoScalar(asm.R3, offsetBase, int32(idxByteOff), failLabel)...)
+	} else {
+		insns = append(insns, asm.Mov.Imm(asm.R3, int32(base.AbsOffset+idxByteOff)))
+	}
+	insns = append(insns, boundedScalarLoad(asm.R3, asm.R0, asm.R3, asm.R1, asm.Byte, failLabel)...)
+	insns = append(insns, asm.JGE.Imm(asm.R3, int32(ref.Aux.Stack.Capacity), failLabel))
+	if countSlot != nil {
+		insns = append(insns,
+			asm.LoadMem(asm.R2, asm.R10, *countSlot, asm.DWord),
+			asm.JGE.Reg(asm.R3, asm.R2, failLabel),
+		)
+	}
+	return insns
+}
+
+// emitEntryBaseScalar sets R3 = scalar offset of the stack's entry 0 from
+// the layer anchor. For a slot anchor, `slotInR5` says the caller already
+// holds the slot value in R5 (emitDynamicIndexRead leaves it there);
+// otherwise the slot is loaded.
+func emitEntryBaseScalar(ref *ir.FieldRef, base layerAnchor, slotInR5 bool) asm.Instructions {
+	switch {
+	case base.UseSlot && slotInR5:
+		return asm.Instructions{asm.Mov.Reg(asm.R3, asm.R5), asm.Add.Imm(asm.R3, int32(ref.Aux.OffsetInLayer))}
+	case base.UseSlot:
+		return asm.Instructions{asm.LoadMem(asm.R3, asm.R10, base.SlotOff, asm.DWord), asm.Add.Imm(asm.R3, int32(ref.Aux.OffsetInLayer))}
+	case base.UseR4:
+		return asm.Instructions{asm.Mov.Reg(asm.R3, offsetBase), asm.Add.Imm(asm.R3, int32(ref.Aux.OffsetInLayer))}
+	}
+	return asm.Instructions{asm.Mov.Imm(asm.R3, int32(base.AbsOffset+ref.Aux.OffsetInLayer))}
+}
+
+// emitVarTailStep advances R3 from the start of one variable-length entry
+// to the start of the next: R2 = tail(entry) from its length byte, then
+// R3 += ElemSize + R2 (the parser's own arithmetic, emitTailLengthScalar).
+func emitVarTailStep(ref *ir.FieldRef, vt variableTailSkip, shift int, failLabel string) asm.Instructions {
+	insns := asm.Instructions{asm.Mov.Reg(asm.R2, asm.R3), asm.Add.Imm(asm.R2, int32(vt.LenFieldByteOff))}
+	insns = append(insns, boundedScalarLoad(asm.R2, asm.R0, asm.R2, asm.R1, asm.Byte, failLabel)...)
+	insns = append(insns, emitTailLengthScalar(vt, shift, asm.R2, failLabel)...)
+	return append(insns, asm.Add.Imm(asm.R3, int32(ref.Aux.HeaderSize)), asm.Add.Reg(asm.R3, asm.R2))
+}
+
+// emitExposeEntry turns the scalar entry offset in R3 into R5 = entry
+// start and R3 = R5 + HeaderSize: the scalar is bounded, the pointer
+// formed, and the fixed part of the entry proved inside the window.
+func emitExposeEntry(ref *ir.FieldRef, failLabel string) asm.Instructions {
+	return asm.Instructions{
+		asm.JGT.Imm(asm.R3, int32(ScratchBufSize-ref.Aux.HeaderSize), failLabel),
+		asm.Mov.Reg(asm.R5, asm.R0),
+		asm.Add.Reg(asm.R5, asm.R3),
+		asm.Mov.Reg(asm.R3, asm.R5),
+		asm.Add.Imm(asm.R3, int32(ref.Aux.HeaderSize)),
+		asm.JGT.Reg(asm.R3, asm.R1, failLabel),
+	}
+}
+
+// emitDynamicVarTailStackAddress is emitDynamicStackAddressCounted for a
+// stack whose entries carry a variable tail (ipv6.exts): entry i has no
+// constant stride, so the walk of emitStaticStackEntryAddress is unrolled
+// up to the push bound and stops at the step the runtime index names.
+// Leaves R5 = entry start and R3 = R5 + HeaderSize. R2/R3 are clobbered.
+func emitDynamicVarTailStackAddress(ref *ir.FieldRef, base layerAnchor, countSlot *int16, failLabel string) (asm.Instructions, error) {
+	idxByteOff, err := dynamicIndexSource(ref)
+	if err != nil {
+		return nil, err
+	}
+	vt, ok := variableTailFor(ref.Layer.Spec, ref.Aux.HeaderName)
+	if !ok {
+		return nil, fmt.Errorf("codegen: emitDynamicVarTailStackAddress on %s.%s without a variable tail", ref.Layer.Spec.Name, ref.Aux.OutParam)
+	}
+	shift := log2PowerOfTwo(vt.Scale)
+	if shift < 0 {
+		return nil, fmt.Errorf("%w: variable-tail scale %d is not a power of two", ErrNotImplemented, vt.Scale)
+	}
+	// R3 = index (R5 = slot value for a slot anchor); park the index in R2,
+	// build the entry-0 base in R3, then keep the index in R5.
+	insns := emitDynamicIndexRead(ref, base, idxByteOff, countSlot, failLabel)
+	insns = append(insns, asm.Mov.Reg(asm.R2, asm.R3))
+	insns = append(insns, emitEntryBaseScalar(ref, base, true)...)
+	insns = append(insns, asm.Mov.Reg(asm.R5, asm.R2))
+	// Walk entry by entry until the step the index names; a stack can hold
+	// at most pushBound entries, so an index past that is absent. The last
+	// possible index needs no further step.
+	bound := min(ref.Aux.Stack.Capacity, pushBound(ref.Layer.Spec, ref.Aux.OutParam))
+	found := freshLabel("varwalk")
+	for k := 0; k < bound-1; k++ {
+		insns = append(insns, asm.JEq.Imm(asm.R5, int32(k), found))
+		insns = append(insns, emitVarTailStep(ref, vt, shift, failLabel)...)
+	}
+	insns = append(insns, asm.JNE.Imm(asm.R5, int32(bound-1), failLabel), landingNoop(found))
+	return append(insns, emitExposeEntry(ref, failLabel)...), nil
+}
+
 // emitStackEntryAddress leaves R5 = the start of the stack entry `ref`
 // names and R3 = R5 + HeaderSize (proved inside the window), for entries
-// whose offset is not a compile-time constant (needsEntryAddress): a
-// dynamic index (emitDynamicStackAddressCounted, bounded by `countSlot` when
-// given), or a static index walked through variable-length entries
-// (emitStaticStackEntryAddress). R2/R3 are clobbered.
+// whose offset is not a compile-time constant (needsEntryAddress):
+//
+//   - a static index walked through variable-length entries
+//     (emitStaticStackEntryAddress; the caller guarded it against the
+//     push count),
+//   - a dynamic index into fixed-size entries (emitDynamicStackAddressCounted),
+//   - a dynamic index into variable-length entries, unrolled up to the
+//     push bound (emitDynamicVarTailStackAddress).
+//
+// A dynamic index into a push-counted stack needs `countSlot`: without
+// the pushed count the walk would read entries the parser never pushed
+// (D-031), so that call is refused rather than left to convention.
+// R2/R3 are clobbered.
 func emitStackEntryAddress(ref *ir.FieldRef, base layerAnchor, countSlot *int16, failLabel string) (asm.Instructions, error) {
 	if ref.Aux.Stack.IsStatic {
 		return emitStaticStackEntryAddress(ref, base, failLabel)
 	}
+	if countSlot == nil && needsPushCount(ref) {
+		return nil, fmt.Errorf("codegen: dynamic index into the push-counted stack %s.%s without its count slot (D-031)", ref.Layer.Spec.Name, ref.Aux.OutParam)
+	}
 	if isVarTailStack(ref) {
-		return nil, fmt.Errorf("%w: dynamic index into %s.%s, whose entries are variable-length; use a constant index or any/all", ErrNotImplemented, ref.Layer.Spec.Name, ref.Aux.OutParam)
+		return emitDynamicVarTailStackAddress(ref, base, countSlot, failLabel)
 	}
 	return emitDynamicStackAddressCounted(ref, base, countSlot, failLabel)
 }
@@ -2260,16 +2366,7 @@ func auxEntryFieldWindow(ref *ir.FieldRef) (int, int, error) {
 // against the push count, so every entry walked is present; the loads
 // are still bounded for the verifier. R2/R3 are clobbered.
 func emitStaticStackEntryAddress(ref *ir.FieldRef, base layerAnchor, failLabel string) (asm.Instructions, error) {
-	// R3 = scalar offset of entry 0.
-	var insns asm.Instructions
-	switch {
-	case base.UseSlot:
-		insns = append(insns, asm.LoadMem(asm.R3, asm.R10, base.SlotOff, asm.DWord), asm.Add.Imm(asm.R3, int32(ref.Aux.OffsetInLayer)))
-	case base.UseR4:
-		insns = append(insns, asm.Mov.Reg(asm.R3, offsetBase), asm.Add.Imm(asm.R3, int32(ref.Aux.OffsetInLayer)))
-	default:
-		insns = append(insns, asm.Mov.Imm(asm.R3, int32(base.AbsOffset+ref.Aux.OffsetInLayer)))
-	}
+	insns := emitEntryBaseScalar(ref, base, false)
 	vt, varTail := variableTailFor(ref.Layer.Spec, ref.Aux.HeaderName)
 	switch {
 	case !varTail:
@@ -2282,24 +2379,10 @@ func emitStaticStackEntryAddress(ref *ir.FieldRef, base layerAnchor, failLabel s
 			return nil, fmt.Errorf("%w: variable-tail scale %d is not a power of two", ErrNotImplemented, vt.Scale)
 		}
 		for k := uint64(0); k < ref.Aux.Stack.Static; k++ {
-			// R2 = tail(entry_k) from its length byte; R3 += ElemSize + R2.
-			insns = append(insns, asm.Mov.Reg(asm.R2, asm.R3), asm.Add.Imm(asm.R2, int32(vt.LenFieldByteOff)))
-			insns = append(insns, boundedScalarLoad(asm.R2, asm.R0, asm.R2, asm.R1, asm.Byte, failLabel)...)
-			insns = append(insns, emitTailLengthScalar(vt, shift, asm.R2, failLabel)...)
-			insns = append(insns, asm.Add.Imm(asm.R3, int32(ref.Aux.HeaderSize)), asm.Add.Reg(asm.R3, asm.R2))
+			insns = append(insns, emitVarTailStep(ref, vt, shift, failLabel)...)
 		}
 	}
-	// Same exposure as emitDynamicStackAddressCounted: bound the scalar, form the
-	// pointer, prove the fixed part of the entry is inside the window.
-	insns = append(insns,
-		asm.JGT.Imm(asm.R3, int32(ScratchBufSize-ref.Aux.HeaderSize), failLabel),
-		asm.Mov.Reg(asm.R5, asm.R0),
-		asm.Add.Reg(asm.R5, asm.R3),
-		asm.Mov.Reg(asm.R3, asm.R5),
-		asm.Add.Imm(asm.R3, int32(ref.Aux.HeaderSize)),
-		asm.JGT.Reg(asm.R3, asm.R1, failLabel),
-	)
-	return insns, nil
+	return append(insns, emitExposeEntry(ref, failLabel)...), nil
 }
 
 // emitDynamicStackLoad is the single-LDX convenience built on

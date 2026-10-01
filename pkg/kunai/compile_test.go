@@ -1042,11 +1042,10 @@ func TestCompileBracketOnPushCountedStack(t *testing.T) {
 		}
 	}
 	// Variable-length entries (ipv6 and, since ext_length is honoured, gtp)
-	// cannot be addressed from a runtime index.
+	// are addressed from a runtime index by walking up to the push bound.
 	for _, expr := range []string{"eth/ipv6/tcp where ipv6.exts[ipv6.hop_limit].next_header == 6", "eth/ipv4/udp/gtp/ipv4/tcp where gtp.exts[gtp.msg_type].next_ext == 6"} {
-		_, err = compileForTest(expr)
-		if !errors.Is(err, codegen.ErrNotImplemented) || !strings.Contains(err.Error(), "variable-length") {
-			t.Fatalf("%s: expected codegen.ErrNotImplemented for a dynamic index into variable-length entries, got %v", expr, err)
+		if _, err := compileForTest(expr); err != nil {
+			t.Fatalf("%s: %v", expr, err)
 		}
 	}
 	// Entry 0 keeps its constant offset, so `in @set` style constant-offset
