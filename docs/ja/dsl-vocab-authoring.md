@@ -378,14 +378,26 @@ kind byte で dispatch する TLV 列です。形の要件は `IsMultiStateLoopE
 
 - `parse_options` のような entry state は本体が空で、`transition select` だけを持ちます。
 - select の鍵は、`pkt.lookahead<bit<8>>()` 単独、`<counter>.is_zero()` 単独、その 2 本のタプルのいずれかです。
-- 各 case の行き先は accept / reject か、`transition parse_options;` で entry に戻るだけの sibling state です。
+- 各 case の行き先は accept / reject か、entry に戻る sibling state です。sibling は直接戻るほか、extract したヘッダのフィールドを `select` で検証し、正常時は entry、不正時は `default: reject;` に遷移できます。
 
-sibling の書き方は次の 3 パターンです。tcp.p4 と ipv4.p4 を参照してください。
+sibling の書き方は次の 3 パターンです。以下は `tcp.p4` の抜粋で、`pc` は TCP options の残り byte 数を管理する ParserCounter です (§7.8)。`pkt.extract(mss)` は宣言されたヘッダ長 (4 byte) を読み進めますが、パケット中の `mss.length` が 4 であることまでは保証しないため、続く `select` で検証します。
 
 ```p4
-state parse_mss { pkt.extract(mss); transition parse_options; }        // (1) extract 形
-state parse_nop { pkt.advance(8);   transition parse_options; }        // (2) 固定スキップ形
-state parse_sack {                                                     // (3) advance-only 形
+state parse_mss {                             // (1) extract + 長さ検証
+    pkt.extract(mss);
+    pc.decrement(4);
+    transition select(mss.length) {
+        4: parse_options;
+        default: reject;
+    }
+}
+state parse_nop {                             // (2) 固定スキップ形
+    pkt.advance(8);
+    pc.decrement(1);
+    transition parse_options;
+}
+state parse_sack {                            // (3) advance-only 形
+    pc.decrement((bit<8>)pkt.lookahead<bit<16>>()[7:0]);
     pkt.advance(((bit<32>)pkt.lookahead<bit<16>>()[7:0]) << 3);
     transition parse_options;
 }
