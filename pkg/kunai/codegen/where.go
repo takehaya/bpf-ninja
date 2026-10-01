@@ -32,6 +32,10 @@ type whereCtx struct {
 	// here so the atom evaluates false (spec D-027, D-031) instead of
 	// rejecting the packet; empty outside an atom (then dslReject).
 	atomFail string
+	// presentLayers holds absentable layers an enclosing any()/all() has
+	// already guarded as present, so the atoms it unrolls skip their own
+	// guard.
+	presentLayers map[*ir.LayerInstance]bool
 	// callbacks accumulates bpf_loop callback subprograms emitted while
 	// generating the where clause (currently the aux-walk any()/all()
 	// loop). They are returned out of genCondition and appended to
@@ -102,9 +106,13 @@ func (c *whereCtx) gen(w *ir.Condition, failLabel string) (asm.Instructions, err
 	case ast.WAtomAction:
 		return genActionAtom(w, c.lang, failLabel)
 	case ast.WAtomArith:
-		return c.withStackGuards(w, failLabel, c.genArithCompare)
+		return c.withLayerGuards(w, failLabel, func(w *ir.Condition, fail string) (asm.Instructions, error) {
+			return c.withStackGuards(w, fail, c.genArithCompare)
+		})
 	case ast.WAtomLiteralCmp:
-		return c.withStackGuards(w, failLabel, c.genLiteralCompare)
+		return c.withLayerGuards(w, failLabel, func(w *ir.Condition, fail string) (asm.Instructions, error) {
+			return c.withStackGuards(w, fail, c.genLiteralCompare)
+		})
 	case ast.WAnd:
 		return c.genAnd(w, failLabel)
 	case ast.WOr:
@@ -118,7 +126,7 @@ func (c *whereCtx) gen(w *ir.Condition, failLabel string) (asm.Instructions, err
 	case ast.WAtomBoolLit:
 		return c.genBoolLit(w, failLabel)
 	case ast.WAtomBoolExists:
-		return c.genBoolExists(w, failLabel)
+		return c.withLayerGuards(w, failLabel, c.genBoolExists)
 	case ast.WAtomBoolEq:
 		return c.genBoolEq(w, failLabel)
 	}
@@ -282,20 +290,22 @@ func (c *whereCtx) genAny(w *ir.Condition, failLabel string) (asm.Instructions, 
 	if w.QuantTarget == nil {
 		return nil, fmt.Errorf("codegen: any() lacks a resolved iteration target")
 	}
-	if use, err := useBpfLoopAuxWalk(w); err != nil {
-		return nil, err
-	} else if use {
-		return c.genQuantBpfLoop(w, failLabel, true)
-	}
-	matchLabel := c.freshLabel("any_match")
-	insns, err := c.genQuantUnroll(w, matchLabel, failLabel, true)
-	if err != nil {
-		return nil, err
-	}
-	// After all iterations exhaust without a match, fall to failLabel.
-	insns = append(insns, asm.Ja.Label(failLabel))
-	insns = append(insns, landingNoop(matchLabel))
-	return insns, nil
+	return c.withQuantLayerGuard(w, failLabel, func() (asm.Instructions, error) {
+		if use, err := useBpfLoopAuxWalk(w); err != nil {
+			return nil, err
+		} else if use {
+			return c.genQuantBpfLoop(w, failLabel, true)
+		}
+		matchLabel := c.freshLabel("any_match")
+		insns, err := c.genQuantUnroll(w, matchLabel, failLabel, true)
+		if err != nil {
+			return nil, err
+		}
+		// After all iterations exhaust without a match, fall to failLabel.
+		insns = append(insns, asm.Ja.Label(failLabel))
+		insns = append(insns, landingNoop(matchLabel))
+		return insns, nil
+	})
 }
 
 // genAll emits a static-unroll where every iteration must succeed.
@@ -306,16 +316,97 @@ func (c *whereCtx) genAll(w *ir.Condition, failLabel string) (asm.Instructions, 
 	if w.QuantTarget == nil {
 		return nil, fmt.Errorf("codegen: all() lacks a resolved iteration target")
 	}
-	if use, err := useBpfLoopAuxWalk(w); err != nil {
-		return nil, err
-	} else if use {
-		return c.genQuantBpfLoop(w, failLabel, false)
-	}
-	insns, err := c.genQuantUnroll(w, "" /* no per-iter accept */, failLabel, false)
+	return c.withQuantLayerGuard(w, failLabel, func() (asm.Instructions, error) {
+		if use, err := useBpfLoopAuxWalk(w); err != nil {
+			return nil, err
+		} else if use {
+			return c.genQuantBpfLoop(w, failLabel, false)
+		}
+		return c.genQuantUnroll(w, "" /* no per-iter accept */, failLabel, false)
+	})
+}
+
+// withQuantLayerGuard makes any()/all() over the stack of an absentable
+// layer false when the layer is absent (spec D-003 / D-007: not vacuously
+// true), by guarding the layer once before the iterations; the unrolled
+// atoms then skip their own guard (presentLayers). The guard also keeps
+// the aux bpf_loop walk from seeding its ctx with the absent sentinel.
+func (c *whereCtx) withQuantLayerGuard(w *ir.Condition, failLabel string, body func() (asm.Instructions, error)) (asm.Instructions, error) {
+	layer := w.QuantTarget.Layer
+	guard, err := c.absentLayerGuard(layer, failLabel)
 	if err != nil {
 		return nil, err
 	}
-	return insns, nil
+	if guard != nil {
+		if c.presentLayers == nil {
+			c.presentLayers = map[*ir.LayerInstance]bool{}
+		}
+		if !c.presentLayers[layer] {
+			c.presentLayers[layer] = true
+			defer delete(c.presentLayers, layer)
+		}
+	}
+	insns, err := body()
+	if err != nil {
+		return nil, err
+	}
+	return append(guard, insns...), nil
+}
+
+// absentLayerGuard jumps to failLabel when the layer matched zero headers:
+// its per-layer entry slot holds layerEntryAbsent (D-003). Empty for layers
+// that are always present, that an enclosing quantifier already guarded,
+// or whose layer the atom does not reference at a runtime offset. A marked
+// absentable layer always has a slot: the resolver marks every quantified
+// layer a where / capture clause references.
+func (c *whereCtx) absentLayerGuard(l *ir.LayerInstance, failLabel string) (asm.Instructions, error) {
+	if l == nil || !l.Absentable() || c.presentLayers[l] {
+		return nil, nil
+	}
+	if !l.NeedsRuntimeOffset {
+		// The resolver marks every quantified layer a where / capture
+		// clause references; without the mark there is no slot to test.
+		return nil, fmt.Errorf("%w: where-clause field on quantified layer %q without a runtime entry slot", ErrNotImplemented, l.Spec.Name)
+	}
+	slot, err := whereLayerEntrySlot(l.LayerPos)
+	if err != nil {
+		return nil, err
+	}
+	return asm.Instructions{
+		asm.LoadMem(asm.R3, asm.R10, slot, asm.DWord),
+		asm.JEq.Imm(asm.R3, layerEntryAbsent, failLabel),
+	}, nil
+}
+
+// withLayerGuards prefixes an atom with absentLayerGuard for every distinct
+// absentable layer it reads, so a field of a skipped `?` / `*` layer makes
+// the atom false for `==`, `!=`, arithmetic and `.exists` alike (D-003);
+// `not` of such an atom is true. The guards run before the stack guards,
+// whose count reads may address the same layer's slot.
+func (c *whereCtx) withLayerGuards(w *ir.Condition, failLabel string, body func(*ir.Condition, string) (asm.Instructions, error)) (asm.Instructions, error) {
+	var guards asm.Instructions
+	var walkErr error
+	seen := map[*ir.LayerInstance]bool{}
+	ir.WalkConditionFieldRefs(w, func(ref *ir.FieldRef) {
+		if walkErr != nil || ref == nil || ref.Layer == nil || seen[ref.Layer] {
+			return
+		}
+		seen[ref.Layer] = true
+		g, err := c.absentLayerGuard(ref.Layer, failLabel)
+		if err != nil {
+			walkErr = err
+			return
+		}
+		guards = append(guards, g...)
+	})
+	if walkErr != nil {
+		return nil, walkErr
+	}
+	insns, err := body(w, failLabel)
+	if err != nil {
+		return nil, err
+	}
+	return append(guards, insns...), nil
 }
 
 // genQuantUnroll emits Capacity copies of the inner expression, each
