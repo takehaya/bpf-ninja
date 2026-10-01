@@ -168,3 +168,7 @@ __pycache__/
 /docs/publications/ebpf_workshop_2026/review_memo
 /docs/publications/ebpf_workshop_2026/slides
 /docs/publications/ebpf_workshop_2026/paper/sections/attic
+
+# Lean build artifacts (spec/lean)
+/spec/lean/.lake/
+/pkg/kunai/dsltest/testdata/*.tmp

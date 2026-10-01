@@ -715,7 +715,7 @@ Part I は、どこに何の check を入れるかという実装者向け実用
 F  ::= ⟨L̄, w?, c̄⟩                                         filter
 
 L  ::= proto(p, ℓ?, q, π̄)                                  単一 protocol layer
-     | alt(L̄)                                              alternation (同サイズ)
+     | alt(L̄)                                              alternation (2〜4 枝、各枝は proto、サイズは異なってよい)
 
 q  ::= 1 | ? | + | * | {n,m}                               quantifier (n,m ∈ ℕ)
 
@@ -918,9 +918,12 @@ proto(p, ℓ?, q, π̄):
 
 [T-LayerAlt]
 ∀ L ∈ L̄. Γ ⊢ L : LayerOK
-∀ L, L' ∈ L̄. byte_size(L) = byte_size(L')        (uniform-size 制約)
+∀ L ∈ L̄. L = proto(p, ℓ?, 1, π̄)  かつ  親から p への Field dispatch const が存在
+alt(L̄) は chain の先頭ではない
 ────────────────────────────────────────────────
 Γ ⊢ alt(L̄) : LayerOK
+
+(枝のサイズは異なってよい。以前の uniform-size 制約は `dsl-grammar.md` / `dsl-usage.md` / 実装と食い違っていたため撤回、D-004)
 
 
 [T-Filter]
@@ -1017,6 +1020,20 @@ inst = layer-instance-of(p, π)
 ⟨L, σ⟩ ⇓_P ✗
 ```
 
+[E-Layer-Alt-First]                           ; D-004 / D-010
+L̄ = L_1 · … · L_k
+∃ i. parent_dispatch(p_i, σ, P) = ok  かつ  ∀ j < i. parent_dispatch(p_j, σ, P) = miss
+⟨L_i, σ⟩ ⇓_P r                                ; 採用した枝の結果がそのまま alt の結果 (後続の枝は試さない)
+─────────────────────────────────────────────
+⟨alt(L̄), σ⟩ ⇓_P r
+
+[E-Layer-Alt-None]
+∀ i. parent_dispatch(p_i, σ, P) = miss
+─────────────────────────────────────────────
+⟨alt(L̄), σ⟩ ⇓_P ✗
+
+`parent_dispatch(p, σ, P)` は、親 layer の dispatch const が Field なら親のその field の値で判定し、NO_CHECK なら常に ok、const が無く p が self-validating (parser block が `default: reject` を持つ) なら p のヘッダ自身の検査 (ipv4 の `version == 4` など) で判定します (D-017)。親 const があるうえでヘッダ自身の検査に失敗した場合は miss ではなく [E-Layer-Proto-1-Fail-Pred] です。NO_CHECK の下に `?` / `*` / `{0,m}` を置くことは不在を検出できないため型エラーです。
+
 ### 13.5 Quantifier
 
 quantifier `q` に対して、`L(q)` の reduction を q-iteration が成功したかどうかで定義します。`L(1)` は §13.4 のとおりです。それ以外は反復 + 上下限の制約で定義します。
@@ -1031,7 +1048,7 @@ proto(p, ?, π̄) は最大 1 回:
 [E-Quant-Range-Step {n,m}]                    ; q = {n,m},  n ≤ m
 σ_0 = σ
 ∀ i ∈ [0, k).  ⟨L(1), σ_i⟩ ⇓_P σ_{i+1} ✓
-i = k で extract 失敗 (parent_dispatch miss / bounds 越え) または k = m で停止
+i = k で parent_dispatch(p, σ_k, P) = miss または k = m で停止
 n ≤ k ≤ m
 ─────────────────────────────────────────────
 ⟨L({n,m}), σ⟩ ⇓_P σ_k ✓
@@ -1043,11 +1060,20 @@ n ≤ k ≤ m
 ⟨L({n,m}), σ⟩ ⇓_P ✗
 
 
+[E-Quant-Range-Fail-Extract {n,m}]
+∃ i < m.  ∀ j < i. ⟨L(1), σ_j⟩ ⇓_P σ_{j+1} ✓
+parent_dispatch(p, σ_i, P) = ok   かつ   ⟨L(1), σ_i⟩ ⇓_P ✗      ; bounds 越え、または predicate 失敗
+─────────────────────────────────────────────
+⟨L({n,m}), σ⟩ ⇓_P ✗
+
+
 [E-Quant-Plus]    ≡  L({1, m_chain})            ; m_chain は chain bound 由来の上限
 [E-Quant-Star]    ≡  L({0, m_chain})
 ```
 
 ここで `m_chain` は、vocab + chain 全体形の静的 chain 解析から導かれる iteration 上限です。実装は `pkg/kunai/codegen/` の `chainCap` 計算で同等です。
+
+反復を止めるのは parent_dispatch の miss だけです。dispatch が一致したうえで L(1) が失敗した場合 (bounds 越え、bracket predicate の不成立) は、`?` の case B と同じく skip にはならず、layer 全体が ✗ になります (`spec/lean/DECISIONS.md` D-001, D-005)。したがって `L?` ≡ `L{0,1}` です (`spec/lean/Kunai/Laws.lean: opt_eq_range`)。
 
 実装対応としては、`+` / `*` / `{n,m>4}` は `pkg/kunai/codegen/loop_*.go` で `bpf_loop` + bpf2bpf callback として emit し、`{n,m≤4}` は静的に unroll します。
 
@@ -1059,10 +1085,11 @@ n ≤ k ≤ m
 captures : list of (offset_start, offset_end, view)
   view ⊆ P[offset_start..offset_end]
 
-eval-captures(c̄, σ, P) = [eval-cap(c, σ, P) | c ∈ c̄, gate(c, σ) = true]
+eval-captures(c̄, σ, P) = [eval-cap(c, σ, P) | c ∈ c̄]          ; ∀ c ∈ c̄. gate(c, σ) = true のときのみ
+                                                                 ; いずれかの gate が false なら ⟨F, P⟩ ⇓ reject
 
 gate(cap(spec, ε),  σ)         = true
-gate(cap(spec, w),  σ)         = ⟨w, σ⟩ ⇓_P true             ; per-capture where 句
+gate(cap(spec, w),  σ)         = ⟨w, σ⟩ ⇓_P true             ; per-capture where 句。filter 全体の where と AND 合成 (D-021)
 
 eval-cap(cap(all, _), σ, P)             = (0, |P|, P)
 eval-cap(cap(headers, _), σ, P)         = (0, π_now, P[..π_now])              ; π_now = chain 終了時の cursor
@@ -1141,18 +1168,23 @@ op_c(n, v_n) = b                             ───────────�
 ```
 [E-A-Const]                          [E-A-Field]
                                      load(f, σ, P) = n                   ; aux 抽出済を含む field load
+                                                                         ; f の layer が σ に無い (? / * で skip) とき、
+                                                                         ; f を含む atom は false (D-003)
 ─────────────────────                ───────────────────────
 ⟨const(n), σ⟩ ⇓_P n                  ⟨field(f), σ⟩ ⇓_P n
 
 
 [E-A-BinOp]
 ⟨e₁, σ⟩ ⇓_P n₁    ⟨e₂, σ⟩ ⇓_P n₂
-op_a ∈ {+, −, *}: r = (n₁ op_a n₂) mod 2^max(width(e₁), width(e₂))
+op_a ∈ {+, −, *, &, |, ^}: r = (n₁ op_a n₂) mod 2^64                      ; Int<64> で計算 (D-015)
 op_a = /:  r = n₂ ≠ 0 ? ⌊n₁ / n₂⌋ : 0                                    ; 動的 0 → 0 (BPF 既定)
-op_a = %:  r = n₂ ≠ 0 ? n₁ mod n₂ : 0
+op_a = %:  r = n₂ ≠ 0 ? n₁ mod n₂ : n₁                                   ; 動的 0 → 被除数 (BPF 既定、D-022)
+op_a ∈ {<<, >>}: shift 量は n₂ mod 64                                    ; BPF の masked shift (D-014)
 ──────────────────────────────────────────────
 ⟨binop(op_a, e₁, e₂), σ⟩ ⇓_P r
 ```
+
+算術は operand の宣言幅にかかわらず Int<64> で行い、`max(width(e₁), width(e₂))` は literal narrow (§7.3 の fit check) にだけ使います。`ipv4.ttl + 1` は ttl = 255 のとき 256 であり、0 には巻き戻りません。64 bit を超える field を含む算術は `spec/lean` の対象外です。
 
 ## 14. p4lite parser machine の意味論
 
@@ -1283,7 +1315,7 @@ Compile が成功した filter F は任意の packet P に対して spec の意�
 
 ### 15.3 Proof sketch (各 sub-claim の方針)
 
-完全な機械証明は、Coq / Agda などの形式メタ言語の選定も含めて将来課題ですが、人間レベルの sketch を共有しておきます。
+§11 と §13 は Lean 4 で実行可能な全域関数として `spec/lean/` に書き直してあります (§15.4)。Codegen soundness と verifier 通過性の機械証明は将来課題で、以下は人間レベルの sketch です。
 
 #### Type soundness (resolver、構造帰納)
 
@@ -1345,7 +1377,7 @@ BPF verifier の通過性は kernel に委ねられますが、kunai は次の�
 | Type soundness の §12 rule 全網羅 (D8 一元化) | ✅ 完了 (resolve/typing.go + typing_errors.go に集約、ordered cmp on Bool/network literal の resolver-side defense in depth も完備) |
 | Codegen soundness の lemma-style 証明 | 未着手 (sketch のみ) |
 | Verifier acceptance の formal property | 未着手 (経験的検証のみ) |
-| Mechanical proof framework 選定 | 未着手 |
+| Mechanical proof framework 選定 | ✅ Lean 4 (`spec/lean/`)。§11 抽象構文と §13 意味論を全域関数 `Kunai.eval` として実装し、golden vector を `pkg/kunai/dsltest/testdata/spec_vectors.json` に書き出して実機 BPF と照合する。対象は構文論と意味論のみで、BPF 命令列・verifier は対象外。§13 が未定義だった挙動と実装との食い違いは `spec/lean/DECISIONS.md` に記録 |
 
 #### 既知の verifier corner case
 
