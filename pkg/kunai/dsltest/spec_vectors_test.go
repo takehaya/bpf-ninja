@@ -32,8 +32,8 @@ var specHostCaps = map[string]func() codegen.Capabilities{
 // Without root only parsing and the illTyped/notImplemented compile
 // expectations run; with root, every vector whose compile is expected to
 // succeed is also matched against the real BPF program, compiled for the
-// vector's host and, on an exit host, with the vector's action as the
-// traced program's return value. A vector with goStatus "mismatch" is a documented
+// vector's host; on an exit host the wrapper presents the vector's action
+// as the traced program's return value. A vector with goStatus "mismatch" is a documented
 // divergence (see spec/lean/DECISIONS.md): it is logged, not asserted.
 func TestSpecVectors(t *testing.T) { runSpecVectors(t, loadSpecVectors(t)) }
 
@@ -56,18 +56,16 @@ func runSpecVectors(t *testing.T, vectors []specVector) {
 			if v.Action < 0 || v.Action > math.MaxUint32 {
 				t.Fatalf("action %d is not a 32-bit value", v.Action)
 			}
-			caps := func() codegen.Capabilities {
-				return HostCaps(Host{Caps: hostCaps(), Action: int32(uint32(v.Action))})
-			}
+			caps, action := hostCaps(), int32(uint32(v.Action))
 			if v.GoStatus == "mismatch" {
-				_, err := kunai.Compile(v.Expr, caps())
+				_, err := kunai.Compile(v.Expr, caps)
 				t.Logf("documented divergence (not asserted): %s; compile err=%v", v.Note, err)
 				return
 			}
 			if _, err := parser.Parse(v.Expr, "", nil); err != nil && v.Expected.Kind != "illTyped" {
 				t.Fatalf("parse %q: %v", v.Expr, err)
 			}
-			out, err := kunai.Compile(v.Expr, caps())
+			out, err := kunai.Compile(v.Expr, caps)
 			switch {
 			case v.GoStatus == "notImplemented":
 				if !errors.Is(err, codegen.ErrNotImplemented) {
@@ -92,7 +90,7 @@ func runSpecVectors(t *testing.T, vectors []specVector) {
 				t.Fatalf("packet hex: %v", err)
 			}
 			want := v.Expected.Kind == "accept"
-			if got := NewFromOutput(t, v.Expr, out).Match(t, pkt); got != want {
+			if got := NewFromOutput(t, v.Expr, out, action).Match(t, pkt); got != want {
 				t.Fatalf("%q on %d-byte packet: got match=%v, Lean says %s. %s", v.Expr, len(pkt), got, v.Expected.Kind, v.Note)
 			}
 		})
