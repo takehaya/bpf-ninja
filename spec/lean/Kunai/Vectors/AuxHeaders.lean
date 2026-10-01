@@ -192,7 +192,21 @@ vector greKeyTruncated := {
   id := "gre-key-truncated", ast := { layers := greL }, packet := (eth 0x0800 ++ ipv4 47 ++ greHdr 0x2000 []).take 36, expected := .reject,
   note := "K set but the key word is missing" }
 
+-- Sightings only where the walk dispatched (review finding on D-030) -------------
+
+vector rrNoSighting := {
+  id := "ipv4-rr-no-options-sport-looks-like-rr",
+  ast := { layers := chain3, cond := some (cmp (rr (.nat 0)) .ne (k 0)) },
+  packet := eth 0x0800 ++ ipv4 6 ++ tcp 0x070b 80 ++ payload 5, expected := .reject,
+  note := "ihl = 5: the walk's `(true, _)` lookahead reads tcp.sport (0x07) but does not dispatch on it, so RR is not sighted" }
+vector sackNoSighting := {
+  id := "tcp-opt-sack-payload-looks-like-sack",
+  ast := { layers := chain3, cond := some (.any (cmp (sackIter "right") .eq (k 200))) },
+  packet := eth 0x0800 ++ ipv4 6 ++ tcp 12345 80 (dataOffset := 6) (options := mssOpt 1460) ++ [5, 10] ++ be 4 100 ++ be 4 200, expected := .reject,
+  note := "the payload after the option region starts with a SACK-shaped kind byte; the walk ended on the counter, so no sighting" }
+
 def auxVectors : List Vector := [
+  rrNoSighting, sackNoSighting,
   grePlain, greKey, greKeySeq, greAllFlags, greKeyTruncated,
   tcpMss, tcpMssMiss, tcpMssAbsent, tcpMssAbsentNot, tcpMssAfterNop, tcpUnknownSkipped, tcpUnknownLen0, tcpUnknownLen1,
   tcpOptCross, tcpEol, tcpMssDup, tcpMssBadLen, tcpMssExists, tcpMssExistsNot, tcpSackBlock, tcpSackAny, tcpSackAll,

@@ -94,7 +94,7 @@ def vocab : Vocab :=
           headers := [⟨"ipv6_h", [⟨"version", 0, 4⟩, ⟨"traffic_class", 4, 8⟩, ⟨"flow_label", 12, 20⟩, ⟨"payload_length", 32, 16⟩, ⟨"next_header", 48, 8⟩, ⟨"hop_limit", 56, 8⟩, ⟨"src", 64, 128⟩, ⟨"dst", 192, 128⟩], 40⟩, ⟨"ipv6_ext_h", [⟨"next_header", 0, 8⟩, ⟨"hdr_ext_len", 8, 8⟩, ⟨"_opts", 16, 48⟩], 8⟩],
           options := [],
           stacks := [{ name := "exts", header := "ipv6_ext_h", capacity := 8, elemBytes := 8, ownerOption := "", offsetAfterOwner := 0 }],
-          tails := [("ipv6_ext_h", ⟨1, 255, 0, 8, 0⟩)],
+          tails := [("ipv6_ext_h", { byteOff := 1, mask := 255, shift := 0, scale := 8, base := 0, addend := 0 })],
           writebacks := [("ipv6_ext_h", ⟨0, 6⟩)] } },
       { name := "mpls",
         fields := [⟨"label", 0, 20⟩, ⟨"tc", 20, 3⟩, ⟨"s", 23, 1⟩, ⟨"ttl", 24, 8⟩],

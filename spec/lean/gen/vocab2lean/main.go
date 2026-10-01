@@ -110,13 +110,13 @@ func protoLean(s *vocab.ProtocolSpec) string {
 // trailer skip when the loader exposes one, else the region counter the
 // entry state seeds from a primary field (`pc.set(((hdr.data_offset - 5)) << 5)`).
 func declaredLength(s *vocab.ProtocolSpec) *vocab.HeaderLength {
-	if hl := s.PrimaryAdvanceSkip(); hl != nil {
-		return hl
-	}
 	m := s.ParseStateMachine
 	if m == nil {
-		return nil
+		return s.PrimaryAdvanceSkip()
 	}
+	// With a parser machine, only the entry state's byte counter is the
+	// declared length; PrimaryAdvanceSkip picks the first state with an
+	// advance, which depends on state order.
 	for _, c := range m.States[m.EntryIdx].Counters {
 		// Scale ≥ 2 means the set expression carried a `<< S` (bytes);
 		// a bare cast (srv6 `last_entry + 1`) counts elements, not bytes.
@@ -211,8 +211,8 @@ func machineLean(s *vocab.ProtocolSpec) string {
 			}
 		}
 	}
-	for name, a := range m.AuxLayouts {
-		if _, ok := outParam[a.HeaderName]; !ok {
+	for _, name := range sortedKeys(m.AuxLayouts) {
+		if a := m.AuxLayouts[name]; outParam[a.HeaderName] == "" {
 			outParam[a.HeaderName] = name
 		}
 	}
@@ -336,7 +336,7 @@ func machineLean(s *vocab.ProtocolSpec) string {
 		a := s.HeaderAnnotations[hn]
 		if a.VariableTail != nil {
 			t := a.VariableTail
-			tails = append(tails, fmt.Sprintf("(%s, ⟨%d, %d, %d, %d, %d⟩)", str(hn), t.LenFieldByteOff, t.LenMask, t.LenShift, t.Scale, t.Base))
+			tails = append(tails, fmt.Sprintf("(%s, %s)", str(hn), lenExpr(&vocab.HeaderLength{LenByteOff: t.LenFieldByteOff, LenMask: t.LenMask, LenShift: t.LenShift, Scale: t.Scale, Base: t.Base})))
 		}
 		if a.WriteBack != nil {
 			wbs = append(wbs, fmt.Sprintf("(%s, ⟨%d, %d⟩)", str(hn), a.WriteBack.SourceByteOff, a.WriteBack.ParentByteOff))

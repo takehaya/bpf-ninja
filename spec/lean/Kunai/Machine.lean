@@ -117,15 +117,6 @@ structure StackDecl where
   offsetAfterOwner : Nat := 0
   deriving Repr, BEq, DecidableEq
 
-/-- `@kunai_variable_tail[len_field, scale, mask]`: extra bytes after the fixed header. -/
-structure TailRule where
-  byteOff : Nat
-  mask : Nat
-  shift : Nat
-  scale : Nat
-  base : Nat
-  deriving Repr, BEq, DecidableEq
-
 /-- `@kunai_writeback[source, parent]`: copy a byte of the aux into the primary header view. -/
 structure WriteBack where
   sourceByteOff : Nat
@@ -147,7 +138,8 @@ structure Machine where
   headers : List HeaderDecl
   options : List OptionDecl := []
   stacks : List StackDecl
-  tails : List (String × TailRule)
+  /-- `@kunai_variable_tail[len_field, scale, mask]`: extra bytes after the fixed header. -/
+  tails : List (String × LenExpr)
   writebacks : List (String × WriteBack)
   deriving Repr, BEq, DecidableEq
 

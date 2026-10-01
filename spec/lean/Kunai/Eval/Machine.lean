@@ -64,9 +64,7 @@ private def doExtract (P : Packet) (m : Machine) (layerOff : Nat) (ψ : MState) 
   let mut cursor := ψ.cursor + e.bytes
   if let some (_, t) := m.tails.find? (·.1 == e.header) then
     let b ← byteAt P (view.off + t.byteOff)
-    let extra := ((b &&& t.mask) >>> t.shift) * t.scale
-    if extra < t.base then throw .reject
-    let extra := extra - t.base
+    let some extra := t.apply b | throw .reject
     if cursor + extra > P.length then throw .reject
     view := { view with len := view.len + extra }
     cursor := cursor + extra
@@ -132,30 +130,29 @@ private def valMatches : MatchVal → Option KeyVal → Bool
   | .bool b, some (.bool k) => b == k
   | _, _ => false
 
-/-- TLV option sighting (D-030): when a lookahead key reads an option's
-kind byte at the cursor, that option's view starts here, whether or not
-the target state extracts it (`sack`, `rr` advance by length instead). The
-latest sighting wins. -/
-private def sightOptions (m : Machine) (ψ : MState) (keys : List (SelectKey × Option KeyVal)) : MState :=
-  keys.foldl (fun ψ (k, v) =>
+/-- TLV option sighting (D-030): when the walk dispatches on a lookahead
+kind byte — the matched case names that kind (`(false, 5): parse_sack`) —
+the option's view starts at the cursor, whether or not the target state
+extracts it (`sack`, `rr` advance by length instead). A lookahead taken
+after the counter ran out (`(true, _)`) sights nothing. The latest sighting
+wins. -/
+private def sightOptions (m : Machine) (ψ : MState) (hit : SelectCase) (keys : List SelectKey) : MState :=
+  (keys.zip hit.values).foldl (fun ψ (k, v) =>
     match k, v with
-    | .lookahead bits, some (.nat n) =>
-      m.options.foldl (fun ψ o =>
-        -- an 8-bit kind byte is only sighted by an 8-bit lookahead, a wider
-        -- kind (geneve class+type) only by a lookahead of its own width
-        if o.kindByte == some n && (if n < 256 then bits == 8 else bits > 8) then
-          let bytes := ((m.header? o.header).map (·.bytes)).getD 0
-          { ψ with views := ψ.views ++ [{ outParam := o.outParam, header := o.header, off := ψ.cursor, len := bytes }] }
-        else ψ) ψ
+    | .lookahead _, .val n =>
+      match m.options.find? (·.kindByte == some n) with
+      | some o =>
+        let bytes := ((m.header? o.header).map (·.bytes)).getD 0
+        { ψ with views := ψ.views ++ [{ outParam := o.outParam, header := o.header, off := ψ.cursor, len := bytes }] }
+      | none => ψ
     | _, _ => ψ) ψ
 
 /-- P-Trans-Select: the first case whose values all match wins. -/
 private def selectTarget (P : Packet) (m : Machine) (ψ : MState) (s : Select) : Except MFail (MState × Target) := do
   let keys ← s.keys.mapM (evalKey P ψ)
-  let ψ := sightOptions m ψ (s.keys.zip keys)
-  let hit := s.cases.find? fun c =>
-    c.values.length == keys.length && (c.values.zip keys).all fun (v, k) => valMatches v k
-  pure (ψ, match hit with | some c => c.target | none => s.default)
+  match s.cases.find? fun c => c.values.length == keys.length && (c.values.zip keys).all fun (v, k) => valMatches v k with
+  | some c => pure (sightOptions m ψ c s.keys, c.target)
+  | none => pure (ψ, s.default)
 
 /-- One state: statements in the loader's order (extracts, counters,
 advances), then the transition. -/
