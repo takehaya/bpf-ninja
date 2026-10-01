@@ -2115,7 +2115,11 @@ func emitStackEntryAddress(ref *ir.FieldRef, base layerAnchor, countSlot *int16,
 // only known at run time: a dynamic index, or a static index into
 // variable-length entries (isVarTailStack).
 func needsEntryAddress(ref *ir.FieldRef) bool {
-	return ref != nil && ref.Aux != nil && ref.Aux.Stack != nil && (!ref.Aux.Stack.IsStatic || isVarTailStack(ref))
+	if ref == nil || ref.Aux == nil || ref.Aux.Stack == nil {
+		return false
+	}
+	// Entry 0 of a variable-length stack still starts at the stack base.
+	return !ref.Aux.Stack.IsStatic || (ref.Aux.Stack.Static > 0 && isVarTailStack(ref))
 }
 
 // isVarTailStack reports whether the stack `ref` indexes holds entries

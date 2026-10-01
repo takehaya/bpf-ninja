@@ -441,7 +441,7 @@ parser IPv4Parser(packet_in pkt, out ipv4_h hdr, ...) {
 
 | annotation | 付く場所 | キー | 用途 |
 |---|---|---|---|
-| `@kunai_variable_tail` | header | `len_field` 必須、`scale` 必須かつ 2 冪、`mask`、`shift`、`base` | extract 後にさらに `(field値 [& mask] [>> shift]) * scale + base` byte 進む可変 tail。`len_field` は 1 byte 内のフィールド |
+| `@kunai_variable_tail` | header | `len_field` 必須、`scale` 必須かつ 2 冪、`mask`、`shift`、`base`、`min_total` | extract 後にさらに `(field値 [& mask] [>> shift]) * scale - min_total + base` byte 進む可変 tail。`min_total` は length field が固定部込みの全長を表すとき (gtp_ext_h の `ext_length` × 4) にその固定部を引く。scaled 値が `min_total` 未満なら header 不正として reject。`len_field` は 1 byte 内のフィールド |
 | `@kunai_writeback` | header | `source` 必須、`parent=proto.field` 必須 | スタック要素の `source` byte を親 header の field に書き戻し、ipv6 ext の next_header のように後続 dispatch へ連鎖の最終値を見せる。両 field とも byte-aligned な 8 bit |
 | `@kunai_option_segment` | parser | `name` 必須 | DSL の option セグメント名を `options` から変更する |
 | `@kunai_layout` | parser param の `out X[N]` | `after` 必須。値は `primary` または他 stack 名 | declare-only スタックの base offset を anchor する。push されない top-level スタックには必須。現在 bundled vocab では未使用 (SRv6 は §7.4 の element-driven walk に移行し、base が push state から決まるため) だが loader は引き続きサポートする |

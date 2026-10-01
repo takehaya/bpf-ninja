@@ -1294,7 +1294,7 @@ bundled の `.p4` は §14.2 の規則に無い構文を使います。`spec/lea
 | `pkt.advance(N)` / `advance((f − K) ≪ S)` / `advance(lookahead[hi:lo] ≪ S)` | π を進める。パケット末尾を越えれば ⊥。lookahead 駆動の advance は読んだバイトを越えて進まなければ ⊥ (D-028) |
 | `c.set(expr)` / `c.decrement(n)` / `c.is_zero()` | counter は自然数。decrement が残量を超えれば ⊥ |
 | `pkt.lookahead<bit<M>>()` | π から M bit を読む。末尾を越えれば ⊥ |
-| `@kunai_variable_tail` | extract 直後に `((byte & mask) ≫ shift) × scale + base` バイトを追加で消費 |
+| `@kunai_variable_tail` | extract 直後に `((byte & mask) ≫ shift) × scale − min_total + base` バイトを追加で消費。scaled 値が `min_total` 未満なら ⊥ |
 | `@kunai_writeback[source, parent]` | aux の byte を primary header の byte に書き込む。後続の dispatch、where、bracket predicate はこの値を見る (D-032) |
 | `extract(stack.next)` で `\|stack\| = capacity` | ⊥ (P-Extract-Stack-Full) |
 | `MAX_DEPTH` | 同じか手前の状態への遷移を 1 反復と数え、`MAX_DEPTH` 回で accept (D-026) |

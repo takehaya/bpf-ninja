@@ -571,6 +571,11 @@ func lowerKunaiVariableTail(ann p4lite.Annotation, h *p4lite.Header, source stri
 		if mTok.Kind != p4lite.AnnotationInt {
 			return nil, fmt.Errorf("%s:%s: @kunai_variable_tail.min_total must be an int literal", source, ann.Pos)
 		}
+		// The annotation integer is unsigned, so only the upper bound and
+		// the unit need checking: min_total removes whole scale units.
+		if mTok.Int > 0xFFFF || mTok.Int%uint64(scale) != 0 {
+			return nil, fmt.Errorf("%s:%s: @kunai_variable_tail.min_total=%d must be a multiple of scale=%d below 65536", source, ann.Pos, mTok.Int, scale)
+		}
 		minTotal = int(mTok.Int)
 	}
 	return &VariableTailSpec{

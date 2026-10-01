@@ -338,8 +338,12 @@ func BuildGTPU(t testing.TB, opts GTPUOpts) []byte {
 	// Strip the outer eth (14 bytes); GTP-U payload starts at IP.
 	innerIP := innerBytes[14:]
 
-	// Assemble the GTP payload: gtp_h (8) + opt (4) + exts (4N) + innerIP.
-	gtp := make([]byte, 0, 8+4+4*len(opts.Exts)+len(innerIP))
+	// Assemble the GTP payload: gtp_h (8) + opt (4) + exts (4·ExtLength each) + innerIP.
+	extBytes := 0
+	for _, ext := range opts.Exts {
+		extBytes += 4 * max(int(ext.ExtLength), 1)
+	}
+	gtp := make([]byte, 0, 8+4+extBytes+len(innerIP))
 	gtp = append(gtp,
 		flags, msgType,
 		0, 0, // length placeholder (filled below)
