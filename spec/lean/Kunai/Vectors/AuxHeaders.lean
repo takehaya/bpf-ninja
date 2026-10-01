@@ -103,11 +103,39 @@ vector ipv6ExtsDynamicLongSecond := {
   ast := { layers := ipv6L, cond := some (cmp (Arith.field ⟨[("ipv6", none), ("exts", some (.field ["ipv6", "hop_limit"])), ("next_header", none)]⟩) .eq (k 6)) },
   packet := eth 0x86DD ++ ipv6 0 (hopLimit := 1) ++ ipv6Ext 60 (len := 1) ++ ipv6Ext 6 ++ tcp 12345 80 ++ payload 5, expected := .accept [],
   note := "index 1 behind a 16-byte first ext" }
+/-- `ipv6.exts[ipv6.hop_limit].next_header`: hop_limit doubles as the index. -/
+def extsHop : Arith := Arith.field ⟨[("ipv6", none), ("exts", some (.field ["ipv6", "hop_limit"])), ("next_header", none)]⟩
 vector ipv6ExtsDynamicLongAbsent := {
   id := "ipv6-exts-dynamic-index-var-len-absent",
-  ast := { layers := ipv6L, cond := some (cmp (Arith.field ⟨[("ipv6", none), ("exts", some (.field ["ipv6", "hop_limit"])), ("next_header", none)]⟩) .eq (k 6)) },
-  packet := eth 0x86DD ++ ipv6 0 (hopLimit := 1) ++ ipv6Ext 6 ++ tcp 12345 80 ++ payload 5, expected := .reject,
-  note := "D-031: index 1 with one entry pushed ⇒ absent ⇒ false" }
+  ast := { layers := ipv6L, cond := some (cmp extsHop .eq (k 6)) },
+  packet := eth 0x86DD ++ ipv6 0 (hopLimit := 1) ++ ipv6Ext 6 ++ tcp 0x0600 80 ++ payload 5, expected := .reject,
+  note := "D-031: index 1 with one entry pushed ⇒ absent ⇒ false (tcp.sport = 0x0600 would read as next_header 6 without the push count guard)" }
+def fiveExts : Packet := ipv6Ext 60 ++ ipv6Ext 60 ++ ipv6Ext 60 ++ ipv6Ext 60 ++ ipv6Ext 6
+vector ipv6ExtsDynamicLongLast := {
+  id := "ipv6-exts-dynamic-index-var-len-last",
+  ast := { layers := ipv6L, cond := some (cmp extsHop .eq (k 6)) },
+  packet := eth 0x86DD ++ ipv6 0 (hopLimit := 4) ++ fiveExts ++ tcp 12345 80 ++ payload 5, expected := .accept [],
+  note := "index 4 is the last entry the depth cap admits (Go: the unrolled walk's final step, reached by fall-through)" }
+vector ipv6ExtsDynamicLongLastMiss := {
+  id := "ipv6-exts-dynamic-index-var-len-last-miss",
+  ast := { layers := ipv6L, cond := some (cmp extsHop .eq (k 60)) },
+  packet := eth 0x86DD ++ ipv6 0 (hopLimit := 4) ++ fiveExts ++ tcp 12345 80 ++ payload 5, expected := .reject,
+  note := "the walk lands on entry 4 (next_header 6), not on one of the earlier entries (60)" }
+vector ipv6ExtsDynamicLongBeyond := {
+  id := "ipv6-exts-dynamic-index-var-len-beyond",
+  ast := { layers := ipv6L, cond := some (cmp extsHop .eq (k 60)) },
+  packet := eth 0x86DD ++ ipv6 0 (hopLimit := 6) ++ fiveExts ++ tcp 12345 80 ++ payload 5, expected := .reject,
+  note := "D-031: index 6 past the five pushed entries ⇒ absent, although the stack's capacity is 8" }
+vector ipv6ExtsDynamicLongSlot := {
+  id := "ipv6-exts-dynamic-index-var-len-slot",
+  ast := { layers := [P "eth", Pq "vlan" .opt, P "ipv6", P "tcp"], cond := some (cmp extsHop .eq (k 6)) },
+  packet := eth 0x8100 ++ vlan 100 0x86DD ++ ipv6 0 (hopLimit := 1) ++ ipv6Ext 60 (len := 1) ++ ipv6Ext 6 ++ tcp 12345 80 ++ payload 5, expected := .accept [],
+  note := "ipv6 behind an optional layer: Go anchors the walk on the layer's runtime entry slot" }
+vector ipv6ExtsDynamicLongSlotAbsent := {
+  id := "ipv6-exts-dynamic-index-var-len-slot-absent",
+  ast := { layers := [P "eth", Pq "vlan" .opt, P "ipv6", P "tcp"], cond := some (cmp extsHop .eq (k 6)) },
+  packet := eth 0x8100 ++ vlan 100 0x86DD ++ ipv6 0 (hopLimit := 2) ++ ipv6Ext 60 (len := 1) ++ ipv6Ext 6 ++ tcp 0x0600 80 ++ payload 5, expected := .reject,
+  note := "D-031 on the slot-anchored walk: index 2 with two entries pushed ⇒ absent" }
 -- Bracket predicates on aux fields (issue 17): resolved like a where clause scoped to the layer.
 def ipv6Br (ρ : Predicate) : List Layer := [P "eth", .proto { name := "ipv6", preds := [ρ] }, P "tcp"]
 def extsBr (i : Nat) : FieldPath := ⟨[("exts", some (.nat i)), ("next_header", none)]⟩
@@ -296,7 +324,7 @@ def auxVectors : List Vector := [
   tcpMss, tcpMssMiss, tcpMssAbsent, tcpMssAbsentNot, tcpMssAfterNop, tcpUnknownSkipped, tcpUnknownLen0, tcpUnknownLen1,
   tcpOptCross, tcpEol, tcpMssDup, tcpMssBadLen, tcpMssExists, tcpMssExistsNot, tcpSackBlock, tcpSackAny, tcpSackAll,
   tcpSackAbsentAny, tcpMalformedNoQuery,
-  ipv6Hbh, ipv6TwoExts, ipv6ExtLong, ipv6ExtTooLong, ipv6ExtsIndex, ipv6ExtsIndex1, ipv6ExtsIndexAfterLong, ipv6ExtsAnyAfterLong, ipv6ExtsDynamicLong, ipv6ExtsDynamicLongSecond, ipv6ExtsDynamicLongAbsent,
+  ipv6Hbh, ipv6TwoExts, ipv6ExtLong, ipv6ExtTooLong, ipv6ExtsIndex, ipv6ExtsIndex1, ipv6ExtsIndexAfterLong, ipv6ExtsAnyAfterLong, ipv6ExtsDynamicLong, ipv6ExtsDynamicLongSecond, ipv6ExtsDynamicLongAbsent, ipv6ExtsDynamicLongLast, ipv6ExtsDynamicLongLastMiss, ipv6ExtsDynamicLongBeyond, ipv6ExtsDynamicLongSlot, ipv6ExtsDynamicLongSlotAbsent,
   ipv6ExtsBracket, ipv6ExtsBracketAbsent, ipv6ExtsBracketLong, ipv6ExtsBracketDynamic, ipv6ExtsBracketIter, ipv6ExtsBracketInAbsent, ipv6ExtsBracketInLong, ipv6ExtsSliceLong, ipv6ExtsBracketSliceLong, gtpExtsBracket, ipv6ExtsIndexAbsent,
   ipv6NextHeaderWhere, ipv6NextHeaderBracket, ipv6FiveExts, ipv6SixExts, ipv6AnyExts, ipv6AllExts,
   srv6Chain, srv6Static, srv6Dynamic, srv6Any, srv6All, srv6AllCidr, srv6IndexAbsent, srv6OverCap, srv6AtCap,
