@@ -3,6 +3,7 @@ package dsltest
 import (
 	"encoding/hex"
 	"errors"
+	"math"
 	"os"
 	"testing"
 
@@ -29,9 +30,10 @@ var specHostCaps = map[string]func() codegen.Capabilities{
 
 // TestSpecVectors checks the Go implementation against the Lean semantics.
 // Without root only parsing and the illTyped/notImplemented compile
-// expectations run; with root, every vector is matched against the real
-// BPF program, compiled for the vector's host and, for an exit host, with
-// the vector's action as the traced program's return value. A vector with goStatus "mismatch" is a documented
+// expectations run; with root, every vector whose compile is expected to
+// succeed is also matched against the real BPF program, compiled for the
+// vector's host and, on an exit host, with the vector's action as the
+// traced program's return value. A vector with goStatus "mismatch" is a documented
 // divergence (see spec/lean/DECISIONS.md): it is logged, not asserted.
 func TestSpecVectors(t *testing.T) { runSpecVectors(t, loadSpecVectors(t)) }
 
@@ -46,9 +48,16 @@ func runSpecVectors(t *testing.T, vectors []specVector) {
 	root := os.Getuid() == 0
 	for _, v := range vectors {
 		t.Run(v.ID, func(t *testing.T) {
-			caps, ok := specHostCaps[v.Host]
+			hostCaps, ok := specHostCaps[v.Host]
 			if !ok {
 				t.Fatalf("unknown host %q", v.Host)
+			}
+			// Lean models actions as 32-bit values (TC_ACT_UNSPEC is 2^32-1).
+			if v.Action < 0 || v.Action > math.MaxUint32 {
+				t.Fatalf("action %d is not a 32-bit value", v.Action)
+			}
+			caps := func() codegen.Capabilities {
+				return HostCaps(Host{Caps: hostCaps(), Action: int32(uint32(v.Action))})
 			}
 			if v.GoStatus == "mismatch" {
 				_, err := kunai.Compile(v.Expr, caps())
@@ -58,7 +67,7 @@ func runSpecVectors(t *testing.T, vectors []specVector) {
 			if _, err := parser.Parse(v.Expr, "", nil); err != nil && v.Expected.Kind != "illTyped" {
 				t.Fatalf("parse %q: %v", v.Expr, err)
 			}
-			_, err := kunai.Compile(v.Expr, caps())
+			out, err := kunai.Compile(v.Expr, caps())
 			switch {
 			case v.GoStatus == "notImplemented":
 				if !errors.Is(err, codegen.ErrNotImplemented) {
@@ -83,7 +92,7 @@ func runSpecVectors(t *testing.T, vectors []specVector) {
 				t.Fatalf("packet hex: %v", err)
 			}
 			want := v.Expected.Kind == "accept"
-			if got := NewOn(t, v.Expr, Host{Caps: caps(), Action: v.Action}).Match(t, pkt); got != want {
+			if got := NewFromOutput(t, v.Expr, out).Match(t, pkt); got != want {
 				t.Fatalf("%q on %d-byte packet: got match=%v, Lean says %s. %s", v.Expr, len(pkt), got, v.Expected.Kind, v.Note)
 			}
 		})

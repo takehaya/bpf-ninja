@@ -74,9 +74,9 @@ means every vector agrees with the evaluator.
 
 On the Go side, `TestSpecASTRoundTrip` checks printer, parser and JSON
 agree, and `TestSpecVectors` checks the compile expectations; under root it
-also runs `Runner.Match` on every vector, compiled for the vector's host
-(`dsltest.NewOn`); for an exit host the wrapper presents the vector's
-`action` as the traced program's return value. The test compares the
+also runs `Runner.Match` on every vector whose compile is expected to
+succeed, compiled for the vector's host (`dsltest.NewOn`); on an exit host
+the vector's `action` stands in for the traced program's return value. The test compares the
 verdict only: `Runner.Match` returns the verdict, so the `captures` ranges
 in the JSON are not checked against the BPF program yet.
 
