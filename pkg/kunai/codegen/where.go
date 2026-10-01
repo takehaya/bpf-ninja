@@ -4,7 +4,6 @@ import (
 	"encoding/binary"
 	"fmt"
 	"slices"
-	"strings"
 
 	"github.com/cilium/ebpf/asm"
 
@@ -72,7 +71,7 @@ func (c *whereCtx) layerAnchorFor(l *ir.LayerInstance) (layerAnchor, error) {
 		// Members of a heterogeneous alternation share one entry slot and
 		// where reads have no matched-member check, so a field of the
 		// member that did not match would read the other member's bytes.
-		return layerAnchor{}, fmt.Errorf("%w: where-clause field on %q inside the alternation %s: reading a member of a heterogeneous-size alternation is not supported", ErrNotImplemented, l.Spec.Name, altGroupText(group))
+		return layerAnchor{}, fmt.Errorf("%w: where-clause field on %q inside the alternation %s: reading a member of a heterogeneous-size alternation is not supported", ErrNotImplemented, l.Spec.Name, group.DisplayName())
 	}
 	if l != nil && l.NeedsRuntimeOffset {
 		var slot int16
@@ -106,14 +105,6 @@ func (c *whereCtx) hetAltGroupOf(l *ir.LayerInstance) *ir.LayerInstance {
 		}
 	}
 	return nil
-}
-
-func altGroupText(g *ir.LayerInstance) string {
-	names := make([]string, 0, len(g.Alternation))
-	for _, a := range g.Alternation {
-		names = append(names, a.Spec.Name)
-	}
-	return "(" + strings.Join(names, "|") + ")"
 }
 
 // genCondition emits instructions that fall through when w evaluates

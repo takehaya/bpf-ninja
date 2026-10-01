@@ -1131,7 +1131,7 @@ func TestCompileNestedAlternationQuantifiedRejected(t *testing.T) {
 	// semantics differ from a flat alt — and the resolver rejects it as a
 	// type error (alternatives carry no quantifier, §12).
 	_, err := Compile("eth/((vlan|qinq)?|ipv4)", codegen.Capabilities{})
-	if err == nil || errors.Is(err, codegen.ErrNotImplemented) || !strings.Contains(err.Error(), "alternatives cannot") {
+	if err == nil || errors.Is(err, codegen.ErrNotImplemented) || !strings.Contains(err.Error(), "alternatives cannot carry quantifiers") {
 		t.Fatalf("err = %v; want a resolver error on the quantified inner alt group", err)
 	}
 }

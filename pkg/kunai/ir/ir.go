@@ -10,6 +10,8 @@
 package ir
 
 import (
+	"strings"
+
 	"github.com/takehaya/bpf-ninja/pkg/kunai/ast"
 	"github.com/takehaya/bpf-ninja/pkg/kunai/vocab"
 )
@@ -91,6 +93,28 @@ type LayerInstance struct {
 	NeedsRuntimeOffset bool
 
 	Pos ast.Position
+}
+
+// DisplayName is the layer as a diagnostic names it: the protocol (with
+// its @label when present), or `(a|b)` for an alternation group.
+func (l *LayerInstance) DisplayName() string {
+	if l == nil {
+		return "?"
+	}
+	if l.Alternation != nil {
+		names := make([]string, 0, len(l.Alternation))
+		for _, a := range l.Alternation {
+			names = append(names, a.DisplayName())
+		}
+		return "(" + strings.Join(names, "|") + ")"
+	}
+	if l.Spec == nil {
+		return "?"
+	}
+	if l.Label != "" {
+		return l.Spec.Name + "@" + l.Label
+	}
+	return l.Spec.Name
 }
 
 // Absentable reports whether the layer may match zero headers (`?`, `*`,

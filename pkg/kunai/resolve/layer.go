@@ -75,17 +75,17 @@ func (r *resolver) resolveLayer(al *ast.Layer, parent *ir.LayerInstance) (*ir.La
 
 // resolveAlternation resolves each alternative so name and dispatch
 // errors still surface. The group itself carries the per-alt
-// LayerInstance slice; MVP-specific constraints (alt count cap,
-// quantifier on the group) are enforced by codegen.
+// LayerInstance slice; checkChainShape (resolve.go) rejects the shapes
+// the typing rules exclude, and codegen keeps its own guards for what it
+// cannot emit (alt count cap, quantifier on the group).
 //
 // Nested alt groups (`((a|b)|(c|d))`, P3-13) are flattened here
 // when the inner group has the default QuantOne — semantically
 // equivalent to `(a|b|c|d)` because alt members are single layers
 // with no chain / quantifier / predicate of their own. Inner alt
 // groups that carry a quantifier (`(a|b)?`, `(a|b)+`, etc.) are
-// left intact, so codegen's "QuantOne only on alt" check still
-// fires with a clear error — supporting quantified nested alt
-// would be different semantics and is not part of P3-13.
+// left intact and rejected by checkChainShape — supporting quantified
+// nested alt would be different semantics and is not part of P3-13.
 func (r *resolver) resolveAlternation(al *ast.Layer, parent *ir.LayerInstance) (*ir.LayerInstance, error) {
 	flattened := flattenAltMembers(al.Alternatives)
 	alts := make([]*ir.LayerInstance, 0, len(flattened))
@@ -117,7 +117,7 @@ func (r *resolver) resolveAlternation(al *ast.Layer, parent *ir.LayerInstance) (
 
 // flattenAltMembers walks `((a|b)|c)` into `(a|b|c)`. Recursive on
 // LayerAltGroup members with QuantOne; quantified alt groups stay
-// as-is (codegen will reject them downstream). Order of leaf
+// as-is (checkChainShape rejects them). Order of leaf
 // members is preserved (depth-first left-to-right) so error
 // messages and alt-index stamping match the source order users
 // see in the filter expression.

@@ -8,8 +8,10 @@
 //   - Tracks @label assignments, auto-indexes repeated protocols
 //     without labels, and enforces the MVP 2-label-per-protocol cap
 //   - Rejects unknown protocols and unknown field references
-//   - Marks MVP-unsupported constructs (alternation groups, in/has
-//     predicates) so the next phase can emit a unified error
+//   - Rejects chain shapes the typing rules exclude (alternation or
+//     optional first layer, alternatives without a field dispatch,
+//     optional layers whose absence cannot be detected) and marks the
+//     predicates codegen does not emit yet
 //
 // Where-clause and capture-clause resolution live in sibling files and
 // arrive in the next commit.
@@ -18,7 +20,6 @@ package resolve
 import (
 	"fmt"
 	"slices"
-	"strings"
 
 	"github.com/takehaya/bpf-ninja/pkg/kunai/ast"
 	"github.com/takehaya/bpf-ninja/pkg/kunai/ir"
@@ -150,30 +151,35 @@ func (r *resolver) resolveFilter(f *ast.Filter) (*ir.Program, error) {
 }
 
 // checkChainShape rejects chain shapes the typing rules exclude (§12,
-// mirrored by the spec's static check): an alternation or an optional
-// layer cannot open the chain (nothing to dispatch from, nothing to peek
-// for absence), an alternative needs a field constant under its parent
-// to be told apart from its siblings, and an optional layer with a
+// mirrored by the spec's static check and worded like it): an
+// alternation or an optional layer cannot open the chain (nothing to
+// dispatch from, nothing to peek for absence), an alternative needs a
+// field constant under every layer that can precede it at run time (the
+// static predecessor, and earlier layers reached by skipping absentable
+// ones) to be told apart from its siblings, and an optional layer with a
 // no-check dispatch cannot detect its own absence unless it is a
 // self-edge of a protocol with a chain-end signal (`mpls/mpls*`, whose
-// s-bit ends the chain).
+// s-bit ends the chain). The codegen keeps guards for the same shapes,
+// but the resolver is the authority.
 func checkChainShape(layers []*ir.LayerInstance) error {
 	if len(layers) == 0 {
 		return nil
 	}
 	if first := layers[0]; first.Alternation != nil {
-		return errorf(first.Pos, "alternation cannot be the first layer: it has no parent to dispatch from")
+		return errorf(first.Pos, "alternation cannot be the first layer (it has no parent to dispatch from)")
 	} else if first.Absentable() {
-		return errorf(first.Pos, "the first layer cannot be optional: there is no parent field to peek for its absence")
+		return errorf(first.Pos, "the first layer cannot be optional (there is no parent field to peek for its absence)")
 	}
 	for i, l := range layers {
 		if l.Alternation != nil {
 			for _, alt := range l.Alternation {
 				if alt.Alternation != nil || alt.Quant != ast.QuantOne {
-					return errorf(alt.Pos, "alternatives cannot be alternation groups or carry quantifiers")
+					return errorf(alt.Pos, "alternatives cannot carry quantifiers or nest alternation groups")
 				}
-				if alt.Dispatch == nil || alt.Dispatch.Type != vocab.DispatchField {
-					return errorf(alt.Pos, "alternative %q needs a field dispatch under %q to be told apart from the other alternatives", alt.Spec.Name, parentNameOf(layers, i))
+				for _, parent := range runtimeParents(layers, i) {
+					if c := alt.Spec.SelectDispatchConst(parent.Spec.Name); c == nil || c.Type != vocab.DispatchField {
+						return errorf(alt.Pos, "alternative %s needs a field dispatch under %s (to be told apart from the other alternatives)", alt.Spec.Name, parent.Spec.Name)
+					}
 				}
 			}
 			continue
@@ -184,25 +190,29 @@ func checkChainShape(layers []*ir.LayerInstance) error {
 		prev := layers[i-1]
 		selfEnd := prev.Alternation == nil && prev.Spec == l.Spec && l.Spec.ChainEnd != nil
 		if !selfEnd {
-			return errorf(l.Pos, "optional %q with no-check dispatch cannot detect absence under %q", l.Spec.Name, parentNameOf(layers, i))
+			return errorf(l.Pos, "optional %s with no-check dispatch cannot detect absence (under %s)", l.Spec.Name, prev.DisplayName())
 		}
 	}
 	return nil
 }
 
-func parentNameOf(layers []*ir.LayerInstance, i int) string {
-	if i == 0 {
-		return "(root)"
-	}
-	p := layers[i-1]
-	if p.Alternation != nil {
-		names := make([]string, 0, len(p.Alternation))
-		for _, a := range p.Alternation {
-			names = append(names, a.Spec.Name)
+// runtimeParents lists the non-alternation layers that can precede layer
+// `i` at run time: its static predecessor, then each earlier layer while
+// the one after it may be absent. An alternation group ends the walk
+// (its members keep the static rule).
+func runtimeParents(layers []*ir.LayerInstance, i int) []*ir.LayerInstance {
+	var out []*ir.LayerInstance
+	for j := i - 1; j >= 0; j-- {
+		prev := layers[j]
+		if prev.Alternation != nil {
+			break
 		}
-		return "(" + strings.Join(names, "|") + ")"
+		out = append(out, prev)
+		if !prev.Absentable() {
+			break
+		}
 	}
-	return p.Spec.Name
+	return out
 }
 
 // checkRuntimeParents requires a dispatch (constant or self-validation)

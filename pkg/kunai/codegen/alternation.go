@@ -41,15 +41,15 @@ var matchedAltReg = asm.R5
 // matchedAltReg before falling through to altEnd, so the next layer
 // can read it back and pick the right per-alt dispatch field.
 //
-// MVP constraints:
+// MVP constraints (the resolver's checkChainShape rejects the typing
+// violations first; the guards below stay as defence in depth):
 //   - alt count ∈ [2, altCountCap]
 //   - QuantOne only
 //   - every alternative carries a parent-side dispatch (no first-
 //     layer alternation)
 //   - no nested alternation
-//   - DispatchNoCheck alternatives are rejected (a fall-through alt
-//     would always "win" — semantic noise)
-//   - alt members must use Field dispatch (the guard is a Field check)
+//   - alt members must use Field dispatch (the guard is a Field check;
+//     a NoCheck alternative would always "win")
 func genAlternation(layer *ir.LayerInstance, index int, all []*ir.LayerInstance, qo queriedOptions, plan *accPlan, pc *predCtx) (asm.Instructions, asm.Instructions, error) {
 	if layer.Quant != ast.QuantOne {
 		return nil, nil, fmt.Errorf("%w: quantifier %s on alternation group", ErrNotImplemented, layer.Quant)

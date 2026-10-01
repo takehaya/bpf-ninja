@@ -912,7 +912,8 @@ func TestResolveAllExamples(t *testing.T) {
 		{"l2vpn_no_cw", "eth/mpls+/eth@inner/ipv4/tcp", false, ""},
 		// cw has only a NO_CHECK edge under mpls, so its absence cannot be
 		// detected: `cw?` is ill-typed (spec vector typ-optional-nocheck).
-		{"l2vpn_cw", "eth/mpls+/cw?/eth@inner/ipv4/tcp", true, "cannot detect absence"},
+		{"l2vpn_cw", "eth/mpls+/cw/eth@inner/ipv4/tcp", false, ""},
+		{"l2vpn_cw_optional", "eth/mpls+/cw?/eth@inner/ipv4/tcp", true, "cannot detect absence"},
 		{"where_arith_gtp", "eth/ipv4@outer/udp/gtp/ipv4@inner/tcp where outer.total_length == inner.total_length + 36", false, ""},
 		{"where_action", "eth/ipv4/tcp where action == XDP_DROP", false, ""},
 		{"capture_truncated", "eth/ipv4/tcp[dport==443] capture headers+64", false, ""},
