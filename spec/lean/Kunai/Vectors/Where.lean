@@ -98,13 +98,32 @@ def vlanOptTci (w : Where) : Filter := { layers := vlanOpt, cond := some w }
 
 vector whereAbsentFalse := {
   id := "where-absent-layer-false", ast := vlanOptTci (cmp (fld "vlan" "tci") .eq (k 1)),
-  expected := .reject, goStatus := .notImplemented, note := "D-003 (a): atom on an absent layer is false" }
+  expected := .reject, note := "D-003 (a): atom on an absent layer is false (Go: the layer's entry slot holds the absent sentinel)" }
 vector whereAbsentNot := {
   id := "where-absent-layer-not", ast := vlanOptTci (.not (cmp (fld "vlan" "tci") .eq (k 1))),
-  expected := .accept [], goStatus := .notImplemented, note := "D-003 (a): not(false)" }
+  expected := .accept [], note := "D-003 (a): not(false)" }
+vector whereAbsentNe := {
+  id := "where-absent-layer-ne", ast := vlanOptTci (cmp (fld "vlan" "tci") .ne (k 1)),
+  expected := .reject, note := "D-003: != on an absent layer is false too; `not (==)` is the \"absent or different\" form" }
 vector whereOptPresent := {
   id := "where-optional-present", ast := vlanOptTci (cmp (fld "vlan" "tci") .eq (k 100)),
-  packet := vlanPkt, expected := .accept [], goStatus := .notImplemented }
+  packet := vlanPkt, expected := .accept [] }
+vector whereAfterOptional := {
+  id := "where-after-optional", ast := vlanOptTci (cmp ttl .eq (k 64)), packet := vlanPkt, expected := .accept [],
+  note := "a mandatory layer after `?` is always present; only its offset is runtime" }
+vector whereAfterOptionalAbsent := {
+  id := "where-after-optional-absent", ast := vlanOptTci (cmp ttl .eq (k 64)), expected := .accept [] }
+def mplsLabelled : List Layer :=
+  [P "eth", .proto { name := "mpls", label := some "m", quant := .range 1 (some 3) }, P "ipv4", P "tcp"]
+vector whereLabelRepeatedLast := {
+  id := "where-label-repeated-last", ast := { layers := mplsLabelled, cond := some (cmp (fld "m" "label") .eq (k 7)) },
+  packet := mpls3, expected := .accept [], note := "D-018: a label on a repeated layer binds the last matched instance (labels 5, 6, 7)" }
+vector whereLabelRepeatedFirstMiss := {
+  id := "where-label-repeated-first-miss", ast := { layers := mplsLabelled, cond := some (cmp (fld "m" "label") .eq (k 5)) },
+  packet := mpls3, expected := .reject, note := "D-018: the first instance is not what the label names" }
+vector whereRepeatedUnlabelled := {
+  id := "where-repeated-unlabelled", ast := { layers := mplsRange 1 (some 3), cond := some (cmp (fld "mpls" "label") .eq (k 7)) },
+  packet := mpls3, expected := .illTyped "protocol mpls is ambiguous; qualify with an @label", note := "D-013: a quantifier whose upper bound is not 1 counts as several instances" }
 vector wherePastQuantified := {
   id := "where-past-quantified-ok", ast := vlanOptTci (cmp dport .eq (k 80)),
   packet := vlanPkt, expected := .accept [], note := "Go compiles this one: ipv4 is a runtime-offset layer" }
@@ -225,7 +244,8 @@ def whereVectors : List Vector := [
   whereNegLitMiss, whereNegLitHit, whereConstFold,
   whereArithOps, whereBitwise, whereShiftMasked, whereNoWrap, whereDivZero, whereModZero, whereMixedWidth,
   whereTrue, whereFalse, whereDecay, whereNot, whereOr, whereBoolEqIff, whereBoolEqXor,
-  whereAbsentFalse, whereAbsentNot, whereOptPresent, wherePastQuantified, whereLabels, whereAmbiguous,
+  whereAbsentFalse, whereAbsentNot, whereAbsentNe, whereOptPresent, whereAfterOptional, whereAfterOptionalAbsent,
+  whereLabelRepeatedLast, whereLabelRepeatedFirstMiss, whereRepeatedUnlabelled, wherePastQuantified, whereLabels, whereAmbiguous,
   actionEntry, actionHit, actionMiss, actionUnknown,
   predCmp, predCmpMiss, predInList, predInListMiss, predInRange, predNegative, predIPv4,
   capAll, capWhereFalse, capWhereTrue, capLabel, capAbsent,

@@ -891,6 +891,33 @@ func TestCompileQinqVlanChainCoversAllTagShapes(t *testing.T) {
 	}
 }
 
+// TestCompileWhereOnQuantifiedLayers pins D-003 / D-013 / D-018 end to
+// end: fields of an optional layer and of the layers after it compile
+// (the absent layer makes the atom false at run time), a labelled
+// repeated layer binds its last instance on both chain lowerings, and an
+// unlabelled repeated layer is a type error, not an implementation limit.
+func TestCompileWhereOnQuantifiedLayers(t *testing.T) {
+	for _, expr := range []string{
+		"eth/vlan?/ipv4/tcp where vlan.tci == 100",
+		"eth/vlan?/ipv4/tcp where not (vlan.tci == 1)",
+		"eth/vlan?/ipv4/tcp where vlan.tci != 1",
+		"eth/vlan?/ipv4/tcp where ipv4.ttl == 64",
+		"eth/qinq?/vlan?/ipv4/tcp where vlan.tci == 100 and ipv4.ttl == 64",
+		"eth/mpls@m{1,3}/ipv4/tcp where m.label == 7", // static unroll
+		"eth/mpls@m{1,8}/ipv4/tcp where m.label == 7", // bpf_loop
+		"eth/mpls@m*/ipv4/tcp where not (m.label == 7)",
+		"eth/mpls{1,8}/ipv4/tcp where ipv4.total_length > 100", // the README example
+	} {
+		if _, err := compileForTest(expr); err != nil {
+			t.Errorf("%s: %v", expr, err)
+		}
+	}
+	_, err := compileForTest("eth/mpls{1,3}/ipv4/tcp where mpls.label == 7")
+	if err == nil || errors.Is(err, codegen.ErrNotImplemented) || !strings.Contains(err.Error(), "ambiguous") {
+		t.Fatalf("unlabelled repeated layer: expected a resolver ambiguity error, got %v", err)
+	}
+}
+
 // TestCompileConsecutiveOptionalsNeedEquivalentDispatch pins the D-034
 // limit of the static-parent dispatch after consecutive optional layers:
 // it is sound only when every runtime parent dispatches the layer the
@@ -1255,6 +1282,7 @@ func TestVlanInMetadataRejectsVlanLayers(t *testing.T) {
 		"eth/qinq/vlan/ipv4/tcp where tcp.dport == 80",      // mandatory QinQ
 		"eth/vlan[tci==100]?/ipv4/tcp",                      // optional but reads tci
 		"eth/(vlan|qinq)/ipv4/tcp",                          // tag in alternation
+		"eth/vlan?/ipv4/tcp where vlan.tci == 100",          // where reads the tag
 	}
 	// Optional, predicate-free tags are matchable at a VlanInMetadata
 	// host: at most one tag survives in the bytes, and the skip path
@@ -1263,6 +1291,7 @@ func TestVlanInMetadataRejectsVlanLayers(t *testing.T) {
 		"eth/vlan?/ipv4/tcp",
 		"eth/qinq?/vlan?/ipv4/tcp",
 		"eth/vlan*/ipv4/tcp",
+		"eth/vlan?/ipv4/tcp where ipv4.ttl == 64", // past the tag: runtime offset, no tag read
 	}
 	tcCaps := codegen.Capabilities{Host: codegen.HostLayout{VlanInMetadata: true}}
 	for _, expr := range rejected {

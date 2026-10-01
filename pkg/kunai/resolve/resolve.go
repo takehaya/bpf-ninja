@@ -277,8 +277,11 @@ func markRuntimeOffsetLayers(p *ir.Program) {
 	hasVarBody := func(l *ir.LayerInstance) bool {
 		return l != nil && l.Spec != nil && l.Spec.HasVariableLayout()
 	}
+	// A quantified layer is a boundary too: how many headers it matched
+	// (zero included) decides where everything after it starts, and its
+	// own presence and last-instance start are runtime facts (D-003).
 	isRuntimeBoundary := func(l *ir.LayerInstance) bool {
-		return ir.IsHeterogeneousAlt(l) || hasVarBody(l) || slices.ContainsFunc(l.Alternation, hasVarBody)
+		return ir.IsHeterogeneousAlt(l) || hasVarBody(l) || slices.ContainsFunc(l.Alternation, hasVarBody) || l.Quant != ast.QuantOne
 	}
 	boundary := -1
 	for i, l := range p.Layers {
@@ -303,8 +306,11 @@ func markRuntimeOffsetLayers(p *ir.Program) {
 		return
 	}
 
+	// A quantified layer marks itself (its slot carries presence and the
+	// last instance); a het-alt / variable-body boundary layer does not,
+	// since its own start is still the static prefix.
 	mark := func(target *ir.LayerInstance) {
-		if target == nil || target.LayerPos <= boundary {
+		if target == nil || (target.Quant == ast.QuantOne && target.LayerPos <= boundary) {
 			return
 		}
 		target.NeedsRuntimeOffset = true

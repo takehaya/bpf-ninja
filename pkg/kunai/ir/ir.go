@@ -78,14 +78,16 @@ type LayerInstance struct {
 	Unsupported string
 
 	// NeedsRuntimeOffset tells codegen that where / capture clauses
-	// reference fields in this layer (or pass through it) and that
-	// the layer's position in the packet cannot be known at compile
-	// time — typically because a heterogeneous-size alternation group
-	// sits at or before this layer in the chain. When set, the layer's
-	// emit MUST store offsetBase (R4) into whereLayerEntrySlot at
-	// layer entry, and field loads in where / capture / option-walk
-	// MUST address through that slot rather than R0+static_prefix.
-	// Resolver decides; codegen executes.
+	// reference fields in this layer and that the layer's position in
+	// the packet cannot be known at compile time: a heterogeneous-size
+	// alternation group or a quantified layer sits before it, or the
+	// layer is quantified itself. When set, the layer's emit MUST store
+	// offsetBase (R4) into whereLayerEntrySlot at each instance's entry
+	// (a quantified layer stores every instance, so the slot holds the
+	// last one, and marks the slot absent before its first peek), and
+	// field loads in where / capture / option-walk MUST address through
+	// that slot rather than R0+static_prefix. Resolver decides; codegen
+	// executes.
 	NeedsRuntimeOffset bool
 
 	Pos ast.Position

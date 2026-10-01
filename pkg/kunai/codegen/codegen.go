@@ -806,14 +806,20 @@ func checkUnsupported(p *ir.Program) error {
 //
 // What stays rejected, because it reads a tag the host does not expose
 // in packet bytes:
+//
 //   - a mandatory vlan/qinq layer (no skip path),
+//
 //   - a bracket predicate on the layer (`vlan[tci==100]?`), and
+//
 //   - a vlan/qinq layer inside an alternation (no per-alt skip path).
 //
-// A where-clause or capture that reads a vlan field, or any field past
-// the optional tag, is already rejected upstream as a quantified-layer
-// limitation, so it needs no separate check here. Reading the tag from
-// skb metadata is future work; see HostLayout.VlanInMetadata.
+//   - a where clause or capture that reads a vlan/qinq field (the tag's
+//     bytes are not in the packet, so its entry slot would be absent on
+//     every tagged frame).
+//
+// Fields past the optional tag read fine: the layers after it record
+// their runtime offsets. Reading the tag from skb metadata is future
+// work; see HostLayout.VlanInMetadata.
 func checkHostLayerSupport(p *ir.Program, host HostLayout) error {
 	if !host.VlanInMetadata {
 		return nil
@@ -841,7 +847,26 @@ func checkHostLayerSupport(p *ir.Program, host HostLayout) error {
 			return reject(l)
 		}
 	}
-	return nil
+	var refErr error
+	visit := func(f *ir.FieldRef) {
+		if refErr == nil && f != nil && isVlan(f.Layer) {
+			refErr = withPos(fmt.Errorf("%w: where / capture reads %s.%s, but this host moves the VLAN tag to skb metadata before the program runs; the tag is not in the packet bytes (reading it from metadata is future work)", ErrNotImplemented, f.Layer.Spec.Name, f.Field.Name), f.Layer.Pos)
+		}
+	}
+	ir.WalkConditionFieldRefs(p.Where, visit)
+	for _, c := range p.Captures {
+		if c == nil {
+			continue
+		}
+		if isVlan(c.TargetLayer) {
+			return reject(c.TargetLayer)
+		}
+		ir.WalkConditionFieldRefs(c.Where, visit)
+		for _, f := range c.Fields {
+			visit(f)
+		}
+	}
+	return refErr
 }
 
 // genLayer dispatches on the quantifier and emits the layer's own

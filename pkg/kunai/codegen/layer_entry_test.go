@@ -76,7 +76,7 @@ func TestOptionalChainSentinelThenStore(t *testing.T) {
 	if sentinelAt < 0 || peekAt < 0 || storeAt < 0 {
 		t.Fatalf("sentinel=%d peek=%d store=%d: all three must be emitted", sentinelAt, peekAt, storeAt)
 	}
-	if !(sentinelAt < peekAt && peekAt < storeAt) {
+	if sentinelAt >= peekAt || peekAt >= storeAt {
 		t.Errorf("order sentinel(%d) < peek(%d) < store(%d) violated", sentinelAt, peekAt, storeAt)
 	}
 }

@@ -118,6 +118,30 @@ func TestChainRootWarning(t *testing.T) {
 	}
 }
 
+// TestQuantifiedLayerReferences pins D-003 / D-013 / D-018 at the
+// resolver: an unlabelled reference to a layer that may repeat is
+// ambiguous, a label binds it, and a quantified layer plus the layers a
+// where clause reads after it are marked for runtime addressing.
+func TestQuantifiedLayerReferences(t *testing.T) {
+	for _, expr := range []string{"eth/mpls{1,3}/ipv4/tcp where mpls.label == 7", "eth/mpls+/ipv4/tcp capture mpls", "eth/vlan*/ipv4/tcp where vlan.tci == 1"} {
+		f, err := parser.Parse(expr, "t.dsl", nil)
+		if err != nil {
+			t.Fatalf("parse(%q): %v", expr, err)
+		}
+		if _, err := Resolve(f, loadVocab(t), nil); err == nil || !strings.Contains(err.Error(), "ambiguous") || !strings.Contains(err.Error(), "@label") {
+			t.Errorf("%s: expected an ambiguity error pointing at @label, got %v", expr, err)
+		}
+	}
+	resolveOK(t, "eth/mpls@m{1,3}/ipv4/tcp where m.label == 7", nil)
+	resolveOK(t, "eth/mpls@m+/ipv4/tcp where m.label == 7", nil)
+	p := resolveOK(t, "eth/vlan?/ipv4/tcp where vlan.tci == 1 and ipv4.ttl == 64", nil)
+	for i, want := range []bool{false, true, true, false} {
+		if got := p.Layers[i].NeedsRuntimeOffset; got != want {
+			t.Errorf("layer %d (%s) NeedsRuntimeOffset = %v, want %v", i, p.Layers[i].Spec.Name, got, want)
+		}
+	}
+}
+
 // TestRuntimeParentDispatch pins that a layer after an absentable layer
 // needs a dispatch from every layer it can meet at run time (D-034).
 func TestRuntimeParentDispatch(t *testing.T) {

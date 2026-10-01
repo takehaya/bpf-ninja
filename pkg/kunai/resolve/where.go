@@ -1,6 +1,7 @@
 package resolve
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/takehaya/bpf-ninja/pkg/kunai/ast"
@@ -727,24 +728,56 @@ func resolveAuxField(layer *ir.LayerInstance, auxName, tail string, fp *ast.Fiel
 
 // lookupByQualifier resolves a name to a layer. User labels and
 // auto-indexed keys live in r.labels; a bare protocol name resolves
-// only when there is exactly one instance of that protocol.
+// only when the chain can hold exactly one instance of that protocol.
+// A layer whose quantifier allows more than one header (`{n,m>1}`, `+`,
+// `*`) counts as several instances (T-FieldPrim side condition, D-013):
+// the reference must go through an @label, which binds the last matched
+// instance (D-018).
 func (r *resolver) lookupByQualifier(name string, pos ast.Position) (*ir.LayerInstance, error) {
 	if li, ok := r.labels[name]; ok {
 		return li, nil
 	}
 	var found *ir.LayerInstance
 	count := 0
+	repeated := false
 	for _, li := range r.flatLayers {
 		if li.Spec != nil && li.Spec.Name == name {
 			found = li
 			count++
+			if mayRepeat(li) {
+				repeated = true
+			}
 		}
 	}
-	switch count {
-	case 0:
+	switch {
+	case count == 0:
 		return nil, errorf(pos, "unknown label or protocol %q", name)
-	case 1:
+	case count == 1 && !repeated:
 		return found, nil
+	case count == 1:
+		return nil, errorf(pos, "protocol %q is ambiguous (quantifier %s may match several headers); qualify with an @label, which names the last one", name, quantText(found))
 	}
 	return nil, errorf(pos, "protocol %q is ambiguous (%d instances); qualify with an @label", name, count)
+}
+
+// mayRepeat reports whether a layer's quantifier admits more than one
+// header: `?` and `{n,1}` do not, `{n,m>1}`, `{n,}`, `+` and `*` do.
+func mayRepeat(l *ir.LayerInstance) bool {
+	switch l.Quant {
+	case ast.QuantPlus, ast.QuantStar:
+		return true
+	case ast.QuantRange:
+		return l.RangeMax != 1
+	}
+	return false
+}
+
+func quantText(l *ir.LayerInstance) string {
+	if l.Quant == ast.QuantRange {
+		if l.RangeMax < 0 {
+			return fmt.Sprintf("{%d,}", l.RangeMin)
+		}
+		return fmt.Sprintf("{%d,%d}", l.RangeMin, l.RangeMax)
+	}
+	return l.Quant.String()
 }
