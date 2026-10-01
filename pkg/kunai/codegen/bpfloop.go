@@ -31,11 +31,11 @@ var chainCbProto = &btf.FuncProto{
 // keeps matching. On first mismatch (or bounds overrun) the callback
 // returns 1 to terminate the loop.
 //
-// Only uniform chains with Field or NoCheck self-dispatch are covered
-// by this commit; MPLS s-bit termination (a break condition baked into
-// the callback) lands in a follow-up. `*` (RangeMin == 0) is likewise
-// deferred — the whole-chain skip path needs more plumbing than is
-// worth here.
+// Uniform chains with Field or NoCheck self-dispatch are covered. A
+// chain-end protocol (MPLS) ends the loop on its s bit inside the
+// callback, and `*` / `{0,m}` enter through the same peek-and-skip as
+// `?` (emitPeekedIterZero): for a self edge the peek is the previous
+// label's end signal.
 
 // ctx layout on the main program's stack:
 //
@@ -115,7 +115,7 @@ const bpfLoopChainCap = 32
 func genBpfLoopChain(layer *ir.LayerInstance, index int, all []*ir.LayerInstance, pc *predCtx) (asm.Instructions, asm.Instructions, error) {
 	rangeMin, _ := chainBounds(layer)
 	if rangeMin == 0 {
-		if err := optionalLayerGuard(layer, index); err != nil {
+		if err := optionalLayerGuard(layer, index, all); err != nil {
 			return nil, nil, err
 		}
 	}

@@ -1101,6 +1101,11 @@ func dispatchEquivalent(child, a, b *vocab.ProtocolSpec) (bool, error) {
 	if ca.Type != cb.Type {
 		return false, nil
 	}
+	// The self edge of a chain-end protocol also reads the previous
+	// header's end signal, which a different parent does not have.
+	if child.ChainEnd != nil && (a == child) != (b == child) {
+		return false, nil
+	}
 	if ca.Type != vocab.DispatchField {
 		return true, nil
 	}
@@ -1176,7 +1181,7 @@ func withAbsentEdge(present asm.Instructions, peekFail string, index int, all []
 // neither the parser machine nor the layer-entry slot store, so a
 // following layer would read an unset slot (verifier rejection at best).
 // Self-validating layers have no parent field to peek for absence.
-func optionalLayerGuard(layer *ir.LayerInstance, index int) error {
+func optionalLayerGuard(layer *ir.LayerInstance, index int, all []*ir.LayerInstance) error {
 	if index == 0 {
 		return fmt.Errorf("%w: the first layer cannot be optional", ErrNotImplemented)
 	}
@@ -1185,7 +1190,9 @@ func optionalLayerGuard(layer *ir.LayerInstance, index int) error {
 	}
 	switch layer.Dispatch.Type {
 	case vocab.DispatchNoCheck:
-		return fmt.Errorf("%w: optional %q with no-check dispatch cannot detect absence", ErrNotImplemented, layer.Spec.Name)
+		if !selfEdgeWithChainEnd(layer, all[index-1]) {
+			return fmt.Errorf("%w: optional %q with no-check dispatch cannot detect absence", ErrNotImplemented, layer.Spec.Name)
+		}
 	case vocab.DispatchSelfValidating:
 		return fmt.Errorf("%w: optional %q is self-validating under its parent; there is no dispatch field to peek for absence", ErrNotImplemented, layer.Spec.Name)
 	}
@@ -1193,6 +1200,14 @@ func optionalLayerGuard(layer *ir.LayerInstance, index int) error {
 		return fmt.Errorf("%w: optional %q has a variable-length header or parser machine; the skip path cannot run its parser", ErrNotImplemented, layer.Spec.Name)
 	}
 	return nil
+}
+
+// selfEdgeWithChainEnd reports whether `layer` continues a chain of its
+// own protocol whose headers carry an end signal (`mpls/mpls?`,
+// `mpls/mpls*`): a NO_CHECK self edge then still detects absence, through
+// the previous header's chain-end field that genDispatch checks.
+func selfEdgeWithChainEnd(layer, parent *ir.LayerInstance) bool {
+	return parent != nil && parent.Alternation == nil && parent.Spec == layer.Spec && layer.Spec.ChainEnd != nil
 }
 
 // emitPeekedIterZero emits a single-layer block with a peek-style
@@ -1216,6 +1231,8 @@ func emitPeekedIterZero(layer *ir.LayerInstance, index int, all []*ir.LayerInsta
 	if err != nil {
 		return nil, err
 	}
+	// For a self edge of a chain-end protocol the dispatch is the previous
+	// header's end signal (genDispatch), so `mpls/mpls?` peeks the s bit.
 	peek, err := genLayerDispatch(layer, all[index-1], precedingLayersLeaveR4Range(all, index), precedingLayersLeaveR4Range(all, index-1), peekFailLabel)
 	if err != nil {
 		return nil, err
@@ -1241,18 +1258,40 @@ func emitPeekedIterZero(layer *ir.LayerInstance, index int, all []*ir.LayerInsta
 }
 
 func genDispatch(current, parent *ir.LayerInstance, parentHS int, r4IsRange, parentEntryIsRange bool, failLabel string) (asm.Instructions, error) {
+	// A self edge of a chain-end protocol misses once the previous header
+	// signalled end (spec parent_dispatch: `ended ⇒ miss`, checked before
+	// the edge itself): the MPLS s bit of the label ending at R4 says no
+	// further label follows. Every lowering that dispatches against a
+	// same-protocol parent inherits it here.
+	var pre asm.Instructions
+	if selfEdgeWithChainEnd(current, parent) {
+		if parent.Spec.HasVariableLayout() {
+			return nil, fmt.Errorf("%w: %q follows a variable-length %q; the chain-end signal of the previous header cannot be located from the cursor", ErrNotImplemented, current.Spec.Name, parent.Spec.Name)
+		}
+		var err error
+		pre, err = chainEndCheck(current.Spec, parentHS, staticChainFrame, failLabel)
+		if err != nil {
+			return nil, err
+		}
+	}
+	var edge asm.Instructions
+	var err error
 	switch current.Dispatch.Type {
 	case vocab.DispatchField:
-		return genFieldDispatch(current, parent, parentHS, r4IsRange, parentEntryIsRange, failLabel)
+		edge, err = genFieldDispatch(current, parent, parentHS, r4IsRange, parentEntryIsRange, failLabel)
 	case vocab.DispatchNoCheck:
-		return genNoCheckDispatch(current)
+		edge, err = genNoCheckDispatch(current)
 	case vocab.DispatchSelfValidating:
 		// Boundary emits nothing: the child's parser machine validates
 		// the layer via its `transition select(...) { ...; default:
 		// reject; }`, so we delegate the check entirely to the parser.
-		return nil, nil
+	default:
+		return nil, fmt.Errorf("codegen: unknown dispatch type %v", current.Dispatch.Type)
 	}
-	return nil, fmt.Errorf("codegen: unknown dispatch type %v", current.Dispatch.Type)
+	if err != nil {
+		return nil, err
+	}
+	return append(pre, edge...), nil
 }
 
 // genLayerDispatch is the call-site wrapper for layer-level dispatch
@@ -1285,6 +1324,16 @@ func genLayerDispatch(current, prev *ir.LayerInstance, r4IsRange, parentEntryIsR
 		return genFieldDispatchAltDiverged(current, prev.Alternation, r4IsRange, parentEntryIsRange, failLabel)
 	}
 	parent := dispatchParent(prev)
+	if prev.Alternation != nil && current.Spec.ChainEnd != nil {
+		// The chain-end pre-check reads the previous header at R4 minus
+		// the parent's size; a group mixing the child's protocol with
+		// others leaves that header unknown at compile time.
+		for _, alt := range prev.Alternation {
+			if (alt.Spec == current.Spec) != (parent.Spec == current.Spec) {
+				return nil, fmt.Errorf("%w: %q after the alternation %s mixes a self edge with other parents", ErrNotImplemented, current.Spec.Name, prev.DisplayName())
+			}
+		}
+	}
 	parentHS, err := headerSize(parent.Spec)
 	if err != nil {
 		return nil, err

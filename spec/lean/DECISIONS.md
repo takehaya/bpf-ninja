@@ -297,5 +297,6 @@ Entries are never deleted; a rejected candidate stays in the log.
 15. ✅ `tcp.options.X.exists` を実装。
 16. ◐ `eth/mpls*/ipv4/tcp` が ARP を accept する (D-034) — skip された layer の後の dispatch は実行時の親 (grandparent) に対して行う。optional が連続する形は、全ての実行時の親で dispatch が同じ読みになる場合だけ受け付け (`eth/qinq?/vlan?/ipv4`)、それ以外 (`eth/vlan?/mpls?/ipv4`) は `ErrNotImplemented`。一般の chain は未着手。
 17. ✅ (spec 側) Lean の bracket predicate が primary header の field しか型付けしなかった — `resolveBracket` で where と同じ規則 (T-FieldAux / T-FieldStackStatic、不在なら false、write-back 後の値) に拡張 (`fix/kunai-spec-conformance-4`, vectors `ipv6-exts-bracket-*`, `gtp-exts-bracket`)。Go は walk 後に predicate を評価する proto (ipv6) では push count で guard、walk 前に評価する proto (gtp) では `ErrNotImplemented`。
+18. ✅ 自己 edge の dispatch が前 header の chain-end 信号を見ない — `eth/mpls/mpls` が 1 label の stack で 2 枚目を ipv4 の先頭 4 byte から読んでいた。`genDispatch` が同一 proto の親に対して先に end 信号を検査する (PR #128, vectors `chain-mpls-self-edge-miss`, `quant-self-edge-opt`, `quant-self-edge-star`)。
 
-残: self-validating / 可変長 layer の `?` (D-017 案 c の実装)、NO_CHECK 自己 edge の optional (`mpls/mpls*`)。
+残: self-validating / 可変長 layer の `?` (D-017 案 c の実装)。
