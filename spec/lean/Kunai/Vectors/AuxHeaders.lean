@@ -23,7 +23,8 @@ def srv6Pkt (lastEntry : Nat) (segs : List Nat) : Packet :=
   eth 0x86DD ++ ipv6 43 ++ srv6Hdr 6 lastEntry ++ (segs.map (be 16)).flatten ++ tcp 12345 80 ++ payload 5
 def gtpHdr (flags : Nat) : Packet := [UInt8.ofNat (0x30 + flags), 0xff] ++ be 2 28 ++ be 4 1
 def gtpOpt (nextExt : Nat) : Packet := be 2 7 ++ [0, UInt8.ofNat nextExt]
-def gtpExt (extType nextExt : Nat) : Packet := [1] ++ be 2 extType ++ [UInt8.ofNat nextExt]
+def gtpExt (extType nextExt : Nat) (extLength : Nat := 1) : Packet :=
+  [UInt8.ofNat extLength] ++ be 2 extType ++ [UInt8.ofNat nextExt] ++ List.replicate (4 * (extLength - 1)) 0
 def gtpPkt (gtp : Packet) : Packet :=
   eth 0x0800 ++ ipv4 17 ++ udp 2152 2152 ++ gtp ++ ipv4 6 ++ tcp 12345 80 ++ payload 5
 def rrPkt : Packet :=
@@ -203,6 +204,14 @@ vector gtpOptField := {
   id := "gtp-opt-field", ast := { layers := gtpL, cond := some (cmp gtpNextExt .eq (k 0)) }, packet := gtpPkt (gtpHdr 2 ++ gtpOpt 0), expected := .accept [] }
 vector gtpOptFieldAbsent := {
   id := "gtp-opt-field-absent", ast := { layers := gtpL, cond := some (cmp gtpNextExt .eq (k 0)) }, packet := gtpPkt (gtpHdr 0), expected := .reject, note := "D-027" }
+vector gtpExtLongFirst := {
+  id := "gtp-ext-after-long-ext",
+  ast := { layers := gtpL, cond := some (cmp (Arith.field ⟨[("gtp", none), ("exts", some (.nat 1)), ("ext_type", none)]⟩) .eq (k 2)) },
+  packet := gtpPkt (gtpHdr 4 ++ gtpOpt 0x85 ++ gtpExt 1 0x85 (extLength := 2) ++ gtpExt 2 0), expected := .accept [],
+  note := "ext_length counts 4-byte units including the fixed part: an 8-byte first ext puts the second at +8" }
+vector gtpExtLengthZero := {
+  id := "gtp-ext-length-zero", ast := { layers := gtpL }, packet := gtpPkt (gtpHdr 4 ++ gtpOpt 0x85 ++ gtpExt 1 0 (extLength := 0)),
+  expected := .reject, note := "ext_length 0 is below the 4-byte fixed part ⇒ malformed" }
 vector gtpExtStack := {
   id := "gtp-ext-stack", ast := { layers := gtpL, cond := some (cmp gtpExt0 .eq (k 1)) }, packet := gtpPkt (gtpHdr 4 ++ gtpOpt 0x85 ++ gtpExt 1 0), expected := .accept [] }
 
@@ -276,7 +285,7 @@ def auxVectors : List Vector := [
   ipv6ExtsBracket, ipv6ExtsBracketAbsent, ipv6ExtsBracketLong, ipv6ExtsBracketDynamic, ipv6ExtsBracketIter, ipv6ExtsBracketInAbsent, ipv6ExtsBracketInLong, ipv6ExtsSliceLong, ipv6ExtsBracketSliceLong, gtpExtsBracket, ipv6ExtsIndexAbsent,
   ipv6NextHeaderWhere, ipv6NextHeaderBracket, ipv6FiveExts, ipv6SixExts, ipv6AnyExts, ipv6AllExts,
   srv6Chain, srv6Static, srv6Dynamic, srv6Any, srv6All, srv6AllCidr, srv6IndexAbsent, srv6OverCap, srv6AtCap,
-  gtpPlain, gtpOptExists, gtpOptAbsent, gtpOptField, gtpOptFieldAbsent, gtpExtStack,
+  gtpPlain, gtpOptExists, gtpOptAbsent, gtpOptField, gtpOptFieldAbsent, gtpExtLongFirst, gtpExtLengthZero, gtpExtStack,
   ipv4RrStatic, ipv4RrAny, ipv4RrArith]
 
 end Kunai

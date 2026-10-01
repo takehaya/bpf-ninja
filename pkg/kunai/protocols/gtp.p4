@@ -23,7 +23,12 @@ header gtp_opt_h {
     bit<8>  next_ext;
 }
 
-// Extension header; length in 4-byte units. Chain terminates at next_ext==0.
+// Extension header (TS 29.281 §5.2.1): ext_length counts the whole
+// header in 4-byte units, so the common 4-byte extension has
+// ext_length == 1 and @kunai_variable_tail consumes the remaining
+// (ext_length - 1) × 4 bytes (ext_length == 0 is malformed → reject).
+// The chain terminates at next_ext == 0.
+@kunai_variable_tail[len_field=ext_length, scale=4, min_total=4]
 header gtp_ext_h {
     bit<8>  ext_length;
     bit<16> ext_type;

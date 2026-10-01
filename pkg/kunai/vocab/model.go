@@ -144,7 +144,13 @@ type VariableTailSpec struct {
 	LenMask         int
 	LenShift        int
 	Scale           int
-	Base            int
+	// Base is added to the scaled length.
+	Base int
+	// MinTotal is subtracted from the scaled length, which must reach it
+	// (else the header is malformed and the layer rejects): for a length
+	// field that counts the whole header including its fixed part
+	// (gtp_ext_h: ext_length × 4 bytes, 4 of them fixed).
+	MinTotal int
 }
 
 // WriteBackSpec captures the cross-protocol byte copy a chained

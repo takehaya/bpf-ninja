@@ -62,7 +62,7 @@ var FilterSet = []FilterSpec{
 		CBPFCExpr: "icmp[icmptype]==8",
 		WantInsns: 86, Notes: "ICMP echo request"},
 	{ID: "F7", Expr: "eth/ipv4@outer/udp/gtp/ipv4@inner/tcp where inner.dst == 10.0.0.1",
-		WantInsns: 349, Notes: "GTP-U inner IPv4 dst (5G core)"},
+		WantInsns: 390, Notes: "GTP-U inner IPv4 dst (5G core); the ext-header walk honours ext_length (variable-length extensions)"},
 	{ID: "F8", Expr: "eth/ipv6/srv6 where any(srv6.segments.addr == fc00::1)",
 		WantInsns: 333, Notes: "SRv6 segment-list any-quantifier (5G/SDN); element-driven segment walk (count = last_entry+1, derived) + post-walk R4 re-anchor to next-header at (last_entry+1)*16 from the same count (no annotations), any() read lowered to a bpf_loop callback"},
 	{ID: "F9", Expr: "eth/ipv4@outer/udp/geneve/eth/ipv4@inner/tcp where inner.dst == 10.0.0.1",
