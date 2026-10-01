@@ -345,10 +345,6 @@ func (r *resolver) resolveQualifiedFieldNoSlice(fp *ast.FieldPath) (*ir.FieldRef
 // AuxLayout must be IsDynamicEligible (i.e. extracted by a TLV-walk
 // sibling) so the parser machine records the option's per-packet
 // offset for where-time access.
-//
-// `.exists` predicates remain unsupported (no codegen path yet);
-// they surface a clear ErrNotImplemented now that the legacy
-// OptionLookup ExistsOnly bit is no longer set.
 func resolveOptionField(layer *ir.LayerInstance, optName, tail string, fp *ast.FieldPath) (*ir.FieldRef, error) {
 	machine := layer.Spec.ParseStateMachine
 	if machine == nil || len(machine.AuxLayouts) == 0 {
@@ -367,7 +363,16 @@ func resolveOptionField(layer *ir.LayerInstance, optName, tail string, fp *ast.F
 		return nil, errorf(fp.Pos, "protocol %q has no option named %q (declared options: %v)", layer.Spec.Name, optName, names)
 	}
 	if tail == "exists" {
-		return nil, errorf(fp.Pos, "%s.options.%s.exists is not yet implemented (planned alongside the bool-atom parser extension)", layer.Spec.Name, optName)
+		// Bool atom: true iff the option walk saw this option (codegen reads
+		// its offset slot). No field, no gating.
+		return &ir.FieldRef{
+			Layer: layer,
+			Aux: &ir.AuxRef{
+				OutParam:   layout.OutParam,
+				HeaderName: layout.HeaderName,
+				HeaderSize: layout.HeaderSize,
+			},
+		}, nil
 	}
 	bitOff := 0
 	bitWidth := 0

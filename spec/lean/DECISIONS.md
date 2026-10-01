@@ -283,11 +283,11 @@ Status values: 提案中 (implemented as recommended, awaiting sign-off) /
 
 10. bpf_loop 経路が反復上限で chain-end 信号を要求しない (D-024)。
 
-11. 抽出されなかった option の field 参照が filter 全体を reject する (D-027)。
-12. option を参照しない filter は option を検証しない (D-029)。
-13. count source の無い stack で `all` が capacity 分 unroll される、静的 index が count を見ない、`!=` が範囲外で true (D-031)。
-14. bracket predicate が write-back 前の値を見る (D-032)。
-15. `tcp.options.X.exists` 未実装。
-16. `eth/mpls*/ipv4/tcp` が ARP など非 IP フレームを accept する (D-034 + D-029)。
+11. ✅ 抽出されなかった option の field 参照が filter 全体を reject する (D-027) — atom が false になるよう fail label を通した (`fix/kunai-spec-conformance-2`)。
+12. option を参照しない filter は option を検証しない (D-029) — 未着手 (bulk advance の設計変更が必要)。
+13. ◐ 静的 index が count を見ない・`!=` が範囲外で true (D-031) — count source のある stack (srv6, SACK, RR) は修正。count source の無い stack (ipv6.exts, gtp.exts) の `all` は未着手 (push 数を記録する slot が必要)。
+14. ✅ bracket predicate が write-back 前の値を見る (D-032) — write-back を持つ proto は walk 後に評価。
+15. ✅ `tcp.options.X.exists` を実装。
+16. ✅ `eth/mpls*/ipv4/tcp` が ARP を accept する (D-034) — skip された layer の後の dispatch は実行時の親 (grandparent) に対して行う。
 
 残: 量化 layer 以降の where field 参照 (D-003 の実装)、self-validating / 可変長 layer の `?` (D-017 案 c の実装)、NO_CHECK 自己 edge の optional (`mpls/mpls*`)。

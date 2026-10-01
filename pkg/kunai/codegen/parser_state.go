@@ -35,11 +35,11 @@ func genParserMachine(layer *ir.LayerInstance, layerIdx int, all []*ir.LayerInst
 	}
 
 	pmCtx := &pmCtx{
-		spec:         spec,
-		machine:      m,
-		layerIdx:     layerIdx,
-		layer:        layer,
-		all:          all,
+		spec:     spec,
+		machine:  m,
+		layerIdx: layerIdx,
+		layer:    layer,
+		all:      all,
 		// (name, Index) is unique across the program; layerIdx alone
 		// collides when alternatives of one group share a protocol.
 		labelNS:      fmt.Sprintf("dsl_pm_%s_%d_%d", spec.Name, layerIdx, layer.Index),
@@ -90,6 +90,29 @@ func genParserMachine(layer *ir.LayerInstance, layerIdx int, all []*ir.LayerInst
 		return nil, nil, err
 	}
 	insns = append(insns, reanchor...)
+	// Bracket predicates run after aux-extract (§13.4 evaluates them on
+	// σ', spec D-032), so they see @kunai_writeback values. The emitters
+	// address fields from R4 at layer entry: park the post-walk R4 in the
+	// (now free) bpf_loop offset slot, reload the entry offset from the
+	// layer-entry slot, re-establish its bounds, and restore R4 after.
+	if len(layer.Predicates) > 0 && pmHasWriteBack(spec) {
+		preds, err := emitPredicates(layer.Predicates, pc)
+		if err != nil {
+			return nil, nil, err
+		}
+		primaryHS, err := headerSize(spec)
+		if err != nil {
+			return nil, nil, err
+		}
+		insns = append(insns,
+			asm.StoreMem(asm.R10, bpfLoopCtxOffsetSlot, offsetBase, asm.DWord),
+			asm.LoadMem(offsetBase, asm.R10, bpfLoopCtxLayerEntrySlot, asm.DWord),
+			asm.JGT.Imm(offsetBase, ScratchBufSize, dslReject),
+		)
+		insns = append(insns, emitBounds(primaryHS, dslReject)...)
+		insns = append(insns, preds...)
+		insns = append(insns, asm.LoadMem(offsetBase, asm.R10, bpfLoopCtxOffsetSlot, asm.DWord))
+	}
 	return insns, callbacks, nil
 }
 
@@ -272,13 +295,29 @@ func (c *pmCtx) emitState(stateIdx int) (asm.Instructions, asm.Instructions, err
 	return insns, cbs, nil
 }
 
+// pmHasWriteBack reports whether any aux header of the protocol writes
+// back into the primary header (`@kunai_writeback`), in which case bracket
+// predicates must wait for the walk to finish (D-032).
+func pmHasWriteBack(spec *vocab.ProtocolSpec) bool {
+	for _, a := range spec.HeaderAnnotations {
+		if a != nil && a.WriteBack != nil {
+			return true
+		}
+	}
+	return false
+}
+
 // emitEntryDispatch runs the parent-protocol dispatch once at machine
 // entry, identical in shape to genStaticLayer's QuantOne dispatch.
 func (c *pmCtx) emitEntryDispatch() (asm.Instructions, error) {
 	if c.layerIdx == 0 || c.layer.Dispatch == nil {
 		return nil, nil
 	}
-	return genLayerDispatch(c.layer, c.all[c.layerIdx-1], c.r4IsRange, precedingLayersLeaveR4Range(c.all, c.layerIdx-1), dslReject)
+	di, err := genLayerDispatch(c.layer, c.all[c.layerIdx-1], c.r4IsRange, precedingLayersLeaveR4Range(c.all, c.layerIdx-1), dslReject)
+	if err != nil {
+		return nil, err
+	}
+	return append(di, dispatchJoin(c.layerIdx, c.all)...), nil
 }
 
 // emitStateBody emits one state's extracts + transition. When the
@@ -346,7 +385,10 @@ func (c *pmCtx) emitStateBody(state *vocab.ParseState, stateIdx int, isEntry boo
 			return nil, nil, err
 		}
 		insns = append(insns, exInsns...)
-		if isEntry && i == 0 {
+		if isEntry && i == 0 && !pmHasWriteBack(c.spec) {
+			// No write-back can change the primary header: evaluate the
+			// bracket predicates here, before the walk (byte-identical
+			// bytecode to the pre-D-032 layout).
 			preds, err := emitPredicates(c.layer.Predicates, c.pc)
 			if err != nil {
 				return nil, nil, err

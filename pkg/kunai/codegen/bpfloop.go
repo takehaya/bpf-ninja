@@ -152,11 +152,17 @@ func genBpfLoopChain(layer *ir.LayerInstance, index int, all []*ir.LayerInstance
 	var mainInsns asm.Instructions
 	chainDone := fmt.Sprintf("dsl_chain_done_%d", index)
 	optionalChain := rangeMin == 0
+	// The absent edge (`*` with no header) gets its own label when it must
+	// dispatch the next layer against the grandparent (D-034).
+	absentLabel := chainDone
+	if optionalChain && absentEdgeApplies(index, all) {
+		absentLabel = fmt.Sprintf("dsl_absent_%d", index)
+	}
 	if optionalChain {
 		// Whole-chain skip: peek the parent dispatch; on mismatch
 		// jump past every iteration (including the bpf_loop call and
 		// its reload) so offsetBase stays put for the next layer.
-		body, err := emitPeekedIterZero(layer, index, all, chainDone, pc)
+		body, err := emitPeekedIterZero(layer, index, all, absentLabel, pc)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -248,6 +254,12 @@ func genBpfLoopChain(layer *ir.LayerInstance, index int, all []*ir.LayerInstance
 		// reloaded it from ctx. R3 is caller-saved and would land as
 		// !read_ok on the miss path.
 		mainInsns = append(mainInsns, asm.Mov.Reg(asm.R0, asm.R0).WithSymbol(chainDone))
+	}
+	if absentLabel != chainDone {
+		mainInsns, err = withAbsentEdge(mainInsns, absentLabel, index, all)
+		if err != nil {
+			return nil, nil, err
+		}
 	}
 
 	return mainInsns, callback, nil
