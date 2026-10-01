@@ -3,6 +3,7 @@ package codegen
 import (
 	"encoding/binary"
 	"fmt"
+	"slices"
 
 	"github.com/cilium/ebpf/asm"
 
@@ -36,6 +37,8 @@ type whereCtx struct {
 	// already guarded as present, so the atoms it unrolls skip their own
 	// guard.
 	presentLayers map[*ir.LayerInstance]bool
+	// absentable caches hasAbsentableLayer.
+	absentable *bool
 	// callbacks accumulates bpf_loop callback subprograms emitted while
 	// generating the where clause (currently the aux-walk any()/all()
 	// loop). They are returned out of genCondition and appended to
@@ -353,6 +356,22 @@ func (c *whereCtx) withQuantLayerGuard(w *ir.Condition, failLabel string, body f
 	return append(guard, insns...), nil
 }
 
+// hasAbsentableLayer reports whether any layer of the program can match
+// zero headers, i.e. whether where atoms may need an absent-layer guard.
+func (c *whereCtx) hasAbsentableLayer() bool {
+	if c.absentable == nil {
+		v := false
+		for _, l := range c.p.Layers {
+			if l != nil && l.Absentable() {
+				v = true
+				break
+			}
+		}
+		c.absentable = &v
+	}
+	return *c.absentable
+}
+
 // absentLayerGuard jumps to failLabel when the layer matched zero headers:
 // its per-layer entry slot holds layerEntryAbsent (D-003). Empty for layers
 // that are always present, that an enclosing quantifier already guarded,
@@ -384,6 +403,9 @@ func (c *whereCtx) absentLayerGuard(l *ir.LayerInstance, failLabel string) (asm.
 // `not` of such an atom is true. The guards run before the stack guards,
 // whose count reads may address the same layer's slot.
 func (c *whereCtx) withLayerGuards(w *ir.Condition, failLabel string, body func(*ir.Condition, string) (asm.Instructions, error)) (asm.Instructions, error) {
+	if !c.hasAbsentableLayer() {
+		return body(w, failLabel)
+	}
 	var guards asm.Instructions
 	var walkErr error
 	seen := map[*ir.LayerInstance]bool{}
@@ -1569,7 +1591,9 @@ func prefixHeaderSizeMaxAlt(p *ir.Program, until *ir.LayerInstance, reason strin
 func prefixHeaderSizeUpper(p *ir.Program, until *ir.LayerInstance, reason string) (int, error) {
 	total := 0
 	for _, l := range p.Layers {
-		if l == until {
+		// An alternation member as the target: the prefix stops before
+		// its group; the caller adds the member's own size.
+		if l == until || slices.Contains(l.Alternation, until) {
 			return total, nil
 		}
 		var hs int
@@ -1589,7 +1613,7 @@ func prefixHeaderSizeUpper(p *ir.Program, until *ir.LayerInstance, reason string
 		total += n * hs
 	}
 	if until != nil {
-		return 0, fmt.Errorf("codegen: %s target layer not in program", reason)
+		return 0, fmt.Errorf("codegen: %s target layer %q not in program", reason, layerName(until))
 	}
 	return total, nil
 }

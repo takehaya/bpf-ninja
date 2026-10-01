@@ -916,6 +916,22 @@ func TestCompileWhereOnQuantifiedLayers(t *testing.T) {
 	if err == nil || errors.Is(err, codegen.ErrNotImplemented) || !strings.Contains(err.Error(), "ambiguous") {
 		t.Fatalf("unlabelled repeated layer: expected a resolver ambiguity error, got %v", err)
 	}
+	// A member of a heterogeneous alternation shares its group's slot and
+	// has no matched-member check on where reads, so it stays refused
+	// even behind an optional layer.
+	_, err = compileForTest("eth/vlan?/(ipv4|ipv6)/tcp where ipv4.ttl == 64")
+	if !errors.Is(err, codegen.ErrNotImplemented) {
+		t.Fatalf("het-alt member after an optional layer: expected ErrNotImplemented, got %v", err)
+	}
+	// Capturing an alternation member behind an optional layer sizes the
+	// bound from the member itself.
+	out, err := Compile("eth/vlan?/(ipv4|ipv6)/tcp capture ipv4+8", codegen.Capabilities{})
+	if err != nil {
+		t.Fatalf("capture alt member: %v", err)
+	}
+	if out.Capture.MaxCapLen != 14+4+20+8 {
+		t.Fatalf("capture alt member: MaxCapLen = %d, want %d", out.Capture.MaxCapLen, 14+4+20+8)
+	}
 }
 
 // TestCompileCaptureUpperBoundOverQuantifiers pins that capture lengths

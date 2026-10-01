@@ -859,7 +859,7 @@ func checkHostLayerSupport(p *ir.Program, host HostLayout) error {
 			continue
 		}
 		if isVlan(c.TargetLayer) {
-			return reject(c.TargetLayer)
+			return withPos(fmt.Errorf("%w: capture %s targets a VLAN tag this host moves to skb metadata before the program runs; its bytes are not in the packet (capture ipv4 or an absolute length instead)", ErrNotImplemented, c.TargetLayer.Spec.Name), c.TargetLayer.Pos)
 		}
 		ir.WalkConditionFieldRefs(c.Where, visit)
 		for _, f := range c.Fields {

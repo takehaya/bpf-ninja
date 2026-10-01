@@ -32,7 +32,7 @@ Entries are never deleted; a rejected candidate stays in the log.
 ## D-003: 不在レイヤの field 参照
 - 論点: `eth/vlan?/ipv4 where vlan.tci == 10` で vlan が無いとき。
 - 候補: (a) 比較 (atom) は false / (b) filter は reject / (c) 型エラー
-- 現行 Go 実装の挙動 (2026-10-01 時点): **コンパイル時 `ErrNotImplemented`** ("where-clause field on quantified layer" / "past quantified layer")。→ `fix/kunai-where-quantified` で実装: 量化 layer は entry slot に「不在」または最後の instance の開始を記録し、where の atom は slot が不在なら false へ飛ぶ。`eth/vlan?/ipv4/tcp where tcp.dport == 80` は通る (ipv4 が可変長 slot 境界になるため)。`README.ja.md:18` の例 `eth/mpls{1,8}/ipv4/tcp where ipv4.total_length > 100` は **コンパイルできない** (要修正)。
+- 現行 Go 実装の挙動 (2026-10-01 時点): **コンパイル時 `ErrNotImplemented`** ("where-clause field on quantified layer" / "past quantified layer")。→ `fix/kunai-where-quantified` で実装: 量化 layer は entry slot に「不在」または最後の instance の開始を記録し、where の atom は slot が不在なら false へ飛ぶ。`eth/vlan?/ipv4/tcp where tcp.dport == 80` は通る (ipv4 が可変長 slot 境界になるため)。`README.ja.md:18` の例 `eth/mpls{1,8}/ipv4/tcp where ipv4.total_length > 100` は当初コンパイルできなかった (例を差し替え済) が、この実装で通るようになった (`TestCompileWhereOnQuantifiedLayers`)。
 - 推奨: (a)。atom 単位で false にする。(b) は `not (vlan.tci == 1)` を書けなくし、(c) は実装制限を仕様に昇格させる。ユーザー決定 (2026-10-01): 仕様は純粋に書き、Go の制限は vector の `goStatus: notImplemented` で表す。注意: `not (vlan.tci == 1)` は不在時に true になる。
 - 状態: 承認済 (2026-10-01)。不在時の真理値表:
 

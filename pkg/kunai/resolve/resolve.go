@@ -306,11 +306,23 @@ func markRuntimeOffsetLayers(p *ir.Program) {
 		return
 	}
 
+	// Members of a heterogeneous alternation share one entry slot and
+	// codegen has no matched-member check on where reads, so a reference
+	// to such a member stays unmarked and codegen refuses it (D-003 would
+	// want "false" when the other member matched).
+	hetAltMember := map[*ir.LayerInstance]bool{}
+	for _, l := range p.Layers {
+		if ir.IsHeterogeneousAlt(l) {
+			for _, alt := range l.Alternation {
+				hetAltMember[alt] = true
+			}
+		}
+	}
 	// A quantified layer marks itself (its slot carries presence and the
 	// last instance); a het-alt / variable-body boundary layer does not,
 	// since its own start is still the static prefix.
 	mark := func(target *ir.LayerInstance) {
-		if target == nil || (target.Quant == ast.QuantOne && target.LayerPos <= boundary) {
+		if target == nil || hetAltMember[target] || (target.Quant == ast.QuantOne && target.LayerPos <= boundary) {
 			return
 		}
 		target.NeedsRuntimeOffset = true
