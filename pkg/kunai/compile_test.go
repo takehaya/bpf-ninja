@@ -919,6 +919,11 @@ func TestCompileBracketOnPushCountedStack(t *testing.T) {
 			t.Fatalf("%s must compile: %v", expr, err)
 		}
 	}
+	// Variable-length entries cannot be addressed from a runtime index.
+	_, err = compileForTest("eth/ipv6/tcp where ipv6.exts[ipv6.hop_limit].next_header == 6")
+	if !errors.Is(err, codegen.ErrNotImplemented) || !strings.Contains(err.Error(), "variable-length") {
+		t.Fatalf("expected codegen.ErrNotImplemented for a dynamic index into variable-length entries, got %v", err)
+	}
 }
 
 func TestCompileAlternationDivergentSize(t *testing.T) {

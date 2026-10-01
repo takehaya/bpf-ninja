@@ -2099,7 +2099,7 @@ func emitFieldLoad(anchor layerAnchor, fieldOff int, size asm.Size) asm.Instruct
 // call emitDynamicStackAddress directly so they can issue multiple
 // LDX from the same R5 base.
 func emitDynamicStackLoad(ref *ir.FieldRef, size asm.Size, failLabel string) (asm.Instructions, error) {
-	addr, err := emitDynamicStackAddress(ref, r4Anchor(), failLabel)
+	addr, err := emitStackEntryAddressUncounted(ref, r4Anchor(), failLabel)
 	if err != nil {
 		return nil, err
 	}

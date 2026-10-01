@@ -49,9 +49,11 @@ func TestPushCountedStackGuards(t *testing.T) {
 		return n
 	}
 
+	// ipv6 pushes at most 1 + IPV6_MAX_DEPTH (4) entries, so the unroll
+	// stops at 5 of the declared capacity 8.
 	all := compileBundled(t, "eth/ipv6/tcp where all(ipv6.exts.next_header != 1)")
-	if got := guards(all.Main); got != 8 {
-		t.Errorf("all(): %d count guards in main, want one per unrolled entry (8)", got)
+	if got := guards(all.Main); got != 5 {
+		t.Errorf("all(): %d count guards in main, want one per possible entry (5)", got)
 	}
 	if got := increments(all.Main, asm.R3); got != 1 {
 		t.Errorf("all(): %d inline push increments, want 1", got)
@@ -76,8 +78,9 @@ func TestPushCountedStackGuards(t *testing.T) {
 		t.Errorf("bracket index: %d count guards, want 1", got)
 	}
 
-	// A dynamic index is bounded by the count too: `JGE idx, count`.
-	dynamic := compileBundled(t, "eth/ipv6/tcp where ipv6.exts[ipv6.hop_limit].next_header == 6")
+	// A dynamic index (fixed-size entries: gtp) is bounded by the count
+	// too: `JGE idx, count`.
+	dynamic := compileBundled(t, "eth/ipv4/udp/gtp/ipv4/tcp where gtp.exts[gtp.msg_type].next_ext == 6")
 	if got := count(dynamic.Main, func(ins asm.Instruction) bool {
 		return ins.OpCode == asm.JGE.Reg(asm.R3, asm.R2, "").OpCode && ins.Dst == asm.R3 && ins.Src == asm.R2
 	}); got != 1 {
@@ -85,10 +88,21 @@ func TestPushCountedStackGuards(t *testing.T) {
 	}
 
 	// gtp.exts: the first push happens in a non-entry state (parse_opt →
-	// parse_ext), so the inline increment sits past the entry state.
+	// parse_ext), so the inline increment sits past the entry state. Its
+	// push bound (1 + GTP_MAX_DEPTH 8) exceeds the capacity 8.
 	gtp := compileBundled(t, "eth/ipv4/udp/gtp/ipv4/tcp where all(gtp.exts.next_ext != 1)")
 	if got := guards(gtp.Main); got != 8 {
 		t.Errorf("gtp all(): %d count guards, want 8", got)
+	}
+
+	// ipv6 ext entries are variable-length: a static index walks the
+	// entries before it (one bounded length-byte load per entry), and a
+	// dynamic index into such a stack is refused.
+	walked := compileBundled(t, "eth/ipv6/tcp where ipv6.exts[2].next_header == 6")
+	if got := count(walked.Main, func(ins asm.Instruction) bool {
+		return ins.OpCode == asm.LoadMem(asm.R2, asm.R0, 0, asm.Byte).OpCode && ins.Dst == asm.R2
+	}); got != 2 {
+		t.Errorf("exts[2]: %d length-byte loads, want 2", got)
 	}
 	if got := increments(gtp.Main, asm.R3); got != 1 {
 		t.Errorf("gtp all(): %d inline push increments, want 1", got)
