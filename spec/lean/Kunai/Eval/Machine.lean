@@ -137,10 +137,15 @@ extracts it (`sack`, `rr` advance by length instead). A lookahead taken
 after the counter ran out (`(true, _)`) sights nothing. The latest sighting
 wins. -/
 private def sightOptions (m : Machine) (ψ : MState) (hit : SelectCase) (keys : List SelectKey) : MState :=
+  let extractsIt (o : OptionDecl) : Bool :=
+    match hit.target with
+    | .state i => (m.states[i]?.map fun s => s.extracts.any (·.outParam == o.outParam)).getD false
+    | _ => false
   (keys.zip hit.values).foldl (fun ψ (k, v) =>
     match k, v with
     | .lookahead _, .val n =>
-      match m.options.find? (·.kindByte == some n) with
+      -- an option whose target state extracts it gets its view from the extract
+      match m.options.find? fun o => o.kindByte == some n && !extractsIt o with
       | some o =>
         let bytes := ((m.header? o.header).map (·.bytes)).getD 0
         { ψ with views := ψ.views ++ [{ outParam := o.outParam, header := o.header, off := ψ.cursor, len := bytes }] }

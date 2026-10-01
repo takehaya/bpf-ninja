@@ -100,13 +100,13 @@ private def stop (e : Except Stop α) : Except String α :=
 
 /-- A field reference: resolvable, and an index-less stack reference only
 under an `any`/`all` that binds that stack. -/
-private def checkRef (c : Ctx) (bound : List String) (f : FieldPath) : Except String Ref := do
+private def checkRef (c : Ctx) (bound : List (String × String)) (f : FieldPath) : Except String Ref := do
   let r ← stop (resolvePath c f)
   if let .stackEntry s none := r.aux then
-    if !bound.contains s then throw s!"index-less stack reference {r.proto}.{s} outside any/all"
+    if !bound.contains (r.head, s) then throw s!"index-less stack reference {r.proto}.{s} outside any/all"
   pure r
 
-private def checkArith (c : Ctx) (bound : List String) (ctx : Nat) : Arith → Except String Unit
+private def checkArith (c : Ctx) (bound : List (String × String)) (ctx : Nat) : Arith → Except String Unit
   | .const n => discard <| narrowInt ctx n
   | .field f => discard <| checkRef c bound f
   | .bin _ l r => do
@@ -115,7 +115,7 @@ private def checkArith (c : Ctx) (bound : List String) (ctx : Nat) : Arith → E
     checkArith c bound cl l
     checkArith c bound cr r
 
-private def checkWhere (c : Ctx) (bound : List String) : Where → Except String Unit
+private def checkWhere (c : Ctx) (bound : List (String × String)) : Where → Except String Unit
   | .or l r | .and l r | .boolEq l _ r => do checkWhere c bound l; checkWhere c bound r
   | .not w => checkWhere c bound w
   | .arith l _ r => do
@@ -130,8 +130,8 @@ private def checkWhere (c : Ctx) (bound : List String) : Where → Except String
     if (c.H.actions.find? (·.1 == a)).isNone then throw s!"unknown action {a}"
   | .any w | .all w => do
     -- T-Quant: exactly one stack is iterated; check the body with it bound.
-    let (_, stack) ← stop (quantStack c w)
-    checkWhere c (stack :: bound) w
+    let hs ← stop (quantStack c bound w)
+    checkWhere c (hs :: bound) w
   | .boolLit _ => pure ()
   | .fieldExists f => discard <| stop (resolveExists c f)
 

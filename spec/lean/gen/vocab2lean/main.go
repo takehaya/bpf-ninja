@@ -140,25 +140,36 @@ func requires(s *vocab.ProtocolSpec) string {
 		return ""
 	}
 	sel := st.Trans.Select
-	if len(sel.Keys) == 0 || sel.Keys[0].Kind != vocab.SelectKeyField {
-		return ""
-	}
-	seen := map[uint64]bool{}
-	var vals []string
-	for _, c := range sel.Cases {
-		if c.Target == vocab.StateReject || len(c.Values) == 0 || c.Values[0].IsWildcard {
+	var reqs []string
+	for i, k := range sel.Keys {
+		if k.Kind != vocab.SelectKeyField || k.Field.IsStackLast {
 			continue
 		}
-		v := c.Values[0].Value
-		if !seen[v] {
-			seen[v] = true
-			vals = append(vals, fmt.Sprintf("%d", v))
+		// A key constrains the header only if every accepting case names a value for it.
+		seen := map[uint64]bool{}
+		var vals []string
+		concrete := true
+		for _, c := range sel.Cases {
+			if c.Target == vocab.StateReject {
+				continue
+			}
+			if len(c.Values) <= i || c.Values[i].IsWildcard {
+				concrete = false
+				break
+			}
+			if v := c.Values[i].Value; !seen[v] {
+				seen[v] = true
+				vals = append(vals, fmt.Sprintf("%d", v))
+			}
+		}
+		if concrete && len(vals) > 0 {
+			reqs = append(reqs, fmt.Sprintf("(%s, [%s])", str(k.Field.FieldName), strings.Join(vals, ", ")))
 		}
 	}
-	if len(vals) == 0 {
+	if len(reqs) == 0 {
 		return ""
 	}
-	return fmt.Sprintf("[(%s, [%s])]", str(sel.Keys[0].Field.FieldName), strings.Join(vals, ", "))
+	return "[" + strings.Join(reqs, ", ") + "]"
 }
 
 func edgesLean(s *vocab.ProtocolSpec) []string {
@@ -336,7 +347,8 @@ func machineLean(s *vocab.ProtocolSpec) string {
 		a := s.HeaderAnnotations[hn]
 		if a.VariableTail != nil {
 			t := a.VariableTail
-			tails = append(tails, fmt.Sprintf("(%s, %s)", str(hn), lenExpr(&vocab.HeaderLength{LenByteOff: t.LenFieldByteOff, LenMask: t.LenMask, LenShift: t.LenShift, Scale: t.Scale, Base: t.Base})))
+			// VariableTailSpec.Base is added to the scaled length (parser_trail.go), unlike HeaderLength.Base.
+			tails = append(tails, fmt.Sprintf("(%s, %s)", str(hn), lenExpr(&vocab.HeaderLength{LenByteOff: t.LenFieldByteOff, LenMask: t.LenMask, LenShift: t.LenShift, Scale: t.Scale, Addend: t.Base})))
 		}
 		if a.WriteBack != nil {
 			wbs = append(wbs, fmt.Sprintf("(%s, ⟨%d, %d⟩)", str(hn), a.WriteBack.SourceByteOff, a.WriteBack.ParentByteOff))

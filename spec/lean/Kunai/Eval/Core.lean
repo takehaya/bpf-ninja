@@ -34,8 +34,9 @@ structure Inst where
 def patched (P : Packet) (patches : List (Nat × Nat)) : Packet :=
   patches.foldl (fun acc (i, v) => acc.set i (UInt8.ofNat v)) P
 
-/-- `σ = ⟨π, α, Λ⟩` without `α` (aux, Phase 5). `insts` is the resolved
-chain in order; `labels` is `Λ`, most recent binding first (`Λ ⊕ {ℓ ↦ inst}`). -/
+/-- `σ = ⟨π, α, Λ⟩`. `insts` is the resolved chain in order, each carrying
+its slice of `α` (`Inst.aux`); `labels` is `Λ`, most recent binding first
+(`Λ ⊕ {ℓ ↦ inst}`). -/
 structure State where
   cursor : Nat := 0
   insts : List Inst := []

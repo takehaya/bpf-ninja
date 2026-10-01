@@ -55,8 +55,8 @@ inductive AuxRef
   | stackEntry (stack : String) (index : Option Index)
   deriving Repr, BEq, DecidableEq
 
-/-- Iteration variables bound by enclosing `any`/`all`: stack name ↦ index. -/
-abbrev IterEnv := List (String × Nat)
+/-- Iteration variables bound by enclosing `any`/`all`: `(head, stack)` ↦ index. -/
+abbrev IterEnv := List ((String × String) × Nat)
 
 /-- A statically resolved field reference. -/
 structure Ref where
@@ -125,6 +125,7 @@ def resolvePath (c : Ctx) (f : FieldPath) : Except Stop Ref := do
     match rest with
     | [(x, xIdx), (fieldName, fIdx)] =>
       if let some sd := m.stack? x then
+        if sd.ownerOption != "" then throw (.illTyped s!"{proto}.{x} is reached through {proto}.{spec.optionSegment}.{sd.ownerOption}")
         checkIndex c proto spec sd xIdx
         let fs ← fieldOf m sd.header fieldName
         pure { head, proto, spec, aux := .stackEntry x xIdx, field := fs, slice := ← applySlice fs fIdx }
@@ -206,7 +207,7 @@ private def refView (c : Ctx) (env : IterEnv) (inst : Inst) (r : Ref) : Except S
       | some (.nat i) => pure i
       | some (.field parts) => indexValue c inst r parts
       | _ =>
-        match env.find? (·.1 == stack) with
+        match env.find? (·.1 == (r.head, stack)) with
         | some (_, i) => pure i
         | none => throw (.illTyped s!"index-less stack reference {r.proto}.{stack} outside any/all")
     pure ((stackEntries c.P inst m sd)[i]?.map fun v => (v.off, v.len))
@@ -300,10 +301,10 @@ where
 
 /-- T-Quant: the one stack a quantifier iterates, from the index-less stack
 references inside it: `(head, stack)`. -/
-def quantStack (c : Ctx) (w : Where) : Except Stop (String × String) := do
+def quantStack (c : Ctx) (bound : List (String × String)) (w : Where) : Except Stop (String × String) := do
   let refs ← w.paths.mapM (resolvePath c)
   let iters : List (String × String) := refs.filterMap fun r => match r.aux with
-    | .stackEntry s none => some (r.head, s)
+    | .stackEntry s none => if bound.contains (r.head, s) then none else some (r.head, s)
     | _ => none
   match iters.eraseDups with
   | [one] => pure one
@@ -344,13 +345,13 @@ def evalWhere (c : Ctx) (st : State) (env : IterEnv) : Where → Except Stop Boo
     pure (c.H.action == v)
   | .any w => do
     -- E-W-Any: ∃ i < count(stack). ⟨w[x ↦ stack[i]], σ⟩ ⇓ true (empty stack: false, D-007)
-    let (head, stack) ← quantStack c w
+    let (head, stack) ← quantStack c (env.map (·.1)) w
     let n ← stackCount c st head stack
-    (List.range n).anyM fun i => evalWhere c st ((stack, i) :: env) w
+    (List.range n).anyM fun i => evalWhere c st (((head, stack), i) :: env) w
   | .all w => do
-    let (head, stack) ← quantStack c w
+    let (head, stack) ← quantStack c (env.map (·.1)) w
     let n ← stackCount c st head stack
-    (List.range n).allM fun i => evalWhere c st ((stack, i) :: env) w
+    (List.range n).allM fun i => evalWhere c st (((head, stack), i) :: env) w
   | .boolLit b => pure b
   | .fieldExists f => do
     -- E-W-Exists: the aux header was extracted (`(LayerInst × AuxName) ∈ dom(α)`).
