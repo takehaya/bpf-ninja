@@ -85,10 +85,41 @@ vector ipv6ExtsIndex := {
   id := "ipv6-exts-index", ast := { layers := ipv6L, cond := some (cmp exts0 .eq (k 60)) }, packet := twoExts, expected := .accept [] }
 vector ipv6ExtsIndex1 := {
   id := "ipv6-exts-index-1", ast := { layers := ipv6L, cond := some (cmp exts1 .eq (k 6)) }, packet := twoExts, expected := .accept [] }
+def longExts : Packet := ipv6With 0 (ipv6Ext 60 (len := 1) ++ ipv6Ext 6)
 vector ipv6ExtsIndexAfterLong := {
-  id := "ipv6-exts-index-after-long-ext", ast := { layers := ipv6L, cond := some (cmp exts1 .eq (k 6)) },
-  packet := ipv6With 0 (ipv6Ext 60 (len := 1) ++ ipv6Ext 6), expected := .accept [], goStatus := .mismatch,
-  note := "entry 1 starts after the 16-byte first ext; Go addresses exts[i] at base + i*8 and reads inside the first ext (issue 13, variable-length ext addressing)" }
+  id := "ipv6-exts-index-after-long-ext", ast := { layers := ipv6L, cond := some (cmp exts1 .eq (k 6)) }, packet := longExts,
+  expected := .accept [], note := "entry 1 starts after the 16-byte first ext (Go walks the entries before a static index at read time)" }
+vector ipv6ExtsAnyAfterLong := {
+  id := "ipv6-exts-any-after-long-ext", ast := { layers := ipv6L, cond := some (.any (cmp extsIter .eq (k 6))) }, packet := longExts,
+  expected := .accept [] }
+vector ipv6ExtsDynamicLong := {
+  id := "ipv6-exts-dynamic-index-var-len",
+  ast := { layers := ipv6L, cond := some (cmp (Arith.field ⟨[("ipv6", none), ("exts", some (.field ["ipv6", "hop_limit"])), ("next_header", none)]⟩) .eq (k 6)) },
+  packet := eth 0x86DD ++ ipv6 0 (hopLimit := 0) ++ ipv6Ext 6 ++ tcp 12345 80 ++ payload 5, expected := .accept [], goStatus := .notImplemented,
+  note := "a dynamic index into variable-length entries; Go cannot walk a runtime number of entries" }
+-- Bracket predicates on aux fields (issue 17): resolved like a where clause scoped to the layer.
+def ipv6Br (ρ : Predicate) : List Layer := [P "eth", .proto { name := "ipv6", preds := [ρ] }, P "tcp"]
+def extsBr (i : Nat) : FieldPath := ⟨[("exts", some (.nat i)), ("next_header", none)]⟩
+vector ipv6ExtsBracket := {
+  id := "ipv6-exts-bracket-index", ast := { layers := ipv6Br (.cmp (extsBr 1) .eq (.int 6)) }, packet := twoExts, expected := .accept [],
+  note := "T-FieldStackStatic inside a bracket; Go guards the index by the push count after the walk (D-031)" }
+vector ipv6ExtsBracketAbsent := {
+  id := "ipv6-exts-bracket-index-absent", ast := { layers := ipv6Br (.cmp (extsBr 1) .eq (.int 6)) },
+  packet := ipv6With 0 (ipv6Ext 6) (sport := 0x0600), expected := .reject, note := "D-031 in a bracket: entry 1 was not extracted ⇒ false" }
+vector ipv6ExtsBracketLong := {
+  id := "ipv6-exts-bracket-after-long-ext", ast := { layers := ipv6Br (.cmp (extsBr 1) .eq (.int 6)) }, packet := longExts, expected := .accept [] }
+vector ipv6ExtsBracketDynamic := {
+  id := "ipv6-exts-bracket-dynamic-index",
+  ast := { layers := ipv6Br (.cmp ⟨[("exts", some (.field ["ipv6", "hop_limit"])), ("next_header", none)]⟩ .eq (.int 6)) },
+  expected := .illTyped "stack ipv6.exts needs a constant index inside a bracket predicate (a dynamic index needs a where clause)" }
+vector ipv6ExtsBracketIter := {
+  id := "ipv6-exts-bracket-iterator", ast := { layers := ipv6Br (.cmp ⟨[("exts", none), ("next_header", none)]⟩ .eq (.int 6)) },
+  expected := .illTyped "stack ipv6.exts needs a constant index inside a bracket predicate" }
+vector gtpExtsBracket := {
+  id := "gtp-exts-bracket",
+  ast := { layers := [P "eth", P "ipv4", P "udp", .proto { name := "gtp", preds := [.cmp ⟨[("exts", some (.nat 0)), ("ext_type", none)]⟩ .eq (.int 1)] }, P "ipv4", P "tcp"] },
+  packet := gtpPkt (gtpHdr 4 ++ gtpOpt 0x85 ++ gtpExt 1 0), expected := .accept [], goStatus := .notImplemented,
+  note := "Go evaluates gtp's bracket predicates before the walk (no write-back), where the push count is not final yet" }
 vector ipv6ExtsIndexAbsent := {
   id := "ipv6-exts-index-absent", ast := { layers := ipv6L, cond := some (cmp exts1 .eq (k 6)) }, packet := ipv6With 0 (ipv6Ext 6) (sport := 0x0600),
   expected := .reject, note := "D-031: entry 1 was not extracted ⇒ false (Go: the push count slot guards the static index; tcp.sport = 0x0600 would otherwise look like next_header 6)" }
@@ -228,7 +259,8 @@ def auxVectors : List Vector := [
   tcpMss, tcpMssMiss, tcpMssAbsent, tcpMssAbsentNot, tcpMssAfterNop, tcpUnknownSkipped, tcpUnknownLen0, tcpUnknownLen1,
   tcpOptCross, tcpEol, tcpMssDup, tcpMssBadLen, tcpMssExists, tcpMssExistsNot, tcpSackBlock, tcpSackAny, tcpSackAll,
   tcpSackAbsentAny, tcpMalformedNoQuery,
-  ipv6Hbh, ipv6TwoExts, ipv6ExtLong, ipv6ExtTooLong, ipv6ExtsIndex, ipv6ExtsIndex1, ipv6ExtsIndexAfterLong, ipv6ExtsIndexAbsent,
+  ipv6Hbh, ipv6TwoExts, ipv6ExtLong, ipv6ExtTooLong, ipv6ExtsIndex, ipv6ExtsIndex1, ipv6ExtsIndexAfterLong, ipv6ExtsAnyAfterLong, ipv6ExtsDynamicLong,
+  ipv6ExtsBracket, ipv6ExtsBracketAbsent, ipv6ExtsBracketLong, ipv6ExtsBracketDynamic, ipv6ExtsBracketIter, gtpExtsBracket, ipv6ExtsIndexAbsent,
   ipv6NextHeaderWhere, ipv6NextHeaderBracket, ipv6FiveExts, ipv6SixExts, ipv6AnyExts, ipv6AllExts,
   srv6Chain, srv6Static, srv6Dynamic, srv6Any, srv6All, srv6AllCidr, srv6IndexAbsent, srv6OverCap, srv6AtCap,
   gtpPlain, gtpOptExists, gtpOptAbsent, gtpOptField, gtpOptFieldAbsent, gtpExtStack,

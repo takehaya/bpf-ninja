@@ -120,12 +120,11 @@ private def checkIndex (c : Ctx) (proto : String) (spec : ProtoSpec) (sd : Stack
   | some (.field parts) => discard <| checkDynamicIndex c proto spec parts
   | none => pure ()
 
-/-- Static resolution of a field path (T-FieldPrim, T-FieldAux, T-FieldStackStatic). -/
-def resolvePath (c : Ctx) (f : FieldPath) : Except Stop Ref := do
-  let (head, headIdx) :: rest := f.segs | throw (.illTyped "empty field path")
-  if headIdx.isSome then throw (.illTyped s!"{head} does not take an index")
-  let proto ← staticProto c head
-  let some spec := c.V.proto? proto | throw (.illTyped s!"unknown protocol {proto}")
+/-- The segments of a field path after its protocol head, resolved against
+that protocol: shared by where clauses (`resolvePath`) and bracket
+predicates (`resolveBracket`), whose paths have no head. -/
+def resolveRest (c : Ctx) (head proto : String) (spec : ProtoSpec) (f : FieldPath)
+    (rest : List (String × Option Index)) : Except Stop Ref := do
   match rest with
   | [(fieldName, idx)] => do
     let some fs := spec.field? fieldName | throw (.illTyped s!"unknown field {proto}.{fieldName}")
@@ -161,6 +160,26 @@ def resolvePath (c : Ctx) (f : FieldPath) : Except Stop Ref := do
       let fs ← fieldOf m sd.header fieldName
       pure { head, proto, spec, aux := .stackEntry stack sIdx, field := fs, slice := ← applySlice fs fIdx }
     | _ => throw (.illTyped s!"unsupported: field path {f.text}")
+
+/-- Static resolution of a field path (T-FieldPrim, T-FieldAux, T-FieldStackStatic). -/
+def resolvePath (c : Ctx) (f : FieldPath) : Except Stop Ref := do
+  let (head, headIdx) :: rest := f.segs | throw (.illTyped "empty field path")
+  if headIdx.isSome then throw (.illTyped s!"{head} does not take an index")
+  let proto ← staticProto c head
+  let some spec := c.V.proto? proto | throw (.illTyped s!"unknown protocol {proto}")
+  resolveRest c head proto spec f rest
+
+/-- A bracket field is scoped to the layer's own header: a primary field, or
+an aux / constant-indexed stack entry as in a where clause (T-FieldAux,
+T-FieldStackStatic). The iterator and dynamic-index forms need `where`. -/
+def resolveBracket (c : Ctx) (spec : ProtoSpec) (f : FieldPath) : Except Stop Ref := do
+  let r ← resolveRest c spec.name spec.name spec f f.segs
+  match r.aux with
+  | .stackEntry stack none =>
+    throw (.illTyped s!"stack {spec.name}.{stack} needs a constant index inside a bracket predicate")
+  | .stackEntry stack (some (.field _)) =>
+    throw (.illTyped s!"stack {spec.name}.{stack} needs a constant index inside a bracket predicate (a dynamic index needs a where clause)")
+  | _ => pure r
 
 /-- `proto.X.exists` / `proto.options.NAME.exists` → (head, out parameter). -/
 def resolveExists (c : Ctx) (f : FieldPath) : Except Stop (String × String) := do
@@ -222,15 +241,20 @@ private def refView (c : Ctx) (env : IterEnv) (inst : Inst) (r : Ref) : Except S
         | none => throw (.illTyped s!"index-less stack reference {r.proto}.{stack} outside any/all")
     pure ((stackEntries c.P inst m sd)[i]?.map fun v => (v.off, v.len))
 
-/-- E-A-Field: `load(f, σ, P)`. `none` = the layer, option, or entry is
-absent (D-003, D-027); a field past the end of the packet rejects (D-006). -/
-def loadRef (c : Ctx) (st : State) (env : IterEnv) (r : Ref) : Except Stop (Option Nat) := do
-  let some inst ← resolveRef c st r.head | pure none
+/-- `load` on a given instance: `none` = the option or entry is absent
+(D-027, D-031); a field past the end of the packet rejects (D-006). -/
+def loadRefOn (c : Ctx) (env : IterEnv) (inst : Inst) (r : Ref) : Except Stop (Option Nat) := do
   let some (off, _) ← refView c env inst r | pure none
   let some v := readBits (patched c.P inst.patches) (off * 8 + r.field.bitOff) r.field.width | throw .reject
   pure (some (match r.slice with
     | some (lo, hi) => (v >>> (r.field.width - hi)) % 2 ^ (hi - lo)
     | none => v))
+
+/-- E-A-Field: `load(f, σ, P)`. `none` = the layer, option, or entry is
+absent (D-003, D-027); a field past the end of the packet rejects (D-006). -/
+def loadRef (c : Ctx) (st : State) (env : IterEnv) (r : Ref) : Except Stop (Option Nat) := do
+  let some inst ← resolveRef c st r.head | pure none
+  loadRefOn c env inst r
 
 def loadField (c : Ctx) (st : State) (env : IterEnv) (f : FieldPath) : Except Stop (Option Nat) := do
   loadRef c st env (← resolvePath c f)

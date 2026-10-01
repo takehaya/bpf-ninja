@@ -1113,6 +1113,8 @@ op_c(n_f, v_n) = b
 ⟨cmp(f, op_c, v), σ⟩ ⇓_P b
 ```
 
+`f` は layer 自身の primary field のほか、where と同じ規則で aux header / 定数 index の stack 要素 (`srv6[segments[0].addr == …]`, `ipv6[exts[1].next_header == 6]`) を指せます (T-FieldAux / T-FieldStackStatic)。読み出しは `load(f, σ', P)` と同じで、抽出されなかった aux / 範囲外の要素は predicate を false にし (D-027 / D-031)、write-back 後の値を見ます (D-032)。index 無しの iterator 形と動的 index は bracket では ill-typed (`where` を使う)。
+
 ### 13.8 Where 式
 
 ```

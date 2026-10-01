@@ -37,22 +37,25 @@ private def checkValue (spec : ProtoSpec) (fs : FieldSpec) (op : CmpOp) (v : Val
   | .range .. => throw s!"range literal is only valid in `in [...]` ({spec.name}.{fs.name})"
   | v => discard <| liftValue fs.width v
 
-private def checkPred (spec : ProtoSpec) : Predicate → Except String Unit
+private def stop (e : Except Stop α) : Except String α :=
+  match e with
+  | .ok a => pure a
+  | .error .reject => throw "internal: static check hit a dynamic reject" -- unreachable: no packet reads here
+  | .error (.illTyped r) => throw r
+
+/-- Bracket predicates resolve their field like a where clause scoped to the
+layer (`resolveBracket`); a bit slice narrows the compared width. -/
+private def checkPred (c : Ctx) (spec : ProtoSpec) : Predicate → Except String Unit
   | .cmp f op v => do
-    let some fs := bracketSpec spec f | throw s!"unknown field {spec.name}.{f.text}"
-    checkValue spec fs op v
+    let r ← stop (resolveBracket c spec f)
+    checkValue spec { r.field with width := r.width } op v
   | .inList f vs => do
-    let some fs := bracketSpec spec f | throw s!"unknown field {spec.name}.{f.text}"
+    let r ← stop (resolveBracket c spec f)
     for v in vs do
       match v with
       | .range .. => pure ()
-      | v => checkValue spec fs .eq v
+      | v => checkValue spec { r.field with width := r.width } .eq v
   | .inSet .. => throw "unsupported: in @set"
-where
-  bracketSpec (spec : ProtoSpec) (f : FieldPath) : Option FieldSpec :=
-    match f.segs with
-    | [(name, none)] => spec.field? name
-    | _ => none
 
 private def checkEdge (V : Vocab) (child parent : String) (alt optional : Bool) : Except String Unit :=
   match V.edge? child parent, V.proto? child with
@@ -80,7 +83,7 @@ private def checkProtoLayer (c : Ctx) (i : Nat) (p : ProtoLayer) (alt : Bool) : 
   if fuel > chainCap then throw s!"chain depth {fuel} exceeds {chainCap}"
   if n > fuel then throw "iteration bound below the quantifier minimum"
   for parent in possibleParents c.layers i do checkEdge c.V p.name parent alt (n == 0)
-  for ρ in p.preds do checkPred spec ρ
+  for ρ in p.preds do checkPred c spec ρ
 
 -- Structural iteration (`List.forIn`) rather than `[0:n]`, whose
 -- well-founded loop the kernel cannot unfold under `decide`.
@@ -91,12 +94,6 @@ private def checkLayers (c : Ctx) : Except String Unit := do
     | .alt alts =>
       if i == 0 then throw "alternation cannot be the first layer"
       for a in alts do checkProtoLayer c i a true
-
-private def stop (e : Except Stop α) : Except String α :=
-  match e with
-  | .ok a => pure a
-  | .error .reject => throw "internal: static check hit a dynamic reject" -- unreachable: no packet reads here
-  | .error (.illTyped r) => throw r
 
 /-- A field reference: resolvable, and an index-less stack reference only
 under an `any`/`all` that binds that stack. -/
