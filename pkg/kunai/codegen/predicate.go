@@ -33,6 +33,12 @@ func genPredicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, error) {
 	if pred.Kind != ast.PredCmp {
 		return nil, fmt.Errorf("%w: predicate kind %s", ErrNotImplemented, pred.Kind)
 	}
+	// Bracket predicates address stack entries statically and have no
+	// access to the push count slot a where clause consults (D-031), so an
+	// entry past the pushed ones would read the bytes after the stack.
+	if needsPushCount(pred.Field) {
+		return nil, fmt.Errorf("%w: bracket predicate on %s.%s indexes a stack whose entries are counted by the parser; move the comparison to a where clause", ErrNotImplemented, pred.Field.Layer.Spec.Name, pred.Field.Aux.OutParam)
+	}
 	if pred.Value == nil {
 		return nil, fmt.Errorf("codegen: nil predicate value")
 	}

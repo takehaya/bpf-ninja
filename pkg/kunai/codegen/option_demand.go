@@ -133,7 +133,15 @@ func needsPushCount(f *ir.FieldRef) bool {
 		return false
 	}
 	machine := f.Layer.Spec.ParseStateMachine
-	return machine != nil && machine.StackRefs[f.Aux.OutParam] != nil && f.Layer.Spec.StackCounts[f.Aux.OutParam] == nil
+	return machine != nil && isPushedStack(machine, f.Aux.OutParam) && f.Layer.Spec.StackCounts[f.Aux.OutParam] == nil
+}
+
+// isPushedStack reports whether `name` is an out-stack the machine pushes
+// onto. The loader lists out-stacks in StackRefs and never in AuxLayouts
+// (pinned by vocab's loader tests), so the two name spaces are disjoint;
+// the AuxLayouts check keeps that assumption explicit.
+func isPushedStack(machine *vocab.ParseStateMachine, name string) bool {
+	return machine.StackRefs[name] != nil && machine.AuxLayouts[name] == nil
 }
 
 // stackCountLayout returns the layer's demand entry for the push count
@@ -160,7 +168,19 @@ func (qo queriedOptions) stackCountLayout(f *ir.FieldRef) *vocab.AuxLayout {
 // and recording the cursor when the option's kind byte matches.
 func isStackCountLayout(layer *ir.LayerInstance, layout *vocab.AuxLayout) bool {
 	machine := layer.Spec.ParseStateMachine
-	return machine != nil && machine.StackRefs[layout.OutParam] != nil
+	return machine != nil && isPushedStack(machine, layout.OutParam)
+}
+
+// optionDemand is the layer's demand list without its stack count
+// entries: the options whose positions the TLV walk records.
+func (qo queriedOptions) optionDemand(layer *ir.LayerInstance) []*vocab.AuxLayout {
+	var out []*vocab.AuxLayout
+	for _, l := range qo[layer] {
+		if !isStackCountLayout(layer, l) {
+			out = append(out, l)
+		}
+	}
+	return out
 }
 
 // stackCountSlot returns the slot holding the push count of `stack` in

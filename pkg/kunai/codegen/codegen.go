@@ -1785,6 +1785,14 @@ func emitAuxGating(g *vocab.AuxGating, base layerAnchor, failLabel string) asm.I
 // The computed element offset is checked against both ScratchBufSize and
 // the materialised packet end before exposing its address to callers.
 func emitDynamicStackAddress(ref *ir.FieldRef, base layerAnchor, failLabel string) (asm.Instructions, error) {
+	return emitDynamicStackAddressCounted(ref, base, nil, failLabel)
+}
+
+// emitDynamicStackAddressCounted is emitDynamicStackAddress with an
+// optional runtime count: when countSlot names a push count slot, an
+// index at or past the pushed entries jumps to failLabel (the entry is
+// absent, spec D-031) instead of reading the bytes after the stack.
+func emitDynamicStackAddressCounted(ref *ir.FieldRef, base layerAnchor, countSlot *int16, failLabel string) (asm.Instructions, error) {
 	if ref == nil || ref.Aux == nil || ref.Aux.Stack == nil || ref.Aux.Stack.IsStatic {
 		return nil, fmt.Errorf("codegen: emitDynamicStackAddress called on non-dynamic ref")
 	}
@@ -1820,8 +1828,14 @@ func emitDynamicStackAddress(ref *ir.FieldRef, base layerAnchor, failLabel strin
 		insns = append(insns, asm.Mov.Imm(asm.R3, int32(base.AbsOffset+idxByteOff)))
 	}
 	insns = append(insns, boundedScalarLoad(asm.R3, asm.R0, asm.R3, asm.R1, asm.Byte, failLabel)...)
+	insns = append(insns, asm.JGE.Imm(asm.R3, int32(stack.Capacity), failLabel))
+	if countSlot != nil {
+		insns = append(insns,
+			asm.LoadMem(asm.R2, asm.R10, *countSlot, asm.DWord),
+			asm.JGE.Reg(asm.R3, asm.R2, failLabel),
+		)
+	}
 	insns = append(insns,
-		asm.JGE.Imm(asm.R3, int32(stack.Capacity), failLabel),
 		asm.Mul.Imm(asm.R3, int32(ref.Aux.HeaderSize)),
 		asm.Add.Imm(asm.R3, int32(ref.Aux.OffsetInLayer)),
 	)

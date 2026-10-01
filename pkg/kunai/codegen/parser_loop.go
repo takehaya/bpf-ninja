@@ -83,7 +83,7 @@ func (c *pmCtx) canFallbackToBulkAdvance(stateIdx int) bool {
 	if !hasCounter {
 		return false
 	}
-	return len(c.queried[c.layer]) == 0
+	return len(c.queried.optionDemand(c.layer)) == 0
 }
 
 // emitCounterDrivenBulkAdvance lowers a counter-driven multi-state
@@ -387,20 +387,6 @@ func (c *pmCtx) emitDynamicAuxSentinelInit() (asm.Instructions, error) {
 	// Accumulator path: a single slot holds the result bitmask, ORed into
 	// over the walk, so it must start at 0 (not the option-absent sentinel
 	// -1, whose bits would falsely satisfy the mask check).
-	if atoms := c.accPlan.atomsFor(c.layer); atoms != nil {
-		// Zero the single accumulator slot. This runs inline in the entry
-		// state where R0 is the scratch-start pointer, so use R3 as the
-		// scratch register (the same one emitFillStackSlots uses); a Mov
-		// into R0 here would clobber scratchStart and break later loads.
-		slot, err := c.accPlan.accSlot(c.queried)
-		if err != nil {
-			return nil, err
-		}
-		return asm.Instructions{
-			asm.Mov.Imm(asm.R3, 0),
-			asm.StoreMem(asm.R10, slot, asm.R3, asm.DWord),
-		}, nil
-	}
 	// Option slots start at the absent sentinel; stack count slots at 0.
 	var options, counts []int
 	for i, layout := range c.queried[c.layer] {
@@ -410,14 +396,28 @@ func (c *pmCtx) emitDynamicAuxSentinelInit() (asm.Instructions, error) {
 			options = append(options, i)
 		}
 	}
-	insns, err := emitFillStackSlots(dynamicAuxSentinel, len(options), func(i int) (int16, error) {
-		return c.queried.slotForLayer(c.layer, options[i]+1)
+	zero, err := emitFillStackSlots(0, len(counts), func(i int) (int16, error) {
+		return c.queried.slotForLayer(c.layer, counts[i]+1)
 	})
 	if err != nil {
 		return nil, err
 	}
-	zero, err := emitFillStackSlots(0, len(counts), func(i int) (int16, error) {
-		return c.queried.slotForLayer(c.layer, counts[i]+1)
+	if atoms := c.accPlan.atomsFor(c.layer); atoms != nil {
+		// Zero the single accumulator slot. This runs inline in the entry
+		// state where R0 is the scratch-start pointer, so use R3 as the
+		// scratch register (the same one emitFillStackSlots uses); a Mov
+		// into R0 here would clobber scratchStart and break later loads.
+		slot, err := c.accPlan.accSlot(c.queried)
+		if err != nil {
+			return nil, err
+		}
+		return append(asm.Instructions{
+			asm.Mov.Imm(asm.R3, 0),
+			asm.StoreMem(asm.R10, slot, asm.R3, asm.DWord),
+		}, zero...), nil
+	}
+	insns, err := emitFillStackSlots(dynamicAuxSentinel, len(options), func(i int) (int16, error) {
+		return c.queried.slotForLayer(c.layer, options[i]+1)
 	})
 	if err != nil {
 		return nil, err
@@ -489,7 +489,7 @@ func (c *pmCtx) emitDynamicAuxSlotPrelude(sel *vocab.SelectOp, breakLabel string
 		return c.emitAccPrelude(sel, atoms, breakLabel)
 	}
 	demand := c.queried[c.layer]
-	if len(demand) == 0 {
+	if len(c.queried.optionDemand(c.layer)) == 0 {
 		return nil, nil
 	}
 	// R1 = the dispatch kind at scratchStart(R4) + cursor(R3); R3/R4/R5
@@ -1209,13 +1209,6 @@ func (c *pmCtx) emitSelfLoopCallback(state *vocab.ParseState, stateIdx int, cbSy
 			asm.Add.Imm(asm.R3, int32(hs)),
 			asm.StoreMem(asm.R2, bpfLoopCbCtxOffsetField, asm.R3, asm.DWord),
 		)
-		insns = append(insns, c.emitStackPushCount(ex, asm.R0,
-			func(slot int16) asm.Instruction {
-				return asm.LoadMem(asm.R0, asm.R2, mainStackOffsetFromCb(slot), asm.DWord)
-			},
-			func(slot int16) asm.Instruction {
-				return asm.StoreMem(asm.R2, mainStackOffsetFromCb(slot), asm.R0, asm.DWord)
-			})...)
 		if vt, ok := variableTailFor(c.spec, ex.HeaderName); ok && !c.deferPrimaryTail(ex.HeaderName) {
 			if state.Trans.Kind == vocab.TransSelect {
 				// Callback ABI: R0/R1 are free here (R1 = bpf_loop idx
@@ -1247,6 +1240,15 @@ func (c *pmCtx) emitSelfLoopCallback(state *vocab.ParseState, stateIdx int, cbSy
 			}
 			insns = append(insns, tail...)
 		}
+		// Count the push once the whole entry (fixed part and tail) is in
+		// bounds, so a truncated last entry is not counted as present.
+		insns = append(insns, c.emitStackPushCount(ex, asm.R0,
+			func(slot int16) asm.Instruction {
+				return asm.LoadMem(asm.R0, asm.R2, mainStackOffsetFromCb(slot), asm.DWord)
+			},
+			func(slot int16) asm.Instruction {
+				return asm.StoreMem(asm.R2, mainStackOffsetFromCb(slot), asm.R0, asm.DWord)
+			})...)
 	}
 
 	transInsns, err := c.emitCallbackTransition(state.Trans, stateIdx, breakLabel, continueLabel, stashAddr)

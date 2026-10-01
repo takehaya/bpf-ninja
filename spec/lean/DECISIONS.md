@@ -286,9 +286,10 @@ Status values: 提案中 (implemented as recommended, awaiting sign-off) /
 
 11. ✅ 抽出されなかった option の field 参照が filter 全体を reject する (D-027) — atom が false になるよう fail label を通した (`fix/kunai-spec-conformance-2`)。
 12. ✗ option を参照しない filter は option を検証しない (D-029) — やらない (2026-10-01 決定)。demand-driven walk は設計判断として維持し、仕様との差は D-029 に記録。vectors は mismatch のまま。
-13. ✅ 静的 index が count を見ない・`!=` が範囲外で true (D-031) — count source のある stack (srv6, SACK, RR) は #120 で修正。parser machine が push する stack (ipv6.exts, gtp.exts) は push 数を数える demand slot を導入 (`fix/kunai-spec-conformance-3`)。可変長 ext header の `exts[i]` addressing (`base + i*ElemSize`) は別件のまま。
+13. ✅ 静的 index が count を見ない・`!=` が範囲外で true (D-031) — count source のある stack (srv6, SACK, RR) は #120 で修正。parser machine が push する stack (ipv6.exts, gtp.exts) は push 数を数える demand slot を導入 (`fix/kunai-spec-conformance-3`): 静的 index・動的 index・any/all の unroll がそれを guard に使う。bracket predicate (`ipv6[exts[1].next_header == 6]`) は slot を参照できないので `ErrNotImplemented` (Go 単体テスト; Lean 側は issue 17 のため vector 化できない)。可変長 ext header の `exts[i]` addressing (`base + i*ElemSize`) は別件のまま。
 14. ✅ bracket predicate が write-back 前の値を見る (D-032) — write-back を持つ proto は walk 後に評価。
 15. ✅ `tcp.options.X.exists` を実装。
 16. ◐ `eth/mpls*/ipv4/tcp` が ARP を accept する (D-034) — skip された layer の後の dispatch は実行時の親 (grandparent) に対して行う。optional が連続する形は、全ての実行時の親で dispatch が同じ読みになる場合だけ受け付け (`eth/qinq?/vlan?/ipv4`)、それ以外 (`eth/vlan?/mpls?/ipv4`) は `ErrNotImplemented`。一般の chain は未着手。
+17. (spec 側) Lean の bracket predicate は primary header の field しか型付けしない (`Check.lean` `bracketSpec` → "unknown field")。Go の DSL は aux field と定数 index の stack (`srv6[segments[0].addr == fc00::1]`, `tcp[options.MSS.value == 1460]`, `dsl-usage.md` §bracket) を許す。§13.4 の bracket 評価を aux view 込みに拡張し、vector を追加する (Phase 5 の残り)。
 
 残: 量化 layer 以降の where field 参照 (D-003 の実装)、self-validating / 可変長 layer の `?` (D-017 案 c の実装)、NO_CHECK 自己 edge の optional (`mpls/mpls*`)。

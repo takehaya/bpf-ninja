@@ -59,6 +59,27 @@ func TestPushCountedStackGuards(t *testing.T) {
 		t.Errorf("static index: %d count guards, want 1", got)
 	}
 
+	// A dynamic index is bounded by the count too: `JGE idx, count`.
+	dynamic := compileBundled(t, "eth/ipv6/tcp where ipv6.exts[ipv6.hop_limit].next_header == 6")
+	if got := count(dynamic.Main, func(ins asm.Instruction) bool {
+		return ins.OpCode == asm.JGE.Reg(asm.R3, asm.R2, "").OpCode && ins.Dst == asm.R3 && ins.Src == asm.R2
+	}); got != 1 {
+		t.Errorf("dynamic index: %d count bounds, want 1", got)
+	}
+
+	// gtp.exts: the first push happens in a non-entry state (parse_opt →
+	// parse_ext), so the inline increment sits past the entry state.
+	gtp := compileBundled(t, "eth/ipv4/udp/gtp/ipv4/tcp where all(gtp.exts.next_ext != 1)")
+	if got := count(gtp.Main, isGuard); got != 8 {
+		t.Errorf("gtp all(): %d count guards, want 8", got)
+	}
+	if got := increments(gtp.Main, asm.R3); got != 1 {
+		t.Errorf("gtp all(): %d inline push increments, want 1", got)
+	}
+	if got := increments(gtp.Callbacks, asm.R0); got != 1 {
+		t.Errorf("gtp all(): %d callback push increments, want 1", got)
+	}
+
 	// Without a stack reference nothing is demanded: no slot, no increment.
 	plain := compileBundled(t, "eth/ipv6/tcp where tcp.dport == 80")
 	if got := increments(plain.Main, asm.R3) + increments(plain.Callbacks, asm.R0); got != 0 {

@@ -1230,7 +1230,7 @@ func (c *whereCtx) genArithFieldLoad(f *ir.FieldRef) (asm.Instructions, error) {
 		if err != nil {
 			return nil, err
 		}
-		addr, err := emitDynamicStackAddress(f, anchor, c.absent())
+		addr, err := c.emitDynamicStackAddress(f, anchor, c.absent())
 		if err != nil {
 			return nil, err
 		}
@@ -1930,6 +1930,21 @@ func (c *whereCtx) dynamicOffsetSlotFor(f *ir.FieldRef) (int16, bool) {
 	return c.queried.dynamicAuxSlotForLayout(f.Layer, layout)
 }
 
+// emitDynamicStackAddress is the where-side emitDynamicStackAddress: a
+// dynamic index into a push-counted stack is also bounded by the push
+// count slot (D-031).
+func (c *whereCtx) emitDynamicStackAddress(ref *ir.FieldRef, base layerAnchor, failLabel string) (asm.Instructions, error) {
+	var countSlot *int16
+	if needsPushCount(ref) {
+		slot, ok := c.queried.stackCountSlot(ref.Layer, ref.Aux.OutParam)
+		if !ok {
+			return nil, fmt.Errorf("codegen: push count of stack %q not in demand set", ref.Aux.OutParam)
+		}
+		countSlot = &slot
+	}
+	return emitDynamicStackAddressCounted(ref, base, countSlot, failLabel)
+}
+
 // absent is the jump target for a field whose option, gated aux, or
 // stack entry is not present on this packet: the enclosing atom's fail
 // label (the atom is false, D-027), or dslReject when no atom is open.
@@ -2019,7 +2034,7 @@ func whereDynamicMultiByte(c *whereCtx, ref *ir.FieldRef, op ast.CmpOp, failLabe
 		return nil, err
 	}
 	if op == ast.CmpEq {
-		addr, err := emitDynamicStackAddress(ref, anchor, failLabel)
+		addr, err := c.emitDynamicStackAddress(ref, anchor, failLabel)
 		if err != nil {
 			return nil, err
 		}
@@ -2027,7 +2042,7 @@ func whereDynamicMultiByte(c *whereCtx, ref *ir.FieldRef, op ast.CmpOp, failLabe
 	}
 	// An entry that is not there makes the atom false for `!=` too (D-031).
 	match := c.freshLabel("where_lit_match")
-	addr, err := emitDynamicStackAddress(ref, anchor, failLabel)
+	addr, err := c.emitDynamicStackAddress(ref, anchor, failLabel)
 	if err != nil {
 		return nil, err
 	}
