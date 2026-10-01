@@ -958,6 +958,18 @@ func TestCompileCaptureUpperBoundOverQuantifiers(t *testing.T) {
 	}
 }
 
+// TestCompileInRangeBoundsFit pins that both bounds of a range alternative
+// must fit the field (and lo ≤ hi): the resolver rejects, codegen never
+// masks a bound into a different range.
+func TestCompileInRangeBoundsFit(t *testing.T) {
+	for _, expr := range []string{"eth/ipv4/tcp[dport in [0..70000]]", "eth/ipv4/tcp[dport in [65535..70000]]", "eth/ipv4/tcp[dport in [90..80]]"} {
+		_, err := compileForTest(expr)
+		if err == nil || errors.Is(err, codegen.ErrNotImplemented) {
+			t.Errorf("%s: expected a resolver error, got %v", expr, err)
+		}
+	}
+}
+
 // TestCompileOptionalSelfEdgeWithChainEnd pins that an optional
 // continuation of a chain-end protocol (`mpls/mpls?`, `mpls/mpls*`) is
 // accepted: the previous label's s bit stands in for the dispatch peek.

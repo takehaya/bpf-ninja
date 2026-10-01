@@ -100,10 +100,10 @@ Entries are never deleted; a rejected candidate stays in the log.
 
 ## D-011: bracket `in` の規則が §13 に無い
 - 論点: §13.7 は [E-Pred-Cmp] のみ。`in [v…]`, `in @set`, `range` の規則が無い。
-- 現行 Go 実装の挙動: `in [80, 8000..8080]` は `ErrNotImplemented` (range)、`in @set` は SetSlots が要る。
+- 現行 Go 実装の挙動: `in [80, 8000..8080]` は `ErrNotImplemented` (range) だった → PR #130 で実装 (host order に揃えて `lo ≤ v ≤ hi`、両端は resolver が field 幅で fit-check)。`in @set` は SetSlots が要る。
 - 推奨: `in [v…]` = いずれかの v と `==`。range は `lo ≤ n ≤ hi`。`in @set` は Phase 2 では illTyped。
 - 状態: 承認済 (2026-10-01、一括)
-- 反映先: `Eval/Layer.lean` `evalPred`, vectors `pred-in-list`, `pred-in-range` (goStatus notImplemented)
+- 反映先: `Eval/Layer.lean` `evalPred`, `Eval/Check.lean` (range の両端が field 幅に収まる、lo ≤ hi), vectors `pred-in-list`, `pred-in-range`, `pred-in-range-miss`, `typ-pred-in-range-wide`
 
 ## D-012: Phase 2 のプロトコル簡略化
 - 論点: vocab を手で写す際に落としたもの。

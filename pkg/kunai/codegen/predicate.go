@@ -824,13 +824,16 @@ func requireEqualityOp(pred *ir.Predicate, kind string) error {
 	return nil
 }
 
-// emitInPredicate handles `field in [v1, v2, ...]`. The IR carries
+// emitInPredicate handles `field in [v1, lo..hi, ...]`. The IR carries
 // the field on pred.Field and the alternatives on pred.List; the
-// resolver has already fit-checked each element against the field
-// width. We load the field once, emit an "if equal jump to match"
-// for every alternative, and jump to dslReject if none matched.
+// resolver has already fit-checked each value and range bound against
+// the field width. We load the field once, emit "if equal jump to
+// match" for a value and "if below lo skip, if at most hi match" for a
+// range (D-011), and jump to dslReject if none matched. A range needs
+// the field in host order, so a list with a range byte-swaps the
+// register once instead of swapping each constant.
 //
-// MVP scope (dsl-followups.md F7): integer alternatives only, on
+// MVP scope (dsl-followups.md F7): integer and range alternatives, on
 // fields ≤ 64 bits. IPv4 / IPv6 / MAC / CIDR alternatives stay as
 // ErrNotImplemented since they would each need their own multi-
 // word emit path; fold them in when there's user demand.
@@ -891,24 +894,20 @@ func emitInPredicate(pred *ir.Predicate) (asm.Instructions, error) {
 		insns = append(insns, emitBoundedLoad(asm.R3, int16(fieldOff), size, dslReject)...)
 	}
 
-	// Sub-byte field: the load read a covering window, so bring R3 to
-	// host order and narrow it to the field's bits before comparing.
-	// The alternatives then stay in host order (no constant bswap). A
-	// range alternative needs host order too: `lo ≤ v ≤ hi` is an
-	// ordered compare (the same HostTo path emitIntPredicate takes).
+	// A sub-byte field (the load read a covering window to narrow) and a
+	// range alternative (`lo ≤ v ≤ hi` is an ordered compare, the path
+	// emitIntPredicate takes) both need R3 in host order; the
+	// alternatives then stay unswapped.
 	subByte := fieldIsSubByte(pred.Field) || pred.Field.Slice != nil
-	if !subByte && hasRange && bytes > 1 {
+	hostOrder := subByte || hasRange
+	if hostOrder && bytes > 1 {
 		insns = append(insns, asm.HostTo(asm.BE, asm.R3, size))
 	}
 	if subByte {
-		if bytes > 1 {
-			insns = append(insns, asm.HostTo(asm.BE, asm.R3, size))
-		}
 		insns = append(insns, emitSliceShiftMask(pred.Field, bytes)...)
 	}
 
 	matchLabel := nextPredicateMatchLabel()
-	hostOrder := subByte || hasRange
 	narrow := func(v uint64) uint64 {
 		if fieldBits < 64 {
 			v &= (uint64(1) << fieldBits) - 1
@@ -918,17 +917,23 @@ func emitInPredicate(pred *ir.Predicate) (asm.Instructions, error) {
 	for i, v := range pred.List {
 		if v.Kind == ast.ValRange {
 			// `lo ≤ R3 ≤ hi` in host order (D-011): below lo → next
-			// alternative, at most hi → match.
-			lo, hi := narrow(v.RangeLo), narrow(v.RangeHi)
+			// alternative (the final reject for the last one), at most
+			// hi → match. The resolver fit-checked both bounds.
+			lo, hi := v.RangeLo, v.RangeHi
 			if hi > 0x7FFFFFFF {
-				return nil, fmt.Errorf("%w: 'in' range %d..%d exceeds int32 immediate range", ErrNotImplemented, v.RangeLo, v.RangeHi)
+				return nil, fmt.Errorf("%w: 'in' range %d..%d exceeds int32 immediate range", ErrNotImplemented, lo, hi)
 			}
-			next := fmt.Sprintf("%s_r%d", matchLabel, i)
-			insns = append(insns,
-				asm.JLT.Imm(asm.R3, int32(lo), next),
-				asm.JLE.Imm(asm.R3, int32(hi), matchLabel),
-				landingNoop(next),
-			)
+			next, landing := dslReject, false
+			if i+1 < len(pred.List) {
+				next, landing = fmt.Sprintf("%s%d", predInNextLabelPrefix, predLabelCounter.Add(1)), true
+			}
+			if lo > 0 {
+				insns = append(insns, asm.JLT.Imm(asm.R3, int32(lo), next))
+			}
+			insns = append(insns, asm.JLE.Imm(asm.R3, int32(hi), matchLabel))
+			if landing {
+				insns = append(insns, landingNoop(next))
+			}
 			continue
 		}
 		value := narrow(v.Int)
@@ -963,6 +968,10 @@ func vKindOf(v *ast.Value) ast.ValueKind {
 // `!=` match landings. Tests scanning emitted instructions for the
 // landing symbol depend on this exact string.
 const predMatchLabelPrefix = "dsl_pred_match_"
+
+// predInNextLabelPrefix labels the fall-through of a range alternative
+// inside an `in` list (not a match landing).
+const predInNextLabelPrefix = "dsl_pred_in_next_"
 
 // predLabelCounter feeds nextPredicateMatchLabel. Atomic so concurrent
 // Gen() calls produce non-colliding labels; labels are scoped to one

@@ -165,6 +165,9 @@ vector predInListMiss := {
 vector predInRange := {
   id := "pred-in-range", ast := tcpPred (.inList (f "dport") [.range 79 81]), expected := .accept [],
   note := "D-011: lo ≤ n ≤ hi" }
+vector typPredInRangeWide := {
+  id := "typ-pred-in-range-wide", ast := tcpPred (.inList (f "dport") [.range 0 70000]),
+  expected := .illTyped "range 0..70000 exceeds bit<16> (tcp.dport)", note := "T-PredIn: both bounds must fit the field" }
 vector predInRangeMiss := {
   id := "pred-in-range-miss", ast := tcpPred (.inList (f "dport") [.int 443, .range 8000 8080]), expected := .reject,
   note := "D-011: 80 is neither 443 nor in 8000..8080" }
@@ -254,7 +257,7 @@ def whereVectors : List Vector := [
   whereAbsentFalse, whereAbsentNot, whereAbsentNe, whereOptPresent, whereAfterOptional, whereAfterOptionalAbsent,
   whereLabelRepeatedLast, whereLabelRepeatedFirstMiss, whereRepeatedUnlabelled, wherePastQuantified, whereLabels, whereAmbiguous,
   actionEntry, actionHit, actionMiss, actionUnknown,
-  predCmp, predCmpMiss, predInList, predInListMiss, predInRange, predInRangeMiss, predNegative, predIPv4,
+  predCmp, predCmpMiss, predInList, predInListMiss, predInRange, typPredInRangeWide, predInRangeMiss, predNegative, predIPv4,
   capAll, capWhereFalse, capWhereTrue, capLabel, capAbsent, capPresent,
   typUnknownProto, typNoDispatch, typNotInChain, typUnknownField, typFit, typFitArith, typWidthIPv6, typCIDRWidth,
   typPredIdent, typInSet, typAny, typExists, typAuxPath, typArith128]

@@ -720,7 +720,7 @@ L  ::= proto(p, ℓ?, q, π̄)                                  単一 protocol 
 q  ::= 1 | ? | + | * | {n,m}                               quantifier (n,m ∈ ℕ)
 
 π  ::= cmp(f, op_c, v)                                     bracket cmp predicate
-     | in(f, v̄)                                            v̄ ∈ Int_lit* (F7、整数 alternatives のみ)
+     | in(f, v̄)                                            v̄ ∈ (Int_lit | Int_lit..Int_lit)* (整数と範囲、両端は f の幅に収まる)
      (`has` は §6 bitwise `&` で superseded — F6/F8 参照)
 
 w  ::= or(w, w) | and(w, w) | not(w)

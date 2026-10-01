@@ -53,7 +53,10 @@ private def checkPred (c : Ctx) (spec : ProtoSpec) : Predicate → Except String
     let r ← stop (resolveBracket c spec f)
     for v in vs do
       match v with
-      | .range .. => pure ()
+      | .range lo hi =>
+        -- both bounds fit the field (T-PredIn); an empty range is a typo
+        if hi ≥ 2 ^ r.width then throw s!"range {lo}..{hi} exceeds bit<{r.width}> ({spec.name}.{f.text})"
+        if lo > hi then throw s!"range {lo}..{hi} is empty ({spec.name}.{f.text})"
       | v => checkValue spec { r.field with width := r.width } .eq v
   | .inSet .. => throw "unsupported: in @set"
 
