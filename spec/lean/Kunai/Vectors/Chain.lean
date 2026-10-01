@@ -133,6 +133,17 @@ vector quantChainEnd := {
 vector quantGreedyOverrun := {
   id := "quant-range-greedy-overrun", ast := { layers := mplsRange 1 (some 2) }, packet := mpls3,
   expected := .reject, note := "D-002: greedy takes 2 labels; ipv4 then fails at the 3rd" }
+vector quantOverrunBounded := {
+  id := "quant-overrun-bounded", ast := { layers := [P "eth", Pq "mpls" (.range 1 (some 2))] }, packet := mpls3,
+  expected := .reject, note := "D-024: the 2nd label has s = 0, so the stack is deeper than {1,2} allows" }
+vector quantOverrunOpen := {
+  id := "quant-overrun-open", ast := { layers := [P "eth", Pq "mpls" .plus] },
+  packet := eth 0x8847 ++ mpls 1 0 ++ mpls 2 0 ++ mpls 3 0 ++ mpls 4 0 ++ mpls 5 0 ++ mpls 6 0 ++ mpls 7 0 ++ mpls 8 0 ++ mpls 9 1,
+  expected := .reject, goStatus := .mismatch,
+  note := "D-024: 9 labels exceed MPLS_MAX_DEPTH = 8 and the 8th has s = 0; Go's bpf_loop path does not require the end signal at the cap" }
+vector quantExactBound := {
+  id := "quant-exact-bound", ast := { layers := [P "eth", Pq "mpls" (.range 1 (some 3))] }, packet := mpls3,
+  expected := .accept [], note := "3 labels, the 3rd has s = 1: bound reached with the end signal" }
 vector quantGreedyUnreachable := {
   id := "quant-greedy-unreachable",
   ast := { layers := [P "eth", Pq "mpls" (.range 1 (some 8)), P "mpls", P "ipv4", P "tcp"] }, packet := mpls3,
@@ -166,7 +177,8 @@ vector typOptionalNoCheck := {
   packet := vxlanPkt, expected := .illTyped "optional eth with no-check dispatch cannot detect absence", goStatus := .notImplemented }
 vector quantSelfEdgeStar := {
   id := "quant-self-edge-star", ast := { layers := [P "eth", P "mpls", Pq "mpls" .star, P "ipv4", P "tcp"] },
-  packet := mpls3, expected := .accept [], note := "NO_CHECK self-edge with CHAIN_END: the s bit detects absence" }
+  packet := mpls3, expected := .accept [], goStatus := .notImplemented,
+  note := "NO_CHECK self-edge with CHAIN_END: the s bit detects absence; Go has no peek for NO_CHECK" }
 vector quantSelfEdgeOpt := {
   id := "quant-self-edge-opt", ast := { layers := [P "eth", P "mpls", Pq "mpls" .opt, P "ipv4", P "tcp"] },
   packet := mpls1, expected := .accept [], goStatus := .notImplemented,
@@ -219,7 +231,7 @@ def chainVectors : List Vector := [
   chainVxlan, chainVxlanAlt, chainMplsSingle, chainMplsSingleOverrun,
   quantOptPresent, quantOptAbsent, quantOptPredHolds, quantOptPredFails, quantOptBounds, quantRangeMidTrunc, quantRange01Bounds,
   quantStarBounds, quantMplsRange, quantMplsPlus, quantMplsStarZero, quantMplsMinUnmet, quantChainEnd,
-  quantGreedyOverrun, quantGreedyUnreachable, quantPredMidFail, quantPredMidFailStatic, quantPredFirstFail,
+  quantGreedyOverrun, quantOverrunBounded, quantOverrunOpen, quantExactBound, quantGreedyUnreachable, quantPredMidFail, quantPredMidFailStatic, quantPredFirstFail,
   quantPredAllHold, quantSelfValidSkip, quantSelfValidBroken, typOptionalAfterSkip, typOptionalNoCheck, quantSelfEdgeStar, quantSelfEdgeOpt, quantFirstOptional,
   altFirst, altSecond, altNone, altFirstPredFails, altRoot, altNoCheck,
   hostTcVlanMandatory, hostTcVlanOpt, hostL3Root, hostL3EthRoot]

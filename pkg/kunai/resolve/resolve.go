@@ -160,6 +160,13 @@ func addUnreachableChainWarning(p *ir.Program) {
 		if l.Spec.Name != next.Spec.Name {
 			continue
 		}
+		// A bounded {n,m} on a self-dispatch protocol (no chain-end signal)
+		// can still leave headers for the follower when the stack is deeper
+		// than m; only chain-end protocols and open-ended quantifiers make
+		// the follower unreachable.
+		if l.Quant == ast.QuantRange && l.RangeMax >= 0 && l.Spec.ChainEnd == nil {
+			continue
+		}
 		p.Warnings = append(p.Warnings, fmt.Sprintf(
 			"%q is quantified and immediately followed by another %q; quantifiers are greedy and never backtrack, so the second %q is unreachable (or only matches stacks deeper than the quantifier's upper bound). Fold it into the quantifier (e.g. `%s{n+1,m+1}`).",
 			l.Spec.Name, next.Spec.Name, next.Spec.Name, l.Spec.Name))

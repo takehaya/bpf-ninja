@@ -119,8 +119,10 @@ const bpfLoopChainCap = 32
 // self-dispatch peek.
 func genBpfLoopChain(layer *ir.LayerInstance, index int, all []*ir.LayerInstance, pc *predCtx) (asm.Instructions, asm.Instructions, error) {
 	rangeMin, _ := chainBounds(layer)
-	if rangeMin == 0 && index == 0 {
-		return nil, nil, fmt.Errorf("%w: `*` on the first layer has no parent to peek", ErrNotImplemented)
+	if rangeMin == 0 {
+		if err := optionalLayerGuard(layer, index); err != nil {
+			return nil, nil, err
+		}
 	}
 	hs, err := headerSize(layer.Spec)
 	if err != nil {
@@ -195,6 +197,11 @@ func genBpfLoopChain(layer *ir.LayerInstance, index int, all []*ir.LayerInstance
 	loopIter := int32(maxIter - 1)
 	mainInsns = append(mainInsns,
 		asm.StoreMem(asm.R10, bpfLoopCtxOffsetSlot, offsetBase, asm.DWord),
+		// Pre-loop offset, for the RangeMin floor below. Chain layers are
+		// fixed-size, so nothing downstream reads the layer-entry slot
+		// for them; the parser-machine lifecycle in parser_state.go is
+		// unaffected.
+		asm.StoreMem(asm.R10, bpfLoopCtxLayerEntrySlot, offsetBase, asm.DWord),
 		asm.StoreMem(asm.R10, bpfLoopCtxScratchStartSlot, asm.R0, asm.DWord),
 		asm.StoreMem(asm.R10, bpfLoopCtxScratchEndSlot, asm.R1, asm.DWord),
 		asm.Mov.Imm(asm.R1, loopIter),
@@ -204,20 +211,6 @@ func genBpfLoopChain(layer *ir.LayerInstance, index int, all []*ir.LayerInstance
 		asm.Mov.Imm(asm.R4, 0),
 		asm.FnLoop.Call(),
 	)
-
-	if rangeMin > 1 {
-		// R0 now holds bpf_loop's return value: the number of callback
-		// iterations that ran, including the one that broke. A chain-end
-		// protocol (MPLS) breaks after consuming its header, so R0 headers
-		// were consumed in the loop; a self-dispatch protocol (VLAN) breaks
-		// before consuming, so only R0-1 were. Add the pre-loop iteration
-		// and require RangeMin.
-		threshold := int32(rangeMin - 1)
-		if layer.Spec.ChainEnd == nil {
-			threshold = int32(rangeMin)
-		}
-		mainInsns = append(mainInsns, asm.JLT.Imm(asm.R0, threshold, dslReject))
-	}
 
 	// Reload the registers the helper clobbered. ctx.offset holds the
 	// advanced offsetBase; scratch_start/end are unchanged but must be
@@ -231,6 +224,20 @@ func genBpfLoopChain(layer *ir.LayerInstance, index int, all []*ir.LayerInstance
 		asm.LoadMem(asm.R1, asm.R10, bpfLoopCtxScratchEndSlot, asm.DWord),
 		asm.JGT.Imm(offsetBase, ScratchBufSize, dslReject),
 	)
+
+	if rangeMin > 1 {
+		// RangeMin floor: headers consumed inside the loop are
+		// (offset_after - offset_before) / hs. bpf_loop's return value
+		// cannot serve here: it counts iterations including the one that
+		// broke, and a self-dispatch protocol breaks before consuming
+		// while the iteration cap is reached after consuming.
+		mainInsns = append(mainInsns,
+			asm.LoadMem(asm.R3, asm.R10, bpfLoopCtxLayerEntrySlot, asm.DWord),
+			asm.Mov.Reg(asm.R5, offsetBase),
+			asm.Sub.Reg(asm.R5, asm.R3),
+			asm.JLT.Imm(asm.R5, int32((rangeMin-1)*hs), dslReject),
+		)
+	}
 
 	if optionalChain || layer.Spec.ChainEnd != nil {
 		// Landing for paths that jump past the bpf_loop call: the `*`

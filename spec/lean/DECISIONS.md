@@ -14,7 +14,7 @@ Status values: 提案中 (implemented as recommended, awaiting sign-off) /
 - 現行 Go 実装の挙動: **経路により異なる。** 静的 unroll (`{1,3}`, m ≤ 4) は (b): `eth/mpls[label == 5]{1,3}/ipv4/tcp` にラベル 5,6,7 → reject。bpf_loop 経路 (`{1,8}`, `+`) は predicate を **初回反復にしか適用しない**: 同じパケットで `{1,8}` → accept、`[label == 6]{1,8}` → reject、`[label == 7]{1,8}` → reject。(a) でも (b) でもない。`codegen/chain.go:83-133` vs `codegen/bpfloop.go`。
 - 推奨: (b)。predicate は「その layer のすべてのインスタンスが満たすべき条件」と読むのが `vlan[tci==100]?` の既存挙動 (`vlan_tagflex_test.go:42-54`) と整合する。bpf_loop 経路は issue として報告する (Go の挙動は変えない)。
 - 状態: 承認済 (2026-10-01)
-- 反映先: `Eval/Layer.lean` `iterate` (`.error .pred => throw e`), vectors `quant-pred-mid-fail` (goStatus mismatch), `quant-pred-mid-fail-static`, `quant-pred-first-fail`, `quant-pred-all-hold`
+- 反映先: `Eval/Layer.lean` `iterate` (`.error .pred => throw e`), vectors `quant-pred-mid-fail`, `quant-pred-mid-fail-static`, `quant-pred-first-fail`, `quant-pred-all-hold`
 
 ## D-002: greedy / バックトラック無し
 - 論点: `eth/mpls{1,8}/mpls/ipv4` は greedy なら決してマッチしない。仕様として確定するか。
@@ -46,7 +46,7 @@ Status values: 提案中 (implemented as recommended, awaiting sign-off) /
 - 現行 Go 実装の挙動: (a)。`eth/(vlan|qinq)/ipv4/tcp` と `(qinq|vlan)` はどちらも vlan パケットに accept、`(vlan[tci == 200]|qinq)` は tci=100 で reject (predicate 失敗後に qinq を試さない)。同一 proto を 2 枝に書く `(ipv4[ttl == 1]|ipv4[ttl == 255])` は **ロード時に "duplicate symbol" で失敗** (Go bug、issue)。同サイズ制約は `codegen/alternation.go` に無く、`dsl-grammar.md:56` / `dsl-usage.md:257` もサイズ差を許す。
 - 推奨: (a)。§13 に [E-Layer-Alt-First] を追加し、T-LayerAlt の uniform-size 制約は削除する (dsl-types.md 修正提案)。
 - 状態: 承認済 (2026-10-01)
-- 反映先: `Eval/Layer.lean` `evalAlt`, vectors `alt-first`, `alt-second`, `alt-none`, `alt-first-pred-fails`
+- 反映先: `Eval/Layer.lean` `evalAlt`, vectors `alt-first`, `alt-second`, `alt-none`, `alt-first-pred-fails` (Go のラベル衝突は `fix/kunai-spec-conformance` で修正済)
 
 ## D-005: `?` の skip 条件と Range-Step の停止条件
 - 論点: [E-Quant-Optional] case B は dispatch miss だけを skip にしている。dispatch は一致するが bounds で L(1) が失敗する場合は skip か ✗ か。また [E-Quant-Range-Step] は bounds 失敗を停止条件に含めているため、文字どおりだと `?` ≢ `{0,1}` になる。
@@ -54,7 +54,7 @@ Status values: 提案中 (implemented as recommended, awaiting sign-off) /
 - 現行 Go 実装の挙動: **経路により異なる。** `eth/vlan?` も `eth/vlan*` も eth + vlan 2 バイトのパケットを reject (`codegen.go:1040-1062` は親の dispatch field だけを peek し、以後の bounded load 失敗は `dslReject`)。一方 bpf_loop 経路は反復途中の bounds 失敗を「そこで停止」と扱う: `eth/mpls{1,8}` に 2 個目のラベルが 2 バイトで切れたパケット → accept (k=1)。`{0,1}` は `ErrNotImplemented`。案 1 でも案 2 でも Go のどちらかの経路とは食い違う。
 - 推奨: (2)。dispatch が一致しているのにヘッダが壊れているパケットを accept するのは説明できず、Go の実測とも一致し、`?` ≡ `{0,1}` が定理になる。
 - 状態: 承認済 (2026-10-01、案 2)
-- 反映先: `Eval/Layer.lean` `iterate` (bounds は `throw`), `Laws.lean: opt_eq_range`, vectors `quant-opt-bounds-reject`, `quant-range01-bounds-skip` (goStatus notImplemented), `quant-star-bounds-skip`, `quant-range-truncated-mid-chain` (goStatus mismatch), `dsl-types.md` §13.5
+- 反映先: `Eval/Layer.lean` `iterate` (bounds は `throw`), `Laws.lean: opt_eq_range`, vectors `quant-opt-bounds-reject`, `quant-range01-bounds-skip`, `quant-star-bounds-skip`, `quant-range-truncated-mid-chain`, `dsl-types.md` §13.5
 
 ## D-006: 切り詰めパケットと where
 - 論点: chain は通ったが where の field が packet 末尾を越える場合。
@@ -140,7 +140,7 @@ Status values: 提案中 (implemented as recommended, awaiting sign-off) /
 - 現行 Go 実装の挙動: `eth/ipv4/tcp` に version=5 → reject。`eth/ipv4?/tcp` は **verifier で load 失敗** ("math between map_value pointer and register with unbounded min value")、issue 4。`eth/mpls/ipv4?/tcp` はコンパイルできる。
 - 推奨: (c)。`mpls/ipv4?` では version が「次は ipv4 か」を判定する唯一の材料なので miss (skip) が自然。`eth/ipv4?` では ethertype がすでに ipv4 と言っているので、version≠4 は破損であり D-005 と同じく ✗。
 - 状態: 承認済 (2026-10-01、案 c)
-- 反映先: `Eval/Layer.lean` `dispatch` (edge 無し + `requires` を dispatch 段階で検査), `extract` (`requires`), vectors `quant-selfvalidating-skip`, `quant-selfvalidating-broken` (goStatus mismatch), `typ-no-dispatch-after-skip`, `dsl-types.md` §13.5
+- 反映先: `Eval/Layer.lean` `dispatch` (edge 無し + `requires` を dispatch 段階で検査), `extract` (`requires`), vectors `quant-selfvalidating-skip`, `quant-selfvalidating-broken`, `typ-no-dispatch-after-skip` (いずれも goStatus notImplemented: Go は self-validating / 可変長の optional を未実装), `dsl-types.md` §13.5
 
 ## D-018: quantified layer のラベル再束縛
 - 論点: `mpls@m{1,8}` は反復ごとに `m` を束縛し直す。
@@ -187,6 +187,15 @@ Status values: 提案中 (implemented as recommended, awaiting sign-off) /
 - 状態: 承認済 (2026-10-01、一括)
 - 反映先: `Laws.lean`
 
+## D-024: 上限 m に達したときの over-run
+- 論点: `mpls{1,2}` に 3 段のスタック。§13.5 の Range-Step は「k = m で停止 ✓」とだけ言うが、3 段目が残ったまま次の layer (無ければ accept) に進むのは「深さ 1〜2 のスタック」という読みに反する。
+- 候補: (a) k = m で無条件に ✓ / (b) chain-end を宣言する proto では m 個目のヘッダが end 信号 (MPLS s=1) を持たなければ ✗
+- 現行 Go 実装の挙動: 静的 unroll (`chainEndRequire`) は (b)、bpf_loop 経路 (`+`, `{n,m>4}`) は (a) (既知の gap、`bpfloop.go` のコメント)。
+- 推奨: (b)。`{n,m}` と `+`/`*` (m = MAX_DEPTH) を同じ規則にし、「サポートする深さを超えたスタックは reject」と読む。bpf_loop 側は issue。
+- 帰結: `{1,1}` ≡ `1` は chain-end を持たない proto に限って成立 (`Laws.lean: one_eq_range_layer` に仮定を追加)。mpls では `{1,1}` が「スタックはここで終わる」を含意するので `mpls` と異なる (Go も同じ)。`?` ≡ `{0,1}` は `?` にも同じ要求を課して維持。
+- 状態: 提案中
+- 反映先: `Eval/Layer.lean` `chainEnded` / `iterate` / `extractOpt`, `Laws.lean`, vectors `quant-overrun-bounded`, `quant-overrun-open` (goStatus mismatch), `quant-exact-bound`
+
 ## Go 側への issue 候補 (この作業では変更しない)
 
 `fix/kunai-spec-conformance` で対応済みのものは ✅、残りは `issues/` に本文がある。
@@ -201,4 +210,6 @@ Status values: 提案中 (implemented as recommended, awaiting sign-off) /
 8. ✅ bpf_loop 経路が反復途中の bounds 失敗を「停止」と扱う (D-005) — dispatch 一致後の bounds 失敗は reject。
 9. bpf_loop 経路の RangeMin 判定が VLAN (self-dispatch で停止) で 1 つずれていた — 8 と同時に修正済 ✅。
 
-残: 量化 layer 以降の where field 参照 (D-003 の実装)、self-validating / 可変長 layer の `?` (D-017 案 c の実装)。
+10. bpf_loop 経路が反復上限で chain-end 信号を要求しない (D-024)。
+
+残: 量化 layer 以降の where field 参照 (D-003 の実装)、self-validating / 可変長 layer の `?` (D-017 案 c の実装)、NO_CHECK 自己 edge の optional (`mpls/mpls*`)。

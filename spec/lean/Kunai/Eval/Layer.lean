@@ -113,16 +113,42 @@ def quantBounds : Quant → Nat × Option Nat
   | .one => (1, some 1) | .opt => (0, some 1) | .plus => (1, none) | .star => (0, none)
   | .range n m => (n, m)
 
+/-- The last extracted header of a chain-end protocol must carry the end
+signal once the iteration bound is reached, else the stack is deeper than
+the quantifier allows ([E-Quant-Range-Fail-Overrun], D-024). No-op for
+protocols without `chainEnd`. -/
+def chainEnded (c : Ctx) (p : ProtoLayer) (st : State) : Bool :=
+  match c.V.proto? p.name with
+  | some spec =>
+    match spec.chainEnd, st.insts.getLast? with
+    | some (f, v), some last => ((spec.field? f).bind (readField c.P last)) == some v
+    | some _, none => false
+    | none, _ => true
+  | none => true
+
 /-- E-Quant-Range-Step / E-Quant-Range-Fail: greedy, no backtracking (D-002).
 Only a dispatch miss stops the iteration; a bounds failure (D-005) or a
-predicate failure (D-001) fails the layer, exactly as for `?`. -/
+predicate failure (D-001) fails the layer, exactly as for `?`. Reaching the
+bound requires the chain-end signal (D-024). -/
 def iterate (c : Ctx) (p : ProtoLayer) (n : Nat) : Nat → Nat → State → Except LayerFail State
-  | 0, k, st => if k < n then throw (.illTyped "iteration bound below the quantifier minimum") else pure st
+  | 0, k, st =>
+    if k < n then throw (.illTyped "iteration bound below the quantifier minimum")
+    else if k > 0 && !chainEnded c p st then throw .pred
+    else pure st
   | fuel + 1, k, st =>
     match extract c st p with
     | .ok st' => iterate c p n fuel (k + 1) st'
     | .error .dispMiss => if k < n then throw .dispMiss else pure st
     | .error e => throw e
+
+/-- One optional extraction ([E-Quant-Optional]): skip on a dispatch miss
+only (D-005); after an extraction the chain-end signal is required (D-024),
+exactly as `{0,1}` (Laws.lean: opt_eq_range). -/
+def extractOpt (c : Ctx) (st : State) (p : ProtoLayer) : Except LayerFail State :=
+  match extract c st p with
+  | .ok st' => if chainEnded c p st' then pure st' else throw .pred
+  | .error .dispMiss => pure st
+  | .error e => throw e
 
 /-- `L(q)` for one protocol layer. -/
 def evalProtoLayer (c : Ctx) (st : State) (p : ProtoLayer) : Except LayerFail State := do
@@ -132,11 +158,7 @@ def evalProtoLayer (c : Ctx) (st : State) (p : ProtoLayer) : Except LayerFail St
     throw (.illTyped "vlan is in metadata on this host; the layer must be optional")
   match p.quant with
   | .one => extract c st p
-  | .opt =>
-    -- [E-Quant-Optional]: case B skips on dispatch miss only; `?` ≡ `{0,1}` (Laws.lean: opt_eq_range)
-    match extract c st p with
-    | .error .dispMiss => pure st
-    | r => r
+  | .opt => extractOpt c st p
   | _ =>
     let fuel := m.getD spec.maxDepth
     if fuel > chainCap then throw (.illTyped s!"chain depth {fuel} exceeds {chainCap}")

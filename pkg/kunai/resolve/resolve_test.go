@@ -131,7 +131,7 @@ func TestUnreachableChainWarning(t *testing.T) {
 			t.Errorf("%s: expected unreachable-chain warning, got %v", expr, p.Warnings)
 		}
 	}
-	for _, expr := range []string{"eth/mpls{1,8}/ipv4/tcp", "eth/vlan+/ipv4/tcp", "eth/vlan/vlan/ipv4/tcp"} {
+	for _, expr := range []string{"eth/mpls{1,8}/ipv4/tcp", "eth/vlan+/ipv4/tcp", "eth/vlan/vlan/ipv4/tcp", "eth/vlan{1}/vlan/ipv4/tcp", "eth/vlan{1,2}/vlan/ipv4/tcp"} {
 		p := resolveOK(t, expr, nil)
 		for _, w := range p.Warnings {
 			if strings.Contains(w, "never backtrack") {
