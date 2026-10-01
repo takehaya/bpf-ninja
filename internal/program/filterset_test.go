@@ -50,7 +50,7 @@ var FilterSet = []FilterSpec{
 		WantInsns: 154, Notes: "IPv4 source CIDR via bracket predicate"},
 	{ID: "F3", Expr: "eth/ipv6[src==2001:db8::/32]/tcp",
 		CBPFCExpr: "src net 2001:db8::/32 and tcp",
-		WantInsns: 282, Notes: "IPv6 source CIDR via bracket predicate"},
+		WantInsns: 290, Notes: "IPv6 source CIDR via bracket predicate"},
 	{ID: "F4", Expr: "eth/vlan[tci==100]/ipv4/tcp where tcp.dport == 80",
 		CBPFCExpr: "vlan 100 and tcp dst port 80",
 		WantInsns: 159, Notes: "VLAN tag (TCI=100) + TCP dst", TCUnsupported: true},

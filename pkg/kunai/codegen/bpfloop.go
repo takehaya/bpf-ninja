@@ -152,11 +152,17 @@ func genBpfLoopChain(layer *ir.LayerInstance, index int, all []*ir.LayerInstance
 	var mainInsns asm.Instructions
 	chainDone := fmt.Sprintf("dsl_chain_done_%d", index)
 	optionalChain := rangeMin == 0
+	// The absent edge (`*` with no header) gets its own label when it must
+	// dispatch the next layer against the grandparent (D-034).
+	absentLabel := chainDone
+	if optionalChain && absentEdgeApplies(index, all) {
+		absentLabel = fmt.Sprintf("dsl_absent_%d", index)
+	}
 	if optionalChain {
 		// Whole-chain skip: peek the parent dispatch; on mismatch
 		// jump past every iteration (including the bpf_loop call and
 		// its reload) so offsetBase stays put for the next layer.
-		body, err := emitPeekedIterZero(layer, index, all, chainDone, pc)
+		body, err := emitPeekedIterZero(layer, index, all, absentLabel, pc)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -249,6 +255,12 @@ func genBpfLoopChain(layer *ir.LayerInstance, index int, all []*ir.LayerInstance
 		// !read_ok on the miss path.
 		mainInsns = append(mainInsns, asm.Mov.Reg(asm.R0, asm.R0).WithSymbol(chainDone))
 	}
+	if absentLabel != chainDone {
+		mainInsns, err = withAbsentEdge(mainInsns, absentLabel, index, all)
+		if err != nil {
+			return nil, nil, err
+		}
+	}
 
 	return mainInsns, callback, nil
 }
@@ -277,9 +289,17 @@ func genBpfLoopCallback(layer *ir.LayerInstance, selfConst *vocab.DispatchConst,
 		first,
 		asm.LoadMem(asm.R4, asm.R2, bpfLoopCbCtxScratchStartField, asm.DWord),
 		asm.LoadMem(asm.R5, asm.R2, bpfLoopCbCtxScratchEndField, asm.DWord),
-		// Pin ctx.offset so pointer arithmetic below stays bounded.
-		asm.JGT.Imm(asm.R3, int32(ScratchBufSize), rejectLabel),
 	}
+	// Predicates run in the main frame's register layout and may clobber
+	// R2 before jumping to rejectLabel, which stores through ctx: park
+	// ctx in the callee-local R6 for the whole callback and restore it
+	// on the reject path.
+	hasPreds := len(layer.Predicates) > 0
+	if hasPreds {
+		insns = append(insns, asm.Mov.Reg(asm.R6, asm.R2))
+	}
+	// Pin ctx.offset so pointer arithmetic below stays bounded.
+	insns = append(insns, asm.JGT.Imm(asm.R3, int32(ScratchBufSize), rejectLabel))
 
 	if selfConst.Type == vocab.DispatchField {
 		peek, err := chainFieldPeek(spec, selfConst, hs, breakLabel)
@@ -299,7 +319,7 @@ func genBpfLoopCallback(layer *ir.LayerInstance, selfConst *vocab.DispatchConst,
 		asm.JGT.Reg(asm.R0, asm.R5, rejectLabel),
 	)
 
-	if len(layer.Predicates) > 0 {
+	if hasPreds {
 		preds, err := callbackPredicates(layer, rejectLabel, pc)
 		if err != nil {
 			return nil, err
@@ -320,6 +340,11 @@ func genBpfLoopCallback(layer *ir.LayerInstance, selfConst *vocab.DispatchConst,
 		asm.Mov.Imm(asm.R0, 0), // continue
 		asm.Return(),
 		asm.Mov.Imm(asm.R0, -1).WithSymbol(rejectLabel), // reject: poison ctx.offset, then break
+	)
+	if hasPreds {
+		insns = append(insns, asm.Mov.Reg(asm.R2, asm.R6))
+	}
+	insns = append(insns,
 		asm.StoreMem(asm.R2, bpfLoopCbCtxOffsetField, asm.R0, asm.DWord),
 		asm.Mov.Imm(asm.R0, 1).WithSymbol(breakLabel), // break
 		asm.Return(),
@@ -334,9 +359,9 @@ func genBpfLoopCallback(layer *ir.LayerInstance, selfConst *vocab.DispatchConst,
 // bpf_loop callback. The predicate emitters assume the main frame's
 // register layout (R0 = scratch start, R1 = scratch end, R4 = layer
 // offset, R2/R3/R5 scratch), so the callback frame (R2 = ctx, R3 =
-// offset, R4/R5 = window) is swapped in and out around them, with ctx
-// parked in the callee-local R6. Their dslReject jumps are retargeted at
-// the callback's reject label. Predicates that spill to the main stack
+// offset, R4/R5 = window) is swapped in and out around them; the caller
+// parked ctx in the callee-local R6 at callback entry. Their dslReject
+// jumps are retargeted at the callback's reject label. Predicates that spill to the main stack
 // (`in @set` slots) are not replayable from the callback frame.
 func callbackPredicates(layer *ir.LayerInstance, rejectLabel string, pc *predCtx) (asm.Instructions, error) {
 	var replayPC *predCtx
@@ -356,7 +381,6 @@ func callbackPredicates(layer *ir.LayerInstance, rejectLabel string, pc *predCtx
 		}
 	}
 	insns := asm.Instructions{
-		asm.Mov.Reg(asm.R6, asm.R2),
 		asm.Mov.Reg(asm.R0, asm.R4),
 		asm.Mov.Reg(asm.R1, asm.R5),
 		asm.Mov.Reg(asm.R4, asm.R3),

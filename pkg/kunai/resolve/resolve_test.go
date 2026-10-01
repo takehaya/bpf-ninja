@@ -118,6 +118,24 @@ func TestChainRootWarning(t *testing.T) {
 	}
 }
 
+// TestRuntimeParentDispatch pins that a layer after an absentable layer
+// needs a dispatch from every layer it can meet at run time (D-034).
+func TestRuntimeParentDispatch(t *testing.T) {
+	for _, expr := range []string{"eth/mpls?/ipv4/tcp", "eth/vlan?/ipv4/tcp", "eth/vlan?/mpls?/ipv4/tcp"} {
+		resolveOK(t, expr, nil)
+	}
+	// eth has no constant under udp, so vxlan's absence would leave it undispatched.
+	for _, expr := range []string{"eth/mpls?/cw/eth", "eth/ipv4/udp/vxlan?/eth/ipv4/tcp", "eth/ipv4/udp/vxlan*/eth/ipv4/tcp"} {
+		f, err := parser.Parse(expr, "t.dsl", nil)
+		if err != nil {
+			t.Fatalf("parse(%q): %v", expr, err)
+		}
+		if _, err := Resolve(f, loadVocab(t), nil); err == nil || !strings.Contains(err.Error(), "no dispatch constant") {
+			t.Errorf("%s: expected a no-dispatch-constant error, got %v", expr, err)
+		}
+	}
+}
+
 func TestUnreachableChainWarning(t *testing.T) {
 	for _, expr := range []string{"eth/mpls{1,8}/mpls/ipv4/tcp", "eth/vlan+/vlan/ipv4/tcp", "eth/mpls*/mpls"} {
 		p := resolveOK(t, expr, nil)

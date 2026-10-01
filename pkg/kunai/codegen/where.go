@@ -27,6 +27,11 @@ type whereCtx struct {
 	// uses it to pick a distinct LHS-save slot per level so a nested
 	// bool-eq operand does not clobber an enclosing one.
 	boolEqDepth int
+	// atomFail is the fail label of the where atom being generated. Field
+	// loads that find an option, gated aux, or stack entry absent jump
+	// here so the atom evaluates false (spec D-027, D-031) instead of
+	// rejecting the packet; empty outside an atom (then dslReject).
+	atomFail string
 	// callbacks accumulates bpf_loop callback subprograms emitted while
 	// generating the where clause (currently the aux-walk any()/all()
 	// loop). They are returned out of genCondition and appended to
@@ -97,9 +102,9 @@ func (c *whereCtx) gen(w *ir.Condition, failLabel string) (asm.Instructions, err
 	case ast.WAtomAction:
 		return genActionAtom(w, c.lang, failLabel)
 	case ast.WAtomArith:
-		return c.genArithCompare(w, failLabel)
+		return c.withStackGuards(w, failLabel, c.genArithCompare)
 	case ast.WAtomLiteralCmp:
-		return c.genLiteralCompare(w, failLabel)
+		return c.withStackGuards(w, failLabel, c.genLiteralCompare)
 	case ast.WAnd:
 		return c.genAnd(w, failLabel)
 	case ast.WOr:
@@ -140,6 +145,16 @@ func (c *whereCtx) genBoolLit(w *ir.Condition, failLabel string) (asm.Instructio
 func (c *whereCtx) genBoolExists(w *ir.Condition, failLabel string) (asm.Instructions, error) {
 	if w == nil || w.BoolField == nil || w.BoolField.Aux == nil {
 		return nil, fmt.Errorf("codegen: bool exists atom lacks aux reference")
+	}
+	// A TLV option exists iff the walk recorded its offset (slot ≠ sentinel).
+	if slot, ok := c.dynamicOffsetSlotFor(w.BoolField); ok {
+		return asm.Instructions{
+			asm.LoadMem(asm.R3, asm.R10, slot, asm.DWord),
+			asm.JEq.Imm(asm.R3, dynamicAuxSentinel, failLabel),
+		}, nil
+	}
+	if dynamicAuxLayoutOf(w.BoolField) != nil {
+		return nil, fmt.Errorf("codegen: option %s.%s has no offset slot for .exists", w.BoolField.Layer.Spec.Name, w.BoolField.Aux.OutParam)
 	}
 	anchor, err := c.layerAnchorFor(w.BoolField.Layer)
 	if err != nil {
@@ -377,6 +392,72 @@ func (c *whereCtx) genQuantIterBody(inner *ir.Condition, target *ir.QuantTarget,
 	return body, nil
 }
 
+// withStackGuards prefixes an atom with a count guard for every static
+// stack index it reads (`srv6.segments[2].addr`, `tcp.options.SACK.blocks[1]`):
+// an entry past the stack's runtime count is absent, so the atom is false
+// for `==`, `!=`, ordered compares and arithmetic alike (spec D-031).
+// Stacks without a count source keep their capacity-only bounds. An
+// entry referenced more than once in the atom is guarded once.
+func (c *whereCtx) withStackGuards(w *ir.Condition, failLabel string, body func(*ir.Condition, string) (asm.Instructions, error)) (asm.Instructions, error) {
+	var guards asm.Instructions
+	var walkErr error
+	guarded := map[string]bool{}
+	ir.WalkConditionFieldRefs(w, func(ref *ir.FieldRef) {
+		if walkErr != nil || ref == nil || ref.Aux == nil || ref.Aux.Stack == nil || !ref.Aux.Stack.IsStatic {
+			return
+		}
+		key := fmt.Sprintf("%p/%s/%d", ref.Layer, ref.Aux.OutParam, ref.Aux.Stack.Static)
+		if guarded[key] {
+			return
+		}
+		guarded[key] = true
+		src, err := refCountSource(ref)
+		if err != nil || src == nil {
+			walkErr = err
+			return
+		}
+		g, err := c.emitCountGuard(src, int(ref.Aux.Stack.Static), failLabel)
+		if err != nil {
+			walkErr = err
+			return
+		}
+		guards = append(guards, g...)
+	})
+	if walkErr != nil {
+		return nil, walkErr
+	}
+	insns, err := body(w, failLabel)
+	if err != nil {
+		return nil, err
+	}
+	return append(guards, insns...), nil
+}
+
+// refCountSource derives the runtime element count of the stack a
+// reference indexes. Option-internal arrays (SACK blocks, RR addrs) use
+// the owner option's length byte: it sits at byte 1 by RFC convention
+// (kind = byte 0), SubBefore = OffsetAfterOwner (the option's fixed
+// prefix) is subtracted, and the residue divides by the element size:
+//
+//	SACK (OffsetAfterOwner=2, ElemSize=8): (length-2) >> 3 = 0..4 blocks
+//	RR   (OffsetAfterOwner=3, ElemSize=4): (length-3) >> 2 = 0..9 addrs
+//
+// Declare-only stacks with @kunai_stack_count read a primary-header byte.
+// nil when the stack has no count source (callers fall back to Capacity).
+func refCountSource(ref *ir.FieldRef) (*quantCountSource, error) {
+	if ref.Aux.OwnerOption != nil {
+		shift := log2PowerOfTwo(ref.Aux.HeaderSize)
+		if shift < 0 {
+			return nil, fmt.Errorf("codegen: stack element size %d is not a power of two (cannot derive count via shift)", ref.Aux.HeaderSize)
+		}
+		return &quantCountSource{Layer: ref.Layer, Owner: ref.Aux.OwnerOption, ByteOff: 1, SubBefore: ref.Aux.OffsetAfterOwner, RShAfter: shift}, nil
+	}
+	if cnt := ref.Layer.Spec.StackCounts[ref.Aux.OutParam]; cnt != nil {
+		return &quantCountSource{Layer: ref.Layer, ByteOff: cnt.ByteOff, Offset: cnt.Addend}, nil
+	}
+	return nil, nil
+}
+
 // emitCountGuard emits the per-iteration check that the iteration
 // index is below the runtime count. Primary-header byte (Owner == nil)
 // reads from a layer-anchored field; owner-slot (Owner != nil) reads
@@ -439,7 +520,6 @@ type quantCountSource struct {
 // so the unroll runs over the full Capacity (which is safe for
 // self-flag chains where the parser has already walked every entry).
 func stackCountSource(w *ir.Condition) (*quantCountSource, error) {
-	target := w.QuantTarget
 	var iterRef *ir.FieldRef
 	ir.WalkConditionFieldRefs(w.Inner, func(ref *ir.FieldRef) {
 		if iterRef == nil && ref != nil && ref.Aux != nil && ref.Aux.Stack != nil && ref.Aux.Stack.IsIterator {
@@ -449,36 +529,7 @@ func stackCountSource(w *ir.Condition) (*quantCountSource, error) {
 	if iterRef == nil {
 		return nil, fmt.Errorf("codegen: quantifier inner has no iterator field reference")
 	}
-	if iterRef.Aux.OwnerOption != nil {
-		// Length byte sits at slot+1 by RFC convention (kind=byte 0,
-		// length=byte 1 for both TCP options and IPv4 options). The
-		// raw length byte then has SubBefore=OffsetAfterOwner (the
-		// option's fixed prefix) subtracted to get the trailing-array
-		// byte count, which divides by ElemSize to yield the element
-		// count. Examples:
-		//   SACK   (OffsetAfterOwner=2, ElemSize=8): (length-2) >> 3 = 0..4 blocks
-		//   RR     (OffsetAfterOwner=3, ElemSize=4): (length-3) >> 2 = 0..9 addrs
-		shift := log2PowerOfTwo(target.ElemSize)
-		if shift < 0 {
-			return nil, fmt.Errorf("codegen: quantifier element size %d is not a power of two (cannot derive count via shift)", target.ElemSize)
-		}
-		return &quantCountSource{
-			Layer:     iterRef.Layer,
-			Owner:     iterRef.Aux.OwnerOption,
-			ByteOff:   1,
-			SubBefore: iterRef.Aux.OffsetAfterOwner,
-			RShAfter:  shift,
-		}, nil
-	}
-	if cnt := iterRef.Layer.Spec.StackCounts[target.OutParam]; cnt != nil {
-		return &quantCountSource{
-			Layer:   iterRef.Layer,
-			ByteOff: cnt.ByteOff,
-			Offset:  cnt.Addend,
-		}, nil
-	}
-	// No @kunai_stack_count → caller unrolls over the static Capacity.
-	return nil, nil
+	return refCountSource(iterRef)
 }
 
 // rebindIterator deep-copies the inner condition, replacing every
@@ -768,6 +819,9 @@ func (c *whereCtx) genArithCompare(w *ir.Condition, failLabel string) (asm.Instr
 	// stores the constant as 0xffff..ff and trips the immediate
 	// range check; the spec wants it narrowed to bit<16> = 0xffff.
 	targetBits := arithCmpTargetBits(w.ArithL, w.ArithR)
+	saved := c.atomFail
+	c.atomFail = failLabel
+	defer func() { c.atomFail = saved }()
 	if targetBits > 64 {
 		return c.genArithCompare128(w, failLabel, targetBits)
 	}
@@ -1155,7 +1209,7 @@ func (c *whereCtx) genArithFieldLoad(f *ir.FieldRef) (asm.Instructions, error) {
 		if err != nil {
 			return nil, err
 		}
-		addr, err := emitDynamicStackAddress(f, anchor, dslReject)
+		addr, err := emitDynamicStackAddress(f, anchor, c.absent())
 		if err != nil {
 			return nil, err
 		}
@@ -1180,7 +1234,7 @@ func (c *whereCtx) genArithFieldLoad(f *ir.FieldRef) (asm.Instructions, error) {
 	}
 	var insns asm.Instructions
 	if f.Aux != nil {
-		insns = append(insns, emitAuxGating(f.Aux.Gating, anchor, dslReject)...)
+		insns = append(insns, emitAuxGating(f.Aux.Gating, anchor, c.absent())...)
 	}
 	insns = append(insns, emitFieldLoad(anchor, fieldOff, size)...)
 	if fieldBytes > 1 {
@@ -1855,6 +1909,16 @@ func (c *whereCtx) dynamicOffsetSlotFor(f *ir.FieldRef) (int16, bool) {
 	return c.queried.dynamicAuxSlotForLayout(f.Layer, layout)
 }
 
+// absent is the jump target for a field whose option, gated aux, or
+// stack entry is not present on this packet: the enclosing atom's fail
+// label (the atom is false, D-027), or dslReject when no atom is open.
+func (c *whereCtx) absent() string {
+	if c.atomFail != "" {
+		return c.atomFail
+	}
+	return dslReject
+}
+
 // genDynamicOffsetAuxLoad reads an aux header field whose layer
 // position was recorded by the parser machine into a dynamic offset
 // slot. The slot value is the absolute scratch offset of the aux's
@@ -1888,7 +1952,7 @@ func (c *whereCtx) genDynamicOffsetAuxLoad(f *ir.FieldRef, slot int16) (asm.Inst
 	if err != nil {
 		return nil, err
 	}
-	insns := emitDynamicAuxByteLoad(slot, byteOff, size, dslReject)
+	insns := emitDynamicAuxByteLoad(slot, byteOff, size, c.absent())
 	if fieldBytes > 1 {
 		insns = append(insns, asm.HostTo(asm.BE, asm.R3, size))
 	}
@@ -1940,8 +2004,9 @@ func whereDynamicMultiByte(c *whereCtx, ref *ir.FieldRef, op ast.CmpOp, failLabe
 		}
 		return append(addr, body(failLabel)...), nil
 	}
+	// An entry that is not there makes the atom false for `!=` too (D-031).
 	match := c.freshLabel("where_lit_match")
-	addr, err := emitDynamicStackAddress(ref, anchor, match)
+	addr, err := emitDynamicStackAddress(ref, anchor, failLabel)
 	if err != nil {
 		return nil, err
 	}

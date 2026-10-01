@@ -91,6 +91,18 @@ type LayerInstance struct {
 	Pos ast.Position
 }
 
+// Absentable reports whether the layer may match zero headers (`?`, `*`,
+// `{0,m}`), so the layer after it can meet an earlier layer as its parent.
+func (l *LayerInstance) Absentable() bool {
+	switch l.Quant {
+	case ast.QuantOpt, ast.QuantStar:
+		return true
+	case ast.QuantRange:
+		return l.RangeMin == 0
+	}
+	return false
+}
+
 // DispatchChoice records how this layer is selected from its parent.
 //
 // AltConsts / IsAltDiverged are populated when the parent is an

@@ -172,3 +172,6 @@ __pycache__/
 # Lean build artifacts (spec/lean)
 /spec/lean/.lake/
 /pkg/kunai/dsltest/testdata/*.tmp
+/spec/lean/Kunai/*.tmp
+# go build output of the Lean vocabulary generator
+/vocab2lean

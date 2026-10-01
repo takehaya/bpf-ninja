@@ -891,6 +891,19 @@ func TestCompileQinqVlanChainCoversAllTagShapes(t *testing.T) {
 	}
 }
 
+// TestCompileConsecutiveOptionalsNeedEquivalentDispatch pins the D-034
+// limit of the static-parent dispatch after consecutive optional layers:
+// it is sound only when every runtime parent dispatches the layer the
+// same way (`qinq?/vlan?/ipv4`: ethertype is the last two bytes of eth,
+// qinq and vlan). `eth/vlan?/mpls?/ipv4` is refused — ipv4 self-validates
+// under mpls but needs ethertype 0x0800 under vlan or eth.
+func TestCompileConsecutiveOptionalsNeedEquivalentDispatch(t *testing.T) {
+	_, err := compileForTest("eth/vlan?/mpls?/ipv4/tcp")
+	if !errors.Is(err, codegen.ErrNotImplemented) || !strings.Contains(err.Error(), "dispatches differently") {
+		t.Fatalf("expected codegen.ErrNotImplemented (dispatches differently), got %v", err)
+	}
+}
+
 func TestCompileAlternationDivergentSize(t *testing.T) {
 	// P3-12: `eth/(ipv4|ipv6)/tcp` is the canonical user-facing alt
 	// case. ipv4 and ipv6 differ in header size (20 vs 40 bytes) AND

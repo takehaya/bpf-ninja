@@ -66,6 +66,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"slices"
 	"sync/atomic"
 
 	"github.com/cilium/ebpf/asm"
@@ -820,18 +821,6 @@ func checkHostLayerSupport(p *ir.Program, host HostLayout) error {
 	isVlan := func(l *ir.LayerInstance) bool {
 		return l != nil && l.Spec != nil && (l.Spec.Name == "vlan" || l.Spec.Name == "qinq")
 	}
-	// absentable reports whether the byte parser can take the layer's
-	// zero-occurrence path, so the tag the kernel moved to metadata is
-	// simply not in the bytes the parser walks.
-	absentable := func(l *ir.LayerInstance) bool {
-		switch l.Quant {
-		case ast.QuantOpt, ast.QuantStar:
-			return true
-		case ast.QuantRange:
-			return l.RangeMin == 0
-		}
-		return false
-	}
 	reject := func(l *ir.LayerInstance) error {
 		return withPos(fmt.Errorf("%w: layer %q cannot be matched at this host: the kernel extracts the outer VLAN tag into skb metadata before the program runs, so it is not present in the packet bytes. Use an optional quantifier (e.g. %s? or qinq?/vlan?) to match tag-flexible traffic without reading the tag, or read the tag from skb metadata (future work)", ErrNotImplemented, l.Spec.Name, l.Spec.Name), l.Pos)
 	}
@@ -845,7 +834,10 @@ func checkHostLayerSupport(p *ir.Program, host HostLayout) error {
 		}
 		// A vlan/qinq layer is rejected unless it can be absent (optional
 		// quantifier) and reads none of its own fields (no predicate).
-		if isVlan(l) && (!absentable(l) || len(l.Predicates) > 0) {
+		// An absentable layer takes the zero-occurrence path, so the tag
+		// the kernel moved to metadata is simply not in the bytes the
+		// parser walks.
+		if isVlan(l) && (!l.Absentable() || len(l.Predicates) > 0) {
 			return reject(l)
 		}
 	}
@@ -875,7 +867,10 @@ func genLayerInner(layer *ir.LayerInstance, index int, all []*ir.LayerInstance, 
 		insns, err := genStaticLayer(layer, index, all, pc)
 		return insns, nil, err
 	case ast.QuantOpt:
-		insns, err := genOptionalLayer(layer, index, all, pc)
+		// `?` ≡ `{0,1}` (spec D-005/D-024, Laws.lean opt_eq_range): one lowering.
+		opt := *layer
+		opt.Quant, opt.RangeMin, opt.RangeMax = ast.QuantRange, 0, 1
+		insns, err := genStaticChain(&opt, index, all, pc)
 		return insns, nil, err
 	case ast.QuantRange:
 		if staticChainFitsRange(layer.RangeMax) {
@@ -907,6 +902,11 @@ func genStaticLayer(layer *ir.LayerInstance, index int, all []*ir.LayerInstance,
 		}
 		insns = append(insns, di...)
 	}
+	join, err := dispatchJoin(index, all)
+	if err != nil {
+		return nil, err
+	}
+	insns = append(insns, join...)
 
 	preds, err := emitPredicates(layer.Predicates, pc)
 	if err != nil {
@@ -998,26 +998,158 @@ func variableTailSkipFromHeaderLength(vs *vocab.HeaderLength) variableTailSkip {
 	}
 }
 
-// genOptionalLayer emits the `?` quantifier: peek the dispatch check
-// from the parent; if it fails we skip the layer entirely without
-// advancing R4. If it succeeds we do the bounds check, predicates,
-// and advance R4. The no-op Mov R3,R3 at the end receives the skip
-// label so both the present and absent paths fall through to the
-// next layer with R4 pointing at the right place. DispatchNoCheck is
-// rejected because there is no way to detect absence when the vocab
-// says "don't look".
-func genOptionalLayer(layer *ir.LayerInstance, index int, all []*ir.LayerInstance, pc *predCtx) (asm.Instructions, error) {
-	if err := optionalLayerGuard(layer, index); err != nil {
+// absentEdgeApplies reports whether the absent path of the absentable
+// layer at `index` carries its own dispatch of the next layer against the
+// grandparent (D-034). It needs a non-absentable, non-alternation
+// grandparent and a plain (QuantOne, non-alternation) next layer; other
+// shapes keep the static-parent dispatch.
+func absentEdgeApplies(index int, all []*ir.LayerInstance) bool {
+	if index < 1 || index+1 >= len(all) || !all[index].Absentable() {
+		return false
+	}
+	gp, next := all[index-1], all[index+1]
+	if gp.Absentable() || gp.Alternation != nil {
+		return false
+	}
+	return next.Quant == ast.QuantOne && next.Alternation == nil && next.Dispatch != nil && !next.Dispatch.IsAltDiverged
+}
+
+// dispatchJoinLabel marks the point in layer `index` just after its own
+// (static-parent) dispatch; the absent edge of an absentable predecessor
+// joins here after dispatching against the grandparent instead.
+func dispatchJoinLabel(index int) string { return fmt.Sprintf("dsl_disp_join_%d", index) }
+
+// dispatchJoin follows a layer's static-parent dispatch. It emits the
+// landing an absentable predecessor's absent edge joins at, and refuses
+// the layer when that dispatch is not sound for every runtime parent
+// (checkRuntimeParentDispatch).
+func dispatchJoin(index int, all []*ir.LayerInstance) (asm.Instructions, error) {
+	if err := checkRuntimeParentDispatch(index, all); err != nil {
 		return nil, err
 	}
+	if index >= 1 && absentEdgeApplies(index-1, all) {
+		return asm.Instructions{asm.Mov.Reg(asm.R0, asm.R0).WithSymbol(dispatchJoinLabel(index))}, nil
+	}
+	return nil, nil
+}
 
-	skipLabel := fmt.Sprintf("dsl_skip_%d", index)
-	body, err := emitPeekedIterZero(layer, index, all, skipLabel, pc)
+// checkRuntimeParentDispatch refuses a layer whose static-parent dispatch
+// would misread under some runtime parent (D-034). When the predecessor
+// is absentable but the absent edge carries no dispatch of its own
+// (absentEdgeApplies is false: consecutive absentables, a quantified
+// next layer), the layer's dispatch runs against its static parent
+// whatever header actually precedes it. That is sound only when every
+// runtime parent dispatches the layer identically — the same constant
+// read from the same bytes relative to the parent's end, as for
+// `eth/qinq?/vlan?/ipv4` where ethertype is the last two bytes of eth,
+// qinq and vlan alike. Alternation groups keep the static rule, as in the
+// resolver.
+func checkRuntimeParentDispatch(index int, all []*ir.LayerInstance) error {
+	if index < 2 || !all[index-1].Absentable() || absentEdgeApplies(index-1, all) {
+		return nil
+	}
+	cur, static := all[index], all[index-1]
+	if cur.Alternation != nil || static.Alternation != nil {
+		return nil
+	}
+	for j := index - 2; j >= 0; j-- {
+		prev := all[j]
+		if prev.Alternation != nil {
+			return nil
+		}
+		same, err := dispatchEquivalent(cur.Spec, static.Spec, prev.Spec)
+		if err != nil {
+			return err
+		}
+		if !same {
+			return fmt.Errorf("%w: %q after optional %q dispatches differently under %q, its parent when %q is absent", ErrNotImplemented, cur.Spec.Name, static.Spec.Name, prev.Spec.Name, static.Spec.Name)
+		}
+		if !prev.Absentable() {
+			break
+		}
+	}
+	return nil
+}
+
+// dispatchEquivalent reports whether `child` dispatches the same way
+// under fixed-layout parents `a` and `b`: both self-validating, both
+// no-check, or the same field constant at the same offset from the
+// parent's end (where the static-parent read lands).
+func dispatchEquivalent(child, a, b *vocab.ProtocolSpec) (bool, error) {
+	ca, cb := child.SelectDispatchConst(a.Name), child.SelectDispatchConst(b.Name)
+	if ca == nil || cb == nil {
+		return ca == nil && cb == nil, nil
+	}
+	if ca.Type != cb.Type {
+		return false, nil
+	}
+	if ca.Type != vocab.DispatchField {
+		return true, nil
+	}
+	if ca.Value != cb.Value || ca.Bits != cb.Bits || !slices.Equal(ca.AltValues, cb.AltValues) {
+		return false, nil
+	}
+	if a.HasVariableLayout() || b.HasVariableLayout() {
+		return false, nil
+	}
+	tail := func(p *vocab.ProtocolSpec, c *vocab.DispatchConst) (int, int, error) {
+		off, width, err := findFieldByteOffset(p, c.FieldName)
+		if err != nil {
+			return 0, 0, err
+		}
+		hs, err := headerSize(p)
+		return off - hs, width, err
+	}
+	ta, wa, err := tail(a, ca)
+	if err != nil {
+		return false, err
+	}
+	tb, wb, err := tail(b, cb)
+	if err != nil {
+		return false, err
+	}
+	return ta == tb && wa == wb, nil
+}
+
+// withAbsentEdge wraps an absentable layer's instructions when its absent
+// edge applies (absentEdgeApplies). `present` is the layer body whose peek
+// jumps to `peekFail` when the layer is absent. The absent path lands on
+// its own block that bounds-checks the next layer, dispatches it against
+// the grandparent (the actual runtime parent, §13.4 parent_dispatch(p, σ,
+// P)), and joins the next layer past its static dispatch; the present
+// path skips that block. When the next layer has no dispatch constant for
+// the grandparent and does not self-validate, the absent path rejects.
+func withAbsentEdge(present asm.Instructions, peekFail string, index int, all []*ir.LayerInstance) (asm.Instructions, error) {
+	if !absentEdgeApplies(index, all) {
+		return nil, fmt.Errorf("codegen: absent edge of layer %d does not apply (chain codegen bug)", index)
+	}
+	gp, next := all[index-1], all[index+1]
+	nextHS, err := headerSize(next.Spec)
 	if err != nil {
 		return nil, err
 	}
-	body = append(body, landingNoop(skipLabel))
-	return body, nil
+	gpHS, err := headerSize(gp.Spec)
+	if err != nil {
+		return nil, err
+	}
+	after := fmt.Sprintf("dsl_after_%d", index)
+	out := append(present, asm.Ja.Label(after))
+	// Absent path: R4 still ends the grandparent, R0/R1 are the scratch window.
+	out = append(out, asm.Mov.Reg(asm.R0, asm.R0).WithSymbol(peekFail))
+	out = append(out, emitBounds(nextHS, dslReject)...)
+	if c := next.Spec.SelectDispatchConst(gp.Spec.Name); c != nil {
+		viaGP := &ir.LayerInstance{Spec: next.Spec, Dispatch: &ir.DispatchChoice{Type: c.Type, Const: c}}
+		di, err := genDispatch(viaGP, gp, gpHS, precedingLayersLeaveR4Range(all, index+1), precedingLayersLeaveR4Range(all, index-1), dslReject)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, di...)
+	} else if !next.Spec.IsSelfValidating() {
+		return nil, fmt.Errorf("codegen: no dispatch constant for %q under %q, its parent when %q is absent", next.Spec.Name, gp.Spec.Name, all[index].Spec.Name)
+	}
+	out = append(out, asm.Ja.Label(dispatchJoinLabel(index+1)))
+	out = append(out, asm.Mov.Reg(asm.R0, asm.R0).WithSymbol(after))
+	return out, nil
 }
 
 // optionalLayerGuard lists the shapes the peek-and-skip path cannot
@@ -1068,6 +1200,9 @@ func emitPeekedIterZero(layer *ir.LayerInstance, index int, all []*ir.LayerInsta
 	}
 	peek, err := genLayerDispatch(layer, all[index-1], precedingLayersLeaveR4Range(all, index), precedingLayersLeaveR4Range(all, index-1), peekFailLabel)
 	if err != nil {
+		return nil, err
+	}
+	if err := checkRuntimeParentDispatch(index, all); err != nil {
 		return nil, err
 	}
 	preds, err := emitPredicates(layer.Predicates, pc)

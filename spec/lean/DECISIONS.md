@@ -265,7 +265,7 @@ Status values: 提案中 (implemented as recommended, awaiting sign-off) /
 - 現行 Go 実装の挙動: 静的 (mpls)。mpls→ipv4 は const 無しで self-validating 扱いになり、さらに option を参照しない filter は parser machine を走らせない (D-029) ため version も見ない。結果 **ethertype 0x0806 (ARP) のフレームを `eth/mpls*/ipv4/tcp` が accept する**。`eth/vlan*/ipv4/tcp` は vlan→ipv4 に ethertype const があるので正しく reject。
 - 推奨: 実行時の直前 layer (σ の最後の instance)。§13.4 の `parent_dispatch(p, σ, P)` は σ に依存する関数として書かれており、Lean もそう実装している。Go は issue。
 - 状態: 承認済 (2026-10-01、一括)
-- 反映先: `Eval/Layer.lean` `dispatch`, generated vectors `quant-mpls-star-zero/flip12`, `/flip13` (goStatus mismatch)
+- 反映先: `Eval/Layer.lean` `dispatch`, generated vectors `quant-mpls-star-zero/flip12`, `/flip13` (`fix/kunai-spec-conformance-2` で Go も一致)。Go 側の grandparent dispatch は「optional layer が 1 つ、その親が optional でなく、次の layer が量化なし」の形。optional が連続する形は静的な親に対する dispatch をそのまま使い、それが実行時のどの親でも同じ読み (同じ定数、親末尾からの同じ位置) になる場合だけ受け付ける (`eth/qinq?/vlan?/ipv4`: ethertype は eth/qinq/vlan いずれも末尾 2 byte)。そうでない形 (`eth/vlan?/mpls?/ipv4`: ipv4 は mpls の下では self-validating、vlan の下では ethertype) は `ErrNotImplemented` (vectors `absent-consecutive-*`)。
 
 ## Go 側への issue 候補 (この作業では変更しない)
 
@@ -283,11 +283,11 @@ Status values: 提案中 (implemented as recommended, awaiting sign-off) /
 
 10. bpf_loop 経路が反復上限で chain-end 信号を要求しない (D-024)。
 
-11. 抽出されなかった option の field 参照が filter 全体を reject する (D-027)。
-12. option を参照しない filter は option を検証しない (D-029)。
-13. count source の無い stack で `all` が capacity 分 unroll される、静的 index が count を見ない、`!=` が範囲外で true (D-031)。
-14. bracket predicate が write-back 前の値を見る (D-032)。
-15. `tcp.options.X.exists` 未実装。
-16. `eth/mpls*/ipv4/tcp` が ARP など非 IP フレームを accept する (D-034 + D-029)。
+11. ✅ 抽出されなかった option の field 参照が filter 全体を reject する (D-027) — atom が false になるよう fail label を通した (`fix/kunai-spec-conformance-2`)。
+12. option を参照しない filter は option を検証しない (D-029) — 未着手 (bulk advance の設計変更が必要)。
+13. ◐ 静的 index が count を見ない・`!=` が範囲外で true (D-031) — count source のある stack (srv6, SACK, RR) は修正。count source の無い stack (ipv6.exts, gtp.exts) の `all` は未着手 (push 数を記録する slot が必要)。
+14. ✅ bracket predicate が write-back 前の値を見る (D-032) — write-back を持つ proto は walk 後に評価。
+15. ✅ `tcp.options.X.exists` を実装。
+16. ◐ `eth/mpls*/ipv4/tcp` が ARP を accept する (D-034) — skip された layer の後の dispatch は実行時の親 (grandparent) に対して行う。optional が連続する形は、全ての実行時の親で dispatch が同じ読みになる場合だけ受け付け (`eth/qinq?/vlan?/ipv4`)、それ以外 (`eth/vlan?/mpls?/ipv4`) は `ErrNotImplemented`。一般の chain は未着手。
 
 残: 量化 layer 以降の where field 参照 (D-003 の実装)、self-validating / 可変長 layer の `?` (D-017 案 c の実装)、NO_CHECK 自己 edge の optional (`mpls/mpls*`)。

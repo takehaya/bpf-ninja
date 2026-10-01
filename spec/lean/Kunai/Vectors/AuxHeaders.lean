@@ -38,8 +38,8 @@ def tcpW (w : Where) (pkt : Packet) (id : String) (expected : Result) (goStatus 
 vector tcpMss := tcpW (cmp mss .eq (k 1460)) (tcpOpts (mssOpt 1460)) "tcp-opt-mss-value" (.accept [])
 vector tcpMssMiss := tcpW (cmp mss .eq (k 1460)) (tcpOpts (mssOpt 1400)) "tcp-opt-mss-mismatch" .reject
 vector tcpMssAbsent := tcpW (cmp mss .eq (k 1460)) ethIPv4TCP "tcp-opt-mss-absent" .reject (note := "D-027: the atom is false")
-vector tcpMssAbsentNot := tcpW (.not (cmp mss .eq (k 1460))) ethIPv4TCP "tcp-opt-mss-absent-not" (.accept []) .mismatch
-  "D-027: absent option ⇒ atom false ⇒ not(false); Go rejects the filter on the sentinel"
+vector tcpMssAbsentNot := tcpW (.not (cmp mss .eq (k 1460))) ethIPv4TCP "tcp-opt-mss-absent-not" (.accept [])
+  (note := "D-027: absent option ⇒ atom false ⇒ not(false)")
 vector tcpMssAfterNop := tcpW (cmp mss .eq (k 1460)) (tcpOpts ([1, 1] ++ mssOpt 1460 ++ [1, 1])) "tcp-opt-mss-after-nop" (.accept [])
 vector tcpUnknownSkipped := tcpW (cmp mss .eq (k 1460)) (tcpOpts ([25, 4, 0, 0] ++ mssOpt 1460)) "tcp-opt-unknown-skipped" (.accept [])
 vector tcpUnknownLen0 := tcpW (cmp mss .eq (k 1460)) (tcpOpts [25, 0, 0, 0]) "tcp-opt-unknown-len0" .reject (note := "D-028: no progress")
@@ -49,10 +49,8 @@ vector tcpOptCross := tcpW (cmp mss .eq (k 1460)) (tcpOpts [1, 1, 2, 4]) "tcp-op
 vector tcpEol := tcpW (cmp dport .eq (k 80)) (tcpOpts [0, 0, 0, 0]) "tcp-opt-eol" (.accept [])
 vector tcpMssDup := tcpW (cmp mss .eq (k 16)) (tcpOpts (mssOpt 1460 ++ mssOpt 16)) "tcp-opt-mss-duplicate-last-wins" (.accept []) (note := "D-030")
 vector tcpMssBadLen := tcpW (cmp mss .eq (k 1460)) (tcpOpts [2, 3, 5, 0xb4]) "tcp-opt-mss-bad-length" .reject
-vector tcpMssExists := tcpW (.fieldExists ⟨[("tcp", none), ("options", none), ("MSS", none)]⟩) (tcpOpts (mssOpt 1460)) "tcp-opt-mss-exists" (.accept []) .mismatch
-  "Go: `tcp.options.MSS.exists` is a resolver error (not yet implemented)"
-vector tcpMssExistsNot := tcpW (.fieldExists ⟨[("tcp", none), ("options", none), ("MSS", none)]⟩) ethIPv4TCP "tcp-opt-mss-exists-absent" .reject .mismatch
-  "Go: `tcp.options.MSS.exists` is a resolver error (not yet implemented)"
+vector tcpMssExists := tcpW (.fieldExists ⟨[("tcp", none), ("options", none), ("MSS", none)]⟩) (tcpOpts (mssOpt 1460)) "tcp-opt-mss-exists" (.accept [])
+vector tcpMssExistsNot := tcpW (.fieldExists ⟨[("tcp", none), ("options", none), ("MSS", none)]⟩) ethIPv4TCP "tcp-opt-mss-exists-absent" .reject
 def sackBlock := Arith.field ⟨[("tcp", none), ("options", none), ("SACK", none), ("blocks", some (.nat 0)), ("left", none)]⟩
 def sackIter (f : String) := Arith.field ⟨[("tcp", none), ("options", none), ("SACK", none), ("blocks", none), (f, none)]⟩
 def sackPkt : Packet := tcpOpts ([1, 1, 5, 10] ++ be 4 100 ++ be 4 200)
@@ -96,7 +94,7 @@ vector ipv6NextHeaderWhere := {
 vector ipv6NextHeaderBracket := {
   id := "ipv6-next-header-writeback-bracket",
   ast := { layers := [P "eth", .proto { name := "ipv6", preds := [.cmp (f "next_header") .eq (.int 6)] }, P "tcp"] }, packet := hbhTcp,
-  expected := .accept [], goStatus := .mismatch, note := "D-032: bracket predicates run after aux-extract (σ'); Go evaluates them on the original header" }
+  expected := .accept [], note := "D-032: bracket predicates run after aux-extract (σ'), so they see the written-back next_header" }
 vector ipv6FiveExts := {
   id := "ipv6-ext-five-at-depth", ast := { layers := ipv6L }, packet := ipv6With 0 (ipv6Ext 60 ++ ipv6Ext 60 ++ ipv6Ext 60 ++ ipv6Ext 60 ++ ipv6Ext 6),
   expected := .accept [], note := "D-026: IPV6_MAX_DEPTH = 4 loop iterations after the first extension" }
@@ -133,7 +131,7 @@ vector srv6AllCidr := {
   id := "srv6-segments-all-cidr", ast := { layers := srv6L, cond := some (.all (.litCmp segIter .eq (.cidr6 0xfc000000000000000000000000000000 8))) }, packet := srv6Two, expected := .accept [] }
 vector srv6IndexAbsent := {
   id := "srv6-segments-index-absent", ast := { layers := srv6L, cond := some (.litCmp (seg (.nat 2)) .ne (.ipv6 s1)) }, packet := srv6Two,
-  expected := .reject, goStatus := .mismatch, note := "D-031: entry 2 was not extracted ⇒ false even for !=; Go's != reads the bytes past the list" }
+  expected := .reject, note := "D-031: entry 2 was not extracted ⇒ false even for !=" }
 vector srv6OverCap := {
   id := "srv6-over-capacity", ast := { layers := srv6L }, packet := srv6Pkt 8 (List.replicate 9 s1), expected := .reject,
   note := "P-Extract-Stack-Full: capacity 8" }

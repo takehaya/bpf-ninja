@@ -28,8 +28,6 @@ def mutations (P : Packet) : List (String × Packet) :=
 /-- Mutations known to hit a documented Go divergence (DECISIONS.md); the
 generated vector inherits its base vector's `goStatus` otherwise. -/
 def goOverrides : List (String × GoStatus × String) := [
-  ("quant-mpls-star-zero/flip12", .mismatch, "D-034: Go dispatches ipv4 against its static parent (mpls, self-validating) and skips the version check (D-029), so an ARP frame is accepted"),
-  ("quant-mpls-star-zero/flip13", .mismatch, "D-034"),
   ("chain-ipv4-ihl6/flip34", .mismatch, "D-029: an unknown ipv4 option kind is only rejected when an option is queried")]
 
 def Vector.mutate (v : Vector) : List Vector :=

@@ -51,9 +51,15 @@ func genStaticChain(layer *ir.LayerInstance, index int, all []*ir.LayerInstance,
 	chainDone := fmt.Sprintf("dsl_chain_done_%d", index)
 	// Iteration 0: mandatory when RangeMin ≥ 1; for `{0,m}` it is the
 	// same peek-and-skip block as `?` (`{0,1}` ≡ `?`), landing on chainDone.
+	// The absent edge (`{0,m}` with no header) gets its own label when it
+	// must dispatch the next layer against the grandparent (D-034).
+	absentLabel := chainDone
+	if absentEdgeApplies(index, all) {
+		absentLabel = fmt.Sprintf("dsl_absent_%d", index)
+	}
 	var first asm.Instructions
 	if optional {
-		first, err = emitPeekedIterZero(layer, index, all, chainDone, pc)
+		first, err = emitPeekedIterZero(layer, index, all, absentLabel, pc)
 	} else {
 		first, err = genStaticLayer(layer, index, all, pc)
 	}
@@ -70,10 +76,7 @@ func genStaticChain(layer *ir.LayerInstance, index int, all []*ir.LayerInstance,
 			return nil, err
 		}
 		insns = append(insns, overRun...)
-		if optional {
-			insns = append(insns, landingNoop(chainDone))
-		}
-		return insns, nil
+		return chainLanding(insns, layer, optional, chainDone, absentLabel, index, all)
 	}
 
 	selfConst := layer.Spec.SelectDispatchConst(layer.Spec.Name)
@@ -151,13 +154,22 @@ func genStaticChain(layer *ir.LayerInstance, index int, all []*ir.LayerInstance,
 		return nil, err
 	}
 	insns = append(insns, overRun...)
+	return chainLanding(insns, layer, optional, chainDone, absentLabel, index, all)
+}
 
-	if layer.RangeMin < layer.RangeMax {
-		// Landing for any in-range iteration that hit its natural chain-end
-		// (or, for self-dispatch protocols, missed its self-dispatch peek):
-		// falls through to the next layer with offsetBase still pointing
-		// past the last successful iteration.
+// chainLanding closes a static chain. chainDone is where an in-range
+// iteration ≥ 1 that hit its natural chain-end (or, for self-dispatch
+// protocols, missed its self-dispatch peek) falls through to the next
+// layer with offsetBase still past the last successful iteration; for an
+// optional chain the iteration-0 peek miss lands there too, unless the
+// absent edge has its own block that dispatches the next layer against
+// the grandparent (D-034).
+func chainLanding(insns asm.Instructions, layer *ir.LayerInstance, optional bool, chainDone, absentLabel string, index int, all []*ir.LayerInstance) (asm.Instructions, error) {
+	if (layer.RangeMax > 1 && layer.RangeMin < layer.RangeMax) || (optional && absentLabel == chainDone) {
 		insns = append(insns, landingNoop(chainDone))
+	}
+	if optional && absentLabel != chainDone {
+		return withAbsentEdge(insns, absentLabel, index, all)
 	}
 	return insns, nil
 }

@@ -36,7 +36,7 @@ var (
 		vocab.Field{Name: "src", Bits: 48},
 		vocab.Field{Name: "ethertype", Bits: 16},
 	)
-	ipv4Spec = newSpec("ipv4", "ipv4_h",
+	ipv4Spec = newSpecWithConsts("ipv4", "ipv4_h", []vocab.Field{
 		vocab.Field{Name: "version", Bits: 4},
 		vocab.Field{Name: "ihl", Bits: 4},
 		vocab.Field{Name: "diffserv", Bits: 8},
@@ -49,8 +49,8 @@ var (
 		vocab.Field{Name: "checksum", Bits: 16},
 		vocab.Field{Name: "src", Bits: 32},
 		vocab.Field{Name: "dst", Bits: 32},
-	)
-	ipv6Spec = newSpec("ipv6", "ipv6_h",
+	}, *ipv4EthertypeConst)
+	ipv6Spec = newSpecWithConsts("ipv6", "ipv6_h", []vocab.Field{
 		vocab.Field{Name: "version", Bits: 4},
 		vocab.Field{Name: "traffic_class", Bits: 8},
 		vocab.Field{Name: "flow_label", Bits: 20},
@@ -59,8 +59,8 @@ var (
 		vocab.Field{Name: "hop_limit", Bits: 8},
 		vocab.Field{Name: "src", Bits: 128},
 		vocab.Field{Name: "dst", Bits: 128},
-	)
-	tcpSpec = newSpec("tcp", "tcp_h",
+	}, *ipv6EthertypeConst)
+	tcpSpec = newSpecWithConsts("tcp", "tcp_h", []vocab.Field{
 		vocab.Field{Name: "sport", Bits: 16},
 		vocab.Field{Name: "dport", Bits: 16},
 		vocab.Field{Name: "seq", Bits: 32},
@@ -71,7 +71,11 @@ var (
 		vocab.Field{Name: "window", Bits: 16},
 		vocab.Field{Name: "checksum", Bits: 16},
 		vocab.Field{Name: "urgent_ptr", Bits: 16},
-	)
+	}, *tcpProtocolConst)
+	ipv6EthertypeConst = &vocab.DispatchConst{
+		Type: vocab.DispatchField, Name: "IPV6_ETH_ETHERTYPE",
+		Parent: "eth", FieldName: "ethertype", Bits: 16, Value: 0x86DD,
+	}
 	ipv4EthertypeConst = &vocab.DispatchConst{
 		Type: vocab.DispatchField, Name: "IPV4_ETH_ETHERTYPE",
 		Parent: "eth", FieldName: "ethertype", Bits: 16, Value: 0x0800,
@@ -783,7 +787,9 @@ func TestGenOptionalLayerEmitsSkipMarker(t *testing.T) {
 	}
 	var skipSeen bool
 	for _, ins := range out.Main {
-		if sym := ins.Symbol(); sym == "dsl_skip_1" {
+		// `?` lowers to `{0,1}`: the absent path lands on dsl_absent_1 when it
+		// re-dispatches the next layer, else on the chain-done landing.
+		if sym := ins.Symbol(); sym == "dsl_absent_1" || sym == "dsl_chain_done_1" {
 			skipSeen = true
 		}
 	}
@@ -1221,4 +1227,37 @@ func TestFindFieldRejectsNonByteAligned(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for non-byte-sized field")
 	}
+}
+
+// TestGenOptionalEqualsRange01 pins that `mpls?` and `mpls{0,1}` are one
+// lowering (spec D-005/D-024, Laws.lean opt_eq_range): same instructions.
+func TestGenOptionalEqualsRange01(t *testing.T) {
+	build := func(q ast.QuantKind, lo, hi int) asm.Instructions {
+		eth := &ir.LayerInstance{Spec: ethSpec}
+		mpls := &ir.LayerInstance{
+			Spec:     mplsSpecForChain,
+			Dispatch: &ir.DispatchChoice{Type: vocab.DispatchField, Const: mplsFromEthConst},
+			Quant:    q, RangeMin: lo, RangeMax: hi,
+		}
+		out, err := Gen(&ir.Program{Layers: []*ir.LayerInstance{eth, mpls}}, Capabilities{})
+		if err != nil {
+			t.Fatalf("Gen(%v): %v", q, err)
+		}
+		return out.Main
+	}
+	opt, rng := build(ast.QuantOpt, 0, 0), build(ast.QuantRange, 0, 1)
+	if len(opt) != len(rng) {
+		t.Fatalf("mpls? emits %d insns, mpls{0,1} emits %d; expected the same lowering", len(opt), len(rng))
+	}
+	for i := range opt {
+		if a, b := insnKey(opt[i]), insnKey(rng[i]); a != b {
+			t.Fatalf("insn %d differs: %s vs %s", i, a, b)
+		}
+	}
+}
+
+// insnKey renders an instruction with its label and jump target so two
+// streams compare on everything but metadata identity.
+func insnKey(ins asm.Instruction) string {
+	return fmt.Sprintf("%v sym=%q ref=%q", ins, ins.Symbol(), ins.Reference())
 }

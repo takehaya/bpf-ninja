@@ -137,8 +137,38 @@ func (r *resolver) resolveFilter(f *ast.Filter) (*ir.Program, error) {
 	}
 	addChainRootWarning(p, f, r.opts)
 	addUnreachableChainWarning(p)
+	if err := checkRuntimeParents(p, f); err != nil {
+		return nil, err
+	}
 	markRuntimeOffsetLayers(p)
 	return p, nil
+}
+
+// checkRuntimeParents requires a dispatch (constant or self-validation)
+// from every layer that can precede a layer at run time, not only from
+// its static predecessor: §13.4 evaluates parent_dispatch against σ, and
+// an absentable predecessor leaves the layer before it as the parent.
+// Alternation groups keep the static rule.
+func checkRuntimeParents(p *ir.Program, f *ast.Filter) error {
+	for i := 2; i < len(p.Layers) && i < len(f.Layers); i++ {
+		cur := p.Layers[i]
+		if cur.Alternation != nil || !p.Layers[i-1].Absentable() {
+			continue
+		}
+		for j := i - 2; j >= 0; j-- {
+			prev := p.Layers[j]
+			if prev.Alternation != nil {
+				break
+			}
+			if _, err := selectDispatch(cur.Spec, prev.Spec.Name, f.Layers[i].Pos); err != nil {
+				return err
+			}
+			if !prev.Absentable() {
+				break
+			}
+		}
+	}
+	return nil
 }
 
 // addUnreachableChainWarning flags a quantified layer immediately
