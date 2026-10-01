@@ -1635,8 +1635,11 @@ func fieldRefByteOffset(ref *ir.FieldRef) (int, int, error) {
 	}
 	off := ref.Aux.OffsetInLayer + ref.Aux.FieldBitOff/8
 	if ref.Aux.Stack != nil {
-		if !ref.Aux.Stack.IsStatic {
-			return 0, 0, fmt.Errorf("%w: dynamic aux header stack index requires runtime offset emit (use emitAuxStackDynamicLoad)", ErrNotImplemented)
+		// Entries whose offset is only known at run time (a dynamic index,
+		// or a static index behind variable-length entries) have no
+		// constant fold: callers must go through emitStackEntryAddress.
+		if needsEntryAddress(ref) {
+			return 0, 0, fmt.Errorf("%w: %s.%s entry has no constant offset (runtime index or variable-length entries); use emitStackEntryAddress", ErrNotImplemented, ref.Layer.Spec.Name, ref.Aux.OutParam)
 		}
 		off += int(ref.Aux.Stack.Static) * ref.Aux.HeaderSize
 	}
@@ -1756,7 +1759,7 @@ func emitAuxGating(g *vocab.AuxGating, base layerAnchor, failLabel string) asm.I
 	return insns
 }
 
-// emitDynamicStackAddress emits the runtime index source byte read,
+// emitDynamicStackAddressCounted emits the runtime index source byte read,
 // bounds check, and multiply-add address compute for a dynamic aux
 // header stack index. After it runs, R5 holds the absolute scratch
 // address of the addressed stack entry's start. Callers append one
@@ -1785,17 +1788,14 @@ func emitAuxGating(g *vocab.AuxGating, base layerAnchor, failLabel string) asm.I
 //
 // The computed element offset is checked against both ScratchBufSize and
 // the materialised packet end before exposing its address to callers.
-func emitDynamicStackAddress(ref *ir.FieldRef, base layerAnchor, failLabel string) (asm.Instructions, error) {
-	return emitDynamicStackAddressCounted(ref, base, nil, failLabel)
-}
-
-// emitDynamicStackAddressCounted is emitDynamicStackAddress with an
-// optional runtime count: when countSlot names a push count slot, an
-// index at or past the pushed entries jumps to failLabel (the entry is
-// absent, spec D-031) instead of reading the bytes after the stack.
+//
+// countSlot, when it names a push count slot, bounds the index by the
+// pushed entries as well: an index at or past them jumps to failLabel
+// (the entry is absent, spec D-031) instead of reading the bytes after
+// the stack.
 func emitDynamicStackAddressCounted(ref *ir.FieldRef, base layerAnchor, countSlot *int16, failLabel string) (asm.Instructions, error) {
 	if ref == nil || ref.Aux == nil || ref.Aux.Stack == nil || ref.Aux.Stack.IsStatic {
-		return nil, fmt.Errorf("codegen: emitDynamicStackAddress called on non-dynamic ref")
+		return nil, fmt.Errorf("codegen: emitDynamicStackAddressCounted called on non-dynamic ref")
 	}
 	stack := ref.Aux.Stack
 	if stack.Dynamic == nil {
@@ -1862,7 +1862,7 @@ func emitDynamicStackAddressCounted(ref *ir.FieldRef, base layerAnchor, countSlo
 // emitRuntimeAuxElementAddr loads `size` bytes of an aux-stack element
 // field at the bpf_loop runtime index, for use INSIDE an aux-walk
 // callback (genAuxWalkCallback). It mirrors the element-address
-// arithmetic of emitDynamicStackAddress but takes the index from R1
+// arithmetic of emitDynamicStackAddressCounted but takes the index from R1
 // (the bpf_loop iteration variable) rather than a primary-header field,
 // and addresses against the callback frame: R2 = &ctx, R4 = scratchStart,
 // R5 = scratchEnd. The element's byte offset from scratch start is
@@ -1938,7 +1938,7 @@ type resolveAuxSlot func(*ir.FieldRef) (int16, bool)
 //   - Single aux + static stack: prelude is empty, loadAt routes
 //     through emitFieldLoad with anchor + (OffsetInLayer +
 //     Static*ElemSize + FieldByteOff + chunkOff).
-//   - Dynamic stack: prelude is emitDynamicStackAddress (R5 = element
+//   - Runtime-offset stack entry: prelude is emitStackEntryAddress (R5 = element
 //     start), loadAt is LoadMem(R3, R5, FieldByteOff+chunkOff, size).
 //   - Owner-bound static stack: prelude loads the owner option's
 //     dynamic-aux slot, sentinel-checks, sets R5 = R0 + slot +
@@ -1953,10 +1953,10 @@ func auxLoadEmitter(ref *ir.FieldRef, anchor layerAnchor, resolveSlot resolveAux
 		return nil, nil, fmt.Errorf("codegen: auxLoadEmitter on non-aux FieldRef")
 	}
 	aux := ref.Aux
-	if aux.FieldBitOff%8 != 0 || aux.FieldBitWidth%8 != 0 {
-		return nil, nil, fmt.Errorf("%w: aux field %s.%s.%s not byte-aligned", ErrNotImplemented, ref.Layer.Spec.Name, aux.OutParam, ref.Field.Name)
+	fieldByteOff, _, err := auxEntryFieldWindow(ref)
+	if err != nil {
+		return nil, nil, err
 	}
-	fieldByteOff := aux.FieldBitOff / 8
 
 	if aux.OwnerOption != nil {
 		if aux.Stack == nil || !aux.Stack.IsStatic {
@@ -1997,8 +1997,10 @@ func auxLoadEmitter(ref *ir.FieldRef, anchor layerAnchor, resolveSlot resolveAux
 		}, nil
 	}
 
-	if aux.Stack != nil && !aux.Stack.IsStatic {
-		prelude, err := emitDynamicStackAddress(ref, anchor, failLabel)
+	if needsEntryAddress(ref) {
+		// Dynamic index, or a static index behind variable-length entries:
+		// R5 = entry start, per-chunk loads are R5-relative.
+		prelude, err := emitStackEntryAddress(ref, anchor, nil, failLabel)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -2093,17 +2095,115 @@ func emitFieldLoad(anchor layerAnchor, fieldOff int, size asm.Size) asm.Instruct
 	}
 }
 
+// emitStackEntryAddress leaves R5 = the start of the stack entry `ref`
+// names and R3 = R5 + HeaderSize (proved inside the window), for entries
+// whose offset is not a compile-time constant (needsEntryAddress): a
+// dynamic index (emitDynamicStackAddressCounted, bounded by `countSlot` when
+// given), or a static index walked through variable-length entries
+// (emitStaticStackEntryAddress). R2/R3 are clobbered.
+func emitStackEntryAddress(ref *ir.FieldRef, base layerAnchor, countSlot *int16, failLabel string) (asm.Instructions, error) {
+	if ref.Aux.Stack.IsStatic {
+		return emitStaticStackEntryAddress(ref, base, failLabel)
+	}
+	if isVarTailStack(ref) {
+		return nil, fmt.Errorf("%w: dynamic index into %s.%s, whose entries are variable-length; use a constant index or any/all", ErrNotImplemented, ref.Layer.Spec.Name, ref.Aux.OutParam)
+	}
+	return emitDynamicStackAddressCounted(ref, base, countSlot, failLabel)
+}
+
+// needsEntryAddress reports whether a stack reference's entry offset is
+// only known at run time: a dynamic index, or a static index into
+// variable-length entries (isVarTailStack).
+func needsEntryAddress(ref *ir.FieldRef) bool {
+	return ref != nil && ref.Aux != nil && ref.Aux.Stack != nil && (!ref.Aux.Stack.IsStatic || isVarTailStack(ref))
+}
+
+// isVarTailStack reports whether the stack `ref` indexes holds entries
+// with a @kunai_variable_tail (ipv6.exts: 8 + 8·hdr_ext_len bytes), so
+// entry i does not sit at base + i·ElemSize.
+func isVarTailStack(ref *ir.FieldRef) bool {
+	if ref == nil || ref.Aux == nil || ref.Aux.Stack == nil || ref.Aux.OwnerOption != nil || ref.Layer == nil {
+		return false
+	}
+	_, ok := variableTailFor(ref.Layer.Spec, ref.Aux.HeaderName)
+	return ok
+}
+
+// auxEntryFieldWindow is the byte window of `ref`'s field inside its aux
+// entry, narrowed by a bit slice like fieldRefByteOffset narrows a
+// layer-relative offset: (offset from the entry start, load bytes).
+func auxEntryFieldWindow(ref *ir.FieldRef) (int, int, error) {
+	if ref.Aux.FieldBitOff%8 != 0 || ref.Aux.FieldBitWidth%8 != 0 {
+		return 0, 0, fmt.Errorf("%w: aux field %s.%s.%s not byte-aligned", ErrNotImplemented, ref.Layer.Spec.Name, ref.Aux.OutParam, ref.Field.Name)
+	}
+	return applySliceToOffset(ref, ref.Aux.FieldBitOff/8, ref.Aux.FieldBitWidth/8)
+}
+
+// emitStaticStackEntryAddress leaves R5 = the start of entry `Static`
+// (and R3 = R5 + HeaderSize, proved inside the window). Fixed-size
+// entries sit at base + Static·ElemSize; entries with a variable tail
+// are walked: entry₀ starts at the stack base, entry_{k+1} at entry_k +
+// ElemSize + tail(entry_k), measured with the parser's own arithmetic
+// (emitTailLengthScalar). The caller has already guarded the index
+// against the push count, so every entry walked is present; the loads
+// are still bounded for the verifier. R2/R3 are clobbered.
+func emitStaticStackEntryAddress(ref *ir.FieldRef, base layerAnchor, failLabel string) (asm.Instructions, error) {
+	// R3 = scalar offset of entry 0.
+	var insns asm.Instructions
+	switch {
+	case base.UseSlot:
+		insns = append(insns, asm.LoadMem(asm.R3, asm.R10, base.SlotOff, asm.DWord), asm.Add.Imm(asm.R3, int32(ref.Aux.OffsetInLayer)))
+	case base.UseR4:
+		insns = append(insns, asm.Mov.Reg(asm.R3, offsetBase), asm.Add.Imm(asm.R3, int32(ref.Aux.OffsetInLayer)))
+	default:
+		insns = append(insns, asm.Mov.Imm(asm.R3, int32(base.AbsOffset+ref.Aux.OffsetInLayer)))
+	}
+	vt, varTail := variableTailFor(ref.Layer.Spec, ref.Aux.HeaderName)
+	switch {
+	case !varTail:
+		if ref.Aux.Stack.Static > 0 {
+			insns = append(insns, asm.Add.Imm(asm.R3, int32(ref.Aux.Stack.Static)*int32(ref.Aux.HeaderSize)))
+		}
+	default:
+		shift := log2PowerOfTwo(vt.Scale)
+		if shift < 0 {
+			return nil, fmt.Errorf("%w: variable-tail scale %d is not a power of two", ErrNotImplemented, vt.Scale)
+		}
+		for k := uint64(0); k < ref.Aux.Stack.Static; k++ {
+			// R2 = tail(entry_k) from its length byte; R3 += ElemSize + R2.
+			insns = append(insns, asm.Mov.Reg(asm.R2, asm.R3), asm.Add.Imm(asm.R2, int32(vt.LenFieldByteOff)))
+			insns = append(insns, boundedScalarLoad(asm.R2, asm.R0, asm.R2, asm.R1, asm.Byte, failLabel)...)
+			insns = append(insns, emitTailLengthScalar(vt, shift, asm.R2, failLabel)...)
+			insns = append(insns, asm.Add.Imm(asm.R3, int32(ref.Aux.HeaderSize)), asm.Add.Reg(asm.R3, asm.R2))
+		}
+	}
+	// Same exposure as emitDynamicStackAddressCounted: bound the scalar, form the
+	// pointer, prove the fixed part of the entry is inside the window.
+	insns = append(insns,
+		asm.JGT.Imm(asm.R3, int32(ScratchBufSize-ref.Aux.HeaderSize), failLabel),
+		asm.Mov.Reg(asm.R5, asm.R0),
+		asm.Add.Reg(asm.R5, asm.R3),
+		asm.Mov.Reg(asm.R3, asm.R5),
+		asm.Add.Imm(asm.R3, int32(ref.Aux.HeaderSize)),
+		asm.JGT.Reg(asm.R3, asm.R1, failLabel),
+	)
+	return insns, nil
+}
+
 // emitDynamicStackLoad is the single-LDX convenience built on
-// emitDynamicStackAddress for predicate-emit-time callers (R4 still
-// at layer entry). Multi-byte literals (IPv6, MAC, multi-half CIDR)
-// call emitDynamicStackAddress directly so they can issue multiple
-// LDX from the same R5 base.
+// emitStackEntryAddress for predicate-emit-time callers (R4 still at
+// layer entry). Multi-byte literals (IPv6, MAC, multi-half CIDR) go
+// through auxLoadEmitter so they can issue multiple LDX from the same
+// R5 base.
 func emitDynamicStackLoad(ref *ir.FieldRef, size asm.Size, failLabel string) (asm.Instructions, error) {
-	addr, err := emitDynamicStackAddress(ref, r4Anchor(), failLabel)
+	addr, err := emitStackEntryAddress(ref, r4Anchor(), nil, failLabel)
 	if err != nil {
 		return nil, err
 	}
-	fieldByteOff := ref.Aux.FieldBitOff / 8
+	fieldByteOff, _, err := auxEntryFieldWindow(ref)
+	if err != nil {
+		return nil, err
+	}
 	return append(addr, asm.LoadMem(asm.R3, asm.R5, int16(fieldByteOff), size)), nil
 }
 

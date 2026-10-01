@@ -338,8 +338,14 @@ func (c *whereCtx) genQuantUnroll(w *ir.Condition, acceptLabel, failLabel string
 	if err != nil {
 		return nil, err
 	}
+	// A push-counted stack holds at most one inline push plus one per
+	// walk iteration; entries past that bound never exist.
+	n := target.Capacity
+	if countSrc != nil && countSrc.Stack != "" {
+		n = min(n, pushBound(target.Layer.Spec, countSrc.Stack))
+	}
 	var insns asm.Instructions
-	for i := 0; i < target.Capacity; i++ {
+	for i := 0; i < n; i++ {
 		iterSkip := c.freshLabel("quant_skip")
 		// Per-iteration runtime count guard: when present, skip the
 		// body for iter ≥ count. The check is `count <= i → skip`,
@@ -359,6 +365,59 @@ func (c *whereCtx) genQuantUnroll(w *ir.Condition, acceptLabel, failLabel string
 		insns = append(insns, landingNoop(iterSkip))
 	}
 	return insns, nil
+}
+
+// pushBound is the most entries a parser machine can push onto `stack`:
+// one per state that pushes onto it, plus MAX_DEPTH more for each such
+// state when the machine loops (a direct self-edge, or an indirect loop
+// through a sibling: every lowering caps its iterations at MAX_DEPTH,
+// parser_loop.go emitSelfLoop / emitMultiStateSelfLoop). A machine
+// without a backward transition pushes each site once.
+func pushBound(spec *vocab.ProtocolSpec, stack string) int {
+	depth := spec.MaxDepth
+	if depth == 0 {
+		depth = defaultChainDepth
+	}
+	m := spec.ParseStateMachine
+	loops := false
+	for i, st := range m.States {
+		for _, t := range transitionTargets(st.Trans) {
+			if t >= 0 && t <= i {
+				loops = true
+			}
+		}
+	}
+	n := 0
+	for _, st := range m.States {
+		for _, ex := range st.Extracts {
+			if ex.IsStackPush && ex.OutParam == stack {
+				n++
+				if loops {
+					n += depth
+				}
+			}
+		}
+	}
+	return n
+}
+
+// transitionTargets lists the state indices a transition can reach
+// (accept / reject are negative sentinels and listed as-is).
+func transitionTargets(t vocab.TransitionOp) []int {
+	switch t.Kind {
+	case vocab.TransDirect:
+		return []int{t.Target}
+	case vocab.TransSelect:
+		if t.Select == nil {
+			return nil
+		}
+		out := []int{t.Select.Default}
+		for _, cs := range t.Select.Cases {
+			out = append(out, cs.Target)
+		}
+		return out
+	}
+	return nil
 }
 
 // genQuantIterBody clones the inner condition with the iterator
@@ -1216,29 +1275,33 @@ func (c *whereCtx) genArithFieldLoad(f *ir.FieldRef) (asm.Instructions, error) {
 	if slot, ok := c.dynamicOffsetSlotFor(f); ok {
 		return c.genDynamicOffsetAuxLoad(f, slot)
 	}
-	if f.Aux != nil && f.Aux.Stack != nil && !f.Aux.Stack.IsStatic {
-		// Dynamic stack index in a where clause: fold runtime offset
-		// computation off the layer's where-context anchor, then
-		// byte-swap the loaded value to natural order so downstream
-		// arithmetic / comparison sees the network-order integer.
+	if needsEntryAddress(f) {
+		// Dynamic stack index, or a static index into a stack of
+		// variable-length entries: compute the entry's runtime offset off
+		// the layer's where-context anchor, then byte-swap the loaded
+		// value to natural order so downstream arithmetic / comparison
+		// sees the network-order integer; a bit slice narrows it after.
 		anchor, err := c.layerAnchorFor(f.Layer)
 		if err != nil {
 			return nil, err
 		}
-		fieldBytes := f.Aux.FieldBitWidth / 8
+		fieldByteOff, fieldBytes, err := auxEntryFieldWindow(f)
+		if err != nil {
+			return nil, err
+		}
 		size, err := asmSizeFor(fieldBytes)
 		if err != nil {
 			return nil, err
 		}
-		addr, err := c.emitDynamicStackAddress(f, anchor, c.absent())
+		addr, err := c.stackEntryAddress(f, anchor, c.absent())
 		if err != nil {
 			return nil, err
 		}
-		fieldByteOff := f.Aux.FieldBitOff / 8
 		insns := append(addr, asm.LoadMem(asm.R3, asm.R5, int16(fieldByteOff), size))
 		if fieldBytes > 1 {
 			insns = append(insns, asm.HostTo(asm.BE, asm.R3, size))
 		}
+		insns = append(insns, emitSliceShiftMask(f, fieldBytes)...)
 		return insns, nil
 	}
 	anchor, err := c.layerAnchorFor(f.Layer)
@@ -1489,7 +1552,8 @@ func genActionAtom(w *ir.Condition, lang LangCaps, failLabel string) (asm.Instru
 // For aux refs:
 //   - Single auxes and static stack indices fold into a fixed
 //     `base` offset; gating fires before the load when present.
-//   - Dynamic stack indices route through emitDynamicStackAddress,
+//   - Runtime-offset entries (dynamic index, variable-length entries)
+//     route through emitStackEntryAddress,
 //     which leaves R5 = element start so subsequent LDX use
 //     R5-relative offsets instead of R0-relative.
 func (c *whereCtx) genLiteralCompare(w *ir.Condition, failLabel string) (asm.Instructions, error) {
@@ -1504,7 +1568,7 @@ func (c *whereCtx) genLiteralCompare(w *ir.Condition, failLabel string) (asm.Ins
 	if ref.Aux != nil && ref.Aux.OwnerOption != nil {
 		return c.genOwnerBoundLiteralCompare(w, failLabel)
 	}
-	if ref.Aux != nil && ref.Aux.Stack != nil && !ref.Aux.Stack.IsStatic {
+	if needsEntryAddress(ref) {
 		return c.genLiteralCompareDynamic(w, failLabel)
 	}
 	anchor, err := c.layerAnchorFor(ref.Layer)
@@ -1608,11 +1672,11 @@ func whereLiteralFieldOffset(ref *ir.FieldRef) (int, int, error) {
 // the parser-machine self-loop.
 func (c *whereCtx) genLiteralCompareDynamic(w *ir.Condition, failLabel string) (asm.Instructions, error) {
 	ref := w.LiteralField
-	if ref.Aux.FieldBitOff%8 != 0 || ref.Aux.FieldBitWidth%8 != 0 {
-		return nil, fmt.Errorf("%w: aux field %s.%s.%s not byte-aligned", ErrNotImplemented, ref.Layer.Spec.Name, ref.Aux.OutParam, ref.Field.Name)
+	off, fieldBytes, err := auxEntryFieldWindow(ref)
+	if err != nil {
+		return nil, err
 	}
-	fieldByteOff := int16(ref.Aux.FieldBitOff / 8)
-	fieldBytes := ref.Aux.FieldBitWidth / 8
+	fieldByteOff := int16(off)
 
 	switch w.LiteralValue.Kind {
 	case ast.ValIPv4:
@@ -1930,19 +1994,19 @@ func (c *whereCtx) dynamicOffsetSlotFor(f *ir.FieldRef) (int16, bool) {
 	return c.queried.dynamicAuxSlotForLayout(f.Layer, layout)
 }
 
-// emitDynamicStackAddress is the where-side emitDynamicStackAddress: a
-// dynamic index into a push-counted stack is also bounded by the push
-// count slot (D-031).
-func (c *whereCtx) emitDynamicStackAddress(ref *ir.FieldRef, base layerAnchor, failLabel string) (asm.Instructions, error) {
+// stackEntryAddress is the where-side emitStackEntryAddress: a dynamic
+// index into a push-counted stack is also bounded by the push count slot
+// (D-031).
+func (c *whereCtx) stackEntryAddress(ref *ir.FieldRef, base layerAnchor, failLabel string) (asm.Instructions, error) {
 	var countSlot *int16
-	if needsPushCount(ref) {
+	if !ref.Aux.Stack.IsStatic && needsPushCount(ref) {
 		slot, ok := c.queried.stackCountSlot(ref.Layer, ref.Aux.OutParam)
 		if !ok {
 			return nil, fmt.Errorf("codegen: push count of stack %q not in demand set", ref.Aux.OutParam)
 		}
 		countSlot = &slot
 	}
-	return emitDynamicStackAddressCounted(ref, base, countSlot, failLabel)
+	return emitStackEntryAddress(ref, base, countSlot, failLabel)
 }
 
 // absent is the jump target for a field whose option, gated aux, or
@@ -2027,14 +2091,14 @@ func whereDynamicMultiByte(c *whereCtx, ref *ir.FieldRef, op ast.CmpOp, failLabe
 	// layerAnchorFor (not the static-only layerOffset) so a dynamic aux
 	// index resolves correctly when its layer sits past a runtime-offset
 	// boundary (e.g. srv6 segments after ipv6 ext headers, or any stack
-	// past a variable-length predecessor). emitDynamicStackAddress
+	// past a variable-length predecessor). emitStackEntryAddress
 	// already handles slot anchors.
 	anchor, err := c.layerAnchorFor(ref.Layer)
 	if err != nil {
 		return nil, err
 	}
 	if op == ast.CmpEq {
-		addr, err := c.emitDynamicStackAddress(ref, anchor, failLabel)
+		addr, err := c.stackEntryAddress(ref, anchor, failLabel)
 		if err != nil {
 			return nil, err
 		}
@@ -2042,7 +2106,7 @@ func whereDynamicMultiByte(c *whereCtx, ref *ir.FieldRef, op ast.CmpOp, failLabe
 	}
 	// An entry that is not there makes the atom false for `!=` too (D-031).
 	match := c.freshLabel("where_lit_match")
-	addr, err := c.emitDynamicStackAddress(ref, anchor, failLabel)
+	addr, err := c.stackEntryAddress(ref, anchor, failLabel)
 	if err != nil {
 		return nil, err
 	}

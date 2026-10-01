@@ -1,5 +1,6 @@
 import Kunai.Eval.Core
 import Kunai.Eval.Machine
+import Kunai.Eval.Where
 
 /-!
 # Layers and chains (§13.3–§13.5, plus alternation)
@@ -50,30 +51,29 @@ def dispatch (c : Ctx) (st : State) (child : String) : Disp :=
           if failed then .miss else .ok
       | none => .illTyped s!"unknown protocol {child}"
 
-/-- Bracket field: a single segment naming a field of the layer's own header. -/
-private def bracketField (c : Ctx) (spec : ProtoSpec) (inst : Inst) (f : FieldPath)
-    : Except String (FieldSpec × Nat) :=
-  match f.segs with
-  | [(name, none)] =>
-    match spec.field? name with
-    | none => throw s!"unknown field {spec.name}.{name}"
-    | some fs =>
-      match readField c.P inst fs with
-      | some n => pure (fs, n)
-      | none => throw "internal: primary field outside the header"
-  | _ => throw s!"unsupported: bracket field path {f.text}"
+private def typed (e : Except String α) : Except Stop α :=
+  match e with
+  | .ok a => pure a
+  | .error r => throw (.illTyped r)
 
-/-- E-Pred-Cmp, plus `in [...]` (D-011). -/
-def evalPred (c : Ctx) (spec : ProtoSpec) (inst : Inst) : Predicate → Except String Bool
+/-- E-Pred-Cmp, plus `in [...]` (D-011). The bracket field is read on the
+layer's own instance with the where rules: an absent aux or stack entry
+makes the predicate false (D-027, D-031), and the value seen is the one
+after write-back (D-032). -/
+def evalPred (c : Ctx) (spec : ProtoSpec) (inst : Inst) : Predicate → Except Stop Bool
   | .cmp f op v => do
-    let (fs, n) ← bracketField c spec inst f
-    cmpValue fs.width n op v
+    let r ← resolveBracket c spec f
+    match ← loadRefOn c [] inst r with
+    | none => pure false
+    | some n => typed (cmpValue r.width n op v)
   | .inList f vs => do
-    let (fs, n) ← bracketField c spec inst f
-    vs.anyM fun
+    let r ← resolveBracket c spec f
+    match ← loadRefOn c [] inst r with
+    | none => pure false
+    | some n => vs.anyM fun
       | .range lo hi => pure (lo ≤ n && n ≤ hi)
-      | v => cmpValue fs.width n .eq v
-  | .inSet .. => throw "unsupported: in @set"
+      | v => typed (cmpValue r.width n .eq v)
+  | .inSet .. => throw (.illTyped "unsupported: in @set")
 
 /-- E-Layer-Proto-1 and its three failure rules. -/
 def extract (c : Ctx) (st : State) (p : ProtoLayer) : Except LayerFail State := do
@@ -124,7 +124,8 @@ def extract (c : Ctx) (st : State) (p : ProtoLayer) : Except LayerFail State := 
   -- [E-Layer-Proto-1-Fail-Pred]
   for ρ in p.preds do
     match evalPred c spec inst ρ with
-    | .error r => throw (.illTyped r)
+    | .error .reject => throw .bounds
+    | .error (.illTyped r) => throw (.illTyped r)
     | .ok false => throw .pred
     | .ok true => pure ()
   pure { cursor := st.cursor + len, insts := st.insts ++ [inst],
