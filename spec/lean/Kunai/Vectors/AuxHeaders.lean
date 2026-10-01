@@ -87,7 +87,7 @@ vector ipv6ExtsIndex1 := {
   id := "ipv6-exts-index-1", ast := { layers := ipv6L, cond := some (cmp exts1 .eq (k 6)) }, packet := twoExts, expected := .accept [] }
 vector ipv6ExtsIndexAbsent := {
   id := "ipv6-exts-index-absent", ast := { layers := ipv6L, cond := some (cmp exts1 .eq (k 6)) }, packet := ipv6With 0 (ipv6Ext 6) (sport := 0x0600),
-  expected := .reject, goStatus := .mismatch, note := "D-031: entry 1 was not extracted ⇒ false; Go reads the bytes at the slot (tcp.sport = 0x0600 makes them look like next_header 6)" }
+  expected := .reject, note := "D-031: entry 1 was not extracted ⇒ false (Go: the push count slot guards the static index; tcp.sport = 0x0600 would otherwise look like next_header 6)" }
 vector ipv6NextHeaderWhere := {
   id := "ipv6-next-header-writeback-where", ast := { layers := ipv6L, cond := some (cmp (fld "ipv6" "next_header") .eq (k 6)) },
   packet := hbhTcp, expected := .accept [], note := "where sees the written-back next_header" }
@@ -106,7 +106,7 @@ vector ipv6AnyExts := {
   expected := .accept [], note := "any ranges over the 2 extracted entries (D-031); Go's unroll agrees here because a hit comes first" }
 vector ipv6AllExts := {
   id := "ipv6-exts-all", ast := { layers := ipv6L, cond := some (.all (cmp extsIter .ne (k 1))) }, packet := twoExts,
-  expected := .accept [], goStatus := .mismatch, note := "D-031: all ranges over the 2 extracted entries; Go unrolls 8 capacity slots and fails on the ones past the packet" }
+  expected := .accept [], note := "D-031: all ranges over the 2 extracted entries (Go: the unroll skips entries past the push count)" }
 
 -- SRv6 -----------------------------------------------------------------------
 

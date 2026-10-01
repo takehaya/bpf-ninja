@@ -401,10 +401,43 @@ func (c *pmCtx) emitDynamicAuxSentinelInit() (asm.Instructions, error) {
 			asm.StoreMem(asm.R10, slot, asm.R3, asm.DWord),
 		}, nil
 	}
-	demand := c.queried[c.layer]
-	return emitFillStackSlots(dynamicAuxSentinel, len(demand), func(i int) (int16, error) {
-		return c.queried.slotForLayer(c.layer, i+1)
+	// Option slots start at the absent sentinel; stack count slots at 0.
+	var options, counts []int
+	for i, layout := range c.queried[c.layer] {
+		if isStackCountLayout(c.layer, layout) {
+			counts = append(counts, i)
+		} else {
+			options = append(options, i)
+		}
+	}
+	insns, err := emitFillStackSlots(dynamicAuxSentinel, len(options), func(i int) (int16, error) {
+		return c.queried.slotForLayer(c.layer, options[i]+1)
 	})
+	if err != nil {
+		return nil, err
+	}
+	zero, err := emitFillStackSlots(0, len(counts), func(i int) (int16, error) {
+		return c.queried.slotForLayer(c.layer, counts[i]+1)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return append(insns, zero...), nil
+}
+
+// emitStackPushCount bumps the push count slot of an `extract(stack.next)`
+// when a where / capture clause demanded it. `load` reads the slot into
+// `reg` and `store` writes it back: the inline body addresses the slot
+// from R10, the self-loop callback through the ctx pointer R2.
+func (c *pmCtx) emitStackPushCount(ex vocab.ExtractOp, reg asm.Register, load func(int16) asm.Instruction, store func(int16) asm.Instruction) asm.Instructions {
+	if !ex.IsStackPush {
+		return nil
+	}
+	slot, ok := c.queried.stackCountSlot(c.layer, ex.OutParam)
+	if !ok {
+		return nil
+	}
+	return asm.Instructions{load(slot), asm.Add.Imm(reg, 1), store(slot)}
 }
 
 // emitFillStackSlots writes initImm into n stack slots resolved by
@@ -471,6 +504,9 @@ func (c *pmCtx) emitDynamicAuxSlotPrelude(sel *vocab.SelectOp, breakLabel string
 	insns := boundedScalarLoad(asm.R1, asm.R4, asm.R3, asm.R5, shape.loadSize, breakLabel)
 	insns = append(insns, shape.normalize(asm.R1)...)
 	for idx, layout := range demand {
+		if isStackCountLayout(c.layer, layout) {
+			continue // counted at the push, not dispatched on a kind byte
+		}
 		slot, err := c.queried.slotForLayer(c.layer, idx+1)
 		if err != nil {
 			return nil, err
@@ -1173,6 +1209,13 @@ func (c *pmCtx) emitSelfLoopCallback(state *vocab.ParseState, stateIdx int, cbSy
 			asm.Add.Imm(asm.R3, int32(hs)),
 			asm.StoreMem(asm.R2, bpfLoopCbCtxOffsetField, asm.R3, asm.DWord),
 		)
+		insns = append(insns, c.emitStackPushCount(ex, asm.R0,
+			func(slot int16) asm.Instruction {
+				return asm.LoadMem(asm.R0, asm.R2, mainStackOffsetFromCb(slot), asm.DWord)
+			},
+			func(slot int16) asm.Instruction {
+				return asm.StoreMem(asm.R2, mainStackOffsetFromCb(slot), asm.R0, asm.DWord)
+			})...)
 		if vt, ok := variableTailFor(c.spec, ex.HeaderName); ok && !c.deferPrimaryTail(ex.HeaderName) {
 			if state.Trans.Kind == vocab.TransSelect {
 				// Callback ABI: R0/R1 are free here (R1 = bpf_loop idx

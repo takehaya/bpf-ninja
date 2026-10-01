@@ -246,6 +246,10 @@ type StackIndex struct {
 	Static     uint64    // when IsStatic
 	Dynamic    *FieldRef // when !IsStatic && !IsIterator; primary-header field of the same layer
 	IsIterator bool      // when this StackIndex is the any/all iteration variable
+	// Guarded marks a static index the any/all unroll produced by
+	// rebinding its iterator: the unroll's per-iteration count guard
+	// already covers it, so the atom emits no guard of its own.
+	Guarded bool
 }
 
 // IsExistsCheck reports whether this FieldRef represents an

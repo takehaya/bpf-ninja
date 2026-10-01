@@ -401,6 +401,9 @@ func (c *pmCtx) emitStateBody(state *vocab.ParseState, stateIdx int, isEntry boo
 		}
 		hs := ex.HeaderSize / 8
 		insns = append(insns, emitAdvance(hs))
+		insns = append(insns, c.emitStackPushCount(ex, asm.R3,
+			func(slot int16) asm.Instruction { return asm.LoadMem(asm.R3, asm.R10, slot, asm.DWord) },
+			func(slot int16) asm.Instruction { return asm.StoreMem(asm.R10, slot, asm.R3, asm.DWord) })...)
 		fixedHs += hs
 		if vt, ok := variableTailFor(c.spec, ex.HeaderName); ok && !c.deferPrimaryTail(ex.HeaderName) {
 			if state.Trans.Kind == vocab.TransSelect {

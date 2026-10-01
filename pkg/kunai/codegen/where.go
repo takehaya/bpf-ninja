@@ -397,13 +397,15 @@ func (c *whereCtx) genQuantIterBody(inner *ir.Condition, target *ir.QuantTarget,
 // an entry past the stack's runtime count is absent, so the atom is false
 // for `==`, `!=`, ordered compares and arithmetic alike (spec D-031).
 // Stacks without a count source keep their capacity-only bounds. An
-// entry referenced more than once in the atom is guarded once.
+// entry referenced more than once in the atom is guarded once; an index
+// the any/all unroll rebound from its iterator is already guarded by
+// the unroll (StackIndex.Guarded).
 func (c *whereCtx) withStackGuards(w *ir.Condition, failLabel string, body func(*ir.Condition, string) (asm.Instructions, error)) (asm.Instructions, error) {
 	var guards asm.Instructions
 	var walkErr error
 	guarded := map[string]bool{}
 	ir.WalkConditionFieldRefs(w, func(ref *ir.FieldRef) {
-		if walkErr != nil || ref == nil || ref.Aux == nil || ref.Aux.Stack == nil || !ref.Aux.Stack.IsStatic {
+		if walkErr != nil || ref == nil || ref.Aux == nil || ref.Aux.Stack == nil || !ref.Aux.Stack.IsStatic || ref.Aux.Stack.Guarded {
 			return
 		}
 		key := fmt.Sprintf("%p/%s/%d", ref.Layer, ref.Aux.OutParam, ref.Aux.Stack.Static)
@@ -443,7 +445,9 @@ func (c *whereCtx) withStackGuards(w *ir.Condition, failLabel string, body func(
 //	RR   (OffsetAfterOwner=3, ElemSize=4): (length-3) >> 2 = 0..9 addrs
 //
 // Declare-only stacks with @kunai_stack_count read a primary-header byte.
-// nil when the stack has no count source (callers fall back to Capacity).
+// Stacks the parser machine pushes onto (ipv6.exts, gtp.exts) read the
+// push count slot the machine maintains. nil when the stack has no count
+// source (callers fall back to Capacity).
 func refCountSource(ref *ir.FieldRef) (*quantCountSource, error) {
 	if ref.Aux.OwnerOption != nil {
 		shift := log2PowerOfTwo(ref.Aux.HeaderSize)
@@ -455,6 +459,9 @@ func refCountSource(ref *ir.FieldRef) (*quantCountSource, error) {
 	if cnt := ref.Layer.Spec.StackCounts[ref.Aux.OutParam]; cnt != nil {
 		return &quantCountSource{Layer: ref.Layer, ByteOff: cnt.ByteOff, Offset: cnt.Addend}, nil
 	}
+	if needsPushCount(ref) {
+		return &quantCountSource{Layer: ref.Layer, Stack: ref.Aux.OutParam}, nil
+	}
 	return nil, nil
 }
 
@@ -465,6 +472,16 @@ func refCountSource(ref *ir.FieldRef) (*quantCountSource, error) {
 // sentinel = option absent translating to "skip every iter" (vacuous
 // any/all).
 func (c *whereCtx) emitCountGuard(countSrc *quantCountSource, idx int, skipLabel string) (asm.Instructions, error) {
+	if countSrc.Stack != "" {
+		slot, ok := c.queried.stackCountSlot(countSrc.Layer, countSrc.Stack)
+		if !ok {
+			return nil, fmt.Errorf("codegen: push count of stack %q not in demand set", countSrc.Stack)
+		}
+		return asm.Instructions{
+			asm.LoadMem(asm.R3, asm.R10, slot, asm.DWord),
+			asm.JLE.Imm(asm.R3, int32(idx), skipLabel),
+		}, nil
+	}
 	if countSrc.Owner != nil {
 		slot, ok := c.queried.dynamicAuxSlotForLayout(countSrc.Layer, countSrc.Owner)
 		if !ok {
@@ -493,8 +510,8 @@ func (c *whereCtx) emitCountGuard(countSrc *quantCountSource, idx int, skipLabel
 }
 
 // quantCountSource carries the runtime count of an aux header stack.
-// Two shapes folded into one struct so emitCountGuard can dispatch on
-// Owner == nil:
+// Three shapes folded into one struct so emitCountGuard can dispatch on
+// Stack / Owner:
 //   - Primary-header byte: Layer + ByteOff + Offset (e.g. SRv6
 //     last_entry at byte 4, count = last_entry + 1).
 //   - Owner option slot: Owner (the AuxLayout the slot maps to) +
@@ -502,9 +519,12 @@ func (c *whereCtx) emitCountGuard(countSrc *quantCountSource, idx int, skipLabel
 //     option, e.g. 1 for SACK) + SubBefore (bytes to subtract = the
 //     option's fixed prefix size including kind+length) + RShAfter
 //     (log2 of element size, e.g. 3 for 8-byte SACK blocks).
+//   - Push count slot: Stack names the out-stack whose demand slot the
+//     parser machine increments on every `extract(stack.next)`.
 type quantCountSource struct {
 	Layer     *ir.LayerInstance
 	Owner     *vocab.AuxLayout
+	Stack     string
 	ByteOff   int
 	Offset    int // primary-header path: value to add to the loaded byte
 	SubBefore int // owner-slot path: bytes subtracted before the right shift
@@ -657,6 +677,7 @@ func rebindFieldRef(ref *ir.FieldRef, target *ir.QuantTarget, idx uint64) (*ir.F
 		Capacity: target.Capacity,
 		IsStatic: true,
 		Static:   idx,
+		Guarded:  true,
 	}
 	cp.Aux = &auxCopy
 	return &cp, nil
