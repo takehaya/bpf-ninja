@@ -1176,7 +1176,7 @@ func withAbsentEdge(present asm.Instructions, peekFail string, index int, all []
 // neither the parser machine nor the layer-entry slot store, so a
 // following layer would read an unset slot (verifier rejection at best).
 // Self-validating layers have no parent field to peek for absence.
-func optionalLayerGuard(layer *ir.LayerInstance, index int) error {
+func optionalLayerGuard(layer *ir.LayerInstance, index int, all []*ir.LayerInstance) error {
 	if index == 0 {
 		return fmt.Errorf("%w: the first layer cannot be optional", ErrNotImplemented)
 	}
@@ -1185,7 +1185,9 @@ func optionalLayerGuard(layer *ir.LayerInstance, index int) error {
 	}
 	switch layer.Dispatch.Type {
 	case vocab.DispatchNoCheck:
-		return fmt.Errorf("%w: optional %q with no-check dispatch cannot detect absence", ErrNotImplemented, layer.Spec.Name)
+		if !selfEdgeWithChainEnd(layer, all[index-1]) {
+			return fmt.Errorf("%w: optional %q with no-check dispatch cannot detect absence", ErrNotImplemented, layer.Spec.Name)
+		}
 	case vocab.DispatchSelfValidating:
 		return fmt.Errorf("%w: optional %q is self-validating under its parent; there is no dispatch field to peek for absence", ErrNotImplemented, layer.Spec.Name)
 	}
@@ -1193,6 +1195,15 @@ func optionalLayerGuard(layer *ir.LayerInstance, index int) error {
 		return fmt.Errorf("%w: optional %q has a variable-length header or parser machine; the skip path cannot run its parser", ErrNotImplemented, layer.Spec.Name)
 	}
 	return nil
+}
+
+// selfEdgeWithChainEnd reports whether `layer` continues a chain of its
+// own protocol whose headers carry an end signal (`mpls/mpls?`,
+// `mpls/mpls*`): the NO_CHECK self edge then detects absence through the
+// previous header's chain-end field (spec: parent_dispatch is a miss once
+// the previous instance signalled end).
+func selfEdgeWithChainEnd(layer, parent *ir.LayerInstance) bool {
+	return parent != nil && parent.Alternation == nil && parent.Spec == layer.Spec && layer.Spec.ChainEnd != nil
 }
 
 // emitPeekedIterZero emits a single-layer block with a peek-style
@@ -1216,7 +1227,14 @@ func emitPeekedIterZero(layer *ir.LayerInstance, index int, all []*ir.LayerInsta
 	if err != nil {
 		return nil, err
 	}
-	peek, err := genLayerDispatch(layer, all[index-1], precedingLayersLeaveR4Range(all, index), precedingLayersLeaveR4Range(all, index-1), peekFailLabel)
+	var peek asm.Instructions
+	if selfEdgeWithChainEnd(layer, all[index-1]) {
+		// The previous header of the same protocol ends at R4: its
+		// chain-end signal (the MPLS s bit) means this layer is absent.
+		peek, err = chainEndCheck(layer.Spec, hs, staticChainFrame, peekFailLabel)
+	} else {
+		peek, err = genLayerDispatch(layer, all[index-1], precedingLayersLeaveR4Range(all, index), precedingLayersLeaveR4Range(all, index-1), peekFailLabel)
+	}
 	if err != nil {
 		return nil, err
 	}

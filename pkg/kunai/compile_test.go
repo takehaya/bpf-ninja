@@ -958,6 +958,17 @@ func TestCompileCaptureUpperBoundOverQuantifiers(t *testing.T) {
 	}
 }
 
+// TestCompileOptionalSelfEdgeWithChainEnd pins that an optional
+// continuation of a chain-end protocol (`mpls/mpls?`, `mpls/mpls*`) is
+// accepted: the previous label's s bit stands in for the dispatch peek.
+func TestCompileOptionalSelfEdgeWithChainEnd(t *testing.T) {
+	for _, expr := range []string{"eth/mpls/mpls?/ipv4/tcp", "eth/mpls/mpls*/ipv4/tcp", "eth/mpls/mpls{0,3}/ipv4/tcp"} {
+		if _, err := compileForTest(expr); err != nil {
+			t.Errorf("%s: %v", expr, err)
+		}
+	}
+}
+
 // TestCompileConsecutiveOptionalsNeedEquivalentDispatch pins the D-034
 // limit of the static-parent dispatch after consecutive optional layers:
 // it is sound only when every runtime parent dispatches the layer the

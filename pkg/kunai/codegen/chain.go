@@ -38,7 +38,7 @@ func genStaticChain(layer *ir.LayerInstance, index int, all []*ir.LayerInstance,
 	}
 	optional := layer.RangeMin == 0
 	if optional {
-		if err := optionalLayerGuard(layer, index); err != nil {
+		if err := optionalLayerGuard(layer, index, all); err != nil {
 			return nil, err
 		}
 	}

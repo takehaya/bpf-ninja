@@ -115,7 +115,7 @@ const bpfLoopChainCap = 32
 func genBpfLoopChain(layer *ir.LayerInstance, index int, all []*ir.LayerInstance, pc *predCtx) (asm.Instructions, asm.Instructions, error) {
 	rangeMin, _ := chainBounds(layer)
 	if rangeMin == 0 {
-		if err := optionalLayerGuard(layer, index); err != nil {
+		if err := optionalLayerGuard(layer, index, all); err != nil {
 			return nil, nil, err
 		}
 	}

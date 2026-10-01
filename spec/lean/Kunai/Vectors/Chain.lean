@@ -183,12 +183,12 @@ vector typOptionalNoCheck := {
   packet := vxlanPkt, expected := .illTyped "optional eth with no-check dispatch cannot detect absence" }
 vector quantSelfEdgeStar := {
   id := "quant-self-edge-star", ast := { layers := [P "eth", P "mpls", Pq "mpls" .star, P "ipv4", P "tcp"] },
-  packet := mpls3, expected := .accept [], goStatus := .notImplemented,
-  note := "NO_CHECK self-edge with CHAIN_END: the s bit detects absence; Go has no peek for NO_CHECK" }
+  packet := mpls3, expected := .accept [],
+  note := "NO_CHECK self-edge with CHAIN_END: the s bit of the previous label detects absence" }
 vector quantSelfEdgeOpt := {
   id := "quant-self-edge-opt", ast := { layers := [P "eth", P "mpls", Pq "mpls" .opt, P "ipv4", P "tcp"] },
-  packet := mpls1, expected := .accept [], goStatus := .notImplemented,
-  note := "skips on the s bit of the first label; Go has no peek path for NO_CHECK" }
+  packet := mpls1, expected := .accept [],
+  note := "skips on the s bit of the first label" }
 vector absentConsecutiveEthertype := {
   id := "absent-consecutive-ethertype", ast := { layers := [P "eth", Pq "qinq" .opt, Pq "vlan" .opt, P "ipv4", P "tcp"] },
   packet := vlanPkt, expected := .accept [],
