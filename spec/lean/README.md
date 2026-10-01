@@ -5,9 +5,9 @@ rewritten as total Lean 4 functions. `Kunai.eval` produces the verdict for
 golden test vectors; the vectors are exported as JSON and checked against the
 real BPF program by `pkg/kunai/dsltest/spec_vectors_test.go`.
 
-Scope: syntax and semantics of the DSL only. eBPF instruction semantics,
-codegen correctness, and the verifier are out of scope. Aux headers (options,
-extension headers, stacks) are not modelled yet (Phase 5).
+Scope: syntax and semantics of the DSL only, including the p4lite parser
+machines for aux headers (options, extension headers, stacks). eBPF
+instruction semantics, codegen correctness, and the verifier are out of scope.
 
 ## Build
 
@@ -18,7 +18,12 @@ Requires [elan](https://github.com/leanprover/elan). The toolchain is pinned in
 ```sh
 make lean-build   # cd spec/lean && lake build
 make lean-gen     # regenerate pkg/kunai/dsltest/testdata/spec_vectors.json
+make lean-vocab   # regenerate Kunai/VocabData.lean from pkg/kunai/protocols/*.p4
 ```
+
+`VocabData.lean` is produced by `spec/lean/gen/vocab2lean` (Go) from the
+loader's output, so the Lean vocabulary cannot drift from the `.p4` files;
+regenerate it whenever a `.p4` file changes.
 
 `lake build` also checks every `example` and `theorem`, so a successful build
 means every vector agrees with the evaluator.
@@ -31,7 +36,10 @@ means every vector agrees with the evaluator.
 | `Kunai/Print.lean` | AST → canonical DSL text (`Filter.text`) |
 | `Kunai/Json.lean` | JSON encoding; mirrored by `dsltest/spec_ast_json_test.go` |
 | `Kunai/Packet.lean` | `Packet = List UInt8`, big-endian bit reads |
-| `Kunai/Vocab.lean` | Protocol table (fields, length rule, dispatch edges) transcribed from `protocols/*.p4` |
+| `Kunai/Vocab.lean` | Protocol table types |
+| `Kunai/Machine.lean` | p4lite parser machine as data (`vocab.ParseStateMachine` mirror) |
+| `Kunai/VocabData.lean` | Generated: all bundled protocols, edges, and machines (`make lean-vocab`) |
+| `Kunai/Eval/Machine.lean` | §14 small-step machine: extract, stacks, tails, write-back, counters, select |
 | `Kunai/Host.lean` | `codegen.Capabilities` mirror per host kind |
 | `Kunai/Eval/Core.lean` | State `σ`, `Result`, field reads, literal lifting (§7.3, §12.1) |
 | `Kunai/Eval/Layer.lean` | §13.3–§13.5 chain, layer, quantifiers, alternation |

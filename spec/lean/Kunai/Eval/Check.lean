@@ -98,42 +98,52 @@ private def stop (e : Except Stop α) : Except String α :=
   | .error .reject => throw "internal: static check hit a dynamic reject" -- unreachable: no packet reads here
   | .error (.illTyped r) => throw r
 
-private def checkArith (c : Ctx) (ctx : Nat) : Arith → Except String Unit
+/-- A field reference: resolvable, and an index-less stack reference only
+under an `any`/`all` that binds that stack. -/
+private def checkRef (c : Ctx) (bound : List (String × String)) (f : FieldPath) : Except String Ref := do
+  let r ← stop (resolvePath c f)
+  if let .stackEntry s none := r.aux then
+    if !bound.contains (← stop (canonicalHead c r.head), s) then throw s!"index-less stack reference {r.proto}.{s} outside any/all"
+  pure r
+
+private def checkArith (c : Ctx) (bound : List (String × String)) (ctx : Nat) : Arith → Except String Unit
   | .const n => discard <| narrowInt ctx n
-  | .field f => discard <| stop (staticField c f)
+  | .field f => discard <| checkRef c bound f
   | .bin _ l r => do
     let (cl, cr) := sideWidths (← stop (arithWidth c l)) (← stop (arithWidth c r))
     if max cl cr > 64 then throw "unsupported: arithmetic on fields wider than 64 bits"
-    checkArith c cl l
-    checkArith c cr r
+    checkArith c bound cl l
+    checkArith c bound cr r
 
-private def checkWhere (c : Ctx) : Where → Except String Unit
-  | .or l r | .and l r | .boolEq l _ r => do checkWhere c l; checkWhere c r
-  | .not w => checkWhere c w
+private def checkWhere (c : Ctx) (bound : List (String × String)) : Where → Except String Unit
+  | .or l r | .and l r | .boolEq l _ r => do checkWhere c bound l; checkWhere c bound r
+  | .not w => checkWhere c bound w
   | .arith l _ r => do
     let (cl, cr) := sideWidths (← stop (arithWidth c l)) (← stop (arithWidth c r))
-    checkArith c cl l
-    checkArith c cr r
+    checkArith c bound cl l
+    checkArith c bound cr r
   | .litCmp f op v => do
-    let (p, fs) ← stop (staticField c f)
-    let some spec := c.V.proto? p | throw s!"unknown protocol {p}"
-    checkValue spec fs op v
+    let r ← checkRef c bound f
+    checkValue r.spec { r.field with width := r.width } op v
   | .action a => do
     if c.H.actions.isEmpty then throw "`action ==` is not available on this host"
     if (c.H.actions.find? (·.1 == a)).isNone then throw s!"unknown action {a}"
-  | .any _ | .all _ => throw "unsupported: aux stacks (Phase 5)"
+  | .any w | .all w => do
+    -- T-Quant: exactly one stack is iterated; check the body with it bound.
+    let hs ← stop (quantStack c bound w)
+    checkWhere c (hs :: bound) w
   | .boolLit _ => pure ()
-  | .fieldExists _ => throw "unsupported: aux exists (Phase 5)"
+  | .fieldExists f => discard <| stop (resolveExists c f)
 
 private def checkCapture (c : Ctx) (cap : Capture) : Except String Unit := do
-  if let some w := cap.cond then checkWhere c w
+  if let some w := cap.cond then checkWhere c [] w
   if let .toLayer name _ := cap.spec then discard <| stop (staticProto c name)
 
 /-- `none` when the filter type-checks; otherwise the resolver's complaint. -/
 def check (c : Ctx) (F : Filter) : Option String :=
   let r : Except String Unit := do
     checkLayers c
-    if let some w := F.cond then checkWhere c w
+    if let some w := F.cond then checkWhere c [] w
     for cap in F.captures do checkCapture c cap
   match r with
   | .ok () => none

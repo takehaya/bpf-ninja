@@ -19,7 +19,7 @@ def eval (H : Host) (V : Vocab) (F : Filter) (P : Packet) : Result :=
   | .error _ => .reject
   | .ok st =>
     let verdict : Except Stop (List (Nat × Nat)) := do
-      let ok ← match F.cond with | some w => evalWhere c st w | none => pure true
+      let ok ← match F.cond with | some w => evalWhere c st [] w | none => pure true
       if !ok then throw .reject
       let cs ← F.captures.mapM (evalCapture c st)
       pure (cs.filterMap id)
