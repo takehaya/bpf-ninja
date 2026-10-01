@@ -838,9 +838,13 @@ func emitInPredicate(pred *ir.Predicate) (asm.Instructions, error) {
 	if len(pred.List) == 0 {
 		return nil, fmt.Errorf("codegen: 'in' predicate has empty list")
 	}
+	hasRange := false
 	for _, v := range pred.List {
-		if v == nil || v.Kind != ast.ValInt {
-			return nil, fmt.Errorf("%w: 'in' predicate currently supports only integer alternatives (got %v)", ErrNotImplemented, vKindOf(v))
+		if v == nil || (v.Kind != ast.ValInt && v.Kind != ast.ValRange) {
+			return nil, fmt.Errorf("%w: 'in' predicate currently supports only integer and range alternatives (got %v)", ErrNotImplemented, vKindOf(v))
+		}
+		if v.Kind == ast.ValRange {
+			hasRange = true
 		}
 	}
 	if pred.Field == nil || pred.Field.Field == nil {
@@ -889,8 +893,13 @@ func emitInPredicate(pred *ir.Predicate) (asm.Instructions, error) {
 
 	// Sub-byte field: the load read a covering window, so bring R3 to
 	// host order and narrow it to the field's bits before comparing.
-	// The alternatives then stay in host order (no constant bswap).
+	// The alternatives then stay in host order (no constant bswap). A
+	// range alternative needs host order too: `lo ≤ v ≤ hi` is an
+	// ordered compare (the same HostTo path emitIntPredicate takes).
 	subByte := fieldIsSubByte(pred.Field) || pred.Field.Slice != nil
+	if !subByte && hasRange && bytes > 1 {
+		insns = append(insns, asm.HostTo(asm.BE, asm.R3, size))
+	}
 	if subByte {
 		if bytes > 1 {
 			insns = append(insns, asm.HostTo(asm.BE, asm.R3, size))
@@ -899,16 +908,36 @@ func emitInPredicate(pred *ir.Predicate) (asm.Instructions, error) {
 	}
 
 	matchLabel := nextPredicateMatchLabel()
-	for _, v := range pred.List {
-		value := v.Int
+	hostOrder := subByte || hasRange
+	narrow := func(v uint64) uint64 {
 		if fieldBits < 64 {
-			value &= (uint64(1) << fieldBits) - 1
+			v &= (uint64(1) << fieldBits) - 1
 		}
+		return v
+	}
+	for i, v := range pred.List {
+		if v.Kind == ast.ValRange {
+			// `lo ≤ R3 ≤ hi` in host order (D-011): below lo → next
+			// alternative, at most hi → match.
+			lo, hi := narrow(v.RangeLo), narrow(v.RangeHi)
+			if hi > 0x7FFFFFFF {
+				return nil, fmt.Errorf("%w: 'in' range %d..%d exceeds int32 immediate range", ErrNotImplemented, v.RangeLo, v.RangeHi)
+			}
+			next := fmt.Sprintf("%s_r%d", matchLabel, i)
+			insns = append(insns,
+				asm.JLT.Imm(asm.R3, int32(lo), next),
+				asm.JLE.Imm(asm.R3, int32(hi), matchLabel),
+				landingNoop(next),
+			)
+			continue
+		}
+		value := narrow(v.Int)
 		// Multi-byte fields land in R3 in network-byte order packed
 		// as little-endian; mirror emitIntPredicate by byte-swapping
-		// the constant so a single JEq still matches. A sub-byte field
-		// is already host-order after the shift+mask above, so skip it.
-		if bytes > 1 && !subByte {
+		// the constant so a single JEq still matches. A register already
+		// brought to host order (sub-byte field, or a list with a range)
+		// compares against the plain constant.
+		if bytes > 1 && !hostOrder {
 			value = swapValueBytes(value, bytes)
 		}
 		if value > 0x7FFFFFFF {

@@ -164,7 +164,10 @@ vector predInListMiss := {
   id := "pred-in-list-miss", ast := tcpPred (.inList (f "dport") [.int 22, .int 443]), expected := .reject }
 vector predInRange := {
   id := "pred-in-range", ast := tcpPred (.inList (f "dport") [.range 79 81]), expected := .accept [],
-  goStatus := .notImplemented, note := "D-011: lo ≤ n ≤ hi" }
+  note := "D-011: lo ≤ n ≤ hi" }
+vector predInRangeMiss := {
+  id := "pred-in-range-miss", ast := tcpPred (.inList (f "dport") [.int 443, .range 8000 8080]), expected := .reject,
+  note := "D-011: 80 is neither 443 nor in 8000..8080" }
 vector predNegative := {
   id := "pred-negative-literal", ast := tcpPred (.cmp (f "dport") .eq (.int (-1))),
   packet := ethIPv4TCP (dport := 65535), expected := .accept [] }
@@ -251,7 +254,7 @@ def whereVectors : List Vector := [
   whereAbsentFalse, whereAbsentNot, whereAbsentNe, whereOptPresent, whereAfterOptional, whereAfterOptionalAbsent,
   whereLabelRepeatedLast, whereLabelRepeatedFirstMiss, whereRepeatedUnlabelled, wherePastQuantified, whereLabels, whereAmbiguous,
   actionEntry, actionHit, actionMiss, actionUnknown,
-  predCmp, predCmpMiss, predInList, predInListMiss, predInRange, predNegative, predIPv4,
+  predCmp, predCmpMiss, predInList, predInListMiss, predInRange, predInRangeMiss, predNegative, predIPv4,
   capAll, capWhereFalse, capWhereTrue, capLabel, capAbsent, capPresent,
   typUnknownProto, typNoDispatch, typNotInChain, typUnknownField, typFit, typFitArith, typWidthIPv6, typCIDRWidth,
   typPredIdent, typInSet, typAny, typExists, typAuxPath, typArith128]

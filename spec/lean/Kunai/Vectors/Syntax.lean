@@ -53,7 +53,7 @@ vector synPredIn := {
   id := "syn-pred-in",
   ast := { layers := [P "eth", P "ipv4",
         .proto { name := "tcp", preds := [.inList (f "dport") [.int 80, .int 443, .range 8000 8080]] }] },
-  expected := .accept [], goStatus := .notImplemented }
+  expected := .accept [] }
 
 vector synPredInset := {
   id := "syn-pred-inset",
