@@ -24,22 +24,11 @@ func genPredicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, error) {
 	if pred.Unsupported != "" {
 		return nil, fmt.Errorf("%w: %s", ErrNotImplemented, pred.Unsupported)
 	}
-	if pred.Kind == ast.PredInSet {
-		return emitInSetPredicate(pred, pc)
-	}
-	if pred.Kind == ast.PredIn {
-		return emitInPredicate(pred)
-	}
-	if pred.Kind != ast.PredCmp {
-		return nil, fmt.Errorf("%w: predicate kind %s", ErrNotImplemented, pred.Kind)
-	}
-	if pred.Value == nil {
-		return nil, fmt.Errorf("codegen: nil predicate value")
-	}
 	// A static index into a push-counted stack is absent past the pushed
 	// entries (D-031): guard it against the count slot when the predicate
 	// runs after the walk, refuse it when it runs before (the count is
 	// still 0 there and the entry would read the bytes after the stack).
+	// The guard precedes every predicate kind.
 	var guard asm.Instructions
 	if needsPushCount(pred.Field) {
 		var slot int16
@@ -58,28 +47,43 @@ func genPredicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, error) {
 
 	var insns asm.Instructions
 	var err error
-	switch pred.Value.Kind {
-	case ast.ValInt:
-		insns, err = emitIntPredicate(pred)
-	case ast.ValIPv4:
-		insns, err = emitIPv4Predicate(pred)
-	case ast.ValIPv6:
-		insns, err = emitIPv6Predicate(pred)
-	case ast.ValMAC:
-		insns, err = emitMACPredicate(pred)
-	case ast.ValCIDR:
-		if pred.Value.AF == 4 {
-			insns, err = emitIPv4CIDRPredicate(pred)
-		} else {
-			insns, err = emitIPv6CIDRPredicate(pred)
-		}
+	switch pred.Kind {
+	case ast.PredInSet:
+		insns, err = emitInSetPredicate(pred, pc)
+	case ast.PredIn:
+		insns, err = emitInPredicate(pred)
+	case ast.PredCmp:
+		insns, err = emitCmpPredicate(pred)
 	default:
-		return nil, fmt.Errorf("%w: predicate value type %s", ErrNotImplemented, pred.Value.Kind)
+		return nil, fmt.Errorf("%w: predicate kind %s", ErrNotImplemented, pred.Kind)
 	}
 	if err != nil {
 		return nil, err
 	}
 	return append(guard, insns...), nil
+}
+
+// emitCmpPredicate lowers `field op value` by the literal's kind.
+func emitCmpPredicate(pred *ir.Predicate) (asm.Instructions, error) {
+	if pred.Value == nil {
+		return nil, fmt.Errorf("codegen: nil predicate value")
+	}
+	switch pred.Value.Kind {
+	case ast.ValInt:
+		return emitIntPredicate(pred)
+	case ast.ValIPv4:
+		return emitIPv4Predicate(pred)
+	case ast.ValIPv6:
+		return emitIPv6Predicate(pred)
+	case ast.ValMAC:
+		return emitMACPredicate(pred)
+	case ast.ValCIDR:
+		if pred.Value.AF == 4 {
+			return emitIPv4CIDRPredicate(pred)
+		}
+		return emitIPv6CIDRPredicate(pred)
+	}
+	return nil, fmt.Errorf("%w: predicate value type %s", ErrNotImplemented, pred.Value.Kind)
 }
 
 // emitIntPredicate handles `field op INTEGER`. The field is read LE
@@ -282,6 +286,11 @@ func emitInSetPredicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, erro
 	}
 	if pred.Field == nil || pred.Field.Field == nil {
 		return nil, fmt.Errorf("codegen: in-set predicate missing field reference")
+	}
+	// The key is extracted from a constant layer offset; an entry whose
+	// offset is only known at run time has none.
+	if needsEntryAddress(pred.Field) {
+		return nil, fmt.Errorf("%w: `in @%s` on %s.%s, an entry whose offset is only known at run time (dynamic index or variable-length entries); use a where clause", ErrNotImplemented, pred.SetName, pred.Field.Layer.Spec.Name, pred.Field.Aux.OutParam)
 	}
 	// Implicit name match: the DSL field name is the set's key field name.
 	fieldName := pred.Field.Field.Name

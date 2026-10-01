@@ -115,6 +115,11 @@ vector ipv6ExtsBracketDynamic := {
 vector ipv6ExtsBracketIter := {
   id := "ipv6-exts-bracket-iterator", ast := { layers := ipv6Br (.cmp ⟨[("exts", none), ("next_header", none)]⟩ .eq (.int 6)) },
   expected := .illTyped "stack ipv6.exts needs a constant index inside a bracket predicate" }
+vector ipv6ExtsBracketInAbsent := {
+  id := "ipv6-exts-bracket-in-absent", ast := { layers := ipv6Br (.inList (extsBr 1) [.int 6, .int 60]) },
+  packet := ipv6With 0 (ipv6Ext 6) (sport := 0x0600), expected := .reject, note := "D-031 for `in [...]` in a bracket: the entry is absent ⇒ false" }
+vector ipv6ExtsBracketInLong := {
+  id := "ipv6-exts-bracket-in-after-long-ext", ast := { layers := ipv6Br (.inList (extsBr 1) [.int 6, .int 60]) }, packet := longExts, expected := .accept [] }
 vector ipv6ExtsSliceLong := {
   id := "ipv6-exts-index-slice-after-long-ext",
   ast := { layers := ipv6L, cond := some (cmp (Arith.field ⟨[("ipv6", none), ("exts", some (.nat 1)), ("next_header", some (.slice 4 8))]⟩) .eq (k 6)) },
@@ -268,7 +273,7 @@ def auxVectors : List Vector := [
   tcpOptCross, tcpEol, tcpMssDup, tcpMssBadLen, tcpMssExists, tcpMssExistsNot, tcpSackBlock, tcpSackAny, tcpSackAll,
   tcpSackAbsentAny, tcpMalformedNoQuery,
   ipv6Hbh, ipv6TwoExts, ipv6ExtLong, ipv6ExtTooLong, ipv6ExtsIndex, ipv6ExtsIndex1, ipv6ExtsIndexAfterLong, ipv6ExtsAnyAfterLong, ipv6ExtsDynamicLong,
-  ipv6ExtsBracket, ipv6ExtsBracketAbsent, ipv6ExtsBracketLong, ipv6ExtsBracketDynamic, ipv6ExtsBracketIter, ipv6ExtsSliceLong, ipv6ExtsBracketSliceLong, gtpExtsBracket, ipv6ExtsIndexAbsent,
+  ipv6ExtsBracket, ipv6ExtsBracketAbsent, ipv6ExtsBracketLong, ipv6ExtsBracketDynamic, ipv6ExtsBracketIter, ipv6ExtsBracketInAbsent, ipv6ExtsBracketInLong, ipv6ExtsSliceLong, ipv6ExtsBracketSliceLong, gtpExtsBracket, ipv6ExtsIndexAbsent,
   ipv6NextHeaderWhere, ipv6NextHeaderBracket, ipv6FiveExts, ipv6SixExts, ipv6AnyExts, ipv6AllExts,
   srv6Chain, srv6Static, srv6Dynamic, srv6Any, srv6All, srv6AllCidr, srv6IndexAbsent, srv6OverCap, srv6AtCap,
   gtpPlain, gtpOptExists, gtpOptAbsent, gtpOptField, gtpOptFieldAbsent, gtpExtStack,

@@ -368,27 +368,56 @@ func (c *whereCtx) genQuantUnroll(w *ir.Condition, acceptLabel, failLabel string
 }
 
 // pushBound is the most entries a parser machine can push onto `stack`:
-// one per state that pushes onto it, plus MAX_DEPTH more for a state
-// that self-loops (its inline first iteration and the bpf_loop cap of
-// parser_loop.go emitSelfLoop).
+// one per state that pushes onto it, plus MAX_DEPTH more for each such
+// state when the machine loops (a direct self-edge, or an indirect loop
+// through a sibling: every lowering caps its iterations at MAX_DEPTH,
+// parser_loop.go emitSelfLoop / emitMultiStateSelfLoop). A machine
+// without a backward transition pushes each site once.
 func pushBound(spec *vocab.ProtocolSpec, stack string) int {
 	depth := spec.MaxDepth
 	if depth == 0 {
 		depth = defaultChainDepth
 	}
-	n := 0
-	for i, st := range spec.ParseStateMachine.States {
-		for _, ex := range st.Extracts {
-			if !ex.IsStackPush || ex.OutParam != stack {
-				continue
+	m := spec.ParseStateMachine
+	loops := false
+	for i, st := range m.States {
+		for _, t := range transitionTargets(st.Trans) {
+			if t >= 0 && t <= i {
+				loops = true
 			}
-			n++
-			if transitionRefsState(st.Trans, i) {
-				n += depth
+		}
+	}
+	n := 0
+	for _, st := range m.States {
+		for _, ex := range st.Extracts {
+			if ex.IsStackPush && ex.OutParam == stack {
+				n++
+				if loops {
+					n += depth
+				}
 			}
 		}
 	}
 	return n
+}
+
+// transitionTargets lists the state indices a transition can reach
+// (accept / reject are negative sentinels and listed as-is).
+func transitionTargets(t vocab.TransitionOp) []int {
+	switch t.Kind {
+	case vocab.TransDirect:
+		return []int{t.Target}
+	case vocab.TransSelect:
+		if t.Select == nil {
+			return nil
+		}
+		out := []int{t.Select.Default}
+		for _, cs := range t.Select.Cases {
+			out = append(out, cs.Target)
+		}
+		return out
+	}
+	return nil
 }
 
 // genQuantIterBody clones the inner condition with the iterator
@@ -1523,7 +1552,8 @@ func genActionAtom(w *ir.Condition, lang LangCaps, failLabel string) (asm.Instru
 // For aux refs:
 //   - Single auxes and static stack indices fold into a fixed
 //     `base` offset; gating fires before the load when present.
-//   - Dynamic stack indices route through emitDynamicStackAddress,
+//   - Runtime-offset entries (dynamic index, variable-length entries)
+//     route through emitStackEntryAddress,
 //     which leaves R5 = element start so subsequent LDX use
 //     R5-relative offsets instead of R0-relative.
 func (c *whereCtx) genLiteralCompare(w *ir.Condition, failLabel string) (asm.Instructions, error) {
@@ -1642,11 +1672,11 @@ func whereLiteralFieldOffset(ref *ir.FieldRef) (int, int, error) {
 // the parser-machine self-loop.
 func (c *whereCtx) genLiteralCompareDynamic(w *ir.Condition, failLabel string) (asm.Instructions, error) {
 	ref := w.LiteralField
-	if ref.Aux.FieldBitOff%8 != 0 || ref.Aux.FieldBitWidth%8 != 0 {
-		return nil, fmt.Errorf("%w: aux field %s.%s.%s not byte-aligned", ErrNotImplemented, ref.Layer.Spec.Name, ref.Aux.OutParam, ref.Field.Name)
+	off, fieldBytes, err := auxEntryFieldWindow(ref)
+	if err != nil {
+		return nil, err
 	}
-	fieldByteOff := int16(ref.Aux.FieldBitOff / 8)
-	fieldBytes := ref.Aux.FieldBitWidth / 8
+	fieldByteOff := int16(off)
 
 	switch w.LiteralValue.Kind {
 	case ast.ValIPv4:
@@ -1979,101 +2009,6 @@ func (c *whereCtx) stackEntryAddress(ref *ir.FieldRef, base layerAnchor, failLab
 	return emitStackEntryAddress(ref, base, countSlot, failLabel)
 }
 
-// emitStackEntryAddress leaves R5 = the start of the stack entry `ref`
-// names and R3 = R5 + HeaderSize (proved inside the window), for entries
-// whose offset is not a compile-time constant (needsEntryAddress): a
-// dynamic index (emitDynamicStackAddress, bounded by `countSlot` when
-// given), or a static index walked through variable-length entries
-// (emitStaticStackEntryAddress). R2/R3 are clobbered.
-func emitStackEntryAddress(ref *ir.FieldRef, base layerAnchor, countSlot *int16, failLabel string) (asm.Instructions, error) {
-	if ref.Aux.Stack.IsStatic {
-		return emitStaticStackEntryAddress(ref, base, failLabel)
-	}
-	if isVarTailStack(ref) {
-		return nil, fmt.Errorf("%w: dynamic index into %s.%s, whose entries are variable-length; use a constant index or any/all", ErrNotImplemented, ref.Layer.Spec.Name, ref.Aux.OutParam)
-	}
-	return emitDynamicStackAddressCounted(ref, base, countSlot, failLabel)
-}
-
-// needsEntryAddress reports whether a stack reference's entry offset is
-// only known at run time: a dynamic index, or a static index into
-// variable-length entries (isVarTailStack).
-func needsEntryAddress(ref *ir.FieldRef) bool {
-	return ref != nil && ref.Aux != nil && ref.Aux.Stack != nil && (!ref.Aux.Stack.IsStatic || isVarTailStack(ref))
-}
-
-// isVarTailStack reports whether the stack `ref` indexes holds entries
-// with a @kunai_variable_tail (ipv6.exts: 8 + 8·hdr_ext_len bytes), so
-// entry i does not sit at base + i·ElemSize.
-func isVarTailStack(ref *ir.FieldRef) bool {
-	if ref == nil || ref.Aux == nil || ref.Aux.Stack == nil || ref.Aux.OwnerOption != nil || ref.Layer == nil {
-		return false
-	}
-	_, ok := variableTailFor(ref.Layer.Spec, ref.Aux.HeaderName)
-	return ok
-}
-
-// auxEntryFieldWindow is the byte window of `ref`'s field inside its aux
-// entry, narrowed by a bit slice like fieldRefByteOffset narrows a
-// layer-relative offset: (offset from the entry start, load bytes).
-func auxEntryFieldWindow(ref *ir.FieldRef) (int, int, error) {
-	if ref.Aux.FieldBitOff%8 != 0 || ref.Aux.FieldBitWidth%8 != 0 {
-		return 0, 0, fmt.Errorf("%w: aux field %s.%s.%s not byte-aligned", ErrNotImplemented, ref.Layer.Spec.Name, ref.Aux.OutParam, ref.Field.Name)
-	}
-	return applySliceToOffset(ref, ref.Aux.FieldBitOff/8, ref.Aux.FieldBitWidth/8)
-}
-
-// emitStaticStackEntryAddress leaves R5 = the start of entry `Static`
-// (and R3 = R5 + HeaderSize, proved inside the window). Fixed-size
-// entries sit at base + Static·ElemSize; entries with a variable tail
-// are walked: entry₀ starts at the stack base, entry_{k+1} at entry_k +
-// ElemSize + tail(entry_k), measured with the parser's own arithmetic
-// (emitTailLengthScalar). The caller has already guarded the index
-// against the push count, so every entry walked is present; the loads
-// are still bounded for the verifier. R2/R3 are clobbered.
-func emitStaticStackEntryAddress(ref *ir.FieldRef, base layerAnchor, failLabel string) (asm.Instructions, error) {
-	// R3 = scalar offset of entry 0.
-	var insns asm.Instructions
-	switch {
-	case base.UseSlot:
-		insns = append(insns, asm.LoadMem(asm.R3, asm.R10, base.SlotOff, asm.DWord), asm.Add.Imm(asm.R3, int32(ref.Aux.OffsetInLayer)))
-	case base.UseR4:
-		insns = append(insns, asm.Mov.Reg(asm.R3, offsetBase), asm.Add.Imm(asm.R3, int32(ref.Aux.OffsetInLayer)))
-	default:
-		insns = append(insns, asm.Mov.Imm(asm.R3, int32(base.AbsOffset+ref.Aux.OffsetInLayer)))
-	}
-	vt, varTail := variableTailFor(ref.Layer.Spec, ref.Aux.HeaderName)
-	switch {
-	case !varTail:
-		if ref.Aux.Stack.Static > 0 {
-			insns = append(insns, asm.Add.Imm(asm.R3, int32(ref.Aux.Stack.Static)*int32(ref.Aux.HeaderSize)))
-		}
-	default:
-		shift := log2PowerOfTwo(vt.Scale)
-		if shift < 0 {
-			return nil, fmt.Errorf("%w: variable-tail scale %d is not a power of two", ErrNotImplemented, vt.Scale)
-		}
-		for k := uint64(0); k < ref.Aux.Stack.Static; k++ {
-			// R2 = tail(entry_k) from its length byte; R3 += ElemSize + R2.
-			insns = append(insns, asm.Mov.Reg(asm.R2, asm.R3), asm.Add.Imm(asm.R2, int32(vt.LenFieldByteOff)))
-			insns = append(insns, boundedScalarLoad(asm.R2, asm.R0, asm.R2, asm.R1, asm.Byte, failLabel)...)
-			insns = append(insns, emitTailLengthScalar(vt, shift, asm.R2, failLabel)...)
-			insns = append(insns, asm.Add.Imm(asm.R3, int32(ref.Aux.HeaderSize)), asm.Add.Reg(asm.R3, asm.R2))
-		}
-	}
-	// Same exposure as emitDynamicStackAddress: bound the scalar, form the
-	// pointer, prove the fixed part of the entry is inside the window.
-	insns = append(insns,
-		asm.JGT.Imm(asm.R3, int32(ScratchBufSize-ref.Aux.HeaderSize), failLabel),
-		asm.Mov.Reg(asm.R5, asm.R0),
-		asm.Add.Reg(asm.R5, asm.R3),
-		asm.Mov.Reg(asm.R3, asm.R5),
-		asm.Add.Imm(asm.R3, int32(ref.Aux.HeaderSize)),
-		asm.JGT.Reg(asm.R3, asm.R1, failLabel),
-	)
-	return insns, nil
-}
-
 // absent is the jump target for a field whose option, gated aux, or
 // stack entry is not present on this packet: the enclosing atom's fail
 // label (the atom is false, D-027), or dslReject when no atom is open.
@@ -2156,7 +2091,7 @@ func whereDynamicMultiByte(c *whereCtx, ref *ir.FieldRef, op ast.CmpOp, failLabe
 	// layerAnchorFor (not the static-only layerOffset) so a dynamic aux
 	// index resolves correctly when its layer sits past a runtime-offset
 	// boundary (e.g. srv6 segments after ipv6 ext headers, or any stack
-	// past a variable-length predecessor). emitDynamicStackAddress
+	// past a variable-length predecessor). emitStackEntryAddress
 	// already handles slot anchors.
 	anchor, err := c.layerAnchorFor(ref.Layer)
 	if err != nil {

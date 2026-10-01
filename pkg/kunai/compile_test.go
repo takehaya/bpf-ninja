@@ -919,6 +919,10 @@ func TestCompileBracketOnPushCountedStack(t *testing.T) {
 			t.Fatalf("%s must compile: %v", expr, err)
 		}
 	}
+	// `in [...]` brackets carry the same push-count guard.
+	if _, err := compileForTest("eth/ipv6[exts[1].next_header in [6, 60]]/tcp"); err != nil {
+		t.Fatalf("in-list bracket on a push-counted stack must compile: %v", err)
+	}
 	// Bit slices narrow the loaded window on walked entries too.
 	for _, expr := range []string{"eth/ipv6/tcp where ipv6.exts[1].next_header[4:8] == 6", "eth/ipv6[exts[1].next_header[4:8] == 6]/tcp", "eth/ipv6/tcp where ipv6.exts[0].next_header[0:4] == 0"} {
 		if _, err := compileForTest(expr); err != nil {
