@@ -1128,14 +1128,11 @@ func TestCompileNestedAlternationCapOverflow(t *testing.T) {
 
 func TestCompileNestedAlternationQuantifiedRejected(t *testing.T) {
 	// `(a|b)?` inside an outer alt is NOT flattened — the optional
-	// semantics differ from a flat alt — and codegen still rejects
-	// it via the QuantOne check, with the existing error message.
+	// semantics differ from a flat alt — and the resolver rejects it as a
+	// type error (alternatives carry no quantifier, §12).
 	_, err := Compile("eth/((vlan|qinq)?|ipv4)", codegen.Capabilities{})
-	if err == nil {
-		t.Fatal("expected error for quantified inner alt group")
-	}
-	if !errors.Is(err, codegen.ErrNotImplemented) {
-		t.Fatalf("err = %v; want ErrNotImplemented", err)
+	if err == nil || errors.Is(err, codegen.ErrNotImplemented) || !strings.Contains(err.Error(), "alternatives cannot carry quantifiers") {
+		t.Fatalf("err = %v; want a resolver error on the quantified inner alt group", err)
 	}
 }
 
@@ -1196,11 +1193,11 @@ func TestCompileStarQuantifierCompiles(t *testing.T) {
 }
 
 func TestCompileStarOnFirstLayerRejected(t *testing.T) {
-	// No outer parent to peek before the chain — reject with a
-	// targeted message.
+	// No outer parent to peek before the chain: a type error from the
+	// resolver, not an implementation limit.
 	_, err := Compile("vlan*/ipv4/tcp", codegen.Capabilities{})
-	if !errors.Is(err, codegen.ErrNotImplemented) {
-		t.Fatalf("err = %v; want ErrNotImplemented for `*` on first layer", err)
+	if err == nil || errors.Is(err, codegen.ErrNotImplemented) || !strings.Contains(err.Error(), "first layer cannot be optional") {
+		t.Fatalf("err = %v; want a resolver error for `*` on the first layer", err)
 	}
 }
 

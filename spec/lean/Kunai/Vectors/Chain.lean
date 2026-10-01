@@ -180,7 +180,7 @@ vector typOptionalAfterSkip := {
   note := "if ipv4 is skipped, tcp sits under eth with no constant (the resolver rejects it too)" }
 vector typOptionalNoCheck := {
   id := "typ-optional-nocheck", ast := { layers := [P "eth", P "ipv4", P "udp", P "vxlan", Pq "eth" .opt, P "ipv4", P "tcp"] },
-  packet := vxlanPkt, expected := .illTyped "optional eth with no-check dispatch cannot detect absence", goStatus := .notImplemented }
+  packet := vxlanPkt, expected := .illTyped "optional eth with no-check dispatch cannot detect absence" }
 vector quantSelfEdgeStar := {
   id := "quant-self-edge-star", ast := { layers := [P "eth", P "mpls", Pq "mpls" .star, P "ipv4", P "tcp"] },
   packet := mpls3, expected := .accept [], goStatus := .notImplemented,
@@ -199,7 +199,7 @@ vector absentConsecutiveSelfValid := {
   note := "D-034: vlan present, mpls absent; ipv4 dispatches on vlan.ethertype. Go: ipv4 self-validates under mpls but not under vlan, so the static-parent read is refused" }
 vector quantFirstOptional := {
   id := "quant-first-optional", ast := { layers := [Pq "vlan" .opt, P "ipv4"] },
-  expected := .illTyped "the first layer cannot be optional", goStatus := .notImplemented }
+  expected := .illTyped "the first layer cannot be optional" }
 
 -- Alternation (D-004, D-010) -----------------------------------------------
 
@@ -218,11 +218,11 @@ vector altFirstPredFails := {
   note := "[E-Layer-Alt-First]: the first alternative commits" }
 vector altRoot := {
   id := "alt-root-illtyped", ast := { layers := [.alt [{ name := "ipv4" }, { name := "ipv6" }], P "tcp"] },
-  packet := l3Pkt, expected := .illTyped "alternation cannot be the first layer", goStatus := .notImplemented }
+  packet := l3Pkt, expected := .illTyped "alternation cannot be the first layer" }
 vector altNoCheck := {
   id := "alt-nocheck-illtyped",
   ast := { layers := [P "eth", P "mpls", .alt [{ name := "eth" }, { name := "ipv4" }]] }, packet := mpls1,
-  expected := .illTyped "alternative eth needs a field dispatch under mpls", goStatus := .notImplemented }
+  expected := .illTyped "alternative eth needs a field dispatch under mpls" }
 
 -- Host (D-008) -----------------------------------------------------------------
 

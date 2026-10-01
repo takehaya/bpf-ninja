@@ -8,8 +8,10 @@
 //   - Tracks @label assignments, auto-indexes repeated protocols
 //     without labels, and enforces the MVP 2-label-per-protocol cap
 //   - Rejects unknown protocols and unknown field references
-//   - Marks MVP-unsupported constructs (alternation groups, in/has
-//     predicates) so the next phase can emit a unified error
+//   - Rejects chain shapes the typing rules exclude (alternation or
+//     optional first layer, alternatives without a field dispatch,
+//     optional layers whose absence cannot be detected) and marks the
+//     predicates codegen does not emit yet
 //
 // Where-clause and capture-clause resolution live in sibling files and
 // arrive in the next commit.
@@ -104,6 +106,10 @@ func (r *resolver) resolveFilter(f *ast.Filter) (*ir.Program, error) {
 		layers = append(layers, li)
 	}
 
+	if err := checkChainShape(layers); err != nil {
+		return nil, err
+	}
+
 	for proto, count := range r.protoLabelCount {
 		if count > MaxLabelInstancesPerProto {
 			return nil, errorf(f.Pos, "protocol %q has %d labeled instances; MVP supports up to %d (@outer/@inner). SRv6 3-stage labelling is deferred", proto, count, MaxLabelInstancesPerProto)
@@ -142,6 +148,71 @@ func (r *resolver) resolveFilter(f *ast.Filter) (*ir.Program, error) {
 	}
 	markRuntimeOffsetLayers(p)
 	return p, nil
+}
+
+// checkChainShape rejects chain shapes the typing rules exclude (§12,
+// mirrored by the spec's static check and worded like it): an
+// alternation or an optional layer cannot open the chain (nothing to
+// dispatch from, nothing to peek for absence), an alternative needs a
+// field constant under every layer that can precede it at run time (the
+// static predecessor, and earlier layers reached by skipping absentable
+// ones) to be told apart from its siblings, and an optional layer with a
+// no-check dispatch cannot detect its own absence unless it is a
+// self-edge of a protocol with a chain-end signal (`mpls/mpls*`, whose
+// s-bit ends the chain). The codegen keeps guards for the same shapes,
+// but the resolver is the authority.
+func checkChainShape(layers []*ir.LayerInstance) error {
+	if len(layers) == 0 {
+		return nil
+	}
+	if first := layers[0]; first.Alternation != nil {
+		return errorf(first.Pos, "alternation cannot be the first layer (it has no parent to dispatch from)")
+	} else if first.Absentable() {
+		return errorf(first.Pos, "the first layer cannot be optional (there is no parent field to peek for its absence)")
+	}
+	for i, l := range layers {
+		if l.Alternation != nil {
+			for _, alt := range l.Alternation {
+				if alt.Alternation != nil || alt.Quant != ast.QuantOne {
+					return errorf(alt.Pos, "alternatives cannot carry quantifiers or nest alternation groups")
+				}
+				for _, parent := range runtimeParents(layers, i) {
+					if c := alt.Spec.SelectDispatchConst(parent.Spec.Name); c == nil || c.Type != vocab.DispatchField {
+						return errorf(alt.Pos, "alternative %s needs a field dispatch under %s (to be told apart from the other alternatives)", alt.Spec.Name, parent.Spec.Name)
+					}
+				}
+			}
+			continue
+		}
+		if !l.Absentable() || l.Dispatch == nil || l.Dispatch.Type != vocab.DispatchNoCheck {
+			continue
+		}
+		prev := layers[i-1]
+		selfEnd := prev.Alternation == nil && prev.Spec == l.Spec && l.Spec.ChainEnd != nil
+		if !selfEnd {
+			return errorf(l.Pos, "optional %s with no-check dispatch cannot detect absence (under %s)", l.Spec.Name, prev.DisplayName())
+		}
+	}
+	return nil
+}
+
+// runtimeParents lists the non-alternation layers that can precede layer
+// `i` at run time: its static predecessor, then each earlier layer while
+// the one after it may be absent. An alternation group ends the walk
+// (its members keep the static rule).
+func runtimeParents(layers []*ir.LayerInstance, i int) []*ir.LayerInstance {
+	var out []*ir.LayerInstance
+	for j := i - 1; j >= 0; j-- {
+		prev := layers[j]
+		if prev.Alternation != nil {
+			break
+		}
+		out = append(out, prev)
+		if !prev.Absentable() {
+			break
+		}
+	}
+	return out
 }
 
 // checkRuntimeParents requires a dispatch (constant or self-validation)
