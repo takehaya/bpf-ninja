@@ -169,33 +169,7 @@ func emitVariableTrail(fixedHs int, vt variableTailSkip, env trailEnv, failLabel
 	loadByteOff := int32(-fixedHs + vt.LenFieldByteOff)
 	insns = append(insns, foldOffsetIntoScalar(env.addrReg, env.offset, loadByteOff, failLabel)...)
 	insns = append(insns, boundedScalarLoad(env.lenReg, env.scratchStart, env.addrReg, env.scratchEnd, asm.Byte, failLabel)...)
-	if vt.LenMask != 0 {
-		insns = append(insns, asm.And.Imm(env.lenReg, int32(vt.LenMask)))
-	}
-	if vt.LenShift > 0 {
-		insns = append(insns, asm.RSh.Imm(env.lenReg, int32(vt.LenShift)))
-	}
-	if shift > 0 {
-		insns = append(insns, asm.LSh.Imm(env.lenReg, int32(shift)))
-	}
-	if vt.MinimumTotal > 0 {
-		insns = append(insns,
-			asm.JLT.Imm(env.lenReg, int32(vt.MinimumTotal), failLabel),
-			asm.Sub.Imm(env.lenReg, int32(vt.MinimumTotal)),
-		)
-	}
-	// vt.MinValue would naturally emit a `JLT lenReg, MinValue, fail`
-	// guard before the bounds compute. In the bpf_loop callback path
-	// (parse_options self-loop) the extra branch inflates verifier
-	// state IDs across MAX_DEPTH iterations and trips the 1M insn
-	// limit on kernels 6.1 / 6.6 / 6.12 / 6.18. Termination is still
-	// bounded by MAX_DEPTH, so a length=0/1 byte just costs MAX_DEPTH
-	// wasted iterations rather than spinning indefinitely; the guard
-	// is a polish item we defer until the callback can carry a tight
-	// early-exit label that won't accumulate scalar IDs.
-	if vt.Base != 0 {
-		insns = append(insns, asm.Add.Imm(env.lenReg, int32(vt.Base)))
-	}
+	insns = append(insns, emitTailLengthScalar(vt, shift, env.lenReg, failLabel)...)
 	insns = append(insns,
 		// Bound the scalar sum before forming a map-value pointer. A pointer
 		// comparison alone cannot establish the verifier's map access range.
@@ -207,6 +181,45 @@ func emitVariableTrail(fixedHs int, vt variableTailSkip, env trailEnv, failLabel
 	)
 	insns = append(insns, env.storeOffsetBack...)
 	return insns, nil
+}
+
+// emitTailLengthScalar turns the raw length byte in `reg` into the tail's
+// byte count: `((byte & LenMask) >> LenShift) << log2(Scale)`, minus
+// MinimumTotal (guarded) when the field encodes the total size, plus
+// Base. `shift` is log2(vt.Scale), validated by the caller. Shared by the
+// parser's advance (emitVariableTrail) and the where-side entry walk
+// (emitStaticStackEntryAddress) so both measure an entry the same way.
+//
+// vt.MinValue would naturally emit a `JLT reg, MinValue, fail` guard
+// before the bounds compute. In the bpf_loop callback path
+// (parse_options self-loop) the extra branch inflates verifier state IDs
+// across MAX_DEPTH iterations and trips the 1M insn limit on kernels 6.1
+// / 6.6 / 6.12 / 6.18. Termination is still bounded by MAX_DEPTH, so a
+// length=0/1 byte just costs MAX_DEPTH wasted iterations rather than
+// spinning indefinitely; the guard is a polish item we defer until the
+// callback can carry a tight early-exit label that won't accumulate
+// scalar IDs.
+func emitTailLengthScalar(vt variableTailSkip, shift int, reg asm.Register, failLabel string) asm.Instructions {
+	var insns asm.Instructions
+	if vt.LenMask != 0 {
+		insns = append(insns, asm.And.Imm(reg, int32(vt.LenMask)))
+	}
+	if vt.LenShift > 0 {
+		insns = append(insns, asm.RSh.Imm(reg, int32(vt.LenShift)))
+	}
+	if shift > 0 {
+		insns = append(insns, asm.LSh.Imm(reg, int32(shift)))
+	}
+	if vt.MinimumTotal > 0 {
+		insns = append(insns,
+			asm.JLT.Imm(reg, int32(vt.MinimumTotal), failLabel),
+			asm.Sub.Imm(reg, int32(vt.MinimumTotal)),
+		)
+	}
+	if vt.Base != 0 {
+		insns = append(insns, asm.Add.Imm(reg, int32(vt.Base)))
+	}
+	return insns
 }
 
 // emitVariableTrailInline is the inline-path facade over

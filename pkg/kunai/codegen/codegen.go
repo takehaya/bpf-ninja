@@ -1785,14 +1785,11 @@ func emitAuxGating(g *vocab.AuxGating, base layerAnchor, failLabel string) asm.I
 //
 // The computed element offset is checked against both ScratchBufSize and
 // the materialised packet end before exposing its address to callers.
-func emitDynamicStackAddress(ref *ir.FieldRef, base layerAnchor, failLabel string) (asm.Instructions, error) {
-	return emitDynamicStackAddressCounted(ref, base, nil, failLabel)
-}
-
-// emitDynamicStackAddressCounted is emitDynamicStackAddress with an
-// optional runtime count: when countSlot names a push count slot, an
-// index at or past the pushed entries jumps to failLabel (the entry is
-// absent, spec D-031) instead of reading the bytes after the stack.
+//
+// countSlot, when it names a push count slot, bounds the index by the
+// pushed entries as well: an index at or past them jumps to failLabel
+// (the entry is absent, spec D-031) instead of reading the bytes after
+// the stack.
 func emitDynamicStackAddressCounted(ref *ir.FieldRef, base layerAnchor, countSlot *int16, failLabel string) (asm.Instructions, error) {
 	if ref == nil || ref.Aux == nil || ref.Aux.Stack == nil || ref.Aux.Stack.IsStatic {
 		return nil, fmt.Errorf("codegen: emitDynamicStackAddress called on non-dynamic ref")
@@ -1997,8 +1994,8 @@ func auxLoadEmitter(ref *ir.FieldRef, anchor layerAnchor, resolveSlot resolveAux
 		}, nil
 	}
 
-	if aux.Stack != nil && !aux.Stack.IsStatic {
-		prelude, err := emitDynamicStackAddress(ref, anchor, failLabel)
+	if needsEntryAddress(ref) {
+		prelude, err := emitStackEntryAddress(ref, anchor, nil, failLabel)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -2099,11 +2096,14 @@ func emitFieldLoad(anchor layerAnchor, fieldOff int, size asm.Size) asm.Instruct
 // call emitDynamicStackAddress directly so they can issue multiple
 // LDX from the same R5 base.
 func emitDynamicStackLoad(ref *ir.FieldRef, size asm.Size, failLabel string) (asm.Instructions, error) {
-	addr, err := emitStackEntryAddressUncounted(ref, r4Anchor(), failLabel)
+	addr, err := emitStackEntryAddress(ref, r4Anchor(), nil, failLabel)
 	if err != nil {
 		return nil, err
 	}
-	fieldByteOff := ref.Aux.FieldBitOff / 8
+	fieldByteOff, _, err := auxEntryFieldWindow(ref)
+	if err != nil {
+		return nil, err
+	}
 	return append(addr, asm.LoadMem(asm.R3, asm.R5, int16(fieldByteOff), size)), nil
 }
 

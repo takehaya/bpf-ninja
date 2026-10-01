@@ -56,11 +56,6 @@ func genPredicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, error) {
 		}
 	}
 
-	// Network literals address aux fields at a constant offset; an entry
-	// past a variable-length one has none.
-	if pred.Value.Kind != ast.ValInt && isVarTailStack(pred.Field) && pred.Field.Aux.Stack.Static > 0 {
-		return nil, fmt.Errorf("%w: %s literal on %s.%s[%d], an entry behind variable-length ones; use a where clause", ErrNotImplemented, pred.Value.Kind, pred.Field.Layer.Spec.Name, pred.Field.Aux.OutParam, pred.Field.Aux.Stack.Static)
-	}
 	var insns asm.Instructions
 	var err error
 	switch pred.Value.Kind {
@@ -137,7 +132,11 @@ func emitIntPredicate(pred *ir.Predicate) (asm.Instructions, error) {
 	dynamic := needsEntryAddress(pred.Field)
 	switch {
 	case dynamic:
-		bytes = pred.Field.Aux.FieldBitWidth / 8
+		_, bs, err := auxEntryFieldWindow(pred.Field)
+		if err != nil {
+			return nil, err
+		}
+		bytes = bs
 		size, err := asmSizeFor(bytes)
 		if err != nil {
 			return nil, err
@@ -849,8 +848,11 @@ func emitInPredicate(pred *ir.Predicate) (asm.Instructions, error) {
 	var size asm.Size
 	switch {
 	case dynamic:
-		bytes = pred.Field.Aux.FieldBitWidth / 8
-		var err error
+		_, bs, err := auxEntryFieldWindow(pred.Field)
+		if err != nil {
+			return nil, err
+		}
+		bytes = bs
 		size, err = asmSizeFor(bytes)
 		if err != nil {
 			return nil, err

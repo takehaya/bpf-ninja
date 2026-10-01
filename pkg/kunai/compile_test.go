@@ -919,6 +919,12 @@ func TestCompileBracketOnPushCountedStack(t *testing.T) {
 			t.Fatalf("%s must compile: %v", expr, err)
 		}
 	}
+	// Bit slices narrow the loaded window on walked entries too.
+	for _, expr := range []string{"eth/ipv6/tcp where ipv6.exts[1].next_header[4:8] == 6", "eth/ipv6[exts[1].next_header[4:8] == 6]/tcp", "eth/ipv6/tcp where ipv6.exts[0].next_header[0:4] == 0"} {
+		if _, err := compileForTest(expr); err != nil {
+			t.Fatalf("%s must compile: %v", expr, err)
+		}
+	}
 	// Variable-length entries cannot be addressed from a runtime index.
 	_, err = compileForTest("eth/ipv6/tcp where ipv6.exts[ipv6.hop_limit].next_header == 6")
 	if !errors.Is(err, codegen.ErrNotImplemented) || !strings.Contains(err.Error(), "variable-length") {

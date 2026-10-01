@@ -115,6 +115,14 @@ vector ipv6ExtsBracketDynamic := {
 vector ipv6ExtsBracketIter := {
   id := "ipv6-exts-bracket-iterator", ast := { layers := ipv6Br (.cmp ⟨[("exts", none), ("next_header", none)]⟩ .eq (.int 6)) },
   expected := .illTyped "stack ipv6.exts needs a constant index inside a bracket predicate" }
+vector ipv6ExtsSliceLong := {
+  id := "ipv6-exts-index-slice-after-long-ext",
+  ast := { layers := ipv6L, cond := some (cmp (Arith.field ⟨[("ipv6", none), ("exts", some (.nat 1)), ("next_header", some (.slice 4 8))]⟩) .eq (k 6)) },
+  packet := longExts, expected := .accept [], note := "a bit slice of a walked entry's field: low nibble of next_header 6" }
+vector ipv6ExtsBracketSliceLong := {
+  id := "ipv6-exts-bracket-slice-after-long-ext",
+  ast := { layers := ipv6Br (.cmp ⟨[("exts", some (.nat 1)), ("next_header", some (.slice 0 4))]⟩ .eq (.int 0)) },
+  packet := longExts, expected := .accept [], note := "high nibble of next_header 6 is 0" }
 vector gtpExtsBracket := {
   id := "gtp-exts-bracket",
   ast := { layers := [P "eth", P "ipv4", P "udp", .proto { name := "gtp", preds := [.cmp ⟨[("exts", some (.nat 0)), ("ext_type", none)]⟩ .eq (.int 1)] }, P "ipv4", P "tcp"] },
@@ -260,7 +268,7 @@ def auxVectors : List Vector := [
   tcpOptCross, tcpEol, tcpMssDup, tcpMssBadLen, tcpMssExists, tcpMssExistsNot, tcpSackBlock, tcpSackAny, tcpSackAll,
   tcpSackAbsentAny, tcpMalformedNoQuery,
   ipv6Hbh, ipv6TwoExts, ipv6ExtLong, ipv6ExtTooLong, ipv6ExtsIndex, ipv6ExtsIndex1, ipv6ExtsIndexAfterLong, ipv6ExtsAnyAfterLong, ipv6ExtsDynamicLong,
-  ipv6ExtsBracket, ipv6ExtsBracketAbsent, ipv6ExtsBracketLong, ipv6ExtsBracketDynamic, ipv6ExtsBracketIter, gtpExtsBracket, ipv6ExtsIndexAbsent,
+  ipv6ExtsBracket, ipv6ExtsBracketAbsent, ipv6ExtsBracketLong, ipv6ExtsBracketDynamic, ipv6ExtsBracketIter, ipv6ExtsSliceLong, ipv6ExtsBracketSliceLong, gtpExtsBracket, ipv6ExtsIndexAbsent,
   ipv6NextHeaderWhere, ipv6NextHeaderBracket, ipv6FiveExts, ipv6SixExts, ipv6AnyExts, ipv6AllExts,
   srv6Chain, srv6Static, srv6Dynamic, srv6Any, srv6All, srv6AllCidr, srv6IndexAbsent, srv6OverCap, srv6AtCap,
   gtpPlain, gtpOptExists, gtpOptAbsent, gtpOptField, gtpOptFieldAbsent, gtpExtStack,
