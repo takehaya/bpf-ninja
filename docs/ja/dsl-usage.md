@@ -143,6 +143,14 @@ eth/ipv4/tcp where action == XDP_DROP            # exit mode 限定
 | `proto.stack[expr].field` | `srv6.segments[srv6.last_entry].addr` | 動的 index (parent header field 由来) |
 | `proto.options.NAME.field` | `tcp.options.MSS.value` | TCP/IPv4 option lookup |
 
+量化された layer の field も参照できます。
+
+- `?` / `{0,1}` の layer (`eth/vlan?/ipv4/tcp where vlan.tci == 100`): layer が無いパケットでは、その field を含む atom は **false** になります (`==` も `!=` も)。「無い、または 100 でない」は `not (vlan.tci == 100)` と書きます。
+- `{n,m>1}` / `+` / `*` の layer は複数 header にマッチしうるので、素の proto 名では ambiguous エラーになります。`@label` を付けると**最後にマッチした header** を指します (`eth/mpls@m{1,8}/ipv4/tcp where m.label == 7`)。
+- 量化 layer の後ろの layer (`eth/vlan?/ipv4/tcp where ipv4.ttl == 64`) は普通に参照できます。offset は実行時に解決されます (実行時 offset で参照できるのは chain の先頭から 7 層目までで、8 層目以降は `ErrNotImplemented`)。
+- 大きさの異なる alternation (`(ipv4|ipv6)`) の中の layer は、量化 layer の後ろにあっても where から参照できません (どちらがマッチしたかの判定が where 側に無いため)。
+- `any` / `all` の対象 stack を持つ layer が無いときは、どちらも false です (空 stack の場合とは違います)。
+
 あるプロトコルにどんな aux / stack / options が露出しているか調べたいときは、`bpf-ninja --dsl-help <proto>` で full reference を出せます。たとえば `--dsl-help srv6` では `segments[0..7]` stack の field と access pattern が、`--dsl-help gtp` では `opt` aux + `exts[0..7]` stack が、`--dsl-help tcp` では options walk の named entries が一覧されます。
 
 #### Aux header / stack / options アクセスの実例
@@ -219,7 +227,7 @@ per-capture の `where` はトップレベルの `where` と AND で合成され
 MVP では次の制限があります。
 
 - フィールド列指定 (`capture tcp.flags, ipv4.dst`) は未対応です。
-- chain (`+`/`*`/`{n,m}`) を含むフィルタは静的に長さを確定できないので、`headers (+N)?` / `<label> (+N)?` は使えず resolve エラーになります。`absolute N` は chain 形に依存しないので使用可能です。
+- capture の長さは compile 時に決まる上限です。量化 layer (`?`/`+`/`*`/`{n,m}`) を含むフィルタでは、その layer が最大数マッチした場合の長さを取ります (`eth/vlan?/ipv4/tcp capture headers` は 58 byte、`eth/mpls+/ipv4/tcp capture headers` は MPLS_MAX_DEPTH 分の 32 byte を含む)。layer が無い / 短いパケットでは、その分だけ余分に capture されます (`min(pkt_len, 上限)` で切られる)。`capture vlan` のように無いかもしれない layer を対象にすると、無いときも同じ上限が使われます。複数の capture 句を書いた場合も実装は句ごとの上限の最大値を 1 つ使うので、「vlan があれば vlan+8、無ければ ipv4+8」のような実行時の使い分けは (仕様上は句を落として表現できますが) 実装ではできません。
 - proto 名で指定するとき chain 内に複数 instance があると ambiguous error になります。`@label` で一意化します。
 - `absolute` は capture 内の contextual keyword です。label が `absolute` という名前と衝突する稀なケースでは `absolute+0` で label 解釈を強制できます。
 

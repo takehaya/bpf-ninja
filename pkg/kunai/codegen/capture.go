@@ -125,21 +125,20 @@ func inferFilterMinPrefix(p *ir.Program, where *ir.Condition) (prefix int) {
 //   - CapToLayer: prefix sum up to and including the target layer + Extra
 //   - CapAbsolute: c.Extra (= N), independent of chain shape
 //
-// Chains containing a quantified layer in the prefix fail because the
-// length would otherwise be runtime-variable. CapAbsolute escapes
-// this constraint because it does not consult the chain at all.
+// The length is a compile-time upper bound: the host clamps it with
+// min(pkt_len, MaxCapLen), so a heterogeneous alternation counts its
+// largest member and a quantified layer every instance it may match
+// (prefixHeaderSizeUpper). A skipped optional layer or a shorter stack
+// then over-captures by the unused instances' bytes; the verdict is
+// unaffected. The spec drops a `capture <layer>` clause whose target is
+// absent (D-020); the length being an immediate, Go captures the upper
+// bound instead.
 func captureLength(c *ir.CaptureClause, p *ir.Program) (int, error) {
 	switch c.Kind {
 	case ast.CapAll:
 		return 0, nil
 	case ast.CapHeaders, ast.CapHeadersPlus:
-		// Capture length is an upper bound: when a het-alt makes the
-		// prefix runtime-variable, we round up to the largest alt
-		// rather than error. The wrapper still emits the same bytes
-		// regardless of which alt matched, so a slightly larger
-		// MaxCapLen just means a few wasted bytes at the tail when
-		// the smaller alt fired — acceptable for "headers" semantics.
-		total, err := prefixHeaderSizeMaxAlt(p, nil, "capture headers")
+		total, err := prefixHeaderSizeUpper(p, nil, "capture headers")
 		if err != nil {
 			return 0, err
 		}
@@ -148,10 +147,9 @@ func captureLength(c *ir.CaptureClause, p *ir.Program) (int, error) {
 		if c.TargetLayer == nil {
 			return 0, fmt.Errorf("codegen: capture to-layer missing resolved target")
 		}
-		// prefixHeaderSize sums up to (but excluding) the target;
-		// add the target's own header size to capture through it.
-		// Same het-alt upper-bound treatment as CapHeaders.
-		prefix, err := prefixHeaderSizeMaxAlt(p, c.TargetLayer, "capture <label>")
+		// The prefix stops before the target; add every instance the
+		// target may match to capture through the whole stack.
+		prefix, err := prefixHeaderSizeUpper(p, c.TargetLayer, "capture <label>")
 		if err != nil {
 			return 0, err
 		}
@@ -159,7 +157,11 @@ func captureLength(c *ir.CaptureClause, p *ir.Program) (int, error) {
 		if err != nil {
 			return 0, err
 		}
-		return prefix + hs + c.Extra, nil
+		n, err := layerMaxInstances(c.TargetLayer)
+		if err != nil {
+			return 0, err
+		}
+		return prefix + n*hs + c.Extra, nil
 	case ast.CapAbsolute:
 		// Resolver already enforces Extra > 0; no defence-in-depth
 		// check here keeps the error path single-sourced.

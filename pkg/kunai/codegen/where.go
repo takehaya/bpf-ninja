@@ -3,6 +3,8 @@ package codegen
 import (
 	"encoding/binary"
 	"fmt"
+	"slices"
+	"strings"
 
 	"github.com/cilium/ebpf/asm"
 
@@ -32,6 +34,12 @@ type whereCtx struct {
 	// here so the atom evaluates false (spec D-027, D-031) instead of
 	// rejecting the packet; empty outside an atom (then dslReject).
 	atomFail string
+	// presentLayers holds absentable layers an enclosing any()/all() has
+	// already guarded as present, so the atoms it unrolls skip their own
+	// guard.
+	presentLayers map[*ir.LayerInstance]bool
+	// absentable caches hasAbsentableLayer.
+	absentable *bool
 	// callbacks accumulates bpf_loop callback subprograms emitted while
 	// generating the where clause (currently the aux-walk any()/all()
 	// loop). They are returned out of genCondition and appended to
@@ -60,6 +68,12 @@ func (c *whereCtx) layerAnchorFor(l *ir.LayerInstance) (layerAnchor, error) {
 		anchor layerAnchor
 		err    error
 	)
+	if group := c.hetAltGroupOf(l); group != nil {
+		// Members of a heterogeneous alternation share one entry slot and
+		// where reads have no matched-member check, so a field of the
+		// member that did not match would read the other member's bytes.
+		return layerAnchor{}, fmt.Errorf("%w: where-clause field on %q inside the alternation %s: reading a member of a heterogeneous-size alternation is not supported", ErrNotImplemented, l.Spec.Name, altGroupText(group))
+	}
 	if l != nil && l.NeedsRuntimeOffset {
 		var slot int16
 		slot, err = whereLayerEntrySlot(l.LayerPos)
@@ -78,6 +92,28 @@ func (c *whereCtx) layerAnchorFor(l *ir.LayerInstance) (layerAnchor, error) {
 	}
 	c.anchors[l] = anchor
 	return anchor, nil
+}
+
+// hetAltGroupOf returns the heterogeneous alternation group `l` belongs
+// to, or nil.
+func (c *whereCtx) hetAltGroupOf(l *ir.LayerInstance) *ir.LayerInstance {
+	if c.p == nil {
+		return nil
+	}
+	for _, g := range c.p.Layers {
+		if ir.IsHeterogeneousAlt(g) && slices.Contains(g.Alternation, l) {
+			return g
+		}
+	}
+	return nil
+}
+
+func altGroupText(g *ir.LayerInstance) string {
+	names := make([]string, 0, len(g.Alternation))
+	for _, a := range g.Alternation {
+		names = append(names, a.Spec.Name)
+	}
+	return "(" + strings.Join(names, "|") + ")"
 }
 
 // genCondition emits instructions that fall through when w evaluates
@@ -102,9 +138,13 @@ func (c *whereCtx) gen(w *ir.Condition, failLabel string) (asm.Instructions, err
 	case ast.WAtomAction:
 		return genActionAtom(w, c.lang, failLabel)
 	case ast.WAtomArith:
-		return c.withStackGuards(w, failLabel, c.genArithCompare)
+		return c.withLayerGuards(w, failLabel, func(w *ir.Condition, fail string) (asm.Instructions, error) {
+			return c.withStackGuards(w, fail, c.genArithCompare)
+		})
 	case ast.WAtomLiteralCmp:
-		return c.withStackGuards(w, failLabel, c.genLiteralCompare)
+		return c.withLayerGuards(w, failLabel, func(w *ir.Condition, fail string) (asm.Instructions, error) {
+			return c.withStackGuards(w, fail, c.genLiteralCompare)
+		})
 	case ast.WAnd:
 		return c.genAnd(w, failLabel)
 	case ast.WOr:
@@ -118,7 +158,7 @@ func (c *whereCtx) gen(w *ir.Condition, failLabel string) (asm.Instructions, err
 	case ast.WAtomBoolLit:
 		return c.genBoolLit(w, failLabel)
 	case ast.WAtomBoolExists:
-		return c.genBoolExists(w, failLabel)
+		return c.withLayerGuards(w, failLabel, c.genBoolExists)
 	case ast.WAtomBoolEq:
 		return c.genBoolEq(w, failLabel)
 	}
@@ -282,20 +322,22 @@ func (c *whereCtx) genAny(w *ir.Condition, failLabel string) (asm.Instructions, 
 	if w.QuantTarget == nil {
 		return nil, fmt.Errorf("codegen: any() lacks a resolved iteration target")
 	}
-	if use, err := useBpfLoopAuxWalk(w); err != nil {
-		return nil, err
-	} else if use {
-		return c.genQuantBpfLoop(w, failLabel, true)
-	}
-	matchLabel := c.freshLabel("any_match")
-	insns, err := c.genQuantUnroll(w, matchLabel, failLabel, true)
-	if err != nil {
-		return nil, err
-	}
-	// After all iterations exhaust without a match, fall to failLabel.
-	insns = append(insns, asm.Ja.Label(failLabel))
-	insns = append(insns, landingNoop(matchLabel))
-	return insns, nil
+	return c.withQuantLayerGuard(w, failLabel, func() (asm.Instructions, error) {
+		if use, err := useBpfLoopAuxWalk(w); err != nil {
+			return nil, err
+		} else if use {
+			return c.genQuantBpfLoop(w, failLabel, true)
+		}
+		matchLabel := c.freshLabel("any_match")
+		insns, err := c.genQuantUnroll(w, matchLabel, failLabel, true)
+		if err != nil {
+			return nil, err
+		}
+		// After all iterations exhaust without a match, fall to failLabel.
+		insns = append(insns, asm.Ja.Label(failLabel))
+		insns = append(insns, landingNoop(matchLabel))
+		return insns, nil
+	})
 }
 
 // genAll emits a static-unroll where every iteration must succeed.
@@ -306,16 +348,126 @@ func (c *whereCtx) genAll(w *ir.Condition, failLabel string) (asm.Instructions, 
 	if w.QuantTarget == nil {
 		return nil, fmt.Errorf("codegen: all() lacks a resolved iteration target")
 	}
-	if use, err := useBpfLoopAuxWalk(w); err != nil {
-		return nil, err
-	} else if use {
-		return c.genQuantBpfLoop(w, failLabel, false)
+	return c.withQuantLayerGuard(w, failLabel, func() (asm.Instructions, error) {
+		if use, err := useBpfLoopAuxWalk(w); err != nil {
+			return nil, err
+		} else if use {
+			return c.genQuantBpfLoop(w, failLabel, false)
+		}
+		return c.genQuantUnroll(w, "" /* no per-iter accept */, failLabel, false)
+	})
+}
+
+// withQuantLayerGuard makes any()/all() over the stack of an absentable
+// layer false when the layer is absent (spec D-003 / D-007: not vacuously
+// true), by guarding the layer once before the iterations; the unrolled
+// atoms then skip their own guard (presentLayers). The guard also keeps
+// the aux bpf_loop walk from seeding its ctx with the absent sentinel.
+func (c *whereCtx) withQuantLayerGuard(w *ir.Condition, failLabel string, body func() (asm.Instructions, error)) (asm.Instructions, error) {
+	// The target layer first, then every other absentable layer the body
+	// reads: guarded once here rather than once per unrolled iteration.
+	layers := []*ir.LayerInstance{w.QuantTarget.Layer}
+	ir.WalkConditionFieldRefs(w.Inner, func(ref *ir.FieldRef) {
+		if ref != nil && ref.Layer != nil && !slices.Contains(layers, ref.Layer) {
+			layers = append(layers, ref.Layer)
+		}
+	})
+	var guards asm.Instructions
+	for _, layer := range layers {
+		guard, err := c.absentLayerGuard(layer, failLabel)
+		if err != nil {
+			return nil, err
+		}
+		if guard == nil {
+			continue
+		}
+		guards = append(guards, guard...)
+		if c.presentLayers == nil {
+			c.presentLayers = map[*ir.LayerInstance]bool{}
+		}
+		c.presentLayers[layer] = true
+		defer delete(c.presentLayers, layer)
 	}
-	insns, err := c.genQuantUnroll(w, "" /* no per-iter accept */, failLabel, false)
+	insns, err := body()
 	if err != nil {
 		return nil, err
 	}
-	return insns, nil
+	return append(guards, insns...), nil
+}
+
+// hasAbsentableLayer reports whether any layer of the program can match
+// zero headers, i.e. whether where atoms may need an absent-layer guard.
+func (c *whereCtx) hasAbsentableLayer() bool {
+	if c.absentable == nil {
+		v := false
+		for _, l := range c.p.Layers {
+			if l != nil && l.Absentable() {
+				v = true
+				break
+			}
+		}
+		c.absentable = &v
+	}
+	return *c.absentable
+}
+
+// absentLayerGuard jumps to failLabel when the layer matched zero headers:
+// its per-layer entry slot holds layerEntryAbsent (D-003). Empty for layers
+// that are always present, that an enclosing quantifier already guarded,
+// or whose layer the atom does not reference at a runtime offset. A marked
+// absentable layer always has a slot: the resolver marks every quantified
+// layer a where / capture clause references.
+func (c *whereCtx) absentLayerGuard(l *ir.LayerInstance, failLabel string) (asm.Instructions, error) {
+	if l == nil || !l.Absentable() || c.presentLayers[l] {
+		return nil, nil
+	}
+	if !l.NeedsRuntimeOffset {
+		// The resolver marks every quantified layer a where / capture
+		// clause references; without the mark there is no slot to test.
+		return nil, fmt.Errorf("%w: where-clause field on quantified layer %q without a runtime entry slot", ErrNotImplemented, l.Spec.Name)
+	}
+	slot, err := whereLayerEntrySlot(l.LayerPos)
+	if err != nil {
+		return nil, err
+	}
+	return asm.Instructions{
+		asm.LoadMem(asm.R3, asm.R10, slot, asm.DWord),
+		asm.JEq.Imm(asm.R3, layerEntryAbsent, failLabel),
+	}, nil
+}
+
+// withLayerGuards prefixes an atom with absentLayerGuard for every distinct
+// absentable layer it reads, so a field of a skipped `?` / `*` layer makes
+// the atom false for `==`, `!=`, arithmetic and `.exists` alike (D-003);
+// `not` of such an atom is true. The guards run before the stack guards,
+// whose count reads may address the same layer's slot.
+func (c *whereCtx) withLayerGuards(w *ir.Condition, failLabel string, body func(*ir.Condition, string) (asm.Instructions, error)) (asm.Instructions, error) {
+	if !c.hasAbsentableLayer() {
+		return body(w, failLabel)
+	}
+	var guards asm.Instructions
+	var walkErr error
+	seen := map[*ir.LayerInstance]bool{}
+	ir.WalkConditionFieldRefs(w, func(ref *ir.FieldRef) {
+		if walkErr != nil || ref == nil || ref.Layer == nil || seen[ref.Layer] {
+			return
+		}
+		seen[ref.Layer] = true
+		g, err := c.absentLayerGuard(ref.Layer, failLabel)
+		if err != nil {
+			walkErr = err
+			return
+		}
+		guards = append(guards, g...)
+	})
+	if walkErr != nil {
+		return nil, walkErr
+	}
+	insns, err := body(w, failLabel)
+	if err != nil {
+		return nil, err
+	}
+	return append(guards, insns...), nil
 }
 
 // genQuantUnroll emits Capacity copies of the inner expression, each
@@ -1413,7 +1565,7 @@ func arithALUOp(op ast.ArithOp) (asm.ALUOp, error) {
 // layerAbsoluteOffset returns the scratch-buffer byte offset at which
 // target's header begins.
 func layerAbsoluteOffset(target *ir.LayerInstance, p *ir.Program) (int, error) {
-	return prefixHeaderSize(p, target, "where-clause field", uniformAltPrefixSize)
+	return prefixHeaderSize(p, target, "where-clause field", uniformAltPrefixSize, exactInstances)
 }
 
 // prefixHeaderSize sums header sizes of p.Layers up to (but not
@@ -1432,42 +1584,85 @@ func layerAbsoluteOffset(target *ir.LayerInstance, p *ir.Program) (int, error) {
 //   - maxAltPrefixSize: returns the largest member's size; used by
 //     capture, which over-captures by a few bytes when the smaller
 //     alt fired rather than refusing the chain.
-func prefixHeaderSize(p *ir.Program, until *ir.LayerInstance, reason string, altReducer func([]*ir.LayerInstance, string) (int, error)) (int, error) {
+func prefixHeaderSize(p *ir.Program, until *ir.LayerInstance, reason string, altReducer func([]*ir.LayerInstance, string) (int, error), instances func(*ir.LayerInstance, string) (int, error)) (int, error) {
 	total := 0
 	for _, l := range p.Layers {
-		if l == until {
-			if l.Quant != ast.QuantOne {
-				return 0, fmt.Errorf("%w: %s on quantified layer %q", ErrNotImplemented, reason, l.Spec.Name)
+		// An alternation member as the target: the prefix stops before
+		// its group (every member starts there).
+		if l == until || slices.Contains(l.Alternation, until) {
+			if l == until {
+				if _, err := instances(l, reason+" on"); err != nil {
+					return 0, err
+				}
 			}
 			return total, nil
 		}
-		if l.Quant != ast.QuantOne {
-			return 0, fmt.Errorf("%w: %s past quantified layer %q", ErrNotImplemented, reason, l.Spec.Name)
-		}
-		if l.Alternation != nil {
-			altHs, err := altReducer(l.Alternation, reason)
-			if err != nil {
-				return 0, err
-			}
-			total += altHs
-			continue
-		}
-		hs, err := headerSize(l.Spec)
+		n, err := instances(l, reason+" past")
 		if err != nil {
 			return 0, err
 		}
-		total += hs
+		var hs int
+		if l.Alternation != nil {
+			hs, err = altReducer(l.Alternation, reason)
+		} else {
+			hs, err = headerSize(l.Spec)
+		}
+		if err != nil {
+			return 0, err
+		}
+		total += n * hs
 	}
 	if until != nil {
-		return 0, fmt.Errorf("codegen: %s references layer %q which is not in program", reason, until.Spec.Name)
+		return 0, fmt.Errorf("codegen: %s references layer %q which is not in program", reason, layerName(until))
 	}
 	return total, nil
+}
+
+// exactInstances is the where-side quantifier policy: a static prefix
+// needs every layer to match exactly one header. `what` is the reason
+// plus "on" / "past" for the diagnostic.
+func exactInstances(l *ir.LayerInstance, what string) (int, error) {
+	if l.Quant != ast.QuantOne {
+		return 0, fmt.Errorf("%w: %s quantified layer %q", ErrNotImplemented, what, l.Spec.Name)
+	}
+	return 1, nil
+}
+
+// upperInstances is the capture-side policy: every instance a
+// quantifier allows counts (layerMaxInstances).
+func upperInstances(l *ir.LayerInstance, _ string) (int, error) {
+	return layerMaxInstances(l)
 }
 
 // prefixHeaderSizeMaxAlt is the capture-side wrapper that rounds
 // heterogeneous alts up to their largest member instead of erroring.
 func prefixHeaderSizeMaxAlt(p *ir.Program, until *ir.LayerInstance, reason string) (int, error) {
-	return prefixHeaderSize(p, until, reason, maxAltPrefixSize)
+	return prefixHeaderSize(p, until, reason, maxAltPrefixSize, exactInstances)
+}
+
+// prefixHeaderSizeUpper bounds the bytes the layers before `until` (all
+// of them when nil) can span: the largest alternation member and every
+// instance a quantifier allows (layerMaxInstances) count. Capture lengths
+// use it; where-clause addressing keeps prefixHeaderSize, whose static
+// prefix must be exact.
+func prefixHeaderSizeUpper(p *ir.Program, until *ir.LayerInstance, reason string) (int, error) {
+	return prefixHeaderSize(p, until, reason, maxAltPrefixSize, upperInstances)
+}
+
+// layerMaxInstances is the most headers a layer can match: one for a
+// plain or `?` layer, the quantifier's upper bound otherwise, with the
+// chain's iteration cap standing in for an open bound.
+func layerMaxInstances(l *ir.LayerInstance) (int, error) {
+	switch l.Quant {
+	case ast.QuantRange:
+		if l.RangeMax >= 0 {
+			return l.RangeMax, nil
+		}
+		return chainMaxIter(l)
+	case ast.QuantPlus, ast.QuantStar:
+		return chainMaxIter(l)
+	}
+	return 1, nil
 }
 
 // uniformAltPrefixSize is the strict altReducer: every alt must agree

@@ -891,6 +891,73 @@ func TestCompileQinqVlanChainCoversAllTagShapes(t *testing.T) {
 	}
 }
 
+// TestCompileWhereOnQuantifiedLayers pins D-003 / D-013 / D-018 end to
+// end: fields of an optional layer and of the layers after it compile
+// (the absent layer makes the atom false at run time), a labelled
+// repeated layer binds its last instance on both chain lowerings, and an
+// unlabelled repeated layer is a type error, not an implementation limit.
+func TestCompileWhereOnQuantifiedLayers(t *testing.T) {
+	for _, expr := range []string{
+		"eth/vlan?/ipv4/tcp where vlan.tci == 100",
+		"eth/vlan?/ipv4/tcp where not (vlan.tci == 1)",
+		"eth/vlan?/ipv4/tcp where vlan.tci != 1",
+		"eth/vlan?/ipv4/tcp where ipv4.ttl == 64",
+		"eth/qinq?/vlan?/ipv4/tcp where vlan.tci == 100 and ipv4.ttl == 64",
+		"eth/mpls@m{1,3}/ipv4/tcp where m.label == 7", // static unroll
+		"eth/mpls@m{1,8}/ipv4/tcp where m.label == 7", // bpf_loop
+		"eth/mpls@m*/ipv4/tcp where not (m.label == 7)",
+		"eth/mpls{1,8}/ipv4/tcp where ipv4.total_length > 100", // the README example
+	} {
+		if _, err := compileForTest(expr); err != nil {
+			t.Errorf("%s: %v", expr, err)
+		}
+	}
+	_, err := compileForTest("eth/mpls{1,3}/ipv4/tcp where mpls.label == 7")
+	if err == nil || errors.Is(err, codegen.ErrNotImplemented) || !strings.Contains(err.Error(), "ambiguous") {
+		t.Fatalf("unlabelled repeated layer: expected a resolver ambiguity error, got %v", err)
+	}
+	// A member of a heterogeneous alternation shares its group's slot and
+	// has no matched-member check on where reads, so it stays refused
+	// even behind an optional layer.
+	_, err = compileForTest("eth/vlan?/(ipv4|ipv6)/tcp where ipv4.ttl == 64")
+	if !errors.Is(err, codegen.ErrNotImplemented) || !strings.Contains(err.Error(), "heterogeneous-size alternation") {
+		t.Fatalf("het-alt member after an optional layer: expected ErrNotImplemented naming the alternation, got %v", err)
+	}
+	// Capturing an alternation member behind an optional layer sizes the
+	// bound from the member itself.
+	out, err := Compile("eth/vlan?/(ipv4|ipv6)/tcp capture ipv4+8", codegen.Capabilities{})
+	if err != nil {
+		t.Fatalf("capture alt member: %v", err)
+	}
+	if out.Capture.MaxCapLen != 14+4+20+8 {
+		t.Fatalf("capture alt member: MaxCapLen = %d, want %d", out.Capture.MaxCapLen, 14+4+20+8)
+	}
+}
+
+// TestCompileCaptureUpperBoundOverQuantifiers pins that capture lengths
+// over quantified layers are the compile-time upper bound (every instance
+// the quantifier allows), which the host clamps with the packet length.
+func TestCompileCaptureUpperBoundOverQuantifiers(t *testing.T) {
+	for _, tc := range []struct {
+		expr string
+		want int
+	}{
+		{"eth/vlan?/ipv4/tcp capture headers", 14 + 4 + 20 + 20},
+		{"eth/vlan?/ipv4/tcp capture vlan", 14 + 4},
+		{"eth/mpls{1,3}/ipv4/tcp capture headers", 14 + 3*4 + 20 + 20},
+		{"eth/mpls+/ipv4/tcp capture headers", 14 + 8*4 + 20 + 20}, // MPLS_MAX_DEPTH = 8
+		{"eth/mpls@m+/ipv4/tcp capture m+8", 14 + 8*4 + 8},
+	} {
+		out, err := Compile(tc.expr, codegen.Capabilities{})
+		if err != nil {
+			t.Fatalf("%s: %v", tc.expr, err)
+		}
+		if out.Capture.MaxCapLen != tc.want {
+			t.Errorf("%s: MaxCapLen = %d, want %d", tc.expr, out.Capture.MaxCapLen, tc.want)
+		}
+	}
+}
+
 // TestCompileConsecutiveOptionalsNeedEquivalentDispatch pins the D-034
 // limit of the static-parent dispatch after consecutive optional layers:
 // it is sound only when every runtime parent dispatches the layer the
@@ -1264,6 +1331,8 @@ func TestVlanInMetadataRejectsVlanLayers(t *testing.T) {
 		"eth/qinq/vlan/ipv4/tcp where tcp.dport == 80",      // mandatory QinQ
 		"eth/vlan[tci==100]?/ipv4/tcp",                      // optional but reads tci
 		"eth/(vlan|qinq)/ipv4/tcp",                          // tag in alternation
+		"eth/vlan?/ipv4/tcp where vlan.tci == 100",          // where reads the tag
+		"eth/vlan?/ipv4/tcp capture vlan",                   // capture targets the tag
 	}
 	// Optional, predicate-free tags are matchable at a VlanInMetadata
 	// host: at most one tag survives in the bytes, and the skip path
@@ -1272,6 +1341,7 @@ func TestVlanInMetadataRejectsVlanLayers(t *testing.T) {
 		"eth/vlan?/ipv4/tcp",
 		"eth/qinq?/vlan?/ipv4/tcp",
 		"eth/vlan*/ipv4/tcp",
+		"eth/vlan?/ipv4/tcp where ipv4.ttl == 64", // past the tag: runtime offset, no tag read
 	}
 	tcCaps := codegen.Capabilities{Host: codegen.HostLayout{VlanInMetadata: true}}
 	for _, expr := range rejected {

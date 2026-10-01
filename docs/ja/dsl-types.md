@@ -1095,6 +1095,8 @@ eval-cap(cap(all, _), σ, P)             = (0, |P|, P)
 eval-cap(cap(headers, _), σ, P)         = (0, π_now, P[..π_now])              ; π_now = chain 終了時の cursor
 eval-cap(cap(headers+N, _), σ, P)       = (0, min(π_now + N, |P|), …)
 eval-cap(cap(label+N, _), σ, P)         = (off(Λ[label]), min(off(...) + |label_layer| + N, |P|), …)
+                                                                 ; Λ[label] が無い (layer が skip された) ときはこの句を省く (D-020)。
+                                                                 ; 実装の capture 長は compile 時の上限 (全 instance がある場合) で、無いときは余分に capture する
 eval-cap(cap(proto+N, _), σ, P)         = (off(layer_of(proto)), …)
 eval-cap(cap(absolute(N), _), σ, P)     = (0, min(N, |P|), …)
 eval-cap(cap(layer-target,_), σ, P)     = layer-instance のバイト範囲
@@ -1162,7 +1164,7 @@ op_c(n, v_n) = b                             ───────────�
 ─────────────────────────────                ─────────────────────────────
 ⟨any(w), σ⟩ ⇓_P true                         ⟨all(w), σ⟩ ⇓_P true
 
-(空 stack のとき: any ⇓ false, all ⇓ true)
+(空 stack のとき: any ⇓ false, all ⇓ true。stack を持つ layer 自体が σ に無いとき (skip された `?` / `*`): any ⇓ false, all ⇓ false — D-003 / D-007)
 ```
 
 ### 13.9 算術評価
@@ -1346,7 +1348,7 @@ resolver は AST を root から再帰的に walk します。各 §12 rule に�
 
 | §12 rule | resolver 実装 |
 |---|---|
-| T-FieldPrim / T-FieldAux | `resolve/where.go::resolveQualifiedField` |
+| T-FieldPrim / T-FieldAux | `resolve/where.go::resolveQualifiedField`。素の proto 名は chain 内の静的 instance 数が 1 のときだけ束縛し、上限が 1 でない量化 (`{n,m>1}`, `+`, `*`) は複数扱いで ambiguous (D-013、`lookupByQualifier`)。`@label` は最後にマッチした instance を指す (D-018) |
 | T-IntLit + narrow | `resolve/typing.go::checkArithExpr` |
 | T-CmpEq-Int / T-CmpOrd-Int | `resolve/typing.go::checkArithCondition` (経由で `arithCmpTargetBits`) |
 | T-CmpCIDR4 / T-CmpCIDR6 | `resolve/typing.go::checkLiteralWidthShape` (旧名: `validateLiteralFieldType`) |

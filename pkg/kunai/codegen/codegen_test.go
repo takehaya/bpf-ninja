@@ -268,10 +268,36 @@ func TestGenArithBinaryOpEvaluatesBothSides(t *testing.T) {
 	}
 }
 
-func TestGenArithRejectsQuantifiedUpstream(t *testing.T) {
-	// eth / vlan? / ipv4 / tcp with `where ipv4.total_length == 100`:
-	// the optional vlan makes ipv4's absolute offset runtime-variable,
-	// so the where codegen must refuse.
+// TestGenArithPastOptionalLayer pins both sides of the runtime-offset
+// contract for `eth/vlan?/ipv4/tcp where ipv4.total_length == 100`: an
+// ipv4 the resolver did not mark has no slot and is refused (the prefix
+// is runtime-variable), a marked one reads through its entry slot.
+func TestGenArithPastOptionalLayer(t *testing.T) {
+	for _, marked := range []bool{false, true} {
+		p := vlanOptIPv4Program()
+		p.Layers[2].NeedsRuntimeOffset = marked
+		p.Where = &ir.Condition{
+			Kind: ast.WAtomArith,
+			Op:   ast.CmpEq,
+			ArithL: &ir.ArithExpr{
+				Kind:  ast.ArithField,
+				Field: &ir.FieldRef{Layer: p.Layers[2], Field: &ipv4Spec.Fields[3]},
+			},
+			ArithR: &ir.ArithExpr{Kind: ast.ArithConst, Const: 100},
+		}
+		_, err := Gen(p, Capabilities{})
+		if marked && err != nil {
+			t.Fatalf("marked ipv4: %v", err)
+		}
+		if !marked && !errors.Is(err, ErrNotImplemented) {
+			t.Fatalf("unmarked ipv4: err = %v; want ErrNotImplemented", err)
+		}
+	}
+}
+
+// vlanOptIPv4Program is eth / vlan? / ipv4 with LayerPos set as the
+// resolver would; callers mark layers to exercise the slot paths.
+func vlanOptIPv4Program() *ir.Program {
 	vlanSpec := newSpec("vlan", "vlan_h",
 		vocab.Field{Name: "tci", Bits: 16},
 		vocab.Field{Name: "ethertype", Bits: 16},
@@ -284,27 +310,63 @@ func TestGenArithRejectsQuantifiedUpstream(t *testing.T) {
 	vlan := &ir.LayerInstance{
 		Spec:     vlanSpec,
 		Dispatch: &ir.DispatchChoice{Type: vocab.DispatchField, Const: vlanFromEth},
-		Quant:    ast.QuantOpt,
+		Quant:    ast.QuantOpt, LayerPos: 1,
 	}
 	ipv4 := &ir.LayerInstance{
 		Spec:     ipv4Spec,
 		Dispatch: &ir.DispatchChoice{Type: vocab.DispatchField, Const: ipv4EthertypeConst},
+		LayerPos: 2,
 	}
-	p := &ir.Program{
-		Layers: []*ir.LayerInstance{eth, vlan, ipv4},
-		Where: &ir.Condition{
-			Kind: ast.WAtomArith,
-			Op:   ast.CmpEq,
-			ArithL: &ir.ArithExpr{
-				Kind:  ast.ArithField,
-				Field: &ir.FieldRef{Layer: ipv4, Field: &ipv4Spec.Fields[3]},
-			},
+	return &ir.Program{Layers: []*ir.LayerInstance{eth, vlan, ipv4}}
+}
+
+// TestGenAbsentLayerGuard pins the D-003 guard on a marked optional layer:
+// `LoadMem R3 ← slot; JEq R3, -1, fail` precedes the field load, and under
+// `not` the guard's target is the not-success landing (absent ⇒ true).
+func TestGenAbsentLayerGuard(t *testing.T) {
+	slot, err := whereLayerEntrySlot(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	atom := func(p *ir.Program) *ir.Condition {
+		return &ir.Condition{
+			Kind: ast.WAtomArith, Op: ast.CmpEq,
+			ArithL: &ir.ArithExpr{Kind: ast.ArithField, Field: &ir.FieldRef{Layer: p.Layers[1], Field: &p.Layers[1].Spec.Fields[0]}},
 			ArithR: &ir.ArithExpr{Kind: ast.ArithConst, Const: 100},
-		},
+		}
 	}
-	_, err := Gen(p, Capabilities{})
-	if !errors.Is(err, ErrNotImplemented) {
-		t.Fatalf("err = %v; want ErrNotImplemented", err)
+	guardTarget := func(insns asm.Instructions) (string, bool) {
+		for i, ins := range insns {
+			if ins.OpCode == asm.LoadMem(asm.R3, asm.R10, 0, asm.DWord).OpCode && ins.Src == asm.R10 && ins.Offset == slot && i+1 < len(insns) {
+				next := insns[i+1]
+				if next.OpCode == asm.JEq.Imm(asm.R3, 0, "").OpCode && next.Constant == int64(layerEntryAbsent) {
+					return next.Reference(), true
+				}
+			}
+		}
+		return "", false
+	}
+
+	p := vlanOptIPv4Program()
+	p.Layers[1].NeedsRuntimeOffset = true
+	p.Where = atom(p)
+	out, err := Gen(p, Capabilities{})
+	if err != nil {
+		t.Fatalf("Gen: %v", err)
+	}
+	if target, ok := guardTarget(out.Main); !ok || target != dslReject {
+		t.Errorf("plain atom: guard target %q (found=%v), want %s", target, ok, dslReject)
+	}
+
+	p = vlanOptIPv4Program()
+	p.Layers[1].NeedsRuntimeOffset = true
+	p.Where = &ir.Condition{Kind: ast.WNot, Inner: atom(p)}
+	out, err = Gen(p, Capabilities{})
+	if err != nil {
+		t.Fatalf("Gen(not): %v", err)
+	}
+	if target, ok := guardTarget(out.Main); !ok || !strings.Contains(target, "not_succ") {
+		t.Errorf("not(atom): guard target %q (found=%v), want the not-success landing", target, ok)
 	}
 }
 
@@ -658,7 +720,11 @@ func TestGenCaptureRejectsFieldList(t *testing.T) {
 	}
 }
 
-func TestGenCaptureRejectsQuantifiedChain(t *testing.T) {
+// TestGenCaptureUpperBoundOverOptional pins that a capture over an
+// optional layer sizes MaxCapLen for the present case (eth 14 + vlan 4 +
+// 16): the host clamps with the packet length, so a skipped tag only
+// over-captures (D-020).
+func TestGenCaptureUpperBoundOverOptional(t *testing.T) {
 	vlanSpec := newSpec("vlan", "vlan_h",
 		vocab.Field{Name: "tci", Bits: 16},
 		vocab.Field{Name: "ethertype", Bits: 16},
@@ -677,9 +743,12 @@ func TestGenCaptureRejectsQuantifiedChain(t *testing.T) {
 		Layers:   []*ir.LayerInstance{eth, vlan},
 		Captures: []*ir.CaptureClause{{Kind: ast.CapHeadersPlus, Extra: 16}},
 	}
-	_, err := Gen(p, Capabilities{})
-	if !errors.Is(err, ErrNotImplemented) {
-		t.Fatalf("err = %v; want ErrNotImplemented", err)
+	out, err := Gen(p, Capabilities{})
+	if err != nil {
+		t.Fatalf("Gen: %v", err)
+	}
+	if out.Capture.MaxCapLen != 14+4+16 {
+		t.Fatalf("MaxCapLen = %d; want %d", out.Capture.MaxCapLen, 14+4+16)
 	}
 }
 

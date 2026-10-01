@@ -153,6 +153,13 @@ func genBpfLoopChain(layer *ir.LayerInstance, index int, all []*ir.LayerInstance
 	if optionalChain && absentEdgeApplies(index, all) {
 		absentLabel = fmt.Sprintf("dsl_absent_%d", index)
 	}
+	// A marked `*` / `{0,m}` layer's entry slot reads "absent" until a
+	// present iteration overwrites it (D-003).
+	sentinel, err := emitLayerEntrySentinel(layer)
+	if err != nil {
+		return nil, nil, err
+	}
+	mainInsns = append(mainInsns, sentinel...)
 	if optionalChain {
 		// Whole-chain skip: peek the parent dispatch; on mismatch
 		// jump past every iteration (including the bpf_loop call and
@@ -334,6 +341,13 @@ func genBpfLoopCallback(layer *ir.LayerInstance, selfConst *vocab.DispatchConst,
 		insns = append(insns, preds...)
 	}
 
+	// Record this instance's start for where / capture (last one wins,
+	// D-018) before the cursor moves past it.
+	entry, err := emitLayerEntryStoreFromCb(layer)
+	if err != nil {
+		return nil, err
+	}
+	insns = append(insns, entry...)
 	insns = append(insns,
 		asm.Add.Imm(asm.R3, int32(hs)),
 		asm.StoreMem(asm.R2, bpfLoopCbCtxOffsetField, asm.R3, asm.DWord),

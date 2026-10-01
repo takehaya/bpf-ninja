@@ -806,14 +806,20 @@ func checkUnsupported(p *ir.Program) error {
 //
 // What stays rejected, because it reads a tag the host does not expose
 // in packet bytes:
+//
 //   - a mandatory vlan/qinq layer (no skip path),
+//
 //   - a bracket predicate on the layer (`vlan[tci==100]?`), and
+//
 //   - a vlan/qinq layer inside an alternation (no per-alt skip path).
 //
-// A where-clause or capture that reads a vlan field, or any field past
-// the optional tag, is already rejected upstream as a quantified-layer
-// limitation, so it needs no separate check here. Reading the tag from
-// skb metadata is future work; see HostLayout.VlanInMetadata.
+//   - a where clause or capture that reads a vlan/qinq field (the tag's
+//     bytes are not in the packet, so its entry slot would be absent on
+//     every tagged frame).
+//
+// Fields past the optional tag read fine: the layers after it record
+// their runtime offsets. Reading the tag from skb metadata is future
+// work; see HostLayout.VlanInMetadata.
 func checkHostLayerSupport(p *ir.Program, host HostLayout) error {
 	if !host.VlanInMetadata {
 		return nil
@@ -841,7 +847,26 @@ func checkHostLayerSupport(p *ir.Program, host HostLayout) error {
 			return reject(l)
 		}
 	}
-	return nil
+	var refErr error
+	visit := func(f *ir.FieldRef) {
+		if refErr == nil && f != nil && isVlan(f.Layer) {
+			refErr = withPos(fmt.Errorf("%w: where / capture reads %s.%s, but this host moves the VLAN tag to skb metadata before the program runs; the tag is not in the packet bytes (reading it from metadata is future work)", ErrNotImplemented, f.Layer.Spec.Name, f.Field.Name), f.Layer.Pos)
+		}
+	}
+	ir.WalkConditionFieldRefs(p.Where, visit)
+	for _, c := range p.Captures {
+		if c == nil {
+			continue
+		}
+		if isVlan(c.TargetLayer) {
+			return withPos(fmt.Errorf("%w: capture %s targets a VLAN tag this host moves to skb metadata before the program runs; its bytes are not in the packet (capture ipv4 or an absolute length instead)", ErrNotImplemented, c.TargetLayer.Spec.Name), c.TargetLayer.Pos)
+		}
+		ir.WalkConditionFieldRefs(c.Where, visit)
+		for _, f := range c.Fields {
+			visit(f)
+		}
+	}
+	return refErr
 }
 
 // genLayer dispatches on the quantifier and emits the layer's own
@@ -922,18 +947,11 @@ func genStaticLayer(layer *ir.LayerInstance, index int, all []*ir.LayerInstance,
 		// read/write ordering invariant.
 		insns = append(insns, asm.StoreMem(asm.R10, bpfLoopCtxLayerEntrySlot, offsetBase, asm.DWord))
 	}
-	if layer.NeedsRuntimeOffset {
-		// Resolver flagged this layer as referenced by where / capture
-		// past a heterogeneous-size alt. Store R4 (= layer entry byte
-		// offset within scratch) into the per-layer slot so downstream
-		// where / capture / option-walk loads can address through it
-		// instead of the (now-runtime-variable) R0+static_prefix.
-		slotEntry, err := whereLayerEntrySlot(layer.LayerPos)
-		if err != nil {
-			return nil, err
-		}
-		insns = append(insns, asm.StoreMem(asm.R10, slotEntry, offsetBase, asm.DWord))
+	entry, err := emitLayerEntryStore(layer)
+	if err != nil {
+		return nil, err
 	}
+	insns = append(insns, entry...)
 	insns = append(insns, emitAdvance(hs))
 	if len(layer.Spec.FlagTriggers) > 0 {
 		flags, err := emitFlagTriggers(fmt.Sprintf("dsl_l%d_%d", index, layer.Index), hs, layer.Spec.FlagsByteOffset, layer.Spec.FlagTriggers, dslReject)
@@ -1209,10 +1227,15 @@ func emitPeekedIterZero(layer *ir.LayerInstance, index int, all []*ir.LayerInsta
 	if err != nil {
 		return nil, err
 	}
+	entry, err := emitLayerEntryStore(layer)
+	if err != nil {
+		return nil, err
+	}
 	var out asm.Instructions
 	out = append(out, peek...)
 	out = append(out, emitBounds(hs, dslReject)...)
 	out = append(out, preds...)
+	out = append(out, entry...)
 	out = append(out, emitAdvance(hs))
 	return out, nil
 }
@@ -2059,6 +2082,61 @@ func slotAnchor(slot int16) layerAnchor {
 // either a slot-stride redesign or arith depth rollback.
 const whereLayerEntrySlotBase = int16(-224)
 const whereLayerEntrySlotCap = 7
+
+// layerEntryAbsent is the value a quantified layer's entry slot holds when
+// the layer matched zero headers (D-003): the layer's sentinel store
+// writes it before the first peek, and every present iteration overwrites
+// it with the instance start. Same value as dynamicAuxSentinel, kept apart
+// because the two slot families are read by different guards.
+const layerEntryAbsent = int32(-1)
+
+// emitLayerEntryStore records R4 (= the start of the layer instance
+// being emitted) in the layer's per-layer entry slot, when the resolver
+// marked the layer as referenced at a runtime offset (NeedsRuntimeOffset).
+// Quantified layers store on every present iteration, so the slot ends up
+// holding the last instance (D-018). Empty for unmarked layers.
+func emitLayerEntryStore(layer *ir.LayerInstance) (asm.Instructions, error) {
+	if !layer.NeedsRuntimeOffset {
+		return nil, nil
+	}
+	slot, err := whereLayerEntrySlot(layer.LayerPos)
+	if err != nil {
+		return nil, err
+	}
+	return asm.Instructions{asm.StoreMem(asm.R10, slot, offsetBase, asm.DWord)}, nil
+}
+
+// emitLayerEntrySentinel marks a marked absentable layer's entry slot as
+// absent before its first peek; a present iteration overwrites it
+// (emitLayerEntryStore). R3 is scratch here. Empty unless the layer is
+// marked and can match zero headers.
+func emitLayerEntrySentinel(layer *ir.LayerInstance) (asm.Instructions, error) {
+	if !layer.NeedsRuntimeOffset || !layer.Absentable() {
+		return nil, nil
+	}
+	slot, err := whereLayerEntrySlot(layer.LayerPos)
+	if err != nil {
+		return nil, err
+	}
+	return asm.Instructions{
+		asm.Mov.Imm(asm.R3, layerEntryAbsent),
+		asm.StoreMem(asm.R10, slot, asm.R3, asm.DWord),
+	}, nil
+}
+
+// emitLayerEntryStoreFromCb is emitLayerEntryStore for the bpf_loop chain
+// callback, where R2 is the ctx pointer into the main frame and R3 the
+// start of the instance being consumed.
+func emitLayerEntryStoreFromCb(layer *ir.LayerInstance) (asm.Instructions, error) {
+	if !layer.NeedsRuntimeOffset {
+		return nil, nil
+	}
+	slot, err := whereLayerEntrySlot(layer.LayerPos)
+	if err != nil {
+		return nil, err
+	}
+	return asm.Instructions{asm.StoreMem(asm.R2, mainStackOffsetFromCb(slot), asm.R3, asm.DWord)}, nil
+}
 
 func whereLayerEntrySlot(layerPos int) (int16, error) {
 	if layerPos < 0 || layerPos >= whereLayerEntrySlotCap {
