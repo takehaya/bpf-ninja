@@ -6,12 +6,12 @@ on:
     branches: [main]
     paths:
       - "spec/lean/**"
-      - "pkg/kunai/dsltest/testdata/spec_vectors.json"
+      - "pkg/kunai/dsltest/testdata/spec_vectors*.json"
       - ".github/workflows/lean-spec.yml"
   pull_request:
     paths:
       - "spec/lean/**"
-      - "pkg/kunai/dsltest/testdata/spec_vectors.json"
+      - "pkg/kunai/dsltest/testdata/spec_vectors*.json"
       - ".github/workflows/lean-spec.yml"
 
 permissions:
@@ -32,3 +32,5 @@ jobs:
         run: |
           spec/lean/.lake/build/bin/gen > /tmp/spec_vectors.json
           diff -u pkg/kunai/dsltest/testdata/spec_vectors.json /tmp/spec_vectors.json
+          spec/lean/.lake/build/bin/gen --generated > /tmp/spec_vectors_gen.json
+          diff -u pkg/kunai/dsltest/testdata/spec_vectors_gen.json /tmp/spec_vectors_gen.json

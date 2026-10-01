@@ -32,9 +32,16 @@ var specHostCaps = map[string]func() codegen.Capabilities{
 // expectations run; with root, xdp_entry vectors are matched against the
 // real BPF program. A vector with goStatus "mismatch" is a documented
 // divergence (see spec/lean/DECISIONS.md): it is logged, not asserted.
-func TestSpecVectors(t *testing.T) {
+func TestSpecVectors(t *testing.T) { runSpecVectors(t, loadSpecVectors(t)) }
+
+// TestSpecVectorsGenerated runs the mutated vectors (truncations and byte
+// flips of the golden packets); their verdicts come from the Lean
+// evaluator at generation time.
+func TestSpecVectorsGenerated(t *testing.T) { runSpecVectors(t, loadSpecVectorsFrom(t, specVectorsGenPath)) }
+
+func runSpecVectors(t *testing.T, vectors []specVector) {
 	root := os.Getuid() == 0
-	for _, v := range loadSpecVectors(t) {
+	for _, v := range vectors {
 		t.Run(v.ID, func(t *testing.T) {
 			caps, ok := specHostCaps[v.Host]
 			if !ok {

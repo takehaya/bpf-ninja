@@ -35,15 +35,20 @@ type specResult struct {
 	Reason   string     `json:"reason"`
 }
 
-func loadSpecVectors(t testing.TB) []specVector {
+// specVectorsGenPath holds mutations of the golden vectors (`gen --generated`).
+const specVectorsGenPath = "testdata/spec_vectors_gen.json"
+
+func loadSpecVectors(t testing.TB) []specVector { return loadSpecVectorsFrom(t, specVectorsPath) }
+
+func loadSpecVectorsFrom(t testing.TB, path string) []specVector {
 	t.Helper()
-	raw, err := os.ReadFile(specVectorsPath)
+	raw, err := os.ReadFile(path)
 	if err != nil {
-		t.Fatalf("read %s: %v (run `make lean-gen`)", specVectorsPath, err)
+		t.Fatalf("read %s: %v (run `make lean-gen`)", path, err)
 	}
 	var vs []specVector
 	if err := json.Unmarshal(raw, &vs); err != nil {
-		t.Fatalf("decode %s: %v", specVectorsPath, err)
+		t.Fatalf("decode %s: %v", path, err)
 	}
 	return vs
 }

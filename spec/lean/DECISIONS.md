@@ -253,6 +253,20 @@ Status values: 提案中 (implemented as recommended, awaiting sign-off) /
 - 状態: 承認済 (2026-10-01、一括)
 - 反映先: `Eval/Layer.lean` `extract` (predicates は `inst` の patches 込みで評価), vector `ipv6-next-header-writeback-bracket` (goStatus mismatch)
 
+## D-033: 読めない lookahead key
+- 論点: counter が 0 でちょうどパケット末尾にいるとき、`select(pc.is_zero(), lookahead<8>)` の lookahead は読めない。`(true, _)` で accept すべきか ⊥ か。
+- 現行 Go 実装の挙動: accept (`eth/vlan?/ipv4` に eth + ipv4 ちょうど 34 バイト)。
+- 推奨: 読めない key は wildcard にだけ一致する (遅延評価と同じ結果)。
+- 状態: 承認済 (2026-10-01、一括)
+- 反映先: `Eval/Machine.lean` `evalKey` / `valMatches`, generated vectors `*/trunc34`
+
+## D-034: skip された chain の後の dispatch 親
+- 論点: `eth/mpls*/ipv4` で mpls が 0 個のとき、ipv4 の `parent_dispatch` は eth (実行時の直前 layer) か mpls (静的な直前 layer) か。
+- 現行 Go 実装の挙動: 静的 (mpls)。mpls→ipv4 は const 無しで self-validating 扱いになり、さらに option を参照しない filter は parser machine を走らせない (D-029) ため version も見ない。結果 **ethertype 0x0806 (ARP) のフレームを `eth/mpls*/ipv4/tcp` が accept する**。`eth/vlan*/ipv4/tcp` は vlan→ipv4 に ethertype const があるので正しく reject。
+- 推奨: 実行時の直前 layer (σ の最後の instance)。§13.4 の `parent_dispatch(p, σ, P)` は σ に依存する関数として書かれており、Lean もそう実装している。Go は issue。
+- 状態: 承認済 (2026-10-01、一括)
+- 反映先: `Eval/Layer.lean` `dispatch`, generated vectors `quant-mpls-star-zero/flip12`, `/flip13` (goStatus mismatch)
+
 ## Go 側への issue 候補 (この作業では変更しない)
 
 `fix/kunai-spec-conformance` で対応済みのものは ✅、残りは `issues/` に本文がある。
@@ -274,5 +288,6 @@ Status values: 提案中 (implemented as recommended, awaiting sign-off) /
 13. count source の無い stack で `all` が capacity 分 unroll される、静的 index が count を見ない、`!=` が範囲外で true (D-031)。
 14. bracket predicate が write-back 前の値を見る (D-032)。
 15. `tcp.options.X.exists` 未実装。
+16. `eth/mpls*/ipv4/tcp` が ARP など非 IP フレームを accept する (D-034 + D-029)。
 
 残: 量化 layer 以降の where field 参照 (D-003 の実装)、self-validating / 可変長 layer の `?` (D-017 案 c の実装)、NO_CHECK 自己 edge の optional (`mpls/mpls*`)。

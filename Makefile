@@ -52,6 +52,8 @@ lean-gen: lean-build ## Regenerate pkg/kunai/dsltest/testdata/spec_vectors.json 
 	mkdir -p pkg/kunai/dsltest/testdata
 	spec/lean/.lake/build/bin/gen > pkg/kunai/dsltest/testdata/spec_vectors.json.tmp \
 		&& mv pkg/kunai/dsltest/testdata/spec_vectors.json.tmp pkg/kunai/dsltest/testdata/spec_vectors.json
+	spec/lean/.lake/build/bin/gen --generated > pkg/kunai/dsltest/testdata/spec_vectors_gen.json.tmp \
+		&& mv pkg/kunai/dsltest/testdata/spec_vectors_gen.json.tmp pkg/kunai/dsltest/testdata/spec_vectors_gen.json
 
 p4c-check: ## Validate bundled .p4 vocab with the official p4c parser (docker required)
 	./scripts/p4c-check.sh

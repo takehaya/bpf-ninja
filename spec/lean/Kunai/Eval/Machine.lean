@@ -113,34 +113,33 @@ inductive KeyVal
   | bool (b : Bool)
   deriving Repr, BEq, DecidableEq
 
-/-- `eval-key` (§14.3). -/
-private def evalKey (P : Packet) (ψ : MState) : SelectKey → Except MFail KeyVal
+/-- `eval-key` (§14.3). A lookahead past the end of the packet is
+unreadable (`none`): it matches only wildcards, so `(true, _)` still ends a
+walk whose counter is exhausted exactly at the packet end (D-033). -/
+private def evalKey (P : Packet) (ψ : MState) : SelectKey → Except MFail (Option KeyVal)
   | .field target stackLast bitOff width => do
     let view? := if stackLast then (stackViews ψ.views target).getLast? else latestView ψ.views target
     let some v := view? | throw (.illTyped s!"select reads {target} before extracting it")
     match readBits P (v.off * 8 + bitOff) width with
-    | some n => pure (.nat n)
+    | some n => pure (some (.nat n))
     | none => throw .reject
-  | .lookahead bits =>
-    match readBits P (ψ.cursor * 8) bits with
-    | some n => pure (.nat n)
-    | none => throw .reject
-  | .counterIsZero c => pure (.bool (ψ.counter c == 0))
+  | .lookahead bits => pure ((readBits P (ψ.cursor * 8) bits).map .nat)
+  | .counterIsZero c => pure (some (.bool (ψ.counter c == 0)))
 
-private def valMatches : MatchVal → KeyVal → Bool
+private def valMatches : MatchVal → Option KeyVal → Bool
   | .wild, _ => true
-  | .val n, .nat k => n == k
-  | .bool b, .bool k => b == k
+  | .val n, some (.nat k) => n == k
+  | .bool b, some (.bool k) => b == k
   | _, _ => false
 
 /-- TLV option sighting (D-030): when a lookahead key reads an option's
 kind byte at the cursor, that option's view starts here, whether or not
 the target state extracts it (`sack`, `rr` advance by length instead). The
 latest sighting wins. -/
-private def sightOptions (m : Machine) (ψ : MState) (keys : List (SelectKey × KeyVal)) : MState :=
+private def sightOptions (m : Machine) (ψ : MState) (keys : List (SelectKey × Option KeyVal)) : MState :=
   keys.foldl (fun ψ (k, v) =>
     match k, v with
-    | .lookahead _, .nat n =>
+    | .lookahead _, some (.nat n) =>
       m.options.foldl (fun ψ o =>
         if o.kindByte == some n then
           let bytes := ((m.header? o.header).map (·.bytes)).getD 0
