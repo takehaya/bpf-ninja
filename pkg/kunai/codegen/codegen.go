@@ -921,7 +921,7 @@ func genStaticLayer(layer *ir.LayerInstance, index int, all []*ir.LayerInstance,
 	insns := emitBounds(hs, dslReject)
 
 	if index > 0 && layer.Dispatch != nil {
-		di, err := genLayerDispatch(layer, all[index-1], precedingLayersLeaveR4Range(all, index), precedingLayersLeaveR4Range(all, index-1), dslReject)
+		di, err := genParentDispatch(layer, index, all, precedingLayersLeaveR4Range(all, index), precedingLayersLeaveR4Range(all, index-1), dslReject)
 		if err != nil {
 			return nil, err
 		}
@@ -1037,56 +1037,124 @@ func absentEdgeApplies(index int, all []*ir.LayerInstance) bool {
 // joins here after dispatching against the grandparent instead.
 func dispatchJoinLabel(index int) string { return fmt.Sprintf("dsl_disp_join_%d", index) }
 
-// dispatchJoin follows a layer's static-parent dispatch. It emits the
-// landing an absentable predecessor's absent edge joins at, and refuses
-// the layer when that dispatch is not sound for every runtime parent
-// (checkRuntimeParentDispatch).
+// dispatchJoin follows a layer's static-parent dispatch: it emits the
+// landing an absentable predecessor's absent edge joins at.
 func dispatchJoin(index int, all []*ir.LayerInstance) (asm.Instructions, error) {
-	if err := checkRuntimeParentDispatch(index, all); err != nil {
-		return nil, err
-	}
 	if index >= 1 && absentEdgeApplies(index-1, all) {
 		return asm.Instructions{asm.Mov.Reg(asm.R0, asm.R0).WithSymbol(dispatchJoinLabel(index))}, nil
 	}
 	return nil, nil
 }
 
-// checkRuntimeParentDispatch refuses a layer whose static-parent dispatch
-// would misread under some runtime parent (D-034). When the predecessor
-// is absentable but the absent edge carries no dispatch of its own
-// (absentEdgeApplies is false: consecutive absentables, a quantified
-// next layer), the layer's dispatch runs against its static parent
-// whatever header actually precedes it. That is sound only when every
-// runtime parent dispatches the layer identically — the same constant
-// read from the same bytes relative to the parent's end, as for
-// `eth/qinq?/vlan?/ipv4` where ethertype is the last two bytes of eth,
-// qinq and vlan alike. Alternation groups keep the static rule, as in the
-// resolver.
-func checkRuntimeParentDispatch(index int, all []*ir.LayerInstance) error {
-	if index < 2 || !all[index-1].Absentable() || absentEdgeApplies(index-1, all) {
-		return nil
+// genParentDispatch emits the dispatch of layer `index` against whichever
+// layer precedes it at run time (§13.4 parent_dispatch(p, σ, P)). With a
+// plain predecessor that is the static parent. After an absentable layer
+// whose absent edge carries its own dispatch (absentEdgeApplies) the
+// static dispatch is still right on the present path. Otherwise — a run
+// of consecutive optionals, or a quantified layer after an optional one —
+// the runtime parent is the nearest candidate that matched: when every
+// candidate dispatches the layer identically (`eth/qinq?/vlan?/ipv4`,
+// ethertype in the last two bytes of each) one static read serves, else
+// a cascade tests the candidates' entry slots, nearest first, and
+// dispatches against the first present one (D-034).
+// `current` is the layer being emitted — an alternation member when
+// `all[index]` is its group.
+func genParentDispatch(current *ir.LayerInstance, index int, all []*ir.LayerInstance, r4IsRange, parentEntryIsRange bool, failLabel string) (asm.Instructions, error) {
+	if index == 0 || current.Dispatch == nil {
+		return nil, nil
 	}
-	cur, static := all[index], all[index-1]
-	if cur.Alternation != nil || static.Alternation != nil {
-		return nil
+	static := all[index-1]
+	candidates := runtimeParentCandidates(index, all)
+	if len(candidates) <= 1 || absentEdgeApplies(index-1, all) || current.Alternation != nil || current.Dispatch.IsAltDiverged {
+		return genLayerDispatch(current, static, r4IsRange, parentEntryIsRange, failLabel)
 	}
-	for j := index - 2; j >= 0; j-- {
-		prev := all[j]
-		if prev.Alternation != nil {
-			return nil
-		}
-		same, err := dispatchEquivalent(cur.Spec, static.Spec, prev.Spec)
+	uniform := true
+	for _, cand := range candidates[1:] {
+		same, err := dispatchEquivalent(current.Spec, static.Spec, cand.Spec)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if !same {
-			return fmt.Errorf("%w: %q after optional %q dispatches differently under %q, its parent when %q is absent", ErrNotImplemented, cur.Spec.Name, static.Spec.Name, prev.Spec.Name, static.Spec.Name)
+			uniform = false
+			break
 		}
+	}
+	if uniform {
+		return genLayerDispatch(current, static, r4IsRange, parentEntryIsRange, failLabel)
+	}
+	join := fmt.Sprintf("dsl_parent_join_%d", index)
+	var out asm.Instructions
+	for k, cand := range candidates {
+		last := k == len(candidates)-1
+		next := fmt.Sprintf("dsl_parent_next_%d_%d", index, k)
+		if !last {
+			if !cand.NeedsRuntimeOffset {
+				return nil, fmt.Errorf("codegen: optional %q has no entry slot to test for presence (resolver bug)", cand.Spec.Name)
+			}
+			slot, err := whereLayerEntrySlot(cand.LayerPos)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out,
+				asm.LoadMem(asm.R3, asm.R10, slot, asm.DWord),
+				asm.JEq.Imm(asm.R3, layerEntryAbsent, next),
+			)
+		}
+		di, err := dispatchVia(current, cand, r4IsRange, parentEntryIsRange, failLabel)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, di...)
+		if !last {
+			out = append(out, asm.Ja.Label(join), asm.Mov.Reg(asm.R0, asm.R0).WithSymbol(next))
+		}
+	}
+	// R0 is the scratch window on every path (a self-validating
+	// candidate emits no instructions of its own).
+	return append(out, asm.Mov.Reg(asm.R0, asm.R0).WithSymbol(join)), nil
+}
+
+// runtimeParentCandidates lists the layers that can end right before
+// layer `index` at run time, nearest first: the static predecessor and,
+// while that is absentable, the layer before it. An alternation among
+// them ends the list at the static predecessor (members keep the static
+// rule).
+func runtimeParentCandidates(index int, all []*ir.LayerInstance) []*ir.LayerInstance {
+	var out []*ir.LayerInstance
+	for j := index - 1; j >= 0; j-- {
+		prev := all[j]
+		if prev.Alternation != nil {
+			if len(out) == 0 {
+				out = append(out, prev)
+			}
+			break
+		}
+		out = append(out, prev)
 		if !prev.Absentable() {
 			break
 		}
 	}
-	return nil
+	return out
+}
+
+// dispatchVia emits the dispatch of `current` against a specific runtime
+// parent: the constant the vocabulary declares for that parent, or
+// nothing when the layer self-validates (the resolver's
+// checkRuntimeParents guarantees one of the two).
+func dispatchVia(current, parent *ir.LayerInstance, r4IsRange, parentEntryIsRange bool, failLabel string) (asm.Instructions, error) {
+	c := current.Spec.SelectDispatchConst(parent.Spec.Name)
+	if c == nil {
+		if current.Spec.IsSelfValidating() {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("codegen: no dispatch constant for %q under %q (resolver bug)", current.Spec.Name, parent.Spec.Name)
+	}
+	via := &ir.LayerInstance{Spec: current.Spec, Dispatch: &ir.DispatchChoice{Type: c.Type, Const: c}}
+	hs, err := headerSize(parent.Spec)
+	if err != nil {
+		return nil, err
+	}
+	return genDispatch(via, parent, hs, r4IsRange, parentEntryIsRange, failLabel)
 }
 
 // dispatchEquivalent reports whether `child` dispatches the same way
@@ -1233,11 +1301,8 @@ func emitPeekedIterZero(layer *ir.LayerInstance, index int, all []*ir.LayerInsta
 	}
 	// For a self edge of a chain-end protocol the dispatch is the previous
 	// header's end signal (genDispatch), so `mpls/mpls?` peeks the s bit.
-	peek, err := genLayerDispatch(layer, all[index-1], precedingLayersLeaveR4Range(all, index), precedingLayersLeaveR4Range(all, index-1), peekFailLabel)
+	peek, err := genParentDispatch(layer, index, all, precedingLayersLeaveR4Range(all, index), precedingLayersLeaveR4Range(all, index-1), peekFailLabel)
 	if err != nil {
-		return nil, err
-	}
-	if err := checkRuntimeParentDispatch(index, all); err != nil {
 		return nil, err
 	}
 	preds, err := emitPredicates(layer.Predicates, pc)

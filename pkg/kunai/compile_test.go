@@ -969,16 +969,17 @@ func TestCompileOptionalSelfEdgeWithChainEnd(t *testing.T) {
 	}
 }
 
-// TestCompileConsecutiveOptionalsNeedEquivalentDispatch pins the D-034
-// limit of the static-parent dispatch after consecutive optional layers:
-// it is sound only when every runtime parent dispatches the layer the
-// same way (`qinq?/vlan?/ipv4`: ethertype is the last two bytes of eth,
-// qinq and vlan). `eth/vlan?/mpls?/ipv4` is refused — ipv4 self-validates
-// under mpls but needs ethertype 0x0800 under vlan or eth.
-func TestCompileConsecutiveOptionalsNeedEquivalentDispatch(t *testing.T) {
-	_, err := compileForTest("eth/vlan?/mpls?/ipv4/tcp")
-	if !errors.Is(err, codegen.ErrNotImplemented) || !strings.Contains(err.Error(), "dispatches differently") {
-		t.Fatalf("expected codegen.ErrNotImplemented (dispatches differently), got %v", err)
+// TestCompileConsecutiveOptionals pins that a layer after consecutive
+// optional layers dispatches against whichever of them matched (D-034):
+// `eth/vlan?/mpls?/ipv4` needs a cascade (ipv4 self-validates under
+// mpls but needs ethertype 0x0800 under vlan or eth), while
+// `eth/qinq?/vlan?/ipv4` keeps one static read (ethertype sits in the
+// last two bytes of eth, qinq and vlan alike).
+func TestCompileConsecutiveOptionals(t *testing.T) {
+	for _, expr := range []string{"eth/vlan?/mpls?/ipv4/tcp", "eth/qinq?/vlan?/mpls?/ipv4/tcp", "eth/vlan?/mpls{1,3}/ipv4/tcp"} {
+		if _, err := compileForTest(expr); err != nil {
+			t.Errorf("%s: %v", expr, err)
+		}
 	}
 }
 

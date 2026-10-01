@@ -110,3 +110,22 @@ func TestBpfLoopCallbackWritesMainSlot(t *testing.T) {
 		t.Errorf("callback stores through ctx: %d, want 1", cb)
 	}
 }
+
+// TestAlternationMembersKeepTheirDispatch pins that alternation members
+// still emit their parent dispatch after the runtime-parent cascade was
+// introduced: `eth/(ipv4|ipv6)/tcp` compares eth.ethertype against both
+// 0x0800 and 0x86DD (in either byte order).
+func TestAlternationMembersKeepTheirDispatch(t *testing.T) {
+	out := compileBundled(t, "eth/(ipv4|ipv6)/tcp")
+	seen := map[int64]bool{}
+	for _, ins := range out.Main {
+		if ins.OpCode.JumpOp() == asm.JNE || ins.OpCode.JumpOp() == asm.JEq {
+			seen[ins.Constant] = true
+		}
+	}
+	for _, want := range [][2]int64{{0x0800, 0x0008}, {0x86DD, 0xDD86}} {
+		if !seen[want[0]] && !seen[want[1]] {
+			t.Errorf("no dispatch compare against 0x%04x found", want[0])
+		}
+	}
+}

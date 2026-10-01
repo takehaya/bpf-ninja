@@ -147,7 +147,26 @@ func (r *resolver) resolveFilter(f *ast.Filter) (*ir.Program, error) {
 		return nil, err
 	}
 	markRuntimeOffsetLayers(p)
+	markConsecutiveAbsentables(p)
 	return p, nil
+}
+
+// markConsecutiveAbsentables makes every absentable layer in a run of two
+// or more consecutive absentable layers record its presence
+// (NeedsRuntimeOffset): the layer after such a run, and each optional
+// layer inside it, has several possible runtime parents, and codegen
+// picks the dispatch by testing which of them matched (D-034).
+func markConsecutiveAbsentables(p *ir.Program) {
+	for i, l := range p.Layers {
+		if l == nil || !l.Absentable() {
+			continue
+		}
+		prevAbsentable := i > 0 && p.Layers[i-1].Absentable()
+		nextAbsentable := i+1 < len(p.Layers) && p.Layers[i+1].Absentable()
+		if prevAbsentable || nextAbsentable {
+			l.NeedsRuntimeOffset = true
+		}
+	}
 }
 
 // checkChainShape rejects chain shapes the typing rules exclude (§12,
