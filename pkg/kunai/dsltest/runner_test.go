@@ -231,6 +231,36 @@ func TestParserMachineGTPExt(t *testing.T) {
 	r.MustMatch(t, pkt, "GTP-U with 2 ext headers")
 }
 
+// TestAuxStackGtpExtsAfterLongExt pins that ext_length is honoured: the
+// first extension is 8 bytes (ext_length = 2), so the second starts at
+// +8, not +4; a zero ext_length is malformed and rejects the layer.
+func TestAuxStackGtpExtsAfterLongExt(t *testing.T) {
+	r := New(t, "eth/ipv4/udp/gtp/ipv4/tcp where gtp.exts[1].ext_type == 2")
+	pkt := BuildGTPU(t, GTPUOpts{
+		TEID:    0xdeadbeef,
+		Flags:   0x34, // E=1 → opt + ext
+		MsgType: 0xff,
+		Opt:     &GTPOpt{NextExt: 0xc0},
+		Exts: []GTPExt{
+			{ExtLength: 2, ExtType: 1, NextExt: 0xc1},
+			{ExtLength: 1, ExtType: 2, NextExt: 0},
+		},
+	})
+	r.MustMatch(t, pkt, "gtp.exts[1].ext_type == 2 behind an 8-byte first ext")
+
+	plain := New(t, gtpChain)
+	zero := BuildGTPU(t, GTPUOpts{
+		TEID:    0xdeadbeef,
+		Flags:   0x34,
+		MsgType: 0xff,
+		Opt:     &GTPOpt{NextExt: 0xc0},
+		Exts: []GTPExt{
+			{ExtLength: 0, ExtType: 1, NextExt: 0},
+		},
+	})
+	plain.MustReject(t, zero, "ext_length == 0 is malformed")
+}
+
 // TestAuxStackGtpExtsIndex0 reads the first GTP extension's
 // ext_type via static aux header stack index `gtp.exts[0]`. The
 // ext stack starts at offset 12 (gtp_h 8 + gtp_opt_h 4); ext_type

@@ -68,6 +68,7 @@ func variableTailFor(spec *vocab.ProtocolSpec, headerName string) (variableTailS
 		Base:            ann.VariableTail.Base,
 		LenMask:         ann.VariableTail.LenMask,
 		LenShift:        ann.VariableTail.LenShift,
+		MinimumTotal:    ann.VariableTail.MinTotal,
 	}
 	if ann.WriteBack != nil {
 		if !ann.WriteBack.Resolved {

@@ -501,15 +501,17 @@ func getOrCreateHeaderAnnotations(m map[string]*HeaderAnnotations, name string) 
 }
 
 // lowerKunaiVariableTail validates and projects an
-// @kunai_variable_tail[len_field=F, scale=S, mask=M, shift=N, base=B]
-// decorator into VariableTailSpec. Required keys: len_field, scale.
-// Optional keys: mask (defaults to the full field extraction mask),
-// shift (defaults to 0), base (defaults to 0). The named field's
+// @kunai_variable_tail[len_field=F, scale=S, mask=M, shift=N, base=B,
+// min_total=T] decorator into VariableTailSpec. Required keys: len_field,
+// scale. Optional keys: mask (defaults to the full field extraction
+// mask), shift (defaults to 0), base (added, defaults to 0), min_total
+// (subtracted and required, defaults to 0: the tail is
+// `((field & mask) >> shift) * scale - min_total + base`). The named field's
 // declared bit layout drives the LenFieldByteOff / LenShift /
 // field-extraction-mask intersection so authors don't repeat what
 // the header schema already states.
 func lowerKunaiVariableTail(ann p4lite.Annotation, h *p4lite.Header, source string) (*VariableTailSpec, error) {
-	allowed := map[string]bool{"len_field": true, "scale": true, "mask": true, "shift": true, "base": true}
+	allowed := map[string]bool{"len_field": true, "scale": true, "mask": true, "shift": true, "base": true, "min_total": true}
 	if err := requireKnownKeys(ann, allowed, source); err != nil {
 		return nil, err
 	}
@@ -564,12 +566,25 @@ func lowerKunaiVariableTail(ann p4lite.Annotation, h *p4lite.Header, source stri
 		}
 		base = int(bTok.Int)
 	}
+	minTotal := 0
+	if mTok, ok := ann.KVs["min_total"]; ok {
+		if mTok.Kind != p4lite.AnnotationInt {
+			return nil, fmt.Errorf("%s:%s: @kunai_variable_tail.min_total must be an int literal", source, ann.Pos)
+		}
+		// The annotation integer is unsigned, so only the upper bound and
+		// the unit need checking: min_total removes whole scale units.
+		if mTok.Int > 0xFFFF || mTok.Int%uint64(scale) != 0 {
+			return nil, fmt.Errorf("%s:%s: @kunai_variable_tail.min_total=%d must be a multiple of scale=%d below 65536", source, ann.Pos, mTok.Int, scale)
+		}
+		minTotal = int(mTok.Int)
+	}
 	return &VariableTailSpec{
 		LenFieldByteOff: bitOff / 8,
 		LenMask:         mask,
 		LenShift:        shift,
 		Scale:           scale,
 		Base:            base,
+		MinTotal:        minTotal,
 	}, nil
 }
 

@@ -55,7 +55,7 @@ def vocab : Vocab :=
           headers := [⟨"gtp_h", [⟨"version", 0, 3⟩, ⟨"pt", 3, 1⟩, ⟨"reserved", 4, 1⟩, ⟨"e", 5, 1⟩, ⟨"s", 6, 1⟩, ⟨"pn", 7, 1⟩, ⟨"msg_type", 8, 8⟩, ⟨"length", 16, 16⟩, ⟨"teid", 32, 32⟩], 8⟩, ⟨"gtp_ext_h", [⟨"ext_length", 0, 8⟩, ⟨"ext_type", 8, 16⟩, ⟨"next_ext", 24, 8⟩], 4⟩, ⟨"gtp_opt_h", [⟨"seq", 0, 16⟩, ⟨"npdu", 16, 8⟩, ⟨"next_ext", 24, 8⟩], 4⟩],
           options := [{ outParam := "opt", header := "gtp_opt_h", kindByte := none }],
           stacks := [{ name := "exts", header := "gtp_ext_h", capacity := 8, elemBytes := 4, ownerOption := "", offsetAfterOwner := 0 }],
-          tails := [],
+          tails := [("gtp_ext_h", { byteOff := 0, mask := 255, shift := 0, scale := 4, base := 4, addend := 0 })],
           writebacks := [] } },
       { name := "icmp",
         fields := [⟨"type", 0, 8⟩, ⟨"code", 8, 8⟩, ⟨"checksum", 16, 16⟩],

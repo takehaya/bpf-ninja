@@ -78,15 +78,6 @@ func TestPushCountedStackGuards(t *testing.T) {
 		t.Errorf("bracket index: %d count guards, want 1", got)
 	}
 
-	// A dynamic index (fixed-size entries: gtp) is bounded by the count
-	// too: `JGE idx, count`.
-	dynamic := compileBundled(t, "eth/ipv4/udp/gtp/ipv4/tcp where gtp.exts[gtp.msg_type].next_ext == 6")
-	if got := count(dynamic.Main, func(ins asm.Instruction) bool {
-		return ins.OpCode == asm.JGE.Reg(asm.R3, asm.R2, "").OpCode && ins.Dst == asm.R3 && ins.Src == asm.R2
-	}); got != 1 {
-		t.Errorf("dynamic index: %d count bounds, want 1", got)
-	}
-
 	// gtp.exts: the first push happens in a non-entry state (parse_opt →
 	// parse_ext), so the inline increment sits past the entry state. Its
 	// push bound (1 + GTP_MAX_DEPTH 8) exceeds the capacity 8.

@@ -929,10 +929,19 @@ func TestCompileBracketOnPushCountedStack(t *testing.T) {
 			t.Fatalf("%s must compile: %v", expr, err)
 		}
 	}
-	// Variable-length entries cannot be addressed from a runtime index.
-	_, err = compileForTest("eth/ipv6/tcp where ipv6.exts[ipv6.hop_limit].next_header == 6")
-	if !errors.Is(err, codegen.ErrNotImplemented) || !strings.Contains(err.Error(), "variable-length") {
-		t.Fatalf("expected codegen.ErrNotImplemented for a dynamic index into variable-length entries, got %v", err)
+	// Variable-length entries (ipv6 and, since ext_length is honoured, gtp)
+	// cannot be addressed from a runtime index.
+	for _, expr := range []string{"eth/ipv6/tcp where ipv6.exts[ipv6.hop_limit].next_header == 6", "eth/ipv4/udp/gtp/ipv4/tcp where gtp.exts[gtp.msg_type].next_ext == 6"} {
+		_, err = compileForTest(expr)
+		if !errors.Is(err, codegen.ErrNotImplemented) || !strings.Contains(err.Error(), "variable-length") {
+			t.Fatalf("%s: expected codegen.ErrNotImplemented for a dynamic index into variable-length entries, got %v", expr, err)
+		}
+	}
+	// Entry 0 keeps its constant offset, so `in @set` style constant-offset
+	// readers still accept it (the resolver needs a set here; the where
+	// form stands in for the constant-offset path).
+	if _, err := compileForTest("eth/ipv4/udp/gtp/ipv4/tcp where gtp.exts[0].ext_type == 1"); err != nil {
+		t.Fatalf("gtp.exts[0] must compile: %v", err)
 	}
 }
 

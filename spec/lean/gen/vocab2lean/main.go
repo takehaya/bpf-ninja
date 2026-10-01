@@ -338,8 +338,9 @@ func machineLean(s *vocab.ProtocolSpec) string {
 		a := s.HeaderAnnotations[hn]
 		if a.VariableTail != nil {
 			t := a.VariableTail
-			// VariableTailSpec.Base is added to the scaled length (parser_trail.go), unlike HeaderLength.Base.
-			tails = append(tails, fmt.Sprintf("(%s, %s)", str(hn), lenExpr(&vocab.HeaderLength{LenByteOff: t.LenFieldByteOff, LenMask: t.LenMask, LenShift: t.LenShift, Scale: t.Scale, Addend: t.Base})))
+			// VariableTailSpec.Base is added to the scaled length and MinTotal subtracted
+			// from it (parser_trail.go), so they map to LenExpr.addend / base.
+			tails = append(tails, fmt.Sprintf("(%s, %s)", str(hn), lenExpr(&vocab.HeaderLength{LenByteOff: t.LenFieldByteOff, LenMask: t.LenMask, LenShift: t.LenShift, Scale: t.Scale, Base: t.MinTotal, Addend: t.Base})))
 		}
 		if a.WriteBack != nil {
 			wbs = append(wbs, fmt.Sprintf("(%s, ⟨%d, %d⟩)", str(hn), a.WriteBack.SourceByteOff, a.WriteBack.ParentByteOff))

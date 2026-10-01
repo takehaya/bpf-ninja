@@ -296,8 +296,9 @@ type GTPOpt struct {
 	NPDU, NextExt uint8
 }
 
-// GTPExt is one 4-byte extension header; the terminating ext should
-// have NextExt == 0.
+// GTPExt is one extension header of ExtLength × 4 bytes (ExtLength 1 =
+// the common 4-byte form; longer ones are padded with zero bytes after
+// the fixed part); the terminating ext should have NextExt == 0.
 type GTPExt struct {
 	ExtLength uint8
 	ExtType   uint16 // payload of ext (any 16-bit value)
@@ -337,8 +338,12 @@ func BuildGTPU(t testing.TB, opts GTPUOpts) []byte {
 	// Strip the outer eth (14 bytes); GTP-U payload starts at IP.
 	innerIP := innerBytes[14:]
 
-	// Assemble the GTP payload: gtp_h (8) + opt (4) + exts (4N) + innerIP.
-	gtp := make([]byte, 0, 8+4+4*len(opts.Exts)+len(innerIP))
+	// Assemble the GTP payload: gtp_h (8) + opt (4) + exts (4·ExtLength each) + innerIP.
+	extBytes := 0
+	for _, ext := range opts.Exts {
+		extBytes += 4 * max(int(ext.ExtLength), 1)
+	}
+	gtp := make([]byte, 0, 8+4+extBytes+len(innerIP))
 	gtp = append(gtp,
 		flags, msgType,
 		0, 0, // length placeholder (filled below)
@@ -356,6 +361,9 @@ func BuildGTPU(t testing.TB, opts GTPUOpts) []byte {
 			byte(ext.ExtType>>8), byte(ext.ExtType),
 			ext.NextExt,
 		)
+		if ext.ExtLength > 1 {
+			gtp = append(gtp, make([]byte, 4*(int(ext.ExtLength)-1))...)
+		}
 	}
 	gtp = append(gtp, innerIP...)
 

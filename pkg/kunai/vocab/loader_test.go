@@ -1198,6 +1198,25 @@ parser P(packet_in pkt,
 	}
 }
 
+// TestGTPExtHeaderAnnotations pins that gtp_ext_h is variable-length:
+// ext_length counts the whole header in 4-byte units, so the tail is
+// ext_length × 4 − 4 and ext_length 0 is malformed (min_total).
+func TestGTPExtHeaderAnnotations(t *testing.T) {
+	specs := loadBundled(t)
+	gtp := specs["gtp"]
+	if gtp == nil {
+		t.Fatal("missing gtp spec")
+	}
+	ann, ok := gtp.HeaderAnnotations["gtp_ext_h"]
+	if !ok || ann == nil || ann.VariableTail == nil {
+		t.Fatal("gtp_ext_h has no @kunai_variable_tail")
+	}
+	want := &VariableTailSpec{LenFieldByteOff: 0, LenMask: 0xFF, LenShift: 0, Scale: 4, Base: 0, MinTotal: 4}
+	if *ann.VariableTail != *want {
+		t.Errorf("VariableTail = %+v, want %+v", ann.VariableTail, want)
+	}
+}
+
 // TestIPv6ExtHeaderAnnotations pins the kunai-specific annotations
 // on ipv6_ext_h: the variable-trail params and the writeback resolve
 // ipv6.next_header to byte offset 6 so the chain tail's next_header
