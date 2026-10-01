@@ -867,7 +867,10 @@ func genLayerInner(layer *ir.LayerInstance, index int, all []*ir.LayerInstance, 
 		insns, err := genStaticLayer(layer, index, all, pc)
 		return insns, nil, err
 	case ast.QuantOpt:
-		insns, err := genOptionalLayer(layer, index, all, pc)
+		// `?` ≡ `{0,1}` (spec D-005/D-024, Laws.lean opt_eq_range): one lowering.
+		opt := *layer
+		opt.Quant, opt.RangeMin, opt.RangeMax = ast.QuantRange, 0, 1
+		insns, err := genStaticChain(&opt, index, all, pc)
 		return insns, nil, err
 	case ast.QuantRange:
 		if staticChainFitsRange(layer.RangeMax) {
@@ -989,38 +992,6 @@ func variableTailSkipFromHeaderLength(vs *vocab.HeaderLength) variableTailSkip {
 		Scale:           vs.Scale,
 		MinimumTotal:    vs.Base,
 	}
-}
-
-// genOptionalLayer emits the `?` quantifier: peek the dispatch check
-// from the parent; if it fails we skip the layer entirely without
-// advancing R4. If it succeeds we do the bounds check, predicates,
-// and advance R4. The no-op Mov R3,R3 at the end receives the skip
-// label so both the present and absent paths fall through to the
-// next layer with R4 pointing at the right place. DispatchNoCheck is
-// rejected because there is no way to detect absence when the vocab
-// says "don't look".
-func genOptionalLayer(layer *ir.LayerInstance, index int, all []*ir.LayerInstance, pc *predCtx) (asm.Instructions, error) {
-	if err := optionalLayerGuard(layer, index); err != nil {
-		return nil, err
-	}
-
-	skipLabel := fmt.Sprintf("dsl_skip_%d", index)
-	body, err := emitPeekedIterZero(layer, index, all, skipLabel, pc)
-	if err != nil {
-		return nil, err
-	}
-	// One header at most: a chain-end protocol must signal end here, as
-	// `{0,1}` requires (spec D-024, `?` ≡ `{0,1}`). No-op otherwise.
-	hs, err := headerSize(layer.Spec)
-	if err != nil {
-		return nil, err
-	}
-	overRun, err := chainEndRequire(layer.Spec, hs, staticChainFrame, dslReject)
-	if err != nil {
-		return nil, err
-	}
-	body = append(body, overRun...)
-	return withAbsentEdge(body, skipLabel, index, all)
 }
 
 // isAbsentable reports whether a layer may match zero headers (`?`, `*`,

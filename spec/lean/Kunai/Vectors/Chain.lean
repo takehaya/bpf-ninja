@@ -144,6 +144,12 @@ vector quantOverrunOpen := {
 vector quantExactBound := {
   id := "quant-exact-bound", ast := { layers := [P "eth", Pq "mpls" (.range 1 (some 3))] }, packet := mpls3,
   expected := .accept [], note := "3 labels, the 3rd has s = 1: bound reached with the end signal" }
+vector quantOptMplsOverrun := {
+  id := "quant-opt-mpls-overrun", ast := { layers := [P "eth", Pq "mpls" .opt, P "ipv4", P "tcp"] },
+  packet := eth 0x8847 ++ mpls 5 0 ++ mpls 6 1 ++ ipv4 6 ++ tcp 12345 80 ++ payload 5, expected := .reject,
+  note := "D-024: `?` requires the end signal after one label, like {0,1}" }
+vector quantOptMplsOne := {
+  id := "quant-opt-mpls-one", ast := { layers := [P "eth", Pq "mpls" .opt, P "ipv4", P "tcp"] }, packet := mpls1, expected := .accept [] }
 vector quantGreedyUnreachable := {
   id := "quant-greedy-unreachable",
   ast := { layers := [P "eth", Pq "mpls" (.range 1 (some 8)), P "mpls", P "ipv4", P "tcp"] }, packet := mpls3,
@@ -169,9 +175,9 @@ vector quantSelfValidBroken := {
   packet := eth 0x0800 ++ ipv4 6 (version := 5) ++ tcp 12345 80 ++ payload 5, expected := .reject, goStatus := .notImplemented,
   note := "D-017: eth.ethertype already says ipv4, so version = 5 is a broken header, not absence; Go: optional variable-length layer not implemented" }
 vector typOptionalAfterSkip := {
-  id := "typ-no-dispatch-after-skip", ast := { layers := [P "eth", Pq "ipv4" .opt, P "tcp"] }, goStatus := .notImplemented,
+  id := "typ-no-dispatch-after-skip", ast := { layers := [P "eth", Pq "ipv4" .opt, P "tcp"] },
   expected := .illTyped "no dispatch constant for tcp under eth",
-  note := "if ipv4 is skipped, tcp sits under eth with no constant" }
+  note := "if ipv4 is skipped, tcp sits under eth with no constant (the resolver rejects it too)" }
 vector typOptionalNoCheck := {
   id := "typ-optional-nocheck", ast := { layers := [P "eth", P "ipv4", P "udp", P "vxlan", Pq "eth" .opt, P "ipv4", P "tcp"] },
   packet := vxlanPkt, expected := .illTyped "optional eth with no-check dispatch cannot detect absence", goStatus := .notImplemented }
@@ -231,7 +237,7 @@ def chainVectors : List Vector := [
   chainVxlan, chainVxlanAlt, chainMplsSingle, chainMplsSingleOverrun,
   quantOptPresent, quantOptAbsent, quantOptPredHolds, quantOptPredFails, quantOptBounds, quantRangeMidTrunc, quantRange01Bounds,
   quantStarBounds, quantMplsRange, quantMplsPlus, quantMplsStarZero, quantMplsMinUnmet, quantChainEnd,
-  quantGreedyOverrun, quantOverrunBounded, quantOverrunOpen, quantExactBound, quantGreedyUnreachable, quantPredMidFail, quantPredMidFailStatic, quantPredFirstFail,
+  quantGreedyOverrun, quantOverrunBounded, quantOverrunOpen, quantExactBound, quantOptMplsOverrun, quantOptMplsOne, quantGreedyUnreachable, quantPredMidFail, quantPredMidFailStatic, quantPredFirstFail,
   quantPredAllHold, quantSelfValidSkip, quantSelfValidBroken, typOptionalAfterSkip, typOptionalNoCheck, quantSelfEdgeStar, quantSelfEdgeOpt, quantFirstOptional,
   altFirst, altSecond, altNone, altFirstPredFails, altRoot, altNoCheck,
   hostTcVlanMandatory, hostTcVlanOpt, hostL3Root, hostL3EthRoot]
