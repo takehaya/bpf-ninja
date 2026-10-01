@@ -42,6 +42,9 @@ func (r *resolver) resolveBracketPredicate(ap *ast.Predicate, layer *ir.LayerIns
 		if err := rejectBareIdentValue(ap.Value); err != nil {
 			return nil, err
 		}
+		if ap.Value != nil && ap.Value.Kind == ast.ValRange {
+			return nil, errorf(ap.Pos, "range literal %s is only valid in `in [...]` (%s.%s)", ap.Value.Raw, layer.Spec.Name, field.Field.Name)
+		}
 		if err := checkBracketIntFit(field, ap.Value, layer.Spec.Name, ap.Pos); err != nil {
 			return nil, err
 		}

@@ -46,18 +46,32 @@ func checkLiteralWidthShape(ref *ir.FieldRef, v *ast.Value, pos ast.Position) er
 // that needs this check (non-int literal, no field, or wide enough
 // field).
 func checkBracketIntFit(field *ir.FieldRef, v *ast.Value, layerName string, pos ast.Position) error {
-	if v == nil || v.Kind != ast.ValInt || field.Field == nil {
+	if v == nil || field.Field == nil {
 		return nil
 	}
 	bits := field.EffectiveBits()
-	if literalFitsBits(v.Int, v.Negative, bits) {
-		return nil
-	}
 	fieldName := field.Field.Name
 	if field.Aux != nil {
 		fieldName = field.Aux.OutParam + "." + fieldName
 	}
-	return errFitInField(pos, v.Int, bits, layerName, fieldName)
+	switch v.Kind {
+	case ast.ValInt:
+		if !literalFitsBits(v.Int, v.Negative, bits) {
+			return errFitInField(pos, v.Int, bits, layerName, fieldName)
+		}
+	case ast.ValRange:
+		// Both bounds must fit: a bound past the field width would be
+		// masked by codegen into a different range (D-011).
+		for _, b := range []uint64{v.RangeLo, v.RangeHi} {
+			if !literalFitsBits(b, false, bits) {
+				return errFitInField(pos, b, bits, layerName, fieldName)
+			}
+		}
+		if v.RangeLo > v.RangeHi {
+			return errorf(pos, "range %d..%d on %s.%s is empty (lower bound above the upper bound)", v.RangeLo, v.RangeHi, layerName, fieldName)
+		}
+	}
+	return nil
 }
 
 // typing.go implements the static type checks defined by

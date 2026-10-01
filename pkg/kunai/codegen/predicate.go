@@ -824,13 +824,16 @@ func requireEqualityOp(pred *ir.Predicate, kind string) error {
 	return nil
 }
 
-// emitInPredicate handles `field in [v1, v2, ...]`. The IR carries
+// emitInPredicate handles `field in [v1, lo..hi, ...]`. The IR carries
 // the field on pred.Field and the alternatives on pred.List; the
-// resolver has already fit-checked each element against the field
-// width. We load the field once, emit an "if equal jump to match"
-// for every alternative, and jump to dslReject if none matched.
+// resolver has already fit-checked each value and range bound against
+// the field width. We load the field once, emit "if equal jump to
+// match" for a value and "if below lo skip, if at most hi match" for a
+// range (D-011), and jump to dslReject if none matched. A range needs
+// the field in host order, so a list with a range byte-swaps the
+// register once instead of swapping each constant.
 //
-// MVP scope (dsl-followups.md F7): integer alternatives only, on
+// MVP scope (dsl-followups.md F7): integer and range alternatives, on
 // fields ≤ 64 bits. IPv4 / IPv6 / MAC / CIDR alternatives stay as
 // ErrNotImplemented since they would each need their own multi-
 // word emit path; fold them in when there's user demand.
@@ -838,9 +841,13 @@ func emitInPredicate(pred *ir.Predicate) (asm.Instructions, error) {
 	if len(pred.List) == 0 {
 		return nil, fmt.Errorf("codegen: 'in' predicate has empty list")
 	}
+	hasRange := false
 	for _, v := range pred.List {
-		if v == nil || v.Kind != ast.ValInt {
-			return nil, fmt.Errorf("%w: 'in' predicate currently supports only integer alternatives (got %v)", ErrNotImplemented, vKindOf(v))
+		if v == nil || (v.Kind != ast.ValInt && v.Kind != ast.ValRange) {
+			return nil, fmt.Errorf("%w: 'in' predicate currently supports only integer and range alternatives (got %v)", ErrNotImplemented, vKindOf(v))
+		}
+		if v.Kind == ast.ValRange {
+			hasRange = true
 		}
 	}
 	if pred.Field == nil || pred.Field.Field == nil {
@@ -887,38 +894,82 @@ func emitInPredicate(pred *ir.Predicate) (asm.Instructions, error) {
 		insns = append(insns, emitBoundedLoad(asm.R3, int16(fieldOff), size, dslReject)...)
 	}
 
-	// Sub-byte field: the load read a covering window, so bring R3 to
-	// host order and narrow it to the field's bits before comparing.
-	// The alternatives then stay in host order (no constant bswap).
+	// A sub-byte field (the load read a covering window to narrow) and a
+	// range alternative (`lo ≤ v ≤ hi` is an ordered compare, the path
+	// emitIntPredicate takes) both need R3 in host order; the
+	// alternatives then stay unswapped.
 	subByte := fieldIsSubByte(pred.Field) || pred.Field.Slice != nil
+	hostOrder := subByte || hasRange
+	if hostOrder && bytes > 1 {
+		insns = append(insns, asm.HostTo(asm.BE, asm.R3, size))
+	}
 	if subByte {
-		if bytes > 1 {
-			insns = append(insns, asm.HostTo(asm.BE, asm.R3, size))
-		}
 		insns = append(insns, emitSliceShiftMask(pred.Field, bytes)...)
 	}
 
 	matchLabel := nextPredicateMatchLabel()
-	for _, v := range pred.List {
+	// A range alternative's below-lo branch jumps to the next
+	// alternative; the label lands on that alternative's first compare,
+	// so `pending` carries it there instead of a filler instruction.
+	pending := ""
+	emit := func(ins asm.Instructions) {
+		if pending != "" {
+			ins[0] = ins[0].WithSymbol(pending)
+			pending = ""
+		}
+		insns = append(insns, ins...)
+	}
+	for i, v := range pred.List {
+		last := i+1 == len(pred.List)
+		if v.Kind == ast.ValRange {
+			// `lo ≤ R3 ≤ hi` in host order (D-011): below lo → next
+			// alternative (the final reject for the last one), at most
+			// hi → match. The resolver fit-checked both bounds.
+			lo, hi := v.RangeLo, v.RangeHi
+			next := dslReject
+			if lo > 0 {
+				if !last {
+					next = nextPredicateLabel(predInNextLabelPrefix)
+				}
+				emit(cmpR3Const(asm.JLT, lo, next))
+			}
+			emit(cmpR3Const(asm.JLE, hi, matchLabel))
+			if next != dslReject {
+				pending = next
+			}
+			continue
+		}
 		value := v.Int
 		if fieldBits < 64 {
 			value &= (uint64(1) << fieldBits) - 1
 		}
 		// Multi-byte fields land in R3 in network-byte order packed
 		// as little-endian; mirror emitIntPredicate by byte-swapping
-		// the constant so a single JEq still matches. A sub-byte field
-		// is already host-order after the shift+mask above, so skip it.
-		if bytes > 1 && !subByte {
+		// the constant so a single JEq still matches. A register already
+		// brought to host order (sub-byte field, or a list with a range)
+		// compares against the plain constant.
+		if bytes > 1 && !hostOrder {
 			value = swapValueBytes(value, bytes)
 		}
-		if value > 0x7FFFFFFF {
-			return nil, fmt.Errorf("%w: 'in' alternative %d exceeds int32 immediate range", ErrNotImplemented, v.Int)
-		}
-		insns = append(insns, asm.JEq.Imm(asm.R3, int32(value), matchLabel))
+		emit(cmpR3Const(asm.JEq, value, matchLabel))
 	}
 	insns = append(insns, asm.Ja.Label(dslReject))
 	insns = append(insns, landingNoop(matchLabel))
 	return insns, nil
+}
+
+// cmpR3Const compares R3 against a constant: a single immediate compare
+// when the value fits int32, else `LoadImm R5; <op>.Reg` so the compare
+// stays an unsigned 64-bit one instead of sign-extending the immediate
+// (the same shape as cmpRegEqU32, for any width up to 64 bits).
+func cmpR3Const(jumpOp asm.JumpOp, value uint64, label string) asm.Instructions {
+	if value <= 0x7FFFFFFF {
+		return asm.Instructions{jumpOp.Imm(asm.R3, int32(value), label)}
+	}
+	return asm.Instructions{
+		asm.LoadImm(asm.R5, int64(value), asm.DWord),
+		jumpOp.Reg(asm.R3, asm.R5, label),
+	}
 }
 
 // vKindOf is a nil-safe ValueKind extractor used in error messages
@@ -935,13 +986,22 @@ func vKindOf(v *ast.Value) ast.ValueKind {
 // landing symbol depend on this exact string.
 const predMatchLabelPrefix = "dsl_pred_match_"
 
-// predLabelCounter feeds nextPredicateMatchLabel. Atomic so concurrent
+// predInNextLabelPrefix labels the fall-through of a range alternative
+// inside an `in` list (not a match landing).
+const predInNextLabelPrefix = "dsl_pred_in_next_"
+
+// predLabelCounter feeds nextPredicateLabel. Atomic so concurrent
 // Gen() calls produce non-colliding labels; labels are scoped to one
 // instruction stream so a process-wide counter suffices for uniqueness.
 var predLabelCounter atomic.Uint64
 
+// nextPredicateLabel returns a fresh `<prefix><n>` label.
+func nextPredicateLabel(prefix string) string {
+	return fmt.Sprintf("%s%d", prefix, predLabelCounter.Add(1))
+}
+
 func nextPredicateMatchLabel() string {
-	return fmt.Sprintf("%s%d", predMatchLabelPrefix, predLabelCounter.Add(1))
+	return nextPredicateLabel(predMatchLabelPrefix)
 }
 
 // ipv6PrefixMaskBE returns (high, low) uint64 halves of the /N
