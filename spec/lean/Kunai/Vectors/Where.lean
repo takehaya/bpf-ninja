@@ -208,12 +208,12 @@ vector typPredIdent := {
 vector typInSet := {
   id := "typ-pred-inset", ast := tcpPred (.inSet (f "dport") "ports"), expected := .illTyped "unsupported: in @set", goStatus := .notImplemented }
 vector typAny := {
-  id := "typ-any-unsupported", ast := W (.any (cmp dport .eq (k 1))), expected := .illTyped "unsupported: aux stacks (Phase 5)" }
+  id := "typ-any-unsupported", ast := W (.any (cmp dport .eq (k 1))), expected := .illTyped "any/all needs exactly one index-less stack reference" }
 vector typExists := {
-  id := "typ-exists-unsupported", ast := W (.fieldExists (ff "tcp" "options")), expected := .illTyped "unsupported: aux exists (Phase 5)" }
+  id := "typ-exists-unsupported", ast := W (.fieldExists (ff "tcp" "options")), expected := .illTyped "unknown auxiliary header tcp.options" }
 vector typAuxPath := {
   id := "typ-aux-path-unsupported", ast := W (cmp (.field ⟨[("tcp", none), ("options", none), ("mss", none)]⟩) .eq (k 1)),
-  expected := .illTyped "unsupported: field path tcp.options.mss (aux, index, or slice)" }
+  expected := .illTyped "tcp.options needs an option name and a field" }
 vector typArith128 := {
   id := "typ-arith-128",
   ast := { layers := [P "eth", P "ipv6", P "tcp"], cond := some (cmp (.bin .add (fld "ipv6" "src") (k 1)) .eq (k 1)) },

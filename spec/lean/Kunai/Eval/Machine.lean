@@ -73,7 +73,7 @@ private def doExtract (P : Packet) (m : Machine) (layerOff : Nat) (ψ : MState) 
   let mut patches := ψ.patches
   if let some (_, wb) := m.writebacks.find? (·.1 == e.header) then
     let v ← byteAt P (view.off + wb.sourceByteOff)
-    patches := (layerOff + wb.parentByteOff, v) :: patches
+    patches := patches ++ [(layerOff + wb.parentByteOff, v)]   -- in order: the last extension wins
   pure { ψ with cursor, views := ψ.views ++ [view], patches }
 
 private def doCounter (P : Packet) (layerOff : Nat) (ψ : MState) : CounterOp → Except MFail MState
@@ -100,7 +100,9 @@ private def doAdvance (P : Packet) (ψ : MState) : AdvanceOp → Except MFail MS
   | .lookahead len => do
     let b ← byteAt P (ψ.cursor + len.byteOff)
     match len.apply b with
-    | some n => adv n
+    -- D-028: a length-driven advance must move past the bytes it read,
+    -- else the walk makes no progress (TLV length 0 or 1).
+    | some n => if n ≤ len.byteOff then throw .reject else adv n
     | none => throw .reject
 where
   adv (n : Nat) : Except MFail MState :=
@@ -131,12 +133,28 @@ private def valMatches : MatchVal → KeyVal → Bool
   | .bool b, .bool k => b == k
   | _, _ => false
 
+/-- TLV option sighting (D-030): when a lookahead key reads an option's
+kind byte at the cursor, that option's view starts here, whether or not
+the target state extracts it (`sack`, `rr` advance by length instead). The
+latest sighting wins. -/
+private def sightOptions (m : Machine) (ψ : MState) (keys : List (SelectKey × KeyVal)) : MState :=
+  keys.foldl (fun ψ (k, v) =>
+    match k, v with
+    | .lookahead _, .nat n =>
+      m.options.foldl (fun ψ o =>
+        if o.kindByte == some n then
+          let bytes := ((m.header? o.header).map (·.bytes)).getD 0
+          { ψ with views := ψ.views ++ [{ outParam := o.outParam, header := o.header, off := ψ.cursor, len := bytes }] }
+        else ψ) ψ
+    | _, _ => ψ) ψ
+
 /-- P-Trans-Select: the first case whose values all match wins. -/
-private def selectTarget (P : Packet) (ψ : MState) (s : Select) : Except MFail Target := do
+private def selectTarget (P : Packet) (m : Machine) (ψ : MState) (s : Select) : Except MFail (MState × Target) := do
   let keys ← s.keys.mapM (evalKey P ψ)
+  let ψ := sightOptions m ψ (s.keys.zip keys)
   let hit := s.cases.find? fun c =>
     c.values.length == keys.length && (c.values.zip keys).all fun (v, k) => valMatches v k
-  pure (match hit with | some c => c.target | none => s.default)
+  pure (ψ, match hit with | some c => c.target | none => s.default)
 
 /-- One state: statements in the loader's order (extracts, counters,
 advances), then the transition. -/
@@ -147,7 +165,7 @@ def step (P : Packet) (m : Machine) (layerOff : Nat) (ψ : MState) (s : ParseSta
   for a in s.advances do ψ ← doAdvance P ψ a
   match s.trans with
   | .goto t => pure (ψ, t)
-  | .select sel => do pure (ψ, ← selectTarget P ψ sel)
+  | .select sel => selectTarget P m ψ sel
 
 /-- Runs the machine from `layerOff`. `depth` is `MAX_DEPTH`: each transition
 to the same or an earlier state consumes one, and exhausting it accepts

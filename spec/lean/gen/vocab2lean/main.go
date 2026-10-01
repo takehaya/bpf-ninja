@@ -13,6 +13,7 @@ import (
 
 	"github.com/takehaya/bpf-ninja/pkg/kunai/dslvocab"
 	"github.com/takehaya/bpf-ninja/pkg/kunai/vocab"
+	"github.com/takehaya/bpf-ninja/pkg/kunai/vocab/p4lite"
 )
 
 func main() {
@@ -302,9 +303,19 @@ func machineLean(s *vocab.ProtocolSpec) string {
 			str(st.Name), strings.Join(ex, ", "), strings.Join(cn, ", "), strings.Join(ad, ", "), trans))
 	}
 
+	// Header types: extracted headers plus stack element headers.
+	headerRefs := map[string]*p4lite.Header{}
+	for k, v := range m.HeaderRefs {
+		headerRefs[k] = v
+	}
+	for _, st := range m.StackRefs {
+		if st.HeaderRef != nil {
+			headerRefs[st.HeaderRef.Name] = st.HeaderRef
+		}
+	}
 	var headers []string
-	for _, hn := range sortedKeys(m.HeaderRefs) {
-		h := m.HeaderRefs[hn]
+	for _, hn := range sortedKeys(headerRefs) {
+		h := headerRefs[hn]
 		bits := 0
 		fs := make([]vocab.Field, 0, len(h.Fields))
 		for _, f := range h.Fields {
@@ -312,6 +323,15 @@ func machineLean(s *vocab.ProtocolSpec) string {
 			bits += f.Bits
 		}
 		headers = append(headers, fmt.Sprintf("⟨%s, %s, %d⟩", str(h.Name), fieldsLean(fs), bits/8))
+	}
+	var options []string
+	for _, on := range sortedKeys(m.AuxLayouts) {
+		a := m.AuxLayouts[on]
+		kind := "none"
+		if a.IsDynamicEligible {
+			kind = fmt.Sprintf("some %d", a.DynamicKindByte)
+		}
+		options = append(options, fmt.Sprintf("{ outParam := %s, header := %s, kindByte := %s }", str(on), str(a.HeaderName), kind))
 	}
 	var stacks []string
 	for _, sn := range sortedKeys(m.StackRefs) {
@@ -330,7 +350,7 @@ func machineLean(s *vocab.ProtocolSpec) string {
 			wbs = append(wbs, fmt.Sprintf("(%s, ⟨%d, %d⟩)", str(hn), a.WriteBack.SourceByteOff, a.WriteBack.ParentByteOff))
 		}
 	}
-	return fmt.Sprintf("{\n          states := [\n            %s],\n          entry := %d,\n          headers := [%s],\n          stacks := [%s],\n          tails := [%s],\n          writebacks := [%s] }",
-		strings.Join(states, ",\n            "), m.EntryIdx, strings.Join(headers, ", "), strings.Join(stacks, ", "),
-		strings.Join(tails, ", "), strings.Join(wbs, ", "))
+	return fmt.Sprintf("{\n          states := [\n            %s],\n          entry := %d,\n          headers := [%s],\n          options := [%s],\n          stacks := [%s],\n          tails := [%s],\n          writebacks := [%s] }",
+		strings.Join(states, ",\n            "), m.EntryIdx, strings.Join(headers, ", "), strings.Join(options, ", "),
+		strings.Join(stacks, ", "), strings.Join(tails, ", "), strings.Join(wbs, ", "))
 }

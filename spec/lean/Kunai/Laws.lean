@@ -55,13 +55,13 @@ theorem one_eq_range_chain (c : Ctx) (st : State) (p : ProtoLayer) (rest : List 
 /-- `and` commutes when neither side stops the evaluation (D-019: a dynamic
 `reject` in the second operand is short-circuited, so the hypotheses are needed). -/
 theorem and_comm_where (c : Ctx) (st : State) (a b : Where) (x y : Bool)
-    (ha : evalWhere c st a = .ok x) (hb : evalWhere c st b = .ok y) :
-    evalWhere c st (.and a b) = evalWhere c st (.and b a) := by
+    (ha : evalWhere c st [] a = .ok x) (hb : evalWhere c st [] b = .ok y) :
+    evalWhere c st [] (.and a b) = evalWhere c st [] (.and b a) := by
   simp [evalWhere, ha, hb, bind, Except.bind, logic, Bool.and_comm]
 
 theorem or_comm_where (c : Ctx) (st : State) (a b : Where) (x y : Bool)
-    (ha : evalWhere c st a = .ok x) (hb : evalWhere c st b = .ok y) :
-    evalWhere c st (.or a b) = evalWhere c st (.or b a) := by
+    (ha : evalWhere c st [] a = .ok x) (hb : evalWhere c st [] b = .ok y) :
+    evalWhere c st [] (.or a b) = evalWhere c st [] (.or b a) := by
   simp [evalWhere, ha, hb, bind, Except.bind, logic, Bool.or_comm]
 
 /-- The quantifier plays no part in an optional extraction either. -/

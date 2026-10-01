@@ -196,6 +196,63 @@ Status values: 提案中 (implemented as recommended, awaiting sign-off) /
 - 状態: 提案中
 - 反映先: `Eval/Layer.lean` `chainEnded` / `iterate` / `extractOpt`, `Laws.lean`, vectors `quant-overrun-bounded`, `quant-overrun-open` (goStatus mismatch), `quant-exact-bound`
 
+## D-025: 可変長 layer の長さ
+- 論点: §13.4 の `total_bytes(p, P, π)` は「primary + 抽出した aux の合計」だが、tcp は EOL で walk を止めても Go は data_offset×4 まで進む。
+- 推奨: `len = max(宣言長, parser machine が消費した長さ)`。宣言長は ipv4 IHL / tcp data_offset / geneve opt_len (`vocab.HeaderLength` 由来)。srv6 は machine の消費量 (= 8 + 16×(last_entry+1)) と一致。
+- 状態: 承認済 (2026-10-01、一括)
+- 反映先: `Eval/Layer.lean` `extract`, `gen/vocab2lean` `declaredLength`
+
+## D-026: parser machine の反復上限
+- 論点: §14 は `MAX_DEPTH` の役割を定義しない。Go は bpf_loop の max_iter (self-loop は inline 1 回 + MAX_DEPTH 回) として使い、上限到達で accept する。
+- 推奨: 「同じか手前の状態への遷移」を 1 反復と数え、`MAX_DEPTH` 回で accept (状態はそのまま)。ipv6 (MAX_DEPTH=4) は 5 個目まで拡張ヘッダを読み、6 個目は読まずに accept → 後続の dispatch が miss。
+- 現行 Go 実装の挙動: 同じ (vector `ipv6-ext-five-at-depth`, `ipv6-ext-six-exceeds-depth`)。
+- 状態: 承認済 (2026-10-01、一括)
+- 反映先: `Eval/Machine.lean` `run`
+
+## D-027: 抽出されなかった option / aux の field
+- 論点: `tcp.options.MSS.value == 1460` で MSS が無いとき。
+- 候補: (a) atom は false (D-003 と同じ) / (b) filter を reject
+- 現行 Go 実装の挙動: (b)。sentinel -1 を見て `dslReject` に飛ぶため `not (tcp.options.MSS.value == 1460)` も reject。
+- 推奨: (a)。D-003 と同じ理由。`.exists` で明示的に問える。
+- 状態: 承認済 (2026-10-01、一括)
+- 反映先: `Eval/Where.lean` `loadRef`, vectors `tcp-opt-mss-absent`, `tcp-opt-mss-absent-not` (goStatus mismatch), `gtp-opt-field-absent`
+
+## D-028: TLV walk の非前進
+- 論点: unknown option の length が 0 / 1 のとき、`advance(len)` が読んだバイトを越えない。
+- 現行 Go 実装の挙動: reject (`parser_region.go` の `JLT len, off+1`)。
+- 推奨: lookahead 駆動の advance は「読んだバイトの先」まで進まなければ ⊥。
+- 状態: 承認済 (2026-10-01、一括)
+- 反映先: `Eval/Machine.lean` `doAdvance`, vectors `tcp-opt-unknown-len0`, `tcp-opt-unknown-len1`
+
+## D-029: option の検証は常に行う
+- 論点: `eth/ipv4/tcp` (option を参照しない filter) に壊れた option を持つパケット。
+- 現行 Go 実装の挙動: option を参照しない filter は walk を省略し (bulk advance)、accept。参照すると同じパケットが reject。
+- 推奨: 仕様では parser machine は常に走る (⊥ なら reject)。filter の書き方で verdict が変わる現状は実装都合として issue。
+- 状態: 承認済 (2026-10-01、一括)
+- 反映先: `Eval/Layer.lean` `extract`, vector `tcp-opt-malformed-no-query` (goStatus mismatch)
+
+## D-030: option の「視認」と重複
+- 論点: `parse_sack` / `parse_rr` は `extract` せず lookahead で長さ分 advance するため、§14 の α には SACK / RR の view が入らない。しかし `tcp.options.SACK.blocks[0]` は参照できる。
+- 現行 Go 実装の挙動: kind byte が一致した位置を記録する (prelude)。同じ option が複数あれば最後が勝つ。
+- 推奨: lookahead key が option の kind byte と一致した時点でその option の view を cursor に置く (`OptionDecl.kindByte`)。重複は最後が勝つ。owner-bound stack (blocks, addrs) は owner の length byte から要素数を得る。
+- 状態: 承認済 (2026-10-01、一括)
+- 反映先: `Eval/Machine.lean` `sightOptions`, `Eval/Where.lean` `stackEntries`, vectors `tcp-opt-sack-*`, `ipv4-rr-*`, `tcp-opt-mss-duplicate-last-wins`
+
+## D-031: stack の要素数と範囲外 index
+- 論点: `ipv6.exts[1]` で 1 個しか抽出していないとき、`any`/`all` の反復範囲。
+- 候補: (a) 抽出した要素数 (`count(stack(σ))`) / (b) capacity
+- 現行 Go 実装の挙動: count source が無い stack (ipv6.exts, gtp.exts) は capacity 8 を unroll し、静的 index は count を見ずにバイトを読む。`srv6.segments[2] != …` は範囲外で true。
+- 推奨: (a)。範囲外 index は不在 → atom false (D-027)。
+- 状態: 承認済 (2026-10-01、一括)
+- 反映先: `Eval/Where.lean` `stackEntries` / `refView`, vectors `ipv6-exts-index-absent`, `ipv6-exts-all`, `srv6-segments-index-absent` (goStatus mismatch)
+
+## D-032: bracket predicate と write-back
+- 論点: `ipv6[next_header == 6]/tcp` で拡張ヘッダがあるとき、predicate は write-back 前後どちらの値を見るか。
+- 現行 Go 実装の挙動: 最初の extract 直後に評価するため元の値 (0)。`where ipv6.next_header` は write-back 後の値。
+- 推奨: §13.4 [E-Layer-Proto-1] の `∀ ρ ∈ π̄. ⟨ρ, σ'⟩` どおり aux-extract 後 (write-back 後) の値。bracket と where が同じ値を見る。
+- 状態: 承認済 (2026-10-01、一括)
+- 反映先: `Eval/Layer.lean` `extract` (predicates は `inst` の patches 込みで評価), vector `ipv6-next-header-writeback-bracket` (goStatus mismatch)
+
 ## Go 側への issue 候補 (この作業では変更しない)
 
 `fix/kunai-spec-conformance` で対応済みのものは ✅、残りは `issues/` に本文がある。
@@ -211,5 +268,11 @@ Status values: 提案中 (implemented as recommended, awaiting sign-off) /
 9. bpf_loop 経路の RangeMin 判定が VLAN (self-dispatch で停止) で 1 つずれていた — 8 と同時に修正済 ✅。
 
 10. bpf_loop 経路が反復上限で chain-end 信号を要求しない (D-024)。
+
+11. 抽出されなかった option の field 参照が filter 全体を reject する (D-027)。
+12. option を参照しない filter は option を検証しない (D-029)。
+13. count source の無い stack で `all` が capacity 分 unroll される、静的 index が count を見ない、`!=` が範囲外で true (D-031)。
+14. bracket predicate が write-back 前の値を見る (D-032)。
+15. `tcp.options.X.exists` 未実装。
 
 残: 量化 layer 以降の where field 参照 (D-003 の実装)、self-validating / 可変長 layer の `?` (D-017 案 c の実装)、NO_CHECK 自己 edge の optional (`mpls/mpls*`)。

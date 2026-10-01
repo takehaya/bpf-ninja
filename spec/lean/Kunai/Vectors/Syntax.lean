@@ -116,7 +116,7 @@ vector synWhereAnyAll := {
         (.any (.arith (.field ⟨[("srv6", none), ("segments", some (.field ["x"])), ("addr", none)]⟩) .ne (.const 0)))
         (.all (.arith (.field ⟨[("srv6", none), ("segments", some (.nat 0)), ("addr", some (.slice 0 32))]⟩)
                       .eq (.const 1)))) },
-  expected := .illTyped "unsupported: aux stacks (Phase 5)", note := "Go rejects it too (index-less stack ref must be qualified)" }
+  expected := .illTyped "any/all needs exactly one index-less stack reference", note := "Go rejects it too (index-less stack ref must be qualified)" }
 
 vector synWhereBool := {
   id := "syn-where-bool",
@@ -124,7 +124,7 @@ vector synWhereBool := {
       layers := chain3,
       cond := some (.boolEq (.fieldExists (ff "tcp" "options")) .ne
                             (.boolEq (.boolLit true) .eq (.arith (.field (ff "tcp" "dport")) .ne (.const 0)))) },
-  expected := .illTyped "unsupported: aux exists (Phase 5)" }
+  expected := .illTyped "unknown auxiliary header tcp.options" }
 
 vector synCapture := {
   id := "syn-capture",

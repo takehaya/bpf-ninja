@@ -132,10 +132,20 @@ structure WriteBack where
   parentByteOff : Nat
   deriving Repr, BEq, DecidableEq
 
+/-- An aux out parameter (`vocab.AuxLayout`). `kindByte` is set for TLV
+options: the walk records the option when its lookahead kind byte matches,
+even where the parser state advances by length instead of extracting. -/
+structure OptionDecl where
+  outParam : String
+  header : String
+  kindByte : Option Nat := none
+  deriving Repr, BEq, DecidableEq
+
 structure Machine where
   states : List ParseState
   entry : Nat
   headers : List HeaderDecl
+  options : List OptionDecl := []
   stacks : List StackDecl
   tails : List (String × TailRule)
   writebacks : List (String × WriteBack)

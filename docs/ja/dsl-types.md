@@ -1282,6 +1282,25 @@ aux-extract(p, π, P, α) = α' such that ⟨start, 0, α⟩ →* ⟨accept, π_
 
 `⊥` (reject) は親 layer の `[E-Layer-Proto-1-Fail-Pred]` 系統の失敗にマップされます。
 
+### 14.5 §14 が省略している構文と、その意味 (Phase 5)
+
+bundled の `.p4` は §14.2 の規則に無い構文を使います。`spec/lean/Kunai/Eval/Machine.lean` は次のとおり解釈します (DECISIONS D-025〜D-032)。
+
+| 構文 | 意味 |
+|---|---|
+| `pkt.extract(h)` で `π + \|h\| > \|P\|` | ⊥ |
+| `pkt.advance(N)` / `advance((f − K) ≪ S)` / `advance(lookahead[hi:lo] ≪ S)` | π を進める。パケット末尾を越えれば ⊥。lookahead 駆動の advance は読んだバイトを越えて進まなければ ⊥ (D-028) |
+| `c.set(expr)` / `c.decrement(n)` / `c.is_zero()` | counter は自然数。decrement が残量を超えれば ⊥ |
+| `pkt.lookahead<bit<M>>()` | π から M bit を読む。末尾を越えれば ⊥ |
+| `@kunai_variable_tail` | extract 直後に `((byte & mask) ≫ shift) × scale − base` バイトを追加で消費 |
+| `@kunai_writeback[source, parent]` | aux の byte を primary header の byte に書き込む。後続の dispatch、where、bracket predicate はこの値を見る (D-032) |
+| `extract(stack.next)` で `\|stack\| = capacity` | ⊥ (P-Extract-Stack-Full) |
+| `MAX_DEPTH` | 同じか手前の状態への遷移を 1 反復と数え、`MAX_DEPTH` 回で accept (D-026) |
+| lookahead で option の kind byte を読んだ | その option の view を π に置く (extract しない `parse_sack` / `parse_rr` 用、D-030)。重複は最後が勝つ |
+| layer の長さ | `max(宣言長, machine が消費した長さ)` (D-025) |
+
+where 側: 抽出されなかった option / 範囲外の stack index を含む atom は false (D-027, D-031)。`any`/`all` は抽出した要素数 (owner-bound stack は owner の length byte から) を範囲とする。
+
 ## 15. 実装との対応 (Soundness sketch)
 
 ### 15.1 各実装ステージ ↔ 形式仕様
