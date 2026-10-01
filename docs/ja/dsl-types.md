@@ -667,7 +667,7 @@ pre-squash backup として、161 commit の細かい history を `pre-squash-ba
 | F12 | bit-slice の (64, 128) 中間 width cmp ✅ 完了 (resolver で AND/OR-chain に desugar、`tryDesugarMultiLDXSliceCmp`) | F11 の延長 |
 | F13 | bit-slice の non-aligned 範囲 (`[3:9]`, `[4:12]` など) ✅ 完了 (codegen で pow2-cover load → bswap → shift+mask、`emitSliceShiftMask`)。≤ 64bit 内なら任意の bit 範囲を抽出可 | F11 の延長 |
 | F6 | bitwise op (`&`, `|`, `^`, `<<`, `>>`) ✅ 完了。precedence: `&` `<<` `>>` は mul/div 級、`|` `^` は add/sub 級 | DSL 機能拡張 (TCP flag check 等で需要) |
-| F7 | `field in [...]` 実装 ✅ 整数 alternatives は完了 (`emitInPredicate`)、IPv4/IPv6/MAC/CIDR alternatives は MVP scope 外 | 既存 dead syntax の有効化 |
+| F7 | `field in [...]` 実装 ✅ 整数と範囲 `lo..hi` の alternatives は完了 (`emitInPredicate`)、IPv4/IPv6/MAC/CIDR alternatives は MVP scope 外 | 既存 dead syntax の有効化 |
 | F8 | `field has FLAG` 専用 codegen ⏸ superseded。F6 の bitwise `&` で同等表現 (`tcp.flags & 0x12 == 0x12`) が書けるので独自 emit は不要と判断。resolver は引き続き `PredHas` を `Unsupported` 扱い (使うと `ErrNotImplemented`) で、ユーザーには bitwise 形式を促す形になっている。vocab 側に flag 定数を declare するのは vocab 著者の自由 | F6 で代替 |
 | F9 | `flow.*` dead syntax 削除 ✅ 完了 | 整理 |
 | F10 | `Bool == Bool` precision-preserving codegen ✅ 完了 | `genConditionAsBool` で各 operand を {0, 1} に評価して register に置き、scratch slot 経由で比較。per-packet operand 評価は 1 回ずつ |

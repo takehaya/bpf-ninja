@@ -908,35 +908,41 @@ func emitInPredicate(pred *ir.Predicate) (asm.Instructions, error) {
 	}
 
 	matchLabel := nextPredicateMatchLabel()
-	narrow := func(v uint64) uint64 {
-		if fieldBits < 64 {
-			v &= (uint64(1) << fieldBits) - 1
+	// A range alternative's below-lo branch jumps to the next
+	// alternative; the label lands on that alternative's first compare,
+	// so `pending` carries it there instead of a filler instruction.
+	pending := ""
+	emit := func(ins asm.Instructions) {
+		if pending != "" {
+			ins[0] = ins[0].WithSymbol(pending)
+			pending = ""
 		}
-		return v
+		insns = append(insns, ins...)
 	}
 	for i, v := range pred.List {
+		last := i+1 == len(pred.List)
 		if v.Kind == ast.ValRange {
 			// `lo ≤ R3 ≤ hi` in host order (D-011): below lo → next
 			// alternative (the final reject for the last one), at most
 			// hi → match. The resolver fit-checked both bounds.
 			lo, hi := v.RangeLo, v.RangeHi
-			if hi > 0x7FFFFFFF {
-				return nil, fmt.Errorf("%w: 'in' range %d..%d exceeds int32 immediate range", ErrNotImplemented, lo, hi)
-			}
-			next, landing := dslReject, false
-			if i+1 < len(pred.List) {
-				next, landing = fmt.Sprintf("%s%d", predInNextLabelPrefix, predLabelCounter.Add(1)), true
-			}
+			next := dslReject
 			if lo > 0 {
-				insns = append(insns, asm.JLT.Imm(asm.R3, int32(lo), next))
+				if !last {
+					next = nextPredicateLabel(predInNextLabelPrefix)
+				}
+				emit(cmpR3Const(asm.JLT, lo, next))
 			}
-			insns = append(insns, asm.JLE.Imm(asm.R3, int32(hi), matchLabel))
-			if landing {
-				insns = append(insns, landingNoop(next))
+			emit(cmpR3Const(asm.JLE, hi, matchLabel))
+			if next != dslReject {
+				pending = next
 			}
 			continue
 		}
-		value := narrow(v.Int)
+		value := v.Int
+		if fieldBits < 64 {
+			value &= (uint64(1) << fieldBits) - 1
+		}
 		// Multi-byte fields land in R3 in network-byte order packed
 		// as little-endian; mirror emitIntPredicate by byte-swapping
 		// the constant so a single JEq still matches. A register already
@@ -945,14 +951,25 @@ func emitInPredicate(pred *ir.Predicate) (asm.Instructions, error) {
 		if bytes > 1 && !hostOrder {
 			value = swapValueBytes(value, bytes)
 		}
-		if value > 0x7FFFFFFF {
-			return nil, fmt.Errorf("%w: 'in' alternative %d exceeds int32 immediate range", ErrNotImplemented, v.Int)
-		}
-		insns = append(insns, asm.JEq.Imm(asm.R3, int32(value), matchLabel))
+		emit(cmpR3Const(asm.JEq, value, matchLabel))
 	}
 	insns = append(insns, asm.Ja.Label(dslReject))
 	insns = append(insns, landingNoop(matchLabel))
 	return insns, nil
+}
+
+// cmpR3Const compares R3 against a constant: a single immediate compare
+// when the value fits int32, else `LoadImm R5; <op>.Reg` so the compare
+// stays an unsigned 64-bit one instead of sign-extending the immediate
+// (the same shape as cmpRegEqU32, for any width up to 64 bits).
+func cmpR3Const(jumpOp asm.JumpOp, value uint64, label string) asm.Instructions {
+	if value <= 0x7FFFFFFF {
+		return asm.Instructions{jumpOp.Imm(asm.R3, int32(value), label)}
+	}
+	return asm.Instructions{
+		asm.LoadImm(asm.R5, int64(value), asm.DWord),
+		jumpOp.Reg(asm.R3, asm.R5, label),
+	}
 }
 
 // vKindOf is a nil-safe ValueKind extractor used in error messages
@@ -973,13 +990,18 @@ const predMatchLabelPrefix = "dsl_pred_match_"
 // inside an `in` list (not a match landing).
 const predInNextLabelPrefix = "dsl_pred_in_next_"
 
-// predLabelCounter feeds nextPredicateMatchLabel. Atomic so concurrent
+// predLabelCounter feeds nextPredicateLabel. Atomic so concurrent
 // Gen() calls produce non-colliding labels; labels are scoped to one
 // instruction stream so a process-wide counter suffices for uniqueness.
 var predLabelCounter atomic.Uint64
 
+// nextPredicateLabel returns a fresh `<prefix><n>` label.
+func nextPredicateLabel(prefix string) string {
+	return fmt.Sprintf("%s%d", prefix, predLabelCounter.Add(1))
+}
+
 func nextPredicateMatchLabel() string {
-	return fmt.Sprintf("%s%d", predMatchLabelPrefix, predLabelCounter.Add(1))
+	return nextPredicateLabel(predMatchLabelPrefix)
 }
 
 // ipv6PrefixMaskBE returns (high, low) uint64 halves of the /N

@@ -61,14 +61,15 @@ resolver / codegen が enforce する MVP 制約は次のとおりです。
 
 ```ebnf
 predicate      ::= '[' field-path op value ']'
-                 | '[' field-path 'in' value-list ']'      (* F7: integer 値の OR-chain *)
+                 | '[' field-path 'in' value-list ']'      (* F7: integer / integer '..' integer の OR-chain *)
                  | '[' field-path 'in' '@' set-name ']'    (* pinned-map 集合照合 *)
                  | '[' field-path 'has' flag-name ']'      (* F6 bitwise & で superseded *)
 field-path     ::= field-name ('.' field-name)*            (* aux access: <aux>.<field> *)
 field-name     ::= [a-z] [a-z0-9_]*
 op             ::= '==' | '!=' | '<' | '<=' | '>' | '>='
 value          ::= integer | ipv4 | ipv4-cidr | ipv6 | ipv6-cidr | mac
-value-list     ::= '[' value (',' value)* ']'
+value-list     ::= '[' alternative (',' alternative)* ']'
+alternative    ::= value | integer '..' integer              (* 範囲は両端含む、`in` 専用 *)
 set-name       ::= [a-z] [a-z0-9_]*                        (* --set NAME= で宣言した集合 *)
 flag-name      ::= [A-Z] [A-Z0-9_]*
 integer        ::= '-'? ('0x' [0-9a-fA-F]+ | [0-9]+)        (* 値域: [-2^63, 2^64) *)

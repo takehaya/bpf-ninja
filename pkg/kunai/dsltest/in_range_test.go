@@ -24,4 +24,21 @@ func TestBracketInRange(t *testing.T) {
 	mixed.MustMatch(t, dport(8040), "inside the range")
 	mixed.MustReject(t, dport(8081), "just above the range")
 	mixed.MustReject(t, dport(22), "unlisted")
+
+	// A 32-bit field with alternatives above int32: the compare must stay
+	// unsigned (register compare, not a sign-extended immediate).
+	seq := func(s uint32) []byte {
+		pkt := Build(t, Defaults())
+		// eth(14) + ipv4(20) + tcp sport/dport(4) → seq
+		pkt[38], pkt[39], pkt[40], pkt[41] = byte(s>>24), byte(s>>16), byte(s>>8), byte(s)
+		return pkt
+	}
+	high := New(t, "eth/ipv4/tcp[seq in [1..2, 0x80000000]]")
+	high.MustMatch(t, seq(1), "inside the low range")
+	high.MustMatch(t, seq(0x80000000), "listed value above int32")
+	high.MustReject(t, seq(0x7FFFFFFF), "unlisted")
+	highRange := New(t, "eth/ipv4/tcp[seq in [0x80000000..0xFFFFFFFF]]")
+	highRange.MustMatch(t, seq(0x80000000), "low bound above int32")
+	highRange.MustMatch(t, seq(0xFFFFFFFF), "high bound")
+	highRange.MustReject(t, seq(0x7FFFFFFF), "below the range")
 }
