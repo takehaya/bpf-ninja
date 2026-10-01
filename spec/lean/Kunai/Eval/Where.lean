@@ -207,7 +207,7 @@ private def refView (c : Ctx) (env : IterEnv) (inst : Inst) (r : Ref) : Except S
       | some (.nat i) => pure i
       | some (.field parts) => indexValue c inst r parts
       | _ =>
-        match env.find? (·.1 == (r.head, stack)) with
+        match env.find? (·.1 == (r.proto, stack)) with
         | some (_, i) => pure i
         | none => throw (.illTyped s!"index-less stack reference {r.proto}.{stack} outside any/all")
     pure ((stackEntries c.P inst m sd)[i]?.map fun v => (v.off, v.len))
@@ -286,13 +286,13 @@ def logic (a : Bool) (decided : Bool) (r : Except Stop Bool) (k : Bool → Bool)
   | .error .reject => if a == decided then pure (k a) else throw .reject
   | .error e => throw e
 
-/-- Field paths of a `where` expression (not descending into nested quantifiers). -/
+/-- Field paths of a `where` expression, including nested quantifier bodies. -/
 def Where.paths : Where → List FieldPath
   | .or l r | .and l r | .boolEq l _ r => l.paths ++ r.paths
-  | .not w => w.paths
+  | .not w | .any w | .all w => w.paths
   | .arith l _ r => arithPaths l ++ arithPaths r
   | .litCmp f _ _ => [f]
-  | .fieldExists _ | .any _ | .all _ | .action _ | .boolLit _ => []
+  | .fieldExists _ | .action _ | .boolLit _ => []
 where
   arithPaths : Arith → List FieldPath
     | .const _ => []
@@ -300,16 +300,18 @@ where
     | .bin _ l r => arithPaths l ++ arithPaths r
 
 /-- T-Quant: the one stack a quantifier iterates, from the index-less stack
-references inside it: `(head, stack)`. -/
+references inside it (nested quantifiers included, as the resolver does):
+`(proto, stack)`, so a label and the protocol name denote the same stack.
+`bound` names stacks an enclosing quantifier already iterates. -/
 def quantStack (c : Ctx) (bound : List (String × String)) (w : Where) : Except Stop (String × String) := do
   let refs ← w.paths.mapM (resolvePath c)
   let iters : List (String × String) := refs.filterMap fun r => match r.aux with
-    | .stackEntry s none => if bound.contains (r.head, s) then none else some (r.head, s)
+    | .stackEntry s none => some (r.proto, s)
     | _ => none
-  match iters.eraseDups with
+  match iters.eraseDups.filter (!bound.contains ·) with
   | [one] => pure one
   | [] => throw (.illTyped "any/all needs exactly one index-less stack reference")
-  | _ => throw (.illTyped "any/all may iterate only one stack")
+  | _ => throw (.illTyped "any/all iterates a single aux header stack")
 
 /-- Number of entries of `stack` on the instance bound to `head` (0 if the
 layer is absent). -/
@@ -345,13 +347,13 @@ def evalWhere (c : Ctx) (st : State) (env : IterEnv) : Where → Except Stop Boo
     pure (c.H.action == v)
   | .any w => do
     -- E-W-Any: ∃ i < count(stack). ⟨w[x ↦ stack[i]], σ⟩ ⇓ true (empty stack: false, D-007)
-    let (head, stack) ← quantStack c (env.map (·.1)) w
-    let n ← stackCount c st head stack
-    (List.range n).anyM fun i => evalWhere c st (((head, stack), i) :: env) w
+    let (proto, stack) ← quantStack c (env.map (·.1)) w
+    let n ← stackCount c st proto stack
+    (List.range n).anyM fun i => evalWhere c st (((proto, stack), i) :: env) w
   | .all w => do
-    let (head, stack) ← quantStack c (env.map (·.1)) w
-    let n ← stackCount c st head stack
-    (List.range n).allM fun i => evalWhere c st (((head, stack), i) :: env) w
+    let (proto, stack) ← quantStack c (env.map (·.1)) w
+    let n ← stackCount c st proto stack
+    (List.range n).allM fun i => evalWhere c st (((proto, stack), i) :: env) w
   | .boolLit b => pure b
   | .fieldExists f => do
     -- E-W-Exists: the aux header was extracted (`(LayerInst × AuxName) ∈ dom(α)`).

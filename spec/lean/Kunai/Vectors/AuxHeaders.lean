@@ -189,7 +189,7 @@ vector greKeySeq := {
 vector greAllFlags := {
   id := "gre-c-k-s", ast := { layers := greL }, packet := grePkt (greHdr 0xb000 [0, 42, 7]), expected := .accept [] }
 vector greKeyTruncated := {
-  id := "gre-key-truncated", ast := { layers := greL }, packet := (eth 0x0800 ++ ipv4 47 ++ greHdr 0x2000 []).take 36, expected := .reject,
+  id := "gre-key-truncated", ast := { layers := greL }, packet := eth 0x0800 ++ ipv4 47 ++ greHdr 0x2000 [], expected := .reject,
   note := "K set but the key word is missing" }
 
 -- Sightings only where the walk dispatched (review finding on D-030) -------------

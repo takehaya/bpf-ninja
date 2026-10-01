@@ -48,7 +48,7 @@ lean-vocab: ## Regenerate spec/lean/Kunai/VocabData.lean from the bundled .p4 vo
 	go run ./spec/lean/gen/vocab2lean > spec/lean/Kunai/VocabData.lean.tmp \
 		&& mv spec/lean/Kunai/VocabData.lean.tmp spec/lean/Kunai/VocabData.lean
 
-lean-gen: lean-build ## Regenerate pkg/kunai/dsltest/testdata/spec_vectors.json from the Lean spec
+lean-gen: lean-vocab lean-build ## Regenerate pkg/kunai/dsltest/testdata/spec_vectors.json from the Lean spec
 	mkdir -p pkg/kunai/dsltest/testdata
 	spec/lean/.lake/build/bin/gen > pkg/kunai/dsltest/testdata/spec_vectors.json.tmp \
 		&& mv pkg/kunai/dsltest/testdata/spec_vectors.json.tmp pkg/kunai/dsltest/testdata/spec_vectors.json

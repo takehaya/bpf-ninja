@@ -118,7 +118,7 @@ private def evalKey (P : Packet) (ψ : MState) : SelectKey → Except MFail (Opt
   | .field target stackLast bitOff width => do
     let view? := if stackLast then (stackViews ψ.views target).getLast? else latestView ψ.views target
     let some v := view? | throw (.illTyped s!"select reads {target} before extracting it")
-    match readBits P (v.off * 8 + bitOff) width with
+    match readBits (patched P ψ.patches) (v.off * 8 + bitOff) width with
     | some n => pure (some (.nat n))
     | none => throw .reject
   | .lookahead bits => pure ((readBits P (ψ.cursor * 8) bits).map .nat)
@@ -137,10 +137,11 @@ extracts it (`sack`, `rr` advance by length instead). A lookahead taken
 after the counter ran out (`(true, _)`) sights nothing. The latest sighting
 wins. -/
 private def sightOptions (m : Machine) (ψ : MState) (hit : SelectCase) (keys : List SelectKey) : MState :=
+  -- only a transition into a state consumes the option; `accept`/`reject` arms sight nothing
   let extractsIt (o : OptionDecl) : Bool :=
     match hit.target with
     | .state i => (m.states[i]?.map fun s => s.extracts.any (·.outParam == o.outParam)).getD false
-    | _ => false
+    | _ => true
   (keys.zip hit.values).foldl (fun ψ (k, v) =>
     match k, v with
     | .lookahead _, .val n =>
