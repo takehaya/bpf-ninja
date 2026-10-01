@@ -1009,6 +1009,17 @@ func genOptionalLayer(layer *ir.LayerInstance, index int, all []*ir.LayerInstanc
 	if err != nil {
 		return nil, err
 	}
+	// One header at most: a chain-end protocol must signal end here, as
+	// `{0,1}` requires (spec D-024, `?` ≡ `{0,1}`). No-op otherwise.
+	hs, err := headerSize(layer.Spec)
+	if err != nil {
+		return nil, err
+	}
+	overRun, err := chainEndRequire(layer.Spec, hs, staticChainFrame, dslReject)
+	if err != nil {
+		return nil, err
+	}
+	body = append(body, overRun...)
 	return withAbsentEdge(body, skipLabel, index, all)
 }
 
@@ -1090,7 +1101,7 @@ func withAbsentEdge(present asm.Instructions, peekFail string, index int, all []
 		}
 		out = append(out, di...)
 	} else if !next.Spec.IsSelfValidating() {
-		out = append(out, asm.Ja.Label(dslReject))
+		return nil, fmt.Errorf("codegen: no dispatch constant for %q under %q, its parent when %q is absent", next.Spec.Name, gp.Spec.Name, all[index].Spec.Name)
 	}
 	out = append(out, asm.Ja.Label(dispatchJoinLabel(index+1)))
 	out = append(out, asm.Mov.Reg(asm.R0, asm.R0).WithSymbol(after))

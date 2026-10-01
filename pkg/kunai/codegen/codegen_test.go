@@ -82,6 +82,14 @@ var (
 	}
 )
 
+// The shared fixtures declare their dispatch constants the way the .p4
+// loader does, so SelectDispatchConst resolves ipv4-under-eth and
+// tcp-under-ipv4 (the absent edge of an optional layer looks them up).
+func init() {
+	ipv4Spec.Consts = append(ipv4Spec.Consts, *ipv4EthertypeConst)
+	tcpSpec.Consts = append(tcpSpec.Consts, *tcpProtocolConst)
+}
+
 func ethIPv4TCPProgram() *ir.Program {
 	eth := &ir.LayerInstance{Spec: ethSpec}
 	ipv4 := &ir.LayerInstance{Spec: ipv4Spec, Dispatch: &ir.DispatchChoice{Type: vocab.DispatchField, Const: ipv4EthertypeConst}}

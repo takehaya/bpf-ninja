@@ -426,9 +426,17 @@ func (c *whereCtx) withStackGuards(w *ir.Condition, failLabel string, body func(
 	return append(guards, insns...), nil
 }
 
-// refCountSource is stackCountSource for a single stack reference: the
-// owner option's length byte for option-internal arrays, the
-// @kunai_stack_count byte for declare-only stacks, nil otherwise.
+// refCountSource derives the runtime element count of the stack a
+// reference indexes. Option-internal arrays (SACK blocks, RR addrs) use
+// the owner option's length byte: it sits at byte 1 by RFC convention
+// (kind = byte 0), SubBefore = OffsetAfterOwner (the option's fixed
+// prefix) is subtracted, and the residue divides by the element size:
+//
+//	SACK (OffsetAfterOwner=2, ElemSize=8): (length-2) >> 3 = 0..4 blocks
+//	RR   (OffsetAfterOwner=3, ElemSize=4): (length-3) >> 2 = 0..9 addrs
+//
+// Declare-only stacks with @kunai_stack_count read a primary-header byte.
+// nil when the stack has no count source (callers fall back to Capacity).
 func refCountSource(ref *ir.FieldRef) (*quantCountSource, error) {
 	if ref.Aux.OwnerOption != nil {
 		shift := log2PowerOfTwo(ref.Aux.HeaderSize)
@@ -505,7 +513,6 @@ type quantCountSource struct {
 // so the unroll runs over the full Capacity (which is safe for
 // self-flag chains where the parser has already walked every entry).
 func stackCountSource(w *ir.Condition) (*quantCountSource, error) {
-	target := w.QuantTarget
 	var iterRef *ir.FieldRef
 	ir.WalkConditionFieldRefs(w.Inner, func(ref *ir.FieldRef) {
 		if iterRef == nil && ref != nil && ref.Aux != nil && ref.Aux.Stack != nil && ref.Aux.Stack.IsIterator {
@@ -515,36 +522,7 @@ func stackCountSource(w *ir.Condition) (*quantCountSource, error) {
 	if iterRef == nil {
 		return nil, fmt.Errorf("codegen: quantifier inner has no iterator field reference")
 	}
-	if iterRef.Aux.OwnerOption != nil {
-		// Length byte sits at slot+1 by RFC convention (kind=byte 0,
-		// length=byte 1 for both TCP options and IPv4 options). The
-		// raw length byte then has SubBefore=OffsetAfterOwner (the
-		// option's fixed prefix) subtracted to get the trailing-array
-		// byte count, which divides by ElemSize to yield the element
-		// count. Examples:
-		//   SACK   (OffsetAfterOwner=2, ElemSize=8): (length-2) >> 3 = 0..4 blocks
-		//   RR     (OffsetAfterOwner=3, ElemSize=4): (length-3) >> 2 = 0..9 addrs
-		shift := log2PowerOfTwo(target.ElemSize)
-		if shift < 0 {
-			return nil, fmt.Errorf("codegen: quantifier element size %d is not a power of two (cannot derive count via shift)", target.ElemSize)
-		}
-		return &quantCountSource{
-			Layer:     iterRef.Layer,
-			Owner:     iterRef.Aux.OwnerOption,
-			ByteOff:   1,
-			SubBefore: iterRef.Aux.OffsetAfterOwner,
-			RShAfter:  shift,
-		}, nil
-	}
-	if cnt := iterRef.Layer.Spec.StackCounts[target.OutParam]; cnt != nil {
-		return &quantCountSource{
-			Layer:   iterRef.Layer,
-			ByteOff: cnt.ByteOff,
-			Offset:  cnt.Addend,
-		}, nil
-	}
-	// No @kunai_stack_count → caller unrolls over the static Capacity.
-	return nil, nil
+	return refCountSource(iterRef)
 }
 
 // rebindIterator deep-copies the inner condition, replacing every
