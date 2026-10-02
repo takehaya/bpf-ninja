@@ -31,13 +31,14 @@ structure Vector where
   ast : Filter
   host : HostKind := .xdp_entry
   action : Nat := 0
+  sets : List SetDecl := []
   packet : Packet := Pkt.ethIPv4TCP
   expected : Result
   goStatus : GoStatus := .ok
   note : String := ""
 
 def Vector.check (v : Vector) : Bool :=
-  eval (v.host.host v.action) vocab v.ast v.packet == v.expected
+  eval (v.host.host v.action v.sets) vocab v.ast v.packet == v.expected
 
 /-- `vector name := { … }` defines the vector and its `decide` proof. -/
 macro "vector " n:ident " := " v:term : command =>
@@ -52,9 +53,15 @@ def Result.toJson : Result → Json
   | .illTyped r => Json.mkObj [("kind", "illTyped"), ("reason", r)]
 
 open Lean in
+def SetDecl.toJson (s : SetDecl) : Json :=
+  Json.mkObj [("name", s.name), ("width", (s.width : Json)),
+    ("members", Json.arr (s.members.toArray.map fun (m : Nat) => (m : Json)))]
+
+open Lean in
 def Vector.toJson (v : Vector) : Json :=
   Json.mkObj [("id", v.id), ("expr", v.ast.text), ("ast", v.ast.toJson),
     ("host", v.host.text), ("action", (v.action : Json)),
+    ("sets", Json.arr (v.sets.map SetDecl.toJson).toArray),
     ("packet", hexOfBytes v.packet), ("expected", v.expected.toJson),
     ("goStatus", v.goStatus.text), ("note", v.note)]
 

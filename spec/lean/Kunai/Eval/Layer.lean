@@ -56,10 +56,11 @@ private def typed (e : Except String α) : Except Stop α :=
   | .ok a => pure a
   | .error r => throw (.illTyped r)
 
-/-- E-Pred-Cmp, plus `in [...]` (D-011). The bracket field is read on the
-layer's own instance with the where rules: an absent aux or stack entry
-makes the predicate false (D-027, D-031), and the value seen is the one
-after write-back (D-032). -/
+/-- E-Pred-Cmp, plus `in [...]` (D-011) and `in @set` (D-036: membership in
+the host-declared set, decided by the host's lookup after the filter). The
+bracket field is read on the layer's own instance with the where rules: an
+absent aux or stack entry makes the predicate false (D-027, D-031), and
+the value seen is the one after write-back (D-032). -/
 def evalPred (c : Ctx) (spec : ProtoSpec) (inst : Inst) : Predicate → Except Stop Bool
   | .cmp f op v => do
     let r ← resolveBracket c spec f
@@ -73,7 +74,12 @@ def evalPred (c : Ctx) (spec : ProtoSpec) (inst : Inst) : Predicate → Except S
     | some n => vs.anyM fun
       | .range lo hi => pure (lo ≤ n && n ≤ hi)
       | v => typed (cmpValue r.width n .eq v)
-  | .inSet .. => throw (.illTyped "unsupported: in @set")
+  | .inSet f name => do
+    let r ← resolveBracket c spec f
+    let some s := c.H.set? name | throw (.illTyped s!"undeclared set @{name}")
+    match ← loadRefOn c [] inst r with
+    | none => pure false
+    | some n => pure (s.members.contains n)
 
 /-- E-Layer-Proto-1 and its three failure rules. -/
 def extract (c : Ctx) (st : State) (p : ProtoLayer) : Except LayerFail State := do

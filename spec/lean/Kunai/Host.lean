@@ -8,6 +8,19 @@ evaluator because it is not part of the packet.
 -/
 namespace Kunai
 
+/-- A set the host declares for `field in @name` (`--set name=…`,
+`LangCaps.SetSlots`): the key width in bits (8, 16, 32, 64 or 128, the
+`set create` key types) and the keys the map holds. The filter extracts
+the key and the host looks it up after the filter; the spec folds that
+lookup into the verdict (D-036). Only scalar sets are modelled: a
+composite key (several fields, the unwritten ones zero-filled by the host)
+is outside the spec. -/
+structure SetDecl where
+  name : String
+  width : Nat
+  members : List Nat
+  deriving Repr, BEq, DecidableEq
+
 structure Host where
   packetStartsAtL3 : Bool := false
   vlanInMetadata : Bool := false
@@ -15,7 +28,12 @@ structure Host where
   actions : List (String × Nat) := []
   /-- Observed action value (fexit only; ignored when `actions` is empty). -/
   action : Nat := 0
+  /-- Sets declared for `in @name`; an undeclared name is ill-typed. -/
+  sets : List SetDecl := []
   deriving Repr, BEq, DecidableEq
+
+/-- The declaration of set `name`, if the host has one. -/
+def Host.set? (h : Host) (name : String) : Option SetDecl := h.sets.find? (·.name == name)
 
 inductive HostKind
   | xdp_entry | xdp_exit | tc_entry | tc_exit
@@ -40,16 +58,17 @@ def tcActions : List (String × Nat) :=
 def cgroupSkbActions : List (String × Nat) := [("SK_DROP", 0), ("SK_PASS", 1)]
 def netfilterActions : List (String × Nat) := [("NF_DROP", 0), ("NF_ACCEPT", 1)]
 
-/-- Static host parameters; `action` is supplied per vector. -/
-def HostKind.host (k : HostKind) (action : Nat := 0) : Host :=
-  match k with
-  | .xdp_entry => {}
-  | .xdp_exit => { actions := xdpActions, action }
-  | .tc_entry => { vlanInMetadata := true }
-  | .tc_exit => { vlanInMetadata := true, actions := tcActions, action }
-  | .cgroup_skb_entry => { vlanInMetadata := true, packetStartsAtL3 := true }
-  | .cgroup_skb_exit => { vlanInMetadata := true, packetStartsAtL3 := true, actions := cgroupSkbActions, action }
-  | .netfilter_entry => { vlanInMetadata := true, packetStartsAtL3 := true }
-  | .netfilter_exit => { vlanInMetadata := true, packetStartsAtL3 := true, actions := netfilterActions, action }
+/-- Static host parameters; `action` and `sets` are supplied per vector. -/
+def HostKind.host (k : HostKind) (action : Nat := 0) (sets : List SetDecl := []) : Host :=
+  let h : Host := match k with
+    | .xdp_entry => {}
+    | .xdp_exit => { actions := xdpActions, action }
+    | .tc_entry => { vlanInMetadata := true }
+    | .tc_exit => { vlanInMetadata := true, actions := tcActions, action }
+    | .cgroup_skb_entry => { vlanInMetadata := true, packetStartsAtL3 := true }
+    | .cgroup_skb_exit => { vlanInMetadata := true, packetStartsAtL3 := true, actions := cgroupSkbActions, action }
+    | .netfilter_entry => { vlanInMetadata := true, packetStartsAtL3 := true }
+    | .netfilter_exit => { vlanInMetadata := true, packetStartsAtL3 := true, actions := netfilterActions, action }
+  { h with sets }
 
 end Kunai

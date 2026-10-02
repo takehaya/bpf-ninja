@@ -101,7 +101,7 @@ Entries are never deleted; a rejected candidate stays in the log.
 ## D-011: bracket `in` の規則が §13 に無い
 - 論点: §13.7 は [E-Pred-Cmp] のみ。`in [v…]`, `in @set`, `range` の規則が無い。
 - 現行 Go 実装の挙動: `in [80, 8000..8080]` は `ErrNotImplemented` (range) だった → PR #130 で実装 (host order に揃えて `lo ≤ v ≤ hi`、両端は resolver が field 幅で fit-check)。`in @set` は SetSlots が要る。
-- 推奨: `in [v…]` = いずれかの v と `==`。range は `lo ≤ n ≤ hi`。`in @set` は Phase 2 では illTyped。
+- 推奨: `in [v…]` = いずれかの v と `==`。range は `lo ≤ n ≤ hi`。`in @set` は D-036。
 - 状態: 承認済 (2026-10-01、一括)
 - 反映先: `Eval/Layer.lean` `evalPred`, `Eval/Check.lean` (range の両端が field 幅に収まる、lo ≤ hi), vectors `pred-in-list`, `pred-in-range`, `pred-in-range-miss`, `typ-pred-in-range-wide`
 
@@ -279,6 +279,13 @@ Entries are never deleted; a rejected candidate stays in the log.
 - 推奨: Go の実装範囲を仕様にする。operand の幅が 64 を超えるとき、`+` `-` は `mod 2^w` (w = max 幅、実質 128)、それ以外の演算子は illTyped。比較は幅に関係なく値の比較。定数は文脈幅 (128) で fit-check。Go 側は `*` 等を resolver で型エラーにする (ErrNotImplemented ではなく)。
 - 状態: 承認済 (2026-10-02)
 - 反映先: `Eval/Where.lean` `wideArithWidth` / `binop (w := …)`, `Eval/Check.lean` `checkArith`, vectors `arith-128-*`, `typ-arith-128-mul`, `typ-arith-128-band`; Go `resolve/typing.go` `checkArithExpr`
+
+## D-036: `in @set` の意味
+- 論点: `field in @name` は filter 内では key の抽出だけで、membership の lookup は host が filter の後に行い verdict に AND する (`internal/program` の `emitPktSetLookups`)。Lean は Phase 2 で illTyped にしていた。
+- 現行 Go 実装の挙動: SetSlots を持たない host は `ErrNotImplemented`、宣言の無い set は型エラー、key 幅と field 幅は一致必須、量化 layer と alternation member では reject (key が書かれない経路があるため)。
+- 推奨: Host に宣言済 set (名前、key 幅、要素) を持たせ、`in @name` は「宣言されていれば field の値が要素に含まれるか、未宣言なら illTyped」。key 幅は filter が field のために読む load 窓 (bit 範囲を覆う最小の 1/2/4/8 byte、Int<128> は 16; 4 bit の `ihl` は bit<8>、bit 4 から始まる 8 bit の `traffic_class` は bit<16>) と一致、量化 layer と alternation member は不可、同じ set は filter 内で 1 回 (host は set ごとに key を 1 つ持ち 1 回 lookup する; Go codegen は同じ key slot への 2 度目の書き込みを拒否し、複合 key の別 field は別 slot なので書ける)、参照された key を chain 順に各 key の幅 (最大 8) で align して並べたとき host の key buffer 16 byte 以内 (いずれも illTyped、Go では resolver / codegen の通常エラー)。set の宣言自体 (重複、要素の範囲) は host 側の問題で、仕様は見ない。scalar set のみを対象とし、複合 key (複数 field、未書込 field は host が zero-fill) は仕様外。end-to-end の verdict (filter ∧ lookup) を仕様にする。Go runner は set を持つ vector のうち accept を kernel で照合し (filter 単体でも accept になる)、reject は lookup 由来かもしれないので compile-only。
+- 状態: 承認済 (2026-10-02)
+- 反映先: `Host.lean` `SetDecl` / `Host.sets`, `Eval/Layer.lean` `evalPred`, `Eval/Check.lean` `checkPred` / `checkProtoLayer`, vectors `pred-inset-*`, `typ-pred-inset-*`, `syn-pred-inset`; Go `dsltest` `specSetSlots`
 
 ## Go 側への issue 候補 (この作業では変更しない)
 

@@ -303,6 +303,17 @@ func emitInSetPredicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, erro
 	if slotOff <= KunaiStackTop {
 		return nil, fmt.Errorf("codegen: set slot %d for @%s.%s is inside kunai's stack region (must be > %d)", slotOff, pred.SetName, fieldName, KunaiStackTop)
 	}
+	// The host looks each set up once, against one key: a second
+	// predicate on the same key field (a scalar set's single key under
+	// two field names, or the same composite field twice) would silently
+	// overwrite the first extraction.
+	if pc.out != nil {
+		for _, prev := range *pc.out {
+			if prev.SetName == pred.SetName && prev.StackOff == slotOff {
+				return nil, fmt.Errorf("set @%s: key field %q is written twice (%q and %q); the host holds one key per set and looks it up once", pred.SetName, fieldName, prev.FieldName, fieldName)
+			}
+		}
+	}
 
 	// A 16-byte (128-bit) field is rejected by fieldRefByteOffset (which
 	// caps at a single <=8-byte load), so resolve its offset separately and

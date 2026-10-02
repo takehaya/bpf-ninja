@@ -38,7 +38,7 @@ def Vector.mutate (v : Vector) : List Vector :=
     let (goStatus, note) := match goOverrides.find? (·.1 == id) with
       | some (_, g, n) => (g, n)
       | none => (v.goStatus, "generated from " ++ v.id)
-    { v with id, packet := P, expected := eval (v.host.host v.action) vocab v.ast P, goStatus, note }
+    { v with id, packet := P, expected := eval (v.host.host v.action v.sets) vocab v.ast P, goStatus, note }
 
 def generatedVectors : List Vector := vectors.flatMap Vector.mutate
 
