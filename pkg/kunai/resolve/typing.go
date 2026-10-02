@@ -125,23 +125,37 @@ func checkArithExpr(e *ir.ArithExpr, bits int) error {
 		// Above 64 bits only `+` and `-` are defined (dsl-types.md §13.9):
 		// `*` on Int<128> was dropped in favour of bit slices, and the
 		// rest has no use that a CIDR literal or a slice does not cover.
-		if w := exprMaxFieldBits(e); w > 64 && e.Op != ast.ArithAdd && e.Op != ast.ArithSub {
+		wl, wr := exprMaxFieldBits(e.Left), exprMaxFieldBits(e.Right)
+		if w := max(wl, wr); w > 64 && e.Op != ast.ArithAdd && e.Op != ast.ArithSub {
 			return errorf(e.Pos, "%s on Int<%d>: only + and - are defined on fields wider than 64 bits (use a bit slice `field[lo:hi]` or a CIDR literal)", e.Op, w)
 		}
-		// A sub-64-bit node inside a wider comparison computes at its own
-		// width (§13.9), so its literals fit that width, not the
-		// comparison's: `ipv6.src == tcp.dport * 70000` does not type.
-		if w := exprMaxFieldBits(e); bits > 64 && w > 0 && w <= 64 {
-			bits = w
-		}
-		if err := checkArithExpr(e.Left, bits); err != nil {
+		// A literal operand takes the width of the operand next to it, and
+		// 64 bits when that has no field either (§7.3, D-009; Lean
+		// `sideWidths`): `ipv4.ttl + 300` does not type, whatever the
+		// comparison around it is.
+		cl, cr := sideBits(wl, wr)
+		if err := checkArithExpr(e.Left, cl); err != nil {
 			return err
 		}
-		if err := checkArithExpr(e.Right, bits); err != nil {
+		if err := checkArithExpr(e.Right, cr); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// sideBits is the literal context width of each operand of a binary node:
+// an operand with fields keeps its own width, a literal-only one takes its
+// sibling's, and with no field on either side both are 64 (0 = no field).
+func sideBits(wl, wr int) (int, int) {
+	or := func(a, b int) int {
+		if a != 0 {
+			return a
+		}
+		return b
+	}
+	w := max(or(wl, or(wr, 64)), or(wr, or(wl, 64)))
+	return or(wl, w), or(wr, w)
 }
 
 // arithCmpTargetBits picks the comparison's target width per the

@@ -747,25 +747,32 @@ func TestCompileWhereIPv6MulIllTyped(t *testing.T) {
 		"eth/ipv6/tcp where ipv6.src + tcp.dport == 1",
 		"eth/ipv6/tcp where ipv6.src == tcp.dport * 2",
 		"eth/ipv6/tcp where ipv6.src + tcp.dport * 2 == ipv6.dst",
+		"eth/ipv6/tcp where ipv6.src == tcp.dport + -1", // -1 is 0xffff next to dport
+		"eth/ipv6/tcp where ipv6.src == 2 * 3",          // literals only: 64 bits
 	} {
 		if _, err := compileForTest(expr); err != nil {
 			t.Errorf("Compile(%q): %v", expr, err)
 		}
 	}
-	// Still refused: a 128-bit expression on the right of ±, a negative
-	// literal inside the narrow part, a slice wider than 64 bits.
+	// Still refused: a 128-bit expression on the right of ±, a slice
+	// wider than 64 bits.
 	for _, expr := range []string{
 		"eth/ipv6/tcp where ipv6.src + (ipv6.dst + 1) == ipv6.dst",
-		"eth/ipv6/tcp where ipv6.src == tcp.dport + -1",
 		"eth/ipv6/tcp where ipv6.src[0:96] + ipv6.dst == 1",
 	} {
 		if _, err := compileForTest(expr); !errors.Is(err, codegen.ErrNotImplemented) {
 			t.Errorf("Compile(%q) = %v; want ErrNotImplemented", expr, err)
 		}
 	}
-	// A literal fits the width of the sub-64-bit node it sits in.
-	if _, err := compileForTest("eth/ipv6/tcp where ipv6.src == tcp.dport * 70000"); err == nil || errors.Is(err, codegen.ErrNotImplemented) {
-		t.Errorf("literal past the narrow node's width: err = %v; want a resolver error", err)
+	// A literal fits the width of the operand next to it, at any nesting.
+	for _, expr := range []string{
+		"eth/ipv6/tcp where ipv6.src == tcp.dport * 70000",
+		"eth/ipv6/tcp where ipv6.src == tcp.dport * 70000 + tcp.seq",
+		"eth/ipv4/tcp where ipv4.ttl + 300 == tcp.dport",
+	} {
+		if _, err := compileForTest(expr); err == nil || errors.Is(err, codegen.ErrNotImplemented) {
+			t.Errorf("Compile(%q) = %v; want a resolver error", expr, err)
+		}
 	}
 	// Constants above int32 are a 64-bit load, at every width.
 	for _, expr := range []string{
