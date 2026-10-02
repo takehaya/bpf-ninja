@@ -898,7 +898,12 @@ func genLayerInner(layer *ir.LayerInstance, index int, all []*ir.LayerInstance, 
 		insns, err := genStaticChain(&opt, index, all, qo, pc)
 		return insns, nil, err
 	case ast.QuantRange:
-		if layer.RangeMin == 0 && layer.RangeMax == 1 && layer.Spec.ParseStateMachine != nil {
+		if layer.RangeMax == 1 && layer.Spec.ParseStateMachine != nil {
+			// One header at most: the parser machine must run (the static
+			// chain would advance by the primary header only).
+			if layer.RangeMin == 1 {
+				return genParserMachine(layer, index, all, qo, plan, pc)
+			}
 			return genOptionalMachineLayer(layer, layer, index, all, qo, plan, pc)
 		}
 		if staticChainFitsRange(layer.RangeMax) {
@@ -941,6 +946,19 @@ func genStaticLayer(layer *ir.LayerInstance, index int, all []*ir.LayerInstance,
 		return nil, err
 	}
 	insns = append(insns, preds...)
+	tail, err := emitStaticLayerTail(layer, index, hs, qo)
+	if err != nil {
+		return nil, err
+	}
+	return append(insns, tail...), nil
+}
+
+// emitStaticLayerTail closes a non-machine layer's body once its bounds,
+// dispatch and predicates passed: the entry stores, the advance past the
+// primary header, and the flag-gated words. Shared by the mandatory
+// (genStaticLayer) and the peeked (emitPeekedIterZero) lowering.
+func emitStaticLayerTail(layer *ir.LayerInstance, index, hs int, qo queriedOptions) (asm.Instructions, error) {
+	var insns asm.Instructions
 	if layer.Spec.HasVariableLayout() {
 		// Save this layer's entry offsetBase to the slot before the
 		// fixed-prefix advance so children's dispatch can recover the
@@ -957,6 +975,7 @@ func genStaticLayer(layer *ir.LayerInstance, index int, all []*ir.LayerInstance,
 	insns = append(insns, entry...)
 	insns = append(insns, emitAdvance(hs))
 	if len(layer.Spec.FlagTriggers) > 0 {
+		// emitFlagTriggers must follow emitAdvance(hs) directly.
 		flags, err := emitFlagTriggers(fmt.Sprintf("dsl_l%d_%d", index, layer.Index), hs, layer.Spec.FlagsByteOffset, layer.Spec.FlagTriggers, dslReject)
 		if err != nil {
 			return nil, err
@@ -1083,13 +1102,6 @@ func genParentDispatch(current *ir.LayerInstance, index int, all []*ir.LayerInst
 				asm.LoadMem(asm.R3, asm.R10, slot, asm.DWord),
 				asm.JEq.Imm(asm.R3, layerEntryAbsent, next),
 			)
-			if cand.Spec.HasVariableLayout() {
-				// The dispatch against a variable-length parent anchors on
-				// the shared layer-entry slot; a later layer that matched
-				// nothing may have left another entry there, so restore
-				// this candidate's own.
-				out = append(out, asm.StoreMem(asm.R10, bpfLoopCtxLayerEntrySlot, asm.R3, asm.DWord))
-			}
 		}
 		di, err := dispatchVia(current, cand, r4IsRange, precedingLayersLeaveR4Range(all, j), failLabel)
 		if err != nil {
@@ -1157,12 +1169,13 @@ func withAbsentEdge(present asm.Instructions, peekFail string, index int, all []
 	return out, nil
 }
 
-// optionalLayerGuard lists the shapes the peek-and-skip path cannot
-// express. It is shared by `?` and `{0,m}` (chain.go). Variable-length
-// and parser-machine layers are refused because the peek path runs
-// neither the parser machine nor the layer-entry slot store, so a
-// following layer would read an unset slot (verifier rejection at best).
-// Self-validating layers have no parent field to peek for absence.
+// optionalLayerGuard lists the absentable shapes codegen cannot express.
+// It is shared by `?`, `{0,m}` and `*` (chain.go, bpfloop.go). A layer
+// needs a parent dispatch to tell absence by, which a self-validating
+// layer under that parent does not have. A variable-length layer may be
+// optional (one header: genOptionalMachineLayer runs its parser machine,
+// emitPeekedIterZero its flag triggers) but not repeated, and not with a
+// chain-end rule, whose over-run check assumes a fixed header.
 func optionalLayerGuard(layer *ir.LayerInstance, index int, all []*ir.LayerInstance) error {
 	if index == 0 {
 		return fmt.Errorf("%w: the first layer cannot be optional", ErrNotImplemented)
@@ -1182,8 +1195,8 @@ func optionalLayerGuard(layer *ir.LayerInstance, index int, all []*ir.LayerInsta
 	// genOptionalMachineLayer (parser machine) or emitPeekedIterZero (flag
 	// triggers); repeating one would need the previous instance's runtime
 	// length to find the next dispatch field.
-	if layer.RangeMax > 1 && (layer.Spec.HasVariableLayout() || layer.Spec.ParseStateMachine != nil) {
-		return fmt.Errorf("%w: {0,%d} on %q: a variable-length header or parser machine can be optional, not repeated", ErrNotImplemented, layer.RangeMax, layer.Spec.Name)
+	if layer.RangeMax != 1 && layer.Spec.HasVariableLayout() {
+		return fmt.Errorf("%w: %q has a variable-length header: it can be optional (`?`, `{0,1}`), not repeated", ErrNotImplemented, layer.Spec.Name)
 	}
 	if layer.Spec.ChainEnd != nil && layer.Spec.HasVariableLayout() {
 		return fmt.Errorf("%w: optional %q is variable-length with a chain-end rule", ErrNotImplemented, layer.Spec.Name)
@@ -1230,7 +1243,7 @@ func emitPeekedIterZero(layer *ir.LayerInstance, index int, all []*ir.LayerInsta
 	if err != nil {
 		return nil, err
 	}
-	entry, err := emitLayerEntryStore(layer, qo)
+	tail, err := emitStaticLayerTail(layer, index, hs, qo)
 	if err != nil {
 		return nil, err
 	}
@@ -1238,21 +1251,7 @@ func emitPeekedIterZero(layer *ir.LayerInstance, index int, all []*ir.LayerInsta
 	out = append(out, peek...)
 	out = append(out, emitBounds(hs, dslReject)...)
 	out = append(out, preds...)
-	if layer.Spec.HasVariableLayout() {
-		// As genStaticLayer: children anchor their dispatch on this
-		// layer's entry, whatever the flag-gated words add to R4.
-		out = append(out, asm.StoreMem(asm.R10, bpfLoopCtxLayerEntrySlot, offsetBase, asm.DWord))
-	}
-	out = append(out, entry...)
-	out = append(out, emitAdvance(hs))
-	if len(layer.Spec.FlagTriggers) > 0 {
-		flags, err := emitFlagTriggers(fmt.Sprintf("dsl_l%d_%d", index, layer.Index), hs, layer.Spec.FlagsByteOffset, layer.Spec.FlagTriggers, dslReject)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, flags...)
-	}
-	return out, nil
+	return append(out, tail...), nil
 }
 
 func genDispatch(current, parent *ir.LayerInstance, parentHS int, r4IsRange, parentEntryIsRange bool, failLabel string) (asm.Instructions, error) {

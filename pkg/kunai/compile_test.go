@@ -1088,7 +1088,7 @@ func TestCompileOptionalVariableLayers(t *testing.T) {
 			t.Errorf("Compile(%q): %v", expr, err)
 		}
 	}
-	for _, expr := range []string{"eth/ipv6/srv6{0,2}/tcp", "eth/mpls/ipv4?"} {
+	for _, expr := range []string{"eth/ipv6/srv6{0,2}/tcp", "eth/ipv6/srv6*/tcp", "eth/ipv4/gre{0,2}/ipv4/tcp", "eth/ipv4/gre*/ipv4/tcp", "eth/mpls/ipv4?"} {
 		if _, err := compileForTest(expr); !errors.Is(err, codegen.ErrNotImplemented) {
 			t.Errorf("Compile(%q) = %v; want ErrNotImplemented", expr, err)
 		}

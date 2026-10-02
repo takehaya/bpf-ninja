@@ -145,7 +145,7 @@ Entries are never deleted; a rejected candidate stays in the log.
 - 現行 Go 実装の挙動: `eth/ipv4/tcp` に version=5 → reject。`eth/ipv4?/tcp` は **verifier で load 失敗** ("math between map_value pointer and register with unbounded min value")、issue 4。`eth/mpls/ipv4?/tcp` はコンパイルできる。
 - 推奨: (c)。`mpls/ipv4?` では version が「次は ipv4 か」を判定する唯一の材料なので miss (skip) が自然。`eth/ipv4?` では ethertype がすでに ipv4 と言っているので、version≠4 は破損であり D-005 と同じく ✗。
 - 状態: 承認済 (2026-10-01、案 c)
-- 反映先: `Eval/Layer.lean` `dispatch` (edge 無し + `requires` を dispatch 段階で検査), `extract` (`requires`), vectors `quant-selfvalidating-skip`, `quant-selfvalidating-broken`, `typ-no-dispatch-after-skip` (いずれも goStatus notImplemented: Go は self-validating / 可変長の optional を未実装), `dsl-types.md` §13.5
+- 反映先: `Eval/Layer.lean` `dispatch` (edge 無し + `requires` を dispatch 段階で検査), `extract` (`requires`), vectors `quant-selfvalidating-skip` (goStatus notImplemented: Go は親定数の無い self-validating optional を未実装), `quant-selfvalidating-broken`, `typ-no-dispatch-after-skip`, `dsl-types.md` §13.5
 
 ## D-018: quantified layer のラベル再束縛
 - 論点: `mpls@m{1,8}` は反復ごとに `m` を束縛し直す。

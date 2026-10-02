@@ -195,6 +195,10 @@ vector quantOptIPIPTwiceNone := {
 vector quantOptIPIPTwiceBoth := {
   id := "quant-opt-ipip-twice-both", ast := { layers := ipipTwice },
   packet := eth 0x0800 ++ ipv4 4 ++ ipv4 4 ++ ipv4 6 ++ tcp 12345 80 ++ payload 5, expected := .accept [] }
+vector quantExactOneMachine := {
+  id := "quant-exact-one-machine", ast := { layers := [P "eth", Pq "ipv4" (.range 1 (some 1)), P "tcp"] },
+  packet := ihl6Pkt, expected := .accept [],
+  note := "{1,1} is the plain layer: the header length rule still moves the cursor past the options" }
 vector quantOptIPIPAbsent := {
   id := "quant-opt-ipip-absent", ast := { layers := [P "eth", P "ipv4", Pq "ipv4" .opt, P "tcp"] },
   expected := .accept [], note := "no inner ipv4: tcp dispatches on the outer header (D-034)" }
@@ -283,7 +287,7 @@ def chainVectors : List Vector := [
   quantOptPresent, quantOptAbsent, quantOptPredHolds, quantOptPredFails, quantOptBounds, quantRangeMidTrunc, quantRange01Bounds,
   quantStarBounds, quantMplsRange, quantMplsPlus, quantMplsStarZero, quantMplsMinUnmet, quantChainEnd,
   quantGreedyOverrun, quantOverrunBounded, quantOverrunOpen, quantExactBound, quantOptMplsOverrun, quantOptMplsOne, quantGreedyUnreachable, quantPredMidFail, quantPredMidFailStatic, quantPredFirstFail,
-  quantPredAllHold, quantSelfValidSkip, quantSelfValidBroken, quantOptIPv4Last, quantOptIPv4LastAbsent, quantOptIPIP, quantOptIPIPAbsent, quantOptIPIPTwiceOne, quantOptIPIPTwiceNone, quantOptIPIPTwiceBoth, typOptionalAfterSkip, typOptionalNoCheck, chainMandatorySelfEdgeMiss, quantSelfEdgeStar, quantSelfEdgeOpt,
+  quantPredAllHold, quantSelfValidSkip, quantSelfValidBroken, quantOptIPv4Last, quantOptIPv4LastAbsent, quantOptIPIP, quantExactOneMachine, quantOptIPIPAbsent, quantOptIPIPTwiceOne, quantOptIPIPTwiceNone, quantOptIPIPTwiceBoth, typOptionalAfterSkip, typOptionalNoCheck, chainMandatorySelfEdgeMiss, quantSelfEdgeStar, quantSelfEdgeOpt,
   absentConsecutiveEthertype, absentConsecutiveSelfValid, absentConsecutiveMplsOnly, absentConsecutiveNeither, absentConsecutiveArp, quantFirstOptional,
   altFirst, altSecond, altNone, altFirstPredFails, altRoot, altNoCheck,
   hostTcVlanMandatory, hostTcVlanOpt, hostL3Root, hostL3EthRoot]
