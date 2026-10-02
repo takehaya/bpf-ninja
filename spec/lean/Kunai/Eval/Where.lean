@@ -50,7 +50,7 @@ def canonicalHead (c : Ctx) (head : String) : Except Stop String := do
       | .alt _ => none).getD p)
 
 /-- Runtime instance for a reference head; `none` when the layer was skipped (D-003). -/
-private def resolveRef (c : Ctx) (st : State) (head : String) : Except Stop (Option Inst) := do
+def resolveRef (c : Ctx) (st : State) (head : String) : Except Stop (Option Inst) := do
   let p ← staticProto c head
   match st.labels.find? (·.1 == head) with
   | some (_, inst) => pure (some inst)
@@ -120,15 +120,25 @@ private def checkIndex (c : Ctx) (proto : String) (spec : ProtoSpec) (sd : Stack
   | some (.field parts) => discard <| checkDynamicIndex c proto spec parts
   | none => pure ()
 
+/-- What a field path names below its protocol head; the caller adds the head. -/
+structure RefBody where
+  aux : AuxRef
+  field : FieldSpec
+  slice : Option (Nat × Nat) := none
+
+def RefBody.toRef (b : RefBody) (head proto : String) (spec : ProtoSpec) : Ref :=
+  { head, proto, spec, aux := b.aux, field := b.field, slice := b.slice }
+
 /-- The segments of a field path after its protocol head, resolved against
 that protocol: shared by where clauses (`resolvePath`) and bracket
-predicates (`resolveBracket`), whose paths have no head. -/
-def resolveRest (c : Ctx) (head proto : String) (spec : ProtoSpec) (f : FieldPath)
-    (rest : List (String × Option Index)) : Except Stop Ref := do
+predicates (`resolveBracket`), whose paths have no head. The result does
+not depend on how the head was written (Laws.lean `bracket_eq_where`). -/
+def resolveRest (c : Ctx) (proto : String) (spec : ProtoSpec)
+    (rest : List (String × Option Index)) : Except Stop RefBody := do
   match rest with
   | [(fieldName, idx)] => do
     let some fs := spec.field? fieldName | throw (.illTyped s!"unknown field {proto}.{fieldName}")
-    pure { head, proto, spec, aux := .primary, field := fs, slice := ← applySlice fs idx }
+    pure { aux := .primary, field := fs, slice := ← applySlice fs idx }
   | _ => do
     let some m := spec.machine | throw (.illTyped s!"{proto} has no auxiliary headers")
     match rest with
@@ -137,29 +147,29 @@ def resolveRest (c : Ctx) (head proto : String) (spec : ProtoSpec) (f : FieldPat
         if sd.ownerOption != "" then throw (.illTyped s!"{proto}.{x} is reached through {proto}.{spec.optionSegment}.{sd.ownerOption}")
         checkIndex c proto spec sd xIdx
         let fs ← fieldOf m sd.header fieldName
-        pure { head, proto, spec, aux := .stackEntry x xIdx, field := fs, slice := ← applySlice fs fIdx }
+        pure { aux := .stackEntry x xIdx, field := fs, slice := ← applySlice fs fIdx }
       else if x == spec.optionSegment then throw (.illTyped s!"{proto}.{x} needs an option name and a field")
       else
         let some o := option? m x | throw (.illTyped s!"unknown auxiliary header {proto}.{x}")
         if xIdx.isSome then throw (.illTyped s!"{proto}.{x} does not take an index")
         let fs ← fieldOf m o.header fieldName
-        pure { head, proto, spec, aux := .option x, field := fs, slice := ← applySlice fs fIdx }
+        pure { aux := .option x, field := fs, slice := ← applySlice fs fIdx }
     | [(seg, none), (name, none), (fieldName, fIdx)] =>
-      if seg != spec.optionSegment then throw (.illTyped s!"unsupported: field path {f.text}")
+      if seg != spec.optionSegment then throw (.illTyped s!"unsupported: field path {proto}.{(FieldPath.mk rest).text}")
       let opt := lowerAscii name
       -- `<proto>.options.NAME` names a TLV option (one with a kind byte).
       let some o := option? m opt | throw (.illTyped s!"unknown option {proto}.{seg}.{name}")
       if o.kindByte.isNone then throw (.illTyped s!"{proto}.{seg}.{name} is not a TLV option")
       let fs ← fieldOf m o.header fieldName
-      pure { head, proto, spec, aux := .option opt, field := fs, slice := ← applySlice fs fIdx }
+      pure { aux := .option opt, field := fs, slice := ← applySlice fs fIdx }
     | [(seg, none), (name, none), (stack, sIdx), (fieldName, fIdx)] =>
-      if seg != spec.optionSegment then throw (.illTyped s!"unsupported: field path {f.text}")
+      if seg != spec.optionSegment then throw (.illTyped s!"unsupported: field path {proto}.{(FieldPath.mk rest).text}")
       let some sd := m.stack? stack | throw (.illTyped s!"unknown stack {proto}.{stack}")
       if sd.ownerOption != lowerAscii name then throw (.illTyped s!"stack {stack} does not belong to option {name}")
       checkIndex c proto spec sd sIdx
       let fs ← fieldOf m sd.header fieldName
-      pure { head, proto, spec, aux := .stackEntry stack sIdx, field := fs, slice := ← applySlice fs fIdx }
-    | _ => throw (.illTyped s!"unsupported: field path {f.text}")
+      pure { aux := .stackEntry stack sIdx, field := fs, slice := ← applySlice fs fIdx }
+    | _ => throw (.illTyped s!"unsupported: field path {proto}.{(FieldPath.mk rest).text}")
 
 /-- Static resolution of a field path (T-FieldPrim, T-FieldAux, T-FieldStackStatic). -/
 def resolvePath (c : Ctx) (f : FieldPath) : Except Stop Ref := do
@@ -167,19 +177,19 @@ def resolvePath (c : Ctx) (f : FieldPath) : Except Stop Ref := do
   if headIdx.isSome then throw (.illTyped s!"{head} does not take an index")
   let proto ← staticProto c head
   let some spec := c.V.proto? proto | throw (.illTyped s!"unknown protocol {proto}")
-  resolveRest c head proto spec f rest
+  pure ((← resolveRest c proto spec rest).toRef head proto spec)
 
 /-- A bracket field is scoped to the layer's own header: a primary field, or
 an aux / constant-indexed stack entry as in a where clause (T-FieldAux,
 T-FieldStackStatic). The iterator and dynamic-index forms need `where`. -/
 def resolveBracket (c : Ctx) (spec : ProtoSpec) (f : FieldPath) : Except Stop Ref := do
-  let r ← resolveRest c spec.name spec.name spec f f.segs
-  match r.aux with
+  let b ← resolveRest c spec.name spec f.segs
+  match b.aux with
   | .stackEntry stack none =>
     throw (.illTyped s!"stack {spec.name}.{stack} needs a constant index inside a bracket predicate")
   | .stackEntry stack (some (.field _)) =>
     throw (.illTyped s!"stack {spec.name}.{stack} needs a constant index inside a bracket predicate (a dynamic index needs a where clause)")
-  | _ => pure r
+  | _ => pure (b.toRef spec.name spec.name spec)
 
 /-- `proto.X.exists` / `proto.options.NAME.exists` → (head, out parameter). -/
 def resolveExists (c : Ctx) (f : FieldPath) : Except Stop (String × String) := do

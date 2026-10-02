@@ -188,7 +188,7 @@ Entries are never deleted; a rejected candidate stays in the log.
 - `opt_eq_range` (`L?` ≡ `L{0,1}`): D-005 案 2 の採用後に **成立** (`Laws.lean: opt_eq_range`)。案 1 のままなら不成立だった。
 - `alt_comm`: **不成立** (先勝ち)。`Laws.lean: alt_order_matters`。
 - `and_comm_where` / `or_comm_where`: 両辺が Stop しない (reject / illTyped を投げない) という仮定付きで成立 (`Laws.lean`)。仮定なしでは D-019 の short-circuit により非対称。
-- `bracket_eq_where` (`…/p[f op v]` ≡ `…/p where p.f op v`): **未証明**。両者は `cmpValue` / `narrowInt` を共有するので p が chain 内で一意・非量化・root 以外なら一致するはずだが、`extract` の Fail-Pred と `evalWhere` の false を `eval` の reject に結び付ける証明が長く、Phase 4 では見送った。vector `pred-cmp` / `where-cmp-ops` などで個別に一致を確認している。
+- `bracket_eq_where` (`…/p[f op v]/…` ≡ `…/p/… where p.f op v`): **成立** (`Laws.lean: bracket_eq_where`)。仮定: p は量化なしで、bracket 無しの chain が match し、p の名前が最終状態でその layer の instance を指す (chain 内で一意、label に隠されない)。結論: bracket 付き chain は where の atom が true のとき同じ状態で match し、false のとき Fail-Pred。評価できない場合の報告だけが違う: bracket は自分の layer で chain を止めるので、packet 末尾を越える field はその場の bounds 失敗になり、where は chain 全体の後に見る。証明のため `extract` を header 部分 (`extractInst`)・predicate (`checkPreds`)・状態更新 (`State.push`) に分け、`resolveRest` から path 引数を外した (bracket と where が同じ解決結果を使うことが定義から読める)。補題: `evalChain_append`, `extract_cmp`, `litCmp_eq_evalPred`。
 - `prefix_independence` / `filterMinPrefix`: 未着手。
 - 状態: 承認済 (2026-10-01、一括)
 - 反映先: `Laws.lean`

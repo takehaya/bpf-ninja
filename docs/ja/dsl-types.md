@@ -1127,7 +1127,7 @@ b = ∃ a ∈ ā. (a = v ∧ n_f = lift(v))                   S = sets_H(name)  
 
 `in @name` の layer は必ず抽出される位置に無ければなりません。量化された layer (`?` `*` `+` `{n,m}`) と alternation の member では ill-typed です (key が書かれない経路があるため、D-036)。host は set ごとに key を 1 つ持って 1 回 lookup するので、同じ set を 2 つの predicate から参照する filter と、参照した key (chain 順、各 key の幅で align) が host の key buffer (16 byte) に収まらない filter も ill-typed です。仕様が扱うのは scalar set だけで、複合 key の set は対象外です。
 
-`f` は layer 自身の primary field のほか、where と同じ規則で aux header / 定数 index の stack 要素 (`srv6[segments[0].addr == …]`, `ipv6[exts[1].next_header == 6]`) を指せます (T-FieldAux / T-FieldStackStatic)。読み出しは `load(f, σ', P)` と同じで、抽出されなかった aux / 範囲外の要素は predicate を false にし (D-027 / D-031)、write-back 後の値を見ます (D-032)。index 無しの iterator 形と動的 index は bracket では ill-typed (`where` を使う)。
+`f` は layer 自身の primary field のほか、where と同じ規則で aux header / 定数 index の stack 要素 (`srv6[segments[0].addr == …]`, `ipv6[exts[1].next_header == 6]`) を指せます (T-FieldAux / T-FieldStackStatic)。読み出しは `load(f, σ', P)` と同じで (`spec/lean` の `Laws.lean` `bracket_eq_where`: 量化の無い一意な layer では `p[f op v]` と `where p.f op v` が同じ verdict)、抽出されなかった aux / 範囲外の要素は predicate を false にし (D-027 / D-031)、write-back 後の値を見ます (D-032)。index 無しの iterator 形と動的 index は bracket では ill-typed (`where` を使う)。
 
 ### 13.8 Where 式
 
