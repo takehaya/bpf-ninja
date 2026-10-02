@@ -366,6 +366,11 @@ vector arith128GeMiss := {
 vector arith128LtHighHalf := {
   id := "arith-128-lt-high-half", ast := W6 (cmp src6 .lt dst6), packet := v6pkt lowOnes (2 ^ 64),
   expected := .accept [], note := "the high half decides before the low half" }
+vector typPathDeep := {
+  id := "typ-path-unsupported-deep",
+  ast := W (cmp (.field ⟨[("tcp", none), ("a", none), ("b", none), ("c", none), ("d", none), ("e", none)]⟩) .eq (k 1)),
+  expected := .illTyped "unsupported: field path tcp.a.b.c.d.e",
+  note := "the message names the protocol the path resolved under" }
 vector typArith128Mul := {
   id := "typ-arith-128-mul", ast := W6 (cmp (.bin .mul src6 (k 2)) .eq dst6), packet := ipv6TCP,
   expected := .illTyped "unsupported: only + and - are defined on fields wider than 64 bits",
@@ -391,6 +396,6 @@ def whereVectors : List Vector := [
   arith128FieldAddField, arith128FieldAddFieldCarry, arith128FieldSubField, arith128FieldSubFieldBorrow, arith128AddWideConst, arith128SubWideConstBorrow,
   arith128AddNegConst, arith128SubNegConst, arith128CmpNegConst,
   arith128MixedWidthAdd, arith128MixedWidthMul, arith128CmpWideConst,
-  arith128Lt, arith128GeMiss, arith128LtHighHalf, typArith128Mul, typArith128Band]
+  arith128Lt, arith128GeMiss, arith128LtHighHalf, typArith128Mul, typArith128Band, typPathDeep]
 
 end Kunai

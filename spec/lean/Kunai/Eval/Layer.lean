@@ -51,11 +51,6 @@ def dispatch (c : Ctx) (st : State) (child : String) : Disp :=
           if failed then .miss else .ok
       | none => .illTyped s!"unknown protocol {child}"
 
-def typed (e : Except String α) : Except Stop α :=
-  match e with
-  | .ok a => pure a
-  | .error r => throw (.illTyped r)
-
 /-- E-Pred-Cmp, plus `in [...]` (D-011) and `in @set` (D-036: membership in
 the host-declared set, decided by the host's lookup after the filter). The
 bracket field is read on the layer's own instance with the where rules: an
@@ -66,14 +61,14 @@ def evalPred (c : Ctx) (spec : ProtoSpec) (inst : Inst) : Predicate → Except S
     let r ← resolveBracket c spec f
     match ← loadRefOn c [] inst r with
     | none => pure false
-    | some n => typed (cmpValue r.width n op v)
+    | some n => Stop.ofExcept (cmpValue r.width n op v)
   | .inList f vs => do
     let r ← resolveBracket c spec f
     match ← loadRefOn c [] inst r with
     | none => pure false
     | some n => vs.anyM fun
       | .range lo hi => pure (lo ≤ n && n ≤ hi)
-      | v => typed (cmpValue r.width n .eq v)
+      | v => Stop.ofExcept (cmpValue r.width n .eq v)
   | .inSet f name => do
     let r ← resolveBracket c spec f
     let some s := c.H.set? name | throw (.illTyped s!"undeclared set @{name}")
@@ -84,8 +79,7 @@ def evalPred (c : Ctx) (spec : ProtoSpec) (inst : Inst) : Predicate → Except S
 /-- The header part of E-Layer-Proto-1: dispatch, bounds, self-validation,
 declared length, and aux-extract give the new instance. Bracket predicates
 play no part in it. -/
-def extractInst (c : Ctx) (st : State) (name : String) : Except LayerFail (ProtoSpec × Inst) := do
-  let some spec := c.V.proto? name | throw (.illTyped s!"unknown protocol {name}")
+def extractInst (c : Ctx) (st : State) (name : String) (spec : ProtoSpec) : Except LayerFail Inst := do
   match dispatch c st name with
   | .miss => throw .dispMiss
   | .illTyped r => throw (.illTyped r)
@@ -128,7 +122,7 @@ def extractInst (c : Ctx) (st : State) (name : String) : Except LayerFail (Proto
       | .ok ψ => pure (max len (ψ.cursor - st.cursor), ψ.views, ψ.patches)
       | .error .reject => throw .pred
       | .error (.illTyped r) => throw (.illTyped r)
-  pure (spec, { proto := name, off := st.cursor, len, aux, patches })
+  pure { proto := name, off := st.cursor, len, aux, patches }
 
 /-- [E-Layer-Proto-1-Fail-Pred]: every bracket predicate holds on the new
 instance. A field past the packet end is a bounds failure. -/
@@ -149,7 +143,8 @@ def State.push (st : State) (label : Option String) (inst : Inst) : State :=
 
 /-- E-Layer-Proto-1 and its three failure rules. -/
 def extract (c : Ctx) (st : State) (p : ProtoLayer) : Except LayerFail State := do
-  let (spec, inst) ← extractInst c st p.name
+  let some spec := c.V.proto? p.name | throw (.illTyped s!"unknown protocol {p.name}")
+  let inst ← extractInst c st p.name spec
   checkPreds c spec inst p.preds
   pure (st.push p.label inst)
 

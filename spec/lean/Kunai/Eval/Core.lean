@@ -110,6 +110,12 @@ private def cidrCmp (w W : Nat) (n : Nat) (op : CmpOp) (a k : Nat) : Except Stri
   | .ne => pure (!member)
   | _ => throw "ordered comparison on a cidr literal"
 
+/-- A typing failure found while evaluating stops the evaluation as ill-typed. -/
+def Stop.ofExcept (e : Except String α) : Except Stop α :=
+  match e with
+  | .ok a => pure a
+  | .error r => throw (.illTyped r)
+
 /-- `op_c(n_f, lift(v))` for a field value `n` of width `w` (E-Pred-Cmp, E-W-LitCmp). -/
 def cmpValue (w : Nat) (n : Nat) (op : CmpOp) : Value → Except String Bool
   | .cidr4 a k => cidrCmp w 32 n op a.toNat k

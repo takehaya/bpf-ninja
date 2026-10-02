@@ -114,14 +114,15 @@ the comparison on the instance just extracted (E-Layer-Proto-1 and its
 Fail-Pred rule). -/
 theorem extract_cmp (c : Ctx) (st : State) (name : String) (label : Option String) (q : Quant)
     (spec : ProtoSpec) (inst : Inst) (ρ : Predicate)
-    (hx : extractInst c st name = .ok (spec, inst)) :
+    (hspec : c.V.proto? name = some spec)
+    (hx : extractInst c st name spec = .ok inst) :
     extract c st { name, label, preds := [ρ], quant := q } =
       match evalPred c spec inst ρ with
       | .ok true => .ok (st.push label inst)
       | .ok false => .error .pred
       | .error .reject => .error .bounds
       | .error (.illTyped r) => .error (.illTyped r) := by
-  simp only [extract, hx, bind, Except.bind, checkPreds]
+  simp only [extract, hspec, hx, bind, Except.bind, checkPreds]
   cases evalPred c spec inst ρ with
   | error e => cases e <;> rfl
   | ok b => cases b <;> rfl
@@ -154,7 +155,7 @@ theorem litCmp_eq_evalPred (c : Ctx) (st : State) (spec : ProtoSpec) (inst : Ins
     | ok o =>
       cases o with
       | none => rfl
-      | some n => simp only [typed]; split <;> simp_all
+      | some n => rfl
 
 /-- `…/p[f op v]/…` ≡ `…/p/… where p.f op v` (D-023), for a mandatory layer
 whose name denotes the instance it extracts.
@@ -174,7 +175,7 @@ theorem bracket_eq_where
     (hq : p.quant = .one) (hname : spec.name = p.name)
     (hvlan : (c.H.vlanInMetadata && p.name == "vlan") = false)
     (hpre : evalChain c pre st = .ok s1)
-    (hx : extractInst c s1 p.name = .ok (spec, inst))
+    (hx : extractInst c s1 p.name spec = .ok inst)
     (hrest : evalChain c rest (s1.push p.label inst) = .ok stF)
     (hproto : staticProto c spec.name = .ok spec.name)
     (hspec : c.V.proto? spec.name = some spec)
@@ -190,7 +191,7 @@ theorem bracket_eq_where
   have hw := litCmp_eq_evalPred c stF spec inst f op v r hproto hspec hinst hres
   rw [evalChain_append, hpre, hw]
   simp only [Except.bind, evalChain, bind, hq, quantBounds, evalProtoLayer, hsp, hvlan]
-  simp only [extract_cmp c s1 p.name p.label _ spec inst (.cmp f op v) hx]
+  simp only [extract_cmp c s1 p.name p.label _ spec inst (.cmp f op v) hsp hx]
   cases evalPred c spec inst (.cmp f op v) with
   | error e => cases e <;> simp
   | ok b => cases b <;> simp [hrest]

@@ -68,16 +68,24 @@ inductive AuxRef
 /-- Iteration variables bound by enclosing `any`/`all`: `(head, stack)` ↦ index. -/
 abbrev IterEnv := List ((String × String) × Nat)
 
-/-- A statically resolved field reference. -/
-structure Ref where
-  head : String
-  proto : String
-  spec : ProtoSpec
+/-- What a field path names below its protocol head. -/
+structure RefBody where
   aux : AuxRef
   field : FieldSpec
   /-- `[lo:hi]` bit slice of the field (bit 0 = MSB). -/
   slice : Option (Nat × Nat) := none
   deriving Repr, BEq
+
+/-- A statically resolved field reference: the body under the head that
+names the layer. -/
+structure Ref extends RefBody where
+  head : String
+  proto : String
+  spec : ProtoSpec
+  deriving Repr, BEq
+
+def RefBody.toRef (b : RefBody) (head proto : String) (spec : ProtoSpec) : Ref :=
+  { b with head, proto, spec }
 
 def Ref.width (r : Ref) : Nat :=
   match r.slice with
@@ -120,21 +128,13 @@ private def checkIndex (c : Ctx) (proto : String) (spec : ProtoSpec) (sd : Stack
   | some (.field parts) => discard <| checkDynamicIndex c proto spec parts
   | none => pure ()
 
-/-- What a field path names below its protocol head; the caller adds the head. -/
-structure RefBody where
-  aux : AuxRef
-  field : FieldSpec
-  slice : Option (Nat × Nat) := none
-
-def RefBody.toRef (b : RefBody) (head proto : String) (spec : ProtoSpec) : Ref :=
-  { head, proto, spec, aux := b.aux, field := b.field, slice := b.slice }
-
 /-- The segments of a field path after its protocol head, resolved against
 that protocol: shared by where clauses (`resolvePath`) and bracket
 predicates (`resolveBracket`), whose paths have no head. The result does
 not depend on how the head was written (Laws.lean `bracket_eq_where`). -/
 def resolveRest (c : Ctx) (proto : String) (spec : ProtoSpec)
     (rest : List (String × Option Index)) : Except Stop RefBody := do
+  let unsupported : Stop := .illTyped s!"unsupported: field path {proto}.{(FieldPath.mk rest).text}"
   match rest with
   | [(fieldName, idx)] => do
     let some fs := spec.field? fieldName | throw (.illTyped s!"unknown field {proto}.{fieldName}")
@@ -155,7 +155,7 @@ def resolveRest (c : Ctx) (proto : String) (spec : ProtoSpec)
         let fs ← fieldOf m o.header fieldName
         pure { aux := .option x, field := fs, slice := ← applySlice fs fIdx }
     | [(seg, none), (name, none), (fieldName, fIdx)] =>
-      if seg != spec.optionSegment then throw (.illTyped s!"unsupported: field path {proto}.{(FieldPath.mk rest).text}")
+      if seg != spec.optionSegment then throw unsupported
       let opt := lowerAscii name
       -- `<proto>.options.NAME` names a TLV option (one with a kind byte).
       let some o := option? m opt | throw (.illTyped s!"unknown option {proto}.{seg}.{name}")
@@ -163,13 +163,13 @@ def resolveRest (c : Ctx) (proto : String) (spec : ProtoSpec)
       let fs ← fieldOf m o.header fieldName
       pure { aux := .option opt, field := fs, slice := ← applySlice fs fIdx }
     | [(seg, none), (name, none), (stack, sIdx), (fieldName, fIdx)] =>
-      if seg != spec.optionSegment then throw (.illTyped s!"unsupported: field path {proto}.{(FieldPath.mk rest).text}")
+      if seg != spec.optionSegment then throw unsupported
       let some sd := m.stack? stack | throw (.illTyped s!"unknown stack {proto}.{stack}")
       if sd.ownerOption != lowerAscii name then throw (.illTyped s!"stack {stack} does not belong to option {name}")
       checkIndex c proto spec sd sIdx
       let fs ← fieldOf m sd.header fieldName
       pure { aux := .stackEntry stack sIdx, field := fs, slice := ← applySlice fs fIdx }
-    | _ => throw (.illTyped s!"unsupported: field path {proto}.{(FieldPath.mk rest).text}")
+    | _ => throw unsupported
 
 /-- Static resolution of a field path (T-FieldPrim, T-FieldAux, T-FieldStackStatic). -/
 def resolvePath (c : Ctx) (f : FieldPath) : Except Stop Ref := do
@@ -392,9 +392,7 @@ def evalWhere (c : Ctx) (st : State) (env : IterEnv) : Where → Except Stop Boo
   | .litCmp f op v => do
     let r ← resolvePath c f
     let some n ← loadRef c st env r | pure false
-    match cmpValue r.width n op v with
-    | .ok b => pure b
-    | .error e => throw (.illTyped e)
+    Stop.ofExcept (cmpValue r.width n op v)
   | .action a => do
     if c.H.actions.isEmpty then throw (.illTyped "`action ==` is not available on this host")
     let some (_, v) := c.H.actions.find? (·.1 == a) | throw (.illTyped s!"unknown action {a}")
