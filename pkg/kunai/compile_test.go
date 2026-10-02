@@ -740,17 +740,32 @@ func TestCompileWhereIPv6MulIllTyped(t *testing.T) {
 	if _, err := compileForTest("eth/ipv6/tcp where ipv6.src[64:128] * 2 == ipv6.dst[64:128]"); err != nil {
 		t.Errorf("slice arithmetic: %v", err)
 	}
-	// A slice or a narrower field next to a full Int<128> operand lands in
-	// the 128-bit pipeline, which does not widen it: refused rather than
-	// loading the whole field.
+	// A slice, a narrower field, or a sub-64-bit expression next to a full
+	// Int<128> operand computes in 64 bits and joins zero-extended.
 	for _, expr := range []string{
 		"eth/ipv6/tcp where ipv6.src[64:128] + ipv6.dst == 1",
 		"eth/ipv6/tcp where ipv6.src + tcp.dport == 1",
 		"eth/ipv6/tcp where ipv6.src == tcp.dport * 2",
+		"eth/ipv6/tcp where ipv6.src + tcp.dport * 2 == ipv6.dst",
+	} {
+		if _, err := compileForTest(expr); err != nil {
+			t.Errorf("Compile(%q): %v", expr, err)
+		}
+	}
+	// Still refused: a 128-bit expression on the right of ±, a negative
+	// literal inside the narrow part, a slice wider than 64 bits.
+	for _, expr := range []string{
+		"eth/ipv6/tcp where ipv6.src + (ipv6.dst + 1) == ipv6.dst",
+		"eth/ipv6/tcp where ipv6.src == tcp.dport + -1",
+		"eth/ipv6/tcp where ipv6.src[0:96] + ipv6.dst == 1",
 	} {
 		if _, err := compileForTest(expr); !errors.Is(err, codegen.ErrNotImplemented) {
 			t.Errorf("Compile(%q) = %v; want ErrNotImplemented", expr, err)
 		}
+	}
+	// A literal fits the width of the sub-64-bit node it sits in.
+	if _, err := compileForTest("eth/ipv6/tcp where ipv6.src == tcp.dport * 70000"); err == nil || errors.Is(err, codegen.ErrNotImplemented) {
+		t.Errorf("literal past the narrow node's width: err = %v; want a resolver error", err)
 	}
 	// Constants above int32 are a 64-bit load, at every width.
 	for _, expr := range []string{

@@ -78,8 +78,9 @@ func checkBracketIntFit(field *ir.FieldRef, v *ast.Value, layerName string, pos 
 // docs/ja/dsl-types.md. Per D0 (b+1) the resolver enforces fit-check,
 // division-by-zero and the operator set above 64 bits (§13.9: + and -
 // only); codegen separately reports ErrNotImplemented for the Int<128>
-// operand shapes it has not wired (a binop on the right of ±, a narrower
-// field or a bit slice next to an Int<128> operand, aux fields).
+// operand shapes it has not wired (a 128-bit binop on the right of ±, a
+// slice between 65 and 127 bits, a negative literal in a sub-64-bit part,
+// aux fields).
 
 // checkArithCondition runs all type-related validations against a
 // resolved WAtomArith condition: literal fit checks against the
@@ -126,6 +127,12 @@ func checkArithExpr(e *ir.ArithExpr, bits int) error {
 		// rest has no use that a CIDR literal or a slice does not cover.
 		if w := exprMaxFieldBits(e); w > 64 && e.Op != ast.ArithAdd && e.Op != ast.ArithSub {
 			return errorf(e.Pos, "%s on Int<%d>: only + and - are defined on fields wider than 64 bits (use a bit slice `field[lo:hi]` or a CIDR literal)", e.Op, w)
+		}
+		// A sub-64-bit node inside a wider comparison computes at its own
+		// width (§13.9), so its literals fit that width, not the
+		// comparison's: `ipv6.src == tcp.dport * 70000` does not type.
+		if w := exprMaxFieldBits(e); bits > 64 && w > 0 && w <= 64 {
+			bits = w
 		}
 		if err := checkArithExpr(e.Left, bits); err != nil {
 			return err

@@ -1079,9 +1079,10 @@ func (c *whereCtx) genArithCompare(w *ir.Condition, failLabel string) (asm.Instr
 // R3 = high half, R5 = low half. Supported ops: `==` / `!=` (F4) and
 // `<` / `≤` / `>` / `≥` (F3). Operand shapes supported: ArithField
 // (an Int<128> field), a constant, `field ± const` and `field ± field`,
-// nested through the left operand (see genArith128). A binop on the
-// right of ±, a field narrower than 128 bits or a bit slice next to an
-// Int<128> operand, and aux fields return ErrNotImplemented; operators
+// nested through the left operand, and any sub-64-bit expression, which
+// computes in 64 bits and joins zero-extended (see genArith128). A
+// 128-bit binop on the right of ±, a slice between 65 and 127 bits, and
+// aux fields return ErrNotImplemented; operators
 // other than + and - on Int<128> operands never arrive, the resolver
 // types them as errors (dsl-types.md §13.9).
 func (c *whereCtx) genArithCompare128(w *ir.Condition, failLabel string, targetBits int) (asm.Instructions, error) {
@@ -1157,9 +1158,10 @@ func (c *whereCtx) genArithCompare128(w *ir.Condition, failLabel string, targetB
 // genArith128 emits insns that leave R3=high and R5=low of an Int<128>
 // arith expression. Supported shapes:
 //
-//   - ArithField: 16-byte field load via genArithField128Load (a
-//     narrower field or a bit slice next to an Int<128> operand is not
-//     wired: nothing zero-extends it into the register pair)
+//   - a sub-64-bit expression (a narrower field, a slice of at most 64
+//     bits, `tcp.dport * 2`): the 64-bit pipeline, zero-extended
+//     (genArith128Narrow)
+//   - ArithField: 16-byte field load via genArithField128Load
 //   - ArithConst: literal materialised as (0, const), or all ones in the
 //     high half for a negative literal (-1 is 2^128 - 1 at this width)
 //   - ArithBinOp with op ∈ {+, -}:
@@ -1176,29 +1178,32 @@ func (c *whereCtx) genArith128(e *ir.ArithExpr) (asm.Instructions, error) {
 	if e == nil {
 		return nil, fmt.Errorf("codegen: nil 128-bit arith expression")
 	}
+	// A subexpression whose fields are all at most 64 bits wide (a
+	// narrower field, a slice, `tcp.dport * 2`) computes in 64 bits like
+	// anywhere else (§13.9) and joins the 128-bit operand zero-extended.
+	if isNarrowArith(e) {
+		return c.genArith128Narrow(e)
+	}
 	switch e.Kind {
 	case ast.ArithField:
 		if f := e.Field; f != nil && f.Field != nil && (f.Slice != nil || f.Field.Bits != 128) {
-			return nil, fmt.Errorf("%w: %s.%s (bit<%d>) next to an Int<128> operand: mixed widths are not wired in the 128-bit path (slice the Int<128> side to the same width)", ErrNotImplemented, f.Layer.Spec.Name, f.Field.Name, f.EffectiveBits())
+			return nil, fmt.Errorf("%w: %s.%s (bit<%d>) next to an Int<128> operand: a field wider than 64 bits but narrower than 128 is not wired", ErrNotImplemented, f.Layer.Spec.Name, f.Field.Name, f.EffectiveBits())
 		}
 		return c.genArithField128Load(e.Field)
 	case ast.ArithBinOp:
 		if e.Op != ast.ArithAdd && e.Op != ast.ArithSub {
-			// The resolver rejects these on Int<128> operands; a narrower
-			// subexpression (`ipv6.src == tcp.dport * 2`) is well-typed but
-			// lands here because the comparison is 128 bits wide.
-			return nil, fmt.Errorf("%w: %s on a sub-64-bit expression next to an Int<128> operand", ErrNotImplemented, e.Op)
+			return nil, fmt.Errorf("codegen: %s on Int<128> operands reached codegen; the resolver should have rejected it", e.Op)
 		}
 		if e.Right == nil {
 			return nil, fmt.Errorf("codegen: bit<128> arith binop missing RHS")
 		}
-		switch e.Right.Kind {
-		case ast.ArithConst:
+		switch {
+		case e.Right.Kind == ast.ArithConst:
 			return c.genArith128FieldOpConst(e)
-		case ast.ArithField:
+		case e.Right.Kind == ast.ArithField, isNarrowArith(e.Right):
 			return c.genArith128FieldOpField(e)
 		}
-		return nil, fmt.Errorf("%w: bit<128> arith RHS shape %v not supported (only field or const)", ErrNotImplemented, e.Right.Kind)
+		return nil, fmt.Errorf("%w: bit<128> arith with a 128-bit expression on the right of %s (only a field, a constant, or a sub-64-bit expression)", ErrNotImplemented, e.Op)
 	case ast.ArithConst:
 		// A positive constant is (0, const): the resolver fit-checked it
 		// against Int<128>, so only the low half can be non-zero. A
@@ -1212,6 +1217,50 @@ func (c *whereCtx) genArith128(e *ir.ArithExpr) (asm.Instructions, error) {
 		return append(asm.Instructions{asm.Mov.Imm(asm.R3, high)}, loadConst(asm.R5, e.Const)...), nil
 	}
 	return nil, fmt.Errorf("%w: bit<128> arith expression kind %v not supported", ErrNotImplemented, e.Kind)
+}
+
+// isNarrowArith reports whether `e` reads fields and all of them are at
+// most 64 bits wide: such an expression is one the 64-bit pipeline
+// evaluates. A bare constant is not narrow; it takes its width from the
+// operand next to it.
+func isNarrowArith(e *ir.ArithExpr) bool {
+	if e == nil || e.Kind == ast.ArithConst {
+		return false
+	}
+	w := arithMaxFieldBits(e)
+	return w > 0 && w <= 64
+}
+
+// arithHasNegativeConst reports whether a negative literal occurs in `e`.
+func arithHasNegativeConst(e *ir.ArithExpr) bool {
+	if e == nil {
+		return false
+	}
+	if e.Kind == ast.ArithConst {
+		return e.Negative
+	}
+	return arithHasNegativeConst(e.Left) || arithHasNegativeConst(e.Right)
+}
+
+// genArith128Narrow evaluates a sub-64-bit expression with the 64-bit
+// pipeline and leaves it zero-extended in the 128-bit pair (R3 = 0,
+// R5 = value). It starts at arith depth boolEqOperandReserve: the slots
+// below hold what the 128-bit path parks while the other operand is
+// computed (the compare's left side in 0/1, field ± field's left side in
+// 2/3, the high-half stash in 4).
+//
+// A negative literal inside it is refused: the 64-bit pipeline loads it
+// as a 64-bit two's complement, while its value is the two's complement
+// at the width of the field next to it (§7.3).
+func (c *whereCtx) genArith128Narrow(e *ir.ArithExpr) (asm.Instructions, error) {
+	if arithHasNegativeConst(e) {
+		return nil, fmt.Errorf("%w: a negative literal in a sub-64-bit expression next to an Int<128> operand", ErrNotImplemented)
+	}
+	insns, err := c.genArithWithBits(e, boolEqOperandReserve, 0)
+	if err != nil {
+		return nil, err
+	}
+	return append(insns, asm.Mov.Reg(asm.R5, asm.R3), asm.Mov.Imm(asm.R3, 0)), nil
 }
 
 // genArith128FieldOpConst handles `field + const` / `field - const`
