@@ -1,13 +1,18 @@
 package program
 
 import (
-	"errors"
+	"strings"
 	"testing"
 
 	"github.com/cilium/ebpf"
-
-	"github.com/takehaya/bpf-ninja/pkg/kunai/codegen"
 )
+
+// isVlanMetadataReject reports whether err is the compile-time rejection
+// of a VLAN tag the host moved to skb metadata: a type error for a
+// mandatory vlan layer, ErrNotImplemented for the other shapes.
+func isVlanMetadataReject(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "skb metadata")
+}
 
 // tcRejectingCorpus lists the VerifierCorpus expressions the tc host
 // rejects at compile time. The tc host extracts the outer VLAN tag into
@@ -16,8 +21,9 @@ import (
 // absent-able — an optional quantifier whose skip path the byte parser
 // can take. The optional predicate-free forms (D00 vlan?, D01 qinq?/vlan?,
 // D07 vlan? with a tcp predicate) are therefore accepted and loaded at
-// tc; only a mandatory tag or a tag inside an alternation is rejected.
-// See checkHostLayerSupport.
+// tc; only a mandatory tag or a tag inside an alternation is rejected
+// (a type error for vlan, ErrNotImplemented for qinq). See
+// checkHostLayerSupport.
 var tcRejectingCorpus = map[string]bool{
 	"eth/vlan{1,3}/ipv4/tcp":   true, // D04: mandatory tag, no skip path
 	"eth/(vlan|qinq)/ipv4/tcp": true, // E00: tag inside an alternation
@@ -170,8 +176,8 @@ func TestFilterCorpusCompiles(t *testing.T) {
 				tcReject := h.progType != ebpf.XDP && tcRejectingCorpus[c.Expr]
 				_, err := compileFilter(c.Expr, true /*useDSL*/, false /*isFexit*/, h.progType)
 				if tcReject {
-					if !errors.Is(err, codegen.ErrNotImplemented) {
-						t.Fatalf("compile %s (%s): expected tc rejection with ErrNotImplemented (VLAN in skb metadata), got %v", c.ID, h.name, err)
+					if !isVlanMetadataReject(err) {
+						t.Fatalf("compile %s (%s): expected tc rejection (VLAN in skb metadata), got %v", c.ID, h.name, err)
 					}
 					return
 				}

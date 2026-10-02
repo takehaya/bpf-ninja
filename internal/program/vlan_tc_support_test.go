@@ -8,12 +8,9 @@ package program
 // confirmed end-to-end in vlan_untag_datapath_test.go.
 
 import (
-	"errors"
 	"testing"
 
 	"github.com/cilium/ebpf"
-
-	"github.com/takehaya/bpf-ninja/pkg/kunai/codegen"
 )
 
 // tcAcceptedVlanExprs load & verify at the tc clsact host.
@@ -48,8 +45,8 @@ func TestVlanTCFieldReadingRejects(t *testing.T) {
 	for _, expr := range tcRejectedVlanExprs {
 		t.Run(expr, func(t *testing.T) {
 			_, err := compileFilter(expr, true /*useDSL*/, false /*isFexit*/, ebpf.SchedCLS)
-			if !errors.Is(err, codegen.ErrNotImplemented) {
-				t.Fatalf("expected tc ErrNotImplemented for %q, got %v", expr, err)
+			if !isVlanMetadataReject(err) {
+				t.Fatalf("expected the tc VLAN-in-metadata rejection for %q, got %v", expr, err)
 			}
 		})
 	}

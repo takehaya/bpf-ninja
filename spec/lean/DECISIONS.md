@@ -83,6 +83,7 @@ Entries are never deleted; a rejected candidate stays in the log.
 - 推奨: (b)。警告は意味論の外。cursor 0 から評価し、L3 パケットに `eth` を当てれば普通に reject される。
 - 状態: 承認済 (2026-10-01、一括)
 - 反映先: `Eval.lean` (host は dispatch に関与しない), vectors `host-l3-ipv4-root`, `host-l3-eth-root`
+- 追記 (2026-10-03): `vlanInMetadata` の host で必須の `vlan` layer (alternation の枝を含む) は illTyped。Go も `ErrNotImplemented` ではなく型エラーを返すようにした (vectors `host-tc-vlan-mandatory`, `host-tc-vlan-alt`)。未決: Lean の規則は `vlan` だけを見る。kernel は 802.1ad の外側 tag も metadata に移すので、Go は必須の `qinq` も断る (`ErrNotImplemented` のまま)。`qinq` を規則に含めるかは未決定。
 
 ## D-009: 算術の幅 (定数同士)
 - 論点: `mod 2^max(width(e₁), width(e₂))` の width が定数由来のとき。

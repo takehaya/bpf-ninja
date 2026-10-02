@@ -801,14 +801,19 @@ func checkUnsupported(p *ir.Program) error {
 // TestVlanUntagAtTCIngress) and at the packet level (dsltest
 // TestVlanQuestionMarkOptional).
 //
-// What stays rejected, because it reads a tag the host does not expose
-// in packet bytes:
+// A mandatory vlan layer, alone or as an alternation member, is a type
+// error: the language requires the layer to be optional at such a host
+// (spec/lean Eval/Check.lean), so the error does not wrap
+// ErrNotImplemented.
 //
-//   - a mandatory vlan/qinq layer (no skip path),
+// What is refused as not implemented, because it reads a tag the host
+// does not expose in packet bytes:
+//
+//   - a mandatory qinq layer (no skip path),
 //
 //   - a bracket predicate on the layer (`vlan[tci==100]?`), and
 //
-//   - a vlan/qinq layer inside an alternation (no per-alt skip path).
+//   - a qinq layer inside an alternation (no per-alt skip path).
 //
 //   - a where clause or capture that reads a vlan/qinq field (the tag's
 //     bytes are not in the packet, so its entry slot would be absent on
@@ -827,13 +832,22 @@ func checkHostLayerSupport(p *ir.Program, host HostLayout) error {
 	reject := func(l *ir.LayerInstance) error {
 		return withPos(fmt.Errorf("%w: layer %q cannot be matched at this host: the kernel extracts the outer VLAN tag into skb metadata before the program runs, so it is not present in the packet bytes. Use an optional quantifier (e.g. %s? or qinq?/vlan?) to match tag-flexible traffic without reading the tag, or read the tag from skb metadata (future work)", ErrNotImplemented, l.Spec.Name, l.Spec.Name), l.Pos)
 	}
+	mandatoryVlan := func(l *ir.LayerInstance) error {
+		return withPos(fmt.Errorf("layer vlan must be optional at this host: the kernel moves the outer VLAN tag into skb metadata before the program runs, so it is not in the packet bytes (write vlan? or qinq?/vlan?)"), l.Pos)
+	}
 	for _, l := range p.Layers {
 		// vlan/qinq inside an alternation group cannot take a per-alt
 		// skip path in the current codegen; keep rejecting those.
 		for _, alt := range l.Alternation {
 			if isVlan(alt) {
+				if alt.Spec.Name == "vlan" {
+					return mandatoryVlan(alt)
+				}
 				return reject(alt)
 			}
+		}
+		if isVlan(l) && l.Spec.Name == "vlan" && !l.Absentable() {
+			return mandatoryVlan(l)
 		}
 		// A vlan/qinq layer is rejected unless it can be absent (optional
 		// quantifier) and reads none of its own fields (no predicate).

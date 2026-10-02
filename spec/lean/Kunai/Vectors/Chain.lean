@@ -304,7 +304,12 @@ vector altNoCheck := {
 vector hostTcVlanMandatory := {
   id := "host-tc-vlan-mandatory", host := .tc_entry,
   ast := { layers := [P "eth", P "vlan", P "ipv4", P "tcp"] }, packet := vlanPkt,
-  expected := .illTyped "vlan is in metadata on this host; the layer must be optional", goStatus := .notImplemented }
+  expected := .illTyped "vlan is in metadata on this host; the layer must be optional" }
+vector hostTcVlanAlt := {
+  id := "host-tc-vlan-alt", host := .tc_entry,
+  ast := { layers := [P "eth", .alt [{ name := "vlan" }, { name := "qinq" }], P "ipv4", P "tcp"] }, packet := vlanPkt,
+  expected := .illTyped "vlan is in metadata on this host; the layer must be optional",
+  note := "an alternation member is mandatory" }
 vector hostTcVlanOpt := {
   id := "host-tc-vlan-optional", host := .tc_entry, ast := { layers := vlanOpt }, expected := .accept [] }
 vector hostL3Root := {
@@ -324,6 +329,6 @@ def chainVectors : List Vector := [
   quantPredAllHold, quantSelfValidSkip, quantSelfValidPresent, quantSelfValidShortV4, quantSelfValidShortV6, quantSelfValidEmpty, quantSelfValidCascade, quantSelfValidCascadeEth, quantSelfValidBroken, quantOptIPv4Last, quantOptIPv4LastAbsent, quantOptIPIP, quantExactOneMachine, typAltExactOne, typRepeatNoSelfEdge, typRepeatNoSelfEdgeStar, quantOptIPIPAbsent, quantOptIPIPTwiceOne, quantOptIPIPTwiceNone, quantOptIPIPTwiceBoth, typOptionalAfterSkip, typOptionalNoCheck, chainMandatorySelfEdgeMiss, quantSelfEdgeStar, quantSelfEdgeOpt,
   absentConsecutiveEthertype, absentConsecutiveSelfValid, absentConsecutiveMplsOnly, absentConsecutiveNeither, absentConsecutiveArp, quantFirstOptional,
   altFirst, altSecond, altNone, altFirstPredFails, altRoot, altNoCheck,
-  hostTcVlanMandatory, hostTcVlanOpt, hostL3Root, hostL3EthRoot]
+  hostTcVlanMandatory, hostTcVlanAlt, hostTcVlanOpt, hostL3Root, hostL3EthRoot]
 
 end Kunai
