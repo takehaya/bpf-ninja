@@ -40,7 +40,8 @@ import (
 // Errors are returned as-is from each phase so callers can
 // distinguish syntax errors (*lexer.SyntaxError) from resolver
 // errors and codegen errors (codegen.ErrNotImplemented for valid
-// DSL the MVP codegen has not yet emitted).
+// DSL the MVP codegen has not yet emitted, codegen.ErrVlanInMetadata
+// for a mandatory vlan layer at a host that keeps the tag in metadata).
 func Compile(expr string, caps codegen.Capabilities) (codegen.Output, error) {
 	v, err := dslvocab.Bundled()
 	if err != nil {

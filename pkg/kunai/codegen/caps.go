@@ -98,9 +98,13 @@ type HostLayout struct {
 	// the target-agnostic BPF_PROG_TEST_RUN harness, which feed raw
 	// frames with the tag present.
 	//
-	// When true, kunai rejects any chain containing a vlan or qinq
-	// layer at compile time rather than silently parsing the wrong
-	// bytes. Reading the tag from skb metadata is future work.
+	// When true, kunai rejects a chain that would read the tag from
+	// packet bytes at compile time rather than silently parsing the
+	// wrong bytes: a mandatory vlan layer is the type error
+	// ErrVlanInMetadata, the other shapes (a mandatory qinq, a predicate
+	// on or a where / capture read of the tag) are ErrNotImplemented.
+	// Optional, predicate-free tags (vlan?, qinq?/vlan?) compile.
+	// Reading the tag from skb metadata is future work.
 	VlanInMetadata bool
 
 	// PacketStartsAtL3 declares that the host presents packet bytes

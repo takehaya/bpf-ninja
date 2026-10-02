@@ -1509,6 +1509,9 @@ func TestVlanInMetadataRejectsVlanLayers(t *testing.T) {
 		"eth/vlan[tci==100]/ipv4/tcp where tcp.dport == 80", // mandatory + field
 		"eth/vlan+/ipv4/tcp",
 		"eth/(vlan|qinq)/ipv4/tcp", // alternation members are mandatory
+		"eth/(qinq|vlan)/ipv4/tcp",
+		"eth/((vlan|qinq)|ipv4)",
+		"eth/qinq/vlan/ipv4/tcp where tcp.dport == 80", // wins over the qinq refusal
 	}
 	rejected := []string{
 		"eth/qinq/vlan?/ipv4/tcp where tcp.dport == 80", // mandatory QinQ
@@ -1529,8 +1532,8 @@ func TestVlanInMetadataRejectsVlanLayers(t *testing.T) {
 	for _, expr := range illTyped {
 		t.Run("illTyped/"+expr, func(t *testing.T) {
 			_, err := Compile(expr, tcCaps)
-			if err == nil || errors.Is(err, codegen.ErrNotImplemented) || !strings.Contains(err.Error(), "must be optional") {
-				t.Fatalf("Compile(%q) with VlanInMetadata = %v; want the must-be-optional type error", expr, err)
+			if !errors.Is(err, codegen.ErrVlanInMetadata) || errors.Is(err, codegen.ErrNotImplemented) {
+				t.Fatalf("Compile(%q) with VlanInMetadata = %v; want ErrVlanInMetadata", expr, err)
 			}
 		})
 	}
@@ -1540,7 +1543,7 @@ func TestVlanInMetadataRejectsVlanLayers(t *testing.T) {
 			if err == nil {
 				t.Fatalf("Compile(%q) with VlanInMetadata: expected rejection, got nil", expr)
 			}
-			if !errors.Is(err, codegen.ErrNotImplemented) {
+			if !errors.Is(err, codegen.ErrNotImplemented) || errors.Is(err, codegen.ErrVlanInMetadata) {
 				t.Fatalf("Compile(%q): expected ErrNotImplemented, got %v", expr, err)
 			}
 		})
@@ -1603,8 +1606,8 @@ func TestCompileCgroupSKBHost(t *testing.T) {
 	})
 	t.Run("vlan layer rejected", func(t *testing.T) {
 		_, err := Compile("eth/vlan/ipv4/tcp", cgskbhost.EntryCapabilities())
-		if err == nil || errors.Is(err, codegen.ErrNotImplemented) || !strings.Contains(err.Error(), "must be optional") {
-			t.Fatalf("expected the must-be-optional type error for vlan on cgroup-skb, got %v", err)
+		if !errors.Is(err, codegen.ErrVlanInMetadata) {
+			t.Fatalf("expected ErrVlanInMetadata for vlan on cgroup-skb, got %v", err)
 		}
 	})
 }
