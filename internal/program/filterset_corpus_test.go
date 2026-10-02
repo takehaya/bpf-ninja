@@ -16,12 +16,12 @@ import (
 // absent-able — an optional quantifier whose skip path the byte parser
 // can take. The optional predicate-free forms (D00 vlan?, D01 qinq?/vlan?,
 // D07 vlan? with a tcp predicate) are therefore accepted and loaded at
-// tc; only a mandatory tag or a tag inside an alternation is rejected.
-// See checkHostLayerSupport.
-var tcRejectingCorpus = map[string]bool{
-	"eth/vlan{1,3}/ipv4/tcp":   true, // D04: mandatory tag, no skip path
-	"eth/(vlan|qinq)/ipv4/tcp": true, // E00: tag inside an alternation
-	"eth/((vlan|qinq)|ipv4)":   true, // E03: tag inside an alternation
+// tc; only a mandatory tag or a tag inside an alternation is rejected,
+// with the error each entry names. See checkHostLayerSupport.
+var tcRejectingCorpus = map[string]error{
+	"eth/vlan{1,3}/ipv4/tcp":   codegen.ErrVlanInMetadata, // D04: mandatory tag, no skip path
+	"eth/(vlan|qinq)/ipv4/tcp": codegen.ErrVlanInMetadata, // E00: tag inside an alternation
+	"eth/((vlan|qinq)|ipv4)":   codegen.ErrVlanInMetadata, // E03: tag inside an alternation
 }
 
 // VerifierCorpus is a curated set of well-typed kunai expressions that
@@ -167,11 +167,12 @@ func TestFilterCorpusCompiles(t *testing.T) {
 	for _, c := range VerifierCorpus {
 		for _, h := range hosts {
 			t.Run(c.ID+"/"+h.name, func(t *testing.T) {
-				tcReject := h.progType != ebpf.XDP && tcRejectingCorpus[c.Expr]
+				wantErr := tcRejectingCorpus[c.Expr]
+				tcReject := h.progType != ebpf.XDP && wantErr != nil
 				_, err := compileFilter(c.Expr, true /*useDSL*/, false /*isFexit*/, h.progType)
 				if tcReject {
-					if !errors.Is(err, codegen.ErrNotImplemented) {
-						t.Fatalf("compile %s (%s): expected tc rejection with ErrNotImplemented (VLAN in skb metadata), got %v", c.ID, h.name, err)
+					if !errors.Is(err, wantErr) {
+						t.Fatalf("compile %s (%s): expected tc rejection %q (VLAN in skb metadata), got %v", c.ID, h.name, wantErr, err)
 					}
 					return
 				}
@@ -203,7 +204,7 @@ func runFilterCorpusMatrix(t *testing.T, hostProg *ebpf.Program, funcName string
 	isTC := funcName == tcFuncName
 	for _, c := range VerifierCorpus {
 		t.Run(c.ID, func(t *testing.T) {
-			if isTC && tcRejectingCorpus[c.Expr] {
+			if isTC && tcRejectingCorpus[c.Expr] != nil {
 				t.Skipf("%s carries a non-absent-able vlan/qinq layer (mandatory or in an alternation); the tc host rejects it at compile time (not loadable)", c.ID)
 			}
 			loadProbeOrFail(t, hostProg, funcName, c.Expr, false /*exit*/, true /*useDSL*/)

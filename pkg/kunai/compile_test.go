@@ -1503,13 +1503,22 @@ func isHostOwned(ins asm.Instruction) bool {
 // the stripped tag. Every expression must still compile under the zero
 // (in-band) Capabilities used by XDP and the test harness.
 func TestVlanInMetadataRejectsVlanLayers(t *testing.T) {
-	rejected := []string{
+	// A mandatory vlan layer is a type error at such a host.
+	illTyped := []string{
+		"eth/vlan/ipv4/tcp",
 		"eth/vlan[tci==100]/ipv4/tcp where tcp.dport == 80", // mandatory + field
-		"eth/qinq/vlan/ipv4/tcp where tcp.dport == 80",      // mandatory QinQ
-		"eth/vlan[tci==100]?/ipv4/tcp",                      // optional but reads tci
-		"eth/(vlan|qinq)/ipv4/tcp",                          // tag in alternation
-		"eth/vlan?/ipv4/tcp where vlan.tci == 100",          // where reads the tag
-		"eth/vlan?/ipv4/tcp capture vlan",                   // capture targets the tag
+		"eth/vlan+/ipv4/tcp",
+		"eth/(vlan|qinq)/ipv4/tcp", // alternation members are mandatory
+		"eth/(qinq|vlan)/ipv4/tcp",
+		"eth/((vlan|qinq)|ipv4)",
+		"eth/qinq/vlan/ipv4/tcp where tcp.dport == 80", // wins over the qinq refusal
+	}
+	rejected := []string{
+		"eth/qinq/vlan?/ipv4/tcp where tcp.dport == 80", // mandatory QinQ
+		"eth/((qinq|mpls)|ipv4)",                        // qinq in a nested alternation
+		"eth/vlan[tci==100]?/ipv4/tcp",                  // optional but reads tci
+		"eth/vlan?/ipv4/tcp where vlan.tci == 100",      // where reads the tag
+		"eth/vlan?/ipv4/tcp capture vlan",               // capture targets the tag
 	}
 	// Optional, predicate-free tags are matchable at a VlanInMetadata
 	// host: at most one tag survives in the bytes, and the skip path
@@ -1521,13 +1530,21 @@ func TestVlanInMetadataRejectsVlanLayers(t *testing.T) {
 		"eth/vlan?/ipv4/tcp where ipv4.ttl == 64", // past the tag: runtime offset, no tag read
 	}
 	tcCaps := codegen.Capabilities{Host: codegen.HostLayout{VlanInMetadata: true}}
+	for _, expr := range illTyped {
+		t.Run("illTyped/"+expr, func(t *testing.T) {
+			_, err := Compile(expr, tcCaps)
+			if !errors.Is(err, codegen.ErrVlanInMetadata) || errors.Is(err, codegen.ErrNotImplemented) {
+				t.Fatalf("Compile(%q) with VlanInMetadata = %v; want ErrVlanInMetadata", expr, err)
+			}
+		})
+	}
 	for _, expr := range rejected {
 		t.Run("reject/"+expr, func(t *testing.T) {
 			_, err := Compile(expr, tcCaps)
 			if err == nil {
 				t.Fatalf("Compile(%q) with VlanInMetadata: expected rejection, got nil", expr)
 			}
-			if !errors.Is(err, codegen.ErrNotImplemented) {
+			if !errors.Is(err, codegen.ErrNotImplemented) || errors.Is(err, codegen.ErrVlanInMetadata) {
 				t.Fatalf("Compile(%q): expected ErrNotImplemented, got %v", expr, err)
 			}
 		})
@@ -1539,7 +1556,7 @@ func TestVlanInMetadataRejectsVlanLayers(t *testing.T) {
 			}
 		})
 	}
-	for _, expr := range append(append([]string{}, rejected...), accepted...) {
+	for _, expr := range append(append(append([]string{}, illTyped...), rejected...), accepted...) {
 		t.Run("inband/"+expr, func(t *testing.T) {
 			if _, err := Compile(expr, codegen.Capabilities{}); err != nil {
 				t.Fatalf("Compile(%q) with zero caps: expected success, got %v", expr, err)
@@ -1590,8 +1607,8 @@ func TestCompileCgroupSKBHost(t *testing.T) {
 	})
 	t.Run("vlan layer rejected", func(t *testing.T) {
 		_, err := Compile("eth/vlan/ipv4/tcp", cgskbhost.EntryCapabilities())
-		if !errors.Is(err, codegen.ErrNotImplemented) {
-			t.Fatalf("expected ErrNotImplemented for vlan on cgroup-skb, got %v", err)
+		if !errors.Is(err, codegen.ErrVlanInMetadata) {
+			t.Fatalf("expected ErrVlanInMetadata for vlan on cgroup-skb, got %v", err)
 		}
 	})
 }

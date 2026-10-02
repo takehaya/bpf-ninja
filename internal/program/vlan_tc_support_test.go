@@ -25,14 +25,19 @@ var tcAcceptedVlanExprs = []string{
 }
 
 // tcRejectedVlanExprs reject at compile time on the tc host: they read a
-// tag the kernel stripped into skb metadata.
-var tcRejectedVlanExprs = []string{
-	"eth/vlan/ipv4/tcp",            // mandatory tag, no skip path
-	"eth/vlan{1,3}/ipv4/tcp",       // mandatory (RangeMin>=1)
-	"eth/qinq/vlan/ipv4/tcp",       // mandatory QinQ stack
-	"eth/vlan[tci==100]/ipv4/tcp",  // mandatory + reads tci
-	"eth/vlan[tci==100]?/ipv4/tcp", // optional but reads tci (predicate before quant)
-	"eth/(vlan|qinq)/ipv4/tcp",     // tag inside an alternation
+// tag the kernel stripped into skb metadata. A mandatory vlan layer is
+// a type error; the other shapes are not implemented.
+var tcRejectedVlanExprs = []struct {
+	expr string
+	want error
+}{
+	{"eth/vlan/ipv4/tcp", codegen.ErrVlanInMetadata},            // mandatory tag, no skip path
+	{"eth/vlan{1,3}/ipv4/tcp", codegen.ErrVlanInMetadata},       // mandatory (RangeMin>=1)
+	{"eth/qinq/vlan/ipv4/tcp", codegen.ErrVlanInMetadata},       // mandatory QinQ stack
+	{"eth/vlan[tci==100]/ipv4/tcp", codegen.ErrVlanInMetadata},  // mandatory + reads tci
+	{"eth/(vlan|qinq)/ipv4/tcp", codegen.ErrVlanInMetadata},     // tag inside an alternation
+	{"eth/qinq/vlan?/ipv4/tcp", codegen.ErrNotImplemented},      // mandatory outer tag
+	{"eth/vlan[tci==100]?/ipv4/tcp", codegen.ErrNotImplemented}, // optional but reads tci (predicate before quant)
 }
 
 func TestVlanTCOptionalLoads(t *testing.T) {
@@ -45,11 +50,11 @@ func TestVlanTCOptionalLoads(t *testing.T) {
 }
 
 func TestVlanTCFieldReadingRejects(t *testing.T) {
-	for _, expr := range tcRejectedVlanExprs {
-		t.Run(expr, func(t *testing.T) {
-			_, err := compileFilter(expr, true /*useDSL*/, false /*isFexit*/, ebpf.SchedCLS)
-			if !errors.Is(err, codegen.ErrNotImplemented) {
-				t.Fatalf("expected tc ErrNotImplemented for %q, got %v", expr, err)
+	for _, c := range tcRejectedVlanExprs {
+		t.Run(c.expr, func(t *testing.T) {
+			_, err := compileFilter(c.expr, true /*useDSL*/, false /*isFexit*/, ebpf.SchedCLS)
+			if !errors.Is(err, c.want) {
+				t.Fatalf("expected tc rejection %q for %q, got %v", c.want, c.expr, err)
 			}
 		})
 	}

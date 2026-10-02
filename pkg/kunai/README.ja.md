@@ -120,8 +120,8 @@ type LangCaps struct {
 
 type HostLayout struct {
     // VlanInMetadata: kernel が outer VLAN tag を skb metadata へ
-    // 抜き出し済み (tc)。true なら vlan/qinq を含む chain を
-    // コンパイル時に拒否する。
+    // 抜き出し済み (tc)。true なら packet の byte 列から tag を読む
+    // vlan/qinq layer をコンパイル時に拒否する (vlan? / qinq?/vlan? は通る)。
     VlanInMetadata bool
     // PacketStartsAtL3: パケットウィンドウが L3 ヘッダから始まる
     // (cgroup-skb)。true なら resolver は eth root の chain に警告する。
@@ -164,7 +164,7 @@ userspace の `BPF_PROG_TEST_RUN` や独自 tracing のような他のホスト�
 
 - lexer / parser のエラーは `*lexer.SyntaxError` です。
 - resolver のエラーは `*resolve.Error` です。syntax error 型のエイリアスで、file / line / col を保持します。
-- codegen のエラーには `codegen.ErrNotImplemented` が含まれます。これは MVP codegen がまだ emit していない有効な DSL に対するエラーで、本物のバグと区別するには `errors.Is(err, codegen.ErrNotImplemented)` を使います。
+- codegen のエラーには `codegen.ErrNotImplemented` が含まれます。これは MVP codegen がまだ emit していない有効な DSL に対するエラーで、本物のバグと区別するには `errors.Is(err, codegen.ErrNotImplemented)` を使います。`codegen.ErrVlanInMetadata` は、VLAN tag を skb metadata に持つ host (tc, cgroup-skb, netfilter) で必須の `vlan` layer を書いたときの型エラーで、`ErrNotImplemented` を wrap しません。
 
 ## 同梱 vocabulary
 

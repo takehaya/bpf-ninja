@@ -91,8 +91,8 @@ func TestFilterSetCompiles(t *testing.T) {
 			t.Run(fs.ID+"/"+h.name, func(t *testing.T) {
 				if fs.TCUnsupported && h.progType != ebpf.XDP {
 					_, err := compileFilter(fs.Expr, true /*useDSL*/, false /*isFexit*/, h.progType)
-					if !errors.Is(err, codegen.ErrNotImplemented) {
-						t.Fatalf("compile %s (%s): expected tc rejection with ErrNotImplemented (VLAN in skb metadata), got %v\n  expr: %s", fs.ID, fs.Notes, err, fs.Expr)
+					if !errors.Is(err, codegen.ErrVlanInMetadata) {
+						t.Fatalf("compile %s (%s): expected tc rejection with ErrVlanInMetadata, got %v\n  expr: %s", fs.ID, fs.Notes, err, fs.Expr)
 					}
 					t.Logf("rejected on %s as expected: %v", h.name, err)
 					return
