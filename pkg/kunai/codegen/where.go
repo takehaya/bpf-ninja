@@ -217,8 +217,8 @@ func (c *whereCtx) genBoolEq(w *ir.Condition, failLabel string) (asm.Instruction
 	}
 	// Park the LHS truth value across the RHS evaluation. The RHS is a full
 	// condition whose own comparison/arith codegen writes the low arith
-	// scratch slots (slot 0 for a scalar compare, up to slot 4 for a
-	// 128-bit compare), so the LHS lives in the top of the arith region.
+	// scratch slots (growing up from slot 0 with its nesting), so the LHS
+	// lives in the top of the arith region.
 	// One slot per bool-eq nesting level: a bool-eq operand (nested
 	// bool-eq) parks its own LHS one slot lower, so they never collide.
 	slotDepth := maxArithDepth - 1 - c.boolEqDepth
@@ -968,12 +968,17 @@ func (c *whereCtx) genNot(w *ir.Condition, failLabel string) (asm.Instructions, 
 //
 // Slot allocation (each path "owns" its slots while it executes):
 //
-//   - 0..15: 64-bit arith stack — genArithWithBits at depth d uses
-//     slot d. The 64-bit and 128-bit paths never interleave within a
-//     single binop emit, so the 128-bit path safely reuses slots in
-//     this region for its own preserves: 0,1 for genArithCompare128's
-//     LHS hold, 2,3 for genArith128's `field + field` LHS hi/lo, and
-//     4 for genArithField128Load's high-half transient stash.
+//   - 0..15: 64-bit arith stack — a binary node at depth d parks its
+//     left operand in slot d and evaluates both children from depth
+//     d+1. A 64-bit comparison parks its left value in the first slot
+//     the right side leaves free (slot 0 when the right side is a plain
+//     operand).
+//   - The 128-bit path keeps slots 0..4 (arith128ReservedSlots) for its
+//     own preserves: 0,1 for genArithCompare128's LHS hold, 2,3 for
+//     genArith128's `field + field` LHS hi/lo, and 4 for
+//     genArithField128Load's high-half transient stash. A sub-64-bit
+//     expression inside it (genArith128Narrow) runs the 64-bit pipeline
+//     from slot 5 up, so the two never share a slot.
 //
 // genBoolEq also parks LHS truth values in this region, growing *down*
 // from slot 15 (one per bool-eq nesting level) while operand arith grows
@@ -995,7 +1000,7 @@ const (
 	// genBoolEq parks its LHS in the top of the arith region growing
 	// downward one slot per nesting level, so it must stay above these
 	// reserved low slots; deeper bool-eq nesting is rejected.
-	boolEqOperandReserve = 5
+	boolEqOperandReserve = arith128ReservedSlots
 )
 
 // arithCmpTargetBits returns the comparison's effective integer
@@ -1062,7 +1067,12 @@ func (c *whereCtx) genArithCompare(w *ir.Condition, failLabel string) (asm.Instr
 		return nil, fmt.Errorf("codegen: unknown comparison op %v", w.Op)
 	}
 
-	slot := arithStackSlot(0)
+	// The left value is parked while the right side is computed, in the
+	// first slot the right side's binary nodes do not use (they take
+	// slots 0..nesting-1): slot 0 for a plain operand, as before.
+	// (Generating the right side above already refused a nesting that
+	// would leave no slot.)
+	slot := arithStackSlot(arithNesting(w.ArithR))
 	var insns asm.Instructions
 	insns = append(insns, left...)
 	insns = append(insns, asm.StoreMem(asm.R10, slot, asm.R3, asm.DWord))
@@ -1079,9 +1089,10 @@ func (c *whereCtx) genArithCompare(w *ir.Condition, failLabel string) (asm.Instr
 // R3 = high half, R5 = low half. Supported ops: `==` / `!=` (F4) and
 // `<` / `≤` / `>` / `≥` (F3). Operand shapes supported: ArithField
 // (an Int<128> field), a constant, `field ± const` and `field ± field`,
-// nested through the left operand (see genArith128). A binop on the
-// right of ±, a field narrower than 128 bits or a bit slice next to an
-// Int<128> operand, and aux fields return ErrNotImplemented; operators
+// nested through the left operand, and any sub-64-bit expression, which
+// computes in 64 bits and joins zero-extended (see genArith128). A
+// 128-bit binop on the right of ±, a slice between 65 and 127 bits, and
+// Int<128> aux fields return ErrNotImplemented; operators
 // other than + and - on Int<128> operands never arrive, the resolver
 // types them as errors (dsl-types.md §13.9).
 func (c *whereCtx) genArithCompare128(w *ir.Condition, failLabel string, targetBits int) (asm.Instructions, error) {
@@ -1157,9 +1168,10 @@ func (c *whereCtx) genArithCompare128(w *ir.Condition, failLabel string, targetB
 // genArith128 emits insns that leave R3=high and R5=low of an Int<128>
 // arith expression. Supported shapes:
 //
-//   - ArithField: 16-byte field load via genArithField128Load (a
-//     narrower field or a bit slice next to an Int<128> operand is not
-//     wired: nothing zero-extends it into the register pair)
+//   - a sub-64-bit expression (a narrower field, a slice of at most 64
+//     bits, `tcp.dport * 2`): the 64-bit pipeline, zero-extended
+//     (genArith128Narrow)
+//   - ArithField: 16-byte field load via genArithField128Load
 //   - ArithConst: literal materialised as (0, const), or all ones in the
 //     high half for a negative literal (-1 is 2^128 - 1 at this width)
 //   - ArithBinOp with op ∈ {+, -}:
@@ -1176,29 +1188,32 @@ func (c *whereCtx) genArith128(e *ir.ArithExpr) (asm.Instructions, error) {
 	if e == nil {
 		return nil, fmt.Errorf("codegen: nil 128-bit arith expression")
 	}
+	// A subexpression whose fields are all at most 64 bits wide (a
+	// narrower field, a slice, `tcp.dport * 2`) computes in 64 bits like
+	// anywhere else (§13.9) and joins the 128-bit operand zero-extended.
+	if isNarrowArith(e) {
+		return c.genArith128Narrow(e)
+	}
 	switch e.Kind {
 	case ast.ArithField:
 		if f := e.Field; f != nil && f.Field != nil && (f.Slice != nil || f.Field.Bits != 128) {
-			return nil, fmt.Errorf("%w: %s.%s (bit<%d>) next to an Int<128> operand: mixed widths are not wired in the 128-bit path (slice the Int<128> side to the same width)", ErrNotImplemented, f.Layer.Spec.Name, f.Field.Name, f.EffectiveBits())
+			return nil, fmt.Errorf("%w: %s.%s (bit<%d>) next to an Int<128> operand: a field wider than 64 bits but narrower than 128 is not wired", ErrNotImplemented, f.Layer.Spec.Name, f.Field.Name, f.EffectiveBits())
 		}
 		return c.genArithField128Load(e.Field)
 	case ast.ArithBinOp:
 		if e.Op != ast.ArithAdd && e.Op != ast.ArithSub {
-			// The resolver rejects these on Int<128> operands; a narrower
-			// subexpression (`ipv6.src == tcp.dport * 2`) is well-typed but
-			// lands here because the comparison is 128 bits wide.
-			return nil, fmt.Errorf("%w: %s on a sub-64-bit expression next to an Int<128> operand", ErrNotImplemented, e.Op)
+			return nil, fmt.Errorf("codegen: %s on Int<128> operands reached codegen; the resolver should have rejected it", e.Op)
 		}
 		if e.Right == nil {
 			return nil, fmt.Errorf("codegen: bit<128> arith binop missing RHS")
 		}
-		switch e.Right.Kind {
-		case ast.ArithConst:
+		switch {
+		case e.Right.Kind == ast.ArithConst:
 			return c.genArith128FieldOpConst(e)
-		case ast.ArithField:
+		case e.Right.Kind == ast.ArithField, isNarrowArith(e.Right):
 			return c.genArith128FieldOpField(e)
 		}
-		return nil, fmt.Errorf("%w: bit<128> arith RHS shape %v not supported (only field or const)", ErrNotImplemented, e.Right.Kind)
+		return nil, fmt.Errorf("%w: bit<128> arith with a 128-bit expression on the right of %s (only a field, a constant, or a sub-64-bit expression)", ErrNotImplemented, e.Op)
 	case ast.ArithConst:
 		// A positive constant is (0, const): the resolver fit-checked it
 		// against Int<128>, so only the low half can be non-zero. A
@@ -1212,6 +1227,49 @@ func (c *whereCtx) genArith128(e *ir.ArithExpr) (asm.Instructions, error) {
 		return append(asm.Instructions{asm.Mov.Imm(asm.R3, high)}, loadConst(asm.R5, e.Const)...), nil
 	}
 	return nil, fmt.Errorf("%w: bit<128> arith expression kind %v not supported", ErrNotImplemented, e.Kind)
+}
+
+// isNarrowArith reports whether `e` is an expression the 64-bit pipeline
+// evaluates: a field or a binary node none of whose fields is wider than
+// 64 bits (a node of literals only computes in 64 bits too, D-009). A
+// bare constant is not narrow; it takes its width from the operand next
+// to it.
+func isNarrowArith(e *ir.ArithExpr) bool {
+	return e != nil && e.Kind != ast.ArithConst && arithMaxFieldBits(e) <= 64
+}
+
+// arithNesting is the number of arith slots `e` needs: one per level of
+// binary nodes.
+func arithNesting(e *ir.ArithExpr) int {
+	if e == nil || e.Kind != ast.ArithBinOp {
+		return 0
+	}
+	return 1 + max(arithNesting(e.Left), arithNesting(e.Right))
+}
+
+// arith128ReservedSlots is how many low arith slots the 128-bit path
+// parks operands in while the other operand is computed: the compare's
+// left side in 0/1, field ± field's left side in 2/3, the high-half
+// stash in 4. A sub-64-bit expression inside it, and the bool-eq park
+// slots (boolEqOperandReserve), stay above them.
+const arith128ReservedSlots = 5
+
+// genArith128Narrow evaluates a sub-64-bit expression with the 64-bit
+// pipeline and leaves it zero-extended in the 128-bit pair (R3 = 0,
+// R5 = value). It starts above the slots the 128-bit path parks its
+// operands in (arith128ReservedSlots), which leaves it that many fewer
+// nesting levels than a 64-bit comparison has.
+func (c *whereCtx) genArith128Narrow(e *ir.ArithExpr) (asm.Instructions, error) {
+	// Its leaves sit at depth arith128ReservedSlots + nesting, which must
+	// stay below the arith ceiling.
+	if room := maxArithDepth - c.boolEqDepth - arith128ReservedSlots; arithNesting(e) >= room {
+		return nil, fmt.Errorf("%w: a sub-64-bit expression next to an Int<128> operand nests deeper than %d levels", ErrNotImplemented, room-1)
+	}
+	insns, err := c.genArithWithBits(e, arith128ReservedSlots, 0)
+	if err != nil {
+		return nil, err
+	}
+	return append(insns, asm.Mov.Reg(asm.R5, asm.R3), asm.Mov.Imm(asm.R3, 0)), nil
 }
 
 // genArith128FieldOpConst handles `field + const` / `field - const`
@@ -1414,13 +1472,8 @@ func (c *whereCtx) genArithField128Load(f *ir.FieldRef) (asm.Instructions, error
 	return insns, nil
 }
 
-// genArith computes e's value into R3. depth indexes the stack slot
-// used if e is a binary op; callers pass the current nesting level.
-func (c *whereCtx) genArith(e *ir.ArithExpr, depth int) (asm.Instructions, error) {
-	return c.genArithWithBits(e, depth, 0)
-}
-
-// genArithWithBits is genArith plus a target-width hint used to narrow
+// genArithWithBits evaluates an arith expression into R3 (`depth` is the
+// first arith slot it may use), with a target-width hint used to narrow
 // integer-constant leaves at codegen time (dsl-types.md §5.2 / §7.3).
 // targetBits = 0 means "no narrowing"; targetBits ∈ [1, 63] masks
 // the constant to its low `targetBits` so 2's-complement negative
@@ -1551,11 +1604,14 @@ func emitSliceShiftMask(f *ir.FieldRef, loadBytes int) asm.Instructions {
 // R5 ⬅ R5 op R3; the result is then moved back into R3 for the
 // caller.
 func (c *whereCtx) genArithBinOp(e *ir.ArithExpr, depth int) (asm.Instructions, error) {
-	left, err := c.genArith(e.Left, depth+1)
+	// A literal operand is narrowed to the width of the operand next to
+	// it (§7.3, D-009): `tcp.dport + -1` adds 0xffff, not a 64-bit -1.
+	// With no field on the other side it stays a 64-bit value.
+	left, err := c.genArithWithBits(e.Left, depth+1, arithMaxFieldBits(e.Right))
 	if err != nil {
 		return nil, err
 	}
-	right, err := c.genArith(e.Right, depth+1)
+	right, err := c.genArithWithBits(e.Right, depth+1, arithMaxFieldBits(e.Left))
 	if err != nil {
 		return nil, err
 	}

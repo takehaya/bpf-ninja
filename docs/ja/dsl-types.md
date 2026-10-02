@@ -625,9 +625,9 @@ dsl codegen is not yet fully implemented: value V exceeds int32 immediate range 
 | `/`, `%`, `&`, `\|`, `^`, `<<`, `>>` | ✅ 既存 | ❌ 型エラー (D-035。bit slice か CIDR literal で書く) |
 | bit-slice `field[lo:hi]` | ✅ 任意 bit 範囲 (single LDX + bswap + shift+mask、F11/F13) | ✅ byte-aligned 端点に限り cmp 可 (F12 で resolver desugar) |
 
-表の ❌ は型エラー (resolver が拒否) です。型としては well-typed でも codegen が配線していない形 (`±` の右側の binop、`Int<128>` の operand と幅の違う field や bit slice の混在 (`ipv6.src + tcp.dport`)、aux field の `Int<128>` 算術) は `ErrNotImplemented` を返します。
+表の ❌ は型エラー (resolver が拒否) です。型としては well-typed でも codegen が配線していない形 (`±` の右側に 128 bit の binop (`ipv6.src + (ipv6.dst + 1)`)、65〜127 bit の slice、aux field の `Int<128>` 算術) は `ErrNotImplemented` を返します。64 bit 以下の部分式 (幅の狭い field、64 bit までの slice、`tcp.dport * 2`) は 64 bit で計算され、zero-extend されて 128 bit の operand に加わります (`ipv6.src + tcp.dport`)。
 
-Literal narrow (§4.1 / §7.3) について、負数を 2's complement で uint64 化したものを含む整数リテラルは、codegen の最終 emit 直前に対象 field の幅 N でマスクされます。`tcp.dport == -1` ⇒ 比較 immediate = `0xffff` (Int<16> narrow) となります。これにより signed-extended 値が int32 immediate 範囲に収まります。実装は bracket predicate 用 (`codegen/predicate.go::emitIntPredicate`) と where arith cmp 用 (`codegen/where.go::genArithWithBits`、target bits は両 operand の field 最大幅から計算) の 2 箇所です。
+Literal narrow (§4.1 / §7.3) について、負数を 2's complement で uint64 化したものを含む整数リテラルは、codegen の最終 emit 直前に対象 field の幅 N でマスクされます。`tcp.dport == -1` ⇒ 比較 immediate = `0xffff` (Int<16> narrow) となります。これにより signed-extended 値が int32 immediate 範囲に収まります。実装は bracket predicate 用 (`codegen/predicate.go::emitIntPredicate`) と where arith cmp 用 (`codegen/where.go::genArithWithBits`、target bits は両 operand の field 最大幅から計算) の 2 箇所です。 二項演算の operand になっているリテラルは、比較全体の幅ではなく隣の operand の幅で fit-check され、その幅に narrow されます (隣もリテラルだけなら 64 bit、D-009)。`ipv4.ttl + 300 == tcp.dport` は 300 が `Int<8>` に収まらないので型エラー、`tcp.seq == tcp.dport + -1` の `-1` は `0xffff` です。
 
 ### 9.2 段階展開の意図
 

@@ -229,6 +229,19 @@ vector typFit := {
 vector typFitArith := {
   id := "typ-literal-fit-arith", ast := W (cmp (.bin .add ttl (k 256)) .eq (k 0)),
   expected := .illTyped "literal 256 does not fit Int<8>", note := "D-009: the constant takes its sibling's width" }
+vector whereArithRight := {
+  id := "where-arith-binop-right", ast := W (cmp dport .eq (.bin .add ttl (k 16))),
+  expected := .accept [], note := "a binary node on the right of a comparison: 64 + 16 = 80" }
+vector whereArithRightMiss := {
+  id := "where-arith-binop-right-miss", ast := W (cmp dport .eq (.bin .add ttl (k 17))), expected := .reject }
+vector typFitArithSibling := {
+  id := "typ-literal-fit-arith-sibling", ast := W (cmp (.bin .add ttl (k 300)) .eq dport),
+  expected := .illTyped "literal 300 does not fit Int<8>",
+  note := "D-009: the sibling's width, not the comparison's (Int<16> here)" }
+vector whereNegLitSibling := {
+  id := "where-negative-literal-sibling", ast := W (cmp (fld "tcp" "seq") .eq (.bin .add dport (k (-1)))),
+  packet := eth 0x0800 ++ ipv4 6 ++ tcp 12345 80 (seq := 65615) ++ payload 5, expected := .accept [],
+  note := "-1 next to dport is 0xffff: 80 + 65535, not 80 - 1" }
 vector typWidthIPv6 := {
   id := "typ-ipv6-literal-width", ast := W (.litCmp (ff "ipv4" "src") .eq (.ipv6 1)),
   expected := .illTyped "ipv6 literal requires an Int<128> field" }
@@ -350,12 +363,57 @@ vector arith128CmpNegConst := {
   expected := .accept [], note := "a negative literal compared at 128 bits is all ones in both halves" }
 vector arith128MixedWidthAdd := {
   id := "arith-128-mixed-width-add", ast := W6 (cmp (.bin .add src6 (fld "tcp" "dport")) .eq (k 80)), packet := v6pkt 0 0,
-  expected := .accept [], goStatus := .notImplemented,
-  note := "Int<128> + Int<16> widens to 128 bits (§5.2); Go does not zero-extend a narrower field into its register pair" }
+  expected := .accept [],
+  note := "Int<128> + Int<16> widens to 128 bits (§5.2): the narrower field joins zero-extended" }
 vector arith128MixedWidthMul := {
   id := "arith-128-mixed-width-mul", ast := W6 (cmp src6 .eq (.bin .mul (fld "tcp" "dport") (k 2))), packet := v6pkt 160 0,
-  expected := .accept [], goStatus := .notImplemented,
-  note := "the * node is 16 bits wide and well-typed; the 128-bit comparison around it is not wired in Go" }
+  expected := .accept [],
+  note := "the * node is 16 bits wide and computes in 64 bits; only the comparison is 128 bits wide" }
+def dport6 : Arith := fld "tcp" "dport"
+vector arith128MixedCarry := {
+  id := "arith-128-mixed-width-carry", ast := W6 (cmp (.bin .add src6 dport6) .eq dst6),
+  packet := v6pkt lowOnes (2 ^ 64 + 79), expected := .accept [],
+  note := "2^64 - 1 + 80: the narrow addend carries into the high half" }
+vector arith128MixedBorrow := {
+  id := "arith-128-mixed-width-borrow", ast := W6 (cmp (.bin .sub src6 dport6) .eq dst6),
+  packet := v6pkt (2 ^ 64) (2 ^ 64 - 80), expected := .accept [] }
+vector arith128MixedWrap64 := {
+  id := "arith-128-mixed-width-wrap64", ast := W6 (cmp src6 .eq (.bin .sub dport6 (k 100))),
+  packet := v6pkt (2 ^ 64 - 20) 0, expected := .accept [],
+  note := "80 - 100 wraps at 64 bits (D-015), and that value is what the 128-bit comparison sees" }
+vector arith128MixedSlice := {
+  id := "arith-128-mixed-width-slice",
+  ast := W6 (cmp (.bin .add (.field ⟨[("ipv6", none), ("src", some (.slice 64 128))]⟩) dst6) .eq src6),
+  packet := v6pkt (2 ^ 64 + 5) (2 ^ 64), expected := .accept [],
+  note := "a 64-bit slice next to the full field" }
+vector arith128MixedNested := {
+  id := "arith-128-mixed-width-nested", ast := W6 (cmp (.bin .add src6 (.bin .mul dport6 (k 2))) .eq dst6),
+  packet := v6pkt 1 161, expected := .accept [], note := "a sub-64-bit expression on the right of +" }
+vector arith128MixedNeg := {
+  id := "arith-128-mixed-width-neg", ast := W6 (cmp src6 .eq (.bin .add dport6 (k (-1)))),
+  packet := v6pkt 65615 0, expected := .accept [],
+  note := "-1 next to an Int<16> field is 0xffff (§7.3): 80 + 65535" }
+vector arith128ConstBinop := {
+  id := "arith-128-const-binop", ast := W6 (cmp src6 .eq (.bin .mul (k 2) (k 3))), packet := v6pkt 6 0,
+  expected := .accept [], note := "a node of literals only computes in 64 bits (D-009)" }
+vector arith128MixedAux := {
+  id := "arith-128-mixed-width-aux",
+  ast := { layers := [P "eth", P "ipv6", P "tcp"],
+           cond := some (cmp (.bin .add src6 (.field ⟨[("ipv6", none), ("exts", some (.nat 0)), ("next_header", none)]⟩)) .eq (.bin .add dst6 (k 5))) },
+  packet := eth 0x86DD ++ ipv6 0 ++ [6, 0, 0, 0, 0, 0, 0, 0] ++ tcp 12345 80 ++ payload 5, expected := .accept [],
+  note := "an 8-bit extension header field next to the address: fc00::1 + 6 = fc00::2 + 5" }
+vector typArith128NarrowFitNested := {
+  id := "typ-arith-128-narrow-fit-nested",
+  ast := W6 (cmp src6 .eq (.bin .add (.bin .mul dport6 (k 70000)) (fld "tcp" "seq"))), packet := ipv6TCP,
+  expected := .illTyped "literal 70000 does not fit Int<16>" }
+vector arith128WideRight := {
+  id := "arith-128-wide-right", ast := W6 (cmp (.bin .add src6 (.bin .add dst6 (k 1))) .eq (k 4)),
+  packet := v6pkt 1 2, expected := .accept [], goStatus := .notImplemented,
+  note := "Go: a 128-bit expression on the right of ± would overwrite the parked left operand" }
+vector typArith128NarrowFit := {
+  id := "typ-arith-128-narrow-fit", ast := W6 (cmp src6 .eq (.bin .mul dport6 (k 70000))), packet := ipv6TCP,
+  expected := .illTyped "literal 70000 does not fit Int<16>",
+  note := "a literal fits the width of the node it sits in, not the comparison's" }
 vector arith128CmpWideConst := {
   id := "arith-128-cmp-wide-const", ast := W6 (cmp (.bin .add src6 dst6) .eq (k (2 ^ 32))), packet := v6pkt (2 ^ 32 - 1) 1,
   expected := .accept [], note := "a constant above int32 on the comparison side" }
@@ -401,12 +459,14 @@ def whereVectors : List Vector := [
   actionEntry, actionHit, actionMiss, actionUnknown,
   predCmp, predCmpMiss, predInList, predInListMiss, predInRange, typPredInRangeWide, typPredCmpRange, predInRangeMiss, predNegative, predIPv4,
   capAll, capWhereFalse, capWhereTrue, capLabel, capAbsent, capPresent,
-  typUnknownProto, typNoDispatch, typNotInChain, typUnknownField, typFit, typFitArith, typWidthIPv6, typCIDRWidth,
+  typUnknownProto, typNoDispatch, typNotInChain, typUnknownField, typFit, typFitArith, whereArithRight, whereArithRightMiss, typFitArithSibling, whereNegLitSibling, typWidthIPv6, typCIDRWidth,
   typPredIdent, typInSet, predInSetMember, predInSetMiss, typPredInSetWidth, predInSetSubByte, predInSetWindow, typPredInSetWindow, typPredInSetTwice, typPredInSetBudget, typPredInSetOptional, typPredInSetAlt, typAny, typExists, typAuxPath,
   arith128AddConst, arith128SubConst, arith128AddCarry, arith128AddWrap, arith128SubBorrow, arith128SubWrap, arith128AddMiss,
   arith128FieldAddField, arith128FieldAddFieldCarry, arith128FieldSubField, arith128FieldSubFieldBorrow, arith128AddWideConst, arith128SubWideConstBorrow,
   arith128AddNegConst, arith128SubNegConst, arith128CmpNegConst,
-  arith128MixedWidthAdd, arith128MixedWidthMul, arith128CmpWideConst,
+  arith128MixedWidthAdd, arith128MixedWidthMul, arith128MixedCarry, arith128MixedBorrow, arith128MixedWrap64, arith128MixedSlice,
+  arith128MixedNested, arith128MixedNeg, arith128ConstBinop, arith128MixedAux, typArith128NarrowFitNested,
+  arith128WideRight, typArith128NarrowFit, arith128CmpWideConst,
   arith128Lt, arith128GeMiss, arith128LtHighHalf, typArith128Mul, typArith128Band, typPathDeep, typPathDeepLabel, typPathDeepBracket]
 
 end Kunai

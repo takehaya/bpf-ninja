@@ -78,8 +78,8 @@ func checkBracketIntFit(field *ir.FieldRef, v *ast.Value, layerName string, pos 
 // docs/ja/dsl-types.md. Per D0 (b+1) the resolver enforces fit-check,
 // division-by-zero and the operator set above 64 bits (§13.9: + and -
 // only); codegen separately reports ErrNotImplemented for the Int<128>
-// operand shapes it has not wired (a binop on the right of ±, a narrower
-// field or a bit slice next to an Int<128> operand, aux fields).
+// operand shapes it has not wired (a 128-bit binop on the right of ±, a
+// slice between 65 and 127 bits, Int<128> aux fields).
 
 // checkArithCondition runs all type-related validations against a
 // resolved WAtomArith condition: literal fit checks against the
@@ -124,17 +124,33 @@ func checkArithExpr(e *ir.ArithExpr, bits int) error {
 		// Above 64 bits only `+` and `-` are defined (dsl-types.md §13.9):
 		// `*` on Int<128> was dropped in favour of bit slices, and the
 		// rest has no use that a CIDR literal or a slice does not cover.
-		if w := exprMaxFieldBits(e); w > 64 && e.Op != ast.ArithAdd && e.Op != ast.ArithSub {
+		wl, wr := exprMaxFieldBits(e.Left), exprMaxFieldBits(e.Right)
+		if w := max(wl, wr); w > 64 && e.Op != ast.ArithAdd && e.Op != ast.ArithSub {
 			return errorf(e.Pos, "%s on Int<%d>: only + and - are defined on fields wider than 64 bits (use a bit slice `field[lo:hi]` or a CIDR literal)", e.Op, w)
 		}
-		if err := checkArithExpr(e.Left, bits); err != nil {
+		// A literal operand takes the width of the operand next to it, and
+		// 64 bits when that has no field either (§7.3, D-009; Lean
+		// `sideWidths`): `ipv4.ttl + 300` does not type, whatever the
+		// comparison around it is.
+		if err := checkArithExpr(e.Left, literalContextBits(wr)); err != nil {
 			return err
 		}
-		if err := checkArithExpr(e.Right, bits); err != nil {
+		if err := checkArithExpr(e.Right, literalContextBits(wl)); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// literalContextBits is the width a literal operand of a binary node is
+// checked against: the width of the operand next to it, or 64 bits when
+// that has no field either (0). Codegen narrows the literal the same way
+// (genArithBinOp passes the sibling's width, 0 meaning no narrowing).
+func literalContextBits(siblingBits int) int {
+	if siblingBits == 0 {
+		return 64
+	}
+	return siblingBits
 }
 
 // arithCmpTargetBits picks the comparison's target width per the
