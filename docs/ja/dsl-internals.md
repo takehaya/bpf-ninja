@@ -516,7 +516,7 @@ DSL output が既存の runFilter wrapper にどう乗るかを説明します�
 
 Stack 占有 (詳細は `codegen.go` パッケージ doc の `KunaiStackTop` 周辺) は次のとおりです。
 
-- kunai 占有: arith spill `[-56..-184]` (`maxArithDepth = 16` slot × 8 byte、10b で 8 → 16 bump)、bpf_loop ctx `[-208..-176]` (4 slot: `bpfLoopCtxOffsetSlot=-208` / `bpfLoopCtxScratchStartSlot=-200` / `bpfLoopCtxScratchEndSlot=-192` / `bpfLoopCtxLayerEntrySlot=-184`)、per-layer entry slot `[-224..-224-8N]` (`whereLayerEntrySlot`、PR-A/B 由来、het-alt 後の where / capture が runtime offset を読むのに使用、`whereLayerEntrySlotCap = 7` 上限 = 56 byte)、dynamic aux offset slot `[-280..-512]` (`dynamicAuxOffsetSlot(layerPos, slotIdx)`、TLV-walk callback の lifted prelude が record、demand walker が割り当てた option 数だけ消費、`dynamicAuxMaxSlotsPerLayer = 5` × `whereLayerEntrySlotCap = 7` 上限 = 280 byte cap、realistic vocab で TCP options (1 layer × 1〜5 slot = 8〜40 byte) が最大)
+- kunai 占有: arith spill `[-56..-184]` (`maxArithDepth = 16` slot × 8 byte、10b で 8 → 16 bump)、bpf_loop ctx `[-208..-176]` (4 slot: `bpfLoopCtxOffsetSlot=-208` / `bpfLoopCtxScratchStartSlot=-200` / `bpfLoopCtxScratchEndSlot=-192` / `bpfLoopCtxLayerEntrySlot=-184`)、parser counter slot `[-224..-208]` (2 slot)、stack plan `[-232..-512]` (`stack_plan.go` `planStack`: resolver が `NeedsRuntimeOffset` を付けた layer group ごとの runtime entry slot (het-alt / 量化 layer 以降の where / capture と optional の presence 判定が読む) を chain 順に並べ、その下に各 layer の dynamic aux offset slot (TLV-walk callback の lifted prelude が record、demand walker が割り当てた option 数だけ消費) を詰める。必要な slot だけが場所を取るので上限は BPF stack の底 = 合計 36 slot、超える filter は `ErrNotImplemented`)
 - host 占有: `(KunaiStackTop, 0)` = `(-56, 0)` の任意の slot。bpf-ninja wrapper は `-48` で tracing args ptr、`-12..-8` で metadata
 - 境界定数は `pkg/kunai/codegen.KunaiStackTop = int16(-56)` です。kunai がここより浅いオフセットを書くことは無く、regression test `TestZeroCapsIsHostAgnostic` で守ります。
 - scratch buffer サイズは `pkg/kunai/codegen.ScratchBufSize = 512` byte です。host wrapper はこの prefix を per-CPU scratch buffer に materialise してから kunai filter に jump します。新 protocol を vocab に足すときは、`sum(per-protocol max trail) + sum(fixed primary headers) ≤ ScratchBufSize` が成立するかを、codegen.go パッケージ doc の sizing contract に従って検証します。
@@ -1025,7 +1025,7 @@ callback は kind ごとの slot-store prelude を dispatch の前に置きま�
 
 `pkt.lookahead` を使う counter decrement は `pkt.advance` より前に記述します。逆順は loader が診断します。これは対応する TLV sibling の制約であり、P4-lite の任意の statement 順序を保持する一般的な保証ではありません。
 
-Demand-driven 割当では、codegen は `collectQueriedOptions(p)` (`pkg/kunai/codegen/option_demand.go`) で program 全体の where、各 layer の bracket predicate、各 capture を walk し、参照された (layer, option) ペアだけ slot を割り当てます。`where tcp.options.MSS.value == 1460` だけなら slot は 1 個です (per-layer × per-aux で最大 5 まで、`dynamicAuxMaxSlotsPerLayer` = TCP の queryable kind 数)。layer entry では `emitDynamicAuxSentinelInit` が各 slot を sentinel `-1` で zero-init します。extract されなかった option は sentinel のまま残り、where 評価で reject されます。
+Demand-driven 割当では、codegen は `collectQueriedOptions(p)` (`pkg/kunai/codegen/option_demand.go`) で program 全体の where、各 layer の bracket predicate、各 capture を walk し、参照された (layer, option) ペアだけ slot を割り当てます。`where tcp.options.MSS.value == 1460` だけなら slot は 1 個です (slot の総数は stack plan の 36 slot が上限)。layer entry では `emitDynamicAuxSentinelInit` が各 slot を sentinel `-1` で zero-init します。extract されなかった option は sentinel のまま残り、where 評価で reject されます。
 
 Where 評価では、`tcp.options.MSS.value == 1460` のような predicate は `genArithFieldLoad → dynamicOffsetSlotFor → genDynamicOffsetAuxLoad` (`pkg/kunai/codegen/where.go`) の経路をたどります。
 
@@ -1169,7 +1169,7 @@ implementation 詳細は、`pkg/kunai/codegen/parser_state.go` の state graph e
 | Aux × literal | landed (B-3 commit 6547a42): IPv4/IPv6/MAC/CIDR literal を aux 経由で比較可能。例: `srv6.segments[0].addr == fc00::/16`、`where ipv4.options.RR.addrs[0].addr == 10.0.0.1` |
 | Capture | `capture f1, f2` フィールド列 不可 / 量化 layer (`+`/`*`/`{n,m}`) を含む filter で `headers+N` 不可。het-alt 越えの capture は max-alt 上界丸めで動作 |
 | Alternation | alt 数 2-4 (`altCountCap`) / heterogeneous size + diverged dispatch 対応済 (P3-12) / nested alt は resolver flatten (P3-13) / quantifier 付き内側 alt (`(a\|b)?`) は reject / 先頭不可 |
-| Layer 数 | per-layer entry slot を要する filter は最大 7 layer (`whereLayerEntrySlotCap`、10b で 12→7 にトレードオフ縮小)。実用上の chain 深度 (深 5 layer = `eth/ipv4/udp/gtp/ipv4/tcp`) を上回る上限 |
+| Layer 数 | runtime entry slot と dynamic aux slot は 1 つの stack plan から必要な分だけ割り当てる (`planStack`)。上限は合計 36 slot (512 byte stack の底) で、層数そのものの上限は無い |
 | Parser machine (vocab 著者向け) | select key 幅 ≤8 bit / select key 本数 ≤3 / variable-trail scale は 2 冪のみ / self-loop 反復上限あり (vocab の `<SELF>_MAX_DEPTH` で declare) |
 | Self-validation | parser-block 自検証 (`transition select(field) { v: accept; default: reject; }`) のみ。旧 SANITY const family は撤廃 (legacy 名は loud-fail で拒否) |
 | Vocab | 1 protocol あたり最大 2 ラベル |

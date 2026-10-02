@@ -149,7 +149,7 @@ type pmCtx struct {
 	// multi-state callback emits a flat slot-store prelude for every
 	// option in this layer's slice (and only those). nil-safe.
 	queried queriedOptions
-	// queriedAuxes is the OutParam-name set for c.queried[c.layer]
+	// queriedAuxes is the OutParam-name set for c.queried.of(c.layer)
 	// — built once at pmCtx construction and consulted by the
 	// TLV-walk dispatch elision predicate (caseRedundantWithDefault)
 	// without rebuilding per dispatch site. nil when no options are
@@ -265,7 +265,7 @@ func (c *pmCtx) emitState(stateIdx int) (asm.Instructions, asm.Instructions, err
 			// capture / option-walk emitted later in the program can
 			// recover the layer's start regardless of how far the
 			// parser machine advances R4 inside its own body.
-			slotEntry, err := whereLayerEntrySlot(c.layer.LayerPos)
+			slotEntry, err := c.queried.entrySlot(c.layer)
 			if err != nil {
 				return nil, nil, err
 			}
@@ -319,7 +319,7 @@ func (c *pmCtx) emitEntryDispatch() (asm.Instructions, error) {
 	if c.layerIdx == 0 || c.layer.Dispatch == nil {
 		return nil, nil
 	}
-	di, err := genParentDispatch(c.layer, c.layerIdx, c.all, c.r4IsRange, precedingLayersLeaveR4Range(c.all, c.layerIdx-1), dslReject)
+	di, err := genParentDispatch(c.layer, c.layerIdx, c.all, c.queried, c.r4IsRange, precedingLayersLeaveR4Range(c.all, c.layerIdx-1), dslReject)
 	if err != nil {
 		return nil, err
 	}

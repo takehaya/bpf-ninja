@@ -324,10 +324,11 @@ func vlanOptIPv4Program() *ir.Program {
 // `LoadMem R3 ← slot; JEq R3, -1, fail` precedes the field load, and under
 // `not` the guard's target is the not-success landing (absent ⇒ true).
 func TestGenAbsentLayerGuard(t *testing.T) {
-	slot, err := whereLayerEntrySlot(1)
-	if err != nil {
-		t.Fatal(err)
-	}
+	slot := entrySlotOf(t, func() *ir.Program {
+		p := vlanOptIPv4Program()
+		p.Layers[1].NeedsRuntimeOffset = true
+		return p
+	}(), 1)
 	atom := func(p *ir.Program) *ir.Condition {
 		return &ir.Condition{
 			Kind: ast.WAtomArith, Op: ast.CmpEq,

@@ -56,9 +56,9 @@ var chainCbProto = &btf.FuncProto{
 // (slot 15 at -176 under maxArithDepth=16) sits flush against
 // layerEntry's upper bound — the byte ranges [-176, -168) and
 // [-184, -176) are disjoint, so packing without a margin is safe.
-// The 16-byte gap [-224, -208) below ctx hosts the parser counter
-// slots and provides the contract margin against
-// whereLayerEntrySlotBase = -224.
+// The 16 bytes [-224, -208) below ctx hold the parser counter slots;
+// the stack plan (entry and dynamic aux slots) starts below them at
+// stackPlanTop = -232.
 const (
 	bpfLoopCtxOffsetSlot       int16 = -208
 	bpfLoopCtxScratchStartSlot int16 = -200
@@ -155,7 +155,7 @@ func genBpfLoopChain(layer *ir.LayerInstance, index int, all []*ir.LayerInstance
 	}
 	// A marked `*` / `{0,m}` layer's entry slot reads "absent" until a
 	// present iteration overwrites it (D-003).
-	sentinel, err := emitLayerEntrySentinel(layer)
+	sentinel, err := emitLayerEntrySentinel(layer, pc.queried)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -343,7 +343,7 @@ func genBpfLoopCallback(layer *ir.LayerInstance, selfConst *vocab.DispatchConst,
 
 	// Record this instance's start for where / capture (last one wins,
 	// D-018) before the cursor moves past it.
-	entry, err := emitLayerEntryStoreFromCb(layer)
+	entry, err := emitLayerEntryStoreFromCb(layer, pc.queried)
 	if err != nil {
 		return nil, err
 	}
@@ -387,7 +387,7 @@ func genBpfLoopCallback(layer *ir.LayerInstance, selfConst *vocab.DispatchConst,
 func callbackPredicates(layer *ir.LayerInstance, rejectLabel string, pc *predCtx) (asm.Instructions, error) {
 	var replayPC *predCtx
 	if pc != nil {
-		replayPC = &predCtx{sets: pc.sets}
+		replayPC = &predCtx{sets: pc.sets, queried: pc.queried}
 	}
 	preds, err := emitPredicates(layer.Predicates, replayPC)
 	if err != nil {

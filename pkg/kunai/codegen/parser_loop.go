@@ -387,7 +387,7 @@ func (c *pmCtx) emitAccPrelude(sel *vocab.SelectOp, atoms []accAtom, breakLabel 
 func (c *pmCtx) emitDynamicAuxSentinelInit() (asm.Instructions, error) {
 	// Option slots start at the absent sentinel; stack count slots at 0.
 	var options, counts []int
-	for i, layout := range c.queried[c.layer] {
+	for i, layout := range c.queried.of(c.layer) {
 		if isStackCountLayout(c.layer, layout) {
 			counts = append(counts, i)
 		} else {
@@ -489,7 +489,7 @@ func (c *pmCtx) emitDynamicAuxSlotPrelude(sel *vocab.SelectOp, breakLabel string
 	if atoms := c.accPlan.atomsFor(c.layer); atoms != nil {
 		return c.emitAccPrelude(sel, atoms, breakLabel)
 	}
-	demand := c.queried[c.layer]
+	demand := c.queried.of(c.layer)
 	if len(c.queried.optionDemand(c.layer)) == 0 {
 		return nil, nil
 	}
@@ -741,10 +741,10 @@ func (c *pmCtx) emitMultiStateDispatch(entry *vocab.ParseState, entryIdx int, ad
 // layer's queried options once per pmCtx, to avoid rebuilding it
 // on every dispatch site. nil when no options are queried.
 func buildQueriedAuxNames(qo queriedOptions, layer *ir.LayerInstance) map[string]bool {
-	if qo == nil || layer == nil {
+	if layer == nil {
 		return nil
 	}
-	layouts := qo[layer]
+	layouts := qo.of(layer)
 	if len(layouts) == 0 {
 		return nil
 	}

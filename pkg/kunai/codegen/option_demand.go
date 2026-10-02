@@ -20,16 +20,37 @@ import (
 // program actually needs rather than to the vocab's option vocabulary
 // (TCP declares four eligible options today; a program that only
 // reads tcp.options.MSS pays for one slot, not four).
-type queriedOptions map[*ir.LayerInstance][]*vocab.AuxLayout
+// queriedOptions is the demand walker's result: the dynamic-eligible aux
+// references per layer, and the stack plan that places their slots and
+// the layers' runtime entry slots. The zero value has no demand and no
+// slots.
+type queriedOptions struct {
+	demand map[*ir.LayerInstance][]*vocab.AuxLayout
+	plan   *stackPlan
+}
+
+// of returns the layer's demand list (nil when nothing is queried).
+func (qo queriedOptions) of(layer *ir.LayerInstance) []*vocab.AuxLayout { return qo.demand[layer] }
+
+// entrySlot is the stack slot holding the layer's runtime entry offset
+// (planStack); only layers the resolver marked NeedsRuntimeOffset have one.
+func (qo queriedOptions) entrySlot(layer *ir.LayerInstance) (int16, error) {
+	if qo.plan != nil && layer != nil {
+		if slot, ok := qo.plan.entry[layer.LayerPos]; ok {
+			return slot, nil
+		}
+	}
+	return 0, fmt.Errorf("codegen: %s has no runtime entry slot (the resolver did not mark it)", layer.DisplayName())
+}
 
 // collectQueriedOptions walks the resolved program and gathers every
-// dynamic-eligible aux reference. Preserves sort-by-kind-byte
-// ordering so slot indices stay stable across compiles regardless
-// of source order.
-func collectQueriedOptions(p *ir.Program) queriedOptions {
-	qo := queriedOptions{}
+// dynamic-eligible aux reference, then plans the stack slots. Preserves
+// sort-by-kind-byte ordering so slot indices stay stable across compiles
+// regardless of source order.
+func collectQueriedOptions(p *ir.Program) (queriedOptions, error) {
+	qo := queriedOptions{demand: map[*ir.LayerInstance][]*vocab.AuxLayout{}}
 	if p == nil {
-		return qo
+		return qo, nil
 	}
 	visit := func(f *ir.FieldRef) { qo.record(f) }
 	for _, layer := range p.Layers {
@@ -45,16 +66,21 @@ func collectQueriedOptions(p *ir.Program) queriedOptions {
 			visit(f)
 		}
 	}
-	for layer, layouts := range qo {
+	for layer, layouts := range qo.demand {
 		sort.Slice(layouts, func(i, j int) bool {
 			if layouts[i].DynamicKindByte != layouts[j].DynamicKindByte {
 				return layouts[i].DynamicKindByte < layouts[j].DynamicKindByte
 			}
 			return layouts[i].OutParam < layouts[j].OutParam
 		})
-		qo[layer] = layouts
+		qo.demand[layer] = layouts
 	}
-	return qo
+	plan, err := planStack(p.Layers, qo.demand)
+	if err != nil {
+		return queriedOptions{}, err
+	}
+	qo.plan = plan
+	return qo, nil
 }
 
 // visitLayerPredicates fans visit() over a layer's bracket
@@ -116,10 +142,10 @@ func (qo queriedOptions) record(f *ir.FieldRef) {
 	if layout == nil {
 		return
 	}
-	if slices.Contains(qo[f.Layer], layout) {
+	if slices.Contains(qo.demand[f.Layer], layout) {
 		return
 	}
-	qo[f.Layer] = append(qo[f.Layer], layout)
+	qo.demand[f.Layer] = append(qo.demand[f.Layer], layout)
 }
 
 // needsPushCount reports whether a stack reference can only learn how
@@ -153,7 +179,7 @@ func (qo queriedOptions) stackCountLayout(f *ir.FieldRef) *vocab.AuxLayout {
 	if !needsPushCount(f) {
 		return nil
 	}
-	for _, l := range qo[f.Layer] {
+	for _, l := range qo.demand[f.Layer] {
 		if l.OutParam == f.Aux.OutParam {
 			return l
 		}
@@ -175,7 +201,7 @@ func isStackCountLayout(layer *ir.LayerInstance, layout *vocab.AuxLayout) bool {
 // entries: the options whose positions the TLV walk records.
 func (qo queriedOptions) optionDemand(layer *ir.LayerInstance) []*vocab.AuxLayout {
 	var out []*vocab.AuxLayout
-	for _, l := range qo[layer] {
+	for _, l := range qo.demand[layer] {
 		if !isStackCountLayout(layer, l) {
 			out = append(out, l)
 		}
@@ -186,7 +212,7 @@ func (qo queriedOptions) optionDemand(layer *ir.LayerInstance) []*vocab.AuxLayou
 // stackCountSlot returns the slot holding the push count of `stack` in
 // `layer`, when a where / capture clause demanded it.
 func (qo queriedOptions) stackCountSlot(layer *ir.LayerInstance, stack string) (int16, bool) {
-	for _, l := range qo[layer] {
+	for _, l := range qo.demand[layer] {
 		if l.OutParam == stack && isStackCountLayout(layer, l) {
 			return qo.dynamicAuxSlotForLayout(layer, l)
 		}
@@ -204,10 +230,10 @@ func (qo queriedOptions) stackCountSlot(layer *ir.LayerInstance, stack string) (
 // allocated, which means the where / capture walker missed a
 // reference. Caller should fall back or fail loudly.
 func (qo queriedOptions) dynamicAuxSlotForLayout(layer *ir.LayerInstance, layout *vocab.AuxLayout) (int16, bool) {
-	if qo == nil || layer == nil || layout == nil {
+	if layer == nil || layout == nil {
 		return 0, false
 	}
-	demand, ok := qo[layer]
+	demand, ok := qo.demand[layer]
 	if !ok {
 		return 0, false
 	}
@@ -224,47 +250,19 @@ func (qo queriedOptions) dynamicAuxSlotForLayout(layer *ir.LayerInstance, layout
 	return 0, false
 }
 
-// slotForLayer returns the stack slot at index `slotIdx` (1-based)
-// for `layer`'s demand list. Per-layer-demand-sized stride: the
-// cumulative offset is the sum of prior layers' actual demand
-// lengths (× 8 bytes), so layers that query 0 options consume 0
-// slots and layers that query N consume exactly N. This packs
-// better than the prior fixed `dynamicAuxMaxSlotsPerLayer = 5`
-// stride which reserved 40 bytes per layer regardless of demand,
-// freeing slot region headroom for deeper / wider vocabs.
-//
-// The base descends from -280 in 8-byte steps; bpfStackBottom (-512)
-// caps total demand at 29 slots (= 232 bytes). Worst-case packing
-// is `whereLayerEntrySlotCap (7) × dynamicAuxMaxSlotsPerLayer (5) =
-// 35 slots = 280 bytes` if every layer queried every option, which
-// would still exceed bpfStackBottom — but no realistic vocab gets
-// near that density. The error message names the layer and the
-// chain shape so the user can shrink either dimension.
-const dynamicAuxOffsetSlotBase = int16(-280)
-const dynamicAuxMaxSlotsPerLayer = 5
-const bpfStackBottom = int16(-512)
-
+// slotForLayer returns the stack slot at index `slotIdx` (1-based) in
+// `layer`'s demand list: the layer's first demand slot in the stack plan
+// (planStack packs the lists in chain order, so a layer that queries no
+// option takes no space) minus 8 bytes per earlier entry.
 func (qo queriedOptions) slotForLayer(layer *ir.LayerInstance, slotIdx int) (int16, error) {
-	if slotIdx <= 0 || slotIdx > dynamicAuxMaxSlotsPerLayer {
-		return 0, fmt.Errorf("%w: dynamic aux slot %d out of range [1, %d]", ErrNotImplemented, slotIdx, dynamicAuxMaxSlotsPerLayer)
+	demand := qo.demand[layer]
+	if slotIdx <= 0 || slotIdx > len(demand) {
+		return 0, fmt.Errorf("codegen: dynamic aux slot %d of %s out of range [1, %d]", slotIdx, layer.DisplayName(), len(demand))
 	}
-	if layer.LayerPos < 0 || layer.LayerPos >= whereLayerEntrySlotCap {
-		return 0, fmt.Errorf("%w: dynamic aux slot for layer position %d exceeds cap %d", ErrNotImplemented, layer.LayerPos, whereLayerEntrySlotCap)
+	if qo.plan == nil {
+		return 0, fmt.Errorf("codegen: dynamic aux slot of %s requested without a stack plan", layer.DisplayName())
 	}
-	cumulative := 0
-	for other, demand := range qo {
-		if other == layer {
-			continue
-		}
-		if other.LayerPos < layer.LayerPos {
-			cumulative += len(demand)
-		}
-	}
-	slot := dynamicAuxOffsetSlotBase - int16(cumulative+(slotIdx-1))*8
-	if slot < bpfStackBottom {
-		return 0, fmt.Errorf("%w: dynamic aux slot for layer position %d slot %d (= %d) sits below the 512-byte BPF stack — total demand × 8 bytes exceeds the 232-byte slot region", ErrNotImplemented, layer.LayerPos, slotIdx, slot)
-	}
-	return slot, nil
+	return qo.plan.aux[layer] - int16(slotIdx-1)*8, nil
 }
 
 // dynamicAuxSentinel is the value stored in a dynamic aux offset

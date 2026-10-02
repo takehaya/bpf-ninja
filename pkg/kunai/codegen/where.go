@@ -58,8 +58,8 @@ func (c *whereCtx) freshLabel(prefix string) string {
 // flagged NeedsRuntimeOffset (resolver mark for "past a het-alt")
 // route through their per-layer entry slot; the rest stay on the
 // static R0+prefix path. Errors propagate from the static path
-// (e.g. quantified layer in prefix) and from slot allocation
-// (layer position exceeds the slot cap).
+// (e.g. quantified layer in prefix) and from the stack plan (a marked
+// layer without a slot is a planning bug).
 func (c *whereCtx) layerAnchorFor(l *ir.LayerInstance) (layerAnchor, error) {
 	if a, ok := c.anchors[l]; ok {
 		return a, nil
@@ -76,7 +76,7 @@ func (c *whereCtx) layerAnchorFor(l *ir.LayerInstance) (layerAnchor, error) {
 	}
 	if l != nil && l.NeedsRuntimeOffset {
 		var slot int16
-		slot, err = whereLayerEntrySlot(l.LayerPos)
+		slot, err = c.queried.entrySlot(l)
 		if err == nil {
 			anchor = slotAnchor(slot)
 		}
@@ -418,7 +418,7 @@ func (c *whereCtx) absentLayerGuard(l *ir.LayerInstance, failLabel string) (asm.
 		// clause references; without the mark there is no slot to test.
 		return nil, fmt.Errorf("%w: where-clause field on quantified layer %q without a runtime entry slot", ErrNotImplemented, l.Spec.Name)
 	}
-	slot, err := whereLayerEntrySlot(l.LayerPos)
+	slot, err := c.queried.entrySlot(l)
 	if err != nil {
 		return nil, err
 	}
