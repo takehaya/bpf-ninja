@@ -9,22 +9,19 @@ import (
 	"github.com/takehaya/bpf-ninja/pkg/kunai/vocab"
 )
 
-// queriedOptions maps each LayerInstance to the dynamic-eligible aux
-// AuxLayouts that the program's where clauses (top-level + per-
-// layer brackets + per-capture) actually reference. Slices are
-// sorted by DynamicKindByte for deterministic codegen.
-//
-// The codegen's TLV-walk callback writes one stack slot per (layer,
-// queried option) pair — *not* per spec-eligible aux. This keeps
-// the per-iteration verifier state cost proportional to what the
-// program actually needs rather than to the vocab's option vocabulary
-// (TCP declares four eligible options today; a program that only
-// reads tcp.options.MSS pays for one slot, not four).
 // queriedOptions is the demand walker's result: the dynamic-eligible aux
 // references per layer, and the stack plan that places their slots and
 // the layers' runtime entry slots. The zero value has no demand and no
 // slots.
 type queriedOptions struct {
+	// demand maps each LayerInstance to the dynamic-eligible AuxLayouts
+	// that the program's where clauses (top-level + per-layer brackets +
+	// per-capture) actually reference, sorted by DynamicKindByte for
+	// deterministic codegen. The TLV-walk callback writes one stack slot
+	// per (layer, queried option) pair, not per spec-eligible aux, so the
+	// per-iteration verifier state cost follows what the program needs
+	// (TCP declares four eligible options; a program that only reads
+	// tcp.options.MSS pays for one slot, not four).
 	demand map[*ir.LayerInstance][]*vocab.AuxLayout
 	plan   *stackPlan
 }
@@ -35,10 +32,11 @@ func (qo queriedOptions) of(layer *ir.LayerInstance) []*vocab.AuxLayout { return
 // entrySlot is the stack slot holding the layer's runtime entry offset
 // (planStack); only layers the resolver marked NeedsRuntimeOffset have one.
 func (qo queriedOptions) entrySlot(layer *ir.LayerInstance) (int16, error) {
-	if qo.plan != nil && layer != nil {
-		if slot, ok := qo.plan.entry[layer.LayerPos]; ok {
-			return slot, nil
-		}
+	if qo.plan == nil {
+		return 0, fmt.Errorf("codegen: runtime entry slot of %s requested without a stack plan", layer.DisplayName())
+	}
+	if slot, ok := qo.plan.entry[layer.LayerPos]; ok {
+		return slot, nil
 	}
 	return 0, fmt.Errorf("codegen: %s has no runtime entry slot (the resolver did not mark it)", layer.DisplayName())
 }
@@ -262,7 +260,11 @@ func (qo queriedOptions) slotForLayer(layer *ir.LayerInstance, slotIdx int) (int
 	if qo.plan == nil {
 		return 0, fmt.Errorf("codegen: dynamic aux slot of %s requested without a stack plan", layer.DisplayName())
 	}
-	return qo.plan.aux[layer] - int16(slotIdx-1)*8, nil
+	base, ok := qo.plan.aux[layer]
+	if !ok {
+		return 0, fmt.Errorf("codegen: %s has demand but no planned aux slots (not a layer of the program)", layer.DisplayName())
+	}
+	return base - int16(slotIdx-1)*8, nil
 }
 
 // dynamicAuxSentinel is the value stored in a dynamic aux offset

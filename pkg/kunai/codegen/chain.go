@@ -59,7 +59,7 @@ func genStaticChain(layer *ir.LayerInstance, index int, all []*ir.LayerInstance,
 	}
 	// A marked optional layer's entry slot reads "absent" until a present
 	// iteration overwrites it (D-003); the absent path never writes again.
-	sentinel, err := emitLayerEntrySentinel(layer, pc.queried)
+	sentinel, err := emitLayerEntrySentinel(layer, queriedOf(pc))
 	if err != nil {
 		return nil, err
 	}
@@ -143,7 +143,7 @@ func genStaticChain(layer *ir.LayerInstance, index int, all []*ir.LayerInstance,
 		insns = append(insns, dispatch...)
 		insns = append(insns, emitBounds(hs, dslReject)...)
 		insns = append(insns, preds...)
-		entry, err := emitLayerEntryStore(layer, pc.queried)
+		entry, err := emitLayerEntryStore(layer, queriedOf(pc))
 		if err != nil {
 			return nil, err
 		}

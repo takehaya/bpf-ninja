@@ -184,7 +184,7 @@ bpf-ninja は non-invasive な BPF 観測ツールです。BPF trampoline (fentr
 
 ファイル構成を読む順に示します。
 
-1. `codegen.go::Gen` は全体の骨格です。共通 helper として、slice 用 `applySliceToOffset` / `slicePostAdjust` / `nextLDXSize`、anchor 三種 `layerAnchorFor` / `absAnchor` / `slotAnchor` / `emitFieldLoad`、per-layer entry slot allocator `whereLayerEntrySlot` を含みます。パッケージ doc が読みどころの最上位です。ABI (R0/R1/R2/R4 の役割、`offsetBase` 概念、`dslReject` / `filter_result` ラベル、`KunaiStackTop` / `ScratchBufSize` の sizing 契約) はここに集約されています。§4 の codegen ABI を参照してください。
+1. `codegen.go::Gen` は全体の骨格です。共通 helper として、slice 用 `applySliceToOffset` / `slicePostAdjust` / `nextLDXSize`、anchor 三種 `layerAnchorFor` / `absAnchor` / `slotAnchor` / `emitFieldLoad`、stack plan (`stack_plan.go` `planStack`、runtime entry slot と dynamic aux slot の割当) を含みます。パッケージ doc が読みどころの最上位です。ABI (R0/R1/R2/R4 の役割、`offsetBase` 概念、`dslReject` / `filter_result` ラベル、`KunaiStackTop` / `ScratchBufSize` の sizing 契約) はここに集約されています。§4 の codegen ABI を参照してください。
 2. `caps.go` は host 提供の `Capabilities` と `ActionFetcher` interface です。`Capabilities` は `Lex` (ReservedLabels) / `Lang` (Action map + ActionFetcher) / `Host` (packet layout) の 3 つのフェーズ別グループを束ねる薄い集約体です。
 3. `dispatch.go` は Field / NoCheck / SelfValidating の dispatch 検査を emit します。Sanity family は撤廃済みで、parser-block 自検証に統合されています。§3.2 / §5 を参照してください。
 4. `predicate.go` は predicate codegen です。整数 / IPv4 / IPv6 / MAC / CIDR、`==` / `!=` / ordered を扱い、F3 IPv6 ordered cmp (`emitIPv6OrderedCmp`)、F7 整数 / 範囲 in (`emitInPredicate`)、bit-slice 適用も含みます。`multiWordRoute` ヘルパで `==` と `!=` を統一しています。
@@ -193,7 +193,7 @@ bpf-ninja は non-invasive な BPF 観測ツールです。BPF trampoline (fentr
 7. `alternation.go` は alt の sequence 展開です。P3-12 で per-alt body emit + matched flag に、P3-13 で nested alt の resolver flatten に対応しました。
 8. `where.go` は where 節 (or / and / not / arith / action atom / bool atom / bool eq / quantifier any-all) です。het-alt 後の field addressing は PR-A/B 由来で、`layerAnchorFor` が abs / slot anchor を出し分けます。F4 Int<128> arith pipeline (`genArithCompare128` / `genArith128FieldOpConst` / `genArith128FieldOpField` / `genArithField128Load`、ABI-clean な stack-bridged carry/borrow)、F6 bitwise ALU 統合、F10 BoolEq の `genConditionAsBool`、F13 slice の `emitSliceShiftMask`、TLV-walk option access を含みます。TLV-walk option access の `genDynamicOffsetAuxLoad` は、parser-machine が記録した dynamic offset slot から absolute scratch offset を読み出して field を取得します。
 9. `capture.go` は `headers+N` の長さ algo です。
-10. `option_demand.go` は、TLV-walk callback が record する dynamic-aux offset の per-(layer, queried-aux) demand-driven 割当です。`queriedOptions` map が where/capture/predicate を walk して実際に参照される aux を集め、eligible aux 数ではなく referenced aux 数で課金する形で、`dynamicAuxOffsetSlotBase` から下の領域を per-layer demand size に応じて pack します。
+10. `option_demand.go` は、TLV-walk callback が record する dynamic-aux offset の per-(layer, queried-aux) demand-driven 割当です。`queriedOptions` が where/capture/predicate を walk して実際に参照される aux を集め、eligible aux 数ではなく referenced aux 数で課金する形で、stack plan の中に per-layer demand size に応じて pack します。
 11. `callback_lint.go` は bpf_loop callback の compile-time branch-count tripwire です。`assertCallbackComplexity` が conditional + Ja の総数を count し、`callbackBranchThreshold` を超えたら `ErrNotImplemented` で reject します。rationale と閾値の根拠は同ファイル冒頭のコメントにあります。new branch in callback → MAX_DEPTH × scalar-ID inflation という fingerprint への systemic mitigation です。
 12. `parser_state.go` / `parser_trail.go` / `parser_select.go` / `parser_loop.go` は parser-machine codegen の 4 ファイルです。`parser_state.go` は状態 walk root + entry dispatch を、`parser_trail.go` は `pkt.advance` 系 variable trailer (mechanism 1) を、`parser_select.go` は transition select tuple-key resolution (lookahead / bit-slice) を、`parser_loop.go` は bpf_loop callback (multi-state TLV walk + parser self-loop + dynamic aux slot prelude) を担当します。
 13. `parser_counter.go` は、mechanism 8 の `extern ParserCounter { ... }` における `pc.set` / `pc.decrement` / `pc.is_zero` を bpf_loop callback の prelude / per-iter ops に下ろします。1-key (`select(pc.is_zero())`) / 2-key (`select(pc.is_zero(), pkt.lookahead<bit<8>>())`) 双方の dispatch を生成します。
@@ -533,7 +533,7 @@ Stack 占有 (詳細は `codegen.go` パッケージ doc の `KunaiStackTop` 周
 1. bounds check として `R3 = R0 + R4 + hs; R3 > R1 → dsl_reject` を emit します。
 2. dispatch check を行います。Field では親の field を読んで const と比較し、NoCheck では何もせず、SelfValidating では parser-block 自検証 (Sanity family の置換) になります。
 3. predicate を emit し、layer のフィールド条件を AND で連鎖します。
-4. `NeedsRuntimeOffset` 設定時は per-layer entry slot を書き出します。het-alt 後の where/capture/option-walk が runtime offset を読むため、`Store R4 → fp[whereLayerEntrySlot(LayerPos)]` を emit します。
+4. `NeedsRuntimeOffset` 設定時は per-layer entry slot を書き出します。het-alt 後の where/capture/option-walk が runtime offset を読むため、`Store R4 → fp[entrySlot(layer)]` (stack plan が LayerPos ごとに割り当てた slot) を emit します。
 5. `Add R4, hs` で R4 を進めます。
 6. HDRLEN 末尾消費 (`emitPrimaryVariableTail`) として、IPv4 IHL / TCP data_offset の trailing bytes を R4 に加算します。
 7. flag-triggered sub-header advance (`emitFlagTriggers`) として、GRE C/K/S 等の flag-gated 4B sub-header を per-flag に R4 advance します。
@@ -568,9 +568,9 @@ bpf_loop callback は bpf2bpf subprogram として emit し、BTF `func_info` �
 
 NOT は inner success label を作って `Ja failLabel` で反転します。
 
-算術は tree walk で R3 に結果を残す契約で、stack に左オペランドを退避します。ネストは `maxArithDepth = 16` の 16 段までです。10b で 8 → 16 に bump し、stack 再配置で `whereLayerEntrySlotBase = -224` / `dynamicAuxOffsetSlotBase = -280` に連鎖シフト、`whereLayerEntrySlotCap = 7` になりました。
+算術は tree walk で R3 に結果を残す契約で、stack に左オペランドを退避します。ネストは `maxArithDepth = 16` の 16 段までです。10b で 8 → 16 に bump しました。その下の runtime entry slot と dynamic aux slot は stack plan が `-232` から必要な分だけ割り当てます。
 
-het-alt 後の field addressing では、resolver の `markRuntimeOffsetLayers` が het-alt より後ろの layer を `NeedsRuntimeOffset = true` でマークします。codegen は `layerAnchorFor` で、その layer の field load を abs anchor (R0+静的 prefix) ではなく slot anchor (R10[whereLayerEntrySlot] + R0) で emit します。het-alt の無い filter は、slot 経路ゼロ、命令数増加なしの完全 fast path を維持します。詳細は `codegen.go::layerAnchor` 周辺と `where.go::layerAnchorFor` を参照してください。
+het-alt 後の field addressing では、resolver の `markRuntimeOffsetLayers` が het-alt より後ろの layer を `NeedsRuntimeOffset = true` でマークします。codegen は `layerAnchorFor` で、その layer の field load を abs anchor (R0+静的 prefix) ではなく slot anchor (R10[entry slot] + R0) で emit します。het-alt の無い filter は、slot 経路ゼロ、命令数増加なしの完全 fast path を維持します。詳細は `codegen.go::layerAnchor` 周辺と `where.go::layerAnchorFor` を参照してください。
 
 action atom (`action == NAME`) では、codegen は `caps.Lang.ActionFetcher.EmitFetch(R3)` を呼んで R3 に action u32 をロードする命令列を取得し、続けて `JNE R3, caps.Lang.Action[NAME], dsl_reject` を emit します。既定 fexit ABI (`pkg/kunai/host/{xdp,tc,cgroupskb}` 各パッケージの `FexitFetcher`) は `stack[-48] → args[1]` の 2 段 LDX を返します。BPF tracing args ABI が host 非依存なので EmitFetch ロジックは XDP / tc / cgroup-skb で共通で、違いは XDP_DROP=1、TC_ACT_SHOT=2、SK_DROP=0 のような Actions map の値です。`caps.Lang.Action == nil` のときは、host が action 値を提供できないため resolver が atom を拒否します。userspace target 等は `pkg/kunai/host/<name>/` で独自の fetcher を実装すれば再利用可能で、kunai コアは host 知識を持ちません。
 

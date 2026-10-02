@@ -155,7 +155,7 @@ func genBpfLoopChain(layer *ir.LayerInstance, index int, all []*ir.LayerInstance
 	}
 	// A marked `*` / `{0,m}` layer's entry slot reads "absent" until a
 	// present iteration overwrites it (D-003).
-	sentinel, err := emitLayerEntrySentinel(layer, pc.queried)
+	sentinel, err := emitLayerEntrySentinel(layer, queriedOf(pc))
 	if err != nil {
 		return nil, nil, err
 	}
@@ -343,7 +343,7 @@ func genBpfLoopCallback(layer *ir.LayerInstance, selfConst *vocab.DispatchConst,
 
 	// Record this instance's start for where / capture (last one wins,
 	// D-018) before the cursor moves past it.
-	entry, err := emitLayerEntryStoreFromCb(layer, pc.queried)
+	entry, err := emitLayerEntryStoreFromCb(layer, queriedOf(pc))
 	if err != nil {
 		return nil, err
 	}

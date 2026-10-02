@@ -47,8 +47,8 @@ type LayerInstance struct {
 
 	// LayerPos is this layer's position within Program.Layers (0-based).
 	// Distinct from Index, which counts per-protocol occurrences. Used
-	// by codegen to allocate per-layer entry-offset stack slots
-	// (whereLayerEntrySlot) when NeedsRuntimeOffset is set. Alt
+	// by codegen to key per-layer entry-offset stack slots (the stack
+	// plan, codegen/stack_plan.go) when NeedsRuntimeOffset is set. Alt
 	// members carry the alt group's LayerPos rather than their own
 	// position so all alts share the same slot — see resolver mark
 	// pass for the allocation invariant.
@@ -86,7 +86,7 @@ type LayerInstance struct {
 	// or it is quantified itself, or a later layer picks its dispatch by
 	// testing which optional matched (NeedsParentCascade). When set, the
 	// layer's emit MUST store
-	// offsetBase (R4) into whereLayerEntrySlot at each instance's entry
+	// offsetBase (R4) into its planned entry slot at each instance's entry
 	// (a quantified layer stores every instance, so the slot holds the
 	// last one, and marks the slot absent before its first peek), and
 	// field loads in where / capture / option-walk MUST address through
