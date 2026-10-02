@@ -11,6 +11,14 @@ successful `check` they are unreachable for the modelled constructs.
 -/
 namespace Kunai
 
+/-- Run `f` on each element in order, stopping at the first complaint.
+Structural recursion, so the kernel unfolds it under `decide` and the laws
+below can reason about it by membership. -/
+def allOk (xs : List α) (f : α → Except String Unit) : Except String Unit :=
+  match xs with
+  | [] => pure ()
+  | x :: tl => do f x; allOk tl f
+
 private def layerMin : Layer → Nat
   | .proto p => (quantBounds p.quant).1
   | .alt _ => 1
@@ -102,9 +110,9 @@ private def checkEdge (V : Vocab) (child parent : String) (alt optional : Bool) 
     else pure ()
   | none, none => throw s!"unknown protocol {child}"
 
-private def checkProtoLayer (c : Ctx) (layers : List Layer) (i : Nat) (p : ProtoLayer) (alt : Bool) :
-    Except String Unit := do
-  let some spec := c.V.proto? p.name | throw s!"unknown protocol {p.name}"
+/-- The checks on a layer that do not look at its predicates. -/
+private def checkProtoShape (c : Ctx) (layers : List Layer) (i : Nat) (p : ProtoLayer) (spec : ProtoSpec)
+    (alt : Bool) : Except String Unit := do
   -- A label never shadows a protocol name, so a name in a where clause is
   -- either a label or a protocol, statically and at run time alike.
   if let some l := p.label then
@@ -124,18 +132,25 @@ private def checkProtoLayer (c : Ctx) (layers : List Layer) (i : Nat) (p : Proto
   let canRepeat := match m with | some k => k > 1 | none => true
   if canRepeat && (c.V.edge? p.name p.name).isNone then
     throw s!"repeated {p.name} needs a dispatch constant under itself"
-  for parent in possibleParents layers i do checkEdge c.V p.name parent alt (n == 0)
-  for ρ in p.preds do checkPred c spec (!alt && p.quant == .one) ρ
+  allOk (possibleParents layers i) fun parent => checkEdge c.V p.name parent alt (n == 0)
 
--- Structural iteration (`List.forIn`) rather than `[0:n]`, whose
--- well-founded loop the kernel cannot unfold under `decide`.
-private def checkLayers (c : Ctx) (layers : List Layer) : Except String Unit := do
-  for (l, i) in layers.zipIdx do
-    match l with
-    | .proto p => checkProtoLayer c layers i p false
-    | .alt alts =>
-      if i == 0 then throw "alternation cannot be the first layer"
-      for a in alts do checkProtoLayer c layers i a true
+private def checkProtoLayer (c : Ctx) (layers : List Layer) (i : Nat) (p : ProtoLayer) (alt : Bool) :
+    Except String Unit :=
+  match c.V.proto? p.name with
+  | none => throw s!"unknown protocol {p.name}"
+  | some spec => do
+    checkProtoShape c layers i p spec alt
+    allOk p.preds (checkPred c spec (!alt && p.quant == .one))
+
+/-- One layer at position `i` of the chain. -/
+private def checkLayer (c : Ctx) (layers : List Layer) : Layer × Nat → Except String Unit
+  | (.proto p, i) => checkProtoLayer c layers i p false
+  | (.alt alts, i) =>
+    if i == 0 then throw "alternation cannot be the first layer"
+    else allOk alts fun a => checkProtoLayer c layers i a true
+
+private def checkLayers (c : Ctx) (layers : List Layer) : Except String Unit :=
+  allOk layers.zipIdx (checkLayer c layers)
 
 /-- A field reference: resolvable, and an index-less stack reference only
 under an `any`/`all` that binds that stack. -/
@@ -213,18 +228,174 @@ private def checkLabels (layers : List Layer) : Except String Unit := do
   for l in labels.eraseDups do
     if (labels.filter (· == l)).length > 1 then throw s!"duplicate label {l}"
 
+private def checkCond (c : Ctx) : Option Where → Except String Unit
+  | some w => checkWhere c [] w
+  | none => pure ()
+
+private def checkAll (c : Ctx) (F : Filter) : Except String Unit := do
+  checkLabels F.layers
+  -- The layers are checked from `F.layers` (predicates, positions, parents);
+  -- `c.layers`, the chain's shape, only serves name resolution.
+  checkLayers c F.layers
+  checkSets c F.layers
+  checkCond c F.cond
+  allOk F.captures (checkCapture c)
+
 /-- `none` when the filter type-checks; otherwise the resolver's complaint. -/
 def check (c : Ctx) (F : Filter) : Option String :=
-  let r : Except String Unit := do
-    checkLabels F.layers
-    -- The layers are checked from `F.layers` (predicates, positions, parents);
-    -- `c.layers`, the chain's shape, only serves name resolution.
-    checkLayers c F.layers
-    checkSets c F.layers
-    if let some w := F.cond then checkWhere c [] w
-    for cap in F.captures do checkCapture c cap
-  match r with
+  match checkAll c F with
   | .ok () => none
   | .error e => some e
+
+/-! ## Laws of `check`
+
+A bracket comparison on a layer and the same comparison in a `where` clause
+are checked alike: if the bracket form type-checks, so does the where form.
+-/
+
+theorem allOk_ok {xs : List α} {f : α → Except String Unit} :
+    allOk xs f = .ok () ↔ ∀ x ∈ xs, f x = .ok () := by
+  induction xs with
+  | nil => simp [allOk, pure, Except.pure]
+  | cons x tl ih =>
+    simp only [allOk, bind, Except.bind, List.mem_cons, forall_eq_or_imp]
+    cases hx : f x with
+    | error e => simp
+    | ok u => simp [ih]
+
+private theorem seq_ok {x y : Except String Unit} :
+    (x >>= fun _ => y) = .ok () ↔ x = .ok () ∧ y = .ok () := by
+  cases x with
+  | error e => simp [bind, Except.bind]
+  | ok u => simp [bind, Except.bind]
+
+/-- The parents a layer can have depend on the chain's names and quantifiers
+only. -/
+private theorem possibleParents_congr (L L' : List Layer)
+    (h : L.map (fun l => (l.names, layerMin l)) = L'.map (fun l => (l.names, layerMin l))) (i : Nat) :
+    possibleParents L i = possibleParents L' i := by
+  induction i with
+  | zero => rfl
+  | succ i ih =>
+    have hi : (L[i]?).map (fun l => (l.names, layerMin l)) = (L'[i]?).map (fun l => (l.names, layerMin l)) := by
+      rw [← List.getElem?_map, ← List.getElem?_map, h]
+    simp only [possibleParents]
+    cases hl : L[i]? with
+    | none =>
+      cases hl' : L'[i]? with
+      | none => rfl
+      | some l' => simp [hl, hl'] at hi
+    | some l =>
+      cases hl' : L'[i]? with
+      | none => simp [hl, hl'] at hi
+      | some l' =>
+        simp [hl, hl'] at hi
+        simp [hi.1, hi.2, ih]
+
+private theorem checkLayer_congr (c : Ctx) (L L' : List Layer)
+    (h : ∀ i, possibleParents L i = possibleParents L' i) (x : Layer × Nat) :
+    checkLayer c L x = checkLayer c L' x := by
+  obtain ⟨l, i⟩ := x
+  cases l with
+  | proto p => simp [checkLayer, checkProtoLayer, checkProtoShape, h]
+  | alt alts => simp [checkLayer, checkProtoLayer, checkProtoShape, h]
+
+/-- The layers of the where form check when those of the bracket form do,
+and the bracket predicate itself checked. -/
+private theorem checkLayers_bracket (c : Ctx) (pre rest : List Layer) (p : ProtoLayer) (spec : ProtoSpec)
+    (ρ : Predicate) (hq : p.quant = .one) (hnp : p.preds = []) (hspec : c.V.proto? p.name = some spec)
+    (h : checkLayers c (pre ++ .proto { p with preds := [ρ] } :: rest) = .ok ()) :
+    checkLayers c (pre ++ .proto p :: rest) = .ok () ∧ checkPred c spec true ρ = .ok () := by
+  have hpp : ∀ i, possibleParents (pre ++ .proto { p with preds := [ρ] } :: rest) i
+      = possibleParents (pre ++ .proto p :: rest) i :=
+    possibleParents_congr _ _ (by simp [Layer.names, layerMin])
+  simp only [checkLayers, allOk_ok, List.zipIdx_append, List.zipIdx_cons, List.mem_append, List.mem_cons] at h ⊢
+  have hmid := h (.proto { p with preds := [ρ] }, 0 + pre.length) (Or.inr (Or.inl rfl))
+  simp only [checkLayer, checkProtoLayer, hspec, seq_ok, allOk_ok, List.mem_singleton, forall_eq] at hmid
+  have hshape : checkProtoShape c (pre ++ .proto { p with preds := [ρ] } :: rest) (0 + pre.length)
+      { p with preds := [ρ] } spec false
+      = checkProtoShape c (pre ++ .proto { p with preds := [ρ] } :: rest) (0 + pre.length) p spec false := rfl
+  have hone : (Quant.one == Quant.one) = true := by decide
+  refine ⟨?_, by simpa [hq, hone] using hmid.2⟩
+  intro x hx
+  rw [← checkLayer_congr c _ _ hpp]
+  rcases hx with hx | hx | hx
+  · exact h x (Or.inl hx)
+  · subst hx
+    simp only [checkLayer, checkProtoLayer, hspec, seq_ok, allOk_ok, hnp]
+    exact ⟨hshape ▸ hmid.1, by simp⟩
+  · exact h x (Or.inr (Or.inr hx))
+
+theorem check_none {c : Ctx} {F : Filter} : check c F = none ↔ checkAll c F = .ok () := by
+  simp only [check]
+  cases checkAll c F <;> simp
+
+/-- A bracket comparison that checks resolves, and the same path under the
+layer's name checks as a `where` comparison. -/
+private theorem checkPred_where (c : Ctx) (p : ProtoLayer) (spec : ProtoSpec)
+    (f : FieldPath) (op : CmpOp) (v : Value)
+    (hname : spec.name = p.name) (hspec : c.V.proto? p.name = some spec)
+    (hproto : staticProto c p.name = .ok p.name)
+    (h : checkPred c spec true (.cmp f op v) = .ok ()) :
+    checkWhere c [] (.litCmp ⟨(p.name, none) :: f.segs⟩ op v) = .ok ()
+      ∧ ∃ r, resolveBracket c spec f = .ok r := by
+  simp only [checkPred, bind, Except.bind] at h
+  cases hr : resolveBracket c spec f with
+  | error e => cases e <;> simp [hr, stop, throw, throwThe, MonadExceptOf.throw] at h
+  | ok r =>
+    refine ⟨?_, r, rfl⟩
+    simp only [hr, stop, pure, Except.pure] at h
+    simp only [resolveBracket, bind, Except.bind, hname] at hr
+    cases hb : resolveRest c p.name spec f.segs with
+    | error e => simp [hb] at hr
+    | ok b =>
+      simp only [hb] at hr
+      have hpath : resolvePath c ⟨(p.name, none) :: f.segs⟩ = .ok (b.toRef p.name p.name spec) := by
+        simp [resolvePath, hproto, hspec, hb, bind, Except.bind, pure, Except.pure]
+      simp only [checkWhere, checkRef, hpath, stop, bind, Except.bind, pure, Except.pure]
+      cases haux : b.aux with
+      | primary =>
+        simp only [haux, pure, Except.pure] at hr
+        cases hr
+        simpa [RefBody.toRef, haux, Ref.width] using h
+      | option o =>
+        simp only [haux, pure, Except.pure] at hr
+        cases hr
+        simpa [RefBody.toRef, haux, Ref.width] using h
+      | stackEntry stack idx =>
+        cases idx with
+        | none => simp [haux, throw, throwThe, MonadExceptOf.throw] at hr
+        | some ix =>
+          cases ix with
+          | field g => simp [haux, throw, throwThe, MonadExceptOf.throw] at hr
+          | _ =>
+            simp only [haux, pure, Except.pure] at hr
+            cases hr
+            simpa [RefBody.toRef, haux, Ref.width] using h
+
+/-- D-023, statically: when `…/p[f op v]/…` type-checks, so does
+`…/p/… where p.f op v`, and the bracket path resolves. `p` is a mandatory
+layer with no other predicate whose name resolves to itself (`hproto`: one
+layer of that protocol, and no label of that name). Neither filter has
+captures. -/
+theorem check_bracket_where (c : Ctx) (pre rest : List Layer) (p : ProtoLayer) (spec : ProtoSpec)
+    (f : FieldPath) (op : CmpOp) (v : Value)
+    (hq : p.quant = .one) (hnp : p.preds = []) (hname : spec.name = p.name)
+    (hspec : c.V.proto? p.name = some spec)
+    (hproto : staticProto c p.name = .ok p.name)
+    (hB : check c { layers := pre ++ .proto { p with preds := [.cmp f op v] } :: rest } = none) :
+    check c { layers := pre ++ .proto p :: rest, cond := some (.litCmp ⟨(p.name, none) :: f.segs⟩ op v) } = none
+      ∧ ∃ r, resolveBracket c spec f = .ok r := by
+  rw [check_none] at hB ⊢
+  simp only [checkAll, seq_ok] at hB ⊢
+  obtain ⟨hlabels, hlayers, hsets, -, -⟩ := hB
+  obtain ⟨hL, hpred⟩ := checkLayers_bracket c pre rest p spec (.cmp f op v) hq hnp hspec hlayers
+  obtain ⟨hw, hres⟩ := checkPred_where c p spec f op v hname hspec hproto hpred
+  refine ⟨⟨?_, hL, ?_, hw, by simp [allOk, pure, Except.pure]⟩, hres⟩
+  · simpa [checkLabels, Layer.labels] using hlabels
+  · have hrefs : setRefs (pre ++ .proto p :: rest)
+        = setRefs (pre ++ .proto { p with preds := [.cmp f op v] } :: rest) := by
+      simp [setRefs, setRef, hnp]
+    simpa only [checkSets, hrefs] using hsets
 
 end Kunai

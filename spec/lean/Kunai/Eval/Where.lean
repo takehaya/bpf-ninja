@@ -39,6 +39,51 @@ def staticProto (c : Ctx) (head : String) : Except Stop String :=
       | 1 => pure head
       | _ => throw (.illTyped s!"protocol {head} is ambiguous; qualify with an @label")
 
+private theorem staticCount_zero (L : List Layer) (name : String)
+    (h : staticCount (L.map Layer.shape) name = 0) : name ∉ L.flatMap Layer.names := by
+  induction L with
+  | nil => simp
+  | cons x tl ih =>
+    simp only [staticCount, List.map_cons, List.sum_cons, Nat.add_eq_zero_iff] at h
+    simp only [List.flatMap_cons, List.mem_append, not_or]
+    refine ⟨?_, ih h.2⟩
+    cases x with
+    | proto q =>
+      have h1 := h.1
+      simp only [Layer.shape] at h1
+      simp only [Layer.names, List.mem_singleton]
+      intro heq
+      subst heq
+      cases hq : q.quant <;> simp [hq] at h1
+      all_goals (split at h1 <;> simp at h1)
+    | alt alts =>
+      have h1 := h.1
+      simp only [Layer.shape] at h1
+      simpa [Layer.names] using h1
+
+/-- A mandatory layer whose name resolves to its own protocol, with no
+label of that name in the chain, is the only layer of that protocol. -/
+theorem staticProto_unique (c : Ctx) (pre rest : List Layer) (p : ProtoLayer)
+    (hq : p.quant = .one)
+    (hlayers : c.layers = (pre ++ .proto p :: rest).map Layer.shape)
+    (hlab : labelProto c.layers p.name = none)
+    (h : staticProto c p.name = .ok p.name) :
+    p.name ∉ pre.flatMap Layer.names ∧ p.name ∉ rest.flatMap Layer.names := by
+  simp only [staticProto, hlab] at h
+  split at h
+  · cases h
+  · have hsum : staticCount c.layers p.name
+        = staticCount (pre.map Layer.shape) p.name + (1 + staticCount (rest.map Layer.shape) p.name) := by
+      simp [hlayers, staticCount, Layer.shape, hq]
+    split at h
+    · cases h
+    · rename_i h1
+      rw [hsum] at h1
+      exact ⟨staticCount_zero pre _ (by omega), staticCount_zero rest _ (by omega)⟩
+    · rename_i h0 h1
+      exfalso
+      simp [throw, throwThe, MonadExceptOf.throw] at h
+
 /-- The one name for a layer: its label when it has one, else the protocol
 name. A label and the protocol name of the same layer denote the same stack. -/
 def canonicalHead (c : Ctx) (head : String) : Except Stop String := do
