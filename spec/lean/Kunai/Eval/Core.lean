@@ -68,7 +68,9 @@ inductive Stop
 structure Ctx where
   V : Vocab
   H : Host
-  /-- The filter's chain, for static resolution of field references. -/
+  /-- The shape of the filter's chain (`Layer.shape`: no bracket
+  predicates), for static resolution of field references. Two filters
+  that differ only in bracket predicates share this context. -/
   layers : List Layer
   P : Packet
 

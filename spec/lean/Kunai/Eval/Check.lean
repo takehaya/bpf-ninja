@@ -11,10 +11,6 @@ successful `check` they are unreachable for the modelled constructs.
 -/
 namespace Kunai
 
-private def layerNames : Layer → List String
-  | .proto p => [p.name]
-  | .alt alts => alts.map (·.name)
-
 private def layerMin : Layer → Nat
   | .proto p => (quantBounds p.quant).1
   | .alt _ => 1
@@ -26,7 +22,7 @@ private def possibleParents (layers : List Layer) : Nat → List String
   | i + 1 =>
     match layers[i]? with
     | none => []
-    | some l => layerNames l ++ (if layerMin l == 0 then possibleParents layers i else [])
+    | some l => l.names ++ (if layerMin l == 0 then possibleParents layers i else [])
 
 private def checkValue (spec : ProtoSpec) (fs : FieldSpec) (op : CmpOp) (v : Value) : Except String Unit := do
   match v with
@@ -106,8 +102,13 @@ private def checkEdge (V : Vocab) (child parent : String) (alt optional : Bool) 
     else pure ()
   | none, none => throw s!"unknown protocol {child}"
 
-private def checkProtoLayer (c : Ctx) (i : Nat) (p : ProtoLayer) (alt : Bool) : Except String Unit := do
+private def checkProtoLayer (c : Ctx) (layers : List Layer) (i : Nat) (p : ProtoLayer) (alt : Bool) :
+    Except String Unit := do
   let some spec := c.V.proto? p.name | throw s!"unknown protocol {p.name}"
+  -- A label never shadows a protocol name, so a name in a where clause is
+  -- either a label or a protocol, statically and at run time alike.
+  if let some l := p.label then
+    if (c.V.proto? l).isSome then throw s!"label {l} collides with protocol name"
   let (n, m) := quantBounds p.quant
   if i == 0 && n == 0 then throw "the first layer cannot be optional"
   if alt && p.quant != .one then throw "alternatives cannot carry quantifiers"
@@ -123,18 +124,18 @@ private def checkProtoLayer (c : Ctx) (i : Nat) (p : ProtoLayer) (alt : Bool) : 
   let canRepeat := match m with | some k => k > 1 | none => true
   if canRepeat && (c.V.edge? p.name p.name).isNone then
     throw s!"repeated {p.name} needs a dispatch constant under itself"
-  for parent in possibleParents c.layers i do checkEdge c.V p.name parent alt (n == 0)
+  for parent in possibleParents layers i do checkEdge c.V p.name parent alt (n == 0)
   for ρ in p.preds do checkPred c spec (!alt && p.quant == .one) ρ
 
 -- Structural iteration (`List.forIn`) rather than `[0:n]`, whose
 -- well-founded loop the kernel cannot unfold under `decide`.
-private def checkLayers (c : Ctx) : Except String Unit := do
-  for (l, i) in c.layers.zipIdx do
+private def checkLayers (c : Ctx) (layers : List Layer) : Except String Unit := do
+  for (l, i) in layers.zipIdx do
     match l with
-    | .proto p => checkProtoLayer c i p false
+    | .proto p => checkProtoLayer c layers i p false
     | .alt alts =>
       if i == 0 then throw "alternation cannot be the first layer"
-      for a in alts do checkProtoLayer c i a true
+      for a in alts do checkProtoLayer c layers i a true
 
 /-- A field reference: resolvable, and an index-less stack reference only
 under an `any`/`all` that binds that stack. -/
@@ -194,8 +195,8 @@ private def alignUp (x a : Nat) : Nat := ((x + a - 1) / a) * a
 referenced by at most one predicate (the host holds one key per set and
 looks it up once), and the referenced keys, laid out in chain order with
 each key aligned to its own width (8 at most), fit the 16-byte buffer. -/
-private def checkSets (c : Ctx) : Except String Unit := do
-  let refs := setRefs c.layers
+private def checkSets (c : Ctx) (layers : List Layer) : Except String Unit := do
+  let refs := setRefs layers
   for name in refs.eraseDups do
     if (refs.filter (· == name)).length > 1 then
       throw s!"set @{name} is referenced twice: the host holds one key per set"
@@ -205,11 +206,21 @@ private def checkSets (c : Ctx) : Except String Unit := do
     | none => used) 0
   if bytes > 16 then throw s!"packet keys take {bytes} bytes; the host's key buffer holds 16"
 
+/-- A label names one layer: two layers (alternation members included)
+cannot carry the same one. -/
+private def checkLabels (layers : List Layer) : Except String Unit := do
+  let labels := layers.flatMap Layer.labels
+  for l in labels.eraseDups do
+    if (labels.filter (· == l)).length > 1 then throw s!"duplicate label {l}"
+
 /-- `none` when the filter type-checks; otherwise the resolver's complaint. -/
 def check (c : Ctx) (F : Filter) : Option String :=
   let r : Except String Unit := do
-    checkLayers c
-    checkSets c
+    checkLabels F.layers
+    -- The layers are checked from `F.layers` (predicates, positions, parents);
+    -- `c.layers`, the chain's shape, only serves name resolution.
+    checkLayers c F.layers
+    checkSets c F.layers
     if let some w := F.cond then checkWhere c [] w
     for cap in F.captures do checkCapture c cap
   match r with

@@ -79,7 +79,8 @@ def evalPred (c : Ctx) (spec : ProtoSpec) (inst : Inst) : Predicate → Except S
 /-- The header part of E-Layer-Proto-1: dispatch, bounds, self-validation,
 declared length, and aux-extract give the new instance. Bracket predicates
 play no part in it. -/
-def extractInst (c : Ctx) (st : State) (name : String) (spec : ProtoSpec) : Except LayerFail Inst := do
+def extractBody (c : Ctx) (st : State) (name : String) (spec : ProtoSpec) :
+    Except LayerFail (Nat × List AuxView × List (Nat × Nat)) := do
   match dispatch c st name with
   | .miss => throw .dispMiss
   | .illTyped r => throw (.illTyped r)
@@ -122,6 +123,12 @@ def extractInst (c : Ctx) (st : State) (name : String) (spec : ProtoSpec) : Exce
       | .ok ψ => pure (max len (ψ.cursor - st.cursor), ψ.views, ψ.patches)
       | .error .reject => throw .pred
       | .error (.illTyped r) => throw (.illTyped r)
+  pure (len, aux, patches)
+
+/-- The instance a layer named `name` extracts at the cursor: its length,
+aux views and write-backs come from `extractBody`. -/
+def extractInst (c : Ctx) (st : State) (name : String) (spec : ProtoSpec) : Except LayerFail Inst := do
+  let (len, aux, patches) ← extractBody c st name spec
   pure { proto := name, off := st.cursor, len, aux, patches }
 
 /-- [E-Layer-Proto-1-Fail-Pred]: every bracket predicate holds on the new

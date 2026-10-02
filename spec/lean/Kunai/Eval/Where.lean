@@ -13,7 +13,7 @@ stack entry is absent (D-003, D-027).
 namespace Kunai
 
 /-- Protocol a label is declared on, from the static chain. -/
-private def labelProto (layers : List Layer) (l : String) : Option String :=
+def labelProto (layers : List Layer) (l : String) : Option String :=
   layers.findSome? fun
     | .proto p => if p.label == some l then some p.name else none
     | .alt _ => none
