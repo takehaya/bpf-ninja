@@ -1128,6 +1128,11 @@ func TestCompileBracketOnPushCountedStack(t *testing.T) {
 			t.Fatalf("%s: expected ErrNotImplemented pointing at a where clause, got %v", expr, err)
 		}
 	}
+	// gtp has no gtp-under-gtp constant, so repeating it is a typing error
+	// before any predicate is looked at (D-037).
+	if _, err := compileForTest("eth/ipv4/udp/gtp[exts[0].ext_type == 1]{1,2}/ipv4/tcp"); err == nil || errors.Is(err, codegen.ErrNotImplemented) || !strings.Contains(err.Error(), "under itself") {
+		t.Fatalf("repeated gtp: expected the self-dispatch typing error, got %v", err)
+	}
 	// `in [...]` brackets carry the same push-count guard.
 	if _, err := compileForTest("eth/ipv6[exts[1].next_header in [6, 60]]/tcp"); err != nil {
 		t.Fatalf("in-list bracket on a push-counted stack must compile: %v", err)

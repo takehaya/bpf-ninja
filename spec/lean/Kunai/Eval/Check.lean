@@ -120,7 +120,8 @@ private def checkProtoLayer (c : Ctx) (i : Nat) (p : ProtoLayer) (alt : Bool) : 
   -- against its own protocol, and needs a declared edge for that (D-037):
   -- the self-validation probe (D-017) is not a chain link, and with no
   -- edge at all the failure would only show once one instance matched.
-  if fuel > 1 && (c.V.edge? p.name p.name).isNone then
+  let canRepeat := match m with | some k => k > 1 | none => true
+  if canRepeat && (c.V.edge? p.name p.name).isNone then
     throw s!"repeated {p.name} needs a dispatch constant under itself"
   for parent in possibleParents c.layers i do checkEdge c.V p.name parent alt (n == 0)
   for ρ in p.preds do checkPred c spec (!alt && p.quant == .one) ρ

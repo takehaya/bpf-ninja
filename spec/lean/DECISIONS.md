@@ -291,7 +291,7 @@ Entries are never deleted; a rejected candidate stays in the log.
 ## D-037: 繰り返す layer の self edge
 - 論点: `{n,m}` (m > 1), `*`, `+` の 2 個目以降の instance は自分自身の protocol を親に dispatch する。`check` は `possibleParents` に自分を含めないので self edge を見ておらず、`srv6{0,2}` は静的に通って実行時に 2 個目が D-017 の probe (routing_type == 4) に落ちる (tcp の sport の下位 byte が 4 だと 2 個目の srv6 とみなして reject)。`gre{0,2}` は gre が 1 個 match した後で初めて illTyped になり、「illTyped は packet に依らない」に反する。
 - 現行 Go 実装の挙動: codegen が `chained X has no self-dispatch const` の `ErrNotImplemented`。
-- 推奨: 繰り返せる layer (最大 instance 数 > 1) には宣言された self edge を要求し、無ければ illTyped。self-validation の probe は chain の連結には使わない。Go は resolver (`checkChainShape`) で同じ型エラーにする。`?` / `{0,1}` は self edge 不要。
+- 推奨: 2 個目の header を抽出しうる layer (`*`, `+`, `{n,}`, m > 1 の `{n,m}`; 量化子の形で決め、`MAX_DEPTH` の値には依らない) には宣言された self edge を要求し、無ければ illTyped。self-validation の probe は chain の連結には使わない。Go は resolver (`checkChainShape`) で同じ型エラーにする。`?` / `{0,1}` は self edge 不要。
 - 付記: `*` / `+` の反復上限は `<PROTO>_MAX_DEPTH`。ipv6 ではこの定数が拡張ヘッダ walk の上限 (4) と兼用で、入れ子の深さの意味ではない。可変長 layer の繰り返しを実装するときに分ける。
 - 状態: 承認済 (2026-10-03)
 - 反映先: `Eval/Check.lean` `checkProtoLayer`, vectors `typ-repeat-no-self-edge`, `typ-repeat-no-self-edge-star`; Go `resolve/resolve.go` `checkChainShape`

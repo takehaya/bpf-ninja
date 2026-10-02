@@ -186,8 +186,9 @@ func markCascadeParents(p *ir.Program) error {
 // ones) to be told apart from its siblings, and an optional layer with a
 // no-check dispatch cannot detect its own absence unless it is a
 // self-edge of a protocol with a chain-end signal (`mpls/mpls*`, whose
-// s-bit ends the chain). The codegen keeps guards for the same shapes,
-// but the resolver is the authority.
+// s-bit ends the chain), and a layer that can extract a second header
+// needs a dispatch constant under its own protocol (D-037). The codegen
+// keeps guards for the same shapes, but the resolver is the authority.
 func checkChainShape(layers []*ir.LayerInstance) error {
 	if len(layers) == 0 {
 		return nil
@@ -214,7 +215,7 @@ func checkChainShape(layers []*ir.LayerInstance) error {
 		// A layer that can repeat dispatches its second and later
 		// instances against its own protocol, which needs a declared
 		// constant: self-validation is not a chain link (spec D-037).
-		if repeats := l.Quant == ast.QuantStar || l.Quant == ast.QuantPlus || (l.Quant == ast.QuantRange && l.RangeMax != 1); repeats && l.Spec.SelectDispatchConst(l.Spec.Name) == nil {
+		if canExtractTwo(l) && l.Spec.SelectDispatchConst(l.Spec.Name) == nil {
 			self := strings.ToUpper(l.Spec.Name)
 			return errorf(l.Pos, "repeated %s needs a dispatch constant under itself (declare KUNAI_%s_%s_<FIELD> or KUNAI_%s_%s_NO_CHECK in %s.p4); without one it can be optional (`?`), not repeated", l.Spec.Name, self, self, self, self, l.Spec.Name)
 		}
@@ -228,6 +229,19 @@ func checkChainShape(layers []*ir.LayerInstance) error {
 		}
 	}
 	return nil
+}
+
+// canExtractTwo reports whether the quantifier lets a second header of the
+// layer be extracted: `*`, `+`, `{n,}` and `{n,m}` with m > 1. (mayRepeat
+// in where.go is the name-ambiguity rule and also counts `{0,0}`.)
+func canExtractTwo(l *ir.LayerInstance) bool {
+	switch l.Quant {
+	case ast.QuantPlus, ast.QuantStar:
+		return true
+	case ast.QuantRange:
+		return l.RangeMax < 0 || l.RangeMax > 1
+	}
+	return false
 }
 
 // runtimeParents lists the non-alternation layers that can precede layer
