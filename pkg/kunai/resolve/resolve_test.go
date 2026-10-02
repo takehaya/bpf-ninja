@@ -149,13 +149,28 @@ func TestRuntimeParentDispatch(t *testing.T) {
 		resolveOK(t, expr, nil)
 	}
 	// eth has no constant under udp, so vxlan's absence would leave it undispatched.
-	for _, expr := range []string{"eth/mpls?/cw/eth", "eth/ipv4/udp/vxlan?/eth/ipv4/tcp", "eth/ipv4/udp/vxlan*/eth/ipv4/tcp"} {
+	for _, expr := range []string{"eth/mpls?/cw/eth", "eth/ipv4/udp/vxlan?/eth/ipv4/tcp"} {
 		f, err := parser.Parse(expr, "t.dsl", nil)
 		if err != nil {
 			t.Fatalf("parse(%q): %v", expr, err)
 		}
 		if _, err := Resolve(f, loadVocab(t), nil); err == nil || !strings.Contains(err.Error(), "no dispatch constant") {
 			t.Errorf("%s: expected a no-dispatch-constant error, got %v", expr, err)
+		}
+	}
+	// A repeated layer also needs a constant under itself (D-037); vxlan
+	// has none, and `{0,0}` never extracts a second header.
+	for expr, want := range map[string]string{
+		"eth/ipv4/udp/vxlan*/eth/ipv4/tcp":     "under itself",
+		"eth/ipv4/udp/vxlan{0,2}/eth/ipv4/tcp": "under itself",
+		"eth/ipv4/udp/vxlan{0,0}/eth/ipv4/tcp": "no dispatch constant",
+	} {
+		f, err := parser.Parse(expr, "t.dsl", nil)
+		if err != nil {
+			t.Fatalf("parse(%q): %v", expr, err)
+		}
+		if _, err := Resolve(f, loadVocab(t), nil); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%s: expected an error containing %q, got %v", expr, want, err)
 		}
 	}
 }

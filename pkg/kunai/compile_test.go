@@ -1090,7 +1090,15 @@ func TestCompileOptionalVariableLayers(t *testing.T) {
 			t.Errorf("Compile(%q): %v", expr, err)
 		}
 	}
+	// Repeating a layer needs a dispatch constant under itself: without one
+	// it is a typing error (srv6, gre); with one, a variable-length layer
+	// is still an implementation limit (ipv4 in ipv4).
 	for _, expr := range []string{"eth/ipv6/srv6{0,2}/tcp", "eth/ipv6/srv6*/tcp", "eth/ipv4/gre{0,2}/ipv4/tcp", "eth/ipv4/gre*/ipv4/tcp"} {
+		if _, err := compileForTest(expr); err == nil || errors.Is(err, codegen.ErrNotImplemented) || !strings.Contains(err.Error(), "under itself") {
+			t.Errorf("Compile(%q) = %v; want the self-dispatch typing error", expr, err)
+		}
+	}
+	for _, expr := range []string{"eth/ipv4/ipv4{0,2}/tcp", "eth/ipv4/ipv4*/tcp"} {
 		if _, err := compileForTest(expr); !errors.Is(err, codegen.ErrNotImplemented) {
 			t.Errorf("Compile(%q) = %v; want ErrNotImplemented", expr, err)
 		}
@@ -1115,10 +1123,15 @@ func TestCompileBracketOnPushCountedStack(t *testing.T) {
 	}
 	// A quantified layer replays its predicates per iteration, where no
 	// final count exists: still refused rather than read unguarded.
-	for _, expr := range []string{"eth/ipv4/udp/gtp[exts[0].ext_type == 1]{1,2}/ipv4/tcp", "eth/ipv6[exts[0].next_header == 6]{1,2}/tcp"} {
+	for _, expr := range []string{"eth/ipv6[exts[0].next_header == 6]{1,2}/tcp"} {
 		if _, err := compileForTest(expr); !errors.Is(err, codegen.ErrNotImplemented) || !strings.Contains(err.Error(), "where clause") {
 			t.Fatalf("%s: expected ErrNotImplemented pointing at a where clause, got %v", expr, err)
 		}
+	}
+	// gtp has no gtp-under-gtp constant, so repeating it is a typing error
+	// before any predicate is looked at (D-037).
+	if _, err := compileForTest("eth/ipv4/udp/gtp[exts[0].ext_type == 1]{1,2}/ipv4/tcp"); err == nil || errors.Is(err, codegen.ErrNotImplemented) || !strings.Contains(err.Error(), "under itself") {
+		t.Fatalf("repeated gtp: expected the self-dispatch typing error, got %v", err)
 	}
 	// `in [...]` brackets carry the same push-count guard.
 	if _, err := compileForTest("eth/ipv6[exts[1].next_header in [6, 60]]/tcp"); err != nil {
