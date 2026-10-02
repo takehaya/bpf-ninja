@@ -1327,6 +1327,13 @@ func emitSelfValidationProbe(spec *vocab.ProtocolSpec, missLabel string) (asm.In
 			return nil, err
 		}
 		ok := freshLabel("probe_ok")
+		// The window check comes first as a pointer compare against the
+		// window end, like every layer's own bounds check: besides taking
+		// an unreadable field as "present", it ends the paths on which
+		// the verifier carries an out-of-window R4 out of a bpf_loop walk
+		// (kernels 6.12 / 6.15 follow such a path past a scalar-only
+		// check and then refuse the load).
+		out = append(out, emitBounds(bitOff/8+loadBytes, ok)...)
 		out = append(out, emitBoundedLoad(asm.R3, int16(bitOff/8), size, ok)...)
 		if loadBytes > 1 {
 			out = append(out, asm.HostTo(asm.BE, asm.R3, size))
