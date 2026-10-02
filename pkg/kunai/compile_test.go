@@ -157,6 +157,20 @@ func TestCompileInSetKeyWrittenTwice(t *testing.T) {
 	}
 }
 
+// TestCompileDeepChainRuntimeOffsets pins that the number of layers with a
+// runtime entry slot is bounded only by the stack plan, not by a fixed
+// cap: both chains put their where field past the seventh position.
+func TestCompileDeepChainRuntimeOffsets(t *testing.T) {
+	for _, expr := range []string{
+		"eth/ipv4/udp/gtp/ipv4/udp/vxlan/eth/ipv4/tcp where tcp.dport == 80",
+		"eth/vlan?/vlan?/vlan?/vlan?/vlan?/vlan?/vlan?/ipv4/tcp where tcp.dport == 80",
+	} {
+		if _, err := compileForTest(expr); err != nil {
+			t.Errorf("Compile(%q): %v", expr, err)
+		}
+	}
+}
+
 func TestCompileInSetExtractsToSlotStayingMapAgnostic(t *testing.T) {
 	caps := codegen.Capabilities{Lang: codegen.LangCaps{SetSlots: fakeSetSlots{}}}
 	out, err := Compile("eth/ipv4/udp/gtp[teid in @teids]", caps)

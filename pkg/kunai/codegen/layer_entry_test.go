@@ -24,11 +24,25 @@ func countSlotStores(insns asm.Instructions, slot int16, src asm.Register) int {
 	return n
 }
 
-func TestStaticChainWritesEntrySlotPerIteration(t *testing.T) {
-	slot, err := whereLayerEntrySlot(1)
+// entrySlotOf plans p's stack and returns the entry slot of its layer at
+// index i.
+func entrySlotOf(t *testing.T, p *ir.Program, i int) int16 {
+	t.Helper()
+	slot, err := mustQueried(t, p).entrySlot(p.Layers[i])
 	if err != nil {
 		t.Fatal(err)
 	}
+	return slot
+}
+
+func TestStaticChainWritesEntrySlotPerIteration(t *testing.T) {
+	// The slot an unmarked layer would get, so both halves count the same
+	// offset.
+	slot := entrySlotOf(t, func() *ir.Program {
+		p := vlanChainProgram(1, 3)
+		p.Layers[1].LayerPos, p.Layers[1].NeedsRuntimeOffset = 1, true
+		return p
+	}(), 1)
 	for _, marked := range []bool{false, true} {
 		p := vlanChainProgram(1, 3)
 		p.Layers[1].LayerPos, p.Layers[1].NeedsRuntimeOffset = 1, marked
@@ -50,12 +64,9 @@ func TestStaticChainWritesEntrySlotPerIteration(t *testing.T) {
 }
 
 func TestOptionalChainSentinelThenStore(t *testing.T) {
-	slot, err := whereLayerEntrySlot(1)
-	if err != nil {
-		t.Fatal(err)
-	}
 	p := vlanChainProgram(0, 1)
 	p.Layers[1].LayerPos, p.Layers[1].NeedsRuntimeOffset = 1, true
+	slot := entrySlotOf(t, p, 1)
 	out, err := Gen(p, Capabilities{})
 	if err != nil {
 		t.Fatalf("Gen: %v", err)
@@ -82,10 +93,6 @@ func TestOptionalChainSentinelThenStore(t *testing.T) {
 }
 
 func TestBpfLoopCallbackWritesMainSlot(t *testing.T) {
-	slot, err := whereLayerEntrySlot(1)
-	if err != nil {
-		t.Fatal(err)
-	}
 	eth := &ir.LayerInstance{Spec: ethSpec}
 	mpls := &ir.LayerInstance{
 		Spec:     mplsSpecForChain,
@@ -93,7 +100,9 @@ func TestBpfLoopCallbackWritesMainSlot(t *testing.T) {
 		Quant:    ast.QuantPlus, RangeMin: 1, RangeMax: -1,
 		LayerPos: 1, NeedsRuntimeOffset: true,
 	}
-	out, err := Gen(&ir.Program{Layers: []*ir.LayerInstance{eth, mpls}}, Capabilities{})
+	p := &ir.Program{Layers: []*ir.LayerInstance{eth, mpls}}
+	slot := entrySlotOf(t, p, 1)
+	out, err := Gen(p, Capabilities{})
 	if err != nil {
 		t.Fatalf("Gen: %v", err)
 	}

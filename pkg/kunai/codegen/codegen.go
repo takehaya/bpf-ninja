@@ -259,25 +259,18 @@ const dslReject = "dsl_reject"
 //     flush against the arith stack's bottom byte at the same
 //     offset — the two writes touch disjoint byte ranges so the
 //     packing is verifier-safe.
-//   - kunai: parser counter slots in the gap [-224, -208) below
-//     ctx (2 slots × 8 bytes, parserCounterSlotsBase = -216).
-//   - kunai: per-layer entry slots at -224 .. -224-8*N (where N <
-//     whereLayerEntrySlotCap = 7), allocated lazily when the
-//     resolver marks a layer NeedsRuntimeOffset (a where / capture
-//     clause references it past a heterogeneous-size alt or a
+//   - kunai: parser counter slots at -216 and -224 (2 slots × 8
+//     bytes, parserCounterSlotsBase = -216), the last fixed region.
+//   - kunai: the stack plan (stack_plan.go) from stackPlanTop = -232
+//     down to the 512-byte BPF stack bottom: one runtime entry slot
+//     per layer group the resolver marked NeedsRuntimeOffset (a where /
+//     capture clause references it past a heterogeneous-size alt or a
 //     quantified layer, or a later layer's dispatch tests whether this
-//     optional matched). Worst-case
-//     bottom is -272 (slot 6 at -272 writing [-272, -264)); total
-//     kunai stack consumption above the dynamic-aux region is
-//     bounded by KunaiStackTop − 272 = 216 bytes.
-//   - kunai: dynamic aux slots at -280 .. -512 (29 slot positions,
-//     dynamicAuxOffsetSlotBase = -280). Worst case usage is TCP at
-//     layerPos=5 with 5 queried options, slot=-512 (= bpfStackBottom
-//     limit). The kunai stack overall fits inside the 512-byte BPF
-//     stack budget exactly at the boundary; adding a 6th queried
-//     TCP option (raise dynamicAuxMaxSlotsPerLayer past 5) or a 7th
-//     deep-chain layer requires reducing the dynamic aux stride or
-//     restructuring the slot allocator.
+//     optional matched; alternation members share their group's slot),
+//     then every layer's dynamic aux slots (queried option positions,
+//     push counts), packed in chain order. Only the layers that need a
+//     slot take one, so 36 slots are available to a filter in total;
+//     planStack refuses a filter that needs more.
 //   - host: any subset of [-1, KunaiStackTop+1]; bpf-ninja uses -48
 //     for the saved tracing args pointer.
 //
@@ -366,7 +359,10 @@ func Gen(p *ir.Program, caps Capabilities) (Output, error) {
 		// optional / repeating layers can advance conditionally.
 		asm.Mov.Imm(offsetBase, 0),
 	}
-	qo := collectQueriedOptions(p)
+	qo, err := collectQueriedOptions(p)
+	if err != nil {
+		return Output{}, err
+	}
 	// Multi-option accumulator plan: when the whole merged where clause
 	// is a pure conjunction of `<option.field> == <const>` over >=2
 	// distinct dynamic-eligible options of one lookahead-only TLV layer
@@ -890,22 +886,22 @@ func genLayerInner(layer *ir.LayerInstance, index int, all []*ir.LayerInstance, 
 		if layer.Spec.ParseStateMachine != nil {
 			return genParserMachine(layer, index, all, qo, plan, pc)
 		}
-		insns, err := genStaticLayer(layer, index, all, pc)
+		insns, err := genStaticLayer(layer, index, all, qo, pc)
 		return insns, nil, err
 	case ast.QuantOpt:
 		// `?` ≡ `{0,1}` (spec D-005/D-024, Laws.lean opt_eq_range): one lowering.
 		opt := *layer
 		opt.Quant, opt.RangeMin, opt.RangeMax = ast.QuantRange, 0, 1
-		insns, err := genStaticChain(&opt, index, all, pc)
+		insns, err := genStaticChain(&opt, index, all, qo, pc)
 		return insns, nil, err
 	case ast.QuantRange:
 		if staticChainFitsRange(layer.RangeMax) {
-			insns, err := genStaticChain(layer, index, all, pc)
+			insns, err := genStaticChain(layer, index, all, qo, pc)
 			return insns, nil, err
 		}
-		return genBpfLoopChain(layer, index, all, pc)
+		return genBpfLoopChain(layer, index, all, qo, pc)
 	case ast.QuantPlus, ast.QuantStar:
-		return genBpfLoopChain(layer, index, all, pc)
+		return genBpfLoopChain(layer, index, all, qo, pc)
 	}
 	return nil, nil, fmt.Errorf("%w: quantifier %s on layer %q", ErrNotImplemented, layer.Quant, layer.Spec.Name)
 }
@@ -913,7 +909,7 @@ func genLayerInner(layer *ir.LayerInstance, index int, all []*ir.LayerInstance, 
 // genStaticLayer emits the bounds check, dispatch check, predicates,
 // and R4 advancement for a layer that is always present. Failure of
 // any check jumps to dslReject.
-func genStaticLayer(layer *ir.LayerInstance, index int, all []*ir.LayerInstance, pc *predCtx) (asm.Instructions, error) {
+func genStaticLayer(layer *ir.LayerInstance, index int, all []*ir.LayerInstance, qo queriedOptions, pc *predCtx) (asm.Instructions, error) {
 	hs, err := headerSize(layer.Spec)
 	if err != nil {
 		return nil, err
@@ -922,7 +918,7 @@ func genStaticLayer(layer *ir.LayerInstance, index int, all []*ir.LayerInstance,
 	insns := emitBounds(hs, dslReject)
 
 	if index > 0 && layer.Dispatch != nil {
-		di, err := genParentDispatch(layer, index, all, precedingLayersLeaveR4Range(all, index), precedingLayersLeaveR4Range(all, index-1), dslReject)
+		di, err := genParentDispatch(layer, index, all, qo, precedingLayersLeaveR4Range(all, index), precedingLayersLeaveR4Range(all, index-1), dslReject)
 		if err != nil {
 			return nil, err
 		}
@@ -948,7 +944,7 @@ func genStaticLayer(layer *ir.LayerInstance, index int, all []*ir.LayerInstance,
 		// read/write ordering invariant.
 		insns = append(insns, asm.StoreMem(asm.R10, bpfLoopCtxLayerEntrySlot, offsetBase, asm.DWord))
 	}
-	entry, err := emitLayerEntryStore(layer)
+	entry, err := emitLayerEntryStore(layer, qo)
 	if err != nil {
 		return nil, err
 	}
@@ -1045,7 +1041,7 @@ func dispatchJoin(index int, all []*ir.LayerInstance) (asm.Instructions, error) 
 // keep the static rule: their group's guard already chose the member
 // against the static parent. `current` is the layer being emitted — an
 // alternation member when `all[index]` is its group.
-func genParentDispatch(current *ir.LayerInstance, index int, all []*ir.LayerInstance, r4IsRange, parentEntryIsRange bool, failLabel string) (asm.Instructions, error) {
+func genParentDispatch(current *ir.LayerInstance, index int, all []*ir.LayerInstance, qo queriedOptions, r4IsRange, parentEntryIsRange bool, failLabel string) (asm.Instructions, error) {
 	if index == 0 || current.Dispatch == nil {
 		return nil, nil
 	}
@@ -1073,7 +1069,7 @@ func genParentDispatch(current *ir.LayerInstance, index int, all []*ir.LayerInst
 			if !cand.NeedsRuntimeOffset {
 				return nil, fmt.Errorf("codegen: optional %q has no entry slot to test for presence (resolver bug)", cand.Spec.Name)
 			}
-			slot, err := whereLayerEntrySlot(cand.LayerPos)
+			slot, err := qo.entrySlot(cand)
 			if err != nil {
 				return nil, err
 			}
@@ -1196,7 +1192,7 @@ func selfEdgeWithChainEnd(layer, parent *ir.LayerInstance) bool {
 // emitBounds has already validated, so it is safe; and skipping the
 // current layer's bounds check on the absent path avoids spurious
 // dslReject when an optional layer is simply not there.
-func emitPeekedIterZero(layer *ir.LayerInstance, index int, all []*ir.LayerInstance, peekFailLabel string, pc *predCtx) (asm.Instructions, error) {
+func emitPeekedIterZero(layer *ir.LayerInstance, index int, all []*ir.LayerInstance, peekFailLabel string, qo queriedOptions, pc *predCtx) (asm.Instructions, error) {
 	if index == 0 || layer.Dispatch == nil {
 		return nil, fmt.Errorf("%w: peeked iter-0 on %q requires a parent dispatch", ErrNotImplemented, layer.Spec.Name)
 	}
@@ -1206,7 +1202,7 @@ func emitPeekedIterZero(layer *ir.LayerInstance, index int, all []*ir.LayerInsta
 	}
 	// For a self edge of a chain-end protocol the dispatch is the previous
 	// header's end signal (genDispatch), so `mpls/mpls?` peeks the s bit.
-	peek, err := genParentDispatch(layer, index, all, precedingLayersLeaveR4Range(all, index), precedingLayersLeaveR4Range(all, index-1), peekFailLabel)
+	peek, err := genParentDispatch(layer, index, all, qo, precedingLayersLeaveR4Range(all, index), precedingLayersLeaveR4Range(all, index-1), peekFailLabel)
 	if err != nil {
 		return nil, err
 	}
@@ -1214,7 +1210,7 @@ func emitPeekedIterZero(layer *ir.LayerInstance, index int, all []*ir.LayerInsta
 	if err != nil {
 		return nil, err
 	}
-	entry, err := emitLayerEntryStore(layer)
+	entry, err := emitLayerEntryStore(layer, qo)
 	if err != nil {
 		return nil, err
 	}
@@ -2055,21 +2051,6 @@ func slotAnchor(slot int16) layerAnchor {
 	return layerAnchor{UseSlot: true, SlotOff: slot}
 }
 
-// whereLayerEntrySlot returns the stack slot reserved for layer at
-// position layerPos (= LayerInstance.LayerPos) in the program. Slots
-// descend from -224 in 8-byte steps so they sit below the parser
-// counter gap [-224, -208) and the bpf_loop ctx [-208, -176) (see
-// the KunaiStackTop docblock for the full layout map).
-//
-// The cap is tight — 7 slots × 8 bytes = 56 bytes — because the
-// 10b arith bump consumed the slack the previous 12-slot region had.
-// The bundled chain set tops out at TCP at layerPos=5
-// (`eth/ipv4/udp/gtp/ipv4/tcp`), so cap=7 leaves one position of
-// headroom; deeper chains needing runtime offsets will require
-// either a slot-stride redesign or arith depth rollback.
-const whereLayerEntrySlotBase = int16(-224)
-const whereLayerEntrySlotCap = 7
-
 // layerEntryAbsent is the value a quantified layer's entry slot holds when
 // the layer matched zero headers (D-003): the layer's sentinel store
 // writes it before the first peek, and every present iteration overwrites
@@ -2082,11 +2063,11 @@ const layerEntryAbsent = int32(-1)
 // marked the layer as referenced at a runtime offset (NeedsRuntimeOffset).
 // Quantified layers store on every present iteration, so the slot ends up
 // holding the last instance (D-018). Empty for unmarked layers.
-func emitLayerEntryStore(layer *ir.LayerInstance) (asm.Instructions, error) {
+func emitLayerEntryStore(layer *ir.LayerInstance, qo queriedOptions) (asm.Instructions, error) {
 	if !layer.NeedsRuntimeOffset {
 		return nil, nil
 	}
-	slot, err := layerEntrySlotOf(layer)
+	slot, err := qo.entrySlot(layer)
 	if err != nil {
 		return nil, err
 	}
@@ -2097,11 +2078,11 @@ func emitLayerEntryStore(layer *ir.LayerInstance) (asm.Instructions, error) {
 // absent before its first peek; a present iteration overwrites it
 // (emitLayerEntryStore). R3 is scratch here. Empty unless the layer is
 // marked and can match zero headers.
-func emitLayerEntrySentinel(layer *ir.LayerInstance) (asm.Instructions, error) {
+func emitLayerEntrySentinel(layer *ir.LayerInstance, qo queriedOptions) (asm.Instructions, error) {
 	if !layer.NeedsRuntimeOffset || !layer.Absentable() {
 		return nil, nil
 	}
-	slot, err := layerEntrySlotOf(layer)
+	slot, err := qo.entrySlot(layer)
 	if err != nil {
 		return nil, err
 	}
@@ -2114,33 +2095,15 @@ func emitLayerEntrySentinel(layer *ir.LayerInstance) (asm.Instructions, error) {
 // emitLayerEntryStoreFromCb is emitLayerEntryStore for the bpf_loop chain
 // callback, where R2 is the ctx pointer into the main frame and R3 the
 // start of the instance being consumed.
-func emitLayerEntryStoreFromCb(layer *ir.LayerInstance) (asm.Instructions, error) {
+func emitLayerEntryStoreFromCb(layer *ir.LayerInstance, qo queriedOptions) (asm.Instructions, error) {
 	if !layer.NeedsRuntimeOffset {
 		return nil, nil
 	}
-	slot, err := layerEntrySlotOf(layer)
+	slot, err := qo.entrySlot(layer)
 	if err != nil {
 		return nil, err
 	}
 	return asm.Instructions{asm.StoreMem(asm.R2, mainStackOffsetFromCb(slot), asm.R3, asm.DWord)}, nil
-}
-
-// layerEntrySlotOf names the layer in whereLayerEntrySlot's cap error, so a
-// chain whose optionals sit past the slotted positions (runtime-parent
-// dispatch, where references) reads as a limit on that layer.
-func layerEntrySlotOf(layer *ir.LayerInstance) (int16, error) {
-	slot, err := whereLayerEntrySlot(layer.LayerPos)
-	if err != nil {
-		return 0, fmt.Errorf("%w (layer %s at chain position %d needs a runtime entry slot: it is referenced by a where / capture clause, or its presence decides a later layer's dispatch)", err, layer.DisplayName(), layer.LayerPos+1)
-	}
-	return slot, nil
-}
-
-func whereLayerEntrySlot(layerPos int) (int16, error) {
-	if layerPos < 0 || layerPos >= whereLayerEntrySlotCap {
-		return 0, fmt.Errorf("%w: layer position %d exceeds where-slot cap %d (chain too deep for runtime addressing)", ErrNotImplemented, layerPos, whereLayerEntrySlotCap)
-	}
-	return whereLayerEntrySlotBase - int16(layerPos)*8, nil
 }
 
 // emitFieldLoad reads `size` bytes at `fieldOff` from the layer

@@ -56,9 +56,9 @@ func TestCollectQueriedOptionsEmpty(t *testing.T) {
 	}
 	tcp := &ir.LayerInstance{Spec: specs["tcp"], LayerPos: 2}
 	p := &ir.Program{Layers: []*ir.LayerInstance{tcp}}
-	qo := collectQueriedOptions(p)
-	if len(qo) != 0 {
-		t.Errorf("got %d demand entries, want 0 (no where / capture references)", len(qo))
+	qo := mustQueried(t, p)
+	if len(qo.demand) != 0 {
+		t.Errorf("got %d demand entries, want 0 (no where / capture references)", len(qo.demand))
 	}
 }
 
@@ -78,8 +78,8 @@ func TestCollectQueriedOptionsDirectArith(t *testing.T) {
 			ArithL: &ir.ArithExpr{Kind: ast.ArithField, Field: mss},
 		},
 	}
-	qo := collectQueriedOptions(p)
-	demand, ok := qo[layer]
+	qo := mustQueried(t, p)
+	demand, ok := qo.demand[layer]
 	if !ok {
 		t.Fatalf("layer not in demand set")
 	}
@@ -114,8 +114,8 @@ func TestCollectQueriedOptionsHandlesAnyAllNot(t *testing.T) {
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
 			p := &ir.Program{Layers: []*ir.LayerInstance{layer}, Where: c}
-			qo := collectQueriedOptions(p)
-			if _, ok := qo[layer]; !ok {
+			qo := mustQueried(t, p)
+			if _, ok := qo.demand[layer]; !ok {
 				t.Errorf("walker did not record mss reference inside %q shape", name)
 			}
 		})
@@ -133,8 +133,8 @@ func TestCollectQueriedOptionsBracketPredicate(t *testing.T) {
 	layer, mss := auxRefForOption(t, specs, "tcp", "mss")
 	layer.Predicates = []*ir.Predicate{{Field: mss}}
 	p := &ir.Program{Layers: []*ir.LayerInstance{layer}}
-	qo := collectQueriedOptions(p)
-	if _, ok := qo[layer]; !ok {
+	qo := mustQueried(t, p)
+	if _, ok := qo.demand[layer]; !ok {
 		t.Fatalf("walker did not record mss reference inside bracket predicate")
 	}
 }
@@ -154,8 +154,8 @@ func TestCollectQueriedOptionsCapture(t *testing.T) {
 				{Where: &ir.Condition{ArithL: &ir.ArithExpr{Kind: ast.ArithField, Field: mss}}},
 			},
 		}
-		qo := collectQueriedOptions(p)
-		if _, ok := qo[layer]; !ok {
+		qo := mustQueried(t, p)
+		if _, ok := qo.demand[layer]; !ok {
 			t.Errorf("walker did not record mss reference inside capture's where")
 		}
 	})
@@ -164,8 +164,8 @@ func TestCollectQueriedOptionsCapture(t *testing.T) {
 			Layers:   []*ir.LayerInstance{layer},
 			Captures: []*ir.CaptureClause{{Fields: []*ir.FieldRef{mss}}},
 		}
-		qo := collectQueriedOptions(p)
-		if _, ok := qo[layer]; !ok {
+		qo := mustQueried(t, p)
+		if _, ok := qo.demand[layer]; !ok {
 			t.Errorf("walker did not record mss reference inside capture's fields")
 		}
 	})
@@ -196,8 +196,8 @@ func TestCollectQueriedOptionsDeterministicOrder(t *testing.T) {
 			Right: &ir.Condition{ArithL: &ir.ArithExpr{Kind: ast.ArithField, Field: sackPerm}},
 		},
 	}
-	qo := collectQueriedOptions(p)
-	demand := qo[layer]
+	qo := mustQueried(t, p)
+	demand := qo.demand[layer]
 	if len(demand) != 3 {
 		t.Fatalf("demand has %d entries, want 3", len(demand))
 	}
@@ -221,7 +221,7 @@ func TestDynamicAuxSentinelOutsideValidRange(t *testing.T) {
 
 // TestDynamicAuxSlotForLayoutAllocates pins the per-layer-demand-
 // sized stride: a single-layer program with one queried option at
-// layerPos 2 still gets slot -280 (= dynamicAuxOffsetSlotBase),
+// layerPos 2 still gets the plan's first slot (= stackPlanTop),
 // because no prior layer adds to the cumulative offset. Under the
 // previous fixed-stride allocator the same slot was -360 (= -280 -
 // 2×5×8); the new allocator skips empty layers entirely.
@@ -236,21 +236,21 @@ func TestDynamicAuxSlotForLayoutAllocates(t *testing.T) {
 		Layers: []*ir.LayerInstance{layer},
 		Where:  &ir.Condition{ArithL: &ir.ArithExpr{Kind: ast.ArithField, Field: mss}},
 	}
-	qo := collectQueriedOptions(p)
+	qo := mustQueried(t, p)
 	mssLayout := specs["tcp"].ParseStateMachine.AuxLayouts["mss"]
 	slot, ok := qo.dynamicAuxSlotForLayout(layer, mssLayout)
 	if !ok {
 		t.Fatal("dynamicAuxSlotForLayout returned !ok for queried mss")
 	}
-	if slot != dynamicAuxOffsetSlotBase {
-		t.Errorf("slot = %d, want %d (no prior-layer demand)", slot, dynamicAuxOffsetSlotBase)
+	if slot != stackPlanTop {
+		t.Errorf("slot = %d, want %d (no entry slots, no prior-layer demand)", slot, stackPlanTop)
 	}
 }
 
 // TestDynamicAuxSlotCumulativeOffset pins the stride pack: when
 // layer 0 has 2 queried options and layer 2 has 1, layer-2's first
-// slot starts at `-280 - 2×8 = -296` (after layer-0's 2 slots) —
-// not at the previous fixed-stride `-280 - 2×5×8 = -360`.
+// slot starts 2 slots below the plan's top (after layer-0's 2 slots);
+// nothing is reserved for layer 1, which queries nothing.
 func TestDynamicAuxSlotCumulativeOffset(t *testing.T) {
 	specs, err := dslvocab.Bundled()
 	if err != nil {
@@ -263,16 +263,31 @@ func TestDynamicAuxSlotCumulativeOffset(t *testing.T) {
 	tsLayout := tcpSpec.ParseStateMachine.AuxLayouts["ts"]
 	sackPermLayout := tcpSpec.ParseStateMachine.AuxLayouts["sack_perm"]
 
-	qo := queriedOptions{
+	demand := map[*ir.LayerInstance][]*vocab.AuxLayout{
 		priorLayer:   {tsLayout, sackPermLayout},
 		currentLayer: {mssLayout},
 	}
+	plan, err := planStack([]*ir.LayerInstance{priorLayer, nil, currentLayer}, demand)
+	if err != nil {
+		t.Fatal(err)
+	}
+	qo := queriedOptions{demand: demand, plan: plan}
 	slot, ok := qo.dynamicAuxSlotForLayout(currentLayer, mssLayout)
 	if !ok {
 		t.Fatal("dynamicAuxSlotForLayout returned !ok")
 	}
-	want := dynamicAuxOffsetSlotBase - int16(2)*8 // 2 prior demand entries
+	want := stackPlanTop - int16(2)*8 // 2 prior demand entries
 	if slot != want {
 		t.Errorf("slot = %d, want %d (cumulative = 2 × 8)", slot, want)
 	}
+}
+
+// mustQueried collects p's demand and plans its stack.
+func mustQueried(t *testing.T, p *ir.Program) queriedOptions {
+	t.Helper()
+	qo, err := collectQueriedOptions(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return qo
 }
