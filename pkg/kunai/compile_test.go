@@ -145,14 +145,15 @@ func (fakeSetSlots) SlotFor(set, field string) (int16, int, bool) {
 	return 0, 0, false
 }
 
-// TestCompileInSetReferencedTwice pins that a set is referenced by at most
-// one predicate: the host keeps one key slot per set and looks it up once,
-// so a second extraction would silently overwrite the first.
-func TestCompileInSetReferencedTwice(t *testing.T) {
+// TestCompileInSetKeyWrittenTwice pins that one key slot of a set takes
+// one extraction: the host looks the set up once, so a second predicate
+// on the same key field would silently overwrite the first. (A composite
+// set's distinct key fields are distinct slots and may each be written.)
+func TestCompileInSetKeyWrittenTwice(t *testing.T) {
 	caps := codegen.Capabilities{Lang: codegen.LangCaps{SetSlots: fakeSetSlots{}}}
 	_, err := Compile("eth/ipv4/udp/gtp[teid in @teids, teid in @teids]", caps)
-	if err == nil || !strings.Contains(err.Error(), "referenced twice") {
-		t.Fatalf("Compile: err = %v; want the one-reference-per-set error", err)
+	if err == nil || errors.Is(err, codegen.ErrNotImplemented) || !strings.Contains(err.Error(), "written twice") {
+		t.Fatalf("Compile: err = %v; want the key-written-twice error", err)
 	}
 }
 
