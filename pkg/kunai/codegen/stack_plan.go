@@ -20,8 +20,11 @@ const bpfStackBottom = int16(-512)
 // runtime entry slot per layer group the resolver marked
 // NeedsRuntimeOffset (alternation members share their group's slot), then
 // every layer's dynamic-aux demand (option positions, push counts), packed
-// in chain order from stackPlanTop downward. Positions that need no slot
-// take no space, so the only bound is the BPF stack itself.
+// in chain order from stackPlanTop downward, then one matched-member slot
+// per alternation group whose matched member something reads (a where /
+// capture clause on a member, or the next layer's per-member dispatch).
+// Positions that need no slot take no space, so the only bound is the BPF
+// stack itself.
 //
 // Entry slots are keyed by chain position: the group's members share the
 // position, and the `?` lowering in genLayerInner emits a copy of the
@@ -31,12 +34,16 @@ const bpfStackBottom = int16(-512)
 type stackPlan struct {
 	entry map[int]int16
 	aux   map[*ir.LayerInstance]int16 // the layer's first demand slot
+	// matched holds, per alternation group (by chain position), the slot
+	// the group records the index of its matched member in.
+	matched map[int]int16
 }
 
-// planStack lays out `layers` and their demand; it fails when the plan
-// would run past the BPF stack.
-func planStack(layers []*ir.LayerInstance, demand map[*ir.LayerInstance][]*vocab.AuxLayout) (*stackPlan, error) {
-	plan := &stackPlan{entry: map[int]int16{}, aux: map[*ir.LayerInstance]int16{}}
+// planStack lays out `layers`, their demand and the alternation groups
+// in `readGroups` (chain positions of the groups whose matched member is
+// read); it fails when the plan would run past the BPF stack.
+func planStack(layers []*ir.LayerInstance, demand map[*ir.LayerInstance][]*vocab.AuxLayout, readGroups map[int]bool) (*stackPlan, error) {
+	plan := &stackPlan{entry: map[int]int16{}, aux: map[*ir.LayerInstance]int16{}, matched: map[int]int16{}}
 	cursor := int(stackPlanTop)
 	// take hands out `slots` consecutive slots for `l`, naming it when the
 	// plan runs past the BPF stack.
@@ -44,7 +51,7 @@ func planStack(layers []*ir.LayerInstance, demand map[*ir.LayerInstance][]*vocab
 		first := cursor
 		cursor -= 8 * slots
 		if cursor+8 < int(bpfStackBottom) {
-			return 0, fmt.Errorf("%w: %s of %s (chain position %d, %d bytes) end %d bytes past the 512-byte BPF stack: the runtime entry slots and dynamic aux slots of this filter do not fit (reference fewer options, or a shallower chain)", ErrNotImplemented, what, l.DisplayName(), l.LayerPos+1, 8*slots, int(bpfStackBottom)-(cursor+8))
+			return 0, fmt.Errorf("%w: %s of %s (chain position %d, %d bytes) end %d bytes past the 512-byte BPF stack: the runtime entry slots, dynamic aux slots and matched-member slots of this filter do not fit (reference fewer options, or a shallower chain)", ErrNotImplemented, what, l.DisplayName(), l.LayerPos+1, 8*slots, int(bpfStackBottom)-(cursor+8))
 		}
 		return int16(first), nil
 	}
@@ -75,6 +82,16 @@ func planStack(layers []*ir.LayerInstance, demand map[*ir.LayerInstance][]*vocab
 				plan.aux[m] = slot
 			}
 		}
+	}
+	for _, l := range layers {
+		if l == nil || len(l.Alternation) == 0 || !readGroups[l.LayerPos] {
+			continue
+		}
+		slot, err := take(l, 1, "the matched-member slot")
+		if err != nil {
+			return nil, err
+		}
+		plan.matched[l.LayerPos] = slot
 	}
 	return plan, nil
 }

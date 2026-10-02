@@ -21,7 +21,7 @@ func TestPlanStackPacksByNeed(t *testing.T) {
 		m2: {{OutParam: "x"}},
 		c:  {{OutParam: "y"}, {OutParam: "z"}},
 	}
-	plan, err := planStack([]*ir.LayerInstance{a, group, b, c}, demand)
+	plan, err := planStack([]*ir.LayerInstance{a, group, b, c}, demand, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,11 +59,30 @@ func TestPlanStackOverflow(t *testing.T) {
 	for i := range 37 {
 		layers = append(layers, &ir.LayerInstance{LayerPos: i, NeedsRuntimeOffset: true})
 	}
-	if _, err := planStack(layers[:36], nil); err != nil {
+	if _, err := planStack(layers[:36], nil, nil); err != nil {
 		t.Errorf("36 slots: %v", err)
 	}
-	_, err := planStack(layers, nil)
+	_, err := planStack(layers, nil, nil)
 	if !errors.Is(err, ErrNotImplemented) {
 		t.Errorf("37 slots: err = %v; want ErrNotImplemented", err)
+	}
+}
+
+// TestPlanStackMatchedMember pins the matched-member slot: one per
+// alternation group a where / capture clause reads a member of, none
+// otherwise, and never for a position that is not a group.
+func TestPlanStackMatchedMember(t *testing.T) {
+	a := &ir.LayerInstance{LayerPos: 0}
+	group := &ir.LayerInstance{LayerPos: 1, Alternation: []*ir.LayerInstance{{LayerPos: 1}, {LayerPos: 1}}}
+	plan, err := planStack([]*ir.LayerInstance{a, group}, nil, nil)
+	if err != nil || len(plan.matched) != 0 {
+		t.Fatalf("unread group: matched = %v, err %v", plan.matched, err)
+	}
+	plan, err = planStack([]*ir.LayerInstance{a, group}, nil, map[int]bool{0: true, 1: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slot, ok := plan.matched[1]; !ok || len(plan.matched) != 1 || slot != stackPlanTop {
+		t.Errorf("read group: matched = %v, want one slot at %d", plan.matched, stackPlanTop)
 	}
 }

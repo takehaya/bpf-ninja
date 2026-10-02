@@ -55,7 +55,7 @@ func (c *whereCtx) freshLabel(prefix string) string {
 
 // layerAnchorFor returns the addressing strategy for a layer's start
 // in the scratch buffer, memoised after the first lookup. Layers
-// flagged NeedsRuntimeOffset (resolver mark for "past a het-alt")
+// flagged NeedsRuntimeOffset (resolver mark for "at a runtime offset")
 // route through their per-layer entry slot; the rest stay on the
 // static R0+prefix path. Errors propagate from the static path
 // (e.g. quantified layer in prefix) and from the stack plan (a marked
@@ -68,12 +68,6 @@ func (c *whereCtx) layerAnchorFor(l *ir.LayerInstance) (layerAnchor, error) {
 		anchor layerAnchor
 		err    error
 	)
-	if group := c.hetAltGroupOf(l); group != nil {
-		// Members of a heterogeneous alternation share one entry slot and
-		// where reads have no matched-member check, so a field of the
-		// member that did not match would read the other member's bytes.
-		return layerAnchor{}, fmt.Errorf("%w: where-clause field on %q inside the alternation %s: reading a member of a heterogeneous-size alternation is not supported", ErrNotImplemented, l.Spec.Name, group.DisplayName())
-	}
 	if l != nil && l.NeedsRuntimeOffset {
 		var slot int16
 		slot, err = c.queried.entrySlot(l)
@@ -92,20 +86,6 @@ func (c *whereCtx) layerAnchorFor(l *ir.LayerInstance) (layerAnchor, error) {
 	}
 	c.anchors[l] = anchor
 	return anchor, nil
-}
-
-// hetAltGroupOf returns the heterogeneous alternation group `l` belongs
-// to, or nil.
-func (c *whereCtx) hetAltGroupOf(l *ir.LayerInstance) *ir.LayerInstance {
-	if c.p == nil {
-		return nil
-	}
-	for _, g := range c.p.Layers {
-		if ir.IsHeterogeneousAlt(g) && slices.Contains(g.Alternation, l) {
-			return g
-		}
-	}
-	return nil
 }
 
 // genCondition emits instructions that fall through when w evaluates
@@ -356,24 +336,16 @@ func (c *whereCtx) genAll(w *ir.Condition, failLabel string) (asm.Instructions, 
 // atoms then skip their own guard (presentLayers). The guard also keeps
 // the aux bpf_loop walk from seeding its ctx with the absent sentinel.
 func (c *whereCtx) withQuantLayerGuard(w *ir.Condition, failLabel string, body func() (asm.Instructions, error)) (asm.Instructions, error) {
-	// The target layer first, then every other absentable layer the body
-	// reads: guarded once here rather than once per unrolled iteration.
-	layers := []*ir.LayerInstance{w.QuantTarget.Layer}
-	ir.WalkConditionFieldRefs(w.Inner, func(ref *ir.FieldRef) {
-		if ref != nil && ref.Layer != nil && !slices.Contains(layers, ref.Layer) {
-			layers = append(layers, ref.Layer)
-		}
-	})
-	var guards asm.Instructions
-	for _, layer := range layers {
-		guard, err := c.absentLayerGuard(layer, failLabel)
-		if err != nil {
-			return nil, err
-		}
-		if guard == nil {
-			continue
-		}
-		guards = append(guards, guard...)
+	// Only the layer that owns the stack: another absent layer the body
+	// reads makes its own atom false, not the quantifier
+	// (`all(x.f == 1 or vlan.tci == 5)`), so those atoms keep their guard
+	// in each iteration.
+	layer := w.QuantTarget.Layer
+	guard, err := c.absentLayerGuard(layer, failLabel)
+	if err != nil {
+		return nil, err
+	}
+	if guard != nil {
 		if c.presentLayers == nil {
 			c.presentLayers = map[*ir.LayerInstance]bool{}
 		}
@@ -384,14 +356,15 @@ func (c *whereCtx) withQuantLayerGuard(w *ir.Condition, failLabel string, body f
 	if err != nil {
 		return nil, err
 	}
-	return append(guards, insns...), nil
+	return append(guard, insns...), nil
 }
 
 // hasAbsentableLayer reports whether any layer of the program can match
 // zero headers, i.e. whether where atoms may need an absent-layer guard.
 func (c *whereCtx) hasAbsentableLayer() bool {
 	if c.absentable == nil {
-		v := false
+		// An alternation member is absent when another member matched.
+		v := c.queried.readsAltMember()
 		for _, l := range c.p.Layers {
 			if l != nil && l.Absentable() {
 				v = true
@@ -409,8 +382,24 @@ func (c *whereCtx) hasAbsentableLayer() bool {
 // or whose layer the atom does not reference at a runtime offset. A marked
 // absentable layer always has a slot: the resolver marks every quantified
 // layer a where / capture clause references.
+//
+// An alternation member is absent when another member matched: the guard
+// compares the group's matched-member slot with the member's index.
 func (c *whereCtx) absentLayerGuard(l *ir.LayerInstance, failLabel string) (asm.Instructions, error) {
-	if l == nil || !l.Absentable() || c.presentLayers[l] {
+	if l == nil || c.presentLayers[l] {
+		return nil, nil
+	}
+	if idx, isMember := c.queried.members[l]; isMember {
+		slot, ok := c.queried.matchedSlot(l.LayerPos)
+		if !ok {
+			return nil, fmt.Errorf("codegen: the alternation at chain position %d has no matched-member slot for a read of %q", l.LayerPos+1, l.Spec.Name)
+		}
+		return asm.Instructions{
+			asm.LoadMem(asm.R3, asm.R10, slot, asm.DWord),
+			asm.JNE.Imm(asm.R3, int32(idx), failLabel),
+		}, nil
+	}
+	if !l.Absentable() {
 		return nil, nil
 	}
 	if !l.NeedsRuntimeOffset {

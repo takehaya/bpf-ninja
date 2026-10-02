@@ -490,7 +490,106 @@ vector typArith128Band := {
   expected := .illTyped "unsupported: only + and - are defined on fields wider than 64 bits",
   note := "D-035: bitwise operators too; a CIDR literal covers prefix tests" }
 
+-- Alternation members in `where` (D-023 label note) --------------------------
+
+def qinqPkt (tci : Nat := 100) : Packet := eth 0x88a8 ++ vlan tci 0x0800 ++ ipv4 6 ++ tcp 12345 80 ++ payload 5
+def tagAlt (label : Option String) (w : Where) : Filter :=
+  { layers := [P "eth", .alt [{ name := "vlan", label }, { name := "qinq" }], P "ipv4", P "tcp"], cond := some w }
+def l4Alt (w : Where) : Filter :=
+  { layers := [P "eth", P "ipv4", .alt [{ name := "tcp", label := some "x" }, { name := "udp" }]], cond := some w }
+
+vector whereAltLabelHit := {
+  id := "where-alt-label-hit", ast := tagAlt (some "v") (cmp (fld "v" "tci") .eq (k 100)), packet := vlanPkt,
+  expected := .accept [], note := "a label on an alternation member names that member" }
+vector whereAltLabelOther := {
+  id := "where-alt-label-other-member", ast := tagAlt (some "v") (cmp (fld "v" "tci") .eq (k 100)), packet := qinqPkt,
+  expected := .reject, note := "qinq matched, so v is absent and its atom false (D-003), whatever qinq's tci is" }
+vector whereAltLabelOtherNot := {
+  id := "where-alt-label-other-member-not", ast := tagAlt (some "v") (.not (cmp (fld "v" "tci") .eq (k 100))),
+  packet := qinqPkt, expected := .accept [] }
+vector whereAltNameHit := {
+  id := "where-alt-name-hit", ast := tagAlt none (cmp (fld "vlan" "tci") .eq (k 100)), packet := vlanPkt,
+  expected := .accept [] }
+vector whereAltNameOther := {
+  id := "where-alt-name-other-member", ast := tagAlt none (cmp (fld "vlan" "tci") .eq (k 100)), packet := qinqPkt,
+  expected := .reject, note := "the protocol name of a member that did not match is absent too" }
+vector whereAltNameOtherNot := {
+  id := "where-alt-name-other-member-not", ast := tagAlt none (.not (cmp (fld "vlan" "tci") .eq (k 100))),
+  packet := qinqPkt, expected := .accept [] }
+def udpPkt : Packet := eth 0x0800 ++ ipv4 17 ++ udp 12345 80 ++ payload 5
+def l3Alt (pre : List Layer) (w : Where) : Filter :=
+  { layers := pre ++ [.alt [{ name := "ipv4" }, { name := "ipv6" }], P "tcp"], cond := some w }
+
+vector whereAltLabelHet := {
+  id := "where-alt-label-het", ast := l4Alt (cmp (fld "x" "dport") .eq (k 80)),
+  expected := .accept [], note := "members of different sizes" }
+vector whereAltLabelHetOther := {
+  id := "where-alt-label-het-other-member", ast := l4Alt (cmp (fld "x" "dport") .eq (k 80)), packet := udpPkt,
+  expected := .reject, note := "udp matched; its dport is 80 at the same offset, but x is absent" }
+vector whereAltLabelHetOtherNot := {
+  id := "where-alt-label-het-other-member-not", ast := l4Alt (.not (cmp (fld "x" "dport") .eq (k 80))),
+  packet := udpPkt, expected := .accept [] }
+vector whereAltL3Hit := {
+  id := "where-alt-l3-hit", ast := l3Alt [P "eth"] (.and (cmp ttl .eq (k 64)) (cmp dport .eq (k 80))),
+  expected := .accept [], note := "a member of a variable-size alternation, and a layer after it" }
+vector whereAltL3Other := {
+  id := "where-alt-l3-other-member", ast := l3Alt [P "eth"] (cmp ttl .eq (k 64)), packet := ipv6TCP,
+  expected := .reject }
+vector whereAltL3OtherOr := {
+  id := "where-alt-l3-other-member-or", packet := ipv6TCP,
+  ast := l3Alt [P "eth"] (.or (cmp ttl .eq (k 64)) (cmp (fld "ipv6" "hop_limit") .gt (k 0))),
+  expected := .accept [], note := "one atom per member: the absent one is false, the present one decides" }
+vector whereAltL3AfterOpt := {
+  id := "where-alt-l3-after-optional", ast := l3Alt [P "eth", Pq "vlan" .opt] (cmp ttl .eq (k 64)), packet := vlanPkt,
+  expected := .accept [], note := "the member's start is a runtime offset" }
+vector whereAltL3AfterOptOther := {
+  id := "where-alt-l3-after-optional-other-member", ast := l3Alt [P "eth", Pq "vlan" .opt] (cmp ttl .eq (k 64)),
+  packet := ipv6TCP, expected := .reject }
+
+vector whereAltNameAmbiguous := {
+  id := "where-alt-name-ambiguous",
+  ast := { layers := [P "eth", .alt [{ name := "ipv4", label := some "a" }, { name := "ipv4", label := some "b" }], P "tcp"],
+           cond := some (cmp ttl .eq (k 64)) },
+  expected := .illTyped "protocol ipv4 is ambiguous; qualify with an @label",
+  note := "two members of one protocol: the name does not say which" }
+def twoAlts (w : Option Where) : Filter :=
+  { layers := [P "eth", .alt [{ name := "ipv4" }, { name := "ipv6" }], .alt [{ name := "tcp" }, { name := "udp" }]], cond := w }
+vector altTwoGroups := {
+  id := "alt-two-groups", ast := twoAlts none, packet := ipv6TCP, expected := .accept [],
+  note := "the second group's members dispatch under whichever member of the first matched" }
+vector altTwoGroupsUdp := {
+  id := "alt-two-groups-udp", ast := twoAlts none, packet := udpPkt, expected := .accept [] }
+vector whereAltTwoGroups := {
+  id := "where-alt-two-groups", ast := twoAlts (some (.and (cmp ttl .eq (k 64)) (cmp dport .eq (k 80)))),
+  expected := .accept [] }
+vector whereAltTwoGroupsOther := {
+  id := "where-alt-two-groups-other-member", ast := twoAlts (some (cmp dport .eq (k 80))), packet := udpPkt,
+  expected := .reject }
+def sackRight := Arith.field ⟨[("tcp", none), ("options", none), ("SACK", none), ("blocks", none), ("right", none)]⟩
+def sackPkt' : Packet :=
+  eth 0x0800 ++ ipv4 6 ++ tcp 12345 80 (dataOffset := 8) (options := [1, 1, 5, 10] ++ be 4 100 ++ be 4 200) ++ payload 5
+vector whereQuantOtherAbsent := {
+  id := "where-quant-other-layer-absent",
+  ast := { layers := vlanOpt, cond := some (.all (.or (cmp sackRight .eq (k 200)) (cmp (fld "vlan" "tci") .eq (k 5)))) },
+  packet := sackPkt', expected := .accept [],
+  note := "the absent vlan makes its atom false in each iteration, not the quantifier" }
+vector whereQuantOtherAbsentEmpty := {
+  id := "where-quant-other-layer-absent-empty-stack",
+  ast := { layers := vlanOpt, cond := some (.all (.or (cmp sackRight .eq (k 200)) (cmp (fld "vlan" "tci") .eq (k 5)))) },
+  expected := .accept [],
+  note := "no SACK blocks: all over an empty stack of a present layer is true, whatever else the body reads" }
+vector whereQuantOtherMember := {
+  id := "where-quant-other-member",
+  ast := { layers := [P "eth", P "ipv4", .alt [{ name := "tcp" }, { name := "udp" }]],
+           cond := some (.any (.or (cmp sackRight .eq (k 200)) (cmp (fld "udp" "dport") .eq (k 80)))) },
+  packet := sackPkt', expected := .accept [] }
+
 def whereVectors : List Vector := [
+  whereAltNameAmbiguous, altTwoGroups, altTwoGroupsUdp, whereAltTwoGroups, whereAltTwoGroupsOther,
+  whereQuantOtherAbsent, whereQuantOtherAbsentEmpty, whereQuantOtherMember,
+  whereAltLabelHit, whereAltLabelOther, whereAltLabelOtherNot, whereAltNameHit, whereAltNameOther, whereAltNameOtherNot,
+  whereAltLabelHet, whereAltLabelHetOther, whereAltLabelHetOtherNot, whereAltL3Hit, whereAltL3Other, whereAltL3OtherOr,
+  whereAltL3AfterOpt, whereAltL3AfterOptOther,
   whereCmpOps, whereLitIPv4, whereCIDRIn, whereCIDRNe, whereCIDR0, whereMAC, whereIPv6CIDR, whereIPv6Eq,
   whereNegLitMiss, whereNegLitHit, whereConstFold,
   whereArithOps, whereBitwise, whereShiftMasked, whereNoWrap, whereDivZero, whereModZero, whereMixedWidth,

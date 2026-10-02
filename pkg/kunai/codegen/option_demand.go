@@ -24,6 +24,9 @@ type queriedOptions struct {
 	// tcp.options.MSS pays for one slot, not four).
 	demand map[*ir.LayerInstance][]*vocab.AuxLayout
 	plan   *stackPlan
+	// members maps each alternation member to its index in its group
+	// (the group's chain position is the member's own LayerPos).
+	members map[*ir.LayerInstance]int
 }
 
 // of returns the layer's demand list (nil when nothing is queried).
@@ -41,6 +44,24 @@ func (qo queriedOptions) entrySlot(layer *ir.LayerInstance) (int16, error) {
 	return 0, fmt.Errorf("codegen: %s has no runtime entry slot (the resolver did not mark it)", layer.DisplayName())
 }
 
+// matchedSlot is the stack slot in which the alternation group at chain
+// position `pos` records the index of its matched member; ok is false
+// when nothing reads it: no where / capture clause reads a member of the
+// group and the next layer dispatches the same way under every member.
+func (qo queriedOptions) matchedSlot(pos int) (slot int16, ok bool) {
+	if qo.plan == nil {
+		return 0, false
+	}
+	slot, ok = qo.plan.matched[pos]
+	return slot, ok
+}
+
+// readsAltMember reports whether any matched-member slot is planned,
+// i.e. whether a where atom can need a member guard.
+func (qo queriedOptions) readsAltMember() bool {
+	return qo.plan != nil && len(qo.plan.matched) > 0
+}
+
 // collectQueriedOptions walks the resolved program and gathers every
 // dynamic-eligible aux reference, then plans the stack slots. Preserves
 // sort-by-kind-byte ordering so slot indices stay stable across compiles
@@ -54,14 +75,45 @@ func collectQueriedOptions(p *ir.Program) (queriedOptions, error) {
 	for _, layer := range p.Layers {
 		visitLayerPredicates(layer, visit)
 	}
-	ir.WalkConditionFieldRefs(p.Where, visit)
+	// A where / capture read of an alternation member needs to know
+	// whether that member is the one that matched. A member's own bracket
+	// predicate runs inside its branch and does not.
+	qo.members = map[*ir.LayerInstance]int{}
+	readGroups := map[int]bool{}
+	divergedUnder := func(l *ir.LayerInstance) bool {
+		return l != nil && l.Dispatch != nil && l.Dispatch.IsAltDiverged
+	}
+	for i, layer := range p.Layers {
+		if layer == nil {
+			continue
+		}
+		for j, alt := range layer.Alternation {
+			qo.members[alt] = j
+		}
+		// The layer after a group whose members dispatch it differently
+		// (`(ipv4|ipv6)/tcp`, or a second group `(ipv4|ipv6)/(tcp|udp)`)
+		// picks its dispatch by the matched member.
+		if i > 0 && p.Layers[i-1] != nil && len(p.Layers[i-1].Alternation) > 0 &&
+			(divergedUnder(layer) || slices.ContainsFunc(layer.Alternation, divergedUnder)) {
+			readGroups[p.Layers[i-1].LayerPos] = true
+		}
+	}
+	visitRead := func(f *ir.FieldRef) {
+		visit(f)
+		if f != nil {
+			if _, ok := qo.members[f.Layer]; ok {
+				readGroups[f.Layer.LayerPos] = true
+			}
+		}
+	}
+	ir.WalkConditionFieldRefs(p.Where, visitRead)
 	for _, cap := range p.Captures {
 		if cap == nil {
 			continue
 		}
-		ir.WalkConditionFieldRefs(cap.Where, visit)
+		ir.WalkConditionFieldRefs(cap.Where, visitRead)
 		for _, f := range cap.Fields {
-			visit(f)
+			visitRead(f)
 		}
 	}
 	for layer, layouts := range qo.demand {
@@ -73,7 +125,7 @@ func collectQueriedOptions(p *ir.Program) (queriedOptions, error) {
 		})
 		qo.demand[layer] = layouts
 	}
-	plan, err := planStack(p.Layers, qo.demand)
+	plan, err := planStack(p.Layers, qo.demand, readGroups)
 	if err != nil {
 		return queriedOptions{}, err
 	}

@@ -1003,12 +1003,10 @@ func TestCompileWhereOnQuantifiedLayers(t *testing.T) {
 	if err == nil || errors.Is(err, codegen.ErrNotImplemented) || !strings.Contains(err.Error(), "ambiguous") {
 		t.Fatalf("unlabelled repeated layer: expected a resolver ambiguity error, got %v", err)
 	}
-	// A member of a heterogeneous alternation shares its group's slot and
-	// has no matched-member check on where reads, so it stays refused
-	// even behind an optional layer.
-	_, err = compileForTest("eth/vlan?/(ipv4|ipv6)/tcp where ipv4.ttl == 64")
-	if !errors.Is(err, codegen.ErrNotImplemented) || !strings.Contains(err.Error(), "heterogeneous-size alternation") {
-		t.Fatalf("het-alt member after an optional layer: expected ErrNotImplemented naming the alternation, got %v", err)
+	// A member of a heterogeneous alternation shares its group's slot;
+	// the read is guarded by the group's matched-member slot.
+	if _, err = compileForTest("eth/vlan?/(ipv4|ipv6)/tcp where ipv4.ttl == 64"); err != nil {
+		t.Fatalf("het-alt member after an optional layer: %v", err)
 	}
 	// Capturing an alternation member behind an optional layer sizes the
 	// bound from the member itself.
@@ -1246,24 +1244,25 @@ func TestCompileAlternationHetSizeWhere(t *testing.T) {
 	}
 }
 
-func TestCompileAlternationHetSizeAltMemberWhereStaged(t *testing.T) {
-	// `where ipv6.src == ...` references an alt member directly. Each
-	// member sits inside the alt group rather than in p.Layers, and
-	// the slot mechanism would only address the alt's primary bytes
-	// (semantics ill-defined when the *other* alt was matched). MVP
-	// keeps this rejected so users write per-alt bracket predicates
-	// instead: `eth/(ipv4|ipv6[src==fe80::1])/tcp`.
+func TestCompileAlternationMemberWhere(t *testing.T) {
+	// `where ipv6.src == ...` references an alt member directly, by
+	// protocol name or by label. The atom is false when another member
+	// matched: the group records the matched member's index and the read
+	// tests it first.
 	for _, expr := range []string{
 		"eth/(ipv4|ipv6)/tcp where ipv6.src == fe80::1",
 		"eth/(ipv4|ipv6)/tcp where ipv4.src == 10.0.0.1",
+		"eth/(ipv4@a|ipv6@b)/tcp where a.ttl == 64 or b.hop_limit == 64",
+		"eth/ipv4/(tcp@x|udp) where x.dport == 80",
+		"eth/(vlan@v|qinq)/ipv4/tcp where v.tci == 100",
 	} {
 		t.Run(expr, func(t *testing.T) {
-			_, err := Compile(expr, codegen.Capabilities{})
-			if err == nil {
-				t.Fatalf("Compile(%q): expected ErrNotImplemented", expr)
+			out, err := Compile(expr, codegen.Capabilities{})
+			if err != nil {
+				t.Fatalf("Compile(%q): %v", expr, err)
 			}
-			if !errors.Is(err, codegen.ErrNotImplemented) {
-				t.Fatalf("err = %v; want ErrNotImplemented", err)
+			if len(out.Main) == 0 {
+				t.Fatal("expected non-empty instructions")
 			}
 		})
 	}

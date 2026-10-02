@@ -12,11 +12,13 @@ stack entry is absent (D-003, D-027).
 -/
 namespace Kunai
 
-/-- Protocol a label is declared on, from the static chain. -/
+/-- Protocol a label is declared on, from the static chain. A label on an
+alternation member counts: it is bound when that member matches, and names
+an absent layer otherwise. -/
 def labelProto (layers : List Layer) (l : String) : Option String :=
   layers.findSome? fun
     | .proto p => if p.label == some l then some p.name else none
-    | .alt _ => none
+    | .alt alts => alts.findSome? fun a => if a.label == some l then some a.name else none
 
 /-- How many instances of `p` the chain can bind: 0, 1, or 2 (= ambiguous, D-013). -/
 private def staticCount (layers : List Layer) (p : String) : Nat :=
@@ -26,7 +28,7 @@ private def staticCount (layers : List Layer) (p : String) : Nat :=
       else match q.quant with
         | .one | .opt | .range _ (some 1) => 1
         | _ => 2
-    | .alt alts => if alts.any (·.name == p) then 1 else 0).sum
+    | .alt alts => min (alts.countP (·.name == p)) 2).sum
 
 /-- Static resolution of a reference head (`label` or `proto`) to a protocol. -/
 def staticProto (c : Ctx) (head : String) : Except Stop String :=
@@ -92,7 +94,7 @@ def canonicalHead (c : Ctx) (head : String) : Except Stop String := do
     let p ← staticProto c head
     pure ((c.layers.findSome? fun
       | .proto q => if q.name == p then some (q.label.getD p) else none
-      | .alt _ => none).getD p)
+      | .alt alts => alts.findSome? fun a => if a.name == p then some (a.label.getD p) else none).getD p)
 
 /-- Runtime instance for a reference head; `none` when the layer was skipped (D-003). -/
 def resolveRef (c : Ctx) (st : State) (head : String) : Except Stop (Option Inst) := do
