@@ -163,10 +163,11 @@ func genStaticChain(layer *ir.LayerInstance, index int, all []*ir.LayerInstance,
 	return chainLanding(insns, layer, optional, chainDone, absentLabel, index, all)
 }
 
-// genOptionalMachineLayer lowers `?` / `{0,1}` on a parser-machine layer
-// whose parent names it with a dispatch constant (`ipv6/srv6?`,
-// `eth/ipv4?`): the machine runs as for a mandatory layer, except that a
-// failed parent dispatch jumps to the absent label instead of rejecting.
+// genOptionalMachineLayer lowers `?` / `{0,1}` on a parser-machine layer:
+// the machine runs as for a mandatory layer, except that a failed dispatch
+// jumps to the absent label instead of rejecting. The dispatch is the
+// parent's constant (`ipv6/srv6?`, `eth/ipv4?`) or, under a parent with
+// none, the probe of the layer's self-validation fields (`mpls/ipv4?`).
 // `layer` is the instance the demand walker and the stack plan know, not
 // a `{0,1}` copy.
 func genOptionalMachineLayer(layer *ir.LayerInstance, index int, all []*ir.LayerInstance, qo queriedOptions, plan *accPlan, pc *predCtx) (asm.Instructions, asm.Instructions, error) {

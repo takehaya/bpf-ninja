@@ -28,14 +28,6 @@ func (r *resolver) resolveLayer(al *ast.Layer, parent *ir.LayerInstance) (*ir.La
 		Pos:      al.Pos,
 	}
 
-	// `{1,1}` is the plain layer (Laws.lean one_eq_range) unless the
-	// protocol carries a chain-end rule, where reaching the bound demands
-	// the end signal (D-024). Normalising here keeps every later check on
-	// `Quant != QuantOne` from treating it as a repeated layer.
-	if li.Quant == ast.QuantRange && li.RangeMin == 1 && li.RangeMax == 1 && spec.ChainEnd == nil {
-		li.Quant, li.RangeMin, li.RangeMax = ast.QuantOne, 0, 0
-	}
-
 	// Auto-index captures occurrence order even when no label is written.
 	li.Index = r.protoAutoIndex[spec.Name]
 	r.protoAutoIndex[spec.Name]++

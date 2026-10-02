@@ -188,6 +188,7 @@ func loadFile(fsys fs.FS, p string, knownProtos map[string]bool) (*ProtocolSpec,
 		return nil, err
 	}
 	spec.selfValidating = computeSelfValidating(spec)
+	spec.requires = computeRequires(spec)
 	return spec, nil
 }
 

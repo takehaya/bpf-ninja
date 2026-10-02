@@ -274,7 +274,7 @@ func (c *pmCtx) emitState(stateIdx int) (asm.Instructions, asm.Instructions, err
 		if err != nil {
 			return nil, nil, err
 		}
-		optional := c.dispatchFail != dslReject
+		optional := missIsNotReject(c.dispatchFail)
 		if optional {
 			insns = append(insns, dynInit...)
 		}

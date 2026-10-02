@@ -87,8 +87,10 @@ type ProtocolSpec struct {
 	// Computed once at vocab load (loader.go) and queried per Compile
 	// via IsSelfValidating().
 	selfValidating bool
-	File           *p4lite.File // full AST (for resolver/codegen later)
-	Source         string       // original file path, for diagnostics
+	// requires caches Requires(), computed with selfValidating.
+	requires []Requirement
+	File     *p4lite.File // full AST (for resolver/codegen later)
+	Source   string       // original file path, for diagnostics
 }
 
 // StackLayoutSpec captures the @kunai_layout[after=...] decorator on
@@ -376,12 +378,17 @@ type Requirement struct {
 // protocol: when the entry state's select rejects by default, each field
 // key for which every accepting case names a concrete value must take one
 // of those values (ipv4: version ∈ {4}). A tuple select is projected per
-// key. Nil for a protocol that does not self-validate. Codegen probes
-// these fields to tell an absent optional layer from a present one, and
-// the Lean vocabulary (spec/lean/gen/vocab2lean) carries the same list.
-func (p *ProtocolSpec) Requires() []Requirement {
+// key, and only keys on the primary header count (a key on an auxiliary
+// header is not a field of the header being dispatched). Nil for a
+// protocol that does not self-validate. Codegen probes these fields to
+// tell an absent optional layer from a present one, and the Lean
+// vocabulary (spec/lean/gen/vocab2lean) carries the same list. Cached by
+// the loader, like IsSelfValidating.
+func (p *ProtocolSpec) Requires() []Requirement { return p.requires }
+
+func computeRequires(p *ProtocolSpec) []Requirement {
 	m := p.ParseStateMachine
-	if m == nil || !p.IsSelfValidating() {
+	if m == nil || !p.selfValidating {
 		return nil
 	}
 	st := m.States[m.EntryIdx]
@@ -391,7 +398,7 @@ func (p *ProtocolSpec) Requires() []Requirement {
 	sel := st.Trans.Select
 	var reqs []Requirement
 	for i, k := range sel.Keys {
-		if k.Kind != SelectKeyField || k.Field.IsStackLast {
+		if k.Kind != SelectKeyField || k.Field.IsStackLast || k.Field.HeaderName != p.HeaderName {
 			continue
 		}
 		// A key constrains the header only if every accepting case names a value for it.

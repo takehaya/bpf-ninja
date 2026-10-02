@@ -900,8 +900,14 @@ func genLayerInner(layer *ir.LayerInstance, index int, all []*ir.LayerInstance, 
 	case ast.QuantRange:
 		if layer.RangeMax == 1 && layer.Spec.ParseStateMachine != nil {
 			// One header at most: the parser machine must run (the static
-			// chain would advance by the primary header only).
+			// chain would advance by the primary header only). `{1,1}` is
+			// the plain layer (Laws.lean one_eq_range) unless a chain-end
+			// rule demands the end signal at the bound (D-024), which the
+			// machine lowering does not check.
 			if layer.RangeMin == 1 {
+				if layer.Spec.ChainEnd != nil {
+					return nil, nil, fmt.Errorf("%w: {1,1} on %q: a parser-machine layer with a chain-end rule", ErrNotImplemented, layer.Spec.Name)
+				}
 				return genParserMachine(layer, index, all, qo, plan, pc)
 			}
 			return genOptionalMachineLayer(layer, index, all, qo, plan, pc)
@@ -1125,7 +1131,7 @@ func dispatchVia(current, parent *ir.LayerInstance, r4IsRange, parentEntryIsRang
 	c := current.Spec.SelectDispatchConst(parent.Spec.Name)
 	if c == nil {
 		if current.Spec.IsSelfValidating() {
-			if failLabel != dslReject {
+			if missIsNotReject(failLabel) {
 				return emitSelfValidationProbe(current.Spec, failLabel)
 			}
 			return nil, nil
@@ -1174,8 +1180,9 @@ func withAbsentEdge(present asm.Instructions, peekFail string, index int, all []
 
 // optionalLayerGuard lists the absentable shapes codegen cannot express.
 // It is shared by `?`, `{0,m}` and `*` (chain.go, bpfloop.go). A layer
-// needs a parent dispatch to tell absence by, which a self-validating
-// layer under that parent does not have. A variable-length layer may be
+// needs a parent dispatch to tell absence by; a layer that self-validates
+// under its parent has its required fields probed instead (D-017), so it
+// needs a parser that constrains one. A variable-length layer may be
 // optional (one header: genOptionalMachineLayer runs its parser machine,
 // emitPeekedIterZero its flag triggers) but not repeated, and not with a
 // chain-end rule, whose over-run check assumes a fixed header.
@@ -1291,7 +1298,7 @@ func genDispatch(current, parent *ir.LayerInstance, parentHS int, r4IsRange, par
 		// ...; default: reject; }`. An optional one must tell a miss from
 		// a reject before the machine runs, so it probes the fields that
 		// select requires (D-017).
-		if failLabel != dslReject {
+		if missIsNotReject(failLabel) {
 			edge, err = emitSelfValidationProbe(current.Spec, failLabel)
 		}
 	default:
@@ -1303,52 +1310,48 @@ func genDispatch(current, parent *ir.LayerInstance, parentHS int, r4IsRange, par
 	return append(pre, edge...), nil
 }
 
+// missIsNotReject reports whether a dispatch is emitted for a layer that
+// may be absent: its failure target is a skip label rather than the
+// filter's reject. Only then does a self-validating layer need its probe
+// (and a parser machine its slots initialised before the dispatch); for a
+// mandatory layer a miss and a reject coincide. Self-validating layers
+// are never chained, so a chain iteration's non-reject target does not
+// reach the probe.
+func missIsNotReject(failLabel string) bool { return failLabel != dslReject }
+
 // emitSelfValidationProbe is the dispatch of an optional layer that no
 // parent constant names (spec D-017, Layer.lean `dispatch`): it reads the
 // primary-header fields the parser's entry select requires
 // (vocab.Requires) at R4 and jumps to missLabel when one holds a value the
 // select would reject, before anything of the layer is consumed. A field
 // the packet is too short to hold is not a miss: the layer is taken as
-// present and its own bounds check rejects. Clobbers R3 (and R5 for a
-// wide mask).
+// present and its own bounds check rejects. A select key sits inside one
+// byte (the parser machine refuses wider ones), so the probe is one byte
+// load per field. Clobbers R3.
 func emitSelfValidationProbe(spec *vocab.ProtocolSpec, missLabel string) (asm.Instructions, error) {
-	var out asm.Instructions
+	// A cursor at or past the scratch window can read nothing, and the
+	// layer's bounds check would reject it. Testing the high bits of R4
+	// itself also ends, on kernels 6.12 / 6.15, the paths the verifier
+	// carries out of a bpf_loop walk with a cursor constant its range
+	// tracking has lost: a range compare there falls through and the
+	// load after it is refused, while a bit test is decided on the
+	// constant.
+	out := asm.Instructions{asm.JSet.Imm(offsetBase, int32(-ScratchBufSize), dslReject)}
 	for _, req := range spec.Requires() {
 		bitOff, bits, err := findFieldBitOffset(spec, req.Field)
 		if err != nil {
 			return nil, err
 		}
-		loadBytes := nextLDXSize((bitOff%8 + bits + 7) / 8)
-		if loadBytes == 0 {
-			return nil, fmt.Errorf("%w: self-validation field %s.%s is wider than 8 bytes", ErrNotImplemented, spec.Name, req.Field)
-		}
-		size, err := asmSizeFor(loadBytes)
-		if err != nil {
-			return nil, err
+		if bitOff/8 != (bitOff+bits-1)/8 {
+			return nil, fmt.Errorf("%w: self-validation field %s.%s straddles a byte", ErrNotImplemented, spec.Name, req.Field)
 		}
 		ok := freshLabel("probe_ok")
-		// The window check comes first as a pointer compare against the
-		// window end, like every layer's own bounds check: besides taking
-		// an unreadable field as "present", it ends the paths on which
-		// the verifier carries an out-of-window R4 out of a bpf_loop walk
-		// (kernels 6.12 / 6.15 follow such a path past a scalar-only
-		// check and then refuse the load).
-		out = append(out, emitBounds(bitOff/8+loadBytes, ok)...)
-		out = append(out, emitBoundedLoad(asm.R3, int16(bitOff/8), size, ok)...)
-		if loadBytes > 1 {
-			out = append(out, asm.HostTo(asm.BE, asm.R3, size))
-		}
-		if shift := loadBytes*8 - (bitOff%8 + bits); shift > 0 {
+		out = append(out, emitBoundedLoad(asm.R3, int16(bitOff/8), asm.Byte, ok)...)
+		if shift := 8 - (bitOff%8 + bits); shift > 0 {
 			out = append(out, asm.RSh.Imm(asm.R3, int32(shift)))
 		}
-		if bits < loadBytes*8 {
-			mask := uint64(1)<<bits - 1
-			if mask <= math.MaxInt32 {
-				out = append(out, asm.And.Imm(asm.R3, int32(mask)))
-			} else {
-				out = append(out, loadConst(asm.R5, mask)...)
-				out = append(out, asm.And.Reg(asm.R3, asm.R5))
-			}
+		if bits < 8 {
+			out = append(out, asm.And.Imm(asm.R3, int32(1)<<bits-1))
 		}
 		for _, v := range req.Values {
 			out = append(out, cmpR3Const(asm.JEq, v, ok)...)

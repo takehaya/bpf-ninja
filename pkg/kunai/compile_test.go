@@ -1070,10 +1070,10 @@ func TestCompileConsecutiveOptionals(t *testing.T) {
 }
 
 // TestCompileOptionalVariableLayers pins `?` / `{0,1}` on a variable-length
-// layer that its parent names with a dispatch constant: the parser machine
-// (or the flag-trigger emit) runs with a failed dispatch routed to the
-// absent path. Repeating such a layer, and an optional layer with no
-// parent constant to tell absence by, stay refused.
+// layer: the parser machine (or the flag-trigger emit) runs with a failed
+// dispatch routed to the absent path, the dispatch being the parent's
+// constant or, with none, the self-validation probe. Repeating such a
+// layer stays refused.
 func TestCompileOptionalVariableLayers(t *testing.T) {
 	for _, expr := range []string{
 		"eth/ipv4?",
