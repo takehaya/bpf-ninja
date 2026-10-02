@@ -88,23 +88,6 @@ func (c *whereCtx) layerAnchorFor(l *ir.LayerInstance) (layerAnchor, error) {
 	return anchor, nil
 }
 
-// altGroupOf returns the alternation group `l` is a member of and its
-// index in it, or nil.
-func (c *whereCtx) altGroupOf(l *ir.LayerInstance) (*ir.LayerInstance, int) {
-	if c.p == nil || l == nil {
-		return nil, 0
-	}
-	for _, g := range c.p.Layers {
-		if g == nil {
-			continue
-		}
-		if i := slices.Index(g.Alternation, l); i >= 0 {
-			return g, i
-		}
-	}
-	return nil, 0
-}
-
 // genCondition emits instructions that fall through when w evaluates
 // to true and jump to failLabel when it evaluates to false. Errors
 // surface with the condition's source position prefixed so users see
@@ -388,10 +371,10 @@ func (c *whereCtx) withQuantLayerGuard(w *ir.Condition, failLabel string, body f
 // zero headers, i.e. whether where atoms may need an absent-layer guard.
 func (c *whereCtx) hasAbsentableLayer() bool {
 	if c.absentable == nil {
-		v := false
+		// An alternation member is absent when another member matched.
+		v := c.queried.readsAltMember()
 		for _, l := range c.p.Layers {
-			// An alternation member is absent when another member matched.
-			if l != nil && (l.Absentable() || len(l.Alternation) > 0) {
+			if l != nil && l.Absentable() {
 				v = true
 				break
 			}
@@ -411,17 +394,20 @@ func (c *whereCtx) hasAbsentableLayer() bool {
 // An alternation member is absent when another member matched: the guard
 // compares the group's matched-member slot with the member's index.
 func (c *whereCtx) absentLayerGuard(l *ir.LayerInstance, failLabel string) (asm.Instructions, error) {
-	if group, idx := c.altGroupOf(l); group != nil {
-		slot, ok := c.queried.matchedSlot(group.LayerPos)
+	if l == nil || c.presentLayers[l] {
+		return nil, nil
+	}
+	if m, isMember := c.queried.members[l]; isMember {
+		slot, ok := c.queried.matchedSlot(m.groupPos)
 		if !ok {
-			return nil, fmt.Errorf("codegen: alternation %s has no matched-member slot for a read of %q", group.DisplayName(), l.Spec.Name)
+			return nil, fmt.Errorf("codegen: the alternation at chain position %d has no matched-member slot for a read of %q", m.groupPos+1, l.Spec.Name)
 		}
 		return asm.Instructions{
 			asm.LoadMem(asm.R3, asm.R10, slot, asm.DWord),
-			asm.JNE.Imm(asm.R3, int32(idx), failLabel),
+			asm.JNE.Imm(asm.R3, int32(m.index), failLabel),
 		}, nil
 	}
-	if l == nil || !l.Absentable() || c.presentLayers[l] {
+	if !l.Absentable() {
 		return nil, nil
 	}
 	if !l.NeedsRuntimeOffset {

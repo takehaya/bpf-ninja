@@ -426,9 +426,9 @@ func markRuntimeOffsetLayers(p *ir.Program) {
 	}
 
 	// Members of a heterogeneous alternation share one entry slot. A
-	// where read tests which member matched before it uses the slot; a
-	// capture target has no such test, so it stays unmarked and codegen
-	// refuses it.
+	// where read tests which member matched before it uses the slot. A
+	// capture target does not read the slot (its length is a static upper
+	// bound), so it is not a reason to mark the member.
 	hetAltMember := map[*ir.LayerInstance]bool{}
 	for _, l := range p.Layers {
 		if ir.IsHeterogeneousAlt(l) {

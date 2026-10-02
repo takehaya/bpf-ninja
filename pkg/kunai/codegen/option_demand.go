@@ -24,6 +24,15 @@ type queriedOptions struct {
 	// tcp.options.MSS pays for one slot, not four).
 	demand map[*ir.LayerInstance][]*vocab.AuxLayout
 	plan   *stackPlan
+	// members maps each alternation member to its group's chain position
+	// and its index in the group.
+	members map[*ir.LayerInstance]altMember
+}
+
+// altMember places a layer inside its alternation group.
+type altMember struct {
+	groupPos int
+	index    int
 }
 
 // of returns the layer's demand list (nil when nothing is queried).
@@ -52,6 +61,12 @@ func (qo queriedOptions) matchedSlot(pos int) (slot int16, ok bool) {
 	return slot, ok
 }
 
+// readsAltMember reports whether any where / capture clause reads an
+// alternation member, i.e. whether any matched-member slot is planned.
+func (qo queriedOptions) readsAltMember() bool {
+	return qo.plan != nil && len(qo.plan.matched) > 0
+}
+
 // collectQueriedOptions walks the resolved program and gathers every
 // dynamic-eligible aux reference, then plans the stack slots. Preserves
 // sort-by-kind-byte ordering so slot indices stay stable across compiles
@@ -68,21 +83,21 @@ func collectQueriedOptions(p *ir.Program) (queriedOptions, error) {
 	// A where / capture read of an alternation member needs to know
 	// whether that member is the one that matched. A member's own bracket
 	// predicate runs inside its branch and does not.
-	memberGroup := map[*ir.LayerInstance]int{}
+	qo.members = map[*ir.LayerInstance]altMember{}
 	for _, layer := range p.Layers {
 		if layer == nil {
 			continue
 		}
-		for _, alt := range layer.Alternation {
-			memberGroup[alt] = layer.LayerPos
+		for i, alt := range layer.Alternation {
+			qo.members[alt] = altMember{groupPos: layer.LayerPos, index: i}
 		}
 	}
 	readGroups := map[int]bool{}
 	visitRead := func(f *ir.FieldRef) {
 		visit(f)
 		if f != nil {
-			if pos, ok := memberGroup[f.Layer]; ok {
-				readGroups[pos] = true
+			if m, ok := qo.members[f.Layer]; ok {
+				readGroups[m.groupPos] = true
 			}
 		}
 	}
