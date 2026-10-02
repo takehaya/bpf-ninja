@@ -24,15 +24,9 @@ type queriedOptions struct {
 	// tcp.options.MSS pays for one slot, not four).
 	demand map[*ir.LayerInstance][]*vocab.AuxLayout
 	plan   *stackPlan
-	// members maps each alternation member to its group's chain position
-	// and its index in the group.
-	members map[*ir.LayerInstance]altMember
-}
-
-// altMember places a layer inside its alternation group.
-type altMember struct {
-	groupPos int
-	index    int
+	// members maps each alternation member to its index in its group
+	// (the group's chain position is the member's own LayerPos).
+	members map[*ir.LayerInstance]int
 }
 
 // of returns the layer's demand list (nil when nothing is queried).
@@ -52,7 +46,8 @@ func (qo queriedOptions) entrySlot(layer *ir.LayerInstance) (int16, error) {
 
 // matchedSlot is the stack slot in which the alternation group at chain
 // position `pos` records the index of its matched member; ok is false
-// when no where / capture clause reads a member of that group.
+// when nothing reads it: no where / capture clause reads a member of the
+// group and the next layer dispatches the same way under every member.
 func (qo queriedOptions) matchedSlot(pos int) (slot int16, ok bool) {
 	if qo.plan == nil {
 		return 0, false
@@ -61,8 +56,8 @@ func (qo queriedOptions) matchedSlot(pos int) (slot int16, ok bool) {
 	return slot, ok
 }
 
-// readsAltMember reports whether any where / capture clause reads an
-// alternation member, i.e. whether any matched-member slot is planned.
+// readsAltMember reports whether any matched-member slot is planned,
+// i.e. whether a where atom can need a member guard.
 func (qo queriedOptions) readsAltMember() bool {
 	return qo.plan != nil && len(qo.plan.matched) > 0
 }
@@ -83,21 +78,31 @@ func collectQueriedOptions(p *ir.Program) (queriedOptions, error) {
 	// A where / capture read of an alternation member needs to know
 	// whether that member is the one that matched. A member's own bracket
 	// predicate runs inside its branch and does not.
-	qo.members = map[*ir.LayerInstance]altMember{}
-	for _, layer := range p.Layers {
+	qo.members = map[*ir.LayerInstance]int{}
+	readGroups := map[int]bool{}
+	divergedUnder := func(l *ir.LayerInstance) bool {
+		return l != nil && l.Dispatch != nil && l.Dispatch.IsAltDiverged
+	}
+	for i, layer := range p.Layers {
 		if layer == nil {
 			continue
 		}
-		for i, alt := range layer.Alternation {
-			qo.members[alt] = altMember{groupPos: layer.LayerPos, index: i}
+		for j, alt := range layer.Alternation {
+			qo.members[alt] = j
+		}
+		// The layer after a group whose members dispatch it differently
+		// (`(ipv4|ipv6)/tcp`, or a second group `(ipv4|ipv6)/(tcp|udp)`)
+		// picks its dispatch by the matched member.
+		if i > 0 && p.Layers[i-1] != nil && len(p.Layers[i-1].Alternation) > 0 &&
+			(divergedUnder(layer) || slices.ContainsFunc(layer.Alternation, divergedUnder)) {
+			readGroups[p.Layers[i-1].LayerPos] = true
 		}
 	}
-	readGroups := map[int]bool{}
 	visitRead := func(f *ir.FieldRef) {
 		visit(f)
 		if f != nil {
-			if m, ok := qo.members[f.Layer]; ok {
-				readGroups[m.groupPos] = true
+			if _, ok := qo.members[f.Layer]; ok {
+				readGroups[f.Layer.LayerPos] = true
 			}
 		}
 	}

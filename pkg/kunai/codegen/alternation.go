@@ -16,13 +16,11 @@ import (
 // collapses anyway.
 const altCountCap = 4
 
-// matchedAltReg holds the matched alt index for the layer immediately
-// following an alt group with diverged dispatch (P3-12). genAlternation
-// stores the alt index here as it falls through to altEnd, and
-// genFieldDispatchAltDiverged reads it back to pick the correct alt's
-// dispatch field/value pair. R5 is otherwise unused between the alt
-// emit and the next layer's dispatch (only the where-arith pipeline
-// uses R5, and that runs after every chain layer).
+// matchedAltReg is the register genFieldDispatchAltDiverged loads the
+// group's matched-member slot into to pick the matched member's dispatch
+// field/value pair (P3-12). The index lives in the slot, not in the
+// register, between the group and its readers: a member's body may call
+// bpf_loop, and a second group's members each need it.
 var matchedAltReg = asm.R5
 
 // genAlternation emits `(a|b|c)`. Each non-last alt is fronted by a
@@ -36,10 +34,10 @@ var matchedAltReg = asm.R5
 // a non-alt layer would emit them. Per-alt size differences therefore
 // fall out for free (each body advances R4 by its own size).
 //
-// When the layer immediately following the alt group has IsAltDiverged
-// dispatch, each alt branch additionally records its own index in
-// matchedAltReg before falling through to altEnd, so the next layer
-// can read it back and pick the right per-alt dispatch field.
+// When something reads which member matched — the next layer's
+// IsAltDiverged dispatch, or a where / capture read of a member — each
+// alt branch records its own index in the group's matched-member slot
+// (queriedOptions.matchedSlot) before falling through to altEnd.
 //
 // MVP constraints (the resolver's checkChainShape rejects the typing
 // violations first; the guards below stay as defence in depth):
@@ -89,17 +87,6 @@ func genAlternation(layer *ir.LayerInstance, index int, all []*ir.LayerInstance,
 
 	altEnd := fmt.Sprintf("dsl_alt_end_%d", index)
 
-	// Only emit `Mov R5, i` markers when a downstream layer actually
-	// reads them — otherwise uniform-dispatch alts (vlan|qinq) would
-	// carry dead writes to R5 that just bloat the stream.
-	needMatchedFlag := false
-	if index+1 < len(all) {
-		next := all[index+1]
-		if next.Dispatch != nil && next.Dispatch.IsAltDiverged {
-			needMatchedFlag = true
-		}
-	}
-
 	var (
 		insns     asm.Instructions
 		callbacks asm.Instructions
@@ -136,7 +123,16 @@ func genAlternation(layer *ir.LayerInstance, index int, all []*ir.LayerInstance,
 		// already targets dslReject (correct on no-match).
 		if i+1 < len(alts) {
 			nextAltLabel := fmt.Sprintf("dsl_alt_%d_%d", index, i+1)
-			guard, err := emitAltGuard(alt, parent, parentHS, nextAltLabel)
+			var guard asm.Instructions
+			if alt.Dispatch.IsAltDiverged {
+				// The parent is itself a group whose members dispatch
+				// this one differently: the guard is the member's own
+				// dispatch (picked by the parent's matched member),
+				// failing to the next alt.
+				guard, err = genParentDispatch(alt, index, all, qo, precedingLayersLeaveR4Range(all, index), precedingLayersLeaveR4Range(all, index-1), nextAltLabel)
+			} else {
+				guard, err = emitAltGuard(alt, parent, parentHS, nextAltLabel)
+			}
 			if err != nil {
 				return nil, nil, err
 			}
@@ -168,13 +164,11 @@ func genAlternation(layer *ir.LayerInstance, index int, all []*ir.LayerInstance,
 		insns = append(insns, altBody...)
 		callbacks = append(callbacks, altCbs...)
 
-		if needMatchedFlag {
-			insns = append(insns, asm.Mov.Imm(matchedAltReg, int32(i)))
-		}
-		// A where / capture clause reads a member of this group: record
-		// which one matched, so a read of another member is false
-		// (D-003) instead of reading this member's bytes. R3 is scratch
-		// after the member's body.
+		// Something reads which member matched (the slot is planned only
+		// then): the next layer's diverged dispatch, or a where / capture
+		// read of a member, which is false on another member (D-003)
+		// instead of reading this member's bytes. R3 is scratch after the
+		// member's body.
 		if slot, ok := qo.matchedSlot(layer.LayerPos); ok {
 			insns = append(insns,
 				asm.Mov.Imm(asm.R3, int32(i)),

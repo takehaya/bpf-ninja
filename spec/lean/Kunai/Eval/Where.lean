@@ -28,7 +28,7 @@ private def staticCount (layers : List Layer) (p : String) : Nat :=
       else match q.quant with
         | .one | .opt | .range _ (some 1) => 1
         | _ => 2
-    | .alt alts => if alts.any (·.name == p) then 1 else 0).sum
+    | .alt alts => min (alts.countP (·.name == p)) 2).sum
 
 /-- Static resolution of a reference head (`label` or `proto`) to a protocol. -/
 def staticProto (c : Ctx) (head : String) : Except Stop String :=

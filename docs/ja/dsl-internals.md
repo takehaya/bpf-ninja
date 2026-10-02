@@ -508,7 +508,7 @@ DSL output が既存の runFilter wrapper にどう乗るかを説明します�
 | R0 | scratch buffer 先頭 (in: wrapper が先読みしておいた packet bytes) |
 | R1 | scratch buffer 末尾 (in: bounds check 用) |
 | R2 | filter result (out: 1==accept / 0==reject) |
-| R3 / R5 | 自由に clobber 可 (working)。ただし R5 は alt-diverged dispatch (P3-12) で `matchedAltReg` に流用される。alt block が match した alt index を R5 に書き、直後の layer dispatch が `JNE R5, i` で per-alt 分岐する。alt block 入口から次 layer dispatch 完了までの区間で R5 を別用途に潰してはいけない (`pkg/kunai/codegen/alternation.go::matchedAltReg`) |
+| R3 / R5 | 自由に clobber 可 (working)。ただし R5 は alt-diverged dispatch (P3-12) で `matchedAltReg` に流用される。alternation は match した member の番号を stack plan の matched-member slot に書き、次の layer の dispatch がそれを R5 に読み直して per-alt に分岐する (member の body が bpf_loop を呼んでも、後ろがもう 1 つの alternation でも値が残る)。 |
 | R4 | offsetBase: 現 layer の scratch buffer 内開始位置 (codegen 専用) |
 | R6-R8 | host 占有 (callee-saved from kunai's view、kunai は読み書き禁忌)。bpf-ninja wrapper では xdp_buff / data / data_end を保持。注: filter 後に走る `captureWithXdpOutput` (`internal/program/program.go`) が R6 を使うので、kunai が clobber すると capture 出力先 ctx が壊れる |
 | R9 | packet length (in: wrapper が事前計算)。read-only: filter 後に `captureWithXdpOutput` が `Mov R3, R9` で `MaxCapLen` を計算するパスがある (per-CPU map にコピーする bytes 長)。kunai が R9 に書くと capture 長が silent truncation する。`TestZeroCapsIsHostAgnostic` が R6-R8 / shallow stack を pin する一方、R9 への write も同じ違反として扱う必要がある (Int<128> dual-half compare で見落とした履歴あり、commit `b6d5e7f` 後に修正) |
@@ -516,7 +516,7 @@ DSL output が既存の runFilter wrapper にどう乗るかを説明します�
 
 Stack 占有 (詳細は `codegen.go` パッケージ doc の `KunaiStackTop` 周辺) は次のとおりです。
 
-- kunai 占有: arith spill `[-56..-184]` (`maxArithDepth = 16` slot × 8 byte、10b で 8 → 16 bump)、bpf_loop ctx `[-208..-176]` (4 slot: `bpfLoopCtxOffsetSlot=-208` / `bpfLoopCtxScratchStartSlot=-200` / `bpfLoopCtxScratchEndSlot=-192` / `bpfLoopCtxLayerEntrySlot=-184`)、parser counter slot `[-224..-208]` (2 slot)、stack plan `[-232..-512]` (`stack_plan.go` `planStack`: resolver が `NeedsRuntimeOffset` を付けた layer group ごとの runtime entry slot (het-alt / 量化 layer 以降の where / capture と optional の presence 判定が読む) を chain 順に並べ、その下に各 layer の dynamic aux offset slot (TLV-walk callback の lifted prelude が record、demand walker が割り当てた option 数だけ消費) を詰める。必要な slot だけが場所を取るので上限は BPF stack の底 = 合計 36 slot、超える filter は `ErrNotImplemented`)
+- kunai 占有: arith spill `[-56..-184]` (`maxArithDepth = 16` slot × 8 byte、10b で 8 → 16 bump)、bpf_loop ctx `[-208..-176]` (4 slot: `bpfLoopCtxOffsetSlot=-208` / `bpfLoopCtxScratchStartSlot=-200` / `bpfLoopCtxScratchEndSlot=-192` / `bpfLoopCtxLayerEntrySlot=-184`)、parser counter slot `[-224..-208]` (2 slot)、stack plan `[-232..-512]` (`stack_plan.go` `planStack`。runtime entry slot、dynamic aux slot に続けて、member が where / capture から読まれるか次の layer の dispatch が member ごとに違う alternation に matched-member slot を 1 つ置く: resolver が `NeedsRuntimeOffset` を付けた layer group ごとの runtime entry slot (het-alt / 量化 layer 以降の where / capture と optional の presence 判定が読む) を chain 順に並べ、その下に各 layer の dynamic aux offset slot (TLV-walk callback の lifted prelude が record、demand walker が割り当てた option 数だけ消費) を詰める。必要な slot だけが場所を取るので上限は BPF stack の底 = 合計 36 slot、超える filter は `ErrNotImplemented`)
 - host 占有: `(KunaiStackTop, 0)` = `(-56, 0)` の任意の slot。bpf-ninja wrapper は `-48` で tracing args ptr、`-12..-8` で metadata
 - 境界定数は `pkg/kunai/codegen.KunaiStackTop = int16(-56)` です。kunai がここより浅いオフセットを書くことは無く、regression test `TestZeroCapsIsHostAgnostic` で守ります。
 - scratch buffer サイズは `pkg/kunai/codegen.ScratchBufSize = 512` byte です。host wrapper はこの prefix を per-CPU scratch buffer に materialise してから kunai filter に jump します。新 protocol を vocab に足すときは、`sum(per-protocol max trail) + sum(fixed primary headers) ≤ ScratchBufSize` が成立するかを、codegen.go パッケージ doc の sizing contract に従って検証します。
@@ -554,7 +554,7 @@ bpf_loop callback は bpf2bpf subprogram として emit し、BTF `func_info` �
 
 - alt 数は `altCountCap` により 2-4 です。
 - heterogeneous header size に対応しています。per-alt body emit + inline advance により、`(ipv4|ipv6)` で 20 vs 40 byte が動きます。
-- alt 後の layer の diverged dispatch に対応しています。`AltConsts` を per-alt に持ち、`matchedAltReg=R5` で per-alt JNE 分岐します。
+- alt 後の layer の diverged dispatch に対応しています。`AltConsts` を per-alt に持ち、matched-member slot から読んだ番号 (`matchedAltReg=R5`) で per-alt JNE 分岐します。後ろがもう 1 つの alternation (`(ipv4|ipv6)/(tcp|udp)`) のときは、その member の guard も同じ dispatch を使います。
 - ネスト alt は resolver で flatten します。quantifier 付き内側 alt を除き、`((a|b)|(c|d))` → `(a|b|c|d)` になります。
 - parent dispatch が無いため、先頭 layer には置けません。
 - 内側 alt への quantifier (`(a|b)?`) は意味が違うので reject します。

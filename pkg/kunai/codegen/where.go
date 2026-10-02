@@ -55,7 +55,7 @@ func (c *whereCtx) freshLabel(prefix string) string {
 
 // layerAnchorFor returns the addressing strategy for a layer's start
 // in the scratch buffer, memoised after the first lookup. Layers
-// flagged NeedsRuntimeOffset (resolver mark for "past a het-alt")
+// flagged NeedsRuntimeOffset (resolver mark for "at a runtime offset")
 // route through their per-layer entry slot; the rest stay on the
 // static R0+prefix path. Errors propagate from the static path
 // (e.g. quantified layer in prefix) and from the stack plan (a marked
@@ -336,14 +336,11 @@ func (c *whereCtx) genAll(w *ir.Condition, failLabel string) (asm.Instructions, 
 // atoms then skip their own guard (presentLayers). The guard also keeps
 // the aux bpf_loop walk from seeding its ctx with the absent sentinel.
 func (c *whereCtx) withQuantLayerGuard(w *ir.Condition, failLabel string, body func() (asm.Instructions, error)) (asm.Instructions, error) {
-	// The target layer first, then every other absentable layer the body
-	// reads: guarded once here rather than once per unrolled iteration.
+	// Only the layer that owns the stack: another absent layer the body
+	// reads makes its own atom false, not the quantifier
+	// (`all(x.f == 1 or vlan.tci == 5)`), so those atoms keep their guard
+	// in each iteration.
 	layers := []*ir.LayerInstance{w.QuantTarget.Layer}
-	ir.WalkConditionFieldRefs(w.Inner, func(ref *ir.FieldRef) {
-		if ref != nil && ref.Layer != nil && !slices.Contains(layers, ref.Layer) {
-			layers = append(layers, ref.Layer)
-		}
-	})
 	var guards asm.Instructions
 	for _, layer := range layers {
 		guard, err := c.absentLayerGuard(layer, failLabel)
@@ -397,14 +394,14 @@ func (c *whereCtx) absentLayerGuard(l *ir.LayerInstance, failLabel string) (asm.
 	if l == nil || c.presentLayers[l] {
 		return nil, nil
 	}
-	if m, isMember := c.queried.members[l]; isMember {
-		slot, ok := c.queried.matchedSlot(m.groupPos)
+	if idx, isMember := c.queried.members[l]; isMember {
+		slot, ok := c.queried.matchedSlot(l.LayerPos)
 		if !ok {
-			return nil, fmt.Errorf("codegen: the alternation at chain position %d has no matched-member slot for a read of %q", m.groupPos+1, l.Spec.Name)
+			return nil, fmt.Errorf("codegen: the alternation at chain position %d has no matched-member slot for a read of %q", l.LayerPos+1, l.Spec.Name)
 		}
 		return asm.Instructions{
 			asm.LoadMem(asm.R3, asm.R10, slot, asm.DWord),
-			asm.JNE.Imm(asm.R3, int32(m.index), failLabel),
+			asm.JNE.Imm(asm.R3, int32(idx), failLabel),
 		}, nil
 	}
 	if !l.Absentable() {

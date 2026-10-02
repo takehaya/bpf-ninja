@@ -546,7 +546,42 @@ vector whereAltL3AfterOptOther := {
   id := "where-alt-l3-after-optional-other-member", ast := l3Alt [P "eth", Pq "vlan" .opt] (cmp ttl .eq (k 64)),
   packet := ipv6TCP, expected := .reject }
 
+vector whereAltNameAmbiguous := {
+  id := "where-alt-name-ambiguous",
+  ast := { layers := [P "eth", .alt [{ name := "ipv4", label := some "a" }, { name := "ipv4", label := some "b" }], P "tcp"],
+           cond := some (cmp ttl .eq (k 64)) },
+  expected := .illTyped "protocol ipv4 is ambiguous; qualify with an @label",
+  note := "two members of one protocol: the name does not say which" }
+def twoAlts (w : Option Where) : Filter :=
+  { layers := [P "eth", .alt [{ name := "ipv4" }, { name := "ipv6" }], .alt [{ name := "tcp" }, { name := "udp" }]], cond := w }
+vector altTwoGroups := {
+  id := "alt-two-groups", ast := twoAlts none, packet := ipv6TCP, expected := .accept [],
+  note := "the second group's members dispatch under whichever member of the first matched" }
+vector altTwoGroupsUdp := {
+  id := "alt-two-groups-udp", ast := twoAlts none, packet := udpPkt, expected := .accept [] }
+vector whereAltTwoGroups := {
+  id := "where-alt-two-groups", ast := twoAlts (some (.and (cmp ttl .eq (k 64)) (cmp dport .eq (k 80)))),
+  expected := .accept [] }
+vector whereAltTwoGroupsOther := {
+  id := "where-alt-two-groups-other-member", ast := twoAlts (some (cmp dport .eq (k 80))), packet := udpPkt,
+  expected := .reject }
+def sackRight := Arith.field ⟨[("tcp", none), ("options", none), ("SACK", none), ("blocks", none), ("right", none)]⟩
+def sackPkt' : Packet :=
+  eth 0x0800 ++ ipv4 6 ++ tcp 12345 80 (dataOffset := 8) (options := [1, 1, 5, 10] ++ be 4 100 ++ be 4 200) ++ payload 5
+vector whereQuantOtherAbsent := {
+  id := "where-quant-other-layer-absent",
+  ast := { layers := vlanOpt, cond := some (.all (.or (cmp sackRight .eq (k 200)) (cmp (fld "vlan" "tci") .eq (k 5)))) },
+  packet := sackPkt', expected := .accept [],
+  note := "the absent vlan makes its atom false in each iteration, not the quantifier" }
+vector whereQuantOtherMember := {
+  id := "where-quant-other-member",
+  ast := { layers := [P "eth", P "ipv4", .alt [{ name := "tcp" }, { name := "udp" }]],
+           cond := some (.any (.or (cmp sackRight .eq (k 200)) (cmp (fld "udp" "dport") .eq (k 80)))) },
+  packet := sackPkt', expected := .accept [] }
+
 def whereVectors : List Vector := [
+  whereAltNameAmbiguous, altTwoGroups, altTwoGroupsUdp, whereAltTwoGroups, whereAltTwoGroupsOther,
+  whereQuantOtherAbsent, whereQuantOtherMember,
   whereAltLabelHit, whereAltLabelOther, whereAltLabelOtherNot, whereAltNameHit, whereAltNameOther, whereAltNameOtherNot,
   whereAltLabelHet, whereAltLabelHetOther, whereAltLabelHetOtherNot, whereAltL3Hit, whereAltL3Other, whereAltL3OtherOr,
   whereAltL3AfterOpt, whereAltL3AfterOptOther,

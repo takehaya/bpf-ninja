@@ -1112,14 +1112,14 @@ func genParentDispatch(current *ir.LayerInstance, index int, all []*ir.LayerInst
 	}
 	static := all[index-1]
 	if all[index].Alternation != nil {
-		return genLayerDispatch(current, static, r4IsRange, parentEntryIsRange, failLabel)
+		return genLayerDispatch(current, static, qo, r4IsRange, parentEntryIsRange, failLabel)
 	}
 	needed, parents, altReached, err := ir.NeedsParentCascade(all, index)
 	if err != nil {
 		return nil, err
 	}
 	if !needed {
-		return genLayerDispatch(current, static, r4IsRange, parentEntryIsRange, failLabel)
+		return genLayerDispatch(current, static, qo, r4IsRange, parentEntryIsRange, failLabel)
 	}
 	if altReached {
 		return nil, fmt.Errorf("%w: %q may follow the alternation %s or one of the optional layers after it, which dispatch it differently", ErrNotImplemented, current.Spec.Name, all[parents[len(parents)-1]-1].DisplayName())
@@ -1415,7 +1415,7 @@ func emitSelfValidationProbe(spec *vocab.ProtocolSpec, missLabel string) (asm.In
 // variable-parent (layer-entry slot) forward read's bounded form.
 // Both default false for fully fixed-offset chains, which keeps their
 // bytecode byte-identical.
-func genLayerDispatch(current, prev *ir.LayerInstance, r4IsRange, parentEntryIsRange bool, failLabel string) (asm.Instructions, error) {
+func genLayerDispatch(current, prev *ir.LayerInstance, qo queriedOptions, r4IsRange, parentEntryIsRange bool, failLabel string) (asm.Instructions, error) {
 	if current.Dispatch == nil {
 		return nil, nil
 	}
@@ -1423,7 +1423,11 @@ func genLayerDispatch(current, prev *ir.LayerInstance, r4IsRange, parentEntryIsR
 		if prev.Alternation == nil {
 			return nil, fmt.Errorf("codegen: IsAltDiverged dispatch on %q but parent is not an alt group (resolver bug)", current.Spec.Name)
 		}
-		return genFieldDispatchAltDiverged(current, prev.Alternation, r4IsRange, parentEntryIsRange, failLabel)
+		slot, ok := qo.matchedSlot(prev.LayerPos)
+		if !ok {
+			return nil, fmt.Errorf("codegen: the alternation %s has no matched-member slot for the dispatch of %q", prev.DisplayName(), current.Spec.Name)
+		}
+		return genFieldDispatchAltDiverged(current, prev.Alternation, slot, r4IsRange, parentEntryIsRange, failLabel)
 	}
 	parent := dispatchParent(prev)
 	if prev.Alternation != nil && current.Spec.ChainEnd != nil {
@@ -1462,14 +1466,14 @@ func genLayerDispatch(current, prev *ir.LayerInstance, r4IsRange, parentEntryIsR
 //
 // The last alt has no skip / ja — matchedAltReg is guaranteed to be
 // N-1 if we got here (genAlternation set it before the fall-through).
-func genFieldDispatchAltDiverged(current *ir.LayerInstance, altParents []*ir.LayerInstance, r4IsRange, parentEntryIsRange bool, failLabel string) (asm.Instructions, error) {
+func genFieldDispatchAltDiverged(current *ir.LayerInstance, altParents []*ir.LayerInstance, matchedSlot int16, r4IsRange, parentEntryIsRange bool, failLabel string) (asm.Instructions, error) {
 	consts := current.Dispatch.AltConsts
 	if len(altParents) != len(consts) {
 		return nil, fmt.Errorf("codegen: alt parent count %d != AltConsts count %d (resolver bug)", len(altParents), len(consts))
 	}
 
 	doneLabel := nextAltDispatchLabel("done")
-	var insns asm.Instructions
+	insns := asm.Instructions{asm.LoadMem(matchedAltReg, asm.R10, matchedSlot, asm.DWord)}
 	for i, altParent := range altParents {
 		var skipLabel string
 		if i+1 < len(altParents) {
