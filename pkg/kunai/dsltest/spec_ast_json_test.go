@@ -31,10 +31,12 @@ type specVector struct {
 }
 
 // specSet is a set the vector's host declares (Kunai/Host.lean SetDecl).
+// Members may be 128-bit keys, so they stay json.Number; the runner never
+// looks them up (the membership lookup is the host's, after the filter).
 type specSet struct {
-	Name    string   `json:"name"`
-	Width   int      `json:"width"` // bits
-	Members []uint64 `json:"members"`
+	Name    string        `json:"name"`
+	Width   int           `json:"width"` // bits
+	Members []json.Number `json:"members"`
 }
 
 type specResult struct {

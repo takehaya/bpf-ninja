@@ -44,8 +44,10 @@ private def stop (e : Except Stop α) : Except String α :=
   | .error (.illTyped r) => throw r
 
 /-- Bracket predicates resolve their field like a where clause scoped to the
-layer (`resolveBracket`); a bit slice narrows the compared width. -/
-private def checkPred (c : Ctx) (spec : ProtoSpec) : Predicate → Except String Unit
+layer (`resolveBracket`); a bit slice narrows the compared width. `mandatory`
+says the layer is extracted on every accepting path (not quantified, not an
+alternative), which `in @set` needs. -/
+private def checkPred (c : Ctx) (spec : ProtoSpec) (mandatory : Bool) : Predicate → Except String Unit
   | .cmp f op v => do
     let r ← stop (resolveBracket c spec f)
     checkValue spec { r.field with width := r.width } op v
@@ -61,11 +63,17 @@ private def checkPred (c : Ctx) (spec : ProtoSpec) : Predicate → Except String
       | v => checkValue spec { r.field with width := r.width } .eq v
   | .inSet f name => do
     let r ← stop (resolveBracket c spec f)
-    -- D-036: the set must be declared and its keys as wide as the field
-    -- (a narrower field would only write a prefix of the key).
-    let some s := c.H.sets.find? (·.name == name) | throw s!"undeclared set @{name}"
-    if s.width != r.width then
-      throw s!"set @{name} keys are bit<{s.width}>, {spec.name}.{f.text} is bit<{r.width}>"
+    -- D-036: the key is written while the layer is extracted and read after
+    -- the filter, so the layer must be on every accepting path.
+    if !mandatory then
+      throw s!"in @{name} on an optional, repeated, or alternative layer: the key is only written when the layer is present"
+    -- The set must be declared, and its keys as wide as the bytes the
+    -- filter extracts for the field (whole bytes: a 4-bit field is a
+    -- bit<8> key; a narrower key would only hold a prefix of the field).
+    let some s := c.H.set? name | throw s!"undeclared set @{name}"
+    let extracted := 8 * ((r.width + 7) / 8)
+    if s.width != extracted then
+      throw s!"set @{name} keys are bit<{s.width}>, {spec.name}.{f.text} extracts bit<{extracted}>"
 
 private def checkEdge (V : Vocab) (child parent : String) (alt optional : Bool) : Except String Unit :=
   match V.edge? child parent, V.proto? child with
@@ -93,13 +101,7 @@ private def checkProtoLayer (c : Ctx) (i : Nat) (p : ProtoLayer) (alt : Bool) : 
   if fuel > chainCap then throw s!"chain depth {fuel} exceeds {chainCap}"
   if n > fuel then throw "iteration bound below the quantifier minimum"
   for parent in possibleParents c.layers i do checkEdge c.V p.name parent alt (n == 0)
-  for ρ in p.preds do
-    -- D-036: the key is written while the layer is extracted and read after
-    -- the filter, so the layer must be on every accepting path.
-    if let .inSet _ s := ρ then
-      if alt then throw s!"in @{s} inside an alternation: the member may not be on the matched path"
-      if p.quant != .one then throw s!"in @{s} on an optional or repeated layer: the key is only written when the layer is present"
-    checkPred c spec ρ
+  for ρ in p.preds do checkPred c spec (!alt && p.quant == .one) ρ
 
 -- Structural iteration (`List.forIn`) rather than `[0:n]`, whose
 -- well-founded loop the kernel cannot unfold under `decide`.
@@ -152,10 +154,38 @@ private def checkCapture (c : Ctx) (cap : Capture) : Except String Unit := do
   if let some w := cap.cond then checkWhere c [] w
   if let .toLayer name _ := cap.spec then discard <| stop (staticProto c name)
 
+private def setRef : Predicate → Option String
+  | .inSet _ s => some s
+  | _ => none
+
+/-- The set names a filter's bracket predicates reference, in chain order. -/
+private def setRefs (layers : List Layer) : List String :=
+  layers.flatMap fun
+    | .proto p => p.preds.filterMap setRef
+    | .alt alts => alts.flatMap (·.preds.filterMap setRef)
+
+/-- D-036 across the filter, mirroring the host's key buffer: a referenced
+set is declared once with a `set create` key width and keys that fit it,
+each set is referenced by at most one predicate (the host holds one key per
+set and looks it up once), and the referenced keys fit the 16-byte buffer. -/
+private def checkSets (c : Ctx) : Except String Unit := do
+  let refs := setRefs c.layers
+  for name in refs.eraseDups do
+    let some s := c.H.set? name | pure ()
+    if (c.H.sets.filter (·.name == name)).length > 1 then throw s!"set @{name} is declared twice"
+    if ![8, 16, 32, 64, 128].contains s.width then
+      throw s!"set @{name} declares bit<{s.width}> keys; keys are 8, 16, 32, 64 or 128 bits"
+    if s.members.any (· ≥ 2 ^ s.width) then throw s!"set @{name} holds a key that does not fit bit<{s.width}>"
+    if (refs.filter (· == name)).length > 1 then
+      throw s!"set @{name} is referenced twice: the host holds one key per set"
+  let bytes : Nat := refs.foldl (fun acc n => acc + ((c.H.set? n).map (·.width / 8)).getD 0) 0
+  if bytes > 16 then throw s!"packet keys take {bytes} bytes; the host's key buffer holds 16"
+
 /-- `none` when the filter type-checks; otherwise the resolver's complaint. -/
 def check (c : Ctx) (F : Filter) : Option String :=
   let r : Except String Unit := do
     checkLayers c
+    checkSets c
     if let some w := F.cond then checkWhere c [] w
     for cap in F.captures do checkCapture c cap
   match r with

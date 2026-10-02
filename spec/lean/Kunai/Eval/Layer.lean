@@ -76,7 +76,7 @@ def evalPred (c : Ctx) (spec : ProtoSpec) (inst : Inst) : Predicate → Except S
       | v => typed (cmpValue r.width n .eq v)
   | .inSet f name => do
     let r ← resolveBracket c spec f
-    let some s := c.H.sets.find? (·.name == name) | throw (.illTyped s!"undeclared set @{name}")
+    let some s := c.H.set? name | throw (.illTyped s!"undeclared set @{name}")
     match ← loadRefOn c [] inst r with
     | none => pure false
     | some n => pure (s.members.contains n)

@@ -75,6 +75,7 @@ func ResolveWithOptions(f *ast.Filter, vocabulary map[string]*vocab.ProtocolSpec
 		labels:          make(map[string]*ir.LayerInstance),
 		protoLabelCount: make(map[string]int),
 		protoAutoIndex:  make(map[string]int),
+		setRefs:         make(map[string]ast.Position),
 	}
 	return r.resolveFilter(f)
 }
@@ -90,6 +91,10 @@ type resolver struct {
 	// flatLayers is populated as layers are resolved, giving
 	// where-clause resolution a complete map of reachable instances.
 	flatLayers []*ir.LayerInstance
+
+	// setRefs records the first `in @name` per set: the host keeps one key
+	// per set and looks it up once, so a second reference is rejected.
+	setRefs map[string]ast.Position
 }
 
 func (r *resolver) resolveFilter(f *ast.Filter) (*ir.Program, error) {

@@ -145,6 +145,17 @@ func (fakeSetSlots) SlotFor(set, field string) (int16, int, bool) {
 	return 0, 0, false
 }
 
+// TestCompileInSetReferencedTwice pins that a set is referenced by at most
+// one predicate: the host keeps one key slot per set and looks it up once,
+// so a second extraction would silently overwrite the first.
+func TestCompileInSetReferencedTwice(t *testing.T) {
+	caps := codegen.Capabilities{Lang: codegen.LangCaps{SetSlots: fakeSetSlots{}}}
+	_, err := Compile("eth/ipv4/udp/gtp[teid in @teids, teid in @teids]", caps)
+	if err == nil || !strings.Contains(err.Error(), "referenced twice") {
+		t.Fatalf("Compile: err = %v; want the one-reference-per-set error", err)
+	}
+}
+
 func TestCompileInSetExtractsToSlotStayingMapAgnostic(t *testing.T) {
 	caps := codegen.Capabilities{Lang: codegen.LangCaps{SetSlots: fakeSetSlots{}}}
 	out, err := Compile("eth/ipv4/udp/gtp[teid in @teids]", caps)

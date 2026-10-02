@@ -252,17 +252,33 @@ vector predInSetMiss := {
   note := "the host's lookup misses: the verdict is reject" }
 vector typPredInSetWidth := {
   id := "typ-pred-inset-width", ast := tcpPred (.inSet (f "dport") "ports"), sets := [{ name := "ports", width := 32, members := [80] }],
-  expected := .illTyped "set @ports keys are bit<32>, tcp.dport is bit<16>", note := "D-036: key and field widths must match" }
+  expected := .illTyped "set @ports keys are bit<32>, tcp.dport extracts bit<16>", note := "D-036: key and field widths must match" }
+vector predInSetSubByte := {
+  id := "pred-inset-subbyte", ast := { layers := [P "eth", .proto { name := "ipv4", preds := [.inSet (f "ihl") "ihls"] }, P "tcp"] },
+  sets := [{ name := "ihls", width := 8, members := [5] }], expected := .accept [],
+  note := "a 4-bit field is extracted as one byte, so the key is bit<8>" }
+vector typPredInSetTwice := {
+  id := "typ-pred-inset-twice",
+  ast := { layers := [P "eth", .proto { name := "ipv4", preds := [.inSet (f "src") "hosts", .inSet (f "dst") "hosts"] }, P "tcp"] },
+  sets := [{ name := "hosts", width := 32, members := [0x0a000001] }],
+  expected := .illTyped "set @hosts is referenced twice: the host holds one key per set",
+  note := "D-036: the host keeps one key per set and looks it up once; two references would share the slot" }
+vector typPredInSetBudget := {
+  id := "typ-pred-inset-budget",
+  ast := { layers := [P "eth", .proto { name := "ipv6", preds := [.inSet (f "src") "a", .inSet (f "dst") "b"] }, P "tcp"] },
+  sets := [{ name := "a", width := 128, members := [1] }, { name := "b", width := 128, members := [2] }],
+  packet := ipv6TCP, expected := .illTyped "packet keys take 32 bytes; the host's key buffer holds 16",
+  note := "D-036: the host's packet-key buffer is 16 bytes" }
 vector typPredInSetOptional := {
   id := "typ-pred-inset-optional",
   ast := { layers := [P "eth", .proto { name := "vlan", preds := [.inSet (f "tci") "vlans"], quant := .opt }, P "ipv4", P "tcp"] },
   sets := [{ name := "vlans", width := 16, members := [100] }],
-  expected := .illTyped "in @vlans on an optional or repeated layer: the key is only written when the layer is present" }
+  expected := .illTyped "in @vlans on an optional, repeated, or alternative layer: the key is only written when the layer is present" }
 vector typPredInSetAlt := {
   id := "typ-pred-inset-alt",
   ast := { layers := [P "eth", .alt [{ name := "ipv4", preds := [.inSet (f "src") "hosts"] }, { name := "ipv6" }], P "tcp"] },
   sets := [{ name := "hosts", width := 32, members := [0x0a000001] }],
-  expected := .illTyped "in @hosts inside an alternation: the member may not be on the matched path" }
+  expected := .illTyped "in @hosts on an optional, repeated, or alternative layer: the key is only written when the layer is present" }
 vector typAny := {
   id := "typ-any-unsupported", ast := W (.any (cmp dport .eq (k 1))), expected := .illTyped "any/all needs exactly one index-less stack reference" }
 vector typExists := {
@@ -362,7 +378,7 @@ def whereVectors : List Vector := [
   predCmp, predCmpMiss, predInList, predInListMiss, predInRange, typPredInRangeWide, typPredCmpRange, predInRangeMiss, predNegative, predIPv4,
   capAll, capWhereFalse, capWhereTrue, capLabel, capAbsent, capPresent,
   typUnknownProto, typNoDispatch, typNotInChain, typUnknownField, typFit, typFitArith, typWidthIPv6, typCIDRWidth,
-  typPredIdent, typInSet, predInSetMember, predInSetMiss, typPredInSetWidth, typPredInSetOptional, typPredInSetAlt, typAny, typExists, typAuxPath,
+  typPredIdent, typInSet, predInSetMember, predInSetMiss, typPredInSetWidth, predInSetSubByte, typPredInSetTwice, typPredInSetBudget, typPredInSetOptional, typPredInSetAlt, typAny, typExists, typAuxPath,
   arith128AddConst, arith128SubConst, arith128AddCarry, arith128AddWrap, arith128SubBorrow, arith128SubWrap, arith128AddMiss,
   arith128FieldAddField, arith128FieldAddFieldCarry, arith128FieldSubField, arith128FieldSubFieldBorrow, arith128AddWideConst, arith128SubWideConstBorrow,
   arith128AddNegConst, arith128SubNegConst, arith128CmpNegConst,

@@ -28,32 +28,44 @@ var specHostCaps = map[string]func() codegen.Capabilities{
 	"netfilter_exit":   netfilter.FexitCapabilities,
 }
 
-// specSetSlots declares a vector's sets to codegen: each set has one key
-// field of the declared width at a host slot above KunaiStackTop. The
-// membership lookup is the host's, after the filter, and the runner does
-// not perform it, so vectors with sets are compile-only.
+// specSetSlots declares a vector's sets to codegen the way bpf-ninja's
+// packet-key resolver does: each set has one key field of the declared
+// width, keys are packed downward from the host slot at -24, and the
+// buffer holds 16 bytes (a set past it has no slot). The membership
+// lookup is the host's, after the filter, and the runner does not
+// perform it, so a vector's reject verdict is not checked on the kernel.
 type specSetSlots []specSet
 
+const (
+	specSetKeyTop   = int16(-24)
+	specSetKeyFloor = int16(-40)
+)
+
 func (s specSetSlots) HasSet(name string) bool {
-	_, ok := s.find(name)
+	_, _, ok := s.find(name)
 	return ok
 }
 
 func (s specSetSlots) SlotFor(set, _ string) (int16, int, bool) {
-	d, ok := s.find(set)
-	if !ok {
+	off, size, ok := s.find(set)
+	if !ok || off < specSetKeyFloor {
 		return 0, 0, false
 	}
-	return -40, d.Width / 8, true
+	return off, size, true
 }
 
-func (s specSetSlots) find(name string) (specSet, bool) {
+// find returns the set's key slot and byte size: the sets declared before
+// it take the bytes above.
+func (s specSetSlots) find(name string) (int16, int, bool) {
+	off := specSetKeyTop
 	for _, d := range s {
+		size := d.Width / 8
+		off -= int16(size)
 		if d.Name == name {
-			return d, true
+			return off, size, true
 		}
 	}
-	return specSet{}, false
+	return 0, 0, false
 }
 
 // TestSpecVectors checks the Go implementation against the Lean semantics.
@@ -61,8 +73,10 @@ func (s specSetSlots) find(name string) (specSet, bool) {
 // expectations run; with root, every vector whose compile is expected to
 // succeed is also matched against the real BPF program, compiled for the
 // vector's host; on an exit host the wrapper presents the vector's action
-// as the traced program's return value. Vectors that declare sets stay
-// compile-only: the set lookup belongs to the host, not the filter. A vector with goStatus "mismatch" is a documented
+// as the traced program's return value. A vector that declares sets runs
+// on the kernel only when Lean accepts: the filter alone must accept too,
+// while a Lean reject may come from the set lookup, which is the host's
+// and not performed here. A vector with goStatus "mismatch" is a documented
 // divergence (see spec/lean/DECISIONS.md): it is logged, not asserted.
 func TestSpecVectors(t *testing.T) { runSpecVectors(t, loadSpecVectors(t)) }
 
@@ -112,14 +126,14 @@ func runSpecVectors(t *testing.T, vectors []specVector) {
 			case err != nil:
 				t.Fatalf("Compile(%q): %v", v.Expr, err)
 			}
-			if !root || len(v.Sets) > 0 {
+			want := v.Expected.Kind == "accept"
+			if !root || (len(v.Sets) > 0 && !want) {
 				return
 			}
 			pkt, err := hex.DecodeString(v.Packet)
 			if err != nil {
 				t.Fatalf("packet hex: %v", err)
 			}
-			want := v.Expected.Kind == "accept"
 			if got := NewFromOutput(t, v.Expr, out, action).Match(t, pkt); got != want {
 				t.Fatalf("%q on %d-byte packet: got match=%v, Lean says %s. %s", v.Expr, len(pkt), got, v.Expected.Kind, v.Note)
 			}

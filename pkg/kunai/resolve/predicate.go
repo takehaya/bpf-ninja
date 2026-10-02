@@ -32,6 +32,12 @@ func (r *resolver) resolveBracketPredicate(ap *ast.Predicate, layer *ir.LayerIns
 	// absent would leave the buffer unwritten and the lookup would match
 	// the wrong (zeroed) key. (Alternation members are rejected in
 	// resolveAlternation.)
+	if ap.Kind == ast.PredInSet {
+		if first, dup := r.setRefs[ap.SetName]; dup {
+			return nil, errorf(ap.Pos, "set @%s is referenced twice (first at %d:%d): the host holds one key per set and looks it up once", ap.SetName, first.Line, first.Col)
+		}
+		r.setRefs[ap.SetName] = ap.Pos
+	}
 	if ap.Kind == ast.PredInSet && layer.Quant != ast.QuantOne {
 		return nil, errorf(ap.Pos, "`in @%s` is only supported on a mandatory layer; %q here is optional/repeated (quantifier %s)", ap.SetName, layer.Spec.Name, layer.Quant)
 	}

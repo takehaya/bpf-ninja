@@ -9,9 +9,12 @@ evaluator because it is not part of the packet.
 namespace Kunai
 
 /-- A set the host declares for `field in @name` (`--set name=…`,
-`LangCaps.SetSlots`): the key width in bits and the keys the map holds. The
-filter extracts the key and the host looks it up after the filter; the
-spec folds that lookup into the verdict (D-036). -/
+`LangCaps.SetSlots`): the key width in bits (8, 16, 32, 64 or 128, the
+`set create` key types) and the keys the map holds. The filter extracts
+the key and the host looks it up after the filter; the spec folds that
+lookup into the verdict (D-036). Only scalar sets are modelled: a
+composite key (several fields, the unwritten ones zero-filled by the host)
+is outside the spec. -/
 structure SetDecl where
   name : String
   width : Nat
@@ -28,6 +31,9 @@ structure Host where
   /-- Sets declared for `in @name`; an undeclared name is ill-typed. -/
   sets : List SetDecl := []
   deriving Repr, BEq, DecidableEq
+
+/-- The declaration of set `name`, if the host has one. -/
+def Host.set? (h : Host) (name : String) : Option SetDecl := h.sets.find? (·.name == name)
 
 inductive HostKind
   | xdp_entry | xdp_exit | tc_entry | tc_exit
