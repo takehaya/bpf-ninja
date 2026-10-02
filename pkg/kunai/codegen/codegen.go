@@ -374,7 +374,7 @@ func Gen(p *ir.Program, caps Capabilities) (Output, error) {
 	plan := buildAccPlan(where, qo)
 	var callbacks asm.Instructions
 	var extractions []ExtractSlot
-	pc := &predCtx{sets: caps.Lang.SetSlots, out: &extractions, queried: qo}
+	pc := &predCtx{sets: caps.Lang.SetSlots, out: &extractions}
 	for i, layer := range p.Layers {
 		layerInsns, cb, err := genLayer(layer, i, p.Layers, qo, plan, pc)
 		if err != nil {
@@ -886,22 +886,22 @@ func genLayerInner(layer *ir.LayerInstance, index int, all []*ir.LayerInstance, 
 		if layer.Spec.ParseStateMachine != nil {
 			return genParserMachine(layer, index, all, qo, plan, pc)
 		}
-		insns, err := genStaticLayer(layer, index, all, pc)
+		insns, err := genStaticLayer(layer, index, all, qo, pc)
 		return insns, nil, err
 	case ast.QuantOpt:
 		// `?` ≡ `{0,1}` (spec D-005/D-024, Laws.lean opt_eq_range): one lowering.
 		opt := *layer
 		opt.Quant, opt.RangeMin, opt.RangeMax = ast.QuantRange, 0, 1
-		insns, err := genStaticChain(&opt, index, all, pc)
+		insns, err := genStaticChain(&opt, index, all, qo, pc)
 		return insns, nil, err
 	case ast.QuantRange:
 		if staticChainFitsRange(layer.RangeMax) {
-			insns, err := genStaticChain(layer, index, all, pc)
+			insns, err := genStaticChain(layer, index, all, qo, pc)
 			return insns, nil, err
 		}
-		return genBpfLoopChain(layer, index, all, pc)
+		return genBpfLoopChain(layer, index, all, qo, pc)
 	case ast.QuantPlus, ast.QuantStar:
-		return genBpfLoopChain(layer, index, all, pc)
+		return genBpfLoopChain(layer, index, all, qo, pc)
 	}
 	return nil, nil, fmt.Errorf("%w: quantifier %s on layer %q", ErrNotImplemented, layer.Quant, layer.Spec.Name)
 }
@@ -909,7 +909,7 @@ func genLayerInner(layer *ir.LayerInstance, index int, all []*ir.LayerInstance, 
 // genStaticLayer emits the bounds check, dispatch check, predicates,
 // and R4 advancement for a layer that is always present. Failure of
 // any check jumps to dslReject.
-func genStaticLayer(layer *ir.LayerInstance, index int, all []*ir.LayerInstance, pc *predCtx) (asm.Instructions, error) {
+func genStaticLayer(layer *ir.LayerInstance, index int, all []*ir.LayerInstance, qo queriedOptions, pc *predCtx) (asm.Instructions, error) {
 	hs, err := headerSize(layer.Spec)
 	if err != nil {
 		return nil, err
@@ -918,7 +918,7 @@ func genStaticLayer(layer *ir.LayerInstance, index int, all []*ir.LayerInstance,
 	insns := emitBounds(hs, dslReject)
 
 	if index > 0 && layer.Dispatch != nil {
-		di, err := genParentDispatch(layer, index, all, queriedOf(pc), precedingLayersLeaveR4Range(all, index), precedingLayersLeaveR4Range(all, index-1), dslReject)
+		di, err := genParentDispatch(layer, index, all, qo, precedingLayersLeaveR4Range(all, index), precedingLayersLeaveR4Range(all, index-1), dslReject)
 		if err != nil {
 			return nil, err
 		}
@@ -944,7 +944,7 @@ func genStaticLayer(layer *ir.LayerInstance, index int, all []*ir.LayerInstance,
 		// read/write ordering invariant.
 		insns = append(insns, asm.StoreMem(asm.R10, bpfLoopCtxLayerEntrySlot, offsetBase, asm.DWord))
 	}
-	entry, err := emitLayerEntryStore(layer, queriedOf(pc))
+	entry, err := emitLayerEntryStore(layer, qo)
 	if err != nil {
 		return nil, err
 	}
@@ -1192,7 +1192,7 @@ func selfEdgeWithChainEnd(layer, parent *ir.LayerInstance) bool {
 // emitBounds has already validated, so it is safe; and skipping the
 // current layer's bounds check on the absent path avoids spurious
 // dslReject when an optional layer is simply not there.
-func emitPeekedIterZero(layer *ir.LayerInstance, index int, all []*ir.LayerInstance, peekFailLabel string, pc *predCtx) (asm.Instructions, error) {
+func emitPeekedIterZero(layer *ir.LayerInstance, index int, all []*ir.LayerInstance, peekFailLabel string, qo queriedOptions, pc *predCtx) (asm.Instructions, error) {
 	if index == 0 || layer.Dispatch == nil {
 		return nil, fmt.Errorf("%w: peeked iter-0 on %q requires a parent dispatch", ErrNotImplemented, layer.Spec.Name)
 	}
@@ -1202,7 +1202,7 @@ func emitPeekedIterZero(layer *ir.LayerInstance, index int, all []*ir.LayerInsta
 	}
 	// For a self edge of a chain-end protocol the dispatch is the previous
 	// header's end signal (genDispatch), so `mpls/mpls?` peeks the s bit.
-	peek, err := genParentDispatch(layer, index, all, queriedOf(pc), precedingLayersLeaveR4Range(all, index), precedingLayersLeaveR4Range(all, index-1), peekFailLabel)
+	peek, err := genParentDispatch(layer, index, all, qo, precedingLayersLeaveR4Range(all, index), precedingLayersLeaveR4Range(all, index-1), peekFailLabel)
 	if err != nil {
 		return nil, err
 	}
@@ -1210,7 +1210,7 @@ func emitPeekedIterZero(layer *ir.LayerInstance, index int, all []*ir.LayerInsta
 	if err != nil {
 		return nil, err
 	}
-	entry, err := emitLayerEntryStore(layer, queriedOf(pc))
+	entry, err := emitLayerEntryStore(layer, qo)
 	if err != nil {
 		return nil, err
 	}

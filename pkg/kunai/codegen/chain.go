@@ -29,7 +29,7 @@ func staticChainFitsRange(max int) bool {
 // KUNAI_MPLS_MPLS_NO_CHECK).
 // Iterations below RangeMin fail hard; iterations at or above RangeMin
 // skip to a single chain-done landing so a short stack falls through.
-func genStaticChain(layer *ir.LayerInstance, index int, all []*ir.LayerInstance, pc *predCtx) (asm.Instructions, error) {
+func genStaticChain(layer *ir.LayerInstance, index int, all []*ir.LayerInstance, qo queriedOptions, pc *predCtx) (asm.Instructions, error) {
 	if layer.RangeMax < 0 {
 		return nil, fmt.Errorf("%w: open-ended quantifier {%d,} on %q needs bpf_loop chain codegen", ErrNotImplemented, layer.RangeMin, layer.Spec.Name)
 	}
@@ -59,15 +59,15 @@ func genStaticChain(layer *ir.LayerInstance, index int, all []*ir.LayerInstance,
 	}
 	// A marked optional layer's entry slot reads "absent" until a present
 	// iteration overwrites it (D-003); the absent path never writes again.
-	sentinel, err := emitLayerEntrySentinel(layer, queriedOf(pc))
+	sentinel, err := emitLayerEntrySentinel(layer, qo)
 	if err != nil {
 		return nil, err
 	}
 	var first asm.Instructions
 	if optional {
-		first, err = emitPeekedIterZero(layer, index, all, absentLabel, pc)
+		first, err = emitPeekedIterZero(layer, index, all, absentLabel, qo, pc)
 	} else {
-		first, err = genStaticLayer(layer, index, all, pc)
+		first, err = genStaticLayer(layer, index, all, qo, pc)
 	}
 	if err != nil {
 		return nil, err
@@ -111,7 +111,7 @@ func genStaticChain(layer *ir.LayerInstance, index int, all []*ir.LayerInstance,
 	// nil-safe: a nil pc (host without set support) stays nil.
 	var replayPC *predCtx
 	if pc != nil {
-		replayPC = &predCtx{sets: pc.sets, queried: pc.queried}
+		replayPC = &predCtx{sets: pc.sets}
 	}
 	preds, err := emitPredicates(layer.Predicates, replayPC)
 	if err != nil {
@@ -143,7 +143,7 @@ func genStaticChain(layer *ir.LayerInstance, index int, all []*ir.LayerInstance,
 		insns = append(insns, dispatch...)
 		insns = append(insns, emitBounds(hs, dslReject)...)
 		insns = append(insns, preds...)
-		entry, err := emitLayerEntryStore(layer, queriedOf(pc))
+		entry, err := emitLayerEntryStore(layer, qo)
 		if err != nil {
 			return nil, err
 		}

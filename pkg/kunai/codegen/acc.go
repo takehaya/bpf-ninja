@@ -259,9 +259,8 @@ func emitAccMaskCheck(p *accPlan, qo queriedOptions, failLabel string) (asm.Inst
 	if err != nil {
 		return nil, err
 	}
-	// mask fits int32 in every realistic case (<=29 slots => <=29 bits),
-	// so And.Imm / JNE.Imm suffice. The slot-region cap keeps len(atoms)
-	// well under 31.
+	// mask fits int32: buildAccPlan caps the atoms at accMaxAtoms (16),
+	// so And.Imm / JNE.Imm suffice.
 	return asm.Instructions{
 		asm.LoadMem(asm.R3, asm.R10, slot, asm.DWord),
 		asm.And.Imm(asm.R3, int32(p.mask)),

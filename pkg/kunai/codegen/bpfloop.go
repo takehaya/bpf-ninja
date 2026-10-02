@@ -112,7 +112,7 @@ const bpfLoopChainCap = 32
 // chain-end, else the stack is deeper than RangeMax (or MAX_DEPTH for
 // `+` / `*`) allows and the packet rejects (D-024). Non-chain-end
 // protocols (VLAN) bound both ends via their self-dispatch peek.
-func genBpfLoopChain(layer *ir.LayerInstance, index int, all []*ir.LayerInstance, pc *predCtx) (asm.Instructions, asm.Instructions, error) {
+func genBpfLoopChain(layer *ir.LayerInstance, index int, all []*ir.LayerInstance, qo queriedOptions, pc *predCtx) (asm.Instructions, asm.Instructions, error) {
 	rangeMin, _ := chainBounds(layer)
 	if rangeMin == 0 {
 		if err := optionalLayerGuard(layer, index, all); err != nil {
@@ -139,7 +139,7 @@ func genBpfLoopChain(layer *ir.LayerInstance, index int, all []*ir.LayerInstance
 	}
 
 	cbSym := fmt.Sprintf("dsl_chain_cb_%d", index)
-	callback, err := genBpfLoopCallback(layer, selfConst, hs, cbSym, pc)
+	callback, err := genBpfLoopCallback(layer, selfConst, hs, cbSym, qo, pc)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -155,7 +155,7 @@ func genBpfLoopChain(layer *ir.LayerInstance, index int, all []*ir.LayerInstance
 	}
 	// A marked `*` / `{0,m}` layer's entry slot reads "absent" until a
 	// present iteration overwrites it (D-003).
-	sentinel, err := emitLayerEntrySentinel(layer, queriedOf(pc))
+	sentinel, err := emitLayerEntrySentinel(layer, qo)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -164,7 +164,7 @@ func genBpfLoopChain(layer *ir.LayerInstance, index int, all []*ir.LayerInstance
 		// Whole-chain skip: peek the parent dispatch; on mismatch
 		// jump past every iteration (including the bpf_loop call and
 		// its reload) so offsetBase stays put for the next layer.
-		body, err := emitPeekedIterZero(layer, index, all, absentLabel, pc)
+		body, err := emitPeekedIterZero(layer, index, all, absentLabel, qo, pc)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -172,7 +172,7 @@ func genBpfLoopChain(layer *ir.LayerInstance, index int, all []*ir.LayerInstance
 	} else {
 		// `+` / `{n,m}` with n ≥ 1: iteration 0 is a mandatory
 		// parent-dispatched layer identical to a QuantOne.
-		first, err := genStaticLayer(layer, index, all, pc)
+		first, err := genStaticLayer(layer, index, all, qo, pc)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -291,7 +291,7 @@ func genBpfLoopChain(layer *ir.LayerInstance, index int, all []*ir.LayerInstance
 // dslReject (same protocol as the parser-machine callback). This matches
 // the static unroll path in chain.go, which runs bounds and predicates on
 // every iteration.
-func genBpfLoopCallback(layer *ir.LayerInstance, selfConst *vocab.DispatchConst, hs int, cbSym string, pc *predCtx) (asm.Instructions, error) {
+func genBpfLoopCallback(layer *ir.LayerInstance, selfConst *vocab.DispatchConst, hs int, cbSym string, qo queriedOptions, pc *predCtx) (asm.Instructions, error) {
 	spec := layer.Spec
 	breakLabel := cbSym + "_break"
 	rejectLabel := cbSym + "_reject"
@@ -343,7 +343,7 @@ func genBpfLoopCallback(layer *ir.LayerInstance, selfConst *vocab.DispatchConst,
 
 	// Record this instance's start for where / capture (last one wins,
 	// D-018) before the cursor moves past it.
-	entry, err := emitLayerEntryStoreFromCb(layer, queriedOf(pc))
+	entry, err := emitLayerEntryStoreFromCb(layer, qo)
 	if err != nil {
 		return nil, err
 	}
@@ -387,7 +387,7 @@ func genBpfLoopCallback(layer *ir.LayerInstance, selfConst *vocab.DispatchConst,
 func callbackPredicates(layer *ir.LayerInstance, rejectLabel string, pc *predCtx) (asm.Instructions, error) {
 	var replayPC *predCtx
 	if pc != nil {
-		replayPC = &predCtx{sets: pc.sets, queried: pc.queried}
+		replayPC = &predCtx{sets: pc.sets}
 	}
 	preds, err := emitPredicates(layer.Predicates, replayPC)
 	if err != nil {

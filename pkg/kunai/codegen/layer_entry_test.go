@@ -28,11 +28,7 @@ func countSlotStores(insns asm.Instructions, slot int16, src asm.Register) int {
 // index i.
 func entrySlotOf(t *testing.T, p *ir.Program, i int) int16 {
 	t.Helper()
-	qo, err := collectQueriedOptions(p)
-	if err != nil {
-		t.Fatal(err)
-	}
-	slot, err := qo.entrySlot(p.Layers[i])
+	slot, err := mustQueried(t, p).entrySlot(p.Layers[i])
 	if err != nil {
 		t.Fatal(err)
 	}

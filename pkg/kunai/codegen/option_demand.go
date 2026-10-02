@@ -77,6 +77,14 @@ func collectQueriedOptions(p *ir.Program) (queriedOptions, error) {
 	if err != nil {
 		return queriedOptions{}, err
 	}
+	// Every demand key is a layer of the program (or an alternation
+	// member), so the plan placed its slots; anything else is a walker or
+	// resolver bug, caught here rather than as a silent "not recorded".
+	for layer := range qo.demand {
+		if _, ok := plan.aux[layer]; !ok {
+			return queriedOptions{}, fmt.Errorf("codegen: %s has queried options but is not a layer of the program", layer.DisplayName())
+		}
+	}
 	qo.plan = plan
 	return qo, nil
 }

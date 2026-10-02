@@ -37,16 +37,16 @@ type stackPlan struct {
 // would run past the BPF stack.
 func planStack(layers []*ir.LayerInstance, demand map[*ir.LayerInstance][]*vocab.AuxLayout) (*stackPlan, error) {
 	plan := &stackPlan{entry: map[int]int16{}, aux: map[*ir.LayerInstance]int16{}}
-	cursor := stackPlanTop
+	cursor := int(stackPlanTop)
 	// take hands out `slots` consecutive slots for `l`, naming it when the
 	// plan runs past the BPF stack.
 	take := func(l *ir.LayerInstance, slots int, what string) (int16, error) {
 		first := cursor
-		cursor -= 8 * int16(slots)
-		if cursor+8 < bpfStackBottom {
-			return 0, fmt.Errorf("%w: %s of %s (chain position %d) needs %d bytes below %d, past the 512-byte BPF stack: the runtime entry slots and dynamic aux slots of this filter do not fit (reference fewer options, or a shallower chain)", ErrNotImplemented, what, l.DisplayName(), l.LayerPos+1, int(stackPlanTop-cursor), stackPlanTop)
+		cursor -= 8 * slots
+		if cursor+8 < int(bpfStackBottom) {
+			return 0, fmt.Errorf("%w: %s of %s (chain position %d, %d bytes) end %d bytes past the 512-byte BPF stack: the runtime entry slots and dynamic aux slots of this filter do not fit (reference fewer options, or a shallower chain)", ErrNotImplemented, what, l.DisplayName(), l.LayerPos+1, 8*slots, int(bpfStackBottom)-(cursor+8))
 		}
-		return first, nil
+		return int16(first), nil
 	}
 	marked := func(l *ir.LayerInstance) bool { return l != nil && l.NeedsRuntimeOffset }
 	for _, l := range layers {
@@ -77,13 +77,4 @@ func planStack(layers []*ir.LayerInstance, demand map[*ir.LayerInstance][]*vocab
 		}
 	}
 	return plan, nil
-}
-
-// queriedOf is the demand set a predicate context carries to the chain
-// emitters; a nil context (unit tests of single emitters) has none.
-func queriedOf(pc *predCtx) queriedOptions {
-	if pc == nil {
-		return queriedOptions{}
-	}
-	return pc.queried
 }

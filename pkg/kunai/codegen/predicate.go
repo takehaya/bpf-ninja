@@ -211,9 +211,6 @@ type predCtx struct {
 	// run after the parser walk (write-back protocols, D-032), since the
 	// count is final only then; nil means such an index cannot be guarded.
 	stackCount func(*ir.FieldRef) (int16, bool)
-	// queried carries the stack plan to the chain emitters, which store
-	// each iteration's start into the layer's runtime entry slot.
-	queried queriedOptions
 }
 
 // emitInSetPredicate lowers `field in @set` for architecture B: it does
