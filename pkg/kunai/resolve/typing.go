@@ -79,8 +79,7 @@ func checkBracketIntFit(field *ir.FieldRef, v *ast.Value, layerName string, pos 
 // division-by-zero and the operator set above 64 bits (§13.9: + and -
 // only); codegen separately reports ErrNotImplemented for the Int<128>
 // operand shapes it has not wired (a 128-bit binop on the right of ±, a
-// slice between 65 and 127 bits, a negative literal in a sub-64-bit part,
-// aux fields).
+// slice between 65 and 127 bits, Int<128> aux fields).
 
 // checkArithCondition runs all type-related validations against a
 // resolved WAtomArith condition: literal fit checks against the
@@ -133,29 +132,25 @@ func checkArithExpr(e *ir.ArithExpr, bits int) error {
 		// 64 bits when that has no field either (§7.3, D-009; Lean
 		// `sideWidths`): `ipv4.ttl + 300` does not type, whatever the
 		// comparison around it is.
-		cl, cr := sideBits(wl, wr)
-		if err := checkArithExpr(e.Left, cl); err != nil {
+		if err := checkArithExpr(e.Left, literalContextBits(wr)); err != nil {
 			return err
 		}
-		if err := checkArithExpr(e.Right, cr); err != nil {
+		if err := checkArithExpr(e.Right, literalContextBits(wl)); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// sideBits is the literal context width of each operand of a binary node:
-// an operand with fields keeps its own width, a literal-only one takes its
-// sibling's, and with no field on either side both are 64 (0 = no field).
-func sideBits(wl, wr int) (int, int) {
-	or := func(a, b int) int {
-		if a != 0 {
-			return a
-		}
-		return b
+// literalContextBits is the width a literal operand of a binary node is
+// checked against: the width of the operand next to it, or 64 bits when
+// that has no field either (0). Codegen narrows the literal the same way
+// (genArithBinOp passes the sibling's width, 0 meaning no narrowing).
+func literalContextBits(siblingBits int) int {
+	if siblingBits == 0 {
+		return 64
 	}
-	w := max(or(wl, or(wr, 64)), or(wr, or(wl, 64)))
-	return or(wl, w), or(wr, w)
+	return siblingBits
 }
 
 // arithCmpTargetBits picks the comparison's target width per the
