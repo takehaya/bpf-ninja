@@ -28,12 +28,41 @@ var specHostCaps = map[string]func() codegen.Capabilities{
 	"netfilter_exit":   netfilter.FexitCapabilities,
 }
 
+// specSetSlots declares a vector's sets to codegen: each set has one key
+// field of the declared width at a host slot above KunaiStackTop. The
+// membership lookup is the host's, after the filter, and the runner does
+// not perform it, so vectors with sets are compile-only.
+type specSetSlots []specSet
+
+func (s specSetSlots) HasSet(name string) bool {
+	_, ok := s.find(name)
+	return ok
+}
+
+func (s specSetSlots) SlotFor(set, _ string) (int16, int, bool) {
+	d, ok := s.find(set)
+	if !ok {
+		return 0, 0, false
+	}
+	return -40, d.Width / 8, true
+}
+
+func (s specSetSlots) find(name string) (specSet, bool) {
+	for _, d := range s {
+		if d.Name == name {
+			return d, true
+		}
+	}
+	return specSet{}, false
+}
+
 // TestSpecVectors checks the Go implementation against the Lean semantics.
 // Without root only parsing and the illTyped/notImplemented compile
 // expectations run; with root, every vector whose compile is expected to
 // succeed is also matched against the real BPF program, compiled for the
 // vector's host; on an exit host the wrapper presents the vector's action
-// as the traced program's return value. A vector with goStatus "mismatch" is a documented
+// as the traced program's return value. Vectors that declare sets stay
+// compile-only: the set lookup belongs to the host, not the filter. A vector with goStatus "mismatch" is a documented
 // divergence (see spec/lean/DECISIONS.md): it is logged, not asserted.
 func TestSpecVectors(t *testing.T) { runSpecVectors(t, loadSpecVectors(t)) }
 
@@ -57,6 +86,7 @@ func runSpecVectors(t *testing.T, vectors []specVector) {
 				t.Fatalf("action %d is not a 32-bit value", v.Action)
 			}
 			caps, action := hostCaps(), int32(uint32(v.Action))
+			caps.Lang.SetSlots = specSetSlots(v.Sets)
 			if v.GoStatus == "mismatch" {
 				_, err := kunai.Compile(v.Expr, caps)
 				t.Logf("documented divergence (not asserted): %s; compile err=%v", v.Note, err)
@@ -82,7 +112,7 @@ func runSpecVectors(t *testing.T, vectors []specVector) {
 			case err != nil:
 				t.Fatalf("Compile(%q): %v", v.Expr, err)
 			}
-			if !root {
+			if !root || len(v.Sets) > 0 {
 				return
 			}
 			pkt, err := hex.DecodeString(v.Packet)

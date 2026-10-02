@@ -23,10 +23,18 @@ type specVector struct {
 	AST      json.RawMessage `json:"ast"`
 	Host     string          `json:"host"`
 	Action   int64           `json:"action"`
+	Sets     []specSet       `json:"sets"`
 	Packet   string          `json:"packet"` // hex
 	Expected specResult      `json:"expected"`
 	GoStatus string          `json:"goStatus"` // ok | notImplemented | mismatch
 	Note     string          `json:"note"`
+}
+
+// specSet is a set the vector's host declares (Kunai/Host.lean SetDecl).
+type specSet struct {
+	Name    string   `json:"name"`
+	Width   int      `json:"width"` // bits
+	Members []uint64 `json:"members"`
 }
 
 type specResult struct {

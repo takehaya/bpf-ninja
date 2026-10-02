@@ -59,7 +59,13 @@ private def checkPred (c : Ctx) (spec : ProtoSpec) : Predicate → Except String
           throw s!"range {lo}..{hi} exceeds bit<{r.width}> ({spec.name}.{f.text})"
         if lo > hi then throw s!"range {lo}..{hi} is empty ({spec.name}.{f.text})"
       | v => checkValue spec { r.field with width := r.width } .eq v
-  | .inSet .. => throw "unsupported: in @set"
+  | .inSet f name => do
+    let r ← stop (resolveBracket c spec f)
+    -- D-036: the set must be declared and its keys as wide as the field
+    -- (a narrower field would only write a prefix of the key).
+    let some s := c.H.sets.find? (·.name == name) | throw s!"undeclared set @{name}"
+    if s.width != r.width then
+      throw s!"set @{name} keys are bit<{s.width}>, {spec.name}.{f.text} is bit<{r.width}>"
 
 private def checkEdge (V : Vocab) (child parent : String) (alt optional : Bool) : Except String Unit :=
   match V.edge? child parent, V.proto? child with
@@ -87,7 +93,13 @@ private def checkProtoLayer (c : Ctx) (i : Nat) (p : ProtoLayer) (alt : Bool) : 
   if fuel > chainCap then throw s!"chain depth {fuel} exceeds {chainCap}"
   if n > fuel then throw "iteration bound below the quantifier minimum"
   for parent in possibleParents c.layers i do checkEdge c.V p.name parent alt (n == 0)
-  for ρ in p.preds do checkPred c spec ρ
+  for ρ in p.preds do
+    -- D-036: the key is written while the layer is extracted and read after
+    -- the filter, so the layer must be on every accepting path.
+    if let .inSet _ s := ρ then
+      if alt then throw s!"in @{s} inside an alternation: the member may not be on the matched path"
+      if p.quant != .one then throw s!"in @{s} on an optional or repeated layer: the key is only written when the layer is present"
+    checkPred c spec ρ
 
 -- Structural iteration (`List.forIn`) rather than `[0:n]`, whose
 -- well-founded loop the kernel cannot unfold under `decide`.

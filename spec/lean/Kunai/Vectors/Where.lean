@@ -239,7 +239,30 @@ vector typPredIdent := {
   id := "typ-pred-ident", ast := tcpPred (.cmp (f "flags") .eq (.ident "SYN")),
   expected := .illTyped "unsupported: identifier literal SYN" }
 vector typInSet := {
-  id := "typ-pred-inset", ast := tcpPred (.inSet (f "dport") "ports"), expected := .illTyped "unsupported: in @set", goStatus := .notImplemented }
+  id := "typ-pred-inset-undeclared", ast := tcpPred (.inSet (f "dport") "ports"), expected := .illTyped "undeclared set @ports",
+  note := "D-036: a set the host did not declare" }
+-- `in @set` (D-036): membership in a host-declared set. Go only checks these
+-- at compile time (the lookup is the host's, after the filter).
+def ports (members : List Nat) : SetDecl := { name := "ports", width := 16, members }
+vector predInSetMember := {
+  id := "pred-inset-member", ast := tcpPred (.inSet (f "dport") "ports"), sets := [ports [80, 443]], expected := .accept [],
+  note := "dport 80 is a key of @ports" }
+vector predInSetMiss := {
+  id := "pred-inset-miss", ast := tcpPred (.inSet (f "dport") "ports"), sets := [ports [443]], expected := .reject,
+  note := "the host's lookup misses: the verdict is reject" }
+vector typPredInSetWidth := {
+  id := "typ-pred-inset-width", ast := tcpPred (.inSet (f "dport") "ports"), sets := [{ name := "ports", width := 32, members := [80] }],
+  expected := .illTyped "set @ports keys are bit<32>, tcp.dport is bit<16>", note := "D-036: key and field widths must match" }
+vector typPredInSetOptional := {
+  id := "typ-pred-inset-optional",
+  ast := { layers := [P "eth", .proto { name := "vlan", preds := [.inSet (f "tci") "vlans"], quant := .opt }, P "ipv4", P "tcp"] },
+  sets := [{ name := "vlans", width := 16, members := [100] }],
+  expected := .illTyped "in @vlans on an optional or repeated layer: the key is only written when the layer is present" }
+vector typPredInSetAlt := {
+  id := "typ-pred-inset-alt",
+  ast := { layers := [P "eth", .alt [{ name := "ipv4", preds := [.inSet (f "src") "hosts"] }, { name := "ipv6" }], P "tcp"] },
+  sets := [{ name := "hosts", width := 32, members := [0x0a000001] }],
+  expected := .illTyped "in @hosts inside an alternation: the member may not be on the matched path" }
 vector typAny := {
   id := "typ-any-unsupported", ast := W (.any (cmp dport .eq (k 1))), expected := .illTyped "any/all needs exactly one index-less stack reference" }
 vector typExists := {
@@ -339,7 +362,7 @@ def whereVectors : List Vector := [
   predCmp, predCmpMiss, predInList, predInListMiss, predInRange, typPredInRangeWide, typPredCmpRange, predInRangeMiss, predNegative, predIPv4,
   capAll, capWhereFalse, capWhereTrue, capLabel, capAbsent, capPresent,
   typUnknownProto, typNoDispatch, typNotInChain, typUnknownField, typFit, typFitArith, typWidthIPv6, typCIDRWidth,
-  typPredIdent, typInSet, typAny, typExists, typAuxPath,
+  typPredIdent, typInSet, predInSetMember, predInSetMiss, typPredInSetWidth, typPredInSetOptional, typPredInSetAlt, typAny, typExists, typAuxPath,
   arith128AddConst, arith128SubConst, arith128AddCarry, arith128AddWrap, arith128SubBorrow, arith128SubWrap, arith128AddMiss,
   arith128FieldAddField, arith128FieldAddFieldCarry, arith128FieldSubField, arith128FieldSubFieldBorrow, arith128AddWideConst, arith128SubWideConstBorrow,
   arith128AddNegConst, arith128SubNegConst, arith128CmpNegConst,
