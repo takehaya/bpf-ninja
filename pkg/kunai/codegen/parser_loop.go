@@ -427,7 +427,7 @@ func (c *pmCtx) emitDynamicAuxSentinelInit() (asm.Instructions, error) {
 }
 
 // emitStackPushCount bumps the push count slot of an `extract(stack.next)`
-// when a where / capture clause demanded it. `load` reads the slot into
+// when a where / capture clause or a bracket predicate demanded it. `load` reads the slot into
 // `reg` and `store` writes it back: the inline body addresses the slot
 // from R10, the self-loop callback through the ctx pointer R2.
 func (c *pmCtx) emitStackPushCount(ex vocab.ExtractOp, reg asm.Register, load func(int16) asm.Instruction, store func(int16) asm.Instruction) asm.Instructions {

@@ -51,6 +51,8 @@ func genParserMachine(layer *ir.LayerInstance, layerIdx int, all []*ir.LayerInst
 		accPlan:      plan,
 		pc:           pc,
 	}
+	prePreds, postPreds := splitPredicates(layer)
+	pmCtx.prePreds = prePreds
 	// Pre-scan for multi-state self-loops. Each loop entry's siblings
 	// inline into the entry's bpf_loop callback, so the per-state
 	// emit loop below skips them — no standalone code, no landing
@@ -90,19 +92,21 @@ func genParserMachine(layer *ir.LayerInstance, layerIdx int, all []*ir.LayerInst
 		return nil, nil, err
 	}
 	insns = append(insns, reanchor...)
-	// Bracket predicates run after aux-extract (§13.4 evaluates them on
-	// σ', spec D-032), so they see @kunai_writeback values. The emitters
-	// address fields from R4 at layer entry: park the post-walk R4 in the
-	// (now free) bpf_loop offset slot, reload the entry offset from the
-	// layer-entry slot, re-establish its bounds, and restore R4 after.
-	if len(layer.Predicates) > 0 && pmHasWriteBack(spec) {
+	// Bracket predicates that must wait for aux-extract (splitPredicates:
+	// every predicate of a write-back protocol, §13.4 / D-032, and any
+	// predicate indexing a push-counted stack, D-031) run here. The
+	// emitters address fields from R4 at layer entry: park the post-walk
+	// R4 in the (now free) bpf_loop offset slot, reload the entry offset
+	// from the layer-entry slot, re-establish its bounds, and restore R4
+	// after.
+	if len(postPreds) > 0 {
 		// Post-walk, the push counts are final: let a static index into a
 		// push-counted stack be guarded like a where clause does.
 		pcPost := &predCtx{stackCount: func(f *ir.FieldRef) (int16, bool) { return qo.stackCountSlot(f.Layer, f.Aux.OutParam) }}
 		if pc != nil {
 			pcPost.sets, pcPost.out = pc.sets, pc.out
 		}
-		preds, err := emitPredicates(layer.Predicates, pcPost)
+		preds, err := emitPredicates(postPreds, pcPost)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -149,6 +153,9 @@ type pmCtx struct {
 	// multi-state callback emits a flat slot-store prelude for every
 	// option in this layer's slice (and only those). nil-safe.
 	queried queriedOptions
+	// prePreds are the bracket predicates evaluated right after the first
+	// extract, before the walk (splitPredicates); the rest run after it.
+	prePreds []*ir.Predicate
 	// queriedAuxes is the OutParam-name set for c.queried.of(c.layer)
 	// — built once at pmCtx construction and consulted by the
 	// TLV-walk dispatch elision predicate (caseRedundantWithDefault)
@@ -313,6 +320,27 @@ func pmHasWriteBack(spec *vocab.ProtocolSpec) bool {
 	return false
 }
 
+// splitPredicates divides the layer's bracket predicates by when they can
+// run: `pre` right after the first extract, `post` after the parser walk.
+// A write-back protocol defers them all (they must see the written-back
+// primary header, D-032); otherwise only a predicate indexing a
+// push-counted stack waits, since its count is final only after the walk
+// (D-031; gtp[exts[0].…]), and the others still reject before the walk.
+// Predicates are a conjunction, so the split does not change the verdict.
+func splitPredicates(layer *ir.LayerInstance) (pre, post []*ir.Predicate) {
+	if pmHasWriteBack(layer.Spec) {
+		return nil, layer.Predicates
+	}
+	for _, p := range layer.Predicates {
+		if p != nil && needsPushCount(p.Field) {
+			post = append(post, p)
+		} else {
+			pre = append(pre, p)
+		}
+	}
+	return pre, post
+}
+
 // emitEntryDispatch runs the parent-protocol dispatch once at machine
 // entry, identical in shape to genStaticLayer's QuantOne dispatch.
 func (c *pmCtx) emitEntryDispatch() (asm.Instructions, error) {
@@ -395,11 +423,12 @@ func (c *pmCtx) emitStateBody(state *vocab.ParseState, stateIdx int, isEntry boo
 			return nil, nil, err
 		}
 		insns = append(insns, exInsns...)
-		if isEntry && i == 0 && !pmHasWriteBack(c.spec) {
-			// No write-back can change the primary header: evaluate the
-			// bracket predicates here, before the walk (byte-identical
-			// bytecode to the pre-D-032 layout).
-			preds, err := emitPredicates(c.layer.Predicates, c.pc)
+		if isEntry && i == 0 && len(c.prePreds) > 0 {
+			// Predicates that neither a write-back nor a push count can
+			// affect run here, before the walk (byte-identical bytecode
+			// to the pre-D-032 layout, and a mismatch rejects before the
+			// walk).
+			preds, err := emitPredicates(c.prePreds, c.pc)
 			if err != nil {
 				return nil, nil, err
 			}

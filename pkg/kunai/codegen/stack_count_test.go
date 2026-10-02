@@ -70,9 +70,13 @@ func TestPushCountedStackGuards(t *testing.T) {
 		t.Errorf("static index: %d count guards, want 1", got)
 	}
 
-	// ipv6 evaluates bracket predicates after the walk (write-back), so a
-	// bracket index is guarded the same way; gtp evaluates them before the
-	// walk and refuses the shape (compile_test.go).
+	// A bracket index into a push-counted stack is evaluated after the
+	// walk and guarded the same way (ipv6 always runs its brackets there,
+	// for the write-back; gtp only when a predicate needs the count).
+	gtpBracket := compileBundled(t, "eth/ipv4/udp/gtp[exts[1].ext_type == 0]/ipv4/tcp")
+	if got := guards(gtpBracket.Main); got != 1 {
+		t.Errorf("gtp bracket index: %d count guards, want 1", got)
+	}
 	bracket := compileBundled(t, "eth/ipv6[exts[1].next_header == 6]/tcp")
 	if got := guards(bracket.Main); got != 1 {
 		t.Errorf("bracket index: %d count guards, want 1", got)

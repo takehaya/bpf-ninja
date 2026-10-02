@@ -1070,18 +1070,26 @@ func TestCompileConsecutiveOptionals(t *testing.T) {
 }
 
 // TestCompileBracketOnPushCountedStack pins that a bracket predicate
-// indexing a stack the parser machine pushes onto is refused when the
-// predicate runs before the walk (gtp: no write-back), since the push
-// count it would need is not final yet (D-031); the where form and the
-// post-walk bracket (ipv6) compile.
+// indexing a stack the parser machine pushes onto compiles: it is
+// evaluated after the walk, when the push count that guards the index is
+// final (D-031), for a protocol without write-back (gtp) as for one with
+// (ipv6), like the where form.
 func TestCompileBracketOnPushCountedStack(t *testing.T) {
-	_, err := compileForTest("eth/ipv4/udp/gtp[exts[0].next_ext == 1]/ipv4/tcp")
-	if !errors.Is(err, codegen.ErrNotImplemented) || !strings.Contains(err.Error(), "where clause") {
-		t.Fatalf("expected codegen.ErrNotImplemented pointing at a where clause, got %v", err)
-	}
-	for _, expr := range []string{"eth/ipv4/udp/gtp/ipv4/tcp where gtp.exts[0].next_ext == 1", "eth/ipv6[exts[1].next_header == 6]/tcp"} {
+	for _, expr := range []string{
+		"eth/ipv4/udp/gtp[exts[0].next_ext == 1]/ipv4/tcp",
+		"eth/ipv4/udp/gtp[teid == 1, exts[1].ext_type == 0]/ipv4/tcp",
+		"eth/ipv4/udp/gtp/ipv4/tcp where gtp.exts[0].next_ext == 1",
+		"eth/ipv6[exts[1].next_header == 6]/tcp",
+	} {
 		if _, err := compileForTest(expr); err != nil {
 			t.Fatalf("%s must compile: %v", expr, err)
+		}
+	}
+	// A quantified layer replays its predicates per iteration, where no
+	// final count exists: still refused rather than read unguarded.
+	for _, expr := range []string{"eth/ipv4/udp/gtp[exts[0].ext_type == 1]{1,2}/ipv4/tcp", "eth/ipv6[exts[0].next_header == 6]{1,2}/tcp"} {
+		if _, err := compileForTest(expr); !errors.Is(err, codegen.ErrNotImplemented) || !strings.Contains(err.Error(), "where clause") {
+			t.Fatalf("%s: expected ErrNotImplemented pointing at a where clause, got %v", expr, err)
 		}
 	}
 	// `in [...]` brackets carry the same push-count guard.
