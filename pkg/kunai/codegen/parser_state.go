@@ -2,6 +2,7 @@ package codegen
 
 import (
 	"fmt"
+	"slices"
 
 	"github.com/cilium/ebpf/asm"
 
@@ -95,7 +96,7 @@ func genParserMachine(layer *ir.LayerInstance, layerIdx int, all []*ir.LayerInst
 	// address fields from R4 at layer entry: park the post-walk R4 in the
 	// (now free) bpf_loop offset slot, reload the entry offset from the
 	// layer-entry slot, re-establish its bounds, and restore R4 after.
-	if len(layer.Predicates) > 0 && pmHasWriteBack(spec) {
+	if len(layer.Predicates) > 0 && predsAfterWalk(layer) {
 		// Post-walk, the push counts are final: let a static index into a
 		// push-counted stack be guarded like a where clause does.
 		pcPost := &predCtx{stackCount: func(f *ir.FieldRef) (int16, bool) { return qo.stackCountSlot(f.Layer, f.Aux.OutParam) }}
@@ -313,6 +314,17 @@ func pmHasWriteBack(spec *vocab.ProtocolSpec) bool {
 	return false
 }
 
+// predsAfterWalk reports whether the layer's bracket predicates must wait
+// for the parser walk: the protocol writes back into its primary header
+// (D-032), or a predicate indexes a push-counted stack, whose count is
+// final only after the walk (D-031; gtp[exts[0].…]).
+func predsAfterWalk(layer *ir.LayerInstance) bool {
+	if pmHasWriteBack(layer.Spec) {
+		return true
+	}
+	return slices.ContainsFunc(layer.Predicates, func(p *ir.Predicate) bool { return p != nil && needsPushCount(p.Field) })
+}
+
 // emitEntryDispatch runs the parent-protocol dispatch once at machine
 // entry, identical in shape to genStaticLayer's QuantOne dispatch.
 func (c *pmCtx) emitEntryDispatch() (asm.Instructions, error) {
@@ -395,10 +407,11 @@ func (c *pmCtx) emitStateBody(state *vocab.ParseState, stateIdx int, isEntry boo
 			return nil, nil, err
 		}
 		insns = append(insns, exInsns...)
-		if isEntry && i == 0 && !pmHasWriteBack(c.spec) {
-			// No write-back can change the primary header: evaluate the
-			// bracket predicates here, before the walk (byte-identical
-			// bytecode to the pre-D-032 layout).
+		if isEntry && i == 0 && !predsAfterWalk(c.layer) {
+			// No write-back can change the primary header and no predicate
+			// needs the walk's push count: evaluate the bracket predicates
+			// here, before the walk (byte-identical bytecode to the
+			// pre-D-032 layout, and a mismatch rejects before the walk).
 			preds, err := emitPredicates(c.layer.Predicates, c.pc)
 			if err != nil {
 				return nil, nil, err
