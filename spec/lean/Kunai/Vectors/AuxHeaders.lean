@@ -357,6 +357,16 @@ vector srv6OptBroken := {
   id := "srv6-opt-broken", ast := { layers := srv6OptL },
   packet := eth 0x86DD ++ ipv6 43 ++ [6, 2, 5, 0, 0, 0, 0, 0] ++ be 16 s1 ++ tcp 12345 80 ++ payload 5, expected := .reject,
   note := "D-017: ipv6.next_header = 43 names the routing header, so routing_type 5 is a broken SRH, not an absent one" }
+vector srv6OptThenIPv4Opt := {
+  id := "srv6-opt-then-ipv4-opt", ast := { layers := [P "eth", P "ipv6", Pq "srv6" .opt, Pq "ipv4" .opt] },
+  packet := ipv6TCP, expected := .accept [],
+  note := "D-017: srv6 absent, so ipv4? faces ipv6, which has no constant for it; the tcp bytes fail ipv4's self-validation, a miss" }
+vector tcpOptAccAbsent := {
+  id := "tcp-opt-acc-absent-layer",
+  ast := { layers := [P "eth", P "ipv4", Pq "tcp" .opt],
+           cond := some (.and (cmp mss .eq (k 1460)) (cmp (Arith.field ⟨[("tcp", none), ("options", none), ("WS", none), ("shift", none)]⟩) .eq (k 7))) },
+  packet := eth 0x0800 ++ ipv4 17 ++ udp 53 53 ++ payload 5, expected := .reject,
+  note := "D-003: tcp is absent, both option atoms are false (Go: the option accumulator slot is zeroed before the optional layer's dispatch)" }
 def greOptL : List Layer := [P "eth", P "ipv4", Pq "gre" .opt, P "ipv4", P "tcp"]
 vector greOptPresent := {
   id := "gre-opt-present", ast := { layers := greOptL }, packet := grePkt (greHdr 0x2000 [42]), expected := .accept [],
@@ -367,7 +377,7 @@ vector greOptAbsent := {
   note := "no gre: the inner ipv4 dispatches on the outer protocol = 4" }
 
 def auxVectors : List Vector := [
-  srv6AnyLabel, srv6AllAbsent, srv6OptPresent, srv6OptAbsent, srv6OptAnyPresent, srv6OptAnyAbsent, srv6OptBroken, greOptPresent, greOptAbsent,
+  srv6AnyLabel, srv6AllAbsent, srv6OptPresent, srv6OptAbsent, srv6OptAnyPresent, srv6OptAnyAbsent, srv6OptBroken, srv6OptThenIPv4Opt, tcpOptAccAbsent, greOptPresent, greOptAbsent,
   rrNoSighting, sackNoSighting,
   grePlain, greKey, greKeySeq, greAllFlags, greKeyTruncated,
   tcpMss, tcpMssMiss, tcpMssAbsent, tcpMssAbsentNot, tcpMssAfterNop, tcpUnknownSkipped, tcpUnknownLen0, tcpUnknownLen1,

@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/takehaya/bpf-ninja/pkg/kunai/ast"
 	"github.com/takehaya/bpf-ninja/pkg/kunai/ir"
 	"github.com/takehaya/bpf-ninja/pkg/kunai/vocab"
 )
@@ -20,7 +21,7 @@ func TestOptionalLayerGuardVariableShapes(t *testing.T) {
 		if chainEnd {
 			spec.ChainEnd = &vocab.ChainEndConst{FieldName: "s", Value: 1, Bits: 1}
 		}
-		return &ir.LayerInstance{Spec: spec, Dispatch: &ir.DispatchChoice{Type: vocab.DispatchField}, RangeMax: rangeMax}
+		return &ir.LayerInstance{Spec: spec, Dispatch: &ir.DispatchChoice{Type: vocab.DispatchField}, Quant: ast.QuantRange, RangeMax: rangeMax}
 	}
 	if err := optionalLayerGuard(layer(1, false), 1, []*ir.LayerInstance{parent, nil}); err != nil {
 		t.Errorf("{0,1} on a variable-length layer: %v", err)

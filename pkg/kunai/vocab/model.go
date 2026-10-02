@@ -364,6 +364,60 @@ func (p *ProtocolSpec) IsSelfValidating() bool {
 	return p.selfValidating
 }
 
+// Requirement is one primary-header field the parser entry state's select
+// constrains: the header self-validates only when the field holds one of
+// Values.
+type Requirement struct {
+	Field  string
+	Values []uint64
+}
+
+// Requires derives the self-validation constraint of a self-validating
+// protocol: when the entry state's select rejects by default, each field
+// key for which every accepting case names a concrete value must take one
+// of those values (ipv4: version ∈ {4}). A tuple select is projected per
+// key. Nil for a protocol that does not self-validate. Codegen probes
+// these fields to tell an absent optional layer from a present one, and
+// the Lean vocabulary (spec/lean/gen/vocab2lean) carries the same list.
+func (p *ProtocolSpec) Requires() []Requirement {
+	m := p.ParseStateMachine
+	if m == nil || !p.IsSelfValidating() {
+		return nil
+	}
+	st := m.States[m.EntryIdx]
+	if st.Trans.Kind != TransSelect || st.Trans.Select == nil || st.Trans.Select.Default != StateReject {
+		return nil
+	}
+	sel := st.Trans.Select
+	var reqs []Requirement
+	for i, k := range sel.Keys {
+		if k.Kind != SelectKeyField || k.Field.IsStackLast {
+			continue
+		}
+		// A key constrains the header only if every accepting case names a value for it.
+		seen := map[uint64]bool{}
+		var vals []uint64
+		concrete := true
+		for _, c := range sel.Cases {
+			if c.Target == StateReject {
+				continue
+			}
+			if len(c.Values) <= i || c.Values[i].IsWildcard {
+				concrete = false
+				break
+			}
+			if v := c.Values[i].Value; !seen[v] {
+				seen[v] = true
+				vals = append(vals, v)
+			}
+		}
+		if concrete && len(vals) > 0 {
+			reqs = append(reqs, Requirement{Field: k.Field.FieldName, Values: vals})
+		}
+	}
+	return reqs
+}
+
 // computeSelfValidating walks the parser machine to detect the
 // "self-validating" shape. Called once per spec from the vocab loader
 // (after buildParseStateMachine) so the per-Compile IsSelfValidating

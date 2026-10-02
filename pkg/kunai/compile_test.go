@@ -1083,12 +1083,14 @@ func TestCompileOptionalVariableLayers(t *testing.T) {
 		"eth/ipv4/gre?/ipv4/tcp",
 		"eth/ipv4/ipv4?/ipv4?/tcp",
 		"eth/vlan?/ipv4?",
+		"eth/mpls/ipv4?",        // no parent constant: self-validation probe
+		"eth/vlan?/mpls?/ipv4?", // probe under mpls, ethertype under vlan / eth
 	} {
 		if _, err := compileForTest(expr); err != nil {
 			t.Errorf("Compile(%q): %v", expr, err)
 		}
 	}
-	for _, expr := range []string{"eth/ipv6/srv6{0,2}/tcp", "eth/ipv6/srv6*/tcp", "eth/ipv4/gre{0,2}/ipv4/tcp", "eth/ipv4/gre*/ipv4/tcp", "eth/mpls/ipv4?"} {
+	for _, expr := range []string{"eth/ipv6/srv6{0,2}/tcp", "eth/ipv6/srv6*/tcp", "eth/ipv4/gre{0,2}/ipv4/tcp", "eth/ipv4/gre*/ipv4/tcp"} {
 		if _, err := compileForTest(expr); !errors.Is(err, codegen.ErrNotImplemented) {
 			t.Errorf("Compile(%q) = %v; want ErrNotImplemented", expr, err)
 		}

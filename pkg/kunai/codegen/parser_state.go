@@ -262,6 +262,22 @@ func (c *pmCtx) emitState(stateIdx int) (asm.Instructions, asm.Instructions, err
 
 	var insns asm.Instructions
 	if isEntry {
+		// Sentinel-init each queried option's dynamic offset slot so
+		// where-time access can detect "option not extracted in this
+		// packet" via JEq sentinel (the TLV-walk callback's prelude
+		// overwrites the slot only when the matching kind byte runs), and
+		// zero the push counts and the accumulator. An optional layer
+		// initialises them before its dispatch: the absent path skips the
+		// machine, and a reader of these slots (the accumulator mask
+		// check) must still find them defined and empty.
+		dynInit, err := c.emitDynamicAuxSentinelInit()
+		if err != nil {
+			return nil, nil, err
+		}
+		optional := c.dispatchFail != dslReject
+		if optional {
+			insns = append(insns, dynInit...)
+		}
 		di, err := c.emitEntryDispatch()
 		if err != nil {
 			return nil, nil, err
@@ -298,16 +314,9 @@ func (c *pmCtx) emitState(stateIdx int) (asm.Instructions, asm.Instructions, err
 			}
 			insns = append(insns, asm.StoreMem(asm.R10, slotEntry, offsetBase, asm.DWord))
 		}
-		// Sentinel-init each queried option's dynamic offset slot so
-		// where-time access can detect "option not extracted in this
-		// packet" via JEq sentinel. The TLV-walk callback's prelude
-		// overwrites the slot only when the matching kind byte runs
-		// — un-extracted options keep the sentinel value.
-		dynInit, err := c.emitDynamicAuxSentinelInit()
-		if err != nil {
-			return nil, nil, err
+		if !optional {
+			insns = append(insns, dynInit...)
 		}
-		insns = append(insns, dynInit...)
 		// Zero each declared ParserCounter slot. Counters are
 		// machine-local; the slot must hold a known value before any
 		// is_zero() reaches it so the verifier accepts the load.

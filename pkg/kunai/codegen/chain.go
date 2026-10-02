@@ -167,10 +167,10 @@ func genStaticChain(layer *ir.LayerInstance, index int, all []*ir.LayerInstance,
 // whose parent names it with a dispatch constant (`ipv6/srv6?`,
 // `eth/ipv4?`): the machine runs as for a mandatory layer, except that a
 // failed parent dispatch jumps to the absent label instead of rejecting.
-// `layer` is the instance the demand walker and the stack plan know;
-// `opt` is its `{0,1}` view for the shared optional-layer checks.
-func genOptionalMachineLayer(layer, opt *ir.LayerInstance, index int, all []*ir.LayerInstance, qo queriedOptions, plan *accPlan, pc *predCtx) (asm.Instructions, asm.Instructions, error) {
-	if err := optionalLayerGuard(opt, index, all); err != nil {
+// `layer` is the instance the demand walker and the stack plan know, not
+// a `{0,1}` copy.
+func genOptionalMachineLayer(layer *ir.LayerInstance, index int, all []*ir.LayerInstance, qo queriedOptions, plan *accPlan, pc *predCtx) (asm.Instructions, asm.Instructions, error) {
+	if err := optionalLayerGuard(layer, index, all); err != nil {
 		return nil, nil, err
 	}
 	chainDone := fmt.Sprintf("dsl_chain_done_%d", index)
