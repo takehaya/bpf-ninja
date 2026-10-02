@@ -422,8 +422,20 @@ vector typArith128NarrowFitNested := {
   expected := .illTyped "literal 70000 does not fit Int<16>" }
 vector arith128WideRight := {
   id := "arith-128-wide-right", ast := W6 (cmp (.bin .add src6 (.bin .add dst6 (k 1))) .eq (k 4)),
+  packet := v6pkt 1 2, expected := .accept [],
+  note := "a 128-bit expression on the right of +: 1 + (2 + 1)" }
+vector arith128WideRightSub := {
+  id := "arith-128-wide-right-sub", ast := W6 (cmp (.bin .sub src6 (.bin .sub dst6 src6)) .eq (k 7)),
+  packet := v6pkt 5 3, expected := .accept [],
+  note := "5 - (3 - 5): the inner difference wraps to 2^128 - 2, the outer one back to 7" }
+vector arith128WideRightDeep := {
+  id := "arith-128-wide-right-deep",
+  ast := W6 (cmp (.bin .add src6 (.bin .add dst6 (.bin .add src6 (fld "tcp" "dport")))) .eq (k 84)),
+  packet := v6pkt 1 2, expected := .accept [], note := "1 + (2 + (1 + 80))" }
+vector arith128WideBoth := {
+  id := "arith-128-wide-both", ast := W6 (cmp (.bin .sub (.bin .add src6 dst6) (.bin .add dst6 src6)) .eq (k 0)),
   packet := v6pkt 1 2, expected := .accept [], goStatus := .notImplemented,
-  note := "Go: a 128-bit expression on the right of ± would overwrite the parked left operand" }
+  note := "Go: 128-bit expressions on both sides of ± would need a second pair of park slots" }
 vector typArith128NarrowFit := {
   id := "typ-arith-128-narrow-fit", ast := W6 (cmp src6 .eq (.bin .mul dport6 (k 70000))), packet := ipv6TCP,
   expected := .illTyped "literal 70000 does not fit Int<16>",
@@ -480,7 +492,7 @@ def whereVectors : List Vector := [
   arith128AddNegConst, arith128SubNegConst, arith128CmpNegConst,
   arith128MixedWidthAdd, arith128MixedWidthMul, arith128MixedCarry, arith128MixedBorrow, arith128MixedWrap64, arith128MixedSlice,
   arith128MixedNested, arith128MixedNeg, arith128ConstBinop, arith128MixedAux, typArith128NarrowFitNested,
-  arith128WideRight, typArith128NarrowFit, arith128CmpWideConst,
+  arith128WideRight, arith128WideRightSub, arith128WideRightDeep, arith128WideBoth, typArith128NarrowFit, arith128CmpWideConst,
   arith128Lt, arith128GeMiss, arith128LtHighHalf, typArith128Mul, typArith128Band, typPathDeep, typPathDeepLabel, typPathDeepBracket]
 
 end Kunai

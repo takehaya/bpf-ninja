@@ -754,10 +754,21 @@ func TestCompileWhereIPv6MulIllTyped(t *testing.T) {
 			t.Errorf("Compile(%q): %v", expr, err)
 		}
 	}
-	// Still refused: a 128-bit expression on the right of ±, a slice
-	// wider than 64 bits.
+	// A 128-bit expression on the right of ± is computed first.
 	for _, expr := range []string{
 		"eth/ipv6/tcp where ipv6.src + (ipv6.dst + 1) == ipv6.dst",
+		"eth/ipv6/tcp where ipv6.src - (ipv6.dst - (ipv6.src + ipv6.dst)) == 1",
+		"eth/ipv6/tcp where (ipv6.src + ipv6.dst) - ipv6.src == ipv6.dst + (ipv6.src + 1)",
+	} {
+		if _, err := compileForTest(expr); err != nil {
+			t.Errorf("Compile(%q): %v", expr, err)
+		}
+	}
+	// Still refused: 128-bit expressions on both sides of ±, a slice
+	// wider than 64 bits.
+	for _, expr := range []string{
+		"eth/ipv6/tcp where (ipv6.src + ipv6.dst) - (ipv6.dst + ipv6.src) == 0",
+		"eth/ipv6/tcp where (ipv6.src + ipv6.dst + 1) + (ipv6.dst + ipv6.src) == 0",
 		"eth/ipv6/tcp where ipv6.src[0:96] + ipv6.dst == 1",
 	} {
 		if _, err := compileForTest(expr); !errors.Is(err, codegen.ErrNotImplemented) {
