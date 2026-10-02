@@ -758,7 +758,8 @@ func TestCompileWhereIPv6MulIllTyped(t *testing.T) {
 	for _, expr := range []string{
 		"eth/ipv6/tcp where ipv6.src + (ipv6.dst + 1) == ipv6.dst",
 		"eth/ipv6/tcp where ipv6.src - (ipv6.dst - (ipv6.src + ipv6.dst)) == 1",
-		"eth/ipv6/tcp where (ipv6.src + ipv6.dst) - ipv6.src == ipv6.dst + (ipv6.src + 1)",
+		"eth/ipv6/tcp where (ipv6.src + ipv6.dst) - ipv6.src == (ipv6.dst - 1) + (ipv6.src + ipv6.dst)",
+		"eth/ipv6/tcp where (ipv6.src == ipv6.dst - (ipv6.src + ipv6.dst)) == (tcp.dport == 80)",
 	} {
 		if _, err := compileForTest(expr); err != nil {
 			t.Errorf("Compile(%q): %v", expr, err)
