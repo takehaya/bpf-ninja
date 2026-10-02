@@ -29,43 +29,57 @@ var specHostCaps = map[string]func() codegen.Capabilities{
 }
 
 // specSetSlots declares a vector's sets to codegen the way bpf-ninja's
-// packet-key resolver does: each set has one key field of the declared
-// width, keys are packed downward from the host slot at -24, and the
-// buffer holds 16 bytes (a set past it has no slot). The membership
-// lookup is the host's, after the filter, and the runner does not
-// perform it, so a vector's reject verdict is not checked on the kernel.
-type specSetSlots []specSet
+// packet-key resolver (internal/program pktSetSlots) does: each set is one
+// scalar key of the declared width, allocated on first use downward from
+// the host slot at -24, aligned to its width (8 at most), inside a 16-byte
+// buffer; a set past the buffer has no slot. The membership lookup is the
+// host's, after the filter, and the runner does not perform it, so a
+// vector's reject verdict is not checked on the kernel.
+type specSetSlots struct {
+	decls  []specSet
+	base   map[string]int16
+	cursor int16
+}
 
 const (
 	specSetKeyTop   = int16(-24)
 	specSetKeyFloor = int16(-40)
 )
 
-func (s specSetSlots) HasSet(name string) bool {
-	_, _, ok := s.find(name)
+func newSpecSetSlots(decls []specSet) *specSetSlots {
+	return &specSetSlots{decls: decls, base: map[string]int16{}, cursor: specSetKeyTop}
+}
+
+func (s *specSetSlots) decl(name string) (specSet, bool) {
+	for _, d := range s.decls {
+		if d.Name == name {
+			return d, true
+		}
+	}
+	return specSet{}, false
+}
+
+func (s *specSetSlots) HasSet(name string) bool {
+	_, ok := s.decl(name)
 	return ok
 }
 
-func (s specSetSlots) SlotFor(set, _ string) (int16, int, bool) {
-	off, size, ok := s.find(set)
-	if !ok || off < specSetKeyFloor {
+func (s *specSetSlots) SlotFor(set, _ string) (int16, int, bool) {
+	d, ok := s.decl(set)
+	if !ok {
 		return 0, 0, false
 	}
-	return off, size, true
-}
-
-// find returns the set's key slot and byte size: the sets declared before
-// it take the bytes above.
-func (s specSetSlots) find(name string) (int16, int, bool) {
-	off := specSetKeyTop
-	for _, d := range s {
-		size := d.Width / 8
-		off -= int16(size)
-		if d.Name == name {
-			return off, size, true
+	size := int16(d.Width / 8)
+	base, allocated := s.base[set]
+	if !allocated {
+		align := min(size, 8)
+		base = (s.cursor - size) &^ (align - 1)
+		if base < specSetKeyFloor {
+			return 0, 0, false
 		}
+		s.base[set], s.cursor = base, base
 	}
-	return 0, 0, false
+	return base, int(size), true
 }
 
 // TestSpecVectors checks the Go implementation against the Lean semantics.
@@ -100,7 +114,7 @@ func runSpecVectors(t *testing.T, vectors []specVector) {
 				t.Fatalf("action %d is not a 32-bit value", v.Action)
 			}
 			caps, action := hostCaps(), int32(uint32(v.Action))
-			caps.Lang.SetSlots = specSetSlots(v.Sets)
+			caps.Lang.SetSlots = newSpecSetSlots(v.Sets)
 			if v.GoStatus == "mismatch" {
 				_, err := kunai.Compile(v.Expr, caps)
 				t.Logf("documented divergence (not asserted): %s; compile err=%v", v.Note, err)

@@ -257,6 +257,14 @@ vector predInSetSubByte := {
   id := "pred-inset-subbyte", ast := { layers := [P "eth", .proto { name := "ipv4", preds := [.inSet (f "ihl") "ihls"] }, P "tcp"] },
   sets := [{ name := "ihls", width := 8, members := [5] }], expected := .accept [],
   note := "a 4-bit field is extracted as one byte, so the key is bit<8>" }
+vector predInSetWindow := {
+  id := "pred-inset-window", ast := { layers := [P "eth", .proto { name := "ipv6", preds := [.inSet (f "traffic_class") "tc"] }, P "tcp"] },
+  sets := [{ name := "tc", width := 16, members := [0] }], packet := ipv6TCP, expected := .accept [],
+  note := "traffic_class is 8 bits starting at bit 4: the filter loads the 2-byte window, so the key is bit<16>" }
+vector typPredInSetWindow := {
+  id := "typ-pred-inset-window", ast := { layers := [P "eth", .proto { name := "ipv6", preds := [.inSet (f "traffic_class") "tc"] }, P "tcp"] },
+  sets := [{ name := "tc", width := 8, members := [0] }], packet := ipv6TCP,
+  expected := .illTyped "set @tc keys are bit<8>, ipv6.traffic_class extracts bit<16>" }
 vector typPredInSetTwice := {
   id := "typ-pred-inset-twice",
   ast := { layers := [P "eth", .proto { name := "ipv4", preds := [.inSet (f "src") "hosts", .inSet (f "dst") "hosts"] }, P "tcp"] },
@@ -378,7 +386,7 @@ def whereVectors : List Vector := [
   predCmp, predCmpMiss, predInList, predInListMiss, predInRange, typPredInRangeWide, typPredCmpRange, predInRangeMiss, predNegative, predIPv4,
   capAll, capWhereFalse, capWhereTrue, capLabel, capAbsent, capPresent,
   typUnknownProto, typNoDispatch, typNotInChain, typUnknownField, typFit, typFitArith, typWidthIPv6, typCIDRWidth,
-  typPredIdent, typInSet, predInSetMember, predInSetMiss, typPredInSetWidth, predInSetSubByte, typPredInSetTwice, typPredInSetBudget, typPredInSetOptional, typPredInSetAlt, typAny, typExists, typAuxPath,
+  typPredIdent, typInSet, predInSetMember, predInSetMiss, typPredInSetWidth, predInSetSubByte, predInSetWindow, typPredInSetWindow, typPredInSetTwice, typPredInSetBudget, typPredInSetOptional, typPredInSetAlt, typAny, typExists, typAuxPath,
   arith128AddConst, arith128SubConst, arith128AddCarry, arith128AddWrap, arith128SubBorrow, arith128SubWrap, arith128AddMiss,
   arith128FieldAddField, arith128FieldAddFieldCarry, arith128FieldSubField, arith128FieldSubFieldBorrow, arith128AddWideConst, arith128SubWideConstBorrow,
   arith128AddNegConst, arith128SubNegConst, arith128CmpNegConst,

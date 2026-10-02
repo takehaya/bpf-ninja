@@ -43,6 +43,21 @@ private def stop (e : Except Stop α) : Except String α :=
   | .error .reject => throw "internal: static check hit a dynamic reject" -- unreachable: no packet reads here
   | .error (.illTyped r) => throw r
 
+/-- The smallest load (1, 2, 4 or 8 bytes) covering `cover` bytes. -/
+private def ldxBytes (cover : Nat) : Nat :=
+  if cover ≤ 1 then 1 else if cover ≤ 2 then 2 else if cover ≤ 4 then 4 else 8
+
+/-- The bytes the filter extracts for a bracket field, which is the key an
+`in @set` predicate writes: a whole-byte field is itself (16 for Int<128>),
+anything else is the smallest load window covering its bits. -/
+private def keyBytes (r : Ref) : Nat :=
+  match r.slice with
+  | some (lo, hi) => ldxBytes ((r.field.bitOff + hi + 7) / 8 - (r.field.bitOff + lo) / 8)
+  | none =>
+    if r.field.width == 128 then 16
+    else if r.field.bitOff % 8 == 0 && r.field.width % 8 == 0 then r.field.width / 8
+    else ldxBytes ((r.field.bitOff % 8 + r.field.width + 7) / 8)
+
 /-- Bracket predicates resolve their field like a where clause scoped to the
 layer (`resolveBracket`); a bit slice narrows the compared width. `mandatory`
 says the layer is extracted on every accepting path (not quantified, not an
@@ -68,10 +83,11 @@ private def checkPred (c : Ctx) (spec : ProtoSpec) (mandatory : Bool) : Predicat
     if !mandatory then
       throw s!"in @{name} on an optional, repeated, or alternative layer: the key is only written when the layer is present"
     -- The set must be declared, and its keys as wide as the bytes the
-    -- filter extracts for the field (whole bytes: a 4-bit field is a
-    -- bit<8> key; a narrower key would only hold a prefix of the field).
+    -- filter extracts for the field (keyBytes: a 4-bit field is a bit<8>
+    -- key, a 20-bit one a bit<32> key; a narrower key would only hold a
+    -- prefix of the field).
     let some s := c.H.set? name | throw s!"undeclared set @{name}"
-    let extracted := 8 * ((r.width + 7) / 8)
+    let extracted := 8 * keyBytes r
     if s.width != extracted then
       throw s!"set @{name} keys are bit<{s.width}>, {spec.name}.{f.text} extracts bit<{extracted}>"
 
@@ -164,21 +180,22 @@ private def setRefs (layers : List Layer) : List String :=
     | .proto p => p.preds.filterMap setRef
     | .alt alts => alts.flatMap (·.preds.filterMap setRef)
 
-/-- D-036 across the filter, mirroring the host's key buffer: a referenced
-set is declared once with a `set create` key width and keys that fit it,
-each set is referenced by at most one predicate (the host holds one key per
-set and looks it up once), and the referenced keys fit the 16-byte buffer. -/
+/-- `x` rounded up to a multiple of `a`. -/
+private def alignUp (x a : Nat) : Nat := ((x + a - 1) / a) * a
+
+/-- D-036 across the filter, mirroring the host's key buffer: each set is
+referenced by at most one predicate (the host holds one key per set and
+looks it up once), and the referenced keys, laid out in chain order with
+each key aligned to its own width (8 at most), fit the 16-byte buffer. -/
 private def checkSets (c : Ctx) : Except String Unit := do
   let refs := setRefs c.layers
   for name in refs.eraseDups do
-    let some s := c.H.set? name | pure ()
-    if (c.H.sets.filter (·.name == name)).length > 1 then throw s!"set @{name} is declared twice"
-    if ![8, 16, 32, 64, 128].contains s.width then
-      throw s!"set @{name} declares bit<{s.width}> keys; keys are 8, 16, 32, 64 or 128 bits"
-    if s.members.any (· ≥ 2 ^ s.width) then throw s!"set @{name} holds a key that does not fit bit<{s.width}>"
     if (refs.filter (· == name)).length > 1 then
       throw s!"set @{name} is referenced twice: the host holds one key per set"
-  let bytes : Nat := refs.foldl (fun acc n => acc + ((c.H.set? n).map (·.width / 8)).getD 0) 0
+  let bytes : Nat := refs.foldl (fun used n =>
+    match c.H.set? n with
+    | some s => alignUp (used + s.width / 8) (min (s.width / 8) 8)
+    | none => used) 0
   if bytes > 16 then throw s!"packet keys take {bytes} bytes; the host's key buffer holds 16"
 
 /-- `none` when the filter type-checks; otherwise the resolver's complaint. -/

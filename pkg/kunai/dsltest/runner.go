@@ -39,6 +39,10 @@ func skipIfNotRoot(t *testing.T) {
 // the verifier proves.
 const scratchSize = codegen.ScratchBufSize
 
+// fakeArgsSize is the tracing-args block the wrapper fakes after the
+// packet prefix for exit-host filters (args[0], args[1]).
+const fakeArgsSize = 16
+
 // XDP retval constants (uapi/linux/bpf.h XDP_* values). Tests use
 // them as the truth table when asserting Match outcomes.
 const (
@@ -117,7 +121,7 @@ func NewFromOutput(t *testing.T, dslExpr string, out codegen.Output, action int3
 		Name:       "dslt_sc",
 		Type:       ebpf.PerCPUArray,
 		KeySize:    4,
-		ValueSize:  scratchSize,
+		ValueSize:  scratchSize + fakeArgsSize,
 		MaxEntries: 1,
 	})
 	if err != nil {
@@ -198,13 +202,13 @@ func (r *Runner) MustReject(t *testing.T, pkt []byte, why string) {
 // ActionFetcher runs under the verifier: a pointer to the tracing args
 // block is saved at fp-48 and the return value sits in args[1] (the host
 // packages' fexitFetcher, internal/program's fexit layout). The block is
-// faked at fp-40 with `action` in args[1]; a filter compiled for an entry
-// host never reads it.
+// faked in the scratch value right after the packet prefix (the filter
+// never reads past ScratchBufSize), with `action` in args[1]; the host
+// stack slots [-40, -24) stay free for set keys, as on the real hosts.
 func buildXDPWrapper(filterOut codegen.Output, scratchFD int, action int32) asm.Instructions {
 	const (
 		stackKey     = int16(-16)
 		stackScratch = int16(-24)
-		stackArgs    = int16(-40) // args[0] at -40, args[1] at -32
 		stackArgsPtr = int16(-48)
 	)
 
@@ -227,11 +231,12 @@ func buildXDPWrapper(filterOut codegen.Output, scratchFD int, action int32) asm.
 		asm.JEq.Imm(asm.R0, 0, "drop"),
 		asm.StoreMem(asm.R10, stackScratch, asm.R0, asm.DWord),
 
-		// Fake tracing args: args[1] = action (read as a u32), pointer at fp-48.
-		asm.Mov.Imm(asm.R2, action),
-		asm.StoreMem(asm.R10, stackArgs+8, asm.R2, asm.DWord),
-		asm.Mov.Reg(asm.R2, asm.R10),
-		asm.Add.Imm(asm.R2, int32(stackArgs)),
+		// Fake tracing args after the packet prefix: args[1] = action
+		// (read as a u32), pointer at fp-48.
+		asm.Mov.Reg(asm.R2, asm.R0),
+		asm.Add.Imm(asm.R2, int32(scratchSize)),
+		asm.Mov.Imm(asm.R3, action),
+		asm.StoreMem(asm.R2, 8, asm.R3, asm.DWord),
 		asm.StoreMem(asm.R10, stackArgsPtr, asm.R2, asm.DWord),
 
 		// Compute capped copy length: min(pkt_len, scratchSize). The
