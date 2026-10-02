@@ -125,44 +125,16 @@ func declaredLength(s *vocab.ProtocolSpec) *vocab.HeaderLength {
 	return nil
 }
 
-// requires derives the self-validation constraint of the start state: when
-// its select rejects by default, the first key (a primary field) must take
-// one of the values the cases name.
+// requires renders the protocol's self-validation constraint
+// (vocab.ProtocolSpec.Requires) as a Lean list of (field, values).
 func requires(s *vocab.ProtocolSpec) string {
-	m := s.ParseStateMachine
-	if m == nil || !s.IsSelfValidating() {
-		return ""
-	}
-	st := m.States[m.EntryIdx]
-	if st.Trans.Kind != vocab.TransSelect || st.Trans.Select.Default != vocab.StateReject {
-		return ""
-	}
-	sel := st.Trans.Select
 	var reqs []string
-	for i, k := range sel.Keys {
-		if k.Kind != vocab.SelectKeyField || k.Field.IsStackLast {
-			continue
+	for _, r := range s.Requires() {
+		vals := make([]string, len(r.Values))
+		for i, v := range r.Values {
+			vals[i] = fmt.Sprintf("%d", v)
 		}
-		// A key constrains the header only if every accepting case names a value for it.
-		seen := map[uint64]bool{}
-		var vals []string
-		concrete := true
-		for _, c := range sel.Cases {
-			if c.Target == vocab.StateReject {
-				continue
-			}
-			if len(c.Values) <= i || c.Values[i].IsWildcard {
-				concrete = false
-				break
-			}
-			if v := c.Values[i].Value; !seen[v] {
-				seen[v] = true
-				vals = append(vals, fmt.Sprintf("%d", v))
-			}
-		}
-		if concrete && len(vals) > 0 {
-			reqs = append(reqs, fmt.Sprintf("(%s, [%s])", str(k.Field.FieldName), strings.Join(vals, ", ")))
-		}
+		reqs = append(reqs, fmt.Sprintf("(%s, [%s])", str(r.Field), strings.Join(vals, ", ")))
 	}
 	if len(reqs) == 0 {
 		return ""

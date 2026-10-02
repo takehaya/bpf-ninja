@@ -1069,6 +1069,34 @@ func TestCompileConsecutiveOptionals(t *testing.T) {
 	}
 }
 
+// TestCompileOptionalVariableLayers pins `?` / `{0,1}` on a variable-length
+// layer: the parser machine (or the flag-trigger emit) runs with a failed
+// dispatch routed to the absent path, the dispatch being the parent's
+// constant or, with none, the self-validation probe. Repeating such a
+// layer stays refused.
+func TestCompileOptionalVariableLayers(t *testing.T) {
+	for _, expr := range []string{
+		"eth/ipv4?",
+		"eth/ipv6/srv6?/tcp",
+		"eth/ipv6/srv6{0,1}/tcp where tcp.options.mss.value == 1460",
+		"eth/ipv6/srv6?/tcp where all(srv6.segments.addr != fc00::1)",
+		"eth/ipv4/gre?/ipv4/tcp",
+		"eth/ipv4/ipv4?/ipv4?/tcp",
+		"eth/vlan?/ipv4?",
+		"eth/mpls/ipv4?",        // no parent constant: self-validation probe
+		"eth/vlan?/mpls?/ipv4?", // probe under mpls, ethertype under vlan / eth
+	} {
+		if _, err := compileForTest(expr); err != nil {
+			t.Errorf("Compile(%q): %v", expr, err)
+		}
+	}
+	for _, expr := range []string{"eth/ipv6/srv6{0,2}/tcp", "eth/ipv6/srv6*/tcp", "eth/ipv4/gre{0,2}/ipv4/tcp", "eth/ipv4/gre*/ipv4/tcp"} {
+		if _, err := compileForTest(expr); !errors.Is(err, codegen.ErrNotImplemented) {
+			t.Errorf("Compile(%q) = %v; want ErrNotImplemented", expr, err)
+		}
+	}
+}
+
 // TestCompileBracketOnPushCountedStack pins that a bracket predicate
 // indexing a stack the parser machine pushes onto compiles: it is
 // evaluated after the walk, when the push count that guards the index is

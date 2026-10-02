@@ -163,6 +163,41 @@ func genStaticChain(layer *ir.LayerInstance, index int, all []*ir.LayerInstance,
 	return chainLanding(insns, layer, optional, chainDone, absentLabel, index, all)
 }
 
+// genOptionalMachineLayer lowers `?` / `{0,1}` on a parser-machine layer:
+// the machine runs as for a mandatory layer, except that a failed dispatch
+// jumps to the absent label instead of rejecting. The dispatch is the
+// parent's constant (`ipv6/srv6?`, `eth/ipv4?`) or, under a parent with
+// none, the probe of the layer's self-validation fields (`mpls/ipv4?`).
+// `layer` is the instance the demand walker and the stack plan know, not
+// a `{0,1}` copy.
+func genOptionalMachineLayer(layer *ir.LayerInstance, index int, all []*ir.LayerInstance, qo queriedOptions, plan *accPlan, pc *predCtx) (asm.Instructions, asm.Instructions, error) {
+	if err := optionalLayerGuard(layer, index, all); err != nil {
+		return nil, nil, err
+	}
+	chainDone := fmt.Sprintf("dsl_chain_done_%d", index)
+	absentLabel := chainDone
+	if ir.AbsentEdgeApplies(all, index) {
+		absentLabel = fmt.Sprintf("dsl_absent_%d", index)
+	}
+	sentinel, err := emitLayerEntrySentinel(layer, qo)
+	if err != nil {
+		return nil, nil, err
+	}
+	body, callbacks, err := genParserMachineOn(layer, index, all, qo, plan, pc, absentLabel)
+	if err != nil {
+		return nil, nil, err
+	}
+	insns := append(asm.Instructions{}, sentinel...)
+	insns = append(insns, body...)
+	if absentLabel != chainDone {
+		insns, err = withAbsentEdge(insns, absentLabel, index, all)
+		return insns, callbacks, err
+	}
+	// R0 (the scratch window) is live on both paths; R3 is not after the
+	// machine's bpf_loop, so the landing must not touch it.
+	return append(insns, asm.Mov.Reg(asm.R0, asm.R0).WithSymbol(chainDone)), callbacks, nil
+}
+
 // chainLanding closes a static chain. chainDone is where an in-range
 // iteration ≥ 1 that hit its natural chain-end (or, for self-dispatch
 // protocols, missed its self-dispatch peek) falls through to the next

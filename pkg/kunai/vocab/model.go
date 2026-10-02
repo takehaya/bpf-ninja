@@ -87,8 +87,10 @@ type ProtocolSpec struct {
 	// Computed once at vocab load (loader.go) and queried per Compile
 	// via IsSelfValidating().
 	selfValidating bool
-	File           *p4lite.File // full AST (for resolver/codegen later)
-	Source         string       // original file path, for diagnostics
+	// requires caches Requires(), computed with selfValidating.
+	requires []Requirement
+	File     *p4lite.File // full AST (for resolver/codegen later)
+	Source   string       // original file path, for diagnostics
 }
 
 // StackLayoutSpec captures the @kunai_layout[after=...] decorator on
@@ -362,6 +364,65 @@ func (p *ProtocolSpec) AuxWalkSegmentTail() (*VariableTailSpec, int, bool) {
 // validates internally). Cached at vocab load via computeSelfValidating.
 func (p *ProtocolSpec) IsSelfValidating() bool {
 	return p.selfValidating
+}
+
+// Requirement is one primary-header field the parser entry state's select
+// constrains: the header self-validates only when the field holds one of
+// Values.
+type Requirement struct {
+	Field  string
+	Values []uint64
+}
+
+// Requires derives the self-validation constraint of a self-validating
+// protocol: when the entry state's select rejects by default, each field
+// key for which every accepting case names a concrete value must take one
+// of those values (ipv4: version ∈ {4}). A tuple select is projected per
+// key, and only keys on the primary header count (a key on an auxiliary
+// header is not a field of the header being dispatched). Nil for a
+// protocol that does not self-validate. Codegen probes these fields to
+// tell an absent optional layer from a present one, and the Lean
+// vocabulary (spec/lean/gen/vocab2lean) carries the same list. Cached by
+// the loader, like IsSelfValidating.
+func (p *ProtocolSpec) Requires() []Requirement { return p.requires }
+
+func computeRequires(p *ProtocolSpec) []Requirement {
+	m := p.ParseStateMachine
+	if m == nil || !p.selfValidating {
+		return nil
+	}
+	st := m.States[m.EntryIdx]
+	if st.Trans.Kind != TransSelect || st.Trans.Select == nil || st.Trans.Select.Default != StateReject {
+		return nil
+	}
+	sel := st.Trans.Select
+	var reqs []Requirement
+	for i, k := range sel.Keys {
+		if k.Kind != SelectKeyField || k.Field.IsStackLast || k.Field.HeaderName != p.HeaderName {
+			continue
+		}
+		// A key constrains the header only if every accepting case names a value for it.
+		seen := map[uint64]bool{}
+		var vals []uint64
+		concrete := true
+		for _, c := range sel.Cases {
+			if c.Target == StateReject {
+				continue
+			}
+			if len(c.Values) <= i || c.Values[i].IsWildcard {
+				concrete = false
+				break
+			}
+			if v := c.Values[i].Value; !seen[v] {
+				seen[v] = true
+				vals = append(vals, v)
+			}
+		}
+		if concrete && len(vals) > 0 {
+			reqs = append(reqs, Requirement{Field: k.Field.FieldName, Values: vals})
+		}
+	}
+	return reqs
 }
 
 // computeSelfValidating walks the parser machine to detect the

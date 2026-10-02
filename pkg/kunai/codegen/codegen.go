@@ -890,11 +890,28 @@ func genLayerInner(layer *ir.LayerInstance, index int, all []*ir.LayerInstance, 
 		return insns, nil, err
 	case ast.QuantOpt:
 		// `?` ≡ `{0,1}` (spec D-005/D-024, Laws.lean opt_eq_range): one lowering.
+		if layer.Spec.ParseStateMachine != nil {
+			return genOptionalMachineLayer(layer, index, all, qo, plan, pc)
+		}
 		opt := *layer
 		opt.Quant, opt.RangeMin, opt.RangeMax = ast.QuantRange, 0, 1
 		insns, err := genStaticChain(&opt, index, all, qo, pc)
 		return insns, nil, err
 	case ast.QuantRange:
+		if layer.RangeMax == 1 && layer.Spec.ParseStateMachine != nil {
+			// One header at most: the parser machine must run (the static
+			// chain would advance by the primary header only). `{1,1}` is
+			// the plain layer (Laws.lean one_eq_range) unless a chain-end
+			// rule demands the end signal at the bound (D-024), which the
+			// machine lowering does not check.
+			if layer.RangeMin == 1 {
+				if layer.Spec.ChainEnd != nil {
+					return nil, nil, fmt.Errorf("%w: {1,1} on %q: a parser-machine layer with a chain-end rule", ErrNotImplemented, layer.Spec.Name)
+				}
+				return genParserMachine(layer, index, all, qo, plan, pc)
+			}
+			return genOptionalMachineLayer(layer, index, all, qo, plan, pc)
+		}
 		if staticChainFitsRange(layer.RangeMax) {
 			insns, err := genStaticChain(layer, index, all, qo, pc)
 			return insns, nil, err
@@ -935,6 +952,19 @@ func genStaticLayer(layer *ir.LayerInstance, index int, all []*ir.LayerInstance,
 		return nil, err
 	}
 	insns = append(insns, preds...)
+	tail, err := emitStaticLayerTail(layer, index, hs, qo)
+	if err != nil {
+		return nil, err
+	}
+	return append(insns, tail...), nil
+}
+
+// emitStaticLayerTail closes a non-machine layer's body once its bounds,
+// dispatch and predicates passed: the entry stores, the advance past the
+// primary header, and the flag-gated words. Shared by the mandatory
+// (genStaticLayer) and the peeked (emitPeekedIterZero) lowering.
+func emitStaticLayerTail(layer *ir.LayerInstance, index, hs int, qo queriedOptions) (asm.Instructions, error) {
+	var insns asm.Instructions
 	if layer.Spec.HasVariableLayout() {
 		// Save this layer's entry offsetBase to the slot before the
 		// fixed-prefix advance so children's dispatch can recover the
@@ -951,6 +981,7 @@ func genStaticLayer(layer *ir.LayerInstance, index int, all []*ir.LayerInstance,
 	insns = append(insns, entry...)
 	insns = append(insns, emitAdvance(hs))
 	if len(layer.Spec.FlagTriggers) > 0 {
+		// emitFlagTriggers must follow emitAdvance(hs) directly.
 		flags, err := emitFlagTriggers(fmt.Sprintf("dsl_l%d_%d", index, layer.Index), hs, layer.Spec.FlagsByteOffset, layer.Spec.FlagTriggers, dslReject)
 		if err != nil {
 			return nil, err
@@ -973,7 +1004,7 @@ func genStaticLayer(layer *ir.LayerInstance, index int, all []*ir.LayerInstance,
 // so offsetBase already points past the fixed primary header. The
 // initial flag-byte LDX uses immediate `-fixedHs+flagsByteOff` to
 // reach back into the just-passed primary header. If a future caller
-// reorders the advance / triggers sequence in genStaticLayer, this
+// reorders the advance / triggers sequence in emitStaticLayerTail, this
 // helper must change to match (or split into a "read flag byte" /
 // "emit triggers" pair).
 func emitFlagTriggers(ns string, fixedHs, flagsByteOff int, triggers []vocab.FlagTrigger, failLabel string) (asm.Instructions, error) {
@@ -1100,6 +1131,9 @@ func dispatchVia(current, parent *ir.LayerInstance, r4IsRange, parentEntryIsRang
 	c := current.Spec.SelectDispatchConst(parent.Spec.Name)
 	if c == nil {
 		if current.Spec.IsSelfValidating() {
+			if missIsNotReject(failLabel) {
+				return emitSelfValidationProbe(current.Spec, failLabel)
+			}
 			return nil, nil
 		}
 		return nil, fmt.Errorf("codegen: no dispatch constant for %q under %q (resolver bug)", current.Spec.Name, parent.Spec.Name)
@@ -1144,12 +1178,14 @@ func withAbsentEdge(present asm.Instructions, peekFail string, index int, all []
 	return out, nil
 }
 
-// optionalLayerGuard lists the shapes the peek-and-skip path cannot
-// express. It is shared by `?` and `{0,m}` (chain.go). Variable-length
-// and parser-machine layers are refused because the peek path runs
-// neither the parser machine nor the layer-entry slot store, so a
-// following layer would read an unset slot (verifier rejection at best).
-// Self-validating layers have no parent field to peek for absence.
+// optionalLayerGuard lists the absentable shapes codegen cannot express.
+// It is shared by `?`, `{0,m}` and `*` (chain.go, bpfloop.go). A layer
+// needs a parent dispatch to tell absence by; a layer that self-validates
+// under its parent has its required fields probed instead (D-017), so it
+// needs a parser that constrains one. A variable-length layer may be
+// optional (one header: genOptionalMachineLayer runs its parser machine,
+// emitPeekedIterZero its flag triggers) but not repeated, and not with a
+// chain-end rule, whose over-run check assumes a fixed header.
 func optionalLayerGuard(layer *ir.LayerInstance, index int, all []*ir.LayerInstance) error {
 	if index == 0 {
 		return fmt.Errorf("%w: the first layer cannot be optional", ErrNotImplemented)
@@ -1163,10 +1199,21 @@ func optionalLayerGuard(layer *ir.LayerInstance, index int, all []*ir.LayerInsta
 			return fmt.Errorf("%w: optional %q with no-check dispatch cannot detect absence", ErrNotImplemented, layer.Spec.Name)
 		}
 	case vocab.DispatchSelfValidating:
-		return fmt.Errorf("%w: optional %q is self-validating under its parent; there is no dispatch field to peek for absence", ErrNotImplemented, layer.Spec.Name)
+		// With no parent constant, self-validation is the dispatch
+		// (D-017): the probe of the required fields tells absence.
+		if len(layer.Spec.Requires()) == 0 {
+			return fmt.Errorf("%w: optional %q is self-validating under its parent, but its parser constrains no primary field to tell absence by", ErrNotImplemented, layer.Spec.Name)
+		}
 	}
-	if layer.Spec.HasVariableLayout() || layer.Spec.ParseStateMachine != nil {
-		return fmt.Errorf("%w: optional %q has a variable-length header or parser machine; the skip path cannot run its parser", ErrNotImplemented, layer.Spec.Name)
+	// One optional header of a variable-length protocol is lowered by
+	// genOptionalMachineLayer (parser machine) or emitPeekedIterZero (flag
+	// triggers); repeating one would need the previous instance's runtime
+	// length to find the next dispatch field.
+	if atMostOne := layer.Quant == ast.QuantOpt || (layer.Quant == ast.QuantRange && layer.RangeMax == 1); !atMostOne && layer.Spec.HasVariableLayout() {
+		return fmt.Errorf("%w: %q has a variable-length header: it can be optional (`?`, `{0,1}`), not repeated", ErrNotImplemented, layer.Spec.Name)
+	}
+	if layer.Spec.ChainEnd != nil && layer.Spec.HasVariableLayout() {
+		return fmt.Errorf("%w: optional %q is variable-length with a chain-end rule", ErrNotImplemented, layer.Spec.Name)
 	}
 	return nil
 }
@@ -1210,7 +1257,7 @@ func emitPeekedIterZero(layer *ir.LayerInstance, index int, all []*ir.LayerInsta
 	if err != nil {
 		return nil, err
 	}
-	entry, err := emitLayerEntryStore(layer, qo)
+	tail, err := emitStaticLayerTail(layer, index, hs, qo)
 	if err != nil {
 		return nil, err
 	}
@@ -1218,9 +1265,7 @@ func emitPeekedIterZero(layer *ir.LayerInstance, index int, all []*ir.LayerInsta
 	out = append(out, peek...)
 	out = append(out, emitBounds(hs, dslReject)...)
 	out = append(out, preds...)
-	out = append(out, entry...)
-	out = append(out, emitAdvance(hs))
-	return out, nil
+	return append(out, tail...), nil
 }
 
 func genDispatch(current, parent *ir.LayerInstance, parentHS int, r4IsRange, parentEntryIsRange bool, failLabel string) (asm.Instructions, error) {
@@ -1248,9 +1293,14 @@ func genDispatch(current, parent *ir.LayerInstance, parentHS int, r4IsRange, par
 	case vocab.DispatchNoCheck:
 		edge, err = genNoCheckDispatch(current)
 	case vocab.DispatchSelfValidating:
-		// Boundary emits nothing: the child's parser machine validates
-		// the layer via its `transition select(...) { ...; default:
-		// reject; }`, so we delegate the check entirely to the parser.
+		// A mandatory layer's boundary emits nothing: the child's parser
+		// machine validates the layer via its `transition select(...) {
+		// ...; default: reject; }`. An optional one must tell a miss from
+		// a reject before the machine runs, so it probes the fields that
+		// select requires (D-017).
+		if missIsNotReject(failLabel) {
+			edge, err = emitSelfValidationProbe(current.Spec, failLabel)
+		}
 	default:
 		return nil, fmt.Errorf("codegen: unknown dispatch type %v", current.Dispatch.Type)
 	}
@@ -1258,6 +1308,58 @@ func genDispatch(current, parent *ir.LayerInstance, parentHS int, r4IsRange, par
 		return nil, err
 	}
 	return append(pre, edge...), nil
+}
+
+// missIsNotReject reports whether a dispatch is emitted for a layer that
+// may be absent: its failure target is a skip label rather than the
+// filter's reject. Only then does a self-validating layer need its probe
+// (and a parser machine its slots initialised before the dispatch); for a
+// mandatory layer a miss and a reject coincide. Self-validating layers
+// are never chained, so a chain iteration's non-reject target does not
+// reach the probe.
+func missIsNotReject(failLabel string) bool { return failLabel != dslReject }
+
+// emitSelfValidationProbe is the dispatch of an optional layer that no
+// parent constant names (spec D-017, Layer.lean `dispatch`): it reads the
+// primary-header fields the parser's entry select requires
+// (vocab.Requires) at R4 and jumps to missLabel when one holds a value the
+// select would reject, before anything of the layer is consumed. A field
+// the packet is too short to hold is not a miss: the layer is taken as
+// present and its own bounds check rejects. A select key sits inside one
+// byte (the parser machine refuses wider ones), so the probe is one byte
+// load per field. Clobbers R3.
+func emitSelfValidationProbe(spec *vocab.ProtocolSpec, missLabel string) (asm.Instructions, error) {
+	// A cursor at or past the scratch window can read nothing, and the
+	// layer's bounds check would reject it. Testing the high bits of R4
+	// itself also ends, on kernels 6.12 / 6.15, the paths the verifier
+	// carries out of a bpf_loop walk with a cursor constant its range
+	// tracking has lost: a range compare there falls through and the
+	// load after it is refused, while a bit test is decided on the
+	// constant.
+	out := asm.Instructions{asm.JSet.Imm(offsetBase, int32(-ScratchBufSize), dslReject)}
+	for _, req := range spec.Requires() {
+		bitOff, bits, err := findFieldBitOffset(spec, req.Field)
+		if err != nil {
+			return nil, err
+		}
+		if bitOff/8 != (bitOff+bits-1)/8 {
+			return nil, fmt.Errorf("%w: self-validation field %s.%s straddles a byte", ErrNotImplemented, spec.Name, req.Field)
+		}
+		ok := freshLabel("probe_ok")
+		out = append(out, emitBoundedLoad(asm.R3, int16(bitOff/8), asm.Byte, ok)...)
+		if shift := 8 - (bitOff%8 + bits); shift > 0 {
+			out = append(out, asm.RSh.Imm(asm.R3, int32(shift)))
+		}
+		if bits < 8 {
+			out = append(out, asm.And.Imm(asm.R3, int32(1)<<bits-1))
+		}
+		for _, v := range req.Values {
+			out = append(out, cmpR3Const(asm.JEq, v, ok)...)
+		}
+		// R0 is the scratch window on every path into the landing.
+		out = append(out, asm.Ja.Label(missLabel), asm.Mov.Reg(asm.R0, asm.R0).WithSymbol(ok))
+	}
+	return out, nil
 }
 
 // genLayerDispatch is the call-site wrapper for layer-level dispatch

@@ -28,6 +28,17 @@ import (
 // iteration runs inline so dispatch and predicates remain in the main
 // stream where the verifier can see them.
 func genParserMachine(layer *ir.LayerInstance, layerIdx int, all []*ir.LayerInstance, qo queriedOptions, plan *accPlan, pc *predCtx) (asm.Instructions, asm.Instructions, error) {
+	return genParserMachineOn(layer, layerIdx, all, qo, plan, pc, dslReject)
+}
+
+// genParserMachineOn is genParserMachine with the target of a failed
+// parent dispatch made explicit: dslReject for a mandatory layer, the
+// absent label for an optional one (genOptionalMachineLayer). The entry
+// dispatch runs before any bounds check, slot store or advance, so the
+// absent path leaves R4 and every slot as the previous layer left them.
+// Failures past the dispatch (self-validation, bounds) still reject: the
+// parent's constant already named this protocol (D-017).
+func genParserMachineOn(layer *ir.LayerInstance, layerIdx int, all []*ir.LayerInstance, qo queriedOptions, plan *accPlan, pc *predCtx, dispatchFail string) (asm.Instructions, asm.Instructions, error) {
 	spec := layer.Spec
 	m := spec.ParseStateMachine
 	if m == nil {
@@ -36,12 +47,13 @@ func genParserMachine(layer *ir.LayerInstance, layerIdx int, all []*ir.LayerInst
 
 	prePreds, postPreds := splitPredicates(layer)
 	pmCtx := &pmCtx{
-		prePreds: prePreds,
-		spec:     spec,
-		machine:  m,
-		layerIdx: layerIdx,
-		layer:    layer,
-		all:      all,
+		prePreds:     prePreds,
+		dispatchFail: dispatchFail,
+		spec:         spec,
+		machine:      m,
+		layerIdx:     layerIdx,
+		layer:        layer,
+		all:          all,
 		// (name, Index) is unique across the program; layerIdx alone
 		// collides when alternatives of one group share a protocol.
 		labelNS:      fmt.Sprintf("dsl_pm_%s_%d_%d", spec.Name, layerIdx, layer.Index),
@@ -162,6 +174,8 @@ type pmCtx struct {
 	// extract, before the walk (splitPredicates); the rest run after it.
 	prePreds        []*ir.Predicate
 	prePredsEmitted bool
+	// dispatchFail is where a failed parent dispatch jumps (genParserMachineOn).
+	dispatchFail string
 	// queriedAuxes is the OutParam-name set for c.queried.of(c.layer)
 	// — built once at pmCtx construction and consulted by the
 	// TLV-walk dispatch elision predicate (caseRedundantWithDefault)
@@ -248,6 +262,22 @@ func (c *pmCtx) emitState(stateIdx int) (asm.Instructions, asm.Instructions, err
 
 	var insns asm.Instructions
 	if isEntry {
+		// Sentinel-init each queried option's dynamic offset slot so
+		// where-time access can detect "option not extracted in this
+		// packet" via JEq sentinel (the TLV-walk callback's prelude
+		// overwrites the slot only when the matching kind byte runs), and
+		// zero the push counts and the accumulator. An optional layer
+		// initialises them before its dispatch: the absent path skips the
+		// machine, and a reader of these slots (the accumulator mask
+		// check) must still find them defined and empty.
+		dynInit, err := c.emitDynamicAuxSentinelInit()
+		if err != nil {
+			return nil, nil, err
+		}
+		optional := missIsNotReject(c.dispatchFail)
+		if optional {
+			insns = append(insns, dynInit...)
+		}
 		di, err := c.emitEntryDispatch()
 		if err != nil {
 			return nil, nil, err
@@ -284,16 +314,9 @@ func (c *pmCtx) emitState(stateIdx int) (asm.Instructions, asm.Instructions, err
 			}
 			insns = append(insns, asm.StoreMem(asm.R10, slotEntry, offsetBase, asm.DWord))
 		}
-		// Sentinel-init each queried option's dynamic offset slot so
-		// where-time access can detect "option not extracted in this
-		// packet" via JEq sentinel. The TLV-walk callback's prelude
-		// overwrites the slot only when the matching kind byte runs
-		// — un-extracted options keep the sentinel value.
-		dynInit, err := c.emitDynamicAuxSentinelInit()
-		if err != nil {
-			return nil, nil, err
+		if !optional {
+			insns = append(insns, dynInit...)
 		}
-		insns = append(insns, dynInit...)
 		// Zero each declared ParserCounter slot. Counters are
 		// machine-local; the slot must hold a known value before any
 		// is_zero() reaches it so the verifier accepts the load.
@@ -353,7 +376,7 @@ func (c *pmCtx) emitEntryDispatch() (asm.Instructions, error) {
 	if c.layerIdx == 0 || c.layer.Dispatch == nil {
 		return nil, nil
 	}
-	di, err := genParentDispatch(c.layer, c.layerIdx, c.all, c.queried, c.r4IsRange, precedingLayersLeaveR4Range(c.all, c.layerIdx-1), dslReject)
+	di, err := genParentDispatch(c.layer, c.layerIdx, c.all, c.queried, c.r4IsRange, precedingLayersLeaveR4Range(c.all, c.layerIdx-1), c.dispatchFail)
 	if err != nil {
 		return nil, err
 	}
