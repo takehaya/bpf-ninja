@@ -37,7 +37,7 @@ func genPredicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, error) {
 			slot, ok = pc.stackCount(pred.Field)
 		}
 		if !ok {
-			return nil, fmt.Errorf("%w: bracket predicate on %s.%s indexes a stack whose entries are counted by the parser walk that runs after the predicate; move the comparison to a where clause", ErrNotImplemented, pred.Field.Layer.Spec.Name, pred.Field.Aux.OutParam)
+			return nil, fmt.Errorf("%w: bracket predicate on %s.%s indexes a stack whose entries are counted by the parser walk, and it runs where that count is not final (a quantified layer replays its predicates per iteration); move the comparison to a where clause", ErrNotImplemented, pred.Field.Layer.Spec.Name, pred.Field.Aux.OutParam)
 		}
 		guard = asm.Instructions{
 			asm.LoadMem(asm.R3, asm.R10, slot, asm.DWord),
