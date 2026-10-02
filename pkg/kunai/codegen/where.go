@@ -1090,8 +1090,9 @@ func (c *whereCtx) genArithCompare(w *ir.Condition, failLabel string) (asm.Instr
 // `<` / `≤` / `>` / `≥` (F3). Operand shapes supported: ArithField
 // (an Int<128> field), a constant, `x ± const` and `x ± y` nested on
 // either side, and any sub-64-bit expression, which computes in 64 bits
-// and joins zero-extended (see genArith128). A ± whose both sides are
-// such `x ± y` expressions, a slice between 65 and 127 bits, and
+// and joins zero-extended (see genArith128). A ± whose both sides
+// hold an `x ± y` with a non-constant 128-bit y (parks128), a slice
+// between 65 and 127 bits, and
 // Int<128> aux fields return ErrNotImplemented; operators
 // other than + and - on Int<128> operands never arrive, the resolver
 // types them as errors (dsl-types.md §13.9).
@@ -1247,7 +1248,7 @@ func arithNesting(e *ir.ArithExpr) int {
 
 // arith128ReservedSlots is how many low arith slots the 128-bit path
 // parks operands in while the other operand is computed: the compare's
-// left side in 0/1, field ± field's left side in 2/3, the high-half
+// left side in 0/1, field ± field's first operand in 2/3, the high-half
 // stash in 4. A sub-64-bit expression inside it, and the bool-eq park
 // slots (boolEqOperandReserve), stay above them.
 const arith128ReservedSlots = 5
@@ -1417,7 +1418,8 @@ func (c *whereCtx) genArith128FieldOpField(e *ir.ArithExpr) (asm.Instructions, e
 			asm.Mov.Reg(asm.R5, asm.R2),
 		)
 	}
-	// R3 = rhs_high, R5 = rhs_low.
+	// Slots = lhs, R3 = rhs_high, R5 = rhs_low. For a right-first `+`
+	// the two names are exchanged, which the sum does not see.
 	switch e.Op {
 	case ast.ArithAdd:
 		// Park rhs_high so we can recycle R3 as the "load lhs into a

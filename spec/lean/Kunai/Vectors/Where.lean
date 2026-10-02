@@ -436,6 +436,17 @@ vector arith128WideRightConstLeft := {
   id := "arith-128-wide-right-const-left",
   ast := W6 (cmp (.bin .sub (.bin .add src6 (k 10)) (.bin .add dst6 src6)) .eq (k 4)),
   packet := v6pkt 5 6, expected := .accept [], note := "(5 + 10) - (6 + 5): the left side is itself an expression" }
+vector arith128WideRightBorrow := {
+  id := "arith-128-wide-right-borrow", ast := W6 (cmp (.bin .sub (k 1) (.bin .add src6 dst6)) .eq (k (-2))),
+  packet := v6pkt 1 2, expected := .accept [], note := "1 - (1 + 2) borrows through the high half: 2^128 - 2" }
+vector arith128WideRightNarrowLeft := {
+  id := "arith-128-wide-right-narrow-left",
+  ast := W6 (cmp (.bin .sub (fld "tcp" "dport") (.bin .add src6 dst6)) .eq (k 77)),
+  packet := v6pkt 1 2, expected := .accept [], note := "80 - (1 + 2), a 16-bit left operand" }
+vector arith128WideRightNarrowLeftRej := {
+  id := "arith-128-wide-right-narrow-left-rej",
+  ast := W6 (cmp (.bin .sub src6 (.bin .sub (fld "tcp" "dport") (.bin .add src6 dst6))) .eq (k 76)),
+  packet := v6pkt 1 2, expected := .reject, note := "1 - (80 - (1 + 2)) wraps below zero to 2^128 - 76, not 76" }
 vector arith128WideBoth := {
   id := "arith-128-wide-both", ast := W6 (cmp (.bin .sub (.bin .add src6 dst6) (.bin .add dst6 src6)) .eq (k 0)),
   packet := v6pkt 1 2, expected := .accept [], goStatus := .notImplemented,
@@ -496,7 +507,7 @@ def whereVectors : List Vector := [
   arith128AddNegConst, arith128SubNegConst, arith128CmpNegConst,
   arith128MixedWidthAdd, arith128MixedWidthMul, arith128MixedCarry, arith128MixedBorrow, arith128MixedWrap64, arith128MixedSlice,
   arith128MixedNested, arith128MixedNeg, arith128ConstBinop, arith128MixedAux, typArith128NarrowFitNested,
-  arith128WideRight, arith128WideRightSub, arith128WideRightDeep, arith128WideRightConstLeft, arith128WideBoth, typArith128NarrowFit, arith128CmpWideConst,
+  arith128WideRight, arith128WideRightSub, arith128WideRightDeep, arith128WideRightConstLeft, arith128WideRightBorrow, arith128WideRightNarrowLeft, arith128WideRightNarrowLeftRej, arith128WideBoth, typArith128NarrowFit, arith128CmpWideConst,
   arith128Lt, arith128GeMiss, arith128LtHighHalf, typArith128Mul, typArith128Band, typPathDeep, typPathDeepLabel, typPathDeepBracket]
 
 end Kunai
