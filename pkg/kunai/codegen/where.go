@@ -1088,10 +1088,11 @@ func (c *whereCtx) genArithCompare(w *ir.Condition, failLabel string) (asm.Instr
 // we emit a register-pair pipeline where each side leaves
 // R3 = high half, R5 = low half. Supported ops: `==` / `!=` (F4) and
 // `<` / `≤` / `>` / `≥` (F3). Operand shapes supported: ArithField
-// (an Int<128> field), a constant, `field ± const` and `field ± field`,
-// nested through the left operand, and any sub-64-bit expression, which
-// computes in 64 bits and joins zero-extended (see genArith128). A
-// 128-bit binop on the right of ±, a slice between 65 and 127 bits, and
+// (an Int<128> field), a constant, `x ± const` and `x ± y` nested on
+// either side, and any sub-64-bit expression, which computes in 64 bits
+// and joins zero-extended (see genArith128). A ± whose both sides
+// hold an `x ± y` with a non-constant 128-bit y (parks128), a slice
+// between 65 and 127 bits, and
 // Int<128> aux fields return ErrNotImplemented; operators
 // other than + and - on Int<128> operands never arrive, the resolver
 // types them as errors (dsl-types.md §13.9).
@@ -1180,7 +1181,8 @@ func (c *whereCtx) genArithCompare128(w *ir.Condition, failLabel string, targetB
 //     beyond R3/R5 needed).
 //   - `field op field`: LHS preserved in arith slots 2/3 while RHS
 //     is computed, then RHS is the in-place accumulator that LHS
-//     gets added/subtracted into.
+//     gets added/subtracted into. A RHS that needs those slots
+//     itself goes first (genArith128FieldOpField).
 //
 // Other operators are typing errors above 64 bits (dsl-types.md §13.9),
 // so the resolver never lets them reach here.
@@ -1207,13 +1209,10 @@ func (c *whereCtx) genArith128(e *ir.ArithExpr) (asm.Instructions, error) {
 		if e.Right == nil {
 			return nil, fmt.Errorf("codegen: bit<128> arith binop missing RHS")
 		}
-		switch {
-		case e.Right.Kind == ast.ArithConst:
+		if e.Right.Kind == ast.ArithConst {
 			return c.genArith128FieldOpConst(e)
-		case e.Right.Kind == ast.ArithField, isNarrowArith(e.Right):
-			return c.genArith128FieldOpField(e)
 		}
-		return nil, fmt.Errorf("%w: bit<128> arith with a 128-bit expression on the right of %s (only a field, a constant, or a sub-64-bit expression)", ErrNotImplemented, e.Op)
+		return c.genArith128FieldOpField(e)
 	case ast.ArithConst:
 		// A positive constant is (0, const): the resolver fit-checked it
 		// against Int<128>, so only the low half can be non-zero. A
@@ -1249,10 +1248,24 @@ func arithNesting(e *ir.ArithExpr) int {
 
 // arith128ReservedSlots is how many low arith slots the 128-bit path
 // parks operands in while the other operand is computed: the compare's
-// left side in 0/1, field ± field's left side in 2/3, the high-half
+// left side in 0/1, field ± field's first operand in 2/3, the high-half
 // stash in 4. A sub-64-bit expression inside it, and the bool-eq park
 // slots (boolEqOperandReserve), stay above them.
 const arith128ReservedSlots = 5
+
+// parks128 reports whether evaluating `e` in the 128-bit path parks an
+// operand in slots 2/3: a `x ± y` whose right side is not a constant
+// (genArith128FieldOpField), directly or under `± const` nodes. It
+// follows genArith128's dispatch and has to change with it.
+func parks128(e *ir.ArithExpr) bool {
+	if e == nil || e.Kind != ast.ArithBinOp || isNarrowArith(e) {
+		return false
+	}
+	if e.Right != nil && e.Right.Kind == ast.ArithConst {
+		return parks128(e.Left)
+	}
+	return true
+}
 
 // genArith128Narrow evaluates a sub-64-bit expression with the 64-bit
 // pipeline and leaves it zero-extended in the 128-bit pair (R3 = 0,
@@ -1362,24 +1375,51 @@ func loadConst(dst asm.Register, value uint64) asm.Instructions {
 //	R5 = (lhs_low  + rhs_low)            mod 2^64
 //
 // (mirrored for sub: borrow propagates from low to high).
+//
+// The second operand runs while the first sits in slots 2/3, so it must
+// not be an expression that parks there itself. When the right side is
+// one (`a + (b + c)`), it goes first and the left side, which then must
+// not park, second; for `-` the two are swapped back afterwards. Two
+// parking sides (`(a + b) - (c + d)`) stay refused.
 func (c *whereCtx) genArith128FieldOpField(e *ir.ArithExpr) (asm.Instructions, error) {
-	leftInsns, err := c.genArith128(e.Left)
+	first, second := e.Left, e.Right
+	rightFirst := parks128(e.Right)
+	if rightFirst {
+		if parks128(e.Left) {
+			return nil, fmt.Errorf("%w: bit<128> arith with a 128-bit expression on both sides of %s", ErrNotImplemented, e.Op)
+		}
+		first, second = e.Right, e.Left
+	}
+	firstInsns, err := c.genArith128(first)
 	if err != nil {
 		return nil, err
 	}
-	rightInsns, err := c.genArith128(e.Right)
+	secondInsns, err := c.genArith128(second)
 	if err != nil {
 		return nil, err
 	}
 	lhsHighSlot := arithStackSlot(2)
 	lhsLowSlot := arithStackSlot(3)
-	insns := append(asm.Instructions{}, leftInsns...)
+	insns := append(asm.Instructions{}, firstInsns...)
 	insns = append(insns,
 		asm.StoreMem(asm.R10, lhsHighSlot, asm.R3, asm.DWord),
 		asm.StoreMem(asm.R10, lhsLowSlot, asm.R5, asm.DWord),
 	)
-	insns = append(insns, rightInsns...)
-	// R3 = rhs_high, R5 = rhs_low.
+	insns = append(insns, secondInsns...)
+	if rightFirst && e.Op == ast.ArithSub {
+		// The slots hold the right operand and the registers the left;
+		// `-` does not commute, so exchange them through R2.
+		insns = append(insns,
+			asm.LoadMem(asm.R2, asm.R10, lhsHighSlot, asm.DWord),
+			asm.StoreMem(asm.R10, lhsHighSlot, asm.R3, asm.DWord),
+			asm.Mov.Reg(asm.R3, asm.R2),
+			asm.LoadMem(asm.R2, asm.R10, lhsLowSlot, asm.DWord),
+			asm.StoreMem(asm.R10, lhsLowSlot, asm.R5, asm.DWord),
+			asm.Mov.Reg(asm.R5, asm.R2),
+		)
+	}
+	// Slots = lhs, R3 = rhs_high, R5 = rhs_low. For a right-first `+`
+	// the two names are exchanged, which the sum does not see.
 	switch e.Op {
 	case ast.ArithAdd:
 		// Park rhs_high so we can recycle R3 as the "load lhs into a
