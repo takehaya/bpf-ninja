@@ -188,10 +188,11 @@ Entries are never deleted; a rejected candidate stays in the log.
 - `opt_eq_range` (`L?` ≡ `L{0,1}`): D-005 案 2 の採用後に **成立** (`Laws.lean: opt_eq_range`)。案 1 のままなら不成立だった。
 - `alt_comm`: **不成立** (先勝ち)。`Laws.lean: alt_order_matters`。
 - `and_comm_where` / `or_comm_where`: 両辺が Stop しない (reject / illTyped を投げない) という仮定付きで成立 (`Laws.lean`)。仮定なしでは D-019 の short-circuit により非対称。
-- `bracket_eq_where` (`…/p[f op v]` ≡ `…/p where p.f op v`): **未証明**。両者は `cmpValue` / `narrowInt` を共有するので p が chain 内で一意・非量化・root 以外なら一致するはずだが、`extract` の Fail-Pred と `evalWhere` の false を `eval` の reject に結び付ける証明が長く、Phase 4 では見送った。vector `pred-cmp` / `where-cmp-ops` などで個別に一致を確認している。
+- `bracket_eq_where` (`…/p[f op v]` ≡ `…/p where p.f op v`): **未証明**。両者は `cmpValue` / `narrowInt` を共有するので p が chain 内で一意・非量化・root 以外なら一致するはずだが、`extract` の Fail-Pred と `evalWhere` の false を `eval` の reject に結び付ける証明が長く、Phase 4 では見送った。vector `pred-cmp` / `where-cmp-ops` などで個別に一致を確認している。 (→ 下の追記 2026-10-03 で証明。条件はそちらが正)
 - `prefix_independence` / `filterMinPrefix`: 未着手。
 - 状態: 承認済 (2026-10-01、一括)
 - 反映先: `Laws.lean`
+- 追記 (2026-10-03): `bracket_eq_where` を `Laws.lean` で証明した。主張は `evalChain` / `evalWhere` の水準で、文脈 `c` は共通: p は量化なし・他の predicate 無しで、bracket 無しの chain が `stF` で match し、p の名前が `stF` でその layer が抽出した instance を指す (chain 内で一意、label に隠されない) とき、`[f op v]` 付きの chain は where の atom `p.f op v` が `stF` で true なら同じ `stF` で match、false なら Fail-Pred。root 以外という条件は不要だった。atom が評価できない場合の報告だけが違う (bracket は自分の layer で chain を止めるので packet 末尾を越える field はその場の bounds 失敗、where は chain 全体の後)。対象は cmp predicate 1 つ。filter 全体の `eval` の等式 (2 つの filter で `c.layers` と `check` が違う) までは示していない: `staticProto` / `check` が preds に依らないことと、`staticCount = 1` から名前がその instance を指すことの補題が要る。証明のため `extract` を `extractInst` / `checkPreds` / `State.push` に分け、`resolveRest` は head と path を取らず `RefBody` (`Ref` が extends) を返す形にした。この変更で ill-typed の文言が 1 つ変わる: `unsupported: field path` は、head が label でも bracket の path (head 無し) でも protocol 名から始まる (vectors `typ-path-unsupported-deep`, `-label`, `-bracket`)。補題: `evalChain_append`, `evalChain_proto_inv`, `extract_cmp`, `litCmp_eq_evalPred`, `bracket_eq_where_at` (chain を分解した形)。
 
 ## D-024: 上限 m に達したときの over-run
 - 論点: `mpls{1,2}` に 3 段のスタック。§13.5 の Range-Step は「k = m で停止 ✓」とだけ言うが、3 段目が残ったまま次の layer (無ければ accept) に進むのは「深さ 1〜2 のスタック」という読みに反する。
