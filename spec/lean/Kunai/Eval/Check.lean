@@ -11,10 +11,6 @@ successful `check` they are unreachable for the modelled constructs.
 -/
 namespace Kunai
 
-private def layerNames : Layer → List String
-  | .proto p => [p.name]
-  | .alt alts => alts.map (·.name)
-
 private def layerMin : Layer → Nat
   | .proto p => (quantBounds p.quant).1
   | .alt _ => 1
@@ -26,7 +22,7 @@ private def possibleParents (layers : List Layer) : Nat → List String
   | i + 1 =>
     match layers[i]? with
     | none => []
-    | some l => layerNames l ++ (if layerMin l == 0 then possibleParents layers i else [])
+    | some l => l.names ++ (if layerMin l == 0 then possibleParents layers i else [])
 
 private def checkValue (spec : ProtoSpec) (fs : FieldSpec) (op : CmpOp) (v : Value) : Except String Unit := do
   match v with
@@ -106,8 +102,13 @@ private def checkEdge (V : Vocab) (child parent : String) (alt optional : Bool) 
     else pure ()
   | none, none => throw s!"unknown protocol {child}"
 
-private def checkProtoLayer (c : Ctx) (i : Nat) (p : ProtoLayer) (alt : Bool) : Except String Unit := do
+private def checkProtoLayer (c : Ctx) (layers : List Layer) (i : Nat) (p : ProtoLayer) (alt : Bool) :
+    Except String Unit := do
   let some spec := c.V.proto? p.name | throw s!"unknown protocol {p.name}"
+  -- A label never shadows a protocol name, so a name in a where clause is
+  -- either a label or a protocol, statically and at run time alike.
+  if let some l := p.label then
+    if (c.V.proto? l).isSome then throw s!"label {l} collides with protocol name"
   let (n, m) := quantBounds p.quant
   if i == 0 && n == 0 then throw "the first layer cannot be optional"
   if alt && p.quant != .one then throw "alternatives cannot carry quantifiers"
@@ -123,7 +124,7 @@ private def checkProtoLayer (c : Ctx) (i : Nat) (p : ProtoLayer) (alt : Bool) : 
   let canRepeat := match m with | some k => k > 1 | none => true
   if canRepeat && (c.V.edge? p.name p.name).isNone then
     throw s!"repeated {p.name} needs a dispatch constant under itself"
-  for parent in possibleParents c.layers i do checkEdge c.V p.name parent alt (n == 0)
+  for parent in possibleParents layers i do checkEdge c.V p.name parent alt (n == 0)
   for ρ in p.preds do checkPred c spec (!alt && p.quant == .one) ρ
 
 -- Structural iteration (`List.forIn`) rather than `[0:n]`, whose
@@ -131,10 +132,10 @@ private def checkProtoLayer (c : Ctx) (i : Nat) (p : ProtoLayer) (alt : Bool) : 
 private def checkLayers (c : Ctx) (layers : List Layer) : Except String Unit := do
   for (l, i) in layers.zipIdx do
     match l with
-    | .proto p => checkProtoLayer c i p false
+    | .proto p => checkProtoLayer c layers i p false
     | .alt alts =>
       if i == 0 then throw "alternation cannot be the first layer"
-      for a in alts do checkProtoLayer c i a true
+      for a in alts do checkProtoLayer c layers i a true
 
 /-- A field reference: resolvable, and an index-less stack reference only
 under an `any`/`all` that binds that stack. -/
@@ -208,7 +209,8 @@ private def checkSets (c : Ctx) (layers : List Layer) : Except String Unit := do
 /-- `none` when the filter type-checks; otherwise the resolver's complaint. -/
 def check (c : Ctx) (F : Filter) : Option String :=
   let r : Except String Unit := do
-    -- `c.layers` is the chain's shape; the predicates come from `F.layers`.
+    -- The layers are checked from `F.layers` (predicates, positions, parents);
+    -- `c.layers`, the chain's shape, only serves name resolution.
     checkLayers c F.layers
     checkSets c F.layers
     if let some w := F.cond then checkWhere c [] w

@@ -226,8 +226,8 @@ is the layer's bounds failure there, while `where` sees it after the whole
 chain.
 
 The statement is about the chain and where evaluators under one context
-`c`; `eval` on the two filters additionally runs `check` and resolves names
-against each filter's own chain, which this law does not cover. -/
+`c`. `bracket_iff_where_eval` below carries it to `eval` on the two
+filters, which share that context and additionally run `check`. -/
 theorem bracket_eq_where
     (c : Ctx) (pre rest : List Layer) (p : ProtoLayer) (spec : ProtoSpec)
     (f : FieldPath) (op : CmpOp) (v : Value) {r : Ref} (st stF : State)
@@ -594,13 +594,16 @@ theorem eval_chain_where (H : Host) (V : Vocab) (P : Packet) (L : List Layer) (w
     | ok b => cases b <;> simp [pure, Except.pure, throw, throwThe, MonadExceptOf.throw]
 
 /-- `…/p[f op v]/…` and `…/p/… where p.f op v` accept the same packets
-(D-023), as whole filters under `eval`.
+(D-023), as filters under `eval`.
 
-`p` is a mandatory layer with no other predicate, the first layer of its
-protocol in the chain, and no layer is labelled with its name; the name
-resolves statically to the protocol itself (it is the only layer of that
-protocol), the bracket path resolves, and both filters type-check. Then
-one filter accepts a packet exactly when the other does.
+The two filters are a chain with one bracket comparison on `p` and no
+`where`, and the same chain without it and with the comparison as its
+`where`; neither has captures. `p` is a mandatory layer with no other
+predicate. No earlier layer has its protocol (`hnames`), no layer is
+labelled with its name (`hlab`), and the name resolves statically to the
+protocol itself (`hproto`, which also rules out a later layer of the same
+protocol). The bracket path resolves and both filters type-check. Then one
+filter accepts a packet exactly when the other does.
 
 Only acceptance is related. On a packet neither accepts, the two can
 report differently: the bracket stops the chain at its layer, so the
