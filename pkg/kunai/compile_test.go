@@ -1515,6 +1515,7 @@ func TestVlanInMetadataRejectsVlanLayers(t *testing.T) {
 	}
 	rejected := []string{
 		"eth/qinq/vlan?/ipv4/tcp where tcp.dport == 80", // mandatory QinQ
+		"eth/((qinq|mpls)|ipv4)",                        // qinq in a nested alternation
 		"eth/vlan[tci==100]?/ipv4/tcp",                  // optional but reads tci
 		"eth/vlan?/ipv4/tcp where vlan.tci == 100",      // where reads the tag
 		"eth/vlan?/ipv4/tcp capture vlan",               // capture targets the tag

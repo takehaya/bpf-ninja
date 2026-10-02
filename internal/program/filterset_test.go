@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/cilium/ebpf"
+
 	"github.com/takehaya/bpf-ninja/pkg/kunai/codegen"
 )
 

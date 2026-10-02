@@ -322,10 +322,12 @@ func Gen(p *ir.Program, caps Capabilities) (Output, error) {
 	if p == nil {
 		return Output{}, errors.New("codegen: nil program")
 	}
-	if err := checkUnsupported(p); err != nil {
+	// The host check carries a type error (ErrVlanInMetadata), which is
+	// reported ahead of the not-implemented refusals.
+	if err := checkHostLayerSupport(p, caps.Host); err != nil {
 		return Output{}, err
 	}
-	if err := checkHostLayerSupport(p, caps.Host); err != nil {
+	if err := checkUnsupported(p); err != nil {
 		return Output{}, err
 	}
 	capInfo, where, err := computeCapture(p, p.Where)
@@ -807,19 +809,19 @@ func checkUnsupported(p *ir.Program) error {
 // TestVlanUntagAtTCIngress) and at the packet level (dsltest
 // TestVlanQuestionMarkOptional).
 //
-// A mandatory vlan layer, alone or as an alternation member, is a type
-// error (ErrVlanInMetadata): the language requires the layer to be
-// optional at such a host (spec/lean Eval/Check.lean). It is looked for
-// across the whole chain first, so it wins over the refusals below.
+// A vlan layer that cannot be absent — no optional quantifier, or a
+// member of an alternation at any depth, so `(vlan|qinq)` and
+// `(qinq|vlan)` alike — is a type error (ErrVlanInMetadata): the
+// language requires the layer to be optional at such a host (spec/lean
+// Eval/Check.lean). It is looked for across the whole chain, so it is
+// reported ahead of the refusals below.
 //
 // What is refused as not implemented, because it reads a tag the host
 // does not expose in packet bytes:
 //
-//   - a mandatory qinq layer (no skip path),
+//   - a qinq layer that cannot be absent (same two shapes),
 //
-//   - a bracket predicate on the layer (`vlan[tci==100]?`), and
-//
-//   - a qinq layer inside an alternation (no per-alt skip path).
+//   - a bracket predicate on an optional tag (`vlan[tci==100]?`),
 //
 //   - a where clause or capture that reads a vlan/qinq field (the tag's
 //     bytes are not in the packet, so its entry slot would be absent on
@@ -835,47 +837,46 @@ func checkHostLayerSupport(p *ir.Program, host HostLayout) error {
 	isVlan := func(l *ir.LayerInstance) bool {
 		return l != nil && l.Spec != nil && (l.Spec.Name == "vlan" || l.Spec.Name == "qinq")
 	}
-	reject := func(l *ir.LayerInstance) error {
-		return withPos(fmt.Errorf("%w: layer %q cannot be matched at this host: the kernel extracts the outer VLAN tag into skb metadata before the program runs, so it is not present in the packet bytes. Use an optional quantifier (e.g. %s? or qinq?/vlan?) to match tag-flexible traffic without reading the tag, or read the tag from skb metadata (future work)", ErrNotImplemented, l.Spec.Name, l.Spec.Name), l.Pos)
-	}
-	// mandatoryVlan finds a vlan layer that cannot be absent: a plain
-	// layer without an optional quantifier, or any alternation member.
-	var mandatoryVlan func(l *ir.LayerInstance, inAlt bool) *ir.LayerInstance
-	mandatoryVlan = func(l *ir.LayerInstance, inAlt bool) *ir.LayerInstance {
+	// One walk over every layer and alternation member. A vlan that
+	// cannot be absent is the type error; a qinq that cannot be absent
+	// and a predicate on either tag are refused as not implemented. The
+	// type error is reported even when a refusal comes first in the
+	// chain.
+	var typeErr, refusal error
+	var walk func(l *ir.LayerInstance, inAlt bool)
+	walk = func(l *ir.LayerInstance, inAlt bool) {
 		if l == nil {
-			return nil
+			return
 		}
-		if l.Spec != nil && l.Spec.Name == "vlan" && (inAlt || !l.Absentable()) {
-			return l
-		}
-		for _, alt := range l.Alternation {
-			if v := mandatoryVlan(alt, true); v != nil {
-				return v
+		if isVlan(l) {
+			mandatory := inAlt || !l.Absentable()
+			switch {
+			case mandatory && l.Spec.Name == "vlan":
+				if typeErr == nil {
+					typeErr = withPos(fmt.Errorf("%w: the kernel moves the outer VLAN tag into skb metadata before the program runs, so a tagged frame does not carry it in the packet bytes; make the layer optional (vlan?) or remove it", ErrVlanInMetadata), l.Pos)
+				}
+			case mandatory:
+				if refusal == nil {
+					refusal = withPos(fmt.Errorf("%w: layer %q cannot be matched at this host: the kernel extracts the outer VLAN tag into skb metadata before the program runs, so it is not present in the packet bytes. Make the layer optional (e.g. qinq?/vlan?) to match tag-flexible traffic without reading the tag", ErrNotImplemented, l.Spec.Name), l.Pos)
+				}
+			case len(l.Predicates) > 0:
+				if refusal == nil {
+					refusal = withPos(fmt.Errorf("%w: the predicate on layer %q reads a VLAN tag this host moves to skb metadata before the program runs; the tag is not in the packet bytes (reading it from metadata is future work)", ErrNotImplemented, l.Spec.Name), l.Pos)
+				}
 			}
 		}
-		return nil
-	}
-	for _, l := range p.Layers {
-		if v := mandatoryVlan(l, false); v != nil {
-			return withPos(fmt.Errorf("%w: the kernel moves the outer VLAN tag into skb metadata before the program runs, so a tagged frame does not carry it in the packet bytes. A chain with vlan? in place of this layer matches tagged and untagged traffic", ErrVlanInMetadata), v.Pos)
-		}
-	}
-	for _, l := range p.Layers {
-		// qinq inside an alternation group cannot take a per-alt skip
-		// path in the current codegen; keep rejecting those.
 		for _, alt := range l.Alternation {
-			if isVlan(alt) {
-				return reject(alt)
-			}
+			walk(alt, true)
 		}
-		// A vlan/qinq layer is rejected unless it can be absent (optional
-		// quantifier) and reads none of its own fields (no predicate).
-		// An absentable layer takes the zero-occurrence path, so the tag
-		// the kernel moved to metadata is simply not in the bytes the
-		// parser walks.
-		if isVlan(l) && (!l.Absentable() || len(l.Predicates) > 0) {
-			return reject(l)
-		}
+	}
+	for _, l := range p.Layers {
+		walk(l, false)
+	}
+	if typeErr != nil {
+		return typeErr
+	}
+	if refusal != nil {
+		return refusal
 	}
 	var refErr error
 	visit := func(f *ir.FieldRef) {
