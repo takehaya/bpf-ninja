@@ -34,7 +34,9 @@ func genParserMachine(layer *ir.LayerInstance, layerIdx int, all []*ir.LayerInst
 		return nil, nil, fmt.Errorf("codegen: genParserMachine called with nil ParseStateMachine on %q", spec.Name)
 	}
 
+	prePreds, postPreds := splitPredicates(layer)
 	pmCtx := &pmCtx{
+		prePreds: prePreds,
 		spec:     spec,
 		machine:  m,
 		layerIdx: layerIdx,
@@ -51,8 +53,6 @@ func genParserMachine(layer *ir.LayerInstance, layerIdx int, all []*ir.LayerInst
 		accPlan:      plan,
 		pc:           pc,
 	}
-	prePreds, postPreds := splitPredicates(layer)
-	pmCtx.prePreds = prePreds
 	// Pre-scan for multi-state self-loops. Each loop entry's siblings
 	// inline into the entry's bpf_loop callback, so the per-state
 	// emit loop below skips them — no standalone code, no landing
@@ -87,6 +87,11 @@ func genParserMachine(layer *ir.LayerInstance, layerIdx int, all []*ir.LayerInst
 	// Aux-stack walk layers (SRv6) re-anchor R4 at the next-header
 	// position once every walk path has converged on the done landing.
 	// No-op for every other protocol (returns nil).
+	// The pre-walk predicates ride on the entry state's first extract; an
+	// entry state that never reaches it would drop them silently.
+	if len(prePreds) > 0 && !pmCtx.prePredsEmitted {
+		return nil, nil, fmt.Errorf("%w: bracket predicates on %q: its parser entry state has no plain first extract to evaluate them after", ErrNotImplemented, spec.Name)
+	}
 	reanchor, err := pmCtx.emitAuxWalkTailReanchor()
 	if err != nil {
 		return nil, nil, err
@@ -155,7 +160,8 @@ type pmCtx struct {
 	queried queriedOptions
 	// prePreds are the bracket predicates evaluated right after the first
 	// extract, before the walk (splitPredicates); the rest run after it.
-	prePreds []*ir.Predicate
+	prePreds        []*ir.Predicate
+	prePredsEmitted bool
 	// queriedAuxes is the OutParam-name set for c.queried.of(c.layer)
 	// — built once at pmCtx construction and consulted by the
 	// TLV-walk dispatch elision predicate (caseRedundantWithDefault)
@@ -332,7 +338,7 @@ func splitPredicates(layer *ir.LayerInstance) (pre, post []*ir.Predicate) {
 		return nil, layer.Predicates
 	}
 	for _, p := range layer.Predicates {
-		if p != nil && needsPushCount(p.Field) {
+		if needsPushCount(p.Field) {
 			post = append(post, p)
 		} else {
 			pre = append(pre, p)
@@ -432,6 +438,7 @@ func (c *pmCtx) emitStateBody(state *vocab.ParseState, stateIdx int, isEntry boo
 			if err != nil {
 				return nil, nil, err
 			}
+			c.prePredsEmitted = true
 			insns = append(insns, preds...)
 		}
 		hs := ex.HeaderSize / 8
