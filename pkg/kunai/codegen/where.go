@@ -340,17 +340,12 @@ func (c *whereCtx) withQuantLayerGuard(w *ir.Condition, failLabel string, body f
 	// reads makes its own atom false, not the quantifier
 	// (`all(x.f == 1 or vlan.tci == 5)`), so those atoms keep their guard
 	// in each iteration.
-	layers := []*ir.LayerInstance{w.QuantTarget.Layer}
-	var guards asm.Instructions
-	for _, layer := range layers {
-		guard, err := c.absentLayerGuard(layer, failLabel)
-		if err != nil {
-			return nil, err
-		}
-		if guard == nil {
-			continue
-		}
-		guards = append(guards, guard...)
+	layer := w.QuantTarget.Layer
+	guard, err := c.absentLayerGuard(layer, failLabel)
+	if err != nil {
+		return nil, err
+	}
+	if guard != nil {
 		if c.presentLayers == nil {
 			c.presentLayers = map[*ir.LayerInstance]bool{}
 		}
@@ -361,7 +356,7 @@ func (c *whereCtx) withQuantLayerGuard(w *ir.Condition, failLabel string, body f
 	if err != nil {
 		return nil, err
 	}
-	return append(guards, insns...), nil
+	return append(guard, insns...), nil
 }
 
 // hasAbsentableLayer reports whether any layer of the program can match

@@ -573,6 +573,11 @@ vector whereQuantOtherAbsent := {
   ast := { layers := vlanOpt, cond := some (.all (.or (cmp sackRight .eq (k 200)) (cmp (fld "vlan" "tci") .eq (k 5)))) },
   packet := sackPkt', expected := .accept [],
   note := "the absent vlan makes its atom false in each iteration, not the quantifier" }
+vector whereQuantOtherAbsentEmpty := {
+  id := "where-quant-other-layer-absent-empty-stack",
+  ast := { layers := vlanOpt, cond := some (.all (.or (cmp sackRight .eq (k 200)) (cmp (fld "vlan" "tci") .eq (k 5)))) },
+  expected := .accept [],
+  note := "no SACK blocks: all over an empty stack of a present layer is true, whatever else the body reads" }
 vector whereQuantOtherMember := {
   id := "where-quant-other-member",
   ast := { layers := [P "eth", P "ipv4", .alt [{ name := "tcp" }, { name := "udp" }]],
@@ -581,7 +586,7 @@ vector whereQuantOtherMember := {
 
 def whereVectors : List Vector := [
   whereAltNameAmbiguous, altTwoGroups, altTwoGroupsUdp, whereAltTwoGroups, whereAltTwoGroupsOther,
-  whereQuantOtherAbsent, whereQuantOtherMember,
+  whereQuantOtherAbsent, whereQuantOtherAbsentEmpty, whereQuantOtherMember,
   whereAltLabelHit, whereAltLabelOther, whereAltLabelOtherNot, whereAltNameHit, whereAltNameOther, whereAltNameOtherNot,
   whereAltLabelHet, whereAltLabelHetOther, whereAltLabelHetOtherNot, whereAltL3Hit, whereAltL3Other, whereAltL3OtherOr,
   whereAltL3AfterOpt, whereAltL3AfterOptOther,

@@ -274,7 +274,10 @@ const dslReject = "dsl_reject"
 //     quantified layer, or a later layer's dispatch tests whether this
 //     optional matched; alternation members share their group's slot),
 //     then every layer's dynamic aux slots (queried option positions,
-//     push counts), packed in chain order. Only the layers that need a
+//     push counts), packed in chain order, then one matched-member
+//     slot per alternation group whose matched member is read (a where
+//     / capture clause on a member, or the next layer's per-member
+//     dispatch). Only the layers that need a
 //     slot take one, so 36 slots are available to a filter in total;
 //     planStack refuses a filter that needs more.
 //   - host: any subset of [-1, KunaiStackTop+1]; bpf-ninja uses -48
@@ -1404,8 +1407,8 @@ func emitSelfValidationProbe(spec *vocab.ProtocolSpec, missLabel string) (asm.In
 // the existing single-dispatch path (uniform alts or non-alt parent).
 //
 // For diverged dispatch each alt branch is emitted under a JNE check
-// against matchedAltReg (set by genAlternation when `IsAltDiverged`
-// holds for the next layer). For non-diverged we keep the historical
+// against matchedAltReg (loaded from the group's matched-member slot,
+// which genAlternation writes). For non-diverged we keep the historical
 // behavior — collapse the alt group to its first member via
 // dispatchParent and call genDispatch as before.
 // r4IsRange reports whether R4 (the current running offset) may be a
@@ -1465,7 +1468,8 @@ func genLayerDispatch(current, prev *ir.LayerInstance, qo queriedOptions, r4IsRa
 //	dsl_altdisp_done_<n>:
 //
 // The last alt has no skip / ja — matchedAltReg is guaranteed to be
-// N-1 if we got here (genAlternation set it before the fall-through).
+// N-1 if we got here (genAlternation stored the index in the slot before
+// the fall-through).
 func genFieldDispatchAltDiverged(current *ir.LayerInstance, altParents []*ir.LayerInstance, matchedSlot int16, r4IsRange, parentEntryIsRange bool, failLabel string) (asm.Instructions, error) {
 	consts := current.Dispatch.AltConsts
 	if len(altParents) != len(consts) {
