@@ -128,8 +128,8 @@ private def checkProtoLayer (c : Ctx) (i : Nat) (p : ProtoLayer) (alt : Bool) : 
 
 -- Structural iteration (`List.forIn`) rather than `[0:n]`, whose
 -- well-founded loop the kernel cannot unfold under `decide`.
-private def checkLayers (c : Ctx) : Except String Unit := do
-  for (l, i) in c.layers.zipIdx do
+private def checkLayers (c : Ctx) (layers : List Layer) : Except String Unit := do
+  for (l, i) in layers.zipIdx do
     match l with
     | .proto p => checkProtoLayer c i p false
     | .alt alts =>
@@ -194,8 +194,8 @@ private def alignUp (x a : Nat) : Nat := ((x + a - 1) / a) * a
 referenced by at most one predicate (the host holds one key per set and
 looks it up once), and the referenced keys, laid out in chain order with
 each key aligned to its own width (8 at most), fit the 16-byte buffer. -/
-private def checkSets (c : Ctx) : Except String Unit := do
-  let refs := setRefs c.layers
+private def checkSets (c : Ctx) (layers : List Layer) : Except String Unit := do
+  let refs := setRefs layers
   for name in refs.eraseDups do
     if (refs.filter (· == name)).length > 1 then
       throw s!"set @{name} is referenced twice: the host holds one key per set"
@@ -208,8 +208,9 @@ private def checkSets (c : Ctx) : Except String Unit := do
 /-- `none` when the filter type-checks; otherwise the resolver's complaint. -/
 def check (c : Ctx) (F : Filter) : Option String :=
   let r : Except String Unit := do
-    checkLayers c
-    checkSets c
+    -- `c.layers` is the chain's shape; the predicates come from `F.layers`.
+    checkLayers c F.layers
+    checkSets c F.layers
     if let some w := F.cond then checkWhere c [] w
     for cap in F.captures do checkCapture c cap
   match r with

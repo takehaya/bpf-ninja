@@ -75,6 +75,22 @@ inductive Layer
   | alt (alts : List ProtoLayer)
   deriving Repr, BEq, DecidableEq
 
+/-- A layer without its bracket predicates: all that static name
+resolution (labels, how many instances a name can bind) looks at. -/
+def Layer.shape : Layer → Layer
+  | .proto p => .proto { p with preds := [] }
+  | .alt alts => .alt (alts.map fun a => { a with preds := [] })
+
+/-- The protocols a layer can extract. -/
+def Layer.names : Layer → List String
+  | .proto p => [p.name]
+  | .alt alts => alts.map (·.name)
+
+/-- The labels a layer can bind. -/
+def Layer.labels : Layer → List String
+  | .proto p => p.label.toList
+  | .alt alts => alts.filterMap (·.label)
+
 /-- `e ::= const(n) | field(f) | binop(op, e, e)` (`ast.ArithExpr`). -/
 inductive Arith
   | const (n : Int)

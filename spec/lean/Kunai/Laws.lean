@@ -249,6 +249,421 @@ theorem bracket_eq_where
   exact bracket_eq_where_at c pre rest p spec inst f op v st s1 stF hq hname hvlan hpre hx hrest
     hproto hspec (hinst s1 inst hpre hx) hres
 
+/-! ## What a chain adds to the state
+
+Evaluating layers only appends instances of the layers' protocols and only
+binds the layers' labels. This is what makes "the layer is the only one of
+its protocol" a static condition. -/
+
+/-- `st'` extends `st`: the new instances all have a protocol in `names`,
+the new label bindings a label in `labels`. -/
+def Grows (names labels : List String) (st st' : State) : Prop :=
+  ∃ new newL, st'.insts = st.insts ++ new ∧ (∀ i ∈ new, i.proto ∈ names) ∧
+    st'.labels = newL ++ st.labels ∧ (∀ kv ∈ newL, kv.1 ∈ labels)
+
+theorem Grows.refl (names labels : List String) (st : State) : Grows names labels st st :=
+  ⟨[], [], by simp, by simp, by simp, by simp⟩
+
+theorem Grows.trans {n1 l1 n2 l2 : List String} {a b c : State}
+    (h1 : Grows n1 l1 a b) (h2 : Grows n2 l2 b c) : Grows (n1 ++ n2) (l1 ++ l2) a c := by
+  obtain ⟨new1, nl1, hi1, hp1, hl1, hk1⟩ := h1
+  obtain ⟨new2, nl2, hi2, hp2, hl2, hk2⟩ := h2
+  refine ⟨new1 ++ new2, nl2 ++ nl1, by simp [hi2, hi1], ?_, by simp [hl2, hl1], ?_⟩
+  · intro i hi
+    rcases List.mem_append.mp hi with h | h
+    · exact List.mem_append_left _ (hp1 i h)
+    · exact List.mem_append_right _ (hp2 i h)
+  · intro kv hkv
+    rcases List.mem_append.mp hkv with h | h
+    · exact List.mem_append_right _ (hk2 kv h)
+    · exact List.mem_append_left _ (hk1 kv h)
+
+theorem Grows.mono {n l n' l' : List String} {a b : State} (h : Grows n l a b)
+    (hn : ∀ x ∈ n, x ∈ n') (hl : ∀ x ∈ l, x ∈ l') : Grows n' l' a b := by
+  obtain ⟨new, nl, hi, hp, hlb, hk⟩ := h
+  exact ⟨new, nl, hi, fun i h => hn _ (hp i h), hlb, fun kv h => hl _ (hk kv h)⟩
+
+/-- The instance a layer extracts carries the layer's protocol. -/
+theorem extractInst_proto {c : Ctx} {st : State} {name : String} {spec : ProtoSpec} {inst : Inst}
+    (h : extractInst c st name spec = .ok inst) : inst.proto = name := by
+  unfold extractInst at h
+  cases hb : extractBody c st name spec with
+  | error e => simp [hb, bind, Except.bind] at h
+  | ok b =>
+    obtain ⟨len, aux, patches⟩ := b
+    simp [hb, bind, Except.bind, pure, Except.pure] at h
+    rw [← h]
+
+theorem push_grows (st : State) (label : Option String) (inst : Inst) :
+    Grows [inst.proto] label.toList st (st.push label inst) := by
+  refine ⟨[inst], (match label with | some l => [(l, inst)] | none => []), rfl, by simp, ?_, ?_⟩
+  · cases label <;> rfl
+  · cases label <;> simp
+
+theorem extract_grows {c : Ctx} {st st' : State} {p : ProtoLayer}
+    (h : extract c st p = .ok st') : Grows [p.name] p.label.toList st st' := by
+  unfold extract at h
+  cases hs : c.V.proto? p.name with
+  | none => simp [hs] at h
+  | some spec =>
+    simp only [hs, bind, Except.bind] at h
+    cases hx : extractInst c st p.name spec with
+    | error e => simp [hx] at h
+    | ok inst =>
+      simp only [hx] at h
+      cases hc : checkPreds c spec inst p.preds with
+      | error e => simp [hc] at h
+      | ok u =>
+        simp [hc, pure, Except.pure] at h
+        have hp := extractInst_proto hx
+        rw [← h, ← hp]
+        exact push_grows st p.label inst
+
+theorem extractOpt_grows {c : Ctx} {st st' : State} {p : ProtoLayer}
+    (h : extractOpt c st p = .ok st') : Grows [p.name] p.label.toList st st' := by
+  unfold extractOpt at h
+  cases hx : extract c st p with
+  | ok s =>
+    simp only [hx] at h
+    split at h
+    · simp [pure, Except.pure] at h; rw [← h]; exact extract_grows hx
+    · simp [throw, throwThe, MonadExceptOf.throw] at h
+  | error e =>
+    cases e <;> simp [hx, pure, Except.pure, throw, throwThe, MonadExceptOf.throw] at h
+    rw [← h]; exact Grows.refl _ _ _
+
+theorem iterate_grows {c : Ctx} {p : ProtoLayer} {n : Nat} :
+    ∀ (fuel k : Nat) (st st' : State), iterate c p n fuel k st = .ok st' →
+      Grows [p.name] p.label.toList st st' := by
+  intro fuel
+  induction fuel with
+  | zero =>
+    intro k st st' h
+    simp only [iterate] at h
+    split at h
+    · simp [throw, throwThe, MonadExceptOf.throw] at h
+    · split at h
+      · simp [throw, throwThe, MonadExceptOf.throw] at h
+      · simp [pure, Except.pure] at h; rw [← h]; exact Grows.refl _ _ _
+  | succ fuel ih =>
+    intro k st st' h
+    simp only [iterate] at h
+    cases hx : extract c st p with
+    | ok s =>
+      simp only [hx] at h
+      have g := Grows.trans (extract_grows hx) (ih _ _ _ h)
+      exact g.mono (by simp) (by simp)
+    | error e =>
+      cases e <;> simp [hx, throw, throwThe, MonadExceptOf.throw] at h
+      split at h
+      · simp at h
+      · simp [pure, Except.pure] at h; rw [← h]; exact Grows.refl _ _ _
+
+theorem evalProtoLayer_grows {c : Ctx} {st st' : State} {p : ProtoLayer}
+    (h : evalProtoLayer c st p = .ok st') : Grows [p.name] p.label.toList st st' := by
+  unfold evalProtoLayer at h
+  cases hs : c.V.proto? p.name with
+  | none => simp [hs] at h
+  | some spec =>
+    simp only [hs, bind, Except.bind] at h
+    split at h
+    · simp [throw, throwThe, MonadExceptOf.throw] at h
+    · split at h
+      · exact extract_grows h
+      · exact extractOpt_grows h
+      · split at h
+        · simp [throw, throwThe, MonadExceptOf.throw] at h
+        · exact iterate_grows _ _ _ _ h
+
+theorem evalAlt_grows {c : Ctx} {st : State} :
+    ∀ (alts : List ProtoLayer) (st' : State), evalAlt c st alts = .ok st' →
+      Grows (alts.map (·.name)) (alts.filterMap (·.label)) st st' := by
+  intro alts
+  induction alts with
+  | nil => intro st' h; simp [evalAlt, throw, throwThe, MonadExceptOf.throw] at h
+  | cons a rest ih =>
+    intro st' h
+    have hn : ∀ x ∈ [a.name], x ∈ (a :: rest).map (·.name) := by simp
+    have hl : ∀ x ∈ a.label.toList, x ∈ (a :: rest).filterMap (·.label) := by
+      intro x hx; cases hlab : a.label <;> simp_all [List.filterMap_cons]
+    have hn' : ∀ x ∈ rest.map (·.name), x ∈ (a :: rest).map (·.name) := by
+      intro x hx; simp only [List.map_cons, List.mem_cons]; exact Or.inr hx
+    have hl' : ∀ x ∈ rest.filterMap (·.label), x ∈ (a :: rest).filterMap (·.label) := by
+      intro x hx; cases hlab : a.label <;> simp_all [List.filterMap_cons]
+    simp only [evalAlt, bind, Except.bind] at h
+    repeat' (split at h)
+    all_goals first
+      | (simp [throw, throwThe, MonadExceptOf.throw] at h; done)
+      | exact (extract_grows h).mono hn hl
+      | exact (ih _ h).mono hn' hl'
+
+/-- A chain appends instances of its layers' protocols and binds its
+layers' labels, nothing else. -/
+theorem evalChain_grows {c : Ctx} :
+    ∀ (L : List Layer) (st st' : State), evalChain c L st = .ok st' →
+      Grows (L.flatMap Layer.names) (L.flatMap Layer.labels) st st' := by
+  intro L
+  induction L with
+  | nil =>
+    intro st st' h
+    simp [evalChain, pure, Except.pure] at h
+    rw [← h]; exact Grows.refl _ _ _
+  | cons l tl ih =>
+    intro st st' h
+    cases l with
+    | proto p =>
+      simp only [evalChain, bind, Except.bind] at h
+      split at h
+      · simp [throw, throwThe, MonadExceptOf.throw] at h
+      · cases hp : evalProtoLayer c st p with
+        | error e => simp [hp] at h
+        | ok s =>
+          simp only [hp] at h
+          simpa [List.flatMap_cons, Layer.names, Layer.labels] using
+            Grows.trans (evalProtoLayer_grows hp) (ih _ _ h)
+    | alt alts =>
+      simp only [evalChain, bind, Except.bind] at h
+      cases hp : evalAlt c st alts with
+      | error e => simp [hp] at h
+      | ok s =>
+        simp only [hp] at h
+        simpa [List.flatMap_cons, Layer.names, Layer.labels] using
+          Grows.trans (evalAlt_grows alts s hp) (ih _ _ h)
+
+/-- No layer of the chain carries the label `l`, so `l` is not a label. -/
+theorem labelProto_shape_none (L : List Layer) (l : String)
+    (h : l ∉ L.flatMap Layer.labels) : labelProto (L.map Layer.shape) l = none := by
+  induction L with
+  | nil => rfl
+  | cons x tl ih =>
+    simp only [List.flatMap_cons, List.mem_append, not_or] at h
+    cases x with
+    | proto q =>
+      have hq : q.label ≠ some l := by
+        intro hql; exact h.1 (by simp [Layer.labels, hql])
+      simp [labelProto, List.findSome?_cons, Layer.shape, hq] at *
+      exact ih h.2
+    | alt alts =>
+      simp [labelProto, List.findSome?_cons, Layer.shape] at *
+      exact ih h.2
+
+/-- A name that no label shadows resolves to the first instance of its
+protocol. -/
+theorem resolveRef_first (c : Ctx) (st : State) (name : String) (inst : Inst)
+    (before after : List Inst)
+    (hproto : staticProto c name = .ok name)
+    (hlp : labelProto c.layers name = none)
+    (hlabels : ∀ kv ∈ st.labels, kv.1 ≠ name)
+    (hinsts : st.insts = before ++ inst :: after)
+    (hbefore : ∀ i ∈ before, i.proto ≠ name)
+    (hinstp : inst.proto = name) :
+    resolveRef c st name = .ok (some inst) := by
+  have hfl : st.labels.find? (·.1 == name) = none := by
+    rw [List.find?_eq_none]
+    intro kv hkv; simpa using hlabels kv hkv
+  have hfb : before.find? (·.proto == name) = none := by
+    rw [List.find?_eq_none]
+    intro i hi; simpa using hbefore i hi
+  simp [resolveRef, hproto, hfl, hlp, hinsts, List.find?_append, hfb, hinstp, bind, Except.bind,
+    pure, Except.pure]
+
+/-- Dropping a mandatory layer's one bracket predicate cannot turn its
+extraction into a failure. -/
+theorem evalProtoLayer_drop_pred (c : Ctx) (s1 s2 : State) (p : ProtoLayer) (ρ : Predicate)
+    (hq : p.quant = .one) (hnp : p.preds = [])
+    (h : evalProtoLayer c s1 { p with preds := [ρ] } = .ok s2) :
+    evalProtoLayer c s1 p = .ok s2 := by
+  unfold evalProtoLayer at h ⊢
+  cases hs : c.V.proto? p.name with
+  | none => simp [hs] at h
+  | some spec =>
+    simp only [hs, hq, quantBounds, bind, Except.bind] at h ⊢
+    split at h
+    · simp [throw, throwThe, MonadExceptOf.throw] at h
+    · rename_i hv
+      simp only [hv]
+      unfold extract at h ⊢
+      simp only [hs, bind, Except.bind] at h ⊢
+      cases hx : extractInst c s1 p.name spec with
+      | error e => simp [hx] at h
+      | ok inst =>
+        simp only [hx, checkPreds, hnp] at h ⊢
+        cases hp : evalPred c spec inst ρ with
+        | error e => cases e <;> simp [hp, throw, throwThe, MonadExceptOf.throw] at h
+        | ok b =>
+          cases b
+          · simp [hp, throw, throwThe, MonadExceptOf.throw] at h
+          · simpa [hp] using h
+
+/-- A chain that matches with one bracket predicate on a mandatory layer
+matches without it, with the same state. -/
+theorem evalChain_drop_pred (c : Ctx) (pre rest : List Layer) (p : ProtoLayer) (ρ : Predicate)
+    (st stF : State) (hq : p.quant = .one) (hnp : p.preds = [])
+    (h : evalChain c (pre ++ .proto { p with preds := [ρ] } :: rest) st = .ok stF) :
+    evalChain c (pre ++ .proto p :: rest) st = .ok stF := by
+  rw [evalChain_append] at h ⊢
+  cases hpre : evalChain c pre st with
+  | error e => simp [hpre, Except.bind] at h
+  | ok s1 =>
+    simp only [hpre, Except.bind, evalChain, bind] at h ⊢
+    split at h
+    · simp [throw, throwThe, MonadExceptOf.throw] at h
+    · rename_i hg
+      have hg' : ¬(s1.insts.isEmpty && (quantBounds p.quant).fst == 0) = true := hg
+      simp only [hg']
+      cases hpl : evalProtoLayer c s1 { p with preds := [ρ] } with
+      | error e => simp [hpl] at h
+      | ok s2 =>
+        simp only [hpl] at h
+        simp [evalProtoLayer_drop_pred c s1 s2 p ρ hq hnp hpl, h]
+
+/-- At the end of a chain, the name of a mandatory layer that is the first
+of its protocol and that no label shadows resolves to the instance that
+layer extracted. -/
+theorem resolveRef_layer (c : Ctx) (pre rest : List Layer) (p : ProtoLayer) (spec : ProtoSpec)
+    (inst : Inst) (s1 stF : State)
+    (hlayers : c.layers = (pre ++ .proto p :: rest).map Layer.shape)
+    (hnames : p.name ∉ pre.flatMap Layer.names)
+    (hlab : p.name ∉ (pre ++ .proto p :: rest).flatMap Layer.labels)
+    (hproto : staticProto c p.name = .ok p.name)
+    (hpre : evalChain c pre {} = .ok s1)
+    (hx : extractInst c s1 p.name spec = .ok inst)
+    (hrest : evalChain c rest (s1.push p.label inst) = .ok stF) :
+    resolveRef c stF p.name = .ok (some inst) := by
+  obtain ⟨new1, nl1, hi1, hp1, hl1, hk1⟩ := evalChain_grows pre {} s1 hpre
+  obtain ⟨new3, nl3, hi3, hp3, hl3, hk3⟩ := evalChain_grows rest _ stF hrest
+  simp only [List.flatMap_append, List.flatMap_cons, List.mem_append, Layer.labels, not_or] at hlab
+  apply resolveRef_first c stF p.name inst new1 new3 hproto
+  · rw [hlayers]; exact labelProto_shape_none _ _ (by
+      simp only [List.flatMap_append, List.flatMap_cons, List.mem_append, Layer.labels, not_or]
+      exact hlab)
+  · intro kv hkv heq
+    rw [hl3] at hkv
+    rcases List.mem_append.mp hkv with h | h
+    · exact hlab.2.2 (heq ▸ hk3 kv h)
+    · simp only [State.push] at h
+      have hs1 : kv ∈ s1.labels → False := by
+        intro h1; rw [hl1] at h1; simp at h1
+        exact hlab.1 (heq ▸ hk1 kv h1)
+      cases hpl : p.label with
+      | none => rw [hpl] at h; exact hs1 h
+      | some l =>
+        rw [hpl] at h
+        rcases List.mem_cons.mp h with h | h
+        · exact hlab.2.1 (by rw [hpl, ← heq, h]; simp)
+        · exact hs1 h
+  · simp [hi3, State.push, hi1]
+  · intro i hi heq
+    simp at hi1
+    exact hnames (heq ▸ hp1 i hi)
+  · exact extractInst_proto hx
+
+/-- `eval` of a filter with no `where` and no capture: the chain decides. -/
+theorem eval_chain (H : Host) (V : Vocab) (P : Packet) (L : List Layer)
+    (hck : check (Filter.ctx { layers := L } H V P) { layers := L } = none) :
+    eval H V { layers := L } P =
+      match evalChain (Filter.ctx { layers := L } H V P) L {} with
+      | .error (.illTyped r) => .illTyped r
+      | .error _ => .reject
+      | .ok _ => .accept [] := by
+  simp only [eval, hck]
+  cases evalChain (Filter.ctx { layers := L } H V P) L {} with
+  | error e => cases e <;> rfl
+  | ok st => simp [bind, Except.bind, pure, Except.pure]
+
+/-- `eval` of a filter with one `where` and no capture. -/
+theorem eval_chain_where (H : Host) (V : Vocab) (P : Packet) (L : List Layer) (w : Where)
+    (hck : check (Filter.ctx { layers := L, cond := some w } H V P) { layers := L, cond := some w } = none) :
+    eval H V { layers := L, cond := some w } P =
+      match evalChain (Filter.ctx { layers := L, cond := some w } H V P) L {} with
+      | .error (.illTyped r) => .illTyped r
+      | .error _ => .reject
+      | .ok st =>
+        match evalWhere (Filter.ctx { layers := L, cond := some w } H V P) st [] w with
+        | .ok true => .accept []
+        | .ok false => .reject
+        | .error .reject => .reject
+        | .error (.illTyped r) => .illTyped r := by
+  simp only [eval, hck]
+  cases evalChain (Filter.ctx { layers := L, cond := some w } H V P) L {} with
+  | error e => cases e <;> rfl
+  | ok st =>
+    simp only [bind, Except.bind]
+    cases evalWhere (Filter.ctx { layers := L, cond := some w } H V P) st [] w with
+    | error e => cases e <;> rfl
+    | ok b => cases b <;> simp [pure, Except.pure, throw, throwThe, MonadExceptOf.throw]
+
+/-- `…/p[f op v]/…` and `…/p/… where p.f op v` accept the same packets
+(D-023), as whole filters under `eval`.
+
+`p` is a mandatory layer with no other predicate, the first layer of its
+protocol in the chain, and no layer is labelled with its name; the name
+resolves statically to the protocol itself (it is the only layer of that
+protocol), the bracket path resolves, and both filters type-check. Then
+one filter accepts a packet exactly when the other does.
+
+Only acceptance is related. On a packet neither accepts, the two can
+report differently: the bracket stops the chain at its layer, so the
+bracket form rejects where the where form goes on to a later layer's
+failure. -/
+theorem bracket_iff_where_eval
+    (H : Host) (V : Vocab) (P : Packet) (pre rest : List Layer) (p : ProtoLayer) (spec : ProtoSpec)
+    (f : FieldPath) (op : CmpOp) (v : Value) {r : Ref}
+    (hq : p.quant = .one) (hnp : p.preds = []) (hname : spec.name = p.name)
+    (hspec : V.proto? p.name = some spec)
+    (hnames : p.name ∉ pre.flatMap Layer.names)
+    (hlab : p.name ∉ (pre ++ .proto p :: rest).flatMap Layer.labels)
+    (hproto : staticProto (Filter.ctx { layers := pre ++ .proto p :: rest } H V P) p.name = .ok p.name)
+    (hres : resolveBracket (Filter.ctx { layers := pre ++ .proto p :: rest } H V P) spec f = .ok r)
+    (hckB : check (Filter.ctx { layers := pre ++ .proto { p with preds := [.cmp f op v] } :: rest } H V P)
+      { layers := pre ++ .proto { p with preds := [.cmp f op v] } :: rest } = none)
+    (hckW : check
+      (Filter.ctx { layers := pre ++ .proto p :: rest, cond := some (.litCmp ⟨(p.name, none) :: f.segs⟩ op v) } H V P)
+      { layers := pre ++ .proto p :: rest, cond := some (.litCmp ⟨(p.name, none) :: f.segs⟩ op v) } = none) :
+    eval H V { layers := pre ++ .proto { p with preds := [.cmp f op v] } :: rest } P = .accept []
+      ↔ eval H V { layers := pre ++ .proto p :: rest,
+                   cond := some (.litCmp ⟨(p.name, none) :: f.segs⟩ op v) } P = .accept [] := by
+  -- both filters run in one context: their chains have the same shape
+  have hcB : Filter.ctx ({ layers := pre ++ .proto { p with preds := [.cmp f op v] } :: rest } : Filter) H V P
+      = Filter.ctx ({ layers := pre ++ .proto p :: rest } : Filter) H V P := by
+    simp [Filter.ctx, Layer.shape]
+  have hcW : Filter.ctx ({ layers := pre ++ .proto p :: rest, cond := some (.litCmp ⟨(p.name, none) :: f.segs⟩ op v) } : Filter) H V P
+      = Filter.ctx ({ layers := pre ++ .proto p :: rest } : Filter) H V P := rfl
+  rw [eval_chain H V P _ hckB, eval_chain_where H V P _ _ hckW, hcB, hcW]
+  have hsp : (Filter.ctx { layers := pre ++ .proto p :: rest } H V P).V.proto? p.name = some spec := hspec
+  cases hW : evalChain (Filter.ctx { layers := pre ++ .proto p :: rest } H V P) (pre ++ .proto p :: rest) {} with
+  | ok stF =>
+    obtain ⟨s1, inst, hpre, hx, hrest, hvlan⟩ :=
+      evalChain_proto_inv _ pre rest p spec {} stF hq hnp hsp hW
+    have hinst := resolveRef_layer _ pre rest p spec inst s1 stF rfl hnames hlab hproto hpre hx hrest
+    have key := bracket_eq_where_at _ pre rest p spec inst f op v {} s1 stF hq hname hvlan hpre hx hrest
+      (by rw [hname]; exact hproto) (by rw [hname]; exact hsp) (by rw [hname]; exact hinst) hres
+    rw [hname] at key
+    rw [key]
+    cases hw : evalWhere (Filter.ctx { layers := pre ++ .proto p :: rest } H V P) stF []
+        (.litCmp ⟨(p.name, none) :: f.segs⟩ op v) with
+    | error e => cases e <;> simp [hw]
+    | ok b => cases b <;> simp [hw]
+  | error e =>
+    cases hB : evalChain (Filter.ctx { layers := pre ++ .proto p :: rest } H V P)
+        (pre ++ .proto { p with preds := [.cmp f op v] } :: rest) {} with
+    | ok st =>
+      have hdrop := evalChain_drop_pred _ pre rest p (.cmp f op v) {} st hq hnp hB
+      rw [hW] at hdrop
+      cases hdrop
+    | error e' => cases e <;> cases e' <;> simp
+
+/-- The hypotheses of `bracket_iff_where_eval` are static and are
+discharged by evaluation: `eth/ipv4/tcp[dport < 1024]` and
+`eth/ipv4/tcp where tcp.dport < 1024` accept the same packets, for every
+packet. -/
+theorem tcp_dport_bracket_iff_where (pkt : Packet) :
+    eval {} vocab { layers := [P "eth", P "ipv4", .proto { name := "tcp", preds := [.cmp (f "dport") .lt (.int 1024)] }] } pkt = .accept []
+      ↔ eval {} vocab { layers := chain3, cond := some (.litCmp (ff "tcp" "dport") .lt (.int 1024)) } pkt = .accept [] :=
+  bracket_iff_where_eval {} vocab pkt [P "eth", P "ipv4"] [] { name := "tcp" }
+    ((vocab.proto? "tcp").get (by decide)) (f "dport") .lt (.int 1024)
+    rfl rfl (by decide) (by decide) (by decide) (by decide) rfl rfl rfl rfl
+
 /-- Alternation order matters when dispatch overlaps (D-004): the first
 matching alternative commits. Vector `alt-first-pred-fails`. -/
 theorem alt_order_matters :

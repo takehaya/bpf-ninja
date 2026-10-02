@@ -8,9 +8,14 @@ import Kunai.Eval.Check
 -/
 namespace Kunai
 
+/-- The read-only context a filter is evaluated in. Its `layers` is the
+chain's shape, so filters that differ only in bracket predicates share it. -/
+def Filter.ctx (F : Filter) (H : Host) (V : Vocab) (P : Packet) : Ctx :=
+  { V, H, layers := F.layers.map Layer.shape, P }
+
 /-- E-Filter-Accept / E-Filter-Reject-Chain / E-Filter-Reject-Where. -/
 def eval (H : Host) (V : Vocab) (F : Filter) (P : Packet) : Result :=
-  let c : Ctx := { V, H, layers := F.layers, P }
+  let c : Ctx := F.ctx H V P
   match check c F with
   | some r => .illTyped r
   | none =>
