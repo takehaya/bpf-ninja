@@ -85,4 +85,6 @@ in the JSON are not checked against the BPF program yet.
 
 No `partial def` and no `sorry`. `native_decide` is allowed where `decide`
 is too slow, with a comment saying so. Write loops structurally (`for x in
-list`), not as `for i in [0:n]`, or `decide` cannot unfold them.
+list`), not as `for i in [0:n]`, or `decide` cannot unfold them. In `check`,
+a loop a law reasons about is an `allOk` (`allOk_ok` turns it into a
+statement about every element).

@@ -599,11 +599,12 @@ theorem eval_chain_where (H : Host) (V : Vocab) (P : Packet) (L : List Layer) (w
 The two filters are a chain with one bracket comparison on `p` and no
 `where`, and the same chain without it and with the comparison as its
 `where`; neither has captures. `p` is a mandatory layer with no other
-predicate. No layer is labelled with its name (`hlab`), and the name
-resolves statically to the protocol itself (`hproto`: no other layer has
-that protocol). The bracket form type-checks; that the where form does,
-and that the bracket path resolves, follows (`check_bracket_where`). Then
-one filter accepts a packet exactly when the other does.
+predicate, and its name resolves statically to the protocol itself
+(`hproto`: no other layer has that protocol). The bracket form
+type-checks. That the where form does, that the bracket path resolves
+(`check_bracket_where`) and that no layer is labelled with `p`'s name
+(`check_labels`: a label is never a protocol name) follow. Then one filter
+accepts a packet exactly when the other does.
 
 Only acceptance is related. On a packet neither accepts, the two can
 report differently: the bracket stops the chain at its layer, so the
@@ -612,9 +613,8 @@ failure. -/
 theorem bracket_iff_where_eval
     (H : Host) (V : Vocab) (P : Packet) (pre rest : List Layer) (p : ProtoLayer) (spec : ProtoSpec)
     (f : FieldPath) (op : CmpOp) (v : Value)
-    (hq : p.quant = .one) (hnp : p.preds = []) (hname : spec.name = p.name)
+    (hq : p.quant = .one) (hnp : p.preds = [])
     (hspec : V.proto? p.name = some spec)
-    (hlab : p.name ∉ (pre ++ .proto p :: rest).flatMap Layer.labels)
     (hproto : staticProto (Filter.ctx { layers := pre ++ .proto p :: rest } H V P) p.name = .ok p.name)
     (hckB : check (Filter.ctx { layers := pre ++ .proto { p with preds := [.cmp f op v] } :: rest } H V P)
       { layers := pre ++ .proto { p with preds := [.cmp f op v] } :: rest } = none) :
@@ -627,6 +627,15 @@ theorem bracket_iff_where_eval
     simp [Filter.ctx, Layer.shape]
   have hcW : Filter.ctx ({ layers := pre ++ .proto p :: rest, cond := some (.litCmp ⟨(p.name, none) :: f.segs⟩ op v) } : Filter) H V P
       = Filter.ctx ({ layers := pre ++ .proto p :: rest } : Filter) H V P := rfl
+  have hname : spec.name = p.name := by
+    have := List.find?_some hspec
+    simpa using this
+  -- a label is never a protocol name, and `p.name` is one
+  have hlab : p.name ∉ (pre ++ .proto p :: rest).flatMap Layer.labels := by
+    intro hmem
+    have := check_labels _ _ hckB p.name (by simpa [Layer.labels] using hmem)
+    rw [hcB] at this
+    exact absurd (this.symm.trans hspec) (by simp)
   -- the where form type-checks and the bracket path resolves, from `hckB`
   obtain ⟨hckW, r, hres⟩ := check_bracket_where
     (Filter.ctx { layers := pre ++ .proto p :: rest } H V P) pre rest p spec f op v hq hnp hname hspec hproto
@@ -671,7 +680,7 @@ theorem tcp_dport_bracket_iff_where (pkt : Packet) :
       ↔ eval {} vocab { layers := chain3, cond := some (.litCmp (ff "tcp" "dport") .lt (.int 1024)) } pkt = .accept [] :=
   bracket_iff_where_eval {} vocab pkt [P "eth", P "ipv4"] [] { name := "tcp" }
     ((vocab.proto? "tcp").get (by decide)) (f "dport") .lt (.int 1024)
-    rfl rfl (by decide) (by decide) (by decide) rfl rfl
+    rfl rfl (by decide) rfl rfl
 
 /-- Alternation order matters when dispatch overlaps (D-004): the first
 matching alternative commits. Vector `alt-first-pred-fails`. -/

@@ -326,7 +326,48 @@ private theorem checkLayers_bracket (c : Ctx) (pre rest : List Layer) (p : Proto
     exact ⟨hshape ▸ hmid.1, by simp⟩
   · exact h x (Or.inr (Or.inr hx))
 
-theorem check_none {c : Ctx} {F : Filter} : check c F = none ↔ checkAll c F = .ok () := by
+private theorem checkProtoLayer_label (c : Ctx) (L : List Layer) (i : Nat) (p : ProtoLayer) (alt : Bool)
+    (h : checkProtoLayer c L i p alt = .ok ()) : ∀ l ∈ p.label.toList, c.V.proto? l = none := by
+  intro l hl
+  simp only [checkProtoLayer] at h
+  cases hs : c.V.proto? p.name with
+  | none => simp [hs, throw, throwThe, MonadExceptOf.throw] at h
+  | some spec =>
+    simp only [hs, seq_ok] at h
+    have h1 := h.1
+    cases hp : p.label with
+    | none => simp [hp] at hl
+    | some l' =>
+      simp only [hp, Option.toList_some, List.mem_singleton] at hl
+      subst hl
+      cases hc : c.V.proto? l with
+      | none => rfl
+      | some s => simp [checkProtoShape, hp, hc, bind, Except.bind, throw, throwThe, MonadExceptOf.throw] at h1
+
+/-- A chain that checks has no label that is also a protocol name. -/
+private theorem checkLayers_labels (c : Ctx) (L : List Layer) (h : checkLayers c L = .ok ()) :
+    ∀ l ∈ L.flatMap Layer.labels, c.V.proto? l = none := by
+  intro l hl
+  simp only [checkLayers, allOk_ok] at h
+  obtain ⟨x, hx, hlx⟩ := List.mem_flatMap.mp hl
+  obtain ⟨i, hi, rfl⟩ := List.getElem_of_mem hx
+  have hmem : (L[i], i) ∈ L.zipIdx := by
+    simp [List.mem_zipIdx_iff_getElem?, hi]
+  have hx' := h _ hmem
+  cases hxl : L[i] with
+  | proto p =>
+    rw [hxl] at hx' hlx
+    exact checkProtoLayer_label c L i p false (by simpa [checkLayer] using hx') l (by simpa [Layer.labels] using hlx)
+  | alt alts =>
+    rw [hxl] at hx' hlx
+    simp only [checkLayer] at hx'
+    split at hx'
+    · simp [throw, throwThe, MonadExceptOf.throw] at hx'
+    · simp only [Layer.labels, List.mem_filterMap] at hlx
+      obtain ⟨a, ha, hal⟩ := hlx
+      exact checkProtoLayer_label c L i a true (allOk_ok.mp hx' a ha) l (by simp [hal])
+
+private theorem check_none {c : Ctx} {F : Filter} : check c F = none ↔ checkAll c F = .ok () := by
   simp only [check]
   cases checkAll c F <;> simp
 
@@ -373,11 +414,17 @@ private theorem checkPred_where (c : Ctx) (p : ProtoLayer) (spec : ProtoSpec)
             cases hr
             simpa [RefBody.toRef, haux, Ref.width] using h
 
+/-- A filter that checks has no label that is also a protocol name. -/
+theorem check_labels (c : Ctx) (F : Filter) (h : check c F = none) :
+    ∀ l ∈ F.layers.flatMap Layer.labels, c.V.proto? l = none := by
+  rw [check_none] at h
+  simp only [checkAll, seq_ok] at h
+  exact checkLayers_labels c F.layers h.2.1
+
 /-- D-023, statically: when `…/p[f op v]/…` type-checks, so does
 `…/p/… where p.f op v`, and the bracket path resolves. `p` is a mandatory
-layer with no other predicate whose name resolves to itself (`hproto`: one
-layer of that protocol, and no label of that name). Neither filter has
-captures. -/
+layer with no other predicate whose name resolves to itself in `c`
+(`hproto`). Neither filter has captures. -/
 theorem check_bracket_where (c : Ctx) (pre rest : List Layer) (p : ProtoLayer) (spec : ProtoSpec)
     (f : FieldPath) (op : CmpOp) (v : Value)
     (hq : p.quant = .one) (hnp : p.preds = []) (hname : spec.name = p.name)
