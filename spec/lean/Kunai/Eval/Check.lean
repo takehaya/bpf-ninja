@@ -206,9 +206,17 @@ private def checkSets (c : Ctx) (layers : List Layer) : Except String Unit := do
     | none => used) 0
   if bytes > 16 then throw s!"packet keys take {bytes} bytes; the host's key buffer holds 16"
 
+/-- A label names one layer: two layers (alternation members included)
+cannot carry the same one. -/
+private def checkLabels (layers : List Layer) : Except String Unit := do
+  let labels := layers.flatMap Layer.labels
+  for l in labels.eraseDups do
+    if (labels.filter (· == l)).length > 1 then throw s!"duplicate label {l}"
+
 /-- `none` when the filter type-checks; otherwise the resolver's complaint. -/
 def check (c : Ctx) (F : Filter) : Option String :=
   let r : Except String Unit := do
+    checkLabels F.layers
     -- The layers are checked from `F.layers` (predicates, positions, parents);
     -- `c.layers`, the chain's shape, only serves name resolution.
     checkLayers c F.layers

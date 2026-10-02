@@ -230,6 +230,16 @@ vector typLabelCollides := {
   id := "typ-label-collides", ast := { layers := [P "eth", P "ipv4", .proto { name := "tcp", label := some "ipv4" }] },
   expected := .illTyped "label ipv4 collides with protocol name",
   note := "a label never shadows a protocol name" }
+vector typLabelCollidesAlt := {
+  id := "typ-label-collides-alt",
+  ast := { layers := [P "eth", P "ipv4", .alt [{ name := "tcp", label := some "ipv4" }, { name := "udp" }]],
+           cond := some (cmp (fld "ipv4" "ttl") .eq (k 64)) },
+  expected := .illTyped "label ipv4 collides with protocol name",
+  note := "on an alternation member the label would be bound at run time and hide the ipv4 layer" }
+vector typLabelDuplicate := {
+  id := "typ-label-duplicate",
+  ast := { layers := [P "eth", .proto { name := "ipv4", label := some "x" }, .proto { name := "tcp", label := some "x" }] },
+  expected := .illTyped "duplicate label x" }
 vector typFitArith := {
   id := "typ-literal-fit-arith", ast := W (cmp (.bin .add ttl (k 256)) .eq (k 0)),
   expected := .illTyped "literal 256 does not fit Int<8>", note := "D-009: the constant takes its sibling's width" }
@@ -463,7 +473,7 @@ def whereVectors : List Vector := [
   actionEntry, actionHit, actionMiss, actionUnknown,
   predCmp, predCmpMiss, predInList, predInListMiss, predInRange, typPredInRangeWide, typPredCmpRange, predInRangeMiss, predNegative, predIPv4,
   capAll, capWhereFalse, capWhereTrue, capLabel, capAbsent, capPresent,
-  typUnknownProto, typNoDispatch, typNotInChain, typUnknownField, typFit, typLabelCollides, typFitArith, whereArithRight, whereArithRightMiss, typFitArithSibling, whereNegLitSibling, typWidthIPv6, typCIDRWidth,
+  typUnknownProto, typNoDispatch, typNotInChain, typUnknownField, typFit, typLabelCollides, typLabelCollidesAlt, typLabelDuplicate, typFitArith, whereArithRight, whereArithRightMiss, typFitArithSibling, whereNegLitSibling, typWidthIPv6, typCIDRWidth,
   typPredIdent, typInSet, predInSetMember, predInSetMiss, typPredInSetWidth, predInSetSubByte, predInSetWindow, typPredInSetWindow, typPredInSetTwice, typPredInSetBudget, typPredInSetOptional, typPredInSetAlt, typAny, typExists, typAuxPath,
   arith128AddConst, arith128SubConst, arith128AddCarry, arith128AddWrap, arith128SubBorrow, arith128SubWrap, arith128AddMiss,
   arith128FieldAddField, arith128FieldAddFieldCarry, arith128FieldSubField, arith128FieldSubFieldBorrow, arith128AddWideConst, arith128SubWideConstBorrow,
