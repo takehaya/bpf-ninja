@@ -134,7 +134,10 @@ predicates (`resolveBracket`), whose paths have no head. The result does
 not depend on how the head was written (Laws.lean `bracket_eq_where`). -/
 def resolveRest (c : Ctx) (proto : String) (spec : ProtoSpec)
     (rest : List (String × Option Index)) : Except Stop RefBody := do
-  let unsupported : Stop := .illTyped s!"unsupported: field path {proto}.{(FieldPath.mk rest).text}"
+  -- The path is reported under the protocol it resolved against, however
+  -- its head was written (a label, or none in a bracket predicate).
+  let unsupported (_ : Unit) : Stop :=
+    .illTyped s!"unsupported: field path {(FieldPath.mk ((proto, none) :: rest)).text}"
   match rest with
   | [(fieldName, idx)] => do
     let some fs := spec.field? fieldName | throw (.illTyped s!"unknown field {proto}.{fieldName}")
@@ -155,7 +158,7 @@ def resolveRest (c : Ctx) (proto : String) (spec : ProtoSpec)
         let fs ← fieldOf m o.header fieldName
         pure { aux := .option x, field := fs, slice := ← applySlice fs fIdx }
     | [(seg, none), (name, none), (fieldName, fIdx)] =>
-      if seg != spec.optionSegment then throw unsupported
+      if seg != spec.optionSegment then throw (unsupported ())
       let opt := lowerAscii name
       -- `<proto>.options.NAME` names a TLV option (one with a kind byte).
       let some o := option? m opt | throw (.illTyped s!"unknown option {proto}.{seg}.{name}")
@@ -163,13 +166,13 @@ def resolveRest (c : Ctx) (proto : String) (spec : ProtoSpec)
       let fs ← fieldOf m o.header fieldName
       pure { aux := .option opt, field := fs, slice := ← applySlice fs fIdx }
     | [(seg, none), (name, none), (stack, sIdx), (fieldName, fIdx)] =>
-      if seg != spec.optionSegment then throw unsupported
+      if seg != spec.optionSegment then throw (unsupported ())
       let some sd := m.stack? stack | throw (.illTyped s!"unknown stack {proto}.{stack}")
       if sd.ownerOption != lowerAscii name then throw (.illTyped s!"stack {stack} does not belong to option {name}")
       checkIndex c proto spec sd sIdx
       let fs ← fieldOf m sd.header fieldName
       pure { aux := .stackEntry stack sIdx, field := fs, slice := ← applySlice fs fIdx }
-    | _ => throw unsupported
+    | _ => throw (unsupported ())
 
 /-- Static resolution of a field path (T-FieldPrim, T-FieldAux, T-FieldStackStatic). -/
 def resolvePath (c : Ctx) (f : FieldPath) : Except Stop Ref := do

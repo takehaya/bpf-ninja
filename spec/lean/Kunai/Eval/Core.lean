@@ -110,7 +110,9 @@ private def cidrCmp (w W : Nat) (n : Nat) (op : CmpOp) (a k : Nat) : Except Stri
   | .ne => pure (!member)
   | _ => throw "ordered comparison on a cidr literal"
 
-/-- A typing failure found while evaluating stops the evaluation as ill-typed. -/
+/-- A typing failure found while evaluating stops the evaluation as
+ill-typed. One named adapter (rather than `Except.mapError` at each site)
+so the where atom and the bracket predicate end in the same term. -/
 def Stop.ofExcept (e : Except String α) : Except Stop α :=
   match e with
   | .ok a => pure a

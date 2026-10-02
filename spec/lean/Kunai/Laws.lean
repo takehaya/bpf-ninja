@@ -157,21 +157,12 @@ theorem litCmp_eq_evalPred (c : Ctx) (st : State) (spec : ProtoSpec) (inst : Ins
       | none => rfl
       | some n => rfl
 
-/-- `…/p[f op v]/…` ≡ `…/p/… where p.f op v` (D-023), for a mandatory layer
-whose name denotes the instance it extracts.
-
-Given the chain without the bracket matches (`pre` to `s1`, the layer's
-header to `inst`, `rest` to `stF`) and `p`'s name resolves to `inst` in the
-final state (the layer is the only one of its protocol and no label hides
-the name), the chain with the bracket matches exactly when the where atom
-is true on the final state, and fails as a predicate failure when it is
-false. The two forms differ only in what they report when the atom cannot
-be evaluated: the bracket stops the chain at its layer, so a field past the
-packet end is the layer's bounds failure there, while `where` sees it after
-the whole chain. -/
-theorem bracket_eq_where
+/-- `bracket_eq_where` on the pieces of the chain: `pre` evaluates to `s1`,
+the layer's header to `inst`, `rest` to `stF`, and the layer's name denotes
+`inst` in `stF`. -/
+theorem bracket_eq_where_at
     (c : Ctx) (pre rest : List Layer) (p : ProtoLayer) (spec : ProtoSpec) (inst : Inst)
-    (f : FieldPath) (op : CmpOp) (v : Value) (r : Ref) (st s1 stF : State)
+    (f : FieldPath) (op : CmpOp) (v : Value) {r : Ref} (st s1 stF : State)
     (hq : p.quant = .one) (hname : spec.name = p.name)
     (hvlan : (c.H.vlanInMetadata && p.name == "vlan") = false)
     (hpre : evalChain c pre st = .ok s1)
@@ -195,6 +186,68 @@ theorem bracket_eq_where
   cases evalPred c spec inst (.cmp f op v) with
   | error e => cases e <;> simp
   | ok b => cases b <;> simp [hrest]
+
+/-- A chain that matches through a mandatory layer without predicates
+splits at that layer: the prefix gives `s1`, the layer's header `inst`,
+and the rest runs from `s1 ⊕ inst`. -/
+theorem evalChain_proto_inv (c : Ctx) (pre rest : List Layer) (p : ProtoLayer) (spec : ProtoSpec)
+    (st stF : State) (hq : p.quant = .one) (hnp : p.preds = [])
+    (hsp : c.V.proto? p.name = some spec)
+    (h : evalChain c (pre ++ .proto p :: rest) st = .ok stF) :
+    ∃ s1 inst, evalChain c pre st = .ok s1 ∧ extractInst c s1 p.name spec = .ok inst ∧
+      evalChain c rest (s1.push p.label inst) = .ok stF ∧
+      (c.H.vlanInMetadata && p.name == "vlan") = false := by
+  rw [evalChain_append] at h
+  cases hpre : evalChain c pre st with
+  | error e => simp [hpre, Except.bind] at h
+  | ok s1 =>
+    simp only [hpre, Except.bind, evalChain, bind, hq, quantBounds, evalProtoLayer, hsp] at h
+    cases hv : (c.H.vlanInMetadata && p.name == "vlan") with
+    | true => simp [hv] at h
+    | false =>
+      simp only [hv, extract, hsp, hnp, checkPreds, bind, Except.bind] at h
+      cases hx : extractInst c s1 p.name spec with
+      | error e => simp [hx] at h
+      | ok inst =>
+        simp [hx, pure, Except.pure] at h
+        exact ⟨s1, inst, rfl, hx, h, rfl⟩
+
+/-- `…/p[f op v]/…` ≡ `…/p/… where p.f op v` (D-023), for a mandatory layer
+`p` without other predicates whose name denotes the instance it extracts.
+
+When the chain without the bracket matches with final state `stF`, and
+`p`'s name resolves in `stF` to the instance the layer extracted (the layer
+is the only one of its protocol and no label hides the name), the chain
+with the bracket matches with the same `stF` exactly when the where atom is
+true on `stF`, and fails as a predicate failure when it is false. The two
+forms differ only in what they report when the atom cannot be evaluated:
+the bracket stops the chain at its layer, so a field past the packet end
+is the layer's bounds failure there, while `where` sees it after the whole
+chain.
+
+The statement is about the chain and where evaluators under one context
+`c`; `eval` on the two filters additionally runs `check` and resolves names
+against each filter's own chain, which this law does not cover. -/
+theorem bracket_eq_where
+    (c : Ctx) (pre rest : List Layer) (p : ProtoLayer) (spec : ProtoSpec)
+    (f : FieldPath) (op : CmpOp) (v : Value) {r : Ref} (st stF : State)
+    (hq : p.quant = .one) (hnp : p.preds = []) (hname : spec.name = p.name)
+    (hspec : c.V.proto? spec.name = some spec)
+    (hchain : evalChain c (pre ++ .proto p :: rest) st = .ok stF)
+    (hproto : staticProto c spec.name = .ok spec.name)
+    (hinst : ∀ s1 inst, evalChain c pre st = .ok s1 → extractInst c s1 p.name spec = .ok inst →
+      resolveRef c stF spec.name = .ok (some inst))
+    (hres : resolveBracket c spec f = .ok r) :
+    evalChain c (pre ++ .proto { p with preds := [.cmp f op v] } :: rest) st
+      = match evalWhere c stF [] (.litCmp ⟨(spec.name, none) :: f.segs⟩ op v) with
+        | .ok true => .ok stF
+        | .ok false => .error .pred
+        | .error .reject => .error .bounds
+        | .error (.illTyped e) => .error (.illTyped e) := by
+  have hsp : c.V.proto? p.name = some spec := hname ▸ hspec
+  obtain ⟨s1, inst, hpre, hx, hrest, hvlan⟩ := evalChain_proto_inv c pre rest p spec st stF hq hnp hsp hchain
+  exact bracket_eq_where_at c pre rest p spec inst f op v st s1 stF hq hname hvlan hpre hx hrest
+    hproto hspec (hinst s1 inst hpre hx) hres
 
 /-- Alternation order matters when dispatch overlaps (D-004): the first
 matching alternative commits. Vector `alt-first-pred-fails`. -/
