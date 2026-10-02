@@ -3,6 +3,7 @@ package codegen
 import (
 	"encoding/binary"
 	"fmt"
+	"math"
 	"slices"
 
 	"github.com/cilium/ebpf/asm"
@@ -1077,10 +1078,12 @@ func (c *whereCtx) genArithCompare(w *ir.Condition, failLabel string) (asm.Instr
 // we emit a register-pair pipeline where each side leaves
 // R3 = high half, R5 = low half. Supported ops: `==` / `!=` (F4) and
 // `<` / `≤` / `>` / `≥` (F3). Operand shapes supported: ArithField
-// (an Int<128> field) and `field + const` / `field - const` with the
-// const treated as zero-extended Int<128> (its high half is 0).
-// Anything more elaborate (field + field, nested binops, mul) returns
-// ErrNotImplemented via genArith128.
+// (an Int<128> field), a constant, `field ± const` and `field ± field`,
+// nested through the left operand (see genArith128). A binop on the
+// right of ±, a field narrower than 128 bits or a bit slice next to an
+// Int<128> operand, and aux fields return ErrNotImplemented; operators
+// other than + and - on Int<128> operands never arrive, the resolver
+// types them as errors (dsl-types.md §13.9).
 func (c *whereCtx) genArithCompare128(w *ir.Condition, failLabel string, targetBits int) (asm.Instructions, error) {
 	// Mid-width slice cmps (widths in (64, 128) other than exactly
 	// 128) are desugared in the resolver into chains of single-LDX
@@ -1154,8 +1157,11 @@ func (c *whereCtx) genArithCompare128(w *ir.Condition, failLabel string, targetB
 // genArith128 emits insns that leave R3=high and R5=low of an Int<128>
 // arith expression. Supported shapes:
 //
-//   - ArithField: 16-byte field load via genArithField128Load
-//   - ArithConst: literal materialised as (0, const) (rare standalone)
+//   - ArithField: 16-byte field load via genArithField128Load (a
+//     narrower field or a bit slice next to an Int<128> operand is not
+//     wired: nothing zero-extends it into the register pair)
+//   - ArithConst: literal materialised as (0, const), or all ones in the
+//     high half for a negative literal (-1 is 2^128 - 1 at this width)
 //   - ArithBinOp with op ∈ {+, -}:
 //   - `field op const`: const folded into low half, carry/borrow
 //     propagated to high via a const-relative compare (no register
@@ -1164,18 +1170,24 @@ func (c *whereCtx) genArithCompare128(w *ir.Condition, failLabel string, targetB
 //     is computed, then RHS is the in-place accumulator that LHS
 //     gets added/subtracted into.
 //
-// Mul / div / mod on bit<128> stay ErrNotImplemented (F5 — bit-slice
-// covers the practical IPv6 manipulation cases).
+// Other operators are typing errors above 64 bits (dsl-types.md §13.9),
+// so the resolver never lets them reach here.
 func (c *whereCtx) genArith128(e *ir.ArithExpr) (asm.Instructions, error) {
 	if e == nil {
 		return nil, fmt.Errorf("codegen: nil 128-bit arith expression")
 	}
 	switch e.Kind {
 	case ast.ArithField:
+		if f := e.Field; f != nil && f.Field != nil && (f.Slice != nil || f.Field.Bits != 128) {
+			return nil, fmt.Errorf("%w: %s.%s (bit<%d>) next to an Int<128> operand: mixed widths are not wired in the 128-bit path (slice the Int<128> side to the same width)", ErrNotImplemented, f.Layer.Spec.Name, f.Field.Name, f.EffectiveBits())
+		}
 		return c.genArithField128Load(e.Field)
 	case ast.ArithBinOp:
 		if e.Op != ast.ArithAdd && e.Op != ast.ArithSub {
-			return nil, fmt.Errorf("%w: bit<128> arith binop %s is staged (F5)", ErrNotImplemented, e.Op)
+			// The resolver rejects these on Int<128> operands; a narrower
+			// subexpression (`ipv6.src == tcp.dport * 2`) is well-typed but
+			// lands here because the comparison is 128 bits wide.
+			return nil, fmt.Errorf("%w: %s on a sub-64-bit expression next to an Int<128> operand", ErrNotImplemented, e.Op)
 		}
 		if e.Right == nil {
 			return nil, fmt.Errorf("codegen: bit<128> arith binop missing RHS")
@@ -1188,13 +1200,16 @@ func (c *whereCtx) genArith128(e *ir.ArithExpr) (asm.Instructions, error) {
 		}
 		return nil, fmt.Errorf("%w: bit<128> arith RHS shape %v not supported (only field or const)", ErrNotImplemented, e.Right.Kind)
 	case ast.ArithConst:
-		// Const-only arith expression at width > 64 is unusual but
-		// we materialise it as (0, const). The const has been
-		// resolver-narrowed to int32 territory upstream.
-		return asm.Instructions{
-			asm.Mov.Imm(asm.R3, 0),
-			asm.Mov.Imm(asm.R5, int32(e.Const)),
-		}, nil
+		// A positive constant is (0, const): the resolver fit-checked it
+		// against Int<128>, so only the low half can be non-zero. A
+		// negative literal is the 128-bit two's complement, so its high
+		// half is all ones (Const already holds the 64-bit low half);
+		// `-0` is 0.
+		high := int32(0)
+		if e.Negative && int64(e.Const) < 0 {
+			high = -1
+		}
+		return append(asm.Instructions{asm.Mov.Imm(asm.R3, high)}, loadConst(asm.R5, e.Const)...), nil
 	}
 	return nil, fmt.Errorf("%w: bit<128> arith expression kind %v not supported", ErrNotImplemented, e.Kind)
 }
@@ -1212,31 +1227,70 @@ func (c *whereCtx) genArith128(e *ir.ArithExpr) (asm.Instructions, error) {
 //
 // Sub mirrors the relation: borrow ⇔ orig < const, checked before
 // the subtraction so the test sees the unwrapped low half.
+//
+// A negative literal is the operator flipped onto its magnitude
+// (`x + -1` is `x - 1` modulo 2^128), so the constant folded into the
+// low half is always the literal's absolute value. A constant above the
+// int32 immediate range goes through R2 (caller-saved scratch, free
+// inside the where pipeline) with the register forms of the same three
+// instructions.
 func (c *whereCtx) genArith128FieldOpConst(e *ir.ArithExpr) (asm.Instructions, error) {
-	imm := e.Right.Const
-	if imm > 0x7FFFFFFF {
-		return nil, fmt.Errorf("%w: bit<128> arith const exceeds int32 immediate range", ErrNotImplemented)
+	imm, op := e.Right.Const, e.Op
+	if e.Right.Negative {
+		imm = -imm // two's complement magnitude
+		if op == ast.ArithAdd {
+			op = ast.ArithSub
+		} else {
+			op = ast.ArithAdd
+		}
 	}
 	leftInsns, err := c.genArith128(e.Left)
 	if err != nil {
 		return nil, err
 	}
 	insns := append(asm.Instructions{}, leftInsns...)
-	switch e.Op {
+	wide := imm > 0x7FFFFFFF
+	if wide {
+		insns = append(insns, loadConst(asm.R2, imm)...)
+	}
+	alu := func(op asm.ALUOp) asm.Instruction {
+		if wide {
+			return op.Reg(asm.R5, asm.R2)
+		}
+		return op.Imm(asm.R5, int32(imm))
+	}
+	geConst := func(label string) asm.Instruction {
+		if wide {
+			return asm.JGE.Reg(asm.R5, asm.R2, label)
+		}
+		return asm.JGE.Imm(asm.R5, int32(imm), label)
+	}
+	switch op {
 	case ast.ArithAdd:
-		insns = append(insns, asm.Add.Imm(asm.R5, int32(imm)))
+		insns = append(insns, alu(asm.Add))
 		noCarry := c.freshLabel("v128_nocarry")
-		insns = append(insns, asm.JGE.Imm(asm.R5, int32(imm), noCarry))
+		insns = append(insns, geConst(noCarry))
 		insns = append(insns, asm.Add.Imm(asm.R3, 1))
 		insns = append(insns, landingNoop(noCarry))
 	case ast.ArithSub:
 		noBorrow := c.freshLabel("v128_noborrow")
-		insns = append(insns, asm.JGE.Imm(asm.R5, int32(imm), noBorrow))
+		insns = append(insns, geConst(noBorrow))
 		insns = append(insns, asm.Sub.Imm(asm.R3, 1))
 		insns = append(insns, landingNoop(noBorrow))
-		insns = append(insns, asm.Sub.Imm(asm.R5, int32(imm)))
+		insns = append(insns, alu(asm.Sub))
 	}
 	return insns, nil
+}
+
+// loadConst puts a 64-bit constant into dst: one Mov when the bit pattern
+// is a sign-extended int32 (BPF MOV64 sign-extends its immediate, so small
+// negative two's-complement values take the short form too), else the
+// two-slot 64-bit load.
+func loadConst(dst asm.Register, value uint64) asm.Instructions {
+	if v := int64(value); v >= math.MinInt32 && v <= math.MaxInt32 {
+		return asm.Instructions{asm.Mov.Imm(dst, int32(v))}
+	}
+	return asm.Instructions{asm.LoadImm(dst, int64(value), asm.DWord)}
 }
 
 // genArith128FieldOpField handles `field op field` at Int<128>. LHS
@@ -1390,10 +1444,7 @@ func (c *whereCtx) genArithWithBits(e *ir.ArithExpr, depth int, targetBits int) 
 		if targetBits > 0 && targetBits < 64 {
 			v &= (uint64(1) << targetBits) - 1
 		}
-		if v > 0x7FFFFFFF {
-			return nil, fmt.Errorf("%w: arith constant %d exceeds int32 immediate range", ErrNotImplemented, e.Const)
-		}
-		return asm.Instructions{asm.Mov.Imm(asm.R3, int32(v))}, nil
+		return loadConst(asm.R3, v), nil
 	case ast.ArithField:
 		return c.genArithFieldLoad(e.Field)
 	case ast.ArithBinOp:
@@ -1485,10 +1536,10 @@ func emitSliceShiftMask(f *ir.FieldRef, loadBytes int) asm.Instructions {
 		insns = append(insns, asm.RSh.Imm(asm.R3, int32(shift)))
 	}
 	if mask != 0 && mask != ^uint64(0) {
-		if mask <= 0x7FFFFFFF {
+		if mask <= math.MaxInt32 {
 			insns = append(insns, asm.And.Imm(asm.R3, int32(mask)))
 		} else {
-			insns = append(insns, asm.LoadImm(asm.R5, int64(mask), asm.DWord))
+			insns = append(insns, loadConst(asm.R5, mask)...)
 			insns = append(insns, asm.And.Reg(asm.R3, asm.R5))
 		}
 	}

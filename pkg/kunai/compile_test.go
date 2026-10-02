@@ -695,18 +695,45 @@ func TestCompileWhereIPv6Arith128(t *testing.T) {
 	}
 }
 
-func TestCompileWhereIPv6MulStaged(t *testing.T) {
-	// F5 boundary: multiplication on Int<128> in the where path stays
-	// staged — bit-slice (F11) covers the practical IPv6 manipulation
-	// cases. Ordered cmp (F3) and field+field add/sub (F4) are no
-	// longer staged; see TestCompileWhereIPv6OrderedCmp /
-	// TestCompileWhereIPv6FieldFieldArith.
-	_, err := compileForTest("eth/ipv6/tcp where ipv6.src * 2 == ipv6.dst")
-	if err == nil {
-		t.Fatal("Compile: expected ErrNotImplemented for Int<128> mul")
+func TestCompileWhereIPv6MulIllTyped(t *testing.T) {
+	// Above 64 bits only + and - are defined (dsl-types.md §13.9): `*`
+	// was dropped in favour of bit slices (F5/F11), and bitwise / div /
+	// mod / shifts have no 128-bit codegen. The resolver rejects them as
+	// a typing error, not as an implementation limit.
+	for _, expr := range []string{
+		"eth/ipv6/tcp where ipv6.src * 2 == ipv6.dst",
+		"eth/ipv6/tcp where ipv6.src & 1 == 1",
+		"eth/ipv6/tcp where ipv6.src >> 64 == 0",
+	} {
+		_, err := compileForTest(expr)
+		if err == nil || !strings.Contains(err.Error(), "only + and - are defined") {
+			t.Errorf("Compile(%q) = %v; want the §13.9 operator error", expr, err)
+		}
 	}
-	if !errors.Is(err, codegen.ErrNotImplemented) {
-		t.Fatalf("err = %v; want ErrNotImplemented", err)
+	// A 64-bit slice of the same field keeps every operator.
+	if _, err := compileForTest("eth/ipv6/tcp where ipv6.src[64:128] * 2 == ipv6.dst[64:128]"); err != nil {
+		t.Errorf("slice arithmetic: %v", err)
+	}
+	// A slice or a narrower field next to a full Int<128> operand lands in
+	// the 128-bit pipeline, which does not widen it: refused rather than
+	// loading the whole field.
+	for _, expr := range []string{
+		"eth/ipv6/tcp where ipv6.src[64:128] + ipv6.dst == 1",
+		"eth/ipv6/tcp where ipv6.src + tcp.dport == 1",
+		"eth/ipv6/tcp where ipv6.src == tcp.dport * 2",
+	} {
+		if _, err := compileForTest(expr); !errors.Is(err, codegen.ErrNotImplemented) {
+			t.Errorf("Compile(%q) = %v; want ErrNotImplemented", expr, err)
+		}
+	}
+	// Constants above int32 are a 64-bit load, at every width.
+	for _, expr := range []string{
+		"eth/ipv4/tcp where tcp.seq == 2147483648",
+		"eth/ipv6/tcp where ipv6.src[64:128] == 4294967296",
+	} {
+		if _, err := compileForTest(expr); err != nil {
+			t.Errorf("Compile(%q): %v", expr, err)
+		}
 	}
 }
 

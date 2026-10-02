@@ -128,7 +128,7 @@ Entries are never deleted; a rejected candidate stays in the log.
 ## D-015: 算術の wrap 幅 (§13.9 と実装の食い違い)
 - 論点: §13.9 は `+ − *` を `mod 2^max(width(e₁), width(e₂))` で wrap すると書く。
 - 現行 Go 実装の挙動: **wrap しない。** 64 bit レジスタで計算し定数だけ narrow する。`eth/ipv4/tcp where ipv4.ttl + 1 > 200` は ttl=255 で **true** (§13.9 では (255+1) mod 256 = 0 で false)。`ipv4.ttl + 1 == 0` → false。
-- 推奨: 実装に合わせて §13.9 を「Int<64> で計算、定数は文脈幅で fit-check」に改める。BPF の自然な挙動で、per-node wrap をコード生成する利点が無い。64 bit を超える field (ipv6 src/dst) を含む算術は Lean では未対応 (Go はコンパイルする; vector `typ-arith-128` は mismatch)。
+- 推奨: 実装に合わせて §13.9 を「Int<64> で計算、定数は文脈幅で fit-check」に改める。BPF の自然な挙動で、per-node wrap をコード生成する利点が無い。64 bit を超える field (ipv6 src/dst) を含む算術は D-035。
 - 状態: 承認済 (2026-10-01)
 - 反映先: `Eval/Where.lean` `binop` (64 bit), vectors `where-arith-no-wrap`, `where-arith-ops`
 
@@ -273,6 +273,12 @@ Entries are never deleted; a rejected candidate stays in the log.
 - 推奨: 実行時の直前 layer (σ の最後の instance)。§13.4 の `parent_dispatch(p, σ, P)` は σ に依存する関数として書かれており、Lean もそう実装している。Go は issue。
 - 状態: 承認済 (2026-10-01、一括)
 - 反映先: `Eval/Layer.lean` `dispatch`, generated vectors `quant-mpls-star-zero/flip12`, `/flip13` (`fix/kunai-spec-conformance-2` で Go も一致)。Go 側の grandparent dispatch は「optional layer が 1 つ、その親が optional でなく、次の layer が量化なし」の形。optional が連続する形は静的な親に対する dispatch をそのまま使い、それが実行時のどの親でも同じ読み (同じ定数、親末尾からの同じ位置) になる場合だけ受け付ける (`eth/qinq?/vlan?/ipv4`: ethertype は eth/qinq/vlan いずれも末尾 2 byte)。そうでない形 (`eth/vlan?/mpls?/ipv4`: ipv4 は mpls の下では self-validating、vlan の下では ethertype) は `ErrNotImplemented` (vectors `absent-consecutive-*`)。
+
+## D-035: 64 bit を超える算術
+- 論点: §13.9 は Int<64> で計算すると書き (D-015)、Int<128> (ipv6 src/dst) を含む算術は Lean では illTyped にしていた。Go は `+` `-` を 128 bit (64 bit 2 つ、桁上がり・借り付き) で計算し、比較も 128 bit で行う。`*` は dsl-types §9.1 で廃止 (bit slice で代替)、`/` `%` bitwise shift は codegen 無し (`ErrNotImplemented`)。
+- 推奨: Go の実装範囲を仕様にする。operand の幅が 64 を超えるとき、`+` `-` は `mod 2^w` (w = max 幅、実質 128)、それ以外の演算子は illTyped。比較は幅に関係なく値の比較。定数は文脈幅 (128) で fit-check。Go 側は `*` 等を resolver で型エラーにする (ErrNotImplemented ではなく)。
+- 状態: 承認済 (2026-10-02)
+- 反映先: `Eval/Where.lean` `wideArithWidth` / `binop (w := …)`, `Eval/Check.lean` `checkArith`, vectors `arith-128-*`, `typ-arith-128-mul`, `typ-arith-128-band`; Go `resolve/typing.go` `checkArithExpr`
 
 ## Go 側への issue 候補 (この作業では変更しない)
 

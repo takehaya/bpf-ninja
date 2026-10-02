@@ -276,12 +276,14 @@ def sideWidths (wl wr : Option Nat) : Nat × Nat :=
   let w := max (wl.getD (wr.getD 64)) (wr.getD (wl.getD 64))
   (wl.getD w, wr.getD w)
 
-/-- E-A-BinOp in 64 bits (D-015: the Go implementation does not wrap at
-`max(width(e₁), width(e₂))` as §13.9 says; it computes in 64-bit registers).
-Division by zero gives 0 and modulo by zero leaves the dividend, as BPF does
-(D-022; §13.9 says 0 for both); shifts use the BPF masked amount (D-014). -/
-def binop (op : ArithOp) (a b : Nat) : Nat :=
-  let m := 2 ^ 64
+/-- E-A-BinOp in `w` bits: 64 for every field up to 64 bits wide (D-015: the
+Go implementation does not wrap at `max(width(e₁), width(e₂))` as §13.9 says;
+it computes in 64-bit registers), 128 when an Int<128> field takes part
+(D-035; only `+` and `-` reach here at that width). Division by zero gives 0
+and modulo by zero leaves the dividend, as BPF does (D-022; §13.9 says 0 for
+both); shifts use the BPF masked amount (D-014). -/
+def binop (op : ArithOp) (a b : Nat) (w : Nat := 64) : Nat :=
+  let m := 2 ^ w
   match op with
   | .add => (a + b) % m
   | .sub => (a + m - b % m) % m
@@ -293,6 +295,13 @@ def binop (op : ArithOp) (a b : Nat) : Nat :=
   | .bxor => a ^^^ b
   | .shl => (a <<< (b % 64)) % m
   | .shr => a >>> (b % 64)
+
+/-- The width a binary node computes in: 64 up to 64-bit operands (D-015),
+the operand width above that, where only `+` and `-` are defined (D-035). -/
+def wideArithWidth (w : Nat) (op : ArithOp) : Except Stop Nat :=
+  if w ≤ 64 then pure 64
+  else if op == .add || op == .sub then pure w
+  else throw (.illTyped "unsupported: only + and - are defined on fields wider than 64 bits")
 
 /-- E-A-Const / E-A-Field / E-A-BinOp. `ctx` is the width a constant is
 narrowed to. `none` propagates an absent layer. -/
@@ -306,10 +315,10 @@ def evalArith (c : Ctx) (st : State) (env : IterEnv) (ctx : Nat) : Arith → Exc
     let wl ← arithWidth c l
     let wr ← arithWidth c r
     let (cl, cr) := sideWidths wl wr
-    if max cl cr > 64 then throw (.illTyped "unsupported: arithmetic on fields wider than 64 bits")
+    let w ← wideArithWidth (max cl cr) op
     let some a ← evalArith c st env cl l | pure none
     let some b ← evalArith c st env cr r | pure none
-    pure (some (binop op a b))
+    pure (some (binop op a b (w := w)))
 
 /-- Strict evaluation of both operands (E-W-And/Or premises), but a dynamic
 `reject` in the second operand is short-circuited when the first already

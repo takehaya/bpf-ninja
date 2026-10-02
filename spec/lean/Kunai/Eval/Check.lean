@@ -110,9 +110,9 @@ private def checkRef (c : Ctx) (bound : List (String × String)) (f : FieldPath)
 private def checkArith (c : Ctx) (bound : List (String × String)) (ctx : Nat) : Arith → Except String Unit
   | .const n => discard <| narrowInt ctx n
   | .field f => discard <| checkRef c bound f
-  | .bin _ l r => do
+  | .bin op l r => do
     let (cl, cr) := sideWidths (← stop (arithWidth c l)) (← stop (arithWidth c r))
-    if max cl cr > 64 then throw "unsupported: arithmetic on fields wider than 64 bits"
+    discard <| stop (wideArithWidth (max cl cr) op)
     checkArith c bound cl l
     checkArith c bound cr r
 
