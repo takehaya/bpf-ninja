@@ -251,7 +251,7 @@ Entries are never deleted; a rejected candidate stays in the log.
 - 現行 Go 実装の挙動: count source が無い stack (ipv6.exts, gtp.exts) は capacity 8 を unroll し、静的 index は count を見ずにバイトを読む。`srv6.segments[2] != …` は範囲外で true。
 - 推奨: (a)。範囲外 index は不在 → atom false (D-027)。
 - 状態: 承認済 (2026-10-01、一括)
-- 反映先: `Eval/Where.lean` `stackEntries` / `refView`, `Eval/Layer.lean` `evalPred` (bracket も同じ規則), vectors `ipv6-exts-index-absent`, `ipv6-exts-all`, `srv6-segments-index-absent`, `ipv6-exts-bracket-index-absent` (Go は #120/#121/conformance-4 で一致)
+- 反映先: `Eval/Where.lean` `stackEntries` / `refView`, `Eval/Layer.lean` `evalPred` (bracket も同じ規則), vectors `ipv6-exts-index-absent`, `ipv6-exts-all`, `srv6-segments-index-absent`, `ipv6-exts-bracket-index-absent`, `gtp-exts-bracket-absent` (Go は #120/#121/conformance-4 で一致)
 
 ## D-032: bracket predicate と write-back
 - 論点: `ipv6[next_header == 6]/tcp` で拡張ヘッダがあるとき、predicate は write-back 前後どちらの値を見るか。
@@ -309,7 +309,7 @@ Entries are never deleted; a rejected candidate stays in the log.
 14. ✅ bracket predicate が write-back 前の値を見る (D-032) — write-back を持つ proto は walk 後に評価。
 15. ✅ `tcp.options.X.exists` を実装。
 16. ✅ `eth/mpls*/ipv4/tcp` が ARP を accept する (D-034) — skip された layer の後の dispatch は実行時の親に対して行う。1 つの optional は absent edge で grandparent に dispatch (#120)、連続する optional は各 optional の entry slot (不在 sentinel) を近い順に試す cascade で実行時の親を選ぶ (`fix/kunai-consecutive-optionals`, vectors `absent-consecutive-*`)。全候補で dispatch が同じ読みになる形 (`eth/qinq?/vlan?/ipv4`) は従来どおり静的 1 回。
-17. ✅ (spec 側) Lean の bracket predicate が primary header の field しか型付けしなかった — `resolveBracket` で where と同じ規則 (T-FieldAux / T-FieldStackStatic、不在なら false、write-back 後の値) に拡張 (`fix/kunai-spec-conformance-4`, vectors `ipv6-exts-bracket-*`, `gtp-exts-bracket`)。Go は walk 後に predicate を評価する proto (ipv6) では push count で guard、walk 前に評価する proto (gtp) でも、push 数で数える stack を index する predicate があれば walk 後に評価する (vectors `gtp-exts-bracket`, `gtp-exts-bracket-absent`)。
+17. ✅ (spec 側) Lean の bracket predicate が primary header の field しか型付けしなかった — `resolveBracket` で where と同じ規則 (T-FieldAux / T-FieldStackStatic、不在なら false、write-back 後の値) に拡張 (`fix/kunai-spec-conformance-4`, vectors `ipv6-exts-bracket-*`, `gtp-exts-bracket`)。Go は push 数で数える stack を index する bracket predicate を walk 後に評価し push count で guard する (write-back を持つ ipv6 は全 predicate を walk 後、持たない gtp はその predicate だけを walk 後に回し、他は walk 前のまま; vectors `gtp-exts-bracket`, `gtp-exts-bracket-absent`, `gtp-exts-bracket-mixed`)。量化 layer の predicate は反復ごとの replay で count が確定しないため `ErrNotImplemented` のまま。
 18. ✅ 自己 edge の dispatch が前 header の chain-end 信号を見ない — `eth/mpls/mpls` が 1 label の stack で 2 枚目を ipv4 の先頭 4 byte から読んでいた。`genDispatch` が同一 proto の親に対して先に end 信号を検査する (PR #128, vectors `chain-mpls-self-edge-miss`, `quant-self-edge-opt`, `quant-self-edge-star`)。
 
 残: self-validating / 可変長 layer の `?` (D-017 案 c の実装)。

@@ -177,6 +177,18 @@ vector gtpExtsBracketAbsent := {
   ast := { layers := [P "eth", P "ipv4", P "udp", .proto { name := "gtp", preds := [.cmp ⟨[("exts", some (.nat 1)), ("ext_type", none)]⟩ .eq (.int 0)] }, P "ipv4", P "tcp"] },
   packet := gtpPkt (gtpHdr 4 ++ gtpOpt 0x85 ++ gtpExt 1 0), expected := .reject,
   note := "D-031: one ext pushed, entry 1 is absent; the inner ipv4 bytes there read as ext_type 0, so a missing count guard would accept" }
+def gtpMixed (teid : Int) : List Layer :=
+  [P "eth", P "ipv4", P "udp",
+   .proto { name := "gtp", preds := [.cmp (f "teid") .eq (.int teid), .cmp ⟨[("exts", some (.nat 1)), ("ext_type", none)]⟩ .eq (.int 7)] },
+   P "ipv4", .proto { name := "tcp", preds := [.cmp (f "dport") .eq (.int 80)] }]
+vector gtpExtsBracketMixed := {
+  id := "gtp-exts-bracket-mixed", ast := { layers := gtpMixed 1 },
+  packet := gtpPkt (gtpHdr 4 ++ gtpOpt 0x85 ++ gtpExt 1 0x85 (extLength := 2) ++ gtpExt 7 0), expected := .accept [],
+  note := "a primary-header predicate next to an index behind an 8-byte ext, and a predicate on a later layer (Go: teid before the walk, exts[1] after it, R4 restored for tcp)" }
+vector gtpExtsBracketMixedMiss := {
+  id := "gtp-exts-bracket-mixed-miss", ast := { layers := gtpMixed 2 },
+  packet := gtpPkt (gtpHdr 4 ++ gtpOpt 0x85 ++ gtpExt 1 0x85 (extLength := 2) ++ gtpExt 7 0), expected := .reject,
+  note := "the primary-header predicate fails" }
 vector ipv6ExtsIndexAbsent := {
   id := "ipv6-exts-index-absent", ast := { layers := ipv6L, cond := some (cmp exts1 .eq (k 6)) }, packet := ipv6With 0 (ipv6Ext 6) (sport := 0x0600),
   expected := .reject, note := "D-031: entry 1 was not extracted ⇒ false (Go: the push count slot guards the static index; tcp.sport = 0x0600 would otherwise look like next_header 6)" }
@@ -330,7 +342,7 @@ def auxVectors : List Vector := [
   tcpOptCross, tcpEol, tcpMssDup, tcpMssBadLen, tcpMssExists, tcpMssExistsNot, tcpSackBlock, tcpSackAny, tcpSackAll,
   tcpSackAbsentAny, tcpMalformedNoQuery,
   ipv6Hbh, ipv6TwoExts, ipv6ExtLong, ipv6ExtTooLong, ipv6ExtsIndex, ipv6ExtsIndex1, ipv6ExtsIndexAfterLong, ipv6ExtsAnyAfterLong, ipv6ExtsDynamicLong, ipv6ExtsDynamicLongSecond, ipv6ExtsDynamicLongAbsent, ipv6ExtsDynamicLongLast, ipv6ExtsDynamicLongLastMiss, ipv6ExtsDynamicLongBeyond, ipv6ExtsDynamicLongSlot, ipv6ExtsDynamicLongSlotAbsent,
-  ipv6ExtsBracket, ipv6ExtsBracketAbsent, ipv6ExtsBracketLong, ipv6ExtsBracketDynamic, ipv6ExtsBracketIter, ipv6ExtsBracketInAbsent, ipv6ExtsBracketInLong, ipv6ExtsSliceLong, ipv6ExtsBracketSliceLong, gtpExtsBracket, gtpExtsBracketAbsent, ipv6ExtsIndexAbsent,
+  ipv6ExtsBracket, ipv6ExtsBracketAbsent, ipv6ExtsBracketLong, ipv6ExtsBracketDynamic, ipv6ExtsBracketIter, ipv6ExtsBracketInAbsent, ipv6ExtsBracketInLong, ipv6ExtsSliceLong, ipv6ExtsBracketSliceLong, gtpExtsBracket, gtpExtsBracketAbsent, gtpExtsBracketMixed, gtpExtsBracketMixedMiss, ipv6ExtsIndexAbsent,
   ipv6NextHeaderWhere, ipv6NextHeaderBracket, ipv6FiveExts, ipv6SixExts, ipv6AnyExts, ipv6AllExts,
   srv6Chain, srv6Static, srv6Dynamic, srv6Any, srv6All, srv6AllCidr, srv6IndexAbsent, srv6OverCap, srv6AtCap,
   gtpPlain, gtpOptExists, gtpOptAbsent, gtpOptField, gtpOptFieldAbsent, gtpExtDynamicIndex, gtpExtLongFirst, gtpExtLengthZero, gtpExtStack,

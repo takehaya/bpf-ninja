@@ -208,7 +208,7 @@ type predCtx struct {
 	out  *[]ExtractSlot
 	// stackCount resolves the push count slot of a push-counted stack
 	// (option_demand.go needsPushCount). Set only where the predicates
-	// run after the parser walk (predsAfterWalk), since the count is final
+	// run after the parser walk (splitPredicates), since the count is final
 	// only then; nil means such an index cannot be guarded.
 	stackCount func(*ir.FieldRef) (int16, bool)
 }

@@ -1085,6 +1085,13 @@ func TestCompileBracketOnPushCountedStack(t *testing.T) {
 			t.Fatalf("%s must compile: %v", expr, err)
 		}
 	}
+	// A quantified layer replays its predicates per iteration, where no
+	// final count exists: still refused rather than read unguarded.
+	for _, expr := range []string{"eth/ipv4/udp/gtp[exts[0].ext_type == 1]{1,2}/ipv4/tcp", "eth/ipv6[exts[0].next_header == 6]{1,2}/tcp"} {
+		if _, err := compileForTest(expr); !errors.Is(err, codegen.ErrNotImplemented) || !strings.Contains(err.Error(), "where clause") {
+			t.Fatalf("%s: expected ErrNotImplemented pointing at a where clause, got %v", expr, err)
+		}
+	}
 	// `in [...]` brackets carry the same push-count guard.
 	if _, err := compileForTest("eth/ipv6[exts[1].next_header in [6, 60]]/tcp"); err != nil {
 		t.Fatalf("in-list bracket on a push-counted stack must compile: %v", err)

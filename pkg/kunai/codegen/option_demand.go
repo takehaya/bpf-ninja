@@ -216,7 +216,7 @@ func (qo queriedOptions) optionDemand(layer *ir.LayerInstance) []*vocab.AuxLayou
 }
 
 // stackCountSlot returns the slot holding the push count of `stack` in
-// `layer`, when a where / capture clause demanded it.
+// `layer`, when a where / capture clause or a bracket predicate demanded it.
 func (qo queriedOptions) stackCountSlot(layer *ir.LayerInstance, stack string) (int16, bool) {
 	for _, l := range qo.demand[layer] {
 		if l.OutParam == stack && isStackCountLayout(layer, l) {
