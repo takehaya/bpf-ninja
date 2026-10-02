@@ -172,8 +172,32 @@ vector quantSelfValidSkip := {
   note := "D-017: no parent constant for ipv4 under mpls, so version = 6 is a dispatch miss and ipv4? skips; Go: self-validating optional not implemented", goStatus := .notImplemented }
 vector quantSelfValidBroken := {
   id := "quant-selfvalidating-broken", ast := { layers := [P "eth", Pq "ipv4" .opt] },
-  packet := eth 0x0800 ++ ipv4 6 (version := 5) ++ tcp 12345 80 ++ payload 5, expected := .reject, goStatus := .notImplemented,
-  note := "D-017: eth.ethertype already says ipv4, so version = 5 is a broken header, not absence; Go: optional variable-length layer not implemented" }
+  packet := eth 0x0800 ++ ipv4 6 (version := 5) ++ tcp 12345 80 ++ payload 5, expected := .reject,
+  note := "D-017: eth.ethertype already says ipv4, so version = 5 is a broken header, not absence" }
+vector quantOptIPv4Last := {
+  id := "quant-opt-ipv4-last", ast := { layers := [P "eth", Pq "ipv4" .opt] }, expected := .accept [],
+  note := "an optional variable-length layer at the end of the chain, present" }
+vector quantOptIPv4LastAbsent := {
+  id := "quant-opt-ipv4-last-absent", ast := { layers := [P "eth", Pq "ipv4" .opt] },
+  packet := eth 0x0806 ++ payload 5, expected := .accept [],
+  note := "ethertype is not ipv4: the layer is skipped before its bounds are checked (5 bytes follow, fewer than an ipv4 header)" }
+vector quantOptIPIP := {
+  id := "quant-opt-ipip", ast := { layers := [P "eth", P "ipv4", Pq "ipv4" .opt, P "tcp"] },
+  packet := eth 0x0800 ++ ipv4 4 ++ ipv4 6 ++ tcp 12345 80 ++ payload 5, expected := .accept [],
+  note := "ipv4 in ipv4 present: tcp dispatches on the inner header" }
+def ipipTwice : List Layer := [P "eth", P "ipv4", Pq "ipv4" .opt, Pq "ipv4" .opt, P "tcp"]
+vector quantOptIPIPTwiceOne := {
+  id := "quant-opt-ipip-twice-one", ast := { layers := ipipTwice },
+  packet := eth 0x0800 ++ ipv4 4 ++ ipv4 6 ++ tcp 12345 80 ++ payload 5, expected := .accept [],
+  note := "the first optional takes the inner header, the second is absent; tcp dispatches on whichever ipv4 came last" }
+vector quantOptIPIPTwiceNone := {
+  id := "quant-opt-ipip-twice-none", ast := { layers := ipipTwice }, expected := .accept [] }
+vector quantOptIPIPTwiceBoth := {
+  id := "quant-opt-ipip-twice-both", ast := { layers := ipipTwice },
+  packet := eth 0x0800 ++ ipv4 4 ++ ipv4 4 ++ ipv4 6 ++ tcp 12345 80 ++ payload 5, expected := .accept [] }
+vector quantOptIPIPAbsent := {
+  id := "quant-opt-ipip-absent", ast := { layers := [P "eth", P "ipv4", Pq "ipv4" .opt, P "tcp"] },
+  expected := .accept [], note := "no inner ipv4: tcp dispatches on the outer header (D-034)" }
 vector typOptionalAfterSkip := {
   id := "typ-no-dispatch-after-skip", ast := { layers := [P "eth", Pq "ipv4" .opt, P "tcp"] },
   expected := .illTyped "no dispatch constant for tcp under eth",
@@ -259,7 +283,7 @@ def chainVectors : List Vector := [
   quantOptPresent, quantOptAbsent, quantOptPredHolds, quantOptPredFails, quantOptBounds, quantRangeMidTrunc, quantRange01Bounds,
   quantStarBounds, quantMplsRange, quantMplsPlus, quantMplsStarZero, quantMplsMinUnmet, quantChainEnd,
   quantGreedyOverrun, quantOverrunBounded, quantOverrunOpen, quantExactBound, quantOptMplsOverrun, quantOptMplsOne, quantGreedyUnreachable, quantPredMidFail, quantPredMidFailStatic, quantPredFirstFail,
-  quantPredAllHold, quantSelfValidSkip, quantSelfValidBroken, typOptionalAfterSkip, typOptionalNoCheck, chainMandatorySelfEdgeMiss, quantSelfEdgeStar, quantSelfEdgeOpt,
+  quantPredAllHold, quantSelfValidSkip, quantSelfValidBroken, quantOptIPv4Last, quantOptIPv4LastAbsent, quantOptIPIP, quantOptIPIPAbsent, quantOptIPIPTwiceOne, quantOptIPIPTwiceNone, quantOptIPIPTwiceBoth, typOptionalAfterSkip, typOptionalNoCheck, chainMandatorySelfEdgeMiss, quantSelfEdgeStar, quantSelfEdgeOpt,
   absentConsecutiveEthertype, absentConsecutiveSelfValid, absentConsecutiveMplsOnly, absentConsecutiveNeither, absentConsecutiveArp, quantFirstOptional,
   altFirst, altSecond, altNone, altFirstPredFails, altRoot, altNoCheck,
   hostTcVlanMandatory, hostTcVlanOpt, hostL3Root, hostL3EthRoot]

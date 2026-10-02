@@ -294,7 +294,7 @@ Entries are never deleted; a rejected candidate stays in the log.
 1. ✅ bpf_loop 経路の quantifier predicate が初回反復にしか適用されない (D-001) — callback が毎反復 predicate を replay。
 2. ✅ `README.ja.md:18` の例がコンパイルできない (D-003) — 例を差し替え。量化 layer 以降の where field 参照自体は未実装のまま。
 3. ✅ 同一 proto を含む alternation がロード時 "duplicate symbol" (D-004) — ラベル名に layer Index を含めた。
-4. ✅ `eth/ipv4?/tcp` が verifier で落ちる (D-017) — 可変長 / self-validating な optional layer は `ErrNotImplemented` に。skip の実装 (D-017 案 c) は未着手。
+4. ✅ `eth/ipv4?/tcp` が verifier で落ちる (D-017) — 可変長 / self-validating な optional layer は `ErrNotImplemented` に。その後、親に dispatch 定数がある可変長 layer の `?` / `{0,1}` (`ipv6/srv6?`, `eth/ipv4?`, `ipv4/gre?`) は実装: parser machine の entry dispatch の失敗先を absent ラベルにし、dispatch は bounds / slot store / advance より前なので absent 経路は R4 と slot を触らない (vectors `quant-selfvalidating-broken`, `quant-opt-*`, `srv6-opt-*`, `gre-opt-*`, `srv6-all-absent-layer`)。親定数の無い self-validating layer の `?` (`mpls/ipv4?`) と可変長 layer の繰り返し (`{0,m>1}`, `*`) は未実装。
 5. ✅ `{0,1}` が `ErrNotImplemented` (D-005) — `{0,m}` (m ≤ 4) は `?` の peek 経路 + 静的 unroll。
 6. ✅ 到達不能 chain `mpls{1,8}/mpls` に警告が無い (D-002) — resolver が警告を出す。
 7. ✅ `dsl-types.md` の記述 (D-004, D-015, D-021, D-022) — `feat/lean-spec` で修正済。
@@ -312,4 +312,4 @@ Entries are never deleted; a rejected candidate stays in the log.
 17. ✅ (spec 側) Lean の bracket predicate が primary header の field しか型付けしなかった — `resolveBracket` で where と同じ規則 (T-FieldAux / T-FieldStackStatic、不在なら false、write-back 後の値) に拡張 (`fix/kunai-spec-conformance-4`, vectors `ipv6-exts-bracket-*`, `gtp-exts-bracket`)。Go は push 数で数える stack を index する bracket predicate を walk 後に評価し push count で guard する (write-back を持つ ipv6 は全 predicate を walk 後、持たない gtp はその predicate だけを walk 後に回し、他は walk 前のまま; vectors `gtp-exts-bracket`, `gtp-exts-bracket-absent`, `gtp-exts-bracket-mixed`)。量化 layer の predicate は反復ごとの replay で count が確定しないため `ErrNotImplemented` のまま。
 18. ✅ 自己 edge の dispatch が前 header の chain-end 信号を見ない — `eth/mpls/mpls` が 1 label の stack で 2 枚目を ipv4 の先頭 4 byte から読んでいた。`genDispatch` が同一 proto の親に対して先に end 信号を検査する (PR #128, vectors `chain-mpls-self-edge-miss`, `quant-self-edge-opt`, `quant-self-edge-star`)。
 
-残: self-validating / 可変長 layer の `?` (D-017 案 c の実装)。
+残: 親定数の無い self-validating layer の `?` (D-017 案 c の probe、`quant-selfvalidating-skip`)。

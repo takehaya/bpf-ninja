@@ -336,11 +336,38 @@ vector srv6AnyLabel := {
 vector srv6AllAbsent := {
   id := "srv6-all-absent-layer",
   ast := { layers := [P "eth", P "ipv6", Pq "srv6" .opt, P "tcp"], cond := some (.all (.litCmp segIter .ne (.ipv6 s1))) },
-  packet := ipv6TCP, expected := .reject, goStatus := .notImplemented,
-  note := "D-003: a quantifier over an absent layer is false, not vacuously true; Go: optional variable-length layer not implemented" }
+  packet := ipv6TCP, expected := .reject,
+  note := "D-003: a quantifier over an absent layer is false, not vacuously true" }
+-- An optional variable-length layer (`srv6?`, `gre?`): the parent's constant decides presence.
+def srv6OptL : List Layer := [P "eth", P "ipv6", Pq "srv6" .opt, P "tcp"]
+def dport80 : Where := .arith (fld "tcp" "dport") .eq (k 80)
+vector srv6OptPresent := {
+  id := "srv6-opt-present", ast := { layers := srv6OptL, cond := some dport80 }, packet := srv6Two, expected := .accept [],
+  note := "tcp is read past the SRH (Go: runtime entry slot)" }
+vector srv6OptAbsent := {
+  id := "srv6-opt-absent", ast := { layers := srv6OptL, cond := some dport80 }, packet := ipv6TCP, expected := .accept [],
+  note := "no SRH: tcp dispatches on ipv6.next_header (D-034)" }
+vector srv6OptAnyPresent := {
+  id := "srv6-opt-any-present", ast := { layers := srv6OptL, cond := some (.any (.litCmp segIter .eq (.ipv6 s2))) },
+  packet := srv6Two, expected := .accept [] }
+vector srv6OptAnyAbsent := {
+  id := "srv6-opt-any-absent", ast := { layers := srv6OptL, cond := some (.any (.litCmp segIter .eq (.ipv6 s2))) },
+  packet := ipv6TCP, expected := .reject, note := "D-003: a field of the absent layer is false" }
+vector srv6OptBroken := {
+  id := "srv6-opt-broken", ast := { layers := srv6OptL },
+  packet := eth 0x86DD ++ ipv6 43 ++ [6, 2, 5, 0, 0, 0, 0, 0] ++ be 16 s1 ++ tcp 12345 80 ++ payload 5, expected := .reject,
+  note := "D-017: ipv6.next_header = 43 names the routing header, so routing_type 5 is a broken SRH, not an absent one" }
+def greOptL : List Layer := [P "eth", P "ipv4", Pq "gre" .opt, P "ipv4", P "tcp"]
+vector greOptPresent := {
+  id := "gre-opt-present", ast := { layers := greOptL }, packet := grePkt (greHdr 0x2000 [42]), expected := .accept [],
+  note := "an optional flag-gated header: the inner ipv4 sits past the key word" }
+vector greOptAbsent := {
+  id := "gre-opt-absent", ast := { layers := greOptL },
+  packet := eth 0x0800 ++ ipv4 4 ++ ipv4 6 ++ tcp 12345 80 ++ payload 5, expected := .accept [],
+  note := "no gre: the inner ipv4 dispatches on the outer protocol = 4" }
 
 def auxVectors : List Vector := [
-  srv6AnyLabel, srv6AllAbsent,
+  srv6AnyLabel, srv6AllAbsent, srv6OptPresent, srv6OptAbsent, srv6OptAnyPresent, srv6OptAnyAbsent, srv6OptBroken, greOptPresent, greOptAbsent,
   rrNoSighting, sackNoSighting,
   grePlain, greKey, greKeySeq, greAllFlags, greKeyTruncated,
   tcpMss, tcpMssMiss, tcpMssAbsent, tcpMssAbsentNot, tcpMssAfterNop, tcpUnknownSkipped, tcpUnknownLen0, tcpUnknownLen1,

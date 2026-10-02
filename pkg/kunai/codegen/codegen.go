@@ -892,9 +892,15 @@ func genLayerInner(layer *ir.LayerInstance, index int, all []*ir.LayerInstance, 
 		// `?` ≡ `{0,1}` (spec D-005/D-024, Laws.lean opt_eq_range): one lowering.
 		opt := *layer
 		opt.Quant, opt.RangeMin, opt.RangeMax = ast.QuantRange, 0, 1
+		if layer.Spec.ParseStateMachine != nil {
+			return genOptionalMachineLayer(layer, &opt, index, all, qo, plan, pc)
+		}
 		insns, err := genStaticChain(&opt, index, all, qo, pc)
 		return insns, nil, err
 	case ast.QuantRange:
+		if layer.RangeMin == 0 && layer.RangeMax == 1 && layer.Spec.ParseStateMachine != nil {
+			return genOptionalMachineLayer(layer, layer, index, all, qo, plan, pc)
+		}
 		if staticChainFitsRange(layer.RangeMax) {
 			insns, err := genStaticChain(layer, index, all, qo, pc)
 			return insns, nil, err
@@ -1077,6 +1083,13 @@ func genParentDispatch(current *ir.LayerInstance, index int, all []*ir.LayerInst
 				asm.LoadMem(asm.R3, asm.R10, slot, asm.DWord),
 				asm.JEq.Imm(asm.R3, layerEntryAbsent, next),
 			)
+			if cand.Spec.HasVariableLayout() {
+				// The dispatch against a variable-length parent anchors on
+				// the shared layer-entry slot; a later layer that matched
+				// nothing may have left another entry there, so restore
+				// this candidate's own.
+				out = append(out, asm.StoreMem(asm.R10, bpfLoopCtxLayerEntrySlot, asm.R3, asm.DWord))
+			}
 		}
 		di, err := dispatchVia(current, cand, r4IsRange, precedingLayersLeaveR4Range(all, j), failLabel)
 		if err != nil {
@@ -1165,8 +1178,15 @@ func optionalLayerGuard(layer *ir.LayerInstance, index int, all []*ir.LayerInsta
 	case vocab.DispatchSelfValidating:
 		return fmt.Errorf("%w: optional %q is self-validating under its parent; there is no dispatch field to peek for absence", ErrNotImplemented, layer.Spec.Name)
 	}
-	if layer.Spec.HasVariableLayout() || layer.Spec.ParseStateMachine != nil {
-		return fmt.Errorf("%w: optional %q has a variable-length header or parser machine; the skip path cannot run its parser", ErrNotImplemented, layer.Spec.Name)
+	// One optional header of a variable-length protocol is lowered by
+	// genOptionalMachineLayer (parser machine) or emitPeekedIterZero (flag
+	// triggers); repeating one would need the previous instance's runtime
+	// length to find the next dispatch field.
+	if layer.RangeMax > 1 && (layer.Spec.HasVariableLayout() || layer.Spec.ParseStateMachine != nil) {
+		return fmt.Errorf("%w: {0,%d} on %q: a variable-length header or parser machine can be optional, not repeated", ErrNotImplemented, layer.RangeMax, layer.Spec.Name)
+	}
+	if layer.Spec.ChainEnd != nil && layer.Spec.HasVariableLayout() {
+		return fmt.Errorf("%w: optional %q is variable-length with a chain-end rule", ErrNotImplemented, layer.Spec.Name)
 	}
 	return nil
 }
@@ -1218,8 +1238,20 @@ func emitPeekedIterZero(layer *ir.LayerInstance, index int, all []*ir.LayerInsta
 	out = append(out, peek...)
 	out = append(out, emitBounds(hs, dslReject)...)
 	out = append(out, preds...)
+	if layer.Spec.HasVariableLayout() {
+		// As genStaticLayer: children anchor their dispatch on this
+		// layer's entry, whatever the flag-gated words add to R4.
+		out = append(out, asm.StoreMem(asm.R10, bpfLoopCtxLayerEntrySlot, offsetBase, asm.DWord))
+	}
 	out = append(out, entry...)
 	out = append(out, emitAdvance(hs))
+	if len(layer.Spec.FlagTriggers) > 0 {
+		flags, err := emitFlagTriggers(fmt.Sprintf("dsl_l%d_%d", index, layer.Index), hs, layer.Spec.FlagsByteOffset, layer.Spec.FlagTriggers, dslReject)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, flags...)
+	}
 	return out, nil
 }
 
