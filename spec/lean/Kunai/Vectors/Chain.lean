@@ -226,6 +226,13 @@ vector typAltExactOne := {
   id := "typ-alt-exact-one", ast := { layers := [P "eth", .alt [{ name := "ipv4", quant := .range 1 (some 1) }, { name := "ipv6" }], P "tcp"] },
   expected := .illTyped "alternatives cannot carry quantifiers",
   note := "{1,1} is still a quantifier where the typing rules look at one" }
+vector typRepeatNoSelfEdge := {
+  id := "typ-repeat-no-self-edge", ast := { layers := [P "eth", P "ipv6", Pq "srv6" (.range 0 (some 2)), P "tcp"] },
+  expected := .illTyped "repeated srv6 needs a dispatch constant under itself",
+  note := "D-037: srv6 declares no srv6-under-srv6 constant; one optional header (`srv6?`) is fine" }
+vector typRepeatNoSelfEdgeStar := {
+  id := "typ-repeat-no-self-edge-star", ast := { layers := [P "eth", P "ipv4", Pq "gre" .star, P "ipv4", P "tcp"] },
+  expected := .illTyped "repeated gre needs a dispatch constant under itself" }
 vector quantOptIPIPAbsent := {
   id := "quant-opt-ipip-absent", ast := { layers := [P "eth", P "ipv4", Pq "ipv4" .opt, P "tcp"] },
   expected := .accept [], note := "no inner ipv4: tcp dispatches on the outer header (D-034)" }
@@ -314,7 +321,7 @@ def chainVectors : List Vector := [
   quantOptPresent, quantOptAbsent, quantOptPredHolds, quantOptPredFails, quantOptBounds, quantRangeMidTrunc, quantRange01Bounds,
   quantStarBounds, quantMplsRange, quantMplsPlus, quantMplsStarZero, quantMplsMinUnmet, quantChainEnd,
   quantGreedyOverrun, quantOverrunBounded, quantOverrunOpen, quantExactBound, quantOptMplsOverrun, quantOptMplsOne, quantGreedyUnreachable, quantPredMidFail, quantPredMidFailStatic, quantPredFirstFail,
-  quantPredAllHold, quantSelfValidSkip, quantSelfValidPresent, quantSelfValidShortV4, quantSelfValidShortV6, quantSelfValidEmpty, quantSelfValidCascade, quantSelfValidCascadeEth, quantSelfValidBroken, quantOptIPv4Last, quantOptIPv4LastAbsent, quantOptIPIP, quantExactOneMachine, typAltExactOne, quantOptIPIPAbsent, quantOptIPIPTwiceOne, quantOptIPIPTwiceNone, quantOptIPIPTwiceBoth, typOptionalAfterSkip, typOptionalNoCheck, chainMandatorySelfEdgeMiss, quantSelfEdgeStar, quantSelfEdgeOpt,
+  quantPredAllHold, quantSelfValidSkip, quantSelfValidPresent, quantSelfValidShortV4, quantSelfValidShortV6, quantSelfValidEmpty, quantSelfValidCascade, quantSelfValidCascadeEth, quantSelfValidBroken, quantOptIPv4Last, quantOptIPv4LastAbsent, quantOptIPIP, quantExactOneMachine, typAltExactOne, typRepeatNoSelfEdge, typRepeatNoSelfEdgeStar, quantOptIPIPAbsent, quantOptIPIPTwiceOne, quantOptIPIPTwiceNone, quantOptIPIPTwiceBoth, typOptionalAfterSkip, typOptionalNoCheck, chainMandatorySelfEdgeMiss, quantSelfEdgeStar, quantSelfEdgeOpt,
   absentConsecutiveEthertype, absentConsecutiveSelfValid, absentConsecutiveMplsOnly, absentConsecutiveNeither, absentConsecutiveArp, quantFirstOptional,
   altFirst, altSecond, altNone, altFirstPredFails, altRoot, altNoCheck,
   hostTcVlanMandatory, hostTcVlanOpt, hostL3Root, hostL3EthRoot]

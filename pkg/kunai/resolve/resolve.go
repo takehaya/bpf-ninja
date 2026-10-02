@@ -20,6 +20,7 @@ package resolve
 import (
 	"fmt"
 	"slices"
+	"strings"
 
 	"github.com/takehaya/bpf-ninja/pkg/kunai/ast"
 	"github.com/takehaya/bpf-ninja/pkg/kunai/ir"
@@ -209,6 +210,13 @@ func checkChainShape(layers []*ir.LayerInstance) error {
 				}
 			}
 			continue
+		}
+		// A layer that can repeat dispatches its second and later
+		// instances against its own protocol, which needs a declared
+		// constant: self-validation is not a chain link (spec D-037).
+		if repeats := l.Quant == ast.QuantStar || l.Quant == ast.QuantPlus || (l.Quant == ast.QuantRange && l.RangeMax != 1); repeats && l.Spec.SelectDispatchConst(l.Spec.Name) == nil {
+			self := strings.ToUpper(l.Spec.Name)
+			return errorf(l.Pos, "repeated %s needs a dispatch constant under itself (declare KUNAI_%s_%s_<FIELD> or KUNAI_%s_%s_NO_CHECK in %s.p4); without one it can be optional (`?`), not repeated", l.Spec.Name, self, self, self, self, l.Spec.Name)
 		}
 		if !l.Absentable() || l.Dispatch == nil || l.Dispatch.Type != vocab.DispatchNoCheck {
 			continue

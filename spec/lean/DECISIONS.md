@@ -288,6 +288,14 @@ Entries are never deleted; a rejected candidate stays in the log.
 - 状態: 承認済 (2026-10-02)
 - 反映先: `Host.lean` `SetDecl` / `Host.sets`, `Eval/Layer.lean` `evalPred`, `Eval/Check.lean` `checkPred` / `checkProtoLayer`, vectors `pred-inset-*`, `typ-pred-inset-*`, `syn-pred-inset`; Go `dsltest` `specSetSlots`
 
+## D-037: 繰り返す layer の self edge
+- 論点: `{n,m}` (m > 1), `*`, `+` の 2 個目以降の instance は自分自身の protocol を親に dispatch する。`check` は `possibleParents` に自分を含めないので self edge を見ておらず、`srv6{0,2}` は静的に通って実行時に 2 個目が D-017 の probe (routing_type == 4) に落ちる (tcp の sport の下位 byte が 4 だと 2 個目の srv6 とみなして reject)。`gre{0,2}` は gre が 1 個 match した後で初めて illTyped になり、「illTyped は packet に依らない」に反する。
+- 現行 Go 実装の挙動: codegen が `chained X has no self-dispatch const` の `ErrNotImplemented`。
+- 推奨: 繰り返せる layer (最大 instance 数 > 1) には宣言された self edge を要求し、無ければ illTyped。self-validation の probe は chain の連結には使わない。Go は resolver (`checkChainShape`) で同じ型エラーにする。`?` / `{0,1}` は self edge 不要。
+- 付記: `*` / `+` の反復上限は `<PROTO>_MAX_DEPTH`。ipv6 ではこの定数が拡張ヘッダ walk の上限 (4) と兼用で、入れ子の深さの意味ではない。可変長 layer の繰り返しを実装するときに分ける。
+- 状態: 承認済 (2026-10-03)
+- 反映先: `Eval/Check.lean` `checkProtoLayer`, vectors `typ-repeat-no-self-edge`, `typ-repeat-no-self-edge-star`; Go `resolve/resolve.go` `checkChainShape`
+
 ## Go 側への issue 候補 (この作業では変更しない)
 
 `fix/kunai-spec-conformance` で対応済みのものは ✅、残りは `issues/` に本文がある。
@@ -313,4 +321,4 @@ Entries are never deleted; a rejected candidate stays in the log.
 17. ✅ (spec 側) Lean の bracket predicate が primary header の field しか型付けしなかった — `resolveBracket` で where と同じ規則 (T-FieldAux / T-FieldStackStatic、不在なら false、write-back 後の値) に拡張 (`fix/kunai-spec-conformance-4`, vectors `ipv6-exts-bracket-*`, `gtp-exts-bracket`)。Go は push 数で数える stack を index する bracket predicate を walk 後に評価し push count で guard する (write-back を持つ ipv6 は全 predicate を walk 後、持たない gtp はその predicate だけを walk 後に回し、他は walk 前のまま; vectors `gtp-exts-bracket`, `gtp-exts-bracket-absent`, `gtp-exts-bracket-mixed`)。量化 layer の predicate は反復ごとの replay で count が確定しないため `ErrNotImplemented` のまま。
 18. ✅ 自己 edge の dispatch が前 header の chain-end 信号を見ない — `eth/mpls/mpls` が 1 label の stack で 2 枚目を ipv4 の先頭 4 byte から読んでいた。`genDispatch` が同一 proto の親に対して先に end 信号を検査する (PR #128, vectors `chain-mpls-self-edge-miss`, `quant-self-edge-opt`, `quant-self-edge-star`)。
 
-残: 可変長 layer の繰り返し (`ipv4*`, `srv6{0,2}`)。
+残: self edge を持つ可変長 layer の繰り返し (`ipv4{0,2}`, `ipv4*`)。self edge の無い protocol の繰り返し (`srv6{0,2}`, `gre*`) は型エラー (D-037)。入れ子は `ipv4/ipv4?/ipv4?` で 3 段まで書ける。

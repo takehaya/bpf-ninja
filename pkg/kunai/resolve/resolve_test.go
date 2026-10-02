@@ -149,7 +149,7 @@ func TestRuntimeParentDispatch(t *testing.T) {
 		resolveOK(t, expr, nil)
 	}
 	// eth has no constant under udp, so vxlan's absence would leave it undispatched.
-	for _, expr := range []string{"eth/mpls?/cw/eth", "eth/ipv4/udp/vxlan?/eth/ipv4/tcp", "eth/ipv4/udp/vxlan*/eth/ipv4/tcp"} {
+	for _, expr := range []string{"eth/mpls?/cw/eth", "eth/ipv4/udp/vxlan?/eth/ipv4/tcp", "eth/mpls*/cw/eth"} {
 		f, err := parser.Parse(expr, "t.dsl", nil)
 		if err != nil {
 			t.Fatalf("parse(%q): %v", expr, err)
