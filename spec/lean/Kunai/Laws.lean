@@ -437,15 +437,25 @@ theorem labelProto_shape_none (L : List Layer) (l : String)
   | nil => rfl
   | cons x tl ih =>
     simp only [List.flatMap_cons, List.mem_append, not_or] at h
+    have ih' := ih h.2
+    simp only [labelProto] at ih' ⊢
+    rw [List.map_cons, List.findSome?_cons, ih']
     cases x with
     | proto q =>
       have hq : q.label ≠ some l := by
         intro hql; exact h.1 (by simp [Layer.labels, hql])
-      simp [labelProto, List.findSome?_cons, Layer.shape, hq] at *
-      exact ih h.2
+      simp [Layer.shape, hq]
     | alt alts =>
-      simp [labelProto, List.findSome?_cons, Layer.shape] at *
-      exact ih h.2
+      have halts : ∀ a ∈ alts, a.label ≠ some l := by
+        intro a ha hal
+        exact h.1 (by simp only [Layer.labels, List.mem_filterMap]; exact ⟨a, ha, hal⟩)
+      have hnone : (alts.map fun a : ProtoLayer => { a with preds := [] }).findSome?
+          (fun a => if a.label == some l then some a.name else none) = none := by
+        rw [List.findSome?_eq_none_iff]
+        intro a ha
+        obtain ⟨a', ha', rfl⟩ := List.mem_map.mp ha
+        simp [halts a' ha']
+      simp only [Layer.shape, hnone]
 
 /-- A name that no label shadows resolves to the first instance of its
 protocol. -/

@@ -1165,7 +1165,7 @@ implementation 詳細は、`pkg/kunai/codegen/parser_state.go` の state graph e
 | 領域 | 制限 |
 |---|---|
 | Predicate | `field in [...]` は整数と範囲 `lo..hi` の alternatives 実装済 (F7、ホスト順で比較) / IPv4/IPv6/MAC/CIDR alternatives は scope outside / `bit<>64` の field に対する `in` は未対応 (今のところ ≤64-bit のみ wired) / `field has FLAG` は F6 bitwise `&` で superseded (`tcp.flags & 0x12 == 0x12` で同等表現) |
-| Where | 算術ネスト最大 16 段 (`maxArithDepth`、10b で 8→16 bump) / het-alt 後の where が alt member の field を直接参照 (`where ipv6.src == fe80::1`) は reject (alt 識別不能) / `in` は bracket predicate `[...]` 専用で、where 句では `==` の `or` chain で代替 (parser が targeted hint を返す) |
+| Where | 算術ネスト最大 16 段 (`maxArithDepth`、10b で 8→16 bump) / where が alt member の field を参照するとき (`where ipv6.src == fe80::1`) は、alternation が matched-member slot に記録した member の番号を atom の前で確かめる (別の member なら atom は false) / `in` は bracket predicate `[...]` 専用で、where 句では `==` の `or` chain で代替 (parser が targeted hint を返す) |
 | Aux × literal | landed (B-3 commit 6547a42): IPv4/IPv6/MAC/CIDR literal を aux 経由で比較可能。例: `srv6.segments[0].addr == fc00::/16`、`where ipv4.options.RR.addrs[0].addr == 10.0.0.1` |
 | Capture | `capture f1, f2` フィールド列 不可 / 量化 layer (`+`/`*`/`{n,m}`) を含む filter で `headers+N` 不可。het-alt 越えの capture は max-alt 上界丸めで動作 |
 | Alternation | alt 数 2-4 (`altCountCap`) / heterogeneous size + diverged dispatch 対応済 (P3-12) / nested alt は resolver flatten (P3-13) / quantifier 付き内側 alt (`(a\|b)?`) は reject / 先頭不可 |

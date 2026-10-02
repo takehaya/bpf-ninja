@@ -41,6 +41,17 @@ func (qo queriedOptions) entrySlot(layer *ir.LayerInstance) (int16, error) {
 	return 0, fmt.Errorf("codegen: %s has no runtime entry slot (the resolver did not mark it)", layer.DisplayName())
 }
 
+// matchedSlot is the stack slot in which the alternation group at chain
+// position `pos` records the index of its matched member; ok is false
+// when no where / capture clause reads a member of that group.
+func (qo queriedOptions) matchedSlot(pos int) (slot int16, ok bool) {
+	if qo.plan == nil {
+		return 0, false
+	}
+	slot, ok = qo.plan.matched[pos]
+	return slot, ok
+}
+
 // collectQueriedOptions walks the resolved program and gathers every
 // dynamic-eligible aux reference, then plans the stack slots. Preserves
 // sort-by-kind-byte ordering so slot indices stay stable across compiles
@@ -54,14 +65,35 @@ func collectQueriedOptions(p *ir.Program) (queriedOptions, error) {
 	for _, layer := range p.Layers {
 		visitLayerPredicates(layer, visit)
 	}
-	ir.WalkConditionFieldRefs(p.Where, visit)
+	// A where / capture read of an alternation member needs to know
+	// whether that member is the one that matched. A member's own bracket
+	// predicate runs inside its branch and does not.
+	memberGroup := map[*ir.LayerInstance]int{}
+	for _, layer := range p.Layers {
+		if layer == nil {
+			continue
+		}
+		for _, alt := range layer.Alternation {
+			memberGroup[alt] = layer.LayerPos
+		}
+	}
+	readGroups := map[int]bool{}
+	visitRead := func(f *ir.FieldRef) {
+		visit(f)
+		if f != nil {
+			if pos, ok := memberGroup[f.Layer]; ok {
+				readGroups[pos] = true
+			}
+		}
+	}
+	ir.WalkConditionFieldRefs(p.Where, visitRead)
 	for _, cap := range p.Captures {
 		if cap == nil {
 			continue
 		}
-		ir.WalkConditionFieldRefs(cap.Where, visit)
+		ir.WalkConditionFieldRefs(cap.Where, visitRead)
 		for _, f := range cap.Fields {
-			visit(f)
+			visitRead(f)
 		}
 	}
 	for layer, layouts := range qo.demand {
@@ -73,7 +105,7 @@ func collectQueriedOptions(p *ir.Program) (queriedOptions, error) {
 		})
 		qo.demand[layer] = layouts
 	}
-	plan, err := planStack(p.Layers, qo.demand)
+	plan, err := planStack(p.Layers, qo.demand, readGroups)
 	if err != nil {
 		return queriedOptions{}, err
 	}

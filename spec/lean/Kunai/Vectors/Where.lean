@@ -490,7 +490,66 @@ vector typArith128Band := {
   expected := .illTyped "unsupported: only + and - are defined on fields wider than 64 bits",
   note := "D-035: bitwise operators too; a CIDR literal covers prefix tests" }
 
+-- Alternation members in `where` (D-023 label note) --------------------------
+
+def qinqPkt (tci : Nat := 100) : Packet := eth 0x88a8 ++ vlan tci 0x0800 ++ ipv4 6 ++ tcp 12345 80 ++ payload 5
+def tagAlt (label : Option String) (w : Where) : Filter :=
+  { layers := [P "eth", .alt [{ name := "vlan", label }, { name := "qinq" }], P "ipv4", P "tcp"], cond := some w }
+def l4Alt (w : Where) : Filter :=
+  { layers := [P "eth", P "ipv4", .alt [{ name := "tcp", label := some "x" }, { name := "udp" }]], cond := some w }
+
+vector whereAltLabelHit := {
+  id := "where-alt-label-hit", ast := tagAlt (some "v") (cmp (fld "v" "tci") .eq (k 100)), packet := vlanPkt,
+  expected := .accept [], note := "a label on an alternation member names that member" }
+vector whereAltLabelOther := {
+  id := "where-alt-label-other-member", ast := tagAlt (some "v") (cmp (fld "v" "tci") .eq (k 100)), packet := qinqPkt,
+  expected := .reject, note := "qinq matched, so v is absent and its atom false (D-003), whatever qinq's tci is" }
+vector whereAltLabelOtherNot := {
+  id := "where-alt-label-other-member-not", ast := tagAlt (some "v") (.not (cmp (fld "v" "tci") .eq (k 100))),
+  packet := qinqPkt, expected := .accept [] }
+vector whereAltNameHit := {
+  id := "where-alt-name-hit", ast := tagAlt none (cmp (fld "vlan" "tci") .eq (k 100)), packet := vlanPkt,
+  expected := .accept [] }
+vector whereAltNameOther := {
+  id := "where-alt-name-other-member", ast := tagAlt none (cmp (fld "vlan" "tci") .eq (k 100)), packet := qinqPkt,
+  expected := .reject, note := "the protocol name of a member that did not match is absent too" }
+vector whereAltNameOtherNot := {
+  id := "where-alt-name-other-member-not", ast := tagAlt none (.not (cmp (fld "vlan" "tci") .eq (k 100))),
+  packet := qinqPkt, expected := .accept [] }
+def udpPkt : Packet := eth 0x0800 ++ ipv4 17 ++ udp 12345 80 ++ payload 5
+def l3Alt (pre : List Layer) (w : Where) : Filter :=
+  { layers := pre ++ [.alt [{ name := "ipv4" }, { name := "ipv6" }], P "tcp"], cond := some w }
+
+vector whereAltLabelHet := {
+  id := "where-alt-label-het", ast := l4Alt (cmp (fld "x" "dport") .eq (k 80)),
+  expected := .accept [], note := "members of different sizes" }
+vector whereAltLabelHetOther := {
+  id := "where-alt-label-het-other-member", ast := l4Alt (cmp (fld "x" "dport") .eq (k 80)), packet := udpPkt,
+  expected := .reject, note := "udp matched; its dport is 80 at the same offset, but x is absent" }
+vector whereAltLabelHetOtherNot := {
+  id := "where-alt-label-het-other-member-not", ast := l4Alt (.not (cmp (fld "x" "dport") .eq (k 80))),
+  packet := udpPkt, expected := .accept [] }
+vector whereAltL3Hit := {
+  id := "where-alt-l3-hit", ast := l3Alt [P "eth"] (.and (cmp ttl .eq (k 64)) (cmp dport .eq (k 80))),
+  expected := .accept [], note := "a member of a variable-size alternation, and a layer after it" }
+vector whereAltL3Other := {
+  id := "where-alt-l3-other-member", ast := l3Alt [P "eth"] (cmp ttl .eq (k 64)), packet := ipv6TCP,
+  expected := .reject }
+vector whereAltL3OtherOr := {
+  id := "where-alt-l3-other-member-or", packet := ipv6TCP,
+  ast := l3Alt [P "eth"] (.or (cmp ttl .eq (k 64)) (cmp (fld "ipv6" "hop_limit") .gt (k 0))),
+  expected := .accept [], note := "one atom per member: the absent one is false, the present one decides" }
+vector whereAltL3AfterOpt := {
+  id := "where-alt-l3-after-optional", ast := l3Alt [P "eth", Pq "vlan" .opt] (cmp ttl .eq (k 64)), packet := vlanPkt,
+  expected := .accept [], note := "the member's start is a runtime offset" }
+vector whereAltL3AfterOptOther := {
+  id := "where-alt-l3-after-optional-other-member", ast := l3Alt [P "eth", Pq "vlan" .opt] (cmp ttl .eq (k 64)),
+  packet := ipv6TCP, expected := .reject }
+
 def whereVectors : List Vector := [
+  whereAltLabelHit, whereAltLabelOther, whereAltLabelOtherNot, whereAltNameHit, whereAltNameOther, whereAltNameOtherNot,
+  whereAltLabelHet, whereAltLabelHetOther, whereAltLabelHetOtherNot, whereAltL3Hit, whereAltL3Other, whereAltL3OtherOr,
+  whereAltL3AfterOpt, whereAltL3AfterOptOther,
   whereCmpOps, whereLitIPv4, whereCIDRIn, whereCIDRNe, whereCIDR0, whereMAC, whereIPv6CIDR, whereIPv6Eq,
   whereNegLitMiss, whereNegLitHit, whereConstFold,
   whereArithOps, whereBitwise, whereShiftMasked, whereNoWrap, whereDivZero, whereModZero, whereMixedWidth,

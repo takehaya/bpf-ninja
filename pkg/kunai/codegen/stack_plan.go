@@ -20,8 +20,10 @@ const bpfStackBottom = int16(-512)
 // runtime entry slot per layer group the resolver marked
 // NeedsRuntimeOffset (alternation members share their group's slot), then
 // every layer's dynamic-aux demand (option positions, push counts), packed
-// in chain order from stackPlanTop downward. Positions that need no slot
-// take no space, so the only bound is the BPF stack itself.
+// in chain order from stackPlanTop downward, then one matched-member slot
+// per alternation group a where / capture clause reads a member of.
+// Positions that need no slot take no space, so the only bound is the BPF
+// stack itself.
 //
 // Entry slots are keyed by chain position: the group's members share the
 // position, and the `?` lowering in genLayerInner emits a copy of the
@@ -31,12 +33,16 @@ const bpfStackBottom = int16(-512)
 type stackPlan struct {
 	entry map[int]int16
 	aux   map[*ir.LayerInstance]int16 // the layer's first demand slot
+	// matched holds, per alternation group (by chain position), the slot
+	// the group records the index of its matched member in.
+	matched map[int]int16
 }
 
-// planStack lays out `layers` and their demand; it fails when the plan
-// would run past the BPF stack.
-func planStack(layers []*ir.LayerInstance, demand map[*ir.LayerInstance][]*vocab.AuxLayout) (*stackPlan, error) {
-	plan := &stackPlan{entry: map[int]int16{}, aux: map[*ir.LayerInstance]int16{}}
+// planStack lays out `layers`, their demand and the alternation groups
+// in `readGroups` (chain positions whose members a where / capture clause
+// reads); it fails when the plan would run past the BPF stack.
+func planStack(layers []*ir.LayerInstance, demand map[*ir.LayerInstance][]*vocab.AuxLayout, readGroups map[int]bool) (*stackPlan, error) {
+	plan := &stackPlan{entry: map[int]int16{}, aux: map[*ir.LayerInstance]int16{}, matched: map[int]int16{}}
 	cursor := int(stackPlanTop)
 	// take hands out `slots` consecutive slots for `l`, naming it when the
 	// plan runs past the BPF stack.
@@ -75,6 +81,16 @@ func planStack(layers []*ir.LayerInstance, demand map[*ir.LayerInstance][]*vocab
 				plan.aux[m] = slot
 			}
 		}
+	}
+	for _, l := range layers {
+		if l == nil || len(l.Alternation) == 0 || !readGroups[l.LayerPos] {
+			continue
+		}
+		slot, err := take(l, 1, "the matched-member slot")
+		if err != nil {
+			return nil, err
+		}
+		plan.matched[l.LayerPos] = slot
 	}
 	return plan, nil
 }

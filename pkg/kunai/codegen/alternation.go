@@ -171,6 +171,16 @@ func genAlternation(layer *ir.LayerInstance, index int, all []*ir.LayerInstance,
 		if needMatchedFlag {
 			insns = append(insns, asm.Mov.Imm(matchedAltReg, int32(i)))
 		}
+		// A where / capture clause reads a member of this group: record
+		// which one matched, so a read of another member is false
+		// (D-003) instead of reading this member's bytes. R3 is scratch
+		// after the member's body.
+		if slot, ok := qo.matchedSlot(layer.LayerPos); ok {
+			insns = append(insns,
+				asm.Mov.Imm(asm.R3, int32(i)),
+				asm.StoreMem(asm.R10, slot, asm.R3, asm.DWord),
+			)
+		}
 
 		if i > 0 {
 			sym := fmt.Sprintf("dsl_alt_%d_%d", index, i)
