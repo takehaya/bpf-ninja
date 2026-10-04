@@ -169,6 +169,7 @@ Entries are never deleted; a rejected candidate stays in the log.
 - 状態: 承認済 (2026-10-01、案 a)
 - 反映先: `Eval/Where.lean` `evalCapture` `.toLayer`
 - Go (PR #126): capture 長は compile 時の上限 (全 instance がある場合、`prefixHeaderSizeUpper`)。対象 layer が無いときは句を落とせず上限分を capture する (verdict は一致、vectors `cap-absent-layer`, `cap-present-layer`)。
+- 追記 (2026-10-05): alternation の member を対象にした capture (`(ipv4@a|ipv6) capture a`) も同じ規則: 別の member がマッチした packet では `a` は不在で句は落ちる。Go はここでも compile 時の上限 (その member のサイズ) を capture する。where の atom (#146 で matched-member slot を確かめるようにした) と違い capture 長は immediate なので、host 側に長さを渡す経路を変えない限り揃えられない (vectors `cap-alt-member-*`)。
 
 ## D-021: per-capture `where` の合成
 - 論点: §13.6 は `gate(c, σ) = false` なら capture 句を省くだけ (verdict は変えない) と読める。`dsl-grammar.md:219` / `dsl-usage.md:217` は「filter 全体の where と AND 合成」。
