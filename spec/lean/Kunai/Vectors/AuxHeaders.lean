@@ -86,6 +86,20 @@ vector ipv4MalformedOptsQueried := {
   ast := { layers := chain3, cond := some (.or (cmp dport .eq (k 80)) (.fieldExists ⟨[("ipv4", none), ("router_alert", none)]⟩)) },
   packet := ipv4BadOptPkt, expected := .accept [] }
 
+def raExists := Where.fieldExists ⟨[("ipv4", none), ("options", none), ("ROUTER_ALERT", none)]⟩
+def ipv4Opt40 (opts : Packet) : Packet :=
+  eth 0x0800 ++ ipv4 6 (ihl := 15) (options := opts ++ List.replicate (40 - opts.length) 0) ++ tcp 12345 80 ++ payload 5
+vector ipv4OptDepthLastFault := {
+  id := "ipv4-opt-depth-last-dispatch-fault",
+  ast := { layers := chain3, cond := some raExists },
+  packet := ipv4Opt40 ([0x94, 4, 0, 0] ++ List.replicate 7 1 ++ [0x99, 2]), expected := .reject,
+  note := "D-026: MAX_DEPTH 8 back edges = 9 dispatches; the 9th reads the bad kind, so the region is malformed" }
+vector ipv4OptDepthLastSighting := {
+  id := "ipv4-opt-depth-last-dispatch-sighting",
+  ast := { layers := chain3, cond := some raExists },
+  packet := ipv4Opt40 (List.replicate 8 1 ++ [0x94, 4, 0, 0]), expected := .accept [],
+  note := "D-026: the 9th dispatch sights the router alert" }
+
 -- IPv6 extension headers ---------------------------------------------------
 
 def ipv6L : List Layer := [P "eth", P "ipv6", P "tcp"]
@@ -406,7 +420,7 @@ def auxVectors : List Vector := [
   tcpMss, tcpMssMiss, tcpMssAbsent, tcpMssAbsentNot, tcpMssAfterNop, tcpUnknownSkipped, tcpUnknownLen0, tcpUnknownLen1,
   tcpOptCross, tcpEol, tcpMssDup, tcpMssBadLen, tcpMssExists, tcpMssExistsNot, tcpSackBlock, tcpSackAny, tcpSackAll,
   tcpSackAbsentAny, tcpMalformedNoQuery, tcpMalformedNotQuery, tcpMalformedOrTrue, tcpMalformedExists,
-  tcpMalformedAfterMss, tcpMalformedChainOn, ipv4MalformedOpts, ipv4MalformedOptsQueried,
+  tcpMalformedAfterMss, tcpMalformedChainOn, ipv4MalformedOpts, ipv4MalformedOptsQueried, ipv4OptDepthLastFault, ipv4OptDepthLastSighting,
   ipv6Hbh, ipv6TwoExts, ipv6ExtLong, ipv6ExtTooLong, ipv6ExtsIndex, ipv6ExtsIndex1, ipv6ExtsIndexAfterLong, ipv6ExtsAnyAfterLong, ipv6ExtsDynamicLong, ipv6ExtsDynamicLongSecond, ipv6ExtsDynamicLongAbsent, ipv6ExtsDynamicLongLast, ipv6ExtsDynamicLongLastMiss, ipv6ExtsDynamicLongBeyond, ipv6ExtsDynamicLongSlot, ipv6ExtsDynamicLongSlotAbsent,
   ipv6ExtsBracket, ipv6ExtsBracketAbsent, ipv6ExtsBracketLong, ipv6ExtsBracketDynamic, ipv6ExtsBracketIter, ipv6ExtsBracketInAbsent, ipv6ExtsBracketInLong, ipv6ExtsSliceLong, ipv6ExtsBracketSliceLong, gtpExtsBracket, gtpExtsBracketAbsent, gtpExtsBracketNone, gtpExtsBracketMixed, gtpExtsBracketMixedMiss, ipv6ExtsIndexAbsent,
   ipv6NextHeaderWhere, ipv6NextHeaderBracket, ipv6FiveExts, ipv6SixExts, ipv6AnyExts, ipv6AllExts,

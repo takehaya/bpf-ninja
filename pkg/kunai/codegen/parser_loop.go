@@ -224,10 +224,14 @@ const parserTLVLoopCap = 64
 // inline iter-0 — control enters via Ja from a parent state,
 // invokes bpf_loop, then jumps to doneLabel.
 func (c *pmCtx) emitMultiStateSelfLoop(state *vocab.ParseState, stateIdx int) (asm.Instructions, asm.Instructions, error) {
+	// D-026: MAX_DEPTH counts back edges, so the walk dispatches
+	// MAX_DEPTH + 1 times. emitSelfLoop gets the extra one from its
+	// inline first iteration; this loop has none, so it runs it here.
 	maxIter := c.spec.MaxDepth
 	if maxIter == 0 {
 		maxIter = defaultChainDepth
 	}
+	maxIter++
 	if maxIter > parserTLVLoopCap {
 		return nil, nil, fmt.Errorf("%w: parser machine %s multi-state self-loop depth %d exceeds cap %d", ErrNotImplemented, c.spec.Name, maxIter, parserTLVLoopCap)
 	}

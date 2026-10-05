@@ -220,6 +220,7 @@ Entries are never deleted; a rejected candidate stays in the log.
 - 現行 Go 実装の挙動: 同じ (vector `ipv6-ext-five-at-depth`, `ipv6-ext-six-exceeds-depth`)。
 - 状態: 承認済 (2026-10-01、一括)
 - 反映先: `Eval/Machine.lean` `run`
+- 追記 (2026-10-06): Go の TLV walk (`emitMultiStateSelfLoop`: ipv4 / tcp / geneve の option) は inline の初回反復が無く、bpf_loop を `MAX_DEPTH` 回しか回していなかった (dispatch が 1 回少ない)。`MAX_DEPTH + 1` 回に直した (vectors `ipv4-opt-depth-last-dispatch-*`)。
 
 ## D-027: 抽出されなかった option / aux の field
 - 論点: `tcp.options.MSS.value == 1460` で MSS が無いとき。
@@ -241,7 +242,7 @@ Entries are never deleted; a rejected candidate stays in the log.
 - 当初の決定 (2026-10-01): 仕様では parser machine は常に走り、⊥ なら reject。Go は option を参照しない filter では walk を省く (demand-driven) ので accept し、意図的な逸脱として mismatch のまま維持していた。
 - 改訂 (2026-10-05、ユーザー決定): Go の demand-driven な扱いをそのまま仕様にすると、`where tcp.dport == 80 or tcp.options.MSS.exists` が左辺 true でも reject になる (option を「書いたかどうか」で verdict が変わる) ので採らない。代わりに、宣言された option 領域 (`lenRule` のある layer: ipv4 の IHL、tcp の data_offset、geneve の opt_len) の中で walk が ⊥ になったら、その layer は option を 1 つも持たないものとし、chain は宣言長の先へ進む。option を読む atom は D-003 / D-027 の不在と同じく false (`not (…)` は true、`any` は false、`all` は true)。途中まで見えた option も含めて全部を捨てる。宣言長そのものが不正な場合と、領域が packet に収まらない場合は従来どおり reject。
 - 性質: verdict は atom が読むものだけで決まり局所的。`or` / `and` の交換則などの law はそのまま。壊れた option を弾く手段は DSL から無くなる (必要なら `tcp.options.valid` のような明示的な atom を後で足す)。
-- 反映先: `Eval/Layer.lean` `extractBody`。Go: `parser_loop.go` `emitMultiStateSelfLoop` (callback の reject を `_malformed_` landing へ: R4 を walk 入口に戻し、option slot を不在に、bulk advance で宣言長だけ進む)、`hasDeclaredOptionRegion`。srv6 の segment walk は宣言長を持たないので対象外 (従来どおり reject)。F10 pin 257→283。vectors `tcp-opt-malformed-*`, `ipv4-opt-malformed*`。mismatch は 0 になった。
+- 反映先: `Eval/Layer.lean` `extractBody`。Go: `parser_loop.go` `emitMultiStateSelfLoop` (callback の reject を `_malformed_` landing へ: R4 を walk 入口に戻し、option slot を不在に、bulk advance で宣言長だけ進む)、`hasDeclaredOptionRegion`。srv6 の segment walk は宣言長を持たないので対象外 (従来どおり reject)。F10 pin 257→283。vectors `tcp-opt-malformed-*`, `ipv4-opt-malformed*`。mismatch は 0 になった。Go と仕様で option 領域を何回 dispatch するかがずれていた件 (D-026 追記) もあわせて直した。
 
 ## D-030: option の「視認」と重複
 - 論点: `parse_sack` / `parse_rr` は `extract` せず lookahead で長さ分 advance するため、§14 の α には SACK / RR の view が入らない。しかし `tcp.options.SACK.blocks[0]` は参照できる。
