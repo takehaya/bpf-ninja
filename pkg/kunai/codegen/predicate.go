@@ -211,6 +211,16 @@ type predCtx struct {
 	// run after the parser walk (splitPredicates), since the count is final
 	// only then; nil means such an index cannot be guarded.
 	stackCount func(*ir.FieldRef) (int16, bool)
+	// guarded is the alternation member whose guard has just run its
+	// parent dispatch (genAlternation); its body skips the identical
+	// dispatch, which the guard already passed.
+	guarded *ir.LayerInstance
+}
+
+// dispatchDone reports whether `l`'s parent dispatch already ran as its
+// alternation guard.
+func (pc *predCtx) dispatchDone(l *ir.LayerInstance) bool {
+	return pc != nil && pc.guarded != nil && pc.guarded == l
 }
 
 // emitInSetPredicate lowers `field in @set` for architecture B: it does

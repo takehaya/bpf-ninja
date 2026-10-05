@@ -1274,6 +1274,28 @@ func TestAccPlanDropsMatchedMemberStore(t *testing.T) {
 	}
 }
 
+// TestAlternationDispatchOnce: a non-last member's guard is its parent
+// dispatch, so its body does not compare the parent field again. Each
+// member's protocol value appears in exactly one compare.
+func TestAlternationDispatchOnce(t *testing.T) {
+	out, err := Compile("eth/ipv4/(tcp|udp|icmp)", codegen.Capabilities{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, proto := range []int64{6, 17, 1} {
+		n := 0
+		for _, ins := range out.Main {
+			if ins.OpCode.Class().IsJump() && ins.OpCode.Source() == asm.ImmSource && ins.Constant == proto &&
+				(ins.OpCode.JumpOp() == asm.JNE || ins.OpCode.JumpOp() == asm.JEq) && ins.Dst == asm.R3 {
+				n++
+			}
+		}
+		if n != 1 {
+			t.Errorf("ipv4.protocol == %d compared %d times, want 1", proto, n)
+		}
+	}
+}
+
 func TestCompileAlternationMemberWhere(t *testing.T) {
 	// `where ipv6.src == ...` references an alt member directly, by
 	// protocol name or by label. The atom is false when another member

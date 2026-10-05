@@ -970,7 +970,7 @@ func genStaticLayer(layer *ir.LayerInstance, index int, all []*ir.LayerInstance,
 
 	insns := emitBounds(hs, dslReject)
 
-	if index > 0 && layer.Dispatch != nil {
+	if index > 0 && layer.Dispatch != nil && !pc.dispatchDone(layer) {
 		di, err := genParentDispatch(layer, index, all, qo, precedingLayersLeaveR4Range(all, index), precedingLayersLeaveR4Range(all, index-1), dslReject)
 		if err != nil {
 			return nil, err
