@@ -114,14 +114,18 @@ def extractBody (c : Ctx) (st : State) (name : String) (spec : ProtoSpec) :
       | some flags => pure (ts.foldl (fun acc t => if flags &&& t.bitMask != 0 then acc + t.lenBytes else acc) len)
   if st.cursor + len > c.P.length then throw .bounds
   -- aux-extract(p, π, P, α) (§14.4): the parser machine walks options,
-  -- extension headers, and stacks; ⊥ is Fail-Pred. The layer spans the
-  -- declared length or whatever the machine consumed, whichever is longer.
+  -- extension headers, and stacks. The layer spans the declared length or
+  -- whatever the machine consumed, whichever is longer. ⊥ is Fail-Pred,
+  -- except inside a declared option region (D-029): the header declares
+  -- how long its options are (`lenRule`) and that region is in the packet,
+  -- so a walk that fails there leaves the layer with no options, as if
+  -- the region held none, and the chain goes on past the region.
   let (len, aux, patches) ← match spec.machine with
     | none => pure (len, [], [])
     | some m =>
       match runMachine c.P spec m st.cursor with
       | .ok ψ => pure (max len (ψ.cursor - st.cursor), ψ.views, ψ.patches)
-      | .error .reject => throw .pred
+      | .error .reject => if spec.lenRule.isSome then pure (len, [], []) else throw .pred
       | .error (.illTyped r) => throw (.illTyped r)
   pure (len, aux, patches)
 

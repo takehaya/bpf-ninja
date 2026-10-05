@@ -61,7 +61,30 @@ vector tcpSackAll := tcpW (.all (cmp (sackIter "left") .eq (k 1))) sackPkt "tcp-
 vector tcpSackAbsentAny := tcpW (.any (cmp (sackIter "right") .eq (k 200))) ethIPv4TCP "tcp-opt-sack-absent-any" .reject (note := "D-007: empty stack ⇒ any is false")
 vector tcpMalformedNoQuery := {
   id := "tcp-opt-malformed-no-query", ast := { layers := chain3 }, packet := tcpOpts [25, 0, 0, 0],
-  expected := .reject, goStatus := .mismatch, note := "D-029: the parser always walks the options; Go only walks when an option is queried" }
+  expected := .accept [], note := "D-029: a malformed option region leaves tcp with no options; the chain goes on" }
+
+def mssExists := Where.fieldExists ⟨[("tcp", none), ("options", none), ("MSS", none)]⟩
+def malformedOpts : Packet := tcpOpts [25, 0, 0, 0]
+vector tcpMalformedNotQuery := tcpW (.not (cmp mss .eq (k 1460))) malformedOpts "tcp-opt-malformed-not"
+  (.accept []) (note := "D-029: no options, so MSS is absent: the atom is false and its negation true")
+vector tcpMalformedOrTrue := tcpW (.or (cmp dport .eq (k 80)) mssExists) malformedOpts "tcp-opt-malformed-or"
+  (.accept []) (note := "D-029: a true disjunct accepts whatever the other reads")
+vector tcpMalformedExists := tcpW mssExists malformedOpts "tcp-opt-malformed-exists" .reject
+vector tcpMalformedAfterMss := tcpW (cmp mss .eq (k 1460)) (tcpOpts (mssOpt 1460 ++ [25, 0, 0, 0]))
+  "tcp-opt-malformed-after-mss" .reject (note := "D-029: the region is malformed as a whole; an option sighted before the fault is gone too")
+vector tcpMalformedChainOn := {
+  id := "tcp-opt-malformed-chain-on", ast := { layers := chain3, cond := some (cmp dport .eq (k 80)) },
+  packet := tcpOpts [2, 4, 5], expected := .accept [],
+  note := "MSS crosses the end of the declared region: malformed, not a bounds failure" }
+def ipv4BadOptPkt : Packet :=
+  eth 0x0800 ++ ipv4 6 (ihl := 6) (options := [0x99, 4, 0, 0]) ++ tcp 12345 80 ++ payload 5
+vector ipv4MalformedOpts := {
+  id := "ipv4-opt-malformed", ast := { layers := chain3, cond := some (cmp dport .eq (k 80)) },
+  packet := ipv4BadOptPkt, expected := .accept [], note := "D-029: an unknown ipv4 option kind leaves ipv4 with no options" }
+vector ipv4MalformedOptsQueried := {
+  id := "ipv4-opt-malformed-queried",
+  ast := { layers := chain3, cond := some (.or (cmp dport .eq (k 80)) (.fieldExists ⟨[("ipv4", none), ("router_alert", none)]⟩)) },
+  packet := ipv4BadOptPkt, expected := .accept [] }
 
 -- IPv6 extension headers ---------------------------------------------------
 
@@ -382,7 +405,8 @@ def auxVectors : List Vector := [
   grePlain, greKey, greKeySeq, greAllFlags, greKeyTruncated,
   tcpMss, tcpMssMiss, tcpMssAbsent, tcpMssAbsentNot, tcpMssAfterNop, tcpUnknownSkipped, tcpUnknownLen0, tcpUnknownLen1,
   tcpOptCross, tcpEol, tcpMssDup, tcpMssBadLen, tcpMssExists, tcpMssExistsNot, tcpSackBlock, tcpSackAny, tcpSackAll,
-  tcpSackAbsentAny, tcpMalformedNoQuery,
+  tcpSackAbsentAny, tcpMalformedNoQuery, tcpMalformedNotQuery, tcpMalformedOrTrue, tcpMalformedExists,
+  tcpMalformedAfterMss, tcpMalformedChainOn, ipv4MalformedOpts, ipv4MalformedOptsQueried,
   ipv6Hbh, ipv6TwoExts, ipv6ExtLong, ipv6ExtTooLong, ipv6ExtsIndex, ipv6ExtsIndex1, ipv6ExtsIndexAfterLong, ipv6ExtsAnyAfterLong, ipv6ExtsDynamicLong, ipv6ExtsDynamicLongSecond, ipv6ExtsDynamicLongAbsent, ipv6ExtsDynamicLongLast, ipv6ExtsDynamicLongLastMiss, ipv6ExtsDynamicLongBeyond, ipv6ExtsDynamicLongSlot, ipv6ExtsDynamicLongSlotAbsent,
   ipv6ExtsBracket, ipv6ExtsBracketAbsent, ipv6ExtsBracketLong, ipv6ExtsBracketDynamic, ipv6ExtsBracketIter, ipv6ExtsBracketInAbsent, ipv6ExtsBracketInLong, ipv6ExtsSliceLong, ipv6ExtsBracketSliceLong, gtpExtsBracket, gtpExtsBracketAbsent, gtpExtsBracketNone, gtpExtsBracketMixed, gtpExtsBracketMixedMiss, ipv6ExtsIndexAbsent,
   ipv6NextHeaderWhere, ipv6NextHeaderBracket, ipv6FiveExts, ipv6SixExts, ipv6AnyExts, ipv6AllExts,
