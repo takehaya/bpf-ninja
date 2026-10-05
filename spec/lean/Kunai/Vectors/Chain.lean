@@ -278,6 +278,19 @@ vector quantFirstOptional := {
 
 -- Alternation (D-004, D-010) -----------------------------------------------
 
+def vxlan6Pkt (inner : Packet) : Packet :=
+  eth 0x86DD ++ ipv6 17 ++ udp 1234 4789 ++ vxlan 100 ++ inner ++ tcp 12345 80 ++ payload 5
+def vxlanAltL : List Layer :=
+  [P "eth", P "ipv6", P "udp", P "vxlan", P "eth", .alt [{ name := "ipv4" }, { name := "ipv6" }]]
+set_option maxRecDepth 16384 in
+vector altAfterVxlan6 := {
+  id := "alt-after-vxlan-ipv6", ast := { layers := vxlanAltL }, packet := vxlan6Pkt (eth 0x86DD ++ ipv6 6),
+  expected := .accept [],
+  note := "the inner group's parent starts at a runtime offset; its member guard reads through a bounded cursor" }
+set_option maxRecDepth 16384 in
+vector altAfterVxlan4 := {
+  id := "alt-after-vxlan-ipv4", ast := { layers := vxlanAltL }, packet := vxlan6Pkt (eth 0x0800 ++ ipv4 6),
+  expected := .accept [] }
 def altL3 : List Layer := [P "eth", .alt [{ name := "ipv4" }, { name := "ipv6" }], P "tcp"]
 
 vector altFirst := {
@@ -346,7 +359,7 @@ def chainVectors : List Vector := [
   quantGreedyOverrun, quantOverrunBounded, quantOverrunOpen, quantExactBound, quantOptMplsOverrun, quantOptMplsOne, quantGreedyUnreachable, quantPredMidFail, quantPredMidFailStatic, quantPredFirstFail,
   quantPredAllHold, quantSelfValidSkip, quantSelfValidPresent, quantSelfValidShortV4, quantSelfValidShortV6, quantSelfValidEmpty, quantSelfValidCascade, quantSelfValidCascadeEth, quantSelfValidBroken, quantOptIPv4Last, quantOptIPv4LastAbsent, quantOptIPIP, quantExactOneMachine, typAltExactOne, typRepeatNoSelfEdge, typRepeatNoSelfEdgeStar, quantOptIPIPAbsent, quantOptIPIPTwiceOne, quantOptIPIPTwiceNone, quantOptIPIPTwiceBoth, typOptionalAfterSkip, typOptionalNoCheck, chainMandatorySelfEdgeMiss, quantSelfEdgeStar, quantSelfEdgeOpt,
   absentConsecutiveEthertype, absentConsecutiveSelfValid, absentConsecutiveMplsOnly, absentConsecutiveNeither, absentConsecutiveArp, quantFirstOptional,
-  altFirst, altSecond, altNone, altFirstPredFails, altRoot, altNoCheck,
+  altFirst, altSecond, altAfterVxlan6, altAfterVxlan4, altNone, altFirstPredFails, altRoot, altNoCheck,
   hostTcVlanMandatory, hostTcVlanAlt, hostTcVlanAltSecond, hostTcQinqVlan, hostTcQinqMandatory, hostTcQinqOpt, hostTcVlanOpt, hostL3Root, hostL3EthRoot]
 
 end Kunai

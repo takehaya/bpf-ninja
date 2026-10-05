@@ -24,7 +24,9 @@ const altCountCap = 4
 var matchedAltReg = asm.R5
 
 // genAlternation emits `(a|b|c)`. Each non-last alt is fronted by a
-// 2-insn guard (LDX parent.<field>; JNE alt.value, dsl_alt_<idx>_<i+1>)
+// guard — the member's own parent dispatch (genParentDispatch), with the
+// next alt's entry dsl_alt_<idx>_<i+1> as its fail label, so it takes the
+// bounded or variable-parent form whenever the body's dispatch would —
 // that routes a mismatch to the next alt's entry; the last alt has no
 // guard since its body's own dispatch failure correctly lands at
 // dslReject. After the guard each alt's full layer body runs via
@@ -46,8 +48,8 @@ var matchedAltReg = asm.R5
 //   - every alternative carries a parent-side dispatch (no first-
 //     layer alternation)
 //   - no nested alternation
-//   - alt members must use Field dispatch (the guard is a Field check;
-//     a NoCheck alternative would always "win")
+//   - alt members must use Field dispatch (a NoCheck alternative
+//     would always "win")
 func genAlternation(layer *ir.LayerInstance, index int, all []*ir.LayerInstance, qo queriedOptions, plan *accPlan, pc *predCtx) (asm.Instructions, asm.Instructions, error) {
 	if layer.Quant != ast.QuantOne {
 		return nil, nil, fmt.Errorf("%w: quantifier %s on alternation group", ErrNotImplemented, layer.Quant)
@@ -78,7 +80,6 @@ func genAlternation(layer *ir.LayerInstance, index int, all []*ir.LayerInstance,
 	if err := validateAlternatives(alts); err != nil {
 		return nil, nil, err
 	}
-
 
 	altEnd := fmt.Sprintf("dsl_alt_end_%d", index)
 
