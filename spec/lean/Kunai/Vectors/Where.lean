@@ -211,6 +211,17 @@ vector capPresent := {
   id := "cap-present-layer",
   ast := { layers := vlanOpt, captures := [{ spec := .toLayer "vlan" 0 }] }, packet := vlanPkt,
   expected := .accept [(14, 18)] }
+def capAltL3 (target : String) : Filter :=
+  { layers := [P "eth", .alt [{ name := "ipv4", label := some "a" }, { name := "ipv6" }], P "tcp"],
+    captures := [{ spec := .toLayer target 0 }] }
+vector capAltMemberPresent := {
+  id := "cap-alt-member-present", ast := capAltL3 "a", expected := .accept [(14, 34)],
+  note := "a label on an alternation member names that member's instance" }
+vector capAltMemberAbsent := {
+  id := "cap-alt-member-absent", ast := capAltL3 "a", packet := ipv6TCP, expected := .accept [],
+  note := "D-020: ipv6 matched, so a is absent and the clause is dropped; Go captures the member's compile-time upper bound (34 bytes), the verdict agrees" }
+vector capAltMemberByName := {
+  id := "cap-alt-member-by-name", ast := capAltL3 "ipv6", packet := ipv6TCP, expected := .accept [(14, 54)] }
 
 -- Typing (§12) ------------------------------------------------------------------
 
@@ -598,7 +609,7 @@ def whereVectors : List Vector := [
   whereLabelRepeatedLast, whereLabelRepeatedFirstMiss, whereRepeatedUnlabelled, wherePastQuantified, whereLabels, whereAmbiguous,
   actionEntry, actionHit, actionMiss, actionUnknown,
   predCmp, predCmpMiss, predInList, predInListMiss, predInRange, typPredInRangeWide, typPredCmpRange, predInRangeMiss, predNegative, predIPv4,
-  capAll, capWhereFalse, capWhereTrue, capLabel, capAbsent, capPresent,
+  capAll, capWhereFalse, capWhereTrue, capLabel, capAbsent, capPresent, capAltMemberPresent, capAltMemberAbsent, capAltMemberByName,
   typUnknownProto, typNoDispatch, typNotInChain, typUnknownField, typFit, typLabelCollides, typLabelCollidesAlt, typLabelDuplicate, typFitArith, whereArithRight, whereArithRightMiss, typFitArithSibling, whereNegLitSibling, typWidthIPv6, typCIDRWidth,
   typPredIdent, typInSet, predInSetMember, predInSetMiss, typPredInSetWidth, predInSetSubByte, predInSetWindow, typPredInSetWindow, typPredInSetTwice, typPredInSetBudget, typPredInSetOptional, typPredInSetAlt, typAny, typExists, typAuxPath,
   arith128AddConst, arith128SubConst, arith128AddCarry, arith128AddWrap, arith128SubBorrow, arith128SubWrap, arith128AddMiss,
