@@ -25,6 +25,11 @@ type whereCtx struct {
 	labels  int
 	anchors map[*ir.LayerInstance]layerAnchor
 	queried queriedOptions
+	// wideHold is how many arith slots above arith128ReservedSlots hold
+	// the left results of enclosing 128-bit `x ± y` nodes whose both
+	// sides park (genArith128FieldOpField); a sub-64-bit expression
+	// inside them starts above these.
+	wideHold int
 	// boolEqDepth is the current `Bool == Bool` nesting level. genBoolEq
 	// uses it to pick a distinct LHS-save slot per level so a nested
 	// bool-eq operand does not clobber an enclosing one.
@@ -1079,10 +1084,10 @@ func (c *whereCtx) genArithCompare(w *ir.Condition, failLabel string) (asm.Instr
 // `<` / `≤` / `>` / `≥` (F3). Operand shapes supported: ArithField
 // (an Int<128> field), a constant, `x ± const` and `x ± y` nested on
 // either side, and any sub-64-bit expression, which computes in 64 bits
-// and joins zero-extended (see genArith128). A ± whose both sides
-// hold an `x ± y` with a non-constant 128-bit y (parks128), a slice
-// between 65 and 127 bits, and
-// Int<128> aux fields return ErrNotImplemented; operators
+// and joins zero-extended (see genArith128); a ± whose both sides park
+// holds its left result above the reserved slots (genArith128BothPark).
+// A slice between 65 and 127 bits and Int<128> aux fields return
+// ErrNotImplemented; operators
 // other than + and - on Int<128> operands never arrive, the resolver
 // types them as errors (dsl-types.md §13.9).
 func (c *whereCtx) genArithCompare128(w *ir.Condition, failLabel string, targetBits int) (asm.Instructions, error) {
@@ -1262,16 +1267,60 @@ func parks128(e *ir.ArithExpr) bool {
 // operands in (arith128ReservedSlots), which leaves it that many fewer
 // nesting levels than a 64-bit comparison has.
 func (c *whereCtx) genArith128Narrow(e *ir.ArithExpr) (asm.Instructions, error) {
-	// Its leaves sit at depth arith128ReservedSlots + nesting, which must
-	// stay below the arith ceiling.
-	if room := maxArithDepth - c.boolEqDepth - arith128ReservedSlots; arithNesting(e) >= room {
+	// Its leaves sit at depth base + nesting, which must stay below the
+	// arith ceiling.
+	base := arith128ReservedSlots + c.wideHold
+	if room := maxArithDepth - c.boolEqDepth - base; arithNesting(e) >= room {
 		return nil, fmt.Errorf("%w: a sub-64-bit expression next to an Int<128> operand nests deeper than %d levels", ErrNotImplemented, room-1)
 	}
-	insns, err := c.genArithWithBits(e, arith128ReservedSlots, 0)
+	insns, err := c.genArithWithBits(e, base, 0)
 	if err != nil {
 		return nil, err
 	}
 	return append(insns, asm.Mov.Reg(asm.R5, asm.R3), asm.Mov.Imm(asm.R3, 0)), nil
+}
+
+// genArith128BothPark is `x ± y` where both sides park an operand in
+// slots 2/3 themselves (`(a + b) - (c + d)`). The left result is held in
+// the next two slots above arith128ReservedSlots and the ones enclosing
+// nodes of this kind hold (wideHold), the right side is computed with
+// those slots taken, and the left result then moves to slots 2/3 so the
+// ordinary combine runs. Only these nodes take extra slots, so other
+// expressions keep every nesting level they had.
+func (c *whereCtx) genArith128BothPark(e *ir.ArithExpr) (asm.Instructions, error) {
+	hold := arith128ReservedSlots + c.wideHold
+	if hold+2 > maxArithDepth-c.boolEqDepth {
+		return nil, fmt.Errorf("%w: bit<128> arith nests 128-bit expressions on both sides of %s too deeply", ErrNotImplemented, e.Op)
+	}
+	leftInsns, err := c.genArith128(e.Left)
+	if err != nil {
+		return nil, err
+	}
+	c.wideHold += 2
+	rightInsns, err := c.genArith128(e.Right)
+	c.wideHold -= 2
+	if err != nil {
+		return nil, err
+	}
+	holdHigh, holdLow := arithStackSlot(hold), arithStackSlot(hold+1)
+	insns := append(asm.Instructions{}, leftInsns...)
+	insns = append(insns,
+		asm.StoreMem(asm.R10, holdHigh, asm.R3, asm.DWord),
+		asm.StoreMem(asm.R10, holdLow, asm.R5, asm.DWord),
+	)
+	insns = append(insns, rightInsns...)
+	// Left into slots 2/3 (R2 is scratch), right stays in R3/R5.
+	insns = append(insns,
+		asm.LoadMem(asm.R2, asm.R10, holdHigh, asm.DWord),
+		asm.StoreMem(asm.R10, arithStackSlot(2), asm.R2, asm.DWord),
+		asm.LoadMem(asm.R2, asm.R10, holdLow, asm.DWord),
+		asm.StoreMem(asm.R10, arithStackSlot(3), asm.R2, asm.DWord),
+	)
+	combine, err := c.genArith128Combine(e.Op)
+	if err != nil {
+		return nil, err
+	}
+	return append(insns, combine...), nil
 }
 
 // genArith128FieldOpConst handles `field + const` / `field - const`
@@ -1371,12 +1420,12 @@ func loadConst(dst asm.Register, value uint64) asm.Instructions {
 // not park, second; for `-` the two are swapped back afterwards. Two
 // parking sides (`(a + b) - (c + d)`) stay refused.
 func (c *whereCtx) genArith128FieldOpField(e *ir.ArithExpr) (asm.Instructions, error) {
+	if parks128(e.Left) && parks128(e.Right) {
+		return c.genArith128BothPark(e)
+	}
 	first, second := e.Left, e.Right
 	rightFirst := parks128(e.Right)
 	if rightFirst {
-		if parks128(e.Left) {
-			return nil, fmt.Errorf("%w: bit<128> arith with a 128-bit expression on both sides of %s", ErrNotImplemented, e.Op)
-		}
 		first, second = e.Right, e.Left
 	}
 	firstInsns, err := c.genArith128(first)
@@ -1409,7 +1458,21 @@ func (c *whereCtx) genArith128FieldOpField(e *ir.ArithExpr) (asm.Instructions, e
 	}
 	// Slots = lhs, R3 = rhs_high, R5 = rhs_low. For a right-first `+`
 	// the two names are exchanged, which the sum does not see.
-	switch e.Op {
+	combine, err := c.genArith128Combine(e.Op)
+	if err != nil {
+		return nil, err
+	}
+	return append(insns, combine...), nil
+}
+
+// genArith128Combine adds or subtracts the 128-bit value in R3 (high) /
+// R5 (low) into the one parked in arith slots 2 (high) / 3 (low), the
+// left operand, and leaves the result in R3/R5.
+func (c *whereCtx) genArith128Combine(op ast.ArithOp) (asm.Instructions, error) {
+	lhsHighSlot := arithStackSlot(2)
+	lhsLowSlot := arithStackSlot(3)
+	var insns asm.Instructions
+	switch op {
 	case ast.ArithAdd:
 		// Park rhs_high so we can recycle R3 as the "load lhs into a
 		// register" slot. R5 keeps rhs_low until we add lhs_low.
