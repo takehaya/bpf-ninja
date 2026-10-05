@@ -220,6 +220,7 @@ Entries are never deleted; a rejected candidate stays in the log.
 - 現行 Go 実装の挙動: 同じ (vector `ipv6-ext-five-at-depth`, `ipv6-ext-six-exceeds-depth`)。
 - 状態: 承認済 (2026-10-01、一括)
 - 反映先: `Eval/Machine.lean` `run`
+- 追記 (2026-10-06): Go の TLV walk (`emitMultiStateSelfLoop`: ipv4 / tcp / geneve の option) は inline の初回反復が無く、bpf_loop を `MAX_DEPTH` 回しか回していなかった (dispatch が 1 回少ない)。`MAX_DEPTH + 1` 回に直した (vectors `ipv4-opt-depth-last-dispatch-*`)。
 
 ## D-027: 抽出されなかった option / aux の field
 - 論点: `tcp.options.MSS.value == 1460` で MSS が無いとき。
@@ -236,13 +237,12 @@ Entries are never deleted; a rejected candidate stays in the log.
 - 状態: 承認済 (2026-10-01、一括)
 - 反映先: `Eval/Machine.lean` `doAdvance`, vectors `tcp-opt-unknown-len0`, `tcp-opt-unknown-len1`
 
-## D-029: option の検証は常に行う
-- 論点: `eth/ipv4/tcp` (option を参照しない filter) に壊れた option を持つパケット。
-- 現行 Go 実装の挙動: option を参照しない filter は walk を省略し (bulk advance)、accept。参照すると同じパケットが reject。
-- 推奨: 仕様では parser machine は常に走る (⊥ なら reject)。
-- 状態: 承認済 (2026-10-01、一括)。Go 側は 2026-10-01 に「意図的な逸脱として維持」で確定 (option を filter する時に初めて読む)。
-- Go の逸脱: option を参照しない filter は option 領域を walk せず宣言長 (IHL / data_offset / opt_len) だけ進む (demand-driven walk、`canFallbackToBulkAdvance`)。差が出るのは「option 領域が壊れている、かつその layer の option を参照していない」filter だけで、Go が余計に accept する方向 (誤って reject する方向には倒れない)。常時 walk に変えると全 pin が約 2 倍 (F1 143→340、F7 349→643、F9 293→653)、GTP/Geneve の二重 ipv4 chain で verifier 予算のリスク、ipv4 の MAX_DEPTH 到達時の R4 補正も要る。壊れた option を弾きたい filter はその layer の option を 1 つ参照すれば walk が走る。
-- 反映先: `Eval/Layer.lean` `extract`, vectors `tcp-opt-malformed-no-query`, `chain-ipv4-ihl6/flip34` (goStatus mismatch のまま維持: 既知の逸脱として機械可読に残す), `docs/ja/dsl-types.md` §14.5, `docs/ja/dsl-internals.md`
+## D-029: 壊れた option 領域
+- 論点: `eth/ipv4/tcp` に壊れた option (kind 不明、長さ 0、領域末尾をまたぐ) を持つパケット。
+- 当初の決定 (2026-10-01): 仕様では parser machine は常に走り、⊥ なら reject。Go は option を参照しない filter では walk を省く (demand-driven) ので accept し、意図的な逸脱として mismatch のまま維持していた。
+- 改訂 (2026-10-05、ユーザー決定): Go の demand-driven な扱いをそのまま仕様にすると、`where tcp.dport == 80 or tcp.options.MSS.exists` が左辺 true でも reject になる (option を「書いたかどうか」で verdict が変わる) ので採らない。代わりに、宣言された option 領域 (`lenRule` のある layer: ipv4 の IHL、tcp の data_offset、geneve の opt_len) の中で walk が ⊥ になったら、その layer は option を 1 つも持たないものとし、chain は宣言長の先へ進む。option を読む atom は D-003 / D-027 の不在と同じく false (`not (…)` は true、`any` は false、`all` は true)。途中まで見えた option も含めて全部を捨てる。宣言長そのものが不正な場合と、領域が packet に収まらない場合は従来どおり reject。
+- 性質: verdict は atom が読むものだけで決まり局所的。`or` / `and` の交換則などの law はそのまま。壊れた option を弾く手段は DSL から無くなる (必要なら `tcp.options.valid` のような明示的な atom を後で足す)。
+- 反映先: `Eval/Layer.lean` `extractBody`。Go: `parser_loop.go` `emitMultiStateSelfLoop` (callback の reject を `_malformed_` landing へ: R4 を walk 入口に戻し、option slot を不在に、bulk advance で宣言長だけ進む)、`hasDeclaredOptionRegion`。srv6 の segment walk は宣言長を持たないので対象外 (従来どおり reject)。F10 pin 257→283。vectors `tcp-opt-malformed-*`, `ipv4-opt-malformed*`。mismatch は 0 になった。Go と仕様で option 領域を何回 dispatch するかがずれていた件 (D-026 追記) もあわせて直した。
 
 ## D-030: option の「視認」と重複
 - 論点: `parse_sack` / `parse_rr` は `extract` せず lookahead で長さ分 advance するため、§14 の α には SACK / RR の view が入らない。しかし `tcp.options.SACK.blocks[0]` は参照できる。
@@ -319,7 +319,7 @@ Entries are never deleted; a rejected candidate stays in the log.
 10. ✅ bpf_loop 経路が反復上限で chain-end 信号を要求しない (D-024) — ループ後に最後の header の end 信号を要求 (`fix/kunai-spec-conformance-3`)。
 
 11. ✅ 抽出されなかった option の field 参照が filter 全体を reject する (D-027) — atom が false になるよう fail label を通した (`fix/kunai-spec-conformance-2`)。
-12. ✗ option を参照しない filter は option を検証しない (D-029) — やらない (2026-10-01 決定)。demand-driven walk は設計判断として維持し、仕様との差は D-029 に記録。vectors は mismatch のまま。
+12. ✅ 壊れた option 領域 (D-029) — 2026-10-05 に仕様を改訂して解消: 宣言された option 領域の中で walk が失敗したら、その layer は option を持たないものとし chain は続く。Go も option を参照する filter で同じ扱いにした (mismatch 0)。
 13. ✅ 静的 index が count を見ない・`!=` が範囲外で true (D-031) — count source のある stack (srv6, SACK, RR) は #120、parser machine が push する stack (ipv6.exts, gtp.exts) は push 数を数える demand slot で #121。可変長 ext header の `exts[i]` は読む側で手前の entry を辿って位置を出す (`fix/kunai-spec-conformance-4`, vectors `ipv6-exts-index-after-long-ext`, `ipv6-exts-any-after-long-ext`)。可変長 entry への動的 index も、push 上限まで展開した walk を index の段で止めて読む (PR #131, vectors `ipv6-exts-dynamic-index-var-len*`, `gtp-ext-dynamic-index`)。
 14. ✅ bracket predicate が write-back 前の値を見る (D-032) — write-back を持つ proto は walk 後に評価。
 15. ✅ `tcp.options.X.exists` を実装。

@@ -68,7 +68,7 @@ var FilterSet = []FilterSpec{
 	{ID: "F9", Expr: "eth/ipv4@outer/udp/geneve/eth/ipv4@inner/tcp where inner.dst == 10.0.0.1",
 		WantInsns: 293, Notes: "Geneve inner IPv4 dst (Cilium overlay / cloud VPC); inner offset resolved past the opt_len*4 options section via the counter-driven bulk-advance fallback"},
 	{ID: "F10", Expr: "eth/ipv4/tcp where tcp.options.MSS.value == 1460",
-		WantInsns: 257, Notes: "TCP option MSS via parser-counter walk"},
+		WantInsns: 283, Notes: "TCP option MSS via parser-counter walk"},
 }
 
 // TestFilterSetCompiles confirms every paper filter compiles end-to-end

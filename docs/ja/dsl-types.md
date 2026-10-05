@@ -1318,10 +1318,11 @@ bundled の `.p4` は §14.2 の規則に無い構文を使います。`spec/lea
 | `MAX_DEPTH` | 同じか手前の状態への遷移を 1 反復と数え、`MAX_DEPTH` 回で accept (D-026) |
 | lookahead で option の kind byte を読んだ | その option の view を π に置く (extract しない `parse_sack` / `parse_rr` 用、D-030)。重複は最後が勝つ |
 | layer の長さ | `max(宣言長, machine が消費した長さ)` (D-025) |
+| 宣言された option 領域 (ipv4 の IHL、tcp の data_offset、geneve の opt_len) の中で ⊥ | layer は reject されず、option を 1 つも持たない (領域が空だった場合と同じ)。chain は宣言長の先へ進む (D-029)。宣言長そのものが不正 (data_offset < 5 など) か、領域が packet に収まらない場合は従来どおり reject |
 
 where 側: 抽出されなかった option / 範囲外の stack index を含む atom は false (D-027, D-031)。`any`/`all` は抽出した要素数 (owner-bound stack は owner の length byte から) を範囲とする。
 
-実装との既知の差 (D-029): Go codegen は、その layer の option を where / capture / bracket predicate のどこも参照しない filter では option 領域を walk せず、宣言長 (ipv4 の IHL、tcp の data_offset、geneve の opt_len) だけ進みます。したがって kind 不明や長さ 0 の壊れた option を持つパケットは、仕様では ⊥ ですが Go では accept されます。差が出るのはこの「壊れた option かつ未参照」の組み合わせだけで、Go が余計に通す方向にしか倒れません。壊れた option を弾きたい filter は、その layer の option を 1 つ参照すれば walk が走ります。
+壊れた option 領域 (D-029): kind 不明、長さ 0、領域の末尾をまたぐ option などで walk が失敗しても、packet は reject されません。その layer は option を持たないものとして扱われ、option を読む atom は抽出されなかった option と同じく false になります (`not (tcp.options.MSS.value == 1460)` は true)。途中までに見えた option も含めて全部が無いことになります。verdict はその atom が読むものだけで決まり、filter の他の場所で option を参照しているかどうかには依存しません。Go は option を参照しない filter では walk 自体を省き (宣言長だけ進む)、参照する filter では walk が失敗したとき option の slot を不在に戻して宣言長だけ進みます。
 
 ## 15. 実装との対応 (Soundness sketch)
 

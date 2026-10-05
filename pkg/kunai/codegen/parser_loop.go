@@ -224,10 +224,14 @@ const parserTLVLoopCap = 64
 // inline iter-0 — control enters via Ja from a parent state,
 // invokes bpf_loop, then jumps to doneLabel.
 func (c *pmCtx) emitMultiStateSelfLoop(state *vocab.ParseState, stateIdx int) (asm.Instructions, asm.Instructions, error) {
+	// D-026: MAX_DEPTH counts back edges, so the walk dispatches
+	// MAX_DEPTH + 1 times. emitSelfLoop gets the extra one from its
+	// inline first iteration; this loop has none, so it runs it here.
 	maxIter := c.spec.MaxDepth
 	if maxIter == 0 {
 		maxIter = defaultChainDepth
 	}
+	maxIter++
 	if maxIter > parserTLVLoopCap {
 		return nil, nil, fmt.Errorf("%w: parser machine %s multi-state self-loop depth %d exceeds cap %d", ErrNotImplemented, c.spec.Name, maxIter, parserTLVLoopCap)
 	}
@@ -235,6 +239,40 @@ func (c *pmCtx) emitMultiStateSelfLoop(state *vocab.ParseState, stateIdx int) (a
 	callback, err := c.emitMultiStateCallback(state, stateIdx, cbSym)
 	if err != nil {
 		return nil, nil, err
+	}
+
+	// A walk that fails inside a declared option region (D-029) leaves
+	// the layer with no options: the callback's reject lands on
+	// walkFail, which resets the option slots and advances past the
+	// declared region like the bulk advance does when nothing is
+	// queried. Without a declared region the failure rejects.
+	walkFail := dslReject
+	var malformed asm.Instructions
+	if c.hasDeclaredOptionRegion(stateIdx) {
+		walkFail = fmt.Sprintf("%s_malformed_%d", c.labelNS, stateIdx)
+		reset, err := c.emitDynamicAuxSentinelInit()
+		if err != nil {
+			return nil, nil, err
+		}
+		bulk, _, err := c.emitCounterDrivenBulkAdvance(state, stateIdx)
+		if err != nil {
+			return nil, nil, err
+		}
+		if state.OffsetAtEntry < 0 {
+			return nil, nil, fmt.Errorf("%w: option walk at state %q with dynamic R4 offset", ErrNotImplemented, state.Name)
+		}
+		// The loop left R4 at the reject marker; the bulk advance reads
+		// the declared length relative to the walk's entry, so put R4
+		// back there (layer entry + the bytes before the walk). R0/R1
+		// were reloaded after the loop.
+		malformed = asm.Instructions{
+			asm.LoadMem(offsetBase, asm.R10, bpfLoopCtxLayerEntrySlot, asm.DWord).WithSymbol(walkFail),
+			asm.JGT.Imm(offsetBase, ScratchBufSize, dslReject),
+			asm.Add.Imm(offsetBase, int32(state.OffsetAtEntry)),
+			asm.JGT.Imm(offsetBase, ScratchBufSize, dslReject),
+		}
+		malformed = append(malformed, reset...)
+		malformed = append(malformed, bulk...)
 	}
 
 	var insns asm.Instructions
@@ -267,7 +305,7 @@ func (c *pmCtx) emitMultiStateSelfLoop(state *vocab.ParseState, stateIdx int) (a
 		asm.LoadMem(offsetBase, asm.R10, bpfLoopCtxOffsetSlot, asm.DWord),
 		asm.LoadMem(asm.R0, asm.R10, bpfLoopCtxScratchStartSlot, asm.DWord),
 		asm.LoadMem(asm.R1, asm.R10, bpfLoopCtxScratchEndSlot, asm.DWord),
-		asm.JGT.Imm(offsetBase, ScratchBufSize, dslReject),
+		asm.JGT.Imm(offsetBase, ScratchBufSize, walkFail),
 	)
 	if hasCounterAndKindKeys(state.Trans.Select) {
 		slot, err := c.counterSlot(state.Trans.Select.Keys[0].Counter)
@@ -288,7 +326,29 @@ func (c *pmCtx) emitMultiStateSelfLoop(state *vocab.ParseState, stateIdx int) (a
 		}
 	}
 	insns = append(insns, asm.Ja.Label(c.doneLabel))
+	insns = append(insns, malformed...)
 	return insns, callback, nil
+}
+
+// hasDeclaredOptionRegion reports whether the walk entered at stateIdx
+// runs over a region whose length the header declares (a counter key:
+// ipv4 IHL, tcp data_offset, geneve opt_len), the case D-029 treats as
+// "malformed region ⇒ no options" rather than a reject. An aux-stack walk
+// (srv6 segments) is not one: its region is re-anchored after the walk.
+func (c *pmCtx) hasDeclaredOptionRegion(stateIdx int) bool {
+	if _, _, ok := c.spec.AuxWalkSegmentTail(); ok {
+		return false
+	}
+	sel := c.machine.States[stateIdx].Trans.Select
+	if sel == nil {
+		return false
+	}
+	for _, k := range sel.Keys {
+		if k.Kind == vocab.SelectKeyCounterIsZero {
+			return true
+		}
+	}
+	return false
 }
 
 // isLengthByteOptionLoop identifies TLV walks eligible for the shared
