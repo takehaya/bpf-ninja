@@ -186,7 +186,7 @@ Errors are returned as-is from each phase. Recognise them with `errors.As`/`erro
 
 - Lexer / parser errors are `*lexer.SyntaxError`.
 - Resolver errors are `*resolve.Error` (alias of the syntax error type, with file/line/col preserved).
-- Codegen errors include `codegen.ErrNotImplemented` for valid DSL that the MVP codegen has not yet emitted (use `errors.Is(err, codegen.ErrNotImplemented)` to distinguish from real bugs), and `codegen.ErrVlanInMetadata`, a type error for a mandatory `vlan` layer at a host that keeps the VLAN tag in skb metadata (tc, cgroup-skb, netfilter); it does not wrap `ErrNotImplemented`.
+- Codegen errors include `codegen.ErrNotImplemented` for valid DSL that the MVP codegen has not yet emitted (use `errors.Is(err, codegen.ErrNotImplemented)` to distinguish from real bugs), and `codegen.ErrVlanInMetadata`, a type error for a mandatory `vlan` / `qinq` layer at a host that keeps the VLAN tag in skb metadata (tc, cgroup-skb, netfilter); it does not wrap `ErrNotImplemented`.
 
 ## Bundled vocabulary
 

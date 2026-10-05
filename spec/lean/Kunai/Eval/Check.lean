@@ -120,8 +120,8 @@ private def checkProtoShape (c : Ctx) (layers : List Layer) (i : Nat) (p : Proto
   let (n, m) := quantBounds p.quant
   if i == 0 && n == 0 then throw "the first layer cannot be optional"
   if alt && p.quant != .one then throw "alternatives cannot carry quantifiers"
-  if c.H.vlanInMetadata && p.name == "vlan" && n ≥ 1 then
-    throw "vlan is in metadata on this host; the layer must be optional"
+  if c.H.tagInMetadata p.name && n ≥ 1 then
+    throw s!"{p.name} is in metadata on this host; the layer must be optional"
   let fuel := m.getD spec.maxDepth
   if fuel > chainCap then throw s!"chain depth {fuel} exceeds {chainCap}"
   if n > fuel then throw "iteration bound below the quantifier minimum"

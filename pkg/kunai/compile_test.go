@@ -1502,7 +1502,7 @@ func isHostOwned(ins asm.Instruction) bool {
 // the stripped tag. Every expression must still compile under the zero
 // (in-band) Capabilities used by XDP and the test harness.
 func TestVlanInMetadataRejectsVlanLayers(t *testing.T) {
-	// A mandatory vlan layer is a type error at such a host.
+	// A mandatory vlan or qinq layer is a type error at such a host.
 	illTyped := []string{
 		"eth/vlan/ipv4/tcp",
 		"eth/vlan[tci==100]/ipv4/tcp where tcp.dport == 80", // mandatory + field
@@ -1510,14 +1510,14 @@ func TestVlanInMetadataRejectsVlanLayers(t *testing.T) {
 		"eth/(vlan|qinq)/ipv4/tcp", // alternation members are mandatory
 		"eth/(qinq|vlan)/ipv4/tcp",
 		"eth/((vlan|qinq)|ipv4)",
-		"eth/qinq/vlan/ipv4/tcp where tcp.dport == 80", // wins over the qinq refusal
+		"eth/qinq/vlan/ipv4/tcp where tcp.dport == 80",
+		"eth/qinq/vlan?/ipv4/tcp where tcp.dport == 80", // an 802.1ad outer tag is moved too
+		"eth/((qinq|mpls)|ipv4)",
 	}
 	rejected := []string{
-		"eth/qinq/vlan?/ipv4/tcp where tcp.dport == 80", // mandatory QinQ
-		"eth/((qinq|mpls)|ipv4)",                        // qinq in a nested alternation
-		"eth/vlan[tci==100]?/ipv4/tcp",                  // optional but reads tci
-		"eth/vlan?/ipv4/tcp where vlan.tci == 100",      // where reads the tag
-		"eth/vlan?/ipv4/tcp capture vlan",               // capture targets the tag
+		"eth/vlan[tci==100]?/ipv4/tcp",             // optional but reads tci
+		"eth/vlan?/ipv4/tcp where vlan.tci == 100", // where reads the tag
+		"eth/vlan?/ipv4/tcp capture vlan",          // capture targets the tag
 	}
 	// Optional, predicate-free tags are matchable at a VlanInMetadata
 	// host: at most one tag survives in the bytes, and the skip path

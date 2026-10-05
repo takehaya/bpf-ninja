@@ -150,11 +150,12 @@ func withPos(err error, pos ast.Position) error {
 // caller hit.
 var ErrNotImplemented = errors.New("dsl codegen is not yet fully implemented")
 
-// ErrVlanInMetadata is the type error for a mandatory vlan layer at a
-// host with HostLayout.VlanInMetadata: the language requires the layer
-// to be optional there. It is a property of the filter and the host,
-// not a codegen gap, so it does not wrap ErrNotImplemented.
-var ErrVlanInMetadata = errors.New("vlan layer must be optional at this host")
+// ErrVlanInMetadata is the type error for a mandatory vlan or qinq layer
+// at a host with HostLayout.VlanInMetadata: the kernel moves the outer
+// tag of either kind into skb metadata, so the language requires the
+// layer to be optional there. It is a property of the filter and the
+// host, not a codegen gap, so it does not wrap ErrNotImplemented.
+var ErrVlanInMetadata = errors.New("VLAN tag layer must be optional at this host")
 
 // CaptureInfo summarises the compile-time capture configuration that
 // the program wrapper must honour. A zero value means "no DSL capture
@@ -812,17 +813,14 @@ func checkUnsupported(p *ir.Program) error {
 // TestVlanUntagAtTCIngress) and at the packet level (dsltest
 // TestVlanQuestionMarkOptional).
 //
-// A vlan layer that cannot be absent — no optional quantifier, or a
-// member of an alternation at any depth, so `(vlan|qinq)` and
-// `(qinq|vlan)` alike — is a type error (ErrVlanInMetadata): the
-// language requires the layer to be optional at such a host (spec/lean
-// Eval/Check.lean). It is looked for across the whole chain, so it is
-// reported ahead of the refusals below.
+// A vlan or qinq layer that cannot be absent — no optional quantifier,
+// or a member of an alternation at any depth — is a type error
+// (ErrVlanInMetadata): the language requires the layer to be optional at
+// such a host (spec/lean Eval/Check.lean). It is looked for across the
+// whole chain, so it is reported ahead of the refusals below.
 //
 // What is refused as not implemented, because it reads a tag the host
 // does not expose in packet bytes:
-//
-//   - a qinq layer that cannot be absent (same two shapes),
 //
 //   - a bracket predicate on an optional tag (`vlan[tci==100]?`),
 //
@@ -840,11 +838,10 @@ func checkHostLayerSupport(p *ir.Program, host HostLayout) error {
 	isVlan := func(l *ir.LayerInstance) bool {
 		return l != nil && l.Spec != nil && (l.Spec.Name == "vlan" || l.Spec.Name == "qinq")
 	}
-	// One walk over every layer and alternation member. A vlan that
-	// cannot be absent is the type error; a qinq that cannot be absent
-	// and a predicate on either tag are refused as not implemented. The
-	// type error is reported even when a refusal comes first in the
-	// chain.
+	// One walk over every layer and alternation member. A tag that
+	// cannot be absent is the type error; a predicate on an optional tag
+	// is refused as not implemented. The type error is reported even
+	// when a refusal comes first in the chain.
 	var typeErr, refusal error
 	var walk func(l *ir.LayerInstance, inAlt bool)
 	walk = func(l *ir.LayerInstance, inAlt bool) {
@@ -854,13 +851,9 @@ func checkHostLayerSupport(p *ir.Program, host HostLayout) error {
 		if isVlan(l) {
 			mandatory := inAlt || !l.Absentable()
 			switch {
-			case mandatory && l.Spec.Name == "vlan":
-				if typeErr == nil {
-					typeErr = withPos(fmt.Errorf("%w: the kernel moves the outer VLAN tag into skb metadata before the program runs, so a tagged frame does not carry it in the packet bytes; make the layer optional (vlan?) or remove it", ErrVlanInMetadata), l.Pos)
-				}
 			case mandatory:
-				if refusal == nil {
-					refusal = withPos(fmt.Errorf("%w: layer %q cannot be matched at this host: the kernel extracts the outer VLAN tag into skb metadata before the program runs, so it is not present in the packet bytes. Make the layer optional (e.g. qinq?/vlan?) to match tag-flexible traffic without reading the tag", ErrNotImplemented, l.Spec.Name), l.Pos)
+				if typeErr == nil {
+					typeErr = withPos(fmt.Errorf("%w: layer %q: the kernel moves the outer VLAN tag into skb metadata before the program runs, so a tagged frame does not carry it in the packet bytes; make the layer optional (%s?) or remove it", ErrVlanInMetadata, l.Spec.Name, l.Spec.Name), l.Pos)
 				}
 			case len(l.Predicates) > 0:
 				if refusal == nil {

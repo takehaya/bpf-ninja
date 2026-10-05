@@ -100,9 +100,9 @@ type HostLayout struct {
 	//
 	// When true, kunai rejects a chain that would read the tag from
 	// packet bytes at compile time rather than silently parsing the
-	// wrong bytes: a mandatory vlan layer is the type error
-	// ErrVlanInMetadata, the other shapes (a mandatory qinq, a predicate
-	// on or a where / capture read of the tag) are ErrNotImplemented.
+	// wrong bytes: a mandatory vlan or qinq layer is the type error
+	// ErrVlanInMetadata, the other shapes (a predicate on or a where /
+	// capture read of the tag) are ErrNotImplemented.
 	// Optional, predicate-free tags (vlan?, qinq?/vlan?) compile.
 	// Reading the tag from skb metadata is future work.
 	VlanInMetadata bool

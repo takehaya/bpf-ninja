@@ -23,6 +23,8 @@ structure SetDecl where
 
 structure Host where
   packetStartsAtL3 : Bool := false
+  /-- The kernel moved the outer VLAN tag (802.1Q or 802.1ad) into skb
+  metadata before the program ran, so it is not in the packet bytes. -/
   vlanInMetadata : Bool := false
   /-- Symbolic action names the host declares (`LangCaps.Action`); empty on entry hosts. -/
   actions : List (String × Nat) := []
@@ -70,5 +72,10 @@ def HostKind.host (k : HostKind) (action : Nat := 0) (sets : List SetDecl := [])
     | .netfilter_entry => { vlanInMetadata := true, packetStartsAtL3 := true }
     | .netfilter_exit => { vlanInMetadata := true, packetStartsAtL3 := true, actions := netfilterActions, action }
   { h with sets }
+
+/-- `name` is a VLAN tag protocol whose outer instance this host keeps in
+metadata (D-008): such a layer must be optional. -/
+def Host.tagInMetadata (H : Host) (name : String) : Bool :=
+  H.vlanInMetadata && (name == "vlan" || name == "qinq")
 
 end Kunai
