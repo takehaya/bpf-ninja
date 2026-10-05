@@ -376,6 +376,10 @@ func (c *pmCtx) emitEntryDispatch() (asm.Instructions, error) {
 	if c.layerIdx == 0 || c.layer.Dispatch == nil {
 		return nil, nil
 	}
+	if c.pc.dispatchDone(c.layer) {
+		// The alternation guard ran this dispatch; only the join stays.
+		return dispatchJoin(c.layerIdx, c.all)
+	}
 	di, err := genParentDispatch(c.layer, c.layerIdx, c.all, c.queried, c.r4IsRange, precedingLayersLeaveR4Range(c.all, c.layerIdx-1), c.dispatchFail)
 	if err != nil {
 		return nil, err

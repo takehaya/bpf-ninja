@@ -148,7 +148,18 @@ func genAlternation(layer *ir.LayerInstance, index int, all []*ir.LayerInstance,
 		if plan != nil && plan.layer == alt {
 			altPlan = plan
 		}
-		altBody, altCbs, err := genLayerInner(alt, index, all, qo, altPlan, pc)
+		// A guarded member's body skips its dispatch: the guard ran the
+		// same one and only falls through when it passed.
+		bodyPC := pc
+		if i+1 < len(alts) {
+			guarded := predCtx{guarded: alt}
+			if pc != nil {
+				guarded = *pc
+				guarded.guarded = alt
+			}
+			bodyPC = &guarded
+		}
+		altBody, altCbs, err := genLayerInner(alt, index, all, qo, altPlan, bodyPC)
 		if err != nil {
 			return nil, nil, err
 		}
