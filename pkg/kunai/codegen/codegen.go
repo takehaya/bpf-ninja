@@ -384,6 +384,11 @@ func Gen(p *ir.Program, caps Capabilities) (Output, error) {
 	// budget). nil for every other shape; the parser machine then keeps
 	// the existing >=2 reject. See acc.go.
 	plan := buildAccPlan(where, qo)
+	if plan != nil {
+		// The where clause will not be emitted, so no member guard reads
+		// a matched-member slot planned for it.
+		qo.dropWhereReads()
+	}
 	var callbacks asm.Instructions
 	var extractions []ExtractSlot
 	pc := &predCtx{sets: caps.Lang.SetSlots, out: &extractions}
@@ -759,9 +764,10 @@ func emitAdvance(hs int) asm.Instruction {
 //   - resolve.selectAltParentDispatch enforces every alt agreeing on
 //     the *child's* dispatch field (so any alt can stand in for the
 //     field-offset lookup that follows).
-//   - genAlternation's uniform-size check guarantees every alt has
-//     the same header layout (so parentHS computed off the first alt
-//     matches what offsetBase already advanced).
+//   - a heterogeneous-size group marks the layers after it to read
+//     through their runtime entry slot, and a diverged dispatch picks
+//     the matched member's own header (genFieldDispatchAltDiverged), so
+//     the first member's size is only used where every member agrees.
 //
 // Together these mean findFieldByteOffset and genDispatch can read
 // off Alternation[0].Spec without ambiguity.

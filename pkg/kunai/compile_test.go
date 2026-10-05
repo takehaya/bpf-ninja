@@ -1244,6 +1244,36 @@ func TestCompileAlternationHetSizeWhere(t *testing.T) {
 	}
 }
 
+// TestAccPlanDropsMatchedMemberStore: under the multi-option accumulator
+// plan no where guard runs, so the alternation does not record which
+// member matched (the slot was asked for by the where clause alone).
+func TestAccPlanDropsMatchedMemberStore(t *testing.T) {
+	stores := func(expr string) int {
+		out, err := Compile(expr, codegen.Capabilities{})
+		if err != nil {
+			t.Fatalf("Compile(%q): %v", expr, err)
+		}
+		// The member index store sits right before the alt's exit: a
+		// `Ja dsl_alt_end_*`, or the end landing itself for the last alt.
+		n := 0
+		for i := 1; i+1 < len(out.Main); i++ {
+			ins, next := out.Main[i], out.Main[i+1]
+			atExit := strings.HasPrefix(next.Reference(), "dsl_alt_end_") || strings.HasPrefix(next.Symbol(), "dsl_alt_end_")
+			if atExit && ins.OpCode.Class().IsStore() && ins.Dst == asm.R10 && ins.Src == asm.R3 &&
+				out.Main[i-1].Dst == asm.R3 && out.Main[i-1].OpCode.Source() == asm.ImmSource {
+				n++
+			}
+		}
+		return n
+	}
+	if n := stores("eth/ipv4/(tcp|udp) where tcp.options.MSS.value == 1460"); n != 2 {
+		t.Errorf("guarded where: %d matched-member stores, want 2", n)
+	}
+	if n := stores("eth/ipv4/(tcp|udp) where tcp.options.MSS.value == 1460 and tcp.options.WS.shift == 7"); n != 0 {
+		t.Errorf("accumulator plan: %d matched-member stores, want 0", n)
+	}
+}
+
 func TestCompileAlternationMemberWhere(t *testing.T) {
 	// `where ipv6.src == ...` references an alt member directly, by
 	// protocol name or by label. The atom is false when another member

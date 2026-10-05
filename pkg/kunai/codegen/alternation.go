@@ -24,7 +24,9 @@ const altCountCap = 4
 var matchedAltReg = asm.R5
 
 // genAlternation emits `(a|b|c)`. Each non-last alt is fronted by a
-// 2-insn guard (LDX parent.<field>; JNE alt.value, dsl_alt_<idx>_<i+1>)
+// guard — the member's own parent dispatch (genParentDispatch), with the
+// next alt's entry dsl_alt_<idx>_<i+1> as its fail label, so it takes the
+// bounded or variable-parent form whenever the body's dispatch would —
 // that routes a mismatch to the next alt's entry; the last alt has no
 // guard since its body's own dispatch failure correctly lands at
 // dslReject. After the guard each alt's full layer body runs via
@@ -46,8 +48,8 @@ var matchedAltReg = asm.R5
 //   - every alternative carries a parent-side dispatch (no first-
 //     layer alternation)
 //   - no nested alternation
-//   - alt members must use Field dispatch (the guard is a Field check;
-//     a NoCheck alternative would always "win")
+//   - alt members must use Field dispatch (a NoCheck alternative
+//     would always "win")
 func genAlternation(layer *ir.LayerInstance, index int, all []*ir.LayerInstance, qo queriedOptions, plan *accPlan, pc *predCtx) (asm.Instructions, asm.Instructions, error) {
 	if layer.Quant != ast.QuantOne {
 		return nil, nil, fmt.Errorf("%w: quantifier %s on alternation group", ErrNotImplemented, layer.Quant)
@@ -76,12 +78,6 @@ func genAlternation(layer *ir.LayerInstance, index int, all []*ir.LayerInstance,
 	}
 
 	if err := validateAlternatives(alts); err != nil {
-		return nil, nil, err
-	}
-
-	parent := dispatchParent(all[index-1])
-	parentHS, err := headerSize(parent.Spec)
-	if err != nil {
 		return nil, nil, err
 	}
 
@@ -123,16 +119,11 @@ func genAlternation(layer *ir.LayerInstance, index int, all []*ir.LayerInstance,
 		// already targets dslReject (correct on no-match).
 		if i+1 < len(alts) {
 			nextAltLabel := fmt.Sprintf("dsl_alt_%d_%d", index, i+1)
-			var guard asm.Instructions
-			if alt.Dispatch.IsAltDiverged {
-				// The parent is itself a group whose members dispatch
-				// this one differently: the guard is the member's own
-				// dispatch (picked by the parent's matched member),
-				// failing to the next alt.
-				guard, err = genParentDispatch(alt, index, all, qo, precedingLayersLeaveR4Range(all, index), precedingLayersLeaveR4Range(all, index-1), nextAltLabel)
-			} else {
-				guard, err = emitAltGuard(alt, parent, parentHS, nextAltLabel)
-			}
+			// The guard is the member's own dispatch, failing to the next
+			// alt instead of dslReject; after a group whose members
+			// dispatch this one differently it is picked by the parent's
+			// matched member.
+			guard, err := genParentDispatch(alt, index, all, qo, precedingLayersLeaveR4Range(all, index), precedingLayersLeaveR4Range(all, index-1), nextAltLabel)
 			if err != nil {
 				return nil, nil, err
 			}
@@ -198,41 +189,6 @@ func genAlternation(layer *ir.LayerInstance, index int, all []*ir.LayerInstance,
 	// landing uses for the same reason.
 	insns = append(insns, asm.Mov.Reg(asm.R0, asm.R0).WithSymbol(altEnd))
 	return insns, callbacks, nil
-}
-
-// emitAltGuard emits the per-alt lookahead: load parent's dispatch
-// field and JNE to nextAltLabel on mismatch. Identical shape to the
-// fixed-size dispatch check, but routed to the next alt's entry
-// rather than dslReject so the body of the previous alt can be
-// skipped without rejecting the packet outright.
-func emitAltGuard(alt *ir.LayerInstance, parent *ir.LayerInstance, parentHS int, nextAltLabel string) (asm.Instructions, error) {
-	if alt.Dispatch == nil || alt.Dispatch.Type != vocab.DispatchField {
-		return nil, fmt.Errorf("%w: alternation guard requires Field dispatch on alt %q (got %v)", ErrNotImplemented, alt.Spec.Name, alt.Dispatch.Type)
-	}
-	if parent.Spec.HasVariableLayout() {
-		return emitFieldDispatchCheck(
-			parent.Spec,
-			alt.Dispatch.Const,
-			0,
-			asm.R3,
-			asm.Instructions{
-				asm.LoadMem(asm.R3, asm.R10, bpfLoopCtxLayerEntrySlot, asm.DWord),
-				asm.Add.Reg(asm.R3, asm.R0),
-			},
-			nextAltLabel,
-		)
-	}
-	return emitFieldDispatchCheck(
-		parent.Spec,
-		alt.Dispatch.Const,
-		parentHS,
-		asm.R3,
-		asm.Instructions{
-			asm.Mov.Reg(asm.R3, asm.R0),
-			asm.Add.Reg(asm.R3, offsetBase),
-		},
-		nextAltLabel,
-	)
 }
 
 // validateAlternatives walks the alt list once rejecting MVP-invalid
