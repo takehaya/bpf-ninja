@@ -164,7 +164,7 @@ theorem bracket_eq_where_at
     (c : Ctx) (pre rest : List Layer) (p : ProtoLayer) (spec : ProtoSpec) (inst : Inst)
     (f : FieldPath) (op : CmpOp) (v : Value) {r : Ref} (st s1 stF : State)
     (hq : p.quant = .one) (hname : spec.name = p.name)
-    (hvlan : (c.H.vlanInMetadata && p.name == "vlan") = false)
+    (hvlan : c.H.tagInMetadata p.name = false)
     (hpre : evalChain c pre st = .ok s1)
     (hx : extractInst c s1 p.name spec = .ok inst)
     (hrest : evalChain c rest (s1.push p.label inst) = .ok stF)
@@ -196,13 +196,13 @@ theorem evalChain_proto_inv (c : Ctx) (pre rest : List Layer) (p : ProtoLayer) (
     (h : evalChain c (pre ++ .proto p :: rest) st = .ok stF) :
     ∃ s1 inst, evalChain c pre st = .ok s1 ∧ extractInst c s1 p.name spec = .ok inst ∧
       evalChain c rest (s1.push p.label inst) = .ok stF ∧
-      (c.H.vlanInMetadata && p.name == "vlan") = false := by
+      c.H.tagInMetadata p.name = false := by
   rw [evalChain_append] at h
   cases hpre : evalChain c pre st with
   | error e => simp [hpre, Except.bind] at h
   | ok s1 =>
     simp only [hpre, Except.bind, evalChain, bind, hq, quantBounds, evalProtoLayer, hsp] at h
-    cases hv : (c.H.vlanInMetadata && p.name == "vlan") with
+    cases hv : c.H.tagInMetadata p.name with
     | true => simp [hv] at h
     | false =>
       simp only [hv, extract, hsp, hnp, checkPreds, bind, Except.bind] at h

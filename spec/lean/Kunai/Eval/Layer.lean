@@ -201,8 +201,8 @@ def extractOpt (c : Ctx) (st : State) (p : ProtoLayer) : Except LayerFail State 
 def evalProtoLayer (c : Ctx) (st : State) (p : ProtoLayer) : Except LayerFail State := do
   let some spec := c.V.proto? p.name | throw (.illTyped s!"unknown protocol {p.name}")
   let (n, m) := quantBounds p.quant
-  if c.H.vlanInMetadata && p.name == "vlan" && n ≥ 1 then
-    throw (.illTyped "vlan is in metadata on this host; the layer must be optional")
+  if c.H.tagInMetadata p.name && n ≥ 1 then
+    throw (.illTyped s!"{p.name} is in metadata on this host; the layer must be optional")
   match p.quant with
   | .one => extract c st p
   | .opt => extractOpt c st p

@@ -164,7 +164,7 @@ userspace の `BPF_PROG_TEST_RUN` や独自 tracing のような他のホスト�
 
 - lexer / parser のエラーは `*lexer.SyntaxError` です。
 - resolver のエラーは `*resolve.Error` です。syntax error 型のエイリアスで、file / line / col を保持します。
-- codegen のエラーには `codegen.ErrNotImplemented` が含まれます。これは MVP codegen がまだ emit していない有効な DSL に対するエラーで、本物のバグと区別するには `errors.Is(err, codegen.ErrNotImplemented)` を使います。`codegen.ErrVlanInMetadata` は、VLAN tag を skb metadata に持つ host (tc, cgroup-skb, netfilter) で必須の `vlan` layer を書いたときの型エラーで、`ErrNotImplemented` を wrap しません。
+- codegen のエラーには `codegen.ErrNotImplemented` が含まれます。これは MVP codegen がまだ emit していない有効な DSL に対するエラーで、本物のバグと区別するには `errors.Is(err, codegen.ErrNotImplemented)` を使います。`codegen.ErrVlanInMetadata` は、VLAN tag を skb metadata に持つ host (tc, cgroup-skb, netfilter) で必須の `vlan` / `qinq` layer を書いたときの型エラーで、`ErrNotImplemented` を wrap しません。
 
 ## 同梱 vocabulary
 

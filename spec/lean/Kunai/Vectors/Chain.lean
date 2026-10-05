@@ -313,17 +313,21 @@ vector hostTcVlanAlt := {
 vector hostTcVlanAltSecond := {
   id := "host-tc-vlan-alt-second", host := .tc_entry,
   ast := { layers := [P "eth", .alt [{ name := "qinq" }, { name := "vlan" }], P "ipv4", P "tcp"] }, packet := vlanPkt,
-  expected := .illTyped "vlan is in metadata on this host; the layer must be optional" }
+  expected := .illTyped "qinq is in metadata on this host; the layer must be optional" }
 vector hostTcQinqVlan := {
   id := "host-tc-qinq-vlan", host := .tc_entry,
   ast := { layers := [P "eth", P "qinq", P "vlan", P "ipv4", P "tcp"] }, packet := vlanPkt,
-  expected := .illTyped "vlan is in metadata on this host; the layer must be optional",
-  note := "the vlan rule wins over Go's refusal of a mandatory qinq" }
+  expected := .illTyped "qinq is in metadata on this host; the layer must be optional",
+  note := "both tags are mandatory; the first is reported" }
 vector hostTcQinqMandatory := {
   id := "host-tc-qinq-mandatory", host := .tc_entry,
   ast := { layers := [P "eth", P "qinq", P "ipv4", P "tcp"] }, packet := vlanPkt,
-  expected := .reject, goStatus := .notImplemented,
-  note := "the rule names vlan only; Go refuses a mandatory qinq at this host (D-008, open)" }
+  expected := .illTyped "qinq is in metadata on this host; the layer must be optional",
+  note := "the kernel moves an 802.1ad outer tag to metadata like an 802.1Q one" }
+vector hostTcQinqOpt := {
+  id := "host-tc-qinq-optional", host := .tc_entry,
+  ast := { layers := [P "eth", Pq "qinq" .opt, Pq "vlan" .opt, P "ipv4", P "tcp"] }, packet := vlanPkt,
+  expected := .accept [] }
 vector hostTcVlanOpt := {
   id := "host-tc-vlan-optional", host := .tc_entry, ast := { layers := vlanOpt }, expected := .accept [] }
 vector hostL3Root := {
@@ -343,6 +347,6 @@ def chainVectors : List Vector := [
   quantPredAllHold, quantSelfValidSkip, quantSelfValidPresent, quantSelfValidShortV4, quantSelfValidShortV6, quantSelfValidEmpty, quantSelfValidCascade, quantSelfValidCascadeEth, quantSelfValidBroken, quantOptIPv4Last, quantOptIPv4LastAbsent, quantOptIPIP, quantExactOneMachine, typAltExactOne, typRepeatNoSelfEdge, typRepeatNoSelfEdgeStar, quantOptIPIPAbsent, quantOptIPIPTwiceOne, quantOptIPIPTwiceNone, quantOptIPIPTwiceBoth, typOptionalAfterSkip, typOptionalNoCheck, chainMandatorySelfEdgeMiss, quantSelfEdgeStar, quantSelfEdgeOpt,
   absentConsecutiveEthertype, absentConsecutiveSelfValid, absentConsecutiveMplsOnly, absentConsecutiveNeither, absentConsecutiveArp, quantFirstOptional,
   altFirst, altSecond, altNone, altFirstPredFails, altRoot, altNoCheck,
-  hostTcVlanMandatory, hostTcVlanAlt, hostTcVlanAltSecond, hostTcQinqVlan, hostTcQinqMandatory, hostTcVlanOpt, hostL3Root, hostL3EthRoot]
+  hostTcVlanMandatory, hostTcVlanAlt, hostTcVlanAltSecond, hostTcQinqVlan, hostTcQinqMandatory, hostTcQinqOpt, hostTcVlanOpt, hostL3Root, hostL3EthRoot]
 
 end Kunai

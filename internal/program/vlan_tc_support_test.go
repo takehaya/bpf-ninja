@@ -25,8 +25,8 @@ var tcAcceptedVlanExprs = []string{
 }
 
 // tcRejectedVlanExprs reject at compile time on the tc host: they read a
-// tag the kernel stripped into skb metadata. A mandatory vlan layer is
-// a type error; the other shapes are not implemented.
+// tag the kernel stripped into skb metadata. A mandatory tag layer is a
+// type error; a predicate on an optional tag is not implemented.
 var tcRejectedVlanExprs = []struct {
 	expr string
 	want error
@@ -36,7 +36,7 @@ var tcRejectedVlanExprs = []struct {
 	{"eth/qinq/vlan/ipv4/tcp", codegen.ErrVlanInMetadata},       // mandatory QinQ stack
 	{"eth/vlan[tci==100]/ipv4/tcp", codegen.ErrVlanInMetadata},  // mandatory + reads tci
 	{"eth/(vlan|qinq)/ipv4/tcp", codegen.ErrVlanInMetadata},     // tag inside an alternation
-	{"eth/qinq/vlan?/ipv4/tcp", codegen.ErrNotImplemented},      // mandatory outer tag
+	{"eth/qinq/vlan?/ipv4/tcp", codegen.ErrVlanInMetadata},      // mandatory outer tag
 	{"eth/vlan[tci==100]?/ipv4/tcp", codegen.ErrNotImplemented}, // optional but reads tci (predicate before quant)
 }
 
