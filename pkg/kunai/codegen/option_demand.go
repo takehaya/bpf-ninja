@@ -27,6 +27,9 @@ type queriedOptions struct {
 	// members maps each alternation member to its index in its group
 	// (the group's chain position is the member's own LayerPos).
 	members map[*ir.LayerInstance]int
+	// whereOnlyGroups are the groups whose matched-member slot exists for
+	// where / capture reads alone (no diverged dispatch follows them).
+	whereOnlyGroups map[int]bool
 }
 
 // of returns the layer's demand list (nil when nothing is queried).
@@ -56,6 +59,19 @@ func (qo queriedOptions) matchedSlot(pos int) (slot int16, ok bool) {
 	return slot, ok
 }
 
+// dropWhereReads forgets the matched-member slots that only where /
+// capture reads asked for, when the where clause is lowered elsewhere
+// (the accumulator plan) and no guard will read them. Those slots are the
+// last ones planned, so nothing else moves.
+func (qo queriedOptions) dropWhereReads() {
+	if qo.plan == nil {
+		return
+	}
+	for pos := range qo.whereOnlyGroups {
+		delete(qo.plan.matched, pos)
+	}
+}
+
 // readsAltMember reports whether any matched-member slot is planned,
 // i.e. whether a where atom can need a member guard.
 func (qo queriedOptions) readsAltMember() bool {
@@ -80,6 +96,7 @@ func collectQueriedOptions(p *ir.Program) (queriedOptions, error) {
 	// predicate runs inside its branch and does not.
 	qo.members = map[*ir.LayerInstance]int{}
 	readGroups := map[int]bool{}
+	dispatchGroups := map[int]bool{}
 	divergedUnder := func(l *ir.LayerInstance) bool {
 		return l != nil && l.Dispatch != nil && l.Dispatch.IsAltDiverged
 	}
@@ -96,6 +113,7 @@ func collectQueriedOptions(p *ir.Program) (queriedOptions, error) {
 		if i > 0 && p.Layers[i-1] != nil && len(p.Layers[i-1].Alternation) > 0 &&
 			(divergedUnder(layer) || slices.ContainsFunc(layer.Alternation, divergedUnder)) {
 			readGroups[p.Layers[i-1].LayerPos] = true
+			dispatchGroups[p.Layers[i-1].LayerPos] = true
 		}
 	}
 	visitRead := func(f *ir.FieldRef) {
@@ -124,6 +142,12 @@ func collectQueriedOptions(p *ir.Program) (queriedOptions, error) {
 			return layouts[i].OutParam < layouts[j].OutParam
 		})
 		qo.demand[layer] = layouts
+	}
+	qo.whereOnlyGroups = map[int]bool{}
+	for pos := range readGroups {
+		if !dispatchGroups[pos] {
+			qo.whereOnlyGroups[pos] = true
+		}
 	}
 	plan, err := planStack(p.Layers, qo.demand, readGroups)
 	if err != nil {

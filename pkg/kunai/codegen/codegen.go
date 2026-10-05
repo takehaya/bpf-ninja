@@ -384,6 +384,11 @@ func Gen(p *ir.Program, caps Capabilities) (Output, error) {
 	// budget). nil for every other shape; the parser machine then keeps
 	// the existing >=2 reject. See acc.go.
 	plan := buildAccPlan(where, qo)
+	if plan != nil {
+		// The where clause will not be emitted, so no member guard reads
+		// a matched-member slot planned for it.
+		qo.dropWhereReads()
+	}
 	var callbacks asm.Instructions
 	var extractions []ExtractSlot
 	pc := &predCtx{sets: caps.Lang.SetSlots, out: &extractions}
