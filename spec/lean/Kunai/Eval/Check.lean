@@ -115,6 +115,13 @@ private def checkEdge (V : Vocab) (child parent : String) (alt optional : Bool) 
     else pure ()
   | none, none => throw s!"unknown protocol {child}"
 
+/-- Layer `i` of the chain is an outer VLAN tag position (D-008): the root
+is `eth` and every layer between them is a tag (an alternation of tags
+counts as one). It looks at the chain's protocol names only
+(`Layer.names`), so bracket predicates do not change it. -/
+private def outerTagPos (names : List (List String)) (i : Nat) : Bool :=
+  i ≥ 1 && names[0]? == some ["eth"] && ((names.take i).drop 1).all (·.all isTagName)
+
 /-- The checks on a layer that do not look at its predicates. -/
 private def checkProtoShape (c : Ctx) (layers : List Layer) (i : Nat) (p : ProtoLayer) (spec : ProtoSpec)
     (alt : Bool) : Except String Unit := do
@@ -125,7 +132,7 @@ private def checkProtoShape (c : Ctx) (layers : List Layer) (i : Nat) (p : Proto
   let (n, m) := quantBounds p.quant
   if i == 0 && n == 0 then throw "the first layer cannot be optional"
   if alt && p.quant != .one then throw "alternatives cannot carry quantifiers"
-  if c.H.tagInMetadata p.name && n ≥ 1 then
+  if c.H.tagInMetadata p.name && outerTagPos (layers.map Layer.names) i && n ≥ 1 then
     throw s!"{p.name} is in metadata on this host; the layer must be optional"
   let fuel := m.getD spec.maxDepth
   if fuel > chainCap then throw s!"chain depth {fuel} exceeds {chainCap}"
@@ -299,12 +306,13 @@ private theorem possibleParents_congr (L L' : List Layer)
         simp [hi.1, hi.2, ih]
 
 private theorem checkLayer_congr (c : Ctx) (L L' : List Layer)
-    (h : ∀ i, possibleParents L i = possibleParents L' i) (x : Layer × Nat) :
+    (h : ∀ i, possibleParents L i = possibleParents L' i)
+    (hn : L.map Layer.names = L'.map Layer.names) (x : Layer × Nat) :
     checkLayer c L x = checkLayer c L' x := by
   obtain ⟨l, i⟩ := x
   cases l with
-  | proto p => simp [checkLayer, checkProtoLayer, checkProtoShape, h]
-  | alt alts => simp [checkLayer, checkProtoLayer, checkProtoShape, h]
+  | proto p => simp [checkLayer, checkProtoLayer, checkProtoShape, h, hn]
+  | alt alts => simp [checkLayer, checkProtoLayer, checkProtoShape, h, hn]
 
 /-- The layers of the where form check when those of the bracket form do,
 and the bracket predicate itself checked. -/
@@ -324,7 +332,7 @@ private theorem checkLayers_bracket (c : Ctx) (pre rest : List Layer) (p : Proto
   have hone : (Quant.one == Quant.one) = true := by decide
   refine ⟨?_, by simpa [hq, hone] using hmid.2⟩
   intro x hx
-  rw [← checkLayer_congr c _ _ hpp]
+  rw [← checkLayer_congr c _ _ hpp (by simp [Layer.names])]
   rcases hx with hx | hx | hx
   · exact h x (Or.inl hx)
   · subst hx

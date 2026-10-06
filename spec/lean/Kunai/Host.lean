@@ -78,4 +78,7 @@ metadata (D-008): such a layer must be optional. -/
 def Host.tagInMetadata (H : Host) (name : String) : Bool :=
   H.vlanInMetadata && (name == "vlan" || name == "qinq")
 
+/-- A VLAN tag protocol name (802.1Q `vlan`, 802.1ad `qinq`). -/
+def isTagName (name : String) : Bool := name == "vlan" || name == "qinq"
+
 end Kunai

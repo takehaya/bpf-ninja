@@ -164,7 +164,7 @@ theorem bracket_eq_where_at
     (c : Ctx) (pre rest : List Layer) (p : ProtoLayer) (spec : ProtoSpec) (inst : Inst)
     (f : FieldPath) (op : CmpOp) (v : Value) {r : Ref} (st s1 stF : State)
     (hq : p.quant = .one) (hname : spec.name = p.name)
-    (hvlan : c.H.tagInMetadata p.name = false)
+    (hvlan : tagGuard c s1 p.name = false)
     (hpre : evalChain c pre st = .ok s1)
     (hx : extractInst c s1 p.name spec = .ok inst)
     (hrest : evalChain c rest (s1.push p.label inst) = .ok stF)
@@ -196,13 +196,13 @@ theorem evalChain_proto_inv (c : Ctx) (pre rest : List Layer) (p : ProtoLayer) (
     (h : evalChain c (pre ++ .proto p :: rest) st = .ok stF) :
     ∃ s1 inst, evalChain c pre st = .ok s1 ∧ extractInst c s1 p.name spec = .ok inst ∧
       evalChain c rest (s1.push p.label inst) = .ok stF ∧
-      c.H.tagInMetadata p.name = false := by
+      tagGuard c s1 p.name = false := by
   rw [evalChain_append] at h
   cases hpre : evalChain c pre st with
   | error e => simp [hpre, Except.bind] at h
   | ok s1 =>
     simp only [hpre, Except.bind, evalChain, bind, hq, quantBounds, evalProtoLayer, hsp] at h
-    cases hv : c.H.tagInMetadata p.name with
+    cases hv : tagGuard c s1 p.name with
     | true => simp [hv] at h
     | false =>
       simp only [hv, extract, hsp, hnp, checkPreds, bind, Except.bind] at h
@@ -210,7 +210,7 @@ theorem evalChain_proto_inv (c : Ctx) (pre rest : List Layer) (p : ProtoLayer) (
       | error e => simp [hx] at h
       | ok inst =>
         simp [hx, pure, Except.pure] at h
-        exact ⟨s1, inst, rfl, hx, h, rfl⟩
+        exact ⟨s1, inst, rfl, hx, h, hv⟩
 
 /-- `…/p[f op v]/…` ≡ `…/p/… where p.f op v` (D-023), for a mandatory layer
 `p` without other predicates whose name denotes the instance it extracts.

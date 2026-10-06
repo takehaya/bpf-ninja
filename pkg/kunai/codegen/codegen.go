@@ -66,6 +66,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"slices"
 	"sync/atomic"
 
 	"github.com/cilium/ebpf/asm"
@@ -819,6 +820,11 @@ func checkUnsupported(p *ir.Program) error {
 // TestVlanUntagAtTCIngress) and at the packet level (dsltest
 // TestVlanQuestionMarkOptional).
 //
+// All of this concerns the outer tag only: a tag layer right after the
+// root eth, with only tags in between. A tag inside a tunnel
+// (`eth/ipv4/udp/vxlan/eth/vlan`) is in the packet bytes and is matched
+// like any other layer.
+//
 // A vlan or qinq layer that cannot be absent — no optional quantifier,
 // or a member of an alternation at any depth — is a type error
 // (ErrVlanInMetadata): the language requires the layer to be optional at
@@ -841,9 +847,37 @@ func checkHostLayerSupport(p *ir.Program, host HostLayout) error {
 	if !host.VlanInMetadata {
 		return nil
 	}
-	isVlan := func(l *ir.LayerInstance) bool {
+	isTag := func(l *ir.LayerInstance) bool {
 		return l != nil && l.Spec != nil && (l.Spec.Name == "vlan" || l.Spec.Name == "qinq")
 	}
+	// The kernel moves only the outer tag: a tag layer right after the
+	// root eth, with only tags (or alternations of tags) in between. A
+	// tag further in, inside a tunnel, is in the packet bytes and needs
+	// none of the rules below (spec D-008).
+	outer := map[*ir.LayerInstance]bool{}
+	if len(p.Layers) > 0 && p.Layers[0] != nil && p.Layers[0].Spec != nil && p.Layers[0].Spec.Name == "eth" {
+		for _, l := range p.Layers[1:] {
+			members := l.Alternation
+			if len(members) == 0 {
+				members = []*ir.LayerInstance{l}
+			}
+			if !slices.ContainsFunc(members, isTag) || slices.ContainsFunc(members, func(m *ir.LayerInstance) bool { return !isTag(m) }) {
+				// A non-tag ends the outer stack; a mixed alternation
+				// still puts its tag members in the outer position.
+				for _, m := range members {
+					if isTag(m) {
+						outer[m] = true
+					}
+				}
+				break
+			}
+			outer[l] = true
+			for _, m := range l.Alternation {
+				outer[m] = true
+			}
+		}
+	}
+	isVlan := func(l *ir.LayerInstance) bool { return isTag(l) && outer[l] }
 	// One walk over every layer and alternation member. A tag that
 	// cannot be absent is the type error; a predicate on an optional tag
 	// is refused as not implemented. The type error is reported even

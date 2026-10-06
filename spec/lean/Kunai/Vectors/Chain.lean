@@ -341,6 +341,28 @@ vector hostTcQinqOpt := {
   id := "host-tc-qinq-optional", host := .tc_entry,
   ast := { layers := [P "eth", Pq "qinq" .opt, Pq "vlan" .opt, P "ipv4", P "tcp"] }, packet := vlanPkt,
   expected := .accept [] }
+def vxlanInnerVlanPkt (tci : Nat := 100) : Packet :=
+  eth 0x0800 ++ ipv4 17 ++ udp 1234 4789 ++ vxlan 100 ++ eth 0x8100 ++ vlan tci 0x0800 ++ ipv4 6 ++ tcp 12345 80 ++ payload 5
+def vxlanInnerVlanL : List Layer := [P "eth", P "ipv4", P "udp", P "vxlan", P "eth", P "vlan", P "ipv4", P "tcp"]
+set_option maxRecDepth 16384 in
+vector hostTcInnerVlan := {
+  id := "host-tc-inner-vlan", host := .tc_entry, ast := { layers := vxlanInnerVlanL }, packet := vxlanInnerVlanPkt,
+  expected := .accept [], note := "D-008: only the outer tag is moved to metadata; a tag inside a tunnel is in the packet bytes" }
+set_option maxRecDepth 16384 in
+vector hostTcInnerVlanTci := {
+  id := "host-tc-inner-vlan-tci", host := .tc_entry,
+  ast := { layers := vxlanInnerVlanL, cond := some (.arith (.field ⟨[("vlan", none), ("tci", none)]⟩) .eq (.const 100)) },
+  packet := vxlanInnerVlanPkt, expected := .accept [] }
+set_option maxRecDepth 16384 in
+vector hostTcInnerVlanPred := {
+  id := "host-tc-inner-vlan-bracket", host := .tc_entry,
+  ast := { layers := [P "eth", P "ipv4", P "udp", P "vxlan", P "eth", .proto { name := "vlan", preds := [.cmp ⟨[("tci", none)]⟩ .eq (.int 200)] }, P "ipv4", P "tcp"] },
+  packet := vxlanInnerVlanPkt, expected := .reject, note := "the inner tag is read: tci 100 ≠ 200" }
+vector hostTcQinqOptVlan := {
+  id := "host-tc-qinq-opt-then-vlan", host := .tc_entry,
+  ast := { layers := [P "eth", Pq "qinq" .opt, P "vlan", P "ipv4", P "tcp"] }, packet := vlanPkt,
+  expected := .illTyped "vlan is in metadata on this host; the layer must be optional",
+  note := "only tags stand between the root eth and vlan, so it is still an outer tag" }
 vector hostTcVlanOpt := {
   id := "host-tc-vlan-optional", host := .tc_entry, ast := { layers := vlanOpt }, expected := .accept [] }
 vector hostL3Root := {
@@ -360,6 +382,6 @@ def chainVectors : List Vector := [
   quantPredAllHold, quantSelfValidSkip, quantSelfValidPresent, quantSelfValidShortV4, quantSelfValidShortV6, quantSelfValidEmpty, quantSelfValidCascade, quantSelfValidCascadeEth, quantSelfValidBroken, quantOptIPv4Last, quantOptIPv4LastAbsent, quantOptIPIP, quantExactOneMachine, typAltExactOne, typRepeatNoSelfEdge, typRepeatNoSelfEdgeStar, quantOptIPIPAbsent, quantOptIPIPTwiceOne, quantOptIPIPTwiceNone, quantOptIPIPTwiceBoth, typOptionalAfterSkip, typOptionalNoCheck, chainMandatorySelfEdgeMiss, quantSelfEdgeStar, quantSelfEdgeOpt,
   absentConsecutiveEthertype, absentConsecutiveSelfValid, absentConsecutiveMplsOnly, absentConsecutiveNeither, absentConsecutiveArp, quantFirstOptional,
   altFirst, altSecond, altAfterVxlan6, altAfterVxlan4, altNone, altFirstPredFails, altRoot, altNoCheck,
-  hostTcVlanMandatory, hostTcVlanAlt, hostTcVlanAltSecond, hostTcQinqVlan, hostTcQinqMandatory, hostTcQinqOpt, hostTcVlanOpt, hostL3Root, hostL3EthRoot]
+  hostTcVlanMandatory, hostTcVlanAlt, hostTcVlanAltSecond, hostTcQinqVlan, hostTcQinqMandatory, hostTcQinqOpt, hostTcInnerVlan, hostTcInnerVlanTci, hostTcInnerVlanPred, hostTcQinqOptVlan, hostTcVlanOpt, hostL3Root, hostL3EthRoot]
 
 end Kunai

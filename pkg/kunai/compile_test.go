@@ -1589,6 +1589,17 @@ func TestVlanInMetadataRejectsVlanLayers(t *testing.T) {
 		"eth/vlan?/ipv4/tcp where ipv4.ttl == 64", // past the tag: runtime offset, no tag read
 	}
 	tcCaps := codegen.Capabilities{Host: codegen.HostLayout{VlanInMetadata: true}}
+	// Only the outer tag is in metadata: a tag inside a tunnel is in the
+	// packet bytes, so it may be mandatory and read (spec D-008).
+	for _, expr := range []string{
+		"eth/ipv4/udp/vxlan/eth/vlan/ipv4/tcp",
+		"eth/ipv4/udp/vxlan/eth/vlan[tci==100]/ipv4/tcp where vlan.tci == 100",
+		"eth/ipv4/udp/vxlan/eth/qinq/vlan/ipv4/tcp capture vlan",
+	} {
+		if _, err := Compile(expr, tcCaps); err != nil {
+			t.Errorf("inner tag %q with VlanInMetadata: %v", expr, err)
+		}
+	}
 	for _, expr := range illTyped {
 		t.Run("illTyped/"+expr, func(t *testing.T) {
 			_, err := Compile(expr, tcCaps)
