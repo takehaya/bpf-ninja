@@ -127,6 +127,66 @@ def wsShift := Arith.field ⟨[("tcp", none), ("options", none), ("WS", none), (
 vector tcpOptsValidTwoOptions := tcpW (.and tcpValid (.and (cmp mss .eq (k 1460)) (cmp wsShift .eq (k 7))))
   (tcpOpts (mssOpt 1460 ++ [3, 3, 7, 1])) "tcp-opts-valid-with-two-options" (.accept []) (goStatus := .notImplemented)
   (note := "Go: the accumulator plan for two option equalities has no slot for the validity flag")
+def tcpValidPred : Predicate := .optionsValid ⟨[("options", none)]⟩
+def tcpValidL (q : Quant := .one) : List Layer :=
+  [P "eth", P "ipv4", .proto { name := "tcp", preds := [tcpValidPred], quant := q }]
+vector bracketValid := {
+  id := "bracket-opts-valid", ast := { layers := tcpValidL }, packet := tcpOpts (mssOpt 1460), expected := .accept [] }
+vector bracketValidMalformed := {
+  id := "bracket-opts-valid-malformed", ast := { layers := tcpValidL }, packet := malformedOpts, expected := .reject }
+vector bracketValidOptMalformed := {
+  id := "bracket-opts-valid-optional-malformed", ast := { layers := tcpValidL .opt }, packet := malformedOpts, expected := .reject,
+  note := "D-001: tcp dispatched, so a false bracket predicate rejects rather than skipping the layer" }
+vector bracketValidWithCmp := {
+  id := "bracket-opts-valid-and-cmp",
+  ast := { layers := [P "eth", P "ipv4", .proto { name := "tcp", preds := [.cmp (f "dport") .eq (.int 80), tcpValidPred] }] },
+  packet := tcpOpts (mssOpt 1460), expected := .accept [] }
+def validMember (name : String) : ProtoLayer := { name, preds := [tcpValidPred] }
+vector bracketValidAltFirst := {
+  id := "bracket-opts-valid-alt-first", ast := { layers := [P "eth", P "ipv4", .alt [validMember "tcp", { name := "udp" }]] },
+  packet := malformedOpts, expected := .reject }
+vector bracketValidAltSecond := {
+  id := "bracket-opts-valid-alt-second", ast := { layers := [P "eth", P "ipv4", .alt [{ name := "udp" }, validMember "tcp"]] },
+  packet := malformedOpts, expected := .reject }
+vector bracketValidAltOther := {
+  id := "bracket-opts-valid-alt-other-member", ast := { layers := [P "eth", P "ipv4", .alt [validMember "tcp", { name := "udp" }]] },
+  packet := eth 0x0800 ++ ipv4 17 ++ udp 1234 53 ++ payload 5, expected := .accept [] }
+vector bracketValidFirst := {
+  id := "bracket-opts-valid-first-in-list",
+  ast := { layers := [P "eth", P "ipv4", .proto { name := "tcp", preds := [tcpValidPred, .cmp (f "dport") .eq (.int 80)] }] },
+  packet := malformedOpts, expected := .reject }
+vector bracketValidNoOpts := {
+  id := "bracket-opts-valid-no-options", ast := { layers := tcpValidL }, expected := .accept [] }
+vector bracketValidOptAbsent := {
+  id := "bracket-opts-valid-optional-absent", ast := { layers := tcpValidL .opt },
+  packet := eth 0x0800 ++ ipv4 17 ++ udp 1234 53 ++ payload 5, expected := .accept [],
+  note := "tcp does not dispatch under protocol 17, so the optional layer is skipped and its predicate never runs" }
+vector bracketValidIPv4 := {
+  id := "bracket-opts-valid-ipv4",
+  ast := { layers := [P "eth", .proto { name := "ipv4", preds := [tcpValidPred] }, P "tcp"] },
+  packet := ipv4BadOptPkt, expected := .reject }
+vector bracketValidTwoOptions := {
+  id := "bracket-opts-valid-with-two-options",
+  ast := { layers := [P "eth", P "ipv4", .proto { name := "tcp", preds := [tcpValidPred] }], cond := some (.and (cmp mss .eq (k 1460)) (cmp wsShift .eq (k 7))) },
+  packet := tcpOpts (mssOpt 1460 ++ [3, 3, 7, 1]), expected := .accept [],
+  note := "the bracket form works next to the two-option accumulator, which the where form does not (notImplemented)" }
+vector bracketValidRepeated := {
+  id := "bracket-opts-valid-repeated",
+  ast := { layers := [P "eth", .proto { name := "ipv4", preds := [tcpValidPred], quant := .range 1 (some 2) }, P "tcp"] },
+  expected := .accept [], goStatus := .notImplemented,
+  note := "Go: a repeated layer replays its bracket predicates per iteration, before the walk's outcome is recorded" }
+vector typBracketValidSegment := {
+  id := "typ-bracket-opts-valid-segment",
+  ast := { layers := [P "eth", P "ipv4", .proto { name := "tcp", preds := [.optionsValid ⟨[("opts", none)]⟩] }] },
+  expected := .illTyped "unsupported: tcp[opts.valid]" }
+vector typBracketValidSrv6 := {
+  id := "typ-bracket-segments-valid-srv6",
+  ast := { layers := [P "eth", P "ipv6", .proto { name := "srv6", preds := [.optionsValid ⟨[("segments", none)]⟩] }, P "tcp"] },
+  expected := .illTyped "srv6 has no option region whose faults are skipped; segments.valid needs one (@kunai_option_region[on_fault=skip])" }
+vector typBracketValidNoRegion := {
+  id := "typ-bracket-opts-valid-no-region",
+  ast := { layers := [P "eth", P "ipv4", .proto { name := "udp", preds := [tcpValidPred] }] },
+  expected := .illTyped "udp has no option region whose faults are skipped; options.valid needs one (@kunai_option_region[on_fault=skip])" }
 vector typOptsValidNoRegion := {
   id := "typ-opts-valid-no-region", ast := { layers := [P "eth", P "ipv4", P "udp"], cond := some (.optionsValid ⟨[("udp", none), ("options", none)]⟩) },
   expected := .illTyped "udp has no option region whose faults are skipped; udp.options.valid needs one (@kunai_option_region[on_fault=skip])" }
@@ -164,6 +224,10 @@ vector geneveRegionPastEnd := {
 vector geneveValidEmpty := {
   id := "geneve-opts-valid-empty", ast := { layers := geneveL, cond := some geneveValid },
   packet := genevePkt 0 [], expected := .accept [] }
+vector bracketValidGeneve := {
+  id := "bracket-opts-valid-geneve",
+  ast := { layers := [P "eth", P "ipv4", P "udp", .proto { name := "geneve", preds := [tcpValidPred] }] },
+  packet := genevePkt 4 (geneveUnknown ++ geneveOvn 42), expected := .reject }
 
 -- IPv6 extension headers ---------------------------------------------------
 
@@ -565,7 +629,8 @@ def auxVectors : List Vector := [
   tcpOptCross, tcpEol, tcpMssDup, tcpMssBadLen, tcpMssExists, tcpMssExistsNot, tcpSackBlock, tcpSackAny, tcpSackAll,
   tcpSackAbsentAny, tcpMalformedNoQuery, tcpMalformedNotQuery, tcpMalformedOrTrue, tcpMalformedExists,
   tcpMalformedAfterMss, tcpMalformedChainOn, ipv4MalformedOpts, ipv4MalformedOptsQueried, ipv4OptDepthLastFault, ipv4OptDepthLastSighting,
-  tcpOptsValid, tcpOptsValidNone, tcpOptsInvalid, tcpOptsInvalidNot, tcpOptsValidWithMss, tcpOptsValidAbsent, tcpOptsValidAltMember, tcpOptsValidAltOther, tcpOptsValidTwoOptions, ipv4OptsInvalid,
+  tcpOptsValid, tcpOptsValidNone, tcpOptsInvalid, tcpOptsInvalidNot, tcpOptsValidWithMss, tcpOptsValidAbsent, tcpOptsValidAltMember, tcpOptsValidAltOther, tcpOptsValidTwoOptions, bracketValid, bracketValidMalformed, bracketValidOptMalformed, bracketValidWithCmp, typBracketValidNoRegion, bracketValidAltFirst, bracketValidAltSecond, bracketValidAltOther, bracketValidFirst,
+  bracketValidNoOpts, bracketValidOptAbsent, bracketValidIPv4, bracketValidGeneve, bracketValidTwoOptions, bracketValidRepeated, typBracketValidSegment, typBracketValidSrv6, ipv4OptsInvalid,
   geneveOvnHit, geneveMalformedAfter, geneveMalformedBefore, geneveMalformedChainOn, geneveRegionPastEnd, geneveValidEmpty, typOptsValidNoRegion,
   ipv6Hbh, ipv6TwoExts, ipv6ExtLong, ipv6ExtTooLong, ipv6ExtsIndex, ipv6ExtsIndex1, ipv6ExtsIndexAfterLong, ipv6ExtsAnyAfterLong, ipv6ExtsDynamicLong, ipv6ExtsDynamicLongSecond, ipv6ExtsDynamicLongAbsent, ipv6ExtsDynamicLongLast, ipv6ExtsDynamicLongLastMiss, ipv6ExtsDynamicLongBeyond, ipv6ExtsDynamicLongSlot, ipv6ExtsDynamicLongSlotAbsent,
   ipv6ExtsBracket, ipv6ExtsBracketAbsent, ipv6ExtsBracketLong, ipv6ExtsBracketDynamic, ipv6ExtsBracketIter, ipv6ExtsBracketInAbsent, ipv6ExtsBracketInLong, ipv6ExtsSliceLong, ipv6ExtsBracketSliceLong, gtpExtsBracket, gtpExtsBracketAbsent, gtpExtsBracketNone, gtpExtsBracketMixed, gtpExtsBracketMixedMiss, ipv6ExtsIndexAbsent,

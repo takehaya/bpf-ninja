@@ -66,6 +66,7 @@ def Predicate.text : Predicate → String
   | .cmp f op v => f.text ++ " " ++ op.text ++ " " ++ v.text
   | .inList f vs => f.text ++ " in [" ++ sepBy ", " (vs.map Value.text) ++ "]"
   | .inSet f s => f.text ++ " in @" ++ s
+  | .optionsValid f => f.text ++ ".valid"
 
 def ProtoLayer.text (p : ProtoLayer) : String :=
   p.name

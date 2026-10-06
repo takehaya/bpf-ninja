@@ -54,6 +54,21 @@ func genPredicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, error) {
 		insns, err = emitInPredicate(pred)
 	case ast.PredCmp:
 		insns, err = emitCmpPredicate(pred)
+	case ast.PredValid:
+		var slot int16
+		ok := false
+		if pc != nil && pc.validSlot != nil {
+			slot, ok = pc.validSlot(pred.Field.Layer)
+		}
+		if !ok {
+			// The walk's outcome is only recorded where the predicates run
+			// after it; a repeated layer replays them per iteration.
+			return nil, fmt.Errorf("%w: %s[options.valid] on a repeated layer; move it to a where clause", ErrNotImplemented, pred.Field.Layer.Spec.Name)
+		}
+		insns = asm.Instructions{
+			asm.LoadMem(asm.R3, asm.R10, slot, asm.DWord),
+			asm.JEq.Imm(asm.R3, 0, dslReject),
+		}
 	default:
 		return nil, fmt.Errorf("%w: predicate kind %s", ErrNotImplemented, pred.Kind)
 	}
@@ -211,6 +226,9 @@ type predCtx struct {
 	// run after the parser walk (splitPredicates), since the count is final
 	// only then; nil means such an index cannot be guarded.
 	stackCount func(*ir.FieldRef) (int16, bool)
+	// validSlot resolves a layer's option-validity slot, for
+	// `[options.valid]`. Set with stackCount, after the walk.
+	validSlot func(*ir.LayerInstance) (int16, bool)
 	// guarded is the alternation member whose guard has just run its
 	// parent dispatch (genAlternation); its body skips the identical
 	// dispatch, which the guard already passed.

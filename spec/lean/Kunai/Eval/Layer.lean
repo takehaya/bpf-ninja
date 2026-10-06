@@ -69,6 +69,7 @@ def evalPred (c : Ctx) (spec : ProtoSpec) (inst : Inst) : Predicate → Except S
     | some n => vs.anyM fun
       | .range lo hi => pure (lo ≤ n && n ≤ hi)
       | v => Stop.ofExcept (cmpValue r.width n .eq v)
+  | .optionsValid _ => pure inst.optsValid
   | .inSet f name => do
     let r ← resolveBracket c spec f
     let some s := c.H.set? name | throw (.illTyped s!"undeclared set @{name}")

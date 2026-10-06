@@ -10,6 +10,17 @@ import (
 // two-part `<aux>.<field>` / `<aux>.exists` for auxiliary access,
 // always scoped to the owning layer.
 func (r *resolver) resolveBracketPredicate(ap *ast.Predicate, layer *ir.LayerInstance) (*ir.Predicate, error) {
+	if ap.Kind == ast.PredValid {
+		// `[options.valid]`: the same rule as `where <layer>.options.valid`.
+		seg := ""
+		if len(ap.Field.Parts) == 1 {
+			seg = ap.Field.Parts[0]
+		}
+		if err := checkOptionsValid(layer, seg, ap.Field.String(), ap.Pos); err != nil {
+			return nil, err
+		}
+		return &ir.Predicate{Kind: ast.PredValid, Field: &ir.FieldRef{Layer: layer}, Pos: ap.Pos}, nil
+	}
 	field, err := r.resolveUnqualifiedField(ap.Field, layer)
 	if err != nil {
 		return nil, err
@@ -82,6 +93,20 @@ func (r *resolver) resolveBracketPredicate(ap *ast.Predicate, layer *ir.LayerIns
 	// host's SetSlotResolver, which the resolver does not carry, so its
 	// set-existence / field checks happen there, not here.
 	return rp, nil
+}
+
+// checkOptionsValid is the typing rule of `.valid` in a where clause and
+// in a bracket alike (spec D-029): the layer has a declared option region
+// whose faults are skipped, and `seg` is its option segment. `path` is the
+// written path before `.valid`, for the message.
+func checkOptionsValid(layer *ir.LayerInstance, seg, path string, pos ast.Position) error {
+	if _, ok := layer.Spec.SkipsRegionFault(); !ok {
+		return errorf(pos, "%s has no option region whose faults are skipped; %s.valid needs one (@kunai_option_region[on_fault=skip])", layer.Spec.Name, path)
+	}
+	if seg != layer.Spec.OptionSegment {
+		return errorf(pos, "%s.valid: the option segment of %s is %q", path, layer.Spec.Name, layer.Spec.OptionSegment)
+	}
+	return nil
 }
 
 // rejectBareIdentValue surfaces a typing error when the RHS of a
