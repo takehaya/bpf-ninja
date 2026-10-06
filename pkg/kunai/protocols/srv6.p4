@@ -69,6 +69,10 @@ extern ParserCounter {
     bool is_zero();
 }
 
+// A fault in the segment list rejects the packet: an SRH whose segments
+// cannot be read is not an SRH (RFC 8754 requires at least one segment),
+// unlike an option region, which may legitimately be empty (spec D-029).
+@kunai_option_region[on_fault=fail]
 parser SRv6Parser(packet_in pkt,
                     out srv6_h        hdr,
                     out srv6_seg_h[8] segments) {

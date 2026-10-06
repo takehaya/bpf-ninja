@@ -126,6 +126,13 @@ func loadFile(fsys fs.FS, p string, knownProtos map[string]bool) (*ProtocolSpec,
 	if err != nil {
 		return nil, err
 	}
+	onFault, err := readParserOptionRegion(file, p)
+	if err != nil {
+		return nil, err
+	}
+	if onFault == "" {
+		onFault = OnFaultSkip
+	}
 	if optionSegment == "" {
 		optionSegment = "options"
 	}
@@ -167,10 +174,14 @@ func loadFile(fsys fs.FS, p string, knownProtos map[string]bool) (*ProtocolSpec,
 		StackLayouts:      stackLayouts,
 		StackCounts:       stackCounts,
 		OptionSegment:     optionSegment,
+		OptionRegionFault: onFault,
 		File:              file,
 		Source:            p,
 	}
 	if err := resolveStackLayouts(spec); err != nil {
+		return nil, err
+	}
+	if err := validateOptionRegion(spec); err != nil {
 		return nil, err
 	}
 	if err := validateDeclareOnlyStacks(spec); err != nil {

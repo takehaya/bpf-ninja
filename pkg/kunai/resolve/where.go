@@ -148,7 +148,7 @@ func (r *resolver) resolveWhere(w *ast.WhereExpr) (*ir.Condition, error) {
 		if err != nil {
 			return nil, err
 		}
-		if !layer.Spec.HasDeclaredOptionRegion() {
+		if _, ok := layer.Spec.SkipsRegionFault(); !ok {
 			return nil, errorf(w.Pos, "%s declares no option region; %s.valid needs one", layer.Spec.Name, w.BoolField.String())
 		}
 		if parts[1] != layer.Spec.OptionSegment {

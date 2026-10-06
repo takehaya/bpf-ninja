@@ -2190,6 +2190,7 @@ extern ParserCounter {
     bool is_zero();
 }
 
+@kunai_option_region[on_fault=fail]
 parser F(packet_in pkt, out foo_h h) {
     ParserCounter() pc;
     state start {
@@ -2537,6 +2538,7 @@ extern ParserCounter {
     bool is_zero();
 }
 
+@kunai_option_region[on_fault=fail]
 parser F(packet_in pkt, out foo_h h, out foo_rr_h rr) {
     ParserCounter() pc;
     state start {
@@ -2774,5 +2776,67 @@ const bit<8> KUNAI_FOO_BAR_X_ALT2 = 2;
 `), "vocab")
 	if err == nil || !strings.Contains(err.Error(), "_ALT_<NAME>") {
 		t.Errorf("expected numbered-suffix rejection pointing at _ALT_<NAME>, got %v", err)
+	}
+}
+
+// TestOptionRegionFault pins the one place the spec D-029 rule is
+// decided: which bundled parsers skip a fault inside their declared
+// region (ipv4, tcp, geneve), which fail (srv6, annotated), and which
+// have no declared region at all (ipv6 / gtp extension chains).
+func TestOptionRegionFault(t *testing.T) {
+	specs, err := Load(protocols.FS, ".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, want := range map[string]bool{"ipv4": true, "tcp": true, "geneve": true, "srv6": false, "ipv6": false, "gtp": false, "udp": false} {
+		if _, got := specs[name].SkipsRegionFault(); got != want {
+			t.Errorf("%s: SkipsRegionFault = %v, want %v", name, got, want)
+		}
+	}
+	if _, ok := specs["srv6"].RegionLoopState(); !ok {
+		t.Errorf("srv6: the segment walk is a declared region (it fails rather than skips)")
+	}
+	if specs["srv6"].OptionRegionFault != OnFaultFail {
+		t.Errorf("srv6: OptionRegionFault = %q, want %q", specs["srv6"].OptionRegionFault, OnFaultFail)
+	}
+}
+
+// TestOptionRegionAnnotationErrors: a bad on_fault value, and a region
+// counted in elements left at the default skip, are load errors.
+func TestOptionRegionAnnotationErrors(t *testing.T) {
+	const counter = `
+extern ParserCounter {
+    ParserCounter();
+    void set(in bit<8> value);
+    void decrement(in bit<8> value);
+    bool is_zero();
+}
+header foo_h { bit<8> n; bit<8> next; }
+header seg_h { bit<32> v; }
+`
+	parser := func(ann string) string {
+		return counter + ann + `
+parser F(packet_in pkt, out foo_h h, out seg_h[4] segs) {
+    ParserCounter() pc;
+    state start { pkt.extract(h); pc.set((bit<8>)(h.n + 1)); transition walk; }
+    state walk { transition select(pc.is_zero()) { true: accept; false: seg; } }
+    state seg { pkt.extract(segs.next); pc.decrement(1); transition walk; }
+}
+`
+	}
+	for _, tc := range []struct{ ann, want string }{
+		{"@kunai_option_region[on_fault=drop]", "must be `skip` or `fail`"},
+		{"", "add @kunai_option_region[on_fault=fail]"},
+		{"@kunai_option_region[on_fault=skip]", "add @kunai_option_region[on_fault=fail]"},
+	} {
+		fsys := fstest.MapFS{"vocab/foo.p4": &fstest.MapFile{Data: []byte(parser(tc.ann))}}
+		_, err := Load(fsys, "vocab")
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%q: Load error = %v, want it to mention %q", tc.ann, err, tc.want)
+		}
+	}
+	fsys := fstest.MapFS{"vocab/foo.p4": &fstest.MapFile{Data: []byte(parser("@kunai_option_region[on_fault=fail]"))}}
+	if _, err := Load(fsys, "vocab"); err != nil {
+		t.Errorf("on_fault=fail: %v", err)
 	}
 }

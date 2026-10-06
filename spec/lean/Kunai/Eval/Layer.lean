@@ -116,16 +116,17 @@ def extractBody (c : Ctx) (st : State) (name : String) (spec : ProtoSpec) :
   -- aux-extract(p, π, P, α) (§14.4): the parser machine walks options,
   -- extension headers, and stacks. The layer spans the declared length or
   -- whatever the machine consumed, whichever is longer. ⊥ is Fail-Pred,
-  -- except inside a declared option region (D-029): the header declares
-  -- how long its options are (`lenRule`) and that region is in the packet,
-  -- so a walk that fails there leaves the layer with no options, as if
+  -- except inside a header-declared region whose faults are skipped
+  -- (`regionLoop`, D-029): the region's length is known and in the packet,
+  -- so a walk that fails there leaves the layer with no aux headers, as if
   -- the region held none, and the chain goes on past the region.
   match spec.machine with
     | none => pure (len, [], [], true)
     | some m =>
       match runMachine c.P spec m st.cursor with
       | .ok ψ => pure (max len (ψ.cursor - st.cursor), ψ.views, ψ.patches, true)
-      | .error .reject => if spec.lenRule.isSome then pure (len, [], [], false) else throw .pred
+      | .error .regionFault => pure (len, [], [], false)
+      | .error .reject => throw .pred
       | .error (.illTyped r) => throw (.illTyped r)
 
 /-- The instance a layer named `name` extracts at the cursor: its length,

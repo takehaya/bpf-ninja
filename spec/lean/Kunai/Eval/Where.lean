@@ -263,7 +263,7 @@ def resolveValid (c : Ctx) (f : FieldPath) : Except Stop String := do
   let [(head, none), (seg, none)] := f.segs | throw (.illTyped s!"unsupported: {f.text}.valid")
   let proto ← staticProto c head
   let some spec := c.V.proto? proto | throw (.illTyped s!"unknown protocol {proto}")
-  if spec.lenRule.isNone || spec.machine.isNone then
+  if spec.regionLoop.isNone then
     throw (.illTyped s!"{proto} declares no option region; {f.text}.valid needs one")
   if seg != spec.optionSegment then throw (.illTyped s!"unsupported: {f.text}.valid")
   pure head

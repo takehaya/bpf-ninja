@@ -267,6 +267,7 @@ extern ParserCounter {
     bool is_zero();
 }
 
+@kunai_option_region[on_fault=fail]
 parser F(packet_in pkt, out foo_h hdr, out foo_mss_h mss, out foo_ws_h ws) {
     ParserCounter() pc;
     state start {

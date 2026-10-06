@@ -328,6 +328,18 @@ def s1 : Nat := 0xfc000000000000000000000000000001
 def s2 : Nat := 0xfc000000000000000000000000000002
 def srv6Two : Packet := srv6Pkt 1 [s1, s2]
 
+vector srv6TruncatedFails := {
+  id := "srv6-segments-truncated-fails", ast := { layers := srv6L },
+  packet := srv6Pkt 1 [s1] ++ be 8 0, expected := .reject,
+  note := "D-029: srv6.p4 says @kunai_option_region[on_fault=fail]; a segment list cut short rejects, it does not become empty" }
+vector typSrv6NoValid := {
+  id := "typ-srv6-segments-valid", ast := { layers := srv6L, cond := some (.optionsValid ⟨[("srv6", none), ("segments", none)]⟩) },
+  packet := srv6Two, expected := .illTyped "srv6 declares no option region; srv6.segments.valid needs one",
+  note := "on_fault=fail: a fault rejects the packet, so there is nothing for .valid to report" }
+vector geneveVersionOne := {
+  id := "geneve-version-one", ast := { layers := geneveL, cond := some (cmp (fld "udp" "dport") .eq (k 6081)) },
+  packet := eth 0x0800 ++ ipv4 17 ++ udp 1234 6081 ++ [0x40 + 2, 0] ++ be 2 0x6558 ++ be 3 100 ++ [0] ++ geneveOvn 42 ++ payload 5,
+  expected := .reject, note := "a fault in the header itself (version 1), before the option region: rejects" }
 vector srv6Chain := {
   id := "srv6-chain", ast := { layers := srv6L }, packet := srv6Two, expected := .accept [] }
 vector srv6Static := {
@@ -491,7 +503,7 @@ def auxVectors : List Vector := [
   ipv6Hbh, ipv6TwoExts, ipv6ExtLong, ipv6ExtTooLong, ipv6ExtsIndex, ipv6ExtsIndex1, ipv6ExtsIndexAfterLong, ipv6ExtsAnyAfterLong, ipv6ExtsDynamicLong, ipv6ExtsDynamicLongSecond, ipv6ExtsDynamicLongAbsent, ipv6ExtsDynamicLongLast, ipv6ExtsDynamicLongLastMiss, ipv6ExtsDynamicLongBeyond, ipv6ExtsDynamicLongSlot, ipv6ExtsDynamicLongSlotAbsent,
   ipv6ExtsBracket, ipv6ExtsBracketAbsent, ipv6ExtsBracketLong, ipv6ExtsBracketDynamic, ipv6ExtsBracketIter, ipv6ExtsBracketInAbsent, ipv6ExtsBracketInLong, ipv6ExtsSliceLong, ipv6ExtsBracketSliceLong, gtpExtsBracket, gtpExtsBracketAbsent, gtpExtsBracketNone, gtpExtsBracketMixed, gtpExtsBracketMixedMiss, ipv6ExtsIndexAbsent,
   ipv6NextHeaderWhere, ipv6NextHeaderBracket, ipv6FiveExts, ipv6SixExts, ipv6AnyExts, ipv6AllExts,
-  srv6Chain, srv6Static, srv6Dynamic, srv6Any, srv6All, srv6AllCidr, srv6IndexAbsent, srv6OverCap, srv6AtCap,
+  srv6TruncatedFails, typSrv6NoValid, geneveVersionOne, srv6Chain, srv6Static, srv6Dynamic, srv6Any, srv6All, srv6AllCidr, srv6IndexAbsent, srv6OverCap, srv6AtCap,
   gtpPlain, gtpOptExists, gtpOptAbsent, gtpOptField, gtpOptFieldAbsent, gtpExtDynamicIndex, gtpExtLongFirst, gtpExtLengthZero, gtpExtStack,
   ipv4RrStatic, ipv4RrAny, ipv4RrArith]
 

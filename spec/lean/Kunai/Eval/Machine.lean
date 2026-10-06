@@ -21,9 +21,12 @@ structure MState where
   patches : List (Nat × Nat) := []
   deriving Repr, BEq, DecidableEq
 
-/-- Reasons a machine run stops without accepting. -/
+/-- Reasons a machine run stops without accepting. `regionFault` is a
+reject reached once the walk entered the header-declared region whose
+faults are skipped (`ProtoSpec.regionLoop`, D-029). -/
 inductive MFail
   | reject
+  | regionFault
   | illTyped (reason : String)
   deriving Repr, BEq, DecidableEq
 
@@ -174,23 +177,30 @@ def step (P : Packet) (m : Machine) (layerOff : Nat) (ψ : MState) (s : ParseSta
 /-- Runs the machine from `layerOff`. `depth` is `MAX_DEPTH`: each transition
 to the same or an earlier state consumes one, and exhausting it accepts
 (D-026). `fuel` is a structural bound on state entries. -/
-def run (P : Packet) (m : Machine) (layerOff : Nat) : Nat → Nat → MState → Except MFail MState
-  | 0, _, _ => throw (.illTyped "parser machine exceeded its step budget")
-  | fuel + 1, depth, ψ => do
+def run (P : Packet) (m : Machine) (layerOff : Nat) (region : Option Nat) :
+    Bool → Nat → Nat → MState → Except MFail MState
+  | _, 0, _, _ => throw (.illTyped "parser machine exceeded its step budget")
+  | inRegion, fuel + 1, depth, ψ => do
     let some s := m.states[ψ.state]? | throw (.illTyped s!"parser state {ψ.state} does not exist")
-    let (ψ', t) ← step P m layerOff ψ s
+    -- the walk is inside the declared region from the region's loop state on
+    let inRegion := inRegion || region == some ψ.state
+    let fault : MFail := if inRegion then .regionFault else .reject
+    let (ψ', t) ← match step P m layerOff ψ s with
+      | .ok r => pure r
+      | .error .reject => throw fault
+      | .error e => throw e
     match t with
     | .accept => pure ψ'
-    | .reject => throw .reject
+    | .reject => throw fault
     | .state i =>
       if i ≤ ψ.state then
         match depth with
         | 0 => pure ψ'
-        | d + 1 => run P m layerOff fuel d { ψ' with state := i }
-      else run P m layerOff fuel depth { ψ' with state := i }
+        | d + 1 => run P m layerOff region inRegion fuel d { ψ' with state := i }
+      else run P m layerOff region inRegion fuel depth { ψ' with state := i }
 
 /-- `aux-extract(p, π, P, α)` (§14.4) for a layer starting at `layerOff`. -/
 def runMachine (P : Packet) (spec : ProtoSpec) (m : Machine) (layerOff : Nat) : Except MFail MState :=
-  run P m layerOff (m.states.length * (spec.maxDepth + 2) + 1) spec.maxDepth { state := m.entry, cursor := layerOff }
+  run P m layerOff spec.regionLoop false (m.states.length * (spec.maxDepth + 2) + 1) spec.maxDepth { state := m.entry, cursor := layerOff }
 
 end Kunai

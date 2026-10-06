@@ -345,24 +345,11 @@ func (c *pmCtx) emitValidFlag(v int32) asm.Instructions {
 }
 
 // hasDeclaredOptionRegion reports whether the walk entered at stateIdx
-// runs over a region whose length the header declares (a counter key:
-// ipv4 IHL, tcp data_offset, geneve opt_len), the case D-029 treats as
-// "malformed region ⇒ no options" rather than a reject. An aux-stack walk
-// (srv6 segments) is not one: its region is re-anchored after the walk.
+// is the protocol's declared region and a fault inside it is skipped
+// (vocab.SkipsRegionFault, spec D-029) rather than rejected.
 func (c *pmCtx) hasDeclaredOptionRegion(stateIdx int) bool {
-	if _, _, ok := c.spec.AuxWalkSegmentTail(); ok {
-		return false
-	}
-	sel := c.machine.States[stateIdx].Trans.Select
-	if sel == nil {
-		return false
-	}
-	for _, k := range sel.Keys {
-		if k.Kind == vocab.SelectKeyCounterIsZero {
-			return true
-		}
-	}
-	return false
+	loop, ok := c.spec.SkipsRegionFault()
+	return ok && loop == stateIdx
 }
 
 // isLengthByteOptionLoop identifies TLV walks eligible for the shared
