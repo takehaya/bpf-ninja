@@ -177,6 +177,18 @@ func collectQueriedOptions(p *ir.Program) (queriedOptions, error) {
 		}
 	}
 	findValid(p.Where)
+	for _, layer := range p.Layers {
+		if layer == nil {
+			continue
+		}
+		for _, l := range append([]*ir.LayerInstance{layer}, layer.Alternation...) {
+			for _, pred := range l.Predicates {
+				if pred != nil && pred.Kind == ast.PredValid {
+					validRead[l] = true
+				}
+			}
+		}
+	}
 	for _, cap := range p.Captures {
 		if cap != nil {
 			findValid(cap.Where)

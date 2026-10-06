@@ -10,6 +10,16 @@ import (
 // two-part `<aux>.<field>` / `<aux>.exists` for auxiliary access,
 // always scoped to the owning layer.
 func (r *resolver) resolveBracketPredicate(ap *ast.Predicate, layer *ir.LayerInstance) (*ir.Predicate, error) {
+	if ap.Kind == ast.PredValid {
+		// `[options.valid]`: the same rule as `where <layer>.options.valid`.
+		if _, ok := layer.Spec.SkipsRegionFault(); !ok {
+			return nil, errorf(ap.Pos, "%s has no option region whose faults are skipped; %s.valid needs one (@kunai_option_region[on_fault=skip])", layer.Spec.Name, ap.Field.String())
+		}
+		if len(ap.Field.Parts) != 1 || ap.Field.Parts[0] != layer.Spec.OptionSegment {
+			return nil, errorf(ap.Pos, "%s[%s.valid]: the option segment of %s is %q", layer.Spec.Name, ap.Field.String(), layer.Spec.Name, layer.Spec.OptionSegment)
+		}
+		return &ir.Predicate{Kind: ast.PredValid, Field: &ir.FieldRef{Layer: layer}, Pos: ap.Pos}, nil
+	}
 	field, err := r.resolveUnqualifiedField(ap.Field, layer)
 	if err != nil {
 		return nil, err

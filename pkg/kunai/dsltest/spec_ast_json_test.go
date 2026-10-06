@@ -165,6 +165,8 @@ func encPred(p *ast.Predicate) obj {
 		return obj{"kind": "inSet", "field": encField(p.Field), "set": p.SetName}
 	case ast.PredHas:
 		return obj{"kind": "has", "field": encField(p.Field), "flag": p.FlagName}
+	case ast.PredValid:
+		return obj{"kind": "valid", "field": encField(p.Field)}
 	}
 	return obj{"kind": "cmp", "field": encField(p.Field), "op": cmpOpText(p.Op), "value": encValue(p.Value)}
 }

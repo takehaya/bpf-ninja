@@ -61,6 +61,7 @@ resolver / codegen が enforce する MVP 制約は次のとおりです。
 
 ```ebnf
 predicate      ::= '[' field-path op value ']'
+                 | '[' option-segment '.valid' ']'          (* tcp[options.valid]: option 領域が壊れていない (D-029) *)
                  | '[' field-path 'in' value-list ']'      (* F7: integer / integer '..' integer の OR-chain *)
                  | '[' field-path 'in' '@' set-name ']'    (* pinned-map 集合照合 *)
                  | '[' field-path 'has' flag-name ']'      (* F6 bitwise & で superseded *)
@@ -164,7 +165,7 @@ field-ref の shape、つまり where 節で使えるフィールドアクセス
 | `@label.field` | `outer.src` | 同 protocol が複数あるときラベルで識別 |
 | `proto.aux.field` | `gtp.opt.next_ext` | 単発 aux header の field (auto gating) |
 | `proto.aux.exists` | `gtp.opt.exists` | aux が抽出されたかの bool。`where gtp.opt.exists` のように bare bool atom として書ける |
-| `proto.options.valid` | `tcp.options.valid` | 宣言された option 領域 (ipv4 の IHL、tcp の data_offset、geneve の opt_len) が壊れずに読めたかの bool。壊れていると packet は reject されず option が無い扱いになる (D-029) ので、壊れた packet を弾くにはこれを使う。layer が無ければ false |
+| `proto.options.valid` / `proto[options.valid]` | `tcp.options.valid`, `tcp[options.valid]` | 宣言された option 領域 (ipv4 の IHL、tcp の data_offset、geneve の opt_len) が壊れずに読めたかの bool。壊れていると packet は reject されず option が無い扱いになる (D-029) ので、壊れた packet を弾くにはこれを使う。layer が無ければ false |
 | `proto.stack[N].field` | `srv6.segments[0].addr` | aux header stack の N 番目 (静的 index) |
 | `proto.stack[proto.f].field` | `srv6.segments[srv6.last_entry].addr` | 動的 index (parent header field 由来) |
 | `proto.options.NAME.field` | `tcp.options.MSS.value` | TCP/IPv4 option lookup (`<NAME>` は declared option) |

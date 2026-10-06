@@ -37,6 +37,15 @@ func (p *parser) parsePredicate() (*ast.Predicate, error) {
 	}
 	pred := &ast.Predicate{Field: field, Pos: startPos}
 
+	// `<option segment>.valid` stands alone: the layer's option region
+	// parsed without fault. The resolver checks the segment.
+	if len(field.Parts) == 2 && field.Parts[1] == "valid" && len(field.Indices) == 0 &&
+		(p.cur.Kind == lexer.TokComma || p.cur.Kind == lexer.TokRBracket) {
+		pred.Kind = ast.PredValid
+		pred.Field = stripExistsTail(field)
+		return pred, nil
+	}
+
 	switch p.cur.Kind {
 	case lexer.TokIn:
 		if err := p.advance(); err != nil {

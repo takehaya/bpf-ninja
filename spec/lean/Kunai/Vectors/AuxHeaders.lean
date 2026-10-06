@@ -127,6 +127,24 @@ def wsShift := Arith.field ⟨[("tcp", none), ("options", none), ("WS", none), (
 vector tcpOptsValidTwoOptions := tcpW (.and tcpValid (.and (cmp mss .eq (k 1460)) (cmp wsShift .eq (k 7))))
   (tcpOpts (mssOpt 1460 ++ [3, 3, 7, 1])) "tcp-opts-valid-with-two-options" (.accept []) (goStatus := .notImplemented)
   (note := "Go: the accumulator plan for two option equalities has no slot for the validity flag")
+def tcpValidPred : Predicate := .optionsValid ⟨[("options", none)]⟩
+def tcpValidL (q : Quant := .one) : List Layer :=
+  [P "eth", P "ipv4", .proto { name := "tcp", preds := [tcpValidPred], quant := q }]
+vector bracketValid := {
+  id := "bracket-opts-valid", ast := { layers := tcpValidL }, packet := tcpOpts (mssOpt 1460), expected := .accept [] }
+vector bracketValidMalformed := {
+  id := "bracket-opts-valid-malformed", ast := { layers := tcpValidL }, packet := malformedOpts, expected := .reject }
+vector bracketValidOptMalformed := {
+  id := "bracket-opts-valid-optional-malformed", ast := { layers := tcpValidL .opt }, packet := malformedOpts, expected := .reject,
+  note := "D-001: tcp dispatched, so a false bracket predicate rejects rather than skipping the layer" }
+vector bracketValidWithCmp := {
+  id := "bracket-opts-valid-and-cmp",
+  ast := { layers := [P "eth", P "ipv4", .proto { name := "tcp", preds := [.cmp (f "dport") .eq (.int 80), tcpValidPred] }] },
+  packet := tcpOpts (mssOpt 1460), expected := .accept [] }
+vector typBracketValidNoRegion := {
+  id := "typ-bracket-opts-valid-no-region",
+  ast := { layers := [P "eth", P "ipv4", .proto { name := "udp", preds := [tcpValidPred] }] },
+  expected := .illTyped "udp has no option region whose faults are skipped; options.valid needs one (@kunai_option_region[on_fault=skip])" }
 vector typOptsValidNoRegion := {
   id := "typ-opts-valid-no-region", ast := { layers := [P "eth", P "ipv4", P "udp"], cond := some (.optionsValid ⟨[("udp", none), ("options", none)]⟩) },
   expected := .illTyped "udp has no option region whose faults are skipped; udp.options.valid needs one (@kunai_option_region[on_fault=skip])" }
@@ -565,7 +583,7 @@ def auxVectors : List Vector := [
   tcpOptCross, tcpEol, tcpMssDup, tcpMssBadLen, tcpMssExists, tcpMssExistsNot, tcpSackBlock, tcpSackAny, tcpSackAll,
   tcpSackAbsentAny, tcpMalformedNoQuery, tcpMalformedNotQuery, tcpMalformedOrTrue, tcpMalformedExists,
   tcpMalformedAfterMss, tcpMalformedChainOn, ipv4MalformedOpts, ipv4MalformedOptsQueried, ipv4OptDepthLastFault, ipv4OptDepthLastSighting,
-  tcpOptsValid, tcpOptsValidNone, tcpOptsInvalid, tcpOptsInvalidNot, tcpOptsValidWithMss, tcpOptsValidAbsent, tcpOptsValidAltMember, tcpOptsValidAltOther, tcpOptsValidTwoOptions, ipv4OptsInvalid,
+  tcpOptsValid, tcpOptsValidNone, tcpOptsInvalid, tcpOptsInvalidNot, tcpOptsValidWithMss, tcpOptsValidAbsent, tcpOptsValidAltMember, tcpOptsValidAltOther, tcpOptsValidTwoOptions, bracketValid, bracketValidMalformed, bracketValidOptMalformed, bracketValidWithCmp, typBracketValidNoRegion, ipv4OptsInvalid,
   geneveOvnHit, geneveMalformedAfter, geneveMalformedBefore, geneveMalformedChainOn, geneveRegionPastEnd, geneveValidEmpty, typOptsValidNoRegion,
   ipv6Hbh, ipv6TwoExts, ipv6ExtLong, ipv6ExtTooLong, ipv6ExtsIndex, ipv6ExtsIndex1, ipv6ExtsIndexAfterLong, ipv6ExtsAnyAfterLong, ipv6ExtsDynamicLong, ipv6ExtsDynamicLongSecond, ipv6ExtsDynamicLongAbsent, ipv6ExtsDynamicLongLast, ipv6ExtsDynamicLongLastMiss, ipv6ExtsDynamicLongBeyond, ipv6ExtsDynamicLongSlot, ipv6ExtsDynamicLongSlotAbsent,
   ipv6ExtsBracket, ipv6ExtsBracketAbsent, ipv6ExtsBracketLong, ipv6ExtsBracketDynamic, ipv6ExtsBracketIter, ipv6ExtsBracketInAbsent, ipv6ExtsBracketInLong, ipv6ExtsSliceLong, ipv6ExtsBracketSliceLong, gtpExtsBracket, gtpExtsBracketAbsent, gtpExtsBracketNone, gtpExtsBracketMixed, gtpExtsBracketMixedMiss, ipv6ExtsIndexAbsent,

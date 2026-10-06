@@ -119,7 +119,10 @@ func genParserMachineOn(layer *ir.LayerInstance, layerIdx int, all []*ir.LayerIn
 	if len(postPreds) > 0 {
 		// Post-walk, the push counts are final: let a static index into a
 		// push-counted stack be guarded like a where clause does.
-		pcPost := &predCtx{stackCount: func(f *ir.FieldRef) (int16, bool) { return qo.stackCountSlot(f.Layer, f.Aux.OutParam) }}
+		pcPost := &predCtx{
+			stackCount: func(f *ir.FieldRef) (int16, bool) { return qo.stackCountSlot(f.Layer, f.Aux.OutParam) },
+			validSlot:  qo.validSlot,
+		}
 		if pc != nil {
 			pcPost.sets, pcPost.out = pc.sets, pc.out
 		}
@@ -363,7 +366,7 @@ func splitPredicates(layer *ir.LayerInstance) (pre, post []*ir.Predicate) {
 		return nil, layer.Predicates
 	}
 	for _, p := range layer.Predicates {
-		if needsPushCount(p.Field) {
+		if needsPushCount(p.Field) || p.Kind == ast.PredValid {
 			post = append(post, p)
 		} else {
 			pre = append(pre, p)

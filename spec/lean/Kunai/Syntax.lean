@@ -59,6 +59,9 @@ inductive Predicate
   | cmp (field : FieldPath) (op : CmpOp) (value : Value)
   | inList (field : FieldPath) (values : List Value)
   | inSet (field : FieldPath) (set : String)
+  /-- `[options.valid]`: the layer's declared option region parsed without
+  fault (D-029). `field` is the option segment (`options`). -/
+  | optionsValid (field : FieldPath)
   deriving Repr, BEq, DecidableEq
 
 /-- `proto(p, ℓ?, q, π̄)`. -/

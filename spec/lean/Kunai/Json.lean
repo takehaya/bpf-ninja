@@ -60,6 +60,7 @@ def Predicate.toJson : Predicate → Json
   | .cmp f op v => Json.mkObj [("kind", "cmp"), ("field", f.toJson), ("op", op.toJson), ("value", v.toJson)]
   | .inList f vs => Json.mkObj [("kind", "in"), ("field", f.toJson), ("values", Json.arr (vs.map Value.toJson).toArray)]
   | .inSet f s => Json.mkObj [("kind", "inSet"), ("field", f.toJson), ("set", s)]
+  | .optionsValid f => Json.mkObj [("kind", "valid"), ("field", f.toJson)]
 
 def ProtoLayer.toJson (p : ProtoLayer) : Json :=
   Json.mkObj [("kind", "proto"), ("name", p.name), ("label", optJson Json.str p.label),
