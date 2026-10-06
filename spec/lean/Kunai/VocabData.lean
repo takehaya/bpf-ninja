@@ -56,7 +56,7 @@ def vocab : Vocab :=
           entry := 0,
           headers := [⟨"gtp_h", [⟨"version", 0, 3⟩, ⟨"pt", 3, 1⟩, ⟨"reserved", 4, 1⟩, ⟨"e", 5, 1⟩, ⟨"s", 6, 1⟩, ⟨"pn", 7, 1⟩, ⟨"msg_type", 8, 8⟩, ⟨"length", 16, 16⟩, ⟨"teid", 32, 32⟩], 8⟩, ⟨"gtp_ext_h", [⟨"ext_length", 0, 8⟩, ⟨"ext_type", 8, 16⟩, ⟨"next_ext", 24, 8⟩], 4⟩, ⟨"gtp_opt_h", [⟨"seq", 0, 16⟩, ⟨"npdu", 16, 8⟩, ⟨"next_ext", 24, 8⟩], 4⟩],
           options := [{ outParam := "opt", header := "gtp_opt_h", kindByte := none }],
-          stacks := [{ name := "exts", header := "gtp_ext_h", capacity := 8, elemBytes := 4, ownerOption := "", offsetAfterOwner := 0 }],
+          stacks := [{ name := "exts", header := "gtp_ext_h", capacity := 9, elemBytes := 4, ownerOption := "", offsetAfterOwner := 0 }],
           tails := [("gtp_ext_h", { byteOff := 0, mask := 255, shift := 0, scale := 4, base := 4, addend := 0 })],
           writebacks := [] } },
       { name := "icmp",
@@ -111,6 +111,7 @@ def vocab : Vocab :=
       { name := "srv6",
         fields := [⟨"next_header", 0, 8⟩, ⟨"hdr_ext_len", 8, 8⟩, ⟨"routing_type", 16, 8⟩, ⟨"segments_left", 24, 8⟩, ⟨"last_entry", 32, 8⟩, ⟨"flags", 40, 8⟩, ⟨"tag", 48, 16⟩],
         fixedLen := 8,
+        lenRule := some { byteOff := 4, mask := 255, shift := 0, scale := 16, base := 0, addend := 16 },
         requires := [("routing_type", [4])],
         machine := some {
           states := [

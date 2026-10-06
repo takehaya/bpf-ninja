@@ -26,15 +26,17 @@ func foldBooleanConstants(w *ir.Condition) *ir.Condition {
 	switch c.Kind {
 	case ast.WAny, ast.WAll:
 		inner := foldBooleanConstants(w.Inner)
-		if isLiteral(inner) {
-			// any(false) and all(true) do not depend on the domain. For the
-			// other two cases retain the original inner references to determine
-			// whether the runtime domain is empty.
-			if (c.Kind == ast.WAny && !inner.BoolLitValue) || (c.Kind == ast.WAll && inner.BoolLitValue) {
-				return literal(inner.BoolLitValue)
+		if isLiteral(inner) && !inner.BoolLitValue {
+			// any(false) is false whatever the domain. all(false) is false
+			// when the domain is statically non-empty. A true body is not
+			// folded: the quantifier is still false on an absent layer
+			// (D-003) and all() on a truncated stack (D-029), which the
+			// generated guards decide.
+			if c.Kind == ast.WAny {
+				return literal(false)
 			}
 			if count, err := stackCountSource(w); err == nil && count == nil && w.QuantTarget.Capacity > 0 {
-				return literal(inner.BoolLitValue)
+				return literal(false)
 			}
 		}
 

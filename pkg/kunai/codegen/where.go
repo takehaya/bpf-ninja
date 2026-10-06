@@ -560,58 +560,12 @@ func (c *whereCtx) genQuantUnroll(w *ir.Condition, acceptLabel, failLabel string
 	return insns, nil
 }
 
-// pushBound is the most entries a parser machine can push onto `stack`:
-// one per state that pushes onto it, plus MAX_DEPTH more for each such
-// state when the machine loops (a direct self-edge, or an indirect loop
-// through a sibling: every lowering caps its iterations at MAX_DEPTH,
-// parser_loop.go emitSelfLoop / emitMultiStateSelfLoop). A machine
-// without a backward transition pushes each site once.
+// pushBound is the most entries a parser machine can push onto `stack`
+// (vocab.ProtocolSpec.StackPushBound).
 func pushBound(spec *vocab.ProtocolSpec, stack string) int {
-	depth := spec.MaxDepth
-	if depth == 0 {
-		depth = defaultChainDepth
-	}
-	m := spec.ParseStateMachine
-	loops := false
-	for i, st := range m.States {
-		for _, t := range transitionTargets(st.Trans) {
-			if t >= 0 && t <= i {
-				loops = true
-			}
-		}
-	}
-	n := 0
-	for _, st := range m.States {
-		for _, ex := range st.Extracts {
-			if ex.IsStackPush && ex.OutParam == stack {
-				n++
-				if loops {
-					n += depth
-				}
-			}
-		}
-	}
-	return n
+	return spec.StackPushBound(stack)
 }
 
-// transitionTargets lists the state indices a transition can reach
-// (accept / reject are negative sentinels and listed as-is).
-func transitionTargets(t vocab.TransitionOp) []int {
-	switch t.Kind {
-	case vocab.TransDirect:
-		return []int{t.Target}
-	case vocab.TransSelect:
-		if t.Select == nil {
-			return nil
-		}
-		out := []int{t.Select.Default}
-		for _, cs := range t.Select.Cases {
-			out = append(out, cs.Target)
-		}
-		return out
-	}
-	return nil
-}
 
 // genQuantIterBody clones the inner condition with the iterator
 // FieldRef rebound to a static index for this iteration, then emits

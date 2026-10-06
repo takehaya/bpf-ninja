@@ -118,7 +118,15 @@ func declaredLength(s *vocab.ProtocolSpec) *vocab.HeaderLength {
 	if s.ParseStateMachine == nil {
 		return s.PrimaryAdvanceSkip()
 	}
-	return s.RegionLengthBytes()
+	if hl := s.RegionLengthBytes(); hl != nil {
+		return hl
+	}
+	// An element-counted region (srv6 segments) ends at count × element
+	// size past the primary header, the same end codegen re-anchors to.
+	if tail, _, ok := s.AuxWalkSegmentTail(); ok {
+		return &vocab.HeaderLength{LenByteOff: tail.LenFieldByteOff, LenMask: 0xff, LenShift: tail.LenShift, Scale: tail.Scale, Addend: tail.Base}
+	}
+	return nil
 }
 
 // requires renders the protocol's self-validation constraint

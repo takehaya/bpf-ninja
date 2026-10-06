@@ -372,6 +372,30 @@ vector srv6OverCapAll := {
 vector srv6OverCapNotAll := {
   id := "srv6-over-capacity-not-all", ast := { layers := srv6L, cond := some (.not (.all (.litCmp segIter .eq (.ipv6 s1)))) },
   packet := srv6Pkt 8 (List.replicate 9 s1), expected := .accept [] }
+set_option maxRecDepth 16384 in
+vector srv6TenSegs := {
+  id := "srv6-ten-segments", ast := { layers := srv6L, cond := some (cmp (fld "tcp" "dport") .eq (k 80)) },
+  packet := srv6Pkt 9 (List.replicate 10 s1), expected := .accept [],
+  note := "the walk stops at MAX_DEPTH, but the region ends at (last_entry + 1) × 16: tcp is where the header says" }
+set_option maxRecDepth 16384 in
+vector srv6TwelveSegs := {
+  id := "srv6-twelve-segments", ast := { layers := srv6L, cond := some (cmp (fld "tcp" "dport") .eq (k 80)) },
+  packet := srv6Pkt 11 (List.replicate 12 s1), expected := .accept [] }
+vector srv6OverstatedLastEntry := {
+  id := "srv6-last-entry-overstated", ast := { layers := srv6L },
+  packet := srv6Pkt 9 (List.replicate 9 s1), expected := .reject,
+  note := "last_entry says 10 segments, the packet has 9: tcp would start 16 bytes later and runs past the packet" }
+vector srv6OverCapAllOrTrue := {
+  id := "srv6-over-capacity-all-or-true", ast := { layers := srv6L, cond := some (.all (.or (.litCmp segIter .eq (.ipv6 s2)) (.boolLit true))) },
+  packet := srv6Pkt 8 (List.replicate 9 s1), expected := .reject,
+  note := "a true body does not make all() true on a truncated stack" }
+vector srv6AbsentAllTrue := {
+  id := "srv6-absent-all-true", ast := { layers := [P "eth", P "ipv6", Pq "srv6" .opt, P "tcp"], cond := some (.all (.or (.litCmp segIter .eq (.ipv6 s1)) (.boolLit true))) },
+  packet := ipv6TCP, expected := .reject, note := "D-003: all() over the stack of an absent layer is false, even with a true body" }
+vector srv6AtCapAll := {
+  id := "srv6-at-capacity-all", ast := { layers := srv6L, cond := some (.all (.litCmp segIter .eq (.ipv6 s1))) },
+  packet := srv6Pkt 7 (List.replicate 8 s1), expected := .accept [],
+  note := "exactly as many segments as the stack holds: nothing truncated, all() decides" }
 vector srv6OverCapIndex := {
   id := "srv6-over-capacity-index", ast := { layers := srv6L, cond := some (.litCmp (seg (.nat 7)) .eq (.ipv6 s1)) },
   packet := nineSegs, expected := .accept [] }
@@ -384,6 +408,24 @@ vector srv6AtCap := {
 -- GTP --------------------------------------------------------------------------
 
 def gtpL : List Layer := [P "eth", P "ipv4", P "udp", P "gtp", P "ipv4", P "tcp"]
+/-- `n` GTP extension headers, the last one ending the chain. -/
+def gtpExtChain (n : Nat) : Packet :=
+  ((List.range n).map fun i => gtpExt 1 (if i + 1 == n then 0 else 0x85)).flatten
+set_option maxRecDepth 16384 in
+vector gtpEightExts := {
+  id := "gtp-eight-extensions", ast := { layers := gtpL },
+  packet := gtpPkt (gtpHdr 4 ++ gtpOpt 0x85 ++ gtpExtChain 8), expected := .accept [] }
+set_option maxRecDepth 16384 in
+vector gtpNineExts := {
+  id := "gtp-nine-extensions", ast := { layers := gtpL },
+  packet := gtpPkt (gtpHdr 4 ++ gtpOpt 0x85 ++ gtpExtChain 9), expected := .accept [],
+  note := "the walk can push 1 + GTP_MAX_DEPTH = 9 extensions and the stack holds 9 (the loader requires it outside a declared region)" }
+set_option maxRecDepth 16384 in
+vector gtpTenExts := {
+  id := "gtp-ten-extensions", ast := { layers := gtpL },
+  packet := gtpPkt (gtpHdr 4 ++ gtpOpt 0x85 ++ gtpExtChain 10), expected := .reject,
+  note := "D-026: the walk stops after MAX_DEPTH; the tenth extension is read as the inner layer, which does not dispatch" }
+
 def gtpExists := Where.fieldExists ⟨[("gtp", none), ("opt", none)]⟩
 def gtpNextExt := Arith.field ⟨[("gtp", none), ("opt", none), ("next_ext", none)]⟩
 def gtpExt0 := Arith.field ⟨[("gtp", none), ("exts", some (.nat 0)), ("ext_type", none)]⟩
@@ -524,8 +566,9 @@ def auxVectors : List Vector := [
   ipv6ExtsBracket, ipv6ExtsBracketAbsent, ipv6ExtsBracketLong, ipv6ExtsBracketDynamic, ipv6ExtsBracketIter, ipv6ExtsBracketInAbsent, ipv6ExtsBracketInLong, ipv6ExtsSliceLong, ipv6ExtsBracketSliceLong, gtpExtsBracket, gtpExtsBracketAbsent, gtpExtsBracketNone, gtpExtsBracketMixed, gtpExtsBracketMixedMiss, ipv6ExtsIndexAbsent,
   ipv6NextHeaderWhere, ipv6NextHeaderBracket, ipv6FiveExts, ipv6SixExts, ipv6AnyExts, ipv6AllExts,
   srv6TruncatedFails, typSrv6NoValid, geneveVersionOne, srv6Chain, srv6Static, srv6Dynamic, srv6Any, srv6All, srv6AllCidr, srv6IndexAbsent, srv6OverCap, srv6OverCapAnyKept, srv6OverCapAnyDropped, srv6OverCapAll, srv6OverCapNotAll,
-  srv6OverCapIndex, srv6OverCapLastEntry, srv6AtCap,
-  gtpPlain, gtpOptExists, gtpOptAbsent, gtpOptField, gtpOptFieldAbsent, gtpExtDynamicIndex, gtpExtLongFirst, gtpExtLengthZero, gtpExtStack,
+  srv6OverCapIndex, srv6OverCapLastEntry, srv6AtCapAll, srv6TenSegs, srv6TwelveSegs, srv6OverstatedLastEntry,
+  srv6OverCapAllOrTrue, srv6AbsentAllTrue, srv6AtCap,
+  gtpEightExts, gtpNineExts, gtpTenExts, gtpPlain, gtpOptExists, gtpOptAbsent, gtpOptField, gtpOptFieldAbsent, gtpExtDynamicIndex, gtpExtLongFirst, gtpExtLengthZero, gtpExtStack,
   ipv4RrStatic, ipv4RrAny, ipv4RrArith]
 
 end Kunai
