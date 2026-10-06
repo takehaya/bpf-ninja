@@ -1253,26 +1253,26 @@ func TestSRv6LastEntryIsAuthoritative(t *testing.T) {
 		"an SRH whose last_entry overstates the segment count does not chain")
 }
 
-// TestSRv6ChainPastOverCapSRHRejects pins that a chain past an SRH whose
-// last_entry exceeds the static segment capacity (here a 9-segment SRH,
-// last_entry=8, one past the cap of 8) rejects rather than re-anchoring
-// into the segment list. The next-header re-anchor caps the count with a
-// JGT-reject, so an over-cap last_entry does not wrap (8 & 0x07 == 0) to
-// a small offset that would read segment bytes as the inner layer.
-func TestSRv6ChainPastOverCapSRHRejects(t *testing.T) {
-	overCap := BuildSRv6(t, SRv6Opts{
-		Segments: []net.IP{
-			net.ParseIP("fe80::1"), net.ParseIP("fe80::2"),
-			net.ParseIP("fe80::3"), net.ParseIP("fe80::4"),
-			net.ParseIP("fe80::5"), net.ParseIP("fe80::6"),
-			net.ParseIP("fe80::7"), net.ParseIP("fe80::8"),
-			net.ParseIP("fe80::9"), // last_entry = 8, one past the cap of 8
-		},
-		InnerNextHeader: 6,
-		InnerDstPort:    8080,
-	})
-	New(t, "eth/ipv6/srv6/tcp").MustReject(t, overCap,
-		"a 9-segment SRH exceeds the static segment cap and does not chain")
+// TestSRv6ChainPastOverCapSRH pins a chain past an SRH whose last_entry
+// exceeds the static segment capacity (a 9-segment SRH, last_entry=8, one
+// past the cap of 8). The stack keeps the first 8 segments and the region
+// still ends at (last_entry+1) × 16, so the inner tcp is found at its real
+// offset (spec D-029, truncated stacks). The count is never masked, which
+// would wrap 8 to 0 and read segment bytes as the inner layer: the dport
+// check proves the re-anchor lands on the real tcp header. all() over the
+// truncated list is false.
+func TestSRv6ChainPastOverCapSRH(t *testing.T) {
+	segs := make([]net.IP, 9)
+	for i := range segs {
+		segs[i] = net.ParseIP("fe80::1")
+	}
+	overCap := BuildSRv6(t, SRv6Opts{Segments: segs, InnerNextHeader: 6, InnerDstPort: 8080})
+	New(t, "eth/ipv6/srv6/tcp where tcp.dport == 8080").MustMatch(t, overCap,
+		"a 9-segment SRH chains to the tcp header after all 9 segments")
+	New(t, "eth/ipv6/srv6/tcp where all(srv6.segments.addr == fe80::1)").MustReject(t, overCap,
+		"all() over a truncated segment list is false")
+	New(t, "eth/ipv6/srv6/tcp where any(srv6.segments.addr == fe80::1)").MustMatch(t, overCap,
+		"any() sees the kept segments")
 }
 
 // TestIPv4AndTCPOptionsAdvance verifies both HDRLEN advances stack

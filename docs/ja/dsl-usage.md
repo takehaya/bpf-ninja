@@ -190,6 +190,29 @@ eth/ipv6/srv6/tcp where all(srv6.segments.addr == fc00::1)
 
 SRv6 segments のような parent-count 系には自動 count guard が入り、`srv6.last_entry+1` を超えた walk は無視されます。
 
+stack の容量を超える要素は保持されません (srv6.segments は 8 個)。9 個以上の segment を持つ SRH も正当なので reject はせず、最初の 8 個だけを保持して、次の header は `(last_entry+1) × 16` の先から読みます。このとき `any` と `srv6.segments[i]` は保持した 8 個だけを見て、`all` は false になります (全部を確かめられないため)。
+
+#### SRH の無い SRv6
+
+`srv6` layer は SRH (Segment Routing Header、routing type 4 の Routing Header) を表します。SRv6 でも SRH を付けない packet があります。
+- RFC 8986 の H.Encaps.Red (reduced encapsulation) で、segment が 1 つだけ、flag / tag / TLV も不要なとき。SRH を省き、SID は外側 IPv6 の宛先アドレスにだけ置きます。
+- RFC 9800 の圧縮 SID (uSID / CSID)。複数の SID を 1 つの IPv6 アドレス (CSID container) に詰め、SRH 無しで複数 hop をたどれます。
+
+この packet は header の並びとしては普通の IPv6 なので、`eth/ipv6/srv6/...` には match しません (`srv6` が無い)。宛先アドレスが SID (locator prefix) であることで書き分けます。
+
+```
+# SRH があってもなくても、SRv6 locator 宛て
+eth/ipv6/srv6?/tcp where ipv6.dst == fc00:0:1::/48
+
+# SRH の無い SRv6 だけ (SRH があるものは除く)
+eth/ipv6/tcp where ipv6.dst == fc00:0:1::/48
+
+# uSID: 宛先アドレスの中の個々の CSID を bit slice で読む (locator block 32 bit、uSID 16 bit の例)
+eth/ipv6/tcp where ipv6.dst[0:32] == 0xfc000000 and ipv6.dst[32:48] == 0x0100
+```
+
+`srv6` layer があるときは SRH が実在し、RFC 8754 により segment list は 1 個以上あります。segment list が壊れた SRH は packet ごと reject されます (srv6.p4 は `@kunai_option_region[on_fault=fail]`、D-029)。
+
 #### action atom
 
 `action == <NAME>` は `--mode exit` (fexit) でのみ使えます。`entry` (fentry) では下流プログラムの戻り値がまだ存在せず、`--mode xdp` は bpf-ninja 自身が常に `XDP_PASS` を返す立場で観測対象がないため、いずれも resolver で reject されます。

@@ -35,16 +35,16 @@ structure ProtoSpec where
   machine : Option Machine := none
   /-- Reserved path segment for option lookups (`tcp.options.MSS.value`). -/
   optionSegment : String := "options"
-  /-- The parser state that walks the header-declared region when a fault
-  inside it is skipped (`@kunai_option_region[on_fault=skip]`, the default
-  for a region measured in bytes; D-029): from that state on, a reject
-  leaves the layer with no aux headers instead of rejecting the packet.
-  `none` when the parser has no such region or says `on_fault=fail`.
-  The loop is closed (every other arm of its select returns to it, the
-  exit arms are accept / reject), so "after entering it" and "inside the
-  region" are the same, which is where the implementation catches the
-  fault. -/
+  /-- The parser state that walks the header-declared region: a loop ending
+  on `counter.is_zero()` for a counter the header seeds (D-029). The loop is
+  closed (every other arm of its select returns to it, the exit arms are
+  accept / reject), so "after entering it" and "inside the region" are the
+  same, which is where the implementation catches a fault. `none` when the
+  parser has no such region. -/
   regionLoop : Option Nat := none
+  /-- `@kunai_option_region[on_fault=skip]` (the default): a fault inside
+  the region leaves the layer with no aux headers instead of rejecting. -/
+  regionSkips : Bool := false
   flagsByteOff : Nat := 0
   flagTriggers : List FlagTrigger := []
   deriving Repr, BEq, DecidableEq

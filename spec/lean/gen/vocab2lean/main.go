@@ -90,8 +90,11 @@ func protoLean(s *vocab.ProtocolSpec) string {
 	if s.ParseStateMachine != nil {
 		parts = append(parts, "machine := some "+machineLean(s))
 	}
-	if loop, ok := s.SkipsRegionFault(); ok {
+	if loop, ok := s.RegionLoopState(); ok {
 		parts = append(parts, fmt.Sprintf("regionLoop := some %d", loop))
+		if _, skip := s.SkipsRegionFault(); skip {
+			parts = append(parts, "regionSkips := true")
+		}
 	}
 	if s.OptionSegment != "" && s.OptionSegment != "options" {
 		parts = append(parts, "optionSegment := "+str(s.OptionSegment))

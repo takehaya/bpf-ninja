@@ -80,7 +80,7 @@ def evalPred (c : Ctx) (spec : ProtoSpec) (inst : Inst) : Predicate → Except S
 declared length, and aux-extract give the new instance. Bracket predicates
 play no part in it. -/
 def extractBody (c : Ctx) (st : State) (name : String) (spec : ProtoSpec) :
-    Except LayerFail (Nat × List AuxView × List (Nat × Nat) × Bool) := do
+    Except LayerFail (Nat × List AuxView × List (Nat × Nat) × Bool × List String) := do
   match dispatch c st name with
   | .miss => throw .dispMiss
   | .illTyped r => throw (.illTyped r)
@@ -121,19 +121,19 @@ def extractBody (c : Ctx) (st : State) (name : String) (spec : ProtoSpec) :
   -- so a walk that fails there leaves the layer with no aux headers, as if
   -- the region held none, and the chain goes on past the region.
   match spec.machine with
-    | none => pure (len, [], [], true)
+    | none => pure (len, [], [], true, [])
     | some m =>
       match runMachine c.P spec m st.cursor with
-      | .ok ψ => pure (max len (ψ.cursor - st.cursor), ψ.views, ψ.patches, true)
-      | .error .regionFault => pure (len, [], [], false)
+      | .ok ψ => pure (max len (ψ.cursor - st.cursor), ψ.views, ψ.patches, true, ψ.truncated)
+      | .error .regionFault => if spec.regionSkips then pure (len, [], [], false, []) else throw .pred
       | .error .reject => throw .pred
       | .error (.illTyped r) => throw (.illTyped r)
 
 /-- The instance a layer named `name` extracts at the cursor: its length,
 aux views and write-backs come from `extractBody`. -/
 def extractInst (c : Ctx) (st : State) (name : String) (spec : ProtoSpec) : Except LayerFail Inst := do
-  let (len, aux, patches, optsValid) ← extractBody c st name spec
-  pure { proto := name, off := st.cursor, len, aux, patches, optsValid }
+  let (len, aux, patches, optsValid, truncated) ← extractBody c st name spec
+  pure { proto := name, off := st.cursor, len, aux, patches, optsValid, truncated }
 
 /-- [E-Layer-Proto-1-Fail-Pred]: every bracket predicate holds on the new
 instance. A field past the packet end is a bounds failure. -/

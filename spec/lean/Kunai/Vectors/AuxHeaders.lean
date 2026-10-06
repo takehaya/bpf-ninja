@@ -356,8 +356,28 @@ vector srv6IndexAbsent := {
   id := "srv6-segments-index-absent", ast := { layers := srv6L, cond := some (.litCmp (seg (.nat 2)) .ne (.ipv6 s1)) }, packet := srv6Two,
   expected := .reject, note := "D-031: entry 2 was not extracted ⇒ false even for !=" }
 vector srv6OverCap := {
-  id := "srv6-over-capacity", ast := { layers := srv6L }, packet := srv6Pkt 8 (List.replicate 9 s1), expected := .reject,
-  note := "P-Extract-Stack-Full: capacity 8" }
+  id := "srv6-over-capacity", ast := { layers := srv6L }, packet := srv6Pkt 8 (List.replicate 9 s1), expected := .accept [],
+  note := "9 segments, capacity 8: the walk keeps 8, steps over the 9th inside the declared region, and tcp follows" }
+def nineSegs : Packet := srv6Pkt 8 (List.replicate 8 s1 ++ [s2])
+vector srv6OverCapAnyKept := {
+  id := "srv6-over-capacity-any-kept", ast := { layers := srv6L, cond := some (.any (.litCmp segIter .eq (.ipv6 s1))) },
+  packet := nineSegs, expected := .accept [] }
+vector srv6OverCapAnyDropped := {
+  id := "srv6-over-capacity-any-dropped", ast := { layers := srv6L, cond := some (.any (.litCmp segIter .eq (.ipv6 s2))) },
+  packet := nineSegs, expected := .reject, note := "the 9th segment was not kept, so any() cannot see it" }
+vector srv6OverCapAll := {
+  id := "srv6-over-capacity-all", ast := { layers := srv6L, cond := some (.all (.litCmp segIter .eq (.ipv6 s1))) },
+  packet := srv6Pkt 8 (List.replicate 9 s1), expected := .reject,
+  note := "all 9 segments are s1, but only 8 were kept: all() is false on a truncated stack" }
+vector srv6OverCapNotAll := {
+  id := "srv6-over-capacity-not-all", ast := { layers := srv6L, cond := some (.not (.all (.litCmp segIter .eq (.ipv6 s1)))) },
+  packet := srv6Pkt 8 (List.replicate 9 s1), expected := .accept [] }
+vector srv6OverCapIndex := {
+  id := "srv6-over-capacity-index", ast := { layers := srv6L, cond := some (.litCmp (seg (.nat 7)) .eq (.ipv6 s1)) },
+  packet := nineSegs, expected := .accept [] }
+vector srv6OverCapLastEntry := {
+  id := "srv6-over-capacity-last-entry", ast := { layers := srv6L, cond := some (cmp (fld "srv6" "last_entry") .eq (k 8)) },
+  packet := nineSegs, expected := .accept [] }
 vector srv6AtCap := {
   id := "srv6-at-capacity", ast := { layers := srv6L }, packet := srv6Pkt 7 (List.replicate 8 s1), expected := .accept [] }
 
@@ -503,7 +523,8 @@ def auxVectors : List Vector := [
   ipv6Hbh, ipv6TwoExts, ipv6ExtLong, ipv6ExtTooLong, ipv6ExtsIndex, ipv6ExtsIndex1, ipv6ExtsIndexAfterLong, ipv6ExtsAnyAfterLong, ipv6ExtsDynamicLong, ipv6ExtsDynamicLongSecond, ipv6ExtsDynamicLongAbsent, ipv6ExtsDynamicLongLast, ipv6ExtsDynamicLongLastMiss, ipv6ExtsDynamicLongBeyond, ipv6ExtsDynamicLongSlot, ipv6ExtsDynamicLongSlotAbsent,
   ipv6ExtsBracket, ipv6ExtsBracketAbsent, ipv6ExtsBracketLong, ipv6ExtsBracketDynamic, ipv6ExtsBracketIter, ipv6ExtsBracketInAbsent, ipv6ExtsBracketInLong, ipv6ExtsSliceLong, ipv6ExtsBracketSliceLong, gtpExtsBracket, gtpExtsBracketAbsent, gtpExtsBracketNone, gtpExtsBracketMixed, gtpExtsBracketMixedMiss, ipv6ExtsIndexAbsent,
   ipv6NextHeaderWhere, ipv6NextHeaderBracket, ipv6FiveExts, ipv6SixExts, ipv6AnyExts, ipv6AllExts,
-  srv6TruncatedFails, typSrv6NoValid, geneveVersionOne, srv6Chain, srv6Static, srv6Dynamic, srv6Any, srv6All, srv6AllCidr, srv6IndexAbsent, srv6OverCap, srv6AtCap,
+  srv6TruncatedFails, typSrv6NoValid, geneveVersionOne, srv6Chain, srv6Static, srv6Dynamic, srv6Any, srv6All, srv6AllCidr, srv6IndexAbsent, srv6OverCap, srv6OverCapAnyKept, srv6OverCapAnyDropped, srv6OverCapAll, srv6OverCapNotAll,
+  srv6OverCapIndex, srv6OverCapLastEntry, srv6AtCap,
   gtpPlain, gtpOptExists, gtpOptAbsent, gtpOptField, gtpOptFieldAbsent, gtpExtDynamicIndex, gtpExtLongFirst, gtpExtLengthZero, gtpExtStack,
   ipv4RrStatic, ipv4RrAny, ipv4RrArith]
 

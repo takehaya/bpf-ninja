@@ -19,11 +19,15 @@ structure MState where
   counters : List (String × Nat) := []
   views : List AuxView := []
   patches : List (Nat × Nat) := []
+  /-- Stacks that filled up inside the declared region: further entries
+  were stepped over, not kept. -/
+  truncated : List String := []
   deriving Repr, BEq, DecidableEq
 
 /-- Reasons a machine run stops without accepting. `regionFault` is a
-reject reached once the walk entered the header-declared region whose
-faults are skipped (`ProtoSpec.regionLoop`, D-029). -/
+reject reached once the walk entered the header-declared region
+(`ProtoSpec.regionLoop`); `extractBody` skips it or rejects according to
+the region's `on_fault` (D-029). -/
 inductive MFail
   | reject
   | regionFault
@@ -55,11 +59,19 @@ private def viewByte (P : Packet) (views : List AuxView) (target : String) (byte
 
 /-- P-Extract / P-Extract-Stack / P-Extract-Stack-Full, plus the variable
 tail and write-back annotations of the extracted header. -/
-private def doExtract (P : Packet) (m : Machine) (layerOff : Nat) (ψ : MState) (e : Extract) : Except MFail MState := do
+private def doExtract (P : Packet) (m : Machine) (layerOff : Nat) (inRegion : Bool) (ψ : MState) (e : Extract) : Except MFail MState := do
   let stackIdx ← if e.stackPush then
       let some sd := m.stack? e.outParam | throw (.illTyped s!"unknown stack {e.outParam}")
       let k := (stackViews ψ.views e.outParam).length
-      if k ≥ sd.capacity then throw .reject
+      if k ≥ sd.capacity then
+        -- A full stack inside the header-declared region (the region's end
+        -- is known) steps over the entry and remembers it was cut; outside
+        -- one it is P-Extract-Stack-Full.
+        if inRegion then
+          if ψ.cursor + e.bytes > P.length then throw .reject
+          return { ψ with cursor := ψ.cursor + e.bytes,
+                          truncated := if ψ.truncated.contains e.outParam then ψ.truncated else ψ.truncated ++ [e.outParam] }
+        throw .reject
       pure (some k)
     else pure none
   if ψ.cursor + e.bytes > P.length then throw .reject
@@ -165,9 +177,9 @@ private def selectTarget (P : Packet) (m : Machine) (ψ : MState) (s : Select) :
 
 /-- One state: statements in the loader's order (extracts, counters,
 advances), then the transition. -/
-def step (P : Packet) (m : Machine) (layerOff : Nat) (ψ : MState) (s : ParseState) : Except MFail (MState × Target) := do
+def step (P : Packet) (m : Machine) (layerOff : Nat) (inRegion : Bool) (ψ : MState) (s : ParseState) : Except MFail (MState × Target) := do
   let mut ψ := ψ
-  for e in s.extracts do ψ ← doExtract P m layerOff ψ e
+  for e in s.extracts do ψ ← doExtract P m layerOff inRegion ψ e
   for c in s.counters do ψ ← doCounter P layerOff ψ c
   for a in s.advances do ψ ← doAdvance P ψ a
   match s.trans with
@@ -185,7 +197,7 @@ def run (P : Packet) (m : Machine) (layerOff : Nat) (region : Option Nat) :
     -- the walk is inside the declared region from the region's loop state on
     let inRegion := inRegion || region == some ψ.state
     let fault : MFail := if inRegion then .regionFault else .reject
-    let (ψ', t) ← match step P m layerOff ψ s with
+    let (ψ', t) ← match step P m layerOff inRegion ψ s with
       | .ok r => pure r
       | .error .reject => throw fault
       | .error e => throw e
