@@ -372,6 +372,11 @@ vector srv6OverCapAll := {
 vector srv6OverCapNotAll := {
   id := "srv6-over-capacity-not-all", ast := { layers := srv6L, cond := some (.not (.all (.litCmp segIter .eq (.ipv6 s1)))) },
   packet := srv6Pkt 8 (List.replicate 9 s1), expected := .accept [] }
+set_option maxRecDepth 65536 in
+vector srv6PastScratch := {
+  id := "srv6-past-scratch-window", ast := { layers := srv6L, cond := some (cmp (fld "tcp" "dport") .eq (k 80)) },
+  packet := srv6Pkt 29 (List.replicate 30 s1), expected := .accept [], goStatus := .mismatch,
+  note := "Go copies at most 512 bytes into its scratch window; the 30-segment SRH ends past it, so Go rejects (D-029 addendum 2)" }
 set_option maxRecDepth 16384 in
 vector srv6TenSegs := {
   id := "srv6-ten-segments", ast := { layers := srv6L, cond := some (cmp (fld "tcp" "dport") .eq (k 80)) },
@@ -566,7 +571,7 @@ def auxVectors : List Vector := [
   ipv6ExtsBracket, ipv6ExtsBracketAbsent, ipv6ExtsBracketLong, ipv6ExtsBracketDynamic, ipv6ExtsBracketIter, ipv6ExtsBracketInAbsent, ipv6ExtsBracketInLong, ipv6ExtsSliceLong, ipv6ExtsBracketSliceLong, gtpExtsBracket, gtpExtsBracketAbsent, gtpExtsBracketNone, gtpExtsBracketMixed, gtpExtsBracketMixedMiss, ipv6ExtsIndexAbsent,
   ipv6NextHeaderWhere, ipv6NextHeaderBracket, ipv6FiveExts, ipv6SixExts, ipv6AnyExts, ipv6AllExts,
   srv6TruncatedFails, typSrv6NoValid, geneveVersionOne, srv6Chain, srv6Static, srv6Dynamic, srv6Any, srv6All, srv6AllCidr, srv6IndexAbsent, srv6OverCap, srv6OverCapAnyKept, srv6OverCapAnyDropped, srv6OverCapAll, srv6OverCapNotAll,
-  srv6OverCapIndex, srv6OverCapLastEntry, srv6AtCapAll, srv6TenSegs, srv6TwelveSegs, srv6OverstatedLastEntry,
+  srv6OverCapIndex, srv6OverCapLastEntry, srv6AtCapAll, srv6PastScratch, srv6TenSegs, srv6TwelveSegs, srv6OverstatedLastEntry,
   srv6OverCapAllOrTrue, srv6AbsentAllTrue, srv6AtCap,
   gtpEightExts, gtpNineExts, gtpTenExts, gtpPlain, gtpOptExists, gtpOptAbsent, gtpOptField, gtpOptFieldAbsent, gtpExtDynamicIndex, gtpExtLongFirst, gtpExtLengthZero, gtpExtStack,
   ipv4RrStatic, ipv4RrAny, ipv4RrArith]

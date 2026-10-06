@@ -537,10 +537,10 @@ func TransitionTargets(t TransitionOp) []int {
 	return nil
 }
 
-// defaultMaxDepth is the iteration bound of a protocol with no
-// <SELF>_MAX_DEPTH (codegen's defaultChainDepth, the spec's maxDepth
+// DefaultMaxDepth is the iteration bound of a protocol with no
+// <SELF>_MAX_DEPTH (codegen's bpf_loop fallback, the spec's maxDepth
 // default).
-const defaultMaxDepth = 8
+const DefaultMaxDepth = 8
 
 // StackPushBound is the most entries the parser machine can push onto
 // `stack`: one per state that pushes onto it, plus MAX_DEPTH more for each
@@ -551,7 +551,7 @@ const defaultMaxDepth = 8
 func (p *ProtocolSpec) StackPushBound(stack string) int {
 	depth := p.MaxDepth
 	if depth == 0 {
-		depth = defaultMaxDepth
+		depth = DefaultMaxDepth
 	}
 	m := p.ParseStateMachine
 	if m == nil {
@@ -579,10 +579,19 @@ func (p *ProtocolSpec) StackPushBound(stack string) int {
 	return n
 }
 
-// pushesInsideRegion reports whether `stack` is pushed by a state the
-// declared region's loop dispatches to (srv6 segments), where a full stack
-// is truncated rather than rejected (spec D-029).
-func (p *ProtocolSpec) pushesInsideRegion(stack string) bool {
+// truncatesInsideRegion reports whether `stack` is pushed by a state the
+// declared region's loop dispatches to and counted from a header field
+// (srv6 segments: AuxWalkSegmentTail), where a full stack is truncated
+// rather than rejected (spec D-029). Codegen can only tell a truncated
+// stack by comparing that count with the capacity, so a stack counted any
+// other way inside a region must still hold every push.
+func (p *ProtocolSpec) truncatesInsideRegion(stack string) bool {
+	if name, ok := p.pushedAuxStackName(); !ok || name != stack {
+		return false
+	}
+	if _, _, ok := p.AuxWalkSegmentTail(); !ok {
+		return false
+	}
 	loop, ok := p.RegionLoopState()
 	if !ok {
 		return false
@@ -610,7 +619,7 @@ func validateStackCapacity(p *ProtocolSpec) error {
 		return nil
 	}
 	for name, ref := range p.ParseStateMachine.StackRefs {
-		if ref == nil || p.pushesInsideRegion(name) {
+		if ref == nil || p.truncatesInsideRegion(name) {
 			continue
 		}
 		if bound := p.StackPushBound(name); bound > ref.Capacity {

@@ -85,7 +85,7 @@ func mainStackOffsetFromCb(slot int16) int16 {
 
 // defaultChainDepth is the bpf_loop max_iter fallback used when the
 // protocol's vocab did not declare a <SELF>_MAX_DEPTH.
-const defaultChainDepth = 8
+const defaultChainDepth = vocab.DefaultMaxDepth
 
 // bpfLoopChainCap bounds any user-declared or vocab-declared
 // iteration count to something the verifier will accept without

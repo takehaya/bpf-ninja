@@ -237,4 +237,24 @@ example : failOf (run [] (twoStates (.goto (.state 1))) 0 (some 1) false 4 4 { s
 example : failOf (run [] (twoStates (.goto (.state 1))) 0 none false 4 4 { state := 0, cursor := 0 }) = some .reject := by
   decide
 
+/-! A full stack inside the declared region steps over the entry and
+records the truncation; outside one it is P-Extract-Stack-Full. The bundled
+vocabulary never fills a stack outside a region (the loader requires such a
+stack to hold every push), so this is pinned on a one-entry stack. -/
+
+private def pushTwice : Machine :=
+  { states := [{ name := "start", extracts := [⟨"s", "e", 1, true⟩], counters := [], advances := [], trans := .goto (.state 1) },
+               { name := "again", extracts := [⟨"s", "e", 1, true⟩], counters := [], advances := [], trans := .goto .accept }],
+    entry := 0, headers := [⟨"e", [], 1⟩], stacks := [{ name := "s", header := "e", capacity := 1, elemBytes := 1 }],
+    tails := [], writebacks := [] }
+
+private def truncatedOf : Except MFail MState → Option (List String)
+  | .ok ψ => some ψ.truncated
+  | .error _ => none
+
+example : failOf (run [1, 2] pushTwice 0 none false 4 4 { state := 0, cursor := 0 }) = some .reject := by
+  decide
+example : truncatedOf (run [1, 2] pushTwice 0 (some 0) false 4 4 { state := 0, cursor := 0 }) = some ["s"] := by
+  decide
+
 end Kunai
