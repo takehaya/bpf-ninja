@@ -74,8 +74,8 @@ vector tcpMalformedAfterMss := tcpW (cmp mss .eq (k 1460)) (tcpOpts (mssOpt 1460
   "tcp-opt-malformed-after-mss" .reject (note := "D-029: the region is malformed as a whole; an option sighted before the fault is gone too")
 vector tcpMalformedChainOn := {
   id := "tcp-opt-malformed-chain-on", ast := { layers := chain3, cond := some (cmp dport .eq (k 80)) },
-  packet := tcpOpts [2, 4, 5], expected := .accept [],
-  note := "MSS crosses the end of the declared region: malformed, not a bounds failure" }
+  packet := tcpOpts [1, 1, 2, 4], expected := .accept [],
+  note := "data_offset 6: the MSS starting at the region's third byte crosses its end; malformed, not a bounds failure" }
 def ipv4BadOptPkt : Packet :=
   eth 0x0800 ++ ipv4 6 (ihl := 6) (options := [0x99, 4, 0, 0]) ++ tcp 12345 80 ++ payload 5
 vector ipv4MalformedOpts := {
@@ -123,9 +123,47 @@ vector tcpOptsValidAltOther := {
   id := "tcp-opts-valid-alt-other-member",
   ast := { layers := [P "eth", P "ipv4", .alt [{ name := "tcp" }, { name := "udp" }]], cond := some tcpValid },
   packet := eth 0x0800 ++ ipv4 17 ++ udp 1234 53 ++ payload 5, expected := .reject, note := "udp matched: tcp is absent" }
+def wsShift := Arith.field ⟨[("tcp", none), ("options", none), ("WS", none), ("shift", none)]⟩
+vector tcpOptsValidTwoOptions := tcpW (.and tcpValid (.and (cmp mss .eq (k 1460)) (cmp wsShift .eq (k 7))))
+  (tcpOpts (mssOpt 1460 ++ [3, 3, 7, 1])) "tcp-opts-valid-with-two-options" (.accept []) (goStatus := .notImplemented)
+  (note := "Go: the accumulator plan for two option equalities has no slot for the validity flag")
 vector typOptsValidNoRegion := {
   id := "typ-opts-valid-no-region", ast := { layers := [P "eth", P "ipv4", P "udp"], cond := some (.optionsValid ⟨[("udp", none), ("options", none)]⟩) },
   expected := .illTyped "udp declares no option region; udp.options.valid needs one" }
+
+-- geneve options (D-029) ----------------------------------------------------
+
+/-- geneve header with `optLen` 4-byte words of options, carrying an
+Ethernet payload. -/
+def geneveHdr (optLen : Nat) : Packet := [UInt8.ofNat optLen, 0] ++ be 2 0x6558 ++ be 3 100 ++ [0]
+def geneveOvn (egress : Nat) : Packet := be 2 0x0102 ++ [0x80, 1] ++ be 2 1 ++ be 2 egress
+def geneveUnknown : Packet := be 2 0x0000 ++ [0x01, 1] ++ be 4 0
+def genevePkt (optLen : Nat) (opts : Packet) : Packet :=
+  eth 0x0800 ++ ipv4 17 ++ udp 1234 6081 ++ geneveHdr optLen ++ opts ++ payload 5
+def geneveL : List Layer := [P "eth", P "ipv4", P "udp", P "geneve"]
+def ovnExists := Where.fieldExists ⟨[("geneve", none), ("options", none), ("OVN", none)]⟩
+def geneveValid := Where.optionsValid ⟨[("geneve", none), ("options", none)]⟩
+vector geneveOvnHit := {
+  id := "geneve-opt-ovn", ast := { layers := geneveL, cond := some ovnExists },
+  packet := genevePkt 2 (geneveOvn 42), expected := .accept [] }
+vector geneveMalformedAfter := {
+  id := "geneve-opt-malformed-after-ovn", ast := { layers := geneveL, cond := some ovnExists },
+  packet := genevePkt 4 (geneveOvn 42 ++ geneveUnknown), expected := .reject,
+  note := "D-029: an unknown option after OVN makes the region malformed; OVN is gone too" }
+vector geneveMalformedBefore := {
+  id := "geneve-opt-malformed-before-ovn", ast := { layers := geneveL, cond := some (.not geneveValid) },
+  packet := genevePkt 4 (geneveUnknown ++ geneveOvn 42), expected := .accept [] }
+vector geneveMalformedChainOn := {
+  id := "geneve-opt-malformed-chain-on", ast := { layers := geneveL, cond := some (cmp (fld "udp" "dport") .eq (k 6081)) },
+  packet := genevePkt 4 (geneveUnknown ++ geneveOvn 42), expected := .accept [],
+  note := "D-029: the chain goes on whatever the options are" }
+vector geneveRegionPastEnd := {
+  id := "geneve-opt-region-past-end", ast := { layers := geneveL, cond := some (cmp (fld "udp" "dport") .eq (k 6081)) },
+  packet := eth 0x0800 ++ ipv4 17 ++ udp 1234 6081 ++ geneveHdr 8 ++ geneveOvn 42, expected := .reject,
+  note := "the declared region does not fit in the packet: a bounds failure, not a malformed region" }
+vector geneveValidEmpty := {
+  id := "geneve-opts-valid-empty", ast := { layers := geneveL, cond := some geneveValid },
+  packet := genevePkt 0 [], expected := .accept [] }
 
 -- IPv6 extension headers ---------------------------------------------------
 
@@ -448,7 +486,8 @@ def auxVectors : List Vector := [
   tcpOptCross, tcpEol, tcpMssDup, tcpMssBadLen, tcpMssExists, tcpMssExistsNot, tcpSackBlock, tcpSackAny, tcpSackAll,
   tcpSackAbsentAny, tcpMalformedNoQuery, tcpMalformedNotQuery, tcpMalformedOrTrue, tcpMalformedExists,
   tcpMalformedAfterMss, tcpMalformedChainOn, ipv4MalformedOpts, ipv4MalformedOptsQueried, ipv4OptDepthLastFault, ipv4OptDepthLastSighting,
-  tcpOptsValid, tcpOptsValidNone, tcpOptsInvalid, tcpOptsInvalidNot, tcpOptsValidWithMss, tcpOptsValidAbsent, tcpOptsValidAltMember, tcpOptsValidAltOther, ipv4OptsInvalid, typOptsValidNoRegion,
+  tcpOptsValid, tcpOptsValidNone, tcpOptsInvalid, tcpOptsInvalidNot, tcpOptsValidWithMss, tcpOptsValidAbsent, tcpOptsValidAltMember, tcpOptsValidAltOther, tcpOptsValidTwoOptions, ipv4OptsInvalid,
+  geneveOvnHit, geneveMalformedAfter, geneveMalformedBefore, geneveMalformedChainOn, geneveRegionPastEnd, geneveValidEmpty, typOptsValidNoRegion,
   ipv6Hbh, ipv6TwoExts, ipv6ExtLong, ipv6ExtTooLong, ipv6ExtsIndex, ipv6ExtsIndex1, ipv6ExtsIndexAfterLong, ipv6ExtsAnyAfterLong, ipv6ExtsDynamicLong, ipv6ExtsDynamicLongSecond, ipv6ExtsDynamicLongAbsent, ipv6ExtsDynamicLongLast, ipv6ExtsDynamicLongLastMiss, ipv6ExtsDynamicLongBeyond, ipv6ExtsDynamicLongSlot, ipv6ExtsDynamicLongSlotAbsent,
   ipv6ExtsBracket, ipv6ExtsBracketAbsent, ipv6ExtsBracketLong, ipv6ExtsBracketDynamic, ipv6ExtsBracketIter, ipv6ExtsBracketInAbsent, ipv6ExtsBracketInLong, ipv6ExtsSliceLong, ipv6ExtsBracketSliceLong, gtpExtsBracket, gtpExtsBracketAbsent, gtpExtsBracketNone, gtpExtsBracketMixed, gtpExtsBracketMixedMiss, ipv6ExtsIndexAbsent,
   ipv6NextHeaderWhere, ipv6NextHeaderBracket, ipv6FiveExts, ipv6SixExts, ipv6AnyExts, ipv6AllExts,
