@@ -13,6 +13,7 @@ const (
 	annKunaiVariableTail = "kunai_variable_tail"
 	annKunaiWriteback    = "kunai_writeback"
 	annKunaiOptionSeg    = "kunai_option_segment"
+	annKunaiOptionRegion = "kunai_option_region"
 	annKunaiLayout       = "kunai_layout"
 	annKunaiStackCount   = "kunai_stack_count"
 )
@@ -414,6 +415,40 @@ func counterSetOp(states []*ParseState, counterName string) *CounterOp {
 	return nil
 }
 
+// readParserOptionRegion scans the parser block's @-decorators for
+// @kunai_option_region[on_fault=skip|fail]: what a fault inside the
+// parser's header-declared region means (spec D-029). Empty when absent;
+// the default is skip. A second annotation is an error.
+func readParserOptionRegion(file *p4lite.File, source string) (string, error) {
+	if file == nil {
+		return "", nil
+	}
+	allowed := map[string]bool{"on_fault": true}
+	found := ""
+	for _, par := range file.Parsers {
+		for _, ann := range par.Annotations {
+			if ann.Name != annKunaiOptionRegion {
+				continue
+			}
+			if err := requireKnownKeys(ann, allowed, source); err != nil {
+				return "", err
+			}
+			v, ok := ann.KVs["on_fault"]
+			if !ok {
+				return "", fmt.Errorf("%s:%s: @kunai_option_region is missing required key `on_fault`", source, ann.Pos)
+			}
+			if v.Kind != p4lite.AnnotationIdent || (v.Ident != OnFaultSkip && v.Ident != OnFaultFail) {
+				return "", fmt.Errorf("%s:%s: @kunai_option_region.on_fault must be `skip` or `fail`", source, ann.Pos)
+			}
+			if found != "" {
+				return "", fmt.Errorf("%s:%s: @kunai_option_region given twice", source, ann.Pos)
+			}
+			found = v.Ident
+		}
+	}
+	return found, nil
+}
+
 // readParserOptionSegment scans the parser block's @-decorators for
 // @kunai_option_segment[name=IDENT]. Returns the declared segment
 // name or the empty string when no override exists; the loader treats
@@ -679,5 +714,3 @@ func resolveHeaderWritebackTargets(specs map[string]*ProtocolSpec) error {
 	}
 	return nil
 }
-
-

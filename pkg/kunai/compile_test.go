@@ -1683,3 +1683,31 @@ func TestCompileL2HostRootWarningUnchanged(t *testing.T) {
 		t.Fatalf("expected the L2 non-eth-root warning, got %v", out.Warnings)
 	}
 }
+
+// TestOptionRegionPolicyCompiles: `.valid` exists only where a region's
+// faults are skipped, and only those layers get the malformed landing
+// (spec D-029, @kunai_option_region). srv6 says on_fault=fail.
+func TestOptionRegionPolicyCompiles(t *testing.T) {
+	_, err := Compile("eth/ipv6/srv6/tcp where srv6.segments.valid", codegen.Capabilities{})
+	if err == nil || errors.Is(err, codegen.ErrNotImplemented) || !strings.Contains(err.Error(), "on_fault=skip") {
+		t.Fatalf("srv6.segments.valid: got %v, want the type error naming on_fault=skip", err)
+	}
+	landing := func(expr string) bool {
+		out, err := Compile(expr, codegen.Capabilities{})
+		if err != nil {
+			t.Fatalf("Compile(%q): %v", expr, err)
+		}
+		for _, ins := range out.Main {
+			if strings.Contains(ins.Symbol(), "_malformed_") {
+				return true
+			}
+		}
+		return false
+	}
+	if !landing("eth/ipv4/tcp where tcp.options.MSS.value == 1460") {
+		t.Errorf("tcp: no malformed landing for a skipped region")
+	}
+	if landing("eth/ipv6/srv6/tcp where any(srv6.segments.addr == fc00::1)") {
+		t.Errorf("srv6: a malformed landing although on_fault=fail")
+	}
+}

@@ -2190,6 +2190,7 @@ extern ParserCounter {
     bool is_zero();
 }
 
+@kunai_option_region[on_fault=fail]
 parser F(packet_in pkt, out foo_h h) {
     ParserCounter() pc;
     state start {
@@ -2537,6 +2538,7 @@ extern ParserCounter {
     bool is_zero();
 }
 
+@kunai_option_region[on_fault=fail]
 parser F(packet_in pkt, out foo_h h, out foo_rr_h rr) {
     ParserCounter() pc;
     state start {
@@ -2774,5 +2776,230 @@ const bit<8> KUNAI_FOO_BAR_X_ALT2 = 2;
 `), "vocab")
 	if err == nil || !strings.Contains(err.Error(), "_ALT_<NAME>") {
 		t.Errorf("expected numbered-suffix rejection pointing at _ALT_<NAME>, got %v", err)
+	}
+}
+
+// TestOptionRegionFault pins the one place the spec D-029 rule is
+// decided: which bundled parsers skip a fault inside their declared
+// region (ipv4, tcp, geneve), which fail (srv6, annotated), and which
+// have no declared region at all (ipv6 / gtp extension chains).
+func TestOptionRegionFault(t *testing.T) {
+	specs, err := Load(protocols.FS, ".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, want := range map[string]bool{"ipv4": true, "tcp": true, "geneve": true, "srv6": false, "ipv6": false, "gtp": false, "udp": false} {
+		if _, got := specs[name].SkipsRegionFault(); got != want {
+			t.Errorf("%s: SkipsRegionFault = %v, want %v", name, got, want)
+		}
+	}
+	if _, ok := specs["srv6"].RegionLoopState(); !ok {
+		t.Errorf("srv6: the segment walk is a declared region (it fails rather than skips)")
+	}
+	if specs["srv6"].OptionRegionFault != OnFaultFail {
+		t.Errorf("srv6: OptionRegionFault = %q, want %q", specs["srv6"].OptionRegionFault, OnFaultFail)
+	}
+}
+
+// TestOptionRegionAnnotationErrors: a bad on_fault value, and a region
+// counted in elements left at the default skip, are load errors.
+func TestOptionRegionAnnotationErrors(t *testing.T) {
+	const counter = `
+extern ParserCounter {
+    ParserCounter();
+    void set(in bit<8> value);
+    void decrement(in bit<8> value);
+    bool is_zero();
+}
+header foo_h { bit<8> n; bit<8> next; }
+header seg_h { bit<32> v; }
+`
+	parser := func(ann string) string {
+		return counter + ann + `
+parser F(packet_in pkt, out foo_h h, out seg_h[4] segs) {
+    ParserCounter() pc;
+    state start { pkt.extract(h); pc.set((bit<8>)(h.n + 1)); transition walk; }
+    state walk { transition select(pc.is_zero()) { true: accept; false: seg; } }
+    state seg { pkt.extract(segs.next); pc.decrement(1); transition walk; }
+}
+`
+	}
+	for _, tc := range []struct{ ann, want string }{
+		{"@kunai_option_region[on_fault=drop]", "must be `skip` or `fail`"},
+		{"", "add @kunai_option_region[on_fault=fail]"},
+		{"@kunai_option_region[on_fault=skip]", "add @kunai_option_region[on_fault=fail]"},
+	} {
+		fsys := fstest.MapFS{"vocab/foo.p4": &fstest.MapFile{Data: []byte(parser(tc.ann))}}
+		_, err := Load(fsys, "vocab")
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%q: Load error = %v, want it to mention %q", tc.ann, err, tc.want)
+		}
+	}
+	fsys := fstest.MapFS{"vocab/foo.p4": &fstest.MapFile{Data: []byte(parser("@kunai_option_region[on_fault=fail]"))}}
+	if _, err := Load(fsys, "vocab"); err != nil {
+		t.Errorf("on_fault=fail: %v", err)
+	}
+}
+
+// TestOptionRegionAnnotationNeedsRegion: the annotation on a parser with
+// no header-bounded region, or given twice, is a load error.
+func TestOptionRegionAnnotationNeedsRegion(t *testing.T) {
+	const plain = `
+header foo_h { bit<8> a; }
+%s
+parser F(packet_in pkt, out foo_h h) { state start { pkt.extract(h); transition accept; } }
+`
+	for _, tc := range []struct{ ann, want string }{
+		{"@kunai_option_region[on_fault=skip]", "no header-bounded region"},
+		{"@kunai_option_region[on_fault=fail]\n@kunai_option_region[on_fault=fail]", "given twice"},
+	} {
+		fsys := fstest.MapFS{"vocab/foo.p4": &fstest.MapFile{Data: []byte(strings.Replace(plain, "%s", tc.ann, 1))}}
+		if _, err := Load(fsys, "vocab"); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%q: Load error = %v, want it to mention %q", tc.ann, err, tc.want)
+		}
+	}
+}
+
+// TestOptionRegionByteMeasure pins each clause of the skip eligibility:
+// every arm decrements the loop's counter by the bytes it consumes, and
+// the entry state seeds that counter. One positive case loads at the
+// default skip.
+func TestOptionRegionByteMeasure(t *testing.T) {
+	const head = `
+extern ParserCounter {
+    ParserCounter();
+    void set(in bit<8> value);
+    void decrement(in bit<8> value);
+    bool is_zero();
+}
+header foo_h { bit<8> n; bit<8> m; }
+header opt_h { bit<8> kind; bit<8> length; bit<16> v; }
+parser F(packet_in pkt, out foo_h h, out opt_h o) {
+    ParserCounter() pc;
+`
+	walk := `
+    state walk {
+        transition select(pc.is_zero(), pkt.lookahead<bit<8>>()) {
+            (true, _):  accept;
+            (false, 7): parse_opt;
+            (false, _): reject;
+        }
+    }
+`
+	seeded := `    state start { pkt.extract(h); pc.set(((bit<8>)(h.n - 0)) << 5); transition walk; }
+`
+	for _, tc := range []struct {
+		name, body, wantErr string
+	}{
+		{"bytes", seeded + walk + "    state parse_opt { pkt.extract(o); pc.decrement(4); transition walk; }\n}\n", ""},
+		{"short decrement", seeded + walk + "    state parse_opt { pkt.extract(o); pc.decrement(3); transition walk; }\n}\n", "not counted in bytes"},
+		{"field decrement", seeded + walk + "    state parse_opt { pkt.extract(o); pc.decrement(o.length); transition walk; }\n}\n", "not counted in bytes"},
+		{"seeded late", "    state start { pkt.extract(h); transition prep; }\n    state prep { pc.set(((bit<8>)(h.n - 0)) << 5); transition walk; }\n" + walk + "    state parse_opt { pkt.extract(o); pc.decrement(4); transition walk; }\n}\n", "not set in the parser's entry state"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fsys := fstest.MapFS{"vocab/foo.p4": &fstest.MapFile{Data: []byte(head + tc.body)}}
+			specs, err := Load(fsys, "vocab")
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("Load: %v", err)
+				}
+				if loop, ok := specs["foo"].SkipsRegionFault(); !ok || specs["foo"].ParseStateMachine.States[loop].Name != "walk" {
+					t.Errorf("SkipsRegionFault = %d, %v; want the walk state", loop, ok)
+				}
+				if specs["foo"].RegionLengthBytes() == nil {
+					t.Errorf("RegionLengthBytes = nil; want the seed")
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Errorf("Load error = %v, want it to mention %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+// TestOptionRegionAnnotationSyntax: an unknown key, a missing on_fault,
+// and a non-identifier value are load errors, on a parser that does have
+// a byte-counted region (so no other check fires first).
+func TestOptionRegionAnnotationSyntax(t *testing.T) {
+	const region = `
+extern ParserCounter {
+    ParserCounter();
+    void set(in bit<8> value);
+    void decrement(in bit<8> value);
+    bool is_zero();
+}
+header foo_h { bit<8> n; bit<8> m; }
+ANN
+parser F(packet_in pkt, out foo_h h) {
+    ParserCounter() pc;
+    state start { pkt.extract(h); pc.set(((bit<8>)(h.n - 0)) << 5); transition walk; }
+    state walk {
+        transition select(pc.is_zero(), pkt.lookahead<bit<8>>()) {
+            (true, _):  accept;
+            (false, 1): parse_nop;
+            (false, _): reject;
+        }
+    }
+    state parse_nop { pkt.advance(8); pc.decrement(1); transition walk; }
+}
+`
+	load := func(ann string) error {
+		fsys := fstest.MapFS{"vocab/foo.p4": &fstest.MapFile{Data: []byte(strings.Replace(region, "ANN", ann, 1))}}
+		_, err := Load(fsys, "vocab")
+		return err
+	}
+	if err := load("@kunai_option_region[on_fault=skip]"); err != nil {
+		t.Fatalf("well-formed annotation: %v", err)
+	}
+	for _, tc := range []struct{ ann, want string }{
+		{"@kunai_option_region[mode=fail]", "mode"},
+		{"@kunai_option_region[on_fault=fail, x=1]", "x"},
+		{"@kunai_option_region[on_fault=1]", "must be `skip` or `fail`"},
+	} {
+		if err := load(tc.ann); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: Load error = %v, want it to mention %q", tc.ann, err, tc.want)
+		}
+	}
+}
+
+// TestOptionRegionLengthFromLoopCounter: with two counters seeded in the
+// entry state, the region's length is the seed of the counter the loop
+// ends on, not the first one set.
+func TestOptionRegionLengthFromLoopCounter(t *testing.T) {
+	const src = `
+extern ParserCounter {
+    ParserCounter();
+    void set(in bit<8> value);
+    void decrement(in bit<8> value);
+    bool is_zero();
+}
+header foo_h { bit<8> a; bit<8> b; }
+parser F(packet_in pkt, out foo_h h) {
+    ParserCounter() hl;
+    ParserCounter() pc;
+    state start {
+        pkt.extract(h);
+        hl.set(((bit<8>)(h.a - 0)) << 5);
+        pc.set(((bit<8>)(h.b - 0)) << 5);
+        transition walk;
+    }
+    state walk {
+        transition select(pc.is_zero(), pkt.lookahead<bit<8>>()) {
+            (true, _):  accept;
+            (false, 1): parse_nop;
+            (false, _): reject;
+        }
+    }
+    state parse_nop { pkt.advance(8); pc.decrement(1); transition walk; }
+}
+`
+	specs, err := Load(fstest.MapFS{"vocab/foo.p4": &fstest.MapFile{Data: []byte(src)}}, "vocab")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hl := specs["foo"].RegionLengthBytes()
+	if hl == nil || hl.LenByteOff != 1 {
+		t.Fatalf("RegionLengthBytes = %+v, want the seed of pc (field b at byte 1)", hl)
 	}
 }

@@ -87,6 +87,15 @@ func (c *pmCtx) canFallbackToBulkAdvance(stateIdx int) bool {
 	if _, ok := c.queried.validSlot(c.layer); ok {
 		return false // `.options.valid` needs the walk's outcome
 	}
+	// A region whose faults reject must be walked to see them, unless
+	// the walk is an aux-stack walk (srv6 segments), whose re-anchor
+	// already rejects the faults such a walk can have (a count over
+	// capacity, a list past the packet end).
+	if loop, ok := c.spec.FailsRegionFault(); ok && loop == stateIdx {
+		if _, _, aux := c.spec.AuxWalkSegmentTail(); !aux {
+			return false
+		}
+	}
 	return len(c.queried.optionDemand(c.layer)) == 0
 }
 
@@ -251,7 +260,7 @@ func (c *pmCtx) emitMultiStateSelfLoop(state *vocab.ParseState, stateIdx int) (a
 	// queried. Without a declared region the failure rejects.
 	walkFail := dslReject
 	var malformed asm.Instructions
-	if c.hasDeclaredOptionRegion(stateIdx) {
+	if c.skipsRegionFaultAt(stateIdx) {
 		walkFail = fmt.Sprintf("%s_malformed_%d", c.labelNS, stateIdx)
 		reset, err := c.emitDynamicAuxSentinelInit()
 		if err != nil {
@@ -344,25 +353,12 @@ func (c *pmCtx) emitValidFlag(v int32) asm.Instructions {
 	return asm.Instructions{asm.Mov.Imm(asm.R3, v), asm.StoreMem(asm.R10, slot, asm.R3, asm.DWord)}
 }
 
-// hasDeclaredOptionRegion reports whether the walk entered at stateIdx
-// runs over a region whose length the header declares (a counter key:
-// ipv4 IHL, tcp data_offset, geneve opt_len), the case D-029 treats as
-// "malformed region ⇒ no options" rather than a reject. An aux-stack walk
-// (srv6 segments) is not one: its region is re-anchored after the walk.
-func (c *pmCtx) hasDeclaredOptionRegion(stateIdx int) bool {
-	if _, _, ok := c.spec.AuxWalkSegmentTail(); ok {
-		return false
-	}
-	sel := c.machine.States[stateIdx].Trans.Select
-	if sel == nil {
-		return false
-	}
-	for _, k := range sel.Keys {
-		if k.Kind == vocab.SelectKeyCounterIsZero {
-			return true
-		}
-	}
-	return false
+// skipsRegionFaultAt reports whether the walk entered at stateIdx is the
+// protocol's declared region and a fault inside it is skipped
+// (vocab.SkipsRegionFault, spec D-029) rather than rejected.
+func (c *pmCtx) skipsRegionFaultAt(stateIdx int) bool {
+	loop, ok := c.spec.SkipsRegionFault()
+	return ok && loop == stateIdx
 }
 
 // isLengthByteOptionLoop identifies TLV walks eligible for the shared

@@ -81,6 +81,13 @@ type ProtocolSpec struct {
 	// option-walk under a domain-appropriate name (e.g. "tlvs") without
 	// a resolver-side code change.
 	OptionSegment string
+	// OptionRegionFault is what a fault inside the parser's
+	// header-declared region means (spec D-029), from
+	// @kunai_option_region[on_fault=...]: OnFaultSkip leaves the layer with
+	// no aux headers from that walk and goes on past the region;
+	// OnFaultFail rejects the packet. Empty when the parser carries no
+	// annotation, which means skip.
+	OptionRegionFault string
 	// selfValidating caches whether the parser block proves the
 	// protocol's identity itself (start-state `transition select(...)
 	// { ...; default: reject; }` keyed on a primary-header field).
@@ -349,18 +356,21 @@ func (p *ProtocolSpec) AuxWalkSegmentTail() (*VariableTailSpec, int, bool) {
 	}, bits / 8, true
 }
 
-// HasDeclaredOptionRegion reports whether the protocol's parser walks an
-// option region whose length the header declares: a multi-state loop
-// keyed on a counter (ipv4 IHL, tcp data_offset, geneve opt_len). An
-// aux-stack walk (srv6 segments) is not one. Such a region can be
-// malformed without the packet being rejected (spec D-029), which
-// `<layer>.options.valid` reports.
-func (p *ProtocolSpec) HasDeclaredOptionRegion() bool {
+// OnFaultSkip and OnFaultFail are the @kunai_option_region on_fault
+// values.
+const (
+	OnFaultSkip = "skip"
+	OnFaultFail = "fail"
+)
+
+// RegionLoopState is the parser state that walks the protocol's
+// header-declared region: a loop entry selecting on `counter.is_zero()`
+// (ipv4 options, tcp options, geneve options, srv6 segments). ok is false
+// when the parser has no such region; its walks (ipv6 / gtp extension
+// chains) end on their own and have no declared end.
+func (p *ProtocolSpec) RegionLoopState() (int, bool) {
 	if p == nil || p.ParseStateMachine == nil {
-		return false
-	}
-	if _, _, ok := p.AuxWalkSegmentTail(); ok {
-		return false
+		return 0, false
 	}
 	states := p.ParseStateMachine.States
 	for i, st := range states {
@@ -369,11 +379,174 @@ func (p *ProtocolSpec) HasDeclaredOptionRegion() bool {
 		}
 		for _, k := range st.Trans.Select.Keys {
 			if k.Kind == SelectKeyCounterIsZero {
-				return true
+				return i, true
 			}
 		}
 	}
-	return false
+	return 0, false
+}
+
+// regionCounter is the counter the region loop at loopIdx ends on.
+func (p *ProtocolSpec) regionCounter(loopIdx int) string {
+	for _, k := range p.ParseStateMachine.States[loopIdx].Trans.Select.Keys {
+		if k.Kind == SelectKeyCounterIsZero {
+			return k.Counter
+		}
+	}
+	return ""
+}
+
+// RegionLengthBytes is the header's declared region length in bytes: the
+// set expression the entry state seeds the region loop's own counter with
+// (`pc.set(((bit<8>)(hdr.data_offset - 5)) << 5)`), when that counter
+// measures bytes (RegionCounterTracksBytes). nil otherwise: no region, a
+// counter set elsewhere, or one that counts elements (srv6 segments).
+// The spec's declared length (vocab2lean lenRule) and codegen's skip past
+// the region both come from here.
+func (p *ProtocolSpec) RegionLengthBytes() *HeaderLength {
+	loop, ok := p.RegionLoopState()
+	if !ok || !p.RegionCounterTracksBytes(loop) {
+		return nil
+	}
+	m := p.ParseStateMachine
+	name := p.regionCounter(loop)
+	for _, c := range m.States[m.EntryIdx].Counters {
+		if c.Kind == CounterOpSet && c.Counter == name && c.Skip != nil {
+			return c.Skip
+		}
+	}
+	return nil
+}
+
+// SkipsRegionFault reports whether a fault inside the protocol's declared
+// region leaves the layer with no aux headers (on_fault=skip, spec
+// D-029), and the loop state from which a fault counts as inside it. This
+// is the one place the rule is decided: the resolver (`.options.valid`),
+// codegen (the malformed landing) and the spec's vocabulary generator all
+// ask here.
+func (p *ProtocolSpec) SkipsRegionFault() (int, bool) {
+	loop, ok := p.RegionLoopState()
+	if !ok || p.OptionRegionFault == OnFaultFail {
+		return 0, false
+	}
+	return loop, true
+}
+
+// FailsRegionFault reports whether the protocol has a declared region
+// whose faults reject (on_fault=fail), and its loop state. The walk must
+// then run even when nothing reads the region, or a fault would go
+// unseen.
+func (p *ProtocolSpec) FailsRegionFault() (int, bool) {
+	loop, ok := p.RegionLoopState()
+	if !ok || p.OptionRegionFault != OnFaultFail {
+		return 0, false
+	}
+	return loop, true
+}
+
+// RegionCounterTracksBytes reports whether every way out of the region
+// loop at loopIdx either ends the walk or decrements the loop's counter
+// by exactly the bytes it consumes (fixed extracts and literal advances,
+// or a lookahead-length advance matched by a lookahead-length
+// decrement). The counter then measures the bytes left in the region, so
+// the region's end is known before the walk and a fault inside it can be
+// stepped over. A stack push (srv6 segments) counts elements, not bytes.
+func (p *ProtocolSpec) RegionCounterTracksBytes(loopIdx int) bool {
+	if p == nil || p.ParseStateMachine == nil || loopIdx < 0 || loopIdx >= len(p.ParseStateMachine.States) {
+		return false
+	}
+	states := p.ParseStateMachine.States
+	sel := states[loopIdx].Trans.Select
+	if sel == nil {
+		return false
+	}
+	name := ""
+	for _, k := range sel.Keys {
+		if k.Kind == SelectKeyCounterIsZero {
+			name = k.Counter
+		}
+	}
+	if name == "" {
+		return false
+	}
+	check := func(idx int) bool {
+		if idx == StateAccept || idx == StateReject {
+			return true
+		}
+		if idx < 0 || idx >= len(states) {
+			return false
+		}
+		st := states[idx]
+		if len(st.Counters) != 1 {
+			return false
+		}
+		op := st.Counters[0]
+		if op.Kind != CounterOpDecrement || op.Counter != name {
+			return false
+		}
+		if op.DecrementLookaheadByteOffR {
+			if len(st.Extracts) != 0 || len(st.Advances) != 1 {
+				return false
+			}
+			adv := st.Advances[0]
+			v := adv.Skip
+			return adv.Kind == AdvanceOpLookahead && v != nil && v.LenByteOff == op.DecrementLookaheadByteOff && v.LenMask == 0xff && v.LenShift == 0 && v.Scale == 1 && v.Base == 0 && v.Addend == 0
+		}
+		if op.DecrementFieldName != "" || op.LiteralBytes <= 0 {
+			return false
+		}
+		size := 0
+		for _, ex := range st.Extracts {
+			if ex.IsStackPush {
+				return false
+			}
+			if ann, ok := p.HeaderAnnotations[ex.HeaderName]; ok && ann != nil && ann.VariableTail != nil {
+				return false
+			}
+			size += ex.HeaderSize / 8
+		}
+		for _, adv := range st.Advances {
+			if adv.Kind != AdvanceOpLiteral {
+				return false
+			}
+			size += adv.LiteralBytes
+		}
+		return size == op.LiteralBytes
+	}
+	if !check(sel.Default) {
+		return false
+	}
+	for _, cs := range sel.Cases {
+		if !check(cs.Target) {
+			return false
+		}
+	}
+	return true
+}
+
+// validateOptionRegion checks that a region whose faults are skipped is
+// measured in bytes, so "go on past the region" is defined. That is a
+// limit of the current implementation; an element-counted region (srv6)
+// must say @kunai_option_region[on_fault=fail].
+func validateOptionRegion(p *ProtocolSpec) error {
+	loop, ok := p.RegionLoopState()
+	if !ok {
+		if p.OptionRegionFault != "" {
+			return fmt.Errorf("%s: @kunai_option_region on a parser with no header-bounded region (a loop state whose select ends on counter.is_zero(), every other arm returning to it)", p.Source)
+		}
+		return nil
+	}
+	if _, skip := p.SkipsRegionFault(); !skip {
+		return nil
+	}
+	state := p.ParseStateMachine.States[loop].Name
+	switch {
+	case !p.RegionCounterTracksBytes(loop):
+		return fmt.Errorf("%s: the region walked by state %q is not counted in bytes (an arm does not decrement %q by the bytes it consumes), so a fault inside it cannot be skipped yet; add @kunai_option_region[on_fault=fail] to the parser", p.Source, state, p.regionCounter(loop))
+	case p.RegionLengthBytes() == nil:
+		return fmt.Errorf("%s: the counter %q that ends the region walked by state %q is not set in the parser's entry state, so the region's end is not known up front; set it there or add @kunai_option_region[on_fault=fail] to the parser", p.Source, p.regionCounter(loop), state)
+	}
+	return nil
 }
 
 // IsSelfValidating reports whether the parser block proves the
