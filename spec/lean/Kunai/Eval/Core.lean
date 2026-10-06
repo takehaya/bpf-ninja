@@ -28,6 +28,9 @@ structure Inst where
   len : Nat
   aux : List AuxView := []
   patches : List (Nat × Nat) := []
+  /-- The parser walked the declared option region without fault (D-029);
+  `false` when the region was malformed and the layer has no options. -/
+  optsValid : Bool := true
   deriving Repr, BEq, DecidableEq
 
 /-- The packet as this layer's parser left it: write-backs applied. -/

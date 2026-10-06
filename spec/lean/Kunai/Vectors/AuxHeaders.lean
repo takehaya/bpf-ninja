@@ -100,6 +100,25 @@ vector ipv4OptDepthLastSighting := {
   packet := ipv4Opt40 (List.replicate 8 1 ++ [0x94, 4, 0, 0]), expected := .accept [],
   note := "D-026: the 9th dispatch sights the router alert" }
 
+def tcpValid := Where.optionsValid ⟨[("tcp", none), ("options", none)]⟩
+vector tcpOptsValid := tcpW tcpValid (tcpOpts (mssOpt 1460)) "tcp-opts-valid" (.accept [])
+vector tcpOptsValidNone := tcpW tcpValid ethIPv4TCP "tcp-opts-valid-empty" (.accept [])
+  (note := "an empty option region is well formed")
+vector tcpOptsInvalid := tcpW tcpValid malformedOpts "tcp-opts-valid-malformed" .reject
+vector tcpOptsInvalidNot := tcpW (.not tcpValid) malformedOpts "tcp-opts-valid-malformed-not" (.accept [])
+  (note := "D-029: the way to keep only packets with malformed options")
+vector tcpOptsValidWithMss := tcpW (.and tcpValid (cmp mss .eq (k 1460))) (tcpOpts (mssOpt 1460)) "tcp-opts-valid-and-mss" (.accept [])
+vector tcpOptsValidAbsent := {
+  id := "tcp-opts-valid-absent-layer",
+  ast := { layers := [P "eth", P "ipv4", Pq "tcp" .opt], cond := some tcpValid }, packet := eth 0x0800 ++ ipv4 17 ++ udp 1234 53 ++ payload 5,
+  expected := .reject, note := "D-003: an absent layer has no options to vouch for" }
+vector ipv4OptsInvalid := {
+  id := "ipv4-opts-valid-malformed", ast := { layers := chain3, cond := some (.not (.optionsValid ⟨[("ipv4", none), ("options", none)]⟩)) },
+  packet := ipv4BadOptPkt, expected := .accept [] }
+vector typOptsValidNoRegion := {
+  id := "typ-opts-valid-no-region", ast := { layers := [P "eth", P "ipv4", P "udp"], cond := some (.optionsValid ⟨[("udp", none), ("options", none)]⟩) },
+  expected := .illTyped "udp declares no option region; udp.options.valid needs one" }
+
 -- IPv6 extension headers ---------------------------------------------------
 
 def ipv6L : List Layer := [P "eth", P "ipv6", P "tcp"]
@@ -421,6 +440,7 @@ def auxVectors : List Vector := [
   tcpOptCross, tcpEol, tcpMssDup, tcpMssBadLen, tcpMssExists, tcpMssExistsNot, tcpSackBlock, tcpSackAny, tcpSackAll,
   tcpSackAbsentAny, tcpMalformedNoQuery, tcpMalformedNotQuery, tcpMalformedOrTrue, tcpMalformedExists,
   tcpMalformedAfterMss, tcpMalformedChainOn, ipv4MalformedOpts, ipv4MalformedOptsQueried, ipv4OptDepthLastFault, ipv4OptDepthLastSighting,
+  tcpOptsValid, tcpOptsValidNone, tcpOptsInvalid, tcpOptsInvalidNot, tcpOptsValidWithMss, tcpOptsValidAbsent, ipv4OptsInvalid, typOptsValidNoRegion,
   ipv6Hbh, ipv6TwoExts, ipv6ExtLong, ipv6ExtTooLong, ipv6ExtsIndex, ipv6ExtsIndex1, ipv6ExtsIndexAfterLong, ipv6ExtsAnyAfterLong, ipv6ExtsDynamicLong, ipv6ExtsDynamicLongSecond, ipv6ExtsDynamicLongAbsent, ipv6ExtsDynamicLongLast, ipv6ExtsDynamicLongLastMiss, ipv6ExtsDynamicLongBeyond, ipv6ExtsDynamicLongSlot, ipv6ExtsDynamicLongSlotAbsent,
   ipv6ExtsBracket, ipv6ExtsBracketAbsent, ipv6ExtsBracketLong, ipv6ExtsBracketDynamic, ipv6ExtsBracketIter, ipv6ExtsBracketInAbsent, ipv6ExtsBracketInLong, ipv6ExtsSliceLong, ipv6ExtsBracketSliceLong, gtpExtsBracket, gtpExtsBracketAbsent, gtpExtsBracketNone, gtpExtsBracketMixed, gtpExtsBracketMixedMiss, ipv6ExtsIndexAbsent,
   ipv6NextHeaderWhere, ipv6NextHeaderBracket, ipv6FiveExts, ipv6SixExts, ipv6AnyExts, ipv6AllExts,

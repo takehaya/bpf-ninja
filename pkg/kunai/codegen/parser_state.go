@@ -274,6 +274,8 @@ func (c *pmCtx) emitState(stateIdx int) (asm.Instructions, asm.Instructions, err
 		if err != nil {
 			return nil, nil, err
 		}
+		// The region counts as well formed until the walk faults.
+		dynInit = append(dynInit, c.emitValidFlag(1)...)
 		optional := missIsNotReject(c.dispatchFail)
 		if optional {
 			insns = append(insns, dynInit...)

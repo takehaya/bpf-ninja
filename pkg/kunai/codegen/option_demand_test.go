@@ -267,7 +267,7 @@ func TestDynamicAuxSlotCumulativeOffset(t *testing.T) {
 		priorLayer:   {tsLayout, sackPermLayout},
 		currentLayer: {mssLayout},
 	}
-	plan, err := planStack([]*ir.LayerInstance{priorLayer, nil, currentLayer}, demand, nil)
+	plan, err := planStack([]*ir.LayerInstance{priorLayer, nil, currentLayer}, demand, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

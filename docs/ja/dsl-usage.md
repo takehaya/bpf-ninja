@@ -371,6 +371,7 @@ Bool には自然順序がないので `<`、`>` 等は禁止です。`==` (iff)
 where true                              # 常に match (where 省略と等価)
 where false                             # 常に no-match
 where gtp.opt.exists                    # GTP-U の opt block が抽出されたか
+where not tcp.options.valid             # TCP option 領域が壊れている packet だけ (D-029)
 where tcp.dport                         # tcp.dport != 0 の縮約 (Int<N> -> Bool decay)
 where (tcp.dport == 443) == gtp.opt.exists   # iff (両方真 or 両方偽)
 where (tcp.dport == 443) != gtp.opt.exists   # xor (片方だけ真)

@@ -257,6 +257,17 @@ def resolveExists (c : Ctx) (f : FieldPath) : Except Stop (String × String) := 
   if rest.length == 2 && o.kindByte.isNone then throw (.illTyped s!"{proto}.{opt} is not a TLV option")
   pure (head, opt)
 
+/-- `head.options.valid` → head. The layer must declare an option region
+(a header length field and a parser walk: ipv4, tcp, geneve). -/
+def resolveValid (c : Ctx) (f : FieldPath) : Except Stop String := do
+  let [(head, none), (seg, none)] := f.segs | throw (.illTyped s!"unsupported: {f.text}.valid")
+  let proto ← staticProto c head
+  let some spec := c.V.proto? proto | throw (.illTyped s!"unknown protocol {proto}")
+  if spec.lenRule.isNone || spec.machine.isNone then
+    throw (.illTyped s!"{proto} declares no option region; {f.text}.valid needs one")
+  if seg != spec.optionSegment then throw (.illTyped s!"unsupported: {f.text}.valid")
+  pure head
+
 /-- Entries of a stack on an instance: pushed entries from the parser, or an
 owner-bound stack laid out after its owner option's header, whose count
 comes from the owner's length byte. -/
@@ -395,7 +406,7 @@ def Where.paths : Where → List FieldPath
   | .not w | .any w | .all w => w.paths
   | .arith l _ r => arithPaths l ++ arithPaths r
   | .litCmp f _ _ => [f]
-  | .fieldExists _ | .action _ | .boolLit _ => []
+  | .fieldExists _ | .optionsValid _ | .action _ | .boolLit _ => []
 where
   arithPaths : Arith → List FieldPath
     | .const _ => []
@@ -463,6 +474,11 @@ def evalWhere (c : Ctx) (st : State) (env : IterEnv) : Where → Except Stop Boo
     let (head, opt) ← resolveExists c f
     let some inst ← resolveRef c st head | pure false
     pure (latestView inst.aux opt).isSome
+  | .optionsValid f => do
+    -- an absent layer has no options to vouch for (D-003)
+    let head ← resolveValid c f
+    let some inst ← resolveRef c st head | pure false
+    pure inst.optsValid
   | .boolEq l op r => do
     let a ← evalWhere c st env l
     let b ← evalWhere c st env r

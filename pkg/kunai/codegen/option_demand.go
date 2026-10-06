@@ -5,6 +5,7 @@ import (
 	"slices"
 	"sort"
 
+	"github.com/takehaya/bpf-ninja/pkg/kunai/ast"
 	"github.com/takehaya/bpf-ninja/pkg/kunai/ir"
 	"github.com/takehaya/bpf-ninja/pkg/kunai/vocab"
 )
@@ -70,6 +71,17 @@ func (qo queriedOptions) dropWhereReads() {
 	for pos := range qo.whereOnlyGroups {
 		delete(qo.plan.matched, pos)
 	}
+}
+
+// validSlot is the slot holding whether `layer`'s option region parsed
+// (1) or was malformed (0); ok is false when no `.options.valid` atom
+// reads it.
+func (qo queriedOptions) validSlot(layer *ir.LayerInstance) (int16, bool) {
+	if qo.plan == nil {
+		return 0, false
+	}
+	slot, ok := qo.plan.valid[layer]
+	return slot, ok
 }
 
 // readsAltMember reports whether any matched-member slot is planned,
@@ -149,7 +161,28 @@ func collectQueriedOptions(p *ir.Program) (queriedOptions, error) {
 			qo.whereOnlyGroups[pos] = true
 		}
 	}
-	plan, err := planStack(p.Layers, qo.demand, readGroups)
+	// `<layer>.options.valid` atoms: the walk must run for those layers
+	// and record its outcome.
+	validRead := map[*ir.LayerInstance]bool{}
+	var findValid func(c *ir.Condition)
+	findValid = func(c *ir.Condition) {
+		if c == nil {
+			return
+		}
+		if c.Kind == ast.WAtomBoolValid && c.BoolField != nil {
+			validRead[c.BoolField.Layer] = true
+		}
+		for _, sub := range []*ir.Condition{c.Left, c.Right, c.Inner, c.BoolL, c.BoolR} {
+			findValid(sub)
+		}
+	}
+	findValid(p.Where)
+	for _, cap := range p.Captures {
+		if cap != nil {
+			findValid(cap.Where)
+		}
+	}
+	plan, err := planStack(p.Layers, qo.demand, readGroups, validRead)
 	if err != nil {
 		return queriedOptions{}, err
 	}

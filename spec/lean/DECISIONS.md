@@ -241,7 +241,7 @@ Entries are never deleted; a rejected candidate stays in the log.
 - 論点: `eth/ipv4/tcp` に壊れた option (kind 不明、長さ 0、領域末尾をまたぐ) を持つパケット。
 - 当初の決定 (2026-10-01): 仕様では parser machine は常に走り、⊥ なら reject。Go は option を参照しない filter では walk を省く (demand-driven) ので accept し、意図的な逸脱として mismatch のまま維持していた。
 - 改訂 (2026-10-05、ユーザー決定): Go の demand-driven な扱いをそのまま仕様にすると、`where tcp.dport == 80 or tcp.options.MSS.exists` が左辺 true でも reject になる (option を「書いたかどうか」で verdict が変わる) ので採らない。代わりに、宣言された option 領域 (`lenRule` のある layer: ipv4 の IHL、tcp の data_offset、geneve の opt_len) の中で walk が ⊥ になったら、その layer は option を 1 つも持たないものとし、chain は宣言長の先へ進む。option を読む atom は D-003 / D-027 の不在と同じく false (`not (…)` は true、`any` は false、`all` は true)。途中まで見えた option も含めて全部を捨てる。宣言長そのものが不正な場合と、領域が packet に収まらない場合は従来どおり reject。
-- 性質: verdict は atom が読むものだけで決まり局所的。`or` / `and` の交換則などの law はそのまま。壊れた option を弾く手段は DSL から無くなる (必要なら `tcp.options.valid` のような明示的な atom を後で足す)。
+- 性質: verdict は atom が読むものだけで決まり局所的。`or` / `and` の交換則などの law はそのまま。壊れた option を弾く手段として `<layer>.options.valid` (Bool) を足した (2026-10-06、`Where.optionsValid`、`Inst.optsValid`): 宣言された option 領域を持つ layer にだけ書け (それ以外は illTyped)、layer が無ければ false。Go はこの atom があると、その layer の option を参照していなくても walk を走らせ、結果を slot に残す (vectors `tcp-opts-valid*`, `ipv4-opts-valid-malformed`, `typ-opts-valid-no-region`)。
 - 反映先: `Eval/Layer.lean` `extractBody`。Go: `parser_loop.go` `emitMultiStateSelfLoop` (callback の reject を `_malformed_` landing へ: R4 を walk 入口に戻し、option slot を不在に、bulk advance で宣言長だけ進む)、`hasDeclaredOptionRegion`。srv6 の segment walk は宣言長を持たないので対象外 (従来どおり reject)。F10 pin 257→283。vectors `tcp-opt-malformed-*`, `ipv4-opt-malformed*`。mismatch は 0 になった。Go と仕様で option 領域を何回 dispatch するかがずれていた件 (D-026 追記) もあわせて直した。
 
 ## D-030: option の「視認」と重複

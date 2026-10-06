@@ -113,7 +113,7 @@ or-expr        ::= and-expr (('or' | '||') and-expr)*
 and-expr       ::= not-expr (('and' | '&&') not-expr)*
 not-expr       ::= ('not' | '!') not-expr | atom
 atom           ::= '(' or-expr ')'
-                 | bool-atom                                  (* bare Bool: tcp.syn / gtp.opt.exists / true *)
+                 | bool-atom                                  (* bare Bool: tcp.syn / gtp.opt.exists / tcp.options.valid / true *)
                  | action-atom
                  | quant-atom
                  | cmp-expr                                   (* literal allowed on either side *)
@@ -164,6 +164,7 @@ field-ref の shape、つまり where 節で使えるフィールドアクセス
 | `@label.field` | `outer.src` | 同 protocol が複数あるときラベルで識別 |
 | `proto.aux.field` | `gtp.opt.next_ext` | 単発 aux header の field (auto gating) |
 | `proto.aux.exists` | `gtp.opt.exists` | aux が抽出されたかの bool。`where gtp.opt.exists` のように bare bool atom として書ける |
+| `proto.options.valid` | `tcp.options.valid` | 宣言された option 領域 (ipv4 の IHL、tcp の data_offset、geneve の opt_len) が壊れずに読めたかの bool。壊れていると packet は reject されず option が無い扱いになる (D-029) ので、壊れた packet を弾くにはこれを使う。layer が無ければ false |
 | `proto.stack[N].field` | `srv6.segments[0].addr` | aux header stack の N 番目 (静的 index) |
 | `proto.stack[proto.f].field` | `srv6.segments[srv6.last_entry].addr` | 動的 index (parent header field 由来) |
 | `proto.options.NAME.field` | `tcp.options.MSS.value` | TCP/IPv4 option lookup (`<NAME>` は declared option) |

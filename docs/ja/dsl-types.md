@@ -84,7 +84,7 @@ EBNF は `dsl-grammar.md` の表記をそのまま流用します。
 | `Int<N>` | 整数値全般 (フィールド値、リテラル narrow 後、算術結果) | vocab の `bit<N>` field 宣言 |
 | `CIDR4` | IPv4 subnet (range として使用) | リテラル `<addr>/<prefix>` (AF=4) |
 | `CIDR6` | IPv6 subnet | 同 (AF=6) |
-| `Bool` | 真偽値 | cmp 結果 / `<aux>.exists` / quantifier 結果 / Bool literal |
+| `Bool` | 真偽値 | cmp 結果 / `<aux>.exists` / `<layer>.options.valid` / quantifier 結果 / Bool literal |
 | `Action` | XDP action 等の symbolic 値 | `XDP_DROP` 等の literal |
 
 ### 3.2 IPv4 / IPv6 / MAC は型ではなく shaped Int<N>
@@ -748,6 +748,7 @@ f  ::= ident                                               primary field
      | ident[f].ident                                      aux stack dynamic index (parent field)
      | ident.options.IDENT.ident                           option lookup
      | ident.exists                                        aux extract bool
+     | ident.options.valid                                 option region parsed (D-029)
 
 v  ::= int_lit(n)                                          n ∈ [−2⁶³, 2⁶⁴)
      | range_lit(lo, hi)                                   N..M, predicate-only (codegen staged)
@@ -1322,7 +1323,7 @@ bundled の `.p4` は §14.2 の規則に無い構文を使います。`spec/lea
 
 where 側: 抽出されなかった option / 範囲外の stack index を含む atom は false (D-027, D-031)。`any`/`all` は抽出した要素数 (owner-bound stack は owner の length byte から) を範囲とする。
 
-壊れた option 領域 (D-029): kind 不明、長さ 0、領域の末尾をまたぐ option などで walk が失敗しても、packet は reject されません。その layer は option を持たないものとして扱われ、option を読む atom は抽出されなかった option と同じく false になります (`not (tcp.options.MSS.value == 1460)` は true)。途中までに見えた option も含めて全部が無いことになります。verdict はその atom が読むものだけで決まり、filter の他の場所で option を参照しているかどうかには依存しません。Go は option を参照しない filter では walk 自体を省き (宣言長だけ進む)、参照する filter では walk が失敗したとき option の slot を不在に戻して宣言長だけ進みます。
+壊れた option 領域 (D-029): kind 不明、長さ 0、領域の末尾をまたぐ option などで walk が失敗しても、packet は reject されません。その layer は option を持たないものとして扱われ、option を読む atom は抽出されなかった option と同じく false になります (`not (tcp.options.MSS.value == 1460)` は true)。途中までに見えた option も含めて全部が無いことになります。verdict はその atom が読むものだけで決まり、filter の他の場所で option を参照しているかどうかには依存しません。Go は option を参照しない filter では walk 自体を省き (宣言長だけ進む)、参照する filter では walk が失敗したとき option の slot を不在に戻して宣言長だけ進みます。壊れた領域そのものは `<layer>.options.valid` (Bool) で読めます: 宣言された option 領域を持つ layer (ipv4 / tcp / geneve) だけに書け、それ以外は型エラー。layer が無ければ false です。`where not tcp.options.valid` で壊れた packet だけを、`where tcp.options.valid and …` で壊れた packet を除いて選べます。この atom を書くと、その layer は option を参照しなくても walk が走ります。
 
 ## 15. 実装との対応 (Soundness sketch)
 

@@ -287,6 +287,8 @@ func encWhere(w *ast.WhereExpr) obj {
 		return obj{"kind": "bool", "value": w.BoolLitValue}
 	case ast.WAtomBoolExists:
 		return obj{"kind": "exists", "field": encField(w.BoolField)}
+	case ast.WAtomBoolValid:
+		return obj{"kind": "valid", "field": encField(w.BoolField)}
 	case ast.WAtomBoolEq:
 		return obj{"kind": "boolEq", "left": encWhere(w.BoolL), "op": cmpOpText(w.BoolEqOp), "right": encWhere(w.BoolR)}
 	}

@@ -37,13 +37,17 @@ type stackPlan struct {
 	// matched holds, per alternation group (by chain position), the slot
 	// the group records the index of its matched member in.
 	matched map[int]int16
+	// valid holds, per layer a `.options.valid` atom reads, the slot its
+	// parser walk sets to 1 when the option region parsed and 0 when it
+	// was malformed.
+	valid map[*ir.LayerInstance]int16
 }
 
 // planStack lays out `layers`, their demand and the alternation groups
 // in `readGroups` (chain positions of the groups whose matched member is
 // read); it fails when the plan would run past the BPF stack.
-func planStack(layers []*ir.LayerInstance, demand map[*ir.LayerInstance][]*vocab.AuxLayout, readGroups map[int]bool) (*stackPlan, error) {
-	plan := &stackPlan{entry: map[int]int16{}, aux: map[*ir.LayerInstance]int16{}, matched: map[int]int16{}}
+func planStack(layers []*ir.LayerInstance, demand map[*ir.LayerInstance][]*vocab.AuxLayout, readGroups map[int]bool, validRead map[*ir.LayerInstance]bool) (*stackPlan, error) {
+	plan := &stackPlan{entry: map[int]int16{}, aux: map[*ir.LayerInstance]int16{}, matched: map[int]int16{}, valid: map[*ir.LayerInstance]int16{}}
 	cursor := int(stackPlanTop)
 	// take hands out `slots` consecutive slots for `l`, naming it when the
 	// plan runs past the BPF stack.
@@ -92,6 +96,16 @@ func planStack(layers []*ir.LayerInstance, demand map[*ir.LayerInstance][]*vocab
 			return nil, err
 		}
 		plan.matched[l.LayerPos] = slot
+	}
+	for _, l := range layers {
+		if l == nil || !validRead[l] {
+			continue
+		}
+		slot, err := take(l, 1, "the option-validity slot")
+		if err != nil {
+			return nil, err
+		}
+		plan.valid[l] = slot
 	}
 	return plan, nil
 }

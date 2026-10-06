@@ -85,6 +85,7 @@ def Where.toJson : Where → Json
   | .all w => Json.mkObj [("kind", "all"), ("inner", w.toJson)]
   | .boolLit b => Json.mkObj [("kind", "bool"), ("value", b)]
   | .fieldExists f => Json.mkObj [("kind", "exists"), ("field", f.toJson)]
+  | .optionsValid f => Json.mkObj [("kind", "valid"), ("field", f.toJson)]
   | .boolEq l op r => Json.mkObj [("kind", "boolEq"), ("left", l.toJson), ("op", op.toJson), ("right", r.toJson)]
 
 def CaptureSpec.toJson : CaptureSpec → Json

@@ -312,6 +312,33 @@ func (p *ProtocolSpec) pushedAuxStackName() (string, bool) {
 //
 // Returns (nil, 0, false) for any protocol without a pushed aux stack or
 // without a derived stack count: ipv6 / gtp ext stacks self-terminate on
+// HasDeclaredOptionRegion reports whether the protocol's parser walks an
+// option region whose length the header declares: a multi-state loop
+// keyed on a counter (ipv4 IHL, tcp data_offset, geneve opt_len). An
+// aux-stack walk (srv6 segments) is not one. Such a region can be
+// malformed without the packet being rejected (spec D-029), which
+// `<layer>.options.valid` reports.
+func (p *ProtocolSpec) HasDeclaredOptionRegion() bool {
+	if p == nil || p.ParseStateMachine == nil {
+		return false
+	}
+	if _, _, ok := p.AuxWalkSegmentTail(); ok {
+		return false
+	}
+	states := p.ParseStateMachine.States
+	for i, st := range states {
+		if !IsMultiStateLoopEntry(states, i) || st.Trans.Select == nil {
+			continue
+		}
+		for _, k := range st.Trans.Select.Keys {
+			if k.Kind == SelectKeyCounterIsZero {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // next_header and carry no count, so they keep their own tail handling.
 func (p *ProtocolSpec) AuxWalkSegmentTail() (*VariableTailSpec, int, bool) {
 	stack, ok := p.pushedAuxStackName()

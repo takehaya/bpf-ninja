@@ -84,6 +84,9 @@ func (c *pmCtx) canFallbackToBulkAdvance(stateIdx int) bool {
 	if !hasCounter {
 		return false
 	}
+	if _, ok := c.queried.validSlot(c.layer); ok {
+		return false // `.options.valid` needs the walk's outcome
+	}
 	return len(c.queried.optionDemand(c.layer)) == 0
 }
 
@@ -272,6 +275,7 @@ func (c *pmCtx) emitMultiStateSelfLoop(state *vocab.ParseState, stateIdx int) (a
 			asm.JGT.Imm(offsetBase, ScratchBufSize, dslReject),
 		}
 		malformed = append(malformed, reset...)
+		malformed = append(malformed, c.emitValidFlag(0)...)
 		malformed = append(malformed, bulk...)
 	}
 
@@ -328,6 +332,16 @@ func (c *pmCtx) emitMultiStateSelfLoop(state *vocab.ParseState, stateIdx int) (a
 	insns = append(insns, asm.Ja.Label(c.doneLabel))
 	insns = append(insns, malformed...)
 	return insns, callback, nil
+}
+
+// emitValidFlag stores v into the layer's option-validity slot, when a
+// `.options.valid` atom reads it. R3 is scratch.
+func (c *pmCtx) emitValidFlag(v int32) asm.Instructions {
+	slot, ok := c.queried.validSlot(c.layer)
+	if !ok {
+		return nil
+	}
+	return asm.Instructions{asm.Mov.Imm(asm.R3, v), asm.StoreMem(asm.R10, slot, asm.R3, asm.DWord)}
 }
 
 // hasDeclaredOptionRegion reports whether the walk entered at stateIdx
