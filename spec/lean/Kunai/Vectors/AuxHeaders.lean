@@ -115,6 +115,14 @@ vector tcpOptsValidAbsent := {
 vector ipv4OptsInvalid := {
   id := "ipv4-opts-valid-malformed", ast := { layers := chain3, cond := some (.not (.optionsValid ⟨[("ipv4", none), ("options", none)]⟩)) },
   packet := ipv4BadOptPkt, expected := .accept [] }
+vector tcpOptsValidAltMember := {
+  id := "tcp-opts-valid-alt-member",
+  ast := { layers := [P "eth", P "ipv4", .alt [{ name := "tcp" }, { name := "udp" }]], cond := some (.not tcpValid) },
+  packet := malformedOpts, expected := .accept [], note := "a member of an alternation has its own flag" }
+vector tcpOptsValidAltOther := {
+  id := "tcp-opts-valid-alt-other-member",
+  ast := { layers := [P "eth", P "ipv4", .alt [{ name := "tcp" }, { name := "udp" }]], cond := some tcpValid },
+  packet := eth 0x0800 ++ ipv4 17 ++ udp 1234 53 ++ payload 5, expected := .reject, note := "udp matched: tcp is absent" }
 vector typOptsValidNoRegion := {
   id := "typ-opts-valid-no-region", ast := { layers := [P "eth", P "ipv4", P "udp"], cond := some (.optionsValid ⟨[("udp", none), ("options", none)]⟩) },
   expected := .illTyped "udp declares no option region; udp.options.valid needs one" }
@@ -440,7 +448,7 @@ def auxVectors : List Vector := [
   tcpOptCross, tcpEol, tcpMssDup, tcpMssBadLen, tcpMssExists, tcpMssExistsNot, tcpSackBlock, tcpSackAny, tcpSackAll,
   tcpSackAbsentAny, tcpMalformedNoQuery, tcpMalformedNotQuery, tcpMalformedOrTrue, tcpMalformedExists,
   tcpMalformedAfterMss, tcpMalformedChainOn, ipv4MalformedOpts, ipv4MalformedOptsQueried, ipv4OptDepthLastFault, ipv4OptDepthLastSighting,
-  tcpOptsValid, tcpOptsValidNone, tcpOptsInvalid, tcpOptsInvalidNot, tcpOptsValidWithMss, tcpOptsValidAbsent, ipv4OptsInvalid, typOptsValidNoRegion,
+  tcpOptsValid, tcpOptsValidNone, tcpOptsInvalid, tcpOptsInvalidNot, tcpOptsValidWithMss, tcpOptsValidAbsent, tcpOptsValidAltMember, tcpOptsValidAltOther, ipv4OptsInvalid, typOptsValidNoRegion,
   ipv6Hbh, ipv6TwoExts, ipv6ExtLong, ipv6ExtTooLong, ipv6ExtsIndex, ipv6ExtsIndex1, ipv6ExtsIndexAfterLong, ipv6ExtsAnyAfterLong, ipv6ExtsDynamicLong, ipv6ExtsDynamicLongSecond, ipv6ExtsDynamicLongAbsent, ipv6ExtsDynamicLongLast, ipv6ExtsDynamicLongLastMiss, ipv6ExtsDynamicLongBeyond, ipv6ExtsDynamicLongSlot, ipv6ExtsDynamicLongSlotAbsent,
   ipv6ExtsBracket, ipv6ExtsBracketAbsent, ipv6ExtsBracketLong, ipv6ExtsBracketDynamic, ipv6ExtsBracketIter, ipv6ExtsBracketInAbsent, ipv6ExtsBracketInLong, ipv6ExtsSliceLong, ipv6ExtsBracketSliceLong, gtpExtsBracket, gtpExtsBracketAbsent, gtpExtsBracketNone, gtpExtsBracketMixed, gtpExtsBracketMixedMiss, ipv6ExtsIndexAbsent,
   ipv6NextHeaderWhere, ipv6NextHeaderBracket, ipv6FiveExts, ipv6SixExts, ipv6AnyExts, ipv6AllExts,

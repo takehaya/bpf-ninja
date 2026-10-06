@@ -98,14 +98,21 @@ func planStack(layers []*ir.LayerInstance, demand map[*ir.LayerInstance][]*vocab
 		plan.matched[l.LayerPos] = slot
 	}
 	for _, l := range layers {
-		if l == nil || !validRead[l] {
+		if l == nil {
 			continue
 		}
-		slot, err := take(l, 1, "the option-validity slot")
-		if err != nil {
-			return nil, err
+		// Alternation members run their own walk, so each read member
+		// gets its own flag; the where guard checks which one matched.
+		for _, m := range append([]*ir.LayerInstance{l}, l.Alternation...) {
+			if m == nil || !validRead[m] {
+				continue
+			}
+			slot, err := take(m, 1, "the option-validity slot")
+			if err != nil {
+				return nil, err
+			}
+			plan.valid[m] = slot
 		}
-		plan.valid[l] = slot
 	}
 	return plan, nil
 }
