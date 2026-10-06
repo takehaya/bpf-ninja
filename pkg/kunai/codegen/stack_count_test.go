@@ -84,10 +84,11 @@ func TestPushCountedStackGuards(t *testing.T) {
 
 	// gtp.exts: the first push happens in a non-entry state (parse_opt →
 	// parse_ext), so the inline increment sits past the entry state. Its
-	// push bound (1 + GTP_MAX_DEPTH 8) exceeds the capacity 8.
+	// push bound (1 + GTP_MAX_DEPTH 8) is the capacity 9: the loader
+	// requires a stack outside a declared region to hold every push.
 	gtp := compileBundled(t, "eth/ipv4/udp/gtp/ipv4/tcp where all(gtp.exts.next_ext != 1)")
-	if got := guards(gtp.Main); got != 8 {
-		t.Errorf("gtp all(): %d count guards, want 8", got)
+	if got := guards(gtp.Main); got != 9 {
+		t.Errorf("gtp all(): %d count guards, want 9", got)
 	}
 
 	// ipv6 ext entries are variable-length: a static index walks the

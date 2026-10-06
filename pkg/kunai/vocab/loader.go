@@ -181,6 +181,9 @@ func loadFile(fsys fs.FS, p string, knownProtos map[string]bool) (*ProtocolSpec,
 	if err := validateOptionRegion(spec); err != nil {
 		return nil, err
 	}
+	if err := validateStackCapacity(spec); err != nil {
+		return nil, err
+	}
 	if err := validateDeclareOnlyStacks(spec); err != nil {
 		return nil, err
 	}

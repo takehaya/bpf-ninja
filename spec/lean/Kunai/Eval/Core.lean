@@ -31,6 +31,9 @@ structure Inst where
   /-- The parser walked the declared option region without fault (D-029);
   `false` when the region was malformed and the layer has no options. -/
   optsValid : Bool := true
+  /-- Stacks that filled up inside the declared region: the packet holds
+  more entries than the stack keeps, so `all` over them is false. -/
+  truncated : List String := []
   deriving Repr, BEq, DecidableEq
 
 /-- The packet as this layer's parser left it: write-backs applied. -/

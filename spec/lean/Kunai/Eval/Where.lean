@@ -263,7 +263,7 @@ def resolveValid (c : Ctx) (f : FieldPath) : Except Stop String := do
   let [(head, none), (seg, none)] := f.segs | throw (.illTyped s!"unsupported: {f.text}.valid")
   let proto ← staticProto c head
   let some spec := c.V.proto? proto | throw (.illTyped s!"unknown protocol {proto}")
-  if spec.regionLoop.isNone then
+  if spec.regionLoop.isNone || !spec.regionSkips then
     throw (.illTyped s!"{proto} has no option region whose faults are skipped; {f.text}.valid needs one (@kunai_option_region[on_fault=skip])")
   if seg != spec.optionSegment then throw (.illTyped s!"unsupported: {f.text}.valid")
   pure head
@@ -427,6 +427,12 @@ def quantStack (c : Ctx) (bound : List (String × String)) (w : Where) : Except 
   | [] => throw (.illTyped "any/all needs exactly one index-less stack reference")
   | _ => throw (.illTyped "any/all iterates a single aux header stack")
 
+/-- The stack on the instance bound to `head` filled up inside the
+declared region and dropped entries. -/
+def stackTruncated (c : Ctx) (st : State) (head stack : String) : Except Stop Bool := do
+  let some inst ← resolveRef c st head | pure false
+  pure (inst.truncated.contains stack)
+
 /-- Number of entries of `stack` on the instance bound to `head`; `none`
 when the layer is absent (then the quantifier is false, like any other atom
 on an absent layer, D-003). -/
@@ -467,6 +473,8 @@ def evalWhere (c : Ctx) (st : State) (env : IterEnv) : Where → Except Stop Boo
     -- E-W-All over the extracted entries; an absent layer makes it false (D-003), not vacuously true
     let (head, stack) ← quantStack c (env.map (·.1)) w
     let some n ← stackCount c st head stack | pure false
+    -- entries past the stack's capacity were not kept: all of them cannot be confirmed
+    if ← stackTruncated c st head stack then return false
     (List.range n).allM fun i => evalWhere c st (((head, stack), i) :: env) w
   | .boolLit b => pure b
   | .fieldExists f => do

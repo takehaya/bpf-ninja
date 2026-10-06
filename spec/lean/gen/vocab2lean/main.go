@@ -90,8 +90,11 @@ func protoLean(s *vocab.ProtocolSpec) string {
 	if s.ParseStateMachine != nil {
 		parts = append(parts, "machine := some "+machineLean(s))
 	}
-	if loop, ok := s.SkipsRegionFault(); ok {
+	if loop, ok := s.RegionLoopState(); ok {
 		parts = append(parts, fmt.Sprintf("regionLoop := some %d", loop))
+		if _, skip := s.SkipsRegionFault(); skip {
+			parts = append(parts, "regionSkips := true")
+		}
 	}
 	if s.OptionSegment != "" && s.OptionSegment != "options" {
 		parts = append(parts, "optionSegment := "+str(s.OptionSegment))
@@ -115,7 +118,15 @@ func declaredLength(s *vocab.ProtocolSpec) *vocab.HeaderLength {
 	if s.ParseStateMachine == nil {
 		return s.PrimaryAdvanceSkip()
 	}
-	return s.RegionLengthBytes()
+	if hl := s.RegionLengthBytes(); hl != nil {
+		return hl
+	}
+	// An element-counted region (srv6 segments) ends at count × element
+	// size past the primary header, the same end codegen re-anchors to.
+	if tail, _, ok := s.AuxWalkSegmentTail(); ok {
+		return &vocab.HeaderLength{LenByteOff: tail.LenFieldByteOff, LenMask: 0xff, LenShift: tail.LenShift, Scale: tail.Scale, Addend: tail.Base}
+	}
+	return nil
 }
 
 // requires renders the protocol's self-validation constraint

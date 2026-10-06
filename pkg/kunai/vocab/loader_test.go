@@ -1309,7 +1309,7 @@ func TestParseStateMachineAllowsSelfLoop(t *testing.T) {
 		"vocab/foo.p4": &fstest.MapFile{Data: []byte(`
 header foo_h     { bit<8> next; }
 header foo_ext_h { bit<8> next_ext; bit<24> _pad; }
-parser F(packet_in pkt, out foo_h h, out foo_ext_h[8] exts) {
+parser F(packet_in pkt, out foo_h h, out foo_ext_h[9] exts) {
   state start { pkt.extract(h); transition parse_ext; }
   state parse_ext {
     pkt.extract(exts.next);
@@ -3001,5 +3001,30 @@ parser F(packet_in pkt, out foo_h h) {
 	hl := specs["foo"].RegionLengthBytes()
 	if hl == nil || hl.LenByteOff != 1 {
 		t.Fatalf("RegionLengthBytes = %+v, want the seed of pc (field b at byte 1)", hl)
+	}
+}
+
+// TestStackCapacityHoldsEveryPush: outside a declared region a stack must
+// hold every entry the walk can push (1 + MAX_DEPTH for a looping push),
+// since a push onto a full stack rejects (P-Extract-Stack-Full).
+func TestStackCapacityHoldsEveryPush(t *testing.T) {
+	const src = `
+header foo_h { bit<8> next; }
+header foo_ext_h { bit<8> len; bit<8> next_ext; }
+const bit<8> FOO_MAX_DEPTH = 8;
+parser F(packet_in pkt, out foo_h h, out foo_ext_h[CAP] exts) {
+  state start { pkt.extract(h); transition parse_ext; }
+  state parse_ext {
+    pkt.extract(exts.next);
+    transition select(exts.last.next_ext) { 0: accept; _: parse_ext; }
+  }
+}
+`
+	for cap, wantErr := range map[string]bool{"8": true, "9": false} {
+		fsys := fstest.MapFS{"vocab/foo.p4": &fstest.MapFile{Data: []byte(strings.Replace(src, "CAP", cap, 1))}}
+		_, err := Load(fsys, "vocab")
+		if gotErr := err != nil && strings.Contains(err.Error(), "can push 9 entries onto exts but it holds 8"); gotErr != wantErr {
+			t.Errorf("capacity %s: Load error = %v, want error %v", cap, err, wantErr)
+		}
 	}
 }

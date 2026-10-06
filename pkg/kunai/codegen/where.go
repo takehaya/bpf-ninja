@@ -345,13 +345,49 @@ func (c *whereCtx) genAll(w *ir.Condition, failLabel string) (asm.Instructions, 
 		return nil, fmt.Errorf("codegen: all() lacks a resolved iteration target")
 	}
 	return c.withQuantLayerGuard(w, failLabel, func() (asm.Instructions, error) {
-		if use, err := useBpfLoopAuxWalk(w); err != nil {
+		// A stack whose header-declared count exceeds its capacity kept
+		// only the first entries (spec D-029, truncated stacks): all()
+		// cannot confirm the rest, so it is false.
+		truncated, err := c.truncatedStackGuard(w, failLabel)
+		if err != nil {
 			return nil, err
-		} else if use {
-			return c.genQuantBpfLoop(w, failLabel, false)
 		}
-		return c.genQuantUnroll(w, "" /* no per-iter accept */, failLabel, false)
+		insns, err := c.genAllBody(w, failLabel)
+		if err != nil {
+			return nil, err
+		}
+		return append(truncated, insns...), nil
 	})
+}
+
+// truncatedStackGuard jumps to failLabel when the quantified stack's count
+// comes from a header field and exceeds the stack's capacity. Empty for
+// stacks counted any other way: a push count or an owner's length stops
+// at the capacity by construction.
+func (c *whereCtx) truncatedStackGuard(w *ir.Condition, failLabel string) (asm.Instructions, error) {
+	src, err := stackCountSource(w)
+	if err != nil || src == nil || src.Stack != "" || src.Owner != nil {
+		return nil, err
+	}
+	anchor, err := c.layerAnchorFor(src.Layer)
+	if err != nil {
+		return nil, err
+	}
+	insns := emitFieldLoad(anchor, src.ByteOff, asm.Byte)
+	return append(insns,
+		asm.Add.Imm(asm.R3, int32(src.Offset)),
+		asm.JGT.Imm(asm.R3, int32(w.QuantTarget.Capacity), failLabel),
+	), nil
+}
+
+// genAllBody is all() past the layer and truncation guards.
+func (c *whereCtx) genAllBody(w *ir.Condition, failLabel string) (asm.Instructions, error) {
+	if use, err := useBpfLoopAuxWalk(w); err != nil {
+		return nil, err
+	} else if use {
+		return c.genQuantBpfLoop(w, failLabel, false)
+	}
+	return c.genQuantUnroll(w, "" /* no per-iter accept */, failLabel, false)
 }
 
 // withQuantLayerGuard makes any()/all() over the stack of an absentable
@@ -524,58 +560,12 @@ func (c *whereCtx) genQuantUnroll(w *ir.Condition, acceptLabel, failLabel string
 	return insns, nil
 }
 
-// pushBound is the most entries a parser machine can push onto `stack`:
-// one per state that pushes onto it, plus MAX_DEPTH more for each such
-// state when the machine loops (a direct self-edge, or an indirect loop
-// through a sibling: every lowering caps its iterations at MAX_DEPTH,
-// parser_loop.go emitSelfLoop / emitMultiStateSelfLoop). A machine
-// without a backward transition pushes each site once.
+// pushBound is the most entries a parser machine can push onto `stack`
+// (vocab.ProtocolSpec.StackPushBound).
 func pushBound(spec *vocab.ProtocolSpec, stack string) int {
-	depth := spec.MaxDepth
-	if depth == 0 {
-		depth = defaultChainDepth
-	}
-	m := spec.ParseStateMachine
-	loops := false
-	for i, st := range m.States {
-		for _, t := range transitionTargets(st.Trans) {
-			if t >= 0 && t <= i {
-				loops = true
-			}
-		}
-	}
-	n := 0
-	for _, st := range m.States {
-		for _, ex := range st.Extracts {
-			if ex.IsStackPush && ex.OutParam == stack {
-				n++
-				if loops {
-					n += depth
-				}
-			}
-		}
-	}
-	return n
+	return spec.StackPushBound(stack)
 }
 
-// transitionTargets lists the state indices a transition can reach
-// (accept / reject are negative sentinels and listed as-is).
-func transitionTargets(t vocab.TransitionOp) []int {
-	switch t.Kind {
-	case vocab.TransDirect:
-		return []int{t.Target}
-	case vocab.TransSelect:
-		if t.Select == nil {
-			return nil
-		}
-		out := []int{t.Select.Default}
-		for _, cs := range t.Select.Cases {
-			out = append(out, cs.Target)
-		}
-		return out
-	}
-	return nil
-}
 
 // genQuantIterBody clones the inner condition with the iterator
 // FieldRef rebound to a static index for this iteration, then emits

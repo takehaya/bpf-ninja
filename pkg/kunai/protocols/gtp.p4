@@ -46,7 +46,7 @@ const bit<8> GTP_MAX_DEPTH = 8;
 parser GtpParser(packet_in pkt,
                    out gtp_h gtp,
                    out gtp_opt_h opt,
-                   out gtp_ext_h[8] exts) {
+                   out gtp_ext_h[9] exts) {
     state start {
         pkt.extract(gtp);
         transition select(gtp.e, gtp.s, gtp.pn) {

@@ -313,9 +313,10 @@ func (p *ProtocolSpec) pushedAuxStackName() (string, bool) {
 // The region reuses the five-tuple emitAuxWalkTailReanchor consumes:
 // region = count*ElemSize + Addend*ElemSize. The count byte is read whole
 // (LenShift 0, no shift); LenMask carries the maximum valid index
-// Capacity-1, which emitAuxWalkTailReanchor enforces as a JGT-reject (an
-// over-cap count is rejected, not wrapped) so the scaled offset stays
-// within a static bound.
+// Capacity-1, the largest index the stack keeps. The re-anchor does not
+// cap the count with it: an SRH with more segments than the stack holds is
+// valid, the stack keeps what fits (spec D-029, truncated stacks), and the
+// region still ends at count × ElemSize, bounded by the scratch window.
 //
 // Returns (nil, 0, false) for any protocol without a pushed aux stack or
 // without a derived stack count: ipv6 / gtp ext stacks self-terminate on
@@ -337,16 +338,9 @@ func (p *ProtocolSpec) AuxWalkSegmentTail() (*VariableTailSpec, int, bool) {
 	if bits%8 != 0 {
 		return nil, 0, false
 	}
-	// Bound the count byte to the exact maximum valid index Capacity-1.
-	// emitAuxWalkTailReanchor turns LenMask into a JGT-reject (not a
-	// bitwise AND), so an over-cap count is rejected outright rather than
-	// wrapped, and the region (count*ElemSize) keeps a static upper bound
-	// (Capacity*ElemSize) the verifier can prove. Using Capacity-1 directly,
-	// rather than rounding up to the next power-of-two mask, enforces the
-	// declared capacity precisely even when Capacity is not a power of two
-	// (a power-of-two mask would let counts in [Capacity, 2^k-1] slip past
-	// the bound check). A valid SRH carries last_entry < Capacity, so it
-	// passes; a malformed over-cap frame is rejected at the re-anchor.
+	// LenMask records the largest index the stack keeps (Capacity-1).
+	// The re-anchor reads the count byte whole and never masks it, which
+	// would wrap an over-capacity count into the middle of the list.
 	return &VariableTailSpec{
 		LenFieldByteOff: cnt.ByteOff,
 		LenMask:         st.Capacity - 1,
@@ -522,6 +516,117 @@ func (p *ProtocolSpec) RegionCounterTracksBytes(loopIdx int) bool {
 		}
 	}
 	return true
+}
+
+// TransitionTargets lists the state indices a transition can reach
+// (accept / reject are negative sentinels and listed as-is).
+func TransitionTargets(t TransitionOp) []int {
+	switch t.Kind {
+	case TransDirect:
+		return []int{t.Target}
+	case TransSelect:
+		if t.Select == nil {
+			return nil
+		}
+		out := []int{t.Select.Default}
+		for _, cs := range t.Select.Cases {
+			out = append(out, cs.Target)
+		}
+		return out
+	}
+	return nil
+}
+
+// DefaultMaxDepth is the iteration bound of a protocol with no
+// <SELF>_MAX_DEPTH (codegen's bpf_loop fallback, the spec's maxDepth
+// default).
+const DefaultMaxDepth = 8
+
+// StackPushBound is the most entries the parser machine can push onto
+// `stack`: one per state that pushes onto it, plus MAX_DEPTH more for each
+// such state when the machine loops (a direct self-edge, or an indirect
+// loop through a sibling: every lowering caps its iterations at
+// MAX_DEPTH). A machine without a backward transition pushes each site
+// once.
+func (p *ProtocolSpec) StackPushBound(stack string) int {
+	depth := p.MaxDepth
+	if depth == 0 {
+		depth = DefaultMaxDepth
+	}
+	m := p.ParseStateMachine
+	if m == nil {
+		return 0
+	}
+	loops := false
+	for i, st := range m.States {
+		for _, t := range TransitionTargets(st.Trans) {
+			if t >= 0 && t <= i {
+				loops = true
+			}
+		}
+	}
+	n := 0
+	for _, st := range m.States {
+		for _, ex := range st.Extracts {
+			if ex.IsStackPush && ex.OutParam == stack {
+				n++
+				if loops {
+					n += depth
+				}
+			}
+		}
+	}
+	return n
+}
+
+// truncatesInsideRegion reports whether `stack` is pushed by a state the
+// declared region's loop dispatches to and counted from a header field
+// (srv6 segments: AuxWalkSegmentTail), where a full stack is truncated
+// rather than rejected (spec D-029). Codegen can only tell a truncated
+// stack by comparing that count with the capacity, so a stack counted any
+// other way inside a region must still hold every push.
+func (p *ProtocolSpec) truncatesInsideRegion(stack string) bool {
+	if name, ok := p.pushedAuxStackName(); !ok || name != stack {
+		return false
+	}
+	if _, _, ok := p.AuxWalkSegmentTail(); !ok {
+		return false
+	}
+	loop, ok := p.RegionLoopState()
+	if !ok {
+		return false
+	}
+	states := p.ParseStateMachine.States
+	for _, t := range TransitionTargets(states[loop].Trans) {
+		if t < 0 || t >= len(states) {
+			continue
+		}
+		for _, ex := range states[t].Extracts {
+			if ex.IsStackPush && ex.OutParam == stack {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// validateStackCapacity: outside a declared region a push onto a full
+// stack rejects the packet (P-Extract-Stack-Full), which the generated
+// code only enforces by never reaching it. So a stack pushed outside a
+// region must hold every entry the walk can push (StackPushBound).
+func validateStackCapacity(p *ProtocolSpec) error {
+	if p.ParseStateMachine == nil {
+		return nil
+	}
+	for name, ref := range p.ParseStateMachine.StackRefs {
+		if ref == nil || p.truncatesInsideRegion(name) {
+			continue
+		}
+		if bound := p.StackPushBound(name); bound > ref.Capacity {
+			return fmt.Errorf("%s: the parser can push %d entries onto %s but it holds %d; declare it with at least %d entries or lower <SELF>_MAX_DEPTH", p.Source, bound, name, ref.Capacity, bound)
+		}
+	}
+	return nil
 }
 
 // validateOptionRegion checks that a region whose faults are skipped is
