@@ -140,6 +140,23 @@ func (r *resolver) resolveWhere(w *ast.WhereExpr) (*ir.Condition, error) {
 			ref.Field = nil
 		}
 		c.BoolField = ref
+	case ast.WAtomBoolValid:
+		// `<layer>.<option segment>.valid`: the layer's declared option
+		// region parsed without fault (spec D-029).
+		parts := w.BoolField.Parts
+		layer, err := r.lookupByQualifier(parts[0], w.Pos)
+		if err != nil {
+			return nil, err
+		}
+		if !layer.Spec.HasDeclaredOptionRegion() {
+			return nil, errorf(w.Pos, "%s declares no option region; %s.valid needs one", layer.Spec.Name, w.BoolField.String())
+		}
+		if parts[1] != layer.Spec.OptionSegment {
+			return nil, errorf(w.Pos, "unsupported: %s.valid (the option segment of %s is %q)", w.BoolField.String(), layer.Spec.Name, layer.Spec.OptionSegment)
+		}
+		// A reference with neither field nor aux: the absent-layer guard
+		// and the runtime-offset marking see the layer through it.
+		c.BoolField = &ir.FieldRef{Layer: layer}
 	case ast.WAtomBoolEq:
 		// Defense in depth: parser already blocks ordered cmp on Bool
 		// in maybeBoolEqTail, but a future parser refactor could let

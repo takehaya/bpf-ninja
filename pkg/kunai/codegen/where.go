@@ -136,6 +136,8 @@ func (c *whereCtx) gen(w *ir.Condition, failLabel string) (asm.Instructions, err
 		return c.genBoolLit(w, failLabel)
 	case ast.WAtomBoolExists:
 		return c.withLayerGuards(w, failLabel, c.genBoolExists)
+	case ast.WAtomBoolValid:
+		return c.withLayerGuards(w, failLabel, c.genBoolValid)
 	case ast.WAtomBoolEq:
 		return c.genBoolEq(w, failLabel)
 	}
@@ -178,6 +180,23 @@ func (c *whereCtx) genBoolExists(w *ir.Condition, failLabel string) (asm.Instruc
 		return nil, err
 	}
 	return emitAuxGating(w.BoolField.Aux.Gating, anchor, failLabel), nil
+}
+
+// genBoolValid handles `where <layer>.options.valid`: the flag the
+// layer's parser walk left in its validity slot (1 parsed, 0 malformed,
+// spec D-029). An absent layer is false through withLayerGuards.
+func (c *whereCtx) genBoolValid(w *ir.Condition, failLabel string) (asm.Instructions, error) {
+	if w == nil || w.BoolField == nil || w.BoolField.Layer == nil {
+		return nil, fmt.Errorf("codegen: options.valid atom lacks its layer")
+	}
+	slot, ok := c.queried.validSlot(w.BoolField.Layer)
+	if !ok {
+		return nil, fmt.Errorf("codegen: %s has no option-validity slot", w.BoolField.Layer.DisplayName())
+	}
+	return asm.Instructions{
+		asm.LoadMem(asm.R3, asm.R10, slot, asm.DWord),
+		asm.JEq.Imm(asm.R3, 0, failLabel),
+	}, nil
 }
 
 // genBoolEq handles `Bool == Bool` (iff) and `Bool != Bool` (xor)

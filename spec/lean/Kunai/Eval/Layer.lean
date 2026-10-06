@@ -80,7 +80,7 @@ def evalPred (c : Ctx) (spec : ProtoSpec) (inst : Inst) : Predicate → Except S
 declared length, and aux-extract give the new instance. Bracket predicates
 play no part in it. -/
 def extractBody (c : Ctx) (st : State) (name : String) (spec : ProtoSpec) :
-    Except LayerFail (Nat × List AuxView × List (Nat × Nat)) := do
+    Except LayerFail (Nat × List AuxView × List (Nat × Nat) × Bool) := do
   match dispatch c st name with
   | .miss => throw .dispMiss
   | .illTyped r => throw (.illTyped r)
@@ -120,20 +120,19 @@ def extractBody (c : Ctx) (st : State) (name : String) (spec : ProtoSpec) :
   -- how long its options are (`lenRule`) and that region is in the packet,
   -- so a walk that fails there leaves the layer with no options, as if
   -- the region held none, and the chain goes on past the region.
-  let (len, aux, patches) ← match spec.machine with
-    | none => pure (len, [], [])
+  match spec.machine with
+    | none => pure (len, [], [], true)
     | some m =>
       match runMachine c.P spec m st.cursor with
-      | .ok ψ => pure (max len (ψ.cursor - st.cursor), ψ.views, ψ.patches)
-      | .error .reject => if spec.lenRule.isSome then pure (len, [], []) else throw .pred
+      | .ok ψ => pure (max len (ψ.cursor - st.cursor), ψ.views, ψ.patches, true)
+      | .error .reject => if spec.lenRule.isSome then pure (len, [], [], false) else throw .pred
       | .error (.illTyped r) => throw (.illTyped r)
-  pure (len, aux, patches)
 
 /-- The instance a layer named `name` extracts at the cursor: its length,
 aux views and write-backs come from `extractBody`. -/
 def extractInst (c : Ctx) (st : State) (name : String) (spec : ProtoSpec) : Except LayerFail Inst := do
-  let (len, aux, patches) ← extractBody c st name spec
-  pure { proto := name, off := st.cursor, len, aux, patches }
+  let (len, aux, patches, optsValid) ← extractBody c st name spec
+  pure { proto := name, off := st.cursor, len, aux, patches, optsValid }
 
 /-- [E-Layer-Proto-1-Fail-Pred]: every bracket predicate holds on the new
 instance. A field past the packet end is a bounds failure. -/

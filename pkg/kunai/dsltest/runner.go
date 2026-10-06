@@ -115,6 +115,21 @@ func NewWithVocab(t *testing.T, dslExpr string, v map[string]*vocab.ProtocolSpec
 // CAP_SYS_ADMIN).
 func NewFromOutput(t *testing.T, dslExpr string, out codegen.Output, action int32) *Runner {
 	t.Helper()
+	return newFromOutput(t, dslExpr, out, action, nil)
+}
+
+// NewFromOutputStackFilled is NewFromOutput with kunai's whole stack
+// region (KunaiStackTop down to the 512-byte bottom) filled with `fill`
+// before the filter runs. A filter that reads a slot it never wrote then
+// sees that value instead of whatever the wrapper left there; running a
+// vector under two different fills catches such a read.
+func NewFromOutputStackFilled(t *testing.T, dslExpr string, out codegen.Output, action int32, fill int32) *Runner {
+	t.Helper()
+	return newFromOutput(t, dslExpr, out, action, &fill)
+}
+
+func newFromOutput(t *testing.T, dslExpr string, out codegen.Output, action int32, fill *int32) *Runner {
+	t.Helper()
 	skipIfNotRoot(t)
 
 	scratch, err := ebpf.NewMap(&ebpf.MapSpec{
@@ -128,7 +143,7 @@ func NewFromOutput(t *testing.T, dslExpr string, out codegen.Output, action int3
 		t.Fatalf("create scratch map: %v", err)
 	}
 
-	insns := buildXDPWrapper(out, scratch.FD(), action)
+	insns := buildXDPWrapper(out, scratch.FD(), action, fill)
 	prog, err := ebpf.NewProgram(&ebpf.ProgramSpec{
 		Name:         "dslt_filter",
 		Type:         ebpf.XDP,
@@ -205,7 +220,7 @@ func (r *Runner) MustReject(t *testing.T, pkt []byte, why string) {
 // faked in the scratch value right after the packet prefix (the filter
 // never reads past ScratchBufSize), with `action` in args[1]; the host
 // stack slots [-40, -24) stay free for set keys, as on the real hosts.
-func buildXDPWrapper(filterOut codegen.Output, scratchFD int, action int32) asm.Instructions {
+func buildXDPWrapper(filterOut codegen.Output, scratchFD int, action int32, fill *int32) asm.Instructions {
 	const (
 		stackKey     = int16(-16)
 		stackScratch = int16(-24)
@@ -261,7 +276,18 @@ func buildXDPWrapper(filterOut codegen.Output, scratchFD int, action int32) asm.
 		asm.LoadMem(asm.R3, asm.R10, stackScratch, asm.DWord),
 		asm.FnXdpLoadBytes.Call(),
 		asm.JNE.Imm(asm.R0, 0, "drop"),
-
+	}
+	if fill != nil {
+		// Fill kunai's stack region with the pattern (an imm32 Mov sign-
+		// extends, so -1 is all ones), down to the deepest slot the filter
+		// itself addresses: going further would grow the frame, which the
+		// verifier limits together with any bpf_loop callback's.
+		insns = append(insns, asm.Mov.Imm(asm.R2, *fill))
+		for off := int16(codegen.KunaiStackTop); off >= deepestStackSlot(filterOut.Main); off -= 8 {
+			insns = append(insns, asm.StoreMem(asm.R10, off, asm.R2, asm.DWord))
+		}
+	}
+	insns = append(insns,
 		// Hand off to the kunai filter: R0=scratch, R1=scratch+len,
 		// R9=pkt_len.
 		asm.LoadMem(asm.R0, asm.R10, stackScratch, asm.DWord),
@@ -269,7 +295,7 @@ func buildXDPWrapper(filterOut codegen.Output, scratchFD int, action int32) asm.
 		asm.JLE.Imm(asm.R1, int32(scratchSize), "filter_len_ok"),
 		asm.Mov.Imm(asm.R1, int32(scratchSize)),
 		asm.Add.Reg(asm.R1, asm.R0).WithSymbol("filter_len_ok"),
-	}
+	)
 
 	insns = append(insns, filterOut.Main...)
 
@@ -289,4 +315,22 @@ func buildXDPWrapper(filterOut codegen.Output, scratchFD int, action int32) asm.
 	}
 
 	return insns
+}
+
+// deepestStackSlot is the lowest 8-byte-aligned R10 offset an instruction
+// of insns loads from or stores to (KunaiStackTop when none goes below it).
+func deepestStackSlot(insns asm.Instructions) int16 {
+	low := int16(codegen.KunaiStackTop)
+	for _, ins := range insns {
+		cls := ins.OpCode.Class()
+		if !cls.IsLoad() && !cls.IsStore() {
+			continue
+		}
+		if (cls.IsLoad() && ins.Src == asm.R10) || (cls.IsStore() && ins.Dst == asm.R10) {
+			if off := ins.Offset &^ 7; off < low {
+				low = off
+			}
+		}
+	}
+	return low
 }

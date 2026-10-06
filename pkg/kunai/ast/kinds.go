@@ -157,6 +157,7 @@ const (
 	WAtomBoolLit                     // bare 'true' / 'false' bool literal
 	WAtomBoolExists                  // bare aux-exists, e.g. `where gtp.opt.exists`
 	WAtomBoolEq                      // Bool == Bool / Bool != Bool (iff / xor)
+	WAtomBoolValid                   // bare option-region validity, e.g. `where tcp.options.valid`
 )
 
 func (k WhereKind) String() string {
@@ -183,6 +184,8 @@ func (k WhereKind) String() string {
 		return "boolexists"
 	case WAtomBoolEq:
 		return "booleq"
+	case WAtomBoolValid:
+		return "boolvalid"
 	}
 	return fmt.Sprintf("WhereKind(%d)", int(k))
 }

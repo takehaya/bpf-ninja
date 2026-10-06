@@ -275,9 +275,12 @@ func (p *parser) parseWherePrimary() (whereValue, error) {
 		if err != nil {
 			return v, err
 		}
-		if fieldPathEndsWithExists(field) {
+		switch {
+		case fieldPathEndsWithExists(field):
 			v.boolean = &ast.WhereExpr{Kind: ast.WAtomBoolExists, BoolField: stripExistsTail(field), Pos: pos}
-		} else {
+		case fieldPathIsValid(field):
+			v.boolean = &ast.WhereExpr{Kind: ast.WAtomBoolValid, BoolField: stripExistsTail(field), Pos: pos}
+		default:
 			v.arith = &ast.ArithExpr{Kind: ast.ArithField, Field: field, Pos: pos}
 		}
 		return v, nil
@@ -322,6 +325,12 @@ func (p *parser) parseActionAtom(startPos ast.Position) (*ast.WhereExpr, error) 
 	return &ast.WhereExpr{Kind: ast.WAtomAction, ActionValue: ident.Text, Pos: startPos}, nil
 }
 
+// fieldPathIsValid matches `<layer>.<option segment>.valid`, the option
+// region validity atom. The resolver checks the segment and the layer.
+func fieldPathIsValid(fp *ast.FieldPath) bool {
+	return fp != nil && len(fp.Parts) == 3 && fp.Parts[2] == "valid" && len(fp.Indices) == 0
+}
+
 func fieldPathEndsWithExists(fp *ast.FieldPath) bool {
 	if fp == nil || len(fp.Parts) == 0 {
 		return false
@@ -330,7 +339,7 @@ func fieldPathEndsWithExists(fp *ast.FieldPath) bool {
 }
 
 // stripExistsTail returns a new FieldPath with the trailing `.exists`
-// segment (and any associated index) removed.
+// (or `.valid`) segment (and any associated index) removed.
 func stripExistsTail(fp *ast.FieldPath) *ast.FieldPath {
 	n := len(fp.Parts) - 1
 	out := &ast.FieldPath{Parts: append([]string(nil), fp.Parts[:n]...), Pos: fp.Pos}

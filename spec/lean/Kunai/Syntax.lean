@@ -111,6 +111,9 @@ inductive Where
   | all (w : Where)
   | boolLit (b : Bool)
   | fieldExists (field : FieldPath)
+  /-- `head.options.valid` (D-029): the layer's declared option region
+  parsed without fault. `field` is `head.options`. -/
+  | optionsValid (field : FieldPath)
   | boolEq (l : Where) (op : CmpOp) (r : Where)
   deriving Repr, BEq, DecidableEq
 

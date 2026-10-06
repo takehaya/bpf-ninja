@@ -188,6 +188,7 @@ private def checkWhere (c : Ctx) (bound : List (String × String)) : Where → E
     checkWhere c (hs :: bound) w
   | .boolLit _ => pure ()
   | .fieldExists f => discard <| stop (resolveExists c f)
+  | .optionsValid f => discard <| stop (resolveValid c f)
 
 private def checkCapture (c : Ctx) (cap : Capture) : Except String Unit := do
   if let some w := cap.cond then checkWhere c [] w

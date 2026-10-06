@@ -349,6 +349,33 @@ func (p *ProtocolSpec) AuxWalkSegmentTail() (*VariableTailSpec, int, bool) {
 	}, bits / 8, true
 }
 
+// HasDeclaredOptionRegion reports whether the protocol's parser walks an
+// option region whose length the header declares: a multi-state loop
+// keyed on a counter (ipv4 IHL, tcp data_offset, geneve opt_len). An
+// aux-stack walk (srv6 segments) is not one. Such a region can be
+// malformed without the packet being rejected (spec D-029), which
+// `<layer>.options.valid` reports.
+func (p *ProtocolSpec) HasDeclaredOptionRegion() bool {
+	if p == nil || p.ParseStateMachine == nil {
+		return false
+	}
+	if _, _, ok := p.AuxWalkSegmentTail(); ok {
+		return false
+	}
+	states := p.ParseStateMachine.States
+	for i, st := range states {
+		if !IsMultiStateLoopEntry(states, i) || st.Trans.Select == nil {
+			continue
+		}
+		for _, k := range st.Trans.Select.Keys {
+			if k.Kind == SelectKeyCounterIsZero {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // IsSelfValidating reports whether the parser block proves the
 // protocol's identity itself — i.e. its `start` state's transition
 // is `select(...) { ...; default: reject; }` keyed on at least one

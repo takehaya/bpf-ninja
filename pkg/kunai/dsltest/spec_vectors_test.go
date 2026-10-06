@@ -148,8 +148,13 @@ func runSpecVectors(t *testing.T, vectors []specVector) {
 			if err != nil {
 				t.Fatalf("packet hex: %v", err)
 			}
-			if got := NewFromOutput(t, v.Expr, out, action).Match(t, pkt); got != want {
-				t.Fatalf("%q on %d-byte packet: got match=%v, Lean says %s. %s", v.Expr, len(pkt), got, v.Expected.Kind, v.Note)
+			// Twice, with kunai's stack filled with zeros and with ones: a
+			// slot read before it is written shows up as a verdict that
+			// depends on the fill.
+			for _, fill := range []int32{0, -1} {
+				if got := NewFromOutputStackFilled(t, v.Expr, out, action, fill).Match(t, pkt); got != want {
+					t.Fatalf("%q on %d-byte packet (stack filled with %#x): got match=%v, Lean says %s. %s", v.Expr, len(pkt), uint32(fill), got, v.Expected.Kind, v.Note)
+				}
 			}
 		})
 	}

@@ -21,7 +21,7 @@ func TestPlanStackPacksByNeed(t *testing.T) {
 		m2: {{OutParam: "x"}},
 		c:  {{OutParam: "y"}, {OutParam: "z"}},
 	}
-	plan, err := planStack([]*ir.LayerInstance{a, group, b, c}, demand, nil)
+	plan, err := planStack([]*ir.LayerInstance{a, group, b, c}, demand, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,10 +59,10 @@ func TestPlanStackOverflow(t *testing.T) {
 	for i := range 37 {
 		layers = append(layers, &ir.LayerInstance{LayerPos: i, NeedsRuntimeOffset: true})
 	}
-	if _, err := planStack(layers[:36], nil, nil); err != nil {
+	if _, err := planStack(layers[:36], nil, nil, nil); err != nil {
 		t.Errorf("36 slots: %v", err)
 	}
-	_, err := planStack(layers, nil, nil)
+	_, err := planStack(layers, nil, nil, nil)
 	if !errors.Is(err, ErrNotImplemented) {
 		t.Errorf("37 slots: err = %v; want ErrNotImplemented", err)
 	}
@@ -74,11 +74,11 @@ func TestPlanStackOverflow(t *testing.T) {
 func TestPlanStackMatchedMember(t *testing.T) {
 	a := &ir.LayerInstance{LayerPos: 0}
 	group := &ir.LayerInstance{LayerPos: 1, Alternation: []*ir.LayerInstance{{LayerPos: 1}, {LayerPos: 1}}}
-	plan, err := planStack([]*ir.LayerInstance{a, group}, nil, nil)
+	plan, err := planStack([]*ir.LayerInstance{a, group}, nil, nil, nil)
 	if err != nil || len(plan.matched) != 0 {
 		t.Fatalf("unread group: matched = %v, err %v", plan.matched, err)
 	}
-	plan, err = planStack([]*ir.LayerInstance{a, group}, nil, map[int]bool{0: true, 1: true})
+	plan, err = planStack([]*ir.LayerInstance{a, group}, nil, map[int]bool{0: true, 1: true}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

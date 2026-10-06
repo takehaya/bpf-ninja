@@ -95,6 +95,7 @@ def Where.text : Where → String
   | .all w => "all(" ++ w.textTop ++ ")"
   | .boolLit b => if b then "true" else "false"
   | .fieldExists f => f.text ++ ".exists"
+  | .optionsValid f => f.text ++ ".valid"
   | .boolEq l op r => "(" ++ l.text ++ " " ++ op.text ++ " " ++ r.text ++ ")"
 
 /-- Top-of-clause form: one layer of parentheses dropped. -/
