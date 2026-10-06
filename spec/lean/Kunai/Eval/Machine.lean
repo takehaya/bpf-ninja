@@ -203,4 +203,26 @@ def run (P : Packet) (m : Machine) (layerOff : Nat) (region : Option Nat) :
 def runMachine (P : Packet) (spec : ProtoSpec) (m : Machine) (layerOff : Nat) : Except MFail MState :=
   run P m layerOff spec.regionLoop false (m.states.length * (spec.maxDepth + 2) + 1) spec.maxDepth { state := m.entry, cursor := layerOff }
 
+/-! A reject counts as a region fault only once the run has reached the
+region's loop state (D-029). A fault in a state before it — a header the
+parser itself refuses — stays a plain reject, so `extractBody` rejects the
+packet. The bundled parsers never get there (their `requires` checks run
+first), so this is pinned on a two-state machine. -/
+
+private def twoStates (first : Trans) : Machine :=
+  { states := [{ name := "start", extracts := [], counters := [], advances := [], trans := first },
+               { name := "walk", extracts := [], counters := [], advances := [], trans := .goto .reject }],
+    entry := 0, headers := [], stacks := [], tails := [], writebacks := [] }
+
+private def failOf : Except MFail MState → Option MFail
+  | .error f => some f
+  | .ok _ => none
+
+example : failOf (run [] (twoStates (.goto .reject)) 0 (some 1) false 4 4 { state := 0, cursor := 0 }) = some .reject := by
+  decide
+example : failOf (run [] (twoStates (.goto (.state 1))) 0 (some 1) false 4 4 { state := 0, cursor := 0 }) = some .regionFault := by
+  decide
+example : failOf (run [] (twoStates (.goto (.state 1))) 0 none false 4 4 { state := 0, cursor := 0 }) = some .reject := by
+  decide
+
 end Kunai

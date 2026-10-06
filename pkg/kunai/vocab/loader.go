@@ -130,9 +130,6 @@ func loadFile(fsys fs.FS, p string, knownProtos map[string]bool) (*ProtocolSpec,
 	if err != nil {
 		return nil, err
 	}
-	if onFault == "" {
-		onFault = OnFaultSkip
-	}
 	if optionSegment == "" {
 		optionSegment = "options"
 	}

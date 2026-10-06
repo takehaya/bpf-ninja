@@ -83,9 +83,10 @@ type ProtocolSpec struct {
 	OptionSegment string
 	// OptionRegionFault is what a fault inside the parser's
 	// header-declared region means (spec D-029), from
-	// @kunai_option_region[on_fault=...]: OnFaultSkip (the default) leaves
-	// the layer with no aux headers from that walk and goes on past the
-	// region; OnFaultFail rejects the packet.
+	// @kunai_option_region[on_fault=...]: OnFaultSkip leaves the layer with
+	// no aux headers from that walk and goes on past the region;
+	// OnFaultFail rejects the packet. Empty when the parser carries no
+	// annotation, which means skip.
 	OptionRegionFault string
 	// selfValidating caches whether the parser block proves the
 	// protocol's identity itself (start-state `transition select(...)
@@ -385,17 +386,32 @@ func (p *ProtocolSpec) RegionLoopState() (int, bool) {
 	return 0, false
 }
 
+// regionCounter is the counter the region loop at loopIdx ends on.
+func (p *ProtocolSpec) regionCounter(loopIdx int) string {
+	for _, k := range p.ParseStateMachine.States[loopIdx].Trans.Select.Keys {
+		if k.Kind == SelectKeyCounterIsZero {
+			return k.Counter
+		}
+	}
+	return ""
+}
+
 // RegionLengthBytes is the header's declared region length in bytes: the
-// counter the entry state seeds from a primary field with a `<< S`
-// (`pc.set(((hdr.data_offset - 5)) << 2)`); nil when the counter counts
-// elements (srv6 `last_entry + 1`) or there is none.
+// set expression the entry state seeds the region loop's own counter with
+// (`pc.set(((bit<8>)(hdr.data_offset - 5)) << 5)`), when that counter
+// measures bytes (RegionCounterTracksBytes). nil otherwise: no region, a
+// counter set elsewhere, or one that counts elements (srv6 segments).
+// The spec's declared length (vocab2lean lenRule) and codegen's skip past
+// the region both come from here.
 func (p *ProtocolSpec) RegionLengthBytes() *HeaderLength {
-	m := p.ParseStateMachine
-	if m == nil {
+	loop, ok := p.RegionLoopState()
+	if !ok || !p.RegionCounterTracksBytes(loop) {
 		return nil
 	}
+	m := p.ParseStateMachine
+	name := p.regionCounter(loop)
 	for _, c := range m.States[m.EntryIdx].Counters {
-		if c.Kind == CounterOpSet && c.Skip != nil && c.Skip.Scale >= 2 {
+		if c.Kind == CounterOpSet && c.Counter == name && c.Skip != nil {
 			return c.Skip
 		}
 	}
@@ -411,6 +427,18 @@ func (p *ProtocolSpec) RegionLengthBytes() *HeaderLength {
 func (p *ProtocolSpec) SkipsRegionFault() (int, bool) {
 	loop, ok := p.RegionLoopState()
 	if !ok || p.OptionRegionFault == OnFaultFail {
+		return 0, false
+	}
+	return loop, true
+}
+
+// FailsRegionFault reports whether the protocol has a declared region
+// whose faults reject (on_fault=fail), and its loop state. The walk must
+// then run even when nothing reads the region, or a fault would go
+// unseen.
+func (p *ProtocolSpec) FailsRegionFault() (int, bool) {
+	loop, ok := p.RegionLoopState()
+	if !ok || p.OptionRegionFault != OnFaultFail {
 		return 0, false
 	}
 	return loop, true
@@ -501,8 +529,22 @@ func (p *ProtocolSpec) RegionCounterTracksBytes(loopIdx int) bool {
 // limit of the current implementation; an element-counted region (srv6)
 // must say @kunai_option_region[on_fault=fail].
 func validateOptionRegion(p *ProtocolSpec) error {
-	if loop, ok := p.SkipsRegionFault(); ok && (!p.RegionCounterTracksBytes(loop) || p.RegionLengthBytes() == nil) {
-		return fmt.Errorf("%s: the parser's declared region is not measured in bytes, so a fault inside it cannot be skipped yet; add @kunai_option_region[on_fault=fail] to the parser", p.Source)
+	loop, ok := p.RegionLoopState()
+	if !ok {
+		if p.OptionRegionFault != "" {
+			return fmt.Errorf("%s: @kunai_option_region on a parser with no header-bounded region (a loop state whose select ends on counter.is_zero(), every other arm returning to it)", p.Source)
+		}
+		return nil
+	}
+	if _, skip := p.SkipsRegionFault(); !skip {
+		return nil
+	}
+	state := p.ParseStateMachine.States[loop].Name
+	switch {
+	case !p.RegionCounterTracksBytes(loop):
+		return fmt.Errorf("%s: the region walked by state %q is not counted in bytes (an arm does not decrement %q by the bytes it consumes), so a fault inside it cannot be skipped yet; add @kunai_option_region[on_fault=fail] to the parser", p.Source, state, p.regionCounter(loop))
+	case p.RegionLengthBytes() == nil:
+		return fmt.Errorf("%s: the counter %q that ends the region walked by state %q is not set in the parser's entry state, so the region's end is not known up front; set it there or add @kunai_option_region[on_fault=fail] to the parser", p.Source, p.regionCounter(loop), state)
 	}
 	return nil
 }

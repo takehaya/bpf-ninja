@@ -418,12 +418,13 @@ func counterSetOp(states []*ParseState, counterName string) *CounterOp {
 // readParserOptionRegion scans the parser block's @-decorators for
 // @kunai_option_region[on_fault=skip|fail]: what a fault inside the
 // parser's header-declared region means (spec D-029). Empty when absent;
-// the loader then applies the default, skip.
+// the default is skip. A second annotation is an error.
 func readParserOptionRegion(file *p4lite.File, source string) (string, error) {
 	if file == nil {
 		return "", nil
 	}
 	allowed := map[string]bool{"on_fault": true}
+	found := ""
 	for _, par := range file.Parsers {
 		for _, ann := range par.Annotations {
 			if ann.Name != annKunaiOptionRegion {
@@ -439,10 +440,13 @@ func readParserOptionRegion(file *p4lite.File, source string) (string, error) {
 			if v.Kind != p4lite.AnnotationIdent || (v.Ident != OnFaultSkip && v.Ident != OnFaultFail) {
 				return "", fmt.Errorf("%s:%s: @kunai_option_region.on_fault must be `skip` or `fail`", source, ann.Pos)
 			}
-			return v.Ident, nil
+			if found != "" {
+				return "", fmt.Errorf("%s:%s: @kunai_option_region given twice", source, ann.Pos)
+			}
+			found = v.Ident
 		}
 	}
-	return "", nil
+	return found, nil
 }
 
 // readParserOptionSegment scans the parser block's @-decorators for

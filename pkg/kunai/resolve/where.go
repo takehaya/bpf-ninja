@@ -149,7 +149,7 @@ func (r *resolver) resolveWhere(w *ast.WhereExpr) (*ir.Condition, error) {
 			return nil, err
 		}
 		if _, ok := layer.Spec.SkipsRegionFault(); !ok {
-			return nil, errorf(w.Pos, "%s declares no option region; %s.valid needs one", layer.Spec.Name, w.BoolField.String())
+			return nil, errorf(w.Pos, "%s has no option region whose faults are skipped; %s.valid needs one (@kunai_option_region[on_fault=skip])", layer.Spec.Name, w.BoolField.String())
 		}
 		if parts[1] != layer.Spec.OptionSegment {
 			return nil, errorf(w.Pos, "unsupported: %s.valid (the option segment of %s is %q)", w.BoolField.String(), layer.Spec.Name, layer.Spec.OptionSegment)

@@ -129,7 +129,7 @@ vector tcpOptsValidTwoOptions := tcpW (.and tcpValid (.and (cmp mss .eq (k 1460)
   (note := "Go: the accumulator plan for two option equalities has no slot for the validity flag")
 vector typOptsValidNoRegion := {
   id := "typ-opts-valid-no-region", ast := { layers := [P "eth", P "ipv4", P "udp"], cond := some (.optionsValid ⟨[("udp", none), ("options", none)]⟩) },
-  expected := .illTyped "udp declares no option region; udp.options.valid needs one" }
+  expected := .illTyped "udp has no option region whose faults are skipped; udp.options.valid needs one (@kunai_option_region[on_fault=skip])" }
 
 -- geneve options (D-029) ----------------------------------------------------
 
@@ -329,12 +329,12 @@ def s2 : Nat := 0xfc000000000000000000000000000002
 def srv6Two : Packet := srv6Pkt 1 [s1, s2]
 
 vector srv6TruncatedFails := {
-  id := "srv6-segments-truncated-fails", ast := { layers := srv6L },
-  packet := srv6Pkt 1 [s1] ++ be 8 0, expected := .reject,
+  id := "srv6-segments-truncated-fails", ast := { layers := [P "eth", P "ipv6", P "srv6"] },
+  packet := eth 0x86DD ++ ipv6 43 ++ srv6Hdr 59 1 ++ be 16 s1 ++ be 8 0, expected := .reject,
   note := "D-029: srv6.p4 says @kunai_option_region[on_fault=fail]; a segment list cut short rejects, it does not become empty" }
 vector typSrv6NoValid := {
   id := "typ-srv6-segments-valid", ast := { layers := srv6L, cond := some (.optionsValid ⟨[("srv6", none), ("segments", none)]⟩) },
-  packet := srv6Two, expected := .illTyped "srv6 declares no option region; srv6.segments.valid needs one",
+  packet := srv6Two, expected := .illTyped "srv6 has no option region whose faults are skipped; srv6.segments.valid needs one (@kunai_option_region[on_fault=skip])",
   note := "on_fault=fail: a fault rejects the packet, so there is nothing for .valid to report" }
 vector geneveVersionOne := {
   id := "geneve-version-one", ast := { layers := geneveL, cond := some (cmp (fld "udp" "dport") .eq (k 6081)) },
