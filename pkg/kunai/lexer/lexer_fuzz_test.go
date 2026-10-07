@@ -22,6 +22,9 @@ func FuzzLexNext(f *testing.F) {
 		// Valid-shaped seeds taken from lexer_test.go / parser_test.go.
 		"eth/ipv4/tcp",
 		"eth/ipv4/tcp[dport==443]",
+		"where ipv6.src + int<128>(18446744073709551616) == ipv6.dst",
+		"int<128>(340282366920938463463374607431768211455) int<64>(1) int<128>(",
+		"18446744073709551616",
 		"where capture all headers and or not in has action",
 		"== != <= >= < >",
 		"/ @ [ ] ( ) { } , . | ? + * - %",

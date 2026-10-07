@@ -80,6 +80,7 @@ def Layer.text : Layer → String
 
 def Arith.text : Arith → String
   | .const n => toString n
+  | .wide n => s!"int<128>({n})"
   | .field f => f.text
   | .bin op l r => "(" ++ l.text ++ " " ++ op.text ++ " " ++ r.text ++ ")"
 

@@ -270,6 +270,9 @@ func (p *parser) parseWherePrimary() (whereValue, error) {
 	case lexer.TokInt:
 		v.arith = &ast.ArithExpr{Kind: ast.ArithConst, Const: p.cur.Int, Pos: pos}
 		return v, p.advance()
+	case lexer.TokWide:
+		v.arith = &ast.ArithExpr{Kind: ast.ArithConst, Const: p.cur.Int, ConstHi: p.cur.IntHi, Wide: true, Pos: pos}
+		return v, p.advance()
 	case lexer.TokIdent:
 		field, err := p.parseFieldPath()
 		if err != nil {

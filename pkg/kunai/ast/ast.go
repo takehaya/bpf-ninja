@@ -200,8 +200,10 @@ type WhereExpr struct {
 type ArithExpr struct {
 	Kind ArithKind
 
-	Const    uint64     // ArithConst
+	Const    uint64     // ArithConst: the low 64 bits
+	ConstHi  uint64     // ArithConst: the high 64 bits; non-zero only for a literal above 64 bits
 	Negative bool       // explicitly signed literal; never inferred from the high bit
+	Wide     bool       // ArithConst written `int<128>(n)`: typed Int<128>
 	Field    *FieldPath // ArithField
 
 	// ArithBinOp

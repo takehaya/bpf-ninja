@@ -1027,12 +1027,17 @@ func arithCmpTargetBits(l, r *ir.ArithExpr) int {
 
 // arithMaxFieldBits walks an arith subtree and returns the largest
 // effective bit width of any field reference encountered (slice-
-// adjusted). Returns 0 if the subtree is pure-literal.
+// adjusted), counting an `int<128>(n)` literal as 128. Returns 0 if
+// the subtree has only plain literals.
 func arithMaxFieldBits(e *ir.ArithExpr) int {
 	if e == nil {
 		return 0
 	}
 	switch e.Kind {
+	case ast.ArithConst:
+		if e.Wide {
+			return 128
+		}
 	case ast.ArithField:
 		return e.Field.EffectiveBits()
 	case ast.ArithBinOp:
@@ -1219,7 +1224,7 @@ func (c *whereCtx) genArith128(e *ir.ArithExpr) (asm.Instructions, error) {
 		if e.Right == nil {
 			return nil, fmt.Errorf("codegen: bit<128> arith binop missing RHS")
 		}
-		if e.Right.Kind == ast.ArithConst {
+		if isLowConst128(e.Right) {
 			return c.genArith128FieldOpConst(e)
 		}
 		return c.genArith128FieldOpField(e)
@@ -1229,6 +1234,10 @@ func (c *whereCtx) genArith128(e *ir.ArithExpr) (asm.Instructions, error) {
 		// negative literal is the 128-bit two's complement, so its high
 		// half is all ones (Const already holds the 64-bit low half);
 		// `-0` is 0.
+		// `int<128>(n)` carries its own high half.
+		if e.Wide {
+			return append(loadConst(asm.R3, e.ConstHi), loadConst(asm.R5, e.Const)...), nil
+		}
 		high := int32(0)
 		if e.Negative && int64(e.Const) < 0 {
 			high = -1
@@ -1271,10 +1280,17 @@ func parks128(e *ir.ArithExpr) bool {
 	if e == nil || e.Kind != ast.ArithBinOp || isNarrowArith(e) {
 		return false
 	}
-	if e.Right != nil && e.Right.Kind == ast.ArithConst {
+	if isLowConst128(e.Right) {
 		return parks128(e.Left)
 	}
 	return true
+}
+
+// isLowConst128 reports whether `e` is a constant genArith128FieldOpConst
+// folds into the low half: a plain literal, or `int<128>(n)` with n
+// below 2^64. A wider `int<128>(n)` is computed like a field operand.
+func isLowConst128(e *ir.ArithExpr) bool {
+	return e != nil && e.Kind == ast.ArithConst && e.ConstHi == 0
 }
 
 // genArith128Narrow evaluates a sub-64-bit expression with the 64-bit
@@ -1602,6 +1618,11 @@ func (c *whereCtx) genArithWithBits(e *ir.ArithExpr, depth int, targetBits int) 
 	}
 	switch e.Kind {
 	case ast.ArithConst:
+		// The 128-bit path takes every `int<128>(n)` (arithMaxFieldBits
+		// counts it as 128); reading only the low half here would drop it.
+		if e.Wide || e.ConstHi != 0 {
+			return nil, fmt.Errorf("codegen: an int<128> literal reached the 64-bit pipeline")
+		}
 		v := e.Const
 		if targetBits > 0 && targetBits < 64 {
 			v &= (uint64(1) << targetBits) - 1

@@ -72,6 +72,7 @@ def Layer.toJson : Layer → Json
 
 def Arith.toJson : Arith → Json
   | .const n => Json.mkObj (("kind", "const") :: intFields n)
+  | .wide n => Json.mkObj [("kind", "wide"), ("value", u64Str n)]
   | .field f => Json.mkObj [("kind", "field"), ("field", f.toJson)]
   | .bin op l r => Json.mkObj [("kind", "bin"), ("op", op.toJson), ("left", l.toJson), ("right", r.toJson)]
 

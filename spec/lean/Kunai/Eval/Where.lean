@@ -333,6 +333,7 @@ def loadField (c : Ctx) (st : State) (env : IterEnv) (f : FieldPath) : Except St
 /-- T-ArithBin width; `none` for constant-only expressions (D-009). -/
 def arithWidth (c : Ctx) : Arith → Except Stop (Option Nat)
   | .const _ => pure none
+  | .wide _ => pure (some 128)
   | .field f => do pure (some (← resolvePath c f).width)
   | .bin _ l r => do
     match ← arithWidth c l, ← arithWidth c r with
@@ -381,6 +382,10 @@ def evalArith (c : Ctx) (st : State) (env : IterEnv) (ctx : Nat) : Arith → Exc
     match narrowInt ctx n with
     | .ok v => pure (some v)
     | .error r => throw (.illTyped r)
+  | .wide n =>
+    match wideLit n with
+    | .ok v => pure (some v)
+    | .error r => throw (.illTyped r)
   | .field f => loadField c st env f
   | .bin op l r => do
     let wl ← arithWidth c l
@@ -409,7 +414,7 @@ def Where.paths : Where → List FieldPath
   | .fieldExists _ | .optionsValid _ | .action _ | .boolLit _ => []
 where
   arithPaths : Arith → List FieldPath
-    | .const _ => []
+    | .const _ | .wide _ => []
     | .field f => [f]
     | .bin _ l r => arithPaths l ++ arithPaths r
 

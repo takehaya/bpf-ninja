@@ -101,6 +101,40 @@ func TestLexIntegers(t *testing.T) {
 	}
 }
 
+func TestLexWideLiteral(t *testing.T) {
+	for _, tc := range []struct {
+		src    string
+		hi, lo uint64
+	}{
+		{"int<128>(5)", 0, 5},
+		{"int<128>(18446744073709551616)", 1, 0},
+		{"int<128>(340282366920938463463374607431768211455)", ^uint64(0), ^uint64(0)},
+	} {
+		toks := lexAll(t, tc.src)
+		if toks[0].Kind != TokWide || toks[0].IntHi != tc.hi || toks[0].Int != tc.lo || toks[1].Kind != TokEOF {
+			t.Errorf("%s: got %v hi=%d lo=%d", tc.src, toks[0].Kind, toks[0].IntHi, toks[0].Int)
+		}
+	}
+	// `int` is still an identifier when no `<` follows.
+	if toks := lexAll(t, "int.x"); toks[0].Kind != TokIdent || toks[0].Text != "int" {
+		t.Errorf("int.x: got %v %q", toks[0].Kind, toks[0].Text)
+	}
+	for src, want := range map[string]string{
+		"int<64>(5)":     "int<64> is not supported",
+		"int<128>(0x10)": "takes a decimal literal",
+		"int<128>( 5 )":  "takes a decimal literal",
+		"int<128>(340282366920938463463374607431768211456)": "does not fit Int<128>",
+		"18446744073709551616":                              "write int<128>(18446744073709551616)",
+	} {
+		if _, err := New([]byte(src), "t").Next(); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%s: err = %v; want %q", src, err, want)
+		}
+	}
+	if _, err := New([]byte("int<128>(5)"), "t").NextValue(); err == nil || !strings.Contains(err.Error(), "only valid in a where expression") {
+		t.Errorf("value mode: err = %v", err)
+	}
+}
+
 func TestLexMalformedHex(t *testing.T) {
 	_, err := New([]byte("0xG"), "t").Next()
 	if err == nil {
@@ -393,9 +427,9 @@ func TestValueCIDRBoundaryAlignedAccepted(t *testing.T) {
 
 func TestValueNegativeIntegerSignedRange(t *testing.T) {
 	cases := []struct {
-		raw   string
-		want  uint64 // 2's-complement representation
-		ok    bool
+		raw  string
+		want uint64 // 2's-complement representation
+		ok   bool
 	}{
 		{"-1]", ^uint64(0), true},
 		{"-128]", ^uint64(127), true},

@@ -93,7 +93,13 @@ def cmpNat (op : CmpOp) (a b : Nat) : Bool :=
 /-- Two's complement of `n` in `w` bits, after the §7.3 fit check
 `-2^(w-1) ≤ n < 2^w` (T-IntLit narrow). -/
 def narrowInt (w : Nat) (n : Int) : Except String Nat :=
-  if n < -((2 : Int) ^ (w - 1)) ∨ n ≥ (2 : Int) ^ w then
+  -- A plain literal is at most 64 bits whatever the width it narrows to;
+  -- a wider value is written `int<128>(n)`.
+  if w > 64 ∧ n ≥ (2 : Int) ^ 64 then
+    throw s!"literal {n} exceeds 64 bits; write int<128>({n}) for a wider value"
+  else if w > 64 ∧ n < -((2 : Int) ^ 63) then
+    throw s!"literal {n} is below -2^63"
+  else if n < -((2 : Int) ^ (w - 1)) ∨ n ≥ (2 : Int) ^ w then
     throw s!"literal {n} does not fit Int<{w}>"
   else if n < 0 then pure ((2 : Int) ^ w + n).toNat
   else pure n.toNat
@@ -108,6 +114,10 @@ def liftValue (w : Nat) : Value → Except String Nat
   | .cidr6 .. => throw "cidr literal is not a plain value"
   | .range .. => throw "range literal is only valid in `in [...]`"
   | .ident s => throw s!"unsupported: identifier literal {s}"
+
+/-- `int<128>(n)`: the value must fit 128 bits. -/
+def wideLit (n : Nat) : Except String Nat :=
+  if n ≥ 2 ^ 128 then throw s!"int<128>({n}) does not fit Int<128>" else pure n
 
 /-- T-CmpCIDR4 / T-CmpCIDR6: subnet membership, `==` / `!=` only. -/
 private def cidrCmp (w W : Nat) (n : Nat) (op : CmpOp) (a k : Nat) : Except String Bool := do

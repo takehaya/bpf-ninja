@@ -37,6 +37,8 @@ def tcpW (w : Where) (pkt : Packet) (id : String) (expected : Result) (goStatus 
 -- TCP options ----------------------------------------------------------------
 
 vector tcpMss := tcpW (cmp mss .eq (k 1460)) (tcpOpts (mssOpt 1460)) "tcp-opt-mss-value" (.accept [])
+vector tcpMssWide := tcpW (cmp mss .eq (.wide 1460)) (tcpOpts (mssOpt 1460)) "tcp-opt-mss-wide" (.accept [])
+  (note := "an option value next to int<128>(…) compares at 128 bits")
 vector tcpMssMiss := tcpW (cmp mss .eq (k 1460)) (tcpOpts (mssOpt 1400)) "tcp-opt-mss-mismatch" .reject
 vector tcpMssAbsent := tcpW (cmp mss .eq (k 1460)) ethIPv4TCP "tcp-opt-mss-absent" .reject (note := "D-027: the atom is false")
 vector tcpMssAbsentNot := tcpW (.not (cmp mss .eq (k 1460))) ethIPv4TCP "tcp-opt-mss-absent-not" (.accept [])
@@ -124,6 +126,12 @@ vector tcpOptsValidAltOther := {
   ast := { layers := [P "eth", P "ipv4", .alt [{ name := "tcp" }, { name := "udp" }]], cond := some tcpValid },
   packet := eth 0x0800 ++ ipv4 17 ++ udp 1234 53 ++ payload 5, expected := .reject, note := "udp matched: tcp is absent" }
 def wsShift := Arith.field ⟨[("tcp", none), ("options", none), ("WS", none), ("shift", none)]⟩
+vector tcpMssWsWide := tcpW (.and (cmp mss .eq (.wide 1460)) (cmp wsShift .eq (k 7)))
+  (tcpOpts (mssOpt 1460 ++ [3, 3, 7, 1])) "tcp-opt-mss-ws-wide" (.accept [])
+  (note := "two option equalities, one against a small int<128>(…): the accumulator takes it")
+vector tcpMssWsWideHigh := tcpW (.and (cmp mss .eq (.wide (2 ^ 64 + 1460))) (cmp wsShift .eq (k 7)))
+  (tcpOpts (mssOpt 1460 ++ [3, 3, 7, 1])) "tcp-opt-mss-ws-wide-high" .reject (goStatus := .notImplemented)
+  (note := "a value the option field cannot hold keeps the pair out of the accumulator, which is the only path for two options")
 vector tcpOptsValidTwoOptions := tcpW (.and tcpValid (.and (cmp mss .eq (k 1460)) (cmp wsShift .eq (k 7))))
   (tcpOpts (mssOpt 1460 ++ [3, 3, 7, 1])) "tcp-opts-valid-with-two-options" (.accept []) (goStatus := .notImplemented)
   (note := "Go: the accumulator plan for two option equalities has no slot for the validity flag")
@@ -404,6 +412,10 @@ vector geneveVersionOne := {
   id := "geneve-version-one", ast := { layers := geneveL, cond := some (cmp (fld "udp" "dport") .eq (k 6081)) },
   packet := eth 0x0800 ++ ipv4 17 ++ udp 1234 6081 ++ [0x40 + 2, 0] ++ be 2 0x6558 ++ be 3 100 ++ [0] ++ geneveOvn 42 ++ payload 5,
   expected := .reject, note := "a fault in the header itself (version 1), before the option region: rejects" }
+vector srv6SegWideLit := {
+  id := "srv6-segments-wide-lit", ast := { layers := srv6L, cond := some (cmp (.field (seg (.nat 1))) .eq (.wide s2)) },
+  packet := srv6Two, expected := .accept [], goStatus := .notImplemented,
+  note := "128-bit arithmetic on an aux field is not wired in Go; an IPv6 literal works (srv6-segments-static)" }
 vector srv6Chain := {
   id := "srv6-chain", ast := { layers := srv6L }, packet := srv6Two, expected := .accept [] }
 vector srv6Static := {
@@ -625,7 +637,7 @@ def auxVectors : List Vector := [
   srv6AnyLabel, srv6AllAbsent, srv6OptPresent, srv6OptAbsent, srv6OptAnyPresent, srv6OptAnyAbsent, srv6OptBroken, srv6OptThenIPv4Opt, tcpOptAccAbsent, greOptPresent, greOptAbsent,
   rrNoSighting, sackNoSighting,
   grePlain, greKey, greKeySeq, greAllFlags, greKeyTruncated,
-  tcpMss, tcpMssMiss, tcpMssAbsent, tcpMssAbsentNot, tcpMssAfterNop, tcpUnknownSkipped, tcpUnknownLen0, tcpUnknownLen1,
+  tcpMss, tcpMssWide, tcpMssWsWide, tcpMssWsWideHigh, tcpMssMiss, tcpMssAbsent, tcpMssAbsentNot, tcpMssAfterNop, tcpUnknownSkipped, tcpUnknownLen0, tcpUnknownLen1,
   tcpOptCross, tcpEol, tcpMssDup, tcpMssBadLen, tcpMssExists, tcpMssExistsNot, tcpSackBlock, tcpSackAny, tcpSackAll,
   tcpSackAbsentAny, tcpMalformedNoQuery, tcpMalformedNotQuery, tcpMalformedOrTrue, tcpMalformedExists,
   tcpMalformedAfterMss, tcpMalformedChainOn, ipv4MalformedOpts, ipv4MalformedOptsQueried, ipv4OptDepthLastFault, ipv4OptDepthLastSighting,
@@ -635,7 +647,7 @@ def auxVectors : List Vector := [
   ipv6Hbh, ipv6TwoExts, ipv6ExtLong, ipv6ExtTooLong, ipv6ExtsIndex, ipv6ExtsIndex1, ipv6ExtsIndexAfterLong, ipv6ExtsAnyAfterLong, ipv6ExtsDynamicLong, ipv6ExtsDynamicLongSecond, ipv6ExtsDynamicLongAbsent, ipv6ExtsDynamicLongLast, ipv6ExtsDynamicLongLastMiss, ipv6ExtsDynamicLongBeyond, ipv6ExtsDynamicLongSlot, ipv6ExtsDynamicLongSlotAbsent,
   ipv6ExtsBracket, ipv6ExtsBracketAbsent, ipv6ExtsBracketLong, ipv6ExtsBracketDynamic, ipv6ExtsBracketIter, ipv6ExtsBracketInAbsent, ipv6ExtsBracketInLong, ipv6ExtsSliceLong, ipv6ExtsBracketSliceLong, gtpExtsBracket, gtpExtsBracketAbsent, gtpExtsBracketNone, gtpExtsBracketMixed, gtpExtsBracketMixedMiss, ipv6ExtsIndexAbsent,
   ipv6NextHeaderWhere, ipv6NextHeaderBracket, ipv6FiveExts, ipv6SixExts, ipv6AnyExts, ipv6AllExts,
-  srv6TruncatedFails, typSrv6NoValid, geneveVersionOne, srv6Chain, srv6Static, srv6Dynamic, srv6Any, srv6All, srv6AllCidr, srv6IndexAbsent, srv6OverCap, srv6OverCapAnyKept, srv6OverCapAnyDropped, srv6OverCapAll, srv6OverCapNotAll,
+  srv6TruncatedFails, typSrv6NoValid, geneveVersionOne, srv6SegWideLit, srv6Chain, srv6Static, srv6Dynamic, srv6Any, srv6All, srv6AllCidr, srv6IndexAbsent, srv6OverCap, srv6OverCapAnyKept, srv6OverCapAnyDropped, srv6OverCapAll, srv6OverCapNotAll,
   srv6OverCapIndex, srv6OverCapLastEntry, srv6AtCapAll, srv6PastScratch, srv6TenSegs, srv6TwelveSegs, srv6OverstatedLastEntry,
   srv6OverCapAllOrTrue, srv6AbsentAllTrue, srv6AtCap,
   gtpEightExts, gtpNineExts, gtpTenExts, gtpPlain, gtpOptExists, gtpOptAbsent, gtpOptField, gtpOptFieldAbsent, gtpExtDynamicIndex, gtpExtLongFirst, gtpExtLengthZero, gtpExtStack,

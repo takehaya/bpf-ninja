@@ -96,7 +96,11 @@ def Layer.labels : Layer → List String
 
 /-- `e ::= const(n) | field(f) | binop(op, e, e)` (`ast.ArithExpr`). -/
 inductive Arith
+  /-- A plain integer literal: untyped, in [−2^63, 2^64) (§11.2), narrowed to the
+  width of the operand next to it. -/
   | const (n : Int)
+  /-- `int<128>(n)`: a literal typed Int<128>, `n < 2^128` written in decimal. -/
+  | wide (n : Nat)
   | field (f : FieldPath)
   | bin (op : ArithOp) (l r : Arith)
   deriving Repr, BEq, DecidableEq

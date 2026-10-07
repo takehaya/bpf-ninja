@@ -3,9 +3,11 @@ package dsltest
 import (
 	"encoding/json"
 	"fmt"
+	"math/big"
 	"os"
 	"reflect"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/takehaya/bpf-ninja/pkg/kunai/ast"
@@ -73,6 +75,11 @@ func TestSpecASTRoundTrip(t *testing.T) {
 		}
 		t.Run(v.ID, func(t *testing.T) {
 			f, err := parser.Parse(v.Expr, "", nil)
+			if err != nil && v.Expected.Kind == "illTyped" && literalRangeError(err) {
+				// An integer literal outside its range is refused by the
+				// lexer or parser, before there is an AST to compare.
+				return
+			}
 			if err != nil {
 				t.Fatalf("parse %q: %v", v.Expr, err)
 			}
@@ -85,6 +92,14 @@ func TestSpecASTRoundTrip(t *testing.T) {
 			}
 		})
 	}
+}
+
+// literalRangeError reports whether a parse error is one of the integer
+// literal range refusals: a plain literal above 64 bits or below -2^63, or
+// an int<128>(n) above 128 bits.
+func literalRangeError(err error) bool {
+	msg := err.Error()
+	return strings.Contains(msg, "exceeds 64 bits") || strings.Contains(msg, "exceeds the supported range") || strings.Contains(msg, "does not fit Int<128>")
 }
 
 // normalizeJSON round-trips any value through encoding/json so that both
@@ -256,6 +271,10 @@ func encArith(e *ast.ArithExpr) obj {
 		return obj{"kind": "field", "field": encField(e.Field)}
 	case ast.ArithBinOp:
 		return obj{"kind": "bin", "op": arithOpText(e.Op), "left": encArith(e.Left), "right": encArith(e.Right)}
+	}
+	if e.Wide {
+		v := new(big.Int).Lsh(new(big.Int).SetUint64(e.ConstHi), 64)
+		return obj{"kind": "wide", "value": v.Or(v, new(big.Int).SetUint64(e.Const)).String()}
 	}
 	return obj{"kind": "const", "value": u64(e.Const), "negative": e.Negative}
 }
