@@ -44,6 +44,14 @@ type Hook struct {
 	// bounded by R9), so capture epilogues may reuse it.
 	PacketPrologue func() (asm.Instructions, error)
 
+	// OuterVlanTag, when set, emits instructions that load the outer VLAN
+	// tag the kernel keeps in the ctx's metadata (R6 = ctx): R2 = the
+	// tag's TPID as it sits in memory (network order, 0 when there is no
+	// tag) and R3 = the TCI in host order. Clobbers only R1..R5. The
+	// filter's scratch copy puts the tag back after the MAC addresses, so
+	// the filter sees the frame as it was on the wire (spec D-008).
+	OuterVlanTag func() (asm.Instructions, error)
+
 	// EntryCaps / FexitCaps are the kunai host capabilities for fentry
 	// and fexit compiles respectively (action atoms, packet layout).
 	EntryCaps func() codegen.Capabilities

@@ -52,7 +52,8 @@ func (fexitFetcher) EmitFetch(dst asm.Register) asm.Instructions {
 // derived from Lang.Action by kunai.Compile); Host.VlanInMetadata is
 // set because at the tc attach point the kernel has already extracted
 // the outer VLAN tag into skb metadata, so vlan/qinq layers cannot be
-// matched from packet bytes.
+// matched from packet bytes. A host that puts the tag back into the
+// filter's bytes uses WireFexitCapabilities instead.
 func FexitCapabilities() codegen.Capabilities {
 	return codegen.Capabilities{
 		Lang: codegen.LangCaps{
@@ -73,4 +74,22 @@ func EntryCapabilities() codegen.Capabilities {
 	return codegen.Capabilities{
 		Host: codegen.HostLayout{VlanInMetadata: true},
 	}
+}
+
+// WireFexitCapabilities is FexitCapabilities for a host that puts the
+// outer VLAN tag back from skb metadata into the bytes it hands the
+// filter (after the MAC addresses, as on the wire), so vlan and qinq
+// layers parse like at any other host. bpf-ninja's tc host does this.
+func WireFexitCapabilities() codegen.Capabilities {
+	c := FexitCapabilities()
+	c.Host.VlanInMetadata = false
+	return c
+}
+
+// WireEntryCapabilities is EntryCapabilities for a host that puts the
+// outer VLAN tag back into the filter's bytes (see WireFexitCapabilities).
+func WireEntryCapabilities() codegen.Capabilities {
+	c := EntryCapabilities()
+	c.Host.VlanInMetadata = false
+	return c
 }

@@ -14,9 +14,8 @@ package program
 // sees ethertype 0x0800 (the INNER protocol — the tag bytes are gone)
 // with vlan_present=1 and vlan_tci carrying VID 100.
 //
-// Combined with the dsltest packet checks (kunai's `eth/vlan?/ipv4/tcp`
-// matches exactly this de-tagged byte layout), this closes the loop:
-// an optional VLAN chain matches a tagged frame correctly at tc.
+// The tc host puts this tag back into the filter's bytes, so filters
+// see the wire frame; TestBpfVlanWireFrameAtTC checks that end to end.
 //
 // Root + veth + tcx required; skipped otherwise. Run via make test-bpf
 // or: sudo -E go test ./internal/program -run TestVlanUntag -v
