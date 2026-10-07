@@ -20,9 +20,10 @@ import (
 var specHostCaps = map[string]func() codegen.Capabilities{
 	"xdp_entry":        func() codegen.Capabilities { return codegen.Capabilities{} },
 	"xdp_exit":         xdp.FexitCapabilities,
-	"tc_entry":         tc.WireEntryCapabilities,
-	"tc_exit":          tc.WireFexitCapabilities,
-	"tc_raw_entry":     tc.EntryCapabilities,
+	"tc_entry":         tc.EntryCapabilities,
+	"tc_exit":          tc.FexitCapabilities,
+	"tc_wire_entry":    tc.WireEntryCapabilities,
+	"tc_wire_exit":     tc.WireFexitCapabilities,
 	"cgroup_skb_entry": cgroupskb.EntryCapabilities,
 	"cgroup_skb_exit":  cgroupskb.FexitCapabilities,
 	"netfilter_entry":  netfilter.EntryCapabilities,

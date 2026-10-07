@@ -1,10 +1,11 @@
 package program
 
 // End-to-end check of the tc host's wire-frame copy: the kernel moves the
-// outer VLAN tag into skb metadata before the tc program runs, and the
-// observer puts it back into the filter's scratch copy (hook.OuterVlanTag
-// + wireFrameCopy), so a filter written against the frame on the wire
-// matches at tc. A veth pair carries hand-built frames to a tc program at
+// outer VLAN tag into skb metadata before the tc program runs, and with
+// TCVlanReinsert the observer puts it back into the filter's scratch copy
+// (hook.OuterVlanTag + wireFrameCopy), so a filter written against the
+// frame on the wire matches at tc. The default cases check the bytes as
+// the kernel holds them. A veth pair carries hand-built frames to a tc program at
 // tcx (or clsact) ingress; probes on that program (fentry, fexit, gated
 // entry+exit) count the captures.
 //
@@ -80,6 +81,10 @@ func TestBpfVlanWireFrameAtTC(t *testing.T) {
 		expr  string
 		match []string // frames the filter matches; the others must not
 	}{
+		// Default: the bytes as the kernel holds them. The outer tag is not
+		// there, so eth/ipv4/tcp matches a single-tagged frame too.
+		{"default", entry, "eth/ipv4/tcp[dport==80]", []string{"untagged", "vid100", "vid200"}},
+		{"default", entry, "eth/vlan?/ipv4/tcp[dport==80]", []string{"untagged", "vid100", "vid200", "qinq"}},
 		{"entry", entry, "eth/vlan[tci==100]/ipv4/tcp[dport==80]", []string{"vid100"}},
 		{"entry", entry, "eth/vlan/ipv4/tcp where vlan.tci == 200", []string{"vid200"}},
 		{"entry", entry, "eth/ipv4/tcp[dport==80]", []string{"untagged"}},
@@ -95,6 +100,9 @@ func TestBpfVlanWireFrameAtTC(t *testing.T) {
 		{"pcap", pcap, "tcp dst port 80", []string{"untagged", "vid100", "vid200"}},
 	} {
 		t.Run(tc.name+"/"+tc.expr, func(t *testing.T) {
+			// Every case but "default" runs with the tag put back.
+			TCVlanReinsert = tc.name != "default"
+			t.Cleanup(func() { TCVlanReinsert = false })
 			for name, frame := range frames {
 				want := slices.Contains(tc.match, name)
 				got := captureCount(t, tc.load, tc.expr, ifindex, frame) > 0

@@ -25,8 +25,9 @@ structure Host where
   packetStartsAtL3 : Bool := false
   /-- The kernel moved the outer VLAN tag (802.1Q or 802.1ad) into skb
   metadata before the program ran, and the host hands the filter the
-  packet bytes without it. bpf-ninja's tc host puts the tag back, so the
-  filter sees the wire frame and this is false there (D-008). -/
+  packet bytes without it. bpf-ninja's tc host does so by default; with
+  `--tc-vlan-reinsert` it puts the tag back and the filter sees the wire
+  frame (`tc_wire_entry` / `tc_wire_exit`, D-008). -/
   vlanInMetadata : Bool := false
   /-- Symbolic action names the host declares (`LangCaps.Action`); empty on entry hosts. -/
   actions : List (String × Nat) := []
@@ -41,15 +42,14 @@ def Host.set? (h : Host) (name : String) : Option SetDecl := h.sets.find? (·.na
 
 inductive HostKind
   | xdp_entry | xdp_exit | tc_entry | tc_exit
-  /-- A tc host that does not put the outer tag back (the kunai library's
-  `host/tc` capabilities without the wire-frame copy). -/
-  | tc_raw_entry
+  /-- tc with the outer tag put back into the filter's bytes (`--tc-vlan-reinsert`). -/
+  | tc_wire_entry | tc_wire_exit
   | cgroup_skb_entry | cgroup_skb_exit | netfilter_entry | netfilter_exit
   deriving Repr, BEq, DecidableEq
 
 def HostKind.text : HostKind → String
   | .xdp_entry => "xdp_entry" | .xdp_exit => "xdp_exit"
-  | .tc_entry => "tc_entry" | .tc_exit => "tc_exit" | .tc_raw_entry => "tc_raw_entry"
+  | .tc_entry => "tc_entry" | .tc_exit => "tc_exit" | .tc_wire_entry => "tc_wire_entry" | .tc_wire_exit => "tc_wire_exit"
   | .cgroup_skb_entry => "cgroup_skb_entry" | .cgroup_skb_exit => "cgroup_skb_exit"
   | .netfilter_entry => "netfilter_entry" | .netfilter_exit => "netfilter_exit"
 
@@ -70,9 +70,10 @@ def HostKind.host (k : HostKind) (action : Nat := 0) (sets : List SetDecl := [])
   let h : Host := match k with
     | .xdp_entry => {}
     | .xdp_exit => { actions := xdpActions, action }
-    | .tc_entry => {}
-    | .tc_exit => { actions := tcActions, action }
-    | .tc_raw_entry => { vlanInMetadata := true }
+    | .tc_entry => { vlanInMetadata := true }
+    | .tc_exit => { vlanInMetadata := true, actions := tcActions, action }
+    | .tc_wire_entry => {}
+    | .tc_wire_exit => { actions := tcActions, action }
     | .cgroup_skb_entry => { vlanInMetadata := true, packetStartsAtL3 := true }
     | .cgroup_skb_exit => { vlanInMetadata := true, packetStartsAtL3 := true, actions := cgroupSkbActions, action }
     | .netfilter_entry => { vlanInMetadata := true, packetStartsAtL3 := true }

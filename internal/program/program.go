@@ -430,6 +430,9 @@ func compileFilterWithSlots(expr string, useDSL, isFexit bool, progType ebpf.Pro
 			} else {
 				caps = h.EntryCaps()
 			}
+			if TCVlanReinsert && h.OuterVlanTag != nil {
+				caps.Host.VlanInMetadata = false
+			}
 		}
 		// DSL `field in @set`: hand kunai the host slot resolver so it can
 		// extract packet fields into the host key buffer (host does the map
@@ -682,6 +685,15 @@ func buildFilterBody(h *hook.Hook, filterOut codegen.Output, tf filter.TargetFil
 // production-XDP-vs-observer-throughput Pareto curve preferences
 // vary by deployment.
 var ObserverPrefetch bool
+
+// TCVlanReinsert, when true, makes the tc host put the outer VLAN tag the
+// kernel keeps in skb metadata back into a DSL filter's bytes, so the
+// filter matches the frame as it was on the wire (`eth/vlan[tci==100]/…`
+// matches an 802.1Q frame, `eth/ipv4/tcp` does not). Off by default: the
+// filter reads the bytes as the kernel holds them, where `eth/ipv4/tcp`
+// also matches a tagged frame and reading the outer tag is refused at
+// compile time. Hooks without a metadata tag ignore it.
+var TCVlanReinsert bool
 
 // filterScanLen picks the bpf_probe_read_kernel size for runFilter:
 // the kunai-computed FilterMinPrefix when available (clamped to

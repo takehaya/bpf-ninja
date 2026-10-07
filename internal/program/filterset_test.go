@@ -29,11 +29,12 @@ type FilterSpec struct {
 	CBPFCExpr string // pcap-filter equivalent; "" when cBPF cannot express
 	WantInsns int    // entry-mode XDP host raw-insn count (tc emits the same body)
 	Notes     string // short rationale; surfaces in test output
-	// VlanUnsupported marks filters the cgroup-skb host rejects at
-	// compile time: it keeps the outer VLAN tag in skb metadata (see
-	// codegen.HostLayout.VlanInMetadata). The tc host puts the tag back
-	// into the filter's copy, so these compile and load there as on XDP.
-	VlanUnsupported bool
+	// TCUnsupported marks filters the tc host rejects at compile time.
+	// The kernel extracts the outer VLAN tag into skb metadata before
+	// the tc program runs, so vlan/qinq layers are not in packet bytes
+	// (see codegen.Capabilities.VlanInMetadata). These compile and load
+	// on XDP, where VLAN is in-band.
+	TCUnsupported bool
 }
 
 // FilterSet is the canonical F1-F10 used across the paper's expressiveness
@@ -52,11 +53,11 @@ var FilterSet = []FilterSpec{
 		WantInsns: 290, Notes: "IPv6 source CIDR via bracket predicate"},
 	{ID: "F4", Expr: "eth/vlan[tci==100]/ipv4/tcp where tcp.dport == 80",
 		CBPFCExpr: "vlan 100 and tcp dst port 80",
-		WantInsns: 159, Notes: "VLAN tag (TCI=100) + TCP dst", VlanUnsupported: true},
+		WantInsns: 159, Notes: "VLAN tag (TCI=100) + TCP dst", TCUnsupported: true},
 	{ID: "F5", Expr: "eth/qinq/vlan/ipv4/tcp where tcp.dport == 80",
 		// pcap "vlan 100 and vlan 200" is kernel/NIC dependent; intentionally
 		// omitted so the bench does not pretend the comparison is meaningful.
-		WantInsns: 161, Notes: "QinQ S-VLAN + inner C-VLAN via chain", VlanUnsupported: true},
+		WantInsns: 161, Notes: "QinQ S-VLAN + inner C-VLAN via chain", TCUnsupported: true},
 	{ID: "F6", Expr: "eth/ipv4/icmp where icmp.type == 8",
 		CBPFCExpr: "icmp[icmptype]==8",
 		WantInsns: 86, Notes: "ICMP echo request"},
@@ -88,10 +89,10 @@ func TestFilterSetCompiles(t *testing.T) {
 	for _, fs := range FilterSet {
 		for _, h := range hosts {
 			t.Run(fs.ID+"/"+h.name, func(t *testing.T) {
-				if fs.VlanUnsupported && h.progType == ebpf.CGroupSKB {
+				if fs.TCUnsupported && h.progType != ebpf.XDP {
 					_, err := compileFilter(fs.Expr, true /*useDSL*/, false /*isFexit*/, h.progType)
 					if !errors.Is(err, codegen.ErrVlanInMetadata) {
-						t.Fatalf("compile %s (%s): expected rejection with ErrVlanInMetadata, got %v\n  expr: %s", fs.ID, fs.Notes, err, fs.Expr)
+						t.Fatalf("compile %s (%s): expected tc rejection with ErrVlanInMetadata, got %v\n  expr: %s", fs.ID, fs.Notes, err, fs.Expr)
 					}
 					t.Logf("rejected on %s as expected: %v", h.name, err)
 					return

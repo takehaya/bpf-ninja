@@ -79,7 +79,8 @@ func EntryCapabilities() codegen.Capabilities {
 // WireFexitCapabilities is FexitCapabilities for a host that puts the
 // outer VLAN tag back from skb metadata into the bytes it hands the
 // filter (after the MAC addresses, as on the wire), so vlan and qinq
-// layers parse like at any other host. bpf-ninja's tc host does this.
+// layers parse like at any other host. bpf-ninja's tc host does this with
+// --tc-vlan-reinsert.
 func WireFexitCapabilities() codegen.Capabilities {
 	c := FexitCapabilities()
 	c.Host.VlanInMetadata = false

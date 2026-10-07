@@ -203,6 +203,10 @@ var flags = []cli.Flag{
 		Usage: "use NIC hardware timestamps (bpf_xdp_metadata_rx_timestamp kfunc, Linux 6.8+); --mode xdp only; software fallback if kfunc / driver unsupported",
 	},
 	&cli.BoolFlag{
+		Name:  "tc-vlan-reinsert",
+		Usage: "at tc, put the outer VLAN tag the kernel moved into skb metadata back into the DSL filter's bytes, so the filter matches the frame as on the wire (eth/vlan[tci==100]/... works; eth/ipv4/tcp no longer matches tagged frames). Captured bytes are unchanged. Default off",
+	},
+	&cli.BoolFlag{
 		Name:  "observer-prefetch",
 		Usage: "force the fentry/fexit filter to probe_read the full 512-byte scratch regardless of the chain's actual prefix needs. Trades a per-packet helper-CPU cost for warming the ice driver's L1 dcache; on prod_tx_reflect-style targets this accelerates the observed XDP program by ~70% (see docs/ja/r12-fentry-prefetch-finding.md). Default off — most deployments prefer lower observer CPU",
 	},
@@ -428,6 +432,9 @@ func run(ctx context.Context, cmd *cli.Command) error {
 	}
 	if cmd.Bool("observer-prefetch") {
 		program.ObserverPrefetch = true
+	}
+	if cmd.Bool("tc-vlan-reinsert") {
+		program.TCVlanReinsert = true
 	}
 	if period := cmd.Int("latency-sample-period"); period > 0 {
 		capture.LatencySamplePeriod = int64(period)
