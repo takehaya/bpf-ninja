@@ -205,6 +205,14 @@ type Output struct {
 	// patch releases (see pkg/kunai/README.md). The zero value (nil)
 	// means "no warnings".
 	Warnings []string
+
+	// WireFrame reports that the filter parses the frame as it was on
+	// the wire, with the outer VLAN tag in the bytes: it was compiled for
+	// a host that does not declare HostLayout.VlanInMetadata. A host that
+	// keeps the tag in skb metadata (tc) puts it back into the filter's
+	// bytes only for such a filter; a filter from another compiler (a
+	// pcap expression) reads the bytes as the kernel holds them.
+	WireFrame bool
 }
 
 // ExtractSlot records one `field in @set` extraction: codegen stored the
@@ -362,8 +370,9 @@ func Gen(p *ir.Program, caps Capabilities) (Output, error) {
 				asm.Mov.Imm(asm.R2, 0),
 				asm.Ja.Label(filterResultLabel),
 			},
-			Capture:  capInfo,
-			Warnings: cloneWarnings(p.Warnings),
+			Capture:   capInfo,
+			Warnings:  cloneWarnings(p.Warnings),
+			WireFrame: !caps.Host.VlanInMetadata,
 		}, nil
 	}
 
@@ -443,6 +452,7 @@ func Gen(p *ir.Program, caps Capabilities) (Output, error) {
 		Capture:     capInfo,
 		Extractions: extractions,
 		Warnings:    cloneWarnings(p.Warnings),
+		WireFrame:   !caps.Host.VlanInMetadata,
 	}, nil
 }
 

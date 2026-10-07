@@ -79,6 +79,11 @@ func skbOuterVlanTag() (asm.Instructions, error) {
 	if err != nil {
 		return nil, fmt.Errorf("resolving struct sk_buff VLAN members via BTF: %w", err)
 	}
+	return outerVlanTagInsns(v), nil
+}
+
+// outerVlanTagInsns is skbOuterVlanTag for a given member layout.
+func outerVlanTagInsns(v skBuffVlan) asm.Instructions {
 	insns := asm.Instructions{
 		asm.LoadMem(asm.R2, asm.R6, int16(v.proto), asm.Half),
 		asm.LoadMem(asm.R3, asm.R6, int16(v.tci), asm.Half),
@@ -91,5 +96,5 @@ func skbOuterVlanTag() (asm.Instructions, error) {
 			asm.Mov.Reg(asm.R1, asm.R1).WithSymbol("vlan_tag_present"),
 		)
 	}
-	return insns, nil
+	return insns
 }

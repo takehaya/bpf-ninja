@@ -12,8 +12,10 @@ collide. Do not run another host suite or integration setup concurrently.
 | Host | Every `Test*` in internal/program, internal/attach, internal/capture/..., cmd/bpf-ninja, and pkg/kunai/dsltest | Integration job, Ubuntu 24.04 runner |
 | Kernel matrix | Every `TestBpf*` in internal/program and cmd/bpf-ninja; all tests in internal/attach, internal/capture/..., and pkg/kunai/dsltest | vimto, kernels 6.1/6.6/6.12/6.15/6.18/7.0 |
 
-The host profile includes `TestLinearHeadClampAtCgroupSKB` and
-`TestVlanUntagAtTCIngress`. It also exercises all attach discovery tests. The
+The host profile includes `TestLinearHeadClampAtCgroupSKB`,
+`TestVlanUntagAtTCIngress` and `TestBpfVlanWireFrameAtTC` (the tc host puts the
+outer VLAN tag back into the filter's bytes; tagged, untagged and QinQ frames
+over a veth pair). It also exercises all attach discovery tests. The
 matrix includes literal/slice, grouping, IPv6 length, and TCP option tests via
 the complete DSL suite, plus tracing read-window tests with variable headers.
 `python3 scripts/test/privileged.py --kernel 6.12` runs a matrix cell locally.
@@ -21,9 +23,8 @@ the complete DSL suite, plus tracing read-window tests with variable headers.
 The runner enumerates the selected tests independently, captures Go JSON events,
 and rejects missing completions, package failures, and unexpected skips,
 including skipped children of passing parent tests. The only skip exceptions
-are exact TC corpus cases documenting unsupported mandatory VLAN matching,
-netfilter on kernel 6.1, and the tail-call veth fixture in the matrix images
-without a veth driver. Each exception also checks the diagnostic reason. The
+are netfilter on kernel 6.1, and the tail-call and VLAN wire-frame veth fixtures
+in the matrix images without a veth driver. Each exception also checks the diagnostic reason. The
 host job must execute the veth and netfilter cases. Missing clang or BTF fixture
 parameters are errors. The shell integration suite rejects all skips in CI.
 

@@ -39,10 +39,20 @@ func TestVlanTCLoads(t *testing.T) {
 
 func TestVlanTCCompiles(t *testing.T) {
 	for _, expr := range tcVlanExprs {
-		t.Run(expr, func(t *testing.T) {
-			if _, err := compileFilter(expr, true /*useDSL*/, false /*isFexit*/, ebpf.SchedCLS); err != nil {
-				t.Fatalf("compile %q at tc: %v", expr, err)
-			}
-		})
+		for _, isFexit := range []bool{false, true} {
+			t.Run(expr, func(t *testing.T) {
+				out, err := compileFilter(expr, true /*useDSL*/, isFexit, ebpf.SchedCLS)
+				if err != nil {
+					t.Fatalf("compile %q at tc (fexit=%v): %v", expr, isFexit, err)
+				}
+				if !out.WireFrame {
+					t.Fatalf("compile %q at tc (fexit=%v): the filter does not expect the wire frame", expr, isFexit)
+				}
+			})
+		}
+	}
+	// A pcap filter reads the bytes as the kernel holds them.
+	if out, err := compileFilter("tcp dst port 80", false /*useDSL*/, false, ebpf.SchedCLS); err != nil || out.WireFrame {
+		t.Fatalf("pcap filter at tc: WireFrame=%v err=%v; want false, nil", out.WireFrame, err)
 	}
 }

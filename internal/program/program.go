@@ -658,9 +658,12 @@ func buildFilterBody(h *hook.Hook, filterOut codegen.Output, tf filter.TargetFil
 	if slots != nil {
 		insns = append(insns, slots.emitPktSetKeyZeroing(pktRefs)...)
 	}
-	vlan, err := outerVlanTag(h)
-	if err != nil {
-		return nil, err
+	var vlan asm.Instructions
+	if filterOut.WireFrame {
+		var err error
+		if vlan, err = outerVlanTag(h); err != nil {
+			return nil, err
+		}
 	}
 	insns = append(insns, runFilter(filterOut.Main, scratchFD, filterScanLen(filterOut), vlan)...)
 	if slots != nil {

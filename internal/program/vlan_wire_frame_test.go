@@ -5,11 +5,13 @@ package program
 // observer puts it back into the filter's scratch copy (hook.OuterVlanTag
 // + wireFrameCopy), so a filter written against the frame on the wire
 // matches at tc. A veth pair carries hand-built frames to a tc program at
-// tcx ingress; an fentry probe on that program counts the captures.
+// tcx (or clsact) ingress; probes on that program (fentry, fexit, gated
+// entry+exit) count the captures.
 //
 // Root + veth + tcx required; skipped otherwise.
 
 import (
+	"slices"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -19,7 +21,9 @@ import (
 	"github.com/cilium/ebpf/btf"
 	"github.com/cilium/ebpf/link"
 	"github.com/vishvananda/netlink"
+	"golang.org/x/sys/unix"
 
+	"github.com/takehaya/bpf-ninja/internal/attach"
 	"github.com/takehaya/bpf-ninja/internal/capture"
 	"github.com/takehaya/bpf-ninja/internal/testutil"
 )
@@ -52,10 +56,64 @@ func loadAsmTC(t *testing.T) *ebpf.Program {
 	return prog
 }
 
-func TestVlanWireFrameAtTC(t *testing.T) {
+func TestBpfVlanWireFrameAtTC(t *testing.T) {
 	testutil.SkipIfNotRoot(t)
 	tcProg := loadAsmTC(t)
+	ifindex := wireTestVeth(t, tcProg)
 
+	frames := map[string][]byte{
+		"untagged": untaggedIPv4TCP(),
+		"vid100":   vlanTaggedIPv4TCP(100),
+		"vid200":   vlanTaggedIPv4TCP(200),
+		"qinq":     qinqTaggedIPv4TCP(10, 100),
+	}
+	entry := func(expr string) (*Probe, error) { return LoadEntry(tcProg, asmTCFuncName, expr, nil, true) }
+	exit := func(expr string) (*Probe, error) { return LoadExit(tcProg, asmTCFuncName, expr, nil, true) }
+	gated := func(expr string) (*Probe, error) {
+		targets := []attach.Target{{Program: tcProg, FuncName: asmTCFuncName, Type: ebpf.SchedCLS}}
+		return LoadMultiPoint(targets, []Stage{{Expr: expr}, {Expr: expr, IsFexit: true}}, nil, true, nil, EmitBoth)
+	}
+	pcap := func(expr string) (*Probe, error) { return LoadEntry(tcProg, asmTCFuncName, expr, nil, false) }
+	for _, tc := range []struct {
+		name  string
+		load  func(string) (*Probe, error)
+		expr  string
+		match []string // frames the filter matches; the others must not
+	}{
+		{"entry", entry, "eth/vlan[tci==100]/ipv4/tcp[dport==80]", []string{"vid100"}},
+		{"entry", entry, "eth/vlan/ipv4/tcp where vlan.tci == 200", []string{"vid200"}},
+		{"entry", entry, "eth/ipv4/tcp[dport==80]", []string{"untagged"}},
+		{"entry", entry, "eth/vlan?/ipv4/tcp[dport==80]", []string{"untagged", "vid100", "vid200"}},
+		{"entry", entry, "eth/qinq[tci==10]/vlan[tci==100]/ipv4/tcp", []string{"qinq"}},
+		{"entry", entry, "eth/qinq?/vlan?/ipv4/tcp", []string{"untagged", "vid100", "vid200", "qinq"}},
+		// A chain shorter than the 16 bytes up to the end of the tag.
+		{"entry", entry, "eth[ethertype==0x8100]", []string{"vid100", "vid200"}},
+		{"exit", exit, "eth/vlan[tci==100]/ipv4/tcp where action == TC_ACT_OK", []string{"vid100"}},
+		{"gated", gated, "eth/qinq[tci==10]/vlan[tci==100]/ipv4/tcp", []string{"qinq"}},
+		// A pcap filter reads the bytes as the kernel holds them (the tag
+		// is not put back), as before.
+		{"pcap", pcap, "tcp dst port 80", []string{"untagged", "vid100", "vid200"}},
+	} {
+		t.Run(tc.name+"/"+tc.expr, func(t *testing.T) {
+			for name, frame := range frames {
+				want := slices.Contains(tc.match, name)
+				got := captureCount(t, tc.load, tc.expr, ifindex, frame) > 0
+				if got != want {
+					t.Errorf("frame %s: captured=%v, want %v", name, got, want)
+				}
+			}
+		})
+	}
+}
+
+// wireTestVeth creates a veth pair, attaches tcProg at ingress of the
+// receiving end (tcx, or a clsact filter on kernels without tcx) and
+// returns the sending end's ifindex.
+func wireTestVeth(t *testing.T, tcProg *ebpf.Program) int {
+	t.Helper()
+	if old, err := netlink.LinkByName("kxwire0"); err == nil {
+		_ = netlink.LinkDel(old) // left behind by an interrupted run
+	}
 	la := netlink.NewLinkAttrs()
 	la.Name = "kxwire0"
 	veth := &netlink.Veth{LinkAttrs: la, PeerName: "kxwire1"}
@@ -76,49 +134,35 @@ func TestVlanWireFrameAtTC(t *testing.T) {
 			t.Fatalf("LinkSetUp: %v", err)
 		}
 	}
-	lnk, err := link.AttachTCX(link.TCXOptions{Interface: v1.Attrs().Index, Program: tcProg, Attach: ebpf.AttachTCXIngress})
-	if err != nil {
-		t.Skipf("AttachTCX unavailable (%v)", err)
+	idx := v1.Attrs().Index
+	if lnk, err := link.AttachTCX(link.TCXOptions{Interface: idx, Program: tcProg, Attach: ebpf.AttachTCXIngress}); err == nil {
+		t.Cleanup(func() { _ = lnk.Close() })
+		return v0.Attrs().Index
 	}
-	t.Cleanup(func() { _ = lnk.Close() })
-
-	frames := map[string][]byte{
-		"untagged": untaggedIPv4TCP(),
-		"vid100":   vlanTaggedIPv4TCP(100),
-		"vid200":   vlanTaggedIPv4TCP(200),
-		"qinq":     qinqTaggedIPv4TCP(10, 100),
+	qdisc := &netlink.GenericQdisc{
+		QdiscAttrs: netlink.QdiscAttrs{LinkIndex: idx, Handle: netlink.MakeHandle(0xffff, 0), Parent: netlink.HANDLE_CLSACT},
+		QdiscType:  "clsact",
 	}
-	for _, tc := range []struct {
-		expr  string
-		match []string // frames the filter matches; the others must not
-	}{
-		{"eth/vlan[tci==100]/ipv4/tcp[dport==80]", []string{"vid100"}},
-		{"eth/vlan/ipv4/tcp where vlan.tci == 200", []string{"vid200"}},
-		{"eth/ipv4/tcp[dport==80]", []string{"untagged"}},
-		{"eth/vlan?/ipv4/tcp[dport==80]", []string{"untagged", "vid100", "vid200"}},
-		{"eth/qinq[tci==10]/vlan[tci==100]/ipv4/tcp", []string{"qinq"}},
-		{"eth/qinq?/vlan?/ipv4/tcp", []string{"untagged", "vid100", "vid200", "qinq"}},
-	} {
-		t.Run(tc.expr, func(t *testing.T) {
-			for name, frame := range frames {
-				want := false
-				for _, m := range tc.match {
-					want = want || m == name
-				}
-				got := captureCount(t, tcProg, tc.expr, v0.Attrs().Index, frame) > 0
-				if got != want {
-					t.Errorf("frame %s: captured=%v, want %v", name, got, want)
-				}
-			}
-		})
+	if err := netlink.QdiscAdd(qdisc); err != nil {
+		t.Skipf("neither tcx nor clsact available (%v)", err)
 	}
+	filter := &netlink.BpfFilter{
+		FilterAttrs:  netlink.FilterAttrs{LinkIndex: idx, Parent: netlink.HANDLE_MIN_INGRESS, Handle: 1, Protocol: unix.ETH_P_ALL, Priority: 1},
+		Fd:           tcProg.FD(),
+		Name:         asmTCFuncName,
+		DirectAction: true,
+	}
+	if err := netlink.FilterAdd(filter); err != nil {
+		t.Fatalf("clsact filter: %v", err)
+	}
+	return v0.Attrs().Index
 }
 
-// captureCount attaches an fentry probe with the DSL filter to the tc
-// program, sends the frame a few times out ifindex, and counts captures.
-func captureCount(t *testing.T, tcProg *ebpf.Program, expr string, ifindex int, frame []byte) int {
+// captureCount loads a probe with load(expr), sends the frame out
+// ifindex, and counts the captures.
+func captureCount(t *testing.T, load func(string) (*Probe, error), expr string, ifindex int, frame []byte) int {
 	t.Helper()
-	probe, err := LoadEntry(tcProg, asmTCFuncName, expr, nil, true)
+	probe, err := load(expr)
 	if err != nil {
 		t.Fatalf("load probe %q: %v", expr, err)
 	}
