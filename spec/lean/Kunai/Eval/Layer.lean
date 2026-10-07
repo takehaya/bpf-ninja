@@ -202,22 +202,10 @@ def extractOpt (c : Ctx) (st : State) (p : ProtoLayer) : Except LayerFail State 
   | .error .dispMiss => pure st
   | .error e => throw e
 
-/-- The layer about to be extracted at `st` is an outer VLAN tag the host
-keeps in metadata (D-008): a tag protocol right after the root `eth`, with
-only tags in between. A tag further in (inside a tunnel) is in the packet
-bytes. -/
-def tagGuard (c : Ctx) (st : State) (name : String) : Bool :=
-  c.H.tagInMetadata name &&
-    match st.insts with
-    | root :: rest => root.proto == "eth" && rest.all (isTagName ·.proto)
-    | [] => false
-
 /-- `L(q)` for one protocol layer. -/
 def evalProtoLayer (c : Ctx) (st : State) (p : ProtoLayer) : Except LayerFail State := do
   let some spec := c.V.proto? p.name | throw (.illTyped s!"unknown protocol {p.name}")
   let (n, m) := quantBounds p.quant
-  if tagGuard c st p.name && n ≥ 1 then
-    throw (.illTyped s!"{p.name} is in metadata on this host; the layer must be optional")
   match p.quant with
   | .one => extract c st p
   | .opt => extractOpt c st p
