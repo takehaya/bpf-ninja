@@ -477,6 +477,33 @@ vector arith128WideBothNarrow := {
 vector arith128WideBothRej := {
   id := "arith-128-wide-both-rej", ast := W6 (cmp (.bin .sub (.bin .add src6 dst6) (.bin .add dst6 src6)) .eq (k 1)),
   packet := v6pkt 1 2, expected := .reject }
+/-- `S - (S - (… S))` with `n` both-sides nodes, `S = src + dst`. -/
+def bothParkChain : Nat → Arith
+  | 0 => .bin .add src6 dst6
+  | n + 1 => .bin .sub (.bin .add src6 dst6) (bothParkChain n)
+/-- `dport + (dport + (… dport))` nested `n` levels. -/
+def narrowChain : Nat → Arith
+  | 0 => dport6
+  | n + 1 => .bin .add dport6 (narrowChain n)
+def dport6Is80 : Where := cmp dport6 .eq (k 80)
+vector arith128BoolEqBothPark := {
+  id := "arith-128-booleq-both-park",
+  ast := W6 (.boolEq (.boolEq (cmp (bothParkChain 4) .eq (k 3)) .eq dport6Is80) .eq dport6Is80),
+  packet := v6pkt 1 2, expected := .accept [],
+  note := "four both-sides nodes inside two `==`, the deepest Go compiles: the hold slots stay below the parked truth values" }
+vector arith128BoolEqBothParkRej := {
+  id := "arith-128-booleq-both-park-rej",
+  ast := W6 (.boolEq (.boolEq (cmp (bothParkChain 4) .eq (k 0)) .eq dport6Is80) .eq dport6Is80),
+  packet := v6pkt 1 2, expected := .reject, note := "the chain is 3, so the innermost atom is false" }
+vector arith128BoolEqNarrow := {
+  id := "arith-128-booleq-narrow",
+  ast := W6 (.boolEq (cmp src6 .eq (narrowChain 9)) .eq dport6Is80),
+  packet := v6pkt 800 2, expected := .accept [],
+  note := "a sub-64-bit expression nested nine levels inside `==`, the deepest Go compiles: 10 × 80" }
+vector arith128BoolEqNarrowRej := {
+  id := "arith-128-booleq-narrow-rej",
+  ast := W6 (.boolEq (cmp src6 .eq (narrowChain 9)) .eq dport6Is80),
+  packet := v6pkt 801 2, expected := .reject }
 vector typArith128NarrowFit := {
   id := "typ-arith-128-narrow-fit", ast := W6 (cmp src6 .eq (.bin .mul dport6 (k 70000))), packet := ipv6TCP,
   expected := .illTyped "literal 70000 does not fit Int<16>",
@@ -632,7 +659,7 @@ def whereVectors : List Vector := [
   arith128AddNegConst, arith128SubNegConst, arith128CmpNegConst,
   arith128MixedWidthAdd, arith128MixedWidthMul, arith128MixedCarry, arith128MixedBorrow, arith128MixedWrap64, arith128MixedSlice,
   arith128MixedNested, arith128MixedNeg, arith128ConstBinop, arith128MixedAux, typArith128NarrowFitNested,
-  arith128WideRight, arith128WideRightSub, arith128WideRightDeep, arith128WideRightConstLeft, arith128WideRightBorrow, arith128WideRightNarrowLeft, arith128WideRightNarrowLeftRej, arith128WideBoth, arith128WideBothBorrow, arith128WideBothNested, arith128WideBothNarrow, arith128WideBothRej, typArith128NarrowFit, arith128CmpWideConst,
+  arith128WideRight, arith128WideRightSub, arith128WideRightDeep, arith128WideRightConstLeft, arith128WideRightBorrow, arith128WideRightNarrowLeft, arith128WideRightNarrowLeftRej, arith128WideBoth, arith128WideBothBorrow, arith128WideBothNested, arith128WideBothNarrow, arith128WideBothRej, arith128BoolEqBothPark, arith128BoolEqBothParkRej, arith128BoolEqNarrow, arith128BoolEqNarrowRej, typArith128NarrowFit, arith128CmpWideConst,
   arith128Lt, arith128GeMiss, arith128LtHighHalf, typArith128Mul, typArith128Band, typPathDeep, typPathDeepLabel, typPathDeepBracket]
 
 end Kunai

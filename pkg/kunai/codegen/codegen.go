@@ -892,8 +892,14 @@ func checkHostLayerSupport(p *ir.Program, host HostLayout) error {
 			mandatory := inAlt || !l.Absentable()
 			switch {
 			case mandatory:
+				// An alternation member cannot be made optional, so the
+				// advice there is a chain of optional tags.
+				fix := fmt.Sprintf("make the layer optional (%s?) or remove it", l.Spec.Name)
+				if inAlt {
+					fix = "an alternation member cannot be optional; write the tags as optional layers instead (qinq?/vlan?)"
+				}
 				if typeErr == nil {
-					typeErr = withPos(fmt.Errorf("%w: layer %q: the kernel moves the outer VLAN tag into skb metadata before the program runs, so a tagged frame does not carry it in the packet bytes; make the layer optional (%s?) or remove it", ErrVlanInMetadata, l.Spec.Name, l.Spec.Name), l.Pos)
+					typeErr = withPos(fmt.Errorf("%w: layer %q: the kernel moves the outer VLAN tag into skb metadata before the program runs, so a tagged frame does not carry it in the packet bytes; %s", ErrVlanInMetadata, l.Spec.Name, fix), l.Pos)
 				}
 			case len(l.Predicates) > 0:
 				if refusal == nil {
