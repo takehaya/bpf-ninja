@@ -1,10 +1,11 @@
 package program
 
 // End-to-end check of the tc host's wire-frame copy: the kernel moves the
-// outer VLAN tag into skb metadata before the tc program runs, and the
-// observer puts it back into the filter's scratch copy (hook.OuterVlanTag
-// + wireFrameCopy), so a filter written against the frame on the wire
-// matches at tc. A veth pair carries hand-built frames to a tc program at
+// outer VLAN tag into skb metadata before the tc program runs, and with
+// TCVlanReinsert the observer puts it back into the filter's scratch copy
+// (hook.OuterVlanTag + wireFrameCopy), so a filter written against the
+// frame on the wire matches at tc. The default cases check the bytes as
+// the kernel holds them. A veth pair carries hand-built frames to a tc program at
 // tcx (or clsact) ingress; probes on that program (fentry, fexit, gated
 // entry+exit) count the captures.
 //
@@ -12,7 +13,8 @@ package program
 
 import (
 	"slices"
-	"sync/atomic"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -80,6 +82,12 @@ func TestBpfVlanWireFrameAtTC(t *testing.T) {
 		expr  string
 		match []string // frames the filter matches; the others must not
 	}{
+		// Default: the bytes as the kernel holds them. The outer tag is not
+		// there, so eth/ipv4/tcp matches a single-tagged frame too.
+		{"default", entry, "eth/ipv4/tcp[dport==80]", []string{"untagged", "vid100", "vid200"}},
+		{"default", entry, "eth/vlan?/ipv4/tcp[dport==80]", []string{"untagged", "vid100", "vid200", "qinq"}},
+		{"default-exit", exit, "eth/ipv4/tcp where action == TC_ACT_OK", []string{"untagged", "vid100", "vid200"}},
+		{"default-gated", gated, "eth/ipv4/tcp[dport==80]", []string{"untagged", "vid100", "vid200"}},
 		{"entry", entry, "eth/vlan[tci==100]/ipv4/tcp[dport==80]", []string{"vid100"}},
 		{"entry", entry, "eth/vlan/ipv4/tcp where vlan.tci == 200", []string{"vid200"}},
 		{"entry", entry, "eth/ipv4/tcp[dport==80]", []string{"untagged"}},
@@ -95,11 +103,22 @@ func TestBpfVlanWireFrameAtTC(t *testing.T) {
 		{"pcap", pcap, "tcp dst port 80", []string{"untagged", "vid100", "vid200"}},
 	} {
 		t.Run(tc.name+"/"+tc.expr, func(t *testing.T) {
+			// Every case but the "default" ones runs with the tag put back.
+			prev := TCVlanReinsert
+			TCVlanReinsert = !strings.HasPrefix(tc.name, "default")
+			t.Cleanup(func() { TCVlanReinsert = prev })
 			for name, frame := range frames {
 				want := slices.Contains(tc.match, name)
-				got := captureCount(t, tc.load, tc.expr, ifindex, frame) > 0
-				if got != want {
+				pkts := capturePackets(t, tc.load, tc.expr, ifindex, frame)
+				if got := len(pkts) > 0; got != want {
 					t.Errorf("frame %s: captured=%v, want %v", name, got, want)
+				}
+				// Captured bytes are the kernel's in both modes: a
+				// single-tagged frame shows its inner ethertype at 12.
+				for _, p := range pkts {
+					if (name == "vid100" || name == "vid200") && (len(p.Data) < 14 || p.Data[12] != 0x08 || p.Data[13] != 0x00) {
+						t.Errorf("frame %s: captured bytes % x; want the outer tag absent (ethertype 0x0800 at 12)", name, p.Data[:min(len(p.Data), 16)])
+					}
 				}
 			}
 		})
@@ -158,9 +177,9 @@ func wireTestVeth(t *testing.T, tcProg *ebpf.Program) int {
 	return v0.Attrs().Index
 }
 
-// captureCount loads a probe with load(expr), sends the frame out
-// ifindex, and counts the captures.
-func captureCount(t *testing.T, load func(string) (*Probe, error), expr string, ifindex int, frame []byte) int {
+// capturePackets loads a probe with load(expr), sends the frame out
+// ifindex, and returns the captures.
+func capturePackets(t *testing.T, load func(string) (*Probe, error), expr string, ifindex int, frame []byte) []capture.Packet {
 	t.Helper()
 	probe, err := load(expr)
 	if err != nil {
@@ -171,19 +190,27 @@ func captureCount(t *testing.T, load func(string) (*Probe, error), expr string, 
 	if err != nil {
 		t.Fatalf("sharded reader: %v", err)
 	}
-	var count atomic.Int64
+	var mu sync.Mutex
+	var got []capture.Packet
 	stop, err := sr.RunShards(func(_ int, pkts []capture.Packet) error {
-		count.Add(int64(len(pkts)))
+		mu.Lock()
+		defer mu.Unlock()
+		for _, p := range pkts {
+			p.Data = append([]byte(nil), p.Data...)
+			got = append(got, p)
+		}
 		return nil
 	})
 	if err != nil {
 		t.Fatalf("RunShards: %v", err)
 	}
-	defer stop()
 	time.Sleep(100 * time.Millisecond)
 	sendFrame(t, ifindex, frame)
 	time.Sleep(300 * time.Millisecond)
-	return int(count.Load())
+	stop()
+	mu.Lock()
+	defer mu.Unlock()
+	return got
 }
 
 // qinqTaggedIPv4TCP builds eth(0x88a8)/qinq(svid)/vlan(cvid)/ipv4/tcp:80.

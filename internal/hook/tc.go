@@ -16,10 +16,11 @@ var tcHook = &Hook{
 	OuterVlanTag:   skbOuterVlanTag,
 	Identity:       skbIdentity,
 	// The kernel strips the outer VLAN tag into skb metadata before
-	// either attach point runs; OuterVlanTag puts it back into the
-	// filter's copy, so the filter parses the wire frame.
-	EntryCaps: tchost.WireEntryCapabilities,
-	FexitCaps: tchost.WireFexitCapabilities,
+	// either attach point runs, so the caps carry VlanInMetadata. With
+	// program.TCVlanReinsert the compile clears it and OuterVlanTag puts
+	// the tag back into the filter's copy (the wire frame).
+	EntryCaps: tchost.EntryCapabilities,
+	FexitCaps: tchost.FexitCapabilities,
 	// Mirrors tchost.Actions (uapi/linux/pkt_cls.h); consistency is
 	// asserted by TestHookActionsMatchHostVocab.
 	Actions: []ActionName{

@@ -82,7 +82,7 @@ eth/mpls{2,8}/ipv4/tcp              # MPLS 2〜8 段、8 段で打切
 eth/vlan*/ipv4/tcp                  # VLAN 0〜N 段
 ```
 
-VLAN の layer は回線上のフレームどおりに書きます。tc では kernel が外側の tag を 1 枚 skb metadata に移してから program が動きますが、bpf-ninja はその tag を filter に渡す byte 列の MAC アドレスの直後に戻すので、XDP と同じ filter がそのまま使えます (`eth/vlan[tci==100]/ipv4/tcp` は 802.1Q のフレーム、`eth/qinq/vlan/ipv4/tcp` は QinQ のフレームに match します)。capture される byte 列は kernel が持っているもの (外側の tag が無い状態) で、`capture vlan` のように layer で長さを決める capture は 4 byte 多めに取ります。`--cbpf` で使う pcap 形式のフィルタは従来どおり kernel が持つ byte 列に当てるので、tc では `tcp dst port 80` が tag 付きのフレームにも match します。cgroup-skb と netfilter は L3 から始まるので VLAN は関係しません。
+tc では kernel が外側の VLAN tag を 1 枚 skb metadata に移してから program が動くので、filter が見る byte 列にその tag はありません。既定では filter はこの byte 列に当たるので、`eth/ipv4/tcp` は tag 付きのフレームにも match し、外側の tag を読む形 (必須の `vlan`、`vlan[tci==100]`、`where vlan.tci == …`) は compile 時のエラーになります (`eth/vlan?/ipv4/tcp` は書けます)。`--tc-vlan-reinsert` を付けると、bpf-ninja は metadata の tag を filter に渡す byte 列の MAC アドレスの直後に戻し、filter は回線上のフレームどおりに書けます: `eth/vlan[tci==100]/ipv4/tcp` は 802.1Q のフレーム、`eth/qinq/vlan/ipv4/tcp` は QinQ のフレームに match し、`eth/ipv4/tcp` は tag 付きのフレームに match しなくなります。どちらでも capture される byte 列は kernel が持っているもの (外側の tag が無い状態) で、option を付けたとき `capture vlan` のように layer で長さを決める capture は 4 byte 多めに取ります。`--cbpf` の pcap 形式のフィルタは option に関係なく kernel が持つ byte 列に当たります。cgroup-skb と netfilter は L3 から始まるので VLAN は関係しません。
 
 ### Predicate
 

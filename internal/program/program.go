@@ -5,6 +5,7 @@ package program
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/cilium/ebpf"
@@ -430,6 +431,9 @@ func compileFilterWithSlots(expr string, useDSL, isFexit bool, progType ebpf.Pro
 			} else {
 				caps = h.EntryCaps()
 			}
+			if TCVlanReinsert && h.OuterVlanTag != nil {
+				caps.Host.VlanInMetadata = false
+			}
 		}
 		// DSL `field in @set`: hand kunai the host slot resolver so it can
 		// extract packet fields into the host key buffer (host does the map
@@ -439,8 +443,11 @@ func compileFilterWithSlots(expr string, useDSL, isFexit bool, progType ebpf.Pro
 		}
 		out, err := kunai.Compile(expr, caps)
 		if err != nil {
-			return out, fmt.Errorf("DSL filter compile failed: %w\n\nhint: %s",
-				err, dslHintFor(expr))
+			hint := dslHintFor(expr)
+			if h, ok := hook.ByProgramType(progType); ok && h.OuterVlanTag != nil && caps.Host.VlanInMetadata && vlanInMetadataError(err) {
+				hint = "the outer VLAN tag is in skb metadata at this hook; --tc-vlan-reinsert puts it back so the filter can match it"
+			}
+			return out, fmt.Errorf("DSL filter compile failed: %w\n\nhint: %s", err, hint)
 		}
 		return out, nil
 	}
@@ -683,6 +690,15 @@ func buildFilterBody(h *hook.Hook, filterOut codegen.Output, tf filter.TargetFil
 // vary by deployment.
 var ObserverPrefetch bool
 
+// TCVlanReinsert, when true, makes the tc host put the outer VLAN tag the
+// kernel keeps in skb metadata back into a DSL filter's bytes, so the
+// filter matches the frame as it was on the wire (`eth/vlan[tci==100]/…`
+// matches an 802.1Q frame, `eth/ipv4/tcp` does not). Off by default: the
+// filter reads the bytes as the kernel holds them, where `eth/ipv4/tcp`
+// also matches a tagged frame and reading the outer tag is refused at
+// compile time. Hooks without a metadata tag ignore it.
+var TCVlanReinsert bool
+
 // filterScanLen picks the bpf_probe_read_kernel size for runFilter:
 // the kunai-computed FilterMinPrefix when available (clamped to
 // [1, scratchBufSize]), otherwise the conservative scratchBufSize.
@@ -698,6 +714,12 @@ func filterScanLen(out codegen.Output) int {
 		return scratchBufSize
 	}
 	return n
+}
+
+// vlanInMetadataError reports whether a compile error is one of kunai's
+// refusals of a VLAN tag the host keeps in skb metadata.
+func vlanInMetadataError(err error) bool {
+	return errors.Is(err, codegen.ErrVlanInMetadata) || strings.Contains(err.Error(), "skb metadata")
 }
 
 // outerVlanTag is the hook's OuterVlanTag loader, or nil when the hook

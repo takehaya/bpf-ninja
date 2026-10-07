@@ -95,7 +95,7 @@ type HostLayout struct {
 	// the filter parses. This is the case at the tc (SCHED_CLS) attach
 	// point, where skb_vlan_untag fires before the program, unless the
 	// host puts the tag back into the filter's bytes (bpf-ninja's tc host
-	// does; see host/tc.WireEntryCapabilities). The zero
+	// with --tc-vlan-reinsert; see host/tc.WireEntryCapabilities). The zero
 	// value (false) assumes VLAN is in-band — correct for XDP and for
 	// the target-agnostic BPF_PROG_TEST_RUN harness, which feed raw
 	// frames with the tag present.

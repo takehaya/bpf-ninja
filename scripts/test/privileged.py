@@ -15,6 +15,13 @@ PROGRAM = "github.com/takehaya/bpf-ninja/internal/program"
 def allowed_skip(package, test, output, kernel):
     if package != PROGRAM:
         return False
+    unsupported_tc = {
+        "TestBpfFilterSetTC/F4", "TestBpfFilterSetTC/F5",
+        "TestBpfFilterCorpusTC/D04", "TestBpfFilterCorpusTC/E00",
+        "TestBpfFilterCorpusTC/E03",
+    }
+    if test in unsupported_tc:
+        return "rejected at compile time" in output or "rejects it at compile time" in output
     if kernel and test == "TestBpfTailcallSubfunc":
         return "veth not supported on this kernel" in output
     if kernel and test == "TestBpfVlanWireFrameAtTC":
