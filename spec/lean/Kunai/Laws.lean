@@ -164,7 +164,6 @@ theorem bracket_eq_where_at
     (c : Ctx) (pre rest : List Layer) (p : ProtoLayer) (spec : ProtoSpec) (inst : Inst)
     (f : FieldPath) (op : CmpOp) (v : Value) {r : Ref} (st s1 stF : State)
     (hq : p.quant = .one) (hname : spec.name = p.name)
-    (hvlan : c.H.tagInMetadata p.name = false)
     (hpre : evalChain c pre st = .ok s1)
     (hx : extractInst c s1 p.name spec = .ok inst)
     (hrest : evalChain c rest (s1.push p.label inst) = .ok stF)
@@ -181,7 +180,7 @@ theorem bracket_eq_where_at
   have hsp : c.V.proto? p.name = some spec := hname ▸ hspec
   have hw := litCmp_eq_evalPred c stF spec inst f op v r hproto hspec hinst hres
   rw [evalChain_append, hpre, hw]
-  simp only [Except.bind, evalChain, bind, hq, quantBounds, evalProtoLayer, hsp, hvlan]
+  simp only [Except.bind, evalChain, bind, hq, quantBounds, evalProtoLayer, hsp]
   simp only [extract_cmp c s1 p.name p.label _ spec inst (.cmp f op v) hsp hx]
   cases evalPred c spec inst (.cmp f op v) with
   | error e => cases e <;> simp
@@ -195,22 +194,18 @@ theorem evalChain_proto_inv (c : Ctx) (pre rest : List Layer) (p : ProtoLayer) (
     (hsp : c.V.proto? p.name = some spec)
     (h : evalChain c (pre ++ .proto p :: rest) st = .ok stF) :
     ∃ s1 inst, evalChain c pre st = .ok s1 ∧ extractInst c s1 p.name spec = .ok inst ∧
-      evalChain c rest (s1.push p.label inst) = .ok stF ∧
-      c.H.tagInMetadata p.name = false := by
+      evalChain c rest (s1.push p.label inst) = .ok stF := by
   rw [evalChain_append] at h
   cases hpre : evalChain c pre st with
   | error e => simp [hpre, Except.bind] at h
   | ok s1 =>
     simp only [hpre, Except.bind, evalChain, bind, hq, quantBounds, evalProtoLayer, hsp] at h
-    cases hv : c.H.tagInMetadata p.name with
-    | true => simp [hv] at h
-    | false =>
-      simp only [hv, extract, hsp, hnp, checkPreds, bind, Except.bind] at h
-      cases hx : extractInst c s1 p.name spec with
-      | error e => simp [hx] at h
-      | ok inst =>
-        simp [hx, pure, Except.pure] at h
-        exact ⟨s1, inst, rfl, hx, h, rfl⟩
+    simp only [extract, hsp, hnp, checkPreds, bind, Except.bind] at h
+    cases hx : extractInst c s1 p.name spec with
+    | error e => simp [hx] at h
+    | ok inst =>
+      simp [hx, pure, Except.pure] at h
+      exact ⟨s1, inst, rfl, hx, h⟩
 
 /-- `…/p[f op v]/…` ≡ `…/p/… where p.f op v` (D-023), for a mandatory layer
 `p` without other predicates whose name denotes the instance it extracts.
@@ -245,8 +240,8 @@ theorem bracket_eq_where
         | .error .reject => .error .bounds
         | .error (.illTyped e) => .error (.illTyped e) := by
   have hsp : c.V.proto? p.name = some spec := hname ▸ hspec
-  obtain ⟨s1, inst, hpre, hx, hrest, hvlan⟩ := evalChain_proto_inv c pre rest p spec st stF hq hnp hsp hchain
-  exact bracket_eq_where_at c pre rest p spec inst f op v st s1 stF hq hname hvlan hpre hx hrest
+  obtain ⟨s1, inst, hpre, hx, hrest⟩ := evalChain_proto_inv c pre rest p spec st stF hq hnp hsp hchain
+  exact bracket_eq_where_at c pre rest p spec inst f op v st s1 stF hq hname hpre hx hrest
     hproto hspec (hinst s1 inst hpre hx) hres
 
 /-! ## What a chain adds to the state
@@ -367,13 +362,11 @@ theorem evalProtoLayer_grows {c : Ctx} {st st' : State} {p : ProtoLayer}
   | some spec =>
     simp only [hs, bind, Except.bind] at h
     split at h
-    · simp [throw, throwThe, MonadExceptOf.throw] at h
+    · exact extract_grows h
+    · exact extractOpt_grows h
     · split at h
-      · exact extract_grows h
-      · exact extractOpt_grows h
-      · split at h
-        · simp [throw, throwThe, MonadExceptOf.throw] at h
-        · exact iterate_grows _ _ _ _ h
+      · simp [throw, throwThe, MonadExceptOf.throw] at h
+      · exact iterate_grows _ _ _ _ h
 
 theorem evalAlt_grows {c : Ctx} {st : State} :
     ∀ (alts : List ProtoLayer) (st' : State), evalAlt c st alts = .ok st' →
@@ -488,22 +481,18 @@ theorem evalProtoLayer_drop_pred (c : Ctx) (s1 s2 : State) (p : ProtoLayer) (ρ 
   | none => simp [hs] at h
   | some spec =>
     simp only [hs, hq, quantBounds, bind, Except.bind] at h ⊢
-    split at h
-    · simp [throw, throwThe, MonadExceptOf.throw] at h
-    · rename_i hv
-      simp only [hv]
-      unfold extract at h ⊢
-      simp only [hs, bind, Except.bind] at h ⊢
-      cases hx : extractInst c s1 p.name spec with
-      | error e => simp [hx] at h
-      | ok inst =>
-        simp only [hx, checkPreds, hnp] at h ⊢
-        cases hp : evalPred c spec inst ρ with
-        | error e => cases e <;> simp [hp, throw, throwThe, MonadExceptOf.throw] at h
-        | ok b =>
-          cases b
-          · simp [hp, throw, throwThe, MonadExceptOf.throw] at h
-          · simpa [hp] using h
+    unfold extract at h ⊢
+    simp only [hs, bind, Except.bind] at h ⊢
+    cases hx : extractInst c s1 p.name spec with
+    | error e => simp [hx] at h
+    | ok inst =>
+      simp only [hx, checkPreds, hnp] at h ⊢
+      cases hp : evalPred c spec inst ρ with
+      | error e => cases e <;> simp [hp, throw, throwThe, MonadExceptOf.throw] at h
+      | ok b =>
+        cases b
+        · simp [hp, throw, throwThe, MonadExceptOf.throw] at h
+        · simpa [hp] using h
 
 /-- A chain that matches with one bracket predicate on a mandatory layer
 matches without it, with the same state. -/
@@ -661,10 +650,10 @@ theorem bracket_iff_where_eval
   have hsp : (Filter.ctx { layers := pre ++ .proto p :: rest } H V P).V.proto? p.name = some spec := hspec
   cases hW : evalChain (Filter.ctx { layers := pre ++ .proto p :: rest } H V P) (pre ++ .proto p :: rest) {} with
   | ok stF =>
-    obtain ⟨s1, inst, hpre, hx, hrest, hvlan⟩ :=
+    obtain ⟨s1, inst, hpre, hx, hrest⟩ :=
       evalChain_proto_inv _ pre rest p spec {} stF hq hnp hsp hW
     have hinst := resolveRef_layer _ pre rest p spec inst s1 stF rfl hnames hlab hproto hpre hx hrest
-    have key := bracket_eq_where_at _ pre rest p spec inst f op v {} s1 stF hq hname hvlan hpre hx hrest
+    have key := bracket_eq_where_at _ pre rest p spec inst f op v {} s1 stF hq hname hpre hx hrest
       (by rw [hname]; exact hproto) (by rw [hname]; exact hsp) (by rw [hname]; exact hinst) hres
     rw [hname] at key
     rw [key]

@@ -84,6 +84,7 @@ Entries are never deleted; a rejected candidate stays in the log.
 - 状態: 承認済 (2026-10-01、一括)
 - 反映先: `Eval.lean` (host は dispatch に関与しない), vectors `host-l3-ipv4-root`, `host-l3-eth-root`
 - 追記 (2026-10-03): `vlanInMetadata` の host で必須の `vlan` layer (alternation の枝を含む) は illTyped。Go も `ErrNotImplemented` ではなく型エラーを返すようにした (`codegen.ErrVlanInMetadata`、vectors `host-tc-vlan-mandatory`, `host-tc-vlan-alt*`, `host-tc-qinq-vlan`)。追記 2 (2026-10-05): 規則を `qinq` にも広げた (`Host.tagInMetadata`)。kernel の `skb_vlan_untag` は 802.1Q と 802.1ad の外側 tag を同じように metadata に移すので、byte 列に無い理由は両者で同じ。Go も必須の `qinq` を `ErrVlanInMetadata` にした (vectors `host-tc-qinq-mandatory`, `host-tc-qinq-optional`)。
+- 追記 3 (2026-10-07、ユーザー決定): kernel が metadata に移すのは外側の tag だけなので、規則を位置で絞った。対象は root の `eth` の直後に tag (vlan / qinq、tag だけの alternation を含む) だけが並ぶ位置の tag で、トンネルの内側 (`eth/ipv4/udp/vxlan/eth/vlan/...`) の tag は packet の byte 列にあるので、必須にしても bracket / where / capture で読んでもよい。`eth/qinq?/vlan` の vlan は間に tag しか無いので外側のまま (型エラー)。spec: `Check.outerTagPos` (chain の protocol 名だけを見る静的な規則)。レビューを受けて、`evalProtoLayer` にあった実行時の同じ判定は外した (`check` を通った filter では到達せず、利用者の vocab では optional な非 tag layer が不在のときに静的な規則と食い違いえたため)。root が `eth` でない chain (tc の `vlan/...`、L3 から始まる host) には規則を当てない。Go: `checkHostLayerSupport` の全規則 (型エラー、tag の predicate、where / capture での読み取り) を外側の tag に限った。vectors `host-tc-inner-vlan*`, `host-tc-qinq-opt-then-vlan`。
 
 ## D-009: 算術の幅 (定数同士)
 - 論点: `mod 2^max(width(e₁), width(e₂))` の width が定数由来のとき。

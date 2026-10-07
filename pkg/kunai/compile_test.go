@@ -1589,6 +1589,24 @@ func TestVlanInMetadataRejectsVlanLayers(t *testing.T) {
 		"eth/vlan?/ipv4/tcp where ipv4.ttl == 64", // past the tag: runtime offset, no tag read
 	}
 	tcCaps := codegen.Capabilities{Host: codegen.HostLayout{VlanInMetadata: true}}
+	// Only the outer tag is in metadata: a tag inside a tunnel is in the
+	// packet bytes, so it may be mandatory and read (spec D-008).
+	for _, expr := range []string{
+		"eth/ipv4/udp/vxlan/eth/vlan/ipv4/tcp",
+		"eth/ipv4/udp/vxlan/eth/vlan[tci==100]/ipv4/tcp where vlan.tci == 100",
+		"eth/ipv4/udp/vxlan/eth/qinq/vlan/ipv4/tcp capture vlan",
+		"eth/vlan?/ipv4/udp/vxlan/eth/vlan@i[tci==100]/ipv4/tcp where i.tci == 100",
+	} {
+		t.Run("inner/"+expr, func(t *testing.T) {
+			if _, err := Compile(expr, tcCaps); err != nil {
+				t.Errorf("inner tag with VlanInMetadata: %v", err)
+			}
+		})
+	}
+	// The same protocol name as the outer tag: still refused there.
+	if _, err := Compile("eth/vlan@o?/ipv4/udp/vxlan/eth/vlan@i/ipv4/tcp where o.tci == 100", tcCaps); !errors.Is(err, codegen.ErrNotImplemented) {
+		t.Errorf("outer tag read by label: got %v, want ErrNotImplemented", err)
+	}
 	for _, expr := range illTyped {
 		t.Run("illTyped/"+expr, func(t *testing.T) {
 			_, err := Compile(expr, tcCaps)
