@@ -13,12 +13,13 @@ var tcHook = &Hook{
 	Kind:           KindTC,
 	ProgTypes:      []ebpf.ProgramType{ebpf.SchedCLS, ebpf.SchedACT},
 	PacketPrologue: skbPacketPrologue,
+	OuterVlanTag:   skbOuterVlanTag,
 	Identity:       skbIdentity,
-	// The tc host carries VlanInMetadata in both entry and fexit caps,
-	// because the kernel strips the outer VLAN tag into skb metadata
-	// before either attach point runs.
-	EntryCaps: tchost.EntryCapabilities,
-	FexitCaps: tchost.FexitCapabilities,
+	// The kernel strips the outer VLAN tag into skb metadata before
+	// either attach point runs; OuterVlanTag puts it back into the
+	// filter's copy, so the filter parses the wire frame.
+	EntryCaps: tchost.WireEntryCapabilities,
+	FexitCaps: tchost.WireFexitCapabilities,
 	// Mirrors tchost.Actions (uapi/linux/pkt_cls.h); consistency is
 	// asserted by TestHookActionsMatchHostVocab.
 	Actions: []ActionName{
@@ -67,4 +68,28 @@ func skbPacketPrologue() (asm.Instructions, error) {
 		asm.Mov.Reg(asm.R8, asm.R7),
 		asm.Add.Reg(asm.R8, asm.R9), // R8 = data + headlen
 	), nil
+}
+
+// skbOuterVlanTag loads the outer VLAN tag from struct sk_buff (R6):
+// R2 = vlan_proto as stored (network order), R3 = vlan_tci. A kernel
+// with the vlan_present bit reports no tag (R2 = 0) when it is clear,
+// because proto and tci may then be stale.
+func skbOuterVlanTag() (asm.Instructions, error) {
+	v, err := skBuffVlanOffsets()
+	if err != nil {
+		return nil, fmt.Errorf("resolving struct sk_buff VLAN members via BTF: %w", err)
+	}
+	insns := asm.Instructions{
+		asm.LoadMem(asm.R2, asm.R6, int16(v.proto), asm.Half),
+		asm.LoadMem(asm.R3, asm.R6, int16(v.tci), asm.Half),
+	}
+	if v.hasPresent {
+		insns = append(insns,
+			asm.LoadMem(asm.R1, asm.R6, int16(v.presentByte), asm.Byte),
+			asm.JSet.Imm(asm.R1, int32(1)<<v.presentBit, "vlan_tag_present"),
+			asm.Mov.Imm(asm.R2, 0),
+			asm.Mov.Reg(asm.R1, asm.R1).WithSymbol("vlan_tag_present"),
+		)
+	}
+	return insns, nil
 }

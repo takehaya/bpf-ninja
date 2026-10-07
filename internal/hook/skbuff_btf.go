@@ -62,3 +62,83 @@ var (
 	skBuffDataLenOff uint32
 	skBuffErr        error
 )
+
+// skBuffVlan locates the outer VLAN tag kept in `struct sk_buff`
+// metadata (skb_vlan_untag on receive, the hwaccel tag on transmit).
+// The members sit inside anonymous unions and struct groups, so the walk
+// descends into anonymous members and adds their offsets. Kernels before
+// 6.2 mark presence with the `vlan_present` bitfield (proto and tci may
+// be stale when it is clear); later kernels clear `vlan_all` and test it
+// for zero, so a non-zero vlan_proto means a tag.
+type skBuffVlan struct {
+	proto, tci uint32 // byte offsets: __be16 vlan_proto, __u16 vlan_tci
+	// presentByte / presentBit locate `vlan_present` (bit numbered from
+	// the least significant bit of that byte); hasPresent is false on
+	// kernels without it.
+	presentByte uint32
+	presentBit  uint8
+	hasPresent  bool
+}
+
+func skBuffVlanOffsets() (skBuffVlan, error) {
+	skBuffVlanOnce.Do(func() {
+		spec, err := btf.LoadKernelSpec()
+		if err != nil {
+			skBuffVlanErr = fmt.Errorf("loading kernel BTF: %w", err)
+			return
+		}
+		var skb *btf.Struct
+		if err := spec.TypeByName("sk_buff", &skb); err != nil {
+			skBuffVlanErr = fmt.Errorf("BTF type sk_buff not found: %w", err)
+			return
+		}
+		proto, okProto := findMember(skb, "vlan_proto", 0)
+		tci, okTCI := findMember(skb, "vlan_tci", 0)
+		if !okProto || !okTCI {
+			skBuffVlanErr = fmt.Errorf("BTF struct sk_buff missing vlan_proto or vlan_tci")
+			return
+		}
+		v := skBuffVlan{proto: proto.Offset.Bytes(), tci: tci.Offset.Bytes()}
+		if p, ok := findMember(skb, "vlan_present", 0); ok {
+			v.presentByte = uint32(p.Offset) / 8
+			v.presentBit = uint8(uint32(p.Offset) % 8)
+			v.hasPresent = true
+		}
+		skBuffVlanVal = v
+	})
+	return skBuffVlanVal, skBuffVlanErr
+}
+
+// findMember finds a member by name in t (a struct or union) or,
+// recursively, in its anonymous struct / union members. The returned
+// member's Offset is relative to the outermost type; base is the bit
+// offset of t in it.
+func findMember(t btf.Type, name string, base btf.Bits) (btf.Member, bool) {
+	var members []btf.Member
+	switch c := btf.UnderlyingType(t).(type) {
+	case *btf.Struct:
+		members = c.Members
+	case *btf.Union:
+		members = c.Members
+	default:
+		return btf.Member{}, false
+	}
+	for _, m := range members {
+		if m.Name == name {
+			m.Offset += base
+			return m, true
+		}
+		if m.Name == "" {
+			if found, ok := findMember(m.Type, name, base+m.Offset); ok {
+				return found, true
+			}
+		}
+	}
+	return btf.Member{}, false
+}
+
+var (
+	skBuffVlanOnce sync.Once
+	skBuffVlanVal  skBuffVlan
+	skBuffVlanErr  error
+)

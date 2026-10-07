@@ -806,9 +806,11 @@ func checkUnsupported(p *ir.Program) error {
 
 // checkHostLayerSupport rejects chains the target host cannot match by
 // parsing packet bytes. It guards VLAN: when the host has
-// HostLayout.VlanInMetadata set (e.g. tc, where skb_vlan_untag moves the
-// outer tag into skb metadata before the program runs), a vlan or qinq
-// layer read from packet bytes would see the wrong bytes.
+// HostLayout.VlanInMetadata set (a tc host that hands the filter the
+// bytes as the kernel keeps them, after skb_vlan_untag moved the outer
+// tag into skb metadata), a vlan or qinq layer read from packet bytes
+// would see the wrong bytes. bpf-ninja's tc host puts the tag back into
+// the filter's copy and clears the flag, so none of this applies there.
 //
 // A vlan/qinq layer is still matchable when it can be ABSENT from the
 // packet bytes — an optional quantifier (`?`, `*`, `{0,m}`) whose
@@ -842,8 +844,7 @@ func checkUnsupported(p *ir.Program) error {
 //     every tagged frame).
 //
 // Fields past the optional tag read fine: the layers after it record
-// their runtime offsets. Reading the tag from skb metadata is future
-// work; see HostLayout.VlanInMetadata.
+// their runtime offsets.
 func checkHostLayerSupport(p *ir.Program, host HostLayout) error {
 	if !host.VlanInMetadata {
 		return nil
@@ -947,7 +948,7 @@ func checkHostLayerSupport(p *ir.Program, host HostLayout) error {
 				}
 			case len(l.Predicates) > 0:
 				if refusal == nil {
-					refusal = withPos(fmt.Errorf("%w: the predicate on layer %q reads a VLAN tag this host moves to skb metadata before the program runs; the tag is not in the packet bytes (reading it from metadata is future work)", ErrNotImplemented, l.Spec.Name), l.Pos)
+					refusal = withPos(fmt.Errorf("%w: the predicate on layer %q reads a VLAN tag this host moves to skb metadata before the program runs; the tag is not in the packet bytes (a host that puts the tag back into the bytes, like bpf-ninja's tc host, can read it)", ErrNotImplemented, l.Spec.Name), l.Pos)
 				}
 			}
 		}
@@ -967,7 +968,7 @@ func checkHostLayerSupport(p *ir.Program, host HostLayout) error {
 	var refErr error
 	visit := func(f *ir.FieldRef) {
 		if refErr == nil && f != nil && isVlan(f.Layer) {
-			refErr = withPos(fmt.Errorf("%w: where / capture reads %s.%s, but this host moves the VLAN tag to skb metadata before the program runs; the tag is not in the packet bytes (reading it from metadata is future work)", ErrNotImplemented, f.Layer.Spec.Name, f.Field.Name), f.Layer.Pos)
+			refErr = withPos(fmt.Errorf("%w: where / capture reads %s.%s, but this host moves the VLAN tag to skb metadata before the program runs; the tag is not in the packet bytes (a host that puts the tag back into the bytes, like bpf-ninja's tc host, can read it)", ErrNotImplemented, f.Layer.Spec.Name, f.Field.Name), f.Layer.Pos)
 		}
 	}
 	ir.WalkConditionFieldRefs(p.Where, visit)

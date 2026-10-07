@@ -314,79 +314,116 @@ vector altNoCheck := {
 
 -- Host (D-008) -----------------------------------------------------------------
 
-vector hostTcVlanMandatory := {
-  id := "host-tc-vlan-mandatory", host := .tc_entry,
+-- bpf-ninja's tc host puts the outer tag back from skb metadata, so the
+-- filter sees the wire frame: tags parse as at any other host.
+def qinqVlanPkt : Packet := eth 0x88a8 ++ vlan 10 0x8100 ++ vlan 100 0x0800 ++ ipv4 6 ++ tcp 12345 80 ++ payload 5
+def vlanTci (op : CmpOp) (v : Nat) : ProtoLayer := { name := "vlan", preds := [.cmp ⟨[("tci", none)]⟩ op (.int v)] }
+vector hostTcWireVlanMandatory := {
+  id := "host-tc-vlan-mandatory", host := .tc_entry, ast := { layers := [P "eth", P "vlan", P "ipv4", P "tcp"] },
+  packet := vlanPkt, expected := .accept [], note := "D-008: the tc host hands the filter the wire frame" }
+vector hostTcWireVlanMandatoryUntagged := {
+  id := "host-tc-vlan-mandatory-untagged", host := .tc_entry, ast := { layers := [P "eth", P "vlan", P "ipv4", P "tcp"] },
+  packet := eth 0x0800 ++ ipv4 6 ++ tcp 12345 80 ++ payload 5, expected := .reject }
+vector hostTcWireVlanTci := {
+  id := "host-tc-vlan-tci", host := .tc_entry, ast := { layers := [P "eth", .proto (vlanTci .eq 100), P "ipv4", P "tcp"] },
+  packet := vlanPkt, expected := .accept [] }
+vector hostTcWireVlanTciMiss := {
+  id := "host-tc-vlan-tci-miss", host := .tc_entry, ast := { layers := [P "eth", .proto (vlanTci .eq 200), P "ipv4", P "tcp"] },
+  packet := vlanPkt, expected := .reject }
+vector hostTcWireVlanWhere := {
+  id := "host-tc-vlan-where", host := .tc_exit, action := 0,
+  ast := { layers := [P "eth", Pq "vlan" .opt, P "ipv4", P "tcp"],
+           cond := some (.and (.arith (.field ⟨[("vlan", none), ("tci", none)]⟩) .eq (.const 100)) (.action "TC_ACT_OK")) },
+  packet := vlanPkt, expected := .accept [] }
+vector hostTcWireUntaggedChainOnTagged := {
+  id := "host-tc-untagged-chain-on-tagged", host := .tc_entry, ast := { layers := chain3 }, packet := vlanPkt,
+  expected := .reject, note := "eth/ipv4/tcp does not match a tagged frame at tc either" }
+vector hostTcWireQinqVlan := {
+  id := "host-tc-qinq-vlan", host := .tc_entry,
+  ast := { layers := [P "eth", .proto { name := "qinq", preds := [.cmp ⟨[("tci", none)]⟩ .eq (.int 10)] }, .proto (vlanTci .eq 100), P "ipv4", P "tcp"] },
+  packet := qinqVlanPkt, expected := .accept [],
+  note := "the kernel moves only the 802.1ad tag to metadata; the 802.1Q tag stays in the bytes behind it" }
+vector hostTcWireVlanAlt := {
+  id := "host-tc-vlan-alt", host := .tc_entry,
+  ast := { layers := [P "eth", .alt [{ name := "vlan" }, { name := "qinq" }], P "ipv4", P "tcp"] }, packet := vlanPkt,
+  expected := .accept [] }
+
+-- A tc host that does not put the tag back (tc_raw_entry) keeps the old rule.
+
+
+vector hostTcRawVlanMandatory := {
+  id := "host-tc-raw-vlan-mandatory", host := .tc_raw_entry,
   ast := { layers := [P "eth", P "vlan", P "ipv4", P "tcp"] }, packet := vlanPkt,
   expected := .illTyped "vlan is in metadata on this host; the layer must be optional" }
-vector hostTcVlanAlt := {
-  id := "host-tc-vlan-alt", host := .tc_entry,
+vector hostTcRawVlanAlt := {
+  id := "host-tc-raw-vlan-alt", host := .tc_raw_entry,
   ast := { layers := [P "eth", .alt [{ name := "vlan" }, { name := "qinq" }], P "ipv4", P "tcp"] }, packet := vlanPkt,
   expected := .illTyped "vlan is in metadata on this host; the layer must be optional",
   note := "an alternation member is mandatory" }
-vector hostTcVlanAltSecond := {
-  id := "host-tc-vlan-alt-second", host := .tc_entry,
+vector hostTcRawVlanAltSecond := {
+  id := "host-tc-raw-vlan-alt-second", host := .tc_raw_entry,
   ast := { layers := [P "eth", .alt [{ name := "qinq" }, { name := "vlan" }], P "ipv4", P "tcp"] }, packet := vlanPkt,
   expected := .illTyped "qinq is in metadata on this host; the layer must be optional" }
-vector hostTcQinqVlan := {
-  id := "host-tc-qinq-vlan", host := .tc_entry,
+vector hostTcRawQinqVlan := {
+  id := "host-tc-raw-qinq-vlan", host := .tc_raw_entry,
   ast := { layers := [P "eth", P "qinq", P "vlan", P "ipv4", P "tcp"] }, packet := vlanPkt,
   expected := .illTyped "qinq is in metadata on this host; the layer must be optional",
   note := "both tags are mandatory; the first is reported" }
-vector hostTcQinqMandatory := {
-  id := "host-tc-qinq-mandatory", host := .tc_entry,
+vector hostTcRawQinqMandatory := {
+  id := "host-tc-raw-qinq-mandatory", host := .tc_raw_entry,
   ast := { layers := [P "eth", P "qinq", P "ipv4", P "tcp"] }, packet := vlanPkt,
   expected := .illTyped "qinq is in metadata on this host; the layer must be optional",
   note := "the kernel moves an 802.1ad outer tag to metadata like an 802.1Q one" }
-vector hostTcQinqOpt := {
-  id := "host-tc-qinq-optional", host := .tc_entry,
+vector hostTcRawQinqOpt := {
+  id := "host-tc-raw-qinq-optional", host := .tc_raw_entry,
   ast := { layers := [P "eth", Pq "qinq" .opt, Pq "vlan" .opt, P "ipv4", P "tcp"] }, packet := vlanPkt,
   expected := .accept [] }
 def vxlanInnerVlanPkt (tci : Nat := 100) : Packet :=
   eth 0x0800 ++ ipv4 17 ++ udp 1234 4789 ++ vxlan 100 ++ eth 0x8100 ++ vlan tci 0x0800 ++ ipv4 6 ++ tcp 12345 80 ++ payload 5
 def vxlanInnerVlanL : List Layer := [P "eth", P "ipv4", P "udp", P "vxlan", P "eth", P "vlan", P "ipv4", P "tcp"]
 set_option maxRecDepth 16384 in
-vector hostTcInnerVlan := {
-  id := "host-tc-inner-vlan", host := .tc_entry, ast := { layers := vxlanInnerVlanL }, packet := vxlanInnerVlanPkt,
+vector hostTcRawInnerVlan := {
+  id := "host-tc-raw-inner-vlan", host := .tc_raw_entry, ast := { layers := vxlanInnerVlanL }, packet := vxlanInnerVlanPkt,
   expected := .accept [], note := "D-008: only the outer tag is moved to metadata; a tag inside a tunnel is in the packet bytes" }
 set_option maxRecDepth 16384 in
-vector hostTcInnerVlanTci := {
-  id := "host-tc-inner-vlan-tci", host := .tc_entry,
+vector hostTcRawInnerVlanTci := {
+  id := "host-tc-raw-inner-vlan-tci", host := .tc_raw_entry,
   ast := { layers := vxlanInnerVlanL, cond := some (.arith (.field ⟨[("vlan", none), ("tci", none)]⟩) .eq (.const 100)) },
   packet := vxlanInnerVlanPkt, expected := .accept [] }
 set_option maxRecDepth 16384 in
-vector hostTcInnerVlanPred := {
-  id := "host-tc-inner-vlan-bracket", host := .tc_entry,
+vector hostTcRawInnerVlanPred := {
+  id := "host-tc-raw-inner-vlan-bracket", host := .tc_raw_entry,
   ast := { layers := [P "eth", P "ipv4", P "udp", P "vxlan", P "eth", .proto { name := "vlan", preds := [.cmp ⟨[("tci", none)]⟩ .eq (.int 200)] }, P "ipv4", P "tcp"] },
   packet := vxlanInnerVlanPkt, expected := .reject, note := "the inner tag is read: tci 100 ≠ 200" }
 set_option maxRecDepth 16384 in
-vector hostTcOuterAndInner := {
-  id := "host-tc-outer-optional-inner-bracket", host := .tc_entry,
+vector hostTcRawOuterAndInner := {
+  id := "host-tc-raw-outer-optional-inner-bracket", host := .tc_raw_entry,
   ast := { layers := [P "eth", Pq "vlan" .opt, P "ipv4", P "udp", P "vxlan", P "eth",
                       .proto { name := "vlan", preds := [.cmp ⟨[("tci", none)]⟩ .eq (.int 100)] }, P "ipv4", P "tcp"] },
   packet := vxlanInnerVlanPkt, expected := .accept [],
   note := "the same protocol twice: the outer vlan follows the root eth (metadata rules), the inner one is in the tunnel (read freely)" }
 set_option maxRecDepth 16384 in
-vector hostTcInnerLabel := {
-  id := "host-tc-inner-labelled-where", host := .tc_entry,
+vector hostTcRawInnerLabel := {
+  id := "host-tc-raw-inner-labelled-where", host := .tc_raw_entry,
   ast := { layers := [P "eth", .proto { name := "vlan", label := some "o", quant := .opt }, P "ipv4", P "udp", P "vxlan", P "eth",
                       .proto { name := "vlan", label := some "i" }, P "ipv4", P "tcp"],
            cond := some (.arith (.field ⟨[("i", none), ("tci", none)]⟩) .eq (.const 100)) },
   packet := vxlanInnerVlanPkt, expected := .accept [] }
 set_option maxRecDepth 16384 in
-vector hostTcOuterLabelRead := {
-  id := "host-tc-outer-labelled-where", host := .tc_entry,
+vector hostTcRawOuterLabelRead := {
+  id := "host-tc-raw-outer-labelled-where", host := .tc_raw_entry,
   ast := { layers := [P "eth", .proto { name := "vlan", label := some "o", quant := .opt }, P "ipv4", P "udp", P "vxlan", P "eth",
                       .proto { name := "vlan", label := some "i" }, P "ipv4", P "tcp"],
            cond := some (.not (.arith (.field ⟨[("o", none), ("tci", none)]⟩) .eq (.const 100))) },
   packet := vxlanInnerVlanPkt, expected := .accept [], goStatus := .notImplemented,
-  note := "Go: reading the outer tag at a metadata host is refused (the tag is not in the bytes; reading skb metadata is future work)" }
-vector hostTcMixedAlt := {
-  id := "host-tc-mixed-alt", host := .tc_entry,
+  note := "Go: reading the outer tag at a metadata host is refused (the tag is not in the bytes this host hands the filter)" }
+vector hostTcRawMixedAlt := {
+  id := "host-tc-raw-mixed-alt", host := .tc_raw_entry,
   ast := { layers := [P "eth", .alt [{ name := "vlan" }, { name := "ipv4" }], P "tcp"] }, packet := vlanPkt,
   expected := .illTyped "vlan is in metadata on this host; the layer must be optional",
   note := "a tag member of an alternation right after the root eth is an outer tag" }
-vector hostTcVlanRoot := {
-  id := "host-tc-vlan-root", host := .tc_entry, ast := { layers := [P "vlan", P "vlan", P "ipv4", P "tcp"] }, packet := vlanPkt,
+vector hostTcRawVlanRoot := {
+  id := "host-tc-raw-vlan-root", host := .tc_raw_entry, ast := { layers := [P "vlan", P "vlan", P "ipv4", P "tcp"] }, packet := vlanPkt,
   expected := .reject, note := "D-008: the rule concerns tags after a root eth; a chain rooted elsewhere is well-typed (and does not match an Ethernet frame)" }
 set_option maxRecDepth 16384 in
 vector hostL3InnerVlan := {
@@ -394,13 +431,13 @@ vector hostL3InnerVlan := {
   ast := { layers := [P "ipv4", P "udp", P "vxlan", P "eth", P "vlan", P "ipv4", P "tcp"] },
   packet := ipv4 17 ++ udp 1234 4789 ++ vxlan 100 ++ eth 0x8100 ++ vlan 100 0x0800 ++ ipv4 6 ++ tcp 12345 80 ++ payload 5,
   expected := .accept [], note := "an L3-rooted host: no root eth, so the tunnel's vlan is an ordinary layer" }
-vector hostTcQinqOptVlan := {
-  id := "host-tc-qinq-opt-then-vlan", host := .tc_entry,
+vector hostTcRawQinqOptVlan := {
+  id := "host-tc-raw-qinq-opt-then-vlan", host := .tc_raw_entry,
   ast := { layers := [P "eth", Pq "qinq" .opt, P "vlan", P "ipv4", P "tcp"] }, packet := vlanPkt,
   expected := .illTyped "vlan is in metadata on this host; the layer must be optional",
   note := "only tags stand between the root eth and vlan, so it is still an outer tag" }
-vector hostTcVlanOpt := {
-  id := "host-tc-vlan-optional", host := .tc_entry, ast := { layers := vlanOpt }, expected := .accept [] }
+vector hostTcRawVlanOpt := {
+  id := "host-tc-raw-vlan-optional", host := .tc_raw_entry, ast := { layers := vlanOpt }, expected := .accept [] }
 vector hostL3Root := {
   id := "host-l3-ipv4-root", host := .cgroup_skb_entry, ast := { layers := [P "ipv4", P "tcp"] },
   packet := l3Pkt, expected := .accept [] }
@@ -418,7 +455,7 @@ def chainVectors : List Vector := [
   quantPredAllHold, quantSelfValidSkip, quantSelfValidPresent, quantSelfValidShortV4, quantSelfValidShortV6, quantSelfValidEmpty, quantSelfValidCascade, quantSelfValidCascadeEth, quantSelfValidBroken, quantOptIPv4Last, quantOptIPv4LastAbsent, quantOptIPIP, quantExactOneMachine, typAltExactOne, typRepeatNoSelfEdge, typRepeatNoSelfEdgeStar, quantOptIPIPAbsent, quantOptIPIPTwiceOne, quantOptIPIPTwiceNone, quantOptIPIPTwiceBoth, typOptionalAfterSkip, typOptionalNoCheck, chainMandatorySelfEdgeMiss, quantSelfEdgeStar, quantSelfEdgeOpt,
   absentConsecutiveEthertype, absentConsecutiveSelfValid, absentConsecutiveMplsOnly, absentConsecutiveNeither, absentConsecutiveArp, quantFirstOptional,
   altFirst, altSecond, altAfterVxlan6, altAfterVxlan4, altNone, altFirstPredFails, altRoot, altNoCheck,
-  hostTcVlanMandatory, hostTcVlanAlt, hostTcVlanAltSecond, hostTcQinqVlan, hostTcQinqMandatory, hostTcQinqOpt, hostTcInnerVlan, hostTcInnerVlanTci, hostTcInnerVlanPred, hostTcQinqOptVlan, hostTcOuterAndInner, hostTcInnerLabel, hostTcOuterLabelRead,
-  hostTcMixedAlt, hostTcVlanRoot, hostL3InnerVlan, hostTcVlanOpt, hostL3Root, hostL3EthRoot]
+  hostTcWireVlanMandatory, hostTcWireVlanMandatoryUntagged, hostTcWireVlanTci, hostTcWireVlanTciMiss, hostTcWireVlanWhere, hostTcWireUntaggedChainOnTagged, hostTcWireQinqVlan, hostTcWireVlanAlt, hostTcRawVlanMandatory, hostTcRawVlanAlt, hostTcRawVlanAltSecond, hostTcRawQinqVlan, hostTcRawQinqMandatory, hostTcRawQinqOpt, hostTcRawInnerVlan, hostTcRawInnerVlanTci, hostTcRawInnerVlanPred, hostTcRawQinqOptVlan, hostTcRawOuterAndInner, hostTcRawInnerLabel, hostTcRawOuterLabelRead,
+  hostTcRawMixedAlt, hostTcRawVlanRoot, hostL3InnerVlan, hostTcRawVlanOpt, hostL3Root, hostL3EthRoot]
 
 end Kunai

@@ -1,60 +1,47 @@
 package program
 
-// tc-host VLAN support: an optional, predicate-free vlan/qinq layer is
-// matchable at the tc attach point (the kernel moves the outer tag into
-// skb metadata, and the byte parser takes the layer's skip path), while
-// a mandatory tag, a field-reading predicate, or a tag inside an
-// alternation stays rejected at compile time. The datapath rationale is
-// confirmed end-to-end in vlan_untag_datapath_test.go.
+// tc-host VLAN support: the tc host puts the outer VLAN tag the kernel
+// keeps in skb metadata back into the filter's copy (hook.OuterVlanTag),
+// so every vlan / qinq shape compiles and loads at tc as at XDP. The
+// matching itself is checked on a veth pair in vlan_wire_frame_test.go.
 
 import (
-	"errors"
 	"testing"
 
 	"github.com/cilium/ebpf"
-
-	"github.com/takehaya/bpf-ninja/pkg/kunai/codegen"
 )
 
-// tcAcceptedVlanExprs load & verify at the tc clsact host.
-var tcAcceptedVlanExprs = []string{
-	"eth/vlan?/ipv4/tcp",             // optional single tag
-	"eth/qinq?/vlan?/ipv4/tcp",       // recommended tag-flexible pattern
-	"eth/vlan*/ipv4/tcp",             // zero-or-more (bpf_loop)
-	"eth/vlan?/ipv4/tcp[dport==443]", // optional tag + predicate on a later layer
+// tcVlanExprs load & verify at the tc clsact host.
+var tcVlanExprs = []string{
+	"eth/vlan?/ipv4/tcp",
+	"eth/qinq?/vlan?/ipv4/tcp",
+	"eth/vlan*/ipv4/tcp",
+	"eth/vlan?/ipv4/tcp[dport==443]",
+	"eth/vlan/ipv4/tcp",
+	"eth/vlan{1,3}/ipv4/tcp",
+	"eth/qinq/vlan/ipv4/tcp",
+	"eth/vlan[tci==100]/ipv4/tcp",
+	"eth/(vlan|qinq)/ipv4/tcp",
+	"eth/qinq/vlan?/ipv4/tcp",
+	"eth/vlan[tci==100]?/ipv4/tcp",
+	"eth/vlan?/ipv4/tcp where vlan.tci == 100",
+	"eth/vlan?/ipv4/tcp capture vlan",
 }
 
-// tcRejectedVlanExprs reject at compile time on the tc host: they read a
-// tag the kernel stripped into skb metadata. A mandatory tag layer is a
-// type error; a predicate on an optional tag is not implemented.
-var tcRejectedVlanExprs = []struct {
-	expr string
-	want error
-}{
-	{"eth/vlan/ipv4/tcp", codegen.ErrVlanInMetadata},            // mandatory tag, no skip path
-	{"eth/vlan{1,3}/ipv4/tcp", codegen.ErrVlanInMetadata},       // mandatory (RangeMin>=1)
-	{"eth/qinq/vlan/ipv4/tcp", codegen.ErrVlanInMetadata},       // mandatory QinQ stack
-	{"eth/vlan[tci==100]/ipv4/tcp", codegen.ErrVlanInMetadata},  // mandatory + reads tci
-	{"eth/(vlan|qinq)/ipv4/tcp", codegen.ErrVlanInMetadata},     // tag inside an alternation
-	{"eth/qinq/vlan?/ipv4/tcp", codegen.ErrVlanInMetadata},      // mandatory outer tag
-	{"eth/vlan[tci==100]?/ipv4/tcp", codegen.ErrNotImplemented}, // optional but reads tci (predicate before quant)
-}
-
-func TestVlanTCOptionalLoads(t *testing.T) {
+func TestVlanTCLoads(t *testing.T) {
 	hostProg := loadDummyTC(t) // skips when not root
-	for _, expr := range tcAcceptedVlanExprs {
+	for _, expr := range tcVlanExprs {
 		t.Run(expr, func(t *testing.T) {
 			loadProbeOrFail(t, hostProg, tcFuncName, expr, false /*exit*/, true /*useDSL*/)
 		})
 	}
 }
 
-func TestVlanTCFieldReadingRejects(t *testing.T) {
-	for _, c := range tcRejectedVlanExprs {
-		t.Run(c.expr, func(t *testing.T) {
-			_, err := compileFilter(c.expr, true /*useDSL*/, false /*isFexit*/, ebpf.SchedCLS)
-			if !errors.Is(err, c.want) {
-				t.Fatalf("expected tc rejection %q for %q, got %v", c.want, c.expr, err)
+func TestVlanTCCompiles(t *testing.T) {
+	for _, expr := range tcVlanExprs {
+		t.Run(expr, func(t *testing.T) {
+			if _, err := compileFilter(expr, true /*useDSL*/, false /*isFexit*/, ebpf.SchedCLS); err != nil {
+				t.Fatalf("compile %q at tc: %v", expr, err)
 			}
 		})
 	}

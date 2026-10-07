@@ -185,7 +185,7 @@ func buildGatedExitInsns(h *hook.Hook, filterOut codegen.Output, tf filter.Targe
 		asm.JNE.Reg(asm.R1, asm.R2, "exit"), // stale slot (missed fentry, RT interleave): drop it
 	)
 
-	body, err := buildFilterBody(filterOut, tf, scratchFD, slots, pktRefs)
+	body, err := buildFilterBody(h, filterOut, tf, scratchFD, slots, pktRefs)
 	if err != nil {
 		return nil, err
 	}

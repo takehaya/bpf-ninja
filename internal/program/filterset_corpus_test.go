@@ -9,16 +9,13 @@ import (
 	"github.com/takehaya/bpf-ninja/pkg/kunai/codegen"
 )
 
-// tcRejectingCorpus lists the VerifierCorpus expressions the tc host
-// rejects at compile time. The tc host extracts the outer VLAN tag into
-// skb metadata before the program runs (codegen.HostLayout.VlanInMetadata),
-// so a vlan/qinq layer read from packet bytes is rejected UNLESS it is
-// absent-able — an optional quantifier whose skip path the byte parser
-// can take. The optional predicate-free forms (D00 vlan?, D01 qinq?/vlan?,
-// D07 vlan? with a tcp predicate) are therefore accepted and loaded at
-// tc; only a mandatory tag or a tag inside an alternation is rejected,
-// with the error each entry names. See checkHostLayerSupport.
-var tcRejectingCorpus = map[string]error{
+// vlanRejectingCorpus lists the VerifierCorpus expressions the
+// cgroup-skb host rejects at compile time: it keeps the outer VLAN tag in
+// skb metadata (codegen.HostLayout.VlanInMetadata), so a mandatory tag or
+// a tag inside an alternation is the error each entry names. The tc host
+// puts the tag back into the filter's copy and loads them all. See
+// checkHostLayerSupport.
+var vlanRejectingCorpus = map[string]error{
 	"eth/vlan{1,3}/ipv4/tcp":   codegen.ErrVlanInMetadata, // D04: mandatory tag, no skip path
 	"eth/(vlan|qinq)/ipv4/tcp": codegen.ErrVlanInMetadata, // E00: tag inside an alternation
 	"eth/((vlan|qinq)|ipv4)":   codegen.ErrVlanInMetadata, // E03: tag inside an alternation
@@ -167,12 +164,12 @@ func TestFilterCorpusCompiles(t *testing.T) {
 	for _, c := range VerifierCorpus {
 		for _, h := range hosts {
 			t.Run(c.ID+"/"+h.name, func(t *testing.T) {
-				wantErr := tcRejectingCorpus[c.Expr]
-				tcReject := h.progType != ebpf.XDP && wantErr != nil
+				wantErr := vlanRejectingCorpus[c.Expr]
+				vlanReject := h.progType == ebpf.CGroupSKB && wantErr != nil
 				_, err := compileFilter(c.Expr, true /*useDSL*/, false /*isFexit*/, h.progType)
-				if tcReject {
+				if vlanReject {
 					if !errors.Is(err, wantErr) {
-						t.Fatalf("compile %s (%s): expected tc rejection %q (VLAN in skb metadata), got %v", c.ID, h.name, wantErr, err)
+						t.Fatalf("compile %s (%s): expected rejection %q (VLAN in skb metadata), got %v", c.ID, h.name, wantErr, err)
 					}
 					return
 				}
@@ -201,12 +198,8 @@ func TestBpfFilterCorpusTC(t *testing.T) {
 
 func runFilterCorpusMatrix(t *testing.T, hostProg *ebpf.Program, funcName string) {
 	t.Helper()
-	isTC := funcName == tcFuncName
 	for _, c := range VerifierCorpus {
 		t.Run(c.ID, func(t *testing.T) {
-			if isTC && tcRejectingCorpus[c.Expr] != nil {
-				t.Skipf("%s carries a non-absent-able vlan/qinq layer (mandatory or in an alternation); the tc host rejects it at compile time (not loadable)", c.ID)
-			}
 			loadProbeOrFail(t, hostProg, funcName, c.Expr, false /*exit*/, true /*useDSL*/)
 		})
 	}

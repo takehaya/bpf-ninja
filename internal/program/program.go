@@ -635,7 +635,7 @@ func buildFilterGate(h *hook.Hook, filterOut codegen.Output, tf filter.TargetFil
 	if isFexit {
 		insns = append(insns, loadSavedReturn(returnOffset)...)
 	}
-	body, err := buildFilterBody(filterOut, tf, scratchFD, slots, pktRefs)
+	body, err := buildFilterBody(h, filterOut, tf, scratchFD, slots, pktRefs)
 	if err != nil {
 		return nil, err
 	}
@@ -645,7 +645,7 @@ func buildFilterGate(h *hook.Hook, filterOut codegen.Output, tf filter.TargetFil
 // buildFilterBody is the filter part of the gate (no prologue): tag
 // reset, arg filters, set filters, the kunai/cBPF filter and the DSL set
 // lookups. Assumes R6=ctx, R7=data, R8=data_end, R9=len from the prologue.
-func buildFilterBody(filterOut codegen.Output, tf filter.TargetFilters, scratchFD int, slots *pktSetSlots, pktRefs []string) (asm.Instructions, error) {
+func buildFilterBody(h *hook.Hook, filterOut codegen.Output, tf filter.TargetFilters, scratchFD int, slots *pktSetSlots, pktRefs []string) (asm.Instructions, error) {
 	var insns asm.Instructions
 	// Default the tag to 0 before any set lookup can overwrite it, so a
 	// captured packet that matched no set (or a set-less filter) reports 0.
@@ -658,7 +658,11 @@ func buildFilterBody(filterOut codegen.Output, tf filter.TargetFilters, scratchF
 	if slots != nil {
 		insns = append(insns, slots.emitPktSetKeyZeroing(pktRefs)...)
 	}
-	insns = append(insns, runFilter(filterOut.Main, scratchFD, filterScanLen(filterOut))...)
+	vlan, err := outerVlanTag(h)
+	if err != nil {
+		return nil, err
+	}
+	insns = append(insns, runFilter(filterOut.Main, scratchFD, filterScanLen(filterOut), vlan)...)
 	if slots != nil {
 		insns = append(insns, slots.emitPktSetLookups(pktRefs)...)
 	}
@@ -693,12 +697,27 @@ func filterScanLen(out codegen.Output) int {
 	return n
 }
 
+// outerVlanTag is the hook's OuterVlanTag loader, or nil when the hook
+// has none (the packet bytes already are the wire frame).
+func outerVlanTag(h *hook.Hook) (asm.Instructions, error) {
+	if h == nil || h.OuterVlanTag == nil {
+		return nil, nil
+	}
+	return h.OuterVlanTag()
+}
+
 // runFilter は scratch buffer にヘッダをコピーして cbpfc フィルタを実行する。
 // scanLen is the number of packet bytes bpf_probe_read_kernel copies in
 // and the upper bound exposed to the filter via R1; sized per-chain
 // from codegen.Output.Capture.FilterMinPrefix to avoid copying 512 B
 // when the filter only needs (e.g.) 54 B.
-func runFilter(filter asm.Instructions, scratchFD, scanLen int) asm.Instructions {
+//
+// vlan, when non-nil, loads the outer VLAN tag the kernel keeps in
+// metadata (hook.Hook.OuterVlanTag). With a tag, the copy is the wire
+// frame: the MAC addresses, the 4-byte tag, then the bytes from the
+// ethertype on, so the filter's R1 bound grows by 4. R9 stays the
+// length of the bytes in the packet (capture copies those).
+func runFilter(filter asm.Instructions, scratchFD, scanLen int, vlan asm.Instructions) asm.Instructions {
 	if len(filter) == 0 {
 		return nil
 	}
@@ -714,7 +733,11 @@ func runFilter(filter asm.Instructions, scratchFD, scanLen int) asm.Instructions
 		asm.FnMapLookupElem.Call(),
 		asm.JEq.Imm(asm.R0, 0, "exit"),
 		asm.StoreMem(asm.R10, -24, asm.R0, asm.DWord),
-
+	}
+	if vlan != nil {
+		insns = append(insns, wireFrameCopy(vlan, scanLen)...)
+	}
+	insns = append(insns, asm.Instructions{
 		// ヘッダコピー: bpf_probe_read_kernel(scratch, min(pkt_len, scanLen), data)。
 		// コピー長を R9 (線形ヘッド長) でもクランプする。固定 scanLen の
 		// ままだとヘッドが scanLen より短い skb で先の kernel メモリを読み、
@@ -722,7 +745,7 @@ func runFilter(filter asm.Instructions, scratchFD, scanLen int) asm.Instructions
 		// ゼロ化され、本物のヘッダまで消えて filter が false negative
 		// になる。probe_read_kernel は size 0 も許容する
 		// (ARG_CONST_SIZE_OR_ZERO) ので下限のガードは不要。
-		asm.Mov.Reg(asm.R1, asm.R0),
+		asm.LoadMem(asm.R1, asm.R10, -24, asm.DWord).WithSymbol("plain_copy"),
 		asm.Mov.Reg(asm.R2, asm.R9),
 		asm.JLE.Imm(asm.R2, int32(scanLen), "copy_len_ok"),
 		asm.Mov.Imm(asm.R2, int32(scanLen)),
@@ -735,10 +758,55 @@ func runFilter(filter asm.Instructions, scratchFD, scanLen int) asm.Instructions
 		asm.JLE.Imm(asm.R1, int32(scanLen), "len_ok"),
 		asm.Mov.Imm(asm.R1, int32(scanLen)),
 		asm.Add.Reg(asm.R1, asm.R0).WithSymbol("len_ok"),
-	}
+	}...)
 	insns = append(insns, filter...)
 	insns = append(insns, asm.JEq.Imm(asm.R2, 0, "exit").WithSymbol("filter_result"))
 	return insns
+}
+
+// wireFrameCopy copies the packet into the scratch buffer (at stack
+// -24) with the outer VLAN tag put back: bytes 0..12 are the MAC
+// addresses, 12..16 the tag (TPID, TCI in network order), and the
+// packet's bytes from its ethertype on follow. It sets R0 = scratch and
+// R1 = min(len + 4, scanLen) and joins runFilter at "len_ok". Without a
+// tag, or with a packet shorter than the MAC addresses, it falls through
+// to the plain copy at "plain_copy".
+func wireFrameCopy(vlan asm.Instructions, scanLen int) asm.Instructions {
+	insns := append(asm.Instructions{}, vlan...)
+	insns = append(insns,
+		asm.JEq.Imm(asm.R2, 0, "plain_copy"),
+		asm.JLT.Imm(asm.R9, 12, "plain_copy"),
+		asm.LoadMem(asm.R1, asm.R10, -24, asm.DWord),
+		asm.StoreMem(asm.R1, 12, asm.R2, asm.Half),
+		asm.HostTo(asm.BE, asm.R3, asm.Half),
+		asm.StoreMem(asm.R1, 14, asm.R3, asm.Half),
+		// bpf_probe_read_kernel(scratch, 12, data): the MAC addresses
+		asm.Mov.Imm(asm.R2, 12),
+		asm.Mov.Reg(asm.R3, asm.R7),
+		asm.FnProbeReadKernel.Call(),
+	)
+	if rest := int32(scanLen - 16); rest > 0 {
+		// bpf_probe_read_kernel(scratch + 16, min(len - 12, scanLen - 16), data + 12)
+		insns = append(insns,
+			asm.LoadMem(asm.R1, asm.R10, -24, asm.DWord),
+			asm.Add.Imm(asm.R1, 16),
+			asm.Mov.Reg(asm.R2, asm.R9),
+			asm.Sub.Imm(asm.R2, 12),
+			asm.JLE.Imm(asm.R2, rest, "vlan_rest_ok"),
+			asm.Mov.Imm(asm.R2, rest),
+			asm.Mov.Reg(asm.R3, asm.R7).WithSymbol("vlan_rest_ok"),
+			asm.Add.Imm(asm.R3, 12),
+			asm.FnProbeReadKernel.Call(),
+		)
+	}
+	return append(insns,
+		asm.LoadMem(asm.R0, asm.R10, -24, asm.DWord),
+		asm.Mov.Reg(asm.R1, asm.R9),
+		asm.Add.Imm(asm.R1, 4),
+		asm.JLE.Imm(asm.R1, int32(scanLen), "len_ok"),
+		asm.Mov.Imm(asm.R1, int32(scanLen)),
+		asm.Ja.Label("len_ok"),
+	)
 }
 
 // captureWithRingbuf is the tracing-mode capture epilogue: reserve a
