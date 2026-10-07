@@ -721,6 +721,7 @@ q  ::= 1 | ? | + | * | {n,m}                               quantifier (n,m ∈ �
 
 π  ::= cmp(f, op_c, v)                                     bracket cmp predicate
      | in(f, v̄)                                            v̄ ∈ (Int_lit | Int_lit..Int_lit)* (整数と範囲、両端は f の幅に収まる)
+     | valid                                               `[options.valid]`: この layer の option 領域が壊れていない (D-029)
      (`has` は §6 bitwise `&` で superseded — F6/F8 参照)
 
 w  ::= or(w, w) | and(w, w) | not(w)
@@ -730,6 +731,7 @@ w  ::= or(w, w) | and(w, w) | not(w)
      | atom_quant(κ, w)                                    κ ∈ {any, all}
      | atom_bool_lit(b)                                    b ∈ {true, false}
      | atom_bool_exists(f_aux)                             aux 抽出済みか
+     | atom_valid(r)                                       `r.options.valid`、r は protocol 名か label (D-029)
      | atom_bool_eq(w, op_eq, w)                           Bool == Bool / != Bool
 
 e  ::= const(n)                                            n ∈ Z, untyped (narrow in context)
@@ -748,7 +750,6 @@ f  ::= ident                                               primary field
      | ident[f].ident                                      aux stack dynamic index (parent field)
      | ident.options.IDENT.ident                           option lookup
      | ident.exists                                        aux extract bool
-     | ident.options.valid                                 option region parsed (D-029)
 
 v  ::= int_lit(n)                                          n ∈ [−2⁶³, 2⁶⁴)
      | range_lit(lo, hi)                                   N..M, predicate-only (codegen staged)
@@ -885,6 +886,17 @@ b ∈ {true, false}                  f_aux は aux ref (`<proto>.<aux>` shape)
 Γ ⊢ atom_bool_lit(b) : Bool       Γ ⊢ atom_bool_exists(f_aux) : Bool
 
 
+[T-Where-Valid]                                     [T-Pred-Valid]
+r が静的に layer p に解決する                       π̄ は layer p の bracket
+skip-region(V(p))                                  skip-region(V(p))
+────────────────────────────                      ──────────────────────
+Γ ⊢ atom_valid(r) : Bool                           Γ ⊢_p valid : Bool
+
+skip-region(spec): spec の parser が長さを宣言する option 領域 (byte で数える counter で区切られた walk) を持ち、
+`@kunai_option_region[on_fault=fail]` を宣言していない。満たさない layer に書くと ill-typed。
+`r.options.valid` と `[options.valid]` のどちらでも、`options` は p の option segment の名前と一致しなければならない。
+
+
 [T-Where-BoolEq]
 Γ ⊢ w₁ : Bool     Γ ⊢ w₂ : Bool     op_eq ∈ {==, !=}
 ─────────────────────────────────────────────────
@@ -1001,9 +1013,9 @@ captures = eval-captures(c̄, ⟨π', α', Λ'⟩, P)
 L = proto(p, ℓ?, 1, π̄)
 π + |p_header| ≤ |P|
 parent_dispatch(p, ⟨π, α, Λ⟩, P) = ok          ; 親 layer の dispatch const から p を導出可
-inst = layer-instance-of(p, π)
-α' = aux-extract(p, π, P, α)                  ; §14 parser machine で aux 抽出
-π' = π + total_bytes(p, P, π)                 ; primary header + extracted aux のサイズ合計
+⟨α', ok⟩ = aux-extract(p, π, P, α)            ; §14 parser machine で aux 抽出
+inst = layer-instance-of(p, π, ok)             ; ok は [E-Pred-Valid] / [E-W-Valid] が読む
+π' = π + total_bytes(p, P, π)                 ; primary header + extracted aux のサイズ合計。ok = false (D-029) なら header の宣言長
 Λ' = Λ ⊕ {ℓ ↦ inst}                           ; label が在れば bind
 ∀ ρ ∈ π̄. ⟨ρ, ⟨π', α', Λ'⟩⟩ ⇓_P true           ; bracket predicate がすべて成立
 ─────────────────────────────────────────────
@@ -1126,6 +1138,13 @@ b = ∃ a ∈ ā. (a = v ∧ n_f = lift(v))                   S = sets_H(name)  
                                                        ⟨in(f, @name), σ⟩ ⇓_P b
 ```
 
+```
+[E-Pred-Valid]
+inst = この layer の instance (σ' 内)
+─────────────────────────────
+⟨valid, σ'⟩ ⇓_P ok(inst)                     ; ok は §14.4 の aux-extract が返す flag
+```
+
 `in @name` の layer は必ず抽出される位置に無ければなりません。量化された layer (`?` `*` `+` `{n,m}`) と alternation の member では ill-typed です (key が書かれない経路があるため、D-036)。host は set ごとに key を 1 つ持って 1 回 lookup するので、同じ set を 2 つの predicate から参照する filter と、参照した key (chain 順、各 key の幅で align) が host の key buffer (16 byte) に収まらない filter も ill-typed です。仕様が扱うのは scalar set だけで、複合 key の set は対象外です。
 
 `f` は layer 自身の primary field のほか、where と同じ規則で aux header / 定数 index の stack 要素 (`srv6[segments[0].addr == …]`, `ipv6[exts[1].next_header == 6]`) を指せます (T-FieldAux / T-FieldStackStatic)。読み出しは `load(f, σ', P)` と同じで (この共有を述べた定理が `spec/lean` の `Laws.lean` `bracket_eq_where` と、filter 全体について accept が一致することを述べる `bracket_iff_where_eval`。仮定と範囲は定理の docstring にあります)、抽出されなかった aux / 範囲外の要素は predicate を false にし (D-027 / D-031)、write-back 後の値を見ます (D-032)。index 無しの iterator 形と動的 index は bracket では ill-typed (`where` を使う)。
@@ -1163,6 +1182,12 @@ op_c(n, v_n) = b                             ───────────�
                                               (LayerInst × AuxName) ∉ dom(α)
                                               ─────────────────────────
                                               ⟨atom_bool_exists(f_aux), σ⟩ ⇓_P false
+
+
+[E-W-Valid]                                   [E-W-Valid-Absent]
+r が σ の instance inst に解決する            r が σ のどの instance にも解決しない   ; skip された `?` など
+─────────────────────────────                 ─────────────────────────────
+⟨atom_valid(r), σ⟩ ⇓_P ok(inst)               ⟨atom_valid(r), σ⟩ ⇓_P false
 
 
 [E-W-BoolEq-iff]                              [E-W-BoolEq-xor]
@@ -1297,11 +1322,13 @@ eval-key(k, α) =
 `[E-Layer-Proto-1]` における `aux-extract(p, π, P, α)` は、`start → accept` (または `reject`) までの transitive closure として次のように定義されます。
 
 ```
-aux-extract(p, π, P, α) = α' such that ⟨start, 0, α⟩ →* ⟨accept, π_final, α'⟩  (proto bytes 内 relative)
-                        = ⊥ if →* ⟨reject⟩
+aux-extract(p, π, P, α) = ⟨α', true⟩   if ⟨start, 0, α⟩ →* ⟨accept, π_final, α'⟩       (proto bytes 内 relative)
+                        = ⟨α, false⟩   if →* ⟨reject⟩ が option 領域の loop に入った後で、
+                                          skip-region(V(p))                              ; D-029
+                        = ⊥            if →* ⟨reject⟩ (それ以外)
 ```
 
-`⊥` (reject) は親 layer の `[E-Layer-Proto-1-Fail-Pred]` 系統の失敗にマップされます。
+2 番目の場合、その layer は option を 1 つも持たず (途中まで抽出した option も捨てる)、次の layer は宣言長 (header の長さ field から決まる領域の終わり) から始まります。flag (`ok(inst)`) は instance に記録され、`[E-Pred-Valid]` / `[E-W-Valid]` が読みます。`[E-Layer-Proto-1]` の `α'` はこの組の 1 番目です。`⊥` (reject) は親 layer の `[E-Layer-Proto-1-Fail-Pred]` 系統の失敗にマップされます。option 領域を持たない layer、`on_fault=fail` を宣言した layer (bundled vocab では srv6)、領域に入る前の reject は 3 番目の場合です。
 
 ### 14.5 §14 が省略している構文と、その意味 (Phase 5)
 

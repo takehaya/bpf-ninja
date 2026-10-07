@@ -805,6 +805,73 @@ func TestCompileWhereIPv6MulIllTyped(t *testing.T) {
 	}
 }
 
+// TestArith128NestingInsideBoolEq pins the bool-eq term of the 128-bit
+// nesting guards. A bool-eq parks its operands' truth values at the top
+// of the arith region, so the slots a 128-bit expression may take shrink
+// with each enclosing `==`. Without that term the hold slots of a
+// both-sides node overwrite a parked truth value and the filter compiles
+// to a wrong verdict.
+func TestArith128NestingInsideBoolEq(t *testing.T) {
+	// bothPark(k) nests k both-sides nodes on the right: S - (S - (… S)).
+	const s = "(ipv6.src + ipv6.dst)"
+	bothPark := func(k int) string {
+		e := s
+		for range k {
+			e = s + " - (" + e + ")"
+		}
+		return e
+	}
+	// narrow(k) is a sub-64-bit expression nested k levels.
+	narrow := func(k int) string {
+		e := "tcp.dport"
+		for range k {
+			e = "tcp.dport + (" + e + ")"
+		}
+		return e
+	}
+	// boolEq wraps an atom in d nested `==`. On the right the atom runs
+	// while the left operands' truth values are parked; on the left it runs
+	// before any is. The limits are the same for both.
+	boolEq := func(atom string, d int, right bool) string {
+		for range d {
+			if right {
+				atom = "(tcp.dport == 80) == (" + atom + ")"
+			} else {
+				atom = "(" + atom + ") == (tcp.dport == 80)"
+			}
+		}
+		return atom
+	}
+	// refusal is the guard's message; the per-leaf ceiling of the 64-bit
+	// pipeline backs up the narrow guard, so its message is what tells the
+	// two apart.
+	for _, tc := range []struct {
+		atom    string
+		d       int
+		refusal string
+	}{
+		{bothPark(5) + " == 0", 0, ""},
+		{bothPark(5) + " == 0", 1, ""},
+		{bothPark(5) + " == 0", 2, "both sides"},
+		{bothPark(4) + " == 0", 2, ""},
+		{bothPark(4) + " == 0", 3, ""},
+		{"ipv6.src == " + narrow(10), 0, ""},
+		{"ipv6.src == " + narrow(10), 1, "sub-64-bit expression"},
+		{"ipv6.src == " + narrow(9), 1, ""},
+	} {
+		for _, right := range []bool{false, true} {
+			expr := "eth/ipv6/tcp where " + boolEq(tc.atom, tc.d, right)
+			_, err := compileForTest(expr)
+			switch {
+			case tc.refusal == "" && err != nil:
+				t.Errorf("Compile(%q): %v", expr, err)
+			case tc.refusal != "" && (!errors.Is(err, codegen.ErrNotImplemented) || !strings.Contains(err.Error(), tc.refusal)):
+				t.Errorf("Compile(%q) = %v; want ErrNotImplemented from the %q guard", expr, err, tc.refusal)
+			}
+		}
+	}
+}
+
 func TestCompileWhereIPv6FieldFieldArith(t *testing.T) {
 	// F4 (full): `field + field` and `field - field` on Int<128>
 	// compile via the dual-LDX pipeline and stack-bridged carry/borrow
@@ -1614,6 +1681,22 @@ func TestVlanInMetadataRejectsVlanLayers(t *testing.T) {
 				t.Fatalf("Compile(%q) with VlanInMetadata = %v; want ErrVlanInMetadata", expr, err)
 			}
 		})
+	}
+	// The advice is one the user can follow: a tag inside an alternation
+	// cannot take `?`, so the alternation is rewritten, and the rewrite
+	// compiles.
+	for _, tc := range []struct{ expr, advice, rewrite string }{
+		{"eth/vlan/ipv4/tcp", "(vlan?)", "eth/vlan?/ipv4/tcp"},
+		{"eth/(vlan|qinq)/ipv4/tcp", "write qinq?/vlan? instead", "eth/qinq?/vlan?/ipv4/tcp"},
+		{"eth/((qinq|mpls)|ipv4)", "write qinq?/(mpls|ipv4) instead", "eth/qinq?/(mpls|ipv4)"},
+		{"eth/(vlan|qinq|ipv4)", "write qinq?/vlan?/ipv4 instead", "eth/qinq?/vlan?/ipv4"},
+	} {
+		if _, err := Compile(tc.expr, tcCaps); err == nil || !strings.Contains(err.Error(), tc.advice) {
+			t.Errorf("Compile(%q) = %v; want the advice %q", tc.expr, err, tc.advice)
+		}
+		if _, err := Compile(tc.rewrite, tcCaps); err != nil {
+			t.Errorf("the advised rewrite %q does not compile: %v", tc.rewrite, err)
+		}
 	}
 	for _, expr := range rejected {
 		t.Run("reject/"+expr, func(t *testing.T) {
