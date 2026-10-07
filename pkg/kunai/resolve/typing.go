@@ -221,7 +221,7 @@ func literalFitsBits(v uint64, negative bool, bits int) bool {
 }
 
 func isZeroLiteral(e *ir.ArithExpr) bool {
-	return e != nil && e.Kind == ast.ArithConst && e.Const == 0
+	return e != nil && e.Kind == ast.ArithConst && e.Const == 0 && e.ConstHi == 0
 }
 
 // detachTrailingSlice peels a `[lo:hi]` slice index off the last

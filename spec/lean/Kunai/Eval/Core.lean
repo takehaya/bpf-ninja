@@ -95,8 +95,10 @@ def cmpNat (op : CmpOp) (a b : Nat) : Bool :=
 def narrowInt (w : Nat) (n : Int) : Except String Nat :=
   -- A plain literal is at most 64 bits whatever the width it narrows to;
   -- a wider value is written `int<128>(n)`.
-  if w > 64 ∧ (n < -((2 : Int) ^ 63) ∨ n ≥ (2 : Int) ^ 64) then
+  if w > 64 ∧ n ≥ (2 : Int) ^ 64 then
     throw s!"literal {n} exceeds 64 bits; write int<128>({n}) for a wider value"
+  else if w > 64 ∧ n < -((2 : Int) ^ 63) then
+    throw s!"literal {n} is below -2^63"
   else if n < -((2 : Int) ^ (w - 1)) ∨ n ≥ (2 : Int) ^ w then
     throw s!"literal {n} does not fit Int<{w}>"
   else if n < 0 then pure ((2 : Int) ^ w + n).toNat

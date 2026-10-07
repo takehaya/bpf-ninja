@@ -184,7 +184,7 @@ func eqLeafToAtom(leaf *ir.Condition, qo queriedOptions) (*ir.LayerInstance, acc
 	if l.Kind == ast.ArithConst && r.Kind == ast.ArithField {
 		l, r = r, l
 	}
-	if l.Kind != ast.ArithField || r.Kind != ast.ArithConst || r.Wide {
+	if l.Kind != ast.ArithField || r.Kind != ast.ArithConst {
 		return nil, accAtom{}, false
 	}
 	f := l.Field
@@ -227,6 +227,11 @@ func eqLeafToAtom(leaf *ir.Condition, qo queriedOptions) (*ir.LayerInstance, acc
 	// shift == 0xff). A constant whose high bit is set on a 4-byte field
 	// still rejects: JNE.Imm sign-extends a 32-bit immediate, so the
 	// accumulator cannot compare it correctly and must fall back.
+	// An `int<128>(n)` is not narrowed: it compares at 128 bits, so only a
+	// value the field can hold is an equality the accumulator can test.
+	if r.Wide && (r.ConstHi != 0 || r.Const>>uint(f.Aux.FieldBitWidth) != 0) {
+		return nil, accAtom{}, false
+	}
 	cmpVal := r.Const & ((uint64(1) << uint(f.Aux.FieldBitWidth)) - 1)
 	if cmpVal > 0x7FFFFFFF {
 		return nil, accAtom{}, false

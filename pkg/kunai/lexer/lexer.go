@@ -249,8 +249,12 @@ func (l *Lexer) readInt(pos ast.Position) (Token, error) {
 	text := string(l.src[start:l.pos])
 	v, err := strconv.ParseUint(text, 0, 64)
 	if err != nil {
-		if b, ok := new(big.Int).SetString(text, 0); ok && b.BitLen() <= 128 {
-			return Token{}, l.syntaxErr(pos, "integer literal %s exceeds 64 bits; write int<128>(%s) for a wider value", text, b)
+		// 128 bits are at most 39 decimal digits; a longer run is not worth
+		// parsing for the hint.
+		if len(text) <= 40 {
+			if b, ok := new(big.Int).SetString(text, 0); ok && b.BitLen() <= 128 {
+				return Token{}, l.syntaxErr(pos, "integer literal %s exceeds 64 bits; write int<128>(%s) for a wider value", text, b)
+			}
 		}
 		return Token{}, l.syntaxErr(pos, "invalid integer literal %q: %v", text, err)
 	}
@@ -290,8 +294,15 @@ func (l *Lexer) readWide(pos ast.Position) (Token, error) {
 	if digits == "" || !l.consume(")") {
 		return Token{}, l.syntaxErr(pos, "int<128>(n) takes a decimal literal n")
 	}
-	b, _ := new(big.Int).SetString(digits, 10)
-	if b.BitLen() > 128 {
+	// 2^128 - 1 has 39 digits; reject longer runs before parsing them.
+	var b *big.Int
+	if len(digits) <= 39 {
+		b, _ = new(big.Int).SetString(digits, 10)
+	}
+	if b == nil || b.BitLen() > 128 {
+		if len(digits) > 39 {
+			digits = digits[:39] + "…"
+		}
 		return Token{}, l.syntaxErr(pos, "int<128>(%s) does not fit Int<128>", digits)
 	}
 	lo := new(big.Int).And(b, new(big.Int).SetUint64(^uint64(0))).Uint64()

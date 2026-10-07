@@ -1618,6 +1618,11 @@ func (c *whereCtx) genArithWithBits(e *ir.ArithExpr, depth int, targetBits int) 
 	}
 	switch e.Kind {
 	case ast.ArithConst:
+		// The 128-bit path takes every `int<128>(n)` (arithMaxFieldBits
+		// counts it as 128); reading only the low half here would drop it.
+		if e.Wide || e.ConstHi != 0 {
+			return nil, fmt.Errorf("codegen: an int<128> literal reached the 64-bit pipeline")
+		}
 		v := e.Const
 		if targetBits > 0 && targetBits < 64 {
 			v &= (uint64(1) << targetBits) - 1
