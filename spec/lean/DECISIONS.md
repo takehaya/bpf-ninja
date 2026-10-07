@@ -208,7 +208,7 @@ Entries are never deleted; a rejected candidate stays in the log.
 - 現行 Go 実装の挙動: 静的 unroll (`chainEndRequire`) は (b)、bpf_loop 経路 (`+`, `{n,m>4}`) は (a) (既知の gap、`bpfloop.go` のコメント)。
 - 推奨: (b)。`{n,m}` と `+`/`*` (m = MAX_DEPTH) を同じ規則にし、「サポートする深さを超えたスタックは reject」と読む。bpf_loop 側は issue。
 - 帰結: `{1,1}` ≡ `1` は chain-end を持たない proto に限って成立 (`Laws.lean: one_eq_range_layer` に仮定を追加)。mpls では `{1,1}` が「スタックはここで終わる」を含意するので `mpls` と異なる (Go も同じ)。`?` ≡ `{0,1}` は `?` にも同じ要求を課して維持。
-- 状態: 提案中
+- 状態: 承認済 (2026-10-07、(b))
 - 反映先: `Eval/Layer.lean` `chainEnded` / `iterate` / `extractOpt`, `Laws.lean`, vectors `quant-overrun-bounded`, `quant-overrun-open` (goStatus mismatch), `quant-exact-bound`
 
 ## D-025: 可変長 layer の長さ
