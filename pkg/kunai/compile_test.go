@@ -829,10 +829,16 @@ func TestArith128NestingInsideBoolEq(t *testing.T) {
 		}
 		return e
 	}
-	// boolEq wraps an atom in d nested `==`, keeping it on the left.
-	boolEq := func(atom string, d int) string {
+	// boolEq wraps an atom in d nested `==`. On the right the atom runs
+	// while the left operands' truth values are parked; on the left it runs
+	// before any is. The limits are the same for both.
+	boolEq := func(atom string, d int, right bool) string {
 		for range d {
-			atom = "(" + atom + ") == (tcp.dport == 80)"
+			if right {
+				atom = "(tcp.dport == 80) == (" + atom + ")"
+			} else {
+				atom = "(" + atom + ") == (tcp.dport == 80)"
+			}
 		}
 		return atom
 	}
@@ -848,17 +854,20 @@ func TestArith128NestingInsideBoolEq(t *testing.T) {
 		{bothPark(5) + " == 0", 1, ""},
 		{bothPark(5) + " == 0", 2, "both sides"},
 		{bothPark(4) + " == 0", 2, ""},
+		{bothPark(4) + " == 0", 3, ""},
 		{"ipv6.src == " + narrow(10), 0, ""},
 		{"ipv6.src == " + narrow(10), 1, "sub-64-bit expression"},
 		{"ipv6.src == " + narrow(9), 1, ""},
 	} {
-		expr := "eth/ipv6/tcp where " + boolEq(tc.atom, tc.d)
-		_, err := compileForTest(expr)
-		switch {
-		case tc.refusal == "" && err != nil:
-			t.Errorf("Compile(%q): %v", expr, err)
-		case tc.refusal != "" && (!errors.Is(err, codegen.ErrNotImplemented) || !strings.Contains(err.Error(), tc.refusal)):
-			t.Errorf("Compile(%q) = %v; want ErrNotImplemented from the %q guard", expr, err, tc.refusal)
+		for _, right := range []bool{false, true} {
+			expr := "eth/ipv6/tcp where " + boolEq(tc.atom, tc.d, right)
+			_, err := compileForTest(expr)
+			switch {
+			case tc.refusal == "" && err != nil:
+				t.Errorf("Compile(%q): %v", expr, err)
+			case tc.refusal != "" && (!errors.Is(err, codegen.ErrNotImplemented) || !strings.Contains(err.Error(), tc.refusal)):
+				t.Errorf("Compile(%q) = %v; want ErrNotImplemented from the %q guard", expr, err, tc.refusal)
+			}
 		}
 	}
 }
@@ -1673,14 +1682,20 @@ func TestVlanInMetadataRejectsVlanLayers(t *testing.T) {
 			}
 		})
 	}
-	// The advice is one the user can follow: an alternation member cannot
-	// take `?`, so it points to optional tags instead.
-	for expr, advice := range map[string]string{
-		"eth/vlan/ipv4/tcp":        "make the layer optional (vlan?)",
-		"eth/(vlan|qinq)/ipv4/tcp": "write the tags as optional layers instead (qinq?/vlan?)",
+	// The advice is one the user can follow: a tag inside an alternation
+	// cannot take `?`, so the alternation is rewritten, and the rewrite
+	// compiles.
+	for _, tc := range []struct{ expr, advice, rewrite string }{
+		{"eth/vlan/ipv4/tcp", "(vlan?)", "eth/vlan?/ipv4/tcp"},
+		{"eth/(vlan|qinq)/ipv4/tcp", "write qinq?/vlan? instead", "eth/qinq?/vlan?/ipv4/tcp"},
+		{"eth/((qinq|mpls)|ipv4)", "write qinq?/(mpls|ipv4) instead", "eth/qinq?/(mpls|ipv4)"},
+		{"eth/(vlan|qinq|ipv4)", "write qinq?/vlan?/ipv4 instead", "eth/qinq?/vlan?/ipv4"},
 	} {
-		if _, err := Compile(expr, tcCaps); err == nil || !strings.Contains(err.Error(), advice) {
-			t.Errorf("Compile(%q) = %v; want the advice %q", expr, err, advice)
+		if _, err := Compile(tc.expr, tcCaps); err == nil || !strings.Contains(err.Error(), tc.advice) {
+			t.Errorf("Compile(%q) = %v; want the advice %q", tc.expr, err, tc.advice)
+		}
+		if _, err := Compile(tc.rewrite, tcCaps); err != nil {
+			t.Errorf("the advised rewrite %q does not compile: %v", tc.rewrite, err)
 		}
 	}
 	for _, expr := range rejected {

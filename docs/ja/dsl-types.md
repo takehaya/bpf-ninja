@@ -894,7 +894,7 @@ skip-region(V(p))                                  skip-region(V(p))
 
 skip-region(spec): spec の parser が長さを宣言する option 領域 (byte で数える counter で区切られた walk) を持ち、
 `@kunai_option_region[on_fault=fail]` を宣言していない。満たさない layer に書くと ill-typed。
-`r.options.valid` の `options` は p の option segment の名前と一致しなければならない。
+`r.options.valid` と `[options.valid]` のどちらでも、`options` は p の option segment の名前と一致しなければならない。
 
 
 [T-Where-BoolEq]
@@ -1013,9 +1013,9 @@ captures = eval-captures(c̄, ⟨π', α', Λ'⟩, P)
 L = proto(p, ℓ?, 1, π̄)
 π + |p_header| ≤ |P|
 parent_dispatch(p, ⟨π, α, Λ⟩, P) = ok          ; 親 layer の dispatch const から p を導出可
-inst = layer-instance-of(p, π)
-α' = aux-extract(p, π, P, α)                  ; §14 parser machine で aux 抽出
-π' = π + total_bytes(p, P, π)                 ; primary header + extracted aux のサイズ合計
+⟨α', ok⟩ = aux-extract(p, π, P, α)            ; §14 parser machine で aux 抽出
+inst = layer-instance-of(p, π, ok)             ; ok は [E-Pred-Valid] / [E-W-Valid] が読む
+π' = π + total_bytes(p, P, π)                 ; primary header + extracted aux のサイズ合計。ok = false (D-029) なら header の宣言長
 Λ' = Λ ⊕ {ℓ ↦ inst}                           ; label が在れば bind
 ∀ ρ ∈ π̄. ⟨ρ, ⟨π', α', Λ'⟩⟩ ⇓_P true           ; bracket predicate がすべて成立
 ─────────────────────────────────────────────

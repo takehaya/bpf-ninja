@@ -67,6 +67,7 @@ import (
 	"fmt"
 	"math"
 	"slices"
+	"strings"
 	"sync/atomic"
 
 	"github.com/cilium/ebpf/asm"
@@ -878,6 +879,51 @@ func checkHostLayerSupport(p *ir.Program, host HostLayout) error {
 		}
 	}
 	isVlan := func(l *ir.LayerInstance) bool { return isTag(l) && outer[l] }
+	// A tag inside an alternation cannot be skipped, so the advice for it
+	// rewrites the whole alternation: its tags as optional layers (qinq
+	// first, the order the dispatch allows), then the other members.
+	altAdvice := map[*ir.LayerInstance]string{}
+	for _, l := range p.Layers {
+		if l == nil || len(l.Alternation) == 0 {
+			continue
+		}
+		var leaves func(l *ir.LayerInstance) []*ir.LayerInstance
+		leaves = func(l *ir.LayerInstance) []*ir.LayerInstance {
+			if len(l.Alternation) == 0 {
+				return []*ir.LayerInstance{l}
+			}
+			var out []*ir.LayerInstance
+			for _, m := range l.Alternation {
+				out = append(out, leaves(m)...)
+			}
+			return out
+		}
+		var tags, rest []string
+		for _, m := range leaves(l) {
+			if isVlan(m) {
+				if !slices.Contains(tags, m.Spec.Name+"?") {
+					tags = append(tags, m.Spec.Name+"?")
+				}
+			} else if m.Spec != nil {
+				rest = append(rest, m.Spec.Name)
+			}
+		}
+		slices.Sort(tags) // qinq? before vlan?
+		rewrite := strings.Join(tags, "/")
+		switch len(rest) {
+		case 0:
+		case 1:
+			rewrite += "/" + rest[0]
+		default:
+			rewrite += "/(" + strings.Join(rest, "|") + ")"
+		}
+		advice := fmt.Sprintf("a tag inside an alternation cannot be skipped; write %s instead, which also matches frames without the tag", rewrite)
+		for _, m := range leaves(l) {
+			if isVlan(m) {
+				altAdvice[m] = advice
+			}
+		}
+	}
 	// One walk over every layer and alternation member. A tag that
 	// cannot be absent is the type error; a predicate on an optional tag
 	// is refused as not implemented. The type error is reported even
@@ -892,11 +938,9 @@ func checkHostLayerSupport(p *ir.Program, host HostLayout) error {
 			mandatory := inAlt || !l.Absentable()
 			switch {
 			case mandatory:
-				// An alternation member cannot be made optional, so the
-				// advice there is a chain of optional tags.
 				fix := fmt.Sprintf("make the layer optional (%s?) or remove it", l.Spec.Name)
-				if inAlt {
-					fix = "an alternation member cannot be optional; write the tags as optional layers instead (qinq?/vlan?)"
+				if a, ok := altAdvice[l]; ok {
+					fix = a
 				}
 				if typeErr == nil {
 					typeErr = withPos(fmt.Errorf("%w: layer %q: the kernel moves the outer VLAN tag into skb metadata before the program runs, so a tagged frame does not carry it in the packet bytes; %s", ErrVlanInMetadata, l.Spec.Name, fix), l.Pos)

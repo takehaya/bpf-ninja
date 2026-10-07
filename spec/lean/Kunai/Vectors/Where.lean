@@ -504,6 +504,49 @@ vector arith128BoolEqNarrowRej := {
   id := "arith-128-booleq-narrow-rej",
   ast := W6 (.boolEq (cmp src6 .eq (narrowChain 9)) .eq dport6Is80),
   packet := v6pkt 801 2, expected := .reject }
+def dport6Is81 : Where := cmp dport6 .eq (k 81)
+/-- `b == (b == … (b == atom))` with `d` bool-eqs: the atom on the right, so
+it runs while the truth values of the left operands are parked. -/
+def boolEqRight (b : Where) : Nat → Where → Where
+  | 0, a => a
+  | d + 1, a => .boolEq b .eq (boolEqRight b d a)
+vector arith128BoolEqRightBoth5 := {
+  id := "arith-128-booleq-right-both5",
+  ast := W6 (boolEqRight dport6Is80 1 (cmp (bothParkChain 5) .eq (k 0))),
+  packet := v6pkt 1 2, expected := .accept [],
+  note := "five both-sides nodes on the right of one `==`, the deepest Go compiles: the holds run with the left truth value parked" }
+vector arith128BoolEqRightBoth5False := {
+  id := "arith-128-booleq-right-both5-false",
+  ast := W6 (boolEqRight dport6Is81 1 (cmp (bothParkChain 5) .eq (k 0))),
+  packet := v6pkt 1 2, expected := .reject, note := "a parked false next to a true atom" }
+vector arith128BoolEqRightBoth5BothFalse := {
+  id := "arith-128-booleq-right-both5-both-false",
+  ast := W6 (boolEqRight dport6Is81 1 (cmp (bothParkChain 5) .eq (k 3))),
+  packet := v6pkt 1 2, expected := .accept [] }
+vector arith128BoolEqRightBoth4Deep := {
+  id := "arith-128-booleq-right-both4-deep",
+  ast := W6 (boolEqRight dport6Is80 3 (cmp (bothParkChain 4) .eq (k 3))),
+  packet := v6pkt 1 2, expected := .accept [], note := "four both-sides nodes under three parked truth values" }
+vector arith128BoolEqRightBoth4DeepFalse := {
+  id := "arith-128-booleq-right-both4-deep-false",
+  ast := W6 (boolEqRight dport6Is81 3 (cmp (bothParkChain 4) .eq (k 3))),
+  packet := v6pkt 1 2, expected := .reject, note := "false == (false == (false == true))" }
+vector arith128BoolEqRightBoth4DeepBothFalse := {
+  id := "arith-128-booleq-right-both4-deep-both-false",
+  ast := W6 (boolEqRight dport6Is81 3 (cmp (bothParkChain 4) .eq (k 0))),
+  packet := v6pkt 1 2, expected := .accept [], note := "false == (false == (false == false))" }
+vector arith128BoolEqRightNarrow := {
+  id := "arith-128-booleq-right-narrow",
+  ast := W6 (boolEqRight dport6Is80 1 (cmp src6 .eq (narrowChain 9))),
+  packet := v6pkt 800 2, expected := .accept [] }
+vector arith128BoolEqRightNarrowFalse := {
+  id := "arith-128-booleq-right-narrow-false",
+  ast := W6 (boolEqRight dport6Is81 1 (cmp src6 .eq (narrowChain 9))),
+  packet := v6pkt 800 2, expected := .reject }
+vector arith128BoolEqRightNarrowBothFalse := {
+  id := "arith-128-booleq-right-narrow-both-false",
+  ast := W6 (boolEqRight dport6Is81 1 (cmp src6 .eq (narrowChain 9))),
+  packet := v6pkt 801 2, expected := .accept [] }
 vector typArith128NarrowFit := {
   id := "typ-arith-128-narrow-fit", ast := W6 (cmp src6 .eq (.bin .mul dport6 (k 70000))), packet := ipv6TCP,
   expected := .illTyped "literal 70000 does not fit Int<16>",
@@ -659,7 +702,7 @@ def whereVectors : List Vector := [
   arith128AddNegConst, arith128SubNegConst, arith128CmpNegConst,
   arith128MixedWidthAdd, arith128MixedWidthMul, arith128MixedCarry, arith128MixedBorrow, arith128MixedWrap64, arith128MixedSlice,
   arith128MixedNested, arith128MixedNeg, arith128ConstBinop, arith128MixedAux, typArith128NarrowFitNested,
-  arith128WideRight, arith128WideRightSub, arith128WideRightDeep, arith128WideRightConstLeft, arith128WideRightBorrow, arith128WideRightNarrowLeft, arith128WideRightNarrowLeftRej, arith128WideBoth, arith128WideBothBorrow, arith128WideBothNested, arith128WideBothNarrow, arith128WideBothRej, arith128BoolEqBothPark, arith128BoolEqBothParkRej, arith128BoolEqNarrow, arith128BoolEqNarrowRej, typArith128NarrowFit, arith128CmpWideConst,
+  arith128WideRight, arith128WideRightSub, arith128WideRightDeep, arith128WideRightConstLeft, arith128WideRightBorrow, arith128WideRightNarrowLeft, arith128WideRightNarrowLeftRej, arith128WideBoth, arith128WideBothBorrow, arith128WideBothNested, arith128WideBothNarrow, arith128WideBothRej, arith128BoolEqBothPark, arith128BoolEqBothParkRej, arith128BoolEqNarrow, arith128BoolEqNarrowRej, arith128BoolEqRightBoth5, arith128BoolEqRightBoth5False, arith128BoolEqRightBoth5BothFalse, arith128BoolEqRightBoth4Deep, arith128BoolEqRightBoth4DeepFalse, arith128BoolEqRightBoth4DeepBothFalse, arith128BoolEqRightNarrow, arith128BoolEqRightNarrowFalse, arith128BoolEqRightNarrowBothFalse, typArith128NarrowFit, arith128CmpWideConst,
   arith128Lt, arith128GeMiss, arith128LtHighHalf, typArith128Mul, typArith128Band, typPathDeep, typPathDeepLabel, typPathDeepBracket]
 
 end Kunai
