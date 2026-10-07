@@ -130,6 +130,12 @@ eth/ipv4/tcp where action == XDP_DROP            # exit mode 限定
 | 論理 | `or`, `and`, `not` (`&&`/`\|\|` も可) |
 | カッコ | `(`, `)` |
 
+IPv6 アドレス (`Int<128>`) の算術は `+` と `-` だけです。2⁶⁴ 以上の定数は `int<128>(10 進の値)` で書きます (素の整数リテラルは 64 bit まで):
+
+```
+eth/ipv6/tcp where ipv6.src + int<128>(18446744073709551616) == ipv6.dst
+```
+
 算術ネストは MVP では 16 段までです。それを超えると `ErrNotImplemented` になります。上限は `maxArithDepth` 定数で管理されています。
 
 #### フィールド参照
@@ -357,6 +363,15 @@ $ bpf-ninja -i eth0 'eth/ipv4/tcp where tcp.dport > 99999'
 ```
 
 `tcp.dport` は `bit<16>` field なので、99999 は narrow できません。`> 65535` に書き直すか、より広い field を使います。
+
+### 整数リテラルが 64 bit を超える
+
+```
+$ bpf-ninja -i eth0 'eth/ipv6/tcp where ipv6.src == 18446744073709551616'
+1:32: integer literal 18446744073709551616 exceeds 64 bits; write int<128>(18446744073709551616) for a wider value
+```
+
+素の整数リテラルは 64 bit までです。`int<128>(…)` で書くか、IPv6 リテラル (`::1:0:0:0:0`) を使います。
 
 ### CIDR の host bits が立っている
 

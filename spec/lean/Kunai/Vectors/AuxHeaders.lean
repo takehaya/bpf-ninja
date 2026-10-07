@@ -37,6 +37,8 @@ def tcpW (w : Where) (pkt : Packet) (id : String) (expected : Result) (goStatus 
 -- TCP options ----------------------------------------------------------------
 
 vector tcpMss := tcpW (cmp mss .eq (k 1460)) (tcpOpts (mssOpt 1460)) "tcp-opt-mss-value" (.accept [])
+vector tcpMssWide := tcpW (cmp mss .eq (.wide 1460)) (tcpOpts (mssOpt 1460)) "tcp-opt-mss-wide" (.accept [])
+  (note := "an option value next to int<128>(…) compares at 128 bits")
 vector tcpMssMiss := tcpW (cmp mss .eq (k 1460)) (tcpOpts (mssOpt 1400)) "tcp-opt-mss-mismatch" .reject
 vector tcpMssAbsent := tcpW (cmp mss .eq (k 1460)) ethIPv4TCP "tcp-opt-mss-absent" .reject (note := "D-027: the atom is false")
 vector tcpMssAbsentNot := tcpW (.not (cmp mss .eq (k 1460))) ethIPv4TCP "tcp-opt-mss-absent-not" (.accept [])
@@ -625,7 +627,7 @@ def auxVectors : List Vector := [
   srv6AnyLabel, srv6AllAbsent, srv6OptPresent, srv6OptAbsent, srv6OptAnyPresent, srv6OptAnyAbsent, srv6OptBroken, srv6OptThenIPv4Opt, tcpOptAccAbsent, greOptPresent, greOptAbsent,
   rrNoSighting, sackNoSighting,
   grePlain, greKey, greKeySeq, greAllFlags, greKeyTruncated,
-  tcpMss, tcpMssMiss, tcpMssAbsent, tcpMssAbsentNot, tcpMssAfterNop, tcpUnknownSkipped, tcpUnknownLen0, tcpUnknownLen1,
+  tcpMss, tcpMssWide, tcpMssMiss, tcpMssAbsent, tcpMssAbsentNot, tcpMssAfterNop, tcpUnknownSkipped, tcpUnknownLen0, tcpUnknownLen1,
   tcpOptCross, tcpEol, tcpMssDup, tcpMssBadLen, tcpMssExists, tcpMssExistsNot, tcpSackBlock, tcpSackAny, tcpSackAll,
   tcpSackAbsentAny, tcpMalformedNoQuery, tcpMalformedNotQuery, tcpMalformedOrTrue, tcpMalformedExists,
   tcpMalformedAfterMss, tcpMalformedChainOn, ipv4MalformedOpts, ipv4MalformedOptsQueried, ipv4OptDepthLastFault, ipv4OptDepthLastSighting,

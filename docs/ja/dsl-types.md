@@ -177,7 +177,16 @@ where (ipv6.src[0:32] & 0xff000000) != 0                    # arith / bitwise �
 | 16進 (`0x` prefix) | `0xff`, `0xc0a80101` |
 | 負数 (`-` prefix) | `-1`, `-128` |
 
-parser-time の値域は `[-2⁶³, 2⁶⁴)` です。これを超える数値リテラルは parser でエラーになります。
+parser-time の値域は `[-2⁶³, 2⁶⁴)` です。これを超える数値リテラルは parser でエラーになります。`Int<128>` 文脈 (`ipv6.src` など) でも同じです。
+
+2⁶⁴ 以上の値は型付きリテラル `int<128>(n)` で書きます (D-038)。`n` は 10 進の `[0, 2¹²⁸)` で、空白を挟まずに書きます。
+
+```
+eth/ipv6/tcp where ipv6.src + int<128>(18446744073709551616) == ipv6.dst   # 2⁶⁴ を足す
+eth/ipv6/tcp where ipv6.dst - ipv6.src == int<128>(1)                      # 小さい値も書ける
+```
+
+`int<128>(n)` は文脈から幅を取らず、常に `Int<128>` です。そのため、それを含む算術は 128 bit で計算され (§13.9、`+` `-` のみ)、`tcp.dport - int<128>(100)` は 2¹²⁸ を法として折り返します (64 bit ではない)。書けるのは where 式の中だけで、bracket predicate の値には書けません (`ipv6[src == …]` は IPv6 リテラルか CIDR で書きます)。
 
 `-1` のような負数は、2's complement で文脈型 `Int<N>` に narrow されます。たとえば `Int<16>` 文脈では `-1` ⤳ `0xffff` となります。
 
@@ -304,6 +313,8 @@ resolver-time 制約は次のとおりです。
 | `Int<N>` field との arith | `Int<N>` | 同上 |
 | Bool 文脈 (`where v`) | `Bool` | `v != 0` として coerce (§5.4) |
 | 単独 `where v` (literal-Bool fold) | `Bool` | `true` / `false` に fold |
+
+`int<128>(n)` は例外で、parse 直後から `Int<128>` です (§4.1)。
 
 注意点として、`UInt` のような専用型を spec 上は導入しません。リテラルは値であって型ではない、と扱います。これは Go の untyped constant に近い設計です。
 
@@ -734,7 +745,8 @@ w  ::= or(w, w) | and(w, w) | not(w)
      | atom_valid(r)                                       `r.options.valid`、r は protocol 名か label (D-029)
      | atom_bool_eq(w, op_eq, w)                           Bool == Bool / != Bool
 
-e  ::= const(n)                                            n ∈ Z, untyped (narrow in context)
+e  ::= const(n)                                            n ∈ [−2⁶³, 2⁶⁴), untyped (narrow in context)
+     | wide(n)                                             `int<128>(n)`、n ∈ [0, 2¹²⁸)、Int<128> (D-038)
      | field(f)                                            FieldRef
      | binop(op_a, e, e)
 
@@ -804,6 +816,12 @@ v ∈ [−2⁶³, 2⁶⁴)                            f は protocol p の N-bit
 Γ ⊢ const(v) : Int<·>                      Γ ⊢ field(f) : Int<N>
 
 (untyped — context 文脈で N を決定)
+
+
+[T-WideLit]
+n ∈ [0, 2¹²⁸)
+─────────────────────
+Γ ⊢ wide(n) : Int<128>
 
 
 [T-FieldAux]                                [T-FieldStackStatic]
@@ -1214,6 +1232,11 @@ r が σ の instance inst に解決する            r が σ のどの instanc
                                                                          ; f を含む atom は false (D-003)
 ─────────────────────                ───────────────────────
 ⟨const(n), σ⟩ ⇓_P n                  ⟨field(f), σ⟩ ⇓_P n
+
+
+[E-A-Wide]
+─────────────────────
+⟨wide(n), σ⟩ ⇓_P n
 
 
 [E-A-BinOp]

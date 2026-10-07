@@ -305,6 +305,11 @@ Entries are never deleted; a rejected candidate stays in the log.
 - 状態: 承認済 (2026-10-03)
 - 反映先: `Eval/Check.lean` `checkProtoShape`, vectors `typ-repeat-no-self-edge`, `typ-repeat-no-self-edge-star`; Go `resolve/resolve.go` `checkChainShape`
 
+## D-038: 64 bit を超える整数リテラル
+- 論点: §11.2 / dsl-types §4.1 は整数リテラルの値域を [−2⁶³, 2⁶⁴) としていたが、Lean の `Arith.const` は任意の `Int` を持ち、`Int<128>` 文脈では 2⁶⁴ 以上の定数を受け付けていた。Go の lexer は 64 bit を超えるリテラルを読めない。一方で `ipv6.src + 2^64` のように 128 bit の定数を足したい場面はある。
+- 決定 (ユーザー決定、2026-10-07): 素の整数リテラルは [−2⁶³, 2⁶⁴) のまま (`Int<128>` 文脈でも、超えれば illTyped)。2⁶⁴ 以上は型付きリテラル `int<128>(n)` (10 進、[0, 2¹²⁸)) で書く。`int<128>(n)` は文脈から幅を取らず常に `Int<128>` で、小さい値も書ける。それを含む算術は 128 bit で計算する (D-035、`+` `-` のみ)。where 式の中だけで、bracket predicate の値には書けない。
+- 反映先: `Syntax.lean` `Arith.wide`, `Eval/Core.lean` `narrowInt` (64 bit の範囲) / `wideLit`, `Eval/Where.lean` `arithWidth` / `evalArith`, `Eval/Check.lean` `checkArith`, `Print.lean`, `Json.lean`, vectors `arith-128-wide-lit*`, `tcp-opt-mss-wide`, `typ-arith-128-wide-mul`, `typ-arith-128-plain-too-wide`; Go lexer `TokWide`, `ast/ir.ArithExpr.Wide` / `ConstHi`, resolver と codegen は `int<128>(n)` を Int<128> の operand として扱う
+
 ## Go 側への issue 候補 (この作業では変更しない)
 
 `fix/kunai-spec-conformance` で対応済みのものは ✅、残りは `issues/` に本文がある。

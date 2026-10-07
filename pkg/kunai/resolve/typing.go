@@ -111,6 +111,10 @@ func checkArithExpr(e *ir.ArithExpr, bits int) error {
 	}
 	switch e.Kind {
 	case ast.ArithConst:
+		// `int<128>(n)` is typed Int<128> and fits by construction.
+		if e.Wide {
+			return nil
+		}
 		if !literalFitsBits(e.Const, e.Negative, bits) {
 			return errFitInArith(e.Pos, e.Const, bits)
 		}
@@ -177,13 +181,18 @@ func arithCmpTargetBits(c *ir.Condition) int {
 }
 
 // exprMaxFieldBits returns the largest declared bit width of any
-// field reachable from an arith expression. Returns 0 if the
-// expression has no field references (literal-only or nil).
+// field reachable from an arith expression, counting an `int<128>(n)`
+// literal as an Int<128> operand. Returns 0 if the expression has no
+// typed operand (plain literals only, or nil).
 func exprMaxFieldBits(e *ir.ArithExpr) int {
 	if e == nil {
 		return 0
 	}
 	switch e.Kind {
+	case ast.ArithConst:
+		if e.Wide {
+			return 128
+		}
 	case ast.ArithField:
 		return e.Field.EffectiveBits()
 	case ast.ArithBinOp:

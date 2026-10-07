@@ -14,7 +14,9 @@ package lexer
 
 import (
 	"fmt"
+	"math/big"
 	"strconv"
+	"strings"
 
 	"github.com/takehaya/bpf-ninja/pkg/kunai/ast"
 )
@@ -68,6 +70,9 @@ func (l *Lexer) Next() (Token, error) {
 	b := l.src[l.pos]
 
 	if isIdentStart(b) {
+		if l.atWidePrefix() {
+			return l.readWide(pos)
+		}
 		return l.readIdent(pos), nil
 	}
 	if b >= '0' && b <= '9' {
@@ -165,6 +170,9 @@ func (l *Lexer) NextValue() (Token, error) {
 		return Token{Kind: TokEOF, Pos: l.currentPos()}, nil
 	}
 	pos := l.currentPos()
+	if l.atWidePrefix() {
+		return Token{}, l.syntaxErr(pos, "int<128>(n) is only valid in a where expression")
+	}
 	start := l.pos
 	for l.pos < len(l.src) && isValueByte(l.src[l.pos]) {
 		l.advance()
@@ -241,9 +249,65 @@ func (l *Lexer) readInt(pos ast.Position) (Token, error) {
 	text := string(l.src[start:l.pos])
 	v, err := strconv.ParseUint(text, 0, 64)
 	if err != nil {
+		if b, ok := new(big.Int).SetString(text, 0); ok && b.BitLen() <= 128 {
+			return Token{}, l.syntaxErr(pos, "integer literal %s exceeds 64 bits; write int<128>(%s) for a wider value", text, b)
+		}
 		return Token{}, l.syntaxErr(pos, "invalid integer literal %q: %v", text, err)
 	}
 	return Token{Kind: TokInt, Text: text, Int: v, Pos: pos}, nil
+}
+
+// widePrefix opens the one typed literal form, `int<128>(n)`.
+const widePrefix = "int<"
+
+// atWidePrefix reports whether the cursor is at `int<`. No field path or
+// label is a bare `int` followed by `<` (a where operand names a field as
+// `proto.field`), so the prefix is unambiguous.
+func (l *Lexer) atWidePrefix() bool {
+	return strings.HasPrefix(string(l.src[l.pos:min(l.pos+len(widePrefix), len(l.src))]), widePrefix)
+}
+
+// readWide reads `int<128>(n)` with n a decimal literal below 2^128, as
+// one token. Other widths are not part of the language.
+func (l *Lexer) readWide(pos ast.Position) (Token, error) {
+	start := l.pos
+	for range len(widePrefix) {
+		l.advance()
+	}
+	wStart := l.pos
+	for l.pos < len(l.src) && l.src[l.pos] >= '0' && l.src[l.pos] <= '9' {
+		l.advance()
+	}
+	width := string(l.src[wStart:l.pos])
+	if width != "128" || !l.consume(">(") {
+		return Token{}, l.syntaxErr(pos, "a typed literal is written int<128>(n); int<%s> is not supported", width)
+	}
+	dStart := l.pos
+	for l.pos < len(l.src) && l.src[l.pos] >= '0' && l.src[l.pos] <= '9' {
+		l.advance()
+	}
+	digits := string(l.src[dStart:l.pos])
+	if digits == "" || !l.consume(")") {
+		return Token{}, l.syntaxErr(pos, "int<128>(n) takes a decimal literal n")
+	}
+	b, _ := new(big.Int).SetString(digits, 10)
+	if b.BitLen() > 128 {
+		return Token{}, l.syntaxErr(pos, "int<128>(%s) does not fit Int<128>", digits)
+	}
+	lo := new(big.Int).And(b, new(big.Int).SetUint64(^uint64(0))).Uint64()
+	hi := new(big.Int).Rsh(b, 64).Uint64()
+	return Token{Kind: TokWide, Text: string(l.src[start:l.pos]), Int: lo, IntHi: hi, Pos: pos}, nil
+}
+
+// consume advances past s when the cursor is at it.
+func (l *Lexer) consume(s string) bool {
+	if !strings.HasPrefix(string(l.src[l.pos:]), s) {
+		return false
+	}
+	for range len(s) {
+		l.advance()
+	}
+	return true
 }
 
 func (l *Lexer) atHex() bool {

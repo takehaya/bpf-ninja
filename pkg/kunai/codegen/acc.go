@@ -184,7 +184,7 @@ func eqLeafToAtom(leaf *ir.Condition, qo queriedOptions) (*ir.LayerInstance, acc
 	if l.Kind == ast.ArithConst && r.Kind == ast.ArithField {
 		l, r = r, l
 	}
-	if l.Kind != ast.ArithField || r.Kind != ast.ArithConst {
+	if l.Kind != ast.ArithField || r.Kind != ast.ArithConst || r.Wide {
 		return nil, accAtom{}, false
 	}
 	f := l.Field

@@ -14,6 +14,7 @@ const (
 	TokIdent
 	TokInt   // structural-mode integer literal (e.g. "{1,8}", "443", "headers + 64")
 	TokValue // value-mode classified literal (wraps *ast.Value)
+	TokWide  // `int<128>(n)`: a decimal literal typed Int<128> (Int = low, IntHi = high 64 bits)
 
 	// Keywords
 	TokWhere
@@ -71,6 +72,8 @@ func (k TokenKind) String() string {
 		return "identifier"
 	case TokInt:
 		return "integer"
+	case TokWide:
+		return "int<128> literal"
 	case TokValue:
 		return "value"
 	case TokWhere:
@@ -164,7 +167,8 @@ func (k TokenKind) String() string {
 type Token struct {
 	Kind  TokenKind
 	Text  string       // raw source text
-	Int   uint64       // valid when Kind == TokInt
+	Int   uint64       // valid when Kind == TokInt or TokWide (low 64 bits)
+	IntHi uint64       // valid when Kind == TokWide: the high 64 bits
 	Value *ast.Value   // valid when Kind == TokValue
 	Pos   ast.Position
 }

@@ -547,6 +547,39 @@ vector arith128BoolEqRightNarrowBothFalse := {
   id := "arith-128-booleq-right-narrow-both-false",
   ast := W6 (boolEqRight dport6Is81 1 (cmp src6 .eq (narrowChain 9))),
   packet := v6pkt 801 2, expected := .accept [] }
+def wide (n : Nat) : Arith := .wide n
+vector arith128WideLit := {
+  id := "arith-128-wide-lit", ast := W6 (cmp (.bin .add src6 (wide (2 ^ 64))) .eq dst6),
+  packet := v6pkt 1 (2 ^ 64 + 1), expected := .accept [], note := "int<128>(2^64): a literal above 64 bits" }
+vector arith128WideLitHigh := {
+  id := "arith-128-wide-lit-high", ast := W6 (cmp src6 .eq (wide (2 ^ 127 + 5))),
+  packet := v6pkt (2 ^ 127 + 5) 2, expected := .accept [] }
+vector arith128WideLitHighRej := {
+  id := "arith-128-wide-lit-high-rej", ast := W6 (cmp src6 .eq (wide (2 ^ 127 + 5))),
+  packet := v6pkt 5 2, expected := .reject, note := "the low halves agree, the high halves do not" }
+vector arith128WideLitSmall := {
+  id := "arith-128-wide-lit-small", ast := W6 (cmp (.bin .add src6 (wide 1)) .eq dst6),
+  packet := v6pkt 1 2, expected := .accept [], note := "a small value inside int<128>(…) is the same as the plain literal next to Int<128>" }
+vector arith128WideLitNarrow := {
+  id := "arith-128-wide-lit-narrow", ast := W6 (cmp (.bin .sub dport6 (wide 100)) .eq (k (-20))),
+  packet := v6pkt 1 2, expected := .accept [],
+  note := "int<128>(…) makes the node 128 bits wide: 80 - 100 wraps to 2^128 - 20, which -20 also is at that width" }
+vector arith128WideLitNarrowRej := {
+  id := "arith-128-wide-lit-narrow-rej", ast := W6 (cmp (.bin .sub dport6 (wide 100)) .eq (k (2 ^ 64 - 20))),
+  packet := v6pkt 1 2, expected := .reject, note := "not the 64-bit wrap" }
+vector arith128WideLitLeft := {
+  id := "arith-128-wide-lit-left", ast := W6 (cmp (.bin .sub (wide (2 ^ 64 + 3)) src6) .eq dst6),
+  packet := v6pkt 1 (2 ^ 64 + 2), expected := .accept [], note := "int<128>(…) on the left of -, borrowing from the high half" }
+vector arith128WideLitCmpLeft := {
+  id := "arith-128-wide-lit-cmp-left", ast := W6 (cmp (wide (2 ^ 127)) .eq src6),
+  packet := v6pkt (2 ^ 127) 2, expected := .accept [] }
+vector typArith128WideMul := {
+  id := "typ-arith-128-wide-mul", ast := W6 (cmp (.bin .mul dport6 (wide 2)) .eq (k 160)), packet := ipv6TCP,
+  expected := .illTyped "unsupported: only + and - are defined on fields wider than 64 bits" }
+vector typArith128PlainTooWide := {
+  id := "typ-arith-128-plain-too-wide", ast := W6 (cmp src6 .eq (k (2 ^ 64))), packet := ipv6TCP,
+  expected := .illTyped "literal 18446744073709551616 exceeds 64 bits; write int<128>(18446744073709551616) for a wider value",
+  note := "a plain literal is at most 64 bits (§11.2)" }
 vector typArith128NarrowFit := {
   id := "typ-arith-128-narrow-fit", ast := W6 (cmp src6 .eq (.bin .mul dport6 (k 70000))), packet := ipv6TCP,
   expected := .illTyped "literal 70000 does not fit Int<16>",
@@ -702,7 +735,7 @@ def whereVectors : List Vector := [
   arith128AddNegConst, arith128SubNegConst, arith128CmpNegConst,
   arith128MixedWidthAdd, arith128MixedWidthMul, arith128MixedCarry, arith128MixedBorrow, arith128MixedWrap64, arith128MixedSlice,
   arith128MixedNested, arith128MixedNeg, arith128ConstBinop, arith128MixedAux, typArith128NarrowFitNested,
-  arith128WideRight, arith128WideRightSub, arith128WideRightDeep, arith128WideRightConstLeft, arith128WideRightBorrow, arith128WideRightNarrowLeft, arith128WideRightNarrowLeftRej, arith128WideBoth, arith128WideBothBorrow, arith128WideBothNested, arith128WideBothNarrow, arith128WideBothRej, arith128BoolEqBothPark, arith128BoolEqBothParkRej, arith128BoolEqNarrow, arith128BoolEqNarrowRej, arith128BoolEqRightBoth5, arith128BoolEqRightBoth5False, arith128BoolEqRightBoth5BothFalse, arith128BoolEqRightBoth4Deep, arith128BoolEqRightBoth4DeepFalse, arith128BoolEqRightBoth4DeepBothFalse, arith128BoolEqRightNarrow, arith128BoolEqRightNarrowFalse, arith128BoolEqRightNarrowBothFalse, typArith128NarrowFit, arith128CmpWideConst,
+  arith128WideRight, arith128WideRightSub, arith128WideRightDeep, arith128WideRightConstLeft, arith128WideRightBorrow, arith128WideRightNarrowLeft, arith128WideRightNarrowLeftRej, arith128WideBoth, arith128WideBothBorrow, arith128WideBothNested, arith128WideBothNarrow, arith128WideBothRej, arith128BoolEqBothPark, arith128BoolEqBothParkRej, arith128BoolEqNarrow, arith128BoolEqNarrowRej, arith128BoolEqRightBoth5, arith128BoolEqRightBoth5False, arith128BoolEqRightBoth5BothFalse, arith128BoolEqRightBoth4Deep, arith128BoolEqRightBoth4DeepFalse, arith128BoolEqRightBoth4DeepBothFalse, arith128BoolEqRightNarrow, arith128BoolEqRightNarrowFalse, arith128BoolEqRightNarrowBothFalse, arith128WideLit, arith128WideLitHigh, arith128WideLitHighRej, arith128WideLitSmall, arith128WideLitNarrow, arith128WideLitNarrowRej, arith128WideLitLeft, arith128WideLitCmpLeft, typArith128WideMul, typArith128PlainTooWide, typArith128NarrowFit, arith128CmpWideConst,
   arith128Lt, arith128GeMiss, arith128LtHighHalf, typArith128Mul, typArith128Band, typPathDeep, typPathDeepLabel, typPathDeepBracket]
 
 end Kunai

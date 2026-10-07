@@ -174,6 +174,7 @@ private def checkRef (c : Ctx) (bound : List (String × String)) (f : FieldPath)
 
 private def checkArith (c : Ctx) (bound : List (String × String)) (ctx : Nat) : Arith → Except String Unit
   | .const n => discard <| narrowInt ctx n
+  | .wide n => discard <| wideLit n
   | .field f => discard <| checkRef c bound f
   | .bin op l r => do
     let (cl, cr) := sideWidths (← stop (arithWidth c l)) (← stop (arithWidth c r))

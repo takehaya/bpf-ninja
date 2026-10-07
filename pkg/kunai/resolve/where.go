@@ -243,7 +243,9 @@ func (r *resolver) resolveArith(a *ast.ArithExpr) (*ir.ArithExpr, error) {
 	switch a.Kind {
 	case ast.ArithConst:
 		out.Const = a.Const
+		out.ConstHi = a.ConstHi
 		out.Negative = a.Negative
+		out.Wide = a.Wide
 	case ast.ArithField:
 		ref, err := r.resolveQualifiedField(a.Field)
 		if err != nil {
