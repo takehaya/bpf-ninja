@@ -929,7 +929,7 @@ func checkHostLayerSupport(p *ir.Program, host HostLayout) error {
 		default:
 			rewrite += "/(" + strings.Join(rest, "|") + ")"
 		}
-		advice := fmt.Sprintf("a tag inside an alternation cannot be skipped; write %s instead, which also matches frames without the tag, or have the host put the tag back (bpf-ninja: --tc-vlan-reinsert)", rewrite)
+		advice := fmt.Sprintf("a tag inside an alternation cannot be skipped; write %s instead, which also matches frames without the tag, or have the host put the tag back", rewrite)
 		for _, m := range leaves(l) {
 			if isVlan(m) {
 				altAdvice[m] = advice
@@ -950,7 +950,7 @@ func checkHostLayerSupport(p *ir.Program, host HostLayout) error {
 			mandatory := inAlt || !l.Absentable()
 			switch {
 			case mandatory:
-				fix := fmt.Sprintf("make the layer optional (%s?) or remove it, or have the host put the tag back (bpf-ninja: --tc-vlan-reinsert)", l.Spec.Name)
+				fix := fmt.Sprintf("make the layer optional (%s?) or remove it, or have the host put the tag back", l.Spec.Name)
 				if a, ok := altAdvice[l]; ok {
 					fix = a
 				}
@@ -959,7 +959,7 @@ func checkHostLayerSupport(p *ir.Program, host HostLayout) error {
 				}
 			case len(l.Predicates) > 0:
 				if refusal == nil {
-					refusal = withPos(fmt.Errorf("%w: the predicate on layer %q reads a VLAN tag this host moves to skb metadata before the program runs; the tag is not in the packet bytes (a host that puts the tag back into the bytes can read it; bpf-ninja: --tc-vlan-reinsert)", ErrNotImplemented, l.Spec.Name), l.Pos)
+					refusal = withPos(fmt.Errorf("%w: the predicate on layer %q reads a VLAN tag this host moves to skb metadata before the program runs; the tag is not in the packet bytes (a host that puts the tag back into the bytes can read it)", ErrNotImplemented, l.Spec.Name), l.Pos)
 				}
 			}
 		}
@@ -979,7 +979,7 @@ func checkHostLayerSupport(p *ir.Program, host HostLayout) error {
 	var refErr error
 	visit := func(f *ir.FieldRef) {
 		if refErr == nil && f != nil && isVlan(f.Layer) {
-			refErr = withPos(fmt.Errorf("%w: where / capture reads %s.%s, but this host moves the VLAN tag to skb metadata before the program runs; the tag is not in the packet bytes (a host that puts the tag back into the bytes can read it; bpf-ninja: --tc-vlan-reinsert)", ErrNotImplemented, f.Layer.Spec.Name, f.Field.Name), f.Layer.Pos)
+			refErr = withPos(fmt.Errorf("%w: where / capture reads %s.%s, but this host moves the VLAN tag to skb metadata before the program runs; the tag is not in the packet bytes (a host that puts the tag back into the bytes can read it)", ErrNotImplemented, f.Layer.Spec.Name, f.Field.Name), f.Layer.Pos)
 		}
 	}
 	ir.WalkConditionFieldRefs(p.Where, visit)

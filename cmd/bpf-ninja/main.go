@@ -433,8 +433,8 @@ func run(ctx context.Context, cmd *cli.Command) error {
 	if cmd.Bool("observer-prefetch") {
 		program.ObserverPrefetch = true
 	}
-	if cmd.Bool("tc-vlan-reinsert") {
-		program.TCVlanReinsert = true
+	if err := applyTCVlanReinsert(cmd); err != nil {
+		return err
 	}
 	if period := cmd.Int("latency-sample-period"); period > 0 {
 		capture.LatencySamplePeriod = int64(period)
@@ -963,6 +963,20 @@ func printProbeWarnings(probe *program.Probe) {
 
 // resolveFilterSyntax returns whether to use the DSL path (default)
 // or the legacy cBPF path (--cbpf).
+// applyTCVlanReinsert sets program.TCVlanReinsert from --tc-vlan-reinsert.
+// The option changes the bytes a DSL filter reads; a --cbpf filter always
+// reads the bytes as the kernel holds them, so the combination is refused.
+func applyTCVlanReinsert(cmd *cli.Command) error {
+	if !cmd.Bool("tc-vlan-reinsert") {
+		return nil
+	}
+	if cmd.Bool("cbpf") {
+		return fmt.Errorf("--tc-vlan-reinsert applies to DSL filters; a --cbpf filter reads the bytes as the kernel holds them")
+	}
+	program.TCVlanReinsert = true
+	return nil
+}
+
 func resolveFilterSyntax(cmd *cli.Command) (useDSL bool, err error) {
 	useCBPF := cmd.Bool("cbpf")
 	if useCBPF {

@@ -349,6 +349,15 @@ vector hostTcWireVlanAlt := {
   expected := .accept [] }
 
 -- By default the tc host hands the filter the bytes the kernel holds (no outer tag).
+vector hostTcExitVlanOpt := {
+  id := "host-tc-exit-vlan-optional", host := .tc_exit, action := 0,
+  ast := { layers := vlanOpt, cond := some (.action "TC_ACT_OK") },
+  packet := eth 0x0800 ++ ipv4 6 ++ tcp 12345 80 ++ payload 5, expected := .accept [],
+  note := "a tagged frame as the kernel holds it at tc: the outer tag is gone, vlan? is skipped" }
+vector hostTcExitVlanMandatory := {
+  id := "host-tc-exit-vlan-mandatory", host := .tc_exit, action := 0,
+  ast := { layers := [P "eth", P "vlan", P "ipv4", P "tcp"] }, packet := vlanPkt,
+  expected := .illTyped "vlan is in metadata on this host; the layer must be optional" }
 
 
 vector hostTcVlanMandatory := {
@@ -455,7 +464,7 @@ def chainVectors : List Vector := [
   quantPredAllHold, quantSelfValidSkip, quantSelfValidPresent, quantSelfValidShortV4, quantSelfValidShortV6, quantSelfValidEmpty, quantSelfValidCascade, quantSelfValidCascadeEth, quantSelfValidBroken, quantOptIPv4Last, quantOptIPv4LastAbsent, quantOptIPIP, quantExactOneMachine, typAltExactOne, typRepeatNoSelfEdge, typRepeatNoSelfEdgeStar, quantOptIPIPAbsent, quantOptIPIPTwiceOne, quantOptIPIPTwiceNone, quantOptIPIPTwiceBoth, typOptionalAfterSkip, typOptionalNoCheck, chainMandatorySelfEdgeMiss, quantSelfEdgeStar, quantSelfEdgeOpt,
   absentConsecutiveEthertype, absentConsecutiveSelfValid, absentConsecutiveMplsOnly, absentConsecutiveNeither, absentConsecutiveArp, quantFirstOptional,
   altFirst, altSecond, altAfterVxlan6, altAfterVxlan4, altNone, altFirstPredFails, altRoot, altNoCheck,
-  hostTcWireVlanMandatory, hostTcWireVlanMandatoryUntagged, hostTcWireVlanTci, hostTcWireVlanTciMiss, hostTcWireVlanWhere, hostTcWireUntaggedChainOnTagged, hostTcWireQinqVlan, hostTcWireVlanAlt, hostTcVlanMandatory, hostTcVlanAlt, hostTcVlanAltSecond, hostTcQinqVlan, hostTcQinqMandatory, hostTcQinqOpt, hostTcInnerVlan, hostTcInnerVlanTci, hostTcInnerVlanPred, hostTcQinqOptVlan, hostTcOuterAndInner, hostTcInnerLabel, hostTcOuterLabelRead,
+  hostTcExitVlanOpt, hostTcExitVlanMandatory, hostTcWireVlanMandatory, hostTcWireVlanMandatoryUntagged, hostTcWireVlanTci, hostTcWireVlanTciMiss, hostTcWireVlanWhere, hostTcWireUntaggedChainOnTagged, hostTcWireQinqVlan, hostTcWireVlanAlt, hostTcVlanMandatory, hostTcVlanAlt, hostTcVlanAltSecond, hostTcQinqVlan, hostTcQinqMandatory, hostTcQinqOpt, hostTcInnerVlan, hostTcInnerVlanTci, hostTcInnerVlanPred, hostTcQinqOptVlan, hostTcOuterAndInner, hostTcInnerLabel, hostTcOuterLabelRead,
   hostTcMixedAlt, hostTcVlanRoot, hostL3InnerVlan, hostTcVlanOpt, hostL3Root, hostL3EthRoot]
 
 end Kunai

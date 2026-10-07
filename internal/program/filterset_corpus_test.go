@@ -205,7 +205,7 @@ func runFilterCorpusMatrix(t *testing.T, hostProg *ebpf.Program, funcName string
 	for _, c := range VerifierCorpus {
 		t.Run(c.ID, func(t *testing.T) {
 			if isTC && tcRejectingCorpus[c.Expr] != nil {
-				t.Skipf("%s carries a non-absent-able vlan/qinq layer (mandatory or in an alternation); the tc host rejects it at compile time (not loadable)", c.ID)
+				t.Skipf("%s carries a non-absent-able vlan/qinq layer (mandatory or in an alternation); the tc host rejects it at compile time by default (TestBpfVlanTCWireLoads loads it with --tc-vlan-reinsert)", c.ID)
 			}
 			loadProbeOrFail(t, hostProg, funcName, c.Expr, false /*exit*/, true /*useDSL*/)
 		})

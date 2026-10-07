@@ -5,6 +5,7 @@ package program
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/cilium/ebpf"
@@ -442,8 +443,11 @@ func compileFilterWithSlots(expr string, useDSL, isFexit bool, progType ebpf.Pro
 		}
 		out, err := kunai.Compile(expr, caps)
 		if err != nil {
-			return out, fmt.Errorf("DSL filter compile failed: %w\n\nhint: %s",
-				err, dslHintFor(expr))
+			hint := dslHintFor(expr)
+			if h, ok := hook.ByProgramType(progType); ok && h.OuterVlanTag != nil && caps.Host.VlanInMetadata && vlanInMetadataError(err) {
+				hint = "the outer VLAN tag is in skb metadata at this hook; --tc-vlan-reinsert puts it back so the filter can match it"
+			}
+			return out, fmt.Errorf("DSL filter compile failed: %w\n\nhint: %s", err, hint)
 		}
 		return out, nil
 	}
@@ -710,6 +714,12 @@ func filterScanLen(out codegen.Output) int {
 		return scratchBufSize
 	}
 	return n
+}
+
+// vlanInMetadataError reports whether a compile error is one of kunai's
+// refusals of a VLAN tag the host keeps in skb metadata.
+func vlanInMetadataError(err error) bool {
+	return errors.Is(err, codegen.ErrVlanInMetadata) || strings.Contains(err.Error(), "skb metadata")
 }
 
 // outerVlanTag is the hook's OuterVlanTag loader, or nil when the hook

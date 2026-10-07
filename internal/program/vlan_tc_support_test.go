@@ -9,6 +9,7 @@ package program
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/cilium/ebpf"
@@ -63,8 +64,9 @@ func TestVlanTCFieldReadingRejects(t *testing.T) {
 // withTCVlanReinsert turns program.TCVlanReinsert on for the test.
 func withTCVlanReinsert(t *testing.T) {
 	t.Helper()
+	prev := TCVlanReinsert
 	TCVlanReinsert = true
-	t.Cleanup(func() { TCVlanReinsert = false })
+	t.Cleanup(func() { TCVlanReinsert = prev })
 }
 
 // tcWireVlanExprs: with TCVlanReinsert every vlan / qinq shape compiles
@@ -79,6 +81,9 @@ var tcWireVlanExprs = append(append([]string{}, tcAcceptedVlanExprs...),
 	"eth/vlan[tci==100]?/ipv4/tcp",
 	"eth/vlan?/ipv4/tcp where vlan.tci == 100",
 	"eth/vlan?/ipv4/tcp capture vlan",
+	"eth/((vlan|qinq)|ipv4)",                            // corpus E03
+	"eth/vlan[tci==100]/ipv4/tcp where tcp.dport == 80", // filter set F4
+	"eth/qinq/vlan/ipv4/tcp where tcp.dport == 80",      // filter set F5
 )
 
 // TestBpfVlanTCWireLoads loads the wire-frame copy through the verifier
@@ -94,9 +99,15 @@ func TestBpfVlanTCWireLoads(t *testing.T) {
 }
 
 func TestVlanTCWireCompiles(t *testing.T) {
-	// Default: the filter reads the bytes as the kernel holds them.
+	// Default: the filter reads the bytes as the kernel holds them, and a
+	// refusal of the outer tag points to the option.
 	if out, err := compileFilter("eth/ipv4/tcp", true, false, ebpf.SchedCLS); err != nil || out.WireFrame {
 		t.Fatalf("default tc: WireFrame=%v err=%v; want false, nil", out.WireFrame, err)
+	}
+	for _, expr := range []string{"eth/vlan/ipv4/tcp", "eth/vlan?/ipv4/tcp where vlan.tci == 100"} {
+		if _, err := compileFilter(expr, true, false, ebpf.SchedCLS); err == nil || !strings.Contains(err.Error(), "--tc-vlan-reinsert") {
+			t.Fatalf("default tc %q: err = %v; want the --tc-vlan-reinsert hint", expr, err)
+		}
 	}
 	withTCVlanReinsert(t)
 	for _, expr := range tcWireVlanExprs {
@@ -113,6 +124,11 @@ func TestVlanTCWireCompiles(t *testing.T) {
 	// A pcap filter reads the bytes as the kernel holds them either way.
 	if out, err := compileFilter("tcp dst port 80", false /*useDSL*/, false, ebpf.SchedCLS); err != nil || out.WireFrame {
 		t.Fatalf("pcap filter at tc: WireFrame=%v err=%v; want false, nil", out.WireFrame, err)
+	}
+	// cgroup-skb keeps the tag in metadata too but has no OuterVlanTag:
+	// the option changes nothing there, and the hint does not offer it.
+	if _, err := compileFilter("eth/vlan/ipv4/tcp", true, false, ebpf.CGroupSKB); !errors.Is(err, codegen.ErrVlanInMetadata) || strings.Contains(err.Error(), "--tc-vlan-reinsert") {
+		t.Fatalf("cgroup-skb with the option: err = %v; want ErrVlanInMetadata without the tc hint", err)
 	}
 	// XDP has no metadata tag: the option changes nothing there.
 	if out, err := compileFilter("eth/vlan/ipv4/tcp", true, false, ebpf.XDP); err != nil || !out.WireFrame {
