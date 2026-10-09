@@ -215,6 +215,15 @@ func TestTLVWalkCascadeMultiOptionAccumulator(t *testing.T) {
 			reject: false,
 		},
 		{
+			// A value that fits 64 bits but not the 16-bit field is never
+			// too (not narrowed to 70000 mod 2^16).
+			name: "wide_literal_fits64_never_holds",
+			expr: "eth/ipv4/tcp where " +
+				"tcp.options.MSS.value == int<128>(70000) " +
+				"and tcp.options.WS.shift == 7",
+			reject: false,
+		},
+		{
 			// A 4-byte constant with the high bit set compares from a
 			// register (JNE.Imm would sign-extend it).
 			name: "high_bit_u32_const",
