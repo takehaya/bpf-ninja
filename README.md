@@ -194,21 +194,10 @@ Without `-w` (streaming to stdout), all CPUs are merged into a single pcap-ng st
 | `--rx-cores N` | Pin readers to permitted CPU IDs at or above `N`. All producer shards are drained. **Requires `--fast-reader`**; configure RX affinity separately. |
 | `--busy-poll` | Spin the fast-reader shards instead of sleeping in `epoll_wait`. Burns a core per shard. **Requires `--fast-reader`** |
 | `--null-output` | Drop output entirely (bench only) |
-| `--rx-hwts` | Use NIC hardware timestamps (`bpf_xdp_metadata_rx_timestamp` kfunc, Linux 6.8+). `--mode xdp` only; falls back to software timestamps when the kfunc or driver lacks support |
-| `--legacy-timestamp` | Timestamp per reader batch with userland `time.Now()` instead of the per-packet kernel `bpf_ktime_get_ns()` |
-| `--in-memory-buffer MB` | With `--raw-dump`, hold each shard's output in a pre-touched heap buffer of this size until exit instead of writing it as it arrives |
-| `--observer-prefetch` | Entry/exit: always copy the full 512-byte scratch instead of only the prefix the filter needs. Costs observer CPU, but can speed up the observed XDP program by warming the driver's L1 dcache |
-| `--no-cpu-affinity` | Do not pin each shard reader to its producer CPU (diagnostic) |
-
-Diagnostics and benchmarking only:
-
-| Flag | Purpose |
-|------|---------|
-| `--bench-drop` | `--mode xdp`: return `XDP_DROP` after capturing instead of `XDP_PASS`, skipping the kernel stack (benchmarks only) |
-| `--latency-sample-period N` | Sample every Nth record's BPF-submit → reader-read latency per shard (raw-dump path only) |
-| `--latency-sample-output FILE` | Write the latency samples as TSV (one ns value per line); empty prints a percentile summary to stderr |
-| `--cpuprofile FILE` | Write a Go CPU profile |
-| `--no-async-preempt-off` | Keep Go's SIGURG-based goroutine preemption enabled (diagnostic opt-out) |
+| `--rx-hwts` | Use NIC hardware timestamps (`bpf_xdp_metadata_rx_timestamp` kfunc, Linux 6.8+). **Requires `--mode xdp`**; falls back to software timestamps when the kfunc or driver lacks support |
+| `--legacy-timestamp` | Replace the per-packet kernel `bpf_ktime_get_ns()` timestamp with userland `time.Now()` taken when the reader reads the record (shared across a read batch on the default reader). No effect with `--raw-dump` |
+| `--in-memory-buffer MB` | Buffer up to MB MiB per shard in pre-touched heap and write it out only when the buffer fills or at exit, keeping `write(2)` off the hot path. Memory use is MB × shard count. **Requires `--raw-dump`** |
+| `--observer-prefetch` | Entry/exit only: always copy the full 512-byte scratch instead of only the prefix the filter needs. Costs observer CPU; on an ice-driver XDP_TX target it sped up the observed program by warming the L1 dcache. Default off |
 
 On exit, capture prints a `capture status=...` line to stderr for both readers.
 It reports selected export attempts, submitted records, reserve/lookup/copy
@@ -221,6 +210,17 @@ fields and the scope of `complete`.
 Detailed flag reference + DSL `capture` clause's snaplen trade-off: [docs/ja/dsl-usage.md](./docs/ja/dsl-usage.md#performance-flags).
 
 High-rate tuning — which lever in which order, and what doesn't work: [docs/ja/tuning.md](./docs/ja/tuning.md).
+
+#### Diagnostics and benchmarking flags
+
+| Flag | Purpose |
+|------|---------|
+| `--bench-drop` | `--mode xdp` only (ignored otherwise): return `XDP_DROP` for matched packets after capturing them, so they never reach the host stack. Non-matching packets still pass. Benchmarks only |
+| `--latency-sample-period N` | Sample every Nth record's BPF-submit → reader-read latency per shard. **Requires `--raw-dump` and `--fast-reader`**; otherwise nothing is sampled |
+| `--latency-sample-output FILE` | Write the latency samples as TSV (one ns value per line); empty prints a percentile summary to stderr |
+| `--cpuprofile FILE` | Write a Go CPU profile |
+| `--no-async-preempt-off` | By default bpf-ninja re-execs with `GODEBUG=asyncpreemptoff=1`; this flag keeps Go's SIGURG-based preemption enabled (diagnostic opt-out) |
+| `--no-cpu-affinity` | Do not pin shard readers to CPUs (also disables `--rx-cores` pinning). Diagnostic opt-out |
 
 ### Hand-test: `--dump-asm`
 
@@ -313,6 +313,8 @@ int parse_headers(struct xdp_md *ctx) {
 | `--list-params` | List filterable parameters for `--func` (requires `--func`) | entry, exit |
 | `--json` | Print `--list-progs` / `--list-funcs` / `--list-params` output as JSON on stdout instead of text on stderr | entry, exit |
 | `--arg-filter` | Filter by function argument value (requires `--func`); format: `param=value`, `param>=val`, `param<=val`, `param=min..max` | entry, exit |
+| `--set` | Define a named match set backed by a pinned BPF hash map: `NAME=/sys/fs/bpf/path[,key(field=arg:param,...)]`. Reference it with `--arg-filter @NAME` or the DSL predicate `layer[field in @NAME]`; manage entries at runtime with `bpf-ninja set`. Repeatable | all |
+| `--arg-echo` | Print the target function's integer args for each call (gated by `--arg-filter` if set) instead of capturing. Requires `--func` and a single `--mode`; combine with `-c N` | entry, exit |
 | `--split-by-tag` | Route matched packets to one pcap per set-map value (tag): `-w out.pcap` yields `out.<tag>.pcap` (requires `-w`) | all |
 | `--max-bytes` | Stop the whole capture once total output bytes reach N (works with or without `--split-by-tag`). Per-tag caps live on the set entries: `set add ... max-bytes=N` (0 / omitted = uncapped; entries sharing a tag share one budget — an uncapped entry makes the tag uncapped, otherwise the largest cap wins) | all |
 | `--exit-when-capped` | Exit 0 once every entry that has a per-entry cap reached it; uncapped entries don't participate (requires `--split-by-tag` and at least one `--set`) | all |
