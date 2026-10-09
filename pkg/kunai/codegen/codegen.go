@@ -304,23 +304,14 @@ const dslReject = "dsl_reject"
 const KunaiStackTop = int16(-56)
 
 // ScratchBufSize is the prefix length host wrappers must materialise
-// in the per-CPU scratch buffer before jumping into the kunai filter.
-// 512 bytes covers worst-case verifier-tracked R4 for chains that
-// stack two variable advances (e.g. IPv6 ext loop + SRv6 segments +
-// TCP options ≈ 320 bytes) with headroom for future stacked layers.
-//
-// Sizing contract — when you change a vocab LenMask or add a new
-// trail-bearing protocol, verify that
-//
-//	sum(per-protocol max trail) + sum(fixed primary headers) ≤ ScratchBufSize
-//
-// holds for every reachable chain shape. Per-protocol max trail
-// is `(LenMask >> LenShift) << log2(Scale) - MinimumTotal + Base`
-// for primary-header pkt.advance trailers, `iter_cap × per-iter advance` for parser-machine
-// self-loops (e.g. ipv6_ext_h LenMask=0x03 ⇒ 32 B/iter × 4 iter cap
-// = 128 B). Currently every chain in the bundled vocab fits within
-// 320 B; the 192 B slack accommodates one more variable-trail layer
-// before this constant has to grow.
+// in the per-CPU scratch buffer before jumping into the kunai filter,
+// and the bound every variable-length walk clamps its cursor to (at any
+// host, XDP included). A packet whose walk ends past it is rejected;
+// static layers past it fail their bounds check against R1. The spec
+// has no such bound, so this is a known divergence (DECISIONS D-029
+// addendum 2, vector srv6-past-scratch-window): a declared region can
+// exceed it, e.g. an SRH whose segment list is longer than the stack
+// holds since truncated stacks continue at the declared end.
 const ScratchBufSize = 512
 
 // Gen produces BPF instructions for the resolved program. The output

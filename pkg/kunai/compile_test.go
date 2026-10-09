@@ -855,9 +855,9 @@ func TestArith128NestingInsideBoolEq(t *testing.T) {
 		{bothPark(5) + " == 0", 2, "both sides"},
 		{bothPark(4) + " == 0", 2, ""},
 		{bothPark(4) + " == 0", 3, ""},
-		{"ipv6.src == " + narrow(10), 0, ""},
-		{"ipv6.src == " + narrow(10), 1, "sub-64-bit expression"},
-		{"ipv6.src == " + narrow(9), 1, ""},
+		{"ipv6.src == " + narrow(11), 0, ""},
+		{"ipv6.src == " + narrow(11), 1, "sub-64-bit expression"},
+		{"ipv6.src == " + narrow(10), 1, ""},
 	} {
 		for _, right := range []bool{false, true} {
 			expr := "eth/ipv6/tcp where " + boolEq(tc.atom, tc.d, right)

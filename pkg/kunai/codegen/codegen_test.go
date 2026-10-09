@@ -463,9 +463,9 @@ func deepLeftArithCompare(layer *ir.LayerInstance, binops int) *ir.Condition {
 // operand, where climbing that deep would clobber the parked LHS and
 // silently mis-compare.
 func TestGenBoolEqOperandArithDepthBudget(t *testing.T) {
-	// binops = maxArithDepth-1 puts the leaves at the deepest call-depth
-	// the full (boolEqDepth == 0) guard still accepts.
-	const binops = maxArithDepth - 1
+	// binops = maxArithDepth puts the deepest binary node in the last
+	// slot the full (boolEqDepth == 0) guard still accepts.
+	const binops = maxArithDepth
 
 	standalone := ethIPv4TCPProgram()
 	standalone.Where = deepLeftArithCompare(standalone.Layers[1], binops)
@@ -1330,4 +1330,50 @@ func TestGenOptionalEqualsRange01(t *testing.T) {
 // streams compare on everything but metadata identity.
 func insnKey(ins asm.Instruction) string {
 	return fmt.Sprintf("%v sym=%q ref=%q", ins, ins.Symbol(), ins.Reference())
+}
+
+// TestArithCompareParkSlotInRegion pins the comparison's park slot: the
+// side computed first is parked in the first slot the other side's
+// binary nodes leave free, so a 16-deep side on the right must go first.
+// A store one slot past the arith region would land in the layer entry
+// slots, which a kernel run of a static chain does not notice.
+func TestArithCompareParkSlotInRegion(t *testing.T) {
+	outside := arithStackSlot(maxArithDepth)
+	for _, tc := range []struct {
+		name   string
+		cond   func(*ir.LayerInstance) *ir.Condition
+		refuse bool
+	}{
+		{"deep right", func(l *ir.LayerInstance) *ir.Condition {
+			return deepLeftArithCompare(l, maxArithDepth)
+		}, false},
+		{"deep left", func(l *ir.LayerInstance) *ir.Condition {
+			c := deepLeftArithCompare(l, maxArithDepth)
+			c.ArithL, c.ArithR = c.ArithR, c.ArithL
+			return c
+		}, false},
+		{"both deep", func(l *ir.LayerInstance) *ir.Condition {
+			c := deepLeftArithCompare(l, maxArithDepth)
+			c.ArithL = deepLeftArithCompare(l, maxArithDepth).ArithR
+			return c
+		}, true},
+	} {
+		p := ethIPv4TCPProgram()
+		p.Where = tc.cond(p.Layers[1])
+		out, err := Gen(p, Capabilities{})
+		if tc.refuse {
+			if !errors.Is(err, ErrNotImplemented) {
+				t.Errorf("%s: err = %v; want ErrNotImplemented", tc.name, err)
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		for _, ins := range out.Main {
+			if ins.OpCode.Class().IsStore() && ins.Dst == asm.R10 && ins.Offset == outside {
+				t.Errorf("%s: store to %d, one slot past the arith region", tc.name, outside)
+			}
+		}
+	}
 }

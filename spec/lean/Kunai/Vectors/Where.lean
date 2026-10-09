@@ -497,13 +497,13 @@ vector arith128BoolEqBothParkRej := {
   packet := v6pkt 1 2, expected := .reject, note := "the chain is 3, so the innermost atom is false" }
 vector arith128BoolEqNarrow := {
   id := "arith-128-booleq-narrow",
-  ast := W6 (.boolEq (cmp src6 .eq (narrowChain 9)) .eq dport6Is80),
-  packet := v6pkt 800 2, expected := .accept [],
-  note := "a sub-64-bit expression nested nine levels inside `==`, the deepest Go compiles: 10 × 80" }
+  ast := W6 (.boolEq (cmp src6 .eq (narrowChain 10)) .eq dport6Is80),
+  packet := v6pkt 880 2, expected := .accept [],
+  note := "a sub-64-bit expression nested ten levels inside `==`, the deepest Go compiles: 11 × 80" }
 vector arith128BoolEqNarrowRej := {
   id := "arith-128-booleq-narrow-rej",
-  ast := W6 (.boolEq (cmp src6 .eq (narrowChain 9)) .eq dport6Is80),
-  packet := v6pkt 801 2, expected := .reject }
+  ast := W6 (.boolEq (cmp src6 .eq (narrowChain 10)) .eq dport6Is80),
+  packet := v6pkt 881 2, expected := .reject }
 def dport6Is81 : Where := cmp dport6 .eq (k 81)
 /-- `b == (b == … (b == atom))` with `d` bool-eqs: the atom on the right, so
 it runs while the truth values of the left operands are parked. -/
@@ -537,16 +537,36 @@ vector arith128BoolEqRightBoth4DeepBothFalse := {
   packet := v6pkt 1 2, expected := .accept [], note := "false == (false == (false == false))" }
 vector arith128BoolEqRightNarrow := {
   id := "arith-128-booleq-right-narrow",
-  ast := W6 (boolEqRight dport6Is80 1 (cmp src6 .eq (narrowChain 9))),
-  packet := v6pkt 800 2, expected := .accept [] }
+  ast := W6 (boolEqRight dport6Is80 1 (cmp src6 .eq (narrowChain 10))),
+  packet := v6pkt 880 2, expected := .accept [] }
 vector arith128BoolEqRightNarrowFalse := {
   id := "arith-128-booleq-right-narrow-false",
-  ast := W6 (boolEqRight dport6Is81 1 (cmp src6 .eq (narrowChain 9))),
-  packet := v6pkt 800 2, expected := .reject }
+  ast := W6 (boolEqRight dport6Is81 1 (cmp src6 .eq (narrowChain 10))),
+  packet := v6pkt 880 2, expected := .reject }
 vector arith128BoolEqRightNarrowBothFalse := {
   id := "arith-128-booleq-right-narrow-both-false",
-  ast := W6 (boolEqRight dport6Is81 1 (cmp src6 .eq (narrowChain 9))),
-  packet := v6pkt 801 2, expected := .accept [] }
+  ast := W6 (boolEqRight dport6Is81 1 (cmp src6 .eq (narrowChain 10))),
+  packet := v6pkt 881 2, expected := .accept [] }
+/-- `dport + (dport + (… dport))` nested `n` levels on the IPv4 chain. -/
+def dportChain : Nat → Arith
+  | 0 => dport
+  | n + 1 => .bin .add dport (dportChain n)
+vector arithDepth16Left := {
+  id := "arith-depth-16-left", ast := W (cmp (dportChain 16) .eq (k 1360)), expected := .accept [],
+  note := "sixteen nested binary nodes, the deepest Go compiles: 17 × 80" }
+vector arithDepth16Right := {
+  id := "arith-depth-16-right", ast := W (cmp (k 1360) .eq (dportChain 16)), expected := .accept [],
+  note := "the deeper side is computed first, so the shallow left side parks in a free slot" }
+vector arithDepth16RightRej := {
+  id := "arith-depth-16-right-rej", ast := W (cmp (k 1361) .eq (dportChain 16)), expected := .reject }
+vector arithDepthBothDeep := {
+  id := "arith-depth-both-deep", ast := W (cmp (dportChain 15) .lt (dportChain 16)), expected := .accept [],
+  note := "16 × 80 < 17 × 80: the 15-deep side goes second and leaves slot 15 for the parked 16-deep side; the operator order is kept" }
+vector arithDepthBothDeepRej := {
+  id := "arith-depth-both-deep-rej", ast := W (cmp (dportChain 16) .lt (dportChain 15)), expected := .reject }
+vector arithDepth15InBoolEq := {
+  id := "arith-depth-15-booleq", ast := W (.boolEq (cmp dport .eq (k 80)) .eq (cmp (dportChain 15) .eq (k 1280))),
+  expected := .accept [], note := "fifteen nodes on the right of `==`, under the parked truth value" }
 def wide (n : Nat) : Arith := .wide n
 vector arith128WideLit := {
   id := "arith-128-wide-lit", ast := W6 (cmp (.bin .add src6 (wide (2 ^ 64))) .eq dst6),
@@ -757,7 +777,7 @@ def whereVectors : List Vector := [
   arith128AddNegConst, arith128SubNegConst, arith128CmpNegConst,
   arith128MixedWidthAdd, arith128MixedWidthMul, arith128MixedCarry, arith128MixedBorrow, arith128MixedWrap64, arith128MixedSlice,
   arith128MixedNested, arith128MixedNeg, arith128ConstBinop, arith128MixedAux, typArith128NarrowFitNested,
-  arith128WideRight, arith128WideRightSub, arith128WideRightDeep, arith128WideRightConstLeft, arith128WideRightBorrow, arith128WideRightNarrowLeft, arith128WideRightNarrowLeftRej, arith128WideBoth, arith128WideBothBorrow, arith128WideBothNested, arith128WideBothNarrow, arith128WideBothRej, arith128BoolEqBothPark, arith128BoolEqBothParkRej, arith128BoolEqNarrow, arith128BoolEqNarrowRej, arith128BoolEqRightBoth5, arith128BoolEqRightBoth5False, arith128BoolEqRightBoth5BothFalse, arith128BoolEqRightBoth4Deep, arith128BoolEqRightBoth4DeepFalse, arith128BoolEqRightBoth4DeepBothFalse, arith128BoolEqRightNarrow, arith128BoolEqRightNarrowFalse, arith128BoolEqRightNarrowBothFalse, arith128WideLit, arith128WideLitHigh, arith128WideLitHighRej, arith128WideLitSmall, arith128WideLitNarrow, arith128WideLitNarrowRej, arith128WideLitLeft, arith128WideLitCmpLeft, arith128WideLitRightNested, arith128WideLitRightNestedSub, arith128WideLitSubHigh, arith128WideLitNarrowFit, typArith128WideMod, typArith128PlainTooNegative, typArith128WideTooWide, typArith128WideMul, typArith128PlainTooWide, typArith128NarrowFit, arith128CmpWideConst,
+  arith128WideRight, arith128WideRightSub, arith128WideRightDeep, arith128WideRightConstLeft, arith128WideRightBorrow, arith128WideRightNarrowLeft, arith128WideRightNarrowLeftRej, arith128WideBoth, arith128WideBothBorrow, arith128WideBothNested, arith128WideBothNarrow, arith128WideBothRej, arith128BoolEqBothPark, arith128BoolEqBothParkRej, arith128BoolEqNarrow, arith128BoolEqNarrowRej, arith128BoolEqRightBoth5, arith128BoolEqRightBoth5False, arith128BoolEqRightBoth5BothFalse, arith128BoolEqRightBoth4Deep, arith128BoolEqRightBoth4DeepFalse, arith128BoolEqRightBoth4DeepBothFalse, arith128BoolEqRightNarrow, arith128BoolEqRightNarrowFalse, arith128BoolEqRightNarrowBothFalse, arithDepth16Left, arithDepth16Right, arithDepth16RightRej, arithDepthBothDeep, arithDepthBothDeepRej, arithDepth15InBoolEq, arith128WideLit, arith128WideLitHigh, arith128WideLitHighRej, arith128WideLitSmall, arith128WideLitNarrow, arith128WideLitNarrowRej, arith128WideLitLeft, arith128WideLitCmpLeft, arith128WideLitRightNested, arith128WideLitRightNestedSub, arith128WideLitSubHigh, arith128WideLitNarrowFit, typArith128WideMod, typArith128PlainTooNegative, typArith128WideTooWide, typArith128WideMul, typArith128PlainTooWide, typArith128NarrowFit, arith128CmpWideConst,
   arith128Lt, arith128GeMiss, arith128LtHighHalf, typArith128Mul, typArith128Band, typPathDeep, typPathDeepLabel, typPathDeepBracket]
 
 end Kunai
