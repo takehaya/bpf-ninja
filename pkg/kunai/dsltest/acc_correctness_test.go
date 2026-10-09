@@ -1,6 +1,7 @@
 package dsltest
 
 import (
+	"net"
 	"testing"
 
 	"github.com/google/gopacket/layers"
@@ -222,4 +223,106 @@ func TestTCPAccumulatorInAlternation(t *testing.T) {
 	// udp branch: the tcp option walk never runs, so the acc slot keeps its
 	// pre-alternation zero and the mask check rejects.
 	r.MustReject(t, BuildEthIPv4UDP(t, 1234, 5678, []byte{0xde, 0xad}), "udp branch: no tcp options")
+}
+
+// TestTCPAccumulatorWideLiteralNeverHolds checks a pair whose first leaf
+// compares the 16-bit MSS against an int<128>(…) above 2^64. No MSS can
+// hold that value, so the conjunction is false for every packet (D-035
+// compares values, not bit patterns): the plan rejects outright, even
+// the packet whose WS leaf matches.
+func TestTCPAccumulatorWideLiteralNeverHolds(t *testing.T) {
+	r := New(t, "eth/ipv4/tcp where tcp.options.MSS.value == int<128>(18446744073709553076) and tcp.options.WS.shift == 7")
+
+	mss := layers.TCPOption{OptionType: layers.TCPOptionKindMSS, OptionLength: 4, OptionData: []byte{0x05, 0xb4}}
+	ws := layers.TCPOption{OptionType: layers.TCPOptionKindWindowScale, OptionLength: 3, OptionData: []byte{7}}
+
+	both := Defaults()
+	both.TCPOptions = []layers.TCPOption{mss, ws}
+	r.MustReject(t, Build(t, both), "MSS=1460 is not 2^64+1460; WS=7 cannot rescue the AND")
+
+	none := Defaults()
+	r.MustReject(t, Build(t, none), "no options")
+
+	// The same value written as a small int<128>(…) fits and matches.
+	small := New(t, "eth/ipv4/tcp where tcp.options.MSS.value == int<128>(1460) and tcp.options.WS.shift == 7")
+	small.MustMatch(t, Build(t, both), "int<128>(1460) fits the field")
+}
+
+// TestTCPAccumulatorHighBitConst checks a 4-byte constant with the high
+// bit set (0x80000000): the prelude compares it from a register because
+// JNE.Imm would sign-extend the immediate to 0xffffffff80000000.
+func TestTCPAccumulatorHighBitConst(t *testing.T) {
+	r := New(t, "eth/ipv4/tcp where tcp.options.MSS.value == 1460 and tcp.options.TS.tsval == 0x80000000")
+
+	mss := layers.TCPOption{OptionType: layers.TCPOptionKindMSS, OptionLength: 4, OptionData: []byte{0x05, 0xb4}}
+	ts := func(tsval uint32) layers.TCPOption {
+		d := make([]byte, 8)
+		d[0], d[1], d[2], d[3] = byte(tsval>>24), byte(tsval>>16), byte(tsval>>8), byte(tsval)
+		return layers.TCPOption{OptionType: layers.TCPOptionKindTimestamps, OptionLength: 10, OptionData: d}
+	}
+
+	match := Defaults()
+	match.TCPOptions = []layers.TCPOption{mss, ts(0x80000000)}
+	r.MustMatch(t, Build(t, match), "tsval == 0x80000000")
+
+	below := Defaults()
+	below.TCPOptions = []layers.TCPOption{mss, ts(0x7fffffff)}
+	r.MustReject(t, Build(t, below), "tsval == 0x7fffffff")
+
+	signExt := Defaults()
+	signExt.TCPOptions = []layers.TCPOption{mss, ts(0)}
+	r.MustReject(t, Build(t, signExt), "tsval == 0")
+}
+
+// TestTCPAccumulatorOtherLayerValid checks `ipv4.options.valid` ANDed
+// with a two-option TCP plan. The ipv4 flag comes from ipv4's own walk,
+// so it is checked after the accumulator's mask: a malformed ipv4 option
+// region (D-029) rejects even when both TCP options match.
+func TestTCPAccumulatorOtherLayerValid(t *testing.T) {
+	r := New(t, "eth/ipv4/tcp where ipv4.options.valid and tcp.options.MSS.value == 1460 and tcp.options.WS.shift == 7")
+
+	mss := layers.TCPOption{OptionType: layers.TCPOptionKindMSS, OptionLength: 4, OptionData: []byte{0x05, 0xb4}}
+	ws := func(s byte) layers.TCPOption {
+		return layers.TCPOption{OptionType: layers.TCPOptionKindWindowScale, OptionLength: 3, OptionData: []byte{s}}
+	}
+
+	plain := Defaults()
+	plain.TCPOptions = []layers.TCPOption{mss, ws(7)}
+	r.MustMatch(t, Build(t, plain), "ipv4 without options is valid; MSS=1460 AND WS=7")
+
+	withOpt := Defaults()
+	withOpt.IPv4Options = []layers.IPv4Option{{OptionType: 7, OptionLength: 4, OptionData: []byte{0, 0}}}
+	withOpt.TCPOptions = []layers.TCPOption{mss, ws(7)}
+	r.MustMatch(t, Build(t, withOpt), "a well-formed RR option keeps ipv4 valid")
+
+	// An unknown ipv4 option kind faults the walk: ipv4 has no options
+	// and is not valid (D-029), whatever the TCP options say.
+	bad := Defaults()
+	bad.IPv4Options = []layers.IPv4Option{{OptionType: 0x99, OptionLength: 4, OptionData: []byte{0, 0}}}
+	bad.TCPOptions = []layers.TCPOption{mss, ws(7)}
+	r.MustReject(t, Build(t, bad), "malformed ipv4 options: the residual flag check rejects")
+
+	wsBad := Defaults()
+	wsBad.TCPOptions = []layers.TCPOption{mss, ws(8)}
+	r.MustReject(t, Build(t, wsBad), "ipv4 valid but WS=8: the mask check rejects")
+}
+
+// TestTCPAccumulatorOtherLayerValidAbsent checks the residual atom on an
+// alternation member that did not match: `ipv4.options.valid` is false
+// when ipv6 was taken (D-003), so the filter rejects even though the TCP
+// plan is satisfied.
+func TestTCPAccumulatorOtherLayerValidAbsent(t *testing.T) {
+	r := New(t, "eth/(ipv4|ipv6)/tcp where ipv4.options.valid and tcp.options.MSS.value == 1460 and tcp.options.WS.shift == 7")
+
+	mss := layers.TCPOption{OptionType: layers.TCPOptionKindMSS, OptionLength: 4, OptionData: []byte{0x05, 0xb4}}
+	ws := layers.TCPOption{OptionType: layers.TCPOptionKindWindowScale, OptionLength: 3, OptionData: []byte{7}}
+
+	v4 := Defaults()
+	v4.TCPOptions = []layers.TCPOption{mss, ws}
+	r.MustMatch(t, Build(t, v4), "ipv4 member matched and valid")
+
+	v6 := Defaults()
+	v6.SrcIP, v6.DstIP = net.ParseIP("2001:db8::1"), net.ParseIP("2001:db8::2")
+	v6.TCPOptions = []layers.TCPOption{mss, ws}
+	r.MustReject(t, Build(t, v6), "ipv6 member matched: ipv4 is absent, its flag reads false")
 }

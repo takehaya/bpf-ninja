@@ -130,8 +130,8 @@ vector tcpMssWsWide := tcpW (.and (cmp mss .eq (.wide 1460)) (cmp wsShift .eq (k
   (tcpOpts (mssOpt 1460 ++ [3, 3, 7, 1])) "tcp-opt-mss-ws-wide" (.accept [])
   (note := "two option equalities, one against a small int<128>(…): the accumulator takes it")
 vector tcpMssWsWideHigh := tcpW (.and (cmp mss .eq (.wide (2 ^ 64 + 1460))) (cmp wsShift .eq (k 7)))
-  (tcpOpts (mssOpt 1460 ++ [3, 3, 7, 1])) "tcp-opt-mss-ws-wide-high" .reject (goStatus := .notImplemented)
-  (note := "a value the option field cannot hold keeps the pair out of the accumulator, which is the only path for two options")
+  (tcpOpts (mssOpt 1460 ++ [3, 3, 7, 1])) "tcp-opt-mss-ws-wide-high" .reject
+  (note := "a value the option field cannot hold makes its leaf false for every packet; the accumulator rejects outright")
 vector tcpOptsValidTwoOptions := tcpW (.and tcpValid (.and (cmp mss .eq (k 1460)) (cmp wsShift .eq (k 7))))
   (tcpOpts (mssOpt 1460 ++ [3, 3, 7, 1])) "tcp-opts-valid-with-two-options" (.accept [])
   (note := "the accumulator plan for two option equalities also checks the validity flag")
@@ -159,8 +159,8 @@ vector tcpOptsValidTwoOptionsLabel := {
 vector tcpOptsValidTwoOptionsOtherLayer := {
   id := "tcp-opts-valid-with-two-options-other-layer",
   ast := { layers := chain3, cond := some (.and (.optionsValid ⟨[("ipv4", none), ("options", none)]⟩) twoOptsValid) },
-  packet := twoOptsPkt, expected := .accept [], goStatus := .notImplemented,
-  note := "Go: the accumulator takes the validity flag of its own layer only; another layer's flag keeps the plan off" }
+  packet := twoOptsPkt, expected := .accept [],
+  note := "another layer's validity flag is checked after the accumulator's mask, with that layer's absent guard" }
 vector tcpOptsValidTwoOptionsMiss := tcpW (.and tcpValid (.and (cmp mss .eq (k 1460)) (cmp wsShift .eq (k 8))))
   (tcpOpts (mssOpt 1460 ++ [3, 3, 7, 1])) "tcp-opts-valid-with-two-options-miss" .reject
 def tcpValidPred : Predicate := .optionsValid ⟨[("options", none)]⟩

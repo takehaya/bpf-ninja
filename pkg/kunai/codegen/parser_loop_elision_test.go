@@ -203,6 +203,36 @@ func TestTLVWalkCascadeMultiOptionAccumulator(t *testing.T) {
 				"and tcp.options.WS.shift == 7",
 			reject: true,
 		},
+		{
+			// An `int<128>(n)` the 16-bit MSS cannot hold makes that leaf
+			// false for every packet. The plan is still built (marked never)
+			// so the pair compiles and rejects, instead of falling to the
+			// >=2 reject.
+			name: "wide_literal_never_holds",
+			expr: "eth/ipv4/tcp where " +
+				"tcp.options.MSS.value == int<128>(18446744073709553076) " +
+				"and tcp.options.WS.shift == 7",
+			reject: false,
+		},
+		{
+			// A 4-byte constant with the high bit set compares from a
+			// register (JNE.Imm would sign-extend it).
+			name: "high_bit_u32_const",
+			expr: "eth/ipv4/tcp where " +
+				"tcp.options.MSS.value == 1460 " +
+				"and tcp.options.TS.tsval == 0x80000000",
+			reject: false,
+		},
+		{
+			// `.options.valid` on another layer is ANDed after the mask
+			// check instead of keeping the plan off.
+			name: "other_layer_valid_residual",
+			expr: "eth/ipv4/tcp where " +
+				"ipv4.options.valid " +
+				"and tcp.options.MSS.value == 1460 " +
+				"and tcp.options.WS.shift == 7",
+			reject: false,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

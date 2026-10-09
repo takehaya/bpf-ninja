@@ -411,10 +411,20 @@ func (c *pmCtx) emitAccPrelude(sel *vocab.SelectOp, atoms []accAtom, breakLabel 
 		if atom.width > 1 {
 			insns = append(insns, asm.HostTo(asm.BE, asm.R0, size))
 		}
+		// Compare against the constant. JNE.Imm sign-extends its 32-bit
+		// immediate, so a 4-byte value with the high bit set goes through
+		// a register (R1 is free again after the field load).
+		if atom.cmpVal > 0x7FFFFFFF {
+			insns = append(insns,
+				asm.LoadImm(asm.R1, int64(atom.cmpVal), asm.DWord),
+				asm.JNE.Reg(asm.R0, asm.R1, skip),
+			)
+		} else {
+			insns = append(insns, asm.JNE.Imm(asm.R0, int32(atom.cmpVal), skip))
+		}
 		// On a value match, OR the atom's bit into the accumulator slot
 		// (reached via R2 = ctx pointer + main-frame offset).
 		insns = append(insns,
-			asm.JNE.Imm(asm.R0, int32(atom.cmpVal), skip),
 			asm.LoadMem(asm.R0, asm.R2, mainStackOffsetFromCb(slot), asm.DWord),
 			asm.Or.Imm(asm.R0, int32(uint64(1)<<uint(atom.bit))),
 			asm.StoreMem(asm.R2, mainStackOffsetFromCb(slot), asm.R0, asm.DWord),

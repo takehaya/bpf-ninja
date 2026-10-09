@@ -192,7 +192,7 @@ eth/ipv4/tcp where tcp.options.WS.shift > 5
 eth/ipv4/tcp where tcp.options.TS.tsval > 0
 ```
 
-1 つの filter で TCP の option を 2 種類以上見る場合は、`where` 全体を `<option>.<field> == <定数>` の `and` だけで書きます。定数は 32 bit の符号付き整数に収まる値に限ります。同じ layer の `options.valid` は混ぜられます。`!=`、`or`、`not`、`.exists`、別の layer の `options.valid`、`action == …`、`tcp.dport == 80` のような option 以外の atom を混ぜると `ErrNotImplemented` になります。option 以外の field の条件は bracket に移せば compile できます。`action == …` は bracket に書けないので、この形とは組み合わせられません。
+1 つの filter で TCP の option を 2 種類以上見る場合は、`where` 全体を `<option>.<field> == <定数>` の `and` だけで書きます。`options.valid` はどの layer のものでも混ぜられます。`int<128>(n)` で field に収まらない定数を書くと、その filter はどの packet にも一致しません。`!=`、`or`、`not`、`.exists`、`action == …`、`tcp.dport == 80` のような option 以外の atom を混ぜると `ErrNotImplemented` になります。option 以外の field の条件は bracket に移せば compile できます。`action == …` は bracket に書けないので、この形とは組み合わせられません。
 
 ```
 eth/ipv4/tcp where tcp.options.MSS.value == 1460 and tcp.options.WS.shift == 7                     # compile できる
