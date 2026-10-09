@@ -12,6 +12,8 @@ package program
 // Root + veth + tcx required; skipped otherwise.
 
 import (
+	"fmt"
+	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -125,26 +127,66 @@ func TestBpfVlanWireFrameAtTC(t *testing.T) {
 	}
 }
 
+// TestBpfVlanWireFrameAtTCEdges covers two corners of wireFrameCopy that
+// TestBpfVlanWireFrameAtTC does not reach: a priority tag (VID 0), which
+// is a tag in metadata although its TCI is zero, and a field in the last
+// bytes of the frame, which the copy after the inserted tag must reach.
+func TestBpfVlanWireFrameAtTCEdges(t *testing.T) {
+	testutil.SkipIfNotRoot(t)
+	tcProg := loadAsmTC(t)
+	ifindex := wireTestVeth(t, tcProg)
+	prev := TCVlanReinsert
+	TCVlanReinsert = true
+	t.Cleanup(func() { TCVlanReinsert = prev })
+
+	urg := vlanTaggedIPv4TCP(100)
+	urg[len(urg)-2], urg[len(urg)-1] = 0x12, 0x34 // tcp urgent_ptr
+	frames := map[string][]byte{
+		"untagged": untaggedIPv4TCP(),
+		"vid0":     vlanTaggedIPv4TCP(0),
+		"urg":      urg,
+	}
+	entry := func(expr string) (*Probe, error) { return LoadEntry(tcProg, asmTCFuncName, expr, nil, true) }
+	for _, tc := range []struct {
+		expr  string
+		match []string
+	}{
+		{"eth/vlan[tci==0]/ipv4/tcp[dport==80]", []string{"vid0"}},
+		{"eth/vlan/ipv4/tcp[urgent_ptr==0x1234]", []string{"urg"}},
+	} {
+		t.Run(tc.expr, func(t *testing.T) {
+			for name, frame := range frames {
+				want := slices.Contains(tc.match, name)
+				if got := len(capturePackets(t, entry, tc.expr, ifindex, frame)) > 0; got != want {
+					t.Errorf("frame %s: captured=%v, want %v", name, got, want)
+				}
+			}
+		})
+	}
+}
+
 // wireTestVeth creates a veth pair, attaches tcProg at ingress of the
 // receiving end (tcx, or a clsact filter on kernels without tcx) and
 // returns the sending end's ifindex.
 func wireTestVeth(t *testing.T, tcProg *ebpf.Program) int {
 	t.Helper()
-	if old, err := netlink.LinkByName("kxwire0"); err == nil {
+	// Names carry the pid so concurrent runs on one host do not collide.
+	name0, name1 := fmt.Sprintf("kxw%da", os.Getpid()%100000), fmt.Sprintf("kxw%db", os.Getpid()%100000)
+	if old, err := netlink.LinkByName(name0); err == nil {
 		_ = netlink.LinkDel(old) // left behind by an interrupted run
 	}
 	la := netlink.NewLinkAttrs()
-	la.Name = "kxwire0"
-	veth := &netlink.Veth{LinkAttrs: la, PeerName: "kxwire1"}
+	la.Name = name0
+	veth := &netlink.Veth{LinkAttrs: la, PeerName: name1}
 	if err := netlink.LinkAdd(veth); err != nil {
 		t.Skipf("veth unavailable (%v)", err)
 	}
 	t.Cleanup(func() { _ = netlink.LinkDel(veth) })
-	v0, err := netlink.LinkByName("kxwire0")
+	v0, err := netlink.LinkByName(name0)
 	if err != nil {
 		t.Fatalf("LinkByName: %v", err)
 	}
-	v1, err := netlink.LinkByName("kxwire1")
+	v1, err := netlink.LinkByName(name1)
 	if err != nil {
 		t.Fatalf("LinkByName: %v", err)
 	}
