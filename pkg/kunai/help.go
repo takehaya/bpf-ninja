@@ -16,30 +16,45 @@ import (
 const SyntaxHelp = `Syntax:
   filter        := layer-chain [where-clause] [capture-clause]*
   layer-chain   := layer (/ layer)*
-  layer         := proto[@label][quantifier][predicate]*
+  layer         := proto[@label][predicates][quantifier]
                 |  ( layer (| layer)+ )    # alternation
   quantifier    := ? | + | * | {n} | {n,m}
-  predicate     := [ field op value (, field op value)* ]
+  predicates    := [ predicate (, predicate)* ]    # comma = AND
+  predicate     := field op value
+                |  field in [ value-or-range (, value-or-range)* ]
+                |  field in @set               # --set NAME=... pinned map
+                |  options.valid               # option region parsed cleanly
   op            := == | != | < | <= | > | >=
   value         := integer | ipv4 | ipv6 | ipv4_cidr | ipv6_cidr | mac
-  where-clause  := where <expr>
-  capture-clause:= capture (all|headers|headers+N) [where <expr>]
+  where-clause  := where <expr>    # and/or/not, + - * / % & | ^ << >>,
+                                   # any(...)/all(...) over aux stacks,
+                                   # int<128>(n) for 128-bit constants
+  capture-clause:= capture (all|headers[+N]|<label-or-proto>[+N]|absolute N)
+                   [where <expr>]
 `
 
 // ExamplesHelp is a set of representative DSL expressions.
 const ExamplesHelp = `Examples:
   eth/ipv4/tcp[dport==443]
   eth/ipv4/tcp[sport==12345, dport==443]      # multi-field AND
+  eth/ipv4/tcp[dport in [80, 443, 8000..8080]] # value list and range
   eth/ipv4[src==10.0.0.0/8]/tcp
   eth[dst==de:ad:be:ef:00:01]/ipv4/tcp        # MAC predicate
   eth/ipv6[src==2001:db8::/32]/tcp            # IPv6 CIDR
   eth/vlan?/ipv4/tcp                           # optional VLAN
+  eth/vlan[tci==100]+/ipv4/tcp                 # predicate before quantifier
   eth/mpls{1,4}/ipv4/tcp                       # MPLS 1-4 labels
   eth/ipv4/udp/vxlan/eth/ipv4/tcp              # VXLAN inner
   eth/(vlan|qinq)/ipv4/tcp                     # alternation
   eth/ipv4@outer/udp/gtp/ipv4@inner/tcp        # labelled layers
+  eth/ipv4/udp/gtp[teid in @teids]             # pinned-map set (--set)
+  eth/ipv4/tcp[options.valid]                  # reject malformed options
   eth/ipv4/tcp where tcp.dport == 443 or tcp.dport == 80
+  eth/ipv4/tcp where tcp.options.MSS.value == 1460
+  eth/ipv6/srv6/tcp where any(srv6.segments.addr == fc00::1)
+  eth/ipv6/tcp where ipv6.src + int<128>(18446744073709551616) == ipv6.dst
   eth/ipv4/tcp capture headers+64
+  eth/ipv4/tcp capture absolute 128
 `
 
 // WriteProtocolCatalogue writes a one-line-per-protocol summary of
@@ -75,7 +90,6 @@ func protocolHeaderBytes(spec *vocab.ProtocolSpec) int {
 	}
 	return (bits + 7) / 8
 }
-
 
 func dispatchParents(spec *vocab.ProtocolSpec) []string {
 	seen := map[string]struct{}{}

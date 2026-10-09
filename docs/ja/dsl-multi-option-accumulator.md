@@ -121,7 +121,12 @@ codegen には別途、callback の分岐命令数を静的に数える tripwire
   積む変更が要る。
 - 起動条件は次のとおり。distinct な option が 2 種類以上で、`where` 全体が
   `<option>.<field> == <const>` の純粋な AND であること (`buildAccPlan`)。
-  単一 option や、`!=`・非 option atom が混ざる形は別経路をたどる (従来どおり)。
+  同じ layer の `<layer>.options.valid` は AND の項として混ぜてよい。accumulator の
+  後で、`emitAccMaskCheck` が option 領域が壊れていないことを別に確かめる。
+  単一 option の filter は従来どおり別経路をたどる。2 種類以上の option を見る
+  filter に `!=`・`or`・`.exists`・option 以外の atom・別 layer の `.valid` が
+  混ざる形は `ErrNotImplemented` になる。`tcp[dport==80]` のような bracket の条件は
+  `where` の外なので、混ぜても accumulator の対象のままである。
   対象 layer は length-byte advance を持つ TLV walk (TCP options) であること。TCP の領域 counter は対象に含み、それ以外の counter-driven
   walk (Geneve / IPv4 options) は native path のままとなる (`buildAccPlan` が gate)。
 - alternation 内の TCP 多 option も対応する

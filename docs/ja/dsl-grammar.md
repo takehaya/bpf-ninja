@@ -37,8 +37,8 @@ capture-clause ::= 'capture' capture-spec ('where' or-expr)?
 ### 1.2 Layer
 
 ```ebnf
-layer          ::= layer-atom quantifier? predicate*
-layer-atom     ::= proto-name ('@' label)?
+layer          ::= layer-atom quantifier?
+layer-atom     ::= proto-name ('@' label)? predicate-list?
                  | '(' layer ('|' layer)+ ')'        (* alternation *)
 proto-name     ::= [a-z] [a-z0-9_]*
 label          ::= [a-zA-Z_] [a-zA-Z0-9_]*
@@ -47,10 +47,12 @@ quantifier     ::= '?' | '+' | '*' | '{' INT '}' | '{' INT ',' INT? '}'
 
 | Production | parser | 例文 |
 |---|---|---|
-| `layer` | `layer.go::parseLayerItem` | `ipv4@outer[ttl==64]` |
+| `layer` | `layer.go::parseLayerItem` | `ipv4@outer[ttl==64]` / `vlan[tci==100]+` |
 | `layer-atom` (proto) | `layer.go::parseProtoLeaf` | `ipv4@outer` |
 | `layer-atom` (alt) | `layer.go::parseLayerAltGroup` | `(vlan\|qinq)` |
 | `quantifier` | `layer.go::parseQuantifier` / `parseQuantRange` | `?` / `+` / `{1,4}` |
+
+predicate は quantifier より前に書きます。`vlan[tci==100]+` は通りますが、`vlan+[tci==100]` は構文エラーです。1 つの layer に書ける `[...]` は 1 つだけで、複数の条件は `[a==1, b==2]` のようにカンマで並べます。
 
 resolver / codegen が enforce する MVP 制約は次のとおりです。
 - Alternation は alt 数 2-4、先頭 layer に置けない、quantifier 不可、各 alt は親からの Field dispatch 必須 (NoCheck 不可)。ネストした group は flatten され、header size は alt 間で異なっていても構いません
@@ -60,11 +62,12 @@ resolver / codegen が enforce する MVP 制約は次のとおりです。
 ### 1.3 Predicate
 
 ```ebnf
-predicate      ::= '[' field-path op value ']'
-                 | '[' option-segment '.valid' ']'          (* tcp[options.valid]: option 領域が壊れていない (D-029) *)
-                 | '[' field-path 'in' value-list ']'      (* F7: integer / integer '..' integer の OR-chain *)
-                 | '[' field-path 'in' '@' set-name ']'    (* pinned-map 集合照合 *)
-                 | '[' field-path 'has' flag-name ']'      (* F6 bitwise & で superseded *)
+predicate-list ::= '[' predicate (',' predicate)* ']'     (* カンマは AND *)
+predicate      ::= field-path op value
+                 | option-segment '.valid'                (* tcp[options.valid]: option 領域が壊れていない (D-029) *)
+                 | field-path 'in' value-list             (* F7: integer / integer '..' integer の OR-chain *)
+                 | field-path 'in' '@' set-name           (* pinned-map 集合照合 *)
+                 | field-path 'has' flag-name             (* F6 bitwise & で superseded *)
 field-path     ::= field-name ('.' field-name)*            (* aux access: <aux>.<field> *)
 field-name     ::= [a-z] [a-z0-9_]*
 op             ::= '==' | '!=' | '<' | '<=' | '>' | '>='
@@ -84,8 +87,8 @@ mac            ::= [0-9a-fA-F]{2} (':' [0-9a-fA-F]{2}){5}   (* colon 区切り 6
 | Production | parser | 例文 |
 |---|---|---|
 | `predicate` (cmp) | `predicate.go::parsePredicate` | `[dport==443]`, `[src!=fe80::1]`, `[opt.next_ext == 0]` |
-| `predicate` (in) | `predicate.go::parsePredicate` (`PredIn` branch) | `[dport in [80, 443]]` *(codegen reject)* |
-| `predicate` (in @set) | `predicate.go::parsePredicate` (`PredInSet` branch) | `gtp[teid in @teids]`、複合キーは `gtp[teid in @f, imsi in @f]` |
+| `predicate` (in) | `predicate.go::parsePredicate` (`PredIn` branch) | `[dport in [80, 443]]`、`[dport in [80, 1000..2000]]` |
+| `predicate` (in @set) | `predicate.go::parsePredicate` (`PredInSet` branch) | `gtp[teid in @teids]`、複合キーは `gtp[teid in @f, msg_type in @f]` |
 | `predicate` (has) | `predicate.go::parsePredicate` (`PredHas` branch) | `[flags has SYN]` *(codegen reject)* |
 | `field-path` (1-part) | `predicate.go::parseFieldPath` | `dport` / `src` |
 | `field-path` (2-part = aux) | `predicate.go::parseFieldPath` | `opt.next_ext` (gtp の auxiliary header field) |
@@ -187,14 +190,14 @@ field-ref の shape、つまり where 節で使えるフィールドアクセス
 - `all(EXPR)` は ∀ にあたり、全 entry が EXPR を満たすとき true になります。
 - iteration 変数として、EXPR 内に index 無しの stack 参照を 1 個だけ要求します。複数または 0 個は parse-time error です。
 - 静的 unroll で stack capacity 回反復します。SRv6 segments のような parent-count 系は、per-iter `iter < parent.last_entry+1` の guard を入れて、実 entry 数を超えた walk が誤 match しないよう保護します。
-- 例えば `where any(srv6.segments.addr == fc00::1)` は、経路に該当 segment が含まれることを表します。`where all(vlan.id < 4096)` も書けますが、VLAN tag は chain なので別パスで、現在 quantifier は aux stack 限定です。
+- 例えば `where any(srv6.segments.addr == fc00::1)` は、経路に該当 segment が含まれることを表します。`any` / `all` の対象は aux header stack だけです。`vlan+` のような量化 layer の各 header は対象にならないので、`where all(vlan.tci < 4096)` は parse-time error になります。
 
 MVP 制約は次のとおりです。
 - 算術ネストは最大 16 段 (`maxArithDepth`) で、17 段以上は ErrNotImplemented になります。
 - `action == NAME` は、host 側で `Capabilities.Lang` の `Action` map と `ActionFetcher` を提供しているときのみ使えます。XDP の場合は fexit attach (`--mode exit`) で `pkg/kunai/host/xdp.FexitCapabilities()` 経由で有効化されます。
 - 同 protocol が 2 段以上ある場合、`proto.field` だけでは ambiguous になるため `@label.field` が必須です。
 - PR-A〜PR-D で landing した aux predicate / stack index access / options lookup は、wrapper protocol の中身を見るため、protocol 側の `out` parameter declaration が必要です。詳細は `dsl-internals.md §6` を参照してください。
-- Aux 系の補助関数 / stack walk は bracket form (`proto[...]`) と where form の両方で動きますが、CIDR / IPv4 / MAC literal predicate を aux field に対して書くのは現在 `ErrNotImplemented` です。整数比較は可能です。
+- Aux 系の補助関数 / stack walk は bracket form (`proto[...]`) と where form の両方で動きます。aux field に対しても、整数比較に加えてアドレスや CIDR のリテラルとの比較が書けます。例えば `srv6[segments[0].addr == fc00::/16]` や `where any(srv6.segments.addr == fc00::/16)` です。
 
 ### 1.5 Capture 節
 
@@ -219,7 +222,7 @@ capture-spec   ::= 'all'
 - `absolute N` は先頭固定の N bytes を capture します。chain shape に依存せず、quantifier 制約もありません。
 
 MVP 制約は次のとおりです。
-- chain (`+`/`*`/`{n,m}`) を含む filter では、静的に長さを確定できないため `headers (+N)?` / `<label_or_proto> (+N)?` は使えません。`absolute N` は影響を受けません。
+- 量化 layer (`?`/`+`/`*`/`{n,m}`) を含む filter でも `headers (+N)?` / `<label_or_proto> (+N)?` は使えます。長さは compile 時に決まる上限で、量化 layer が最大数マッチした場合の長さになります。詳しくは [`dsl-usage.md`](./dsl-usage.md) の capture 節を参照してください。
 - per-capture の `where` は filter 全体の `where` と AND 合成されます。
 - `absolute` は capture 内の contextual keyword です。label が `absolute` という名前と衝突する稀なケースでは、`absolute+0` で label 解釈を強制できます。
 

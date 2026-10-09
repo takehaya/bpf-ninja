@@ -1,6 +1,6 @@
 # P4 vocabulary でやわらかく BPF パケットフィルタを書くライブラリ kunai
 
-> kunai は、XDP / tracing / tc / userspace BPF の packet filter を、tcpdump 構文より表現力の高い one-liner で書くためのライブラリです。`eth/ipv4/udp/gtp/ipv4/tcp where any(srv6.segments.addr == fc00::1)` のような chain 構文の DSL を、P4-16 の strict subset を vocabulary にして BPF 命令列にコンパイルします。
+> kunai は、XDP / tracing / tc / userspace BPF の packet filter を、tcpdump 構文より表現力の高い one-liner で書くためのライブラリです。`eth/ipv6/srv6/tcp where any(srv6.segments.addr == fc00::1)` のような chain 構文の DSL を、P4-16 の strict subset を vocabulary にして BPF 命令列にコンパイルします。
 
 ## なぜ kunai を作ったか
 
@@ -10,7 +10,7 @@
 
 しかし bpf-ninja の用途では、tcpdump では足りない場面が出てきます。たとえば次のような場面です。
 
-- Encapsulation の特定階層を狙いたい場面です。`eth/ipv4/udp/vxlan/eth/ipv4@inner/tcp[dport=80]` で VXLAN トンネル内側の TCP/80 だけを表現したいとします。tcpdump でこれを書くことは可能ですが、byte offset の計算を手で書くことになります。
+- Encapsulation の特定階層を狙いたい場面です。`eth/ipv4/udp/vxlan/eth/ipv4@inner/tcp[dport==80]` で VXLAN トンネル内側の TCP/80 だけを表現したいとします。tcpdump でこれを書くことは可能ですが、byte offset の計算を手で書くことになります。
 - Variable-length extension headers を walk したい場面です。IPv6 ext-chain (HBH / DestOpt / Routing / Fragment) を任意深さで歩いて中の TCP を見たいのですが、tcpdump はそもそも対応していません。
 - 配列性のある field を見たい場面です。SRv6 segments / GTP extension headers / TCP options に対して、any segment が `fc00::1` か、という条件を書きたくなります。
 - セマンティックな match を書きたい場面です。outer の total_length と inner の total_length に 36 byte 差があるパケット、のような同 chain 内 cross-layer の比較です。
@@ -23,7 +23,7 @@
 
 ```
 # 基本: encapsulation 階層を chain で表現
-eth/ipv4/udp/vxlan/eth/ipv4@inner/tcp[dport=80]
+eth/ipv4/udp/vxlan/eth/ipv4@inner/tcp[dport==80]
 
 # chain quantifier (+ * ?) で「0 個以上」「1 個以上」を表現
 eth/vlan?/ipv4/tcp                                   # VLAN tag は optional
@@ -36,10 +36,10 @@ eth/(ipv4|ipv6)/tcp                                  # IPv4 でも IPv6 でも
 # where 句で arithmetic / boolean / IP literal compare
 eth/ipv4@outer/udp/gtp/ipv4@inner/tcp where outer.total_length == inner.total_length + 36
 eth/ipv6/tcp where ipv6.dst == fc00::/16
-eth/ipv4/tcp where (src == 10.0.0.0/8 or src == 192.168.0.0/16) and dport == 443
+eth/ipv4/tcp where (ipv4.src == 10.0.0.0/8 or ipv4.src == 192.168.0.0/16) and tcp.dport == 443
 
 # capture: パケットの何バイトを userspace に渡すか
-eth/ipv4/tcp[dport=443] capture headers+128                    # ヘッダ + 128B
+eth/ipv4/tcp[dport==443] capture headers+128                    # ヘッダ + 128B
 eth/ipv6/srv6/tcp capture absolute 256                          # 先頭 256B 固定
 
 # aux header: GTP opt / IPv6 ext / SRv6 segments / TCP options
@@ -59,7 +59,7 @@ pcap では書けないがやりたい、という条件が DSL でほぼ自然�
 kunai の処理は次の pipeline で進みます。
 
 ```
-DSL one-liner ("eth/ipv4/tcp[dport=443]")
+DSL one-liner ("eth/ipv4/tcp[dport==443]")
    │
    ├─ lexer: トークナイズ
    ├─ parser: AST 構築 (recursive descent)
@@ -229,7 +229,7 @@ GTP の optional header `gtp.opt`、SRv6 の `srv6.segments[N]`、TCP の `tcp.o
 
 kunai の output は XDP に固定されません。2 レジスタの packet window と少数のワーキングレジスタしか仮定せず、attach point 固有の prologue / epilogue である host adapter が、context から R0 / R1 / R9 をセットアップする責務を持ちます。
 
-bpf-ninja は `pkg/kunai/host/xdp/`・`host/tc/`・`host/cgroupskb/` の 3 つの fentry/fexit 用 adapter を同梱していて、同じ paradigm で userspace `BPF_PROG_TEST_RUN` / 独自 tracing 等の host adapter も書けます。fexit attach では `where action == XDP_DROP` のような action atom が使えますが、fentry では return code がまだ無いため使えません。これは `Capabilities.Lang.Action` map で host から kunai に declare する設計です。
+bpf-ninja は `pkg/kunai/host/xdp/`・`host/tc/`・`host/cgroupskb/`・`host/netfilter/` の 4 つの fentry/fexit 用 adapter を同梱していて、同じ paradigm で userspace `BPF_PROG_TEST_RUN` / 独自 tracing 等の host adapter も書けます。fexit attach では `where action == XDP_DROP` のような action atom が使えますが、fentry では return code がまだ無いため使えません。これは `Capabilities.Lang.Action` map で host から kunai に declare する設計です。
 
 kunai 自身は XDP を知らず、XDP を知る adapter が wrap する、というのが kunai のスタンスです。結果として、library として完全に独立して使えます。使い方は `pkg/kunai/README.md` の Quick start を参照してください。
 
@@ -248,6 +248,6 @@ kunai は、packet filter の DSL を次の方針で設計したライブラリ�
 - chain quantifier は静的 unroll と bpf_loop を使い分けます。古い kernel との互換性と表現力のバランスを取るためです。
 - parser block の `transition select` で protocol が自己検証します。これにより vocab が self-contained になります。
 
-122 commits の積み上げの結果、17 protocol を bundle して、GTP-U の 7 階層 encapsulation や SRv6 segments の `any()` 量化、TCP options の kind 別 lookup まで 1 行の DSL で書けるようになりました。
+開発を積み上げた結果、17 protocol を bundle して、GTP-U の 7 階層 encapsulation や SRv6 segments の `any()` 量化、TCP options の kind 別 lookup まで 1 行の DSL で書けるようになりました。
 
 詳しい仕様は英語版 `pkg/kunai/README.md` と日本語版 `pkg/kunai/README.ja.md` を、internal は `docs/ja/dsl-internals.md` を、文法 BNF は `docs/ja/dsl-grammar.md` を参照してください。親リポジトリ `bpf-ninja` の default filter syntax として、実 packet capture に使えます。
