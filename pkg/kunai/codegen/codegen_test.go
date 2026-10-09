@@ -1352,6 +1352,11 @@ func TestArithCompareParkSlotInRegion(t *testing.T) {
 			c.ArithL, c.ArithR = c.ArithR, c.ArithL
 			return c
 		}, false},
+		// A bool-eq parks its left truth value at the top of the region.
+		{"bool-eq", func(l *ir.LayerInstance) *ir.Condition {
+			return &ir.Condition{Kind: ast.WAtomBoolEq, BoolEqOp: ast.CmpEq,
+				BoolL: deepLeftArithCompare(l, 0), BoolR: deepLeftArithCompare(l, 0)}
+		}, false},
 		{"both deep", func(l *ir.LayerInstance) *ir.Condition {
 			c := deepLeftArithCompare(l, maxArithDepth)
 			c.ArithL = deepLeftArithCompare(l, maxArithDepth).ArithR

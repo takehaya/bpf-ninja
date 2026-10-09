@@ -973,9 +973,9 @@ func (c *whereCtx) genNot(w *ir.Condition, failLabel string) (asm.Instructions, 
 //
 //   - 0..15: 64-bit arith stack — a binary node at depth d parks its
 //     left operand in slot d and evaluates both children from depth
-//     d+1. A 64-bit comparison parks its left value in the first slot
-//     the right side leaves free (slot 0 when the right side is a plain
-//     operand).
+//     d+1. A 64-bit comparison computes its deeper side first and parks
+//     that value in the first slot the other side leaves free (slot 0
+//     when the other side is a plain operand).
 //   - The 128-bit path keeps slots 0..4 (arith128ReservedSlots) for its
 //     own preserves: 0,1 for genArithCompare128's LHS hold, 2,3 for
 //     genArith128's `field + field` LHS hi/lo, and 4 for

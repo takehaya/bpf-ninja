@@ -842,7 +842,7 @@ func TestArith128NestingInsideBoolEq(t *testing.T) {
 		}
 		return atom
 	}
-	// refusal is the guard's message; the per-leaf ceiling of the 64-bit
+	// refusal is the guard's message; the per-node ceiling of the 64-bit
 	// pipeline backs up the narrow guard, so its message is what tells the
 	// two apart.
 	for _, tc := range []struct {

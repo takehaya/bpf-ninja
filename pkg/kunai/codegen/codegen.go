@@ -306,8 +306,9 @@ const KunaiStackTop = int16(-56)
 // ScratchBufSize is the prefix length host wrappers must materialise
 // in the per-CPU scratch buffer before jumping into the kunai filter,
 // and the bound every variable-length walk clamps its cursor to (at any
-// host, XDP included). A packet whose walk ends past it is rejected;
-// static layers past it fail their bounds check against R1. The spec
+// host, XDP included). A packet whose walk, or a read after it, goes
+// past it is rejected; on a host that copies into scratch, a static
+// layer past it also fails its bounds check against R1. The spec
 // has no such bound, so this is a known divergence (DECISIONS D-029
 // addendum 2, vector srv6-past-scratch-window): a declared region can
 // exceed it, e.g. an SRH whose segment list is longer than the stack
