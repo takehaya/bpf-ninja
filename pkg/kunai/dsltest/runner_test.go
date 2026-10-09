@@ -1446,6 +1446,10 @@ func TestAuxStackSrv6SegmentsArith128(t *testing.T) {
 	wide.MustMatch(t, two, "segments[1] == fc00::2 as int<128>")
 	wide.MustReject(t, other, "segments[1] == fc00::3")
 	wide.MustReject(t, one, "one segment: segments[1] is past the count, the atom is false (D-031)")
+	// `!=` is false there too: the guard, not a byte mismatch, decides.
+	wideNE := New(t, "eth/ipv6/srv6/tcp where srv6.segments[1].addr != int<128>(334965454937798799971759379190646833154)")
+	wideNE.MustReject(t, one, "one segment: segments[1] is past the count, != is false as well (D-031)")
+	wideNE.MustMatch(t, other, "segments[1] == fc00::3 differs")
 
 	adjacent := New(t, "eth/ipv6/srv6/tcp where srv6.segments[0].addr + 1 == srv6.segments[1].addr")
 	adjacent.MustMatch(t, two, "fc00::1 + 1 == fc00::2")

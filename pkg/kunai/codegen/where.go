@@ -1116,10 +1116,10 @@ func (c *whereCtx) genArithCompare(w *ir.Condition, failLabel string) (asm.Instr
 // either side, and any sub-64-bit expression, which computes in 64 bits
 // and joins zero-extended (see genArith128); a ± whose both sides park
 // holds its left result above the reserved slots (genArith128BothPark).
-// A slice between 65 and 127 bits and Int<128> aux fields return
-// ErrNotImplemented; operators
-// other than + and - on Int<128> operands never arrive, the resolver
-// types them as errors (dsl-types.md §13.9).
+// An Int<128> aux field (an SRH segment) loads like a primary one
+// (genArithAuxField128Load). A slice between 65 and 127 bits returns
+// ErrNotImplemented; operators other than + and - on Int<128> operands
+// never arrive, the resolver types them as errors (dsl-types.md §13.9).
 func (c *whereCtx) genArithCompare128(w *ir.Condition, failLabel string, targetBits int) (asm.Instructions, error) {
 	// Mid-width slice cmps (widths in (64, 128) other than exactly
 	// 128) are desugared in the resolver into chains of single-LDX
@@ -2579,8 +2579,8 @@ func dynamicOffsetAuxByteOff(f *ir.FieldRef) (int, error) {
 //   - boundedScalarLoad R3 = *(scratch[R5]) at the requested size
 //
 // On return R3 holds the loaded value (host endianness — caller is
-// responsible for HostTo if a multi-byte field needs byte-swap). R0/
-// R1/R5 are clobbered.
+// responsible for HostTo if a multi-byte field needs byte-swap). R5 is
+// clobbered (the scalar offset); R0/R1 are only read.
 func emitDynamicAuxByteLoad(slot int16, byteOff int, size asm.Size, failLabel string) asm.Instructions {
 	insns := asm.Instructions{
 		asm.LoadMem(asm.R3, asm.R10, slot, asm.DWord),
