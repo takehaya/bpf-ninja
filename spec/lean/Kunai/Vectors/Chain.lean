@@ -424,8 +424,8 @@ vector hostTcOuterLabelRead := {
   ast := { layers := [P "eth", .proto { name := "vlan", label := some "o", quant := .opt }, P "ipv4", P "udp", P "vxlan", P "eth",
                       .proto { name := "vlan", label := some "i" }, P "ipv4", P "tcp"],
            cond := some (.not (.arith (.field ⟨[("o", none), ("tci", none)]⟩) .eq (.const 100))) },
-  packet := vxlanInnerVlanPkt, expected := .accept [], goStatus := .notImplemented,
-  note := "Go: reading the outer tag at a metadata host is refused (the tag is not in the bytes this host hands the filter)" }
+  packet := vxlanInnerVlanPkt, expected := .accept [],
+  note := "the outer tag is in metadata at this host, so the optional layer is absent and the reference is false (D-003)" }
 vector hostTcMixedAlt := {
   id := "host-tc-mixed-alt", host := .tc_entry,
   ast := { layers := [P "eth", .alt [{ name := "vlan" }, { name := "ipv4" }], P "tcp"] }, packet := vlanPkt,

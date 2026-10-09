@@ -100,12 +100,12 @@ type HostLayout struct {
 	// the target-agnostic BPF_PROG_TEST_RUN harness, which feed raw
 	// frames with the tag present.
 	//
-	// When true, kunai rejects a chain that would read the tag from
-	// packet bytes at compile time rather than silently parsing the
-	// wrong bytes: a mandatory vlan or qinq layer is the type error
-	// ErrVlanInMetadata, the other shapes (a predicate on or a where /
-	// capture read of the tag) are ErrNotImplemented.
-	// Optional, predicate-free tags (vlan?, qinq?/vlan?) compile.
+	// When true, a mandatory outer vlan or qinq layer (right after the
+	// root eth, with only tags in between) is the type error
+	// ErrVlanInMetadata: it could never match a tagged frame. An optional
+	// outer tag compiles, with or without predicates and reads: the filter
+	// sees the bytes the kernel holds, so the layer is absent on a
+	// single-tagged frame and reads the C-tag on a QinQ frame.
 	VlanInMetadata bool
 
 	// PacketStartsAtL3 declares that the host presents packet bytes

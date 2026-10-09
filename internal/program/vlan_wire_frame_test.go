@@ -88,6 +88,12 @@ func TestBpfVlanWireFrameAtTC(t *testing.T) {
 		// there, so eth/ipv4/tcp matches a single-tagged frame too.
 		{"default", entry, "eth/ipv4/tcp[dport==80]", []string{"untagged", "vid100", "vid200"}},
 		{"default", entry, "eth/vlan?/ipv4/tcp[dport==80]", []string{"untagged", "vid100", "vid200", "qinq"}},
+		// Reading the optional tag by default: absent on a single-tagged
+		// frame (its tag is in metadata), present as the C-tag on QinQ.
+		{"default", entry, "eth/vlan[tci==100]?/ipv4/tcp", []string{"untagged", "vid100", "vid200", "qinq"}},
+		{"default", entry, "eth/vlan[tci==200]?/ipv4/tcp", []string{"untagged", "vid100", "vid200"}},
+		{"default", entry, "eth/vlan?/ipv4/tcp where vlan.tci == 100", []string{"qinq"}},
+		{"default", entry, "eth/vlan?/ipv4/tcp where not (vlan.tci == 100)", []string{"untagged", "vid100", "vid200"}},
 		{"default-exit", exit, "eth/ipv4/tcp where action == TC_ACT_OK", []string{"untagged", "vid100", "vid200"}},
 		{"default-gated", gated, "eth/ipv4/tcp[dport==80]", []string{"untagged", "vid100", "vid200"}},
 		{"entry", entry, "eth/vlan[tci==100]/ipv4/tcp[dport==80]", []string{"vid100"}},

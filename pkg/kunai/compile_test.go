@@ -1622,12 +1622,13 @@ func isHostOwned(ins asm.Instruction) bool {
 
 // TestVlanInMetadataRejectsVlanLayers asserts the VlanInMetadata host
 // policy (e.g. tc, where the kernel strips the outer VLAN tag into skb
-// metadata before the program runs). A vlan/qinq layer that READS the
-// tag from packet bytes is rejected at compile time rather than
-// silently parsing the wrong bytes; an optional, predicate-free tag is
-// accepted, because the byte parser takes its skip path and never reads
-// the stripped tag. Every expression must still compile under the zero
-// (in-band) Capabilities used by XDP and the test harness.
+// metadata before the program runs). A mandatory outer vlan/qinq layer
+// could never match a tagged frame there and is a type error. An
+// optional outer tag compiles, with or without a predicate or a where /
+// capture read: the filter sees the bytes the kernel holds, so the tag
+// is absent on a single-tagged frame and the C-tag is read on a QinQ
+// frame (spec D-003 / D-008). Every expression must still compile under
+// the zero (in-band) Capabilities used by XDP and the test harness.
 func TestVlanInMetadataRejectsVlanLayers(t *testing.T) {
 	// A mandatory vlan or qinq layer is a type error at such a host.
 	illTyped := []string{
@@ -1641,19 +1642,20 @@ func TestVlanInMetadataRejectsVlanLayers(t *testing.T) {
 		"eth/qinq/vlan?/ipv4/tcp where tcp.dport == 80", // an 802.1ad outer tag is moved too
 		"eth/((qinq|mpls)|ipv4)",
 	}
-	rejected := []string{
-		"eth/vlan[tci==100]?/ipv4/tcp",             // optional but reads tci
-		"eth/vlan?/ipv4/tcp where vlan.tci == 100", // where reads the tag
-		"eth/vlan?/ipv4/tcp capture vlan",          // capture targets the tag
-	}
-	// Optional, predicate-free tags are matchable at a VlanInMetadata
-	// host: at most one tag survives in the bytes, and the skip path
-	// covers untagged / single-tag / QinQ traffic without reading it.
+	// Optional tags are matchable at a VlanInMetadata host: at most one
+	// tag survives in the bytes, and the skip path covers untagged /
+	// single-tag / QinQ traffic. A predicate or a read on the optional
+	// tag sees the C-tag of a QinQ frame and nothing on a single-tagged
+	// one (the layer is absent: the predicate is not evaluated, the where
+	// atom is false).
 	accepted := []string{
 		"eth/vlan?/ipv4/tcp",
 		"eth/qinq?/vlan?/ipv4/tcp",
 		"eth/vlan*/ipv4/tcp",
-		"eth/vlan?/ipv4/tcp where ipv4.ttl == 64", // past the tag: runtime offset, no tag read
+		"eth/vlan?/ipv4/tcp where ipv4.ttl == 64",  // past the tag: runtime offset, no tag read
+		"eth/vlan[tci==100]?/ipv4/tcp",             // optional and reads tci
+		"eth/vlan?/ipv4/tcp where vlan.tci == 100", // where reads the tag
+		"eth/vlan?/ipv4/tcp capture vlan",          // capture targets the tag
 	}
 	tcCaps := codegen.Capabilities{Host: codegen.HostLayout{VlanInMetadata: true}}
 	// Only the outer tag is in metadata: a tag inside a tunnel is in the
@@ -1670,9 +1672,10 @@ func TestVlanInMetadataRejectsVlanLayers(t *testing.T) {
 			}
 		})
 	}
-	// The same protocol name as the outer tag: still refused there.
-	if _, err := Compile("eth/vlan@o?/ipv4/udp/vxlan/eth/vlan@i/ipv4/tcp where o.tci == 100", tcCaps); !errors.Is(err, codegen.ErrNotImplemented) {
-		t.Errorf("outer tag read by label: got %v, want ErrNotImplemented", err)
+	// The outer tag read by label compiles too; its atom is false when the
+	// optional tag is absent (vector host-tc-outer-labelled-where).
+	if _, err := Compile("eth/vlan@o?/ipv4/udp/vxlan/eth/vlan@i/ipv4/tcp where not (o.tci == 100)", tcCaps); err != nil {
+		t.Errorf("outer tag read by label: %v", err)
 	}
 	for _, expr := range illTyped {
 		t.Run("illTyped/"+expr, func(t *testing.T) {
@@ -1698,17 +1701,6 @@ func TestVlanInMetadataRejectsVlanLayers(t *testing.T) {
 			t.Errorf("the advised rewrite %q does not compile: %v", tc.rewrite, err)
 		}
 	}
-	for _, expr := range rejected {
-		t.Run("reject/"+expr, func(t *testing.T) {
-			_, err := Compile(expr, tcCaps)
-			if err == nil {
-				t.Fatalf("Compile(%q) with VlanInMetadata: expected rejection, got nil", expr)
-			}
-			if !errors.Is(err, codegen.ErrNotImplemented) || errors.Is(err, codegen.ErrVlanInMetadata) {
-				t.Fatalf("Compile(%q): expected ErrNotImplemented, got %v", expr, err)
-			}
-		})
-	}
 	for _, expr := range accepted {
 		t.Run("accept/"+expr, func(t *testing.T) {
 			if _, err := Compile(expr, tcCaps); err != nil {
@@ -1716,7 +1708,7 @@ func TestVlanInMetadataRejectsVlanLayers(t *testing.T) {
 			}
 		})
 	}
-	for _, expr := range append(append(append([]string{}, illTyped...), rejected...), accepted...) {
+	for _, expr := range append(append([]string{}, illTyped...), accepted...) {
 		t.Run("inband/"+expr, func(t *testing.T) {
 			if _, err := Compile(expr, codegen.Capabilities{}); err != nil {
 				t.Fatalf("Compile(%q) with zero caps: expected success, got %v", expr, err)

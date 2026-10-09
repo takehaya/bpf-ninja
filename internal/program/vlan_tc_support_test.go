@@ -23,22 +23,27 @@ var tcAcceptedVlanExprs = []string{
 	"eth/qinq?/vlan?/ipv4/tcp",       // recommended tag-flexible pattern
 	"eth/vlan*/ipv4/tcp",             // zero-or-more (bpf_loop)
 	"eth/vlan?/ipv4/tcp[dport==443]", // optional tag + predicate on a later layer
+	// An optional tag may be read: absent on a single-tagged frame (the
+	// tag is in metadata), the C-tag on a QinQ frame.
+	"eth/vlan[tci==100]?/ipv4/tcp",
+	"eth/vlan?/ipv4/tcp where not (vlan.tci == 100)",
+	"eth/vlan@o?/ipv4/udp/vxlan/eth/vlan@i/ipv4/tcp where not (o.tci == 100)",
+	"eth/vlan?/ipv4/tcp capture vlan",
 }
 
-// tcRejectedVlanExprs reject at compile time on the tc host: they read a
-// tag the kernel stripped into skb metadata. A mandatory tag layer is a
-// type error; a predicate on an optional tag is not implemented.
+// tcRejectedVlanExprs reject at compile time on the tc host: a mandatory
+// outer tag layer could never match a tagged frame, whose tag the kernel
+// stripped into skb metadata. It is a type error.
 var tcRejectedVlanExprs = []struct {
 	expr string
 	want error
 }{
-	{"eth/vlan/ipv4/tcp", codegen.ErrVlanInMetadata},            // mandatory tag, no skip path
-	{"eth/vlan{1,3}/ipv4/tcp", codegen.ErrVlanInMetadata},       // mandatory (RangeMin>=1)
-	{"eth/qinq/vlan/ipv4/tcp", codegen.ErrVlanInMetadata},       // mandatory QinQ stack
-	{"eth/vlan[tci==100]/ipv4/tcp", codegen.ErrVlanInMetadata},  // mandatory + reads tci
-	{"eth/(vlan|qinq)/ipv4/tcp", codegen.ErrVlanInMetadata},     // tag inside an alternation
-	{"eth/qinq/vlan?/ipv4/tcp", codegen.ErrVlanInMetadata},      // mandatory outer tag
-	{"eth/vlan[tci==100]?/ipv4/tcp", codegen.ErrNotImplemented}, // optional but reads tci (predicate before quant)
+	{"eth/vlan/ipv4/tcp", codegen.ErrVlanInMetadata},           // mandatory tag, no skip path
+	{"eth/vlan{1,3}/ipv4/tcp", codegen.ErrVlanInMetadata},      // mandatory (RangeMin>=1)
+	{"eth/qinq/vlan/ipv4/tcp", codegen.ErrVlanInMetadata},      // mandatory QinQ stack
+	{"eth/vlan[tci==100]/ipv4/tcp", codegen.ErrVlanInMetadata}, // mandatory + reads tci
+	{"eth/(vlan|qinq)/ipv4/tcp", codegen.ErrVlanInMetadata},    // tag inside an alternation
+	{"eth/qinq/vlan?/ipv4/tcp", codegen.ErrVlanInMetadata},     // mandatory outer tag
 }
 
 func TestVlanTCOptionalLoads(t *testing.T) {
@@ -50,7 +55,7 @@ func TestVlanTCOptionalLoads(t *testing.T) {
 	}
 }
 
-func TestVlanTCFieldReadingRejects(t *testing.T) {
+func TestVlanTCMandatoryTagRejects(t *testing.T) {
 	for _, c := range tcRejectedVlanExprs {
 		t.Run(c.expr, func(t *testing.T) {
 			_, err := compileFilter(c.expr, true /*useDSL*/, false /*isFexit*/, ebpf.SchedCLS)
@@ -99,12 +104,12 @@ func TestBpfVlanTCWireLoads(t *testing.T) {
 }
 
 func TestVlanTCWireCompiles(t *testing.T) {
-	// Default: the filter reads the bytes as the kernel holds them, and a
-	// refusal of the outer tag points to the option.
+	// Default: the filter reads the bytes as the kernel holds them, and
+	// the type error for a mandatory outer tag points to the option.
 	if out, err := compileFilter("eth/ipv4/tcp", true, false, ebpf.SchedCLS); err != nil || out.WireFrame {
 		t.Fatalf("default tc: WireFrame=%v err=%v; want false, nil", out.WireFrame, err)
 	}
-	for _, expr := range []string{"eth/vlan/ipv4/tcp", "eth/vlan?/ipv4/tcp where vlan.tci == 100"} {
+	for _, expr := range []string{"eth/vlan/ipv4/tcp", "eth/qinq/vlan?/ipv4/tcp where vlan.tci == 100"} {
 		if _, err := compileFilter(expr, true, false, ebpf.SchedCLS); err == nil || !strings.Contains(err.Error(), "--tc-vlan-reinsert") {
 			t.Fatalf("default tc %q: err = %v; want the --tc-vlan-reinsert hint", expr, err)
 		}
