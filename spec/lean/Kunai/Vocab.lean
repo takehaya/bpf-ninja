@@ -73,6 +73,14 @@ def Vocab.proto? (V : Vocab) (name : String) : Option ProtoSpec :=
 def Vocab.edge? (V : Vocab) (child parent : String) : Option Edge :=
   V.edges.find? fun e => e.child == child && e.parent == parent
 
+/-- The rule `.valid` needs (D-029), in a where clause and a bracket alike:
+the protocol declares an option region whose faults are skipped. `path` is
+the written path before `.valid`, for the message. -/
+def ProtoSpec.validRegionError? (p : ProtoSpec) (path : String) : Option String :=
+  if p.regionLoop.isNone || !p.regionSkips then
+    some s!"{p.name} has no option region whose faults are skipped; {path}.valid needs one (@kunai_option_region[on_fault=skip])"
+  else none
+
 def ProtoSpec.field? (p : ProtoSpec) (name : String) : Option FieldSpec :=
   p.fields.find? (·.name == name)
 
