@@ -683,7 +683,7 @@ func buildFilterBody(h *hook.Hook, filterOut codegen.Output, tf filter.TargetFil
 // full scratchBufSize (512 B) regardless of the chain-specific
 // FilterMinPrefix kunai computes. Sacrifices filter-eval CPU time
 // (the R32-fix 20× → 1× win) in exchange for warming the ice driver
-// L1 dcache, which the R12 measurement
+// L1 dcache, which an internal measurement
 // showed accelerates production XDP_TX programs by ≈ 70 %. The
 // trade-off is visible to operators; default off because the
 // production-XDP-vs-observer-throughput Pareto curve preferences

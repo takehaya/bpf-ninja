@@ -180,7 +180,7 @@ caps := xdphost.FexitCapabilities()
 out, err := kunai.Compile(expr, caps)
 ```
 
-At a tc attach point the kernel has already moved the outer VLAN tag into skb metadata. `tc.EntryCapabilities` / `tc.FexitCapabilities` declare `HostLayout.VlanInMetadata`, so the filter reads the bytes as the kernel holds them and a mandatory outer `vlan` / `qinq` layer is `ErrVlanInMetadata`. A host that puts the tag back into the bytes it hands the filter (after the MAC addresses, as on the wire) uses `tc.WireEntryCapabilities` / `tc.WireFexitCapabilities` instead; the compiled `Output.WireFrame` then tells it to do so. bpf-ninja does this with `--tc-vlan-reinsert`.
+At a tc attach point the kernel has already moved the outer VLAN tag into skb metadata. `tc.EntryCapabilities` / `tc.FexitCapabilities` declare `HostLayout.VlanInMetadata`, so the filter reads the bytes as the kernel holds them and a mandatory outer `vlan` / `qinq` layer fails with `ErrVlanInMetadata`. A host that puts the tag back into the bytes it hands the filter (after the MAC addresses, as on the wire) uses `tc.WireEntryCapabilities` / `tc.WireFexitCapabilities` instead; the compiled `Output.WireFrame` then tells it to do so. bpf-ninja does this with `--tc-vlan-reinsert`.
 
 Other hosts (userspace `BPF_PROG_TEST_RUN`, custom tracing) supply their own `ActionFetcher` + symbolic-name map by adding a `host/<name>/` package alongside `host/xdp/`. See [`codegen/caps.go`](./codegen/caps.go) for the `Capabilities` / `ActionFetcher` contract and [`codegen/codegen.go`](./codegen/codegen.go)'s package doc for the runFilter ABI the host wraps.
 
