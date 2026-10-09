@@ -138,7 +138,9 @@ IPv6 アドレス (`Int<128>`) の算術は `+` と `-` だけです。2⁶⁴ �
 eth/ipv6/tcp where ipv6.src + int<128>(18446744073709551616) == ipv6.dst
 ```
 
-算術ネストは MVP では 16 段までです。それを超えると `ErrNotImplemented` になります。上限は `maxArithDepth` 定数で管理されています。
+算術ネストは MVP では 16 段までです。それを超えると `ErrNotImplemented` になります。上限は `maxArithDepth` 定数で管理されています。比較の両辺がともに 16 段のときも、片方の値を退避する場所が無いので `ErrNotImplemented` です。`Bool == Bool` の内側では、外側の真偽値の退避に 1 段ずつ使うので、その分だけ浅くなります。
+
+filter が読めるのはパケットの先頭 512 byte (`codegen.ScratchBufSize`) までです。fentry / fexit / tc ではこの分だけを scratch にコピーして読むので、そこから先にある layer や field は match しません。`--mode xdp` はパケットを直接読みますが、可変長の walk (IPv4 / TCP の option 領域、IPv6 拡張ヘッダ、SRv6 の segment list) の位置は host に関係なく 512 byte で打ち切られるので、walk が 512 byte を越えるパケットも、walk より後ろの layer や field が 512 byte を越えるパケットも reject されます。固定長の layer だけの chain なら XDP では 512 byte より先も読めます。Lean の仕様にはこの上限が無く、両者で結果が違う唯一の既知の例がこれです (vector `srv6-past-scratch-window`、DECISIONS D-029 追記 2)。
 
 #### フィールド参照
 

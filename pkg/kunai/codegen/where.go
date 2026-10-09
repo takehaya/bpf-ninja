@@ -973,9 +973,9 @@ func (c *whereCtx) genNot(w *ir.Condition, failLabel string) (asm.Instructions, 
 //
 //   - 0..15: 64-bit arith stack — a binary node at depth d parks its
 //     left operand in slot d and evaluates both children from depth
-//     d+1. A 64-bit comparison parks its left value in the first slot
-//     the right side leaves free (slot 0 when the right side is a plain
-//     operand).
+//     d+1. A 64-bit comparison computes its deeper side first and parks
+//     that value in the first slot the other side leaves free (slot 0
+//     when the other side is a plain operand).
 //   - The 128-bit path keeps slots 0..4 (arith128ReservedSlots) for its
 //     own preserves: 0,1 for genArithCompare128's LHS hold, 2,3 for
 //     genArith128's `field + field` LHS hi/lo, and 4 for
@@ -1080,17 +1080,29 @@ func (c *whereCtx) genArithCompare(w *ir.Condition, failLabel string) (asm.Instr
 		return nil, fmt.Errorf("codegen: unknown comparison op %v", w.Op)
 	}
 
-	// The left value is parked while the right side is computed, in the
-	// first slot the right side's binary nodes do not use (they take
-	// slots 0..nesting-1): slot 0 for a plain operand, as before.
-	// (Generating the right side above already refused a nesting that
-	// would leave no slot.)
-	slot := arithStackSlot(arithNesting(w.ArithR))
+	// The side computed first is parked while the other is computed, in
+	// the first slot the other side's binary nodes do not use (they take
+	// slots 0..nesting-1). The shallower side goes second, so the park
+	// slot exists unless both sides use every slot.
+	nl, nr := arithNesting(w.ArithL), arithNesting(w.ArithR)
+	if min(nl, nr) >= maxArithDepth-c.boolEqDepth {
+		return nil, fmt.Errorf("%w: both sides of the comparison nest %d levels; one must leave a slot to park the other", ErrNotImplemented, min(nl, nr))
+	}
 	var insns asm.Instructions
-	insns = append(insns, left...)
-	insns = append(insns, asm.StoreMem(asm.R10, slot, asm.R3, asm.DWord))
-	insns = append(insns, right...)
-	insns = append(insns, asm.LoadMem(asm.R5, asm.R10, slot, asm.DWord))
+	if nr <= nl {
+		slot := arithStackSlot(nr)
+		insns = append(insns, left...)
+		insns = append(insns, asm.StoreMem(asm.R10, slot, asm.R3, asm.DWord))
+		insns = append(insns, right...)
+		insns = append(insns, asm.LoadMem(asm.R5, asm.R10, slot, asm.DWord))
+	} else {
+		slot := arithStackSlot(nl)
+		insns = append(insns, right...)
+		insns = append(insns, asm.StoreMem(asm.R10, slot, asm.R3, asm.DWord))
+		insns = append(insns, left...)
+		insns = append(insns, asm.Mov.Reg(asm.R5, asm.R3))
+		insns = append(insns, asm.LoadMem(asm.R3, asm.R10, slot, asm.DWord))
+	}
 	insns = append(insns, jumpOp.Reg(asm.R5, asm.R3, failLabel))
 	return insns, nil
 }
@@ -1303,8 +1315,8 @@ func (c *whereCtx) genArith128Narrow(e *ir.ArithExpr) (asm.Instructions, error) 
 	// Its leaves sit at depth base + nesting, which must stay below the
 	// arith ceiling.
 	base := arith128ReservedSlots + c.wideHold
-	if room := maxArithDepth - c.boolEqDepth - base; arithNesting(e) >= room {
-		return nil, fmt.Errorf("%w: a sub-64-bit expression next to an Int<128> operand nests deeper than %d levels", ErrNotImplemented, room-1)
+	if room := maxArithDepth - c.boolEqDepth - base; arithNesting(e) > room {
+		return nil, fmt.Errorf("%w: a sub-64-bit expression next to an Int<128> operand nests deeper than %d levels", ErrNotImplemented, room)
 	}
 	insns, err := c.genArithWithBits(e, base, 0)
 	if err != nil {
@@ -1612,10 +1624,9 @@ func (c *whereCtx) genArithWithBits(e *ir.ArithExpr, depth int, targetBits int) 
 	// (maxArithDepth-1) and overwrites the saved LHS, silently
 	// mis-comparing. Outside any bool-eq (boolEqDepth == 0) the ceiling is
 	// the full maxArithDepth, so non-bool-eq expressions are unaffected.
+	// Only a binary node writes a slot (its depth); a leaf at the depth
+	// below the deepest node writes none, so the check sits on the node.
 	ceiling := maxArithDepth - c.boolEqDepth
-	if depth >= ceiling {
-		return nil, fmt.Errorf("%w: arith expression nested deeper than %d levels", ErrNotImplemented, ceiling)
-	}
 	switch e.Kind {
 	case ast.ArithConst:
 		// The 128-bit path takes every `int<128>(n)` (arithMaxFieldBits
@@ -1631,6 +1642,9 @@ func (c *whereCtx) genArithWithBits(e *ir.ArithExpr, depth int, targetBits int) 
 	case ast.ArithField:
 		return c.genArithFieldLoad(e.Field)
 	case ast.ArithBinOp:
+		if depth >= ceiling {
+			return nil, fmt.Errorf("%w: arith expression nested deeper than %d levels", ErrNotImplemented, ceiling)
+		}
 		return c.genArithBinOp(e, depth)
 	}
 	return nil, fmt.Errorf("codegen: unknown arith kind %v", e.Kind)
