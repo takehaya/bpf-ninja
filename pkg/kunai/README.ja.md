@@ -185,7 +185,7 @@ vocabulary のパース結果は、`pkg/kunai/dslvocab/` の `dslvocab.Bundled()
 
 ## 関連プロジェクト
 
-- [bpf-ninja](https://github.com/takehaya/bpf-ninja) は、本パッケージのメイン consumer である非侵襲 BPF 観測ツールです。XDP / tc / cgroup-skb のフックポイントを扱います。
+- [bpf-ninja](https://github.com/takehaya/bpf-ninja) は、本パッケージのメイン consumer である非侵襲 BPF 観測ツールです。XDP / tc / cgroup-skb / netfilter のフックポイントを扱います。
 - [cilium/ebpf](https://github.com/cilium/ebpf) は、codegen がターゲットにする BPF アセンブラ / ローダです。
 - [cloudflare/cbpfc](https://github.com/cloudflare/cbpfc) は、tcpdump 構文の classical BPF を変換する代替コンパイラです。bpf-ninja は `--cbpf` 指定時の legacy 経路で使います。
 - [p4lang/p4c](https://github.com/p4lang/p4c) は公式の P4 コンパイラです。`.p4` vocab ファイルが P4-16 に収まっていることを CI で検証するのに使います。

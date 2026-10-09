@@ -38,7 +38,7 @@ Supported hooks and how to name the target:
 | Hook | Target selection | Notes |
 |---|---|---|
 | XDP | `-i <iface>` (interface's XDP) or `-p <progID>` | |
-| TC clsact | `-p <progID>` only (interface lookup for clsact is not yet wired) | |
+| TC clsact | `-p <progID>` only (interface lookup for clsact is not yet wired) | the kernel moves the outer VLAN tag into skb metadata first, so by default DSL filters see the frame without it — see `--tc-vlan-reinsert` |
 | cgroup-skb | `--cgroup <cgroup v2 path>` (enumerates attached programs) or `-p <progID>` | packet bytes start at the IP header — root DSL chains at `ipv4`/`ipv6`, pcap-ng is LINKTYPE_RAW |
 | netfilter | `-p <progID>` (kernel 6.4+, programs attached to NF_INET_* hooks via bpf_link) | packet bytes start at the IP header, same L3-start notes as cgroup-skb; exit-mode verdicts are `NF_DROP` / `NF_ACCEPT` |
 
@@ -148,6 +148,10 @@ sudo bpf-ninja -i eth0 \
 sudo bpf-ninja -i eth0 --mode exit \
   "eth/ipv4/tcp where action == XDP_DROP"
 ```
+
+A filter reads the first 512 bytes of the packet. On entry/exit only that prefix is copied for the filter, so layers and fields past it never match. On `--mode xdp` a chain of fixed-size headers can read further, but variable-length walks (IPv4/TCP options, IPv6 extension headers, SRv6 segments) and everything read after them must stay inside the first 512 bytes, or the packet is rejected.
+
+At a tc target the kernel has already moved the outer VLAN tag into skb metadata. By default the filter reads the bytes the kernel holds: `eth/ipv4/tcp` also matches tagged frames, and a filter that requires the outer tag (`eth/vlan[tci==100]/...`) is a compile error. `--tc-vlan-reinsert` puts the tag back into the bytes the filter reads, so filters are written against the frame as it was on the wire. Captured bytes are the kernel's either way. Tags inside a tunnel are never moved and are always readable.
 
 Run `bpf-ninja --dsl-help` for the grammar + bundled protocol catalogue, or `bpf-ninja --dsl-help <proto>` (e.g. `--dsl-help ipv4`) to see a protocol's field list, dispatch parents/children, and any variable-layout note.
 
@@ -285,6 +289,7 @@ int parse_headers(struct xdp_md *ctx) {
 | `--cbpf` | Use the legacy tcpdump/cBPF syntax (compiled via cbpfc); default is the built-in DSL. Prints a deprecation notice when used. | all |
 | `--dsl-help` | Print the DSL grammar + bundled protocol catalogue and exit (no `-i`/`-p` required) | — |
 | `--dump-asm` | Print compiled eBPF asm and exit. Values: `filter` (kunai/cbpfc body only) \| `full` (wrapped program). No `-i`/`-p` required | — |
+| `--tc-vlan-reinsert` | At a tc target, put the outer VLAN tag the kernel moved into skb metadata back into the bytes the DSL filter reads (`eth/vlan[tci==100]/...` then works; `eth/ipv4/tcp` stops matching tagged frames). Captured bytes are unchanged. Not allowed with `--cbpf` | entry, exit |
 | `--dump-hook` | Hook whose capabilities/prologue `--dump-asm` renders: `xdp` (default) \| `tc` \| `cgroup-skb` \| `netfilter` (offline compiles have no target program to auto-detect from) | — |
 | `--func` | Attach to a specific `__noinline` subfunction by BTF name | entry, exit |
 | `--list-funcs` | List available BTF functions in the target program and exit | entry, exit |
