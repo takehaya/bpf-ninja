@@ -18,7 +18,7 @@ Lean core only; there is no mathlib.
 
 ```sh
 make lean-build   # cd spec/lean && lake build
-make lean-gen     # regenerate pkg/kunai/dsltest/testdata/spec_vectors.json
+make lean-gen     # regenerate VocabData.lean, spec_vectors.json and spec_vectors_gen.json
 make lean-vocab   # regenerate Kunai/VocabData.lean from pkg/kunai/protocols/*.p4
 ```
 
@@ -49,8 +49,9 @@ means every vector agrees with the evaluator.
 | `Kunai/Eval.lean` | `eval` (§13.2) |
 | `Kunai/Packets.lean` | Packet builders for vectors |
 | `Kunai/Vectors/*.lean` | Golden vectors, each with its `decide` proof |
+| `Kunai/Gen.lean` | Generated vectors: truncations and byte flips of every golden packet, verdicts computed by `eval` (not proved); exported by `lake exe gen --generated` to `spec_vectors_gen.json` |
 | `Kunai/Laws.lean` | Equational theorems: forms that mean the same thing |
-| `Main.lean` | `lake exe gen`: prints the vectors as JSON |
+| `Main.lean` | `lake exe gen [--generated]`: prints the golden (or generated) vectors as JSON |
 | `DECISIONS.md` | Log of behaviours the Markdown spec left open, and how each was settled |
 
 ## Adding a vector

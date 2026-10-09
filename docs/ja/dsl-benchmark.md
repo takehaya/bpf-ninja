@@ -152,7 +152,7 @@ C 軸で DSL が cbpfc より重く見える典型ケースは次のとおりで
 ## ベンチで陥りがちな罠
 
 - uname -r が違う環境を混ぜてはいけません。bpf_loop は 5.17+ で、それより古いと DSL の chain は load 自体が失敗します。
-- scratch buffer のサイズ (`ScratchBufSize = 512` byte) を超える packet では、filter は丸読みしません。capture 量とフィルタ評価範囲が分離されている事実を忘れないでください。per-CPU map にコピーする prefix 長は別で、`MaxCapLen` で制御します。
+- filter が読むのは packet の先頭 `ScratchBufSize` (512 byte) までです。host ごとの扱いは [`dsl-usage.md`](./dsl-usage.md#読めるのはパケットの先頭-512-byte-まで) を参照してください。capture 量とフィルタ評価範囲が分離されている事実を忘れないでください。per-CPU map にコピーする prefix 長は別で、`MaxCapLen` で制御します。
 - veth 環境は GRO/GSO の影響を受けやすいので、`ethtool -K vethX gso off tso off gro off` で揃えてください。
 - 負荷源 (pktgen/iperf3) の上限が NIC でなく CPU になっていないか、`mpstat` で確認してください。
 - 同じ pcap ファイルへの書き込みで IO が律速していないか確認してください。`-w /dev/null` に向けるか、`-c 100` などで頭を切ります。

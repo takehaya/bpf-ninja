@@ -208,7 +208,7 @@ var flags = []cli.Flag{
 	},
 	&cli.BoolFlag{
 		Name:  "observer-prefetch",
-		Usage: "force the fentry/fexit filter to probe_read the full 512-byte scratch regardless of the chain's actual prefix needs. Trades a per-packet helper-CPU cost for warming the ice driver's L1 dcache; on prod_tx_reflect-style targets this accelerates the observed XDP program by ~70% (see docs/ja/r12-fentry-prefetch-finding.md). Default off — most deployments prefer lower observer CPU",
+		Usage: "force the fentry/fexit filter to probe_read the full 512-byte scratch regardless of the chain's actual prefix needs. Trades a per-packet helper-CPU cost for warming the ice driver's L1 dcache; on prod_tx_reflect-style targets this accelerated the observed XDP program by ~70% in our measurements. Default off — most deployments prefer lower observer CPU",
 	},
 	&cli.IntFlag{
 		Name:  "latency-sample-period",

@@ -262,7 +262,7 @@ pkt.advance(((bit<32>)pkt.lookahead<bit<16>>()[7:0]) << 3); // (c) lookahead 形
 
 ### 7.2 MPLS 型の chain self-loop
 
-vocab 側は const だけで済み、parser block は trivial のままにします。self-dispatch の `KUNAI_MPLS_MPLS_NO_CHECK`、構造 const の `MPLS_MAX_DEPTH`、`MPLS_CHAIN_END_S` を §5 のとおり宣言します。ユーザーが `mpls+` や `mpls{1,3}` と書いたときだけ bpf_loop に落ちます。
+vocab 側は const だけで済み、parser block は trivial のままにします。self-dispatch の `KUNAI_MPLS_MPLS_NO_CHECK`、構造 const の `MPLS_MAX_DEPTH`、`MPLS_CHAIN_END_S` を §5 のとおり宣言します。ユーザーが `mpls+` や `mpls{1,8}` のように上限が無いか 4 を超える quantifier を書いたときだけ bpf_loop に落ちます。`mpls{1,3}` のように上限が 4 以下なら静的に unroll します。
 
 ### 7.3 IPv6 ext 型の parser self-loop
 
@@ -456,7 +456,7 @@ parser IPv4Parser(packet_in pkt, out ipv4_h hdr, ...) {
 | `@kunai_variable_tail` | header | `len_field` 必須、`scale` 必須かつ 2 冪、`mask`、`shift`、`base`、`min_total` | extract 後にさらに `(field値 [& mask] [>> shift]) * scale - min_total + base` byte 進む可変 tail。`min_total` は length field が固定部込みの全長を表すとき (gtp_ext_h の `ext_length` × 4) にその固定部を引く。scaled 値が `min_total` 未満なら header 不正として reject。`len_field` は 1 byte 内のフィールド |
 | `@kunai_writeback` | header | `source` 必須、`parent=proto.field` 必須 | スタック要素の `source` byte を親 header の field に書き戻し、ipv6 ext の next_header のように後続 dispatch へ連鎖の最終値を見せる。両 field とも byte-aligned な 8 bit |
 | `@kunai_option_segment` | parser | `name` 必須 | DSL の option セグメント名を `options` から変更する |
-| `@kunai_option_region` | parser | `on_fault` 必須 (`skip` / `fail`) | header が長さを宣言する領域 (counter で区切られた walk) の中で parse が失敗したときの扱い。`skip` (既定): layer はその walk の aux を持たず、宣言長の先へ進む。`<proto>.<option セグメント>.valid` で失敗を読める。`fail`: packet を reject する。領域が byte 単位で宣言されていない walk (要素数の counter) は今の実装では `skip` にできず、`fail` の明示が必要 (spec D-029)。領域として認識するのは、select が `counter.is_zero()` で終わり他の枝がすべて loop に戻る multi-state loop (counter は entry state で header field から設定する) で、1 状態の counter loop は対象外。領域の無い parser に書く、2 回書く、未知の key を書くと loader エラー。`fail` の領域は filter が読まなくても walk するので命令数が増える |
+| `@kunai_option_region` | parser | `on_fault` 必須 (`skip` / `fail`) | header が長さを宣言する領域 (counter で区切られた walk) の中で parse が失敗したときの扱い。annotation を書かない領域は `skip` として扱う。ただし byte で数えない領域では後述のとおり loader エラーになる。`skip`: layer はその walk の aux を持たず、宣言長の先へ進む。`<proto>.<option セグメント>.valid` で失敗を読める。`fail`: packet を reject する。領域が byte 単位で宣言されていない walk (要素数の counter) は今の実装では `skip` にできず、`fail` の明示が必要 (spec D-029)。領域として認識するのは、select が `counter.is_zero()` で終わり他の枝がすべて loop に戻る multi-state loop (counter は entry state で header field から設定する) で、1 状態の counter loop は対象外。領域の無い parser に書く、2 回書く、未知の key を書くと loader エラー。`fail` の領域は filter が読まなくても walk するので命令数が増える |
 | `@kunai_layout` | parser param の `out X[N]` | `after` 必須。値は `primary` または他 stack 名 | declare-only スタックの base offset を anchor する。push されない top-level スタックには必須。現在 bundled vocab では未使用 (SRv6 は §7.4 の element-driven walk に移行し、base が push state から決まるため) だが loader は引き続きサポートする |
 | `@kunai_stack_count` | parser param の `out X[N]` | `field` 必須、`offset` | `any` / `all` quantifier 用の実行時要素数を primary の `field` 値 + `offset` で与える。`field` は byte-aligned な 8 bit。現在 bundled vocab では未使用 (SRv6 は parser counter から要素数を導出する方式に移行) だが loader は引き続きサポートし、明示宣言があれば counter 由来の導出より優先する |
 
@@ -478,9 +478,12 @@ vocab を書いたら、`go test ./pkg/kunai/vocab/...` が最初の関門です
 | `duplicate const "X"` / `duplicate header "X"` / `duplicate protocol "X"` | 重複宣言。p4c 無しの vendored 環境でも落ちるよう二重にゲートされている |
 | `declares both a non-trivial parser block and OPT_TRIGGER_*` | §7.6 と parser machine は排他。どちらかに寄せる |
 | `OPT_TRIGGER_X declared without matching OPT_LEN_X` | TRIGGER と LEN はペア必須。逆向きも同様 |
-| `MAX_DEPTH ... exceeds cap 64` | 上限 64。verifier の命令数予算も考えて一桁を推奨 |
+| `MAX_DEPTH ... exceeds cap 64` | loader の上限は 64。codegen は chain の反復と 1 状態の self-loop を 32 までしか扱わないので、後述の表も参照する。verifier の命令数予算も考えて一桁を推奨 |
 | `top-level declare-only aux stack "X" has no @kunai_layout` | push されない top-level スタックを使う場合に出る。`@kunai_layout[after=primary]` を付ける (§8)。SRv6 のように `consume_seg` で push する形 (§7.4) なら、そもそもこのエラーは出ない |
 | `CHAIN_END const "X" references unknown field` | `<FIELD>` が primary に無い |
+| `@kunai_option_region is missing required key on_fault` / `on_fault must be skip or fail` / `given twice` | §8 のとおり、annotation には `on_fault=skip` か `on_fault=fail` を 1 回だけ書く |
+| `@kunai_option_region on a parser with no header-bounded region` | 領域を持たない parser に annotation を書いた。§8 を参照して annotation を外す |
+| `the region walked by state "X" is not counted in bytes` / `the counter "C" that ends the region ... is not set in the parser's entry state` | 失敗を `skip` できない領域。§8 と spec D-029 のとおり、counter を byte 単位で減らし entry state で設定するか、`@kunai_option_region[on_fault=fail]` を付ける |
 
 次に `vocab/parser_machine.go` の parser machine が出すエラーです。
 
@@ -502,9 +505,10 @@ vocab を書いたら、`go test ./pkg/kunai/vocab/...` が最初の関門です
 | エラーの要旨 | 原因と対処 |
 |---|---|
 | `no dispatch constant for "foo" under "udp"` | §5.4 のいずれかを宣言する。const なら `KUNAI_FOO_UDP_<FIELD\|NO_CHECK>` |
-| `chained "foo" has no self-dispatch const` | `KUNAI_FOO_FOO_*` を宣言する (§5.3) |
+| `repeated foo needs a dispatch constant under itself` | 2 回以上繰り返せる quantifier (`+`、`*`、上限 2 以上の `{n,m}`) には self-dispatch が要る。§5.3 と spec D-037 のとおり `KUNAI_FOO_FOO_*` を宣言する。self-dispatch が無い protocol は `?` までしか付けられない |
 | `alternation alts disagree on dispatch for "tcp"` | dispatch が alt 間で揃わないこと自体は可。Field dispatch でない alt が混ざったときに出るので、全 alt に Field const を宣言する |
-| `parser machine self-loop depth N exceeds cap M` | `<SELF>_MAX_DEPTH` で調整する。既定 8、最大 64 |
+| `parser machine P self-loop depth N exceeds cap M` / `multi-state self-loop depth N exceeds cap M` | `<SELF>_MAX_DEPTH` を下げる。既定は 8 で、1 状態の self-loop は 32 まで、TLV walk のような multi-state loop は反復が `MAX_DEPTH` + 1 回なので 63 まで |
+| `chain "foo" max iterations N exceeds verifier-safe cap 32` | `foo+` / `foo*` の反復は `<SELF>_MAX_DEPTH` 回で、上限は 32。`<SELF>_MAX_DEPTH` を下げるか、`foo{n,m}` で上限を明示する |
 
 ## 10. テストとチェックリスト
 

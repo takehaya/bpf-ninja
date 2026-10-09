@@ -965,6 +965,27 @@ alt(L̄) は chain の先頭ではない
 Γ ⊢ ⟨L̄, w?, c̄⟩ : FilterOK
 ```
 
+#### host によって変わる規則
+
+tc / cgroup-skb / netfilter のように kernel が外側の VLAN tag を skb metadata に移す host は、`vlanInMetadata` を真にします。この host では、外側の tag の位置にある `vlan` / `qinq` layer を省略可能にしなければなりません。外側の tag の位置とは、chain の root が `eth` で、root からその layer までの間に tag しか無い位置です。tag は `vlan` と `qinq` で、tag だけから成る alternation も tag として数えます。この判定は chain の protocol 名だけを見ます。
+
+```
+[T-Layer-OuterTag]                              ; D-008
+H.vlanInMetadata
+L̄ = L_0 · L_1 · … · L_k,   L_0 = proto(eth, ℓ?, 1, π̄)
+∀ j ∈ (0, i).  tag(L_j)
+L_i = proto(p, ℓ?, q, π̄)  または  L_i = alt(L̄')  かつ  proto(p, ℓ?, q, π̄) ∈ L̄'
+p ∈ {vlan, qinq}     lo(q) ≥ 1
+─────────────────────────────────────────────
+Γ ⊬ L_i : LayerOK
+```
+
+`H` は filter を受け取る host の宣言 (Γ の `Caps`) です。`tag(L)` は、L が `proto(p, …)` で p ∈ {vlan, qinq} であるか、L が `alt(L̄')` で L̄' のすべての member がそうであることを表します。`lo(q)` は quantifier の下限で、alternation の member は quantifier を持たないので 1 です。この規則に当たる layer には [T-Layer] を適用できません。
+
+Lean では `Check.lean` の `outerTagPos` と `checkProtoShape` が対応し、Go は `codegen.ErrVlanInMetadata` を返します。トンネルの内側の tag と、root が `eth` でない chain には適用されません。bpf-ninja の tc host に `--tc-vlan-reinsert` を付けると、spec の host は `tc_wire_entry` / `tc_wire_exit` になります。この host では `vlanInMetadata` が偽なので、この規則は適用されません。
+
+Go はさらに、省略可能な外側の tag に対する bracket predicate と、where / capture での読み取りを `ErrNotImplemented` で拒否します。tag が byte 列に無いためです。経緯は `spec/lean/DECISIONS.md` の D-008 と追記 1〜5 にあります。
+
 ## 13. 操作的意味論 (Operational Semantics)
 
 big-step (`⇓`) 形式で filter 評価を定義します。1 packet ごとに `accept` / `reject` を判定します。
@@ -1063,7 +1084,7 @@ L̄ = L_1 · … · L_k
 ─────────────────────────────────────────────
 ⟨alt(L̄), σ⟩ ⇓_P ✗
 
-`parent_dispatch(p, σ, P)` は、親 layer の dispatch const が Field なら親のその field の値で判定し、NO_CHECK なら常に ok、const が無く p が self-validating (parser block が `default: reject` を持つ) なら p のヘッダ自身の検査 (ipv4 の `version == 4` など) で判定します (D-017)。親 const があるうえでヘッダ自身の検査に失敗した場合は miss ではなく [E-Layer-Proto-1-Fail-Pred] です。NO_CHECK の下に `?` / `*` / `{0,m}` を置くことは不在を検出できないため型エラーです。
+`parent_dispatch(p, σ, P)` は、まず直前の header が p 自身で、その header が p の終端の印 (`<SELF>_CHAIN_END_<FIELD>`、MPLS の s-bit = 1) を持つなら miss です。この判定は const の種類より先に行います。それ以外では、親 layer の dispatch const が Field なら親のその field の値で判定し、NO_CHECK なら常に ok、const が無く p が self-validating (parser block が `default: reject` を持つ) なら p のヘッダ自身の検査 (ipv4 の `version == 4` など) で判定します (D-017)。親 const があるうえでヘッダ自身の検査に失敗した場合は miss ではなく [E-Layer-Proto-1-Fail-Pred] です。NO_CHECK の下に `?` / `*` / `{0,m}` を置くことは不在を検出できないため型エラーです。
 
 ### 13.5 Quantifier
 
@@ -1072,21 +1093,30 @@ quantifier `q` に対して、`L(q)` の reduction を q-iteration が成功し�
 ```
 [E-Quant-Optional]                            ; q = ?
 proto(p, ?, π̄) は最大 1 回:
-  case A:  ⟨L(1), σ⟩ ⇓_P σ' ✓                ⇒  ⟨L(?), σ⟩ ⇓_P σ' ✓
-  case B:  parent_dispatch(p, σ, P) = miss   ⇒  ⟨L(?), σ⟩ ⇓_P σ ✓        ; skip
+  case A:  ⟨L(1), σ⟩ ⇓_P σ' ✓  かつ  ended(p, σ')   ⇒  ⟨L(?), σ⟩ ⇓_P σ' ✓
+  case B:  parent_dispatch(p, σ, P) = miss          ⇒  ⟨L(?), σ⟩ ⇓_P σ ✓        ; skip
+  case C:  ⟨L(1), σ⟩ ⇓_P σ' ✓  かつ  ¬ended(p, σ')  ⇒  ⟨L(?), σ⟩ ⇓_P ✗        ; D-024
 
 
 [E-Quant-Range-Step {n,m}]                    ; q = {n,m},  n ≤ m
 σ_0 = σ
 ∀ i ∈ [0, k).  ⟨L(1), σ_i⟩ ⇓_P σ_{i+1} ✓
-i = k で parent_dispatch(p, σ_k, P) = miss または k = m で停止
+i = k で parent_dispatch(p, σ_k, P) = miss、または k = m で停止
 n ≤ k ≤ m
+k = m ≥ 1 なら ended(p, σ_m)
 ─────────────────────────────────────────────
 ⟨L({n,m}), σ⟩ ⇓_P σ_k ✓
 
 
 [E-Quant-Range-Fail {n,m}]
 上記の k < n
+─────────────────
+⟨L({n,m}), σ⟩ ⇓_P ✗
+
+
+[E-Quant-Range-Fail-Overrun {n,m}]            ; D-024
+Range-Step の最後の前提以外が k = m ≥ 1 で成り立つ
+¬ended(p, σ_m)
 ─────────────────
 ⟨L({n,m}), σ⟩ ⇓_P ✗
 
@@ -1098,15 +1128,17 @@ parent_dispatch(p, σ_i, P) = ok   かつ   ⟨L(1), σ_i⟩ ⇓_P ✗      ; bo
 ⟨L({n,m}), σ⟩ ⇓_P ✗
 
 
-[E-Quant-Plus]    ≡  L({1, m_chain})            ; m_chain は chain bound 由来の上限
+[E-Quant-Plus]    ≡  L({1, m_chain})            ; m_chain は vocab の <SELF>_MAX_DEPTH
 [E-Quant-Star]    ≡  L({0, m_chain})
 ```
 
-ここで `m_chain` は、vocab + chain 全体形の静的 chain 解析から導かれる iteration 上限です。実装は `pkg/kunai/codegen/` の `chainCap` 計算で同等です。
+ここで `m_chain` は protocol の vocab が宣言する `<SELF>_MAX_DEPTH` です。`mpls` では 8 です。Lean の `Eval/Layer.lean` の `evalProtoLayer` は `spec.maxDepth` を使い、32 (`chainCap`) を超える値を illTyped にします。Go も同じ 32 (`bpfLoopChainCap`) を上限にします。
 
-反復を止めるのは parent_dispatch の miss だけです。dispatch が一致したうえで L(1) が失敗した場合 (bounds 越え、bracket predicate の不成立) は、`?` の case B と同じく skip にはならず、layer 全体が ✗ になります (`spec/lean/DECISIONS.md` D-001, D-005)。したがって `L?` ≡ `L{0,1}` です (`spec/lean/Kunai/Laws.lean: opt_eq_range`)。
+`ended(p, σ)` は、p が MPLS の s-bit のようなスタックの終端を示す印を持つ protocol のとき、σ で最後に取り出した p の header がその印を持つことを表します。終端の印は vocab の `MPLS_CHAIN_END_S` のような `<SELF>_CHAIN_END_<FIELD>` const で宣言します。印を持たない protocol では常に真です。上限に達して反復を止めた時点で終端の印が無ければ、スタックは quantifier が許すより深いので ✗ になります。dispatch の miss で止まった場合は検査しません。§13.4 のとおり、終端の印を持つ header の次では parent_dispatch が miss になるので、miss で止まったスタックは既に終端しているか、次の header が p ではありません。`?` は `{0,1}` と同じ要求を持ちます。根拠は `spec/lean/DECISIONS.md` の D-024 で、Lean では `chainEnded` / `iterate` / `extractOpt` が対応します。
 
-実装対応としては、`+` / `*` / `{n,m>4}` は `pkg/kunai/codegen/loop_*.go` で `bpf_loop` + bpf2bpf callback として emit し、`{n,m≤4}` は静的に unroll します。
+反復が正常に止まるのは parent_dispatch の miss か上限への到達だけです。dispatch が一致したうえで L(1) が失敗した場合 (bounds 越え、bracket predicate の不成立) は、`?` の case B と同じく skip にはならず、layer 全体が ✗ になります (`spec/lean/DECISIONS.md` D-001, D-005)。したがって `L?` ≡ `L{0,1}` です (`spec/lean/Kunai/Laws.lean: opt_eq_range`)。
+
+実装対応としては、`+` / `*` / `{n,m>4}` は `pkg/kunai/codegen/bpfloop.go` で `bpf_loop` + bpf2bpf callback として emit し、`{n,m≤4}` は `chain.go` で静的に unroll します。どちらの経路も上限に達したところで終端の印を確かめます。
 
 ### 13.6 Capture 評価
 

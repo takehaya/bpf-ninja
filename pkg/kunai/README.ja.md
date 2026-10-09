@@ -158,6 +158,8 @@ caps := xdphost.FexitCapabilities()
 out, err := kunai.Compile(expr, caps)
 ```
 
+tc の attach point では、kernel が外側の VLAN tag を既に skb metadata に移しています。`tc.EntryCapabilities` / `tc.FexitCapabilities` は `HostLayout.VlanInMetadata` を宣言するので、filter は kernel が持つ byte 列を読み、外側の `vlan` / `qinq` を必須にした layer は `ErrVlanInMetadata` になります。filter に渡す byte 列の MAC アドレスの直後へ tag を戻すホストは、代わりに `tc.WireEntryCapabilities` / `tc.WireFexitCapabilities` を使います。このときコンパイル結果の `Output.WireFrame` が真になり、ホストに tag を戻すよう伝えます。bpf-ninja では `--tc-vlan-reinsert` がこれにあたります。
+
 userspace の `BPF_PROG_TEST_RUN` や独自 tracing のような他のホストは、`host/xdp/` と並ぶ形で `host/<name>/` パッケージを追加し、独自の `ActionFetcher` と symbol map を提供します。`Capabilities` / `ActionFetcher` の契約は [`codegen/caps.go`](./codegen/caps.go) を、ホストが wrap すべき runFilter ABI は [`codegen/codegen.go`](./codegen/codegen.go) のパッケージ doc を参照してください。
 
 エラーは各フェーズからそのまま返ります。`errors.As` / `errors.Is` で識別します。
