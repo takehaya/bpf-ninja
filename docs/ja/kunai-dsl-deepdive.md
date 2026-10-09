@@ -117,7 +117,7 @@ bracket predicate は layer-local な検査で、codegen 上は layer の bounds
 
 ### 3. Where 句と precedence climbing
 
-`where (src == 10.0.0.0/8 or dst == 192.168.0.0/16) and dport == 443` のような boolean expression を読みます。precedence は次のとおりです。
+`where (ipv4.src == 10.0.0.0/8 or ipv4.dst == 192.168.0.0/16) and tcp.dport == 443` のような boolean expression を読みます。precedence は次のとおりです。
 
 ```
 3 (tightest): not, atom (arith / IP literal / parens / quantifier)

@@ -157,7 +157,7 @@ filter が読めるのはパケットの先頭 512 byte (`codegen.ScratchBufSize
 
 - `?` / `{0,1}` の layer (`eth/vlan?/ipv4/tcp where vlan.tci == 100`): layer が無いパケットでは、その field を含む atom は **false** になります (`==` も `!=` も)。「無い、または 100 でない」は `not (vlan.tci == 100)` と書きます。
 - `{n,m>1}` / `+` / `*` の layer は複数 header にマッチしうるので、素の proto 名では ambiguous エラーになります。`@label` を付けると**最後にマッチした header** を指します (`eth/mpls@m{1,8}/ipv4/tcp where m.label == 7`)。
-- 量化 layer の後ろの layer (`eth/vlan?/ipv4/tcp where ipv4.ttl == 64`) は普通に参照できます。offset は実行時に解決されます。実行時 offset を持てる layer の数に固定の上限はありません。ただし実行時 offset、aux の位置、alternation の member 番号を置く stack 上の領域は filter 全体で 36 slot なので、これに収まらない filter は `ErrNotImplemented` になります。
+- 量化 layer の後ろの layer (`eth/vlan?/ipv4/tcp where ipv4.ttl == 64`) は普通に参照できます。offset は実行時に解決されます。実行時 offset を持てる layer の数に固定の上限はありません。ただし実行時 offset、aux の位置、alternation の member 番号、`options.valid` の結果を置く stack 上の領域は filter 全体で 36 slot なので、これに収まらない filter は `ErrNotImplemented` になります。
 - alternation の member (`eth/(ipv4|ipv6)/tcp where ipv4.ttl == 64`、label なら `(ipv4@a|ipv6) where a.ttl == 64`): 別の member がマッチしたパケットでは、その field を含む atom は **false** になります (`?` の layer が無い場合と同じ扱い)。member ごとの条件は `or` で並べます (`where ipv4.ttl == 64 or ipv6.hop_limit == 64`)。
 - `any` / `all` の対象 stack を持つ layer が無いときは、どちらも false です (空 stack の場合とは違います)。
 
@@ -849,17 +849,17 @@ sudo bpf-ninja set schema /sys/fs/bpf/sids     # dst  ipv6  offset 0
 
 set の value すなわち tag を使って、マッチしたパケットを tag ごとに別々の pcap へ振り分けられます。`-w out.pcap` に `--split-by-tag` を足すと、tag=1 に当たったパケットは `out.1.pcap`、tag=2 は `out.2.pcap` へ流れます。拡張子の手前に tag を差し込む形なので、`out.pcap` が `out.1.pcap` になります。
 
-GTP-U のトンネルの TEID ごとに tag を分けて入れておく例を次に示します。
+GTP-U トンネルの TEID ごとに tag を分けて入れておく例を次に示します。
 
 ```bash
-PIN=/sys/fs/bpf/subs
+PIN=/sys/fs/bpf/tunnels
 sudo bpf-ninja set create $PIN --key "teid:u32"
 sudo bpf-ninja set add    $PIN teid=0x1000 tag=1
 sudo bpf-ninja set add    $PIN teid=0x2000 tag=2
 
-sudo bpf-ninja -i eth0 --mode xdp --set "subs=$PIN" \
+sudo bpf-ninja -i eth0 --mode xdp --set "tunnels=$PIN" \
   --split-by-tag -w out.pcap \
-  'eth/ipv4/udp/gtp[teid in @subs]'
+  'eth/ipv4/udp/gtp[teid in @tunnels]'
 ```
 
 出し分けはロックフリーの per-CPU 書き込みをそのまま使うため、キャプチャ中はシャードごとに `out.cpu0.1.pcap` や `out.cpu1.2.pcap` のような live ファイルが生えます。これらは 1 秒ごとに flush するので、実行中でも `cp` や tcpdump や Wireshark で取り出せます。map から entry を消してその tag への書き込みが止まれば、約 1 秒で対応するファイルがディスク上で完結します。
@@ -889,9 +889,9 @@ sudo bpf-ninja merge --base out.pcap --fexit  # --mode exit で録った場合
 完了判定は無通信の秒数では決めません。削除を検出したtagをcapture専用mapで停止し、実行中のBPF処理が完了するまで待ってから各ringのproducer位置を記録します。全shardがその位置まで読み、writer登録・書き込みを終えたことを確認して合算します。別tagの保存が遅れている場合も、未処理レコードを残したまま完了通知を出しません。停止処理を始めたtagは同一capture中に再利用できず、set entryを再追加しても再開しません。停止tagは最大65,536個保持し、上限や同期処理の失敗はエラーとして報告します。
 
 ```bash
-sudo bpf-ninja -i eth0 --mode xdp --set "subs=$PIN" \
+sudo bpf-ninja -i eth0 --mode xdp --set "tunnels=$PIN" \
   --split-by-tag --finalize-on-del -w out.pcap \
-  'eth/ipv4/udp/gtp[teid in @subs]'
+  'eth/ipv4/udp/gtp[teid in @tunnels]'
 
 # 別シェルから: ジョブ終了 = entry を消してファイルを待つ
 sudo bpf-ninja set del $PIN teid=0x1000
@@ -912,9 +912,9 @@ sudo bpf-ninja set add $PIN teid=0x1000 tag=1 max-bytes=104857600
 sudo bpf-ninja set add $PIN teid=0x2000 tag=2 max-bytes=10485760
 sudo bpf-ninja set add $PIN teid=0x3000 tag=3      # 上限なし
 
-sudo bpf-ninja -i eth0 --mode xdp --set "subs=$PIN" \
+sudo bpf-ninja -i eth0 --mode xdp --set "tunnels=$PIN" \
   --split-by-tag --exit-when-capped -w out.pcap \
-  'eth/ipv4/udp/gtp[teid in @subs]'
+  'eth/ipv4/udp/gtp[teid in @tunnels]'
 ```
 
 - 上限のカウント対象は pcap-ng の packet block バイトで、ファイルごとの固定ヘッダは含みません。判定は ringbuf バッチ単位なので、shard あたり最大 1 バッチぶんの超過があり得ます。

@@ -21,9 +21,10 @@ const SyntaxHelp = `Syntax:
   quantifier    := ? | + | * | {n} | {n,m}
   predicates    := [ predicate (, predicate)* ]    # comma = AND
   predicate     := field op value
-                |  field in [ value-or-range (, value-or-range)* ]
+                |  field in [ int-or-range (, int-or-range)* ]
                 |  field in @set               # --set NAME=... pinned map
                 |  options.valid               # option region parsed cleanly
+  int-or-range  := integer | integer..integer
   op            := == | != | < | <= | > | >=
   value         := integer | ipv4 | ipv6 | ipv4_cidr | ipv6_cidr | mac
   where-clause  := where <expr>    # and/or/not, + - * / % & | ^ << >>,

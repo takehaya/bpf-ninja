@@ -248,6 +248,6 @@ kunai は、packet filter の DSL を次の方針で設計したライブラリ�
 - chain quantifier は静的 unroll と bpf_loop を使い分けます。古い kernel との互換性と表現力のバランスを取るためです。
 - parser block の `transition select` で protocol が自己検証します。これにより vocab が self-contained になります。
 
-開発を積み上げた結果、17 protocol を bundle して、GTP-U の 7 階層 encapsulation や SRv6 segments の `any()` 量化、TCP options の kind 別 lookup まで 1 行の DSL で書けるようになりました。
+開発を重ねた結果、17 protocol を bundle して、GTP-U の 7 階層 encapsulation や SRv6 segments の `any()` 量化、TCP options の kind 別 lookup まで 1 行の DSL で書けるようになりました。
 
 詳しい仕様は英語版 `pkg/kunai/README.md` と日本語版 `pkg/kunai/README.ja.md` を、internal は `docs/ja/dsl-internals.md` を、文法 BNF は `docs/ja/dsl-grammar.md` を参照してください。親リポジトリ `bpf-ninja` の default filter syntax として、実 packet capture に使えます。

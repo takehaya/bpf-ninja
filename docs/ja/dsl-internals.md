@@ -576,7 +576,7 @@ action atom (`action == NAME`) では、codegen は `caps.Lang.ActionFetcher.Emi
 
 ### 4.7 capture 節
 
-`headers+N` の N は静的に計算します。chain を含む filter ではコンパイル時に長さを確定できないため reject します。`captureWithXdpOutput(eventsFD, isFexit, maxCapLen)` の `maxCapLen` 引数として wrapper に渡します。per-capture の `where` は filter 全体の `where` と AND 合成します。
+`headers+N` の長さは compile 時に静的に計算します。量化 layer を含む filter では、量化 layer が最大数マッチした場合の長さを上限として使います。`captureWithXdpOutput(eventsFD, isFexit, maxCapLen)` の `maxCapLen` 引数として wrapper に渡します。per-capture の `where` は filter 全体の `where` と AND 合成します。
 
 `CaptureInfo.MaxCapLen` の解釈では、0 は analyser bail と句なしの両方を含む sentinel で、host 側 fallback を意味します。bpf-ninja host は libpcap 既定の `DefaultCapLen = 1500` を埋めます。つまり `capture` 句を書かなければ tcpdump 互換の full packet capture になります。これは設計上重要な点です。`tcp where dport==443` と書けば payload まで取れるという principle of least surprise を満たすため、`inferMinCapLenFromWhere` の値は `MaxCapLen` には流さず、in-kernel scratch read sizing である `FilterMinPrefix` にのみ流します。ringbuf 予約を縮めて throughput を上げたい場合は `capture headers` 等を明示します。R32 bench script `benchmark/pipelines/r32_dynamic_scratch.sh` はその明示を行っています。
 
@@ -1166,7 +1166,7 @@ implementation 詳細は、`pkg/kunai/codegen/parser_state.go` の state graph e
 | Aux × literal | landed (B-3 commit 6547a42): IPv4/IPv6/MAC/CIDR literal を aux 経由で比較可能。例: `srv6.segments[0].addr == fc00::/16`、`where ipv4.options.RR.addrs[0].addr == 10.0.0.1` |
 | Capture | `capture f1, f2` フィールド列 不可 / 量化 layer を含む filter の `headers+N` は、量化 layer が最大数マッチした場合の長さを上限にする。het-alt 越えの capture は max-alt 上界丸めで動作 |
 | Alternation | alt 数 2-4 (`altCountCap`) / heterogeneous size + diverged dispatch 対応済 (P3-12) / nested alt は resolver flatten (P3-13) / quantifier 付き内側 alt (`(a\|b)?`) は reject / 先頭不可 |
-| Layer 数 | runtime entry slot と dynamic aux slot は 1 つの stack plan から必要な分だけ割り当てる (`planStack`)。上限は合計 36 slot (512 byte stack の底) で、層数そのものの上限は無い |
+| Layer 数 | runtime entry slot、dynamic aux slot、matched-member slot、`.options.valid` の slot は 1 つの stack plan から必要な分だけ割り当てる (`planStack`)。上限は合計 36 slot (512 byte stack の底) で、層数そのものの上限は無い |
 | Parser machine (vocab 著者向け) | select key 幅 ≤8 bit / select key 本数 ≤3 / variable-trail scale は 2 冪のみ / self-loop 反復上限あり (vocab の `<SELF>_MAX_DEPTH` で declare) |
 | Self-validation | parser-block 自検証 (`transition select(field) { v: accept; default: reject; }`) のみ。旧 SANITY const family は撤廃 (legacy 名は loud-fail で拒否) |
 | Vocab | 1 protocol あたり最大 2 ラベル |

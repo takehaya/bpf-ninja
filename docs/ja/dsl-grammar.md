@@ -52,7 +52,7 @@ quantifier     ::= '?' | '+' | '*' | '{' INT '}' | '{' INT ',' INT? '}'
 | `layer-atom` (alt) | `layer.go::parseLayerAltGroup` | `(vlan\|qinq)` |
 | `quantifier` | `layer.go::parseQuantifier` / `parseQuantRange` | `?` / `+` / `{1,4}` |
 
-predicate は quantifier より前に書きます。`vlan[tci==100]+` は通りますが、`vlan+[tci==100]` は構文エラーです。1 つの layer に書ける `[...]` は 1 つだけで、複数の条件は `[a==1, b==2]` のようにカンマで並べます。
+predicate は quantifier より前に書きます。`vlan[tci==100]+` は受け付けますが、`vlan+[tci==100]` は構文エラーです。1 つの layer に書ける `[...]` は 1 つだけで、複数の条件は `[a==1, b==2]` のようにカンマで並べます。
 
 resolver / codegen が enforce する MVP 制約は次のとおりです。
 - Alternation は alt 数 2-4、先頭 layer に置けない、quantifier 不可、各 alt は親からの Field dispatch 必須 (NoCheck 不可)。ネストした group は flatten され、header size は alt 間で異なっていても構いません
@@ -190,14 +190,14 @@ field-ref の shape、つまり where 節で使えるフィールドアクセス
 - `all(EXPR)` は ∀ にあたり、全 entry が EXPR を満たすとき true になります。
 - iteration 変数として、EXPR 内に index 無しの stack 参照を 1 個だけ要求します。複数または 0 個は parse-time error です。
 - 静的 unroll で stack capacity 回反復します。SRv6 segments のような parent-count 系は、per-iter `iter < parent.last_entry+1` の guard を入れて、実 entry 数を超えた walk が誤 match しないよう保護します。
-- 例えば `where any(srv6.segments.addr == fc00::1)` は、経路に該当 segment が含まれることを表します。`any` / `all` の対象は aux header stack だけです。`vlan+` のような量化 layer の各 header は対象にならないので、`where all(vlan.tci < 4096)` は parse-time error になります。
+- 例えば `where any(srv6.segments.addr == fc00::1)` は、経路に該当 segment が含まれることを表します。`any` / `all` の対象は aux header stack だけです。`vlan+` のような量化 layer の各 header は対象にならないので、`eth/vlan@v+/ipv4/tcp where all(v.tci < 4096)` は parse-time error になります。
 
 MVP 制約は次のとおりです。
 - 算術ネストは最大 16 段 (`maxArithDepth`) で、17 段以上は ErrNotImplemented になります。
 - `action == NAME` は、host 側で `Capabilities.Lang` の `Action` map と `ActionFetcher` を提供しているときのみ使えます。XDP の場合は fexit attach (`--mode exit`) で `pkg/kunai/host/xdp.FexitCapabilities()` 経由で有効化されます。
 - 同 protocol が 2 段以上ある場合、`proto.field` だけでは ambiguous になるため `@label.field` が必須です。
 - PR-A〜PR-D で landing した aux predicate / stack index access / options lookup は、wrapper protocol の中身を見るため、protocol 側の `out` parameter declaration が必要です。詳細は `dsl-internals.md §6` を参照してください。
-- Aux 系の補助関数 / stack walk は bracket form (`proto[...]`) と where form の両方で動きます。aux field に対しても、整数比較に加えてアドレスや CIDR のリテラルとの比較が書けます。例えば `srv6[segments[0].addr == fc00::/16]` や `where any(srv6.segments.addr == fc00::/16)` です。
+- Aux 系の補助関数 / stack walk は bracket form (`proto[...]`) と where form の両方で動きます。aux field に対しても、整数比較に加えてアドレスや CIDR のリテラルとの比較が書けます。例えば `srv6[segments[0].addr == fc00::/16]` や `where any(srv6.segments.addr == fc00::/16)` と書けます。
 
 ### 1.5 Capture 節
 
@@ -222,7 +222,7 @@ capture-spec   ::= 'all'
 - `absolute N` は先頭固定の N bytes を capture します。chain shape に依存せず、quantifier 制約もありません。
 
 MVP 制約は次のとおりです。
-- 量化 layer (`?`/`+`/`*`/`{n,m}`) を含む filter でも `headers (+N)?` / `<label_or_proto> (+N)?` は使えます。長さは compile 時に決まる上限で、量化 layer が最大数マッチした場合の長さになります。詳しくは [`dsl-usage.md`](./dsl-usage.md) の capture 節を参照してください。
+- 量化 layer (`?`/`+`/`*`/`{n,m}`) を含む filter の `headers (+N)?` / `<label_or_proto> (+N)?` は、量化 layer が最大数マッチした場合の長さを上限として capture します。layer が少ないパケットでは、その分だけ余分に capture されます。詳しくは [`dsl-usage.md`](./dsl-usage.md) の capture 節を参照してください。
 - per-capture の `where` は filter 全体の `where` と AND 合成されます。
 - `absolute` は capture 内の contextual keyword です。label が `absolute` という名前と衝突する稀なケースでは、`absolute+0` で label 解釈を強制できます。
 
