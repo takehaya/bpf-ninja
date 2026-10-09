@@ -708,6 +708,13 @@ func TestCompileWhereIPv6Arith128(t *testing.T) {
 		"eth/ipv6/tcp where ipv6.src + 1 == ipv6.dst",
 		"eth/ipv6/tcp where ipv6.src - 1 == ipv6.dst",
 		"eth/ipv6/tcp where ipv6.src != ipv6.dst",
+		// A 16-byte aux field (an SRH segment) is an Int<128> operand too:
+		// static index, runtime index, and on either side of ±.
+		"eth/ipv6/srv6/tcp where srv6.segments[1].addr == int<128>(334965454937798799971759379190646833154)",
+		"eth/ipv6/srv6/tcp where srv6.segments[0].addr + 1 == srv6.segments[1].addr",
+		"eth/ipv6/srv6/tcp where ipv6.dst - srv6.segments[0].addr == 1",
+		"eth/ipv6/srv6/tcp where srv6.segments[srv6.last_entry].addr == ipv6.dst",
+		"eth/ipv6/srv6/tcp where srv6.segments[srv6.last_entry].addr + int<128>(18446744073709551616) == ipv6.dst",
 	} {
 		t.Run(expr, func(t *testing.T) {
 			insns, err := compileForTest(expr)
