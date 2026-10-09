@@ -151,7 +151,7 @@ sudo bpf-ninja -i eth0 --mode exit \
 
 A filter reads the first 512 bytes of the packet. On entry/exit only that prefix is copied for the filter, so layers and fields past it never match. On `--mode xdp` a chain of fixed-size headers can read further, but variable-length walks (IPv4/TCP options, IPv6 extension headers, SRv6 segments) and everything read after them must stay inside the first 512 bytes, or the packet is rejected.
 
-At a tc target the kernel has already moved the outer VLAN tag into skb metadata. By default the filter reads the bytes the kernel holds: `eth/ipv4/tcp` also matches tagged frames, and a filter that requires the outer tag (`eth/vlan[tci==100]/...`) is a compile error. `--tc-vlan-reinsert` puts the tag back into the bytes the filter reads, so filters are written against the frame as it was on the wire. Captured bytes are the kernel's either way. Tags inside a tunnel are never moved and are always readable.
+At a tc target the kernel has normally already moved the outer VLAN tag into skb metadata (always at ingress; at egress on the usual paths such as a VLAN device). By default the filter reads the bytes the kernel holds: `eth/ipv4/tcp` also matches single-tagged frames, and a filter that requires or reads the outer tag (`eth/vlan[tci==100]/...`, `where vlan.tci == ...`) is a compile error. Only the outermost tag is moved: on a QinQ frame the inner C-tag stays in the bytes (so `eth/vlan?/ipv4/tcp` matches it and `eth/ipv4/tcp` does not), and tags inside a tunnel are always readable. `--tc-vlan-reinsert` puts the tag back into the bytes the filter reads, so filters are written against the frame as it was on the wire. Captured bytes are the kernel's either way (without the outer tag); with the flag, a layer-bounded capture such as `capture vlan` takes 4 more bytes. Details: [dsl-usage.md](./docs/ja/dsl-usage.md#tc-での-vlan-tag).
 
 Run `bpf-ninja --dsl-help` for the grammar + bundled protocol catalogue, or `bpf-ninja --dsl-help <proto>` (e.g. `--dsl-help ipv4`) to see a protocol's field list, dispatch parents/children, and any variable-layout note.
 
@@ -287,9 +287,9 @@ int parse_headers(struct xdp_md *ctx) {
 | `-c, --count` | Stop after N packets (0 = unlimited) | all |
 | `-v, --verbose` | Verbose output to stderr | all |
 | `--cbpf` | Use the legacy tcpdump/cBPF syntax (compiled via cbpfc); default is the built-in DSL. Prints a deprecation notice when used. | all |
+| `--tc-vlan-reinsert` | At a tc target, put the outer VLAN tag the kernel moved into skb metadata back into the bytes the DSL filter reads (`eth/vlan[tci==100]/...` then works; `eth/ipv4/tcp` stops matching tagged frames). Captured bytes stay as the kernel holds them; layer-bounded captures grow by 4 bytes. Not allowed with `--cbpf` | entry, exit |
 | `--dsl-help` | Print the DSL grammar + bundled protocol catalogue and exit (no `-i`/`-p` required) | — |
 | `--dump-asm` | Print compiled eBPF asm and exit. Values: `filter` (kunai/cbpfc body only) \| `full` (wrapped program). No `-i`/`-p` required | — |
-| `--tc-vlan-reinsert` | At a tc target, put the outer VLAN tag the kernel moved into skb metadata back into the bytes the DSL filter reads (`eth/vlan[tci==100]/...` then works; `eth/ipv4/tcp` stops matching tagged frames). Captured bytes are unchanged. Not allowed with `--cbpf` | entry, exit |
 | `--dump-hook` | Hook whose capabilities/prologue `--dump-asm` renders: `xdp` (default) \| `tc` \| `cgroup-skb` \| `netfilter` (offline compiles have no target program to auto-detect from) | — |
 | `--func` | Attach to a specific `__noinline` subfunction by BTF name | entry, exit |
 | `--list-funcs` | List available BTF functions in the target program and exit | entry, exit |

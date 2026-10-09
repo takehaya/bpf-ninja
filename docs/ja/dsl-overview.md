@@ -43,7 +43,7 @@ filter expr  →  AST  →  IR (vocab 解決済)  →  asm.Instructions  →  ci
 
 - `eth/ipv4/tcp[dport==443]` 風の layer chain が書けます。各 layer は vocab `.p4` ファイル (`pkg/kunai/protocols/*.p4`) で定義された protocol です。
 - vocab は P4-16 の strict subset である p4lite を Go 側の `pkg/kunai/vocab/p4lite/` で parse します。p4c で標準パースできるのが目標です。詳しくは internals §5 を参照してください。
-- 出力は cilium/ebpf の `asm.Instructions` で、target portable な eBPF subprogram です。kunai コアは XDP / tc 等の host 知識を持たず、host adapter は `pkg/kunai/host/<name>/` サブパッケージに局所化しています。`host/xdp` は XDP fentry/fexit、`host/tc` は TC clsact fentry/fexit、`host/cgroupskb` は cgroup-skb fentry/fexit、`host/netfilter` は netfilter fentry/fexit です。後の 2 つは L3 始まりの packet window を扱います。
+- 出力は cilium/ebpf の `asm.Instructions` で、target portable な eBPF subprogram です。kunai コアは XDP / tc 等の host 知識を持たず、host adapter は `pkg/kunai/host/<name>/` サブパッケージに局所化しています。`host/xdp` は XDP fentry/fexit、`host/tc` は TC clsact fentry/fexit、`host/cgroupskb` は cgroup-skb fentry/fexit、`host/netfilter` は netfilter fentry/fexit です。cgroupskb と netfilter は L3 始まりの packet window を扱います。
 - caller (`internal/program/program.go`) は `kunai.Compile(expr, caps)` に host capability (`xdphost.FexitCapabilities()` / `tchost.FexitCapabilities()` 等) を渡すことで host を選びます。どの host caps を使うかは `internal/hook` の registry がターゲットプログラムの型から決めます。zero `Capabilities` だと、action atom を使えない target-agnostic な filter が出ます。
 
 ## 関連コード
