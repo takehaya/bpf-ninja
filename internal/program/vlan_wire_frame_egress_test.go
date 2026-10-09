@@ -12,6 +12,8 @@ package program
 // Root + veth + vlan + tcx (or clsact) required; skipped otherwise.
 
 import (
+	"fmt"
+	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -89,31 +91,33 @@ func TestBpfVlanWireFrameAtTCEgress(t *testing.T) {
 // end and of the VLAN device.
 func wireTestVethEgress(t *testing.T, tcProg *ebpf.Program) (direct, vlanDev int) {
 	t.Helper()
-	if old, err := netlink.LinkByName("kxegr0"); err == nil {
+	// Names carry the pid so concurrent runs on one host do not collide.
+	name0, name1 := fmt.Sprintf("kxe%da", os.Getpid()%100000), fmt.Sprintf("kxe%db", os.Getpid()%100000)
+	if old, err := netlink.LinkByName(name0); err == nil {
 		_ = netlink.LinkDel(old) // left behind by an interrupted run
 	}
 	la := netlink.NewLinkAttrs()
-	la.Name = "kxegr0"
-	veth := &netlink.Veth{LinkAttrs: la, PeerName: "kxegr1"}
+	la.Name = name0
+	veth := &netlink.Veth{LinkAttrs: la, PeerName: name1}
 	if err := netlink.LinkAdd(veth); err != nil {
 		t.Skipf("veth unavailable (%v)", err)
 	}
 	t.Cleanup(func() { _ = netlink.LinkDel(veth) })
-	v0, err := netlink.LinkByName("kxegr0")
+	v0, err := netlink.LinkByName(name0)
 	if err != nil {
 		t.Fatalf("LinkByName: %v", err)
 	}
-	v1, err := netlink.LinkByName("kxegr1")
+	v1, err := netlink.LinkByName(name1)
 	if err != nil {
 		t.Fatalf("LinkByName: %v", err)
 	}
 	vla := netlink.NewLinkAttrs()
-	vla.Name = "kxegr0.100"
+	vla.Name = name0 + ".100"
 	vla.ParentIndex = v0.Attrs().Index
 	if err := netlink.LinkAdd(&netlink.Vlan{LinkAttrs: vla, VlanId: 100}); err != nil {
 		t.Skipf("vlan device unavailable (%v)", err)
 	}
-	vd, err := netlink.LinkByName("kxegr0.100")
+	vd, err := netlink.LinkByName(name0 + ".100")
 	if err != nil {
 		t.Fatalf("LinkByName: %v", err)
 	}
