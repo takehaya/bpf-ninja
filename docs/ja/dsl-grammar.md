@@ -193,7 +193,7 @@ field-ref の shape、つまり where 節で使えるフィールドアクセス
 - 例えば `where any(srv6.segments.addr == fc00::1)` は、経路に該当 segment が含まれることを表します。`any` / `all` の対象は aux header stack だけです。`vlan+` のような量化 layer の各 header は対象にならないので、`eth/vlan@v+/ipv4/tcp where all(v.tci < 4096)` は parse-time error になります。
 
 MVP 制約は次のとおりです。
-- 算術ネストは最大 16 段 (`maxArithDepth`) で、17 段以上は ErrNotImplemented になります。
+- 算術ネストは 16 段 (`maxArithDepth`) までで、17 段以上は ErrNotImplemented になります。比較の両辺がともに 16 段の場合と、`Bool == Bool` の内側で上限が下がる場合は [`dsl-usage.md` の演算子の節](./dsl-usage.md#演算子) にまとめています。
 - `action == NAME` は、host 側で `Capabilities.Lang` の `Action` map と `ActionFetcher` を提供しているときのみ使えます。XDP の場合は fexit attach (`--mode exit`) で `pkg/kunai/host/xdp.FexitCapabilities()` 経由で有効化されます。
 - 同 protocol が 2 段以上ある場合、`proto.field` だけでは ambiguous になるため `@label.field` が必須です。
 - PR-A〜PR-D で landing した aux predicate / stack index access / options lookup は、wrapper protocol の中身を見るため、protocol 側の `out` parameter declaration が必要です。詳細は `dsl-internals.md §6` を参照してください。
@@ -392,7 +392,7 @@ DSL の `layer-chain` は grammar 上 root を制約しませんが、operationa
 例外は次のとおりです。
 
 - tc clsact ターゲット (fentry) では、入り口で既に L2 解析済みの場合があり、短い chain で問題ありません。
-- cgroup-skb ターゲットでは packet が network header (L3) 始まりなので、`ipv4/...` / `ipv6/...` 起点が正しい chain です (`eth` 起点は逆に warning)。
+- cgroup-skb と netfilter のターゲットでは packet が network header (L3) 始まりなので、`ipv4/...` / `ipv6/...` 起点が正しい chain です (`eth` 起点は逆に warning)。
 - vocab 学習目的で、自前 testing として特定 protocol だけ codegen を確認したい時は、短 chain も valid です。
 
 root が `eth` 以外の短 chain は resolver で warning が出ますが、compile は通ります。

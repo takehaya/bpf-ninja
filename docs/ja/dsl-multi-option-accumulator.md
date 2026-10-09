@@ -124,7 +124,7 @@ codegen には別途、callback の分岐命令数を静的に数える tripwire
   同じ layer の `<layer>.options.valid` は AND の項として混ぜてよい。accumulator の
   後で、`emitAccMaskCheck` が option 領域が壊れていないことを別に確かめる。
   単一 option の filter は従来どおり別経路をたどる。2 種類以上の option を見る
-  filter に `!=`・`or`・`.exists`・option 以外の atom・別 layer の `.valid` が
+  filter に `!=`・`or`・`not`・`.exists`・option 以外の atom・別 layer の `.valid` が
   混ざる形は `ErrNotImplemented` になる。`tcp[dport==80]` のような bracket の条件は
   `where` の外なので、混ぜても accumulator の対象のままである。
   対象 layer は length-byte advance を持つ TLV walk (TCP options) であること。TCP の領域 counter は対象に含み、それ以外の counter-driven

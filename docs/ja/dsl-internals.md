@@ -572,7 +572,7 @@ NOT は inner success label を作って `Ja failLabel` で反転します。
 
 het-alt 後の field addressing では、resolver の `markRuntimeOffsetLayers` が het-alt より後ろの layer を `NeedsRuntimeOffset = true` でマークします。codegen は `layerAnchorFor` で、その layer の field load を abs anchor (R0+静的 prefix) ではなく slot anchor (R10[entry slot] + R0) で emit します。het-alt の無い filter は、slot 経路ゼロ、命令数増加なしの完全 fast path を維持します。詳細は `codegen.go::layerAnchor` 周辺と `where.go::layerAnchorFor` を参照してください。
 
-action atom (`action == NAME`) では、codegen は `caps.Lang.ActionFetcher.EmitFetch(R3)` を呼んで R3 に action u32 をロードする命令列を取得し、続けて `JNE R3, caps.Lang.Action[NAME], dsl_reject` を emit します。既定 fexit ABI (`pkg/kunai/host/{xdp,tc,cgroupskb}` 各パッケージの `FexitFetcher`) は `stack[-48] → args[1]` の 2 段 LDX を返します。BPF tracing args ABI が host 非依存なので EmitFetch ロジックは XDP / tc / cgroup-skb で共通で、違いは XDP_DROP=1、TC_ACT_SHOT=2、SK_DROP=0 のような Actions map の値です。`caps.Lang.Action == nil` のときは、host が action 値を提供できないため resolver が atom を拒否します。userspace target 等は `pkg/kunai/host/<name>/` で独自の fetcher を実装すれば再利用可能で、kunai コアは host 知識を持ちません。
+action atom (`action == NAME`) では、codegen は `caps.Lang.ActionFetcher.EmitFetch(R3)` を呼んで R3 に action u32 をロードする命令列を取得し、続けて `JNE R3, caps.Lang.Action[NAME], dsl_reject` を emit します。既定 fexit ABI (`pkg/kunai/host/{xdp,tc,cgroupskb,netfilter}` 各パッケージの `FexitFetcher`) は `stack[-48] → args[1]` の 2 段 LDX を返します。BPF tracing args ABI が host 非依存なので EmitFetch ロジックは XDP / tc / cgroup-skb / netfilter で共通で、違いは XDP_DROP=1、TC_ACT_SHOT=2、SK_DROP=0、NF_DROP=0 のような Actions map の値です。`caps.Lang.Action == nil` のときは、host が action 値を提供できないため resolver が atom を拒否します。userspace target 等は `pkg/kunai/host/<name>/` で独自の fetcher を実装すれば再利用可能で、kunai コアは host 知識を持ちません。
 
 ### 4.7 capture 節
 
@@ -1162,7 +1162,7 @@ implementation 詳細は、`pkg/kunai/codegen/parser_state.go` の state graph e
 | 領域 | 制限 |
 |---|---|
 | Predicate | `field in [...]` は整数と範囲 `lo..hi` の alternatives 実装済 (F7、ホスト順で比較) / IPv4/IPv6/MAC/CIDR alternatives は scope outside / `bit<>64` の field に対する `in` は未対応 (今のところ ≤64-bit のみ wired) / `field has FLAG` は F6 bitwise `&` で superseded (`tcp.flags & 0x12 == 0x12` で同等表現) |
-| Where | 算術ネスト最大 16 段 (`maxArithDepth`、10b で 8→16 bump) / where が alt member の field を参照するとき (`where ipv6.src == fe80::1`) は、alternation が matched-member slot に記録した member の番号を atom の前で確かめる (別の member なら atom は false) / `in` は bracket predicate `[...]` 専用で、where 句では `==` の `or` chain で代替 (parser が targeted hint を返す) |
+| Where | 算術ネスト最大 16 段 (`maxArithDepth`、10b で 8→16 bump。比較と `Bool == Bool` での扱いは [`dsl-usage.md`](./dsl-usage.md#演算子)) / where が alt member の field を参照するとき (`where ipv6.src == fe80::1`) は、alternation が matched-member slot に記録した member の番号を atom の前で確かめる (別の member なら atom は false) / `in` は bracket predicate `[...]` 専用で、where 句では `==` の `or` chain で代替 (parser が targeted hint を返す) |
 | Aux × literal | landed (B-3 commit 6547a42): IPv4/IPv6/MAC/CIDR literal を aux 経由で比較可能。例: `srv6.segments[0].addr == fc00::/16`、`where ipv4.options.RR.addrs[0].addr == 10.0.0.1` |
 | Capture | `capture f1, f2` フィールド列 不可 / 量化 layer を含む filter の `headers+N` は、量化 layer が最大数マッチした場合の長さを上限にする。het-alt 越えの capture は max-alt 上界丸めで動作 |
 | Alternation | alt 数 2-4 (`altCountCap`) / heterogeneous size + diverged dispatch 対応済 (P3-12) / nested alt は resolver flatten (P3-13) / quantifier 付き内側 alt (`(a\|b)?`) は reject / 先頭不可 |

@@ -78,11 +78,17 @@ eth/ipv4/udp/gtp/ipv4/tcp           # GTP-U の内側 IP
 eth/vlan?/ipv4/tcp                  # 任意 VLAN 1 段
 eth/vlan{1,3}/ipv4/tcp              # VLAN 1〜3 段
 eth/mpls+/ipv4/tcp                  # MPLS label stack (s-bit で終端)
-eth/mpls{2,8}/ipv4/tcp              # MPLS 2〜8 段、8 段で打切
+eth/mpls{2,8}/ipv4/tcp              # MPLS 2〜8 段 (9 段以上のスタックには match しない)
 eth/vlan*/ipv4/tcp                  # VLAN 0〜N 段
 ```
 
+MPLS の s-bit のように、スタックの終端を示す印を持つ protocol では、quantifier の上限に達した header がその印を持っていないと、スタックが上限より深いとみなして packet を reject します。この規則は [`spec/lean/DECISIONS.md`](../../spec/lean/DECISIONS.md) の D-024 で決めたものです。`eth/mpls{1,2}/ipv4/tcp` は 3 段以上のスタックに match せず、`mpls?` は MPLS が無いパケットと、1 段で終わるスタックにだけ match します。`mpls+` と `mpls*` の上限は `MPLS_MAX_DEPTH` の 8 段です。終端の印を持たない `vlan` などでは、上限に達したところで次の layer に進みます。
+
+#### tc での VLAN tag
+
 tc では kernel が外側の VLAN tag を 1 枚 skb metadata に移してから program が動くので、filter が見る byte 列にその tag はありません。既定では filter はこの byte 列に当たるので、`eth/ipv4/tcp` は tag 付きのフレームにも match し、外側の tag を読む形 (必須の `vlan`、`vlan[tci==100]`、`where vlan.tci == …`) は compile 時のエラーになります (`eth/vlan?/ipv4/tcp` は書けます)。`--tc-vlan-reinsert` を付けると、bpf-ninja は metadata の tag を filter に渡す byte 列の MAC アドレスの直後に戻し、filter は回線上のフレームどおりに書けます: `eth/vlan[tci==100]/ipv4/tcp` は 802.1Q のフレーム、`eth/qinq/vlan/ipv4/tcp` は QinQ のフレームに match し、`eth/ipv4/tcp` は tag 付きのフレームに match しなくなります。どちらでも capture される byte 列は kernel が持っているもの (外側の tag が無い状態) で、option を付けたとき `capture vlan` のように layer で長さを決める capture は 4 byte 多めに取ります。`--cbpf` の pcap 形式のフィルタは option に関係なく kernel が持つ byte 列に当たります。cgroup-skb と netfilter は L3 から始まるので VLAN は関係しません。
+
+metadata に移るのは外側の tag 1 枚だけです。この制約がかかるのは root の `eth` の直後に続く `vlan` / `qinq` だけで、トンネルの内側の tag は既定のままでも byte 列から読めます。たとえば `eth/ipv4/udp/vxlan/eth/vlan[tci==100]/ipv4/tcp` はそのまま書けます。QinQ のフレームでは外側の S-tag だけが metadata に移り、内側の C-tag は byte 列に残ります。そのため既定のままでは `eth/vlan?/ipv4/tcp` の `vlan` が C-tag にマッチし、`eth/ipv4/tcp` は QinQ のフレームに match しません。ただし C-tag の field を bracket や `where` で読む形は、既定では compile 時のエラーのままです。読みたいときは `--tc-vlan-reinsert` を付けます。tag の有無や種類を問わず match させたいとき、既定の tc では必須の `(vlan|qinq)` が compile 時のエラーになり、alternation には `?` を付けられないので、`eth/qinq?/vlan?/ipv4/tcp` のように書きます。
 
 ### Predicate
 
@@ -184,6 +190,16 @@ eth/ipv4/tcp where tcp.options.WS.shift > 5
 eth/ipv4/tcp where tcp.options.TS.tsval > 0
 ```
 
+1 つの filter で TCP の option を 2 種類以上見る場合は、`where` 全体を `<option>.<field> == <定数>` の `and` だけで書きます。定数は 32 bit の符号付き整数に収まる値に限ります。同じ layer の `options.valid` は混ぜられます。`!=`、`or`、`not`、`.exists`、別の layer の `options.valid`、`action == …`、`tcp.dport == 80` のような option 以外の atom を混ぜると `ErrNotImplemented` になります。option 以外の field の条件は bracket に移せば compile できます。`action == …` は bracket に書けないので、この形とは組み合わせられません。
+
+```
+eth/ipv4/tcp where tcp.options.MSS.value == 1460 and tcp.options.WS.shift == 7                     # compile できる
+eth/ipv4/tcp where tcp.options.MSS.value == 1460 and tcp.options.WS.shift == 7 and tcp.dport == 80  # ErrNotImplemented
+eth/ipv4/tcp[dport==80] where tcp.options.MSS.value == 1460 and tcp.options.WS.shift == 7           # compile できる
+```
+
+見る TCP の option が 1 種類のときと、IPv4 や Geneve の option では、この制約はありません。仕組みは [`dsl-multi-option-accumulator.md`](./dsl-multi-option-accumulator.md) を参照してください。
+
 #### Quantifier (`any` / `all`)
 
 aux header stack の全 entry に対して量化できます。
@@ -232,8 +248,9 @@ eth/ipv6/tcp where ipv6.dst[0:32] == 0xfc000000 and ipv6.dst[32:48] == 0x0100
 | XDP プログラム (fexit) | `XDP_ABORTED`, `XDP_DROP`, `XDP_PASS`, `XDP_TX`, `XDP_REDIRECT` |
 | TC clsact プログラム (fexit) | `TC_ACT_UNSPEC` (-1), `TC_ACT_OK`, `TC_ACT_RECLASSIFY`, `TC_ACT_SHOT`, `TC_ACT_PIPE`, `TC_ACT_STOLEN`, `TC_ACT_QUEUED`, `TC_ACT_REPEAT`, `TC_ACT_REDIRECT`, `TC_ACT_TRAP` |
 | cgroup-skb プログラム (fexit) | `SK_DROP` (0), `SK_PASS` (1)。egress 専用の 2/3 (輻輳通知付き drop) は uapi 名が無いため atom は無く、pcap 側では `cgroup-skb:UNKNOWN(n)` interface に落ちます |
+| netfilter プログラム (fexit) | `NF_DROP` (0), `NF_ACCEPT` (1) |
 
-host adapter ごとの定数表は `pkg/kunai/host/xdp/xdp.go` / `pkg/kunai/host/tc/tc.go` / `pkg/kunai/host/cgroupskb/cgroupskb.go` の `FexitCapabilities()` を参照してください。新 host を足すときは `Capabilities.Lang` に同 shape の `Action map[string]int32` + `ActionFetcher` を提供します。
+host adapter ごとの定数表は `pkg/kunai/host/xdp/xdp.go` / `pkg/kunai/host/tc/tc.go` / `pkg/kunai/host/cgroupskb/cgroupskb.go` / `pkg/kunai/host/netfilter/netfilter.go` の `FexitCapabilities()` を参照してください。新 host を足すときは `Capabilities.Lang` に同 shape の `Action map[string]int32` + `ActionFetcher` を提供します。
 
 ### Capture 節
 
