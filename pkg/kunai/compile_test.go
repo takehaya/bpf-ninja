@@ -1212,7 +1212,25 @@ func TestCompileOptionalVariableLayers(t *testing.T) {
 			t.Errorf("Compile(%q) = %v; want the self-dispatch typing error", expr, err)
 		}
 	}
-	for _, expr := range []string{"eth/ipv4/ipv4{0,2}/tcp", "eth/ipv4/ipv4*/tcp"} {
+	// A parser-machine layer with a self edge repeats up to the static
+	// cap: one machine per instance (genStaticMachineChain).
+	for _, expr := range []string{
+		"eth/ipv4/ipv4{0,2}/tcp",
+		"eth/ipv4{1,2}/tcp",
+		"eth/ipv4{2,2}/tcp",
+		"eth/ipv4[options.valid]{1,2}/tcp",
+		"eth/ipv4[ttl==64]{1,4}/tcp",
+		"eth/ipv4@o{1,2}/tcp where o.ttl == 64",
+		"eth/ipv4@o{1,2}/tcp where o.options.RR.kind == 7",
+		"eth/ipv6{1,2}/tcp",
+		"eth/ipv4/gre?/ipv4{1,2}/tcp",
+	} {
+		if _, err := compileForTest(expr); err != nil {
+			t.Errorf("Compile(%q): %v", expr, err)
+		}
+	}
+	// Past the cap, and the open-ended quantifiers, stay refused.
+	for _, expr := range []string{"eth/ipv4{1,5}/tcp", "eth/ipv4/ipv4*/tcp", "eth/ipv4/ipv4+/tcp", "eth/ipv4{1,}/tcp"} {
 		if _, err := compileForTest(expr); !errors.Is(err, codegen.ErrNotImplemented) {
 			t.Errorf("Compile(%q) = %v; want ErrNotImplemented", expr, err)
 		}
@@ -1235,11 +1253,13 @@ func TestCompileBracketOnPushCountedStack(t *testing.T) {
 			t.Fatalf("%s must compile: %v", expr, err)
 		}
 	}
-	// A quantified layer replays its predicates per iteration, where no
-	// final count exists: still refused rather than read unguarded.
-	for _, expr := range []string{"eth/ipv6[exts[0].next_header == 6]{1,2}/tcp"} {
-		if _, err := compileForTest(expr); !errors.Is(err, codegen.ErrNotImplemented) || !strings.Contains(err.Error(), "where clause") {
-			t.Fatalf("%s: expected ErrNotImplemented pointing at a where clause, got %v", expr, err)
+	// A repeated parser-machine layer runs one machine per instance, so
+	// each instance's predicates wait for its own walk and push count
+	// (genStaticMachineChain). The fixed-layout chains (vlan, mpls) have
+	// no push-counted stack to index.
+	for _, expr := range []string{"eth/ipv6[exts[0].next_header == 6]{1,2}/tcp", "eth/ipv6/ipv6[exts[0].next_header == 6]{0,2}/tcp"} {
+		if _, err := compileForTest(expr); err != nil {
+			t.Fatalf("%s must compile: %v", expr, err)
 		}
 	}
 	// gtp has no gtp-under-gtp constant, so repeating it is a typing error

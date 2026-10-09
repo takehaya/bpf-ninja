@@ -39,12 +39,36 @@ func genParserMachine(layer *ir.LayerInstance, layerIdx int, all []*ir.LayerInst
 // Failures past the dispatch (self-validation, bounds) still reject: the
 // parent's constant already named this protocol (D-017).
 func genParserMachineOn(layer *ir.LayerInstance, layerIdx int, all []*ir.LayerInstance, qo queriedOptions, plan *accPlan, pc *predCtx, dispatchFail string) (asm.Instructions, asm.Instructions, error) {
+	return genParserMachineIter(layer, layerIdx, all, qo, plan, pc, dispatchFail, 0)
+}
+
+// genParserMachineIter is genParserMachineOn for one instance of a
+// repeated parser-machine layer (`ipv4{1,2}`, genStaticMachineChain).
+// Iteration 0 is the layer as usual. An iteration ≥ 1 is one more header
+// of the same protocol: its labels carry the iteration number, its entry
+// dispatch is the self edge against the previous iteration's header,
+// whose entry the previous iteration left in the layer-entry slot, and
+// its slots are written only after that dispatch succeeded, so a miss
+// (the chain ends) leaves the previous instance's values in place. The
+// slots are the layer's own, shared by every iteration: a where reference
+// to the layer reads the last instance (spec resolveRef).
+func genParserMachineIter(layer *ir.LayerInstance, layerIdx int, all []*ir.LayerInstance, qo queriedOptions, plan *accPlan, pc *predCtx, dispatchFail string, iter int) (asm.Instructions, asm.Instructions, error) {
 	spec := layer.Spec
 	m := spec.ParseStateMachine
 	if m == nil {
 		return nil, nil, fmt.Errorf("codegen: genParserMachine called with nil ParseStateMachine on %q", spec.Name)
 	}
 
+	// (name, Index) is unique across the program; layerIdx alone collides
+	// when alternatives of one group share a protocol. Iterations ≥ 1 of a
+	// repeated layer add their number; iteration 0 keeps the plain name.
+	labelNS := fmt.Sprintf("dsl_pm_%s_%d_%d", spec.Name, layerIdx, layer.Index)
+	r4IsRange := precedingLayersLeaveR4Range(all, layerIdx)
+	if iter > 0 {
+		labelNS = fmt.Sprintf("%s_i%d", labelNS, iter)
+		// The previous iteration advanced R4 by its variable length.
+		r4IsRange = true
+	}
 	prePreds, postPreds := splitPredicates(layer)
 	pmCtx := &pmCtx{
 		prePreds:     prePreds,
@@ -54,12 +78,11 @@ func genParserMachineOn(layer *ir.LayerInstance, layerIdx int, all []*ir.LayerIn
 		layerIdx:     layerIdx,
 		layer:        layer,
 		all:          all,
-		// (name, Index) is unique across the program; layerIdx alone
-		// collides when alternatives of one group share a protocol.
-		labelNS:      fmt.Sprintf("dsl_pm_%s_%d_%d", spec.Name, layerIdx, layer.Index),
-		doneLabel:    fmt.Sprintf("dsl_pm_%s_%d_%d_done", spec.Name, layerIdx, layer.Index),
+		iter:         iter,
+		labelNS:      labelNS,
+		doneLabel:    labelNS + "_done",
 		absorbed:     map[int]bool{},
-		r4IsRange:    precedingLayersLeaveR4Range(all, layerIdx),
+		r4IsRange:    r4IsRange,
 		queried:      qo,
 		queriedAuxes: buildQueriedAuxNames(qo, layer),
 		accPlan:      plan,
@@ -150,12 +173,15 @@ func genParserMachineOn(layer *ir.LayerInstance, layerIdx int, all []*ir.LayerIn
 // namespace) through the per-state emitters.
 type pmCtx struct {
 	// regionCounter is represented by an immutable end within a proven TLV loop.
-	regionCounter      string
-	spec               *vocab.ProtocolSpec
-	machine            *vocab.ParseStateMachine
-	layerIdx           int
-	layer              *ir.LayerInstance
-	all                []*ir.LayerInstance
+	regionCounter string
+	spec          *vocab.ProtocolSpec
+	machine       *vocab.ParseStateMachine
+	layerIdx      int
+	layer         *ir.LayerInstance
+	all           []*ir.LayerInstance
+	// iter is the instance number inside a repeated layer
+	// (genParserMachineIter); 0 for a layer emitted once.
+	iter               int
 	labelNS            string
 	doneLabel          string
 	selectCounterValue int
@@ -211,6 +237,24 @@ func precedingLayersLeaveR4Range(all []*ir.LayerInstance, idx int) bool {
 		}
 	}
 	return false
+}
+
+// layerEntryIsRange reports whether the entry offset layer `idx` records
+// in its slots is a range scalar: something before it is variable, or
+// the layer itself is a repeated variable-length layer whose last
+// instance starts past the first instance's variable length
+// (genStaticMachineChain). A dispatch against that layer's entry (the
+// layer after `ipv4{1,2}`) then needs the bounded idiom; a constant
+// entry keeps the fast path.
+func layerEntryIsRange(all []*ir.LayerInstance, idx int) bool {
+	if idx < 0 || idx >= len(all) {
+		return false
+	}
+	if precedingLayersLeaveR4Range(all, idx) {
+		return true
+	}
+	l := all[idx]
+	return l != nil && l.Spec != nil && l.Spec.HasVariableLayout() && l.Quant == ast.QuantRange && l.RangeMax >= 2
 }
 
 func layerLeavesR4Range(l *ir.LayerInstance) bool {
@@ -279,7 +323,9 @@ func (c *pmCtx) emitState(stateIdx int) (asm.Instructions, asm.Instructions, err
 		}
 		// The region counts as well formed until the walk faults.
 		dynInit = append(dynInit, c.emitValidFlag(1)...)
-		optional := missIsNotReject(c.dispatchFail)
+		// An iteration ≥ 1 of a repeated layer must not: a miss there ends
+		// the chain and the slots keep the previous instance's values.
+		optional := missIsNotReject(c.dispatchFail) && c.iter == 0
 		if optional {
 			insns = append(insns, dynInit...)
 		}
@@ -378,6 +424,9 @@ func splitPredicates(layer *ir.LayerInstance) (pre, post []*ir.Predicate) {
 // emitEntryDispatch runs the parent-protocol dispatch once at machine
 // entry, identical in shape to genStaticLayer's QuantOne dispatch.
 func (c *pmCtx) emitEntryDispatch() (asm.Instructions, error) {
+	if c.iter > 0 {
+		return c.emitSelfEdgeDispatch()
+	}
 	if c.layerIdx == 0 || c.layer.Dispatch == nil {
 		return nil, nil
 	}
@@ -385,7 +434,7 @@ func (c *pmCtx) emitEntryDispatch() (asm.Instructions, error) {
 		// The alternation guard ran this dispatch; only the join stays.
 		return dispatchJoin(c.layerIdx, c.all)
 	}
-	di, err := genParentDispatch(c.layer, c.layerIdx, c.all, c.queried, c.r4IsRange, precedingLayersLeaveR4Range(c.all, c.layerIdx-1), c.dispatchFail)
+	di, err := genParentDispatch(c.layer, c.layerIdx, c.all, c.queried, c.r4IsRange, layerEntryIsRange(c.all, c.layerIdx-1), c.dispatchFail)
 	if err != nil {
 		return nil, err
 	}
@@ -394,6 +443,28 @@ func (c *pmCtx) emitEntryDispatch() (asm.Instructions, error) {
 		return nil, err
 	}
 	return append(di, join...), nil
+}
+
+// emitSelfEdgeDispatch is the entry dispatch of an iteration ≥ 1 of a
+// repeated parser-machine layer: the previous header of the same protocol
+// names this one through the declared self edge (KUNAI_IPV4_IPV4_PROTOCOL).
+// genFieldDispatch reads the field from the previous iteration's entry,
+// which it left in the layer-entry slot; from iteration 2 on that entry is
+// a range scalar (the first header's variable length lies in between).
+// No dispatch join is emitted: the join of this layer belongs to
+// iteration 0 and the absent edge of the next layer.
+func (c *pmCtx) emitSelfEdgeDispatch() (asm.Instructions, error) {
+	selfConst := c.spec.SelectDispatchConst(c.spec.Name)
+	if selfConst == nil {
+		return nil, fmt.Errorf("%w: repeated %q has no self-dispatch const (resolver bug)", ErrNotImplemented, c.spec.Name)
+	}
+	via := &ir.LayerInstance{Spec: c.spec, Dispatch: &ir.DispatchChoice{Type: selfConst.Type, Const: selfConst}}
+	hs, err := headerSize(c.spec)
+	if err != nil {
+		return nil, err
+	}
+	parentEntryIsRange := precedingLayersLeaveR4Range(c.all, c.layerIdx) || c.iter >= 2
+	return genDispatch(via, c.layer, hs, c.r4IsRange, parentEntryIsRange, c.dispatchFail)
 }
 
 // emitStateBody emits one state's extracts + transition. When the

@@ -50,6 +50,22 @@ var (
 		// capture clause
 		"eth/ipv4/tcp capture headers+64",
 		"eth/ipv6/tcp capture headers+64",
+		// repeated variable-length layers: the layer after the chain
+		// dispatches against a range-valued entry (bounded idiom), and
+		// iterations >= 2 read the previous header through one too.
+		"eth/ipv4{1,2}/tcp",
+		"eth/ipv4{2,2}/tcp",
+		"eth/ipv4{1,4}/tcp",
+		"eth/ipv4/ipv4{0,2}/tcp",
+		"eth/vlan/ipv4{1,2}/tcp",
+		"eth/ipv4[options.valid]{1,4}/tcp",
+		"eth/ipv4@o{1,2}/tcp where o.options.RR.kind == 7",
+		"eth/ipv4{1,2}/tcp where tcp.dport == 443",
+		"eth/ipv4{1,2}/udp",
+		// Not here: a layer dispatched against an ipv6 whose entry is a
+		// range (`eth/ipv6/ipv6/tcp`, `eth/ipv4/ipv6/tcp`, so `ipv6{1,2}`
+		// too) and the absent edge of `gre?` (`eth/ipv4/gre?/ipv4/tcp`)
+		// are rejected on the packet pointer today, repeated or not.
 	}
 )
 

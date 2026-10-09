@@ -198,6 +198,77 @@ func genOptionalMachineLayer(layer *ir.LayerInstance, index int, all []*ir.Layer
 	return append(insns, asm.Mov.Reg(asm.R0, asm.R0).WithSymbol(chainDone)), callbacks, nil
 }
 
+// genStaticMachineChain lowers `{n,m}` (2 ≤ m ≤ staticChainCap) on a
+// parser-machine layer with a declared self edge (`ipv4{1,2}`,
+// `ipv6{0,2}`): one parser machine per instance, so each header's
+// variable length, option walk and bracket predicates are those of that
+// header (spec `iterate`: every instance runs `extract`, a predicate
+// failure rejects, only a dispatch miss ends the chain). Iteration 0 is
+// the layer as usual, optional when n = 0. Iteration i ≥ 1 dispatches
+// through the self edge against iteration i-1 (genParserMachineIter); its
+// miss ends the chain at the done landing when i ≥ n, and rejects below n
+// (under-run). The slots are the layer's own, written after each
+// successful dispatch: a where reference reads the last instance.
+func genStaticMachineChain(layer *ir.LayerInstance, index int, all []*ir.LayerInstance, qo queriedOptions, plan *accPlan, pc *predCtx) (asm.Instructions, asm.Instructions, error) {
+	if layer.RangeMax < 2 || layer.RangeMax > staticChainCap {
+		return nil, nil, fmt.Errorf("codegen: genStaticMachineChain on %q with {%d,%d}", layer.Spec.Name, layer.RangeMin, layer.RangeMax)
+	}
+	if layer.Spec.ChainEnd != nil {
+		// The over-run check at the bound (D-024) assumes a fixed header.
+		return nil, nil, fmt.Errorf("%w: {%d,%d} on %q: a parser-machine layer with a chain-end rule", ErrNotImplemented, layer.RangeMin, layer.RangeMax, layer.Spec.Name)
+	}
+	if layer.Spec.SelectDispatchConst(layer.Spec.Name) == nil {
+		return nil, nil, fmt.Errorf("%w: repeated %q has no self-dispatch const (resolver bug)", ErrNotImplemented, layer.Spec.Name)
+	}
+	optional := layer.RangeMin == 0
+	if optional {
+		if err := optionalLayerGuard(layer, index, all); err != nil {
+			return nil, nil, err
+		}
+	}
+	chainDone := fmt.Sprintf("dsl_chain_done_%d", index)
+	absentLabel := chainDone
+	if optional && ir.AbsentEdgeApplies(all, index) {
+		absentLabel = fmt.Sprintf("dsl_absent_%d", index)
+	}
+	// A marked optional layer's entry slot reads "absent" until a present
+	// iteration overwrites it (D-003).
+	insns, err := emitLayerEntrySentinel(layer, qo)
+	if err != nil {
+		return nil, nil, err
+	}
+	var callbacks asm.Instructions
+	for i := 0; i < layer.RangeMax; i++ {
+		target := dslReject
+		switch {
+		case i == 0 && optional:
+			target = absentLabel
+		case i >= layer.RangeMin && i > 0:
+			target = chainDone
+		}
+		body, cbs, err := genParserMachineIter(layer, index, all, qo, plan, pc, target, i)
+		if err != nil {
+			return nil, nil, err
+		}
+		insns = append(insns, body...)
+		callbacks = append(callbacks, cbs...)
+	}
+	// The done landing is where an iteration ≥ n ends the chain (and the
+	// absent iteration 0 of `{0,m}` without its own edge); `{m,m}` never
+	// jumps there. R0 (the scratch window) is live on both paths; R3 is
+	// not after the machine's bpf_loop, so the landing must not touch it.
+	if layer.RangeMin < layer.RangeMax {
+		insns = append(insns, asm.Mov.Reg(asm.R0, asm.R0).WithSymbol(chainDone))
+	}
+	if absentLabel != chainDone {
+		insns, err = withAbsentEdge(insns, absentLabel, index, all)
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+	return insns, callbacks, nil
+}
+
 // chainLanding closes a static chain. chainDone is where an in-range
 // iteration ≥ 1 that hit its natural chain-end (or, for self-dispatch
 // protocols, missed its self-dispatch peek) falls through to the next

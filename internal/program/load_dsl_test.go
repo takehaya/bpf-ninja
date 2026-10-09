@@ -96,6 +96,12 @@ var dslEntryExprs = []string{
 	// SRv6 segment list address access via aux header stack:
 	// static index (final destination = wire-order [0]) and
 	// dynamic index from a parent field (next hop = [last_entry]).
+	// Repeated variable-length layers: one parser machine per instance.
+	"eth/ipv4{1,4}/tcp",
+	"eth/ipv4/ipv4{0,2}/tcp",
+	"eth/ipv4[options.valid]{1,4}/tcp",
+	"eth/ipv4@o{1,2}/tcp where o.options.RR.kind == 7",
+	"eth/ipv6{1,2}/tcp",
 	"eth/ipv6/srv6/tcp where srv6.segments[0].addr == fc00::1",
 	"eth/ipv6/srv6/tcp where srv6.segments[srv6.last_entry].addr == fc00::1",
 	// 128-bit arithmetic on a segment: static and runtime index.
@@ -209,6 +215,7 @@ var dslExitExprs = []string{
 // len via runtime BTF resolve).
 var dslTCEntryExprs = []string{
 	"eth/ipv4/tcp",
+	"eth/ipv4{1,2}/tcp",
 	"eth/ipv4/udp",
 	"eth/ipv6/tcp",
 	"eth/ipv4/tcp[dport==443]",

@@ -212,8 +212,8 @@ vector bracketValidTwoOptions := {
 vector bracketValidRepeated := {
   id := "bracket-opts-valid-repeated",
   ast := { layers := [P "eth", .proto { name := "ipv4", preds := [tcpValidPred], quant := .range 1 (some 2) }, P "tcp"] },
-  expected := .accept [], goStatus := .notImplemented,
-  note := "Go: a repeated layer replays its bracket predicates per iteration, before the walk's outcome is recorded" }
+  expected := .accept [],
+  note := "every matched instance runs its bracket predicates; here the one ipv4 has a well-formed (empty) option region" }
 vector typBracketValidSegment := {
   id := "typ-bracket-opts-valid-segment",
   ast := { layers := [P "eth", P "ipv4", .proto { name := "tcp", preds := [.optionsValid ⟨[("opts", none)]⟩] }] },

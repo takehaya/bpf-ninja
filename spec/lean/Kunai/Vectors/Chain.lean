@@ -459,6 +459,34 @@ vector hostTcOuterBracketCTag := {
 vector hostTcOuterBracketCTagMiss := {
   id := "host-tc-outer-bracket-ctag-miss", host := .tc_entry, ast := { layers := vlanOptBracket 200 }, packet := vlanPkt,
   expected := .reject, note := "the C-tag is present and its tci is 100: the predicate fails and rejects (D-001)" }
+-- A repeated variable-length layer: every instance runs its own extract
+-- (its variable length, its predicates); a reference reads the last one.
+def ipv4Range (lo : Nat) (hi : Nat) (preds : List Predicate := []) (label : Option String := none) : Layer :=
+  .proto { name := "ipv4", label, preds, quant := .range lo (some hi) }
+def ipipPkt3 : Packet := eth 0x0800 ++ ipv4 4 (ttl := 32) ++ ipv4 4 (ttl := 32) ++ ipv4 6 ++ tcp 12345 80 ++ payload 5
+vector quantMachineRangeTwo := {
+  id := "quant-machine-range-two", ast := { layers := [P "eth", ipv4Range 1 2, P "tcp"] }, packet := ipipPkt,
+  expected := .accept [], note := "two ipv4 headers, each with its own length" }
+vector quantMachineRangeThree := {
+  id := "quant-machine-range-three", ast := { layers := [P "eth", ipv4Range 1 2, P "tcp"] }, packet := ipipPkt3,
+  expected := .reject, note := "greedy: the third ipv4 is where tcp is expected (D-002)" }
+vector quantMachineExactUnderRun := {
+  id := "quant-machine-exact-under-run", ast := { layers := [P "eth", ipv4Range 2 2, P "tcp"] },
+  packet := eth 0x0800 ++ ipv4 6 ++ tcp 12345 80 ++ payload 5, expected := .reject, note := "one header where two are required" }
+vector quantMachinePredFirstFails := {
+  id := "quant-machine-pred-first-fails", ast := { layers := [P "eth", ipv4Range 1 2 [.cmp ⟨[("ttl", none)]⟩ .eq (.int 64)], P "tcp"] },
+  packet := ipipPkt, expected := .reject, note := "the outer header (ttl 32) fails the predicate" }
+vector quantMachinePredSecondFails := {
+  id := "quant-machine-pred-second-fails", ast := { layers := [P "eth", ipv4Range 1 2 [.cmp ⟨[("ttl", none)]⟩ .eq (.int 32)], P "tcp"] },
+  packet := ipipPkt, expected := .reject, note := "the inner header (ttl 64) fails the predicate: every instance is checked" }
+vector quantMachineWhereLast := {
+  id := "quant-machine-where-last", ast := { layers := [P "eth", ipv4Range 1 2 [] (some "o"), P "tcp"],
+                                             cond := some (.arith (.field ⟨[("o", none), ("ttl", none)]⟩) .eq (.const 64)) },
+  packet := ipipPkt, expected := .accept [], note := "the reference reads the last instance (inner ttl 64)" }
+vector quantMachineWhereNotFirst := {
+  id := "quant-machine-where-not-first", ast := { layers := [P "eth", ipv4Range 1 2 [] (some "o"), P "tcp"],
+                                                  cond := some (.arith (.field ⟨[("o", none), ("ttl", none)]⟩) .eq (.const 32)) },
+  packet := ipipPkt, expected := .reject, note := "the outer header's ttl is not what the reference reads" }
 vector hostL3Root := {
   id := "host-l3-ipv4-root", host := .cgroup_skb_entry, ast := { layers := [P "ipv4", P "tcp"] },
   packet := l3Pkt, expected := .accept [] }
@@ -477,6 +505,7 @@ def chainVectors : List Vector := [
   absentConsecutiveEthertype, absentConsecutiveSelfValid, absentConsecutiveMplsOnly, absentConsecutiveNeither, absentConsecutiveArp, quantFirstOptional,
   altFirst, altSecond, altAfterVxlan6, altAfterVxlan4, altNone, altFirstPredFails, altRoot, altNoCheck,
   hostTcExitVlanOpt, hostTcExitVlanMandatory, hostTcWireVlanMandatory, hostTcWireVlanMandatoryUntagged, hostTcWireVlanTci, hostTcWireVlanTciMiss, hostTcWireVlanWhere, hostTcWireUntaggedChainOnTagged, hostTcWireQinqVlan, hostTcWireVlanAlt, hostTcVlanMandatory, hostTcVlanAlt, hostTcVlanAltSecond, hostTcQinqVlan, hostTcQinqMandatory, hostTcQinqOpt, hostTcInnerVlan, hostTcInnerVlanTci, hostTcInnerVlanPred, hostTcQinqOptVlan, hostTcOuterAndInner, hostTcInnerLabel, hostTcOuterLabelRead,
-  hostTcMixedAlt, hostTcVlanRoot, hostL3InnerVlan, hostTcVlanOpt, hostTcOuterBracketAbsent, hostTcOuterBracketCTag, hostTcOuterBracketCTagMiss, hostL3Root, hostL3EthRoot]
+  hostTcMixedAlt, hostTcVlanRoot, hostL3InnerVlan, hostTcVlanOpt,
+  quantMachineRangeTwo, quantMachineRangeThree, quantMachineExactUnderRun, quantMachinePredFirstFails, quantMachinePredSecondFails, quantMachineWhereLast, quantMachineWhereNotFirst, hostTcOuterBracketAbsent, hostTcOuterBracketCTag, hostTcOuterBracketCTagMiss, hostL3Root, hostL3EthRoot]
 
 end Kunai
