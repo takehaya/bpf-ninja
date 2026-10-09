@@ -50,7 +50,7 @@ accept 後の書き出しは、tracing の `captureWithRingbuf` と XDP-native �
 - reserve サイズはコンパイル時定数でなければ verifier が通りません。だから常に `int32(metadataSize + maxCapLen)` を即値で渡し、レジスタ由来の可変サイズは使いません。実データ長は metadata の `caplen` フィールドで伝えます。
 - reserve+submit にしているのは memcpy を 1 回減らすためです。`bpf_ringbuf_output` は内部でデータバッファをスロットへ memcpy しますが、reserve したスロットへ直接書けばその一段を省けます。
 
-> snaplen にあたる `maxCapLen` は kunai 側が決めます。`capture N` 句があればその長さを使い、`where` 節が参照するフィールドのオフセットから必要な最小プレフィックスを推論します。無指定なら 0 を返して host 側の `DefaultCapLen` である 1500B にフォールバックします。この処理は `pkg/kunai/codegen/capture.go` にあります。CLI の `--snaplen` で上書きもできます。
+> snaplen にあたる `maxCapLen` は kunai 側が決めます。`headers+N` や `absolute N` のような `capture` 句があればその長さを使います。`capture` 句が無ければ 0 を返し、host 側の `DefaultCapLen` である 1500B にフォールバックします。`where` 節が参照するフィールドのオフセットから推論する最小プレフィックスは filter の scratch 読み出しの大きさを決めるだけで、`maxCapLen` には影響しません。この処理は `pkg/kunai/codegen/capture.go` にあります。CLI の `--snaplen` で上書きもできます。
 
 ## on-wire 形式と RawSample レイアウト
 

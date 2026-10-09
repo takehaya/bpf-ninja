@@ -157,7 +157,7 @@ filter が読めるのはパケットの先頭 512 byte (`codegen.ScratchBufSize
 
 - `?` / `{0,1}` の layer (`eth/vlan?/ipv4/tcp where vlan.tci == 100`): layer が無いパケットでは、その field を含む atom は **false** になります (`==` も `!=` も)。「無い、または 100 でない」は `not (vlan.tci == 100)` と書きます。
 - `{n,m>1}` / `+` / `*` の layer は複数 header にマッチしうるので、素の proto 名では ambiguous エラーになります。`@label` を付けると**最後にマッチした header** を指します (`eth/mpls@m{1,8}/ipv4/tcp where m.label == 7`)。
-- 量化 layer の後ろの layer (`eth/vlan?/ipv4/tcp where ipv4.ttl == 64`) は普通に参照できます。offset は実行時に解決されます (実行時 offset で参照できるのは chain の先頭から 7 層目までで、8 層目以降は `ErrNotImplemented`)。
+- 量化 layer の後ろの layer (`eth/vlan?/ipv4/tcp where ipv4.ttl == 64`) は普通に参照できます。offset は実行時に解決されます。実行時 offset を持てる layer の数に固定の上限はありません。ただし実行時 offset、aux の位置、alternation の member 番号、`options.valid` の結果を置く stack 上の領域は filter 全体で 36 slot なので、これに収まらない filter は `ErrNotImplemented` になります。
 - alternation の member (`eth/(ipv4|ipv6)/tcp where ipv4.ttl == 64`、label なら `(ipv4@a|ipv6) where a.ttl == 64`): 別の member がマッチしたパケットでは、その field を含む atom は **false** になります (`?` の layer が無い場合と同じ扱い)。member ごとの条件は `or` で並べます (`where ipv4.ttl == 64 or ipv6.hop_limit == 64`)。
 - `any` / `all` の対象 stack を持つ layer が無いときは、どちらも false です (空 stack の場合とは違います)。
 
@@ -303,7 +303,7 @@ codegen が enforce する MVP 制約は次のとおりです。
 同じ protocol が 2 段以上出てくると `proto.field` では曖昧になります。`@name` で明示できます。
 
 ```
-eth/ipv4@outer/udp/gtp/ipv4@inner/tcp where outer.dst == 0xc0a80101 and inner.dport == 443
+eth/ipv4@outer/udp/gtp/ipv4@inner/tcp where outer.dst == 0xc0a80101 and inner.ttl == 64
 ```
 
 ラベル名は英数字と `_` です。`XDP_*` 等の予約語は使えません。MVP では 1 つの protocol あたり最大 2 ラベルです。
@@ -363,7 +363,7 @@ resolver / parser が出す主要なエラーパターンを示します。詳�
 
 ```
 $ bpf-ninja -i eth0 'eth/ipv4/tcp where tcp.dport > 99999'
-1:30: value 99999 does not fit in bit<16> (in arithmetic context)
+1:32: value 99999 does not fit in bit<16> (in arithmetic context)
 ```
 
 `tcp.dport` は `bit<16>` field なので、99999 は narrow できません。`> 65535` に書き直すか、より広い field を使います。
@@ -381,7 +381,7 @@ $ bpf-ninja -i eth0 'eth/ipv6/tcp where ipv6.src == 18446744073709551616'
 
 ```
 $ bpf-ninja -i eth0 'eth/ipv4[src==10.0.0.5/24]/tcp'
-1:14: CIDR "10.0.0.5/24" has host bits set; network would be 10.0.0.0/24
+1:15: CIDR "10.0.0.5/24" has host bits set; network would be 10.0.0.0/24
   (suggestion: 10.0.0.0/24 for the subnet, or 10.0.0.5/32 for the single host)
 ```
 
@@ -391,7 +391,7 @@ CIDR は boundary 整列した network address を要求します。`10.0.0.0/24
 
 ```
 $ bpf-ninja -i eth0 'eth/ipv4/tcp where tcp.dport / 0 == 1'
-1:33: division by zero
+1:30: division by zero
 ```
 
 書き間違いを防ぐため resolver が reject します。runtime に divisor が 0 の場合は BPF の既定で `0` が返ります。
@@ -849,17 +849,17 @@ sudo bpf-ninja set schema /sys/fs/bpf/sids     # dst  ipv6  offset 0
 
 set の value すなわち tag を使って、マッチしたパケットを tag ごとに別々の pcap へ振り分けられます。`-w out.pcap` に `--split-by-tag` を足すと、tag=1 に当たったパケットは `out.1.pcap`、tag=2 は `out.2.pcap` へ流れます。拡張子の手前に tag を差し込む形なので、`out.pcap` が `out.1.pcap` になります。
 
-購読者ごとに tag を分けて入れておく例が次のものです。
+GTP-U トンネルの TEID ごとに tag を分けて入れておく例を次に示します。
 
 ```bash
-PIN=/sys/fs/bpf/subs
-sudo bpf-ninja set create $PIN --key "imsi:u64"
-sudo bpf-ninja set add    $PIN imsi=999990000000001 tag=1
-sudo bpf-ninja set add    $PIN imsi=999990000000777 tag=2
+PIN=/sys/fs/bpf/tunnels
+sudo bpf-ninja set create $PIN --key "teid:u32"
+sudo bpf-ninja set add    $PIN teid=0x1000 tag=1
+sudo bpf-ninja set add    $PIN teid=0x2000 tag=2
 
-sudo bpf-ninja -i eth0 --mode xdp --set "subs=$PIN" \
+sudo bpf-ninja -i eth0 --mode xdp --set "tunnels=$PIN" \
   --split-by-tag -w out.pcap \
-  'eth/ipv4/udp/gtp[imsi in @subs]'
+  'eth/ipv4/udp/gtp[teid in @tunnels]'
 ```
 
 出し分けはロックフリーの per-CPU 書き込みをそのまま使うため、キャプチャ中はシャードごとに `out.cpu0.1.pcap` や `out.cpu1.2.pcap` のような live ファイルが生えます。これらは 1 秒ごとに flush するので、実行中でも `cp` や tcpdump や Wireshark で取り出せます。map から entry を消してその tag への書き込みが止まれば、約 1 秒で対応するファイルがディスク上で完結します。
@@ -889,12 +889,12 @@ sudo bpf-ninja merge --base out.pcap --fexit  # --mode exit で録った場合
 完了判定は無通信の秒数では決めません。削除を検出したtagをcapture専用mapで停止し、実行中のBPF処理が完了するまで待ってから各ringのproducer位置を記録します。全shardがその位置まで読み、writer登録・書き込みを終えたことを確認して合算します。別tagの保存が遅れている場合も、未処理レコードを残したまま完了通知を出しません。停止処理を始めたtagは同一capture中に再利用できず、set entryを再追加しても再開しません。停止tagは最大65,536個保持し、上限や同期処理の失敗はエラーとして報告します。
 
 ```bash
-sudo bpf-ninja -i eth0 --mode xdp --set "subs=$PIN" \
+sudo bpf-ninja -i eth0 --mode xdp --set "tunnels=$PIN" \
   --split-by-tag --finalize-on-del -w out.pcap \
-  'eth/ipv4/udp/gtp[imsi in @subs]'
+  'eth/ipv4/udp/gtp[teid in @tunnels]'
 
 # 別シェルから: ジョブ終了 = entry を消してファイルを待つ
-sudo bpf-ninja set del $PIN imsi=999990000000001
+sudo bpf-ninja set del $PIN teid=0x1000
 until [ -f out.1.pcap ]; do sleep 0.1; done
 ```
 
@@ -908,13 +908,13 @@ until [ -f out.1.pcap ]; do sleep 0.1; done
 出力バイト上限は entry (すなわち tag) 単位で set map に持たせます。`set add` に `max-bytes=N` を付けると、その tag の出力 (per-CPU shard の合計) が N に達した時点でその tag への書き込みだけが止まり、他の tag はそのまま録り続けます。上限は entry ごとに別々の値にでき、省略または 0 なら無制限です。ジョブごとに予算が違う多重化運用がフラグ 1 個では表現できなかったため、v0.22.0 の `--max-bytes-per-tag` フラグはこの方式に置き換えて廃止しました。
 
 ```bash
-sudo bpf-ninja set add $PIN imsi=999990000000001 tag=1 max-bytes=104857600
-sudo bpf-ninja set add $PIN imsi=999990000000777 tag=2 max-bytes=10485760
-sudo bpf-ninja set add $PIN imsi=999990000000042 tag=3      # 上限なし
+sudo bpf-ninja set add $PIN teid=0x1000 tag=1 max-bytes=104857600
+sudo bpf-ninja set add $PIN teid=0x2000 tag=2 max-bytes=10485760
+sudo bpf-ninja set add $PIN teid=0x3000 tag=3      # 上限なし
 
-sudo bpf-ninja -i eth0 --mode xdp --set "subs=$PIN" \
+sudo bpf-ninja -i eth0 --mode xdp --set "tunnels=$PIN" \
   --split-by-tag --exit-when-capped -w out.pcap \
-  'eth/ipv4/udp/gtp[imsi in @subs]'
+  'eth/ipv4/udp/gtp[teid in @tunnels]'
 ```
 
 - 上限のカウント対象は pcap-ng の packet block バイトで、ファイルごとの固定ヘッダは含みません。判定は ringbuf バッチ単位なので、shard あたり最大 1 バッチぶんの超過があり得ます。
@@ -923,7 +923,7 @@ sudo bpf-ninja -i eth0 --mode xdp --set "subs=$PIN" \
 - `set add` で既存 entry を更新するとき、`max-bytes=` を**省略しても既存の上限は維持されます** (state と同じ扱い)。上限を外すには明示的に `max-bytes=0` を指定します。tag を変えた更新は新しいジョブへの割り当てとみなし、state も上限もこの `set add` の指定どおりに始まります。
 - 上限に達した tag の live ファイルは閉じてファイルディスクリプタを解放します。到達を検知した CPU の分は即時に、他の CPU の分は次にその tag のパケットを見た時点で閉じます。
 - `--exit-when-capped` を足すと、**上限を持つ全 entry** が到達した時点で自動的に exit 0 します。上限なしの entry と tag 0 (set 不一致) は判定に参加しません。通常のシャットダウンと同じく per-CPU ファイルの合算まで行うので、待っている呼び出し側はそのまま完成した `out.<tag>.pcap` を回収できます。前回実行の残りで最初から全 entry が capped/finalized の map に対して起動した場合は、録るものが無いので即座に exit 0 します。
-- `--finalize-on-del` と併用すると、上限に達した tag は entry の `state` が `capped` に書き換わってカーネル側のマッチも止まり、そのまま静止 → 合算の経路に入って `out.<tag>.pcap` が生成され、最後に `state=finalized` になります。**`--exit-when-capped` の exit はこの finalize の完了を待つ**ので、プロセスが exit 0 した時点で上限付き全 tag の ack ファイルと `state=finalized` が揃っていることが保証されます (cap 到達から exit まで数秒かかります)。entry 自体は消えないので、`set list` で「どのキー (imsi 等) のジョブがどこまで進んだか」を追えます。`--finalize-on-del` 無しの場合は state に触らず、従来通りユーザー空間で捨てるだけです。
+- `--finalize-on-del` と併用すると、上限に達した tag は entry の `state` が `capped` に書き換わってカーネル側のマッチも止まり、そのまま静止 → 合算の経路に入って `out.<tag>.pcap` が生成され、最後に `state=finalized` になります。**`--exit-when-capped` の exit はこの finalize の完了を待つ**ので、プロセスが exit 0 した時点で上限付き全 tag の ack ファイルと `state=finalized` が揃っていることが保証されます (cap 到達から exit まで数秒かかります)。entry 自体は消えないので、`set list` で「どのキー (teid 等) のジョブがどこまで進んだか」を追えます。`--finalize-on-del` 無しの場合は state に触らず、従来通りユーザー空間で捨てるだけです。
 - state は pinned map に**プロセスを跨いで残ります**。capped/finalized の entry は次のキャプチャでもマッチしないので、同じコマンドを再実行しても該当 tag は何も録れません。キーを新しいジョブとして使い直すには `set add ... tag=<新しい番号>` で tag を振り直します (同じ tag への復帰手段は意図的にありません)。
 - キャプチャプロセスと `set add` は map の value を無同期で読み書きします (last-writer-wins)。state の書き込みが競合で失われても毎秒の巡回で自動修復されますが、`set add` の上限変更がまれに 1 回失われる可能性はあります (再実行すれば反映されます)。
 - プロセス全体の上限は `--max-bytes` フラグです。こちらは `--split-by-tag` 無しでも使えて、到達すると `-c` と同じ経路でキャプチャ全体を止めて exit 0 します。逆に、entry に `max-bytes` を付けても `--split-by-tag` 無しのキャプチャでは強制されません (起動時に警告を出します)。

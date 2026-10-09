@@ -576,7 +576,7 @@ action atom (`action == NAME`) では、codegen は `caps.Lang.ActionFetcher.Emi
 
 ### 4.7 capture 節
 
-`headers+N` の N は静的に計算します。chain を含む filter ではコンパイル時に長さを確定できないため reject します。`captureWithXdpOutput(eventsFD, isFexit, maxCapLen)` の `maxCapLen` 引数として wrapper に渡します。per-capture の `where` は filter 全体の `where` と AND 合成します。
+`headers+N` の長さは compile 時に静的に計算します。量化 layer を含む filter では、量化 layer が最大数マッチした場合の長さを上限として使います。`captureWithXdpOutput(eventsFD, isFexit, maxCapLen)` の `maxCapLen` 引数として wrapper に渡します。per-capture の `where` は filter 全体の `where` と AND 合成します。
 
 `CaptureInfo.MaxCapLen` の解釈では、0 は analyser bail と句なしの両方を含む sentinel で、host 側 fallback を意味します。bpf-ninja host は libpcap 既定の `DefaultCapLen = 1500` を埋めます。つまり `capture` 句を書かなければ tcpdump 互換の full packet capture になります。これは設計上重要な点です。`tcp where dport==443` と書けば payload まで取れるという principle of least surprise を満たすため、`inferMinCapLenFromWhere` の値は `MaxCapLen` には流さず、in-kernel scratch read sizing である `FilterMinPrefix` にのみ流します。ringbuf 予約を縮めて throughput を上げたい場合は `capture headers` 等を明示します。R32 bench script `benchmark/pipelines/r32_dynamic_scratch.sh` はその明示を行っています。
 
@@ -747,7 +747,6 @@ vocab 側は `KUNAI_<SELF>_<PARENT>_<FIELD>` 系の dispatch const で、どこ�
 ```
 ; パターン B: 拡張ヘッダ繰り返し
 eth/ipv4/udp/gtp/ipv4/tcp where any(gtp.exts.ext_type == 0xc0)
-eth/ipv4/udp/gtp/ipv4/tcp where gtp.exts.count >= 1
 eth/ipv6/tcp where any(ipv6.exts.next_header == 44)              ; Fragment ext あり
 
 ; パターン C: wrapper + 内部項目列
@@ -1138,11 +1137,10 @@ aux への access は dot path で統一しています。chain element も同�
 | 単発 aux の存在 | `<proto>.<aux>.exists` | `gtp.opt.exists`, `tcp.options.SACK_PERM.exists` |
 | stack/chain の index | `<proto>.<aux>[N].<field>` | `srv6.segments[0].addr == fc00::1` |
 | stack/chain の動的 index | `<proto>.<aux>[<expr>].<field>` | `srv6.segments[srv6.last_entry].addr` |
-| 集合 ∃ | `any(<expr>)` | `any(srv6.segments.addr == X)`, `any(vlan.id == 100)` |
-| 集合 ∀ | `all(<expr>)` | `all(srv6.segments.addr in fc00::/16)` |
-| 件数 | `<proto>.<aux>.count` | `srv6.segments.count >= 3` |
+| 集合 ∃ | `any(<expr>)` | `any(srv6.segments.addr == X)` |
+| 集合 ∀ | `all(<expr>)` | `all(srv6.segments.addr == fc00::/16)` |
 
-`any` / `all` は関数形です。bracket 形 `vlan+[id == 100]` は、∀ デフォルトを維持するため、`all(vlan.id == 100)` の syntax sugar として残します。
+`any` / `all` は where 節の関数形で、対象は aux header stack だけです。`vlan+` のような量化 layer は対象になりません。`vlan[tci == 100]+` のような量化 layer の bracket 条件は、マッチした各 header に掛かります。stack の件数を返す accessor はありません。
 
 ### 6.7 codegen 上の扱い (概要)
 
@@ -1152,7 +1150,6 @@ aux への access は dot path で統一しています。chain element も同�
 | stack aux への [N] index (静的) | parse-time に `0 <= N < cap` を check、runtime は parser の state graph から算出した offset で field load |
 | stack aux への [parent.field] (動的) | runtime に bound check (`<expr> < count`) + dynamic offset 計算 |
 | `any(P)` / `all(P)` | bpf_loop 経由で per-iter P 評価。any: 1 個目の match で R0=1 早期 break、all: 1 個目の miss で reject |
-| `count` | wrapper の field 由来 (SRv6 の last_entry+1 等) または stack walk 結果 |
 
 implementation 詳細は、`pkg/kunai/codegen/parser_state.go` の state graph emit ロジックと `parser_loop.go` の bpf_loop callback emit を参照してください。
 
@@ -1167,9 +1164,9 @@ implementation 詳細は、`pkg/kunai/codegen/parser_state.go` の state graph e
 | Predicate | `field in [...]` は整数と範囲 `lo..hi` の alternatives 実装済 (F7、ホスト順で比較) / IPv4/IPv6/MAC/CIDR alternatives は scope outside / `bit<>64` の field に対する `in` は未対応 (今のところ ≤64-bit のみ wired) / `field has FLAG` は F6 bitwise `&` で superseded (`tcp.flags & 0x12 == 0x12` で同等表現) |
 | Where | 算術ネスト最大 16 段 (`maxArithDepth`、10b で 8→16 bump) / where が alt member の field を参照するとき (`where ipv6.src == fe80::1`) は、alternation が matched-member slot に記録した member の番号を atom の前で確かめる (別の member なら atom は false) / `in` は bracket predicate `[...]` 専用で、where 句では `==` の `or` chain で代替 (parser が targeted hint を返す) |
 | Aux × literal | landed (B-3 commit 6547a42): IPv4/IPv6/MAC/CIDR literal を aux 経由で比較可能。例: `srv6.segments[0].addr == fc00::/16`、`where ipv4.options.RR.addrs[0].addr == 10.0.0.1` |
-| Capture | `capture f1, f2` フィールド列 不可 / 量化 layer (`+`/`*`/`{n,m}`) を含む filter で `headers+N` 不可。het-alt 越えの capture は max-alt 上界丸めで動作 |
+| Capture | `capture f1, f2` フィールド列 不可 / 量化 layer を含む filter の `headers+N` は、量化 layer が最大数マッチした場合の長さを上限にする。het-alt 越えの capture は max-alt 上界丸めで動作 |
 | Alternation | alt 数 2-4 (`altCountCap`) / heterogeneous size + diverged dispatch 対応済 (P3-12) / nested alt は resolver flatten (P3-13) / quantifier 付き内側 alt (`(a\|b)?`) は reject / 先頭不可 |
-| Layer 数 | runtime entry slot と dynamic aux slot は 1 つの stack plan から必要な分だけ割り当てる (`planStack`)。上限は合計 36 slot (512 byte stack の底) で、層数そのものの上限は無い |
+| Layer 数 | runtime entry slot、dynamic aux slot、matched-member slot、`.options.valid` の slot は 1 つの stack plan から必要な分だけ割り当てる (`planStack`)。上限は合計 36 slot (512 byte stack の底) で、層数そのものの上限は無い |
 | Parser machine (vocab 著者向け) | select key 幅 ≤8 bit / select key 本数 ≤3 / variable-trail scale は 2 冪のみ / self-loop 反復上限あり (vocab の `<SELF>_MAX_DEPTH` で declare) |
 | Self-validation | parser-block 自検証 (`transition select(field) { v: accept; default: reject; }`) のみ。旧 SANITY const family は撤廃 (legacy 名は loud-fail で拒否) |
 | Vocab | 1 protocol あたり最大 2 ラベル |
