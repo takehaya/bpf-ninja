@@ -41,8 +41,9 @@ type accPlan struct {
 	mask  uint64 // OR of (1<<bit) for every atom
 	// valid is set when the conjunction also holds `<layer>.options.valid`
 	// (spec D-029): the mask check then also requires the layer's
-	// validity flag. A malformed region zeroes the accumulator too, so
-	// the option atoms are false there either way.
+	// validity flag. The malformed landing zeroes the accumulator too, so
+	// the flag check is defensive: it keeps the rule from depending on
+	// that reset.
 	valid bool
 }
 
