@@ -965,6 +965,23 @@ alt(L̄) は chain の先頭ではない
 Γ ⊢ ⟨L̄, w?, c̄⟩ : FilterOK
 ```
 
+#### host によって変わる規則
+
+host の `vlanInMetadata` が真の場合、つまり tc / cgroup-skb / netfilter のように kernel が外側の VLAN tag を skb metadata に移す host では、外側の tag の位置にある `vlan` / `qinq` layer は省略可能でなければなりません。外側の tag の位置とは、chain の root が `eth` で、root からその layer までの間に tag しか無い位置です。tag は `vlan` と `qinq` で、tag だけから成る alternation も tag として数えます。この判定は chain の protocol 名だけを見ます。
+
+```
+[T-Layer-OuterTag]                              ; D-008
+H.vlanInMetadata,  p ∈ {vlan, qinq}
+L_0 = eth,  ∀ j ∈ (0, i). L_j は tag だけから成る
+L_i (alternation の member を含む) の quantifier の下限 n ≥ 1
+─────────────────────────────────────────────
+Γ ⊢ L_i : 型エラー
+```
+
+Lean では `Check.lean` の `outerTagPos` と `checkProtoShape` が対応し、Go は `codegen.ErrVlanInMetadata` を返します。トンネルの内側の tag と、root が `eth` でない chain には掛かりません。bpf-ninja の tc host に `--tc-vlan-reinsert` を付けると、spec の host は `tc_wire_entry` / `tc_wire_exit` になります。この host では `vlanInMetadata` が偽なので、この規則は掛かりません。
+
+Go はさらに、省略可能な外側の tag に対する bracket predicate と、where / capture での読み取りを `ErrNotImplemented` で断ります。tag が byte 列に無いためです。経緯は `spec/lean/DECISIONS.md` の D-008 と追記 1〜5 にあります。
+
 ## 13. 操作的意味論 (Operational Semantics)
 
 big-step (`⇓`) 形式で filter 評価を定義します。1 packet ごとに `accept` / `reject` を判定します。
@@ -1072,8 +1089,9 @@ quantifier `q` に対して、`L(q)` の reduction を q-iteration が成功し�
 ```
 [E-Quant-Optional]                            ; q = ?
 proto(p, ?, π̄) は最大 1 回:
-  case A:  ⟨L(1), σ⟩ ⇓_P σ' ✓                ⇒  ⟨L(?), σ⟩ ⇓_P σ' ✓
-  case B:  parent_dispatch(p, σ, P) = miss   ⇒  ⟨L(?), σ⟩ ⇓_P σ ✓        ; skip
+  case A:  ⟨L(1), σ⟩ ⇓_P σ' ✓  かつ  ended(p, σ')   ⇒  ⟨L(?), σ⟩ ⇓_P σ' ✓
+  case B:  parent_dispatch(p, σ, P) = miss          ⇒  ⟨L(?), σ⟩ ⇓_P σ ✓        ; skip
+  case C:  ⟨L(1), σ⟩ ⇓_P σ' ✓  かつ  ¬ended(p, σ')  ⇒  ⟨L(?), σ⟩ ⇓_P ✗        ; D-024
 
 
 [E-Quant-Range-Step {n,m}]                    ; q = {n,m},  n ≤ m
@@ -1091,6 +1109,13 @@ n ≤ k ≤ m
 ⟨L({n,m}), σ⟩ ⇓_P ✗
 
 
+[E-Quant-Range-Fail-Overrun {n,m}]            ; D-024
+Range-Step の前提が k = m ≥ 1 で成り立つ
+¬ended(p, σ_m)
+─────────────────
+⟨L({n,m}), σ⟩ ⇓_P ✗
+
+
 [E-Quant-Range-Fail-Extract {n,m}]
 ∃ i < m.  ∀ j < i. ⟨L(1), σ_j⟩ ⇓_P σ_{j+1} ✓
 parent_dispatch(p, σ_i, P) = ok   かつ   ⟨L(1), σ_i⟩ ⇓_P ✗      ; bounds 越え、または predicate 失敗
@@ -1102,11 +1127,13 @@ parent_dispatch(p, σ_i, P) = ok   かつ   ⟨L(1), σ_i⟩ ⇓_P ✗      ; bo
 [E-Quant-Star]    ≡  L({0, m_chain})
 ```
 
-ここで `m_chain` は、vocab + chain 全体形の静的 chain 解析から導かれる iteration 上限です。実装は `pkg/kunai/codegen/` の `chainCap` 計算で同等です。
+ここで `m_chain` は protocol の vocab が宣言する `<SELF>_MAX_DEPTH` です。`mpls` では 8 です。Lean の `Eval/Layer.lean` の `evalProtoLayer` は `spec.maxDepth` を使い、`chainCap` を超える値を illTyped にします。
+
+`ended(p, σ)` は、p が MPLS の s-bit のようなスタックの終端を示す印を持つ protocol のとき、σ で最後に取り出した p の header がその印を持つことを表します。終端の印は vocab の `MPLS_CHAIN_END_S` のような `<SELF>_CHAIN_END_<FIELD>` const で宣言します。印を持たない protocol では常に真です。上限に達して反復を止めた時点で終端の印が無ければ、スタックは quantifier が許すより深いので ✗ になります。dispatch の miss で止まった場合は検査しません。MPLS では次の label への dispatch 自体が s-bit = 0 を要求するので、miss で止まったスタックは既に終端しています。`?` は `{0,1}` と同じ要求を持ちます。根拠は `spec/lean/DECISIONS.md` の D-024 で、Lean では `chainEnded` / `iterate` / `extractOpt` が対応します。
 
 反復を止めるのは parent_dispatch の miss だけです。dispatch が一致したうえで L(1) が失敗した場合 (bounds 越え、bracket predicate の不成立) は、`?` の case B と同じく skip にはならず、layer 全体が ✗ になります (`spec/lean/DECISIONS.md` D-001, D-005)。したがって `L?` ≡ `L{0,1}` です (`spec/lean/Kunai/Laws.lean: opt_eq_range`)。
 
-実装対応としては、`+` / `*` / `{n,m>4}` は `pkg/kunai/codegen/loop_*.go` で `bpf_loop` + bpf2bpf callback として emit し、`{n,m≤4}` は静的に unroll します。
+実装対応としては、`+` / `*` / `{n,m>4}` は `pkg/kunai/codegen/bpfloop.go` で `bpf_loop` + bpf2bpf callback として emit し、`{n,m≤4}` は `chain.go` で静的に unroll します。どちらの経路も上限に達したところで終端の印を確かめます。
 
 ### 13.6 Capture 評価
 
