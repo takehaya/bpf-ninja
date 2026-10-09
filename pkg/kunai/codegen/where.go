@@ -566,7 +566,6 @@ func pushBound(spec *vocab.ProtocolSpec, stack string) int {
 	return spec.StackPushBound(stack)
 }
 
-
 // genQuantIterBody clones the inner condition with the iterator
 // FieldRef rebound to a static index for this iteration, then emits
 // it. The fail target depends on anySemantics:
@@ -1579,34 +1578,97 @@ func (c *whereCtx) genArithField128Load(f *ir.FieldRef) (asm.Instructions, error
 	if f == nil || f.Field == nil {
 		return nil, fmt.Errorf("codegen: bit<128> field load with nil ref")
 	}
-	if f.Aux != nil {
-		return nil, fmt.Errorf("%w: bit<128> arith on aux field is not yet wired", ErrNotImplemented)
-	}
 	if f.Field.Bits != 128 {
 		return nil, fmt.Errorf("codegen: bit<128> path called with %d-bit field", f.Field.Bits)
+	}
+	if f.Aux != nil {
+		return c.genArithAuxField128Load(f)
 	}
 	anchor, err := c.layerAnchorFor(f.Layer)
 	if err != nil {
 		return nil, err
 	}
-	bitOff, _, err := findFieldByteOffset128(f.Layer.Spec, f.Field.Name)
+	byteOff, _, err := findFieldByteOffset128(f.Layer.Spec, f.Field.Name)
 	if err != nil {
 		return nil, err
 	}
-	var insns asm.Instructions
-	// High half load → R3, then bswap.
-	insns = append(insns, emitFieldLoad(anchor, bitOff, asm.DWord)...)
-	insns = append(insns, asm.HostTo(asm.BE, asm.R3, asm.DWord))
-	// Stash high to a kunai-owned scratch slot (R6/R7/R8 belong to
-	// the host per ABI doc — using them here would let the host's
-	// pointers leak past the filter).
-	insns = append(insns, asm.StoreMem(asm.R10, arithStackSlot(4), asm.R3, asm.DWord))
-	insns = append(insns, emitFieldLoad(anchor, bitOff+8, asm.DWord)...)
-	insns = append(insns, asm.HostTo(asm.BE, asm.R3, asm.DWord))
-	// Move low to R5; reload the stashed high into R3.
-	insns = append(insns, asm.Mov.Reg(asm.R5, asm.R3))
-	insns = append(insns, asm.LoadMem(asm.R3, asm.R10, arithStackSlot(4), asm.DWord))
-	return insns, nil
+	return arith128Halves(func(delta int) asm.Instructions {
+		return emitFieldLoad(anchor, byteOff+delta, asm.DWord)
+	}), nil
+}
+
+// arith128Halves assembles a 128-bit load from two DWord loads into R3:
+// load(0) reads the high half, load(8) the low half. Each half is
+// byte-swapped to host order; the high half waits in a kunai-owned
+// scratch slot (R6/R7/R8 belong to the host per the ABI doc — using
+// them here would let the host's pointers leak past the filter) while
+// the low half is loaded and moved to R5, then it is reloaded into R3.
+func arith128Halves(load func(delta int) asm.Instructions) asm.Instructions {
+	insns := append(asm.Instructions{}, load(0)...)
+	insns = append(insns,
+		asm.HostTo(asm.BE, asm.R3, asm.DWord),
+		asm.StoreMem(asm.R10, arithStackSlot(4), asm.R3, asm.DWord),
+	)
+	insns = append(insns, load(8)...)
+	insns = append(insns,
+		asm.HostTo(asm.BE, asm.R3, asm.DWord),
+		asm.Mov.Reg(asm.R5, asm.R3),
+		asm.LoadMem(asm.R3, asm.R10, arithStackSlot(4), asm.DWord),
+	)
+	return insns
+}
+
+// genArithAuxField128Load is the aux-header case of genArithField128Load:
+// a 16-byte field of an extracted aux header (`srv6.segments[i].addr`)
+// into (R3=high, R5=low). The three addressing modes are those of
+// genArithFieldLoad: a dynamic-offset slot the parser machine recorded,
+// a runtime entry address (dynamic stack index, or a static index past
+// variable-length entries), or a constant offset from the layer anchor.
+// An absent entry or a failed gate makes the atom false (D-027).
+func (c *whereCtx) genArithAuxField128Load(f *ir.FieldRef) (asm.Instructions, error) {
+	if f.Aux.FieldBitWidth != 128 {
+		return nil, fmt.Errorf("codegen: bit<128> aux path called with %d-bit field %s.%s.%s", f.Aux.FieldBitWidth, f.Layer.Spec.Name, f.Aux.OutParam, f.Field.Name)
+	}
+	if slot, ok := c.dynamicOffsetSlotFor(f); ok {
+		byteOff, err := dynamicOffsetAuxByteOff(f)
+		if err != nil {
+			return nil, err
+		}
+		// Both halves re-read the slot: the first load's address
+		// arithmetic clobbers R5, which only has to hold the low half at
+		// the end.
+		return arith128Halves(func(delta int) asm.Instructions {
+			return emitDynamicAuxByteLoad(slot, byteOff+delta, asm.DWord, c.absent())
+		}), nil
+	}
+	anchor, err := c.layerAnchorFor(f.Layer)
+	if err != nil {
+		return nil, err
+	}
+	if needsEntryAddress(f) {
+		fieldByteOff, _, err := auxEntryFieldWindow(f)
+		if err != nil {
+			return nil, err
+		}
+		// R5 = entry start, the whole entry proved in bounds; the loads
+		// read R5-relative and the second overwrites R5 only after the
+		// low half is in R3.
+		addr, err := c.stackEntryAddress(f, anchor, c.absent())
+		if err != nil {
+			return nil, err
+		}
+		return append(addr, arith128Halves(func(delta int) asm.Instructions {
+			return asm.Instructions{asm.LoadMem(asm.R3, asm.R5, int16(fieldByteOff+delta), asm.DWord)}
+		})...), nil
+	}
+	fieldOff, err := auxStaticByteOffset(f.Aux)
+	if err != nil {
+		return nil, err
+	}
+	insns := emitAuxGating(f.Aux.Gating, anchor, c.absent())
+	return append(insns, arith128Halves(func(delta int) asm.Instructions {
+		return emitFieldLoad(anchor, fieldOff+delta, asm.DWord)
+	})...), nil
 }
 
 // genArithWithBits evaluates an arith expression into R3 (`depth` is the
@@ -2470,19 +2532,9 @@ func (c *whereCtx) absent() string {
 //     codegen time. Iterator indices are rebound to a static index
 //     by the surrounding any/all unroll before reaching this site.
 func (c *whereCtx) genDynamicOffsetAuxLoad(f *ir.FieldRef, slot int16) (asm.Instructions, error) {
-	if f.Aux.FieldBitOff%8 != 0 || f.Aux.FieldBitWidth%8 != 0 {
-		return nil, fmt.Errorf("%w: dynamic-offset aux field %s.%s not byte-aligned (bit-off %d, %d bits)", ErrNotImplemented, f.Layer.Spec.Name, f.Aux.OutParam, f.Aux.FieldBitOff, f.Aux.FieldBitWidth)
-	}
-	byteOff := f.Aux.FieldBitOff / 8
-	if f.Aux.OwnerOption != nil {
-		stack := f.Aux.Stack
-		if stack == nil {
-			return nil, fmt.Errorf("%w: owner-bound aux %q has no stack index — predicate codegen needs Static/Dynamic/Iterator", ErrNotImplemented, f.Aux.OutParam)
-		}
-		if !stack.IsStatic {
-			return nil, fmt.Errorf("%w: owner-bound aux %q with non-static index is not yet supported", ErrNotImplemented, f.Aux.OutParam)
-		}
-		byteOff += f.Aux.OffsetAfterOwner + int(stack.Static)*f.Aux.HeaderSize
+	byteOff, err := dynamicOffsetAuxByteOff(f)
+	if err != nil {
+		return nil, err
 	}
 	fieldBytes := f.Aux.FieldBitWidth / 8
 	size, err := asmSizeFor(fieldBytes)
@@ -2494,6 +2546,26 @@ func (c *whereCtx) genDynamicOffsetAuxLoad(f *ir.FieldRef, slot int16) (asm.Inst
 		insns = append(insns, asm.HostTo(asm.BE, asm.R3, size))
 	}
 	return insns, nil
+}
+
+// dynamicOffsetAuxByteOff is the field's byte offset from the recorded
+// option base (see genDynamicOffsetAuxLoad for the two addressing modes).
+func dynamicOffsetAuxByteOff(f *ir.FieldRef) (int, error) {
+	if f.Aux.FieldBitOff%8 != 0 || f.Aux.FieldBitWidth%8 != 0 {
+		return 0, fmt.Errorf("%w: dynamic-offset aux field %s.%s not byte-aligned (bit-off %d, %d bits)", ErrNotImplemented, f.Layer.Spec.Name, f.Aux.OutParam, f.Aux.FieldBitOff, f.Aux.FieldBitWidth)
+	}
+	byteOff := f.Aux.FieldBitOff / 8
+	if f.Aux.OwnerOption != nil {
+		stack := f.Aux.Stack
+		if stack == nil {
+			return 0, fmt.Errorf("%w: owner-bound aux %q has no stack index — predicate codegen needs Static/Dynamic/Iterator", ErrNotImplemented, f.Aux.OutParam)
+		}
+		if !stack.IsStatic {
+			return 0, fmt.Errorf("%w: owner-bound aux %q with non-static index is not yet supported", ErrNotImplemented, f.Aux.OutParam)
+		}
+		byteOff += f.Aux.OffsetAfterOwner + int(stack.Static)*f.Aux.HeaderSize
+	}
+	return byteOff, nil
 }
 
 // emitDynamicAuxByteLoad emits the canonical "load a byte at

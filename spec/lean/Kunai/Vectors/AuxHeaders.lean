@@ -445,8 +445,8 @@ vector geneveVersionOne := {
   expected := .reject, note := "a fault in the header itself (version 1), before the option region: rejects" }
 vector srv6SegWideLit := {
   id := "srv6-segments-wide-lit", ast := { layers := srv6L, cond := some (cmp (.field (seg (.nat 1))) .eq (.wide s2)) },
-  packet := srv6Two, expected := .accept [], goStatus := .notImplemented,
-  note := "128-bit arithmetic on an aux field is not wired in Go; an IPv6 literal works (srv6-segments-static)" }
+  packet := srv6Two, expected := .accept [],
+  note := "a 16-byte segment is an Int<128> operand like ipv6.dst; the same value as srv6-segments-static, written as int<128>(…)" }
 vector srv6Chain := {
   id := "srv6-chain", ast := { layers := srv6L }, packet := srv6Two, expected := .accept [] }
 vector srv6Static := {

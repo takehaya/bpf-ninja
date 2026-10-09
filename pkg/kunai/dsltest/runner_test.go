@@ -1422,3 +1422,47 @@ func TestSRv6RejectsNonSRHRouting(t *testing.T) {
 	pkt[ethIPv6PrefixSize+2] = 0
 	r.MustReject(t, pkt, "non-SRH routing_type=0 should not match")
 }
+
+// TestAuxStackSrv6SegmentsArith128 pins 128-bit arithmetic on an SRH
+// segment, the aux-field case of the Int<128> pipeline. A segment loads
+// like ipv6.dst (two swapped DWord halves) from its static offset, from a
+// runtime entry address, or on either side of ±. int<128>(…) carries the
+// value of fc00::2 (= 0xfc00 << 112 + 2).
+func TestAuxStackSrv6SegmentsArith128(t *testing.T) {
+	two := BuildSRv6(t, SRv6Opts{
+		Segments:        []net.IP{net.ParseIP("fc00::1"), net.ParseIP("fc00::2")},
+		InnerNextHeader: 6,
+	})
+	other := BuildSRv6(t, SRv6Opts{
+		Segments:        []net.IP{net.ParseIP("fc00::1"), net.ParseIP("fc00::3")},
+		InnerNextHeader: 6,
+	})
+	one := BuildSRv6(t, SRv6Opts{
+		Segments:        []net.IP{net.ParseIP("fc00::2")},
+		InnerNextHeader: 6,
+	})
+
+	wide := New(t, "eth/ipv6/srv6/tcp where srv6.segments[1].addr == int<128>(334965454937798799971759379190646833154)")
+	wide.MustMatch(t, two, "segments[1] == fc00::2 as int<128>")
+	wide.MustReject(t, other, "segments[1] == fc00::3")
+	wide.MustReject(t, one, "one segment: segments[1] is past the count, the atom is false (D-031)")
+
+	adjacent := New(t, "eth/ipv6/srv6/tcp where srv6.segments[0].addr + 1 == srv6.segments[1].addr")
+	adjacent.MustMatch(t, two, "fc00::1 + 1 == fc00::2")
+	adjacent.MustReject(t, other, "fc00::1 + 1 != fc00::3")
+
+	diff := New(t, "eth/ipv6/srv6/tcp where srv6.segments[1].addr - srv6.segments[0].addr == 2")
+	diff.MustMatch(t, other, "fc00::3 - fc00::1 == 2")
+	diff.MustReject(t, two, "fc00::2 - fc00::1 == 1")
+
+	// A runtime index: last_entry is 1 on the two-segment packets.
+	dyn := New(t, "eth/ipv6/srv6/tcp where srv6.segments[srv6.last_entry].addr - 1 == int<128>(334965454937798799971759379190646833153)")
+	dyn.MustMatch(t, two, "segments[last_entry] - 1 == fc00::1")
+	dyn.MustReject(t, other, "fc00::3 - 1 != fc00::1")
+
+	// A borrow across the 64-bit halves: fc00::2 - 3 is
+	// fbff:ffff:ffff:ffff:ffff:ffff:ffff:ffff, written as int<128>(…).
+	borrow := New(t, "eth/ipv6/srv6/tcp where srv6.segments[1].addr - 3 == int<128>(334965454937798799971759379190646833151)")
+	borrow.MustMatch(t, two, "fc00::2 - 3 borrows into the high half")
+	borrow.MustReject(t, other, "fc00::3 - 3 == fc00::0")
+}
