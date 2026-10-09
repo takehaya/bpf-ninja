@@ -1,6 +1,8 @@
 package codegen
 
 import (
+	"fmt"
+
 	"github.com/cilium/ebpf/asm"
 
 	"github.com/takehaya/bpf-ninja/pkg/kunai/ast"
@@ -37,6 +39,12 @@ type accPlan struct {
 	layer *ir.LayerInstance
 	atoms []accAtom
 	mask  uint64 // OR of (1<<bit) for every atom
+	// valid is set when the conjunction also holds `<layer>.options.valid`
+	// (spec D-029): the mask check then also requires the layer's
+	// validity flag. The malformed landing zeroes the accumulator too, so
+	// the flag check is defensive: it keeps the rule from depending on
+	// that reset.
+	valid bool
 }
 
 // buildAccPlan inspects a merged where condition and the program's
@@ -56,7 +64,15 @@ func buildAccPlan(where *ir.Condition, qo queriedOptions) *accPlan {
 
 	plan := &accPlan{}
 	seen := map[*vocab.AuxLayout]bool{}
+	var validOn []*ir.LayerInstance
 	for _, leaf := range leaves {
+		if leaf.Kind == ast.WAtomBoolValid {
+			if leaf.BoolField == nil || leaf.BoolField.Layer == nil {
+				return nil
+			}
+			validOn = append(validOn, leaf.BoolField.Layer)
+			continue
+		}
 		layer, atom, ok := eqLeafToAtom(leaf, qo)
 		if !ok {
 			return nil
@@ -74,6 +90,19 @@ func buildAccPlan(where *ir.Condition, qo queriedOptions) *accPlan {
 	}
 	if plan.layer == nil {
 		return nil
+	}
+	// `.options.valid` joins the plan only on the plan's own layer, whose
+	// walk sets the flag the mask check reads.
+	for _, l := range validOn {
+		if l != plan.layer {
+			return nil
+		}
+		plan.valid = true
+	}
+	if plan.valid {
+		if _, ok := qo.validSlot(plan.layer); !ok {
+			return nil
+		}
 	}
 	// Length-byte TLV walks retain the accumulator when a byte counter bounds
 	// the region. Counter walks with another discriminator keep their path.
@@ -139,9 +168,9 @@ const accMaxAtoms = 16
 
 // flattenPureAnd returns the flat leaf list of a where condition that is
 // a pure conjunction (a tree of ast.WAnd whose leaves are all
-// ast.WAtomArith). Returns nil when the tree contains any non-AND
-// connective (or/not/any/all/bool-eq/...) or any non-arith leaf —
-// signalling "not the supported pure-AND-equality shape".
+// ast.WAtomArith or ast.WAtomBoolValid). Returns nil when the tree
+// contains any non-AND connective (or/not/any/all/bool-eq/...) or any
+// other leaf — signalling "not the supported pure-AND-equality shape".
 func flattenPureAnd(c *ir.Condition) []*ir.Condition {
 	if c == nil {
 		return nil
@@ -157,7 +186,7 @@ func flattenPureAnd(c *ir.Condition) []*ir.Condition {
 			return nil
 		}
 		return append(left, right...)
-	case ast.WAtomArith:
+	case ast.WAtomArith, ast.WAtomBoolValid:
 		return []*ir.Condition{c}
 	default:
 		return nil
@@ -266,11 +295,22 @@ func emitAccMaskCheck(p *accPlan, qo queriedOptions, failLabel string) (asm.Inst
 	}
 	// mask fits int32: buildAccPlan caps the atoms at accMaxAtoms (16),
 	// so And.Imm / JNE.Imm suffice.
-	return asm.Instructions{
+	insns := asm.Instructions{
 		asm.LoadMem(asm.R3, asm.R10, slot, asm.DWord),
 		asm.And.Imm(asm.R3, int32(p.mask)),
 		asm.JNE.Imm(asm.R3, int32(p.mask), failLabel),
-	}, nil
+	}
+	if p.valid {
+		vslot, ok := qo.validSlot(p.layer)
+		if !ok {
+			return nil, fmt.Errorf("codegen: %s has no option-validity slot", p.layer.DisplayName())
+		}
+		insns = append(insns,
+			asm.LoadMem(asm.R3, asm.R10, vslot, asm.DWord),
+			asm.JEq.Imm(asm.R3, 0, failLabel),
+		)
+	}
+	return insns, nil
 }
 
 // atomsFor returns the accumulator atoms that belong to the given layer,

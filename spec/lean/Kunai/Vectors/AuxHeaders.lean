@@ -133,8 +133,36 @@ vector tcpMssWsWideHigh := tcpW (.and (cmp mss .eq (.wide (2 ^ 64 + 1460))) (cmp
   (tcpOpts (mssOpt 1460 ++ [3, 3, 7, 1])) "tcp-opt-mss-ws-wide-high" .reject (goStatus := .notImplemented)
   (note := "a value the option field cannot hold keeps the pair out of the accumulator, which is the only path for two options")
 vector tcpOptsValidTwoOptions := tcpW (.and tcpValid (.and (cmp mss .eq (k 1460)) (cmp wsShift .eq (k 7))))
-  (tcpOpts (mssOpt 1460 ++ [3, 3, 7, 1])) "tcp-opts-valid-with-two-options" (.accept []) (goStatus := .notImplemented)
-  (note := "Go: the accumulator plan for two option equalities has no slot for the validity flag")
+  (tcpOpts (mssOpt 1460 ++ [3, 3, 7, 1])) "tcp-opts-valid-with-two-options" (.accept [])
+  (note := "the accumulator plan for two option equalities also checks the validity flag")
+vector tcpOptsValidTwoOptionsLast := tcpW (.and (.and (cmp mss .eq (k 1460)) (cmp wsShift .eq (k 7))) tcpValid)
+  (tcpOpts (mssOpt 1460 ++ [3, 3, 7, 1])) "tcp-opts-valid-with-two-options-last" (.accept [])
+vector tcpOptsValidTwoOptionsMalformed := tcpW (.and tcpValid (.and (cmp mss .eq (k 1460)) (cmp wsShift .eq (k 7))))
+  (tcpOpts (mssOpt 1460 ++ [3, 3, 7] ++ [25, 0, 0, 0, 0])) "tcp-opts-valid-with-two-options-malformed" .reject
+  (note := "D-029: both options are sighted before the zero-length option faults the walk: no options, and not valid")
+def twoOptsValid : Where := .and tcpValid (.and (cmp mss .eq (k 1460)) (cmp wsShift .eq (k 7)))
+def twoOptsPkt : Packet := tcpOpts (mssOpt 1460 ++ [3, 3, 7, 1])
+vector tcpOptsValidTwoOptionsOptional := {
+  id := "tcp-opts-valid-with-two-options-optional",
+  ast := { layers := [P "eth", P "ipv4", Pq "tcp" .opt], cond := some twoOptsValid },
+  packet := eth 0x0800 ++ ipv4 17 ++ udp 1234 53 ++ payload 5, expected := .reject, note := "tcp absent: every atom is false" }
+vector tcpOptsValidTwoOptionsAlt := {
+  id := "tcp-opts-valid-with-two-options-alt",
+  ast := { layers := [P "eth", P "ipv4", .alt [{ name := "udp" }, { name := "tcp" }]], cond := some twoOptsValid },
+  packet := twoOptsPkt, expected := .accept [] }
+vector tcpOptsValidTwoOptionsLabel := {
+  id := "tcp-opts-valid-with-two-options-label",
+  ast := { layers := [P "eth", P "ipv4", .proto { name := "tcp", label := some "t" }],
+           cond := some (.and (.optionsValid ⟨[("t", none), ("options", none)]⟩)
+                              (.and (cmp mss .eq (k 1460)) (cmp wsShift .eq (k 7)))) },
+  packet := twoOptsPkt, expected := .accept [] }
+vector tcpOptsValidTwoOptionsOtherLayer := {
+  id := "tcp-opts-valid-with-two-options-other-layer",
+  ast := { layers := chain3, cond := some (.and (.optionsValid ⟨[("ipv4", none), ("options", none)]⟩) twoOptsValid) },
+  packet := twoOptsPkt, expected := .accept [], goStatus := .notImplemented,
+  note := "Go: the accumulator takes the validity flag of its own layer only; another layer's flag keeps the plan off" }
+vector tcpOptsValidTwoOptionsMiss := tcpW (.and tcpValid (.and (cmp mss .eq (k 1460)) (cmp wsShift .eq (k 8))))
+  (tcpOpts (mssOpt 1460 ++ [3, 3, 7, 1])) "tcp-opts-valid-with-two-options-miss" .reject
 def tcpValidPred : Predicate := .optionsValid ⟨[("options", none)]⟩
 def tcpValidL (q : Quant := .one) : List Layer :=
   [P "eth", P "ipv4", .proto { name := "tcp", preds := [tcpValidPred], quant := q }]
@@ -641,7 +669,7 @@ def auxVectors : List Vector := [
   tcpOptCross, tcpEol, tcpMssDup, tcpMssBadLen, tcpMssExists, tcpMssExistsNot, tcpSackBlock, tcpSackAny, tcpSackAll,
   tcpSackAbsentAny, tcpMalformedNoQuery, tcpMalformedNotQuery, tcpMalformedOrTrue, tcpMalformedExists,
   tcpMalformedAfterMss, tcpMalformedChainOn, ipv4MalformedOpts, ipv4MalformedOptsQueried, ipv4OptDepthLastFault, ipv4OptDepthLastSighting,
-  tcpOptsValid, tcpOptsValidNone, tcpOptsInvalid, tcpOptsInvalidNot, tcpOptsValidWithMss, tcpOptsValidAbsent, tcpOptsValidAltMember, tcpOptsValidAltOther, tcpOptsValidTwoOptions, bracketValid, bracketValidMalformed, bracketValidOptMalformed, bracketValidWithCmp, typBracketValidNoRegion, bracketValidAltFirst, bracketValidAltSecond, bracketValidAltOther, bracketValidFirst,
+  tcpOptsValid, tcpOptsValidNone, tcpOptsInvalid, tcpOptsInvalidNot, tcpOptsValidWithMss, tcpOptsValidAbsent, tcpOptsValidAltMember, tcpOptsValidAltOther, tcpOptsValidTwoOptions, tcpOptsValidTwoOptionsLast, tcpOptsValidTwoOptionsMalformed, tcpOptsValidTwoOptionsMiss, tcpOptsValidTwoOptionsOptional, tcpOptsValidTwoOptionsAlt, tcpOptsValidTwoOptionsLabel, tcpOptsValidTwoOptionsOtherLayer, bracketValid, bracketValidMalformed, bracketValidOptMalformed, bracketValidWithCmp, typBracketValidNoRegion, bracketValidAltFirst, bracketValidAltSecond, bracketValidAltOther, bracketValidFirst,
   bracketValidNoOpts, bracketValidOptAbsent, bracketValidIPv4, bracketValidGeneve, bracketValidTwoOptions, bracketValidRepeated, typBracketValidSegment, typBracketValidSrv6, ipv4OptsInvalid,
   geneveOvnHit, geneveMalformedAfter, geneveMalformedBefore, geneveMalformedChainOn, geneveRegionPastEnd, geneveValidEmpty, typOptsValidNoRegion,
   ipv6Hbh, ipv6TwoExts, ipv6ExtLong, ipv6ExtTooLong, ipv6ExtsIndex, ipv6ExtsIndex1, ipv6ExtsIndexAfterLong, ipv6ExtsAnyAfterLong, ipv6ExtsDynamicLong, ipv6ExtsDynamicLongSecond, ipv6ExtsDynamicLongAbsent, ipv6ExtsDynamicLongLast, ipv6ExtsDynamicLongLastMiss, ipv6ExtsDynamicLongBeyond, ipv6ExtsDynamicLongSlot, ipv6ExtsDynamicLongSlotAbsent,
