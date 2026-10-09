@@ -827,8 +827,8 @@ func checkUnsupported(p *ir.Program) error {
 // parsing packet bytes. It guards VLAN: when the host has
 // HostLayout.VlanInMetadata set (a tc host that hands the filter the
 // bytes as the kernel keeps them, after skb_vlan_untag moved the outer
-// tag into skb metadata), a vlan or qinq layer read from packet bytes
-// would see the wrong bytes. With --tc-vlan-reinsert, bpf-ninja's tc
+// tag into skb metadata), a mandatory outer vlan or qinq layer can never
+// match a single-tagged frame. With --tc-vlan-reinsert, bpf-ninja's tc
 // host puts the tag back into the filter's copy and clears the flag, so
 // none of this applies there.
 //
@@ -851,20 +851,15 @@ func checkUnsupported(p *ir.Program) error {
 // A vlan or qinq layer that cannot be absent — no optional quantifier,
 // or a member of an alternation at any depth — is a type error
 // (ErrVlanInMetadata): the language requires the layer to be optional at
-// such a host (spec/lean Eval/Check.lean). It is looked for across the
-// whole chain, so it is reported ahead of the refusals below.
-//
-// What is refused as not implemented, because it reads a tag the host
-// does not expose in packet bytes:
-//
-//   - a bracket predicate on an optional tag (`vlan[tci==100]?`),
-//
-//   - a where clause or capture that reads a vlan/qinq field (the tag's
-//     bytes are not in the packet, so its entry slot would be absent on
-//     every tagged frame).
-//
-// Fields past the optional tag read fine: the layers after it record
-// their runtime offsets.
+// such a host (spec/lean Eval/Check.lean). That is the only rule. An
+// optional outer tag may carry a bracket predicate and its fields may be
+// read in a where clause or a capture: the filter sees the bytes the
+// kernel holds, so on a single-tagged frame the layer is absent (a
+// predicate on it is not evaluated, a where reference to it is false,
+// spec D-003) and on a QinQ frame the C-tag left in the bytes is the
+// `vlan` the filter reads. A host that puts the tag back
+// (tc.WireEntryCapabilities) is the way to match the frame as it was on
+// the wire.
 func checkHostLayerSupport(p *ir.Program, host HostLayout) error {
 	if !host.VlanInMetadata {
 		return nil
@@ -945,32 +940,20 @@ func checkHostLayerSupport(p *ir.Program, host HostLayout) error {
 			}
 		}
 	}
-	// One walk over every layer and alternation member. A tag that
-	// cannot be absent is the type error; a predicate on an optional tag
-	// is refused as not implemented. The type error is reported even
-	// when a refusal comes first in the chain.
-	var typeErr, refusal error
+	// One walk over every layer and alternation member: the first tag
+	// that cannot be absent is the type error.
+	var typeErr error
 	var walk func(l *ir.LayerInstance, inAlt bool)
 	walk = func(l *ir.LayerInstance, inAlt bool) {
-		if l == nil {
+		if l == nil || typeErr != nil {
 			return
 		}
-		if isVlan(l) {
-			mandatory := inAlt || !l.Absentable()
-			switch {
-			case mandatory:
-				fix := fmt.Sprintf("make the layer optional (%s?) or remove it, or have the host put the tag back", l.Spec.Name)
-				if a, ok := altAdvice[l]; ok {
-					fix = a
-				}
-				if typeErr == nil {
-					typeErr = withPos(fmt.Errorf("%w: layer %q: the kernel moves the outer VLAN tag into skb metadata before the program runs, so a tagged frame does not carry it in the packet bytes; %s", ErrVlanInMetadata, l.Spec.Name, fix), l.Pos)
-				}
-			case len(l.Predicates) > 0:
-				if refusal == nil {
-					refusal = withPos(fmt.Errorf("%w: the predicate on layer %q reads a VLAN tag this host moves to skb metadata before the program runs; the tag is not in the packet bytes (a host that puts the tag back into the bytes can read it)", ErrNotImplemented, l.Spec.Name), l.Pos)
-				}
+		if isVlan(l) && (inAlt || !l.Absentable()) {
+			fix := fmt.Sprintf("make the layer optional (%s?) or remove it, or have the host put the tag back", l.Spec.Name)
+			if a, ok := altAdvice[l]; ok {
+				fix = a
 			}
+			typeErr = withPos(fmt.Errorf("%w: layer %q: the kernel moves the outer VLAN tag into skb metadata before the program runs, so a tagged frame does not carry it in the packet bytes; %s", ErrVlanInMetadata, l.Spec.Name, fix), l.Pos)
 		}
 		for _, alt := range l.Alternation {
 			walk(alt, true)
@@ -979,32 +962,7 @@ func checkHostLayerSupport(p *ir.Program, host HostLayout) error {
 	for _, l := range p.Layers {
 		walk(l, false)
 	}
-	if typeErr != nil {
-		return typeErr
-	}
-	if refusal != nil {
-		return refusal
-	}
-	var refErr error
-	visit := func(f *ir.FieldRef) {
-		if refErr == nil && f != nil && isVlan(f.Layer) {
-			refErr = withPos(fmt.Errorf("%w: where / capture reads %s.%s, but this host moves the VLAN tag to skb metadata before the program runs; the tag is not in the packet bytes (a host that puts the tag back into the bytes can read it)", ErrNotImplemented, f.Layer.Spec.Name, f.Field.Name), f.Layer.Pos)
-		}
-	}
-	ir.WalkConditionFieldRefs(p.Where, visit)
-	for _, c := range p.Captures {
-		if c == nil {
-			continue
-		}
-		if isVlan(c.TargetLayer) {
-			return withPos(fmt.Errorf("%w: capture %s targets a VLAN tag this host moves to skb metadata before the program runs; its bytes are not in the packet (capture ipv4 or an absolute length instead)", ErrNotImplemented, c.TargetLayer.Spec.Name), c.TargetLayer.Pos)
-		}
-		ir.WalkConditionFieldRefs(c.Where, visit)
-		for _, f := range c.Fields {
-			visit(f)
-		}
-	}
-	return refErr
+	return typeErr
 }
 
 // genLayer dispatches on the quantifier and emits the layer's own
