@@ -263,8 +263,7 @@ def resolveValid (c : Ctx) (f : FieldPath) : Except Stop String := do
   let [(head, none), (seg, none)] := f.segs | throw (.illTyped s!"unsupported: {f.text}.valid")
   let proto ← staticProto c head
   let some spec := c.V.proto? proto | throw (.illTyped s!"unknown protocol {proto}")
-  if spec.regionLoop.isNone || !spec.regionSkips then
-    throw (.illTyped s!"{proto} has no option region whose faults are skipped; {f.text}.valid needs one (@kunai_option_region[on_fault=skip])")
+  if let some e := spec.validRegionError? f.text then throw (.illTyped e)
   if seg != spec.optionSegment then throw (.illTyped s!"unsupported: {f.text}.valid")
   pure head
 

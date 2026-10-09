@@ -95,9 +95,7 @@ private def checkPred (c : Ctx) (spec : ProtoSpec) (mandatory : Bool) : Predicat
     if s.width != extracted then
       throw s!"set @{name} keys are bit<{s.width}>, {spec.name}.{f.text} extracts bit<{extracted}>"
   | .optionsValid f => do
-    -- the same rule as `where p.options.valid` (resolveValid)
-    if spec.regionLoop.isNone || !spec.regionSkips then
-      throw s!"{spec.name} has no option region whose faults are skipped; {f.text}.valid needs one (@kunai_option_region[on_fault=skip])"
+    if let some e := spec.validRegionError? f.text then throw e
     if f.segs != [(spec.optionSegment, none)] then throw s!"unsupported: {spec.name}[{f.text}.valid]"
 
 private def checkEdge (V : Vocab) (child parent : String) (alt optional : Bool) : Except String Unit :=
