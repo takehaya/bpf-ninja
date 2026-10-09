@@ -1039,7 +1039,7 @@ func genStaticLayer(layer *ir.LayerInstance, index int, all []*ir.LayerInstance,
 	insns := emitBounds(hs, dslReject)
 
 	if index > 0 && layer.Dispatch != nil && !pc.dispatchDone(layer) {
-		di, err := genParentDispatch(layer, index, all, qo, precedingLayersLeaveR4Range(all, index), precedingLayersLeaveR4Range(all, index-1), dslReject)
+		di, err := genParentDispatch(layer, index, all, qo, precedingLayersLeaveR4Range(all, index), layerEntryIsRange(all, index-1), dslReject)
 		if err != nil {
 			return nil, err
 		}
@@ -1213,7 +1213,7 @@ func genParentDispatch(current *ir.LayerInstance, index int, all []*ir.LayerInst
 				asm.JEq.Imm(asm.R3, layerEntryAbsent, next),
 			)
 		}
-		di, err := dispatchVia(current, cand, r4IsRange, precedingLayersLeaveR4Range(all, j), failLabel)
+		di, err := dispatchVia(current, cand, r4IsRange, layerEntryIsRange(all, j), failLabel)
 		if err != nil {
 			return nil, err
 		}
@@ -1272,7 +1272,7 @@ func withAbsentEdge(present asm.Instructions, peekFail string, index int, all []
 	// Absent path: R4 still ends the grandparent, R0/R1 are the scratch window.
 	out = append(out, asm.Mov.Reg(asm.R0, asm.R0).WithSymbol(peekFail))
 	out = append(out, emitBounds(nextHS, dslReject)...)
-	di, err := dispatchVia(next, gp, precedingLayersLeaveR4Range(all, index+1), precedingLayersLeaveR4Range(all, index-1), dslReject)
+	di, err := dispatchVia(next, gp, precedingLayersLeaveR4Range(all, index+1), layerEntryIsRange(all, index-1), dslReject)
 	if err != nil {
 		return nil, err
 	}
@@ -1319,7 +1319,7 @@ func optionalLayerGuard(layer *ir.LayerInstance, index int, all []*ir.LayerInsta
 	atMostOne := layer.Quant == ast.QuantOpt || (layer.Quant == ast.QuantRange && layer.RangeMax == 1)
 	machineChain := layer.Quant == ast.QuantRange && staticChainFitsRange(layer.RangeMax) && layer.Spec.ParseStateMachine != nil
 	if !atMostOne && !machineChain && layer.Spec.HasVariableLayout() {
-		return fmt.Errorf("%w: %q has a variable-length header: it can be optional (`?`, `{0,1}`) or repeated up to {n,%d}, not open-ended", ErrNotImplemented, layer.Spec.Name, staticChainCap)
+		return fmt.Errorf("%w: %q has a variable-length header: it can be optional (`?`, `{0,1}`) or repeated with a bound of at most %d (`{n,m}`, m <= %d); `*`, `+`, `{n,}` and larger bounds are not", ErrNotImplemented, layer.Spec.Name, staticChainCap, staticChainCap)
 	}
 	if layer.Spec.ChainEnd != nil && layer.Spec.HasVariableLayout() {
 		return fmt.Errorf("%w: optional %q is variable-length with a chain-end rule", ErrNotImplemented, layer.Spec.Name)
@@ -1358,7 +1358,7 @@ func emitPeekedIterZero(layer *ir.LayerInstance, index int, all []*ir.LayerInsta
 	}
 	// For a self edge of a chain-end protocol the dispatch is the previous
 	// header's end signal (genDispatch), so `mpls/mpls?` peeks the s bit.
-	peek, err := genParentDispatch(layer, index, all, qo, precedingLayersLeaveR4Range(all, index), precedingLayersLeaveR4Range(all, index-1), peekFailLabel)
+	peek, err := genParentDispatch(layer, index, all, qo, precedingLayersLeaveR4Range(all, index), layerEntryIsRange(all, index-1), peekFailLabel)
 	if err != nil {
 		return nil, err
 	}

@@ -253,9 +253,13 @@ func genStaticMachineChain(layer *ir.LayerInstance, index int, all []*ir.LayerIn
 		insns = append(insns, body...)
 		callbacks = append(callbacks, cbs...)
 	}
-	// R0 (the scratch window) is live on both paths; R3 is not after the
-	// machine's bpf_loop, so the landing must not touch it.
-	insns = append(insns, asm.Mov.Reg(asm.R0, asm.R0).WithSymbol(chainDone))
+	// The done landing is where an iteration ≥ n ends the chain (and the
+	// absent iteration 0 of `{0,m}` without its own edge); `{m,m}` never
+	// jumps there. R0 (the scratch window) is live on both paths; R3 is
+	// not after the machine's bpf_loop, so the landing must not touch it.
+	if layer.RangeMin < layer.RangeMax {
+		insns = append(insns, asm.Mov.Reg(asm.R0, asm.R0).WithSymbol(chainDone))
+	}
 	if absentLabel != chainDone {
 		insns, err = withAbsentEdge(insns, absentLabel, index, all)
 		if err != nil {

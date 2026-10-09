@@ -68,11 +68,6 @@ func genParserMachineIter(layer *ir.LayerInstance, layerIdx int, all []*ir.Layer
 		labelNS = fmt.Sprintf("%s_i%d", labelNS, iter)
 		// The previous iteration advanced R4 by its variable length.
 		r4IsRange = true
-		// An `in @set` predicate records its extraction once (iteration 0);
-		// the store asm is replayed here. nil-safe.
-		if pc != nil {
-			pc = &predCtx{sets: pc.sets}
-		}
 	}
 	prePreds, postPreds := splitPredicates(layer)
 	pmCtx := &pmCtx{
@@ -242,6 +237,24 @@ func precedingLayersLeaveR4Range(all []*ir.LayerInstance, idx int) bool {
 		}
 	}
 	return false
+}
+
+// layerEntryIsRange reports whether the entry offset layer `idx` records
+// in its slots is a range scalar: something before it is variable, or
+// the layer itself is a repeated variable-length layer whose last
+// instance starts past the first instance's variable length
+// (genStaticMachineChain). A dispatch against that layer's entry (the
+// layer after `ipv4{1,2}`) then needs the bounded idiom; a constant
+// entry keeps the fast path.
+func layerEntryIsRange(all []*ir.LayerInstance, idx int) bool {
+	if idx < 0 || idx >= len(all) {
+		return false
+	}
+	if precedingLayersLeaveR4Range(all, idx) {
+		return true
+	}
+	l := all[idx]
+	return l != nil && l.Spec != nil && l.Spec.HasVariableLayout() && l.Quant == ast.QuantRange && l.RangeMax >= 2
 }
 
 func layerLeavesR4Range(l *ir.LayerInstance) bool {
@@ -421,7 +434,7 @@ func (c *pmCtx) emitEntryDispatch() (asm.Instructions, error) {
 		// The alternation guard ran this dispatch; only the join stays.
 		return dispatchJoin(c.layerIdx, c.all)
 	}
-	di, err := genParentDispatch(c.layer, c.layerIdx, c.all, c.queried, c.r4IsRange, precedingLayersLeaveR4Range(c.all, c.layerIdx-1), c.dispatchFail)
+	di, err := genParentDispatch(c.layer, c.layerIdx, c.all, c.queried, c.r4IsRange, layerEntryIsRange(c.all, c.layerIdx-1), c.dispatchFail)
 	if err != nil {
 		return nil, err
 	}

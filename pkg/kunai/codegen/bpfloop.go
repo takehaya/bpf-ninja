@@ -130,7 +130,7 @@ func genBpfLoopChain(layer *ir.LayerInstance, index int, all []*ir.LayerInstance
 	}
 	// Same #11-class miscompile guard as genStaticChain — see chain.go.
 	if layer.Spec.HasVariableLayout() {
-		return nil, nil, fmt.Errorf("%w: chained %q has a variable-length primary header; use layered dispatch (e.g. `eth/%s/%s/...`)", ErrNotImplemented, layer.Spec.Name, layer.Spec.Name, layer.Spec.Name)
+		return nil, nil, fmt.Errorf("%w: `*`, `+` and `{n,}` on the variable-length %q are not implemented; write a bound of at most %d (`{n,m}`) or layered dispatch (`eth/%s/%s/...`)", ErrNotImplemented, layer.Spec.Name, staticChainCap, layer.Spec.Name, layer.Spec.Name)
 	}
 
 	maxIter, err := chainMaxIter(layer)

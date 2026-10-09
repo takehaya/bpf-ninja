@@ -1,6 +1,7 @@
 package dsltest
 
 import (
+	"net"
 	"testing"
 
 	"github.com/google/gopacket/layers"
@@ -96,4 +97,29 @@ func TestMachineChainWhereLast(t *testing.T) {
 	after.MustMatch(t, ipipDepth(t, 2), "tcp after two headers")
 	after.MustMatch(t, BuildEthIPv4TCP(t, 12345, 80), "tcp after one header")
 	after.MustReject(t, BuildEthIPv4TCP(t, 12345, 81), "tcp dport 81")
+}
+
+// TestMachineChainIPv6 is the IPv6 shape: the extension-header walk of
+// each instance is its own, and the self edge is next_header == 41.
+func TestMachineChainIPv6(t *testing.T) {
+	one := BuildEthIPv6TCP(t, net.ParseIP("2001:db8::1"), net.ParseIP("2001:db8::2"), 1234, 80)
+	two := BuildEthIPv6inIPv6TCP(t)
+
+	r12 := New(t, "eth/ipv6{1,2}/tcp")
+	r12.MustMatch(t, one, "one header")
+	r12.MustMatch(t, two, "ipv6 in ipv6")
+
+	r22 := New(t, "eth/ipv6{2,2}/tcp")
+	r22.MustReject(t, one, "one header: under-run")
+	r22.MustMatch(t, two, "two headers")
+
+	// An extension header on the last instance only; the bracket form
+	// checks every instance.
+	ext := BuildIPv6WithExts(t, IPv6WithExtsOpts{FirstNextHeader: 0, FinalNextHeader: 6, Exts: []IPv6Ext{{HdrExtLen: 0}}})
+	last := New(t, "eth/ipv6@o{1,2}/tcp where o.exts[0].next_header == 6")
+	last.MustMatch(t, ext, "one header with a hop-by-hop ext: the second iteration misses, the slots stay")
+	last.MustReject(t, two, "no ext on the last instance: index past the count is false (D-031)")
+	br := New(t, "eth/ipv6[exts[0].next_header == 6]{1,2}/tcp")
+	br.MustMatch(t, ext, "one header with ext")
+	br.MustReject(t, two, "neither header has an ext")
 }

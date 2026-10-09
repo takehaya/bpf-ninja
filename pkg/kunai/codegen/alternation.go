@@ -123,7 +123,7 @@ func genAlternation(layer *ir.LayerInstance, index int, all []*ir.LayerInstance,
 			// alt instead of dslReject; after a group whose members
 			// dispatch this one differently it is picked by the parent's
 			// matched member.
-			guard, err := genParentDispatch(alt, index, all, qo, precedingLayersLeaveR4Range(all, index), precedingLayersLeaveR4Range(all, index-1), nextAltLabel)
+			guard, err := genParentDispatch(alt, index, all, qo, precedingLayersLeaveR4Range(all, index), layerEntryIsRange(all, index-1), nextAltLabel)
 			if err != nil {
 				return nil, nil, err
 			}

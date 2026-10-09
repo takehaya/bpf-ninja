@@ -69,7 +69,7 @@ eth/ipv4/udp/gtp/ipv4/tcp           # GTP-U の内側 IP
 | `+` | 1 回以上 (bpf_loop で展開) |
 | `*` | 0 回以上 (bpf_loop、先頭の peek でスキップ) |
 | `{n}` | ちょうど n 回 (静的アンロール、`{n,n}` と等価。`{1,1}` ≡ `1` は chain-end 信号を持たない proto で Lean 保証済: `spec/lean/Kunai/Laws.lean: one_eq_range_layer`。mpls では `{1,1}` がスタックの終端も要求する) |
-| `{n,m}` | n〜m 回。m≤4 は静的アンロール、それ以上は bpf_loop。可変長の layer (ipv4、ipv6) も m≤4 なら書け、instance ごとに parser が走る。`where` でその layer を参照するには `@label` を付け、最後に match した header を指す |
+| `{n,m}` | n〜m 回。m≤4 は静的アンロール、それ以上は bpf_loop。self edge を持つ parser-machine の layer (ipv4、ipv6) も m≤4 なら書け、instance ごとに parser が走る。`where` でその layer を参照するには `@label` を付け、最後に match した header を指す |
 | `{n,}` | n 回以上 (上限省略、bpf_loop で展開) |
 
 例を示します。
