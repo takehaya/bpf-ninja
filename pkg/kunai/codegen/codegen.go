@@ -1011,6 +1011,11 @@ func genLayerInner(layer *ir.LayerInstance, index int, all []*ir.LayerInstance, 
 			}
 			return genOptionalMachineLayer(layer, index, all, qo, plan, pc)
 		}
+		if layer.Spec.ParseStateMachine != nil && staticChainFitsRange(layer.RangeMax) {
+			// Two to four headers of a variable-length protocol
+			// (`ipv4{1,2}`): one parser machine per instance.
+			return genStaticMachineChain(layer, index, all, qo, plan, pc)
+		}
 		if staticChainFitsRange(layer.RangeMax) {
 			insns, err := genStaticChain(layer, index, all, qo, pc)
 			return insns, nil, err
@@ -1306,10 +1311,15 @@ func optionalLayerGuard(layer *ir.LayerInstance, index int, all []*ir.LayerInsta
 	}
 	// One optional header of a variable-length protocol is lowered by
 	// genOptionalMachineLayer (parser machine) or emitPeekedIterZero (flag
-	// triggers); repeating one would need the previous instance's runtime
-	// length to find the next dispatch field.
-	if atMostOne := layer.Quant == ast.QuantOpt || (layer.Quant == ast.QuantRange && layer.RangeMax == 1); !atMostOne && layer.Spec.HasVariableLayout() {
-		return fmt.Errorf("%w: %q has a variable-length header: it can be optional (`?`, `{0,1}`), not repeated", ErrNotImplemented, layer.Spec.Name)
+	// triggers). A parser-machine protocol repeats up to the static cap
+	// (genStaticMachineChain: one machine per instance, the self edge read
+	// from the previous instance's entry); a flag-trigger layer and the
+	// bpf_loop quantifiers would need the previous instance's runtime
+	// length inside one body.
+	atMostOne := layer.Quant == ast.QuantOpt || (layer.Quant == ast.QuantRange && layer.RangeMax == 1)
+	machineChain := layer.Quant == ast.QuantRange && staticChainFitsRange(layer.RangeMax) && layer.Spec.ParseStateMachine != nil
+	if !atMostOne && !machineChain && layer.Spec.HasVariableLayout() {
+		return fmt.Errorf("%w: %q has a variable-length header: it can be optional (`?`, `{0,1}`) or repeated up to {n,%d}, not open-ended", ErrNotImplemented, layer.Spec.Name, staticChainCap)
 	}
 	if layer.Spec.ChainEnd != nil && layer.Spec.HasVariableLayout() {
 		return fmt.Errorf("%w: optional %q is variable-length with a chain-end rule", ErrNotImplemented, layer.Spec.Name)

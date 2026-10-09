@@ -807,6 +807,16 @@ func BuildEthIPv4UDPGeneveOpts(t testing.TB, vni uint32, opts ...[]byte) []byte 
 // which is the use case the chain-quantifier `ipv4+` cannot handle.
 type IPIPOpts struct {
 	InnerOptions []layers.IPv4Option
+	// OuterOptions go on the outer header (IHL > 5).
+	OuterOptions []layers.IPv4Option
+	// OuterTTL sets the outer headers' TTL; zero means 64.
+	OuterTTL uint8
+	// InnerTTL sets the innermost header's TTL; zero means 64.
+	InnerTTL uint8
+	// Depth is the number of IPv4 headers around the TCP segment; zero
+	// means 2 (outer and inner). Every header past the inner one is a
+	// copy of the outer, so Depth 3 is eth/ipv4/ipv4/ipv4/tcp.
+	Depth int
 }
 
 // BuildEthIPIPTCP serializes Ethernet/IPv4(outer, proto=IPIP)/IPv4
@@ -818,6 +828,7 @@ func BuildEthIPIPTCP(t testing.TB, opts IPIPOpts) []byte {
 	t.Helper()
 	innerInputs := Defaults()
 	innerInputs.IPv4Options = opts.InnerOptions
+	innerInputs.TTL = opts.InnerTTL
 	innerBytes := Build(t, innerInputs)
 	innerIP := innerBytes[ethHeaderSize:] // strip inner eth
 
@@ -827,19 +838,39 @@ func BuildEthIPIPTCP(t testing.TB, opts IPIPOpts) []byte {
 		DstMAC:       d.DstMAC,
 		EthernetType: layers.EthernetTypeIPv4,
 	}
-	outer := &layers.IPv4{
-		Version:  4,
-		IHL:      5,
-		TTL:      64,
-		SrcIP:    net.ParseIP("203.0.113.1").To4(),
-		DstIP:    net.ParseIP("203.0.113.2").To4(),
-		Protocol: layers.IPProtocolIPv4, // IANA "IPIP"
+	depth := opts.Depth
+	if depth == 0 {
+		depth = 2
+	}
+	ttl := opts.OuterTTL
+	if ttl == 0 {
+		ttl = 64
+	}
+	payload := innerIP
+	for i := 1; i < depth; i++ {
+		outer := &layers.IPv4{
+			Version:  4,
+			IHL:      5,
+			TTL:      ttl,
+			SrcIP:    net.ParseIP("203.0.113.1").To4(),
+			DstIP:    net.ParseIP("203.0.113.2").To4(),
+			Protocol: layers.IPProtocolIPv4, // IANA "IPIP"
+			Options:  opts.OuterOptions,
+		}
+		buf := gopacket.NewSerializeBuffer()
+		if err := gopacket.SerializeLayers(buf, gopacket.SerializeOptions{
+			ComputeChecksums: true,
+			FixLengths:       true,
+		}, outer, gopacket.Payload(payload)); err != nil {
+			t.Fatalf("gopacket.SerializeLayers (ipip): %v", err)
+		}
+		payload = buf.Bytes()
 	}
 	buf := gopacket.NewSerializeBuffer()
 	if err := gopacket.SerializeLayers(buf, gopacket.SerializeOptions{
 		ComputeChecksums: true,
 		FixLengths:       true,
-	}, eth, outer, gopacket.Payload(innerIP)); err != nil {
+	}, eth, gopacket.Payload(payload)); err != nil {
 		t.Fatalf("gopacket.SerializeLayers (ipip): %v", err)
 	}
 	return buf.Bytes()
