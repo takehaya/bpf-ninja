@@ -387,9 +387,11 @@ func Gen(p *ir.Program, caps Capabilities) (Output, error) {
 	// budget). nil for every other shape; the parser machine then keeps
 	// the existing >=2 reject. See acc.go.
 	plan := buildAccPlan(where, qo)
-	if plan != nil {
+	if plan != nil && len(plan.residual) == 0 {
 		// The where clause will not be emitted, so no member guard reads
-		// a matched-member slot planned for it.
+		// a matched-member slot planned for it. A residual atom on another
+		// layer still goes through genCondition, whose absent-member guard
+		// may read that layer's slot, so the slots stay when there is one.
 		qo.dropWhereReads()
 	}
 	var callbacks asm.Instructions
@@ -421,6 +423,21 @@ func Gen(p *ir.Program, caps Capabilities) (Output, error) {
 			return Output{}, err
 		}
 		insns = append(insns, maskCheck...)
+		// `.options.valid` atoms on other layers were not folded into the
+		// mask: AND them here as an ordinary where condition, so an
+		// optional or alternation-member layer keeps its absent guard.
+		var rest *ir.Condition
+		for _, leaf := range plan.residual {
+			rest = andCondition(rest, leaf, leaf.Pos)
+		}
+		if rest != nil {
+			restInsns, restCbs, err := genCondition(rest, caps.Lang, p, qo, dslReject)
+			if err != nil {
+				return Output{}, err
+			}
+			insns = append(insns, restInsns...)
+			callbacks = append(callbacks, restCbs...)
+		}
 	} else if where != nil {
 		whereInsns, whereCbs, err := genCondition(where, caps.Lang, p, qo, dslReject)
 		if err != nil {

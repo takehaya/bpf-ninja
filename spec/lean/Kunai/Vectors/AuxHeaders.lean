@@ -130,8 +130,11 @@ vector tcpMssWsWide := tcpW (.and (cmp mss .eq (.wide 1460)) (cmp wsShift .eq (k
   (tcpOpts (mssOpt 1460 ++ [3, 3, 7, 1])) "tcp-opt-mss-ws-wide" (.accept [])
   (note := "two option equalities, one against a small int<128>(…): the accumulator takes it")
 vector tcpMssWsWideHigh := tcpW (.and (cmp mss .eq (.wide (2 ^ 64 + 1460))) (cmp wsShift .eq (k 7)))
-  (tcpOpts (mssOpt 1460 ++ [3, 3, 7, 1])) "tcp-opt-mss-ws-wide-high" .reject (goStatus := .notImplemented)
-  (note := "a value the option field cannot hold keeps the pair out of the accumulator, which is the only path for two options")
+  (tcpOpts (mssOpt 1460 ++ [3, 3, 7, 1])) "tcp-opt-mss-ws-wide-high" .reject
+  (note := "a value the option field cannot hold makes its leaf false for every packet; the accumulator rejects outright")
+vector tcpMssWsWideFits64 := tcpW (.and (cmp mss .eq (.wide 70000)) (cmp wsShift .eq (k 7)))
+  (tcpOpts (mssOpt 4464 ++ [3, 3, 7, 1])) "tcp-opt-mss-ws-wide-fits64" .reject
+  (note := "70000 fits 64 bits but not the 16-bit field: compared by value, it never equals an MSS (here 70000 mod 2^16)")
 vector tcpOptsValidTwoOptions := tcpW (.and tcpValid (.and (cmp mss .eq (k 1460)) (cmp wsShift .eq (k 7))))
   (tcpOpts (mssOpt 1460 ++ [3, 3, 7, 1])) "tcp-opts-valid-with-two-options" (.accept [])
   (note := "the accumulator plan for two option equalities also checks the validity flag")
@@ -159,8 +162,8 @@ vector tcpOptsValidTwoOptionsLabel := {
 vector tcpOptsValidTwoOptionsOtherLayer := {
   id := "tcp-opts-valid-with-two-options-other-layer",
   ast := { layers := chain3, cond := some (.and (.optionsValid ⟨[("ipv4", none), ("options", none)]⟩) twoOptsValid) },
-  packet := twoOptsPkt, expected := .accept [], goStatus := .notImplemented,
-  note := "Go: the accumulator takes the validity flag of its own layer only; another layer's flag keeps the plan off" }
+  packet := twoOptsPkt, expected := .accept [],
+  note := "another layer's validity flag is checked after the accumulator's mask, with that layer's absent guard" }
 vector tcpOptsValidTwoOptionsMiss := tcpW (.and tcpValid (.and (cmp mss .eq (k 1460)) (cmp wsShift .eq (k 8))))
   (tcpOpts (mssOpt 1460 ++ [3, 3, 7, 1])) "tcp-opts-valid-with-two-options-miss" .reject
 def tcpValidPred : Predicate := .optionsValid ⟨[("options", none)]⟩
@@ -205,7 +208,7 @@ vector bracketValidTwoOptions := {
   id := "bracket-opts-valid-with-two-options",
   ast := { layers := [P "eth", P "ipv4", .proto { name := "tcp", preds := [tcpValidPred] }], cond := some (.and (cmp mss .eq (k 1460)) (cmp wsShift .eq (k 7))) },
   packet := tcpOpts (mssOpt 1460 ++ [3, 3, 7, 1]), expected := .accept [],
-  note := "the bracket form works next to the two-option accumulator, which the where form does not (notImplemented)" }
+  note := "the bracket form next to the two-option accumulator; the where form joins the plan's mask check" }
 vector bracketValidRepeated := {
   id := "bracket-opts-valid-repeated",
   ast := { layers := [P "eth", .proto { name := "ipv4", preds := [tcpValidPred], quant := .range 1 (some 2) }, P "tcp"] },
@@ -665,7 +668,7 @@ def auxVectors : List Vector := [
   srv6AnyLabel, srv6AllAbsent, srv6OptPresent, srv6OptAbsent, srv6OptAnyPresent, srv6OptAnyAbsent, srv6OptBroken, srv6OptThenIPv4Opt, tcpOptAccAbsent, greOptPresent, greOptAbsent,
   rrNoSighting, sackNoSighting,
   grePlain, greKey, greKeySeq, greAllFlags, greKeyTruncated,
-  tcpMss, tcpMssWide, tcpMssWsWide, tcpMssWsWideHigh, tcpMssMiss, tcpMssAbsent, tcpMssAbsentNot, tcpMssAfterNop, tcpUnknownSkipped, tcpUnknownLen0, tcpUnknownLen1,
+  tcpMss, tcpMssWide, tcpMssWsWide, tcpMssWsWideHigh, tcpMssWsWideFits64, tcpMssMiss, tcpMssAbsent, tcpMssAbsentNot, tcpMssAfterNop, tcpUnknownSkipped, tcpUnknownLen0, tcpUnknownLen1,
   tcpOptCross, tcpEol, tcpMssDup, tcpMssBadLen, tcpMssExists, tcpMssExistsNot, tcpSackBlock, tcpSackAny, tcpSackAll,
   tcpSackAbsentAny, tcpMalformedNoQuery, tcpMalformedNotQuery, tcpMalformedOrTrue, tcpMalformedExists,
   tcpMalformedAfterMss, tcpMalformedChainOn, ipv4MalformedOpts, ipv4MalformedOptsQueried, ipv4OptDepthLastFault, ipv4OptDepthLastSighting,

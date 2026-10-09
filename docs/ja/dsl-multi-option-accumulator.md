@@ -91,8 +91,13 @@ compile(where = AND of "opt.field == const"):
         acc = forget(acc, u64)                 # 毎周 acc を収束 (1 ループ化の鍵)
         cursor += option_length(packet, cursor)
 
+    if never:                                  # field に収まらない定数の葉があった
+        mask |= NEVER_BIT                      # 誰も立てない bit を要求して必ず reject
     if (acc & mask) != mask:                   # 全 option が一致したときだけ通す
         reject
+    for leaf in residual:                      # 別 layer の options.valid
+        if not valid[leaf.layer]:              # 不在の layer は false (D-003)
+            reject
 ```
 
 ループが運ぶ可変スカラ (cursor と acc) を両方とも forget するのが要点である。
@@ -121,10 +126,15 @@ codegen には別途、callback の分岐命令数を静的に数える tripwire
   積む変更が要る。
 - 起動条件は次のとおり。distinct な option が 2 種類以上で、`where` 全体が
   `<option>.<field> == <const>` の純粋な AND であること (`buildAccPlan`)。
-  同じ layer の `<layer>.options.valid` は AND の項として混ぜてよい。accumulator の
-  後で、`emitAccMaskCheck` が option 領域が壊れていないことを別に確かめる。
+  `<layer>.options.valid` は AND の項として混ぜてよい。同じ layer のものは
+  `emitAccMaskCheck` が mask の後で確かめ、別 layer のものは plan の外 (`residual`) に
+  置いて mask の後に通常の where 条件として AND する。不在になりうる layer の
+  flag には通常どおり不在のガードが付く。
+  定数は field の幅に収まる値を比較する。`int<128>(n)` で field に収まらない値を
+  書いた葉は、どの packet でも false になるので、plan を `never` にして mask check が
+  必ず reject する。32 bit field の上位 bit が立った定数はレジスタ経由で比較する。
   単一 option の filter は従来どおり別経路をたどる。2 種類以上の option を見る
-  filter に `!=`・`or`・`not`・`.exists`・option 以外の atom・別 layer の `.valid` が
+  filter に `!=`・`or`・`not`・`.exists`・option 以外の atom が
   混ざる形は `ErrNotImplemented` になる。`tcp[dport==80]` のような bracket の条件は
   `where` の外なので、混ぜても accumulator の対象のままである。
   対象 layer は length-byte advance を持つ TLV walk (TCP options) であること。TCP の領域 counter は対象に含み、それ以外の counter-driven
@@ -138,7 +148,7 @@ codegen には別途、callback の分岐命令数を静的に数える tripwire
 ## 7. 関連ファイル / テスト
 
 - `pkg/kunai/codegen/acc.go`: `buildAccPlan` (どの `where` を accumulator に
-  するか判定)、`accMaxAtoms`、`emitAccMaskCheck`。
+  するか判定、`never` と `residual` の振り分け)、`accMaxAtoms`、`emitAccMaskCheck`。
 - `pkg/kunai/codegen/parser_loop.go`: `emitMultiStateCallback` (cursor forget +
   分岐ガード免除)、`emitAccPrelude` (atom 評価 + acc forget)。
 - `internal/program/tcp_accumulator_load_test.go`: `TestBpfTCPAccumulator{XDP,TC}`

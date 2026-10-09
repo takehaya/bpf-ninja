@@ -23,6 +23,11 @@ type accAtom struct {
 	width        int // 1, 2, or 4 bytes
 	cmpVal       uint64
 	bit          int
+	// never marks a leaf whose constant the field cannot hold (an
+	// `int<128>(n)` at or above 2^width): the equality is false for every
+	// packet (D-035 compares values, whatever the width). Such an atom
+	// never gets a bit; the plan records it as `never` instead.
+	never bool
 }
 
 // accPlan is the accumulator lowering for a multi-option TCP `where`
@@ -45,14 +50,28 @@ type accPlan struct {
 	// the flag check is defensive: it keeps the rule from depending on
 	// that reset.
 	valid bool
+	// never is set when a leaf compares an option field against a constant
+	// the field cannot hold: the conjunction is false for every packet, so
+	// the mask check rejects unconditionally. The walk still runs (the slot
+	// layout and the D-029 landing are unchanged); only the final check
+	// collapses.
+	never bool
+	// residual holds the `<layer>.options.valid` leaves on layers other
+	// than the plan's. Their flags come from those layers' own walks, so
+	// the plan cannot fold them into the accumulator; the caller emits them
+	// through genCondition after the mask check (with the usual absent-
+	// layer guards) and ANDs the two.
+	residual []*ir.Condition
 }
 
 // buildAccPlan inspects a merged where condition and the program's
 // queried-option set, returning an accPlan when the whole clause is a
 // pure conjunction of equality leaves over >=2 distinct dynamic-eligible
 // options on a single layer, every leaf byte-aligned with width in
-// {1,2,4} and a const that fits int32. Returns nil for any other shape;
-// the caller then falls through to the existing reject.
+// {1,2,4}, optionally ANDed with `.options.valid` atoms (this layer's
+// joins the mask check, another layer's goes to residual). A constant the
+// field cannot hold marks the plan `never`. Returns nil for any other
+// shape; the caller then falls through to the existing reject.
 func buildAccPlan(where *ir.Condition, qo queriedOptions) *accPlan {
 	if where == nil {
 		return nil
@@ -62,15 +81,17 @@ func buildAccPlan(where *ir.Condition, qo queriedOptions) *accPlan {
 		return nil
 	}
 
-	plan := &accPlan{}
+	// atoms stays non-nil even when every leaf is `never`: atomsFor must
+	// still report the plan to the walk (emitStateBody / the prelude).
+	plan := &accPlan{atoms: []accAtom{}}
 	seen := map[*vocab.AuxLayout]bool{}
-	var validOn []*ir.LayerInstance
+	var validLeaves []*ir.Condition
 	for _, leaf := range leaves {
 		if leaf.Kind == ast.WAtomBoolValid {
 			if leaf.BoolField == nil || leaf.BoolField.Layer == nil {
 				return nil
 			}
-			validOn = append(validOn, leaf.BoolField.Layer)
+			validLeaves = append(validLeaves, leaf)
 			continue
 		}
 		layer, atom, ok := eqLeafToAtom(leaf, qo)
@@ -83,19 +104,27 @@ func buildAccPlan(where *ir.Condition, qo queriedOptions) *accPlan {
 		} else if plan.layer != layer {
 			return nil
 		}
+		// The option still counts as covered: its position slot is not
+		// wanted, the leaf just can never hold.
+		seen[atom.layout] = true
+		if atom.never {
+			plan.never = true
+			continue
+		}
 		atom.bit = len(plan.atoms)
 		plan.atoms = append(plan.atoms, atom)
 		plan.mask |= uint64(1) << uint(atom.bit)
-		seen[atom.layout] = true
 	}
 	if plan.layer == nil {
 		return nil
 	}
-	// `.options.valid` joins the plan only on the plan's own layer, whose
-	// walk sets the flag the mask check reads.
-	for _, l := range validOn {
-		if l != plan.layer {
-			return nil
+	// `.options.valid` on the plan's own layer joins the mask check (that
+	// layer's walk sets the flag). On another layer it stays a where atom
+	// of its own, ANDed after the mask check (residual).
+	for _, leaf := range validLeaves {
+		if leaf.BoolField.Layer != plan.layer {
+			plan.residual = append(plan.residual, leaf)
+			continue
 		}
 		plan.valid = true
 	}
@@ -165,6 +194,13 @@ func layerOptionWalkHasLengthByte(layer *ir.LayerInstance) bool {
 // int32-mask limit (31 bits). See buildAccPlan and the forgets in
 // emitMultiStateCallback / emitAccPrelude.
 const accMaxAtoms = 16
+
+// accNeverBit is the mask bit emitAccMaskCheck requires for a `never`
+// plan. Atom bits stop at accMaxAtoms, the slot starts at zero and the
+// walk only ORs atom bits into it (the forget XORs a value twice), so
+// this bit is never set and the check fails for every packet. It stays
+// below bit 31 so the mask remains a non-negative int32 immediate.
+const accNeverBit = uint64(1) << 30
 
 // flattenPureAnd returns the flat leaf list of a where condition that is
 // a pure conjunction (a tree of ast.WAnd whose leaves are all
@@ -250,21 +286,19 @@ func eqLeafToAtom(leaf *ir.Condition, qo queriedOptions) (*ir.LayerInstance, acc
 	default:
 		return nil, accAtom{}, false
 	}
-	// Narrow the constant to the field width before the int32 check, the
-	// same way the normal arith path (genArithWithBits) does — so a negative
-	// literal on an unsigned field is accepted (e.g. `WS.shift == -1` means
-	// shift == 0xff). A constant whose high bit is set on a 4-byte field
-	// still rejects: JNE.Imm sign-extends a 32-bit immediate, so the
-	// accumulator cannot compare it correctly and must fall back.
-	// An `int<128>(n)` is not narrowed: it compares at 128 bits, so only a
-	// value the field can hold is an equality the accumulator can test.
+	// Narrow the constant to the field width, the same way the normal
+	// arith path (genArithWithBits) does — so a negative literal on an
+	// unsigned field is accepted (e.g. `WS.shift == -1` means shift ==
+	// 0xff). An `int<128>(n)` is not narrowed: it compares at 128 bits
+	// (D-038), so a value the field cannot hold makes the leaf false for
+	// every packet. That leaf becomes a `never` atom and the plan rejects
+	// outright (emitAccMaskCheck), instead of leaving the accumulator.
 	if r.Wide && (r.ConstHi != 0 || r.Const>>uint(f.Aux.FieldBitWidth) != 0) {
-		return nil, accAtom{}, false
+		return f.Layer, accAtom{layout: layout, never: true}, true
 	}
 	cmpVal := r.Const & ((uint64(1) << uint(f.Aux.FieldBitWidth)) - 1)
-	if cmpVal > 0x7FFFFFFF {
-		return nil, accAtom{}, false
-	}
+	// A 4-byte value with the high bit set does not fit JNE.Imm (the
+	// immediate sign-extends); emitAccPrelude compares it from a register.
 	return f.Layer, accAtom{
 		layout:       layout,
 		fieldByteOff: f.Aux.FieldBitOff / 8,
@@ -295,10 +329,19 @@ func emitAccMaskCheck(p *accPlan, qo queriedOptions, failLabel string) (asm.Inst
 	}
 	// mask fits int32: buildAccPlan caps the atoms at accMaxAtoms (16),
 	// so And.Imm / JNE.Imm suffice.
+	mask := p.mask
+	// A leaf the field can never satisfy makes the whole conjunction
+	// false. Require a bit no atom sets: the check then fails for every
+	// packet, while the accept path stays reachable in the control-flow
+	// graph (an unconditional jump would leave it unreachable, which the
+	// verifier refuses).
+	if p.never {
+		mask |= accNeverBit
+	}
 	insns := asm.Instructions{
 		asm.LoadMem(asm.R3, asm.R10, slot, asm.DWord),
-		asm.And.Imm(asm.R3, int32(p.mask)),
-		asm.JNE.Imm(asm.R3, int32(p.mask), failLabel),
+		asm.And.Imm(asm.R3, int32(mask)),
+		asm.JNE.Imm(asm.R3, int32(mask), failLabel),
 	}
 	if p.valid {
 		vslot, ok := qo.validSlot(p.layer)

@@ -45,6 +45,18 @@ func accumulatorExprs() []struct{ id, expr string } {
 		// Accumulator threaded through an alternation member: the acc slot is
 		// zeroed before the alt so the non-matching (udp) branch loads too.
 		{"tcp_opts_2_in_alt", "eth/ipv4/(tcp|udp) where tcp.options.MSS.value == 1460 and tcp.options.WS.shift == 7"},
+		// A constant the field cannot hold: the plan is marked never and the
+		// mask check is an unconditional reject.
+		{"tcp_opts_2_wide_never", "eth/ipv4/tcp where tcp.options.MSS.value == int<128>(18446744073709553076) and tcp.options.WS.shift == 7"},
+		// Every leaf never: the plan has no atoms and the mask is the
+		// never bit alone.
+		{"tcp_opts_2_all_never", "eth/ipv4/tcp where tcp.options.MSS.value == int<128>(70000) and tcp.options.WS.shift == int<128>(256)"},
+		// A 4-byte constant with the high bit set compares from a register.
+		{"tcp_opts_2_high_bit", "eth/ipv4/tcp where tcp.options.MSS.value == 1460 and tcp.options.TS.tsval == 0x80000000"},
+		// Another layer's validity flag is ANDed after the mask check; the
+		// alternation form keeps the member guard on that flag.
+		{"tcp_opts_2_other_valid", "eth/ipv4/tcp where ipv4.options.valid and tcp.options.MSS.value == 1460 and tcp.options.WS.shift == 7"},
+		{"tcp_opts_2_other_valid_alt", "eth/(ipv4|ipv6)/tcp where ipv4.options.valid and tcp.options.MSS.value == 1460 and tcp.options.WS.shift == 7"},
 	}
 }
 
