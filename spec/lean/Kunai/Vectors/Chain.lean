@@ -447,6 +447,18 @@ vector hostTcQinqOptVlan := {
   note := "only tags stand between the root eth and vlan, so it is still an outer tag" }
 vector hostTcVlanOpt := {
   id := "host-tc-vlan-optional", host := .tc_entry, ast := { layers := vlanOpt }, expected := .accept [] }
+def vlanOptBracket (tci : Nat) : List Layer :=
+  [P "eth", .proto { name := "vlan", preds := [.cmp ⟨[("tci", none)]⟩ .eq (.int tci)], quant := .opt }, P "ipv4", P "tcp"]
+vector hostTcOuterBracketAbsent := {
+  id := "host-tc-outer-bracket-absent", host := .tc_entry, ast := { layers := vlanOptBracket 100 },
+  packet := eth 0x0800 ++ ipv4 6 ++ tcp 12345 80 ++ payload 5, expected := .accept [],
+  note := "a single-tagged frame as the kernel holds it: the optional tag is absent, its predicate is not evaluated" }
+vector hostTcOuterBracketCTag := {
+  id := "host-tc-outer-bracket-ctag", host := .tc_entry, ast := { layers := vlanOptBracket 100 }, packet := vlanPkt,
+  expected := .accept [], note := "a QinQ frame as the kernel holds it: the C-tag left in the bytes is the vlan the predicate reads" }
+vector hostTcOuterBracketCTagMiss := {
+  id := "host-tc-outer-bracket-ctag-miss", host := .tc_entry, ast := { layers := vlanOptBracket 200 }, packet := vlanPkt,
+  expected := .reject, note := "the C-tag is present and its tci is 100: the predicate fails and rejects (D-001)" }
 vector hostL3Root := {
   id := "host-l3-ipv4-root", host := .cgroup_skb_entry, ast := { layers := [P "ipv4", P "tcp"] },
   packet := l3Pkt, expected := .accept [] }
@@ -465,6 +477,6 @@ def chainVectors : List Vector := [
   absentConsecutiveEthertype, absentConsecutiveSelfValid, absentConsecutiveMplsOnly, absentConsecutiveNeither, absentConsecutiveArp, quantFirstOptional,
   altFirst, altSecond, altAfterVxlan6, altAfterVxlan4, altNone, altFirstPredFails, altRoot, altNoCheck,
   hostTcExitVlanOpt, hostTcExitVlanMandatory, hostTcWireVlanMandatory, hostTcWireVlanMandatoryUntagged, hostTcWireVlanTci, hostTcWireVlanTciMiss, hostTcWireVlanWhere, hostTcWireUntaggedChainOnTagged, hostTcWireQinqVlan, hostTcWireVlanAlt, hostTcVlanMandatory, hostTcVlanAlt, hostTcVlanAltSecond, hostTcQinqVlan, hostTcQinqMandatory, hostTcQinqOpt, hostTcInnerVlan, hostTcInnerVlanTci, hostTcInnerVlanPred, hostTcQinqOptVlan, hostTcOuterAndInner, hostTcInnerLabel, hostTcOuterLabelRead,
-  hostTcMixedAlt, hostTcVlanRoot, hostL3InnerVlan, hostTcVlanOpt, hostL3Root, hostL3EthRoot]
+  hostTcMixedAlt, hostTcVlanRoot, hostL3InnerVlan, hostTcVlanOpt, hostTcOuterBracketAbsent, hostTcOuterBracketCTag, hostTcOuterBracketCTagMiss, hostL3Root, hostL3EthRoot]
 
 end Kunai

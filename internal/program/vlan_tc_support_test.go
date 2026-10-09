@@ -1,11 +1,11 @@
 package program
 
-// tc-host VLAN support: an optional, predicate-free vlan/qinq layer is
-// matchable at the tc attach point (the kernel moves the outer tag into
-// skb metadata, and the byte parser takes the layer's skip path), while
-// a mandatory tag, a field-reading predicate, or a tag inside an
-// alternation stays rejected at compile time. The datapath rationale is
-// confirmed end-to-end in vlan_untag_datapath_test.go.
+// tc-host VLAN support: an optional vlan/qinq layer is matchable at the
+// tc attach point (the kernel moves the outer tag into skb metadata, so
+// the byte parser takes the layer's skip path on a single-tagged frame
+// and reads the C-tag on a QinQ one), while a mandatory outer tag, or a
+// tag inside an alternation, is a compile-time type error. The datapath
+// rationale is confirmed end-to-end in vlan_untag_datapath_test.go.
 
 import (
 	"errors"
@@ -32,8 +32,8 @@ var tcAcceptedVlanExprs = []string{
 }
 
 // tcRejectedVlanExprs reject at compile time on the tc host: a mandatory
-// outer tag layer could never match a tagged frame, whose tag the kernel
-// stripped into skb metadata. It is a type error.
+// outer tag layer could never match a single-tagged frame, whose tag the
+// kernel stripped into skb metadata. It is a type error.
 var tcRejectedVlanExprs = []struct {
 	expr string
 	want error

@@ -102,7 +102,7 @@ type HostLayout struct {
 	//
 	// When true, a mandatory outer vlan or qinq layer (right after the
 	// root eth, with only tags in between) is the type error
-	// ErrVlanInMetadata: it could never match a tagged frame. An optional
+	// ErrVlanInMetadata: it could never match a single-tagged frame. An optional
 	// outer tag compiles, with or without predicates and reads: the filter
 	// sees the bytes the kernel holds, so the layer is absent on a
 	// single-tagged frame and reads the C-tag on a QinQ frame.

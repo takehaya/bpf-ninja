@@ -5,7 +5,6 @@ package program
 import (
 	"errors"
 	"fmt"
-	"strings"
 	"sync"
 
 	"github.com/cilium/ebpf"
@@ -695,8 +694,9 @@ var ObserverPrefetch bool
 // filter matches the frame as it was on the wire (`eth/vlan[tci==100]/…`
 // matches an 802.1Q frame, `eth/ipv4/tcp` does not). Off by default: the
 // filter reads the bytes as the kernel holds them, where `eth/ipv4/tcp`
-// also matches a tagged frame and reading the outer tag is refused at
-// compile time. Hooks without a metadata tag ignore it.
+// also matches a tagged frame, a mandatory outer tag is a compile-time
+// type error and an optional one is absent on a single-tagged frame.
+// Hooks without a metadata tag ignore it.
 var TCVlanReinsert bool
 
 // filterScanLen picks the bpf_probe_read_kernel size for runFilter:
@@ -716,10 +716,11 @@ func filterScanLen(out codegen.Output) int {
 	return n
 }
 
-// vlanInMetadataError reports whether a compile error is one of kunai's
-// refusals of a VLAN tag the host keeps in skb metadata.
+// vlanInMetadataError reports whether a compile error is kunai's type
+// error for a mandatory outer VLAN tag at a host that keeps the tag in
+// skb metadata.
 func vlanInMetadataError(err error) bool {
-	return errors.Is(err, codegen.ErrVlanInMetadata) || strings.Contains(err.Error(), "skb metadata")
+	return errors.Is(err, codegen.ErrVlanInMetadata)
 }
 
 // outerVlanTag is the hook's OuterVlanTag loader, or nil when the hook

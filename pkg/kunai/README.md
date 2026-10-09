@@ -121,8 +121,8 @@ type LangCaps struct {
 
 type HostLayout struct {
     // VlanInMetadata: the kernel pre-extracted the outer VLAN tag into
-    // skb metadata (tc), so a vlan/qinq layer that would read it from
-    // packet bytes is rejected at compile; vlan? / qinq?/vlan? compile.
+    // skb metadata (tc), so a mandatory outer vlan/qinq layer is a type
+    // error; an optional one compiles and reads whatever tag is left.
     VlanInMetadata bool
     // PacketStartsAtL3: the packet window begins at the network header
     // (cgroup-skb), so the resolver warns on an `eth/...` chain root

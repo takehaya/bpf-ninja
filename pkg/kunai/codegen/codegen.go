@@ -827,8 +827,8 @@ func checkUnsupported(p *ir.Program) error {
 // parsing packet bytes. It guards VLAN: when the host has
 // HostLayout.VlanInMetadata set (a tc host that hands the filter the
 // bytes as the kernel keeps them, after skb_vlan_untag moved the outer
-// tag into skb metadata), a vlan or qinq layer read from packet bytes
-// would see the wrong bytes. With --tc-vlan-reinsert, bpf-ninja's tc
+// tag into skb metadata), a mandatory outer vlan or qinq layer can never
+// match a single-tagged frame. With --tc-vlan-reinsert, bpf-ninja's tc
 // host puts the tag back into the filter's copy and clears the flag, so
 // none of this applies there.
 //

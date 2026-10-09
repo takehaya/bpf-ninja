@@ -94,6 +94,12 @@ func TestBpfVlanWireFrameAtTC(t *testing.T) {
 		{"default", entry, "eth/vlan[tci==200]?/ipv4/tcp", []string{"untagged", "vid100", "vid200"}},
 		{"default", entry, "eth/vlan?/ipv4/tcp where vlan.tci == 100", []string{"qinq"}},
 		{"default", entry, "eth/vlan?/ipv4/tcp where not (vlan.tci == 100)", []string{"untagged", "vid100", "vid200"}},
+		// `!=` is false on the absent tag too (D-003): only the C-tag,
+		// which is present and differs, matches.
+		{"default", entry, "eth/vlan?/ipv4/tcp where vlan.tci != 200", []string{"qinq"}},
+		// A layer-bounded capture of the optional tag keeps its length
+		// whether the tag is in the bytes (QinQ: eth + C-tag) or not.
+		{"default", entry, "eth/vlan?/ipv4/tcp capture vlan", []string{"untagged", "vid100", "vid200", "qinq"}},
 		{"default-exit", exit, "eth/ipv4/tcp where action == TC_ACT_OK", []string{"untagged", "vid100", "vid200"}},
 		{"default-gated", gated, "eth/ipv4/tcp[dport==80]", []string{"untagged", "vid100", "vid200"}},
 		{"entry", entry, "eth/vlan[tci==100]/ipv4/tcp[dport==80]", []string{"vid100"}},
@@ -124,6 +130,9 @@ func TestBpfVlanWireFrameAtTC(t *testing.T) {
 				// Captured bytes are the kernel's in both modes: a
 				// single-tagged frame shows its inner ethertype at 12.
 				for _, p := range pkts {
+					if strings.HasSuffix(tc.expr, "capture vlan") && len(p.Data) != 18 {
+						t.Errorf("frame %s: captured %d bytes, want 18 (eth + 4)", name, len(p.Data))
+					}
 					if (name == "vid100" || name == "vid200") && (len(p.Data) < 14 || p.Data[12] != 0x08 || p.Data[13] != 0x00) {
 						t.Errorf("frame %s: captured bytes % x; want the outer tag absent (ethertype 0x0800 at 12)", name, p.Data[:min(len(p.Data), 16)])
 					}

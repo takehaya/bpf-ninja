@@ -120,8 +120,8 @@ type LangCaps struct {
 
 type HostLayout struct {
     // VlanInMetadata: kernel が outer VLAN tag を skb metadata へ
-    // 抜き出し済み (tc)。true なら packet の byte 列から tag を読む
-    // vlan/qinq layer をコンパイル時に拒否する (vlan? / qinq?/vlan? は通る)。
+    // 抜き出し済み (tc)。true なら必須の outer vlan/qinq layer は型エラー。
+    // optional なら通り、byte 列に残っている tag を読む。
     VlanInMetadata bool
     // PacketStartsAtL3: パケットウィンドウが L3 ヘッダから始まる
     // (cgroup-skb)。true なら resolver は eth root の chain に警告する。
