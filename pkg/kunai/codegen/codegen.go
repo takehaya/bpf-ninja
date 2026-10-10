@@ -687,16 +687,12 @@ func emitSlotDispatchCheck(c *vocab.DispatchConst, slot int16, failLabel string)
 // with the field's within-layer byte offset as the immediate.
 const offsetBase = asm.R4
 
-// emitBoundedLoad reads R0+offsetBase+off without changing offsetBase or
-// other scratch registers. Fold into a scalar first: pointer comparisons alone
-// do not prove a ranged map-value access stays inside ScratchBufSize.
+// emitBoundedLoad reads R0+offsetBase+off into dst, writing no other
+// register: it is emitFieldLoadTo on the R4 anchor. Fold into a scalar
+// first: pointer comparisons alone do not prove a ranged map-value
+// access stays inside ScratchBufSize.
 func emitBoundedLoad(dst asm.Register, off int16, size asm.Size, failLabel string) asm.Instructions {
-	insns := foldOffsetIntoScalar(asm.R3, offsetBase, int32(off), failLabel)
-	insns = append(insns, boundedScalarLoad(asm.R3, asm.R0, asm.R3, asm.R1, size, failLabel)...)
-	if dst != asm.R3 {
-		insns = append(insns, asm.Mov.Reg(dst, asm.R3))
-	}
-	return insns
+	return emitFieldLoadTo(dst, r4Anchor(), int(off), size, failLabel)
 }
 
 // foldOffsetIntoScalar emits the scalar-arithmetic preamble that lets
@@ -711,25 +707,24 @@ func emitBoundedLoad(dst asm.Register, off int16, size asm.Size, failLabel strin
 // offset into a non-negative scalar before the pkt-pointer arithmetic
 // sidesteps the issue.
 //
-// dst may equal src: the helper tests src before it writes dst (the
-// slot anchor of emitFieldLoadTo folds in place, at the cost of a
-// self-Mov when off > 0).
+// dst may equal src: the helper tests src before it writes dst and
+// skips the copy, so the slot anchor of emitFieldLoadTo folds in place
+// (an offset of 0 then emits nothing).
 func foldOffsetIntoScalar(dst, src asm.Register, off int32, failLabel string) asm.Instructions {
+	var insns asm.Instructions
+	if off < 0 {
+		insns = append(insns, asm.JLT.Imm(src, -off, failLabel))
+	}
+	if dst != src {
+		insns = append(insns, asm.Mov.Reg(dst, src))
+	}
 	switch {
 	case off < 0:
-		return asm.Instructions{
-			asm.JLT.Imm(src, -off, failLabel),
-			asm.Mov.Reg(dst, src),
-			asm.Sub.Imm(dst, -off),
-		}
+		insns = append(insns, asm.Sub.Imm(dst, -off))
 	case off > 0:
-		return asm.Instructions{
-			asm.Mov.Reg(dst, src),
-			asm.Add.Imm(dst, off),
-		}
-	default:
-		return asm.Instructions{asm.Mov.Reg(dst, src)}
+		insns = append(insns, asm.Add.Imm(dst, off))
 	}
+	return insns
 }
 
 // boundedScalarLoad emits a `size`-byte load from scratchStart +
@@ -1146,7 +1141,8 @@ func emitStaticLayerTail(layer *ir.LayerInstance, index, hs int, qo queriedOptio
 // emitStaticLayerTail, this helper must change to match (or split
 // into a "read flag byte" / "emit triggers" pair).
 func emitFlagTriggers(ns string, fixedHs, flagsByteOff int, triggers []vocab.FlagTrigger, failLabel string) (asm.Instructions, error) {
-	// R3 is the load scratch; the first trigger overwrites it anyway.
+	// The flag byte lands in R5 and stays there across the triggers; R3
+	// is each trigger's scratch.
 	insns := emitBoundedLoad(asm.R5, int16(-fixedHs+flagsByteOff), asm.Byte, failLabel)
 	for i, tr := range triggers {
 		skipLabel := fmt.Sprintf("%s_flag_skip_%d_%s", ns, i, tr.Name)
