@@ -1876,3 +1876,21 @@ func TestCompileFlagTriggerReadIsBounded(t *testing.T) {
 		}
 	}
 }
+
+// TestCompileAuxStaticIndexSlice pins that a bit-slice narrows a 16-byte
+// aux field behind a static stack index to a loadable window, as it does
+// for a primary ipv6 address and for a runtime index: the width check in
+// fieldRefByteOffset applies to the slice, not the field.
+func TestCompileAuxStaticIndexSlice(t *testing.T) {
+	runCompileExprCases(t, []string{
+		"eth/ipv6/srv6/tcp where srv6.segments[1].addr[64:128] == 2",
+		"eth/ipv6/srv6/tcp where srv6.segments[0].addr[0:64] == 0xfc00000000000000",
+		"eth/ipv6/srv6/tcp where srv6.segments[1].addr[64:128] + 1 == 3",
+		"eth/ipv6/srv6/tcp where srv6.segments[1].addr[64:128] == srv6.segments[0].addr[64:128] + 1",
+		"eth/ipv6/srv6[segments[0].addr[64:128] == 1]/tcp",
+	})
+	// A 65..127-bit slice still has no single-register load.
+	if _, err := compileForTest("eth/ipv6/srv6/tcp where srv6.segments[1].addr[0:96] == 1"); !errors.Is(err, codegen.ErrNotImplemented) {
+		t.Fatalf("96-bit slice of a segment: err = %v, want ErrNotImplemented", err)
+	}
+}

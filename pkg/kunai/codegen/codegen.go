@@ -1926,7 +1926,10 @@ func fieldRefByteOffset(ref *ir.FieldRef) (int, int, error) {
 	if ref.Aux.FieldBitWidth%8 != 0 {
 		return 0, 0, fmt.Errorf("%w: aux field %s.%s.%s is %d bits (not byte-sized)", ErrNotImplemented, ref.Layer.Spec.Name, ref.Aux.OutParam, ref.Field.Name, ref.Aux.FieldBitWidth)
 	}
-	if ref.Aux.FieldBitWidth/8 > 8 {
+	// A bit-slice may narrow a 16-byte field (srv6.segments[i].addr) to a
+	// loadable window, as it does for a primary ipv6 address above;
+	// applySliceToOffset refuses a window over 8 bytes.
+	if ref.Slice == nil && ref.Aux.FieldBitWidth/8 > 8 {
 		return 0, 0, fmt.Errorf("%w: aux field %s.%s.%s is %d bytes (max 8)", ErrNotImplemented, ref.Layer.Spec.Name, ref.Aux.OutParam, ref.Field.Name, ref.Aux.FieldBitWidth/8)
 	}
 	off := ref.Aux.OffsetInLayer + ref.Aux.FieldBitOff/8

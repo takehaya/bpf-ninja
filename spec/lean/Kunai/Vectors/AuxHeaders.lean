@@ -488,6 +488,13 @@ vector srv6OptDynamicAtCount := {
 vector srv6OptDynamicLast := {
   id := "srv6-opt-segments-dynamic-last", ast := { layers := [P "eth", P "ipv6", Pq "srv6" .opt, P "tcp"], cond := some (.litCmp segLeft .ne (.ipv6 s1)) },
   packet := srv6Pkt 1 [s1, s2] (segsLeft := 1), expected := .accept [] }
+def segLow (i : Nat) : FieldPath := ⟨[("srv6", none), ("segments", some (.nat i)), ("addr", some (.slice 64 128))]⟩
+vector srv6StaticSlice := {
+  id := "srv6-segments-static-slice", ast := { layers := srv6L, cond := some (cmp (.field (segLow 1)) .eq (k 2)) },
+  packet := srv6Two, expected := .accept [], note := "the low 64 bits of segments[1] (fc00::2) behind a static index" }
+vector srv6StaticSliceAbsent := {
+  id := "srv6-segments-static-slice-absent", ast := { layers := srv6L, cond := some (cmp (.field (segLow 1)) .ne (k 2)) },
+  packet := srv6Pkt 0 [s1], expected := .reject, note := "D-031: entry 1 was not extracted, the sliced read is absent too" }
 def segBr (i : Nat) : FieldPath := ⟨[("segments", some (.nat i)), ("addr", none)]⟩
 def srv6Br (ρ : Predicate) : List Layer := [P "eth", P "ipv6", .proto { name := "srv6", preds := [ρ] }, P "tcp"]
 vector srv6BracketIndexAbsent := {
@@ -496,6 +503,9 @@ vector srv6BracketIndexAbsent := {
   note := "D-031 in a bracket on a stack with a count field: entry 1 was not extracted (last_entry = 0) ⇒ false even for !=" }
 vector srv6BracketIndex := {
   id := "srv6-segments-bracket-index", ast := { layers := srv6Br (.cmp (segBr 1) .eq (.ipv6 s2)) },
+  packet := srv6Two, expected := .accept [] }
+vector srv6BracketSlice := {
+  id := "srv6-segments-bracket-slice", ast := { layers := srv6Br (.cmp ⟨[("segments", some (.nat 1)), ("addr", some (.slice 64 128))]⟩ .eq (.int 2)) },
   packet := srv6Two, expected := .accept [] }
 vector srv6OverCap := {
   id := "srv6-over-capacity", ast := { layers := srv6L }, packet := srv6Pkt 8 (List.replicate 9 s1), expected := .accept [],
@@ -721,7 +731,7 @@ def auxVectors : List Vector := [
   ipv6Hbh, ipv6TwoExts, ipv6ExtLong, ipv6ExtTooLong, ipv6ExtsIndex, ipv6ExtsIndex1, ipv6ExtsIndexAfterLong, ipv6ExtsAnyAfterLong, ipv6ExtsDynamicLong, ipv6ExtsDynamicLongSecond, ipv6ExtsDynamicLongAbsent, ipv6ExtsDynamicLongLast, ipv6ExtsDynamicLongLastMiss, ipv6ExtsDynamicLongBeyond, ipv6ExtsDynamicLongSlot, ipv6ExtsDynamicLongSlotAbsent,
   ipv6ExtsBracket, ipv6ExtsBracketAbsent, ipv6ExtsBracketLong, ipv6ExtsBracketDynamic, ipv6ExtsBracketIter, ipv6ExtsBracketInAbsent, ipv6ExtsBracketInLong, ipv6ExtsSliceLong, ipv6ExtsBracketSliceLong, gtpExtsBracket, gtpExtsBracketAbsent, gtpExtsBracketNone, gtpExtsBracketMixed, gtpExtsBracketMixedMiss, ipv6ExtsIndexAbsent,
   ipv6NextHeaderWhere, ipv6NextHeaderBracket, altIPv6MemberWriteBack, altIPv6MemberWriteBackWhere, altIPv6MemberWriteBackMiss, ipv6FiveExts, ipv6SixExts, ipv6AnyExts, ipv6AllExts,
-  srv6TruncatedFails, typSrv6NoValid, geneveVersionOne, srv6SegWideLit, srv6Chain, srv6Static, srv6Dynamic, srv6Any, srv6All, srv6AllCidr, srv6IndexAbsent, srv6DynamicAtCount, srv6DynamicLast, srv6OptDynamicAtCount, srv6OptDynamicLast, srv6BracketIndexAbsent, srv6BracketIndex, srv6OverCap, srv6OverCapAnyKept, srv6OverCapAnyDropped, srv6OverCapAll, srv6OverCapNotAll,
+  srv6TruncatedFails, typSrv6NoValid, geneveVersionOne, srv6SegWideLit, srv6Chain, srv6Static, srv6Dynamic, srv6Any, srv6All, srv6AllCidr, srv6IndexAbsent, srv6DynamicAtCount, srv6DynamicLast, srv6OptDynamicAtCount, srv6OptDynamicLast, srv6BracketIndexAbsent, srv6BracketIndex, srv6StaticSlice, srv6StaticSliceAbsent, srv6BracketSlice, srv6OverCap, srv6OverCapAnyKept, srv6OverCapAnyDropped, srv6OverCapAll, srv6OverCapNotAll,
   srv6OverCapIndex, srv6OverCapLastEntry, srv6AtCapAll, srv6PastScratch, srv6TenSegs, srv6TwelveSegs, srv6OverstatedLastEntry,
   srv6OverCapAllOrTrue, srv6AbsentAllTrue, srv6AtCap,
   gtpEightExts, gtpNineExts, gtpTenExts, gtpPlain, gtpOptExists, gtpOptAbsent, gtpOptField, gtpOptFieldAbsent, gtpExtDynamicIndex, gtpExtLongFirst, gtpExtLengthZero, gtpExtStack,
