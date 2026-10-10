@@ -80,6 +80,11 @@ structure Ctx where
   layers : List Layer
   P : Packet
 
+/-- `(n, m)` of `q`; `none` = `m_chain`. -/
+def quantBounds : Quant → Nat × Option Nat
+  | .one => (1, some 1) | .opt => (0, some 1) | .plus => (1, none) | .star => (0, none)
+  | .range n m => (n, m)
+
 /-- Hard cap on quantifier iterations (`bpfLoopChainCap` in Go). -/
 def chainCap : Nat := 32
 

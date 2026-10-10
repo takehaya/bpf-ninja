@@ -79,8 +79,10 @@ also runs `Runner.Match` on every vector whose compile is expected to
 succeed, compiled for the vector's host (`dsltest.NewFromOutput`); on an
 exit host the vector's `action` stands in for the traced program's return
 value. The test compares the
-verdict only: `Runner.Match` returns the verdict, so the `captures` ranges
-in the JSON are not checked against the BPF program yet.
+verdict, plus the capture length for `headers` / `headers+N` / `absolute`
+clauses: `Runner.Match` returns the verdict, and `spec_capture_test.go`
+compares the largest range end the spec expects with `min(MaxCapLen, |P|)`
+(D-039). A `capture <layer>` or `all` clause keeps a vector verdict-only.
 
 ## Conventions for the Lean code
 

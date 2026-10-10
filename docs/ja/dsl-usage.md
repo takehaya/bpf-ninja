@@ -287,6 +287,7 @@ per-capture の `where` はトップレベルの `where` と AND で合成され
 MVP では次の制限があります。
 
 - フィールド列指定 (`capture tcp.flags, ipv4.dst`) は未対応です。
+- `capture headers` の長さは各 layer の固定ヘッダ長の合計で、IPv4 option や TCP option、IPv6 の拡張ヘッダのように parser が歩いた可変部分は含みません。`eth/ipv6/tcp capture headers` に Hop-by-Hop 拡張ヘッダ 8 byte が付いたフレームでは 74 byte で切れるので、拡張ヘッダまで欲しいときは `headers+N` か `capture all` を使います。
 - capture の長さは compile 時に決まる上限です。量化 layer (`?`/`+`/`*`/`{n,m}`) を含むフィルタでは、その layer が最大数マッチした場合の長さを取ります (`eth/vlan?/ipv4/tcp capture headers` は 58 byte、`eth/mpls+/ipv4/tcp capture headers` は MPLS_MAX_DEPTH 分の 32 byte を含む)。layer が無い / 短いパケットでは、その分だけ余分に capture されます (`min(pkt_len, 上限)` で切られる)。`capture vlan` のように無いかもしれない layer を対象にすると、無いときも同じ上限が使われます。複数の capture 句を書いた場合も実装は句ごとの上限の最大値を 1 つ使うので、「vlan があれば vlan+8、無ければ ipv4+8」のような実行時の使い分けは (仕様上は句を落として表現できますが) 実装ではできません。
 - proto 名で指定するとき chain 内に複数 instance があると ambiguous error になります。`@label` で一意化します。
 - `absolute` は capture 内の contextual keyword です。label が `absolute` という名前と衝突する稀なケースでは `absolute+0` で label 解釈を強制できます。

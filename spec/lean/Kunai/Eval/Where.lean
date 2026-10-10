@@ -496,16 +496,36 @@ def evalWhere (c : Ctx) (st : State) (env : IterEnv) : Where → Except Stop Boo
     let b ← evalWhere c st env r
     pure (if op == .eq then a == b else a != b)
 
+/-- The most headers a layer can match (`layerMaxInstances` in Go): the upper
+bound of its quantifier (`quantBounds`), the protocol's `maxDepth` for an open
+bound (`+`, `*`, `{n,}`). This is the fuel `evalProtoLayer` iterates with, so
+the capture bound counts exactly the headers the chain can extract. -/
+def maxInstances (c : Ctx) (p : ProtoLayer) : Nat :=
+  (quantBounds p.quant).2.getD (((c.V.proto? p.name).map (·.maxDepth)).getD 8)
+
+/-- D-039: the bytes `capture headers` keeps are a bound computed from the
+chain's shape, not the cursor: every protocol's fixed header, counted as
+many times as its quantifier allows, the largest member of an alternation.
+Options and extension headers the parser walked are not counted, so a frame
+that carries them is cut inside its last header. -/
+def headersBound (c : Ctx) : Nat :=
+  let fixedLen (p : ProtoLayer) : Nat := ((c.V.proto? p.name).map (·.fixedLen)).getD 0
+  let layerBound : Layer → Nat
+    | .proto p => fixedLen p * maxInstances c p
+    | .alt alts => (alts.map fun a => fixedLen a * maxInstances c a).foldl max 0
+  (c.layers.map layerBound).foldl (· + ·) 0
+
 /-- §13.6 `eval-cap`. The per-capture `where` is ANDed into the verdict
-(D-021), so a false one rejects. `none` = the target layer is absent (D-020). -/
+(D-021), so a false one rejects. `none` = the target layer is absent (D-020).
+`headers` keeps `headersBound` bytes (D-039), clamped to the packet. -/
 def evalCapture (c : Ctx) (st : State) (cap : Capture) : Except Stop (Option (Nat × Nat)) := do
   let gate ← match cap.cond with | some w => evalWhere c st [] w | none => pure true
   if !gate then throw .reject
   let n := c.P.length
   match cap.spec with
   | .all => pure (some (0, n))
-  | .headers => pure (some (0, min st.cursor n))
-  | .headersPlus k => pure (some (0, min (st.cursor + k) n))
+  | .headers => pure (some (0, min (headersBound c) n))
+  | .headersPlus k => pure (some (0, min (headersBound c + k) n))
   | .absolute k => pure (some (0, min k n))
   | .toLayer name k =>
     match ← resolveRef c st name with

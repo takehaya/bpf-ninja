@@ -122,7 +122,8 @@ func runSpecVectors(t *testing.T, vectors []specVector) {
 				t.Logf("documented divergence (not asserted): %s; compile err=%v", v.Note, err)
 				return
 			}
-			if _, err := parser.Parse(v.Expr, "", nil); err != nil && v.Expected.Kind != "illTyped" {
+			parsed, err := parser.Parse(v.Expr, "", nil)
+			if err != nil && v.Expected.Kind != "illTyped" {
 				t.Fatalf("parse %q: %v", v.Expr, err)
 			}
 			out, err := kunai.Compile(v.Expr, caps)
@@ -143,12 +144,13 @@ func runSpecVectors(t *testing.T, vectors []specVector) {
 				t.Fatalf("Compile(%q): %v", v.Expr, err)
 			}
 			want := v.Expected.Kind == "accept"
-			if !root || (len(v.Sets) > 0 && !want) {
-				return
-			}
 			pkt, err := hex.DecodeString(v.Packet)
 			if err != nil {
 				t.Fatalf("packet hex: %v", err)
+			}
+			checkCaptureBound(t, v, parsed, out, len(pkt))
+			if !root || (len(v.Sets) > 0 && !want) {
+				return
 			}
 			// Twice, with kunai's stack filled with zeros and with ones: a
 			// slot read before it is written shows up as a verdict that

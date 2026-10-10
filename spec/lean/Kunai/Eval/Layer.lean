@@ -160,11 +160,6 @@ def extract (c : Ctx) (st : State) (p : ProtoLayer) : Except LayerFail State := 
   checkPreds c spec inst p.preds
   pure (st.push p.label inst)
 
-/-- `(n, m)` of `q`; `none` = `m_chain`. -/
-def quantBounds : Quant → Nat × Option Nat
-  | .one => (1, some 1) | .opt => (0, some 1) | .plus => (1, none) | .star => (0, none)
-  | .range n m => (n, m)
-
 /-- The last extracted header of a chain-end protocol must carry the end
 signal once the iteration bound is reached, else the stack is deeper than
 the quantifier allows ([E-Quant-Range-Fail-Overrun], D-024). No-op for
