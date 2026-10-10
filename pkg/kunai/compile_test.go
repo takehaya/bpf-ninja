@@ -1874,6 +1874,12 @@ func TestCompileFlagTriggerReadIsBounded(t *testing.T) {
 		if !okLoad || !okCheck {
 			t.Fatalf("%s: flag byte read is\n%v\n%v\nwant `JGT ptr, R1 -> dsl_reject` then `LDX.B ptr, [ptr-1]` (bounded idiom)", expr, chk, ld)
 		}
+		// The trigger reads the byte from the register the load wrote
+		// (`Mov R3, <byte>` right before the mask): a load into another
+		// register would verify and silently test the wrong value.
+		if mv := insns[mask-1]; mv.OpCode != asm.Mov.Op(asm.RegSource) || mv.Dst != asm.R3 || mv.Src != ld.Dst {
+			t.Fatalf("%s: instruction before the mask is %v; want `Mov R3, %v` (the flag byte's register)", expr, mv, ld.Dst)
+		}
 	}
 }
 
