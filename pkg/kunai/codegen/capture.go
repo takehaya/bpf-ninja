@@ -125,14 +125,18 @@ func inferFilterMinPrefix(p *ir.Program, where *ir.Condition) (prefix int) {
 //   - CapToLayer: prefix sum up to and including the target layer + Extra
 //   - CapAbsolute: c.Extra (= N), independent of chain shape
 //
-// The length is a compile-time upper bound: the host clamps it with
-// min(pkt_len, MaxCapLen), so a heterogeneous alternation counts its
-// largest member and a quantified layer every instance it may match
-// (prefixHeaderSizeUpper). A skipped optional layer or a shorter stack
-// then over-captures by the unused instances' bytes; the verdict is
-// unaffected. The spec drops a `capture <layer>` clause whose target is
-// absent (D-020); the length being an immediate, Go captures the upper
-// bound instead.
+// The length is a compile-time constant computed from the chain's
+// shape: the fixed header of every layer, a heterogeneous alternation
+// counting its largest member and a quantified layer every instance it
+// may match (prefixHeaderSizeUpper). The host clamps it with
+// min(pkt_len, MaxCapLen). Options and extension headers the parser
+// walks are not counted, so a frame carrying them is cut inside its
+// last header, and a skipped optional layer or a shorter stack
+// over-captures by the unused instances' bytes; the verdict is
+// unaffected. The spec defines `headers` the same way (D-039,
+// headersBound in Eval/Where.lean). It drops a `capture <layer>` clause
+// whose target is absent (D-020); the length being an immediate, Go
+// captures the bound instead.
 func captureLength(c *ir.CaptureClause, p *ir.Program) (int, error) {
 	switch c.Kind {
 	case ast.CapAll:

@@ -1155,11 +1155,16 @@ gate(cap(spec, ε),  σ)         = true
 gate(cap(spec, w),  σ)         = ⟨w, σ⟩ ⇓_P true             ; per-capture where 句。filter 全体の where と AND 合成 (D-021)
 
 eval-cap(cap(all, _), σ, P)             = (0, |P|, P)
-eval-cap(cap(headers, _), σ, P)         = (0, π_now, P[..π_now])              ; π_now = chain 終了時の cursor
-eval-cap(cap(headers+N, _), σ, P)       = (0, min(π_now + N, |P|), …)
+eval-cap(cap(headers, _), σ, P)         = (0, min(hdrs(L̄), |P|), …)          ; hdrs は chain の形から決まる定数 (D-039)
+eval-cap(cap(headers+N, _), σ, P)       = (0, min(hdrs(L̄) + N, |P|), …)
 eval-cap(cap(label+N, _), σ, P)         = (off(Λ[label]), min(off(...) + |label_layer| + N, |P|), …)
                                                                  ; Λ[label] が無い (layer が skip された) ときはこの句を省く (D-020)。
                                                                  ; 実装の capture 長は compile 時の上限 (全 instance がある場合) で、無いときは余分に capture する
+
+hdrs(L̄)                 = Σ_{L ∈ L̄} hdrs(L)
+hdrs(proto(p, _, q, _)) = fixed(p) × inst(q)                     ; fixed(p) = p の固定ヘッダ長 (option / 拡張ヘッダは含まない)
+hdrs(alt(L̄))            = max_{L ∈ L̄} hdrs(L)
+inst(1) = inst(?) = 1,  inst({n,m}) = m,  inst(+) = inst(*) = inst({n,}) = MAX_DEPTH(p)
 eval-cap(cap(proto+N, _), σ, P)         = (off(layer_of(proto)), …)
 eval-cap(cap(absolute(N), _), σ, P)     = (0, min(N, |P|), …)
 eval-cap(cap(layer-target,_), σ, P)     = layer-instance のバイト範囲

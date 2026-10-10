@@ -222,6 +222,27 @@ vector capAltMemberAbsent := {
   note := "D-020: ipv6 matched, so a is absent and the clause is dropped; Go captures the member's compile-time upper bound (34 bytes), the verdict agrees" }
 vector capAltMemberByName := {
   id := "cap-alt-member-by-name", ast := capAltL3 "ipv6", packet := ipv6TCP, expected := .accept [(14, 54)] }
+-- D-039: `headers` is a bound from the chain's shape, not the cursor.
+def capHeaders (layers : List Layer) (k : Option Nat := none) : Filter :=
+  { layers, captures := [{ spec := match k with | some k => .headersPlus k | none => .headers }] }
+vector capHeadersIPv4Options := {
+  id := "cap-headers-ipv4-options", ast := capHeaders chain3, packet := ihl6Pkt, expected := .accept [(0, 54)],
+  note := "D-039: 14 + 20 + 20 fixed bytes; the four option bytes the cursor walked are not counted (the cursor is at 58)" }
+vector capHeadersTCPOptions := {
+  id := "cap-headers-tcp-options", ast := capHeaders chain3, packet := doff8Pkt, expected := .accept [(0, 54)],
+  note := "D-039: tcp data_offset 8 moves the cursor to 66, the capture stays at 54" }
+vector capHeadersQuantOpt := {
+  id := "cap-headers-quant-opt", ast := capHeaders vlanOpt, expected := .accept [(0, 58)],
+  note := "D-039: the absent vlan? still counts its 4 bytes (Go MaxCapLen 58 on an untagged frame)" }
+vector capHeadersQuantRange := {
+  id := "cap-headers-quant-range", ast := capHeaders (mplsRange 1 (some 3)), packet := mpls3, expected := .accept [(0, 66)],
+  note := "D-039: 14 + 3 * 4 + 20 + 20, the upper bound of {1,3}" }
+vector capHeadersQuantPlusClamped := {
+  id := "cap-headers-quant-plus-clamped", ast := capHeaders [P "eth", Pq "mpls" .plus, P "ipv4", P "tcp"], packet := mpls1,
+  expected := .accept [(0, 63)], note := "D-039: 14 + 8 * 4 + 20 + 20 = 86 (mpls maxDepth 8), clamped to the 63-byte frame" }
+vector capHeadersPlusOptions := {
+  id := "cap-headers-plus-ipv4-options", ast := capHeaders chain3 (some 8), packet := ihl6Pkt, expected := .accept [(0, 62)],
+  note := "D-039: headers+8 is the bound plus 8, whatever the cursor did" }
 
 -- Typing (§12) ------------------------------------------------------------------
 
@@ -770,6 +791,7 @@ def whereVectors : List Vector := [
   actionEntry, actionHit, actionMiss, actionUnknown,
   predCmp, predCmpMiss, predInList, predInListMiss, predInRange, typPredInRangeWide, typPredCmpRange, predInRangeMiss, predNegative, predIPv4,
   capAll, capWhereFalse, capWhereTrue, capLabel, capAbsent, capPresent, capAltMemberPresent, capAltMemberAbsent, capAltMemberByName,
+  capHeadersIPv4Options, capHeadersTCPOptions, capHeadersQuantOpt, capHeadersQuantRange, capHeadersQuantPlusClamped, capHeadersPlusOptions,
   typUnknownProto, typNoDispatch, typNotInChain, typUnknownField, typFit, typLabelCollides, typLabelCollidesAlt, typLabelDuplicate, typFitArith, whereArithRight, whereArithRightMiss, typFitArithSibling, whereNegLitSibling, typWidthIPv6, typCIDRWidth,
   typPredIdent, typInSet, predInSetMember, predInSetMiss, typPredInSetWidth, predInSetSubByte, predInSetWindow, typPredInSetWindow, typPredInSetTwice, typPredInSetBudget, typPredInSetOptional, typPredInSetAlt, typAny, typExists, typAuxPath,
   arith128AddConst, arith128SubConst, arith128AddCarry, arith128AddWrap, arith128SubBorrow, arith128SubWrap, arith128AddMiss,

@@ -275,6 +275,14 @@ def exts0 := Arith.field ⟨[("ipv6", none), ("exts", some (.nat 0)), ("next_hea
 def exts1 := Arith.field ⟨[("ipv6", none), ("exts", some (.nat 1)), ("next_header", none)]⟩
 def extsIter := Arith.field ⟨[("ipv6", none), ("exts", none), ("next_header", none)]⟩
 def hbhTcp : Packet := ipv6With 0 (ipv6Ext 6)
+-- D-039: `capture headers` does not count the extension header the parser walked.
+vector capHeadersIPv6Ext := {
+  id := "cap-headers-ipv6-ext", ast := { layers := [P "eth", P "ipv6", P "tcp"], captures := [{ spec := .headers }] },
+  packet := hbhTcp, expected := .accept [(0, 74)],
+  note := "D-039: 14 + 40 + 20; the 8-byte Hop-by-Hop header is walked but not counted, so the record ends 8 bytes inside tcp (cursor 82)" }
+vector capHeadersPlusIPv6Ext := {
+  id := "cap-headers-plus-ipv6-ext", ast := { layers := [P "eth", P "ipv6", P "tcp"], captures := [{ spec := .headersPlus 8 }] },
+  packet := hbhTcp, expected := .accept [(0, 82)], note := "D-039: headers+8 reaches the end of tcp on this frame by coincidence of the sizes" }
 def twoExts : Packet := ipv6With 0 (ipv6Ext 60 ++ ipv6Ext 6)
 
 vector ipv6Hbh := {
@@ -731,6 +739,7 @@ vector greOptAbsent := {
   note := "no gre: the inner ipv4 dispatches on the outer protocol = 4" }
 
 def auxVectors : List Vector := [
+  capHeadersIPv6Ext, capHeadersPlusIPv6Ext,
   srv6AnyLabel, srv6AllAbsent, srv6OptPresent, srv6OptAbsent, srv6OptAnyPresent, srv6OptAnyAbsent, srv6OptBroken, srv6OptThenIPv4Opt, tcpOptAccAbsent, greOptPresent, greOptAbsent,
   rrNoSighting, sackNoSighting,
   grePlain, greKey, greKeySeq, greAllFlags, greKeyTruncated, greAllTruncatedLast, greAllLast,

@@ -143,12 +143,13 @@ func runSpecVectors(t *testing.T, vectors []specVector) {
 				t.Fatalf("Compile(%q): %v", v.Expr, err)
 			}
 			want := v.Expected.Kind == "accept"
-			if !root || (len(v.Sets) > 0 && !want) {
-				return
-			}
 			pkt, err := hex.DecodeString(v.Packet)
 			if err != nil {
 				t.Fatalf("packet hex: %v", err)
+			}
+			checkHeadersCaptureBound(t, v, out, len(pkt))
+			if !root || (len(v.Sets) > 0 && !want) {
+				return
 			}
 			// Twice, with kunai's stack filled with zeros and with ones: a
 			// slot read before it is written shows up as a verdict that

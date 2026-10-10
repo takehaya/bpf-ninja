@@ -315,6 +315,12 @@ Entries are never deleted; a rejected candidate stays in the log.
 - 決定 (ユーザー決定、2026-10-07): 素の整数リテラルは [−2⁶³, 2⁶⁴) のまま (`Int<128>` 文脈でも、超えれば illTyped)。2⁶⁴ 以上は型付きリテラル `int<128>(n)` (10 進、[0, 2¹²⁸)) で書く。`int<128>(n)` は文脈から幅を取らず常に `Int<128>` で、小さい値も書ける。それを含む算術は 128 bit で計算する (D-035、`+` `-` のみ)。where 式の中だけで、bracket predicate の値には書けない。
 - 反映先: `Syntax.lean` `Arith.wide`, `Eval/Core.lean` `narrowInt` (64 bit の範囲) / `wideLit`, `Eval/Where.lean` `arithWidth` / `evalArith`, `Eval/Check.lean` `checkArith`, `Print.lean`, `Json.lean`, vectors `arith-128-wide-lit*`, `tcp-opt-mss-wide`, `typ-arith-128-wide-mul`, `typ-arith-128-plain-too-wide`; Go lexer `TokWide`, `ast/ir.ArithExpr.Wide` / `ConstHi`, resolver と codegen は `int<128>(n)` を Int<128> の operand として扱う
 
+## D-039: `capture headers` の長さ
+- 論点: §13.6 は `capture headers` を chain 終了時の cursor (`π_now`) までとしていた。Go の `captureLength` は chain の形から compile 時に決まる定数 (各 layer の固定ヘッダ長、quantifier は上限の個数、alternation は最大の member) を `MaxCapLen` とし、host が `min(pkt_len, MaxCapLen)` を capture する。`eth/ipv6/tcp capture headers` に 8 byte の Hop-by-Hop が付いたフレームでは、仕様は 82 byte、Go は 74 byte で、IPv4 option や TCP option でも同じ差が出る (#180 の review で判明)。
+- 候補: (a) Go を cursor に揃える (filter が chain 終了時の cursor を slot に保存して accept 時に返し、xdp native / tracing / gated の 3 host が caplen を clamp する。ringbuf の reserve は定数が要るので、可変長 layer を含む chain では host 既定の 1500 まで広がる) / (b) 仕様を Go の静的な上限に揃える。
+- 決定 (ユーザー決定、2026-10-11): (b)。長さは ringbuf reserve の定数として host に渡るものであり (D-020 追記と同じ経路の制約)、dsl-usage / dsl-grammar は元から固定ヘッダ合計の意味で書かれている。option や拡張ヘッダまで欲しければ `headers+N` か `capture all` を使う。`capture <layer>` は D-020 のまま (仕様は instance の範囲、Go は静的な上限)。
+- 反映先: `Eval/Where.lean` `maxInstances` / `headersBound` / `evalCapture`、vectors `cap-headers-ipv4-options`, `cap-headers-tcp-options`, `cap-headers-quant-opt`, `cap-headers-quant-range`, `cap-headers-quant-plus-clamped`, `cap-headers-plus-ipv4-options`, `cap-headers-ipv6-ext`, `cap-headers-plus-ipv6-ext`; Go runner は `headers` 句だけの vector で `min(MaxCapLen, |P|)` と Lean の終端を比べる; `dsl-types.md` §13.6
+
 ## Go 側への issue 候補 (この作業では変更しない)
 
 `fix/kunai-spec-conformance` で対応済みのものは ✅、残りは `issues/` に本文がある。
