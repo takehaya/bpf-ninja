@@ -60,10 +60,7 @@ func genPredicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, error) {
 		}
 	case staticHeaderCountedIndex(pred.Field):
 		cnt := pred.Field.Layer.Spec.StackCounts[pred.Field.Aux.OutParam]
-		guard = emitFieldLoad(r4Anchor(), cnt.ByteOff, asm.Byte)
-		if cnt.Addend != 0 {
-			guard = append(guard, asm.Add.Imm(asm.R3, int32(cnt.Addend)))
-		}
+		guard = emitHeaderCount(asm.R3, r4Anchor(), cnt, dslReject)
 		guard = append(guard, asm.JLE.Imm(asm.R3, int32(pred.Field.Aux.Stack.Static), dslReject))
 	}
 

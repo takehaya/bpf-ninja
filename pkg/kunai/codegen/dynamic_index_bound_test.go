@@ -6,6 +6,7 @@ import (
 	"github.com/cilium/ebpf/asm"
 
 	"github.com/takehaya/bpf-ninja/pkg/kunai/ir"
+	"github.com/takehaya/bpf-ninja/pkg/kunai/vocab"
 )
 
 // TestEmitDynamicIndexReadHeaderCountAnchors pins the shape of the
@@ -18,7 +19,7 @@ import (
 // in R3, the slot value stays in R5, and the compare is `JGE R3, R2`.
 func TestEmitDynamicIndexReadHeaderCountAnchors(t *testing.T) {
 	ref := &ir.FieldRef{Aux: &ir.AuxRef{Stack: &ir.StackIndex{Capacity: 8}}}
-	bound := indexBound{hdr: true, byteOff: 4, addend: 1}
+	bound := indexBound{hdr: &vocab.StackCountSpec{ByteOff: 4, Addend: 1}}
 	anchors := map[string]layerAnchor{
 		"slot": slotAnchor(-240),
 		"r4":   r4Anchor(),
@@ -50,7 +51,7 @@ func TestEmitDynamicIndexReadHeaderCountAnchors(t *testing.T) {
 						t.Errorf("count read writes %v: %v", ins.Dst, ins)
 					}
 				}
-				if ins.OpCode.Class() == asm.LdXClass {
+				if ins.OpCode.Class() == asm.LdXClass && ins.Src != asm.R10 {
 					loads++
 					if ins.OpCode != asm.LoadMemOp(asm.Byte) || ins.Src != asm.R2 || ins.Offset != -1 {
 						t.Errorf("count load %v is not the bounded byte load", ins)
