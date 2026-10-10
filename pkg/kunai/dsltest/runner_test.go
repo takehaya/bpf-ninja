@@ -899,6 +899,30 @@ func TestIPv4OptionsRRAddrStaticIndex(t *testing.T) {
 		OptionData:   append([]byte{4}, append([]byte{10, 0, 0, 2}, 0, 0, 0, 0)...),
 	}}
 	r.MustReject(t, Build(t, mismatch), "addrs[0].addr != 10.0.0.1")
+
+	// A full-width slice of the owner-bound field is the field; the
+	// literal is typed against the slice width (32 here).
+	for _, c := range []struct {
+		expr          string
+		match, reject bool
+	}{
+		{"eth/ipv4/tcp where ipv4.options.RR.addrs[0].addr[0:32] == 10.0.0.1", true, false},
+		{"eth/ipv4/tcp where ipv4.options.RR.addrs[0].addr[0:32] != 10.0.0.1", false, true},
+		{"eth/ipv4/tcp where ipv4.options.RR.addrs[0].addr[0:32] == 10.0.0.0/8", true, true},
+		{"eth/ipv4/tcp where ipv4.options.RR.addrs[0].addr[0:32] == 11.0.0.0/8", false, false},
+	} {
+		s := New(t, c.expr)
+		if c.match {
+			s.MustMatch(t, Build(t, o), c.expr+" on 10.0.0.1")
+		} else {
+			s.MustReject(t, Build(t, o), c.expr+" on 10.0.0.1")
+		}
+		if c.reject {
+			s.MustMatch(t, Build(t, mismatch), c.expr+" on 10.0.0.2")
+		} else {
+			s.MustReject(t, Build(t, mismatch), c.expr+" on 10.0.0.2")
+		}
+	}
 }
 
 // TestIPv4OptionsRRAddrAnyQuantifier exercises any() over the RR
@@ -1599,4 +1623,56 @@ func TestAuxStackSrv6StaticIndexSlice(t *testing.T) {
 	brNarrow := New(t, "eth/ipv6/srv6[segments[1].addr[124:128] == 2]/tcp")
 	brNarrow.MustMatch(t, narrow, "bracket: low nibble")
 	brNarrow.MustReject(t, one, "bracket: low nibble of an absent entry")
+}
+
+// TestNetworkLiteralOnSlice: a network literal compared with a bit-slice
+// reads exactly the sliced bytes. The low 32 bits of fc00::a00:1 are
+// 10.0.0.1; the low 48 bits are 00:00:0a:00:00:01.
+func TestNetworkLiteralOnSlice(t *testing.T) {
+	pkt := BuildEthIPv6TCP(t, net.ParseIP("fc00::1"), net.ParseIP("fc00::a00:1"), 1234, 80)
+
+	New(t, "eth/ipv6/tcp where ipv6.dst[96:128] == 10.0.0.1").MustMatch(t, pkt, "low 32 bits as an IPv4 literal")
+	New(t, "eth/ipv6/tcp where 10.0.0.1 == ipv6.dst[96:128]").MustMatch(t, pkt, "literal on the left")
+	New(t, "eth/ipv6/tcp where ipv6.dst[96:128] == 10.0.0.2").MustReject(t, pkt, "low 32 bits mismatch")
+	New(t, "eth/ipv6/tcp where ipv6.dst[96:128] != 10.0.0.2").MustMatch(t, pkt, "!= on the sliced word")
+	New(t, "eth/ipv6/tcp where ipv6.dst[0:32] == 10.0.0.1").MustReject(t, pkt, "the high word is fc00:0000, not the literal")
+	New(t, "eth/ipv6/tcp where ipv6.dst[96:128] == 10.0.0.0/8").MustMatch(t, pkt, "CIDR on the sliced word")
+	New(t, "eth/ipv6/tcp where ipv6.dst[96:128] == 11.0.0.0/8").MustReject(t, pkt, "CIDR mismatch on the sliced word")
+	New(t, "eth/ipv6/tcp where ipv6.dst[80:128] == 00:00:0a:00:00:01").MustMatch(t, pkt, "low 48 bits as a MAC literal")
+	New(t, "eth/ipv6/tcp where ipv6.dst[80:128] == 00:00:0a:00:00:02").MustReject(t, pkt, "MAC literal mismatch")
+	New(t, "eth/ipv6/tcp where ipv6.dst[0:128] == fc00::a00:1").MustMatch(t, pkt, "a full-width slice is the field")
+
+	br := New(t, "eth/ipv6[dst[96:128] == 10.0.0.1]/tcp")
+	br.MustMatch(t, pkt, "bracket: low 32 bits")
+	New(t, "eth/ipv6[dst[96:128] == 10.0.0.2]/tcp").MustReject(t, pkt, "bracket mismatch")
+	New(t, "eth/ipv6[dst[96:128] == 10.0.0.0/8]/tcp").MustMatch(t, pkt, "bracket CIDR on the sliced word")
+	New(t, "eth/ipv6[dst[96:128] == 11.0.0.0/8]/tcp").MustReject(t, pkt, "bracket CIDR mismatch")
+	New(t, "eth/ipv6[dst[80:128] == 00:00:0a:00:00:01]/tcp").MustMatch(t, pkt, "bracket MAC on the sliced bytes")
+	New(t, "eth/ipv6[dst[80:128] == 00:00:0a:00:00:02]/tcp").MustReject(t, pkt, "bracket MAC mismatch")
+	New(t, "eth/ipv6[dst[0:128] == fc00::/16]/tcp").MustMatch(t, pkt, "bracket CIDR6 on a full-width slice")
+	New(t, "eth/ipv6/tcp where ipv6.dst[0:128] == fc00::/16").MustMatch(t, pkt, "CIDR6 on a full-width slice")
+
+	// Aux fields: the last word of segments[1] (fc00::2) is 0.0.0.2.
+	two := BuildSRv6(t, SRv6Opts{Segments: []net.IP{net.ParseIP("fc00::1"), net.ParseIP("fc00::2")}, InnerNextHeader: 6})
+	one := BuildSRv6(t, SRv6Opts{Segments: []net.IP{net.ParseIP("fc00::1")}, InnerNextHeader: 6})
+	New(t, "eth/ipv6/srv6/tcp where srv6.segments[1].addr[96:128] == 0.0.0.2").MustMatch(t, two, "static index: low word")
+	New(t, "eth/ipv6/srv6/tcp where srv6.segments[0].addr[96:128] == 0.0.0.2").MustReject(t, two, "static index: segments[0] ends in 1")
+	New(t, "eth/ipv6/srv6/tcp where srv6.segments[1].addr[96:128] != 0.0.0.2").MustReject(t, one, "absent entry is false for != (D-031)")
+	New(t, "eth/ipv6/srv6/tcp where srv6.segments[srv6.last_entry].addr[96:128] == 0.0.0.2").MustMatch(t, two, "dynamic index: low word")
+	// `!=` on the dynamic IPv4 arm used to come out inverted (the op was
+	// folded into the jump and routed again by whereDynamicMultiByte).
+	New(t, "eth/ipv6/srv6/tcp where srv6.segments[srv6.last_entry].addr[96:128] != 0.0.0.2").MustReject(t, two, "dynamic index: != on the matching word")
+	New(t, "eth/ipv6/srv6/tcp where srv6.segments[srv6.last_entry].addr[96:128] != 0.0.0.1").MustMatch(t, two, "dynamic index: != on another word")
+	New(t, "eth/ipv6/srv6/tcp where srv6.segments[srv6.last_entry].addr[96:128] == 0.0.0.0/8").MustMatch(t, two, "dynamic index: CIDR on the low word")
+	New(t, "eth/ipv6/srv6/tcp where srv6.segments[srv6.last_entry].addr[80:128] == 00:00:00:00:00:02").MustMatch(t, two, "dynamic index: low 48 bits as a MAC literal")
+	New(t, "eth/ipv6/srv6/tcp where srv6.segments[srv6.last_entry].addr[80:128] == 00:00:00:00:00:03").MustReject(t, two, "dynamic index: MAC literal mismatch")
+	New(t, "eth/ipv6/srv6/tcp where srv6.segments[srv6.last_entry].addr[0:128] == fc00::2").MustMatch(t, two, "dynamic index: a full-width slice is the field")
+	New(t, "eth/ipv6/srv6/tcp where srv6.segments[1].addr[80:128] == 00:00:00:00:00:02").MustMatch(t, two, "static index: low 48 bits as a MAC literal")
+	brSeg := New(t, "eth/ipv6/srv6[segments[1].addr[96:128] == 0.0.0.2]/tcp")
+	brSeg.MustMatch(t, two, "bracket: low word of segments[1]")
+	brSeg.MustReject(t, one, "bracket: segments[1] absent")
+	New(t, "eth/ipv6/srv6[segments[1].addr[80:128] == 00:00:00:00:00:02]/tcp").MustMatch(t, two, "bracket: low 48 bits of segments[1] as a MAC literal")
+	New(t, "eth/ipv6/srv6[segments[1].addr[0:128] == fc00::2]/tcp").MustMatch(t, two, "bracket: a full-width slice of segments[1]")
+	New(t, "eth/ipv6/srv6[segments[1].addr[0:128] == fc00::/16]/tcp").MustMatch(t, two, "bracket: CIDR6 on a full-width slice of segments[1]")
+	New(t, "eth/ipv6/srv6[segments[1].addr[0:128] == fd00::/16]/tcp").MustReject(t, two, "bracket: CIDR6 mismatch on segments[1]")
 }

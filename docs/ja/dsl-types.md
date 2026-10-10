@@ -536,6 +536,10 @@ literal の暗黙幅と field の幅が異なるときに reject します。
 | `tcp.dport == aa:bb:cc:dd:ee:ff` | ❌ MAC literal は Int<48>、tcp.dport は Int<16> → width mismatch |
 | `ipv4.dst == fe80::/64` | ❌ CIDR6 (Int<128> 用)、ipv4.dst は Int<32> → AF mismatch |
 | `tcp.dport == XDP_DROP` | ❌ Action と Int<16> → kind mismatch |
+| `ipv6.dst[64:128] == fc00::2` | ❌ IPv6 literal は Int<128>、slice 後の ipv6.dst[64:128] は Int<64> → width mismatch |
+| `ipv6.dst[96:128] == 10.0.0.1` | ✅ slice 後の幅 Int<32> が IPv4 literal と一致する |
+
+field の幅は §3.4 の slice を適用した後の幅 (T-FieldSlice) です。bracket predicate の `==` と `in [...]` の各要素も同じ規則で、`ipv6[dst[64:128] == fc00::2]` は reject、`ipv6[dst[96:128] == 10.0.0.1]` は通ります。
 
 補足すると、§3.2 で IP/MAC を Int<N> に吸収したので同幅であれば OK とも書けますが、リテラル parser が識別している kind 情報 (IPv4 / IPv6 / MAC) を使って、`IPv4 literal cannot be compared with bit<16> field tcp.dport (IPv4 requires bit<32>)` のようなより親切なエラーメッセージを出します。
 
@@ -561,6 +565,7 @@ IPv6 address literal needs a bit<128> field; ipv4.dst is bit<32>
 MAC address literal needs a bit<48> field; tcp.dport is bit<16>
 IPv4 CIDR literal needs a bit<32> field; tcp.dport is bit<16>
 IPv6 CIDR literal needs a bit<128> field; ipv4.dst is bit<32>
+IPv6 address literal needs a bit<128> field; ipv6.dst[64:128] is bit<64>   # slice 後の幅と比べる
 ```
 
 ### 8.3 operator 適用エラー
@@ -842,6 +847,8 @@ b ∈ {true, false}                 a ∈ Caps
 ─────────────────                ──────────────
 Γ ⊢ bool_lit(b) : Bool           Γ ⊢ action_lit(a) : Action
 ```
+
+network literal と field の比較 (§7.5、§12.3 の T-CmpCIDR4 / T-CmpCIDR6) が照らす field の幅は、§3.4 の T-FieldSlice を適用した後の幅です。`ipv6.dst[96:128]` は Int<32> なので IPv4 literal と比較でき、`ipv6.dst[64:128]` は Int<64> なので IPv6 literal とは比較できません。
 
 ### 12.2 算術
 

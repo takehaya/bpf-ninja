@@ -113,8 +113,12 @@ var dslEntryExprs = []string{
 	"eth/ipv6/srv6/tcp where srv6.segments[srv6.segments_left].addr == fc00::1",
 	"eth/ipv6/srv6/tcp where srv6.segments[srv6.segments_left].addr + 1 == ipv6.dst",
 	"eth/ipv6/srv6[segments[1].addr != fc00::1]/tcp",
-	// A 64-bit slice of a segment behind a static index.
+	// A 64-bit slice of a segment behind a static index, and network
+	// literals typed against a slice (the low 32 bits as an IPv4 address).
 	"eth/ipv6/srv6/tcp where srv6.segments[1].addr[64:128] == 2",
+	"eth/ipv6/srv6/tcp where srv6.segments[1].addr[96:128] == 0.0.0.2",
+	"eth/ipv6/tcp where ipv6.dst[96:128] == 10.0.0.1",
+	"eth/ipv6[dst[96:128] == 10.0.0.0/8]/tcp",
 	// any/all quantifiers over an aux header stack: static unrolls
 	// 8 iters (= capacity), each guarded by srv6.last_entry+1.
 	"eth/ipv6/srv6/tcp where any(srv6.segments.addr == fc00::1)",

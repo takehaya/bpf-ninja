@@ -496,8 +496,8 @@ func emitIPv4Predicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, error
 	expected := uint32(byteSwap(uint64(binary.BigEndian.Uint32(v4[:])), 4))
 
 	if pred.Field.Aux != nil {
-		if pred.Field.Aux.FieldBitWidth != 32 {
-			return nil, fmt.Errorf("%w: IPv4 literal needs a 32-bit field, got %s.%s.%s (%d bits)", ErrNotImplemented, pred.Field.Layer.Spec.Name, pred.Field.Aux.OutParam, pred.Field.Field.Name, pred.Field.Aux.FieldBitWidth)
+		if pred.Field.EffectiveBits() != 32 {
+			return nil, fmt.Errorf("%w: IPv4 literal needs a 32-bit field, got %s.%s.%s (%d bits)", ErrNotImplemented, pred.Field.Layer.Spec.Name, pred.Field.Aux.OutParam, pred.Field.Field.Name, pred.Field.EffectiveBits())
 		}
 		prelude, loadAt, err := auxLoadEmitter(pred.Field, r4Anchor(), nil, dslReject)
 		if err != nil {
@@ -510,7 +510,7 @@ func emitIPv4Predicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, error
 		return insns, nil
 	}
 
-	fieldOff, bytes, err := findFieldByteOffset(pred.Field.Layer.Spec, pred.Field.Field.Name)
+	fieldOff, bytes, err := literalFieldWindow(pred.Field)
 	if err != nil {
 		return nil, err
 	}
@@ -534,8 +534,8 @@ func emitIPv6Predicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, error
 		if pred.Op != ast.CmpEq && pred.Op != ast.CmpNeq {
 			return nil, fmt.Errorf("%w: IPv6 ordered cmp on aux header field is not yet supported", ErrNotImplemented)
 		}
-		if pred.Field.Aux.FieldBitWidth != 128 {
-			return nil, fmt.Errorf("%w: IPv6 literal needs a 128-bit field, got %s.%s.%s (%d bits)", ErrNotImplemented, pred.Field.Layer.Spec.Name, pred.Field.Aux.OutParam, pred.Field.Field.Name, pred.Field.Aux.FieldBitWidth)
+		if pred.Field.EffectiveBits() != 128 {
+			return nil, fmt.Errorf("%w: IPv6 literal needs a 128-bit field, got %s.%s.%s (%d bits)", ErrNotImplemented, pred.Field.Layer.Spec.Name, pred.Field.Aux.OutParam, pred.Field.Field.Name, pred.Field.EffectiveBits())
 		}
 		prelude, loadAt, err := auxLoadEmitter(pred.Field, r4Anchor(), nil, dslReject)
 		if err != nil {
@@ -701,8 +701,8 @@ func emitIPv6CIDRPredicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, e
 	hostLowBE := binary.BigEndian.Uint64(pred.Value.V6[8:16]) & maskLowBE
 
 	if pred.Field != nil && pred.Field.Aux != nil {
-		if pred.Field.Aux.FieldBitWidth != 128 {
-			return nil, fmt.Errorf("%w: IPv6 CIDR needs a 128-bit field, got %s.%s.%s (%d bits)", ErrNotImplemented, pred.Field.Layer.Spec.Name, pred.Field.Aux.OutParam, pred.Field.Field.Name, pred.Field.Aux.FieldBitWidth)
+		if pred.Field.EffectiveBits() != 128 {
+			return nil, fmt.Errorf("%w: IPv6 CIDR needs a 128-bit field, got %s.%s.%s (%d bits)", ErrNotImplemented, pred.Field.Layer.Spec.Name, pred.Field.Aux.OutParam, pred.Field.Field.Name, pred.Field.EffectiveBits())
 		}
 		prelude, loadAt, err := auxLoadEmitter(pred.Field, r4Anchor(), nil, dslReject)
 		if err != nil {
@@ -760,16 +760,16 @@ func ipv6HalfCheck(off int16, mask, host uint64, failLabel string) asm.Instructi
 }
 
 // requireIPv6Field returns the byte offset of the predicate's field
-// after asserting it is byte-aligned and exactly 128 bits wide.
+// (after its bit-slice, if any) once the window is exactly 16 bytes.
 func requireIPv6Field(pred *ir.Predicate) (int, error) {
-	bitOff, bits, err := findFieldBitOffset(pred.Field.Layer.Spec, pred.Field.Field.Name)
+	off, bytes, err := literalFieldWindow(pred.Field)
 	if err != nil {
 		return 0, err
 	}
-	if bitOff%8 != 0 || bits != 128 {
-		return 0, fmt.Errorf("%w: IPv6 literal needs a 128-bit byte-aligned field, got %s.%s (%d bits at bit %d)", ErrNotImplemented, pred.Field.Layer.Spec.Name, pred.Field.Field.Name, bits, bitOff)
+	if bytes != 16 {
+		return 0, fmt.Errorf("%w: IPv6 literal needs a 16-byte field, got %d-byte %s.%s", ErrNotImplemented, bytes, pred.Field.Layer.Spec.Name, pred.Field.Field.Name)
 	}
-	return bitOff / 8, nil
+	return off, nil
 }
 
 // emitMACPredicate handles `field == de:ad:be:ef:00:01` (and !=). MAC
@@ -787,8 +787,8 @@ func emitMACPredicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, error)
 	lowLE := uint16(byteSwap(uint64(binary.BigEndian.Uint16(mac[4:6])), 2))
 
 	if pred.Field != nil && pred.Field.Aux != nil {
-		if pred.Field.Aux.FieldBitWidth != 48 {
-			return nil, fmt.Errorf("%w: MAC literal needs a 48-bit field, got %s.%s.%s (%d bits)", ErrNotImplemented, pred.Field.Layer.Spec.Name, pred.Field.Aux.OutParam, pred.Field.Field.Name, pred.Field.Aux.FieldBitWidth)
+		if pred.Field.EffectiveBits() != 48 {
+			return nil, fmt.Errorf("%w: MAC literal needs a 48-bit field, got %s.%s.%s (%d bits)", ErrNotImplemented, pred.Field.Layer.Spec.Name, pred.Field.Aux.OutParam, pred.Field.Field.Name, pred.Field.EffectiveBits())
 		}
 		prelude, loadAt, err := auxLoadEmitter(pred.Field, r4Anchor(), nil, dslReject)
 		if err != nil {
@@ -812,7 +812,7 @@ func emitMACPredicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, error)
 		return insns, nil
 	}
 
-	fieldOff, bytes, err := findFieldByteOffset(pred.Field.Layer.Spec, pred.Field.Field.Name)
+	fieldOff, bytes, err := literalFieldWindow(pred.Field)
 	if err != nil {
 		return nil, err
 	}
@@ -1125,8 +1125,8 @@ func emitIPv4CIDRPredicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, e
 	maskLE := uint32(byteSwap(uint64(maskBE), 4))
 
 	if pred.Field != nil && pred.Field.Aux != nil {
-		if pred.Field.Aux.FieldBitWidth != 32 {
-			return nil, fmt.Errorf("%w: IPv4 CIDR needs a 32-bit field, got %s.%s.%s (%d bits)", ErrNotImplemented, pred.Field.Layer.Spec.Name, pred.Field.Aux.OutParam, pred.Field.Field.Name, pred.Field.Aux.FieldBitWidth)
+		if pred.Field.EffectiveBits() != 32 {
+			return nil, fmt.Errorf("%w: IPv4 CIDR needs a 32-bit field, got %s.%s.%s (%d bits)", ErrNotImplemented, pred.Field.Layer.Spec.Name, pred.Field.Aux.OutParam, pred.Field.Field.Name, pred.Field.EffectiveBits())
 		}
 		prelude, loadAt, err := auxLoadEmitter(pred.Field, r4Anchor(), nil, dslReject)
 		if err != nil {
@@ -1140,7 +1140,7 @@ func emitIPv4CIDRPredicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, e
 		return insns, nil
 	}
 
-	fieldOff, bytes, err := findFieldByteOffset(pred.Field.Layer.Spec, pred.Field.Field.Name)
+	fieldOff, bytes, err := literalFieldWindow(pred.Field)
 	if err != nil {
 		return nil, err
 	}

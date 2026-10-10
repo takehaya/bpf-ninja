@@ -602,6 +602,155 @@ func TestCompileBitSliceRejected(t *testing.T) {
 	}
 }
 
+// TestCompileNetworkLiteralSliceWidth: a network literal is typed
+// against the field's width after its bit-slice (dsl-types.md §7.5, Lean
+// liftValue over Ref.width). A 64-bit half of an address is not an IPv6
+// literal's field, in a where clause or a bracket, on a primary or an
+// aux field; a 32-bit tail is an IPv4 literal's field and compiles to a
+// compare of exactly those bytes.
+func TestCompileNetworkLiteralSliceWidth(t *testing.T) {
+	for _, c := range []struct {
+		expr string
+		want string
+	}{
+		{"eth/ipv6/tcp where ipv6.dst[64:128] == fc00::2", "IPv6 address literal needs a bit<128> field; ipv6.dst[64:128] is bit<64>"},
+		{"eth/ipv6/tcp where fc00::2 == ipv6.dst[64:128]", "ipv6.dst[64:128] is bit<64>"},
+		{"eth/ipv6/tcp where ipv6.dst[64:128] == fc00::/16", "IPv6 CIDR literal needs a bit<128> field; ipv6.dst[64:128] is bit<64>"},
+		{"eth/ipv6[dst[64:128] == fc00::2]/tcp", "IPv6 address literal needs a bit<128> field; ipv6.dst[64:128] is bit<64>"},
+		{"eth/ipv6[dst[64:128] in [fc00::1, fc00::2]]/tcp", "ipv6.dst[64:128] is bit<64>"},
+		{"eth/ipv6/srv6/tcp where srv6.segments[1].addr[64:128] == fc00::2", "IPv6 address literal needs a bit<128> field; srv6.segments.addr[64:128] is bit<64>"},
+		{"eth/ipv6/srv6[segments[1].addr[64:128] == fc00::2]/tcp", "srv6.segments.addr[64:128] is bit<64>"},
+		{"eth/ipv6/tcp where ipv6.dst[64:128] == 10.0.0.1", "IPv4 address literal needs a bit<32> field; ipv6.dst[64:128] is bit<64>"},
+		// Unsliced shapes keep the same diagnostic, in brackets too (the
+		// bracket path used to reach codegen and fail there).
+		{"eth/ipv4/tcp where ipv4.src == fc00::1", "IPv6 address literal needs a bit<128> field; ipv4.src is bit<32>"},
+		{"eth/ipv4[src == fc00::1]/tcp", "IPv6 address literal needs a bit<128> field; ipv4.src is bit<32>"},
+		{"eth/ipv4[src in [10.0.0.1, fc00::1]]/tcp", "ipv4.src is bit<32>"},
+	} {
+		t.Run(c.expr, func(t *testing.T) {
+			_, err := compileForTest(c.expr)
+			if err == nil {
+				t.Fatalf("Compile(%q): expected error containing %q", c.expr, c.want)
+			}
+			if errors.Is(err, codegen.ErrNotImplemented) {
+				t.Fatalf("Compile(%q) = %v; want a typing error, not ErrNotImplemented", c.expr, err)
+			}
+			if !strings.Contains(err.Error(), c.want) {
+				t.Errorf("err = %v; want substring %q", err, c.want)
+			}
+		})
+	}
+
+	for _, expr := range []string{
+		"eth/ipv6/tcp where ipv6.dst[96:128] == 10.0.0.1",
+		"eth/ipv6/tcp where 10.0.0.1 == ipv6.dst[96:128]",
+		"eth/ipv6/tcp where ipv6.dst[96:128] != 10.0.0.1",
+		"eth/ipv6/tcp where ipv6.dst[96:128] == 10.0.0.0/8",
+		"eth/ipv6/tcp where ipv6.dst[80:128] == 00:00:0a:00:00:01",
+		"eth/ipv6/tcp where ipv6.dst[0:128] == fc00::1",
+		"eth/ipv6[dst[96:128] == 10.0.0.1]/tcp",
+		"eth/ipv6[dst[96:128] == 10.0.0.0/8]/tcp",
+		"eth/ipv6[dst[80:128] == 00:00:0a:00:00:01]/tcp",
+		"eth/ipv6/srv6/tcp where srv6.segments[1].addr[96:128] == 0.0.0.2",
+		"eth/ipv6/srv6/tcp where srv6.segments[srv6.last_entry].addr[96:128] == 0.0.0.2",
+		"eth/ipv6/srv6[segments[1].addr[96:128] == 0.0.0.2]/tcp",
+	} {
+		t.Run(expr, func(t *testing.T) {
+			insns, err := compileForTest(expr)
+			if err != nil {
+				t.Fatalf("Compile(%q): %v", expr, err)
+			}
+			if len(insns) == 0 {
+				t.Fatal("expected non-empty instructions")
+			}
+		})
+	}
+
+	// A slice that is 32 bits wide but not on byte boundaries types like
+	// the others and is an implementation limit of the literal readers.
+	expr := "eth/ipv6/tcp where ipv6.dst[92:124] == 10.0.0.1"
+	if _, err := compileForTest(expr); !errors.Is(err, codegen.ErrNotImplemented) {
+		t.Fatalf("Compile(%q) = %v; want ErrNotImplemented", expr, err)
+	}
+}
+
+// TestCompileIPv4LiteralOnSliceReadsSlicedBytes pins the window the
+// compare reads: `ipv6.dst[96:128]` is the last word of the address, at
+// byte 14 + 24 + 12 = 50 of the frame, so the bounded load ends at 54.
+// `==` jumps away on inequality, `!=` on equality.
+func TestCompileIPv4LiteralOnSliceReadsSlicedBytes(t *testing.T) {
+	// 10.0.0.1 read as a little-endian word is 0x0100000a; the compare
+	// materialises it with a 64-bit immediate load and a register jump.
+	const want = int64(0x0100000a)
+	for _, c := range []struct {
+		expr string
+		jump asm.JumpOp
+	}{
+		{"eth/ipv6/tcp where ipv6.dst[96:128] == 10.0.0.1", asm.JNE},
+		{"eth/ipv6/tcp where ipv6.dst[96:128] != 10.0.0.1", asm.JEq},
+	} {
+		t.Run(c.expr, func(t *testing.T) {
+			insns, err := compileForTest(c.expr)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for i, ins := range insns {
+				if ins.OpCode.Class() != asm.LdClass || ins.OpCode.Mode() != asm.ImmMode || ins.Constant != want || i == 0 || i+1 >= len(insns) {
+					continue
+				}
+				if next := insns[i+1]; next.OpCode.JumpOp() != c.jump || next.OpCode.Source() != asm.RegSource {
+					t.Fatalf("instruction after the literal = %v; want %v.Reg", next, c.jump)
+				}
+				// The load right before the literal must be a word at [ptr-4]
+				// with the pointer proven against R1 after an Add of 54.
+				if ld := insns[i-1]; ld.OpCode.Class() != asm.LdXClass || ld.OpCode.Size() != asm.Word || ld.Offset != -4 {
+					t.Fatalf("instruction before the literal = %v; want a word load at [ptr-4]", ld)
+				}
+				for j := i - 2; j >= 0 && j > i-6; j-- {
+					if insns[j].OpCode.ALUOp() == asm.Add && insns[j].OpCode.Source() == asm.ImmSource && insns[j].Constant == 54 {
+						return
+					}
+				}
+				t.Fatalf("no `Add ptr, 54` before the sliced load at %d", i)
+			}
+			t.Fatalf("no 64-bit immediate %#x found", want)
+		})
+	}
+}
+
+// TestCompileDynamicIndexIPv4LiteralJumps pins the jump the dynamic-index
+// IPv4 arm emits: the body is the equality check and whereDynamicMultiByte
+// routes `!=`, so the register jump after the literal is JNE for both ops
+// (for `!=` it lands on the match label instead of dsl_reject).
+func TestCompileDynamicIndexIPv4LiteralJumps(t *testing.T) {
+	const want = int64(0x02000000) // 0.0.0.2 as a little-endian word
+	for _, c := range []struct {
+		expr   string
+		target string
+	}{
+		{"eth/ipv6/srv6/tcp where srv6.segments[srv6.last_entry].addr[96:128] == 0.0.0.2", "dsl_reject"},
+		{"eth/ipv6/srv6/tcp where srv6.segments[srv6.last_entry].addr[96:128] != 0.0.0.2", "where_lit_match"},
+	} {
+		t.Run(c.expr, func(t *testing.T) {
+			insns, err := compileForTest(c.expr)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for i, ins := range insns {
+				if ins.OpCode.Class() != asm.LdClass || ins.OpCode.Mode() != asm.ImmMode || ins.Constant != want || i+1 >= len(insns) {
+					continue
+				}
+				next := insns[i+1]
+				if next.OpCode.JumpOp() != asm.JNE || next.OpCode.Source() != asm.RegSource || !strings.Contains(next.Reference(), c.target) {
+					t.Fatalf("instruction after the literal = %v; want JNE.Reg to %s…", next, c.target)
+				}
+				return
+			}
+			t.Fatalf("no 64-bit immediate %#x found", want)
+		})
+	}
+}
+
 func TestCompileBitSliceNonAligned(t *testing.T) {
 	// F13: slice endpoints no longer need to be byte-aligned. The
 	// codegen rounds the load up to the next pow-of-2 byte size and

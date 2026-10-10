@@ -6,10 +6,13 @@ import (
 )
 
 // checkLiteralWidthShape pins the network-literal RHS (or LHS) to a
-// field whose declared bit width can hold it: IPv4 / CIDR-v4 →
-// bit<32>, IPv6 / CIDR-v6 → bit<128>, MAC → bit<48>. Mismatches
-// surface via errLiteralFieldShape so the user gets a clear
-// diagnostic before codegen. dsl-types.md §7.5.
+// field whose effective bit width equals it: IPv4 / CIDR-v4 →
+// bit<32>, IPv6 / CIDR-v6 → bit<128>, MAC → bit<48>. The effective
+// width is the slice's when the field is sliced (T-FieldSlice), so
+// `ipv6.dst[96:128] == 10.0.0.1` is well-typed and
+// `ipv6.dst[64:128] == fc00::2` is not. Mismatches surface via
+// errLiteralFieldShape so the user gets a clear diagnostic before
+// codegen. dsl-types.md §7.5.
 func checkLiteralWidthShape(ref *ir.FieldRef, v *ast.Value, pos ast.Position) error {
 	want := 0
 	desc := ""
@@ -29,10 +32,23 @@ func checkLiteralWidthShape(ref *ir.FieldRef, v *ast.Value, pos ast.Position) er
 	default:
 		return errorf(pos, "internal: %v is not a network literal", v.Kind)
 	}
-	if ref.Field.Bits != want {
+	if ref.EffectiveBits() != want {
 		return errLiteralFieldShape(pos, desc, want, ref)
 	}
 	return nil
+}
+
+// isNetworkLiteral reports whether v is typed by its own shape (an
+// address or a CIDR) rather than narrowed to the field like an integer.
+func isNetworkLiteral(v *ast.Value) bool {
+	if v == nil {
+		return false
+	}
+	switch v.Kind {
+	case ast.ValIPv4, ast.ValIPv6, ast.ValMAC, ast.ValCIDR:
+		return true
+	}
+	return false
 }
 
 // checkBracketIntFit covers the bracket-predicate variant of the
