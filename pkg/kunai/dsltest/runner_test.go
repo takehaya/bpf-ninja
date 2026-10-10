@@ -1524,7 +1524,8 @@ func TestAuxStackSrv6IndexAtOrPastCount(t *testing.T) {
 	opt := New(t, "eth/ipv6/srv6?/tcp where srv6.segments[srv6.segments_left].addr != fc00::1")
 	opt.MustReject(t, atCount, "srv6? present, index == count: absent (D-031)")
 	opt.MustMatch(t, lastSeg, "srv6? present, index == last_entry")
-	opt.MustReject(t, BuildEthIPv6TCP(t, nil, nil, 1234, 80), "srv6? absent: the reference is false (D-003)")
+	opt.MustReject(t, BuildEthIPv6TCP(t, net.ParseIP("fe80::1"), net.ParseIP("fe80::2"), 1234, 80), "srv6? absent: the reference is false (D-003)")
+	New(t, "eth/ipv6/srv6?/tcp").MustMatch(t, BuildEthIPv6TCP(t, net.ParseIP("fe80::1"), net.ParseIP("fe80::2"), 1234, 80), "srv6? absent: the chain itself still matches")
 
 	eq := New(t, "eth/ipv6/srv6/tcp where srv6.segments[srv6.segments_left].addr == fc00::2")
 	eq.MustMatch(t, lastSeg, "index == last_entry reads fc00::2")
