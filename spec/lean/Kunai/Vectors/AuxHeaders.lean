@@ -599,6 +599,14 @@ vector greAllFlags := {
 vector greKeyTruncated := {
   id := "gre-key-truncated", ast := { layers := greL }, packet := eth 0x0800 ++ ipv4 47 ++ greHdr 0x2000 [], expected := .reject,
   note := "K set but the key word is missing" }
+vector greAllTruncatedLast := {
+  id := "gre-c-k-s-last-truncated", ast := { layers := [P "eth", P "ipv4", P "gre"] },
+  packet := eth 0x0800 ++ ipv4 47 ++ greHdr 0xb000 [0, 42], expected := .reject,
+  note := "D-005: C, K and S set, the S word missing; gre is the last layer, so only its own bounds check can reject" }
+vector greAllLast := {
+  id := "gre-c-k-s-last", ast := { layers := [P "eth", P "ipv4", P "gre"] },
+  packet := eth 0x0800 ++ ipv4 47 ++ greHdr 0xb000 [0, 42, 7], expected := .accept [],
+  note := "all three words present and nothing after them" }
 
 -- Sightings only where the walk dispatched (review finding on D-030) -------------
 
@@ -667,7 +675,7 @@ vector greOptAbsent := {
 def auxVectors : List Vector := [
   srv6AnyLabel, srv6AllAbsent, srv6OptPresent, srv6OptAbsent, srv6OptAnyPresent, srv6OptAnyAbsent, srv6OptBroken, srv6OptThenIPv4Opt, tcpOptAccAbsent, greOptPresent, greOptAbsent,
   rrNoSighting, sackNoSighting,
-  grePlain, greKey, greKeySeq, greAllFlags, greKeyTruncated,
+  grePlain, greKey, greKeySeq, greAllFlags, greKeyTruncated, greAllTruncatedLast, greAllLast,
   tcpMss, tcpMssWide, tcpMssWsWide, tcpMssWsWideHigh, tcpMssWsWideFits64, tcpMssMiss, tcpMssAbsent, tcpMssAbsentNot, tcpMssAfterNop, tcpUnknownSkipped, tcpUnknownLen0, tcpUnknownLen1,
   tcpOptCross, tcpEol, tcpMssDup, tcpMssBadLen, tcpMssExists, tcpMssExistsNot, tcpSackBlock, tcpSackAny, tcpSackAll,
   tcpSackAbsentAny, tcpMalformedNoQuery, tcpMalformedNotQuery, tcpMalformedOrTrue, tcpMalformedExists,

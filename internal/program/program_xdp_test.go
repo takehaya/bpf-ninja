@@ -8,21 +8,14 @@ import (
 	"github.com/takehaya/bpf-ninja/internal/testutil"
 )
 
-// xdpNativeFilterExprs covers the kunai/cbpfc shapes the XDP-native
-// wrapper needs to load cleanly.
-//
-// cbpfc filters all pass the verifier: cbpfc emits packet-pointer-safe
-// bound checks on every variable-offset access.
-//
-// DSL filters are partial in v1: simple chains like eth/ipv4/udp work
-// because UDP's fixed 8-byte header keeps every access within a
-// statically-known offset range. Chains that walk through IPv4 to a
-// variable-offset L4 header (TCP, where the inner offset depends on
-// IHL*4) currently fail to load: kunai's bound-check emit was tuned
-// for the tracing path's PTR_TO_MAP_VALUE access (where the verifier
-// trusts the proven map size for any in-bounds offset), and is too
-// loose for PTR_TO_PACKET access. See dsl-followups for "kunai
-// packet-pointer codegen".
+// xdpNativeCBPFExprs and xdpNativeDSLExprs cover the cbpfc and kunai
+// shapes the XDP-native wrapper must load cleanly. The filter runs on
+// the packet pointer there (PTR_TO_PACKET), where every variable-offset
+// access needs an end-pointer check on the very pointer it uses; the
+// tracing hosts run on a 512-byte map value whose size alone bounds a
+// scalar offset, so a shape can pass dsltest and still fail here. The
+// DSL list is the coverage statement: a shape rejected on the packet
+// pointer is named in the note at its end.
 var (
 	xdpNativeCBPFExprs = []string{
 		"arp",
@@ -62,10 +55,16 @@ var (
 		"eth/ipv4@o{1,2}/tcp where o.options.RR.kind == 7",
 		"eth/ipv4{1,2}/tcp where tcp.dport == 443",
 		"eth/ipv4{1,2}/udp",
-		// Not here: a layer dispatched against an ipv6 whose entry is a
-		// range (`eth/ipv6/ipv6/tcp`, `eth/ipv4/ipv6/tcp`, so `ipv6{1,2}`
-		// too) and the absent edge of `gre?` (`eth/ipv4/gre?/ipv4/tcp`)
-		// are rejected on the packet pointer today, repeated or not.
+		// flag-gated optional words (gre's C/K/S) read the flag byte
+		// back through the range-valued R4 left by ipv4's IHL.
+		"eth/ipv4/gre/ipv4/tcp",
+		"eth/ipv4/gre?/ipv4/tcp",
+		"eth/ipv4{1,2}/gre?/ipv4/tcp",
+		// Not here: an ipv6 whose entry is a range (`eth/ipv6/ipv6/tcp`,
+		// `eth/ipv4/ipv6/tcp`, so `ipv6{1,2}` too) stores the extension
+		// chain's next_header back into the ipv6 header through an
+		// unbounded packet pointer and is rejected on the packet pointer
+		// today.
 	}
 )
 

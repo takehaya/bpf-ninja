@@ -1831,3 +1831,48 @@ func TestOptionRegionPolicyCompiles(t *testing.T) {
 		t.Errorf("srv6: a malformed landing although on_fault=fail")
 	}
 }
+
+// TestCompileFlagTriggerReadIsBounded pins the packet-pointer safety of
+// the flag-byte read that gates gre's optional words. The read looks
+// back into the just-passed primary header through offsetBase, which is
+// a range scalar behind ipv4's IHL, and a negative LDX through a freshly
+// built packet pointer is rejected on PTR_TO_PACKET (native XDP). The
+// bounded idiom checks the end pointer at `ptr + 1` and loads `[ptr - 1]`
+// through the same register: the test locates the C-flag mask (the first
+// trigger), takes the nearest load before it as the flag-byte read and
+// requires that shape, with the reject label on the check (a bounds
+// failure after the dispatch matched rejects, also under `?`, D-005).
+// Register names and any moves in between are not pinned.
+func TestCompileFlagTriggerReadIsBounded(t *testing.T) {
+	for _, expr := range []string{
+		"eth/ipv4/gre/ipv4/tcp",
+		"eth/ipv4/gre?/ipv4/tcp",
+		"eth/ipv4{1,2}/gre?/ipv4/tcp",
+	} {
+		insns, err := compileForTest(expr)
+		if err != nil {
+			t.Fatalf("Compile(%q): %v", expr, err)
+		}
+		mask := -1
+		for i, ins := range insns {
+			if ins.OpCode == asm.And.Op(asm.ImmSource) && ins.Dst == asm.R3 && ins.Constant == 0x80 {
+				mask = i
+				break
+			}
+		}
+		if mask < 2 {
+			t.Fatalf("%s: C-flag mask not found", expr)
+		}
+		load := mask - 1
+		for load > 0 && !(insns[load].OpCode.Class() == asm.LdXClass && insns[load].OpCode.Mode() == asm.MemMode) {
+			load--
+		}
+		ld, chk := insns[load], insns[load-1]
+		ptr := ld.Src
+		okLoad := ld.OpCode == asm.LoadMemOp(asm.Byte) && ld.Dst == ptr && ld.Offset == -1
+		okCheck := chk.OpCode == asm.JGT.Op(asm.RegSource) && chk.Dst == ptr && chk.Src == asm.R1 && chk.Reference() == "dsl_reject"
+		if !okLoad || !okCheck {
+			t.Fatalf("%s: flag byte read is\n%v\n%v\nwant `JGT ptr, R1 -> dsl_reject` then `LDX.B ptr, [ptr-1]` (bounded idiom)", expr, chk, ld)
+		}
+	}
+}
