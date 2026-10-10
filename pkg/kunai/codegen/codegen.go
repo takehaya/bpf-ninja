@@ -2049,12 +2049,12 @@ func emitAuxGating(g *vocab.AuxGating, base layerAnchor, failLabel string) asm.I
 // The computed element offset is checked against both ScratchBufSize and
 // the materialised packet end before exposing its address to callers.
 //
-// countSlot, when it names a push count slot, bounds the index by the
-// pushed entries as well: an index at or past them jumps to failLabel
-// (the entry is absent, spec D-031) instead of reading the bytes after
-// the stack. Entries with a variable tail take
-// emitDynamicVarTailStackAddress instead (no constant stride).
-func emitDynamicStackAddressCounted(ref *ir.FieldRef, base layerAnchor, countSlot *int16, failLabel string) (asm.Instructions, error) {
+// bound, when it names a count source, bounds the index by the extracted
+// entries as well: an index at or past them jumps to failLabel (the entry
+// is absent, spec D-031) instead of reading the bytes after the stack.
+// Entries with a variable tail take emitDynamicVarTailStackAddress
+// instead (no constant stride).
+func emitDynamicStackAddressCounted(ref *ir.FieldRef, base layerAnchor, bound indexBound, failLabel string) (asm.Instructions, error) {
 	if ref == nil || ref.Aux == nil || ref.Aux.Stack == nil || ref.Aux.Stack.IsStatic {
 		return nil, fmt.Errorf("codegen: emitDynamicStackAddressCounted called on non-dynamic ref")
 	}
@@ -2065,7 +2065,7 @@ func emitDynamicStackAddressCounted(ref *ir.FieldRef, base layerAnchor, countSlo
 	if ref.Aux.HeaderSize <= 0 || ref.Aux.HeaderSize > 127 {
 		return nil, fmt.Errorf("%w: dynamic stack element size %d outside 1..127", ErrNotImplemented, ref.Aux.HeaderSize)
 	}
-	insns := emitDynamicIndexRead(ref, base, idxByteOff, countSlot, failLabel)
+	insns := emitDynamicIndexRead(ref, base, idxByteOff, bound, failLabel)
 	insns = append(insns,
 		asm.Mul.Imm(asm.R3, int32(ref.Aux.HeaderSize)),
 		asm.Add.Imm(asm.R3, int32(ref.Aux.OffsetInLayer)),
@@ -2222,7 +2222,7 @@ func auxLoadEmitter(ref *ir.FieldRef, anchor layerAnchor, resolveSlot resolveAux
 	if needsEntryAddress(ref) {
 		// Dynamic index, or a static index behind variable-length entries:
 		// R5 = entry start, per-chunk loads are R5-relative.
-		prelude, err := emitStackEntryAddress(ref, anchor, nil, failLabel)
+		prelude, err := emitStackEntryAddress(ref, anchor, indexBound{}, failLabel)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -2373,12 +2373,28 @@ func dynamicIndexSource(ref *ir.FieldRef) (int, error) {
 	return idxByteOff, nil
 }
 
+// indexBound names where the runtime count of a stack comes from, so a
+// dynamic index at or past the extracted entries is absent (D-031) rather
+// than a read of the bytes after the stack. Exactly one source applies:
+// the push count slot of a stack the parser machine pushes onto
+// (ipv6.exts, gtp.exts), or a byte of the layer's primary header for a
+// stack declared with a count field (srv6.segments: last_entry + 1,
+// vocab.StackCountSpec). The zero value bounds by capacity alone.
+type indexBound struct {
+	slot *int16
+	// hdr: count = primary header byte at byteOff + addend.
+	hdr     bool
+	byteOff int
+	addend  int
+}
+
 // emitDynamicIndexRead reads a dynamic stack index into R3 through the
 // same scalar and packet bounds as a field, then bounds it by the stack's
-// capacity and, when countSlot names a push count slot, by the pushed
-// entries (an index at or past them is absent, D-031). With a slot anchor
-// the layer offset stays in R5 for the caller's address arithmetic.
-func emitDynamicIndexRead(ref *ir.FieldRef, base layerAnchor, idxByteOff int, countSlot *int16, failLabel string) asm.Instructions {
+// capacity and, when bound names a count source, by the extracted entries
+// (an index at or past them is absent, D-031). With a slot anchor the
+// layer offset stays in R5 for the caller's address arithmetic. R2 is
+// scratch for the count.
+func emitDynamicIndexRead(ref *ir.FieldRef, base layerAnchor, idxByteOff int, bound indexBound, failLabel string) asm.Instructions {
 	var insns asm.Instructions
 	if base.UseSlot {
 		insns = append(insns, asm.LoadMem(asm.R5, asm.R10, base.SlotOff, asm.DWord))
@@ -2390,13 +2406,29 @@ func emitDynamicIndexRead(ref *ir.FieldRef, base layerAnchor, idxByteOff int, co
 	}
 	insns = append(insns, boundedScalarLoad(asm.R3, asm.R0, asm.R3, asm.R1, asm.Byte, failLabel)...)
 	insns = append(insns, asm.JGE.Imm(asm.R3, int32(ref.Aux.Stack.Capacity), failLabel))
-	if countSlot != nil {
-		insns = append(insns,
-			asm.LoadMem(asm.R2, asm.R10, *countSlot, asm.DWord),
-			asm.JGE.Reg(asm.R3, asm.R2, failLabel),
-		)
+	switch {
+	case bound.slot != nil:
+		insns = append(insns, asm.LoadMem(asm.R2, asm.R10, *bound.slot, asm.DWord))
+	case bound.hdr:
+		// The count byte through the same anchor as the index, into R2 so
+		// R3 (the index) and R5 (the slot value) survive. The byte sits in
+		// the primary header, whose bounds the layer proved, but the
+		// scalar is re-checked like any field read.
+		if base.UseSlot {
+			insns = append(insns, foldOffsetIntoScalar(asm.R2, asm.R5, int32(bound.byteOff), failLabel)...)
+		} else if base.UseR4 {
+			insns = append(insns, foldOffsetIntoScalar(asm.R2, offsetBase, int32(bound.byteOff), failLabel)...)
+		} else {
+			insns = append(insns, asm.Mov.Imm(asm.R2, int32(base.AbsOffset+bound.byteOff)))
+		}
+		insns = append(insns, boundedScalarLoad(asm.R2, asm.R0, asm.R2, asm.R1, asm.Byte, failLabel)...)
+		if bound.addend != 0 {
+			insns = append(insns, asm.Add.Imm(asm.R2, int32(bound.addend)))
+		}
+	default:
+		return insns
 	}
-	return insns
+	return append(insns, asm.JGE.Reg(asm.R3, asm.R2, failLabel))
 }
 
 // emitEntryBaseScalar sets R3 = scalar offset of the stack's entry 0 from
@@ -2444,7 +2476,7 @@ func emitExposeEntry(ref *ir.FieldRef, failLabel string) asm.Instructions {
 // constant stride, so the walk of emitStaticStackEntryAddress is unrolled
 // up to the push bound and stops at the step the runtime index names.
 // Leaves R5 = entry start and R3 = R5 + HeaderSize. R2/R3 are clobbered.
-func emitDynamicVarTailStackAddress(ref *ir.FieldRef, base layerAnchor, countSlot *int16, failLabel string) (asm.Instructions, error) {
+func emitDynamicVarTailStackAddress(ref *ir.FieldRef, base layerAnchor, idxBound indexBound, failLabel string) (asm.Instructions, error) {
 	idxByteOff, err := dynamicIndexSource(ref)
 	if err != nil {
 		return nil, err
@@ -2459,7 +2491,7 @@ func emitDynamicVarTailStackAddress(ref *ir.FieldRef, base layerAnchor, countSlo
 	}
 	// R3 = index (R5 = slot value for a slot anchor); park the index in R2,
 	// build the entry-0 base in R3, then keep the index in R5.
-	insns := emitDynamicIndexRead(ref, base, idxByteOff, countSlot, failLabel)
+	insns := emitDynamicIndexRead(ref, base, idxByteOff, idxBound, failLabel)
 	insns = append(insns, asm.Mov.Reg(asm.R2, asm.R3))
 	insns = append(insns, emitEntryBaseScalar(ref, base, true)...)
 	insns = append(insns, asm.Mov.Reg(asm.R5, asm.R2))
@@ -2487,21 +2519,24 @@ func emitDynamicVarTailStackAddress(ref *ir.FieldRef, base layerAnchor, countSlo
 //   - a dynamic index into variable-length entries, unrolled up to the
 //     push bound (emitDynamicVarTailStackAddress).
 //
-// A dynamic index into a push-counted stack needs `countSlot`: without
+// A dynamic index into a push-counted stack needs `bound.slot`: without
 // the pushed count the walk would read entries the parser never pushed
-// (D-031), so that call is refused rather than left to convention.
+// (D-031), so that call is refused rather than left to convention. A
+// stack with a declared count field gets `bound.hdr` from the where side
+// (whereCtx.stackEntryAddress); the predicate side never sees a dynamic
+// index (the resolver refuses it in brackets) and passes the zero bound.
 // R2/R3 are clobbered.
-func emitStackEntryAddress(ref *ir.FieldRef, base layerAnchor, countSlot *int16, failLabel string) (asm.Instructions, error) {
+func emitStackEntryAddress(ref *ir.FieldRef, base layerAnchor, bound indexBound, failLabel string) (asm.Instructions, error) {
 	if ref.Aux.Stack.IsStatic {
 		return emitStaticStackEntryAddress(ref, base, failLabel)
 	}
-	if countSlot == nil && needsPushCount(ref) {
+	if bound.slot == nil && needsPushCount(ref) {
 		return nil, fmt.Errorf("codegen: dynamic index into the push-counted stack %s.%s without its count slot (D-031)", ref.Layer.Spec.Name, ref.Aux.OutParam)
 	}
 	if isVarTailStack(ref) {
-		return emitDynamicVarTailStackAddress(ref, base, countSlot, failLabel)
+		return emitDynamicVarTailStackAddress(ref, base, bound, failLabel)
 	}
-	return emitDynamicStackAddressCounted(ref, base, countSlot, failLabel)
+	return emitDynamicStackAddressCounted(ref, base, bound, failLabel)
 }
 
 // needsEntryAddress reports whether a stack reference's entry offset is
@@ -2570,7 +2605,7 @@ func emitStaticStackEntryAddress(ref *ir.FieldRef, base layerAnchor, failLabel s
 // through auxLoadEmitter so they can issue multiple LDX from the same
 // R5 base.
 func emitDynamicStackLoad(ref *ir.FieldRef, size asm.Size, failLabel string) (asm.Instructions, error) {
-	addr, err := emitStackEntryAddress(ref, r4Anchor(), nil, failLabel)
+	addr, err := emitStackEntryAddress(ref, r4Anchor(), indexBound{}, failLabel)
 	if err != nil {
 		return nil, err
 	}

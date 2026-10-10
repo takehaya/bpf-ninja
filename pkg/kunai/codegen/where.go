@@ -2494,18 +2494,33 @@ func (c *whereCtx) dynamicOffsetSlotFor(f *ir.FieldRef) (int16, bool) {
 }
 
 // stackEntryAddress is the where-side emitStackEntryAddress: a dynamic
-// index into a push-counted stack is also bounded by the push count slot
-// (D-031).
+// index is also bounded by the stack's count source (D-031), the push
+// count slot of a parser-pushed stack or the count byte of the primary
+// header (srv6.segments: last_entry + 1), the same source the static
+// index guard (emitCountGuard) reads.
 func (c *whereCtx) stackEntryAddress(ref *ir.FieldRef, base layerAnchor, failLabel string) (asm.Instructions, error) {
-	var countSlot *int16
-	if !ref.Aux.Stack.IsStatic && needsPushCount(ref) {
-		slot, ok := c.queried.stackCountSlot(ref.Layer, ref.Aux.OutParam)
-		if !ok {
-			return nil, fmt.Errorf("codegen: push count of stack %q not in demand set", ref.Aux.OutParam)
+	var bound indexBound
+	if !ref.Aux.Stack.IsStatic {
+		src, err := refCountSource(ref)
+		if err != nil {
+			return nil, err
 		}
-		countSlot = &slot
+		switch {
+		case src == nil:
+			// No count source: capacity alone bounds the index.
+		case src.Stack != "":
+			slot, ok := c.queried.stackCountSlot(ref.Layer, ref.Aux.OutParam)
+			if !ok {
+				return nil, fmt.Errorf("codegen: push count of stack %q not in demand set", ref.Aux.OutParam)
+			}
+			bound.slot = &slot
+		case src.Owner != nil:
+			return nil, fmt.Errorf("%w: owner-bound aux %q with non-static index is not yet supported", ErrNotImplemented, ref.Aux.OutParam)
+		default:
+			bound.hdr, bound.byteOff, bound.addend = true, src.ByteOff, src.Offset
+		}
 	}
-	return emitStackEntryAddress(ref, base, countSlot, failLabel)
+	return emitStackEntryAddress(ref, base, bound, failLabel)
 }
 
 // absent is the jump target for a field whose option, gated aux, or

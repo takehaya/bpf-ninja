@@ -162,6 +162,8 @@ filter が読めるのはパケットの先頭 512 byte (`codegen.ScratchBufSize
 | `proto.stack[expr].field` | `srv6.segments[srv6.last_entry].addr` | 動的 index (parent header field 由来) |
 | `proto.options.NAME.field` | `tcp.options.MSS.value` | TCP/IPv4 option lookup |
 
+stack の index は静的でも動的でも、抽出された要素数以上を指すとその要素は不在として扱われ、それを含む atom は `!=` でも false になります。要素数は protocol が宣言した count field (srv6 なら `last_entry + 1`) か、parser が push した数です。bracket predicate の静的 index も同じ規則です。
+
 量化された layer の field も参照できます。
 
 - `?` / `{0,1}` の layer (`eth/vlan?/ipv4/tcp where vlan.tci == 100`): layer が無いパケットでは、その field を含む atom は **false** になります (`==` も `!=` も)。「無い、または 100 でない」は `not (vlan.tci == 100)` と書きます。

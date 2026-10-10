@@ -1470,3 +1470,58 @@ func TestAuxStackSrv6SegmentsArith128(t *testing.T) {
 	borrow.MustMatch(t, two, "fc00::2 - 3 borrows into the high half")
 	borrow.MustReject(t, other, "fc00::3 - 3 == fc00::0")
 }
+
+// TestAuxStackSrv6IndexAtOrPastCount pins D-031 for the two index forms
+// that used to escape the count guard on a stack whose count is a header
+// field (srv6.segments: last_entry + 1). A dynamic index at or past the
+// count read the bytes after the segment list (the inner TCP header) and
+// compared them; a static index in a bracket predicate did the same. Both
+// are absent now: the atom is false, for `!=` too, and a bracket predicate
+// rejects. The count byte, not the packet end, decides: the two-segment
+// packet has 20 bytes of TCP after the list, so index 2 is readable.
+func TestAuxStackSrv6IndexAtOrPastCount(t *testing.T) {
+	two := func() []byte {
+		return BuildSRv6(t, SRv6Opts{
+			Segments:        []net.IP{net.ParseIP("fc00::1"), net.ParseIP("fc00::2")},
+			InnerNextHeader: 6,
+		})
+	}
+	// segments_left (SRH byte 3) is the index source; the builder sets it
+	// to last_entry, so patch it.
+	const segmentsLeft = ethIPv6PrefixSize + 3
+	atCount := two()
+	atCount[segmentsLeft] = 2 // == count
+	lastSeg := two()
+	lastSeg[segmentsLeft] = 1 // the last extracted entry
+	pastCount := two()
+	pastCount[segmentsLeft] = 5 // past the count and the packet end alike
+
+	ne := New(t, "eth/ipv6/srv6/tcp where srv6.segments[srv6.segments_left].addr != fc00::1")
+	ne.MustReject(t, atCount, "index == count: the entry is absent, != is false (D-031)")
+	ne.MustMatch(t, lastSeg, "index == last_entry: fc00::2 != fc00::1")
+	ne.MustReject(t, pastCount, "index past the count")
+
+	// The 16 bytes at segment position 2 are the start of the TCP header
+	// the builder writes (04d2 0050 00000001 00000000 5002 ffff): the old
+	// code compared them and matched.
+	tcpBytes := New(t, "eth/ipv6/srv6/tcp where srv6.segments[srv6.segments_left].addr == int<128>(6407300661684978453200384028825550847)")
+	tcpBytes.MustReject(t, atCount, "index == count must not compare the TCP header bytes")
+
+	eq := New(t, "eth/ipv6/srv6/tcp where srv6.segments[srv6.segments_left].addr == fc00::2")
+	eq.MustMatch(t, lastSeg, "index == last_entry reads fc00::2")
+	eq.MustReject(t, atCount, "index == count is absent")
+
+	// The 128-bit arithmetic path shares the entry address.
+	arith := New(t, "eth/ipv6/srv6/tcp where srv6.segments[srv6.segments_left].addr + 1 == int<128>(334965454937798799971759379190646833155)")
+	arith.MustMatch(t, lastSeg, "fc00::2 + 1 == fc00::3")
+	arith.MustReject(t, atCount, "index == count: absent operand, atom false")
+
+	// Bracket form, static index: one segment, index 1 is absent.
+	one := BuildSRv6(t, SRv6Opts{Segments: []net.IP{net.ParseIP("fc00::1")}, InnerNextHeader: 6})
+	brNE := New(t, "eth/ipv6/srv6[segments[1].addr != fc00::1]/tcp")
+	brNE.MustReject(t, one, "bracket: segments[1] not extracted, predicate false even for != (D-031)")
+	brNE.MustMatch(t, two(), "bracket: segments[1] == fc00::2 differs")
+	brEQ := New(t, "eth/ipv6/srv6[segments[1].addr == fc00::2]/tcp")
+	brEQ.MustMatch(t, two(), "bracket: segments[1] == fc00::2")
+	brEQ.MustReject(t, one, "bracket: segments[1] absent")
+}

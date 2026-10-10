@@ -11,6 +11,17 @@ import (
 	"github.com/takehaya/bpf-ninja/pkg/kunai/ir"
 )
 
+// staticHeaderCountedIndex reports whether f is a static index into a
+// stack whose element count is a declared field of the primary header
+// (vocab.StackCountSpec, e.g. srv6.segments), the shape genPredicate
+// guards by reading that byte.
+func staticHeaderCountedIndex(f *ir.FieldRef) bool {
+	if f == nil || f.Aux == nil || f.Aux.Stack == nil || !f.Aux.Stack.IsStatic || f.Aux.OwnerOption != nil || f.Layer == nil {
+		return false
+	}
+	return f.Layer.Spec.StackCounts[f.Aux.OutParam] != nil
+}
+
 // genPredicate emits the comparison asm for one "field op value" entry.
 // Supported value types: integer, IPv4 / IPv6 host, IPv4 / IPv6 CIDR,
 // MAC. Each accepts == and !=; ordered comparisons land on integers
@@ -24,13 +35,17 @@ func genPredicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, error) {
 	if pred.Unsupported != "" {
 		return nil, fmt.Errorf("%w: %s", ErrNotImplemented, pred.Unsupported)
 	}
-	// A static index into a push-counted stack is absent past the pushed
-	// entries (D-031): guard it against the count slot when the predicate
-	// runs after the walk, refuse it when it runs before (the count is
-	// still 0 there and the entry would read the bytes after the stack).
-	// The guard precedes every predicate kind.
+	// A static index into a stack is absent past the extracted entries
+	// (D-031), so the guard precedes every predicate kind. A push-counted
+	// stack is guarded against the count slot when the predicate runs after
+	// the walk and refused when it runs before (the count is still 0 there
+	// and the entry would read the bytes after the stack). A stack with a
+	// declared count field (srv6.segments: last_entry + 1) reads that byte
+	// of the primary header, which sits at layer entry (R4) both before and
+	// after the walk; the where clause's emitCountGuard reads the same byte.
 	var guard asm.Instructions
-	if needsPushCount(pred.Field) {
+	switch {
+	case needsPushCount(pred.Field):
 		var slot int16
 		ok := false
 		if pc != nil && pc.stackCount != nil {
@@ -43,6 +58,13 @@ func genPredicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, error) {
 			asm.LoadMem(asm.R3, asm.R10, slot, asm.DWord),
 			asm.JLE.Imm(asm.R3, int32(pred.Field.Aux.Stack.Static), dslReject),
 		}
+	case staticHeaderCountedIndex(pred.Field):
+		cnt := pred.Field.Layer.Spec.StackCounts[pred.Field.Aux.OutParam]
+		guard = emitFieldLoad(r4Anchor(), cnt.ByteOff, asm.Byte)
+		if cnt.Addend != 0 {
+			guard = append(guard, asm.Add.Imm(asm.R3, int32(cnt.Addend)))
+		}
+		guard = append(guard, asm.JLE.Imm(asm.R3, int32(pred.Field.Aux.Stack.Static), dslReject))
 	}
 
 	var insns asm.Instructions
