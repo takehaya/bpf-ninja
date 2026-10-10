@@ -2,6 +2,7 @@ package dsltest
 
 import (
 	"encoding/binary"
+	"encoding/hex"
 	"net"
 	"testing"
 
@@ -1493,19 +1494,37 @@ func TestAuxStackSrv6IndexAtOrPastCount(t *testing.T) {
 	atCount[segmentsLeft] = 2 // == count
 	lastSeg := two()
 	lastSeg[segmentsLeft] = 1 // the last extracted entry
-	pastCount := two()
-	pastCount[segmentsLeft] = 5 // past the count and the packet end alike
+	// Past the count but inside the packet: 32 bytes of TLVs follow the
+	// two segments, so index 3 is readable and only the count can reject.
+	// The chain stops at srv6 (a TLV-bearing SRH does not chain, D-029).
+	tlv := BuildSRv6(t, SRv6Opts{
+		Segments:         []net.IP{net.ParseIP("fc00::1"), net.ParseIP("fc00::2")},
+		InnerNextHeader:  6,
+		TrailingTLVBytes: make([]byte, 32),
+	})
+	tlv[segmentsLeft] = 3
 
 	ne := New(t, "eth/ipv6/srv6/tcp where srv6.segments[srv6.segments_left].addr != fc00::1")
 	ne.MustReject(t, atCount, "index == count: the entry is absent, != is false (D-031)")
 	ne.MustMatch(t, lastSeg, "index == last_entry: fc00::2 != fc00::1")
-	ne.MustReject(t, pastCount, "index past the count")
+	neTLV := New(t, "eth/ipv6/srv6 where srv6.segments[srv6.segments_left].addr != fc00::1")
+	neTLV.MustReject(t, tlv, "index past the count, bytes present: still absent")
 
 	// The 16 bytes at segment position 2 are the start of the TCP header
-	// the builder writes (04d2 0050 00000001 00000000 5002 ffff): the old
-	// code compared them and matched.
+	// the builder writes: the old code compared them and matched. Pin the
+	// bytes so the literal cannot drift away from the builder.
+	const tcpAt2 = "04d2005000000001000000005002ffff"
+	if got := hex.EncodeToString(atCount[ethIPv6PrefixSize+8+2*16:][:16]); got != tcpAt2 {
+		t.Fatalf("TCP bytes at segment position 2 are %s, the literal below assumes %s", got, tcpAt2)
+	}
 	tcpBytes := New(t, "eth/ipv6/srv6/tcp where srv6.segments[srv6.segments_left].addr == int<128>(6407300661684978453200384028825550847)")
 	tcpBytes.MustReject(t, atCount, "index == count must not compare the TCP header bytes")
+
+	// Optional srv6: the absent-layer guard runs before the count guard.
+	opt := New(t, "eth/ipv6/srv6?/tcp where srv6.segments[srv6.segments_left].addr != fc00::1")
+	opt.MustReject(t, atCount, "srv6? present, index == count: absent (D-031)")
+	opt.MustMatch(t, lastSeg, "srv6? present, index == last_entry")
+	opt.MustReject(t, BuildEthIPv6TCP(t, nil, nil, 1234, 80), "srv6? absent: the reference is false (D-003)")
 
 	eq := New(t, "eth/ipv6/srv6/tcp where srv6.segments[srv6.segments_left].addr == fc00::2")
 	eq.MustMatch(t, lastSeg, "index == last_entry reads fc00::2")

@@ -2026,17 +2026,19 @@ func emitAuxGating(g *vocab.AuxGating, base layerAnchor, failLabel string) asm.I
 // or more LDX from R5 with field-relative offsets to read individual
 // fields.
 //
-// `layerBase` describes how the layer's start is anchored:
-//   - LayerAnchorR4: R0 + offsetBase = layer start. Used by predicate
-//     codegen which runs while R4 still equals layer entry.
-//   - LayerAnchorAbsolute(off): R0 + off = layer start. Used by
-//     where-clause codegen which runs after R4 has advanced past
-//     every layer.
+// `base` describes how the layer's start is anchored (layerAnchor):
+//   - UseR4: R0 + offsetBase = layer start. Used by predicate codegen,
+//     which runs while R4 still equals layer entry.
+//   - UseSlot: R0 + the layer's runtime entry slot = layer start. Used
+//     by where-clause codegen for a layer behind a variable-length one
+//     (every bundled srv6 filter: srv6 follows ipv6).
+//   - absolute: R0 + AbsOffset = layer start. Where-clause codegen for a
+//     layer at a fixed offset.
 //
 // failLabel is where the bounds check jumps when the runtime index
-// reaches the stack's declared capacity. R3 is also clobbered (and R2
-// when emitDynamicStackAddressCounted is given a count slot); R5
-// remains live until the next emitter that touches it.
+// reaches the stack's declared capacity or its count (`bound`). R3 is
+// also clobbered, and R2 when `bound` names a count source (slot or
+// header byte); R5 remains live until the next emitter that touches it.
 //
 // MVP constraints:
 //   - The dynamic index source must be a byte-aligned 1-byte

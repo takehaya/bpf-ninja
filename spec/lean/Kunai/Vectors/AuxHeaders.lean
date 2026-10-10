@@ -471,6 +471,13 @@ vector srv6DynamicLast := {
   id := "srv6-segments-dynamic-last", ast := { layers := srv6L, cond := some (.litCmp segLeft .eq (.ipv6 s2)) },
   packet := srv6Pkt 1 [s1, s2] (segsLeft := 1), expected := .accept [],
   note := "segments_left = 1 = last_entry is the last extracted entry: the index is in range" }
+vector srv6OptDynamicAtCount := {
+  id := "srv6-opt-segments-dynamic-at-count", ast := { layers := [P "eth", P "ipv6", Pq "srv6" .opt, P "tcp"], cond := some (.litCmp segLeft .ne (.ipv6 s1)) },
+  packet := srv6Pkt 1 [s1, s2] (segsLeft := 2), expected := .reject,
+  note := "the optional layer is present and the index is at the count: absent, false for != (the layer guard and the count guard share the verdict)" }
+vector srv6OptDynamicLast := {
+  id := "srv6-opt-segments-dynamic-last", ast := { layers := [P "eth", P "ipv6", Pq "srv6" .opt, P "tcp"], cond := some (.litCmp segLeft .ne (.ipv6 s1)) },
+  packet := srv6Pkt 1 [s1, s2] (segsLeft := 1), expected := .accept [] }
 def segBr (i : Nat) : FieldPath := ⟨[("segments", some (.nat i)), ("addr", none)]⟩
 def srv6Br (ρ : Predicate) : List Layer := [P "eth", P "ipv6", .proto { name := "srv6", preds := [ρ] }, P "tcp"]
 vector srv6BracketIndexAbsent := {
@@ -696,7 +703,7 @@ def auxVectors : List Vector := [
   ipv6Hbh, ipv6TwoExts, ipv6ExtLong, ipv6ExtTooLong, ipv6ExtsIndex, ipv6ExtsIndex1, ipv6ExtsIndexAfterLong, ipv6ExtsAnyAfterLong, ipv6ExtsDynamicLong, ipv6ExtsDynamicLongSecond, ipv6ExtsDynamicLongAbsent, ipv6ExtsDynamicLongLast, ipv6ExtsDynamicLongLastMiss, ipv6ExtsDynamicLongBeyond, ipv6ExtsDynamicLongSlot, ipv6ExtsDynamicLongSlotAbsent,
   ipv6ExtsBracket, ipv6ExtsBracketAbsent, ipv6ExtsBracketLong, ipv6ExtsBracketDynamic, ipv6ExtsBracketIter, ipv6ExtsBracketInAbsent, ipv6ExtsBracketInLong, ipv6ExtsSliceLong, ipv6ExtsBracketSliceLong, gtpExtsBracket, gtpExtsBracketAbsent, gtpExtsBracketNone, gtpExtsBracketMixed, gtpExtsBracketMixedMiss, ipv6ExtsIndexAbsent,
   ipv6NextHeaderWhere, ipv6NextHeaderBracket, ipv6FiveExts, ipv6SixExts, ipv6AnyExts, ipv6AllExts,
-  srv6TruncatedFails, typSrv6NoValid, geneveVersionOne, srv6SegWideLit, srv6Chain, srv6Static, srv6Dynamic, srv6Any, srv6All, srv6AllCidr, srv6IndexAbsent, srv6DynamicAtCount, srv6DynamicLast, srv6BracketIndexAbsent, srv6BracketIndex, srv6OverCap, srv6OverCapAnyKept, srv6OverCapAnyDropped, srv6OverCapAll, srv6OverCapNotAll,
+  srv6TruncatedFails, typSrv6NoValid, geneveVersionOne, srv6SegWideLit, srv6Chain, srv6Static, srv6Dynamic, srv6Any, srv6All, srv6AllCidr, srv6IndexAbsent, srv6DynamicAtCount, srv6DynamicLast, srv6OptDynamicAtCount, srv6OptDynamicLast, srv6BracketIndexAbsent, srv6BracketIndex, srv6OverCap, srv6OverCapAnyKept, srv6OverCapAnyDropped, srv6OverCapAll, srv6OverCapNotAll,
   srv6OverCapIndex, srv6OverCapLastEntry, srv6AtCapAll, srv6PastScratch, srv6TenSegs, srv6TwelveSegs, srv6OverstatedLastEntry,
   srv6OverCapAllOrTrue, srv6AbsentAllTrue, srv6AtCap,
   gtpEightExts, gtpNineExts, gtpTenExts, gtpPlain, gtpOptExists, gtpOptAbsent, gtpOptField, gtpOptFieldAbsent, gtpExtDynamicIndex, gtpExtLongFirst, gtpExtLengthZero, gtpExtStack,

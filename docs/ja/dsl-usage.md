@@ -162,7 +162,7 @@ filter が読めるのはパケットの先頭 512 byte (`codegen.ScratchBufSize
 | `proto.stack[expr].field` | `srv6.segments[srv6.last_entry].addr` | 動的 index (parent header field 由来) |
 | `proto.options.NAME.field` | `tcp.options.MSS.value` | TCP/IPv4 option lookup |
 
-stack の index は静的でも動的でも、抽出された要素数以上を指すとその要素は不在として扱われ、それを含む atom は `!=` でも false になります。要素数は protocol が宣言した count field (srv6 なら `last_entry + 1`) か、parser が push した数です。bracket predicate の静的 index も同じ規則です。
+stack の index は静的でも動的でも、抽出された要素数以上を指すとその要素は不在として扱われ、それを含む atom は `!=` でも false になります。要素数は protocol が宣言した count field (srv6 なら `last_entry + 1`)、option の中の配列 (`tcp.options.SACK.blocks[i]` など) ならその option の length byte、それ以外は parser が push した数です。bracket predicate の静的 index も同じ規則です。
 
 量化された layer の field も参照できます。
 
