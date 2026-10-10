@@ -3,11 +3,14 @@ package program
 import (
 	"bytes"
 	"errors"
-	"github.com/takehaya/bpf-ninja/pkg/kunai/dsltest"
 	"testing"
+	"time"
 
 	"github.com/cilium/ebpf"
+	"github.com/cilium/ebpf/ringbuf"
+	"github.com/takehaya/bpf-ninja/internal/capture"
 	"github.com/takehaya/bpf-ninja/internal/testutil"
+	"github.com/takehaya/bpf-ninja/pkg/kunai/dsltest"
 )
 
 // xdpNativeCBPFExprs and xdpNativeDSLExprs cover the cbpfc and kunai
@@ -105,15 +108,18 @@ func TestBpfXDPNativeLoad(t *testing.T) {
 // Mirrors loadProbeOrFail but skips the attach step.
 func loadXDPNativeOrFail(t *testing.T, expr string, useDSL bool) {
 	t.Helper()
-	loadXDPNative(t, expr, useDSL)
+	_, _, _ = loadXDPNative(t, expr, useDSL)
 }
 
 // TestBpfXDPNativePacketUnchanged runs the native program on a frame with
 // an IPv6 extension header through BPF_PROG_TEST_RUN and requires the
-// frame back unchanged. The filter runs on the live packet here, and the
-// extension walk used to write the chain's final next_header into the
-// IPv6 header (byte 20 became 6 on this frame) before passing it on; the
-// value lives in a stack slot now (D-032 overlay).
+// frame back unchanged, both the frame the program passes on (DataOut)
+// and the capture record it wrote to the ring. The filter runs on the
+// live packet here, and the extension walk used to write the chain's
+// final next_header into the IPv6 header (byte 20 became 6 on this frame)
+// before passing it on and before copying it into the record; the value
+// lives in a stack slot now (D-032 overlay) and the record holds the wire
+// bytes, as the spec's evalCapture does.
 func TestBpfXDPNativePacketUnchanged(t *testing.T) {
 	testutil.SkipIfNotRoot(t)
 	// One extension (walked inline) and two (the second in the bpf_loop
@@ -134,10 +140,18 @@ func TestBpfXDPNativePacketUnchanged(t *testing.T) {
 		"eth/ipv6/tcp",
 		"eth/ipv6/tcp where ipv6.next_header == 6",
 		"eth/ipv6[next_header == 6]/tcp",
+		// `capture headers` is bounded by the chain's primary headers
+		// (14 + 40 + 20 = 74 here): the record is that prefix of the frame.
+		"eth/ipv6/tcp capture headers",
 	} {
 		for name, in := range frames {
 			t.Run(expr+"/"+name, func(t *testing.T) {
-				prog := loadXDPNative(t, expr, true)
+				prog, ring, maxCapLen := loadXDPNative(t, expr, true)
+				rd, err := ringbuf.NewReader(ring)
+				if err != nil {
+					t.Fatalf("ringbuf reader: %v", err)
+				}
+				defer func() { _ = rd.Close() }()
 				out := make([]byte, len(in)+64)
 				ret, outLen, err := runXDPOnce(prog, in, out)
 				if err != nil {
@@ -146,8 +160,33 @@ func TestBpfXDPNativePacketUnchanged(t *testing.T) {
 				if ret != 2 { // XDP_PASS
 					t.Fatalf("return value %d, want XDP_PASS (2)", ret)
 				}
+				// Errorf, not Fatalf: the record check below is the other
+				// witness of a packet write and should report in the same run.
 				if !bytes.Equal(out[:outLen], in) {
-					t.Fatalf("the program changed the frame (ipv6 byte 20 is %#x, wire %#x):\n got %x\nwant %x", out[20], in[20], out[:outLen], in)
+					t.Errorf("the program changed the frame (ipv6 byte 20 is %#x, wire %#x):\n got %x\nwant %x", out[20], in[20], out[:outLen], in)
+				}
+				// The record the program wrote: a deadline means the filter
+				// missed or the per-CPU ring lookup failed.
+				rd.SetDeadline(time.Now().Add(time.Second))
+				rec, err := rd.Read()
+				if err != nil {
+					t.Fatalf("no capture record (filter miss or ring lookup miss): %v", err)
+				}
+				pkt, err := capture.ParseRawSample(rec.RawSample)
+				if err != nil {
+					t.Fatalf("parse record: %v", err)
+				}
+				// The record is the frame clamped to the filter's capture
+				// length (0 = the host default, longer than these frames).
+				want := len(in)
+				if maxCapLen != 0 && maxCapLen < want {
+					want = maxCapLen
+				}
+				if len(pkt.Data) != want {
+					t.Fatalf("capture record length %d, want %d (MaxCapLen %d, frame %d)", len(pkt.Data), want, maxCapLen, len(in))
+				}
+				if !bytes.Equal(pkt.Data, in[:len(pkt.Data)]) {
+					t.Fatalf("the capture record differs from the wire (ipv6 byte 20 is %#x, wire %#x, caplen %d):\n got %x\nwant %x", pkt.Data[20], in[20], pkt.CapLen, pkt.Data, in[:len(pkt.Data)])
 				}
 			})
 		}
@@ -165,8 +204,14 @@ func runXDPOnce(prog *ebpf.Program, data, dataOut []byte) (uint32, int, error) {
 	return ret, len(opts.DataOut), nil
 }
 
-// loadXDPNative is loadXDPNativeOrFail returning the loaded program.
-func loadXDPNative(t *testing.T, expr string, useDSL bool) *ebpf.Program {
+// loadXDPNative is loadXDPNativeOrFail returning the loaded program, the
+// ring it captures into and the filter's capture length (0 = host
+// default). The program picks the ring by CPU id from the outer map
+// (captureXDPNative), so every possible CPU index points at the one
+// ring and a test run on any CPU finds it; a test only exercises the CPU
+// it happens to run on, so a fixture regression to fewer slots would show
+// up as a scheduler-dependent failure rather than a sure one.
+func loadXDPNative(t *testing.T, expr string, useDSL bool) (*ebpf.Program, *ebpf.Map, int) {
 	t.Helper()
 	out, err := compileFilter(expr, useDSL, false, ebpf.XDP)
 	if err != nil {
@@ -181,16 +226,22 @@ func loadXDPNative(t *testing.T, expr string, useDSL bool) *ebpf.Program {
 		t.Fatalf("creating inner ringbuf: %v", err)
 	}
 	t.Cleanup(func() { _ = innerMap.Close() })
+	slots, err := possibleCPUSlots()
+	if err != nil {
+		t.Fatalf("possible CPUs: %v", err)
+	}
 	outerMap, err := ebpf.NewMap(&ebpf.MapSpec{
 		Name: "ninja_xdp_test_outer", Type: ebpf.ArrayOfMaps,
-		KeySize: 4, ValueSize: 4, MaxEntries: 1, InnerMap: innerSpec,
+		KeySize: 4, ValueSize: 4, MaxEntries: uint32(slots), InnerMap: innerSpec,
 	})
 	if err != nil {
 		t.Fatalf("creating outer array_of_maps: %v", err)
 	}
 	t.Cleanup(func() { _ = outerMap.Close() })
-	if err := outerMap.Put(uint32(0), innerMap); err != nil {
-		t.Fatalf("populating outer map: %v", err)
+	for cpu := 0; cpu < slots; cpu++ {
+		if err := outerMap.Put(uint32(cpu), innerMap); err != nil {
+			t.Fatalf("populating outer map slot %d: %v", cpu, err)
+		}
 	}
 
 	insns := buildXDPNativeInsns(out, outerMap.FD(), nil, 0, 0)
@@ -209,5 +260,5 @@ func loadXDPNative(t *testing.T, expr string, useDSL bool) *ebpf.Program {
 		t.Fatalf("loading XDP-native program for %q: %v", expr, err)
 	}
 	t.Cleanup(func() { _ = prog.Close() })
-	return prog
+	return prog, innerMap, out.Capture.MaxCapLen
 }
