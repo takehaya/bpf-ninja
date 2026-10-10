@@ -46,9 +46,10 @@ func (r *resolver) resolveBracketPredicate(ap *ast.Predicate, layer *ir.LayerIns
 	if ap.Kind == ast.PredInSet && layer.Quant != ast.QuantOne {
 		return nil, errorf(ap.Pos, "`in @%s` is only supported on a mandatory layer; %q here is optional/repeated (quantifier %s)", ap.SetName, layer.Spec.Name, layer.Quant)
 	}
-	// Bracket-predicate fit check: integer literal must fit the
-	// field's declared bit width (dsl-types.md §7.2). Delegated to
-	// the typing helper so the same rule is in one place.
+	// Bracket-predicate fit check: an integer literal must fit the
+	// field's effective bit width (dsl-types.md §7.2) and a network
+	// literal must match it exactly (§7.5), as in a where clause.
+	// Delegated to the typing helpers so each rule lives in one place.
 	if ap.Kind == ast.PredCmp {
 		if err := rejectBareIdentValue(ap.Value); err != nil {
 			return nil, err
@@ -56,7 +57,7 @@ func (r *resolver) resolveBracketPredicate(ap *ast.Predicate, layer *ir.LayerIns
 		if ap.Value != nil && ap.Value.Kind == ast.ValRange {
 			return nil, errorf(ap.Pos, "range literal %s is only valid in `in [...]` (%s.%s)", ap.Value.Raw, layer.Spec.Name, field.Field.Name)
 		}
-		if err := checkBracketIntFit(field, ap.Value, layer.Spec.Name, ap.Pos); err != nil {
+		if err := checkBracketLiteral(field, ap.Value, layer.Spec.Name, ap.Pos); err != nil {
 			return nil, err
 		}
 	}
@@ -65,13 +66,13 @@ func (r *resolver) resolveBracketPredicate(ap *ast.Predicate, layer *ir.LayerIns
 			return nil, errorf(ap.Pos, "'in' predicate needs at least one alternative")
 		}
 		// Each alternative narrows independently against the same
-		// field — apply the bracket fit-check per element so
-		// out-of-range values surface here, not at codegen time.
+		// field — apply the checks per element so out-of-range values
+		// surface here, not at codegen time.
 		for _, v := range ap.List {
 			if err := rejectBareIdentValue(v); err != nil {
 				return nil, err
 			}
-			if err := checkBracketIntFit(field, v, layer.Spec.Name, ap.Pos); err != nil {
+			if err := checkBracketLiteral(field, v, layer.Spec.Name, ap.Pos); err != nil {
 				return nil, err
 			}
 		}
@@ -93,6 +94,17 @@ func (r *resolver) resolveBracketPredicate(ap *ast.Predicate, layer *ir.LayerIns
 	// host's SetSlotResolver, which the resolver does not carry, so its
 	// set-existence / field checks happen there, not here.
 	return rp, nil
+}
+
+// checkBracketLiteral types one literal of a bracket predicate against
+// its field: the fit check for integers and ranges, the width-shape
+// check for addresses and CIDRs (Lean `checkPred` uses the same
+// sliced width for both).
+func checkBracketLiteral(field *ir.FieldRef, v *ast.Value, layerName string, pos ast.Position) error {
+	if isNetworkLiteral(v) {
+		return checkLiteralWidthShape(field, v, pos)
+	}
+	return checkBracketIntFit(field, v, layerName, pos)
 }
 
 // checkOptionsValid is the typing rule of `.valid` in a where clause and

@@ -1968,6 +1968,22 @@ func applySliceToOffset(ref *ir.FieldRef, off, size int) (int, int, error) {
 	return off, loadBytes, nil
 }
 
+// applyExactSlice narrows (off, size) to exactly the bytes of the
+// field's bit-slice, for readers that compare whole bytes against a
+// network literal (IPv4 = 4, MAC = 6, IPv6 = 16 bytes) and so cannot
+// use applySliceToOffset's rounded-up load window. The resolver types
+// the literal against the slice width, so only a slice whose ends sit
+// on byte boundaries reaches a reader; any other slice is refused.
+func applyExactSlice(ref *ir.FieldRef, off, size int) (int, int, error) {
+	if ref.Slice == nil {
+		return off, size, nil
+	}
+	if ref.Slice.Lo%8 != 0 || ref.Slice.Hi%8 != 0 {
+		return 0, 0, fmt.Errorf("%w: bit-slice [%d:%d] compared with a network literal must start and end on a byte boundary", ErrNotImplemented, ref.Slice.Lo, ref.Slice.Hi)
+	}
+	return off + ref.Slice.Lo/8, ref.Slice.Bits() / 8, nil
+}
+
 // nextLDXSize returns the smallest LDX-acceptable byte count
 // (1 / 2 / 4 / 8) ≥ cover, or 0 if cover > 8. The post-load
 // shift + mask narrows the loaded value back down to the slice's

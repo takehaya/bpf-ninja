@@ -1,6 +1,8 @@
 package resolve
 
 import (
+	"fmt"
+
 	"github.com/takehaya/bpf-ninja/pkg/kunai/ast"
 	"github.com/takehaya/bpf-ninja/pkg/kunai/ir"
 )
@@ -35,12 +37,28 @@ func errStaticDivZero(pos ast.Position, op ast.ArithOp) error {
 }
 
 // errLiteralFieldShape covers `<network-literal> ⨀ <field>` where the
-// field's declared width does not match the literal's natural shape
+// field's effective width does not match the literal's natural shape
 // (IPv4=32, IPv6=128, MAC=48, CIDR4=32, CIDR6=128). The field
 // reference carries the layer + field metadata that frame the
-// diagnostic.
+// diagnostic; a sliced field is printed with its slice
+// (`ipv6.dst[64:128] is bit<64>`).
 func errLiteralFieldShape(pos ast.Position, kindLabel string, want int, ref *ir.FieldRef) error {
-	return errorf(pos, "%s literal needs a bit<%d> field; %s.%s is bit<%d>", kindLabel, want, ref.Layer.Spec.Name, ref.Field.Name, ref.Field.Bits)
+	return errorf(pos, "%s literal needs a bit<%d> field; %s is bit<%d>", kindLabel, want, fieldRefPath(ref), ref.EffectiveBits())
+}
+
+// fieldRefPath renders a field reference the way the user wrote it:
+// `<layer>.<field>`, `<layer>.<aux>.<field>` for an aux field, with a
+// trailing `[lo:hi]` when sliced.
+func fieldRefPath(ref *ir.FieldRef) string {
+	path := ref.Layer.Spec.Name
+	if ref.Aux != nil {
+		path += "." + ref.Aux.OutParam
+	}
+	path += "." + ref.Field.Name
+	if ref.Slice != nil {
+		path += fmt.Sprintf("[%d:%d]", ref.Slice.Lo, ref.Slice.Hi)
+	}
+	return path
 }
 
 // errUnknownActionLiteral fires when a where clause names an XDP_*

@@ -2138,11 +2138,23 @@ func (c *whereCtx) genLiteralCompare(w *ir.Condition, failLabel string) (asm.Ins
 }
 
 // whereLiteralFieldOffset returns the byte offset (relative to the
-// layer's start) and byte width of the LiteralField — primary or
-// aux. For static stack indices the index*ElemSize is folded in;
-// dynamic indices return ErrNotImplemented from this helper because
-// they need runtime offset emit (see genLiteralCompareDynamic).
+// layer's start) and byte width of a field compared with a network
+// literal — primary or aux, in a where clause or a bracket. For static
+// stack indices the index*ElemSize is folded in; dynamic indices return
+// ErrNotImplemented from this helper because they need runtime offset
+// emit (see genLiteralCompareDynamic). A bit-slice narrows the window
+// to exactly the sliced bytes (applyExactSlice): the resolver has typed
+// the literal against the slice width, so `ipv6.dst[96:128] == 10.0.0.1`
+// compares the last four bytes of the address.
 func whereLiteralFieldOffset(ref *ir.FieldRef) (int, int, error) {
+	off, bytes, err := unslicedLiteralFieldOffset(ref)
+	if err != nil {
+		return 0, 0, err
+	}
+	return applyExactSlice(ref, off, bytes)
+}
+
+func unslicedLiteralFieldOffset(ref *ir.FieldRef) (int, int, error) {
 	if ref.Aux == nil {
 		bitOff, bits, err := findFieldBitOffset(ref.Layer.Spec, ref.Field.Name)
 		if err != nil {
@@ -2352,10 +2364,12 @@ func (c *whereCtx) genOwnerBoundLiteralCompare(w *ir.Condition, failLabel string
 		return nil, err
 	}
 
+	// auxLoadEmitter's window already starts at the slice (auxEntryFieldWindow),
+	// so the width checks look at the sliced width.
 	switch w.LiteralValue.Kind {
 	case ast.ValIPv4:
-		if ref.Aux.FieldBitWidth != 32 {
-			return nil, fmt.Errorf("%w: IPv4 literal needs a 32-bit field, got %s.%s.%s (%d bits)", ErrNotImplemented, ref.Layer.Spec.Name, ref.Aux.OutParam, ref.Field.Name, ref.Aux.FieldBitWidth)
+		if ref.EffectiveBits() != 32 {
+			return nil, fmt.Errorf("%w: IPv4 literal needs a 32-bit field, got %s.%s.%s (%d bits)", ErrNotImplemented, ref.Layer.Spec.Name, ref.Aux.OutParam, ref.Field.Name, ref.EffectiveBits())
 		}
 		v4 := w.LiteralValue.V4
 		expected := uint32(byteSwap(uint64(binary.BigEndian.Uint32(v4[:])), 4))
@@ -2365,8 +2379,8 @@ func (c *whereCtx) genOwnerBoundLiteralCompare(w *ir.Condition, failLabel string
 		return insns, nil
 
 	case ast.ValIPv6:
-		if ref.Aux.FieldBitWidth != 128 {
-			return nil, fmt.Errorf("%w: IPv6 literal needs a 128-bit field, got %s.%s.%s (%d bits)", ErrNotImplemented, ref.Layer.Spec.Name, ref.Aux.OutParam, ref.Field.Name, ref.Aux.FieldBitWidth)
+		if ref.EffectiveBits() != 128 {
+			return nil, fmt.Errorf("%w: IPv6 literal needs a 128-bit field, got %s.%s.%s (%d bits)", ErrNotImplemented, ref.Layer.Spec.Name, ref.Aux.OutParam, ref.Field.Name, ref.EffectiveBits())
 		}
 		highBE := binary.BigEndian.Uint64(w.LiteralValue.V6[0:8])
 		lowBE := binary.BigEndian.Uint64(w.LiteralValue.V6[8:16])
@@ -2387,8 +2401,8 @@ func (c *whereCtx) genOwnerBoundLiteralCompare(w *ir.Condition, failLabel string
 		return insns, nil
 
 	case ast.ValMAC:
-		if ref.Aux.FieldBitWidth != 48 {
-			return nil, fmt.Errorf("%w: MAC literal needs a 48-bit field, got %s.%s.%s (%d bits)", ErrNotImplemented, ref.Layer.Spec.Name, ref.Aux.OutParam, ref.Field.Name, ref.Aux.FieldBitWidth)
+		if ref.EffectiveBits() != 48 {
+			return nil, fmt.Errorf("%w: MAC literal needs a 48-bit field, got %s.%s.%s (%d bits)", ErrNotImplemented, ref.Layer.Spec.Name, ref.Aux.OutParam, ref.Field.Name, ref.EffectiveBits())
 		}
 		mac := w.LiteralValue.MAC
 		highLE := uint32(byteSwap(uint64(binary.BigEndian.Uint32(mac[0:4])), 4))
@@ -2420,8 +2434,8 @@ func (c *whereCtx) genOwnerBoundLiteralCompare(w *ir.Condition, failLabel string
 
 func (c *whereCtx) genOwnerBoundCIDRv4(w *ir.Condition, prelude asm.Instructions, loadAt auxLoadAt, failLabel string, jumpOp asm.JumpOp) (asm.Instructions, error) {
 	ref := w.LiteralField
-	if ref.Aux.FieldBitWidth != 32 {
-		return nil, fmt.Errorf("%w: IPv4 CIDR needs a 32-bit field, got %s.%s.%s (%d bits)", ErrNotImplemented, ref.Layer.Spec.Name, ref.Aux.OutParam, ref.Field.Name, ref.Aux.FieldBitWidth)
+	if ref.EffectiveBits() != 32 {
+		return nil, fmt.Errorf("%w: IPv4 CIDR needs a 32-bit field, got %s.%s.%s (%d bits)", ErrNotImplemented, ref.Layer.Spec.Name, ref.Aux.OutParam, ref.Field.Name, ref.EffectiveBits())
 	}
 	prefix := w.LiteralValue.Prefix
 	if prefix < 0 || prefix > 32 {
@@ -2454,8 +2468,8 @@ func (c *whereCtx) genOwnerBoundCIDRv4(w *ir.Condition, prelude asm.Instructions
 
 func (c *whereCtx) genOwnerBoundCIDRv6(w *ir.Condition, prelude asm.Instructions, loadAt auxLoadAt, failLabel string) (asm.Instructions, error) {
 	ref := w.LiteralField
-	if ref.Aux.FieldBitWidth != 128 {
-		return nil, fmt.Errorf("%w: IPv6 CIDR needs a 128-bit field, got %s.%s.%s (%d bits)", ErrNotImplemented, ref.Layer.Spec.Name, ref.Aux.OutParam, ref.Field.Name, ref.Aux.FieldBitWidth)
+	if ref.EffectiveBits() != 128 {
+		return nil, fmt.Errorf("%w: IPv6 CIDR needs a 128-bit field, got %s.%s.%s (%d bits)", ErrNotImplemented, ref.Layer.Spec.Name, ref.Aux.OutParam, ref.Field.Name, ref.EffectiveBits())
 	}
 	prefix := w.LiteralValue.Prefix
 	if prefix < 0 || prefix > 128 {

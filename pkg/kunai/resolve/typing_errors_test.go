@@ -73,6 +73,31 @@ func TestErrLiteralFieldShapeMatchesSpec(t *testing.T) {
 	}
 }
 
+func TestErrLiteralFieldShapePrintsSliceAndAux(t *testing.T) {
+	ref := &ir.FieldRef{
+		Layer: &ir.LayerInstance{Spec: &vocab.ProtocolSpec{Name: "ipv6"}},
+		Field: &vocab.Field{Name: "dst", Bits: 128},
+		Slice: &ir.FieldSlice{Lo: 64, Hi: 128},
+	}
+	got := errorMessage(t, errLiteralFieldShape(ast.Position{Line: 1, Col: 1}, "IPv6 address", 128, ref))
+	want := "IPv6 address literal needs a bit<128> field; ipv6.dst[64:128] is bit<64>"
+	if got != want {
+		t.Errorf("\n  got:  %q\n  want: %q", got, want)
+	}
+
+	aux := &ir.FieldRef{
+		Layer: &ir.LayerInstance{Spec: &vocab.ProtocolSpec{Name: "srv6"}},
+		Field: &vocab.Field{Name: "addr", Bits: 128},
+		Aux:   &ir.AuxRef{OutParam: "segments", FieldBitWidth: 128},
+		Slice: &ir.FieldSlice{Lo: 96, Hi: 128},
+	}
+	got = errorMessage(t, errLiteralFieldShape(ast.Position{Line: 1, Col: 1}, "IPv6 address", 128, aux))
+	want = "IPv6 address literal needs a bit<128> field; srv6.segments.addr[96:128] is bit<32>"
+	if got != want {
+		t.Errorf("\n  got:  %q\n  want: %q", got, want)
+	}
+}
+
 func TestErrUnknownActionLiteralMatchesSpec(t *testing.T) {
 	got := errorMessage(t, errUnknownActionLiteral(ast.Position{Line: 1, Col: 1}, "XDP_FOO", 5))
 	want := `unknown action "XDP_FOO" (host accepts 5 symbols)`
