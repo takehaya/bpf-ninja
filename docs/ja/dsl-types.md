@@ -1396,7 +1396,7 @@ bundled の `.p4` は §14.2 の規則に無い構文を使います。`spec/lea
 | `c.set(expr)` / `c.decrement(n)` / `c.is_zero()` | counter は自然数。decrement が残量を超えれば ⊥ |
 | `pkt.lookahead<bit<M>>()` | π から M bit を読む。末尾を越えれば ⊥ |
 | `@kunai_variable_tail` | extract 直後に `((byte & mask) ≫ shift) × scale − min_total + base` バイトを追加で消費。scaled 値が `min_total` 未満なら ⊥ |
-| `@kunai_writeback[source, parent]` | aux の byte を primary header の byte に書き込む。後続の dispatch、where、bracket predicate はこの値を見る (D-032) |
+| `@kunai_writeback[source, parent]` | aux の byte を primary header の該当 byte の値として instance に重ねる。後続の dispatch、where、bracket predicate はこの値を見る (D-032)。Go は値を layer ごとの stack slot に持ち、packet は書き換えない。capture は wire の byte を返す |
 | `extract(stack.next)` で `\|stack\| = capacity` | 宣言された領域の中なら、要素を積まずに読み飛ばし (cursor と counter は進む)、stack に「切り詰め」の印を付ける。`all` はその stack に対して false、`any` と index 参照は残った要素だけを見る。領域の外なら ⊥ (P-Extract-Stack-Full) |
 | `MAX_DEPTH` | 同じか手前の状態への遷移を 1 反復と数え、`MAX_DEPTH` 回で accept (D-026) |
 | lookahead で option の kind byte を読んだ | その option の view を π に置く (extract しない `parse_sack` / `parse_rr` 用、D-030)。重複は最後が勝つ |

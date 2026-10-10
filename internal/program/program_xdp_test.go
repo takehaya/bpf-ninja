@@ -1,7 +1,9 @@
 package program
 
 import (
+	"bytes"
 	"errors"
+	"github.com/takehaya/bpf-ninja/pkg/kunai/dsltest"
 	"testing"
 
 	"github.com/cilium/ebpf"
@@ -64,11 +66,17 @@ var (
 		"eth/ipv4/gre/ipv4/tcp",
 		"eth/ipv4/gre?/ipv4/tcp",
 		"eth/ipv4{1,2}/gre?/ipv4/tcp",
-		// Not here: an ipv6 whose entry is a range (`eth/ipv6/ipv6/tcp`,
-		// `eth/ipv4/ipv6/tcp`, so `ipv6{1,2}` too) stores the extension
-		// chain's next_header back into the ipv6 header through an
-		// unbounded packet pointer and is rejected on the packet pointer
-		// today.
+		// ipv6 whose entry is a range: the extension chain's next_header
+		// used to be written back into the packet through an unbounded
+		// pointer; it lives in a stack slot now, which the next layer's
+		// dispatch and the field reads use.
+		"eth/ipv6/ipv6/tcp",
+		"eth/ipv4/ipv6/tcp",
+		"eth/ipv6{1,2}/tcp",
+		"eth/ipv6/tcp where ipv6.next_header == 6",
+		"eth/ipv6[next_header == 6]/tcp",
+		"eth/(ipv4|ipv6)/tcp where ipv6.next_header == 6",
+		"eth/vlan?/ipv6/tcp capture headers+64",
 	}
 )
 
@@ -96,6 +104,69 @@ func TestBpfXDPNativeLoad(t *testing.T) {
 // on capture-side LoadMapPtr), and loads it through the verifier.
 // Mirrors loadProbeOrFail but skips the attach step.
 func loadXDPNativeOrFail(t *testing.T, expr string, useDSL bool) {
+	t.Helper()
+	loadXDPNative(t, expr, useDSL)
+}
+
+// TestBpfXDPNativePacketUnchanged runs the native program on a frame with
+// an IPv6 extension header through BPF_PROG_TEST_RUN and requires the
+// frame back unchanged. The filter runs on the live packet here, and the
+// extension walk used to write the chain's final next_header into the
+// IPv6 header (byte 20 became 6 on this frame) before passing it on; the
+// value lives in a stack slot now (D-032 overlay).
+func TestBpfXDPNativePacketUnchanged(t *testing.T) {
+	testutil.SkipIfNotRoot(t)
+	// One extension (walked inline) and two (the second in the bpf_loop
+	// callback, whose store goes through the ctx pointer).
+	frames := map[string][]byte{
+		"hbh": dsltest.BuildIPv6WithExts(t, dsltest.IPv6WithExtsOpts{
+			FirstNextHeader: 0, // Hop-by-Hop
+			Exts:            []dsltest.IPv6Ext{{}},
+			FinalNextHeader: 6,
+		}),
+		"hbh-dstopts": dsltest.BuildIPv6WithExts(t, dsltest.IPv6WithExtsOpts{
+			FirstNextHeader: 0,
+			Exts:            []dsltest.IPv6Ext{{NextHeader: 60}, {}},
+			FinalNextHeader: 6,
+		}),
+	}
+	for _, expr := range []string{
+		"eth/ipv6/tcp",
+		"eth/ipv6/tcp where ipv6.next_header == 6",
+		"eth/ipv6[next_header == 6]/tcp",
+	} {
+		for name, in := range frames {
+			t.Run(expr+"/"+name, func(t *testing.T) {
+				prog := loadXDPNative(t, expr, true)
+				out := make([]byte, len(in)+64)
+				ret, outLen, err := runXDPOnce(prog, in, out)
+				if err != nil {
+					t.Fatalf("test run: %v", err)
+				}
+				if ret != 2 { // XDP_PASS
+					t.Fatalf("return value %d, want XDP_PASS (2)", ret)
+				}
+				if !bytes.Equal(out[:outLen], in) {
+					t.Fatalf("the program changed the frame (ipv6 byte 20 is %#x, wire %#x):\n got %x\nwant %x", out[20], in[20], out[:outLen], in)
+				}
+			})
+		}
+	}
+}
+
+// runXDPOnce runs prog once on data through BPF_PROG_TEST_RUN and returns
+// the verdict and the bytes the program left in dataOut.
+func runXDPOnce(prog *ebpf.Program, data, dataOut []byte) (uint32, int, error) {
+	opts := ebpf.RunOptions{Data: data, DataOut: dataOut, Repeat: 1}
+	ret, err := prog.Run(&opts)
+	if err != nil {
+		return 0, 0, err
+	}
+	return ret, len(opts.DataOut), nil
+}
+
+// loadXDPNative is loadXDPNativeOrFail returning the loaded program.
+func loadXDPNative(t *testing.T, expr string, useDSL bool) *ebpf.Program {
 	t.Helper()
 	out, err := compileFilter(expr, useDSL, false, ebpf.XDP)
 	if err != nil {
@@ -138,4 +209,5 @@ func loadXDPNativeOrFail(t *testing.T, expr string, useDSL bool) {
 		t.Fatalf("loading XDP-native program for %q: %v", expr, err)
 	}
 	t.Cleanup(func() { _ = prog.Close() })
+	return prog
 }

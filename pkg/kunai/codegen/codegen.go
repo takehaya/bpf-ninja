@@ -652,6 +652,35 @@ func emitVarParentDispatchBounded(spec *vocab.ProtocolSpec, c *vocab.DispatchCon
 	}, check...), nil
 }
 
+// writeBackDispatchSlot returns the parent's write-back slot when the
+// dispatch const reads the very byte the parent's aux walk writes back
+// (ipv6.next_header); the dispatch then reads the slot (D-032).
+func writeBackDispatchSlot(parent *ir.LayerInstance, c *vocab.DispatchConst, qo queriedOptions) (int16, bool) {
+	if parent == nil || c == nil {
+		return 0, false
+	}
+	wb := writeBackOf(parent.Spec)
+	if wb == nil {
+		return 0, false
+	}
+	fieldOff, fieldBytes, err := findFieldByteOffset(parent.Spec, c.FieldName)
+	if err != nil || fieldBytes != 1 || fieldOff != wb.ParentByteOff {
+		return 0, false
+	}
+	return qo.writeBackSlot(parent)
+}
+
+// emitSlotDispatchCheck is emitFieldDispatchCheck for a dispatch byte held
+// in a stack slot (writeBackDispatchSlot proved the field is one byte):
+// load it (zero-extended) and compare like a packet byte.
+func emitSlotDispatchCheck(c *vocab.DispatchConst, slot int16, failLabel string) (asm.Instructions, error) {
+	match, err := emitDispatchValueMatch(asm.R3, c, 1, failLabel)
+	if err != nil {
+		return nil, err
+	}
+	return append(asm.Instructions{asm.LoadMem(asm.R3, asm.R10, slot, asm.DWord)}, match...), nil
+}
+
 // offsetBase is the register that holds the byte offset from R0
 // (scratch buffer start) to the current layer's start. Each layer's
 // load instructions first compute `R3 = R0 + offsetBase`, then LDX
@@ -1213,7 +1242,7 @@ func genParentDispatch(current *ir.LayerInstance, index int, all []*ir.LayerInst
 				asm.JEq.Imm(asm.R3, layerEntryAbsent, next),
 			)
 		}
-		di, err := dispatchVia(current, cand, r4IsRange, layerEntryIsRange(all, j), failLabel)
+		di, err := dispatchVia(current, cand, qo, r4IsRange, layerEntryIsRange(all, j), failLabel)
 		if err != nil {
 			return nil, err
 		}
@@ -1231,7 +1260,7 @@ func genParentDispatch(current *ir.LayerInstance, index int, all []*ir.LayerInst
 // parent: the constant the vocabulary declares for that parent, or
 // nothing when the layer self-validates (the resolver's
 // checkRuntimeParents guarantees one of the two).
-func dispatchVia(current, parent *ir.LayerInstance, r4IsRange, parentEntryIsRange bool, failLabel string) (asm.Instructions, error) {
+func dispatchVia(current, parent *ir.LayerInstance, qo queriedOptions, r4IsRange, parentEntryIsRange bool, failLabel string) (asm.Instructions, error) {
 	c := current.Spec.SelectDispatchConst(parent.Spec.Name)
 	if c == nil {
 		if current.Spec.IsSelfValidating() {
@@ -1247,7 +1276,7 @@ func dispatchVia(current, parent *ir.LayerInstance, r4IsRange, parentEntryIsRang
 	if err != nil {
 		return nil, err
 	}
-	return genDispatch(via, parent, hs, r4IsRange, parentEntryIsRange, failLabel)
+	return genDispatch(via, parent, hs, qo, r4IsRange, parentEntryIsRange, failLabel)
 }
 
 // withAbsentEdge wraps an absentable layer's instructions when its absent
@@ -1258,7 +1287,7 @@ func dispatchVia(current, parent *ir.LayerInstance, r4IsRange, parentEntryIsRang
 // P)), and joins the next layer past its static dispatch; the present
 // path skips that block. When the next layer has no dispatch constant for
 // the grandparent and does not self-validate, the absent path rejects.
-func withAbsentEdge(present asm.Instructions, peekFail string, index int, all []*ir.LayerInstance) (asm.Instructions, error) {
+func withAbsentEdge(present asm.Instructions, peekFail string, index int, all []*ir.LayerInstance, qo queriedOptions) (asm.Instructions, error) {
 	if !ir.AbsentEdgeApplies(all, index) {
 		return nil, fmt.Errorf("codegen: absent edge of layer %d does not apply (chain codegen bug)", index)
 	}
@@ -1272,7 +1301,7 @@ func withAbsentEdge(present asm.Instructions, peekFail string, index int, all []
 	// Absent path: R4 still ends the grandparent, R0/R1 are the scratch window.
 	out = append(out, asm.Mov.Reg(asm.R0, asm.R0).WithSymbol(peekFail))
 	out = append(out, emitBounds(nextHS, dslReject)...)
-	di, err := dispatchVia(next, gp, precedingLayersLeaveR4Range(all, index+1), layerEntryIsRange(all, index-1), dslReject)
+	di, err := dispatchVia(next, gp, qo, precedingLayersLeaveR4Range(all, index+1), layerEntryIsRange(all, index-1), dslReject)
 	if err != nil {
 		return nil, err
 	}
@@ -1377,7 +1406,7 @@ func emitPeekedIterZero(layer *ir.LayerInstance, index int, all []*ir.LayerInsta
 	return append(out, tail...), nil
 }
 
-func genDispatch(current, parent *ir.LayerInstance, parentHS int, r4IsRange, parentEntryIsRange bool, failLabel string) (asm.Instructions, error) {
+func genDispatch(current, parent *ir.LayerInstance, parentHS int, qo queriedOptions, r4IsRange, parentEntryIsRange bool, failLabel string) (asm.Instructions, error) {
 	// A self edge of a chain-end protocol misses once the previous header
 	// signalled end (spec parent_dispatch: `ended ⇒ miss`, checked before
 	// the edge itself): the MPLS s bit of the label ending at R4 says no
@@ -1398,7 +1427,7 @@ func genDispatch(current, parent *ir.LayerInstance, parentHS int, r4IsRange, par
 	var err error
 	switch current.Dispatch.Type {
 	case vocab.DispatchField:
-		edge, err = genFieldDispatch(current, parent, parentHS, r4IsRange, parentEntryIsRange, failLabel)
+		edge, err = genFieldDispatch(current, parent, parentHS, qo, r4IsRange, parentEntryIsRange, failLabel)
 	case vocab.DispatchNoCheck:
 		edge, err = genNoCheckDispatch(current)
 	case vocab.DispatchSelfValidating:
@@ -1502,7 +1531,7 @@ func genLayerDispatch(current, prev *ir.LayerInstance, qo queriedOptions, r4IsRa
 		if !ok {
 			return nil, fmt.Errorf("codegen: the alternation %s has no matched-member slot for the dispatch of %q", prev.DisplayName(), current.Spec.Name)
 		}
-		return genFieldDispatchAltDiverged(current, prev.Alternation, slot, r4IsRange, parentEntryIsRange, failLabel)
+		return genFieldDispatchAltDiverged(current, prev.Alternation, slot, qo, r4IsRange, parentEntryIsRange, failLabel)
 	}
 	parent := dispatchParent(prev)
 	if prev.Alternation != nil && current.Spec.ChainEnd != nil {
@@ -1519,7 +1548,7 @@ func genLayerDispatch(current, prev *ir.LayerInstance, qo queriedOptions, r4IsRa
 	if err != nil {
 		return nil, err
 	}
-	return genDispatch(current, parent, parentHS, r4IsRange, parentEntryIsRange, failLabel)
+	return genDispatch(current, parent, parentHS, qo, r4IsRange, parentEntryIsRange, failLabel)
 }
 
 // genFieldDispatchAltDiverged emits per-alt dispatch for a layer
@@ -1542,7 +1571,7 @@ func genLayerDispatch(current, prev *ir.LayerInstance, qo queriedOptions, r4IsRa
 // The last alt has no skip / ja — matchedAltReg is guaranteed to be
 // N-1 if we got here (genAlternation stored the index in the slot before
 // the fall-through).
-func genFieldDispatchAltDiverged(current *ir.LayerInstance, altParents []*ir.LayerInstance, matchedSlot int16, r4IsRange, parentEntryIsRange bool, failLabel string) (asm.Instructions, error) {
+func genFieldDispatchAltDiverged(current *ir.LayerInstance, altParents []*ir.LayerInstance, matchedSlot int16, qo queriedOptions, r4IsRange, parentEntryIsRange bool, failLabel string) (asm.Instructions, error) {
 	consts := current.Dispatch.AltConsts
 	if len(altParents) != len(consts) {
 		return nil, fmt.Errorf("codegen: alt parent count %d != AltConsts count %d (resolver bug)", len(altParents), len(consts))
@@ -1561,7 +1590,9 @@ func genFieldDispatchAltDiverged(current *ir.LayerInstance, altParents []*ir.Lay
 			check asm.Instructions
 			err   error
 		)
-		if altParent.Spec.HasVariableLayout() {
+		if wbSlot, ok := writeBackDispatchSlot(altParent, consts[i], qo); ok {
+			check, err = emitSlotDispatchCheck(consts[i], wbSlot, failLabel)
+		} else if altParent.Spec.HasVariableLayout() {
 			// Forward read off the layer-entry slot; bounded when the
 			// parent entry may be a range scalar (see genFieldDispatch).
 			if parentEntryIsRange {
@@ -1662,7 +1693,12 @@ func nextAltDispatchLabel(role string) string {
 // The scratch buffer holds packet bytes in network order but eBPF
 // LDX reads them little-endian; rather than emit a BSwap at runtime
 // we byte-swap the constant at codegen time so a single JNE suffices.
-func genFieldDispatch(current, parent *ir.LayerInstance, parentHS int, r4IsRange, parentEntryIsRange bool, failLabel string) (asm.Instructions, error) {
+func genFieldDispatch(current, parent *ir.LayerInstance, parentHS int, qo queriedOptions, r4IsRange, parentEntryIsRange bool, failLabel string) (asm.Instructions, error) {
+	if slot, ok := writeBackDispatchSlot(parent, current.Dispatch.Const, qo); ok {
+		// The parent's walk keeps the dispatch byte in its write-back slot
+		// (ipv6.next_header after the extension chain); no packet read.
+		return emitSlotDispatchCheck(current.Dispatch.Const, slot, failLabel)
+	}
 	if parent.Spec.HasVariableLayout() {
 		// Parser-machine parent: base is the parent's layer-entry slot
 		// value, dispatch field at +fieldOff (forward read from the
@@ -2261,6 +2297,12 @@ type layerAnchor struct {
 	AbsOffset int
 	UseSlot   bool
 	SlotOff   int16
+	// WriteBack marks the layer whose parser walk writes an aux byte back
+	// into its primary header: the byte at WriteBackOff is read from the
+	// stack slot WriteBackSlot, not from the packet (D-032 overlay).
+	WriteBack     bool
+	WriteBackOff  int
+	WriteBackSlot int16
 }
 
 func r4Anchor() layerAnchor         { return layerAnchor{UseR4: true} }
@@ -2333,6 +2375,15 @@ func emitLayerEntryStoreFromCb(layer *ir.LayerInstance, qo queriedOptions) (asm.
 // verifier propagates `r ≥ size` to the LoadMem. The check is
 // mandatory for PTR_TO_PACKET and harmless for PTR_TO_MAP_VALUE.
 func emitFieldLoad(anchor layerAnchor, fieldOff int, size asm.Size) asm.Instructions {
+	if anchor.WriteBack && fieldOff == anchor.WriteBackOff && size == asm.Byte {
+		// The written-back byte lives in its slot (zero-extended, so the
+		// DWord load is the byte's value, like a packet byte load). The
+		// exact match suffices because the loader admits only a
+		// byte-aligned 8-bit target (resolveHeaderWritebackTargets): no
+		// other field shares the byte, every read of it is a Byte load,
+		// and a slice of an 8-bit field stays within that byte.
+		return asm.Instructions{asm.LoadMem(asm.R3, asm.R10, anchor.WriteBackSlot, asm.DWord)}
+	}
 	sizeBytes := int32(size.Sizeof())
 	switch {
 	case anchor.UseSlot:

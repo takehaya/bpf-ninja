@@ -468,7 +468,7 @@ sudo bpf-ninja --mode xdp -i eth0 "eth/ipv4/tcp[dport==443]"
 - どのパケットも常に `XDP_PASS` を返します。drop モードは v2 follow-up です。
 - mode metadata 値は xdp-native を表す 2 です。既存は entry=0、exit=1 です。
 
-DSL / tcpdump の両方とも `--mode xdp` で完全に load 可能です。kunai codegen が packet-pointer-safe な bound check を emit する設計で、F14 として完了済みです。IPv4 / IPv6 / alternation / 各種 quantifier / capture / where のすべてで verifier 通過を確認しています。詳細は `internal/program/program_xdp_test.go::xdpNativeDSLExprs` を参照してください。
+DSL / tcpdump の両方とも `--mode xdp` で load できます。native XDP では filter が packet pointer の上で直接動くので、kunai codegen は可変 offset の読みに packet 末尾との比較を付けます。verifier を通ることを確認している形は `internal/program/program_xdp_test.go` の `xdpNativeDSLExprs` にあり、IPv4 と IPv6 の chain、IPv6 を親にした dispatch (`eth/ipv6/ipv6/tcp`、`eth/ipv4/ipv6/tcp`)、`ipv4{1,2}` や `ipv6{1,2}` の繰り返し、gre の optional word、alternation、各種 quantifier、capture、where を含みます。IPv6 拡張ヘッダの write-back は packet を書き換えず stack slot に値を持つので、`--mode xdp` が通す frame は受け取ったままです。
 
 ## 入口と出口の両方に一致した packet だけを取る (`--mode` を 2 回)
 

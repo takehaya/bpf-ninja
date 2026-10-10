@@ -409,6 +409,16 @@ vector ipv6NextHeaderBracket := {
   id := "ipv6-next-header-writeback-bracket",
   ast := { layers := [P "eth", .proto { name := "ipv6", preds := [.cmp (f "next_header") .eq (.int 6)] }, P "tcp"] }, packet := hbhTcp,
   expected := .accept [], note := "D-032: bracket predicates run after aux-extract (σ'), so they see the written-back next_header" }
+def altV6L (last : String) : List Layer := [P "eth", .alt [{ name := "ipv4" }, { name := "ipv6" }], P last]
+vector altIPv6MemberWriteBack := {
+  id := "alt-ipv6-member-writeback", ast := { layers := altV6L "tcp" }, packet := hbhTcp, expected := .accept [],
+  note := "the ipv6 member's dispatch of tcp sees the written-back next_header (6), not the wire byte (0)" }
+vector altIPv6MemberWriteBackWhere := {
+  id := "alt-ipv6-member-writeback-where", ast := { layers := altV6L "tcp", cond := some (cmp (fld "ipv6" "next_header") .eq (k 6)) },
+  packet := hbhTcp, expected := .accept [] }
+vector altIPv6MemberWriteBackMiss := {
+  id := "alt-ipv6-member-writeback-udp-miss", ast := { layers := altV6L "udp" }, packet := hbhTcp, expected := .reject,
+  note := "the written-back value is 6, so udp (17) misses" }
 vector ipv6FiveExts := {
   id := "ipv6-ext-five-at-depth", ast := { layers := ipv6L }, packet := ipv6With 0 (ipv6Ext 60 ++ ipv6Ext 60 ++ ipv6Ext 60 ++ ipv6Ext 60 ++ ipv6Ext 6),
   expected := .accept [], note := "D-026: IPV6_MAX_DEPTH = 4 loop iterations after the first extension" }
@@ -710,7 +720,7 @@ def auxVectors : List Vector := [
   geneveOvnHit, geneveMalformedAfter, geneveMalformedBefore, geneveMalformedChainOn, geneveRegionPastEnd, geneveValidEmpty, typOptsValidNoRegion,
   ipv6Hbh, ipv6TwoExts, ipv6ExtLong, ipv6ExtTooLong, ipv6ExtsIndex, ipv6ExtsIndex1, ipv6ExtsIndexAfterLong, ipv6ExtsAnyAfterLong, ipv6ExtsDynamicLong, ipv6ExtsDynamicLongSecond, ipv6ExtsDynamicLongAbsent, ipv6ExtsDynamicLongLast, ipv6ExtsDynamicLongLastMiss, ipv6ExtsDynamicLongBeyond, ipv6ExtsDynamicLongSlot, ipv6ExtsDynamicLongSlotAbsent,
   ipv6ExtsBracket, ipv6ExtsBracketAbsent, ipv6ExtsBracketLong, ipv6ExtsBracketDynamic, ipv6ExtsBracketIter, ipv6ExtsBracketInAbsent, ipv6ExtsBracketInLong, ipv6ExtsSliceLong, ipv6ExtsBracketSliceLong, gtpExtsBracket, gtpExtsBracketAbsent, gtpExtsBracketNone, gtpExtsBracketMixed, gtpExtsBracketMixedMiss, ipv6ExtsIndexAbsent,
-  ipv6NextHeaderWhere, ipv6NextHeaderBracket, ipv6FiveExts, ipv6SixExts, ipv6AnyExts, ipv6AllExts,
+  ipv6NextHeaderWhere, ipv6NextHeaderBracket, altIPv6MemberWriteBack, altIPv6MemberWriteBackWhere, altIPv6MemberWriteBackMiss, ipv6FiveExts, ipv6SixExts, ipv6AnyExts, ipv6AllExts,
   srv6TruncatedFails, typSrv6NoValid, geneveVersionOne, srv6SegWideLit, srv6Chain, srv6Static, srv6Dynamic, srv6Any, srv6All, srv6AllCidr, srv6IndexAbsent, srv6DynamicAtCount, srv6DynamicLast, srv6OptDynamicAtCount, srv6OptDynamicLast, srv6BracketIndexAbsent, srv6BracketIndex, srv6OverCap, srv6OverCapAnyKept, srv6OverCapAnyDropped, srv6OverCapAll, srv6OverCapNotAll,
   srv6OverCapIndex, srv6OverCapLastEntry, srv6AtCapAll, srv6PastScratch, srv6TenSegs, srv6TwelveSegs, srv6OverstatedLastEntry,
   srv6OverCapAllOrTrue, srv6AbsentAllTrue, srv6AtCap,

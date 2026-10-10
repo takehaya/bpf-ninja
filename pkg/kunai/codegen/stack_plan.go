@@ -41,13 +41,18 @@ type stackPlan struct {
 	// parser walk sets to 1 when the option region parsed and 0 when it
 	// was malformed.
 	valid map[*ir.LayerInstance]int16
+	// writeBack holds, per layer whose parser walk writes an aux byte back
+	// into its primary header (@kunai_writeback: ipv6.next_header), the
+	// slot that byte lives in. The packet is never written; the layer's
+	// next dispatch and every read of the field use the slot (D-032).
+	writeBack map[*ir.LayerInstance]int16
 }
 
 // planStack lays out `layers`, their demand and the alternation groups
 // in `readGroups` (chain positions of the groups whose matched member is
 // read); it fails when the plan would run past the BPF stack.
 func planStack(layers []*ir.LayerInstance, demand map[*ir.LayerInstance][]*vocab.AuxLayout, readGroups map[int]bool, validRead map[*ir.LayerInstance]bool) (*stackPlan, error) {
-	plan := &stackPlan{entry: map[int]int16{}, aux: map[*ir.LayerInstance]int16{}, matched: map[int]int16{}, valid: map[*ir.LayerInstance]int16{}}
+	plan := &stackPlan{entry: map[int]int16{}, aux: map[*ir.LayerInstance]int16{}, matched: map[int]int16{}, valid: map[*ir.LayerInstance]int16{}, writeBack: map[*ir.LayerInstance]int16{}}
 	cursor := int(stackPlanTop)
 	// take hands out `slots` consecutive slots for `l`, naming it when the
 	// plan runs past the BPF stack.
@@ -112,6 +117,22 @@ func planStack(layers []*ir.LayerInstance, demand map[*ir.LayerInstance][]*vocab
 				return nil, err
 			}
 			plan.valid[m] = slot
+		}
+	}
+	for _, l := range layers {
+		if l == nil {
+			continue
+		}
+		// Not demand-driven: the layer's own next dispatch reads the slot.
+		for _, m := range append([]*ir.LayerInstance{l}, l.Alternation...) {
+			if m == nil || writeBackOf(m.Spec) == nil {
+				continue
+			}
+			slot, err := take(m, 1, "the write-back slot")
+			if err != nil {
+				return nil, err
+			}
+			plan.writeBack[m] = slot
 		}
 	}
 	return plan, nil

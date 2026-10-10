@@ -73,9 +73,9 @@ func genPredicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, error) {
 	case ast.PredInSet:
 		insns, err = emitInSetPredicate(pred, pc)
 	case ast.PredIn:
-		insns, err = emitInPredicate(pred)
+		insns, err = emitInPredicate(pred, pc)
 	case ast.PredCmp:
-		insns, err = emitCmpPredicate(pred)
+		insns, err = emitCmpPredicate(pred, pc)
 	case ast.PredValid:
 		var slot int16
 		ok := false
@@ -101,24 +101,24 @@ func genPredicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, error) {
 }
 
 // emitCmpPredicate lowers `field op value` by the literal's kind.
-func emitCmpPredicate(pred *ir.Predicate) (asm.Instructions, error) {
+func emitCmpPredicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, error) {
 	if pred.Value == nil {
 		return nil, fmt.Errorf("codegen: nil predicate value")
 	}
 	switch pred.Value.Kind {
 	case ast.ValInt:
-		return emitIntPredicate(pred)
+		return emitIntPredicate(pred, pc)
 	case ast.ValIPv4:
-		return emitIPv4Predicate(pred)
+		return emitIPv4Predicate(pred, pc)
 	case ast.ValIPv6:
-		return emitIPv6Predicate(pred)
+		return emitIPv6Predicate(pred, pc)
 	case ast.ValMAC:
-		return emitMACPredicate(pred)
+		return emitMACPredicate(pred, pc)
 	case ast.ValCIDR:
 		if pred.Value.AF == 4 {
-			return emitIPv4CIDRPredicate(pred)
+			return emitIPv4CIDRPredicate(pred, pc)
 		}
-		return emitIPv6CIDRPredicate(pred)
+		return emitIPv6CIDRPredicate(pred, pc)
 	}
 	return nil, fmt.Errorf("%w: predicate value type %s", ErrNotImplemented, pred.Value.Kind)
 }
@@ -142,7 +142,7 @@ func emitCmpPredicate(pred *ir.Predicate) (asm.Instructions, error) {
 // comparisons (<, <=, >, >=) take path 2 (HostTo BE). This keeps
 // every emitted predicate on opcodes that work back to Linux 5.x,
 // matching the verifier-walk floor we promise.
-func emitIntPredicate(pred *ir.Predicate) (asm.Instructions, error) {
+func emitIntPredicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, error) {
 	value := pred.Value.Int
 	// Narrow the literal to the field's effective (possibly sliced) width before the
 	// immediate-range check. The resolver's fit-check (typing.go:
@@ -202,7 +202,7 @@ func emitIntPredicate(pred *ir.Predicate) (asm.Instructions, error) {
 		if pred.Field != nil && pred.Field.Aux != nil {
 			insns = append(insns, emitAuxGating(pred.Field.Aux.Gating, r4Anchor(), dslReject)...)
 		}
-		insns = append(insns, emitBoundedLoad(asm.R3, int16(fieldOff), size, dslReject)...)
+		insns = append(insns, emitFieldLoad(pc.fieldAnchor(), fieldOff, size)...)
 	}
 	size, err := asmSizeFor(bytes)
 	if err != nil {
@@ -255,6 +255,18 @@ type predCtx struct {
 	// parent dispatch (genAlternation); its body skips the identical
 	// dispatch, which the guard already passed.
 	guarded *ir.LayerInstance
+	// anchor, when set, is where the predicates read the layer's primary
+	// fields from; it carries the write-back overlay of a layer whose
+	// predicates run after its walk (D-032). nil: R4 at entry.
+	anchor *layerAnchor
+}
+
+// fieldAnchor is the anchor a predicate reads primary fields through.
+func (pc *predCtx) fieldAnchor() layerAnchor {
+	if pc != nil && pc.anchor != nil {
+		return *pc.anchor
+	}
+	return r4Anchor()
 }
 
 // dispatchDone reports whether `l`'s parent dispatch already ran as its
@@ -409,7 +421,7 @@ func emitInSetPredicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, erro
 		if pred.Field.Aux != nil {
 			insns = append(insns, emitAuxGating(pred.Field.Aux.Gating, r4Anchor(), dslReject)...)
 		}
-		insns = append(insns, emitBoundedLoad(asm.R3, int16(fieldOff), asm.DWord, dslReject)...)
+		insns = append(insns, emitFieldLoad(pc.fieldAnchor(), fieldOff, asm.DWord)...)
 		insns = append(insns, asm.StoreMem(asm.R10, slotOff, asm.R3, asm.DWord))
 		insns = append(insns, emitBoundedLoad(asm.R3, int16(fieldOff+8), asm.DWord, dslReject)...)
 		insns = append(insns, asm.StoreMem(asm.R10, slotOff+8, asm.R3, asm.DWord))
@@ -431,7 +443,7 @@ func emitInSetPredicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, erro
 	if pred.Field.Aux != nil {
 		insns = append(insns, emitAuxGating(pred.Field.Aux.Gating, r4Anchor(), dslReject)...)
 	}
-	insns = append(insns, emitBoundedLoad(asm.R3, int16(fieldOff), size, dslReject)...)
+	insns = append(insns, emitFieldLoad(pc.fieldAnchor(), fieldOff, size)...)
 
 	// Normalize the register to the field's numeric value in host order.
 	hasSlice := pred.Field.Slice != nil
@@ -474,7 +486,7 @@ func swapValueBytes(v uint64, bytes int) uint64 {
 // 32-bit Word in little-endian on x86, so we byte-swap the constant
 // at codegen time and compare with a single JEq/JNE — same trick
 // genFieldDispatch uses for protocol-id consts.
-func emitIPv4Predicate(pred *ir.Predicate) (asm.Instructions, error) {
+func emitIPv4Predicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, error) {
 	if pred.Field == nil || pred.Field.Layer == nil || pred.Field.Field == nil {
 		return nil, fmt.Errorf("codegen: IPv4 predicate missing field reference")
 	}
@@ -507,7 +519,7 @@ func emitIPv4Predicate(pred *ir.Predicate) (asm.Instructions, error) {
 	if bytes != 4 {
 		return nil, fmt.Errorf("%w: IPv4 literal needs a 4-byte field, got %d-byte %s.%s", ErrNotImplemented, bytes, pred.Field.Layer.Spec.Name, pred.Field.Field.Name)
 	}
-	insns := emitBoundedLoad(asm.R3, int16(fieldOff), asm.Word, dslReject)
+	insns := emitFieldLoad(pc.fieldAnchor(), fieldOff, asm.Word)
 	insns = append(insns, cmpRegEqU32(jumpOp, expected, dslReject)...)
 	return insns, nil
 }
@@ -519,7 +531,7 @@ func emitIPv4Predicate(pred *ir.Predicate) (asm.Instructions, error) {
 // codegen so the LE-reading LDX matches the BE constant. For ordered
 // cmp we host-swap the loaded register so its numeric ordering
 // matches the literal, and lexicographic-compare the high half first.
-func emitIPv6Predicate(pred *ir.Predicate) (asm.Instructions, error) {
+func emitIPv6Predicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, error) {
 	if pred.Field != nil && pred.Field.Aux != nil {
 		if pred.Op != ast.CmpEq && pred.Op != ast.CmpNeq {
 			return nil, fmt.Errorf("%w: IPv6 ordered cmp on aux header field is not yet supported", ErrNotImplemented)
@@ -557,7 +569,7 @@ func emitIPv6Predicate(pred *ir.Predicate) (asm.Instructions, error) {
 			return insns
 		}), nil
 	case ast.CmpLt, ast.CmpLe, ast.CmpGt, ast.CmpGe:
-		return emitIPv6OrderedCmp(pred, fieldOff), nil
+		return emitIPv6OrderedCmp(pred, pc, fieldOff), nil
 	}
 	return nil, fmt.Errorf("%w: IPv6 literal cmp op %v not supported", ErrNotImplemented, pred.Op)
 }
@@ -600,7 +612,7 @@ func ipv6AuxHalfCheck(loadAt auxLoadAt, chunkOff int, mask, host uint64, failLab
 // Match success falls through to the next predicate; mismatches jump
 // to dslReject. We use a per-predicate match landing so the early
 // "high half decides" exit can skip the low half emit.
-func emitIPv6OrderedCmp(pred *ir.Predicate, fieldOff int) asm.Instructions {
+func emitIPv6OrderedCmp(pred *ir.Predicate, pc *predCtx, fieldOff int) asm.Instructions {
 	highHostOrder := binary.BigEndian.Uint64(pred.Value.V6[0:8])
 	lowHostOrder := binary.BigEndian.Uint64(pred.Value.V6[8:16])
 	matchLabel := nextPredicateMatchLabel()
@@ -610,7 +622,7 @@ func emitIPv6OrderedCmp(pred *ir.Predicate, fieldOff int) asm.Instructions {
 
 	var insns asm.Instructions
 	// High half: load → bswap → cmp.
-	insns = append(insns, emitBoundedLoad(asm.R3, int16(fieldOff), asm.DWord, dslReject)...)
+	insns = append(insns, emitFieldLoad(pc.fieldAnchor(), fieldOff, asm.DWord)...)
 	insns = append(insns, asm.HostTo(asm.BE, asm.R3, asm.DWord))
 	insns = append(insns, asm.LoadImm(asm.R5, int64(highHostOrder), asm.DWord))
 	insns = append(insns, highSuccess.Reg(asm.R3, asm.R5, matchLabel))
@@ -669,7 +681,7 @@ func lowHalfMissJump(op ast.CmpOp) asm.JumpOp {
 //   - /128 → host match (collapses to emitIPv6Predicate).
 //   - /0 with == → emit nothing (matches every address).
 //   - /0 with != → Ja dslReject (matches no address).
-func emitIPv6CIDRPredicate(pred *ir.Predicate) (asm.Instructions, error) {
+func emitIPv6CIDRPredicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, error) {
 	if err := requireEqualityOp(pred, "IPv6 CIDR"); err != nil {
 		return nil, err
 	}
@@ -678,7 +690,7 @@ func emitIPv6CIDRPredicate(pred *ir.Predicate) (asm.Instructions, error) {
 		return nil, fmt.Errorf("codegen: IPv6 CIDR prefix %d out of [0,128]", prefix)
 	}
 	if prefix == 128 {
-		return emitIPv6Predicate(pred)
+		return emitIPv6Predicate(pred, pc)
 	}
 	if prefix == 0 {
 		if pred.Op == ast.CmpEq {
@@ -768,7 +780,7 @@ func requireIPv6Field(pred *ir.Predicate) (int, error) {
 // The address base is cached in R5 so the second LDX skips the Mov+Add
 // rebuild — both JNE.Imm comparisons fit in 32 bits and so leave R5
 // untouched. The == / != branching shape comes from multiWordRoute.
-func emitMACPredicate(pred *ir.Predicate) (asm.Instructions, error) {
+func emitMACPredicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, error) {
 	if err := requireEqualityOp(pred, "MAC literal"); err != nil {
 		return nil, err
 	}
@@ -898,7 +910,7 @@ func requireEqualityOp(pred *ir.Predicate, kind string) error {
 // fields ≤ 64 bits. IPv4 / IPv6 / MAC / CIDR alternatives stay as
 // ErrNotImplemented since they would each need their own multi-
 // word emit path; fold them in when there's user demand.
-func emitInPredicate(pred *ir.Predicate) (asm.Instructions, error) {
+func emitInPredicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, error) {
 	if len(pred.List) == 0 {
 		return nil, fmt.Errorf("codegen: 'in' predicate has empty list")
 	}
@@ -952,7 +964,7 @@ func emitInPredicate(pred *ir.Predicate) (asm.Instructions, error) {
 		if pred.Field.Aux != nil {
 			insns = append(insns, emitAuxGating(pred.Field.Aux.Gating, r4Anchor(), dslReject)...)
 		}
-		insns = append(insns, emitBoundedLoad(asm.R3, int16(fieldOff), size, dslReject)...)
+		insns = append(insns, emitFieldLoad(pc.fieldAnchor(), fieldOff, size)...)
 	}
 
 	// A sub-byte field (the load read a covering window to narrow) and a
@@ -1091,13 +1103,13 @@ func ipv6PrefixMaskBE(prefix int) (high, low uint64) {
 //     so we hand off to emitIPv4Predicate.
 //   - /0 with == matches every address — emit nothing.
 //   - /0 with != matches nothing — jump straight to dslReject.
-func emitIPv4CIDRPredicate(pred *ir.Predicate) (asm.Instructions, error) {
+func emitIPv4CIDRPredicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, error) {
 	prefix := pred.Value.Prefix
 	if prefix < 0 || prefix > 32 {
 		return nil, fmt.Errorf("codegen: IPv4 CIDR prefix %d out of [0,32]", prefix)
 	}
 	if prefix == 32 {
-		return emitIPv4Predicate(pred)
+		return emitIPv4Predicate(pred, pc)
 	}
 	jumpOp, ok := ipEqualityJumpOp(pred.Op)
 	if !ok {
@@ -1137,7 +1149,7 @@ func emitIPv4CIDRPredicate(pred *ir.Predicate) (asm.Instructions, error) {
 	if bytes != 4 {
 		return nil, fmt.Errorf("%w: IPv4 CIDR needs a 4-byte field, got %d-byte %s.%s", ErrNotImplemented, bytes, pred.Field.Layer.Spec.Name, pred.Field.Field.Name)
 	}
-	insns := emitBoundedLoad(asm.R3, int16(fieldOff), asm.Word, dslReject)
+	insns := emitFieldLoad(pc.fieldAnchor(), fieldOff, asm.Word)
 	insns = append(insns, asm.And.Imm(asm.R3, int32(maskLE)))
 	insns = append(insns, cmpRegEqU32(jumpOp, expectedLE, dslReject)...)
 	return insns, nil

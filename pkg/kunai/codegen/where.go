@@ -89,6 +89,9 @@ func (c *whereCtx) layerAnchorFor(l *ir.LayerInstance) (layerAnchor, error) {
 	if err != nil {
 		return layerAnchor{}, err
 	}
+	// The written-back byte (ipv6.next_header after the extension chain)
+	// is read from the layer's slot, not the packet (D-032).
+	anchor = c.queried.withWriteBackOverlay(anchor, l)
 	c.anchors[l] = anchor
 	return anchor, nil
 }
