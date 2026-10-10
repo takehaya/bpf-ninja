@@ -1864,7 +1864,7 @@ func TestCompileFlagTriggerReadIsBounded(t *testing.T) {
 			t.Fatalf("%s: C-flag mask not found", expr)
 		}
 		load := mask - 1
-		for load > 0 && !(insns[load].OpCode.Class() == asm.LdXClass && insns[load].OpCode.Mode() == asm.MemMode) {
+		for load > 0 && (insns[load].OpCode.Class() != asm.LdXClass || insns[load].OpCode.Mode() != asm.MemMode) {
 			load--
 		}
 		ld, chk := insns[load], insns[load-1]

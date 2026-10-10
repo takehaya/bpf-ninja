@@ -28,6 +28,9 @@ import (
 // The packet itself is never written: the native XDP host runs the
 // filter on the live packet, and the spec models the write-back as
 // an overlay on the instance, not as a change to the bytes (D-032).
+// TestVariableTrailWriteBackStoresToSlot pins the store shape without
+// root; internal/program's TestBpfXDPNativePacketUnchanged pins the
+// frame on the native host (dsltest runs on a scratch copy and cannot).
 type variableTailSkip struct {
 	LenFieldByteOff int
 	Scale           int

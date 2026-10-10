@@ -95,6 +95,19 @@ func (qo queriedOptions) writeBackSlot(layer *ir.LayerInstance) (int16, bool) {
 	return slot, ok
 }
 
+// withWriteBackOverlay returns `a` reading the layer's written-back byte
+// from its write-back slot when the layer's protocol declares one.
+func (qo queriedOptions) withWriteBackOverlay(a layerAnchor, layer *ir.LayerInstance) layerAnchor {
+	wb := writeBackOf(layer.Spec)
+	if wb == nil {
+		return a
+	}
+	if slot, ok := qo.writeBackSlot(layer); ok {
+		a.WriteBack, a.WriteBackOff, a.WriteBackSlot = true, wb.ParentByteOff, slot
+	}
+	return a
+}
+
 // readsAltMember reports whether any matched-member slot is planned,
 // i.e. whether a where atom can need a member guard.
 func (qo queriedOptions) readsAltMember() bool {

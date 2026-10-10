@@ -142,11 +142,11 @@ func genParserMachineIter(layer *ir.LayerInstance, layerIdx int, all []*ir.Layer
 	if len(postPreds) > 0 {
 		// Post-walk, the push counts are final: let a static index into a
 		// push-counted stack be guarded like a where clause does.
+		entryAnchor := pmCtx.entryAnchor()
 		pcPost := &predCtx{
 			stackCount: func(f *ir.FieldRef) (int16, bool) { return qo.stackCountSlot(f.Layer, f.Aux.OutParam) },
 			validSlot:  qo.validSlot,
-			anchor:     pmCtx.entryAnchor(),
-			anchored:   true,
+			anchor:     &entryAnchor,
 		}
 		if pc != nil {
 			pcPost.sets, pcPost.out = pc.sets, pc.out
@@ -330,6 +330,7 @@ func (c *pmCtx) emitState(stateIdx int) (asm.Instructions, asm.Instructions, err
 		optional := missIsNotReject(c.dispatchFail) && c.iter == 0
 		if optional {
 			insns = append(insns, dynInit...)
+			insns = append(insns, c.emitWriteBackSlotZero()...)
 		}
 		di, err := c.emitEntryDispatch()
 		if err != nil {
@@ -359,7 +360,10 @@ func (c *pmCtx) emitState(stateIdx int) (asm.Instructions, asm.Instructions, err
 			// a packet without extension headers dispatches on it; the walk
 			// overwrites it per extension (emitVariableTrail). After the
 			// dispatch, like the entry slots: a missed later instance of a
-			// repeated layer keeps the previous instance's value.
+			// repeated layer keeps the previous instance's value, and the
+			// absent path of an optional layer keeps the zero written above.
+			// The bounded load rejects a header cut short: the dispatch
+			// already matched, so that is a reject, not an absence (D-005).
 			slot, ok := c.queried.writeBackSlot(c.layer)
 			if !ok {
 				return nil, nil, fmt.Errorf("codegen: %s declares a write-back but no slot was planned", c.layer.DisplayName())
@@ -441,13 +445,24 @@ func (c *pmCtx) bindWriteBackSlot(vt *variableTailSkip) error {
 // layer's entry, carrying the write-back overlay when the layer has one
 // so a read of the written-back byte comes from the slot (D-032).
 func (c *pmCtx) entryAnchor() layerAnchor {
-	a := r4Anchor()
-	if wb := writeBackOf(c.spec); wb != nil {
-		if slot, ok := c.queried.writeBackSlot(c.layer); ok {
-			a.WriteBack, a.WriteBackOff, a.WriteBackSlot = true, wb.ParentByteOff, slot
-		}
+	return c.queried.withWriteBackOverlay(r4Anchor(), c.layer)
+}
+
+// emitWriteBackSlotZero defines the write-back slot of an optional layer
+// before its dispatch, like the other slot families (dynamic-aux
+// sentinels, valid flag): the absent path never reads it (every reader
+// sits behind the absent-layer guard), but a defined slot keeps that an
+// invariant rather than a per-reader obligation. Nothing when the layer
+// has no write-back.
+func (c *pmCtx) emitWriteBackSlotZero() asm.Instructions {
+	if writeBackOf(c.spec) == nil {
+		return nil
 	}
-	return a
+	slot, ok := c.queried.writeBackSlot(c.layer)
+	if !ok {
+		return nil
+	}
+	return asm.Instructions{asm.Mov.Imm(asm.R3, 0), asm.StoreMem(asm.R10, slot, asm.R3, asm.DWord)}
 }
 
 // splitPredicates divides the layer's bracket predicates by when they can

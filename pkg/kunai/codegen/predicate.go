@@ -255,17 +255,16 @@ type predCtx struct {
 	// parent dispatch (genAlternation); its body skips the identical
 	// dispatch, which the guard already passed.
 	guarded *ir.LayerInstance
-	// anchor, when anchored, is where the predicates read the layer's
-	// primary fields from; it carries the write-back overlay of a layer
-	// whose predicates run after its walk (D-032). Unset: R4 at entry.
-	anchor   layerAnchor
-	anchored bool
+	// anchor, when set, is where the predicates read the layer's primary
+	// fields from; it carries the write-back overlay of a layer whose
+	// predicates run after its walk (D-032). nil: R4 at entry.
+	anchor *layerAnchor
 }
 
 // fieldAnchor is the anchor a predicate reads primary fields through.
 func (pc *predCtx) fieldAnchor() layerAnchor {
-	if pc != nil && pc.anchored {
-		return pc.anchor
+	if pc != nil && pc.anchor != nil {
+		return *pc.anchor
 	}
 	return r4Anchor()
 }

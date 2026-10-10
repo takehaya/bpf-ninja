@@ -671,13 +671,10 @@ func writeBackDispatchSlot(parent *ir.LayerInstance, c *vocab.DispatchConst, qo 
 }
 
 // emitSlotDispatchCheck is emitFieldDispatchCheck for a dispatch byte held
-// in a stack slot: load it (zero-extended) and compare like a packet byte.
-func emitSlotDispatchCheck(spec *vocab.ProtocolSpec, c *vocab.DispatchConst, slot int16, failLabel string) (asm.Instructions, error) {
-	_, fieldBytes, err := findFieldByteOffset(spec, c.FieldName)
-	if err != nil {
-		return nil, err
-	}
-	match, err := emitDispatchValueMatch(asm.R3, c, fieldBytes, failLabel)
+// in a stack slot (writeBackDispatchSlot proved the field is one byte):
+// load it (zero-extended) and compare like a packet byte.
+func emitSlotDispatchCheck(c *vocab.DispatchConst, slot int16, failLabel string) (asm.Instructions, error) {
+	match, err := emitDispatchValueMatch(asm.R3, c, 1, failLabel)
 	if err != nil {
 		return nil, err
 	}
@@ -1594,7 +1591,7 @@ func genFieldDispatchAltDiverged(current *ir.LayerInstance, altParents []*ir.Lay
 			err   error
 		)
 		if wbSlot, ok := writeBackDispatchSlot(altParent, consts[i], qo); ok {
-			check, err = emitSlotDispatchCheck(altParent.Spec, consts[i], wbSlot, failLabel)
+			check, err = emitSlotDispatchCheck(consts[i], wbSlot, failLabel)
 		} else if altParent.Spec.HasVariableLayout() {
 			// Forward read off the layer-entry slot; bounded when the
 			// parent entry may be a range scalar (see genFieldDispatch).
@@ -1700,7 +1697,7 @@ func genFieldDispatch(current, parent *ir.LayerInstance, parentHS int, qo querie
 	if slot, ok := writeBackDispatchSlot(parent, current.Dispatch.Const, qo); ok {
 		// The parent's walk keeps the dispatch byte in its write-back slot
 		// (ipv6.next_header after the extension chain); no packet read.
-		return emitSlotDispatchCheck(parent.Spec, current.Dispatch.Const, slot, failLabel)
+		return emitSlotDispatchCheck(current.Dispatch.Const, slot, failLabel)
 	}
 	if parent.Spec.HasVariableLayout() {
 		// Parser-machine parent: base is the parent's layer-entry slot
@@ -2380,7 +2377,11 @@ func emitLayerEntryStoreFromCb(layer *ir.LayerInstance, qo queriedOptions) (asm.
 func emitFieldLoad(anchor layerAnchor, fieldOff int, size asm.Size) asm.Instructions {
 	if anchor.WriteBack && fieldOff == anchor.WriteBackOff && size == asm.Byte {
 		// The written-back byte lives in its slot (zero-extended, so the
-		// DWord load is the byte's value, like a packet byte load).
+		// DWord load is the byte's value, like a packet byte load). The
+		// exact match suffices because the loader admits only a
+		// byte-aligned 8-bit target (resolveHeaderWritebackTargets): no
+		// other field shares the byte, every read of it is a Byte load,
+		// and a slice of an 8-bit field stays within that byte.
 		return asm.Instructions{asm.LoadMem(asm.R3, asm.R10, anchor.WriteBackSlot, asm.DWord)}
 	}
 	sizeBytes := int32(size.Sizeof())

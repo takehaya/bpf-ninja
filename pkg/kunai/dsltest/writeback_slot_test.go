@@ -1,6 +1,7 @@
 package dsltest
 
 import (
+	"fmt"
 	"net"
 	"testing"
 )
@@ -62,8 +63,22 @@ func TestIPv6WriteBackSlotReads(t *testing.T) {
 	New(t, "eth/ipv6[next_header == 6]/tcp").MustMatch(t, pkt, "bracket: written-back value (D-032)")
 	New(t, "eth/ipv6[next_header == 0]/tcp").MustReject(t, pkt, "bracket: not the wire byte")
 	New(t, "eth/ipv6/tcp where ipv6.next_header == 17 or ipv6.next_header == 6").MustMatch(t, pkt, "where or-chain on the slot")
-	New(t, "eth/ipv6/tcp where ipv6.hop_limit > 0").MustMatch(t, pkt, "a neighbouring byte still comes from the packet")
+	New(t, "eth/ipv6/tcp where ipv6.hop_limit == 64").MustMatch(t, pkt, "the next byte still comes from the packet")
+	New(t, fmt.Sprintf("eth/ipv6/tcp where ipv6.payload_length == %d", len(pkt)-ethIPv6PrefixSize)).MustMatch(t, pkt, "the previous bytes still come from the packet")
 	New(t, "eth/ipv6/tcp where ipv6.exts[0].next_header == 6").MustMatch(t, pkt, "the extension's own byte is unchanged")
+
+	// Two extensions (HBH, Destination Options): the second is walked by
+	// the bpf_loop callback, whose store goes through the ctx pointer.
+	two := BuildIPv6WithExts(t, IPv6WithExtsOpts{
+		FirstNextHeader: 0,
+		Exts:            []IPv6Ext{{NextHeader: 60}, {}},
+		FinalNextHeader: 6,
+	})
+	New(t, "eth/ipv6/tcp").MustMatch(t, two, "two extensions: dispatch on the callback's value")
+	New(t, "eth/ipv6/udp").MustReject(t, two, "two extensions: not udp")
+	New(t, "eth/ipv6/tcp where ipv6.next_header == 6").MustMatch(t, two, "two extensions: where sees the last value")
+	New(t, "eth/ipv6/tcp where ipv6.next_header == 60").MustReject(t, two, "two extensions: not the intermediate value")
+	New(t, "eth/ipv6[next_header == 6]/tcp").MustMatch(t, two, "two extensions: bracket sees the last value")
 }
 
 // TestIPv6WriteBackSlotPerInstance pins one slot per ipv6 instance: the
@@ -80,5 +95,7 @@ func TestIPv6WriteBackSlotPerInstance(t *testing.T) {
 	New(t, "eth/ipv6{1,2}/tcp").MustMatch(t, inner, "repeated layer: one instance")
 	New(t, "eth/ipv6@o{1,2}/tcp where o.next_header == 6").MustMatch(t, pkt, "where reads the last instance")
 	New(t, "eth/(ipv4|ipv6)/tcp where ipv6.next_header == 6").MustMatch(t, inner, "alternation member keeps its slot")
+	New(t, "eth/(ipv4|ipv6)/tcp").MustMatch(t, inner, "alternation member dispatches on its slot")
+	New(t, "eth/(ipv4|ipv6)/udp").MustReject(t, inner, "alternation member: HBH then TCP is not udp")
 	New(t, "eth/(ipv4|ipv6)/tcp").MustMatch(t, BuildEthIPv4TCP(t, 1234, 80), "the ipv4 member is unaffected")
 }

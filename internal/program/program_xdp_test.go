@@ -116,30 +116,41 @@ func loadXDPNativeOrFail(t *testing.T, expr string, useDSL bool) {
 // value lives in a stack slot now (D-032 overlay).
 func TestBpfXDPNativePacketUnchanged(t *testing.T) {
 	testutil.SkipIfNotRoot(t)
-	in := dsltest.BuildIPv6WithExts(t, dsltest.IPv6WithExtsOpts{
-		FirstNextHeader: 0, // Hop-by-Hop
-		Exts:            []dsltest.IPv6Ext{{}},
-		FinalNextHeader: 6,
-	})
+	// One extension (walked inline) and two (the second in the bpf_loop
+	// callback, whose store goes through the ctx pointer).
+	frames := map[string][]byte{
+		"hbh": dsltest.BuildIPv6WithExts(t, dsltest.IPv6WithExtsOpts{
+			FirstNextHeader: 0, // Hop-by-Hop
+			Exts:            []dsltest.IPv6Ext{{}},
+			FinalNextHeader: 6,
+		}),
+		"hbh-dstopts": dsltest.BuildIPv6WithExts(t, dsltest.IPv6WithExtsOpts{
+			FirstNextHeader: 0,
+			Exts:            []dsltest.IPv6Ext{{NextHeader: 60}, {}},
+			FinalNextHeader: 6,
+		}),
+	}
 	for _, expr := range []string{
 		"eth/ipv6/tcp",
 		"eth/ipv6/tcp where ipv6.next_header == 6",
 		"eth/ipv6[next_header == 6]/tcp",
 	} {
-		t.Run(expr, func(t *testing.T) {
-			prog := loadXDPNative(t, expr, true)
-			out := make([]byte, len(in)+64)
-			ret, outLen, err := runXDPOnce(prog, in, out)
-			if err != nil {
-				t.Fatalf("test run: %v", err)
-			}
-			if ret != 2 { // XDP_PASS
-				t.Fatalf("return value %d, want XDP_PASS (2)", ret)
-			}
-			if !bytes.Equal(out[:outLen], in) {
-				t.Fatalf("the program changed the frame (ipv6 byte 20 is %#x, wire %#x):\n got %x\nwant %x", out[20], in[20], out[:outLen], in)
-			}
-		})
+		for name, in := range frames {
+			t.Run(expr+"/"+name, func(t *testing.T) {
+				prog := loadXDPNative(t, expr, true)
+				out := make([]byte, len(in)+64)
+				ret, outLen, err := runXDPOnce(prog, in, out)
+				if err != nil {
+					t.Fatalf("test run: %v", err)
+				}
+				if ret != 2 { // XDP_PASS
+					t.Fatalf("return value %d, want XDP_PASS (2)", ret)
+				}
+				if !bytes.Equal(out[:outLen], in) {
+					t.Fatalf("the program changed the frame (ipv6 byte 20 is %#x, wire %#x):\n got %x\nwant %x", out[20], in[20], out[:outLen], in)
+				}
+			})
+		}
 	}
 }
 
