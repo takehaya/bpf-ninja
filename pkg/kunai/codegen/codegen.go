@@ -711,7 +711,9 @@ func emitBoundedLoad(dst asm.Register, off int16, size asm.Size, failLabel strin
 // offset into a non-negative scalar before the pkt-pointer arithmetic
 // sidesteps the issue.
 //
-// dst MUST differ from src; the helper writes dst.
+// dst may equal src: the helper tests src before it writes dst (the
+// slot anchor of emitFieldLoadTo folds in place, at the cost of a
+// self-Mov when off > 0).
 func foldOffsetIntoScalar(dst, src asm.Register, off int32, failLabel string) asm.Instructions {
 	switch {
 	case off < 0:
@@ -2375,6 +2377,12 @@ func emitLayerEntryStoreFromCb(layer *ir.LayerInstance, qo queriedOptions) (asm.
 // verifier propagates `r ≥ size` to the LoadMem. The check is
 // mandatory for PTR_TO_PACKET and harmless for PTR_TO_MAP_VALUE.
 func emitFieldLoad(anchor layerAnchor, fieldOff int, size asm.Size) asm.Instructions {
+	return emitFieldLoadTo(asm.R3, anchor, fieldOff, size, dslReject)
+}
+
+// emitFieldLoadTo is emitFieldLoad into a chosen register with a chosen
+// fail label; dst is the only register written.
+func emitFieldLoadTo(dst asm.Register, anchor layerAnchor, fieldOff int, size asm.Size, failLabel string) asm.Instructions {
 	if anchor.WriteBack && fieldOff == anchor.WriteBackOff && size == asm.Byte {
 		// The written-back byte lives in its slot (zero-extended, so the
 		// DWord load is the byte's value, like a packet byte load). The
@@ -2382,25 +2390,44 @@ func emitFieldLoad(anchor layerAnchor, fieldOff int, size asm.Size) asm.Instruct
 		// byte-aligned 8-bit target (resolveHeaderWritebackTargets): no
 		// other field shares the byte, every read of it is a Byte load,
 		// and a slice of an 8-bit field stays within that byte.
-		return asm.Instructions{asm.LoadMem(asm.R3, asm.R10, anchor.WriteBackSlot, asm.DWord)}
+		return asm.Instructions{asm.LoadMem(dst, asm.R10, anchor.WriteBackSlot, asm.DWord)}
 	}
 	sizeBytes := int32(size.Sizeof())
 	switch {
 	case anchor.UseSlot:
-		insns := asm.Instructions{asm.LoadMem(asm.R3, asm.R10, anchor.SlotOff, asm.DWord)}
-		insns = append(insns, foldOffsetIntoScalar(asm.R3, asm.R3, int32(fieldOff), dslReject)...)
-		return append(insns, boundedScalarLoad(asm.R3, asm.R0, asm.R3, asm.R1, size, dslReject)...)
+		insns := asm.Instructions{asm.LoadMem(dst, asm.R10, anchor.SlotOff, asm.DWord)}
+		insns = append(insns, foldOffsetIntoScalar(dst, dst, int32(fieldOff), failLabel)...)
+		return append(insns, boundedScalarLoad(dst, asm.R0, dst, asm.R1, size, failLabel)...)
 	case anchor.UseR4:
-		return emitBoundedLoad(asm.R3, int16(fieldOff), size, dslReject)
+		// emitBoundedLoad's shape, folded straight into dst.
+		insns := foldOffsetIntoScalar(dst, offsetBase, int32(fieldOff), failLabel)
+		return append(insns, boundedScalarLoad(dst, asm.R0, dst, asm.R1, size, failLabel)...)
 	default:
 		totalOff := int32(anchor.AbsOffset+fieldOff) + sizeBytes
 		return asm.Instructions{
-			asm.Mov.Reg(asm.R3, asm.R0),
-			asm.Add.Imm(asm.R3, totalOff), // R3 = R0 + absOff + fieldOff + size
-			asm.JGT.Reg(asm.R3, asm.R1, dslReject),
-			asm.LoadMem(asm.R3, asm.R3, int16(-sizeBytes), size),
+			asm.Mov.Reg(dst, asm.R0),
+			asm.Add.Imm(dst, totalOff), // dst = R0 + absOff + fieldOff + size
+			asm.JGT.Reg(dst, asm.R1, failLabel),
+			asm.LoadMem(dst, dst, int16(-sizeBytes), size),
 		}
 	}
+}
+
+// emitHeaderCount reads a stack's element count declared as a field of
+// the primary header (vocab.StackCountSpec: the byte at ByteOff plus
+// Addend, srv6.segments = last_entry + 1) into dst through the layer
+// anchor. Every reader through a layer anchor uses it: the where guard of
+// a static index (emitCountGuard), the all() truncation guard
+// (truncatedStackGuard), the bracket guard (genPredicate) and the dynamic
+// index bound (emitDynamicIndexRead), each with its own comparison. The
+// bpf_loop callback of any()/all() (auxWalkCountGuard) has no anchor and
+// spells the read out itself; change both together.
+func emitHeaderCount(dst asm.Register, anchor layerAnchor, cnt *vocab.StackCountSpec, failLabel string) asm.Instructions {
+	insns := emitFieldLoadTo(dst, anchor, cnt.ByteOff, asm.Byte, failLabel)
+	if cnt.Addend != 0 {
+		insns = append(insns, asm.Add.Imm(dst, int32(cnt.Addend)))
+	}
+	return insns
 }
 
 // dynamicIndexSource validates a dynamic stack index's source field (a
@@ -2435,10 +2462,7 @@ func dynamicIndexSource(ref *ir.FieldRef) (int, error) {
 // vocab.StackCountSpec). The zero value bounds by capacity alone.
 type indexBound struct {
 	slot *int16
-	// hdr: count = primary header byte at byteOff + addend.
-	hdr     bool
-	byteOff int
-	addend  int
+	hdr  *vocab.StackCountSpec
 }
 
 // emitDynamicIndexRead reads a dynamic stack index into R3 through the
@@ -2462,22 +2486,10 @@ func emitDynamicIndexRead(ref *ir.FieldRef, base layerAnchor, idxByteOff int, bo
 	switch {
 	case bound.slot != nil:
 		insns = append(insns, asm.LoadMem(asm.R2, asm.R10, *bound.slot, asm.DWord))
-	case bound.hdr:
-		// The count byte through the same anchor as the index, into R2 so
-		// R3 (the index) and R5 (the slot value) survive. The byte sits in
-		// the primary header, whose bounds the layer proved, but the
-		// scalar is re-checked like any field read.
-		if base.UseSlot {
-			insns = append(insns, foldOffsetIntoScalar(asm.R2, asm.R5, int32(bound.byteOff), failLabel)...)
-		} else if base.UseR4 {
-			insns = append(insns, foldOffsetIntoScalar(asm.R2, offsetBase, int32(bound.byteOff), failLabel)...)
-		} else {
-			insns = append(insns, asm.Mov.Imm(asm.R2, int32(base.AbsOffset+bound.byteOff)))
-		}
-		insns = append(insns, boundedScalarLoad(asm.R2, asm.R0, asm.R2, asm.R1, asm.Byte, failLabel)...)
-		if bound.addend != 0 {
-			insns = append(insns, asm.Add.Imm(asm.R2, int32(bound.addend)))
-		}
+	case bound.hdr != nil:
+		// The count through the same anchor as the index, into R2 so R3
+		// (the index) and R5 (the slot value) survive.
+		insns = append(insns, emitHeaderCount(asm.R2, base, bound.hdr, failLabel)...)
 	default:
 		return insns
 	}

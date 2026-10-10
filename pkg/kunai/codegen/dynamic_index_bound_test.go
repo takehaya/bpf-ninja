@@ -6,6 +6,7 @@ import (
 	"github.com/cilium/ebpf/asm"
 
 	"github.com/takehaya/bpf-ninja/pkg/kunai/ir"
+	"github.com/takehaya/bpf-ninja/pkg/kunai/vocab"
 )
 
 // TestEmitDynamicIndexReadHeaderCountAnchors pins the shape of the
@@ -18,7 +19,8 @@ import (
 // in R3, the slot value stays in R5, and the compare is `JGE R3, R2`.
 func TestEmitDynamicIndexReadHeaderCountAnchors(t *testing.T) {
 	ref := &ir.FieldRef{Aux: &ir.AuxRef{Stack: &ir.StackIndex{Capacity: 8}}}
-	bound := indexBound{hdr: true, byteOff: 4, addend: 1}
+	// Addend 2, not 1: a Byte load's own `Add dst, 1` must not pass for it.
+	bound := indexBound{hdr: &vocab.StackCountSpec{ByteOff: 4, Addend: 2}}
 	anchors := map[string]layerAnchor{
 		"slot": slotAnchor(-240),
 		"r4":   r4Anchor(),
@@ -43,25 +45,24 @@ func TestEmitDynamicIndexReadHeaderCountAnchors(t *testing.T) {
 			if last.OpCode != asm.JGE.Op(asm.RegSource) || last.Dst != asm.R3 || last.Src != asm.R2 || last.Reference() != "fail" {
 				t.Fatalf("count compare is %v; want JGE R3, R2 -> fail", last)
 			}
-			var loads, addend int
+			var loads int
 			for _, ins := range tail[:len(tail)-1] {
 				if ins.OpCode.Class().IsALU() || ins.OpCode.Class() == asm.LdXClass {
 					if ins.Dst != asm.R2 {
 						t.Errorf("count read writes %v: %v", ins.Dst, ins)
 					}
 				}
-				if ins.OpCode.Class() == asm.LdXClass {
+				if ins.OpCode.Class() == asm.LdXClass && ins.Src != asm.R10 {
 					loads++
 					if ins.OpCode != asm.LoadMemOp(asm.Byte) || ins.Src != asm.R2 || ins.Offset != -1 {
 						t.Errorf("count load %v is not the bounded byte load", ins)
 					}
 				}
-				if ins.OpCode == asm.Add.Op(asm.ImmSource) && ins.Constant == 1 && ins.Dst == asm.R2 {
-					addend++
-				}
 			}
-			if loads != 1 || addend < 1 {
-				t.Fatalf("count read: %d loads, %d addend adds:\n%v", loads, addend, tail)
+			// The addend follows the load and precedes the compare.
+			add := tail[len(tail)-2]
+			if loads != 1 || add.OpCode != asm.Add.Op(asm.ImmSource) || add.Dst != asm.R2 || add.Constant != 2 {
+				t.Fatalf("count read: %d packet loads, instruction before the compare is %v (want Add R2, 2):\n%v", loads, add, tail)
 			}
 			// The index arrives through the anchor the caller named.
 			switch {

@@ -324,15 +324,20 @@ func auxWalkCountGuard(countSrc *quantCountSource, breakLabel string) (asm.Instr
 		)
 		return insns, nil
 	}
-	// Primary: count = layer[ByteOff] + addend.
+	if countSrc.Hdr == nil {
+		return nil, fmt.Errorf("codegen: count source of %s has neither a slot, an owner nor a header field", countSrc.Layer.DisplayName())
+	}
+	// Primary: count = layer[ByteOff] + Addend. The callback ABI (layer
+	// entry in the ctx, R4/R5 scratch window) has no layerAnchor, so this
+	// is the one reader of the count field outside emitHeaderCount.
 	insns := asm.Instructions{
 		asm.LoadMem(asm.R0, asm.R2, bpfLoopCbCtxLayerEntryField, asm.DWord),
-		asm.Add.Imm(asm.R0, int32(countSrc.ByteOff)),
+		asm.Add.Imm(asm.R0, int32(countSrc.Hdr.ByteOff)),
 		asm.Mov.Reg(asm.R3, asm.R0),
 	}
 	insns = append(insns, boundedScalarLoad(asm.R0, asm.R4, asm.R3, asm.R5, asm.Byte, breakLabel)...)
 	insns = append(insns,
-		asm.Add.Imm(asm.R0, int32(countSrc.Offset)),
+		asm.Add.Imm(asm.R0, int32(countSrc.Hdr.Addend)),
 		asm.JGE.Reg(asm.R1, asm.R0, breakLabel),
 	)
 	return insns, nil

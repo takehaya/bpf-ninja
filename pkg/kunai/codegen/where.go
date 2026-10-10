@@ -372,15 +372,15 @@ func (c *whereCtx) truncatedStackGuard(w *ir.Condition, failLabel string) (asm.I
 	if err != nil || src == nil || src.Stack != "" || src.Owner != nil {
 		return nil, err
 	}
+	if src.Hdr == nil {
+		return nil, fmt.Errorf("codegen: count source of %s has neither a slot, an owner nor a header field", src.Layer.DisplayName())
+	}
 	anchor, err := c.layerAnchorFor(src.Layer)
 	if err != nil {
 		return nil, err
 	}
-	insns := emitFieldLoad(anchor, src.ByteOff, asm.Byte)
-	return append(insns,
-		asm.Add.Imm(asm.R3, int32(src.Offset)),
-		asm.JGT.Imm(asm.R3, int32(w.QuantTarget.Capacity), failLabel),
-	), nil
+	insns := emitHeaderCount(asm.R3, anchor, src.Hdr, dslReject)
+	return append(insns, asm.JGT.Imm(asm.R3, int32(w.QuantTarget.Capacity), failLabel)), nil
 }
 
 // genAllBody is all() past the layer and truncation guards.
@@ -665,7 +665,7 @@ func refCountSource(ref *ir.FieldRef) (*quantCountSource, error) {
 		return &quantCountSource{Layer: ref.Layer, Owner: ref.Aux.OwnerOption, ByteOff: 1, SubBefore: ref.Aux.OffsetAfterOwner, RShAfter: shift}, nil
 	}
 	if cnt := ref.Layer.Spec.StackCounts[ref.Aux.OutParam]; cnt != nil {
-		return &quantCountSource{Layer: ref.Layer, ByteOff: cnt.ByteOff, Offset: cnt.Addend}, nil
+		return &quantCountSource{Layer: ref.Layer, Hdr: cnt}, nil
 	}
 	if needsPushCount(ref) {
 		return &quantCountSource{Layer: ref.Layer, Stack: ref.Aux.OutParam}, nil
@@ -704,24 +704,25 @@ func (c *whereCtx) emitCountGuard(countSrc *quantCountSource, idx int, skipLabel
 		)
 		return insns, nil
 	}
+	if countSrc.Hdr == nil {
+		return nil, fmt.Errorf("codegen: count source of %s has neither a slot, an owner nor a header field", countSrc.Layer.DisplayName())
+	}
 	anchor, err := c.layerAnchorFor(countSrc.Layer)
 	if err != nil {
 		return nil, err
 	}
-	insns := emitFieldLoad(anchor, countSrc.ByteOff, asm.Byte)
-	insns = append(insns,
-		asm.Add.Imm(asm.R3, int32(countSrc.Offset)),
-		// `if R3 <= idx: skip` → `if R3 < idx+1: skip` → JLE.Imm(R3, idx, skip).
-		asm.JLE.Imm(asm.R3, int32(idx), skipLabel),
-	)
-	return insns, nil
+	insns := emitHeaderCount(asm.R3, anchor, countSrc.Hdr, dslReject)
+	// `if R3 <= idx: skip` → `if R3 < idx+1: skip` → JLE.Imm(R3, idx, skip).
+	return append(insns, asm.JLE.Imm(asm.R3, int32(idx), skipLabel)), nil
 }
 
 // quantCountSource carries the runtime count of an aux header stack.
 // Three shapes folded into one struct so emitCountGuard can dispatch on
-// Stack / Owner:
-//   - Primary-header byte: Layer + ByteOff + Offset (e.g. SRv6
-//     last_entry at byte 4, count = last_entry + 1).
+// Stack / Owner, with Hdr as the remaining arm; refCountSource is the only
+// constructor and sets exactly one of the three:
+//   - Primary-header field: Layer + Hdr (vocab.StackCountSpec: the byte at
+//     Hdr.ByteOff plus Hdr.Addend, e.g. SRv6 last_entry at byte 4, count
+//     = last_entry + 1).
 //   - Owner option slot: Owner (the AuxLayout the slot maps to) +
 //     ByteOff (= byte position of the length field within the
 //     option, e.g. 1 for SACK) + SubBefore (bytes to subtract = the
@@ -733,10 +734,10 @@ type quantCountSource struct {
 	Layer     *ir.LayerInstance
 	Owner     *vocab.AuxLayout
 	Stack     string
-	ByteOff   int
-	Offset    int // primary-header path: value to add to the loaded byte
-	SubBefore int // owner-slot path: bytes subtracted before the right shift
-	RShAfter  int // owner-slot path: log2(elem_size) — divides residue into element count
+	Hdr       *vocab.StackCountSpec // primary-header path: the declared count field
+	ByteOff   int                   // owner-slot path: length byte within the option
+	SubBefore int                   // owner-slot path: bytes subtracted before the right shift
+	RShAfter  int                   // owner-slot path: log2(elem_size) — divides residue into element count
 }
 
 // stackCountSource derives a runtime count for the quantifier
@@ -2520,7 +2521,7 @@ func (c *whereCtx) stackEntryAddress(ref *ir.FieldRef, base layerAnchor, failLab
 		case src.Owner != nil:
 			return nil, fmt.Errorf("%w: owner-bound aux %q with non-static index is not yet supported", ErrNotImplemented, ref.Aux.OutParam)
 		default:
-			bound.hdr, bound.byteOff, bound.addend = true, src.ByteOff, src.Offset
+			bound.hdr = src.Hdr
 		}
 	}
 	return emitStackEntryAddress(ref, base, bound, failLabel)
