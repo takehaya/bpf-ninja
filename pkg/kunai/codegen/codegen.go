@@ -1106,17 +1106,17 @@ func emitStaticLayerTail(layer *ir.LayerInstance, index, hs int, qo queriedOptio
 //
 // Caller invariant: emitFlagTriggers is invoked AFTER emitAdvance(hs),
 // so offsetBase already points past the fixed primary header. The
-// initial flag-byte LDX uses immediate `-fixedHs+flagsByteOff` to
-// reach back into the just-passed primary header. If a future caller
-// reorders the advance / triggers sequence in emitStaticLayerTail, this
-// helper must change to match (or split into a "read flag byte" /
-// "emit triggers" pair).
+// flag byte is read back at `-fixedHs+flagsByteOff` from offsetBase
+// through the bounded idiom (emitBoundedLoad): the layers that carry
+// flag triggers sit behind a variable-length parent (gre behind
+// ipv4's IHL), so offsetBase is a range scalar and a plain negative
+// LDX through a fresh packet pointer is rejected on PTR_TO_PACKET.
+// If a future caller reorders the advance / triggers sequence in
+// emitStaticLayerTail, this helper must change to match (or split
+// into a "read flag byte" / "emit triggers" pair).
 func emitFlagTriggers(ns string, fixedHs, flagsByteOff int, triggers []vocab.FlagTrigger, failLabel string) (asm.Instructions, error) {
-	insns := asm.Instructions{
-		asm.Mov.Reg(asm.R5, asm.R0),
-		asm.Add.Reg(asm.R5, offsetBase),
-		asm.LoadMem(asm.R5, asm.R5, int16(-fixedHs+flagsByteOff), asm.Byte),
-	}
+	// R3 is the load scratch; the first trigger overwrites it anyway.
+	insns := emitBoundedLoad(asm.R5, int16(-fixedHs+flagsByteOff), asm.Byte, failLabel)
 	for i, tr := range triggers {
 		skipLabel := fmt.Sprintf("%s_flag_skip_%d_%s", ns, i, tr.Name)
 		insns = append(insns,

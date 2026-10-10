@@ -62,10 +62,16 @@ var (
 		"eth/ipv4@o{1,2}/tcp where o.options.RR.kind == 7",
 		"eth/ipv4{1,2}/tcp where tcp.dport == 443",
 		"eth/ipv4{1,2}/udp",
-		// Not here: a layer dispatched against an ipv6 whose entry is a
-		// range (`eth/ipv6/ipv6/tcp`, `eth/ipv4/ipv6/tcp`, so `ipv6{1,2}`
-		// too) and the absent edge of `gre?` (`eth/ipv4/gre?/ipv4/tcp`)
-		// are rejected on the packet pointer today, repeated or not.
+		// flag-gated optional words (gre's C/K/S) read the flag byte
+		// back through the range-valued R4 left by ipv4's IHL.
+		"eth/ipv4/gre/ipv4/tcp",
+		"eth/ipv4/gre?/ipv4/tcp",
+		"eth/ipv4{1,2}/gre?/ipv4/tcp",
+		// Not here: an ipv6 whose entry is a range (`eth/ipv6/ipv6/tcp`,
+		// `eth/ipv4/ipv6/tcp`, so `ipv6{1,2}` too) stores the extension
+		// chain's next_header back into the ipv6 header through an
+		// unbounded packet pointer and is rejected on the packet pointer
+		// today.
 	}
 )
 
