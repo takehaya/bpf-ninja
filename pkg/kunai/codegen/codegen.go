@@ -711,7 +711,9 @@ func emitBoundedLoad(dst asm.Register, off int16, size asm.Size, failLabel strin
 // offset into a non-negative scalar before the pkt-pointer arithmetic
 // sidesteps the issue.
 //
-// dst MUST differ from src; the helper writes dst.
+// dst may equal src: the helper tests src before it writes dst (the
+// slot anchor of emitFieldLoadTo folds in place, at the cost of a
+// self-Mov when off > 0).
 func foldOffsetIntoScalar(dst, src asm.Register, off int32, failLabel string) asm.Instructions {
 	switch {
 	case off < 0:
@@ -2414,9 +2416,12 @@ func emitFieldLoadTo(dst asm.Register, anchor layerAnchor, fieldOff int, size as
 // emitHeaderCount reads a stack's element count declared as a field of
 // the primary header (vocab.StackCountSpec: the byte at ByteOff plus
 // Addend, srv6.segments = last_entry + 1) into dst through the layer
-// anchor. The one place the count byte is read: the where guard of a
-// static index (emitCountGuard), the bracket guard (genPredicate) and
-// the dynamic index bound (emitDynamicIndexRead) all compare against it.
+// anchor. Every reader through a layer anchor uses it: the where guard of
+// a static index (emitCountGuard), the all() truncation guard
+// (truncatedStackGuard), the bracket guard (genPredicate) and the dynamic
+// index bound (emitDynamicIndexRead), each with its own comparison. The
+// bpf_loop callback of any()/all() (auxWalkCountGuard) has no anchor and
+// spells the read out itself; change both together.
 func emitHeaderCount(dst asm.Register, anchor layerAnchor, cnt *vocab.StackCountSpec, failLabel string) asm.Instructions {
 	insns := emitFieldLoadTo(dst, anchor, cnt.ByteOff, asm.Byte, failLabel)
 	if cnt.Addend != 0 {

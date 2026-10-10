@@ -324,6 +324,9 @@ func auxWalkCountGuard(countSrc *quantCountSource, breakLabel string) (asm.Instr
 		)
 		return insns, nil
 	}
+	if countSrc.Hdr == nil {
+		return nil, fmt.Errorf("codegen: count source of %s has neither a slot, an owner nor a header field", countSrc.Layer.DisplayName())
+	}
 	// Primary: count = layer[ByteOff] + Addend. The callback ABI (layer
 	// entry in the ctx, R4/R5 scratch window) has no layerAnchor, so this
 	// is the one reader of the count field outside emitHeaderCount.

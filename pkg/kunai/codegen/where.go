@@ -372,6 +372,9 @@ func (c *whereCtx) truncatedStackGuard(w *ir.Condition, failLabel string) (asm.I
 	if err != nil || src == nil || src.Stack != "" || src.Owner != nil {
 		return nil, err
 	}
+	if src.Hdr == nil {
+		return nil, fmt.Errorf("codegen: count source of %s has neither a slot, an owner nor a header field", src.Layer.DisplayName())
+	}
 	anchor, err := c.layerAnchorFor(src.Layer)
 	if err != nil {
 		return nil, err
@@ -701,6 +704,9 @@ func (c *whereCtx) emitCountGuard(countSrc *quantCountSource, idx int, skipLabel
 		)
 		return insns, nil
 	}
+	if countSrc.Hdr == nil {
+		return nil, fmt.Errorf("codegen: count source of %s has neither a slot, an owner nor a header field", countSrc.Layer.DisplayName())
+	}
 	anchor, err := c.layerAnchorFor(countSrc.Layer)
 	if err != nil {
 		return nil, err
@@ -712,9 +718,11 @@ func (c *whereCtx) emitCountGuard(countSrc *quantCountSource, idx int, skipLabel
 
 // quantCountSource carries the runtime count of an aux header stack.
 // Three shapes folded into one struct so emitCountGuard can dispatch on
-// Stack / Owner:
-//   - Primary-header byte: Layer + ByteOff + Offset (e.g. SRv6
-//     last_entry at byte 4, count = last_entry + 1).
+// Stack / Owner, with Hdr as the remaining arm; refCountSource is the only
+// constructor and sets exactly one of the three:
+//   - Primary-header field: Layer + Hdr (vocab.StackCountSpec: the byte at
+//     Hdr.ByteOff plus Hdr.Addend, e.g. SRv6 last_entry at byte 4, count
+//     = last_entry + 1).
 //   - Owner option slot: Owner (the AuxLayout the slot maps to) +
 //     ByteOff (= byte position of the length field within the
 //     option, e.g. 1 for SACK) + SubBefore (bytes to subtract = the
