@@ -510,7 +510,7 @@ func emitIPv4Predicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, error
 		return insns, nil
 	}
 
-	fieldOff, bytes, err := whereLiteralFieldOffset(pred.Field)
+	fieldOff, bytes, err := literalFieldWindow(pred.Field)
 	if err != nil {
 		return nil, err
 	}
@@ -762,7 +762,7 @@ func ipv6HalfCheck(off int16, mask, host uint64, failLabel string) asm.Instructi
 // requireIPv6Field returns the byte offset of the predicate's field
 // (after its bit-slice, if any) once the window is exactly 16 bytes.
 func requireIPv6Field(pred *ir.Predicate) (int, error) {
-	off, bytes, err := whereLiteralFieldOffset(pred.Field)
+	off, bytes, err := literalFieldWindow(pred.Field)
 	if err != nil {
 		return 0, err
 	}
@@ -812,7 +812,7 @@ func emitMACPredicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, error)
 		return insns, nil
 	}
 
-	fieldOff, bytes, err := whereLiteralFieldOffset(pred.Field)
+	fieldOff, bytes, err := literalFieldWindow(pred.Field)
 	if err != nil {
 		return nil, err
 	}
@@ -1140,7 +1140,7 @@ func emitIPv4CIDRPredicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, e
 		return insns, nil
 	}
 
-	fieldOff, bytes, err := whereLiteralFieldOffset(pred.Field)
+	fieldOff, bytes, err := literalFieldWindow(pred.Field)
 	if err != nil {
 		return nil, err
 	}

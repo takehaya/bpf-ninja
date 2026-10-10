@@ -345,7 +345,7 @@ def lowOnes : Nat := 2 ^ 64 - 1
 def dst6Half : FieldPath := ⟨[("ipv6", none), ("dst", some (.slice 64 128))]⟩
 def dst6Low : FieldPath := ⟨[("ipv6", none), ("dst", some (.slice 96 128))]⟩
 def v6Src1 : Nat := 0xfc000000000000000000000000000001
-def v6LowTen : Nat := 0xfc0000000000000000000000000a000001
+def v6LowTen : Nat := 0xfc00000000000000000000000a000001
 vector typWidthIPv6Slice := {
   id := "typ-ipv6-literal-slice-width", ast := W6 (.litCmp dst6Half .eq (.ipv6 2)), packet := ipv6TCP,
   expected := .illTyped "ipv6 literal requires an Int<128> field", note := "the slice makes the field an Int<64>" }
@@ -362,6 +362,25 @@ vector ipv6DstLow32IPv4Miss := {
 vector ipv6DstLow32Cidr := {
   id := "ipv6-dst-low32-cidr-literal", ast := W6 (.litCmp dst6Low .eq (.cidr4 0x0a000000 8)), packet := v6pkt v6Src1 v6LowTen,
   expected := .accept [], note := "a /8 over the sliced word" }
+vector ipv6DstLow32IPv4Unaligned := {
+  id := "ipv6-dst-unaligned-slice-ipv4-literal", ast := W6 (.litCmp ⟨[("ipv6", none), ("dst", some (.slice 92 124))]⟩ .eq (.ipv4 0x0a000001)),
+  packet := v6pkt v6Src1 (0xfc00000000000000000000000a000001 * 16), expected := .accept [], goStatus := .notImplemented,
+  note := "well-typed (width 32); Go's literal readers compare whole bytes and refuse a slice that does not end on a byte boundary" }
+vector ipv6DstLow32IPv4Ne := {
+  id := "ipv6-dst-low32-ipv4-literal-ne", ast := W6 (.litCmp dst6Low .ne (.ipv4 0x0a000002)), packet := v6pkt v6Src1 v6LowTen,
+  expected := .accept [] }
+vector ipv6DstLow32IPv4NeMiss := {
+  id := "ipv6-dst-low32-ipv4-literal-ne-miss", ast := W6 (.litCmp dst6Low .ne (.ipv4 0x0a000001)), packet := v6pkt v6Src1 v6LowTen,
+  expected := .reject }
+vector ipv6DstLow48Mac := {
+  id := "ipv6-dst-low48-mac-literal", ast := W6 (.litCmp ⟨[("ipv6", none), ("dst", some (.slice 80 128))]⟩ .eq (.mac 0x00000a000001)),
+  packet := v6pkt v6Src1 v6LowTen, expected := .accept [], note := "the low 48 bits of fc00::a00:1 as a MAC literal (width 48 after the slice)" }
+vector ipv6DstFullSliceIPv6 := {
+  id := "ipv6-dst-full-slice-ipv6-literal", ast := W6 (.litCmp ⟨[("ipv6", none), ("dst", some (.slice 0 128))]⟩ .eq (.ipv6 v6LowTen)),
+  packet := v6pkt v6Src1 v6LowTen, expected := .accept [], note := "a full-width slice is the field" }
+vector ipv6DstFullSliceCidr6 := {
+  id := "ipv6-dst-full-slice-cidr6-literal", ast := W6 (.litCmp ⟨[("ipv6", none), ("dst", some (.slice 0 128))]⟩ .eq (.cidr6 0xfc000000000000000000000000000000 16)),
+  packet := v6pkt v6Src1 v6LowTen, expected := .accept [] }
 vector ipv6DstLow32IPv4Bracket := {
   id := "ipv6-dst-low32-ipv4-literal-bracket",
   ast := { layers := [P "eth", .proto { name := "ipv6", preds := [.cmp ⟨[("dst", some (.slice 96 128))]⟩ .eq (.ipv4 0x0a000001)] }, P "tcp"] },
@@ -798,7 +817,7 @@ def whereVectors : List Vector := [
   predCmp, predCmpMiss, predInList, predInListMiss, predInRange, typPredInRangeWide, typPredCmpRange, predInRangeMiss, predNegative, predIPv4,
   capAll, capWhereFalse, capWhereTrue, capLabel, capAbsent, capPresent, capAltMemberPresent, capAltMemberAbsent, capAltMemberByName,
   typUnknownProto, typNoDispatch, typNotInChain, typUnknownField, typFit, typLabelCollides, typLabelCollidesAlt, typLabelDuplicate, typFitArith, whereArithRight, whereArithRightMiss, typFitArithSibling, whereNegLitSibling, typWidthIPv6, typCIDRWidth,
-  typWidthIPv6Slice, typWidthIPv6SliceBracket, ipv6DstLow32IPv4, ipv6DstLow32IPv4Miss, ipv6DstLow32Cidr, ipv6DstLow32IPv4Bracket,
+  typWidthIPv6Slice, typWidthIPv6SliceBracket, ipv6DstLow32IPv4, ipv6DstLow32IPv4Miss, ipv6DstLow32Cidr, ipv6DstLow32IPv4Unaligned, ipv6DstLow32IPv4Ne, ipv6DstLow32IPv4NeMiss, ipv6DstLow48Mac, ipv6DstFullSliceIPv6, ipv6DstFullSliceCidr6, ipv6DstLow32IPv4Bracket,
   typPredIdent, typInSet, predInSetMember, predInSetMiss, typPredInSetWidth, predInSetSubByte, predInSetWindow, typPredInSetWindow, typPredInSetTwice, typPredInSetBudget, typPredInSetOptional, typPredInSetAlt, typAny, typExists, typAuxPath,
   arith128AddConst, arith128SubConst, arith128AddCarry, arith128AddWrap, arith128SubBorrow, arith128SubWrap, arith128AddMiss,
   arith128FieldAddField, arith128FieldAddFieldCarry, arith128FieldSubField, arith128FieldSubFieldBorrow, arith128AddWideConst, arith128SubWideConstBorrow,

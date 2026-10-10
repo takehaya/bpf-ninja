@@ -1952,7 +1952,9 @@ func fieldRefByteOffset(ref *ir.FieldRef) (int, int, error) {
 // to the slice start, size is the slice width in bytes). For
 // sub-byte slices we round the load up to the smallest power-of-2
 // byte size that covers the slice; the caller is responsible for
-// emitting the post-load shift + mask via slicePostAdjust.
+// emitting the post-load shift + mask via slicePostAdjust. Readers that
+// compare whole bytes against a network literal use applyExactSlice
+// instead: a rounded window would misreport a 6- or 16-byte slice.
 func applySliceToOffset(ref *ir.FieldRef, off, size int) (int, int, error) {
 	if ref.Slice == nil {
 		return off, size, nil
@@ -2234,7 +2236,7 @@ func auxLoadEmitter(ref *ir.FieldRef, anchor layerAnchor, resolveSlot resolveAux
 		return nil, nil, fmt.Errorf("codegen: auxLoadEmitter on non-aux FieldRef")
 	}
 	aux := ref.Aux
-	fieldByteOff, _, err := auxEntryFieldWindow(ref)
+	fieldByteOff, err := auxEntryFieldStart(ref)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -2655,6 +2657,22 @@ func auxEntryFieldWindow(ref *ir.FieldRef) (int, int, error) {
 	return applySliceToOffset(ref, ref.Aux.FieldBitOff/8, ref.Aux.FieldBitWidth/8)
 }
 
+// auxEntryFieldStart is the byte at which `ref`'s field (or the first
+// byte its bit-slice touches) starts inside its aux entry, for emitters
+// that pick their own load sizes (auxLoadEmitter's multi-word literal
+// readers): the window size, and with it the 8-byte limit of a single
+// LDX, does not apply to them.
+func auxEntryFieldStart(ref *ir.FieldRef) (int, error) {
+	if ref.Aux.FieldBitOff%8 != 0 || ref.Aux.FieldBitWidth%8 != 0 {
+		return 0, fmt.Errorf("%w: aux field %s.%s.%s not byte-aligned", ErrNotImplemented, ref.Layer.Spec.Name, ref.Aux.OutParam, ref.Field.Name)
+	}
+	off := ref.Aux.FieldBitOff / 8
+	if ref.Slice != nil {
+		off += ref.Slice.Lo / 8
+	}
+	return off, nil
+}
+
 // emitStaticStackEntryAddress leaves R5 = the start of entry `Static`
 // (and R3 = R5 + HeaderSize, proved inside the window). Fixed-size
 // entries sit at base + Static·ElemSize; entries with a variable tail
@@ -2693,7 +2711,7 @@ func emitDynamicStackLoad(ref *ir.FieldRef, size asm.Size, failLabel string) (as
 	if err != nil {
 		return nil, err
 	}
-	fieldByteOff, _, err := auxEntryFieldWindow(ref)
+	fieldByteOff, err := auxEntryFieldStart(ref)
 	if err != nil {
 		return nil, err
 	}

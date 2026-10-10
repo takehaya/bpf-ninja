@@ -677,34 +677,78 @@ func TestCompileNetworkLiteralSliceWidth(t *testing.T) {
 // TestCompileIPv4LiteralOnSliceReadsSlicedBytes pins the window the
 // compare reads: `ipv6.dst[96:128]` is the last word of the address, at
 // byte 14 + 24 + 12 = 50 of the frame, so the bounded load ends at 54.
+// `==` jumps away on inequality, `!=` on equality.
 func TestCompileIPv4LiteralOnSliceReadsSlicedBytes(t *testing.T) {
-	insns, err := compileForTest("eth/ipv6/tcp where ipv6.dst[96:128] == 10.0.0.1")
-	if err != nil {
-		t.Fatal(err)
-	}
 	// 10.0.0.1 read as a little-endian word is 0x0100000a; the compare
-	// materialises it with a 64-bit immediate load and a JNE.Reg.
+	// materialises it with a 64-bit immediate load and a register jump.
 	const want = int64(0x0100000a)
-	for i, ins := range insns {
-		if ins.OpCode.Class() != asm.LdClass || ins.OpCode.Mode() != asm.ImmMode || ins.Constant != want || i == 0 || i+1 >= len(insns) {
-			continue
-		}
-		if next := insns[i+1]; next.OpCode.JumpOp() != asm.JNE || next.OpCode.Source() != asm.RegSource {
-			t.Fatalf("instruction after the literal = %v; want JNE.Reg", next)
-		}
-		// The load right before the literal must be a word at [ptr-4]
-		// with the pointer proven against R1 after an Add of 54.
-		if ld := insns[i-1]; ld.OpCode.Class() != asm.LdXClass || ld.OpCode.Size() != asm.Word || ld.Offset != -4 {
-			t.Fatalf("instruction before the literal = %v; want a word load at [ptr-4]", ld)
-		}
-		for j := i - 2; j >= 0 && j > i-6; j-- {
-			if insns[j].OpCode.ALUOp() == asm.Add && insns[j].OpCode.Source() == asm.ImmSource && insns[j].Constant == 54 {
+	for _, c := range []struct {
+		expr string
+		jump asm.JumpOp
+	}{
+		{"eth/ipv6/tcp where ipv6.dst[96:128] == 10.0.0.1", asm.JNE},
+		{"eth/ipv6/tcp where ipv6.dst[96:128] != 10.0.0.1", asm.JEq},
+	} {
+		t.Run(c.expr, func(t *testing.T) {
+			insns, err := compileForTest(c.expr)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for i, ins := range insns {
+				if ins.OpCode.Class() != asm.LdClass || ins.OpCode.Mode() != asm.ImmMode || ins.Constant != want || i == 0 || i+1 >= len(insns) {
+					continue
+				}
+				if next := insns[i+1]; next.OpCode.JumpOp() != c.jump || next.OpCode.Source() != asm.RegSource {
+					t.Fatalf("instruction after the literal = %v; want %v.Reg", next, c.jump)
+				}
+				// The load right before the literal must be a word at [ptr-4]
+				// with the pointer proven against R1 after an Add of 54.
+				if ld := insns[i-1]; ld.OpCode.Class() != asm.LdXClass || ld.OpCode.Size() != asm.Word || ld.Offset != -4 {
+					t.Fatalf("instruction before the literal = %v; want a word load at [ptr-4]", ld)
+				}
+				for j := i - 2; j >= 0 && j > i-6; j-- {
+					if insns[j].OpCode.ALUOp() == asm.Add && insns[j].OpCode.Source() == asm.ImmSource && insns[j].Constant == 54 {
+						return
+					}
+				}
+				t.Fatalf("no `Add ptr, 54` before the sliced load at %d", i)
+			}
+			t.Fatalf("no 64-bit immediate %#x found", want)
+		})
+	}
+}
+
+// TestCompileDynamicIndexIPv4LiteralJumps pins the jump the dynamic-index
+// IPv4 arm emits: the body is the equality check and whereDynamicMultiByte
+// routes `!=`, so the register jump after the literal is JNE for both ops
+// (for `!=` it lands on the match label instead of dsl_reject).
+func TestCompileDynamicIndexIPv4LiteralJumps(t *testing.T) {
+	const want = int64(0x02000000) // 0.0.0.2 as a little-endian word
+	for _, c := range []struct {
+		expr   string
+		target string
+	}{
+		{"eth/ipv6/srv6/tcp where srv6.segments[srv6.last_entry].addr[96:128] == 0.0.0.2", "dsl_reject"},
+		{"eth/ipv6/srv6/tcp where srv6.segments[srv6.last_entry].addr[96:128] != 0.0.0.2", "where_lit_match"},
+	} {
+		t.Run(c.expr, func(t *testing.T) {
+			insns, err := compileForTest(c.expr)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for i, ins := range insns {
+				if ins.OpCode.Class() != asm.LdClass || ins.OpCode.Mode() != asm.ImmMode || ins.Constant != want || i+1 >= len(insns) {
+					continue
+				}
+				next := insns[i+1]
+				if next.OpCode.JumpOp() != asm.JNE || next.OpCode.Source() != asm.RegSource || !strings.Contains(next.Reference(), c.target) {
+					t.Fatalf("instruction after the literal = %v; want JNE.Reg to %s…", next, c.target)
+				}
 				return
 			}
-		}
-		t.Fatalf("no `Add ptr, 54` before the sliced load at %d", i)
+			t.Fatalf("no 64-bit immediate %#x found", want)
+		})
 	}
-	t.Fatalf("no 64-bit immediate %#x found", want)
 }
 
 func TestCompileBitSliceNonAligned(t *testing.T) {
