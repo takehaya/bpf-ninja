@@ -272,6 +272,7 @@ Entries are never deleted; a rejected candidate stays in the log.
 - 推奨: §13.4 [E-Layer-Proto-1] の `∀ ρ ∈ π̄. ⟨ρ, σ'⟩` どおり aux-extract 後 (write-back 後) の値。bracket と where が同じ値を見る。
 - 状態: 承認済 (2026-10-01、一括)
 - 反映先: `Eval/Layer.lean` `extract` (predicates は `inst` の patches 込みで評価), vector `ipv6-next-header-writeback-bracket` (goStatus mismatch)
+- 追記 (2026-10-11): Go は write-back を packet への store で実装していたため、filter を live packet の上で動かす native XDP では拡張ヘッダ付き IPv6 frame の next_header を内側 protocol で上書きしたまま XDP_PASS していた (tracing host は scratch copy に書くので無害)。store は entry が range の ipv6 では verifier にも落ちていた。Lean の patches と同じ overlay として、値を layer instance ごとの stack slot に持ち、後続 layer の dispatch、where、bracket がその slot を読む形に変更。capture は `evalCapture` と同じく wire の byte を返す。
 
 ## D-033: 読めない lookahead key
 - 論点: counter が 0 でちょうどパケット末尾にいるとき、`select(pc.is_zero(), lookahead<8>)` の lookahead は読めない。`(true, _)` で accept すべきか ⊥ か。

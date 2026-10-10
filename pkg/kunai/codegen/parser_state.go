@@ -145,6 +145,8 @@ func genParserMachineIter(layer *ir.LayerInstance, layerIdx int, all []*ir.Layer
 		pcPost := &predCtx{
 			stackCount: func(f *ir.FieldRef) (int16, bool) { return qo.stackCountSlot(f.Layer, f.Aux.OutParam) },
 			validSlot:  qo.validSlot,
+			anchor:     pmCtx.entryAnchor(),
+			anchored:   true,
 		}
 		if pc != nil {
 			pcPost.sets, pcPost.out = pc.sets, pc.out
@@ -352,6 +354,19 @@ func (c *pmCtx) emitState(stateIdx int) (asm.Instructions, asm.Instructions, err
 		// load-bearing. The slot doubles as bpf_loop ctx field 24, so
 		// self-loop callbacks read it via R2+bpfLoopCbCtxLayerEntryField.
 		insns = append(insns, asm.StoreMem(asm.R10, bpfLoopCtxLayerEntrySlot, offsetBase, asm.DWord))
+		if wb := writeBackOf(c.spec); wb != nil {
+			// Seed the write-back slot with the primary header's own byte so
+			// a packet without extension headers dispatches on it; the walk
+			// overwrites it per extension (emitVariableTrail). After the
+			// dispatch, like the entry slots: a missed later instance of a
+			// repeated layer keeps the previous instance's value.
+			slot, ok := c.queried.writeBackSlot(c.layer)
+			if !ok {
+				return nil, nil, fmt.Errorf("codegen: %s declares a write-back but no slot was planned", c.layer.DisplayName())
+			}
+			insns = append(insns, emitFieldLoad(r4Anchor(), wb.ParentByteOff, asm.Byte)...)
+			insns = append(insns, asm.StoreMem(asm.R10, slot, asm.R3, asm.DWord))
+		}
 		if c.layer.NeedsRuntimeOffset {
 			// Independent of the single-shared bpfLoopCtxLayerEntrySlot
 			// above (which the next layer's dispatch overwrites): store
@@ -391,13 +406,48 @@ func (c *pmCtx) emitState(stateIdx int) (asm.Instructions, asm.Instructions, err
 // pmHasWriteBack reports whether any aux header of the protocol writes
 // back into the primary header (`@kunai_writeback`), in which case bracket
 // predicates must wait for the walk to finish (D-032).
-func pmHasWriteBack(spec *vocab.ProtocolSpec) bool {
+func pmHasWriteBack(spec *vocab.ProtocolSpec) bool { return writeBackOf(spec) != nil }
+
+// writeBackOf returns the write-back an aux header of the protocol
+// declares, nil when there is none. The loader admits one target byte per
+// protocol (ipv6.next_header), so the first hit is the only one.
+func writeBackOf(spec *vocab.ProtocolSpec) *vocab.WriteBackSpec {
+	if spec == nil {
+		return nil
+	}
 	for _, a := range spec.HeaderAnnotations {
 		if a != nil && a.WriteBack != nil {
-			return true
+			return a.WriteBack
 		}
 	}
-	return false
+	return nil
+}
+
+// bindWriteBackSlot points a variable tail's write-back at this layer's
+// slot; a tail without a write-back is left alone.
+func (c *pmCtx) bindWriteBackSlot(vt *variableTailSkip) error {
+	if vt.WriteBack == nil {
+		return nil
+	}
+	slot, ok := c.queried.writeBackSlot(c.layer)
+	if !ok {
+		return fmt.Errorf("codegen: %s declares a write-back but no slot was planned", c.layer.DisplayName())
+	}
+	vt.WriteBack.Slot = slot
+	return nil
+}
+
+// entryAnchor is the R4 anchor of a predicate that runs with R4 at the
+// layer's entry, carrying the write-back overlay when the layer has one
+// so a read of the written-back byte comes from the slot (D-032).
+func (c *pmCtx) entryAnchor() layerAnchor {
+	a := r4Anchor()
+	if wb := writeBackOf(c.spec); wb != nil {
+		if slot, ok := c.queried.writeBackSlot(c.layer); ok {
+			a.WriteBack, a.WriteBackOff, a.WriteBackSlot = true, wb.ParentByteOff, slot
+		}
+	}
+	return a
 }
 
 // splitPredicates divides the layer's bracket predicates by when they can
@@ -464,7 +514,7 @@ func (c *pmCtx) emitSelfEdgeDispatch() (asm.Instructions, error) {
 		return nil, err
 	}
 	parentEntryIsRange := precedingLayersLeaveR4Range(c.all, c.layerIdx) || c.iter >= 2
-	return genDispatch(via, c.layer, hs, c.r4IsRange, parentEntryIsRange, c.dispatchFail)
+	return genDispatch(via, c.layer, hs, c.queried, c.r4IsRange, parentEntryIsRange, c.dispatchFail)
 }
 
 // emitStateBody emits one state's extracts + transition. When the
@@ -548,6 +598,9 @@ func (c *pmCtx) emitStateBody(state *vocab.ParseState, stateIdx int, isEntry boo
 		insns = append(insns, emitAdvance(hs))
 		fixedHs += hs
 		if vt, ok := variableTailFor(c.spec, ex.HeaderName); ok && !c.deferPrimaryTail(ex.HeaderName) {
+			if err := c.bindWriteBackSlot(&vt); err != nil {
+				return nil, nil, err
+			}
 			if state.Trans.Kind == vocab.TransSelect {
 				// Inline ABI: R0/R1 are scratch_start/end, R4 is the
 				// running offset (offsetBase). Use R3 as the load

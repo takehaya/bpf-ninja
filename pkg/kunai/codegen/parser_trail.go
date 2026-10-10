@@ -21,11 +21,13 @@ import (
 //
 // WriteBack opts into IPv6's "next_header" carry-forward pattern:
 // after each ext-header iteration the codegen copies a byte from
-// the just-extracted header back into the parent layer's header
-// (e.g. ipv6.next_header) so the next layer's dispatch reads the
-// final inner protocol — the parent field still reflects the
-// *first* ext type otherwise. This is a standard XDP rewrite
-// pattern (verifier-OK against PTR_TO_MAP_VALUE).
+// the just-extracted header into the layer's write-back slot
+// (stackPlan.writeBack), the value the next layer's dispatch and
+// every read of the parent field (e.g. ipv6.next_header) use; the
+// parent field in the packet still reflects the *first* ext type.
+// The packet itself is never written: the native XDP host runs the
+// filter on the live packet, and the spec models the write-back as
+// an overlay on the instance, not as a change to the bytes (D-032).
 type variableTailSkip struct {
 	LenFieldByteOff int
 	Scale           int
@@ -47,6 +49,9 @@ type variableTailSkip struct {
 type writeBackOp struct {
 	SourceByteOff int // byte offset in the just-extracted header
 	ParentByteOff int // byte offset in the parent layer's header
+	// Slot is the R10-relative stack slot the byte is written to, bound
+	// by the layer's emitter (pmCtx.bindWriteBackSlot); 0 means unbound.
+	Slot int16
 }
 
 // variableTailFor lowers a vocab.HeaderAnnotations entry into the
@@ -105,11 +110,10 @@ type trailEnv struct {
 	lenReg       asm.Register // holds the variable advance amount
 	addrReg      asm.Register // scratch for address arithmetic
 
-	// loadLayerEntry loads the parent layer's entry offset into
-	// lenReg (used as a temporary). Differs between inline (stack
-	// slot anchored on R10) and callback (struct field on the ctx
-	// pointer in R2) so the caller supplies the load.
-	loadLayerEntry asm.Instructions
+	// storeSlot stores val into the main frame's stack slot `slot`.
+	// Differs between inline (R10-relative) and callback (through the
+	// ctx pointer in R2, mainStackOffsetFromCb) so the caller supplies it.
+	storeSlot func(slot int16, val asm.Register) asm.Instruction
 
 	// storeOffsetBack persists offset back to the bpf_loop ctx in
 	// the callback path; empty for inline.
@@ -150,17 +154,15 @@ func emitVariableTrail(fixedHs int, vt variableTailSkip, env trailEnv, failLabel
 		// Source byte lives at R0 + R4 + (-fixedHs + SourceByteOff).
 		// R4 is post-advance so the offset is negative — fold to
 		// non-negative scalar (in lenReg, overwritten by the load),
-		// then bound-load into addrReg. The subsequent loadLayerEntry
-		// reuses lenReg for the writeback target offset.
+		// then bound-load into addrReg and keep it in the layer's
+		// write-back slot; nothing is written into the packet.
+		if wb.Slot >= 0 || env.storeSlot == nil {
+			return nil, fmt.Errorf("codegen: write-back into parent byte %d has no stack slot bound (pmCtx.bindWriteBackSlot)", wb.ParentByteOff)
+		}
 		wbByteOff := int32(-fixedHs + wb.SourceByteOff)
 		insns = append(insns, foldOffsetIntoScalar(env.lenReg, env.offset, wbByteOff, failLabel)...)
 		insns = append(insns, boundedScalarLoad(env.addrReg, env.scratchStart, env.lenReg, env.scratchEnd, asm.Byte, failLabel)...)
-		insns = append(insns, env.loadLayerEntry...)
-		insns = append(insns,
-			asm.JGT.Imm(env.lenReg, int32(ScratchBufSize-wb.ParentByteOff-1), failLabel),
-			asm.Add.Reg(env.lenReg, env.scratchStart),
-			asm.StoreMem(env.lenReg, int16(wb.ParentByteOff), env.addrReg, asm.Byte),
-		)
+		insns = append(insns, env.storeSlot(wb.Slot, env.addrReg))
 	}
 
 	// Length byte lives at R0 + R4 + (-fixedHs + LenFieldByteOff).
@@ -234,8 +236,8 @@ func emitVariableTrailInline(fixedHs int, vt variableTailSkip, failLabel string)
 		scratchEnd:   asm.R1,
 		lenReg:       asm.R5,
 		addrReg:      asm.R3,
-		loadLayerEntry: asm.Instructions{
-			asm.LoadMem(asm.R5, asm.R10, bpfLoopCtxLayerEntrySlot, asm.DWord),
+		storeSlot: func(slot int16, val asm.Register) asm.Instruction {
+			return asm.StoreMem(asm.R10, slot, val, asm.DWord)
 		},
 	}, failLabel)
 }
@@ -251,8 +253,8 @@ func emitVariableTrailCallback(fixedHs int, vt variableTailSkip, breakLabel stri
 		scratchEnd:   asm.R5,
 		lenReg:       asm.R1,
 		addrReg:      asm.R0,
-		loadLayerEntry: asm.Instructions{
-			asm.LoadMem(asm.R1, asm.R2, bpfLoopCbCtxLayerEntryField, asm.DWord),
+		storeSlot: func(slot int16, val asm.Register) asm.Instruction {
+			return asm.StoreMem(asm.R2, mainStackOffsetFromCb(slot), val, asm.DWord)
 		},
 		storeOffsetBack: asm.Instructions{
 			asm.StoreMem(asm.R2, bpfLoopCbCtxOffsetField, asm.R3, asm.DWord),

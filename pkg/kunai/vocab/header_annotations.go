@@ -701,12 +701,12 @@ func resolveHeaderWritebackTargets(specs map[string]*ProtocolSpec) error {
 			if !ok {
 				return fmt.Errorf("%s: @kunai_writeback on %q references unknown protocol %q", spec.Source, hname, wb.ParentProto)
 			}
-			bitOff, _, found := BitOffsetIn(parent.Fields, wb.ParentField)
+			bitOff, bits, found := BitOffsetIn(parent.Fields, wb.ParentField)
 			if !found {
 				return fmt.Errorf("%s: @kunai_writeback on %q references unknown field %q in protocol %q", spec.Source, hname, wb.ParentField, wb.ParentProto)
 			}
-			if bitOff%8 != 0 {
-				return fmt.Errorf("%s: @kunai_writeback on %q targets non-byte-aligned field %s.%s (bit offset %d)", spec.Source, hname, wb.ParentProto, wb.ParentField, bitOff)
+			if bitOff%8 != 0 || bits != 8 {
+				return fmt.Errorf("%s: @kunai_writeback on %q targets %s.%s, which is not a byte-aligned 8-bit field (bit offset %d, %d bits); the written byte is kept whole in a stack slot", spec.Source, hname, wb.ParentProto, wb.ParentField, bitOff, bits)
 			}
 			wb.ParentByteOff = bitOff / 8
 			wb.Resolved = true

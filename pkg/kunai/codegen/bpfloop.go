@@ -44,10 +44,10 @@ var chainCbProto = &btf.FuncProto{
 //	[-192..-184) scratchEnd   u64   PTR_TO_MAP_VALUE + snap length
 //	[-184..-176) layerEntry   u64   scalar offset of the current
 //	                                parser-machine layer's first byte;
-//	                                used by IPv6 ext-chain write-back.
-//	                                Unused by chain (mpls+, vlan+)
-//	                                bpf_loop calls — they leave the
-//	                                slot as-is.
+//	                                the next layer's dispatch anchors
+//	                                its field read on it. Unused by
+//	                                chain (mpls+, vlan+) bpf_loop calls
+//	                                — they leave the slot as-is.
 //
 // The callback reads each via its second arg (R2 = &ctx at
 // stack[-208]). bpfLoopCbCtx*Field are the offsets the callback uses
@@ -270,7 +270,7 @@ func genBpfLoopChain(layer *ir.LayerInstance, index int, all []*ir.LayerInstance
 		mainInsns = append(mainInsns, asm.Mov.Reg(asm.R0, asm.R0).WithSymbol(chainDone))
 	}
 	if absentLabel != chainDone {
-		mainInsns, err = withAbsentEdge(mainInsns, absentLabel, index, all)
+		mainInsns, err = withAbsentEdge(mainInsns, absentLabel, index, all, qo)
 		if err != nil {
 			return nil, nil, err
 		}

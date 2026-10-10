@@ -84,6 +84,17 @@ func (qo queriedOptions) validSlot(layer *ir.LayerInstance) (int16, bool) {
 	return slot, ok
 }
 
+// writeBackSlot is the slot a layer's parser walk writes the written-back
+// primary-header byte to (@kunai_writeback, D-032); the layer's next
+// dispatch and every read of that byte use it instead of the packet.
+func (qo queriedOptions) writeBackSlot(layer *ir.LayerInstance) (int16, bool) {
+	if qo.plan == nil {
+		return 0, false
+	}
+	slot, ok := qo.plan.writeBack[layer]
+	return slot, ok
+}
+
 // readsAltMember reports whether any matched-member slot is planned,
 // i.e. whether a where atom can need a member guard.
 func (qo queriedOptions) readsAltMember() bool {

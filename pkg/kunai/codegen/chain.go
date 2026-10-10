@@ -83,7 +83,7 @@ func genStaticChain(layer *ir.LayerInstance, index int, all []*ir.LayerInstance,
 			return nil, err
 		}
 		insns = append(insns, overRun...)
-		return chainLanding(insns, layer, optional, chainDone, absentLabel, index, all)
+		return chainLanding(insns, layer, optional, chainDone, absentLabel, index, all, qo)
 	}
 
 	selfConst := layer.Spec.SelectDispatchConst(layer.Spec.Name)
@@ -136,7 +136,7 @@ func genStaticChain(layer *ir.LayerInstance, index int, all []*ir.LayerInstance,
 		if i >= layer.RangeMin {
 			target = chainDone
 		}
-		dispatch, err := genDispatch(selfLayer, layer, hs, selfRange, selfRange, target)
+		dispatch, err := genDispatch(selfLayer, layer, hs, qo, selfRange, selfRange, target)
 		if err != nil {
 			return nil, err
 		}
@@ -160,7 +160,7 @@ func genStaticChain(layer *ir.LayerInstance, index int, all []*ir.LayerInstance,
 		return nil, err
 	}
 	insns = append(insns, overRun...)
-	return chainLanding(insns, layer, optional, chainDone, absentLabel, index, all)
+	return chainLanding(insns, layer, optional, chainDone, absentLabel, index, all, qo)
 }
 
 // genOptionalMachineLayer lowers `?` / `{0,1}` on a parser-machine layer:
@@ -190,7 +190,7 @@ func genOptionalMachineLayer(layer *ir.LayerInstance, index int, all []*ir.Layer
 	insns := append(asm.Instructions{}, sentinel...)
 	insns = append(insns, body...)
 	if absentLabel != chainDone {
-		insns, err = withAbsentEdge(insns, absentLabel, index, all)
+		insns, err = withAbsentEdge(insns, absentLabel, index, all, qo)
 		return insns, callbacks, err
 	}
 	// R0 (the scratch window) is live on both paths; R3 is not after the
@@ -261,7 +261,7 @@ func genStaticMachineChain(layer *ir.LayerInstance, index int, all []*ir.LayerIn
 		insns = append(insns, asm.Mov.Reg(asm.R0, asm.R0).WithSymbol(chainDone))
 	}
 	if absentLabel != chainDone {
-		insns, err = withAbsentEdge(insns, absentLabel, index, all)
+		insns, err = withAbsentEdge(insns, absentLabel, index, all, qo)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -276,12 +276,12 @@ func genStaticMachineChain(layer *ir.LayerInstance, index int, all []*ir.LayerIn
 // optional chain the iteration-0 peek miss lands there too, unless the
 // absent edge has its own block that dispatches the next layer against
 // the grandparent (D-034).
-func chainLanding(insns asm.Instructions, layer *ir.LayerInstance, optional bool, chainDone, absentLabel string, index int, all []*ir.LayerInstance) (asm.Instructions, error) {
+func chainLanding(insns asm.Instructions, layer *ir.LayerInstance, optional bool, chainDone, absentLabel string, index int, all []*ir.LayerInstance, qo queriedOptions) (asm.Instructions, error) {
 	if (layer.RangeMax > 1 && layer.RangeMin < layer.RangeMax) || (optional && absentLabel == chainDone) {
 		insns = append(insns, landingNoop(chainDone))
 	}
 	if optional && absentLabel != chainDone {
-		return withAbsentEdge(insns, absentLabel, index, all)
+		return withAbsentEdge(insns, absentLabel, index, all, qo)
 	}
 	return insns, nil
 }
