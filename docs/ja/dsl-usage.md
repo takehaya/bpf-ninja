@@ -143,7 +143,10 @@ IPv6 アドレス (`Int<128>`) の算術は `+` と `-` だけです。2⁶⁴ �
 ```
 eth/ipv6/tcp where ipv6.src + int<128>(18446744073709551616) == ipv6.dst
 eth/ipv6/srv6/tcp where srv6.segments[0].addr + 1 == srv6.segments[1].addr
+eth/ipv6/srv6/tcp where srv6.segments[1].addr[64:128] == 2
 ```
+
+segment のような 16 byte の aux field も、primary の `ipv6.dst[64:128]` と同じく `[0:64]` や `[64:128]` の slice で 64 bit の値として読めます。静的 index でも動的 index でも同じで、bracket predicate の中でも使えます。ただし bracket predicate の整数リテラルは 2^31 未満に限られるので、`0xfc00000000000000` のような大きな値との比較は where 節で書きます。
 
 算術ネストは MVP では 16 段までです。それを超えると `ErrNotImplemented` になります。上限は `maxArithDepth` 定数で管理されています。比較の両辺がともに 16 段のときも、片方の値を退避する場所が無いので `ErrNotImplemented` です。`Bool == Bool` の内側では、外側の真偽値の退避に 1 段ずつ使うので、その分だけ浅くなります。
 

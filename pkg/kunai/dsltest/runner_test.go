@@ -1560,3 +1560,43 @@ func TestAuxStackSrv6IndexAtOrPastCount(t *testing.T) {
 	brEQ.MustMatch(t, two(), "bracket: segments[1] == fc00::2")
 	brEQ.MustReject(t, one, "bracket: segments[1] absent")
 }
+
+// TestAuxStackSrv6StaticIndexSlice pins 64-bit slices of a segment behind
+// a static index, in a where clause and in a bracket predicate: the low
+// half of fc00::2 is 2, the high half of fc00::1 is 0xfc00 << 48, and an
+// entry past the count is absent for the sliced read too (D-031).
+func TestAuxStackSrv6StaticIndexSlice(t *testing.T) {
+	two := BuildSRv6(t, SRv6Opts{Segments: []net.IP{net.ParseIP("fc00::1"), net.ParseIP("fc00::2")}, InnerNextHeader: 6})
+	one := BuildSRv6(t, SRv6Opts{Segments: []net.IP{net.ParseIP("fc00::1")}, InnerNextHeader: 6})
+
+	low := New(t, "eth/ipv6/srv6/tcp where srv6.segments[1].addr[64:128] == 2")
+	low.MustMatch(t, two, "low half of segments[1] (fc00::2) is 2")
+	New(t, "eth/ipv6/srv6/tcp where srv6.segments[1].addr[64:128] == 3").MustReject(t, two, "low half is not 3")
+	New(t, "eth/ipv6/srv6/tcp where srv6.segments[0].addr[0:64] == 0xfc00000000000000").MustMatch(t, two, "high half of segments[0]")
+	New(t, "eth/ipv6/srv6/tcp where srv6.segments[1].addr[64:128] == srv6.segments[0].addr[64:128] + 1").MustMatch(t, two, "sliced halves as arithmetic operands")
+	New(t, "eth/ipv6/srv6/tcp where srv6.segments[1].addr[64:128] != 2").MustReject(t, one, "one segment: segments[1] is absent, != is false (D-031)")
+	br := New(t, "eth/ipv6/srv6[segments[1].addr[64:128] == 2]/tcp")
+	br.MustMatch(t, two, "bracket: low half of segments[1]")
+	br.MustReject(t, one, "bracket: segments[1] absent")
+
+	// Ordered compares swap to host order before comparing: 2 is 2, not
+	// 0x0200000000000000.
+	New(t, "eth/ipv6/srv6/tcp where srv6.segments[1].addr[64:128] > 1").MustMatch(t, two, "ordered: 2 > 1")
+	New(t, "eth/ipv6/srv6/tcp where srv6.segments[1].addr[64:128] < 0x100").MustMatch(t, two, "ordered: 2 < 0x100 only in host order")
+	New(t, "eth/ipv6/srv6/tcp where srv6.segments[1].addr[64:128] > 2").MustReject(t, two, "ordered: 2 > 2 is false")
+	New(t, "eth/ipv6/srv6/tcp where srv6.segments[1].addr[64:128] > 1").MustReject(t, one, "ordered on an absent entry is false (D-031)")
+	New(t, "eth/ipv6/srv6[segments[1].addr[64:128] < 0x100]/tcp").MustMatch(t, two, "bracket ordered in host order")
+
+	// Narrow slices take the covering load plus a shift and mask; the
+	// last byte of fc00::12 is 0x12 = 0001 0010.
+	narrow := BuildSRv6(t, SRv6Opts{Segments: []net.IP{net.ParseIP("fc00::1"), net.ParseIP("fc00::12")}, InnerNextHeader: 6})
+	New(t, "eth/ipv6/srv6/tcp where srv6.segments[1].addr[96:128] == 0x12").MustMatch(t, narrow, "32-bit slice: the last word")
+	New(t, "eth/ipv6/srv6/tcp where srv6.segments[1].addr[96:128] == 0x13").MustReject(t, narrow, "32-bit slice mismatch")
+	New(t, "eth/ipv6/srv6/tcp where srv6.segments[1].addr[124:128] == 2").MustMatch(t, narrow, "low nibble of the last byte (mask)")
+	New(t, "eth/ipv6/srv6/tcp where srv6.segments[1].addr[120:124] == 1").MustMatch(t, narrow, "high nibble of the last byte (shift and mask)")
+	New(t, "eth/ipv6/srv6/tcp where srv6.segments[1].addr[120:124] == 2").MustReject(t, narrow, "high nibble mismatch")
+	New(t, "eth/ipv6/srv6/tcp where srv6.segments[1].addr[116:124] == 1").MustMatch(t, narrow, "a byte straddling two wire bytes")
+	brNarrow := New(t, "eth/ipv6/srv6[segments[1].addr[124:128] == 2]/tcp")
+	brNarrow.MustMatch(t, narrow, "bracket: low nibble")
+	brNarrow.MustReject(t, one, "bracket: low nibble of an absent entry")
+}

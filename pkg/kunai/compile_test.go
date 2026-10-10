@@ -1876,3 +1876,61 @@ func TestCompileFlagTriggerReadIsBounded(t *testing.T) {
 		}
 	}
 }
+
+// TestCompileAuxStaticIndexSlice pins that a bit-slice narrows a 16-byte
+// aux field behind a static stack index to a loadable window, as it does
+// for a primary ipv6 address and for a runtime index: the width check in
+// fieldRefByteOffset applies to the slice, not the field.
+func TestCompileAuxStaticIndexSlice(t *testing.T) {
+	runCompileExprCases(t, []string{
+		"eth/ipv6/srv6/tcp where srv6.segments[1].addr[64:128] == 2",
+		"eth/ipv6/srv6/tcp where srv6.segments[0].addr[0:64] == 0xfc00000000000000",
+		"eth/ipv6/srv6/tcp where srv6.segments[1].addr[64:128] + 1 == 3",
+		"eth/ipv6/srv6/tcp where srv6.segments[1].addr[64:128] == srv6.segments[0].addr[64:128] + 1",
+		"eth/ipv6/srv6[segments[0].addr[64:128] == 1]/tcp",
+	})
+	// A 65..127-bit slice still has no single-register load.
+	if _, err := compileForTest("eth/ipv6/srv6/tcp where srv6.segments[1].addr[0:96] == 1"); !errors.Is(err, codegen.ErrNotImplemented) {
+		t.Fatalf("96-bit slice of a segment: err = %v, want ErrNotImplemented", err)
+	}
+}
+
+// sidSlot8 is sidSlot with an 8-byte key slot: the shape a host declares
+// for a set keyed by half an address.
+type sidSlot8 struct{}
+
+func (sidSlot8) HasSet(name string) bool { return name == "sids" }
+func (sidSlot8) SlotFor(set, _ string) (off int16, size int, ok bool) {
+	if set == "sids" {
+		return -40, 8, true
+	}
+	return 0, 0, false
+}
+
+// TestCompileInSetSRv6SegmentSliceKey pins the in-set key a sliced segment
+// yields now that the static aux path admits slices: one 8-byte extraction
+// swapped to host order before the store, like the primary ipv6.dst[64:128].
+func TestCompileInSetSRv6SegmentSliceKey(t *testing.T) {
+	caps := codegen.Capabilities{Lang: codegen.LangCaps{SetSlots: sidSlot8{}}}
+	out, err := Compile("eth/ipv6/srv6[segments[0].addr[64:128] in @sids]", caps)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	if len(out.Extractions) != 1 || out.Extractions[0].StackOff != -40 || out.Extractions[0].StoreSize != 8 {
+		t.Fatalf("extractions = %+v, want one 8-byte key at -40", out.Extractions)
+	}
+	insns := out.Instructions()
+	swapped := false
+	for _, ins := range insns {
+		if ins.OpCode.Class().IsALU() && ins.OpCode.ALUOp() == asm.Swap && ins.Dst == asm.R3 {
+			swapped = true
+		}
+		if ins.Dst == asm.R10 && ins.OpCode.Class().IsStore() && int16(ins.Offset) == -40 {
+			if !swapped {
+				t.Fatalf("the key is stored before the host-order swap:\n%v", insns)
+			}
+			return
+		}
+	}
+	t.Fatalf("no store of the key at -40:\n%v", insns)
+}
