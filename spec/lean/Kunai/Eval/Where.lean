@@ -496,14 +496,12 @@ def evalWhere (c : Ctx) (st : State) (env : IterEnv) : Where → Except Stop Boo
     let b ← evalWhere c st env r
     pure (if op == .eq then a == b else a != b)
 
-/-- The most headers a layer can match (`layerMaxInstances` in Go): one for a
-plain or `?` layer, the upper bound of `{n,m}`, the protocol's `maxDepth` for
-an open bound (`+`, `*`, `{n,}`). -/
+/-- The most headers a layer can match (`layerMaxInstances` in Go): the upper
+bound of its quantifier (`quantBounds`), the protocol's `maxDepth` for an open
+bound (`+`, `*`, `{n,}`). This is the fuel `evalProtoLayer` iterates with, so
+the capture bound counts exactly the headers the chain can extract. -/
 def maxInstances (c : Ctx) (p : ProtoLayer) : Nat :=
-  match p.quant with
-  | .one | .opt => 1
-  | .range _ (some hi) => hi
-  | .plus | .star | .range _ none => ((c.V.proto? p.name).map (·.maxDepth)).getD 8
+  (quantBounds p.quant).2.getD (((c.V.proto? p.name).map (·.maxDepth)).getD 8)
 
 /-- D-039: the bytes `capture headers` keeps are a bound computed from the
 chain's shape, not the cursor: every protocol's fixed header, counted as

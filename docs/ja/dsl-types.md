@@ -1164,7 +1164,7 @@ eval-cap(cap(label+N, _), σ, P)         = (off(Λ[label]), min(off(...) + |labe
 hdrs(L̄)                 = Σ_{L ∈ L̄} hdrs(L)
 hdrs(proto(p, _, q, _)) = fixed(p) × inst(q)                     ; fixed(p) = p の固定ヘッダ長 (option / 拡張ヘッダは含まない)
 hdrs(alt(L̄))            = max_{L ∈ L̄} hdrs(L)
-inst(1) = inst(?) = 1,  inst({n,m}) = m,  inst(+) = inst(*) = inst({n,}) = MAX_DEPTH(p)
+inst(1) = inst(?) = 1,  inst({n,m}) = m,  inst(+) = inst(*) = inst({n,}) = m_chain(p)   ; §13.5 の m_chain (32 を超えると illTyped)
 eval-cap(cap(proto+N, _), σ, P)         = (off(layer_of(proto)), …)
 eval-cap(cap(absolute(N), _), σ, P)     = (0, min(N, |P|), …)
 eval-cap(cap(layer-target,_), σ, P)     = layer-instance のバイト範囲

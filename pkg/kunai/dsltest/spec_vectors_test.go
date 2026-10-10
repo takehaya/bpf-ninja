@@ -122,7 +122,8 @@ func runSpecVectors(t *testing.T, vectors []specVector) {
 				t.Logf("documented divergence (not asserted): %s; compile err=%v", v.Note, err)
 				return
 			}
-			if _, err := parser.Parse(v.Expr, "", nil); err != nil && v.Expected.Kind != "illTyped" {
+			parsed, err := parser.Parse(v.Expr, "", nil)
+			if err != nil && v.Expected.Kind != "illTyped" {
 				t.Fatalf("parse %q: %v", v.Expr, err)
 			}
 			out, err := kunai.Compile(v.Expr, caps)
@@ -147,7 +148,7 @@ func runSpecVectors(t *testing.T, vectors []specVector) {
 			if err != nil {
 				t.Fatalf("packet hex: %v", err)
 			}
-			checkHeadersCaptureBound(t, v, out, len(pkt))
+			checkCaptureBound(t, v, parsed, out, len(pkt))
 			if !root || (len(v.Sets) > 0 && !want) {
 				return
 			}

@@ -240,6 +240,23 @@ vector capHeadersQuantRange := {
 vector capHeadersQuantPlusClamped := {
   id := "cap-headers-quant-plus-clamped", ast := capHeaders [P "eth", Pq "mpls" .plus, P "ipv4", P "tcp"], packet := mpls1,
   expected := .accept [(0, 63)], note := "D-039: 14 + 8 * 4 + 20 + 20 = 86 (mpls maxDepth 8), clamped to the 63-byte frame" }
+def mplsLong : Packet := eth 0x8847 ++ mpls 5 1 ++ ipv4 6 ++ tcp 12345 80 ++ payload 30
+vector capHeadersQuantPlus := {
+  id := "cap-headers-quant-plus", ast := capHeaders [P "eth", Pq "mpls" .plus, P "ipv4", P "tcp"], packet := mplsLong,
+  expected := .accept [(0, 86)], note := "D-039: 14 + 8 * 4 + 20 + 20 on an 88-byte frame, mpls maxDepth 8 standing in for the open bound" }
+vector capHeadersQuantOpen := {
+  id := "cap-headers-quant-open", ast := capHeaders (mplsRange 1 none), packet := mplsLong,
+  expected := .accept [(0, 86)], note := "D-039: {1,} is bounded by maxDepth like +" }
+def altL3TCP : List Layer := [P "eth", .alt [{ name := "ipv4" }, { name := "ipv6" }], P "tcp"]
+vector capHeadersAltIPv6 := {
+  id := "cap-headers-alt-ipv6", ast := capHeaders altL3TCP, packet := ipv6TCP, expected := .accept [(0, 74)],
+  note := "D-039: the alternation counts its largest member (ipv6, 40)" }
+vector capHeadersAltIPv4 := {
+  id := "cap-headers-alt-ipv4", ast := capHeaders altL3TCP, packet := eth 0x0800 ++ ipv4 6 ++ tcp 12345 80 ++ payload 25,
+  expected := .accept [(0, 74)], note := "D-039: the same 74 when ipv4 matched; the frame is 79 bytes so nothing clamps" }
+vector capHeadersVxlan := {
+  id := "cap-headers-vxlan", ast := capHeaders [P "eth", P "ipv4", P "udp", P "vxlan", P "eth", P "ipv4", P "tcp"], packet := vxlanPkt,
+  expected := .accept [(0, 104)], note := "D-039: 14 + 20 + 8 + 8 + 14 + 20 + 20 through the tunnel" }
 vector capHeadersPlusOptions := {
   id := "cap-headers-plus-ipv4-options", ast := capHeaders chain3 (some 8), packet := ihl6Pkt, expected := .accept [(0, 62)],
   note := "D-039: headers+8 is the bound plus 8, whatever the cursor did" }
@@ -791,7 +808,8 @@ def whereVectors : List Vector := [
   actionEntry, actionHit, actionMiss, actionUnknown,
   predCmp, predCmpMiss, predInList, predInListMiss, predInRange, typPredInRangeWide, typPredCmpRange, predInRangeMiss, predNegative, predIPv4,
   capAll, capWhereFalse, capWhereTrue, capLabel, capAbsent, capPresent, capAltMemberPresent, capAltMemberAbsent, capAltMemberByName,
-  capHeadersIPv4Options, capHeadersTCPOptions, capHeadersQuantOpt, capHeadersQuantRange, capHeadersQuantPlusClamped, capHeadersPlusOptions,
+  capHeadersIPv4Options, capHeadersTCPOptions, capHeadersQuantOpt, capHeadersQuantRange, capHeadersQuantPlusClamped, capHeadersQuantPlus, capHeadersQuantOpen,
+  capHeadersAltIPv6, capHeadersAltIPv4, capHeadersVxlan, capHeadersPlusOptions,
   typUnknownProto, typNoDispatch, typNotInChain, typUnknownField, typFit, typLabelCollides, typLabelCollidesAlt, typLabelDuplicate, typFitArith, whereArithRight, whereArithRightMiss, typFitArithSibling, whereNegLitSibling, typWidthIPv6, typCIDRWidth,
   typPredIdent, typInSet, predInSetMember, predInSetMiss, typPredInSetWidth, predInSetSubByte, predInSetWindow, typPredInSetWindow, typPredInSetTwice, typPredInSetBudget, typPredInSetOptional, typPredInSetAlt, typAny, typExists, typAuxPath,
   arith128AddConst, arith128SubConst, arith128AddCarry, arith128AddWrap, arith128SubBorrow, arith128SubWrap, arith128AddMiss,

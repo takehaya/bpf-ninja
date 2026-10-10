@@ -1966,11 +1966,18 @@ func layerMaxInstances(l *ir.LayerInstance) (int, error) {
 		if l.RangeMax >= 0 {
 			return l.RangeMax, nil
 		}
-		return chainMaxIter(l)
 	case ast.QuantPlus, ast.QuantStar:
-		return chainMaxIter(l)
+	default:
+		return 1, nil
 	}
-	return 1, nil
+	// An open bound takes the protocol's chain depth. An alternation
+	// group has no protocol of its own (Spec is nil); its quantifier is
+	// refused later in the pipeline, so refuse here too instead of
+	// dereferencing it (capture sizing runs before that check).
+	if l.Spec == nil {
+		return 0, fmt.Errorf("%w: quantifier %s on an alternation group", ErrNotImplemented, l.Quant)
+	}
+	return chainMaxIter(l)
 }
 
 // uniformAltPrefixSize is the strict altReducer: every alt must agree

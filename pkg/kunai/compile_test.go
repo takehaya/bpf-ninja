@@ -577,6 +577,22 @@ func TestCompileBitSlice(t *testing.T) {
 	}
 }
 
+// TestCompileCaptureHeadersQuantifiedAltGroup: capture sizing runs before
+// the alternation-group quantifier is refused, and used to dereference the
+// group's nil Spec for an open bound. It must come back as an error.
+func TestCompileCaptureHeadersQuantifiedAltGroup(t *testing.T) {
+	for _, expr := range []string{
+		"eth/(vlan|qinq)+/ipv4/tcp capture headers",
+		"eth/(vlan|qinq)*/ipv4/tcp capture headers",
+		"eth/(vlan|qinq){1,}/ipv4/tcp capture headers",
+		"eth/(vlan|qinq)+/ipv4/tcp capture ipv4+8",
+	} {
+		if _, err := compileForTest(expr); !errors.Is(err, codegen.ErrNotImplemented) {
+			t.Errorf("Compile(%q) = %v; want ErrNotImplemented", expr, err)
+		}
+	}
+}
+
 func TestCompileBitSliceRejected(t *testing.T) {
 	// Slice-related resolver rejections that survive the F13
 	// non-aligned support: out-of-field-width, empty range,
