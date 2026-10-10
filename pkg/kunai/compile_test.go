@@ -1837,10 +1837,12 @@ func TestOptionRegionPolicyCompiles(t *testing.T) {
 // back into the just-passed primary header through offsetBase, which is
 // a range scalar behind ipv4's IHL, and a negative LDX through a freshly
 // built packet pointer is rejected on PTR_TO_PACKET (native XDP). The
-// bounded idiom folds the offset into a scalar, checks the end pointer
-// at `ptr + 1` and loads `[ptr - 1]`: the test locates the C-flag mask
-// (the first trigger) and requires that shape right before it, instead
-// of the unbounded `R5 = R0 + R4; [R5 - 4]`.
+// bounded idiom checks the end pointer at `ptr + 1` and loads `[ptr - 1]`
+// through the same register: the test locates the C-flag mask (the first
+// trigger), takes the nearest load before it as the flag-byte read and
+// requires that shape, with the reject label on the check (a bounds
+// failure after the dispatch matched rejects, also under `?`, D-005).
+// Register names and any moves in between are not pinned.
 func TestCompileFlagTriggerReadIsBounded(t *testing.T) {
 	for _, expr := range []string{
 		"eth/ipv4/gre/ipv4/tcp",
@@ -1858,23 +1860,19 @@ func TestCompileFlagTriggerReadIsBounded(t *testing.T) {
 				break
 			}
 		}
-		if mask < 4 {
+		if mask < 2 {
 			t.Fatalf("%s: C-flag mask not found", expr)
 		}
-		// ... JGT R3, R1 ; LDX.B R3, [R3-1] ; MOV R5, R3 ; MOV R3, R5 ; AND R3, 0x80
-		got := insns[mask-4 : mask]
-		want := asm.Instructions{
-			asm.JGT.Reg(asm.R3, asm.R1, "dsl_reject"),
-			asm.LoadMem(asm.R3, asm.R3, -1, asm.Byte),
-			asm.Mov.Reg(asm.R5, asm.R3),
-			asm.Mov.Reg(asm.R3, asm.R5),
+		load := mask - 1
+		for load > 0 && !(insns[load].OpCode.Class() == asm.LdXClass && insns[load].OpCode.Mode() == asm.MemMode) {
+			load--
 		}
-		for i := range want {
-			g, w := got[i], want[i]
-			// The JGT's offset is its (unresolved) jump target; skip it.
-			if g.OpCode != w.OpCode || g.Dst != w.Dst || g.Src != w.Src || (i != 0 && g.Offset != w.Offset) {
-				t.Fatalf("%s: flag byte read before the C mask is\n%v\nwant the bounded idiom\n%v", expr, got, want)
-			}
+		ld, chk := insns[load], insns[load-1]
+		ptr := ld.Src
+		okLoad := ld.OpCode == asm.LoadMemOp(asm.Byte) && ld.Dst == ptr && ld.Offset == -1
+		okCheck := chk.OpCode == asm.JGT.Op(asm.RegSource) && chk.Dst == ptr && chk.Src == asm.R1 && chk.Reference() == "dsl_reject"
+		if !okLoad || !okCheck {
+			t.Fatalf("%s: flag byte read is\n%v\n%v\nwant `JGT ptr, R1 -> dsl_reject` then `LDX.B ptr, [ptr-1]` (bounded idiom)", expr, chk, ld)
 		}
 	}
 }

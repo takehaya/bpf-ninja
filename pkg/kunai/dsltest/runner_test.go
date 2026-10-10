@@ -1317,6 +1317,21 @@ func TestGREFlags(t *testing.T) {
 	}
 }
 
+// TestGREFlagsTruncatedWords puts gre last so only its own per-trigger
+// bounds checks can reject a flag word that is claimed but missing; with
+// an inner layer behind gre that layer's bounds check masks them. eth 14
+// + ipv4 20 + gre 4 = 38: C at 38, K at 42, S at 46, inner at 50.
+func TestGREFlagsTruncatedWords(t *testing.T) {
+	r := New(t, "eth/ipv4/gre")
+	all := BuildGRE(t, GREOpts{HasChecksum: true, HasKey: true, HasSequence: true, Key: 1, Sequence: 2})
+	key := BuildGRE(t, GREOpts{HasKey: true, Key: 1})
+	r.MustMatch(t, all[:50], "C, K and S present, nothing after them")
+	r.MustReject(t, key[:38], "K claimed, the key word missing")
+	r.MustReject(t, all[:42], "C, K and S claimed, only C present")
+	r.MustReject(t, all[:46], "C, K and S claimed, S missing")
+	r.MustReject(t, all[:49], "C, K and S claimed, S one byte short")
+}
+
 // TestCaptureToLayerLoads compiles a chain that captures up to a
 // labeled inner layer. Capture is host-side (the compiled BPF only
 // emits the kunai filter; the host wrapper consumes Output.Capture
