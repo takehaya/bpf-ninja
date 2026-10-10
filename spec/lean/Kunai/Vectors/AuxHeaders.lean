@@ -489,6 +489,16 @@ vector srv6OptDynamicLast := {
   id := "srv6-opt-segments-dynamic-last", ast := { layers := [P "eth", P "ipv6", Pq "srv6" .opt, P "tcp"], cond := some (.litCmp segLeft .ne (.ipv6 s1)) },
   packet := srv6Pkt 1 [s1, s2] (segsLeft := 1), expected := .accept [] }
 def segLow (i : Nat) : FieldPath := ⟨[("srv6", none), ("segments", some (.nat i)), ("addr", some (.slice 64 128))]⟩
+def segHigh (i : Nat) : FieldPath := ⟨[("srv6", none), ("segments", some (.nat i)), ("addr", some (.slice 0 64))]⟩
+vector srv6StaticSliceHigh := {
+  id := "srv6-segments-static-slice-high", ast := { layers := srv6L, cond := some (cmp (.field (segHigh 0)) .eq (k 0xfc00000000000000)) },
+  packet := srv6Two, expected := .accept [], note := "the high 64 bits of segments[0] (fc00::1)" }
+vector srv6StaticSliceArith := {
+  id := "srv6-segments-static-slice-arith", ast := { layers := srv6L, cond := some (cmp (.field (segLow 1)) .eq (.bin .add (.field (segLow 0)) (k 1))) },
+  packet := srv6Two, expected := .accept [], note := "sliced halves as arithmetic operands: low(fc00::2) == low(fc00::1) + 1" }
+vector srv6StaticSliceNibble := {
+  id := "srv6-segments-static-slice-nibble", ast := { layers := srv6L, cond := some (cmp (.field ⟨[("srv6", none), ("segments", some (.nat 1)), ("addr", some (.slice 124 128))]⟩) .eq (k 2)) },
+  packet := srv6Two, expected := .accept [], note := "a sub-byte slice of a segment: the low nibble of fc00::2 is 2" }
 vector srv6StaticSlice := {
   id := "srv6-segments-static-slice", ast := { layers := srv6L, cond := some (cmp (.field (segLow 1)) .eq (k 2)) },
   packet := srv6Two, expected := .accept [], note := "the low 64 bits of segments[1] (fc00::2) behind a static index" }
@@ -507,6 +517,9 @@ vector srv6BracketIndex := {
 vector srv6BracketSlice := {
   id := "srv6-segments-bracket-slice", ast := { layers := srv6Br (.cmp ⟨[("segments", some (.nat 1)), ("addr", some (.slice 64 128))]⟩ .eq (.int 2)) },
   packet := srv6Two, expected := .accept [] }
+vector srv6BracketSliceAbsent := {
+  id := "srv6-segments-bracket-slice-absent", ast := { layers := srv6Br (.cmp ⟨[("segments", some (.nat 1)), ("addr", some (.slice 64 128))]⟩ .ne (.int 2)) },
+  packet := srv6Pkt 0 [s1], expected := .reject, note := "D-031 in a bracket: the sliced read of an entry that was not extracted is false, for != too" }
 vector srv6OverCap := {
   id := "srv6-over-capacity", ast := { layers := srv6L }, packet := srv6Pkt 8 (List.replicate 9 s1), expected := .accept [],
   note := "9 segments, capacity 8: the walk keeps 8, steps over the 9th inside the declared region, and tcp follows" }
@@ -731,7 +744,7 @@ def auxVectors : List Vector := [
   ipv6Hbh, ipv6TwoExts, ipv6ExtLong, ipv6ExtTooLong, ipv6ExtsIndex, ipv6ExtsIndex1, ipv6ExtsIndexAfterLong, ipv6ExtsAnyAfterLong, ipv6ExtsDynamicLong, ipv6ExtsDynamicLongSecond, ipv6ExtsDynamicLongAbsent, ipv6ExtsDynamicLongLast, ipv6ExtsDynamicLongLastMiss, ipv6ExtsDynamicLongBeyond, ipv6ExtsDynamicLongSlot, ipv6ExtsDynamicLongSlotAbsent,
   ipv6ExtsBracket, ipv6ExtsBracketAbsent, ipv6ExtsBracketLong, ipv6ExtsBracketDynamic, ipv6ExtsBracketIter, ipv6ExtsBracketInAbsent, ipv6ExtsBracketInLong, ipv6ExtsSliceLong, ipv6ExtsBracketSliceLong, gtpExtsBracket, gtpExtsBracketAbsent, gtpExtsBracketNone, gtpExtsBracketMixed, gtpExtsBracketMixedMiss, ipv6ExtsIndexAbsent,
   ipv6NextHeaderWhere, ipv6NextHeaderBracket, altIPv6MemberWriteBack, altIPv6MemberWriteBackWhere, altIPv6MemberWriteBackMiss, ipv6FiveExts, ipv6SixExts, ipv6AnyExts, ipv6AllExts,
-  srv6TruncatedFails, typSrv6NoValid, geneveVersionOne, srv6SegWideLit, srv6Chain, srv6Static, srv6Dynamic, srv6Any, srv6All, srv6AllCidr, srv6IndexAbsent, srv6DynamicAtCount, srv6DynamicLast, srv6OptDynamicAtCount, srv6OptDynamicLast, srv6BracketIndexAbsent, srv6BracketIndex, srv6StaticSlice, srv6StaticSliceAbsent, srv6BracketSlice, srv6OverCap, srv6OverCapAnyKept, srv6OverCapAnyDropped, srv6OverCapAll, srv6OverCapNotAll,
+  srv6TruncatedFails, typSrv6NoValid, geneveVersionOne, srv6SegWideLit, srv6Chain, srv6Static, srv6Dynamic, srv6Any, srv6All, srv6AllCidr, srv6IndexAbsent, srv6DynamicAtCount, srv6DynamicLast, srv6OptDynamicAtCount, srv6OptDynamicLast, srv6BracketIndexAbsent, srv6BracketIndex, srv6StaticSlice, srv6StaticSliceAbsent, srv6StaticSliceHigh, srv6StaticSliceArith, srv6StaticSliceNibble, srv6BracketSlice, srv6BracketSliceAbsent, srv6OverCap, srv6OverCapAnyKept, srv6OverCapAnyDropped, srv6OverCapAll, srv6OverCapNotAll,
   srv6OverCapIndex, srv6OverCapLastEntry, srv6AtCapAll, srv6PastScratch, srv6TenSegs, srv6TwelveSegs, srv6OverstatedLastEntry,
   srv6OverCapAllOrTrue, srv6AbsentAllTrue, srv6AtCap,
   gtpEightExts, gtpNineExts, gtpTenExts, gtpPlain, gtpOptExists, gtpOptAbsent, gtpOptField, gtpOptFieldAbsent, gtpExtDynamicIndex, gtpExtLongFirst, gtpExtLengthZero, gtpExtStack,

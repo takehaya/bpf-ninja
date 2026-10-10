@@ -293,7 +293,8 @@ func (pc *predCtx) dispatchDone(l *ir.LayerInstance) bool {
 // to be extracted as raw wire bytes, and ok=true when the field is one:
 // a primary-header field (ipv6.dst) or a static aux-stack element
 // (srv6.segments[N].addr). It is the width-relaxed 128-bit sibling of
-// fieldRefByteOffset (which caps aux/primary fields at 8 bytes). ok=false
+// fieldRefByteOffset (which caps unsliced aux/primary fields at 8 bytes;
+// a slice narrows a 16-byte field to a window it loads). ok=false
 // means "not a 16-byte field" (the caller falls back to the <=8 path); a
 // non-nil error means a 16-byte field that cannot be extracted (a
 // non-byte-aligned or dynamic-index aux stack).

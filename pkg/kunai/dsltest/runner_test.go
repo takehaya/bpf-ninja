@@ -1578,4 +1578,25 @@ func TestAuxStackSrv6StaticIndexSlice(t *testing.T) {
 	br := New(t, "eth/ipv6/srv6[segments[1].addr[64:128] == 2]/tcp")
 	br.MustMatch(t, two, "bracket: low half of segments[1]")
 	br.MustReject(t, one, "bracket: segments[1] absent")
+
+	// Ordered compares swap to host order before comparing: 2 is 2, not
+	// 0x0200000000000000.
+	New(t, "eth/ipv6/srv6/tcp where srv6.segments[1].addr[64:128] > 1").MustMatch(t, two, "ordered: 2 > 1")
+	New(t, "eth/ipv6/srv6/tcp where srv6.segments[1].addr[64:128] < 0x100").MustMatch(t, two, "ordered: 2 < 0x100 only in host order")
+	New(t, "eth/ipv6/srv6/tcp where srv6.segments[1].addr[64:128] > 2").MustReject(t, two, "ordered: 2 > 2 is false")
+	New(t, "eth/ipv6/srv6/tcp where srv6.segments[1].addr[64:128] > 1").MustReject(t, one, "ordered on an absent entry is false (D-031)")
+	New(t, "eth/ipv6/srv6[segments[1].addr[64:128] < 0x100]/tcp").MustMatch(t, two, "bracket ordered in host order")
+
+	// Narrow slices take the covering load plus a shift and mask; the
+	// last byte of fc00::12 is 0x12 = 0001 0010.
+	narrow := BuildSRv6(t, SRv6Opts{Segments: []net.IP{net.ParseIP("fc00::1"), net.ParseIP("fc00::12")}, InnerNextHeader: 6})
+	New(t, "eth/ipv6/srv6/tcp where srv6.segments[1].addr[96:128] == 0x12").MustMatch(t, narrow, "32-bit slice: the last word")
+	New(t, "eth/ipv6/srv6/tcp where srv6.segments[1].addr[96:128] == 0x13").MustReject(t, narrow, "32-bit slice mismatch")
+	New(t, "eth/ipv6/srv6/tcp where srv6.segments[1].addr[124:128] == 2").MustMatch(t, narrow, "low nibble of the last byte (mask)")
+	New(t, "eth/ipv6/srv6/tcp where srv6.segments[1].addr[120:124] == 1").MustMatch(t, narrow, "high nibble of the last byte (shift and mask)")
+	New(t, "eth/ipv6/srv6/tcp where srv6.segments[1].addr[120:124] == 2").MustReject(t, narrow, "high nibble mismatch")
+	New(t, "eth/ipv6/srv6/tcp where srv6.segments[1].addr[116:124] == 1").MustMatch(t, narrow, "a byte straddling two wire bytes")
+	brNarrow := New(t, "eth/ipv6/srv6[segments[1].addr[124:128] == 2]/tcp")
+	brNarrow.MustMatch(t, narrow, "bracket: low nibble")
+	brNarrow.MustReject(t, one, "bracket: low nibble of an absent entry")
 }
