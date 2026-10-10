@@ -264,6 +264,7 @@ Entries are never deleted; a rejected candidate stays in the log.
 - 推奨: (a)。範囲外 index は不在 → atom false (D-027)。
 - 状態: 承認済 (2026-10-01、一括)
 - 反映先: `Eval/Where.lean` `stackEntries` / `refView`, `Eval/Layer.lean` `evalPred` (bracket も同じ規則), vectors `ipv6-exts-index-absent`, `ipv6-exts-all`, `srv6-segments-index-absent`, `ipv6-exts-bracket-index-absent`, `gtp-exts-bracket-absent` (Go は #120/#121/conformance-4 で一致)
+- 追記 (2026-10-10): count field を持つ stack (srv6.segments) の動的 index (`segments[srv6.segments_left]`) と bracket の静的 index (`srv6[segments[1].addr != …]`) は Go が count を見ておらず、count 以上の index で後続 byte (tcp header) を読んで比較していた。where 側は `emitDynamicIndexRead` が count byte (`last_entry + 1`) で、bracket 側は `genPredicate` が同じ byte で guard するよう修正。vectors `srv6-segments-dynamic-at-count`, `srv6-segments-dynamic-last`, `srv6-segments-bracket-index-absent`, `srv6-segments-bracket-index`。
 
 ## D-032: bracket predicate と write-back
 - 論点: `ipv6[next_header == 6]/tcp` で拡張ヘッダがあるとき、predicate は write-back 前後どちらの値を見るか。
@@ -331,7 +332,7 @@ Entries are never deleted; a rejected candidate stays in the log.
 
 11. ✅ 抽出されなかった option の field 参照が filter 全体を reject する (D-027) — atom が false になるよう fail label を通した (`fix/kunai-spec-conformance-2`)。
 12. ✅ 壊れた option 領域 (D-029) — 2026-10-05 に仕様を改訂して解消: 宣言された option 領域の中で walk が失敗したら、その layer は option を持たないものとし chain は続く。Go も option を参照する filter で同じ扱いにした (mismatch 0)。
-13. ✅ 静的 index が count を見ない・`!=` が範囲外で true (D-031) — count source のある stack (srv6, SACK, RR) は #120、parser machine が push する stack (ipv6.exts, gtp.exts) は push 数を数える demand slot で #121。可変長 ext header の `exts[i]` は読む側で手前の entry を辿って位置を出す (`fix/kunai-spec-conformance-4`, vectors `ipv6-exts-index-after-long-ext`, `ipv6-exts-any-after-long-ext`)。可変長 entry への動的 index も、push 上限まで展開した walk を index の段で止めて読む (PR #131, vectors `ipv6-exts-dynamic-index-var-len*`, `gtp-ext-dynamic-index`)。
+13. ✅ 静的 index が count を見ない・`!=` が範囲外で true (D-031) — count source のある stack (srv6, SACK, RR) は #120、parser machine が push する stack (ipv6.exts, gtp.exts) は push 数を数える demand slot で #121。可変長 ext header の `exts[i]` は読む側で手前の entry を辿って位置を出す (`fix/kunai-spec-conformance-4`, vectors `ipv6-exts-index-after-long-ext`, `ipv6-exts-any-after-long-ext`)。可変長 entry への動的 index も、push 上限まで展開した walk を index の段で止めて読む (PR #131, vectors `ipv6-exts-dynamic-index-var-len*`, `gtp-ext-dynamic-index`)。 count field を持つ stack の動的 index と bracket の静的 index は 2026-10-10 の追記のとおり同じ guard に揃えた。
 14. ✅ bracket predicate が write-back 前の値を見る (D-032) — write-back を持つ proto は walk 後に評価。
 15. ✅ `tcp.options.X.exists` を実装。
 16. ✅ `eth/mpls*/ipv4/tcp` が ARP を accept する (D-034) — skip された layer の後の dispatch は実行時の親に対して行う。1 つの optional は absent edge で grandparent に dispatch (#120)、連続する optional は各 optional の entry slot (不在 sentinel) を近い順に試す cascade で実行時の親を選ぶ (`fix/kunai-consecutive-optionals`, vectors `absent-consecutive-*`)。全候補で dispatch が同じ読みになる形 (`eth/qinq?/vlan?/ipv4`) は従来どおり静的 1 回。

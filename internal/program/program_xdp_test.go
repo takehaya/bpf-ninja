@@ -35,6 +35,10 @@ var (
 		"eth/ipv6/tcp",
 		"eth/ipv6/udp",
 		"eth/ipv6/tcp where ipv6.src == ipv6.dst",
+		// aux stack indexes bounded by the header's count byte (D-031):
+		// dynamic in a where clause, static in a bracket predicate.
+		"eth/ipv6/srv6/tcp where srv6.segments[srv6.segments_left].addr == fc00::1",
+		"eth/ipv6/srv6[segments[1].addr != fc00::1]/tcp",
 		// alternation (both IPv4 + IPv6 paths must verify)
 		"eth/(ipv4|ipv6)/tcp",
 		// optional + range quantifiers
