@@ -1850,6 +1850,13 @@ func bareSubByteField(ref *ir.FieldRef) (bitOff, width int, ok bool) {
 	return bitOff, width, true
 }
 
+// fieldNeedsNarrowing reports whether a field's load window is wider than
+// the field (a bit slice, or a field that does not fill its bytes), so
+// emitFieldValue has to shift and mask it.
+func fieldNeedsNarrowing(ref *ir.FieldRef) bool {
+	return ref.Slice != nil || fieldIsSubByte(ref)
+}
+
 // fieldIsSubByte reports whether ref's load went through a sub-byte
 // covering window in fieldRefByteOffset, so its value needs a post-load
 // shift + mask before being compared. It mirrors exactly what
@@ -2707,14 +2714,15 @@ func emitStaticStackEntryAddress(ref *ir.FieldRef, base layerAnchor, failLabel s
 	return append(insns, emitExposeEntry(ref, failLabel)...), nil
 }
 
-// fieldLoadSite is where a scalar field read sits: the anchor an aux's
-// gating reads through, the anchor the field itself is read through
-// (they differ for a predicate behind a write-back overlay), how a
-// runtime-offset stack entry is located, and the label an absent field
+// fieldLoadSite is where a scalar field read sits: the anchor the layer
+// is reached through (an aux's gating and a stack entry's walk start
+// there), the anchor the field itself is read through (they differ for a
+// predicate behind a write-back overlay), how a runtime-offset stack
+// entry is located from the gate anchor, and the label an absent field
 // jumps to.
 type fieldLoadSite struct {
 	gate, load layerAnchor
-	entryAddr  func(*ir.FieldRef) (asm.Instructions, error)
+	entryAddr  func(ref *ir.FieldRef, base layerAnchor, failLabel string) (asm.Instructions, error)
 	fail       string
 }
 
@@ -2725,8 +2733,8 @@ func predicateLoadSite(pc *predCtx) fieldLoadSite {
 	return fieldLoadSite{
 		gate: r4Anchor(),
 		load: pc.fieldAnchor(),
-		entryAddr: func(ref *ir.FieldRef) (asm.Instructions, error) {
-			return emitStackEntryAddress(ref, r4Anchor(), indexBound{}, dslReject)
+		entryAddr: func(ref *ir.FieldRef, base layerAnchor, failLabel string) (asm.Instructions, error) {
+			return emitStackEntryAddress(ref, base, indexBound{}, failLabel)
 		},
 		fail: dslReject,
 	}
@@ -2738,8 +2746,10 @@ func predicateLoadSite(pc *predCtx) fieldLoadSite {
 // variable-length ones) goes through site.entryAddr, which leaves R5 at
 // the entry start and needs no gating (the walk extracted the entry);
 // any other field gates an aux on presence and loads off site.load. R2
-// and R5 may be clobbered; R10 is never touched, so bpf_loop callbacks
-// can replay the read.
+// and R5 may be clobbered. The read touches R10 only through a slot
+// anchor in the site (a where clause's layer slot, a write-back
+// overlay), so a site anchored at R4, the one bpf_loop callbacks replay
+// bracket predicates with, keeps it off the stack.
 func emitScalarFieldLoad(ref *ir.FieldRef, site fieldLoadSite) (asm.Instructions, int, asm.Size, error) {
 	if needsEntryAddress(ref) {
 		off, bytes, err := auxEntryFieldWindow(ref)
@@ -2750,7 +2760,7 @@ func emitScalarFieldLoad(ref *ir.FieldRef, site fieldLoadSite) (asm.Instructions
 		if err != nil {
 			return nil, 0, 0, err
 		}
-		addr, err := site.entryAddr(ref)
+		addr, err := site.entryAddr(ref, site.gate, site.fail)
 		if err != nil {
 			return nil, 0, 0, err
 		}
@@ -2771,10 +2781,10 @@ func emitScalarFieldLoad(ref *ir.FieldRef, site fieldLoadSite) (asm.Instructions
 	return append(insns, emitFieldLoad(site.load, off, size)...), bytes, size, nil
 }
 
-// emitFieldToHostOrder turns the window emitScalarFieldLoad left in R3
-// into the field's numeric value: host byte order, then a slice or a
-// sub-byte field shifted and masked down to its bits.
-func emitFieldToHostOrder(ref *ir.FieldRef, bytes int, size asm.Size) asm.Instructions {
+// emitFieldValue turns the window emitScalarFieldLoad left in R3 into
+// the field's numeric value: host byte order, then a slice or a sub-byte
+// field shifted and masked down to its bits.
+func emitFieldValue(ref *ir.FieldRef, bytes int, size asm.Size) asm.Instructions {
 	var insns asm.Instructions
 	if bytes > 1 {
 		insns = append(insns, asm.HostTo(asm.BE, asm.R3, size))

@@ -191,27 +191,16 @@ func emitIntPredicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, error)
 	if err != nil {
 		return nil, err
 	}
-	hasSlice := pred.Field != nil && pred.Field.Slice != nil
-	subByte := fieldIsSubByte(pred.Field)
 	switch {
-	case hasSlice || subByte:
-		// Slice-narrowed or sub-byte field: the load went through a
-		// covering window, so bring the register to host order then
-		// shift+mask down to the field's bits. The constant stays in
-		// host order (the user wrote it that way), so we don't apply
-		// the constant-side bswap trick the equality fast-path uses.
-		insns = append(insns, emitFieldToHostOrder(pred.Field, bytes, size)...)
-	case bytes <= 1:
-		// 1-byte: register holds the raw byte; nothing to swap.
-	case pred.Op == ast.CmpEq || pred.Op == ast.CmpNeq:
-		// Equality: byte-swap the constant at codegen time and
-		// compare with the LE-loaded register directly.
+	case fieldNeedsNarrowing(pred.Field) || (bytes > 1 && pred.Op != ast.CmpEq && pred.Op != ast.CmpNeq):
+		// A slice-narrowed or sub-byte field (the load went through a
+		// covering window) and an ordered compare both need the field's
+		// numeric value in R3; the constant stays as the user wrote it.
+		insns = append(insns, emitFieldValue(pred.Field, bytes, size)...)
+	case bytes > 1:
+		// Equality on a whole multi-byte field: byte-swap the constant
+		// at codegen time and compare with the LE-loaded register.
 		value = swapValueBytes(value, bytes)
-	default:
-		// Ordered: bring register to natural numeric order.
-		// HostTo(BE) emits the BPF_END opcode (5.x-safe) instead of
-		// BSwap (6.6+).
-		insns = append(insns, asm.HostTo(asm.BE, asm.R3, size))
 	}
 	insns = append(insns, jumpOp.Imm(asm.R3, int32(value), dslReject))
 	return insns, nil
@@ -429,13 +418,16 @@ func emitInSetPredicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, erro
 		return insns, nil
 	}
 
-	load, _, size, err := emitScalarFieldLoad(pred.Field, predicateLoadSite(pc))
+	load, loaded, size, err := emitScalarFieldLoad(pred.Field, predicateLoadSite(pc))
 	if err != nil {
 		return nil, err
 	}
+	if loaded != bytes {
+		return nil, fmt.Errorf("codegen: set key field %q sized %d bytes but read as %d", fieldName, bytes, loaded)
+	}
 	// Normalize the register to the field's numeric value in host order.
 	insns = append(insns, load...)
-	insns = append(insns, emitFieldToHostOrder(pred.Field, bytes, size)...)
+	insns = append(insns, emitFieldValue(pred.Field, bytes, size)...)
 	// Store native-endian into the host key slot (matches `set add`).
 	insns = append(insns, asm.StoreMem(asm.R10, slotOff, asm.R3, size))
 
@@ -943,9 +935,9 @@ func emitInPredicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, error) 
 	// range alternative (`lo ≤ v ≤ hi` is an ordered compare, the path
 	// emitIntPredicate takes) both need R3 in host order; the
 	// alternatives then stay unswapped.
-	hostOrder := hasRange || fieldIsSubByte(pred.Field) || pred.Field.Slice != nil
+	hostOrder := hasRange || fieldNeedsNarrowing(pred.Field)
 	if hostOrder {
-		insns = append(insns, emitFieldToHostOrder(pred.Field, bytes, size)...)
+		insns = append(insns, emitFieldValue(pred.Field, bytes, size)...)
 	}
 	// A /0 alternative matches every value: the list is true once the
 	// field is readable (an absent aux still fails through the gating or

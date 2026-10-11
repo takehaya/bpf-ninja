@@ -1732,27 +1732,24 @@ func (c *whereCtx) genArithFieldLoad(f *ir.FieldRef) (asm.Instructions, error) {
 	if slot, ok := c.dynamicOffsetSlotFor(f); ok {
 		return c.genDynamicOffsetAuxLoad(f, slot)
 	}
-	// A dynamic stack index, or a static index into a stack of
-	// variable-length entries, locates the entry off the layer's
-	// where-context anchor; the value is then byte-swapped to natural
-	// order so downstream arithmetic / comparison sees the network-order
-	// integer, and a bit slice narrows it after.
+	// Every other field is read off the layer's where-context anchor (a
+	// runtime-offset stack entry is located from it, bounded by the
+	// stack's count source), then brought to its numeric value so the
+	// arithmetic and comparisons see the network-order integer.
 	anchor, err := c.layerAnchorFor(f.Layer)
 	if err != nil {
 		return nil, err
 	}
 	insns, bytes, size, err := emitScalarFieldLoad(f, fieldLoadSite{
-		gate: anchor,
-		load: anchor,
-		entryAddr: func(ref *ir.FieldRef) (asm.Instructions, error) {
-			return c.stackEntryAddress(ref, anchor, c.absent())
-		},
-		fail: c.absent(),
+		gate:      anchor,
+		load:      anchor,
+		entryAddr: c.stackEntryAddress,
+		fail:      c.absent(),
 	})
 	if err != nil {
 		return nil, err
 	}
-	return append(insns, emitFieldToHostOrder(f, bytes, size)...), nil
+	return append(insns, emitFieldValue(f, bytes, size)...), nil
 }
 
 // emitSliceShiftMask returns the post-load shift + AND instructions
