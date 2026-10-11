@@ -96,12 +96,26 @@ var dslEntryExprs = []string{
 	// SRv6 segment list address access via aux header stack:
 	// static index (final destination = wire-order [0]) and
 	// dynamic index from a parent field (next hop = [last_entry]).
-	// Repeated variable-length layers: one parser machine per instance.
+	// Repeated variable-length layers: one parser machine per instance;
+	// an open bound stands for MAX_DEPTH instances (ipv4 8, ipv6 4).
 	"eth/ipv4{1,4}/tcp",
 	"eth/ipv4/ipv4{0,2}/tcp",
 	"eth/ipv4[options.valid]{1,4}/tcp",
 	"eth/ipv4@o{1,2}/tcp where o.options.RR.kind == 7",
 	"eth/ipv6{1,2}/tcp",
+	"eth/ipv4+/tcp",
+	"eth/ipv4{1,8}/tcp",
+	"eth/ipv4/ipv4*/tcp",
+	"eth/ipv4{2,}/tcp",
+	"eth/ipv4[ttl==64]+/tcp",
+	"eth/ipv4[options.valid]+/tcp",
+	"eth/ipv4@o+/tcp where o.options.RR.kind == 7",
+	"eth/ipv4+/tcp where tcp.dport == 443",
+	"eth/ipv6+/tcp",
+	"eth/ipv6/ipv6*/tcp",
+	"eth/ipv6@o+/tcp where o.exts[0].next_header == 6",
+	"eth/ipv4+/tcp capture headers+64",
+	"eth/vlan?/ipv4+/tcp",
 	"eth/ipv6/srv6/tcp where srv6.segments[0].addr == fc00::1",
 	"eth/ipv6/srv6/tcp where srv6.segments[srv6.last_entry].addr == fc00::1",
 	// 128-bit arithmetic on a segment: static and runtime index.
@@ -226,6 +240,7 @@ var dslExitExprs = []string{
 // codegen on the tc context-loading path (skb->data / data_end /
 // len via runtime BTF resolve).
 var dslTCEntryExprs = []string{
+	"eth/ipv4+/tcp",
 	"eth/ipv4/tcp",
 	"eth/ipv4{1,2}/tcp",
 	"eth/ipv4/udp",
@@ -288,6 +303,7 @@ func TestBpfExitWithDSLFilterTC(t *testing.T) {
 // matrix pins the L3-rooted chain shapes on it, including a
 // parser-machine (bpf_loop) path and an option-walk predicate.
 var dslCgroupSKBEntryExprs = []string{
+	"ipv4+/tcp",
 	"ipv4/tcp",
 	"ipv4/udp",
 	"ipv6/tcp",

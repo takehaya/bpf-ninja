@@ -60,3 +60,46 @@ func TestBpfVerifierStats(t *testing.T) {
 		})
 	}
 }
+
+// TestBpfVerifierStatsMachineChain logs the verifier cost of repeated
+// parser-machine layers: an open bound unrolls to MAX_DEPTH machines
+// (ipv4 8, ipv6 4), each with its own option or extension walk, so the
+// growth per instance across the kernel matrix is what this records.
+// Telemetry like TestBpfVerifierStats, not a pin; the FilterSet table
+// stays as published.
+func TestBpfVerifierStatsMachineChain(t *testing.T) {
+	hostProg := loadDummyXDP(t)
+	for _, expr := range []string{
+		"eth/ipv4{1,2}/tcp",
+		"eth/ipv4{1,4}/tcp",
+		"eth/ipv4+/tcp",
+		"eth/ipv4[options.valid]+/tcp",
+		"eth/ipv4@o+/tcp where o.options.RR.kind == 7",
+		"eth/ipv6{1,2}/tcp",
+		"eth/ipv6+/tcp",
+		"eth/ipv6@o+/tcp where o.exts[0].next_header == 6",
+	} {
+		t.Run(expr, func(t *testing.T) {
+			probe := loadProbeOrFail(t, hostProg, xdpFuncName, expr, false /*exit*/, true)
+			var verified uint64
+			for _, p := range probe.progs {
+				info, err := p.Info()
+				if err != nil {
+					t.Fatalf("prog info: %v", err)
+				}
+				vi, ok := info.VerifiedInstructions()
+				if !ok {
+					t.Skip("verified_insns needs kernel 5.16+")
+				}
+				verified += uint64(vi)
+			}
+			if verified == 0 {
+				t.Fatal("verified_insns is zero")
+			}
+			if verified >= 1_000_000 {
+				t.Fatalf("verified_insns %d at or above the one-million verifier limit", verified)
+			}
+			t.Logf("verified_insns=%d", verified)
+		})
+	}
+}
