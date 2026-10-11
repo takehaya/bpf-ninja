@@ -573,7 +573,7 @@ IPv6 address literal needs a bit<128> field; ipv6.dst[64:128] is bit<64>   # sli
 ```
 ordered comparison < not allowed for Bool (Bool supports only == and !=)                                 # parser & resolver
 ordered comparison < not allowed for CIDR (CIDR supports only == and !=)                                 # resolver (errOrderedNotAllowed)
-ordered comparison < not allowed for address (address supports only == and !=)                           # resolver (network literal)
+ordered comparison < not allowed for address (address supports only == and !=)                           # resolver (where 句の network literal。bracket では address literal の順序比較を許す)
 ```
 
 parser は LHS-literal / Bool 経路で早期に reject し、resolver は IR boundary で defense in depth として再 reject します。
@@ -635,7 +635,7 @@ dsl codegen is not yet fully implemented: value V exceeds int32 immediate range 
 | 操作 | N ≤ 64 | 64 < N ≤ 128 |
 |---|---|---|
 | `==`, `!=` | ✅ 既存 (single load) | ✅ 既存 (dual load。IPv6 cmp 経路 / F4) |
-| `<`, `≤`, `>`, `≥` | ✅ 既存 | ✅ bracket / where-arith 両方実装 (F3、`emitIPv6OrderedCmp` + `genArithCompare128` ordered branch、register-pair lex compare) |
+| `<`, `≤`, `>`, `≥` | ✅ 既存 | ✅ bracket / where-arith 両方実装 (F3、`emitOrderedWireCmp` + `genArithCompare128` ordered branch、register-pair lex compare) |
 | `+`, `-` | ✅ 既存 | ✅ where 経路で完全実装 (F4。`field op const`、`field op field` 両方、stack-bridged carry / borrow) |
 | `*` | ✅ 既存 | ❌ 型エラー (D-035。F11 bit-slice で代替) |
 | `/`, `%`, `&`, `\|`, `^`, `<<`, `>>` | ✅ 既存 | ❌ 型エラー (D-035。bit slice か CIDR literal で書く) |
@@ -676,7 +676,7 @@ pre-squash backup として、161 commit の細かい history を `pre-squash-ba
 |---|---|---|
 | F1 | overflow lint mode ✅ 完了 (`resolve.Options.StrictArithLint` opt-in、`codegen.Capabilities.StrictArithLint` 経由で host が選択)。検出パターンは保守的: `field + field` / `field * field` の overflow、`field - field` で RHS ≥ LHS の underflow を error 化。`field + const` などの一般パターンは false-positive を避けるため pass | §6.1 silent wrap への安全網 |
 | F2 | 明示 cast 構文 (`(bit<32>) tcp.dport`) ⏸ 仕様で導入しないと決定 (§5.5)。F1 の overflow ケアの代替手段が必要になったら再検討 | §5.5 |
-| F3 | `Int<128>` ordered cmp の codegen ✅ bracket / where-arith 両方完了。bracket は `emitIPv6OrderedCmp`、where-arith は `genArithCompare128` の ordered branch で同じ lex compare ロジックを共有 (high half decision + low half fall-through、`highHalfJumps` / `lowHalfMissJump` を流用) | §9.1 |
+| F3 | `Int<128>` ordered cmp の codegen ✅ bracket / where-arith 両方完了。bracket は `emitOrderedWireCmp` (IPv6 の primary と aux、IPv4、MAC の literal を chunk ごとに host order で比べる)、where-arith は `genArithCompare128` の ordered branch で同じ lex compare ロジックを共有 (high half decision + low half fall-through、`highHalfJumps` / `lowHalfMissJump` を流用) | §9.1 |
 | F4 | `Int<128>` arith binop (`+`, `-`) の codegen ✅ 完了。`field == field` / `field op const == field` / `field op field == field` の全形が verifier-load 通過。旧版が `field op const` で permission denied になっていたのは emit が R6/R7 (host-callee-saved) を使い ABI 違反していたため。現在は const-relative carry detect (R5+const 後 `R5 < const` で wrap 判定、orig 保存不要) と stack-bridged の field+field shape で R6-R8 完全不使用。実装は `genArith128FieldOpConst` / `genArith128FieldOpField` で分岐 | §9.1 |
 | F5 | `Int<128>` arith binop (`*`) の codegen ❌ 廃止 (= スコープから外す)。代替として bit-slice 構文 `field[lo:hi]` を導入 (下記参照)。実用上 IPv6 同士の乗算は使い道がなく、bit-slice の方が prefix/suffix 比較で広く使えるため | §9.1 |
 | F11 | bit-slice `field[lo:hi]` ✅ MVP 完了。bracket predicate / where-arith 両方で使用可 | dsl-types.md §3.4 |

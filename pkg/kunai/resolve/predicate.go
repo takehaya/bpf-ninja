@@ -57,6 +57,12 @@ func (r *resolver) resolveBracketPredicate(ap *ast.Predicate, layer *ir.LayerIns
 		if ap.Value != nil && ap.Value.Kind == ast.ValRange {
 			return nil, errorf(ap.Pos, "range literal %s is only valid in `in [...]` (%s.%s)", ap.Value.Raw, layer.Spec.Name, field.Field.Name)
 		}
+		// A CIDR is a set of addresses and has no order (spec checkValue:
+		// "ordered comparison on a cidr literal"); the hosts and MACs
+		// order as the number of their wire bytes and pass.
+		if ap.Value != nil && ap.Value.Kind == ast.ValCIDR && ap.Op != ast.CmpEq && ap.Op != ast.CmpNeq {
+			return nil, errOrderedNotAllowed(ap.Pos, ap.Op, "CIDR")
+		}
 		if err := checkBracketLiteral(field, ap.Value, layer.Spec.Name, ap.Pos); err != nil {
 			return nil, err
 		}

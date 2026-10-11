@@ -1146,7 +1146,7 @@ func (c *whereCtx) genArithCompare128(w *ir.Condition, failLabel string, targetB
 	// R9 is the host's pkt_len that captureWithXdpOutput reads after
 	// filter eval. The dual-half compare therefore parks rhs_low to
 	// a kunai-owned slot instead of an alternate register, and shape
-	// mirrors bracket-side emitIPv6OrderedCmp (R5=lhs half, R3=rhs
+	// mirrors bracket-side emitOrderedWireCmp (R5=lhs half, R3=rhs
 	// half) for the per-op jump table reuse.
 	lhsHighSlot := arithStackSlot(0)
 	lhsLowSlot := arithStackSlot(1)
@@ -1179,7 +1179,7 @@ func (c *whereCtx) genArithCompare128(w *ir.Condition, failLabel string, targetB
 	case ast.CmpLt, ast.CmpLe, ast.CmpGt, ast.CmpGe:
 		// Lex compare: high decides if strictly inequal; equal falls
 		// through to the low-half miss check. Recipe matches
-		// emitIPv6OrderedCmp; jump tables shared.
+		// emitOrderedWireCmp; jump tables shared.
 		matchLabel := c.freshLabel("lt128_match")
 		highSuccess, highFail := highHalfJumps(w.Op)
 		lowMiss := lowHalfMissJump(w.Op)
