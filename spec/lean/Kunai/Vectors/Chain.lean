@@ -9,6 +9,7 @@ open Pkt
 def vlanPkt (tci : Nat := 100) : Packet := eth 0x8100 ++ vlan tci 0x0800 ++ ipv4 6 ++ tcp 12345 80 ++ payload 5
 def mpls3 : Packet := eth 0x8847 ++ mpls 5 0 ++ mpls 6 0 ++ mpls 7 1 ++ ipv4 6 ++ tcp 12345 80 ++ payload 5
 def mpls1 : Packet := eth 0x8847 ++ mpls 5 1 ++ ipv4 6 ++ tcp 12345 80 ++ payload 5
+def mpls2 : Packet := eth 0x8847 ++ mpls 5 0 ++ mpls 6 1 ++ ipv4 6 ++ tcp 12345 80 ++ payload 5
 def ipv6TCP : Packet := eth 0x86DD ++ ipv6 6 ++ tcp 12345 80 ++ payload 5
 def vxlanPkt (dport : Nat := 4789) : Packet :=
   eth 0x0800 ++ ipv4 17 ++ udp 1234 dport ++ vxlan 100 ++ eth 0x0800 ++ ipv4 6 ++ tcp 12345 80 ++ payload 5
@@ -154,6 +155,25 @@ vector quantGreedyUnreachable := {
   id := "quant-greedy-unreachable",
   ast := { layers := [P "eth", Pq "mpls" (.range 1 (some 8)), P "mpls", P "ipv4", P "tcp"] }, packet := mpls3,
   expected := .reject, note := "D-002: `mpls{1,8}/mpls` never matches" }
+-- The resolver warns on a quantified layer followed by the same chain-end
+-- protocol; these pin why: the iteration stops on a dispatch miss or on
+-- the label that ends the stack, and the follower misses either way.
+def mplsFollow (q : Quant) : Filter := { layers := [P "eth", Pq "mpls" q, P "mpls", P "ipv4", P "tcp"] }
+vector quantOptFollowTwo := {
+  id := "quant-opt-follow-two", ast := mplsFollow .opt, packet := mpls2, expected := .reject,
+  note := "D-024: `?` takes the s = 0 label and demands the end signal" }
+vector quantOptFollowOne := {
+  id := "quant-opt-follow-one", ast := mplsFollow .opt, packet := mpls1, expected := .reject,
+  note := "D-024: after the s = 1 label the self edge misses; `mpls?/mpls` never matches" }
+vector quantRange01Follow := {
+  id := "quant-range01-follow", ast := mplsFollow (.range 0 (some 1)), packet := mpls2, expected := .reject,
+  note := "D-005: `{0,1}` is `?`" }
+vector quantRange11Follow := {
+  id := "quant-range11-follow", ast := mplsFollow (.range 1 (some 1)), packet := mpls2, expected := .reject,
+  note := "D-024: the bound is reached on an s = 0 label" }
+vector quantRange00Follow := {
+  id := "quant-range00-follow", ast := mplsFollow (.range 0 (some 0)), packet := mpls1, expected := .accept [],
+  goStatus := .notImplemented, note := "`{0,0}` takes no header, so the follower is the first label; Go refuses a zero iteration cap" }
 vector quantPredMidFail := {
   id := "quant-pred-mid-fail", ast := { layers := mplsPred 5 .eq (.range 1 (some 8)) }, packet := mpls3,
   expected := .reject, note := "D-001 (b): a predicate failure at any iteration rejects" }
@@ -594,7 +614,7 @@ def chainVectors : List Vector := [
   chainVxlan, chainVxlanAlt, chainMplsSingle, chainMplsSingleOverrun,
   quantOptPresent, quantOptAbsent, quantOptPredHolds, quantOptPredFails, quantOptBounds, quantRangeMidTrunc, quantRange01Bounds,
   quantStarBounds, quantMplsRange, quantMplsPlus, quantMplsStarZero, quantMplsMinUnmet, quantChainEnd,
-  quantGreedyOverrun, quantOverrunBounded, quantOverrunOpen, quantExactBound, quantOptMplsOverrun, quantOptMplsOne, quantGreedyUnreachable, quantPredMidFail, quantPredMidFailStatic, quantPredFirstFail,
+  quantGreedyOverrun, quantOverrunBounded, quantOverrunOpen, quantExactBound, quantOptMplsOverrun, quantOptMplsOne, quantGreedyUnreachable, quantOptFollowTwo, quantOptFollowOne, quantRange01Follow, quantRange11Follow, quantRange00Follow, quantPredMidFail, quantPredMidFailStatic, quantPredFirstFail,
   quantPredAllHold, quantSelfValidSkip, quantSelfValidPresent, quantSelfValidShortV4, quantSelfValidShortV6, quantSelfValidEmpty, quantSelfValidCascade, quantSelfValidCascadeEth, quantSelfValidBroken, quantOptIPv4Last, quantOptIPv4LastAbsent, quantOptIPIP, quantExactOneMachine, typAltExactOne, typRepeatNoSelfEdge, typRepeatNoSelfEdgeStar, quantOptIPIPAbsent, quantOptIPIPTwiceOne, quantOptIPIPTwiceNone, quantOptIPIPTwiceBoth, typOptionalAfterSkip, typOptionalNoCheck, chainMandatorySelfEdgeMiss, quantSelfEdgeStar, quantSelfEdgeOpt,
   absentConsecutiveEthertype, absentConsecutiveSelfValid, absentConsecutiveMplsOnly, absentConsecutiveNeither, absentConsecutiveArp, quantFirstOptional,
   altFirst, altSecond, altAfterVxlan6, altAfterVxlan4, altNone, altFirstPredFails, altRoot, altNoCheck,
