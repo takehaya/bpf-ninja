@@ -231,6 +231,9 @@ type predCtx struct {
 	// validSlot resolves a layer's option-validity slot, for
 	// `[options.valid]`. Set with stackCount, after the walk.
 	validSlot func(*ir.LayerInstance) (int16, bool)
+	// accWhy says why the multi-option accumulator plan was refused
+	// (buildAccPlan); the walk's refusal of two or more options appends it.
+	accWhy string
 	// guarded is the alternation member whose guard has just run its
 	// parent dispatch (genAlternation); its body skips the identical
 	// dispatch, which the guard already passed.

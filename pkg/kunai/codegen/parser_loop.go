@@ -393,9 +393,15 @@ func (c *pmCtx) emitAccPrelude(sel *vocab.SelectOp, atoms []accAtom, breakLabel 
 		}
 		skip := fmt.Sprintf("%s_acc_skip_%d", c.labelNS, c.selectCounter())
 		// Skip this atom unless the stashed kind matches its option kind.
+		// A matching option clears the atom's bit before the compare: when
+		// the option occurs more than once the last occurrence decides, as
+		// it does for the position slot (the spec reads the latest view).
 		insns = append(insns,
 			asm.LoadMem(asm.R0, asm.R10, kindSlot, asm.DWord),
 			asm.JNE.Imm(asm.R0, int32(atom.layout.DynamicKindByte), skip),
+			asm.LoadMem(asm.R0, asm.R2, mainStackOffsetFromCb(slot), asm.DWord),
+			asm.And.Imm(asm.R0, int32(^(uint32(1) << uint(atom.bit)))),
+			asm.StoreMem(asm.R2, mainStackOffsetFromCb(slot), asm.R0, asm.DWord),
 		)
 		// Read the option field at cursor + fieldByteOff (width bytes).
 		insns = append(insns, foldOffsetIntoScalar(asm.R1, asm.R3, int32(atom.fieldByteOff), breakLabel)...)

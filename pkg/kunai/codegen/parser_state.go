@@ -2,6 +2,7 @@ package codegen
 
 import (
 	"fmt"
+	"slices"
 
 	"github.com/cilium/ebpf/asm"
 
@@ -69,7 +70,7 @@ func genParserMachineIter(layer *ir.LayerInstance, layerIdx int, all []*ir.Layer
 		// The previous iteration advanced R4 by its variable length.
 		r4IsRange = true
 	}
-	prePreds, postPreds := splitPredicates(layer)
+	prePreds, postPreds := splitPredicates(layer, plan)
 	pmCtx := &pmCtx{
 		prePreds:     prePreds,
 		dispatchFail: dispatchFail,
@@ -478,11 +479,18 @@ func (c *pmCtx) emitWriteBackSlotZero() asm.Instructions {
 // locates (tcp[mss.value …]: the slot holds the option's position only
 // after the walk), and the others still reject before the walk.
 // Predicates are a conjunction, so the split does not change the verdict.
-func splitPredicates(layer *ir.LayerInstance) (pre, post []*ir.Predicate) {
-	if pmHasWriteBack(layer.Spec) {
-		return nil, layer.Predicates
+//
+// A predicate the accumulator plan folded into the walk (acc.go) is in
+// neither list: the mask check after the chain tests it.
+func splitPredicates(layer *ir.LayerInstance, plan *accPlan) (pre, post []*ir.Predicate) {
+	preds := layer.Predicates
+	if plan != nil && plan.layer == layer && len(plan.folded) > 0 {
+		preds = slices.DeleteFunc(slices.Clone(preds), func(p *ir.Predicate) bool { return plan.folded[p] })
 	}
-	for _, p := range layer.Predicates {
+	if pmHasWriteBack(layer.Spec) {
+		return nil, preds
+	}
+	for _, p := range preds {
 		if needsPushCount(p.Field) || p.Kind == ast.PredValid || dynamicAuxLayoutOf(p.Field) != nil {
 			post = append(post, p)
 		} else {
@@ -576,11 +584,10 @@ func (c *pmCtx) emitStateBody(state *vocab.ParseState, stateIdx int, isEntry boo
 		// verifier will refuse. One option per filter still works on the
 		// normal path.
 		if options := c.queried.optionDemand(c.layer); c.isLengthByteOptionLoop(stateIdx) && len(options) >= 2 && c.accPlan.atomsFor(c.layer) == nil {
-			bracket := ""
-			if bracketReadsOption(c.layer) {
-				bracket = " (a bracket predicate on an option counts and keeps that form from applying: move it into the where clause)"
+			if c.pc != nil && c.pc.accWhy != "" {
+				return nil, nil, fmt.Errorf("%w: %s; querying %d distinct options of %q in one filter is supported only when every read of them is an `<option>.<field> == <const>` equality, in the bracket or ANDed at the top level of the where clause (at most %d)", ErrNotImplemented, c.pc.accWhy, len(options), c.spec.Name, accMaxAtoms)
 			}
-			return nil, nil, fmt.Errorf("%w: querying %d distinct options of %q in one filter is supported only as a pure AND of `<option>.<field> == <const>` equalities in the where clause (at most %d, where multiple fields on one option each count)%s; rewrite the clause to that form — no `!=`, no non-option term mixed in — or query a single option", ErrNotImplemented, len(options), c.spec.Name, accMaxAtoms, bracket)
+			return nil, nil, fmt.Errorf("%w: querying %d distinct options of %q in one filter is supported only when every read of them is an `<option>.<field> == <const>` equality, in the bracket or ANDed at the top level of the where clause (at most %d, where multiple fields on one option each count); rewrite the reads to that form — no `!=`, no ordering, no `in` — or query a single option", ErrNotImplemented, len(options), c.spec.Name, accMaxAtoms)
 		}
 		// Accumulator queries lower to one combined bpf_loop: the per-
 		// iteration cursor and accumulator forgets (emitAccPrelude /

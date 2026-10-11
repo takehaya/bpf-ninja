@@ -391,18 +391,6 @@ func (qo queriedOptions) optionSlotFor(f *ir.FieldRef) (int16, bool) {
 	return qo.dynamicAuxSlotForLayout(f.Layer, layout)
 }
 
-// bracketReadsOption reports whether one of layer's bracket predicates
-// reads an option the walk locates; such a predicate runs after the walk
-// and reads the option's position slot.
-func bracketReadsOption(layer *ir.LayerInstance) bool {
-	for _, p := range layer.Predicates {
-		if dynamicAuxLayoutOf(p.Field) != nil {
-			return true
-		}
-	}
-	return false
-}
-
 func (qo queriedOptions) dynamicAuxSlotForLayout(layer *ir.LayerInstance, layout *vocab.AuxLayout) (int16, bool) {
 	if layer == nil || layout == nil {
 		return 0, false

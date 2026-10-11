@@ -1,8 +1,8 @@
 # TCP 多 option フィルタの codegen (bit accumulator + forget)
 
 `eth/ipv4/tcp where tcp.options.MSS.value == 1460 and tcp.options.WS.shift == 7`
-のように、同じ TLV リスト (TCP options) から複数の option を 1 つの `where`
-で問い合わせるフィルタをどう eBPF に落とすかを扱う。Mechanism 7
+や `eth/ipv4/tcp[mss.value == 1460, ws.shift == 7]` のように、同じ TLV リスト
+(TCP options) から複数の option を問い合わせるフィルタをどう eBPF に落とすかを扱う。Mechanism 7
 (TLV options walk、`dsl-internals.md` §6.5) の上に乗る codegen 技法である。
 
 結論だけ先に言うと、複数 option を 1 個の bit accumulator に畳んで 1 本の
@@ -86,8 +86,10 @@ compile(where = AND of "opt.field == const"):
         cursor = forget(cursor, byte)          # 毎周 cursor を収束
         kind = packet[cursor]
         for atom in atoms:                     # 全 atom をインライン評価
-            if kind == atom.option_kind and packet[cursor + atom.field_off] == atom.cmpval:
-                acc |= (1 << atom.bit)
+            if kind == atom.option_kind:
+                acc &= ~(1 << atom.bit)        # 同じ option が再び現れたら最後のものが決める
+                if packet[cursor + atom.field_off] == atom.cmpval:
+                    acc |= (1 << atom.bit)
         acc = forget(acc, u64)                 # 毎周 acc を収束 (1 ループ化の鍵)
         cursor += option_length(packet, cursor)
 
@@ -95,9 +97,8 @@ compile(where = AND of "opt.field == const"):
         mask |= NEVER_BIT                      # 誰も立てない bit を要求して必ず reject
     if (acc & mask) != mask:                   # 全 option が一致したときだけ通す
         reject
-    for leaf in residual:                      # 別 layer の options.valid
-        if not valid[leaf.layer]:              # 不在の layer は false (D-003)
-            reject
+    if not where(rest):                        # 畳まなかった where の項
+        reject                                 # (不在の layer の atom は false, D-003)
 ```
 
 ループが運ぶ可変スカラ (cursor と acc) を両方とも forget するのが要点である。
@@ -124,19 +125,33 @@ codegen には別途、callback の分岐命令数を静的に数える tripwire
 - ハード上限は約 31 になる。`where` 後の `(acc & mask) == mask` を 32bit 即値で組んで
   いるためである (`emitAccMaskCheck`)。32 個以上の bit にしたければ mask をレジスタに
   積む変更が要る。
-- 起動条件は次のとおり。distinct な option が 2 種類以上で、`where` 全体が
-  `<option>.<field> == <const>` の純粋な AND であること (`buildAccPlan`)。
-  `<layer>.options.valid` は AND の項として混ぜてよい。同じ layer のものは
-  `emitAccMaskCheck` が mask の後で確かめ、別 layer のものは plan の外 (`residual`) に
-  置いて mask の後に通常の where 条件として AND する。不在になりうる layer の
-  flag には通常どおり不在のガードが付く。
+- 起動条件は次のとおり。length-byte の TLV walk を持つ layer がちょうど 1 つ
+  あり、その layer で distinct な option を 2 種類以上読むこと (`accCandidate`)。
+  そのうえで、その layer の option の読み出しがすべて `<option>.<field> == <const>`
+  であること (`buildAccPlan`)。読み出しは bracket の predicate (`predToAtom`) でも、
+  `where` の一番外側の AND の項 (`eqLeafToAtom`) でもよい。畳んだ bracket の
+  predicate は `accPlan.folded` に入り、`splitPredicates` が飛ばす。
+  同じ layer の `<layer>.options.valid` は `emitAccMaskCheck` が mask の後で確かめる。
+  `where` の残りの項 (option を読まない atom、別 layer の `options.valid`、
+  `or` や `not` を含む部分木) は `accPlan.rest` にまとめ、mask check の後に通常の
+  where 条件として出す。不在になりうる layer の項には通常どおり不在のガードが付く。
+  `rest`、capture の条件、capture の field のどれかが対象 layer の option を読むと、
+  位置の slot が要るので plan を作らない。`!=`、大小比較、`in`、`.exists` などで
+  option を読む bracket の predicate があるときも同じである。
+  bracket の predicate は layer が不在なら評価されない (D-003) のに、mask check は
+  畳んだ条件を偽として扱う。このため、bracket の `==` を畳むのは、layer が必ず
+  存在する (min ≥ 1 で繰り返さず、alternation の member でない) か、`where` の項にも
+  同じ layer の atom があって layer の不在で verdict が偽になる場合に限る
+  (`accLayerAlwaysPresent`)。
+  同じ option が 2 回以上現れたときは、仕様 (`latestView`) と位置 slot の経路に
+  合わせて最後のものの値で判定する。kind が一致した時点で atom の bit を消してから
+  比較し直す。
   定数は field の幅に収まる値を比較する。`int<128>(n)` で field に収まらない値を
   書いた葉は、どの packet でも false になるので、plan を `never` にして mask check が
   必ず reject する。32 bit field の上位 bit が立った定数はレジスタ経由で比較する。
-  単一 option の filter は従来どおり別経路をたどる。2 種類以上の option を見る
-  filter に `!=`・`or`・`not`・`.exists`・option 以外の atom が
-  混ざる形は `ErrNotImplemented` になる。`tcp[dport==80]` のような bracket の条件は
-  `where` の外なので、混ぜても accumulator の対象のままである。
+  単一 option の filter は従来どおり別経路をたどる。plan を作れないときは
+  `emitStateBody` の 2 option 以上の拒否に、`buildAccPlan` が返した理由
+  (`predCtx.accWhy`) を付けて `ErrNotImplemented` にする。
   対象 layer は length-byte advance を持つ TLV walk (TCP options) であること。TCP の領域 counter は対象に含み、それ以外の counter-driven
   walk (Geneve / IPv4 options) は native path のままとなる (`buildAccPlan` が gate)。
 - alternation 内の TCP 多 option も対応する
@@ -147,11 +162,16 @@ codegen には別途、callback の分岐命令数を静的に数える tripwire
 
 ## 7. 関連ファイル / テスト
 
-- `pkg/kunai/codegen/acc.go`: `buildAccPlan` (どの `where` を accumulator に
-  するか判定、`never` と `residual` の振り分け)、`accMaxAtoms`、`emitAccMaskCheck`。
+- `pkg/kunai/codegen/acc.go`: `buildAccPlan` (どの bracket と `where` の項を
+  accumulator にするか判定、`never`、`folded`、`rest` の振り分け、拒否理由)、
+  `accMaxAtoms`、`emitAccMaskCheck`。
 - `pkg/kunai/codegen/parser_loop.go`: `emitMultiStateCallback` (cursor forget +
   分岐ガード免除)、`emitAccPrelude` (atom 評価 + acc forget)。
 - `internal/program/tcp_accumulator_load_test.go`: `TestBpfTCPAccumulator{XDP,TC}`
   で 2/3/4/8/14 atom が 6.1〜7.0 の全カーネルで load することを検証する (vimto matrix)。
 - `pkg/kunai/dsltest/acc_correctness_test.go`: forget がランタイムの判定結果を
   壊していないこと (一致で match、欠け / 不一致で reject) を検証する。
+- `pkg/kunai/dsltest/option_bracket_test.go` の `TestBracketTwoOptionAccumulator`:
+  bracket の `==` を畳んだ filter を、stack を 0x00 と 0xff で埋めて検証する。
+- `pkg/kunai/compile_test.go` の `TestCompileBracketOptionsFoldIntoAccumulator`:
+  畳んだ形に walk 後の slot 読み出しが無いこと、mask の bit 数、拒否理由を検証する。

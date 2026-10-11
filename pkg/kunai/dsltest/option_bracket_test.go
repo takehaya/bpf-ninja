@@ -1,10 +1,14 @@
 package dsltest
 
 import (
+	"fmt"
 	"net"
 	"testing"
 
 	"github.com/google/gopacket/layers"
+
+	"github.com/takehaya/bpf-ninja/pkg/kunai"
+	"github.com/takehaya/bpf-ninja/pkg/kunai/codegen"
 )
 
 // buildTCPWithOptions is an Ethernet/IPv4/TCP frame carrying opts.
@@ -209,4 +213,134 @@ func TestBracketOptionPlus(t *testing.T) {
 	o.IPv4Options = []layers.IPv4Option{rrOpt(4)}
 	r.MustMatch(t, Build(t, o), "single 4")
 	r.MustMatch(t, BuildEthIPIPTCP(t, IPIPOpts{Depth: 3, OuterOptions: []layers.IPv4Option{rrOpt(4)}, InnerOptions: []layers.IPv4Option{rrOpt(4)}}), "depth3 all 4")
+}
+
+// TestBracketTwoOptionAccumulator: bracket equalities on two TCP options
+// fold into the accumulator walk, alone, next to a primary-header
+// predicate, next to a where clause that reads no option, and on an
+// alternation member whose where term makes an unmatched member fail
+// anyway. Each runs with the kunai stack filled with 0x00 and 0xff, so
+// the accumulator's zeroing is what the verdict sees.
+func TestBracketTwoOptionAccumulator(t *testing.T) {
+	ws := func(s byte) layers.TCPOption {
+		return layers.TCPOption{OptionType: layers.TCPOptionKindWindowScale, OptionLength: 3, OptionData: []byte{s}}
+	}
+	withPort := func(dport uint16, opts ...layers.TCPOption) []byte {
+		o := Defaults()
+		o.DstPort, o.TCPOptions = dport, opts
+		return Build(t, o)
+	}
+	for _, c := range []struct {
+		expr  string
+		dport bool // the filter also requires dport 80
+	}{
+		{"eth/ipv4/tcp[mss.value == 1460, ws.shift == 7]", false},
+		{"eth/ipv4/tcp[options.MSS.value == 1460, options.WS.shift == 7]", false},
+		{"eth/ipv4/tcp[dport == 80, mss.value == 1460, ws.shift == 7]", true},
+		{"eth/ipv4/tcp[mss.value == 1460, ws.shift == 7] where tcp.dport == 80", true},
+		{"eth/ipv4/tcp[mss.value == 1460] where tcp.ws.shift == 7 and tcp.dport == 80", true},
+	} {
+		expr := c.expr
+		for _, fill := range []int32{0, -1} {
+			t.Run(fmt.Sprintf("%s/fill=%d", expr, fill), func(t *testing.T) {
+				out, err := kunai.Compile(expr, codegen.Capabilities{})
+				if err != nil {
+					t.Fatal(err)
+				}
+				r := NewFromOutputStackFilled(t, expr, out, 0, fill)
+				r.MustMatch(t, withPort(80, mssOption(1460), ws(7)), "MSS then WS")
+				r.MustMatch(t, withPort(80, ws(7), tsOption(1), mssOption(1460)), "WS, TS, MSS")
+				r.MustReject(t, withPort(80, mssOption(1460)), "no WS")
+				r.MustReject(t, withPort(80, ws(7)), "no MSS")
+				r.MustReject(t, withPort(80, mssOption(1460), ws(8)), "WS 8")
+				r.MustReject(t, withPort(80, mssOption(1400), ws(7)), "MSS 1400")
+				r.MustReject(t, withPort(80), "no options")
+				if c.dport {
+					r.MustReject(t, withPort(81, mssOption(1460), ws(7)), "dport 81")
+				} else {
+					r.MustMatch(t, withPort(81, mssOption(1460), ws(7)), "dport 81")
+				}
+				r.MustReject(t, tcpWithRawOptions(t, 8, []byte{2, 4, 5, 180, 3, 3, 7, 99, 1, 0, 0, 0}, nil), "both before a malformed TLV")
+			})
+		}
+	}
+	withRR := func(ptr byte, opts ...layers.TCPOption) []byte {
+		o := Defaults()
+		o.IPv4Options, o.TCPOptions = []layers.IPv4Option{rrOpt(ptr)}, opts
+		return Build(t, o)
+	}
+	udp := BuildEthIPv4UDP(t, 1234, 5678, []byte{0xde, 0xad})
+	type verdict struct {
+		pkt   []byte
+		match bool
+		desc  string
+	}
+	for _, c := range []struct {
+		expr string
+		want []verdict
+	}{
+		{"eth/ipv4/tcp[mss.value == 1460, ws.shift == -1]", []verdict{
+			{withPort(80, mssOption(1460), ws(0xff)), true, "shift 255 is -1 at 8 bits"},
+			{withPort(80, mssOption(1460), ws(0x7f)), false, "shift 127"},
+		}},
+		{"eth/ipv4/(tcp[mss.value == 1460, ws.shift == 7]|udp) where tcp.options.valid", []verdict{
+			{withPort(80, mssOption(1460), ws(7)), true, "tcp with both"},
+			{withPort(80, mssOption(1460)), false, "tcp without WS"},
+			{udp, false, "udp: the where term on tcp is false"},
+		}},
+		// The last occurrence of a repeated option decides, as on the
+		// position-slot path and in the spec.
+		{"eth/ipv4/tcp[mss.value == 1460, ws.shift == 7]", []verdict{
+			{withPort(80, mssOption(1460), mssOption(1400), ws(7)), false, "MSS 1460 then 1400"},
+			{withPort(80, mssOption(1400), mssOption(1460), ws(7)), true, "MSS 1400 then 1460"},
+		}},
+		{"eth/ipv4/tcp where tcp.mss.value == 1460 and tcp.ws.shift == 7", []verdict{
+			{withPort(80, mssOption(1460), mssOption(1400), ws(7)), false, "MSS 1460 then 1400"},
+			{withPort(80, mssOption(1400), mssOption(1460), ws(7)), true, "MSS 1400 then 1460"},
+		}},
+		// An optional layer with a where atom on it: absent tcp fails the
+		// where clause, as the folded check does.
+		{"eth/ipv4/tcp[mss.value == 1460, ws.shift == 7]? where tcp.dport == 80", []verdict{
+			{withPort(80, mssOption(1460), ws(7)), true, "tcp with both"},
+			{withPort(80, mssOption(1460)), false, "tcp without WS"},
+			{withPort(81, mssOption(1460), ws(7)), false, "dport 81"},
+			{udp, false, "no tcp"},
+		}},
+		// Another layer's option equality stays in the rest and reads that
+		// layer's own slot.
+		{"eth/ipv4/tcp where tcp.mss.value == 1460 and tcp.ws.shift == 7 and ipv4.rr.pointer == 4", []verdict{
+			{withRR(4, mssOption(1460), ws(7)), true, "RR pointer 4, both options"},
+			{withRR(8, mssOption(1460), ws(7)), false, "RR pointer 8"},
+			{withRR(4, mssOption(1460)), false, "no WS"},
+			{withPort(80, mssOption(1460), ws(7)), false, "no RR"},
+		}},
+		// A rest with `or` and `not`.
+		{"eth/ipv4/tcp[mss.value == 1460, ws.shift == 7] where not tcp.dport == 81 or ipv4.ttl == 1", []verdict{
+			{withPort(80, mssOption(1460), ws(7)), true, "dport 80"},
+			{withPort(81, mssOption(1460), ws(7)), false, "dport 81, ttl 64"},
+			{withPort(80, mssOption(1460)), false, "no WS"},
+		}},
+		// options.valid in the bracket next to the folded equalities.
+		{"eth/ipv4/tcp[options.valid, mss.value == 1460, ws.shift == 7]", []verdict{
+			{withPort(80, mssOption(1460), ws(7)), true, "both, well formed"},
+			{tcpWithRawOptions(t, 8, []byte{2, 4, 5, 180, 3, 3, 7, 99, 1, 0, 0, 0}, nil), false, "malformed region"},
+		}},
+	} {
+		for _, fill := range []int32{0, -1} {
+			t.Run(fmt.Sprintf("%s/fill=%d", c.expr, fill), func(t *testing.T) {
+				out, err := kunai.Compile(c.expr, codegen.Capabilities{})
+				if err != nil {
+					t.Fatal(err)
+				}
+				r := NewFromOutputStackFilled(t, c.expr, out, 0, fill)
+				for _, v := range c.want {
+					if v.match {
+						r.MustMatch(t, v.pkt, v.desc)
+					} else {
+						r.MustReject(t, v.pkt, v.desc)
+					}
+				}
+			})
+		}
+	}
 }
