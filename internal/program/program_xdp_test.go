@@ -86,6 +86,7 @@ var (
 		"eth/ipv4[rr.pointer == 4]+/tcp",
 		"eth/(ipv4|ipv6)/tcp[mss.value in [1400..1460]]",
 		"eth/vlan?/ipv4[rr.pointer == 4]+/tcp[mss.value == 1460]",
+		"eth/ipv4[options.RR.addrs[1].addr == 10.0.0.2]/tcp[options.SACK.blocks[1].right > 25]",
 		// flag-gated optional words (gre's C/K/S) read the flag byte
 		// back through the range-valued R4 left by ipv4's IHL.
 		"eth/ipv4/gre/ipv4/tcp",

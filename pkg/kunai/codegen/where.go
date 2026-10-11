@@ -695,14 +695,7 @@ func (c *whereCtx) emitCountGuard(countSrc *quantCountSource, idx int, skipLabel
 		if !ok {
 			return nil, fmt.Errorf("codegen: quantifier owner option %q not in demand set", countSrc.Owner.OutParam)
 		}
-		insns := emitDynamicAuxByteLoad(slot, countSrc.ByteOff, asm.Byte, skipLabel)
-		insns = append(insns,
-			asm.JLT.Imm(asm.R3, int32(countSrc.SubBefore), skipLabel),
-			asm.Sub.Imm(asm.R3, int32(countSrc.SubBefore)),
-			asm.RSh.Imm(asm.R3, int32(countSrc.RShAfter)),
-			asm.JLE.Imm(asm.R3, int32(idx), skipLabel),
-		)
-		return insns, nil
+		return emitOwnerCountGuard(slot, countSrc, idx, skipLabel), nil
 	}
 	if countSrc.Hdr == nil {
 		return nil, fmt.Errorf("codegen: count source of %s has neither a slot, an owner nor a header field", countSrc.Layer.DisplayName())
@@ -714,6 +707,21 @@ func (c *whereCtx) emitCountGuard(countSrc *quantCountSource, idx int, skipLabel
 	insns := emitHeaderCount(asm.R3, anchor, countSrc.Hdr, dslReject)
 	// `if R3 <= idx: skip` → `if R3 < idx+1: skip` → JLE.Imm(R3, idx, skip).
 	return append(insns, asm.JLE.Imm(asm.R3, int32(idx), skipLabel)), nil
+}
+
+// emitOwnerCountGuard jumps to skipLabel unless entry idx of a stack
+// inside an option is present: the option's length byte (read through
+// its position slot; an absent option jumps too) less its fixed prefix,
+// divided by the element size, must exceed idx. Shared by the where
+// clause's guard and the bracket predicates, which run after the walk.
+func emitOwnerCountGuard(slot int16, countSrc *quantCountSource, idx int, skipLabel string) asm.Instructions {
+	insns := emitDynamicAuxByteLoad(slot, countSrc.ByteOff, asm.Byte, skipLabel)
+	return append(insns,
+		asm.JLT.Imm(asm.R3, int32(countSrc.SubBefore), skipLabel),
+		asm.Sub.Imm(asm.R3, int32(countSrc.SubBefore)),
+		asm.RSh.Imm(asm.R3, int32(countSrc.RShAfter)),
+		asm.JLE.Imm(asm.R3, int32(idx), skipLabel),
+	)
 }
 
 // quantCountSource carries the runtime count of an aux header stack.

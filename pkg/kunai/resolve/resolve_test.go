@@ -962,3 +962,34 @@ func TestResolveAllExamples(t *testing.T) {
 		})
 	}
 }
+
+// TestResolveBracketNestedOptionPath: inside a bracket an option the walk
+// locates can be named the long way (`options.MSS.value`, the same ref as
+// `mss.value`) and a stack inside it through the option
+// (`options.SACK.blocks[0].left`); the stack alone is refused, in a bracket
+// and in a where clause, as in the spec.
+func TestResolveBracketNestedOptionPath(t *testing.T) {
+	long := resolveOK(t, "eth/ipv4/tcp[options.MSS.value == 1460]", nil)
+	short := resolveOK(t, "eth/ipv4/tcp[mss.value == 1460]", nil)
+	l, s := long.Layers[2].Predicates[0].Field, short.Layers[2].Predicates[0].Field
+	if l.Aux.OutParam != s.Aux.OutParam || l.Aux.FieldBitOff != s.Aux.FieldBitOff || l.Aux.FieldBitWidth != s.Aux.FieldBitWidth {
+		t.Errorf("options.MSS.value resolves to %+v, mss.value to %+v", *l.Aux, *s.Aux)
+	}
+	sack := resolveOK(t, "eth/ipv4/tcp[options.SACK.blocks[1].right == 5]", nil).Layers[2].Predicates[0].Field
+	if sack.Aux.OwnerOption == nil || sack.Aux.Stack == nil || !sack.Aux.Stack.IsStatic || sack.Aux.Stack.Static != 1 {
+		t.Errorf("options.SACK.blocks[1].right: aux %+v", *sack.Aux)
+	}
+	resolveOK(t, "eth/ipv4[options.RR.addrs[0].addr == 10.0.0.1]/tcp", nil)
+	for expr, want := range map[string]string{
+		"eth/ipv4/tcp[blocks[0].left == 5]":                       "tcp.blocks is reached through tcp.options.SACK",
+		"eth/ipv4/tcp where tcp.blocks[0].left == 5":              "tcp.blocks is reached through tcp.options.SACK",
+		"eth/ipv4/tcp[options.SACK.blocks.left == 5]":             "needs an index inside a bracket predicate",
+		"eth/ipv4/tcp[options.SACK.blocks[tcp.window].left == 5]": "requires a constant index",
+		"eth/ipv4/tcp[options.MSS.exists == 1]":                   "Bool atom of a where clause",
+		"eth/ipv4/tcp[options.NOPE.value == 1]":                   "no option named",
+		"eth/ipv4/tcp[opts.MSS.value == 1]":                       "nested field access",
+		"eth/ipv4/tcp[options[0].MSS.value == 1]":                 "does not take an index",
+	} {
+		resolveErr(t, expr, nil, want)
+	}
+}
