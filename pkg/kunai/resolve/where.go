@@ -1,7 +1,6 @@
 package resolve
 
 import (
-	"fmt"
 	"strings"
 
 	"github.com/takehaya/bpf-ninja/pkg/kunai/ast"
@@ -755,45 +754,27 @@ func (r *resolver) lookupByQualifier(name string, pos ast.Position) (*ir.LayerIn
 	}
 	var found *ir.LayerInstance
 	count := 0
-	repeated := false
 	for _, li := range r.flatLayers {
 		if li.Spec != nil && li.Spec.Name == name {
 			found = li
 			count++
-			if mayRepeat(li) {
-				repeated = true
-			}
 		}
 	}
 	switch {
 	case count == 0:
 		return nil, errorf(pos, "unknown label or protocol %q", name)
-	case count == 1 && !repeated:
+	case count == 1 && matchesNone(found):
+		return nil, errorf(pos, "protocol %q is quantified %s and matches no header", name, found.QuantText())
+	case count == 1 && !found.CanRepeat():
 		return found, nil
 	case count == 1:
-		return nil, errorf(pos, "protocol %q is ambiguous (quantifier %s may match several headers); qualify with an @label, which names the last one", name, quantText(found))
+		return nil, errorf(pos, "protocol %q is ambiguous (quantifier %s may match several headers); qualify with an @label, which names the last one", name, found.QuantText())
 	}
 	return nil, errorf(pos, "protocol %q is ambiguous (%d instances); qualify with an @label", name, count)
 }
 
-// mayRepeat reports whether a layer's quantifier admits more than one
-// header: `?` and `{n,1}` do not, `{n,m>1}`, `{n,}`, `+` and `*` do.
-func mayRepeat(l *ir.LayerInstance) bool {
-	switch l.Quant {
-	case ast.QuantPlus, ast.QuantStar:
-		return true
-	case ast.QuantRange:
-		return l.RangeMax != 1
-	}
-	return false
-}
-
-func quantText(l *ir.LayerInstance) string {
-	if l.Quant == ast.QuantRange {
-		if l.RangeMax < 0 {
-			return fmt.Sprintf("{%d,}", l.RangeMin)
-		}
-		return fmt.Sprintf("{%d,%d}", l.RangeMin, l.RangeMax)
-	}
-	return l.Quant.String()
+// matchesNone reports a `{0,0}` layer, which no bare name can read.
+func matchesNone(l *ir.LayerInstance) bool {
+	_, max := l.Bounds()
+	return max == 0
 }

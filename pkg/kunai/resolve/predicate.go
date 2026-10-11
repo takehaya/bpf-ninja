@@ -44,7 +44,7 @@ func (r *resolver) resolveBracketPredicate(ap *ast.Predicate, layer *ir.LayerIns
 	// the wrong (zeroed) key. (Alternation members are rejected in
 	// resolveAlternation.)
 	if ap.Kind == ast.PredInSet && layer.Quant != ast.QuantOne {
-		return nil, errorf(ap.Pos, "`in @%s` is only supported on a mandatory layer; %q here is optional/repeated (quantifier %s)", ap.SetName, layer.Spec.Name, layer.Quant)
+		return nil, errorf(ap.Pos, "`in @%s` is only supported on a mandatory layer; %q here is optional/repeated (quantifier %s)", ap.SetName, layer.Spec.Name, layer.QuantText())
 	}
 	// Bracket-predicate fit check: an integer literal must fit the
 	// field's effective bit width (dsl-types.md §7.2) and a network
