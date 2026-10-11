@@ -183,6 +183,30 @@ vector predIPv4 := {
   ast := { layers := [P "eth", .proto { name := "ipv4", preds := [.cmp (f "dst") .eq (.cidr4 0x0a000000 24), .cmp (f "src") .ne (.ipv4 0x0a000002)] }, P "tcp"] },
   expected := .accept [] }
 
+-- `in [...]` with address and CIDR alternatives: an OR of `==` and subnet tests.
+def ipv4Pred (p : Predicate) : Filter := { layers := [P "eth", .proto { name := "ipv4", preds := [p] }, P "tcp"] }
+def ethPred (p : Predicate) : Filter := { layers := [.proto { name := "eth", preds := [p] }, P "ipv4", P "tcp"] }
+vector predInListIPv4 := {
+  id := "pred-in-list-ipv4", ast := ipv4Pred (.inList (f "dst") [.ipv4 0x0a000001, .ipv4 0x0a000002]), expected := .accept [] }
+vector predInListIPv4Miss := {
+  id := "pred-in-list-ipv4-miss", ast := ipv4Pred (.inList (f "dst") [.ipv4 0x0a000003, .ipv4 0x0a000004]), expected := .reject }
+vector predInListCidr4 := {
+  id := "pred-in-list-cidr4", ast := ipv4Pred (.inList (f "src") [.ipv4 0xc0a80101, .cidr4 0x0a000000 8]), expected := .accept [],
+  note := "10.0.0.1 is in 10.0.0.0/8" }
+vector predInListCidr4Zero := {
+  id := "pred-in-list-cidr4-zero", ast := ipv4Pred (.inList (f "src") [.ipv4 0xc0a80101, .cidr4 0 0]), expected := .accept [],
+  note := "a /0 alternative matches every address" }
+vector predInListIPv4IntMixed := {
+  id := "pred-in-list-ipv4-int-mixed", ast := ipv4Pred (.inList (f "src") [.ipv4 0x0a000009, .int 0x0a000001]), expected := .accept [],
+  note := "an integer alternative on a bit<32> field is the address as a number" }
+vector predInListIPv4RangeMixed := {
+  id := "pred-in-list-ipv4-range-mixed", ast := ipv4Pred (.inList (f "src") [.ipv4 0x0a000009, .range 0x0a000000 0x0a000005]), expected := .accept [] }
+vector predInListMac := {
+  id := "pred-in-list-mac", ast := ethPred (.inList (f "src") [.mac 0x112233445566, .mac 0x66778899aabb]), expected := .accept [] }
+vector predInListMacMiss := {
+  id := "pred-in-list-mac-miss", ast := ethPred (.inList (f "src") [.mac 0x66778899aabc, .mac 0x76778899aabb]), expected := .reject,
+  note := "one alternative differs in the last two octets, the other in the first four" }
+
 -- Captures (§13.6) ---------------------------------------------------------------
 
 vector capAll := {
@@ -416,6 +440,31 @@ vector ipv6DstLow48Mac := {
 vector ipv6DstFullSliceIPv6 := {
   id := "ipv6-dst-full-slice-ipv6-literal", ast := W6 (.litCmp ⟨[("ipv6", none), ("dst", some (.slice 0 128))]⟩ .eq (.ipv6 v6LowTen)),
   packet := v6pkt v6Src1 v6LowTen, expected := .accept [], note := "a full-width slice is the field" }
+-- Bracket `in [...]` over a 128-bit field and its slices (src fc00::1, dst fc00::a00:1).
+def ipv6Pred (p : Predicate) : Filter := { layers := [P "eth", .proto { name := "ipv6", preds := [p] }, P "tcp"] }
+def v6Src3 : Nat := 0xfc000000000000000000000000000003
+vector predInListIPv6 := {
+  id := "pred-in-list-ipv6", ast := ipv6Pred (.inList (f "src") [.ipv6 v6Src3, .ipv6 v6Src1]), packet := v6pkt v6Src1 v6LowTen,
+  expected := .accept [] }
+vector predInListCidr6 := {
+  id := "pred-in-list-cidr6", ast := ipv6Pred (.inList (f "src") [.ipv6 v6Src3, .cidr6 0xfc000000000000000000000000000000 16]),
+  packet := v6pkt v6Src1 v6LowTen, expected := .accept [], note := "fc00::1 is in fc00::/16, a mask on the high half only" }
+vector predInListCidr6LowHalf := {
+  id := "pred-in-list-cidr6-low-half", ast := ipv6Pred (.inList (f "src") [.cidr6 0xfc000000000000000000000000000000 100]),
+  packet := v6pkt v6Src1 v6LowTen, expected := .accept [], note := "a /100 masks both halves; the low 28 bits of fc00::1 are outside the prefix" }
+vector predInListIPv6Miss := {
+  id := "pred-in-list-ipv6-miss", ast := ipv6Pred (.inList (f "src") [.ipv6 v6Src3, .cidr6 0xfd000000000000000000000000000000 16]),
+  packet := v6pkt v6Src1 v6LowTen, expected := .reject }
+vector predInListIPv6IntMixed := {
+  id := "pred-in-list-ipv6-int-mixed", ast := ipv6Pred (.inList (f "src") [.ipv6 v6Src3, .int 5]), packet := v6pkt v6Src1 v6LowTen,
+  expected := .reject, goStatus := .notImplemented,
+  note := "well-typed; Go compares a 128-bit field only against addresses of its own width inside a list" }
+vector ipv6DstLow32InListIPv4 := {
+  id := "ipv6-dst-low32-in-list-ipv4", ast := ipv6Pred (.inList ⟨[("dst", some (.slice 96 128))]⟩ [.ipv4 0x0a000002, .ipv4 0x0a000001]),
+  packet := v6pkt v6Src1 v6LowTen, expected := .accept [], note := "the sliced word is a bit<32>: IPv4 alternatives compare the last four bytes" }
+vector ipv6DstLow48InListMac := {
+  id := "ipv6-dst-low48-in-list-mac", ast := ipv6Pred (.inList ⟨[("dst", some (.slice 80 128))]⟩ [.mac 0x00000a000001]),
+  packet := v6pkt v6Src1 v6LowTen, expected := .accept [], note := "the sliced 48 bits as a MAC alternative" }
 vector ipv6DstFullSliceCidr6 := {
   id := "ipv6-dst-full-slice-cidr6-literal", ast := W6 (.litCmp ⟨[("ipv6", none), ("dst", some (.slice 0 128))]⟩ .eq (.cidr6 0xfc000000000000000000000000000000 16)),
   packet := v6pkt v6Src1 v6LowTen, expected := .accept [] }
@@ -853,6 +902,8 @@ def whereVectors : List Vector := [
   whereLabelRepeatedLast, whereLabelRepeatedFirstMiss, whereRepeatedUnlabelled, wherePastQuantified, whereLabels, whereAmbiguous,
   actionEntry, actionHit, actionMiss, actionUnknown,
   predCmp, predCmpMiss, predInList, predInListMiss, predInRange, typPredInRangeWide, typPredCmpRange, predInRangeMiss, predNegative, predIPv4,
+  predInListIPv4, predInListIPv4Miss, predInListCidr4, predInListCidr4Zero, predInListIPv4IntMixed, predInListIPv4RangeMixed, predInListMac, predInListMacMiss,
+  predInListIPv6, predInListCidr6, predInListCidr6LowHalf, predInListIPv6Miss, predInListIPv6IntMixed, ipv6DstLow32InListIPv4, ipv6DstLow48InListMac,
   capAll, capWhereFalse, capWhereTrue, capLabel, capAbsent, capPresent, capAltMemberPresent, capAltMemberAbsent, capAltMemberByName,
   capHeadersIPv4Options, capHeadersTCPOptions, capHeadersQuantOpt, capHeadersQuantRange, capHeadersQuantPlusClamped, capHeadersQuantPlus, capHeadersQuantOpen,
   capHeadersAltIPv6, capHeadersAltIPv4, capHeadersVxlan, capHeadersPlusOptions,

@@ -532,6 +532,19 @@ vector srv6BracketSlice := {
 vector srv6BracketSliceAbsent := {
   id := "srv6-segments-bracket-slice-absent", ast := { layers := srv6Br (.cmp ⟨[("segments", some (.nat 1)), ("addr", some (.slice 64 128))]⟩ .ne (.int 2)) },
   packet := srv6Pkt 0 [s1], expected := .reject, note := "D-031 in a bracket: the sliced read of an entry that was not extracted is false, for != too" }
+-- `in [...]` over a segment: address and CIDR alternatives, absent entry false.
+vector srv6BracketInList := {
+  id := "srv6-segments-bracket-in-list", ast := { layers := srv6Br (.inList (segBr 1) [.ipv6 s1, .ipv6 s2]) },
+  packet := srv6Two, expected := .accept [] }
+vector srv6BracketInListCidr := {
+  id := "srv6-segments-bracket-in-list-cidr", ast := { layers := srv6Br (.inList (segBr 1) [.ipv6 s1, .cidr6 0xfc000000000000000000000000000000 16]) },
+  packet := srv6Two, expected := .accept [], note := "segments[1] = fc00::2 is in fc00::/16" }
+vector srv6BracketInListAbsent := {
+  id := "srv6-segments-bracket-in-list-absent", ast := { layers := srv6Br (.inList (segBr 1) [.ipv6 s1, .ipv6 s2]) },
+  packet := srv6Pkt 0 [s1], expected := .reject, note := "D-031: an entry past last_entry is absent, so no alternative matches" }
+vector srv6BracketSliceInListIPv4 := {
+  id := "srv6-segments-bracket-slice-in-list-ipv4", ast := { layers := srv6Br (.inList ⟨[("segments", some (.nat 1)), ("addr", some (.slice 96 128))]⟩ [.ipv4 1, .ipv4 2]) },
+  packet := srv6Two, expected := .accept [], note := "the low 32 bits of fc00::2 are 0.0.0.2" }
 -- Network literals against a sliced segment: typed by the slice width.
 def segLow32 (i : Nat) : FieldPath := ⟨[("srv6", none), ("segments", some (.nat i)), ("addr", some (.slice 96 128))]⟩
 vector typSrv6SliceIPv6Lit := {
@@ -794,7 +807,7 @@ def auxVectors : List Vector := [
   ipv6Hbh, ipv6TwoExts, ipv6ExtLong, ipv6ExtTooLong, ipv6ExtsIndex, ipv6ExtsIndex1, ipv6ExtsIndexAfterLong, ipv6ExtsAnyAfterLong, ipv6ExtsDynamicLong, ipv6ExtsDynamicLongSecond, ipv6ExtsDynamicLongAbsent, ipv6ExtsDynamicLongLast, ipv6ExtsDynamicLongLastMiss, ipv6ExtsDynamicLongBeyond, ipv6ExtsDynamicLongSlot, ipv6ExtsDynamicLongSlotAbsent,
   ipv6ExtsBracket, ipv6ExtsBracketAbsent, ipv6ExtsBracketLong, ipv6ExtsBracketDynamic, ipv6ExtsBracketIter, ipv6ExtsBracketInAbsent, ipv6ExtsBracketInLong, ipv6ExtsSliceLong, ipv6ExtsBracketSliceLong, gtpExtsBracket, gtpExtsBracketAbsent, gtpExtsBracketNone, gtpExtsBracketMixed, gtpExtsBracketMixedMiss, ipv6ExtsIndexAbsent,
   ipv6NextHeaderWhere, ipv6NextHeaderBracket, altIPv6MemberWriteBack, altIPv6MemberWriteBackWhere, altIPv6MemberWriteBackMiss, ipv6FiveExts, ipv6SixExts, ipv6AnyExts, ipv6AllExts,
-  srv6TruncatedFails, typSrv6NoValid, geneveVersionOne, srv6SegWideLit, srv6Chain, srv6Static, srv6Dynamic, srv6Any, srv6All, srv6AllCidr, srv6IndexAbsent, srv6DynamicAtCount, srv6DynamicLast, srv6OptDynamicAtCount, srv6OptDynamicLast, srv6BracketIndexAbsent, srv6BracketIndex, srv6StaticSlice, srv6StaticSliceAbsent, srv6StaticSliceHigh, srv6StaticSliceArith, srv6StaticSliceNibble, srv6BracketSlice, srv6BracketSliceAbsent, typSrv6SliceIPv6Lit, typSrv6BracketSliceIPv6Lit, srv6SliceIPv4Lit, srv6SliceIPv4LitMiss, srv6SliceIPv4LitAbsent, srv6DynSliceIPv4Lit, srv6DynSliceIPv4LitNe, srv6DynSliceIPv4LitNeOther, srv6DynSliceMacLit, srv6BracketFullSliceIPv6Lit, srv6BracketSliceIPv4Lit, srv6OverCap, srv6OverCapAnyKept, srv6OverCapAnyDropped, srv6OverCapAll, srv6OverCapNotAll,
+  srv6TruncatedFails, typSrv6NoValid, geneveVersionOne, srv6SegWideLit, srv6Chain, srv6Static, srv6Dynamic, srv6Any, srv6All, srv6AllCidr, srv6IndexAbsent, srv6DynamicAtCount, srv6DynamicLast, srv6OptDynamicAtCount, srv6OptDynamicLast, srv6BracketIndexAbsent, srv6BracketIndex, srv6StaticSlice, srv6StaticSliceAbsent, srv6StaticSliceHigh, srv6StaticSliceArith, srv6StaticSliceNibble, srv6BracketSlice, srv6BracketSliceAbsent, srv6BracketInList, srv6BracketInListCidr, srv6BracketInListAbsent, srv6BracketSliceInListIPv4, typSrv6SliceIPv6Lit, typSrv6BracketSliceIPv6Lit, srv6SliceIPv4Lit, srv6SliceIPv4LitMiss, srv6SliceIPv4LitAbsent, srv6DynSliceIPv4Lit, srv6DynSliceIPv4LitNe, srv6DynSliceIPv4LitNeOther, srv6DynSliceMacLit, srv6BracketFullSliceIPv6Lit, srv6BracketSliceIPv4Lit, srv6OverCap, srv6OverCapAnyKept, srv6OverCapAnyDropped, srv6OverCapAll, srv6OverCapNotAll,
   srv6OverCapIndex, srv6OverCapLastEntry, srv6AtCapAll, srv6PastScratch, srv6TenSegs, srv6TwelveSegs, srv6OverstatedLastEntry,
   srv6OverCapAllOrTrue, srv6AbsentAllTrue, srv6AtCap,
   gtpEightExts, gtpNineExts, gtpTenExts, gtpPlain, gtpOptExists, gtpOptAbsent, gtpOptField, gtpOptFieldAbsent, gtpExtDynamicIndex, gtpExtLongFirst, gtpExtLengthZero, gtpExtStack,
