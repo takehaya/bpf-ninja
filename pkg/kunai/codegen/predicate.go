@@ -897,25 +897,27 @@ func requireEqualityOp(pred *ir.Predicate, kind string) error {
 // the field in host order, so a list with a range byte-swaps the
 // register once instead of swapping each constant.
 //
-// MVP scope (dsl-followups.md F7): integer and range alternatives, on
-// fields ≤ 64 bits. IPv4 / IPv6 / MAC / CIDR alternatives stay as
-// ErrNotImplemented since they would each need their own multi-
-// word emit path; fold them in when there's user demand.
+// Address alternatives (the resolver typed each against the field's
+// effective width, spec evalPred .inList: an OR of `==` and CIDR
+// membership tests) split by the window they need. An IPv4 host or CIDR
+// is a 32-bit integer and joins this load-once path, so it mixes freely
+// with integers and ranges on the same field. IPv6 / CIDR6 (16 bytes)
+// and MAC (6 bytes) do not fit one register and take emitInAddrList,
+// which reloads the field per alternative. An integer mixed into one of
+// those lists stays ErrNotImplemented, as `ipv6[dst == 5]` does.
 func emitInPredicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, error) {
 	if len(pred.List) == 0 {
 		return nil, fmt.Errorf("codegen: 'in' predicate has empty list")
 	}
-	hasRange := false
-	for _, v := range pred.List {
-		if v == nil || (v.Kind != ast.ValInt && v.Kind != ast.ValRange) {
-			return nil, fmt.Errorf("%w: 'in' predicate currently supports only integer and range alternatives (got %v)", ErrNotImplemented, vKindOf(v))
-		}
-		if v.Kind == ast.ValRange {
-			hasRange = true
-		}
-	}
 	if pred.Field == nil || pred.Field.Field == nil {
 		return nil, fmt.Errorf("codegen: 'in' predicate missing field reference")
+	}
+	shape, hasRange, trivial, err := classifyInList(pred.List)
+	if err != nil {
+		return nil, err
+	}
+	if shape != inListScalar {
+		return emitInAddrList(pred, pc, shape, trivial)
 	}
 	fieldBits := pred.Field.EffectiveBits()
 	if fieldBits <= 0 || fieldBits > 64 {
@@ -970,6 +972,13 @@ func emitInPredicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, error) 
 	if subByte {
 		insns = append(insns, emitSliceShiftMask(pred.Field, bytes)...)
 	}
+	// A /0 alternative matches every value: the list is true once the
+	// field is readable (an absent aux still fails through the gating or
+	// the entry walk above), and no compare may follow, or the kernel
+	// would see unreachable instructions after the unconditional match.
+	if trivial {
+		return insns, nil
+	}
 
 	matchLabel := nextPredicateMatchLabel()
 	// A range alternative's below-lo branch jumps to the next
@@ -1003,7 +1012,31 @@ func emitInPredicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, error) 
 			}
 			continue
 		}
-		value := v.Int
+		// An IPv4 CIDR masks a copy of the field (R2) so the register
+		// stays whole for the remaining alternatives; the mask and the
+		// network take the same byte order as the register. A /32 is a
+		// host, a /0 was caught by classifyInList.
+		if v.Kind == ast.ValCIDR && v.Prefix < 32 {
+			maskBE := uint64(ipv4PrefixMaskBE(v.Prefix))
+			netBE := uint64(binary.BigEndian.Uint32(v.V4[:])) & maskBE
+			if bytes > 1 && !hostOrder {
+				maskBE = swapValueBytes(maskBE, bytes)
+				netBE = swapValueBytes(netBE, bytes)
+			}
+			body := asm.Instructions{
+				asm.Mov.Reg(asm.R2, asm.R3),
+				asm.And.Imm(asm.R2, int32(uint32(maskBE))),
+			}
+			emit(append(body, cmpRegConst(asm.R2, asm.JEq, netBE, matchLabel)...))
+			continue
+		}
+		var value uint64
+		switch v.Kind {
+		case ast.ValIPv4, ast.ValCIDR:
+			value = uint64(binary.BigEndian.Uint32(v.V4[:]))
+		default:
+			value = v.Int
+		}
 		if fieldBits < 64 {
 			value &= (uint64(1) << fieldBits) - 1
 		}
@@ -1022,27 +1055,159 @@ func emitInPredicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, error) 
 	return insns, nil
 }
 
+// inListShape is the lowering an `in` list takes, decided by the widest
+// window its alternatives need.
+type inListShape int
+
+const (
+	inListScalar inListShape = iota // integers, ranges, IPv4 hosts and CIDRs: one load, N compares
+	inListIPv6                      // IPv6 hosts and CIDRs: 16-byte window, reload per alternative
+	inListMAC                       // MAC addresses: 6-byte window, reload per alternative
+)
+
+// classifyInList sorts the alternatives of an `in` list into one shape,
+// reports whether a range is present (the scalar path then compares in
+// host order) and whether a /0 CIDR makes the list trivially true. Mixed
+// kinds that no single register layout serves are ErrNotImplemented.
+func classifyInList(list []*ast.Value) (shape inListShape, hasRange, trivial bool, err error) {
+	var scalar, v6, mac bool
+	for _, v := range list {
+		if v == nil {
+			return 0, false, false, fmt.Errorf("codegen: nil alternative in 'in' list")
+		}
+		switch v.Kind {
+		case ast.ValInt:
+			scalar = true
+		case ast.ValRange:
+			scalar, hasRange = true, true
+		case ast.ValIPv4:
+			scalar = true
+		case ast.ValMAC:
+			mac = true
+		case ast.ValIPv6:
+			v6 = true
+		case ast.ValCIDR:
+			if v.Prefix == 0 {
+				trivial = true
+			}
+			if v.AF == 4 {
+				scalar = true
+			} else {
+				v6 = true
+			}
+		default:
+			return 0, false, false, fmt.Errorf("%w: 'in' predicate alternative of kind %v", ErrNotImplemented, v.Kind)
+		}
+	}
+	switch {
+	case scalar && !v6 && !mac:
+		return inListScalar, hasRange, trivial, nil
+	case v6 && !scalar && !mac:
+		return inListIPv6, false, trivial, nil
+	case mac && !scalar && !v6:
+		return inListMAC, false, false, nil
+	}
+	return 0, false, false, fmt.Errorf("%w: 'in' list mixes integer alternatives with IPv6 or MAC addresses; a 128-bit or 48-bit field compares only against addresses of its own width", ErrNotImplemented)
+}
+
+// emitInAddrList lowers an `in` list of IPv6 (with CIDR6) or MAC
+// alternatives. The field is wider than one register, so each
+// alternative reloads it chunk by chunk through the loadAt closure (the
+// prelude, gating and any entry-address compute run once) and compares
+// with the same body the single-literal predicate uses, failing to the
+// next alternative and jumping to the shared match landing on success.
+// The last alternative fails straight to dslReject and falls through to
+// the landing. Constants live in R2 (ipv6AuxHalfCheck, macCheck), so the
+// body is valid in every bracket mode, including the one where R5 holds
+// the entry address, and nothing touches the stack, so the callback
+// replay of a repeated layer can run it.
+func emitInAddrList(pred *ir.Predicate, pc *predCtx, shape inListShape, trivial bool) (asm.Instructions, error) {
+	bytes, kind := 16, "IPv6 literal"
+	if shape == inListMAC {
+		bytes, kind = 6, "MAC literal"
+	}
+	insns, loadAt, err := bracketLoadAt(pred.Field, pc, bytes, kind)
+	if err != nil {
+		return nil, err
+	}
+	if trivial {
+		// A /0 alternative matches every address once the field is
+		// readable; see emitInPredicate.
+		return insns, nil
+	}
+	match := nextPredicateMatchLabel()
+	pending := ""
+	emit := func(ins asm.Instructions) {
+		if pending != "" {
+			ins[0] = ins[0].WithSymbol(pending)
+			pending = ""
+		}
+		insns = append(insns, ins...)
+	}
+	for i, v := range pred.List {
+		last := i+1 == len(pred.List)
+		fail := dslReject
+		if !last {
+			fail = nextPredicateLabel(predInNextLabelPrefix)
+		}
+		emit(emitAddrAlternative(v, loadAt, fail))
+		if !last {
+			insns = append(insns, asm.Ja.Label(match))
+			pending = fail
+		}
+	}
+	if len(pred.List) > 1 {
+		insns = append(insns, landingNoop(match))
+	}
+	return insns, nil
+}
+
+// emitAddrAlternative is one alternative of emitInAddrList: the chunked
+// equality (or masked CIDR) test of the field against v, every mismatch
+// jumping to failLabel and a match falling through. classifyInList has
+// excluded a /0 CIDR, so the body is never empty.
+func emitAddrAlternative(v *ast.Value, loadAt auxLoadAt, failLabel string) asm.Instructions {
+	switch v.Kind {
+	case ast.ValMAC:
+		highLE, lowLE := macLiteralLE(v)
+		return macCheck(loadAt, highLE, lowLE, failLabel)
+	case ast.ValIPv6, ast.ValCIDR:
+		maskHigh, maskLow := ^uint64(0), ^uint64(0)
+		if v.Kind == ast.ValCIDR {
+			maskHigh, maskLow = ipv6PrefixMaskBE(v.Prefix)
+		}
+		highBE := binary.BigEndian.Uint64(v.V6[0:8]) & maskHigh
+		lowBE := binary.BigEndian.Uint64(v.V6[8:16]) & maskLow
+		var body asm.Instructions
+		if maskHigh != 0 {
+			body = append(body, ipv6AuxHalfCheck(loadAt, 0, maskHigh, highBE, failLabel)...)
+		}
+		if maskLow != 0 {
+			body = append(body, ipv6AuxHalfCheck(loadAt, 8, maskLow, lowBE, failLabel)...)
+		}
+		return body
+	}
+	return nil
+}
+
 // cmpR3Const compares R3 against a constant: a single immediate compare
 // when the value fits int32, else `LoadImm R5; <op>.Reg` so the compare
 // stays an unsigned 64-bit one instead of sign-extending the immediate
 // (the same shape as cmpRegEqU32, for any width up to 64 bits).
 func cmpR3Const(jumpOp asm.JumpOp, value uint64, label string) asm.Instructions {
+	return cmpRegConst(asm.R3, jumpOp, value, label)
+}
+
+// cmpRegConst is cmpR3Const for any register; the wide constant still
+// goes through R5, so reg must not be R5.
+func cmpRegConst(reg asm.Register, jumpOp asm.JumpOp, value uint64, label string) asm.Instructions {
 	if value <= 0x7FFFFFFF {
-		return asm.Instructions{jumpOp.Imm(asm.R3, int32(value), label)}
+		return asm.Instructions{jumpOp.Imm(reg, int32(value), label)}
 	}
 	return asm.Instructions{
 		asm.LoadImm(asm.R5, int64(value), asm.DWord),
-		jumpOp.Reg(asm.R3, asm.R5, label),
+		jumpOp.Reg(reg, asm.R5, label),
 	}
-}
-
-// vKindOf is a nil-safe ValueKind extractor used in error messages
-// to keep the formatter from blowing up on a malformed predicate.
-func vKindOf(v *ast.Value) ast.ValueKind {
-	if v == nil {
-		return ast.ValueKind(0)
-	}
-	return v.Kind
 }
 
 // predMatchLabelPrefix is the label prefix multiWordRoute uses for

@@ -73,3 +73,57 @@ func TestInListRangeHostOrder(t *testing.T) {
 		}
 	}
 }
+
+// TestInListAddressAlternatives pins the shape of address alternatives in
+// an `in` list: an IPv4 host joins the load-once compares (one JEq per
+// address, byte-swapped like an integer), a CIDR masks a copy in R2, and
+// an IPv6 list reloads the field per alternative with its constants in R2.
+func TestInListAddressAlternatives(t *testing.T) {
+	count := func(insns asm.Instructions, pred func(asm.Instruction) bool) int {
+		n := 0
+		for _, ins := range insns {
+			if pred(ins) {
+				n++
+			}
+		}
+		return n
+	}
+	jeq := func(reg asm.Register, c int64) func(asm.Instruction) bool {
+		return func(ins asm.Instruction) bool {
+			return ins.OpCode.JumpOp() == asm.JEq && ins.OpCode.Source() == asm.ImmSource && ins.Dst == reg && ins.Constant == c
+		}
+	}
+	// A 64-bit constant into R2; the parser machine's callback reference
+	// (`LdImmDW R2, <cb>`) carries a symbol and is not one.
+	ldR2 := func(ins asm.Instruction) bool {
+		return ins.OpCode.Class() == asm.LdClass && ins.OpCode.Mode() == asm.ImmMode && ins.Dst == asm.R2 && ins.Reference() == ""
+	}
+	andR2 := func(ins asm.Instruction) bool { return ins.OpCode.ALUOp() == asm.And && ins.Dst == asm.R2 }
+
+	v4 := compileBundled(t, "eth/ipv4[dst in [10.0.0.1, 10.0.0.0/24, 7]]/tcp").Main
+	if got := count(v4, jeq(asm.R3, 0x0100000a)); got != 1 {
+		t.Errorf("ipv4 host: %d `JEq R3, 0x0100000a`, want 1", got)
+	}
+	if got := count(v4, jeq(asm.R3, 0x07000000)); got != 1 {
+		t.Errorf("integer 7 byte-swapped: %d `JEq R3, 0x07000000`, want 1", got)
+	}
+	if got := count(v4, andR2); got != 1 {
+		t.Errorf("cidr: %d `And R2`, want 1", got)
+	}
+	if got := count(v4, jeq(asm.R2, 0x0000000a)); got != 1 {
+		t.Errorf("cidr network LE: %d `JEq R2, 0x0a`, want 1", got)
+	}
+
+	v6 := compileBundled(t, "eth/ipv6[dst in [fc00::1, fc00::2, fc00::/32]]/tcp").Main
+	// Two hosts need two DWord constants each, the /32 one masked half:
+	// mask and network, five 64-bit immediates into R2 in total.
+	if got := count(v6, ldR2); got != 6 {
+		t.Errorf("ipv6 list: %d `LdImmDW R2`, want 6", got)
+	}
+	loads := count(v6, func(ins asm.Instruction) bool {
+		return ins.OpCode.Class() == asm.LdXClass && ins.OpCode.Size() == asm.DWord && ins.Offset < 0 && ins.Src == asm.R3
+	})
+	if loads != 5 {
+		t.Errorf("ipv6 list: %d bounded DWord loads, want 5 (two per host, one for the masked half)", loads)
+	}
+}

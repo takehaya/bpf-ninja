@@ -1110,17 +1110,216 @@ func TestCompileBracketIPv6OrderedCmp(t *testing.T) {
 	}
 }
 
-func TestCompileBracketInIPv4AlternativesNotYetWired(t *testing.T) {
-	// MVP scope: integer alternatives only. IPv4/IPv6/MAC alternatives
-	// would each need their own multi-word emit path, so they surface
-	// as ErrNotImplemented for now.
-	_, err := compileForTest("eth/ipv4[src in [10.0.0.1, 10.0.0.2]]/tcp")
-	if err == nil {
-		t.Fatal("expected ErrNotImplemented for IPv4 alternatives")
+// countInsns counts the instructions of insns that satisfy pred.
+func countInsns(insns asm.Instructions, pred func(asm.Instruction) bool) int {
+	n := 0
+	for _, ins := range insns {
+		if pred(ins) {
+			n++
+		}
 	}
-	if !errors.Is(err, codegen.ErrNotImplemented) {
-		t.Fatalf("err = %v; want ErrNotImplemented", err)
+	return n
+}
+
+// isJumpImm reports a `op reg, imm → label` compare against c.
+func isJumpImm(op asm.JumpOp, reg asm.Register, c int64) func(asm.Instruction) bool {
+	return func(ins asm.Instruction) bool {
+		return ins.OpCode.JumpOp() == op && ins.OpCode.Source() == asm.ImmSource && ins.Dst == reg && ins.Constant == c
 	}
+}
+
+// isLdImm64 reports a 64-bit immediate load of c into reg.
+func isLdImm64(reg asm.Register, c int64) func(asm.Instruction) bool {
+	return func(ins asm.Instruction) bool {
+		return ins.OpCode.Class() == asm.LdClass && ins.OpCode.Mode() == asm.ImmMode && ins.Dst == reg && ins.Constant == c
+	}
+}
+
+func isSwap(ins asm.Instruction) bool {
+	return ins.OpCode.Class() == asm.ALUClass && ins.OpCode.ALUOp() == asm.Swap
+}
+
+func TestCompileBracketInIPv4Alternatives(t *testing.T) {
+	// An IPv4 alternative is a 32-bit integer: the list stays on the
+	// load-once path and each address becomes one JEq against the
+	// byte-swapped constant (10.0.0.1 → 0x0100000a), with no byte swap.
+	insns, err := compileForTest("eth/ipv4[src in [10.0.0.1, 10.0.0.2]]/tcp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := countInsns(insns, isJumpImm(asm.JEq, asm.R3, 0x0100000a)); n != 1 {
+		t.Errorf("JEq R3, 0x0100000a: %d, want 1", n)
+	}
+	if n := countInsns(insns, isJumpImm(asm.JEq, asm.R3, 0x0200000a)); n != 1 {
+		t.Errorf("JEq R3, 0x0200000a: %d, want 1", n)
+	}
+	if n := countInsns(insns, isSwap); n != 0 {
+		t.Errorf("%d byte swaps, want 0", n)
+	}
+	// A CIDR alternative masks a copy in R2 so the loaded word survives
+	// for the next alternative; /8 in LE register order is 0xff.
+	insns, err = compileForTest("eth/ipv4[src in [10.0.0.0/8, 192.168.1.1]]/tcp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, ins := range insns {
+		if ins.OpCode.ALUOp() == asm.And && ins.Dst == asm.R2 {
+			if ins.Constant != 0xff {
+				t.Fatalf("And R2 mask = %#x, want 0xff", ins.Constant)
+			}
+			if prev := insns[i-1]; prev.OpCode.ALUOp() != asm.Mov || prev.Dst != asm.R2 || prev.Src != asm.R3 {
+				t.Fatalf("instruction before the mask = %v; want Mov R2, R3", prev)
+			}
+			if next := insns[i+1]; next.OpCode.JumpOp() != asm.JEq || next.Dst != asm.R2 || next.Constant != 0x0a {
+				t.Fatalf("instruction after the mask = %v; want JEq R2, 0x0a", next)
+			}
+			break
+		}
+	}
+	if n := countInsns(insns, isJumpImm(asm.JEq, asm.R3, 0x0101a8c0)); n != 1 {
+		t.Errorf("JEq R3, 192.168.1.1 LE: %d, want 1", n)
+	}
+	// With a range in the list the register is in host order, so the
+	// mask and the network are too.
+	insns, err = compileForTest("eth/ipv4[src in [10.0.0.0/8, 1..5]]/tcp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := countInsns(insns, isSwap); n != 1 {
+		t.Errorf("%d byte swaps, want 1", n)
+	}
+	if n := countInsns(insns, func(ins asm.Instruction) bool {
+		return ins.OpCode.ALUOp() == asm.And && ins.Dst == asm.R2 && ins.Constant == int64(int32(-16777216))
+	}); n != 1 {
+		t.Errorf("And R2, 0xff000000: %d, want 1", n)
+	}
+	if n := countInsns(insns, isJumpImm(asm.JEq, asm.R2, 0x0a000000)); n != 1 {
+		t.Errorf("JEq R2, 0x0a000000: %d, want 1", n)
+	}
+	// A /0 alternative makes the list true: no compare and no match
+	// landing at all.
+	insns, err = compileForTest("eth/ipv4[src in [0.0.0.0/0, 10.0.0.1]]/tcp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := countInsns(insns, isJumpImm(asm.JEq, asm.R3, 0x0100000a)); n != 0 {
+		t.Errorf("JEq after a /0 alternative: %d, want 0", n)
+	}
+}
+
+func TestCompileBracketInSlicedIPv4Alternatives(t *testing.T) {
+	// The sliced word is loaded through the slice path (host order after
+	// one swap), so the alternatives compare against the plain addresses.
+	insns, err := compileForTest("eth/ipv6[dst[96:128] in [10.0.0.1, 10.0.0.2]]/tcp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := countInsns(insns, isSwap); n != 1 {
+		t.Errorf("%d byte swaps, want 1", n)
+	}
+	for _, c := range []int64{0x0a000001, 0x0a000002} {
+		if n := countInsns(insns, isJumpImm(asm.JEq, asm.R3, c)); n != 1 {
+			t.Errorf("JEq R3, %#x: %d, want 1", c, n)
+		}
+	}
+}
+
+func TestCompileBracketInIPv6Alternatives(t *testing.T) {
+	// fc00::1 as two LE DWords: high 0x00000000000000fc, low
+	// 0x0100000000000000. fc00::/16 masks the high half only, so the
+	// second alternative loads one half and compares it against 0xfc.
+	insns, err := compileForTest("eth/ipv6[src in [fc00::1, fc00::/16]]/tcp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []int64{0xfc, 0x0100000000000000, 0xffff, 0xfc} {
+		if n := countInsns(insns, isLdImm64(asm.R2, c)); n < 1 {
+			t.Errorf("no LdImmDW R2, %#x", c)
+		}
+	}
+	if n := countInsns(insns, isLdImm64(asm.R2, 0xfc)); n != 2 {
+		t.Errorf("LdImmDW R2, 0xfc: %d, want 2 (the host's high half and the masked network)", n)
+	}
+	next, match := 0, 0
+	for _, ins := range insns {
+		if strings.HasPrefix(ins.Symbol(), "dsl_pred_in_next_") {
+			next++
+		}
+		if ins.OpCode.JumpOp() == asm.Ja && strings.HasPrefix(ins.Reference(), "dsl_pred_match_") {
+			match++
+		}
+	}
+	if next != 1 || match != 1 {
+		t.Errorf("next labels %d, jumps to the match landing %d; want 1 and 1", next, match)
+	}
+	// A /0 alternative: the list is true, no compare follows the load.
+	insns, err = compileForTest("eth/ipv6[src in [::/0, fc00::1]]/tcp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := countInsns(insns, func(ins asm.Instruction) bool { return ins.OpCode.JumpOp() == asm.JNE && ins.Src == asm.R2 }); n != 0 {
+		t.Errorf("JNE against R2 after a /0 alternative: %d, want 0", n)
+	}
+}
+
+func TestCompileBracketInMACAlternatives(t *testing.T) {
+	// Each MAC alternative reloads the Word and the Half; constants are
+	// the LE forms aa:bb:cc:dd → 0xddccbbaa, ee:ff → 0xffee.
+	insns, err := compileForTest("eth[src in [aa:bb:cc:dd:ee:ff, 11:22:33:44:55:66]]/ipv4/tcp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []int64{0xddccbbaa, 0xffee, 0x44332211, 0x6655} {
+		if n := countInsns(insns, isLdImm64(asm.R2, c)); n != 1 {
+			t.Errorf("LdImmDW R2, %#x: %d, want 1", c, n)
+		}
+	}
+	words := countInsns(insns, func(ins asm.Instruction) bool {
+		return ins.OpCode.Class() == asm.LdXClass && ins.OpCode.Size() == asm.Word && ins.Offset == -4
+	})
+	halves := countInsns(insns, func(ins asm.Instruction) bool {
+		return ins.OpCode.Class() == asm.LdXClass && ins.OpCode.Size() == asm.Half && ins.Offset == -2
+	})
+	if words < 2 || halves < 2 {
+		t.Errorf("bounded loads: %d words, %d halves; want at least 2 each", words, halves)
+	}
+	// A 48-bit slice window is a MAC-sized field too.
+	if _, err := compileForTest("eth/ipv6[dst[80:128] in [00:00:0a:00:00:01, 00:00:0a:00:00:02]]/tcp"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCompileBracketInMixedKindsRefused(t *testing.T) {
+	// A 128-bit or 48-bit field compares only against addresses of its
+	// own width inside a list.
+	for _, expr := range []string{
+		"eth/ipv6[dst in [fc00::1, 5]]/tcp",
+		"eth[dst in [aa:bb:cc:dd:ee:ff, 5]]/ipv4/tcp",
+	} {
+		_, err := compileForTest(expr)
+		if !errors.Is(err, codegen.ErrNotImplemented) {
+			t.Errorf("%s: err = %v; want ErrNotImplemented", expr, err)
+		}
+	}
+}
+
+func TestCompileMACLiteralPrimaryLoadIsBounded(t *testing.T) {
+	// The first MAC chunk is a Word at [ptr-4] whose pointer was proven
+	// against R1 right before the load.
+	insns, err := compileForTest("eth[dst == aa:bb:cc:dd:ee:ff]/ipv4/tcp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, ins := range insns {
+		if ins.OpCode.Class() != asm.LdXClass || ins.OpCode.Size() != asm.Word || ins.Offset != -4 {
+			continue
+		}
+		if prev := insns[i-1]; prev.OpCode.JumpOp() != asm.JGT || prev.Src != asm.R1 {
+			t.Fatalf("instruction before the MAC word load = %v; want JGT ptr, R1", prev)
+		}
+		return
+	}
+	t.Fatal("no word load at [ptr-4] found")
 }
 
 func TestCompileWhereBareBoolExistsAux(t *testing.T) {
