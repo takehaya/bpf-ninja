@@ -1739,8 +1739,8 @@ func (c *whereCtx) genArithFieldLoad(f *ir.FieldRef) (asm.Instructions, error) {
 		return nil, err
 	}
 	insns, bytes, size, err := emitScalarFieldLoad(f, fieldLoadSite{
-		gate:      anchor,
-		load:      anchor,
+		gate:       anchor,
+		load:       anchor,
 		entryAddr:  c.stackEntryAddress,
 		optionSlot: c.dynamicOffsetSlotFor,
 		fail:       c.absent(),
@@ -2478,11 +2478,7 @@ func (c *whereCtx) genOwnerBoundCIDRv6(w *ir.Condition, prelude asm.Instructions
 // callback wrote the per-packet offset to). Callers fall through
 // to other where paths when the aux isn't dynamic-eligible.
 func (c *whereCtx) dynamicOffsetSlotFor(f *ir.FieldRef) (int16, bool) {
-	layout := dynamicAuxLayoutOf(f)
-	if layout == nil {
-		return 0, false
-	}
-	return c.queried.dynamicAuxSlotForLayout(f.Layer, layout)
+	return c.queried.optionSlotFor(f)
 }
 
 // stackEntryAddress is the where-side emitStackEntryAddress: a dynamic

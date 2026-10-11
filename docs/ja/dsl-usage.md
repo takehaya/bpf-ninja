@@ -132,7 +132,7 @@ eth/ipv4/udp/gtp[opt.next_ext == 0]/ipv4/tcp     # GTP の auxiliary header opt 
 
 ただし `gtp.exts` や `srv6.segments` などの aux header stack には index または `where any/all(...)` が必要です。詳細は §Where 節を参照してください。
 
-TCP / IPv4 / Geneve の option (`tcp[mss.value == 1460]` や `ipv4[rr.pointer == 4]` など) も bracket で参照できます。parser が option 領域を走査して位置を決めるため、これらの bracket 条件は走査が終わった後に評価します。option が無いパケットでは条件は偽になり、`!=` も成り立ちません。同じ layer で 2 種類以上の option を参照するフィルタは、すべての option を `where` 句の `==` の AND で書いたときだけ受け付けるので、bracket の option 条件は `where` 句に移します。
+TCP / IPv4 / Geneve の option (`tcp[mss.value == 1460]` や `ipv4[rr.pointer == 4]` など) も bracket で参照できます。parser が option 領域を走査して位置を決めるため、これらの bracket 条件は走査が終わった後に評価します。option が無いパケットでは条件は偽になり、`!=` も成り立ちません。TCP では、2 種類以上の option を参照するフィルタはすべての option を `where` 句の `==` の AND で書いたときだけ受け付けます。このため、TCP の option を 2 種類以上使うときは bracket の option 条件も `where` 句に移します。IPv4 と Geneve の option にはこの制限がありません。
 
 ### Where 節
 

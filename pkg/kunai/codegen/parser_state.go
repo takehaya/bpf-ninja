@@ -148,15 +148,9 @@ func genParserMachineIter(layer *ir.LayerInstance, layerIdx int, all []*ir.Layer
 		entryAnchor := pmCtx.entryAnchor()
 		pcPost := &predCtx{
 			stackCount: func(f *ir.FieldRef) (int16, bool) { return qo.stackCountSlot(f.Layer, f.Aux.OutParam) },
-			optionSlot: func(f *ir.FieldRef) (int16, bool) {
-				layout := dynamicAuxLayoutOf(f)
-				if layout == nil {
-					return 0, false
-				}
-				return qo.dynamicAuxSlotForLayout(f.Layer, layout)
-			},
-			validSlot: qo.validSlot,
-			anchor:    &entryAnchor,
+			optionSlot: qo.optionSlotFor,
+			validSlot:  qo.validSlot,
+			anchor:     &entryAnchor,
 		}
 		if pc != nil {
 			pcPost.sets, pcPost.out = pc.sets, pc.out
@@ -583,11 +577,8 @@ func (c *pmCtx) emitStateBody(state *vocab.ParseState, stateIdx int, isEntry boo
 		// normal path.
 		if options := c.queried.optionDemand(c.layer); c.isLengthByteOptionLoop(stateIdx) && len(options) >= 2 && c.accPlan.atomsFor(c.layer) == nil {
 			bracket := ""
-			for _, p := range c.layer.Predicates {
-				if dynamicAuxLayoutOf(p.Field) != nil {
-					bracket = " (a bracket predicate on an option counts and keeps that form from applying: move it into the where clause)"
-					break
-				}
+			if bracketReadsOption(c.layer) {
+				bracket = " (a bracket predicate on an option counts and keeps that form from applying: move it into the where clause)"
 			}
 			return nil, nil, fmt.Errorf("%w: querying %d distinct options of %q in one filter is supported only as a pure AND of `<option>.<field> == <const>` equalities in the where clause (at most %d, where multiple fields on one option each count)%s; rewrite the clause to that form — no `!=`, no non-option term mixed in — or query a single option", ErrNotImplemented, len(options), c.spec.Name, accMaxAtoms, bracket)
 		}

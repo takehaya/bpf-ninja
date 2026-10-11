@@ -54,7 +54,7 @@ func genPredicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, error) {
 	// makes the predicate false (D-027).
 	if dynamicAuxLayoutOf(pred.Field) != nil {
 		if _, ok := pc.optionSlotFor(pred.Field); !ok {
-			return nil, fmt.Errorf("codegen: bracket predicate on %s.%s, an option located by the parser's walk, emitted where no option slot is known", pred.Field.Layer.Spec.Name, pred.Field.Aux.OutParam)
+			return nil, fmt.Errorf("%w: bracket predicate on %s.%s, an option located by the parser's walk, here runs where the walk has not recorded it; move it to a where clause", ErrNotImplemented, pred.Field.Layer.Spec.Name, pred.Field.Aux.OutParam)
 		}
 	}
 	var guard asm.Instructions
@@ -537,18 +537,6 @@ func emitOrderedWireCmp(loadAt auxLoadAt, chunks []wireChunk, op ast.CmpOp, cons
 	return insns
 }
 
-// bracketLoadAt prepares the reads of a bracket predicate's field whose
-// window must be exactly `bytes` wide (the literal's natural width after
-// the slice): the prelude (aux presence gating and, for an entry whose
-// offset is only known at run time, the address compute that leaves R5 =
-// entry start) and a loadAt closure reading `size` bytes at `chunkOff`
-// into R3. A primary field reads through pc.fieldAnchor(); an aux field
-// through auxLoadEmitter. kind names the literal in the width error.
-//
-// Register discipline for the callers: R3 is the load destination; R2 is
-// free scratch in every mode; R5 is free only when the prelude is empty
-// (primary or static aux), so a body that must work in every mode keeps
-// its constants in R2 (ipv6AuxHalfCheck, macCheck).
 // bracketAuxLoad is auxLoadEmitter for a bracket predicate: gating (an
 // aux the walk extracts in place) or the option slot (an option the walk
 // located, readable only after the walk) ahead of the addressing
@@ -565,6 +553,19 @@ func bracketAuxLoad(ref *ir.FieldRef, pc *predCtx) (asm.Instructions, auxLoadAt,
 	return append(insns, prelude...), loadAt, nil
 }
 
+// bracketLoadAt prepares the reads of a bracket predicate's field whose
+// window must be exactly `bytes` wide (the literal's natural width after
+// the slice): the prelude (aux presence gating and, for an entry whose
+// offset is only known at run time, the address compute that leaves R5 =
+// entry start) and a loadAt closure reading `size` bytes at `chunkOff`
+// into R3. A primary field reads through pc.fieldAnchor(); an aux field
+// through auxLoadEmitter. kind names the literal in the width error.
+//
+// Register discipline for the callers: R3 is the load destination; R2 is
+// scratch that loadAt may clobber (an option's loadAt builds its pointer
+// there), so a constant goes into R2 after the load; R5 is free only when
+// the prelude is empty (primary or static aux), so a body that must work
+// in every mode keeps its constants in R2 (ipv6AuxHalfCheck, macCheck).
 func bracketLoadAt(ref *ir.FieldRef, pc *predCtx, bytes int, kind string) (asm.Instructions, auxLoadAt, error) {
 	if ref == nil || ref.Layer == nil || ref.Field == nil {
 		return nil, nil, fmt.Errorf("codegen: %s predicate missing field reference", kind)

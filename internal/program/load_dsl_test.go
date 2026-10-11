@@ -122,6 +122,7 @@ var dslEntryExprs = []string{
 	"eth/ipv4/tcp[ts.tsval in [10.0.0.0/8, 192.168.0.1]]",
 	"eth/ipv4[rr.pointer == 4]+/tcp",
 	"eth/(ipv4|ipv6)/tcp[mss.value in [1400..1460]]",
+	"eth/vlan?/ipv4[rr.pointer == 4]+/tcp[mss.value == 1460]",
 	"eth/ipv6/srv6/tcp where srv6.segments[0].addr == fc00::1",
 	"eth/ipv6/srv6/tcp where srv6.segments[srv6.last_entry].addr == fc00::1",
 	// 128-bit arithmetic on a segment: static and runtime index.
