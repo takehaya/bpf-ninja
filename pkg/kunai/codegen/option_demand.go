@@ -380,6 +380,29 @@ func (qo queriedOptions) stackCountSlot(layer *ir.LayerInstance, stack string) (
 // set — indicates the caller is reaching for a slot that wasn't
 // allocated, which means the where / capture walker missed a
 // reference. Caller should fall back or fail loudly.
+// optionSlotFor is the slot holding where the walk found f's option (an
+// option, or the option a stack is bound to), when f reads one the walk
+// locates and the demand set has it.
+func (qo queriedOptions) optionSlotFor(f *ir.FieldRef) (int16, bool) {
+	layout := dynamicAuxLayoutOf(f)
+	if layout == nil {
+		return 0, false
+	}
+	return qo.dynamicAuxSlotForLayout(f.Layer, layout)
+}
+
+// bracketReadsOption reports whether one of layer's bracket predicates
+// reads an option the walk locates; such a predicate runs after the walk
+// and reads the option's position slot.
+func bracketReadsOption(layer *ir.LayerInstance) bool {
+	for _, p := range layer.Predicates {
+		if dynamicAuxLayoutOf(p.Field) != nil {
+			return true
+		}
+	}
+	return false
+}
+
 func (qo queriedOptions) dynamicAuxSlotForLayout(layer *ir.LayerInstance, layout *vocab.AuxLayout) (int16, bool) {
 	if layer == nil || layout == nil {
 		return 0, false

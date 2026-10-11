@@ -445,3 +445,33 @@ func TestBpfDSLSetMatchIPv6ExtWalkedEntryLoads(t *testing.T) {
 	}
 	_ = probe.Close()
 }
+
+// TestBpfDSLSetMatchTCPOptionKeyLoads verifier-loads a set filter whose key
+// is a TCP option field the walk locates (tcp.mss.value): the predicate
+// runs after the walk and reads the option off its position slot. The walk
+// does not execute in the fentry scratch-buffer path, so this asserts the
+// program VERIFIES on the kernel matrix; the packet-level semantics are the
+// dsltest option bracket tests.
+func TestBpfDSLSetMatchTCPOptionKeyLoads(t *testing.T) {
+	testutil.SkipIfNotRoot(t)
+
+	pin := fmt.Sprintf("/sys/fs/bpf/bpfninja_dslmss_%d", os.Getpid())
+	if err := setmap.Create(pin, "value:u16", "", 16); err != nil {
+		t.Skipf("creating pinned u16 set map: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Remove(pin) })
+
+	set, err := setmap.OpenSet(setmap.SpecRef{Name: "mss", Path: pin})
+	if err != nil {
+		t.Fatalf("OpenSet: %v", err)
+	}
+	t.Cleanup(set.Def.Close)
+
+	prog := loadXDPByName(t, dslSetTargetSrc, "xdp_set_e2e_target")
+	targets := []attach.Target{{Program: prog, FuncName: "xdp_set_e2e_target", Type: ebpf.XDP}}
+	probe, err := LoadMultiEntry(targets, "eth/ipv4/tcp[mss.value in @mss]", nil, true, []*setmap.Set{set})
+	if err != nil {
+		t.Fatalf("LoadMultiEntry with a TCP option set key: %v", err)
+	}
+	_ = probe.Close()
+}

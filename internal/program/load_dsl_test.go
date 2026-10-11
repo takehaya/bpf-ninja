@@ -116,6 +116,13 @@ var dslEntryExprs = []string{
 	"eth/ipv6@o+/tcp where o.exts[0].next_header == 6",
 	"eth/ipv4+/tcp capture headers+64",
 	"eth/vlan?/ipv4+/tcp",
+	// bracket predicates on options the walk locates run after the walk
+	// and read the option's slot; per instance on a repeated layer.
+	"eth/ipv4/tcp[mss.value == 1460]",
+	"eth/ipv4/tcp[ts.tsval in [10.0.0.0/8, 192.168.0.1]]",
+	"eth/ipv4[rr.pointer == 4]+/tcp",
+	"eth/(ipv4|ipv6)/tcp[mss.value in [1400..1460]]",
+	"eth/vlan?/ipv4[rr.pointer == 4]+/tcp[mss.value == 1460]",
 	"eth/ipv6/srv6/tcp where srv6.segments[0].addr == fc00::1",
 	"eth/ipv6/srv6/tcp where srv6.segments[srv6.last_entry].addr == fc00::1",
 	// 128-bit arithmetic on a segment: static and runtime index.

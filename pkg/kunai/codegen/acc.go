@@ -150,6 +150,12 @@ func buildAccPlan(where *ir.Condition, qo queriedOptions) *accPlan {
 			return nil
 		}
 	}
+	// A bracket predicate on one of the layer's options reads its
+	// position slot after the walk, which the accumulator walk does not
+	// record.
+	if bracketReadsOption(plan.layer) {
+		return nil
+	}
 	// Cap the total number of option-field equality atoms. All atoms lower
 	// into one combined bpf_loop callback; the per-iteration cursor and
 	// accumulator forgets (emitMultiStateCallback / emitAccPrelude) make it
