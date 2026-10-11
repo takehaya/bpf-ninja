@@ -187,7 +187,7 @@ bpf-ninja は non-invasive な BPF 観測ツールです。BPF trampoline (fentr
 1. `codegen.go::Gen` は全体の骨格です。共通 helper として、slice 用 `applySliceToOffset` / `slicePostAdjust` / `nextLDXSize`、anchor 三種 `layerAnchorFor` / `absAnchor` / `slotAnchor` / `emitFieldLoad`、stack plan (`stack_plan.go` `planStack`、runtime entry slot と dynamic aux slot の割当) を含みます。パッケージ doc が読みどころの最上位です。ABI (R0/R1/R2/R4 の役割、`offsetBase` 概念、`dslReject` / `filter_result` ラベル、`KunaiStackTop` / `ScratchBufSize` の sizing 契約) はここに集約されています。§4 の codegen ABI を参照してください。
 2. `caps.go` は host 提供の `Capabilities` と `ActionFetcher` interface です。`Capabilities` は `Lex` (ReservedLabels) / `Lang` (Action map + ActionFetcher) / `Host` (packet layout) の 3 つのフェーズ別グループを束ねる薄い集約体です。
 3. `dispatch.go` は Field / NoCheck / SelfValidating の dispatch 検査を emit します。Sanity family は撤廃済みで、parser-block 自検証に統合されています。§3.2 / §5 を参照してください。
-4. `predicate.go` は predicate codegen です。整数 / IPv4 / IPv6 / MAC / CIDR、`==` / `!=` / ordered を扱い、F3 IPv6 ordered cmp (`emitIPv6OrderedCmp`)、F7 整数 / 範囲 in (`emitInPredicate`)、bit-slice 適用も含みます。`multiWordRoute` ヘルパで `==` と `!=` を統一しています。
+4. `predicate.go` は predicate codegen です。整数 / IPv4 / IPv6 / MAC / CIDR、`==` / `!=` / ordered を扱い、F3 IPv6 ordered cmp (`emitIPv6OrderedCmp`)、F7 の `in` list (`emitInPredicate`。整数 / 範囲 / IPv4 / CIDR は 1 回 load して比較を並べ、IPv6 / MAC は要素ごとに再 load する `emitInAddrList`)、bit-slice 適用も含みます。`multiWordRoute` ヘルパで `==` と `!=` を統一しています。
 5. `chain.go` は `{n,m}` で `m≤4` の静的アンロールです。
 6. `bpfloop.go` は `+/*/{n,m>4}` の bpf_loop emit です。bpf2bpf subprogram と BTF func_info を扱い、whole-chain skip の `*` は `emitPeekedIterZero` で parent dispatch を peek します。
 7. `alternation.go` は alt の sequence 展開です。P3-12 で per-alt body emit + matched flag に、P3-13 で nested alt の resolver flatten に対応しました。
@@ -1161,7 +1161,7 @@ implementation 詳細は、`pkg/kunai/codegen/parser_state.go` の state graph e
 
 | 領域 | 制限 |
 |---|---|
-| Predicate | `field in [...]` は整数と範囲 `lo..hi` の alternatives 実装済 (F7、ホスト順で比較) / IPv4/IPv6/MAC/CIDR alternatives は scope outside / `bit<>64` の field に対する `in` は未対応 (今のところ ≤64-bit のみ wired) / `field has FLAG` は F6 bitwise `&` で superseded (`tcp.flags & 0x12 == 0x12` で同等表現) |
+| Predicate | `field in [...]` は整数、範囲 `lo..hi`、IPv4 / IPv6 / MAC / CIDR の alternatives 実装済 (F7。範囲を含む list はホスト順で比較) / 128 bit や 48 bit の field に整数の要素を混ぜた list は未対応 / 繰り返し layer の bracket は bpf_loop callback で replay されるため、IPv6 の要素は 8 個程度が上限 (callback の分岐数 64) / `field has FLAG` は F6 bitwise `&` で superseded (`tcp.flags & 0x12 == 0x12` で同等表現) |
 | Where | 算術ネスト最大 16 段 (`maxArithDepth`、10b で 8→16 bump。比較と `Bool == Bool` での扱いは [`dsl-usage.md`](./dsl-usage.md#演算子)) / where が alt member の field を参照するとき (`where ipv6.src == fe80::1`) は、alternation が matched-member slot に記録した member の番号を atom の前で確かめる (別の member なら atom は false) / `in` は bracket predicate `[...]` 専用で、where 句では `==` の `or` chain で代替 (parser が targeted hint を返す) |
 | Aux × literal | landed (B-3 commit 6547a42): IPv4/IPv6/MAC/CIDR literal を aux 経由で比較可能。例: `srv6.segments[0].addr == fc00::/16`、`where ipv4.options.RR.addrs[0].addr == 10.0.0.1` |
 | Capture | `capture f1, f2` フィールド列 不可 / 量化 layer を含む filter の `headers+N` は、量化 layer が最大数マッチした場合の長さを上限にする。het-alt 越えの capture は max-alt 上界丸めで動作 |
