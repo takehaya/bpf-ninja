@@ -414,3 +414,34 @@ func TestBpfDSLSetMatchSRv6SegmentLoads(t *testing.T) {
 	}
 	_ = probe.Close()
 }
+
+// TestBpfDSLSetMatchIPv6ExtWalkedEntryLoads verifier-loads a set filter
+// whose key is a static index into variable-length entries
+// (ipv6.exts[1].next_header): the key is read from the entry the walk
+// placed, after the push-count guard. The extension walk is a parser-
+// machine loop that does not execute in the fentry scratch-buffer path, so
+// this asserts the program VERIFIES on the kernel matrix; the packet-level
+// semantics are the spec vectors pred-inset-exts-* (pkg/kunai/dsltest).
+func TestBpfDSLSetMatchIPv6ExtWalkedEntryLoads(t *testing.T) {
+	testutil.SkipIfNotRoot(t)
+
+	pin := fmt.Sprintf("/sys/fs/bpf/bpfninja_dslnh_%d", os.Getpid())
+	if err := setmap.Create(pin, "next_header:u8", "", 16); err != nil {
+		t.Skipf("creating pinned u8 set map: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Remove(pin) })
+
+	set, err := setmap.OpenSet(setmap.SpecRef{Name: "nh", Path: pin})
+	if err != nil {
+		t.Fatalf("OpenSet: %v", err)
+	}
+	t.Cleanup(set.Def.Close)
+
+	prog := loadXDPByName(t, dslSetTargetSrc, "xdp_set_e2e_target")
+	targets := []attach.Target{{Program: prog, FuncName: "xdp_set_e2e_target", Type: ebpf.XDP}}
+	probe, err := LoadMultiEntry(targets, "eth/ipv6[exts[1].next_header in @nh]/tcp", nil, true, []*setmap.Set{set})
+	if err != nil {
+		t.Fatalf("LoadMultiEntry with a walked ipv6 ext set key: %v", err)
+	}
+	_ = probe.Close()
+}

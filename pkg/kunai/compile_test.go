@@ -1449,9 +1449,9 @@ func TestCompileBracketOnPushCountedStack(t *testing.T) {
 			t.Fatalf("%s: %v", expr, err)
 		}
 	}
-	// Entry 0 keeps its constant offset, so `in @set` style constant-offset
-	// readers still accept it (the resolver needs a set here; the where
-	// form stands in for the constant-offset path).
+	// Entry 0 keeps its constant offset (the constant-offset readers such
+	// as the set key extraction take it; TestCompileInSetWalkedEntry covers
+	// the walked entries behind it).
 	if _, err := compileForTest("eth/ipv4/udp/gtp/ipv4/tcp where gtp.exts[0].ext_type == 1"); err != nil {
 		t.Fatalf("gtp.exts[0] must compile: %v", err)
 	}
@@ -2104,4 +2104,57 @@ func TestCompileInSetSRv6SegmentSliceKey(t *testing.T) {
 		}
 	}
 	t.Fatalf("no store of the key at -40:\n%v", insns)
+}
+
+// byteSetSlots is a test SetSlotResolver with one-byte keys: set "nh" has
+// a "next_header" key and set "nextexts" a "next_ext" key, both at -40.
+type byteSetSlots struct{}
+
+func (byteSetSlots) HasSet(name string) bool { return name == "nh" || name == "nextexts" }
+func (byteSetSlots) SlotFor(set, field string) (int16, int, bool) {
+	if (set == "nh" && field == "next_header") || (set == "nextexts" && field == "next_ext") {
+		return -40, 1, true
+	}
+	return 0, 0, false
+}
+
+// TestCompileInSetWalkedEntry: a static index into variable-length
+// entries (ipv6.exts[1], gtp.exts[1]) has no constant offset, so the set
+// key is read from the walked entry (R5-relative) and stored in the slot,
+// after the push-count guard the bracket already emits.
+func TestCompileInSetWalkedEntry(t *testing.T) {
+	caps := codegen.Capabilities{Lang: codegen.LangCaps{SetSlots: byteSetSlots{}}}
+	for _, expr := range []string{
+		"eth/ipv6[exts[1].next_header in @nh]/tcp",
+		"eth/ipv4/udp/gtp[exts[1].next_ext in @nextexts]/ipv4/tcp",
+	} {
+		out, err := Compile(expr, caps)
+		if err != nil {
+			t.Fatalf("%s: %v", expr, err)
+		}
+		insns := out.Instructions()
+		found := false
+		for i, ins := range insns {
+			if ins.OpCode.Class() != asm.StXClass || ins.Dst != asm.R10 || ins.Offset != -40 || ins.Src != asm.R3 {
+				continue
+			}
+			found = true
+			if ins.OpCode.Size() != asm.Byte {
+				t.Errorf("%s: key store %v; want a byte store", expr, ins)
+			}
+			if ld := insns[i-1]; ld.OpCode.Class() != asm.LdXClass || ld.Dst != asm.R3 || ld.Src != asm.R5 || ld.OpCode.Size() != asm.Byte {
+				t.Errorf("%s: instruction before the key store %v; want a byte load from the walked entry (R5)", expr, ld)
+			}
+		}
+		if !found {
+			t.Errorf("%s: no store into the key slot", expr)
+		}
+		if len(out.Extractions) != 1 || out.Extractions[0].StoreSize != 1 {
+			t.Errorf("%s: extract slots %+v; want one 1-byte extraction", expr, out.Extractions)
+		}
+	}
+	// Entry 0 keeps the constant-offset path.
+	if _, err := Compile("eth/ipv6[exts[0].next_header in @nh]/tcp", caps); err != nil {
+		t.Fatal(err)
+	}
 }
