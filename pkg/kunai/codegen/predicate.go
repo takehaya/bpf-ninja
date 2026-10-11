@@ -46,6 +46,14 @@ func genPredicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, error) {
 	// declared count field (srv6.segments: last_entry + 1) reads that byte
 	// of the primary header, which sits at layer entry (R4) both before and
 	// after the walk; the where clause's emitCountGuard reads the same byte.
+	// An option extracted by a TLV walk (tcp.ts, ipv4.options.RR) has no
+	// constant offset: the walk records where it found it in a dynamic-aux
+	// slot, which only the where clause reads. The bracket readers would
+	// address it at OffsetInLayer, i.e. the primary header's bytes, and
+	// silently compare the wrong field, so they refuse it.
+	if pred.Field != nil && pred.Field.Aux != nil && pred.Field.Aux.OwnerOption == nil && dynamicAuxLayoutOf(pred.Field) != nil {
+		return nil, fmt.Errorf("%w: bracket predicate on %s.%s, an option found by the parser's walk at a runtime offset; write it as a where clause (`where %s.%s.%s ...`)", ErrNotImplemented, pred.Field.Layer.Spec.Name, pred.Field.Aux.OutParam, pred.Field.Layer.Spec.Name, pred.Field.Aux.OutParam, pred.Field.Field.Name)
+	}
 	var guard asm.Instructions
 	switch {
 	case needsPushCount(pred.Field):

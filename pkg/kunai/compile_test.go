@@ -2615,3 +2615,26 @@ func TestCompileInSetWalkedEntry(t *testing.T) {
 	}
 	t.Fatal("segments[1] key: no store into the key slot")
 }
+
+// TestCompileBracketOnTLVOptionRefused: an option the parser's walk finds
+// at a runtime offset (tcp.mss, tcp.ts) cannot be read by the bracket
+// readers, which would address it at the primary header; the bracket form
+// is refused with a pointer to where, and the where form compiles.
+func TestCompileBracketOnTLVOptionRefused(t *testing.T) {
+	for _, expr := range []string{
+		"eth/ipv4/tcp[mss.value == 1460]",
+		"eth/ipv4/tcp[ts.tsval == 7]",
+		"eth/ipv4/tcp[ts.tsval > 7]",
+		"eth/ipv4/tcp[mss.value in [1460, 1400]]",
+	} {
+		_, err := compileForTest(expr)
+		if !errors.Is(err, codegen.ErrNotImplemented) || !strings.Contains(err.Error(), "where clause") {
+			t.Errorf("%s: err = %v; want ErrNotImplemented pointing to a where clause", expr, err)
+		}
+	}
+	for _, expr := range []string{"eth/ipv4/tcp where tcp.options.MSS.value == 1460", "eth/ipv4/udp/gtp[opt.next_ext == 0]/ipv4/tcp"} {
+		if _, err := compileForTest(expr); err != nil {
+			t.Errorf("%s: %v", expr, err)
+		}
+	}
+}
