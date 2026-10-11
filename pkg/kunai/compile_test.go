@@ -2615,3 +2615,46 @@ func TestCompileInSetWalkedEntry(t *testing.T) {
 	}
 	t.Fatal("segments[1] key: no store into the key slot")
 }
+
+// TestCompileBracketOnTLVOptionRefused: an option the parser's walk finds
+// at a runtime offset (tcp.mss, tcp.ts) cannot be read by the bracket
+// readers, which would address it at the primary header; the bracket form
+// is refused with a pointer to where, and the where form compiles.
+func TestCompileBracketOnTLVOptionRefused(t *testing.T) {
+	for _, c := range []struct{ expr, advice string }{
+		{"eth/ipv4/tcp[mss.value == 1460]", "where clause"},
+		{"eth/ipv4/tcp[ts.tsval == 7]", "where clause"},
+		{"eth/ipv4/tcp[ts.tsval > 7]", "where clause"},
+		{"eth/ipv4/tcp[mss.value in [1460, 1400]]", "`or` chain"},
+		{"eth/ipv4[rr.pointer == 4]/tcp", "where clause"},
+		{"eth/ipv4/udp/geneve[ovn.option_class == 0x102]/eth", "where clause"},
+		{"eth/ipv4[rr.pointer == 4]{1,2}/tcp", "where clause"},
+		{"eth/ipv4/(tcp[mss.value == 1460]|udp)", "where clause"},
+	} {
+		_, err := compileForTest(c.expr)
+		if !errors.Is(err, codegen.ErrNotImplemented) || !strings.Contains(err.Error(), c.advice) {
+			t.Errorf("%s: err = %v; want ErrNotImplemented with %q", c.expr, err, c.advice)
+		}
+	}
+	// A set key: refused too, with its own advice.
+	caps := codegen.Capabilities{Lang: codegen.LangCaps{SetSlots: mssSetSlots{}}}
+	if _, err := Compile("eth/ipv4/tcp[mss.value in @mss]", caps); !errors.Is(err, codegen.ErrNotImplemented) || !strings.Contains(err.Error(), "set key") {
+		t.Errorf("tcp[mss.value in @mss]: err = %v; want ErrNotImplemented about the set key", err)
+	}
+	for _, expr := range []string{"eth/ipv4/tcp where tcp.options.MSS.value == 1460", "eth/ipv4/udp/gtp[opt.next_ext == 0]/ipv4/tcp"} {
+		if _, err := compileForTest(expr); err != nil {
+			t.Errorf("%s: %v", expr, err)
+		}
+	}
+}
+
+// mssSetSlots declares a two-byte set "mss" keyed on "value".
+type mssSetSlots struct{}
+
+func (mssSetSlots) HasSet(name string) bool { return name == "mss" }
+func (mssSetSlots) SlotFor(set, field string) (int16, int, bool) {
+	if set == "mss" && field == "value" {
+		return -40, 2, true
+	}
+	return 0, 0, false
+}
