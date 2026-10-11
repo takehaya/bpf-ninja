@@ -168,15 +168,77 @@ func TestCompileMACOrderedShape(t *testing.T) {
 			if a, b := insns[i+1], insns[i+2]; a.OpCode.JumpOp() != asm.JLT || !strings.HasPrefix(a.Reference(), "dsl_pred_match_") || b.OpCode.JumpOp() != asm.JGT || b.Reference() != "dsl_reject" {
 				t.Errorf("after the word constant: %v, %v; want JLT → match, JGT → reject", a, b)
 			}
+			if ld := insns[i-2]; ld.OpCode.Class() != asm.LdXClass || ld.OpCode.Size() != asm.Word {
+				t.Errorf("before the word constant's swap: %v; want a Word load", ld)
+			}
 		case isLdImm64(asm.R5, 0xeeff)(ins):
 			seen++
 			if a := insns[i+1]; a.OpCode.JumpOp() != asm.JGE || a.Reference() != "dsl_reject" {
 				t.Errorf("after the half constant: %v; want JGE → reject", a)
 			}
+			if ld := insns[i-2]; ld.OpCode.Class() != asm.LdXClass || ld.OpCode.Size() != asm.Half {
+				t.Errorf("before the half constant's swap: %v; want a Half load", ld)
+			}
 		}
 	}
 	if seen != 2 {
 		t.Errorf("found %d chunk constants, want 2", seen)
+	}
+}
+
+func TestCompileIPv6OrderedPrimaryShape(t *testing.T) {
+	// A primary field keeps its constants in R5: high half decides with
+	// JLT → match / JGT → reject, the low half misses with JGE for `<`.
+	insns, err := compileForTest("eth/ipv6[src < fc00::1]/tcp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hi, lo := int64(-0x0400000000000000), int64(1)
+	for i, ins := range insns {
+		switch {
+		case isLdImm64(asm.R5, hi)(ins):
+			if a, b := insns[i+1], insns[i+2]; a.OpCode.JumpOp() != asm.JLT || a.Src != asm.R5 || !strings.HasPrefix(a.Reference(), "dsl_pred_match_") || b.OpCode.JumpOp() != asm.JGT || b.Reference() != "dsl_reject" {
+				t.Errorf("after the high constant: %v, %v; want JLT → match, JGT → reject", a, b)
+			}
+		case isLdImm64(asm.R5, lo)(ins):
+			if a := insns[i+1]; a.OpCode.JumpOp() != asm.JGE || a.Src != asm.R5 || a.Reference() != "dsl_reject" {
+				t.Errorf("after the low constant: %v; want JGE → reject", a)
+			}
+		}
+	}
+	if countInsns(insns, isLdImm64(asm.R5, hi)) != 1 || countInsns(insns, isLdImm64(asm.R5, lo)) != 1 {
+		t.Error("expected one high and one low constant in R5")
+	}
+	if countInsns(insns, func(ins asm.Instruction) bool {
+		return ins.OpCode.Class() == asm.LdClass && ins.OpCode.Mode() == asm.ImmMode && ins.Dst == asm.R2 && ins.Reference() == ""
+	}) != 0 {
+		t.Error("a primary field's ordered compare must not use R2")
+	}
+}
+
+func TestCompileOrderedAuxUsesR2(t *testing.T) {
+	// Every aux ordered compare keeps its constants in R2, because the
+	// prelude may leave the entry address in R5: a sliced IPv4 word and a
+	// sliced MAC window of a segment, not only the 128-bit field.
+	for _, c := range []struct {
+		expr   string
+		consts []int64
+	}{
+		{"eth/ipv6/srv6[segments[1].addr[96:128] > 10.0.0.0]/tcp", []int64{0x0a000000}},
+		{"eth/ipv6/srv6[segments[1].addr[80:128] < 00:00:0a:00:00:01]/tcp", []int64{0x00000a00, 0x0001}},
+	} {
+		insns, err := compileForTest(c.expr)
+		if err != nil {
+			t.Fatalf("%s: %v", c.expr, err)
+		}
+		for _, k := range c.consts {
+			if n := countInsns(insns, isLdImm64(asm.R2, k)); n != 1 {
+				t.Errorf("%s: LdImmDW R2, %#x: %d, want 1", c.expr, k, n)
+			}
+			if n := countInsns(insns, isLdImm64(asm.R5, k)); n != 0 {
+				t.Errorf("%s: constant %#x in R5; want R2 on an aux field", c.expr, k)
+			}
+		}
 	}
 }
 
