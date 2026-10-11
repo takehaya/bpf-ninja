@@ -187,70 +187,20 @@ func emitIntPredicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, error)
 	if !ok {
 		return nil, fmt.Errorf("codegen: unknown comparison op %v", pred.Op)
 	}
-	var insns asm.Instructions
-	var bytes int
-	dynamic := needsEntryAddress(pred.Field)
-	switch {
-	case dynamic:
-		_, bs, err := auxEntryFieldWindow(pred.Field)
-		if err != nil {
-			return nil, err
-		}
-		bytes = bs
-		size, err := asmSizeFor(bytes)
-		if err != nil {
-			return nil, err
-		}
-		// Gating doesn't apply to stack auxes (extracted unconditionally
-		// inside the parser-machine self-loop), so we skip emitAuxGating.
-		dyn, err := emitDynamicStackLoad(pred.Field, size, dslReject)
-		if err != nil {
-			return nil, err
-		}
-		insns = append(insns, dyn...)
-	default:
-		fieldOff, bs, err := fieldRefByteOffset(pred.Field)
-		if err != nil {
-			return nil, err
-		}
-		bytes = bs
-		size, err := asmSizeFor(bs)
-		if err != nil {
-			return nil, err
-		}
-		if pred.Field != nil && pred.Field.Aux != nil {
-			insns = append(insns, emitAuxGating(pred.Field.Aux.Gating, r4Anchor(), dslReject)...)
-		}
-		insns = append(insns, emitFieldLoad(pc.fieldAnchor(), fieldOff, size)...)
-	}
-	size, err := asmSizeFor(bytes)
+	insns, bytes, size, err := emitScalarFieldLoad(pred.Field, predicateLoadSite(pc))
 	if err != nil {
 		return nil, err
 	}
-	hasSlice := pred.Field != nil && pred.Field.Slice != nil
-	subByte := fieldIsSubByte(pred.Field)
 	switch {
-	case hasSlice || subByte:
-		// Slice-narrowed or sub-byte field: the load went through a
-		// covering window, so bring the register to host order then
-		// shift+mask down to the field's bits. The constant stays in
-		// host order (the user wrote it that way), so we don't apply
-		// the constant-side bswap trick the equality fast-path uses.
-		if bytes > 1 {
-			insns = append(insns, asm.HostTo(asm.BE, asm.R3, size))
-		}
-		insns = append(insns, emitSliceShiftMask(pred.Field, bytes)...)
-	case bytes <= 1:
-		// 1-byte: register holds the raw byte; nothing to swap.
-	case pred.Op == ast.CmpEq || pred.Op == ast.CmpNeq:
-		// Equality: byte-swap the constant at codegen time and
-		// compare with the LE-loaded register directly.
+	case fieldNeedsNarrowing(pred.Field) || (bytes > 1 && pred.Op != ast.CmpEq && pred.Op != ast.CmpNeq):
+		// A slice-narrowed or sub-byte field (the load went through a
+		// covering window) and an ordered compare both need the field's
+		// numeric value in R3; the constant stays as the user wrote it.
+		insns = append(insns, emitFieldValue(pred.Field, bytes, size)...)
+	case bytes > 1:
+		// Equality on a whole multi-byte field: byte-swap the constant
+		// at codegen time and compare with the LE-loaded register.
 		value = swapValueBytes(value, bytes)
-	default:
-		// Ordered: bring register to natural numeric order.
-		// HostTo(BE) emits the BPF_END opcode (5.x-safe) instead of
-		// BSwap (6.6+).
-		insns = append(insns, asm.HostTo(asm.BE, asm.R3, size))
 	}
 	insns = append(insns, jumpOp.Imm(asm.R3, int32(value), dslReject))
 	return insns, nil
@@ -399,7 +349,7 @@ func emitInSetPredicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, erro
 	// (srv6.segments[N].addr = a specific SID in the SRH list).
 	// A static index into variable-length entries (ipv6.exts[1]) has no
 	// constant offset either: the entry is walked at run time
-	// (emitDynamicStackLoad leaves R5 = entry start), the same read the
+	// (emitScalarFieldLoad leaves R5 = entry start), the same read the
 	// `==` and `in [...]` predicates use. The push-count guard genPredicate
 	// prepends makes the entry present, and splitPredicates has placed
 	// the predicate after the walk. No variable-length stack carries a
@@ -468,40 +418,16 @@ func emitInSetPredicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, erro
 		return insns, nil
 	}
 
-	size, err := asmSizeFor(bytes)
+	load, loaded, size, err := emitScalarFieldLoad(pred.Field, predicateLoadSite(pc))
 	if err != nil {
 		return nil, err
 	}
-	switch {
-	case walked:
-		// Gating does not apply to stack entries (extracted by the walk
-		// itself); the count guard stands in for it.
-		dyn, err := emitDynamicStackLoad(pred.Field, size, dslReject)
-		if err != nil {
-			return nil, err
-		}
-		insns = append(insns, dyn...)
-	default:
-		// Single-aux fields gate on presence just like emitIntPredicate;
-		// iterator-stack (dynamic) aux fields are rejected at resolve time.
-		if pred.Field.Aux != nil {
-			insns = append(insns, emitAuxGating(pred.Field.Aux.Gating, r4Anchor(), dslReject)...)
-		}
-		insns = append(insns, emitFieldLoad(pc.fieldAnchor(), fieldOff, size)...)
+	if loaded != bytes {
+		return nil, fmt.Errorf("codegen: set key field %q sized %d bytes but read as %d", fieldName, bytes, loaded)
 	}
-
 	// Normalize the register to the field's numeric value in host order.
-	hasSlice := pred.Field.Slice != nil
-	subByte := fieldIsSubByte(pred.Field)
-	switch {
-	case hasSlice || subByte:
-		if bytes > 1 {
-			insns = append(insns, asm.HostTo(asm.BE, asm.R3, size))
-		}
-		insns = append(insns, emitSliceShiftMask(pred.Field, bytes)...)
-	case bytes > 1:
-		insns = append(insns, asm.HostTo(asm.BE, asm.R3, size))
-	}
+	insns = append(insns, load...)
+	insns = append(insns, emitFieldValue(pred.Field, bytes, size)...)
 	// Store native-endian into the host key slot (matches `set add`).
 	insns = append(insns, asm.StoreMem(asm.R10, slotOff, asm.R3, size))
 
@@ -1000,53 +926,18 @@ func emitInPredicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, error) 
 		return nil, fmt.Errorf("%w: 'in' on bit<%d> field — only ≤ bit<64> wired", ErrNotImplemented, fieldBits)
 	}
 
-	dynamic := needsEntryAddress(pred.Field)
-	var insns asm.Instructions
-	var bytes int
-	var size asm.Size
-	switch {
-	case dynamic:
-		_, bs, err := auxEntryFieldWindow(pred.Field)
-		if err != nil {
-			return nil, err
-		}
-		bytes = bs
-		size, err = asmSizeFor(bytes)
-		if err != nil {
-			return nil, err
-		}
-		dyn, err := emitDynamicStackLoad(pred.Field, size, dslReject)
-		if err != nil {
-			return nil, err
-		}
-		insns = append(insns, dyn...)
-	default:
-		fieldOff, bs, err := fieldRefByteOffset(pred.Field)
-		if err != nil {
-			return nil, err
-		}
-		bytes = bs
-		size, err = asmSizeFor(bs)
-		if err != nil {
-			return nil, err
-		}
-		if pred.Field.Aux != nil {
-			insns = append(insns, emitAuxGating(pred.Field.Aux.Gating, r4Anchor(), dslReject)...)
-		}
-		insns = append(insns, emitFieldLoad(pc.fieldAnchor(), fieldOff, size)...)
+	insns, bytes, size, err := emitScalarFieldLoad(pred.Field, predicateLoadSite(pc))
+	if err != nil {
+		return nil, err
 	}
 
 	// A sub-byte field (the load read a covering window to narrow) and a
 	// range alternative (`lo ≤ v ≤ hi` is an ordered compare, the path
 	// emitIntPredicate takes) both need R3 in host order; the
 	// alternatives then stay unswapped.
-	subByte := fieldIsSubByte(pred.Field) || pred.Field.Slice != nil
-	hostOrder := subByte || hasRange
-	if hostOrder && bytes > 1 {
-		insns = append(insns, asm.HostTo(asm.BE, asm.R3, size))
-	}
-	if subByte {
-		insns = append(insns, emitSliceShiftMask(pred.Field, bytes)...)
+	hostOrder := hasRange || fieldNeedsNarrowing(pred.Field)
+	if hostOrder {
+		insns = append(insns, emitFieldValue(pred.Field, bytes, size)...)
 	}
 	// A /0 alternative matches every value: the list is true once the
 	// field is readable (an absent aux still fails through the gating or
