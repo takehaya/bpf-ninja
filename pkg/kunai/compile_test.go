@@ -115,12 +115,99 @@ func TestCompileMACNotEqualSucceeds(t *testing.T) {
 	})
 }
 
-func TestCompileIPv4OrderedRejected(t *testing.T) {
-	// IPv4 host literals support only == / !=. Ordered comparisons
-	// are not meaningful on IP addresses; codegen must reject.
-	_, err := Compile("eth/ipv4[src>10.0.0.0]/tcp", codegen.Capabilities{})
-	if !errors.Is(err, codegen.ErrNotImplemented) {
-		t.Fatalf("expected ErrNotImplemented for ordered IPv4, got %v", err)
+func TestCompileIPv4OrderedShape(t *testing.T) {
+	// An ordered IPv4 compare swaps the loaded word to host order and
+	// compares it as an unsigned number: `>` rejects on JLE, `<=` on JGT.
+	for _, c := range []struct {
+		expr string
+		miss asm.JumpOp
+	}{
+		{"eth/ipv4[src > 10.0.0.0]/tcp", asm.JLE},
+		{"eth/ipv4[src <= 10.0.0.0]/tcp", asm.JGT},
+		{"eth/ipv4[src < 10.0.0.0]/tcp", asm.JGE},
+		{"eth/ipv4[src >= 10.0.0.0]/tcp", asm.JLT},
+	} {
+		insns, err := compileForTest(c.expr)
+		if err != nil {
+			t.Fatalf("%s: %v", c.expr, err)
+		}
+		if n := countInsns(insns, isSwap); n != 1 {
+			t.Errorf("%s: %d byte swaps, want 1", c.expr, n)
+		}
+		for i, ins := range insns {
+			if !isLdImm64(asm.R5, 0x0a000000)(ins) {
+				continue
+			}
+			if next := insns[i+1]; next.OpCode.JumpOp() != c.miss || next.Src != asm.R5 || next.Reference() != "dsl_reject" {
+				t.Errorf("%s: after the constant %v; want %v.Reg R3, R5 → dsl_reject", c.expr, next, c.miss)
+			}
+		}
+	}
+	// The sliced word of an IPv6 address orders the same way.
+	if _, err := compileForTest("eth/ipv6[dst[96:128] > 10.0.0.0]/tcp"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCompileMACOrderedShape(t *testing.T) {
+	// Two chunks: the first four octets decide a strict inequality
+	// (JLT → match, JGT → reject), equality falls through to the last two
+	// octets, whose miss is JGE for `<`.
+	insns, err := compileForTest("eth[dst < aa:bb:cc:dd:ee:ff]/ipv4/tcp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := countInsns(insns, isSwap); n != 2 {
+		t.Errorf("%d byte swaps, want 2", n)
+	}
+	seen := 0
+	for i, ins := range insns {
+		switch {
+		case isLdImm64(asm.R5, 0xaabbccdd)(ins):
+			seen++
+			if a, b := insns[i+1], insns[i+2]; a.OpCode.JumpOp() != asm.JLT || !strings.HasPrefix(a.Reference(), "dsl_pred_match_") || b.OpCode.JumpOp() != asm.JGT || b.Reference() != "dsl_reject" {
+				t.Errorf("after the word constant: %v, %v; want JLT → match, JGT → reject", a, b)
+			}
+		case isLdImm64(asm.R5, 0xeeff)(ins):
+			seen++
+			if a := insns[i+1]; a.OpCode.JumpOp() != asm.JGE || a.Reference() != "dsl_reject" {
+				t.Errorf("after the half constant: %v; want JGE → reject", a)
+			}
+		}
+	}
+	if seen != 2 {
+		t.Errorf("found %d chunk constants, want 2", seen)
+	}
+}
+
+func TestCompileIPv6OrderedAuxShape(t *testing.T) {
+	// An aux field's prelude may leave the entry address in R5, so the
+	// constants of an ordered compare live in R2 there.
+	insns, err := compileForTest("eth/ipv6/srv6[segments[1].addr < fc00::2]/tcp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := countInsns(insns, isLdImm64(asm.R2, 2)); n != 1 {
+		t.Errorf("LdImmDW R2, 2 (low half of fc00::2): %d, want 1", n)
+	}
+	if n := countInsns(insns, isLdImm64(asm.R2, int64(-0x0400000000000000))); n != 1 {
+		t.Errorf("LdImmDW R2, fc00<<48: %d, want 1", n)
+	}
+	if n := countInsns(insns, func(ins asm.Instruction) bool {
+		return ins.OpCode.JumpOp() == asm.JGE && ins.Src == asm.R2 && ins.Reference() == "dsl_reject"
+	}); n != 1 {
+		t.Errorf("JGE R3, R2 → dsl_reject: %d, want 1", n)
+	}
+}
+
+func TestCompileOrderedCIDRIsTypingError(t *testing.T) {
+	// A CIDR has no order; the resolver refuses it before codegen, as the
+	// spec's checkValue does.
+	for _, expr := range []string{"eth/ipv4[src < 10.0.0.0/8]/tcp", "eth/ipv6[src > fc00::/16]/tcp"} {
+		_, err := compileForTest(expr)
+		if err == nil || errors.Is(err, codegen.ErrNotImplemented) || !strings.Contains(err.Error(), "ordered comparison") {
+			t.Errorf("%s: err = %v; want a typing error about the ordered comparison", expr, err)
+		}
 	}
 }
 

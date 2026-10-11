@@ -1027,12 +1027,27 @@ func TestGenPredicateAcceptsIPv4CIDR(t *testing.T) {
 	}
 }
 
-func TestGenPredicateIPv4OrderedRejected(t *testing.T) {
+func TestGenPredicateIPv4Ordered(t *testing.T) {
+	// `src > 10.0.0.0`: the word is swapped to host order and compared as
+	// an unsigned number against the plain constant; `>` misses on JLE.
 	p := withIPv4Predicate(ast.CmpGt, &ast.Value{Kind: ast.ValIPv4, V4: [4]byte{10, 0, 0, 0}})
-	_, err := Gen(p, Capabilities{})
-	if !errors.Is(err, ErrNotImplemented) {
-		t.Fatalf("err = %v; want ErrNotImplemented for ordered IPv4", err)
+	out, err := Gen(p, Capabilities{})
+	if err != nil {
+		t.Fatal(err)
 	}
+	for i, ins := range out.Main {
+		if ins.OpCode.Class() != asm.LdClass || ins.OpCode.Mode() != asm.ImmMode || ins.Dst != asm.R5 || ins.Constant != 0x0a000000 {
+			continue
+		}
+		if prev := out.Main[i-1]; prev.OpCode.ALUOp() != asm.Swap || prev.Dst != asm.R3 {
+			t.Fatalf("before the constant: %v; want a byte swap of R3", prev)
+		}
+		if next := out.Main[i+1]; next.OpCode.JumpOp() != asm.JLE || next.Src != asm.R5 || next.Reference() != dslReject {
+			t.Fatalf("after the constant: %v; want JLE R3, R5 → dsl_reject", next)
+		}
+		return
+	}
+	t.Fatal("no `LdImmDW R5, 0x0a000000` in the program")
 }
 
 func TestGenPredicateRejectsIPv6OnIPv4Field(t *testing.T) {

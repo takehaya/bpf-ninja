@@ -24,9 +24,12 @@ func staticHeaderCountedIndex(f *ir.FieldRef) bool {
 
 // genPredicate emits the comparison asm for one "field op value" entry.
 // Supported value types: integer, IPv4 / IPv6 host, IPv4 / IPv6 CIDR,
-// MAC. Each accepts == and !=; ordered comparisons land on integers
-// only. Other shapes (range, ident, string) surface ErrNotImplemented
-// so later phases can plug them in without touching the dispatch path.
+// MAC. Each accepts == and !=; the ordered comparisons apply to
+// integers and to the address literals (IPv4, IPv6, MAC), which the
+// spec orders as the unsigned number of their wire bytes (cmpValue /
+// cmpNat). A CIDR has no order and the resolver refuses one. Other
+// shapes (range, ident, string) surface ErrNotImplemented so later
+// phases can plug them in without touching the dispatch path.
 //
 // The field lookup is delegated to each emit* so the byte/bit-level
 // constraints can differ — IPv6 is 128 bits which findFieldByteOffset
@@ -504,29 +507,87 @@ func swapValueBytes(v uint64, bytes int) uint64 {
 	return out
 }
 
-// emitIPv4Predicate handles `field == 10.0.0.1` and `field != …`.
-// IPv4 fields (`bit<32>`, e.g. ipv4.src / ipv4.dst) are read as a
-// 32-bit Word in little-endian on x86, so we byte-swap the constant
-// at codegen time and compare with a single JEq/JNE — same trick
-// genFieldDispatch uses for protocol-id consts.
+// emitIPv4Predicate handles `field == 10.0.0.1`, `field != …` and the
+// ordered comparisons. IPv4 fields (`bit<32>`, e.g. ipv4.src /
+// ipv4.dst) are read as a 32-bit Word in little-endian on x86, so for
+// equality we byte-swap the constant at codegen time and compare with a
+// single JEq/JNE — same trick genFieldDispatch uses for protocol-id
+// consts. An ordered compare swaps the register instead
+// (emitOrderedWireCmp).
 func emitIPv4Predicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, error) {
 	if pred.Field == nil || pred.Field.Layer == nil || pred.Field.Field == nil {
 		return nil, fmt.Errorf("codegen: IPv4 predicate missing field reference")
 	}
-	jumpOp, ok := ipEqualityJumpOp(pred.Op)
-	if !ok {
-		return nil, fmt.Errorf("%w: IPv4 literal supports only == / != (got %s)", ErrNotImplemented, pred.Op)
-	}
 	v4 := pred.Value.V4
-	expected := uint32(byteSwap(uint64(binary.BigEndian.Uint32(v4[:])), 4))
-
 	insns, loadAt, err := bracketLoadAt(pred.Field, pc, 4, "IPv4 literal")
 	if err != nil {
 		return nil, err
 	}
+	jumpOp, ok := ipEqualityJumpOp(pred.Op)
+	if !ok {
+		chunks := []wireChunk{{0, asm.Word, uint64(binary.BigEndian.Uint32(v4[:]))}}
+		return append(insns, emitOrderedWireCmp(loadAt, chunks, pred.Op, bracketConstReg(pred.Field))...), nil
+	}
+	expected := uint32(byteSwap(uint64(binary.BigEndian.Uint32(v4[:])), 4))
 	insns = append(insns, loadAt(0, asm.Word)...)
 	insns = append(insns, cmpRegEqU32(jumpOp, expected, dslReject)...)
 	return insns, nil
+}
+
+// bracketConstReg is the register a bracket emitter may hold a constant
+// in next to R3: R2 when the field is an aux whose prelude may have left
+// the entry address in R5, R5 otherwise (the primary emitters' habit, so
+// their programs keep their bytes).
+func bracketConstReg(ref *ir.FieldRef) asm.Register {
+	if ref != nil && ref.Aux != nil {
+		return asm.R2
+	}
+	return asm.R5
+}
+
+// wireChunk is one load of an ordered address compare: `size` bytes at
+// `off` inside the field window, and the literal's bytes for that chunk
+// read as a big-endian number.
+type wireChunk struct {
+	off   int
+	size  asm.Size
+	value uint64
+}
+
+// emitOrderedWireCmp compares the field against a literal under an
+// ordered op (<, <=, >, >=) as unsigned numbers of their wire bytes, the
+// order the spec gives address literals (cmpNat over liftValue). The
+// field is read chunk by chunk through loadAt, each chunk byte-swapped
+// to host order: for every chunk but the last a strict inequality of the
+// chunk alone decides (success → match landing, the opposite → reject)
+// and equality falls through to the next chunk; the last chunk applies
+// the op itself. IPv4 is one Word, MAC a Word and a Half, IPv6 two
+// DWords. constReg holds each chunk's constant (bracketConstReg).
+func emitOrderedWireCmp(loadAt auxLoadAt, chunks []wireChunk, op ast.CmpOp, constReg asm.Register) asm.Instructions {
+	var insns asm.Instructions
+	match := ""
+	if len(chunks) > 1 {
+		match = nextPredicateMatchLabel()
+	}
+	success, fail := highHalfJumps(op)
+	miss := lowHalfMissJump(op)
+	for i, c := range chunks {
+		insns = append(insns, loadAt(c.off, c.size)...)
+		insns = append(insns, asm.HostTo(asm.BE, asm.R3, c.size))
+		insns = append(insns, asm.LoadImm(constReg, int64(c.value), asm.DWord))
+		if i+1 < len(chunks) {
+			insns = append(insns,
+				success.Reg(asm.R3, constReg, match),
+				fail.Reg(asm.R3, constReg, dslReject),
+			)
+			continue
+		}
+		insns = append(insns, miss.Reg(asm.R3, constReg, dslReject))
+	}
+	if match != "" {
+		insns = append(insns, landingNoop(match))
+	}
+	return insns
 }
 
 // bracketLoadAt prepares the reads of a bracket predicate's field whose
@@ -571,17 +632,15 @@ func bracketLoadAt(ref *ir.FieldRef, pc *predCtx, bytes int, kind string) (asm.I
 }
 
 // emitIPv6Predicate handles `field == fe80::1`, `field != fe80::1`,
-// and the ordered comparisons `<` / `≤` / `>` / `≥` (F3). IPv6 fields
-// are `bit<128>`, too wide for a single LDX, so the body splits into
-// two 8-byte LDX-DWord loads. For ==/!= each half is byte-swapped at
-// codegen so the LE-reading LDX matches the BE constant. For ordered
-// cmp we host-swap the loaded register so its numeric ordering
-// matches the literal, and lexicographic-compare the high half first.
+// and the ordered comparisons `<` / `≤` / `>` / `≥` (F3) on primary and
+// aux fields alike. IPv6 fields are `bit<128>`, too wide for a single
+// LDX, so the body splits into two 8-byte LDX-DWord loads. For ==/!=
+// each half is byte-swapped at codegen so the LE-reading LDX matches
+// the BE constant. For ordered cmp emitOrderedWireCmp host-swaps the
+// loaded register so its numeric ordering matches the literal, and
+// lexicographic-compares the high half first.
 func emitIPv6Predicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, error) {
 	if pred.Field != nil && pred.Field.Aux != nil {
-		if pred.Op != ast.CmpEq && pred.Op != ast.CmpNeq {
-			return nil, fmt.Errorf("%w: IPv6 ordered cmp on aux header field is not yet supported", ErrNotImplemented)
-		}
 		if pred.Field.EffectiveBits() != 128 {
 			return nil, fmt.Errorf("%w: IPv6 literal needs a 128-bit field, got %s.%s.%s (%d bits)", ErrNotImplemented, pred.Field.Layer.Spec.Name, pred.Field.Aux.OutParam, pred.Field.Field.Name, pred.Field.EffectiveBits())
 		}
@@ -593,6 +652,9 @@ func emitIPv6Predicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, error
 		lowBE := binary.BigEndian.Uint64(pred.Value.V6[8:16])
 		insns := append(asm.Instructions{}, emitAuxGating(pred.Field.Aux.Gating, r4Anchor(), dslReject)...)
 		insns = append(insns, prelude...)
+		if _, eq := ipEqualityJumpOp(pred.Op); !eq {
+			return append(insns, emitOrderedWireCmp(loadAt, ipv6Chunks(pred.Value), pred.Op, asm.R2)...), nil
+		}
 		insns = append(insns, multiWordRoute(pred.Op, func(fail string) asm.Instructions {
 			body := append(asm.Instructions{}, ipv6AuxHalfCheck(loadAt, 0, ^uint64(0), highBE, fail)...)
 			body = append(body, ipv6AuxHalfCheck(loadAt, 8, ^uint64(0), lowBE, fail)...)
@@ -615,9 +677,22 @@ func emitIPv6Predicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, error
 			return insns
 		}), nil
 	case ast.CmpLt, ast.CmpLe, ast.CmpGt, ast.CmpGe:
-		return emitIPv6OrderedCmp(pred, pc, fieldOff), nil
+		anchor := pc.fieldAnchor()
+		loadAt := func(chunkOff int, size asm.Size) asm.Instructions {
+			return emitFieldLoad(anchor, fieldOff+chunkOff, size)
+		}
+		return emitOrderedWireCmp(loadAt, ipv6Chunks(pred.Value), pred.Op, asm.R5), nil
 	}
 	return nil, fmt.Errorf("%w: IPv6 literal cmp op %v not supported", ErrNotImplemented, pred.Op)
+}
+
+// ipv6Chunks splits an IPv6 literal into the two DWord chunks of an
+// ordered compare, high half first.
+func ipv6Chunks(v *ast.Value) []wireChunk {
+	return []wireChunk{
+		{0, asm.DWord, binary.BigEndian.Uint64(v.V6[0:8])},
+		{8, asm.DWord, binary.BigEndian.Uint64(v.V6[8:16])},
+	}
 }
 
 // ipv6AuxHalfCheck mirrors ipv6HalfCheck for the aux path: load via
@@ -641,54 +716,11 @@ func ipv6AuxHalfCheck(loadAt auxLoadAt, chunkOff int, mask, host uint64, failLab
 	return insns
 }
 
-// emitIPv6OrderedCmp emits the lexicographic compare for `field <op>
-// literal` where op ∈ {<, ≤, >, ≥} and field is a 128-bit IPv6
-// address (F3). Algorithm:
-//
-//	load + host-swap high half of field into R3
-//	reg-cmp R3 against literal high:
-//	  - if `op` is "strictly more permissive" (e.g. < and field<lit) → match
-//	  - if `op` is "strictly impossible" (e.g. < and field>lit) → fail
-//	  - if equal → fall through to low check
-//	load + host-swap low half of field into R3
-//	reg-cmp R3 against literal low (same op as the original):
-//	  - on miss → fail
-//	  - on match → success
-//
-// Match success falls through to the next predicate; mismatches jump
-// to dslReject. We use a per-predicate match landing so the early
-// "high half decides" exit can skip the low half emit.
-func emitIPv6OrderedCmp(pred *ir.Predicate, pc *predCtx, fieldOff int) asm.Instructions {
-	highHostOrder := binary.BigEndian.Uint64(pred.Value.V6[0:8])
-	lowHostOrder := binary.BigEndian.Uint64(pred.Value.V6[8:16])
-	matchLabel := nextPredicateMatchLabel()
-
-	highSuccess, highFail := highHalfJumps(pred.Op)
-	lowMissJump := lowHalfMissJump(pred.Op)
-
-	var insns asm.Instructions
-	// High half: load → bswap → cmp.
-	insns = append(insns, emitFieldLoad(pc.fieldAnchor(), fieldOff, asm.DWord)...)
-	insns = append(insns, asm.HostTo(asm.BE, asm.R3, asm.DWord))
-	insns = append(insns, asm.LoadImm(asm.R5, int64(highHostOrder), asm.DWord))
-	insns = append(insns, highSuccess.Reg(asm.R3, asm.R5, matchLabel))
-	insns = append(insns, highFail.Reg(asm.R3, asm.R5, dslReject))
-	// High half equal — proceed to low half.
-	insns = append(insns, emitBoundedLoad(asm.R3, int16(fieldOff+8), asm.DWord, dslReject)...)
-	insns = append(insns, asm.HostTo(asm.BE, asm.R3, asm.DWord))
-	insns = append(insns, asm.LoadImm(asm.R5, int64(lowHostOrder), asm.DWord))
-	insns = append(insns, lowMissJump.Reg(asm.R3, asm.R5, dslReject))
-	// Match landing — both the early "high decides" exit and the
-	// low-half pass land here, then fall through to the next predicate.
-	insns = append(insns, landingNoop(matchLabel))
-	return insns
-}
-
-// highHalfJumps returns the (success, fail) reg-reg jump ops for the
-// high-half lexicographic decision under cmp op `op`. "Success" means
-// the high half alone proves the inequality; "fail" means the high
-// half alone disproves it. The equal case falls through to the
-// caller's low-half emit.
+// highHalfJumps returns the (success, fail) reg-reg jump ops for a
+// non-final chunk of an ordered multi-chunk compare (emitOrderedWireCmp,
+// genArithCompare128). "Success" means the chunk alone proves the
+// inequality; "fail" means it alone disproves it. The equal case falls
+// through to the next chunk.
 func highHalfJumps(op ast.CmpOp) (asm.JumpOp, asm.JumpOp) {
 	switch op {
 	case ast.CmpLt, ast.CmpLe:
@@ -702,7 +734,7 @@ func highHalfJumps(op ast.CmpOp) (asm.JumpOp, asm.JumpOp) {
 }
 
 // lowHalfMissJump returns the reg-reg jump op that *fails* (= jumps
-// to dslReject) on the low half. For `<` we miss when low(field) ≥
+// to dslReject) on the final chunk. For `<` we miss when low(field) ≥
 // low(lit); for `≤` we miss when low(field) > low(lit); etc.
 func lowHalfMissJump(op ast.CmpOp) asm.JumpOp {
 	switch op {
@@ -820,20 +852,26 @@ func requireIPv6Field(pred *ir.Predicate) (int, error) {
 	return off, nil
 }
 
-// emitMACPredicate handles `field == de:ad:be:ef:00:01` (and !=). MAC
-// fields are `bit<48>` (eth.dst, eth.src), so the body splits into a
-// 4-byte Word load (top 4 octets) plus a 2-byte Half load (bottom 2),
-// both bounded reads through the field's anchor (macCheck). The == / !=
+// emitMACPredicate handles `field == de:ad:be:ef:00:01`, `!=` and the
+// ordered comparisons. MAC fields are `bit<48>` (eth.dst, eth.src), so
+// the body splits into a 4-byte Word load (top 4 octets) plus a 2-byte
+// Half load (bottom 2), both bounded reads through the field's anchor
+// (macCheck for equality, emitOrderedWireCmp otherwise). The == / !=
 // branching shape comes from multiWordRoute.
 func emitMACPredicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, error) {
-	if err := requireEqualityOp(pred, "MAC literal"); err != nil {
-		return nil, err
-	}
-	highLE, lowLE := macLiteralLE(pred.Value)
 	insns, loadAt, err := bracketLoadAt(pred.Field, pc, 6, "MAC literal")
 	if err != nil {
 		return nil, err
 	}
+	if _, eq := ipEqualityJumpOp(pred.Op); !eq {
+		mac := pred.Value.MAC
+		chunks := []wireChunk{
+			{0, asm.Word, uint64(binary.BigEndian.Uint32(mac[0:4]))},
+			{4, asm.Half, uint64(binary.BigEndian.Uint16(mac[4:6]))},
+		}
+		return append(insns, emitOrderedWireCmp(loadAt, chunks, pred.Op, bracketConstReg(pred.Field))...), nil
+	}
+	highLE, lowLE := macLiteralLE(pred.Value)
 	insns = append(insns, multiWordRoute(pred.Op, func(fail string) asm.Instructions {
 		return macCheck(loadAt, highLE, lowLE, fail)
 	})...)
@@ -1317,10 +1355,11 @@ func emitIPv4CIDRPredicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, e
 	return insns, nil
 }
 
-// ipEqualityJumpOp narrows rejectingJumpOp to the equality subset
-// IP host / CIDR predicates support. Ordered comparisons (<, >, …)
-// have no useful semantics on IP addresses; reuse rejectingJumpOp's
-// table so JEq/JNE mapping stays in one place.
+// ipEqualityJumpOp narrows rejectingJumpOp to the equality subset: the
+// CIDR predicates support nothing else (the resolver refuses an ordered
+// CIDR compare; this is defence in depth), and the address emitters use
+// it to tell the equality path from emitOrderedWireCmp. Reuses
+// rejectingJumpOp's table so the JEq/JNE mapping stays in one place.
 func ipEqualityJumpOp(op ast.CmpOp) (asm.JumpOp, bool) {
 	if op != ast.CmpEq && op != ast.CmpNeq {
 		return 0, false
