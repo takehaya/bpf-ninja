@@ -68,7 +68,7 @@ predicate      ::= field-path op value
                  | field-path 'in' value-list             (* F7: value / integer '..' integer の OR-chain。アドレスと CIDR も書ける *)
                  | field-path 'in' '@' set-name           (* pinned-map 集合照合 *)
                  | field-path 'has' flag-name             (* F6 bitwise & で superseded *)
-field-path     ::= field-name ('.' field-name)*            (* aux access: <aux>.<field> *)
+field-path     ::= field-name ('.' field-name)*            (* aux access: <aux>.<field>、option は options.<NAME>.<field> も可 *)
 field-name     ::= [a-z] [a-z0-9_]*
 op             ::= '==' | '!=' | '<' | '<=' | '>' | '>='
 value          ::= integer | ipv4 | ipv4-cidr | ipv6 | ipv6-cidr | mac
@@ -92,6 +92,7 @@ mac            ::= [0-9a-fA-F]{2} (':' [0-9a-fA-F]{2}){5}   (* colon 区切り 6
 | `predicate` (has) | `predicate.go::parsePredicate` (`PredHas` branch) | `[flags has SYN]` *(codegen reject)* |
 | `field-path` (1-part) | `predicate.go::parseFieldPath` | `dport` / `src` |
 | `field-path` (2-part = aux) | `predicate.go::parseFieldPath` | `opt.next_ext` (gtp の auxiliary header field) |
+| `field-path` (3/4-part = option) | `predicate.go::parseFieldPath` | `options.MSS.value`、`options.SACK.blocks[0].left` (option の中の stack は option を経由して書く) |
 
 Op の仕様は次のとおりです。
 - `==` / `!=` は全 value 型で動きます。

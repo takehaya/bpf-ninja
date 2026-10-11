@@ -2743,3 +2743,43 @@ func (mssSetSlots) SlotFor(set, field string) (int16, int, bool) {
 	}
 	return 0, 0, false
 }
+
+// TestCompileBracketNestedOptionSpelling: `options.MSS.value` is the long
+// spelling of `mss.value` inside a bracket and compiles to the same
+// program; a stack inside an option is reached through it.
+func TestCompileBracketNestedOptionSpelling(t *testing.T) {
+	long, err := compileForTest("eth/ipv4/tcp[options.MSS.value in [1400, 1460]]")
+	if err != nil {
+		t.Fatalf("long spelling: %v", err)
+	}
+	short, err := compileForTest("eth/ipv4/tcp[mss.value in [1400, 1460]]")
+	if err != nil {
+		t.Fatalf("short spelling: %v", err)
+	}
+	// Labels carry a per-compile counter; compare the instructions.
+	same := len(long) == len(short)
+	for i := 0; same && i < len(long); i++ {
+		a, b := long[i], short[i]
+		same = a.OpCode == b.OpCode && a.Dst == b.Dst && a.Src == b.Src && a.Offset == b.Offset && a.Constant == b.Constant
+	}
+	if !same {
+		t.Error("options.MSS.value and mss.value compile to different programs")
+	}
+	for _, expr := range []string{
+		"eth/ipv4/tcp[options.SACK.blocks[1].left == 5]",
+		"eth/ipv4[options.RR.addrs[0].addr in [10.0.0.0/8, 192.168.0.1]]/tcp",
+	} {
+		out, err := Compile(expr, codegen.Capabilities{})
+		if err != nil {
+			t.Errorf("%s: %v", expr, err)
+			continue
+		}
+		proto := "tcp"
+		if strings.Contains(expr, "RR") {
+			proto = "ipv4"
+		}
+		if !hasOptionSlotRead(out.Main, proto) {
+			t.Errorf("%s: no option slot read after the %s walk", expr, proto)
+		}
+	}
+}
