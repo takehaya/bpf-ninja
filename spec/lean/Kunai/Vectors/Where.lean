@@ -404,8 +404,9 @@ vector typPredIdent := {
 vector typInSet := {
   id := "typ-pred-inset-undeclared", ast := tcpPred (.inSet (f "dport") "ports"), expected := .illTyped "undeclared set @ports",
   note := "D-036: a set the host did not declare" }
--- `in @set` (D-036): membership in a host-declared set. Go only checks these
--- at compile time (the lookup is the host's, after the filter).
+-- `in @set` (D-036): membership in a host-declared set. The lookup is the
+-- host's, after the filter; Go's runner reads the key the filter stored
+-- and looks it up in the declared members.
 def ports (members : List Nat) : SetDecl := { name := "ports", width := 16, members }
 vector predInSetMember := {
   id := "pred-inset-member", ast := tcpPred (.inSet (f "dport") "ports"), sets := [ports [80, 443]], expected := .accept [],
@@ -424,6 +425,32 @@ vector predInSetWindow := {
   id := "pred-inset-window", ast := { layers := [P "eth", .proto { name := "ipv6", preds := [.inSet (f "traffic_class") "tc"] }, P "tcp"] },
   sets := [{ name := "tc", width := 16, members := [0] }], packet := ipv6TCP, expected := .accept [],
   note := "traffic_class is 8 bits starting at bit 4: the filter loads the 2-byte window, so the key is bit<16>" }
+vector predInSetWindowMiss := {
+  id := "pred-inset-window-miss", ast := { layers := [P "eth", .proto { name := "ipv6", preds := [.inSet (f "traffic_class") "tc"] }, P "tcp"] },
+  sets := [{ name := "tc", width := 16, members := [1] }], packet := ipv6TCP, expected := .reject,
+  note := "the 2-byte window is narrowed to traffic_class (0) before the lookup, not compared whole" }
+def sids (members : List Nat) : SetDecl := { name := "sids", width := 128, members }
+def ipv6DstInSet : Filter := { layers := [P "eth", .proto { name := "ipv6", preds := [.inSet (f "dst") "sids"] }, P "tcp"] }
+vector predInSetIPv6 := {
+  id := "pred-inset-ipv6", ast := ipv6DstInSet, sets := [sids [1, 0xfc000000000000000000000000000002]],
+  packet := ipv6TCP, expected := .accept [], note := "a 128-bit key in network order" }
+vector predInSetIPv6Miss := {
+  id := "pred-inset-ipv6-miss", ast := ipv6DstInSet, sets := [sids [0x020000000000000000000000000000fc, 0xfc000000000000000000000000000003]],
+  packet := ipv6TCP, expected := .reject, note := "neither the byte-reversed address nor a neighbour is the key" }
+def twoSets : Filter :=
+  { layers := [P "eth", .proto { name := "ipv4", preds := [.inSet (f "src") "hosts"] }, .proto { name := "tcp", preds := [.inSet (f "dport") "ports"] }] }
+def hosts (members : List Nat) : SetDecl := { name := "hosts", width := 32, members }
+vector predInSetTwo := {
+  id := "pred-inset-two-sets", ast := twoSets, sets := [hosts [0x0a000001], ports [80]], expected := .accept [] }
+vector predInSetTwoSecondMiss := {
+  id := "pred-inset-two-sets-second-miss", ast := twoSets, sets := [hosts [0x0a000001], ports [443]], expected := .reject,
+  note := "every set the filter extracts a key for must hold it" }
+vector predInSetTwoFirstMiss := {
+  id := "pred-inset-two-sets-first-miss", ast := twoSets, sets := [hosts [0x0a000002], ports [80]], expected := .reject }
+vector predInSetUnused := {
+  id := "pred-inset-unused-set", ast := tcpPred (.inSet (f "dport") "ports"),
+  sets := [ports [80], { name := "spare", width := 8, members := [] }], expected := .accept [],
+  note := "a declared set the filter does not reference takes no part in the verdict" }
 vector typPredInSetWindow := {
   id := "typ-pred-inset-window", ast := { layers := [P "eth", .proto { name := "ipv6", preds := [.inSet (f "traffic_class") "tc"] }, P "tcp"] },
   sets := [{ name := "tc", width := 8, members := [0] }], packet := ipv6TCP,
@@ -1016,7 +1043,7 @@ def whereVectors : List Vector := [
   capHeadersAltIPv6, capHeadersAltIPv4, capHeadersVxlan, capHeadersPlusOptions,
   typUnknownProto, typNoDispatch, typNotInChain, typUnknownField, typFit, typLabelCollides, typLabelCollidesAlt, typLabelDuplicate, typFitArith, whereArithRight, whereArithRightMiss, typFitArithSibling, whereNegLitSibling, typWidthIPv6, typCIDRWidth,
   typWidthIPv6Slice, typWidthIPv6SliceBracket, ipv6DstLow32IPv4, ipv6DstLow32IPv4Miss, ipv6DstLow32Cidr, ipv6DstLow32IPv4Unaligned, ipv6DstLow32IPv4Ne, ipv6DstLow32IPv4NeMiss, ipv6DstLow48Mac, ipv6DstFullSliceIPv6, ipv6DstFullSliceCidr6, ipv6DstLow32IPv4Bracket,
-  typPredIdent, typInSet, predInSetMember, predInSetMiss, typPredInSetWidth, predInSetSubByte, predInSetWindow, typPredInSetWindow, typPredInSetTwice, typPredInSetBudget, typPredInSetOptional, typPredInSetAlt, typAny, typExists, typAuxPath,
+  typPredIdent, typInSet, predInSetMember, predInSetMiss, typPredInSetWidth, predInSetSubByte, predInSetWindow, predInSetWindowMiss, predInSetIPv6, predInSetIPv6Miss, predInSetTwo, predInSetTwoSecondMiss, predInSetTwoFirstMiss, predInSetUnused, typPredInSetWindow, typPredInSetTwice, typPredInSetBudget, typPredInSetOptional, typPredInSetAlt, typAny, typExists, typAuxPath,
   arith128AddConst, arith128SubConst, arith128AddCarry, arith128AddWrap, arith128SubBorrow, arith128SubWrap, arith128AddMiss,
   arith128FieldAddField, arith128FieldAddFieldCarry, arith128FieldSubField, arith128FieldSubFieldBorrow, arith128AddWideConst, arith128SubWideConstBorrow,
   arith128AddNegConst, arith128SubNegConst, arith128CmpNegConst,

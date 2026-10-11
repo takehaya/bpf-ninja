@@ -67,7 +67,7 @@ type Runner struct {
 // setKeyLow+16) before the filter, as bpf-ninja's hosts do, and copies it
 // into the key map at filter_result together with a flag saying the
 // filter reached it, so a test can read the bytes an `in @set` predicate
-// wrote (KeyRegion, SetKey).
+// wrote (MatchKey, SetKey).
 const (
 	setKeyLow       = int16(-40)
 	keyRegionSize   = 16
@@ -235,12 +235,15 @@ func (r *Runner) MatchKey(t *testing.T, pkt []byte) (bool, [keyRegionSize]byte) 
 	return matched, region
 }
 
-// SetKey cuts set's key out of a region MatchKey returned: the bytes
-// from its lowest extraction slot to the end of its highest, in stack
-// order (scalar fields native-endian, 16-byte fields in network order,
-// as the hosts' `set add` writes them). nil when the filter extracts no
-// key for set.
-func (r *Runner) SetKey(region [keyRegionSize]byte, set string) []byte {
+// SetKey cuts set's key out of a region MatchKey returned: the bytes the
+// filter wrote for it, from its lowest extraction slot to the end of its
+// highest, in stack order (scalar fields native-endian, 16-byte fields in
+// network order, as the hosts' `set add` writes them). For a scalar set
+// that is the host's whole key; a composite key's unwritten fields, which
+// the host's key size would cover, are left out. nil when the filter
+// extracts no key for set.
+func (r *Runner) SetKey(t *testing.T, region [keyRegionSize]byte, set string) []byte {
+	t.Helper()
 	lo, hi := int16(0), int16(0)
 	found := false
 	for _, x := range r.extractions {
@@ -258,6 +261,9 @@ func (r *Runner) SetKey(region [keyRegionSize]byte, set string) []byte {
 	}
 	if !found {
 		return nil
+	}
+	if lo < setKeyLow || hi > setKeyLow+keyRegionSize {
+		t.Fatalf("set %s: key at [%d, %d) lies outside the key region [%d, %d)", set, lo, hi, setKeyLow, setKeyLow+keyRegionSize)
 	}
 	return append([]byte(nil), region[lo-setKeyLow:hi-setKeyLow]...)
 }
@@ -387,6 +393,8 @@ func buildXDPWrapper(filterOut codegen.Output, scratchFD, keyFD int, action int3
 		// holds 1 (match) or 0 (no match). Park it, copy the set key
 		// region and the reached flag into the key map, then decide.
 		asm.StoreMem(asm.R10, stackVerdict, asm.R2, asm.DWord).WithSymbol("filter_result"),
+		asm.Mov.Imm(asm.R3, 0),
+		asm.StoreMem(asm.R10, stackKey, asm.R3, asm.Word),
 		asm.LoadMapPtr(asm.R1, keyFD),
 		asm.Mov.Reg(asm.R2, asm.R10),
 		asm.Add.Imm(asm.R2, int32(stackKey)),

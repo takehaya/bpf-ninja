@@ -46,9 +46,10 @@ type specSetSlots struct {
 	cursor int16
 }
 
+// The packet-key region the wrapper zeroes and reads back (runner.go).
 const (
-	specSetKeyTop   = int16(-24)
-	specSetKeyFloor = int16(-40)
+	specSetKeyTop   = setKeyLow + keyRegionSize
+	specSetKeyFloor = setKeyLow
 )
 
 func newSpecSetSlots(decls []specSet) *specSetSlots {
@@ -179,7 +180,7 @@ func runSpecVectors(t *testing.T, vectors []specVector) {
 func setsAdmit(t *testing.T, decls []specSet, r *Runner, region [keyRegionSize]byte) bool {
 	t.Helper()
 	for _, d := range decls {
-		key := r.SetKey(region, d.Name)
+		key := r.SetKey(t, region, d.Name)
 		if key == nil {
 			continue
 		}
