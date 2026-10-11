@@ -85,3 +85,15 @@ func TestWhereQuantifierCompositeConstants(t *testing.T) {
 		}
 	}
 }
+
+// TestWhereGatedAuxInOr pins where a gated aux read jumps when the aux is
+// absent: to the atom's fail label, so the other side of an `or` still
+// decides. Gating on dslReject would reject the packet without the
+// optional block even though `tcp.dport == 443` holds.
+func TestWhereGatedAuxInOr(t *testing.T) {
+	r := New(t, gtpChain+" where gtp.opt.seq + 1 == 6 or tcp.dport == 443")
+	r.MustMatch(t, BuildGTPU(t, GTPUOpts{Flags: 0x30, TEID: 1, InnerDstPort: 443}), "block absent, dport matches")
+	r.MustReject(t, BuildGTPU(t, GTPUOpts{Flags: 0x30, TEID: 1, InnerDstPort: 80}), "block absent, dport differs")
+	r.MustMatch(t, BuildGTPU(t, GTPUOpts{Flags: 0x32, TEID: 1, Opt: &GTPOpt{Seq: 5}, InnerDstPort: 80}), "seq + 1 == 6")
+	r.MustReject(t, BuildGTPU(t, GTPUOpts{Flags: 0x32, TEID: 1, Opt: &GTPOpt{Seq: 4}, InnerDstPort: 80}), "seq + 1 == 5")
+}
