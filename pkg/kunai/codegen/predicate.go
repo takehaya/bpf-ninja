@@ -347,11 +347,6 @@ func emitInSetPredicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, erro
 	if pred.Field == nil || pred.Field.Field == nil {
 		return nil, fmt.Errorf("codegen: in-set predicate missing field reference")
 	}
-	// The key is extracted from a constant layer offset; an entry whose
-	// offset is only known at run time has none.
-	if needsEntryAddress(pred.Field) {
-		return nil, fmt.Errorf("%w: `in @%s` on %s.%s, an entry whose offset is only known at run time (dynamic index or variable-length entries); use a where clause", ErrNotImplemented, pred.SetName, pred.Field.Layer.Spec.Name, pred.Field.Aux.OutParam)
-	}
 	// Implicit name match: the DSL field name is the set's key field name.
 	fieldName := pred.Field.Field.Name
 	slotOff, slotSize, ok := pc.sets.SlotFor(pred.SetName, fieldName)
@@ -380,12 +375,28 @@ func emitInSetPredicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, erro
 	// take the two-DWord store path. This covers a primary field
 	// (ipv6.dst = the active SRv6 SID) and a static aux-stack element
 	// (srv6.segments[N].addr = a specific SID in the SRH list).
-	fieldOff, is128, err := field128RawOffset(pred.Field)
+	// A static index into variable-length entries (ipv6.exts[1]) has no
+	// constant offset either: the entry is walked at run time
+	// (emitDynamicStackLoad leaves R5 = entry start), the same read the
+	// `==` and `in [...]` predicates use. The push-count guard genPredicate
+	// prepends makes the entry present, and splitPredicates has placed
+	// the predicate after the walk. No variable-length stack carries a
+	// 16-byte field.
+	walked := needsEntryAddress(pred.Field)
+	var fieldOff, bytes int
+	var is128 bool
+	var err error
+	if walked {
+		_, bytes, err = auxEntryFieldWindow(pred.Field)
+	} else {
+		fieldOff, is128, err = field128RawOffset(pred.Field)
+	}
 	if err != nil {
 		return nil, err
 	}
-	bytes := 16
-	if !is128 {
+	if is128 {
+		bytes = 16
+	} else if !walked {
 		fieldOff, bytes, err = fieldRefByteOffset(pred.Field)
 		if err != nil {
 			return nil, err
@@ -403,7 +414,10 @@ func emitInSetPredicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, erro
 
 	var insns asm.Instructions
 
-	// 16-byte (IPv6 address / SID): store the raw network-order bytes.
+	// 16-byte (IPv6 address / SID): store the raw network-order bytes. A
+	// walked entry never consults field128RawOffset, so a 16-byte field in
+	// a variable-length stack (none exists) would fall to asmSizeFor and
+	// its ErrNotImplemented rather than into this constant-offset copy.
 	// Unlike the <=8 numeric path below, this is an identity byte copy —
 	// emitBoundedLoad (LE load) then StoreMem (LE store) preserves wire
 	// byte order, so NO HostTo is applied. `set add sid=fc00::1` writes
@@ -411,7 +425,7 @@ func emitInSetPredicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, erro
 	// putUint), so the key matches. Do not add a byte-swap here in any
 	// later "unify the store path" refactor — it would reverse the SID on
 	// a little-endian host and silently break every IPv6 match.
-	if bytes == 16 {
+	if is128 {
 		// A static aux-stack element (srv6.segments[N].addr) gates on
 		// presence just like the <=8 aux path; a primary field has no aux
 		// and emitAuxGating is skipped. Dynamic/iterator stacks are rejected
@@ -436,12 +450,23 @@ func emitInSetPredicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, erro
 	if err != nil {
 		return nil, err
 	}
-	// Single-aux fields gate on presence just like emitIntPredicate;
-	// iterator-stack (dynamic) aux fields are rejected at resolve time.
-	if pred.Field.Aux != nil {
-		insns = append(insns, emitAuxGating(pred.Field.Aux.Gating, r4Anchor(), dslReject)...)
+	switch {
+	case walked:
+		// Gating does not apply to stack entries (extracted by the walk
+		// itself); the count guard stands in for it.
+		dyn, err := emitDynamicStackLoad(pred.Field, size, dslReject)
+		if err != nil {
+			return nil, err
+		}
+		insns = append(insns, dyn...)
+	default:
+		// Single-aux fields gate on presence just like emitIntPredicate;
+		// iterator-stack (dynamic) aux fields are rejected at resolve time.
+		if pred.Field.Aux != nil {
+			insns = append(insns, emitAuxGating(pred.Field.Aux.Gating, r4Anchor(), dslReject)...)
+		}
+		insns = append(insns, emitFieldLoad(pc.fieldAnchor(), fieldOff, size)...)
 	}
-	insns = append(insns, emitFieldLoad(pc.fieldAnchor(), fieldOff, size)...)
 
 	// Normalize the register to the field's numeric value in host order.
 	hasSlice := pred.Field.Slice != nil
