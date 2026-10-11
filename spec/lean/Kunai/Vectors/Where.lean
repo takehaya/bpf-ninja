@@ -225,6 +225,29 @@ vector predMacEq := {
 vector predMacEqMiss := {
   id := "pred-mac-eq-miss", ast := ethPred (.cmp (f "src") .eq (.mac 0x66778899aabc)), expected := .reject }
 
+-- Ordered comparisons on address literals: the unsigned number of the wire bytes (cmpNat over liftValue).
+vector predCmpIPv4Gt := {
+  id := "pred-cmp-ipv4-gt", ast := ipv4Pred (.cmp (f "src") .gt (.ipv4 0x0a000000)), expected := .accept [] }
+vector predCmpIPv4LeMiss := {
+  id := "pred-cmp-ipv4-le-miss", ast := ipv4Pred (.cmp (f "src") .le (.ipv4 0x0a000000)), expected := .reject }
+vector predCmpIPv4GeBoundary := {
+  id := "pred-cmp-ipv4-ge-boundary", ast := ipv4Pred (.cmp (f "src") .ge (.ipv4 0x0a000001)), expected := .accept [],
+  note := "equal satisfies >=" }
+vector predCmpIPv4LtBoundary := {
+  id := "pred-cmp-ipv4-lt-boundary", ast := ipv4Pred (.cmp (f "src") .lt (.ipv4 0x0a000001)), expected := .reject,
+  note := "equal does not satisfy <" }
+vector predCmpMacLt := {
+  id := "pred-cmp-mac-lt", ast := ethPred (.cmp (f "dst") .lt (.mac 0x001122334456)), expected := .accept [],
+  note := "decided by the last two octets" }
+vector predCmpMacLtBoundary := {
+  id := "pred-cmp-mac-lt-boundary", ast := ethPred (.cmp (f "dst") .lt (.mac 0x001122334455)), expected := .reject }
+vector predCmpMacGtWord := {
+  id := "pred-cmp-mac-gt-word", ast := ethPred (.cmp (f "dst") .gt (.mac 0x001122000000)), expected := .accept [],
+  note := "decided by the first four octets" }
+vector typPredCidrOrdered := {
+  id := "typ-pred-cidr-ordered", ast := ipv4Pred (.cmp (f "src") .lt (.cidr4 0x0a000000 8)),
+  expected := .illTyped "ordered comparison on a cidr literal", note := "a CIDR is a set of addresses and has no order" }
+
 -- Captures (§13.6) ---------------------------------------------------------------
 
 vector capAll := {
@@ -486,6 +509,21 @@ vector predInListIPv6IntMixed := {
 vector ipv6DstLow32InListIPv4 := {
   id := "ipv6-dst-low32-in-list-ipv4", ast := ipv6Pred (.inList ⟨[("dst", some (.slice 96 128))]⟩ [.ipv4 0x0a000002, .ipv4 0x0a000001]),
   packet := v6pkt v6Src1 v6LowTen, expected := .accept [], note := "the sliced word is a bit<32>: IPv4 alternatives compare the last four bytes" }
+vector predCmpIPv6Lt := {
+  id := "pred-cmp-ipv6-lt", ast := ipv6Pred (.cmp (f "src") .lt (.ipv6 (v6Src1 + 1))), packet := v6pkt v6Src1 v6LowTen,
+  expected := .accept [] }
+vector predCmpIPv6LtBoundary := {
+  id := "pred-cmp-ipv6-lt-boundary", ast := ipv6Pred (.cmp (f "src") .lt (.ipv6 v6Src1)), packet := v6pkt v6Src1 v6LowTen,
+  expected := .reject }
+vector predCmpIPv6GeHigh := {
+  id := "pred-cmp-ipv6-ge-high", ast := ipv6Pred (.cmp (f "dst") .ge (.ipv6 0xfc000000000000000000000000000000)), packet := v6pkt v6Src1 v6LowTen,
+  expected := .accept [], note := "the high half is equal, the low half decides" }
+vector typPredCidr6Ordered := {
+  id := "typ-pred-cidr6-ordered", ast := ipv6Pred (.cmp (f "src") .gt (.cidr6 0xfc000000000000000000000000000000 16)), packet := v6pkt v6Src1 v6LowTen,
+  expected := .illTyped "ordered comparison on a cidr literal" }
+vector ipv6DstLow32Gt := {
+  id := "ipv6-dst-low32-ipv4-literal-gt", ast := ipv6Pred (.cmp ⟨[("dst", some (.slice 96 128))]⟩ .gt (.ipv4 0x0a000000)), packet := v6pkt v6Src1 v6LowTen,
+  expected := .accept [], note := "the sliced word 10.0.0.1 orders as a bit<32>" }
 vector ipv6DstLow48InListMac := {
   id := "ipv6-dst-low48-in-list-mac", ast := ipv6Pred (.inList ⟨[("dst", some (.slice 80 128))]⟩ [.mac 0x00000a000001]),
   packet := v6pkt v6Src1 v6LowTen, expected := .accept [], note := "the sliced 48 bits as a MAC alternative" }
@@ -929,6 +967,8 @@ def whereVectors : List Vector := [
   predInListIPv4, predInListIPv4Miss, predInListCidr4, predInListCidr4Zero, predInListIPv4IntMixed, predInListIPv4RangeMixed, predInListMac, predInListMacMiss,
   predInListMacFirst, predInListCidr4ThenHost, predInListCidr4Miss, predInListCidr4RangeMixed, predInListMacIntMixed, predMacEq, predMacEqMiss,
   predInListIPv6, predInListCidr6, predInListCidr6LowHalf, predInListIPv6First, predInListCidr6Zero, predInListIPv6Miss, predInListIPv6IntMixed, ipv6DstLow32InListIPv4, ipv6DstLow48InListMac,
+  predCmpIPv4Gt, predCmpIPv4LeMiss, predCmpIPv4GeBoundary, predCmpIPv4LtBoundary, predCmpMacLt, predCmpMacLtBoundary, predCmpMacGtWord, typPredCidrOrdered,
+  predCmpIPv6Lt, predCmpIPv6LtBoundary, predCmpIPv6GeHigh, typPredCidr6Ordered, ipv6DstLow32Gt,
   capAll, capWhereFalse, capWhereTrue, capLabel, capAbsent, capPresent, capAltMemberPresent, capAltMemberAbsent, capAltMemberByName,
   capHeadersIPv4Options, capHeadersTCPOptions, capHeadersQuantOpt, capHeadersQuantRange, capHeadersQuantPlusClamped, capHeadersQuantPlus, capHeadersQuantOpen,
   capHeadersAltIPv6, capHeadersAltIPv4, capHeadersVxlan, capHeadersPlusOptions,
