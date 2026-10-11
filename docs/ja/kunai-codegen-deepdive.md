@@ -166,7 +166,9 @@ cap が 4 である理由は verifier の path explosion です。BPF verifier �
 
 実装は `pkg/kunai/codegen/chain.go::genStaticChain` にあります。
 
-### 戦略 2: bpf_loop callback (m > 4 / `+` / `*`)
+parser machine を持つ可変長 layer (ipv4、ipv6) は別の形で展開します。`chain.go::genStaticMachineChain` が instance ごとに parser machine を 1 つずつ出し、2 個目以降は前の instance の entry から self edge を dispatch します。`+` / `*` / `{n,}` は `<PROTO>_MAX_DEPTH` 個の instance (ipv4 は 8、ipv6 は 4) に置き換え、上限は 8 instance です。各 instance の option walk は自身の bpf_loop を持つので、bpf_loop の入れ子は要りません。
+
+### 戦略 2: bpf_loop callback (固定長 layer の m > 4 / `+` / `*`)
 
 `mpls+` のような上限が大きい、または無制限の quantifier は、1 回目の iteration を inline 命令に、2 回目以降を bpf2bpf subprogram (callback) に展開し、main 命令列が `bpf_loop` ヘルパで callback を最大 N 回呼びます。
 

@@ -336,7 +336,7 @@ Mode-specific:
 
 - **`--mode entry` / `exit`**: a target BPF program (XDP, tc clsact, cgroup-skb, or netfilter) already loaded with BTF. With `-i`, an XDP program attached to the interface; tc targets go by `-p <progID>`; cgroup-skb targets by `--cgroup <path>` or `-p`.
 - **`--mode xdp`**: no XDP attached to the interface (bpf-ninja becomes the XDP program).
-- **DSL with chain quantifier (`+`, `*`, `{n,m>4}`), parser-machine self-loop (variable-length headers like IPv6 ext / GTP options / SRv6 segments), or alternation (`(a|b)`)**: kernel 5.17+ (uses `bpf_loop` + bpf2bpf subprograms). Plain DSL chains and `--cbpf` filters work on 5.8+.
+- **DSL with chain quantifier (`+`, `*`, `{n,m>4}`) on a fixed-length layer, parser-machine self-loop (variable-length headers like IPv6 ext / GTP options / SRv6 segments), or alternation (`(a|b)`)**: kernel 5.17+ (uses `bpf_loop` + bpf2bpf subprograms). A repeated variable-length layer (`ipv4+`, `ipv6*`) unrolls to `MAX_DEPTH` parser machines instead. Plain DSL chains and `--cbpf` filters work on 5.8+.
 
 ```bash
 # Debian/Ubuntu
