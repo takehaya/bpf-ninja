@@ -171,6 +171,19 @@ vector quantRange01Follow := {
 vector quantRange11Follow := {
   id := "quant-range11-follow", ast := mplsFollow (.range 1 (some 1)), packet := mpls2, expected := .reject,
   note := "D-024: the bound is reached on an s = 0 label" }
+vector quantRange11FollowOne := {
+  id := "quant-range11-follow-one", ast := mplsFollow (.range 1 (some 1)), packet := mpls1, expected := .reject,
+  note := "the s = 1 label ends the stack, so the second mpls misses" }
+-- VLAN has no end signal: a bounded quantifier leaves deeper stacks to the
+-- follower, which is why the resolver does not warn there.
+def vlanFollow : Filter := { layers := [P "eth", Pq "vlan" .opt, P "vlan", P "ipv4", P "tcp"] }
+vector quantOptVlanFollowTwo := {
+  id := "quant-opt-vlan-follow-two", ast := vlanFollow,
+  packet := eth 0x8100 ++ vlan 100 0x8100 ++ vlan 200 0x0800 ++ ipv4 6 ++ tcp 12345 80 ++ payload 5, expected := .accept [],
+  note := "`vlan?` takes the outer tag and the follower the inner one" }
+vector quantOptVlanFollowOne := {
+  id := "quant-opt-vlan-follow-one", ast := vlanFollow, packet := vlanPkt, expected := .reject,
+  note := "greedy: `vlan?` takes the only tag and the follower misses" }
 vector quantRange00Follow := {
   id := "quant-range00-follow", ast := mplsFollow (.range 0 (some 0)), packet := mpls1, expected := .accept [],
   goStatus := .notImplemented, note := "`{0,0}` takes no header, so the follower is the first label; Go refuses a zero iteration cap" }
@@ -614,7 +627,7 @@ def chainVectors : List Vector := [
   chainVxlan, chainVxlanAlt, chainMplsSingle, chainMplsSingleOverrun,
   quantOptPresent, quantOptAbsent, quantOptPredHolds, quantOptPredFails, quantOptBounds, quantRangeMidTrunc, quantRange01Bounds,
   quantStarBounds, quantMplsRange, quantMplsPlus, quantMplsStarZero, quantMplsMinUnmet, quantChainEnd,
-  quantGreedyOverrun, quantOverrunBounded, quantOverrunOpen, quantExactBound, quantOptMplsOverrun, quantOptMplsOne, quantGreedyUnreachable, quantOptFollowTwo, quantOptFollowOne, quantRange01Follow, quantRange11Follow, quantRange00Follow, quantPredMidFail, quantPredMidFailStatic, quantPredFirstFail,
+  quantGreedyOverrun, quantOverrunBounded, quantOverrunOpen, quantExactBound, quantOptMplsOverrun, quantOptMplsOne, quantGreedyUnreachable, quantOptFollowTwo, quantOptFollowOne, quantRange01Follow, quantRange11Follow, quantRange11FollowOne, quantOptVlanFollowTwo, quantOptVlanFollowOne, quantRange00Follow, quantPredMidFail, quantPredMidFailStatic, quantPredFirstFail,
   quantPredAllHold, quantSelfValidSkip, quantSelfValidPresent, quantSelfValidShortV4, quantSelfValidShortV6, quantSelfValidEmpty, quantSelfValidCascade, quantSelfValidCascadeEth, quantSelfValidBroken, quantOptIPv4Last, quantOptIPv4LastAbsent, quantOptIPIP, quantExactOneMachine, typAltExactOne, typRepeatNoSelfEdge, typRepeatNoSelfEdgeStar, quantOptIPIPAbsent, quantOptIPIPTwiceOne, quantOptIPIPTwiceNone, quantOptIPIPTwiceBoth, typOptionalAfterSkip, typOptionalNoCheck, chainMandatorySelfEdgeMiss, quantSelfEdgeStar, quantSelfEdgeOpt,
   absentConsecutiveEthertype, absentConsecutiveSelfValid, absentConsecutiveMplsOnly, absentConsecutiveNeither, absentConsecutiveArp, quantFirstOptional,
   altFirst, altSecond, altAfterVxlan6, altAfterVxlan4, altNone, altFirstPredFails, altRoot, altNoCheck,
