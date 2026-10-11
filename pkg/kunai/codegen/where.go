@@ -2111,14 +2111,12 @@ func (c *whereCtx) genLiteralCompare(w *ir.Condition, failLabel string) (asm.Ins
 		if fieldBytes != 6 {
 			return nil, fmt.Errorf("%w: MAC literal needs a 6-byte field, got %d-byte %s.%s", ErrNotImplemented, fieldBytes, ref.Layer.Spec.Name, ref.Field.Name)
 		}
-		mac := w.LiteralValue.MAC
-		highLE := uint32(byteSwap(uint64(binary.BigEndian.Uint32(mac[0:4])), 4))
-		lowLE := uint16(byteSwap(uint64(binary.BigEndian.Uint16(mac[4:6])), 2))
+		highLE, lowLE := macLiteralLE(w.LiteralValue)
 		return append(prelude, whereMultiWordRoute(c, w.LiteralOp, failLabel, func(fail string) asm.Instructions {
 			insns := emitFieldLoad(anchor, fieldOff, asm.Word)
 			insns = append(insns, cmpRegEqU32(asm.JNE, highLE, fail)...)
 			insns = append(insns, emitFieldLoad(anchor, fieldOff+4, asm.Half)...)
-			insns = append(insns, cmpRegEqU16(asm.JNE, lowLE, fail)...)
+			insns = append(insns, cmpRegEqU32(asm.JNE, uint32(lowLE), fail)...)
 			return insns
 		})...), nil
 

@@ -495,31 +495,54 @@ func emitIPv4Predicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, error
 	v4 := pred.Value.V4
 	expected := uint32(byteSwap(uint64(binary.BigEndian.Uint32(v4[:])), 4))
 
-	if pred.Field.Aux != nil {
-		if pred.Field.EffectiveBits() != 32 {
-			return nil, fmt.Errorf("%w: IPv4 literal needs a 32-bit field, got %s.%s.%s (%d bits)", ErrNotImplemented, pred.Field.Layer.Spec.Name, pred.Field.Aux.OutParam, pred.Field.Field.Name, pred.Field.EffectiveBits())
-		}
-		prelude, loadAt, err := auxLoadEmitter(pred.Field, r4Anchor(), nil, dslReject)
-		if err != nil {
-			return nil, err
-		}
-		insns := append(asm.Instructions{}, emitAuxGating(pred.Field.Aux.Gating, r4Anchor(), dslReject)...)
-		insns = append(insns, prelude...)
-		insns = append(insns, loadAt(0, asm.Word)...)
-		insns = append(insns, cmpRegEqU32(jumpOp, expected, dslReject)...)
-		return insns, nil
-	}
-
-	fieldOff, bytes, err := literalFieldWindow(pred.Field)
+	insns, loadAt, err := bracketLoadAt(pred.Field, pc, 4, "IPv4 literal")
 	if err != nil {
 		return nil, err
 	}
-	if bytes != 4 {
-		return nil, fmt.Errorf("%w: IPv4 literal needs a 4-byte field, got %d-byte %s.%s", ErrNotImplemented, bytes, pred.Field.Layer.Spec.Name, pred.Field.Field.Name)
-	}
-	insns := emitFieldLoad(pc.fieldAnchor(), fieldOff, asm.Word)
+	insns = append(insns, loadAt(0, asm.Word)...)
 	insns = append(insns, cmpRegEqU32(jumpOp, expected, dslReject)...)
 	return insns, nil
+}
+
+// bracketLoadAt prepares the reads of a bracket predicate's field whose
+// window must be exactly `bytes` wide (the literal's natural width after
+// the slice): the prelude (aux presence gating and, for an entry whose
+// offset is only known at run time, the address compute that leaves R5 =
+// entry start) and a loadAt closure reading `size` bytes at `chunkOff`
+// into R3. A primary field reads through pc.fieldAnchor(); an aux field
+// through auxLoadEmitter. kind names the literal in the width error.
+//
+// Register discipline for the callers: R3 is the load destination; R2 is
+// free scratch in every mode; R5 is free only when the prelude is empty
+// (primary or static aux), so a body that must work in every mode keeps
+// its constants in R2 (ipv6AuxHalfCheck, macCheck).
+func bracketLoadAt(ref *ir.FieldRef, pc *predCtx, bytes int, kind string) (asm.Instructions, auxLoadAt, error) {
+	if ref == nil || ref.Layer == nil || ref.Field == nil {
+		return nil, nil, fmt.Errorf("codegen: %s predicate missing field reference", kind)
+	}
+	if ref.Aux != nil {
+		if ref.EffectiveBits() != bytes*8 {
+			return nil, nil, fmt.Errorf("%w: %s needs a %d-bit field, got %s.%s.%s (%d bits)", ErrNotImplemented, kind, bytes*8, ref.Layer.Spec.Name, ref.Aux.OutParam, ref.Field.Name, ref.EffectiveBits())
+		}
+		prelude, loadAt, err := auxLoadEmitter(ref, r4Anchor(), nil, dslReject)
+		if err != nil {
+			return nil, nil, err
+		}
+		insns := append(asm.Instructions{}, emitAuxGating(ref.Aux.Gating, r4Anchor(), dslReject)...)
+		insns = append(insns, prelude...)
+		return insns, loadAt, nil
+	}
+	fieldOff, got, err := literalFieldWindow(ref)
+	if err != nil {
+		return nil, nil, err
+	}
+	if got != bytes {
+		return nil, nil, fmt.Errorf("%w: %s needs a %d-byte field, got %d-byte %s.%s", ErrNotImplemented, kind, bytes, got, ref.Layer.Spec.Name, ref.Field.Name)
+	}
+	anchor := pc.fieldAnchor()
+	return nil, func(chunkOff int, size asm.Size) asm.Instructions {
+		return emitFieldLoad(anchor, fieldOff+chunkOff, size)
+	}, nil
 }
 
 // emitIPv6Predicate handles `field == fe80::1`, `field != fe80::1`,
@@ -774,71 +797,51 @@ func requireIPv6Field(pred *ir.Predicate) (int, error) {
 
 // emitMACPredicate handles `field == de:ad:be:ef:00:01` (and !=). MAC
 // fields are `bit<48>` (eth.dst, eth.src), so the body splits into a
-// 4-byte Word load (top 4 octets) plus a 2-byte Half load (bottom 2).
-// The address base is cached in R5 so the second LDX skips the Mov+Add
-// rebuild — both JNE.Imm comparisons fit in 32 bits and so leave R5
-// untouched. The == / != branching shape comes from multiWordRoute.
+// 4-byte Word load (top 4 octets) plus a 2-byte Half load (bottom 2),
+// both bounded reads through the field's anchor (macCheck). The == / !=
+// branching shape comes from multiWordRoute.
 func emitMACPredicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, error) {
 	if err := requireEqualityOp(pred, "MAC literal"); err != nil {
 		return nil, err
 	}
-	mac := pred.Value.MAC
-	highLE := uint32(byteSwap(uint64(binary.BigEndian.Uint32(mac[0:4])), 4))
-	lowLE := uint16(byteSwap(uint64(binary.BigEndian.Uint16(mac[4:6])), 2))
-
-	if pred.Field != nil && pred.Field.Aux != nil {
-		if pred.Field.EffectiveBits() != 48 {
-			return nil, fmt.Errorf("%w: MAC literal needs a 48-bit field, got %s.%s.%s (%d bits)", ErrNotImplemented, pred.Field.Layer.Spec.Name, pred.Field.Aux.OutParam, pred.Field.Field.Name, pred.Field.EffectiveBits())
-		}
-		prelude, loadAt, err := auxLoadEmitter(pred.Field, r4Anchor(), nil, dslReject)
-		if err != nil {
-			return nil, err
-		}
-		insns := append(asm.Instructions{}, emitAuxGating(pred.Field.Aux.Gating, r4Anchor(), dslReject)...)
-		insns = append(insns, prelude...)
-		insns = append(insns, multiWordRoute(pred.Op, func(fail string) asm.Instructions {
-			body := loadAt(0, asm.Word)
-			body = append(body,
-				asm.LoadImm(asm.R2, int64(uint64(highLE)), asm.DWord),
-				asm.JNE.Reg(asm.R3, asm.R2, fail),
-			)
-			body = append(body, loadAt(4, asm.Half)...)
-			body = append(body,
-				asm.LoadImm(asm.R2, int64(uint64(lowLE)), asm.DWord),
-				asm.JNE.Reg(asm.R3, asm.R2, fail),
-			)
-			return body
-		})...)
-		return insns, nil
-	}
-
-	fieldOff, bytes, err := literalFieldWindow(pred.Field)
+	highLE, lowLE := macLiteralLE(pred.Value)
+	insns, loadAt, err := bracketLoadAt(pred.Field, pc, 6, "MAC literal")
 	if err != nil {
 		return nil, err
 	}
-	if bytes != 6 {
-		return nil, fmt.Errorf("%w: MAC literal needs a 6-byte field, got %d-byte %s.%s", ErrNotImplemented, bytes, pred.Field.Layer.Spec.Name, pred.Field.Field.Name)
-	}
-	return multiWordRoute(pred.Op, func(fail string) asm.Instructions {
-		// Cache the address base in a non-volatile reg so the second
-		// load skips the Mov+Add rebuild. cmpRegEqU16 uses R5 too,
-		// so we use R6 for the cached pointer base - actually R5 is
-		// fine because LoadImm R5 is followed by JNE.Reg which reads
-		// R5 once and we re-Mov to it before the next compare.
-		insns := asm.Instructions{
-			asm.Mov.Reg(asm.R5, asm.R0),
-			asm.Add.Reg(asm.R5, offsetBase),
-			asm.LoadMem(asm.R3, asm.R5, int16(fieldOff), asm.Word),
-		}
-		insns = append(insns, cmpRegEqU32(asm.JNE, highLE, fail)...)
-		insns = append(insns,
-			asm.Mov.Reg(asm.R5, asm.R0),
-			asm.Add.Reg(asm.R5, offsetBase),
-			asm.LoadMem(asm.R3, asm.R5, int16(fieldOff+4), asm.Half),
-		)
-		insns = append(insns, cmpRegEqU16(asm.JNE, lowLE, fail)...)
-		return insns
-	}), nil
+	insns = append(insns, multiWordRoute(pred.Op, func(fail string) asm.Instructions {
+		return macCheck(loadAt, highLE, lowLE, fail)
+	})...)
+	return insns, nil
+}
+
+// macLiteralLE splits a MAC literal into the two constants macCheck
+// compares against: the first four octets and the last two, each
+// byte-swapped so an LE load of the wire bytes matches directly.
+func macLiteralLE(v *ast.Value) (highLE uint32, lowLE uint16) {
+	mac := v.MAC
+	highLE = uint32(byteSwap(uint64(binary.BigEndian.Uint32(mac[0:4])), 4))
+	lowLE = uint16(byteSwap(uint64(binary.BigEndian.Uint16(mac[4:6])), 2))
+	return highLE, lowLE
+}
+
+// macCheck emits the two-chunk equality test of a 48-bit field against
+// a MAC literal: a Word load compared with highLE, then a Half load
+// compared with lowLE, each mismatch jumping to failLabel and a full
+// match falling through. Constants live in R2 so the loads may be
+// R5-relative (an entry whose address the prelude left in R5).
+func macCheck(loadAt auxLoadAt, highLE uint32, lowLE uint16, failLabel string) asm.Instructions {
+	body := loadAt(0, asm.Word)
+	body = append(body,
+		asm.LoadImm(asm.R2, int64(uint64(highLE)), asm.DWord),
+		asm.JNE.Reg(asm.R3, asm.R2, failLabel),
+	)
+	body = append(body, loadAt(4, asm.Half)...)
+	body = append(body,
+		asm.LoadImm(asm.R2, int64(uint64(lowLE)), asm.DWord),
+		asm.JNE.Reg(asm.R3, asm.R2, failLabel),
+	)
+	return body
 }
 
 // cmpRegEqU32 emits a 64-bit register compare against a 32-bit
@@ -848,16 +851,6 @@ func emitMACPredicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, error)
 // extend to int64 before the compare and mismatch a zero-extended
 // LdXMemW load. Two instructions instead of one but always correct.
 func cmpRegEqU32(jumpOp asm.JumpOp, expected uint32, failLabel string) asm.Instructions {
-	return asm.Instructions{
-		asm.LoadImm(asm.R5, int64(uint64(expected)), asm.DWord),
-		jumpOp.Reg(asm.R3, asm.R5, failLabel),
-	}
-}
-
-// cmpRegEqU16 is the 16-bit twin of cmpRegEqU32 for the bottom half
-// of a MAC literal (or any other 2-byte field whose top bit could
-// be set).
-func cmpRegEqU16(jumpOp asm.JumpOp, expected uint16, failLabel string) asm.Instructions {
 	return asm.Instructions{
 		asm.LoadImm(asm.R5, int64(uint64(expected)), asm.DWord),
 		jumpOp.Reg(asm.R3, asm.R5, failLabel),
@@ -1124,30 +1117,11 @@ func emitIPv4CIDRPredicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, e
 	expectedLE := uint32(byteSwap(uint64(hostBE), 4))
 	maskLE := uint32(byteSwap(uint64(maskBE), 4))
 
-	if pred.Field != nil && pred.Field.Aux != nil {
-		if pred.Field.EffectiveBits() != 32 {
-			return nil, fmt.Errorf("%w: IPv4 CIDR needs a 32-bit field, got %s.%s.%s (%d bits)", ErrNotImplemented, pred.Field.Layer.Spec.Name, pred.Field.Aux.OutParam, pred.Field.Field.Name, pred.Field.EffectiveBits())
-		}
-		prelude, loadAt, err := auxLoadEmitter(pred.Field, r4Anchor(), nil, dslReject)
-		if err != nil {
-			return nil, err
-		}
-		insns := append(asm.Instructions{}, emitAuxGating(pred.Field.Aux.Gating, r4Anchor(), dslReject)...)
-		insns = append(insns, prelude...)
-		insns = append(insns, loadAt(0, asm.Word)...)
-		insns = append(insns, asm.And.Imm(asm.R3, int32(maskLE)))
-		insns = append(insns, cmpRegEqU32(jumpOp, expectedLE, dslReject)...)
-		return insns, nil
-	}
-
-	fieldOff, bytes, err := literalFieldWindow(pred.Field)
+	insns, loadAt, err := bracketLoadAt(pred.Field, pc, 4, "IPv4 CIDR")
 	if err != nil {
 		return nil, err
 	}
-	if bytes != 4 {
-		return nil, fmt.Errorf("%w: IPv4 CIDR needs a 4-byte field, got %d-byte %s.%s", ErrNotImplemented, bytes, pred.Field.Layer.Spec.Name, pred.Field.Field.Name)
-	}
-	insns := emitFieldLoad(pc.fieldAnchor(), fieldOff, asm.Word)
+	insns = append(insns, loadAt(0, asm.Word)...)
 	insns = append(insns, asm.And.Imm(asm.R3, int32(maskLE)))
 	insns = append(insns, cmpRegEqU32(jumpOp, expectedLE, dslReject)...)
 	return insns, nil
