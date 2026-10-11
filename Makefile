@@ -1,5 +1,5 @@
 .PHONY: build clean test test-unit test-bpf test-integration test-all vet goreleaser
-.PHONY: install-lint-tools lint lint-ci p4c-check lean-build lean-gen lean-vocab
+.PHONY: install-lint-tools lint lint-ci p4c-check lean-build lean-gen lean-vocab golden-update golden-diff
 
 BINARY = bpf-ninja
 DIFF_FROM_BRANCH_NAME ?= main
@@ -65,3 +65,18 @@ goreleaser: ## build with goreleaser
 
 clean:
 	rm -f $(BINARY)
+
+golden-update: ## Rewrite the bytecode golden (pkg/kunai/dsltest/testdata/golden) and list the filters that moved
+	cd pkg/kunai/dsltest && go test -run '^TestGolden$$' -update
+
+GOLDEN_BASE ?= main
+golden-diff: ## Diff every golden filter's text between GOLDEN_BASE (default main) and the working tree; exits 1 when they differ
+	@set -e; tmp=$$(mktemp -d); \
+	trap 'git worktree remove --force "$$tmp/base" >/dev/null 2>&1 || true; rm -rf "$$tmp"' EXIT INT TERM; \
+	git worktree add --quiet --detach "$$tmp/base" "$(GOLDEN_BASE)"; \
+	if [ ! -f "$$tmp/base/pkg/kunai/dsltest/golden_test.go" ]; then \
+		echo "golden-diff: $(GOLDEN_BASE) has no bytecode golden test" >&2; exit 2; \
+	fi; \
+	(cd "$$tmp/base/pkg/kunai/dsltest" && go test -run '^TestGolden$$' -golden-dump="$$tmp/old" >&2); \
+	(cd pkg/kunai/dsltest && go test -run '^TestGolden$$' -golden-dump="$$tmp/new" >&2); \
+	diff -ru "$$tmp/old" "$$tmp/new"

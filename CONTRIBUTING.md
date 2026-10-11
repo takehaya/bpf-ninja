@@ -38,3 +38,21 @@ Run the guard's tests with:
 ```sh
 python3 -m unittest discover -s scripts/tests -p 'test_public_content.py'
 ```
+
+## Bytecode golden
+
+`pkg/kunai/dsltest/testdata/golden` pins the bytecode kunai emits for every
+filter the spec vectors compile and for a curated list (the evaluation filter
+set, the tc load matrix, and a few netfilter and set filters). `go test ./...`
+compares against it, so a refactor that should not change the output needs no
+extra step.
+
+When a change is meant to move bytecode or warnings, run `make golden-update`
+and commit the result. It prints each filter that moved, with its instruction
+counts and which part changed (`code` for the instructions, `meta` for the
+capture length, set extractions and warnings). The curated `.asm` files show
+the change as text. `make golden-diff GOLDEN_BASE=main` prints the text diff
+of every filter between the base and the working tree, so a reviewer can check
+the filters the manifest lists only by hash. Adding spec vectors with
+`make lean-gen` also needs `make golden-update`, because each new filter gets
+a manifest line.
