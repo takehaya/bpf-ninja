@@ -289,36 +289,83 @@ func checkRuntimeParents(p *ir.Program, f *ast.Filter) error {
 }
 
 // addUnreachableChainWarning flags a quantified layer immediately
-// followed by the same protocol (`mpls{1,8}/mpls`, `vlan+/vlan`).
-// Quantifiers are greedy and never backtrack, so the repeated layer has
-// nothing left to match: for a chain-end protocol (MPLS s-bit) and for any
-// open-ended quantifier the following layer is unreachable; for a bounded
-// `{n,m}` on a self-dispatch protocol (VLAN) it only matches stacks deeper
-// than m. Alternation groups are left alone.
+// followed by the same protocol (`mpls{1,8}/mpls`, `mpls?/mpls`,
+// `vlan+/vlan`). Quantifiers are greedy and never backtrack, so the
+// following layer has nothing left to match: for a chain-end protocol
+// (MPLS s-bit) the iteration stops on the header that ends the chain or
+// on a dispatch miss, and either way the follower misses too; for an open
+// quantifier on another protocol the follower only matches past
+// MAX_DEPTH; a bounded quantifier there leaves deeper stacks to the
+// follower, so no warning. `?` is `{0,1}` (D-005) and warns alike;
+// `{0,0}` consumes nothing and leaves the follower reachable. A plain
+// `mpls/mpls` is fine: only a quantifier demands the end signal at its
+// bound (D-024), so `mpls{1}/mpls` warns while `mpls/mpls` does not.
+// Alternation groups are left alone.
 func addUnreachableChainWarning(p *ir.Program) {
 	for i := 0; i+1 < len(p.Layers); i++ {
 		l, next := p.Layers[i], p.Layers[i+1]
 		if l.Alternation != nil || next.Alternation != nil || l.Spec == nil || next.Spec == nil {
 			continue
 		}
-		if l.Quant != ast.QuantPlus && l.Quant != ast.QuantStar && l.Quant != ast.QuantRange {
+		if l.Quant == ast.QuantOne || l.Spec.Name != next.Spec.Name {
 			continue
 		}
-		if l.Spec.Name != next.Spec.Name {
+		_, hi := l.Bounds()
+		if hi == 0 || (hi > 0 && l.Spec.ChainEnd == nil) {
 			continue
 		}
-		// A bounded {n,m} on a self-dispatch protocol (no chain-end signal)
-		// can still leave headers for the follower when the stack is deeper
-		// than m; only chain-end protocols and open-ended quantifiers make
-		// the follower unreachable.
-		if l.Quant == ast.QuantRange && l.RangeMax >= 0 && l.Spec.ChainEnd == nil {
-			continue
+		why := fmt.Sprintf("so the second %q never matches", next.Spec.Name)
+		if l.Spec.ChainEnd == nil {
+			why = fmt.Sprintf("so the second %q only matches stacks deeper than the %d headers an open quantifier stands for", next.Spec.Name, l.Spec.ChainDepth())
+		}
+		fix := "Fold the two layers into one quantifier."
+		if fold, ok := foldedQuantifier(l, next); ok {
+			fix = fmt.Sprintf("Fold them into one quantifier: `%s%s`.", l.Spec.Name, fold)
 		}
 		p.Warnings = append(p.Warnings, fmt.Sprintf(
-			"%q is quantified and immediately followed by another %q; quantifiers are greedy and never backtrack, so the second %q is unreachable (or only matches stacks deeper than the quantifier's upper bound). Fold it into the quantifier (e.g. `%s{n+1,m+1}`).",
-			l.Spec.Name, next.Spec.Name, next.Spec.Name, l.Spec.Name))
+			"%q is immediately followed by %q; quantifiers are greedy and never backtrack, %s. %s",
+			l.Spec.Name+l.QuantText(), next.Spec.Name+next.QuantText(), why, fix))
 	}
 }
+
+// foldedQuantifier spells the quantifier that matches what l followed by
+// next of the same protocol was meant to: the bounds add up. ok is false
+// when it cannot be written for them: either layer carries a predicate or
+// a label, which one quantifier cannot keep apart, or the sum exceeds a
+// cap (an open minimum above MAX_DEPTH, a bound above 32).
+func foldedQuantifier(l, next *ir.LayerInstance) (string, bool) {
+	if len(l.Predicates) > 0 || len(next.Predicates) > 0 || l.Label != "" || next.Label != "" {
+		return "", false
+	}
+	lo, hi := l.Bounds()
+	nlo, nhi := next.Bounds()
+	lo += nlo
+	switch {
+	case hi < 0 || nhi < 0:
+		hi = -1
+	default:
+		hi += nhi
+	}
+	if (hi < 0 && lo > l.Spec.ChainDepth()) || hi > foldedQuantifierCap {
+		return "", false
+	}
+	folded := ir.LayerInstance{Quant: ast.QuantRange, RangeMin: lo, RangeMax: hi}
+	switch {
+	case lo == 0 && hi == 1:
+		return "?", true
+	case lo == 1 && hi < 0:
+		return "+", true
+	case lo == 0 && hi < 0:
+		return "*", true
+	case lo == hi:
+		return fmt.Sprintf("{%d}", lo), true
+	}
+	return folded.QuantText(), true
+}
+
+// foldedQuantifierCap is the largest bound the warning proposes: the
+// spec's chainCap and codegen's bpf_loop cap.
+const foldedQuantifierCap = 32
 
 // addChainRootWarning appends a notice to p.Warnings when the chain's
 // root protocol does not match the host's packet entry point. For the

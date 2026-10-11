@@ -82,7 +82,7 @@ eth/mpls{2,8}/ipv4/tcp              # MPLS 2〜8 段 (9 段以上のスタック
 eth/vlan*/ipv4/tcp                  # VLAN 0〜N 段
 ```
 
-MPLS の s-bit のように、スタックの終端を示す印を持つ protocol では、quantifier の上限に達した header がその印を持っていないと、スタックが上限より深いとみなして packet を reject します。この規則は [`spec/lean/DECISIONS.md`](../../spec/lean/DECISIONS.md) の D-024 で決めたものです。`eth/mpls{1,2}/ipv4/tcp` は 3 段以上のスタックに match せず、`mpls?` は MPLS が無いパケットと、1 段で終わるスタックにだけ match します。`mpls+` と `mpls*` の上限は `MPLS_MAX_DEPTH` の 8 段です。終端の印を持たない `vlan` などでは、上限に達したところで次の layer に進みます。
+MPLS の s-bit のように、スタックの終端を示す印を持つ protocol では、quantifier の上限に達した header がその印を持っていないと、スタックが上限より深いとみなして packet を reject します。この規則は [`spec/lean/DECISIONS.md`](../../spec/lean/DECISIONS.md) の D-024 で決めたものです。`eth/mpls{1,2}/ipv4/tcp` は 3 段以上のスタックに match せず、`mpls?` は MPLS が無いパケットと、1 段で終わるスタックにだけ match します。`mpls+` と `mpls*` の上限は `MPLS_MAX_DEPTH` の 8 段です。終端の印を持たない `vlan` などでは、上限に達したところで次の layer に進みます。quantifier は欲張りで後戻りしないので、終端の印を持つ protocol で `mpls?/mpls` や `mpls{1,4}/mpls` のように quantifier の直後に同じ protocol を書くと、後ろの `mpls` は match しません。`vlan+/vlan` のように上限の無い quantifier の後ろに同じ protocol を書いた形も、上限の段数より深いスタックにしか match しません。resolver はこれらの形に warning を出し、`mpls{1,2}` や `mpls{2,5}` のように 1 つの quantifier にまとめた書き方を示します。
 
 #### tc での VLAN tag
 

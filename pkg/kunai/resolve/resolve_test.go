@@ -179,24 +179,70 @@ func TestRuntimeParentDispatch(t *testing.T) {
 }
 
 func TestUnreachableChainWarning(t *testing.T) {
-	for _, expr := range []string{"eth/mpls{1,8}/mpls/ipv4/tcp", "eth/vlan+/vlan/ipv4/tcp", "eth/mpls*/mpls"} {
-		p := resolveOK(t, expr, nil)
-		found := false
-		for _, w := range p.Warnings {
+	warned := func(t *testing.T, expr string) string {
+		t.Helper()
+		for _, w := range resolveOK(t, expr, nil).Warnings {
 			if strings.Contains(w, "never backtrack") {
-				found = true
+				return w
 			}
 		}
-		if !found {
-			t.Errorf("%s: expected unreachable-chain warning, got %v", expr, p.Warnings)
+		return ""
+	}
+	// The fold the warning proposes, per filter ("" when it cannot spell
+	// one).
+	for expr, fold := range map[string]string{
+		"eth/mpls{1,8}/mpls/ipv4/tcp": "mpls{2,9}",
+		"eth/vlan+/vlan/ipv4/tcp":     "vlan{2,}",
+		"eth/mpls*/mpls":              "mpls+",
+		// `?` is `{0,1}` (D-005): the label it takes must end the stack,
+		// so the second mpls never matches.
+		"eth/mpls?/mpls/ipv4/tcp":     "mpls{1,2}",
+		"eth/mpls{0,1}/mpls/ipv4/tcp": "mpls{1,2}",
+		"eth/mpls{1}/mpls/ipv4/tcp":   "mpls{2}",
+		"eth/mpls{1,1}/mpls/ipv4/tcp": "mpls{2}",
+		// The follower's own quantifier adds to the fold.
+		"eth/mpls?/mpls?/ipv4/tcp":     "mpls{0,2}",
+		"eth/mpls+/mpls*/ipv4/tcp":     "mpls+",
+		"eth/mpls+/mpls{2,3}/ipv4/tcp": "mpls{3,}",
+		// No fold past a cap, or for layers a quantifier cannot merge.
+		"eth/mpls{8,}/mpls/ipv4/tcp":          "",
+		"eth/mpls{1,32}/mpls/ipv4/tcp":        "",
+		"eth/mpls[label == 5]+/mpls/ipv4/tcp": "",
+		"eth/mpls+/mpls@inner/ipv4/tcp":       "",
+	} {
+		w := warned(t, expr)
+		switch {
+		case w == "":
+			t.Errorf("%s: expected unreachable-chain warning", expr)
+		case fold == "" && !strings.Contains(w, "Fold the two layers into one quantifier."):
+			t.Errorf("%s: warning %q proposes a fold", expr, w)
+		case fold != "" && !strings.Contains(w, "`"+fold+"`"):
+			t.Errorf("%s: warning %q does not propose %s", expr, w, fold)
 		}
 	}
-	for _, expr := range []string{"eth/mpls{1,8}/ipv4/tcp", "eth/vlan+/ipv4/tcp", "eth/vlan/vlan/ipv4/tcp", "eth/vlan{1}/vlan/ipv4/tcp", "eth/vlan{1,2}/vlan/ipv4/tcp"} {
-		p := resolveOK(t, expr, nil)
-		for _, w := range p.Warnings {
-			if strings.Contains(w, "never backtrack") {
-				t.Errorf("%s: unexpected warning %q", expr, w)
-			}
+	if w := warned(t, "eth/mpls?/mpls/ipv4/tcp"); !strings.HasPrefix(w, `"mpls?" is immediately followed by "mpls"`) || !strings.Contains(w, "never matches") {
+		t.Errorf("warning %q does not spell the layers or the reason", w)
+	}
+	if w := warned(t, "eth/vlan+/vlan/ipv4/tcp"); !strings.Contains(w, "deeper than the 8 headers") {
+		t.Errorf("warning %q does not give the open bound's depth", w)
+	}
+	// The proposed folds resolve, without the warning.
+	for _, expr := range []string{"eth/mpls{2,9}/ipv4/tcp", "eth/vlan{2,}/ipv4/tcp", "eth/mpls{0,2}/ipv4/tcp", "eth/mpls{3,}/ipv4/tcp", "eth/mpls{2}/ipv4/tcp"} {
+		if w := warned(t, expr); w != "" {
+			t.Errorf("%s: a proposed fold warns: %q", expr, w)
+		}
+	}
+	for _, expr := range []string{
+		"eth/mpls{1,8}/ipv4/tcp", "eth/vlan+/ipv4/tcp", "eth/vlan/vlan/ipv4/tcp",
+		"eth/vlan{1}/vlan/ipv4/tcp", "eth/vlan{1,2}/vlan/ipv4/tcp",
+		"eth/mpls/mpls/ipv4/tcp",
+		// A bounded quantifier on VLAN leaves deeper stacks to the follower.
+		"eth/vlan?/vlan/ipv4/tcp", "eth/vlan{0,1}/vlan/ipv4/tcp",
+		// `{0,0}` takes no header; the follower is the first label.
+		"eth/mpls{0,0}/mpls/ipv4/tcp",
+	} {
+		if w := warned(t, expr); w != "" {
+			t.Errorf("%s: unexpected warning %q", expr, w)
 		}
 	}
 }
