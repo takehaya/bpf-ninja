@@ -51,8 +51,19 @@ func genPredicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, error) {
 	// slot, which only the where clause reads. The bracket readers would
 	// address it at OffsetInLayer, i.e. the primary header's bytes, and
 	// silently compare the wrong field, so they refuse it.
-	if pred.Field != nil && pred.Field.Aux != nil && pred.Field.Aux.OwnerOption == nil && dynamicAuxLayoutOf(pred.Field) != nil {
-		return nil, fmt.Errorf("%w: bracket predicate on %s.%s, an option found by the parser's walk at a runtime offset; write it as a where clause (`where %s.%s.%s ...`)", ErrNotImplemented, pred.Field.Layer.Spec.Name, pred.Field.Aux.OutParam, pred.Field.Layer.Spec.Name, pred.Field.Aux.OutParam, pred.Field.Field.Name)
+	// (The demand walker still records such references,
+	// TestCollectQueriedOptionsBracketPredicate, for the day these
+	// predicates run after the walk and read the slot.)
+	if pred.Field != nil && pred.Field.Aux != nil && dynamicAuxLayoutOf(pred.Field) != nil {
+		proto, opt, fld := pred.Field.Layer.Spec.Name, pred.Field.Aux.OutParam, pred.Field.Field.Name
+		advice := fmt.Sprintf("write it as a where clause (`where %s.%s.%s ...`)", proto, opt, fld)
+		switch pred.Kind {
+		case ast.PredIn:
+			advice = fmt.Sprintf("write it as a where clause with an `or` chain (`where %s.%s.%s == a or %s.%s.%s == b`)", proto, opt, fld, proto, opt, fld)
+		case ast.PredInSet:
+			advice = "an option field cannot be a set key"
+		}
+		return nil, fmt.Errorf("%w: bracket predicate on %s.%s, an option found by the parser's walk at a runtime offset; %s", ErrNotImplemented, proto, opt, advice)
 	}
 	var guard asm.Instructions
 	switch {

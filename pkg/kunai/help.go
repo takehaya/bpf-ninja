@@ -325,7 +325,11 @@ func writeAuxHeaders(w io.Writer, protoName string, pm *vocab.ParseStateMachine)
 			}
 			gating = fmt.Sprintf(" (gated: (byte@%d & 0x%x) %s 0x%x)", aux.Gating.ByteOff, aux.Gating.Mask, op, aux.Gating.Value)
 		}
-		if _, err := fmt.Fprintf(w, "  %s (%s, %d bytes @ +%d from layer start)%s\n", name, aux.HeaderName, aux.HeaderSize, aux.OffsetInLayer, gating); err != nil {
+		where := fmt.Sprintf("@ +%d from layer start", aux.OffsetInLayer)
+		if aux.IsDynamicEligible {
+			where = "found by the option walk"
+		}
+		if _, err := fmt.Fprintf(w, "  %s (%s, %d bytes %s)%s\n", name, aux.HeaderName, aux.HeaderSize, where, gating); err != nil {
 			return err
 		}
 		if aux.HeaderRef != nil {
@@ -333,7 +337,13 @@ func writeAuxHeaders(w io.Writer, protoName string, pm *vocab.ParseStateMachine)
 				return err
 			}
 		}
-		if _, err := fmt.Fprintf(w, "    use: %s.%s.<field>  or  %s[%s.<field> == X]\n", protoName, name, protoName, name); err != nil {
+		// A walked option sits at a runtime offset only the where clause
+		// reads; the bracket form is refused (genPredicate).
+		use := fmt.Sprintf("    use: %s.%s.<field>  or  %s[%s.<field> == X]\n", protoName, name, protoName, name)
+		if aux.IsDynamicEligible {
+			use = fmt.Sprintf("    use: where %s.%s.<field> == X  (not in a bracket)\n", protoName, name)
+		}
+		if _, err := io.WriteString(w, use); err != nil {
 			return err
 		}
 	}
