@@ -65,7 +65,7 @@ resolver / codegen が enforce する MVP 制約は次のとおりです。
 predicate-list ::= '[' predicate (',' predicate)* ']'     (* カンマは AND *)
 predicate      ::= field-path op value
                  | option-segment '.valid'                (* tcp[options.valid]: option 領域が壊れていない (D-029) *)
-                 | field-path 'in' value-list             (* F7: integer / integer '..' integer の OR-chain *)
+                 | field-path 'in' value-list             (* F7: value / integer '..' integer の OR-chain。アドレスと CIDR も書ける *)
                  | field-path 'in' '@' set-name           (* pinned-map 集合照合 *)
                  | field-path 'has' flag-name             (* F6 bitwise & で superseded *)
 field-path     ::= field-name ('.' field-name)*            (* aux access: <aux>.<field> *)

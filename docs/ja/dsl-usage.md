@@ -111,6 +111,19 @@ eth[dst==de:ad:be:ef:00:01]/ipv4/tcp               # MAC アドレス
 
 すべてのリテラルで `==` / `!=` が使えます。整数リテラルに限り ordered な比較 (`<`、`<=`、`>`、`>=`) も使えます。
 
+`field in [...]` は候補のどれかに一致すれば真になる OR です。候補には整数、範囲 `lo..hi`、アドレス、CIDR を書けます。アドレスと CIDR は `==` と同じ比較で、CIDR は prefix の一致です。
+
+```
+eth/ipv4/tcp[dport in [80, 443, 8000..8080]]       # 整数と範囲
+eth/ipv4[dst in [10.0.0.1, 10.0.0.2]]/tcp           # IPv4 アドレスの列
+eth/ipv4[src in [10.0.0.0/8, 192.168.1.1]]/tcp      # CIDR とアドレスの混在
+eth/ipv6[src in [fc00::1, fc00::/16]]/tcp           # IPv6
+eth[src in [aa:bb:cc:dd:ee:01, 11:22:33:44:55:66]]/ipv4/tcp
+eth/ipv6/srv6[segments[1].addr in [fc00::1, fc00::2]]/tcp
+```
+
+bit-slice した field にも使えます。`ipv6[dst[96:128] in [10.0.0.1, 10.0.0.2]]` は下位 32 bit を IPv4 アドレスの列と比べます。128 bit や 48 bit の field に整数の候補を混ぜた list は受け付けません。aux field の slice は byte 境界で始まり byte 境界で終わるものだけです。
+
 Aux header field にも bracket 内でアクセスできます。GTP-U の opt block を例に示します。
 
 ```
