@@ -311,7 +311,8 @@ func genStaticMachineChain(layer *ir.LayerInstance, index int, all []*ir.LayerIn
 		switch {
 		case i == 0 && optional:
 			target = absentLabel
-		case i >= lo && i > 0:
+		case i >= lo:
+			// i ≥ 1 here: iteration 0 with lo == 0 is the optional case above.
 			target = chainDone
 		}
 		body, cbs, err := genParserMachineIter(layer, index, all, qo, plan, pc, target, i)

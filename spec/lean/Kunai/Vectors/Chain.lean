@@ -541,6 +541,43 @@ vector typQuantOpenMinAboveDepth := {
   id := "typ-quant-open-min-above-depth", ast := { layers := [P "eth", ipv4Q (.range 9 none), P "tcp"] }, packet := ipipN 1,
   expected := .illTyped "iteration bound below the quantifier minimum", note := "{9,} on ipv4: the open bound is MAX_DEPTH 8" }
 set_option maxRecDepth 16384 in
+vector quantMachineOpenAtDepth := {
+  id := "quant-machine-open-at-depth", ast := { layers := [P "eth", ipv4Q (.range 8 none), P "tcp"] }, packet := ipipN 8, expected := .accept [],
+  note := "the minimum may equal MAX_DEPTH" }
+set_option maxRecDepth 16384 in
+vector quantMachineOpenAtDepthUnderRun := {
+  id := "quant-machine-open-at-depth-under-run", ast := { layers := [P "eth", ipv4Q (.range 8 none), P "tcp"] }, packet := ipipN 7, expected := .reject }
+set_option maxRecDepth 16384 in
+vector quantMachineIPv6OpenAtDepth := {
+  id := "quant-machine-ipv6-open-at-depth", ast := { layers := [P "eth", .proto { name := "ipv6", quant := .range 4 none }, P "tcp"] }, packet := ip6ip6N 4,
+  expected := .accept [] }
+set_option maxRecDepth 16384 in
+vector quantMachineRangeFive := {
+  id := "quant-machine-range-five", ast := { layers := [P "eth", ipv4Q (.range 1 (some 5)), P "tcp"] }, packet := ipipN 5, expected := .accept [],
+  note := "an explicit bound above the fixed-length unroll cap" }
+set_option maxRecDepth 16384 in
+vector quantMachineRangeFiveOver := {
+  id := "quant-machine-range-five-over", ast := { layers := [P "eth", ipv4Q (.range 1 (some 5)), P "tcp"] }, packet := ipipN 6, expected := .reject }
+set_option maxRecDepth 16384 in
+vector quantMachineIPv6RangeFive := {
+  id := "quant-machine-ipv6-range-five", ast := { layers := [P "eth", .proto { name := "ipv6", quant := .range 1 (some 5) }, P "tcp"] }, packet := ip6ip6N 5,
+  expected := .accept [], note := "an explicit bound above IPV6_MAX_DEPTH is the fuel: five headers match" }
+set_option maxRecDepth 16384 in
+vector quantMachineStarNine := {
+  id := "quant-machine-star-nine", ast := { layers := [P "eth", P "ipv4", ipv4Q .star, P "tcp"] }, packet := ipipN 9, expected := .accept [],
+  note := "the mandatory header plus eight repeats" }
+set_option maxRecDepth 16384 in
+vector quantMachineStarTen := {
+  id := "quant-machine-star-ten", ast := { layers := [P "eth", P "ipv4", ipv4Q .star, P "tcp"] }, packet := ipipN 10, expected := .reject }
+set_option maxRecDepth 16384 in
+vector quantMachineRangeNine := {
+  id := "quant-machine-range-nine", ast := { layers := [P "eth", ipv4Q (.range 1 (some 9)), P "tcp"] }, packet := ipipN 9, expected := .accept [],
+  goStatus := .notImplemented, note := "well-typed (bound 9 ≤ 32); Go unrolls at most 8 parser machines" }
+set_option maxRecDepth 16384 in
+vector capHeadersMachinePlusWide := {
+  id := "cap-headers-machine-plus-wide", ast := { layers := [P "eth", ipv4Q .plus, P "tcp"], captures := [{ spec := .headers }] }, packet := ipipN 8,
+  expected := .accept [(0, 194)], note := "D-039: 14 + 8·20 + 20 on a 199-byte frame" }
+set_option maxRecDepth 16384 in
 vector capHeadersMachinePlus := {
   id := "cap-headers-machine-plus", ast := { layers := [P "eth", ipv4Q .plus, P "tcp"], captures := [{ spec := .headers }] }, packet := ipipN 2,
   expected := .accept [(0, 79)], note := "D-039: 14 + 8·20 + 20 = 194, clamped to the 79-byte frame" }
@@ -563,6 +600,6 @@ def chainVectors : List Vector := [
   altFirst, altSecond, altAfterVxlan6, altAfterVxlan4, altNone, altFirstPredFails, altRoot, altNoCheck,
   hostTcExitVlanOpt, hostTcExitVlanMandatory, hostTcWireVlanMandatory, hostTcWireVlanMandatoryUntagged, hostTcWireVlanTci, hostTcWireVlanTciMiss, hostTcWireVlanWhere, hostTcWireUntaggedChainOnTagged, hostTcWireQinqVlan, hostTcWireVlanAlt, hostTcVlanMandatory, hostTcVlanAlt, hostTcVlanAltSecond, hostTcQinqVlan, hostTcQinqMandatory, hostTcQinqOpt, hostTcInnerVlan, hostTcInnerVlanTci, hostTcInnerVlanPred, hostTcQinqOptVlan, hostTcOuterAndInner, hostTcInnerLabel, hostTcOuterLabelRead,
   hostTcMixedAlt, hostTcVlanRoot, hostL3InnerVlan, hostTcVlanOpt,
-  quantMachineRangeTwo, quantMachineRangeThree, quantMachineExactUnderRun, quantMachinePredFirstFails, quantMachinePredSecondFails, quantMachineWhereLast, quantMachineWhereNotFirst, quantMachinePlusOne, quantMachinePlusEight, quantMachinePlusNine, quantMachineOpenUnderRun, quantMachineOpenTwo, quantMachineStarAbsent, quantMachineStarTwo, quantMachinePlusPredMiddleFails, quantMachinePlusWhereLast, quantMachineIPv6PlusTwo, quantMachineIPv6PlusFive, quantMachineIPv6StarAbsent, typQuantOpenMinAboveDepth, capHeadersMachinePlus, hostTcOuterBracketAbsent, hostTcOuterBracketCTag, hostTcOuterBracketCTagMiss, hostL3Root, hostL3EthRoot]
+  quantMachineRangeTwo, quantMachineRangeThree, quantMachineExactUnderRun, quantMachinePredFirstFails, quantMachinePredSecondFails, quantMachineWhereLast, quantMachineWhereNotFirst, quantMachinePlusOne, quantMachinePlusEight, quantMachinePlusNine, quantMachineOpenUnderRun, quantMachineOpenTwo, quantMachineStarAbsent, quantMachineStarTwo, quantMachinePlusPredMiddleFails, quantMachinePlusWhereLast, quantMachineIPv6PlusTwo, quantMachineIPv6PlusFive, quantMachineIPv6StarAbsent, typQuantOpenMinAboveDepth, quantMachineOpenAtDepth, quantMachineOpenAtDepthUnderRun, quantMachineIPv6OpenAtDepth, quantMachineRangeFive, quantMachineRangeFiveOver, quantMachineIPv6RangeFive, quantMachineStarNine, quantMachineStarTen, quantMachineRangeNine, capHeadersMachinePlusWide, capHeadersMachinePlus, hostTcOuterBracketAbsent, hostTcOuterBracketCTag, hostTcOuterBracketCTagMiss, hostL3Root, hostL3EthRoot]
 
 end Kunai

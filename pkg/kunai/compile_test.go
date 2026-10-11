@@ -1628,6 +1628,10 @@ func TestCompileOptionalVariableLayers(t *testing.T) {
 		"eth/ipv6@o+/tcp where o.exts[0].next_header == 6",
 		"eth/ipv4+/tcp capture headers",
 		"eth/vlan?/ipv4+/tcp",
+		// the minimum may equal MAX_DEPTH: exactly that many instances
+		"eth/ipv4{8,}/tcp",
+		"eth/ipv6{4,}/tcp",
+		"eth/mpls{8,}/ipv4/tcp",
 	} {
 		if _, err := compileForTest(expr); err != nil {
 			t.Errorf("Compile(%q): %v", expr, err)

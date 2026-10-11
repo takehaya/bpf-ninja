@@ -149,6 +149,27 @@ func TestMachineChainPlus(t *testing.T) {
 	five := New(t, "eth/ipv4{1,5}/tcp")
 	five.MustMatch(t, ipipDepth(t, 5), "five headers")
 	five.MustReject(t, ipipDepth(t, 6), "six headers")
+
+	// The minimum may equal MAX_DEPTH: exactly eight headers match.
+	eight := New(t, "eth/ipv4{8,}/tcp")
+	eight.MustMatch(t, ipipDepth(t, 8), "eight headers")
+	eight.MustReject(t, ipipDepth(t, 7), "seven headers: under-run")
+	eight.MustReject(t, ipipDepth(t, 9), "nine headers")
+
+	// A tagged frame in front of the chain: the optional vlan leaves a
+	// range-valued entry the first ipv4 dispatches from.
+	tagged := func(depth int) []byte {
+		o := Defaults()
+		o.VLAN = []uint16{100}
+		vlanFrame := Build(t, o)
+		ipip := ipipDepth(t, depth)
+		return append(append([]byte{}, vlanFrame[:18]...), ipip[14:]...)
+	}
+	vl := New(t, "eth/vlan?/ipv4+/tcp")
+	vl.MustMatch(t, tagged(3), "tagged, three headers")
+	vl.MustMatch(t, ipipDepth(t, 3), "untagged, three headers")
+	vl.MustMatch(t, tagged(8), "tagged, eight headers")
+	vl.MustReject(t, tagged(9), "tagged, nine headers")
 }
 
 func TestMachineChainStar(t *testing.T) {
@@ -179,6 +200,12 @@ func TestMachineChainPlusWhereLast(t *testing.T) {
 	last := New(t, "eth/ipv4@o+/tcp where o.ttl == 32")
 	last.MustMatch(t, BuildEthIPIPTCP(t, IPIPOpts{Depth: 3, InnerTTL: 32}), "the reference reads the innermost header")
 	last.MustReject(t, BuildEthIPIPTCP(t, IPIPOpts{Depth: 3, OuterTTL: 32}), "the outer headers' ttl is not what the reference reads")
+
+	// A where clause on the layer after the chain reads through the
+	// range-valued entry the chain leaves.
+	dport := New(t, "eth/ipv4+/tcp where tcp.dport == 80")
+	dport.MustMatch(t, ipipDepth(t, 3), "dport 80 after three headers")
+	New(t, "eth/ipv4+/tcp where tcp.dport == 81").MustReject(t, ipipDepth(t, 3), "dport 81 is not what the frame carries")
 
 	rr := New(t, "eth/ipv4@o+/tcp where o.options.RR.kind == 7")
 	rr.MustMatch(t, BuildEthIPIPTCP(t, IPIPOpts{Depth: 3, InnerOptions: []layers.IPv4Option{rrOption}}), "RR on the last instance")
@@ -213,5 +240,14 @@ func TestMachineChainPlusCaptureBound(t *testing.T) {
 	}
 	if got := out.Capture.MaxCapLen; got != 194 {
 		t.Fatalf("MaxCapLen = %d, want 194", got)
+	}
+	// ipv6 after a mandatory ipv6: 14 + 40 + 4·40 + 20 (the ipv6 bound
+	// alone, 14 + 4·40 + 20, would coincide with ipv4's 194).
+	out, err = kunai.Compile("eth/ipv6/ipv6*/tcp capture headers", codegen.Capabilities{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := out.Capture.MaxCapLen; got != 234 {
+		t.Fatalf("MaxCapLen = %d, want 234", got)
 	}
 }

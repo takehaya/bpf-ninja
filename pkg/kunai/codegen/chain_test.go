@@ -376,7 +376,10 @@ func TestGenMachineChainOpenQuantifiers(t *testing.T) {
 }
 
 func TestLayerEntryIsRangeOpenQuantifiers(t *testing.T) {
-	for _, expr := range []string{"eth/ipv4+/tcp", "eth/ipv4/ipv4*/tcp", "eth/ipv4{2,}/tcp", "eth/ipv4{1,2}/tcp"} {
+	// For the ipv6 and absent-edge shapes this test is the only guard: the
+	// dsltest runner reads a scratch copy, so the verifier's packet bounds
+	// are exercised by TestBpfXDPNativeLoad on the ipv4 rows alone.
+	for _, expr := range []string{"eth/ipv4+/tcp", "eth/ipv4/ipv4*/tcp", "eth/ipv4{2,}/tcp", "eth/ipv4{1,2}/tcp", "eth/ipv6{2,}/tcp", "eth/ipv6{1,2}/tcp", "eth/ipv6+/tcp"} {
 		p := parseResolveBundled(t, expr)
 		idx := len(p.Layers) - 2
 		if !layerEntryIsRange(p.Layers, idx) {
