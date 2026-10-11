@@ -56,10 +56,24 @@ const (
 // BPF_PROG_TEST_RUN. Cleanup is scheduled on the *testing.T that
 // constructed it, so callers don't need to Close() it explicitly.
 type Runner struct {
-	prog       *ebpf.Program
-	scratchMap *ebpf.Map
-	expr       string
+	prog        *ebpf.Program
+	scratchMap  *ebpf.Map
+	keyMap      *ebpf.Map
+	extractions []codegen.ExtractSlot
+	expr        string
 }
+
+// Set keys: the wrapper zeroes the host's key region [setKeyLow,
+// setKeyLow+16) before the filter, as bpf-ninja's hosts do, and copies it
+// into the key map at filter_result together with a flag saying the
+// filter reached it, so a test can read the bytes an `in @set` predicate
+// wrote (KeyRegion, SetKey).
+const (
+	setKeyLow       = int16(-40)
+	keyRegionSize   = 16
+	keyValueSize    = keyRegionSize + 8 // region, then the reached flag
+	keyReachedField = keyRegionSize
+)
 
 // Target is the attachment the runner emulates. Caps shapes the compiled
 // filter (packet layout, action vocabulary, VLAN in metadata, the host's
@@ -143,7 +157,19 @@ func newFromOutput(t *testing.T, dslExpr string, out codegen.Output, action int3
 		t.Fatalf("create scratch map: %v", err)
 	}
 
-	insns := buildXDPWrapper(out, scratch.FD(), action, fill)
+	keys, err := ebpf.NewMap(&ebpf.MapSpec{
+		Name:       "dslt_key",
+		Type:       ebpf.Array,
+		KeySize:    4,
+		ValueSize:  keyValueSize,
+		MaxEntries: 1,
+	})
+	if err != nil {
+		_ = scratch.Close()
+		t.Fatalf("create key map: %v", err)
+	}
+
+	insns := buildXDPWrapper(out, scratch.FD(), keys.FD(), action, fill)
 	prog, err := ebpf.NewProgram(&ebpf.ProgramSpec{
 		Name:         "dslt_filter",
 		Type:         ebpf.XDP,
@@ -152,6 +178,7 @@ func newFromOutput(t *testing.T, dslExpr string, out codegen.Output, action int3
 	})
 	if err != nil {
 		_ = scratch.Close()
+		_ = keys.Close()
 		var ve *ebpf.VerifierError
 		if errors.As(err, &ve) {
 			t.Fatalf("verifier:\n%+v", ve)
@@ -162,9 +189,10 @@ func newFromOutput(t *testing.T, dslExpr string, out codegen.Output, action int3
 	t.Cleanup(func() {
 		_ = prog.Close()
 		_ = scratch.Close()
+		_ = keys.Close()
 	})
 
-	return &Runner{prog: prog, scratchMap: scratch, expr: dslExpr}
+	return &Runner{prog: prog, scratchMap: scratch, keyMap: keys, extractions: out.Extractions, expr: dslExpr}
 }
 
 // Match runs the filter against pkt and reports whether the verdict
@@ -184,6 +212,54 @@ func (r *Runner) Match(t *testing.T, pkt []byte) bool {
 	}
 	t.Fatalf("unexpected XDP verdict %d for %q", ret, r.expr)
 	return false
+}
+
+// MatchKey is Match that also returns the host's set key region as the
+// filter left it at filter_result: 16 bytes, the first at fp-40. The
+// region is zeroed before the filter, so bytes no predicate wrote read 0.
+func (r *Runner) MatchKey(t *testing.T, pkt []byte) (bool, [keyRegionSize]byte) {
+	t.Helper()
+	var region [keyRegionSize]byte
+	if err := r.keyMap.Put(uint32(0), make([]byte, keyValueSize)); err != nil {
+		t.Fatalf("reset key map: %v", err)
+	}
+	matched := r.Match(t, pkt)
+	value := make([]byte, keyValueSize)
+	if err := r.keyMap.Lookup(uint32(0), &value); err != nil {
+		t.Fatalf("read key map: %v", err)
+	}
+	if value[keyReachedField] != 1 {
+		t.Fatalf("%q: the filter did not reach filter_result", r.expr)
+	}
+	copy(region[:], value[:keyRegionSize])
+	return matched, region
+}
+
+// SetKey cuts set's key out of a region MatchKey returned: the bytes
+// from its lowest extraction slot to the end of its highest, in stack
+// order (scalar fields native-endian, 16-byte fields in network order,
+// as the hosts' `set add` writes them). nil when the filter extracts no
+// key for set.
+func (r *Runner) SetKey(region [keyRegionSize]byte, set string) []byte {
+	lo, hi := int16(0), int16(0)
+	found := false
+	for _, x := range r.extractions {
+		if x.SetName != set {
+			continue
+		}
+		end := x.StackOff + int16(x.StoreSize)
+		if !found || x.StackOff < lo {
+			lo = x.StackOff
+		}
+		if !found || end > hi {
+			hi = end
+		}
+		found = true
+	}
+	if !found {
+		return nil
+	}
+	return append([]byte(nil), region[lo-setKeyLow:hi-setKeyLow]...)
 }
 
 // MustMatch fails the test when the filter rejects pkt. why is a
@@ -219,9 +295,11 @@ func (r *Runner) MustReject(t *testing.T, pkt []byte, why string) {
 // packages' fexitFetcher, internal/program's fexit layout). The block is
 // faked in the scratch value right after the packet prefix (the filter
 // never reads past ScratchBufSize), with `action` in args[1]; the host
-// stack slots [-40, -24) stay free for set keys, as on the real hosts.
-func buildXDPWrapper(filterOut codegen.Output, scratchFD int, action int32, fill *int32) asm.Instructions {
+// stack slots [-40, -24) hold set keys, as on the real hosts: zeroed
+// before the filter, copied into the key map at filter_result.
+func buildXDPWrapper(filterOut codegen.Output, scratchFD, keyFD int, action int32, fill *int32) asm.Instructions {
 	const (
+		stackVerdict = int16(-8)
 		stackKey     = int16(-16)
 		stackScratch = int16(-24)
 		stackArgsPtr = int16(-48)
@@ -288,6 +366,11 @@ func buildXDPWrapper(filterOut codegen.Output, scratchFD int, action int32, fill
 		}
 	}
 	insns = append(insns,
+		// The set key region starts zeroed, as the hosts' emitPktSetKeyZeroing
+		// leaves it.
+		asm.Mov.Imm(asm.R3, 0),
+		asm.StoreMem(asm.R10, setKeyLow, asm.R3, asm.DWord),
+		asm.StoreMem(asm.R10, setKeyLow+8, asm.R3, asm.DWord),
 		// Hand off to the kunai filter: R0=scratch, R1=scratch+len,
 		// R9=pkt_len.
 		asm.LoadMem(asm.R0, asm.R10, stackScratch, asm.DWord),
@@ -301,8 +384,21 @@ func buildXDPWrapper(filterOut codegen.Output, scratchFD int, action int32, fill
 
 	insns = append(insns,
 		// filter_result is where the kunai filter falls through. R2
-		// holds 1 (match) or 0 (no match).
-		asm.JEq.Imm(asm.R2, 0, "drop").WithSymbol("filter_result"),
+		// holds 1 (match) or 0 (no match). Park it, copy the set key
+		// region and the reached flag into the key map, then decide.
+		asm.StoreMem(asm.R10, stackVerdict, asm.R2, asm.DWord).WithSymbol("filter_result"),
+		asm.LoadMapPtr(asm.R1, keyFD),
+		asm.Mov.Reg(asm.R2, asm.R10),
+		asm.Add.Imm(asm.R2, int32(stackKey)),
+		asm.FnMapLookupElem.Call(),
+		asm.JEq.Imm(asm.R0, 0, "key_done"),
+		asm.LoadMem(asm.R3, asm.R10, setKeyLow, asm.DWord),
+		asm.StoreMem(asm.R0, 0, asm.R3, asm.DWord),
+		asm.LoadMem(asm.R3, asm.R10, setKeyLow+8, asm.DWord),
+		asm.StoreMem(asm.R0, 8, asm.R3, asm.DWord),
+		asm.StoreImm(asm.R0, keyReachedField, 1, asm.Byte),
+		asm.LoadMem(asm.R2, asm.R10, stackVerdict, asm.DWord).WithSymbol("key_done"),
+		asm.JEq.Imm(asm.R2, 0, "drop"),
 		asm.Mov.Imm(asm.R0, XDPPass),
 		asm.Return(),
 		asm.Mov.Imm(asm.R0, XDPDrop).WithSymbol("drop"),
