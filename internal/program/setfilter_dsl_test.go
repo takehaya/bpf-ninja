@@ -378,7 +378,7 @@ func TestBpfDSLSetMatchIPv6Dst(t *testing.T) {
 // note above calls out), so this asserts the extraction VERIFIES on the CI
 // kernel matrix rather than capturing. The packet-level match is proven by
 // TestAuxStackSrv6SegmentsStaticIndexBracket in pkg/kunai/dsltest (native
-// XDP), and the raw-byte store shape by the codegen unit tests.
+// XDP), and the key bytes the filter stores by TestSetKeyBytes there.
 func TestBpfDSLSetMatchSRv6SegmentLoads(t *testing.T) {
 	testutil.SkipIfNotRoot(t)
 
@@ -421,7 +421,9 @@ func TestBpfDSLSetMatchSRv6SegmentLoads(t *testing.T) {
 // placed, after the push-count guard. The extension walk is a parser-
 // machine loop that does not execute in the fentry scratch-buffer path, so
 // this asserts the program VERIFIES on the kernel matrix; the packet-level
-// semantics are the spec vectors pred-inset-exts-* (pkg/kunai/dsltest).
+// semantics are the spec vectors pred-inset-exts-* (pkg/kunai/dsltest, which
+// look the stored key up in the vector's members) and the key bytes
+// TestSetKeyBytes there.
 func TestBpfDSLSetMatchIPv6ExtWalkedEntryLoads(t *testing.T) {
 	testutil.SkipIfNotRoot(t)
 

@@ -1,9 +1,11 @@
 package dsltest
 
 import (
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"math"
+	"math/big"
 	"os"
 	"testing"
 
@@ -35,17 +37,19 @@ var specHostCaps = map[string]func() codegen.Capabilities{
 // scalar key of the declared width, allocated on first use downward from
 // the host slot at -24, aligned to its width (8 at most), inside a 16-byte
 // buffer; a set past the buffer has no slot. The membership lookup is the
-// host's, after the filter, and the runner does not perform it, so a
-// vector's reject verdict is not checked on the kernel.
+// host's, after the filter; the runner reads the key the filter left in
+// the region (Runner.MatchKey) and looks it up in the vector's members
+// (setsAdmit).
 type specSetSlots struct {
 	decls  []specSet
 	base   map[string]int16
 	cursor int16
 }
 
+// The packet-key region the wrapper zeroes and reads back (runner.go).
 const (
-	specSetKeyTop   = int16(-24)
-	specSetKeyFloor = int16(-40)
+	specSetKeyTop   = setKeyLow + keyRegionSize
+	specSetKeyFloor = setKeyLow
 )
 
 func newSpecSetSlots(decls []specSet) *specSetSlots {
@@ -89,10 +93,10 @@ func (s *specSetSlots) SlotFor(set, _ string) (int16, int, bool) {
 // expectations run; with root, every vector whose compile is expected to
 // succeed is also matched against the real BPF program, compiled for the
 // vector's host; on an exit host the wrapper presents the vector's action
-// as the traced program's return value. A vector that declares sets runs
-// on the kernel only when Lean accepts: the filter alone must accept too,
-// while a Lean reject may come from the set lookup, which is the host's
-// and not performed here. A vector with goStatus "mismatch" is a documented
+// as the traced program's return value. A vector that declares sets is
+// accepted when the filter accepts and every set it extracts a key for
+// holds that key, as the host's lookup after the filter decides. A vector
+// with goStatus "mismatch" is a documented
 // divergence (see spec/lean/DECISIONS.md): it is logged, not asserted.
 func TestSpecVectors(t *testing.T) { runSpecVectors(t, loadSpecVectors(t)) }
 
@@ -149,17 +153,66 @@ func runSpecVectors(t *testing.T, vectors []specVector) {
 				t.Fatalf("packet hex: %v", err)
 			}
 			checkCaptureBound(t, v, parsed, out, len(pkt))
-			if !root || (len(v.Sets) > 0 && !want) {
+			if !root {
 				return
 			}
 			// Twice, with kunai's stack filled with zeros and with ones: a
 			// slot read before it is written shows up as a verdict that
 			// depends on the fill.
 			for _, fill := range []int32{0, -1} {
-				if got := NewFromOutputStackFilled(t, v.Expr, out, action, fill).Match(t, pkt); got != want {
+				r := NewFromOutputStackFilled(t, v.Expr, out, action, fill)
+				got, region := r.MatchKey(t, pkt)
+				if got {
+					got = setsAdmit(t, v.Sets, r, region)
+				}
+				if got != want {
 					t.Fatalf("%q on %d-byte packet (stack filled with %#x): got match=%v, Lean says %s. %s", v.Expr, len(pkt), uint32(fill), got, v.Expected.Kind, v.Note)
 				}
 			}
 		})
 	}
+}
+
+// setsAdmit is the host's lookup after the filter: every set the filter
+// extracts a key for must hold it. A key of at most 8 bytes is stored
+// native-endian (the value `set add` writes), a 16-byte one in network
+// order; a member is the field's numeric value either way.
+func setsAdmit(t *testing.T, decls []specSet, r *Runner, region [keyRegionSize]byte) bool {
+	t.Helper()
+	for _, d := range decls {
+		key := r.SetKey(t, region, d.Name)
+		if key == nil {
+			continue
+		}
+		var v big.Int
+		switch len(key) {
+		case 1:
+			v.SetUint64(uint64(key[0]))
+		case 2:
+			v.SetUint64(uint64(binary.NativeEndian.Uint16(key)))
+		case 4:
+			v.SetUint64(uint64(binary.NativeEndian.Uint32(key)))
+		case 8:
+			v.SetUint64(binary.NativeEndian.Uint64(key))
+		case 16:
+			v.SetBytes(key)
+		default:
+			t.Fatalf("set %s: %d-byte key", d.Name, len(key))
+		}
+		held := false
+		for _, m := range d.Members {
+			var want big.Int
+			if _, ok := want.SetString(m.String(), 10); !ok {
+				t.Fatalf("set %s: member %q is not a decimal integer", d.Name, m)
+			}
+			if want.Cmp(&v) == 0 {
+				held = true
+				break
+			}
+		}
+		if !held {
+			return false
+		}
+	}
+	return true
 }
