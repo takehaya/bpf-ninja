@@ -83,10 +83,6 @@ func mainStackOffsetFromCb(slot int16) int16 {
 	return slot - bpfLoopCtxOffsetSlot
 }
 
-// defaultChainDepth is the bpf_loop max_iter fallback used when the
-// protocol's vocab did not declare a <SELF>_MAX_DEPTH.
-const defaultChainDepth = vocab.DefaultMaxDepth
-
 // bpfLoopChainCap bounds any user-declared or vocab-declared
 // iteration count to something the verifier will accept without
 // drama. Tighten if a lower number proves necessary on older kernels.
@@ -128,9 +124,13 @@ func genBpfLoopChain(layer *ir.LayerInstance, index int, all []*ir.LayerInstance
 	if selfConst == nil {
 		return nil, nil, fmt.Errorf("%w: chained %q has no self-dispatch const", ErrNotImplemented, layer.Spec.Name)
 	}
-	// Same #11-class miscompile guard as genStaticChain — see chain.go.
+	// The callback advances by the fixed header size, so a variable-length
+	// layer here would skip its trailer (the #11-class miscompile). A
+	// parser-machine layer is routed to genStaticMachineChain; only a
+	// flag-trigger layer with a self edge could reach this, and no bundled
+	// protocol has that shape.
 	if layer.Spec.HasVariableLayout() {
-		return nil, nil, fmt.Errorf("%w: `*`, `+` and `{n,}` on the variable-length %q are not implemented; write a bound of at most %d (`{n,m}`) or layered dispatch (`eth/%s/%s/...`)", ErrNotImplemented, layer.Spec.Name, staticChainCap, layer.Spec.Name, layer.Spec.Name)
+		return nil, nil, fmt.Errorf("%w: %s on the variable-length %q without a parser machine is not implemented; use layered dispatch (`eth/%s/%s/...`)", ErrNotImplemented, quantText(layer), layer.Spec.Name, layer.Spec.Name, layer.Spec.Name)
 	}
 
 	maxIter, err := chainMaxIter(layer)
@@ -615,10 +615,7 @@ func chainBounds(layer *ir.LayerInstance) (int, int) {
 func chainMaxIter(layer *ir.LayerInstance) (int, error) {
 	_, max := chainBounds(layer)
 	if max < 0 {
-		max = layer.Spec.MaxDepth
-		if max == 0 {
-			max = defaultChainDepth
-		}
+		max = layer.Spec.ChainDepth()
 	}
 	if max < 1 {
 		return 0, fmt.Errorf("%w: chain %q has non-positive iteration cap", ErrNotImplemented, layer.Spec.Name)

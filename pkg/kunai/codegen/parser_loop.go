@@ -12,10 +12,7 @@ import (
 
 // returns 1 once the transition no longer points back at the state.
 func (c *pmCtx) emitSelfLoop(state *vocab.ParseState, stateIdx int) (asm.Instructions, asm.Instructions, error) {
-	maxIter := c.spec.MaxDepth
-	if maxIter == 0 {
-		maxIter = defaultChainDepth
-	}
+	maxIter := c.spec.ChainDepth()
 	if maxIter > bpfLoopChainCap {
 		return nil, nil, fmt.Errorf("%w: parser machine %s self-loop depth %d exceeds cap %d", ErrNotImplemented, c.spec.Name, maxIter, bpfLoopChainCap)
 	}
@@ -233,10 +230,7 @@ func (c *pmCtx) emitMultiStateSelfLoop(state *vocab.ParseState, stateIdx int) (a
 	// D-026: MAX_DEPTH counts back edges, so the walk dispatches
 	// MAX_DEPTH + 1 times. emitSelfLoop gets the extra one from its
 	// inline first iteration; this loop has none, so it runs it here.
-	maxIter := c.spec.MaxDepth
-	if maxIter == 0 {
-		maxIter = defaultChainDepth
-	}
+	maxIter := c.spec.ChainDepth()
 	maxIter++
 	if maxIter > parserTLVLoopCap {
 		return nil, nil, fmt.Errorf("%w: parser machine %s multi-state self-loop depth %d exceeds cap %d", ErrNotImplemented, c.spec.Name, maxIter, parserTLVLoopCap)

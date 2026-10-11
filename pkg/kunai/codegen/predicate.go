@@ -82,7 +82,7 @@ func genPredicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, error) {
 		if !ok {
 			// The walk's outcome is only recorded where the predicates run
 			// after it; a repeated layer replays them per iteration.
-			return nil, fmt.Errorf("%w: %s[options.valid] on a repeated layer; move it to a where clause", ErrNotImplemented, pred.Field.Layer.Spec.Name)
+			return nil, fmt.Errorf("%w: %s[options.valid] on a repeated fixed-length layer; move it to a where clause", ErrNotImplemented, pred.Field.Layer.Spec.Name)
 		}
 		insns = asm.Instructions{
 			asm.LoadMem(asm.R3, asm.R10, slot, asm.DWord),

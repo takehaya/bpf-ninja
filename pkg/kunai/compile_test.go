@@ -1609,10 +1609,42 @@ func TestCompileOptionalVariableLayers(t *testing.T) {
 			t.Errorf("Compile(%q): %v", expr, err)
 		}
 	}
-	// Past the cap, and the open-ended quantifiers, stay refused.
-	for _, expr := range []string{"eth/ipv4{1,5}/tcp", "eth/ipv4/ipv4*/tcp", "eth/ipv4/ipv4+/tcp", "eth/ipv4{1,}/tcp"} {
+	// An open bound stands for MAX_DEPTH instances (ipv4 8, ipv6 4), as the
+	// spec evaluates it, and a bound up to the machine cap unrolls too.
+	for _, expr := range []string{
+		"eth/ipv4+/tcp",
+		"eth/ipv4{1,8}/tcp",
+		"eth/ipv4{1,5}/tcp",
+		"eth/ipv4{2,}/tcp",
+		"eth/ipv4/ipv4*/tcp",
+		"eth/ipv4/ipv4+/tcp",
+		"eth/ipv4/ipv4{0,}/tcp",
+		"eth/ipv4[ttl==64]+/tcp",
+		"eth/ipv4[options.valid]+/tcp",
+		"eth/ipv4@o+/tcp where o.options.RR.kind == 7",
+		"eth/ipv6+/tcp",
+		"eth/ipv6{1,5}/tcp",
+		"eth/ipv6/ipv6*/tcp",
+		"eth/ipv6@o+/tcp where o.exts[0].next_header == 6",
+		"eth/ipv4+/tcp capture headers",
+		"eth/vlan?/ipv4+/tcp",
+	} {
+		if _, err := compileForTest(expr); err != nil {
+			t.Errorf("Compile(%q): %v", expr, err)
+		}
+	}
+	// Past the machine cap stays an implementation limit.
+	for _, expr := range []string{"eth/ipv4{1,9}/tcp", "eth/ipv6/ipv6{0,9}/tcp"} {
 		if _, err := compileForTest(expr); !errors.Is(err, codegen.ErrNotImplemented) {
 			t.Errorf("Compile(%q) = %v; want ErrNotImplemented", expr, err)
+		}
+	}
+	// A minimum above MAX_DEPTH on an open bound can never be met: a
+	// typing error (spec `iterate` runs out of fuel below the minimum), on
+	// fixed-length layers too.
+	for _, expr := range []string{"eth/ipv4{9,}/tcp", "eth/ipv6{5,}/tcp", "eth/mpls{9,}/ipv4/tcp"} {
+		if _, err := compileForTest(expr); err == nil || errors.Is(err, codegen.ErrNotImplemented) || !strings.Contains(err.Error(), "MAX_DEPTH") {
+			t.Errorf("Compile(%q) = %v; want the MAX_DEPTH typing error", expr, err)
 		}
 	}
 }

@@ -256,7 +256,7 @@ func layerEntryIsRange(all []*ir.LayerInstance, idx int) bool {
 		return true
 	}
 	l := all[idx]
-	return l != nil && l.Spec != nil && l.Spec.HasVariableLayout() && l.Quant == ast.QuantRange && l.RangeMax >= 2
+	return l != nil && l.Spec != nil && l.Spec.HasVariableLayout() && isMachineChain(l)
 }
 
 func layerLeavesR4Range(l *ir.LayerInstance) bool {
