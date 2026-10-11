@@ -206,6 +206,24 @@ vector predInListMac := {
 vector predInListMacMiss := {
   id := "pred-in-list-mac-miss", ast := ethPred (.inList (f "src") [.mac 0x66778899aabc, .mac 0x76778899aabb]), expected := .reject,
   note := "one alternative differs in the last two octets, the other in the first four" }
+vector predInListMacFirst := {
+  id := "pred-in-list-mac-first", ast := ethPred (.inList (f "src") [.mac 0x66778899aabb, .mac 0x112233445566]), expected := .accept [],
+  note := "the first alternative matches; the second is not reached" }
+vector predInListCidr4ThenHost := {
+  id := "pred-in-list-cidr4-then-host", ast := ipv4Pred (.inList (f "src") [.cidr4 0xc0a80000 16, .ipv4 0x0a000001]), expected := .accept [],
+  note := "a CIDR miss leaves the field intact for the host alternative" }
+vector predInListCidr4Miss := {
+  id := "pred-in-list-cidr4-miss", ast := ipv4Pred (.inList (f "src") [.cidr4 0x0b000000 8, .ipv4 0x0a000005]), expected := .reject }
+vector predInListCidr4RangeMixed := {
+  id := "pred-in-list-cidr4-range-mixed", ast := ipv4Pred (.inList (f "src") [.cidr4 0x0a000000 8, .range 1 5]), expected := .accept [],
+  note := "D-011: a range puts the list in host order; the CIDR mask follows" }
+vector predInListMacIntMixed := {
+  id := "pred-in-list-mac-int-mixed", ast := ethPred (.inList (f "src") [.mac 0x112233445566, .int 5]), expected := .reject,
+  goStatus := .notImplemented, note := "well-typed; Go compares a 48-bit field only against MAC alternatives inside a list" }
+vector predMacEq := {
+  id := "pred-mac-eq", ast := ethPred (.cmp (f "src") .eq (.mac 0x66778899aabb)), expected := .accept [] }
+vector predMacEqMiss := {
+  id := "pred-mac-eq-miss", ast := ethPred (.cmp (f "src") .eq (.mac 0x66778899aabc)), expected := .reject }
 
 -- Captures (§13.6) ---------------------------------------------------------------
 
@@ -452,6 +470,12 @@ vector predInListCidr6 := {
 vector predInListCidr6LowHalf := {
   id := "pred-in-list-cidr6-low-half", ast := ipv6Pred (.inList (f "src") [.cidr6 0xfc000000000000000000000000000000 100]),
   packet := v6pkt v6Src1 v6LowTen, expected := .accept [], note := "a /100 masks both halves; the low 28 bits of fc00::1 are outside the prefix" }
+vector predInListIPv6First := {
+  id := "pred-in-list-ipv6-first", ast := ipv6Pred (.inList (f "src") [.ipv6 v6Src1, .ipv6 v6Src3]), packet := v6pkt v6Src1 v6LowTen,
+  expected := .accept [], note := "the first alternative matches" }
+vector predInListCidr6Zero := {
+  id := "pred-in-list-cidr6-zero", ast := ipv6Pred (.inList (f "src") [.cidr6 0 0, .ipv6 v6Src3]), packet := v6pkt v6Src1 v6LowTen,
+  expected := .accept [], note := "a /0 alternative matches every address" }
 vector predInListIPv6Miss := {
   id := "pred-in-list-ipv6-miss", ast := ipv6Pred (.inList (f "src") [.ipv6 v6Src3, .cidr6 0xfd000000000000000000000000000000 16]),
   packet := v6pkt v6Src1 v6LowTen, expected := .reject }
@@ -903,7 +927,8 @@ def whereVectors : List Vector := [
   actionEntry, actionHit, actionMiss, actionUnknown,
   predCmp, predCmpMiss, predInList, predInListMiss, predInRange, typPredInRangeWide, typPredCmpRange, predInRangeMiss, predNegative, predIPv4,
   predInListIPv4, predInListIPv4Miss, predInListCidr4, predInListCidr4Zero, predInListIPv4IntMixed, predInListIPv4RangeMixed, predInListMac, predInListMacMiss,
-  predInListIPv6, predInListCidr6, predInListCidr6LowHalf, predInListIPv6Miss, predInListIPv6IntMixed, ipv6DstLow32InListIPv4, ipv6DstLow48InListMac,
+  predInListMacFirst, predInListCidr4ThenHost, predInListCidr4Miss, predInListCidr4RangeMixed, predInListMacIntMixed, predMacEq, predMacEqMiss,
+  predInListIPv6, predInListCidr6, predInListCidr6LowHalf, predInListIPv6First, predInListCidr6Zero, predInListIPv6Miss, predInListIPv6IntMixed, ipv6DstLow32InListIPv4, ipv6DstLow48InListMac,
   capAll, capWhereFalse, capWhereTrue, capLabel, capAbsent, capPresent, capAltMemberPresent, capAltMemberAbsent, capAltMemberByName,
   capHeadersIPv4Options, capHeadersTCPOptions, capHeadersQuantOpt, capHeadersQuantRange, capHeadersQuantPlusClamped, capHeadersQuantPlus, capHeadersQuantOpen,
   capHeadersAltIPv6, capHeadersAltIPv4, capHeadersVxlan, capHeadersPlusOptions,

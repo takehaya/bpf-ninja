@@ -2232,6 +2232,13 @@ func auxLoadEmitter(ref *ir.FieldRef, anchor layerAnchor, resolveSlot resolveAux
 		return nil, nil, fmt.Errorf("codegen: auxLoadEmitter on non-aux FieldRef")
 	}
 	aux := ref.Aux
+	// Every caller compares the window with a network literal, whose
+	// width the resolver matched to the slice; the chunked loads below
+	// read whole bytes, so a slice must start and end on a byte boundary
+	// (applyExactSlice makes the same demand of a primary field).
+	if ref.Slice != nil && (ref.Slice.Lo%8 != 0 || ref.Slice.Hi%8 != 0) {
+		return nil, nil, fmt.Errorf("%w: bit-slice [%d:%d] compared with a network literal must start and end on a byte boundary", ErrNotImplemented, ref.Slice.Lo, ref.Slice.Hi)
+	}
 	fieldByteOff, err := auxEntryFieldStart(ref)
 	if err != nil {
 		return nil, nil, err

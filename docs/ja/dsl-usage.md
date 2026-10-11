@@ -122,7 +122,7 @@ eth[src in [aa:bb:cc:dd:ee:01, 11:22:33:44:55:66]]/ipv4/tcp
 eth/ipv6/srv6[segments[1].addr in [fc00::1, fc00::2]]/tcp
 ```
 
-bit-slice した field にも使えます。`ipv6[dst[96:128] in [10.0.0.1, 10.0.0.2]]` は下位 32 bit を IPv4 アドレスの列と比べます。128 bit や 48 bit の field に整数の候補を混ぜた list は受け付けません。`vlan+` のような繰り返し layer の bracket は反復ごとに評価されるため、IPv6 の候補は 8 個程度までにしてください。
+bit-slice した field にも使えます。`ipv6[dst[96:128] in [10.0.0.1, 10.0.0.2]]` は下位 32 bit を IPv4 アドレスの列と比べます。128 bit や 48 bit の field に整数の候補を混ぜた list は受け付けません。aux field の slice は byte 境界で始まり byte 境界で終わるものだけです。
 
 Aux header field にも bracket 内でアクセスできます。GTP-U の opt block を例に示します。
 

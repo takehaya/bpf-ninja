@@ -82,6 +82,18 @@ func TestBracketInIPv4List(t *testing.T) {
 	masked.MustReject(t, src("11.0.0.3"), "outside both")
 
 	New(t, "eth/ipv4[src in [0.0.0.0/0, 10.0.0.1]]/tcp").MustMatch(t, src("203.0.113.7"), "a /0 alternative matches every address")
+
+	// Prefix lengths at the ends, and a network above int32 next to a
+	// range (the host-order path materialises it with a register compare).
+	edges := New(t, "eth/ipv4[src in [10.0.0.2/31, 128.0.0.0/1, 10.0.0.9/32]]/tcp")
+	edges.MustMatch(t, src("10.0.0.3"), "inside the /31")
+	edges.MustReject(t, src("10.0.0.4"), "outside the /31")
+	edges.MustMatch(t, src("200.1.1.1"), "inside 128.0.0.0/1")
+	edges.MustReject(t, src("127.0.0.1"), "outside 128.0.0.0/1")
+	edges.MustMatch(t, src("10.0.0.9"), "the /32 host")
+	wide := New(t, "eth/ipv4[src in [200.0.0.0/8, 1..5]]/tcp")
+	wide.MustMatch(t, src("200.9.9.9"), "inside the /8 above int32")
+	wide.MustReject(t, src("201.0.0.1"), "outside the /8")
 }
 
 // TestBracketInIPv6List: IPv6 hosts and CIDRs reload the 16-byte field
@@ -105,6 +117,25 @@ func TestBracketInIPv6List(t *testing.T) {
 	low.MustReject(t, src("fc00::1000:0"), "a bit inside the low-half mask differs")
 
 	New(t, "eth/ipv6[src in [::/0, fc00::1]]/tcp").MustMatch(t, src("2001:db8::1"), "a /0 alternative matches every address")
+
+	// Prefix lengths at the half boundary and at the ends of the low half.
+	edges := New(t, "eth/ipv6[src in [fc00:0:0:0:8000::/65, fc00::ff00/127, fc00::abcd/128]]/tcp")
+	edges.MustMatch(t, src("fc00::8000:0:0:1"), "inside the /65: the top bit of the low half is set")
+	edges.MustReject(t, src("fc00::1"), "outside the /65: the top bit of the low half is clear")
+	edges.MustMatch(t, src("fc00::ff01"), "inside the /127")
+	edges.MustReject(t, src("fc00::ff02"), "outside the /127")
+	edges.MustMatch(t, src("fc00::abcd"), "the /128 host")
+	half := New(t, "eth/ipv6[src in [8000::/1]]/tcp")
+	half.MustMatch(t, src("fc00::1"), "/1: the top bit of fc00:: is set")
+	half.MustReject(t, src("7fff::1"), "/1: the top bit is clear")
+
+	// Inside a repeated layer every instance is checked (statically unrolled).
+	one := BuildEthIPv6TCP(t, net.ParseIP("2001:db8::1"), net.ParseIP("2001:db8::2"), 1234, 80)
+	two := BuildEthIPv6inIPv6TCP(t)
+	rep := New(t, "eth/ipv6[src in [2001:db8::1, 2001:db8:f00::1]]{1,2}/tcp")
+	rep.MustMatch(t, one, "one header, listed")
+	rep.MustMatch(t, two, "two headers, both listed")
+	New(t, "eth/ipv6[src in [2001:db8::2, 2001:db8:f00::/48]]{1,2}/tcp").MustReject(t, two, "the outer header is not listed")
 }
 
 // TestBracketInMACList: MAC alternatives compare the first four octets
@@ -120,6 +151,15 @@ func TestBracketInMACList(t *testing.T) {
 	list.MustMatch(t, srcMAC("11:22:33:44:55:66"), "the second alternative")
 	list.MustReject(t, srcMAC("aa:bb:cc:dd:ee:02"), "differs in the last two octets only")
 	list.MustReject(t, srcMAC("aa:bb:cc:de:ee:01"), "differs in the first four octets only")
+	// The single MAC literal shares macCheck with the list.
+	eq := New(t, "eth[src == aa:bb:cc:dd:ee:01]/ipv4/tcp")
+	eq.MustMatch(t, Build(t, Defaults()), "equal")
+	eq.MustReject(t, srcMAC("aa:bb:cc:dd:ee:02"), "last octet differs")
+	eq.MustReject(t, srcMAC("ab:bb:cc:dd:ee:01"), "first octet differs")
+	ne := New(t, "eth[src != aa:bb:cc:dd:ee:01]/ipv4/tcp")
+	ne.MustReject(t, Build(t, Defaults()), "equal")
+	ne.MustMatch(t, srcMAC("aa:bb:cc:dd:ee:02"), "last octet differs")
+	ne.MustMatch(t, srcMAC("ab:bb:cc:dd:ee:01"), "first octet differs")
 	sliced := New(t, "eth/ipv6[dst[80:128] in [00:00:0a:00:00:01, 00:00:0a:00:00:02]]/tcp")
 	sliced.MustMatch(t, BuildEthIPv6TCP(t, net.ParseIP("fc00::1"), net.ParseIP("fc00::a00:1"), 1234, 80), "the low 48 bits as a MAC alternative")
 	sliced.MustReject(t, BuildEthIPv6TCP(t, net.ParseIP("fc00::1"), net.ParseIP("fc00::a00:3"), 1234, 80), "low 48 bits unlisted")

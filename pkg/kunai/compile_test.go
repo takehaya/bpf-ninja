@@ -1162,8 +1162,10 @@ func TestCompileBracketInIPv4Alternatives(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	masked := false
 	for i, ins := range insns {
 		if ins.OpCode.ALUOp() == asm.And && ins.Dst == asm.R2 {
+			masked = true
 			if ins.Constant != 0xff {
 				t.Fatalf("And R2 mask = %#x, want 0xff", ins.Constant)
 			}
@@ -1175,6 +1177,9 @@ func TestCompileBracketInIPv4Alternatives(t *testing.T) {
 			}
 			break
 		}
+	}
+	if !masked {
+		t.Fatal("no And R2 mask found for the CIDR alternative")
 	}
 	if n := countInsns(insns, isJumpImm(asm.JEq, asm.R3, 0x0101a8c0)); n != 1 {
 		t.Errorf("JEq R3, 192.168.1.1 LE: %d, want 1", n)
@@ -1232,13 +1237,10 @@ func TestCompileBracketInIPv6Alternatives(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, c := range []int64{0xfc, 0x0100000000000000, 0xffff, 0xfc} {
-		if n := countInsns(insns, isLdImm64(asm.R2, c)); n < 1 {
-			t.Errorf("no LdImmDW R2, %#x", c)
+	for c, want := range map[int64]int{0xfc: 2, 0x0100000000000000: 1, 0xffff: 1} {
+		if n := countInsns(insns, isLdImm64(asm.R2, c)); n != want {
+			t.Errorf("LdImmDW R2, %#x: %d, want %d", c, n, want)
 		}
-	}
-	if n := countInsns(insns, isLdImm64(asm.R2, 0xfc)); n != 2 {
-		t.Errorf("LdImmDW R2, 0xfc: %d, want 2 (the host's high half and the masked network)", n)
 	}
 	next, match := 0, 0
 	for _, ins := range insns {
@@ -1299,6 +1301,20 @@ func TestCompileBracketInMixedKindsRefused(t *testing.T) {
 		_, err := compileForTest(expr)
 		if !errors.Is(err, codegen.ErrNotImplemented) {
 			t.Errorf("%s: err = %v; want ErrNotImplemented", expr, err)
+		}
+	}
+	// A slice of an aux field that does not end on byte boundaries is
+	// typed against the literal's width but cannot be read as whole bytes:
+	// refused like the primary shape, for the list and the single literal.
+	for _, expr := range []string{
+		"eth/ipv6/srv6[segments[1].addr[76:124] in [00:00:0a:00:00:01]]/tcp",
+		"eth/ipv6/srv6[segments[1].addr[76:124] == 00:00:0a:00:00:01]/tcp",
+		"eth/ipv6/srv6[segments[1].addr[4:36] == 10.0.0.1]/tcp",
+		"eth/ipv6/srv6/tcp where srv6.segments[1].addr[4:36] == 10.0.0.1",
+	} {
+		_, err := compileForTest(expr)
+		if !errors.Is(err, codegen.ErrNotImplemented) || !strings.Contains(err.Error(), "byte boundary") {
+			t.Errorf("%s: err = %v; want the byte-boundary ErrNotImplemented", expr, err)
 		}
 	}
 }

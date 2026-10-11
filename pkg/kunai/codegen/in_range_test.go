@@ -116,7 +116,7 @@ func TestInListAddressAlternatives(t *testing.T) {
 
 	v6 := compileBundled(t, "eth/ipv6[dst in [fc00::1, fc00::2, fc00::/32]]/tcp").Main
 	// Two hosts need two DWord constants each, the /32 one masked half:
-	// mask and network, five 64-bit immediates into R2 in total.
+	// mask and network, six 64-bit immediates into R2 in total.
 	if got := count(v6, ldR2); got != 6 {
 		t.Errorf("ipv6 list: %d `LdImmDW R2`, want 6", got)
 	}
