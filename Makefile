@@ -70,13 +70,5 @@ golden-update: ## Rewrite the bytecode golden (pkg/kunai/dsltest/testdata/golden
 	cd pkg/kunai/dsltest && go test -run '^TestGolden$$' -update
 
 GOLDEN_BASE ?= main
-golden-diff: ## Diff every golden filter's text between GOLDEN_BASE (default main) and the working tree; exits 1 when they differ
-	@set -e; tmp=$$(mktemp -d); \
-	trap 'git worktree remove --force "$$tmp/base" >/dev/null 2>&1 || true; rm -rf "$$tmp"' EXIT INT TERM; \
-	git worktree add --quiet --detach "$$tmp/base" "$(GOLDEN_BASE)"; \
-	if [ ! -f "$$tmp/base/pkg/kunai/dsltest/golden_test.go" ]; then \
-		echo "golden-diff: $(GOLDEN_BASE) has no bytecode golden test" >&2; exit 2; \
-	fi; \
-	(cd "$$tmp/base/pkg/kunai/dsltest" && go test -run '^TestGolden$$' -golden-dump="$$tmp/old" >&2); \
-	(cd pkg/kunai/dsltest && go test -run '^TestGolden$$' -golden-dump="$$tmp/new" >&2); \
-	diff -ru "$$tmp/old" "$$tmp/new"
+golden-diff: ## Diff every golden filter's text between GOLDEN_BASE (default main) and the working tree, without instruction indexes (GOLDEN_DIFF_INDEX=1 keeps them); scripts/golden-diff.sh exits 0 same, 1 moved, 2 error
+	./scripts/golden-diff.sh "$(GOLDEN_BASE)"
