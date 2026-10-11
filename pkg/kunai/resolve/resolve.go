@@ -224,7 +224,11 @@ func checkChainShape(layers []*ir.LayerInstance) error {
 		// satisfied: the spec's `iterate` runs out of fuel below the minimum
 		// and makes the filter ill-typed rather than always false.
 		if l.Quant == ast.QuantRange && l.RangeMax < 0 && l.RangeMin > l.Spec.ChainDepth() {
-			return errorf(l.Pos, "{%d,} on %s: the minimum exceeds %s_MAX_DEPTH (%d), the bound an open quantifier stands for", l.RangeMin, l.Spec.Name, strings.ToUpper(l.Spec.Name), l.Spec.ChainDepth())
+			bound := fmt.Sprintf("the default MAX_DEPTH (%d)", l.Spec.ChainDepth())
+			if l.Spec.MaxDepth != 0 {
+				bound = fmt.Sprintf("%s_MAX_DEPTH (%d)", strings.ToUpper(l.Spec.Name), l.Spec.MaxDepth)
+			}
+			return errorf(l.Pos, "{%d,} on %s: the minimum exceeds %s, the bound an open quantifier stands for", l.RangeMin, l.Spec.Name, bound)
 		}
 		if !l.Absentable() || l.Dispatch == nil || l.Dispatch.Type != vocab.DispatchNoCheck {
 			continue

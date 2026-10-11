@@ -407,3 +407,27 @@ func parseResolveBundled(t *testing.T, expr string) *ir.Program {
 	}
 	return prog
 }
+
+// TestBundledChainDepthsFitMachineCap pins the relation staticMachineChainCap
+// relies on: every bundled protocol that can repeat (a parser machine and a
+// self edge) declares a MAX_DEPTH of at most the cap, or `+` / `*` / `{n,}`
+// on it would be refused.
+func TestBundledChainDepthsFitMachineCap(t *testing.T) {
+	v, err := dslvocab.Bundled()
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := 0
+	for _, p := range v {
+		if p.ParseStateMachine == nil || p.SelectDispatchConst(p.Name) == nil {
+			continue
+		}
+		seen++
+		if d := p.ChainDepth(); d > staticMachineChainCap {
+			t.Errorf("%s: MAX_DEPTH %d exceeds staticMachineChainCap %d; `%s+` would be ErrNotImplemented", p.Name, d, staticMachineChainCap, p.Name)
+		}
+	}
+	if seen == 0 {
+		t.Fatal("no bundled protocol with a parser machine and a self edge (expected ipv4 and ipv6)")
+	}
+}

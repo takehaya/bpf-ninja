@@ -96,8 +96,14 @@ func TestBpfVerifierStatsMachineChain(t *testing.T) {
 			if verified == 0 {
 				t.Fatal("verified_insns is zero")
 			}
-			if verified >= 1_000_000 {
-				t.Fatalf("verified_insns %d at or above the one-million verifier limit", verified)
+			// Measured on 6.8 (native XDP): ipv4+ 1,368, ipv4[options.valid]+
+			// 7,439, ipv4@o+ … RR.kind 17,902, ipv6+ 13,428, ipv6@o+ …
+			// exts[0] 70,237; linear in the instance count. The ceiling is
+			// a soft one well above those, so a kernel that explores far
+			// more states fails here before the load limit does.
+			const softCeiling = 250_000
+			if verified >= softCeiling {
+				t.Fatalf("verified_insns %d at or above the soft ceiling %d (3.5× the heaviest shape measured on 6.8)", verified, softCeiling)
 			}
 			t.Logf("verified_insns=%d", verified)
 		})

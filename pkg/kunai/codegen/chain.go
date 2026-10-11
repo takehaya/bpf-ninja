@@ -8,7 +8,6 @@ import (
 
 	"github.com/takehaya/bpf-ninja/pkg/kunai/ast"
 	"github.com/takehaya/bpf-ninja/pkg/kunai/ir"
-	"github.com/takehaya/bpf-ninja/pkg/kunai/vocab"
 )
 
 // staticChainCap is the {n,m} m upper bound the unroll path accepts for
@@ -18,11 +17,13 @@ import (
 const staticChainCap = 4
 
 // staticMachineChainCap bounds the instances a repeated parser-machine
-// layer unrolls to, one machine per instance (genStaticMachineChain). It
-// covers every bundled MAX_DEPTH (ipv4 8, ipv6 4); a protocol declaring
-// a larger depth, or an explicit `{n,m}` past it, is an implementation
-// limit (ErrNotImplemented), not a typing error.
-const staticMachineChainCap = vocab.DefaultMaxDepth
+// layer unrolls to, one machine per instance (genStaticMachineChain). An
+// open quantifier stands for the protocol's MAX_DEPTH, so every bundled
+// protocol with a self edge must declare at most this many (ipv4 takes
+// the default 8, ipv6 declares 4; TestBundledChainDepthsFitMachineCap
+// pins it); a larger depth, or an explicit `{n,m}` past it, is an
+// implementation limit (ErrNotImplemented), not a typing error.
+const staticMachineChainCap = 8
 
 // isMachineChain reports whether layer is a repeated parser-machine layer
 // lowered by genStaticMachineChain: `+`, `*`, `{n,}`, or `{n,m}` with
