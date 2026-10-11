@@ -337,13 +337,7 @@ func writeAuxHeaders(w io.Writer, protoName string, pm *vocab.ParseStateMachine)
 				return err
 			}
 		}
-		// A walked option sits at a runtime offset only the where clause
-		// reads; the bracket form is refused (genPredicate).
-		use := fmt.Sprintf("    use: %s.%s.<field>  or  %s[%s.<field> == X]\n", protoName, name, protoName, name)
-		if aux.IsDynamicEligible {
-			use = fmt.Sprintf("    use: where %s.%s.<field> == X  (not in a bracket)\n", protoName, name)
-		}
-		if _, err := io.WriteString(w, use); err != nil {
+		if _, err := fmt.Fprintf(w, "    use: %s.%s.<field>  or  %s[%s.<field> == X]\n", protoName, name, protoName, name); err != nil {
 			return err
 		}
 	}

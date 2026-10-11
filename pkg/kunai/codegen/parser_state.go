@@ -133,20 +133,30 @@ func genParserMachineIter(layer *ir.LayerInstance, layerIdx int, all []*ir.Layer
 	}
 	insns = append(insns, reanchor...)
 	// Bracket predicates that must wait for aux-extract (splitPredicates:
-	// every predicate of a write-back protocol, §13.4 / D-032, and any
-	// predicate indexing a push-counted stack, D-031) run here. The
+	// every predicate of a write-back protocol, §13.4 / D-032, any
+	// predicate indexing a push-counted stack, D-031, and any reading an
+	// option the walk located) run here. The
 	// emitters address fields from R4 at layer entry: park the post-walk
 	// R4 in the (now free) bpf_loop offset slot, reload the entry offset
 	// from the layer-entry slot, re-establish its bounds, and restore R4
 	// after.
 	if len(postPreds) > 0 {
-		// Post-walk, the push counts are final: let a static index into a
-		// push-counted stack be guarded like a where clause does.
+		// Post-walk, the push counts are final and the option slots hold
+		// where the walk found each option: let a static index into a
+		// push-counted stack be guarded, and an option field be read, the
+		// way a where clause does.
 		entryAnchor := pmCtx.entryAnchor()
 		pcPost := &predCtx{
 			stackCount: func(f *ir.FieldRef) (int16, bool) { return qo.stackCountSlot(f.Layer, f.Aux.OutParam) },
-			validSlot:  qo.validSlot,
-			anchor:     &entryAnchor,
+			optionSlot: func(f *ir.FieldRef) (int16, bool) {
+				layout := dynamicAuxLayoutOf(f)
+				if layout == nil {
+					return 0, false
+				}
+				return qo.dynamicAuxSlotForLayout(f.Layer, layout)
+			},
+			validSlot: qo.validSlot,
+			anchor:    &entryAnchor,
 		}
 		if pc != nil {
 			pcPost.sets, pcPost.out = pc.sets, pc.out
@@ -470,14 +480,16 @@ func (c *pmCtx) emitWriteBackSlotZero() asm.Instructions {
 // A write-back protocol defers them all (they must see the written-back
 // primary header, D-032); otherwise only a predicate indexing a
 // push-counted stack waits, since its count is final only after the walk
-// (D-031; gtp[exts[0].…]), and the others still reject before the walk.
+// (D-031; gtp[exts[0].…]), as does one reading an option the walk
+// locates (tcp[mss.value …]: the slot holds the option's position only
+// after the walk), and the others still reject before the walk.
 // Predicates are a conjunction, so the split does not change the verdict.
 func splitPredicates(layer *ir.LayerInstance) (pre, post []*ir.Predicate) {
 	if pmHasWriteBack(layer.Spec) {
 		return nil, layer.Predicates
 	}
 	for _, p := range layer.Predicates {
-		if needsPushCount(p.Field) || p.Kind == ast.PredValid {
+		if needsPushCount(p.Field) || p.Kind == ast.PredValid || dynamicAuxLayoutOf(p.Field) != nil {
 			post = append(post, p)
 		} else {
 			pre = append(pre, p)
@@ -570,7 +582,14 @@ func (c *pmCtx) emitStateBody(state *vocab.ParseState, stateIdx int, isEntry boo
 		// verifier will refuse. One option per filter still works on the
 		// normal path.
 		if options := c.queried.optionDemand(c.layer); c.isLengthByteOptionLoop(stateIdx) && len(options) >= 2 && c.accPlan.atomsFor(c.layer) == nil {
-			return nil, nil, fmt.Errorf("%w: querying %d distinct options of %q in one filter is supported only as a pure AND of `<option>.<field> == <const>` equalities (at most %d, where multiple fields on one option each count); rewrite the clause to that form — no `!=`, no non-option term mixed in — or query a single option", ErrNotImplemented, len(options), c.spec.Name, accMaxAtoms)
+			bracket := ""
+			for _, p := range c.layer.Predicates {
+				if dynamicAuxLayoutOf(p.Field) != nil {
+					bracket = " (a bracket predicate on an option counts and keeps that form from applying: move it into the where clause)"
+					break
+				}
+			}
+			return nil, nil, fmt.Errorf("%w: querying %d distinct options of %q in one filter is supported only as a pure AND of `<option>.<field> == <const>` equalities in the where clause (at most %d, where multiple fields on one option each count)%s; rewrite the clause to that form — no `!=`, no non-option term mixed in — or query a single option", ErrNotImplemented, len(options), c.spec.Name, accMaxAtoms, bracket)
 		}
 		// Accumulator queries lower to one combined bpf_loop: the per-
 		// iteration cursor and accumulator forgets (emitAccPrelude /

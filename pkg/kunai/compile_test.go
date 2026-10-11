@@ -2633,36 +2633,63 @@ func TestCompileInSetWalkedEntry(t *testing.T) {
 	t.Fatal("segments[1] key: no store into the key slot")
 }
 
-// TestCompileBracketOnTLVOptionRefused: an option the parser's walk finds
-// at a runtime offset (tcp.mss, tcp.ts) cannot be read by the bracket
-// readers, which would address it at the primary header; the bracket form
-// is refused with a pointer to where, and the where form compiles.
-func TestCompileBracketOnTLVOptionRefused(t *testing.T) {
-	for _, c := range []struct{ expr, advice string }{
-		{"eth/ipv4/tcp[mss.value == 1460]", "where clause"},
-		{"eth/ipv4/tcp[ts.tsval == 7]", "where clause"},
-		{"eth/ipv4/tcp[ts.tsval > 7]", "where clause"},
-		{"eth/ipv4/tcp[mss.value in [1460, 1400]]", "`or` chain"},
-		{"eth/ipv4[rr.pointer == 4]/tcp", "where clause"},
-		{"eth/ipv4/udp/geneve[ovn.option_class == 0x102]/eth", "where clause"},
-		{"eth/ipv4[rr.pointer == 4]{1,2}/tcp", "where clause"},
-		{"eth/ipv4/(tcp[mss.value == 1460]|udp)", "where clause"},
-	} {
-		_, err := compileForTest(c.expr)
-		if !errors.Is(err, codegen.ErrNotImplemented) || !strings.Contains(err.Error(), c.advice) {
-			t.Errorf("%s: err = %v; want ErrNotImplemented with %q", c.expr, err, c.advice)
-		}
-	}
-	// A set key: refused too, with its own advice.
+// TestCompileBracketOnTLVOption: an option the parser's walk finds at a
+// runtime offset (tcp.mss, tcp.ts, ipv4 RR, geneve ovn) is read in a
+// bracket after the walk, off the slot where the walk recorded it: the
+// slot load is followed by the absent-option sentinel check. Every
+// predicate kind takes that path, on a single layer, a repeated one, an
+// alternation member and as a set key.
+func TestCompileBracketOnTLVOption(t *testing.T) {
 	caps := codegen.Capabilities{Lang: codegen.LangCaps{SetSlots: mssSetSlots{}}}
-	if _, err := Compile("eth/ipv4/tcp[mss.value in @mss]", caps); !errors.Is(err, codegen.ErrNotImplemented) || !strings.Contains(err.Error(), "set key") {
-		t.Errorf("tcp[mss.value in @mss]: err = %v; want ErrNotImplemented about the set key", err)
-	}
-	for _, expr := range []string{"eth/ipv4/tcp where tcp.options.MSS.value == 1460", "eth/ipv4/udp/gtp[opt.next_ext == 0]/ipv4/tcp"} {
-		if _, err := compileForTest(expr); err != nil {
+	for _, expr := range []string{
+		"eth/ipv4/tcp[mss.value == 1460]",
+		"eth/ipv4/tcp[ts.tsval == 7]",
+		"eth/ipv4/tcp[ts.tsval > 7]",
+		"eth/ipv4/tcp[ts.tsval[24:32] == 1]",
+		"eth/ipv4/tcp[mss.value in [1460, 1400]]",
+		"eth/ipv4/tcp[mss.value in [1400..1460]]",
+		"eth/ipv4/tcp[ts.tsval == 10.0.0.1]",
+		"eth/ipv4/tcp[ts.tsval in [10.0.0.0/8, 192.168.0.1]]",
+		"eth/ipv4/tcp[mss.value in @mss]",
+		"eth/ipv4[rr.pointer == 4]/tcp",
+		"eth/ipv4/udp/geneve[ovn.option_class == 0x102]/eth",
+		"eth/ipv4[rr.pointer == 4]{1,2}/tcp",
+		"eth/ipv4[rr.pointer == 4]+/tcp",
+		"eth/ipv4/(tcp[mss.value == 1460]|udp)",
+		"eth/ipv4/tcp[mss.value == 1460] where tcp.mss.value == 1460",
+	} {
+		out, err := Compile(expr, caps)
+		if err != nil {
 			t.Errorf("%s: %v", expr, err)
+			continue
+		}
+		if !hasOptionSlotRead(out.Main) {
+			t.Errorf("%s: no option slot load followed by the sentinel check", expr)
 		}
 	}
+	// Two options, one in a bracket: the accumulator form needs every
+	// option in the where clause, and the refusal says so.
+	_, err := compileForTest("eth/ipv4/tcp[mss.value == 1460] where tcp.ts.tsval == 7")
+	if !errors.Is(err, codegen.ErrNotImplemented) || !strings.Contains(err.Error(), "move it into the where clause") {
+		t.Errorf("bracket + where on two options: err = %v; want ErrNotImplemented pointing the bracket into the where clause", err)
+	}
+	// The same pair written in the where clause compiles (accumulator).
+	if _, err := compileForTest("eth/ipv4/tcp where tcp.mss.value == 1460 and tcp.ts.tsval == 7"); err != nil {
+		t.Errorf("where on two options: %v", err)
+	}
+}
+
+// hasOptionSlotRead reports an R10 slot load into R3 followed by the
+// dynamic-aux sentinel check, the shape every option read starts with.
+func hasOptionSlotRead(insns asm.Instructions) bool {
+	for i := 0; i+1 < len(insns); i++ {
+		ld, chk := insns[i], insns[i+1]
+		if ld.OpCode.Class() == asm.LdXClass && ld.Src == asm.R10 && ld.Dst == asm.R3 &&
+			chk.OpCode.JumpOp() == asm.JEq && chk.Dst == asm.R3 && chk.Constant == -1 {
+			return true
+		}
+	}
+	return false
 }
 
 // mssSetSlots declares a two-byte set "mss" keyed on "value".

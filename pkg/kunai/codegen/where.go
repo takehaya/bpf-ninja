@@ -1729,13 +1729,11 @@ func (c *whereCtx) genArithWithBits(e *ir.ArithExpr, depth int, targetBits int) 
 // where, and a missing aux means the where atom evaluates false —
 // which the surrounding compound boolean handles via dslReject.
 func (c *whereCtx) genArithFieldLoad(f *ir.FieldRef) (asm.Instructions, error) {
-	if slot, ok := c.dynamicOffsetSlotFor(f); ok {
-		return c.genDynamicOffsetAuxLoad(f, slot)
-	}
-	// Every other field is read off the layer's where-context anchor (a
+	// A field is read off the layer's where-context anchor (a
 	// runtime-offset stack entry is located from it, bounded by the
-	// stack's count source), then brought to its numeric value so the
-	// arithmetic and comparisons see the network-order integer.
+	// stack's count source; an option the walk located, off its recorded
+	// position), then brought to its numeric value so the arithmetic and
+	// comparisons see the network-order integer.
 	anchor, err := c.layerAnchorFor(f.Layer)
 	if err != nil {
 		return nil, err
@@ -1743,8 +1741,9 @@ func (c *whereCtx) genArithFieldLoad(f *ir.FieldRef) (asm.Instructions, error) {
 	insns, bytes, size, err := emitScalarFieldLoad(f, fieldLoadSite{
 		gate:      anchor,
 		load:      anchor,
-		entryAddr: c.stackEntryAddress,
-		fail:      c.absent(),
+		entryAddr:  c.stackEntryAddress,
+		optionSlot: c.dynamicOffsetSlotFor,
+		fail:       c.absent(),
 	})
 	if err != nil {
 		return nil, err
@@ -2036,8 +2035,8 @@ func (c *whereCtx) genLiteralCompare(w *ir.Condition, failLabel string) (asm.Ins
 	if !ok {
 		return nil, fmt.Errorf("%w: network literal supports only == / != (got %s)", ErrNotImplemented, w.LiteralOp)
 	}
-	if ref.Aux != nil && ref.Aux.OwnerOption != nil {
-		return c.genOwnerBoundLiteralCompare(w, failLabel)
+	if dynamicAuxLayoutOf(ref) != nil {
+		return c.genOptionLiteralCompare(w, failLabel)
 	}
 	if needsEntryAddress(ref) {
 		return c.genLiteralCompareDynamic(w, failLabel)
@@ -2319,14 +2318,15 @@ func (c *whereCtx) genDynamicCIDRv6(w *ir.Condition, ref *ir.FieldRef, fieldByte
 	})
 }
 
-// genOwnerBoundLiteralCompare emits a literal compare against an
-// owner-bound static-stack aux field (B-4 SACK / future RR). The
-// auxLoadEmitter prelude loads the owner option's per-packet base
-// from its dynamic-aux slot, sentinel-checks (option absent → fail),
-// and lands R5 = R0 + slot + (OffsetAfterOwner + Static*ElemSize).
+// genOptionLiteralCompare emits a literal compare against a field of an
+// option the parser walk located (tcp.ts.tsval), or of a static entry
+// in a stack bound to one (ipv4.options.RR.addrs[N]). The
+// auxLoadEmitter prelude loads the option's per-packet base from its
+// dynamic-aux slot, sentinel-checks (option absent → fail), and lands
+// R5 = slot + (OffsetAfterOwner + Static*ElemSize for a bound stack).
 // Per-kind body issues R5-relative LDX at FieldByteOff + chunkOff
 // for each word in the literal.
-func (c *whereCtx) genOwnerBoundLiteralCompare(w *ir.Condition, failLabel string) (asm.Instructions, error) {
+func (c *whereCtx) genOptionLiteralCompare(w *ir.Condition, failLabel string) (asm.Instructions, error) {
 	ref := w.LiteralField
 	jumpOp, _ := ipEqualityJumpOp(w.LiteralOp)
 	anchor, err := c.layerAnchorFor(ref.Layer)
@@ -2403,7 +2403,7 @@ func (c *whereCtx) genOwnerBoundLiteralCompare(w *ir.Condition, failLabel string
 		}
 		return c.genOwnerBoundCIDRv6(w, prelude, loadAt, failLabel)
 	}
-	return nil, fmt.Errorf("%w: owner-bound aux compare for literal kind %v", ErrNotImplemented, w.LiteralValue.Kind)
+	return nil, fmt.Errorf("%w: option field compare for literal kind %v", ErrNotImplemented, w.LiteralValue.Kind)
 }
 
 func (c *whereCtx) genOwnerBoundCIDRv4(w *ir.Condition, prelude asm.Instructions, loadAt auxLoadAt, failLabel string, jumpOp asm.JumpOp) (asm.Instructions, error) {
@@ -2525,38 +2525,17 @@ func (c *whereCtx) absent() string {
 	return dslReject
 }
 
-// genDynamicOffsetAuxLoad reads an aux header field whose layer
-// position was recorded by the parser machine into a dynamic offset
-// slot. The slot value is the absolute scratch offset of the aux's
-// first byte; sentinel (-1) means the option was not extracted on
-// this packet — the predicate evaluates false (jumps to dslReject).
-//
-// Two addressing modes folded into the same byteOff:
-//   - Single aux: byteOff = FieldBitOff/8.
-//   - Owner-bound stack: byteOff = OffsetAfterOwner +
-//     Static*ElemSize + FieldBitOff/8. The slot still holds the
-//     OWNER option's base; the element offset is folded here at
-//     codegen time. Iterator indices are rebound to a static index
-//     by the surrounding any/all unroll before reaching this site.
-func (c *whereCtx) genDynamicOffsetAuxLoad(f *ir.FieldRef, slot int16) (asm.Instructions, error) {
-	byteOff, err := dynamicOffsetAuxByteOff(f)
-	if err != nil {
-		return nil, err
-	}
-	fieldBytes := f.Aux.FieldBitWidth / 8
-	size, err := asmSizeFor(fieldBytes)
-	if err != nil {
-		return nil, err
-	}
-	insns := emitDynamicAuxByteLoad(slot, byteOff, size, c.absent())
-	if fieldBytes > 1 {
-		insns = append(insns, asm.HostTo(asm.BE, asm.R3, size))
-	}
-	return insns, nil
-}
-
-// dynamicOffsetAuxByteOff is the field's byte offset from the recorded
-// option base (see genDynamicOffsetAuxLoad for the two addressing modes).
+// dynamicOffsetAuxByteOff is the field's byte offset from the option
+// base the parser machine recorded in a dynamic-aux slot (the slot holds
+// the absolute scratch offset of the option's first byte; the sentinel
+// -1 means the option was not extracted on this packet). Two addressing
+// modes fold into it:
+//   - Single aux: FieldBitOff/8.
+//   - Owner-bound stack: OffsetAfterOwner + Static*ElemSize +
+//     FieldBitOff/8. The slot holds the OWNER option's base; the element
+//     offset is folded here at codegen time. Iterator indices are rebound
+//     to a static index by the surrounding any/all unroll before reaching
+//     a reader.
 func dynamicOffsetAuxByteOff(f *ir.FieldRef) (int, error) {
 	if f.Aux.FieldBitOff%8 != 0 || f.Aux.FieldBitWidth%8 != 0 {
 		return 0, fmt.Errorf("%w: dynamic-offset aux field %s.%s not byte-aligned (bit-off %d, %d bits)", ErrNotImplemented, f.Layer.Spec.Name, f.Aux.OutParam, f.Aux.FieldBitOff, f.Aux.FieldBitWidth)

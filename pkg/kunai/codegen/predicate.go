@@ -48,22 +48,14 @@ func genPredicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, error) {
 	// after the walk; the where clause's emitCountGuard reads the same byte.
 	// An option extracted by a TLV walk (tcp.ts, ipv4.options.RR) has no
 	// constant offset: the walk records where it found it in a dynamic-aux
-	// slot, which only the where clause reads. The bracket readers would
-	// address it at OffsetInLayer, i.e. the primary header's bytes, and
-	// silently compare the wrong field, so they refuse it.
-	// (The demand walker still records such references,
-	// TestCollectQueriedOptionsBracketPredicate, for the day these
-	// predicates run after the walk and read the slot.)
-	if pred.Field != nil && pred.Field.Aux != nil && dynamicAuxLayoutOf(pred.Field) != nil {
-		proto, opt, fld := pred.Field.Layer.Spec.Name, pred.Field.Aux.OutParam, pred.Field.Field.Name
-		advice := fmt.Sprintf("write it as a where clause (`where %s.%s.%s ...`)", proto, opt, fld)
-		switch pred.Kind {
-		case ast.PredIn:
-			advice = fmt.Sprintf("write it as a where clause with an `or` chain (`where %s.%s.%s == a or %s.%s.%s == b`)", proto, opt, fld, proto, opt, fld)
-		case ast.PredInSet:
-			advice = "an option field cannot be a set key"
+	// slot (the demand walker registers bracket references too), and
+	// splitPredicates runs the predicate after the walk, where pc carries
+	// the slot. Anywhere else the option cannot be read; an absent option
+	// makes the predicate false (D-027).
+	if dynamicAuxLayoutOf(pred.Field) != nil {
+		if _, ok := pc.optionSlotFor(pred.Field); !ok {
+			return nil, fmt.Errorf("codegen: bracket predicate on %s.%s, an option located by the parser's walk, emitted where no option slot is known", pred.Field.Layer.Spec.Name, pred.Field.Aux.OutParam)
 		}
-		return nil, fmt.Errorf("%w: bracket predicate on %s.%s, an option found by the parser's walk at a runtime offset; %s", ErrNotImplemented, proto, opt, advice)
 	}
 	var guard asm.Instructions
 	switch {
@@ -217,6 +209,11 @@ type predCtx struct {
 	// run after the parser walk (splitPredicates), since the count is final
 	// only then; nil means such an index cannot be guarded.
 	stackCount func(*ir.FieldRef) (int16, bool)
+	// optionSlot resolves the slot where the parser walk recorded an
+	// option's position (dynamicAuxLayoutOf). Set only where the
+	// predicates run after the walk; nil means an option field cannot be
+	// read.
+	optionSlot func(*ir.FieldRef) (int16, bool)
 	// validSlot resolves a layer's option-validity slot, for
 	// `[options.valid]`. Set with stackCount, after the walk.
 	validSlot func(*ir.LayerInstance) (int16, bool)
@@ -236,6 +233,15 @@ func (pc *predCtx) fieldAnchor() layerAnchor {
 		return *pc.anchor
 	}
 	return r4Anchor()
+}
+
+// optionSlotFor is the slot holding where the walk found ref's option,
+// when pc runs after the walk.
+func (pc *predCtx) optionSlotFor(ref *ir.FieldRef) (int16, bool) {
+	if pc == nil || pc.optionSlot == nil {
+		return 0, false
+	}
+	return pc.optionSlot(ref)
 }
 
 // dispatchDone reports whether `l`'s parent dispatch already ran as its
@@ -352,30 +358,26 @@ func emitInSetPredicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, erro
 	// (emitScalarFieldLoad leaves R5 = entry start), the same read the
 	// `==` and `in [...]` predicates use. The push-count guard genPredicate
 	// prepends makes the entry present, and splitPredicates has placed
-	// the predicate after the walk. No variable-length stack carries a
-	// 16-byte field.
-	walked := needsEntryAddress(pred.Field)
+	// the predicate after the walk. An option the walk located is read off
+	// its recorded position, after the walk too. No variable-length stack
+	// and no option carries a 16-byte field.
 	var fieldOff, bytes int
 	var is128 bool
 	var err error
-	if walked {
-		_, bytes, err = auxEntryFieldWindow(pred.Field)
-	} else {
-		fieldOff, is128, err = field128RawOffset(pred.Field)
+	if needsEntryAddress(pred.Field) || dynamicAuxLayoutOf(pred.Field) != nil {
+		_, bytes, err = scalarFieldWindow(pred.Field)
+	} else if fieldOff, is128, err = field128RawOffset(pred.Field); err == nil {
+		if is128 {
+			bytes = 16
+		} else {
+			_, bytes, err = scalarFieldWindow(pred.Field)
+		}
 	}
 	if err != nil {
 		return nil, err
 	}
-	if is128 {
-		bytes = 16
-	} else if !walked {
-		fieldOff, bytes, err = fieldRefByteOffset(pred.Field)
-		if err != nil {
-			return nil, err
-		}
-	}
-	// bytes is 1/2/4/8 (the fieldRefByteOffset path rejects wider) or 16
-	// (the is128 path), so no explicit 9..15 guard is needed here.
+	// bytes is 1/2/4/8 (scalarFieldWindow rejects wider) or 16 (the
+	// is128 path), so no explicit 9..15 guard is needed here.
 	// Require an exact width match: a narrower packet field would only
 	// write a prefix of the key (relying on zero-fill), which silently
 	// matches just zero-extended entries — a mis-configuration trap.
@@ -547,6 +549,22 @@ func emitOrderedWireCmp(loadAt auxLoadAt, chunks []wireChunk, op ast.CmpOp, cons
 // free scratch in every mode; R5 is free only when the prelude is empty
 // (primary or static aux), so a body that must work in every mode keeps
 // its constants in R2 (ipv6AuxHalfCheck, macCheck).
+// bracketAuxLoad is auxLoadEmitter for a bracket predicate: gating (an
+// aux the walk extracts in place) or the option slot (an option the walk
+// located, readable only after the walk) ahead of the addressing
+// prelude, R4 at layer entry, dslReject when absent.
+func bracketAuxLoad(ref *ir.FieldRef, pc *predCtx) (asm.Instructions, auxLoadAt, error) {
+	prelude, loadAt, err := auxLoadEmitter(ref, r4Anchor(), pc.optionSlotFor, dslReject)
+	if err != nil {
+		return nil, nil, err
+	}
+	var insns asm.Instructions
+	if dynamicAuxLayoutOf(ref) == nil {
+		insns = append(insns, emitAuxGating(ref.Aux.Gating, r4Anchor(), dslReject)...)
+	}
+	return append(insns, prelude...), loadAt, nil
+}
+
 func bracketLoadAt(ref *ir.FieldRef, pc *predCtx, bytes int, kind string) (asm.Instructions, auxLoadAt, error) {
 	if ref == nil || ref.Layer == nil || ref.Field == nil {
 		return nil, nil, fmt.Errorf("codegen: %s predicate missing field reference", kind)
@@ -555,13 +573,7 @@ func bracketLoadAt(ref *ir.FieldRef, pc *predCtx, bytes int, kind string) (asm.I
 		if ref.EffectiveBits() != bytes*8 {
 			return nil, nil, fmt.Errorf("%w: %s needs a %d-bit field, got %s.%s.%s (%d bits)", ErrNotImplemented, kind, bytes*8, ref.Layer.Spec.Name, ref.Aux.OutParam, ref.Field.Name, ref.EffectiveBits())
 		}
-		prelude, loadAt, err := auxLoadEmitter(ref, r4Anchor(), nil, dslReject)
-		if err != nil {
-			return nil, nil, err
-		}
-		insns := append(asm.Instructions{}, emitAuxGating(ref.Aux.Gating, r4Anchor(), dslReject)...)
-		insns = append(insns, prelude...)
-		return insns, loadAt, nil
+		return bracketAuxLoad(ref, pc)
 	}
 	fieldOff, got, err := literalFieldWindow(ref)
 	if err != nil {
@@ -596,14 +608,13 @@ func emitIPv6Predicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, error
 		if pred.Field.EffectiveBits() != 128 {
 			return nil, fmt.Errorf("%w: IPv6 literal needs a 128-bit field, got %s.%s.%s (%d bits)", ErrNotImplemented, pred.Field.Layer.Spec.Name, pred.Field.Aux.OutParam, pred.Field.Field.Name, pred.Field.EffectiveBits())
 		}
-		prelude, loadAt, err := auxLoadEmitter(pred.Field, r4Anchor(), nil, dslReject)
+		prelude, loadAt, err := bracketAuxLoad(pred.Field, pc)
 		if err != nil {
 			return nil, err
 		}
 		highBE := binary.BigEndian.Uint64(pred.Value.V6[0:8])
 		lowBE := binary.BigEndian.Uint64(pred.Value.V6[8:16])
-		insns := append(asm.Instructions{}, emitAuxGating(pred.Field.Aux.Gating, r4Anchor(), dslReject)...)
-		insns = append(insns, prelude...)
+		insns := append(asm.Instructions{}, prelude...)
 		insns = append(insns, multiWordRoute(pred.Op, func(fail string) asm.Instructions {
 			body := append(asm.Instructions{}, ipv6AuxHalfCheck(loadAt, 0, ^uint64(0), highBE, fail)...)
 			body = append(body, ipv6AuxHalfCheck(loadAt, 8, ^uint64(0), lowBE, fail)...)
@@ -723,12 +734,11 @@ func emitIPv6CIDRPredicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, e
 		if pred.Field.EffectiveBits() != 128 {
 			return nil, fmt.Errorf("%w: IPv6 CIDR needs a 128-bit field, got %s.%s.%s (%d bits)", ErrNotImplemented, pred.Field.Layer.Spec.Name, pred.Field.Aux.OutParam, pred.Field.Field.Name, pred.Field.EffectiveBits())
 		}
-		prelude, loadAt, err := auxLoadEmitter(pred.Field, r4Anchor(), nil, dslReject)
+		prelude, loadAt, err := bracketAuxLoad(pred.Field, pc)
 		if err != nil {
 			return nil, err
 		}
-		insns := append(asm.Instructions{}, emitAuxGating(pred.Field.Aux.Gating, r4Anchor(), dslReject)...)
-		insns = append(insns, prelude...)
+		insns := append(asm.Instructions{}, prelude...)
 		insns = append(insns, multiWordRoute(pred.Op, func(fail string) asm.Instructions {
 			var body asm.Instructions
 			if maskHighBE != 0 {

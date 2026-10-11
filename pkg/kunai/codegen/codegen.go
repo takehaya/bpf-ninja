@@ -2215,11 +2215,11 @@ func emitRuntimeAuxElementAddrOwner(target *ir.QuantTarget, offsetAfterOwner, fi
 // byte literal compare.
 type auxLoadAt func(chunkOff int, size asm.Size) asm.Instructions
 
-// resolveAuxSlot returns the dynamic-aux offset slot for an owner-
-// bound aux ref, or ok=false when the owner option is not in the
-// demand set. Bracket-form callers pass nil (owner-bound is reachable
-// only via the where-form 5-part path); where-form callers pass
-// (whereCtx).dynamicOffsetSlotFor.
+// resolveAuxSlot returns the dynamic-aux offset slot for an option the
+// parser walk locates (dynamicAuxLayoutOf: an option, or a stack bound
+// to one), or ok=false when the option is not in the demand set or the
+// caller runs where no slot is final. Where-form callers pass
+// (whereCtx).dynamicOffsetSlotFor, bracket-form ones (predCtx).optionSlotFor.
 type resolveAuxSlot func(*ir.FieldRef) (int16, bool)
 
 // auxLoadEmitter prepares a multi-byte literal load against an aux
@@ -2230,14 +2230,14 @@ type resolveAuxSlot func(*ir.FieldRef) (int16, bool)
 //     Static*ElemSize + FieldByteOff + chunkOff).
 //   - Runtime-offset stack entry: prelude is emitStackEntryAddress (R5 = element
 //     start), loadAt is LoadMem(R3, R5, FieldByteOff+chunkOff, size).
-//   - Owner-bound static stack: prelude loads the owner option's
-//     dynamic-aux slot, sentinel-checks, sets R5 = R0 + slot +
-//     (OffsetAfterOwner + Static*ElemSize); loadAt is the same R5-
-//     relative LDX as the dynamic-stack mode.
+//   - An option the walk located, or a static entry of a stack bound to
+//     one: prelude loads the option's dynamic-aux slot, sentinel-checks
+//     (absent option), sets R5 = slot + (OffsetAfterOwner +
+//     Static*ElemSize for a bound stack); loadAt reads R5-relative
+//     through boundedScalarLoad.
 //
-// resolveSlot is consulted only for owner-bound; pass nil from
-// bracket-form callers (the resolver doesn't produce owner-bound
-// AuxRefs through that path).
+// resolveSlot is consulted only for options; an aux there needs no
+// gating, the slot sentinel stands in for it.
 func auxLoadEmitter(ref *ir.FieldRef, anchor layerAnchor, resolveSlot resolveAuxSlot, failLabel string) (asm.Instructions, auxLoadAt, error) {
 	if ref == nil || ref.Aux == nil {
 		return nil, nil, fmt.Errorf("codegen: auxLoadEmitter on non-aux FieldRef")
@@ -2255,18 +2255,21 @@ func auxLoadEmitter(ref *ir.FieldRef, anchor layerAnchor, resolveSlot resolveAux
 		return nil, nil, err
 	}
 
-	if aux.OwnerOption != nil {
-		if aux.Stack == nil || !aux.Stack.IsStatic {
+	if layout := dynamicAuxLayoutOf(ref); layout != nil {
+		if aux.OwnerOption != nil && (aux.Stack == nil || !aux.Stack.IsStatic) {
 			return nil, nil, fmt.Errorf("%w: owner-bound aux %q requires a static stack index", ErrNotImplemented, aux.OutParam)
 		}
 		if resolveSlot == nil {
-			return nil, nil, fmt.Errorf("%w: owner-bound aux %q not addressable from this code path", ErrNotImplemented, aux.OutParam)
+			return nil, nil, fmt.Errorf("%w: option %q not addressable from this code path", ErrNotImplemented, aux.OutParam)
 		}
 		slot, ok := resolveSlot(ref)
 		if !ok {
-			return nil, nil, fmt.Errorf("codegen: owner option %q not in demand set for layer %q", aux.OwnerOption.OutParam, ref.Layer.Spec.Name)
+			return nil, nil, fmt.Errorf("codegen: option %q not in demand set for layer %q", layout.OutParam, ref.Layer.Spec.Name)
 		}
-		elemOff := aux.OffsetAfterOwner + int(aux.Stack.Static)*aux.HeaderSize
+		elemOff := 0
+		if aux.OwnerOption != nil {
+			elemOff = aux.OffsetAfterOwner + int(aux.Stack.Static)*aux.HeaderSize
+		}
 		// Prelude: R5 = slot + elemOff (a SCALAR, not a pointer). It
 		// survives boundedScalarLoad's clobber set so per-chunk loads
 		// reuse it. The pointer is rebuilt per chunk inside
@@ -2279,7 +2282,9 @@ func auxLoadEmitter(ref *ir.FieldRef, anchor layerAnchor, resolveSlot resolveAux
 			asm.LoadMem(asm.R3, asm.R10, slot, asm.DWord),
 			asm.JEq.Imm(asm.R3, dynamicAuxSentinel, failLabel),
 			asm.Mov.Reg(asm.R5, asm.R3),
-			asm.Add.Imm(asm.R5, int32(elemOff)),
+		}
+		if elemOff != 0 {
+			prelude = append(prelude, asm.Add.Imm(asm.R5, int32(elemOff)))
 		}
 		return prelude, func(chunkOff int, size asm.Size) asm.Instructions {
 			delta := int32(fieldByteOff + chunkOff)
@@ -2719,17 +2724,19 @@ func emitStaticStackEntryAddress(ref *ir.FieldRef, base layerAnchor, failLabel s
 // is reached through (an aux's gating and a stack entry's walk start
 // there), the anchor the field itself is read through (they differ for a
 // predicate behind a write-back overlay), how a runtime-offset stack
-// entry is located from the gate anchor, and the label an absent field
-// jumps to.
+// entry is located from the gate anchor, the slot holding where the
+// walk found an option (nil where none is known), and the label an
+// absent field jumps to.
 type fieldLoadSite struct {
 	gate, load layerAnchor
 	entryAddr  func(ref *ir.FieldRef, base layerAnchor, failLabel string) (asm.Instructions, error)
+	optionSlot func(*ir.FieldRef) (int16, bool)
 	fail       string
 }
 
 // predicateLoadSite is the site of a bracket predicate: gating off R4 at
 // layer entry, primary fields through pc's anchor, entries walked with no
-// count bound beyond the static guard.
+// count bound beyond the static guard, options through pc's slots.
 func predicateLoadSite(pc *predCtx) fieldLoadSite {
 	return fieldLoadSite{
 		gate: r4Anchor(),
@@ -2737,43 +2744,68 @@ func predicateLoadSite(pc *predCtx) fieldLoadSite {
 		entryAddr: func(ref *ir.FieldRef, base layerAnchor, failLabel string) (asm.Instructions, error) {
 			return emitStackEntryAddress(ref, base, indexBound{}, failLabel)
 		},
-		fail: dslReject,
+		optionSlot: pc.optionSlotFor,
+		fail:       dslReject,
 	}
+}
+
+// scalarFieldWindow is the byte offset and width of the window a scalar
+// read of ref covers: from the option's recorded position for an option
+// the walk locates (dynamicAuxLayoutOf), from the entry start for a
+// runtime-offset stack entry, from the layer otherwise. A slice narrows
+// the window in every case.
+func scalarFieldWindow(ref *ir.FieldRef) (off, bytes int, err error) {
+	switch {
+	case dynamicAuxLayoutOf(ref) != nil:
+		base, err := dynamicOffsetAuxByteOff(ref)
+		if err != nil {
+			return 0, 0, err
+		}
+		return applySliceToOffset(ref, base, ref.Aux.FieldBitWidth/8)
+	case needsEntryAddress(ref):
+		return auxEntryFieldWindow(ref)
+	}
+	return fieldRefByteOffset(ref)
 }
 
 // emitScalarFieldLoad reads the window covering a field of at most 8
 // bytes into R3, little-endian and unnormalised, and returns its width.
-// A field at a runtime offset (a dynamic index, or an entry past
-// variable-length ones) goes through site.entryAddr, which leaves R5 at
-// the entry start and needs no gating (the walk extracted the entry);
-// any other field gates an aux on presence and loads off site.load. R2
-// and R5 may be clobbered. The read touches R10 only through a slot
-// anchor in the site (a where clause's layer slot, a write-back
-// overlay), so a site anchored at R4, the one bpf_loop callbacks replay
-// bracket predicates with, keeps it off the stack.
+// An option the walk located is read off its recorded position
+// (emitDynamicAuxByteLoad: the sentinel means absent). A field at a
+// runtime offset (a dynamic index, or an entry past variable-length
+// ones) goes through site.entryAddr, which leaves R5 at the entry start
+// and needs no gating (the walk extracted the entry). Any other field
+// gates an aux on presence and loads off site.load. R2 and R5 may be
+// clobbered. The read touches R10 only through a slot (an option's, a
+// where clause's layer slot, a write-back overlay), so an R4-anchored
+// site reading no option, the one bpf_loop callbacks replay bracket
+// predicates with, keeps it off the stack.
 func emitScalarFieldLoad(ref *ir.FieldRef, site fieldLoadSite) (asm.Instructions, int, asm.Size, error) {
-	if needsEntryAddress(ref) {
-		off, bytes, err := auxEntryFieldWindow(ref)
-		if err != nil {
-			return nil, 0, 0, err
-		}
-		size, err := asmSizeFor(bytes)
-		if err != nil {
-			return nil, 0, 0, err
-		}
-		addr, err := site.entryAddr(ref, site.gate, site.fail)
-		if err != nil {
-			return nil, 0, 0, err
-		}
-		return append(addr, asm.LoadMem(asm.R3, asm.R5, int16(off), size)), bytes, size, nil
-	}
-	off, bytes, err := fieldRefByteOffset(ref)
+	off, bytes, err := scalarFieldWindow(ref)
 	if err != nil {
 		return nil, 0, 0, err
 	}
 	size, err := asmSizeFor(bytes)
 	if err != nil {
 		return nil, 0, 0, err
+	}
+	switch {
+	case dynamicAuxLayoutOf(ref) != nil:
+		var slot int16
+		ok := false
+		if site.optionSlot != nil {
+			slot, ok = site.optionSlot(ref)
+		}
+		if !ok {
+			return nil, 0, 0, fmt.Errorf("codegen: option %s.%s not in the demand set", ref.Layer.Spec.Name, ref.Aux.OutParam)
+		}
+		return emitDynamicAuxByteLoad(slot, off, size, site.fail), bytes, size, nil
+	case needsEntryAddress(ref):
+		addr, err := site.entryAddr(ref, site.gate, site.fail)
+		if err != nil {
+			return nil, 0, 0, err
+		}
+		return append(addr, asm.LoadMem(asm.R3, asm.R5, int16(off), size)), bytes, size, nil
 	}
 	var insns asm.Instructions
 	if ref.Aux != nil {
