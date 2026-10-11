@@ -960,7 +960,7 @@ next-header 位置も同じ count から決まります。codegen は walk 収�
 
 各 option を kind ごとに独立 aux header として declare し、parser block の multi-state self-loop が kind dispatch + sibling extract で walk します。where 句から option の field を読むときは、parser machine が記録した per-packet オフセットを stack slot から引いて直接 LDX します。legacy の where-time 再 walk は B6 で削除済みです。
 
-> 同じ TLV から複数 option を 1 つの `where` で問い合わせる場合 (`MSS.value == 1460 and WS.shift == 7` など) は、記録 slot を N 個持つと verifier が爆発するため、bit accumulator + forget で 1 本の bpf_loop に畳む別経路に乗ります。仕組みは [`dsl-multi-option-accumulator.md`](./dsl-multi-option-accumulator.md) を参照してください。
+> 同じ TLV から複数 option を問い合わせる場合 (`where tcp.options.MSS.value == 1460 and tcp.options.WS.shift == 7` や `tcp[mss.value == 1460, ws.shift == 7]` など) は、記録 slot を N 個持つと verifier が爆発するため、bit accumulator + forget で 1 本の bpf_loop に畳む別経路に乗ります。仕組みは [`dsl-multi-option-accumulator.md`](./dsl-multi-option-accumulator.md) を参照してください。
 
 ```p4
 // tcp.p4
@@ -1024,7 +1024,7 @@ callback は kind ごとの slot-store prelude を dispatch の前に置きま�
 
 `pkt.lookahead` を使う counter decrement は `pkt.advance` より前に記述します。逆順は loader が診断します。これは対応する TLV sibling の制約であり、P4-lite の任意の statement 順序を保持する一般的な保証ではありません。
 
-Demand-driven 割当では、codegen は `collectQueriedOptions(p)` (`pkg/kunai/codegen/option_demand.go`) で program 全体の where、各 layer の bracket predicate、各 capture を walk し、参照された (layer, option) ペアだけ slot を割り当てます。`where tcp.options.MSS.value == 1460` だけなら slot は 1 個です (slot の総数は stack plan の 36 slot が上限)。layer entry では `emitDynamicAuxSentinelInit` が各 slot を sentinel `-1` で zero-init します。extract されなかった option は sentinel のまま残り、where 評価で reject されます。bracket predicate が option を読むとき (`tcp[mss.value == 1460]`) は、`splitPredicates` がその predicate を walk の後ろに回し、where と同じ slot を `emitScalarFieldLoad` / `auxLoadEmitter` から読みます。walk の前には option の位置が決まっていないためです。accumulator 経路は位置の slot を書かないので、layer の bracket predicate が option を読むときは accumulator を使いません。
+Demand-driven 割当では、codegen は `collectQueriedOptions(p)` (`pkg/kunai/codegen/option_demand.go`) で program 全体の where、各 layer の bracket predicate、各 capture を walk し、参照された (layer, option) ペアだけ slot を割り当てます。`where tcp.options.MSS.value == 1460` だけなら slot は 1 個です (slot の総数は stack plan の 36 slot が上限)。layer entry では `emitDynamicAuxSentinelInit` が各 slot を sentinel `-1` で zero-init します。extract されなかった option は sentinel のまま残り、where 評価で reject されます。bracket predicate が option を読むとき (`tcp[mss.value == 1460]`) は、`splitPredicates` がその predicate を walk の後ろに回し、where と同じ slot を `emitScalarFieldLoad` / `auxLoadEmitter` から読みます。walk の前には option の位置が決まっていないためです。accumulator 経路は位置の slot を書かないので、bracket の `==` は accumulator の atom として walk の中で評価し、`splitPredicates` はその predicate を飛ばします。`==` 以外の形で option を読む bracket predicate があると、その layer には accumulator を使いません。
 
 Where 評価では、`tcp.options.MSS.value == 1460` のような predicate は `genArithFieldLoad → dynamicOffsetSlotFor → genDynamicOffsetAuxLoad` (`pkg/kunai/codegen/where.go`) の経路をたどります。
 

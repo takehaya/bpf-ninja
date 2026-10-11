@@ -193,12 +193,21 @@ func TestTLVWalkCascadeMultiOptionAccumulator(t *testing.T) {
 			reject: true,
 		},
 		{
-			// Mixing a non-option (primary-header) atom into the AND
-			// leaves both options queried but not all covered by eq-leaves,
-			// so the accumulator is not built and the >=2 reject stands.
-			name: "non_option_atom_rejects",
+			// A conjunct that reads no option (tcp.dport) stays an ordinary
+			// where condition after the mask check; the equalities fold.
+			name: "non_option_atom_rest",
 			expr: "eth/ipv4/tcp where " +
 				"tcp.dport == 443 " +
+				"and tcp.options.MSS.value == 1460 " +
+				"and tcp.options.WS.shift == 7",
+			reject: false,
+		},
+		{
+			// A conjunct that reads an option in another form needs the
+			// option's position, which the folded walk does not record.
+			name: "option_read_in_rest_rejects",
+			expr: "eth/ipv4/tcp where " +
+				"tcp.options.MSS.value > 1000 " +
 				"and tcp.options.MSS.value == 1460 " +
 				"and tcp.options.WS.shift == 7",
 			reject: true,

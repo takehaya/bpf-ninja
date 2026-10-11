@@ -132,7 +132,7 @@ eth/ipv4/udp/gtp[opt.next_ext == 0]/ipv4/tcp     # GTP の auxiliary header opt 
 
 ただし `gtp.exts` や `srv6.segments` などの aux header stack には index または `where any/all(...)` が必要です。詳細は §Where 節を参照してください。
 
-TCP / IPv4 / Geneve の option (`tcp[mss.value == 1460]` や `ipv4[rr.pointer == 4]` など) も bracket で参照できます。parser が option 領域を走査して位置を決めるため、これらの bracket 条件は走査が終わった後に評価します。option が無いパケットでは条件は偽になり、`!=` も成り立ちません。TCP では、2 種類以上の option を参照するフィルタはすべての option を `where` 句の `==` の AND で書いたときだけ受け付けます。このため、TCP の option を 2 種類以上使うときは bracket の option 条件も `where` 句に移します。IPv4 と Geneve の option にはこの制限がありません。bracket の中でも `where` 句と同じく `tcp[options.MSS.value == 1460]` と書けて、`tcp[mss.value == 1460]` と同じ条件になります。SACK の block のように option の中にある stack は `tcp[options.SACK.blocks[0].left == 5]` のように option を経由して書き、`tcp[blocks[0].left == 5]` は型エラーです。option の長さに収まらない index の entry は無いものとして扱います。
+TCP / IPv4 / Geneve の option (`tcp[mss.value == 1460]` や `ipv4[rr.pointer == 4]` など) も bracket で参照できます。parser が option 領域を走査して位置を決めるため、これらの bracket 条件は走査が終わった後に評価します。option が無いパケットでは条件は偽になり、`!=` も成り立ちません。TCP で 2 種類以上の option を参照するフィルタは、option の条件をすべて `==` で書いたときだけ受け付けます。条件は bracket に書いても、`where` 句に書いてもかまいません。詳しい条件は後の TCP option の節で説明します。IPv4 と Geneve の option にはこの制限がありません。bracket の中でも `where` 句と同じく `tcp[options.MSS.value == 1460]` と書けて、`tcp[mss.value == 1460]` と同じ条件になります。SACK の block のように option の中にある stack は `tcp[options.SACK.blocks[0].left == 5]` のように option を経由して書き、`tcp[blocks[0].left == 5]` は型エラーです。option の長さに収まらない index の entry は無いものとして扱います。
 
 ### Where 節
 
@@ -215,12 +215,15 @@ eth/ipv4/tcp where tcp.options.WS.shift > 5
 eth/ipv4/tcp where tcp.options.TS.tsval > 0
 ```
 
-1 つの filter で TCP の option を 2 種類以上見る場合は、`where` 全体を `<option>.<field> == <定数>` の `and` だけで書きます。`options.valid` はどの layer のものでも混ぜられます。`int<128>(n)` で field に収まらない定数を書くと、その filter はどの packet にも一致しません。`!=`、`or`、`not`、`.exists`、`action == …`、`tcp.dport == 80` のような option 以外の atom を混ぜると `ErrNotImplemented` になります。option 以外の field の条件は bracket に移せば compile できます。`action == …` は bracket に書けないので、この形とは組み合わせられません。
+1 つの filter で TCP の option を 2 種類以上見る場合は、option の field を読む条件をすべて `<option>.<field> == <定数>` の形にします。この条件は bracket に書くか、`where` 句の一番外側の `and` の項として書きます。`where` 句のほかの項、たとえば `tcp.dport == 80`、`ipv4.ttl == 64`、`options.valid` は、option を読まない限り自由に混ぜられます。`int<128>(n)` で field に収まらない定数を書くと、その filter はどの packet にも一致しません。option を `!=`、大小比較、`in`、`.exists` で読む条件や、`or` と `not` の内側で読む条件を混ぜると `ErrNotImplemented` になります。`tcp?` や alternation の member のように不在になりうる layer の bracket に option の `==` を書くときは、`where tcp.options.valid` のように同じ layer の項を `where` 句にも書きます。layer が不在のとき bracket の条件は評価されませんが、畳んだ形ではその条件が偽として扱われるためです。
 
 ```
 eth/ipv4/tcp where tcp.options.MSS.value == 1460 and tcp.options.WS.shift == 7                     # compile できる
-eth/ipv4/tcp where tcp.options.MSS.value == 1460 and tcp.options.WS.shift == 7 and tcp.dport == 80  # ErrNotImplemented
-eth/ipv4/tcp[dport==80] where tcp.options.MSS.value == 1460 and tcp.options.WS.shift == 7           # compile できる
+eth/ipv4/tcp[mss.value == 1460, ws.shift == 7]                                                     # compile できる
+eth/ipv4/tcp[mss.value == 1460] where tcp.options.WS.shift == 7 and tcp.dport == 80                 # compile できる
+eth/ipv4/tcp[mss.value == 1460, ts.tsval > 5]                                                      # ErrNotImplemented
+eth/ipv4/(tcp[mss.value == 1460, ws.shift == 7]|udp)                                               # ErrNotImplemented
+eth/ipv4/(tcp[mss.value == 1460, ws.shift == 7]|udp) where tcp.options.valid                       # compile できる
 ```
 
 見る TCP の option が 1 種類のときと、IPv4 や Geneve の option では、この制約はありません。仕組みは [`dsl-multi-option-accumulator.md`](./dsl-multi-option-accumulator.md) を参照してください。

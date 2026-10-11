@@ -57,15 +57,22 @@ func accumulatorExprs() []struct{ id, expr string } {
 		// alternation form keeps the member guard on that flag.
 		{"tcp_opts_2_other_valid", "eth/ipv4/tcp where ipv4.options.valid and tcp.options.MSS.value == 1460 and tcp.options.WS.shift == 7"},
 		{"tcp_opts_2_other_valid_alt", "eth/(ipv4|ipv6)/tcp where ipv4.options.valid and tcp.options.MSS.value == 1460 and tcp.options.WS.shift == 7"},
+		// Bracket equalities fold like where ones; the conjuncts that read
+		// no option stay an ordinary where condition after the mask check.
+		{"tcp_opts_2_bracket", "eth/ipv4/tcp[mss.value == 1460, ws.shift == 7]"},
+		{"tcp_opts_2_bracket_where_rest", "eth/ipv4/tcp[mss.value == 1460] where tcp.ws.shift == 7 and tcp.dport == 80"},
+		{"tcp_opts_2_bracket_alt", "eth/ipv4/(tcp[mss.value == 1460, ws.shift == 7]|udp) where tcp.options.valid"},
 	}
 }
 
 // TestTCPMultiOptionBoundary pins the compile-time boundary. A single
 // option and a pure AND of `<option>.<field> == <const>` equalities over
-// several options both lower (the accumulator folds them into one slot).
-// Shapes the accumulator does not cover reject with ErrNotImplemented: a
-// non-eq (`!=`) leaf, or mixing a non-option atom into the AND (which
-// leaves a queried option uncovered). Compile-only, so it needs no root.
+// several options, in the bracket or the where clause, both lower (the
+// accumulator folds them into one slot); a conjunct that reads no option
+// stays a where condition. Shapes the accumulator does not cover reject
+// with ErrNotImplemented: a non-eq (`!=`) read of an option, or a bracket
+// on a layer that may be absent with no where term on it. Compile-only,
+// so it needs no root.
 func TestTCPMultiOptionBoundary(t *testing.T) {
 	cases := []struct {
 		id     string
@@ -77,7 +84,10 @@ func TestTCPMultiOptionBoundary(t *testing.T) {
 		{"tcp_4opt", "eth/ipv4/tcp where tcp.options.MSS.value == 1460 and tcp.options.WS.shift == 7 and tcp.options.SACK_PERM.kind == 4 and tcp.options.TS.tsval == 1", false},
 		{"tcp_14opt_max", "eth/ipv4/tcp where tcp.options.MSS.kind == 2 and tcp.options.MSS.length == 4 and tcp.options.MSS.value == 1460 and tcp.options.WS.kind == 3 and tcp.options.WS.length == 3 and tcp.options.WS.shift == 7 and tcp.options.SACK_PERM.kind == 4 and tcp.options.SACK_PERM.length == 2 and tcp.options.TS.kind == 8 and tcp.options.TS.length == 10 and tcp.options.TS.tsval == 1 and tcp.options.TS.tsecr == 2 and tcp.options.SACK.kind == 5 and tcp.options.SACK.length == 10", false},
 		{"tcp_2opt_ne_rejects", "eth/ipv4/tcp where tcp.options.MSS.value == 1460 and tcp.options.WS.shift != 7", true},
-		{"tcp_mixed_atom_rejects", "eth/ipv4/tcp where tcp.dport == 443 and tcp.options.MSS.value == 1460 and tcp.options.WS.shift == 7", true},
+		{"tcp_mixed_atom", "eth/ipv4/tcp where tcp.dport == 443 and tcp.options.MSS.value == 1460 and tcp.options.WS.shift == 7", false},
+		{"tcp_2opt_bracket", "eth/ipv4/tcp[mss.value == 1460, ws.shift == 7]", false},
+		{"tcp_2opt_bracket_ordered_rejects", "eth/ipv4/tcp[mss.value == 1460, ts.tsval > 5]", true},
+		{"tcp_2opt_bracket_optional_rejects", "eth/ipv4/tcp[mss.value == 1460, ws.shift == 7]?", true},
 	}
 	for _, c := range cases {
 		t.Run(c.id, func(t *testing.T) {

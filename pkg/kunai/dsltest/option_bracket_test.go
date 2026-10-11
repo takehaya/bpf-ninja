@@ -1,10 +1,14 @@
 package dsltest
 
 import (
+	"fmt"
 	"net"
 	"testing"
 
 	"github.com/google/gopacket/layers"
+
+	"github.com/takehaya/bpf-ninja/pkg/kunai"
+	"github.com/takehaya/bpf-ninja/pkg/kunai/codegen"
 )
 
 // buildTCPWithOptions is an Ethernet/IPv4/TCP frame carrying opts.
@@ -209,4 +213,66 @@ func TestBracketOptionPlus(t *testing.T) {
 	o.IPv4Options = []layers.IPv4Option{rrOpt(4)}
 	r.MustMatch(t, Build(t, o), "single 4")
 	r.MustMatch(t, BuildEthIPIPTCP(t, IPIPOpts{Depth: 3, OuterOptions: []layers.IPv4Option{rrOpt(4)}, InnerOptions: []layers.IPv4Option{rrOpt(4)}}), "depth3 all 4")
+}
+
+// TestBracketTwoOptionAccumulator: bracket equalities on two TCP options
+// fold into the accumulator walk, alone, next to a primary-header
+// predicate, next to a where clause that reads no option, and on an
+// alternation member whose where term makes an unmatched member fail
+// anyway. Each runs with the kunai stack filled with 0x00 and 0xff, so
+// the accumulator's zeroing is what the verdict sees.
+func TestBracketTwoOptionAccumulator(t *testing.T) {
+	ws := func(s byte) layers.TCPOption {
+		return layers.TCPOption{OptionType: layers.TCPOptionKindWindowScale, OptionLength: 3, OptionData: []byte{s}}
+	}
+	withPort := func(dport uint16, opts ...layers.TCPOption) []byte {
+		o := Defaults()
+		o.DstPort, o.TCPOptions = dport, opts
+		return Build(t, o)
+	}
+	for _, c := range []struct {
+		expr  string
+		dport bool // the filter also requires dport 80
+	}{
+		{"eth/ipv4/tcp[mss.value == 1460, ws.shift == 7]", false},
+		{"eth/ipv4/tcp[options.MSS.value == 1460, options.WS.shift == 7]", false},
+		{"eth/ipv4/tcp[dport == 80, mss.value == 1460, ws.shift == 7]", true},
+		{"eth/ipv4/tcp[mss.value == 1460, ws.shift == 7] where tcp.dport == 80", true},
+		{"eth/ipv4/tcp[mss.value == 1460] where tcp.ws.shift == 7 and tcp.dport == 80", true},
+	} {
+		expr := c.expr
+		for _, fill := range []int32{0, -1} {
+			t.Run(fmt.Sprintf("%s/fill=%d", expr, fill), func(t *testing.T) {
+				out, err := kunai.Compile(expr, codegen.Capabilities{})
+				if err != nil {
+					t.Fatal(err)
+				}
+				r := NewFromOutputStackFilled(t, expr, out, 0, fill)
+				r.MustMatch(t, withPort(80, mssOption(1460), ws(7)), "MSS then WS")
+				r.MustMatch(t, withPort(80, ws(7), tsOption(1), mssOption(1460)), "WS, TS, MSS")
+				r.MustReject(t, withPort(80, mssOption(1460)), "no WS")
+				r.MustReject(t, withPort(80, ws(7)), "no MSS")
+				r.MustReject(t, withPort(80, mssOption(1460), ws(8)), "WS 8")
+				r.MustReject(t, withPort(80, mssOption(1400), ws(7)), "MSS 1400")
+				r.MustReject(t, withPort(80), "no options")
+				if c.dport {
+					r.MustReject(t, withPort(81, mssOption(1460), ws(7)), "dport 81")
+				} else {
+					r.MustMatch(t, withPort(81, mssOption(1460), ws(7)), "dport 81")
+				}
+				r.MustReject(t, tcpWithRawOptions(t, 8, []byte{2, 4, 5, 180, 3, 3, 7, 99, 1, 0, 0, 0}, nil), "both before a malformed TLV")
+			})
+		}
+	}
+	t.Run("negative literal", func(t *testing.T) {
+		r := New(t, "eth/ipv4/tcp[mss.value == 1460, ws.shift == -1]")
+		r.MustMatch(t, withPort(80, mssOption(1460), ws(0xff)), "shift 255 is -1 at 8 bits")
+		r.MustReject(t, withPort(80, mssOption(1460), ws(0x7f)), "shift 127")
+	})
+	t.Run("alternation", func(t *testing.T) {
+		r := New(t, "eth/ipv4/(tcp[mss.value == 1460, ws.shift == 7]|udp) where tcp.options.valid")
+		r.MustMatch(t, withPort(80, mssOption(1460), ws(7)), "tcp with both")
+		r.MustReject(t, withPort(80, mssOption(1460)), "tcp without WS")
+		r.MustReject(t, BuildEthIPv4UDP(t, 1234, 5678, []byte{0xde, 0xad}), "udp: the where term on tcp is false")
+	})
 }

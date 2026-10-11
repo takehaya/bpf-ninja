@@ -56,105 +56,108 @@ type accPlan struct {
 	// layout and the D-029 landing are unchanged); only the final check
 	// collapses.
 	never bool
-	// residual holds the `<layer>.options.valid` leaves on layers other
-	// than the plan's. Their flags come from those layers' own walks, so
-	// the plan cannot fold them into the accumulator; the caller emits them
-	// through genCondition after the mask check (with the usual absent-
-	// layer guards) and ANDs the two.
-	residual []*ir.Condition
+	// folded holds the bracket predicates lowered into atoms; the layer
+	// does not emit them (splitPredicates).
+	folded map[*ir.Predicate]bool
+	// rest is the part of the where clause the plan did not fold: the
+	// conjuncts that are not equalities on the plan's options, ANDed. The
+	// caller emits it through genCondition after the mask check (with the
+	// usual absent-layer guards). nil when the whole clause folded.
+	rest *ir.Condition
 }
 
-// buildAccPlan inspects a merged where condition and the program's
-// queried-option set, returning an accPlan when the whole clause is a
-// pure conjunction of equality leaves over >=2 distinct dynamic-eligible
-// options on a single layer, every leaf byte-aligned with width in
-// {1,2,4}, optionally ANDed with `.options.valid` atoms (this layer's
-// joins the mask check, another layer's goes to residual). A constant the
-// field cannot hold marks the plan `never`. Returns nil for any other
-// shape; the caller then falls through to the existing reject.
-func buildAccPlan(where *ir.Condition, qo queriedOptions) *accPlan {
-	if where == nil {
-		return nil
+// buildAccPlan picks the layer whose option walk would have to record
+// the positions of two or more length-byte TLV options (TCP), and lowers
+// every read of those options into accumulator atoms: the layer's bracket
+// predicates and the where clause's top-level conjuncts of the form
+// `<option.field> == <const>` (byte aligned, width 1, 2 or 4), plus
+// `<layer>.options.valid`. The other conjuncts become plan.rest. A
+// constant the field cannot hold marks the plan `never`.
+//
+// The plan is refused, with the reason returned for the error message,
+// when something else still reads one of the layer's options (a bracket
+// predicate other than `== <integer>`, or a rest conjunct, capture field
+// or capture condition naming the option), or when the layer may be
+// absent and no folded where conjunct is on it: a bracket on an absent
+// layer is skipped while the mask check would reject. Without a
+// candidate layer it returns nil and no reason.
+func buildAccPlan(p *ir.Program, where *ir.Condition, qo queriedOptions) (*accPlan, string) {
+	layer := accCandidate(p, qo)
+	if layer == nil {
+		return nil, ""
 	}
-	leaves := flattenPureAnd(where)
-	if leaves == nil {
-		return nil
-	}
-
 	// atoms stays non-nil even when every leaf is `never`: atomsFor must
 	// still report the plan to the walk (emitStateBody / the prelude).
-	plan := &accPlan{atoms: []accAtom{}}
+	plan := &accPlan{layer: layer, atoms: []accAtom{}, folded: map[*ir.Predicate]bool{}}
 	seen := map[*vocab.AuxLayout]bool{}
-	var validLeaves []*ir.Condition
-	for _, leaf := range leaves {
-		if leaf.Kind == ast.WAtomBoolValid {
-			if leaf.BoolField == nil || leaf.BoolField.Layer == nil {
-				return nil
-			}
-			validLeaves = append(validLeaves, leaf)
-			continue
-		}
-		layer, atom, ok := eqLeafToAtom(leaf, qo)
-		if !ok {
-			return nil
-		}
-		// Every leaf must live on the same layer.
-		if plan.layer == nil {
-			plan.layer = layer
-		} else if plan.layer != layer {
-			return nil
-		}
+	add := func(atom accAtom) {
 		// The option still counts as covered: its position slot is not
 		// wanted, the leaf just can never hold.
 		seen[atom.layout] = true
 		if atom.never {
 			plan.never = true
-			continue
+			return
 		}
 		atom.bit = len(plan.atoms)
 		plan.atoms = append(plan.atoms, atom)
 		plan.mask |= uint64(1) << uint(atom.bit)
 	}
-	if plan.layer == nil {
-		return nil
-	}
-	// `.options.valid` on the plan's own layer joins the mask check (that
-	// layer's walk sets the flag). On another layer it stays a where atom
-	// of its own, ANDed after the mask check (residual).
-	for _, leaf := range validLeaves {
-		if leaf.BoolField.Layer != plan.layer {
-			plan.residual = append(plan.residual, leaf)
+	for _, pred := range layer.Predicates {
+		if dynamicAuxLayoutOf(pred.Field) == nil {
 			continue
 		}
-		plan.valid = true
+		atom, ok := predToAtom(pred, qo)
+		if !ok {
+			return nil, fmt.Sprintf("the bracket predicate on %s is not `== <integer>`, the only form the walk folds", optionFieldName(pred.Field))
+		}
+		plan.folded[pred] = true
+		add(atom)
+	}
+	whereOnLayer := false
+	for _, leaf := range flattenAnd(where) {
+		if leaf.Kind == ast.WAtomBoolValid && leaf.BoolField != nil && leaf.BoolField.Layer == layer {
+			plan.valid, whereOnLayer = true, true
+			continue
+		}
+		if l, atom, ok := eqLeafToAtom(leaf, qo); ok && l == layer {
+			add(atom)
+			whereOnLayer = true
+			continue
+		}
+		plan.rest = andCondition(plan.rest, leaf, leaf.Pos)
 	}
 	if plan.valid {
-		if _, ok := qo.validSlot(plan.layer); !ok {
-			return nil
+		if _, ok := qo.validSlot(layer); !ok {
+			return nil, ""
 		}
 	}
-	// Length-byte TLV walks retain the accumulator when a byte counter bounds
-	// the region. Counter walks with another discriminator keep their path.
-	if !layerOptionWalkHasLengthByte(plan.layer) {
-		return nil
+	readers := []*ir.Condition{plan.rest}
+	var fields []*ir.FieldRef
+	for _, c := range p.Captures {
+		readers = append(readers, c.Where)
+		fields = append(fields, c.Fields...)
 	}
-	// Require >=2 DISTINCT queried options, and every option the layer
-	// queries must be covered by an eq-leaf — otherwise an un-covered
-	// queried option would still want its own recorded-position slot
-	// (the explosion shape this lowering exists to avoid).
-	if len(seen) < 2 {
-		return nil
+	for _, c := range readers {
+		ir.WalkConditionFieldRefs(c, func(f *ir.FieldRef) { fields = append(fields, f) })
 	}
-	for _, layout := range qo.optionDemand(plan.layer) {
+	for _, f := range fields {
+		if f != nil && f.Layer == layer && dynamicAuxLayoutOf(f) != nil {
+			return nil, fmt.Sprintf("%s is read by a where or capture term other than `== <integer>` at the top level of the where clause", optionFieldName(f))
+		}
+	}
+	// Every option the layer queries must be covered by an atom; an
+	// uncovered one would still want its own position slot (the explosion
+	// shape this lowering exists to avoid).
+	for _, layout := range qo.optionDemand(layer) {
 		if !seen[layout] {
-			return nil
+			return nil, ""
 		}
 	}
-	// A bracket predicate on one of the layer's options reads its
-	// position slot after the walk, which the accumulator walk does not
-	// record.
-	if bracketReadsOption(plan.layer) {
-		return nil
+	if len(seen) < 2 {
+		return nil, ""
+	}
+	if len(plan.folded) > 0 && !whereOnLayer && !accLayerAlwaysPresent(layer, qo) {
+		return nil, fmt.Sprintf("%s may be absent, which skips its bracket but fails the folded check; add a where term on it, such as `%s.options.valid`", layer.DisplayName(), layer.DisplayName())
 	}
 	// Cap the total number of option-field equality atoms. All atoms lower
 	// into one combined bpf_loop callback; the per-iteration cursor and
@@ -164,9 +167,54 @@ func buildAccPlan(where *ir.Condition, qo queriedOptions) *accPlan {
 	// routes the program to the compile-time reject in emitStateBody — a
 	// clean diagnostic instead of bytecode the verifier refuses.
 	if len(plan.atoms) > accMaxAtoms {
+		return nil, ""
+	}
+	return plan, ""
+}
+
+// accCandidate returns the one layer (or alternation member) whose
+// length-byte option walk queries two or more options, nil when there is
+// none or more than one: the plan holds a single layer.
+func accCandidate(p *ir.Program, qo queriedOptions) *ir.LayerInstance {
+	var found *ir.LayerInstance
+	n := 0
+	for _, l := range p.Layers {
+		for _, inst := range append([]*ir.LayerInstance{l}, l.Alternation...) {
+			if inst == nil || inst.Spec == nil || len(qo.optionDemand(inst)) < 2 || !layerOptionWalkHasLengthByte(inst) {
+				continue
+			}
+			found = inst
+			n++
+		}
+	}
+	if n != 1 {
 		return nil
 	}
-	return plan
+	return found
+}
+
+// accLayerAlwaysPresent reports whether every accepted packet has the
+// layer: one mandatory header outside an alternation. Its brackets then
+// run on every accepted packet, so folding them into the mask check keeps
+// the verdict.
+func accLayerAlwaysPresent(layer *ir.LayerInstance, qo queriedOptions) bool {
+	if _, member := qo.members[layer]; member {
+		return false
+	}
+	lo, _ := layer.Bounds()
+	return lo >= 1 && !layer.CanRepeat()
+}
+
+// optionFieldName spells an option field for an error message.
+func optionFieldName(f *ir.FieldRef) string {
+	name := f.Layer.DisplayName()
+	if layout := dynamicAuxLayoutOf(f); layout != nil {
+		name += "." + layout.OutParam
+	}
+	if f.Field != nil {
+		name += "." + f.Field.Name
+	}
+	return name
 }
 
 // layerOptionWalkHasLengthByte recognizes the TLV fallback shared by
@@ -208,31 +256,17 @@ const accMaxAtoms = 16
 // below bit 31 so the mask remains a non-negative int32 immediate.
 const accNeverBit = uint64(1) << 30
 
-// flattenPureAnd returns the flat leaf list of a where condition that is
-// a pure conjunction (a tree of ast.WAnd whose leaves are all
-// ast.WAtomArith or ast.WAtomBoolValid). Returns nil when the tree
-// contains any non-AND connective (or/not/any/all/bool-eq/...) or any
-// other leaf — signalling "not the supported pure-AND-equality shape".
-func flattenPureAnd(c *ir.Condition) []*ir.Condition {
+// flattenAnd returns the top-level conjuncts of a where condition: the
+// operands of a tree of ast.WAnd, any other node being one conjunct. nil
+// for a nil condition.
+func flattenAnd(c *ir.Condition) []*ir.Condition {
 	if c == nil {
 		return nil
 	}
-	switch c.Kind {
-	case ast.WAnd:
-		left := flattenPureAnd(c.Left)
-		if left == nil {
-			return nil
-		}
-		right := flattenPureAnd(c.Right)
-		if right == nil {
-			return nil
-		}
-		return append(left, right...)
-	case ast.WAtomArith, ast.WAtomBoolValid:
-		return []*ir.Condition{c}
-	default:
-		return nil
+	if c.Kind == ast.WAnd {
+		return append(flattenAnd(c.Left), flattenAnd(c.Right)...)
 	}
+	return []*ir.Condition{c}
 }
 
 // eqLeafToAtom validates one leaf as `<option.field> == <const>` over a
@@ -259,37 +293,11 @@ func eqLeafToAtom(leaf *ir.Condition, qo queriedOptions) (*ir.LayerInstance, acc
 		return nil, accAtom{}, false
 	}
 	f := l.Field
-	if f == nil || f.Aux == nil {
+	if f == nil {
 		return nil, accAtom{}, false
 	}
-	// The field must be a dynamic-eligible option on this layer (the same
-	// predicate the demand walker uses), and that option must actually be
-	// in the layer's queried set (so a slot was allocated / the kind byte
-	// participates in the walk dispatch).
-	layout := dynamicAuxLayoutOf(f)
-	if layout == nil {
-		return nil, accAtom{}, false
-	}
-	if _, ok := qo.dynamicAuxSlotForLayout(f.Layer, layout); !ok {
-		return nil, accAtom{}, false
-	}
-	// Owner-bound stacks (TCP SACK blocks) resolve dynamicAuxLayoutOf to
-	// the owner option, not the queried field's own option; reject so the
-	// accumulator never tries to read a per-element array via this path.
-	if f.Aux.OwnerOption != nil || f.Aux.Stack != nil {
-		return nil, accAtom{}, false
-	}
-	// Byte-aligned field, width in {1,2,4}.
-	if f.Aux.FieldBitOff%8 != 0 || f.Aux.FieldBitWidth%8 != 0 {
-		return nil, accAtom{}, false
-	}
-	if f.Slice != nil {
-		return nil, accAtom{}, false
-	}
-	width := f.Aux.FieldBitWidth / 8
-	switch width {
-	case 1, 2, 4:
-	default:
+	atom, ok := fieldToAtom(f, qo)
+	if !ok {
 		return nil, accAtom{}, false
 	}
 	// Narrow the constant to the field width, the same way the normal
@@ -300,18 +308,67 @@ func eqLeafToAtom(leaf *ir.Condition, qo queriedOptions) (*ir.LayerInstance, acc
 	// every packet. That leaf becomes a `never` atom and the plan rejects
 	// outright (emitAccMaskCheck), instead of leaving the accumulator.
 	if r.Wide && (r.ConstHi != 0 || r.Const>>uint(f.Aux.FieldBitWidth) != 0) {
-		return f.Layer, accAtom{layout: layout, never: true}, true
+		return f.Layer, accAtom{layout: atom.layout, never: true}, true
 	}
-	cmpVal := r.Const & ((uint64(1) << uint(f.Aux.FieldBitWidth)) - 1)
 	// A 4-byte value with the high bit set does not fit JNE.Imm (the
 	// immediate sign-extends); emitAccPrelude compares it from a register.
-	return f.Layer, accAtom{
-		layout:       layout,
-		fieldByteOff: f.Aux.FieldBitOff / 8,
-		width:        width,
-		cmpVal:       cmpVal,
-		bit:          0,
-	}, true
+	atom.cmpVal = r.Const & ((uint64(1) << uint(f.Aux.FieldBitWidth)) - 1)
+	return f.Layer, atom, true
+}
+
+// predToAtom lowers a bracket predicate `<option.field> == <integer>` to
+// an atom. The resolver has checked that the literal fits the field, and
+// the constant is narrowed like emitIntPredicate does, so `shift == -1`
+// still means 0xff.
+func predToAtom(pred *ir.Predicate, qo queriedOptions) (accAtom, bool) {
+	if pred.Kind != ast.PredCmp || pred.Op != ast.CmpEq || pred.Value.Kind != ast.ValInt || pred.Field == nil {
+		return accAtom{}, false
+	}
+	atom, ok := fieldToAtom(pred.Field, qo)
+	if !ok {
+		return accAtom{}, false
+	}
+	// A negative literal arrives sign-extended (`-1` is 0xff..ff).
+	atom.cmpVal = pred.Value.Int & ((uint64(1) << uint(pred.Field.Aux.FieldBitWidth)) - 1)
+	return atom, true
+}
+
+// fieldToAtom checks that f is a field the walk can compare in place: a
+// dynamic-eligible option the layer queries, byte aligned, 1, 2 or 4
+// bytes wide, not sliced and not inside an owner-bound stack. The atom
+// comes back without its constant and bit.
+func fieldToAtom(f *ir.FieldRef, qo queriedOptions) (accAtom, bool) {
+	if f.Aux == nil {
+		return accAtom{}, false
+	}
+	// The field must be a dynamic-eligible option on this layer (the same
+	// predicate the demand walker uses), and that option must actually be
+	// in the layer's queried set (so a slot was allocated / the kind byte
+	// participates in the walk dispatch).
+	layout := dynamicAuxLayoutOf(f)
+	if layout == nil {
+		return accAtom{}, false
+	}
+	if _, ok := qo.dynamicAuxSlotForLayout(f.Layer, layout); !ok {
+		return accAtom{}, false
+	}
+	// Owner-bound stacks (TCP SACK blocks) resolve dynamicAuxLayoutOf to
+	// the owner option, not the queried field's own option; reject so the
+	// accumulator never tries to read a per-element array via this path.
+	if f.Aux.OwnerOption != nil || f.Aux.Stack != nil {
+		return accAtom{}, false
+	}
+	// Byte-aligned field, width in {1,2,4}.
+	if f.Aux.FieldBitOff%8 != 0 || f.Aux.FieldBitWidth%8 != 0 || f.Slice != nil {
+		return accAtom{}, false
+	}
+	width := f.Aux.FieldBitWidth / 8
+	switch width {
+	case 1, 2, 4:
+	default:
+		return accAtom{}, false
+	}
+	return accAtom{layout: layout, fieldByteOff: f.Aux.FieldBitOff / 8, width: width}, true
 }
 
 // accSlot returns the single stack slot the accumulator uses for the

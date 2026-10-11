@@ -378,25 +378,26 @@ func Gen(p *ir.Program, caps Capabilities) (Output, error) {
 	if err != nil {
 		return Output{}, err
 	}
-	// Multi-option accumulator plan: when the whole merged where clause
-	// is a pure conjunction of `<option.field> == <const>` over >=2
-	// distinct dynamic-eligible options of one lookahead-only TLV layer
-	// (TCP options), the parser machine collects a RESULT BIT per leaf
-	// into a single accumulator slot instead of recording N option
-	// positions into N distinct slots (which blows the verifier's state
-	// budget). nil for every other shape; the parser machine then keeps
-	// the existing >=2 reject. See acc.go.
-	plan := buildAccPlan(where, qo)
-	if plan != nil && len(plan.residual) == 0 {
+	// Multi-option accumulator plan: when the reads of >=2 distinct
+	// dynamic-eligible options of one lookahead-only TLV layer (TCP
+	// options) are all `<option.field> == <const>`, in the layer's bracket
+	// or at the top level of the merged where clause, the parser machine
+	// collects a RESULT BIT per equality into a single accumulator slot
+	// instead of recording N option positions into N distinct slots (which
+	// blows the verifier's state budget). nil for every other shape; the
+	// parser machine then keeps the >=2 reject, with accWhy saying what
+	// kept the plan from applying. See acc.go.
+	plan, accWhy := buildAccPlan(p, where, qo)
+	if plan != nil && plan.rest == nil {
 		// The where clause will not be emitted, so no member guard reads
-		// a matched-member slot planned for it. A residual atom on another
-		// layer still goes through genCondition, whose absent-member guard
-		// may read that layer's slot, so the slots stay when there is one.
+		// a matched-member slot planned for it. A rest condition still goes
+		// through genCondition, whose absent-member guard may read the
+		// slot, so the slots stay when there is one.
 		qo.dropWhereReads()
 	}
 	var callbacks asm.Instructions
 	var extractions []ExtractSlot
-	pc := &predCtx{sets: caps.Lang.SetSlots, out: &extractions}
+	pc := &predCtx{sets: caps.Lang.SetSlots, out: &extractions, accWhy: accWhy}
 	for i, layer := range p.Layers {
 		layerInsns, cb, err := genLayer(layer, i, p.Layers, qo, plan, pc)
 		if err != nil {
@@ -411,34 +412,23 @@ func Gen(p *ir.Program, caps Capabilities) (Output, error) {
 	// layer-level mismatch. `where` may include conditions merged in
 	// from per-capture clauses (see computeCapture).
 	//
-	// When an accumulator plan is active the whole where clause has been
-	// lowered into per-iteration bit collection inside the parser
-	// machine; the residual where check is a single `(acc & mask) ==
-	// mask` test against the one accumulator slot. An absent option
-	// leaves its bit at 0, so the AND fails and the packet is rejected —
-	// matching the sentinel-absent semantics of the per-option path.
+	// When an accumulator plan is active the option equalities have been
+	// lowered into per-iteration bit collection inside the parser machine;
+	// they reduce to a single `(acc & mask) == mask` test against the one
+	// accumulator slot. An absent option leaves its bit at 0, so the AND
+	// fails and the packet is rejected — matching the sentinel-absent
+	// semantics of the per-option path. The conjuncts the plan did not
+	// fold (plan.rest) follow as an ordinary where condition, so an
+	// optional or alternation-member layer keeps its absent guard.
 	if plan != nil {
 		maskCheck, err := emitAccMaskCheck(plan, qo, dslReject)
 		if err != nil {
 			return Output{}, err
 		}
 		insns = append(insns, maskCheck...)
-		// `.options.valid` atoms on other layers were not folded into the
-		// mask: AND them here as an ordinary where condition, so an
-		// optional or alternation-member layer keeps its absent guard.
-		var rest *ir.Condition
-		for _, leaf := range plan.residual {
-			rest = andCondition(rest, leaf, leaf.Pos)
-		}
-		if rest != nil {
-			restInsns, restCbs, err := genCondition(rest, caps.Lang, p, qo, dslReject)
-			if err != nil {
-				return Output{}, err
-			}
-			insns = append(insns, restInsns...)
-			callbacks = append(callbacks, restCbs...)
-		}
-	} else if where != nil {
+		where = plan.rest
+	}
+	if where != nil {
 		whereInsns, whereCbs, err := genCondition(where, caps.Lang, p, qo, dslReject)
 		if err != nil {
 			return Output{}, err

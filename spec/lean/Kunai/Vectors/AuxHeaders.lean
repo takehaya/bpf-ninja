@@ -287,6 +287,49 @@ vector bracketTcpOptionNested := {
   note := "`options.MSS.value` is the long spelling of `mss.value`" }
 vector bracketTcpOptionNestedAbsent := {
   id := "bracket-tcp-option-nested-absent", ast := tcpOptPred (.cmp mssNested .eq (.int 1460)), expected := .reject }
+-- Bracket equalities on two TCP options: Go folds them into the
+-- accumulator walk like where equalities (one result bit each).
+def wsShiftBr : FieldPath := ⟨[("ws", none), ("shift", none)]⟩
+def tcpTwoPreds : List Predicate := [.cmp mssValue .eq (.int 1460), .cmp wsShiftBr .eq (.int 7)]
+def mssWsPkt : Packet := tcpOpts (mssOpt 1460 ++ [3, 3, 7, 1])
+vector bracketTcpTwoOptions := {
+  id := "bracket-tcp-two-options", ast := { layers := [P "eth", P "ipv4", .proto { name := "tcp", preds := tcpTwoPreds }] },
+  packet := mssWsPkt, expected := .accept [] }
+vector bracketTcpTwoOptionsReversed := {
+  id := "bracket-tcp-two-options-reversed", ast := { layers := [P "eth", P "ipv4", .proto { name := "tcp", preds := tcpTwoPreds }] },
+  packet := tcpOpts ([1, 3, 3, 7] ++ mssOpt 1460), expected := .accept [] }
+vector bracketTcpTwoOptionsWsAbsent := {
+  id := "bracket-tcp-two-options-ws-absent", ast := { layers := [P "eth", P "ipv4", .proto { name := "tcp", preds := tcpTwoPreds }] },
+  packet := tcpOpts (mssOpt 1460), expected := .reject }
+vector bracketTcpTwoOptionsWsWrong := {
+  id := "bracket-tcp-two-options-ws-wrong", ast := { layers := [P "eth", P "ipv4", .proto { name := "tcp", preds := tcpTwoPreds }] },
+  packet := tcpOpts (mssOpt 1460 ++ [3, 3, 8, 1]), expected := .reject }
+vector bracketTcpTwoOptionsDport := {
+  id := "bracket-tcp-two-options-dport",
+  ast := { layers := [P "eth", P "ipv4", .proto { name := "tcp", preds := .cmp (f "dport") .eq (.int 81) :: tcpTwoPreds }] },
+  packet := mssWsPkt, expected := .reject, note := "the primary-header predicate stays a bracket check next to the folded ones" }
+vector bracketTcpTwoOptionsWhereDport := {
+  id := "bracket-tcp-two-options-where-dport",
+  ast := { layers := [P "eth", P "ipv4", .proto { name := "tcp", preds := tcpTwoPreds }], cond := some (cmp (.field ⟨[("tcp", none), ("dport", none)]⟩) .eq (k 80)) },
+  packet := mssWsPkt, expected := .accept [], note := "a where clause that reads no option stays a where condition" }
+vector bracketTcpTwoOptionsNested := {
+  id := "bracket-tcp-two-options-nested",
+  ast := { layers := [P "eth", P "ipv4", .proto { name := "tcp", preds := [.cmp mssNested .eq (.int 1460), .cmp ⟨[("options", none), ("WS", none), ("shift", none)]⟩ .eq (.int 7)] }] },
+  packet := mssWsPkt, expected := .accept [] }
+vector bracketTcpTwoOptionsValid := {
+  id := "bracket-tcp-two-options-valid",
+  ast := { layers := [P "eth", P "ipv4", .proto { name := "tcp", preds := tcpValidPred :: tcpTwoPreds }] },
+  packet := tcpOpts (mssOpt 1460 ++ [3, 3, 7, 1] ++ [99, 1, 0, 0]), expected := .reject,
+  note := "a malformed TLV leaves the layer with no options (D-029)" }
+vector bracketTcpTwoOptionsAltUdp := {
+  id := "bracket-tcp-two-options-alt-udp",
+  ast := { layers := [P "eth", P "ipv4", .alt [{ name := "tcp", preds := tcpTwoPreds }, { name := "udp" }]], cond := some tcpValid },
+  packet := eth 0x0800 ++ ipv4 17 ++ udp 1234 53 ++ payload 5, expected := .reject,
+  note := "udp matched: the where term on tcp is false, so folding the tcp bracket keeps the verdict" }
+vector bracketTcpTwoOptionsAltTcp := {
+  id := "bracket-tcp-two-options-alt-tcp",
+  ast := { layers := [P "eth", P "ipv4", .alt [{ name := "tcp", preds := tcpTwoPreds }, { name := "udp" }]], cond := some tcpValid },
+  packet := mssWsPkt, expected := .accept [] }
 def sackBlockBr (n : Nat) (fieldName : String) : FieldPath :=
   ⟨[("options", none), ("SACK", none), ("blocks", some (.nat n)), (fieldName, none)]⟩
 def sackBlocksPkt (blocks : List (Nat × Nat)) : Packet :=
@@ -954,7 +997,7 @@ def auxVectors : List Vector := [
   tcpSackAbsentAny, tcpMalformedNoQuery, tcpMalformedNotQuery, tcpMalformedOrTrue, tcpMalformedExists,
   tcpMalformedAfterMss, tcpMalformedChainOn, ipv4MalformedOpts, ipv4MalformedOptsQueried, ipv4OptDepthLastFault, ipv4OptDepthLastSighting,
   tcpOptsValid, tcpOptsValidNone, tcpOptsInvalid, tcpOptsInvalidNot, tcpOptsValidWithMss, tcpOptsValidAbsent, tcpOptsValidAltMember, tcpOptsValidAltOther, tcpOptsValidTwoOptions, tcpOptsValidTwoOptionsLast, tcpOptsValidTwoOptionsMalformed, tcpOptsValidTwoOptionsMiss, tcpOptsValidTwoOptionsOptional, tcpOptsValidTwoOptionsAlt, tcpOptsValidTwoOptionsLabel, tcpOptsValidTwoOptionsOtherLayer, bracketValid, bracketValidMalformed, bracketValidOptMalformed, bracketValidWithCmp, typBracketValidNoRegion, bracketValidAltFirst, bracketValidAltSecond, bracketValidAltOther, bracketValidFirst,
-  bracketValidNoOpts, bracketValidOptAbsent, bracketValidIPv4, bracketValidGeneve, bracketValidTwoOptions, bracketValidRepeated, bracketTcpOptionField, bracketTcpOptionFieldAbsent, bracketTcpOptionBehindWs, bracketTcpOptionNe, bracketTcpOptionInList, bracketTcpOptionInListMiss, bracketTcpOptionOrdered, bracketTcpOptionOrderedMiss, bracketTcpOptionSlice, bracketTcpOptionIPv4Literal, bracketTcpOptionIPv4LiteralMiss, bracketTcpOptionIPv4LiteralNeAbsent, bracketTcpOptionMalformed, whereTcpOptionIPv4Literal, whereTcpOptionIPv4LiteralAbsent, whereTcpOptionSlice, bracketOptionRepeated, bracketOptionRepeatedInner, bracketOptionRepeatedInnerAbsent, bracketTcpOptionNested, bracketTcpOptionNestedAbsent, bracketSackNested, bracketSackNestedSecond, bracketSackNestedAbsent, bracketSackNestedAbsentNe, typBracketSackBareIter, typBracketSackBare, typWhereSackBare, bracketRRAddrNested, bracketValidPlus, typBracketValidSegment, typBracketValidSrv6, ipv4OptsInvalid,
+  bracketValidNoOpts, bracketValidOptAbsent, bracketValidIPv4, bracketValidGeneve, bracketValidTwoOptions, bracketValidRepeated, bracketTcpOptionField, bracketTcpOptionFieldAbsent, bracketTcpOptionBehindWs, bracketTcpOptionNe, bracketTcpOptionInList, bracketTcpOptionInListMiss, bracketTcpOptionOrdered, bracketTcpOptionOrderedMiss, bracketTcpOptionSlice, bracketTcpOptionIPv4Literal, bracketTcpOptionIPv4LiteralMiss, bracketTcpOptionIPv4LiteralNeAbsent, bracketTcpOptionMalformed, whereTcpOptionIPv4Literal, whereTcpOptionIPv4LiteralAbsent, whereTcpOptionSlice, bracketOptionRepeated, bracketOptionRepeatedInner, bracketOptionRepeatedInnerAbsent, bracketTcpOptionNested, bracketTcpOptionNestedAbsent, bracketTcpTwoOptions, bracketTcpTwoOptionsReversed, bracketTcpTwoOptionsWsAbsent, bracketTcpTwoOptionsWsWrong, bracketTcpTwoOptionsDport, bracketTcpTwoOptionsWhereDport, bracketTcpTwoOptionsNested, bracketTcpTwoOptionsValid, bracketTcpTwoOptionsAltUdp, bracketTcpTwoOptionsAltTcp, bracketSackNested, bracketSackNestedSecond, bracketSackNestedAbsent, bracketSackNestedAbsentNe, typBracketSackBareIter, typBracketSackBare, typWhereSackBare, bracketRRAddrNested, bracketValidPlus, typBracketValidSegment, typBracketValidSrv6, ipv4OptsInvalid,
   geneveOvnHit, geneveMalformedAfter, geneveMalformedBefore, geneveMalformedChainOn, geneveRegionPastEnd, geneveValidEmpty, typOptsValidNoRegion,
   ipv6Hbh, ipv6TwoExts, ipv6ExtLong, ipv6ExtTooLong, ipv6ExtsIndex, ipv6ExtsIndex1, ipv6ExtsIndexAfterLong, ipv6ExtsAnyAfterLong, ipv6ExtsDynamicLong, ipv6ExtsDynamicLongSecond, ipv6ExtsDynamicLongAbsent, ipv6ExtsDynamicLongLast, ipv6ExtsDynamicLongLastMiss, ipv6ExtsDynamicLongBeyond, ipv6ExtsDynamicLongSlot, ipv6ExtsDynamicLongSlotAbsent,
   ipv6ExtsBracket, ipv6ExtsBracketAbsent, ipv6ExtsBracketLong, ipv6ExtsBracketDynamic, ipv6ExtsBracketIter, ipv6ExtsBracketInAbsent, ipv6ExtsBracketInLong, predInSetExtsWalked, predInSetExtsAbsent, typPredInSetExtsWidth, ipv6ExtsSliceLong, ipv6ExtsBracketSliceLong, gtpExtsBracket, gtpExtsBracketAbsent, gtpExtsBracketNone, gtpExtsBracketMixed, gtpExtsBracketMixedMiss, predInSetGtpExtsWalked, ipv6ExtsIndexAbsent,

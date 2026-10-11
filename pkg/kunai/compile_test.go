@@ -2674,22 +2674,9 @@ func TestCompileBracketOnTLVOption(t *testing.T) {
 	if !storesKeyAfterSlotRead(out.Main, -40) {
 		t.Error("in @mss: no 2-byte store into the key slot after the option slot read")
 	}
-	// A layer whose bracket reads an option does not use the accumulator
-	// (its walk records no positions), so two options with one in a
-	// bracket fall under the two-option refusal, which says to move the
-	// bracket predicate; the second shape alone would build a plan.
-	for _, expr := range []string{
-		"eth/ipv4/tcp[mss.value == 1460] where tcp.ts.tsval == 7",
-		"eth/ipv4/tcp[mss.value == 1460] where tcp.mss.value == 1460 and tcp.ts.tsval == 7",
-		"eth/ipv4/tcp[mss.value == 1460, ts.tsval == 5]",
-	} {
-		_, err := compileForTest(expr)
-		if !errors.Is(err, codegen.ErrNotImplemented) || !strings.Contains(err.Error(), "move it into the where clause") {
-			t.Errorf("%s: err = %v; want ErrNotImplemented pointing the bracket into the where clause", expr, err)
-		}
-	}
 	// The same options written in the where clause compile (accumulator),
-	// and so does a bracket next to a where on the same option.
+	// and so does a bracket next to a where on the same option (one
+	// option: the slot path).
 	for _, expr := range []string{
 		"eth/ipv4/tcp where tcp.mss.value == 1460 and tcp.ts.tsval == 7",
 		"eth/ipv4/tcp[mss.value == 1460] where tcp.mss.value == 1460",
@@ -2698,6 +2685,76 @@ func TestCompileBracketOnTLVOption(t *testing.T) {
 			t.Errorf("%s: %v", expr, err)
 		}
 	}
+}
+
+// TestCompileBracketOptionsFoldIntoAccumulator checks that bracket
+// equalities on two or more TCP options fold into the accumulator like
+// where equalities do: the walk records no option position (no slot read
+// after it) and the chain ends in a mask check with one bit per equality.
+func TestCompileBracketOptionsFoldIntoAccumulator(t *testing.T) {
+	for _, c := range []struct {
+		expr string
+		mask int32
+	}{
+		{"eth/ipv4/tcp[mss.value == 1460, ts.tsval == 5]", 0b11},
+		{"eth/ipv4/tcp[options.MSS.value == 1460, options.TS.tsval == 5]", 0b11},
+		{"eth/ipv4/tcp[mss.value == 1460] where tcp.ts.tsval == 7", 0b11},
+		{"eth/ipv4/tcp[mss.value == 1460] where tcp.mss.value == 1460 and tcp.ts.tsval == 7", 0b111},
+		{"eth/ipv4/tcp[dport == 80, mss.value == 1460, ws.shift == 7]", 0b11},
+		{"eth/ipv4/tcp[options.valid, mss.value == 1460, ws.shift == 7]", 0b11},
+		{"eth/ipv4/tcp[mss.value == 1460, ws.shift == -1]", 0b11},
+		// Conjuncts that read no TCP option stay a where condition.
+		{"eth/ipv4/tcp[mss.value == 1460, ws.shift == 7] where tcp.dport == 80", 0b11},
+		{"eth/ipv4/tcp where tcp.mss.value == 1460 and tcp.ws.shift == 7 and ipv4.ttl == 64", 0b11},
+		{"eth/ipv4/tcp[mss.value == 1460, ws.shift == 7] where ipv4.ttl == 64 or ipv4.ttl == 128", 0b11},
+		// A where term on the layer makes an absent layer fail anyway.
+		{"eth/ipv4/(tcp[mss.value == 1460, ws.shift == 7]|udp) where tcp.options.valid", 0b11},
+		{"eth/ipv4/tcp[mss.value == 1460, ws.shift == 7]? where tcp.sack_perm.kind == 4", 0b111},
+	} {
+		out, err := compileForTest(c.expr)
+		if err != nil {
+			t.Errorf("%s: %v", c.expr, err)
+			continue
+		}
+		if hasOptionSlotRead(out, "tcp") {
+			t.Errorf("%s: an option slot is read after the walk; the accumulator should cover every option", c.expr)
+		}
+		if !hasAccMaskCheck(out, c.mask) {
+			t.Errorf("%s: no accumulator mask check for mask %#b", c.expr, c.mask)
+		}
+	}
+	for _, c := range []struct{ expr, why string }{
+		{"eth/ipv4/tcp[mss.value == 1460, ts.tsval > 5]", "the bracket predicate on tcp.ts.tsval is not `== <integer>`"},
+		{"eth/ipv4/tcp[mss.value == 1460, ts.tsval in [1, 2]]", "the bracket predicate on tcp.ts.tsval is not `== <integer>`"},
+		{"eth/ipv4/tcp[mss.value == 1460, ts.tsval != 5]", "the bracket predicate on tcp.ts.tsval is not `== <integer>`"},
+		{"eth/ipv4/tcp[mss.value == 1460, ts.tsval == 10.0.0.1]", "the bracket predicate on tcp.ts.tsval is not `== <integer>`"},
+		{"eth/ipv4/tcp[mss.value == 1460, ts.tsval == 5] where tcp.mss.value > 1000", "tcp.mss.value is read by a where or capture term"},
+		{"eth/ipv4/tcp[mss.value == 1460, ts.tsval == 5] where not tcp.ts.tsval == 6", "tcp.ts.tsval is read by a where or capture term"},
+		{"eth/ipv4/tcp[mss.value == 1460, ts.tsval == 5] where tcp.mss.exists", "is read by a where or capture term"},
+		{"eth/ipv4/tcp[mss.value == 1460, ts.tsval == 5] capture headers where tcp.mss.value > 1000", "tcp.mss.value is read by a where or capture term"},
+		{"eth/ipv4/tcp[mss.value == 1460, ts.tsval == 5]?", "tcp may be absent"},
+		{"eth/ipv4/(tcp[mss.value == 1460, ts.tsval == 5]|udp)", "tcp may be absent"},
+		{"eth/ipv4/tcp[mss.value == 1460, ts.tsval == 5]? where tcp.dport == 80", "tcp may be absent"},
+	} {
+		_, err := compileForTest(c.expr)
+		if !errors.Is(err, codegen.ErrNotImplemented) || !strings.Contains(err.Error(), c.why) {
+			t.Errorf("%s: err = %v; want ErrNotImplemented saying %q", c.expr, err, c.why)
+		}
+	}
+}
+
+// hasAccMaskCheck reports the accumulator check emitAccMaskCheck emits:
+// a stack slot load into R3, `R3 &= mask` and `if R3 != mask` reject.
+func hasAccMaskCheck(insns asm.Instructions, mask int32) bool {
+	for i := 0; i+2 < len(insns); i++ {
+		ld, and, jne := insns[i], insns[i+1], insns[i+2]
+		if ld.OpCode.Class().IsLoad() && ld.Src == asm.R10 && ld.Dst == asm.R3 &&
+			and.OpCode.ALUOp() == asm.And && and.Dst == asm.R3 && and.Constant == int64(mask) &&
+			jne.OpCode.JumpOp() == asm.JNE && jne.Dst == asm.R3 && jne.Constant == int64(mask) {
+			return true
+		}
+	}
+	return false
 }
 
 // hasOptionSlotRead reports an R10 slot load into R3 followed by the
