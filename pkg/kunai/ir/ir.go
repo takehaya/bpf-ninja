@@ -10,6 +10,7 @@
 package ir
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/takehaya/bpf-ninja/pkg/kunai/ast"
@@ -129,6 +130,49 @@ func (l *LayerInstance) Absentable() bool {
 		return l.RangeMin == 0
 	}
 	return false
+}
+
+// Bounds is the layer's quantifier as a (min, max) instance count: one
+// is (1, 1), `?` (0, 1), `+` (1, -1), `*` (0, -1) and `{n,m}` (n, m). A
+// negative max is an open bound, which the protocol's MAX_DEPTH caps.
+func (l *LayerInstance) Bounds() (min, max int) {
+	switch l.Quant {
+	case ast.QuantOne:
+		return 1, 1
+	case ast.QuantOpt:
+		return 0, 1
+	case ast.QuantPlus:
+		return 1, -1
+	case ast.QuantStar:
+		return 0, -1
+	}
+	return l.RangeMin, l.RangeMax
+}
+
+// CanRepeat reports whether the quantifier lets a second header of the
+// layer be matched: `+`, `*`, `{n,}` and `{n,m}` with m > 1.
+func (l *LayerInstance) CanRepeat() bool {
+	_, max := l.Bounds()
+	return max < 0 || max > 1
+}
+
+// QuantText prints the quantifier as the DSL spells it, empty for a
+// plain layer.
+func (l *LayerInstance) QuantText() string {
+	switch l.Quant {
+	case ast.QuantOne:
+		return ""
+	case ast.QuantOpt:
+		return "?"
+	case ast.QuantPlus:
+		return "+"
+	case ast.QuantStar:
+		return "*"
+	}
+	if l.RangeMax < 0 {
+		return fmt.Sprintf("{%d,}", l.RangeMin)
+	}
+	return fmt.Sprintf("{%d,%d}", l.RangeMin, l.RangeMax)
 }
 
 // DispatchChoice records how this layer is selected from its parent.

@@ -742,6 +742,21 @@ func TestCompileCaptureHeadersQuantifiedAltGroup(t *testing.T) {
 	}
 }
 
+// TestCompileQuantifiedAltGroupNamesQuantifier: the refusal prints the
+// quantifier as written, not the kind's placeholder (`{n,m}`).
+func TestCompileQuantifiedAltGroupNamesQuantifier(t *testing.T) {
+	for expr, want := range map[string]string{
+		"eth/(vlan|qinq){1,2}/ipv4/tcp":                "quantifier {1,2} on",
+		"eth/(vlan|qinq){1,}/ipv4/tcp capture headers": "quantifier {1,} on",
+		"eth/(vlan|qinq)+/ipv4/tcp":                    "quantifier + on",
+	} {
+		_, err := compileForTest(expr)
+		if !errors.Is(err, codegen.ErrNotImplemented) || !strings.Contains(err.Error(), want) {
+			t.Errorf("Compile(%q) = %v; want ErrNotImplemented naming %q", expr, err, want)
+		}
+	}
+}
+
 func TestCompileBitSliceRejected(t *testing.T) {
 	// Slice-related resolver rejections that survive the F13
 	// non-aligned support: out-of-field-width, empty range,

@@ -6,7 +6,6 @@ import (
 	"github.com/cilium/ebpf/asm"
 	"github.com/cilium/ebpf/btf"
 
-	"github.com/takehaya/bpf-ninja/pkg/kunai/ast"
 	"github.com/takehaya/bpf-ninja/pkg/kunai/ir"
 	"github.com/takehaya/bpf-ninja/pkg/kunai/vocab"
 )
@@ -109,7 +108,7 @@ const bpfLoopChainCap = 32
 // `+` / `*`) allows and the packet rejects (D-024). Non-chain-end
 // protocols (VLAN) bound both ends via their self-dispatch peek.
 func genBpfLoopChain(layer *ir.LayerInstance, index int, all []*ir.LayerInstance, qo queriedOptions, pc *predCtx) (asm.Instructions, asm.Instructions, error) {
-	rangeMin, _ := chainBounds(layer)
+	rangeMin, _ := layer.Bounds()
 	if rangeMin == 0 {
 		if err := optionalLayerGuard(layer, index, all); err != nil {
 			return nil, nil, err
@@ -130,7 +129,7 @@ func genBpfLoopChain(layer *ir.LayerInstance, index int, all []*ir.LayerInstance
 	// flag-trigger layer with a self edge could reach this, and no bundled
 	// protocol has that shape.
 	if layer.Spec.HasVariableLayout() {
-		return nil, nil, fmt.Errorf("%w: %s on the variable-length %q without a parser machine is not implemented; use layered dispatch (`eth/%s/%s/...`)", ErrNotImplemented, quantText(layer), layer.Spec.Name, layer.Spec.Name, layer.Spec.Name)
+		return nil, nil, fmt.Errorf("%w: %s on the variable-length %q without a parser machine is not implemented; use layered dispatch (`eth/%s/%s/...`)", ErrNotImplemented, layer.QuantText(), layer.Spec.Name, layer.Spec.Name, layer.Spec.Name)
 	}
 
 	maxIter, err := chainMaxIter(layer)
@@ -594,26 +593,11 @@ func chainFieldPeek(spec *vocab.ProtocolSpec, selfConst *vocab.DispatchConst, hs
 	return insns, nil
 }
 
-// chainBounds normalises QuantPlus / QuantStar / QuantRange into the
-// (min, max) pair the bpf_loop path uses. `+` → (1, open), `*` → (0,
-// open), `{n,m}` → (n, m as-stored). The second value is negative to
-// signal "open-ended" so callers can consult the vocab's MaxDepth.
-func chainBounds(layer *ir.LayerInstance) (int, int) {
-	switch layer.Quant {
-	case ast.QuantPlus:
-		return 1, -1
-	case ast.QuantStar:
-		return 0, -1
-	case ast.QuantRange:
-		return layer.RangeMin, layer.RangeMax
-	}
-	return layer.RangeMin, layer.RangeMax
-}
-
-// chainMaxIter resolves RangeMax / MaxDepth / default into a concrete
-// cap, clamped at bpfLoopChainCap.
+// chainMaxIter resolves the quantifier's upper bound into a concrete
+// cap: an open bound takes the protocol's MAX_DEPTH, clamped at
+// bpfLoopChainCap.
 func chainMaxIter(layer *ir.LayerInstance) (int, error) {
-	_, max := chainBounds(layer)
+	_, max := layer.Bounds()
 	if max < 0 {
 		max = layer.Spec.ChainDepth()
 	}

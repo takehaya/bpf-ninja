@@ -1928,21 +1928,15 @@ func prefixHeaderSizeUpper(p *ir.Program, until *ir.LayerInstance, reason string
 // plain or `?` layer, the quantifier's upper bound otherwise, with the
 // chain's iteration cap standing in for an open bound.
 func layerMaxInstances(l *ir.LayerInstance) (int, error) {
-	switch l.Quant {
-	case ast.QuantRange:
-		if l.RangeMax >= 0 {
-			return l.RangeMax, nil
-		}
-	case ast.QuantPlus, ast.QuantStar:
-	default:
-		return 1, nil
+	if _, max := l.Bounds(); max >= 0 {
+		return max, nil
 	}
 	// An open bound takes the protocol's chain depth. An alternation
 	// group has no protocol of its own (Spec is nil); its quantifier is
 	// refused later in the pipeline, so refuse here too instead of
 	// dereferencing it (capture sizing runs before that check).
 	if l.Spec == nil {
-		return 0, fmt.Errorf("%w: quantifier %s on an alternation group", ErrNotImplemented, l.Quant)
+		return 0, fmt.Errorf("%w: quantifier %s on an alternation group", ErrNotImplemented, l.QuantText())
 	}
 	return chainMaxIter(l)
 }

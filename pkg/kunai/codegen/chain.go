@@ -6,7 +6,6 @@ import (
 
 	"github.com/cilium/ebpf/asm"
 
-	"github.com/takehaya/bpf-ninja/pkg/kunai/ast"
 	"github.com/takehaya/bpf-ninja/pkg/kunai/ir"
 )
 
@@ -33,13 +32,7 @@ func isMachineChain(layer *ir.LayerInstance) bool {
 	if layer == nil || layer.Alternation != nil || layer.Spec == nil || layer.Spec.ParseStateMachine == nil {
 		return false
 	}
-	switch layer.Quant {
-	case ast.QuantPlus, ast.QuantStar:
-		return true
-	case ast.QuantRange:
-		return layer.RangeMax < 0 || layer.RangeMax >= 2
-	}
-	return false
+	return layer.CanRepeat()
 }
 
 // machineChainBounds is the instance range genStaticMachineChain unrolls:
@@ -49,33 +42,15 @@ func isMachineChain(layer *ir.LayerInstance) bool {
 // shared with the capture bound (layerMaxInstances) through chainMaxIter.
 // A bound past staticMachineChainCap is ErrNotImplemented.
 func machineChainBounds(layer *ir.LayerInstance) (lo, hi int, err error) {
-	lo, _ = chainBounds(layer)
+	lo, _ = layer.Bounds()
 	hi, err = chainMaxIter(layer)
 	if err != nil {
 		return 0, 0, err
 	}
 	if hi > staticMachineChainCap {
-		return 0, 0, fmt.Errorf("%w: %s on %q unrolls to %d parser machines, more than the %d supported; write a bound of at most %d (`{n,m}`)", ErrNotImplemented, quantText(layer), layer.Spec.Name, hi, staticMachineChainCap, staticMachineChainCap)
+		return 0, 0, fmt.Errorf("%w: %s on %q unrolls to %d parser machines, more than the %d supported; write a bound of at most %d (`{n,m}`)", ErrNotImplemented, layer.QuantText(), layer.Spec.Name, hi, staticMachineChainCap, staticMachineChainCap)
 	}
 	return lo, hi, nil
-}
-
-// quantText prints a layer's quantifier as the DSL spells it.
-func quantText(layer *ir.LayerInstance) string {
-	switch layer.Quant {
-	case ast.QuantOne:
-		return ""
-	case ast.QuantOpt:
-		return "?"
-	case ast.QuantPlus:
-		return "+"
-	case ast.QuantStar:
-		return "*"
-	}
-	if layer.RangeMax < 0 {
-		return fmt.Sprintf("{%d,}", layer.RangeMin)
-	}
-	return fmt.Sprintf("{%d,%d}", layer.RangeMin, layer.RangeMax)
 }
 
 // staticChainFitsRange reports whether a QuantRange's upper bound can
@@ -96,7 +71,7 @@ func staticChainFitsRange(max int) bool {
 func genStaticChain(layer *ir.LayerInstance, index int, all []*ir.LayerInstance, qo queriedOptions, pc *predCtx) (asm.Instructions, error) {
 	if !staticChainFitsRange(layer.RangeMax) {
 		// genLayerInner routes an open or larger bound to the bpf_loop chain.
-		return nil, fmt.Errorf("codegen: genStaticChain on %q with %s", layer.Spec.Name, quantText(layer))
+		return nil, fmt.Errorf("codegen: genStaticChain on %q with %s", layer.Spec.Name, layer.QuantText())
 	}
 	optional := layer.RangeMin == 0
 	if optional {
@@ -275,7 +250,7 @@ func genOptionalMachineLayer(layer *ir.LayerInstance, index int, all []*ir.Layer
 // last instance.
 func genStaticMachineChain(layer *ir.LayerInstance, index int, all []*ir.LayerInstance, qo queriedOptions, plan *accPlan, pc *predCtx) (asm.Instructions, asm.Instructions, error) {
 	if !isMachineChain(layer) {
-		return nil, nil, fmt.Errorf("codegen: genStaticMachineChain on %q with %s", layer.Spec.Name, quantText(layer))
+		return nil, nil, fmt.Errorf("codegen: genStaticMachineChain on %q with %s", layer.Spec.Name, layer.QuantText())
 	}
 	lo, hi, err := machineChainBounds(layer)
 	if err != nil {
@@ -283,7 +258,7 @@ func genStaticMachineChain(layer *ir.LayerInstance, index int, all []*ir.LayerIn
 	}
 	if layer.Spec.ChainEnd != nil {
 		// The over-run check at the bound (D-024) assumes a fixed header.
-		return nil, nil, fmt.Errorf("%w: %s on %q: a parser-machine layer with a chain-end rule", ErrNotImplemented, quantText(layer), layer.Spec.Name)
+		return nil, nil, fmt.Errorf("%w: %s on %q: a parser-machine layer with a chain-end rule", ErrNotImplemented, layer.QuantText(), layer.Spec.Name)
 	}
 	if layer.Spec.SelectDispatchConst(layer.Spec.Name) == nil {
 		return nil, nil, fmt.Errorf("%w: repeated %q has no self-dispatch const (resolver bug)", ErrNotImplemented, layer.Spec.Name)
