@@ -171,7 +171,7 @@ dsl_pm_tcp_2_0_done:
 	160: MovImm dst: r3 imm: 0
 	161: StXMemDW dst: rfp src: r3 off: -208 imm: 0
 	162: LdXMemDW dst: r3 src: rfp off: -232 imm: 0
-	163: JEqImm dst: r3 off: -1 imm: -1 <dsl_auxwalk_skip_1>
+	163: JEqImm dst: r3 off: -1 imm: -1 <dsl_auxwalk_skip_2>
 	164: StXMemDW dst: rfp src: r3 off: -184 imm: 0
 	165: MovImm dst: r1 imm: 9
 	166: LdImmDW dst: r2 imm: -1 <dsl_auxwalk_cb_1>
@@ -179,7 +179,7 @@ dsl_pm_tcp_2_0_done:
 	169: AddImm dst: r3 imm: -208
 	170: MovImm dst: r4 imm: 0
 	171: Call FnLoop
-dsl_auxwalk_skip_1:
+dsl_auxwalk_skip_2:
 	172: LdXMemDW dst: r0 src: rfp off: -200 imm: 0
 	173: LdXMemDW dst: r1 src: rfp off: -192 imm: 0
 	174: LdXMemDW dst: r3 src: rfp off: -208 imm: 0
@@ -216,9 +216,9 @@ dsl_pm_ipv4_1_0_walk_cb:
 	 23: JGTReg dst: r1 off: -1 src: r5 <dsl_pm_ipv4_1_0_walk_cb_reject>
 	 24: JGTReg dst: r1 off: -1 src: r6 <dsl_pm_ipv4_1_0_walk_cb_reject>
 	 25: LdXMemB dst: r1 src: r1 off: -1 imm: 0
-	 26: JNEImm dst: r1 off: -1 imm: 7 <dsl_pm_ipv4_1_0_pre_skip_1>
+	 26: JNEImm dst: r1 off: -1 imm: 7 <dsl_pm_ipv4_1_0_pre_skip_2>
 	 27: StXMemDW dst: r2 src: r3 off: -24 imm: 0
-dsl_pm_ipv4_1_0_pre_skip_1:
+dsl_pm_ipv4_1_0_pre_skip_2:
 	 28: MovReg dst: r3 src: r3
 	 29: JGTImm dst: r3 off: -1 imm: 511 <dsl_pm_ipv4_1_0_walk_cb_reject>
 	 30: MovReg dst: r0 src: r4
@@ -289,7 +289,7 @@ dsl_pm_ipv4_1_0_tlvcb_7_skip:
 	 92: Ja off: -1 <dsl_pm_ipv4_1_0_walk_cb_continue>
 dsl_pm_ipv4_1_0_tlvcb_8_skip:
 	 93: MovReg dst: r3 src: r3
-dsl_pm_ipv4_1_0_default_1:
+dsl_pm_ipv4_1_0_default_4:
 	 94: MovReg dst: r3 src: r3
 	 95: Ja off: -1 <dsl_pm_ipv4_1_0_walk_cb_reject>
 dsl_pm_ipv4_1_0_walk_cb_continue:
@@ -342,6 +342,9 @@ dsl_auxwalk_cb_1_mismatch:
 dsl_auxwalk_cb_1_break:
 	139: MovImm dst: r0 imm: 1
 	140: Exit
+== Funcs
+177: dsl_pm_ipv4_1_0_walk_cb
+279: dsl_auxwalk_cb_1
 == Capture MaxCapLen=0 FilterMinPrefix=0
 == WireFrame false
 == Extractions

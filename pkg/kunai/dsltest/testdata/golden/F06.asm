@@ -92,6 +92,7 @@ dsl_pm_ipv4_1_0_done:
 dsl_reject:
 	 84: MovImm dst: r2 imm: 0
 == Callbacks
+== Funcs
 == Capture MaxCapLen=0 FilterMinPrefix=0
 == WireFrame true
 == Extractions

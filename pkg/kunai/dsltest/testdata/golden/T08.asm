@@ -139,6 +139,7 @@ dsl_pm_tcp_2_0_done:
 dsl_reject:
 	128: MovImm dst: r2 imm: 0
 == Callbacks
+== Funcs
 == Capture MaxCapLen=118 FilterMinPrefix=0
 == WireFrame false
 == Extractions

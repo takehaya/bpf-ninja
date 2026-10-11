@@ -411,6 +411,8 @@ dsl_pm_gtp_3_0_parse_ext_cb_continue:
 dsl_pm_gtp_3_0_parse_ext_cb_break:
 	46: MovImm dst: r0 imm: 1
 	47: Exit
+== Funcs
+339: dsl_pm_gtp_3_0_parse_ext_cb
 == Capture MaxCapLen=0 FilterMinPrefix=0
 == WireFrame true
 == Extractions

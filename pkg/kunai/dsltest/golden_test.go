@@ -4,11 +4,12 @@ import (
 	"bufio"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"slices"
 	"strconv"
@@ -16,6 +17,7 @@ import (
 	"testing"
 
 	"github.com/cilium/ebpf/asm"
+	"github.com/cilium/ebpf/btf"
 
 	"github.com/takehaya/bpf-ninja/pkg/kunai"
 	"github.com/takehaya/bpf-ninja/pkg/kunai/codegen"
@@ -27,7 +29,8 @@ import (
 // regenerates it (`make golden-update`) so the diff shows which filters
 // moved. The manifest holds a hash per filter; the curated filters are
 // also kept as full text, which is the part a reviewer reads. `make
-// golden-diff BASE=main` prints the full-text diff of every filter.
+// golden-diff GOLDEN_BASE=main` prints the full-text diff of every
+// filter.
 var (
 	goldenUpdate = flag.Bool("update", false, "rewrite testdata/golden from the current codegen")
 	goldenDump   = flag.String("golden-dump", "", "write every golden filter's canonical text into this directory")
@@ -39,34 +42,42 @@ const (
 )
 
 // goldenCurated are kept as full text. F01-F10 are the evaluation filter
-// set (internal/program FilterSet); T01-T15 the tc load matrix
-// (internal/program dslTCEntryExprs).
-var goldenCurated = []struct{ name, host, expr string }{
-	{"F01", "xdp_entry", "eth/ipv4/tcp where tcp.dport == 443"},
-	{"F02", "xdp_entry", "eth/ipv4[src==10.0.0.0/8]/tcp where tcp.dport == 80"},
-	{"F03", "xdp_entry", "eth/ipv6[src==2001:db8::/32]/tcp"},
-	{"F04", "xdp_entry", "eth/vlan[tci==100]/ipv4/tcp where tcp.dport == 80"},
-	{"F05", "xdp_entry", "eth/qinq/vlan/ipv4/tcp where tcp.dport == 80"},
-	{"F06", "xdp_entry", "eth/ipv4/icmp where icmp.type == 8"},
-	{"F07", "xdp_entry", "eth/ipv4@outer/udp/gtp/ipv4@inner/tcp where inner.dst == 10.0.0.1"},
-	{"F08", "xdp_entry", "eth/ipv6/srv6 where any(srv6.segments.addr == fc00::1)"},
-	{"F09", "xdp_entry", "eth/ipv4@outer/udp/geneve/eth/ipv4@inner/tcp where inner.dst == 10.0.0.1"},
-	{"F10", "xdp_entry", "eth/ipv4/tcp where tcp.options.MSS.value == 1460"},
-	{"T01", "tc_entry", "eth/ipv4+/tcp"},
-	{"T02", "tc_entry", "eth/ipv4/tcp"},
-	{"T03", "tc_entry", "eth/ipv4{1,2}/tcp"},
-	{"T04", "tc_entry", "eth/ipv4/udp"},
-	{"T05", "tc_entry", "eth/ipv6/tcp"},
-	{"T06", "tc_entry", "eth/ipv4/tcp[dport==443]"},
-	{"T07", "tc_entry", "eth/ipv4/tcp where tcp.dport == 443"},
-	{"T08", "tc_entry", "eth/ipv4/tcp capture headers+64"},
-	{"T09", "tc_entry", "eth/(ipv4|ipv6)/tcp"},
-	{"T10", "tc_entry", "eth/mpls+/ipv4/tcp"},
-	{"T11", "tc_entry", "eth/ipv4/ipv4/tcp"},
-	{"T12", "tc_entry", "eth/ipv4/udp/gtp/ipv4/tcp"},
-	{"T13", "tc_entry", "eth/ipv6/srv6/tcp"},
-	{"T14", "tc_entry", "eth/ipv4/tcp where tcp.options.MSS.value == 1460"},
-	{"T15", "tc_entry", "eth/ipv4/tcp where any(ipv4.options.RR.addrs.addr == 192.168.0.0/16)"},
+// set (internal/program FilterSet) and T01-T15 the tc load matrix
+// (internal/program dslTCEntryExprs), copied because test variables of
+// another package cannot be imported; N01-N02 and S01 add a netfilter
+// host with its warning and set-key extractions.
+var goldenCurated = []struct {
+	name, host, expr string
+	sets             []specSet
+}{
+	{"F01", "xdp_entry", "eth/ipv4/tcp where tcp.dport == 443", nil},
+	{"F02", "xdp_entry", "eth/ipv4[src==10.0.0.0/8]/tcp where tcp.dport == 80", nil},
+	{"F03", "xdp_entry", "eth/ipv6[src==2001:db8::/32]/tcp", nil},
+	{"F04", "xdp_entry", "eth/vlan[tci==100]/ipv4/tcp where tcp.dport == 80", nil},
+	{"F05", "xdp_entry", "eth/qinq/vlan/ipv4/tcp where tcp.dport == 80", nil},
+	{"F06", "xdp_entry", "eth/ipv4/icmp where icmp.type == 8", nil},
+	{"F07", "xdp_entry", "eth/ipv4@outer/udp/gtp/ipv4@inner/tcp where inner.dst == 10.0.0.1", nil},
+	{"F08", "xdp_entry", "eth/ipv6/srv6 where any(srv6.segments.addr == fc00::1)", nil},
+	{"F09", "xdp_entry", "eth/ipv4@outer/udp/geneve/eth/ipv4@inner/tcp where inner.dst == 10.0.0.1", nil},
+	{"F10", "xdp_entry", "eth/ipv4/tcp where tcp.options.MSS.value == 1460", nil},
+	{"T01", "tc_entry", "eth/ipv4+/tcp", nil},
+	{"T02", "tc_entry", "eth/ipv4/tcp", nil},
+	{"T03", "tc_entry", "eth/ipv4{1,2}/tcp", nil},
+	{"T04", "tc_entry", "eth/ipv4/udp", nil},
+	{"T05", "tc_entry", "eth/ipv6/tcp", nil},
+	{"T06", "tc_entry", "eth/ipv4/tcp[dport==443]", nil},
+	{"T07", "tc_entry", "eth/ipv4/tcp where tcp.dport == 443", nil},
+	{"T08", "tc_entry", "eth/ipv4/tcp capture headers+64", nil},
+	{"T09", "tc_entry", "eth/(ipv4|ipv6)/tcp", nil},
+	{"T10", "tc_entry", "eth/mpls+/ipv4/tcp", nil},
+	{"T11", "tc_entry", "eth/ipv4/ipv4/tcp", nil},
+	{"T12", "tc_entry", "eth/ipv4/udp/gtp/ipv4/tcp", nil},
+	{"T13", "tc_entry", "eth/ipv6/srv6/tcp", nil},
+	{"T14", "tc_entry", "eth/ipv4/tcp where tcp.options.MSS.value == 1460", nil},
+	{"T15", "tc_entry", "eth/ipv4/tcp where any(ipv4.options.RR.addrs.addr == 192.168.0.0/16)", nil},
+	{"N01", "netfilter_entry", "ipv4/tcp where tcp.dport == 443", nil},
+	{"N02", "netfilter_entry", "eth/ipv4/tcp", nil},
+	{"S01", "xdp_entry", "eth/ipv4[src in @hosts]/tcp[dport in @ports]", []specSet{{Name: "hosts", Width: 32}, {Name: "ports", Width: 16}}},
 }
 
 type goldenFilter struct {
@@ -75,21 +86,24 @@ type goldenFilter struct {
 	curated    string // file name stem, "" for manifest-only filters
 }
 
+// setsText spells the declared sets by name and key width, all codegen
+// sees of them: members only matter to the host's lookup.
 func (g goldenFilter) setsText() string {
 	if len(g.sets) == 0 {
 		return "-"
 	}
-	b, err := json.Marshal(g.sets)
-	if err != nil {
-		panic(err)
+	parts := make([]string, len(g.sets))
+	for i, d := range g.sets {
+		parts[i] = fmt.Sprintf("%s:%d", d.Name, d.Width)
 	}
-	return string(b)
+	return strings.Join(parts, ",")
 }
 
 func (g goldenFilter) key() string { return g.host + "\t" + g.expr + "\t" + g.setsText() }
 
 // goldenCorpus is every (host, expr, sets) a spec vector expects to
-// compile, plus the curated filters, sorted by key.
+// compile, plus the curated filters, sorted by key. A curated filter the
+// vectors also hold keeps its file name.
 func goldenCorpus(t *testing.T) []goldenFilter {
 	t.Helper()
 	byKey := map[string]goldenFilter{}
@@ -101,7 +115,7 @@ func goldenCorpus(t *testing.T) []goldenFilter {
 		byKey[g.key()] = g
 	}
 	for _, c := range goldenCurated {
-		g := goldenFilter{host: c.host, expr: c.expr, curated: c.name}
+		g := goldenFilter{host: c.host, expr: c.expr, sets: c.sets, curated: c.name}
 		byKey[g.key()] = g
 	}
 	keys := make([]string, 0, len(byKey))
@@ -123,17 +137,19 @@ func compileGolden(g goldenFilter) (codegen.Output, error) {
 }
 
 // numberedLabel matches the labels codegen numbers from a process-wide
-// counter (freshLabel, nextPredicateLabel): the number depends on how
-// many filters the process compiled before.
-var numberedLabel = regexp.MustCompile(`^(dsl_.*_)(\d+)$`)
+// counter (freshLabel, nextPredicateLabel): their number depends on how
+// many filters the process compiled before. Every other label is numbered
+// per compile or by index and stays as codegen spells it; a new
+// process-wide counter shows up as a failed double compile in TestGolden.
+var numberedLabel = regexp.MustCompile(`^(dsl_(?:probe_ok|altdisp_[a-z]+|varwalk|pred_match|pred_in_next)_)(\d+)$`)
 
 var trailingSpace = regexp.MustCompile(`(?m)[ \t]+$`)
 
-// canonicalLabels renumbers every numbered label by order of first
+// canonicalLabels renumbers the counter-numbered labels by order of first
 // appearance per prefix across Main and Callbacks, so the text of one
-// filter does not depend on what else the process compiled. Labels whose
-// number is an index (dsl_pm_tcp_2_0) are renumbered too; the mapping is
-// one to one per prefix, so the control flow is kept.
+// filter does not depend on what else the process compiled. The mapping
+// is one to one per prefix and the renamed labels cannot meet a label
+// left alone, so the control flow is kept.
 func canonicalLabels(out codegen.Output) (asm.Instructions, asm.Instructions) {
 	all := slices.Clone(out.Main)
 	all = append(all, out.Callbacks...)
@@ -169,11 +185,17 @@ func canonicalLabels(out codegen.Output) (asm.Instructions, asm.Instructions) {
 }
 
 // goldenText is the canonical text of one compiled filter: code is the
-// instructions, meta everything else the host consumes.
-func goldenText(g goldenFilter, out codegen.Output) (code, meta string) {
+// instructions and the BTF functions they declare, meta everything else
+// the host consumes.
+func goldenText(out codegen.Output) (code, meta string) {
 	mainIns, cbIns := canonicalLabels(out)
 	var c strings.Builder
-	fmt.Fprintf(&c, "== Main\n%v== Callbacks\n%v", mainIns, cbIns)
+	fmt.Fprintf(&c, "== Main\n%v== Callbacks\n%v== Funcs\n", mainIns, cbIns)
+	for i, ins := range append(slices.Clone(mainIns), cbIns...) {
+		if fn := btf.FuncMetadata(&ins); fn != nil {
+			fmt.Fprintf(&c, "%d: %s\n", i, fn.Name)
+		}
+	}
 	// cilium/ebpf leaves a space after some mnemonics; the repository's
 	// hooks strip trailing whitespace, so the golden has none.
 	code = trailingSpace.ReplaceAllString(c.String(), "")
@@ -199,15 +221,20 @@ func shortHash(s string) string {
 	return hex.EncodeToString(h[:8])
 }
 
-func manifestLine(g goldenFilter, out codegen.Output, code, meta string) string {
-	return fmt.Sprintf("%s\tcode=%s meta=%s main=%d cb=%d", g.key(), shortHash(code), shortHash(meta), len(out.Main), len(out.Callbacks))
+func manifestValue(out codegen.Output, code, meta string) string {
+	return fmt.Sprintf("code=%s meta=%s main=%d cb=%d", shortHash(code), shortHash(meta), len(out.Main), len(out.Callbacks))
 }
 
+// readManifest maps each manifest key (host, expr, sets) to its value;
+// nil when the file does not exist.
 func readManifest(t *testing.T) map[string]string {
 	t.Helper()
 	f, err := os.Open(goldenManifest)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
 	if err != nil {
-		t.Fatalf("open %s: %v (run `make golden-update`)", goldenManifest, err)
+		t.Fatalf("open %s: %v", goldenManifest, err)
 	}
 	defer func() { _ = f.Close() }()
 	m := map[string]string{}
@@ -218,6 +245,9 @@ func readManifest(t *testing.T) map[string]string {
 		i := strings.LastIndexByte(line, '\t')
 		if i < 0 {
 			t.Fatalf("%s: malformed line %q", goldenManifest, line)
+		}
+		if _, dup := m[line[:i]]; dup {
+			t.Errorf("%s: %q is listed twice", goldenManifest, line[:i])
 		}
 		m[line[:i]] = line[i+1:]
 	}
@@ -254,81 +284,166 @@ func firstDiff(want, got string) string {
 	return b.String()
 }
 
+var dumpNameUnsafe = regexp.MustCompile(`[^A-Za-z0-9.@-]+`)
+
+// dumpName names a filter's file under -golden-dump: the curated stem, or
+// the host and a readable prefix of the expression, with a hash of the
+// key so names stay unique.
+func dumpName(g goldenFilter) string {
+	if g.curated != "" {
+		return g.curated + ".asm"
+	}
+	expr := dumpNameUnsafe.ReplaceAllString(g.expr, "_")
+	if len(expr) > 60 {
+		expr = expr[:60]
+	}
+	return fmt.Sprintf("%s_%s_%s.asm", g.host, expr, shortHash(g.key())[:8])
+}
+
+// changedPart names which hash of a manifest value moved.
+func changedPart(old, cur string) string {
+	field := func(v, name string) string {
+		for _, f := range strings.Fields(v) {
+			if strings.HasPrefix(f, name+"=") {
+				return f
+			}
+		}
+		return ""
+	}
+	var parts []string
+	for _, name := range []string{"code", "meta"} {
+		if field(old, name) != field(cur, name) {
+			parts = append(parts, name)
+		}
+	}
+	return strings.Join(parts, "+")
+}
+
 // TestGolden compares codegen's output with testdata/golden. It compiles
 // every filter twice and fails if the two texts differ, which would make
-// the golden meaningless.
+// the golden meaningless. With -update it rewrites the golden and prints
+// the filters that moved; with -golden-dump it only writes every filter's
+// text into the directory (make golden-diff compares two such dumps).
 func TestGolden(t *testing.T) {
+	// goldenText must cover every field the host reads.
+	if n := reflect.TypeFor[codegen.Output]().NumField(); n != 6 {
+		t.Fatalf("codegen.Output has %d fields; render the new one in goldenText and update this count", n)
+	}
 	corpus := goldenCorpus(t)
-	var want map[string]string
-	if !*goldenUpdate {
-		want = readManifest(t)
+	want := readManifest(t)
+	check := !*goldenUpdate && *goldenDump == ""
+	if check && want == nil {
+		t.Fatalf("%s is missing; run `make golden-update`", goldenManifest)
 	}
 	var manifest strings.Builder
+	var moved []string
+	curated := map[string]bool{}
 	for _, g := range corpus {
+		old, listed := want[g.key()]
+		delete(want, g.key())
 		out, err := compileGolden(g)
 		if err != nil {
-			t.Errorf("%s %q: compile: %v", g.host, g.expr, err)
+			t.Errorf("%s %q (sets %s): compile: %v", g.host, g.expr, g.setsText(), err)
 			continue
 		}
-		code, meta := goldenText(g, out)
+		code, meta := goldenText(out)
 		again, err := compileGolden(g)
 		if err != nil {
 			t.Fatalf("%s %q: second compile: %v", g.host, g.expr, err)
 		}
-		if code2, meta2 := goldenText(g, again); code2 != code || meta2 != meta {
+		if code2, meta2 := goldenText(again); code2 != code || meta2 != meta {
 			t.Errorf("%s %q: two compiles differ, codegen is not deterministic\n%s", g.host, g.expr, firstDiff(code+meta, code2+meta2))
 		}
 		text := goldenHeader(g) + code + meta
-		line := manifestLine(g, out, code, meta)
-		manifest.WriteString(line + "\n")
+		value := manifestValue(out, code, meta)
+		manifest.WriteString(g.key() + "\t" + value + "\n")
 		if *goldenDump != "" {
-			name := strings.ReplaceAll(g.host, "_", "-") + "-" + shortHash(g.key()) + ".asm"
 			if err := os.MkdirAll(*goldenDump, 0o755); err != nil {
 				t.Fatal(err)
 			}
-			if err := os.WriteFile(filepath.Join(*goldenDump, name), []byte(text), 0o644); err != nil {
+			if err := os.WriteFile(filepath.Join(*goldenDump, dumpName(g)), []byte(text), 0o644); err != nil {
 				t.Fatal(err)
 			}
-		}
-		if g.curated != "" {
-			path := filepath.Join(goldenDir, g.curated+".asm")
-			if *goldenUpdate {
-				if err := os.WriteFile(path, []byte(text), 0o644); err != nil {
-					t.Fatal(err)
-				}
-			} else if old, err := os.ReadFile(path); err != nil {
-				t.Errorf("%s: %v (run `make golden-update`)", path, err)
-			} else if string(old) != text {
-				t.Errorf("%s (%s %q) changed; if intended, run `make golden-update`\n%s", path, g.host, g.expr, firstDiff(string(old), text))
-			}
-		}
-		if *goldenUpdate {
 			continue
 		}
-		i := strings.LastIndexByte(line, '\t')
-		switch old, ok := want[g.key()]; {
-		case !ok:
-			t.Errorf("%s %q is not in %s; run `make golden-update`", g.host, g.expr, goldenManifest)
-		case old != line[i+1:]:
-			t.Errorf("%s %q changed: %s -> %s; if intended, run `make golden-update` (`make golden-diff` shows the text)", g.host, g.expr, old, line[i+1:])
+		switch {
+		case *goldenUpdate && !listed:
+			moved = append(moved, fmt.Sprintf("new   %s %q (sets %s): %s", g.host, g.expr, g.setsText(), value))
+		case *goldenUpdate && old != value:
+			moved = append(moved, fmt.Sprintf("%-5s %s %q (sets %s): %s -> %s", changedPart(old, value), g.host, g.expr, g.setsText(), old, value))
+		case check && !listed:
+			t.Errorf("%s %q (sets %s) is not in %s; run `make golden-update`", g.host, g.expr, g.setsText(), goldenManifest)
+		case check && old != value:
+			t.Errorf("%s %q (sets %s) changed (%s): %s -> %s; if intended, run `make golden-update` (`make golden-diff` shows the text)\nmeta now:\n%s",
+				g.host, g.expr, g.setsText(), changedPart(old, value), old, value, meta)
 		}
-		delete(want, g.key())
+		if g.curated == "" {
+			continue
+		}
+		curated[g.curated+".asm"] = true
+		path := filepath.Join(goldenDir, g.curated+".asm")
+		if *goldenUpdate {
+			if err := os.WriteFile(path, []byte(text), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		} else if old, err := os.ReadFile(path); err != nil {
+			t.Errorf("%s: %v (run `make golden-update`)", path, err)
+		} else if string(old) != text {
+			t.Errorf("%s (%s %q) changed; if intended, run `make golden-update`\n%s", path, g.host, g.expr, firstDiff(string(old), text))
+		}
+	}
+	if *goldenDump != "" {
+		return
 	}
 	for k := range want {
-		t.Errorf("%s lists %q, which no spec vector or curated filter compiles; run `make golden-update`", goldenManifest, k)
+		if *goldenUpdate {
+			fmt.Printf("gone  %s\n", strings.ReplaceAll(k, "\t", " "))
+		} else {
+			t.Errorf("%s lists %q, which no spec vector or curated filter compiles; run `make golden-update`", goldenManifest, k)
+		}
+	}
+	files, err := filepath.Glob(filepath.Join(goldenDir, "*.asm"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range files {
+		if curated[filepath.Base(f)] {
+			continue
+		}
+		if *goldenUpdate {
+			if err := os.Remove(f); err != nil {
+				t.Fatal(err)
+			}
+		} else {
+			t.Errorf("%s belongs to no curated filter; run `make golden-update`", f)
+		}
 	}
 	if *goldenUpdate {
 		if err := os.WriteFile(goldenManifest, []byte(manifest.String()), 0o644); err != nil {
 			t.Fatal(err)
+		}
+		fmt.Printf("golden: %d filters, %d moved or new\n", len(corpus), len(moved))
+		for _, m := range moved {
+			fmt.Println(m)
 		}
 	}
 }
 
 // TestCanonicalLabels checks that two compiles of one filter, which draw
 // different numbers from the label counters, give the same text, and
-// that renumbering keeps distinct labels distinct.
+// that every jump still lands on the instruction it did before the
+// renumbering.
 func TestCanonicalLabels(t *testing.T) {
-	g := goldenFilter{host: "xdp_entry", expr: "eth/ipv4[ttl in [1, 3..5]]/tcp[dport in [80, 443]]"}
+	for _, c := range []struct{ expr, label string }{
+		{"eth/(ipv4|ipv6)/tcp where tcp.dport == 80", "dsl_altdisp_"},
+		{"eth/ipv6[src in [fc00::3, fd00::/16]]/tcp", "dsl_pred_in_next_1"},
+		{"eth[dst <= 00:11:22:33:44:54]/ipv4/tcp", "dsl_pred_match_1"},
+	} {
+		t.Run(c.expr, func(t *testing.T) { checkCanonicalLabels(t, goldenFilter{host: "xdp_entry", expr: c.expr}, c.label) })
+	}
+}
+
+func checkCanonicalLabels(t *testing.T, g goldenFilter, label string) {
 	a, err := compileGolden(g)
 	if err != nil {
 		t.Fatal(err)
@@ -337,31 +452,39 @@ func TestCanonicalLabels(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ca, _ := goldenText(g, a)
-	cb, _ := goldenText(g, b)
+	ca, _ := goldenText(a)
+	cb, _ := goldenText(b)
 	if ca != cb {
 		t.Fatalf("canonical texts differ\n%s", firstDiff(ca, cb))
 	}
-	raw := func(o codegen.Output) map[string]bool {
-		s := map[string]bool{}
-		for _, ins := range o.Instructions() {
+	if !strings.Contains(ca, label) {
+		t.Errorf("filter %q emits no %s label; pick one that does", g.expr, label)
+	}
+	// targets maps each instruction's reference to the index of the
+	// instruction carrying that symbol (-1 for a reference to a label
+	// outside the stream, such as filter_result; -2 for no reference).
+	targets := func(insns asm.Instructions) []int {
+		at := map[string]int{}
+		for i, ins := range insns {
 			if sym := ins.Symbol(); sym != "" {
-				s[sym] = true
+				at[sym] = i
 			}
 		}
-		return s
+		out := make([]int, len(insns))
+		for i, ins := range insns {
+			out[i] = -2
+			if ref := ins.Reference(); ref != "" {
+				j, ok := at[ref]
+				if !ok {
+					j = -1
+				}
+				out[i] = j
+			}
+		}
+		return out
 	}
 	mainIns, cbIns := canonicalLabels(a)
-	canon := map[string]bool{}
-	for _, ins := range append(slices.Clone(mainIns), cbIns...) {
-		if sym := ins.Symbol(); sym != "" {
-			canon[sym] = true
-		}
-	}
-	if len(canon) != len(raw(a)) {
-		t.Fatalf("renumbering merged labels: %d symbols became %d", len(raw(a)), len(canon))
-	}
-	if !strings.Contains(ca, "dsl_pred_") {
-		t.Fatalf("filter %q emits no numbered predicate label; pick one that does:\n%s", g.expr, ca)
+	if raw, canon := targets(a.Instructions()), targets(append(slices.Clone(mainIns), cbIns...)); !slices.Equal(raw, canon) {
+		t.Fatalf("renumbering moved jump targets:\nraw   %v\ncanon %v", raw, canon)
 	}
 }

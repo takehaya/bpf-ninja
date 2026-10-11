@@ -354,6 +354,9 @@ dsl_auxwalk_cb_1_mismatch:
 dsl_auxwalk_cb_1_break:
 	113: MovImm dst: r0 imm: 1
 	114: Exit
+== Funcs
+215: dsl_pm_ipv6_1_0_parse_ext_cb
+279: dsl_auxwalk_cb_1
 == Capture MaxCapLen=0 FilterMinPrefix=0
 == WireFrame true
 == Extractions

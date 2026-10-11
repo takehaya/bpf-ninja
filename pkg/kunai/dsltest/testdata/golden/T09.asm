@@ -369,6 +369,8 @@ dsl_pm_ipv6_1_0_parse_ext_cb_continue:
 dsl_pm_ipv6_1_0_parse_ext_cb_break:
 	 62: MovImm dst: r0 imm: 1
 	 63: Exit
+== Funcs
+275: dsl_pm_ipv6_1_0_parse_ext_cb
 == Capture MaxCapLen=0 FilterMinPrefix=0
 == WireFrame false
 == Extractions

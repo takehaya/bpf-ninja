@@ -224,6 +224,8 @@ dsl_chain_cb_1_reject:
 dsl_chain_cb_1_break:
 	25: MovImm dst: r0 imm: 1
 	26: Exit
+== Funcs
+183: dsl_chain_cb_1
 == Capture MaxCapLen=0 FilterMinPrefix=0
 == WireFrame false
 == Extractions

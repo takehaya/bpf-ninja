@@ -66,14 +66,17 @@ goreleaser: ## build with goreleaser
 clean:
 	rm -f $(BINARY)
 
-golden-update: ## Rewrite the bytecode golden (pkg/kunai/dsltest/testdata/golden) from the current codegen
-	go test ./pkg/kunai/dsltest -run '^TestGolden$$' -update
+golden-update: ## Rewrite the bytecode golden (pkg/kunai/dsltest/testdata/golden) and list the filters that moved
+	cd pkg/kunai/dsltest && go test -run '^TestGolden$$' -update
 
-BASE ?= main
-golden-diff: ## Diff every golden filter's text between BASE (default main) and the working tree
-	@tmp=$$(mktemp -d) && trap 'git worktree remove --force '"$$tmp"'/base >/dev/null 2>&1; rm -rf '"$$tmp" EXIT && \
-	git worktree add --detach $$tmp/base $(BASE) >/dev/null && \
-	(cd $$tmp/base && go test ./pkg/kunai/dsltest -run '^TestGolden$$' -update -golden-dump=$$tmp/old >/dev/null) && \
-	git -C $$tmp/base checkout -q -- . && \
-	go test ./pkg/kunai/dsltest -run '^TestGolden$$' -golden-dump=$$tmp/new >/dev/null; \
-	diff -ru $$tmp/old $$tmp/new; true
+GOLDEN_BASE ?= main
+golden-diff: ## Diff every golden filter's text between GOLDEN_BASE (default main) and the working tree; exits 1 when they differ
+	@set -e; tmp=$$(mktemp -d); \
+	trap 'git worktree remove --force "$$tmp/base" >/dev/null 2>&1 || true; rm -rf "$$tmp"' EXIT INT TERM; \
+	git worktree add --quiet --detach "$$tmp/base" "$(GOLDEN_BASE)"; \
+	if [ ! -f "$$tmp/base/pkg/kunai/dsltest/golden_test.go" ]; then \
+		echo "golden-diff: $(GOLDEN_BASE) has no bytecode golden test" >&2; exit 2; \
+	fi; \
+	(cd "$$tmp/base/pkg/kunai/dsltest" && go test -run '^TestGolden$$' -golden-dump="$$tmp/old" >&2); \
+	(cd pkg/kunai/dsltest && go test -run '^TestGolden$$' -golden-dump="$$tmp/new" >&2); \
+	diff -ru "$$tmp/old" "$$tmp/new"
