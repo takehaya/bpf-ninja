@@ -414,7 +414,10 @@ func emitInSetPredicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, erro
 
 	var insns asm.Instructions
 
-	// 16-byte (IPv6 address / SID): store the raw network-order bytes.
+	// 16-byte (IPv6 address / SID): store the raw network-order bytes. A
+	// walked entry never consults field128RawOffset, so a 16-byte field in
+	// a variable-length stack (none exists) would fall to asmSizeFor and
+	// its ErrNotImplemented rather than into this constant-offset copy.
 	// Unlike the <=8 numeric path below, this is an identity byte copy —
 	// emitBoundedLoad (LE load) then StoreMem (LE store) preserves wire
 	// byte order, so NO HostTo is applied. `set add sid=fc00::1` writes
@@ -422,7 +425,7 @@ func emitInSetPredicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, erro
 	// putUint), so the key matches. Do not add a byte-swap here in any
 	// later "unify the store path" refactor — it would reverse the SID on
 	// a little-endian host and silently break every IPv6 match.
-	if bytes == 16 {
+	if is128 {
 		// A static aux-stack element (srv6.segments[N].addr) gates on
 		// presence just like the <=8 aux path; a primary field has no aux
 		// and emitAuxGating is skipped. Dynamic/iterator stacks are rejected

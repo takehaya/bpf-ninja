@@ -2106,14 +2106,20 @@ func TestCompileInSetSRv6SegmentSliceKey(t *testing.T) {
 	t.Fatalf("no store of the key at -40:\n%v", insns)
 }
 
-// byteSetSlots is a test SetSlotResolver with one-byte keys: set "nh" has
-// a "next_header" key and set "nextexts" a "next_ext" key, both at -40.
+// byteSetSlots is a test SetSlotResolver for the walked-entry shapes: set
+// "nh" has a one-byte "next_header" key, set "nextexts" a one-byte
+// "next_ext" key and set "types" a two-byte "ext_type" key, all at -40.
 type byteSetSlots struct{}
 
-func (byteSetSlots) HasSet(name string) bool { return name == "nh" || name == "nextexts" }
+func (byteSetSlots) HasSet(name string) bool {
+	return name == "nh" || name == "nextexts" || name == "types"
+}
 func (byteSetSlots) SlotFor(set, field string) (int16, int, bool) {
-	if (set == "nh" && field == "next_header") || (set == "nextexts" && field == "next_ext") {
+	switch {
+	case set == "nh" && field == "next_header", set == "nextexts" && field == "next_ext":
 		return -40, 1, true
+	case set == "types" && field == "ext_type":
+		return -40, 2, true
 	}
 	return 0, 0, false
 }
@@ -2124,13 +2130,22 @@ func (byteSetSlots) SlotFor(set, field string) (int16, int, bool) {
 // after the push-count guard the bracket already emits.
 func TestCompileInSetWalkedEntry(t *testing.T) {
 	caps := codegen.Capabilities{Lang: codegen.LangCaps{SetSlots: byteSetSlots{}}}
-	for _, expr := range []string{
-		"eth/ipv6[exts[1].next_header in @nh]/tcp",
-		"eth/ipv4/udp/gtp[exts[1].next_ext in @nextexts]/ipv4/tcp",
+	for _, c := range []struct {
+		expr   string
+		off    int16    // the field's offset inside the entry
+		size   asm.Size // the load and store size
+		bytes  int
+		swaps  int // a multi-byte key is stored in host order
+		guard  int32
+		insert string
+	}{
+		{"eth/ipv6[exts[1].next_header in @nh]/tcp", 0, asm.Byte, 1, 0, 1, ""},
+		{"eth/ipv4/udp/gtp[exts[1].next_ext in @nextexts]/ipv4/tcp", 3, asm.Byte, 1, 0, 1, ""},
+		{"eth/ipv4/udp/gtp[exts[2].ext_type in @types]/ipv4/tcp", 1, asm.Half, 2, 1, 2, ""},
 	} {
-		out, err := Compile(expr, caps)
+		out, err := Compile(c.expr, caps)
 		if err != nil {
-			t.Fatalf("%s: %v", expr, err)
+			t.Fatalf("%s: %v", c.expr, err)
 		}
 		insns := out.Instructions()
 		found := false
@@ -2139,22 +2154,64 @@ func TestCompileInSetWalkedEntry(t *testing.T) {
 				continue
 			}
 			found = true
-			if ins.OpCode.Size() != asm.Byte {
-				t.Errorf("%s: key store %v; want a byte store", expr, ins)
+			if ins.OpCode.Size() != c.size {
+				t.Errorf("%s: key store %v; want size %v", c.expr, ins, c.size)
 			}
-			if ld := insns[i-1]; ld.OpCode.Class() != asm.LdXClass || ld.Dst != asm.R3 || ld.Src != asm.R5 || ld.OpCode.Size() != asm.Byte {
-				t.Errorf("%s: instruction before the key store %v; want a byte load from the walked entry (R5)", expr, ld)
+			// Walk back over the optional byte swap to the load.
+			j := i - 1
+			swaps := 0
+			for insns[j].OpCode.Class() == asm.ALUClass && insns[j].OpCode.ALUOp() == asm.Swap {
+				swaps++
+				j--
+			}
+			if swaps != c.swaps {
+				t.Errorf("%s: %d byte swaps before the store, want %d", c.expr, swaps, c.swaps)
+			}
+			if ld := insns[j]; ld.OpCode.Class() != asm.LdXClass || ld.Dst != asm.R3 || ld.Src != asm.R5 || ld.OpCode.Size() != c.size || ld.Offset != c.off {
+				t.Errorf("%s: load before the key store %v; want a %v load from the walked entry (R5) at %d", c.expr, ld, c.size, c.off)
+			}
+			// The push-count guard precedes the walk: the count slot is
+			// compared against the index and the entry is absent at or below it.
+			guarded := false
+			for k := j; k > 0 && k > j-40; k-- {
+				if g := insns[k]; g.OpCode.JumpOp() == asm.JLE && g.OpCode.Source() == asm.ImmSource && g.Constant == int64(c.guard) && g.Reference() == "dsl_reject" && insns[k-1].OpCode.Class() == asm.LdXClass && insns[k-1].Src == asm.R10 {
+					guarded = true
+					break
+				}
+			}
+			if !guarded {
+				t.Errorf("%s: no `JLE count, %d → dsl_reject` guard before the walked load", c.expr, c.guard)
 			}
 		}
 		if !found {
-			t.Errorf("%s: no store into the key slot", expr)
+			t.Errorf("%s: no store into the key slot", c.expr)
 		}
-		if len(out.Extractions) != 1 || out.Extractions[0].StoreSize != 1 {
-			t.Errorf("%s: extract slots %+v; want one 1-byte extraction", expr, out.Extractions)
+		if len(out.Extractions) != 1 || out.Extractions[0].StoreSize != c.bytes {
+			t.Errorf("%s: extract slots %+v; want one %d-byte extraction", c.expr, out.Extractions, c.bytes)
 		}
 	}
 	// Entry 0 keeps the constant-offset path.
 	if _, err := Compile("eth/ipv6[exts[0].next_header in @nh]/tcp", caps); err != nil {
 		t.Fatal(err)
 	}
+	// A fixed-size stack keeps the constant-offset raw copy for any index:
+	// segments[1] starts 24 bytes into the SRH (8 + 16).
+	out, err := Compile("eth/ipv6/srv6[segments[1].addr in @sids]/tcp", codegen.Capabilities{Lang: codegen.LangCaps{SetSlots: sidSlot{}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, ins := range out.Instructions() {
+		if ins.OpCode.Class() == asm.StXClass && ins.Dst == asm.R10 && ins.Offset == -40 {
+			if ld := out.Instructions()[i-1]; ld.OpCode.Class() != asm.LdXClass || ld.OpCode.Size() != asm.DWord || ld.Offset != -8 {
+				t.Fatalf("segments[1] key: load before the store %v; want a DWord load at [ptr-8]", ld)
+			}
+			for j := i - 2; j > i-8; j-- {
+				if a := out.Instructions()[j]; a.OpCode.ALUOp() == asm.Add && a.OpCode.Source() == asm.ImmSource && a.Constant == 24 {
+					return
+				}
+			}
+			t.Fatal("segments[1] key: no `Add ptr, 24` (entry 1 starts 24 bytes into the SRH) before the load")
+		}
+	}
+	t.Fatal("segments[1] key: no store into the key slot")
 }
