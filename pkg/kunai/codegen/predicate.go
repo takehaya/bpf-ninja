@@ -640,6 +640,13 @@ func bracketLoadAt(ref *ir.FieldRef, pc *predCtx, bytes int, kind string) (asm.I
 // loaded register so its numeric ordering matches the literal, and
 // lexicographic-compares the high half first.
 func emitIPv6Predicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, error) {
+	if _, eq := ipEqualityJumpOp(pred.Op); !eq {
+		insns, loadAt, err := bracketLoadAt(pred.Field, pc, 16, "IPv6 literal")
+		if err != nil {
+			return nil, err
+		}
+		return append(insns, emitOrderedWireCmp(loadAt, ipv6Chunks(pred.Value), pred.Op, bracketConstReg(pred.Field))...), nil
+	}
 	if pred.Field != nil && pred.Field.Aux != nil {
 		if pred.Field.EffectiveBits() != 128 {
 			return nil, fmt.Errorf("%w: IPv6 literal needs a 128-bit field, got %s.%s.%s (%d bits)", ErrNotImplemented, pred.Field.Layer.Spec.Name, pred.Field.Aux.OutParam, pred.Field.Field.Name, pred.Field.EffectiveBits())
@@ -652,9 +659,6 @@ func emitIPv6Predicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, error
 		lowBE := binary.BigEndian.Uint64(pred.Value.V6[8:16])
 		insns := append(asm.Instructions{}, emitAuxGating(pred.Field.Aux.Gating, r4Anchor(), dslReject)...)
 		insns = append(insns, prelude...)
-		if _, eq := ipEqualityJumpOp(pred.Op); !eq {
-			return append(insns, emitOrderedWireCmp(loadAt, ipv6Chunks(pred.Value), pred.Op, asm.R2)...), nil
-		}
 		insns = append(insns, multiWordRoute(pred.Op, func(fail string) asm.Instructions {
 			body := append(asm.Instructions{}, ipv6AuxHalfCheck(loadAt, 0, ^uint64(0), highBE, fail)...)
 			body = append(body, ipv6AuxHalfCheck(loadAt, 8, ^uint64(0), lowBE, fail)...)
@@ -666,24 +670,14 @@ func emitIPv6Predicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, error
 	if err != nil {
 		return nil, err
 	}
-	switch pred.Op {
-	case ast.CmpEq, ast.CmpNeq:
-		highBE := binary.BigEndian.Uint64(pred.Value.V6[0:8])
-		lowBE := binary.BigEndian.Uint64(pred.Value.V6[8:16])
-		return multiWordRoute(pred.Op, func(fail string) asm.Instructions {
-			var insns asm.Instructions
-			insns = append(insns, ipv6HalfCheck(int16(fieldOff), ^uint64(0), highBE, fail)...)
-			insns = append(insns, ipv6HalfCheck(int16(fieldOff+8), ^uint64(0), lowBE, fail)...)
-			return insns
-		}), nil
-	case ast.CmpLt, ast.CmpLe, ast.CmpGt, ast.CmpGe:
-		anchor := pc.fieldAnchor()
-		loadAt := func(chunkOff int, size asm.Size) asm.Instructions {
-			return emitFieldLoad(anchor, fieldOff+chunkOff, size)
-		}
-		return emitOrderedWireCmp(loadAt, ipv6Chunks(pred.Value), pred.Op, asm.R5), nil
-	}
-	return nil, fmt.Errorf("%w: IPv6 literal cmp op %v not supported", ErrNotImplemented, pred.Op)
+	highBE := binary.BigEndian.Uint64(pred.Value.V6[0:8])
+	lowBE := binary.BigEndian.Uint64(pred.Value.V6[8:16])
+	return multiWordRoute(pred.Op, func(fail string) asm.Instructions {
+		var insns asm.Instructions
+		insns = append(insns, ipv6HalfCheck(int16(fieldOff), ^uint64(0), highBE, fail)...)
+		insns = append(insns, ipv6HalfCheck(int16(fieldOff+8), ^uint64(0), lowBE, fail)...)
+		return insns
+	}), nil
 }
 
 // ipv6Chunks splits an IPv6 literal into the two DWord chunks of an
