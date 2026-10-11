@@ -2695,28 +2695,38 @@ func TestCompileBracketOptionsFoldIntoAccumulator(t *testing.T) {
 	for _, c := range []struct {
 		expr string
 		mask int32
+		// rest reads a slot after the tcp walk of its own (the optional
+		// layer's entry, another layer's option), which hasOptionSlotRead
+		// cannot tell from an option slot; the kernel tests cover them.
+		restReadsSlot bool
 	}{
-		{"eth/ipv4/tcp[mss.value == 1460, ts.tsval == 5]", 0b11},
-		{"eth/ipv4/tcp[options.MSS.value == 1460, options.TS.tsval == 5]", 0b11},
-		{"eth/ipv4/tcp[mss.value == 1460] where tcp.ts.tsval == 7", 0b11},
-		{"eth/ipv4/tcp[mss.value == 1460] where tcp.mss.value == 1460 and tcp.ts.tsval == 7", 0b111},
-		{"eth/ipv4/tcp[dport == 80, mss.value == 1460, ws.shift == 7]", 0b11},
-		{"eth/ipv4/tcp[options.valid, mss.value == 1460, ws.shift == 7]", 0b11},
-		{"eth/ipv4/tcp[mss.value == 1460, ws.shift == -1]", 0b11},
+		{"eth/ipv4/tcp[mss.value == 1460, ts.tsval == 5]", 0b11, false},
+		{"eth/ipv4/tcp[options.MSS.value == 1460, options.TS.tsval == 5]", 0b11, false},
+		{"eth/ipv4/tcp[mss.value == 1460] where tcp.ts.tsval == 7", 0b11, false},
+		{"eth/ipv4/tcp[mss.value == 1460] where tcp.mss.value == 1460 and tcp.ts.tsval == 7", 0b111, false},
+		{"eth/ipv4/tcp[dport == 80, mss.value == 1460, ws.shift == 7]", 0b11, false},
+		{"eth/ipv4/tcp[options.valid, mss.value == 1460, ws.shift == 7]", 0b11, false},
+		{"eth/ipv4/tcp[mss.value == 1460, ws.shift == -1]", 0b11, false},
 		// Conjuncts that read no TCP option stay a where condition.
-		{"eth/ipv4/tcp[mss.value == 1460, ws.shift == 7] where tcp.dport == 80", 0b11},
-		{"eth/ipv4/tcp where tcp.mss.value == 1460 and tcp.ws.shift == 7 and ipv4.ttl == 64", 0b11},
-		{"eth/ipv4/tcp[mss.value == 1460, ws.shift == 7] where ipv4.ttl == 64 or ipv4.ttl == 128", 0b11},
+		{"eth/ipv4/tcp[mss.value == 1460, ws.shift == 7] where tcp.dport == 80", 0b11, false},
+		{"eth/ipv4/tcp where tcp.mss.value == 1460 and tcp.ws.shift == 7 and ipv4.ttl == 64", 0b11, false},
+		{"eth/ipv4/tcp[mss.value == 1460, ws.shift == 7] where ipv4.ttl == 64 or ipv4.ttl == 128", 0b11, false},
 		// A where term on the layer makes an absent layer fail anyway.
-		{"eth/ipv4/(tcp[mss.value == 1460, ws.shift == 7]|udp) where tcp.options.valid", 0b11},
-		{"eth/ipv4/tcp[mss.value == 1460, ws.shift == 7]? where tcp.sack_perm.kind == 4", 0b111},
+		{"eth/ipv4/(tcp[mss.value == 1460, ws.shift == 7]|udp) where tcp.options.valid", 0b11, false},
+		{"eth/ipv4/tcp[mss.value == 1460, ws.shift == 7]? where tcp.sack_perm.kind == 4", 0b111, false},
+		{"eth/ipv4/tcp[mss.value == 1460, ws.shift == 7]? where tcp.dport == 80", 0b11, true},
+		// A capture condition is part of the where clause and folds too.
+		{"eth/ipv4/tcp where tcp.ws.shift == 7 capture headers where tcp.mss.value == 1460", 0b11, false},
+		{"eth/ipv4/tcp[mss.value == 1460] where tcp.ws.shift == 7 capture headers where tcp.dport == 80", 0b11, false},
+		// Another layer's option equality stays in the rest.
+		{"eth/ipv4/tcp where tcp.mss.value == 1460 and tcp.ws.shift == 7 and ipv4.rr.pointer == 4", 0b11, true},
 	} {
 		out, err := compileForTest(c.expr)
 		if err != nil {
 			t.Errorf("%s: %v", c.expr, err)
 			continue
 		}
-		if hasOptionSlotRead(out, "tcp") {
+		if !c.restReadsSlot && hasOptionSlotRead(out, "tcp") {
 			t.Errorf("%s: an option slot is read after the walk; the accumulator should cover every option", c.expr)
 		}
 		if !hasAccMaskCheck(out, c.mask) {
@@ -2734,7 +2744,10 @@ func TestCompileBracketOptionsFoldIntoAccumulator(t *testing.T) {
 		{"eth/ipv4/tcp[mss.value == 1460, ts.tsval == 5] capture headers where tcp.mss.value > 1000", "tcp.mss.value is read by a where or capture term"},
 		{"eth/ipv4/tcp[mss.value == 1460, ts.tsval == 5]?", "tcp may be absent"},
 		{"eth/ipv4/(tcp[mss.value == 1460, ts.tsval == 5]|udp)", "tcp may be absent"},
-		{"eth/ipv4/tcp[mss.value == 1460, ts.tsval == 5]? where tcp.dport == 80", "tcp may be absent"},
+		{"eth/ipv4/tcp[mss.value == 1460, ts.tsval == 5]? where not tcp.dport == 80", "tcp may be absent"},
+		{"eth/ipv4/tcp[mss.value == 1460, ts.tsval == 5]? where tcp.dport == 80 or ipv4.ttl == 1", "tcp may be absent"},
+		{"eth/ipv4/tcp[mss.value[0:8] == 5, ts.tsval == 5]", "the bracket predicate on tcp.mss.value is not `== <integer>` on the whole field"},
+		{"eth/ipv4/tcp where tcp.mss.value == 1460 and tcp.options.SACK.blocks[1].left == 5", "tcp.sack.blocks[1].left is read by a where or capture term the walk cannot fold"},
 	} {
 		_, err := compileForTest(c.expr)
 		if !errors.Is(err, codegen.ErrNotImplemented) || !strings.Contains(err.Error(), c.why) {

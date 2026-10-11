@@ -584,11 +584,10 @@ func (c *pmCtx) emitStateBody(state *vocab.ParseState, stateIdx int, isEntry boo
 		// verifier will refuse. One option per filter still works on the
 		// normal path.
 		if options := c.queried.optionDemand(c.layer); c.isLengthByteOptionLoop(stateIdx) && len(options) >= 2 && c.accPlan.atomsFor(c.layer) == nil {
-			why := ""
 			if c.pc != nil && c.pc.accWhy != "" {
-				why = " (here " + c.pc.accWhy + ")"
+				return nil, nil, fmt.Errorf("%w: %s; querying %d distinct options of %q in one filter is supported only when every read of them is an `<option>.<field> == <const>` equality, in the bracket or ANDed at the top level of the where clause (at most %d)", ErrNotImplemented, c.pc.accWhy, len(options), c.spec.Name, accMaxAtoms)
 			}
-			return nil, nil, fmt.Errorf("%w: querying %d distinct options of %q in one filter is supported only when every read of them is an `<option>.<field> == <const>` equality, in the bracket or ANDed at the top level of the where clause (at most %d, where multiple fields on one option each count)%s; rewrite the reads to that form — no `!=`, no ordering, no `in` — or query a single option", ErrNotImplemented, len(options), c.spec.Name, accMaxAtoms, why)
+			return nil, nil, fmt.Errorf("%w: querying %d distinct options of %q in one filter is supported only when every read of them is an `<option>.<field> == <const>` equality, in the bracket or ANDed at the top level of the where clause (at most %d, where multiple fields on one option each count); rewrite the reads to that form — no `!=`, no ordering, no `in` — or query a single option", ErrNotImplemented, len(options), c.spec.Name, accMaxAtoms)
 		}
 		// Accumulator queries lower to one combined bpf_loop: the per-
 		// iteration cursor and accumulator forgets (emitAccPrelude /

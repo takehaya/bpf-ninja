@@ -108,7 +108,7 @@ func buildAccPlan(p *ir.Program, where *ir.Condition, qo queriedOptions) (*accPl
 		}
 		atom, ok := predToAtom(pred, qo)
 		if !ok {
-			return nil, fmt.Sprintf("the bracket predicate on %s is not `== <integer>`, the only form the walk folds", optionFieldName(pred.Field))
+			return nil, fmt.Sprintf("the bracket predicate on %s is not `== <integer>` on the whole field, the only form the walk folds", optionFieldName(pred.Field))
 		}
 		plan.folded[pred] = true
 		add(atom)
@@ -124,6 +124,12 @@ func buildAccPlan(p *ir.Program, where *ir.Condition, qo queriedOptions) (*accPl
 			whereOnLayer = true
 			continue
 		}
+		// An atom on the layer is false when the layer is absent (D-003),
+		// like a folded equality, so it also keeps the verdict when the
+		// layer's brackets are folded.
+		if accAtomOnLayer(leaf, layer) {
+			whereOnLayer = true
+		}
 		plan.rest = andCondition(plan.rest, leaf, leaf.Pos)
 	}
 	if plan.valid {
@@ -131,18 +137,16 @@ func buildAccPlan(p *ir.Program, where *ir.Condition, qo queriedOptions) (*accPl
 			return nil, ""
 		}
 	}
-	readers := []*ir.Condition{plan.rest}
+	// The capture conditions are already part of where (computeCapture);
+	// the capture fields are not.
 	var fields []*ir.FieldRef
 	for _, c := range p.Captures {
-		readers = append(readers, c.Where)
 		fields = append(fields, c.Fields...)
 	}
-	for _, c := range readers {
-		ir.WalkConditionFieldRefs(c, func(f *ir.FieldRef) { fields = append(fields, f) })
-	}
+	ir.WalkConditionFieldRefs(plan.rest, func(f *ir.FieldRef) { fields = append(fields, f) })
 	for _, f := range fields {
 		if f != nil && f.Layer == layer && dynamicAuxLayoutOf(f) != nil {
-			return nil, fmt.Sprintf("%s is read by a where or capture term other than `== <integer>` at the top level of the where clause", optionFieldName(f))
+			return nil, fmt.Sprintf("%s is read by a where or capture term the walk cannot fold: only `<option>.<field> == <integer>` on a whole field, ANDed at the top level of the where clause, folds", optionFieldName(f))
 		}
 	}
 	// Every option the layer queries must be covered by an atom; an
@@ -205,11 +209,34 @@ func accLayerAlwaysPresent(layer *ir.LayerInstance, qo queriedOptions) bool {
 	return lo >= 1 && !layer.CanRepeat()
 }
 
+// accAtomOnLayer reports whether a where conjunct is an atom reading the
+// layer: such an atom is false when the layer is absent (D-003). A
+// negation, a bool equality or a quantifier is not an atom here, since
+// each can hold on an absent layer.
+func accAtomOnLayer(c *ir.Condition, layer *ir.LayerInstance) bool {
+	switch c.Kind {
+	case ast.WAtomArith, ast.WAtomLiteralCmp, ast.WAtomBoolExists, ast.WAtomBoolValid:
+	default:
+		return false
+	}
+	on := false
+	ir.WalkConditionFieldRefs(c, func(f *ir.FieldRef) { on = on || (f != nil && f.Layer == layer) })
+	return on
+}
+
 // optionFieldName spells an option field for an error message.
 func optionFieldName(f *ir.FieldRef) string {
 	name := f.Layer.DisplayName()
 	if layout := dynamicAuxLayoutOf(f); layout != nil {
 		name += "." + layout.OutParam
+	}
+	// An entry of a stack inside the option (SACK blocks).
+	if f.Aux != nil && f.Aux.OwnerOption != nil && f.Aux.Stack != nil {
+		idx := "[i]"
+		if f.Aux.Stack.IsStatic {
+			idx = fmt.Sprintf("[%d]", f.Aux.Stack.Static)
+		}
+		name += "." + f.Aux.OutParam + idx
 	}
 	if f.Field != nil {
 		name += "." + f.Field.Name

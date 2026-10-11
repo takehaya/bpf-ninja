@@ -264,15 +264,83 @@ func TestBracketTwoOptionAccumulator(t *testing.T) {
 			})
 		}
 	}
-	t.Run("negative literal", func(t *testing.T) {
-		r := New(t, "eth/ipv4/tcp[mss.value == 1460, ws.shift == -1]")
-		r.MustMatch(t, withPort(80, mssOption(1460), ws(0xff)), "shift 255 is -1 at 8 bits")
-		r.MustReject(t, withPort(80, mssOption(1460), ws(0x7f)), "shift 127")
-	})
-	t.Run("alternation", func(t *testing.T) {
-		r := New(t, "eth/ipv4/(tcp[mss.value == 1460, ws.shift == 7]|udp) where tcp.options.valid")
-		r.MustMatch(t, withPort(80, mssOption(1460), ws(7)), "tcp with both")
-		r.MustReject(t, withPort(80, mssOption(1460)), "tcp without WS")
-		r.MustReject(t, BuildEthIPv4UDP(t, 1234, 5678, []byte{0xde, 0xad}), "udp: the where term on tcp is false")
-	})
+	withRR := func(ptr byte, opts ...layers.TCPOption) []byte {
+		o := Defaults()
+		o.IPv4Options, o.TCPOptions = []layers.IPv4Option{rrOpt(ptr)}, opts
+		return Build(t, o)
+	}
+	udp := BuildEthIPv4UDP(t, 1234, 5678, []byte{0xde, 0xad})
+	type verdict struct {
+		pkt   []byte
+		match bool
+		desc  string
+	}
+	for _, c := range []struct {
+		expr string
+		want []verdict
+	}{
+		{"eth/ipv4/tcp[mss.value == 1460, ws.shift == -1]", []verdict{
+			{withPort(80, mssOption(1460), ws(0xff)), true, "shift 255 is -1 at 8 bits"},
+			{withPort(80, mssOption(1460), ws(0x7f)), false, "shift 127"},
+		}},
+		{"eth/ipv4/(tcp[mss.value == 1460, ws.shift == 7]|udp) where tcp.options.valid", []verdict{
+			{withPort(80, mssOption(1460), ws(7)), true, "tcp with both"},
+			{withPort(80, mssOption(1460)), false, "tcp without WS"},
+			{udp, false, "udp: the where term on tcp is false"},
+		}},
+		// The last occurrence of a repeated option decides, as on the
+		// position-slot path and in the spec.
+		{"eth/ipv4/tcp[mss.value == 1460, ws.shift == 7]", []verdict{
+			{withPort(80, mssOption(1460), mssOption(1400), ws(7)), false, "MSS 1460 then 1400"},
+			{withPort(80, mssOption(1400), mssOption(1460), ws(7)), true, "MSS 1400 then 1460"},
+		}},
+		{"eth/ipv4/tcp where tcp.mss.value == 1460 and tcp.ws.shift == 7", []verdict{
+			{withPort(80, mssOption(1460), mssOption(1400), ws(7)), false, "MSS 1460 then 1400"},
+			{withPort(80, mssOption(1400), mssOption(1460), ws(7)), true, "MSS 1400 then 1460"},
+		}},
+		// An optional layer with a where atom on it: absent tcp fails the
+		// where clause, as the folded check does.
+		{"eth/ipv4/tcp[mss.value == 1460, ws.shift == 7]? where tcp.dport == 80", []verdict{
+			{withPort(80, mssOption(1460), ws(7)), true, "tcp with both"},
+			{withPort(80, mssOption(1460)), false, "tcp without WS"},
+			{withPort(81, mssOption(1460), ws(7)), false, "dport 81"},
+			{udp, false, "no tcp"},
+		}},
+		// Another layer's option equality stays in the rest and reads that
+		// layer's own slot.
+		{"eth/ipv4/tcp where tcp.mss.value == 1460 and tcp.ws.shift == 7 and ipv4.rr.pointer == 4", []verdict{
+			{withRR(4, mssOption(1460), ws(7)), true, "RR pointer 4, both options"},
+			{withRR(8, mssOption(1460), ws(7)), false, "RR pointer 8"},
+			{withRR(4, mssOption(1460)), false, "no WS"},
+			{withPort(80, mssOption(1460), ws(7)), false, "no RR"},
+		}},
+		// A rest with `or` and `not`.
+		{"eth/ipv4/tcp[mss.value == 1460, ws.shift == 7] where not tcp.dport == 81 or ipv4.ttl == 1", []verdict{
+			{withPort(80, mssOption(1460), ws(7)), true, "dport 80"},
+			{withPort(81, mssOption(1460), ws(7)), false, "dport 81, ttl 64"},
+			{withPort(80, mssOption(1460)), false, "no WS"},
+		}},
+		// options.valid in the bracket next to the folded equalities.
+		{"eth/ipv4/tcp[options.valid, mss.value == 1460, ws.shift == 7]", []verdict{
+			{withPort(80, mssOption(1460), ws(7)), true, "both, well formed"},
+			{tcpWithRawOptions(t, 8, []byte{2, 4, 5, 180, 3, 3, 7, 99, 1, 0, 0, 0}, nil), false, "malformed region"},
+		}},
+	} {
+		for _, fill := range []int32{0, -1} {
+			t.Run(fmt.Sprintf("%s/fill=%d", c.expr, fill), func(t *testing.T) {
+				out, err := kunai.Compile(c.expr, codegen.Capabilities{})
+				if err != nil {
+					t.Fatal(err)
+				}
+				r := NewFromOutputStackFilled(t, c.expr, out, 0, fill)
+				for _, v := range c.want {
+					if v.match {
+						r.MustMatch(t, v.pkt, v.desc)
+					} else {
+						r.MustReject(t, v.pkt, v.desc)
+					}
+				}
+			})
+		}
+	}
 }

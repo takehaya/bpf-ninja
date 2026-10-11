@@ -86,8 +86,10 @@ compile(where = AND of "opt.field == const"):
         cursor = forget(cursor, byte)          # 毎周 cursor を収束
         kind = packet[cursor]
         for atom in atoms:                     # 全 atom をインライン評価
-            if kind == atom.option_kind and packet[cursor + atom.field_off] == atom.cmpval:
-                acc |= (1 << atom.bit)
+            if kind == atom.option_kind:
+                acc &= ~(1 << atom.bit)        # 同じ option が再び現れたら最後のものが決める
+                if packet[cursor + atom.field_off] == atom.cmpval:
+                    acc |= (1 << atom.bit)
         acc = forget(acc, u64)                 # 毎周 acc を収束 (1 ループ化の鍵)
         cursor += option_length(packet, cursor)
 
@@ -141,6 +143,9 @@ codegen には別途、callback の分岐命令数を静的に数える tripwire
   存在する (min ≥ 1 で繰り返さず、alternation の member でない) か、`where` の項にも
   同じ layer の atom があって layer の不在で verdict が偽になる場合に限る
   (`accLayerAlwaysPresent`)。
+  同じ option が 2 回以上現れたときは、仕様 (`latestView`) と位置 slot の経路に
+  合わせて最後のものの値で判定する。kind が一致した時点で atom の bit を消してから
+  比較し直す。
   定数は field の幅に収まる値を比較する。`int<128>(n)` で field に収まらない値を
   書いた葉は、どの packet でも false になるので、plan を `never` にして mask check が
   必ず reject する。32 bit field の上位 bit が立った定数はレジスタ経由で比較する。
