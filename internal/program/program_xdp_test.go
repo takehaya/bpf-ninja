@@ -79,6 +79,12 @@ var (
 		"eth/ipv6@o+/tcp where o.exts[0].next_header == 6",
 		"eth/ipv4+/tcp capture headers+64",
 		"eth/vlan?/ipv4+/tcp",
+		// bracket predicates on options the walk locates run after the walk
+		// and read the option's slot; per instance on a repeated layer.
+		"eth/ipv4/tcp[mss.value == 1460]",
+		"eth/ipv4/tcp[ts.tsval in [10.0.0.0/8, 192.168.0.1]]",
+		"eth/ipv4[rr.pointer == 4]+/tcp",
+		"eth/(ipv4|ipv6)/tcp[mss.value in [1400..1460]]",
 		// flag-gated optional words (gre's C/K/S) read the flag byte
 		// back through the range-valued R4 left by ipv4's IHL.
 		"eth/ipv4/gre/ipv4/tcp",
