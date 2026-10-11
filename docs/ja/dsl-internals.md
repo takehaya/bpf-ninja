@@ -1024,7 +1024,7 @@ callback は kind ごとの slot-store prelude を dispatch の前に置きま�
 
 `pkt.lookahead` を使う counter decrement は `pkt.advance` より前に記述します。逆順は loader が診断します。これは対応する TLV sibling の制約であり、P4-lite の任意の statement 順序を保持する一般的な保証ではありません。
 
-Demand-driven 割当では、codegen は `collectQueriedOptions(p)` (`pkg/kunai/codegen/option_demand.go`) で program 全体の where、各 layer の bracket predicate、各 capture を walk し、参照された (layer, option) ペアだけ slot を割り当てます。`where tcp.options.MSS.value == 1460` だけなら slot は 1 個です (slot の総数は stack plan の 36 slot が上限)。layer entry では `emitDynamicAuxSentinelInit` が各 slot を sentinel `-1` で zero-init します。extract されなかった option は sentinel のまま残り、where 評価で reject されます。
+Demand-driven 割当では、codegen は `collectQueriedOptions(p)` (`pkg/kunai/codegen/option_demand.go`) で program 全体の where、各 layer の bracket predicate、各 capture を walk し、参照された (layer, option) ペアだけ slot を割り当てます。`where tcp.options.MSS.value == 1460` だけなら slot は 1 個です (slot の総数は stack plan の 36 slot が上限)。layer entry では `emitDynamicAuxSentinelInit` が各 slot を sentinel `-1` で zero-init します。extract されなかった option は sentinel のまま残り、where 評価で reject されます。bracket predicate が option を読むとき (`tcp[mss.value == 1460]`) は、`splitPredicates` がその predicate を walk の後ろに回し、where と同じ slot を `emitScalarFieldLoad` / `auxLoadEmitter` から読みます。walk の前には option の位置が決まっていないためです。accumulator 経路は位置の slot を書かないので、layer の bracket predicate が option を読むときは accumulator を使いません。
 
 Where 評価では、`tcp.options.MSS.value == 1460` のような predicate は `genArithFieldLoad → dynamicOffsetSlotFor → genDynamicOffsetAuxLoad` (`pkg/kunai/codegen/where.go`) の経路をたどります。
 
