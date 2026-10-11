@@ -182,6 +182,29 @@ func (r *resolver) resolveUnqualifiedField(fp *ast.FieldPath, layer *ir.LayerIns
 		if err != nil {
 			return nil, err
 		}
+	case 3, 4:
+		// `<option_segment>.<NAME>.<field>` and
+		// `<option_segment>.<NAME>.<stack>[N].<field>` name an option the
+		// walk locates, as a where clause does after its protocol head
+		// (spec resolveRest); the bare `<aux>.<field>` above is the short
+		// form of the first.
+		if fp.Parts[0] != layer.Spec.OptionSegment {
+			return nil, errorf(fp.Pos, "nested field access %q is not supported inside a predicate", fp.String())
+		}
+		if hasIndexAt(fp, 0) || hasIndexAt(fp, 1) || hasIndexAt(fp, len(fp.Parts)-1) {
+			return nil, errorf(fp.Pos, "%s.%s.%s does not take an index", layer.Spec.Name, fp.Parts[0], fp.Parts[1])
+		}
+		if len(fp.Parts) == 3 {
+			if fp.Parts[2] == "exists" {
+				return nil, errorf(fp.Pos, "%s.%s.%s.exists is a Bool atom of a where clause, not a field to compare", layer.Spec.Name, fp.Parts[0], fp.Parts[1])
+			}
+			ref, err = resolveOptionField(layer, fp.Parts[1], fp.Parts[2], fp)
+		} else {
+			ref, err = r.resolveOptionStackField(layer, fp.Parts[1], fp.Parts[2], indexAt(fp, 2), fp.Parts[3], fp)
+		}
+		if err != nil {
+			return nil, err
+		}
 	default:
 		return nil, errorf(fp.Pos, "nested field access %q is not supported inside a predicate", fp.String())
 	}

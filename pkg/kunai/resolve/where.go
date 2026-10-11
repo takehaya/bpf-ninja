@@ -553,6 +553,11 @@ func (r *resolver) resolveAuxStackField(layer *ir.LayerInstance, stackName strin
 		}
 		return nil, errorf(fp.Pos, "protocol %q has no auxiliary header stack %q", layer.Spec.Name, stackName)
 	}
+	// A stack inside an option sits behind the option the walk locates
+	// and is named through it (spec resolveRest).
+	if stack.OwnerOption != "" {
+		return nil, errorf(fp.Pos, "%s.%s is reached through %s.%s.%s", layer.Spec.Name, stackName, layer.Spec.Name, layer.Spec.OptionSegment, strings.ToUpper(stack.OwnerOption))
+	}
 	bitOff := 0
 	bitWidth := 0
 	for _, f := range stack.HeaderRef.Fields {
