@@ -881,33 +881,47 @@ func BuildEthIPIPTCP(t testing.TB, opts IPIPOpts) []byte {
 // chain (`eth/ipv6/ipv6/tcp`).
 func BuildEthIPv6inIPv6TCP(t testing.TB) []byte {
 	t.Helper()
+	return BuildEthIPv6inIPv6TCPDepth(t, 2)
+}
+
+// BuildEthIPv6inIPv6TCPDepth serializes Ethernet/IPv6^depth/TCP: the
+// innermost header is 2001:db8::1 → ::2, every outer one 2001:db8:f00::1
+// → ::2 with next_header IPv6 (the self edge a repeated ipv6 dispatches
+// on). Depth 1 is a plain Ethernet/IPv6/TCP frame.
+func BuildEthIPv6inIPv6TCPDepth(t testing.TB, depth int) []byte {
+	t.Helper()
+	if depth < 1 {
+		t.Fatalf("BuildEthIPv6inIPv6TCPDepth: depth %d < 1", depth)
+	}
 	o := Defaults()
 	o.SrcIP = net.ParseIP("2001:db8::1")
 	o.DstIP = net.ParseIP("2001:db8::2")
-	innerBytes := Build(t, o)
-	innerIP := innerBytes[ethHeaderSize:]
-
-	d := Defaults()
-	eth := &layers.Ethernet{
-		SrcMAC:       d.SrcMAC,
-		DstMAC:       d.DstMAC,
-		EthernetType: layers.EthernetTypeIPv6,
+	frame := Build(t, o)
+	for i := 1; i < depth; i++ {
+		innerIP := frame[ethHeaderSize:]
+		d := Defaults()
+		eth := &layers.Ethernet{
+			SrcMAC:       d.SrcMAC,
+			DstMAC:       d.DstMAC,
+			EthernetType: layers.EthernetTypeIPv6,
+		}
+		outer := &layers.IPv6{
+			Version:    6,
+			HopLimit:   64,
+			SrcIP:      net.ParseIP("2001:db8:f00::1"),
+			DstIP:      net.ParseIP("2001:db8:f00::2"),
+			NextHeader: layers.IPProtocolIPv6,
+		}
+		buf := gopacket.NewSerializeBuffer()
+		if err := gopacket.SerializeLayers(buf, gopacket.SerializeOptions{
+			ComputeChecksums: true,
+			FixLengths:       true,
+		}, eth, outer, gopacket.Payload(innerIP)); err != nil {
+			t.Fatalf("gopacket.SerializeLayers (ipv6-in-ipv6): %v", err)
+		}
+		frame = buf.Bytes()
 	}
-	outer := &layers.IPv6{
-		Version:    6,
-		HopLimit:   64,
-		SrcIP:      net.ParseIP("2001:db8:f00::1"),
-		DstIP:      net.ParseIP("2001:db8:f00::2"),
-		NextHeader: layers.IPProtocolIPv6,
-	}
-	buf := gopacket.NewSerializeBuffer()
-	if err := gopacket.SerializeLayers(buf, gopacket.SerializeOptions{
-		ComputeChecksums: true,
-		FixLengths:       true,
-	}, eth, outer, gopacket.Payload(innerIP)); err != nil {
-		t.Fatalf("gopacket.SerializeLayers (ipv6-in-ipv6): %v", err)
-	}
-	return buf.Bytes()
+	return frame
 }
 
 // GREOpts describes an Ethernet/IPv4/GRE/IPv4/TCP frame. Each

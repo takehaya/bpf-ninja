@@ -5,6 +5,9 @@ import (
 	"testing"
 
 	"github.com/google/gopacket/layers"
+
+	"github.com/takehaya/bpf-ninja/pkg/kunai"
+	"github.com/takehaya/bpf-ninja/pkg/kunai/codegen"
 )
 
 // Repeated variable-length layers (`ipv4{n,m}`, genStaticMachineChain):
@@ -122,4 +125,93 @@ func TestMachineChainIPv6(t *testing.T) {
 	br := New(t, "eth/ipv6[exts[0].next_header == 6]{1,2}/tcp")
 	br.MustMatch(t, ext, "one header with ext")
 	br.MustReject(t, two, "neither header has an ext")
+}
+
+// Open quantifiers on a parser-machine layer unroll to MAX_DEPTH
+// instances (ipv4 8, ipv6 4), as the spec evaluates them (fuel :=
+// m.getD maxDepth): `ipv4+` is `ipv4{1,8}`, `ipv4/ipv4*` is `ipv4{0,8}`.
+
+func TestMachineChainPlus(t *testing.T) {
+	plus := New(t, "eth/ipv4+/tcp")
+	plus.MustMatch(t, ipipDepth(t, 1), "one header")
+	plus.MustMatch(t, ipipDepth(t, 2), "two headers")
+	plus.MustMatch(t, ipipDepth(t, 8), "eight headers: MAX_DEPTH")
+	plus.MustReject(t, ipipDepth(t, 9), "nine headers: the ninth is where tcp is expected")
+	plus.MustReject(t, BuildEthIPv4UDP(t, 1234, 5678, []byte{1, 2}), "udp after one header")
+
+	open := New(t, "eth/ipv4{2,}/tcp")
+	open.MustReject(t, ipipDepth(t, 1), "one header: under-run")
+	open.MustMatch(t, ipipDepth(t, 2), "two headers")
+	open.MustMatch(t, ipipDepth(t, 8), "eight headers")
+	open.MustReject(t, ipipDepth(t, 9), "nine headers")
+
+	// An explicit bound above the fixed-length cap unrolls too.
+	five := New(t, "eth/ipv4{1,5}/tcp")
+	five.MustMatch(t, ipipDepth(t, 5), "five headers")
+	five.MustReject(t, ipipDepth(t, 6), "six headers")
+}
+
+func TestMachineChainStar(t *testing.T) {
+	star := New(t, "eth/ipv4/ipv4*/tcp")
+	star.MustMatch(t, ipipDepth(t, 1), "one header: the star is absent, tcp dispatches against the first ipv4")
+	star.MustMatch(t, ipipDepth(t, 2), "two headers")
+	star.MustMatch(t, ipipDepth(t, 9), "the outer header plus eight repeats")
+	star.MustReject(t, ipipDepth(t, 10), "the outer header plus nine: one too many")
+	New(t, "eth/ipv4/ipv4*/udp").MustMatch(t, BuildEthIPv4UDP(t, 1234, 5678, []byte{1, 2}), "udp after the absent star")
+	New(t, "eth/ipv4/ipv4{0,}/tcp").MustMatch(t, ipipDepth(t, 3), "{0,} is the star")
+}
+
+func TestMachineChainPlusBracket(t *testing.T) {
+	// Every instance runs its bracket predicates: a middle header that
+	// fails rejects the packet (D-001).
+	ttl := New(t, "eth/ipv4[ttl==64]+/tcp")
+	ttl.MustMatch(t, ipipDepth(t, 3), "all three headers have ttl 64")
+	ttl.MustReject(t, BuildEthIPIPTCP(t, IPIPOpts{Depth: 3, OuterTTL: 32}), "the outer headers have ttl 32")
+	ttl.MustReject(t, BuildEthIPIPTCP(t, IPIPOpts{Depth: 3, InnerTTL: 32}), "the inner header has ttl 32")
+
+	valid := New(t, "eth/ipv4[options.valid]+/tcp")
+	valid.MustMatch(t, BuildEthIPIPTCP(t, IPIPOpts{Depth: 3, InnerOptions: []layers.IPv4Option{rrOption}}), "a well-formed option on the last instance")
+	valid.MustReject(t, BuildEthIPIPTCP(t, IPIPOpts{Depth: 3, InnerOptions: []layers.IPv4Option{badOption}}), "a broken option region on the last instance (D-029)")
+	valid.MustReject(t, BuildEthIPIPTCP(t, IPIPOpts{Depth: 3, OuterOptions: []layers.IPv4Option{badOption}}), "a broken option region on an outer instance")
+}
+
+func TestMachineChainPlusWhereLast(t *testing.T) {
+	last := New(t, "eth/ipv4@o+/tcp where o.ttl == 32")
+	last.MustMatch(t, BuildEthIPIPTCP(t, IPIPOpts{Depth: 3, InnerTTL: 32}), "the reference reads the innermost header")
+	last.MustReject(t, BuildEthIPIPTCP(t, IPIPOpts{Depth: 3, OuterTTL: 32}), "the outer headers' ttl is not what the reference reads")
+
+	rr := New(t, "eth/ipv4@o+/tcp where o.options.RR.kind == 7")
+	rr.MustMatch(t, BuildEthIPIPTCP(t, IPIPOpts{Depth: 3, InnerOptions: []layers.IPv4Option{rrOption}}), "RR on the last instance")
+	rr.MustReject(t, BuildEthIPIPTCP(t, IPIPOpts{Depth: 3, OuterOptions: []layers.IPv4Option{rrOption}}), "RR on an outer instance only: the last instance has none")
+}
+
+func TestMachineChainIPv6Plus(t *testing.T) {
+	plus := New(t, "eth/ipv6+/tcp")
+	plus.MustMatch(t, BuildEthIPv6inIPv6TCPDepth(t, 1), "one header")
+	plus.MustMatch(t, BuildEthIPv6inIPv6TCPDepth(t, 2), "two headers")
+	plus.MustMatch(t, BuildEthIPv6inIPv6TCPDepth(t, 4), "four headers: IPV6_MAX_DEPTH")
+	plus.MustReject(t, BuildEthIPv6inIPv6TCPDepth(t, 5), "five headers: one too many")
+
+	star := New(t, "eth/ipv6/ipv6*/tcp")
+	star.MustMatch(t, BuildEthIPv6inIPv6TCPDepth(t, 1), "the star is absent")
+	star.MustMatch(t, BuildEthIPv6inIPv6TCPDepth(t, 5), "the outer header plus four repeats")
+	star.MustReject(t, BuildEthIPv6inIPv6TCPDepth(t, 6), "the outer header plus five")
+
+	// An extension header on the last instance only, read by the where
+	// clause through the last instance's slots.
+	ext := BuildIPv6WithExts(t, IPv6WithExtsOpts{FirstNextHeader: 0, FinalNextHeader: 6, Exts: []IPv6Ext{{HdrExtLen: 0}}})
+	where := New(t, "eth/ipv6@o+/tcp where o.exts[0].next_header == 6")
+	where.MustMatch(t, ext, "one header with a hop-by-hop ext")
+	where.MustReject(t, BuildEthIPv6inIPv6TCPDepth(t, 3), "no ext on the last instance (D-031)")
+}
+
+func TestMachineChainPlusCaptureBound(t *testing.T) {
+	// The capture bound counts MAX_DEPTH instances: 14 + 8·20 + 20.
+	out, err := kunai.Compile("eth/ipv4+/tcp capture headers", codegen.Capabilities{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := out.Capture.MaxCapLen; got != 194 {
+		t.Fatalf("MaxCapLen = %d, want 194", got)
+	}
 }
