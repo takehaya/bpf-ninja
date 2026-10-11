@@ -553,10 +553,8 @@ func (r *resolver) resolveAuxStackField(layer *ir.LayerInstance, stackName strin
 		}
 		return nil, errorf(fp.Pos, "protocol %q has no auxiliary header stack %q", layer.Spec.Name, stackName)
 	}
-	// A stack inside an option sits behind the option the walk locates
-	// and is named through it (spec resolveRest).
-	if stack.OwnerOption != "" {
-		return nil, errorf(fp.Pos, "%s.%s is reached through %s.%s.%s", layer.Spec.Name, stackName, layer.Spec.Name, layer.Spec.OptionSegment, strings.ToUpper(stack.OwnerOption))
+	if err := checkStackNotInOption(layer, stackName, stack, fp); err != nil {
+		return nil, err
 	}
 	bitOff := 0
 	bitWidth := 0
@@ -697,12 +695,25 @@ func resolvePrimaryField(layer *ir.LayerInstance, fieldName string, fp *ast.Fiel
 // can't slip in. Bracket-form predicates do not allow iterator refs
 // (the bracket itself does not iterate); resolveBracketPredicate
 // detects iterator refs and returns a clear error.
+// checkStackNotInOption refuses a stack inside an option named without
+// it: it sits behind the option the walk locates and is reached through
+// `<option_segment>.<NAME>` (spec resolveRest), indexed or not.
+func checkStackNotInOption(layer *ir.LayerInstance, stackName string, stack *vocab.HeaderStack, fp *ast.FieldPath) error {
+	if stack.OwnerOption == "" {
+		return nil
+	}
+	return errorf(fp.Pos, "%s.%s is reached through %s.%s.%s", layer.Spec.Name, stackName, layer.Spec.Name, layer.Spec.OptionSegment, strings.ToUpper(stack.OwnerOption))
+}
+
 func resolveAuxField(layer *ir.LayerInstance, auxName, tail string, fp *ast.FieldPath) (*ir.FieldRef, error) {
 	psm := layer.Spec.ParseStateMachine
 	if psm == nil {
 		return nil, errorf(fp.Pos, "protocol %q has no auxiliary headers (no parser state machine declares an `out` aux parameter)", layer.Spec.Name)
 	}
 	if stack, isStack := psm.StackRefs[auxName]; isStack {
+		if err := checkStackNotInOption(layer, auxName, stack, fp); err != nil {
+			return nil, err
+		}
 		return resolveAuxStackIterField(layer, stack, auxName, tail, fp)
 	}
 	auxLayout, ok := psm.AuxLayouts[auxName]

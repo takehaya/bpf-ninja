@@ -191,8 +191,10 @@ func (r *resolver) resolveUnqualifiedField(fp *ast.FieldPath, layer *ir.LayerIns
 		if fp.Parts[0] != layer.Spec.OptionSegment {
 			return nil, errorf(fp.Pos, "nested field access %q is not supported inside a predicate", fp.String())
 		}
-		if hasIndexAt(fp, 0) || hasIndexAt(fp, 1) || hasIndexAt(fp, len(fp.Parts)-1) {
-			return nil, errorf(fp.Pos, "%s.%s.%s does not take an index", layer.Spec.Name, fp.Parts[0], fp.Parts[1])
+		for _, i := range []int{0, 1, len(fp.Parts) - 1} {
+			if hasIndexAt(fp, i) {
+				return nil, errorf(fp.Pos, "%q in %s does not take an index", fp.Parts[i], fp.String())
+			}
 		}
 		if len(fp.Parts) == 3 {
 			if fp.Parts[2] == "exists" {

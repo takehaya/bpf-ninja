@@ -297,10 +297,17 @@ vector bracketSackNested := {
 vector bracketSackNestedSecond := {
   id := "bracket-tcp-sack-nested-second", ast := tcpOptPred (.cmp (sackBlockBr 1 "right") .gt (.int 25)),
   packet := sackBlocksPkt [(5, 9), (20, 30)], expected := .accept [] }
+def sackOneBlockNops : Packet := tcpOpts ([1, 1, 5, 10] ++ be 4 5 ++ be 4 9 ++ [1, 1, 1, 1, 1, 1, 1, 1])
 vector bracketSackNestedAbsent := {
-  id := "bracket-tcp-sack-nested-past-count", ast := tcpOptPred (.cmp (sackBlockBr 1 "right") .gt (.int 25)),
-  packet := sackBlocksPkt [(5, 9)], expected := .reject,
-  note := "one block: entry 1 is absent although the payload bytes past the option would satisfy the compare (D-031)" }
+  id := "bracket-tcp-sack-nested-past-count", ast := tcpOptPred (.cmp (sackBlockBr 1 "left") .eq (.int 0x01010101)),
+  packet := sackOneBlockNops, expected := .reject,
+  note := "one block: entry 1 is absent although the NOPs after the option read 0x01010101 (D-031)" }
+vector bracketSackNestedAbsentNe := {
+  id := "bracket-tcp-sack-nested-past-count-ne", ast := tcpOptPred (.cmp (sackBlockBr 1 "left") .ne (.int 7)),
+  packet := sackOneBlockNops, expected := .reject, note := "`!=` on an absent entry is false too" }
+vector typBracketSackBareIter := {
+  id := "typ-bracket-tcp-sack-bare-iterator", ast := tcpOptPred (.cmp ⟨[("blocks", none), ("left", none)]⟩ .eq (.int 5)),
+  expected := .illTyped "tcp.blocks is reached through tcp.options.sack" }
 vector typBracketSackBare := {
   id := "typ-bracket-tcp-sack-bare", ast := tcpOptPred (.cmp ⟨[("blocks", some (.nat 0)), ("left", none)]⟩ .eq (.int 5)),
   expected := .illTyped "tcp.blocks is reached through tcp.options.sack" }
@@ -947,7 +954,7 @@ def auxVectors : List Vector := [
   tcpSackAbsentAny, tcpMalformedNoQuery, tcpMalformedNotQuery, tcpMalformedOrTrue, tcpMalformedExists,
   tcpMalformedAfterMss, tcpMalformedChainOn, ipv4MalformedOpts, ipv4MalformedOptsQueried, ipv4OptDepthLastFault, ipv4OptDepthLastSighting,
   tcpOptsValid, tcpOptsValidNone, tcpOptsInvalid, tcpOptsInvalidNot, tcpOptsValidWithMss, tcpOptsValidAbsent, tcpOptsValidAltMember, tcpOptsValidAltOther, tcpOptsValidTwoOptions, tcpOptsValidTwoOptionsLast, tcpOptsValidTwoOptionsMalformed, tcpOptsValidTwoOptionsMiss, tcpOptsValidTwoOptionsOptional, tcpOptsValidTwoOptionsAlt, tcpOptsValidTwoOptionsLabel, tcpOptsValidTwoOptionsOtherLayer, bracketValid, bracketValidMalformed, bracketValidOptMalformed, bracketValidWithCmp, typBracketValidNoRegion, bracketValidAltFirst, bracketValidAltSecond, bracketValidAltOther, bracketValidFirst,
-  bracketValidNoOpts, bracketValidOptAbsent, bracketValidIPv4, bracketValidGeneve, bracketValidTwoOptions, bracketValidRepeated, bracketTcpOptionField, bracketTcpOptionFieldAbsent, bracketTcpOptionBehindWs, bracketTcpOptionNe, bracketTcpOptionInList, bracketTcpOptionInListMiss, bracketTcpOptionOrdered, bracketTcpOptionOrderedMiss, bracketTcpOptionSlice, bracketTcpOptionIPv4Literal, bracketTcpOptionIPv4LiteralMiss, bracketTcpOptionIPv4LiteralNeAbsent, bracketTcpOptionMalformed, whereTcpOptionIPv4Literal, whereTcpOptionIPv4LiteralAbsent, whereTcpOptionSlice, bracketOptionRepeated, bracketOptionRepeatedInner, bracketOptionRepeatedInnerAbsent, bracketTcpOptionNested, bracketTcpOptionNestedAbsent, bracketSackNested, bracketSackNestedSecond, bracketSackNestedAbsent, typBracketSackBare, typWhereSackBare, bracketRRAddrNested, bracketValidPlus, typBracketValidSegment, typBracketValidSrv6, ipv4OptsInvalid,
+  bracketValidNoOpts, bracketValidOptAbsent, bracketValidIPv4, bracketValidGeneve, bracketValidTwoOptions, bracketValidRepeated, bracketTcpOptionField, bracketTcpOptionFieldAbsent, bracketTcpOptionBehindWs, bracketTcpOptionNe, bracketTcpOptionInList, bracketTcpOptionInListMiss, bracketTcpOptionOrdered, bracketTcpOptionOrderedMiss, bracketTcpOptionSlice, bracketTcpOptionIPv4Literal, bracketTcpOptionIPv4LiteralMiss, bracketTcpOptionIPv4LiteralNeAbsent, bracketTcpOptionMalformed, whereTcpOptionIPv4Literal, whereTcpOptionIPv4LiteralAbsent, whereTcpOptionSlice, bracketOptionRepeated, bracketOptionRepeatedInner, bracketOptionRepeatedInnerAbsent, bracketTcpOptionNested, bracketTcpOptionNestedAbsent, bracketSackNested, bracketSackNestedSecond, bracketSackNestedAbsent, bracketSackNestedAbsentNe, typBracketSackBareIter, typBracketSackBare, typWhereSackBare, bracketRRAddrNested, bracketValidPlus, typBracketValidSegment, typBracketValidSrv6, ipv4OptsInvalid,
   geneveOvnHit, geneveMalformedAfter, geneveMalformedBefore, geneveMalformedChainOn, geneveRegionPastEnd, geneveValidEmpty, typOptsValidNoRegion,
   ipv6Hbh, ipv6TwoExts, ipv6ExtLong, ipv6ExtTooLong, ipv6ExtsIndex, ipv6ExtsIndex1, ipv6ExtsIndexAfterLong, ipv6ExtsAnyAfterLong, ipv6ExtsDynamicLong, ipv6ExtsDynamicLongSecond, ipv6ExtsDynamicLongAbsent, ipv6ExtsDynamicLongLast, ipv6ExtsDynamicLongLastMiss, ipv6ExtsDynamicLongBeyond, ipv6ExtsDynamicLongSlot, ipv6ExtsDynamicLongSlotAbsent,
   ipv6ExtsBracket, ipv6ExtsBracketAbsent, ipv6ExtsBracketLong, ipv6ExtsBracketDynamic, ipv6ExtsBracketIter, ipv6ExtsBracketInAbsent, ipv6ExtsBracketInLong, predInSetExtsWalked, predInSetExtsAbsent, typPredInSetExtsWidth, ipv6ExtsSliceLong, ipv6ExtsBracketSliceLong, gtpExtsBracket, gtpExtsBracketAbsent, gtpExtsBracketNone, gtpExtsBracketMixed, gtpExtsBracketMixedMiss, predInSetGtpExtsWalked, ipv6ExtsIndexAbsent,

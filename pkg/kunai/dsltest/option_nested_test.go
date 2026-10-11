@@ -17,7 +17,8 @@ func TestBracketNestedOptionPath(t *testing.T) {
 	r.MustReject(t, buildTCPWithOptions(t, wsOption), "no MSS")
 
 	nop := layers.TCPOption{OptionType: layers.TCPOptionKindNop}
-	oneBlock := buildTCPWithOptions(t, nop, nop, sackOption([2]uint32{5, 9}))
+	// One block, then NOPs: the bytes where block 1 would sit are 0x01.
+	oneBlock := buildTCPWithOptions(t, nop, nop, sackOption([2]uint32{5, 9}), nop, nop, nop, nop, nop, nop, nop, nop)
 	twoBlocks := buildTCPWithOptions(t, nop, nop, sackOption([2]uint32{5, 9}, [2]uint32{20, 30}))
 	r = New(t, "eth/ipv4/tcp[options.SACK.blocks[0].left == 5]")
 	r.MustMatch(t, oneBlock, "block 0 left 5")
@@ -25,7 +26,11 @@ func TestBracketNestedOptionPath(t *testing.T) {
 	r.MustReject(t, buildTCPWithOptions(t, mssOption(1460)), "no SACK")
 	r = New(t, "eth/ipv4/tcp[options.SACK.blocks[1].right > 25]")
 	r.MustMatch(t, twoBlocks, "block 1 right 30")
-	r.MustReject(t, oneBlock, "no block 1")
+	r = New(t, "eth/ipv4/tcp[options.SACK.blocks[1].left == 0x01010101]")
+	r.MustReject(t, oneBlock, "no block 1, although the NOPs after the option read 0x01010101")
+	r = New(t, "eth/ipv4/tcp[options.SACK.blocks[1].left != 7]")
+	r.MustMatch(t, twoBlocks, "block 1 left 20")
+	r.MustReject(t, oneBlock, "no block 1: != is false too")
 
 	rr := func(addrs ...byte) []layers.IPv4Option {
 		data := []byte{4}
@@ -38,6 +43,8 @@ func TestBracketNestedOptionPath(t *testing.T) {
 	r = New(t, "eth/ipv4[options.RR.addrs[1].addr in [10.0.0.0/24, 192.168.0.1]]/tcp")
 	o.IPv4Options = rr(1, 2)
 	r.MustMatch(t, Build(t, o), "addr 1 is 10.0.0.2")
+	r = New(t, "eth/ipv4[options.RR.addrs[1].addr != 1.2.3.4]/tcp")
+	r.MustMatch(t, Build(t, o), "addr 1 is 10.0.0.2")
 	o.IPv4Options = rr(1)
-	r.MustReject(t, Build(t, o), "one address only")
+	r.MustReject(t, Build(t, o), "one address only: != is false too")
 }

@@ -76,6 +76,20 @@ func genPredicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, error) {
 		cnt := pred.Field.Layer.Spec.StackCounts[pred.Field.Aux.OutParam]
 		guard = emitHeaderCount(asm.R3, r4Anchor(), cnt, dslReject)
 		guard = append(guard, asm.JLE.Imm(asm.R3, int32(pred.Field.Aux.Stack.Static), dslReject))
+	case pred.Field != nil && pred.Field.Aux != nil && pred.Field.Aux.OwnerOption != nil && pred.Field.Aux.Stack != nil && pred.Field.Aux.Stack.IsStatic:
+		// A stack inside an option (tcp.options.SACK.blocks[1]) counts its
+		// entries by the option's length byte; the predicate runs after the
+		// walk (the option slot check above), as the where clause's guard
+		// does.
+		src, err := refCountSource(pred.Field)
+		if err != nil {
+			return nil, err
+		}
+		if src == nil || src.Owner == nil {
+			return nil, fmt.Errorf("codegen: stack %s.%s inside an option has no count source", pred.Field.Layer.Spec.Name, pred.Field.Aux.OutParam)
+		}
+		slot, _ := pc.optionSlotFor(pred.Field)
+		guard = emitOwnerCountGuard(slot, src, int(pred.Field.Aux.Stack.Static), dslReject)
 	}
 
 	var insns asm.Instructions
