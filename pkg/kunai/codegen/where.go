@@ -1732,57 +1732,27 @@ func (c *whereCtx) genArithFieldLoad(f *ir.FieldRef) (asm.Instructions, error) {
 	if slot, ok := c.dynamicOffsetSlotFor(f); ok {
 		return c.genDynamicOffsetAuxLoad(f, slot)
 	}
-	if needsEntryAddress(f) {
-		// Dynamic stack index, or a static index into a stack of
-		// variable-length entries: compute the entry's runtime offset off
-		// the layer's where-context anchor, then byte-swap the loaded
-		// value to natural order so downstream arithmetic / comparison
-		// sees the network-order integer; a bit slice narrows it after.
-		anchor, err := c.layerAnchorFor(f.Layer)
-		if err != nil {
-			return nil, err
-		}
-		fieldByteOff, fieldBytes, err := auxEntryFieldWindow(f)
-		if err != nil {
-			return nil, err
-		}
-		size, err := asmSizeFor(fieldBytes)
-		if err != nil {
-			return nil, err
-		}
-		addr, err := c.stackEntryAddress(f, anchor, c.absent())
-		if err != nil {
-			return nil, err
-		}
-		insns := append(addr, asm.LoadMem(asm.R3, asm.R5, int16(fieldByteOff), size))
-		if fieldBytes > 1 {
-			insns = append(insns, asm.HostTo(asm.BE, asm.R3, size))
-		}
-		insns = append(insns, emitSliceShiftMask(f, fieldBytes)...)
-		return insns, nil
-	}
+	// A dynamic stack index, or a static index into a stack of
+	// variable-length entries, locates the entry off the layer's
+	// where-context anchor; the value is then byte-swapped to natural
+	// order so downstream arithmetic / comparison sees the network-order
+	// integer, and a bit slice narrows it after.
 	anchor, err := c.layerAnchorFor(f.Layer)
 	if err != nil {
 		return nil, err
 	}
-	fieldOff, fieldBytes, err := fieldRefByteOffset(f)
+	insns, bytes, size, err := emitScalarFieldLoad(f, fieldLoadSite{
+		gate: anchor,
+		load: anchor,
+		entryAddr: func(ref *ir.FieldRef) (asm.Instructions, error) {
+			return c.stackEntryAddress(ref, anchor, c.absent())
+		},
+		fail: c.absent(),
+	})
 	if err != nil {
 		return nil, err
 	}
-	size, err := asmSizeFor(fieldBytes)
-	if err != nil {
-		return nil, err
-	}
-	var insns asm.Instructions
-	if f.Aux != nil {
-		insns = append(insns, emitAuxGating(f.Aux.Gating, anchor, c.absent())...)
-	}
-	insns = append(insns, emitFieldLoad(anchor, fieldOff, size)...)
-	if fieldBytes > 1 {
-		insns = append(insns, asm.HostTo(asm.BE, asm.R3, size))
-	}
-	insns = append(insns, emitSliceShiftMask(f, fieldBytes)...)
-	return insns, nil
+	return append(insns, emitFieldToHostOrder(f, bytes, size)...), nil
 }
 
 // emitSliceShiftMask returns the post-load shift + AND instructions

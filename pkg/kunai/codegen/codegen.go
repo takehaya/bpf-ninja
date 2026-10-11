@@ -2707,21 +2707,79 @@ func emitStaticStackEntryAddress(ref *ir.FieldRef, base layerAnchor, failLabel s
 	return append(insns, emitExposeEntry(ref, failLabel)...), nil
 }
 
-// emitDynamicStackLoad is the single-LDX convenience built on
-// emitStackEntryAddress for predicate-emit-time callers (R4 still at
-// layer entry). Multi-byte literals (IPv6, MAC, multi-half CIDR) go
-// through auxLoadEmitter so they can issue multiple LDX from the same
-// R5 base.
-func emitDynamicStackLoad(ref *ir.FieldRef, size asm.Size, failLabel string) (asm.Instructions, error) {
-	addr, err := emitStackEntryAddress(ref, r4Anchor(), indexBound{}, failLabel)
-	if err != nil {
-		return nil, err
+// fieldLoadSite is where a scalar field read sits: the anchor an aux's
+// gating reads through, the anchor the field itself is read through
+// (they differ for a predicate behind a write-back overlay), how a
+// runtime-offset stack entry is located, and the label an absent field
+// jumps to.
+type fieldLoadSite struct {
+	gate, load layerAnchor
+	entryAddr  func(*ir.FieldRef) (asm.Instructions, error)
+	fail       string
+}
+
+// predicateLoadSite is the site of a bracket predicate: gating off R4 at
+// layer entry, primary fields through pc's anchor, entries walked with no
+// count bound beyond the static guard.
+func predicateLoadSite(pc *predCtx) fieldLoadSite {
+	return fieldLoadSite{
+		gate: r4Anchor(),
+		load: pc.fieldAnchor(),
+		entryAddr: func(ref *ir.FieldRef) (asm.Instructions, error) {
+			return emitStackEntryAddress(ref, r4Anchor(), indexBound{}, dslReject)
+		},
+		fail: dslReject,
 	}
-	fieldByteOff, err := auxEntryFieldStart(ref)
-	if err != nil {
-		return nil, err
+}
+
+// emitScalarFieldLoad reads the window covering a field of at most 8
+// bytes into R3, little-endian and unnormalised, and returns its width.
+// A field at a runtime offset (a dynamic index, or an entry past
+// variable-length ones) goes through site.entryAddr, which leaves R5 at
+// the entry start and needs no gating (the walk extracted the entry);
+// any other field gates an aux on presence and loads off site.load. R2
+// and R5 may be clobbered; R10 is never touched, so bpf_loop callbacks
+// can replay the read.
+func emitScalarFieldLoad(ref *ir.FieldRef, site fieldLoadSite) (asm.Instructions, int, asm.Size, error) {
+	if needsEntryAddress(ref) {
+		off, bytes, err := auxEntryFieldWindow(ref)
+		if err != nil {
+			return nil, 0, 0, err
+		}
+		size, err := asmSizeFor(bytes)
+		if err != nil {
+			return nil, 0, 0, err
+		}
+		addr, err := site.entryAddr(ref)
+		if err != nil {
+			return nil, 0, 0, err
+		}
+		return append(addr, asm.LoadMem(asm.R3, asm.R5, int16(off), size)), bytes, size, nil
 	}
-	return append(addr, asm.LoadMem(asm.R3, asm.R5, int16(fieldByteOff), size)), nil
+	off, bytes, err := fieldRefByteOffset(ref)
+	if err != nil {
+		return nil, 0, 0, err
+	}
+	size, err := asmSizeFor(bytes)
+	if err != nil {
+		return nil, 0, 0, err
+	}
+	var insns asm.Instructions
+	if ref.Aux != nil {
+		insns = append(insns, emitAuxGating(ref.Aux.Gating, site.gate, site.fail)...)
+	}
+	return append(insns, emitFieldLoad(site.load, off, size)...), bytes, size, nil
+}
+
+// emitFieldToHostOrder turns the window emitScalarFieldLoad left in R3
+// into the field's numeric value: host byte order, then a slice or a
+// sub-byte field shifted and masked down to its bits.
+func emitFieldToHostOrder(ref *ir.FieldRef, bytes int, size asm.Size) asm.Instructions {
+	var insns asm.Instructions
+	if bytes > 1 {
+		insns = append(insns, asm.HostTo(asm.BE, asm.R3, size))
+	}
+	return append(insns, emitSliceShiftMask(ref, bytes)...)
 }
 
 // headerSize sums the protocol's header field bits, rejecting
