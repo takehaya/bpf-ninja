@@ -132,6 +132,9 @@ func TestQuantifiedLayerReferences(t *testing.T) {
 			t.Errorf("%s: expected an ambiguity error pointing at @label, got %v", expr, err)
 		}
 	}
+	resolveOK(t, "eth/vlan{0,1}/ipv4/tcp where vlan.tci == 1", nil)
+	resolveOK(t, "eth/vlan{1,1}/ipv4/tcp where vlan.tci == 1", nil)
+	resolveErr(t, "eth/vlan{0,0}/ipv4/tcp where vlan.tci == 1", nil, "quantified {0,0} and matches no header")
 	resolveOK(t, "eth/mpls@m{1,3}/ipv4/tcp where m.label == 7", nil)
 	resolveOK(t, "eth/mpls@m+/ipv4/tcp where m.label == 7", nil)
 	p := resolveOK(t, "eth/vlan?/ipv4/tcp where vlan.tci == 1 and ipv4.ttl == 64", nil)
@@ -458,6 +461,7 @@ func TestResolvePredicateInSetRejectsOptionalLayer(t *testing.T) {
 	// An optional layer may be absent, leaving the host key buffer
 	// unwritten while the filter still accepts — reject `in @set` there.
 	resolveErr(t, "eth/vlan[tci in @vlans]?/ipv4/tcp", nil, "mandatory layer")
+	resolveErr(t, "eth/vlan[tci in @vlans]{1,2}/ipv4/tcp", nil, "(quantifier {1,2})")
 }
 
 func TestResolvePredicateInSetRejectsAlternationMember(t *testing.T) {

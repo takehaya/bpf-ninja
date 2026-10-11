@@ -743,7 +743,9 @@ func TestCompileCaptureHeadersQuantifiedAltGroup(t *testing.T) {
 }
 
 // TestCompileQuantifiedAltGroupNamesQuantifier: the refusal prints the
-// quantifier as written, not the kind's placeholder (`{n,m}`).
+// quantifier, not the kind's placeholder (`{n,m}`). `{1,2}` reaches the
+// alternation emitter's refusal, `{1,}` with a capture the capture sizing
+// (layerMaxInstances); `+` printed right before and is the control.
 func TestCompileQuantifiedAltGroupNamesQuantifier(t *testing.T) {
 	for expr, want := range map[string]string{
 		"eth/(vlan|qinq){1,2}/ipv4/tcp":                "quantifier {1,2} on",

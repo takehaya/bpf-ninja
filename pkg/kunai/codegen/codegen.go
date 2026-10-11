@@ -1347,6 +1347,7 @@ func optionalLayerGuard(layer *ir.LayerInstance, index int, all []*ir.LayerInsta
 	// instance (genStaticMachineChain, the self edge read from the previous
 	// instance's entry); a repeated flag-trigger layer would need the
 	// previous instance's runtime length inside one bpf_loop body.
+	// Not !CanRepeat(): `{0,0}` is neither, and stays refused here.
 	atMostOne := layer.Quant == ast.QuantOpt || (layer.Quant == ast.QuantRange && layer.RangeMax == 1)
 	if !atMostOne && !isMachineChain(layer) && layer.Spec.HasVariableLayout() {
 		return fmt.Errorf("%w: %q has a variable-length header without a parser machine: it can be optional (`?`, `{0,1}`) but not repeated", ErrNotImplemented, layer.Spec.Name)

@@ -754,20 +754,18 @@ func (r *resolver) lookupByQualifier(name string, pos ast.Position) (*ir.LayerIn
 	}
 	var found *ir.LayerInstance
 	count := 0
-	repeated := false
 	for _, li := range r.flatLayers {
 		if li.Spec != nil && li.Spec.Name == name {
 			found = li
 			count++
-			if mayRepeat(li) {
-				repeated = true
-			}
 		}
 	}
 	switch {
 	case count == 0:
 		return nil, errorf(pos, "unknown label or protocol %q", name)
-	case count == 1 && !repeated:
+	case count == 1 && matchesNone(found):
+		return nil, errorf(pos, "protocol %q is quantified %s and matches no header", name, found.QuantText())
+	case count == 1 && !found.CanRepeat():
 		return found, nil
 	case count == 1:
 		return nil, errorf(pos, "protocol %q is ambiguous (quantifier %s may match several headers); qualify with an @label, which names the last one", name, found.QuantText())
@@ -775,9 +773,8 @@ func (r *resolver) lookupByQualifier(name string, pos ast.Position) (*ir.LayerIn
 	return nil, errorf(pos, "protocol %q is ambiguous (%d instances); qualify with an @label", name, count)
 }
 
-// mayRepeat reports whether a bare protocol name is ambiguous for a
-// layer: the quantifier admits more than one header (CanRepeat), or it is
-// `{n,0}`, which names no header at all.
-func mayRepeat(l *ir.LayerInstance) bool {
-	return l.CanRepeat() || (l.Quant == ast.QuantRange && l.RangeMax == 0)
+// matchesNone reports a `{0,0}` layer, which no bare name can read.
+func matchesNone(l *ir.LayerInstance) bool {
+	_, max := l.Bounds()
+	return max == 0
 }
