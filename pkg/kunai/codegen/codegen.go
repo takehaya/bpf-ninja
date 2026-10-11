@@ -1037,9 +1037,9 @@ func genLayerInner(layer *ir.LayerInstance, index int, all []*ir.LayerInstance, 
 			}
 			return genOptionalMachineLayer(layer, index, all, qo, plan, pc)
 		}
-		if layer.Spec.ParseStateMachine != nil && staticChainFitsRange(layer.RangeMax) {
-			// Two to four headers of a variable-length protocol
-			// (`ipv4{1,2}`): one parser machine per instance.
+		if isMachineChain(layer) {
+			// Two or more headers of a variable-length protocol
+			// (`ipv4{1,2}`, `ipv4{2,}`): one parser machine per instance.
 			return genStaticMachineChain(layer, index, all, qo, plan, pc)
 		}
 		if staticChainFitsRange(layer.RangeMax) {
@@ -1048,6 +1048,11 @@ func genLayerInner(layer *ir.LayerInstance, index int, all []*ir.LayerInstance, 
 		}
 		return genBpfLoopChain(layer, index, all, qo, pc)
 	case ast.QuantPlus, ast.QuantStar:
+		if isMachineChain(layer) {
+			// `ipv4+` / `ipv6*`: MAX_DEPTH parser machines, as the spec
+			// evaluates an open bound (machineChainBounds).
+			return genStaticMachineChain(layer, index, all, qo, plan, pc)
+		}
 		return genBpfLoopChain(layer, index, all, qo, pc)
 	}
 	return nil, nil, fmt.Errorf("%w: quantifier %s on layer %q", ErrNotImplemented, layer.Quant, layer.Spec.Name)
@@ -1338,15 +1343,13 @@ func optionalLayerGuard(layer *ir.LayerInstance, index int, all []*ir.LayerInsta
 	}
 	// One optional header of a variable-length protocol is lowered by
 	// genOptionalMachineLayer (parser machine) or emitPeekedIterZero (flag
-	// triggers). A parser-machine protocol repeats up to the static cap
-	// (genStaticMachineChain: one machine per instance, the self edge read
-	// from the previous instance's entry); a flag-trigger layer and the
-	// bpf_loop quantifiers would need the previous instance's runtime
-	// length inside one body.
+	// triggers). A parser-machine protocol repeats as one machine per
+	// instance (genStaticMachineChain, the self edge read from the previous
+	// instance's entry); a repeated flag-trigger layer would need the
+	// previous instance's runtime length inside one bpf_loop body.
 	atMostOne := layer.Quant == ast.QuantOpt || (layer.Quant == ast.QuantRange && layer.RangeMax == 1)
-	machineChain := layer.Quant == ast.QuantRange && staticChainFitsRange(layer.RangeMax) && layer.Spec.ParseStateMachine != nil
-	if !atMostOne && !machineChain && layer.Spec.HasVariableLayout() {
-		return fmt.Errorf("%w: %q has a variable-length header: it can be optional (`?`, `{0,1}`) or repeated with a bound of at most %d (`{n,m}`, m <= %d); `*`, `+`, `{n,}` and larger bounds are not", ErrNotImplemented, layer.Spec.Name, staticChainCap, staticChainCap)
+	if !atMostOne && !isMachineChain(layer) && layer.Spec.HasVariableLayout() {
+		return fmt.Errorf("%w: %q has a variable-length header without a parser machine: it can be optional (`?`, `{0,1}`) but not repeated", ErrNotImplemented, layer.Spec.Name)
 	}
 	if layer.Spec.ChainEnd != nil && layer.Spec.HasVariableLayout() {
 		return fmt.Errorf("%w: optional %q is variable-length with a chain-end rule", ErrNotImplemented, layer.Spec.Name)

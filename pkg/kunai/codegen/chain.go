@@ -6,13 +6,77 @@ import (
 
 	"github.com/cilium/ebpf/asm"
 
+	"github.com/takehaya/bpf-ninja/pkg/kunai/ast"
 	"github.com/takehaya/bpf-ninja/pkg/kunai/ir"
 )
 
-// staticChainCap is the {n,m} m upper bound the unroll path accepts.
-// Quantifiers beyond this (including `+` / `*` / open-ended `{n,}`)
-// require bpf_loop-based chain codegen and land in a later commit.
+// staticChainCap is the {n,m} m upper bound the unroll path accepts for
+// a fixed-length layer (vlan, mpls). Quantifiers beyond it, including
+// `+` / `*` / open-ended `{n,}`, take the bpf_loop chain (bpfloop.go). A
+// parser-machine layer unrolls further, see staticMachineChainCap.
 const staticChainCap = 4
+
+// staticMachineChainCap bounds the instances a repeated parser-machine
+// layer unrolls to, one machine per instance (genStaticMachineChain). An
+// open quantifier stands for the protocol's MAX_DEPTH, so every bundled
+// protocol with a self edge must declare at most this many (ipv4 takes
+// the default 8, ipv6 declares 4; TestBundledChainDepthsFitMachineCap
+// pins it); a larger depth, or an explicit `{n,m}` past it, is an
+// implementation limit (ErrNotImplemented), not a typing error.
+const staticMachineChainCap = 8
+
+// isMachineChain reports whether layer is a repeated parser-machine layer
+// lowered by genStaticMachineChain: `+`, `*`, `{n,}`, or `{n,m}` with
+// m ≥ 2 on a protocol with a parser machine. (`?`, `{0,1}` and `{1,1}`
+// are single-instance lowerings; an alternation group has no machine.)
+func isMachineChain(layer *ir.LayerInstance) bool {
+	if layer == nil || layer.Alternation != nil || layer.Spec == nil || layer.Spec.ParseStateMachine == nil {
+		return false
+	}
+	switch layer.Quant {
+	case ast.QuantPlus, ast.QuantStar:
+		return true
+	case ast.QuantRange:
+		return layer.RangeMax < 0 || layer.RangeMax >= 2
+	}
+	return false
+}
+
+// machineChainBounds is the instance range genStaticMachineChain unrolls:
+// the quantifier's bounds with the protocol's MAX_DEPTH standing in for an
+// open upper bound, as the spec evaluates it (evalProtoLayer: fuel :=
+// m.getD maxDepth, so `ipv4+` is `ipv4{1,8}` and `ipv6*` is `ipv6{0,4}`),
+// shared with the capture bound (layerMaxInstances) through chainMaxIter.
+// A bound past staticMachineChainCap is ErrNotImplemented.
+func machineChainBounds(layer *ir.LayerInstance) (lo, hi int, err error) {
+	lo, _ = chainBounds(layer)
+	hi, err = chainMaxIter(layer)
+	if err != nil {
+		return 0, 0, err
+	}
+	if hi > staticMachineChainCap {
+		return 0, 0, fmt.Errorf("%w: %s on %q unrolls to %d parser machines, more than the %d supported; write a bound of at most %d (`{n,m}`)", ErrNotImplemented, quantText(layer), layer.Spec.Name, hi, staticMachineChainCap, staticMachineChainCap)
+	}
+	return lo, hi, nil
+}
+
+// quantText prints a layer's quantifier as the DSL spells it.
+func quantText(layer *ir.LayerInstance) string {
+	switch layer.Quant {
+	case ast.QuantOne:
+		return ""
+	case ast.QuantOpt:
+		return "?"
+	case ast.QuantPlus:
+		return "+"
+	case ast.QuantStar:
+		return "*"
+	}
+	if layer.RangeMax < 0 {
+		return fmt.Sprintf("{%d,}", layer.RangeMin)
+	}
+	return fmt.Sprintf("{%d,%d}", layer.RangeMin, layer.RangeMax)
+}
 
 // staticChainFitsRange reports whether a QuantRange's upper bound can
 // ride the static-unroll path. Open-ended ({n,} has RangeMax=-1) and
@@ -30,11 +94,9 @@ func staticChainFitsRange(max int) bool {
 // Iterations below RangeMin fail hard; iterations at or above RangeMin
 // skip to a single chain-done landing so a short stack falls through.
 func genStaticChain(layer *ir.LayerInstance, index int, all []*ir.LayerInstance, qo queriedOptions, pc *predCtx) (asm.Instructions, error) {
-	if layer.RangeMax < 0 {
-		return nil, fmt.Errorf("%w: open-ended quantifier {%d,} on %q needs bpf_loop chain codegen", ErrNotImplemented, layer.RangeMin, layer.Spec.Name)
-	}
-	if layer.RangeMax > staticChainCap {
-		return nil, fmt.Errorf("%w: {%d,%d} on %q exceeds static-unroll cap %d; bpf_loop chain codegen will cover this", ErrNotImplemented, layer.RangeMin, layer.RangeMax, layer.Spec.Name, staticChainCap)
+	if !staticChainFitsRange(layer.RangeMax) {
+		// genLayerInner routes an open or larger bound to the bpf_loop chain.
+		return nil, fmt.Errorf("codegen: genStaticChain on %q with %s", layer.Spec.Name, quantText(layer))
 	}
 	optional := layer.RangeMin == 0
 	if optional {
@@ -198,29 +260,35 @@ func genOptionalMachineLayer(layer *ir.LayerInstance, index int, all []*ir.Layer
 	return append(insns, asm.Mov.Reg(asm.R0, asm.R0).WithSymbol(chainDone)), callbacks, nil
 }
 
-// genStaticMachineChain lowers `{n,m}` (2 ≤ m ≤ staticChainCap) on a
-// parser-machine layer with a declared self edge (`ipv4{1,2}`,
-// `ipv6{0,2}`): one parser machine per instance, so each header's
-// variable length, option walk and bracket predicates are those of that
-// header (spec `iterate`: every instance runs `extract`, a predicate
-// failure rejects, only a dispatch miss ends the chain). Iteration 0 is
-// the layer as usual, optional when n = 0. Iteration i ≥ 1 dispatches
-// through the self edge against iteration i-1 (genParserMachineIter); its
-// miss ends the chain at the done landing when i ≥ n, and rejects below n
-// (under-run). The slots are the layer's own, written after each
-// successful dispatch: a where reference reads the last instance.
+// genStaticMachineChain lowers a repeated parser-machine layer with a
+// declared self edge (`ipv4{1,2}`, `ipv6{0,2}`, `ipv4+`, `ipv6*`,
+// `ipv4{2,}`): one parser machine per instance, so each header's variable
+// length, option walk and bracket predicates are those of that header
+// (spec `iterate`: every instance runs `extract`, a predicate failure
+// rejects, only a dispatch miss ends the chain). The instance range is
+// machineChainBounds: an open bound stands for MAX_DEPTH instances.
+// Iteration 0 is the layer as usual, optional when n = 0. Iteration i ≥ 1
+// dispatches through the self edge against iteration i-1
+// (genParserMachineIter); its miss ends the chain at the done landing when
+// i ≥ n, and rejects below n (under-run). The slots are the layer's own,
+// written after each successful dispatch: a where reference reads the
+// last instance.
 func genStaticMachineChain(layer *ir.LayerInstance, index int, all []*ir.LayerInstance, qo queriedOptions, plan *accPlan, pc *predCtx) (asm.Instructions, asm.Instructions, error) {
-	if layer.RangeMax < 2 || layer.RangeMax > staticChainCap {
-		return nil, nil, fmt.Errorf("codegen: genStaticMachineChain on %q with {%d,%d}", layer.Spec.Name, layer.RangeMin, layer.RangeMax)
+	if !isMachineChain(layer) {
+		return nil, nil, fmt.Errorf("codegen: genStaticMachineChain on %q with %s", layer.Spec.Name, quantText(layer))
+	}
+	lo, hi, err := machineChainBounds(layer)
+	if err != nil {
+		return nil, nil, err
 	}
 	if layer.Spec.ChainEnd != nil {
 		// The over-run check at the bound (D-024) assumes a fixed header.
-		return nil, nil, fmt.Errorf("%w: {%d,%d} on %q: a parser-machine layer with a chain-end rule", ErrNotImplemented, layer.RangeMin, layer.RangeMax, layer.Spec.Name)
+		return nil, nil, fmt.Errorf("%w: %s on %q: a parser-machine layer with a chain-end rule", ErrNotImplemented, quantText(layer), layer.Spec.Name)
 	}
 	if layer.Spec.SelectDispatchConst(layer.Spec.Name) == nil {
 		return nil, nil, fmt.Errorf("%w: repeated %q has no self-dispatch const (resolver bug)", ErrNotImplemented, layer.Spec.Name)
 	}
-	optional := layer.RangeMin == 0
+	optional := lo == 0
 	if optional {
 		if err := optionalLayerGuard(layer, index, all); err != nil {
 			return nil, nil, err
@@ -238,12 +306,13 @@ func genStaticMachineChain(layer *ir.LayerInstance, index int, all []*ir.LayerIn
 		return nil, nil, err
 	}
 	var callbacks asm.Instructions
-	for i := 0; i < layer.RangeMax; i++ {
+	for i := 0; i < hi; i++ {
 		target := dslReject
 		switch {
 		case i == 0 && optional:
 			target = absentLabel
-		case i >= layer.RangeMin && i > 0:
+		case i >= lo:
+			// i ≥ 1 here: iteration 0 with lo == 0 is the optional case above.
 			target = chainDone
 		}
 		body, cbs, err := genParserMachineIter(layer, index, all, qo, plan, pc, target, i)
@@ -257,7 +326,7 @@ func genStaticMachineChain(layer *ir.LayerInstance, index int, all []*ir.LayerIn
 	// absent iteration 0 of `{0,m}` without its own edge); `{m,m}` never
 	// jumps there. R0 (the scratch window) is live on both paths; R3 is
 	// not after the machine's bpf_loop, so the landing must not touch it.
-	if layer.RangeMin < layer.RangeMax {
+	if lo < hi {
 		insns = append(insns, asm.Mov.Reg(asm.R0, asm.R0).WithSymbol(chainDone))
 	}
 	if absentLabel != chainDone {

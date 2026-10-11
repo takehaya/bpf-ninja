@@ -78,10 +78,15 @@ const bit<16> KUNAI_IPV4_GRE_PROTOCOL_TYPE = 0x0800;
 // 32-iter cap was never applied. Removed to eliminate the
 // source/impl drift. The loader's MAX_DEPTH path matches the exact
 // name `<SELF>_MAX_DEPTH` only — declare `IPV4_MAX_DEPTH = N` (and
-// verify on every supported kernel) if a higher cap is needed.
+// verify on every supported kernel) if a higher cap is needed. The
+// same constant is the number of IPv4 headers `ipv4+`, `ipv4*` and
+// `ipv4{n,}` stand for (one parser machine per instance), and the
+// unroll supports at most 8, so a larger value would refuse those
+// filters (spec DECISIONS D-037).
 //
-// The bound is only consulted when codegen emits the bpf_loop walk
-// — which happens only when the program queries an IPv4 option.
+// Otherwise the bound is only consulted when codegen emits the
+// bpf_loop walk — which happens only when the program queries an
+// IPv4 option.
 // Programs that don't reach into ipv4.options.<X> route through
 // the demand-driven bulk-advance fallback (see dsl-internals.md
 // §6.5 Mechanism 8 / canFallbackToBulkAdvance) and skip the

@@ -1145,7 +1145,7 @@ parent_dispatch(p, σ_i, P) = ok   かつ   ⟨L(1), σ_i⟩ ⇓_P ✗      ; bo
 
 反復が正常に止まるのは parent_dispatch の miss か上限への到達だけです。dispatch が一致したうえで L(1) が失敗した場合 (bounds 越え、bracket predicate の不成立) は、`?` の case B と同じく skip にはならず、layer 全体が ✗ になります (`spec/lean/DECISIONS.md` D-001, D-005)。したがって `L?` ≡ `L{0,1}` です (`spec/lean/Kunai/Laws.lean: opt_eq_range`)。
 
-実装対応としては、`+` / `*` / `{n,m>4}` は `pkg/kunai/codegen/bpfloop.go` で `bpf_loop` + bpf2bpf callback として emit し、`{n,m≤4}` は `chain.go` で静的に unroll します。どちらの経路も上限に達したところで終端の印を確かめます。
+実装対応としては、固定長 layer の `+` / `*` / `{n,m>4}` は `pkg/kunai/codegen/bpfloop.go` で `bpf_loop` + bpf2bpf callback として emit し、`{n,m≤4}` は `chain.go` で静的に unroll します。どちらの経路も上限に達したところで終端の印を確かめます。parser machine を持つ可変長 layer (ipv4、ipv6) はどの quantifier でも instance ごとに parser machine を展開し (`genStaticMachineChain`)、open bound は `<PROTO>_MAX_DEPTH` 個の instance に置き換えます (`iterate` の fuel と同じ値)。
 
 ### 13.6 Capture 評価
 

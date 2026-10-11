@@ -542,6 +542,17 @@ func TransitionTargets(t TransitionOp) []int {
 // default).
 const DefaultMaxDepth = 8
 
+// ChainDepth is the protocol's MAX_DEPTH, or DefaultMaxDepth when the
+// .p4 declares none: the iteration bound of its parser loops and, for a
+// repeated layer, the number of instances an open quantifier (`+`, `*`,
+// `{n,}`) stands for (spec evalProtoLayer: fuel := m.getD maxDepth).
+func (p *ProtocolSpec) ChainDepth() int {
+	if p.MaxDepth == 0 {
+		return DefaultMaxDepth
+	}
+	return p.MaxDepth
+}
+
 // StackPushBound is the most entries the parser machine can push onto
 // `stack`: one per state that pushes onto it, plus MAX_DEPTH more for each
 // such state when the machine loops (a direct self-edge, or an indirect
@@ -549,10 +560,7 @@ const DefaultMaxDepth = 8
 // MAX_DEPTH). A machine without a backward transition pushes each site
 // once.
 func (p *ProtocolSpec) StackPushBound(stack string) int {
-	depth := p.MaxDepth
-	if depth == 0 {
-		depth = DefaultMaxDepth
-	}
+	depth := p.ChainDepth()
 	m := p.ParseStateMachine
 	if m == nil {
 		return 0

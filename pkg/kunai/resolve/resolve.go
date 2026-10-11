@@ -219,6 +219,17 @@ func checkChainShape(layers []*ir.LayerInstance) error {
 			self := strings.ToUpper(l.Spec.Name)
 			return errorf(l.Pos, "repeated %s needs a dispatch constant under itself (declare KUNAI_%s_%s_<FIELD> or KUNAI_%s_%s_NO_CHECK in %s.p4); without one it can be optional (`?`), not repeated", l.Spec.Name, self, self, self, self, l.Spec.Name)
 		}
+		// An open bound stands for MAX_DEPTH instances (spec evalProtoLayer:
+		// fuel := m.getD maxDepth), so `{n,}` with n above it can never be
+		// satisfied: the spec's `iterate` runs out of fuel below the minimum
+		// and makes the filter ill-typed rather than always false.
+		if l.Quant == ast.QuantRange && l.RangeMax < 0 && l.RangeMin > l.Spec.ChainDepth() {
+			bound := fmt.Sprintf("the default MAX_DEPTH (%d)", l.Spec.ChainDepth())
+			if l.Spec.MaxDepth != 0 {
+				bound = fmt.Sprintf("%s_MAX_DEPTH (%d)", strings.ToUpper(l.Spec.Name), l.Spec.MaxDepth)
+			}
+			return errorf(l.Pos, "{%d,} on %s: the minimum exceeds %s, the bound an open quantifier stands for", l.RangeMin, l.Spec.Name, bound)
+		}
 		if !l.Absentable() || l.Dispatch == nil || l.Dispatch.Type != vocab.DispatchNoCheck {
 			continue
 		}

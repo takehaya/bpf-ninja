@@ -57,6 +57,8 @@ const bit<8>  IPV6_NH_DEST_OPTS  = 60; // Destination Options (RFC 8200)
 // Bound the number of extension headers independently of their byte lengths.
 // Each iteration checks the complete header against the available packet
 // window; the length must never be masked down to meet this resource budget.
+// The same constant is the number of IPv6 headers `ipv6+`, `ipv6*` and
+// `ipv6{n,}` stand for (one parser machine per instance, at most 8).
 const bit<8> IPV6_MAX_DEPTH = 4;
 
 // Self-validating parser: the start state's tuple-select rejects on

@@ -64,6 +64,21 @@ var (
 		"eth/ipv4@o{1,2}/tcp where o.options.RR.kind == 7",
 		"eth/ipv4{1,2}/tcp where tcp.dport == 443",
 		"eth/ipv4{1,2}/udp",
+		// open quantifiers unroll to MAX_DEPTH parser machines; the layer
+		// after them dispatches against a range-valued entry too.
+		"eth/ipv4+/tcp",
+		"eth/ipv4{1,8}/tcp",
+		"eth/ipv4/ipv4*/tcp",
+		"eth/ipv4{2,}/tcp",
+		"eth/ipv4[ttl==64]+/tcp",
+		"eth/ipv4[options.valid]+/tcp",
+		"eth/ipv4@o+/tcp where o.options.RR.kind == 7",
+		"eth/ipv4+/tcp where tcp.dport == 443",
+		"eth/ipv6+/tcp",
+		"eth/ipv6/ipv6*/tcp",
+		"eth/ipv6@o+/tcp where o.exts[0].next_header == 6",
+		"eth/ipv4+/tcp capture headers+64",
+		"eth/vlan?/ipv4+/tcp",
 		// flag-gated optional words (gre's C/K/S) read the flag byte
 		// back through the range-valued R4 left by ipv4's IHL.
 		"eth/ipv4/gre/ipv4/tcp",

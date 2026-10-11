@@ -66,11 +66,11 @@ eth/ipv4/udp/gtp/ipv4/tcp           # GTP-U の内側 IP
 |---|---|
 | (なし) | 必ず 1 回 |
 | `?` | 0 または 1 回 (optional) |
-| `+` | 1 回以上 (bpf_loop で展開) |
-| `*` | 0 回以上 (bpf_loop、先頭の peek でスキップ) |
+| `+` | 1 回以上。固定長 layer は bpf_loop で展開し、self edge を持つ parser-machine の layer (ipv4、ipv6) は `<PROTO>_MAX_DEPTH` 個 (ipv4 は 8、ipv6 は 4) まで instance ごとに parser を展開する |
+| `*` | 0 回以上 (先頭の peek でスキップ)。上限は `+` と同じ |
 | `{n}` | ちょうど n 回 (静的アンロール、`{n,n}` と等価。`{1,1}` ≡ `1` は chain-end 信号を持たない proto で Lean 保証済: `spec/lean/Kunai/Laws.lean: one_eq_range_layer`。mpls では `{1,1}` がスタックの終端も要求する) |
-| `{n,m}` | n〜m 回。m≤4 は静的アンロール、それ以上は bpf_loop。self edge を持つ parser-machine の layer (ipv4、ipv6) も m≤4 なら書け、instance ごとに parser が走る。`where` でその layer を参照するには `@label` を付け、最後に match した header を指す |
-| `{n,}` | n 回以上 (上限省略、bpf_loop で展開) |
+| `{n,m}` | n〜m 回。固定長 layer は m≤4 を静的アンロールし、それ以上は bpf_loop。self edge を持つ parser-machine の layer (ipv4、ipv6) は m≤8 まで書け、instance ごとに parser が走る。`where` でその layer を参照するには `@label` を付け、最後に match した header を指す |
+| `{n,}` | n 回以上。上限は `+` と同じで、n が `<PROTO>_MAX_DEPTH` を超える式は型エラー |
 
 例を示します。
 
@@ -301,7 +301,7 @@ MVP では次の制限があります。
 
 - フィールド列指定 (`capture tcp.flags, ipv4.dst`) は未対応です。
 - `capture headers` の長さは各 layer の固定ヘッダ長の合計で、IPv4 option や TCP option、IPv6 の拡張ヘッダのように parser が歩いた可変部分は含みません。`eth/ipv6/tcp capture headers` に Hop-by-Hop 拡張ヘッダ 8 byte が付いたフレームでは 74 byte で切れるので、拡張ヘッダまで欲しいときは `headers+N` か `capture all` を使います。
-- capture の長さは compile 時に決まる上限です。量化 layer (`?`/`+`/`*`/`{n,m}`) を含むフィルタでは、その layer が最大数マッチした場合の長さを取ります (`eth/vlan?/ipv4/tcp capture headers` は 58 byte、`eth/mpls+/ipv4/tcp capture headers` は MPLS_MAX_DEPTH 分の 32 byte を含む)。layer が無い / 短いパケットでは、その分だけ余分に capture されます (`min(pkt_len, 上限)` で切られる)。`capture vlan` のように無いかもしれない layer を対象にすると、無いときも同じ上限が使われます。複数の capture 句を書いた場合も実装は句ごとの上限の最大値を 1 つ使うので、「vlan があれば vlan+8、無ければ ipv4+8」のような実行時の使い分けは (仕様上は句を落として表現できますが) 実装ではできません。
+- capture の長さは compile 時に決まる上限です。量化 layer (`?`/`+`/`*`/`{n,m}`) を含むフィルタでは、その layer が最大数マッチした場合の長さを取ります (`eth/vlan?/ipv4/tcp capture headers` は 58 byte、`eth/mpls+/ipv4/tcp capture headers` は MPLS_MAX_DEPTH 分の 32 byte を含み、`eth/ipv4+/tcp capture headers` は 8 個の IPv4 ヘッダ分の 194 byte)。layer が無い / 短いパケットでは、その分だけ余分に capture されます (`min(pkt_len, 上限)` で切られる)。`capture vlan` のように無いかもしれない layer を対象にすると、無いときも同じ上限が使われます。複数の capture 句を書いた場合も実装は句ごとの上限の最大値を 1 つ使うので、「vlan があれば vlan+8、無ければ ipv4+8」のような実行時の使い分けは (仕様上は句を落として表現できますが) 実装ではできません。
 - proto 名で指定するとき chain 内に複数 instance があると ambiguous error になります。`@label` で一意化します。
 - `absolute` は capture 内の contextual keyword です。label が `absolute` という名前と衝突する稀なケースでは `absolute+0` で label 解釈を強制できます。
 

@@ -188,8 +188,8 @@ bpf-ninja は non-invasive な BPF 観測ツールです。BPF trampoline (fentr
 2. `caps.go` は host 提供の `Capabilities` と `ActionFetcher` interface です。`Capabilities` は `Lex` (ReservedLabels) / `Lang` (Action map + ActionFetcher) / `Host` (packet layout) の 3 つのフェーズ別グループを束ねる薄い集約体です。
 3. `dispatch.go` は Field / NoCheck / SelfValidating の dispatch 検査を emit します。Sanity family は撤廃済みで、parser-block 自検証に統合されています。§3.2 / §5 を参照してください。
 4. `predicate.go` は predicate codegen です。整数 / IPv4 / IPv6 / MAC / CIDR、`==` / `!=` / ordered を扱い、F3 IPv6 ordered cmp (`emitIPv6OrderedCmp`)、F7 の `in` list (`emitInPredicate`。整数 / 範囲 / IPv4 / CIDR は 1 回 load して比較を並べ、IPv6 / MAC は要素ごとに再 load する `emitInAddrList`)、bit-slice 適用も含みます。`multiWordRoute` ヘルパで `==` と `!=` を統一しています。
-5. `chain.go` は `{n,m}` で `m≤4` の静的アンロールです。
-6. `bpfloop.go` は `+/*/{n,m>4}` の bpf_loop emit です。bpf2bpf subprogram と BTF func_info を扱い、whole-chain skip の `*` は `emitPeekedIterZero` で parent dispatch を peek します。
+5. `chain.go` は固定長 layer の `{n,m}` で `m≤4` の静的アンロールと、parser-machine layer の繰り返し (`{n,m≤8}`、`+`、`*`、`{n,}`。open bound は `<PROTO>_MAX_DEPTH` 個の instance) の展開 `genStaticMachineChain` です。
+6. `bpfloop.go` は固定長 layer の `+/*/{n,m>4}` の bpf_loop emit です。bpf2bpf subprogram と BTF func_info を扱い、whole-chain skip の `*` は `emitPeekedIterZero` で parent dispatch を peek します。
 7. `alternation.go` は alt の sequence 展開です。P3-12 で per-alt body emit + matched flag に、P3-13 で nested alt の resolver flatten に対応しました。
 8. `where.go` は where 節 (or / and / not / arith / action atom / bool atom / bool eq / quantifier any-all) です。het-alt 後の field addressing は PR-A/B 由来で、`layerAnchorFor` が abs / slot anchor を出し分けます。F4 Int<128> arith pipeline (`genArithCompare128` / `genArith128FieldOpConst` / `genArith128FieldOpField` / `genArithField128Load`、ABI-clean な stack-bridged carry/borrow)、F6 bitwise ALU 統合、F10 BoolEq の `genConditionAsBool`、F13 slice の `emitSliceShiftMask`、TLV-walk option access を含みます。TLV-walk option access の `genDynamicOffsetAuxLoad` は、parser-machine が記録した dynamic offset slot から absolute scratch offset を読み出して field を取得します。
 9. `capture.go` は `headers+N` の長さ algo です。
@@ -285,7 +285,7 @@ const は名前で意味が決まります。
 |---|---|
 | `KUNAI_<SELF>_<PARENT>_<FIELD>` | 親 protocol の `field` がこの値のときに自分 (SELF) として展開 |
 | `KUNAI_<SELF>_<PARENT>_NO_CHECK` | 検査せず blind cast (ユーザの記述順を信じる) |
-| `<SELF>_MAX_DEPTH` | bpf_loop chain (`+`/`*`/`{n,m>4}`) のループ上限。未指定なら codegen 既定 (8) |
+| `<SELF>_MAX_DEPTH` | bpf_loop chain (`+`/`*`/`{n,m>4}`) のループ上限と、parser machine の self-loop の上限。parser-machine layer の `+`/`*`/`{n,}` ではこの数だけ instance を展開する。未指定なら codegen 既定 (8) |
 | `<SELF>_CHAIN_END_<FIELD>` | chain 終了条件 (例: MPLS s-bit が 1 で終端) |
 
 `<SELF>` は uppercase のファイル名、`<PARENT>` は uppercase の親 protocol 名です。`KUNAI_` は inter-layer dispatch のマーカで、親レイヤから自分への遷移を表す dispatch const (Field / NoCheck / self-dispatch) にだけ付けます。value-only な select-match 値 (routing_type / option kind / next-header 種別など、親が実在プロトコルでない phantom parent のもの。例: `SRV6_ROUTING_TYPE`、`IPV6_NH_FRAGMENT`) と、`<SELF>_MAX_DEPTH` / `<SELF>_CHAIN_END_<FIELD>` のような構造 const には付けません。loader (`classifyConsts`) はこの規約を強制し、無印の dispatch shape も `KUNAI_` 付きの非 dispatch も loud-reject します。親が Field/NoCheck のいずれも持たず、子が parser block で自己検証する場合 (例: ipv4 の `transition select(hdr.version) { 4: accept; default: reject; }`) は vocab const が不要で、resolver が `DispatchSelfValidating` を合成します。詳細は §3.3 を参照してください。
@@ -540,7 +540,7 @@ Stack 占有 (詳細は `codegen.go` パッケージ doc の `KunaiStackTop` 周
 
 ### 4.4 chain (`+` / `*` / `{n,m}`)
 
-`m≤4` は chain.go で静的アンロールし、それ以上は bpfloop.go の bpf_loop 経由になります。whole-chain skip の `*` は `emitPeekedIterZero` で parent dispatch を peek し、不一致なら chain 全体を skip します。
+固定長 layer では `m≤4` を chain.go で静的アンロールし、それ以上は bpfloop.go の bpf_loop 経由になります。parser-machine layer は上限 8 まで instance ごとに展開します。whole-chain skip の `*` は `emitPeekedIterZero` で parent dispatch を peek し、不一致なら chain 全体を skip します。
 
 bpf_loop callback は bpf2bpf subprogram として emit し、BTF `func_info` を `internal/program` 側 wrapper で attach します。callback 内の規約は次のとおりです。
 

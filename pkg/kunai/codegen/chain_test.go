@@ -8,7 +8,10 @@ import (
 	"github.com/cilium/ebpf/asm"
 
 	"github.com/takehaya/bpf-ninja/pkg/kunai/ast"
+	"github.com/takehaya/bpf-ninja/pkg/kunai/dslvocab"
 	"github.com/takehaya/bpf-ninja/pkg/kunai/ir"
+	"github.com/takehaya/bpf-ninja/pkg/kunai/parser"
+	"github.com/takehaya/bpf-ninja/pkg/kunai/resolve"
 	"github.com/takehaya/bpf-ninja/pkg/kunai/vocab"
 )
 
@@ -334,5 +337,100 @@ func TestGenPlusQuantifierCompiles(t *testing.T) {
 	}
 	if len(out.Callbacks) == 0 || !strings.HasPrefix(out.Callbacks[0].Symbol(), "dsl_chain_cb_") {
 		t.Errorf("expected callback stream starting with dsl_chain_cb_* symbol, got %+v", out.Callbacks)
+	}
+}
+
+// TestGenMachineChainOpenQuantifiers pins the routing of `+`, `*` and
+// `{n,}` on a parser-machine layer: no bpf_loop chain callback, MAX_DEPTH
+// unrolled instances (ipv4 8), and the optional iteration 0 of `*`.
+func TestGenMachineChainOpenQuantifiers(t *testing.T) {
+	symbols := func(out Output) map[string]bool {
+		seen := map[string]bool{}
+		for _, ins := range append(append(asm.Instructions{}, out.Main...), out.Callbacks...) {
+			if s := ins.Symbol(); s != "" {
+				seen[s] = true
+			}
+		}
+		return seen
+	}
+	plus := symbols(compileBundled(t, "eth/ipv4+/tcp"))
+	for s := range plus {
+		if strings.HasPrefix(s, "dsl_chain_cb_") {
+			t.Fatalf("ipv4+ emitted a bpf_loop chain callback %q", s)
+		}
+	}
+	if !plus["dsl_pm_ipv4_1_0_i7_done"] {
+		t.Errorf("ipv4+ lacks the eighth instance (symbol dsl_pm_ipv4_1_0_i7_done); symbols: %v", plus)
+	}
+	if plus["dsl_pm_ipv4_1_0_i8_done"] {
+		t.Error("ipv4+ emitted a ninth instance")
+	}
+	star := symbols(compileBundled(t, "eth/ipv4/ipv4*/tcp"))
+	if !star["dsl_chain_done_2"] {
+		t.Error("ipv4* lacks the chain-done landing")
+	}
+	open := symbols(compileBundled(t, "eth/ipv6{1,}/tcp"))
+	if !open["dsl_pm_ipv6_1_0_i3_done"] || open["dsl_pm_ipv6_1_0_i4_done"] {
+		t.Errorf("ipv6{1,} should unroll to IPV6_MAX_DEPTH = 4 instances; symbols: %v", open)
+	}
+}
+
+func TestLayerEntryIsRangeOpenQuantifiers(t *testing.T) {
+	// For the ipv6 and absent-edge shapes this test is the only guard: the
+	// dsltest runner reads a scratch copy, so the verifier's packet bounds
+	// are exercised by TestBpfXDPNativeLoad on the ipv4 rows alone.
+	for _, expr := range []string{"eth/ipv4+/tcp", "eth/ipv4/ipv4*/tcp", "eth/ipv4{2,}/tcp", "eth/ipv4{1,2}/tcp", "eth/ipv6{2,}/tcp", "eth/ipv6{1,2}/tcp", "eth/ipv6+/tcp"} {
+		p := parseResolveBundled(t, expr)
+		idx := len(p.Layers) - 2
+		if !layerEntryIsRange(p.Layers, idx) {
+			t.Errorf("%s: layer %d (%s) should leave a range-valued entry", expr, idx, p.Layers[idx].Spec.Name)
+		}
+	}
+	p := parseResolveBundled(t, "eth/ipv4/tcp")
+	if layerEntryIsRange(p.Layers, 1) {
+		t.Error("eth/ipv4/tcp: a single ipv4 has a constant entry")
+	}
+}
+
+// parseResolveBundled parses and resolves expr against the bundled
+// vocabulary without generating code.
+func parseResolveBundled(t *testing.T, expr string) *ir.Program {
+	t.Helper()
+	v, err := dslvocab.Bundled()
+	if err != nil {
+		t.Fatalf("dslvocab.Bundled: %v", err)
+	}
+	f, err := parser.Parse(expr, "", nil)
+	if err != nil {
+		t.Fatalf("parser.Parse(%q): %v", expr, err)
+	}
+	prog, err := resolve.ResolveWithOptions(f, v, nil, resolve.Options{})
+	if err != nil {
+		t.Fatalf("resolve(%q): %v", expr, err)
+	}
+	return prog
+}
+
+// TestBundledChainDepthsFitMachineCap pins the relation staticMachineChainCap
+// relies on: every bundled protocol that can repeat (a parser machine and a
+// self edge) declares a MAX_DEPTH of at most the cap, or `+` / `*` / `{n,}`
+// on it would be refused.
+func TestBundledChainDepthsFitMachineCap(t *testing.T) {
+	v, err := dslvocab.Bundled()
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := 0
+	for _, p := range v {
+		if p.ParseStateMachine == nil || p.SelectDispatchConst(p.Name) == nil {
+			continue
+		}
+		seen++
+		if d := p.ChainDepth(); d > staticMachineChainCap {
+			t.Errorf("%s: MAX_DEPTH %d exceeds staticMachineChainCap %d; `%s+` would be ErrNotImplemented", p.Name, d, staticMachineChainCap, p.Name)
+		}
+	}
+	if seen == 0 {
+		t.Fatal("no bundled protocol with a parser machine and a self edge (expected ipv4 and ipv6)")
 	}
 }
