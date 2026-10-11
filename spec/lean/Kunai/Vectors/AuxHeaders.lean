@@ -372,6 +372,17 @@ vector ipv6ExtsBracketInAbsent := {
   packet := ipv6With 0 (ipv6Ext 6) (sport := 0x0600), expected := .reject, note := "D-031 for `in [...]` in a bracket: the entry is absent ⇒ false" }
 vector ipv6ExtsBracketInLong := {
   id := "ipv6-exts-bracket-in-after-long-ext", ast := { layers := ipv6Br (.inList (extsBr 1) [.int 6, .int 60]) }, packet := longExts, expected := .accept [] }
+-- `in @set` on a walked entry (D-036 with D-031): the key is read from the entry the walk placed.
+def nhSet (width : Nat) (members : List Nat) : SetDecl := { name := "nh", width, members }
+vector predInSetExtsWalked := {
+  id := "pred-inset-exts-walked", ast := { layers := ipv6Br (.inSet (extsBr 1) "nh") }, sets := [nhSet 8 [6]], packet := longExts,
+  expected := .accept [], note := "entry 1 starts after the 16-byte first ext; its next_header 6 is a key of @nh" }
+vector predInSetExtsAbsent := {
+  id := "pred-inset-exts-absent", ast := { layers := ipv6Br (.inSet (extsBr 1) "nh") }, sets := [nhSet 8 [6]],
+  packet := ipv6With 0 (ipv6Ext 6) (sport := 0x0600), expected := .reject, note := "D-031: the entry is absent, so the predicate is false before any lookup" }
+vector typPredInSetExtsWidth := {
+  id := "typ-pred-inset-exts-width", ast := { layers := ipv6Br (.inSet (extsBr 1) "nh") }, sets := [nhSet 16 [6]], packet := longExts,
+  expected := .illTyped "set @nh keys are bit<16>, ipv6.exts[1].next_header extracts bit<8>" }
 vector ipv6ExtsSliceLong := {
   id := "ipv6-exts-index-slice-after-long-ext",
   ast := { layers := ipv6L, cond := some (cmp (Arith.field ⟨[("ipv6", none), ("exts", some (.nat 1)), ("next_header", some (.slice 4 8))]⟩) .eq (k 6)) },
@@ -792,7 +803,7 @@ def auxVectors : List Vector := [
   bracketValidNoOpts, bracketValidOptAbsent, bracketValidIPv4, bracketValidGeneve, bracketValidTwoOptions, bracketValidRepeated, typBracketValidSegment, typBracketValidSrv6, ipv4OptsInvalid,
   geneveOvnHit, geneveMalformedAfter, geneveMalformedBefore, geneveMalformedChainOn, geneveRegionPastEnd, geneveValidEmpty, typOptsValidNoRegion,
   ipv6Hbh, ipv6TwoExts, ipv6ExtLong, ipv6ExtTooLong, ipv6ExtsIndex, ipv6ExtsIndex1, ipv6ExtsIndexAfterLong, ipv6ExtsAnyAfterLong, ipv6ExtsDynamicLong, ipv6ExtsDynamicLongSecond, ipv6ExtsDynamicLongAbsent, ipv6ExtsDynamicLongLast, ipv6ExtsDynamicLongLastMiss, ipv6ExtsDynamicLongBeyond, ipv6ExtsDynamicLongSlot, ipv6ExtsDynamicLongSlotAbsent,
-  ipv6ExtsBracket, ipv6ExtsBracketAbsent, ipv6ExtsBracketLong, ipv6ExtsBracketDynamic, ipv6ExtsBracketIter, ipv6ExtsBracketInAbsent, ipv6ExtsBracketInLong, ipv6ExtsSliceLong, ipv6ExtsBracketSliceLong, gtpExtsBracket, gtpExtsBracketAbsent, gtpExtsBracketNone, gtpExtsBracketMixed, gtpExtsBracketMixedMiss, ipv6ExtsIndexAbsent,
+  ipv6ExtsBracket, ipv6ExtsBracketAbsent, ipv6ExtsBracketLong, ipv6ExtsBracketDynamic, ipv6ExtsBracketIter, ipv6ExtsBracketInAbsent, ipv6ExtsBracketInLong, predInSetExtsWalked, predInSetExtsAbsent, typPredInSetExtsWidth, ipv6ExtsSliceLong, ipv6ExtsBracketSliceLong, gtpExtsBracket, gtpExtsBracketAbsent, gtpExtsBracketNone, gtpExtsBracketMixed, gtpExtsBracketMixedMiss, ipv6ExtsIndexAbsent,
   ipv6NextHeaderWhere, ipv6NextHeaderBracket, altIPv6MemberWriteBack, altIPv6MemberWriteBackWhere, altIPv6MemberWriteBackMiss, ipv6FiveExts, ipv6SixExts, ipv6AnyExts, ipv6AllExts,
   srv6TruncatedFails, typSrv6NoValid, geneveVersionOne, srv6SegWideLit, srv6Chain, srv6Static, srv6Dynamic, srv6Any, srv6All, srv6AllCidr, srv6IndexAbsent, srv6DynamicAtCount, srv6DynamicLast, srv6OptDynamicAtCount, srv6OptDynamicLast, srv6BracketIndexAbsent, srv6BracketIndex, srv6StaticSlice, srv6StaticSliceAbsent, srv6StaticSliceHigh, srv6StaticSliceArith, srv6StaticSliceNibble, srv6BracketSlice, srv6BracketSliceAbsent, typSrv6SliceIPv6Lit, typSrv6BracketSliceIPv6Lit, srv6SliceIPv4Lit, srv6SliceIPv4LitMiss, srv6SliceIPv4LitAbsent, srv6DynSliceIPv4Lit, srv6DynSliceIPv4LitNe, srv6DynSliceIPv4LitNeOther, srv6DynSliceMacLit, srv6BracketFullSliceIPv6Lit, srv6BracketSliceIPv4Lit, srv6OverCap, srv6OverCapAnyKept, srv6OverCapAnyDropped, srv6OverCapAll, srv6OverCapNotAll,
   srv6OverCapIndex, srv6OverCapLastEntry, srv6AtCapAll, srv6PastScratch, srv6TenSegs, srv6TwelveSegs, srv6OverstatedLastEntry,
