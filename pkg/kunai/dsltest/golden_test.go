@@ -76,6 +76,9 @@ var goldenCurated = []struct {
 	{"N01", "netfilter_entry", "ipv4/tcp where tcp.dport == 443", nil},
 	{"N02", "netfilter_entry", "eth/ipv4/tcp", nil},
 	{"S01", "xdp_entry", "eth/ipv4[src in @hosts]/tcp[dport in @ports]", []specSet{{Name: "hosts", Width: 32}, {Name: "ports", Width: 16}}},
+	// A static chain emits its predicates once per header; their labels
+	// must stay distinct.
+	{"L01", "xdp_entry", "eth/mpls[label in [1..5, 100]]{1,3}/ipv4", nil},
 }
 
 type goldenFilter struct {

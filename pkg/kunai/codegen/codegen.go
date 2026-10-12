@@ -445,14 +445,20 @@ func Gen(p *ir.Program, caps Capabilities) (Output, error) {
 		asm.Mov.Imm(asm.R2, 0).WithSymbol(dslReject),
 	)
 
-	return Output{
+	out := Output{
 		Main:        insns,
 		Callbacks:   callbacks,
 		Capture:     capInfo,
 		Extractions: extractions,
 		Warnings:    cloneWarnings(p.Warnings),
 		WireFrame:   !caps.Host.VlanInMetadata,
-	}, nil
+	}
+	// The loader resolves jumps by symbol over Main and Callbacks; a label
+	// placed twice would only fail at load, so refuse it here.
+	if _, err := out.Instructions().SymbolOffsets(); err != nil {
+		return Output{}, fmt.Errorf("codegen: %w", err)
+	}
+	return out, nil
 }
 
 // cloneWarnings returns a defensive copy of the resolver's warnings

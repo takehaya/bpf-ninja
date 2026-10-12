@@ -255,6 +255,11 @@ func (pc *predCtx) labelsOrNil() *labeler {
 	return pc.labels
 }
 
+// freshLabel mints a label from pc's labeler.
+func (pc *predCtx) freshLabel(prefix string) string {
+	return pc.labelsOrNil().fresh(prefix)
+}
+
 // fieldAnchor is the anchor a predicate reads primary fields through.
 func (pc *predCtx) fieldAnchor() layerAnchor {
 	if pc != nil && pc.anchor != nil {
@@ -909,7 +914,8 @@ func cmpRegEqU32(jumpOp asm.JumpOp, expected uint32, failLabel string) asm.Instr
 //     through the body all words agreed, so we Ja dslReject.
 //
 // Callers must filter `op` through requireEqualityOp first — only ==
-// and != are valid here.
+// and != are valid here. labels comes first, unlike the other helpers,
+// so the body closure stays the last argument.
 func multiWordRoute(labels *labeler, op ast.CmpOp, body func(failLabel string) asm.Instructions) asm.Instructions {
 	if op == ast.CmpEq {
 		return body(dslReject)
@@ -986,7 +992,7 @@ func emitInPredicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, error) 
 		return insns, nil
 	}
 
-	matchLabel := pc.labelsOrNil().fresh(predMatchLabel)
+	matchLabel := pc.freshLabel(predMatchLabel)
 	// A range alternative's below-lo branch jumps to the next
 	// alternative; the label lands on that alternative's first compare,
 	// so `pending` carries it there instead of a filler instruction.
@@ -1008,7 +1014,7 @@ func emitInPredicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, error) 
 			next := dslReject
 			if lo > 0 {
 				if !last {
-					next = pc.labelsOrNil().fresh(predInNextLabel)
+					next = pc.freshLabel(predInNextLabel)
 				}
 				emit(cmpR3Const(asm.JLT, lo, next))
 			}
@@ -1141,7 +1147,7 @@ func emitInAddrList(pred *ir.Predicate, pc *predCtx, shape inListShape, trivial 
 		// readable; see emitInPredicate.
 		return insns, nil
 	}
-	match := pc.labelsOrNil().fresh(predMatchLabel)
+	match := pc.freshLabel(predMatchLabel)
 	pending := ""
 	emit := func(ins asm.Instructions) {
 		if pending != "" {
@@ -1154,7 +1160,7 @@ func emitInAddrList(pred *ir.Predicate, pc *predCtx, shape inListShape, trivial 
 		last := i+1 == len(pred.List)
 		fail := dslReject
 		if !last {
-			fail = pc.labelsOrNil().fresh(predInNextLabel)
+			fail = pc.freshLabel(predInNextLabel)
 		}
 		emit(emitAddrAlternative(v, loadAt, fail))
 		if !last {

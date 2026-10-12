@@ -42,3 +42,19 @@ func TestGenLabelsStartAtOnePerCompile(t *testing.T) {
 		}
 	}
 }
+
+// TestStaticChainPredicateLabelsUnique pins that an unrolled chain emits
+// its predicates per header with their own labels: reusing one emission
+// placed each label once per header, which the loader refuses as a
+// duplicate symbol.
+func TestStaticChainPredicateLabelsUnique(t *testing.T) {
+	out := compileBundled(t, "eth/mpls[label in [1..5, 100]]{1,3}/ipv4")
+	if _, err := out.Instructions().SymbolOffsets(); err != nil {
+		t.Fatal(err)
+	}
+	for _, label := range []string{predInNextLabelPrefix + "3", predMatchLabelPrefix + "3"} {
+		if !strings.Contains(out.Instructions().String(), label) {
+			t.Errorf("no %s: each of the three headers should mint its own", label)
+		}
+	}
+}
