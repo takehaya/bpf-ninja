@@ -19,4 +19,10 @@ func TestStaticChainPredicatePerHeader(t *testing.T) {
 	r.MustReject(t, build(3, 50), "second header outside the list")
 	r.MustReject(t, build(3, 4, 50), "third header outside the list")
 	r.MustReject(t, build(1, 2, 3, 4), "four headers exceed the quantifier")
+
+	// `+` walks the stack in a bpf_loop callback, which replays the
+	// predicates with labels of its own.
+	r = New(t, "eth/mpls[label in [1..5, 100]]+/ipv4")
+	r.MustMatch(t, build(3, 100, 5, 1), "four headers, each in the list")
+	r.MustReject(t, build(3, 100, 50), "third header outside the list")
 }

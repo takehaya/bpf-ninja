@@ -79,6 +79,7 @@ var goldenCurated = []struct {
 	// A static chain emits its predicates once per header; their labels
 	// must stay distinct.
 	{"L01", "xdp_entry", "eth/mpls[label in [1..5, 100]]{1,3}/ipv4", nil},
+	{"L02", "xdp_entry", "eth/mpls[label in [1..5, 100]]+/ipv4", nil},
 }
 
 type goldenFilter struct {

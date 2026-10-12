@@ -152,7 +152,7 @@ func genAlternation(layer *ir.LayerInstance, index int, all []*ir.LayerInstance,
 		// same one and only falls through when it passed.
 		bodyPC := pc
 		if i+1 < len(alts) {
-			guarded := predCtx{guarded: alt, labels: qo.labels}
+			guarded := predCtx{guarded: alt}
 			if pc != nil {
 				guarded = *pc
 				guarded.guarded = alt
