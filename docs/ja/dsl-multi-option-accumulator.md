@@ -128,10 +128,14 @@ codegen には別途、callback の分岐命令数を静的に数える tripwire
   積む変更が要る。
 - 起動条件は次のとおり。length-byte の TLV walk を持ち、distinct な option を
   2 種類以上読む layer がちょうど 1 つあること (`accCandidates`)。そうした layer が
-  2 つ以上あると、それぞれの名前を挙げて拒否する。同梱の語彙で該当するのは TCP
-  だけなので、2 つになるのは alternation に tcp を 2 回書いたときに限られる。
-  alternation は先頭から順に protocol を照合するので、2 つ目以降の tcp は match
-  しない。拒否の理由にもそう書く。
+  2 つ以上あると、それぞれの名前と位置を挙げて拒否する。同梱の語彙で該当するのは
+  TCP だけなので、2 つになるのは alternation に tcp を 2 回書いたときに限られる。
+  alternation は親の dispatch が一致した最初の member を採用して残りを試さないので、
+  2 つ目以降の tcp は match しない。拒否の理由は、resolver の warning と同じ説明
+  (`ir.AlternationShadowText`) で、option を 1 種類しか読まない先頭の tcp も含めて
+  同じ protocol の member をすべて挙げ、1 つだけ残すよう勧める。warning が勧める
+  `where` の `or` は、ここでは使えない。`or` の下で option を読む項は walk が畳めない
+  ためである。
   そのうえで、その layer の option の読み出しがすべて `<option>.<field> == <const>`
   であること (`buildAccPlan`)。読み出しは bracket の predicate (`predToAtom`) でも、
   `where` の一番外側の AND の項 (`eqLeafToAtom`) でもよい。畳んだ bracket の

@@ -2761,8 +2761,13 @@ func TestCompileBracketOptionsFoldIntoAccumulator(t *testing.T) {
 		{"eth/ipv4/tcp[mss.value == 1460, ts.tsval == 5]? where tcp.dport == 80 or ipv4.ttl == 1", "tcp may be absent"},
 		{"eth/ipv4/tcp[mss.value[0:8] == 5, ts.tsval == 5]", "the bracket predicate on tcp.mss.value is not `== <integer>` on the whole field"},
 		{"eth/ipv4/tcp where tcp.mss.value == 1460 and tcp.options.SACK.blocks[1].left == 5", "tcp.sack.blocks[1].left is read by a where or capture term the walk cannot fold"},
-		// Two tcp members of one alternation: only the first can match.
-		{"eth/ipv4/(tcp[mss.value == 1460, ws.shift == 7]|tcp[sack_perm.kind == 4, ts.tsval == 5])", "tcp at 1:11 and tcp at 1:49 are members of one alternation with the same protocol, so only the first can ever match"},
+		// Two tcp members of one alternation: only the first can match,
+		// and the reason says so as the resolver's warning does.
+		{"eth/ipv4/(tcp[mss.value == 1460, ws.shift == 7]|tcp[sack_perm.kind == 4, ts.tsval == 5])", "tcp at 1:11 and tcp at 1:49 are members of one alternation with the same protocol; an alternation commits to the first member whose dispatch matches and never tries the rest, so tcp at 1:49 never matches; keep one of them"},
+		{"eth/ipv4/(tcp@a|tcp@b) where a.mss.value == 1 and a.ws.shift == 2 and b.sack_perm.kind == 4 and b.ts.tsval == 5", "tcp@a at 1:11 and tcp@b at 1:17 are members of one alternation"},
+		// The first tcp queries one option and is no candidate, yet it is
+		// the member that matches.
+		{"eth/ipv4/(tcp[mss.value == 1]|tcp[mss.value == 1460, ws.shift == 7]|tcp[sack_perm.kind == 4, ts.tsval == 5])", "tcp at 1:11, tcp at 1:31 and tcp at 1:69 are members of one alternation with the same protocol; an alternation commits to the first member whose dispatch matches and never tries the rest, so tcp at 1:31 and tcp at 1:69 never match; keep one of them"},
 		{repeatedOptionEqualities(16), "the filter has 17 equalities on tcp options; the walk folds at most 16"},
 	} {
 		_, err := compileForTest(c.expr)
@@ -2773,6 +2778,11 @@ func TestCompileBracketOptionsFoldIntoAccumulator(t *testing.T) {
 		// the reads, wrong for these, is not given.
 		if err != nil && strings.Contains(err.Error(), "rewrite the reads") {
 			t.Errorf("%s: err = %v; want the reason instead of the generic advice", c.expr, err)
+		}
+		// The walk cannot fold options read under `or`, so no reason
+		// proposes it.
+		if err != nil && strings.Contains(err.Error(), "`or`") {
+			t.Errorf("%s: err = %v; proposes `or`, which the walk cannot fold", c.expr, err)
 		}
 	}
 	// accMaxAtoms equalities still fold.

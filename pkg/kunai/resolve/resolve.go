@@ -359,10 +359,6 @@ func addShadowedAlternativeWarning(p *ir.Program) {
 			if len(ms) < 2 {
 				continue
 			}
-			verb := "never matches"
-			if len(ms) > 2 {
-				verb = "never match"
-			}
 			fix := "Keep one of them."
 			for _, m := range ms {
 				if len(m.Predicates) > 0 {
@@ -370,24 +366,9 @@ func addShadowedAlternativeWarning(p *ir.Program) {
 					break
 				}
 			}
-			p.Warnings = append(p.Warnings, fmt.Sprintf(
-				"%s are members of one alternation with the same protocol; an alternation commits to the first member whose dispatch matches and never tries the rest, so %s %s. %s",
-				layersAt(ms), layersAt(ms[1:]), verb, fix))
+			p.Warnings = append(p.Warnings, ir.AlternationShadowText(ms)+". "+fix)
 		}
 	}
-}
-
-// layersAt names layers with their source positions: "a at 1:6",
-// "a at 1:6 and b at 1:13", "a at 1:6, b at 1:13 and c at 1:20".
-func layersAt(ms []*ir.LayerInstance) string {
-	names := make([]string, len(ms))
-	for i, m := range ms {
-		names[i] = m.DisplayName() + " at " + m.Pos.String()
-	}
-	if len(names) == 1 {
-		return names[0]
-	}
-	return strings.Join(names[:len(names)-1], ", ") + " and " + names[len(names)-1]
 }
 
 // foldedQuantifier spells the quantifier that matches what l followed by

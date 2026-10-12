@@ -120,6 +120,32 @@ func (l *LayerInstance) DisplayName() string {
 	return l.Spec.Name
 }
 
+// LayersAt names layers with their source positions: "a at 1:6",
+// "a at 1:6 and b at 1:13", "a at 1:6, b at 1:13 and c at 1:20".
+func LayersAt(ms []*LayerInstance) string {
+	names := make([]string, len(ms))
+	for i, m := range ms {
+		names[i] = m.DisplayName() + " at " + m.Pos.String()
+	}
+	if len(names) == 1 {
+		return names[0]
+	}
+	return strings.Join(names[:len(names)-1], ", ") + " and " + names[len(names)-1]
+}
+
+// AlternationShadowText explains why the later of ms, two or more
+// members of one alternation with the same protocol, never match. The
+// resolver's warning and the accumulator's refusal both start with it
+// and add their own fix; it carries no final period.
+func AlternationShadowText(ms []*LayerInstance) string {
+	verb := "never matches"
+	if len(ms) > 2 {
+		verb = "never match"
+	}
+	return fmt.Sprintf("%s are members of one alternation with the same protocol; an alternation commits to the first member whose dispatch matches and never tries the rest, so %s %s",
+		LayersAt(ms), LayersAt(ms[1:]), verb)
+}
+
 // Absentable reports whether the layer may match zero headers (`?`, `*`,
 // `{0,m}`), so the layer after it can meet an earlier layer as its parent.
 func (l *LayerInstance) Absentable() bool {
