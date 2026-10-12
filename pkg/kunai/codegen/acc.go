@@ -2,6 +2,7 @@ package codegen
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/cilium/ebpf/asm"
 
@@ -79,13 +80,21 @@ type accPlan struct {
 // predicate other than `== <integer>`, or a rest conjunct, capture field
 // or capture condition naming the option), or when the layer may be
 // absent and no folded where conjunct is on it: a bracket on an absent
-// layer is skipped while the mask check would reject. Without a
-// candidate layer it returns nil and no reason.
+// layer is skipped while the mask check would reject. It is also refused
+// when two or more layers each query two or more options, or when the
+// equalities exceed accMaxAtoms. Without a candidate layer it returns nil
+// and no reason.
 func buildAccPlan(p *ir.Program, where *ir.Condition, qo queriedOptions) (*accPlan, string) {
-	layer := accCandidate(p, qo)
-	if layer == nil {
+	cands := accCandidates(p, qo)
+	switch {
+	case len(cands) == 0:
 		return nil, ""
+	case len(cands) > 1 && accSameAlternation(cands):
+		return nil, fmt.Sprintf("%s are members of one alternation with the same protocol, so only the first can ever match; keep one of them", accLayerList(cands))
+	case len(cands) > 1:
+		return nil, fmt.Sprintf("%s each query two or more options, and the walk folds the options of one layer only; query a single option on all but one of them", accLayerList(cands))
 	}
+	layer := cands[0]
 	// atoms stays non-nil even when every leaf is `never`: atomsFor must
 	// still report the plan to the walk (emitStateBody / the prelude).
 	plan := &accPlan{layer: layer, atoms: []accAtom{}, folded: map[*ir.Predicate]bool{}}
@@ -167,34 +176,60 @@ func buildAccPlan(p *ir.Program, where *ir.Condition, qo queriedOptions) (*accPl
 	// into one combined bpf_loop callback; the per-iteration cursor and
 	// accumulator forgets (emitMultiStateCallback / emitAccPrelude) make it
 	// converge regardless of the atom count, so the cap is a policy ceiling
-	// (see accMaxAtoms), not a hard verifier limit. Above it, returning nil
-	// routes the program to the compile-time reject in emitStateBody — a
-	// clean diagnostic instead of bytecode the verifier refuses.
+	// (see accMaxAtoms), not a hard verifier limit. Above it, the program
+	// goes to the compile-time reject in emitStateBody — a clean diagnostic
+	// instead of bytecode the verifier refuses. Equalities are not
+	// deduplicated, so only repeating them can get here.
 	if len(plan.atoms) > accMaxAtoms {
-		return nil, ""
+		return nil, fmt.Sprintf("the filter has %d equalities on %s options; the walk folds at most %d", len(plan.atoms), layer.DisplayName(), accMaxAtoms)
 	}
 	return plan, ""
 }
 
-// accCandidate returns the one layer (or alternation member) whose
-// length-byte option walk queries two or more options, nil when there is
-// none or more than one: the plan holds a single layer.
-func accCandidate(p *ir.Program, qo queriedOptions) *ir.LayerInstance {
-	var found *ir.LayerInstance
-	n := 0
+// accCandidates lists, in chain order, the layers (alternation members
+// included) whose length-byte option walk queries two or more options.
+// The plan holds a single layer, so it applies only when there is one.
+func accCandidates(p *ir.Program, qo queriedOptions) []*ir.LayerInstance {
+	var found []*ir.LayerInstance
 	for _, l := range p.Layers {
 		for _, inst := range append([]*ir.LayerInstance{l}, l.Alternation...) {
 			if inst == nil || inst.Spec == nil || len(qo.optionDemand(inst)) < 2 || !layerOptionWalkHasLengthByte(inst) {
 				continue
 			}
-			found = inst
-			n++
+			found = append(found, inst)
 		}
 	}
-	if n != 1 {
-		return nil
-	}
 	return found
+}
+
+// accSameAlternation reports whether the layers are members of one
+// alternation naming one protocol. Members are tried in order and the
+// first whose protocol matches is taken, so only the first can match.
+func accSameAlternation(layers []*ir.LayerInstance) bool {
+	for _, l := range layers[1:] {
+		if l.LayerPos != layers[0].LayerPos || l.Spec != layers[0].Spec {
+			return false
+		}
+	}
+	return true
+}
+
+// accLayerList names the candidate layers for a refusal message. Layers
+// that share a name, such as two tcp members of one alternation, get
+// their position in the expression so the reader can tell them apart.
+func accLayerList(layers []*ir.LayerInstance) string {
+	count := map[string]int{}
+	for _, l := range layers {
+		count[l.DisplayName()]++
+	}
+	names := make([]string, len(layers))
+	for i, l := range layers {
+		names[i] = l.DisplayName()
+		if count[names[i]] > 1 {
+			names[i] += " at " + l.Pos.String()
+		}
+	}
+	return strings.Join(names, " and ")
 }
 
 // accLayerAlwaysPresent reports whether every accepted packet has the

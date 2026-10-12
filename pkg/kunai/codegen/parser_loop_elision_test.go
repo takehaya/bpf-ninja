@@ -21,19 +21,13 @@ func TestAccumulatorGatedToLengthByteWalk(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dslvocab.Bundled: %v", err)
 	}
-	for _, c := range []struct {
-		proto string
-		want  bool
-	}{
-		{"tcp", true},     // counter + kind, with a length-byte fallback
-		{"geneve", false}, // counter-driven walk (ParserCounter)
-	} {
-		spec := v[c.proto]
-		if spec == nil {
-			t.Fatalf("bundled vocab missing %q", c.proto)
-		}
-		if got := layerOptionWalkHasLengthByte(&ir.LayerInstance{Spec: spec}); got != c.want {
-			t.Errorf("layerOptionWalkHasLengthByte(%s) = %v, want %v", c.proto, got, c.want)
+	// tcp walks counter + kind with a length-byte fallback; geneve's walk
+	// is counter-driven (ParserCounter) and ipv4's unknown kind rejects.
+	// Only one bundled protocol qualifies, so only an alternation naming
+	// tcp twice gives the accumulator two candidate layers.
+	for name, spec := range v {
+		if got, want := layerOptionWalkHasLengthByte(&ir.LayerInstance{Spec: spec}), name == "tcp"; got != want {
+			t.Errorf("layerOptionWalkHasLengthByte(%s) = %v, want %v", name, got, want)
 		}
 	}
 }

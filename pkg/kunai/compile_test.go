@@ -2,6 +2,7 @@ package kunai
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -2748,12 +2749,38 @@ func TestCompileBracketOptionsFoldIntoAccumulator(t *testing.T) {
 		{"eth/ipv4/tcp[mss.value == 1460, ts.tsval == 5]? where tcp.dport == 80 or ipv4.ttl == 1", "tcp may be absent"},
 		{"eth/ipv4/tcp[mss.value[0:8] == 5, ts.tsval == 5]", "the bracket predicate on tcp.mss.value is not `== <integer>` on the whole field"},
 		{"eth/ipv4/tcp where tcp.mss.value == 1460 and tcp.options.SACK.blocks[1].left == 5", "tcp.sack.blocks[1].left is read by a where or capture term the walk cannot fold"},
+		// Two tcp members of one alternation: only the first can match.
+		{"eth/ipv4/(tcp[mss.value == 1460, ws.shift == 7]|tcp[sack_perm.kind == 4, ts.tsval == 5])", "tcp at 1:11 and tcp at 1:49 are members of one alternation with the same protocol, so only the first can ever match"},
+		{repeatedOptionEqualities(16), "the filter has 17 equalities on tcp options; the walk folds at most 16"},
 	} {
 		_, err := compileForTest(c.expr)
 		if !errors.Is(err, codegen.ErrNotImplemented) || !strings.Contains(err.Error(), c.why) {
 			t.Errorf("%s: err = %v; want ErrNotImplemented saying %q", c.expr, err, c.why)
 		}
+		// Every refusal has a reason, so the generic advice to rewrite
+		// the reads, wrong for these, is not given.
+		if err != nil && strings.Contains(err.Error(), "rewrite the reads") {
+			t.Errorf("%s: err = %v; want the reason instead of the generic advice", c.expr, err)
+		}
 	}
+	// accMaxAtoms equalities still fold.
+	out, err := compileForTest(repeatedOptionEqualities(15))
+	if err != nil {
+		t.Fatalf("16 equalities: %v", err)
+	}
+	if !hasAccMaskCheck(out, 0xffff) {
+		t.Errorf("16 equalities: no accumulator mask check for mask 0xffff")
+	}
+}
+
+// repeatedOptionEqualities is a filter with n equalities on tcp.mss.value
+// and one on tcp.ws.shift; the accumulator folds each into its own bit.
+func repeatedOptionEqualities(n int) string {
+	terms := []string{"tcp.ws.shift == 7"}
+	for i := 1; i <= n; i++ {
+		terms = append(terms, fmt.Sprintf("tcp.mss.value == %d", i))
+	}
+	return "eth/ipv4/tcp where " + strings.Join(terms, " and ")
 }
 
 // hasAccMaskCheck reports the accumulator check emitAccMaskCheck emits:
