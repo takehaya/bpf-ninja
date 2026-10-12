@@ -2768,6 +2768,8 @@ func TestCompileBracketOptionsFoldIntoAccumulator(t *testing.T) {
 		// The first tcp queries one option and is no candidate, yet it is
 		// the member that matches.
 		{"eth/ipv4/(tcp[mss.value == 1]|tcp[mss.value == 1460, ws.shift == 7]|tcp[sack_perm.kind == 4, ts.tsval == 5])", "tcp at 1:11, tcp at 1:31 and tcp at 1:69 are members of one alternation with the same protocol; an alternation commits to the first member whose dispatch matches and never tries the rest, so tcp at 1:31 and tcp at 1:69 never match; keep one of them"},
+		// A member of another protocol between them is not listed.
+		{"eth/ipv4/(tcp[mss.value == 1460, ws.shift == 7]|udp|tcp[sack_perm.kind == 4, ts.tsval == 5])", "tcp at 1:11 and tcp at 1:53 are members of one alternation with the same protocol; an alternation commits to the first member whose dispatch matches and never tries the rest, so tcp at 1:53 never matches; keep one of them"},
 		{repeatedOptionEqualities(16), "the filter has 17 equalities on tcp options; the walk folds at most 16"},
 	} {
 		_, err := compileForTest(c.expr)
