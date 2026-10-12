@@ -114,6 +114,8 @@ const は名前のパターンによって loader の `vocab/loader.go::classify
 | `<SELF>_OPT_TRIGGER_<NAME>` | `bit<N>`、範囲 (0, 0xFF] | flag bit mask。`OPT_LEN_<NAME>` と必ずペアにする |
 | `<SELF>_OPT_LEN_<NAME>` | `bit<N>`、0 より大 | trigger 成立時に進める byte 数 |
 
+1 つの子が 1 つの親に宣言できる Field dispatch は 1 つだけです。同じ field の別の値は `_ALT_<NAME>` に書きます。別の子が同じ親の同じ field の同じ値を宣言すると、ロードエラーになります。このとき `_ALT_` の値も含め、宣言した幅に関係なく値を比べます。その値のパケットは両方の子に match するので、alternation や optional layer で後ろの子が黙って隠れてしまうためです。NO_CHECK の dispatch は値を持たないので、この規則の対象になりません。
+
 次の family は撤廃済みで、宣言すると loader が error で reject します。
 
 - `*_SANITY_*` family は、parser block の自己検証 `transition select(<field>) { ...; default: reject; }` に置き換えます (§6.2)。
@@ -476,6 +478,8 @@ vocab を書いたら、`go test ./pkg/kunai/vocab/...` が最初の関門です
 | `uses the SANITY family, which has been removed` | parser block の自己検証 (§6.2) に書き換える |
 | `HDRLEN_* const family is no longer supported` | `pkt.advance` テンプレート (§7.1) に書き換える |
 | `duplicate const "X"` / `duplicate header "X"` / `duplicate protocol "X"` | 重複宣言。p4c 無しの vendored 環境でも落ちるよう二重にゲートされている |
+| `dispatch consts "X" and "Y" both dispatch under "p"` | 1 つの子が同じ親に 2 つの Field dispatch を宣言した。1 つ残し、同じ field の別の値なら `_ALT_<NAME>` に書く (§5) |
+| `dispatch const "X" claims p.f == v, which "Y" in ... already claims` | 別の子が同じ親 field の同じ値を宣言している。どちらかの値を変える (§5) |
 | `declares both a non-trivial parser block and OPT_TRIGGER_*` | §7.6 と parser machine は排他。どちらかに寄せる |
 | `OPT_TRIGGER_X declared without matching OPT_LEN_X` | TRIGGER と LEN はペア必須。逆向きも同様 |
 | `MAX_DEPTH ... exceeds cap 64` | loader の上限は 64。codegen は chain の反復と 1 状態の self-loop を 32 までしか扱わないので、後述の表も参照する。verifier の命令数予算も考えて一桁を推奨 |

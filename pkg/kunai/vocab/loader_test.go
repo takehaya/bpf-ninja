@@ -2722,6 +2722,58 @@ parser F(packet_in pkt, out foo_h h) { state start { pkt.extract(h); transition 
 	}
 }
 
+// siblingVocabFS builds a vocab where foo and baz both dispatch under
+// bar, for the dispatch-collision tests.
+func siblingVocabFS(fooConsts, bazConsts string) fstest.MapFS {
+	child := func(name, consts string) *fstest.MapFile {
+		return &fstest.MapFile{Data: []byte(`
+header ` + name + `_h { bit<8> y; }
+` + consts + `
+parser P(packet_in pkt, out ` + name + `_h h) { state start { pkt.extract(h); transition accept; } }
+`)}
+	}
+	return fstest.MapFS{
+		"vocab/bar.p4": &fstest.MapFile{Data: []byte(`
+header bar_h { bit<8> x; bit<8> z; }
+parser B(packet_in pkt, out bar_h h) { state start { pkt.extract(h); transition accept; } }
+`)},
+		"vocab/baz.p4": child("baz", bazConsts),
+		"vocab/foo.p4": child("foo", fooConsts),
+	}
+}
+
+func TestLoadDispatchCollision(t *testing.T) {
+	for _, tc := range []struct{ name, foo, baz, want string }{
+		{"same value", "const bit<8> KUNAI_FOO_BAR_X = 1;", "const bit<8> KUNAI_BAZ_BAR_X = 1;",
+			`vocab/foo.p4: dispatch const "KUNAI_FOO_BAR_X" claims bar.x == 1, which "KUNAI_BAZ_BAR_X" in vocab/baz.p4 already claims`},
+		{"through an alt value", "const bit<8> KUNAI_FOO_BAR_X = 1;", "const bit<8> KUNAI_BAZ_BAR_X = 2;\nconst bit<8> KUNAI_BAZ_BAR_X_ALT_OTHER = 1;",
+			`"KUNAI_FOO_BAR_X" claims bar.x == 1, which "KUNAI_BAZ_BAR_X" in vocab/baz.p4 already claims`},
+		{"whatever the declared width", "const bit<8> KUNAI_FOO_BAR_X = 1;", "const bit<16> KUNAI_BAZ_BAR_X = 1;",
+			`"KUNAI_FOO_BAR_X" claims bar.x == 1`},
+	} {
+		_, err := Load(siblingVocabFS(tc.foo, tc.baz), "vocab")
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: err = %v, want %q", tc.name, err, tc.want)
+		}
+	}
+	// The same value on another field of the parent is no collision.
+	if _, err := Load(siblingVocabFS("const bit<8> KUNAI_FOO_BAR_X = 1;", "const bit<8> KUNAI_BAZ_BAR_Z = 1;"), "vocab"); err != nil {
+		t.Errorf("same value on another field: %v", err)
+	}
+	// NO_CHECK edges carry no value, so two under one parent are fine.
+	if _, err := Load(siblingVocabFS("const bool KUNAI_FOO_BAR_NO_CHECK = true;", "const bool KUNAI_BAZ_BAR_NO_CHECK = true;"), "vocab"); err != nil {
+		t.Errorf("two NO_CHECK edges: %v", err)
+	}
+}
+
+func TestLoadOneFieldDispatchPerParent(t *testing.T) {
+	_, err := Load(siblingVocabFS("const bit<8> KUNAI_FOO_BAR_X = 1;\nconst bit<8> KUNAI_FOO_BAR_Z = 2;", ""), "vocab")
+	want := `vocab/foo.p4: dispatch consts "KUNAI_FOO_BAR_X" and "KUNAI_FOO_BAR_Z" both dispatch under "bar"`
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Errorf("err = %v, want %q", err, want)
+	}
+}
+
 func TestLoadAltDispatchMerges(t *testing.T) {
 	specs, err := Load(altVocabFS(`
 const bit<8> KUNAI_FOO_BAR_X = 1;

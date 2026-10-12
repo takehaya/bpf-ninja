@@ -336,8 +336,8 @@ func addUnreachableChainWarning(p *ir.Program) {
 // members of one protocol dispatch alike under every parent, so the later
 // ones never match. One warning per protocol a group repeats. Two
 // protocols whose dispatch constants collide under one parent would
-// shadow too; the bundled vocabulary has none, and such a collision is a
-// vocabulary defect rather than a filter shape, so it is not checked here.
+// shadow too, but that is a vocabulary defect vocab.Load rejects
+// (checkDispatchCollisions), so it is not checked here.
 func addShadowedAlternativeWarning(p *ir.Program) {
 	for _, l := range p.Layers {
 		if l.Alternation == nil {
