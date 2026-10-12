@@ -68,7 +68,6 @@ import (
 	"math"
 	"slices"
 	"strings"
-	"sync/atomic"
 
 	"github.com/cilium/ebpf/asm"
 	"github.com/cilium/ebpf/btf"
@@ -378,6 +377,7 @@ func Gen(p *ir.Program, caps Capabilities) (Output, error) {
 	if err != nil {
 		return Output{}, err
 	}
+	qo.labels = newLabeler()
 	// Multi-option accumulator plan: when the reads of >=2 distinct
 	// dynamic-eligible options of one lookahead-only TLV layer (TCP
 	// options) are all `<option.field> == <const>`, in the layer's bracket
@@ -397,7 +397,7 @@ func Gen(p *ir.Program, caps Capabilities) (Output, error) {
 	}
 	var callbacks asm.Instructions
 	var extractions []ExtractSlot
-	pc := &predCtx{sets: caps.Lang.SetSlots, out: &extractions, accWhy: accWhy}
+	pc := &predCtx{sets: caps.Lang.SetSlots, out: &extractions, labels: qo.labels, accWhy: accWhy}
 	for i, layer := range p.Layers {
 		layerInsns, cb, err := genLayer(layer, i, p.Layers, qo, plan, pc)
 		if err != nil {
@@ -445,14 +445,20 @@ func Gen(p *ir.Program, caps Capabilities) (Output, error) {
 		asm.Mov.Imm(asm.R2, 0).WithSymbol(dslReject),
 	)
 
-	return Output{
+	out := Output{
 		Main:        insns,
 		Callbacks:   callbacks,
 		Capture:     capInfo,
 		Extractions: extractions,
 		Warnings:    cloneWarnings(p.Warnings),
 		WireFrame:   !caps.Host.VlanInMetadata,
-	}, nil
+	}
+	// The loader resolves jumps by symbol over Main and Callbacks; a label
+	// placed twice would only fail at load, so refuse it here.
+	if _, err := out.Instructions().SymbolOffsets(); err != nil {
+		return Output{}, fmt.Errorf("codegen: %w", err)
+	}
+	return out, nil
 }
 
 // cloneWarnings returns a defensive copy of the resolver's warnings
@@ -519,6 +525,7 @@ func emitFieldDispatchCheck(
 	dst asm.Register,
 	setupAddr asm.Instructions,
 	failLabel string,
+	labels *labeler,
 ) (asm.Instructions, error) {
 	fieldOff, fieldBytes, err := findFieldByteOffset(spec, c.FieldName)
 	if err != nil {
@@ -528,7 +535,7 @@ func emitFieldDispatchCheck(
 	if err != nil {
 		return nil, err
 	}
-	match, err := emitDispatchValueMatch(dst, c, fieldBytes, failLabel)
+	match, err := emitDispatchValueMatch(dst, c, fieldBytes, failLabel, labels)
 	if err != nil {
 		return nil, err
 	}
@@ -552,7 +559,7 @@ func emitFieldDispatchCheck(
 // miscompiling. The register-based compare the predicates use
 // (cmpRegEqU32) is not safe here: R5 is live in the bounded and
 // bpf_loop-callback dispatch contexts.
-func emitDispatchValueMatch(dst asm.Register, c *vocab.DispatchConst, fieldBytes int, failLabel string) (asm.Instructions, error) {
+func emitDispatchValueMatch(dst asm.Register, c *vocab.DispatchConst, fieldBytes int, failLabel string, labels *labeler) (asm.Instructions, error) {
 	swapped := make([]int32, 0, 1+len(c.AltValues))
 	for _, v := range append([]uint64{c.Value}, c.AltValues...) {
 		le := byteSwap(v, fieldBytes)
@@ -564,7 +571,7 @@ func emitDispatchValueMatch(dst asm.Register, c *vocab.DispatchConst, fieldBytes
 	if len(swapped) == 1 {
 		return asm.Instructions{asm.JNE.Imm(dst, swapped[0], failLabel)}, nil
 	}
-	okLabel := nextAltDispatchLabel("multiok")
+	okLabel := labels.fresh("altdisp_multiok")
 	insns := make(asm.Instructions, 0, len(swapped)+1)
 	for _, le := range swapped[:len(swapped)-1] {
 		insns = append(insns, asm.JEq.Imm(dst, le, okLabel))
@@ -606,6 +613,7 @@ func emitFieldDispatchCheckBounded(
 	offsetReg, scalar, dst asm.Register,
 	byteOff int,
 	failLabel string,
+	labels *labeler,
 ) (asm.Instructions, error) {
 	fieldOff, fieldBytes, err := findFieldByteOffset(spec, c.FieldName)
 	if err != nil {
@@ -615,7 +623,7 @@ func emitFieldDispatchCheckBounded(
 	if err != nil {
 		return nil, err
 	}
-	match, err := emitDispatchValueMatch(dst, c, fieldBytes, failLabel)
+	match, err := emitDispatchValueMatch(dst, c, fieldBytes, failLabel, labels)
 	if err != nil {
 		return nil, err
 	}
@@ -632,8 +640,8 @@ func emitFieldDispatchCheckBounded(
 // offset source and load destination (the fold consumes it before the
 // load overwrites it). Shared by genFieldDispatch and the alt-diverged
 // path so the slot-load + register aliasing live in one place.
-func emitVarParentDispatchBounded(spec *vocab.ProtocolSpec, c *vocab.DispatchConst, failLabel string) (asm.Instructions, error) {
-	check, err := emitFieldDispatchCheckBounded(spec, c, asm.R3, asm.R5, asm.R3, 0, failLabel)
+func emitVarParentDispatchBounded(spec *vocab.ProtocolSpec, c *vocab.DispatchConst, failLabel string, labels *labeler) (asm.Instructions, error) {
+	check, err := emitFieldDispatchCheckBounded(spec, c, asm.R3, asm.R5, asm.R3, 0, failLabel, labels)
 	if err != nil {
 		return nil, err
 	}
@@ -663,8 +671,8 @@ func writeBackDispatchSlot(parent *ir.LayerInstance, c *vocab.DispatchConst, qo 
 // emitSlotDispatchCheck is emitFieldDispatchCheck for a dispatch byte held
 // in a stack slot (writeBackDispatchSlot proved the field is one byte):
 // load it (zero-extended) and compare like a packet byte.
-func emitSlotDispatchCheck(c *vocab.DispatchConst, slot int16, failLabel string) (asm.Instructions, error) {
-	match, err := emitDispatchValueMatch(asm.R3, c, 1, failLabel)
+func emitSlotDispatchCheck(c *vocab.DispatchConst, slot int16, failLabel string, labels *labeler) (asm.Instructions, error) {
+	match, err := emitDispatchValueMatch(asm.R3, c, 1, failLabel, labels)
 	if err != nil {
 		return nil, err
 	}
@@ -1258,7 +1266,7 @@ func dispatchVia(current, parent *ir.LayerInstance, qo queriedOptions, r4IsRange
 	if c == nil {
 		if current.Spec.IsSelfValidating() {
 			if missIsNotReject(failLabel) {
-				return emitSelfValidationProbe(current.Spec, failLabel)
+				return emitSelfValidationProbe(current.Spec, failLabel, qo.labels)
 			}
 			return nil, nil
 		}
@@ -1429,7 +1437,7 @@ func genDispatch(current, parent *ir.LayerInstance, parentHS int, qo queriedOpti
 		// a reject before the machine runs, so it probes the fields that
 		// select requires (D-017).
 		if missIsNotReject(failLabel) {
-			edge, err = emitSelfValidationProbe(current.Spec, failLabel)
+			edge, err = emitSelfValidationProbe(current.Spec, failLabel, qo.labels)
 		}
 	default:
 		return nil, fmt.Errorf("codegen: unknown dispatch type %v", current.Dispatch.Type)
@@ -1458,7 +1466,7 @@ func missIsNotReject(failLabel string) bool { return failLabel != dslReject }
 // present and its own bounds check rejects. A select key sits inside one
 // byte (the parser machine refuses wider ones), so the probe is one byte
 // load per field. Clobbers R3.
-func emitSelfValidationProbe(spec *vocab.ProtocolSpec, missLabel string) (asm.Instructions, error) {
+func emitSelfValidationProbe(spec *vocab.ProtocolSpec, missLabel string, labels *labeler) (asm.Instructions, error) {
 	// A cursor at or past the scratch window can read nothing, and the
 	// layer's bounds check would reject it. Testing the high bits of R4
 	// itself also ends, on kernels 6.12 / 6.15, the paths the verifier
@@ -1475,7 +1483,7 @@ func emitSelfValidationProbe(spec *vocab.ProtocolSpec, missLabel string) (asm.In
 		if bitOff/8 != (bitOff+bits-1)/8 {
 			return nil, fmt.Errorf("%w: self-validation field %s.%s straddles a byte", ErrNotImplemented, spec.Name, req.Field)
 		}
-		ok := freshLabel("probe_ok")
+		ok := labels.fresh("probe_ok")
 		out = append(out, emitBoundedLoad(asm.R3, int16(bitOff/8), asm.Byte, ok)...)
 		if shift := 8 - (bitOff%8 + bits); shift > 0 {
 			out = append(out, asm.RSh.Imm(asm.R3, int32(shift)))
@@ -1569,12 +1577,12 @@ func genFieldDispatchAltDiverged(current *ir.LayerInstance, altParents []*ir.Lay
 		return nil, fmt.Errorf("codegen: alt parent count %d != AltConsts count %d (resolver bug)", len(altParents), len(consts))
 	}
 
-	doneLabel := nextAltDispatchLabel("done")
+	doneLabel := qo.labels.fresh("altdisp_done")
 	insns := asm.Instructions{asm.LoadMem(matchedAltReg, asm.R10, matchedSlot, asm.DWord)}
 	for i, altParent := range altParents {
 		var skipLabel string
 		if i+1 < len(altParents) {
-			skipLabel = nextAltDispatchLabel("skip")
+			skipLabel = qo.labels.fresh("altdisp_skip")
 			insns = append(insns, asm.JNE.Imm(matchedAltReg, int32(i), skipLabel))
 		}
 
@@ -1583,12 +1591,12 @@ func genFieldDispatchAltDiverged(current *ir.LayerInstance, altParents []*ir.Lay
 			err   error
 		)
 		if wbSlot, ok := writeBackDispatchSlot(altParent, consts[i], qo); ok {
-			check, err = emitSlotDispatchCheck(consts[i], wbSlot, failLabel)
+			check, err = emitSlotDispatchCheck(consts[i], wbSlot, failLabel, qo.labels)
 		} else if altParent.Spec.HasVariableLayout() {
 			// Forward read off the layer-entry slot; bounded when the
 			// parent entry may be a range scalar (see genFieldDispatch).
 			if parentEntryIsRange {
-				check, err = emitVarParentDispatchBounded(altParent.Spec, consts[i], failLabel)
+				check, err = emitVarParentDispatchBounded(altParent.Spec, consts[i], failLabel, qo.labels)
 			} else {
 				check, err = emitFieldDispatchCheck(
 					altParent.Spec,
@@ -1600,6 +1608,7 @@ func genFieldDispatchAltDiverged(current *ir.LayerInstance, altParents []*ir.Lay
 						asm.Add.Reg(asm.R3, asm.R0),
 					},
 					failLabel,
+					qo.labels,
 				)
 			}
 		} else {
@@ -1611,6 +1620,7 @@ func genFieldDispatchAltDiverged(current *ir.LayerInstance, altParents []*ir.Lay
 				check, err = emitFieldDispatchCheckBounded(
 					altParent.Spec, consts[i],
 					offsetBase /*offsetReg=R4*/, asm.R5 /*scalar*/, asm.R3 /*dst*/, -altParentHS, failLabel,
+					qo.labels,
 				)
 			} else {
 				check, err = emitFieldDispatchCheck(
@@ -1623,6 +1633,7 @@ func genFieldDispatchAltDiverged(current *ir.LayerInstance, altParents []*ir.Lay
 						asm.Add.Reg(asm.R3, offsetBase),
 					},
 					failLabel,
+					qo.labels,
 				)
 			}
 		}
@@ -1649,22 +1660,6 @@ func genFieldDispatchAltDiverged(current *ir.LayerInstance, altParents []*ir.Lay
 	return insns, nil
 }
 
-// labelCounter numbers the labels freshLabel hands out. Atomic so
-// concurrent Compile() calls produce non-colliding labels even though
-// label uniqueness is only required within a single instruction stream.
-var labelCounter atomic.Uint64
-
-// freshLabel returns a process-unique `dsl_<prefix>_<n>` label.
-func freshLabel(prefix string) string {
-	return fmt.Sprintf("dsl_%s_%d", prefix, labelCounter.Add(1))
-}
-
-// nextAltDispatchLabel returns an alt-diverged dispatch label in the
-// `dsl_altdisp_<role>_<n>` shape.
-func nextAltDispatchLabel(role string) string {
-	return freshLabel("altdisp_" + role)
-}
-
 // genFieldDispatch emits the check that parent.<field> == value.
 //
 // For fixed-size parent layers the header sits at
@@ -1689,7 +1684,7 @@ func genFieldDispatch(current, parent *ir.LayerInstance, parentHS int, qo querie
 	if slot, ok := writeBackDispatchSlot(parent, current.Dispatch.Const, qo); ok {
 		// The parent's walk keeps the dispatch byte in its write-back slot
 		// (ipv6.next_header after the extension chain); no packet read.
-		return emitSlotDispatchCheck(current.Dispatch.Const, slot, failLabel)
+		return emitSlotDispatchCheck(current.Dispatch.Const, slot, failLabel, qo.labels)
 	}
 	if parent.Spec.HasVariableLayout() {
 		// Parser-machine parent: base is the parent's layer-entry slot
@@ -1701,7 +1696,7 @@ func genFieldDispatch(current, parent *ir.LayerInstance, parentHS int, qo querie
 		// PTR_TO_PACKET; the bounded idiom fixes it. A constant slot
 		// (parent at a fixed offset) keeps the byte-identical fast path.
 		if parentEntryIsRange {
-			return emitVarParentDispatchBounded(parent.Spec, current.Dispatch.Const, failLabel)
+			return emitVarParentDispatchBounded(parent.Spec, current.Dispatch.Const, failLabel, qo.labels)
 		}
 		return emitFieldDispatchCheck(
 			parent.Spec,
@@ -1713,6 +1708,7 @@ func genFieldDispatch(current, parent *ir.LayerInstance, parentHS int, qo querie
 				asm.Add.Reg(asm.R3, asm.R0),
 			},
 			failLabel,
+			qo.labels,
 		)
 	}
 	// Fixed parent: base is offsetBase (R4), dispatch field at
@@ -1725,6 +1721,7 @@ func genFieldDispatch(current, parent *ir.LayerInstance, parentHS int, qo querie
 		return emitFieldDispatchCheckBounded(
 			parent.Spec, current.Dispatch.Const,
 			offsetBase /*offsetReg=R4*/, asm.R5 /*scalar*/, asm.R3 /*dst*/, -parentHS, failLabel,
+			qo.labels,
 		)
 	}
 	return emitFieldDispatchCheck(
@@ -1737,6 +1734,7 @@ func genFieldDispatch(current, parent *ir.LayerInstance, parentHS int, qo querie
 			asm.Add.Reg(asm.R3, offsetBase),
 		},
 		failLabel,
+		qo.labels,
 	)
 }
 
@@ -2228,7 +2226,7 @@ type resolveAuxSlot func(*ir.FieldRef) (int16, bool)
 //
 // resolveSlot is consulted only for options; an aux there needs no
 // gating, the slot sentinel stands in for it.
-func auxLoadEmitter(ref *ir.FieldRef, anchor layerAnchor, resolveSlot resolveAuxSlot, failLabel string) (asm.Instructions, auxLoadAt, error) {
+func auxLoadEmitter(ref *ir.FieldRef, anchor layerAnchor, resolveSlot resolveAuxSlot, failLabel string, labels *labeler) (asm.Instructions, auxLoadAt, error) {
 	if ref == nil || ref.Aux == nil {
 		return nil, nil, fmt.Errorf("codegen: auxLoadEmitter on non-aux FieldRef")
 	}
@@ -2292,7 +2290,7 @@ func auxLoadEmitter(ref *ir.FieldRef, anchor layerAnchor, resolveSlot resolveAux
 	if needsEntryAddress(ref) {
 		// Dynamic index, or a static index behind variable-length entries:
 		// R5 = entry start, per-chunk loads are R5-relative.
-		prelude, err := emitStackEntryAddress(ref, anchor, indexBound{}, failLabel)
+		prelude, err := emitStackEntryAddress(ref, anchor, indexBound{}, failLabel, labels)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -2571,7 +2569,7 @@ func emitExposeEntry(ref *ir.FieldRef, failLabel string) asm.Instructions {
 // constant stride, so the walk of emitStaticStackEntryAddress is unrolled
 // up to the push bound and stops at the step the runtime index names.
 // Leaves R5 = entry start and R3 = R5 + HeaderSize. R2/R3 are clobbered.
-func emitDynamicVarTailStackAddress(ref *ir.FieldRef, base layerAnchor, idxBound indexBound, failLabel string) (asm.Instructions, error) {
+func emitDynamicVarTailStackAddress(ref *ir.FieldRef, base layerAnchor, idxBound indexBound, failLabel string, labels *labeler) (asm.Instructions, error) {
 	idxByteOff, err := dynamicIndexSource(ref)
 	if err != nil {
 		return nil, err
@@ -2594,7 +2592,7 @@ func emitDynamicVarTailStackAddress(ref *ir.FieldRef, base layerAnchor, idxBound
 	// at most pushBound entries, so an index past that is absent. The last
 	// possible index needs no further step.
 	bound := min(ref.Aux.Stack.Capacity, pushBound(ref.Layer.Spec, ref.Aux.OutParam))
-	found := freshLabel("varwalk")
+	found := labels.fresh("varwalk")
 	for k := 0; k < bound-1; k++ {
 		insns = append(insns, asm.JEq.Imm(asm.R5, int32(k), found))
 		insns = append(insns, emitVarTailStep(ref, vt, shift, failLabel)...)
@@ -2621,7 +2619,7 @@ func emitDynamicVarTailStackAddress(ref *ir.FieldRef, base layerAnchor, idxBound
 // (whereCtx.stackEntryAddress); the predicate side never sees a dynamic
 // index (the resolver refuses it in brackets) and passes the zero bound.
 // R2/R3 are clobbered.
-func emitStackEntryAddress(ref *ir.FieldRef, base layerAnchor, bound indexBound, failLabel string) (asm.Instructions, error) {
+func emitStackEntryAddress(ref *ir.FieldRef, base layerAnchor, bound indexBound, failLabel string, labels *labeler) (asm.Instructions, error) {
 	if ref.Aux.Stack.IsStatic {
 		return emitStaticStackEntryAddress(ref, base, failLabel)
 	}
@@ -2629,7 +2627,7 @@ func emitStackEntryAddress(ref *ir.FieldRef, base layerAnchor, bound indexBound,
 		return nil, fmt.Errorf("codegen: dynamic index into the push-counted stack %s.%s without its count slot (D-031)", ref.Layer.Spec.Name, ref.Aux.OutParam)
 	}
 	if isVarTailStack(ref) {
-		return emitDynamicVarTailStackAddress(ref, base, bound, failLabel)
+		return emitDynamicVarTailStackAddress(ref, base, bound, failLabel, labels)
 	}
 	return emitDynamicStackAddressCounted(ref, base, bound, failLabel)
 }
@@ -2732,7 +2730,7 @@ func predicateLoadSite(pc *predCtx) fieldLoadSite {
 		gate: r4Anchor(),
 		load: pc.fieldAnchor(),
 		entryAddr: func(ref *ir.FieldRef, base layerAnchor, failLabel string) (asm.Instructions, error) {
-			return emitStackEntryAddress(ref, base, indexBound{}, failLabel)
+			return emitStackEntryAddress(ref, base, indexBound{}, failLabel, pc.labelsOrNil())
 		},
 		optionSlot: pc.optionSlotFor,
 		fail:       dslReject,

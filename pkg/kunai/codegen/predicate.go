@@ -3,7 +3,6 @@ package codegen
 import (
 	"encoding/binary"
 	"fmt"
-	"sync/atomic"
 
 	"github.com/cilium/ebpf/asm"
 
@@ -218,6 +217,9 @@ func emitIntPredicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, error)
 type predCtx struct {
 	sets SetSlotResolver
 	out  *[]ExtractSlot
+	// labels numbers the labels of this compile (Gen's labeler); a
+	// rebuilt predCtx carries it over.
+	labels *labeler
 	// stackCount resolves the push count slot of a push-counted stack
 	// (option_demand.go needsPushCount). Set only where the predicates
 	// run after the parser walk (splitPredicates), since the count is final
@@ -242,6 +244,20 @@ type predCtx struct {
 	// fields from; it carries the write-back overlay of a layer whose
 	// predicates run after its walk (D-032). nil: R4 at entry.
 	anchor *layerAnchor
+}
+
+// labelsOrNil is pc's labeler, nil for a nil pc (minting through it
+// panics, see labeler.fresh).
+func (pc *predCtx) labelsOrNil() *labeler {
+	if pc == nil {
+		return nil
+	}
+	return pc.labels
+}
+
+// freshLabel mints a label from pc's labeler.
+func (pc *predCtx) freshLabel(prefix string) string {
+	return pc.labelsOrNil().fresh(prefix)
 }
 
 // fieldAnchor is the anchor a predicate reads primary fields through.
@@ -490,7 +506,7 @@ func emitIPv4Predicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, error
 	jumpOp, ok := ipEqualityJumpOp(pred.Op)
 	if !ok {
 		chunks := []wireChunk{{0, asm.Word, uint64(binary.BigEndian.Uint32(v4[:]))}}
-		return append(insns, emitOrderedWireCmp(loadAt, chunks, pred.Op, bracketConstReg(pred.Field))...), nil
+		return append(insns, emitOrderedWireCmp(loadAt, chunks, pred.Op, bracketConstReg(pred.Field), pc.labelsOrNil())...), nil
 	}
 	expected := uint32(byteSwap(uint64(binary.BigEndian.Uint32(v4[:])), 4))
 	insns = append(insns, loadAt(0, asm.Word)...)
@@ -527,11 +543,11 @@ type wireChunk struct {
 // and equality falls through to the next chunk; the last chunk applies
 // the op itself. IPv4 is one Word, MAC a Word and a Half, IPv6 two
 // DWords. constReg holds each chunk's constant (bracketConstReg).
-func emitOrderedWireCmp(loadAt auxLoadAt, chunks []wireChunk, op ast.CmpOp, constReg asm.Register) asm.Instructions {
+func emitOrderedWireCmp(loadAt auxLoadAt, chunks []wireChunk, op ast.CmpOp, constReg asm.Register, labels *labeler) asm.Instructions {
 	var insns asm.Instructions
 	match := ""
 	if len(chunks) > 1 {
-		match = nextPredicateMatchLabel()
+		match = labels.fresh(predMatchLabel)
 	}
 	success, fail := highHalfJumps(op)
 	miss := lowHalfMissJump(op)
@@ -559,7 +575,7 @@ func emitOrderedWireCmp(loadAt auxLoadAt, chunks []wireChunk, op ast.CmpOp, cons
 // located, readable only after the walk) ahead of the addressing
 // prelude, R4 at layer entry, dslReject when absent.
 func bracketAuxLoad(ref *ir.FieldRef, pc *predCtx) (asm.Instructions, auxLoadAt, error) {
-	prelude, loadAt, err := auxLoadEmitter(ref, r4Anchor(), pc.optionSlotFor, dslReject)
+	prelude, loadAt, err := auxLoadEmitter(ref, r4Anchor(), pc.optionSlotFor, dslReject, pc.labelsOrNil())
 	if err != nil {
 		return nil, nil, err
 	}
@@ -620,7 +636,7 @@ func emitIPv6Predicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, error
 		if err != nil {
 			return nil, err
 		}
-		return append(insns, emitOrderedWireCmp(loadAt, ipv6Chunks(pred.Value), pred.Op, bracketConstReg(pred.Field))...), nil
+		return append(insns, emitOrderedWireCmp(loadAt, ipv6Chunks(pred.Value), pred.Op, bracketConstReg(pred.Field), pc.labelsOrNil())...), nil
 	}
 	if pred.Field != nil && pred.Field.Aux != nil {
 		if pred.Field.EffectiveBits() != 128 {
@@ -633,7 +649,7 @@ func emitIPv6Predicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, error
 		highBE := binary.BigEndian.Uint64(pred.Value.V6[0:8])
 		lowBE := binary.BigEndian.Uint64(pred.Value.V6[8:16])
 		insns := append(asm.Instructions{}, prelude...)
-		insns = append(insns, multiWordRoute(pred.Op, func(fail string) asm.Instructions {
+		insns = append(insns, multiWordRoute(pc.labelsOrNil(), pred.Op, func(fail string) asm.Instructions {
 			body := append(asm.Instructions{}, ipv6AuxHalfCheck(loadAt, 0, ^uint64(0), highBE, fail)...)
 			body = append(body, ipv6AuxHalfCheck(loadAt, 8, ^uint64(0), lowBE, fail)...)
 			return body
@@ -646,7 +662,7 @@ func emitIPv6Predicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, error
 	}
 	highBE := binary.BigEndian.Uint64(pred.Value.V6[0:8])
 	lowBE := binary.BigEndian.Uint64(pred.Value.V6[8:16])
-	return multiWordRoute(pred.Op, func(fail string) asm.Instructions {
+	return multiWordRoute(pc.labelsOrNil(), pred.Op, func(fail string) asm.Instructions {
 		var insns asm.Instructions
 		insns = append(insns, ipv6HalfCheck(int16(fieldOff), ^uint64(0), highBE, fail)...)
 		insns = append(insns, ipv6HalfCheck(int16(fieldOff+8), ^uint64(0), lowBE, fail)...)
@@ -757,7 +773,7 @@ func emitIPv6CIDRPredicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, e
 			return nil, err
 		}
 		insns := append(asm.Instructions{}, prelude...)
-		insns = append(insns, multiWordRoute(pred.Op, func(fail string) asm.Instructions {
+		insns = append(insns, multiWordRoute(pc.labelsOrNil(), pred.Op, func(fail string) asm.Instructions {
 			var body asm.Instructions
 			if maskHighBE != 0 {
 				body = append(body, ipv6AuxHalfCheck(loadAt, 0, maskHighBE, hostHighBE, fail)...)
@@ -774,7 +790,7 @@ func emitIPv6CIDRPredicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, e
 	if err != nil {
 		return nil, err
 	}
-	return multiWordRoute(pred.Op, func(fail string) asm.Instructions {
+	return multiWordRoute(pc.labelsOrNil(), pred.Op, func(fail string) asm.Instructions {
 		var insns asm.Instructions
 		if maskHighBE != 0 {
 			insns = append(insns, ipv6HalfCheck(int16(fieldOff), maskHighBE, hostHighBE, fail)...)
@@ -836,10 +852,10 @@ func emitMACPredicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, error)
 			{0, asm.Word, uint64(binary.BigEndian.Uint32(mac[0:4]))},
 			{4, asm.Half, uint64(binary.BigEndian.Uint16(mac[4:6]))},
 		}
-		return append(insns, emitOrderedWireCmp(loadAt, chunks, pred.Op, bracketConstReg(pred.Field))...), nil
+		return append(insns, emitOrderedWireCmp(loadAt, chunks, pred.Op, bracketConstReg(pred.Field), pc.labelsOrNil())...), nil
 	}
 	highLE, lowLE := macLiteralLE(pred.Value)
-	insns = append(insns, multiWordRoute(pred.Op, func(fail string) asm.Instructions {
+	insns = append(insns, multiWordRoute(pc.labelsOrNil(), pred.Op, func(fail string) asm.Instructions {
 		return macCheck(loadAt, highLE, lowLE, fail)
 	})...)
 	return insns, nil
@@ -898,12 +914,13 @@ func cmpRegEqU32(jumpOp asm.JumpOp, expected uint32, failLabel string) asm.Instr
 //     through the body all words agreed, so we Ja dslReject.
 //
 // Callers must filter `op` through requireEqualityOp first — only ==
-// and != are valid here.
-func multiWordRoute(op ast.CmpOp, body func(failLabel string) asm.Instructions) asm.Instructions {
+// and != are valid here. labels comes first, unlike the other helpers,
+// so the body closure stays the last argument.
+func multiWordRoute(labels *labeler, op ast.CmpOp, body func(failLabel string) asm.Instructions) asm.Instructions {
 	if op == ast.CmpEq {
 		return body(dslReject)
 	}
-	match := nextPredicateMatchLabel()
+	match := labels.fresh(predMatchLabel)
 	out := body(match)
 	return append(out, asm.Ja.Label(dslReject), landingNoop(match))
 }
@@ -975,7 +992,7 @@ func emitInPredicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, error) 
 		return insns, nil
 	}
 
-	matchLabel := nextPredicateMatchLabel()
+	matchLabel := pc.freshLabel(predMatchLabel)
 	// A range alternative's below-lo branch jumps to the next
 	// alternative; the label lands on that alternative's first compare,
 	// so `pending` carries it there instead of a filler instruction.
@@ -997,7 +1014,7 @@ func emitInPredicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, error) 
 			next := dslReject
 			if lo > 0 {
 				if !last {
-					next = nextPredicateLabel(predInNextLabelPrefix)
+					next = pc.freshLabel(predInNextLabel)
 				}
 				emit(cmpR3Const(asm.JLT, lo, next))
 			}
@@ -1130,7 +1147,7 @@ func emitInAddrList(pred *ir.Predicate, pc *predCtx, shape inListShape, trivial 
 		// readable; see emitInPredicate.
 		return insns, nil
 	}
-	match := nextPredicateMatchLabel()
+	match := pc.freshLabel(predMatchLabel)
 	pending := ""
 	emit := func(ins asm.Instructions) {
 		if pending != "" {
@@ -1143,7 +1160,7 @@ func emitInAddrList(pred *ir.Predicate, pc *predCtx, shape inListShape, trivial 
 		last := i+1 == len(pred.List)
 		fail := dslReject
 		if !last {
-			fail = nextPredicateLabel(predInNextLabelPrefix)
+			fail = pc.freshLabel(predInNextLabel)
 		}
 		emit(emitAddrAlternative(v, loadAt, fail))
 		if !last {
@@ -1205,28 +1222,21 @@ func cmpRegConst(reg asm.Register, jumpOp asm.JumpOp, value uint64, label string
 	}
 }
 
-// predMatchLabelPrefix is the label prefix multiWordRoute uses for
-// `!=` match landings. Tests scanning emitted instructions for the
-// landing symbol depend on this exact string.
-const predMatchLabelPrefix = "dsl_pred_match_"
+// predMatchLabel names the match landings of multi-word compares and
+// `in` lists; predMatchLabelPrefix is the label it yields. Tests
+// scanning emitted instructions for the landing symbol depend on this
+// exact string.
+const (
+	predMatchLabel       = "pred_match"
+	predMatchLabelPrefix = "dsl_" + predMatchLabel + "_"
+)
 
-// predInNextLabelPrefix labels the fall-through of a range alternative
-// inside an `in` list (not a match landing).
-const predInNextLabelPrefix = "dsl_pred_in_next_"
-
-// predLabelCounter feeds nextPredicateLabel. Atomic so concurrent
-// Gen() calls produce non-colliding labels; labels are scoped to one
-// instruction stream so a process-wide counter suffices for uniqueness.
-var predLabelCounter atomic.Uint64
-
-// nextPredicateLabel returns a fresh `<prefix><n>` label.
-func nextPredicateLabel(prefix string) string {
-	return fmt.Sprintf("%s%d", prefix, predLabelCounter.Add(1))
-}
-
-func nextPredicateMatchLabel() string {
-	return nextPredicateLabel(predMatchLabelPrefix)
-}
+// predInNextLabel names the fall-through of a range alternative inside
+// an `in` list (not a match landing).
+const (
+	predInNextLabel       = "pred_in_next"
+	predInNextLabelPrefix = "dsl_" + predInNextLabel + "_"
+)
 
 // ipv6PrefixMaskBE returns (high, low) uint64 halves of the /N
 // network mask, big-endian. /0 → 0,0; /64 → all-ones,0; /128 →

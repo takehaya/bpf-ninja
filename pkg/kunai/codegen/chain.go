@@ -141,18 +141,15 @@ func genStaticChain(layer *ir.LayerInstance, index int, all []*ir.LayerInstance,
 		Spec:     layer.Spec,
 		Dispatch: &ir.DispatchChoice{Type: selfConst.Type, Const: selfConst},
 	}
-	// Predicates are identical across iterations; emit once and append
-	// the same slice from each iteration. Use a no-accumulate predCtx so
-	// an `in @set` extraction records its host slot only once (genStaticLayer
-	// above already did); the store asm still replays each iteration.
-	// nil-safe: a nil pc (host without set support) stays nil.
+	// Each iteration emits the predicates again: a predicate may place a
+	// label (an `in` list, a multi-word compare), and a label must appear
+	// once in the stream. Use a no-accumulate predCtx so an `in @set`
+	// extraction records its host slot only once (genStaticLayer above
+	// already did); the store asm still replays each iteration. nil-safe:
+	// a nil pc (host without set support) stays nil.
 	var replayPC *predCtx
 	if pc != nil {
-		replayPC = &predCtx{sets: pc.sets}
-	}
-	preds, err := emitPredicates(layer.Predicates, replayPC)
-	if err != nil {
-		return nil, err
+		replayPC = &predCtx{sets: pc.sets, labels: pc.labels}
 	}
 
 	// Self-repeating layer: the dispatch parent is this same layer, so
@@ -179,6 +176,10 @@ func genStaticChain(layer *ir.LayerInstance, index int, all []*ir.LayerInstance,
 		}
 		insns = append(insns, dispatch...)
 		insns = append(insns, emitBounds(hs, dslReject)...)
+		preds, err := emitPredicates(layer.Predicates, replayPC)
+		if err != nil {
+			return nil, err
+		}
 		insns = append(insns, preds...)
 		entry, err := emitLayerEntryStore(layer, qo)
 		if err != nil {
