@@ -59,7 +59,57 @@ func Load(fsys fs.FS, root string) (map[string]*ProtocolSpec, error) {
 	if err := resolveHeaderWritebackTargets(out); err != nil {
 		return nil, err
 	}
+	if err := checkDispatchCollisions(out); err != nil {
+		return nil, err
+	}
 	return out, nil
+}
+
+// checkDispatchCollisions rejects two children that claim one value of
+// one parent field: a packet carrying it would match both, so an
+// alternation or an optional layer naming them takes the first and never
+// the other. Every value an edge accepts counts, its _ALT_ values
+// included, whatever bit<N> the const declares: the parent field has one
+// width. Self edges count too; NO_CHECK edges carry no value. Children
+// are visited in name order so the error is the same on every run.
+func checkDispatchCollisions(specs map[string]*ProtocolSpec) error {
+	type claimKey struct {
+		parent, field string
+		value         uint64
+	}
+	type claim struct {
+		spec *ProtocolSpec
+		name string
+	}
+	names := make([]string, 0, len(specs))
+	for name := range specs {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	claims := map[claimKey]claim{}
+	for _, name := range names {
+		spec := specs[name]
+		for _, c := range spec.Consts {
+			if c.Type != DispatchField {
+				continue
+			}
+			for _, v := range append([]uint64{c.Value}, c.AltValues...) {
+				// AltValues no longer carry their const names; say the
+				// value comes from an _ALT_ const of the base.
+				name := fmt.Sprintf("%q", c.Name)
+				if v != c.Value {
+					name += " (through an _ALT_ value)"
+				}
+				k := claimKey{c.Parent, c.FieldName, v}
+				if prev, ok := claims[k]; ok {
+					return fmt.Errorf("%s: dispatch const %s claims %s.%s == %d, which %s in %s already claims; a packet with that value would match both, so an alternation or an optional layer naming them takes the first and never the other; give one of them a different value, or fold them into one protocol told apart by a predicate",
+						spec.Source, name, c.Parent, c.FieldName, v, prev.name, prev.spec.Source)
+				}
+				claims[k] = claim{spec, name}
+			}
+		}
+	}
+	return nil
 }
 
 func loadFile(fsys fs.FS, p string, knownProtos map[string]bool) (*ProtocolSpec, error) {
@@ -500,7 +550,31 @@ func classifyConsts(cs []*p4lite.Const, protoName, source string, knownProtos ma
 	if err := mergeAltDispatchConsts(&res, source); err != nil {
 		return classifyResult{}, err
 	}
+	if err := checkOneFieldDispatchPerParent(res, source); err != nil {
+		return classifyResult{}, err
+	}
 	return res, nil
+}
+
+// checkOneFieldDispatchPerParent rejects a child with two field
+// dispatches under one parent: SelectDispatchConst takes the first
+// declared and the other is never read. Another value of the same field
+// is an _ALT_<NAME> const, folded in by mergeAltDispatchConsts. A field
+// dispatch next to a NO_CHECK one is left alone: SelectDispatchConst
+// prefers the field on purpose.
+func checkOneFieldDispatchPerParent(res classifyResult, source string) error {
+	first := map[string]string{}
+	for _, c := range res.Consts {
+		if c.Type != DispatchField {
+			continue
+		}
+		if prev, ok := first[c.Parent]; ok {
+			return fmt.Errorf("%s: dispatch consts %q and %q both dispatch under %q; a child dispatches on one parent field, and the first declared would win silently; keep one, and write another value of the same field as an _ALT_<NAME> const",
+				source, prev, c.Name, c.Parent)
+		}
+		first[c.Parent] = c.Name
+	}
+	return nil
 }
 
 // mergeAltDispatchConsts folds `KUNAI_<SELF>_<PARENT>_<FIELD>_ALT` and
