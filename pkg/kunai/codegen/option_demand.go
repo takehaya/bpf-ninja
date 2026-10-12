@@ -25,6 +25,8 @@ type queriedOptions struct {
 	// tcp.options.MSS pays for one slot, not four).
 	demand map[*ir.LayerInstance][]*vocab.AuxLayout
 	plan   *stackPlan
+	// labels numbers the labels of this compile; every copy shares it.
+	labels *labeler
 	// members maps each alternation member to its index in its group
 	// (the group's chain position is the member's own LayerPos).
 	members map[*ir.LayerInstance]int

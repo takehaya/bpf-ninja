@@ -148,7 +148,7 @@ func genStaticChain(layer *ir.LayerInstance, index int, all []*ir.LayerInstance,
 	// nil-safe: a nil pc (host without set support) stays nil.
 	var replayPC *predCtx
 	if pc != nil {
-		replayPC = &predCtx{sets: pc.sets}
+		replayPC = &predCtx{sets: pc.sets, labels: pc.labels}
 	}
 	preds, err := emitPredicates(layer.Predicates, replayPC)
 	if err != nil {

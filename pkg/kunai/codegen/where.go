@@ -2341,7 +2341,7 @@ func (c *whereCtx) genOptionLiteralCompare(w *ir.Condition, failLabel string) (a
 	if err != nil {
 		return nil, err
 	}
-	prelude, loadAt, err := auxLoadEmitter(ref, anchor, c.dynamicOffsetSlotFor, failLabel)
+	prelude, loadAt, err := auxLoadEmitter(ref, anchor, c.dynamicOffsetSlotFor, failLabel, c.queried.labels)
 	if err != nil {
 		return nil, err
 	}
@@ -2516,7 +2516,7 @@ func (c *whereCtx) stackEntryAddress(ref *ir.FieldRef, base layerAnchor, failLab
 			bound.hdr = src.Hdr
 		}
 	}
-	return emitStackEntryAddress(ref, base, bound, failLabel)
+	return emitStackEntryAddress(ref, base, bound, failLabel, c.queried.labels)
 }
 
 // absent is the jump target for a field whose option, gated aux, or

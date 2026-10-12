@@ -315,7 +315,7 @@ func genBpfLoopCallback(layer *ir.LayerInstance, selfConst *vocab.DispatchConst,
 	insns = append(insns, asm.JGT.Imm(asm.R3, int32(ScratchBufSize), rejectLabel))
 
 	if selfConst.Type == vocab.DispatchField {
-		peek, err := chainFieldPeek(spec, selfConst, hs, breakLabel)
+		peek, err := chainFieldPeek(spec, selfConst, hs, breakLabel, qo.labels)
 		if err != nil {
 			return nil, err
 		}
@@ -386,7 +386,7 @@ func genBpfLoopCallback(layer *ir.LayerInstance, selfConst *vocab.DispatchConst,
 func callbackPredicates(layer *ir.LayerInstance, rejectLabel string, pc *predCtx) (asm.Instructions, error) {
 	var replayPC *predCtx
 	if pc != nil {
-		replayPC = &predCtx{sets: pc.sets}
+		replayPC = &predCtx{sets: pc.sets, labels: pc.labels}
 	}
 	preds, err := emitPredicates(layer.Predicates, replayPC)
 	if err != nil {
@@ -560,7 +560,7 @@ func encodeChainEndField(bitOff, width int, value uint64) (byteOff int, mask uin
 // emitVariableTrail for the same invariant. Falls back to the simple
 // emit (via emitFieldDispatchCheck) when the resolved offset turns
 // out to be non-negative.
-func chainFieldPeek(spec *vocab.ProtocolSpec, selfConst *vocab.DispatchConst, hs int, breakLabel string) (asm.Instructions, error) {
+func chainFieldPeek(spec *vocab.ProtocolSpec, selfConst *vocab.DispatchConst, hs int, breakLabel string, labels *labeler) (asm.Instructions, error) {
 	fieldOff, fieldBytes, err := findFieldByteOffset(spec, selfConst.FieldName)
 	if err != nil {
 		return nil, err
@@ -577,13 +577,14 @@ func chainFieldPeek(spec *vocab.ProtocolSpec, selfConst *vocab.DispatchConst, hs
 				asm.Add.Reg(asm.R0, asm.R3),
 			},
 			breakLabel,
+			labels,
 		)
 	}
 	size, err := asmSizeFor(fieldBytes)
 	if err != nil {
 		return nil, err
 	}
-	match, err := emitDispatchValueMatch(asm.R0, selfConst, fieldBytes, breakLabel)
+	match, err := emitDispatchValueMatch(asm.R0, selfConst, fieldBytes, breakLabel, labels)
 	if err != nil {
 		return nil, err
 	}

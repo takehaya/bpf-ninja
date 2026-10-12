@@ -148,6 +148,7 @@ func genParserMachineIter(layer *ir.LayerInstance, layerIdx int, all []*ir.Layer
 		// way a where clause does.
 		entryAnchor := pmCtx.entryAnchor()
 		pcPost := &predCtx{
+			labels:     qo.labels,
 			stackCount: func(f *ir.FieldRef) (int16, bool) { return qo.stackCountSlot(f.Layer, f.Aux.OutParam) },
 			optionSlot: qo.optionSlotFor,
 			validSlot:  qo.validSlot,
