@@ -53,6 +53,12 @@ counts and which part changed (`code` for the instructions, `meta` for the
 capture length, set extractions and warnings). The curated `.asm` files show
 the change as text. `make golden-diff GOLDEN_BASE=main` prints the text diff
 of every filter between the base and the working tree, so a reviewer can check
-the filters the manifest lists only by hash. Adding spec vectors with
+the filters the manifest lists only by hash; an added or removed filter shows
+in full against an empty file. The diff leaves out instruction
+indexes, so inserted instructions do not renumber the rest of the program;
+`GOLDEN_DIFF_INDEX=1` keeps them. To tell the outcomes apart in a script, run
+`./scripts/golden-diff.sh BASE` directly: it exits 0 when no filter moved, 1
+when one did, and 2 on an error such as a base without the golden test. make
+reports any failing recipe as status 2. Adding spec vectors with
 `make lean-gen` also needs `make golden-update`, because each new filter gets
 a manifest line.
