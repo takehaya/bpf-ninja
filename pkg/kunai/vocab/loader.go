@@ -94,12 +94,18 @@ func checkDispatchCollisions(specs map[string]*ProtocolSpec) error {
 				continue
 			}
 			for _, v := range append([]uint64{c.Value}, c.AltValues...) {
+				// AltValues no longer carry their const names; say the
+				// value comes from an _ALT_ const of the base.
+				name := fmt.Sprintf("%q", c.Name)
+				if v != c.Value {
+					name += " (through an _ALT_ value)"
+				}
 				k := claimKey{c.Parent, c.FieldName, v}
 				if prev, ok := claims[k]; ok {
-					return fmt.Errorf("%s: dispatch const %q claims %s.%s == %d, which %q in %s already claims; a packet with that value would match both children, so an alternation or an optional layer naming them takes the first and never the other; give one of them a different value",
-						spec.Source, c.Name, c.Parent, c.FieldName, v, prev.name, prev.spec.Source)
+					return fmt.Errorf("%s: dispatch const %s claims %s.%s == %d, which %s in %s already claims; a packet with that value would match both, so an alternation or an optional layer naming them takes the first and never the other; give one of them a different value, or fold them into one protocol told apart by a predicate",
+						spec.Source, name, c.Parent, c.FieldName, v, prev.name, prev.spec.Source)
 				}
-				claims[k] = claim{spec, c.Name}
+				claims[k] = claim{spec, name}
 			}
 		}
 	}
