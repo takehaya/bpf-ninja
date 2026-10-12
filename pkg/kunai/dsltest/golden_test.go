@@ -12,11 +12,9 @@ import (
 	"reflect"
 	"regexp"
 	"slices"
-	"strconv"
 	"strings"
 	"testing"
 
-	"github.com/cilium/ebpf/asm"
 	"github.com/cilium/ebpf/btf"
 
 	"github.com/takehaya/bpf-ninja/pkg/kunai"
@@ -136,62 +134,15 @@ func compileGolden(g goldenFilter) (codegen.Output, error) {
 	return kunai.Compile(g.expr, caps)
 }
 
-// numberedLabel matches the labels codegen numbers from a process-wide
-// counter (freshLabel, nextPredicateLabel): their number depends on how
-// many filters the process compiled before. Every other label is numbered
-// per compile or by index and stays as codegen spells it; a new
-// process-wide counter shows up as a failed double compile in TestGolden.
-var numberedLabel = regexp.MustCompile(`^(dsl_(?:probe_ok|altdisp_[a-z]+|varwalk|pred_match|pred_in_next)_)(\d+)$`)
-
 var trailingSpace = regexp.MustCompile(`(?m)[ \t]+$`)
-
-// canonicalLabels renumbers the counter-numbered labels by order of first
-// appearance per prefix across Main and Callbacks, so the text of one
-// filter does not depend on what else the process compiled. The mapping
-// is one to one per prefix and the renamed labels cannot meet a label
-// left alone, so the control flow is kept.
-func canonicalLabels(out codegen.Output) (asm.Instructions, asm.Instructions) {
-	all := slices.Clone(out.Main)
-	all = append(all, out.Callbacks...)
-	next := map[string]int{}
-	seen := map[string]string{}
-	rename := func(label string) string {
-		if label == "" {
-			return label
-		}
-		if s, ok := seen[label]; ok {
-			return s
-		}
-		m := numberedLabel.FindStringSubmatch(label)
-		if m == nil {
-			seen[label] = label
-			return label
-		}
-		next[m[1]]++
-		s := m[1] + strconv.Itoa(next[m[1]])
-		seen[label] = s
-		return s
-	}
-	for i, ins := range all {
-		if sym := ins.Symbol(); sym != "" {
-			ins = ins.WithSymbol(rename(sym))
-		}
-		if ref := ins.Reference(); ref != "" {
-			ins = ins.WithReference(rename(ref))
-		}
-		all[i] = ins
-	}
-	return all[:len(out.Main)], all[len(out.Main):]
-}
 
 // goldenText is the canonical text of one compiled filter: code is the
 // instructions and the BTF functions they declare, meta everything else
 // the host consumes.
 func goldenText(out codegen.Output) (code, meta string) {
-	mainIns, cbIns := canonicalLabels(out)
 	var c strings.Builder
-	fmt.Fprintf(&c, "== Main\n%v== Callbacks\n%v== Funcs\n", mainIns, cbIns)
-	for i, ins := range append(slices.Clone(mainIns), cbIns...) {
+	fmt.Fprintf(&c, "== Main\n%v== Callbacks\n%v== Funcs\n", out.Main, out.Callbacks)
+	for i, ins := range out.Instructions() {
 		if fn := btf.FuncMetadata(&ins); fn != nil {
 			fmt.Fprintf(&c, "%d: %s\n", i, fn.Name)
 		}
@@ -321,9 +272,11 @@ func changedPart(old, cur string) string {
 
 // TestGolden compares codegen's output with testdata/golden. It compiles
 // every filter twice and fails if the two texts differ, which would make
-// the golden meaningless. With -update it rewrites the golden and prints
-// the filters that moved; with -golden-dump it only writes every filter's
-// text into the directory (make golden-diff compares two such dumps).
+// the golden meaningless; label names are compared as emitted, so a label
+// numbered from process-wide state fails here. With -update it rewrites
+// the golden and prints the filters that moved; with -golden-dump it only
+// writes every filter's text into the directory (make golden-diff
+// compares two such dumps).
 func TestGolden(t *testing.T) {
 	// goldenText must cover every field the host reads.
 	if n := reflect.TypeFor[codegen.Output]().NumField(); n != 6 {
@@ -426,65 +379,5 @@ func TestGolden(t *testing.T) {
 		for _, m := range moved {
 			fmt.Println(m)
 		}
-	}
-}
-
-// TestCanonicalLabels checks that two compiles of one filter, which draw
-// different numbers from the label counters, give the same text, and
-// that every jump still lands on the instruction it did before the
-// renumbering.
-func TestCanonicalLabels(t *testing.T) {
-	for _, c := range []struct{ expr, label string }{
-		{"eth/(ipv4|ipv6)/tcp where tcp.dport == 80", "dsl_altdisp_"},
-		{"eth/ipv6[src in [fc00::3, fd00::/16]]/tcp", "dsl_pred_in_next_1"},
-		{"eth[dst <= 00:11:22:33:44:54]/ipv4/tcp", "dsl_pred_match_1"},
-	} {
-		t.Run(c.expr, func(t *testing.T) { checkCanonicalLabels(t, goldenFilter{host: "xdp_entry", expr: c.expr}, c.label) })
-	}
-}
-
-func checkCanonicalLabels(t *testing.T, g goldenFilter, label string) {
-	a, err := compileGolden(g)
-	if err != nil {
-		t.Fatal(err)
-	}
-	b, err := compileGolden(g)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ca, _ := goldenText(a)
-	cb, _ := goldenText(b)
-	if ca != cb {
-		t.Fatalf("canonical texts differ\n%s", firstDiff(ca, cb))
-	}
-	if !strings.Contains(ca, label) {
-		t.Errorf("filter %q emits no %s label; pick one that does", g.expr, label)
-	}
-	// targets maps each instruction's reference to the index of the
-	// instruction carrying that symbol (-1 for a reference to a label
-	// outside the stream, such as filter_result; -2 for no reference).
-	targets := func(insns asm.Instructions) []int {
-		at := map[string]int{}
-		for i, ins := range insns {
-			if sym := ins.Symbol(); sym != "" {
-				at[sym] = i
-			}
-		}
-		out := make([]int, len(insns))
-		for i, ins := range insns {
-			out[i] = -2
-			if ref := ins.Reference(); ref != "" {
-				j, ok := at[ref]
-				if !ok {
-					j = -1
-				}
-				out[i] = j
-			}
-		}
-		return out
-	}
-	mainIns, cbIns := canonicalLabels(a)
-	if raw, canon := targets(a.Instructions()), targets(append(slices.Clone(mainIns), cbIns...)); !slices.Equal(raw, canon) {
-		t.Fatalf("renumbering moved jump targets:\nraw   %v\ncanon %v", raw, canon)
 	}
 }
