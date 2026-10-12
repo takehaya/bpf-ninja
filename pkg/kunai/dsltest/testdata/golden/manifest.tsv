@@ -61,6 +61,7 @@ xdp_entry	eth/ipv4+/tcp	-	code=4ddbd6486f34ce93 meta=5ee214e8b4c27377 main=606 c
 xdp_entry	eth/ipv4+/tcp capture headers	-	code=4ddbd6486f34ce93 meta=25f4d2148f92c2e9 main=606 cb=0
 xdp_entry	eth/ipv4/(tcp@x|udp) where not (x.dport == 80)	-	code=1c7312c4ba175a69 meta=5ee214e8b4c27377 main=161 cb=0
 xdp_entry	eth/ipv4/(tcp@x|udp) where x.dport == 80	-	code=3a33e1298de59aa8 meta=5ee214e8b4c27377 main=159 cb=0
+xdp_entry	eth/ipv4/(tcp[dport == 80]|tcp[sport == 22])	-	code=fd5f08d2b9304b5d meta=5ae9c4ac9b59101e main=210 cb=0
 xdp_entry	eth/ipv4/(tcp[mss.value == 1460, ws.shift == 7]|udp) where tcp.options.valid	-	code=233ae28ce2412b87 meta=5ee214e8b4c27377 main=183 cb=152
 xdp_entry	eth/ipv4/(tcp[options.valid]|udp)	-	code=781beb2a32021b5d meta=5ee214e8b4c27377 main=181 cb=96
 xdp_entry	eth/ipv4/(tcp|udp) where any((tcp.options.SACK.blocks.right == 200) or (udp.dport == 80))	-	code=b9dd20ea79eb7930 meta=5ee214e8b4c27377 main=369 cb=106
