@@ -37,9 +37,11 @@ tc_wire_entry	eth/vlan/ipv4/tcp	-	code=4b5e7e3b6a0f5c14 meta=5ee214e8b4c27377 ma
 tc_wire_entry	eth/vlan[tci == 100]/ipv4/tcp	-	code=b9898a7aec659b84 meta=5ee214e8b4c27377 main=145 cb=0
 tc_wire_entry	eth/vlan[tci == 200]/ipv4/tcp	-	code=2f5efcd853a02a38 meta=5ee214e8b4c27377 main=145 cb=0
 tc_wire_exit	eth/vlan?/ipv4/tcp where (vlan.tci == 100) and action == TC_ACT_OK	-	code=7b45cc832a55b8e4 meta=5ee214e8b4c27377 main=194 cb=0
+xdp_entry	eth/(ipv4@a|ipv4@b)/tcp where a.ttl == 64	-	code=47ccfba419a9f336 meta=dd15f8f9a0ceaaea main=201 cb=0
+xdp_entry	eth/(ipv4@a|ipv4@b)/tcp where b.ttl == 64	-	code=0c265ed4b1aac425 meta=dd15f8f9a0ceaaea main=201 cb=0
 xdp_entry	eth/(ipv4@a|ipv6)/tcp capture a	-	code=9ec36aa01b90c73e meta=62e5651798acd4b3 main=275 cb=64
 xdp_entry	eth/(ipv4@a|ipv6)/tcp capture ipv6	-	code=9ec36aa01b90c73e meta=eaba0a0732fdca28 main=275 cb=64
-xdp_entry	eth/(ipv4[ttl == 1]|ipv4)/tcp	-	code=ec9bcdf93852719b meta=5ee214e8b4c27377 main=195 cb=0
+xdp_entry	eth/(ipv4[ttl == 1]|ipv4)/tcp	-	code=ec9bcdf93852719b meta=633a1022efdee518 main=195 cb=0
 xdp_entry	eth/(ipv4|ipv6)/(tcp|udp)	-	code=14abd60cbe324fb9 meta=5ee214e8b4c27377 main=293 cb=64
 xdp_entry	eth/(ipv4|ipv6)/(tcp|udp) where (ipv4.ttl == 64) and (tcp.dport == 80)	-	code=8493eb243918a0b0 meta=5ee214e8b4c27377 main=322 cb=64
 xdp_entry	eth/(ipv4|ipv6)/(tcp|udp) where tcp.dport == 80	-	code=cdfeb389d288ab25 meta=5ee214e8b4c27377 main=312 cb=64

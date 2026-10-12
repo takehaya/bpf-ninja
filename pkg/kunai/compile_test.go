@@ -2387,6 +2387,18 @@ func TestCompileL2HostRootWarningUnchanged(t *testing.T) {
 	}
 }
 
+// TestCompileShadowedAlternativeWarning: the resolver's notice on a
+// repeated alternation member reaches the compiled output.
+func TestCompileShadowedAlternativeWarning(t *testing.T) {
+	out, err := Compile("eth/ipv4/(tcp[dport == 80]|tcp[sport == 22])", codegen.Capabilities{})
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	if len(out.Warnings) != 1 || !strings.HasPrefix(out.Warnings[0], "tcp at 1:11 and tcp at 1:28 are members of one alternation") {
+		t.Fatalf("expected the shadowed-member warning, got %v", out.Warnings)
+	}
+}
+
 // TestOptionRegionPolicyCompiles: `.valid` exists only where a region's
 // faults are skipped, and only those layers get the malformed landing
 // (spec D-029, @kunai_option_region). srv6 says on_fault=fail.

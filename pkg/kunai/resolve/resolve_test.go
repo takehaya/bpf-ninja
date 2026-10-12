@@ -247,6 +247,66 @@ func TestUnreachableChainWarning(t *testing.T) {
 	}
 }
 
+func TestShadowedAlternativeWarning(t *testing.T) {
+	shadowWarnings := func(t *testing.T, expr string) []string {
+		t.Helper()
+		var ws []string
+		for _, w := range resolveOK(t, expr, nil).Warnings {
+			if strings.Contains(w, "never tries the rest") {
+				ws = append(ws, w)
+			}
+		}
+		return ws
+	}
+	// The members named, the ones that never match, and the fix.
+	for _, tc := range []struct {
+		expr, members, shadowed, fix string
+	}{
+		{"eth/(ipv4[ttl == 1]|ipv4)/tcp", "ipv4 at 1:6 and ipv4 at 1:21", "so ipv4 at 1:21 never matches.", "combine their predicates with `or`"},
+		{"eth/ipv4/(tcp[dport == 80]|tcp[sport == 22])", "tcp at 1:11 and tcp at 1:28", "so tcp at 1:28 never matches.", "combine their predicates"},
+		{"eth/(ipv4|ipv4)/tcp", "ipv4 at 1:6 and ipv4 at 1:11", "so ipv4 at 1:11 never matches.", "Keep one of them."},
+		{"eth/(ipv4@a|ipv4@b)/tcp", "ipv4@a at 1:6 and ipv4@b at 1:13", "so ipv4@b at 1:13 never matches.", "Keep one of them."},
+		// Not adjacent, flattened from a nested group, under a group parent.
+		{"eth/(ipv4|ipv6|ipv4)/tcp", "ipv4 at 1:6 and ipv4 at 1:16", "so ipv4 at 1:16 never matches.", "Keep one of them."},
+		{"eth/((vlan|qinq)|vlan)/ipv4/tcp", "vlan at 1:7 and vlan at 1:18", "so vlan at 1:18 never matches.", "Keep one of them."},
+		{"eth/(ipv4|ipv6)/(tcp|tcp)", "tcp at 1:18 and tcp at 1:22", "so tcp at 1:22 never matches.", "Keep one of them."},
+		{"eth/ipv4/(tcp|tcp|tcp)", "tcp at 1:11, tcp at 1:15 and tcp at 1:19", "so tcp at 1:15 and tcp at 1:19 never match.", "Keep one of them."},
+	} {
+		ws := shadowWarnings(t, tc.expr)
+		if len(ws) != 1 {
+			t.Errorf("%s: want one shadowed-member warning, got %q", tc.expr, ws)
+			continue
+		}
+		w := ws[0]
+		if !strings.HasPrefix(w, tc.members+" are members of one alternation with the same protocol;") ||
+			!strings.Contains(w, tc.shadowed) || !strings.Contains(w, tc.fix) {
+			t.Errorf("%s: warning %q, want members %q, %q, %q", tc.expr, w, tc.members, tc.shadowed, tc.fix)
+		}
+		if tc.fix == "Keep one of them." && !strings.HasSuffix(w, tc.fix) {
+			t.Errorf("%s: warning %q proposes more than keeping one member", tc.expr, w)
+		}
+	}
+	// One warning per protocol the group repeats.
+	if ws := shadowWarnings(t, "eth/(vlan|qinq|vlan|qinq)/ipv4/tcp"); len(ws) != 2 ||
+		!strings.HasPrefix(ws[0], "vlan at") || !strings.HasPrefix(ws[1], "qinq at") {
+		t.Errorf("want a vlan and a qinq warning, got %q", ws)
+	}
+	for _, expr := range []string{
+		"eth/(ipv4|ipv6)/tcp", "eth/(vlan|qinq)/ipv4/tcp", "eth/(ipv4|ipv6)/(tcp|udp)",
+		"eth/ipv4/ipv4/tcp", "eth/mpls?/mpls/ipv4/tcp",
+	} {
+		if ws := shadowWarnings(t, expr); len(ws) != 0 {
+			t.Errorf("%s: unexpected warning %q", expr, ws)
+		}
+	}
+	// A by-name where on the repeated protocol fails before any warning;
+	// a label on the shadowed member resolves and warns.
+	resolveErr(t, "eth/(ipv4[ttl == 1]|ipv4)/tcp where ipv4.ttl == 64", nil, "ambiguous")
+	if ws := shadowWarnings(t, "eth/(ipv4@a|ipv4@b)/tcp where b.ttl == 1"); len(ws) != 1 {
+		t.Errorf("label on the shadowed member: want one warning, got %q", ws)
+	}
+}
+
 func TestResolveIPv6Chain(t *testing.T) {
 	p := resolveOK(t, "eth/ipv6/tcp", nil)
 	// tcp is dual-declared; under ipv6 we expect TCP_IPV6_NEXT_HEADER==6.
