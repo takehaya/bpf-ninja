@@ -121,12 +121,15 @@ codegen には別途、callback の分岐命令数を静的に数える tripwire
 
 - `accMaxAtoms = 16` (`acc.go`) は accumulator が畳む atom 数の上限である。技術的な壁
   ではなく policy 値になっている。TCP が構成可能な atom は最大 14 (全 option の全フィールド)
-  なので、実質として TCP で書けるものは全部通る。
+  なので、実質として TCP で書けるものは全部通る。同じ field の `==` を繰り返すと
+  上限を超えることがあり、そのときは等式の数を示して拒否する。
 - ハード上限は約 31 になる。`where` 後の `(acc & mask) == mask` を 32bit 即値で組んで
   いるためである (`emitAccMaskCheck`)。32 個以上の bit にしたければ mask をレジスタに
   積む変更が要る。
-- 起動条件は次のとおり。length-byte の TLV walk を持つ layer がちょうど 1 つ
-  あり、その layer で distinct な option を 2 種類以上読むこと (`accCandidate`)。
+- 起動条件は次のとおり。length-byte の TLV walk を持ち、distinct な option を
+  2 種類以上読む layer がちょうど 1 つあること (`accCandidates`)。そうした layer が
+  2 つ以上あると、それぞれの名前を挙げて拒否する。同梱の語彙で該当するのは TCP
+  だけなので、2 つになるのは alternation に tcp を 2 回書いたときに限られる。
   そのうえで、その layer の option の読み出しがすべて `<option>.<field> == <const>`
   であること (`buildAccPlan`)。読み出しは bracket の predicate (`predToAtom`) でも、
   `where` の一番外側の AND の項 (`eqLeafToAtom`) でもよい。畳んだ bracket の
