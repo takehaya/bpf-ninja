@@ -89,6 +89,8 @@ func buildAccPlan(p *ir.Program, where *ir.Condition, qo queriedOptions) (*accPl
 	switch {
 	case len(cands) == 0:
 		return nil, ""
+	case len(cands) > 1 && accSameAlternation(cands):
+		return nil, fmt.Sprintf("%s are members of one alternation with the same protocol, so only the first can ever match; keep one of them", accLayerList(cands))
 	case len(cands) > 1:
 		return nil, fmt.Sprintf("%s each query two or more options, and the walk folds the options of one layer only; query a single option on all but one of them", accLayerList(cands))
 	}
@@ -179,7 +181,7 @@ func buildAccPlan(p *ir.Program, where *ir.Condition, qo queriedOptions) (*accPl
 	// instead of bytecode the verifier refuses. Equalities are not
 	// deduplicated, so only repeating them can get here.
 	if len(plan.atoms) > accMaxAtoms {
-		return nil, fmt.Sprintf("%s holds %d option equalities; the walk folds at most %d", layer.DisplayName(), len(plan.atoms), accMaxAtoms)
+		return nil, fmt.Sprintf("the filter has %d equalities on %s options; the walk folds at most %d", len(plan.atoms), layer.DisplayName(), accMaxAtoms)
 	}
 	return plan, ""
 }
@@ -198,6 +200,18 @@ func accCandidates(p *ir.Program, qo queriedOptions) []*ir.LayerInstance {
 		}
 	}
 	return found
+}
+
+// accSameAlternation reports whether the layers are members of one
+// alternation naming one protocol. Members are tried in order and the
+// first whose protocol matches is taken, so only the first can match.
+func accSameAlternation(layers []*ir.LayerInstance) bool {
+	for _, l := range layers[1:] {
+		if l.LayerPos != layers[0].LayerPos || l.Spec != layers[0].Spec {
+			return false
+		}
+	}
+	return true
 }
 
 // accLayerList names the candidate layers for a refusal message. Layers

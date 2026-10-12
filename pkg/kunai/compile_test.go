@@ -2749,9 +2749,9 @@ func TestCompileBracketOptionsFoldIntoAccumulator(t *testing.T) {
 		{"eth/ipv4/tcp[mss.value == 1460, ts.tsval == 5]? where tcp.dport == 80 or ipv4.ttl == 1", "tcp may be absent"},
 		{"eth/ipv4/tcp[mss.value[0:8] == 5, ts.tsval == 5]", "the bracket predicate on tcp.mss.value is not `== <integer>` on the whole field"},
 		{"eth/ipv4/tcp where tcp.mss.value == 1460 and tcp.options.SACK.blocks[1].left == 5", "tcp.sack.blocks[1].left is read by a where or capture term the walk cannot fold"},
-		// Two layers each querying two options: the plan holds one layer.
-		{"eth/ipv4/(tcp[mss.value == 1460, ws.shift == 7]|tcp[sack_perm.kind == 4, ts.tsval == 5])", "tcp at 1:11 and tcp at 1:49 each query two or more options"},
-		{repeatedOptionEqualities(16), "tcp holds 17 option equalities; the walk folds at most 16"},
+		// Two tcp members of one alternation: only the first can match.
+		{"eth/ipv4/(tcp[mss.value == 1460, ws.shift == 7]|tcp[sack_perm.kind == 4, ts.tsval == 5])", "tcp at 1:11 and tcp at 1:49 are members of one alternation with the same protocol, so only the first can ever match"},
+		{repeatedOptionEqualities(16), "the filter has 17 equalities on tcp options; the walk folds at most 16"},
 	} {
 		_, err := compileForTest(c.expr)
 		if !errors.Is(err, codegen.ErrNotImplemented) || !strings.Contains(err.Error(), c.why) {

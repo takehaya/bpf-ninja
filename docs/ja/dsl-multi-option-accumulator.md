@@ -130,6 +130,8 @@ codegen には別途、callback の分岐命令数を静的に数える tripwire
   2 種類以上読む layer がちょうど 1 つあること (`accCandidates`)。そうした layer が
   2 つ以上あると、それぞれの名前を挙げて拒否する。同梱の語彙で該当するのは TCP
   だけなので、2 つになるのは alternation に tcp を 2 回書いたときに限られる。
+  alternation は先頭から順に protocol を照合するので、2 つ目以降の tcp は match
+  しない。拒否の理由にもそう書く。
   そのうえで、その layer の option の読み出しがすべて `<option>.<field> == <const>`
   であること (`buildAccPlan`)。読み出しは bracket の predicate (`predToAtom`) でも、
   `where` の一番外側の AND の項 (`eqLeafToAtom`) でもよい。畳んだ bracket の
@@ -154,7 +156,8 @@ codegen には別途、callback の分岐命令数を静的に数える tripwire
   必ず reject する。32 bit field の上位 bit が立った定数はレジスタ経由で比較する。
   単一 option の filter は従来どおり別経路をたどる。plan を作れないときは
   `emitStateBody` の 2 option 以上の拒否に、`buildAccPlan` が返した理由
-  (`predCtx.accWhy`) を付けて `ErrNotImplemented` にする。
+  (`predCtx.accWhy`) を付けて `ErrNotImplemented` にする。理由が無いときだけ、
+  畳める形の一般的な説明を出す。
   対象 layer は length-byte advance を持つ TLV walk (TCP options) であること。TCP の領域 counter は対象に含み、それ以外の counter-driven
   walk (Geneve / IPv4 options) は native path のままとなる (`buildAccPlan` が gate)。
 - alternation 内の TCP 多 option も対応する
