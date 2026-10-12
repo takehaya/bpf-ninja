@@ -344,6 +344,8 @@ codegen が enforce する MVP 制約は次のとおりです。
 - header size は alt 間で異なっていても構いません。サイズが異なる場合、後続 layer の field 参照は実行時 offset 経由になります
 - alt 後の layer は、各 alt に対する dispatch const を持っている必要があります。VLAN/QinQ → IPv4 のように全 alt で揃っていれば単一チェック、IPv4/IPv6 → TCP のように field が異なる場合も、alt ごとの dispatch (diverged dispatch) として動きます。
 
+alternation は、親の dispatch が一致した最初の alt を採用し、その alt の predicate や bounds が失敗しても次の alt を試しません。この規則は [`spec/lean/DECISIONS.md`](../../spec/lean/DECISIONS.md) の D-004 で決めたもので、`dsl-types.md` の [E-Layer-Alt-First] にあたります。同じ protocol の alt はどの親の下でも同じ dispatch を使うので、`eth/ipv4/(tcp[dport == 80]|tcp[sport == 22])` のように同じ protocol を 2 つの alt に書くと、後ろの alt はどのパケットにも match しません。`eth/(ipv4@a|ipv4@b)/tcp where b.ttl == 64` のように後ろの alt の label を読む比較も、常に false になります。resolver はこの形に warning を出します。alt を 1 つにまとめ、条件は `eth/ipv4/tcp where tcp.dport == 80 or tcp.sport == 22` のように `where` の `or` でつなぎます。同じ field の値を並べるだけなら、`tcp[dport in [80, 443]]` とも書けます。
+
 ### Label
 
 同じ protocol が 2 段以上出てくると `proto.field` では曖昧になります。`@name` で明示できます。

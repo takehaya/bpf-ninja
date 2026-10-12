@@ -144,6 +144,7 @@ func (r *resolver) resolveFilter(f *ast.Filter) (*ir.Program, error) {
 	}
 	addChainRootWarning(p, f, r.opts)
 	addUnreachableChainWarning(p)
+	addShadowedAlternativeWarning(p)
 	if err := checkRuntimeParents(p, f); err != nil {
 		return nil, err
 	}
@@ -326,6 +327,67 @@ func addUnreachableChainWarning(p *ir.Program) {
 			"%q is immediately followed by %q; quantifiers are greedy and never backtrack, %s. %s",
 			l.Spec.Name+l.QuantText(), next.Spec.Name+next.QuantText(), why, fix))
 	}
+}
+
+// addShadowedAlternativeWarning flags an alternation that names one
+// protocol in two or more members (`(tcp[dport == 80]|tcp[sport == 22])`).
+// An alternation commits to the first member whose parent dispatch
+// matches and never tries the rest ([E-Layer-Alt-First], D-004), and
+// members of one protocol dispatch alike under every parent, so the later
+// ones never match. One warning per protocol a group repeats. Two
+// protocols whose dispatch constants collide under one parent would
+// shadow too; the bundled vocabulary has none, and such a collision is a
+// vocabulary defect rather than a filter shape, so it is not checked here.
+func addShadowedAlternativeWarning(p *ir.Program) {
+	for _, l := range p.Layers {
+		if l.Alternation == nil {
+			continue
+		}
+		var order []*vocab.ProtocolSpec
+		bySpec := map[*vocab.ProtocolSpec][]*ir.LayerInstance{}
+		for _, m := range l.Alternation {
+			if m.Spec == nil {
+				continue
+			}
+			if _, seen := bySpec[m.Spec]; !seen {
+				order = append(order, m.Spec)
+			}
+			bySpec[m.Spec] = append(bySpec[m.Spec], m)
+		}
+		for _, spec := range order {
+			ms := bySpec[spec]
+			if len(ms) < 2 {
+				continue
+			}
+			verb := "never matches"
+			if len(ms) > 2 {
+				verb = "never match"
+			}
+			fix := "Keep one of them."
+			for _, m := range ms {
+				if len(m.Predicates) > 0 {
+					fix = "Keep one of them and combine their predicates with `or` in a where clause."
+					break
+				}
+			}
+			p.Warnings = append(p.Warnings, fmt.Sprintf(
+				"%s are members of one alternation with the same protocol; an alternation commits to the first member whose dispatch matches and never tries the rest, so %s %s. %s",
+				layersAt(ms), layersAt(ms[1:]), verb, fix))
+		}
+	}
+}
+
+// layersAt names layers with their source positions: "a at 1:6",
+// "a at 1:6 and b at 1:13", "a at 1:6, b at 1:13 and c at 1:20".
+func layersAt(ms []*ir.LayerInstance) string {
+	names := make([]string, len(ms))
+	for i, m := range ms {
+		names[i] = m.DisplayName() + " at " + m.Pos.String()
+	}
+	if len(names) == 1 {
+		return names[0]
+	}
+	return strings.Join(names[:len(names)-1], ", ") + " and " + names[len(names)-1]
 }
 
 // foldedQuantifier spells the quantifier that matches what l followed by

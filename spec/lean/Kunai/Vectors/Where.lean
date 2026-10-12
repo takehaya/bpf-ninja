@@ -987,6 +987,19 @@ vector whereAltNameAmbiguous := {
            cond := some (cmp ttl .eq (k 64)) },
   expected := .illTyped "protocol ipv4 is ambiguous; qualify with an @label",
   note := "two members of one protocol: the name does not say which" }
+-- The resolver warns on one protocol in two members: the alternation
+-- commits to the first whose dispatch matches (D-004), so the second never
+-- matches and a where reading its label reads an absent layer (D-003).
+def shadowedAlt (w : Where) : Filter :=
+  { layers := [P "eth", .alt [{ name := "ipv4", label := some "a" }, { name := "ipv4", label := some "b" }], P "tcp"],
+    cond := some w }
+vector whereAltShadowedFirst := {
+  id := "where-alt-shadowed-label-first", ast := shadowedAlt (cmp (fld "a" "ttl") .eq (k 64)),
+  expected := .accept [], note := "the first member of a repeated protocol commits" }
+vector whereAltShadowedSecond := {
+  id := "where-alt-shadowed-label-second", ast := shadowedAlt (cmp (fld "b" "ttl") .eq (k 64)),
+  expected := .reject,
+  note := "D-004 / D-003: the second member of one protocol never matches, so b is absent and its atom false" }
 def twoAlts (w : Option Where) : Filter :=
   { layers := [P "eth", .alt [{ name := "ipv4" }, { name := "ipv6" }], .alt [{ name := "tcp" }, { name := "udp" }]], cond := w }
 vector altTwoGroups := {
@@ -1020,7 +1033,7 @@ vector whereQuantOtherMember := {
   packet := sackPkt', expected := .accept [] }
 
 def whereVectors : List Vector := [
-  whereAltNameAmbiguous, altTwoGroups, altTwoGroupsUdp, whereAltTwoGroups, whereAltTwoGroupsOther,
+  whereAltNameAmbiguous, whereAltShadowedFirst, whereAltShadowedSecond, altTwoGroups, altTwoGroupsUdp, whereAltTwoGroups, whereAltTwoGroupsOther,
   whereQuantOtherAbsent, whereQuantOtherAbsentEmpty, whereQuantOtherMember,
   whereAltLabelHit, whereAltLabelOther, whereAltLabelOtherNot, whereAltNameHit, whereAltNameOther, whereAltNameOtherNot,
   whereAltLabelHet, whereAltLabelHetOther, whereAltLabelHetOtherNot, whereAltL3Hit, whereAltL3Other, whereAltL3OtherOr,

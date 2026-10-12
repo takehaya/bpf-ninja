@@ -337,6 +337,13 @@ vector altFirstPredFails := {
   ast := { layers := [P "eth", .alt [{ name := "ipv4", preds := [.cmp (f "ttl") .eq (.int 1)] }, { name := "ipv4" }], P "tcp"] },
   expected := .reject,
   note := "[E-Layer-Alt-First]: the first alternative commits" }
+vector altShadowedSecond := {
+  id := "alt-shadowed-second",
+  ast := { layers := [P "eth", P "ipv4", .alt [{ name := "tcp", preds := [.cmp (f "dport") .eq (.int 80)] },
+                                              { name := "tcp", preds := [.cmp (f "sport") .eq (.int 22)] }]] },
+  packet := Pkt.ethIPv4TCP (sport := 22) (dport := 443),
+  expected := .reject,
+  note := "[E-Layer-Alt-First]: the first tcp commits, so the second tcp never matches (the resolver warns)" }
 vector altRoot := {
   id := "alt-root-illtyped", ast := { layers := [.alt [{ name := "ipv4" }, { name := "ipv6" }], P "tcp"] },
   packet := l3Pkt, expected := .illTyped "alternation cannot be the first layer" }
@@ -630,7 +637,7 @@ def chainVectors : List Vector := [
   quantGreedyOverrun, quantOverrunBounded, quantOverrunOpen, quantExactBound, quantOptMplsOverrun, quantOptMplsOne, quantGreedyUnreachable, quantOptFollowTwo, quantOptFollowOne, quantRange01Follow, quantRange11Follow, quantRange11FollowOne, quantOptVlanFollowTwo, quantOptVlanFollowOne, quantRange00Follow, quantPredMidFail, quantPredMidFailStatic, quantPredFirstFail,
   quantPredAllHold, quantSelfValidSkip, quantSelfValidPresent, quantSelfValidShortV4, quantSelfValidShortV6, quantSelfValidEmpty, quantSelfValidCascade, quantSelfValidCascadeEth, quantSelfValidBroken, quantOptIPv4Last, quantOptIPv4LastAbsent, quantOptIPIP, quantExactOneMachine, typAltExactOne, typRepeatNoSelfEdge, typRepeatNoSelfEdgeStar, quantOptIPIPAbsent, quantOptIPIPTwiceOne, quantOptIPIPTwiceNone, quantOptIPIPTwiceBoth, typOptionalAfterSkip, typOptionalNoCheck, chainMandatorySelfEdgeMiss, quantSelfEdgeStar, quantSelfEdgeOpt,
   absentConsecutiveEthertype, absentConsecutiveSelfValid, absentConsecutiveMplsOnly, absentConsecutiveNeither, absentConsecutiveArp, quantFirstOptional,
-  altFirst, altSecond, altAfterVxlan6, altAfterVxlan4, altNone, altFirstPredFails, altRoot, altNoCheck,
+  altFirst, altSecond, altAfterVxlan6, altAfterVxlan4, altNone, altFirstPredFails, altShadowedSecond, altRoot, altNoCheck,
   hostTcExitVlanOpt, hostTcExitVlanMandatory, hostTcWireVlanMandatory, hostTcWireVlanMandatoryUntagged, hostTcWireVlanTci, hostTcWireVlanTciMiss, hostTcWireVlanWhere, hostTcWireUntaggedChainOnTagged, hostTcWireQinqVlan, hostTcWireVlanAlt, hostTcVlanMandatory, hostTcVlanAlt, hostTcVlanAltSecond, hostTcQinqVlan, hostTcQinqMandatory, hostTcQinqOpt, hostTcInnerVlan, hostTcInnerVlanTci, hostTcInnerVlanPred, hostTcQinqOptVlan, hostTcOuterAndInner, hostTcInnerLabel, hostTcOuterLabelRead,
   hostTcMixedAlt, hostTcVlanRoot, hostL3InnerVlan, hostTcVlanOpt,
   quantMachineRangeTwo, quantMachineRangeThree, quantMachineExactUnderRun, quantMachinePredFirstFails, quantMachinePredSecondFails, quantMachineWhereLast, quantMachineWhereNotFirst, quantMachinePlusOne, quantMachinePlusEight, quantMachinePlusNine, quantMachineOpenUnderRun, quantMachineOpenTwo, quantMachineStarAbsent, quantMachineStarTwo, quantMachinePlusPredMiddleFails, quantMachinePlusWhereLast, quantMachineIPv6PlusTwo, quantMachineIPv6PlusFive, quantMachineIPv6StarAbsent, typQuantOpenMinAboveDepth, quantMachineOpenAtDepth, quantMachineOpenAtDepthUnderRun, quantMachineIPv6OpenAtDepth, quantMachineRangeFive, quantMachineRangeFiveOver, quantMachineIPv6RangeFive, quantMachineStarNine, quantMachineStarTen, quantMachineRangeNine, capHeadersMachinePlusWide, capHeadersMachinePlus, hostTcOuterBracketAbsent, hostTcOuterBracketCTag, hostTcOuterBracketCTagMiss, hostL3Root, hostL3EthRoot]
