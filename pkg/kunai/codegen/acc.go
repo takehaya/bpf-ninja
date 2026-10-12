@@ -2,7 +2,6 @@ package codegen
 
 import (
 	"fmt"
-	"strings"
 
 	"github.com/cilium/ebpf/asm"
 
@@ -90,9 +89,9 @@ func buildAccPlan(p *ir.Program, where *ir.Condition, qo queriedOptions) (*accPl
 	case len(cands) == 0:
 		return nil, ""
 	case len(cands) > 1 && accSameAlternation(cands):
-		return nil, fmt.Sprintf("%s are members of one alternation with the same protocol, so only the first can ever match; keep one of them", accLayerList(cands))
+		return nil, ir.AlternationShadowText(accSameSpecMembers(p, cands[0])) + "; keep one of them"
 	case len(cands) > 1:
-		return nil, fmt.Sprintf("%s each query two or more options, and the walk folds the options of one layer only; query a single option on all but one of them", accLayerList(cands))
+		return nil, fmt.Sprintf("%s each query two or more options, and the walk folds the options of one layer only; query a single option on all but one of them", ir.LayersAt(cands))
 	}
 	layer := cands[0]
 	// atoms stays non-nil even when every leaf is `never`: atomsFor must
@@ -214,22 +213,17 @@ func accSameAlternation(layers []*ir.LayerInstance) bool {
 	return true
 }
 
-// accLayerList names the candidate layers for a refusal message. Layers
-// that share a name, such as two tcp members of one alternation, get
-// their position in the expression so the reader can tell them apart.
-func accLayerList(layers []*ir.LayerInstance) string {
-	count := map[string]int{}
-	for _, l := range layers {
-		count[l.DisplayName()]++
-	}
-	names := make([]string, len(layers))
-	for i, l := range layers {
-		names[i] = l.DisplayName()
-		if count[names[i]] > 1 {
-			names[i] += " at " + l.Pos.String()
+// accSameSpecMembers lists every member of cand's alternation with
+// cand's protocol, the first of them included even when it queries one
+// option and so is no candidate: the first is the one that matches.
+func accSameSpecMembers(p *ir.Program, cand *ir.LayerInstance) []*ir.LayerInstance {
+	var ms []*ir.LayerInstance
+	for _, m := range p.Layers[cand.LayerPos].Alternation {
+		if m.Spec == cand.Spec {
+			ms = append(ms, m)
 		}
 	}
-	return strings.Join(names, " and ")
+	return ms
 }
 
 // accLayerAlwaysPresent reports whether every accepted packet has the
