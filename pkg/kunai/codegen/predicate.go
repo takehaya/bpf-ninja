@@ -3,6 +3,7 @@ package codegen
 import (
 	"encoding/binary"
 	"fmt"
+	"slices"
 
 	"github.com/cilium/ebpf/asm"
 
@@ -257,7 +258,8 @@ func emitIntPredicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, error)
 			wide := *pred
 			wide.Value = intAsAddrValue(pred.Value, inListIPv6)
 			return emitIPv6Predicate(&wide, pc)
-		case bits == 48 && !sliceNeedsScalarLoad(pred.Field):
+		case bits == 48 && pred.Field.Slice == nil:
+			// A 48-bit slice fits one register and keeps the scalar path.
 			wide := *pred
 			wide.Value = intAsAddrValue(pred.Value, inListMAC)
 			return emitMACPredicate(&wide, pc)
@@ -1181,17 +1183,19 @@ const (
 // alternative against it, and reports whether a range is present (the
 // scalar path then compares in host order) and whether a /0 CIDR makes
 // the list trivially true. A bit<128> field takes the IPv6 shape and a
-// bit<48> one the MAC shape, unless it is a slice off byte boundaries
-// (sliceNeedsScalarLoad), whose value fits one register; every other
-// field takes the scalar shape. An integer alternative joins any shape:
+// whole bit<48> one the MAC shape. A 48-bit slice fits one register: it
+// takes the MAC shape only for a list naming a MAC on byte boundaries,
+// which the byte-wise readers compare, and the scalar shape otherwise.
+// Every other field takes the scalar shape. An integer alternative joins any shape:
 // on a wide field it is the address with that number (intAsAddrValue).
 // A range on a wide field is ErrNotImplemented.
 func classifyInList(list []*ast.Value, ref *ir.FieldRef) (shape inListShape, hasRange, trivial bool, err error) {
 	bits := ref.EffectiveBits()
+	hasMAC := slices.ContainsFunc(list, func(v *ast.Value) bool { return v != nil && v.Kind == ast.ValMAC })
 	switch {
 	case bits == 128:
 		shape = inListIPv6
-	case bits == 48 && !sliceNeedsScalarLoad(ref):
+	case bits == 48 && (ref.Slice == nil || (hasMAC && !sliceNeedsScalarLoad(ref))):
 		shape = inListMAC
 	default:
 		shape = inListScalar
@@ -1230,10 +1234,11 @@ func classifyInList(list []*ast.Value, ref *ir.FieldRef) (shape inListShape, has
 	return shape, hasRange, trivial, nil
 }
 
-// intAsAddrValue is an integer alternative of an `in` list on a bit<48>
-// or bit<128> field, as the MAC or IPv6 address whose bytes are the
-// integer narrowed to the field's width (spec narrowInt): a negative
-// literal is its two's complement, so `-1` is all ones.
+// intAsAddrValue is an integer literal on a bit<48> or bit<128> field, in
+// an `in` list or a single compare, as the MAC or IPv6 address whose bytes
+// are the integer narrowed to the field's width (spec narrowInt): a
+// negative literal is its two's complement, so `-1` is all ones and `-0`
+// is zero.
 func intAsAddrValue(v *ast.Value, shape inListShape) *ast.Value {
 	if shape == inListMAC {
 		mac := &ast.Value{Kind: ast.ValMAC, Raw: v.Raw, Pos: v.Pos}
@@ -1243,7 +1248,7 @@ func intAsAddrValue(v *ast.Value, shape inListShape) *ast.Value {
 		return mac
 	}
 	addr := &ast.Value{Kind: ast.ValIPv6, Raw: v.Raw, Pos: v.Pos}
-	if v.Negative {
+	if v.Negative && int64(v.Int) < 0 {
 		binary.BigEndian.PutUint64(addr.V6[0:8], ^uint64(0))
 	}
 	binary.BigEndian.PutUint64(addr.V6[8:16], v.Int)

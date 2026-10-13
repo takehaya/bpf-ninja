@@ -1487,6 +1487,18 @@ func TestCompileBracketInIntegerOnWideField(t *testing.T) {
 			t.Errorf("%s: %v", expr, err)
 		}
 	}
+	// `-0` is zero, not the all-ones high half of a negative literal.
+	zero, err := compileForTest("eth/ipv6[src == 0]/tcp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	negZero, err := compileForTest("eth/ipv6[src == -0]/tcp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fmt.Sprint(zero) != fmt.Sprint(negZero) {
+		t.Errorf("ipv6[src == -0] compiles unlike ipv6[src == 0]")
+	}
 	// A range there needs the field in one register, which it is not.
 	for _, expr := range []string{
 		"eth/ipv6[dst in [fc00::1, 1..5]]/tcp",

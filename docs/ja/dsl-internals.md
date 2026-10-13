@@ -1161,7 +1161,7 @@ implementation 詳細は、`pkg/kunai/codegen/parser_state.go` の state graph e
 
 | 領域 | 制限 |
 |---|---|
-| Predicate | `field in [...]` は整数、範囲 `lo..hi`、IPv4 / IPv6 / MAC / CIDR の alternatives 実装済 (F7。範囲を含む list はホスト順で比較) / 128 bit や 48 bit の field に整数の要素を混ぜた list と、byte 境界に乗らない aux field の slice は未対応 / `+` `*` `{n,m>4}` の固定長 layer の bracket は bpf_loop callback で replay され分岐数 64 の上限 (`callbackBranchThreshold`) を受けるが、その形になる 48 / 128 bit の field を持つ protocol は同梱 vocab にない / `field has FLAG` は F6 bitwise `&` で superseded (`tcp.flags & 0x12 == 0x12` で同等表現) |
+| Predicate | `field in [...]` は整数、範囲 `lo..hi`、IPv4 / IPv6 / MAC / CIDR の alternatives 実装済 (F7。範囲を含む list はホスト順で比較) / 128 bit や 48 bit の field では範囲の要素は未対応 / `+` `*` `{n,m>4}` の固定長 layer の bracket は bpf_loop callback で replay され分岐数 64 の上限 (`callbackBranchThreshold`) を受けるが、その形になる 48 / 128 bit の field を持つ protocol は同梱 vocab にない / `field has FLAG` は F6 bitwise `&` で superseded (`tcp.flags & 0x12 == 0x12` で同等表現) |
 | Where | 算術ネスト最大 16 段 (`maxArithDepth`、10b で 8→16 bump。比較と `Bool == Bool` での扱いは [`dsl-usage.md`](./dsl-usage.md#演算子)) / where が alt member の field を参照するとき (`where ipv6.src == fe80::1`) は、alternation が matched-member slot に記録した member の番号を atom の前で確かめる (別の member なら atom は false) / `in` は bracket predicate `[...]` 専用で、where 句では `==` の `or` chain で代替 (parser が targeted hint を返す) |
 | Aux × literal | landed (B-3 commit 6547a42): IPv4/IPv6/MAC/CIDR literal を aux 経由で比較可能。例: `srv6.segments[0].addr == fc00::/16`、`where ipv4.options.RR.addrs[0].addr == 10.0.0.1` |
 | Capture | `capture f1, f2` フィールド列 不可 / 量化 layer を含む filter の `headers+N` は、量化 layer が最大数マッチした場合の長さを上限にする。het-alt 越えの capture は max-alt 上界丸めで動作 |

@@ -242,6 +242,9 @@ vector predInListMacIntOnly := {
 vector predInListMacRangeMixed := {
   id := "pred-in-list-mac-range-mixed", ast := ethPred (.inList (f "src") [.mac 0x112233445566, .range 0 0xffffffffffff]), expected := .accept [],
   goStatus := .notImplemented, note := "well-typed; Go reads a 48-bit field in two chunks and compares a range only in one register" }
+vector predMacIntNegativeEq := {
+  id := "pred-mac-int-negative-eq", ast := ethPred (.cmp (f "src") .eq (.int (-1))),
+  packet := eth 0x0800 (src := 0xffffffffffff) ++ ipv4 6 ++ tcp 12345 80 ++ payload 5, expected := .accept [] }
 vector predMacIntEq := {
   id := "pred-mac-int-eq", ast := ethPred (.cmp (f "src") .eq (.int 0x66778899aabb)), expected := .accept [] }
 vector predMacIntEqMiss := {
@@ -654,6 +657,14 @@ vector predInListIPv6RangeMixed := {
   id := "pred-in-list-ipv6-range-mixed", ast := ipv6Pred (.inList (f "src") [.ipv6 v6Src3, .range 0 5]), packet := v6pkt 5 v6LowTen,
   expected := .accept [], goStatus := .notImplemented,
   note := "well-typed; Go reads a 128-bit field in two chunks and compares a range only in one register" }
+-- A 48-bit slice: with a MAC in the list the integer is an address, and
+-- without one the slice is a number compared in one register.
+vector predIPv6Slice48InListMacInt := {
+  id := "pred-ipv6-slice48-in-list-mac-int", ast := ipv6Pred (.inList ⟨[("dst", some (.slice 80 128))]⟩ [.mac 0xaabbccddeeff, .int 0xa000001]),
+  packet := v6pkt v6Src1 v6LowTen, expected := .accept [], note := "the low 48 bits of fc00::a00:1 are 00:00:0a:00:00:01" }
+vector predIPv6Slice48InListIntRange := {
+  id := "pred-ipv6-slice48-in-list-int-range", ast := ipv6Pred (.inList ⟨[("dst", some (.slice 80 128))]⟩ [.int 5, .range 0xa000000 0xa0000ff]),
+  packet := v6pkt v6Src1 v6LowTen, expected := .accept [] }
 vector predIPv6IntEq := {
   id := "pred-ipv6-int-eq", ast := ipv6Pred (.cmp (f "src") .eq (.int 5)), packet := v6pkt 5 v6LowTen, expected := .accept [] }
 vector predIPv6IntEqMiss := {
@@ -1157,8 +1168,8 @@ def whereVectors : List Vector := [
   actionEntry, actionHit, actionMiss, actionUnknown,
   predCmp, predCmpMiss, predInList, predInListMiss, predInRange, typPredInRangeWide, typPredCmpRange, predInRangeMiss, predNegative, predIPv4,
   predInListIPv4, predInListIPv4Miss, predInListCidr4, predInListCidr4Zero, predInListIPv4IntMixed, predInListIPv4RangeMixed, predInListMac, predInListMacMiss,
-  predInListMacFirst, predInListCidr4ThenHost, predInListCidr4Miss, predInListCidr4RangeMixed, predInListMacIntMixed, predInListMacIntMixedHit, predInListMacIntNegative, predInListMacIntOnly, predInListMacRangeMixed, predMacIntEq, predMacIntEqMiss, predMacIntGt, predMacIntLeMiss, predMacEq, predMacEqMiss,
-  predInListIPv6, predInListCidr6, predInListCidr6LowHalf, predInListIPv6First, predInListCidr6Zero, predInListIPv6Miss, predInListIPv6IntMixed, predInListIPv6IntMixedHit, predInListIPv6IntNegative, predInListIPv6IntNegativeMiss, predInListIPv6RangeMixed, predIPv6IntEq, predIPv6IntEqMiss, predIPv6IntNe, predIPv6IntLt, predIPv6IntLtMiss, ipv6DstLow32InListIPv4, ipv6DstLow48InListMac,
+  predInListMacFirst, predInListCidr4ThenHost, predInListCidr4Miss, predInListCidr4RangeMixed, predInListMacIntMixed, predInListMacIntMixedHit, predInListMacIntNegative, predInListMacIntOnly, predInListMacRangeMixed, predMacIntNegativeEq, predMacIntEq, predMacIntEqMiss, predMacIntGt, predMacIntLeMiss, predMacEq, predMacEqMiss,
+  predInListIPv6, predInListCidr6, predInListCidr6LowHalf, predInListIPv6First, predInListCidr6Zero, predInListIPv6Miss, predInListIPv6IntMixed, predInListIPv6IntMixedHit, predInListIPv6IntNegative, predInListIPv6IntNegativeMiss, predInListIPv6RangeMixed, predIPv6Slice48InListMacInt, predIPv6Slice48InListIntRange, predIPv6IntEq, predIPv6IntEqMiss, predIPv6IntNe, predIPv6IntLt, predIPv6IntLtMiss, ipv6DstLow32InListIPv4, ipv6DstLow48InListMac,
   predCmpIPv4Gt, predCmpIPv4LeMiss, predCmpIPv4GeBoundary, predCmpIPv4LtBoundary, predCmpMacLt, predCmpMacLtBoundary, predCmpMacGtWord, predCmpIPv4GtByteOrder, predCmpIPv4Lt, predCmpIPv4GtBoundary, predCmpIPv4Le, predCmpIPv4GeMiss, predCmpMacGe, predCmpMacLeMiss, predCmpMacGtMiss, predCidr4Ne, typPredCidrOrdered,
   predCmpIPv6Lt, predCmpIPv6LtBoundary, predCmpIPv6GeHigh, predCmpIPv6LtHighDecides, predCmpIPv6Le, predCmpIPv6Gt, predCmpIPv6GeMiss, predCmpIPv6GtSignLow, predCmpIPv6LtSignHigh, typPredCidr6Ordered, ipv6DstLow32Gt,
   capAll, capWhereFalse, capWhereTrue, capLabel, capAbsent, capPresent, capAltMemberPresent, capAltMemberAbsent, capAltMemberByName,
