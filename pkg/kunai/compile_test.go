@@ -849,12 +849,25 @@ func TestCompileNetworkLiteralSliceWidth(t *testing.T) {
 		})
 	}
 
-	// A slice that is 32 bits wide but not on byte boundaries types like
-	// the others and is an implementation limit of the literal readers.
+	// A slice that is 32 bits wide but not on byte boundaries is read as
+	// a number: the 8-byte window from byte 11 shifted down by 28 bits and
+	// masked, then compared with 10.0.0.1 as the plain constant rather
+	// than a byte-swapped one.
 	expr := "eth/ipv6/tcp where ipv6.dst[92:124] == 10.0.0.1"
-	if _, err := compileForTest(expr); !errors.Is(err, codegen.ErrNotImplemented) {
-		t.Fatalf("Compile(%q) = %v; want ErrNotImplemented", expr, err)
+	insns, err := compileForTest(expr)
+	if err != nil {
+		t.Fatalf("Compile(%q): %v", expr, err)
 	}
+	shift := -1
+	for i, ins := range insns {
+		if ins.OpCode.ALUOp() == asm.RSh && ins.Dst == asm.R3 && ins.Constant == 28 {
+			shift = i
+		}
+		if shift >= 0 && i > shift && ins.OpCode.JumpOp() == asm.JNE && ins.Dst == asm.R3 && ins.Constant == 0x0a000001 {
+			return
+		}
+	}
+	t.Errorf("Compile(%q): no `RSh R3, 28` followed by `JNE R3, 0x0a000001`\n%v", expr, insns)
 }
 
 // TestCompileIPv4LiteralOnSliceReadsSlicedBytes pins the window the
@@ -1470,18 +1483,24 @@ func TestCompileBracketInMixedKindsRefused(t *testing.T) {
 			t.Errorf("%s: err = %v; want ErrNotImplemented", expr, err)
 		}
 	}
-	// A slice of an aux field that does not end on byte boundaries is
-	// typed against the literal's width but cannot be read as whole bytes:
-	// refused like the primary shape, for the list and the single literal.
+}
+
+func TestCompileUnalignedSliceNetworkLiteral(t *testing.T) {
+	// A slice whose ends are off byte boundaries is read as a number, like
+	// an integer field's slice, and the literal compares as the number of
+	// its bytes: primary or aux, bracket or where, single literal or list.
 	for _, expr := range []string{
 		"eth/ipv6/srv6[segments[1].addr[76:124] in [00:00:0a:00:00:01]]/tcp",
+		"eth/ipv6/srv6[segments[1].addr[76:124] in [00:00:0a:00:00:01, 5]]/tcp",
 		"eth/ipv6/srv6[segments[1].addr[76:124] == 00:00:0a:00:00:01]/tcp",
 		"eth/ipv6/srv6[segments[1].addr[4:36] == 10.0.0.1]/tcp",
 		"eth/ipv6/srv6/tcp where srv6.segments[1].addr[4:36] == 10.0.0.1",
+		"eth/ipv6/tcp where ipv6.dst[92:124] != 10.0.0.0/8",
+		"eth/ipv6[dst[92:124] >= 10.0.0.1]/tcp",
+		"eth[src[4:36] == 103.120.137.154]/ipv4/tcp",
 	} {
-		_, err := compileForTest(expr)
-		if !errors.Is(err, codegen.ErrNotImplemented) || !strings.Contains(err.Error(), "byte boundary") {
-			t.Errorf("%s: err = %v; want the byte-boundary ErrNotImplemented", expr, err)
+		if _, err := compileForTest(expr); err != nil {
+			t.Errorf("%s: %v", expr, err)
 		}
 	}
 }

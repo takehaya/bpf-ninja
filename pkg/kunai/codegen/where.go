@@ -2043,6 +2043,9 @@ func (c *whereCtx) genLiteralCompare(w *ir.Condition, failLabel string) (asm.Ins
 	if !ok {
 		return nil, fmt.Errorf("%w: network literal supports only == / != (got %s)", ErrNotImplemented, w.LiteralOp)
 	}
+	if sliceNeedsScalarLoad(ref) {
+		return c.genLiteralScalarCompare(w, failLabel)
+	}
 	if dynamicAuxLayoutOf(ref) != nil {
 		return c.genOptionLiteralCompare(w, failLabel)
 	}
@@ -2108,6 +2111,34 @@ func (c *whereCtx) genLiteralCompare(w *ir.Condition, failLabel string) (asm.Ins
 		return c.genIPv6CIDRCompare(w, anchor, fieldOff, fieldBytes, failLabel)
 	}
 	return nil, fmt.Errorf("%w: where literal kind %v", ErrNotImplemented, w.LiteralValue.Kind)
+}
+
+// genLiteralScalarCompare is genLiteralCompare for a slice
+// sliceNeedsScalarLoad accepts: the slice's numeric value is read as
+// genArithFieldLoad reads it, and an absent field fails the atom like a
+// mismatch does.
+func (c *whereCtx) genLiteralScalarCompare(w *ir.Condition, failLabel string) (asm.Instructions, error) {
+	ref := w.LiteralField
+	anchor, err := c.layerAnchorFor(ref.Layer)
+	if err != nil {
+		return nil, err
+	}
+	insns, bytes, size, err := emitScalarFieldLoad(ref, fieldLoadSite{
+		gate:       anchor,
+		load:       anchor,
+		entryAddr:  c.stackEntryAddress,
+		optionSlot: c.dynamicOffsetSlotFor,
+		fail:       failLabel,
+	})
+	if err != nil {
+		return nil, err
+	}
+	insns = append(insns, emitFieldValue(ref, bytes, size)...)
+	cmp, err := literalScalarCompare(w.LiteralValue, w.LiteralOp, failLabel)
+	if err != nil {
+		return nil, err
+	}
+	return append(insns, cmp...), nil
 }
 
 // literalFieldWindow returns the byte offset (relative to the
@@ -2250,7 +2281,7 @@ func (c *whereCtx) genDynamicCIDRv4(w *ir.Condition, ref *ir.FieldRef, fieldByte
 		if w.LiteralOp == ast.CmpEq {
 			return nil, nil
 		}
-		return asm.Instructions{asm.Ja.Label(failLabel)}, nil
+		return constantFail(failLabel), nil
 	}
 	maskBE := uint32(0xFFFFFFFF) << (32 - prefix)
 	hostBE := binary.BigEndian.Uint32(w.LiteralValue.V4[:]) & maskBE
@@ -2285,7 +2316,7 @@ func (c *whereCtx) genDynamicCIDRv6(w *ir.Condition, ref *ir.FieldRef, fieldByte
 		if w.LiteralOp == ast.CmpEq {
 			return nil, nil
 		}
-		return asm.Instructions{asm.Ja.Label(failLabel)}, nil
+		return constantFail(failLabel), nil
 	}
 	maskHighBE, maskLowBE := ipv6PrefixMaskBE(prefix)
 	hostHighBE := binary.BigEndian.Uint64(w.LiteralValue.V6[0:8]) & maskHighBE
@@ -2427,7 +2458,7 @@ func (c *whereCtx) genOwnerBoundCIDRv4(w *ir.Condition, prelude asm.Instructions
 		if w.LiteralOp == ast.CmpEq {
 			return prelude, nil
 		}
-		return append(prelude, asm.Ja.Label(failLabel)), nil
+		return append(prelude, constantFail(failLabel)...), nil
 	}
 	maskBE := uint32(0xFFFFFFFF) << (32 - prefix)
 	hostBE := binary.BigEndian.Uint32(w.LiteralValue.V4[:]) & maskBE
@@ -2461,7 +2492,7 @@ func (c *whereCtx) genOwnerBoundCIDRv6(w *ir.Condition, prelude asm.Instructions
 		if w.LiteralOp == ast.CmpEq {
 			return prelude, nil
 		}
-		return append(prelude, asm.Ja.Label(failLabel)), nil
+		return append(prelude, constantFail(failLabel)...), nil
 	}
 	maskHighBE, maskLowBE := ipv6PrefixMaskBE(prefix)
 	hostHighBE := binary.BigEndian.Uint64(w.LiteralValue.V6[0:8]) & maskHighBE
@@ -2646,7 +2677,7 @@ func whereIPv6HalfCheck(anchor layerAnchor, fieldOff int, mask, host uint64, fai
 
 // genIPv4CIDRCompare handles `field == 10.0.0.0/8` (and !=) in where.
 // /32 collapses to a host compare; /0 with == is a no-op (always
-// match) and /0 with != is unconditional reject.
+// match) and /0 with != always fails (constantFail).
 func (c *whereCtx) genIPv4CIDRCompare(w *ir.Condition, anchor layerAnchor, fieldOff, fieldBytes int, failLabel string, jumpOp asm.JumpOp) (asm.Instructions, error) {
 	if fieldBytes != 4 {
 		return nil, fmt.Errorf("%w: IPv4 CIDR needs a 4-byte field, got %d-byte %s.%s", ErrNotImplemented, fieldBytes, w.LiteralField.Layer.Spec.Name, w.LiteralField.Field.Name)
@@ -2664,7 +2695,7 @@ func (c *whereCtx) genIPv4CIDRCompare(w *ir.Condition, anchor layerAnchor, field
 		if w.LiteralOp == ast.CmpEq {
 			return nil, nil
 		}
-		return asm.Instructions{asm.Ja.Label(failLabel)}, nil
+		return constantFail(failLabel), nil
 	}
 	maskBE := uint32(0xFFFFFFFF) << (32 - prefix)
 	hostBE := binary.BigEndian.Uint32(w.LiteralValue.V4[:]) & maskBE
@@ -2702,7 +2733,7 @@ func (c *whereCtx) genIPv6CIDRCompare(w *ir.Condition, anchor layerAnchor, field
 		if w.LiteralOp == ast.CmpEq {
 			return nil, nil
 		}
-		return asm.Instructions{asm.Ja.Label(failLabel)}, nil
+		return constantFail(failLabel), nil
 	}
 	maskHighBE, maskLowBE := ipv6PrefixMaskBE(prefix)
 	hostHighBE := binary.BigEndian.Uint64(w.LiteralValue.V6[0:8]) & maskHighBE
