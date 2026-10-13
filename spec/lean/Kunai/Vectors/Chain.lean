@@ -207,6 +207,21 @@ vector quantRange00LabelWhereNot := {
 vector quantRange00LabelWhereOr := {
   id := "quant-range00-label-where-or", ast := vlanR00Where (.or vR00Tci (.arith (.field ⟨[("tcp", none), ("dport", none)]⟩) .eq (.const 80))),
   packet := tcpPlain, expected := .accept [] }
+vector quantRange00LabelWhereNe := {
+  id := "quant-range00-label-where-ne", ast := vlanR00Where (.arith (.field ⟨[("v", none), ("tci", none)]⟩) .ne (.const 100)),
+  packet := tcpPlain, expected := .reject, note := "D-003: false for != too" }
+vector quantRange00Redispatch := {
+  id := "quant-range00-redispatch", ast := { layers := [P "eth", Pq "vlan" range00, P "ipv4", P "tcp"] }, packet := mpls1, expected := .reject,
+  note := "ipv4 dispatches off eth's ethertype, which is MPLS here" }
+vector quantRange00Twice := {
+  id := "quant-range00-twice", ast := { layers := [P "eth", Pq "mpls" range00, Pq "mpls" range00, P "mpls", P "ipv4", P "tcp"] },
+  packet := mpls1, expected := .accept [] }
+vector quantRange00BeforeAlt := {
+  id := "quant-range00-before-alt", ast := { layers := [P "eth", Pq "vlan" range00, .alt [{ name := "ipv4" }, { name := "ipv6" }], P "tcp"] },
+  packet := tcpPlain, expected := .accept [] }
+vector quantRange00AfterAlt := {
+  id := "quant-range00-after-alt", ast := { layers := [P "eth", .alt [{ name := "vlan" }, { name := "qinq" }], Pq "vlan" range00, P "ipv4", P "tcp"] },
+  packet := vlanPkt, expected := .accept [] }
 vector quantRange00Last := {
   id := "quant-range00-last", ast := { layers := [P "eth", P "ipv4", Pq "tcp" range00] },
   packet := eth 0x0800 ++ ipv4 17 ++ udp 12345 53 ++ payload 5, expected := .accept [] }
@@ -674,7 +689,7 @@ def chainVectors : List Vector := [
   chainVxlan, chainVxlanAlt, chainMplsSingle, chainMplsSingleOverrun,
   quantOptPresent, quantOptAbsent, quantOptPredHolds, quantOptPredFails, quantOptBounds, quantRangeMidTrunc, quantRange01Bounds,
   quantStarBounds, quantMplsRange, quantMplsPlus, quantMplsStarZero, quantMplsMinUnmet, quantChainEnd,
-  quantGreedyOverrun, quantOverrunBounded, quantOverrunOpen, quantExactBound, quantOptMplsOverrun, quantOptMplsOne, quantGreedyUnreachable, quantOptFollowTwo, quantOptFollowOne, quantRange01Follow, quantRange11Follow, quantRange11FollowOne, quantOptVlanFollowTwo, quantOptVlanFollowOne, quantRange00Follow, quantRange00PredIgnored, quantRange00LabelWhereFalse, quantRange00LabelWhereNot, quantRange00LabelWhereOr, quantRange00Last, quantRange00Machine, quantRange00AfterOpt, quantRange00AfterOptAbsent, typQuantRange00BareRef, typQuantRange00MachineParent, quantPredMidFail, quantPredMidFailStatic, quantPredFirstFail,
+  quantGreedyOverrun, quantOverrunBounded, quantOverrunOpen, quantExactBound, quantOptMplsOverrun, quantOptMplsOne, quantGreedyUnreachable, quantOptFollowTwo, quantOptFollowOne, quantRange01Follow, quantRange11Follow, quantRange11FollowOne, quantOptVlanFollowTwo, quantOptVlanFollowOne, quantRange00Follow, quantRange00PredIgnored, quantRange00LabelWhereFalse, quantRange00LabelWhereNot, quantRange00LabelWhereOr, quantRange00LabelWhereNe, quantRange00Redispatch, quantRange00Twice, quantRange00BeforeAlt, quantRange00AfterAlt, quantRange00Last, quantRange00Machine, quantRange00AfterOpt, quantRange00AfterOptAbsent, typQuantRange00BareRef, typQuantRange00MachineParent, quantPredMidFail, quantPredMidFailStatic, quantPredFirstFail,
   quantPredAllHold, quantSelfValidSkip, quantSelfValidPresent, quantSelfValidShortV4, quantSelfValidShortV6, quantSelfValidEmpty, quantSelfValidCascade, quantSelfValidCascadeEth, quantSelfValidBroken, quantOptIPv4Last, quantOptIPv4LastAbsent, quantOptIPIP, quantExactOneMachine, typAltExactOne, typRepeatNoSelfEdge, typRepeatNoSelfEdgeStar, quantOptIPIPAbsent, quantOptIPIPTwiceOne, quantOptIPIPTwiceNone, quantOptIPIPTwiceBoth, typOptionalAfterSkip, typOptionalNoCheck, chainMandatorySelfEdgeMiss, quantSelfEdgeStar, quantSelfEdgeOpt,
   absentConsecutiveEthertype, absentConsecutiveSelfValid, absentConsecutiveMplsOnly, absentConsecutiveNeither, absentConsecutiveArp, quantFirstOptional,
   altFirst, altSecond, altAfterVxlan6, altAfterVxlan4, altNone, altFirstPredFails, altShadowedSecond, altRoot, altNoCheck,

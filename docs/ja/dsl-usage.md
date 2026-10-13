@@ -188,7 +188,7 @@ stack の index は静的でも動的でも、抽出された要素数以上を�
 
 - `?` / `{0,1}` の layer (`eth/vlan?/ipv4/tcp where vlan.tci == 100`): layer が無いパケットでは、その field を含む atom は **false** になります (`==` も `!=` も)。「無い、または 100 でない」は `not (vlan.tci == 100)` と書きます。
 - `{n,m>1}` / `+` / `*` の layer は複数 header にマッチしうるので、素の proto 名では ambiguous エラーになります。`@label` を付けると**最後にマッチした header** を指します (`eth/mpls@m{1,8}/ipv4/tcp where m.label == 7`)。
-- `{0,0}` の layer は header を 1 つも取りません。bracket の predicate は評価されず、label も束縛されないので、その `@label` を読む atom は false になります。次の layer は `{0,0}` の手前の layer を親として dispatch します (`eth/mpls{0,0}/mpls/ipv4/tcp` は `eth/mpls/ipv4/tcp` と同じです)。`capture` の対象にすると、手前の layer までを capture します。
+- `{0,0}` の layer は header を 1 つも取りません。bracket の predicate は評価されず、label も束縛されないので、その `@label` を読む atom は false になります。`@label` を付けずに素の proto 名で読むとエラーになります。次の layer は `{0,0}` の手前の layer を親として dispatch します (`eth/mpls{0,0}/mpls/ipv4/tcp` は `eth/mpls/ipv4/tcp` と同じです)。`capture` の対象にすると、手前の layer までを capture します。
 - 量化 layer の後ろの layer (`eth/vlan?/ipv4/tcp where ipv4.ttl == 64`) は普通に参照できます。offset は実行時に解決されます。実行時 offset を持てる layer の数に固定の上限はありません。ただし実行時 offset、aux の位置、alternation の member 番号、`options.valid` の結果を置く stack 上の領域は filter 全体で 36 slot なので、これに収まらない filter は `ErrNotImplemented` になります。
 - alternation の member (`eth/(ipv4|ipv6)/tcp where ipv4.ttl == 64`、label なら `(ipv4@a|ipv6) where a.ttl == 64`): 別の member がマッチしたパケットでは、その field を含む atom は **false** になります (`?` の layer が無い場合と同じ扱い)。member ごとの条件は `or` で並べます (`where ipv4.ttl == 64 or ipv6.hop_limit == 64`)。
 - `any` / `all` の対象 stack を持つ layer が無いときは、どちらも false です (空 stack の場合とは違います)。

@@ -15,8 +15,11 @@ import (
 //   - the follower's dispatch is chosen against the kept predecessor;
 //   - a where atom reading the layer is false (D-003, an absent layer),
 //     and so is any()/all() over its stacks; codegen folds the rest;
-//   - `capture <label>` of the layer captures through its predecessor,
-//     the bound Go captures for an absent `?` layer too (D-020).
+//   - `capture <label>` of the layer captures through its predecessor.
+//     The spec drops the clause (D-020); Go already captures the static
+//     bound for an absent `?` layer, and the retarget keeps that policy.
+//     A field capture (CapFields) never gets here: the parser marks it
+//     unsupported.
 //
 // The first layer cannot be `{0,0}` (checkChainShape), so every dropped
 // layer has a kept predecessor. An alternation group is never dropped.
@@ -58,7 +61,10 @@ func dropEmptyLayers(p *ir.Program) error {
 
 // redispatch chooses l's dispatch, or each member's for a group, against
 // parent, the layer l follows once the `{0,0}` layers between them are
-// gone.
+// gone. checkRuntimeParents has already required that edge for a plain
+// parent; after a group it has not, and a missing edge is the type error
+// here. The rule for an absentable layer on a no-check dispatch
+// (checkChainShape) runs again against the new parent.
 func redispatch(l, parent *ir.LayerInstance) error {
 	members := []*ir.LayerInstance{l}
 	if l.Alternation != nil {
@@ -78,6 +84,9 @@ func redispatch(l, parent *ir.LayerInstance) error {
 			return err
 		}
 		m.Dispatch = choice
+	}
+	if l.Alternation == nil {
+		return checkNoCheckAbsence(l, parent)
 	}
 	return nil
 }
