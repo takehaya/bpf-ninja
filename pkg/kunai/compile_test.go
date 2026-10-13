@@ -1471,16 +1471,30 @@ func TestCompileBracketInMACAlternatives(t *testing.T) {
 	}
 }
 
-func TestCompileBracketInMixedKindsRefused(t *testing.T) {
-	// A 128-bit or 48-bit field compares only against addresses of its
-	// own width inside a list.
+func TestCompileBracketInIntegerOnWideField(t *testing.T) {
+	// An integer on a 128-bit or 48-bit field is the address with that
+	// number, alone or among addresses, in a list or a single compare.
 	for _, expr := range []string{
 		"eth/ipv6[dst in [fc00::1, 5]]/tcp",
+		"eth/ipv6[dst in [5, -1]]/tcp",
 		"eth[dst in [aa:bb:cc:dd:ee:ff, 5]]/ipv4/tcp",
+		"eth[dst == 5]/ipv4/tcp",
+		"eth[dst > 5]/ipv4/tcp",
+		"eth/ipv6[dst != 5]/tcp",
+		"eth/ipv6/srv6[segments[1].addr in [fc00::1, 2]]/tcp",
+	} {
+		if _, err := compileForTest(expr); err != nil {
+			t.Errorf("%s: %v", expr, err)
+		}
+	}
+	// A range there needs the field in one register, which it is not.
+	for _, expr := range []string{
+		"eth/ipv6[dst in [fc00::1, 1..5]]/tcp",
+		"eth[dst in [1..5]]/ipv4/tcp",
 	} {
 		_, err := compileForTest(expr)
-		if !errors.Is(err, codegen.ErrNotImplemented) {
-			t.Errorf("%s: err = %v; want ErrNotImplemented", expr, err)
+		if !errors.Is(err, codegen.ErrNotImplemented) || !strings.Contains(err.Error(), "range alternative") {
+			t.Errorf("%s: err = %v; want the range ErrNotImplemented", expr, err)
 		}
 	}
 }

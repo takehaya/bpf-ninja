@@ -229,8 +229,27 @@ vector predInListCidr4RangeMixed := {
   id := "pred-in-list-cidr4-range-mixed", ast := ipv4Pred (.inList (f "src") [.cidr4 0x0a000000 8, .range 1 5]), expected := .accept [],
   note := "D-011: a range puts the list in host order; the CIDR mask follows" }
 vector predInListMacIntMixed := {
-  id := "pred-in-list-mac-int-mixed", ast := ethPred (.inList (f "src") [.mac 0x112233445566, .int 5]), expected := .reject,
-  goStatus := .notImplemented, note := "well-typed; Go compares a 48-bit field only against MAC alternatives inside a list" }
+  id := "pred-in-list-mac-int-mixed", ast := ethPred (.inList (f "src") [.mac 0x112233445566, .int 5]), expected := .reject }
+-- An integer on a bit<48> field is the address with that number.
+vector predInListMacIntMixedHit := {
+  id := "pred-in-list-mac-int-mixed-hit", ast := ethPred (.inList (f "src") [.mac 0x112233445566, .int 0x66778899aabb]), expected := .accept [] }
+vector predInListMacIntNegative := {
+  id := "pred-in-list-mac-int-negative", ast := ethPred (.inList (f "src") [.mac 0x112233445566, .int (-1)]),
+  packet := eth 0x0800 (src := 0xffffffffffff) ++ ipv4 6 ++ tcp 12345 80 ++ payload 5, expected := .accept [],
+  note := "-1 narrowed to 48 bits is ff:ff:ff:ff:ff:ff" }
+vector predInListMacIntOnly := {
+  id := "pred-in-list-mac-int-only", ast := ethPred (.inList (f "src") [.int 5, .int 0x66778899aabb]), expected := .accept [] }
+vector predInListMacRangeMixed := {
+  id := "pred-in-list-mac-range-mixed", ast := ethPred (.inList (f "src") [.mac 0x112233445566, .range 0 0xffffffffffff]), expected := .accept [],
+  goStatus := .notImplemented, note := "well-typed; Go reads a 48-bit field in two chunks and compares a range only in one register" }
+vector predMacIntEq := {
+  id := "pred-mac-int-eq", ast := ethPred (.cmp (f "src") .eq (.int 0x66778899aabb)), expected := .accept [] }
+vector predMacIntEqMiss := {
+  id := "pred-mac-int-eq-miss", ast := ethPred (.cmp (f "src") .eq (.int 5)), expected := .reject }
+vector predMacIntGt := {
+  id := "pred-mac-int-gt", ast := ethPred (.cmp (f "src") .gt (.int 0x66778899aaba)), expected := .accept [] }
+vector predMacIntLeMiss := {
+  id := "pred-mac-int-le-miss", ast := ethPred (.cmp (f "src") .le (.int 0x66778899aaba)), expected := .reject }
 vector predMacEq := {
   id := "pred-mac-eq", ast := ethPred (.cmp (f "src") .eq (.mac 0x66778899aabb)), expected := .accept [] }
 vector predMacEqMiss := {
@@ -620,8 +639,32 @@ vector predInListIPv6Miss := {
   packet := v6pkt v6Src1 v6LowTen, expected := .reject }
 vector predInListIPv6IntMixed := {
   id := "pred-in-list-ipv6-int-mixed", ast := ipv6Pred (.inList (f "src") [.ipv6 v6Src3, .int 5]), packet := v6pkt v6Src1 v6LowTen,
-  expected := .reject, goStatus := .notImplemented,
-  note := "well-typed; Go compares a 128-bit field only against addresses of its own width inside a list" }
+  expected := .reject }
+-- An integer on a bit<128> field is the address with that number.
+vector predInListIPv6IntMixedHit := {
+  id := "pred-in-list-ipv6-int-mixed-hit", ast := ipv6Pred (.inList (f "src") [.ipv6 v6Src3, .int 5]), packet := v6pkt 5 v6LowTen,
+  expected := .accept [], note := "::5" }
+vector predInListIPv6IntNegative := {
+  id := "pred-in-list-ipv6-int-negative", ast := ipv6Pred (.inList (f "src") [.ipv6 v6Src3, .int (-1)]),
+  packet := v6pkt (2 ^ 128 - 1) v6LowTen, expected := .accept [], note := "-1 narrowed to 128 bits is all ones" }
+vector predInListIPv6IntNegativeMiss := {
+  id := "pred-in-list-ipv6-int-negative-miss", ast := ipv6Pred (.inList (f "src") [.ipv6 v6Src3, .int (-1)]),
+  packet := v6pkt (2 ^ 64 - 1) v6LowTen, expected := .reject, note := "the high half is not all ones" }
+vector predInListIPv6RangeMixed := {
+  id := "pred-in-list-ipv6-range-mixed", ast := ipv6Pred (.inList (f "src") [.ipv6 v6Src3, .range 0 5]), packet := v6pkt 5 v6LowTen,
+  expected := .accept [], goStatus := .notImplemented,
+  note := "well-typed; Go reads a 128-bit field in two chunks and compares a range only in one register" }
+vector predIPv6IntEq := {
+  id := "pred-ipv6-int-eq", ast := ipv6Pred (.cmp (f "src") .eq (.int 5)), packet := v6pkt 5 v6LowTen, expected := .accept [] }
+vector predIPv6IntEqMiss := {
+  id := "pred-ipv6-int-eq-miss", ast := ipv6Pred (.cmp (f "src") .eq (.int 5)), packet := v6pkt v6Src1 v6LowTen, expected := .reject }
+vector predIPv6IntNe := {
+  id := "pred-ipv6-int-ne", ast := ipv6Pred (.cmp (f "src") .ne (.int 5)), packet := v6pkt v6Src1 v6LowTen, expected := .accept [] }
+vector predIPv6IntLt := {
+  id := "pred-ipv6-int-lt", ast := ipv6Pred (.cmp (f "src") .lt (.int 6)), packet := v6pkt 5 v6LowTen, expected := .accept [] }
+vector predIPv6IntLtMiss := {
+  id := "pred-ipv6-int-lt-miss", ast := ipv6Pred (.cmp (f "src") .lt (.int 6)), packet := v6pkt (2 ^ 64 + 5) v6LowTen, expected := .reject,
+  note := "the high half decides" }
 vector ipv6DstLow32InListIPv4 := {
   id := "ipv6-dst-low32-in-list-ipv4", ast := ipv6Pred (.inList ⟨[("dst", some (.slice 96 128))]⟩ [.ipv4 0x0a000002, .ipv4 0x0a000001]),
   packet := v6pkt v6Src1 v6LowTen, expected := .accept [], note := "the sliced word is a bit<32>: IPv4 alternatives compare the last four bytes" }
@@ -1114,8 +1157,8 @@ def whereVectors : List Vector := [
   actionEntry, actionHit, actionMiss, actionUnknown,
   predCmp, predCmpMiss, predInList, predInListMiss, predInRange, typPredInRangeWide, typPredCmpRange, predInRangeMiss, predNegative, predIPv4,
   predInListIPv4, predInListIPv4Miss, predInListCidr4, predInListCidr4Zero, predInListIPv4IntMixed, predInListIPv4RangeMixed, predInListMac, predInListMacMiss,
-  predInListMacFirst, predInListCidr4ThenHost, predInListCidr4Miss, predInListCidr4RangeMixed, predInListMacIntMixed, predMacEq, predMacEqMiss,
-  predInListIPv6, predInListCidr6, predInListCidr6LowHalf, predInListIPv6First, predInListCidr6Zero, predInListIPv6Miss, predInListIPv6IntMixed, ipv6DstLow32InListIPv4, ipv6DstLow48InListMac,
+  predInListMacFirst, predInListCidr4ThenHost, predInListCidr4Miss, predInListCidr4RangeMixed, predInListMacIntMixed, predInListMacIntMixedHit, predInListMacIntNegative, predInListMacIntOnly, predInListMacRangeMixed, predMacIntEq, predMacIntEqMiss, predMacIntGt, predMacIntLeMiss, predMacEq, predMacEqMiss,
+  predInListIPv6, predInListCidr6, predInListCidr6LowHalf, predInListIPv6First, predInListCidr6Zero, predInListIPv6Miss, predInListIPv6IntMixed, predInListIPv6IntMixedHit, predInListIPv6IntNegative, predInListIPv6IntNegativeMiss, predInListIPv6RangeMixed, predIPv6IntEq, predIPv6IntEqMiss, predIPv6IntNe, predIPv6IntLt, predIPv6IntLtMiss, ipv6DstLow32InListIPv4, ipv6DstLow48InListMac,
   predCmpIPv4Gt, predCmpIPv4LeMiss, predCmpIPv4GeBoundary, predCmpIPv4LtBoundary, predCmpMacLt, predCmpMacLtBoundary, predCmpMacGtWord, predCmpIPv4GtByteOrder, predCmpIPv4Lt, predCmpIPv4GtBoundary, predCmpIPv4Le, predCmpIPv4GeMiss, predCmpMacGe, predCmpMacLeMiss, predCmpMacGtMiss, predCidr4Ne, typPredCidrOrdered,
   predCmpIPv6Lt, predCmpIPv6LtBoundary, predCmpIPv6GeHigh, predCmpIPv6LtHighDecides, predCmpIPv6Le, predCmpIPv6Gt, predCmpIPv6GeMiss, predCmpIPv6GtSignLow, predCmpIPv6LtSignHigh, typPredCidr6Ordered, ipv6DstLow32Gt,
   capAll, capWhereFalse, capWhereTrue, capLabel, capAbsent, capPresent, capAltMemberPresent, capAltMemberAbsent, capAltMemberByName,
