@@ -223,6 +223,7 @@ eth/ipv4/tcp where tcp.options.MSS.value == 1460 and tcp.options.WS.shift == 7  
 eth/ipv4/tcp[mss.value == 1460, ws.shift == 7]                                                     # compile できる
 eth/ipv4/tcp[mss.value == 1460] where tcp.options.WS.shift == 7 and tcp.dport == 80                 # compile できる
 eth/ipv4/tcp[mss.value == 1460, ts.tsval > 5]                                                      # ErrNotImplemented
+eth/ipv4/tcp[mss.value == 1460, ws.shift == 7]?                                                    # compile できる
 eth/ipv4/(tcp[mss.value == 1460, ws.shift == 7]|udp)                                               # compile できる
 ```
 

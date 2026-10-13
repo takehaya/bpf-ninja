@@ -492,7 +492,8 @@ func (c *pmCtx) emitWriteBackSlotZero() asm.Instructions {
 // Predicates are a conjunction, so the split does not change the verdict.
 //
 // A predicate the accumulator plan folded into the walk (acc.go) is in
-// neither list: the mask check after the chain tests it.
+// neither list: the mask check tests it, after the chain, or at this
+// layer's done landing for an inLayer plan.
 func splitPredicates(layer *ir.LayerInstance, plan *accPlan) (pre, post []*ir.Predicate) {
 	preds := layer.Predicates
 	if plan != nil && plan.layer == layer && len(plan.folded) > 0 {

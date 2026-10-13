@@ -180,8 +180,8 @@ func buildAccPlan(p *ir.Program, where *ir.Condition, qo queriedOptions) (*accPl
 	}
 	if len(plan.folded) > 0 && !whereOnLayer && !accLayerAlwaysPresent(layer, qo) {
 		// One check per instance would need the accumulator reset between
-		// instances; no length-byte option walk sits on a protocol that
-		// repeats today.
+		// instances. Defence only: the resolver refuses a repeated tcp, the
+		// one protocol with a length-byte option walk today.
 		if layer.CanRepeat() {
 			return nil, fmt.Sprintf("%s may match several headers, each running its bracket, but the folded check runs once; add a where term on it, such as `%s.options.valid`", layer.DisplayName(), layer.DisplayName())
 		}

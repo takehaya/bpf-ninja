@@ -2799,6 +2799,47 @@ func TestCompileBracketOptionsFoldIntoAccumulator(t *testing.T) {
 	}
 }
 
+// TestCompileInLayerAccCheckPlacement pins where the folded check of a
+// layer that may be absent runs: past the tcp walk's done landing and
+// before the landing where its absent path rejoins (the optional layer's
+// chain end, the alternation's end). After the chain it would reject the
+// packets that skip the layer. A where term on the layer keeps the check
+// after the chain.
+func TestCompileInLayerAccCheckPlacement(t *testing.T) {
+	for _, c := range []struct {
+		expr, rejoin string
+		inLayer      bool
+	}{
+		{"eth/ipv4/tcp[mss.value == 1460, ws.shift == 7]?", "dsl_chain_done_", true},
+		{"eth/ipv4/(tcp[mss.value == 1460, ws.shift == 7]|udp)", "dsl_alt_end_", true},
+		{"eth/ipv4/tcp[mss.value == 1460, ws.shift == 7]? where tcp.dport == 80", "dsl_chain_done_", false},
+	} {
+		out, err := compileForTest(c.expr)
+		if err != nil {
+			t.Fatalf("%s: %v", c.expr, err)
+		}
+		done, rejoin, check := -1, -1, -1
+		for i := range out {
+			sym := out[i].Symbol()
+			if strings.HasPrefix(sym, "dsl_pm_tcp_") && strings.HasSuffix(sym, "_done") {
+				done = i
+			}
+			if done >= 0 && rejoin < 0 && strings.HasPrefix(sym, c.rejoin) {
+				rejoin = i
+			}
+			if hasAccMaskCheck(out[i:min(i+3, len(out))], 0b11) {
+				check = i
+			}
+		}
+		if done < 0 || rejoin < 0 || check < 0 {
+			t.Fatalf("%s: done %d, rejoin %d, check %d; want all found", c.expr, done, rejoin, check)
+		}
+		if got := check > done && check < rejoin; got != c.inLayer {
+			t.Errorf("%s: check at %d, tcp done at %d, rejoin at %d; in the layer = %v, want %v", c.expr, check, done, rejoin, got, c.inLayer)
+		}
+	}
+}
+
 // repeatedOptionEqualities is a filter with n equalities on tcp.mss.value
 // and one on tcp.ws.shift; the accumulator folds each into its own bit.
 func repeatedOptionEqualities(n int) string {

@@ -154,7 +154,7 @@ codegen には別途、callback の分岐命令数を静的に数える tripwire
   (`accPlan.inLayer`)。layer が無い経路はこの check を通らない。`where` に同じ layer
   の atom があれば、layer の不在で verdict が偽になるので chain の後で check する。
   layer が必ず存在する場合 (`accLayerAlwaysPresent`) も chain の後で check する。
-  繰り返す layer は instance ごとに accumulator を戻す必要があるので拒否する。
+  繰り返す layer は instance ごとに accumulator を 0 に戻す必要があるので拒否する。
   同じ option が 2 回以上現れたときは、仕様 (`latestView`) と位置 slot の経路に
   合わせて最後のものの値で判定する。kind が一致した時点で atom の bit を消してから
   比較し直す。
