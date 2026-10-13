@@ -52,8 +52,9 @@ func TestModeFlagValidation(t *testing.T) {
 }
 
 // TestNewRootCommandFreshFlagState pins that every newRootCommand() gets
-// its own flag objects: urfave keeps IsSet across Run calls on a shared
-// flag, which made the package order-dependent and fail at -count=2.
+// its own command and flag objects, subcommands included: urfave keeps
+// IsSet across Run calls on a shared flag, which made the package
+// order-dependent and fail at -count=2.
 func TestNewRootCommandFreshFlagState(t *testing.T) {
 	emitIsSet := func(args ...string) bool {
 		app := newRootCommand()
@@ -74,11 +75,41 @@ func TestNewRootCommandFreshFlagState(t *testing.T) {
 		t.Fatal("IsSet(emit) leaked into a fresh newRootCommand()")
 	}
 
-	// Every flag, not only emit, must be its own object per command.
-	a, b := newRootCommand(), newRootCommand()
-	for i := range a.Flags {
-		if a.Flags[i] == b.Flags[i] {
-			t.Errorf("flag %v is shared between two newRootCommand()", a.Flags[i].Names())
+	// A subcommand's flags must not leak either.
+	maxEntriesIsSet := func(args ...string) bool {
+		app := newRootCommand()
+		var set bool
+		app.Command("set").Command("create").Action = func(_ context.Context, c *cli.Command) error {
+			set = c.IsSet("max-entries")
+			return nil
+		}
+		if err := app.Run(context.Background(), append([]string{"bpf-ninja", "set", "create", "--key", "a:u8"}, args...)); err != nil {
+			t.Fatalf("run set create %v: %v", args, err)
+		}
+		return set
+	}
+	if !maxEntriesIsSet("--max-entries", "8", "/sys/fs/bpf/x") {
+		t.Fatal("IsSet(max-entries) is false right after --max-entries")
+	}
+	if maxEntriesIsSet("/sys/fs/bpf/x") {
+		t.Fatal("IsSet(max-entries) leaked into a fresh newRootCommand()")
+	}
+
+	// Every command and flag, subcommands included, must be its own
+	// object per newRootCommand().
+	var walk func(a, b *cli.Command)
+	walk = func(a, b *cli.Command) {
+		if a == b {
+			t.Errorf("command %q is shared between two newRootCommand()", a.Name)
+		}
+		for i := range a.Flags {
+			if a.Flags[i] == b.Flags[i] {
+				t.Errorf("flag %v of %q is shared between two newRootCommand()", a.Flags[i].Names(), a.Name)
+			}
+		}
+		for i := range a.Commands {
+			walk(a.Commands[i], b.Commands[i])
 		}
 	}
+	walk(newRootCommand(), newRootCommand())
 }

@@ -24,29 +24,33 @@ import (
 	"github.com/takehaya/bpf-ninja/internal/output"
 )
 
-var convertFlags = []cli.Flag{
-	&cli.StringSliceFlag{
-		Name: "read", Aliases: []string{"r"},
-		Usage: "input raw-dump file(s) or glob pattern(s) (e.g. 'out.W*.cpu*.raw')",
-	},
-	&cli.StringFlag{
-		Name: "output", Aliases: []string{"o"},
-		Usage: "output pcap-ng file path (default stdout)",
-	},
+func newConvertFlags() []cli.Flag {
+	return []cli.Flag{
+		&cli.StringSliceFlag{
+			Name: "read", Aliases: []string{"r"},
+			Usage: "input raw-dump file(s) or glob pattern(s) (e.g. 'out.W*.cpu*.raw')",
+		},
+		&cli.StringFlag{
+			Name: "output", Aliases: []string{"o"},
+			Usage: "output pcap-ng file path (default stdout)",
+		},
+	}
 }
 
-var convertCommand = &cli.Command{
-	Name:  "convert",
-	Usage: "convert raw-dump files to standard pcap-ng",
-	Description: `Convert one or more --raw-dump output files into a standard
+func newConvertCommand() *cli.Command {
+	return &cli.Command{
+		Name:  "convert",
+		Usage: "convert raw-dump files to standard pcap-ng",
+		Description: `Convert one or more --raw-dump output files into a standard
 pcap-ng file that tcpdump / Wireshark / tshark can read directly.
 
 Examples:
   bpf-ninja convert -r 'session.W*.cpu*.raw' -o session.pcapng
   bpf-ninja convert -r in.cpu0.raw -r in.cpu1.raw -o out.pcapng
   bpf-ninja convert -r 'session.W*.cpu*.raw'   # to stdout`,
-	Flags:  convertFlags,
-	Action: runConvert,
+		Flags:  newConvertFlags(),
+		Action: runConvert,
+	}
 }
 
 func runConvert(ctx context.Context, cmd *cli.Command) error {
