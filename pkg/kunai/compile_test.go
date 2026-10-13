@@ -2728,6 +2728,12 @@ func TestCompileBracketOptionsFoldIntoAccumulator(t *testing.T) {
 		{"eth/ipv4/(tcp[mss.value == 1460, ws.shift == 7]|udp) where tcp.options.valid", 0b11, false},
 		{"eth/ipv4/tcp[mss.value == 1460, ws.shift == 7]? where tcp.sack_perm.kind == 4", 0b111, false},
 		{"eth/ipv4/tcp[mss.value == 1460, ws.shift == 7]? where tcp.dport == 80", 0b11, true},
+		// With no where term on a layer that may be absent, the check runs
+		// inside the layer, where its bracket runs.
+		{"eth/ipv4/tcp[mss.value == 1460, ts.tsval == 5]?", 0b11, false},
+		{"eth/ipv4/(tcp[mss.value == 1460, ts.tsval == 5]|udp)", 0b11, false},
+		{"eth/ipv4/tcp[mss.value == 1460, ts.tsval == 5]? where not tcp.dport == 80", 0b11, true},
+		{"eth/ipv4/tcp[mss.value == 1460, ts.tsval == 5]? where tcp.dport == 80 or ipv4.ttl == 1", 0b11, true},
 		// A capture condition is part of the where clause and folds too.
 		{"eth/ipv4/tcp where tcp.ws.shift == 7 capture headers where tcp.mss.value == 1460", 0b11, false},
 		{"eth/ipv4/tcp[mss.value == 1460] where tcp.ws.shift == 7 capture headers where tcp.dport == 80", 0b11, false},
@@ -2755,10 +2761,6 @@ func TestCompileBracketOptionsFoldIntoAccumulator(t *testing.T) {
 		{"eth/ipv4/tcp[mss.value == 1460, ts.tsval == 5] where not tcp.ts.tsval == 6", "tcp.ts.tsval is read by a where or capture term"},
 		{"eth/ipv4/tcp[mss.value == 1460, ts.tsval == 5] where tcp.mss.exists", "is read by a where or capture term"},
 		{"eth/ipv4/tcp[mss.value == 1460, ts.tsval == 5] capture headers where tcp.mss.value > 1000", "tcp.mss.value is read by a where or capture term"},
-		{"eth/ipv4/tcp[mss.value == 1460, ts.tsval == 5]?", "tcp may be absent"},
-		{"eth/ipv4/(tcp[mss.value == 1460, ts.tsval == 5]|udp)", "tcp may be absent"},
-		{"eth/ipv4/tcp[mss.value == 1460, ts.tsval == 5]? where not tcp.dport == 80", "tcp may be absent"},
-		{"eth/ipv4/tcp[mss.value == 1460, ts.tsval == 5]? where tcp.dport == 80 or ipv4.ttl == 1", "tcp may be absent"},
 		{"eth/ipv4/tcp[mss.value[0:8] == 5, ts.tsval == 5]", "the bracket predicate on tcp.mss.value is not `== <integer>` on the whole field"},
 		{"eth/ipv4/tcp where tcp.mss.value == 1460 and tcp.options.SACK.blocks[1].left == 5", "tcp.sack.blocks[1].left is read by a where or capture term the walk cannot fold"},
 		// Two tcp members of one alternation: only the first can match,
@@ -2794,6 +2796,47 @@ func TestCompileBracketOptionsFoldIntoAccumulator(t *testing.T) {
 	}
 	if !hasAccMaskCheck(out, 0xffff) {
 		t.Errorf("16 equalities: no accumulator mask check for mask 0xffff")
+	}
+}
+
+// TestCompileInLayerAccCheckPlacement pins where the folded check of a
+// layer that may be absent runs: past the tcp walk's done landing and
+// before the landing where its absent path rejoins (the optional layer's
+// chain end, the alternation's end). After the chain it would reject the
+// packets that skip the layer. A where term on the layer keeps the check
+// after the chain.
+func TestCompileInLayerAccCheckPlacement(t *testing.T) {
+	for _, c := range []struct {
+		expr, rejoin string
+		inLayer      bool
+	}{
+		{"eth/ipv4/tcp[mss.value == 1460, ws.shift == 7]?", "dsl_chain_done_", true},
+		{"eth/ipv4/(tcp[mss.value == 1460, ws.shift == 7]|udp)", "dsl_alt_end_", true},
+		{"eth/ipv4/tcp[mss.value == 1460, ws.shift == 7]? where tcp.dport == 80", "dsl_chain_done_", false},
+	} {
+		out, err := compileForTest(c.expr)
+		if err != nil {
+			t.Fatalf("%s: %v", c.expr, err)
+		}
+		done, rejoin, check := -1, -1, -1
+		for i := range out {
+			sym := out[i].Symbol()
+			if strings.HasPrefix(sym, "dsl_pm_tcp_") && strings.HasSuffix(sym, "_done") {
+				done = i
+			}
+			if done >= 0 && rejoin < 0 && strings.HasPrefix(sym, c.rejoin) {
+				rejoin = i
+			}
+			if hasAccMaskCheck(out[i:min(i+3, len(out))], 0b11) {
+				check = i
+			}
+		}
+		if done < 0 || rejoin < 0 || check < 0 {
+			t.Fatalf("%s: done %d, rejoin %d, check %d; want all found", c.expr, done, rejoin, check)
+		}
+		if got := check > done && check < rejoin; got != c.inLayer {
+			t.Errorf("%s: check at %d, tcp done at %d, rejoin at %d; in the layer = %v, want %v", c.expr, check, done, rejoin, got, c.inLayer)
+		}
 	}
 }
 

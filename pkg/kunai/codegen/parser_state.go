@@ -133,6 +133,16 @@ func genParserMachineIter(layer *ir.LayerInstance, layerIdx int, all []*ir.Layer
 		return nil, nil, err
 	}
 	insns = append(insns, reanchor...)
+	// The folded brackets of a layer that may be absent are checked here,
+	// on the present path only: every walk path, the D-029 malformed
+	// landing included, converges on the done landing.
+	if plan != nil && plan.inLayer && plan.layer == layer {
+		check, err := emitAccMaskCheck(plan, qo, dslReject)
+		if err != nil {
+			return nil, nil, err
+		}
+		insns = append(insns, check...)
+	}
 	// Bracket predicates that must wait for aux-extract (splitPredicates:
 	// every predicate of a write-back protocol, §13.4 / D-032, any
 	// predicate indexing a push-counted stack, D-031, and any reading an
@@ -482,7 +492,8 @@ func (c *pmCtx) emitWriteBackSlotZero() asm.Instructions {
 // Predicates are a conjunction, so the split does not change the verdict.
 //
 // A predicate the accumulator plan folded into the walk (acc.go) is in
-// neither list: the mask check after the chain tests it.
+// neither list: the mask check tests it, after the chain, or at this
+// layer's done landing for an inLayer plan.
 func splitPredicates(layer *ir.LayerInstance, plan *accPlan) (pre, post []*ir.Predicate) {
 	preds := layer.Predicates
 	if plan != nil && plan.layer == layer && len(plan.folded) > 0 {

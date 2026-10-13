@@ -59,6 +59,11 @@ type accPlan struct {
 	// folded holds the bracket predicates lowered into atoms; the layer
 	// does not emit them (splitPredicates).
 	folded map[*ir.Predicate]bool
+	// inLayer is set when the plan folds only the layer's brackets and the
+	// layer may be absent: a bracket of an absent layer is skipped (spec
+	// extractOpt), so the mask check runs inside the layer, after its walk,
+	// on the present path only, instead of after the chain.
+	inLayer bool
 	// rest is the part of the where clause the plan did not fold: the
 	// conjuncts that are not equalities on the plan's options, ANDed. The
 	// caller emits it through genCondition after the mask check (with the
@@ -77,12 +82,17 @@ type accPlan struct {
 // The plan is refused, with the reason returned for the error message,
 // when something else still reads one of the layer's options (a bracket
 // predicate other than `== <integer>`, or a rest conjunct, capture field
-// or capture condition naming the option), or when the layer may be
-// absent and no folded where conjunct is on it: a bracket on an absent
-// layer is skipped while the mask check would reject. It is also refused
+// or capture condition naming the option), or when a layer that repeats
+// has its brackets folded and no where conjunct on it. It is also refused
 // when two or more layers each query two or more options, or when the
 // equalities exceed accMaxAtoms. Without a candidate layer it returns nil
 // and no reason.
+//
+// A layer that may be absent, with folded brackets and no where conjunct
+// on it, gets an inLayer plan: its bracket is skipped when it is absent,
+// so the mask check runs after its walk instead of after the chain. A
+// where conjunct on the layer is false when it is absent (D-003), so with
+// one the check after the chain keeps the verdict.
 func buildAccPlan(p *ir.Program, where *ir.Condition, qo queriedOptions) (*accPlan, string) {
 	cands := accCandidates(p, qo)
 	switch {
@@ -169,7 +179,13 @@ func buildAccPlan(p *ir.Program, where *ir.Condition, qo queriedOptions) (*accPl
 		return nil, ""
 	}
 	if len(plan.folded) > 0 && !whereOnLayer && !accLayerAlwaysPresent(layer, qo) {
-		return nil, fmt.Sprintf("%s may be absent, which skips its bracket but fails the folded check; add a where term on it, such as `%s.options.valid`", layer.DisplayName(), layer.DisplayName())
+		// One check per instance would need the accumulator reset between
+		// instances. Defence only: the resolver refuses a repeated tcp, the
+		// one protocol with a length-byte option walk today.
+		if layer.CanRepeat() {
+			return nil, fmt.Sprintf("%s may match several headers, each running its bracket, but the folded check runs once; add a where term on it, such as `%s.options.valid`", layer.DisplayName(), layer.DisplayName())
+		}
+		plan.inLayer = true
 	}
 	// Cap the total number of option-field equality atoms. All atoms lower
 	// into one combined bpf_loop callback; the per-iteration cursor and

@@ -147,11 +147,14 @@ codegen には別途、callback の分岐命令数を静的に数える tripwire
   `rest`、capture の条件、capture の field のどれかが対象 layer の option を読むと、
   位置の slot が要るので plan を作らない。`!=`、大小比較、`in`、`.exists` などで
   option を読む bracket の predicate があるときも同じである。
-  bracket の predicate は layer が不在なら評価されない (D-003) のに、mask check は
-  畳んだ条件を偽として扱う。このため、bracket の `==` を畳むのは、layer が必ず
-  存在する (min ≥ 1 で繰り返さず、alternation の member でない) か、`where` の項にも
-  同じ layer の atom があって layer の不在で verdict が偽になる場合に限る
-  (`accLayerAlwaysPresent`)。
+  bracket の predicate は layer が不在なら評価されない (D-003) のに、chain の後の
+  mask check は畳んだ条件を偽として扱う。このため、layer が不在になりうる (min が 0
+  か、alternation の member) うえに `where` に同じ layer の atom が無いときは、mask
+  check を chain の後ではなく layer の walk の直後 (done landing) に置く
+  (`accPlan.inLayer`)。layer が無い経路はこの check を通らない。`where` に同じ layer
+  の atom があれば、layer の不在で verdict が偽になるので chain の後で check する。
+  layer が必ず存在する場合 (`accLayerAlwaysPresent`) も chain の後で check する。
+  繰り返す layer は instance ごとに accumulator を 0 に戻す必要があるので拒否する。
   同じ option が 2 回以上現れたときは、仕様 (`latestView`) と位置 slot の経路に
   合わせて最後のものの値で判定する。kind が一致した時点で atom の bit を消してから
   比較し直す。
@@ -167,8 +170,9 @@ codegen には別途、callback の分岐命令数を静的に数える tripwire
 - alternation 内の TCP 多 option も対応する
   (`eth/ipv4/(tcp|udp) where tcp.options.MSS.value == .. and ..`)。plan を
   該当 alt member に通し、acc slot を alternation の前で zero-init する
-  (`genAlternation`)。非マッチ枝 (udp) は walk が走らず acc=0 のままなので
-  mask-check で reject される。
+  (`genAlternation`)。`where` に tcp の atom があるとき、非マッチ枝 (udp) は walk が
+  走らず acc=0 のままなので mask-check で reject される。bracket だけを畳むときは
+  check が tcp member の中で走るので、udp の経路は check を通らない。
 
 ## 7. 関連ファイル / テスト
 

@@ -216,15 +216,15 @@ eth/ipv4/tcp where tcp.options.WS.shift > 5
 eth/ipv4/tcp where tcp.options.TS.tsval > 0
 ```
 
-1 つの filter で TCP の option を 2 種類以上見る場合は、option の field を読む条件をすべて `<option>.<field> == <定数>` の形にします。この条件は bracket に書くか、`where` 句の一番外側の `and` の項として書きます。`where` 句のほかの項、たとえば `tcp.dport == 80`、`ipv4.ttl == 64`、`options.valid` は、option を読まない限り自由に混ぜられます。`int<128>(n)` で field に収まらない定数を書くと、その filter はどの packet にも一致しません。option を `!=`、大小比較、`in`、`.exists` で読む条件や、`or` と `not` の内側で読む条件を混ぜると `ErrNotImplemented` になります。`tcp?` や alternation の member のように不在になりうる layer の bracket に option の `==` を書くときは、`where tcp.options.valid` のように同じ layer の項を `where` 句にも書きます。layer が不在のとき bracket の条件は評価されずに filter が一致しえますが、複数の option の条件をまとめて判定する仕組みではこの場合を区別できないためです。
+1 つの filter で TCP の option を 2 種類以上見る場合は、option の field を読む条件をすべて `<option>.<field> == <定数>` の形にします。この条件は bracket に書くか、`where` 句の一番外側の `and` の項として書きます。`where` 句のほかの項、たとえば `tcp.dport == 80`、`ipv4.ttl == 64`、`options.valid` は、option を読まない限り自由に混ぜられます。`int<128>(n)` で field に収まらない定数を書くと、その filter はどの packet にも一致しません。option を `!=`、大小比較、`in`、`.exists` で読む条件や、`or` と `not` の内側で読む条件を混ぜると `ErrNotImplemented` になります。`tcp?` や alternation の member のように不在になりうる layer の bracket に option の `==` を書いた場合も compile できます。layer が不在の packet では、ほかの bracket と同じく条件は評価されません。
 
 ```
 eth/ipv4/tcp where tcp.options.MSS.value == 1460 and tcp.options.WS.shift == 7                     # compile できる
 eth/ipv4/tcp[mss.value == 1460, ws.shift == 7]                                                     # compile できる
 eth/ipv4/tcp[mss.value == 1460] where tcp.options.WS.shift == 7 and tcp.dport == 80                 # compile できる
 eth/ipv4/tcp[mss.value == 1460, ts.tsval > 5]                                                      # ErrNotImplemented
-eth/ipv4/(tcp[mss.value == 1460, ws.shift == 7]|udp)                                               # ErrNotImplemented
-eth/ipv4/(tcp[mss.value == 1460, ws.shift == 7]|udp) where tcp.options.valid                       # compile できる
+eth/ipv4/tcp[mss.value == 1460, ws.shift == 7]?                                                    # compile できる
+eth/ipv4/(tcp[mss.value == 1460, ws.shift == 7]|udp)                                               # compile できる
 ```
 
 見る TCP の option が 1 種類のときと、IPv4 や Geneve の option では、この制約はありません。仕組みは [`dsl-multi-option-accumulator.md`](./dsl-multi-option-accumulator.md) を参照してください。

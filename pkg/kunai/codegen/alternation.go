@@ -91,7 +91,8 @@ func genAlternation(layer *ir.LayerInstance, index int, all []*ir.LayerInstance,
 	// zero its acc slot before the dispatch. A non-matching branch never
 	// runs that member's parser machine (which is where the slot is
 	// otherwise inited), so without this the post-layer (acc & mask) == mask
-	// check would read an undefined slot on that branch.
+	// check would read an undefined slot on that branch. An inLayer plan
+	// checks inside the member and needs no store here; it shares it.
 	if plan != nil {
 		for _, alt := range alts {
 			if plan.layer != alt {
