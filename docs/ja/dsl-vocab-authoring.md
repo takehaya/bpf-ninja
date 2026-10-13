@@ -531,7 +531,7 @@ sudo env "PATH=$PATH" "HOME=$HOME" "GOPATH=$(go env GOPATH)" "GOMODCACHE=$(go en
 #    internal/program/load_dsl_test.go の dslEntryExprs に足してから:
 make test-bpf
 
-# 4. カーネル matrix (CI は 6.1 / 6.6 / 6.12 / 6.18 / 7.0)。特に bpf_loop を使う形
+# 4. カーネル matrix (CI は 6.1 / 6.6 / 6.12 / 6.15 / 6.18 / 7.0 / 7.1 / 7.2 / 7.3-rc4)。特に bpf_loop を使う形
 #    (§7.3 / §7.7 / §7.8) は古いカーネルの 1M insn 予算に当たりやすいので必須
 vimto -kernel :6.6 exec -- go test -v -count 1 -timeout 5m ./internal/program/ -run TestBpf
 

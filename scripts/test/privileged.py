@@ -65,7 +65,7 @@ def audit(events, expected, kernel):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--kernel", choices=["6.1", "6.6", "6.12", "6.15", "6.18", "7.0"])
+    parser.add_argument("--kernel", choices=["6.1", "6.6", "6.12", "6.15", "6.18", "7.0", "7.1", "7.2", "7.3-rc4"])
     parser.add_argument("--log", default="/tmp/bpf-ninja-privileged.jsonl")
     args = parser.parse_args()
     if not args.kernel and os.geteuid() != 0:
