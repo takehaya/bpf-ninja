@@ -44,6 +44,11 @@ func useBpfLoopAuxWalk(w *ir.Condition) (bool, error) {
 	if ref == nil || ref.Aux == nil || ref.Aux.Stack == nil || !ref.Aux.Stack.IsIterator {
 		return false, nil
 	}
+	// The callback compares whole bytes: a slice must start and end on
+	// byte boundaries (its window then folds into the field offset).
+	if ref.Slice != nil && (ref.Slice.Lo%8 != 0 || ref.Slice.Hi%8 != 0) {
+		return false, nil
+	}
 	if _, ok := auxWalkLiteralWidth(in.LiteralValue); !ok {
 		return false, nil
 	}
@@ -217,6 +222,11 @@ func (c *whereCtx) genAuxWalkCallback(w *ir.Condition, countSrc *quantCountSourc
 		return nil, fmt.Errorf("%w: aux walk field %s not byte-aligned", ErrNotImplemented, ref.Field.Name)
 	}
 	fieldByteOff := ref.Aux.FieldBitOff / 8
+	if ref.Slice != nil {
+		// Byte-aligned (useBpfLoopAuxWalk): the literal reads the sliced
+		// bytes, `addr[96:128]` the last four of the address.
+		fieldByteOff += ref.Slice.Lo / 8
+	}
 
 	breakLabel := cbSym + "_break"
 	mismatchLabel := cbSym + "_mismatch"

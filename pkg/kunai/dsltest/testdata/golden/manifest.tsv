@@ -275,8 +275,14 @@ xdp_entry	eth/ipv6/srv6/tcp capture headers	-	code=77f8412b40113585 meta=8f028eb
 xdp_entry	eth/ipv6/srv6/tcp where all((srv6.segments.addr == fc00:0000:0000:0000:0000:0000:0000:0002) or true)	-	code=e534f32d81e66d60 meta=5ee214e8b4c27377 main=357 cb=64
 xdp_entry	eth/ipv6/srv6/tcp where all(srv6.segments.addr == fc00:0000:0000:0000:0000:0000:0000:0000/8)	-	code=081883d73c904d47 meta=5ee214e8b4c27377 main=293 cb=101
 xdp_entry	eth/ipv6/srv6/tcp where all(srv6.segments.addr == fc00:0000:0000:0000:0000:0000:0000:0001)	-	code=423e3a792373ee13 meta=5ee214e8b4c27377 main=293 cb=113
+xdp_entry	eth/ipv6/srv6/tcp where all(srv6.segments.addr[0:32] == 252.0.0.0)	-	code=2dbb0b543a051e07 meta=5ee214e8b4c27377 main=293 cb=99
+xdp_entry	eth/ipv6/srv6/tcp where all(srv6.segments.addr[96:128] == 0.0.0.32)	-	code=49f299688f15f9bb meta=5ee214e8b4c27377 main=293 cb=99
 xdp_entry	eth/ipv6/srv6/tcp where any(srv6.segments.addr == fc00:0000:0000:0000:0000:0000:0000:0001)	-	code=501a12089febe94f meta=5ee214e8b4c27377 main=284 cb=113
 xdp_entry	eth/ipv6/srv6/tcp where any(srv6.segments.addr == fc00:0000:0000:0000:0000:0000:0000:0002)	-	code=0a1a02d0eeb68679 meta=5ee214e8b4c27377 main=284 cb=113
+xdp_entry	eth/ipv6/srv6/tcp where any(srv6.segments.addr[76:124] == 00:00:00:00:00:02)	-	code=0e08a5e443500e2b meta=5ee214e8b4c27377 main=454 cb=64
+xdp_entry	eth/ipv6/srv6/tcp where any(srv6.segments.addr[80:128] == 00:00:00:00:00:20)	-	code=3fa9750a8cc11b87 meta=5ee214e8b4c27377 main=284 cb=113
+xdp_entry	eth/ipv6/srv6/tcp where any(srv6.segments.addr[96:128] == 0.0.0.32)	-	code=d7b052a474c47fdb meta=5ee214e8b4c27377 main=284 cb=99
+xdp_entry	eth/ipv6/srv6/tcp where any(srv6.segments.addr[96:128] == 0.0.0.33)	-	code=7b2a3406220c3420 meta=5ee214e8b4c27377 main=284 cb=99
 xdp_entry	eth/ipv6/srv6/tcp where not (srv6.segments[1].addr[76:124] == 00:00:00:00:00:02)	-	code=2211ad3669af6a07 meta=5ee214e8b4c27377 main=291 cb=64
 xdp_entry	eth/ipv6/srv6/tcp where not all(srv6.segments.addr == fc00:0000:0000:0000:0000:0000:0000:0001)	-	code=ff730014e2d3193f meta=5ee214e8b4c27377 main=295 cb=113
 xdp_entry	eth/ipv6/srv6/tcp where srv6.last_entry == 8	-	code=a930c62a3ec54f2e meta=5ee214e8b4c27377 main=279 cb=64
