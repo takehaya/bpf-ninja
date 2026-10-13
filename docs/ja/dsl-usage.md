@@ -783,7 +783,7 @@ bpf-ninja --dump-asm full --mode exit "eth/ipv4/tcp where action == XDP_DROP"
 
 DSL の parse error / type error も同じ経路を通るので、`--dump-asm filter` は構文/型のサニティチェックにも使えます。load 前に stderr に error を出して exit 1 します。
 
-resolver が出す warning も、live capture と同じ `warning:` の行で stderr に出ます。たとえば `eth/ipv4/(tcp|tcp)` のように alternation に同じ protocol を 2 回書くと、後ろの member が match しないことを知らせる warning が asm より先に出ます。asm は stdout にだけ出るので、パイプや diff に warning が混ざることはありません。
+resolver が出す warning も、通常のキャプチャと同じく `warning:` で始まる行として stderr に出ます。たとえば `eth/ipv4/(tcp|tcp)` のように alternation に同じ protocol を 2 回書くと、後ろの member が match しないことを知らせる warning が asm より先に出ます。asm は stdout にだけ出るので、パイプや diff に warning が混ざることはありません。
 
 ## Hand-test として `set` map を手元で叩く
 

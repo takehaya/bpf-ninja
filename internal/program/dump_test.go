@@ -183,29 +183,47 @@ func TestDumpAsmErrors(t *testing.T) {
 
 // TestDumpAsmWarnings checks that resolver warnings reach warnW as
 // "warning:" lines in both scopes while w carries only the asm, and
-// that the cbpfc path, which has no warnings, writes none.
+// that the cbpfc path, which has no warnings, writes none. The expected
+// lines come from compileFilter, so the resolver's wording (pinned by
+// the resolve and compile tests in pkg/kunai) is not pinned again here.
 func TestDumpAsmWarnings(t *testing.T) {
-	for _, scope := range []DumpScope{DumpScopeFilter, DumpScopeFull} {
-		t.Run(string(scope), func(t *testing.T) {
-			var asm, warn bytes.Buffer
-			if err := DumpAsm(&asm, &warn, scope, "eth/ipv4/(tcp|tcp)", true, "entry", hook.KindXDP); err != nil {
-				t.Fatalf("DumpAsm: %v", err)
-			}
-			got := warn.String()
-			if n := strings.Count(got, "\n"); n != 1 {
-				t.Errorf("want one warning line, got %d:\n%s", n, got)
-			}
-			if !strings.HasPrefix(got, "warning: tcp at 1:11 and tcp at 1:15 are members of one alternation") ||
-				!strings.HasSuffix(got, "Keep one of them.\n") {
-				t.Errorf("unexpected warning:\n%s", got)
-			}
-			if !strings.Contains(asm.String(), "===") {
-				t.Errorf("asm output missing section markers:\n%s", asm.String())
-			}
-			if strings.Contains(asm.String(), "warning:") {
-				t.Errorf("asm output must not carry warnings:\n%s", asm.String())
-			}
-		})
+	h, ok := hook.ByName(hook.KindXDP)
+	if !ok {
+		t.Fatal("no xdp hook")
+	}
+	for _, tc := range []struct {
+		expr string
+		n    int // warnings the fixture must produce
+	}{
+		{"eth/ipv4/(tcp|tcp)", 1},
+		{"ipv4/(tcp|tcp)", 2}, // chain root and the shadowed member
+	} {
+		out, err := compileFilter(tc.expr, true, false, h.ProgTypes[0])
+		if err != nil {
+			t.Fatalf("compileFilter(%q): %v", tc.expr, err)
+		}
+		if len(out.Warnings) != tc.n {
+			t.Fatalf("fixture %q: %d warnings, want %d: %q", tc.expr, len(out.Warnings), tc.n, out.Warnings)
+		}
+		var want bytes.Buffer
+		WriteWarnings(&want, out.Warnings)
+		for _, scope := range []DumpScope{DumpScopeFilter, DumpScopeFull} {
+			t.Run(tc.expr+"/"+string(scope), func(t *testing.T) {
+				var asm, warn bytes.Buffer
+				if err := DumpAsm(&asm, &warn, scope, tc.expr, true, "entry", hook.KindXDP); err != nil {
+					t.Fatalf("DumpAsm: %v", err)
+				}
+				if warn.String() != want.String() {
+					t.Errorf("warnW = %q, want %q", warn.String(), want.String())
+				}
+				if !strings.Contains(asm.String(), "===") {
+					t.Errorf("asm output missing section markers:\n%s", asm.String())
+				}
+				if strings.Contains(asm.String(), "warning:") {
+					t.Errorf("asm output must not carry warnings:\n%s", asm.String())
+				}
+			})
+		}
 	}
 
 	t.Run("before the asm", func(t *testing.T) {
