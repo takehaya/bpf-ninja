@@ -3,6 +3,7 @@ package codegen
 import (
 	"encoding/binary"
 	"fmt"
+	"slices"
 
 	"github.com/cilium/ebpf/asm"
 
@@ -249,6 +250,21 @@ func macValue(v *ast.Value) uint64 {
 // every emitted predicate on opcodes that work back to Linux 5.x,
 // matching the verifier-walk floor we promise.
 func emitIntPredicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, error) {
+	// A bit<128> or bit<48> field does not fit one register: the integer
+	// is the address with that number, compared as the address literal.
+	if pred.Field != nil && pred.Field.Field != nil {
+		switch bits := pred.Field.EffectiveBits(); {
+		case bits == 128:
+			wide := *pred
+			wide.Value = intAsAddrValue(pred.Value, inListIPv6)
+			return emitIPv6Predicate(&wide, pc)
+		case bits == 48 && pred.Field.Slice == nil:
+			// A 48-bit slice fits one register and keeps the scalar path.
+			wide := *pred
+			wide.Value = intAsAddrValue(pred.Value, inListMAC)
+			return emitMACPredicate(&wide, pc)
+		}
+	}
 	value := pred.Value.Int
 	// Narrow the literal to the field's effective (possibly sliced) width before the
 	// immediate-range check. The resolver's fit-check (typing.go:
@@ -1030,12 +1046,12 @@ func requireEqualityOp(pred *ir.Predicate, kind string) error {
 // effective width, spec evalPred .inList: an OR of `==` and CIDR
 // membership tests) split by the window they need. An IPv4 host or CIDR
 // is a 32-bit integer and joins this load-once path, so it mixes freely
-// with integers and ranges on the same field. IPv6 / CIDR6 (16 bytes)
-// and MAC (6 bytes) do not fit one register and take emitInAddrList,
-// which reloads the field per alternative, unless the field is a slice
-// off byte boundaries (sliceNeedsScalarLoad): its MAC alternatives are
-// numbers on the load-once path. An integer mixed into one of
-// those lists stays ErrNotImplemented, as `ipv6[dst == 5]` does.
+// with integers and ranges on the same field. A bit<128> field (IPv6,
+// CIDR6) and a bit<48> one (MAC) do not fit one register and take
+// emitInAddrList, which reloads the field per alternative; an integer
+// alternative there is the address with that number. A 48-bit slice off
+// byte boundaries (sliceNeedsScalarLoad) fits one register, so its MAC
+// alternatives are numbers on the load-once path (classifyInList).
 func emitInPredicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, error) {
 	if len(pred.List) == 0 {
 		return nil, fmt.Errorf("codegen: 'in' predicate has empty list")
@@ -1043,7 +1059,7 @@ func emitInPredicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, error) 
 	if pred.Field == nil || pred.Field.Field == nil {
 		return nil, fmt.Errorf("codegen: 'in' predicate missing field reference")
 	}
-	shape, hasRange, trivial, err := classifyInList(pred.List, sliceNeedsScalarLoad(pred.Field))
+	shape, hasRange, trivial, err := classifyInList(pred.List, pred.Field)
 	if err != nil {
 		return nil, err
 	}
@@ -1163,55 +1179,80 @@ const (
 	inListMAC                       // MAC addresses: 6-byte window, reload per alternative
 )
 
-// classifyInList sorts the alternatives of an `in` list into one shape,
-// reports whether a range is present (the scalar path then compares in
-// host order) and whether a /0 CIDR makes the list trivially true. Mixed
-// kinds that no single register layout serves are ErrNotImplemented.
-// scalarMAC is set for a slice off byte boundaries: its MAC alternatives
-// are 48-bit numbers compared on the load-once path.
-func classifyInList(list []*ast.Value, scalarMAC bool) (shape inListShape, hasRange, trivial bool, err error) {
-	var scalar, v6, mac bool
+// classifyInList picks the shape the field's width asks for, checks each
+// alternative against it, and reports whether a range is present (the
+// scalar path then compares in host order) and whether a /0 CIDR makes
+// the list trivially true. A bit<128> field takes the IPv6 shape and a
+// whole bit<48> one the MAC shape. A 48-bit slice fits one register: it
+// takes the MAC shape only for a list naming a MAC on byte boundaries,
+// which the byte-wise readers compare, and the scalar shape otherwise.
+// Every other field takes the scalar shape. An integer alternative joins any shape:
+// on a wide field it is the address with that number (intAsAddrValue).
+// A range on a wide field is ErrNotImplemented.
+func classifyInList(list []*ast.Value, ref *ir.FieldRef) (shape inListShape, hasRange, trivial bool, err error) {
+	bits := ref.EffectiveBits()
+	hasMAC := slices.ContainsFunc(list, func(v *ast.Value) bool { return v != nil && v.Kind == ast.ValMAC })
+	switch {
+	case bits == 128:
+		shape = inListIPv6
+	case bits == 48 && (ref.Slice == nil || (hasMAC && !sliceNeedsScalarLoad(ref))):
+		shape = inListMAC
+	default:
+		shape = inListScalar
+	}
 	for _, v := range list {
 		if v == nil {
 			return 0, false, false, fmt.Errorf("codegen: nil alternative in 'in' list")
 		}
+		var ok bool
 		switch v.Kind {
 		case ast.ValInt:
-			scalar = true
+			ok = true
 		case ast.ValRange:
-			scalar, hasRange = true, true
+			if shape != inListScalar {
+				return 0, false, false, fmt.Errorf("%w: a range alternative in an 'in' list on a bit<%d> field, which is read in chunks rather than into one register", ErrNotImplemented, bits)
+			}
+			ok, hasRange = true, true
 		case ast.ValIPv4:
-			scalar = true
+			ok = shape == inListScalar
 		case ast.ValMAC:
-			if scalarMAC {
-				scalar = true
-			} else {
-				mac = true
-			}
+			// On the scalar shape only a 48-bit slice off byte boundaries
+			// reaches here: the resolver types a MAC against 48 bits.
+			ok = shape != inListIPv6
 		case ast.ValIPv6:
-			v6 = true
+			ok = shape == inListIPv6
 		case ast.ValCIDR:
-			if v.Prefix == 0 {
-				trivial = true
-			}
-			if v.AF == 4 {
-				scalar = true
-			} else {
-				v6 = true
-			}
+			trivial = trivial || v.Prefix == 0
+			ok = (v.AF == 4 && shape == inListScalar) || (v.AF == 6 && shape == inListIPv6)
 		default:
 			return 0, false, false, fmt.Errorf("%w: 'in' predicate alternative of kind %v", ErrNotImplemented, v.Kind)
 		}
+		if !ok {
+			return 0, false, false, fmt.Errorf("%w: 'in' alternative %s on a bit<%d> field", ErrNotImplemented, v.Raw, bits)
+		}
 	}
-	switch {
-	case scalar && !v6 && !mac:
-		return inListScalar, hasRange, trivial, nil
-	case v6 && !scalar && !mac:
-		return inListIPv6, false, trivial, nil
-	case mac && !scalar && !v6:
-		return inListMAC, false, false, nil
+	return shape, hasRange, trivial, nil
+}
+
+// intAsAddrValue is an integer literal on a bit<48> or bit<128> field, in
+// an `in` list or a single compare, as the MAC or IPv6 address whose bytes
+// are the integer narrowed to the field's width (spec narrowInt): a
+// negative literal is its two's complement, so `-1` is all ones and `-0`
+// is zero.
+func intAsAddrValue(v *ast.Value, shape inListShape) *ast.Value {
+	if shape == inListMAC {
+		mac := &ast.Value{Kind: ast.ValMAC, Raw: v.Raw, Pos: v.Pos}
+		var b [8]byte
+		binary.BigEndian.PutUint64(b[:], v.Int)
+		copy(mac.MAC[:], b[2:])
+		return mac
 	}
-	return 0, false, false, fmt.Errorf("%w: 'in' list mixes integer alternatives with IPv6 or MAC addresses; a 128-bit or 48-bit field compares only against addresses of its own width", ErrNotImplemented)
+	addr := &ast.Value{Kind: ast.ValIPv6, Raw: v.Raw, Pos: v.Pos}
+	if v.Negative && int64(v.Int) < 0 {
+		binary.BigEndian.PutUint64(addr.V6[0:8], ^uint64(0))
+	}
+	binary.BigEndian.PutUint64(addr.V6[8:16], v.Int)
+	return addr
 }
 
 // emitInAddrList lowers an `in` list of IPv6 (with CIDR6) or MAC
@@ -1253,6 +1294,9 @@ func emitInAddrList(pred *ir.Predicate, pc *predCtx, shape inListShape, trivial 
 		fail := dslReject
 		if !last {
 			fail = pc.freshLabel(predInNextLabel)
+		}
+		if v.Kind == ast.ValInt {
+			v = intAsAddrValue(v, shape)
 		}
 		emit(emitAddrAlternative(v, loadAt, fail))
 		if !last {
