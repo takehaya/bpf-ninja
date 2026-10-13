@@ -14,21 +14,24 @@ import (
 	"github.com/takehaya/bpf-ninja/internal/output"
 )
 
-var mergeFlags = []cli.Flag{
-	&cli.StringFlag{
-		Name: "base", Aliases: []string{"b"},
-		Usage: "the -w base path used during capture (e.g. out.pcap); its out.cpuN.<tag> shards are merged into out.<tag>.pcap",
-	},
-	&cli.BoolFlag{
-		Name:  "fexit",
-		Usage: "the shards came from --mode exit (they carry a per-verdict pcap-ng interface); set this so the merged file keeps the same interfaces",
-	},
+func newMergeFlags() []cli.Flag {
+	return []cli.Flag{
+		&cli.StringFlag{
+			Name: "base", Aliases: []string{"b"},
+			Usage: "the -w base path used during capture (e.g. out.pcap); its out.cpuN.<tag> shards are merged into out.<tag>.pcap",
+		},
+		&cli.BoolFlag{
+			Name:  "fexit",
+			Usage: "the shards came from --mode exit (they carry a per-verdict pcap-ng interface); set this so the merged file keeps the same interfaces",
+		},
+	}
 }
 
-var mergeCommand = &cli.Command{
-	Name:  "merge",
-	Usage: "merge leftover per-CPU tag shards from --split-by-tag into one pcap-ng per tag",
-	Description: `Merge the per-CPU tag shard files a --split-by-tag capture leaves behind
+func newMergeCommand() *cli.Command {
+	return &cli.Command{
+		Name:  "merge",
+		Usage: "merge leftover per-CPU tag shards from --split-by-tag into one pcap-ng per tag",
+		Description: `Merge the per-CPU tag shard files a --split-by-tag capture leaves behind
 (<base>.cpuN.<tag>) into a single time-ordered pcap-ng per tag
 (<base>.<tag>). A clean shutdown does this automatically; run this when the
 capture was killed and the per-CPU files still need reconciling. The shard
@@ -37,8 +40,9 @@ files are left in place.
 Examples:
   bpf-ninja merge --base out.pcap
   bpf-ninja merge -b out.pcap --fexit`,
-	Flags:  mergeFlags,
-	Action: runMerge,
+		Flags:  newMergeFlags(),
+		Action: runMerge,
+	}
 }
 
 func runMerge(_ context.Context, cmd *cli.Command) error {

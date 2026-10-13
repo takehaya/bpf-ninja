@@ -294,10 +294,9 @@ func main() {
 }
 
 // newRootCommand builds the top-level CLI. Extracted from main so tests can
-// assert its parsing behaviour (see TestSetFlagNotCommaSplit). The root
-// flags are fresh per call; the subcommands (convertCommand, setCommand,
-// mergeCommand) are still shared singletons, which is fine while no test
-// runs one twice. Give them constructors like rootFlags when a test does.
+// assert its parsing behaviour (see TestSetFlagNotCommaSplit). Every
+// call builds fresh commands and flags, subcommands included: urfave/cli
+// keeps a flag's IsSet across Run calls on the same object.
 func newRootCommand() *cli.Command {
 	return &cli.Command{
 		Name:      "bpf-ninja",
@@ -331,7 +330,7 @@ Examples:
   bpf-ninja -i eth0 -w out.pcap`,
 		Flags:                 rootFlags(),
 		Action:                run,
-		Commands:              []*cli.Command{convertCommand, setCommand, mergeCommand},
+		Commands:              []*cli.Command{newConvertCommand(), newSetCommand(), newMergeCommand()},
 		EnableShellCompletion: true,
 		// Do not split slice-flag values on commas. --set carries a key
 		// mapping whose own syntax uses commas

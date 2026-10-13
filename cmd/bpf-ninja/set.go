@@ -14,10 +14,11 @@ import (
 	"github.com/takehaya/bpf-ninja/internal/setmap"
 )
 
-var setCommand = &cli.Command{
-	Name:  "set",
-	Usage: "manage pinned-map match sets (see --set / --arg-filter @NAME)",
-	Description: `A match set is a pinned BPF hash map whose KEY is the value (or
+func newSetCommand() *cli.Command {
+	return &cli.Command{
+		Name:  "set",
+		Usage: "manage pinned-map match sets (see --set / --arg-filter @NAME)",
+		Description: `A match set is a pinned BPF hash map whose KEY is the value (or
 composite of values) to match and whose value is a small tag. Capture
 references it with --set NAME=/path + --arg-filter @NAME; entries added
 or deleted here take effect immediately, without re-attaching.
@@ -29,145 +30,165 @@ Examples:
   bpf-ninja set list   /sys/fs/bpf/flows
   bpf-ninja set schema /sys/fs/bpf/flows
   bpf-ninja set resize /sys/fs/bpf/flows --max-entries 4096`,
-	Commands: []*cli.Command{setCreateCmd, setAddCmd, setDelCmd, setListCmd, setSchemaCmd, setResizeCmd},
+		Commands: []*cli.Command{
+			newSetCreateCommand(),
+			newSetAddCommand(),
+			newSetDelCommand(),
+			newSetListCommand(),
+			newSetSchemaCommand(),
+			newSetResizeCommand(),
+		},
+	}
 }
 
-var setCreateCmd = &cli.Command{
-	Name:      "create",
-	Usage:     "create + pin a BTF-carrying hash set map",
-	ArgsUsage: "<pin-path>",
-	Flags: []cli.Flag{
-		&cli.StringFlag{
-			Name: "key", Required: true,
-			Usage: "key schema, e.g. \"imsi:u64,teid:u32\" (types: u8/u16/u32/u64, or ipv6 for a 16-byte address / SRv6 SID; numeric fields align to their width, ipv6 to 8)",
+func newSetCreateCommand() *cli.Command {
+	return &cli.Command{
+		Name:      "create",
+		Usage:     "create + pin a BTF-carrying hash set map",
+		ArgsUsage: "<pin-path>",
+		Flags: []cli.Flag{
+			&cli.StringFlag{
+				Name: "key", Required: true,
+				Usage: "key schema, e.g. \"imsi:u64,teid:u32\" (types: u8/u16/u32/u64, or ipv6 for a 16-byte address / SRv6 SID; numeric fields align to their width, ipv6 to 8)",
+			},
+			&cli.StringFlag{
+				Name: "value", Value: setmap.DefaultValueSchema,
+				Usage: "value schema: the default carries the tag, the entry state (active/capped/finalized), and the per-entry byte cap (`set add ... max-bytes=N`, 0 = uncapped); \"tag:u32\" gives the pre-0.23 plain-tag layout (no caps, no state)",
+			},
+			&cli.IntFlag{
+				Name: "max-entries", Value: 1024,
+				Usage: "map capacity",
+			},
 		},
-		&cli.StringFlag{
-			Name: "value", Value: setmap.DefaultValueSchema,
-			Usage: "value schema: the default carries the tag, the entry state (active/capped/finalized), and the per-entry byte cap (`set add ... max-bytes=N`, 0 = uncapped); \"tag:u32\" gives the pre-0.23 plain-tag layout (no caps, no state)",
+		Action: func(_ context.Context, cmd *cli.Command) error {
+			path, err := setPathArg(cmd)
+			if err != nil {
+				return err
+			}
+			maxEntries := cmd.Int("max-entries")
+			if maxEntries <= 0 || maxEntries > math.MaxUint32 {
+				return fmt.Errorf("--max-entries must be in 1..%d, got %d", math.MaxUint32, maxEntries)
+			}
+			if err := setmap.Create(path, cmd.String("key"), cmd.String("value"), uint32(maxEntries)); err != nil {
+				return err
+			}
+			fmt.Fprintf(os.Stderr, "created %s (key: %s, value: %s, max_entries: %d)\n",
+				path, cmd.String("key"), cmd.String("value"), cmd.Int("max-entries"))
+			return nil
 		},
-		&cli.IntFlag{
-			Name: "max-entries", Value: 1024,
-			Usage: "map capacity",
-		},
-	},
-	Action: func(_ context.Context, cmd *cli.Command) error {
-		path, err := setPathArg(cmd)
-		if err != nil {
-			return err
-		}
-		maxEntries := cmd.Int("max-entries")
-		if maxEntries <= 0 || maxEntries > math.MaxUint32 {
-			return fmt.Errorf("--max-entries must be in 1..%d, got %d", math.MaxUint32, maxEntries)
-		}
-		if err := setmap.Create(path, cmd.String("key"), cmd.String("value"), uint32(maxEntries)); err != nil {
-			return err
-		}
-		fmt.Fprintf(os.Stderr, "created %s (key: %s, value: %s, max_entries: %d)\n",
-			path, cmd.String("key"), cmd.String("value"), cmd.Int("max-entries"))
-		return nil
-	},
+	}
 }
 
-var setResizeCmd = &cli.Command{
-	Name:      "resize",
-	Usage:     "change a set's capacity (copies entries into a new map, swaps the pin)",
-	ArgsUsage: "<pin-path>",
-	Description: `BPF maps cannot change max_entries in place, so resize creates a new
+func newSetResizeCommand() *cli.Command {
+	return &cli.Command{
+		Name:      "resize",
+		Usage:     "change a set's capacity (copies entries into a new map, swaps the pin)",
+		ArgsUsage: "<pin-path>",
+		Description: `BPF maps cannot change max_entries in place, so resize creates a new
 map with the same key/value BTF, copies every entry, and atomically
 replaces the pin. A running capture keeps the old map from attach time;
 the new capacity takes effect from the next attach. Entries added
 between the copy and the swap are lost, so resize while no writer is
 active.`,
-	Flags: []cli.Flag{
-		&cli.IntFlag{
-			Name: "max-entries", Required: true,
-			Usage: "new map capacity",
+		Flags: []cli.Flag{
+			&cli.IntFlag{
+				Name: "max-entries", Required: true,
+				Usage: "new map capacity",
+			},
 		},
-	},
-	Action: func(_ context.Context, cmd *cli.Command) error {
-		path, err := setPathArg(cmd)
-		if err != nil {
-			return err
-		}
-		maxEntries := cmd.Int("max-entries")
-		if maxEntries <= 0 || maxEntries > math.MaxUint32 {
-			return fmt.Errorf("--max-entries must be in 1..%d, got %d", math.MaxUint32, maxEntries)
-		}
-		oldMax, copied, err := setmap.Resize(path, uint32(maxEntries))
-		if err != nil {
-			return err
-		}
-		if oldMax == uint32(maxEntries) {
-			fmt.Fprintf(os.Stderr, "%s already has max_entries %d, nothing to do\n", path, oldMax)
+		Action: func(_ context.Context, cmd *cli.Command) error {
+			path, err := setPathArg(cmd)
+			if err != nil {
+				return err
+			}
+			maxEntries := cmd.Int("max-entries")
+			if maxEntries <= 0 || maxEntries > math.MaxUint32 {
+				return fmt.Errorf("--max-entries must be in 1..%d, got %d", math.MaxUint32, maxEntries)
+			}
+			oldMax, copied, err := setmap.Resize(path, uint32(maxEntries))
+			if err != nil {
+				return err
+			}
+			if oldMax == uint32(maxEntries) {
+				fmt.Fprintf(os.Stderr, "%s already has max_entries %d, nothing to do\n", path, oldMax)
+				return nil
+			}
+			fmt.Fprintf(os.Stderr, "resized %s (max_entries: %d -> %d, copied %d entries)\n",
+				path, oldMax, maxEntries, copied)
 			return nil
-		}
-		fmt.Fprintf(os.Stderr, "resized %s (max_entries: %d -> %d, copied %d entries)\n",
-			path, oldMax, maxEntries, copied)
-		return nil
-	},
+		},
+	}
 }
 
-var setAddCmd = &cli.Command{
-	Name:      "add",
-	Usage:     "insert or update one entry (full key required); max-bytes=0 or omitted = uncapped",
-	ArgsUsage: "<pin-path> field=value ... [tag=N] [max-bytes=N]",
-	Action: func(_ context.Context, cmd *cli.Command) error {
-		def, fields, val, err := setOpenWithFields(cmd)
-		if err != nil {
-			return err
-		}
-		defer def.Close()
-		return def.Add(fields, val)
-	},
+func newSetAddCommand() *cli.Command {
+	return &cli.Command{
+		Name:      "add",
+		Usage:     "insert or update one entry (full key required); max-bytes=0 or omitted = uncapped",
+		ArgsUsage: "<pin-path> field=value ... [tag=N] [max-bytes=N]",
+		Action: func(_ context.Context, cmd *cli.Command) error {
+			def, fields, val, err := setOpenWithFields(cmd)
+			if err != nil {
+				return err
+			}
+			defer def.Close()
+			return def.Add(fields, val)
+		},
+	}
 }
 
-var setDelCmd = &cli.Command{
-	Name:      "del",
-	Usage:     "delete one entry (full key required)",
-	ArgsUsage: "<pin-path> field=value ...",
-	Action: func(_ context.Context, cmd *cli.Command) error {
-		def, fields, val, err := setOpenWithFields(cmd)
-		if err != nil {
-			return err
-		}
-		defer def.Close()
-		// del identifies an entry by its key alone; silently ignoring a
-		// value assignment (a typoed `add`, or a templated arg list)
-		// would fake success.
-		if val.HasTag || val.HasMaxBytes {
-			return fmt.Errorf("set del takes key fields only (tag= / max-bytes= have no meaning on delete)")
-		}
-		return def.Delete(fields)
-	},
+func newSetDelCommand() *cli.Command {
+	return &cli.Command{
+		Name:      "del",
+		Usage:     "delete one entry (full key required)",
+		ArgsUsage: "<pin-path> field=value ...",
+		Action: func(_ context.Context, cmd *cli.Command) error {
+			def, fields, val, err := setOpenWithFields(cmd)
+			if err != nil {
+				return err
+			}
+			defer def.Close()
+			// del identifies an entry by its key alone; silently ignoring a
+			// value assignment (a typoed `add`, or a templated arg list)
+			// would fake success.
+			if val.HasTag || val.HasMaxBytes {
+				return fmt.Errorf("set del takes key fields only (tag= / max-bytes= have no meaning on delete)")
+			}
+			return def.Delete(fields)
+		},
+	}
 }
 
-var setListCmd = &cli.Command{
-	Name:      "list",
-	Usage:     "print all entries as field=value lines",
-	ArgsUsage: "<pin-path>",
-	Action: func(_ context.Context, cmd *cli.Command) error {
-		def, err := setOpen(cmd)
-		if err != nil {
-			return err
-		}
-		defer def.Close()
-		return def.List(os.Stdout)
-	},
+func newSetListCommand() *cli.Command {
+	return &cli.Command{
+		Name:      "list",
+		Usage:     "print all entries as field=value lines",
+		ArgsUsage: "<pin-path>",
+		Action: func(_ context.Context, cmd *cli.Command) error {
+			def, err := setOpen(cmd)
+			if err != nil {
+				return err
+			}
+			defer def.Close()
+			return def.List(os.Stdout)
+		},
+	}
 }
 
-var setSchemaCmd = &cli.Command{
-	Name:      "schema",
-	Usage:     "print the key layout resolved from the map's BTF",
-	ArgsUsage: "<pin-path>",
-	Action: func(_ context.Context, cmd *cli.Command) error {
-		def, err := setOpen(cmd)
-		if err != nil {
-			return err
-		}
-		defer def.Close()
-		def.Schema(os.Stdout)
-		return nil
-	},
+func newSetSchemaCommand() *cli.Command {
+	return &cli.Command{
+		Name:      "schema",
+		Usage:     "print the key layout resolved from the map's BTF",
+		ArgsUsage: "<pin-path>",
+		Action: func(_ context.Context, cmd *cli.Command) error {
+			def, err := setOpen(cmd)
+			if err != nil {
+				return err
+			}
+			defer def.Close()
+			def.Schema(os.Stdout)
+			return nil
+		},
+	}
 }
 
 func setPathArg(cmd *cli.Command) (string, error) {
