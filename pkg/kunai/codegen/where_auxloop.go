@@ -27,9 +27,9 @@ const staticAuxCap = 2
 // option-internal length). Field width (IPv4/IPv6/MAC) and count source
 // (primary/owner) are both handled by the callback, so any future P4
 // protocol declaring a large counted list gets the flat lowering for
-// free. Richer inner conditions (or/not, !=, ordered, integer arith)
-// and push-counted stacks (gtp.exts/ipv6.exts, whose count lives in a
-// main-frame slot) stay on the unroll path, which already supports
+// free. Richer inner conditions (or/not, !=, ordered, integer arith),
+// a slice off byte boundaries and push-counted stacks (gtp.exts/ipv6.exts,
+// whose count lives in a main-frame slot) stay on the unroll path, which already supports
 // them, so no shape regresses to a hard error.
 func useBpfLoopAuxWalk(w *ir.Condition) (bool, error) {
 	t := w.QuantTarget
@@ -42,6 +42,11 @@ func useBpfLoopAuxWalk(w *ir.Condition) (bool, error) {
 	}
 	ref := in.LiteralField
 	if ref == nil || ref.Aux == nil || ref.Aux.Stack == nil || !ref.Aux.Stack.IsIterator {
+		return false, nil
+	}
+	// The callback compares whole bytes: a slice must start and end on
+	// byte boundaries (its window then folds into the field offset).
+	if ref.Slice != nil && (ref.Slice.Lo%8 != 0 || ref.Slice.Hi%8 != 0) {
 		return false, nil
 	}
 	if _, ok := auxWalkLiteralWidth(in.LiteralValue); !ok {
@@ -217,6 +222,11 @@ func (c *whereCtx) genAuxWalkCallback(w *ir.Condition, countSrc *quantCountSourc
 		return nil, fmt.Errorf("%w: aux walk field %s not byte-aligned", ErrNotImplemented, ref.Field.Name)
 	}
 	fieldByteOff := ref.Aux.FieldBitOff / 8
+	if ref.Slice != nil {
+		// Byte-aligned (useBpfLoopAuxWalk): the literal reads the sliced
+		// bytes, `addr[96:128]` the last four of the address.
+		fieldByteOff += ref.Slice.Lo / 8
+	}
 
 	breakLabel := cbSym + "_break"
 	mismatchLabel := cbSym + "_mismatch"
