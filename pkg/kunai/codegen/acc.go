@@ -298,7 +298,7 @@ func layerOptionWalkHasLengthByte(layer *ir.LayerInstance) bool {
 // iteration cursor AND accumulator forgets the callback converges
 // regardless of how many option bits it sets, so one loop carries every
 // queried option in a single TLV re-scan — the full 14-atom TCP query
-// (every field of every option type) loads across the 6.1--7.0 matrix.
+// (every field of every option type) loads across the CI kernel matrix.
 // This is a policy ceiling, not a hard verifier limit: it sits above TCP's
 // maximum constructible query (14) and below the emitAccMaskCheck
 // int32-mask limit (31 bits). See buildAccPlan and the forgets in

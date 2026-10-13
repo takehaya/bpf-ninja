@@ -121,8 +121,8 @@ jobs:
       # E4 verifier matrix: extract the per-(filter, host) verdict from
       # TestBpfFilterSet{XDP,TC}/Fn subtests so the paper's Table 2 has
       # a per-cell artifact rather than reading the full test log.
-      # Header + 20 rows per kernel; aggregating the four kernel CSVs
-      # gives the 80-cell matrix.
+      # Header + one row per (filter, host) per kernel; concatenating
+      # the per-kernel CSVs gives the whole matrix.
       - name: Extract verifier matrix CSV
         if: always()
         run: |

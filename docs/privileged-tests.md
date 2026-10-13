@@ -10,7 +10,7 @@ collide. Do not run another host suite or integration setup concurrently.
 | Profile | Required selection | Environment |
 |---|---|---|
 | Host | Every `Test*` in internal/program, internal/attach, internal/capture/..., cmd/bpf-ninja, and pkg/kunai/dsltest | Integration job, Ubuntu 24.04 runner |
-| Kernel matrix | Every `TestBpf*` in internal/program and cmd/bpf-ninja; all tests in internal/attach, internal/capture/..., and pkg/kunai/dsltest | vimto, kernels 6.1/6.6/6.12/6.15/6.18/7.0 |
+| Kernel matrix | Every `TestBpf*` in internal/program and cmd/bpf-ninja; all tests in internal/attach, internal/capture/..., and pkg/kunai/dsltest | vimto, kernels 6.1/6.6/6.12/6.15/6.18/7.0/7.1/7.2/7.3-rc4 |
 
 The host profile includes `TestLinearHeadClampAtCgroupSKB`,
 `TestVlanUntagAtTCIngress` and `TestBpfVlanWireFrameAtTC` (tagged, untagged and
