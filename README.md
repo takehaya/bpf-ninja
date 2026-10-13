@@ -239,6 +239,8 @@ bpf-ninja --dump-asm full --mode xdp --cbpf "tcp port 443"
 
 Use this to sanity-check DSL parse/type errors, inspect codegen output, or verify the wrapped program shape per mode.
 
+Resolver warnings, such as the never-matching second member of `eth/ipv4/(tcp|tcp)`, go to stderr as `warning:` lines before the asm, just as during a live capture; stdout carries only the asm, so dumps can be diffed or piped.
+
 ### Attaching to subfunctions (entry/exit only)
 
 You can use `--func` to attach fentry/fexit to a `__noinline` subfunction inside the target XDP program, instead of the entry function. The subfunction must take `struct xdp_md *ctx` as its first argument.

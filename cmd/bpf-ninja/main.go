@@ -523,7 +523,7 @@ func run(ctx context.Context, cmd *cli.Command) error {
 		if err != nil {
 			return err
 		}
-		return program.DumpAsm(os.Stdout, program.DumpScope(scope), filterExpr, useDSL, mode, dumpHook)
+		return program.DumpAsm(os.Stdout, os.Stderr, program.DumpScope(scope), filterExpr, useDSL, mode, dumpHook)
 	}
 
 	if isXDPNative {
@@ -952,13 +952,8 @@ func formatEchoArgs(funcName string, params []attach.FuncParamInfo, raw []byte) 
 // printProbeWarnings drains non-fatal resolver / codegen notices the
 // kunai DSL pipeline attached to the probe (typically about chain-
 // root conventions) onto stderr.
-// printProbeWarnings drains non-fatal resolver / codegen notices the
-// kunai DSL pipeline attached to the probe (typically about chain-
-// root conventions) onto stderr.
 func printProbeWarnings(probe *program.Probe) {
-	for _, w := range probe.Warnings {
-		fmt.Fprintln(os.Stderr, "warning:", w)
-	}
+	program.WriteWarnings(os.Stderr, probe.Warnings)
 }
 
 // resolveFilterSyntax returns whether to use the DSL path (default)
