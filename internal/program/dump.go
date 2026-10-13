@@ -39,7 +39,13 @@ const (
 // passes --dump-hook (default xdp). Mode is ignored when scope ==
 // DumpScopeFilter except that it drives the Capabilities passed to
 // the kunai compile (exit enables the action atom).
-func DumpAsm(w io.Writer, scope DumpScope, expr string, useDSL bool, mode string, kind hook.Kind) error {
+//
+// Non-fatal resolver / codegen warnings go to warnW as "warning:"
+// lines, before the asm reaches w, so a terminal shows them above a
+// long listing and w stays pure asm for diffing or piping. A compile
+// or render error returns without writing any. warnW must be non-nil;
+// pass io.Discard to drop the warnings.
+func DumpAsm(w, warnW io.Writer, scope DumpScope, expr string, useDSL bool, mode string, kind hook.Kind) error {
 	if expr == "" {
 		return fmt.Errorf("--dump-asm requires a filter expression")
 	}
@@ -73,8 +79,18 @@ func DumpAsm(w io.Writer, scope DumpScope, expr string, useDSL bool, mode string
 		return fmt.Errorf("--dump-asm: unknown scope %q (expected: filter | full)", scope)
 	}
 
+	WriteWarnings(warnW, out.Warnings)
 	_, err = io.WriteString(w, buf.String())
 	return err
+}
+
+// WriteWarnings writes non-fatal resolver / codegen notices one per
+// line as "warning: <text>", the shape the CLI prints on stderr for
+// both live captures and --dump-asm.
+func WriteWarnings(w io.Writer, warnings []string) {
+	for _, msg := range warnings {
+		_, _ = fmt.Fprintln(w, "warning:", msg)
+	}
 }
 
 func renderFilter(buf *strings.Builder, out codegen.Output, useDSL bool, mode string) {
