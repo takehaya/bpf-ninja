@@ -958,9 +958,8 @@ func formatEchoArgs(funcName string, params []attach.FuncParamInfo, raw []byte) 
 	return b.String()
 }
 
-// printProbeWarnings drains non-fatal resolver / codegen notices the
-// kunai DSL pipeline attached to the probe (typically about chain-
-// root conventions) onto stderr.
+// printProbeWarnings prints the probe's resolver / codegen notices on
+// stderr; program.WriteWarnings sets the format.
 func printProbeWarnings(probe *program.Probe) {
 	program.WriteWarnings(os.Stderr, probe.Warnings)
 }

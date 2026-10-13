@@ -33,7 +33,7 @@ type Probe struct {
 	StatsMap   *ebpf.Map
 	closedTags *ebpf.Map
 	IsFexit    bool
-	Warnings   []string // resolver / codegen non-fatal notices; CLI prints to stderr
+	Warnings   []string // resolver / codegen non-fatal notices; the CLI prints them with WriteWarnings
 
 	// --arg-echo diagnostic mode: non-nil EchoRing means this probe emits
 	// the target function's integer args (EchoParams, in order) to a

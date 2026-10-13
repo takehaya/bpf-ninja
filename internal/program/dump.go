@@ -43,7 +43,7 @@ const (
 // Non-fatal resolver / codegen warnings go to warnW as "warning:"
 // lines, before the asm reaches w, so a terminal shows them above a
 // long listing and w stays pure asm for diffing or piping. A compile
-// or render error returns without writing any. warnW must be non-nil;
+// or render error returns before writing any. warnW must be non-nil;
 // pass io.Discard to drop the warnings.
 func DumpAsm(w, warnW io.Writer, scope DumpScope, expr string, useDSL bool, mode string, kind hook.Kind) error {
 	if expr == "" {
