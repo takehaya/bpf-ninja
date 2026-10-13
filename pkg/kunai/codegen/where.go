@@ -2043,6 +2043,9 @@ func (c *whereCtx) genLiteralCompare(w *ir.Condition, failLabel string) (asm.Ins
 	if !ok {
 		return nil, fmt.Errorf("%w: network literal supports only == / != (got %s)", ErrNotImplemented, w.LiteralOp)
 	}
+	if sliceNeedsScalarLoad(ref) {
+		return c.genLiteralScalarCompare(w, failLabel)
+	}
 	if dynamicAuxLayoutOf(ref) != nil {
 		return c.genOptionLiteralCompare(w, failLabel)
 	}
@@ -2108,6 +2111,34 @@ func (c *whereCtx) genLiteralCompare(w *ir.Condition, failLabel string) (asm.Ins
 		return c.genIPv6CIDRCompare(w, anchor, fieldOff, fieldBytes, failLabel)
 	}
 	return nil, fmt.Errorf("%w: where literal kind %v", ErrNotImplemented, w.LiteralValue.Kind)
+}
+
+// genLiteralScalarCompare is genLiteralCompare for a slice
+// sliceNeedsScalarLoad accepts: the slice's numeric value is read as
+// genArithFieldLoad reads it, and an absent field fails the atom like a
+// mismatch does.
+func (c *whereCtx) genLiteralScalarCompare(w *ir.Condition, failLabel string) (asm.Instructions, error) {
+	ref := w.LiteralField
+	anchor, err := c.layerAnchorFor(ref.Layer)
+	if err != nil {
+		return nil, err
+	}
+	insns, bytes, size, err := emitScalarFieldLoad(ref, fieldLoadSite{
+		gate:       anchor,
+		load:       anchor,
+		entryAddr:  c.stackEntryAddress,
+		optionSlot: c.dynamicOffsetSlotFor,
+		fail:       failLabel,
+	})
+	if err != nil {
+		return nil, err
+	}
+	insns = append(insns, emitFieldValue(ref, bytes, size)...)
+	cmp, err := literalScalarCompare(w.LiteralValue, w.LiteralOp, failLabel)
+	if err != nil {
+		return nil, err
+	}
+	return append(insns, cmp...), nil
 }
 
 // literalFieldWindow returns the byte offset (relative to the
