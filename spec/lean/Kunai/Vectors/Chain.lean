@@ -186,7 +186,62 @@ vector quantOptVlanFollowOne := {
   note := "greedy: `vlan?` takes the only tag and the follower misses" }
 vector quantRange00Follow := {
   id := "quant-range00-follow", ast := mplsFollow (.range 0 (some 0)), packet := mpls1, expected := .accept [],
-  goStatus := .notImplemented, note := "`{0,0}` takes no header, so the follower is the first label; Go refuses a zero iteration cap" }
+  note := "`{0,0}` takes no header, so the follower is the first label" }
+-- `{0,0}` takes no header: no bracket runs, no label binds, and the
+-- follower dispatches off the layer before it. The static checks still
+-- see the layer.
+def range00 : Quant := .range 0 (some 0)
+def tcpPlain : Packet := eth 0x0800 ++ ipv4 6 ++ tcp 12345 80 ++ payload 5
+def vlanR00Where (w : Where) : Filter :=
+  { layers := [P "eth", .proto { name := "vlan", label := some "v", quant := range00 }, P "ipv4", P "tcp"], cond := some w }
+def vR00Tci : Where := .arith (.field ⟨[("v", none), ("tci", none)]⟩) .eq (.const 100)
+vector quantRange00PredIgnored := {
+  id := "quant-range00-pred-ignored",
+  ast := { layers := [P "eth", .proto { name := "mpls", preds := [.cmp ⟨[("label", none)]⟩ .eq (.int 99)], quant := range00 }, P "mpls", P "ipv4", P "tcp"] },
+  packet := mpls1, expected := .accept [], note := "the bracket of a `{0,0}` layer never runs" }
+vector quantRange00LabelWhereFalse := {
+  id := "quant-range00-label-where-false", ast := vlanR00Where vR00Tci, packet := tcpPlain, expected := .reject,
+  note := "D-003: the label of a `{0,0}` layer is never bound, so the atom is false" }
+vector quantRange00LabelWhereNot := {
+  id := "quant-range00-label-where-not", ast := vlanR00Where (.not vR00Tci), packet := tcpPlain, expected := .accept [] }
+vector quantRange00LabelWhereOr := {
+  id := "quant-range00-label-where-or", ast := vlanR00Where (.or vR00Tci (.arith (.field ⟨[("tcp", none), ("dport", none)]⟩) .eq (.const 80))),
+  packet := tcpPlain, expected := .accept [] }
+vector quantRange00LabelWhereNe := {
+  id := "quant-range00-label-where-ne", ast := vlanR00Where (.arith (.field ⟨[("v", none), ("tci", none)]⟩) .ne (.const 100)),
+  packet := tcpPlain, expected := .reject, note := "D-003: false for != too" }
+vector quantRange00Redispatch := {
+  id := "quant-range00-redispatch", ast := { layers := [P "eth", Pq "vlan" range00, P "ipv4", P "tcp"] }, packet := mpls1, expected := .reject,
+  note := "ipv4 dispatches off eth's ethertype, which is MPLS here" }
+vector quantRange00Twice := {
+  id := "quant-range00-twice", ast := { layers := [P "eth", Pq "mpls" range00, Pq "mpls" range00, P "mpls", P "ipv4", P "tcp"] },
+  packet := mpls1, expected := .accept [] }
+vector quantRange00BeforeAlt := {
+  id := "quant-range00-before-alt", ast := { layers := [P "eth", Pq "vlan" range00, .alt [{ name := "ipv4" }, { name := "ipv6" }], P "tcp"] },
+  packet := tcpPlain, expected := .accept [] }
+vector quantRange00AfterAlt := {
+  id := "quant-range00-after-alt", ast := { layers := [P "eth", .alt [{ name := "vlan" }, { name := "qinq" }], Pq "vlan" range00, P "ipv4", P "tcp"] },
+  packet := vlanPkt, expected := .accept [] }
+vector quantRange00Last := {
+  id := "quant-range00-last", ast := { layers := [P "eth", P "ipv4", Pq "tcp" range00] },
+  packet := eth 0x0800 ++ ipv4 17 ++ udp 12345 53 ++ payload 5, expected := .accept [] }
+vector quantRange00Machine := {
+  id := "quant-range00-machine", ast := { layers := [P "eth", P "ipv4", Pq "ipv4" range00, P "tcp"] }, packet := tcpPlain, expected := .accept [] }
+vector quantRange00AfterOpt := {
+  id := "quant-range00-after-opt", ast := { layers := [P "eth", Pq "mpls" .opt, Pq "mpls" range00, P "ipv4", P "tcp"] },
+  packet := mpls1, expected := .accept [] }
+vector quantRange00AfterOptAbsent := {
+  id := "quant-range00-after-opt-absent", ast := { layers := [P "eth", Pq "mpls" .opt, Pq "mpls" range00, P "ipv4", P "tcp"] },
+  packet := tcpPlain, expected := .accept [] }
+vector typQuantRange00BareRef := {
+  id := "typ-quant-range00-bare-ref",
+  ast := { layers := [P "eth", Pq "vlan" range00, P "ipv4", P "tcp"], cond := some (.arith (.field ⟨[("vlan", none), ("tci", none)]⟩) .eq (.const 1)) },
+  packet := tcpPlain, expected := .illTyped "protocol vlan is ambiguous; qualify with an @label",
+  note := "a bare name counts the `{0,0}` layer too" }
+vector typQuantRange00MachineParent := {
+  id := "typ-quant-range00-machine-parent", ast := { layers := [P "eth", Pq "ipv4" range00, P "tcp"] },
+  packet := tcpPlain, expected := .illTyped "no dispatch constant for tcp under eth",
+  note := "the follower of an absentable layer needs an edge from the layer before it" }
 vector quantPredMidFail := {
   id := "quant-pred-mid-fail", ast := { layers := mplsPred 5 .eq (.range 1 (some 8)) }, packet := mpls3,
   expected := .reject, note := "D-001 (b): a predicate failure at any iteration rejects" }
@@ -634,7 +689,7 @@ def chainVectors : List Vector := [
   chainVxlan, chainVxlanAlt, chainMplsSingle, chainMplsSingleOverrun,
   quantOptPresent, quantOptAbsent, quantOptPredHolds, quantOptPredFails, quantOptBounds, quantRangeMidTrunc, quantRange01Bounds,
   quantStarBounds, quantMplsRange, quantMplsPlus, quantMplsStarZero, quantMplsMinUnmet, quantChainEnd,
-  quantGreedyOverrun, quantOverrunBounded, quantOverrunOpen, quantExactBound, quantOptMplsOverrun, quantOptMplsOne, quantGreedyUnreachable, quantOptFollowTwo, quantOptFollowOne, quantRange01Follow, quantRange11Follow, quantRange11FollowOne, quantOptVlanFollowTwo, quantOptVlanFollowOne, quantRange00Follow, quantPredMidFail, quantPredMidFailStatic, quantPredFirstFail,
+  quantGreedyOverrun, quantOverrunBounded, quantOverrunOpen, quantExactBound, quantOptMplsOverrun, quantOptMplsOne, quantGreedyUnreachable, quantOptFollowTwo, quantOptFollowOne, quantRange01Follow, quantRange11Follow, quantRange11FollowOne, quantOptVlanFollowTwo, quantOptVlanFollowOne, quantRange00Follow, quantRange00PredIgnored, quantRange00LabelWhereFalse, quantRange00LabelWhereNot, quantRange00LabelWhereOr, quantRange00LabelWhereNe, quantRange00Redispatch, quantRange00Twice, quantRange00BeforeAlt, quantRange00AfterAlt, quantRange00Last, quantRange00Machine, quantRange00AfterOpt, quantRange00AfterOptAbsent, typQuantRange00BareRef, typQuantRange00MachineParent, quantPredMidFail, quantPredMidFailStatic, quantPredFirstFail,
   quantPredAllHold, quantSelfValidSkip, quantSelfValidPresent, quantSelfValidShortV4, quantSelfValidShortV6, quantSelfValidEmpty, quantSelfValidCascade, quantSelfValidCascadeEth, quantSelfValidBroken, quantOptIPv4Last, quantOptIPv4LastAbsent, quantOptIPIP, quantExactOneMachine, typAltExactOne, typRepeatNoSelfEdge, typRepeatNoSelfEdgeStar, quantOptIPIPAbsent, quantOptIPIPTwiceOne, quantOptIPIPTwiceNone, quantOptIPIPTwiceBoth, typOptionalAfterSkip, typOptionalNoCheck, chainMandatorySelfEdgeMiss, quantSelfEdgeStar, quantSelfEdgeOpt,
   absentConsecutiveEthertype, absentConsecutiveSelfValid, absentConsecutiveMplsOnly, absentConsecutiveNeither, absentConsecutiveArp, quantFirstOptional,
   altFirst, altSecond, altAfterVxlan6, altAfterVxlan4, altNone, altFirstPredFails, altShadowedSecond, altRoot, altNoCheck,

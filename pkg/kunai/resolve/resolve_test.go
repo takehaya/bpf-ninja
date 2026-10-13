@@ -223,6 +223,10 @@ func TestUnreachableChainWarning(t *testing.T) {
 	if w := warned(t, "eth/mpls?/mpls/ipv4/tcp"); !strings.HasPrefix(w, `"mpls?" is immediately followed by "mpls"`) || !strings.Contains(w, "never matches") {
 		t.Errorf("warning %q does not spell the layers or the reason", w)
 	}
+	// The layers on either side of a `{0,0}` one are the pair compared.
+	if w := warned(t, "eth/mpls?/mpls{0,0}/mpls/ipv4/tcp"); !strings.Contains(w, `"mpls?" is immediately followed by "mpls"`) {
+		t.Errorf("mpls?/mpls{0,0}/mpls: warning %q; want the mpls?/mpls pair", w)
+	}
 	if w := warned(t, "eth/vlan+/vlan/ipv4/tcp"); !strings.Contains(w, "deeper than the 8 headers") {
 		t.Errorf("warning %q does not give the open bound's depth", w)
 	}
@@ -238,8 +242,9 @@ func TestUnreachableChainWarning(t *testing.T) {
 		"eth/mpls/mpls/ipv4/tcp",
 		// A bounded quantifier on VLAN leaves deeper stacks to the follower.
 		"eth/vlan?/vlan/ipv4/tcp", "eth/vlan{0,1}/vlan/ipv4/tcp",
-		// `{0,0}` takes no header; the follower is the first label.
-		"eth/mpls{0,0}/mpls/ipv4/tcp",
+		// `{0,0}` takes no header; the follower is the first label, and a
+		// `{0,0}` follower matches nothing by itself.
+		"eth/mpls{0,0}/mpls/ipv4/tcp", "eth/mpls?/mpls{0,0}/ipv4/tcp",
 	} {
 		if w := warned(t, expr); w != "" {
 			t.Errorf("%s: unexpected warning %q", expr, w)

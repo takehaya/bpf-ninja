@@ -143,11 +143,14 @@ func (r *resolver) resolveFilter(f *ast.Filter) (*ir.Program, error) {
 		Pos:        f.Pos,
 	}
 	addChainRootWarning(p, f, r.opts)
-	addUnreachableChainWarning(p)
-	addShadowedAlternativeWarning(p)
 	if err := checkRuntimeParents(p, f); err != nil {
 		return nil, err
 	}
+	if err := dropEmptyLayers(p); err != nil {
+		return nil, err
+	}
+	addUnreachableChainWarning(p)
+	addShadowedAlternativeWarning(p)
 	markRuntimeOffsetLayers(p)
 	if err := markCascadeParents(p); err != nil {
 		return nil, err
@@ -231,14 +234,26 @@ func checkChainShape(layers []*ir.LayerInstance) error {
 			}
 			return errorf(l.Pos, "{%d,} on %s: the minimum exceeds %s, the bound an open quantifier stands for", l.RangeMin, l.Spec.Name, bound)
 		}
-		if !l.Absentable() || l.Dispatch == nil || l.Dispatch.Type != vocab.DispatchNoCheck {
+		if i == 0 {
 			continue
 		}
-		prev := layers[i-1]
-		selfEnd := prev.Alternation == nil && prev.Spec == l.Spec && l.Spec.ChainEnd != nil
-		if !selfEnd {
-			return errorf(l.Pos, "optional %s with no-check dispatch cannot detect absence (under %s)", l.Spec.Name, prev.DisplayName())
+		if err := checkNoCheckAbsence(l, layers[i-1]); err != nil {
+			return err
 		}
+	}
+	return nil
+}
+
+// checkNoCheckAbsence refuses an absentable layer whose dispatch under
+// prev is no-check: nothing tells its header from the next layer's, unless
+// it follows itself and its protocol marks the end of the chain.
+func checkNoCheckAbsence(l, prev *ir.LayerInstance) error {
+	if !l.Absentable() || l.Dispatch == nil || l.Dispatch.Type != vocab.DispatchNoCheck {
+		return nil
+	}
+	selfEnd := prev.Alternation == nil && prev.Spec == l.Spec && l.Spec.ChainEnd != nil
+	if !selfEnd {
+		return errorf(l.Pos, "optional %s with no-check dispatch cannot detect absence (under %s)", l.Spec.Name, prev.DisplayName())
 	}
 	return nil
 }
@@ -297,8 +312,9 @@ func checkRuntimeParents(p *ir.Program, f *ast.Filter) error {
 // on a dispatch miss, and either way the follower misses too; for an open
 // quantifier on another protocol the follower only matches past
 // MAX_DEPTH; a bounded quantifier there leaves deeper stacks to the
-// follower, so no warning. `?` is `{0,1}` (D-005) and warns alike;
-// `{0,0}` consumes nothing and leaves the follower reachable. A plain
+// follower, so no warning. `?` is `{0,1}` (D-005) and warns alike.
+// It runs after dropEmptyLayers: a `{0,0}` layer consumes nothing, so
+// the layers on either side of one are the pair to compare. A plain
 // `mpls/mpls` is fine: only a quantifier demands the end signal at its
 // bound (D-024), so `mpls{1}/mpls` warns while `mpls/mpls` does not.
 // Alternation groups are left alone.
@@ -312,7 +328,7 @@ func addUnreachableChainWarning(p *ir.Program) {
 			continue
 		}
 		_, hi := l.Bounds()
-		if hi == 0 || (hi > 0 && l.Spec.ChainEnd == nil) {
+		if hi > 0 && l.Spec.ChainEnd == nil {
 			continue
 		}
 		why := fmt.Sprintf("so the second %q never matches", next.Spec.Name)
