@@ -850,9 +850,10 @@ func TestCompileNetworkLiteralSliceWidth(t *testing.T) {
 	}
 
 	// A slice that is 32 bits wide but not on byte boundaries is read as
-	// a number: the 8-byte window from byte 11 shifted down by 28 bits and
-	// masked, then compared with 10.0.0.1 as the plain constant rather
-	// than a byte-swapped one.
+	// a number: the 8-byte window ending at the address's last byte (byte
+	// 8, so it stays inside the field) shifted down by 4 bits and masked,
+	// then compared with 10.0.0.1 as the plain constant rather than a
+	// byte-swapped one.
 	expr := "eth/ipv6/tcp where ipv6.dst[92:124] == 10.0.0.1"
 	insns, err := compileForTest(expr)
 	if err != nil {
@@ -860,14 +861,14 @@ func TestCompileNetworkLiteralSliceWidth(t *testing.T) {
 	}
 	shift := -1
 	for i, ins := range insns {
-		if ins.OpCode.ALUOp() == asm.RSh && ins.Dst == asm.R3 && ins.Constant == 28 {
+		if ins.OpCode.ALUOp() == asm.RSh && ins.Dst == asm.R3 && ins.Constant == 4 {
 			shift = i
 		}
 		if shift >= 0 && i > shift && ins.OpCode.JumpOp() == asm.JNE && ins.Dst == asm.R3 && ins.Constant == 0x0a000001 {
 			return
 		}
 	}
-	t.Errorf("Compile(%q): no `RSh R3, 28` followed by `JNE R3, 0x0a000001`\n%v", expr, insns)
+	t.Errorf("Compile(%q): no `RSh R3, 4` followed by `JNE R3, 0x0a000001`\n%v", expr, insns)
 }
 
 // TestCompileIPv4LiteralOnSliceReadsSlicedBytes pins the window the
@@ -2989,6 +2990,22 @@ func TestCompileBracketNestedOptionSpelling(t *testing.T) {
 		}
 		if !hasOptionSlotRead(out.Main, proto) {
 			t.Errorf("%s: no option slot read after the %s walk", expr, proto)
+		}
+	}
+}
+
+// TestCompileSliceWindowInFilterMinPrefix pins that the scratch prefix a
+// host copies covers a slice's load window, not only the slice:
+// eth.src[12:44] is read as 8 bytes from frame byte 7, past the slice's
+// last byte (11) and past the 14-byte Ethernet header.
+func TestCompileSliceWindowInFilterMinPrefix(t *testing.T) {
+	for _, expr := range []string{"eth where eth.src[12:44] == 5", "eth[src[12:44] == 5]"} {
+		out, err := Compile(expr, codegen.Capabilities{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := out.Capture.FilterMinPrefix; got != 0 && got < 15 {
+			t.Errorf("%s: FilterMinPrefix = %d; want 0 (full window) or at least 15", expr, got)
 		}
 	}
 }

@@ -242,3 +242,45 @@ func TestApplySliceToOffsetCoverTooLarge(t *testing.T) {
 		t.Fatal("expected error for 12-byte cover (max 8)")
 	}
 }
+
+func TestApplySliceToOffsetStaysInsideField(t *testing.T) {
+	// [92:124] covers bytes 11..15 of the address; the 8-byte window
+	// from byte 11 would end 3 bytes past the field, so it starts at
+	// byte 8 and the shift keeps the slice's bits.
+	ref := &ir.FieldRef{
+		Layer: &ir.LayerInstance{Spec: &vocab.ProtocolSpec{Name: "ipv6"}},
+		Field: &vocab.Field{Name: "dst", Bits: 128},
+		Slice: &ir.FieldSlice{Lo: 92, Hi: 124},
+	}
+	off, size, err := applySliceToOffset(ref, 0, 16)
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if off != 8 || size != 8 {
+		t.Errorf("window = (%d, %d), want (8, 8)", off, size)
+	}
+	if shift, mask := slicePostAdjust(ref, size); shift != 4 || mask != 0xffffffff {
+		t.Errorf("shift, mask = %d, %#x; want 4, 0xffffffff", shift, mask)
+	}
+	// A field exactly as wide as the window slides to its start.
+	seq := &ir.FieldRef{
+		Layer: &ir.LayerInstance{Spec: &vocab.ProtocolSpec{Name: "tcp"}},
+		Field: &vocab.Field{Name: "seq", Bits: 32},
+		Slice: &ir.FieldSlice{Lo: 12, Hi: 28},
+	}
+	if off, size, err := applySliceToOffset(seq, 0, 4); err != nil || off != 0 || size != 4 {
+		t.Errorf("tcp.seq[12:28] window = (%d, %d, %v), want (0, 4, nil)", off, size, err)
+	}
+	if shift, mask := slicePostAdjust(seq, 4); shift != 4 || mask != 0xffff {
+		t.Errorf("tcp.seq[12:28] shift, mask = %d, %#x; want 4, 0xffff", shift, mask)
+	}
+	// A field narrower than the window keeps the slice's first byte.
+	narrow := &ir.FieldRef{
+		Layer: &ir.LayerInstance{Spec: &vocab.ProtocolSpec{Name: "eth"}},
+		Field: &vocab.Field{Name: "src", Bits: 48},
+		Slice: &ir.FieldSlice{Lo: 12, Hi: 44},
+	}
+	if off, size, err := applySliceToOffset(narrow, 0, 6); err != nil || off != 1 || size != 8 {
+		t.Errorf("eth.src[12:44] window = (%d, %d, %v), want (1, 8, nil)", off, size, err)
+	}
+}

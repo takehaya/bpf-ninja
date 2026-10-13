@@ -1957,15 +1957,36 @@ func applySliceToOffset(ref *ir.FieldRef, off, size int) (int, int, error) {
 	if ref.Slice == nil {
 		return off, size, nil
 	}
-	byteStart := ref.Slice.Lo / 8
 	byteEndExclusive := (ref.Slice.Hi + 7) / 8
-	cover := byteEndExclusive - byteStart
+	cover := byteEndExclusive - ref.Slice.Lo/8
 	loadBytes := nextLDXSize(cover)
 	if loadBytes == 0 {
 		return 0, 0, fmt.Errorf("%w: bit-slice [%d:%d] needs %d-byte load (max 8)", ErrNotImplemented, ref.Slice.Lo, ref.Slice.Hi, cover)
 	}
-	off += byteStart
+	off += sliceWindowStart(ref, loadBytes)
 	return off, loadBytes, nil
+}
+
+// sliceWindowStart is the byte, from the field's start, where the load
+// window covering ref's slice begins: the slice's first byte, moved back
+// when the rounded-up window would run past the end of the field, so the
+// read stays inside the field whenever the field is at least as wide as
+// the window. Past the field may be past the packet: `ipv6.dst[92:124]`
+// would read 3 bytes beyond an IPv6 header that ends the frame, and the
+// bounded load would reject a packet whose field is all there.
+func sliceWindowStart(ref *ir.FieldRef, loadBytes int) int {
+	start := ref.Slice.Lo / 8
+	fieldBits := 0
+	switch {
+	case ref.Aux != nil:
+		fieldBits = ref.Aux.FieldBitWidth
+	case ref.Field != nil:
+		fieldBits = ref.Field.Bits
+	}
+	if fieldBits%8 == 0 && fieldBits/8 >= loadBytes && start+loadBytes > fieldBits/8 {
+		start = fieldBits/8 - loadBytes
+	}
+	return start
 }
 
 // applyExactSlice narrows (off, size) to exactly the bytes of the
@@ -2029,7 +2050,7 @@ func slicePostAdjust(ref *ir.FieldRef, loadBytes int) (shift int, mask uint64) {
 	var hiInLoad, width int
 	switch {
 	case ref.Slice != nil:
-		byteStart := ref.Slice.Lo / 8
+		byteStart := sliceWindowStart(ref, loadBytes)
 		hiInLoad = ref.Slice.Hi - byteStart*8
 		width = ref.Slice.Bits()
 		// A slice that exactly fills the load needs no narrowing.

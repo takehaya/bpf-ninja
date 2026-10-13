@@ -2377,7 +2377,7 @@ func (c *whereCtx) genOptionLiteralCompare(w *ir.Condition, failLabel string) (a
 		return nil, err
 	}
 
-	// auxLoadEmitter's window already starts at the slice (auxEntryFieldWindow),
+	// auxLoadEmitter's window already starts at the slice (auxEntryFieldStart),
 	// so the width checks look at the sliced width.
 	switch w.LiteralValue.Kind {
 	case ast.ValIPv4:
