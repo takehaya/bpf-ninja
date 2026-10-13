@@ -603,7 +603,7 @@ func chainMaxIter(layer *ir.LayerInstance) (int, error) {
 		max = layer.Spec.ChainDepth()
 	}
 	if max < 1 {
-		return 0, fmt.Errorf("%w: chain %q has non-positive iteration cap", ErrNotImplemented, layer.Spec.Name)
+		return 0, fmt.Errorf("codegen: chain %q has a non-positive iteration cap; the resolver drops `{0,0}` layers", layer.Spec.Name)
 	}
 	if max > bpfLoopChainCap {
 		return 0, fmt.Errorf("%w: chain %q max iterations %d exceeds verifier-safe cap %d", ErrNotImplemented, layer.Spec.Name, max, bpfLoopChainCap)

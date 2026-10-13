@@ -143,11 +143,14 @@ func (r *resolver) resolveFilter(f *ast.Filter) (*ir.Program, error) {
 		Pos:        f.Pos,
 	}
 	addChainRootWarning(p, f, r.opts)
-	addUnreachableChainWarning(p)
 	addShadowedAlternativeWarning(p)
 	if err := checkRuntimeParents(p, f); err != nil {
 		return nil, err
 	}
+	if err := dropEmptyLayers(p); err != nil {
+		return nil, err
+	}
+	addUnreachableChainWarning(p)
 	markRuntimeOffsetLayers(p)
 	if err := markCascadeParents(p); err != nil {
 		return nil, err
@@ -297,8 +300,9 @@ func checkRuntimeParents(p *ir.Program, f *ast.Filter) error {
 // on a dispatch miss, and either way the follower misses too; for an open
 // quantifier on another protocol the follower only matches past
 // MAX_DEPTH; a bounded quantifier there leaves deeper stacks to the
-// follower, so no warning. `?` is `{0,1}` (D-005) and warns alike;
-// `{0,0}` consumes nothing and leaves the follower reachable. A plain
+// follower, so no warning. `?` is `{0,1}` (D-005) and warns alike.
+// It runs after dropEmptyLayers: a `{0,0}` layer consumes nothing, so
+// the layers on either side of one are the pair to compare. A plain
 // `mpls/mpls` is fine: only a quantifier demands the end signal at its
 // bound (D-024), so `mpls{1}/mpls` warns while `mpls/mpls` does not.
 // Alternation groups are left alone.
@@ -312,7 +316,7 @@ func addUnreachableChainWarning(p *ir.Program) {
 			continue
 		}
 		_, hi := l.Bounds()
-		if hi == 0 || (hi > 0 && l.Spec.ChainEnd == nil) {
+		if hi > 0 && l.Spec.ChainEnd == nil {
 			continue
 		}
 		why := fmt.Sprintf("so the second %q never matches", next.Spec.Name)

@@ -77,6 +77,7 @@ xdp_entry	eth/ipv4/icmp where icmp.type == 8	-	code=f95bb6b80c99c451 meta=5ee214
 xdp_entry	eth/ipv4/ipv4*/tcp	-	code=abd85eba4c914eac meta=5ee214e8b4c27377 main=687 cb=0
 xdp_entry	eth/ipv4/ipv4?/ipv4?/tcp	-	code=03197839cab9b962 meta=5ee214e8b4c27377 main=305 cb=0
 xdp_entry	eth/ipv4/ipv4?/tcp	-	code=860d252b81d88b1b meta=5ee214e8b4c27377 main=210 cb=0
+xdp_entry	eth/ipv4/ipv4{0,0}/tcp	-	code=53e9dd4f863f24be meta=5ee214e8b4c27377 main=129 cb=0
 xdp_entry	eth/ipv4/tcp	-	code=53e9dd4f863f24be meta=5ee214e8b4c27377 main=129 cb=0
 xdp_entry	eth/ipv4/tcp capture all capture headers capture headers+16 capture absolute 32 capture ipv4+4 capture tcp	-	code=42bee4a8af37c28d meta=20cfb7a18e76a800 main=130 cb=0
 xdp_entry	eth/ipv4/tcp capture all where tcp.dport == 80 capture headers where tcp.dport == 1	-	code=965ea2278f4af419 meta=eaba0a0732fdca28 main=154 cb=0
@@ -187,6 +188,7 @@ xdp_entry	eth/ipv4/tcp[ts.tsval != 10.0.0.1]	-	code=50ea1c42340d7cd1 meta=5ee214
 xdp_entry	eth/ipv4/tcp[ts.tsval > 16777216]	-	code=c061b2ce82824688 meta=5ee214e8b4c27377 main=180 cb=106
 xdp_entry	eth/ipv4/tcp[ts.tsval in [10.0.0.0/8, 192.168.0.1]]	-	code=db426b72e33555a2 meta=5ee214e8b4c27377 main=184 cb=106
 xdp_entry	eth/ipv4/tcp[ts.tsval[24:32] == 1]	-	code=bfc4d17c88fcfdce meta=5ee214e8b4c27377 main=179 cb=106
+xdp_entry	eth/ipv4/tcp{0,0}	-	code=8bc0f431048a95e8 meta=5ee214e8b4c27377 main=65 cb=0
 xdp_entry	eth/ipv4/udp	-	code=ba5551a24f2723d1 meta=5ee214e8b4c27377 main=74 cb=0
 xdp_entry	eth/ipv4/udp/geneve where geneve.options.OVN.exists	-	code=8639284533e622ed meta=5ee214e8b4c27377 main=172 cb=71
 xdp_entry	eth/ipv4/udp/geneve where geneve.options.valid	-	code=3a79a75b051aef64 meta=5ee214e8b4c27377 main=172 cb=59
@@ -426,14 +428,17 @@ xdp_entry	eth/mpls/mpls/ipv4/tcp	-	code=26d94593e9a28d9e meta=5ee214e8b4c27377 m
 xdp_entry	eth/mpls/mpls?/ipv4/tcp	-	code=cba22214e260d75f meta=5ee214e8b4c27377 main=182 cb=0
 xdp_entry	eth/mpls?/ipv4/tcp	-	code=3e39948b031205c9 meta=5ee214e8b4c27377 main=176 cb=0
 xdp_entry	eth/mpls?/mpls/ipv4/tcp	-	code=7c68495ebddff654 meta=c1e5715cbbf3106d main=192 cb=0
+xdp_entry	eth/mpls?/mpls{0,0}/ipv4/tcp	-	code=3e39948b031205c9 meta=5ee214e8b4c27377 main=176 cb=0
 xdp_entry	eth/mpls@m{1,3}/ipv4/tcp where m.label == 5	-	code=388cae11f8a63963 meta=5ee214e8b4c27377 main=206 cb=0
 xdp_entry	eth/mpls@m{1,3}/ipv4/tcp where m.label == 7	-	code=1b193335a66a486e meta=5ee214e8b4c27377 main=206 cb=0
 xdp_entry	eth/mpls[label < 8]{1,8}/ipv4/tcp	-	code=28257770b5d11891 meta=5ee214e8b4c27377 main=193 cb=46
 xdp_entry	eth/mpls[label == 5]{1,3}/ipv4/tcp	-	code=3cf67f2a33733709 meta=5ee214e8b4c27377 main=220 cb=0
 xdp_entry	eth/mpls[label == 5]{1,8}/ipv4/tcp	-	code=863adfaed5093118 meta=5ee214e8b4c27377 main=193 cb=46
 xdp_entry	eth/mpls[label == 6]{1,8}/ipv4/tcp	-	code=a007fa5612e84632 meta=5ee214e8b4c27377 main=193 cb=46
+xdp_entry	eth/mpls[label == 99]{0,0}/mpls/ipv4/tcp	-	code=a3195731343b596c meta=5ee214e8b4c27377 main=134 cb=0
 xdp_entry	eth/mpls[label in [1..5, 100]]+/ipv4	-	code=940d9c8686317984 meta=5ee214e8b4c27377 main=127 cb=50
 xdp_entry	eth/mpls[label in [1..5, 100]]{1,3}/ipv4	-	code=e559078017d33483 meta=5ee214e8b4c27377 main=162 cb=0
+xdp_entry	eth/mpls{0,0}/mpls/ipv4/tcp	-	code=a3195731343b596c meta=5ee214e8b4c27377 main=134 cb=0
 xdp_entry	eth/mpls{0,1}/mpls/ipv4/tcp	-	code=7c68495ebddff654 meta=4f4cf2f37f0e2a79 main=192 cb=0
 xdp_entry	eth/mpls{0,}/ipv4/tcp	-	code=f8128005a7eb2832 meta=5ee214e8b4c27377 main=202 cb=27
 xdp_entry	eth/mpls{1,1}/mpls/ipv4/tcp	-	code=60c1344806dda3cc meta=ded7e37ac6edfb54 main=173 cb=0
@@ -471,6 +476,9 @@ xdp_entry	eth/vlan?/ipv6/tcp where ipv6.exts[ipv6.hop_limit].next_header == 6	-	
 xdp_entry	eth/vlan?/mpls?/ipv4/tcp	-	code=28a36113a5491de1 meta=5ee214e8b4c27377 main=209 cb=0
 xdp_entry	eth/vlan?/mpls?/ipv4?	-	code=0daf501b52ed6b04 meta=5ee214e8b4c27377 main=152 cb=0
 xdp_entry	eth/vlan?/vlan/ipv4/tcp	-	code=5311f0a5350978d2 meta=5ee214e8b4c27377 main=190 cb=0
+xdp_entry	eth/vlan@v{0,0}/ipv4/tcp where (v.tci == 100) or (tcp.dport == 80)	-	code=b0fd88c427aa09b7 meta=5ee214e8b4c27377 main=142 cb=0
+xdp_entry	eth/vlan@v{0,0}/ipv4/tcp where not (v.tci == 100)	-	code=53e9dd4f863f24be meta=5ee214e8b4c27377 main=129 cb=0
+xdp_entry	eth/vlan@v{0,0}/ipv4/tcp where v.tci == 100	-	code=c66a66c5d78dddb7 meta=5ee214e8b4c27377 main=2 cb=0
 xdp_entry	eth/vlan[tci == 100]?/ipv4	-	code=2f6270459d31a848 meta=5ee214e8b4c27377 main=112 cb=0
 xdp_entry	eth/vlan[tci == 100]?/ipv4/tcp	-	code=688e2b9fe3c8860a meta=5ee214e8b4c27377 main=182 cb=0
 xdp_entry	eth/vlan[tci == 200]?/ipv4/tcp	-	code=5c505b263bf0da44 meta=5ee214e8b4c27377 main=182 cb=0
