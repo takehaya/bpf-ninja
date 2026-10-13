@@ -28,6 +28,11 @@ jobs:
       - name: Unit Tests
         run: go test ./...
 
+      # The CLI tests build the root command many times; a second,
+      # shuffled pass catches state that leaks from one run into the next.
+      - name: CLI Tests twice
+        run: go test -count=2 -shuffle=on ./cmd/bpf-ninja
+
       - name: Script Tests
         run: python3 -m unittest discover -s scripts/tests
 

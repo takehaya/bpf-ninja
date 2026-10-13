@@ -4,6 +4,8 @@ import (
 	"context"
 	"strings"
 	"testing"
+
+	"github.com/urfave/cli/v3"
 )
 
 // TestModeFlagValidation pins the --mode family checks by running the
@@ -46,5 +48,37 @@ func TestModeFlagValidation(t *testing.T) {
 				t.Fatalf("run %v: error %q, want it to contain %q", tc.args, err, tc.wantErr)
 			}
 		})
+	}
+}
+
+// TestNewRootCommandFreshFlagState pins that every newRootCommand() gets
+// its own flag objects: urfave keeps IsSet across Run calls on a shared
+// flag, which made the package order-dependent and fail at -count=2.
+func TestNewRootCommandFreshFlagState(t *testing.T) {
+	emitIsSet := func(args ...string) bool {
+		app := newRootCommand()
+		var set bool
+		app.Action = func(_ context.Context, c *cli.Command) error {
+			set = c.IsSet("emit")
+			return nil
+		}
+		if err := app.Run(context.Background(), append([]string{"bpf-ninja"}, args...)); err != nil {
+			t.Fatalf("run %v: %v", args, err)
+		}
+		return set
+	}
+	if !emitIsSet("--emit", "entry") {
+		t.Fatal("IsSet(emit) is false right after --emit")
+	}
+	if emitIsSet() {
+		t.Fatal("IsSet(emit) leaked into a fresh newRootCommand()")
+	}
+
+	// Every flag, not only emit, must be its own object per command.
+	a, b := newRootCommand(), newRootCommand()
+	for i := range a.Flags {
+		if a.Flags[i] == b.Flags[i] {
+			t.Errorf("flag %v is shared between two newRootCommand()", a.Flags[i].Names())
+		}
 	}
 }
