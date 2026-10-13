@@ -38,7 +38,7 @@ bpf-ninja は non-invasive な BPF 観測ツールです。BPF trampoline (fentr
 | 判断 | 理由 |
 |---|---|
 | 薄い user-facing DSL + 厚い vocab | プロトコル知識は再利用可能な `.p4` ファイルに切り出す |
-| kernel | CI matrix で実測する範囲は 6.1 / 6.6 / 6.12 / 6.18 / 7.0。`bpf_loop` を要する features (`+`/`*`/`{n,m>4}` chain quantifier、parser machine self-loop) は kernel 5.17+ 導入なので 5.17〜6.0 でも理論上動くが CI 未実測。fixed chain (`{1,4}` 以下、self-loop 無し) は更に古い kernel でも動作可能。predicate codegen は `BSWAP` (6.6+) を避け `BPF_END` byte-swap で済ませる |
+| kernel | CI matrix で実測する範囲は 6.1 / 6.6 / 6.12 / 6.15 / 6.18 / 7.0 / 7.1 / 7.2 / 7.3-rc4。`bpf_loop` を要する features (`+`/`*`/`{n,m>4}` chain quantifier、parser machine self-loop) は kernel 5.17+ 導入なので 5.17〜6.0 でも理論上動くが CI 未実測。fixed chain (`{1,4}` 以下、self-loop 無し) は更に古い kernel でも動作可能。predicate codegen は `BSWAP` (6.6+) を避け `BPF_END` byte-swap で済ませる |
 | DSL がデフォルト、`--cbpf` opt-in | DSL の surface が安定したので default 化、cbpfc パスは legacy fallback として残す (deprecation notice 付き) |
 | baked-in vocab | `//go:embed *.p4` で `.p4` ファイル群を binary に同梱、deploy 時に外部依存ゼロ |
 | vocab は p4lite (P4-16 strict subset) | p4c で parse 可能な範囲に留める (互換性は §5 参照) |
@@ -1020,7 +1020,7 @@ TCP の option walk は `data_offset` から求めた header end に制限しま
 
 各 sibling の counter decrement と消費 byte 数が一致すると証明できる場合、codegen は残量 counter を不変の終了位置へ変換します。callback は option end と実際の packet end の両方を検査し、固定長 option の length 検証後は共通の advance を使います。未問い合わせの既知 option も、walk を実行する場合には length を検証します。option を一つも参照しない filter は既存の bulk advance を使い、TCP 全体の宣言長は検査しますが個々の option の形式は見ません。仕様 (D-029) でも壊れた option 領域は「option が無い」なので、walk を省いても verdict は変わりません。option を参照する filter で walk が失敗した場合 (callback が reject を返した場合) も reject にはせず、`<layer>_malformed_<state>` の landing で R4 を walk の入口に戻し、option の slot を不在 (accumulator は 0) に戻してから同じ bulk advance で宣言長だけ進みます。宣言長そのものの検査は walk の前に残るので従来どおり reject です (tcp / ipv4 は start state と walk 前の領域末尾の検査、geneve の packet end 超えは bulk advance の検査)。walk の反復回数は `MAX_DEPTH + 1` です (D-026: 戻り辺を `MAX_DEPTH` 回数える。inline の初回反復が無いので bpf_loop 側で 1 回多く回す)。walk を option の参照 (または `<layer>.options.valid`) があるときだけ走らせるのは意図した設計です (option は filter が読むときに初めて読む): 常時 walk にすると全 filter の命令数が約 2 倍になり、ipv4 が 2 回現れる GTP / Geneve chain では verifier 予算も危うくなります。D-029 の改訂後は、walk を省いても走らせても verdict は仕様と一致します。
 
-callback は kind ごとの slot-store prelude を dispatch の前に置きます。これだけでは Linux 6.6 / 6.15 で cursor と終了位置の比較による探索増加を抑えられないため、既存 accumulator と同じ二重 XOR による cursor の値追跡緩和を使います。実行時の値は変わりませんが、verifier が二重 XOR を相殺しない性質への依存が残ります。branch 数だけでは保証できないため、6.1 / 6.6 / 6.12 / 6.15 / 6.18 / 7.0 の packet・program load 試験で互換性を検査します。
+callback は kind ごとの slot-store prelude を dispatch の前に置きます。これだけでは Linux 6.6 / 6.15 で cursor と終了位置の比較による探索増加を抑えられないため、既存 accumulator と同じ二重 XOR による cursor の値追跡緩和を使います。実行時の値は変わりませんが、verifier が二重 XOR を相殺しない性質への依存が残ります。branch 数だけでは保証できないため、6.1 / 6.6 / 6.12 / 6.15 / 6.18 / 7.0 / 7.1 / 7.2 / 7.3-rc4 の packet・program load 試験で互換性を検査します。
 
 `pkt.lookahead` を使う counter decrement は `pkt.advance` より前に記述します。逆順は loader が診断します。これは対応する TLV sibling の制約であり、P4-lite の任意の statement 順序を保持する一般的な保証ではありません。
 
@@ -1170,7 +1170,7 @@ implementation 詳細は、`pkg/kunai/codegen/parser_state.go` の state graph e
 | Parser machine (vocab 著者向け) | select key 幅 ≤8 bit / select key 本数 ≤3 / variable-trail scale は 2 冪のみ / self-loop 反復上限あり (vocab の `<SELF>_MAX_DEPTH` で declare) |
 | Self-validation | parser-block 自検証 (`transition select(field) { v: accept; default: reject; }`) のみ。旧 SANITY const family は撤廃 (legacy 名は loud-fail で拒否) |
 | Vocab | 1 protocol あたり最大 2 ラベル |
-| Kernel | CI 実測: 6.1 / 6.6 / 6.12 / 6.18 / 7.0。`bpf_loop` 経路 (chain quantifier + parser self-loop) は 5.17+ 必須 (= 理論上の floor、CI 未実測)。fixed chain は更に古い kernel でも可 |
+| Kernel | CI 実測: 6.1 / 6.6 / 6.12 / 6.15 / 6.18 / 7.0 / 7.1 / 7.2 / 7.3-rc4。`bpf_loop` 経路 (chain quantifier + parser self-loop) は 5.17+ 必須 (= 理論上の floor、CI 未実測)。fixed chain は更に古い kernel でも可 |
 
 ### 7.2 アーキテクチャ上動かない要件
 

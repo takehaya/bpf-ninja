@@ -328,7 +328,7 @@ kunai codegen の核心は verifier との対戦です。boundary check の位�
 3 記事で DSL → AST → IR → BPF の流れを総覧しましたが、まだ書いていない領域も多くあります。
 
 - dsltest harness は、gopacket で組んだフレームを実 BPF として load し、`BPF_PROG_TEST_RUN` で挙動を gating する仕組みです。
-- vimto kernel matrix は、6.1 / 6.6 / 6.12 で BPF プログラムが load を通過するかを QEMU で検証する CI です。
+- vimto kernel matrix は、6.1 から 7.3-rc4 までの各 kernel で BPF プログラムが load を通過するかを QEMU で検証する CI です。
 - `make p4c-check` は、bundled `.p4` ファイルが本物の P4-16 構文として valid かどうかを Docker の p4c で gating します。
 
 これらは Test infrastructure の deep-dive として別シリーズで扱う余地があります。packet filter library を 1.0 に向けてどう品質保証するかの実例として面白い領域です。

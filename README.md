@@ -408,7 +408,7 @@ This runs `scripts/test/run_tests.sh` which:
 
 #### Multi-kernel testing (vimto + QEMU)
 
-BPF load tests and integration tests run on kernel 6.1, 6.6, 6.12, 6.18 via [vimto](https://github.com/lmb/vimto) + QEMU in GitHub Actions.
+BPF load tests and integration tests run on kernel 6.1, 6.6, 6.12, 6.15, 6.18, 7.0, 7.1, 7.2 and 7.3-rc4 via [vimto](https://github.com/lmb/vimto) + QEMU in GitHub Actions.
 
 To run locally:
 

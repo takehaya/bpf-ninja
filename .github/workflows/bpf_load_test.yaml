@@ -35,6 +35,11 @@ jobs:
           - "6.15"
           - "6.18"
           - "7.0"
+          - "7.1"
+          - "7.2"
+          # ghcr.io/cilium/ci-kernels has no plain 7.3 tag yet; move to
+          # "7.3" once the release image is published.
+          - "7.3-rc4"
     permissions:
       contents: read
       packages: read
@@ -116,8 +121,8 @@ jobs:
       # E4 verifier matrix: extract the per-(filter, host) verdict from
       # TestBpfFilterSet{XDP,TC}/Fn subtests so the paper's Table 2 has
       # a per-cell artifact rather than reading the full test log.
-      # Header + 20 rows per kernel; aggregating the four kernel CSVs
-      # gives the 80-cell matrix.
+      # Header + one row per (filter, host) per kernel; concatenating
+      # the per-kernel CSVs gives the whole matrix.
       - name: Extract verifier matrix CSV
         if: always()
         run: |
