@@ -595,6 +595,11 @@ vector ipv6DstUnalignedEndOfFrame := {
   ast := { layers := [P "eth", P "ipv6"], cond := some (.litCmp dst6Unaligned .eq (.ipv4 0x0a000001)) },
   packet := eth 0x86DD ++ ipv6 59 (src := v6Src1) (dst := v6TenShifted), expected := .accept [],
   note := "the frame ends at the IPv6 header: the load window must stay inside dst" }
+vector ipv4DstSliceEndOfFrame := {
+  id := "ipv4-dst-slice-end-of-frame",
+  ast := { layers := [P "eth", .proto { name := "ipv4", preds := [.cmp ⟨[("dst", some (.slice 12 28))]⟩ .eq (.int 0xbcd0)] }] },
+  packet := eth 0x0800 ++ ipv4 59 (dst := 0x0a0bcd02), expected := .accept [],
+  note := "the frame ends at the IPv4 header; a 4-byte window over the 4-byte dst stays inside it" }
 vector ipv6DstUnalignedIntEndOfFrame := {
   id := "ipv6-dst-unaligned-slice-int-end-of-frame",
   ast := { layers := [P "eth", .proto { name := "ipv6", preds := [.cmp ⟨[("dst", some (.slice 92 124))]⟩ .eq (.int 0x0a000001)] }] },
@@ -1180,7 +1185,7 @@ def whereVectors : List Vector := [
   capHeadersIPv4Options, capHeadersTCPOptions, capHeadersQuantOpt, capHeadersQuantRange, capHeadersQuantPlusClamped, capHeadersQuantPlus, capHeadersQuantOpen,
   capHeadersAltIPv6, capHeadersAltIPv4, capHeadersVxlan, capHeadersPlusOptions,
   typUnknownProto, typNoDispatch, typNotInChain, typUnknownField, typFit, typLabelCollides, typLabelCollidesAlt, typLabelDuplicate, typFitArith, whereArithRight, whereArithRightMiss, typFitArithSibling, whereNegLitSibling, typWidthIPv6, typCIDRWidth,
-  typWidthIPv6Slice, typWidthIPv6SliceBracket, ipv6DstLow32IPv4, ipv6DstLow32IPv4Miss, ipv6DstLow32Cidr, ipv6DstLow32IPv4Unaligned, ipv6DstUnalignedIPv4Miss, ipv6DstUnalignedIPv4Ne, ipv6DstUnalignedCidr, ipv6DstUnalignedCidrNeMiss, ipv6DstUnalignedCidrZero, ipv6DstUnalignedCidrZeroNe, ipv6DstCidr6ZeroNeOr, ipv6DstUnalignedEndOfFrame, ipv6DstUnalignedIntEndOfFrame, predIPv6DstUnalignedIPv4, predIPv6DstUnalignedIPv4Gt, predIPv6DstUnalignedIPv4Ge, predIPv6DstUnalignedInListMac, predIPv6DstUnalignedInListMacInt, predEthSrcUnalignedIPv4, predIPv6DstUnalignedCidrZeroNe, predIPv6Cidr6ZeroNe, predIPv6DstNineByteSlice, ipv6DstLow32IPv4Ne, ipv6DstLow32IPv4NeMiss, ipv6DstLow48Mac, ipv6DstFullSliceIPv6, ipv6DstFullSliceCidr6, ipv6DstLow32IPv4Bracket,
+  typWidthIPv6Slice, typWidthIPv6SliceBracket, ipv6DstLow32IPv4, ipv6DstLow32IPv4Miss, ipv6DstLow32Cidr, ipv6DstLow32IPv4Unaligned, ipv6DstUnalignedIPv4Miss, ipv6DstUnalignedIPv4Ne, ipv6DstUnalignedCidr, ipv6DstUnalignedCidrNeMiss, ipv6DstUnalignedCidrZero, ipv6DstUnalignedCidrZeroNe, ipv6DstCidr6ZeroNeOr, ipv6DstUnalignedEndOfFrame, ipv4DstSliceEndOfFrame, ipv6DstUnalignedIntEndOfFrame, predIPv6DstUnalignedIPv4, predIPv6DstUnalignedIPv4Gt, predIPv6DstUnalignedIPv4Ge, predIPv6DstUnalignedInListMac, predIPv6DstUnalignedInListMacInt, predEthSrcUnalignedIPv4, predIPv6DstUnalignedCidrZeroNe, predIPv6Cidr6ZeroNe, predIPv6DstNineByteSlice, ipv6DstLow32IPv4Ne, ipv6DstLow32IPv4NeMiss, ipv6DstLow48Mac, ipv6DstFullSliceIPv6, ipv6DstFullSliceCidr6, ipv6DstLow32IPv4Bracket,
   typPredIdent, typInSet, predInSetMember, predInSetMiss, typPredInSetWidth, predInSetSubByte, predInSetWindow, predInSetWindowMiss, predInSetIPv6, predInSetIPv6Miss, predInSetTwo, predInSetTwoSecondMiss, predInSetTwoFirstMiss, predInSetUnused, typPredInSetWindow, typPredInSetTwice, typPredInSetBudget, typPredInSetOptional, typPredInSetAlt, typAny, typExists, typAuxPath,
   arith128AddConst, arith128SubConst, arith128AddCarry, arith128AddWrap, arith128SubBorrow, arith128SubWrap, arith128AddMiss,
   arith128FieldAddField, arith128FieldAddFieldCarry, arith128FieldSubField, arith128FieldSubFieldBorrow, arith128AddWideConst, arith128SubWideConstBorrow,

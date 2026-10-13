@@ -262,6 +262,18 @@ func TestApplySliceToOffsetStaysInsideField(t *testing.T) {
 	if shift, mask := slicePostAdjust(ref, size); shift != 4 || mask != 0xffffffff {
 		t.Errorf("shift, mask = %d, %#x; want 4, 0xffffffff", shift, mask)
 	}
+	// A field exactly as wide as the window slides to its start.
+	seq := &ir.FieldRef{
+		Layer: &ir.LayerInstance{Spec: &vocab.ProtocolSpec{Name: "tcp"}},
+		Field: &vocab.Field{Name: "seq", Bits: 32},
+		Slice: &ir.FieldSlice{Lo: 12, Hi: 28},
+	}
+	if off, size, err := applySliceToOffset(seq, 0, 4); err != nil || off != 0 || size != 4 {
+		t.Errorf("tcp.seq[12:28] window = (%d, %d, %v), want (0, 4, nil)", off, size, err)
+	}
+	if shift, mask := slicePostAdjust(seq, 4); shift != 4 || mask != 0xffff {
+		t.Errorf("tcp.seq[12:28] shift, mask = %d, %#x; want 4, 0xffff", shift, mask)
+	}
 	// A field narrower than the window keeps the slice's first byte.
 	narrow := &ir.FieldRef{
 		Layer: &ir.LayerInstance{Spec: &vocab.ProtocolSpec{Name: "eth"}},

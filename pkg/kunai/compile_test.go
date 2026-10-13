@@ -2993,3 +2993,19 @@ func TestCompileBracketNestedOptionSpelling(t *testing.T) {
 		}
 	}
 }
+
+// TestCompileSliceWindowInFilterMinPrefix pins that the scratch prefix a
+// host copies covers a slice's load window, not only the slice:
+// eth.src[12:44] is read as 8 bytes from frame byte 7, past the slice's
+// last byte (11) and past the 14-byte Ethernet header.
+func TestCompileSliceWindowInFilterMinPrefix(t *testing.T) {
+	for _, expr := range []string{"eth where eth.src[12:44] == 5", "eth[src[12:44] == 5]"} {
+		out, err := Compile(expr, codegen.Capabilities{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := out.Capture.FilterMinPrefix; got != 0 && got < 15 {
+			t.Errorf("%s: FilterMinPrefix = %d; want 0 (full window) or at least 15", expr, got)
+		}
+	}
+}

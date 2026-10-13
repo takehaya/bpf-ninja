@@ -186,18 +186,15 @@ func captureLength(c *ir.CaptureClause, p *ir.Program) (int, error) {
 //     "max-of-alts" upper bound captureLength uses.
 //
 // Aux-header field refs add the aux's offset within its layer plus the
-// field's bit window inside the aux. Bit-slice references narrow via
-// EffectiveBits.
+// field's bit window inside the aux. A bit-slice reference counts the
+// load window it is read through (applySliceToOffset). The fields of
+// bracket predicates count like the where clause's.
 func inferMinCapLenFromWhere(p *ir.Program, where *ir.Condition) (int, error) {
-	if where == nil {
-		return 0, nil
-	}
-
 	maxOff := 0
 	bailed := false
 	var walkErr error
 
-	ir.WalkConditionFieldRefs(where, func(fr *ir.FieldRef) {
+	visit := func(fr *ir.FieldRef) {
 		if walkErr != nil || bailed {
 			return
 		}
@@ -234,22 +231,30 @@ func inferMinCapLenFromWhere(p *ir.Program, where *ir.Condition) (int, error) {
 		}
 
 		// Field-end byte offset within the layer.
-		var endBit int
+		var startBit int
 		switch {
 		case fr.Aux != nil:
-			endBit = fr.Aux.OffsetInLayer*8 + fr.Aux.FieldBitOff + fr.EffectiveBits()
+			startBit = fr.Aux.OffsetInLayer*8 + fr.Aux.FieldBitOff
 		case fr.Field != nil:
 			fieldBitOff, _, ok := vocab.BitOffsetIn(fr.Layer.Spec.Fields, fr.Field.Name)
 			if !ok {
 				return // field not found in spec — should not happen, conservative skip
 			}
-			sliceLo := 0
-			if fr.Slice != nil {
-				sliceLo = fr.Slice.Lo
-			}
-			endBit = fieldBitOff + sliceLo + fr.EffectiveBits()
+			startBit = fieldBitOff
 		default:
 			return
+		}
+		sliceLo := 0
+		if fr.Slice != nil {
+			sliceLo = fr.Slice.Lo
+		}
+		endBit := startBit + sliceLo + fr.EffectiveBits()
+		// A slice is read through a load window that can reach past its
+		// last byte (applySliceToOffset); the prefix covers the window.
+		if fr.Slice != nil && startBit%8 == 0 {
+			if off, n, err := applySliceToOffset(fr, 0, 0); err == nil && startBit+(off+n)*8 > endBit {
+				endBit = startBit + (off+n)*8
+			}
 		}
 		fieldEnd := (endBit + 7) / 8 // round up to byte
 
@@ -257,7 +262,19 @@ func inferMinCapLenFromWhere(p *ir.Program, where *ir.Condition) (int, error) {
 		if candidate > maxOff {
 			maxOff = candidate
 		}
-	})
+	}
+	ir.WalkConditionFieldRefs(where, visit)
+	// Bracket predicates read their fields too: a slice's load window
+	// can reach past the layer's header (`eth[src[12:44] == 5]`).
+	for _, l := range p.Layers {
+		for _, inst := range append([]*ir.LayerInstance{l}, l.Alternation...) {
+			for _, pred := range inst.Predicates {
+				if pred.Field != nil {
+					visit(pred.Field)
+				}
+			}
+		}
+	}
 
 	if walkErr != nil {
 		return 0, walkErr

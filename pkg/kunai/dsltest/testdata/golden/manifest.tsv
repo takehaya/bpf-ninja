@@ -232,6 +232,7 @@ xdp_entry	eth/ipv4[dst != 0.0.0.0/0]/tcp	-	code=841eb6d44c4dec35 meta=5ee214e8b4
 xdp_entry	eth/ipv4[dst == 10.0.0.0/24, src != 10.0.0.2]/tcp	-	code=5bcecb51d792a65d meta=5ee214e8b4c27377 main=148 cb=0
 xdp_entry	eth/ipv4[dst in [10.0.0.1, 10.0.0.2]]/tcp	-	code=4f1608a2dfe71ccc meta=5ee214e8b4c27377 main=140 cb=0
 xdp_entry	eth/ipv4[dst in [10.0.0.3, 10.0.0.4]]/tcp	-	code=bf9a4404fa2ebf84 meta=5ee214e8b4c27377 main=140 cb=0
+xdp_entry	eth/ipv4[dst[12:28] == 48336]	-	code=7a73e4f1cff6370d meta=5ee214e8b4c27377 main=76 cb=0
 xdp_entry	eth/ipv4[ihl in @ihls]/tcp	ihls:8	code=13d8f4f19a704e1f meta=09445d450182be10 main=137 cb=0
 xdp_entry	eth/ipv4[options.RR.addrs[1].addr == 10.0.0.10]/tcp	-	code=a03caa2742d548e6 meta=5ee214e8b4c27377 main=195 cb=102
 xdp_entry	eth/ipv4[options.valid]+/tcp	-	code=9c349bcab153f4f8 meta=5ee214e8b4c27377 main=934 cb=736
