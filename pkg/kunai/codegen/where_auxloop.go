@@ -27,9 +27,9 @@ const staticAuxCap = 2
 // option-internal length). Field width (IPv4/IPv6/MAC) and count source
 // (primary/owner) are both handled by the callback, so any future P4
 // protocol declaring a large counted list gets the flat lowering for
-// free. Richer inner conditions (or/not, !=, ordered, integer arith)
-// and push-counted stacks (gtp.exts/ipv6.exts, whose count lives in a
-// main-frame slot) stay on the unroll path, which already supports
+// free. Richer inner conditions (or/not, !=, ordered, integer arith),
+// a slice off byte boundaries and push-counted stacks (gtp.exts/ipv6.exts,
+// whose count lives in a main-frame slot) stay on the unroll path, which already supports
 // them, so no shape regresses to a hard error.
 func useBpfLoopAuxWalk(w *ir.Condition) (bool, error) {
 	t := w.QuantTarget
