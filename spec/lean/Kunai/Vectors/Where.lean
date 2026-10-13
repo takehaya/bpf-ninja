@@ -26,6 +26,17 @@ vector whereCIDRNe := {
 vector whereCIDR0 := {
   id := "where-cidr-zero", ast := W (.litCmp (ff "ipv4" "dst") .eq (.cidr4 0 0)), expected := .accept [],
   note := "/0 matches everything" }
+-- `!=` against a /0 CIDR holds for no address, also inside or/not.
+vector whereCIDR0Ne := {
+  id := "where-cidr-zero-ne", ast := W (.litCmp (ff "ipv4" "dst") .ne (.cidr4 0 0)), expected := .reject }
+vector whereCIDR0NeOr := {
+  id := "where-cidr-zero-ne-or", ast := W (.or (.litCmp (ff "ipv4" "dst") .ne (.cidr4 0 0)) (.litCmp (ff "ipv4" "src") .eq (.ipv4 0x0a000001))),
+  expected := .accept [] }
+vector whereCIDR0NeNot := {
+  id := "where-cidr-zero-ne-not", ast := W (.not (.litCmp (ff "ipv4" "dst") .ne (.cidr4 0 0))), expected := .accept [] }
+vector predCIDR0Ne := {
+  id := "pred-cidr-zero-ne", ast := { layers := [P "eth", .proto { name := "ipv4", preds := [.cmp (f "dst") .ne (.cidr4 0 0)] }, P "tcp"] },
+  expected := .reject }
 vector whereMAC := {
   id := "where-mac", ast := W (.litCmp (ff "eth" "dst") .eq (.mac 0x001122334455)), expected := .accept [] }
 vector whereIPv6CIDR := {
@@ -548,6 +559,20 @@ vector ipv6DstFullSliceIPv6 := {
 -- Bracket `in [...]` over a 128-bit field and its slices (src fc00::1, dst fc00::a00:1).
 def ipv6Pred (p : Predicate) : Filter := { layers := [P "eth", .proto { name := "ipv6", preds := [p] }, P "tcp"] }
 def v6Src3 : Nat := 0xfc000000000000000000000000000003
+vector ipv6DstUnalignedCidrZero := {
+  id := "ipv6-dst-unaligned-slice-cidr-zero", ast := W6 (.litCmp dst6Unaligned .eq (.cidr4 0 0)),
+  packet := v6pkt v6Src1 v6LowTen, expected := .accept [] }
+vector ipv6DstUnalignedCidrZeroNe := {
+  id := "ipv6-dst-unaligned-slice-cidr-zero-ne", ast := W6 (.litCmp dst6Unaligned .ne (.cidr4 0 0)),
+  packet := v6pkt v6Src1 v6LowTen, expected := .reject }
+vector ipv6DstCidr6ZeroNeOr := {
+  id := "ipv6-dst-cidr6-zero-ne-or", ast := W6 (.or (.litCmp ⟨[("ipv6", none), ("dst", none)]⟩ .ne (.cidr6 0 0)) (.litCmp dst6Low .eq (.ipv4 0x0a000001))),
+  packet := v6pkt v6Src1 v6LowTen, expected := .accept [] }
+vector ipv6DstUnalignedEndOfFrame := {
+  id := "ipv6-dst-unaligned-slice-end-of-frame",
+  ast := { layers := [P "eth", P "ipv6"], cond := some (.litCmp dst6Unaligned .eq (.ipv4 0x0a000001)) },
+  packet := eth 0x86DD ++ ipv6 59 (src := v6Src1) (dst := v6TenShifted), expected := .accept [], goStatus := .mismatch,
+  note := "the frame ends at the IPv6 header; Go reads the 8 bytes from dst byte 11, past the frame, and rejects" }
 vector predIPv6DstUnalignedIPv4 := {
   id := "pred-ipv6-dst-unaligned-slice-ipv4", ast := ipv6Pred (.cmp ⟨[("dst", some (.slice 92 124))]⟩ .eq (.ipv4 0x0a000001)),
   packet := v6pkt v6Src1 v6TenShifted, expected := .accept [] }
@@ -566,6 +591,11 @@ vector predIPv6DstUnalignedInListMacInt := {
 vector predEthSrcUnalignedIPv4 := {
   id := "pred-eth-src-unaligned-slice-ipv4", ast := ethPred (.cmp ⟨[("src", some (.slice 4 36))]⟩ .eq (.ipv4 0x6778899a)),
   expected := .accept [], note := "bits 4..36 of 66:77:88:99:aa:bb" }
+vector predIPv6DstUnalignedCidrZeroNe := {
+  id := "pred-ipv6-dst-unaligned-slice-cidr-zero-ne", ast := ipv6Pred (.cmp ⟨[("dst", some (.slice 92 124))]⟩ .ne (.cidr4 0 0)),
+  packet := v6pkt v6Src1 v6LowTen, expected := .reject }
+vector predIPv6Cidr6ZeroNe := {
+  id := "pred-ipv6-cidr6-zero-ne", ast := ipv6Pred (.cmp (f "dst") .ne (.cidr6 0 0)), packet := v6pkt v6Src1 v6LowTen, expected := .reject }
 vector predIPv6DstNineByteSlice := {
   id := "pred-ipv6-dst-slice-nine-byte-window", ast := ipv6Pred (.cmp ⟨[("dst", some (.slice 60 124))]⟩ .eq (.int 0xa00000)),
   packet := v6pkt v6Src1 v6LowTen, expected := .accept [], goStatus := .notImplemented,
@@ -1075,7 +1105,7 @@ def whereVectors : List Vector := [
   whereAltLabelHit, whereAltLabelOther, whereAltLabelOtherNot, whereAltNameHit, whereAltNameOther, whereAltNameOtherNot,
   whereAltLabelHet, whereAltLabelHetOther, whereAltLabelHetOtherNot, whereAltL3Hit, whereAltL3Other, whereAltL3OtherOr,
   whereAltL3AfterOpt, whereAltL3AfterOptOther,
-  whereCmpOps, whereLitIPv4, whereCIDRIn, whereCIDRNe, whereCIDR0, whereMAC, whereIPv6CIDR, whereIPv6Eq,
+  whereCmpOps, whereLitIPv4, whereCIDRIn, whereCIDRNe, whereCIDR0, whereCIDR0Ne, whereCIDR0NeOr, whereCIDR0NeNot, predCIDR0Ne, whereMAC, whereIPv6CIDR, whereIPv6Eq,
   whereNegLitMiss, whereNegLitHit, whereConstFold,
   whereArithOps, whereBitwise, whereShiftMasked, whereNoWrap, whereDivZero, whereModZero, whereMixedWidth,
   whereTrue, whereFalse, whereDecay, whereNot, whereOr, whereBoolEqIff, whereBoolEqXor,
@@ -1092,7 +1122,7 @@ def whereVectors : List Vector := [
   capHeadersIPv4Options, capHeadersTCPOptions, capHeadersQuantOpt, capHeadersQuantRange, capHeadersQuantPlusClamped, capHeadersQuantPlus, capHeadersQuantOpen,
   capHeadersAltIPv6, capHeadersAltIPv4, capHeadersVxlan, capHeadersPlusOptions,
   typUnknownProto, typNoDispatch, typNotInChain, typUnknownField, typFit, typLabelCollides, typLabelCollidesAlt, typLabelDuplicate, typFitArith, whereArithRight, whereArithRightMiss, typFitArithSibling, whereNegLitSibling, typWidthIPv6, typCIDRWidth,
-  typWidthIPv6Slice, typWidthIPv6SliceBracket, ipv6DstLow32IPv4, ipv6DstLow32IPv4Miss, ipv6DstLow32Cidr, ipv6DstLow32IPv4Unaligned, ipv6DstUnalignedIPv4Miss, ipv6DstUnalignedIPv4Ne, ipv6DstUnalignedCidr, ipv6DstUnalignedCidrNeMiss, predIPv6DstUnalignedIPv4, predIPv6DstUnalignedIPv4Gt, predIPv6DstUnalignedIPv4Ge, predIPv6DstUnalignedInListMac, predIPv6DstUnalignedInListMacInt, predEthSrcUnalignedIPv4, predIPv6DstNineByteSlice, ipv6DstLow32IPv4Ne, ipv6DstLow32IPv4NeMiss, ipv6DstLow48Mac, ipv6DstFullSliceIPv6, ipv6DstFullSliceCidr6, ipv6DstLow32IPv4Bracket,
+  typWidthIPv6Slice, typWidthIPv6SliceBracket, ipv6DstLow32IPv4, ipv6DstLow32IPv4Miss, ipv6DstLow32Cidr, ipv6DstLow32IPv4Unaligned, ipv6DstUnalignedIPv4Miss, ipv6DstUnalignedIPv4Ne, ipv6DstUnalignedCidr, ipv6DstUnalignedCidrNeMiss, ipv6DstUnalignedCidrZero, ipv6DstUnalignedCidrZeroNe, ipv6DstCidr6ZeroNeOr, ipv6DstUnalignedEndOfFrame, predIPv6DstUnalignedIPv4, predIPv6DstUnalignedIPv4Gt, predIPv6DstUnalignedIPv4Ge, predIPv6DstUnalignedInListMac, predIPv6DstUnalignedInListMacInt, predEthSrcUnalignedIPv4, predIPv6DstUnalignedCidrZeroNe, predIPv6Cidr6ZeroNe, predIPv6DstNineByteSlice, ipv6DstLow32IPv4Ne, ipv6DstLow32IPv4NeMiss, ipv6DstLow48Mac, ipv6DstFullSliceIPv6, ipv6DstFullSliceCidr6, ipv6DstLow32IPv4Bracket,
   typPredIdent, typInSet, predInSetMember, predInSetMiss, typPredInSetWidth, predInSetSubByte, predInSetWindow, predInSetWindowMiss, predInSetIPv6, predInSetIPv6Miss, predInSetTwo, predInSetTwoSecondMiss, predInSetTwoFirstMiss, predInSetUnused, typPredInSetWindow, typPredInSetTwice, typPredInSetBudget, typPredInSetOptional, typPredInSetAlt, typAny, typExists, typAuxPath,
   arith128AddConst, arith128SubConst, arith128AddCarry, arith128AddWrap, arith128SubBorrow, arith128SubWrap, arith128AddMiss,
   arith128FieldAddField, arith128FieldAddFieldCarry, arith128FieldSubField, arith128FieldSubFieldBorrow, arith128AddWideConst, arith128SubWideConstBorrow,

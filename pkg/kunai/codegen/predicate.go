@@ -129,7 +129,7 @@ func emitCmpPredicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, error)
 	if pred.Value == nil {
 		return nil, fmt.Errorf("codegen: nil predicate value")
 	}
-	if pred.Value.Kind != ast.ValInt && sliceNeedsScalarLoad(pred.Field) {
+	if k := pred.Value.Kind; (k == ast.ValIPv4 || k == ast.ValMAC || k == ast.ValCIDR) && sliceNeedsScalarLoad(pred.Field) {
 		return emitLiteralScalarPredicate(pred, pc)
 	}
 	switch pred.Value.Kind {
@@ -151,9 +151,10 @@ func emitCmpPredicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, error)
 }
 
 // sliceNeedsScalarLoad reports whether ref is a bit-slice with an end off
-// a byte boundary. The resolver refuses such a slice above 64 bits, so
-// it is an IPv4 or MAC wide at most: a network literal compares against
-// its numeric value, read like an integer field's through a covering
+// a byte boundary. The resolver refuses such a slice above 64 bits, and
+// types a network literal against the slice width, so the literals that
+// reach one are 32 bits (IPv4) or 48 (MAC) wide: they compare against the
+// slice's numeric value, read like an integer field's through a covering
 // window, instead of byte by byte.
 func sliceNeedsScalarLoad(ref *ir.FieldRef) bool {
 	return ref != nil && ref.Slice != nil && (ref.Slice.Lo%8 != 0 || ref.Slice.Hi%8 != 0)
@@ -190,11 +191,14 @@ func literalScalarCompare(v *ast.Value, op ast.CmpOp, failLabel string) (asm.Ins
 	case v.Kind == ast.ValMAC:
 		return cmpR3Const(jumpOp, macValue(v), failLabel), nil
 	case v.Kind == ast.ValCIDR && v.AF == 4:
+		if _, eq := ipEqualityJumpOp(op); !eq {
+			return nil, fmt.Errorf("%w: IPv4 CIDR supports only == / != (got %s)", ErrNotImplemented, op)
+		}
 		if v.Prefix <= 0 {
 			if op == ast.CmpEq {
 				return nil, nil
 			}
-			return asm.Instructions{asm.Ja.Label(failLabel)}, nil
+			return constantFail(failLabel), nil
 		}
 		mask := ipv4PrefixMaskBE(v.Prefix)
 		network := binary.BigEndian.Uint32(v.V4[:]) & mask
@@ -204,6 +208,16 @@ func literalScalarCompare(v *ast.Value, op ast.CmpOp, failLabel string) (asm.Ins
 		return append(insns, cmpR3Const(jumpOp, uint64(network), failLabel)...), nil
 	}
 	return nil, fmt.Errorf("codegen: a %v literal cannot compare with a slice off byte boundaries", v.Kind)
+}
+
+// constantFail jumps to label on every packet: `!=` against a /0 CIDR
+// holds for no address. The jump is conditional on a constant register,
+// so the code after it stays reachable in the control-flow graph, which
+// the kernel's load-time check demands of every instruction (an
+// unconditional jump there fails the load with "unreachable insn"); the
+// verifier then prunes the fall-through.
+func constantFail(label string) asm.Instructions {
+	return asm.Instructions{asm.Mov.Imm(asm.R3, 0), asm.JEq.Imm(asm.R3, 0, label)}
 }
 
 // macValue is a MAC literal as the 48-bit big-endian number of its bytes.
@@ -810,7 +824,7 @@ func lowHalfMissJump(op ast.CmpOp) asm.JumpOp {
 // Edge cases mirror the IPv4 CIDR path:
 //   - /128 → host match (collapses to emitIPv6Predicate).
 //   - /0 with == → emit nothing (matches every address).
-//   - /0 with != → Ja dslReject (matches no address).
+//   - /0 with != matches no address: always reject (constantFail).
 func emitIPv6CIDRPredicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, error) {
 	if err := requireEqualityOp(pred, "IPv6 CIDR"); err != nil {
 		return nil, err
@@ -826,7 +840,7 @@ func emitIPv6CIDRPredicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, e
 		if pred.Op == ast.CmpEq {
 			return nil, nil
 		}
-		return asm.Instructions{asm.Ja.Label(dslReject)}, nil
+		return constantFail(dslReject), nil
 	}
 	maskHighBE, maskLowBE := ipv6PrefixMaskBE(prefix)
 	hostHighBE := binary.BigEndian.Uint64(pred.Value.V6[0:8]) & maskHighBE
@@ -1341,7 +1355,7 @@ func ipv6PrefixMaskBE(prefix int) (high, low uint64) {
 //   - /32 collapses to a host match (the AND-with-all-ones is dead),
 //     so we hand off to emitIPv4Predicate.
 //   - /0 with == matches every address — emit nothing.
-//   - /0 with != matches nothing — jump straight to dslReject.
+//   - /0 with != matches nothing — always reject (constantFail).
 func emitIPv4CIDRPredicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, error) {
 	prefix := pred.Value.Prefix
 	if prefix < 0 || prefix > 32 {
@@ -1358,7 +1372,7 @@ func emitIPv4CIDRPredicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, e
 		if pred.Op == ast.CmpEq {
 			return nil, nil
 		}
-		return asm.Instructions{asm.Ja.Label(dslReject)}, nil
+		return constantFail(dslReject), nil
 	}
 	maskBE := ipv4PrefixMaskBE(prefix)
 	hostBE := binary.BigEndian.Uint32(pred.Value.V4[:]) & maskBE
