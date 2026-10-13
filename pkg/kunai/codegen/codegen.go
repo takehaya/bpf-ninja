@@ -419,13 +419,16 @@ func Gen(p *ir.Program, caps Capabilities) (Output, error) {
 	// fails and the packet is rejected — matching the sentinel-absent
 	// semantics of the per-option path. The conjuncts the plan did not
 	// fold (plan.rest) follow as an ordinary where condition, so an
-	// optional or alternation-member layer keeps its absent guard.
+	// optional or alternation-member layer keeps its absent guard. An
+	// inLayer plan ran its check inside the layer.
 	if plan != nil {
-		maskCheck, err := emitAccMaskCheck(plan, qo, dslReject)
-		if err != nil {
-			return Output{}, err
+		if !plan.inLayer {
+			maskCheck, err := emitAccMaskCheck(plan, qo, dslReject)
+			if err != nil {
+				return Output{}, err
+			}
+			insns = append(insns, maskCheck...)
 		}
-		insns = append(insns, maskCheck...)
 		where = plan.rest
 	}
 	if where != nil {

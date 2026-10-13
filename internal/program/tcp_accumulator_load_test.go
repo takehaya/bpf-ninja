@@ -62,6 +62,10 @@ func accumulatorExprs() []struct{ id, expr string } {
 		{"tcp_opts_2_bracket", "eth/ipv4/tcp[mss.value == 1460, ws.shift == 7]"},
 		{"tcp_opts_2_bracket_where_rest", "eth/ipv4/tcp[mss.value == 1460] where tcp.ws.shift == 7 and tcp.dport == 80"},
 		{"tcp_opts_2_bracket_alt", "eth/ipv4/(tcp[mss.value == 1460, ws.shift == 7]|udp) where tcp.options.valid"},
+		// With no where term on a layer that may be absent, the mask check
+		// runs inside the layer.
+		{"tcp_opts_2_bracket_optional", "eth/ipv4/tcp[mss.value == 1460, ws.shift == 7]?"},
+		{"tcp_opts_2_bracket_alt_no_where", "eth/ipv4/(tcp[mss.value == 1460, ws.shift == 7]|udp)"},
 	}
 }
 
@@ -70,9 +74,8 @@ func accumulatorExprs() []struct{ id, expr string } {
 // several options, in the bracket or the where clause, both lower (the
 // accumulator folds them into one slot); a conjunct that reads no option
 // stays a where condition. Shapes the accumulator does not cover reject
-// with ErrNotImplemented: a non-eq (`!=`) read of an option, or a bracket
-// on a layer that may be absent with no where term on it. Compile-only,
-// so it needs no root.
+// with ErrNotImplemented: a non-eq (`!=`) read of an option, or an
+// ordered bracket. Compile-only, so it needs no root.
 func TestTCPMultiOptionBoundary(t *testing.T) {
 	cases := []struct {
 		id     string
@@ -87,7 +90,7 @@ func TestTCPMultiOptionBoundary(t *testing.T) {
 		{"tcp_mixed_atom", "eth/ipv4/tcp where tcp.dport == 443 and tcp.options.MSS.value == 1460 and tcp.options.WS.shift == 7", false},
 		{"tcp_2opt_bracket", "eth/ipv4/tcp[mss.value == 1460, ws.shift == 7]", false},
 		{"tcp_2opt_bracket_ordered_rejects", "eth/ipv4/tcp[mss.value == 1460, ts.tsval > 5]", true},
-		{"tcp_2opt_bracket_optional_rejects", "eth/ipv4/tcp[mss.value == 1460, ws.shift == 7]?", true},
+		{"tcp_2opt_bracket_optional", "eth/ipv4/tcp[mss.value == 1460, ws.shift == 7]?", false},
 	}
 	for _, c := range cases {
 		t.Run(c.id, func(t *testing.T) {

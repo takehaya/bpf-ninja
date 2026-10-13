@@ -133,6 +133,16 @@ func genParserMachineIter(layer *ir.LayerInstance, layerIdx int, all []*ir.Layer
 		return nil, nil, err
 	}
 	insns = append(insns, reanchor...)
+	// The folded brackets of a layer that may be absent are checked here,
+	// on the present path only: every walk path, the D-029 malformed
+	// landing included, converges on the done landing.
+	if plan != nil && plan.inLayer && plan.layer == layer {
+		check, err := emitAccMaskCheck(plan, qo, dslReject)
+		if err != nil {
+			return nil, nil, err
+		}
+		insns = append(insns, check...)
+	}
 	// Bracket predicates that must wait for aux-extract (splitPredicates:
 	// every predicate of a write-back protocol, §13.4 / D-032, any
 	// predicate indexing a push-counted stack, D-031, and any reading an

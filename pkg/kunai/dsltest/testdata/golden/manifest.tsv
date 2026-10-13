@@ -63,6 +63,7 @@ xdp_entry	eth/ipv4+/tcp capture headers	-	code=4ddbd6486f34ce93 meta=25f4d2148f9
 xdp_entry	eth/ipv4/(tcp@x|udp) where not (x.dport == 80)	-	code=1c7312c4ba175a69 meta=5ee214e8b4c27377 main=161 cb=0
 xdp_entry	eth/ipv4/(tcp@x|udp) where x.dport == 80	-	code=3a33e1298de59aa8 meta=5ee214e8b4c27377 main=159 cb=0
 xdp_entry	eth/ipv4/(tcp[dport == 80]|tcp[sport == 22])	-	code=fd5f08d2b9304b5d meta=5ae9c4ac9b59101e main=210 cb=0
+xdp_entry	eth/ipv4/(tcp[mss.value == 1460, ws.shift == 7]|udp)	-	code=8f8ee13eeac8f26c meta=5ee214e8b4c27377 main=176 cb=152
 xdp_entry	eth/ipv4/(tcp[mss.value == 1460, ws.shift == 7]|udp) where tcp.options.valid	-	code=233ae28ce2412b87 meta=5ee214e8b4c27377 main=183 cb=152
 xdp_entry	eth/ipv4/(tcp[options.valid]|udp)	-	code=781beb2a32021b5d meta=5ee214e8b4c27377 main=181 cb=96
 xdp_entry	eth/ipv4/(tcp|udp) where any((tcp.options.SACK.blocks.right == 200) or (udp.dport == 80))	-	code=b9dd20ea79eb7930 meta=5ee214e8b4c27377 main=369 cb=106
@@ -171,6 +172,8 @@ xdp_entry	eth/ipv4/tcp[mss.value == 1460, ws.shift == 7]	-	code=a2a4bdfd064d01ce
 xdp_entry	eth/ipv4/tcp[mss.value == 1460, ws.shift == 7] where not (tcp.dport == 80) or (ipv4.ttl == 1)	-	code=73357ba5f3140e1d meta=5ee214e8b4c27377 main=188 cb=152
 xdp_entry	eth/ipv4/tcp[mss.value == 1460, ws.shift == 7] where tcp.dport == 80	-	code=3567965a5477990d meta=5ee214e8b4c27377 main=176 cb=152
 xdp_entry	eth/ipv4/tcp[mss.value == 1460, ws.shift == 7] where tcp.dport == 81	-	code=1e9addf1413800f3 meta=5ee214e8b4c27377 main=176 cb=152
+xdp_entry	eth/ipv4/tcp[mss.value == 1460, ws.shift == 7]?	-	code=41d43412c7047047 meta=5ee214e8b4c27377 main=164 cb=152
+xdp_entry	eth/ipv4/tcp[mss.value == 1460, ws.shift == 7]? where not (tcp.dport == 80)	-	code=df38eb843cc60bc8 meta=5ee214e8b4c27377 main=183 cb=152
 xdp_entry	eth/ipv4/tcp[mss.value == 1460, ws.shift == 7]? where tcp.dport == 80	-	code=93c9cb076aa0ad4c meta=5ee214e8b4c27377 main=181 cb=152
 xdp_entry	eth/ipv4/tcp[mss.value == 1460]	-	code=51a90ba62cc3a48d meta=5ee214e8b4c27377 main=179 cb=106
 xdp_entry	eth/ipv4/tcp[mss.value in [1400, 1450..1460]]	-	code=a19656c11dad3541 meta=5ee214e8b4c27377 main=184 cb=106

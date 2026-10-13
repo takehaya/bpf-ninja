@@ -2728,6 +2728,12 @@ func TestCompileBracketOptionsFoldIntoAccumulator(t *testing.T) {
 		{"eth/ipv4/(tcp[mss.value == 1460, ws.shift == 7]|udp) where tcp.options.valid", 0b11, false},
 		{"eth/ipv4/tcp[mss.value == 1460, ws.shift == 7]? where tcp.sack_perm.kind == 4", 0b111, false},
 		{"eth/ipv4/tcp[mss.value == 1460, ws.shift == 7]? where tcp.dport == 80", 0b11, true},
+		// With no where term on a layer that may be absent, the check runs
+		// inside the layer, where its bracket runs.
+		{"eth/ipv4/tcp[mss.value == 1460, ts.tsval == 5]?", 0b11, false},
+		{"eth/ipv4/(tcp[mss.value == 1460, ts.tsval == 5]|udp)", 0b11, false},
+		{"eth/ipv4/tcp[mss.value == 1460, ts.tsval == 5]? where not tcp.dport == 80", 0b11, true},
+		{"eth/ipv4/tcp[mss.value == 1460, ts.tsval == 5]? where tcp.dport == 80 or ipv4.ttl == 1", 0b11, true},
 		// A capture condition is part of the where clause and folds too.
 		{"eth/ipv4/tcp where tcp.ws.shift == 7 capture headers where tcp.mss.value == 1460", 0b11, false},
 		{"eth/ipv4/tcp[mss.value == 1460] where tcp.ws.shift == 7 capture headers where tcp.dport == 80", 0b11, false},
@@ -2755,10 +2761,6 @@ func TestCompileBracketOptionsFoldIntoAccumulator(t *testing.T) {
 		{"eth/ipv4/tcp[mss.value == 1460, ts.tsval == 5] where not tcp.ts.tsval == 6", "tcp.ts.tsval is read by a where or capture term"},
 		{"eth/ipv4/tcp[mss.value == 1460, ts.tsval == 5] where tcp.mss.exists", "is read by a where or capture term"},
 		{"eth/ipv4/tcp[mss.value == 1460, ts.tsval == 5] capture headers where tcp.mss.value > 1000", "tcp.mss.value is read by a where or capture term"},
-		{"eth/ipv4/tcp[mss.value == 1460, ts.tsval == 5]?", "tcp may be absent"},
-		{"eth/ipv4/(tcp[mss.value == 1460, ts.tsval == 5]|udp)", "tcp may be absent"},
-		{"eth/ipv4/tcp[mss.value == 1460, ts.tsval == 5]? where not tcp.dport == 80", "tcp may be absent"},
-		{"eth/ipv4/tcp[mss.value == 1460, ts.tsval == 5]? where tcp.dport == 80 or ipv4.ttl == 1", "tcp may be absent"},
 		{"eth/ipv4/tcp[mss.value[0:8] == 5, ts.tsval == 5]", "the bracket predicate on tcp.mss.value is not `== <integer>` on the whole field"},
 		{"eth/ipv4/tcp where tcp.mss.value == 1460 and tcp.options.SACK.blocks[1].left == 5", "tcp.sack.blocks[1].left is read by a where or capture term the walk cannot fold"},
 		// Two tcp members of one alternation: only the first can match,
