@@ -161,7 +161,7 @@ eth/ipv6/srv6/tcp where srv6.segments[0].addr + 1 == srv6.segments[1].addr
 eth/ipv6/srv6/tcp where srv6.segments[1].addr[64:128] == 2
 ```
 
-segment のような 16 byte の aux field も、primary の `ipv6.dst[64:128]` と同じく `[0:64]` や `[64:128]` の slice で 64 bit の値として読めます。静的 index でも動的 index でも同じで、bracket predicate の中でも使えます。ただし bracket predicate の整数リテラルは 2^31 未満に限られるので、`0xfc00000000000000` のような大きな値との比較は where 節で書きます。
+segment のような 16 byte の aux field も、primary の `ipv6.dst[64:128]` と同じく `[0:64]` や `[64:128]` の slice で 64 bit の値として読めます。静的 index でも動的 index でも同じで、bracket predicate の中でも使えます。`srv6[segments[1].addr[0:64] == 0xfc00000000000000]` のように、64 bit までの値と比べられます。
 
 IPv4 / IPv6 / MAC のアドレスリテラルと CIDR は slice 後の幅と比べます。`ipv6.dst[96:128] == 10.0.0.1` や `ipv6.dst[96:128] == 10.0.0.0/8` のように、IPv6 アドレスの下位 32 bit を IPv4 のリテラルと比較できます。逆に `ipv6.dst[64:128] == fc00::2` は 64 bit の slice と 128 bit のリテラルなので型エラーになります。アドレスリテラルと比べる slice は byte 境界で始まり byte 境界で終わる必要があります。
 

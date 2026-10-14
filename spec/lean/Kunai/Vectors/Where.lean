@@ -497,6 +497,30 @@ vector predInSetWindowMiss := {
   note := "the 2-byte window is narrowed to traffic_class (0) before the lookup, not compared whole" }
 def sids (members : List Nat) : SetDecl := { name := "sids", width := 128, members }
 def ipv6DstInSet : Filter := { layers := [P "eth", .proto { name := "ipv6", preds := [.inSet (f "dst") "sids"] }, P "tcp"] }
+-- A bracket constant above int32 as the compare sees it: an equality on
+-- a whole field compares the byte-swapped constant (128 on tcp.seq is
+-- 0x80000000), an ordered compare the plain one.
+def seqPkt (seq : Nat) : Packet := eth 0x0800 ++ ipv4 6 ++ tcp 12345 80 (seq := seq) ++ payload 5
+vector predSeqSwappedWide := {
+  id := "pred-tcp-seq-eq-swapped-wide", ast := tcpPred (.cmp (f "seq") .eq (.int 128)), packet := seqPkt 128, expected := .accept [],
+  note := "128 byte-swapped is 0x80000000" }
+vector predSeqSwappedWideMiss := {
+  id := "pred-tcp-seq-eq-swapped-wide-miss", ast := tcpPred (.cmp (f "seq") .eq (.int 128)), packet := seqPkt 0x80000000, expected := .reject }
+vector predSeqWideNe := {
+  id := "pred-tcp-seq-ne-swapped-wide", ast := tcpPred (.cmp (f "seq") .ne (.int 128)), packet := seqPkt 1, expected := .accept [] }
+vector predSeqWideGt := {
+  id := "pred-tcp-seq-gt-wide", ast := tcpPred (.cmp (f "seq") .gt (.int 0x80000000)), packet := seqPkt 0x80000001, expected := .accept [] }
+vector predSeqWideGtMiss := {
+  id := "pred-tcp-seq-gt-wide-miss", ast := tcpPred (.cmp (f "seq") .gt (.int 0x80000000)), packet := seqPkt 5, expected := .reject }
+vector whereCidr32HighOctet := {
+  id := "where-cidr32-high-octet", ast := W (.litCmp (ff "ipv4" "dst") .eq (.cidr4 0x0a000080 32)),
+  packet := eth 0x0800 ++ ipv4 6 (dst := 0x0a000080) ++ tcp 12345 80 ++ payload 5, expected := .accept [],
+  note := "10.0.0.128 byte-swapped is 0x8000000a" }
+vector whereCidr32HighOctetNe := {
+  id := "where-cidr32-high-octet-ne", ast := W (.litCmp (ff "ipv4" "dst") .ne (.cidr4 0x0a000080 32)),
+  packet := eth 0x0800 ++ ipv4 6 (dst := 0x0a000080) ++ tcp 12345 80 ++ payload 5, expected := .reject }
+vector predSeqMax := {
+  id := "pred-tcp-seq-eq-max", ast := tcpPred (.cmp (f "seq") .eq (.int 0xffffffff)), packet := seqPkt 0xffffffff, expected := .accept [] }
 vector predInSetIPv6 := {
   id := "pred-inset-ipv6", ast := ipv6DstInSet, sets := [sids [1, 0xfc000000000000000000000000000002]],
   packet := ipv6TCP, expected := .accept [], note := "a 128-bit key in network order" }
@@ -710,6 +734,9 @@ vector whereIPv6NineByteAlt := {
 vector whereIPv6NineByteAltMiss := {
   id := "where-ipv6-dst-slice-nine-byte-alt-miss", ast := { layers := altL3TCP, cond := some (cmp dst60W .eq (k 0x123450)) },
   packet := v6pkt v6Src1 dstOdd, expected := .reject }
+vector predIPv6NineByteWideConst := {
+  id := "pred-ipv6-dst-slice-nine-byte-wide-constant", ast := ipv6Pred (.cmp ⟨[("dst", some (.slice 4 68))]⟩ .eq (.int 0xc000000000000000)),
+  packet := v6pkt v6Src1 v6LowTen, expected := .accept [], note := "a 64-bit constant in a bracket" }
 def dst60Set (members : List Nat) : SetDecl := { name := "d", width := 64, members }
 vector predInSetNineByte := {
   id := "pred-inset-nine-byte-slice", ast := ipv6Pred (.inSet dst60 "d"), sets := [dst60Set [0xa00000]], packet := v6pkt v6Src1 v6LowTen,
@@ -1299,7 +1326,7 @@ def whereVectors : List Vector := [
   capHeadersAltIPv6, capHeadersAltIPv4, capHeadersVxlan, capHeadersPlusOptions,
   typUnknownProto, typNoDispatch, typNotInChain, typUnknownField, typFit, typLabelCollides, typLabelCollidesAlt, typLabelDuplicate, typFitArith, whereArithRight, whereArithRightMiss, typFitArithSibling, whereNegLitSibling, typWidthIPv6, typCIDRWidth,
   typWidthIPv6Slice, typWidthIPv6SliceBracket, ipv6DstLow32IPv4, ipv6DstLow32IPv4Miss, ipv6DstLow32Cidr, ipv6DstLow32IPv4Unaligned, ipv6DstUnalignedIPv4Miss, ipv6DstUnalignedIPv4Ne, ipv6DstUnalignedCidr, ipv6DstUnalignedCidrNeMiss, ipv6DstUnalignedCidrZero, ipv6DstUnalignedCidrZeroNe, ipv6DstCidr6ZeroNeOr, ipv6DstUnalignedEndOfFrame, ipv4DstSliceEndOfFrame, ipv6DstUnalignedIntEndOfFrame, predIPv6DstUnalignedIPv4, predIPv6DstUnalignedIPv4Gt, predIPv6DstUnalignedIPv4Ge, predIPv6DstUnalignedInListMac, predIPv6DstUnalignedInListMacInt, predEthSrcUnalignedIPv4, predIPv6DstUnalignedCidrZeroNe, predIPv6Cidr6ZeroNe, predIPv6DstNineByteSlice, predIPv6NineByteMiss, predIPv6NineByteGt, predIPv6NineByteLtMiss, predIPv6NineByteInList, predIPv6NineByteInRange, predIPv6NineByteInRangeMiss, predIPv6NineByteNarrow, predIPv6NineByteFrameEnd, whereIPv6NineByte, whereIPv6NineByteWide, whereIPv6NineByteArith, predInSetNineByte, predInSetNineByteMiss, predIPv6NineByteOdd, predIPv6NineByteOddMiss, whereIPv6NineByteAlt, whereIPv6NineByteAltMiss, ipv6DstLow32IPv4Ne, ipv6DstLow32IPv4NeMiss, ipv6DstLow48Mac, ipv6DstFullSliceIPv6, ipv6DstFullSliceCidr6, ipv6DstLow32IPv4Bracket,
-  typPredIdent, typInSet, predInSetMember, predInSetMiss, typPredInSetWidth, predInSetSubByte, predInSetWindow, predInSetWindowMiss, predInSetIPv6, predInSetIPv6Miss, predInSetTwo, predInSetTwoSecondMiss, predInSetTwoFirstMiss, predInSetUnused, typPredInSetWindow, typPredInSetTwice, typPredInSetBudget, typPredInSetOptional, typPredInSetAlt, typAny, typExists, typAuxPath,
+  typPredIdent, typInSet, predInSetMember, predInSetMiss, typPredInSetWidth, predInSetSubByte, predInSetWindow, predInSetWindowMiss, predSeqSwappedWide, predSeqSwappedWideMiss, predSeqWideNe, predSeqWideGt, predSeqWideGtMiss, whereCidr32HighOctet, whereCidr32HighOctetNe, predIPv6NineByteWideConst, predSeqMax, predInSetIPv6, predInSetIPv6Miss, predInSetTwo, predInSetTwoSecondMiss, predInSetTwoFirstMiss, predInSetUnused, typPredInSetWindow, typPredInSetTwice, typPredInSetBudget, typPredInSetOptional, typPredInSetAlt, typAny, typExists, typAuxPath,
   arith128AddConst, arith128SubConst, arith128AddCarry, arith128AddWrap, arith128SubBorrow, arith128SubWrap, arith128AddMiss,
   arith128FieldAddField, arith128FieldAddFieldCarry, arith128FieldSubField, arith128FieldSubFieldBorrow, arith128AddWideConst, arith128SubWideConstBorrow,
   arith128AddNegConst, arith128SubNegConst, arith128CmpNegConst,

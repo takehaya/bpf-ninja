@@ -1222,23 +1222,43 @@ func TestGenNoCheckRejectsFalseConst(t *testing.T) {
 	}
 }
 
-func TestGenPredicateRejectsInt32Overflow(t *testing.T) {
-	// The resolver catches "does not fit in the field" (99999 in 16-bit
-	// dport), so codegen only polices its own int32 immediate limit.
-	// Exercise that path with a 4-byte field (tcp.seq) and a value
-	// above 2^31.
-	p := ethIPv4TCPProgram()
-	p.Layers[2].Predicates = []*ir.Predicate{
-		{
-			Kind:  ast.PredCmp,
-			Field: &ir.FieldRef{Layer: p.Layers[2], Field: &tcpSpec.Fields[2]}, // seq (32 bits)
-			Op:    ast.CmpEq,
-			Value: &ast.Value{Kind: ast.ValInt, Int: 0x80000000},
-		},
-	}
-	_, err := Gen(p, Capabilities{})
-	if !errors.Is(err, ErrNotImplemented) {
-		t.Fatalf("err = %v; want ErrNotImplemented", err)
+// TestGenPredicateWideConstant pins the compare of a bracket constant
+// above int32 as the jump sees it: an equality on a whole field compares
+// the byte-swapped constant (128 on tcp.seq is 0x80000000, 0x80000000
+// is 0x80), an ordered compare the plain one. Such a constant goes
+// through R5, because the immediate would sign-extend and never equal
+// the zero-extended load; a small one stays an immediate.
+func TestGenPredicateWideConstant(t *testing.T) {
+	for _, tc := range []struct {
+		op    ast.CmpOp
+		value uint64
+		reg   bool
+	}{
+		{ast.CmpEq, 128, true},
+		{ast.CmpEq, 0x80000000, false},
+		{ast.CmpEq, 0x7f, false},
+		{ast.CmpGt, 0x80000000, true},
+	} {
+		p := ethIPv4TCPProgram()
+		p.Layers[2].Predicates = []*ir.Predicate{
+			{
+				Kind:  ast.PredCmp,
+				Field: &ir.FieldRef{Layer: p.Layers[2], Field: &tcpSpec.Fields[2]}, // seq (32 bits)
+				Op:    tc.op,
+				Value: &ast.Value{Kind: ast.ValInt, Int: tc.value},
+			},
+		}
+		out, err := Gen(p, Capabilities{})
+		if err != nil {
+			t.Fatalf("seq %s %#x: %v", tc.op, tc.value, err)
+		}
+		reg := false
+		for _, ins := range out.Main {
+			reg = reg || (ins.OpCode.Class().IsJump() && ins.OpCode.Source() == asm.RegSource && ins.Dst == asm.R3 && ins.Src == asm.R5)
+		}
+		if reg != tc.reg {
+			t.Errorf("seq %s %#x: register compare %v, want %v", tc.op, tc.value, reg, tc.reg)
+		}
 	}
 }
 

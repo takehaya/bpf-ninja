@@ -278,14 +278,6 @@ func emitIntPredicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, error)
 			value &= (uint64(1) << fieldBits) - 1
 		}
 	}
-	// After narrowing, the only remaining constraint is the
-	// asm.JumpOp.Imm int32 limit. Values that still exceed it come
-	// from genuine bit<N> fields with N > 32, which the spec stages
-	// (dsl-types.md §9.1, follow-up F3). Type-OK program; rebuild
-	// against a kernel that ships the staged emitter.
-	if value > 0x7FFFFFFF {
-		return nil, fmt.Errorf("%w: value %d exceeds int32 immediate range — staged Int<N>>32 cmp (dsl-types.md §9.1, F3)", ErrNotImplemented, value)
-	}
 	jumpOp, ok := rejectingJumpOp(pred.Op)
 	if !ok {
 		return nil, fmt.Errorf("codegen: unknown comparison op %v", pred.Op)
@@ -305,8 +297,10 @@ func emitIntPredicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, error)
 		// at codegen time and compare with the LE-loaded register.
 		value = swapValueBytes(value, bytes)
 	}
-	insns = append(insns, jumpOp.Imm(asm.R3, int32(value), dslReject))
-	return insns, nil
+	// A constant above int32, as written or once byte-swapped (`seq ==
+	// 128` compares against 0x80000000), goes through a register: the
+	// immediate would sign-extend and never equal the zero-extended load.
+	return append(insns, cmpR3Const(jumpOp, value, dslReject)...), nil
 }
 
 // predCtx threads the host's set-slot resolver and an extraction
