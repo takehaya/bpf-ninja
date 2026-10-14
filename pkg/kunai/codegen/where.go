@@ -2687,9 +2687,11 @@ func (c *whereCtx) genIPv4CIDRCompare(w *ir.Condition, anchor layerAnchor, field
 		return nil, fmt.Errorf("codegen: IPv4 CIDR prefix %d out of [0,32]", prefix)
 	}
 	if prefix == 32 {
-		expected := byteSwap(uint64(binary.BigEndian.Uint32(w.LiteralValue.V4[:])), 4)
+		// A register compare: 10.0.0.128 byte-swaps to 0x8000000a, which
+		// an immediate would sign-extend past the zero-extended load.
+		expected := uint32(byteSwap(uint64(binary.BigEndian.Uint32(w.LiteralValue.V4[:])), 4))
 		insns := emitFieldLoad(anchor, fieldOff, asm.Word)
-		return append(insns, jumpOp.Imm(asm.R3, int32(expected), failLabel)), nil
+		return append(insns, cmpRegEqU32(jumpOp, expected, failLabel)...), nil
 	}
 	if prefix == 0 {
 		if w.LiteralOp == ast.CmpEq {

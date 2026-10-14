@@ -620,11 +620,9 @@ arith may underflow: <expr> can fall below 0 (RHS may exceed LHS)               
 
 ### 8.8 codegen 未実装 (resolver は OK、codegen で reject)
 
-`ErrNotImplemented` の wrapped reason として現れます。spec §9.1 で段階展開している分は次のとおりです。
+`ErrNotImplemented` の wrapped reason として現れます。たとえば `ipv6.dst[0:72] + 1 == 1` のように 65 bit 以上の slice を算術に使うと、メッセージに未配線の理由が書かれます。
 
-```
-dsl codegen is not yet fully implemented: value V exceeds int32 immediate range — staged Int<N>>32 cmp (dsl-types.md §9.1, F3)
-```
+bracket predicate の整数リテラルは 64 bit まで比べられます。`tcp[seq > 0x80000000]` や、byte を入れ替えると 2^31 以上になる `tcp[seq == 128]` では、定数を register に置いて比べます。
 
 ## 9. 実装ステージング
 
@@ -643,7 +641,7 @@ dsl codegen is not yet fully implemented: value V exceeds int32 immediate range 
 
 表の ❌ は型エラー (resolver が拒否) です。型としては well-typed でも codegen が配線していない形 (65〜127 bit の slice) は `ErrNotImplemented` を返します。aux field の `Int<128>` 算術 (`srv6.segments[i].addr`) は primary field と同じに扱います。64 bit 以下の部分式 (幅の狭い field、64 bit までの slice、`tcp.dport * 2`) は 64 bit で計算され、zero-extend されて 128 bit の operand に加わります (`ipv6.src + tcp.dport`)。
 
-Literal narrow (§4.1 / §7.3) について、負数を 2's complement で uint64 化したものを含む整数リテラルは、codegen の最終 emit 直前に対象 field の幅 N でマスクされます。`tcp.dport == -1` ⇒ 比較 immediate = `0xffff` (Int<16> narrow) となります。これにより signed-extended 値が int32 immediate 範囲に収まります。実装は bracket predicate 用 (`codegen/predicate.go::emitIntPredicate`) と where arith cmp 用 (`codegen/where.go::genArithWithBits`、target bits は両 operand の field 最大幅から計算) の 2 箇所です。 二項演算の operand になっているリテラルは、比較全体の幅ではなく隣の operand の幅で fit-check され、その幅に narrow されます (隣もリテラルだけなら 64 bit、D-009)。`ipv4.ttl + 300 == tcp.dport` は 300 が `Int<8>` に収まらないので型エラー、`tcp.seq == tcp.dport + -1` の `-1` は `0xffff` です。
+Literal narrow (§4.1 / §7.3) について、負数を 2's complement で uint64 化したものを含む整数リテラルは、codegen の最終 emit 直前に対象 field の幅 N でマスクされます。`tcp.dport == -1` ⇒ 比較 immediate = `0xffff` (Int<16> narrow) となります。比較に使うのは、こうして得た field 幅の bit パターンです。int32 の immediate に収まる値は immediate で、収まらない値は register に置いて比べます。実装は bracket predicate 用 (`codegen/predicate.go::emitIntPredicate`) と where arith cmp 用 (`codegen/where.go::genArithWithBits`、target bits は両 operand の field 最大幅から計算) の 2 箇所です。 二項演算の operand になっているリテラルは、比較全体の幅ではなく隣の operand の幅で fit-check され、その幅に narrow されます (隣もリテラルだけなら 64 bit、D-009)。`ipv4.ttl + 300 == tcp.dport` は 300 が `Int<8>` に収まらないので型エラー、`tcp.seq == tcp.dport + -1` の `-1` は `0xffff` です。
 
 ### 9.2 段階展開の意図
 
