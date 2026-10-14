@@ -136,7 +136,7 @@ field[lo:hi]                    ; half-open bit range, lo inclusive / hi exclusi
 
 | 範囲 | cmp (`==`/`!=`) | arith binop / bitwise | non-aligned 端点 |
 |---|---|---|---|
-| `≤ 64` | ✅ single LDX | ✅ single register | ✅ codegen で `pow2 ≥ cover` LDX → bswap → shift+mask |
+| `≤ 64` | ✅ single LDX | ✅ single register | ✅ codegen で `pow2 ≥ cover` LDX → bswap → shift+mask。9 byte にまたがる slice は先頭 8 byte と 9 byte 目を別に load して合成 |
 | `(64, 128]` | ✅ resolver desugar (LDX-aligned chunks の AND/OR-chain、例: `[0:96]` → `[0:64]` AND `[64:96]`) | ❌ single register に乗らないため未対応 | ❌ byte-aligned 端点必須 |
 
 `!=` の chain は OR で、`==` は AND でつなぎます。endpoint が 64bit 境界を跨ぐ場合は両端が byte-aligned であることが要件で、sub-byte 跨ぎ + 64+ bit は scope 外です。
@@ -639,7 +639,7 @@ dsl codegen is not yet fully implemented: value V exceeds int32 immediate range 
 | `+`, `-` | ✅ 既存 | ✅ where 経路で完全実装 (F4。`field op const`、`field op field` 両方、stack-bridged carry / borrow) |
 | `*` | ✅ 既存 | ❌ 型エラー (D-035。F11 bit-slice で代替) |
 | `/`, `%`, `&`, `\|`, `^`, `<<`, `>>` | ✅ 既存 | ❌ 型エラー (D-035。bit slice か CIDR literal で書く) |
-| bit-slice `field[lo:hi]` | ✅ 任意 bit 範囲 (single LDX + bswap + shift+mask、F11/F13) | ✅ byte-aligned 端点に限り cmp 可 (F12 で resolver desugar) |
+| bit-slice `field[lo:hi]` | ✅ 任意 bit 範囲 (single LDX + bswap + shift+mask、9 byte にまたがるときは 2 回の LDX、F11/F13) | ✅ byte-aligned 端点に限り cmp 可 (F12 で resolver desugar) |
 
 表の ❌ は型エラー (resolver が拒否) です。型としては well-typed でも codegen が配線していない形 (65〜127 bit の slice) は `ErrNotImplemented` を返します。aux field の `Int<128>` 算術 (`srv6.segments[i].addr`) は primary field と同じに扱います。64 bit 以下の部分式 (幅の狭い field、64 bit までの slice、`tcp.dport * 2`) は 64 bit で計算され、zero-extend されて 128 bit の operand に加わります (`ipv6.src + tcp.dport`)。
 
@@ -681,7 +681,7 @@ pre-squash backup として、161 commit の細かい history を `pre-squash-ba
 | F5 | `Int<128>` arith binop (`*`) の codegen ❌ 廃止 (= スコープから外す)。代替として bit-slice 構文 `field[lo:hi]` を導入 (下記参照)。実用上 IPv6 同士の乗算は使い道がなく、bit-slice の方が prefix/suffix 比較で広く使えるため | §9.1 |
 | F11 | bit-slice `field[lo:hi]` ✅ MVP 完了。bracket predicate / where-arith 両方で使用可 | dsl-types.md §3.4 |
 | F12 | bit-slice の (64, 128) 中間 width cmp ✅ 完了 (resolver で AND/OR-chain に desugar、`tryDesugarMultiLDXSliceCmp`) | F11 の延長 |
-| F13 | bit-slice の non-aligned 範囲 (`[3:9]`, `[4:12]` など) ✅ 完了 (codegen で pow2-cover load → bswap → shift+mask、`emitSliceShiftMask`)。≤ 64bit 内なら任意の bit 範囲を抽出可 | F11 の延長 |
+| F13 | bit-slice の non-aligned 範囲 (`[3:9]`, `[4:12]` など) ✅ 完了 (codegen で pow2-cover load → bswap → shift+mask、`emitSliceShiftMask`)。≤ 64bit 内なら任意の bit 範囲を抽出可。`[60:124]` のように 9 byte にまたがる範囲は、`emitSplitSliceLoad` が 8 byte と 1 byte に分けて load し、`emitFieldValue` が合成する | F11 の延長 |
 | F6 | bitwise op (`&`, `|`, `^`, `<<`, `>>`) ✅ 完了。precedence: `&` `<<` `>>` は mul/div 級、`|` `^` は add/sub 級 | DSL 機能拡張 (TCP flag check 等で需要) |
 | F7 | `field in [...]` 実装 ✅ 整数と範囲 `lo..hi` に加えて IPv4 / IPv6 / MAC / CIDR の alternatives も完了 (`emitInPredicate`、IPv6 と MAC は範囲も含めて `emitInAddrList`)。範囲の端は 64 bit の整数なので、128 bit の field で上位 64 bit が 0 でない範囲は書けない | 既存 dead syntax の有効化 |
 | F8 | `field has FLAG` 専用 codegen ⏸ superseded。F6 の bitwise `&` で同等表現 (`tcp.flags & 0x12 == 0x12`) が書けるので独自 emit は不要と判断。resolver は引き続き `PredHas` を `Unsupported` 扱い (使うと `ErrNotImplemented`) で、ユーザーには bitwise 形式を促す形になっている。vocab 側に flag 定数を declare するのは vocab 著者の自由 | F6 で代替 |

@@ -29,6 +29,8 @@ func TestEmitScalarFieldLoadContract(t *testing.T) {
 		{"eth/ipv4[flags == 2]/tcp", 1, 1, false},
 		{"eth/ipv4/udp/gtp[opt.next_ext == 0]/ipv4/tcp", 3, 1, true},
 		{"eth/ipv6/srv6[segments[1].addr[96:128] == 5]/tcp", 2, 4, false},
+		{"eth/ipv6[dst[60:124] == 5]/tcp", 1, 8, false},
+		{"eth/ipv6/srv6[segments[1].addr[60:124] == 5]/tcp", 2, 8, false},
 		{"eth/ipv6[exts[1].next_header == 6]/tcp", 1, 1, true},
 		{"eth/ipv4/udp/gtp[exts[1].next_ext == 0]/ipv4/tcp", 3, 1, true},
 	}

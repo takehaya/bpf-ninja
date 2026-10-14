@@ -240,7 +240,7 @@ bpf-ninja は non-invasive な BPF 観測ツールです。BPF trampoline (fentr
 - [ ] codegen の register clobber を確認します。R6-R8 を一切触っていないか、bpf_loop callback では R6-R9 をすべて触っていないかを見ます。
 - [ ] byteSwap の方向を確認します。入力が BE (network) で出力が LE (immediate) になっているか、逆にしていないかを見ます。
 - [ ] bpf_loop callback の BTF を確認します。`bpfloop.go::genCallback` で func_info を attach しているかを見ます。
-- [ ] bit-slice の post-adjust を確認します。non-aligned slice が `emitSliceShiftMask` 経由で正しい shift+mask を emit しているかを見ます。
+- [ ] bit-slice の post-adjust を確認します。non-aligned slice が `emitSliceShiftMask` 経由で正しい shift+mask を emit しているかを見ます。9 byte にまたがる slice では、codegen.go の `emitSplitSliceLoad` が 9 byte 目を R2 に読み、`emitFieldValue` が合成していることを見ます。
 - [ ] Test の網羅性を確認します。各 codegen path に対応する verifier load test (`internal/program/load_dsl_test.go::dslEntryExprs`) があるか、型 helper が `resolve/typing_test.go` で unit テストされているかを見ます。
 
 ## 3. Vocab 開発ガイド

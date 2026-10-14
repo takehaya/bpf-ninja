@@ -1960,8 +1960,11 @@ func applySliceToOffset(ref *ir.FieldRef, off, size int) (int, int, error) {
 	byteEndExclusive := (ref.Slice.Hi + 7) / 8
 	cover := byteEndExclusive - ref.Slice.Lo/8
 	loadBytes := nextLDXSize(cover)
+	if loadBytes == 0 && cover == sliceSplitWindow && ref.Slice.Bits() <= 64 {
+		loadBytes = sliceSplitWindow
+	}
 	if loadBytes == 0 {
-		return 0, 0, fmt.Errorf("%w: bit-slice [%d:%d] needs %d-byte load (max 8)", ErrNotImplemented, ref.Slice.Lo, ref.Slice.Hi, cover)
+		return 0, 0, fmt.Errorf("%w: bit-slice [%d:%d] needs a %d-byte window; a slice reads at most 64 bits over at most %d bytes", ErrNotImplemented, ref.Slice.Lo, ref.Slice.Hi, cover, sliceSplitWindow)
 	}
 	off += sliceWindowStart(ref, loadBytes)
 	return off, loadBytes, nil
@@ -2003,6 +2006,22 @@ func applyExactSlice(ref *ir.FieldRef, off, size int) (int, int, error) {
 		return 0, 0, fmt.Errorf("%w: bit-slice [%d:%d] compared with a network literal must start and end on a byte boundary", ErrNotImplemented, ref.Slice.Lo, ref.Slice.Hi)
 	}
 	return off + ref.Slice.Lo/8, ref.Slice.Bits() / 8, nil
+}
+
+// sliceSplitWindow is the window of a slice of at most 64 bits that
+// starts and ends off byte boundaries and so straddles 9 bytes, like
+// `ipv6.dst[60:124]`: one LDX reads at most 8, so the scalar readers
+// load the first 8 bytes and the ninth apart and compose the value
+// (sliceSplitsLoad). Such a window always lies inside the field.
+const sliceSplitWindow = 9
+
+// sliceSplitsLoad reports whether ref is a slice read through a
+// sliceSplitWindow window.
+func sliceSplitsLoad(ref *ir.FieldRef) bool {
+	if ref == nil || ref.Slice == nil || ref.Slice.Bits() > 64 {
+		return false
+	}
+	return (ref.Slice.Hi+7)/8-ref.Slice.Lo/8 == sliceSplitWindow
 }
 
 // nextLDXSize returns the smallest LDX-acceptable byte count
@@ -2781,7 +2800,8 @@ func scalarFieldWindow(ref *ir.FieldRef) (off, bytes int, err error) {
 }
 
 // emitScalarFieldLoad reads the window covering a field of at most 8
-// bytes into R3, little-endian and unnormalised, and returns its width.
+// bytes, or a slice straddling 9 (below), into R3, little-endian and
+// unnormalised, and returns its width.
 // An option the walk located is read off its recorded position
 // (emitDynamicAuxByteLoad: the sentinel means absent). A field at a
 // runtime offset (a dynamic index, or an entry past variable-length
@@ -2792,10 +2812,17 @@ func scalarFieldWindow(ref *ir.FieldRef) (off, bytes int, err error) {
 // where clause's layer slot, a write-back overlay), so an R4-anchored
 // site reading no option, the one bpf_loop callbacks replay bracket
 // predicates with, keeps it off the stack.
+//
+// A slice straddling 9 bytes (sliceSplitsLoad) reads its first 8 into
+// R3 as a DWord and the ninth into R2, which emitFieldValue folds in;
+// the caller appends emitFieldValue before anything else touches R2.
 func emitScalarFieldLoad(ref *ir.FieldRef, site fieldLoadSite) (asm.Instructions, int, asm.Size, error) {
 	off, bytes, err := scalarFieldWindow(ref)
 	if err != nil {
 		return nil, 0, 0, err
+	}
+	if bytes == sliceSplitWindow {
+		return emitSplitSliceLoad(ref, site, off)
 	}
 	size, err := asmSizeFor(bytes)
 	if err != nil {
@@ -2826,10 +2853,52 @@ func emitScalarFieldLoad(ref *ir.FieldRef, site fieldLoadSite) (asm.Instructions
 	return append(insns, emitFieldLoad(site.load, off, size)...), bytes, size, nil
 }
 
+// emitSplitSliceLoad is emitScalarFieldLoad for a slice whose window,
+// at off, straddles 9 bytes: the ninth byte into R2, then the first 8
+// into R3. The window lies inside the field, so an entry the walk
+// proved whole covers it. No option carries a field wider than 8 bytes,
+// and an option's read uses R2 as its pointer, so one stays refused.
+func emitSplitSliceLoad(ref *ir.FieldRef, site fieldLoadSite, off int) (asm.Instructions, int, asm.Size, error) {
+	switch {
+	case dynamicAuxLayoutOf(ref) != nil:
+		return nil, 0, 0, fmt.Errorf("%w: bit-slice [%d:%d] of option field %s.%s straddles 9 bytes", ErrNotImplemented, ref.Slice.Lo, ref.Slice.Hi, ref.Layer.Spec.Name, ref.Field.Name)
+	case needsEntryAddress(ref):
+		addr, err := site.entryAddr(ref, site.gate, site.fail)
+		if err != nil {
+			return nil, 0, 0, err
+		}
+		return append(addr,
+			asm.LoadMem(asm.R2, asm.R5, int16(off+8), asm.Byte),
+			asm.LoadMem(asm.R3, asm.R5, int16(off), asm.DWord),
+		), 8, asm.DWord, nil
+	}
+	var insns asm.Instructions
+	if ref.Aux != nil {
+		insns = append(insns, emitAuxGating(ref.Aux.Gating, site.gate, site.fail)...)
+	}
+	insns = append(insns, emitFieldLoadTo(asm.R2, site.load, off+8, asm.Byte, dslReject)...)
+	return append(insns, emitFieldLoad(site.load, off, asm.DWord)...), 8, asm.DWord, nil
+}
+
 // emitFieldValue turns the window emitScalarFieldLoad left in R3 into
 // the field's numeric value: host byte order, then a slice or a sub-byte
-// field shifted and masked down to its bits.
+// field shifted and masked down to its bits. A slice straddling 9 bytes
+// shifts the bits before it out of the first 8, takes the rest from the
+// ninth byte in R2, and drops the bits after it.
 func emitFieldValue(ref *ir.FieldRef, bytes int, size asm.Size) asm.Instructions {
+	if sliceSplitsLoad(ref) {
+		s := int32(ref.Slice.Lo % 8)
+		insns := asm.Instructions{
+			asm.HostTo(asm.BE, asm.R3, asm.DWord),
+			asm.LSh.Imm(asm.R3, s),
+			asm.RSh.Imm(asm.R2, 8-s),
+			asm.Or.Reg(asm.R3, asm.R2),
+		}
+		if w := ref.Slice.Bits(); w < 64 {
+			insns = append(insns, asm.RSh.Imm(asm.R3, int32(64-w)))
+		}
+		return insns
+	}
 	var insns asm.Instructions
 	if bytes > 1 {
 		insns = append(insns, asm.HostTo(asm.BE, asm.R3, size))
