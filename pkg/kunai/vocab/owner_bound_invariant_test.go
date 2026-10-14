@@ -53,7 +53,7 @@ func TestOwnerBoundStacksUseDispatchedButNotExtracted(t *testing.T) {
 			}
 			if len(state.Extracts) > 0 {
 				t.Errorf(
-					"%s: owner-bound stack %q's owner state %q has %d Extract op(s); expected 0 (dispatched-but-not-extracted shape — see B-4 / B-4a R1 contingency in dsl-followups.md)",
+					"%s: owner-bound stack %q's owner state %q has %d Extract op(s); expected 0 (dispatched-but-not-extracted shape)",
 					protoName, stackParam, stateName, len(state.Extracts),
 				)
 			}

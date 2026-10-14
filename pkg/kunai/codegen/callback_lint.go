@@ -8,8 +8,8 @@ import (
 
 // callbackBranchThreshold caps the number of branch instructions
 // (conditional jumps + unconditional Ja) a bpf_loop callback may
-// contain. Round-2 review surfaced a systemic class of verifier
-// blowups (B-2a, B-4 R1, B-4a R1) where a new branch added inside a
+// contain. An earlier review round found three verifier blowups of
+// one kind, where a new branch added inside a
 // bpf_loop callback inflated scalar IDs across MAX_DEPTH iterations
 // and tripped the kernel's 1M-instruction cap. Static counting at
 // compile time gives vocab authors a tripwire before hitting the
@@ -44,7 +44,7 @@ const callbackBranchThreshold = 64
 func assertCallbackComplexity(insns asm.Instructions, sym string) error {
 	count := countBranches(insns)
 	if count > callbackBranchThreshold {
-		return fmt.Errorf("%w: callback %q has %d branch instructions (threshold %d); risks verifier state-ID inflation across MAX_DEPTH iterations (B-2a class, see dsl-followups.md)", ErrNotImplemented, sym, count, callbackBranchThreshold)
+		return fmt.Errorf("%w: callback %q has %d branch instructions (threshold %d); risks verifier state-ID inflation across MAX_DEPTH iterations", ErrNotImplemented, sym, count, callbackBranchThreshold)
 	}
 	return nil
 }

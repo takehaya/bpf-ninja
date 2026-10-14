@@ -1620,8 +1620,7 @@ func TestResolverAcceptsAlternationAgreementOK(t *testing.T) {
 	//
 	// Pair test: TestResolverRejectsAlternationDivergence
 	// (negative case for ipv4|ipv6 — different sizes, different
-	// dispatch fields). User-facing alternation utility is
-	// effectively gated on dsl-followups.md P3-12.
+	// dispatch fields).
 	out, err := Compile("eth/(vlan|qinq)/ipv4/tcp", codegen.Capabilities{})
 	if err != nil {
 		t.Fatalf("Compile: %v", err)
