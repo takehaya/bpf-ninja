@@ -18,8 +18,8 @@ import (
 // few are enough to tell slot cpu from slot 0 or cpu+1.
 const maxPinnedCPUs = 4
 
-// allowedCPUs returns the CPUs this thread may run on (online and in the
-// cpuset), at most maxPinnedCPUs of them, in ascending order.
+// allowedCPUs returns the CPUs this thread's affinity mask allows, at
+// most maxPinnedCPUs of them, in ascending order.
 func allowedCPUs(t *testing.T) []int {
 	t.Helper()
 	var set unix.CPUSet
@@ -70,6 +70,8 @@ func runPinned(t *testing.T, cpu int, fn func()) {
 
 // collectShards starts a sharded reader over inners and returns a stop
 // function that drains it and yields the records per shard index.
+// Call it before runPinned: RunShards places its reader goroutines from
+// the calling thread's affinity mask.
 func collectShards(t *testing.T, inners []*ebpf.Map) func() map[int][]capture.Packet {
 	t.Helper()
 	sr, err := capture.NewShardedReader(inners)
@@ -91,6 +93,7 @@ func collectShards(t *testing.T, inners []*ebpf.Map) func() map[int][]capture.Pa
 	if err != nil {
 		t.Fatalf("RunShards: %v", err)
 	}
+	t.Cleanup(stop) // a Fatalf before the returned function runs; stop is idempotent
 	return func() map[int][]capture.Packet {
 		stop()
 		if err := sr.Err(); err != nil {
@@ -168,10 +171,11 @@ func TestBpfXDPNativeRecordLandsOnRunningCPU(t *testing.T) {
 // TestBpfGatedRecordLandsOnRunningCPU does the same for the tracing
 // capture: a gated entry + exit probe on the dummy XDP target, test-run
 // pinned to each allowed CPU, for each --emit form. Every record must be
-// in that CPU's shard and, for the gated pair, carry the CPU in its
-// packet id. TestBpfMultiPointGatedTestRun does not pin, so a capture
+// in that CPU's shard and carry the CPU in the top 16 bits of its packet
+// id (cpu << 48 | seq, set for every --emit form). TestBpfMultiPointGatedTestRun does not pin, so a capture
 // that always wrote slot 0 would pass it whenever it ran on CPU 0.
 func TestBpfGatedRecordLandsOnRunningCPU(t *testing.T) {
+	testutil.SkipIfNotRoot(t)
 	const runs = 3
 	udp := dsltest.BuildEthIPv4UDP(t, 1234, 6081, bytes.Repeat([]byte{0xab}, 32))
 	entry, exit := "eth/ipv4/udp[dport==6081]", "eth/ipv4/udp where action == XDP_PASS"

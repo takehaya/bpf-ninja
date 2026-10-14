@@ -238,7 +238,7 @@ func captureFromHold(eventsFD, statsFD, entryCapLen int, packetID asm.Instructio
 	reserveSize := int32(metadataSize + entryCapLen)
 	insns := asm.Instructions{
 		asm.FnGetSmpProcessorId.Call(),
-		asm.StoreImm(asm.R10, -16, 0, asm.Word),
+		asm.StoreMem(asm.R10, -16, asm.R0, asm.Word),
 	}
 	insns = append(insns, emitShardedRBReserve(eventsFD, statsFD, reserveSize)...)
 	insns = append(insns,

@@ -888,7 +888,7 @@ func captureWithRingbuf(eventsFD, statsFD int, isFexit bool, maxCapLen int, pack
 		// key (line above) — both are u32 and the key is dead after
 		// the filter_result label.
 		asm.FnGetSmpProcessorId.Call(),
-		asm.StoreImm(asm.R10, -16, 0, asm.Word),
+		asm.StoreMem(asm.R10, -16, asm.R0, asm.Word),
 	}
 	insns = append(insns, emitShardedRBReserve(eventsFD, statsFD, reserveSize)...)
 	insns = append(insns,
