@@ -70,6 +70,13 @@ func TestBpfMultiPointLoad(t *testing.T) {
 // or the deadline passed.
 func runGatedTestRun(t *testing.T, entry, exit string, emit Emit, frames [][]byte, want int) map[int][]capture.Packet {
 	t.Helper()
+	return runGatedTestRunOn(t, -1, entry, exit, emit, frames, want)
+}
+
+// runGatedTestRunOn is runGatedTestRun with the test runs pinned to cpu
+// (-1 leaves them where the scheduler puts them).
+func runGatedTestRunOn(t *testing.T, cpu int, entry, exit string, emit Emit, frames [][]byte, want int) map[int][]capture.Packet {
+	t.Helper()
 	prog := loadDummyXDP(t)
 	targets := []attach.Target{{Program: prog, FuncName: xdpFuncName, Type: ebpf.XDP}}
 	stages := []Stage{{Expr: entry}, {IsFexit: true, Expr: exit}}
@@ -102,10 +109,17 @@ func runGatedTestRun(t *testing.T, entry, exit string, emit Emit, frames [][]byt
 	}
 	defer stop()
 
-	for _, frame := range frames {
-		if _, err := prog.Run(&ebpf.RunOptions{Data: frame}); err != nil {
-			t.Fatalf("test-run target: %v", err)
+	fire := func() {
+		for _, frame := range frames {
+			if _, err := prog.Run(&ebpf.RunOptions{Data: frame}); err != nil {
+				t.Fatalf("test-run target: %v", err)
+			}
 		}
+	}
+	if cpu < 0 {
+		fire()
+	} else {
+		runPinned(t, cpu, fire)
 	}
 	if err := probe.Quiesce(); err != nil {
 		t.Fatal(err)
