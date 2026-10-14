@@ -246,11 +246,7 @@ func isZeroLiteral(e *ir.ArithExpr) bool {
 // it as a forbidden trailing index. The returned FieldPath shares
 // the original Parts slice but truncates Indices when the last
 // slot held a slice. The caller re-attaches the slice to the
-// resolved FieldRef via attachSlice.
-//
-// Also performs the byte-aligned MVP check (lo % 8 == 0,
-// hi % 8 == 0); non-aligned ranges surface as ErrNotImplemented
-// once F11 lands a shift+mask emit.
+// resolved FieldRef via attachSlice, which checks the bounds.
 func detachTrailingSlice(fp *ast.FieldPath) (*ast.FieldPath, *ast.IndexExpr, error) {
 	if fp == nil || len(fp.Parts) == 0 || len(fp.Indices) == 0 {
 		return fp, nil, nil

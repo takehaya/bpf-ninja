@@ -63,8 +63,7 @@ func (c *pmCtx) emitSelfLoop(state *vocab.ParseState, stateIdx int) (asm.Instruc
 //
 // This is the demand-driven escape hatch that lets ipv4.p4 stay on
 // Mechanism 8 without blowing the 1M-insn verifier limit on chains
-// like `eth/ipv4/udp/gtp/...` where ipv4 options aren't queried —
-// see dsl-followups.md B-2 for context.
+// like `eth/ipv4/udp/gtp/...` where ipv4 options aren't queried.
 func (c *pmCtx) canFallbackToBulkAdvance(stateIdx int) bool {
 	state := c.machine.States[stateIdx]
 	sel := state.Trans.Select
@@ -879,8 +878,9 @@ func (c *pmCtx) defaultIsLengthByteAdvance(defaultIdx int) bool {
 // and stay emitted. Orthogonal to canFallbackToBulkAdvance, which
 // elides the entire bpf_loop subprogram when no aux is queried.
 //
-// Motivation: kernel 6.12 / B-2a-2 fingerprint — see
-// docs/ja/dsl-followups.md mitigation (d).
+// Motivation: on kernel 6.12 the full per-iteration cascade of
+// tcp.p4's option dispatch pushed `eth/(ipv4|ipv6)/tcp where
+// tcp.options.MSS.value == 1460` past the 1M-insn verifier limit.
 func (c *pmCtx) caseRedundantWithDefault(targetIdx int) bool {
 	if targetIdx == vocab.StateAccept || targetIdx == vocab.StateReject {
 		return false

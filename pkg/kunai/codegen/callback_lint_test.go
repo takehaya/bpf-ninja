@@ -18,7 +18,7 @@ import (
 // the matching paper §6 limitations sentence.
 func TestCallbackBranchThresholdValue(t *testing.T) {
 	if callbackBranchThreshold != 64 {
-		t.Errorf("callbackBranchThreshold = %d, want 64 — see callback_lint.go docblock + dsl-followups.md B-2a class for rationale; if this is an intentional change, update both doc sources before bumping the literal here", callbackBranchThreshold)
+		t.Errorf("callbackBranchThreshold = %d, want 64 — see the callback_lint.go docblock for the rationale; if this is an intentional change, update it before bumping the literal here", callbackBranchThreshold)
 	}
 }
 

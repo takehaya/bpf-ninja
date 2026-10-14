@@ -119,36 +119,38 @@ func withPos(err error, pos ast.Position) error {
 }
 
 // ErrNotImplemented is returned by Gen when a resolved program is
-// well-typed but the BPF emitter does not yet cover the required
-// shape. Two flavours coexist under this single error:
+// well-typed but the BPF emitter does not cover its shape. It is an
+// implementation limit, not a property of the filter: spec vectors
+// that Go refuses carry goStatus := .notImplemented in spec/lean.
+// Type and vocabulary errors, and ErrVlanInMetadata, are reported
+// separately.
 //
-//  1. Codegen staging declared by docs/ja/dsl-types.md §9.1 — the
-//     resolver accepts the program, but the spec deliberately
-//     defers the BPF expansion until follow-up work lands. Current
-//     staging cases:
-//     - Int<N> ordered comparison with N > 64 (F3 in
-//     dsl-followups.md): lexicographic cmp not yet wired up,
-//     - Int<128> arithmetic binary ops (+, -, *) (F4/F5):
-//     register-pair carry propagation not yet wired up.
-//     User-visible programs hitting this branch are spec-correct;
-//     they need a kernel build with the staged emitter, not an
-//     expression rewrite.
+// Every return site wraps it with a reason naming the shape; callers
+// match it with errors.Is and show the wrapped message. The reasons
+// fall into these groups:
 //
-//  2. MVP gaps that the resolver structurally lets through but
-//     codegen has yet to plumb. Examples:
-//     - dynamic aux header stack indices outside the static-fold
-//     path (fieldRefByteOffset),
-//     - TCP / IPv4 option lookups reaching the static-fold path
-//     instead of the option-walk emitter,
-//     - non-byte-aligned or oversized primary fields (> 8 bytes),
-//     - quantifier shapes the resolver accepts but emit has not
-//     covered yet.
-//     These are codegen TODOs rather than spec'd staging.
+//   - language shapes without an emitter: `has`, field-list capture,
+//     a bracket predicate on an option or stack entry located by the
+//     parser's walk, nested or quantified alternation groups, a
+//     quantifier on a variable-length layer without a parser machine,
+//     a machine-chain bound above staticMachineChainCap;
+//   - widths and alignment: fields off byte boundaries or wider than
+//     8 bytes outside the 128-bit paths, slices wider than 64 bits
+//     outside the comparisons the resolver splits, a slice of an
+//     option field across 9 bytes, a network literal on a field of
+//     another width or on a slice off byte boundaries, `in [...]` on
+//     a field above 64 bits that is not an address;
+//   - resource caps: arith nesting above maxArithDepth, bpf_loop
+//     iteration caps, the 512-byte stack plan, the callback
+//     branch-count tripwire, option reads that do not fold into one
+//     accumulator;
+//   - offsets known only at runtime where a helper needs a constant;
+//   - host capabilities the Capabilities do not grant (`in @set`,
+//     `action ==`);
+//   - vocabulary shapes the parser-machine lowering does not cover.
 //
-// Callers can match it with errors.Is to distinguish "valid DSL,
-// codegen still to come" from genuine type or vocabulary errors.
-// The wrapped reason in each call site identifies which flavour the
-// caller hit.
+// The user-facing lists are docs/ja/dsl-types.md §8.8 and §9.1 and
+// docs/ja/dsl-internals.md §3.7.
 var ErrNotImplemented = errors.New("dsl codegen is not yet fully implemented")
 
 // ErrVlanInMetadata is the type error for a mandatory vlan or qinq layer
