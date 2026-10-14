@@ -8,10 +8,11 @@ import (
 
 // callbackBranchThreshold caps the number of branch instructions
 // (conditional jumps + unconditional Ja) a bpf_loop callback may
-// contain. An earlier review round found three verifier blowups of
-// one kind, where a new branch added inside a
-// bpf_loop callback inflated scalar IDs across MAX_DEPTH iterations
-// and tripped the kernel's 1M-instruction cap. Static counting at
+// contain. Three verifier blowups (a length guard in tcp.p4's
+// unknown-option state, and the first TCP SACK and IPv4 RR option
+// walks) had one cause: a new branch inside a bpf_loop callback
+// inflated scalar IDs across MAX_DEPTH iterations and tripped the
+// kernel's 1M-instruction cap. Static counting at
 // compile time gives vocab authors a tripwire before hitting the
 // kernel verifier.
 //

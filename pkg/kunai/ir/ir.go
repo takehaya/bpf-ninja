@@ -262,8 +262,9 @@ type FieldRef struct {
 // FieldSlice represents a half-open bit range [Lo, Hi) on the
 // referenced field. Bit 0 is the network-order MSB so users reading
 // e.g. `ipv6.src[0:32]` as "the first 32 bits" get the natural IETF
-// convention. The MVP requires both endpoints byte-aligned (Lo % 8
-// == 0 and Hi % 8 == 0); non-aligned slices follow up under F11.
+// convention. Endpoints may sit on any bit; the resolver
+// (attachSlice) requires byte-aligned endpoints only for slices wider
+// than 64 bits.
 type FieldSlice struct {
 	Lo int // bit position, inclusive
 	Hi int // bit position, exclusive
