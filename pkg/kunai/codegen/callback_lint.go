@@ -8,8 +8,8 @@ import (
 
 // callbackBranchThreshold caps the number of branch instructions
 // (conditional jumps + unconditional Ja) a bpf_loop callback may
-// contain. Round-2 review surfaced a systemic class of verifier
-// blowups (B-2a, B-4 R1, B-4a R1) where a new branch added inside a
+// contain. An earlier review round found three verifier blowups of
+// one kind, where a new branch added inside a
 // bpf_loop callback inflated scalar IDs across MAX_DEPTH iterations
 // and tripped the kernel's 1M-instruction cap. Static counting at
 // compile time gives vocab authors a tripwire before hitting the

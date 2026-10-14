@@ -122,7 +122,7 @@ func withPos(err error, pos ast.Position) error {
 // well-typed but the BPF emitter does not cover its shape. It is an
 // implementation limit, not a property of the filter: spec vectors
 // that Go refuses carry goStatus := .notImplemented in spec/lean.
-// Type and vocabulary errors, and ErrVlanInMetadata, are reported
+// Type errors, vocabulary load errors and ErrVlanInMetadata are reported
 // separately.
 //
 // Every return site wraps it with a reason naming the shape; callers
@@ -130,8 +130,10 @@ func withPos(err error, pos ast.Position) error {
 // fall into these groups:
 //
 //   - language shapes without an emitter: `has`, field-list capture,
+//     capture of a {0,0} layer behind an alternation,
 //     a bracket predicate on an option or stack entry located by the
-//     parser's walk, nested or quantified alternation groups, a
+//     parser's walk, a quantified alternation group, more than
+//     altCountCap alternatives (nested groups flatten into one), a
 //     quantifier on a variable-length layer without a parser machine,
 //     a machine-chain bound above staticMachineChainCap;
 //   - widths and alignment: fields off byte boundaries or wider than
@@ -144,10 +146,12 @@ func withPos(err error, pos ast.Position) error {
 //     iteration caps, the 512-byte stack plan, the callback
 //     branch-count tripwire, option reads that do not fold into one
 //     accumulator;
-//   - offsets known only at runtime where a helper needs a constant;
+//   - offsets known only at runtime on a path that needs a constant;
 //   - host capabilities the Capabilities do not grant (`in @set`,
 //     `action ==`);
-//   - vocabulary shapes the parser-machine lowering does not cover.
+//   - vocabulary shapes the lowering does not cover: parser-machine
+//     select keys and advances, dispatch constants, dynamic-index
+//     sources.
 //
 // The user-facing lists are docs/ja/dsl-types.md §8.8 and §9.1 and
 // docs/ja/dsl-internals.md §3.7.
