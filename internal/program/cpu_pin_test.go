@@ -20,10 +20,6 @@ import (
 // ones and the highest, enough to tell slot cpu from slot 0 or cpu+1.
 const maxPinnedCPUs = 4
 
-// packetIDCPUShift is where the gated capture puts the CPU id in a
-// record's packet id (cpu << 48 | per-CPU sequence, see gated.go).
-const packetIDCPUShift = 48
-
 // allowedCPUs returns the CPUs this thread's affinity mask allows, in
 // ascending order: all of them, or the lowest maxPinnedCPUs-1 and the
 // highest. With fewer than two the test cannot tell slot cpu from slot 0:

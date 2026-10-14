@@ -59,6 +59,10 @@ import (
 // packet that matched both stages.
 type Emit uint8
 
+// packetIDCPUShift places the CPU id above the per-CPU sequence in a
+// gated record's packet id: cpu << packetIDCPUShift | seq.
+const packetIDCPUShift = 48
+
 const (
 	// EmitBoth emits the entry image and the exit image, both stamped
 	// with the verdict and the same packet id.
@@ -207,7 +211,7 @@ func buildGatedExitInsns(h *hook.Hook, filterOut codegen.Output, tf filter.Targe
 	// R6 (ctx is not read again after the filter) ---
 	insns = append(insns,
 		asm.FnGetSmpProcessorId.Call(),
-		asm.LSh.Imm(asm.R0, 48),
+		asm.LSh.Imm(asm.R0, packetIDCPUShift),
 		asm.LoadMem(asm.R6, asm.R8, holdSeq, asm.DWord),
 		asm.Or.Reg(asm.R6, asm.R0),
 	)
