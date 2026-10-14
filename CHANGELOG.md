@@ -1,5 +1,131 @@
 # Changelog
 
+## [0.26.0](https://github.com/takehaya/bpf-ninja/compare/v0.25.0...v0.26.0) (2026-10-14)
+
+
+### 🎉 Features
+
+* **capture:** export accounting, and a guard for the 7.0 tail-call attach failure ([#113](https://github.com/takehaya/bpf-ninja/issues/113)) ([45e365a](https://github.com/takehaya/bpf-ninja/commit/45e365a8ef2733245c63e663359adfe6869451c9))
+* **capture:** gated entry+exit capture (repeatable --mode, --emit) ([#112](https://github.com/takehaya/bpf-ninja/issues/112)) ([2fa4279](https://github.com/takehaya/bpf-ninja/commit/2fa427910b14b3cb4e7dac6799d71d79216baab5))
+* **kunai:** --tc-vlan-reinsert makes the tc wire frame opt-in ([#161](https://github.com/takehaya/bpf-ninja/issues/161)) ([8ea5890](https://github.com/takehaya/bpf-ninja/commit/8ea58908eec5ec737b6adebd22425360c4e8fa68))
+* **kunai:** [@kunai](https://github.com/kunai)_option_region[on_fault=skip|fail] decides the D-029 rule per P4 parser ([#154](https://github.com/takehaya/bpf-ninja/issues/154)) ([8135f3c](https://github.com/takehaya/bpf-ninja/commit/8135f3c8b82f54479ca94423c3bd9d71bdd79540))
+* **kunai:** [options.valid] as a bracket predicate ([#156](https://github.com/takehaya/bpf-ninja/issues/156)) ([2030540](https://github.com/takehaya/bpf-ninja/commit/20305401d6c4d3f7a28a35d98a4050dc96009c9f))
+* **kunai:** &lt;layer&gt;.options.valid reports a malformed option region ([#153](https://github.com/takehaya/bpf-ninja/issues/153)) ([372837d](https://github.com/takehaya/bpf-ninja/commit/372837d28502fed12dc993b3769b45fa903586e4))
+* **kunai:** 128-bit arithmetic on aux fields ([#172](https://github.com/takehaya/bpf-ninja/issues/172)) ([210fd65](https://github.com/takehaya/bpf-ninja/commit/210fd6584afd1695658b3444c4f0039ccdc1c9d6))
+* **kunai:** 128-bit expression on the right of + and - ([#143](https://github.com/takehaya/bpf-ninja/issues/143)) ([1944d59](https://github.com/takehaya/bpf-ninja/commit/1944d590c01a6f758c278fe59b53f89dadeb5ee1))
+* **kunai:** 128-bit expressions on both sides of + and - ([#152](https://github.com/takehaya/bpf-ninja/issues/152)) ([bd57fb6](https://github.com/takehaya/bpf-ninja/commit/bd57fb68f6397eab967aaaa01a25cbeb08fe80c0))
+* **kunai:** a malformed option region leaves the layer with no options ([#150](https://github.com/takehaya/bpf-ninja/issues/150)) ([0125e8f](https://github.com/takehaya/bpf-ninja/commit/0125e8fe47ad191606452b14699f375181360ffe))
+* **kunai:** a stack that fills up inside a declared region keeps what fits ([#155](https://github.com/takehaya/bpf-ninja/issues/155)) ([18b6aac](https://github.com/takehaya/bpf-ninja/commit/18b6aacf5a42184d0eee608da4790b2d8bc4e866))
+* **kunai:** accept address and CIDR alternatives in a bracket in-list ([#184](https://github.com/takehaya/bpf-ninja/issues/184)) ([c1dc8b5](https://github.com/takehaya/bpf-ninja/commit/c1dc8b529d064905820b1c7601c3f26751e665e5))
+* **kunai:** accumulator takes a never-holding literal and another layer's options.valid ([#171](https://github.com/takehaya/bpf-ninja/issues/171)) ([e98b3cd](https://github.com/takehaya/bpf-ninja/commit/e98b3cd2aa6e5cf380fe228999b5e815a50d54ca))
+* **kunai:** bracket predicates on push-counted stacks without write-back ([#136](https://github.com/takehaya/bpf-ninja/issues/136)) ([14a50c4](https://github.com/takehaya/bpf-ninja/commit/14a50c4ffc9ba00be1f1a66716f2d92999fa2cea))
+* **kunai:** define arithmetic above 64 bits as + and - modulo 2^128 ([#132](https://github.com/takehaya/bpf-ninja/issues/132)) ([ef8876a](https://github.com/takehaya/bpf-ninja/commit/ef8876ab10e85313fa0c5d6aaa3a37ba20205721))
+* **kunai:** dispatch against the runtime parent after consecutive optionals ([#129](https://github.com/takehaya/bpf-ninja/issues/129)) ([9350d99](https://github.com/takehaya/bpf-ninja/commit/9350d997e48ea3091cf8b6afd39a5a07f800e008))
+* **kunai:** dynamic index into variable-length stack entries ([#131](https://github.com/takehaya/bpf-ninja/issues/131)) ([9b835e1](https://github.com/takehaya/bpf-ninja/commit/9b835e15b507787b27c7490ae19a4e02e960980e))
+* **kunai:** fold bracket option equalities into the TCP option accumulator ([#196](https://github.com/takehaya/bpf-ninja/issues/196)) ([a772f0e](https://github.com/takehaya/bpf-ninja/commit/a772f0e281b6ede59dba55d458681372569cb3b3))
+* **kunai:** int&lt;128&gt;(n) literal for integers above 64 bits ([#159](https://github.com/takehaya/bpf-ninja/issues/159)) ([dda1d84](https://github.com/takehaya/bpf-ninja/commit/dda1d84544c887456e9b6a1e37f919ebbebd92f8))
+* **kunai:** model in [@set](https://github.com/set) in the Lean spec ([#134](https://github.com/takehaya/bpf-ninja/issues/134)) ([100b0b0](https://github.com/takehaya/bpf-ninja/commit/100b0b01ac996f23b1047508856d20dd7be462e7))
+* **kunai:** name options the long way inside a bracket ([#193](https://github.com/takehaya/bpf-ninja/issues/193)) ([3b87e72](https://github.com/takehaya/bpf-ninja/commit/3b87e72ccf17b83ca73cae507eb781c71f197e76))
+* **kunai:** only the outer VLAN tag is in metadata at tc hosts ([#157](https://github.com/takehaya/bpf-ninja/issues/157)) ([0beba2f](https://github.com/takehaya/bpf-ninja/commit/0beba2fba8c2d452c868acd01820071aa431739d))
+* **kunai:** optional continuation of a chain-end protocol ([#128](https://github.com/takehaya/bpf-ninja/issues/128)) ([c5eaa0d](https://github.com/takehaya/bpf-ninja/commit/c5eaa0df28ab6ff780a887709997fa81006380c9))
+* **kunai:** optional variable-length and self-validating layers ([#138](https://github.com/takehaya/bpf-ninja/issues/138)) ([8067470](https://github.com/takehaya/bpf-ninja/commit/806747023f52eab85e538fe76270768723214b2f))
+* **kunai:** options.valid alongside two option equalities ([#165](https://github.com/takehaya/bpf-ninja/issues/165)) ([5f59a95](https://github.com/takehaya/bpf-ninja/commit/5f59a955f9bd6c7581bc554b0e223a271181e84b))
+* **kunai:** ordered comparisons of ipv4, ipv6 and mac literals in a bracket ([#187](https://github.com/takehaya/bpf-ninja/issues/187)) ([7fbf073](https://github.com/takehaya/bpf-ninja/commit/7fbf0739197b14b7c8b6bfa11da4f770b19b27a4))
+* **kunai:** plan runtime entry and dynamic aux slots from one pool ([#135](https://github.com/takehaya/bpf-ninja/issues/135)) ([b64e298](https://github.com/takehaya/bpf-ninja/commit/b64e298a991ae923fae7c34f80232d21a1a4fade))
+* **kunai:** range alternatives in bracket in predicates ([#130](https://github.com/takehaya/bpf-ninja/issues/130)) ([27ec15d](https://github.com/takehaya/bpf-ninja/commit/27ec15d3d258c9db53c20b2364987d594f5301a6))
+* **kunai:** read a set key from a walked variable-length entry ([#185](https://github.com/takehaya/bpf-ninja/issues/185)) ([520beb5](https://github.com/takehaya/bpf-ninja/commit/520beb521ecfeeceee82c3d1d15aaf6b91ecf01f))
+* **kunai:** read an optional outer VLAN tag at a metadata host ([#173](https://github.com/takehaya/bpf-ninja/issues/173)) ([7d1fde1](https://github.com/takehaya/bpf-ninja/commit/7d1fde173e89108e93f27a1755c7d47872dd9d86))
+* **kunai:** read options located by the walk in bracket predicates ([#191](https://github.com/takehaya/bpf-ninja/issues/191)) ([b75b1f9](https://github.com/takehaya/bpf-ninja/commit/b75b1f95123777f679ed9db82e26a2989ef1d92e))
+* **kunai:** read the outer VLAN tag from skb metadata so the tc host can hand DSL filters the wire frame ([#160](https://github.com/takehaya/bpf-ninja/issues/160)) ([6acf94a](https://github.com/takehaya/bpf-ninja/commit/6acf94a30d5bf2633db55fccf19f21b6c71b9b4a))
+* **kunai:** repeat a variable-length layer up to four times ([#174](https://github.com/takehaya/bpf-ninja/issues/174)) ([7e40f3f](https://github.com/takehaya/bpf-ninja/commit/7e40f3f5cde3ecd2e217be3604db1f68faa3e9f2))
+* **kunai:** slice a 16-byte aux field behind a static stack index ([#179](https://github.com/takehaya/bpf-ninja/issues/179)) ([707283e](https://github.com/takehaya/bpf-ninja/commit/707283e2f1fbfc8d644dd99b9d79d2aaba447459))
+* **kunai:** sub-64-bit operands in 128-bit arithmetic, and two where-arith fixes ([#140](https://github.com/takehaya/bpf-ninja/issues/140)) ([9097b32](https://github.com/takehaya/bpf-ninja/commit/9097b32a26141d94dd441675509fad3bc155153a))
+* **kunai:** unroll `+`, `*` and `{n,}` on a parser-machine layer to MAX_DEPTH instances ([#186](https://github.com/takehaya/bpf-ninja/issues/186)) ([5b1a3b1](https://github.com/takehaya/bpf-ninja/commit/5b1a3b13ebcc2e3de18e2516687da31f4ed4af9f))
+* **kunai:** where and capture references to optional and quantified layers ([#126](https://github.com/takehaya/bpf-ninja/issues/126)) ([5967f7e](https://github.com/takehaya/bpf-ninja/commit/5967f7ef2fb04a410e4ce38802f908a983129e9b))
+* **lean:** bracket and where forms accept the same packets under eval ([#142](https://github.com/takehaya/bpf-ninja/issues/142)) ([4e002db](https://github.com/takehaya/bpf-ninja/commit/4e002db8677c40dec3df9e4a318e41f69f0650e9))
+* **lean:** prove bracket_eq_where ([#139](https://github.com/takehaya/bpf-ninja/issues/139)) ([872ed68](https://github.com/takehaya/bpf-ninja/commit/872ed68f5cd2bcd127d47767f6ee294094b61c00))
+* **lean:** the where form type-checks when the bracket form does ([#145](https://github.com/takehaya/bpf-ninja/issues/145)) ([f63fc5e](https://github.com/takehaya/bpf-ninja/commit/f63fc5e5ae0a041e7682265984e2040ce7d427cd))
+* **spec:** Lean 4 formal specification of the kunai DSL ([#117](https://github.com/takehaya/bpf-ninja/issues/117)) ([aea0830](https://github.com/takehaya/bpf-ninja/commit/aea0830d9a383f73671bd6d3149866280e940458))
+* **spec:** Phase 5 — parser machines, aux headers, generated vectors ([#119](https://github.com/takehaya/bpf-ninja/issues/119)) ([76b1ae4](https://github.com/takehaya/bpf-ninja/commit/76b1ae44cc24a4efb71aa1a4c9904301648caae8))
+
+
+### 🐛 Bug Fixes
+
+* **cli:** address the review of the --dump-asm warnings change ([#205](https://github.com/takehaya/bpf-ninja/issues/205)) ([6c06ba0](https://github.com/takehaya/bpf-ninja/commit/6c06ba08fdec9d8d48014ba313079236a64c025d))
+* **cli:** build fresh root flags for every newRootCommand ([#204](https://github.com/takehaya/bpf-ninja/issues/204)) ([0278793](https://github.com/takehaya/bpf-ninja/commit/027879344ae89c2bdb2fd06b9d5f13d81a3c7fba))
+* **cli:** build fresh subcommands for every newRootCommand ([#210](https://github.com/takehaya/bpf-ninja/issues/210)) ([4608adc](https://github.com/takehaya/bpf-ninja/commit/4608adcc3f18085e74c69ebd375cfb5c88f2d6c2))
+* **cli:** print compiler warnings on stderr for --dump-asm ([#203](https://github.com/takehaya/bpf-ninja/issues/203)) ([3525c6f](https://github.com/takehaya/bpf-ninja/commit/3525c6f690164450aa94c85567de54528059f751))
+* harden DSL matching and capture completion accounting ([#115](https://github.com/takehaya/bpf-ninja/issues/115)) ([97be2b6](https://github.com/takehaya/bpf-ninja/commit/97be2b658b5086c5a6baf700ed776193c1c04044))
+* **kunai:** a mandatory qinq layer is the same type error as vlan where the tag is in metadata ([#148](https://github.com/takehaya/bpf-ninja/issues/148)) ([c18e66e](https://github.com/takehaya/bpf-ninja/commit/c18e66eaf6337f0c6aa1fe92598f6284ad40f073))
+* **kunai:** a mandatory vlan layer is a type error where the tag is in metadata ([#144](https://github.com/takehaya/bpf-ninja/issues/144)) ([bfe6f47](https://github.com/takehaya/bpf-ninja/commit/bfe6f47a3768812b250f54cd87cb5b4d60592112))
+* **kunai:** a repeated layer needs a dispatch constant under itself ([#141](https://github.com/takehaya/bpf-ninja/issues/141)) ([8323972](https://github.com/takehaya/bpf-ninja/commit/8323972e41affe8a26148780882354841dc2e840))
+* **kunai:** align quantifier and alternation codegen with the spec ([#118](https://github.com/takehaya/bpf-ninja/issues/118)) ([c7e8864](https://github.com/takehaya/bpf-ninja/commit/c7e8864f5324dbc36eec98703e63589450da7a8d))
+* **kunai:** arith nesting limit counts binary nodes; document the 512-byte window ([#163](https://github.com/takehaya/bpf-ninja/issues/163)) ([ab35283](https://github.com/takehaya/bpf-ninja/commit/ab352837323c6accdbe2c38c59fcaa5b4b3e0a41))
+* **kunai:** bound srv6 stack indexes by the header's count byte ([#176](https://github.com/takehaya/bpf-ninja/issues/176)) ([366e926](https://github.com/takehaya/bpf-ninja/commit/366e92667e2eb0c7bf07b4acc1010834afd9edda))
+* **kunai:** bpf_loop over-run signal and push-counted stacks ([#121](https://github.com/takehaya/bpf-ninja/issues/121)) ([eb250df](https://github.com/takehaya/bpf-ninja/commit/eb250df2aa959f47637a80113c74b8b30af3784e))
+* **kunai:** compare bracket constants above int32 through a register ([#216](https://github.com/takehaya/bpf-ninja/issues/216)) ([eed1274](https://github.com/takehaya/bpf-ninja/commit/eed12746e06135d4e56c02c32b7cbeb4f30d00f5))
+* **kunai:** compare integers with 48- and 128-bit fields as addresses ([#211](https://github.com/takehaya/bpf-ninja/issues/211)) ([51427d6](https://github.com/takehaya/bpf-ninja/commit/51427d6024c17f5685cbe0027973e5945871450f))
+* **kunai:** compare network literals with slices off byte boundaries ([#207](https://github.com/takehaya/bpf-ninja/issues/207)) ([9957976](https://github.com/takehaya/bpf-ninja/commit/9957976112e856020256c6f19725b167b548194f))
+* **kunai:** compare ranges in `in` lists on MAC and IPv6 fields ([#214](https://github.com/takehaya/bpf-ninja/issues/214)) ([15bf3c8](https://github.com/takehaya/bpf-ninja/commit/15bf3c81d30ee9318e75c9e88129e3e056c7cd69))
+* **kunai:** dispatch after skipped layers, absent options as false, option .exists ([#120](https://github.com/takehaya/bpf-ninja/issues/120)) ([afe9d90](https://github.com/takehaya/bpf-ninja/commit/afe9d90c3ebf7f95027d5e686b18953eb275bb70))
+* **kunai:** fold option brackets of a layer that may be absent ([#209](https://github.com/takehaya/bpf-ninja/issues/209)) ([841a675](https://github.com/takehaya/bpf-ninja/commit/841a6758ec03bec274c38874bf1fa37f5125764d))
+* **kunai:** guard dropped pre-walk predicates and pin the no-push bracket ([#137](https://github.com/takehaya/bpf-ninja/issues/137)) ([7acb76c](https://github.com/takehaya/bpf-ninja/commit/7acb76c84150d729d36da3e1ecc55db96378359e))
+* **kunai:** honour ext_length on GTP-U extension headers ([#123](https://github.com/takehaya/bpf-ninja/issues/123)) ([247b63a](https://github.com/takehaya/bpf-ninja/commit/247b63ae4e3da05f23478f42c3a7f4522e901127))
+* **kunai:** keep a slice's load window inside the field ([#213](https://github.com/takehaya/bpf-ninja/issues/213)) ([832f90f](https://github.com/takehaya/bpf-ninja/commit/832f90f4fb3b3c3c9825a2b2a2814fc431fa343b))
+* **kunai:** keep the ipv6 write-back in a stack slot instead of the packet ([#177](https://github.com/takehaya/bpf-ninja/issues/177)) ([16a5e3f](https://github.com/takehaya/bpf-ninja/commit/16a5e3f5d7cbe4382f561f3f3bbfbdcc30fb4ace))
+* **kunai:** lower a {0,0} layer as the chain without it ([#208](https://github.com/takehaya/bpf-ninja/issues/208)) ([553138f](https://github.com/takehaya/bpf-ninja/commit/553138fbf3e8c45296c11a19a857f529bfde9279))
+* **kunai:** read slices whose bytes span nine ([#215](https://github.com/takehaya/bpf-ninja/issues/215)) ([822d5ac](https://github.com/takehaya/bpf-ninja/commit/822d5ac43bb8918fb08b8bb6d82217540f8583c0))
+* **kunai:** read the flag byte of a flag-gated layer through the bounded idiom ([#175](https://github.com/takehaya/bpf-ninja/issues/175)) ([2a05c01](https://github.com/takehaya/bpf-ninja/commit/2a05c014dd344c4db10a65743cf2a894f4c96f50))
+* **kunai:** read the slice in any()/all() over a large stack ([#212](https://github.com/takehaya/bpf-ninja/issues/212)) ([7cbd64f](https://github.com/takehaya/bpf-ninja/commit/7cbd64f723f47a4e994a66c2a967a46c7e20b548))
+* **kunai:** refuse a bracket predicate on an option found by the parser's walk ([#188](https://github.com/takehaya/bpf-ninja/issues/188)) ([bebd805](https://github.com/takehaya/bpf-ninja/commit/bebd80582e29f9a498752ba4fae3dc2123a522f3))
+* **kunai:** reject a vocabulary whose children share a dispatch value ([#202](https://github.com/takehaya/bpf-ninja/issues/202)) ([0aa3217](https://github.com/takehaya/bpf-ninja/commit/0aa321718996b28c5a6836a599bb386f9d89a9bd))
+* **kunai:** say in the accumulator refusal why the second tcp member never matches ([#201](https://github.com/takehaya/bpf-ninja/issues/201)) ([18ae374](https://github.com/takehaya/bpf-ninja/commit/18ae374f10c0c3fd061851f9ba8e18e7423540f4))
+* **kunai:** say why the accumulator refuses two layers or too many equalities ([#199](https://github.com/takehaya/bpf-ninja/issues/199)) ([5d0ab20](https://github.com/takehaya/bpf-ninja/commit/5d0ab207e9110b83e7742d5441bd5b84943bd095))
+* **kunai:** type a network literal against the width of a sliced field ([#181](https://github.com/takehaya/bpf-ninja/issues/181)) ([d5843df](https://github.com/takehaya/bpf-ninja/commit/d5843df1d06b200fa6b1a0b27a98aa8931e47e89))
+* **kunai:** type-check chain shapes in the resolver ([#127](https://github.com/takehaya/bpf-ninja/issues/127)) ([e6e4c58](https://github.com/takehaya/bpf-ninja/commit/e6e4c58a1941144e7461e17e182baae5a1c2d066))
+* **kunai:** variable-length stack entries and aux fields in bracket predicates ([#122](https://github.com/takehaya/bpf-ninja/issues/122)) ([164b9d1](https://github.com/takehaya/bpf-ninja/commit/164b9d1ea7fb9655e376a54f38ad02b957eb9575))
+* **kunai:** warn on an alternation that names one protocol twice ([#200](https://github.com/takehaya/bpf-ninja/issues/200)) ([c5a9a46](https://github.com/takehaya/bpf-ninja/commit/c5a9a46c060d05800a425168479cddd92c639015))
+* **kunai:** warn on mpls?/mpls like mpls{0,1}/mpls and spell the fold ([#195](https://github.com/takehaya/bpf-ninja/issues/195)) ([910edc4](https://github.com/takehaya/bpf-ninja/commit/910edc44fec57a83e266e3adcb691641dbd0f78d))
+* **kunai:** where reads of alternation members, and consecutive alternations ([#146](https://github.com/takehaya/bpf-ninja/issues/146)) ([7929c60](https://github.com/takehaya/bpf-ninja/commit/7929c605f4c4fc8c0017de5086c7522cbc6c4652))
+* **make:** golden-diff drops instruction indexes and keeps its exit codes ([#197](https://github.com/takehaya/bpf-ninja/issues/197)) ([493d360](https://github.com/takehaya/bpf-ninja/commit/493d360c4c3210b1dff50e3f6a92834349111dbc))
+* **spec:** define capture headers as the fixed-header bound of the chain ([#182](https://github.com/takehaya/bpf-ninja/issues/182)) ([52f7569](https://github.com/takehaya/bpf-ninja/commit/52f7569acaad13d0a13e81edfccc5ed0aada22a2))
+
+
+### 📝 Documentation
+
+* add Apache License 2.0 ([#114](https://github.com/takehaya/bpf-ninja/issues/114)) ([2263498](https://github.com/takehaya/bpf-ninja/commit/22634988d8806461b7d95680317b1dc2a8136ef4))
+* align TCP option examples with length validation ([#116](https://github.com/takehaya/bpf-ninja/issues/116)) ([08ebcfc](https://github.com/takehaya/bpf-ninja/commit/08ebcfc52cd421b3bfd83d1afec7bee0b0097668))
+* clarify where private documents live ([#108](https://github.com/takehaya/bpf-ninja/issues/108)) ([626f85e](https://github.com/takehaya/bpf-ninja/commit/626f85ec512655c38945cf8d22c04b68cc2a5c65))
+* explain multi-option filters, tc VLAN tags, stack over-run and netfilter ([#167](https://github.com/takehaya/bpf-ninja/issues/167)) ([44705a5](https://github.com/takehaya/bpf-ninja/commit/44705a5a4a792dd5e71100749f9bf0161c24ab97))
+* fix DSL examples and stale limits that no longer match the compiler ([#166](https://github.com/takehaya/bpf-ninja/issues/166)) ([9d1dc35](https://github.com/takehaya/bpf-ninja/commit/9d1dc3538311089d0109d15ca60cf0d98c65ccf5))
+* **kunai:** give ErrNotImplemented reasons as examples and fix stale slice and alternation notes ([#220](https://github.com/takehaya/bpf-ninja/issues/220)) ([570421b](https://github.com/takehaya/bpf-ninja/commit/570421b11509ae72f555be2a4cfb905e30806c2c))
+* **kunai:** list the current ErrNotImplemented groups and drop dead doc pointers ([#217](https://github.com/takehaya/bpf-ninja/issues/217)) ([b8a8953](https://github.com/takehaya/bpf-ninja/commit/b8a89534d6b66be737304e888e3cdb28d05cf94c))
+* **lean:** capture of an alternation member follows D-020 ([#147](https://github.com/takehaya/bpf-ninja/issues/147)) ([e983d19](https://github.com/takehaya/bpf-ninja/commit/e983d19d63c2707e81f92b2c600e043366aaab91))
+* publish workshop paper sources and measurement artifacts ([#111](https://github.com/takehaya/bpf-ninja/issues/111)) ([a65fa43](https://github.com/takehaya/bpf-ninja/commit/a65fa433727947af3ea3179710b49ac5165becd8))
+* **readme:** list every CLI flag ([#169](https://github.com/takehaya/bpf-ninja/issues/169)) ([cf2c426](https://github.com/takehaya/bpf-ninja/commit/cf2c4261c2099eb57087c07d82965190219d8ef7))
+* remove private workspace locations from public guides ([#109](https://github.com/takehaya/bpf-ninja/issues/109)) ([5b8f2b6](https://github.com/takehaya/bpf-ninja/commit/5b8f2b6b3e4f4508d3270e0a3410554f5a493d58))
+* spec and vocab-author docs catch up with D-008, D-024 and D-037 ([#168](https://github.com/takehaya/bpf-ninja/issues/168)) ([33184d6](https://github.com/takehaya/bpf-ninja/commit/33184d605943e640c97e38113c96a66854139d1a))
+* **spec:** D-024 approved (option b) ([#162](https://github.com/takehaya/bpf-ninja/issues/162)) ([697e6d3](https://github.com/takehaya/bpf-ninja/commit/697e6d3338321cd8ca1dad1eed6a05b4682a4edb))
+* **spec:** rewrite the Lean spec README in plain prose ([#124](https://github.com/takehaya/bpf-ninja/issues/124)) ([0faf2f7](https://github.com/takehaya/bpf-ninja/commit/0faf2f7bca3ff436931b3442ad7c5274a90311c1))
+* track shared agent instructions ([#110](https://github.com/takehaya/bpf-ninja/issues/110)) ([c05dfc2](https://github.com/takehaya/bpf-ninja/commit/c05dfc2148a84d24c0ddf90848d4474c524a07a8))
+
+
+### 🔧 Miscellaneous Chores
+
+* **docs:** separate private material and guard public content ([#106](https://github.com/takehaya/bpf-ninja/issues/106)) ([b87f0cb](https://github.com/takehaya/bpf-ninja/commit/b87f0cb31fc984f504d6a4c8504769e583e6a964))
+
+
+### ♻️ Code Refactoring
+
+* **kunai:** alternation member guards are the member's own dispatch ([#149](https://github.com/takehaya/bpf-ninja/issues/149)) ([b0f7103](https://github.com/takehaya/bpf-ninja/commit/b0f71030795b0e818ccd47ee9c172ff1e6b76bc0))
+* **kunai:** an alternation member runs its dispatch once ([#151](https://github.com/takehaya/bpf-ninja/issues/151)) ([b299057](https://github.com/takehaya/bpf-ninja/commit/b2990578d4c7a65a00bd7d119b51f21a5389bdb6))
+* **kunai:** fold offsets in place without a self-copy and route emitBoundedLoad through emitFieldLoadTo ([#183](https://github.com/takehaya/bpf-ninja/issues/183)) ([a000594](https://github.com/takehaya/bpf-ninja/commit/a000594cf3502b3510eb2656dd42649ed81e7856))
+* **kunai:** number codegen labels per compile ([#198](https://github.com/takehaya/bpf-ninja/issues/198)) ([55c1778](https://github.com/takehaya/bpf-ninja/commit/55c177845605228103b7c47e36ddb3df1efb68cc))
+* **kunai:** one scalar field read for bracket and where emitters ([#189](https://github.com/takehaya/bpf-ninja/issues/189)) ([17b605f](https://github.com/takehaya/bpf-ninja/commit/17b605fc10dd58196b037848aeb54797f0905b5f))
+* **kunai:** quantifier bounds, repetition and spelling on ir.LayerInstance ([#190](https://github.com/takehaya/bpf-ninja/issues/190)) ([44284da](https://github.com/takehaya/bpf-ninja/commit/44284da4fe802ae3b200cabcd1649c08acd4c8c6))
+* **kunai:** read a stack's header count field in one place ([#178](https://github.com/takehaya/bpf-ninja/issues/178)) ([3ac4aa6](https://github.com/takehaya/bpf-ninja/commit/3ac4aa65f3a6582180dabd3af05de655588d32c7))
+* **spec:** one helper for the .valid region rule ([#164](https://github.com/takehaya/bpf-ninja/issues/164)) ([aa804be](https://github.com/takehaya/bpf-ninja/commit/aa804be56d178368a544f8e532a68e9f5b14bf0b))
+
 ## [0.25.0](https://github.com/takehaya/bpf-ninja/compare/v0.24.0...v0.25.0) (2026-08-23)
 
 
