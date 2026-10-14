@@ -642,6 +642,13 @@ type wireChunk struct {
 // the op itself. IPv4 is one Word, MAC a Word and a Half, IPv6 two
 // DWords. constReg holds each chunk's constant (bracketConstReg).
 func emitOrderedWireCmp(loadAt auxLoadAt, chunks []wireChunk, op ast.CmpOp, constReg asm.Register, labels *labeler) asm.Instructions {
+	return emitOrderedWireCmpTo(loadAt, chunks, op, constReg, dslReject, labels)
+}
+
+// emitOrderedWireCmpTo is emitOrderedWireCmp failing to failLabel
+// instead of dslReject, for a test that is one alternative of an `in`
+// list.
+func emitOrderedWireCmpTo(loadAt auxLoadAt, chunks []wireChunk, op ast.CmpOp, constReg asm.Register, failLabel string, labels *labeler) asm.Instructions {
 	var insns asm.Instructions
 	match := ""
 	if len(chunks) > 1 {
@@ -656,11 +663,11 @@ func emitOrderedWireCmp(loadAt auxLoadAt, chunks []wireChunk, op ast.CmpOp, cons
 		if i+1 < len(chunks) {
 			insns = append(insns,
 				success.Reg(asm.R3, constReg, match),
-				fail.Reg(asm.R3, constReg, dslReject),
+				fail.Reg(asm.R3, constReg, failLabel),
 			)
 			continue
 		}
-		insns = append(insns, miss.Reg(asm.R3, constReg, dslReject))
+		insns = append(insns, miss.Reg(asm.R3, constReg, failLabel))
 	}
 	if match != "" {
 		insns = append(insns, landingNoop(match))
@@ -774,6 +781,14 @@ func ipv6Chunks(v *ast.Value) []wireChunk {
 	return []wireChunk{
 		{0, asm.DWord, binary.BigEndian.Uint64(v.V6[0:8])},
 		{8, asm.DWord, binary.BigEndian.Uint64(v.V6[8:16])},
+	}
+}
+
+// macChunks is ipv6Chunks for a MAC literal: a Word and a Half.
+func macChunks(v *ast.Value) []wireChunk {
+	return []wireChunk{
+		{0, asm.Word, uint64(binary.BigEndian.Uint32(v.MAC[0:4]))},
+		{4, asm.Half, uint64(binary.BigEndian.Uint16(v.MAC[4:6]))},
 	}
 }
 
@@ -945,12 +960,7 @@ func emitMACPredicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, error)
 		return nil, err
 	}
 	if _, eq := ipEqualityJumpOp(pred.Op); !eq {
-		mac := pred.Value.MAC
-		chunks := []wireChunk{
-			{0, asm.Word, uint64(binary.BigEndian.Uint32(mac[0:4]))},
-			{4, asm.Half, uint64(binary.BigEndian.Uint16(mac[4:6]))},
-		}
-		return append(insns, emitOrderedWireCmp(loadAt, chunks, pred.Op, bracketConstReg(pred.Field), pc.labelsOrNil())...), nil
+		return append(insns, emitOrderedWireCmp(loadAt, macChunks(pred.Value), pred.Op, bracketConstReg(pred.Field), pc.labelsOrNil())...), nil
 	}
 	highLE, lowLE := macLiteralLE(pred.Value)
 	insns = append(insns, multiWordRoute(pc.labelsOrNil(), pred.Op, func(fail string) asm.Instructions {
@@ -1049,7 +1059,8 @@ func requireEqualityOp(pred *ir.Predicate, kind string) error {
 // with integers and ranges on the same field. A bit<128> field (IPv6,
 // CIDR6) and a bit<48> one (MAC) do not fit one register and take
 // emitInAddrList, which reloads the field per alternative; an integer
-// alternative there is the address with that number. A 48-bit slice off
+// alternative there is the address with that number, and a range
+// compares the field with the addresses its bounds name. A 48-bit slice off
 // byte boundaries (sliceNeedsScalarLoad) fits one register, so its MAC
 // alternatives are numbers on the load-once path (classifyInList).
 func emitInPredicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, error) {
@@ -1187,8 +1198,9 @@ const (
 // takes the MAC shape only for a list naming a MAC on byte boundaries,
 // which the byte-wise readers compare, and the scalar shape otherwise.
 // Every other field takes the scalar shape. An integer alternative joins any shape:
-// on a wide field it is the address with that number (intAsAddrValue).
-// A range on a wide field is ErrNotImplemented.
+// on a wide field it is the address with that number (intAsAddrValue),
+// and so are a range's bounds. hasRange matters only to the scalar
+// shape; the wide shapes reload the field per alternative.
 func classifyInList(list []*ast.Value, ref *ir.FieldRef) (shape inListShape, hasRange, trivial bool, err error) {
 	bits := ref.EffectiveBits()
 	hasMAC := slices.ContainsFunc(list, func(v *ast.Value) bool { return v != nil && v.Kind == ast.ValMAC })
@@ -1209,9 +1221,10 @@ func classifyInList(list []*ast.Value, ref *ir.FieldRef) (shape inListShape, has
 		case ast.ValInt:
 			ok = true
 		case ast.ValRange:
-			if shape != inListScalar {
-				return 0, false, false, fmt.Errorf("%w: a range alternative in an 'in' list on a bit<%d> field, which is read in chunks rather than into one register", ErrNotImplemented, bits)
-			}
+			// A range covering every MAC makes the list true, like a /0
+			// CIDR. A range on bit<128> cannot cover it: its bounds are
+			// at most 2^64-1.
+			trivial = trivial || (shape == inListMAC && v.RangeLo == 0 && v.RangeHi == 1<<48-1)
 			ok, hasRange = true, true
 		case ast.ValIPv4:
 			ok = shape == inListScalar
@@ -1295,10 +1308,14 @@ func emitInAddrList(pred *ir.Predicate, pc *predCtx, shape inListShape, trivial 
 		if !last {
 			fail = pc.freshLabel(predInNextLabel)
 		}
-		if v.Kind == ast.ValInt {
-			v = intAsAddrValue(v, shape)
+		switch v.Kind {
+		case ast.ValRange:
+			emit(emitAddrRange(v, shape, loadAt, fail, pc.labelsOrNil()))
+		case ast.ValInt:
+			emit(emitAddrAlternative(intAsAddrValue(v, shape), loadAt, fail))
+		default:
+			emit(emitAddrAlternative(v, loadAt, fail))
 		}
-		emit(emitAddrAlternative(v, loadAt, fail))
 		if !last {
 			insns = append(insns, asm.Ja.Label(match))
 			pending = fail
@@ -1336,6 +1353,59 @@ func emitAddrAlternative(v *ast.Value, loadAt auxLoadAt, failLabel string) asm.I
 		return body
 	}
 	return nil
+}
+
+// emitAddrRange is a range alternative of emitInAddrList: the field,
+// read as the big-endian number of its bytes (spec `lo ≤ n ≤ hi`), is
+// at least lo and at most hi, every miss jumping to failLabel. The
+// leading chunks both bounds share are an equality test, so a range on
+// bit<128>, whose bounds fit the low 64 bits, tests the high DWord for
+// zero and orders the low one only. The rest is an ordered compare
+// against each bound, without the trailing chunks a bound leaves free
+// (zero for lo, all ones for hi), and none when that leaves nothing. classifyInList made a range covering
+// every MAC trivial, so the body is never empty: with no shared chunk
+// at least one bound is inside the field's values. Constants live in
+// R2, as in emitAddrAlternative.
+func emitAddrRange(v *ast.Value, shape inListShape, loadAt auxLoadAt, failLabel string, labels *labeler) asm.Instructions {
+	chunksOf := func(bound uint64) []wireChunk {
+		addr := intAsAddrValue(&ast.Value{Kind: ast.ValInt, Int: bound}, shape)
+		if shape == inListMAC {
+			return macChunks(addr)
+		}
+		return ipv6Chunks(addr)
+	}
+	lo, hi := chunksOf(v.RangeLo), chunksOf(v.RangeHi)
+	var body asm.Instructions
+	k := 0
+	for k < len(lo)-1 && lo[k].value == hi[k].value {
+		c := lo[k]
+		body = append(body, loadAt(c.off, c.size)...)
+		body = append(body,
+			asm.LoadImm(asm.R2, int64(byteSwap(c.value, c.size.Sizeof())), asm.DWord),
+			asm.JNE.Reg(asm.R3, asm.R2, failLabel),
+		)
+		k++
+	}
+	// A trailing chunk of lo that is zero, or of hi that is all ones,
+	// cannot fail its compare once the leading chunks are equal, so the
+	// compare ends before it.
+	lo = trimChunks(lo[k:], func(c wireChunk) bool { return c.value == 0 })
+	hi = trimChunks(hi[k:], func(c wireChunk) bool { return c.value == ^uint64(0)>>(64-8*c.size.Sizeof()) })
+	if len(lo) > 0 {
+		body = append(body, emitOrderedWireCmpTo(loadAt, lo, ast.CmpGe, asm.R2, failLabel, labels)...)
+	}
+	if len(hi) > 0 {
+		body = append(body, emitOrderedWireCmpTo(loadAt, hi, ast.CmpLe, asm.R2, failLabel, labels)...)
+	}
+	return body
+}
+
+// trimChunks drops the trailing chunks for which drop holds.
+func trimChunks(chunks []wireChunk, drop func(wireChunk) bool) []wireChunk {
+	for len(chunks) > 0 && drop(chunks[len(chunks)-1]) {
+		chunks = chunks[:len(chunks)-1]
+	}
+	return chunks
 }
 
 // cmpR3Const compares R3 against a constant: a single immediate compare

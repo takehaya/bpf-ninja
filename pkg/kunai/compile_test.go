@@ -1500,14 +1500,13 @@ func TestCompileBracketInIntegerOnWideField(t *testing.T) {
 	if fmt.Sprint(zero) != fmt.Sprint(negZero) {
 		t.Errorf("ipv6[src == -0] compiles unlike ipv6[src == 0]")
 	}
-	// A range there needs the field in one register, which it is not.
+	// A range there compares the addresses its bounds name.
 	for _, expr := range []string{
 		"eth/ipv6[dst in [fc00::1, 1..5]]/tcp",
 		"eth[dst in [1..5]]/ipv4/tcp",
 	} {
-		_, err := compileForTest(expr)
-		if !errors.Is(err, codegen.ErrNotImplemented) || !strings.Contains(err.Error(), "range alternative") {
-			t.Errorf("%s: err = %v; want the range ErrNotImplemented", expr, err)
+		if _, err := compileForTest(expr); err != nil {
+			t.Errorf("%s: %v", expr, err)
 		}
 	}
 }
