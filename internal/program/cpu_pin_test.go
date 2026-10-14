@@ -41,7 +41,7 @@ func allowedCPUs(t *testing.T) []int {
 	switch {
 	case len(cpus) == 0:
 		t.Fatal("no CPU in the affinity mask")
-	case len(cpus) == 1 && os.Getenv("CI") != "":
+	case len(cpus) == 1 && (os.Getenv("CI") == "true" || os.Getenv("CI") == "1"):
 		t.Fatalf("only CPU %d is allowed; slot selection needs two CPUs to be checked", cpus[0])
 	case len(cpus) == 1:
 		t.Logf("only CPU %d is allowed; slot selection is checked on it alone", cpus[0])
@@ -237,7 +237,9 @@ func TestBpfTracingRecordLandsOnRunningCPU(t *testing.T) {
 						}
 					}
 				})
-				if err := probe.Quiesce(); err != nil {
+				// Barrier, not Quiesce: Quiesce detaches the probe, and the
+				// next CPU reuses it.
+				if err := probe.Barrier(); err != nil {
 					t.Fatal(err)
 				}
 				checkOnlyShard(t, cpu, drain(), runs)

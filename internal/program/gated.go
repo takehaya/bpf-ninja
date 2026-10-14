@@ -55,13 +55,13 @@ import (
 //	36  u32 padding
 //	40  u8  bytes[entryCapLen]  (absent when only the exit image is emitted)
 
-// Emit selects which records a gated (entry + exit) capture emits for a
-// packet that matched both stages.
-type Emit uint8
-
 // packetIDCPUShift places the CPU id above the per-CPU sequence in a
 // gated record's packet id: cpu << packetIDCPUShift | seq.
 const packetIDCPUShift = 48
+
+// Emit selects which records a gated (entry + exit) capture emits for a
+// packet that matched both stages.
+type Emit uint8
 
 const (
 	// EmitBoth emits the entry image and the exit image, both stamped
@@ -207,7 +207,7 @@ func buildGatedExitInsns(h *hook.Hook, filterOut codegen.Output, tf filter.Targe
 		insns = append(insns, asm.LoadMem(asm.R1, asm.R8, holdCopyErr, asm.Word), asm.JNE.Imm(asm.R1, 0, "rb_copy_count"))
 	}
 
-	// --- packet id for both records: cpu << 48 | hold.seq, parked in
+	// --- packet id for both records: cpu << packetIDCPUShift | hold.seq, parked in
 	// R6 (ctx is not read again after the filter) ---
 	insns = append(insns,
 		asm.FnGetSmpProcessorId.Call(),
