@@ -244,7 +244,8 @@ func captureXDPNative(eventsFD int, maxCapLen int, statsFD int) asm.Instructions
 	// Timestamp prologue: hardware (NIC PHC via kfunc) if enabled and
 	// available, otherwise software bpf_ktime_get_ns(). Both branches
 	// leave the timestamp at stack[-48]; the smp_processor_id epilogue
-	// is shared.
+	// after them is shared.
+	cpuKey := asm.FnGetSmpProcessorId.Call()
 	if HWTimestampKfuncID != 0 {
 		insns = append(insns,
 			// bpf_xdp_metadata_rx_timestamp(ctx=R6, &stack[-48])
@@ -256,19 +257,15 @@ func captureXDPNative(eventsFD int, maxCapLen int, statsFD int) asm.Instructions
 			// stack[-48]; non-zero (typically -EOPNOTSUPP) falls
 			// through to software ktime.
 			asm.JEq.Imm(asm.R0, 0, "ts_ok"),
-			asm.FnKtimeGetNs.Call(),
-			asm.StoreMem(asm.R10, -48, asm.R0, asm.DWord),
-			asm.FnGetSmpProcessorId.Call().WithSymbol("ts_ok"),
-			asm.StoreMem(asm.R10, -16, asm.R0, asm.Word),
 		)
-	} else {
-		insns = append(insns,
-			asm.FnKtimeGetNs.Call(),
-			asm.StoreMem(asm.R10, -48, asm.R0, asm.DWord),
-			asm.FnGetSmpProcessorId.Call(),
-			asm.StoreMem(asm.R10, -16, asm.R0, asm.Word),
-		)
+		cpuKey = cpuKey.WithSymbol("ts_ok")
 	}
+	insns = append(insns,
+		asm.FnKtimeGetNs.Call(),
+		asm.StoreMem(asm.R10, -48, asm.R0, asm.DWord),
+		cpuKey,
+		asm.StoreMem(asm.R10, -16, asm.R0, asm.Word),
+	)
 	insns = append(insns, emitShardedRBReserve(eventsFD, statsFD, reserveSize)...)
 	insns = append(insns, asm.Instructions{
 

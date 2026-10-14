@@ -2,7 +2,6 @@ package program
 
 import (
 	"bytes"
-	"sync"
 	"testing"
 
 	"github.com/cilium/ebpf"
@@ -86,28 +85,10 @@ func runGatedTestRunOn(t *testing.T, cpu int, entry, exit string, emit Emit, fra
 	}
 	defer func() { _ = probe.Close() }()
 
-	sr, err := capture.NewShardedReader(probe.InnerMaps)
-	if err != nil {
-		t.Fatalf("sharded reader: %v", err)
+	if cpu >= 0 {
+		checkSlot(t, cpu, len(probe.InnerMaps))
 	}
-	var mu sync.Mutex
-	got := map[int][]capture.Packet{}
-	var total int
-	sink := func(shardIdx int, pkts []capture.Packet) error {
-		mu.Lock()
-		defer mu.Unlock()
-		for _, p := range pkts {
-			p.Data = append([]byte(nil), p.Data...) // ring memory is reused after the sink returns
-			got[shardIdx] = append(got[shardIdx], p)
-		}
-		total += len(pkts)
-		return nil
-	}
-	stop, err := sr.RunShards(sink)
-	if err != nil {
-		t.Fatalf("RunShards: %v", err)
-	}
-	defer stop()
+	drain := collectShards(t, probe.InnerMaps)
 
 	fire := func() {
 		for _, frame := range frames {
@@ -124,10 +105,7 @@ func runGatedTestRunOn(t *testing.T, cpu int, entry, exit string, emit Emit, fra
 	if err := probe.Quiesce(); err != nil {
 		t.Fatal(err)
 	}
-	stop()
-	if err := sr.Err(); err != nil {
-		t.Fatal(err)
-	}
+	got := drain()
 	stats, err := probe.ExportStats()
 	if err != nil {
 		t.Fatal(err)
@@ -135,8 +113,10 @@ func runGatedTestRunOn(t *testing.T, cpu int, entry, exit string, emit Emit, fra
 	if stats.Submitted != uint64(want) || stats.ReserveFail+stats.LookupMiss+stats.CopyFail != 0 {
 		t.Fatalf("export stats=%+v want submitted=%d", stats, want)
 	}
-	mu.Lock()
-	defer mu.Unlock()
+	total := 0
+	for _, pkts := range got {
+		total += len(pkts)
+	}
 	if total != want {
 		t.Fatalf("records = %d, want %d", total, want)
 	}
