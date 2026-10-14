@@ -132,7 +132,8 @@ func withPos(err error, pos ast.Position) error {
 //   - language shapes without an emitter: `has`, field-list capture,
 //     a bracket predicate on an option or stack entry located by the
 //     parser's walk, a quantified alternation group, more than
-//     altCountCap alternatives, a machine-chain bound above
+//     altCountCap alternatives, a quantifier on a variable-length layer
+//     without a parser machine, a machine-chain bound above
 //     staticMachineChainCap;
 //   - where a layer may sit: an optional layer whose absence cannot
 //     be told (no dispatch to peek, a no-check dispatch, a
@@ -142,12 +143,15 @@ func withPos(err error, pos ast.Position) error {
 //     a layer after a variable-length one whose end cannot be found;
 //   - widths and alignment: fields off byte boundaries or wider than
 //     8 bytes outside the 128-bit paths, slices wider than 64 bits
-//     outside the comparisons the resolver splits, a network literal
-//     on a field of another width or on a slice off byte boundaries;
+//     outside the comparisons the resolver splits, a slice of an
+//     option field across 9 bytes, a network literal on a field of
+//     another width or on a slice off byte boundaries, `in [...]` on a
+//     field above 64 bits that is not an address;
 //   - resource caps: arith nesting above maxArithDepth, bpf_loop
 //     iteration caps, the 512-byte stack plan, the callback
 //     branch-count tripwire, option reads that do not fold into one
 //     accumulator;
+//   - offsets known only at runtime on a path that needs a constant;
 //   - host capabilities the Capabilities do not grant (`in @set`,
 //     `action ==`);
 //   - vocabulary shapes the lowering does not cover: parser-machine
