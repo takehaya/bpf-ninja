@@ -1,6 +1,7 @@
 package codegen
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/cilium/ebpf/asm"
@@ -125,5 +126,57 @@ func TestInListAddressAlternatives(t *testing.T) {
 	})
 	if loads != 5 {
 		t.Errorf("ipv6 list: %d bounded DWord loads, want 5 (two per host, one for the masked half)", loads)
+	}
+}
+
+// TestInListRangeWideField pins the shape of a range alternative on a
+// MAC or IPv6 field: the chunks both bounds share are one equality test,
+// the rest an ordered compare per bound (byte-swapped to host order)
+// without the trailing chunks the bound leaves free, and a range
+// covering every MAC leaves no compare at all.
+func TestInListRangeWideField(t *testing.T) {
+	for _, tc := range []struct {
+		expr       string
+		jumpsR2    int // conditional jumps of R3 against a constant in R2
+		swaps      int
+		innerMatch int // match landings inside the ordered compares
+	}{
+		{"eth[src in [11:22:33:44:55:66, 0..0xffffffffffff]]/ipv4/tcp", 0, 0, 0},
+		// High DWord == 0, then low ≥ 1 and low ≤ 5.
+		{"eth/ipv6[src in [1..5]]/tcp", 3, 2, 0},
+		// lo = 0 and hi = 2^64-1: the high DWord test alone.
+		{"eth/ipv6[src in [0..0xffffffffffffffff]]/tcp", 1, 0, 0},
+		// The Words differ: lo's zero Half leaves `≥ lo` one Word
+		// compare, `≤ hi` compares both chunks.
+		{"eth[src in [0x667788990000..0x6677889a0000]]/ipv4/tcp", 4, 3, 1},
+		{"eth[src in [0x667788990001..0x6677889a0000]]/ipv4/tcp", 6, 4, 2},
+		// The Words agree: equality on the Word, the Half ordered; the
+		// upper bound ffff is the largest Half and emits nothing.
+		{"eth[src in [0x66778899aabb..0x66778899ffff]]/ipv4/tcp", 2, 1, 0},
+		{"eth[src in [0x66778899aabb..0x66778899fffe]]/ipv4/tcp", 3, 2, 0},
+	} {
+		out := compileBundled(t, tc.expr)
+		var jumps, swaps, inner int
+		for _, ins := range out.Main {
+			if ins.OpCode.Class().IsJump() && ins.OpCode.Source() == asm.RegSource && ins.Dst == asm.R3 && ins.Src == asm.R2 {
+				jumps++
+			}
+			if ins.OpCode.Class() == asm.ALUClass && ins.OpCode.ALUOp() == asm.Swap {
+				swaps++
+			}
+			if strings.HasPrefix(ins.Symbol(), predMatchLabelPrefix) {
+				inner++
+			}
+		}
+		if jumps != tc.jumpsR2 || swaps != tc.swaps || inner != tc.innerMatch {
+			t.Errorf("%s: %d jumps against R2, %d swaps, %d match landings; want %d, %d, %d",
+				tc.expr, jumps, swaps, inner, tc.jumpsR2, tc.swaps, tc.innerMatch)
+		}
+	}
+	// Ranges and a MAC as first, middle and last alternatives: every
+	// label resolves.
+	out := compileBundled(t, "eth[src in [1..5, 11:22:33:44:55:66, 0x10000..0x20000]]/ipv4/tcp")
+	if _, err := out.Main.SymbolOffsets(); err != nil {
+		t.Errorf("labels: %v", err)
 	}
 }
