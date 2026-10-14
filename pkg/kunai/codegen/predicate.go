@@ -507,8 +507,13 @@ func emitInSetPredicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, erro
 	if err != nil {
 		return nil, err
 	}
-	// bytes is 1/2/4/8 (scalarFieldWindow rejects wider) or 16 (the
-	// is128 path), so no explicit 9..15 guard is needed here.
+	// A slice straddling 9 bytes reads into one 64-bit register, so its
+	// key is 8 bytes (spec ldxBytes).
+	if bytes == sliceSplitWindow {
+		bytes = 8
+	}
+	// bytes is now 1/2/4/8 (scalarFieldWindow rejects wider windows) or
+	// 16 (the is128 path), so no explicit 9..15 guard is needed here.
 	// Require an exact width match: a narrower packet field would only
 	// write a prefix of the key (relying on zero-fill), which silently
 	// matches just zero-extended entries — a mis-configuration trap.

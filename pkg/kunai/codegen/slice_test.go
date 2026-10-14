@@ -1,7 +1,10 @@
 package codegen
 
 import (
+	"errors"
 	"testing"
+
+	"github.com/cilium/ebpf/asm"
 
 	"github.com/takehaya/bpf-ninja/pkg/kunai/ir"
 	"github.com/takehaya/bpf-ninja/pkg/kunai/vocab"
@@ -240,6 +243,42 @@ func TestApplySliceToOffsetCoverTooLarge(t *testing.T) {
 	_, _, err := applySliceToOffset(ref, 0, 16)
 	if err == nil {
 		t.Fatal("expected error for 12-byte cover (max 8)")
+	}
+}
+
+// TestSliceNineByteWindow pins the window of a slice of at most 64 bits
+// whose bytes span 9: it is read as 8 bytes and the ninth, never slides,
+// and composes in five instructions (four for exactly 64 bits). A wider
+// slice over 9 bytes stays refused.
+func TestSliceNineByteWindow(t *testing.T) {
+	ref := func(lo, hi int) *ir.FieldRef {
+		return &ir.FieldRef{
+			Layer: &ir.LayerInstance{Spec: &vocab.ProtocolSpec{Name: "ipv6"}},
+			Field: &vocab.Field{Name: "dst", Bits: 128},
+			Slice: &ir.FieldSlice{Lo: lo, Hi: hi},
+		}
+	}
+	for _, tc := range []struct {
+		lo, hi, off, insns int
+	}{
+		{60, 124, 7, 4},
+		{61, 124, 7, 5},
+		{4, 68, 0, 4},
+	} {
+		r := ref(tc.lo, tc.hi)
+		off, size, err := applySliceToOffset(r, 0, 16)
+		if err != nil || off != tc.off || size != sliceSplitWindow || !sliceSplitsLoad(r) {
+			t.Errorf("[%d:%d] window = (%d, %d, %v), split %v; want (%d, 9, nil), split", tc.lo, tc.hi, off, size, err, sliceSplitsLoad(r), tc.off)
+		}
+		if got := len(emitFieldValue(r, 8, asm.DWord)); got != tc.insns {
+			t.Errorf("[%d:%d] composes in %d instructions, want %d", tc.lo, tc.hi, got, tc.insns)
+		}
+	}
+	if _, _, err := applySliceToOffset(ref(0, 72), 0, 16); !errors.Is(err, ErrNotImplemented) {
+		t.Errorf("[0:72]: err = %v, want ErrNotImplemented", err)
+	}
+	if sliceSplitsLoad(ref(56, 120)) {
+		t.Error("[56:120] is byte-aligned over 8 bytes, not split")
 	}
 }
 
