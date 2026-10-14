@@ -1638,10 +1638,9 @@ func TestCompileQinqVlanChainCoversAllTagShapes(t *testing.T) {
 	// `?` peeks the parent's last-2-byte ethertype field, which has
 	// the same semantic ("next protocol") in eth, qinq, and vlan.
 	//
-	// Alternation cannot do this in MVP (`(vlan|qinq)` matches
-	// single-tag only; stacked frames need a different chain
-	// shape). Until alt is generalised in P3-12, optional-chain
-	// is the user-facing answer for tag-flexibility filters.
+	// Alternation cannot do this (`(vlan|qinq)` matches one tag
+	// only; stacked frames need a different chain shape), so
+	// optional layers are the answer for tag-flexibility filters.
 	insns, err := compileForTest("eth/qinq?/vlan?/ipv4/tcp")
 	if err != nil {
 		t.Fatalf("Compile: %v", err)
