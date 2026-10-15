@@ -117,33 +117,37 @@ kernel をまたいで比べるのは processed と状態の数だけにする�
 
 6.1 から 6.12 の間でも、TCP option の filter の processed は段階的に増えている。
 ghcr.io/cilium/ci-kernels の中間の image で `TestVerifierStats` を動かした結果は次のとおりで、mask を入れた後の値である。
-括弧の中は image の実際の release で、tag は stable の点 release を指す。
+括弧の中は image の実際の release で、tag の多くは stable の点 release を指す。
 
-| filter | 6.6 (6.6.155) | 6.7 (6.7.4) | 6.8-rc4 | 6.8 (6.8.10) | 6.9 (6.9.0) | 6.10 (6.10.13) | 6.11 (6.11.1) | 6.12 (6.12.107) |
-|---|---|---|---|---|---|---|---|---|
-| S1 | 6621 | 3867 | 3864 | 6620 | 6212 | 9066 | 9102 | 9066 |
-| P1 | 3316 | 2019 | 2018 | 3315 | 4063 | 6834 | 6887 | 7002 |
-| P2 | 1544 | 1125 | 1124 | 1543 | 1543 | 2543 | 2563 | 2543 |
-| C1 | 18177 | 16952 | 16951 | 18176 | 19439 | 19439 | 9872 | 9872 |
+| filter | 6.1 | 6.6 (6.6.155) | 6.7 (6.7.4) | 6.8-rc4 | 6.8 (6.8.10) | 6.9 (6.9.0) | 6.10 (6.10.13) | 6.11 (6.11.1) | 6.12 (6.12.107) |
+|---|---|---|---|---|---|---|---|---|---|
+| S1 | 2563 | 6621 | 3867 | 3864 | 6620 | 6212 | 9066 | 9102 | 9066 |
+| P1 | 1540 | 3316 | 2019 | 2018 | 3315 | 4063 | 6834 | 6887 | 7002 |
+| P2 | 997 | 1544 | 1125 | 1124 | 1543 | 1543 | 2543 | 2563 | 2543 |
+| P3 | 962 | 1634 | 1262 | 1261 | 1633 | 1562 | 1543 | 1543 | 1543 |
+| C1 | 11112 | 18177 | 16952 | 16951 | 18176 | 19439 | 19439 | 9872 | 9872 |
 
-6.8-rc4 から 6.8 で約 1.7 倍になった原因は commit e9a8e5a587ca (bpf: check bpf_func_state->callback_depth when pruning states) である。
+6.8-rc4 から 6.8 で TCP option の filter が 1.4 倍から 1.7 倍になった原因は、commit e9a8e5a587ca (bpf: check bpf_func_state->callback_depth when pruning states) と考えている。
+6.8-rc4 と 6.8 の差、6.7.4 と 6.6.155 の差が、どちらもこの commit の有無と一致するからである。
 この commit は、bpf_loop の callback の状態を残りの反復数が違う状態と合流させていた安全性の不具合を直す。
-6.6.y と 6.7.y にも backport されていて、6.6.155 の値が 6.8 と同じなのはこのためである。
-6.7.4 はこの backport より前の release なので低い。
+backport は 6.6.22 と 6.7.10 で入ったので、6.6.155 の値は 6.8 とほぼ同じになり、それより前の 6.7.4 は低い。
 安全性の修正なので、この増加は受け入れる。
 
-6.9 から 6.10 では、TCP option の filter だけがさらに 1.5 倍から 1.7 倍になり、IPv4 option の filter と比較用の filter は変わらなかった。
+6.9 から 6.10 では、TCP option の filter だけがさらに 1.5 倍から 1.7 倍になり、IPv4 option の P3 と比較用の C1 は変わらなかった。
 v6.10 で callback が実行する命令の追跡を変えた commit のうち、仕組みが合う候補は 138cc42c05d1 (bpf/verifier: improve XOR and OR range computation) である。
 この commit から、定数でない register との XOR の結果は unknown にならず、tnum から値域を計算する。
-callback の先頭では cursor を 1 byte の salt と 2 回 XOR して値域の履歴を消しているが、salt が 1 byte なので bit 8 より上の知識が残る。
-そこで salt を 8 byte にして測った。
+callback の先頭では cursor を 1 byte の salt と 2 回 XOR して値域の履歴を消しているが、salt が 1 byte なので bit 8 以上の知識が残る。
+そこで salt を 8 byte にし、bound check も 8 byte にして測った。
 P2 は 6.12 で 2543 から 1572 に戻り、6.9 とほぼ同じ値になった。
-一方で、複数の option を読む S1 から S5 は、6.12 から 6.18 で約 1.6 倍、7.1 以降で約 1.5 倍に増えた。7.0 だけは S1 が 27916 から 23705 に減った。
-複数の option を読む filter のほうが重いので、この変更は採らなかった。bisect はしていないので、138cc42c05d1 が原因だとは確定していない。
+option を 1 種類だけ読む P1 と S6 は、6.12 では約 1.7 倍に増え、6.15 以降では減った。
+複数の option を読む S1 から S5 は、6.12 から 6.18 で約 1.6 倍、7.1 以降で約 1.5 倍に増えた。
+7.0 だけは S1 が 27916 から 23705 に減った。
+増える filter のほうが減る filter より重いので、この変更は採らなかった。
+bisect はしていないので、138cc42c05d1 が原因だとは確定していない。
 
-6.10 から 6.11 で C1 が約半分になったのは、linked register の定数差を追う 98d7ca374ba4 (bpf: Track delta between linked registers) によると考えているが、確かめてはいない。
+6.10 から 6.11 で C1 が約半分になったのは、linked register の定数差を追う 98d7ca374ba4 (bpf: Track delta between "linked" registers) によると考えているが、確かめてはいない。
 
-中間の kernel で測るには、bpf_load_test の matrix に tag を足し、`KUNAI_VERIFIER_STRICT` を付けずに `vimto -sudo -kernel :TAG -- go test -count=1 -v -run TestVerifierStats ./pkg/kunai/dsltest` を実行する。
+中間の kernel を CI で測るには、bpf_load_test の matrix に tag を足し、`privileged.py` の代わりに `KUNAI_VERIFIER_STRICT` を付けずに `vimto -sudo -kernel :TAG -- go test -count=1 -v -run TestVerifierStats ./pkg/kunai/dsltest` を実行する。
 `privileged.py --kernel` は既知の kernel しか受け付けず、基準値のない kernel を失敗にするからである。
 
 ## 未解決の点
@@ -160,6 +164,7 @@ v7.1 に入っていて v7.0 に入っていない commit のうち、仕組み�
 2026-10-08 に、bpf_loop の callback の pruning regression を直す patch が upstream に投稿された。
 件名は bpf: Fix state pruning regression in bpf_loop() callbacks で、kernel-patches/bpf の #14273、patchwork の series 1181930 にある。
 この patch は f597664454bd を Fixes に持ち、`clean_live_states()` で読み込みの印が揃っていない状態を飛ばす処理を外す。
-SCC の戻り辺を待つ callback の状態で死んだ stack slot が掃除されず、pruning が効かなくなる不具合を直すもので、6.x の増加とは関係しない。
+patch の説明では、SCC の戻り辺を待つ callback の状態で死んだ stack slot が掃除されず、pruning が効かなくなる不具合を直す。
+Fixes の f597664454bd は 7.0 で入った commit なので、6.x の増加とは関係しない。
 2026-10-16 の時点では torvalds/linux に入っていない。
 この patch が入った kernel では、mask の効果を測り直す。
