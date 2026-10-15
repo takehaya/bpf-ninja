@@ -52,6 +52,7 @@ func (c *pmCtx) emitSharedLengthAdvance(fallback int, lengthLabel, continueLabel
 		asm.JGT.Imm(asm.R3, ScratchBufSize, rejectLabel),
 		asm.Mov.Reg(asm.R0, asm.R4), asm.Add.Reg(asm.R0, asm.R3),
 		asm.JGT.Reg(asm.R0, asm.R5, rejectLabel),
+		asm.And.Imm(asm.R3, 0x3ff), // PROBE: forget the cursor's per-kind bounds
 		asm.StoreMem(asm.R2, bpfLoopCbCtxOffsetField, asm.R3, asm.DWord),
 		asm.Ja.Label(continueLabel),
 	)

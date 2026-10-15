@@ -369,48 +369,50 @@ dsl_pm_gtp_3_0_parse_ext_cb:
 	 6: AddImm dst: r0 imm: 4
 	 7: JGTReg dst: r0 off: -1 src: r5 <dsl_pm_gtp_3_0_parse_ext_cb_break>
 	 8: AddImm dst: r3 imm: 4
-	 9: StXMemDW dst: r2 src: r3 off: 0 imm: 0
-	10: JLTImm dst: r3 off: -1 imm: 1 <dsl_pm_gtp_3_0_parse_ext_cb_break>
-	11: MovReg dst: r1 src: r3
-	12: SubImm dst: r1 imm: 1
-	13: JGTImm dst: r1 off: -1 imm: 511 <dsl_pm_gtp_3_0_parse_ext_cb_break>
-	14: MovReg dst: r0 src: r4
-	15: AddReg dst: r0 src: r1
-	16: AddImm dst: r0 imm: 1
-	17: JGTReg dst: r0 off: -1 src: r5 <dsl_pm_gtp_3_0_parse_ext_cb_break>
-	18: LdXMemB dst: r0 src: r0 off: -1 imm: 0
-	19: StXMemDW dst: rfp src: r0 off: -56 imm: 0
-	20: JLTImm dst: r3 off: -1 imm: 4 <dsl_pm_gtp_3_0_parse_ext_cb_break>
-	21: MovReg dst: r0 src: r3
-	22: SubImm dst: r0 imm: 4
-	23: JGTImm dst: r0 off: -1 imm: 511 <dsl_pm_gtp_3_0_parse_ext_cb_break>
-	24: MovReg dst: r1 src: r4
-	25: AddReg dst: r1 src: r0
-	26: AddImm dst: r1 imm: 1
-	27: JGTReg dst: r1 off: -1 src: r5 <dsl_pm_gtp_3_0_parse_ext_cb_break>
-	28: LdXMemB dst: r1 src: r1 off: -1 imm: 0
-	29: AndImm dst: r1 imm: 255
-	30: LShImm dst: r1 imm: 2
-	31: JLTImm dst: r1 off: -1 imm: 4 <dsl_pm_gtp_3_0_parse_ext_cb_break>
-	32: SubImm dst: r1 imm: 4
-	33: AddReg dst: r3 src: r1
-	34: JGTImm dst: r3 off: -1 imm: 512 <dsl_pm_gtp_3_0_parse_ext_cb_break>
-	35: MovReg dst: r0 src: r4
-	36: AddReg dst: r0 src: r3
-	37: JGTReg dst: r0 off: -1 src: r5 <dsl_pm_gtp_3_0_parse_ext_cb_break>
-	38: StXMemDW dst: r2 src: r3 off: 0 imm: 0
-	39: LdXMemDW dst: r0 src: rfp off: -56 imm: 0
-	40: JNEImm dst: r0 off: -1 imm: 0 <dsl_pm_gtp_3_0_vcb_case_6_skip>
-	41: Ja off: -1 <dsl_pm_gtp_3_0_parse_ext_cb_break>
+	 9: AndImm dst: r3 imm: 1023
+	10: StXMemDW dst: r2 src: r3 off: 0 imm: 0
+	11: JLTImm dst: r3 off: -1 imm: 1 <dsl_pm_gtp_3_0_parse_ext_cb_break>
+	12: MovReg dst: r1 src: r3
+	13: SubImm dst: r1 imm: 1
+	14: JGTImm dst: r1 off: -1 imm: 511 <dsl_pm_gtp_3_0_parse_ext_cb_break>
+	15: MovReg dst: r0 src: r4
+	16: AddReg dst: r0 src: r1
+	17: AddImm dst: r0 imm: 1
+	18: JGTReg dst: r0 off: -1 src: r5 <dsl_pm_gtp_3_0_parse_ext_cb_break>
+	19: LdXMemB dst: r0 src: r0 off: -1 imm: 0
+	20: StXMemDW dst: rfp src: r0 off: -56 imm: 0
+	21: JLTImm dst: r3 off: -1 imm: 4 <dsl_pm_gtp_3_0_parse_ext_cb_break>
+	22: MovReg dst: r0 src: r3
+	23: SubImm dst: r0 imm: 4
+	24: JGTImm dst: r0 off: -1 imm: 511 <dsl_pm_gtp_3_0_parse_ext_cb_break>
+	25: MovReg dst: r1 src: r4
+	26: AddReg dst: r1 src: r0
+	27: AddImm dst: r1 imm: 1
+	28: JGTReg dst: r1 off: -1 src: r5 <dsl_pm_gtp_3_0_parse_ext_cb_break>
+	29: LdXMemB dst: r1 src: r1 off: -1 imm: 0
+	30: AndImm dst: r1 imm: 255
+	31: LShImm dst: r1 imm: 2
+	32: JLTImm dst: r1 off: -1 imm: 4 <dsl_pm_gtp_3_0_parse_ext_cb_break>
+	33: SubImm dst: r1 imm: 4
+	34: AddReg dst: r3 src: r1
+	35: JGTImm dst: r3 off: -1 imm: 512 <dsl_pm_gtp_3_0_parse_ext_cb_break>
+	36: MovReg dst: r0 src: r4
+	37: AddReg dst: r0 src: r3
+	38: JGTReg dst: r0 off: -1 src: r5 <dsl_pm_gtp_3_0_parse_ext_cb_break>
+	39: AndImm dst: r3 imm: 1023
+	40: StXMemDW dst: r2 src: r3 off: 0 imm: 0
+	41: LdXMemDW dst: r0 src: rfp off: -56 imm: 0
+	42: JNEImm dst: r0 off: -1 imm: 0 <dsl_pm_gtp_3_0_vcb_case_6_skip>
+	43: Ja off: -1 <dsl_pm_gtp_3_0_parse_ext_cb_break>
 dsl_pm_gtp_3_0_vcb_case_6_skip:
-	42: MovReg dst: r3 src: r3
-	43: Ja off: -1 <dsl_pm_gtp_3_0_parse_ext_cb_continue>
+	44: MovReg dst: r3 src: r3
+	45: Ja off: -1 <dsl_pm_gtp_3_0_parse_ext_cb_continue>
 dsl_pm_gtp_3_0_parse_ext_cb_continue:
-	44: MovImm dst: r0 imm: 0
-	45: Exit
-dsl_pm_gtp_3_0_parse_ext_cb_break:
-	46: MovImm dst: r0 imm: 1
+	46: MovImm dst: r0 imm: 0
 	47: Exit
+dsl_pm_gtp_3_0_parse_ext_cb_break:
+	48: MovImm dst: r0 imm: 1
+	49: Exit
 == Funcs
 339: dsl_pm_gtp_3_0_parse_ext_cb
 == Capture MaxCapLen=0 FilterMinPrefix=0

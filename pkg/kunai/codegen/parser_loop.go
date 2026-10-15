@@ -1170,6 +1170,7 @@ func (c *pmCtx) emitSiblingCallbackBody(sib *vocab.ParseState, breakLabel string
 			asm.Add.Imm(asm.R0, int32(hs)),
 			asm.JGT.Reg(asm.R0, asm.R5, breakLabel),
 			asm.Add.Imm(asm.R3, int32(hs)),
+			asm.And.Imm(asm.R3, 0x3ff), // PROBE: forget the cursor's per-kind bounds
 			asm.StoreMem(asm.R2, bpfLoopCbCtxOffsetField, asm.R3, asm.DWord),
 		)
 		totalHs += hs
@@ -1231,6 +1232,7 @@ func (c *pmCtx) emitSiblingCallbackBody(sib *vocab.ParseState, breakLabel string
 				asm.Add.Imm(asm.R0, n),
 				asm.JGT.Reg(asm.R0, asm.R5, breakLabel),
 				asm.Add.Imm(asm.R3, n),
+				asm.And.Imm(asm.R3, 0x3ff), // PROBE: forget the cursor's per-kind bounds
 				asm.StoreMem(asm.R2, bpfLoopCbCtxOffsetField, asm.R3, asm.DWord),
 			)
 		default:
@@ -1282,6 +1284,7 @@ func (c *pmCtx) emitSelfLoopCallback(state *vocab.ParseState, stateIdx int, cbSy
 			asm.Add.Imm(asm.R0, int32(hs)),
 			asm.JGT.Reg(asm.R0, asm.R5, breakLabel),
 			asm.Add.Imm(asm.R3, int32(hs)),
+			asm.And.Imm(asm.R3, 0x3ff), // PROBE: forget the cursor's per-kind bounds
 			asm.StoreMem(asm.R2, bpfLoopCbCtxOffsetField, asm.R3, asm.DWord),
 		)
 		if vt, ok := variableTailFor(c.spec, ex.HeaderName); ok && !c.deferPrimaryTail(ex.HeaderName) {

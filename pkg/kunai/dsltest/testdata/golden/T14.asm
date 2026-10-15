@@ -239,75 +239,77 @@ dsl_pm_tcp_2_0_tlvcb_5_skip:
 	 46: JGTReg dst: r0 off: -1 src: r5 <dsl_pm_tcp_2_0_parse_options_cb_reject>
 	 47: JGTReg dst: r0 off: -1 src: r6 <dsl_pm_tcp_2_0_parse_options_cb_reject>
 	 48: AddImm dst: r3 imm: 1
-	 49: StXMemDW dst: r2 src: r3 off: 0 imm: 0
-	 50: Ja off: -1 <dsl_pm_tcp_2_0_parse_options_cb_continue>
+	 49: AndImm dst: r3 imm: 1023
+	 50: StXMemDW dst: r2 src: r3 off: 0 imm: 0
+	 51: Ja off: -1 <dsl_pm_tcp_2_0_parse_options_cb_continue>
 dsl_pm_tcp_2_0_tlvcb_6_skip:
-	 51: MovReg dst: r3 src: r3
-	 52: LdXMemDW dst: r0 src: rfp off: -64 imm: 0
-	 53: JNEImm dst: r0 off: -1 imm: 2 <dsl_pm_tcp_2_0_tlvcb_7_skip>
-	 54: MovImm dst: r7 imm: 4
-	 55: Ja off: -1 <dsl_pm_tcp_2_0_default_4_length>
+	 52: MovReg dst: r3 src: r3
+	 53: LdXMemDW dst: r0 src: rfp off: -64 imm: 0
+	 54: JNEImm dst: r0 off: -1 imm: 2 <dsl_pm_tcp_2_0_tlvcb_7_skip>
+	 55: MovImm dst: r7 imm: 4
+	 56: Ja off: -1 <dsl_pm_tcp_2_0_default_4_length>
 dsl_pm_tcp_2_0_tlvcb_7_skip:
-	 56: MovReg dst: r3 src: r3
-	 57: LdXMemDW dst: r0 src: rfp off: -64 imm: 0
-	 58: JNEImm dst: r0 off: -1 imm: 3 <dsl_pm_tcp_2_0_tlvcb_8_skip>
-	 59: MovImm dst: r7 imm: 3
-	 60: Ja off: -1 <dsl_pm_tcp_2_0_default_4_length>
+	 57: MovReg dst: r3 src: r3
+	 58: LdXMemDW dst: r0 src: rfp off: -64 imm: 0
+	 59: JNEImm dst: r0 off: -1 imm: 3 <dsl_pm_tcp_2_0_tlvcb_8_skip>
+	 60: MovImm dst: r7 imm: 3
+	 61: Ja off: -1 <dsl_pm_tcp_2_0_default_4_length>
 dsl_pm_tcp_2_0_tlvcb_8_skip:
-	 61: MovReg dst: r3 src: r3
-	 62: LdXMemDW dst: r0 src: rfp off: -64 imm: 0
-	 63: JNEImm dst: r0 off: -1 imm: 4 <dsl_pm_tcp_2_0_tlvcb_9_skip>
-	 64: MovImm dst: r7 imm: 2
-	 65: Ja off: -1 <dsl_pm_tcp_2_0_default_4_length>
+	 62: MovReg dst: r3 src: r3
+	 63: LdXMemDW dst: r0 src: rfp off: -64 imm: 0
+	 64: JNEImm dst: r0 off: -1 imm: 4 <dsl_pm_tcp_2_0_tlvcb_9_skip>
+	 65: MovImm dst: r7 imm: 2
+	 66: Ja off: -1 <dsl_pm_tcp_2_0_default_4_length>
 dsl_pm_tcp_2_0_tlvcb_9_skip:
-	 66: MovReg dst: r3 src: r3
-	 67: LdXMemDW dst: r0 src: rfp off: -64 imm: 0
-	 68: JNEImm dst: r0 off: -1 imm: 5 <dsl_pm_tcp_2_0_tlvcb_10_skip>
-	 69: Ja off: -1 <dsl_pm_tcp_2_0_default_4>
+	 67: MovReg dst: r3 src: r3
+	 68: LdXMemDW dst: r0 src: rfp off: -64 imm: 0
+	 69: JNEImm dst: r0 off: -1 imm: 5 <dsl_pm_tcp_2_0_tlvcb_10_skip>
+	 70: Ja off: -1 <dsl_pm_tcp_2_0_default_4>
 dsl_pm_tcp_2_0_tlvcb_10_skip:
-	 70: MovReg dst: r3 src: r3
-	 71: LdXMemDW dst: r0 src: rfp off: -64 imm: 0
-	 72: JNEImm dst: r0 off: -1 imm: 8 <dsl_pm_tcp_2_0_tlvcb_11_skip>
-	 73: MovImm dst: r7 imm: 10
-	 74: Ja off: -1 <dsl_pm_tcp_2_0_default_4_length>
+	 71: MovReg dst: r3 src: r3
+	 72: LdXMemDW dst: r0 src: rfp off: -64 imm: 0
+	 73: JNEImm dst: r0 off: -1 imm: 8 <dsl_pm_tcp_2_0_tlvcb_11_skip>
+	 74: MovImm dst: r7 imm: 10
+	 75: Ja off: -1 <dsl_pm_tcp_2_0_default_4_length>
 dsl_pm_tcp_2_0_tlvcb_11_skip:
-	 75: MovReg dst: r3 src: r3
-dsl_pm_tcp_2_0_default_4:
 	 76: MovReg dst: r3 src: r3
-	 77: MovImm dst: r7 imm: 0
+dsl_pm_tcp_2_0_default_4:
+	 77: MovReg dst: r3 src: r3
+	 78: MovImm dst: r7 imm: 0
 dsl_pm_tcp_2_0_default_4_length:
-	 78: MovReg dst: r3 src: r3
-	 79: MovReg dst: r0 src: r3
-	 80: AddImm dst: r0 imm: 1
-	 81: JGTImm dst: r0 off: -1 imm: 511 <dsl_pm_tcp_2_0_parse_options_cb_reject>
-	 82: MovReg dst: r1 src: r4
-	 83: AddReg dst: r1 src: r0
-	 84: AddImm dst: r1 imm: 1
-	 85: JGTReg dst: r1 off: -1 src: r5 <dsl_pm_tcp_2_0_parse_options_cb_reject>
-	 86: JGTReg dst: r1 off: -1 src: r6 <dsl_pm_tcp_2_0_parse_options_cb_reject>
-	 87: LdXMemB dst: r1 src: r1 off: -1 imm: 0
-	 88: JEqImm dst: r7 off: -1 imm: 0 <dsl_pm_tcp_2_0_default_4_length_valid>
-	 89: JNEReg dst: r1 off: -1 src: r7 <dsl_pm_tcp_2_0_parse_options_cb_reject>
+	 79: MovReg dst: r3 src: r3
+	 80: MovReg dst: r0 src: r3
+	 81: AddImm dst: r0 imm: 1
+	 82: JGTImm dst: r0 off: -1 imm: 511 <dsl_pm_tcp_2_0_parse_options_cb_reject>
+	 83: MovReg dst: r1 src: r4
+	 84: AddReg dst: r1 src: r0
+	 85: AddImm dst: r1 imm: 1
+	 86: JGTReg dst: r1 off: -1 src: r5 <dsl_pm_tcp_2_0_parse_options_cb_reject>
+	 87: JGTReg dst: r1 off: -1 src: r6 <dsl_pm_tcp_2_0_parse_options_cb_reject>
+	 88: LdXMemB dst: r1 src: r1 off: -1 imm: 0
+	 89: JEqImm dst: r7 off: -1 imm: 0 <dsl_pm_tcp_2_0_default_4_length_valid>
+	 90: JNEReg dst: r1 off: -1 src: r7 <dsl_pm_tcp_2_0_parse_options_cb_reject>
 dsl_pm_tcp_2_0_default_4_length_valid:
-	 90: MovReg dst: r3 src: r3
-	 91: JLTImm dst: r1 off: -1 imm: 2 <dsl_pm_tcp_2_0_parse_options_cb_reject>
-	 92: AddReg dst: r3 src: r1
-	 93: JGTImm dst: r3 off: -1 imm: 512 <dsl_pm_tcp_2_0_parse_options_cb_reject>
-	 94: MovReg dst: r0 src: r4
-	 95: AddReg dst: r0 src: r3
-	 96: JGTReg dst: r0 off: -1 src: r5 <dsl_pm_tcp_2_0_parse_options_cb_reject>
-	 97: JGTReg dst: r0 off: -1 src: r6 <dsl_pm_tcp_2_0_parse_options_cb_reject>
-	 98: StXMemDW dst: r2 src: r3 off: 0 imm: 0
-	 99: Ja off: -1 <dsl_pm_tcp_2_0_parse_options_cb_continue>
+	 91: MovReg dst: r3 src: r3
+	 92: JLTImm dst: r1 off: -1 imm: 2 <dsl_pm_tcp_2_0_parse_options_cb_reject>
+	 93: AddReg dst: r3 src: r1
+	 94: JGTImm dst: r3 off: -1 imm: 512 <dsl_pm_tcp_2_0_parse_options_cb_reject>
+	 95: MovReg dst: r0 src: r4
+	 96: AddReg dst: r0 src: r3
+	 97: JGTReg dst: r0 off: -1 src: r5 <dsl_pm_tcp_2_0_parse_options_cb_reject>
+	 98: JGTReg dst: r0 off: -1 src: r6 <dsl_pm_tcp_2_0_parse_options_cb_reject>
+	 99: AndImm dst: r3 imm: 1023
+	100: StXMemDW dst: r2 src: r3 off: 0 imm: 0
+	101: Ja off: -1 <dsl_pm_tcp_2_0_parse_options_cb_continue>
 dsl_pm_tcp_2_0_parse_options_cb_continue:
-	100: MovImm dst: r0 imm: 0
-	101: Exit
+	102: MovImm dst: r0 imm: 0
+	103: Exit
 dsl_pm_tcp_2_0_parse_options_cb_reject:
-	102: MovImm dst: r0 imm: -1
-	103: StXMemDW dst: r2 src: r0 off: 0 imm: 0
+	104: MovImm dst: r0 imm: -1
+	105: StXMemDW dst: r2 src: r0 off: 0 imm: 0
 dsl_pm_tcp_2_0_parse_options_cb_break:
-	104: MovImm dst: r0 imm: 1
-	105: Exit
+	106: MovImm dst: r0 imm: 1
+	107: Exit
 == Funcs
 176: dsl_pm_tcp_2_0_parse_options_cb
 == Capture MaxCapLen=0 FilterMinPrefix=0

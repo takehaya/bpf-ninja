@@ -3,24 +3,24 @@ cgroup_skb_entry	ipv4/tcp	-	code=07c23d4ba92f5387 meta=b48240fa3f1b88c5 main=120
 cgroup_skb_entry	ipv4/udp/vxlan/eth/vlan/ipv4/tcp	-	code=15bb9017d0b9d004 meta=b48240fa3f1b88c5 main=240 cb=0
 netfilter_entry	eth/ipv4/tcp	-	code=53e9dd4f863f24be meta=8b351e0f2206d1ce main=129 cb=0
 netfilter_entry	ipv4/tcp where tcp.dport == 443	-	code=430b7c1e087b311e meta=b48240fa3f1b88c5 main=133 cb=0
-tc_entry	eth/(ipv4|ipv6)/tcp	-	code=9ec36aa01b90c73e meta=b48240fa3f1b88c5 main=275 cb=64
+tc_entry	eth/(ipv4|ipv6)/tcp	-	code=12b8c17c856e02e7 meta=b48240fa3f1b88c5 main=275 cb=66
 tc_entry	eth/ipv4+/tcp	-	code=4ddbd6486f34ce93 meta=b48240fa3f1b88c5 main=606 cb=0
 tc_entry	eth/ipv4/ipv4/tcp	-	code=c5b3641d33d61836 meta=b48240fa3f1b88c5 main=197 cb=0
 tc_entry	eth/ipv4/tcp	-	code=53e9dd4f863f24be meta=b48240fa3f1b88c5 main=129 cb=0
 tc_entry	eth/ipv4/tcp capture headers+64	-	code=53e9dd4f863f24be meta=f6aa524eb9726203 main=129 cb=0
-tc_entry	eth/ipv4/tcp where any(ipv4.options.RR.addrs.addr == 192.168.0.0/16)	-	code=394558c7767f9fc2 meta=b48240fa3f1b88c5 main=177 cb=140
+tc_entry	eth/ipv4/tcp where any(ipv4.options.RR.addrs.addr == 192.168.0.0/16)	-	code=e29bef6517bc90df meta=b48240fa3f1b88c5 main=177 cb=143
 tc_entry	eth/ipv4/tcp where tcp.dport == 443	-	code=226ba1fe80c15f4e meta=b48240fa3f1b88c5 main=142 cb=0
-tc_entry	eth/ipv4/tcp where tcp.options.MSS.value == 1460	-	code=7b58b5b3be77565e meta=b48240fa3f1b88c5 main=176 cb=106
+tc_entry	eth/ipv4/tcp where tcp.options.MSS.value == 1460	-	code=e4cb03f6efb6cd10 meta=b48240fa3f1b88c5 main=176 cb=108
 tc_entry	eth/ipv4/tcp[dport==443]	-	code=a05a8052e2e2261f meta=b48240fa3f1b88c5 main=137 cb=0
 tc_entry	eth/ipv4/udp	-	code=ba5551a24f2723d1 meta=b48240fa3f1b88c5 main=74 cb=0
-tc_entry	eth/ipv4/udp/gtp/ipv4/tcp	-	code=035250402f67d442 meta=b48240fa3f1b88c5 main=329 cb=48
+tc_entry	eth/ipv4/udp/gtp/ipv4/tcp	-	code=4bee354c8255542e meta=b48240fa3f1b88c5 main=329 cb=50
 tc_entry	eth/ipv4/udp/vxlan/eth/vlan/ipv4/tcp	-	code=40d0e3633d23748a meta=b48240fa3f1b88c5 main=249 cb=0
 tc_entry	eth/ipv4/udp/vxlan/eth/vlan/ipv4/tcp where vlan.tci == 100	-	code=639e40ec5590be19 meta=b48240fa3f1b88c5 main=261 cb=0
 tc_entry	eth/ipv4/udp/vxlan/eth/vlan[tci == 200]/ipv4/tcp	-	code=84e55ad71ff64ee9 meta=b48240fa3f1b88c5 main=256 cb=0
 tc_entry	eth/ipv4{1,2}/tcp	-	code=e10680335b5e63ae meta=b48240fa3f1b88c5 main=198 cb=0
-tc_entry	eth/ipv6/srv6/tcp	-	code=77f8412b40113585 meta=b48240fa3f1b88c5 main=267 cb=64
-tc_entry	eth/ipv6/tcp	-	code=cec79221065b2b62 meta=b48240fa3f1b88c5 main=204 cb=64
-tc_entry	eth/mpls+/ipv4/tcp	-	code=c15210051075ffa9 meta=b48240fa3f1b88c5 main=183 cb=27
+tc_entry	eth/ipv6/srv6/tcp	-	code=89f8ae6fd9618527 meta=b48240fa3f1b88c5 main=267 cb=66
+tc_entry	eth/ipv6/tcp	-	code=9614fcd0fe2754e9 meta=b48240fa3f1b88c5 main=204 cb=66
+tc_entry	eth/mpls+/ipv4/tcp	-	code=48184ebb54f0e77f meta=b48240fa3f1b88c5 main=183 cb=28
 tc_entry	eth/qinq?/vlan?/ipv4/tcp	-	code=a7cac655380fcccf meta=b48240fa3f1b88c5 main=173 cb=0
 tc_entry	eth/vlan?/ipv4/tcp	-	code=0a036b48b1482c4a meta=b48240fa3f1b88c5 main=175 cb=0
 tc_entry	eth/vlan?/ipv4/udp/vxlan/eth/vlan[tci == 100]/ipv4/tcp	-	code=f07e4f8a7850eb66 meta=b48240fa3f1b88c5 main=302 cb=0
@@ -39,21 +39,21 @@ tc_wire_entry	eth/vlan[tci == 200]/ipv4/tcp	-	code=2f5efcd853a02a38 meta=5ee214e
 tc_wire_exit	eth/vlan?/ipv4/tcp where (vlan.tci == 100) and action == TC_ACT_OK	-	code=7b45cc832a55b8e4 meta=5ee214e8b4c27377 main=194 cb=0
 xdp_entry	eth/(ipv4@a|ipv4@b)/tcp where a.ttl == 64	-	code=47ccfba419a9f336 meta=dd15f8f9a0ceaaea main=201 cb=0
 xdp_entry	eth/(ipv4@a|ipv4@b)/tcp where b.ttl == 64	-	code=0c265ed4b1aac425 meta=dd15f8f9a0ceaaea main=201 cb=0
-xdp_entry	eth/(ipv4@a|ipv6)/tcp capture a	-	code=9ec36aa01b90c73e meta=62e5651798acd4b3 main=275 cb=64
-xdp_entry	eth/(ipv4@a|ipv6)/tcp capture ipv6	-	code=9ec36aa01b90c73e meta=eaba0a0732fdca28 main=275 cb=64
+xdp_entry	eth/(ipv4@a|ipv6)/tcp capture a	-	code=12b8c17c856e02e7 meta=62e5651798acd4b3 main=275 cb=66
+xdp_entry	eth/(ipv4@a|ipv6)/tcp capture ipv6	-	code=12b8c17c856e02e7 meta=eaba0a0732fdca28 main=275 cb=66
 xdp_entry	eth/(ipv4[ttl == 1]|ipv4)/tcp	-	code=ec9bcdf93852719b meta=633a1022efdee518 main=195 cb=0
-xdp_entry	eth/(ipv4|ipv6)/(tcp|udp)	-	code=14abd60cbe324fb9 meta=5ee214e8b4c27377 main=293 cb=64
-xdp_entry	eth/(ipv4|ipv6)/(tcp|udp) where (ipv4.ttl == 64) and (tcp.dport == 80)	-	code=8493eb243918a0b0 meta=5ee214e8b4c27377 main=322 cb=64
-xdp_entry	eth/(ipv4|ipv6)/(tcp|udp) where tcp.dport == 80	-	code=cdfeb389d288ab25 meta=5ee214e8b4c27377 main=312 cb=64
-xdp_entry	eth/(ipv4|ipv6)/tcp	-	code=9ec36aa01b90c73e meta=5ee214e8b4c27377 main=275 cb=64
-xdp_entry	eth/(ipv4|ipv6)/tcp capture headers	-	code=9ec36aa01b90c73e meta=5cd6e72f7ed73ca2 main=275 cb=64
-xdp_entry	eth/(ipv4|ipv6)/tcp where (ipv4.ttl == 64) and (tcp.dport == 80)	-	code=b9c1d4794a22c1c5 meta=5ee214e8b4c27377 main=298 cb=64
-xdp_entry	eth/(ipv4|ipv6)/tcp where (ipv4.ttl == 64) or (ipv6.hop_limit > 0)	-	code=3089cc81e558b039 meta=5ee214e8b4c27377 main=297 cb=64
-xdp_entry	eth/(ipv4|ipv6)/tcp where ipv4.ttl == 64	-	code=f0dd4e6ebbc7b879 meta=5ee214e8b4c27377 main=285 cb=64
-xdp_entry	eth/(ipv4|ipv6)/tcp where ipv6.dst[60:124] == 1193040	-	code=0c63997e5e907ed5 meta=5ee214e8b4c27377 main=293 cb=64
-xdp_entry	eth/(ipv4|ipv6)/tcp where ipv6.dst[60:124] == 1193046	-	code=e4937a6e15a0c98a meta=5ee214e8b4c27377 main=293 cb=64
-xdp_entry	eth/(ipv4|ipv6)/tcp where ipv6.next_header == 6	-	code=06c6c60cd9a60ccc meta=5ee214e8b4c27377 main=282 cb=64
-xdp_entry	eth/(ipv4|ipv6)/udp	-	code=bd0d731b0e290d76 meta=5ee214e8b4c27377 main=220 cb=64
+xdp_entry	eth/(ipv4|ipv6)/(tcp|udp)	-	code=b822940e77f41ddb meta=5ee214e8b4c27377 main=293 cb=66
+xdp_entry	eth/(ipv4|ipv6)/(tcp|udp) where (ipv4.ttl == 64) and (tcp.dport == 80)	-	code=63cb8cf1c74be2be meta=5ee214e8b4c27377 main=322 cb=66
+xdp_entry	eth/(ipv4|ipv6)/(tcp|udp) where tcp.dport == 80	-	code=24606b3cce0b5e79 meta=5ee214e8b4c27377 main=312 cb=66
+xdp_entry	eth/(ipv4|ipv6)/tcp	-	code=12b8c17c856e02e7 meta=5ee214e8b4c27377 main=275 cb=66
+xdp_entry	eth/(ipv4|ipv6)/tcp capture headers	-	code=12b8c17c856e02e7 meta=5cd6e72f7ed73ca2 main=275 cb=66
+xdp_entry	eth/(ipv4|ipv6)/tcp where (ipv4.ttl == 64) and (tcp.dport == 80)	-	code=9f5ada7ae522b6be meta=5ee214e8b4c27377 main=298 cb=66
+xdp_entry	eth/(ipv4|ipv6)/tcp where (ipv4.ttl == 64) or (ipv6.hop_limit > 0)	-	code=fd08fba99e862558 meta=5ee214e8b4c27377 main=297 cb=66
+xdp_entry	eth/(ipv4|ipv6)/tcp where ipv4.ttl == 64	-	code=f8407bf9eb175522 meta=5ee214e8b4c27377 main=285 cb=66
+xdp_entry	eth/(ipv4|ipv6)/tcp where ipv6.dst[60:124] == 1193040	-	code=06001782913de9c3 meta=5ee214e8b4c27377 main=293 cb=66
+xdp_entry	eth/(ipv4|ipv6)/tcp where ipv6.dst[60:124] == 1193046	-	code=2709ff32f5b00e0e meta=5ee214e8b4c27377 main=293 cb=66
+xdp_entry	eth/(ipv4|ipv6)/tcp where ipv6.next_header == 6	-	code=2ca79ba64bd8e6bb meta=5ee214e8b4c27377 main=282 cb=66
+xdp_entry	eth/(ipv4|ipv6)/udp	-	code=2b1cf00172f6575e meta=5ee214e8b4c27377 main=220 cb=66
 xdp_entry	eth/(vlan@v|qinq)/ipv4/tcp where not (v.tci == 100)	-	code=db99a34b98b783d2 meta=5ee214e8b4c27377 main=184 cb=0
 xdp_entry	eth/(vlan@v|qinq)/ipv4/tcp where v.tci == 100	-	code=3050c96dc4efc138 meta=5ee214e8b4c27377 main=182 cb=0
 xdp_entry	eth/(vlan|qinq)/ipv4/tcp where not (vlan.tci == 100)	-	code=db99a34b98b783d2 meta=5ee214e8b4c27377 main=184 cb=0
@@ -65,14 +65,14 @@ xdp_entry	eth/ipv4+/tcp capture headers	-	code=4ddbd6486f34ce93 meta=25f4d2148f9
 xdp_entry	eth/ipv4/(tcp@x|udp) where not (x.dport == 80)	-	code=1c7312c4ba175a69 meta=5ee214e8b4c27377 main=161 cb=0
 xdp_entry	eth/ipv4/(tcp@x|udp) where x.dport == 80	-	code=3a33e1298de59aa8 meta=5ee214e8b4c27377 main=159 cb=0
 xdp_entry	eth/ipv4/(tcp[dport == 80]|tcp[sport == 22])	-	code=fd5f08d2b9304b5d meta=5ae9c4ac9b59101e main=210 cb=0
-xdp_entry	eth/ipv4/(tcp[mss.value == 1460, ws.shift == 7]|udp)	-	code=8f8ee13eeac8f26c meta=5ee214e8b4c27377 main=176 cb=152
-xdp_entry	eth/ipv4/(tcp[mss.value == 1460, ws.shift == 7]|udp) where tcp.options.valid	-	code=233ae28ce2412b87 meta=5ee214e8b4c27377 main=183 cb=152
-xdp_entry	eth/ipv4/(tcp[options.valid]|udp)	-	code=781beb2a32021b5d meta=5ee214e8b4c27377 main=181 cb=96
-xdp_entry	eth/ipv4/(tcp|udp) where any((tcp.options.SACK.blocks.right == 200) or (udp.dport == 80))	-	code=b9dd20ea79eb7930 meta=5ee214e8b4c27377 main=369 cb=106
-xdp_entry	eth/ipv4/(tcp|udp) where not tcp.options.valid	-	code=9135f74ab26e559e meta=5ee214e8b4c27377 main=182 cb=96
-xdp_entry	eth/ipv4/(tcp|udp) where tcp.options.valid	-	code=904aebcdf5a3a8dc meta=5ee214e8b4c27377 main=180 cb=96
-xdp_entry	eth/ipv4/(udp|tcp) where tcp.options.valid and ((tcp.options.MSS.value == 1460) and (tcp.options.WS.shift == 7))	-	code=e3b46074f73d5089 meta=5ee214e8b4c27377 main=183 cb=152
-xdp_entry	eth/ipv4/(udp|tcp[options.valid])	-	code=9c54367128a2002f meta=5ee214e8b4c27377 main=181 cb=96
+xdp_entry	eth/ipv4/(tcp[mss.value == 1460, ws.shift == 7]|udp)	-	code=5e3d5c4e5e14de6e meta=5ee214e8b4c27377 main=176 cb=154
+xdp_entry	eth/ipv4/(tcp[mss.value == 1460, ws.shift == 7]|udp) where tcp.options.valid	-	code=3f27767db5496c1d meta=5ee214e8b4c27377 main=183 cb=154
+xdp_entry	eth/ipv4/(tcp[options.valid]|udp)	-	code=c300865c8e2ec195 meta=5ee214e8b4c27377 main=181 cb=98
+xdp_entry	eth/ipv4/(tcp|udp) where any((tcp.options.SACK.blocks.right == 200) or (udp.dport == 80))	-	code=a185f858a2462a55 meta=5ee214e8b4c27377 main=369 cb=108
+xdp_entry	eth/ipv4/(tcp|udp) where not tcp.options.valid	-	code=3b1a56f99d6dd20b meta=5ee214e8b4c27377 main=182 cb=98
+xdp_entry	eth/ipv4/(tcp|udp) where tcp.options.valid	-	code=c6d469d0cd7407fe meta=5ee214e8b4c27377 main=180 cb=98
+xdp_entry	eth/ipv4/(udp|tcp) where tcp.options.valid and ((tcp.options.MSS.value == 1460) and (tcp.options.WS.shift == 7))	-	code=25be6616e08f8b62 meta=5ee214e8b4c27377 main=183 cb=154
+xdp_entry	eth/ipv4/(udp|tcp[options.valid])	-	code=499630d7c4a84f69 meta=5ee214e8b4c27377 main=181 cb=98
 xdp_entry	eth/ipv4/gre	-	code=8340310dac05c797 meta=5ee214e8b4c27377 main=110 cb=0
 xdp_entry	eth/ipv4/gre/ipv4/tcp	-	code=dc53e7b960ccb6dd meta=5ee214e8b4c27377 main=248 cb=0
 xdp_entry	eth/ipv4/gre/ipv4/tcp where tcp.dport == 80	-	code=12d519990e408392 meta=5ee214e8b4c27377 main=261 cb=0
@@ -91,7 +91,7 @@ xdp_entry	eth/ipv4/tcp where ((((((((((tcp.sport + 1) - 2) * 3) / 4) % 5) & 255)
 xdp_entry	eth/ipv4/tcp where ((((tcp.dport * 2) - 60) / 10) % 7) == 3	-	code=72b277ce9c186c61 meta=5ee214e8b4c27377 main=162 cb=0
 xdp_entry	eth/ipv4/tcp where ((tcp.dport == 80) and not (ipv4.ttl < 5)) or false	-	code=1112a7f55e020e35 meta=5ee214e8b4c27377 main=152 cb=0
 xdp_entry	eth/ipv4/tcp where ((tcp.flags & 2) == 2) and (((ipv4.ttl | 1) == 65) and ((ipv4.ttl ^ 64) == 0))	-	code=3aeb1fefff000930 meta=5ee214e8b4c27377 main=174 cb=0
-xdp_entry	eth/ipv4/tcp where ((tcp.options.MSS.value == 1460) and (tcp.options.WS.shift == 7)) and tcp.options.valid	-	code=f76812f54201b645 meta=5ee214e8b4c27377 main=170 cb=152
+xdp_entry	eth/ipv4/tcp where ((tcp.options.MSS.value == 1460) and (tcp.options.WS.shift == 7)) and tcp.options.valid	-	code=347cede443f2de5f meta=5ee214e8b4c27377 main=170 cb=154
 xdp_entry	eth/ipv4/tcp where (ipv4.dst != 0.0.0.0/0) or (ipv4.src == 10.0.0.1)	-	code=245bd6445ca50be8 meta=5ee214e8b4c27377 main=139 cb=0
 xdp_entry	eth/ipv4/tcp where (ipv4.ttl + 1) > 200	-	code=9069628e38bc8dad meta=5ee214e8b4c27377 main=142 cb=0
 xdp_entry	eth/ipv4/tcp where (ipv4.ttl + tcp.dport) == 144	-	code=3722208f4dde54c8 meta=5ee214e8b4c27377 main=150 cb=0
@@ -105,19 +105,19 @@ xdp_entry	eth/ipv4/tcp where (tcp.dport == 1) or (ipv4.ttl == 64)	-	code=a59e0ed
 xdp_entry	eth/ipv4/tcp where (tcp.dport == 80) != true	-	code=e6f847d9b3dcfc22 meta=5ee214e8b4c27377 main=150 cb=0
 xdp_entry	eth/ipv4/tcp where (tcp.dport == 80) == ((tcp.dport + (tcp.dport + (tcp.dport + (tcp.dport + (tcp.dport + (tcp.dport + (tcp.dport + (tcp.dport + (tcp.dport + (tcp.dport + (tcp.dport + (tcp.dport + (tcp.dport + (tcp.dport + (tcp.dport + tcp.dport))))))))))))))) == 1280)	-	code=a95df98792137759 meta=5ee214e8b4c27377 main=345 cb=0
 xdp_entry	eth/ipv4/tcp where (tcp.dport == 80) == (ipv4.ttl == 64)	-	code=873a8f9e4201aa09 meta=5ee214e8b4c27377 main=161 cb=0
-xdp_entry	eth/ipv4/tcp where (tcp.dport == 80) or ipv4.router_alert.exists	-	code=2ab47dfec5806111 meta=5ee214e8b4c27377 main=177 cb=102
-xdp_entry	eth/ipv4/tcp where (tcp.dport == 80) or tcp.options.MSS.exists	-	code=552843903c060421 meta=5ee214e8b4c27377 main=177 cb=106
+xdp_entry	eth/ipv4/tcp where (tcp.dport == 80) or ipv4.router_alert.exists	-	code=91e135f6192caf9f meta=5ee214e8b4c27377 main=177 cb=105
+xdp_entry	eth/ipv4/tcp where (tcp.dport == 80) or tcp.options.MSS.exists	-	code=4d668fc106ea1af3 meta=5ee214e8b4c27377 main=177 cb=108
 xdp_entry	eth/ipv4/tcp where (tcp.dport > 79) and ((tcp.dport <= 80) and ((80 >= tcp.dport) and (tcp.sport != 80)))	-	code=e2417af6369a4bd5 meta=5ee214e8b4c27377 main=177 cb=0
-xdp_entry	eth/ipv4/tcp where (tcp.options.MSS.value == 1460) and (tcp.options.WS.shift == 7)	-	code=e54e15d70526e2f4 meta=5ee214e8b4c27377 main=164 cb=152
-xdp_entry	eth/ipv4/tcp where (tcp.options.MSS.value == int<128>(1460)) and (tcp.options.WS.shift == 7)	-	code=e54e15d70526e2f4 meta=5ee214e8b4c27377 main=164 cb=152
-xdp_entry	eth/ipv4/tcp where (tcp.options.MSS.value == int<128>(18446744073709553076)) and (tcp.options.WS.shift == 7)	-	code=121b83f0ece53fd5 meta=5ee214e8b4c27377 main=164 cb=132
-xdp_entry	eth/ipv4/tcp where (tcp.options.MSS.value == int<128>(70000)) and (tcp.options.WS.shift == 7)	-	code=121b83f0ece53fd5 meta=5ee214e8b4c27377 main=164 cb=132
+xdp_entry	eth/ipv4/tcp where (tcp.options.MSS.value == 1460) and (tcp.options.WS.shift == 7)	-	code=838622d5d45a86d0 meta=5ee214e8b4c27377 main=164 cb=154
+xdp_entry	eth/ipv4/tcp where (tcp.options.MSS.value == int<128>(1460)) and (tcp.options.WS.shift == 7)	-	code=838622d5d45a86d0 meta=5ee214e8b4c27377 main=164 cb=154
+xdp_entry	eth/ipv4/tcp where (tcp.options.MSS.value == int<128>(18446744073709553076)) and (tcp.options.WS.shift == 7)	-	code=2e5d099ce55f440c meta=5ee214e8b4c27377 main=164 cb=134
+xdp_entry	eth/ipv4/tcp where (tcp.options.MSS.value == int<128>(70000)) and (tcp.options.WS.shift == 7)	-	code=2e5d099ce55f440c meta=5ee214e8b4c27377 main=164 cb=134
 xdp_entry	eth/ipv4/tcp where 1360 == (tcp.dport + (tcp.dport + (tcp.dport + (tcp.dport + (tcp.dport + (tcp.dport + (tcp.dport + (tcp.dport + (tcp.dport + (tcp.dport + (tcp.dport + (tcp.dport + (tcp.dport + (tcp.dport + (tcp.dport + (tcp.dport + tcp.dport))))))))))))))))	-	code=68d2037772368df0 meta=5ee214e8b4c27377 main=335 cb=0
 xdp_entry	eth/ipv4/tcp where 1361 == (tcp.dport + (tcp.dport + (tcp.dport + (tcp.dport + (tcp.dport + (tcp.dport + (tcp.dport + (tcp.dport + (tcp.dport + (tcp.dport + (tcp.dport + (tcp.dport + (tcp.dport + (tcp.dport + (tcp.dport + (tcp.dport + tcp.dport))))))))))))))))	-	code=f475c17717939f73 meta=5ee214e8b4c27377 main=335 cb=0
 xdp_entry	eth/ipv4/tcp where 300 > 200	-	code=be0ad5907f682dd7 meta=5ee214e8b4c27377 main=134 cb=0
-xdp_entry	eth/ipv4/tcp where all(tcp.options.SACK.blocks.left == 1)	-	code=8cbbc6317ff35c11 meta=5ee214e8b4c27377 main=281 cb=106
-xdp_entry	eth/ipv4/tcp where any(ipv4.options.RR.addrs.addr == 10.0.0.9)	-	code=143500467db07f5d meta=5ee214e8b4c27377 main=177 cb=139
-xdp_entry	eth/ipv4/tcp where any(tcp.options.SACK.blocks.right == 200)	-	code=0fd03d4cc53d3af1 meta=5ee214e8b4c27377 main=287 cb=106
+xdp_entry	eth/ipv4/tcp where all(tcp.options.SACK.blocks.left == 1)	-	code=334e55f42ec1b9a0 meta=5ee214e8b4c27377 main=281 cb=108
+xdp_entry	eth/ipv4/tcp where any(ipv4.options.RR.addrs.addr == 10.0.0.9)	-	code=14bbb3b2e80f47cd meta=5ee214e8b4c27377 main=177 cb=142
+xdp_entry	eth/ipv4/tcp where any(tcp.options.SACK.blocks.right == 200)	-	code=fe204fd3e09f6310 meta=5ee214e8b4c27377 main=287 cb=108
 xdp_entry	eth/ipv4/tcp where eth.dst == 00:11:22:33:44:55	-	code=e007b4ea72ceedfe meta=5ee214e8b4c27377 main=141 cb=0
 xdp_entry	eth/ipv4/tcp where false	-	code=c66a66c5d78dddb7 meta=5ee214e8b4c27377 main=2 cb=0
 xdp_entry	eth/ipv4/tcp where ipv4.dst != 0.0.0.0/0	-	code=d641c046fb2109ad meta=5ee214e8b4c27377 main=131 cb=0
@@ -126,46 +126,46 @@ xdp_entry	eth/ipv4/tcp where ipv4.dst != 10.0.0.128/32	-	code=be627129039fbc87 m
 xdp_entry	eth/ipv4/tcp where ipv4.dst == 0.0.0.0/0	-	code=53e9dd4f863f24be meta=5ee214e8b4c27377 main=129 cb=0
 xdp_entry	eth/ipv4/tcp where ipv4.dst == 10.0.0.0/8	-	code=0c17ea7d56b482f5 meta=5ee214e8b4c27377 main=136 cb=0
 xdp_entry	eth/ipv4/tcp where ipv4.dst == 10.0.0.128/32	-	code=312057d6bd347a7d meta=5ee214e8b4c27377 main=135 cb=0
-xdp_entry	eth/ipv4/tcp where ipv4.options.ROUTER_ALERT.exists	-	code=d8a72c652e02a85e meta=5ee214e8b4c27377 main=162 cb=102
-xdp_entry	eth/ipv4/tcp where ipv4.options.RR.addrs[0].addr != 0	-	code=44d702d7e51b0200 meta=5ee214e8b4c27377 main=189 cb=102
-xdp_entry	eth/ipv4/tcp where ipv4.options.RR.addrs[0].addr == 167772169	-	code=252aaccfec48b537 meta=5ee214e8b4c27377 main=189 cb=102
-xdp_entry	eth/ipv4/tcp where ipv4.options.RR.addrs[1].addr == 10.0.0.10	-	code=a606754fca42ab4e meta=5ee214e8b4c27377 main=187 cb=102
-xdp_entry	eth/ipv4/tcp where ipv4.options.valid and (tcp.options.valid and ((tcp.options.MSS.value == 1460) and (tcp.options.WS.shift == 7)))	-	code=92ddf4ce22478b25 meta=5ee214e8b4c27377 main=203 cb=244
+xdp_entry	eth/ipv4/tcp where ipv4.options.ROUTER_ALERT.exists	-	code=09142ee065789a44 meta=5ee214e8b4c27377 main=162 cb=105
+xdp_entry	eth/ipv4/tcp where ipv4.options.RR.addrs[0].addr != 0	-	code=143cef9b9653c869 meta=5ee214e8b4c27377 main=189 cb=105
+xdp_entry	eth/ipv4/tcp where ipv4.options.RR.addrs[0].addr == 167772169	-	code=15c7ba662beeed57 meta=5ee214e8b4c27377 main=189 cb=105
+xdp_entry	eth/ipv4/tcp where ipv4.options.RR.addrs[1].addr == 10.0.0.10	-	code=ba5beb3effb90d41 meta=5ee214e8b4c27377 main=187 cb=105
+xdp_entry	eth/ipv4/tcp where ipv4.options.valid and (tcp.options.valid and ((tcp.options.MSS.value == 1460) and (tcp.options.WS.shift == 7)))	-	code=71e022b3bad7365c meta=5ee214e8b4c27377 main=203 cb=249
 xdp_entry	eth/ipv4/tcp where ipv4.src == 10.0.0.1	-	code=18610f331362c92c meta=5ee214e8b4c27377 main=135 cb=0
 xdp_entry	eth/ipv4/tcp where ipv4.ttl == 64 capture all where tcp.dport == 80 capture headers where tcp.dport != 1	-	code=39bdff98562a7611 meta=eaba0a0732fdca28 main=162 cb=0
 xdp_entry	eth/ipv4/tcp where not (ipv4.dst != 0.0.0.0/0)	-	code=e793fd7f1336885d meta=5ee214e8b4c27377 main=133 cb=0
 xdp_entry	eth/ipv4/tcp where not (tcp.dport == 80)	-	code=647e47073e50047d meta=5ee214e8b4c27377 main=144 cb=0
-xdp_entry	eth/ipv4/tcp where not (tcp.options.MSS.value == 1460)	-	code=44142a79e7068576 meta=5ee214e8b4c27377 main=178 cb=106
-xdp_entry	eth/ipv4/tcp where not ipv4.options.valid	-	code=f5daa6a33bce89a4 meta=5ee214e8b4c27377 main=164 cb=92
-xdp_entry	eth/ipv4/tcp where not tcp.options.valid	-	code=64ee3203393cfbc8 meta=5ee214e8b4c27377 main=165 cb=96
+xdp_entry	eth/ipv4/tcp where not (tcp.options.MSS.value == 1460)	-	code=5b6e0d3a23109cd9 meta=5ee214e8b4c27377 main=178 cb=108
+xdp_entry	eth/ipv4/tcp where not ipv4.options.valid	-	code=6de3d13a9fc5d6d8 meta=5ee214e8b4c27377 main=164 cb=95
+xdp_entry	eth/ipv4/tcp where not tcp.options.valid	-	code=cb8ad59640c6e03e meta=5ee214e8b4c27377 main=165 cb=98
 xdp_entry	eth/ipv4/tcp where tcp.dport != 0	-	code=e578c4873b0b4f58 meta=5ee214e8b4c27377 main=142 cb=0
 xdp_entry	eth/ipv4/tcp where tcp.dport == (ipv4.ttl + 16)	-	code=e7a555a87224c56e meta=5ee214e8b4c27377 main=151 cb=0
 xdp_entry	eth/ipv4/tcp where tcp.dport == (ipv4.ttl + 17)	-	code=dc3d7b6547384765 meta=5ee214e8b4c27377 main=151 cb=0
 xdp_entry	eth/ipv4/tcp where tcp.dport == -1	-	code=4ea93b7deae4ce67 meta=5ee214e8b4c27377 main=142 cb=0
 xdp_entry	eth/ipv4/tcp where tcp.dport == 443	-	code=226ba1fe80c15f4e meta=5ee214e8b4c27377 main=142 cb=0
 xdp_entry	eth/ipv4/tcp where tcp.dport == 80	-	code=b0fd88c427aa09b7 meta=5ee214e8b4c27377 main=142 cb=0
-xdp_entry	eth/ipv4/tcp where tcp.options.MSS.exists	-	code=c8fd927723a05904 meta=5ee214e8b4c27377 main=163 cb=106
-xdp_entry	eth/ipv4/tcp where tcp.options.MSS.value == 1460	-	code=7b58b5b3be77565e meta=5ee214e8b4c27377 main=176 cb=106
-xdp_entry	eth/ipv4/tcp where tcp.options.MSS.value == 16	-	code=b0677c28e47899c6 meta=5ee214e8b4c27377 main=176 cb=106
-xdp_entry	eth/ipv4/tcp where tcp.options.MSS.value == int<128>(1460)	-	code=8f8ad538dcaf5823 meta=5ee214e8b4c27377 main=184 cb=106
-xdp_entry	eth/ipv4/tcp where tcp.options.SACK.blocks[0].left == 100	-	code=9f06bd744d55eba8 meta=5ee214e8b4c27377 main=190 cb=106
-xdp_entry	eth/ipv4/tcp where tcp.options.valid	-	code=6d53361ccdc041a3 meta=5ee214e8b4c27377 main=163 cb=96
-xdp_entry	eth/ipv4/tcp where tcp.options.valid and ((tcp.options.MSS.value == 1460) and (tcp.options.WS.shift == 7))	-	code=f76812f54201b645 meta=5ee214e8b4c27377 main=170 cb=152
-xdp_entry	eth/ipv4/tcp where tcp.options.valid and ((tcp.options.MSS.value == 1460) and (tcp.options.WS.shift == 8))	-	code=287852a87303093b meta=5ee214e8b4c27377 main=170 cb=152
-xdp_entry	eth/ipv4/tcp where tcp.options.valid and (tcp.options.MSS.value == 1460)	-	code=90b92ff2590b4e75 meta=5ee214e8b4c27377 main=182 cb=106
+xdp_entry	eth/ipv4/tcp where tcp.options.MSS.exists	-	code=0ec2b83321e7d8b7 meta=5ee214e8b4c27377 main=163 cb=108
+xdp_entry	eth/ipv4/tcp where tcp.options.MSS.value == 1460	-	code=e4cb03f6efb6cd10 meta=5ee214e8b4c27377 main=176 cb=108
+xdp_entry	eth/ipv4/tcp where tcp.options.MSS.value == 16	-	code=b7e32c01163fe54e meta=5ee214e8b4c27377 main=176 cb=108
+xdp_entry	eth/ipv4/tcp where tcp.options.MSS.value == int<128>(1460)	-	code=80f4b6f7ffd2d258 meta=5ee214e8b4c27377 main=184 cb=108
+xdp_entry	eth/ipv4/tcp where tcp.options.SACK.blocks[0].left == 100	-	code=8772703530a5f6e2 meta=5ee214e8b4c27377 main=190 cb=108
+xdp_entry	eth/ipv4/tcp where tcp.options.valid	-	code=f26b6da1958ede33 meta=5ee214e8b4c27377 main=163 cb=98
+xdp_entry	eth/ipv4/tcp where tcp.options.valid and ((tcp.options.MSS.value == 1460) and (tcp.options.WS.shift == 7))	-	code=347cede443f2de5f meta=5ee214e8b4c27377 main=170 cb=154
+xdp_entry	eth/ipv4/tcp where tcp.options.valid and ((tcp.options.MSS.value == 1460) and (tcp.options.WS.shift == 8))	-	code=8e488c2d0c41b7ac meta=5ee214e8b4c27377 main=170 cb=154
+xdp_entry	eth/ipv4/tcp where tcp.options.valid and (tcp.options.MSS.value == 1460)	-	code=f7419990cc7ce7ba meta=5ee214e8b4c27377 main=182 cb=108
 xdp_entry	eth/ipv4/tcp where tcp.seq == (tcp.dport + -1)	-	code=5f0f6d1232a0eb0e meta=5ee214e8b4c27377 main=155 cb=0
-xdp_entry	eth/ipv4/tcp where tcp.ts.tsval != 10.0.0.1	-	code=de5c9bf994c59471 meta=5ee214e8b4c27377 main=174 cb=106
-xdp_entry	eth/ipv4/tcp where tcp.ts.tsval == 10.0.0.1	-	code=110c6be4c5ad5123 meta=5ee214e8b4c27377 main=174 cb=106
-xdp_entry	eth/ipv4/tcp where tcp.ts.tsval[24:32] == 1	-	code=f29c8c912d220844 meta=5ee214e8b4c27377 main=175 cb=106
+xdp_entry	eth/ipv4/tcp where tcp.ts.tsval != 10.0.0.1	-	code=1d64fe4a5a3fecc2 meta=5ee214e8b4c27377 main=174 cb=108
+xdp_entry	eth/ipv4/tcp where tcp.ts.tsval == 10.0.0.1	-	code=061db031d328de4a meta=5ee214e8b4c27377 main=174 cb=108
+xdp_entry	eth/ipv4/tcp where tcp.ts.tsval[24:32] == 1	-	code=605f1dfe51fb20f5 meta=5ee214e8b4c27377 main=175 cb=108
 xdp_entry	eth/ipv4/tcp where true	-	code=53e9dd4f863f24be meta=5ee214e8b4c27377 main=129 cb=0
-xdp_entry	eth/ipv4/tcp? where (tcp.options.MSS.value == 1460) and (tcp.options.WS.shift == 7)	-	code=9efceb9402be263e meta=5ee214e8b4c27377 main=167 cb=152
-xdp_entry	eth/ipv4/tcp? where tcp.options.valid	-	code=58f3a84609380f0c meta=5ee214e8b4c27377 main=168 cb=96
-xdp_entry	eth/ipv4/tcp? where tcp.options.valid and ((tcp.options.MSS.value == 1460) and (tcp.options.WS.shift == 7))	-	code=9411408a7616a720 meta=5ee214e8b4c27377 main=173 cb=152
-xdp_entry	eth/ipv4/tcp@t where t.options.valid and ((tcp.options.MSS.value == 1460) and (tcp.options.WS.shift == 7))	-	code=f76812f54201b645 meta=5ee214e8b4c27377 main=170 cb=152
+xdp_entry	eth/ipv4/tcp? where (tcp.options.MSS.value == 1460) and (tcp.options.WS.shift == 7)	-	code=75fd642353b49998 meta=5ee214e8b4c27377 main=167 cb=154
+xdp_entry	eth/ipv4/tcp? where tcp.options.valid	-	code=feb37f4492279433 meta=5ee214e8b4c27377 main=168 cb=98
+xdp_entry	eth/ipv4/tcp? where tcp.options.valid and ((tcp.options.MSS.value == 1460) and (tcp.options.WS.shift == 7))	-	code=72154256965ba407 meta=5ee214e8b4c27377 main=173 cb=154
+xdp_entry	eth/ipv4/tcp@t where t.options.valid and ((tcp.options.MSS.value == 1460) and (tcp.options.WS.shift == 7))	-	code=347cede443f2de5f meta=5ee214e8b4c27377 main=170 cb=154
 xdp_entry	eth/ipv4/tcp[dport < 1024]	-	code=e26486710cb1b501 meta=5ee214e8b4c27377 main=138 cb=0
 xdp_entry	eth/ipv4/tcp[dport == -1]	-	code=0120c0b15bab3f95 meta=5ee214e8b4c27377 main=137 cb=0
-xdp_entry	eth/ipv4/tcp[dport == 80, options.valid]	-	code=28a00b58d3a8a367 meta=5ee214e8b4c27377 main=178 cb=96
-xdp_entry	eth/ipv4/tcp[dport == 81, mss.value == 1460, ws.shift == 7]	-	code=14b326b7f3b9107a meta=5ee214e8b4c27377 main=171 cb=152
+xdp_entry	eth/ipv4/tcp[dport == 80, options.valid]	-	code=d19be369d71c2094 meta=5ee214e8b4c27377 main=178 cb=98
+xdp_entry	eth/ipv4/tcp[dport == 81, mss.value == 1460, ws.shift == 7]	-	code=cb3f28acd3b746da meta=5ee214e8b4c27377 main=171 cb=154
 xdp_entry	eth/ipv4/tcp[dport > 1024]	-	code=4312c798bd65c357 meta=5ee214e8b4c27377 main=138 cb=0
 xdp_entry	eth/ipv4/tcp[dport in @ports]	ports:16	code=954cbdca7948be70 meta=079d6671863ceb02 main=138 cb=0
 xdp_entry	eth/ipv4/tcp[dport in @ports]	ports:16,spare:8	code=954cbdca7948be70 meta=079d6671863ceb02 main=138 cb=0
@@ -174,56 +174,56 @@ xdp_entry	eth/ipv4/tcp[dport in [22, 80, 443]]	-	code=6214897d809debc5 meta=5ee2
 xdp_entry	eth/ipv4/tcp[dport in [443, 8000..8080]]	-	code=d24683beaba22bb4 meta=5ee214e8b4c27377 main=142 cb=0
 xdp_entry	eth/ipv4/tcp[dport in [79..81]]	-	code=c25a94150c85e38a meta=5ee214e8b4c27377 main=141 cb=0
 xdp_entry	eth/ipv4/tcp[dport in [80, 443, 8000..8080]]	-	code=eebeec3f40207900 meta=5ee214e8b4c27377 main=143 cb=0
-xdp_entry	eth/ipv4/tcp[mss.value != 1460]	-	code=99a4f54b00b30afc meta=5ee214e8b4c27377 main=179 cb=106
-xdp_entry	eth/ipv4/tcp[mss.value == 1460, ws.shift == 7]	-	code=a2a4bdfd064d01ce meta=5ee214e8b4c27377 main=163 cb=152
-xdp_entry	eth/ipv4/tcp[mss.value == 1460, ws.shift == 7] where not (tcp.dport == 80) or (ipv4.ttl == 1)	-	code=73357ba5f3140e1d meta=5ee214e8b4c27377 main=188 cb=152
-xdp_entry	eth/ipv4/tcp[mss.value == 1460, ws.shift == 7] where tcp.dport == 80	-	code=3567965a5477990d meta=5ee214e8b4c27377 main=176 cb=152
-xdp_entry	eth/ipv4/tcp[mss.value == 1460, ws.shift == 7] where tcp.dport == 81	-	code=1e9addf1413800f3 meta=5ee214e8b4c27377 main=176 cb=152
-xdp_entry	eth/ipv4/tcp[mss.value == 1460, ws.shift == 7]?	-	code=41d43412c7047047 meta=5ee214e8b4c27377 main=164 cb=152
-xdp_entry	eth/ipv4/tcp[mss.value == 1460, ws.shift == 7]? where not (tcp.dport == 80)	-	code=df38eb843cc60bc8 meta=5ee214e8b4c27377 main=183 cb=152
-xdp_entry	eth/ipv4/tcp[mss.value == 1460, ws.shift == 7]? where not (tcp.dport == 81)	-	code=bc666fc619d485f8 meta=5ee214e8b4c27377 main=183 cb=152
-xdp_entry	eth/ipv4/tcp[mss.value == 1460, ws.shift == 7]? where tcp.dport == 80	-	code=93c9cb076aa0ad4c meta=5ee214e8b4c27377 main=181 cb=152
-xdp_entry	eth/ipv4/tcp[mss.value == 1460]	-	code=51a90ba62cc3a48d meta=5ee214e8b4c27377 main=179 cb=106
-xdp_entry	eth/ipv4/tcp[mss.value in [1400, 1450..1460]]	-	code=a19656c11dad3541 meta=5ee214e8b4c27377 main=184 cb=106
-xdp_entry	eth/ipv4/tcp[options.MSS.value == 1460, options.WS.shift == 7]	-	code=a2a4bdfd064d01ce meta=5ee214e8b4c27377 main=163 cb=152
-xdp_entry	eth/ipv4/tcp[options.MSS.value == 1460]	-	code=51a90ba62cc3a48d meta=5ee214e8b4c27377 main=179 cb=106
-xdp_entry	eth/ipv4/tcp[options.SACK.blocks[0].left == 5]	-	code=8624dc5a8bef809f meta=5ee214e8b4c27377 main=193 cb=106
-xdp_entry	eth/ipv4/tcp[options.SACK.blocks[1].left != 7]	-	code=cef39684b9dbe3aa meta=5ee214e8b4c27377 main=193 cb=106
-xdp_entry	eth/ipv4/tcp[options.SACK.blocks[1].left == 16843009]	-	code=77dbc5e9218bee08 meta=5ee214e8b4c27377 main=193 cb=106
-xdp_entry	eth/ipv4/tcp[options.SACK.blocks[1].right > 25]	-	code=11464671fa0b82d0 meta=5ee214e8b4c27377 main=194 cb=106
-xdp_entry	eth/ipv4/tcp[options.valid, dport == 80]	-	code=28a00b58d3a8a367 meta=5ee214e8b4c27377 main=178 cb=96
-xdp_entry	eth/ipv4/tcp[options.valid, mss.value == 1460, ws.shift == 7]	-	code=b30582913ebca06b meta=5ee214e8b4c27377 main=177 cb=152
-xdp_entry	eth/ipv4/tcp[options.valid]	-	code=2278d43c3046746e meta=5ee214e8b4c27377 main=170 cb=96
-xdp_entry	eth/ipv4/tcp[options.valid] where (tcp.options.MSS.value == 1460) and (tcp.options.WS.shift == 7)	-	code=e4f00491ad2afcf9 meta=5ee214e8b4c27377 main=178 cb=152
-xdp_entry	eth/ipv4/tcp[options.valid]?	-	code=98e4c9bf7065a706 meta=5ee214e8b4c27377 main=171 cb=96
+xdp_entry	eth/ipv4/tcp[mss.value != 1460]	-	code=115cef96f6b0e0bd meta=5ee214e8b4c27377 main=179 cb=108
+xdp_entry	eth/ipv4/tcp[mss.value == 1460, ws.shift == 7]	-	code=619b58bfadc0947b meta=5ee214e8b4c27377 main=163 cb=154
+xdp_entry	eth/ipv4/tcp[mss.value == 1460, ws.shift == 7] where not (tcp.dport == 80) or (ipv4.ttl == 1)	-	code=1868b11ac80d91b3 meta=5ee214e8b4c27377 main=188 cb=154
+xdp_entry	eth/ipv4/tcp[mss.value == 1460, ws.shift == 7] where tcp.dport == 80	-	code=7e1b0e6292ddf206 meta=5ee214e8b4c27377 main=176 cb=154
+xdp_entry	eth/ipv4/tcp[mss.value == 1460, ws.shift == 7] where tcp.dport == 81	-	code=98a7daaba21cbe12 meta=5ee214e8b4c27377 main=176 cb=154
+xdp_entry	eth/ipv4/tcp[mss.value == 1460, ws.shift == 7]?	-	code=df454f977fc7e2ac meta=5ee214e8b4c27377 main=164 cb=154
+xdp_entry	eth/ipv4/tcp[mss.value == 1460, ws.shift == 7]? where not (tcp.dport == 80)	-	code=f35d872e67568f36 meta=5ee214e8b4c27377 main=183 cb=154
+xdp_entry	eth/ipv4/tcp[mss.value == 1460, ws.shift == 7]? where not (tcp.dport == 81)	-	code=e271220614b6474c meta=5ee214e8b4c27377 main=183 cb=154
+xdp_entry	eth/ipv4/tcp[mss.value == 1460, ws.shift == 7]? where tcp.dport == 80	-	code=c9ef0aa8477b668f meta=5ee214e8b4c27377 main=181 cb=154
+xdp_entry	eth/ipv4/tcp[mss.value == 1460]	-	code=549e49ffe9294167 meta=5ee214e8b4c27377 main=179 cb=108
+xdp_entry	eth/ipv4/tcp[mss.value in [1400, 1450..1460]]	-	code=bf2909521a1f77b0 meta=5ee214e8b4c27377 main=184 cb=108
+xdp_entry	eth/ipv4/tcp[options.MSS.value == 1460, options.WS.shift == 7]	-	code=619b58bfadc0947b meta=5ee214e8b4c27377 main=163 cb=154
+xdp_entry	eth/ipv4/tcp[options.MSS.value == 1460]	-	code=549e49ffe9294167 meta=5ee214e8b4c27377 main=179 cb=108
+xdp_entry	eth/ipv4/tcp[options.SACK.blocks[0].left == 5]	-	code=0726de4db7cc4e5c meta=5ee214e8b4c27377 main=193 cb=108
+xdp_entry	eth/ipv4/tcp[options.SACK.blocks[1].left != 7]	-	code=a6e52f91d4ad292b meta=5ee214e8b4c27377 main=193 cb=108
+xdp_entry	eth/ipv4/tcp[options.SACK.blocks[1].left == 16843009]	-	code=2e77e27161caa656 meta=5ee214e8b4c27377 main=193 cb=108
+xdp_entry	eth/ipv4/tcp[options.SACK.blocks[1].right > 25]	-	code=18c68c350f7943ca meta=5ee214e8b4c27377 main=194 cb=108
+xdp_entry	eth/ipv4/tcp[options.valid, dport == 80]	-	code=d19be369d71c2094 meta=5ee214e8b4c27377 main=178 cb=98
+xdp_entry	eth/ipv4/tcp[options.valid, mss.value == 1460, ws.shift == 7]	-	code=935c094119c0d034 meta=5ee214e8b4c27377 main=177 cb=154
+xdp_entry	eth/ipv4/tcp[options.valid]	-	code=59bd0f9b30073eac meta=5ee214e8b4c27377 main=170 cb=98
+xdp_entry	eth/ipv4/tcp[options.valid] where (tcp.options.MSS.value == 1460) and (tcp.options.WS.shift == 7)	-	code=583ea4a9fe2fb5cd meta=5ee214e8b4c27377 main=178 cb=154
+xdp_entry	eth/ipv4/tcp[options.valid]?	-	code=8855495fcd167c5d meta=5ee214e8b4c27377 main=171 cb=98
 xdp_entry	eth/ipv4/tcp[seq != 128]	-	code=68ad53a4bf76eb69 meta=5ee214e8b4c27377 main=138 cb=0
 xdp_entry	eth/ipv4/tcp[seq == 128]	-	code=4dea2f564edc032c meta=5ee214e8b4c27377 main=138 cb=0
 xdp_entry	eth/ipv4/tcp[seq == 4294967295]	-	code=2a7b415f004e6297 meta=5ee214e8b4c27377 main=138 cb=0
 xdp_entry	eth/ipv4/tcp[seq > 2147483648]	-	code=6efa5d4c03864fc8 meta=5ee214e8b4c27377 main=139 cb=0
-xdp_entry	eth/ipv4/tcp[ts.tsval != 10.0.0.1]	-	code=50ea1c42340d7cd1 meta=5ee214e8b4c27377 main=181 cb=106
-xdp_entry	eth/ipv4/tcp[ts.tsval == 128]	-	code=553f8b93c9d03fe0 meta=5ee214e8b4c27377 main=180 cb=106
-xdp_entry	eth/ipv4/tcp[ts.tsval > 16777216]	-	code=c061b2ce82824688 meta=5ee214e8b4c27377 main=180 cb=106
-xdp_entry	eth/ipv4/tcp[ts.tsval in [10.0.0.0/8, 192.168.0.1]]	-	code=db426b72e33555a2 meta=5ee214e8b4c27377 main=184 cb=106
-xdp_entry	eth/ipv4/tcp[ts.tsval[24:32] == 1]	-	code=bfc4d17c88fcfdce meta=5ee214e8b4c27377 main=179 cb=106
+xdp_entry	eth/ipv4/tcp[ts.tsval != 10.0.0.1]	-	code=ff3e5dc28ab36442 meta=5ee214e8b4c27377 main=181 cb=108
+xdp_entry	eth/ipv4/tcp[ts.tsval == 128]	-	code=8be18cb269763a10 meta=5ee214e8b4c27377 main=180 cb=108
+xdp_entry	eth/ipv4/tcp[ts.tsval > 16777216]	-	code=3753d34879bc933e meta=5ee214e8b4c27377 main=180 cb=108
+xdp_entry	eth/ipv4/tcp[ts.tsval in [10.0.0.0/8, 192.168.0.1]]	-	code=18a230d5812ddb14 meta=5ee214e8b4c27377 main=184 cb=108
+xdp_entry	eth/ipv4/tcp[ts.tsval[24:32] == 1]	-	code=2a684714feca54b2 meta=5ee214e8b4c27377 main=179 cb=108
 xdp_entry	eth/ipv4/tcp{0,0}	-	code=8bc0f431048a95e8 meta=5ee214e8b4c27377 main=65 cb=0
 xdp_entry	eth/ipv4/udp	-	code=ba5551a24f2723d1 meta=5ee214e8b4c27377 main=74 cb=0
-xdp_entry	eth/ipv4/udp/geneve where geneve.options.OVN.exists	-	code=8639284533e622ed meta=5ee214e8b4c27377 main=172 cb=71
-xdp_entry	eth/ipv4/udp/geneve where geneve.options.valid	-	code=3a79a75b051aef64 meta=5ee214e8b4c27377 main=172 cb=59
-xdp_entry	eth/ipv4/udp/geneve where not geneve.options.valid	-	code=a1bb1d27c3189ae1 meta=5ee214e8b4c27377 main=174 cb=59
+xdp_entry	eth/ipv4/udp/geneve where geneve.options.OVN.exists	-	code=2f54f68dd73c20c1 meta=5ee214e8b4c27377 main=172 cb=73
+xdp_entry	eth/ipv4/udp/geneve where geneve.options.valid	-	code=36cba888005c3104 meta=5ee214e8b4c27377 main=172 cb=61
+xdp_entry	eth/ipv4/udp/geneve where not geneve.options.valid	-	code=a8799baa06c11a5b meta=5ee214e8b4c27377 main=174 cb=61
 xdp_entry	eth/ipv4/udp/geneve where udp.dport == 6081	-	code=439380ba098b17e2 meta=5ee214e8b4c27377 main=151 cb=0
-xdp_entry	eth/ipv4/udp/geneve[options.valid]	-	code=037079f1f1a4c538 meta=5ee214e8b4c27377 main=179 cb=59
-xdp_entry	eth/ipv4/udp/gtp/ipv4/tcp	-	code=035250402f67d442 meta=5ee214e8b4c27377 main=329 cb=48
-xdp_entry	eth/ipv4/udp/gtp/ipv4/tcp where gtp.exts[0].ext_type == 1	-	code=f11c27f03f944fba meta=5ee214e8b4c27377 main=349 cb=51
-xdp_entry	eth/ipv4/udp/gtp/ipv4/tcp where gtp.exts[1].ext_type == 2	-	code=cf30896541c42a0b meta=5ee214e8b4c27377 main=364 cb=51
-xdp_entry	eth/ipv4/udp/gtp/ipv4/tcp where gtp.exts[gtp.msg_type].ext_type == 2	-	code=424f56a8e018e594 meta=5ee214e8b4c27377 main=476 cb=51
-xdp_entry	eth/ipv4/udp/gtp/ipv4/tcp where gtp.opt.exists	-	code=8fd973a96b3e4a17 meta=5ee214e8b4c27377 main=338 cb=48
-xdp_entry	eth/ipv4/udp/gtp/ipv4/tcp where gtp.opt.next_ext == 0	-	code=73dd3e587b41aff2 meta=5ee214e8b4c27377 main=349 cb=48
-xdp_entry	eth/ipv4/udp/gtp[exts[0].ext_type == 0]/ipv4/tcp	-	code=043b9f5c08b43739 meta=5ee214e8b4c27377 main=352 cb=51
-xdp_entry	eth/ipv4/udp/gtp[exts[0].ext_type == 1]/ipv4/tcp	-	code=4afbf1a5aba9504a meta=5ee214e8b4c27377 main=352 cb=51
-xdp_entry	eth/ipv4/udp/gtp[exts[1].ext_type == 0]/ipv4/tcp	-	code=03acd6331d7b15b7 meta=5ee214e8b4c27377 main=367 cb=51
-xdp_entry	eth/ipv4/udp/gtp[exts[1].ext_type in @types]/ipv4/tcp	types:16	code=511932f101cc6f94 meta=521756d46fa3ce7f main=368 cb=51
-xdp_entry	eth/ipv4/udp/gtp[teid == 1, exts[1].ext_type == 7]/ipv4/tcp[dport == 80]	-	code=a1e067c0b210b35b meta=5ee214e8b4c27377 main=383 cb=51
-xdp_entry	eth/ipv4/udp/gtp[teid == 2, exts[1].ext_type == 7]/ipv4/tcp[dport == 80]	-	code=9f1f0773b1fbf3a5 meta=5ee214e8b4c27377 main=383 cb=51
+xdp_entry	eth/ipv4/udp/geneve[options.valid]	-	code=f5439383ba8f0979 meta=5ee214e8b4c27377 main=179 cb=61
+xdp_entry	eth/ipv4/udp/gtp/ipv4/tcp	-	code=4bee354c8255542e meta=5ee214e8b4c27377 main=329 cb=50
+xdp_entry	eth/ipv4/udp/gtp/ipv4/tcp where gtp.exts[0].ext_type == 1	-	code=4c15c3a3bfab53ca meta=5ee214e8b4c27377 main=349 cb=53
+xdp_entry	eth/ipv4/udp/gtp/ipv4/tcp where gtp.exts[1].ext_type == 2	-	code=a37a1b938bb426e6 meta=5ee214e8b4c27377 main=364 cb=53
+xdp_entry	eth/ipv4/udp/gtp/ipv4/tcp where gtp.exts[gtp.msg_type].ext_type == 2	-	code=2b4be2b85fe3495c meta=5ee214e8b4c27377 main=476 cb=53
+xdp_entry	eth/ipv4/udp/gtp/ipv4/tcp where gtp.opt.exists	-	code=d1787c8fb631928a meta=5ee214e8b4c27377 main=338 cb=50
+xdp_entry	eth/ipv4/udp/gtp/ipv4/tcp where gtp.opt.next_ext == 0	-	code=13e8031a2ae13523 meta=5ee214e8b4c27377 main=349 cb=50
+xdp_entry	eth/ipv4/udp/gtp[exts[0].ext_type == 0]/ipv4/tcp	-	code=3a760ddd403cf25c meta=5ee214e8b4c27377 main=352 cb=53
+xdp_entry	eth/ipv4/udp/gtp[exts[0].ext_type == 1]/ipv4/tcp	-	code=e346fe6d0c9a0c68 meta=5ee214e8b4c27377 main=352 cb=53
+xdp_entry	eth/ipv4/udp/gtp[exts[1].ext_type == 0]/ipv4/tcp	-	code=b02f653be6a10dc9 meta=5ee214e8b4c27377 main=367 cb=53
+xdp_entry	eth/ipv4/udp/gtp[exts[1].ext_type in @types]/ipv4/tcp	types:16	code=84c96f6233144682 meta=521756d46fa3ce7f main=368 cb=53
+xdp_entry	eth/ipv4/udp/gtp[teid == 1, exts[1].ext_type == 7]/ipv4/tcp[dport == 80]	-	code=c62f4c325ea32864 meta=5ee214e8b4c27377 main=383 cb=53
+xdp_entry	eth/ipv4/udp/gtp[teid == 2, exts[1].ext_type == 7]/ipv4/tcp[dport == 80]	-	code=22601db91211b956 meta=5ee214e8b4c27377 main=383 cb=53
 xdp_entry	eth/ipv4/udp/vxlan	-	code=172c0b0b87b839a1 meta=5ee214e8b4c27377 main=91 cb=0
 xdp_entry	eth/ipv4/udp/vxlan/eth/ipv4/tcp	-	code=b935861f364e4de9 meta=5ee214e8b4c27377 main=234 cb=0
 xdp_entry	eth/ipv4/udp/vxlan/eth/ipv4/tcp capture headers	-	code=b935861f364e4de9 meta=1c8e57e8d007e351 main=234 cb=0
@@ -233,7 +233,7 @@ xdp_entry	eth/ipv4@ip/tcp capture ip	-	code=53e9dd4f863f24be meta=62e5651798acd4
 xdp_entry	eth/ipv4@o+/tcp where o.ttl == 32	-	code=ef673a11acda57d4 meta=5ee214e8b4c27377 main=625 cb=0
 xdp_entry	eth/ipv4@outer/ipv4@inner/tcp where (inner.ttl == 64) and (outer.ttl == 32)	-	code=e0ca8b139b402c1d meta=5ee214e8b4c27377 main=217 cb=0
 xdp_entry	eth/ipv4@outer/udp/geneve/eth/ipv4@inner/tcp where inner.dst == 10.0.0.1	-	code=ebdf9ee71deb8289 meta=5ee214e8b4c27377 main=291 cb=0
-xdp_entry	eth/ipv4@outer/udp/gtp/ipv4@inner/tcp where inner.dst == 10.0.0.1	-	code=cb118edc29b7fa9c meta=5ee214e8b4c27377 main=339 cb=48
+xdp_entry	eth/ipv4@outer/udp/gtp/ipv4@inner/tcp where inner.dst == 10.0.0.1	-	code=77fd3e34a5abbfe2 meta=5ee214e8b4c27377 main=339 cb=50
 xdp_entry	eth/ipv4@outer[ttl > 1, dst == 10.0.0.2]/tcp	-	code=d144376a0f8c45b9 meta=5ee214e8b4c27377 main=146 cb=0
 xdp_entry	eth/ipv4@o{1,2}/tcp where o.ttl == 32	-	code=0573f3c34850ca44 meta=5ee214e8b4c27377 main=211 cb=0
 xdp_entry	eth/ipv4@o{1,2}/tcp where o.ttl == 64	-	code=0e72429238d5bac5 meta=5ee214e8b4c27377 main=211 cb=0
@@ -243,11 +243,11 @@ xdp_entry	eth/ipv4[dst in [10.0.0.1, 10.0.0.2]]/tcp	-	code=4f1608a2dfe71ccc meta
 xdp_entry	eth/ipv4[dst in [10.0.0.3, 10.0.0.4]]/tcp	-	code=bf9a4404fa2ebf84 meta=5ee214e8b4c27377 main=140 cb=0
 xdp_entry	eth/ipv4[dst[12:28] == 48336]	-	code=7a73e4f1cff6370d meta=5ee214e8b4c27377 main=76 cb=0
 xdp_entry	eth/ipv4[ihl in @ihls]/tcp	ihls:8	code=13d8f4f19a704e1f meta=09445d450182be10 main=137 cb=0
-xdp_entry	eth/ipv4[options.RR.addrs[1].addr == 10.0.0.10]/tcp	-	code=a03caa2742d548e6 meta=5ee214e8b4c27377 main=195 cb=102
-xdp_entry	eth/ipv4[options.valid]+/tcp	-	code=9c349bcab153f4f8 meta=5ee214e8b4c27377 main=934 cb=736
-xdp_entry	eth/ipv4[options.valid]/tcp	-	code=20968ddfc378d6c7 meta=5ee214e8b4c27377 main=170 cb=92
-xdp_entry	eth/ipv4[options.valid]{1,2}/tcp	-	code=e2a39bc81e168f96 meta=5ee214e8b4c27377 main=280 cb=184
-xdp_entry	eth/ipv4[rr.pointer == 4]{1,2}/tcp	-	code=f71db33162160374 meta=5ee214e8b4c27377 main=298 cb=204
+xdp_entry	eth/ipv4[options.RR.addrs[1].addr == 10.0.0.10]/tcp	-	code=b724d4677a7c649c meta=5ee214e8b4c27377 main=195 cb=105
+xdp_entry	eth/ipv4[options.valid]+/tcp	-	code=2ab2177be277b889 meta=5ee214e8b4c27377 main=934 cb=760
+xdp_entry	eth/ipv4[options.valid]/tcp	-	code=d0dfbaf95b0283f0 meta=5ee214e8b4c27377 main=170 cb=95
+xdp_entry	eth/ipv4[options.valid]{1,2}/tcp	-	code=55b6da8c98990389 meta=5ee214e8b4c27377 main=280 cb=190
+xdp_entry	eth/ipv4[rr.pointer == 4]{1,2}/tcp	-	code=04bfdf15e3e07470 meta=5ee214e8b4c27377 main=298 cb=210
 xdp_entry	eth/ipv4[src != 10.0.0.0/8]/tcp	-	code=ea0503cee15102b1 meta=5ee214e8b4c27377 main=139 cb=0
 xdp_entry	eth/ipv4[src < 10.0.0.1]/tcp	-	code=0b38b17f7c7d35d0 meta=5ee214e8b4c27377 main=139 cb=0
 xdp_entry	eth/ipv4[src < 10.0.0.2]/tcp	-	code=32f167901a588e29 meta=5ee214e8b4c27377 main=139 cb=0
@@ -276,240 +276,240 @@ xdp_entry	eth/ipv4{1,5}/tcp	-	code=d40023eab294c0d0 meta=5ee214e8b4c27377 main=4
 xdp_entry	eth/ipv4{2,2}/tcp	-	code=141da05628ee8559 meta=5ee214e8b4c27377 main=197 cb=0
 xdp_entry	eth/ipv4{2,}/tcp	-	code=dfa9b8c4e7ce64f1 meta=5ee214e8b4c27377 main=606 cb=0
 xdp_entry	eth/ipv4{8,}/tcp	-	code=7bd9f1a287b75a12 meta=5ee214e8b4c27377 main=605 cb=0
-xdp_entry	eth/ipv6 where ipv6.dst[92:124] == 10.0.0.1	-	code=0b2a887d1de801e5 meta=5ee214e8b4c27377 main=151 cb=64
-xdp_entry	eth/ipv6+/tcp	-	code=cc200469caae146e meta=5ee214e8b4c27377 main=724 cb=256
-xdp_entry	eth/ipv6/ipv6*/tcp	-	code=b2488795c38c847a meta=5ee214e8b4c27377 main=910 cb=320
-xdp_entry	eth/ipv6/srv6	-	code=c13122cae1cdf36a meta=5ee214e8b4c27377 main=198 cb=64
-xdp_entry	eth/ipv6/srv6 where any(srv6.segments.addr == fc00::1)	-	code=3b0da51302ef08b0 meta=5ee214e8b4c27377 main=215 cb=113
-xdp_entry	eth/ipv6/srv6/tcp	-	code=77f8412b40113585 meta=5ee214e8b4c27377 main=267 cb=64
-xdp_entry	eth/ipv6/srv6/tcp capture headers	-	code=77f8412b40113585 meta=8f028ebd6a5a5c1f main=267 cb=64
-xdp_entry	eth/ipv6/srv6/tcp where all((srv6.segments.addr == fc00:0000:0000:0000:0000:0000:0000:0002) or true)	-	code=e534f32d81e66d60 meta=5ee214e8b4c27377 main=357 cb=64
-xdp_entry	eth/ipv6/srv6/tcp where all(srv6.segments.addr == fc00:0000:0000:0000:0000:0000:0000:0000/8)	-	code=081883d73c904d47 meta=5ee214e8b4c27377 main=293 cb=101
-xdp_entry	eth/ipv6/srv6/tcp where all(srv6.segments.addr == fc00:0000:0000:0000:0000:0000:0000:0001)	-	code=423e3a792373ee13 meta=5ee214e8b4c27377 main=293 cb=113
-xdp_entry	eth/ipv6/srv6/tcp where all(srv6.segments.addr[0:32] == 252.0.0.0)	-	code=2dbb0b543a051e07 meta=5ee214e8b4c27377 main=293 cb=99
-xdp_entry	eth/ipv6/srv6/tcp where all(srv6.segments.addr[64:96] == 0.0.0.0)	-	code=b35668ffa9367c68 meta=5ee214e8b4c27377 main=293 cb=99
-xdp_entry	eth/ipv6/srv6/tcp where all(srv6.segments.addr[96:128] == 0.0.0.32)	-	code=49f299688f15f9bb meta=5ee214e8b4c27377 main=293 cb=99
-xdp_entry	eth/ipv6/srv6/tcp where any(srv6.segments.addr == fc00:0000:0000:0000:0000:0000:0000:0001)	-	code=501a12089febe94f meta=5ee214e8b4c27377 main=284 cb=113
-xdp_entry	eth/ipv6/srv6/tcp where any(srv6.segments.addr == fc00:0000:0000:0000:0000:0000:0000:0002)	-	code=0a1a02d0eeb68679 meta=5ee214e8b4c27377 main=284 cb=113
-xdp_entry	eth/ipv6/srv6/tcp where any(srv6.segments.addr[76:124] == 00:00:00:00:00:02)	-	code=c65c17b3ab4e080a meta=5ee214e8b4c27377 main=454 cb=64
-xdp_entry	eth/ipv6/srv6/tcp where any(srv6.segments.addr[80:128] == 00:00:00:00:00:20)	-	code=3fa9750a8cc11b87 meta=5ee214e8b4c27377 main=284 cb=113
-xdp_entry	eth/ipv6/srv6/tcp where any(srv6.segments.addr[96:128] == 0.0.0.32)	-	code=d7b052a474c47fdb meta=5ee214e8b4c27377 main=284 cb=99
-xdp_entry	eth/ipv6/srv6/tcp where any(srv6.segments.addr[96:128] == 0.0.0.33)	-	code=7b2a3406220c3420 meta=5ee214e8b4c27377 main=284 cb=99
-xdp_entry	eth/ipv6/srv6/tcp where not (srv6.segments[1].addr[76:124] == 00:00:00:00:00:02)	-	code=5d23e10d20bd1fe5 meta=5ee214e8b4c27377 main=291 cb=64
-xdp_entry	eth/ipv6/srv6/tcp where not all(srv6.segments.addr == fc00:0000:0000:0000:0000:0000:0000:0001)	-	code=ff730014e2d3193f meta=5ee214e8b4c27377 main=295 cb=113
-xdp_entry	eth/ipv6/srv6/tcp where srv6.last_entry == 8	-	code=a930c62a3ec54f2e meta=5ee214e8b4c27377 main=279 cb=64
-xdp_entry	eth/ipv6/srv6/tcp where srv6.segments[0].addr[0:64] == 18158513697557839872	-	code=1140ab6a05196936 meta=5ee214e8b4c27377 main=289 cb=64
-xdp_entry	eth/ipv6/srv6/tcp where srv6.segments[0].addr[96:128] == 0.0.0.2	-	code=6112c3f263c9dece meta=5ee214e8b4c27377 main=286 cb=64
-xdp_entry	eth/ipv6/srv6/tcp where srv6.segments[1].addr == fc00:0000:0000:0000:0000:0000:0000:0002	-	code=d63d04a33f3b28cc meta=5ee214e8b4c27377 main=295 cb=64
-xdp_entry	eth/ipv6/srv6/tcp where srv6.segments[1].addr == int<128>(334965454937798799971759379190646833154)	-	code=ae9df9f015620877 meta=5ee214e8b4c27377 main=306 cb=64
-xdp_entry	eth/ipv6/srv6/tcp where srv6.segments[1].addr[124:128] == 2	-	code=1ef267b523721e4a meta=5ee214e8b4c27377 main=289 cb=64
-xdp_entry	eth/ipv6/srv6/tcp where srv6.segments[1].addr[4:68] == 13835058055282163712	-	code=5fefd28a86aca423 meta=5ee214e8b4c27377 main=299 cb=64
-xdp_entry	eth/ipv6/srv6/tcp where srv6.segments[1].addr[64:128] != 2	-	code=14aeb00606db1477 meta=5ee214e8b4c27377 main=289 cb=64
-xdp_entry	eth/ipv6/srv6/tcp where srv6.segments[1].addr[64:128] == (srv6.segments[0].addr[64:128] + 1)	-	code=bb40a9202e074a86 meta=5ee214e8b4c27377 main=311 cb=64
-xdp_entry	eth/ipv6/srv6/tcp where srv6.segments[1].addr[64:128] == 2	-	code=ecc14cd0fa62615b meta=5ee214e8b4c27377 main=289 cb=64
-xdp_entry	eth/ipv6/srv6/tcp where srv6.segments[1].addr[76:124] != 00:00:00:00:00:02	-	code=92a853d04a99206b meta=5ee214e8b4c27377 main=289 cb=64
-xdp_entry	eth/ipv6/srv6/tcp where srv6.segments[1].addr[76:124] == 00:00:00:00:00:02	-	code=d878a73267644675 meta=5ee214e8b4c27377 main=289 cb=64
-xdp_entry	eth/ipv6/srv6/tcp where srv6.segments[1].addr[96:128] != 0.0.0.2	-	code=ac0c02b370b97ac2 meta=5ee214e8b4c27377 main=286 cb=64
-xdp_entry	eth/ipv6/srv6/tcp where srv6.segments[1].addr[96:128] == 0.0.0.2	-	code=01fd8b0c6ae22d28 meta=5ee214e8b4c27377 main=286 cb=64
-xdp_entry	eth/ipv6/srv6/tcp where srv6.segments[2].addr != fc00:0000:0000:0000:0000:0000:0000:0001	-	code=30759531c9c84254 meta=5ee214e8b4c27377 main=297 cb=64
-xdp_entry	eth/ipv6/srv6/tcp where srv6.segments[7].addr == fc00:0000:0000:0000:0000:0000:0000:0001	-	code=9149db51b59a4a3a meta=5ee214e8b4c27377 main=295 cb=64
-xdp_entry	eth/ipv6/srv6/tcp where srv6.segments[srv6.last_entry].addr == fc00:0000:0000:0000:0000:0000:0000:0002	-	code=90af48ba6c2ea66c meta=5ee214e8b4c27377 main=301 cb=64
-xdp_entry	eth/ipv6/srv6/tcp where srv6.segments[srv6.last_entry].addr[60:124] == 2	-	code=d6100825f6accba7 meta=5ee214e8b4c27377 main=305 cb=64
-xdp_entry	eth/ipv6/srv6/tcp where srv6.segments[srv6.last_entry].addr[76:124] == 00:00:00:00:00:02	-	code=2a19eb30981f1dbc meta=5ee214e8b4c27377 main=301 cb=64
-xdp_entry	eth/ipv6/srv6/tcp where srv6.segments[srv6.last_entry].addr[80:128] == 00:00:00:00:00:02	-	code=557f2c0e3343fc37 meta=5ee214e8b4c27377 main=301 cb=64
-xdp_entry	eth/ipv6/srv6/tcp where srv6.segments[srv6.last_entry].addr[96:128] != 0.0.0.1	-	code=e282a82b20bccffb meta=5ee214e8b4c27377 main=300 cb=64
-xdp_entry	eth/ipv6/srv6/tcp where srv6.segments[srv6.last_entry].addr[96:128] != 0.0.0.2	-	code=f959d80431a7ee33 meta=5ee214e8b4c27377 main=300 cb=64
-xdp_entry	eth/ipv6/srv6/tcp where srv6.segments[srv6.last_entry].addr[96:128] == 0.0.0.2	-	code=5946c7917faec961 meta=5ee214e8b4c27377 main=298 cb=64
-xdp_entry	eth/ipv6/srv6/tcp where srv6.segments[srv6.segments_left].addr != fc00:0000:0000:0000:0000:0000:0000:0001	-	code=42723236545ba3eb meta=5ee214e8b4c27377 main=303 cb=64
-xdp_entry	eth/ipv6/srv6/tcp where srv6.segments[srv6.segments_left].addr == fc00:0000:0000:0000:0000:0000:0000:0002	-	code=61d2e5e77af4c3dd meta=5ee214e8b4c27377 main=301 cb=64
-xdp_entry	eth/ipv6/srv6/tcp where tcp.dport == 80	-	code=227140b5b47389a0 meta=5ee214e8b4c27377 main=280 cb=64
-xdp_entry	eth/ipv6/srv6?/ipv4?	-	code=21640cf7852d30a3 meta=5ee214e8b4c27377 main=287 cb=64
-xdp_entry	eth/ipv6/srv6?/tcp	-	code=bd1bf993e974b8bf meta=5ee214e8b4c27377 main=278 cb=64
-xdp_entry	eth/ipv6/srv6?/tcp where all((srv6.segments.addr == fc00:0000:0000:0000:0000:0000:0000:0001) or true)	-	code=f9a5a4251e70e774 meta=5ee214e8b4c27377 main=372 cb=64
-xdp_entry	eth/ipv6/srv6?/tcp where all(srv6.segments.addr != fc00:0000:0000:0000:0000:0000:0000:0001)	-	code=dd687ca8121d4268 meta=5ee214e8b4c27377 main=532 cb=64
-xdp_entry	eth/ipv6/srv6?/tcp where any(srv6.segments.addr == fc00:0000:0000:0000:0000:0000:0000:0002)	-	code=8234575fe3574cb5 meta=5ee214e8b4c27377 main=299 cb=113
-xdp_entry	eth/ipv6/srv6?/tcp where srv6.segments[srv6.segments_left].addr != fc00:0000:0000:0000:0000:0000:0000:0001	-	code=56f963fbcfa36376 meta=5ee214e8b4c27377 main=318 cb=64
-xdp_entry	eth/ipv6/srv6?/tcp where tcp.dport == 80	-	code=12a67ed2e1f5571d meta=5ee214e8b4c27377 main=291 cb=64
-xdp_entry	eth/ipv6/srv6@sr/tcp where any((sr.segments.addr == fc00:0000:0000:0000:0000:0000:0000:0001) and (srv6.segments.addr != fc00:0000:0000:0000:0000:0000:0000:0002))	-	code=ad94bf1f8e672843 meta=5ee214e8b4c27377 main=662 cb=64
-xdp_entry	eth/ipv6/srv6[segments[1].addr != fc00:0000:0000:0000:0000:0000:0000:0001]/tcp	-	code=9dc828c808b7de7b meta=5ee214e8b4c27377 main=296 cb=64
-xdp_entry	eth/ipv6/srv6[segments[1].addr < fc00:0000:0000:0000:0000:0000:0000:0002]/tcp	-	code=de9013252e1f8640 meta=5ee214e8b4c27377 main=298 cb=64
-xdp_entry	eth/ipv6/srv6[segments[1].addr < fc00:0000:0000:0000:0000:0000:0000:0003]/tcp	-	code=a478f6c4b784625d meta=5ee214e8b4c27377 main=298 cb=64
-xdp_entry	eth/ipv6/srv6[segments[1].addr == fc00:0000:0000:0000:0000:0000:0000:0002]/tcp	-	code=ff3989438fb4b766 meta=5ee214e8b4c27377 main=294 cb=64
-xdp_entry	eth/ipv6/srv6[segments[1].addr in [3..5, fc00:0000:0000:0000:0000:0000:0000:0002]]/tcp	-	code=10a5132c67fa1863 meta=5ee214e8b4c27377 main=325 cb=64
-xdp_entry	eth/ipv6/srv6[segments[1].addr in [fc00:0000:0000:0000:0000:0000:0000:0001, 3..5]]/tcp	-	code=34d901438e871d37 meta=5ee214e8b4c27377 main=325 cb=64
-xdp_entry	eth/ipv6/srv6[segments[1].addr in [fc00:0000:0000:0000:0000:0000:0000:0001, fc00:0000:0000:0000:0000:0000:0000:0000/16]]/tcp	-	code=deffa73200c1463f meta=5ee214e8b4c27377 main=307 cb=64
-xdp_entry	eth/ipv6/srv6[segments[1].addr in [fc00:0000:0000:0000:0000:0000:0000:0001, fc00:0000:0000:0000:0000:0000:0000:0002]]/tcp	-	code=36f1fe4ef53cc895 meta=5ee214e8b4c27377 main=314 cb=64
-xdp_entry	eth/ipv6/srv6[segments[1].addr[0:128] == fc00:0000:0000:0000:0000:0000:0000:0002]/tcp	-	code=ff3989438fb4b766 meta=5ee214e8b4c27377 main=294 cb=64
-xdp_entry	eth/ipv6/srv6[segments[1].addr[0:64] == 18158513697557839872]/tcp	-	code=32248efa3e8f20e2 meta=5ee214e8b4c27377 main=286 cb=64
-xdp_entry	eth/ipv6/srv6[segments[1].addr[60:124] == 2]/tcp	-	code=a973e614577c9755 meta=5ee214e8b4c27377 main=295 cb=64
-xdp_entry	eth/ipv6/srv6[segments[1].addr[64:128] != 2]/tcp	-	code=534d90e70c6e110b meta=5ee214e8b4c27377 main=285 cb=64
-xdp_entry	eth/ipv6/srv6[segments[1].addr[64:128] == 2]/tcp	-	code=7d32c756652d6c34 meta=5ee214e8b4c27377 main=285 cb=64
-xdp_entry	eth/ipv6/srv6[segments[1].addr[76:124] != 00:00:00:00:00:00]/tcp	-	code=c6fd329b931e41f3 meta=5ee214e8b4c27377 main=288 cb=64
-xdp_entry	eth/ipv6/srv6[segments[1].addr[76:124] == 00:00:00:00:00:00]/tcp	-	code=026e7b69e2af9543 meta=5ee214e8b4c27377 main=288 cb=64
-xdp_entry	eth/ipv6/srv6[segments[1].addr[96:128] == 0.0.0.2]/tcp	-	code=893f05f8a9094c05 meta=5ee214e8b4c27377 main=285 cb=64
-xdp_entry	eth/ipv6/srv6[segments[1].addr[96:128] in [0.0.0.1, 0.0.0.2]]/tcp	-	code=349b95c939349ee8 meta=5ee214e8b4c27377 main=288 cb=64
-xdp_entry	eth/ipv6/tcp	-	code=cec79221065b2b62 meta=5ee214e8b4c27377 main=204 cb=64
-xdp_entry	eth/ipv6/tcp capture headers	-	code=cec79221065b2b62 meta=5cd6e72f7ed73ca2 main=204 cb=64
-xdp_entry	eth/ipv6/tcp capture headers+8	-	code=cec79221065b2b62 meta=8f028ebd6a5a5c1f main=204 cb=64
-xdp_entry	eth/ipv6/tcp where ((((ipv6.src + ipv6.dst) - ((ipv6.src + ipv6.dst) - ((ipv6.src + ipv6.dst) - ((ipv6.src + ipv6.dst) - (ipv6.src + ipv6.dst))))) == 0) == (tcp.dport == 80)) == (tcp.dport == 80)	-	code=183a603efeb172b1 meta=5ee214e8b4c27377 main=546 cb=64
-xdp_entry	eth/ipv6/tcp where ((((ipv6.src + ipv6.dst) - ((ipv6.src + ipv6.dst) - ((ipv6.src + ipv6.dst) - ((ipv6.src + ipv6.dst) - (ipv6.src + ipv6.dst))))) == 3) == (tcp.dport == 80)) == (tcp.dport == 80)	-	code=c5f62abb78d7bd43 meta=5ee214e8b4c27377 main=546 cb=64
-xdp_entry	eth/ipv6/tcp where (((ipv6.src + ipv6.dst) - (ipv6.dst + 1)) + ((ipv6.src + ipv6.dst) + (ipv6.dst - ipv6.src))) == 4	-	code=0276e9fad86e64a6 meta=5ee214e8b4c27377 main=409 cb=64
-xdp_entry	eth/ipv6/tcp where ((ipv6.src + 1) - (ipv6.dst + ipv6.dst)) == -2	-	code=fff28984d9b65b14 meta=5ee214e8b4c27377 main=294 cb=64
-xdp_entry	eth/ipv6/tcp where ((ipv6.src + 10) - (ipv6.dst + ipv6.src)) == 4	-	code=6e4eff1ffb3a9b95 meta=5ee214e8b4c27377 main=294 cb=64
-xdp_entry	eth/ipv6/tcp where ((ipv6.src + ipv6.dst) - (ipv6.dst + ipv6.src)) == 0	-	code=46cdf658ff5dfab3 meta=5ee214e8b4c27377 main=316 cb=64
-xdp_entry	eth/ipv6/tcp where ((ipv6.src + ipv6.dst) - (ipv6.dst + ipv6.src)) == 1	-	code=fce15447e7818e70 meta=5ee214e8b4c27377 main=316 cb=64
-xdp_entry	eth/ipv6/tcp where ((ipv6.src + ipv6.dst) - (ipv6.src + (tcp.dport * 2))) == -158	-	code=439b6cb443ebc892 meta=5ee214e8b4c27377 main=319 cb=64
-xdp_entry	eth/ipv6/tcp where (1 - (ipv6.src + ipv6.dst)) == -2	-	code=86285b3ad77da0ac meta=5ee214e8b4c27377 main=279 cb=64
-xdp_entry	eth/ipv6/tcp where (int<128>(18446744073709551619) - ipv6.src) == ipv6.dst	-	code=df0ed1a89711a74f meta=5ee214e8b4c27377 main=256 cb=64
-xdp_entry	eth/ipv6/tcp where (ipv6.dst != 0000:0000:0000:0000:0000:0000:0000:0000/0) or (ipv6.dst[96:128] == 10.0.0.1)	-	code=4d15cd5345eb360c meta=5ee214e8b4c27377 main=214 cb=64
-xdp_entry	eth/ipv6/tcp where (ipv6.dst - 1) == ipv6.src	-	code=80090fd8a8403a6f meta=5ee214e8b4c27377 main=242 cb=64
-xdp_entry	eth/ipv6/tcp where (ipv6.dst[60:124] + 1) == 10485761	-	code=352cda690ccc3eed meta=5ee214e8b4c27377 main=225 cb=64
-xdp_entry	eth/ipv6/tcp where (ipv6.src + (ipv6.dst + (ipv6.src + tcp.dport))) == 84	-	code=0dcd00c2fc64a4fb meta=5ee214e8b4c27377 main=309 cb=64
-xdp_entry	eth/ipv6/tcp where (ipv6.src + (ipv6.dst + 1)) == 4	-	code=e9f91cfd33224945 meta=5ee214e8b4c27377 main=259 cb=64
-xdp_entry	eth/ipv6/tcp where (ipv6.src + (ipv6.dst + int<128>(18446744073709551616))) == int<128>(18446744073709551619)	-	code=9b85137f9f07b830 meta=5ee214e8b4c27377 main=272 cb=64
-xdp_entry	eth/ipv6/tcp where (ipv6.src + (tcp.dport * 2)) == ipv6.dst	-	code=811e3bdb9a574006 meta=5ee214e8b4c27377 main=269 cb=64
-xdp_entry	eth/ipv6/tcp where (ipv6.src + -1) == ipv6.dst	-	code=4dd76de77b89dceb meta=5ee214e8b4c27377 main=242 cb=64
-xdp_entry	eth/ipv6/tcp where (ipv6.src + 1) == ipv6.dst	-	code=7f7aeecc92a4b9e5 meta=5ee214e8b4c27377 main=242 cb=64
-xdp_entry	eth/ipv6/tcp where (ipv6.src + 4294967296) == ipv6.dst	-	code=5ca439af9a25681d meta=5ee214e8b4c27377 main=243 cb=64
-xdp_entry	eth/ipv6/tcp where (ipv6.src + int<128>(1)) == ipv6.dst	-	code=7f7aeecc92a4b9e5 meta=5ee214e8b4c27377 main=242 cb=64
-xdp_entry	eth/ipv6/tcp where (ipv6.src + int<128>(18446744073709551616)) == ipv6.dst	-	code=8034f6c7bda9dda3 meta=5ee214e8b4c27377 main=255 cb=64
-xdp_entry	eth/ipv6/tcp where (ipv6.src + ipv6.dst) == 3	-	code=5e262dfbb0c3c1f6 meta=5ee214e8b4c27377 main=255 cb=64
-xdp_entry	eth/ipv6/tcp where (ipv6.src + ipv6.dst) == 4294967296	-	code=ef20793cc78df6d6 meta=5ee214e8b4c27377 main=255 cb=64
-xdp_entry	eth/ipv6/tcp where (ipv6.src + ipv6.dst) > ipv6.src	-	code=e3ff25f713116e6f meta=5ee214e8b4c27377 main=268 cb=64
-xdp_entry	eth/ipv6/tcp where (ipv6.src + ipv6.exts[0].next_header) == (ipv6.dst + 5)	-	code=609ee5698432c95c meta=5ee214e8b4c27377 main=270 cb=67
-xdp_entry	eth/ipv6/tcp where (ipv6.src + tcp.dport) == 80	-	code=c48762033abab0d8 meta=5ee214e8b4c27377 main=253 cb=64
-xdp_entry	eth/ipv6/tcp where (ipv6.src + tcp.dport) == ipv6.dst	-	code=fc1d4e632a06eb2f meta=5ee214e8b4c27377 main=264 cb=64
-xdp_entry	eth/ipv6/tcp where (ipv6.src - (ipv6.dst + int<128>(18446744073709551616))) == int<128>(340282366920938463444927863358058659843)	-	code=d71d9dcf95b35e8b meta=5ee214e8b4c27377 main=279 cb=64
-xdp_entry	eth/ipv6/tcp where (ipv6.src - (ipv6.dst - ipv6.src)) == 7	-	code=cfa6b9eaa71f7dc2 meta=5ee214e8b4c27377 main=291 cb=64
-xdp_entry	eth/ipv6/tcp where (ipv6.src - (tcp.dport - (ipv6.src + ipv6.dst))) == 76	-	code=793e4455d7ca564e meta=5ee214e8b4c27377 main=323 cb=64
-xdp_entry	eth/ipv6/tcp where (ipv6.src - -1) == ipv6.dst	-	code=7f7aeecc92a4b9e5 meta=5ee214e8b4c27377 main=242 cb=64
-xdp_entry	eth/ipv6/tcp where (ipv6.src - 1) == ipv6.dst	-	code=4dd76de77b89dceb meta=5ee214e8b4c27377 main=242 cb=64
-xdp_entry	eth/ipv6/tcp where (ipv6.src - 4294967296) == ipv6.dst	-	code=3a3ffaa7faa331e4 meta=5ee214e8b4c27377 main=243 cb=64
-xdp_entry	eth/ipv6/tcp where (ipv6.src - int<128>(18446744073709551616)) == int<128>(340282366920938463444927863358058659841)	-	code=e9056cce6468b9e9 meta=5ee214e8b4c27377 main=245 cb=64
-xdp_entry	eth/ipv6/tcp where (ipv6.src - ipv6.dst) == 18446744073709551615	-	code=316d0d35ef6ed2b7 meta=5ee214e8b4c27377 main=256 cb=64
-xdp_entry	eth/ipv6/tcp where (ipv6.src - ipv6.dst) == 2	-	code=5e4b185bf7bd5f7b meta=5ee214e8b4c27377 main=256 cb=64
-xdp_entry	eth/ipv6/tcp where (ipv6.src - tcp.dport) == ipv6.dst	-	code=c03b159ce158ba04 meta=5ee214e8b4c27377 main=265 cb=64
-xdp_entry	eth/ipv6/tcp where (ipv6.src == (tcp.dport + (tcp.dport + (tcp.dport + (tcp.dport + (tcp.dport + (tcp.dport + (tcp.dport + (tcp.dport + (tcp.dport + (tcp.dport + tcp.dport))))))))))) == (tcp.dport == 80)	-	code=74a7a5e6ca0c0c97 meta=5ee214e8b4c27377 main=379 cb=64
-xdp_entry	eth/ipv6/tcp where (ipv6.src[64:128] + ipv6.dst) == ipv6.src	-	code=157454e2301221f8 meta=5ee214e8b4c27377 main=260 cb=64
-xdp_entry	eth/ipv6/tcp where (tcp.dport + int<128>(70000)) == int<128>(70080)	-	code=453d06b2d5e56555 meta=5ee214e8b4c27377 main=229 cb=64
-xdp_entry	eth/ipv6/tcp where (tcp.dport - (ipv6.src + ipv6.dst)) == 77	-	code=980563fc30d1891a meta=5ee214e8b4c27377 main=288 cb=64
-xdp_entry	eth/ipv6/tcp where (tcp.dport - int<128>(100)) == -20	-	code=115a1a78dda7b7bc meta=5ee214e8b4c27377 main=229 cb=64
-xdp_entry	eth/ipv6/tcp where (tcp.dport - int<128>(100)) == 18446744073709551596	-	code=b3f396372e293a1e meta=5ee214e8b4c27377 main=229 cb=64
-xdp_entry	eth/ipv6/tcp where (tcp.dport == 80) == (((ipv6.src + ipv6.dst) - ((ipv6.src + ipv6.dst) - ((ipv6.src + ipv6.dst) - ((ipv6.src + ipv6.dst) - ((ipv6.src + ipv6.dst) - (ipv6.src + ipv6.dst)))))) == 0)	-	code=24e1b10f4b258f58 meta=5ee214e8b4c27377 main=584 cb=64
-xdp_entry	eth/ipv6/tcp where (tcp.dport == 80) == ((tcp.dport == 80) == ((tcp.dport == 80) == (((ipv6.src + ipv6.dst) - ((ipv6.src + ipv6.dst) - ((ipv6.src + ipv6.dst) - ((ipv6.src + ipv6.dst) - (ipv6.src + ipv6.dst))))) == 3)))	-	code=38f1aae6b61d1e31 meta=5ee214e8b4c27377 main=569 cb=64
-xdp_entry	eth/ipv6/tcp where (tcp.dport == 80) == (ipv6.src == (tcp.dport + (tcp.dport + (tcp.dport + (tcp.dport + (tcp.dport + (tcp.dport + (tcp.dport + (tcp.dport + (tcp.dport + (tcp.dport + tcp.dport)))))))))))	-	code=62464073a2fad6cb meta=5ee214e8b4c27377 main=379 cb=64
-xdp_entry	eth/ipv6/tcp where (tcp.dport == 81) == (((ipv6.src + ipv6.dst) - ((ipv6.src + ipv6.dst) - ((ipv6.src + ipv6.dst) - ((ipv6.src + ipv6.dst) - ((ipv6.src + ipv6.dst) - (ipv6.src + ipv6.dst)))))) == 0)	-	code=25971570c59e6ce9 meta=5ee214e8b4c27377 main=584 cb=64
-xdp_entry	eth/ipv6/tcp where (tcp.dport == 81) == (((ipv6.src + ipv6.dst) - ((ipv6.src + ipv6.dst) - ((ipv6.src + ipv6.dst) - ((ipv6.src + ipv6.dst) - ((ipv6.src + ipv6.dst) - (ipv6.src + ipv6.dst)))))) == 3)	-	code=4e25321a68888819 meta=5ee214e8b4c27377 main=584 cb=64
-xdp_entry	eth/ipv6/tcp where (tcp.dport == 81) == ((tcp.dport == 81) == ((tcp.dport == 81) == (((ipv6.src + ipv6.dst) - ((ipv6.src + ipv6.dst) - ((ipv6.src + ipv6.dst) - ((ipv6.src + ipv6.dst) - (ipv6.src + ipv6.dst))))) == 0)))	-	code=1264b8f69a728b5d meta=5ee214e8b4c27377 main=569 cb=64
-xdp_entry	eth/ipv6/tcp where (tcp.dport == 81) == ((tcp.dport == 81) == ((tcp.dport == 81) == (((ipv6.src + ipv6.dst) - ((ipv6.src + ipv6.dst) - ((ipv6.src + ipv6.dst) - ((ipv6.src + ipv6.dst) - (ipv6.src + ipv6.dst))))) == 3)))	-	code=c1088d144afa1318 meta=5ee214e8b4c27377 main=569 cb=64
-xdp_entry	eth/ipv6/tcp where (tcp.dport == 81) == (ipv6.src == (tcp.dport + (tcp.dport + (tcp.dport + (tcp.dport + (tcp.dport + (tcp.dport + (tcp.dport + (tcp.dport + (tcp.dport + (tcp.dport + tcp.dport)))))))))))	-	code=d52344c13b3ebf32 meta=5ee214e8b4c27377 main=379 cb=64
-xdp_entry	eth/ipv6/tcp where all(ipv6.exts.next_header != 1)	-	code=5ebd132018d03162 meta=5ee214e8b4c27377 main=390 cb=67
-xdp_entry	eth/ipv6/tcp where any(ipv6.exts.next_header == 6)	-	code=556d802463d9d1c4 meta=5ee214e8b4c27377 main=397 cb=67
-xdp_entry	eth/ipv6/tcp where any(ipv6.exts.next_header == 60)	-	code=5741c874bcb2361d meta=5ee214e8b4c27377 main=397 cb=67
-xdp_entry	eth/ipv6/tcp where int<128>(170141183460469231731687303715884105728) == ipv6.src	-	code=d5b7883bd9eb040f meta=5ee214e8b4c27377 main=227 cb=64
-xdp_entry	eth/ipv6/tcp where ipv6.dst == fc00:0000:0000:0000:0000:0000:0000:0002	-	code=26164cf017dd9798 meta=5ee214e8b4c27377 main=216 cb=64
-xdp_entry	eth/ipv6/tcp where ipv6.dst[0:128] == fc00:0000:0000:0000:0000:0000:0000:0000/16	-	code=078ae872936363bf meta=5ee214e8b4c27377 main=212 cb=64
-xdp_entry	eth/ipv6/tcp where ipv6.dst[0:128] == fc00:0000:0000:0000:0000:0000:0a00:0001	-	code=b0232fb07eb6b3de meta=5ee214e8b4c27377 main=216 cb=64
-xdp_entry	eth/ipv6/tcp where ipv6.dst[4:68] == 13835058055282163712	-	code=15a66b8a3afced80 meta=5ee214e8b4c27377 main=220 cb=64
-xdp_entry	eth/ipv6/tcp where ipv6.dst[60:124] == 10485760	-	code=734338ed82e112ed meta=5ee214e8b4c27377 main=220 cb=64
-xdp_entry	eth/ipv6/tcp where ipv6.dst[80:128] == 00:00:0a:00:00:01	-	code=0d263c7eb0d38b40 meta=5ee214e8b4c27377 main=216 cb=64
-xdp_entry	eth/ipv6/tcp where ipv6.dst[92:124] != 0.0.0.0/0	-	code=b8fb04d123c643a3 meta=5ee214e8b4c27377 main=214 cb=64
-xdp_entry	eth/ipv6/tcp where ipv6.dst[92:124] != 10.0.0.0/8	-	code=c10906d4be5bd620 meta=5ee214e8b4c27377 main=214 cb=64
-xdp_entry	eth/ipv6/tcp where ipv6.dst[92:124] != 10.0.0.1	-	code=a3a1abb08f8af718 meta=5ee214e8b4c27377 main=213 cb=64
-xdp_entry	eth/ipv6/tcp where ipv6.dst[92:124] == 0.0.0.0/0	-	code=eb3e355b9b08400f meta=5ee214e8b4c27377 main=212 cb=64
-xdp_entry	eth/ipv6/tcp where ipv6.dst[92:124] == 10.0.0.0/8	-	code=cffa05b8da1a1bcd meta=5ee214e8b4c27377 main=214 cb=64
-xdp_entry	eth/ipv6/tcp where ipv6.dst[92:124] == 10.0.0.1	-	code=5055af8939d40d09 meta=5ee214e8b4c27377 main=213 cb=64
-xdp_entry	eth/ipv6/tcp where ipv6.dst[96:128] != 10.0.0.1	-	code=6ae206e97fe578e8 meta=5ee214e8b4c27377 main=210 cb=64
-xdp_entry	eth/ipv6/tcp where ipv6.dst[96:128] != 10.0.0.2	-	code=9aea83016a101d81 meta=5ee214e8b4c27377 main=210 cb=64
-xdp_entry	eth/ipv6/tcp where ipv6.dst[96:128] == 10.0.0.0/8	-	code=ea246d8398024703 meta=5ee214e8b4c27377 main=211 cb=64
-xdp_entry	eth/ipv6/tcp where ipv6.dst[96:128] == 10.0.0.1	-	code=91f68aae14f2be84 meta=5ee214e8b4c27377 main=210 cb=64
-xdp_entry	eth/ipv6/tcp where ipv6.dst[96:128] == 10.0.0.2	-	code=da4d1c323e5c314c meta=5ee214e8b4c27377 main=210 cb=64
-xdp_entry	eth/ipv6/tcp where ipv6.exts[0].next_header == 60	-	code=88735577d18eaea2 meta=5ee214e8b4c27377 main=219 cb=67
-xdp_entry	eth/ipv6/tcp where ipv6.exts[1].next_header == 6	-	code=78ef929792156d8e meta=5ee214e8b4c27377 main=234 cb=67
-xdp_entry	eth/ipv6/tcp where ipv6.exts[1].next_header[4:8] == 6	-	code=f7ea45ec7efe1990 meta=5ee214e8b4c27377 main=235 cb=67
-xdp_entry	eth/ipv6/tcp where ipv6.exts[ipv6.hop_limit].next_header == 6	-	code=0e5a115c87ddbc20 meta=5ee214e8b4c27377 main=282 cb=67
-xdp_entry	eth/ipv6/tcp where ipv6.exts[ipv6.hop_limit].next_header == 60	-	code=08b501411d76d58c meta=5ee214e8b4c27377 main=282 cb=67
-xdp_entry	eth/ipv6/tcp where ipv6.next_header == 6	-	code=f168aeb75a618402 meta=5ee214e8b4c27377 main=209 cb=64
-xdp_entry	eth/ipv6/tcp where ipv6.src < ipv6.dst	-	code=dbd07c3733c759af meta=5ee214e8b4c27377 main=240 cb=64
-xdp_entry	eth/ipv6/tcp where ipv6.src == (2 * 3)	-	code=f17be85d7bd7cd81 meta=5ee214e8b4c27377 main=233 cb=64
-xdp_entry	eth/ipv6/tcp where ipv6.src == (tcp.dport * 2)	-	code=a05505f28384c9ec meta=5ee214e8b4c27377 main=241 cb=64
-xdp_entry	eth/ipv6/tcp where ipv6.src == (tcp.dport + -1)	-	code=6610b93afa52241e meta=5ee214e8b4c27377 main=241 cb=64
-xdp_entry	eth/ipv6/tcp where ipv6.src == (tcp.dport - 100)	-	code=2e946a0c4f82f48f meta=5ee214e8b4c27377 main=241 cb=64
-xdp_entry	eth/ipv6/tcp where ipv6.src == -1	-	code=ee0350e8a4280a98 meta=5ee214e8b4c27377 main=227 cb=64
-xdp_entry	eth/ipv6/tcp where ipv6.src == fc00:0000:0000:0000:0000:0000:0000:0000/8	-	code=43e028caca7cf9a2 meta=5ee214e8b4c27377 main=212 cb=64
-xdp_entry	eth/ipv6/tcp where ipv6.src == int<128>(170141183460469231731687303715884105733)	-	code=f154ae54b4bf8868 meta=5ee214e8b4c27377 main=227 cb=64
-xdp_entry	eth/ipv6/tcp where ipv6.src >= ipv6.dst	-	code=765e644b09e744af meta=5ee214e8b4c27377 main=240 cb=64
-xdp_entry	eth/ipv6/udp/vxlan/eth/(ipv4|ipv6)	-	code=5fcab5a8ef0a189c meta=5ee214e8b4c27377 main=422 cb=128
-xdp_entry	eth/ipv6[dst != 0000:0000:0000:0000:0000:0000:0000:0000/0]/tcp	-	code=5d583366e57d536f meta=5ee214e8b4c27377 main=214 cb=64
-xdp_entry	eth/ipv6[dst > fc00:0000:0000:0000:0000:0000:0000:0001]/tcp	-	code=9d0c8a61d79ce34f meta=5ee214e8b4c27377 main=234 cb=64
-xdp_entry	eth/ipv6[dst >= fc00:0000:0000:0000:0000:0000:0000:0000]/tcp	-	code=02e1a2633e3cc03d meta=5ee214e8b4c27377 main=234 cb=64
-xdp_entry	eth/ipv6[dst in @sids]/tcp	sids:128	code=757cd4cd215faf55 meta=4310679ce1309921 main=228 cb=64
-xdp_entry	eth/ipv6[dst[4:68] == 13835058055282163712]/tcp	-	code=10a912433de8c613 meta=5ee214e8b4c27377 main=232 cb=64
-xdp_entry	eth/ipv6[dst[60:124] < 10485760]/tcp	-	code=4664073ea362f683 meta=5ee214e8b4c27377 main=231 cb=64
-xdp_entry	eth/ipv6[dst[60:124] == 10485760]	-	code=e7890ab84e6b30fd meta=5ee214e8b4c27377 main=169 cb=64
-xdp_entry	eth/ipv6[dst[60:124] == 10485760]/tcp	-	code=23af5c91e605cff3 meta=5ee214e8b4c27377 main=231 cb=64
-xdp_entry	eth/ipv6[dst[60:124] == 10485761]/tcp	-	code=860edae1e1ebccb7 meta=5ee214e8b4c27377 main=231 cb=64
-xdp_entry	eth/ipv6[dst[60:124] == 1193046]/tcp	-	code=f49cab8c826e2879 meta=5ee214e8b4c27377 main=231 cb=64
-xdp_entry	eth/ipv6[dst[60:124] > 10485759]/tcp	-	code=a10d73bc65a07c2b meta=5ee214e8b4c27377 main=231 cb=64
-xdp_entry	eth/ipv6[dst[60:124] in @d]/tcp	d:64	code=24eb1b111442202d meta=f764a8a4aa8ef9db main=231 cb=64
-xdp_entry	eth/ipv6[dst[60:124] in [1, 10485760]]/tcp	-	code=52562b341d746d87 meta=5ee214e8b4c27377 main=234 cb=64
-xdp_entry	eth/ipv6[dst[60:124] in [1, 10485761..10485776]]/tcp	-	code=385eb5524aaf8912 meta=5ee214e8b4c27377 main=235 cb=64
-xdp_entry	eth/ipv6[dst[60:124] in [10485760..10485776]]/tcp	-	code=17b64be5b370a3b1 meta=5ee214e8b4c27377 main=234 cb=64
-xdp_entry	eth/ipv6[dst[61:124] == 10485760]/tcp	-	code=29b718049054216d meta=5ee214e8b4c27377 main=232 cb=64
-xdp_entry	eth/ipv6[dst[76:124] in [11:22:33:44:55:66, 00:00:00:a0:00:00]]/tcp	-	code=ecb80168e77e4787 meta=5ee214e8b4c27377 main=228 cb=64
-xdp_entry	eth/ipv6[dst[76:124] in [11:22:33:44:55:66, 10485760]]/tcp	-	code=ecb80168e77e4787 meta=5ee214e8b4c27377 main=228 cb=64
-xdp_entry	eth/ipv6[dst[80:128] in [00:00:0a:00:00:01]]/tcp	-	code=910449133d971ccf meta=5ee214e8b4c27377 main=230 cb=64
-xdp_entry	eth/ipv6[dst[80:128] in [5, 167772160..167772415]]/tcp	-	code=8f327e64a7d9e861 meta=5ee214e8b4c27377 main=227 cb=64
-xdp_entry	eth/ipv6[dst[80:128] in [aa:bb:cc:dd:ee:ff, 167772160..167772415]]/tcp	-	code=25f312fad3ec7b07 meta=5ee214e8b4c27377 main=251 cb=64
-xdp_entry	eth/ipv6[dst[80:128] in [aa:bb:cc:dd:ee:ff, 167772161]]/tcp	-	code=51f93a46469ffa19 meta=5ee214e8b4c27377 main=250 cb=64
-xdp_entry	eth/ipv6[dst[80:128] in [aa:bb:cc:dd:ee:ff, 167772162..167772415]]/tcp	-	code=d399f2ef8af9c200 meta=5ee214e8b4c27377 main=261 cb=64
-xdp_entry	eth/ipv6[dst[92:124] != 0.0.0.0/0]/tcp	-	code=efb6db014dcb9ee6 meta=5ee214e8b4c27377 main=225 cb=64
-xdp_entry	eth/ipv6[dst[92:124] == 10.0.0.1]/tcp	-	code=135af9b863d0b2ba meta=5ee214e8b4c27377 main=224 cb=64
-xdp_entry	eth/ipv6[dst[92:124] == 167772161]	-	code=9e15301012b519fa meta=5ee214e8b4c27377 main=162 cb=64
-xdp_entry	eth/ipv6[dst[92:124] > 10.0.0.1]/tcp	-	code=91eeba3182dce12f meta=5ee214e8b4c27377 main=224 cb=64
-xdp_entry	eth/ipv6[dst[92:124] >= 10.0.0.1]/tcp	-	code=d417a79b41303223 meta=5ee214e8b4c27377 main=224 cb=64
-xdp_entry	eth/ipv6[dst[96:128] == 10.0.0.1]/tcp	-	code=8c58b39b1b04667d meta=5ee214e8b4c27377 main=221 cb=64
-xdp_entry	eth/ipv6[dst[96:128] > 10.0.0.0]/tcp	-	code=8199bf6775bfbd92 meta=5ee214e8b4c27377 main=222 cb=64
-xdp_entry	eth/ipv6[dst[96:128] in [10.0.0.2, 10.0.0.1]]/tcp	-	code=e6ab70045b1ad253 meta=5ee214e8b4c27377 main=224 cb=64
-xdp_entry	eth/ipv6[exts[1].next_header == 6]/tcp	-	code=9bffaec6b92cf7df meta=5ee214e8b4c27377 main=240 cb=67
-xdp_entry	eth/ipv6[exts[1].next_header in @nh]/tcp	nh:8	code=05da6c71680ba761 meta=84f176b17bb3a4ed main=240 cb=67
-xdp_entry	eth/ipv6[exts[1].next_header in [6, 60]]/tcp	-	code=51e013472d485241 meta=5ee214e8b4c27377 main=243 cb=67
-xdp_entry	eth/ipv6[exts[1].next_header[0:4] == 0]/tcp	-	code=b56ba0ee87800f3f meta=5ee214e8b4c27377 main=242 cb=67
-xdp_entry	eth/ipv6[next_header == 6]/tcp	-	code=52067cb839b1deda meta=5ee214e8b4c27377 main=214 cb=64
-xdp_entry	eth/ipv6[src != 5]/tcp	-	code=08241a0744c12d2f meta=5ee214e8b4c27377 main=232 cb=64
-xdp_entry	eth/ipv6[src < 6]/tcp	-	code=36ddbfb1e85f34f8 meta=5ee214e8b4c27377 main=234 cb=64
-xdp_entry	eth/ipv6[src < fc00:0000:0000:0000:0000:0000:0000:0001]/tcp	-	code=ffe585659e5e243f meta=5ee214e8b4c27377 main=234 cb=64
-xdp_entry	eth/ipv6[src < fc00:0000:0000:0000:0000:0000:0000:0002]/tcp	-	code=29fe2e4e654df8fb meta=5ee214e8b4c27377 main=234 cb=64
-xdp_entry	eth/ipv6[src <= fc00:0000:0000:0000:0000:0000:0000:0001]/tcp	-	code=d71dab432bcde3be meta=5ee214e8b4c27377 main=234 cb=64
-xdp_entry	eth/ipv6[src == 5]/tcp	-	code=a496d668704218dc meta=5ee214e8b4c27377 main=230 cb=64
-xdp_entry	eth/ipv6[src > fc00:0000:0000:0000:0000:0000:0000:0000]/tcp	-	code=d7b865462a58b5b5 meta=5ee214e8b4c27377 main=234 cb=64
-xdp_entry	eth/ipv6[src >= fc00:0000:0000:0000:0000:0000:0000:0002]/tcp	-	code=d46953f0f60fa7e5 meta=5ee214e8b4c27377 main=234 cb=64
-xdp_entry	eth/ipv6[src in [0..18446744073709551615]]/tcp	-	code=54d361ac3451c7ba meta=5ee214e8b4c27377 main=221 cb=64
-xdp_entry	eth/ipv6[src in [0..5]]/tcp	-	code=55ccf772ce8aafcb meta=5ee214e8b4c27377 main=231 cb=64
-xdp_entry	eth/ipv6[src in [0000:0000:0000:0000:0000:0000:0000:0000/0, fc00:0000:0000:0000:0000:0000:0000:0003]]/tcp	-	code=a5fe35827752c59e meta=5ee214e8b4c27377 main=212 cb=64
-xdp_entry	eth/ipv6[src in [3..5, fc00:0000:0000:0000:0000:0000:0000:0001]]/tcp	-	code=e9173236cab1e5ed meta=5ee214e8b4c27377 main=261 cb=64
-xdp_entry	eth/ipv6[src in [3..5]]/tcp	-	code=712c1a7a344490b3 meta=5ee214e8b4c27377 main=241 cb=64
-xdp_entry	eth/ipv6[src in [5..18446744073709551615]]/tcp	-	code=026443f0ea629fb8 meta=5ee214e8b4c27377 main=231 cb=64
-xdp_entry	eth/ipv6[src in [5..5]]/tcp	-	code=fbae67c4ecbfe81e meta=5ee214e8b4c27377 main=241 cb=64
-xdp_entry	eth/ipv6[src in [fc00:0000:0000:0000:0000:0000:0000:0000/100]]/tcp	-	code=c5d203faff871e63 meta=5ee214e8b4c27377 main=232 cb=64
-xdp_entry	eth/ipv6[src in [fc00:0000:0000:0000:0000:0000:0000:0001, fc00:0000:0000:0000:0000:0000:0000:0003]]/tcp	-	code=60b8d7dbf26a5d63 meta=5ee214e8b4c27377 main=250 cb=64
-xdp_entry	eth/ipv6[src in [fc00:0000:0000:0000:0000:0000:0000:0003, -1]]/tcp	-	code=22a6e59ac066a5d1 meta=5ee214e8b4c27377 main=250 cb=64
-xdp_entry	eth/ipv6[src in [fc00:0000:0000:0000:0000:0000:0000:0003, 0..5]]/tcp	-	code=fc58c11453618b3f meta=5ee214e8b4c27377 main=251 cb=64
-xdp_entry	eth/ipv6[src in [fc00:0000:0000:0000:0000:0000:0000:0003, 3..5]]/tcp	-	code=06e0e9ca97ba9758 meta=5ee214e8b4c27377 main=261 cb=64
-xdp_entry	eth/ipv6[src in [fc00:0000:0000:0000:0000:0000:0000:0003, 5]]/tcp	-	code=aec7037e20f6d9c8 meta=5ee214e8b4c27377 main=250 cb=64
-xdp_entry	eth/ipv6[src in [fc00:0000:0000:0000:0000:0000:0000:0003, fc00:0000:0000:0000:0000:0000:0000:0000/16]]/tcp	-	code=7d63cd5349ec2991 meta=5ee214e8b4c27377 main=243 cb=64
-xdp_entry	eth/ipv6[src in [fc00:0000:0000:0000:0000:0000:0000:0003, fc00:0000:0000:0000:0000:0000:0000:0001]]/tcp	-	code=5492c98b19c1e0b4 meta=5ee214e8b4c27377 main=250 cb=64
-xdp_entry	eth/ipv6[src in [fc00:0000:0000:0000:0000:0000:0000:0003, fd00:0000:0000:0000:0000:0000:0000:0000/16]]/tcp	-	code=96d74b8775c70849 meta=5ee214e8b4c27377 main=243 cb=64
-xdp_entry	eth/ipv6[src==2001:db8::/32]/tcp	-	code=4a50db4f250051a4 meta=5ee214e8b4c27377 main=223 cb=64
-xdp_entry	eth/ipv6[traffic_class in @tc]/tcp	tc:16	code=72c3ff04e6943634 meta=ec2ee0a62a37452d main=222 cb=64
-xdp_entry	eth/ipv6{1,5}/tcp	-	code=2d462090f8153871 meta=5ee214e8b4c27377 main=897 cb=320
-xdp_entry	eth/ipv6{4,}/tcp	-	code=f6530681dafb798b meta=5ee214e8b4c27377 main=723 cb=256
-xdp_entry	eth/mpls+	-	code=29d64cb39d94123f meta=5ee214e8b4c27377 main=55 cb=27
-xdp_entry	eth/mpls+/ipv4	-	code=57a4ab812250459f meta=5ee214e8b4c27377 main=113 cb=27
-xdp_entry	eth/mpls+/ipv4/tcp capture headers	-	code=c15210051075ffa9 meta=9c668db809c48a55 main=183 cb=27
+xdp_entry	eth/ipv6 where ipv6.dst[92:124] == 10.0.0.1	-	code=3a18bfd40c98363e meta=5ee214e8b4c27377 main=151 cb=66
+xdp_entry	eth/ipv6+/tcp	-	code=f8c04422550d30af meta=5ee214e8b4c27377 main=724 cb=264
+xdp_entry	eth/ipv6/ipv6*/tcp	-	code=8e96400ab09b9ab6 meta=5ee214e8b4c27377 main=910 cb=330
+xdp_entry	eth/ipv6/srv6	-	code=891999129c15b74e meta=5ee214e8b4c27377 main=198 cb=66
+xdp_entry	eth/ipv6/srv6 where any(srv6.segments.addr == fc00::1)	-	code=7b070fbc53b7969e meta=5ee214e8b4c27377 main=215 cb=115
+xdp_entry	eth/ipv6/srv6/tcp	-	code=89f8ae6fd9618527 meta=5ee214e8b4c27377 main=267 cb=66
+xdp_entry	eth/ipv6/srv6/tcp capture headers	-	code=89f8ae6fd9618527 meta=8f028ebd6a5a5c1f main=267 cb=66
+xdp_entry	eth/ipv6/srv6/tcp where all((srv6.segments.addr == fc00:0000:0000:0000:0000:0000:0000:0002) or true)	-	code=904f5177e935945c meta=5ee214e8b4c27377 main=357 cb=66
+xdp_entry	eth/ipv6/srv6/tcp where all(srv6.segments.addr == fc00:0000:0000:0000:0000:0000:0000:0000/8)	-	code=05b95c50c047a83a meta=5ee214e8b4c27377 main=293 cb=103
+xdp_entry	eth/ipv6/srv6/tcp where all(srv6.segments.addr == fc00:0000:0000:0000:0000:0000:0000:0001)	-	code=b4b4ed72108daafd meta=5ee214e8b4c27377 main=293 cb=115
+xdp_entry	eth/ipv6/srv6/tcp where all(srv6.segments.addr[0:32] == 252.0.0.0)	-	code=bcfa3f588ba8fcb9 meta=5ee214e8b4c27377 main=293 cb=101
+xdp_entry	eth/ipv6/srv6/tcp where all(srv6.segments.addr[64:96] == 0.0.0.0)	-	code=ef48aa85807ced77 meta=5ee214e8b4c27377 main=293 cb=101
+xdp_entry	eth/ipv6/srv6/tcp where all(srv6.segments.addr[96:128] == 0.0.0.32)	-	code=27f424176b915cb0 meta=5ee214e8b4c27377 main=293 cb=101
+xdp_entry	eth/ipv6/srv6/tcp where any(srv6.segments.addr == fc00:0000:0000:0000:0000:0000:0000:0001)	-	code=811b97c0351d5a62 meta=5ee214e8b4c27377 main=284 cb=115
+xdp_entry	eth/ipv6/srv6/tcp where any(srv6.segments.addr == fc00:0000:0000:0000:0000:0000:0000:0002)	-	code=218ab69bacba1732 meta=5ee214e8b4c27377 main=284 cb=115
+xdp_entry	eth/ipv6/srv6/tcp where any(srv6.segments.addr[76:124] == 00:00:00:00:00:02)	-	code=df00ac694d5f9760 meta=5ee214e8b4c27377 main=454 cb=66
+xdp_entry	eth/ipv6/srv6/tcp where any(srv6.segments.addr[80:128] == 00:00:00:00:00:20)	-	code=8f55e49eb1903e4c meta=5ee214e8b4c27377 main=284 cb=115
+xdp_entry	eth/ipv6/srv6/tcp where any(srv6.segments.addr[96:128] == 0.0.0.32)	-	code=678f8a9e528b4c16 meta=5ee214e8b4c27377 main=284 cb=101
+xdp_entry	eth/ipv6/srv6/tcp where any(srv6.segments.addr[96:128] == 0.0.0.33)	-	code=2be05cd650887bb8 meta=5ee214e8b4c27377 main=284 cb=101
+xdp_entry	eth/ipv6/srv6/tcp where not (srv6.segments[1].addr[76:124] == 00:00:00:00:00:02)	-	code=e6677d5b87d31ad6 meta=5ee214e8b4c27377 main=291 cb=66
+xdp_entry	eth/ipv6/srv6/tcp where not all(srv6.segments.addr == fc00:0000:0000:0000:0000:0000:0000:0001)	-	code=0cff384b265c21e6 meta=5ee214e8b4c27377 main=295 cb=115
+xdp_entry	eth/ipv6/srv6/tcp where srv6.last_entry == 8	-	code=ee8b2274cdbf9181 meta=5ee214e8b4c27377 main=279 cb=66
+xdp_entry	eth/ipv6/srv6/tcp where srv6.segments[0].addr[0:64] == 18158513697557839872	-	code=818adfacabc5c200 meta=5ee214e8b4c27377 main=289 cb=66
+xdp_entry	eth/ipv6/srv6/tcp where srv6.segments[0].addr[96:128] == 0.0.0.2	-	code=20ed3734dfe3e210 meta=5ee214e8b4c27377 main=286 cb=66
+xdp_entry	eth/ipv6/srv6/tcp where srv6.segments[1].addr == fc00:0000:0000:0000:0000:0000:0000:0002	-	code=8d9466191485d753 meta=5ee214e8b4c27377 main=295 cb=66
+xdp_entry	eth/ipv6/srv6/tcp where srv6.segments[1].addr == int<128>(334965454937798799971759379190646833154)	-	code=37b73c1b74727888 meta=5ee214e8b4c27377 main=306 cb=66
+xdp_entry	eth/ipv6/srv6/tcp where srv6.segments[1].addr[124:128] == 2	-	code=55881d2ca7d6f8dd meta=5ee214e8b4c27377 main=289 cb=66
+xdp_entry	eth/ipv6/srv6/tcp where srv6.segments[1].addr[4:68] == 13835058055282163712	-	code=6dfef55e0cc34e8f meta=5ee214e8b4c27377 main=299 cb=66
+xdp_entry	eth/ipv6/srv6/tcp where srv6.segments[1].addr[64:128] != 2	-	code=220d08757d283d79 meta=5ee214e8b4c27377 main=289 cb=66
+xdp_entry	eth/ipv6/srv6/tcp where srv6.segments[1].addr[64:128] == (srv6.segments[0].addr[64:128] + 1)	-	code=d61e23a4c44ee313 meta=5ee214e8b4c27377 main=311 cb=66
+xdp_entry	eth/ipv6/srv6/tcp where srv6.segments[1].addr[64:128] == 2	-	code=5c553926e3ef2623 meta=5ee214e8b4c27377 main=289 cb=66
+xdp_entry	eth/ipv6/srv6/tcp where srv6.segments[1].addr[76:124] != 00:00:00:00:00:02	-	code=26622b6c384e1343 meta=5ee214e8b4c27377 main=289 cb=66
+xdp_entry	eth/ipv6/srv6/tcp where srv6.segments[1].addr[76:124] == 00:00:00:00:00:02	-	code=ba44c3c41f992668 meta=5ee214e8b4c27377 main=289 cb=66
+xdp_entry	eth/ipv6/srv6/tcp where srv6.segments[1].addr[96:128] != 0.0.0.2	-	code=034e747d4abfa97f meta=5ee214e8b4c27377 main=286 cb=66
+xdp_entry	eth/ipv6/srv6/tcp where srv6.segments[1].addr[96:128] == 0.0.0.2	-	code=c11b1fe647fd00cb meta=5ee214e8b4c27377 main=286 cb=66
+xdp_entry	eth/ipv6/srv6/tcp where srv6.segments[2].addr != fc00:0000:0000:0000:0000:0000:0000:0001	-	code=09d1c2c1ada49635 meta=5ee214e8b4c27377 main=297 cb=66
+xdp_entry	eth/ipv6/srv6/tcp where srv6.segments[7].addr == fc00:0000:0000:0000:0000:0000:0000:0001	-	code=b843f8bffda0aa8e meta=5ee214e8b4c27377 main=295 cb=66
+xdp_entry	eth/ipv6/srv6/tcp where srv6.segments[srv6.last_entry].addr == fc00:0000:0000:0000:0000:0000:0000:0002	-	code=9a57511981e0da2b meta=5ee214e8b4c27377 main=301 cb=66
+xdp_entry	eth/ipv6/srv6/tcp where srv6.segments[srv6.last_entry].addr[60:124] == 2	-	code=83da0583f1135884 meta=5ee214e8b4c27377 main=305 cb=66
+xdp_entry	eth/ipv6/srv6/tcp where srv6.segments[srv6.last_entry].addr[76:124] == 00:00:00:00:00:02	-	code=e1afc91cf0f1a5f1 meta=5ee214e8b4c27377 main=301 cb=66
+xdp_entry	eth/ipv6/srv6/tcp where srv6.segments[srv6.last_entry].addr[80:128] == 00:00:00:00:00:02	-	code=6522270994e252ae meta=5ee214e8b4c27377 main=301 cb=66
+xdp_entry	eth/ipv6/srv6/tcp where srv6.segments[srv6.last_entry].addr[96:128] != 0.0.0.1	-	code=fe4646242ca9b33a meta=5ee214e8b4c27377 main=300 cb=66
+xdp_entry	eth/ipv6/srv6/tcp where srv6.segments[srv6.last_entry].addr[96:128] != 0.0.0.2	-	code=cf855f512faad11c meta=5ee214e8b4c27377 main=300 cb=66
+xdp_entry	eth/ipv6/srv6/tcp where srv6.segments[srv6.last_entry].addr[96:128] == 0.0.0.2	-	code=a218768f45653b14 meta=5ee214e8b4c27377 main=298 cb=66
+xdp_entry	eth/ipv6/srv6/tcp where srv6.segments[srv6.segments_left].addr != fc00:0000:0000:0000:0000:0000:0000:0001	-	code=b4abb5b9378d7382 meta=5ee214e8b4c27377 main=303 cb=66
+xdp_entry	eth/ipv6/srv6/tcp where srv6.segments[srv6.segments_left].addr == fc00:0000:0000:0000:0000:0000:0000:0002	-	code=ab111c7fcefbfd16 meta=5ee214e8b4c27377 main=301 cb=66
+xdp_entry	eth/ipv6/srv6/tcp where tcp.dport == 80	-	code=fa39b8accd9db53d meta=5ee214e8b4c27377 main=280 cb=66
+xdp_entry	eth/ipv6/srv6?/ipv4?	-	code=12be3d9d9592e1bc meta=5ee214e8b4c27377 main=287 cb=66
+xdp_entry	eth/ipv6/srv6?/tcp	-	code=90b7bbdcb7b41076 meta=5ee214e8b4c27377 main=278 cb=66
+xdp_entry	eth/ipv6/srv6?/tcp where all((srv6.segments.addr == fc00:0000:0000:0000:0000:0000:0000:0001) or true)	-	code=9e78db9202ca7c7d meta=5ee214e8b4c27377 main=372 cb=66
+xdp_entry	eth/ipv6/srv6?/tcp where all(srv6.segments.addr != fc00:0000:0000:0000:0000:0000:0000:0001)	-	code=ae5b0e34ce7c6d21 meta=5ee214e8b4c27377 main=532 cb=66
+xdp_entry	eth/ipv6/srv6?/tcp where any(srv6.segments.addr == fc00:0000:0000:0000:0000:0000:0000:0002)	-	code=bfd94e6803b53791 meta=5ee214e8b4c27377 main=299 cb=115
+xdp_entry	eth/ipv6/srv6?/tcp where srv6.segments[srv6.segments_left].addr != fc00:0000:0000:0000:0000:0000:0000:0001	-	code=ebed2eb5eed0bbf3 meta=5ee214e8b4c27377 main=318 cb=66
+xdp_entry	eth/ipv6/srv6?/tcp where tcp.dport == 80	-	code=606801559a57b17f meta=5ee214e8b4c27377 main=291 cb=66
+xdp_entry	eth/ipv6/srv6@sr/tcp where any((sr.segments.addr == fc00:0000:0000:0000:0000:0000:0000:0001) and (srv6.segments.addr != fc00:0000:0000:0000:0000:0000:0000:0002))	-	code=1d722ee8d80e0936 meta=5ee214e8b4c27377 main=662 cb=66
+xdp_entry	eth/ipv6/srv6[segments[1].addr != fc00:0000:0000:0000:0000:0000:0000:0001]/tcp	-	code=925288a334a97f1a meta=5ee214e8b4c27377 main=296 cb=66
+xdp_entry	eth/ipv6/srv6[segments[1].addr < fc00:0000:0000:0000:0000:0000:0000:0002]/tcp	-	code=a4e993f86915cc96 meta=5ee214e8b4c27377 main=298 cb=66
+xdp_entry	eth/ipv6/srv6[segments[1].addr < fc00:0000:0000:0000:0000:0000:0000:0003]/tcp	-	code=19ad65392f2ddefa meta=5ee214e8b4c27377 main=298 cb=66
+xdp_entry	eth/ipv6/srv6[segments[1].addr == fc00:0000:0000:0000:0000:0000:0000:0002]/tcp	-	code=4077d33eda3e1ba9 meta=5ee214e8b4c27377 main=294 cb=66
+xdp_entry	eth/ipv6/srv6[segments[1].addr in [3..5, fc00:0000:0000:0000:0000:0000:0000:0002]]/tcp	-	code=e0205b837185ac01 meta=5ee214e8b4c27377 main=325 cb=66
+xdp_entry	eth/ipv6/srv6[segments[1].addr in [fc00:0000:0000:0000:0000:0000:0000:0001, 3..5]]/tcp	-	code=3ea930f1c5136b3f meta=5ee214e8b4c27377 main=325 cb=66
+xdp_entry	eth/ipv6/srv6[segments[1].addr in [fc00:0000:0000:0000:0000:0000:0000:0001, fc00:0000:0000:0000:0000:0000:0000:0000/16]]/tcp	-	code=fb7a06bb7717da93 meta=5ee214e8b4c27377 main=307 cb=66
+xdp_entry	eth/ipv6/srv6[segments[1].addr in [fc00:0000:0000:0000:0000:0000:0000:0001, fc00:0000:0000:0000:0000:0000:0000:0002]]/tcp	-	code=45ba47a6e3fb46bb meta=5ee214e8b4c27377 main=314 cb=66
+xdp_entry	eth/ipv6/srv6[segments[1].addr[0:128] == fc00:0000:0000:0000:0000:0000:0000:0002]/tcp	-	code=4077d33eda3e1ba9 meta=5ee214e8b4c27377 main=294 cb=66
+xdp_entry	eth/ipv6/srv6[segments[1].addr[0:64] == 18158513697557839872]/tcp	-	code=7000280146039bf4 meta=5ee214e8b4c27377 main=286 cb=66
+xdp_entry	eth/ipv6/srv6[segments[1].addr[60:124] == 2]/tcp	-	code=9c683a0c5b197248 meta=5ee214e8b4c27377 main=295 cb=66
+xdp_entry	eth/ipv6/srv6[segments[1].addr[64:128] != 2]/tcp	-	code=f1f5eece34b6b390 meta=5ee214e8b4c27377 main=285 cb=66
+xdp_entry	eth/ipv6/srv6[segments[1].addr[64:128] == 2]/tcp	-	code=e51d8268fc6f6ccc meta=5ee214e8b4c27377 main=285 cb=66
+xdp_entry	eth/ipv6/srv6[segments[1].addr[76:124] != 00:00:00:00:00:00]/tcp	-	code=1eb842f5d1478606 meta=5ee214e8b4c27377 main=288 cb=66
+xdp_entry	eth/ipv6/srv6[segments[1].addr[76:124] == 00:00:00:00:00:00]/tcp	-	code=9fb174903e308bac meta=5ee214e8b4c27377 main=288 cb=66
+xdp_entry	eth/ipv6/srv6[segments[1].addr[96:128] == 0.0.0.2]/tcp	-	code=478a4c77d9f6a928 meta=5ee214e8b4c27377 main=285 cb=66
+xdp_entry	eth/ipv6/srv6[segments[1].addr[96:128] in [0.0.0.1, 0.0.0.2]]/tcp	-	code=b8cea192879c28fc meta=5ee214e8b4c27377 main=288 cb=66
+xdp_entry	eth/ipv6/tcp	-	code=9614fcd0fe2754e9 meta=5ee214e8b4c27377 main=204 cb=66
+xdp_entry	eth/ipv6/tcp capture headers	-	code=9614fcd0fe2754e9 meta=5cd6e72f7ed73ca2 main=204 cb=66
+xdp_entry	eth/ipv6/tcp capture headers+8	-	code=9614fcd0fe2754e9 meta=8f028ebd6a5a5c1f main=204 cb=66
+xdp_entry	eth/ipv6/tcp where ((((ipv6.src + ipv6.dst) - ((ipv6.src + ipv6.dst) - ((ipv6.src + ipv6.dst) - ((ipv6.src + ipv6.dst) - (ipv6.src + ipv6.dst))))) == 0) == (tcp.dport == 80)) == (tcp.dport == 80)	-	code=a1481f2529ac6c02 meta=5ee214e8b4c27377 main=546 cb=66
+xdp_entry	eth/ipv6/tcp where ((((ipv6.src + ipv6.dst) - ((ipv6.src + ipv6.dst) - ((ipv6.src + ipv6.dst) - ((ipv6.src + ipv6.dst) - (ipv6.src + ipv6.dst))))) == 3) == (tcp.dport == 80)) == (tcp.dport == 80)	-	code=b4b2a945e590b2cd meta=5ee214e8b4c27377 main=546 cb=66
+xdp_entry	eth/ipv6/tcp where (((ipv6.src + ipv6.dst) - (ipv6.dst + 1)) + ((ipv6.src + ipv6.dst) + (ipv6.dst - ipv6.src))) == 4	-	code=c22805eed4c4f479 meta=5ee214e8b4c27377 main=409 cb=66
+xdp_entry	eth/ipv6/tcp where ((ipv6.src + 1) - (ipv6.dst + ipv6.dst)) == -2	-	code=0ff1c56becfa8aa3 meta=5ee214e8b4c27377 main=294 cb=66
+xdp_entry	eth/ipv6/tcp where ((ipv6.src + 10) - (ipv6.dst + ipv6.src)) == 4	-	code=3fd0b680d12b8236 meta=5ee214e8b4c27377 main=294 cb=66
+xdp_entry	eth/ipv6/tcp where ((ipv6.src + ipv6.dst) - (ipv6.dst + ipv6.src)) == 0	-	code=d35ec03f1cd38353 meta=5ee214e8b4c27377 main=316 cb=66
+xdp_entry	eth/ipv6/tcp where ((ipv6.src + ipv6.dst) - (ipv6.dst + ipv6.src)) == 1	-	code=bd73f53d41481e74 meta=5ee214e8b4c27377 main=316 cb=66
+xdp_entry	eth/ipv6/tcp where ((ipv6.src + ipv6.dst) - (ipv6.src + (tcp.dport * 2))) == -158	-	code=e192dfb5a018101b meta=5ee214e8b4c27377 main=319 cb=66
+xdp_entry	eth/ipv6/tcp where (1 - (ipv6.src + ipv6.dst)) == -2	-	code=7280cf6829c629eb meta=5ee214e8b4c27377 main=279 cb=66
+xdp_entry	eth/ipv6/tcp where (int<128>(18446744073709551619) - ipv6.src) == ipv6.dst	-	code=ed93adea90278591 meta=5ee214e8b4c27377 main=256 cb=66
+xdp_entry	eth/ipv6/tcp where (ipv6.dst != 0000:0000:0000:0000:0000:0000:0000:0000/0) or (ipv6.dst[96:128] == 10.0.0.1)	-	code=182ec12cd1bf59e3 meta=5ee214e8b4c27377 main=214 cb=66
+xdp_entry	eth/ipv6/tcp where (ipv6.dst - 1) == ipv6.src	-	code=ceee4e46c6e33ac4 meta=5ee214e8b4c27377 main=242 cb=66
+xdp_entry	eth/ipv6/tcp where (ipv6.dst[60:124] + 1) == 10485761	-	code=1ec9ff582c95fcec meta=5ee214e8b4c27377 main=225 cb=66
+xdp_entry	eth/ipv6/tcp where (ipv6.src + (ipv6.dst + (ipv6.src + tcp.dport))) == 84	-	code=1a106fa5cdda1e8f meta=5ee214e8b4c27377 main=309 cb=66
+xdp_entry	eth/ipv6/tcp where (ipv6.src + (ipv6.dst + 1)) == 4	-	code=72167cc5c723cef6 meta=5ee214e8b4c27377 main=259 cb=66
+xdp_entry	eth/ipv6/tcp where (ipv6.src + (ipv6.dst + int<128>(18446744073709551616))) == int<128>(18446744073709551619)	-	code=4632e325b3b40b46 meta=5ee214e8b4c27377 main=272 cb=66
+xdp_entry	eth/ipv6/tcp where (ipv6.src + (tcp.dport * 2)) == ipv6.dst	-	code=e4d8575b747bd7e2 meta=5ee214e8b4c27377 main=269 cb=66
+xdp_entry	eth/ipv6/tcp where (ipv6.src + -1) == ipv6.dst	-	code=2836c9cfdd874a4e meta=5ee214e8b4c27377 main=242 cb=66
+xdp_entry	eth/ipv6/tcp where (ipv6.src + 1) == ipv6.dst	-	code=6a5fc9dbe7bd3ffd meta=5ee214e8b4c27377 main=242 cb=66
+xdp_entry	eth/ipv6/tcp where (ipv6.src + 4294967296) == ipv6.dst	-	code=9805254ce052c290 meta=5ee214e8b4c27377 main=243 cb=66
+xdp_entry	eth/ipv6/tcp where (ipv6.src + int<128>(1)) == ipv6.dst	-	code=6a5fc9dbe7bd3ffd meta=5ee214e8b4c27377 main=242 cb=66
+xdp_entry	eth/ipv6/tcp where (ipv6.src + int<128>(18446744073709551616)) == ipv6.dst	-	code=2136394d9701c4e8 meta=5ee214e8b4c27377 main=255 cb=66
+xdp_entry	eth/ipv6/tcp where (ipv6.src + ipv6.dst) == 3	-	code=9402139702c775e0 meta=5ee214e8b4c27377 main=255 cb=66
+xdp_entry	eth/ipv6/tcp where (ipv6.src + ipv6.dst) == 4294967296	-	code=9c244dd2c2d239db meta=5ee214e8b4c27377 main=255 cb=66
+xdp_entry	eth/ipv6/tcp where (ipv6.src + ipv6.dst) > ipv6.src	-	code=568629ed7f94efc0 meta=5ee214e8b4c27377 main=268 cb=66
+xdp_entry	eth/ipv6/tcp where (ipv6.src + ipv6.exts[0].next_header) == (ipv6.dst + 5)	-	code=b496488d49e7c187 meta=5ee214e8b4c27377 main=270 cb=69
+xdp_entry	eth/ipv6/tcp where (ipv6.src + tcp.dport) == 80	-	code=d27d85777e8f0ab4 meta=5ee214e8b4c27377 main=253 cb=66
+xdp_entry	eth/ipv6/tcp where (ipv6.src + tcp.dport) == ipv6.dst	-	code=b64ed88d307a2fa8 meta=5ee214e8b4c27377 main=264 cb=66
+xdp_entry	eth/ipv6/tcp where (ipv6.src - (ipv6.dst + int<128>(18446744073709551616))) == int<128>(340282366920938463444927863358058659843)	-	code=67cbbe8fa34ae166 meta=5ee214e8b4c27377 main=279 cb=66
+xdp_entry	eth/ipv6/tcp where (ipv6.src - (ipv6.dst - ipv6.src)) == 7	-	code=8aadd1e7272bd3fa meta=5ee214e8b4c27377 main=291 cb=66
+xdp_entry	eth/ipv6/tcp where (ipv6.src - (tcp.dport - (ipv6.src + ipv6.dst))) == 76	-	code=e72840dc4fe65213 meta=5ee214e8b4c27377 main=323 cb=66
+xdp_entry	eth/ipv6/tcp where (ipv6.src - -1) == ipv6.dst	-	code=6a5fc9dbe7bd3ffd meta=5ee214e8b4c27377 main=242 cb=66
+xdp_entry	eth/ipv6/tcp where (ipv6.src - 1) == ipv6.dst	-	code=2836c9cfdd874a4e meta=5ee214e8b4c27377 main=242 cb=66
+xdp_entry	eth/ipv6/tcp where (ipv6.src - 4294967296) == ipv6.dst	-	code=27d1d1ea669b132a meta=5ee214e8b4c27377 main=243 cb=66
+xdp_entry	eth/ipv6/tcp where (ipv6.src - int<128>(18446744073709551616)) == int<128>(340282366920938463444927863358058659841)	-	code=ef9adcb4579f9898 meta=5ee214e8b4c27377 main=245 cb=66
+xdp_entry	eth/ipv6/tcp where (ipv6.src - ipv6.dst) == 18446744073709551615	-	code=ea01050f0e7c1b25 meta=5ee214e8b4c27377 main=256 cb=66
+xdp_entry	eth/ipv6/tcp where (ipv6.src - ipv6.dst) == 2	-	code=d698241fd07a894b meta=5ee214e8b4c27377 main=256 cb=66
+xdp_entry	eth/ipv6/tcp where (ipv6.src - tcp.dport) == ipv6.dst	-	code=c182a9330e1ad1b3 meta=5ee214e8b4c27377 main=265 cb=66
+xdp_entry	eth/ipv6/tcp where (ipv6.src == (tcp.dport + (tcp.dport + (tcp.dport + (tcp.dport + (tcp.dport + (tcp.dport + (tcp.dport + (tcp.dport + (tcp.dport + (tcp.dport + tcp.dport))))))))))) == (tcp.dport == 80)	-	code=82b3bb050cac26d9 meta=5ee214e8b4c27377 main=379 cb=66
+xdp_entry	eth/ipv6/tcp where (ipv6.src[64:128] + ipv6.dst) == ipv6.src	-	code=179d6b3a231c11c3 meta=5ee214e8b4c27377 main=260 cb=66
+xdp_entry	eth/ipv6/tcp where (tcp.dport + int<128>(70000)) == int<128>(70080)	-	code=0aa5595626525e03 meta=5ee214e8b4c27377 main=229 cb=66
+xdp_entry	eth/ipv6/tcp where (tcp.dport - (ipv6.src + ipv6.dst)) == 77	-	code=ec1f6d9c45258105 meta=5ee214e8b4c27377 main=288 cb=66
+xdp_entry	eth/ipv6/tcp where (tcp.dport - int<128>(100)) == -20	-	code=b602eb45d7b837a6 meta=5ee214e8b4c27377 main=229 cb=66
+xdp_entry	eth/ipv6/tcp where (tcp.dport - int<128>(100)) == 18446744073709551596	-	code=03c61bfd5f54dbef meta=5ee214e8b4c27377 main=229 cb=66
+xdp_entry	eth/ipv6/tcp where (tcp.dport == 80) == (((ipv6.src + ipv6.dst) - ((ipv6.src + ipv6.dst) - ((ipv6.src + ipv6.dst) - ((ipv6.src + ipv6.dst) - ((ipv6.src + ipv6.dst) - (ipv6.src + ipv6.dst)))))) == 0)	-	code=c2bbd6a3df1948b0 meta=5ee214e8b4c27377 main=584 cb=66
+xdp_entry	eth/ipv6/tcp where (tcp.dport == 80) == ((tcp.dport == 80) == ((tcp.dport == 80) == (((ipv6.src + ipv6.dst) - ((ipv6.src + ipv6.dst) - ((ipv6.src + ipv6.dst) - ((ipv6.src + ipv6.dst) - (ipv6.src + ipv6.dst))))) == 3)))	-	code=75fc8b398bdb7e24 meta=5ee214e8b4c27377 main=569 cb=66
+xdp_entry	eth/ipv6/tcp where (tcp.dport == 80) == (ipv6.src == (tcp.dport + (tcp.dport + (tcp.dport + (tcp.dport + (tcp.dport + (tcp.dport + (tcp.dport + (tcp.dport + (tcp.dport + (tcp.dport + tcp.dport)))))))))))	-	code=5d6e8ea49194244e meta=5ee214e8b4c27377 main=379 cb=66
+xdp_entry	eth/ipv6/tcp where (tcp.dport == 81) == (((ipv6.src + ipv6.dst) - ((ipv6.src + ipv6.dst) - ((ipv6.src + ipv6.dst) - ((ipv6.src + ipv6.dst) - ((ipv6.src + ipv6.dst) - (ipv6.src + ipv6.dst)))))) == 0)	-	code=b54f5fdb41d69589 meta=5ee214e8b4c27377 main=584 cb=66
+xdp_entry	eth/ipv6/tcp where (tcp.dport == 81) == (((ipv6.src + ipv6.dst) - ((ipv6.src + ipv6.dst) - ((ipv6.src + ipv6.dst) - ((ipv6.src + ipv6.dst) - ((ipv6.src + ipv6.dst) - (ipv6.src + ipv6.dst)))))) == 3)	-	code=c6da599f53780a15 meta=5ee214e8b4c27377 main=584 cb=66
+xdp_entry	eth/ipv6/tcp where (tcp.dport == 81) == ((tcp.dport == 81) == ((tcp.dport == 81) == (((ipv6.src + ipv6.dst) - ((ipv6.src + ipv6.dst) - ((ipv6.src + ipv6.dst) - ((ipv6.src + ipv6.dst) - (ipv6.src + ipv6.dst))))) == 0)))	-	code=bddfedaa25819571 meta=5ee214e8b4c27377 main=569 cb=66
+xdp_entry	eth/ipv6/tcp where (tcp.dport == 81) == ((tcp.dport == 81) == ((tcp.dport == 81) == (((ipv6.src + ipv6.dst) - ((ipv6.src + ipv6.dst) - ((ipv6.src + ipv6.dst) - ((ipv6.src + ipv6.dst) - (ipv6.src + ipv6.dst))))) == 3)))	-	code=ea6c9e032ca5cf65 meta=5ee214e8b4c27377 main=569 cb=66
+xdp_entry	eth/ipv6/tcp where (tcp.dport == 81) == (ipv6.src == (tcp.dport + (tcp.dport + (tcp.dport + (tcp.dport + (tcp.dport + (tcp.dport + (tcp.dport + (tcp.dport + (tcp.dport + (tcp.dport + tcp.dport)))))))))))	-	code=e8539d934da85670 meta=5ee214e8b4c27377 main=379 cb=66
+xdp_entry	eth/ipv6/tcp where all(ipv6.exts.next_header != 1)	-	code=64f71dddd464392c meta=5ee214e8b4c27377 main=390 cb=69
+xdp_entry	eth/ipv6/tcp where any(ipv6.exts.next_header == 6)	-	code=52f45de7c701989c meta=5ee214e8b4c27377 main=397 cb=69
+xdp_entry	eth/ipv6/tcp where any(ipv6.exts.next_header == 60)	-	code=4d227918186bb006 meta=5ee214e8b4c27377 main=397 cb=69
+xdp_entry	eth/ipv6/tcp where int<128>(170141183460469231731687303715884105728) == ipv6.src	-	code=76dee8aabb003290 meta=5ee214e8b4c27377 main=227 cb=66
+xdp_entry	eth/ipv6/tcp where ipv6.dst == fc00:0000:0000:0000:0000:0000:0000:0002	-	code=ff3f2b48a56ebaa0 meta=5ee214e8b4c27377 main=216 cb=66
+xdp_entry	eth/ipv6/tcp where ipv6.dst[0:128] == fc00:0000:0000:0000:0000:0000:0000:0000/16	-	code=65783a5577d86121 meta=5ee214e8b4c27377 main=212 cb=66
+xdp_entry	eth/ipv6/tcp where ipv6.dst[0:128] == fc00:0000:0000:0000:0000:0000:0a00:0001	-	code=b08889519a6e3094 meta=5ee214e8b4c27377 main=216 cb=66
+xdp_entry	eth/ipv6/tcp where ipv6.dst[4:68] == 13835058055282163712	-	code=161be9bf16f775ef meta=5ee214e8b4c27377 main=220 cb=66
+xdp_entry	eth/ipv6/tcp where ipv6.dst[60:124] == 10485760	-	code=dcc5a3b4c42cf2c4 meta=5ee214e8b4c27377 main=220 cb=66
+xdp_entry	eth/ipv6/tcp where ipv6.dst[80:128] == 00:00:0a:00:00:01	-	code=d284bc058d89a8ad meta=5ee214e8b4c27377 main=216 cb=66
+xdp_entry	eth/ipv6/tcp where ipv6.dst[92:124] != 0.0.0.0/0	-	code=6505364801a265e0 meta=5ee214e8b4c27377 main=214 cb=66
+xdp_entry	eth/ipv6/tcp where ipv6.dst[92:124] != 10.0.0.0/8	-	code=5131fc1aaae72c21 meta=5ee214e8b4c27377 main=214 cb=66
+xdp_entry	eth/ipv6/tcp where ipv6.dst[92:124] != 10.0.0.1	-	code=c2fe13aae06b57be meta=5ee214e8b4c27377 main=213 cb=66
+xdp_entry	eth/ipv6/tcp where ipv6.dst[92:124] == 0.0.0.0/0	-	code=3a3903622e065e6e meta=5ee214e8b4c27377 main=212 cb=66
+xdp_entry	eth/ipv6/tcp where ipv6.dst[92:124] == 10.0.0.0/8	-	code=71fa72867ab004bc meta=5ee214e8b4c27377 main=214 cb=66
+xdp_entry	eth/ipv6/tcp where ipv6.dst[92:124] == 10.0.0.1	-	code=2c5c20501e5e2b3b meta=5ee214e8b4c27377 main=213 cb=66
+xdp_entry	eth/ipv6/tcp where ipv6.dst[96:128] != 10.0.0.1	-	code=ef9e61230c428839 meta=5ee214e8b4c27377 main=210 cb=66
+xdp_entry	eth/ipv6/tcp where ipv6.dst[96:128] != 10.0.0.2	-	code=dfb621308b428cbc meta=5ee214e8b4c27377 main=210 cb=66
+xdp_entry	eth/ipv6/tcp where ipv6.dst[96:128] == 10.0.0.0/8	-	code=845d4cad2ac97a13 meta=5ee214e8b4c27377 main=211 cb=66
+xdp_entry	eth/ipv6/tcp where ipv6.dst[96:128] == 10.0.0.1	-	code=9fa2f8b4f385c5ca meta=5ee214e8b4c27377 main=210 cb=66
+xdp_entry	eth/ipv6/tcp where ipv6.dst[96:128] == 10.0.0.2	-	code=ace405fba55714da meta=5ee214e8b4c27377 main=210 cb=66
+xdp_entry	eth/ipv6/tcp where ipv6.exts[0].next_header == 60	-	code=a141c0dc5dc2d78c meta=5ee214e8b4c27377 main=219 cb=69
+xdp_entry	eth/ipv6/tcp where ipv6.exts[1].next_header == 6	-	code=7d831934b12b8f0f meta=5ee214e8b4c27377 main=234 cb=69
+xdp_entry	eth/ipv6/tcp where ipv6.exts[1].next_header[4:8] == 6	-	code=480dc8926c48f603 meta=5ee214e8b4c27377 main=235 cb=69
+xdp_entry	eth/ipv6/tcp where ipv6.exts[ipv6.hop_limit].next_header == 6	-	code=9e3399c5dcf196eb meta=5ee214e8b4c27377 main=282 cb=69
+xdp_entry	eth/ipv6/tcp where ipv6.exts[ipv6.hop_limit].next_header == 60	-	code=df31f2dd284d04ad meta=5ee214e8b4c27377 main=282 cb=69
+xdp_entry	eth/ipv6/tcp where ipv6.next_header == 6	-	code=816285192fc7f6cc meta=5ee214e8b4c27377 main=209 cb=66
+xdp_entry	eth/ipv6/tcp where ipv6.src < ipv6.dst	-	code=6a282d539729328f meta=5ee214e8b4c27377 main=240 cb=66
+xdp_entry	eth/ipv6/tcp where ipv6.src == (2 * 3)	-	code=246dff4ccd34f01f meta=5ee214e8b4c27377 main=233 cb=66
+xdp_entry	eth/ipv6/tcp where ipv6.src == (tcp.dport * 2)	-	code=99dee26e6db0122d meta=5ee214e8b4c27377 main=241 cb=66
+xdp_entry	eth/ipv6/tcp where ipv6.src == (tcp.dport + -1)	-	code=f28322fda3e84b96 meta=5ee214e8b4c27377 main=241 cb=66
+xdp_entry	eth/ipv6/tcp where ipv6.src == (tcp.dport - 100)	-	code=a379edecc0f42cfc meta=5ee214e8b4c27377 main=241 cb=66
+xdp_entry	eth/ipv6/tcp where ipv6.src == -1	-	code=1308ea316753a6ed meta=5ee214e8b4c27377 main=227 cb=66
+xdp_entry	eth/ipv6/tcp where ipv6.src == fc00:0000:0000:0000:0000:0000:0000:0000/8	-	code=5a48c3de703ba9ea meta=5ee214e8b4c27377 main=212 cb=66
+xdp_entry	eth/ipv6/tcp where ipv6.src == int<128>(170141183460469231731687303715884105733)	-	code=8e49d7eede050c2b meta=5ee214e8b4c27377 main=227 cb=66
+xdp_entry	eth/ipv6/tcp where ipv6.src >= ipv6.dst	-	code=6ee8b7b8e496a814 meta=5ee214e8b4c27377 main=240 cb=66
+xdp_entry	eth/ipv6/udp/vxlan/eth/(ipv4|ipv6)	-	code=3e15d56e59c0e9d2 meta=5ee214e8b4c27377 main=422 cb=132
+xdp_entry	eth/ipv6[dst != 0000:0000:0000:0000:0000:0000:0000:0000/0]/tcp	-	code=fc7f51cfa8f52a58 meta=5ee214e8b4c27377 main=214 cb=66
+xdp_entry	eth/ipv6[dst > fc00:0000:0000:0000:0000:0000:0000:0001]/tcp	-	code=520a0df09603e23f meta=5ee214e8b4c27377 main=234 cb=66
+xdp_entry	eth/ipv6[dst >= fc00:0000:0000:0000:0000:0000:0000:0000]/tcp	-	code=a28ec8f16e658b71 meta=5ee214e8b4c27377 main=234 cb=66
+xdp_entry	eth/ipv6[dst in @sids]/tcp	sids:128	code=b3481a92f39f059f meta=4310679ce1309921 main=228 cb=66
+xdp_entry	eth/ipv6[dst[4:68] == 13835058055282163712]/tcp	-	code=fd815fd6307961f0 meta=5ee214e8b4c27377 main=232 cb=66
+xdp_entry	eth/ipv6[dst[60:124] < 10485760]/tcp	-	code=5b5ed8e29d5e8b53 meta=5ee214e8b4c27377 main=231 cb=66
+xdp_entry	eth/ipv6[dst[60:124] == 10485760]	-	code=9a53ba3522b7052e meta=5ee214e8b4c27377 main=169 cb=66
+xdp_entry	eth/ipv6[dst[60:124] == 10485760]/tcp	-	code=f69a3554ddc63410 meta=5ee214e8b4c27377 main=231 cb=66
+xdp_entry	eth/ipv6[dst[60:124] == 10485761]/tcp	-	code=8d6ab831355a8cb6 meta=5ee214e8b4c27377 main=231 cb=66
+xdp_entry	eth/ipv6[dst[60:124] == 1193046]/tcp	-	code=f2a8e0ebe13576bd meta=5ee214e8b4c27377 main=231 cb=66
+xdp_entry	eth/ipv6[dst[60:124] > 10485759]/tcp	-	code=7be3b0abc3455d3a meta=5ee214e8b4c27377 main=231 cb=66
+xdp_entry	eth/ipv6[dst[60:124] in @d]/tcp	d:64	code=5777c11a1d114da3 meta=f764a8a4aa8ef9db main=231 cb=66
+xdp_entry	eth/ipv6[dst[60:124] in [1, 10485760]]/tcp	-	code=d71b83b166ba645b meta=5ee214e8b4c27377 main=234 cb=66
+xdp_entry	eth/ipv6[dst[60:124] in [1, 10485761..10485776]]/tcp	-	code=4694a35916020091 meta=5ee214e8b4c27377 main=235 cb=66
+xdp_entry	eth/ipv6[dst[60:124] in [10485760..10485776]]/tcp	-	code=0f7b0a2d696a127c meta=5ee214e8b4c27377 main=234 cb=66
+xdp_entry	eth/ipv6[dst[61:124] == 10485760]/tcp	-	code=46903d6db65dd080 meta=5ee214e8b4c27377 main=232 cb=66
+xdp_entry	eth/ipv6[dst[76:124] in [11:22:33:44:55:66, 00:00:00:a0:00:00]]/tcp	-	code=124e057ae063557e meta=5ee214e8b4c27377 main=228 cb=66
+xdp_entry	eth/ipv6[dst[76:124] in [11:22:33:44:55:66, 10485760]]/tcp	-	code=124e057ae063557e meta=5ee214e8b4c27377 main=228 cb=66
+xdp_entry	eth/ipv6[dst[80:128] in [00:00:0a:00:00:01]]/tcp	-	code=1d8b560390421829 meta=5ee214e8b4c27377 main=230 cb=66
+xdp_entry	eth/ipv6[dst[80:128] in [5, 167772160..167772415]]/tcp	-	code=5b7a553f7ab00e0b meta=5ee214e8b4c27377 main=227 cb=66
+xdp_entry	eth/ipv6[dst[80:128] in [aa:bb:cc:dd:ee:ff, 167772160..167772415]]/tcp	-	code=43626edc2b1a2b88 meta=5ee214e8b4c27377 main=251 cb=66
+xdp_entry	eth/ipv6[dst[80:128] in [aa:bb:cc:dd:ee:ff, 167772161]]/tcp	-	code=0028c2a401e1321a meta=5ee214e8b4c27377 main=250 cb=66
+xdp_entry	eth/ipv6[dst[80:128] in [aa:bb:cc:dd:ee:ff, 167772162..167772415]]/tcp	-	code=8a8bd18b3857fd6f meta=5ee214e8b4c27377 main=261 cb=66
+xdp_entry	eth/ipv6[dst[92:124] != 0.0.0.0/0]/tcp	-	code=ba14760df81cd43d meta=5ee214e8b4c27377 main=225 cb=66
+xdp_entry	eth/ipv6[dst[92:124] == 10.0.0.1]/tcp	-	code=a6d869afdb12b446 meta=5ee214e8b4c27377 main=224 cb=66
+xdp_entry	eth/ipv6[dst[92:124] == 167772161]	-	code=894ef63777dd02c6 meta=5ee214e8b4c27377 main=162 cb=66
+xdp_entry	eth/ipv6[dst[92:124] > 10.0.0.1]/tcp	-	code=6f1b216289246b79 meta=5ee214e8b4c27377 main=224 cb=66
+xdp_entry	eth/ipv6[dst[92:124] >= 10.0.0.1]/tcp	-	code=5f60e697f51db84f meta=5ee214e8b4c27377 main=224 cb=66
+xdp_entry	eth/ipv6[dst[96:128] == 10.0.0.1]/tcp	-	code=bbdf2c83a70ba945 meta=5ee214e8b4c27377 main=221 cb=66
+xdp_entry	eth/ipv6[dst[96:128] > 10.0.0.0]/tcp	-	code=025cb30a6625ef01 meta=5ee214e8b4c27377 main=222 cb=66
+xdp_entry	eth/ipv6[dst[96:128] in [10.0.0.2, 10.0.0.1]]/tcp	-	code=b016c068ef379e6b meta=5ee214e8b4c27377 main=224 cb=66
+xdp_entry	eth/ipv6[exts[1].next_header == 6]/tcp	-	code=8f856506d8e4b7db meta=5ee214e8b4c27377 main=240 cb=69
+xdp_entry	eth/ipv6[exts[1].next_header in @nh]/tcp	nh:8	code=9e1e6f0308bac383 meta=84f176b17bb3a4ed main=240 cb=69
+xdp_entry	eth/ipv6[exts[1].next_header in [6, 60]]/tcp	-	code=9b63148e3365c4ac meta=5ee214e8b4c27377 main=243 cb=69
+xdp_entry	eth/ipv6[exts[1].next_header[0:4] == 0]/tcp	-	code=2ca50e544c6b7110 meta=5ee214e8b4c27377 main=242 cb=69
+xdp_entry	eth/ipv6[next_header == 6]/tcp	-	code=fd71b572b4193f65 meta=5ee214e8b4c27377 main=214 cb=66
+xdp_entry	eth/ipv6[src != 5]/tcp	-	code=dfd04a3bde70b607 meta=5ee214e8b4c27377 main=232 cb=66
+xdp_entry	eth/ipv6[src < 6]/tcp	-	code=71cd8e422cee7081 meta=5ee214e8b4c27377 main=234 cb=66
+xdp_entry	eth/ipv6[src < fc00:0000:0000:0000:0000:0000:0000:0001]/tcp	-	code=bc5cb3d4d1ae211f meta=5ee214e8b4c27377 main=234 cb=66
+xdp_entry	eth/ipv6[src < fc00:0000:0000:0000:0000:0000:0000:0002]/tcp	-	code=67dfaee635225377 meta=5ee214e8b4c27377 main=234 cb=66
+xdp_entry	eth/ipv6[src <= fc00:0000:0000:0000:0000:0000:0000:0001]/tcp	-	code=5215f5c32f5f24b4 meta=5ee214e8b4c27377 main=234 cb=66
+xdp_entry	eth/ipv6[src == 5]/tcp	-	code=fc5aad0a5ea9b9fc meta=5ee214e8b4c27377 main=230 cb=66
+xdp_entry	eth/ipv6[src > fc00:0000:0000:0000:0000:0000:0000:0000]/tcp	-	code=c4468cde442d4df5 meta=5ee214e8b4c27377 main=234 cb=66
+xdp_entry	eth/ipv6[src >= fc00:0000:0000:0000:0000:0000:0000:0002]/tcp	-	code=fc104a6ef4d7682f meta=5ee214e8b4c27377 main=234 cb=66
+xdp_entry	eth/ipv6[src in [0..18446744073709551615]]/tcp	-	code=a89dba0a10a84aa3 meta=5ee214e8b4c27377 main=221 cb=66
+xdp_entry	eth/ipv6[src in [0..5]]/tcp	-	code=a9c5106feefcae09 meta=5ee214e8b4c27377 main=231 cb=66
+xdp_entry	eth/ipv6[src in [0000:0000:0000:0000:0000:0000:0000:0000/0, fc00:0000:0000:0000:0000:0000:0000:0003]]/tcp	-	code=75bfc1bd6661fe91 meta=5ee214e8b4c27377 main=212 cb=66
+xdp_entry	eth/ipv6[src in [3..5, fc00:0000:0000:0000:0000:0000:0000:0001]]/tcp	-	code=fff2f480214290f8 meta=5ee214e8b4c27377 main=261 cb=66
+xdp_entry	eth/ipv6[src in [3..5]]/tcp	-	code=08fc9087ae27fa99 meta=5ee214e8b4c27377 main=241 cb=66
+xdp_entry	eth/ipv6[src in [5..18446744073709551615]]/tcp	-	code=fc294ac295d96689 meta=5ee214e8b4c27377 main=231 cb=66
+xdp_entry	eth/ipv6[src in [5..5]]/tcp	-	code=6ed167ee805082d1 meta=5ee214e8b4c27377 main=241 cb=66
+xdp_entry	eth/ipv6[src in [fc00:0000:0000:0000:0000:0000:0000:0000/100]]/tcp	-	code=aa1ebe0985dc9675 meta=5ee214e8b4c27377 main=232 cb=66
+xdp_entry	eth/ipv6[src in [fc00:0000:0000:0000:0000:0000:0000:0001, fc00:0000:0000:0000:0000:0000:0000:0003]]/tcp	-	code=0534f83195b9c2b7 meta=5ee214e8b4c27377 main=250 cb=66
+xdp_entry	eth/ipv6[src in [fc00:0000:0000:0000:0000:0000:0000:0003, -1]]/tcp	-	code=52790cfcf5bce63d meta=5ee214e8b4c27377 main=250 cb=66
+xdp_entry	eth/ipv6[src in [fc00:0000:0000:0000:0000:0000:0000:0003, 0..5]]/tcp	-	code=e41b2662c6a3f87f meta=5ee214e8b4c27377 main=251 cb=66
+xdp_entry	eth/ipv6[src in [fc00:0000:0000:0000:0000:0000:0000:0003, 3..5]]/tcp	-	code=c2713a47ad6a2fe3 meta=5ee214e8b4c27377 main=261 cb=66
+xdp_entry	eth/ipv6[src in [fc00:0000:0000:0000:0000:0000:0000:0003, 5]]/tcp	-	code=4e41f02f5b2be599 meta=5ee214e8b4c27377 main=250 cb=66
+xdp_entry	eth/ipv6[src in [fc00:0000:0000:0000:0000:0000:0000:0003, fc00:0000:0000:0000:0000:0000:0000:0000/16]]/tcp	-	code=4cf1b4aee1623416 meta=5ee214e8b4c27377 main=243 cb=66
+xdp_entry	eth/ipv6[src in [fc00:0000:0000:0000:0000:0000:0000:0003, fc00:0000:0000:0000:0000:0000:0000:0001]]/tcp	-	code=7ca9096e01350b6c meta=5ee214e8b4c27377 main=250 cb=66
+xdp_entry	eth/ipv6[src in [fc00:0000:0000:0000:0000:0000:0000:0003, fd00:0000:0000:0000:0000:0000:0000:0000/16]]/tcp	-	code=12c534963e96e79e meta=5ee214e8b4c27377 main=243 cb=66
+xdp_entry	eth/ipv6[src==2001:db8::/32]/tcp	-	code=3ab2f98b0affb947 meta=5ee214e8b4c27377 main=223 cb=66
+xdp_entry	eth/ipv6[traffic_class in @tc]/tcp	tc:16	code=0f46c0daad011b01 meta=ec2ee0a62a37452d main=222 cb=66
+xdp_entry	eth/ipv6{1,5}/tcp	-	code=d334bf53a210c2f8 meta=5ee214e8b4c27377 main=897 cb=330
+xdp_entry	eth/ipv6{4,}/tcp	-	code=7f0bd4064049060a meta=5ee214e8b4c27377 main=723 cb=264
+xdp_entry	eth/mpls+	-	code=ffbe81af624a5285 meta=5ee214e8b4c27377 main=55 cb=28
+xdp_entry	eth/mpls+/ipv4	-	code=c4d768dd4b3c1e37 meta=5ee214e8b4c27377 main=113 cb=28
+xdp_entry	eth/mpls+/ipv4/tcp capture headers	-	code=48184ebb54f0e77f meta=9c668db809c48a55 main=183 cb=28
 xdp_entry	eth/mpls/ipv4/tcp	-	code=a3195731343b596c meta=5ee214e8b4c27377 main=134 cb=0
 xdp_entry	eth/mpls/ipv4?	-	code=89bad94436b21f76 meta=5ee214e8b4c27377 main=83 cb=0
-xdp_entry	eth/mpls/mpls*/ipv4/tcp	-	code=8ed92d59d5e12a77 meta=5ee214e8b4c27377 main=208 cb=27
+xdp_entry	eth/mpls/mpls*/ipv4/tcp	-	code=04bf295a696a0ef8 meta=5ee214e8b4c27377 main=208 cb=28
 xdp_entry	eth/mpls/mpls/ipv4/tcp	-	code=26d94593e9a28d9e meta=5ee214e8b4c27377 main=150 cb=0
 xdp_entry	eth/mpls/mpls?/ipv4/tcp	-	code=cba22214e260d75f meta=5ee214e8b4c27377 main=182 cb=0
 xdp_entry	eth/mpls?/ipv4/tcp	-	code=3e39948b031205c9 meta=5ee214e8b4c27377 main=176 cb=0
@@ -517,49 +517,49 @@ xdp_entry	eth/mpls?/mpls/ipv4/tcp	-	code=7c68495ebddff654 meta=c1e5715cbbf3106d 
 xdp_entry	eth/mpls?/mpls{0,0}/ipv4/tcp	-	code=3e39948b031205c9 meta=5ee214e8b4c27377 main=176 cb=0
 xdp_entry	eth/mpls@m{1,3}/ipv4/tcp where m.label == 5	-	code=388cae11f8a63963 meta=5ee214e8b4c27377 main=206 cb=0
 xdp_entry	eth/mpls@m{1,3}/ipv4/tcp where m.label == 7	-	code=1b193335a66a486e meta=5ee214e8b4c27377 main=206 cb=0
-xdp_entry	eth/mpls[label < 8]{1,8}/ipv4/tcp	-	code=28257770b5d11891 meta=5ee214e8b4c27377 main=193 cb=46
+xdp_entry	eth/mpls[label < 8]{1,8}/ipv4/tcp	-	code=8372c84bdd01c168 meta=5ee214e8b4c27377 main=193 cb=47
 xdp_entry	eth/mpls[label == 5]{1,3}/ipv4/tcp	-	code=3cf67f2a33733709 meta=5ee214e8b4c27377 main=220 cb=0
-xdp_entry	eth/mpls[label == 5]{1,8}/ipv4/tcp	-	code=863adfaed5093118 meta=5ee214e8b4c27377 main=193 cb=46
-xdp_entry	eth/mpls[label == 6]{1,8}/ipv4/tcp	-	code=a007fa5612e84632 meta=5ee214e8b4c27377 main=193 cb=46
+xdp_entry	eth/mpls[label == 5]{1,8}/ipv4/tcp	-	code=24fb13c19d3505e7 meta=5ee214e8b4c27377 main=193 cb=47
+xdp_entry	eth/mpls[label == 6]{1,8}/ipv4/tcp	-	code=08320b8b9efca902 meta=5ee214e8b4c27377 main=193 cb=47
 xdp_entry	eth/mpls[label == 99]{0,0}/mpls/ipv4/tcp	-	code=a3195731343b596c meta=5ee214e8b4c27377 main=134 cb=0
-xdp_entry	eth/mpls[label in [1..5, 100]]+/ipv4	-	code=940d9c8686317984 meta=5ee214e8b4c27377 main=127 cb=50
+xdp_entry	eth/mpls[label in [1..5, 100]]+/ipv4	-	code=8e913bfabeca4b4d meta=5ee214e8b4c27377 main=127 cb=51
 xdp_entry	eth/mpls[label in [1..5, 100]]{1,3}/ipv4	-	code=e559078017d33483 meta=5ee214e8b4c27377 main=162 cb=0
 xdp_entry	eth/mpls{0,0}/mpls/ipv4/tcp	-	code=a3195731343b596c meta=5ee214e8b4c27377 main=134 cb=0
 xdp_entry	eth/mpls{0,0}/mpls{0,0}/mpls/ipv4/tcp	-	code=a3195731343b596c meta=5ee214e8b4c27377 main=134 cb=0
 xdp_entry	eth/mpls{0,1}/mpls/ipv4/tcp	-	code=7c68495ebddff654 meta=4f4cf2f37f0e2a79 main=192 cb=0
-xdp_entry	eth/mpls{0,}/ipv4/tcp	-	code=f8128005a7eb2832 meta=5ee214e8b4c27377 main=202 cb=27
+xdp_entry	eth/mpls{0,}/ipv4/tcp	-	code=2b24d9fded332eee meta=5ee214e8b4c27377 main=202 cb=28
 xdp_entry	eth/mpls{1,1}/mpls/ipv4/tcp	-	code=60c1344806dda3cc meta=ded7e37ac6edfb54 main=173 cb=0
 xdp_entry	eth/mpls{1,2}	-	code=15c69b6d1d8f05e1 meta=5ee214e8b4c27377 main=46 cb=0
 xdp_entry	eth/mpls{1,2}/ipv4/tcp	-	code=f0b954918f73f500 meta=5ee214e8b4c27377 main=174 cb=0
 xdp_entry	eth/mpls{1,3}	-	code=aa1b4fabf562e202 meta=5ee214e8b4c27377 main=62 cb=0
 xdp_entry	eth/mpls{1,3}/ipv4/tcp capture headers	-	code=97ef17dfbd04e9d4 meta=5207ddddedc4fd41 main=190 cb=0
-xdp_entry	eth/mpls{1,8}	-	code=29d64cb39d94123f meta=5ee214e8b4c27377 main=55 cb=27
-xdp_entry	eth/mpls{1,8}/ipv4	-	code=57a4ab812250459f meta=5ee214e8b4c27377 main=113 cb=27
-xdp_entry	eth/mpls{1,8}/ipv4/tcp	-	code=c15210051075ffa9 meta=5ee214e8b4c27377 main=183 cb=27
-xdp_entry	eth/mpls{1,8}/mpls/ipv4/tcp	-	code=0021260f9101b51f meta=47ec9b37a09012df main=199 cb=27
-xdp_entry	eth/mpls{1,}/ipv4/tcp	-	code=c15210051075ffa9 meta=5ee214e8b4c27377 main=183 cb=27
-xdp_entry	eth/mpls{1,}/ipv4/tcp capture headers	-	code=c15210051075ffa9 meta=9c668db809c48a55 main=183 cb=27
-xdp_entry	eth/mpls{2,8}/ipv4/tcp	-	code=27f7a6049f162355 meta=5ee214e8b4c27377 main=187 cb=27
-xdp_entry	eth/mpls{2,}/ipv4	-	code=c5bc9529c1fddbc4 meta=5ee214e8b4c27377 main=117 cb=27
+xdp_entry	eth/mpls{1,8}	-	code=ffbe81af624a5285 meta=5ee214e8b4c27377 main=55 cb=28
+xdp_entry	eth/mpls{1,8}/ipv4	-	code=c4d768dd4b3c1e37 meta=5ee214e8b4c27377 main=113 cb=28
+xdp_entry	eth/mpls{1,8}/ipv4/tcp	-	code=48184ebb54f0e77f meta=5ee214e8b4c27377 main=183 cb=28
+xdp_entry	eth/mpls{1,8}/mpls/ipv4/tcp	-	code=d3f8431dbc361288 meta=47ec9b37a09012df main=199 cb=28
+xdp_entry	eth/mpls{1,}/ipv4/tcp	-	code=48184ebb54f0e77f meta=5ee214e8b4c27377 main=183 cb=28
+xdp_entry	eth/mpls{1,}/ipv4/tcp capture headers	-	code=48184ebb54f0e77f meta=9c668db809c48a55 main=183 cb=28
+xdp_entry	eth/mpls{2,8}/ipv4/tcp	-	code=2d8b102ac4da3520 meta=5ee214e8b4c27377 main=187 cb=28
+xdp_entry	eth/mpls{2,}/ipv4	-	code=0f907b828db49412 meta=5ee214e8b4c27377 main=117 cb=28
 xdp_entry	eth/qinq/vlan/ipv4/tcp where tcp.dport == 80	-	code=cd177eb2556ff2e6 meta=5ee214e8b4c27377 main=160 cb=0
 xdp_entry	eth/qinq?/vlan?/ipv4/tcp	-	code=a7cac655380fcccf meta=5ee214e8b4c27377 main=173 cb=0
-xdp_entry	eth/vlan*	-	code=88509a7dc500ffd0 meta=5ee214e8b4c27377 main=33 cb=26
-xdp_entry	eth/vlan*/ipv4	-	code=5c9a80f3474e1540 meta=5ee214e8b4c27377 main=120 cb=26
+xdp_entry	eth/vlan*	-	code=577a70386dddcd6d meta=5ee214e8b4c27377 main=33 cb=27
+xdp_entry	eth/vlan*/ipv4	-	code=a0b0af39e260df98 meta=5ee214e8b4c27377 main=120 cb=27
 xdp_entry	eth/vlan/ipv4/tcp	-	code=4b5e7e3b6a0f5c14 meta=5ee214e8b4c27377 main=138 cb=0
 xdp_entry	eth/vlan?	-	code=f6d4c5203345dc1a meta=5ee214e8b4c27377 main=19 cb=0
-xdp_entry	eth/vlan?/(ipv4|ipv6)/tcp where ipv4.ttl == 64	-	code=63f779d51f733bd6 meta=5ee214e8b4c27377 main=365 cb=64
+xdp_entry	eth/vlan?/(ipv4|ipv6)/tcp where ipv4.ttl == 64	-	code=d2b0673a268569fa meta=5ee214e8b4c27377 main=365 cb=66
 xdp_entry	eth/vlan?/ipv4	-	code=a6379d575e83366c meta=5ee214e8b4c27377 main=105 cb=0
 xdp_entry	eth/vlan?/ipv4/tcp	-	code=0a036b48b1482c4a meta=5ee214e8b4c27377 main=175 cb=0
 xdp_entry	eth/vlan?/ipv4/tcp capture headers	-	code=0a036b48b1482c4a meta=b7725a4fcbdbbf1b main=175 cb=0
 xdp_entry	eth/vlan?/ipv4/tcp capture vlan	-	code=7f565fb9f81f8c0b meta=72b8cd2d04947a44 main=178 cb=0
-xdp_entry	eth/vlan?/ipv4/tcp where all((tcp.options.SACK.blocks.right == 200) or (vlan.tci == 5))	-	code=7d3772f36af2ebd3 meta=5ee214e8b4c27377 main=390 cb=106
+xdp_entry	eth/vlan?/ipv4/tcp where all((tcp.options.SACK.blocks.right == 200) or (vlan.tci == 5))	-	code=0ac74d791f396472 meta=5ee214e8b4c27377 main=390 cb=108
 xdp_entry	eth/vlan?/ipv4/tcp where ipv4.ttl == 64	-	code=327ee4ef20d3ea72 meta=5ee214e8b4c27377 main=187 cb=0
 xdp_entry	eth/vlan?/ipv4/tcp where not (vlan.tci == 1)	-	code=e9278b6a261093d6 meta=5ee214e8b4c27377 main=193 cb=0
 xdp_entry	eth/vlan?/ipv4/tcp where tcp.dport == 80	-	code=3a72bf1e1ffe83e3 meta=5ee214e8b4c27377 main=188 cb=0
 xdp_entry	eth/vlan?/ipv4/tcp where vlan.tci != 1	-	code=dcabbbe9a09d1ca6 meta=5ee214e8b4c27377 main=191 cb=0
 xdp_entry	eth/vlan?/ipv4/tcp where vlan.tci == 1	-	code=dfd134e701eecb72 meta=5ee214e8b4c27377 main=191 cb=0
 xdp_entry	eth/vlan?/ipv4/tcp where vlan.tci == 100	-	code=f7d1be3f0d9b7d8c meta=5ee214e8b4c27377 main=191 cb=0
-xdp_entry	eth/vlan?/ipv6/tcp where ipv6.exts[ipv6.hop_limit].next_header == 6	-	code=9eb4b12a1cdcf317 meta=5ee214e8b4c27377 main=362 cb=67
+xdp_entry	eth/vlan?/ipv6/tcp where ipv6.exts[ipv6.hop_limit].next_header == 6	-	code=cf9dbaf71690a823 meta=5ee214e8b4c27377 main=362 cb=69
 xdp_entry	eth/vlan?/mpls?/ipv4/tcp	-	code=28a36113a5491de1 meta=5ee214e8b4c27377 main=209 cb=0
 xdp_entry	eth/vlan?/mpls?/ipv4?	-	code=0daf501b52ed6b04 meta=5ee214e8b4c27377 main=152 cb=0
 xdp_entry	eth/vlan?/vlan/ipv4/tcp	-	code=5311f0a5350978d2 meta=5ee214e8b4c27377 main=190 cb=0
@@ -567,13 +567,13 @@ xdp_entry	eth/vlan@v{0,0}/ipv4/tcp where (v.tci == 100) or (tcp.dport == 80)	-	c
 xdp_entry	eth/vlan@v{0,0}/ipv4/tcp where not (v.tci == 100)	-	code=53e9dd4f863f24be meta=5ee214e8b4c27377 main=129 cb=0
 xdp_entry	eth/vlan@v{0,0}/ipv4/tcp where v.tci != 100	-	code=c66a66c5d78dddb7 meta=5ee214e8b4c27377 main=2 cb=0
 xdp_entry	eth/vlan@v{0,0}/ipv4/tcp where v.tci == 100	-	code=c66a66c5d78dddb7 meta=5ee214e8b4c27377 main=2 cb=0
-xdp_entry	eth/vlan@v{0,0}/ipv6/srv6/tcp where any((srv6.segments.addr == 0000:0000:0000:0000:0000:0000:0000:0007) or (v.tci == 1))	-	code=f7aa1b3f147d7622 meta=5ee214e8b4c27377 main=502 cb=64
-xdp_entry	eth/vlan@v{0,0}/ipv6/srv6/tcp where any((srv6.segments.addr == fc00:0000:0000:0000:0000:0000:0000:0001) or (v.tci == 1))	-	code=fa2bf151745c9ca0 meta=5ee214e8b4c27377 main=502 cb=64
+xdp_entry	eth/vlan@v{0,0}/ipv6/srv6/tcp where any((srv6.segments.addr == 0000:0000:0000:0000:0000:0000:0000:0007) or (v.tci == 1))	-	code=0282cd16c42aab45 meta=5ee214e8b4c27377 main=502 cb=66
+xdp_entry	eth/vlan@v{0,0}/ipv6/srv6/tcp where any((srv6.segments.addr == fc00:0000:0000:0000:0000:0000:0000:0001) or (v.tci == 1))	-	code=27612a9a98d065bb meta=5ee214e8b4c27377 main=502 cb=66
 xdp_entry	eth/vlan[tci == 100]?/ipv4	-	code=2f6270459d31a848 meta=5ee214e8b4c27377 main=112 cb=0
 xdp_entry	eth/vlan[tci == 100]?/ipv4/tcp	-	code=688e2b9fe3c8860a meta=5ee214e8b4c27377 main=182 cb=0
 xdp_entry	eth/vlan[tci == 200]?/ipv4/tcp	-	code=5c505b263bf0da44 meta=5ee214e8b4c27377 main=182 cb=0
 xdp_entry	eth/vlan[tci==100]/ipv4/tcp where tcp.dport == 80	-	code=82e9a05a20f178b9 meta=5ee214e8b4c27377 main=158 cb=0
-xdp_entry	eth/vlan{0,0}/(ipv4|ipv6)/tcp	-	code=9ec36aa01b90c73e meta=5ee214e8b4c27377 main=275 cb=64
+xdp_entry	eth/vlan{0,0}/(ipv4|ipv6)/tcp	-	code=12b8c17c856e02e7 meta=5ee214e8b4c27377 main=275 cb=66
 xdp_entry	eth/vlan{0,0}/ipv4/tcp	-	code=53e9dd4f863f24be meta=5ee214e8b4c27377 main=129 cb=0
 xdp_entry	eth/vlan{0,1}	-	code=f6d4c5203345dc1a meta=5ee214e8b4c27377 main=19 cb=0
 xdp_entry	eth[dst < 00:11:22:33:44:55]/ipv4/tcp	-	code=a8bb60fae055fd80 meta=5ee214e8b4c27377 main=150 cb=0

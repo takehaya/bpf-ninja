@@ -242,121 +242,123 @@ dsl_pm_ipv6_1_0_parse_ext_cb:
 	  6: AddImm dst: r0 imm: 8
 	  7: JGTReg dst: r0 off: -1 src: r5 <dsl_pm_ipv6_1_0_parse_ext_cb_break>
 	  8: AddImm dst: r3 imm: 8
-	  9: StXMemDW dst: r2 src: r3 off: 0 imm: 0
-	 10: JLTImm dst: r3 off: -1 imm: 8 <dsl_pm_ipv6_1_0_parse_ext_cb_break>
-	 11: MovReg dst: r1 src: r3
-	 12: SubImm dst: r1 imm: 8
-	 13: JGTImm dst: r1 off: -1 imm: 511 <dsl_pm_ipv6_1_0_parse_ext_cb_break>
-	 14: MovReg dst: r0 src: r4
-	 15: AddReg dst: r0 src: r1
-	 16: AddImm dst: r0 imm: 1
-	 17: JGTReg dst: r0 off: -1 src: r5 <dsl_pm_ipv6_1_0_parse_ext_cb_break>
-	 18: LdXMemB dst: r0 src: r0 off: -1 imm: 0
-	 19: StXMemDW dst: rfp src: r0 off: -56 imm: 0
-	 20: JLTImm dst: r3 off: -1 imm: 8 <dsl_pm_ipv6_1_0_parse_ext_cb_break>
-	 21: MovReg dst: r1 src: r3
-	 22: SubImm dst: r1 imm: 8
-	 23: JGTImm dst: r1 off: -1 imm: 511 <dsl_pm_ipv6_1_0_parse_ext_cb_break>
-	 24: MovReg dst: r0 src: r4
-	 25: AddReg dst: r0 src: r1
-	 26: AddImm dst: r0 imm: 1
-	 27: JGTReg dst: r0 off: -1 src: r5 <dsl_pm_ipv6_1_0_parse_ext_cb_break>
-	 28: LdXMemB dst: r0 src: r0 off: -1 imm: 0
-	 29: StXMemDW dst: r2 src: r0 off: -32 imm: 0
-	 30: JLTImm dst: r3 off: -1 imm: 7 <dsl_pm_ipv6_1_0_parse_ext_cb_break>
-	 31: MovReg dst: r0 src: r3
-	 32: SubImm dst: r0 imm: 7
-	 33: JGTImm dst: r0 off: -1 imm: 511 <dsl_pm_ipv6_1_0_parse_ext_cb_break>
-	 34: MovReg dst: r1 src: r4
-	 35: AddReg dst: r1 src: r0
-	 36: AddImm dst: r1 imm: 1
-	 37: JGTReg dst: r1 off: -1 src: r5 <dsl_pm_ipv6_1_0_parse_ext_cb_break>
-	 38: LdXMemB dst: r1 src: r1 off: -1 imm: 0
-	 39: AndImm dst: r1 imm: 255
-	 40: LShImm dst: r1 imm: 3
-	 41: AddReg dst: r3 src: r1
-	 42: JGTImm dst: r3 off: -1 imm: 512 <dsl_pm_ipv6_1_0_parse_ext_cb_break>
-	 43: MovReg dst: r0 src: r4
-	 44: AddReg dst: r0 src: r3
-	 45: JGTReg dst: r0 off: -1 src: r5 <dsl_pm_ipv6_1_0_parse_ext_cb_break>
-	 46: StXMemDW dst: r2 src: r3 off: 0 imm: 0
-	 47: LdXMemDW dst: r0 src: rfp off: -56 imm: 0
-	 48: JNEImm dst: r0 off: -1 imm: 0 <dsl_pm_ipv6_1_0_vcb_case_8_skip>
-	 49: Ja off: -1 <dsl_pm_ipv6_1_0_parse_ext_cb_continue>
+	  9: AndImm dst: r3 imm: 1023
+	 10: StXMemDW dst: r2 src: r3 off: 0 imm: 0
+	 11: JLTImm dst: r3 off: -1 imm: 8 <dsl_pm_ipv6_1_0_parse_ext_cb_break>
+	 12: MovReg dst: r1 src: r3
+	 13: SubImm dst: r1 imm: 8
+	 14: JGTImm dst: r1 off: -1 imm: 511 <dsl_pm_ipv6_1_0_parse_ext_cb_break>
+	 15: MovReg dst: r0 src: r4
+	 16: AddReg dst: r0 src: r1
+	 17: AddImm dst: r0 imm: 1
+	 18: JGTReg dst: r0 off: -1 src: r5 <dsl_pm_ipv6_1_0_parse_ext_cb_break>
+	 19: LdXMemB dst: r0 src: r0 off: -1 imm: 0
+	 20: StXMemDW dst: rfp src: r0 off: -56 imm: 0
+	 21: JLTImm dst: r3 off: -1 imm: 8 <dsl_pm_ipv6_1_0_parse_ext_cb_break>
+	 22: MovReg dst: r1 src: r3
+	 23: SubImm dst: r1 imm: 8
+	 24: JGTImm dst: r1 off: -1 imm: 511 <dsl_pm_ipv6_1_0_parse_ext_cb_break>
+	 25: MovReg dst: r0 src: r4
+	 26: AddReg dst: r0 src: r1
+	 27: AddImm dst: r0 imm: 1
+	 28: JGTReg dst: r0 off: -1 src: r5 <dsl_pm_ipv6_1_0_parse_ext_cb_break>
+	 29: LdXMemB dst: r0 src: r0 off: -1 imm: 0
+	 30: StXMemDW dst: r2 src: r0 off: -32 imm: 0
+	 31: JLTImm dst: r3 off: -1 imm: 7 <dsl_pm_ipv6_1_0_parse_ext_cb_break>
+	 32: MovReg dst: r0 src: r3
+	 33: SubImm dst: r0 imm: 7
+	 34: JGTImm dst: r0 off: -1 imm: 511 <dsl_pm_ipv6_1_0_parse_ext_cb_break>
+	 35: MovReg dst: r1 src: r4
+	 36: AddReg dst: r1 src: r0
+	 37: AddImm dst: r1 imm: 1
+	 38: JGTReg dst: r1 off: -1 src: r5 <dsl_pm_ipv6_1_0_parse_ext_cb_break>
+	 39: LdXMemB dst: r1 src: r1 off: -1 imm: 0
+	 40: AndImm dst: r1 imm: 255
+	 41: LShImm dst: r1 imm: 3
+	 42: AddReg dst: r3 src: r1
+	 43: JGTImm dst: r3 off: -1 imm: 512 <dsl_pm_ipv6_1_0_parse_ext_cb_break>
+	 44: MovReg dst: r0 src: r4
+	 45: AddReg dst: r0 src: r3
+	 46: JGTReg dst: r0 off: -1 src: r5 <dsl_pm_ipv6_1_0_parse_ext_cb_break>
+	 47: AndImm dst: r3 imm: 1023
+	 48: StXMemDW dst: r2 src: r3 off: 0 imm: 0
+	 49: LdXMemDW dst: r0 src: rfp off: -56 imm: 0
+	 50: JNEImm dst: r0 off: -1 imm: 0 <dsl_pm_ipv6_1_0_vcb_case_8_skip>
+	 51: Ja off: -1 <dsl_pm_ipv6_1_0_parse_ext_cb_continue>
 dsl_pm_ipv6_1_0_vcb_case_8_skip:
-	 50: MovReg dst: r3 src: r3
-	 51: LdXMemDW dst: r0 src: rfp off: -56 imm: 0
-	 52: JNEImm dst: r0 off: -1 imm: 44 <dsl_pm_ipv6_1_0_vcb_case_9_skip>
-	 53: Ja off: -1 <dsl_pm_ipv6_1_0_parse_ext_cb_continue>
+	 52: MovReg dst: r3 src: r3
+	 53: LdXMemDW dst: r0 src: rfp off: -56 imm: 0
+	 54: JNEImm dst: r0 off: -1 imm: 44 <dsl_pm_ipv6_1_0_vcb_case_9_skip>
+	 55: Ja off: -1 <dsl_pm_ipv6_1_0_parse_ext_cb_continue>
 dsl_pm_ipv6_1_0_vcb_case_9_skip:
-	 54: MovReg dst: r3 src: r3
-	 55: LdXMemDW dst: r0 src: rfp off: -56 imm: 0
-	 56: JNEImm dst: r0 off: -1 imm: 60 <dsl_pm_ipv6_1_0_vcb_case_10_skip>
-	 57: Ja off: -1 <dsl_pm_ipv6_1_0_parse_ext_cb_continue>
+	 56: MovReg dst: r3 src: r3
+	 57: LdXMemDW dst: r0 src: rfp off: -56 imm: 0
+	 58: JNEImm dst: r0 off: -1 imm: 60 <dsl_pm_ipv6_1_0_vcb_case_10_skip>
+	 59: Ja off: -1 <dsl_pm_ipv6_1_0_parse_ext_cb_continue>
 dsl_pm_ipv6_1_0_vcb_case_10_skip:
-	 58: MovReg dst: r3 src: r3
-	 59: Ja off: -1 <dsl_pm_ipv6_1_0_parse_ext_cb_break>
+	 60: MovReg dst: r3 src: r3
+	 61: Ja off: -1 <dsl_pm_ipv6_1_0_parse_ext_cb_break>
 dsl_pm_ipv6_1_0_parse_ext_cb_continue:
-	 60: MovImm dst: r0 imm: 0
-	 61: Exit
-dsl_pm_ipv6_1_0_parse_ext_cb_break:
-	 62: MovImm dst: r0 imm: 1
+	 62: MovImm dst: r0 imm: 0
 	 63: Exit
+dsl_pm_ipv6_1_0_parse_ext_cb_break:
+	 64: MovImm dst: r0 imm: 1
+	 65: Exit
 dsl_auxwalk_cb_1:
-	 64: LdXMemDW dst: r4 src: r2 off: 8 imm: 0
-	 65: LdXMemDW dst: r5 src: r2 off: 16 imm: 0
-	 66: LdXMemDW dst: r0 src: r2 off: 24 imm: 0
-	 67: AddImm dst: r0 imm: 4
-	 68: MovReg dst: r3 src: r0
-	 69: JGTImm dst: r3 off: -1 imm: 511 <dsl_auxwalk_cb_1_break>
-	 70: MovReg dst: r0 src: r4
-	 71: AddReg dst: r0 src: r3
-	 72: AddImm dst: r0 imm: 1
-	 73: JGTReg dst: r0 off: -1 src: r5 <dsl_auxwalk_cb_1_break>
-	 74: LdXMemB dst: r0 src: r0 off: -1 imm: 0
-	 75: AddImm dst: r0 imm: 1
-	 76: JGEReg dst: r1 off: -1 src: r0 <dsl_auxwalk_cb_1_break>
-	 77: LdXMemDW dst: r0 src: r2 off: 24 imm: 0
-	 78: AddImm dst: r0 imm: 8
-	 79: MovReg dst: r3 src: r1
-	 80: JGEImm dst: r3 off: -1 imm: 8 <dsl_auxwalk_cb_1_mismatch>
-	 81: MulImm dst: r3 imm: 16
-	 82: AddReg dst: r3 src: r0
-	 83: JGTImm dst: r3 off: -1 imm: 504 <dsl_auxwalk_cb_1_mismatch>
-	 84: MovReg dst: r0 src: r4
-	 85: AddReg dst: r0 src: r3
-	 86: AddImm dst: r0 imm: 8
-	 87: JGTReg dst: r0 off: -1 src: r5 <dsl_auxwalk_cb_1_mismatch>
-	 88: LdXMemDW dst: r0 src: r0 off: -8 imm: 0
-	 89: LdImmDW dst: r3 imm: 252
-	 91: JNEReg dst: r0 off: -1 src: r3 <dsl_auxwalk_cb_1_mismatch>
-	 92: LdXMemDW dst: r0 src: r2 off: 24 imm: 0
-	 93: AddImm dst: r0 imm: 16
-	 94: MovReg dst: r3 src: r1
-	 95: JGEImm dst: r3 off: -1 imm: 8 <dsl_auxwalk_cb_1_mismatch>
-	 96: MulImm dst: r3 imm: 16
-	 97: AddReg dst: r3 src: r0
-	 98: JGTImm dst: r3 off: -1 imm: 504 <dsl_auxwalk_cb_1_mismatch>
-	 99: MovReg dst: r0 src: r4
-	100: AddReg dst: r0 src: r3
-	101: AddImm dst: r0 imm: 8
-	102: JGTReg dst: r0 off: -1 src: r5 <dsl_auxwalk_cb_1_mismatch>
-	103: LdXMemDW dst: r0 src: r0 off: -8 imm: 0
-	104: LdImmDW dst: r3 imm: 72057594037927936
-	106: JNEReg dst: r0 off: -1 src: r3 <dsl_auxwalk_cb_1_mismatch>
-	107: MovImm dst: r0 imm: 1
-	108: StXMemDW dst: r2 src: r0 off: 0 imm: 0
+	 66: LdXMemDW dst: r4 src: r2 off: 8 imm: 0
+	 67: LdXMemDW dst: r5 src: r2 off: 16 imm: 0
+	 68: LdXMemDW dst: r0 src: r2 off: 24 imm: 0
+	 69: AddImm dst: r0 imm: 4
+	 70: MovReg dst: r3 src: r0
+	 71: JGTImm dst: r3 off: -1 imm: 511 <dsl_auxwalk_cb_1_break>
+	 72: MovReg dst: r0 src: r4
+	 73: AddReg dst: r0 src: r3
+	 74: AddImm dst: r0 imm: 1
+	 75: JGTReg dst: r0 off: -1 src: r5 <dsl_auxwalk_cb_1_break>
+	 76: LdXMemB dst: r0 src: r0 off: -1 imm: 0
+	 77: AddImm dst: r0 imm: 1
+	 78: JGEReg dst: r1 off: -1 src: r0 <dsl_auxwalk_cb_1_break>
+	 79: LdXMemDW dst: r0 src: r2 off: 24 imm: 0
+	 80: AddImm dst: r0 imm: 8
+	 81: MovReg dst: r3 src: r1
+	 82: JGEImm dst: r3 off: -1 imm: 8 <dsl_auxwalk_cb_1_mismatch>
+	 83: MulImm dst: r3 imm: 16
+	 84: AddReg dst: r3 src: r0
+	 85: JGTImm dst: r3 off: -1 imm: 504 <dsl_auxwalk_cb_1_mismatch>
+	 86: MovReg dst: r0 src: r4
+	 87: AddReg dst: r0 src: r3
+	 88: AddImm dst: r0 imm: 8
+	 89: JGTReg dst: r0 off: -1 src: r5 <dsl_auxwalk_cb_1_mismatch>
+	 90: LdXMemDW dst: r0 src: r0 off: -8 imm: 0
+	 91: LdImmDW dst: r3 imm: 252
+	 93: JNEReg dst: r0 off: -1 src: r3 <dsl_auxwalk_cb_1_mismatch>
+	 94: LdXMemDW dst: r0 src: r2 off: 24 imm: 0
+	 95: AddImm dst: r0 imm: 16
+	 96: MovReg dst: r3 src: r1
+	 97: JGEImm dst: r3 off: -1 imm: 8 <dsl_auxwalk_cb_1_mismatch>
+	 98: MulImm dst: r3 imm: 16
+	 99: AddReg dst: r3 src: r0
+	100: JGTImm dst: r3 off: -1 imm: 504 <dsl_auxwalk_cb_1_mismatch>
+	101: MovReg dst: r0 src: r4
+	102: AddReg dst: r0 src: r3
+	103: AddImm dst: r0 imm: 8
+	104: JGTReg dst: r0 off: -1 src: r5 <dsl_auxwalk_cb_1_mismatch>
+	105: LdXMemDW dst: r0 src: r0 off: -8 imm: 0
+	106: LdImmDW dst: r3 imm: 72057594037927936
+	108: JNEReg dst: r0 off: -1 src: r3 <dsl_auxwalk_cb_1_mismatch>
 	109: MovImm dst: r0 imm: 1
-	110: Exit
-dsl_auxwalk_cb_1_mismatch:
-	111: MovImm dst: r0 imm: 0
+	110: StXMemDW dst: r2 src: r0 off: 0 imm: 0
+	111: MovImm dst: r0 imm: 1
 	112: Exit
-dsl_auxwalk_cb_1_break:
-	113: MovImm dst: r0 imm: 1
+dsl_auxwalk_cb_1_mismatch:
+	113: MovImm dst: r0 imm: 0
 	114: Exit
+dsl_auxwalk_cb_1_break:
+	115: MovImm dst: r0 imm: 1
+	116: Exit
 == Funcs
 215: dsl_pm_ipv6_1_0_parse_ext_cb
-279: dsl_auxwalk_cb_1
+281: dsl_auxwalk_cb_1
 == Capture MaxCapLen=0 FilterMinPrefix=0
 == WireFrame true
 == Extractions
