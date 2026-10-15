@@ -349,8 +349,9 @@ func genBpfLoopCallback(layer *ir.LayerInstance, selfConst *vocab.DispatchConst,
 	insns = append(insns, entry...)
 	insns = append(insns,
 		asm.Add.Imm(asm.R3, int32(hs)),
-		asm.And.Imm(asm.R3, 0x3ff), // PROBE: forget the cursor's per-kind bounds
-		asm.StoreMem(asm.R2, bpfLoopCbCtxOffsetField, asm.R3, asm.DWord),
+		asm.Mov.Reg(asm.R0, asm.R3), // PROBE2: store a masked copy, keep R3
+		asm.And.Imm(asm.R0, 0x3ff),
+		asm.StoreMem(asm.R2, bpfLoopCbCtxOffsetField, asm.R0, asm.DWord),
 	)
 	endCheck, err := chainEndCheck(spec, hs, loopChainFrame, breakLabel)
 	if err != nil {

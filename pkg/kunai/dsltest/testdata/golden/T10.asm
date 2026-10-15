@@ -204,27 +204,28 @@ dsl_chain_cb_1:
 	 6: AddImm dst: r0 imm: 4
 	 7: JGTReg dst: r0 off: -1 src: r5 <dsl_chain_cb_1_reject>
 	 8: AddImm dst: r3 imm: 4
-	 9: AndImm dst: r3 imm: 1023
-	10: StXMemDW dst: r2 src: r3 off: 0 imm: 0
-	11: JLTImm dst: r3 off: -1 imm: 2 <dsl_chain_cb_1_break>
-	12: MovReg dst: r1 src: r3
-	13: SubImm dst: r1 imm: 2
-	14: JGTImm dst: r1 off: -1 imm: 511 <dsl_chain_cb_1_break>
-	15: MovReg dst: r0 src: r4
-	16: AddReg dst: r0 src: r1
-	17: AddImm dst: r0 imm: 1
-	18: JGTReg dst: r0 off: -1 src: r5 <dsl_chain_cb_1_break>
-	19: LdXMemB dst: r0 src: r0 off: -1 imm: 0
-	20: AndImm dst: r0 imm: 1
-	21: JEqImm dst: r0 off: -1 imm: 1 <dsl_chain_cb_1_break>
-	22: MovImm dst: r0 imm: 0
-	23: Exit
+	 9: MovReg dst: r0 src: r3
+	10: AndImm dst: r0 imm: 1023
+	11: StXMemDW dst: r2 src: r0 off: 0 imm: 0
+	12: JLTImm dst: r3 off: -1 imm: 2 <dsl_chain_cb_1_break>
+	13: MovReg dst: r1 src: r3
+	14: SubImm dst: r1 imm: 2
+	15: JGTImm dst: r1 off: -1 imm: 511 <dsl_chain_cb_1_break>
+	16: MovReg dst: r0 src: r4
+	17: AddReg dst: r0 src: r1
+	18: AddImm dst: r0 imm: 1
+	19: JGTReg dst: r0 off: -1 src: r5 <dsl_chain_cb_1_break>
+	20: LdXMemB dst: r0 src: r0 off: -1 imm: 0
+	21: AndImm dst: r0 imm: 1
+	22: JEqImm dst: r0 off: -1 imm: 1 <dsl_chain_cb_1_break>
+	23: MovImm dst: r0 imm: 0
+	24: Exit
 dsl_chain_cb_1_reject:
-	24: MovImm dst: r0 imm: -1
-	25: StXMemDW dst: r2 src: r0 off: 0 imm: 0
+	25: MovImm dst: r0 imm: -1
+	26: StXMemDW dst: r2 src: r0 off: 0 imm: 0
 dsl_chain_cb_1_break:
-	26: MovImm dst: r0 imm: 1
-	27: Exit
+	27: MovImm dst: r0 imm: 1
+	28: Exit
 == Funcs
 183: dsl_chain_cb_1
 == Capture MaxCapLen=0 FilterMinPrefix=0
