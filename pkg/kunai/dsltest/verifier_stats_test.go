@@ -71,15 +71,8 @@ func TestVerifierStats(t *testing.T) {
 			log = prog.VerifierLog
 			_ = prog.Close()
 		}
-		_ = scratch.Close()
-		_ = keys.Close()
-		sort.Slice(wall, func(i, j int) bool { return wall[i] < wall[j] })
-		s, v := statsRe.FindStringSubmatch(log), vtimeRe.FindStringSubmatch(log)
-		if s == nil || v == nil {
-			t.Fatalf("%s: no stats in verifier log: %q", p.name, log)
-		}
 		if p.name == "P2" || p.name == "S4" {
-			prog, err := ebpf.NewProgramWithOptions(spec, ebpf.ProgramOptions{LogLevel: ebpf.LogLevelInstruction | ebpf.LogLevelStats, LogSizeStart: 1 << 28})
+			prog, err := ebpf.NewProgramWithOptions(spec, ebpf.ProgramOptions{LogLevel: ebpf.LogLevelInstruction | ebpf.LogLevelStats, LogSizeStart: 1 << 24})
 			if err != nil {
 				t.Fatalf("%s: level-2 load: %v", p.name, err)
 			}
@@ -88,6 +81,13 @@ func TestVerifierStats(t *testing.T) {
 				t.Fatalf("%s: write %s: %v", p.name, path, err)
 			}
 			_ = prog.Close()
+		}
+		_ = scratch.Close()
+		_ = keys.Close()
+		sort.Slice(wall, func(i, j int) bool { return wall[i] < wall[j] })
+		s, v := statsRe.FindStringSubmatch(log), vtimeRe.FindStringSubmatch(log)
+		if s == nil || v == nil {
+			t.Fatalf("%s: no stats in verifier log: %q", p.name, log)
 		}
 		t.Logf("VSTAT kernel=%s probe=%s insns=%d processed=%s max_states_per_insn=%s total_states=%s peak_states=%s mark_read=%s vtime_us=%s wall_ms=%.1f",
 			kernel, p.name, len(insns), s[1], s[2], s[3], s[4], s[5], v[1], float64(wall[n/2].Microseconds())/1000)
