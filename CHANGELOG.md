@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.26.2](https://github.com/takehaya/bpf-ninja/compare/v0.26.1...v0.26.2) (2026-10-15)
+
+
+### 📝 Documentation
+
+* **adr:** record the 6.x verifier history of the TCP option walk ([#236](https://github.com/takehaya/bpf-ninja/issues/236)) ([f25a94f](https://github.com/takehaya/bpf-ninja/commit/f25a94f9fe5ff89689f14a3e3a501e5c2bbd7bb4))
+
+
+### ♻️ Code Refactoring
+
+* **program:** share the CPU affinity helpers across the pinned tests ([#231](https://github.com/takehaya/bpf-ninja/issues/231)) ([f0084d7](https://github.com/takehaya/bpf-ninja/commit/f0084d71e8900b13ae84709e84d53386a1639294))
+
 ## [0.26.1](https://github.com/takehaya/bpf-ninja/compare/v0.26.0...v0.26.1) (2026-10-15)
 
 
