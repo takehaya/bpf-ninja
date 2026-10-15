@@ -1129,15 +1129,16 @@ func (c *whereCtx) genArithCompare(w *ir.Condition, failLabel string) (asm.Instr
 // and joins zero-extended (see genArith128); a ± whose both sides park
 // holds its left result above the reserved slots (genArith128BothPark).
 // An Int<128> aux field (an SRH segment) loads like a primary one
-// (genArithAuxField128Load), and a [0:128] slice loads as its field. A
-// slice between 65 and 127 bits returns ErrNotImplemented; operators other than + and - on Int<128> operands
-// never arrive, the resolver types them as errors (dsl-types.md §13.9).
+// (genArithAuxField128Load), and a [0:128] slice loads as its field.
+// A slice between 65 and 127 bits returns ErrNotImplemented; operators
+// other than + and - on Int<128> operands never arrive, the resolver
+// types them as errors (dsl-types.md §13.9).
 func (c *whereCtx) genArithCompare128(w *ir.Condition, failLabel string, targetBits int) (asm.Instructions, error) {
 	// Mid-width slice cmps (widths in (64, 128) other than exactly
 	// 128) are desugared in the resolver into chains of single-LDX
 	// sub-cmps, so we should only see `targetBits == 128` here. A
 	// width that slipped past the desugar is either an arith binop
-	// (operand width > 64) or a non-slice 128-bit field — both go
+	// (operand width > 64) or a 128-bit field or its [0:128] slice — both go
 	// through the dual-LDX pipeline below.
 	if targetBits != 128 {
 		return nil, fmt.Errorf("%w: a bit<%d> value compares only with == or != against a slice of the same width (no mid-width arith or constant compare)", ErrNotImplemented, targetBits)
@@ -1244,7 +1245,7 @@ func (c *whereCtx) genArith128(e *ir.ArithExpr) (asm.Instructions, error) {
 			if f.Slice != nil {
 				name += fmt.Sprintf("[%d:%d]", f.Slice.Lo, f.Slice.Hi)
 			}
-			return nil, fmt.Errorf("%w: %s (bit<%d>) next to an Int<128> operand: a slice between 65 and 127 bits is not wired in arithmetic; compare it with == or != against a slice of the same width, or use the whole field", ErrNotImplemented, name, f.EffectiveBits())
+			return nil, fmt.Errorf("%w: %s (bit<%d>) next to an Int<128> operand: a slice between 65 and 127 bits is not wired; compare it with == or != against a slice of the same width, or use the whole field", ErrNotImplemented, name, f.EffectiveBits())
 		}
 		return c.genArithField128Load(e.Field)
 	case ast.ArithBinOp:
@@ -1665,7 +1666,9 @@ func (c *whereCtx) genArithAuxField128Load(f *ir.FieldRef) (asm.Instructions, er
 		return nil, err
 	}
 	if needsEntryAddress(f) {
-		fieldByteOff, _, err := auxEntryFieldWindow(f)
+		// The field's start, not a slice window: a [0:128] slice loads
+		// all 16 bytes like the field.
+		fieldByteOff, err := auxEntryFieldStart(f)
 		if err != nil {
 			return nil, err
 		}

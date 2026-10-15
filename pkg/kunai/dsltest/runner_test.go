@@ -1665,6 +1665,8 @@ func TestNetworkLiteralOnSlice(t *testing.T) {
 	auxArith := New(t, "eth/ipv6/srv6/tcp where srv6.segments[1].addr[0:128] + 1 == srv6.segments[1].addr + 1")
 	auxArith.MustMatch(t, two, "full-width aux slice in 128-bit arith")
 	auxArith.MustReject(t, one, "absent entry rejects (D-031)")
+	New(t, "eth/ipv6/srv6/tcp where srv6.segments[srv6.last_entry].addr[0:128] + 1 == srv6.segments[1].addr + 1").MustMatch(t, two, "full-width dynamic-index aux slice in 128-bit arith")
+	New(t, "eth/ipv6/srv6/tcp where srv6.segments[srv6.last_entry].addr[0:128] == srv6.segments[0].addr").MustReject(t, two, "last_entry is segments[1], not segments[0]")
 	New(t, "eth/ipv6/srv6/tcp where srv6.segments[srv6.last_entry].addr[96:128] == 0.0.0.2").MustMatch(t, two, "dynamic index: low word")
 	// `!=` on the dynamic IPv4 arm used to come out inverted (the op was
 	// folded into the jump and routed again by whereDynamicMultiByte).
