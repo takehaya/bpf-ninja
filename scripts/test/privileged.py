@@ -80,6 +80,10 @@ def main():
     ]
     events, expected = [], set()
     env = dict(os.environ, CI="true")
+    if args.kernel:
+        # TestVerifierStats checks its per-kernel budgets only on the matrix
+        # images; a host kernel's numbers are logged, never asserted.
+        env["KUNAI_VERIFIER_STRICT"] = "1"
     with open(args.log, "w", encoding="utf-8") as log:
         for package, pattern in suites:
             # Enumerate selected tests independently of the execution report;
