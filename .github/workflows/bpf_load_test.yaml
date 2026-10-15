@@ -104,8 +104,8 @@ jobs:
       - name: Run verifier stats
         run: |
           mkdir -p vlogs
-          vimto -sudo -kernel :${{ matrix.kernel }} -- env KUNAI_VERIFIER_DUMP=$PWD/vlogs go test -count=1 -v -run TestVerifierStats ./pkg/kunai/dsltest 2>&1 | tee vstat.log
-          grep -ho 'VSTAT-BASELINE.*' vstat.log
+          KUNAI_VERIFIER_DUMP=$PWD/vlogs vimto -sudo -kernel :${{ matrix.kernel }} -- go test -count=1 -v -run TestVerifierStats ./pkg/kunai/dsltest 2>&1 | tee vstat.log
+          set -o pipefail; grep -ho "VSTAT-BASELINE.*" vstat.log
           for f in vlogs/*.log; do echo "$f $(wc -c < "$f") limit=$(grep -ci 'limit' "$f")"; done
           tar czf vlogs.tgz vlogs
 
