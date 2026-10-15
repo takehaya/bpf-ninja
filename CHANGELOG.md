@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.26.1](https://github.com/takehaya/bpf-ninja/compare/v0.26.0...v0.26.1) (2026-10-15)
+
+
+### 🐛 Bug Fixes
+
+* **kunai:** mask the bpf_loop cursor before writing it back ([#228](https://github.com/takehaya/bpf-ninja/issues/228)) ([0b707ee](https://github.com/takehaya/bpf-ninja/commit/0b707ee77734c5c3a70ea70ef4bf58bc92a68280))
+
+
+### 🔧 Miscellaneous Chores
+
+* **ci:** move the release workflow to the Node 24 majors of its actions ([#223](https://github.com/takehaya/bpf-ninja/issues/223)) ([19f8854](https://github.com/takehaya/bpf-ninja/commit/19f8854597a73ad268fbad10e16bc9386aa38357))
+* **ci:** move workflows to the Node 24 majors of their actions ([#222](https://github.com/takehaya/bpf-ninja/issues/222)) ([e835ae8](https://github.com/takehaya/bpf-ninja/commit/e835ae88b379c3ce96ad74bcfb193e0cd5b3a19e))
+
 ## [0.26.0](https://github.com/takehaya/bpf-ninja/compare/v0.25.0...v0.26.0) (2026-10-14)
 
 
