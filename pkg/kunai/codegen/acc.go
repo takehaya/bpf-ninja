@@ -275,8 +275,9 @@ func optionFieldName(f *ir.FieldRef) string {
 	if layout := dynamicAuxLayoutOf(f); layout != nil {
 		name += "." + layout.OutParam
 	}
-	// An entry of a stack inside the option (SACK blocks).
-	if f.Aux != nil && f.Aux.OwnerOption != nil && f.Aux.Stack != nil {
+	// An entry of a stack: inside an option (SACK blocks) or in the
+	// header (SRv6 segments).
+	if f.Aux != nil && f.Aux.Stack != nil {
 		idx := "[i]"
 		if f.Aux.Stack.IsStatic {
 			idx = fmt.Sprintf("[%d]", f.Aux.Stack.Static)

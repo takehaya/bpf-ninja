@@ -1006,9 +1006,9 @@ func TestCompileSubByteRawOffsetStillRejected(t *testing.T) {
 }
 
 func TestCompileBitSlice128IsSugar(t *testing.T) {
-	// `field[0:128]` is sugar for the full Int<128> field — the
-	// resolver lifted the 64-bit cap so the dual-LDX cmp pipeline
-	// fires the same way as `ipv6.src == ipv6.dst`.
+	// `field[0:128]` is the full Int<128> field. Between two such
+	// slices the resolver's chunk desugar compiles it; against a
+	// constant or in arithmetic the dual-LDX pipeline loads the field.
 	insns, err := compileForTest("eth/ipv6/tcp where ipv6.src[0:128] == ipv6.dst[0:128]")
 	if err != nil {
 		t.Fatalf("Compile: %v", err)
