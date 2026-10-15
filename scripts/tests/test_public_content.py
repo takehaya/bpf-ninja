@@ -74,6 +74,16 @@ class PublicContentTest(unittest.TestCase):
         self.check("--index")
         self.check("--head", "HEAD", "--base", self.baseline, passed=False)
 
+    def test_empty_base_checks_from_baseline(self):
+        # The workflow passes an empty base after a forced push.
+        self.check("--head", "HEAD", "--base", "")
+        self.write("private/draft", "Draft")
+        self.commit()
+        self.git("rm", "-qr", "private")
+        self.commit()
+        result = self.check("--head", "HEAD", "--base", "", passed=False)
+        self.assertIn("Private document paths", result.stderr)
+
     def test_new_branch_checks_hidden_history(self):
         self.write("private/draft", "Draft")
         self.commit()
