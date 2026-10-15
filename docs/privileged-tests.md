@@ -9,7 +9,7 @@ collide. Do not run another host suite or integration setup concurrently.
 
 | Profile | Required selection | Environment |
 |---|---|---|
-| Host | Every `Test*` in internal/program, internal/attach, internal/capture/..., cmd/bpf-ninja, and pkg/kunai/dsltest | Integration job, Ubuntu 24.04 runner |
+| Host | Every `Test*` in internal/program, internal/attach, internal/capture/..., cmd/bpf-ninja, and pkg/kunai/dsltest | Integration job, Ubuntu 26.04 runner |
 | Kernel matrix | Every `TestBpf*` in internal/program and cmd/bpf-ninja; all tests in internal/attach, internal/capture/..., and pkg/kunai/dsltest | vimto, kernels 6.1/6.6/6.12/6.15/6.18/7.0/7.1/7.2/7.3-rc4 |
 
 The host profile includes `TestLinearHeadClampAtCgroupSKB`,
@@ -18,6 +18,10 @@ QinQ frames over a veth pair, by default and with `--tc-vlan-reinsert`). It also
 matrix includes literal/slice, grouping, IPv6 length, and TCP option tests via
 the complete DSL suite, plus tracing read-window tests with variable headers.
 `python3 scripts/test/privileged.py --kernel 6.12` runs a matrix cell locally.
+The matrix also sets `KUNAI_VERIFIER_STRICT=1`, so `TestVerifierStats` fails
+when a probe's processed instruction count exceeds 1.5 times its per-kernel
+baseline or the kernel has no baseline; the host profile only logs the numbers
+(see docs/ja/adr/0003-mask-bpf-loop-cursor.md).
 
 The runner enumerates the selected tests independently, captures Go JSON events,
 and rejects missing completions, package failures, and unexpected skips,
@@ -31,7 +35,7 @@ parameters are errors. The shell integration suite rejects all skips in CI.
 
 The JSON report defaults to `/tmp/bpf-ninja-privileged.jsonl`; use `--log` to
 retain another path. Matrix jobs publish both JSON and readable logs. Each Go
-suite has a five-minute timeout; the matrix job has a twenty-minute timeout.
+suite has a fifteen-minute timeout; the matrix job has a twenty-minute timeout.
 The program suite contains bounded three-second negative argument-filter waits,
 so its duration dominates the smaller attach, capture, and DSL suites.
 

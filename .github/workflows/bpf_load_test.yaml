@@ -142,6 +142,11 @@ jobs:
             ' bpf_load_kernel_${{ matrix.kernel }}.log
           } > verifier_matrix_kernel_${{ matrix.kernel }}.csv
           cat verifier_matrix_kernel_${{ matrix.kernel }}.csv
+          # TestVerifierStats lines and budget failures, including the
+          # VSTAT-BASELINE row that refreshes verifierBaseline in pkg/kunai/dsltest.
+          grep -hoE 'VSTAT.*|[SPC][0-9]: .*(budget|baseline).*|no verifier baseline.*' \
+            bpf_load_kernel_${{ matrix.kernel }}.log \
+            > verifier_stats_kernel_${{ matrix.kernel }}.log || true
 
       - name: Upload verifier matrix
         if: always()
@@ -150,6 +155,7 @@ jobs:
           name: verifier-matrix-kernel-${{ matrix.kernel }}
           path: |
             verifier_matrix_kernel_${{ matrix.kernel }}.csv
+            verifier_stats_kernel_${{ matrix.kernel }}.log
             bpf_load_kernel_${{ matrix.kernel }}.log
             bpf_load_kernel_${{ matrix.kernel }}.jsonl
           retention-days: 30
