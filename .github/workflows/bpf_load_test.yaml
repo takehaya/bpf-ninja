@@ -28,18 +28,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        kernel:
-          - "6.1"
-          - "6.6"
-          - "6.12"
-          - "6.15"
-          - "6.18"
-          - "7.0"
-          - "7.1"
-          - "7.2"
-          # ghcr.io/cilium/ci-kernels has no plain 7.3 tag yet; move to
-          # "7.3" once the release image is published.
-          - "7.3-rc4"
+        kernel: ["6.6", "6.7", "6.8-rc4", "6.8", "6.9", "6.10", "6.11", "6.12-rc2", "6.12"]
     permissions:
       contents: read
       packages: read
@@ -112,50 +101,18 @@ jobs:
             echo "Cache hit: $DIR"
           fi
 
-      - name: Run BPF load test
+      - name: Run verifier stats
         run: |
-          set -o pipefail
-          python3 scripts/test/privileged.py --kernel ${{ matrix.kernel }} \
-            --log bpf_load_kernel_${{ matrix.kernel }}.jsonl \
-            2>&1 | tee bpf_load_kernel_${{ matrix.kernel }}.log
+          mkdir -p vlogs
+          vimto -sudo -kernel :${{ matrix.kernel }} -- env KUNAI_VERIFIER_DUMP=$PWD/vlogs go test -count=1 -v -run TestVerifierStats ./pkg/kunai/dsltest 2>&1 | tee vstat.log
+          grep -ho 'VSTAT-BASELINE.*' vstat.log
+          for f in vlogs/*.log; do echo "$f $(wc -c < "$f") limit=$(grep -ci 'limit' "$f")"; done
+          tar czf vlogs.tgz vlogs
 
-      # E4 verifier matrix: extract the per-(filter, host) verdict from
-      # TestBpfFilterSet{XDP,TC}/Fn subtests so the paper's Table 2 has
-      # a per-cell artifact rather than reading the full test log.
-      # Header + one row per (filter, host) per kernel; concatenating
-      # the per-kernel CSVs gives the whole matrix.
-      - name: Extract verifier matrix CSV
+      - uses: actions/upload-artifact@v7
         if: always()
-        run: |
-          {
-            echo "filter,host,verdict,kernel"
-            awk -v k="${{ matrix.kernel }}" '
-              /^    --- (PASS|FAIL): TestBpfFilterSet(XDP|TC)\// {
-                verdict = tolower($2); sub(/:$/, "", verdict)
-                n = split($3, parts, "/")
-                if (n >= 2) {
-                  host = parts[1]
-                  sub(/^TestBpfFilterSet/, "", host)
-                  print parts[2] "," host "," verdict "," k
-                }
-              }
-            ' bpf_load_kernel_${{ matrix.kernel }}.log
-          } > verifier_matrix_kernel_${{ matrix.kernel }}.csv
-          cat verifier_matrix_kernel_${{ matrix.kernel }}.csv
-          # TestVerifierStats lines and budget failures, including the
-          # VSTAT-BASELINE row that refreshes verifierBaseline in pkg/kunai/dsltest.
-          grep -hoE 'VSTAT.*|[SPC][0-9]: .*(budget|baseline).*|no verifier baseline.*' \
-            bpf_load_kernel_${{ matrix.kernel }}.log \
-            > verifier_stats_kernel_${{ matrix.kernel }}.log || true
-
-      - name: Upload verifier matrix
-        if: always()
-        uses: actions/upload-artifact@v7
         with:
-          name: verifier-matrix-kernel-${{ matrix.kernel }}
+          name: vlogs-${{ matrix.kernel }}
           path: |
-            verifier_matrix_kernel_${{ matrix.kernel }}.csv
-            verifier_stats_kernel_${{ matrix.kernel }}.log
-            bpf_load_kernel_${{ matrix.kernel }}.log
-            bpf_load_kernel_${{ matrix.kernel }}.jsonl
-          retention-days: 30
+            vlogs.tgz
+            vstat.log

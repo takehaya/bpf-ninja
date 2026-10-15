@@ -111,6 +111,15 @@ func TestVerifierStats(t *testing.T) {
 		}
 		log := prog.VerifierLog
 		_ = prog.Close()
+		if dir := os.Getenv("KUNAI_VERIFIER_DUMP"); dir != "" {
+			full, err := ebpf.NewProgramWithOptions(spec, ebpf.ProgramOptions{LogLevel: ebpf.LogLevelInstruction | ebpf.LogLevelStats, LogSizeStart: 1 << 26})
+			if err == nil {
+				_ = os.WriteFile(dir+"/"+key+"-"+p.name+".log", []byte(full.VerifierLog), 0o644)
+				_ = full.Close()
+			} else {
+				t.Logf("%s: level-2 load: %v", p.name, err)
+			}
+		}
 		s, v := verifierStatsRe.FindStringSubmatch(log), verifierTimeRe.FindStringSubmatch(log)
 		if s == nil || v == nil {
 			t.Fatalf("%s: no statistics in the verifier log: %q", p.name, log)
