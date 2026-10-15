@@ -106,11 +106,11 @@ sudo go test -count=1 -v -run TestVerifierStats ./pkg/kunai/dsltest
 ```
 
 `scripts/test/privileged.py --kernel` は `KUNAI_VERIFIER_STRICT=1` を付けて実行する。
-このとき、processed が `verifierBaseline` の値の 1.5 倍を超えた filter と、基準値の無い kernel は失敗になる。
+このとき、processed が `verifierBaseline` の値の 1.5 倍を超えた filter と、基準値のない kernel や filter は失敗になる。
 kernel の key は release の先頭 2 つの数字なので、7.3-rc4 と 7.3 は同じ行を使う。
 手元の kernel では基準値と比べた結果を log に出すだけで、失敗にはしない。
 
-codegen の変更で processed が意図して動いたときは、CI の log か artifact `verifier-matrix-kernel-*` の `verifier_stats_kernel_*.log` から `VSTAT-BASELINE` の行を集め、`verifierBaseline` の該当する行を置き換える。
+codegen の変更で processed が意図どおりに変わったときは、CI の log か artifact `verifier-matrix-kernel-*` の `verifier_stats_kernel_*.log` から `VSTAT-BASELINE` の行を集め、`verifierBaseline` の該当する行を置き換える。
 kernel をまたいで比べるのは processed と状態の数だけにする。
 
 ## 未解決の点

@@ -1022,7 +1022,7 @@ TCP の option walk は `data_offset` から求めた header end に制限しま
 
 callback は kind ごとの slot-store prelude を dispatch の前に置きます。これだけでは Linux 6.6 / 6.15 で cursor と終了位置の比較による探索増加を抑えられないため、既存 accumulator と同じ二重 XOR による cursor の値追跡緩和を使います。実行時の値は変わりませんが、verifier が二重 XOR を相殺しない性質への依存が残ります。branch 数だけでは保証できないため、6.1 / 6.6 / 6.12 / 6.15 / 6.18 / 7.0 / 7.1 / 7.2 / 7.3-rc4 の packet・program load 試験で互換性を検査します。
 
-callback が cursor を ctx に書き戻すときは、`storeCallbackCursor` (`pkg/kunai/codegen/bpfloop.go`) で cursor の複製に `0x3ff` を AND してから書きます。書き戻す前の cursor は ScratchBufSize 以下なので値は変わりませんが、verifier から見た cursor の下限と register 同士の関係が消え、option の種類や反復が違う状態が合流します。Linux 7.0 以降の verifier は bpf_loop の callback をループとして扱い、cursor の slot に precision を付けるので、この mask が無いと TCP option の walk の検証量が約 4 倍になります。経緯と測定は [ADR 0003](./adr/0003-mask-bpf-loop-cursor.md) にあります。CI の各 kernel では `TestVerifierStats` が、TCP option の walk を含む filter の processed が基準値の 1.5 倍を超えないことを検査します。
+callback が cursor を ctx に書き戻すときは、`storeCallbackCursor` (`pkg/kunai/codegen/bpfloop.go`) で cursor の複製に `0x3ff` を AND してから書きます。書き戻す前の cursor は ScratchBufSize 以下なので値は変わりませんが、verifier から見た cursor の下限と register 同士の関係が消え、option の種類や反復が違う状態が合流します。Linux 7.0 以降の verifier は bpf_loop の callback をループとして扱い、cursor の slot に precision を付けるので、この mask が無いと TCP option の walk の検証量が約 4 倍になります。経緯と測定は [ADR 0003](./adr/0003-mask-bpf-loop-cursor.md) にあります。CI の各 kernel では `TestVerifierStats` が、`verifierProbes` の各 filter の processed が kernel ごとの基準値の 1.5 倍を超えないことを検査します。
 
 `pkt.lookahead` を使う counter decrement は `pkt.advance` より前に記述します。逆順は loader が診断します。これは対応する TLV sibling の制約であり、P4-lite の任意の statement 順序を保持する一般的な保証ではありません。
 

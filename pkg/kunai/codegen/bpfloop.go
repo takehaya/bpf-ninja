@@ -92,8 +92,7 @@ const callbackCursorMask = 0x3ff
 func storeCallbackCursor(tmp asm.Register) asm.Instructions {
 	return asm.Instructions{
 		asm.Mov.Reg(tmp, asm.R3),
-		// MUTATION: mask removed
-
+		asm.And.Imm(tmp, callbackCursorMask),
 		asm.StoreMem(asm.R2, bpfLoopCbCtxOffsetField, tmp, asm.DWord),
 	}
 }

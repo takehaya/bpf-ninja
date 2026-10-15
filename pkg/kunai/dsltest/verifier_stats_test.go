@@ -133,11 +133,15 @@ func TestVerifierStats(t *testing.T) {
 		fmt.Fprintf(&row, "%q: %d", p.name, processed[p.name])
 	}
 	row.WriteString("},")
-	t.Log(row.String())
+	t.Logf("%s strict=%v", row.String(), strict)
 
 	base, ok := verifierBaseline[key]
 	if !ok {
-		report("no verifier baseline for kernel %s (%s); add the VSTAT-BASELINE line above to verifierBaseline", key, kernel)
+		if strict {
+			t.Errorf("no verifier baseline for kernel %s (%s); add the VSTAT-BASELINE line above to verifierBaseline", key, kernel)
+		} else {
+			t.Logf("no verifier baseline for kernel %s (%s); the table covers the ci-kernels images only", key, kernel)
+		}
 		return
 	}
 	for _, p := range verifierProbes {
