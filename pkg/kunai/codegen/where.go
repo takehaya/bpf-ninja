@@ -1129,8 +1129,8 @@ func (c *whereCtx) genArithCompare(w *ir.Condition, failLabel string) (asm.Instr
 // and joins zero-extended (see genArith128); a ± whose both sides park
 // holds its left result above the reserved slots (genArith128BothPark).
 // An Int<128> aux field (an SRH segment) loads like a primary one
-// (genArithAuxField128Load). A slice between 65 and 127 bits returns
-// ErrNotImplemented; operators other than + and - on Int<128> operands
+// (genArithAuxField128Load), and a [0:128] slice loads as its field. A
+// slice between 65 and 127 bits returns ErrNotImplemented; operators other than + and - on Int<128> operands
 // never arrive, the resolver types them as errors (dsl-types.md §13.9).
 func (c *whereCtx) genArithCompare128(w *ir.Condition, failLabel string, targetBits int) (asm.Instructions, error) {
 	// Mid-width slice cmps (widths in (64, 128) other than exactly
@@ -1236,8 +1236,15 @@ func (c *whereCtx) genArith128(e *ir.ArithExpr) (asm.Instructions, error) {
 	}
 	switch e.Kind {
 	case ast.ArithField:
-		if f := e.Field; f != nil && f.Field != nil && (f.Slice != nil || f.Field.Bits != 128) {
-			return nil, fmt.Errorf("%w: %s.%s (bit<%d>) next to an Int<128> operand: a field wider than 64 bits but narrower than 128 is not wired", ErrNotImplemented, f.Layer.Spec.Name, f.Field.Name, f.EffectiveBits())
+		// A [0:128] slice of a 128-bit field is the field itself; the
+		// 16-byte loads below never read Slice. Only a 65-127-bit slice
+		// is left here, since isNarrowArith took everything up to 64.
+		if f := e.Field; f != nil && f.Field != nil && f.EffectiveBits() != 128 {
+			name := optionFieldName(f)
+			if f.Slice != nil {
+				name += fmt.Sprintf("[%d:%d]", f.Slice.Lo, f.Slice.Hi)
+			}
+			return nil, fmt.Errorf("%w: %s (bit<%d>) next to an Int<128> operand: a slice between 65 and 127 bits is not wired in arithmetic; compare it with == or != against a slice of the same width, or use the whole field", ErrNotImplemented, name, f.EffectiveBits())
 		}
 		return c.genArithField128Load(e.Field)
 	case ast.ArithBinOp:

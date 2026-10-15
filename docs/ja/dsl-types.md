@@ -137,7 +137,8 @@ field[lo:hi]                    ; half-open bit range, lo inclusive / hi exclusi
 | 範囲 | cmp (`==`/`!=`) | arith binop / bitwise | non-aligned 端点 |
 |---|---|---|---|
 | `≤ 64` | ✅ single LDX | ✅ single register | ✅ codegen で `pow2 ≥ cover` LDX → bswap → shift+mask。9 byte にまたがる slice は先頭 8 byte と 9 byte 目を別に load して合成 |
-| `(64, 128]` | ✅ 両辺が同じ幅の slice のとき、resolver が LDX-aligned chunks の AND/OR-chain に desugar する (例: `[0:96]` → `[0:64]` AND `[64:96]`)。定数とは比べられないので、`ipv6.src == 1` のように slice を外して書く | ❌ single register に乗らないため未対応 | ❌ byte-aligned 端点必須 |
+| `(64, 128)` | ✅ 両辺が同じ幅の slice のとき、resolver が LDX-aligned chunks の AND/OR-chain に desugar する (例: `[0:96]` → `[0:64]` AND `[64:96]`)。定数や幅の違う operand とは比べられない | ❌ single register に乗らないため未対応 | ❌ byte-aligned 端点必須 |
+| `= 128` | ✅ 128 bit の field の `[0:128]` は field そのものと同じに扱い、定数、`int<128>`、field との比較や大小比較もできる | ✅ field と同じ 128 bit の `+` / `-` | 該当しない |
 
 `!=` の chain は OR で、`==` は AND でつなぎます。endpoint が 64bit 境界を跨ぐ場合は両端が byte-aligned であることが要件で、sub-byte 跨ぎ + 64+ bit は scope 外です。
 
@@ -620,7 +621,14 @@ arith may underflow: <expr> can fall below 0 (RHS may exceed LHS)               
 
 ### 8.8 codegen 未実装 (resolver は OK、codegen で reject)
 
-`ErrNotImplemented` の wrapped reason として現れます。たとえば `ipv6.dst[0:72] + 1 == 1` のように 65 bit 以上の slice を算術に使うと、メッセージに未配線の理由が書かれます。
+`ErrNotImplemented` の wrapped reason として現れます。たとえば `ipv6.dst[0:72] + 1 == 1` のように 65 bit から 127 bit の slice を算術に使うと、メッセージに未配線の理由が書かれます。128 bit の field 全体を指す `[0:128]` は field と同じなので、未実装には当たりません。
+
+```
+eth/ipv6/tcp where ipv6.dst[0:72] + 1 == 1          # ErrNotImplemented
+eth/ipv6/tcp where ipv6.src[0:96] + ipv6.dst == 1   # ErrNotImplemented
+eth/ipv6/tcp where ipv6.src[0:128] + 1 == 1         # compile できる
+eth/ipv6/tcp where ipv6.src[0:128] == 1             # compile できる
+```
 
 bracket predicate の整数リテラルは 64 bit まで比べられます。`tcp[seq > 0x80000000]` や、byte を入れ替えると 2^31 以上になる `tcp[seq == 128]` では、定数を register に置いて比べます。
 
