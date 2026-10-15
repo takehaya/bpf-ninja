@@ -43,13 +43,13 @@ jobs:
     name: p4c --parse-only
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up docker buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Build p4c-check image (with layer cache)
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: docker/p4c-check
           load: true
@@ -58,7 +58,7 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Restore per-file parse-check cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: .p4c-cache
           # Cache key encodes the full parse harness (Dockerfile +

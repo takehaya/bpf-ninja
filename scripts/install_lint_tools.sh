@@ -14,6 +14,9 @@ source "${SCRIPT_DIR}/libs/install_utils.sh"
 mkdir -p "${HOME}/.local/bin"
 export GOBIN="${HOME}/.local/bin"
 export PATH="${GOBIN}:${PATH}"
+# The tools below may need a newer Go than go.mod declares. setup-go v6+
+# sets GOTOOLCHAIN=local in CI, so let `go install` fetch what each asks for.
+export GOTOOLCHAIN=auto
 
 echo "Updating package list..."
 sudo apt-get update -qq
