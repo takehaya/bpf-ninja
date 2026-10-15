@@ -260,8 +260,9 @@ func emitVariableTrailCallback(fixedHs int, vt variableTailSkip, breakLabel stri
 			return asm.StoreMem(asm.R2, mainStackOffsetFromCb(slot), val, asm.DWord)
 		},
 		storeOffsetBack: asm.Instructions{
-			asm.And.Imm(asm.R3, 0x3ff), // PROBE: forget the cursor's per-kind bounds
-			asm.StoreMem(asm.R2, bpfLoopCbCtxOffsetField, asm.R3, asm.DWord),
+			asm.Mov.Reg(asm.R0, asm.R3), // PROBE2: store a masked copy, keep R3
+			asm.And.Imm(asm.R0, 0x3ff),
+			asm.StoreMem(asm.R2, bpfLoopCbCtxOffsetField, asm.R0, asm.DWord),
 		},
 	}, breakLabel)
 }
