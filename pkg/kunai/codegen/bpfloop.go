@@ -71,6 +71,32 @@ const (
 	bpfLoopCbCtxLayerEntryField   int16 = 24
 )
 
+// callbackCursorMask is ANDed into the cursor a callback writes back to
+// ctx.offset. Every store site has just bounded the cursor to at most
+// ScratchBufSize, so the AND never changes the value. What it drops is the
+// verifier's view of it: the register id, the constant-offset link and the
+// lower bound, which differ per option kind and per iteration. Since
+// kernel 7.0 (commit f597664454bd) the verifier treats a bpf_loop callback
+// as a loop and keeps the cursor slot precise across iterations, so
+// states that differ only in those details are no longer pruned; TCP
+// option filters took about 4x the verifier work on 7.0 because of it.
+// Measurements are in docs/ja/adr/0003-mask-bpf-loop-cursor.md.
+const callbackCursorMask = 0x3ff
+
+// storeCallbackCursor writes the cursor in R3 back to ctx.offset through a
+// masked copy in tmp, so R3 keeps its bounds for what follows: a
+// negative-offset fold or a minimum-length guard after the store reads
+// R3's lower bound, and masking R3 itself would make that guard a live
+// branch. tmp must be dead at the store; every site passes R0, whose next
+// use is a write.
+func storeCallbackCursor(tmp asm.Register) asm.Instructions {
+	return asm.Instructions{
+		asm.Mov.Reg(tmp, asm.R3),
+		asm.And.Imm(tmp, callbackCursorMask),
+		asm.StoreMem(asm.R2, bpfLoopCbCtxOffsetField, tmp, asm.DWord),
+	}
+}
+
 // mainStackOffsetFromCb translates a main-frame R10-relative stack
 // slot into the equivalent R2-relative offset usable from inside a
 // bpf_loop callback. R2 in the callback is the ctx pointer = main
@@ -347,10 +373,8 @@ func genBpfLoopCallback(layer *ir.LayerInstance, selfConst *vocab.DispatchConst,
 		return nil, err
 	}
 	insns = append(insns, entry...)
-	insns = append(insns,
-		asm.Add.Imm(asm.R3, int32(hs)),
-		asm.StoreMem(asm.R2, bpfLoopCbCtxOffsetField, asm.R3, asm.DWord),
-	)
+	insns = append(insns, asm.Add.Imm(asm.R3, int32(hs)))
+	insns = append(insns, storeCallbackCursor(asm.R0)...)
 	endCheck, err := chainEndCheck(spec, hs, loopChainFrame, breakLabel)
 	if err != nil {
 		return nil, err

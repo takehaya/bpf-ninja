@@ -1170,8 +1170,8 @@ func (c *pmCtx) emitSiblingCallbackBody(sib *vocab.ParseState, breakLabel string
 			asm.Add.Imm(asm.R0, int32(hs)),
 			asm.JGT.Reg(asm.R0, asm.R5, breakLabel),
 			asm.Add.Imm(asm.R3, int32(hs)),
-			asm.StoreMem(asm.R2, bpfLoopCbCtxOffsetField, asm.R3, asm.DWord),
 		)
+		insns = append(insns, storeCallbackCursor(asm.R0)...)
 		totalHs += hs
 	}
 	for _, op := range sib.Counters {
@@ -1231,8 +1231,8 @@ func (c *pmCtx) emitSiblingCallbackBody(sib *vocab.ParseState, breakLabel string
 				asm.Add.Imm(asm.R0, n),
 				asm.JGT.Reg(asm.R0, asm.R5, breakLabel),
 				asm.Add.Imm(asm.R3, n),
-				asm.StoreMem(asm.R2, bpfLoopCbCtxOffsetField, asm.R3, asm.DWord),
 			)
+			insns = append(insns, storeCallbackCursor(asm.R0)...)
 		default:
 			return nil, fmt.Errorf("%w: multi-state callback sibling advance kind %d not yet supported", ErrNotImplemented, adv.Kind)
 		}
@@ -1282,8 +1282,8 @@ func (c *pmCtx) emitSelfLoopCallback(state *vocab.ParseState, stateIdx int, cbSy
 			asm.Add.Imm(asm.R0, int32(hs)),
 			asm.JGT.Reg(asm.R0, asm.R5, breakLabel),
 			asm.Add.Imm(asm.R3, int32(hs)),
-			asm.StoreMem(asm.R2, bpfLoopCbCtxOffsetField, asm.R3, asm.DWord),
 		)
+		insns = append(insns, storeCallbackCursor(asm.R0)...)
 		if vt, ok := variableTailFor(c.spec, ex.HeaderName); ok && !c.deferPrimaryTail(ex.HeaderName) {
 			if err := c.bindWriteBackSlot(&vt); err != nil {
 				return nil, err
