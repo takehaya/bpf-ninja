@@ -22,7 +22,7 @@ jobs:
         id: app-token
         uses: actions/create-github-app-token@v3
         with:
-          app-id: ${{ secrets.TAKEHAYA_RELEASE_PLEASE_APP_APP_ID }}
+          client-id: ${{ secrets.TAKEHAYA_RELEASE_PLEASE_APP_CLIENT_ID }}
           private-key: ${{ secrets.TAKEHAYA_RELEASE_PLEASE_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
       - id: release-please
