@@ -152,4 +152,5 @@ jobs:
             verifier_matrix_kernel_${{ matrix.kernel }}.csv
             bpf_load_kernel_${{ matrix.kernel }}.log
             bpf_load_kernel_${{ matrix.kernel }}.jsonl
+            pkg/kunai/dsltest/vlog_*.txt
           retention-days: 30

@@ -78,6 +78,17 @@ func TestVerifierStats(t *testing.T) {
 		if s == nil || v == nil {
 			t.Fatalf("%s: no stats in verifier log: %q", p.name, log)
 		}
+		if p.name == "P2" || p.name == "S4" {
+			prog, err := ebpf.NewProgramWithOptions(spec, ebpf.ProgramOptions{LogLevel: ebpf.LogLevelInstruction | ebpf.LogLevelStats, LogSizeStart: 1 << 28})
+			if err != nil {
+				t.Fatalf("%s: level-2 load: %v", p.name, err)
+			}
+			path := "vlog_" + kernel + "_" + p.name + ".txt"
+			if err := os.WriteFile(path, []byte(prog.VerifierLog), 0o644); err != nil {
+				t.Fatalf("%s: write %s: %v", p.name, path, err)
+			}
+			_ = prog.Close()
+		}
 		t.Logf("VSTAT kernel=%s probe=%s insns=%d processed=%s max_states_per_insn=%s total_states=%s peak_states=%s mark_read=%s vtime_us=%s wall_ms=%.1f",
 			kernel, p.name, len(insns), s[1], s[2], s[3], s[4], s[5], v[1], float64(wall[n/2].Microseconds())/1000)
 	}
