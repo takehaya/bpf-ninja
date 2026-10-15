@@ -22,6 +22,9 @@ jobs:
 
       - name: Check commits to be published
         env:
-          CONTENT_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          # A forced push (release-please rewrites its branch) orphans
+          # github.event.before, which the checkout cannot fetch. Drop the
+          # base then so the whole history from the policy baseline is checked.
+          CONTENT_BASE: ${{ github.event.pull_request.base.sha || (!github.event.forced && github.event.before) || '' }}
           CONTENT_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
         run: python3 scripts/check-public-content.py --head "$CONTENT_HEAD" --base "$CONTENT_BASE"
