@@ -681,9 +681,9 @@ func (c *pmCtx) emitMultiStateCallback(entry *vocab.ParseState, entryIdx int, cb
 	if c.accPlan.atomsFor(c.layer) != nil || c.regionCounter != "" {
 		insns = append(insns,
 			asm.Mov.Reg(asm.R0, asm.R4),
-			asm.Add.Imm(asm.R0, 1),
+			asm.Add.Imm(asm.R0, 8),
 			asm.JGT.Reg(asm.R0, asm.R5, rejectLabel),
-			asm.LoadMem(asm.R0, asm.R4, 0, asm.Byte),
+			asm.LoadMem(asm.R0, asm.R4, 0, asm.DWord),
 			asm.Xor.Reg(asm.R3, asm.R0),
 			asm.Xor.Reg(asm.R3, asm.R0),
 			asm.JGT.Imm(asm.R3, int32(ScratchBufSize)-1, rejectLabel),

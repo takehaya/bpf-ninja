@@ -202,10 +202,10 @@ dsl_pm_ipv4_1_0_walk_cb:
 	  9: AddReg dst: r1 src: r4
 	 10: MovReg dst: r5 src: r1
 	 11: MovReg dst: r0 src: r4
-	 12: AddImm dst: r0 imm: 1
+	 12: AddImm dst: r0 imm: 8
 	 13: JGTReg dst: r0 off: -1 src: r5 <dsl_pm_ipv4_1_0_walk_cb_reject>
 	 14: JGTReg dst: r0 off: -1 src: r6 <dsl_pm_ipv4_1_0_walk_cb_reject>
-	 15: LdXMemB dst: r0 src: r4 off: 0 imm: 0
+	 15: LdXMemDW dst: r0 src: r4 off: 0 imm: 0
 	 16: XorReg dst: r3 src: r0
 	 17: XorReg dst: r3 src: r0
 	 18: JGTImm dst: r3 off: -1 imm: 511 <dsl_pm_ipv4_1_0_walk_cb_reject>
