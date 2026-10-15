@@ -2,6 +2,7 @@ package program
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"runtime"
 	"slices"
@@ -20,13 +21,9 @@ import (
 // ones and the highest, enough to tell slot cpu from slot 0 or cpu+1.
 const maxPinnedCPUs = 4
 
-// allowedCPUs returns the CPUs this thread's affinity mask allows, in
-// ascending order: all of them, or the lowest maxPinnedCPUs-1 and the
-// highest. With fewer than two the test cannot tell slot cpu from slot 0:
-// on CI that fails the test (the vimto VMs have two CPUs), elsewhere it
-// is logged and the test runs on the one CPU. It never skips, since the
-// privileged audit fails unexpected skips.
-func allowedCPUs(t *testing.T) []int {
+// affinityCPUs returns every CPU in the calling thread's affinity mask, in
+// ascending order.
+func affinityCPUs(t *testing.T) []int {
 	t.Helper()
 	var set unix.CPUSet
 	if err := unix.SchedGetaffinity(0, &set); err != nil {
@@ -38,9 +35,22 @@ func allowedCPUs(t *testing.T) []int {
 			cpus = append(cpus, cpu)
 		}
 	}
-	switch {
-	case len(cpus) == 0:
+	if len(cpus) == 0 {
 		t.Fatal("no CPU in the affinity mask")
+	}
+	return cpus
+}
+
+// allowedCPUs returns the CPUs this thread's affinity mask allows, in
+// ascending order: all of them, or the lowest maxPinnedCPUs-1 and the
+// highest. With fewer than two the test cannot tell slot cpu from slot 0:
+// on CI that fails the test (the vimto VMs have two CPUs), elsewhere it
+// is logged and the test runs on the one CPU. It never skips, since the
+// privileged audit fails unexpected skips.
+func allowedCPUs(t *testing.T) []int {
+	t.Helper()
+	cpus := affinityCPUs(t)
+	switch {
 	case len(cpus) == 1 && (os.Getenv("CI") == "true" || os.Getenv("CI") == "1"):
 		t.Fatalf("only CPU %d is allowed; slot selection needs two CPUs to be checked", cpus[0])
 	case len(cpus) == 1:
@@ -51,32 +61,64 @@ func allowedCPUs(t *testing.T) []int {
 	return cpus
 }
 
+// pinThread locks the calling goroutine to its OS thread and binds the
+// thread to cpu. unpin restores the previous mask and unlocks the thread.
+// If the restore fails, unpin returns the error and leaves the thread
+// locked, so the runtime retires it when the goroutine exits instead of
+// reusing a thread bound to one CPU. On error nothing stays locked or
+// pinned. It takes no *testing.T, so a goroutine other than the test's
+// can use it.
+func pinThread(cpu int) (unpin func() error, err error) {
+	runtime.LockOSThread()
+	var previous, pinned unix.CPUSet
+	if err := unix.SchedGetaffinity(0, &previous); err != nil {
+		runtime.UnlockOSThread()
+		return nil, fmt.Errorf("sched_getaffinity: %w", err)
+	}
+	pinned.Set(cpu)
+	if err := unix.SchedSetaffinity(0, &pinned); err != nil {
+		runtime.UnlockOSThread()
+		return nil, fmt.Errorf("pin to CPU %d: %w", cpu, err)
+	}
+	return func() error {
+		if err := unix.SchedSetaffinity(0, &previous); err != nil {
+			return fmt.Errorf("restore affinity: %w", err)
+		}
+		runtime.UnlockOSThread()
+		return nil
+	}, nil
+}
+
+// pinTest pins the test goroutine's thread to cpu until the test ends.
+// Subtests run on their own goroutines and are not pinned by it.
+func pinTest(t *testing.T, cpu int) {
+	t.Helper()
+	unpin, err := pinThread(cpu)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := unpin(); err != nil {
+			t.Error(err)
+		}
+	})
+}
+
 // runPinned runs fn on an OS thread bound to cpu and restores the
-// thread's affinity before handing it back to the scheduler. If the
-// restore fails the thread stays locked, so the runtime retires it when
-// the goroutine exits instead of reusing a thread bound to one CPU.
+// thread's affinity before handing it back to the scheduler.
 // BPF_PROG_TEST_RUN runs the program, and any fentry/fexit attached to
 // it, on the calling CPU with migration disabled, so inside fn
 // bpf_get_smp_processor_id() returns cpu.
 func runPinned(t *testing.T, cpu int, fn func()) {
 	t.Helper()
-	runtime.LockOSThread()
-	var previous, pinned unix.CPUSet
-	if err := unix.SchedGetaffinity(0, &previous); err != nil {
-		runtime.UnlockOSThread()
-		t.Fatalf("sched_getaffinity: %v", err)
-	}
-	pinned.Set(cpu)
-	if err := unix.SchedSetaffinity(0, &pinned); err != nil {
-		runtime.UnlockOSThread()
-		t.Fatalf("pin to CPU %d: %v", cpu, err)
+	unpin, err := pinThread(cpu)
+	if err != nil {
+		t.Fatal(err)
 	}
 	defer func() {
-		if err := unix.SchedSetaffinity(0, &previous); err != nil {
-			t.Errorf("restore affinity: %v", err)
-			return
+		if err := unpin(); err != nil {
+			t.Error(err)
 		}
-		runtime.UnlockOSThread()
 	}()
 	fn()
 }

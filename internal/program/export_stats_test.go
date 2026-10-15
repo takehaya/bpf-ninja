@@ -6,30 +6,15 @@ import (
 	"github.com/takehaya/bpf-ninja/internal/capture/fastrb"
 	"github.com/takehaya/bpf-ninja/internal/testutil"
 	"github.com/takehaya/bpf-ninja/pkg/kunai/codegen"
-	"golang.org/x/sys/unix"
-	"runtime"
 	"testing"
 )
 
 func TestBpfExportOutcomeAccounting(t *testing.T) {
 	testutil.SkipIfNotRoot(t)
-	var mask unix.CPUSet
-	if err := unix.SchedGetaffinity(0, &mask); err != nil {
-		t.Fatal(err)
-	}
-	cpu := 0
-	for !mask.IsSet(cpu) {
-		cpu++
-	}
+	cpu := affinityCPUs(t)[0]
 	for _, kind := range []string{"normal", "full", "lookup", "copy"} {
 		t.Run(kind, func(t *testing.T) {
-			runtime.LockOSThread()
-			var one unix.CPUSet
-			one.Set(cpu)
-			if err := unix.SchedSetaffinity(0, &one); err != nil {
-				t.Fatal(err)
-			}
-			defer func() { _ = unix.SchedSetaffinity(0, &mask); runtime.UnlockOSThread() }()
+			pinTest(t, cpu)
 			ringSpec := &ebpf.MapSpec{Type: ebpf.RingBuf, MaxEntries: 4096}
 			ring, err := ebpf.NewMap(ringSpec)
 			if err != nil {

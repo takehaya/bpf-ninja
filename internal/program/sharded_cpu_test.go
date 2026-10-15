@@ -31,14 +31,11 @@ func TestBpfShardsUnderRestrictedAffinity(t *testing.T) {
 		return
 	}
 	if os.Getenv("BPF_NINJA_CPU_CHILD") == "" {
-		var allowed unix.CPUSet
-		if err := unix.SchedGetaffinity(0, &allowed); err != nil {
-			t.Fatal(err)
-		}
+		cpus := affinityCPUs(t)
 		cpu := -1
-		for i := 1; i < len(allowed)*64; i++ {
-			if allowed.IsSet(i) {
-				cpu = i
+		for _, c := range cpus {
+			if c > 0 {
+				cpu = c
 				break
 			}
 		}
@@ -47,9 +44,9 @@ func TestBpfShardsUnderRestrictedAffinity(t *testing.T) {
 		}
 		cmd := exec.Command("taskset", "-c", strconv.Itoa(cpu), os.Args[0], "-test.run=^TestBpfShardsUnderRestrictedAffinity$", "-test.v")
 		other := cpu
-		for i := 0; i < len(allowed)*64; i++ {
-			if i != cpu && allowed.IsSet(i) {
-				other = i
+		for _, c := range cpus {
+			if c != cpu {
+				other = c
 				break
 			}
 		}

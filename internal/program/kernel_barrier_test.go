@@ -2,8 +2,6 @@ package program
 
 import (
 	"fmt"
-	"golang.org/x/sys/unix"
-	"runtime"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -53,22 +51,11 @@ func TestBpfKernelBarrierWaitsForBusyRecord(t *testing.T) {
 	testutil.SkipIfNotRoot(t)
 	// The controller must remain runnable while the non-sleepable producer
 	// occupies its CPU. Keep them on distinct CPUs from the allowed mask.
-	var allowed unix.CPUSet
-	if err := unix.SchedGetaffinity(0, &allowed); err != nil {
-		t.Fatal(err)
-	}
-	var cpus []int
-	for cpu := 0; cpu < 1024; cpu++ {
-		if allowed.IsSet(cpu) {
-			cpus = append(cpus, cpu)
-		}
-	}
+	cpus := affinityCPUs(t)
 	if len(cpus) < 2 {
 		t.Fatal("controlled in-flight producer test requires two allowed CPUs")
 	}
-	var controllerCPU, producerCPU unix.CPUSet
-	controllerCPU.Set(cpus[0])
-	producerCPU.Set(cpus[1])
+	controllerCPU, producerCPU := cpus[0], cpus[1]
 
 	spec, err := ebpf.LoadCollectionSpec(testutil.CompileBPFSource(t, heldProducerSource))
 	if err != nil {
@@ -77,20 +64,7 @@ func TestBpfKernelBarrierWaitsForBusyRecord(t *testing.T) {
 	for _, fast := range []bool{false, true} {
 		for _, tag := range []bool{false, true} {
 			t.Run(fmt.Sprintf("fast=%v/tag=%v", fast, tag), func(t *testing.T) {
-				runtime.LockOSThread()
-				defer runtime.UnlockOSThread()
-				var previous unix.CPUSet
-				if err := unix.SchedGetaffinity(0, &previous); err != nil {
-					t.Fatal(err)
-				}
-				if err := unix.SchedSetaffinity(0, &controllerCPU); err != nil {
-					t.Fatal(err)
-				}
-				defer func() {
-					if err := unix.SchedSetaffinity(0, &previous); err != nil {
-						t.Error(err)
-					}
-				}()
+				pinTest(t, controllerCPU)
 
 				col, err := ebpf.NewCollection(spec)
 				if err != nil {
@@ -135,19 +109,15 @@ func TestBpfKernelBarrierWaitsForBusyRecord(t *testing.T) {
 				}
 				runDone := make(chan error, 1)
 				go func() {
-					runtime.LockOSThread()
-					defer runtime.UnlockOSThread()
-					var previous unix.CPUSet
-					if err := unix.SchedGetaffinity(0, &previous); err != nil {
+					unpin, err := pinThread(producerCPU)
+					if err != nil {
 						runDone <- err
 						return
 					}
-					if err := unix.SchedSetaffinity(0, &producerCPU); err != nil {
-						runDone <- err
-						return
-					}
-					defer func() { _ = unix.SchedSetaffinity(0, &previous) }()
-					_, err := col.Programs["held_producer"].Run(&ebpf.RunOptions{Data: make([]byte, 64)})
+					// A failed restore keeps the thread locked; there is no
+					// test goroutine here to report it to.
+					defer func() { _ = unpin() }()
+					_, err = col.Programs["held_producer"].Run(&ebpf.RunOptions{Data: make([]byte, 64)})
 					runDone <- err
 				}()
 				released := false
