@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.26.3](https://github.com/takehaya/bpf-ninja/compare/v0.26.2...v0.26.3) (2026-10-15)
+
+
+### 🐛 Bug Fixes
+
+* **kunai:** treat a full-width [0:128] slice as its field in 128-bit arithmetic ([#237](https://github.com/takehaya/bpf-ninja/issues/237)) ([f272847](https://github.com/takehaya/bpf-ninja/commit/f272847b4fb50cac508571c9c3d4a39ff5b2083f))
+
 ## [0.26.2](https://github.com/takehaya/bpf-ninja/compare/v0.26.1...v0.26.2) (2026-10-15)
 
 
