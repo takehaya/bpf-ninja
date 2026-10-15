@@ -3,7 +3,9 @@ package dsltest
 import (
 	"encoding/binary"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"math"
 	"math/big"
 	"os"
@@ -109,6 +111,12 @@ func TestSpecVectorsGenerated(t *testing.T) {
 
 func runSpecVectors(t *testing.T, vectors []specVector) {
 	root := os.Getuid() == 0
+	// The mutated vectors of one expression come in a row and compile to
+	// the same program, so its two loads (one per stack fill) are kept
+	// until the expression changes. Loading dominates the run time, more
+	// so on kernels whose verifier is slow on the TCP option filters.
+	var loads specLoads
+	t.Cleanup(loads.close)
 	for _, v := range vectors {
 		t.Run(v.ID, func(t *testing.T) {
 			hostCaps, ok := specHostCaps[v.Host]
@@ -159,8 +167,8 @@ func runSpecVectors(t *testing.T, vectors []specVector) {
 			// Twice, with kunai's stack filled with zeros and with ones: a
 			// slot read before it is written shows up as a verdict that
 			// depends on the fill.
-			for _, fill := range []int32{0, -1} {
-				r := NewFromOutputStackFilled(t, v.Expr, out, action, fill)
+			for i, r := range loads.get(t, v, out, action) {
+				fill := specStackFills[i]
 				got, region := r.MatchKey(t, pkt)
 				if got {
 					got = setsAdmit(t, v.Sets, r, region)
@@ -171,6 +179,50 @@ func runSpecVectors(t *testing.T, vectors []specVector) {
 			}
 		})
 	}
+}
+
+// specStackFills are the stack fills each vector runs under.
+var specStackFills = [2]int32{0, -1}
+
+// specLoads holds the Runners of the last expression runSpecVectors
+// loaded, one per entry of specStackFills.
+type specLoads struct {
+	key     string
+	runners [len(specStackFills)]*Runner
+}
+
+// get returns v's Runners, loading them unless the previous vector had the
+// same expression, host, action and sets. A reused Runner gets a zeroed
+// scratch map, so each vector starts from the state a fresh load has.
+func (l *specLoads) get(t *testing.T, v specVector, out codegen.Output, action int32) [len(specStackFills)]*Runner {
+	t.Helper()
+	sets, err := json.Marshal(v.Sets)
+	if err != nil {
+		t.Fatalf("sets: %v", err)
+	}
+	key := fmt.Sprintf("%s\x00%s\x00%d\x00%s", v.Expr, v.Host, action, sets)
+	if key == l.key && l.runners[0] != nil {
+		for _, r := range l.runners {
+			r.resetScratch(t)
+		}
+		return l.runners
+	}
+	l.close()
+	for i, fill := range specStackFills {
+		l.runners[i] = loadFromOutput(t, v.Expr, out, action, &fill)
+	}
+	l.key = key
+	return l.runners
+}
+
+func (l *specLoads) close() {
+	for i, r := range l.runners {
+		if r != nil {
+			r.close()
+			l.runners[i] = nil
+		}
+	}
+	l.key = ""
 }
 
 // setsAdmit is the host's lookup after the filter: every set the filter

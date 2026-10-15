@@ -144,6 +144,15 @@ func NewFromOutputStackFilled(t *testing.T, dslExpr string, out codegen.Output, 
 
 func newFromOutput(t *testing.T, dslExpr string, out codegen.Output, action int32, fill *int32) *Runner {
 	t.Helper()
+	r := loadFromOutput(t, dslExpr, out, action, fill)
+	t.Cleanup(r.close)
+	return r
+}
+
+// loadFromOutput is newFromOutput without the cleanup: the caller closes
+// the Runner, which lets one load serve several subtests.
+func loadFromOutput(t *testing.T, dslExpr string, out codegen.Output, action int32, fill *int32) *Runner {
+	t.Helper()
 	skipIfNotRoot(t)
 
 	scratch, err := ebpf.NewMap(&ebpf.MapSpec{
@@ -186,13 +195,31 @@ func newFromOutput(t *testing.T, dslExpr string, out codegen.Output, action int3
 		t.Fatalf("load XDP for %q: %v", dslExpr, err)
 	}
 
-	t.Cleanup(func() {
-		_ = prog.Close()
-		_ = scratch.Close()
-		_ = keys.Close()
-	})
-
 	return &Runner{prog: prog, scratchMap: scratch, keyMap: keys, extractions: out.Extractions, expr: dslExpr}
+}
+
+func (r *Runner) close() {
+	_ = r.prog.Close()
+	_ = r.scratchMap.Close()
+	_ = r.keyMap.Close()
+}
+
+// resetScratch zeroes every CPU's scratch value, as a fresh load leaves it,
+// so a reused Runner does not hand the next packet the previous one's bytes
+// past its end.
+func (r *Runner) resetScratch(t *testing.T) {
+	t.Helper()
+	n, err := ebpf.PossibleCPU()
+	if err != nil {
+		t.Fatalf("possible CPUs: %v", err)
+	}
+	zero := make([][]byte, n)
+	for i := range zero {
+		zero[i] = make([]byte, scratchSize+fakeArgsSize)
+	}
+	if err := r.scratchMap.Put(uint32(0), zero); err != nil {
+		t.Fatalf("reset scratch map: %v", err)
+	}
 }
 
 // Match runs the filter against pkt and reports whether the verdict
