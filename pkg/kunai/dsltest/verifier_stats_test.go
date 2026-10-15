@@ -34,7 +34,17 @@ var verifierProbes = []struct{ name, expr string }{
 // verifierBaseline holds the processed insns of each probe on the
 // ghcr.io/cilium/ci-kernels images, keyed by kernelKey. Refresh a row by
 // pasting the VSTAT-BASELINE line that TestVerifierStats logs.
-var verifierBaseline = map[string]map[string]int{}
+var verifierBaseline = map[string]map[string]int{
+	"6.1":  {"S1": 2563, "S2": 1319, "S3": 1317, "S4": 1292, "S5": 1299, "S6": 3990, "P1": 1540, "P2": 997, "P3": 962, "C1": 11112, "C2": 3131, "C3": 1316},
+	"6.6":  {"S1": 6621, "S2": 3085, "S3": 3083, "S4": 3053, "S5": 3045, "S6": 7449, "P1": 3316, "P2": 1544, "P3": 1634, "C1": 18177, "C2": 7511, "C3": 1868},
+	"6.12": {"S1": 9066, "S2": 4373, "S3": 4371, "S4": 4294, "S5": 4233, "S6": 14921, "P1": 7002, "P2": 2543, "P3": 1543, "C1": 9872, "C2": 9175, "C3": 2139},
+	"6.15": {"S1": 9089, "S2": 4352, "S3": 4350, "S4": 4294, "S5": 4244, "S6": 14656, "P1": 6882, "P2": 2557, "P3": 1539, "C1": 9867, "C2": 9152, "C3": 2194},
+	"6.18": {"S1": 9051, "S2": 4332, "S3": 4330, "S4": 4303, "S5": 4228, "S6": 14931, "P1": 6997, "P2": 2537, "P3": 1539, "C1": 8383, "C2": 7540, "C3": 1794},
+	"7.0":  {"S1": 27916, "S2": 13914, "S3": 13912, "S4": 13705, "S5": 13497, "S6": 20415, "P1": 9737, "P2": 3177, "P3": 1711, "C1": 8483, "C2": 7832, "C3": 1814},
+	"7.1":  {"S1": 11928, "S2": 5541, "S3": 5539, "S4": 5554, "S5": 5577, "S6": 16761, "P1": 7926, "P2": 2620, "P3": 1611, "C1": 8323, "C2": 7608, "C3": 1794},
+	"7.2":  {"S1": 11928, "S2": 5541, "S3": 5539, "S4": 5554, "S5": 5577, "S6": 16761, "P1": 7926, "P2": 2620, "P3": 1611, "C1": 8323, "C2": 7608, "C3": 1794},
+	"7.3":  {"S1": 11928, "S2": 5541, "S3": 5539, "S4": 5554, "S5": 5577, "S6": 16761, "P1": 7926, "P2": 2620, "P3": 1611, "C1": 8323, "C2": 7608, "C3": 1794},
+}
 
 // verifierHeadroom scales a baseline into the budget. Point releases move
 // processed by a few percent; the regressions this guards against were 2-4x.

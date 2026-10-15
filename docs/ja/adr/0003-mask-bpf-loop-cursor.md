@@ -98,15 +98,19 @@ chain の callback のように書き戻しの直後で R3 の下限を読む場
 
 ## 測り直す手順
 
-`TestVerifierStats` は、root で `KUNAI_VERIFIER_STATS=1` のときだけ、filter ごとに 1 行の `VSTAT` を出す。
+`TestVerifierStats` は root で動くと、filter ごとに 1 行の `VSTAT` を出し、最後に `verifierBaseline` の 1 行と同じ形の `VSTAT-BASELINE` を出す。
 手元の kernel では次のように実行する。
 
 ```sh
-sudo KUNAI_VERIFIER_STATS=1 go test -count=1 -v -run TestVerifierStats ./pkg/kunai/dsltest
+sudo go test -count=1 -v -run TestVerifierStats ./pkg/kunai/dsltest
 ```
 
-vimto は環境変数をそのまま VM に渡すので、`KUNAI_VERIFIER_STATS=1 python3 scripts/test/privileged.py --kernel 7.0` で別の kernel でも測れる。
-CI の 9 つの kernel で測るときは、merge しない draft PR で bpf_load_test の step に環境変数を足し、各 job の log から `grep -h VSTAT` で集める。
+`scripts/test/privileged.py --kernel` は `KUNAI_VERIFIER_STRICT=1` を付けて実行する。
+このとき、processed が `verifierBaseline` の値の 1.5 倍を超えた filter と、基準値の無い kernel は失敗になる。
+kernel の key は release の先頭 2 つの数字なので、7.3-rc4 と 7.3 は同じ行を使う。
+手元の kernel では基準値と比べた結果を log に出すだけで、失敗にはしない。
+
+codegen の変更で processed が意図して動いたときは、CI の log か artifact `verifier-matrix-kernel-*` の `verifier_stats_kernel_*.log` から `VSTAT-BASELINE` の行を集め、`verifierBaseline` の該当する行を置き換える。
 kernel をまたいで比べるのは processed と状態の数だけにする。
 
 ## 未解決の点
