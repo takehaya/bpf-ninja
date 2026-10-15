@@ -137,7 +137,7 @@ field[lo:hi]                    ; half-open bit range, lo inclusive / hi exclusi
 | 範囲 | cmp (`==`/`!=`) | arith binop / bitwise | non-aligned 端点 |
 |---|---|---|---|
 | `≤ 64` | ✅ single LDX | ✅ single register | ✅ codegen で `pow2 ≥ cover` LDX → bswap → shift+mask。9 byte にまたがる slice は先頭 8 byte と 9 byte 目を別に load して合成 |
-| `(64, 128]` | ✅ resolver desugar (LDX-aligned chunks の AND/OR-chain、例: `[0:96]` → `[0:64]` AND `[64:96]`) | ❌ single register に乗らないため未対応 | ❌ byte-aligned 端点必須 |
+| `(64, 128]` | ✅ 両辺が同じ幅の slice のとき、resolver が LDX-aligned chunks の AND/OR-chain に desugar する (例: `[0:96]` → `[0:64]` AND `[64:96]`)。定数とは 128 bit ちょうどのときだけ比べられる | ❌ single register に乗らないため未対応 | ❌ byte-aligned 端点必須 |
 
 `!=` の chain は OR で、`==` は AND でつなぎます。endpoint が 64bit 境界を跨ぐ場合は両端が byte-aligned であることが要件で、sub-byte 跨ぎ + 64+ bit は scope 外です。
 
@@ -989,7 +989,7 @@ p ∈ {vlan, qinq}     lo(q) ≥ 1
 
 Lean では `Check.lean` の `outerTagPos` と `checkProtoShape` が対応し、Go は `codegen.ErrVlanInMetadata` を返します。トンネルの内側の tag と、root が `eth` でない chain には適用されません。bpf-ninja の tc host に `--tc-vlan-reinsert` を付けると、spec の host は `tc_wire_entry` / `tc_wire_exit` になります。この host では `vlanInMetadata` が偽なので、この規則は適用されません。
 
-Go はさらに、省略可能な外側の tag に対する bracket predicate と、where / capture での読み取りを `ErrNotImplemented` で拒否します。tag が byte 列に無いためです。経緯は `spec/lean/DECISIONS.md` の D-008 と追記 1〜5 にあります。
+省略可能な外側の tag はこの規則に当たらず、bracket predicate や where / capture での読み取りを含めて compile できます。filter は kernel が持つ byte 列を見るので、tag が 1 枚のフレームではこの layer は不在になり、QinQ のフレームでは C-tag を読みます。経緯は `spec/lean/DECISIONS.md` の D-008 と追記 1〜6 にあります。
 
 ## 13. 操作的意味論 (Operational Semantics)
 

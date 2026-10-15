@@ -1140,7 +1140,7 @@ func (c *whereCtx) genArithCompare128(w *ir.Condition, failLabel string, targetB
 	// (operand width > 64) or a non-slice 128-bit field — both go
 	// through the dual-LDX pipeline below.
 	if targetBits != 128 {
-		return nil, fmt.Errorf("%w: bit<%d> arith cmp in where-path needs a mid-width pipeline that hasn't been wired (resolver should have desugared this; see tryDesugarMultiLDXSliceCmp)", ErrNotImplemented, targetBits)
+		return nil, fmt.Errorf("%w: a bit<%d> value compares only with == or != against a slice of the same width (no mid-width arith or constant compare)", ErrNotImplemented, targetBits)
 	}
 	leftInsns, err := c.genArith128(w.ArithL)
 	if err != nil {
