@@ -28,3 +28,4 @@
 
 - [0001 fast-reader のゼロコピー flush](./0001-fast-reader-zero-copy-flush.md)（却下）：per-record のペイロードコピー削減を試したが、スループットは変わらなかった。
 - [0002 split-core キャプチャの最適コア幅](./0002-split-core-capture-optimal-width.md)（採用）：reader を専用コアに分離すると競合が切れ、コア数の約 1/4 を頂点に捕捉が最大化する。
+- [0003 bpf_loop callback の cursor の mask](./0003-mask-bpf-loop-cursor.md)（採用）：kernel 7.0 以降で TCP option の walk の検証が約 4 倍に増えたので、cursor の複製を mask して書き戻し、状態を合流させる。

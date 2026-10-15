@@ -250,66 +250,70 @@ dsl_pm_ipv6_1_0_parse_ext_cb:
 	  6: AddImm dst: r0 imm: 8
 	  7: JGTReg dst: r0 off: -1 src: r5 <dsl_pm_ipv6_1_0_parse_ext_cb_break>
 	  8: AddImm dst: r3 imm: 8
-	  9: StXMemDW dst: r2 src: r3 off: 0 imm: 0
-	 10: JLTImm dst: r3 off: -1 imm: 8 <dsl_pm_ipv6_1_0_parse_ext_cb_break>
-	 11: MovReg dst: r1 src: r3
-	 12: SubImm dst: r1 imm: 8
-	 13: JGTImm dst: r1 off: -1 imm: 511 <dsl_pm_ipv6_1_0_parse_ext_cb_break>
-	 14: MovReg dst: r0 src: r4
-	 15: AddReg dst: r0 src: r1
-	 16: AddImm dst: r0 imm: 1
-	 17: JGTReg dst: r0 off: -1 src: r5 <dsl_pm_ipv6_1_0_parse_ext_cb_break>
-	 18: LdXMemB dst: r0 src: r0 off: -1 imm: 0
-	 19: StXMemDW dst: rfp src: r0 off: -56 imm: 0
-	 20: JLTImm dst: r3 off: -1 imm: 8 <dsl_pm_ipv6_1_0_parse_ext_cb_break>
-	 21: MovReg dst: r1 src: r3
-	 22: SubImm dst: r1 imm: 8
-	 23: JGTImm dst: r1 off: -1 imm: 511 <dsl_pm_ipv6_1_0_parse_ext_cb_break>
-	 24: MovReg dst: r0 src: r4
-	 25: AddReg dst: r0 src: r1
-	 26: AddImm dst: r0 imm: 1
-	 27: JGTReg dst: r0 off: -1 src: r5 <dsl_pm_ipv6_1_0_parse_ext_cb_break>
-	 28: LdXMemB dst: r0 src: r0 off: -1 imm: 0
-	 29: StXMemDW dst: r2 src: r0 off: -24 imm: 0
-	 30: JLTImm dst: r3 off: -1 imm: 7 <dsl_pm_ipv6_1_0_parse_ext_cb_break>
-	 31: MovReg dst: r0 src: r3
-	 32: SubImm dst: r0 imm: 7
-	 33: JGTImm dst: r0 off: -1 imm: 511 <dsl_pm_ipv6_1_0_parse_ext_cb_break>
-	 34: MovReg dst: r1 src: r4
-	 35: AddReg dst: r1 src: r0
-	 36: AddImm dst: r1 imm: 1
-	 37: JGTReg dst: r1 off: -1 src: r5 <dsl_pm_ipv6_1_0_parse_ext_cb_break>
-	 38: LdXMemB dst: r1 src: r1 off: -1 imm: 0
-	 39: AndImm dst: r1 imm: 255
-	 40: LShImm dst: r1 imm: 3
-	 41: AddReg dst: r3 src: r1
-	 42: JGTImm dst: r3 off: -1 imm: 512 <dsl_pm_ipv6_1_0_parse_ext_cb_break>
-	 43: MovReg dst: r0 src: r4
-	 44: AddReg dst: r0 src: r3
-	 45: JGTReg dst: r0 off: -1 src: r5 <dsl_pm_ipv6_1_0_parse_ext_cb_break>
-	 46: StXMemDW dst: r2 src: r3 off: 0 imm: 0
-	 47: LdXMemDW dst: r0 src: rfp off: -56 imm: 0
-	 48: JNEImm dst: r0 off: -1 imm: 0 <dsl_pm_ipv6_1_0_vcb_case_8_skip>
-	 49: Ja off: -1 <dsl_pm_ipv6_1_0_parse_ext_cb_continue>
-dsl_pm_ipv6_1_0_vcb_case_8_skip:
-	 50: MovReg dst: r3 src: r3
+	  9: MovReg dst: r0 src: r3
+	 10: AndImm dst: r0 imm: 1023
+	 11: StXMemDW dst: r2 src: r0 off: 0 imm: 0
+	 12: JLTImm dst: r3 off: -1 imm: 8 <dsl_pm_ipv6_1_0_parse_ext_cb_break>
+	 13: MovReg dst: r1 src: r3
+	 14: SubImm dst: r1 imm: 8
+	 15: JGTImm dst: r1 off: -1 imm: 511 <dsl_pm_ipv6_1_0_parse_ext_cb_break>
+	 16: MovReg dst: r0 src: r4
+	 17: AddReg dst: r0 src: r1
+	 18: AddImm dst: r0 imm: 1
+	 19: JGTReg dst: r0 off: -1 src: r5 <dsl_pm_ipv6_1_0_parse_ext_cb_break>
+	 20: LdXMemB dst: r0 src: r0 off: -1 imm: 0
+	 21: StXMemDW dst: rfp src: r0 off: -56 imm: 0
+	 22: JLTImm dst: r3 off: -1 imm: 8 <dsl_pm_ipv6_1_0_parse_ext_cb_break>
+	 23: MovReg dst: r1 src: r3
+	 24: SubImm dst: r1 imm: 8
+	 25: JGTImm dst: r1 off: -1 imm: 511 <dsl_pm_ipv6_1_0_parse_ext_cb_break>
+	 26: MovReg dst: r0 src: r4
+	 27: AddReg dst: r0 src: r1
+	 28: AddImm dst: r0 imm: 1
+	 29: JGTReg dst: r0 off: -1 src: r5 <dsl_pm_ipv6_1_0_parse_ext_cb_break>
+	 30: LdXMemB dst: r0 src: r0 off: -1 imm: 0
+	 31: StXMemDW dst: r2 src: r0 off: -24 imm: 0
+	 32: JLTImm dst: r3 off: -1 imm: 7 <dsl_pm_ipv6_1_0_parse_ext_cb_break>
+	 33: MovReg dst: r0 src: r3
+	 34: SubImm dst: r0 imm: 7
+	 35: JGTImm dst: r0 off: -1 imm: 511 <dsl_pm_ipv6_1_0_parse_ext_cb_break>
+	 36: MovReg dst: r1 src: r4
+	 37: AddReg dst: r1 src: r0
+	 38: AddImm dst: r1 imm: 1
+	 39: JGTReg dst: r1 off: -1 src: r5 <dsl_pm_ipv6_1_0_parse_ext_cb_break>
+	 40: LdXMemB dst: r1 src: r1 off: -1 imm: 0
+	 41: AndImm dst: r1 imm: 255
+	 42: LShImm dst: r1 imm: 3
+	 43: AddReg dst: r3 src: r1
+	 44: JGTImm dst: r3 off: -1 imm: 512 <dsl_pm_ipv6_1_0_parse_ext_cb_break>
+	 45: MovReg dst: r0 src: r4
+	 46: AddReg dst: r0 src: r3
+	 47: JGTReg dst: r0 off: -1 src: r5 <dsl_pm_ipv6_1_0_parse_ext_cb_break>
+	 48: MovReg dst: r0 src: r3
+	 49: AndImm dst: r0 imm: 1023
+	 50: StXMemDW dst: r2 src: r0 off: 0 imm: 0
 	 51: LdXMemDW dst: r0 src: rfp off: -56 imm: 0
-	 52: JNEImm dst: r0 off: -1 imm: 44 <dsl_pm_ipv6_1_0_vcb_case_9_skip>
+	 52: JNEImm dst: r0 off: -1 imm: 0 <dsl_pm_ipv6_1_0_vcb_case_8_skip>
 	 53: Ja off: -1 <dsl_pm_ipv6_1_0_parse_ext_cb_continue>
-dsl_pm_ipv6_1_0_vcb_case_9_skip:
+dsl_pm_ipv6_1_0_vcb_case_8_skip:
 	 54: MovReg dst: r3 src: r3
 	 55: LdXMemDW dst: r0 src: rfp off: -56 imm: 0
-	 56: JNEImm dst: r0 off: -1 imm: 60 <dsl_pm_ipv6_1_0_vcb_case_10_skip>
+	 56: JNEImm dst: r0 off: -1 imm: 44 <dsl_pm_ipv6_1_0_vcb_case_9_skip>
 	 57: Ja off: -1 <dsl_pm_ipv6_1_0_parse_ext_cb_continue>
-dsl_pm_ipv6_1_0_vcb_case_10_skip:
+dsl_pm_ipv6_1_0_vcb_case_9_skip:
 	 58: MovReg dst: r3 src: r3
-	 59: Ja off: -1 <dsl_pm_ipv6_1_0_parse_ext_cb_break>
+	 59: LdXMemDW dst: r0 src: rfp off: -56 imm: 0
+	 60: JNEImm dst: r0 off: -1 imm: 60 <dsl_pm_ipv6_1_0_vcb_case_10_skip>
+	 61: Ja off: -1 <dsl_pm_ipv6_1_0_parse_ext_cb_continue>
+dsl_pm_ipv6_1_0_vcb_case_10_skip:
+	 62: MovReg dst: r3 src: r3
+	 63: Ja off: -1 <dsl_pm_ipv6_1_0_parse_ext_cb_break>
 dsl_pm_ipv6_1_0_parse_ext_cb_continue:
-	 60: MovImm dst: r0 imm: 0
-	 61: Exit
+	 64: MovImm dst: r0 imm: 0
+	 65: Exit
 dsl_pm_ipv6_1_0_parse_ext_cb_break:
-	 62: MovImm dst: r0 imm: 1
-	 63: Exit
+	 66: MovImm dst: r0 imm: 1
+	 67: Exit
 == Funcs
 223: dsl_pm_ipv6_1_0_parse_ext_cb
 == Capture MaxCapLen=0 FilterMinPrefix=0

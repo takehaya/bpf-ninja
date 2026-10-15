@@ -52,8 +52,8 @@ func (c *pmCtx) emitSharedLengthAdvance(fallback int, lengthLabel, continueLabel
 		asm.JGT.Imm(asm.R3, ScratchBufSize, rejectLabel),
 		asm.Mov.Reg(asm.R0, asm.R4), asm.Add.Reg(asm.R0, asm.R3),
 		asm.JGT.Reg(asm.R0, asm.R5, rejectLabel),
-		asm.StoreMem(asm.R2, bpfLoopCbCtxOffsetField, asm.R3, asm.DWord),
-		asm.Ja.Label(continueLabel),
 	)
+	insns = append(insns, storeCallbackCursor(asm.R0)...)
+	insns = append(insns, asm.Ja.Label(continueLabel))
 	return insns
 }

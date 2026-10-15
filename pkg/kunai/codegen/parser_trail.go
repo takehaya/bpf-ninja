@@ -259,8 +259,6 @@ func emitVariableTrailCallback(fixedHs int, vt variableTailSkip, breakLabel stri
 		storeSlot: func(slot int16, val asm.Register) asm.Instruction {
 			return asm.StoreMem(asm.R2, mainStackOffsetFromCb(slot), val, asm.DWord)
 		},
-		storeOffsetBack: asm.Instructions{
-			asm.StoreMem(asm.R2, bpfLoopCbCtxOffsetField, asm.R3, asm.DWord),
-		},
+		storeOffsetBack: storeCallbackCursor(asm.R0),
 	}, breakLabel)
 }

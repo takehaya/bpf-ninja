@@ -22,7 +22,9 @@ import (
 // "tripwire against silent regression," not "verifier-budget oracle."
 // A future feature that doubles a callback's branch count is far
 // more likely to provoke the verifier than one that adds 1-2; the
-// intent is to surface that signal at compile time.
+// intent is to surface that signal at compile time. Callbacks also mask
+// the cursor they write back so that states differing only in its bounds
+// can merge; see storeCallbackCursor.
 //
 // Measured worst case (bundled vocab):
 //   - VLAN+ / MPLS+ chain callback:        ~3 branches
