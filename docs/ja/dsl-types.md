@@ -137,7 +137,7 @@ field[lo:hi]                    ; half-open bit range, lo inclusive / hi exclusi
 | 範囲 | cmp (`==`/`!=`) | arith binop / bitwise | non-aligned 端点 |
 |---|---|---|---|
 | `≤ 64` | ✅ single LDX | ✅ single register | ✅ codegen で `pow2 ≥ cover` LDX → bswap → shift+mask。9 byte にまたがる slice は先頭 8 byte と 9 byte 目を別に load して合成 |
-| `(64, 128]` | ✅ 両辺が同じ幅の slice のとき、resolver が LDX-aligned chunks の AND/OR-chain に desugar する (例: `[0:96]` → `[0:64]` AND `[64:96]`)。定数とは 128 bit ちょうどのときだけ比べられる | ❌ single register に乗らないため未対応 | ❌ byte-aligned 端点必須 |
+| `(64, 128]` | ✅ 両辺が同じ幅の slice のとき、resolver が LDX-aligned chunks の AND/OR-chain に desugar する (例: `[0:96]` → `[0:64]` AND `[64:96]`)。定数とは比べられないので、`ipv6.src == 1` のように slice を外して書く | ❌ single register に乗らないため未対応 | ❌ byte-aligned 端点必須 |
 
 `!=` の chain は OR で、`==` は AND でつなぎます。endpoint が 64bit 境界を跨ぐ場合は両端が byte-aligned であることが要件で、sub-byte 跨ぎ + 64+ bit は scope 外です。
 

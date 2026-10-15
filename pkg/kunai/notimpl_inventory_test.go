@@ -62,6 +62,9 @@ func TestNotImplementedBoundaries(t *testing.T) {
 		{"slice-72-arith", "eth/ipv6/tcp where ipv6.dst[0:72] + 1 == 1", nil, "same width", "dsl-types.md 8.8"},
 		{"slice-96-const", "eth/ipv6/tcp where ipv6.src[0:96] == 1", nil, "same width", "dsl-types.md slice"},
 		{"slice-96-slice", "eth/ipv6/tcp where ipv6.src[0:96] == ipv6.dst[0:96]", nil, "", "dsl-types.md slice"},
+		{"slice-128-const", "eth/ipv6/tcp where ipv6.src[0:128] == 1", nil, "not wired", "dsl-types.md slice"},
+		{"slice-128-slice", "eth/ipv6/tcp where ipv6.src[0:128] == ipv6.dst[0:128]", nil, "", "dsl-types.md slice"},
+		{"field-128-const", "eth/ipv6/tcp where ipv6.src == 1", nil, "", "dsl-types.md slice"},
 		{"slice-64-arith", "eth/ipv6/tcp where ipv6.src[64:128] + 1 == 1", nil, "", "dsl-types.md slice"},
 		{"slice-96-plus-128", "eth/ipv6/tcp where ipv6.src[0:96] + ipv6.dst == 1", nil, "narrower than 128 is not wired", "dsl-types.md 型表"},
 		// dsl-usage.md capture: field lists are not implemented.
