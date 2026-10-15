@@ -47,10 +47,10 @@ jobs:
       VIMTO_VERSION: v0.4.0
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Setup Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v7
         with:
           go-version-file: ./go.mod
 
@@ -58,7 +58,7 @@ jobs:
         run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends libpcap-dev libbpf-dev clang gcc-multilib
 
       - name: Cache vimto binary
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         id: vimto-cache
         with:
           path: ~/go/bin/vimto
@@ -72,7 +72,7 @@ jobs:
         run: CGO_ENABLED=0 go install github.com/google/go-containerregistry/cmd/crane@v0.20.7
 
       - name: Cache QEMU packages
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         id: qemu-cache
         with:
           path: ~/.cache/qemu-debs
@@ -92,7 +92,7 @@ jobs:
         run: sudo chmod 0666 /dev/kvm
 
       - name: Cache kernel images
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cache/vimto
           key: vimto-kernel-${{ matrix.kernel }}
@@ -144,7 +144,7 @@ jobs:
 
       - name: Upload verifier matrix
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: verifier-matrix-kernel-${{ matrix.kernel }}
           path: |
