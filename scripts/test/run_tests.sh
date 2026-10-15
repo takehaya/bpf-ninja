@@ -37,6 +37,14 @@ run_test() {
 
 # --- helpers ---
 
+# interrupt_child sends SIGINT to the process `timeout` (pid $1) runs, so
+# `wait $1` reports that process's own exit status. Signalling `timeout`
+# itself is not the same everywhere: GNU timeout passes the child's status
+# through, while the uutils one (Ubuntu 26.04) exits 128+SIGINT.
+interrupt_child() {
+    pkill -INT -P "$1" 2>/dev/null
+}
+
 send_packets() {
     ip netns exec xdptest ping -c "$1" -W 1 10.0.0.1 >/dev/null 2>&1
 }
@@ -426,7 +434,7 @@ test_cap_finalize_flow() {
     "$BINARY" set list "$pin" 2>/dev/null | grep -Eq "tag=1 .*state=finalized" && finalized=1
     local size=0
     [[ -f "$merged" ]] && size=$(stat -c %s "$merged")
-    kill -INT $pid 2>/dev/null; wait $pid 2>/dev/null
+    interrupt_child $pid; wait $pid 2>/dev/null
     local rc=$?
 
     echo "cap_finalize appeared=$appeared alive=$alive finalized=$finalized size=$size rc=$rc list=$("$BINARY" set list "$pin" 2>/dev/null) stderr=$(cat "$err")" >&2
@@ -508,7 +516,7 @@ test_finalize_on_del() {
     kill -0 $pid 2>/dev/null && alive=1
     local pkts=0
     [[ $appeared -eq 1 ]] && pkts=$(tcpdump -r "$merged" 2>/dev/null | wc -l)
-    kill -INT $pid 2>/dev/null; wait $pid 2>/dev/null
+    interrupt_child $pid; wait $pid 2>/dev/null
     local rc=$?
 
     echo "finalize_on_del appeared=$appeared alive=$alive pkts=$pkts rc=$rc stderr=$(cat "$err")" >&2

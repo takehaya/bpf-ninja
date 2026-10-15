@@ -23,7 +23,7 @@ on:
 jobs:
   bpf-load-test:
     name: BPF load test (kernel ${{ matrix.kernel }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 20
     strategy:
       fail-fast: false
@@ -76,7 +76,8 @@ jobs:
         id: qemu-cache
         with:
           path: ~/.cache/qemu-debs
-          key: qemu-debs-${{ runner.os }}-${{ runner.arch }}
+          # The .debs belong to the runner image; change this with runs-on.
+          key: qemu-debs-ubuntu-26.04-${{ runner.arch }}
 
       - name: Install QEMU
         run: |

@@ -98,7 +98,9 @@ def main():
                 raise RuntimeError(f"no tests selected in {package}")
             expected.update(selected)
             prefix = ["vimto", "-sudo", "-kernel", ":"+args.kernel, "--"] if args.kernel else []
-            command = prefix + ["go", "test", "-json", "-count=1", "-timeout=5m", "-run", pattern, package]
+            # dsltest loads ~17k programs, and kernel 7.0+ verifies the TCP
+            # option filters among them several times slower than 6.x did.
+            command = prefix + ["go", "test", "-json", "-count=1", "-timeout=15m", "-run", pattern, package]
             print("+ " + " ".join(command), flush=True)
             with subprocess.Popen(command, stdout=subprocess.PIPE, text=True, env=env) as process:
                 for line in process.stdout:

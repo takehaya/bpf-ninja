@@ -28,7 +28,7 @@ permissions:
 jobs:
   lean:
     name: build and check vector drift
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
