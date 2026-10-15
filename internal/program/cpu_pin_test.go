@@ -90,6 +90,7 @@ func pinThread(cpu int) (unpin func() error, err error) {
 }
 
 // pinTest pins the test goroutine's thread to cpu until the test ends.
+// Subtests run on their own goroutines and are not pinned by it.
 func pinTest(t *testing.T, cpu int) {
 	t.Helper()
 	unpin, err := pinThread(cpu)
