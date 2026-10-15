@@ -20,13 +20,13 @@ jobs:
     steps:
       - name: Generate App token
         id: app-token
-        uses: actions/create-github-app-token@v2
+        uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ secrets.TAKEHAYA_RELEASE_PLEASE_APP_APP_ID }}
           private-key: ${{ secrets.TAKEHAYA_RELEASE_PLEASE_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
       - id: release-please
-        uses: googleapis/release-please-action@v4
+        uses: googleapis/release-please-action@v5
         with:
           token: ${{ steps.app-token.outputs.token }}
           config-file: release-please-config.json
@@ -45,13 +45,13 @@ jobs:
       # goreleaser's `git describe` deterministic: otherwise it can race the
       # just-pushed tag and resolve the previous release as "current",
       # failing with "git tag vX.Y.Z was not made against commit ...".
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.release-please.outputs.tag_name }}
           fetch-depth: 0
           fetch-tags: true
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
 
@@ -59,7 +59,7 @@ jobs:
         run: sudo apt-get update -qq && sudo apt-get install -y libpcap-dev
 
       - name: Run GoReleaser
-        uses: goreleaser/goreleaser-action@v6
+        uses: goreleaser/goreleaser-action@v7
         with:
           version: '~> v2'
           args: release --clean
