@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.29.0](https://github.com/takehaya/bpf-ninja/compare/v0.28.0...v0.29.0) (2026-10-16)
+
+
+### 🎉 Features
+
+* **kunai:** read aux fields that start off a byte boundary ([#245](https://github.com/takehaya/bpf-ninja/issues/245)) ([9a636b3](https://github.com/takehaya/bpf-ninja/commit/9a636b35f8c2cd216bcfaab6e58211b6d782ad5d))
+
 ## [0.28.0](https://github.com/takehaya/bpf-ninja/compare/v0.27.0...v0.28.0) (2026-10-16)
 
 
