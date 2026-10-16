@@ -26,6 +26,8 @@ or deleted here take effect immediately, without re-attaching.
 Examples:
   bpf-ninja set create /sys/fs/bpf/flows --key "imsi:u64,teid:u32"
   bpf-ninja set add    /sys/fs/bpf/flows imsi=999990000000001 teid=0x3039 tag=1
+  bpf-ninja set create /sys/fs/bpf/macs --key "src:u64"
+  bpf-ninja set add    /sys/fs/bpf/macs src=aa:bb:cc:dd:ee:ff
   bpf-ninja set del    /sys/fs/bpf/flows imsi=999990000000001 teid=0x3039
   bpf-ninja set list   /sys/fs/bpf/flows
   bpf-ninja set schema /sys/fs/bpf/flows
@@ -49,7 +51,7 @@ func newSetCreateCommand() *cli.Command {
 		Flags: []cli.Flag{
 			&cli.StringFlag{
 				Name: "key", Required: true,
-				Usage: "key schema, e.g. \"imsi:u64,teid:u32\" (types: u8/u16/u32/u64, or ipv6 for a 16-byte address / SRv6 SID; numeric fields align to their width, ipv6 to 8)",
+				Usage: "key schema, e.g. \"imsi:u64,teid:u32\" (types: u8/u16/u32/u64, or ipv6 for a 16-byte address / SRv6 SID; numeric fields align to their width, ipv6 to 8; a 24-bit VNI keys a u32 field and a MAC a u64 field)",
 			},
 			&cli.StringFlag{
 				Name: "value", Value: setmap.DefaultValueSchema,
@@ -123,7 +125,7 @@ active.`,
 func newSetAddCommand() *cli.Command {
 	return &cli.Command{
 		Name:      "add",
-		Usage:     "insert or update one entry (full key required); max-bytes=0 or omitted = uncapped",
+		Usage:     "insert or update one entry (full key required); a u64 field also takes a MAC (aa:bb:cc:dd:ee:ff); max-bytes=0 or omitted = uncapped",
 		ArgsUsage: "<pin-path> field=value ... [tag=N] [max-bytes=N]",
 		Action: func(_ context.Context, cmd *cli.Command) error {
 			def, fields, val, err := setOpenWithFields(cmd)
@@ -139,7 +141,7 @@ func newSetAddCommand() *cli.Command {
 func newSetDelCommand() *cli.Command {
 	return &cli.Command{
 		Name:      "del",
-		Usage:     "delete one entry (full key required)",
+		Usage:     "delete one entry (full key required); a u64 field also takes a MAC (aa:bb:cc:dd:ee:ff)",
 		ArgsUsage: "<pin-path> field=value ...",
 		Action: func(_ context.Context, cmd *cli.Command) error {
 			def, fields, val, err := setOpenWithFields(cmd)

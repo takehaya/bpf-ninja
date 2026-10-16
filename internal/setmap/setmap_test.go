@@ -2,6 +2,7 @@ package setmap
 
 import (
 	"bytes"
+	"encoding/binary"
 	"os"
 	"strings"
 	"testing"
@@ -129,6 +130,36 @@ func TestParseSchemaIPv6(t *testing.T) {
 	}
 	if f := specs[0]; f.Name != "sid" || f.Size != 16 || !f.IsBytes {
 		t.Errorf("spec = %+v, want {sid, size 16, bytes}", f)
+	}
+}
+
+func TestBuildKeyMACInU64(t *testing.T) {
+	def := &Definition{
+		KeySize: 8,
+		Fields:  []KeyField{{Name: "src", Off: 0, Size: 8}},
+	}
+	want := binary.NativeEndian.AppendUint64(nil, 0xaabbccddeeff)
+	for _, raw := range []string{"aa:bb:cc:dd:ee:ff", "AA-BB-CC-DD-EE-FF", "0xaabbccddeeff"} {
+		key, err := def.BuildKey(map[string]string{"src": raw})
+		if err != nil {
+			t.Fatalf("BuildKey(%q): %v", raw, err)
+		}
+		if !bytes.Equal(key, want) {
+			t.Errorf("BuildKey(%q) = %x, want %x", raw, key, want)
+		}
+	}
+	for raw, wantErr := range map[string]string{
+		"01-23-45-67-89-ab-cd-ef": "6-byte MAC",
+		"aa:bb":                   "6-byte MAC",
+		"aa:bb:cc:dd:ee:zz":       "6-byte MAC",
+	} {
+		if _, err := def.BuildKey(map[string]string{"src": raw}); err == nil || !strings.Contains(err.Error(), wantErr) {
+			t.Errorf("BuildKey(%q) err = %v, want %q", raw, err, wantErr)
+		}
+	}
+	u32 := &Definition{KeySize: 4, Fields: []KeyField{{Name: "src", Off: 0, Size: 4}}}
+	if _, err := u32.BuildKey(map[string]string{"src": "aa:bb:cc:dd:ee:ff"}); err == nil || !strings.Contains(err.Error(), "needs a u64 field") {
+		t.Errorf("u32 MAC err = %v", err)
 	}
 }
 

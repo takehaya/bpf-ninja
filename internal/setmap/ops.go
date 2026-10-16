@@ -388,6 +388,28 @@ func parseUint(s string) (uint64, error) {
 	return strconv.ParseUint(s, 10, 64)
 }
 
+// parseKeyValue reads a numeric key field's value: decimal or 0x hex, or
+// for a u64 field a MAC address (aa:bb:cc:dd:ee:ff or aa-bb-...), which
+// is the 48-bit number of its wire bytes. That is the value kunai
+// extracts for eth.src / eth.dst into a u64 key.
+func parseKeyValue(f KeyField, raw string) (uint64, error) {
+	if !strings.ContainsAny(raw, ":-") {
+		v, err := parseUint(raw)
+		if err != nil {
+			return 0, fmt.Errorf("key field %s: %w", f.Name, err)
+		}
+		return v, nil
+	}
+	hw, err := net.ParseMAC(raw)
+	if err != nil || len(hw) != 6 {
+		return 0, fmt.Errorf("key field %s: %q is not a number or a 6-byte MAC address", f.Name, raw)
+	}
+	if f.Size != 8 {
+		return 0, fmt.Errorf("key field %s: a MAC address needs a u64 field, not %s", f.Name, f.typeName())
+	}
+	return binary.BigEndian.Uint64(append([]byte{0, 0}, hw...)), nil
+}
+
 // BuildKey assembles the zero-padded key bytes for the definition from
 // named field values. Every key field must be present (full-key rule) and
 // every provided name must be a key field; values must fit their field.
@@ -412,9 +434,9 @@ func (d *Definition) BuildKey(values map[string]string) ([]byte, error) {
 			}
 			copy(key[f.Off:f.Off+f.Size], parsed.To16())
 		} else {
-			v, perr := parseUint(raw)
+			v, perr := parseKeyValue(f, raw)
 			if perr != nil {
-				return nil, fmt.Errorf("key field %s: %w", f.Name, perr)
+				return nil, perr
 			}
 			if f.Size < 8 && v >= 1<<(8*f.Size) {
 				return nil, fmt.Errorf("value %d does not fit key field %s (u%d)", v, f.Name, f.Size*8)

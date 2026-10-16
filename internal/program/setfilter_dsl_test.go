@@ -150,6 +150,52 @@ func TestBpfDSLSetMatchPacketField(t *testing.T) {
 	}
 }
 
+// TestBpfDSLSetMatchMACSrc: a 6-byte eth.src keys a u64 set through its
+// 8-byte window, and `set add` takes the MAC literal. The marker sits in
+// eth.dst's first byte, so the test keys on eth.src.
+func TestBpfDSLSetMatchMACSrc(t *testing.T) {
+	testutil.SkipIfNotRoot(t)
+
+	pin := fmt.Sprintf("/sys/fs/bpf/bpfninja_dslmac_%d", os.Getpid())
+	if err := setmap.Create(pin, "src:u64", "", 16); err != nil {
+		t.Skipf("creating pinned set map (bpffs unavailable?): %v", err)
+	}
+	t.Cleanup(func() { _ = os.Remove(pin) })
+
+	set, err := setmap.OpenSet(setmap.SpecRef{Name: "macs", Path: pin})
+	if err != nil {
+		t.Fatalf("OpenSet: %v", err)
+	}
+	t.Cleanup(set.Def.Close)
+	if err := set.Def.Add(map[string]string{"src": "aa:bb:cc:dd:ee:ff"}, setmap.EntryValue{Tag: 1}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	prog := loadXDPByName(t, dslSetTargetSrc, "xdp_set_e2e_target")
+	targets := []attach.Target{{Program: prog, FuncName: "xdp_set_e2e_target", Type: ebpf.XDP}}
+	probe, err := LoadMultiEntry(targets, "eth[src in @macs]/ipv4/tcp", nil, true, []*setmap.Set{set})
+	if err != nil {
+		t.Fatalf("LoadMultiEntry with DSL set: %v", err)
+	}
+	defer func() { _ = probe.Close() }()
+
+	run := func(marker byte, src []byte) {
+		t.Helper()
+		p := tcpPacket(marker, 1234, 80)
+		copy(p[6:12], src)
+		if _, err := prog.Run(&ebpf.RunOptions{Data: p}); err != nil {
+			t.Fatalf("test-run: %v", err)
+		}
+	}
+	run(0x44, []byte{0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff}) // member, captured
+	run(0x55, []byte{0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xfe}) // non-member, dropped
+	run(0x66, []byte{0xff, 0xee, 0xdd, 0xcc, 0xbb, 0xaa}) // byte-reversed, dropped
+	markers := drainMarkers(t, probe, 1)
+	if markers[0x44] != 1 || markers[0x55] != 0 || markers[0x66] != 0 {
+		t.Fatalf("markers = %v, want only one 0x44 (the member MAC)", markers)
+	}
+}
+
 // TestBpfDSLSetLegacyScalarValue pins the pre-0.23 value layout at the
 // BPF level: a plain `tag:u16` value (no state field → no state check
 // emitted, narrow tag width → 2-byte load) must still match and carry
