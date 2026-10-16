@@ -131,12 +131,13 @@ field[lo:hi]                    ; half-open bit range, lo inclusive / hi exclusi
 | `ipv6.src[96:128]` | `Int<32>` | 末尾 4 octets (IPv6 → IPv4 互換アドレス検査などに) |
 | `ipv6.src[64:128]` | `Int<64>` | 下位半分 (subnet identifier + interface ID) |
 | `ipv4.dst[0:8]` | `Int<8>` | IPv4 アドレスの最上位 octet (Class A の network 番号など) |
+| `ipv6.traffic_class[0:6]` | `Int<6>` | IPv6 の DSCP。traffic_class は header の bit 4 から始まるので、header の bit 4..10 を読む |
 
 結果幅と用途のマトリクス (§9.1) は次のとおりです。
 
 | 範囲 | cmp (`==`/`!=`) | arith binop / bitwise | non-aligned 端点 |
 |---|---|---|---|
-| `≤ 64` | ✅ single LDX | ✅ single register | ✅ codegen で `pow2 ≥ cover` LDX → bswap → shift+mask。9 byte にまたがる slice は先頭 8 byte と 9 byte 目を別に load して合成 |
+| `≤ 64` | ✅ single LDX | ✅ single register | ✅ codegen で `pow2 ≥ cover` LDX → bswap → shift+mask。9 byte にまたがる slice は先頭 8 byte と 9 byte 目を別に load して合成。byte の境界から始まらない field の slice も、header 上の bit 範囲を覆う窓で読む (`traffic_class[0:6]` は bit 4..10 なので 2 byte) |
 | `(64, 128)` | ✅ 両辺が同じ幅の slice のとき、resolver が LDX-aligned chunks の AND/OR-chain に desugar する (例: `[0:96]` → `[0:64]` AND `[64:96]`)。定数や幅の違う operand とは比べられない | ❌ single register に乗らないため未対応 | ❌ byte-aligned 端点必須 |
 | `= 128` | ✅ 128 bit の field の `[0:128]` は field そのものと同じに扱い、定数、`int<128>`、field との比較や大小比較もできる | ✅ field と同じ 128 bit の `+` / `-` | 該当しない |
 
@@ -628,6 +629,7 @@ eth/ipv6/tcp where ipv6.dst[0:72] + 1 == 1          # ErrNotImplemented
 eth/ipv6/tcp where ipv6.src[0:96] + ipv6.dst == 1   # ErrNotImplemented
 eth/ipv6/tcp where ipv6.src[0:128] + 1 == 1         # compile できる
 eth/ipv6/tcp where ipv6.src[0:128] == 1             # compile できる
+eth/ipv6[traffic_class[0:6] == 46]/tcp              # compile できる
 ```
 
 bracket predicate の整数リテラルは 64 bit まで比べられます。`tcp[seq > 0x80000000]` や、byte を入れ替えると 2^31 以上になる `tcp[seq == 128]` では、定数を register に置いて比べます。
@@ -1200,7 +1202,7 @@ op_c(n_f, v_n) = b
 [E-Pred-In]                                            [E-Pred-InSet]
 ⟨field(f), σ⟩ ⇓_P n_f                                  ⟨field(f), σ⟩ ⇓_P n_f
 b = ∃ a ∈ ā. (a = v ∧ op_=(n_f, v) )                   S = sets_H(name)                 ; host が宣言した set、無ければ ill-typed
-        ∨ (a = lo..hi ∧ lo ≤ n_f ≤ hi)                 width(S) = 8·ldx(f)              ; key 幅は f の bit 範囲を覆う最小の load 窓 1/2/4/8 byte で、3 byte や 6 byte の field も 4 / 8 byte。Int<128> の field 全体は `[0:128]` を含めて 16 (D-036)
+        ∨ (a = lo..hi ∧ lo ≤ n_f ≤ hi)                 width(S) = 8·ldx(f)              ; key 幅は f の bit 範囲を覆う最小の load 窓 1/2/4/8 byte で、3 byte や 6 byte の field も 4 / 8 byte。slice は header 上の bit 範囲で数え、`traffic_class[0:4]` は 1 byte、`[0:6]` は 2 byte。Int<128> の field 全体は `[0:128]` を含めて 16 (D-036)
         ; v は int / ipv4 / ipv6 / mac / cidr の literal。op_= は [E-Pred-Cmp] の `==` と同じで、cidr は prefix の一致
 ─────────────────────────────────                      b = (n_f ∈ members(S))           ; lookup は host が filter の後に行い verdict に AND
 ⟨in(f, ā), σ⟩ ⇓_P b                                    ─────────────────────────────────

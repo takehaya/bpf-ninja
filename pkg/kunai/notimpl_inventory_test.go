@@ -91,9 +91,10 @@ func TestNotImplementedBoundaries(t *testing.T) {
 		{"slice-96-plus-128", "eth/ipv6/tcp where ipv6.src[0:96] + ipv6.dst == 1", nil, "ipv6.src[0:96] (bit<96>) next to an Int<128> operand: a slice between 65 and 127 bits", "dsl-types.md 型表"},
 		// dsl-usage.md capture: field lists are not implemented.
 		{"capture-field-list", "eth/ipv4/tcp capture tcp.flags, ipv4.dst", nil, "field-list capture is not yet implemented", "dsl-usage.md capture"},
-		// A slice of a field that starts off a byte boundary is not wired,
-		// though the spec types it (in @set as for ==).
-		{"inset-subbyte-field-slice", "eth/ipv6[traffic_class[0:4] in @k]/tcp", keySlotCaps(1), "not byte-aligned", "dsl-usage.md 集合"},
+		// A slice of a field that starts off a byte boundary reads the
+		// window over its bits from the header (traffic_class is at bit 4).
+		{"inset-subbyte-field-slice", "eth/ipv6[traffic_class[0:4] in @k]/tcp", keySlotCaps(1), "", "dsl-usage.md 集合"},
+		{"inset-dscp-slice", "eth/ipv6[traffic_class[0:6] in @k]/tcp", keySlotCaps(2), "", "dsl-usage.md 集合"},
 		{"inset-aux-six-byte-field", "eth/ipv6[exts[0]._opts in @k]/tcp", keySlotCaps(8), "a key window for it is not wired", "dsl-types.md 13.7"},
 		{"inset-subbyte-field", "eth/ipv6[traffic_class in @k]/tcp", keySlotCaps(2), "", "dsl-usage.md 集合"},
 		// A quantified machine layer unrolls to at most 8 machines.

@@ -615,14 +615,47 @@ vector predInSetSubByteFieldSlice := {
   id := "pred-inset-subbyte-field-slice",
   ast := { layers := [P "eth", .proto { name := "ipv6", preds := [.inSet ⟨[("traffic_class", some (.slice 0 4))]⟩ "tc"] }, P "tcp"] },
   sets := [{ name := "tc", width := 8, members := [0] }], packet := ipv6TCP, expected := .accept [],
-  goStatus := .notImplemented,
-  note := "Go: a slice of a field that starts off a byte boundary is not wired (fieldRefByteOffset)" }
+  note := "traffic_class starts at bit 4: [0:4] is bits 4..8, one byte" }
 vector predInSetIhlSlice := {
   id := "pred-inset-ihl-slice",
   ast := { layers := [P "eth", .proto { name := "ipv4", preds := [.inSet ⟨[("ihl", some (.slice 2 4))]⟩ "k"] }, P "tcp"] },
   sets := [{ name := "k", width := 8, members := [1] }], expected := .accept [],
-  goStatus := .notImplemented,
-  note := "ihl 5 is 0101, so bits 2..4 are 01. Go: a slice of a field that starts off a byte boundary is not wired" }
+  note := "ihl 5 is 0101, so bits 2..4 are 01" }
+def tcPkt (tc : Nat) (flowLabel : Nat := 0) : Packet :=
+  eth 0x86DD ++ ipv6 6 (tc := tc) (flowLabel := flowLabel) ++ tcp 12345 80 ++ payload 5
+def dscp : FieldPath := ⟨[("traffic_class", some (.slice 0 6))]⟩
+def dscpW : Arith := .field ⟨[("ipv6", none), ("traffic_class", some (.slice 0 6))]⟩
+def tcBracket (p : Predicate) : Filter := { layers := [P "eth", .proto { name := "ipv6", preds := [p] }, P "tcp"] }
+def tcWhere (w : Where) : Filter := { layers := [P "eth", P "ipv6", P "tcp"], cond := some w }
+vector predDscp := {
+  id := "pred-ipv6-dscp", ast := tcBracket (.cmp dscp .eq (.int 46)), packet := tcPkt 0xb8, expected := .accept [],
+  note := "DSCP is traffic_class[0:6], bits 4..10 of the header: a 2-byte window" }
+vector predDscpEcn := {
+  id := "pred-ipv6-dscp-ecn", ast := tcBracket (.cmp dscp .eq (.int 46)), packet := tcPkt 0xb9, expected := .accept [],
+  note := "the ECN bits after the slice do not leak into it" }
+vector predDscpMiss := {
+  id := "pred-ipv6-dscp-miss", ast := tcBracket (.cmp dscp .eq (.int 46)), packet := tcPkt 0x28, expected := .reject }
+vector predDscpRange := {
+  id := "pred-ipv6-dscp-range", ast := tcBracket (.inList dscp [.range 40 47]), packet := tcPkt 0xb8, expected := .accept [] }
+vector whereDscp := {
+  id := "where-ipv6-dscp", ast := tcWhere (cmp dscpW .eq (k 46)), packet := tcPkt 0xb8, expected := .accept [] }
+vector whereDscpOrdered := {
+  id := "where-ipv6-dscp-ordered", ast := tcWhere (cmp dscpW .ge (k 40)), packet := tcPkt 0x28, expected := .reject,
+  note := "AF11 is DSCP 10" }
+vector whereDscpArith := {
+  id := "where-ipv6-dscp-arith", ast := tcWhere (cmp (.bin .add dscpW (k 1)) .eq (k 47)), packet := tcPkt 0xb8, expected := .accept [] }
+vector whereEcn := {
+  id := "where-ipv6-ecn", ast := tcWhere (cmp (.field ⟨[("ipv6", none), ("traffic_class", some (.slice 6 8))]⟩) .eq (k 1)),
+  packet := tcPkt 0xb9, expected := .accept [], note := "ECN is bits 10..12 of the header: the window starts at byte 1" }
+vector whereFlowLabelSlice := {
+  id := "where-ipv6-flow-label-slice", ast := tcWhere (cmp (.field ⟨[("ipv6", none), ("flow_label", some (.slice 0 8))]⟩) .eq (k 0x12)),
+  packet := tcPkt 0 0x12345, expected := .accept [] }
+vector predInSetDscp := {
+  id := "pred-inset-dscp", ast := tcBracket (.inSet dscp "dscp"), sets := [{ name := "dscp", width := 16, members := [46] }],
+  packet := tcPkt 0xb8, expected := .accept [], note := "the key is the 2-byte window over bits 4..10" }
+vector typPredInSetDscpWidth := {
+  id := "typ-pred-inset-dscp-width", ast := tcBracket (.inSet dscp "dscp"), sets := [{ name := "dscp", width := 8, members := [46] }],
+  packet := tcPkt 0xb8, expected := .illTyped "set @dscp keys are bit<8>, ipv6.traffic_class[0:6] extracts bit<16>" }
 vector typAny := {
   id := "typ-any-unsupported", ast := W (.any (cmp dport .eq (k 1))), expected := .illTyped "any/all needs exactly one index-less stack reference" }
 vector typExists := {
@@ -1382,7 +1415,7 @@ def whereVectors : List Vector := [
   capHeadersAltIPv6, capHeadersAltIPv4, capHeadersVxlan, capHeadersPlusOptions,
   typUnknownProto, typNoDispatch, typNotInChain, typUnknownField, typFit, typLabelCollides, typLabelCollidesAlt, typLabelDuplicate, typFitArith, whereArithRight, whereArithRightMiss, typFitArithSibling, whereNegLitSibling, typWidthIPv6, typCIDRWidth,
   typWidthIPv6Slice, typWidthIPv6SliceBracket, ipv6DstLow32IPv4, ipv6DstLow32IPv4Miss, ipv6DstLow32Cidr, ipv6DstLow32IPv4Unaligned, ipv6DstUnalignedIPv4Miss, ipv6DstUnalignedIPv4Ne, ipv6DstUnalignedCidr, ipv6DstUnalignedCidrNeMiss, ipv6DstUnalignedCidrZero, ipv6DstUnalignedCidrZeroNe, ipv6DstCidr6ZeroNeOr, ipv6DstUnalignedEndOfFrame, ipv4DstSliceEndOfFrame, ipv6DstUnalignedIntEndOfFrame, predIPv6DstUnalignedIPv4, predIPv6DstUnalignedIPv4Gt, predIPv6DstUnalignedIPv4Ge, predIPv6DstUnalignedInListMac, predIPv6DstUnalignedInListMacInt, predEthSrcUnalignedIPv4, predIPv6DstUnalignedCidrZeroNe, predIPv6Cidr6ZeroNe, predIPv6DstNineByteSlice, predIPv6NineByteMiss, predIPv6NineByteGt, predIPv6NineByteLtMiss, predIPv6NineByteInList, predIPv6NineByteInRange, predIPv6NineByteInRangeMiss, predIPv6NineByteNarrow, predIPv6NineByteFrameEnd, whereIPv6NineByte, whereIPv6NineByteWide, whereIPv6NineByteArith, predInSetNineByte, predInSetNineByteMiss, predIPv6NineByteOdd, predIPv6NineByteOddMiss, whereIPv6NineByteAlt, whereIPv6NineByteAltMiss, ipv6DstLow32IPv4Ne, ipv6DstLow32IPv4NeMiss, ipv6DstLow48Mac, ipv6DstFullSliceIPv6, ipv6DstFullSliceCidr6, ipv6DstLow32IPv4Bracket,
-  typPredIdent, typInSet, predInSetMember, predInSetMiss, typPredInSetWidth, predInSetSubByte, predInSetWindow, predInSetWindowMiss, predSeqSwappedWide, predSeqSwappedWideMiss, predSeqWideNe, predSeqWideGt, predSeqWideGtMiss, whereCidr32HighOctet, whereCidr32HighOctetNe, predIPv6NineByteWideConst, predSeqMax, predInSetIPv6, predInSetIPv6Miss, predInSetTwo, predInSetTwoSecondMiss, predInSetTwoFirstMiss, predInSetUnused, typPredInSetWindow, typPredInSetTwice, typPredInSetBudget, typPredInSetOptional, typPredInSetAlt, predInSetVxlanVni, predInSetVxlanVniMiss, typPredInSetVniWidth, predInSetMacDst, predInSetMacSrc, predInSetMacMiss, typPredInSetMacWidth, predInSetFullSlice, predInSetFullSliceMiss, typPredInSetSlice96, typPredInSetSlice72Unaligned, predInSetSubByteFieldSlice, predInSetIhlSlice, typAny, typExists, typAuxPath,
+  typPredIdent, typInSet, predInSetMember, predInSetMiss, typPredInSetWidth, predInSetSubByte, predInSetWindow, predInSetWindowMiss, predSeqSwappedWide, predSeqSwappedWideMiss, predSeqWideNe, predSeqWideGt, predSeqWideGtMiss, whereCidr32HighOctet, whereCidr32HighOctetNe, predIPv6NineByteWideConst, predSeqMax, predInSetIPv6, predInSetIPv6Miss, predInSetTwo, predInSetTwoSecondMiss, predInSetTwoFirstMiss, predInSetUnused, typPredInSetWindow, typPredInSetTwice, typPredInSetBudget, typPredInSetOptional, typPredInSetAlt, predInSetVxlanVni, predInSetVxlanVniMiss, typPredInSetVniWidth, predInSetMacDst, predInSetMacSrc, predInSetMacMiss, typPredInSetMacWidth, predInSetFullSlice, predInSetFullSliceMiss, typPredInSetSlice96, typPredInSetSlice72Unaligned, predInSetSubByteFieldSlice, predInSetIhlSlice, predDscp, predDscpEcn, predDscpMiss, predDscpRange, whereDscp, whereDscpOrdered, whereDscpArith, whereEcn, whereFlowLabelSlice, predInSetDscp, typPredInSetDscpWidth, typAny, typExists, typAuxPath,
   arith128AddConst, arith128SubConst, arith128AddCarry, arith128AddWrap, arith128SubBorrow, arith128SubWrap, arith128AddMiss,
   arith128FieldAddField, arith128FieldAddFieldCarry, arith128FieldSubField, arith128FieldSubFieldBorrow, arith128AddWideConst, arith128SubWideConstBorrow,
   arith128AddNegConst, arith128SubNegConst, arith128CmpNegConst,

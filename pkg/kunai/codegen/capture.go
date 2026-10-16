@@ -251,9 +251,10 @@ func inferMinCapLenFromWhere(p *ir.Program, where *ir.Condition) (int, error) {
 		endBit := startBit + sliceLo + fr.EffectiveBits()
 		// A slice is read through a load window that can reach past its
 		// last byte (applySliceToOffset); the prefix covers the window.
-		if fr.Slice != nil && startBit%8 == 0 {
-			if off, n, err := applySliceToOffset(fr, 0, 0); err == nil && startBit+(off+n)*8 > endBit {
-				endBit = startBit + (off+n)*8
+		// The window is counted from the field's byte floor.
+		if fr.Slice != nil {
+			if off, n, err := applySliceToOffset(fr, 0, 0); err == nil && (startBit/8+off+n)*8 > endBit {
+				endBit = (startBit/8 + off + n) * 8
 			}
 		}
 		fieldEnd := (endBit + 7) / 8 // round up to byte

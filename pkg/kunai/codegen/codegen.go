@@ -1835,6 +1835,35 @@ func subByteWindow(bitOff, width int) (byteOff, loadBytes int, ok bool) {
 	return byteOff, loadBytes, true
 }
 
+// fieldIntraByteBit is the bit within its first byte at which ref's
+// field starts (0 for a byte-aligned field): a primary field's from the
+// vocab, an aux field's from Aux.FieldBitOff.
+func fieldIntraByteBit(ref *ir.FieldRef) int {
+	switch {
+	case ref == nil:
+		return 0
+	case ref.Aux != nil:
+		return ref.Aux.FieldBitOff % 8
+	case ref.Field == nil || ref.Layer == nil || ref.Layer.Spec == nil:
+		return 0
+	}
+	bitOff, _, ok := vocab.BitOffsetIn(ref.Layer.Spec.Fields, ref.Field.Name)
+	if !ok {
+		return 0
+	}
+	return bitOff % 8
+}
+
+// sliceBits is ref's slice shifted by the field's intra-byte start: the
+// slice's bit range counted from the field's first byte, which every
+// window and shift computation below works on. A slice of
+// ipv6.traffic_class (bit 4 of the header) [0:6] is bits 4..10 of the
+// field's first byte onwards (spec keyBytes and loadRefOn).
+func sliceBits(ref *ir.FieldRef) (lo, hi int) {
+	s := fieldIntraByteBit(ref)
+	return ref.Slice.Lo + s, ref.Slice.Hi + s
+}
+
 // bareSubByteField resolves the header-relative bit geometry of a bare
 // primary field (no slice, no aux) when that geometry is not byte-clean
 // — the field starts off a byte boundary or its width is not a whole
@@ -1906,9 +1935,8 @@ func fieldRefByteOffset(ref *ir.FieldRef) (int, int, error) {
 				if ferr != nil {
 					return 0, 0, ferr
 				}
-				if bitOff%8 != 0 {
-					return 0, 0, fmt.Errorf("%w: field %s.%s starts at bit %d (not byte-aligned)", ErrNotImplemented, ref.Layer.Spec.Name, ref.Field.Name, bitOff)
-				}
+				// A field starting off a byte boundary is read from its
+				// byte floor; sliceBits carries the intra-byte start.
 				_ = bits
 				off = bitOff / 8
 				size = ref.Slice.Bits() / 8
@@ -1970,8 +1998,9 @@ func applySliceToOffset(ref *ir.FieldRef, off, size int) (int, int, error) {
 	if ref.Slice == nil {
 		return off, size, nil
 	}
-	byteEndExclusive := (ref.Slice.Hi + 7) / 8
-	cover := byteEndExclusive - ref.Slice.Lo/8
+	lo, hi := sliceBits(ref)
+	byteEndExclusive := (hi + 7) / 8
+	cover := byteEndExclusive - lo/8
 	loadBytes := nextLDXSize(cover)
 	if loadBytes == 0 && cover == sliceSplitWindow && ref.Slice.Bits() <= 64 {
 		loadBytes = sliceSplitWindow
@@ -1991,7 +2020,8 @@ func applySliceToOffset(ref *ir.FieldRef, off, size int) (int, int, error) {
 // would read 3 bytes beyond an IPv6 header that ends the frame, and the
 // bounded load would reject a packet whose field is all there.
 func sliceWindowStart(ref *ir.FieldRef, loadBytes int) int {
-	start := ref.Slice.Lo / 8
+	lo, _ := sliceBits(ref)
+	start := lo / 8
 	fieldBits := 0
 	switch {
 	case ref.Aux != nil:
@@ -1999,7 +2029,9 @@ func sliceWindowStart(ref *ir.FieldRef, loadBytes int) int {
 	case ref.Field != nil:
 		fieldBits = ref.Field.Bits
 	}
-	if fieldBits%8 == 0 && fieldBits/8 >= loadBytes && start+loadBytes > fieldBits/8 {
+	// Only a byte-aligned field has a byte extent to stay inside; an
+	// unaligned one (traffic_class) is read from its byte floor.
+	if fieldIntraByteBit(ref) == 0 && fieldBits%8 == 0 && fieldBits/8 >= loadBytes && start+loadBytes > fieldBits/8 {
 		start = fieldBits/8 - loadBytes
 	}
 	return start
@@ -2015,10 +2047,11 @@ func applyExactSlice(ref *ir.FieldRef, off, size int) (int, int, error) {
 	if ref.Slice == nil {
 		return off, size, nil
 	}
-	if ref.Slice.Lo%8 != 0 || ref.Slice.Hi%8 != 0 {
+	lo, hi := sliceBits(ref)
+	if lo%8 != 0 || hi%8 != 0 {
 		return 0, 0, fmt.Errorf("%w: bit-slice [%d:%d] compared with a network literal must start and end on a byte boundary", ErrNotImplemented, ref.Slice.Lo, ref.Slice.Hi)
 	}
-	return off + ref.Slice.Lo/8, ref.Slice.Bits() / 8, nil
+	return off + lo/8, ref.Slice.Bits() / 8, nil
 }
 
 // sliceSplitWindow is the window of a slice of at most 64 bits that
@@ -2034,7 +2067,8 @@ func sliceSplitsLoad(ref *ir.FieldRef) bool {
 	if ref == nil || ref.Slice == nil || ref.Slice.Bits() > 64 {
 		return false
 	}
-	return (ref.Slice.Hi+7)/8-ref.Slice.Lo/8 == sliceSplitWindow
+	lo, hi := sliceBits(ref)
+	return (hi+7)/8-lo/8 == sliceSplitWindow
 }
 
 // nextLDXSize returns the smallest LDX-acceptable byte count
@@ -2083,10 +2117,11 @@ func slicePostAdjust(ref *ir.FieldRef, loadBytes int) (shift int, mask uint64) {
 	switch {
 	case ref.Slice != nil:
 		byteStart := sliceWindowStart(ref, loadBytes)
-		hiInLoad = ref.Slice.Hi - byteStart*8
+		lo, hi := sliceBits(ref)
+		hiInLoad = hi - byteStart*8
 		width = ref.Slice.Bits()
 		// A slice that exactly fills the load needs no narrowing.
-		if hiInLoad == loadBits && ref.Slice.Lo == byteStart*8 && width == loadBits {
+		if hiInLoad == loadBits && lo == byteStart*8 && width == loadBits {
 			return 0, 0
 		}
 	default:
@@ -2900,7 +2935,8 @@ func emitSplitSliceLoad(ref *ir.FieldRef, site fieldLoadSite, off int) (asm.Inst
 // ninth byte in R2, and drops the bits after it.
 func emitFieldValue(ref *ir.FieldRef, bytes int, size asm.Size) asm.Instructions {
 	if sliceSplitsLoad(ref) {
-		s := int32(ref.Slice.Lo % 8)
+		lo, _ := sliceBits(ref)
+		s := int32(lo % 8)
 		insns := asm.Instructions{
 			asm.HostTo(asm.BE, asm.R3, asm.DWord),
 			asm.LSh.Imm(asm.R3, s),
