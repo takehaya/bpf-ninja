@@ -94,6 +94,7 @@ func TestNotImplementedBoundaries(t *testing.T) {
 		// A slice of a field that starts off a byte boundary is not wired,
 		// though the spec types it (in @set as for ==).
 		{"inset-subbyte-field-slice", "eth/ipv6[traffic_class[0:4] in @k]/tcp", keySlotCaps(1), "not byte-aligned", "dsl-usage.md 集合"},
+		{"inset-aux-six-byte-field", "eth/ipv6[exts[0]._opts in @k]/tcp", keySlotCaps(8), "a key window for it is not wired", "dsl-types.md 13.7"},
 		{"inset-subbyte-field", "eth/ipv6[traffic_class in @k]/tcp", keySlotCaps(2), "", "dsl-usage.md 集合"},
 		// A quantified machine layer unrolls to at most 8 machines.
 		{"machine-range-9", "eth/ipv4{1,9}/tcp", nil, "unrolls to 9 parser machines, more than the 8 supported", "spec vector quant-machine-range-nine"},

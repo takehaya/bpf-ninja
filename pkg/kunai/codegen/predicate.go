@@ -395,10 +395,9 @@ func (pc *predCtx) dispatchDone(l *ir.LayerInstance) bool {
 // (srv6.segments[N].addr). It is the width-relaxed 128-bit sibling of
 // fieldRefByteOffset (which caps unsliced aux/primary fields at 8 bytes;
 // a slice narrows a 16-byte field to a window it loads; a [0:128] slice
-// is the field). ok=false
-// means "not a 16-byte field" (the caller falls back to the <=8 path); a
-// non-nil error means a 16-byte field that cannot be extracted (a
-// non-byte-aligned or dynamic-index aux stack).
+// is the field). ok=false means "not a 16-byte field" (the caller
+// falls back to the <=8 path); a non-nil error means a 16-byte field that
+// cannot be extracted (a non-byte-aligned or dynamic-index aux stack).
 func field128RawOffset(ref *ir.FieldRef) (off int, ok bool, err error) {
 	// A [0:128] slice is its field (genArith128 does the same); any other
 	// slice narrows the field to a window scalarFieldWindow loads.
@@ -516,6 +515,11 @@ func emitInSetPredicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, erro
 	// stay inside the fixed header: past it may be past the packet, and the
 	// bounded load would reject a frame whose field is all there.
 	window := 0
+	if !is128 && pred.Field.Aux != nil && pred.Field.Slice == nil && nextLDXSize(bytes) != bytes {
+		// The spec keys an aux field the same way, but no aux field a
+		// filter would key on has such a width (only ipv6 ext padding).
+		return nil, fmt.Errorf("%w: aux field %s.%s is %d bytes; a key window for it is not wired", ErrNotImplemented, pred.Field.Layer.Spec.Name, fieldName, bytes)
+	}
 	if !is128 && pred.Field.Aux == nil && pred.Field.Slice == nil && nextLDXSize(bytes) != bytes {
 		window = nextLDXSize(bytes)
 		hdr, err := headerSize(pred.Field.Layer.Spec)
