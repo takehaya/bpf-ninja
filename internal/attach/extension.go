@@ -172,36 +172,61 @@ func (g *ExtensionGuard) Spec(prog *ebpf.Program) (*btf.Spec, error) {
 		return nil, err
 	}
 	id, _ := info.ID()
-	entry, spec, err := resolveEntryFunc(prog, uint32(id))
+	spec, err := BTFSpec(prog)
 	if err != nil {
 		return nil, err
 	}
-	g.programs[prog] = &extensionProgram{uint32(id), entry, spec}
+	g.programs[prog] = &extensionProgram{id: uint32(id), spec: spec}
 	return spec, nil
 }
 
 func (g *ExtensionGuard) Check(prog *ebpf.Program, name string, allowSlot bool) error {
-	spec, err := g.Spec(prog)
-	if err != nil {
+	if _, err := g.Spec(prog); err != nil {
 		return err
 	}
 	p := g.programs[prog]
+	return g.check(p, name, allowSlot, func() (string, error) {
+		if p.entry == "" {
+			entry, _, err := resolveEntryFunc(prog, p.id)
+			if err != nil {
+				return "", err
+			}
+			p.entry = entry
+		}
+		return p.entry, nil
+	})
+}
+
+func (g *ExtensionGuard) check(p *extensionProgram, name string, allowSlot bool, resolveEntry func() (string, error)) error {
+	// Only incoming freplace links require replacement or dispatcher checks.
+	isTarget := false
+	for _, edge := range g.edges {
+		if edge.TargetID == p.id {
+			isTarget = true
+			break
+		}
+	}
+	if !isTarget {
+		return nil
+	}
 	var fn *btf.Func
-	if err := spec.TypeByName(name, &fn); err != nil {
+	if err := p.spec.TypeByName(name, &fn); err != nil {
 		return err
 	}
-	fid, err := spec.TypeID(fn)
+	fid, err := p.spec.TypeID(fn)
 	if err != nil {
 		return err
 	}
 	if err := checkReplacement(g.edges, p.id, fid, name); err != nil {
 		return err
 	}
-	if !allowSlot && name != p.entry && fn.Linkage == btf.GlobalFunc {
-		for _, edge := range g.edges {
-			if edge.TargetID == p.id {
-				return fmt.Errorf("program (id=%d) function %s may be a freplace slot; attaching would make a later freplace fail with EBUSY; use --allow-dispatcher-slot to override", p.id, name)
-			}
+	if !allowSlot && fn.Linkage == btf.GlobalFunc {
+		entry, err := resolveEntry()
+		if err != nil {
+			return err
+		}
+		if name != entry {
+			return fmt.Errorf("program (id=%d) function %s may be a freplace slot; attaching would make a later freplace fail with EBUSY; use --allow-dispatcher-slot to override", p.id, name)
 		}
 	}
 	return nil
