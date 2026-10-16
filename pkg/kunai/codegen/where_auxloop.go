@@ -44,9 +44,11 @@ func useBpfLoopAuxWalk(w *ir.Condition) (bool, error) {
 	if ref == nil || ref.Aux == nil || ref.Aux.Stack == nil || !ref.Aux.Stack.IsIterator {
 		return false, nil
 	}
-	// The callback compares whole bytes: a slice must start and end on
-	// byte boundaries (its window then folds into the field offset).
-	if ref.Slice != nil && (ref.Slice.Lo%8 != 0 || ref.Slice.Hi%8 != 0) {
+	// The callback compares whole bytes: the field, or its slice, must
+	// start and end on byte boundaries of the entry (its window then
+	// folds into the field offset). A field that starts off one, sliced
+	// or not, stays on the unroll path.
+	if sliceNeedsScalarLoad(ref) || fieldIntraByteBit(ref) != 0 {
 		return false, nil
 	}
 	if _, ok := auxWalkLiteralWidth(in.LiteralValue); !ok {
