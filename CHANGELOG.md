@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.27.0](https://github.com/takehaya/bpf-ninja/compare/v0.26.3...v0.27.0) (2026-10-16)
+
+
+### 🎉 Features
+
+* **kunai:** key in-set predicates on load windows for 3- and 6-byte fields and full-width slices ([#239](https://github.com/takehaya/bpf-ninja/issues/239)) ([9c8e159](https://github.com/takehaya/bpf-ninja/commit/9c8e159331e550af66a8df4c28015b2d45f40bc2))
+* **setmap:** accept a MAC address for a u64 key field ([#241](https://github.com/takehaya/bpf-ninja/issues/241)) ([9fa5285](https://github.com/takehaya/bpf-ninja/commit/9fa52850b7a334bcd1ae236c398f549df999f83f))
+
+
+### 📝 Documentation
+
+* **spec:** record the in-set key width rules ([#242](https://github.com/takehaya/bpf-ninja/issues/242)) ([8797d6f](https://github.com/takehaya/bpf-ninja/commit/8797d6fd748bb723d92f0c3b6c0ba9e00a1db50b))
+
 ## [0.26.3](https://github.com/takehaya/bpf-ninja/compare/v0.26.2...v0.26.3) (2026-10-15)
 
 
