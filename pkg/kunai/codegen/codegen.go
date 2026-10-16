@@ -1810,7 +1810,7 @@ func findFieldByteOffset128(spec *vocab.ProtocolSpec, name string) (int, int, er
 }
 
 // subByteWindow computes the byte-aligned covering load window for a
-// primary field whose (bitOff, width) is not byte-clean — i.e. the
+// primary or aux field whose (bitOff, width) is not byte-clean — i.e. the
 // field starts off a byte boundary or its width is not a whole number
 // of bytes. It returns the byte offset to load from and the LDX byte
 // count (1/2/4/8) that covers the field's bits; emitFieldLoad /
@@ -1864,10 +1864,11 @@ func sliceBits(ref *ir.FieldRef) (lo, hi int) {
 	return ref.Slice.Lo + s, ref.Slice.Hi + s
 }
 
-// bareSubByteField resolves the header-relative bit geometry of a bare
-// primary field (no slice, no aux) when that geometry is not byte-clean
-// — the field starts off a byte boundary or its width is not a whole
-// number of bytes. ok is false for slice/aux refs, an empty or unknown
+// bareSubByteField resolves the bit geometry of an unsliced field when
+// that geometry is not byte-clean — the field starts off a byte boundary
+// or its width is not a whole number of bytes: a primary field's from
+// its header's start, an aux field's from its entry's start
+// (Aux.FieldBitOff). ok is false for slice refs, an empty or unknown
 // ref, and byte-clean fields, all of which take the normal whole-byte
 // path. It is the single source of the "is this a sub-byte field, and
 // what are its bits?" question that fieldIsSubByte and slicePostAdjust
@@ -2143,7 +2144,7 @@ func nextLDXSize(cover int) int {
 // register. shift = loadBytes*8 - (hi - byteStart*8) drops the bits
 // below the slice; mask = (1<<width) - 1 keeps only the slice bits.
 //
-// The same math applies to a bare (sliceless) primary field whose bit
+// The same math applies to a bare (sliceless) primary or aux field whose bit
 // geometry is not byte-clean: its load went through subByteWindow, and
 // here we narrow the covering window down to the field's own bits using
 // the field's intra-byte start (bitOff%8) in place of a slice's Lo.

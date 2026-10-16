@@ -428,6 +428,7 @@ func TestUnalignedFieldSliceWindowsFitHeader(t *testing.T) {
 func TestAuxFieldWindowUnaligned(t *testing.T) {
 	for _, c := range []struct {
 		name          string
+		entry         int // bytes; 8 when zero
 		bitOff, width int
 		slice         *ir.FieldSlice
 		start, bytes  int
@@ -443,11 +444,22 @@ func TestAuxFieldWindowUnaligned(t *testing.T) {
 		{name: "window past the entry", bitOff: 41, width: 17, err: "past its 8-byte entry"},
 		{name: "slice window past the entry", bitOff: 41, width: 17, slice: &ir.FieldSlice{Lo: 0, Hi: 17}, err: "past its 8-byte entry"},
 		{name: "aligned 2-byte field", bitOff: 48, width: 16, start: 6, bytes: 2},
+		// A 64-bit slice off a byte boundary straddles 9 bytes (split
+		// load) in a 16-byte entry; its shift and mask are emitFieldValue's.
+		{name: "split slice", entry: 16, bitOff: 1, width: 64, slice: &ir.FieldSlice{Lo: 0, Hi: 64}, start: 0, bytes: sliceSplitWindow},
+		{name: "split slice ending the entry", entry: 16, bitOff: 57, width: 64, slice: &ir.FieldSlice{Lo: 0, Hi: 64}, start: 7, bytes: sliceSplitWindow},
+		// A split window covers only the field's own bytes, so it cannot
+		// leave the entry; a rounded-up window can.
+		{name: "rounded window past a 16-byte entry", entry: 16, bitOff: 108, width: 17, err: "past its 16-byte entry"},
 	} {
+		entry := c.entry
+		if entry == 0 {
+			entry = 8
+		}
 		ref := &ir.FieldRef{
 			Layer: &ir.LayerInstance{Spec: &vocab.ProtocolSpec{Name: "geneve"}},
 			Field: &vocab.Field{Name: "f", Bits: c.width},
-			Aux:   &ir.AuxRef{OutParam: "OVN", HeaderSize: 8, FieldBitOff: c.bitOff, FieldBitWidth: c.width},
+			Aux:   &ir.AuxRef{OutParam: "OVN", HeaderSize: entry, FieldBitOff: c.bitOff, FieldBitWidth: c.width},
 			Slice: c.slice,
 		}
 		start, n, err := auxFieldWindow(ref)
@@ -461,7 +473,10 @@ func TestAuxFieldWindowUnaligned(t *testing.T) {
 			t.Errorf("%s: %v", c.name, err)
 			continue
 		}
-		shift, mask := slicePostAdjust(ref, n)
+		shift, mask := 0, uint64(0)
+		if n != sliceSplitWindow {
+			shift, mask = slicePostAdjust(ref, n)
+		}
 		if start != c.start || n != c.bytes || shift != c.shift || mask != c.mask {
 			t.Errorf("%s = (start %d, %d bytes, shift %d, mask %#x), want (%d, %d, %d, %#x)",
 				c.name, start, n, shift, mask, c.start, c.bytes, c.shift, c.mask)
