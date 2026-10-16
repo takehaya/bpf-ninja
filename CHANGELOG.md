@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.30.0](https://github.com/takehaya/bpf-ninja/compare/v0.29.0...v0.30.0) (2026-10-16)
+
+
+### 🎉 Features
+
+* **kunai:** read unsliced fields whose bits straddle 9 bytes ([#249](https://github.com/takehaya/bpf-ninja/issues/249)) ([9f8e1a3](https://github.com/takehaya/bpf-ninja/commit/9f8e1a31f123eb06c298e77161d262a4b0d5fc09))
+
 ## [0.29.0](https://github.com/takehaya/bpf-ninja/compare/v0.28.0...v0.29.0) (2026-10-16)
 
 
