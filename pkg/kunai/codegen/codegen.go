@@ -1873,8 +1873,14 @@ func sliceBits(ref *ir.FieldRef) (lo, hi int) {
 // what are its bits?" question that fieldIsSubByte and slicePostAdjust
 // both ask.
 func bareSubByteField(ref *ir.FieldRef) (bitOff, width int, ok bool) {
-	if ref == nil || ref.Slice != nil || ref.Aux != nil ||
-		ref.Field == nil || ref.Layer == nil || ref.Layer.Spec == nil {
+	if ref == nil || ref.Slice != nil {
+		return 0, 0, false
+	}
+	if ref.Aux != nil {
+		bitOff, width = ref.Aux.FieldBitOff, ref.Aux.FieldBitWidth
+		return bitOff, width, bitOff%8 != 0 || width%8 != 0
+	}
+	if ref.Field == nil || ref.Layer == nil || ref.Layer.Spec == nil {
 		return 0, 0, false
 	}
 	bitOff, width, err := findFieldBitOffset(ref.Layer.Spec, ref.Field.Name)
@@ -1961,19 +1967,11 @@ func fieldRefByteOffset(ref *ir.FieldRef) (int, int, error) {
 		}
 		return applySliceToOffset(ref, off, size)
 	}
-	if ref.Aux.FieldBitOff%8 != 0 {
-		return 0, 0, fmt.Errorf("%w: aux field %s.%s.%s starts at bit %d (not byte-aligned)", ErrNotImplemented, ref.Layer.Spec.Name, ref.Aux.OutParam, ref.Field.Name, ref.Aux.FieldBitOff)
+	start, size, err := auxFieldWindow(ref)
+	if err != nil {
+		return 0, 0, err
 	}
-	if ref.Aux.FieldBitWidth%8 != 0 {
-		return 0, 0, fmt.Errorf("%w: aux field %s.%s.%s is %d bits (not byte-sized)", ErrNotImplemented, ref.Layer.Spec.Name, ref.Aux.OutParam, ref.Field.Name, ref.Aux.FieldBitWidth)
-	}
-	// A bit-slice may narrow a 16-byte field (srv6.segments[i].addr) to a
-	// loadable window, as it does for a primary ipv6 address above;
-	// applySliceToOffset refuses a window over 8 bytes.
-	if ref.Slice == nil && ref.Aux.FieldBitWidth/8 > 8 {
-		return 0, 0, fmt.Errorf("%w: aux field %s.%s.%s is %d bytes (max 8)", ErrNotImplemented, ref.Layer.Spec.Name, ref.Aux.OutParam, ref.Field.Name, ref.Aux.FieldBitWidth/8)
-	}
-	off := ref.Aux.OffsetInLayer + ref.Aux.FieldBitOff/8
+	off := ref.Aux.OffsetInLayer + start
 	if ref.Aux.Stack != nil {
 		// Entries whose offset is only known at run time (a dynamic index,
 		// or a static index behind variable-length entries) have no
@@ -1983,7 +1981,48 @@ func fieldRefByteOffset(ref *ir.FieldRef) (int, int, error) {
 		}
 		off += int(ref.Aux.Stack.Static) * ref.Aux.HeaderSize
 	}
-	return applySliceToOffset(ref, off, ref.Aux.FieldBitWidth/8)
+	return off, size, nil
+}
+
+// auxFieldWindow is the load window of an aux field inside its entry:
+// (bytes from the entry start, load bytes), narrowed by a bit slice. A
+// field that starts off a byte boundary or does not fill its bytes
+// (geneve OVN ingress_port, bits 33..48) is read from its byte floor
+// through the smallest covering window, which slicePostAdjust narrows to
+// the field's bits; a slice of it counts from the same byte floor
+// (sliceBits). Such a window must stay inside the entry: the walk
+// proved only the entry's bytes, and past them may be past the packet.
+func auxFieldWindow(ref *ir.FieldRef) (int, int, error) {
+	aux := ref.Aux
+	var start, size int
+	switch {
+	case ref.Slice != nil:
+		var err error
+		start, size, err = applySliceToOffset(ref, aux.FieldBitOff/8, 0)
+		if err != nil {
+			return 0, 0, err
+		}
+	case aux.FieldBitOff%8 == 0 && aux.FieldBitWidth%8 == 0:
+		// A bit-slice may narrow a 16-byte field (srv6.segments[i].addr)
+		// to a loadable window; unsliced, it is over the 8-byte limit.
+		if aux.FieldBitWidth/8 > 8 {
+			return 0, 0, fmt.Errorf("%w: aux field %s.%s.%s is %d bytes (max 8)", ErrNotImplemented, ref.Layer.Spec.Name, aux.OutParam, ref.Field.Name, aux.FieldBitWidth/8)
+		}
+		return aux.FieldBitOff / 8, aux.FieldBitWidth / 8, nil
+	default:
+		var ok bool
+		start, size, ok = subByteWindow(aux.FieldBitOff, aux.FieldBitWidth)
+		if !ok {
+			return 0, 0, fmt.Errorf("%w: aux field %s.%s.%s (bit-off %d, %d bits) needs a window over 8 bytes", ErrNotImplemented, ref.Layer.Spec.Name, aux.OutParam, ref.Field.Name, aux.FieldBitOff, aux.FieldBitWidth)
+		}
+	}
+	if fieldIntraByteBit(ref) != 0 || aux.FieldBitWidth%8 != 0 {
+		end := start + size
+		if aux.HeaderSize > 0 && end > aux.HeaderSize {
+			return 0, 0, fmt.Errorf("%w: aux field %s.%s.%s is read through bytes [%d,%d), past its %d-byte entry", ErrNotImplemented, ref.Layer.Spec.Name, aux.OutParam, ref.Field.Name, start, end, aux.HeaderSize)
+		}
+	}
+	return start, size, nil
 }
 
 // applySliceToOffset narrows (off, size) by the field's bit-slice
@@ -2745,16 +2784,6 @@ func isVarTailStack(ref *ir.FieldRef) bool {
 	return ok
 }
 
-// auxEntryFieldWindow is the byte window of `ref`'s field inside its aux
-// entry, narrowed by a bit slice like fieldRefByteOffset narrows a
-// layer-relative offset: (offset from the entry start, load bytes).
-func auxEntryFieldWindow(ref *ir.FieldRef) (int, int, error) {
-	if ref.Aux.FieldBitOff%8 != 0 || ref.Aux.FieldBitWidth%8 != 0 {
-		return 0, 0, fmt.Errorf("%w: aux field %s.%s.%s not byte-aligned", ErrNotImplemented, ref.Layer.Spec.Name, ref.Aux.OutParam, ref.Field.Name)
-	}
-	return applySliceToOffset(ref, ref.Aux.FieldBitOff/8, ref.Aux.FieldBitWidth/8)
-}
-
 // auxEntryFieldStart is the byte at which `ref`'s field (or the first
 // byte its bit-slice touches) starts inside its aux entry, for emitters
 // that pick their own load sizes (auxLoadEmitter's multi-word literal
@@ -2836,13 +2865,14 @@ func predicateLoadSite(pc *predCtx) fieldLoadSite {
 func scalarFieldWindow(ref *ir.FieldRef) (off, bytes int, err error) {
 	switch {
 	case dynamicAuxLayoutOf(ref) != nil:
-		base, err := dynamicOffsetAuxByteOff(ref)
+		base, err := dynamicOffsetAuxEntryOff(ref)
 		if err != nil {
 			return 0, 0, err
 		}
-		return applySliceToOffset(ref, base, ref.Aux.FieldBitWidth/8)
+		start, size, err := auxFieldWindow(ref)
+		return base + start, size, err
 	case needsEntryAddress(ref):
-		return auxEntryFieldWindow(ref)
+		return auxFieldWindow(ref)
 	}
 	return fieldRefByteOffset(ref)
 }

@@ -28,9 +28,9 @@ const bit<8> GENEVE_MAX_DEPTH = 4;
 // OVN (IANA Geneve option class 0x0102), type 0x80: logical ingress /
 // egress port metadata used by OVN (the OpenStack Neutron default
 // backend and OVN-Kubernetes). The 32-bit value packs rsv(1) +
-// ingress(15) + egress(16); egress is byte-aligned and reachable as
-// geneve.options.OVN.egress_port. ingress straddles a byte boundary
-// (bit offset 1) so it is not exposed as a filter field.
+// ingress(15) + egress(16), reachable as geneve.options.OVN.egress_port,
+// .ingress_port and .rsv; the filter narrows ingress_port and rsv out of
+// the bytes they share.
 header geneve_opt_ovn_h {
     bit<16> option_class;
     bit<8>  type;

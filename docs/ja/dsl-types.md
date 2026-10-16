@@ -630,6 +630,7 @@ eth/ipv6/tcp where ipv6.src[0:96] + ipv6.dst == 1   # ErrNotImplemented
 eth/ipv6/tcp where ipv6.src[0:128] + 1 == 1         # compile できる
 eth/ipv6/tcp where ipv6.src[0:128] == 1             # compile できる
 eth/ipv6[traffic_class[0:6] == 46]/tcp              # compile できる
+eth/ipv4/udp/geneve[ovn.ingress_port == 7]          # compile できる
 ```
 
 bracket predicate の整数リテラルは 64 bit まで比べられます。`tcp[seq > 0x80000000]` や、byte を入れ替えると 2^31 以上になる `tcp[seq == 128]` では、定数を register に置いて比べます。

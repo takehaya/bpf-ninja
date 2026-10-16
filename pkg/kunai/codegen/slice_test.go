@@ -2,6 +2,7 @@ package codegen
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/cilium/ebpf/asm"
@@ -415,6 +416,55 @@ func TestUnalignedFieldSliceWindowsFitHeader(t *testing.T) {
 					}
 				}
 			}
+		}
+	}
+}
+
+// TestAuxFieldWindowUnaligned pins the window of an aux field that starts
+// off a byte boundary or does not fill its bytes, inside an 8-byte entry
+// (the geneve OVN option: rsv at bit 32, ingress_port at bits 33..48),
+// and its post-load shift and mask. A window that would run past the
+// entry is refused: the walk proved only the entry's bytes.
+func TestAuxFieldWindowUnaligned(t *testing.T) {
+	for _, c := range []struct {
+		name          string
+		bitOff, width int
+		slice         *ir.FieldSlice
+		start, bytes  int
+		shift         int
+		mask          uint64
+		err           string
+	}{
+		{name: "ovn rsv", bitOff: 32, width: 1, start: 4, bytes: 1, shift: 7, mask: 0x1},
+		{name: "ovn ingress_port", bitOff: 33, width: 15, start: 4, bytes: 2, shift: 0, mask: 0x7fff},
+		{name: "ingress_port[0:7]", bitOff: 33, width: 15, slice: &ir.FieldSlice{Lo: 0, Hi: 7}, start: 4, bytes: 1, shift: 0, mask: 0x7f},
+		{name: "ingress_port[7:15]", bitOff: 33, width: 15, slice: &ir.FieldSlice{Lo: 7, Hi: 15}, start: 5, bytes: 1, shift: 0, mask: 0},
+		{name: "3-byte cover in a 4-byte window", bitOff: 33, width: 17, start: 4, bytes: 4, shift: 14, mask: 0x1ffff},
+		{name: "window past the entry", bitOff: 41, width: 17, err: "past its 8-byte entry"},
+		{name: "slice window past the entry", bitOff: 41, width: 17, slice: &ir.FieldSlice{Lo: 0, Hi: 17}, err: "past its 8-byte entry"},
+		{name: "aligned 2-byte field", bitOff: 48, width: 16, start: 6, bytes: 2},
+	} {
+		ref := &ir.FieldRef{
+			Layer: &ir.LayerInstance{Spec: &vocab.ProtocolSpec{Name: "geneve"}},
+			Field: &vocab.Field{Name: "f", Bits: c.width},
+			Aux:   &ir.AuxRef{OutParam: "OVN", HeaderSize: 8, FieldBitOff: c.bitOff, FieldBitWidth: c.width},
+			Slice: c.slice,
+		}
+		start, n, err := auxFieldWindow(ref)
+		if c.err != "" {
+			if err == nil || !errors.Is(err, ErrNotImplemented) || !strings.Contains(err.Error(), c.err) {
+				t.Errorf("%s: err %v, want ErrNotImplemented containing %q", c.name, err, c.err)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("%s: %v", c.name, err)
+			continue
+		}
+		shift, mask := slicePostAdjust(ref, n)
+		if start != c.start || n != c.bytes || shift != c.shift || mask != c.mask {
+			t.Errorf("%s = (start %d, %d bytes, shift %d, mask %#x), want (%d, %d, %d, %#x)",
+				c.name, start, n, shift, mask, c.start, c.bytes, c.shift, c.mask)
 		}
 	}
 }
