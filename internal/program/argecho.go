@@ -17,6 +17,7 @@ import (
 
 	"github.com/takehaya/bpf-ninja/internal/attach"
 	"github.com/takehaya/bpf-ninja/internal/filter"
+	"github.com/takehaya/bpf-ninja/internal/hook"
 )
 
 // EchoRingSize is the byte capacity of the arg-echo ringbuf. 64 KiB is a
@@ -37,6 +38,7 @@ func LoadArgEcho(
 	argFilters []filter.ArgFilter,
 	echoParams []attach.FuncParamInfo,
 	isFexit bool,
+	allowDispatcherSlot ...bool,
 ) (*Probe, error) {
 	if len(echoParams) == 0 {
 		return nil, fmt.Errorf("--arg-echo requires at least one filterable integer parameter (see --list-params)")
@@ -48,8 +50,16 @@ func LoadArgEcho(
 		return nil, fmt.Errorf("--arg-echo: %d params (%d B/record) exceed the %d B echo ring", len(echoParams), recordSize, EchoRingSize)
 	}
 
-	if _, err := validateTracingTarget(targetProg); err != nil {
+	guard, err := attach.NewExtensionGuard()
+	if err != nil {
 		return nil, err
+	}
+	typ, err := guard.ProgramHookType(targetProg)
+	if err != nil {
+		return nil, err
+	}
+	if _, ok := hook.ByProgramType(typ); !ok {
+		return nil, hook.UnsupportedTypeError(typ)
 	}
 	label, attachType := tracingLabel(isFexit)
 
@@ -63,10 +73,12 @@ func LoadArgEcho(
 	}
 
 	probe := &Probe{
-		IsFexit:    isFexit,
-		EchoRing:   ring,
-		EchoParams: echoParams,
-		maps:       []*ebpf.Map{ring},
+		extensionGuard:      guard,
+		allowDispatcherSlot: len(allowDispatcherSlot) > 0 && allowDispatcherSlot[0],
+		IsFexit:             isFexit,
+		EchoRing:            ring,
+		EchoParams:          echoParams,
+		maps:                []*ebpf.Map{ring},
 	}
 
 	// "njecho_entry" (12) / "njecho_exit" (11): distinct from the capture

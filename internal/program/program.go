@@ -46,9 +46,11 @@ type Probe struct {
 	closeOnce  sync.Once
 	closeErr   error
 
-	maps  []*ebpf.Map
-	progs []*ebpf.Program // one per attached (target prog, func) pair
-	links []link.Link     // parallel to progs
+	extensionGuard      *attach.ExtensionGuard
+	allowDispatcherSlot bool
+	maps                []*ebpf.Map
+	progs               []*ebpf.Program // one per attached (target prog, func) pair
+	links               []link.Link     // parallel to progs
 }
 
 // Program returns the first underlying tracing program. Exposed so that
@@ -167,7 +169,7 @@ func LoadMultiPoint(targets []attach.Target, stages []Stage, filters []filter.Ta
 	if filters != nil && len(filters) != len(targets) {
 		return nil, fmt.Errorf("filters length %d does not match %d targets", len(filters), len(targets))
 	}
-	progType := targets[0].Type
+	progType := targets[0].EffectiveHookType()
 	h, ok := hook.ByProgramType(progType)
 	if !ok {
 		return nil, hook.UnsupportedTypeError(progType)
@@ -175,7 +177,7 @@ func LoadMultiPoint(targets []attach.Target, stages []Stage, filters []filter.Ta
 	// Same-hook, not same-progType: SchedCLS and SchedACT targets share
 	// the tc hook (identical prologue and capabilities) and may mix.
 	for _, t := range targets[1:] {
-		th, tok := hook.ByProgramType(t.Type)
+		th, tok := hook.ByProgramType(t.EffectiveHookType())
 		if !tok {
 			return nil, hook.UnsupportedTypeError(t.Type)
 		}
@@ -301,7 +303,13 @@ func LoadMultiPoint(targets []attach.Target, stages []Stage, filters []filter.Ta
 	// Instructions are built per target: the packet-filter part depends
 	// only on progType and the shared maps, but arg-filter offsets are
 	// resolved against each target func's own BTF param layout.
+	probe.extensionGuard, err = attach.NewExtensionGuard()
+	if err != nil {
+		_ = probe.Close()
+		return nil, err
+	}
 	for i, t := range targets {
+		probe.allowDispatcherSlot = t.AllowDispatcherSlot
 		var tf filter.TargetFilters
 		if filters != nil {
 			tf = filters[i]
@@ -315,7 +323,12 @@ func LoadMultiPoint(targets []attach.Target, stages []Stage, filters []filter.Ta
 			stLabel, attachType := tracingLabel(st.IsFexit)
 			var returnOffset int16
 			if st.IsFexit {
-				returnOffset, err = fexitReturnOffset(t.Program, t.FuncName)
+				spec, specErr := probe.extensionGuard.Spec(t.Program)
+				if specErr != nil {
+					_ = probe.Close()
+					return nil, specErr
+				}
+				returnOffset, err = fexitReturnOffsetFromSpec(spec, t.FuncName)
 				if err != nil {
 					_ = probe.Close()
 					return nil, fmt.Errorf("fexit target %s: %w", t.FuncName, err)
@@ -350,7 +363,11 @@ func validateTracingTarget(targetProg *ebpf.Program) (ebpf.ProgramType, error) {
 	if err != nil {
 		return 0, fmt.Errorf("reading target program info: %w", err)
 	}
-	pt := info.Type
+	id, _ := info.ID()
+	pt, err := attach.ProgramHookType(uint32(id), info.Type)
+	if err != nil {
+		return 0, err
+	}
 	if _, ok := hook.ByProgramType(pt); !ok {
 		return 0, hook.UnsupportedTypeError(pt)
 	}
@@ -372,6 +389,18 @@ func tracingLabel(isFexit bool) (string, ebpf.AttachType) {
 // closes probe (unwinding maps and any attaches already made).
 // Shared by loadMulti (capture) and LoadArgEcho (diagnostic).
 func attachTracingProbe(probe *Probe, targetProg *ebpf.Program, name, funcName string, attachType ebpf.AttachType, insns asm.Instructions) error {
+	if probe.extensionGuard == nil {
+		var err error
+		probe.extensionGuard, err = attach.NewExtensionGuard()
+		if err != nil {
+			_ = probe.Close()
+			return err
+		}
+	}
+	if err := probe.extensionGuard.Check(targetProg, funcName, probe.allowDispatcherSlot); err != nil {
+		_ = probe.Close()
+		return err
+	}
 	prog, err := ebpf.NewProgram(&ebpf.ProgramSpec{
 		Name: name, Type: ebpf.Tracing, AttachType: attachType,
 		AttachTo: funcName, AttachTarget: targetProg,
