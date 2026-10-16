@@ -192,8 +192,7 @@ func bazFrame(idx byte, entries ...[]byte) []byte {
 // 16-byte entry, whose [0:64] slice straddles 9 bytes (split load), by a
 // static and a runtime index; the ninth byte holds w's last bit. The
 // window is bytes 0..9 of the entry (auxFieldWindow's unit rows pin one
-// that ends the entry). The bare field is refused, as for a primary
-// field.
+// that ends the entry). The unsliced field reads as its [0:64] slice.
 func TestAuxStackUnalignedSplitSlice(t *testing.T) {
 	specs, err := loadUnalignedStackVocab()
 	if err != nil {
@@ -203,6 +202,12 @@ func TestAuxStackUnalignedSplitSlice(t *testing.T) {
 	for _, expr := range []string{
 		"eth/baz where baz.entries[1].w[0:64] == 0x8123456789abcdef",
 		"eth/baz where baz.entries[baz.idx].w[0:64] == 0x8123456789abcdef",
+		"eth/baz where baz.entries[1].w == 0x8123456789abcdef",
+		"eth/baz where baz.entries[baz.idx].w == 0x8123456789abcdef",
+		"eth/baz[entries[1].w == 0x8123456789abcdef]",
+		"eth/baz[entries[1].w in [1, 0x8123456789abcdef]]",
+		"eth/baz where baz.entries[1].w - 1 == 0x8123456789abcdee",
+		"eth/baz where any(baz.entries.w == 0x8123456789abcdef) and baz.entries[1].w > 0x8000000000000000",
 	} {
 		t.Run(expr, func(t *testing.T) {
 			r := NewWithVocab(t, expr, specs)
@@ -216,11 +221,41 @@ func TestAuxStackUnalignedSplitSlice(t *testing.T) {
 	r := NewWithVocab(t, "eth/baz where baz.entries[baz.idx].w[0:64] == 0x8123456789abcdef", specs)
 	r.MustMatch(t, bazFrame(2, bazEntry(0, 0), bazEntry(0, 0), bazEntry(w, 0)), "runtime index 2")
 	r.MustReject(t, bazFrame(2, bazEntry(0, 0), bazEntry(w, 0), bazEntry(0, 0)), "runtime index 2, entry 1 holds it")
-	// Unsliced, the field takes a single load, which cannot cover 9 bytes
-	// (as for a primary field).
-	expr := "eth/baz where baz.entries[1].w == 1"
-	if _, err := kunai.CompileWithVocab(expr, specs, codegen.Capabilities{}); !errors.Is(err, codegen.ErrNotImplemented) || !strings.Contains(err.Error(), "needs a window over 8 bytes") {
-		t.Errorf("%s: err %v, want ErrNotImplemented for a 9-byte window", expr, err)
+	// any() and all() over the unsliced field, each on its own.
+	anyR := NewWithVocab(t, "eth/baz where any(baz.entries.w == 0x8123456789abcdef)", specs)
+	anyR.MustMatch(t, bazFrame(0, bazEntry(0, 0), bazEntry(w, 0)), "any: entry 1")
+	anyR.MustMatch(t, bazFrame(0, bazEntry(w, 0), bazEntry(0, 0)), "any: entry 0")
+	anyR.MustReject(t, bazFrame(0, bazEntry(w^1, 0), bazEntry(w^(1<<63), 0)), "any: none")
+	allR := NewWithVocab(t, "eth/baz where all(baz.entries.w > 0x8000000000000000)", specs)
+	allR.MustMatch(t, bazFrame(0, bazEntry(w, 0), bazEntry(^uint64(0), 0)), "all: both above")
+	allR.MustReject(t, bazFrame(0, bazEntry(w, 0), bazEntry(0x8000000000000000, 0)), "all: entry 1 is not above")
+	// Unsliced, the field reads exactly as its [0:64] slice.
+	for _, pair := range [][2]string{
+		{"eth/baz where baz.entries[1].w == 5", "eth/baz where baz.entries[1].w[0:64] == 5"},
+		{"eth/baz where baz.entries[baz.idx].w > 5", "eth/baz where baz.entries[baz.idx].w[0:64] > 5"},
+		{"eth/baz[entries[0].w in [1, 2]]", "eth/baz[entries[0].w[0:64] in [1, 2]]"},
+	} {
+		assertSameCode(t, specs, pair[0], pair[1])
+	}
+}
+
+// assertSameCode compiles two filters against specs and fails unless
+// their instructions, capture info and set extractions are the same.
+func assertSameCode(t *testing.T, specs map[string]*vocab.ProtocolSpec, a, b string) {
+	t.Helper()
+	outA, err := kunai.CompileWithVocab(a, specs, codegen.Capabilities{})
+	if err != nil {
+		t.Fatalf("Compile(%q): %v", a, err)
+	}
+	outB, err := kunai.CompileWithVocab(b, specs, codegen.Capabilities{})
+	if err != nil {
+		t.Fatalf("Compile(%q): %v", b, err)
+	}
+	if fmt.Sprint(outA.Main, outA.Callbacks) != fmt.Sprint(outB.Main, outB.Callbacks) {
+		t.Errorf("%q and %q compile to different code", a, b)
+	}
+	if fmt.Sprintf("%+v %+v", outA.Capture, outA.Extractions) != fmt.Sprintf("%+v %+v", outB.Capture, outB.Extractions) {
+		t.Errorf("%q and %q differ in capture or extractions: %+v %+v vs %+v %+v", a, b, outA.Capture, outA.Extractions, outB.Capture, outB.Extractions)
 	}
 }
 

@@ -447,6 +447,9 @@ func TestAuxFieldWindowUnaligned(t *testing.T) {
 		// A 64-bit slice off a byte boundary straddles 9 bytes (split
 		// load) in a 16-byte entry; its shift and mask are emitFieldValue's.
 		{name: "split slice", entry: 16, bitOff: 1, width: 64, slice: &ir.FieldSlice{Lo: 0, Hi: 64}, start: 0, bytes: sliceSplitWindow},
+		{name: "unsliced field straddling 9 bytes", entry: 16, bitOff: 1, width: 64, start: 0, bytes: sliceSplitWindow},
+		{name: "unsliced 58-bit field at bit 7", entry: 16, bitOff: 7, width: 58, start: 0, bytes: sliceSplitWindow},
+		{name: "unsliced field straddling 8 bytes", entry: 16, bitOff: 7, width: 57, start: 0, bytes: 8, shift: 0, mask: 1<<57 - 1},
 		{name: "split slice ending the entry", entry: 16, bitOff: 57, width: 64, slice: &ir.FieldSlice{Lo: 0, Hi: 64}, start: 7, bytes: sliceSplitWindow},
 		// A split window covers only the field's own bytes, so it cannot
 		// leave the entry; a rounded-up window can.
