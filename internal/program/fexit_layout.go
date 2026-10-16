@@ -3,10 +3,8 @@ package program
 import (
 	"fmt"
 
-	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/asm"
 	"github.com/cilium/ebpf/btf"
-	"github.com/takehaya/bpf-ninja/internal/attach"
 )
 
 // savedReturnSlot is a canonical u32 action shared by the compiled filter and
@@ -20,11 +18,7 @@ func (savedReturnFetcher) EmitFetch(dst asm.Register) asm.Instructions {
 	return asm.Instructions{asm.LoadMem(dst, asm.R10, savedReturnSlot, asm.Word)}
 }
 
-func fexitReturnOffset(prog *ebpf.Program, name string) (int16, error) {
-	spec, err := attach.BTFSpec(prog)
-	if err != nil {
-		return 0, err
-	}
+func fexitReturnOffsetFromSpec(spec *btf.Spec, name string) (int16, error) {
 	var fn *btf.Func
 	if err := spec.TypeByName(name, &fn); err != nil {
 		return 0, err
