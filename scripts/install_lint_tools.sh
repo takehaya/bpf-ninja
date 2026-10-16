@@ -18,15 +18,21 @@ export PATH="${GOBIN}:${PATH}"
 # sets GOTOOLCHAIN=local in CI, so let `go install` fetch what each asks for.
 export GOTOOLCHAIN=auto
 
+# Pinned: golangci-lint lints the whole module, so a new release with
+# stricter checks would fail CI on code a change did not touch. Bump
+# them deliberately, with `golangci-lint run ./...` clean.
+LEFTHOOK_VERSION="v2.1.15"
+GOLANGCI_LINT_VERSION="v2.15.0"
+
 echo "Updating package list..."
 sudo apt-get update -qq
 
-install_tool "lefthook" "go install github.com/evilmartians/lefthook@latest"
+install_tool "lefthook" "go install github.com/evilmartians/lefthook/v2@${LEFTHOOK_VERSION}"
 install_tool "yamllint" "sudo apt-get install -y yamllint"
 install_tool "jq" "sudo apt-get install -y jq"
 install_tool "dos2unix" "sudo apt-get install -y dos2unix"
 install_tool "clang-format" "sudo apt-get install -y clang-format"
-install_tool "golangci-lint" "go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest"
+install_tool "golangci-lint" "go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@${GOLANGCI_LINT_VERSION}"
 
 echo ""
 echo "All lint tools have been installed."
