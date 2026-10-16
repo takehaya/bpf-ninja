@@ -2,6 +2,7 @@ package attach
 
 import (
 	"bytes"
+	"errors"
 	"strings"
 	"testing"
 
@@ -108,6 +109,46 @@ func TestExtensionGuardDispatcherSlots(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
+	}
+	// A renamed program with multiple BTF functions may have no resolvable
+	// entry. Only a dispatcher slot check should need that resolution.
+	resolveErr := errors.New("cannot resolve entry function from BTF")
+	for _, tt := range []struct {
+		name      string
+		edges     []extensionLink
+		function  string
+		allowSlot bool
+		wantCalls int
+		wantErr   string
+	}{
+		{"no links", nil, slot.Name, false, 0, ""},
+		{"unrelated link", []extensionLink{{10, 21, fid}}, slot.Name, false, 0, ""},
+		{"outgoing link", []extensionLink{{20, 21, fid}}, slot.Name, false, 0, ""},
+		{"replaced", guard.edges, replaced.Name, false, 0, "is replaced"},
+		{"replaced with override", guard.edges, replaced.Name, true, 0, "is replaced"},
+		{"slot", guard.edges, slot.Name, false, 1, resolveErr.Error()},
+		{"slot with override", guard.edges, slot.Name, true, 0, ""},
+		{"local", guard.edges, local.Name, false, 0, ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			g := &ExtensionGuard{edges: tt.edges}
+			p := &extensionProgram{id: 20, spec: spec}
+			calls := 0
+			err := g.check(p, tt.function, tt.allowSlot, func() (string, error) {
+				calls++
+				return "", resolveErr
+			})
+			if calls != tt.wantCalls {
+				t.Fatalf("entry resolver called %d times, want %d", calls, tt.wantCalls)
+			}
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatal(err)
+				}
+			} else if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("got %v, want %s", err, tt.wantErr)
+			}
+		})
 	}
 	guard.edges = nil
 	if err := guard.Check(prog, slot.Name, false); err != nil {
