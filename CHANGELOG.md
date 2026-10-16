@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.28.0](https://github.com/takehaya/bpf-ninja/compare/v0.27.0...v0.28.0) (2026-10-16)
+
+
+### 🎉 Features
+
+* **kunai:** read slices of fields that start off a byte boundary ([#243](https://github.com/takehaya/bpf-ninja/issues/243)) ([97888ae](https://github.com/takehaya/bpf-ninja/commit/97888ae4e205f8f5fd86dfbbc2a3454b1ad4fa53))
+
 ## [0.27.0](https://github.com/takehaya/bpf-ninja/compare/v0.26.3...v0.27.0) (2026-10-16)
 
 
