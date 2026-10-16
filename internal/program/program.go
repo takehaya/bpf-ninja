@@ -49,11 +49,10 @@ type Probe struct {
 	closeOnce  sync.Once
 	closeErr   error
 
-	extensionGuard      *attach.ExtensionGuard
-	allowDispatcherSlot bool
-	maps                []*ebpf.Map
-	progs               []*ebpf.Program // one per attached (target prog, func) pair
-	links               []link.Link     // parallel to progs
+	extensionGuard *attach.ExtensionGuard
+	maps           []*ebpf.Map
+	progs          []*ebpf.Program // one per attached (target prog, func) pair
+	links          []link.Link     // parallel to progs
 }
 
 // Program returns the first underlying tracing program. Exposed so that
@@ -335,7 +334,6 @@ func LoadMultiPoint(targets []attach.Target, stages []Stage, filters []filter.Ta
 		return nil, err
 	}
 	for i, t := range targets {
-		probe.allowDispatcherSlot = t.AllowDispatcherSlot
 		var tf filter.TargetFilters
 		if filters != nil {
 			tf = filters[i]
@@ -374,7 +372,7 @@ func LoadMultiPoint(targets []attach.Target, stages []Stage, filters []filter.Ta
 				_ = probe.Close()
 				return nil, err
 			}
-			if err := attachTracingProbe(probe, t.Program, fmt.Sprintf("bpf_ninja_%s", stLabel), t.FuncName, attachType, insns); err != nil {
+			if err := attachTracingProbe(probe, t.Program, fmt.Sprintf("bpf_ninja_%s", stLabel), t.FuncName, attachType, insns, t.AllowDispatcherSlot); err != nil {
 				return nil, err
 			}
 		}
@@ -414,7 +412,7 @@ func tracingLabel(isFexit bool) (string, ebpf.AttachType) {
 // Callable multiple times to build up a multi-attach probe; on failure it
 // closes probe (unwinding maps and any attaches already made).
 // Shared by loadMulti (capture) and LoadArgEcho (diagnostic).
-func attachTracingProbe(probe *Probe, targetProg *ebpf.Program, name, funcName string, attachType ebpf.AttachType, insns asm.Instructions) error {
+func attachTracingProbe(probe *Probe, targetProg *ebpf.Program, name, funcName string, attachType ebpf.AttachType, insns asm.Instructions, allowDispatcherSlot bool) error {
 	if probe.extensionGuard == nil {
 		var err error
 		probe.extensionGuard, err = attach.NewExtensionGuard()
@@ -423,7 +421,7 @@ func attachTracingProbe(probe *Probe, targetProg *ebpf.Program, name, funcName s
 			return err
 		}
 	}
-	if err := probe.extensionGuard.Check(targetProg, funcName, probe.allowDispatcherSlot); err != nil {
+	if err := probe.extensionGuard.Check(targetProg, funcName, allowDispatcherSlot); err != nil {
 		_ = probe.Close()
 		return err
 	}
