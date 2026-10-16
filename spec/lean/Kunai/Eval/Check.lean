@@ -52,14 +52,17 @@ private def ldxBytes (cover : Nat) : Nat :=
   if cover ≤ 1 then 1 else if cover ≤ 2 then 2 else if cover ≤ 4 then 4 else 8
 
 /-- The bytes the filter extracts for a bracket field, which is the key an
-`in @set` predicate writes: a whole-byte field is itself (16 for Int<128>),
-anything else is the smallest load window covering its bits. -/
+`in @set` predicate writes: the whole Int<128> field (16, a `[0:128]` slice
+included), otherwise the smallest load window (1, 2, 4 or 8) covering the
+field's or the slice's bits. A byte-clean 3- or 6-byte field (vxlan.vni,
+eth.dst) is read through its 4- or 8-byte window too, zero-extended. -/
 private def keyBytes (r : Ref) : Nat :=
   match r.slice with
-  | some (lo, hi) => ldxBytes ((r.field.bitOff + hi + 7) / 8 - (r.field.bitOff + lo) / 8)
+  | some (lo, hi) =>
+    if hi - lo == 128 then 16
+    else ldxBytes ((r.field.bitOff + hi + 7) / 8 - (r.field.bitOff + lo) / 8)
   | none =>
     if r.field.width == 128 then 16
-    else if r.field.bitOff % 8 == 0 && r.field.width % 8 == 0 then r.field.width / 8
     else ldxBytes ((r.field.bitOff % 8 + r.field.width + 7) / 8)
 
 /-- Bracket predicates resolve their field like a where clause scoped to the
@@ -86,10 +89,16 @@ private def checkPred (c : Ctx) (spec : ProtoSpec) (mandatory : Bool) : Predicat
     -- the filter, so the layer must be on every accepting path.
     if !mandatory then
       throw s!"in @{name} on an optional, repeated, or alternative layer: the key is only written when the layer is present"
+    -- A key is a load the host can declare: at most 64 bits, or the whole
+    -- Int<128> field. A slice between them has no key type.
+    if let some (lo, hi) := r.slice then
+      if 64 < hi - lo && hi - lo < 128 then
+        throw s!"{spec.name}.{f.text} is a {hi - lo}-bit slice: an `in @{name}` key is at most 64 bits unless it is the whole Int<128> field"
     -- The set must be declared, and its keys as wide as the bytes the
     -- filter extracts for the field (keyBytes: a 4-bit field is a bit<8>
-    -- key, a 20-bit one a bit<32> key; a narrower key would only hold a
-    -- prefix of the field).
+    -- key, a 20-bit one a bit<32> key, a 24-bit VNI a bit<32> key and a
+    -- 48-bit MAC a bit<64> key; a narrower key would only hold a prefix of
+    -- the field).
     let some s := c.H.set? name | throw s!"undeclared set @{name}"
     let extracted := 8 * keyBytes r
     if s.width != extracted then

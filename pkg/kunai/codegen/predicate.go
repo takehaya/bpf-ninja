@@ -394,12 +394,15 @@ func (pc *predCtx) dispatchDone(l *ir.LayerInstance) bool {
 // a primary-header field (ipv6.dst) or a static aux-stack element
 // (srv6.segments[N].addr). It is the width-relaxed 128-bit sibling of
 // fieldRefByteOffset (which caps unsliced aux/primary fields at 8 bytes;
-// a slice narrows a 16-byte field to a window it loads). ok=false
+// a slice narrows a 16-byte field to a window it loads; a [0:128] slice
+// is the field). ok=false
 // means "not a 16-byte field" (the caller falls back to the <=8 path); a
 // non-nil error means a 16-byte field that cannot be extracted (a
 // non-byte-aligned or dynamic-index aux stack).
 func field128RawOffset(ref *ir.FieldRef) (off int, ok bool, err error) {
-	if ref.Slice != nil {
+	// A [0:128] slice is its field (genArith128 does the same); any other
+	// slice narrows the field to a window scalarFieldWindow loads.
+	if ref.Slice != nil && ref.EffectiveBits() != 128 {
 		return 0, false, nil
 	}
 	if ref.Aux == nil {
@@ -495,7 +498,7 @@ func emitInSetPredicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, erro
 		if is128 {
 			bytes = 16
 		} else {
-			_, bytes, err = scalarFieldWindow(pred.Field)
+			fieldOff, bytes, err = scalarFieldWindow(pred.Field)
 		}
 	}
 	if err != nil {
@@ -506,8 +509,27 @@ func emitInSetPredicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, erro
 	if bytes == sliceSplitWindow {
 		bytes = 8
 	}
-	// bytes is now 1/2/4/8 (scalarFieldWindow rejects wider windows) or
-	// 16 (the is128 path), so no explicit 9..15 guard is needed here.
+	// A byte-clean primary field of 3, 5, 6 or 7 bytes (vxlan.vni, eth.dst)
+	// has no load of its own size. Its key is the smallest covering window
+	// (4 or 8, spec keyBytes) holding the field's value zero-extended, so a
+	// u32 set holds a VNI and a u64 set a MAC as a number. The window must
+	// stay inside the fixed header: past it may be past the packet, and the
+	// bounded load would reject a frame whose field is all there.
+	window := 0
+	if !is128 && pred.Field.Aux == nil && pred.Field.Slice == nil && nextLDXSize(bytes) != bytes {
+		window = nextLDXSize(bytes)
+		hdr, err := headerSize(pred.Field.Layer.Spec)
+		if err != nil {
+			return nil, err
+		}
+		if fieldOff+window > hdr {
+			return nil, fmt.Errorf("%w: %s.%s is %d bytes and its %d-byte key window would run past the %d-byte header", ErrNotImplemented, pred.Field.Layer.Spec.Name, fieldName, bytes, window, hdr)
+		}
+		bytes = window
+	}
+	// bytes is now 1/2/4/8 (scalarFieldWindow rejects wider windows, and a
+	// 3- to 7-byte field took its window) or 16 (the is128 path), so no
+	// explicit 9..15 guard is needed here.
 	// Require an exact width match: a narrower packet field would only
 	// write a prefix of the key (relying on zero-fill), which silently
 	// matches just zero-extended entries — a mis-configuration trap.
@@ -545,6 +567,29 @@ func emitInSetPredicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, erro
 			*pc.out = append(*pc.out, ExtractSlot{
 				SetName: pred.SetName, FieldName: fieldName,
 				StackOff: slotOff, StoreSize: 16,
+			})
+		}
+		return insns, nil
+	}
+
+	// The field sits at the window's most significant end, so after the
+	// byte swap a right shift by the trailing bytes leaves its value.
+	if window != 0 {
+		size, err := asmSizeFor(window)
+		if err != nil {
+			return nil, err
+		}
+		width := pred.Field.Field.Bits / 8
+		insns = append(insns, emitFieldLoad(pc.fieldAnchor(), fieldOff, size)...)
+		insns = append(insns,
+			asm.HostTo(asm.BE, asm.R3, size),
+			asm.RSh.Imm(asm.R3, int32(8*(window-width))),
+			asm.StoreMem(asm.R10, slotOff, asm.R3, size),
+		)
+		if pc.out != nil {
+			*pc.out = append(*pc.out, ExtractSlot{
+				SetName: pred.SetName, FieldName: fieldName,
+				StackOff: slotOff, StoreSize: window,
 			})
 		}
 		return insns, nil

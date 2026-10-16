@@ -35,6 +35,20 @@ func boolEqNest(atom string, d int) string {
 	return s
 }
 
+// keySlotCaps declares one set @k whose every key field is width bytes.
+func keySlotCaps(width int) func() codegen.Capabilities {
+	return func() codegen.Capabilities {
+		return codegen.Capabilities{Lang: codegen.LangCaps{SetSlots: keySlots{width}}}
+	}
+}
+
+type keySlots struct{ width int }
+
+func (keySlots) HasSet(name string) bool { return name == "k" }
+func (s keySlots) SlotFor(set, field string) (int16, int, bool) {
+	return -40, s.width, set == "k"
+}
+
 // TestNotImplementedBoundaries pins the documented limits that refuse a
 // well-typed filter with codegen.ErrNotImplemented, each next to the
 // shape one step inside the limit, so a doc boundary is tested on both
@@ -77,6 +91,10 @@ func TestNotImplementedBoundaries(t *testing.T) {
 		{"slice-96-plus-128", "eth/ipv6/tcp where ipv6.src[0:96] + ipv6.dst == 1", nil, "ipv6.src[0:96] (bit<96>) next to an Int<128> operand: a slice between 65 and 127 bits", "dsl-types.md 型表"},
 		// dsl-usage.md capture: field lists are not implemented.
 		{"capture-field-list", "eth/ipv4/tcp capture tcp.flags, ipv4.dst", nil, "field-list capture is not yet implemented", "dsl-usage.md capture"},
+		// A slice of a field that starts off a byte boundary is not wired,
+		// though the spec types it (in @set as for ==).
+		{"inset-subbyte-field-slice", "eth/ipv6[traffic_class[0:4] in @k]/tcp", keySlotCaps(1), "not byte-aligned", "dsl-usage.md 集合"},
+		{"inset-subbyte-field", "eth/ipv6[traffic_class in @k]/tcp", keySlotCaps(2), "", "dsl-usage.md 集合"},
 		// A quantified machine layer unrolls to at most 8 machines.
 		{"machine-range-9", "eth/ipv4{1,9}/tcp", nil, "unrolls to 9 parser machines, more than the 8 supported", "spec vector quant-machine-range-nine"},
 		{"machine-range-8", "eth/ipv4{1,8}/tcp", nil, "", "spec vector quant-machine-range-nine"},

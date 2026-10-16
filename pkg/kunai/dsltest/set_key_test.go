@@ -15,7 +15,8 @@ import (
 // the field's value: native-endian for a field of at most 8 bytes, network
 // order for a 16-byte one. It covers a primary field, a slice, a static
 // stack entry, entries found by walking variable-length ones (ipv6 exts,
-// gtp exts) and an IPv6 segment.
+// gtp exts), an IPv6 segment, a full-width slice, and 3- and 6-byte
+// fields read through their 4- and 8-byte windows (a VNI, a MAC).
 func TestSetKeyBytes(t *testing.T) {
 	native16 := func(v uint16) []byte { return binary.NativeEndian.AppendUint16(nil, v) }
 	native32 := func(v uint32) []byte { return binary.NativeEndian.AppendUint32(nil, v) }
@@ -42,6 +43,10 @@ func TestSetKeyBytes(t *testing.T) {
 		{"gtp walked entry", "eth/ipv4/udp/gtp[exts[1].ext_type in @k]/ipv4/tcp", 16, gtp, native16(0xbeef)},
 		{"srv6 segment", "eth/ipv6/srv6[segments[1].addr in @k]/tcp", 128, srv6, sid.To16()},
 		{"64-bit slice", "eth/ipv6[dst[64:128] in @k]/tcp", 64, BuildEthIPv6TCP(t, net.ParseIP("fc00::1"), net.ParseIP("fc00::102"), 1, 2), native64(0x102)},
+		{"full-width slice", "eth/ipv6[dst[0:128] in @k]/tcp", 128, BuildEthIPv6TCP(t, net.ParseIP("fc00::1"), sid, 1, 2), sid.To16()},
+		{"vxlan vni", "eth/ipv4/udp/vxlan[vni in @k]", 32, BuildEthIPv4UDPVXLAN(t, 0x123456), native32(0x123456)},
+		{"mac src", "eth[src in @k]/ipv4/tcp", 64, BuildEthIPv4TCP(t, 1, 2), native64(0xaabbccddee01)},
+		{"mac dst", "eth[dst in @k]/ipv4/tcp", 64, BuildEthIPv4TCP(t, 1, 2), native64(0xaabbccddee02)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			caps := codegen.Capabilities{Lang: codegen.LangCaps{SetSlots: newSpecSetSlots([]specSet{{Name: "k", Width: tc.width}})}}

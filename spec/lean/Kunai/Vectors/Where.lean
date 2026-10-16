@@ -567,6 +567,62 @@ vector typPredInSetAlt := {
   ast := { layers := [P "eth", .alt [{ name := "ipv4", preds := [.inSet (f "src") "hosts"] }, { name := "ipv6" }], P "tcp"] },
   sets := [{ name := "hosts", width := 32, members := [0x0a000001] }],
   expected := .illTyped "in @hosts on an optional, repeated, or alternative layer: the key is only written when the layer is present" }
+def vniInSet : Filter :=
+  { layers := [P "eth", P "ipv4", P "udp", .proto { name := "vxlan", preds := [.inSet (f "vni") "vnis"] }, P "eth", P "ipv4", P "tcp"] }
+def ipv6DstSliceInSet (lo hi : Nat) (set : String) : Filter :=
+  { layers := [P "eth", .proto { name := "ipv6", preds := [.inSet ⟨[("dst", some (.slice lo hi))]⟩ set] }, P "tcp"] }
+vector predInSetVxlanVni := {
+  id := "pred-inset-vxlan-vni", ast := vniInSet, sets := [{ name := "vnis", width := 32, members := [100] }],
+  packet := vxlanPkt, expected := .accept [],
+  note := "a 24-bit field is read through its 4-byte window: the key is bit<32> and holds the VNI" }
+vector predInSetVxlanVniMiss := {
+  id := "pred-inset-vxlan-vni-miss", ast := vniInSet, sets := [{ name := "vnis", width := 32, members := [101] }],
+  packet := vxlanPkt, expected := .reject }
+vector typPredInSetVniWidth := {
+  id := "typ-pred-inset-vni-width", ast := vniInSet, sets := [{ name := "vnis", width := 16, members := [100] }],
+  packet := vxlanPkt, expected := .illTyped "set @vnis keys are bit<16>, vxlan.vni extracts bit<32>" }
+vector predInSetMacDst := {
+  id := "pred-inset-mac-dst", ast := ethPred (.inSet (f "dst") "macs"),
+  sets := [{ name := "macs", width := 64, members := [0x001122334455] }], expected := .accept [],
+  note := "a 48-bit field is read through its 8-byte window: the key is bit<64>, the MAC as a number" }
+vector predInSetMacSrc := {
+  id := "pred-inset-mac-src", ast := ethPred (.inSet (f "src") "macs"),
+  sets := [{ name := "macs", width := 64, members := [0x66778899aabb] }], expected := .accept [] }
+vector predInSetMacMiss := {
+  id := "pred-inset-mac-miss", ast := ethPred (.inSet (f "dst") "macs"),
+  sets := [{ name := "macs", width := 64, members := [0x001122334456] }], expected := .reject }
+vector typPredInSetMacWidth := {
+  id := "typ-pred-inset-mac-width", ast := ethPred (.inSet (f "dst") "macs"),
+  sets := [{ name := "macs", width := 48, members := [0x001122334455] }],
+  expected := .illTyped "set @macs keys are bit<48>, eth.dst extracts bit<64>",
+  note := "48 is not a key width: the field is extracted as 8 bytes" }
+vector predInSetFullSlice := {
+  id := "pred-inset-ipv6-full-slice", ast := ipv6DstSliceInSet 0 128 "sids",
+  sets := [sids [0xfc000000000000000000000000000002]], packet := ipv6TCP, expected := .accept [],
+  note := "a full-width slice is the field: a 16-byte key" }
+vector predInSetFullSliceMiss := {
+  id := "pred-inset-ipv6-full-slice-miss", ast := ipv6DstSliceInSet 0 128 "sids",
+  sets := [sids [1]], packet := ipv6TCP, expected := .reject }
+vector typPredInSetSlice96 := {
+  id := "typ-pred-inset-slice-96", ast := ipv6DstSliceInSet 0 96 "d",
+  sets := [{ name := "d", width := 128, members := [1] }], packet := ipv6TCP,
+  expected := .illTyped "ipv6.dst[0:96] is a 96-bit slice: an `in @d` key is at most 64 bits unless it is the whole Int<128> field" }
+vector typPredInSetSlice72Unaligned := {
+  id := "typ-pred-inset-slice-72-unaligned", ast := ipv6DstSliceInSet 4 76 "d",
+  sets := [{ name := "d", width := 64, members := [1] }], packet := ipv6TCP,
+  expected := .illTyped "ipv6.dst[4:76] is a 72-bit slice: an `in @d` key is at most 64 bits unless it is the whole Int<128> field" }
+vector predInSetSubByteFieldSlice := {
+  id := "pred-inset-subbyte-field-slice",
+  ast := { layers := [P "eth", .proto { name := "ipv6", preds := [.inSet ⟨[("traffic_class", some (.slice 0 4))]⟩ "tc"] }, P "tcp"] },
+  sets := [{ name := "tc", width := 8, members := [0] }], packet := ipv6TCP, expected := .accept [],
+  goStatus := .notImplemented,
+  note := "Go: a slice of a field that starts off a byte boundary is not wired (fieldRefByteOffset)" }
+vector predInSetIhlSlice := {
+  id := "pred-inset-ihl-slice",
+  ast := { layers := [P "eth", .proto { name := "ipv4", preds := [.inSet ⟨[("ihl", some (.slice 2 4))]⟩ "k"] }, P "tcp"] },
+  sets := [{ name := "k", width := 8, members := [1] }], expected := .accept [],
+  goStatus := .notImplemented,
+  note := "ihl 5 is 0101, so bits 2..4 are 01. Go: a slice of a field that starts off a byte boundary is not wired" }
 vector typAny := {
   id := "typ-any-unsupported", ast := W (.any (cmp dport .eq (k 1))), expected := .illTyped "any/all needs exactly one index-less stack reference" }
 vector typExists := {
@@ -1326,7 +1382,7 @@ def whereVectors : List Vector := [
   capHeadersAltIPv6, capHeadersAltIPv4, capHeadersVxlan, capHeadersPlusOptions,
   typUnknownProto, typNoDispatch, typNotInChain, typUnknownField, typFit, typLabelCollides, typLabelCollidesAlt, typLabelDuplicate, typFitArith, whereArithRight, whereArithRightMiss, typFitArithSibling, whereNegLitSibling, typWidthIPv6, typCIDRWidth,
   typWidthIPv6Slice, typWidthIPv6SliceBracket, ipv6DstLow32IPv4, ipv6DstLow32IPv4Miss, ipv6DstLow32Cidr, ipv6DstLow32IPv4Unaligned, ipv6DstUnalignedIPv4Miss, ipv6DstUnalignedIPv4Ne, ipv6DstUnalignedCidr, ipv6DstUnalignedCidrNeMiss, ipv6DstUnalignedCidrZero, ipv6DstUnalignedCidrZeroNe, ipv6DstCidr6ZeroNeOr, ipv6DstUnalignedEndOfFrame, ipv4DstSliceEndOfFrame, ipv6DstUnalignedIntEndOfFrame, predIPv6DstUnalignedIPv4, predIPv6DstUnalignedIPv4Gt, predIPv6DstUnalignedIPv4Ge, predIPv6DstUnalignedInListMac, predIPv6DstUnalignedInListMacInt, predEthSrcUnalignedIPv4, predIPv6DstUnalignedCidrZeroNe, predIPv6Cidr6ZeroNe, predIPv6DstNineByteSlice, predIPv6NineByteMiss, predIPv6NineByteGt, predIPv6NineByteLtMiss, predIPv6NineByteInList, predIPv6NineByteInRange, predIPv6NineByteInRangeMiss, predIPv6NineByteNarrow, predIPv6NineByteFrameEnd, whereIPv6NineByte, whereIPv6NineByteWide, whereIPv6NineByteArith, predInSetNineByte, predInSetNineByteMiss, predIPv6NineByteOdd, predIPv6NineByteOddMiss, whereIPv6NineByteAlt, whereIPv6NineByteAltMiss, ipv6DstLow32IPv4Ne, ipv6DstLow32IPv4NeMiss, ipv6DstLow48Mac, ipv6DstFullSliceIPv6, ipv6DstFullSliceCidr6, ipv6DstLow32IPv4Bracket,
-  typPredIdent, typInSet, predInSetMember, predInSetMiss, typPredInSetWidth, predInSetSubByte, predInSetWindow, predInSetWindowMiss, predSeqSwappedWide, predSeqSwappedWideMiss, predSeqWideNe, predSeqWideGt, predSeqWideGtMiss, whereCidr32HighOctet, whereCidr32HighOctetNe, predIPv6NineByteWideConst, predSeqMax, predInSetIPv6, predInSetIPv6Miss, predInSetTwo, predInSetTwoSecondMiss, predInSetTwoFirstMiss, predInSetUnused, typPredInSetWindow, typPredInSetTwice, typPredInSetBudget, typPredInSetOptional, typPredInSetAlt, typAny, typExists, typAuxPath,
+  typPredIdent, typInSet, predInSetMember, predInSetMiss, typPredInSetWidth, predInSetSubByte, predInSetWindow, predInSetWindowMiss, predSeqSwappedWide, predSeqSwappedWideMiss, predSeqWideNe, predSeqWideGt, predSeqWideGtMiss, whereCidr32HighOctet, whereCidr32HighOctetNe, predIPv6NineByteWideConst, predSeqMax, predInSetIPv6, predInSetIPv6Miss, predInSetTwo, predInSetTwoSecondMiss, predInSetTwoFirstMiss, predInSetUnused, typPredInSetWindow, typPredInSetTwice, typPredInSetBudget, typPredInSetOptional, typPredInSetAlt, predInSetVxlanVni, predInSetVxlanVniMiss, typPredInSetVniWidth, predInSetMacDst, predInSetMacSrc, predInSetMacMiss, typPredInSetMacWidth, predInSetFullSlice, predInSetFullSliceMiss, typPredInSetSlice96, typPredInSetSlice72Unaligned, predInSetSubByteFieldSlice, predInSetIhlSlice, typAny, typExists, typAuxPath,
   arith128AddConst, arith128SubConst, arith128AddCarry, arith128AddWrap, arith128SubBorrow, arith128SubWrap, arith128AddMiss,
   arith128FieldAddField, arith128FieldAddFieldCarry, arith128FieldSubField, arith128FieldSubFieldBorrow, arith128AddWideConst, arith128SubWideConstBorrow,
   arith128AddNegConst, arith128SubNegConst, arith128CmpNegConst,

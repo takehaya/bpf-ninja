@@ -1200,7 +1200,7 @@ op_c(n_f, v_n) = b
 [E-Pred-In]                                            [E-Pred-InSet]
 ⟨field(f), σ⟩ ⇓_P n_f                                  ⟨field(f), σ⟩ ⇓_P n_f
 b = ∃ a ∈ ā. (a = v ∧ op_=(n_f, v) )                   S = sets_H(name)                 ; host が宣言した set、無ければ ill-typed
-        ∨ (a = lo..hi ∧ lo ≤ n_f ≤ hi)                 width(S) = 8·ldx(f)              ; key 幅は f の bit 範囲を覆う最小の load 窓 1/2/4/8 byte (Int<128> は 16) (D-036)
+        ∨ (a = lo..hi ∧ lo ≤ n_f ≤ hi)                 width(S) = 8·ldx(f)              ; key 幅は f の bit 範囲を覆う最小の load 窓 1/2/4/8 byte で、3 byte や 6 byte の field も 4 / 8 byte。Int<128> の field 全体は `[0:128]` を含めて 16 (D-036)
         ; v は int / ipv4 / ipv6 / mac / cidr の literal。op_= は [E-Pred-Cmp] の `==` と同じで、cidr は prefix の一致
 ─────────────────────────────────                      b = (n_f ∈ members(S))           ; lookup は host が filter の後に行い verdict に AND
 ⟨in(f, ā), σ⟩ ⇓_P b                                    ─────────────────────────────────
@@ -1214,7 +1214,7 @@ inst = この layer の instance (σ' 内)
 ⟨valid, σ'⟩ ⇓_P ok(inst)                     ; ok は §14.4 の aux-extract が返す flag
 ```
 
-`in @name` の layer は必ず抽出される位置に無ければなりません。量化された layer (`?` `*` `+` `{n,m}`) と alternation の member では ill-typed です (key が書かれない経路があるため、D-036)。host は set ごとに key を 1 つ持って 1 回 lookup するので、同じ set を 2 つの predicate から参照する filter と、参照した key (chain 順、各 key の幅で align) が host の key buffer (16 byte) に収まらない filter も ill-typed です。仕様が扱うのは scalar set だけで、複合 key の set は対象外です。
+`in @name` の layer は必ず抽出される位置に無ければなりません。量化された layer (`?` `*` `+` `{n,m}`) と alternation の member では ill-typed です (key が書かれない経路があるため、D-036)。host は set ごとに key を 1 つ持って 1 回 lookup するので、同じ set を 2 つの predicate から参照する filter と、参照した key (chain 順、各 key の幅で align) が host の key buffer (16 byte) に収まらない filter も ill-typed です。仕様が扱うのは scalar set だけで、複合 key の set は対象外です。slice の key は 64 bit 以下か、Int<128> の field 全体を指す `[0:128]` に限ります。65 bit から 127 bit の slice には key の型がないので ill-typed です。
 
 `f` は layer 自身の primary field のほか、where と同じ規則で aux header / 定数 index の stack 要素 (`srv6[segments[0].addr == …]`, `ipv6[exts[1].next_header == 6]`) を指せます (T-FieldAux / T-FieldStackStatic)。読み出しは `load(f, σ', P)` と同じで (この共有を述べた定理が `spec/lean` の `Laws.lean` `bracket_eq_where` と、filter 全体について accept が一致することを述べる `bracket_iff_where_eval`。仮定と範囲は定理の docstring にあります)、抽出されなかった aux / 範囲外の要素は predicate を false にし (D-027 / D-031)、write-back 後の値を見ます (D-032)。index 無しの iterator 形と動的 index は bracket では ill-typed (`where` を使う)。
 
