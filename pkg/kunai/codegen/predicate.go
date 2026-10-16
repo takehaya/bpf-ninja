@@ -158,7 +158,11 @@ func emitCmpPredicate(pred *ir.Predicate, pc *predCtx) (asm.Instructions, error)
 // slice's numeric value, read like an integer field's through a covering
 // window, instead of byte by byte.
 func sliceNeedsScalarLoad(ref *ir.FieldRef) bool {
-	return ref != nil && ref.Slice != nil && (ref.Slice.Lo%8 != 0 || ref.Slice.Hi%8 != 0)
+	if ref == nil || ref.Slice == nil {
+		return false
+	}
+	lo, hi := sliceBits(ref)
+	return lo%8 != 0 || hi%8 != 0
 }
 
 // emitLiteralScalarPredicate handles `field[lo:hi] op LITERAL` for a

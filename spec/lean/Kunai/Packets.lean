@@ -29,8 +29,8 @@ def ipv4 (proto : Nat) (src : Nat := 0x0a000001) (dst : Nat := 0x0a000002) (ttl 
 
 def ipv6 (nextHeader : Nat) (src : Nat := 0xfc000000000000000000000000000001)
     (dst : Nat := 0xfc000000000000000000000000000002) (payloadLength : Nat := 20)
-    (hopLimit : Nat := 64) (version : Nat := 6) : Packet :=
-  be 4 (version * 2 ^ 28) ++ be 2 payloadLength ++ be 1 nextHeader ++ be 1 hopLimit ++ be 16 src ++ be 16 dst
+    (hopLimit : Nat := 64) (version : Nat := 6) (tc : Nat := 0) (flowLabel : Nat := 0) : Packet :=
+  be 4 (version * 2 ^ 28 + tc * 2 ^ 20 + flowLabel) ++ be 2 payloadLength ++ be 1 nextHeader ++ be 1 hopLimit ++ be 16 src ++ be 16 dst
 
 /-- TCP header. `dataOffset` in 32-bit words; `options` must be `(dataOffset - 5) * 4` bytes. -/
 def tcp (sport dport : Nat) (flags : Nat := 0x02) (seq : Nat := 1) (ack : Nat := 0)

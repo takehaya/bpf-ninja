@@ -6,6 +6,7 @@ import (
 
 	"github.com/cilium/ebpf/asm"
 
+	"github.com/takehaya/bpf-ninja/pkg/kunai/dslvocab"
 	"github.com/takehaya/bpf-ninja/pkg/kunai/ir"
 	"github.com/takehaya/bpf-ninja/pkg/kunai/vocab"
 )
@@ -321,5 +322,99 @@ func TestApplySliceToOffsetStaysInsideField(t *testing.T) {
 	}
 	if off, size, err := applySliceToOffset(narrow, 0, 6); err != nil || off != 1 || size != 8 {
 		t.Errorf("eth.src[12:44] window = (%d, %d, %v), want (1, 8, nil)", off, size, err)
+	}
+}
+
+// bundledFieldRef returns a ref to proto.field in the bundled vocab with
+// the slice [lo:hi].
+func bundledFieldRef(t *testing.T, proto, field string, lo, hi int) *ir.FieldRef {
+	t.Helper()
+	v, err := dslvocab.Bundled()
+	if err != nil {
+		t.Fatalf("dslvocab.Bundled: %v", err)
+	}
+	spec := v[proto]
+	if spec == nil {
+		t.Fatalf("no protocol %s", proto)
+	}
+	for i := range spec.Fields {
+		if spec.Fields[i].Name == field {
+			return &ir.FieldRef{Layer: &ir.LayerInstance{Spec: spec}, Field: &spec.Fields[i], Slice: &ir.FieldSlice{Lo: lo, Hi: hi}}
+		}
+	}
+	t.Fatalf("no field %s.%s", proto, field)
+	return nil
+}
+
+// TestUnalignedFieldSliceWindow pins the window and the post-load shift
+// and mask of a slice of a field that starts off a byte boundary: the
+// slice is the bit range [bitOff+lo, bitOff+hi) of the header, read
+// through the smallest window covering it (spec keyBytes / loadRefOn).
+func TestUnalignedFieldSliceWindow(t *testing.T) {
+	for _, c := range []struct {
+		proto, field string
+		lo, hi       int
+		off, bytes   int
+		shift        int
+		mask         uint64
+	}{
+		{"ipv6", "traffic_class", 0, 6, 0, 2, 6, 0x3f}, // DSCP, header bits 4..10
+		{"ipv6", "traffic_class", 6, 8, 1, 1, 4, 0x3},  // ECN, bits 10..12
+		{"ipv6", "traffic_class", 0, 4, 0, 1, 0, 0xf},  // bits 4..8
+		{"ipv4", "ihl", 2, 4, 0, 1, 0, 0x3},
+		{"ipv6", "flow_label", 0, 8, 1, 2, 4, 0xff},   // bits 12..20
+		{"ipv6", "flow_label", 8, 20, 2, 2, 0, 0xfff}, // bits 20..32
+		{"ipv4", "frag_offset", 5, 13, 7, 1, 0, 0},    // fills its byte: no narrowing
+		{"tcp", "flags", 1, 9, 13, 1, 0, 0},           // the tcp[13] byte, no narrowing
+	} {
+		ref := bundledFieldRef(t, c.proto, c.field, c.lo, c.hi)
+		off, n, err := fieldRefByteOffset(ref)
+		if err != nil {
+			t.Errorf("%s.%s[%d:%d]: %v", c.proto, c.field, c.lo, c.hi, err)
+			continue
+		}
+		shift, mask := slicePostAdjust(ref, n)
+		if off != c.off || n != c.bytes || shift != c.shift || mask != c.mask {
+			t.Errorf("%s.%s[%d:%d] = (off %d, %d bytes, shift %d, mask %#x), want (%d, %d, %d, %#x)",
+				c.proto, c.field, c.lo, c.hi, off, n, shift, mask, c.off, c.bytes, c.shift, c.mask)
+		}
+	}
+}
+
+// TestUnalignedFieldSliceWindowsFitHeader: every slice of at most 64 bits
+// of a bundled primary field that starts off a byte boundary resolves,
+// and its window stays inside the fixed header. An unaligned field is
+// read from its byte floor with no move-back, so a vocab field near a
+// header's end would read past it; this fails loudly if one appears.
+func TestUnalignedFieldSliceWindowsFitHeader(t *testing.T) {
+	v, err := dslvocab.Bundled()
+	if err != nil {
+		t.Fatalf("dslvocab.Bundled: %v", err)
+	}
+	for _, spec := range v {
+		hdr, err := headerSize(spec)
+		if err != nil {
+			continue
+		}
+		for i := range spec.Fields {
+			f := &spec.Fields[i]
+			bitOff, _, _ := vocab.BitOffsetIn(spec.Fields, f.Name)
+			if bitOff%8 == 0 {
+				continue
+			}
+			for lo := 0; lo < f.Bits; lo++ {
+				for hi := lo + 1; hi <= f.Bits && hi-lo <= 64; hi++ {
+					ref := &ir.FieldRef{Layer: &ir.LayerInstance{Spec: spec}, Field: f, Slice: &ir.FieldSlice{Lo: lo, Hi: hi}}
+					off, n, err := fieldRefByteOffset(ref)
+					if err != nil {
+						t.Errorf("%s.%s[%d:%d]: %v", spec.Name, f.Name, lo, hi, err)
+						continue
+					}
+					if off+n > hdr {
+						t.Errorf("%s.%s[%d:%d]: window %d..%d runs past the %d-byte header", spec.Name, f.Name, lo, hi, off, off+n, hdr)
+					}
+				}
+			}
+		}
 	}
 }
