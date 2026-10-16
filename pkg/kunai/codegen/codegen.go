@@ -1891,10 +1891,27 @@ func bareSubByteField(ref *ir.FieldRef) (bitOff, width int, ok bool) {
 	return bitOff, width, true
 }
 
+// splitBareField is ref read as its [0:width] slice when ref is an
+// unsliced field (primary or aux) that starts off a byte boundary and
+// whose bits straddle 9 bytes, like a 64-bit field at bit 1: one LDX
+// covers at most 8, so it takes the split load a slice of it takes
+// (sliceSplitsLoad), with the same value. Any other ref is returned
+// as is. The copy is local to codegen; the resolved IR keeps no slice.
+func splitBareField(ref *ir.FieldRef) *ir.FieldRef {
+	bitOff, w, ok := bareSubByteField(ref)
+	if !ok || w > 64 || (bitOff%8+w+7)/8 != sliceSplitWindow {
+		return ref
+	}
+	c := *ref
+	c.Slice = &ir.FieldSlice{Lo: 0, Hi: w}
+	return &c
+}
+
 // fieldNeedsNarrowing reports whether a field's load window is wider than
 // the field (a bit slice, or a field that does not fill its bytes), so
 // emitFieldValue has to shift and mask it.
 func fieldNeedsNarrowing(ref *ir.FieldRef) bool {
+	ref = splitBareField(ref)
 	return ref.Slice != nil || fieldIsSubByte(ref)
 }
 
@@ -1930,6 +1947,7 @@ func fieldRefByteOffset(ref *ir.FieldRef) (int, int, error) {
 	if ref == nil {
 		return 0, 0, fmt.Errorf("codegen: nil field ref")
 	}
+	ref = splitBareField(ref)
 	if ref.Aux == nil {
 		off, size, err := findFieldByteOffset(ref.Layer.Spec, ref.Field.Name)
 		if err != nil {
@@ -1994,6 +2012,7 @@ func fieldRefByteOffset(ref *ir.FieldRef) (int, int, error) {
 // (sliceBits). Such a window must stay inside the entry: the walk
 // proved only the entry's bytes, and past them may be past the packet.
 func auxFieldWindow(ref *ir.FieldRef) (int, int, error) {
+	ref = splitBareField(ref)
 	aux := ref.Aux
 	var start, size int
 	switch {
@@ -2104,6 +2123,7 @@ const sliceSplitWindow = 9
 // sliceSplitsLoad reports whether ref is a slice read through a
 // sliceSplitWindow window.
 func sliceSplitsLoad(ref *ir.FieldRef) bool {
+	ref = splitBareField(ref)
 	if ref == nil || ref.Slice == nil || ref.Slice.Bits() > 64 {
 		return false
 	}
@@ -2149,6 +2169,7 @@ func nextLDXSize(cover int) int {
 // here we narrow the covering window down to the field's own bits using
 // the field's intra-byte start (bitOff%8) in place of a slice's Lo.
 func slicePostAdjust(ref *ir.FieldRef, loadBytes int) (shift int, mask uint64) {
+	ref = splitBareField(ref)
 	loadBits := loadBytes * 8
 	// Resolve the field/slice high bit within the loaded window and the
 	// width to keep; both the slice and the bare sub-byte field reduce
@@ -2896,6 +2917,7 @@ func scalarFieldWindow(ref *ir.FieldRef) (off, bytes int, err error) {
 // R3 as a DWord and the ninth into R2, which emitFieldValue folds in;
 // the caller appends emitFieldValue before anything else touches R2.
 func emitScalarFieldLoad(ref *ir.FieldRef, site fieldLoadSite) (asm.Instructions, int, asm.Size, error) {
+	ref = splitBareField(ref)
 	off, bytes, err := scalarFieldWindow(ref)
 	if err != nil {
 		return nil, 0, 0, err
@@ -2965,6 +2987,7 @@ func emitSplitSliceLoad(ref *ir.FieldRef, site fieldLoadSite, off int) (asm.Inst
 // shifts the bits before it out of the first 8, takes the rest from the
 // ninth byte in R2, and drops the bits after it.
 func emitFieldValue(ref *ir.FieldRef, bytes int, size asm.Size) asm.Instructions {
+	ref = splitBareField(ref)
 	if sliceSplitsLoad(ref) {
 		lo, _ := sliceBits(ref)
 		s := int32(lo % 8)

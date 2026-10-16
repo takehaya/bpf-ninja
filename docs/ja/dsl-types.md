@@ -137,7 +137,7 @@ field[lo:hi]                    ; half-open bit range, lo inclusive / hi exclusi
 
 | 範囲 | cmp (`==`/`!=`) | arith binop / bitwise | non-aligned 端点 |
 |---|---|---|---|
-| `≤ 64` | ✅ single LDX | ✅ single register | ✅ codegen で `pow2 ≥ cover` LDX → bswap → shift+mask。9 byte にまたがる slice は先頭 8 byte と 9 byte 目を別に load して合成。byte の境界から始まらない field の slice も、header 上の bit 範囲を覆う窓で読む (`traffic_class[0:6]` は bit 4..10 なので 2 byte) |
+| `≤ 64` | ✅ single LDX | ✅ single register | ✅ codegen で `pow2 ≥ cover` LDX → bswap → shift+mask。9 byte にまたがる slice は先頭 8 byte と 9 byte 目を別に load して合成。byte の境界から始まらない field の slice も、header 上の bit 範囲を覆う窓で読む (`traffic_class[0:6]` は bit 4..10 なので 2 byte)。slice しない field も、bit が 9 byte にまたがるとき (bit 1 から始まる 64 bit の field など) は `[0:幅]` の slice と同じく読む |
 | `(64, 128)` | ✅ 両辺が同じ幅の slice のとき、resolver が LDX-aligned chunks の AND/OR-chain に desugar する (例: `[0:96]` → `[0:64]` AND `[64:96]`)。定数や幅の違う operand とは比べられない | ❌ single register に乗らないため未対応 | ❌ byte-aligned 端点必須 |
 | `= 128` | ✅ 128 bit の field の `[0:128]` は field そのものと同じに扱い、定数、`int<128>`、field との比較や大小比較もできる | ✅ field と同じ 128 bit の `+` / `-` | 該当しない |
 
