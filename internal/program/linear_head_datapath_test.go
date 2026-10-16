@@ -145,7 +145,9 @@ func TestLinearHeadClampAtCgroupSKB(t *testing.T) {
 	}
 	_ = conn.Close()
 	restore()
-	<-done
+	if err := <-done; err != nil {
+		t.Fatalf("accept: %v", err)
+	}
 
 	// Drain and check every captured record.
 	readers := make([]*fastrb.Reader, len(probe.InnerMaps))
