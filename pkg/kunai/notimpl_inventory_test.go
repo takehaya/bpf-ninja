@@ -97,6 +97,10 @@ func TestNotImplementedBoundaries(t *testing.T) {
 		{"inset-dscp-slice", "eth/ipv6[traffic_class[0:6] in @k]/tcp", keySlotCaps(2), "", "dsl-usage.md 集合"},
 		{"inset-aux-six-byte-field", "eth/ipv6[exts[0]._opts in @k]/tcp", keySlotCaps(8), "a key window for it is not wired", "dsl-types.md 13.7"},
 		{"inset-subbyte-field", "eth/ipv6[traffic_class in @k]/tcp", keySlotCaps(2), "", "dsl-usage.md 集合"},
+		// An option field off a byte boundary (OVN ingress_port, bits
+		// 33..48 of the option) reads the window over its bits.
+		{"inset-ovn-ingress-port", "eth/ipv4/udp/geneve[ovn.ingress_port in @k]", keySlotCaps(2), "", "dsl-usage.md 集合"},
+		{"where-ovn-ingress-port", "eth/ipv4/udp/geneve where geneve.options.OVN.ingress_port[0:7] == 1", nil, "", "dsl-usage.md 集合"},
 		// A quantified machine layer unrolls to at most 8 machines.
 		{"machine-range-9", "eth/ipv4{1,9}/tcp", nil, "unrolls to 9 parser machines, more than the 8 supported", "spec vector quant-machine-range-nine"},
 		{"machine-range-8", "eth/ipv4{1,8}/tcp", nil, "", "spec vector quant-machine-range-nine"},

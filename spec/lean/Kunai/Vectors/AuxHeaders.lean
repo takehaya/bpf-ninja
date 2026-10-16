@@ -489,6 +489,45 @@ vector geneveMalformedAfter := {
 vector geneveMalformedBefore := {
   id := "geneve-opt-malformed-before-ovn", ast := { layers := geneveL, cond := some (.not geneveValid) },
   packet := genevePkt 4 (geneveUnknown ++ geneveOvn 42), expected := .accept [] }
+/-- OVN option with its 32-bit value spelled out: rsv(1) ++ ingress(15) ++
+egress(16). -/
+def geneveOvnPorts (rsv ingress egress : Nat) : Packet :=
+  be 2 0x0102 ++ [0x80, 1] ++ be 2 (rsv * 0x8000 + ingress) ++ be 2 egress
+def ovnField (f : String) (sl : Option Index := none) :=
+  Arith.field ⟨[("geneve", none), ("options", none), ("OVN", none), (f, sl)]⟩
+def ovnBracket (p : Predicate) : Filter :=
+  { layers := [P "eth", P "ipv4", P "udp", .proto { name := "geneve", preds := [p] }] }
+vector geneveOvnIngress := {
+  id := "geneve-opt-ovn-ingress", ast := { layers := geneveL, cond := some (cmp (ovnField "ingress_port") .eq (k 7)) },
+  packet := genevePkt 2 (geneveOvnPorts 1 7 0xffff), expected := .accept [],
+  note := "ingress_port is bits 33..48 of the option; rsv and egress are set around it" }
+vector geneveOvnIngressMiss := {
+  id := "geneve-opt-ovn-ingress-miss", ast := { layers := geneveL, cond := some (cmp (ovnField "ingress_port") .eq (k 7)) },
+  packet := genevePkt 2 (geneveOvnPorts 0 0x4007 0), expected := .reject }
+vector geneveOvnIngressBehind := {
+  id := "geneve-opt-ovn-ingress-behind", ast := { layers := geneveL, cond := some (cmp (ovnField "ingress_port") .gt (k 0x4000)) },
+  packet := genevePkt 4 (geneveOvn 1 ++ geneveOvnPorts 1 0x4001 0), expected := .accept [],
+  note := "the last OVN option wins; its ingress port is read off its recorded position" }
+vector geneveOvnRsv := {
+  id := "geneve-opt-ovn-rsv", ast := { layers := geneveL, cond := some (cmp (ovnField "rsv") .eq (k 1)) },
+  packet := genevePkt 2 (geneveOvnPorts 1 0 0), expected := .accept [] }
+vector geneveOvnRsvClear := {
+  id := "geneve-opt-ovn-rsv-clear", ast := { layers := geneveL, cond := some (cmp (ovnField "rsv") .eq (k 1)) },
+  packet := genevePkt 2 (geneveOvnPorts 0 0x7fff 0xffff), expected := .reject }
+vector geneveOvnIngressSlice := {
+  id := "geneve-opt-ovn-ingress-slice", ast := { layers := geneveL, cond := some (cmp (ovnField "ingress_port" (some (.slice 0 7))) .eq (k 0x40)) },
+  packet := genevePkt 2 (geneveOvnPorts 1 0x40ff 0), expected := .accept [],
+  note := "the slice counts from the field's first bit, bit 33 of the option" }
+vector geneveOvnIngressAbsentNe := {
+  id := "geneve-opt-ovn-ingress-absent-ne", ast := { layers := geneveL, cond := some (cmp (ovnField "ingress_port") .ne (k 7)) },
+  packet := genevePkt 0 [], expected := .reject,
+  note := "D-027: an absent option makes the atom false, != included" }
+vector geneveOvnBracketIngress := {
+  id := "bracket-geneve-ovn-ingress", ast := ovnBracket (.cmp ⟨[("ovn", none), ("ingress_port", none)]⟩ .eq (.int 0x7fff)),
+  packet := genevePkt 2 (geneveOvnPorts 1 0x7fff 0), expected := .accept [] }
+vector geneveOvnBracketRsv := {
+  id := "bracket-geneve-ovn-rsv", ast := ovnBracket (.cmp ⟨[("ovn", none), ("rsv", none)]⟩ .eq (.int 1)),
+  packet := genevePkt 2 (geneveOvnPorts 0 0x7fff 0xffff), expected := .reject }
 vector geneveMalformedChainOn := {
   id := "geneve-opt-malformed-chain-on", ast := { layers := geneveL, cond := some (cmp (fld "udp" "dport") .eq (k 6081)) },
   packet := genevePkt 4 (geneveUnknown ++ geneveOvn 42), expected := .accept [],
@@ -1157,7 +1196,9 @@ def auxVectors : List Vector := [
   tcpMalformedAfterMss, tcpMalformedChainOn, ipv4MalformedOpts, ipv4MalformedOptsQueried, ipv4OptDepthLastFault, ipv4OptDepthLastSighting,
   tcpOptsValid, tcpOptsValidNone, tcpOptsInvalid, tcpOptsInvalidNot, tcpOptsValidWithMss, tcpOptsValidAbsent, tcpOptsValidAltMember, tcpOptsValidAltOther, tcpOptsValidTwoOptions, tcpOptsValidTwoOptionsLast, tcpOptsValidTwoOptionsMalformed, tcpOptsValidTwoOptionsMiss, tcpOptsValidTwoOptionsOptional, tcpOptsValidTwoOptionsAlt, tcpOptsValidTwoOptionsLabel, tcpOptsValidTwoOptionsOtherLayer, bracketValid, bracketValidMalformed, bracketValidOptMalformed, bracketValidWithCmp, typBracketValidNoRegion, bracketValidAltFirst, bracketValidAltSecond, bracketValidAltOther, bracketValidFirst,
   bracketValidNoOpts, bracketValidOptAbsent, bracketValidIPv4, bracketValidGeneve, bracketValidTwoOptions, bracketValidRepeated, bracketTcpOptionField, bracketTcpOptionFieldAbsent, bracketTcpOptionBehindWs, bracketTcpOptionNe, bracketTcpOptionInList, bracketTcpOptionInListMiss, bracketTcpOptionOrdered, bracketTcpOptionOrderedMiss, bracketTcpOptionSwappedWide, bracketTcpOptionSlice, bracketTcpOptionIPv4Literal, bracketTcpOptionIPv4LiteralMiss, bracketTcpOptionIPv4LiteralNeAbsent, bracketTcpOptionMalformed, whereTcpOptionIPv4Literal, whereTcpOptionIPv4LiteralAbsent, whereTcpOptionSlice, bracketOptionRepeated, bracketOptionRepeatedInner, bracketOptionRepeatedInnerAbsent, bracketTcpOptionNested, bracketTcpOptionNestedAbsent, bracketTcpTwoOptions, bracketTcpTwoOptionsReversed, bracketTcpTwoOptionsWsAbsent, bracketTcpTwoOptionsWsWrong, bracketTcpTwoOptionsDport, bracketTcpTwoOptionsWhereDport, bracketTcpTwoOptionsNested, bracketTcpTwoOptionsValid, bracketTcpTwoOptionsAltUdp, bracketTcpTwoOptionsAltTcp, bracketTcpTwoOptionsWhereDportMiss, bracketTcpTwoOptionsWhereNotOr, bracketTcpTwoOptionsValidAccept, bracketTcpTwoOptionsRepeatedLast, bracketTcpTwoOptionsRepeatedFirst, whereTcpTwoOptionsRepeatedFirst, bracketTcpTwoOptionsOptionalWhere, bracketTcpTwoOptionsOptionalAbsent, bracketTcpTwoOptionsOptionalNoWhere, bracketTcpTwoOptionsOptionalPresent, bracketTcpTwoOptionsOptionalWsAbsent, bracketTcpTwoOptionsOptionalMalformed, bracketTcpTwoOptionsOptionalNotWhere, bracketTcpTwoOptionsOptionalNotWherePresent, bracketTcpTwoOptionsOptionalNotWherePresentHit, bracketTcpTwoOptionsOptionalNoOptions, bracketTcpTwoOptionsAltNoWhereTcp, bracketTcpTwoOptionsAltNoWhere, bracketTcpTwoOptionsAltNoWhereWsWrong, bracketSackNested, bracketSackNestedSecond, bracketSackNestedAbsent, bracketSackNestedAbsentNe, typBracketSackBareIter, typBracketSackBare, typWhereSackBare, bracketRRAddrNested, bracketValidPlus, typBracketValidSegment, typBracketValidSrv6, ipv4OptsInvalid,
-  geneveOvnHit, geneveMalformedAfter, geneveMalformedBefore, geneveMalformedChainOn, geneveRegionPastEnd, geneveValidEmpty, typOptsValidNoRegion,
+  geneveOvnHit, geneveMalformedAfter, geneveMalformedBefore, geneveMalformedChainOn,
+  geneveOvnIngress, geneveOvnIngressMiss, geneveOvnIngressBehind, geneveOvnRsv, geneveOvnRsvClear, geneveOvnIngressSlice,
+  geneveOvnIngressAbsentNe, geneveOvnBracketIngress, geneveOvnBracketRsv, geneveRegionPastEnd, geneveValidEmpty, typOptsValidNoRegion,
   ipv6Hbh, ipv6TwoExts, ipv6ExtLong, ipv6ExtTooLong, ipv6ExtsIndex, ipv6ExtsIndex1, ipv6ExtsIndexAfterLong, ipv6ExtsAnyAfterLong, ipv6ExtsDynamicLong, ipv6ExtsDynamicLongSecond, ipv6ExtsDynamicLongAbsent, ipv6ExtsDynamicLongLast, ipv6ExtsDynamicLongLastMiss, ipv6ExtsDynamicLongBeyond, ipv6ExtsDynamicLongSlot, ipv6ExtsDynamicLongSlotAbsent,
   ipv6ExtsBracket, ipv6ExtsBracketAbsent, ipv6ExtsBracketLong, ipv6ExtsBracketDynamic, ipv6ExtsBracketIter, ipv6ExtsBracketInAbsent, ipv6ExtsBracketInLong, predInSetExtsWalked, predInSetExtsAbsent, typPredInSetExtsWidth, ipv6ExtsSliceLong, ipv6ExtsBracketSliceLong, gtpExtsBracket, gtpExtsBracketAbsent, gtpExtsBracketNone, gtpExtsBracketMixed, gtpExtsBracketMixedMiss, predInSetGtpExtsWalked, predInSetGeneveVni, ipv6ExtsIndexAbsent,
   ipv6NextHeaderWhere, ipv6NextHeaderBracket, altIPv6MemberWriteBack, altIPv6MemberWriteBackWhere, altIPv6MemberWriteBackMiss, ipv6FiveExts, ipv6SixExts, ipv6AnyExts, ipv6AllExts,

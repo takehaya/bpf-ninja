@@ -2585,7 +2585,17 @@ func dynamicOffsetAuxByteOff(f *ir.FieldRef) (int, error) {
 	if f.Aux.FieldBitOff%8 != 0 || f.Aux.FieldBitWidth%8 != 0 {
 		return 0, fmt.Errorf("%w: dynamic-offset aux field %s.%s not byte-aligned (bit-off %d, %d bits)", ErrNotImplemented, f.Layer.Spec.Name, f.Aux.OutParam, f.Aux.FieldBitOff, f.Aux.FieldBitWidth)
 	}
-	byteOff := f.Aux.FieldBitOff / 8
+	base, err := dynamicOffsetAuxEntryOff(f)
+	return base + f.Aux.FieldBitOff/8, err
+}
+
+// dynamicOffsetAuxEntryOff is the byte offset of f's entry from the
+// option base in the slot: 0 for a single aux, OffsetAfterOwner +
+// Static*ElemSize for an owner-bound stack element. Scalar readers add
+// the field's window (auxFieldWindow), which may start off a byte
+// boundary.
+func dynamicOffsetAuxEntryOff(f *ir.FieldRef) (int, error) {
+	byteOff := 0
 	if f.Aux.OwnerOption != nil {
 		stack := f.Aux.Stack
 		if stack == nil {

@@ -187,7 +187,8 @@ func captureLength(c *ir.CaptureClause, p *ir.Program) (int, error) {
 //
 // Aux-header field refs add the aux's offset within its layer plus the
 // field's bit window inside the aux. A bit-slice reference counts the
-// load window it is read through (applySliceToOffset). The fields of
+// load window it is read through (applySliceToOffset), and so does a
+// field off a byte boundary (subByteWindow). The fields of
 // bracket predicates count like the where clause's.
 func inferMinCapLenFromWhere(p *ir.Program, where *ir.Condition) (int, error) {
 	maxOff := 0
@@ -255,6 +256,12 @@ func inferMinCapLenFromWhere(p *ir.Program, where *ir.Condition) (int, error) {
 		if fr.Slice != nil {
 			if off, n, err := applySliceToOffset(fr, 0, 0); err == nil && (startBit/8+off+n)*8 > endBit {
 				endBit = (startBit/8 + off + n) * 8
+			}
+		}
+		// So is a field that does not fill its bytes (subByteWindow).
+		if bitOff, w, ok := bareSubByteField(fr); ok {
+			if _, n, ok := subByteWindow(bitOff, w); ok && (startBit/8+n)*8 > endBit {
+				endBit = (startBit/8 + n) * 8
 			}
 		}
 		fieldEnd := (endBit + 7) / 8 // round up to byte

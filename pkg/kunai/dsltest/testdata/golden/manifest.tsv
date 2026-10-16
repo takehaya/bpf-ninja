@@ -208,10 +208,17 @@ xdp_entry	eth/ipv4/tcp[ts.tsval[24:32] == 1]	-	code=08b9bfd00cc8531e meta=5ee214
 xdp_entry	eth/ipv4/tcp{0,0}	-	code=8bc0f431048a95e8 meta=5ee214e8b4c27377 main=65 cb=0
 xdp_entry	eth/ipv4/udp	-	code=ba5551a24f2723d1 meta=5ee214e8b4c27377 main=74 cb=0
 xdp_entry	eth/ipv4/udp/geneve where geneve.options.OVN.exists	-	code=7bd1d985b95dc6b2 meta=5ee214e8b4c27377 main=172 cb=75
+xdp_entry	eth/ipv4/udp/geneve where geneve.options.OVN.ingress_port != 7	-	code=9ee2201698d363bc meta=5ee214e8b4c27377 main=186 cb=75
+xdp_entry	eth/ipv4/udp/geneve where geneve.options.OVN.ingress_port == 7	-	code=63449e042c6a6711 meta=5ee214e8b4c27377 main=186 cb=75
+xdp_entry	eth/ipv4/udp/geneve where geneve.options.OVN.ingress_port > 16384	-	code=403f72e9b15fb2ff meta=5ee214e8b4c27377 main=186 cb=75
+xdp_entry	eth/ipv4/udp/geneve where geneve.options.OVN.ingress_port[0:7] == 64	-	code=d2030a10ff7ad8d7 meta=5ee214e8b4c27377 main=185 cb=75
+xdp_entry	eth/ipv4/udp/geneve where geneve.options.OVN.rsv == 1	-	code=7e46bee8e1303ed4 meta=5ee214e8b4c27377 main=186 cb=75
 xdp_entry	eth/ipv4/udp/geneve where geneve.options.valid	-	code=bcd4fdeb89aaa663 meta=5ee214e8b4c27377 main=172 cb=63
 xdp_entry	eth/ipv4/udp/geneve where not geneve.options.valid	-	code=ff74d9eaf95519ab meta=5ee214e8b4c27377 main=174 cb=63
 xdp_entry	eth/ipv4/udp/geneve where udp.dport == 6081	-	code=439380ba098b17e2 meta=5ee214e8b4c27377 main=151 cb=0
 xdp_entry	eth/ipv4/udp/geneve[options.valid]	-	code=0769701dbb03aa3c meta=5ee214e8b4c27377 main=179 cb=63
+xdp_entry	eth/ipv4/udp/geneve[ovn.ingress_port == 32767]	-	code=2d3e0210bd33e7d2 meta=5ee214e8b4c27377 main=190 cb=75
+xdp_entry	eth/ipv4/udp/geneve[ovn.rsv == 1]	-	code=9965b3717368fc68 meta=5ee214e8b4c27377 main=190 cb=75
 xdp_entry	eth/ipv4/udp/geneve[vni in @vnis]	vnis:32	code=450859acdf1fa48a meta=2a1a4735196b7583 main=148 cb=0
 xdp_entry	eth/ipv4/udp/gtp/ipv4/tcp	-	code=1f767a19fca83770 meta=5ee214e8b4c27377 main=329 cb=52
 xdp_entry	eth/ipv4/udp/gtp/ipv4/tcp where gtp.exts[0].ext_type == 1	-	code=b3888052bb2a59ba meta=5ee214e8b4c27377 main=349 cb=55

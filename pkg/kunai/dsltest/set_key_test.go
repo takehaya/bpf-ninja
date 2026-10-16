@@ -16,7 +16,8 @@ import (
 // order for a 16-byte one. It covers a primary field, a slice, a static
 // stack entry, entries found by walking variable-length ones (ipv6 exts,
 // gtp exts), an IPv6 segment, a full-width slice, and 3- and 6-byte
-// fields read through their 4- and 8-byte windows (a VNI, a MAC).
+// fields read through their 4- and 8-byte windows (a VNI, a MAC), and
+// option fields off a byte boundary (OVN ingress_port, rsv).
 func TestSetKeyBytes(t *testing.T) {
 	native16 := func(v uint16) []byte { return binary.NativeEndian.AppendUint16(nil, v) }
 	native32 := func(v uint32) []byte { return binary.NativeEndian.AppendUint32(nil, v) }
@@ -30,6 +31,7 @@ func TestSetKeyBytes(t *testing.T) {
 		Exts: []GTPExt{{ExtLength: 2, ExtType: 0x1234, NextExt: 0x85}, {ExtLength: 1, ExtType: 0xbeef, NextExt: 0}}})
 	sid := net.ParseIP("fc00::2")
 	srv6 := BuildSRv6(t, SRv6Opts{Segments: []net.IP{net.ParseIP("fc00::1"), sid}, InnerNextHeader: 6})
+	ovn := BuildEthIPv4UDPGeneveOpts(t, 0x123456, GeneveOptionTLV(t, 0x0102, 0x80, ovnValue(true, 0x1234, 0xffff)))
 	for _, tc := range []struct {
 		name, expr string
 		width      int
@@ -47,6 +49,8 @@ func TestSetKeyBytes(t *testing.T) {
 		{"vxlan vni", "eth/ipv4/udp/vxlan[vni in @k]", 32, BuildEthIPv4UDPVXLAN(t, 0x123456), native32(0x123456)},
 		{"mac src", "eth[src in @k]/ipv4/tcp", 64, BuildEthIPv4TCP(t, 1, 2), native64(0xaabbccddee01)},
 		{"mac dst", "eth[dst in @k]/ipv4/tcp", 64, BuildEthIPv4TCP(t, 1, 2), native64(0xaabbccddee02)},
+		{"ovn ingress port", "eth/ipv4/udp/geneve[ovn.ingress_port in @k]", 16, ovn, native16(0x1234)},
+		{"ovn rsv", "eth/ipv4/udp/geneve[ovn.rsv in @k]", 8, ovn, []byte{1}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			caps := codegen.Capabilities{Lang: codegen.LangCaps{SetSlots: newSpecSetSlots([]specSet{{Name: "k", Width: tc.width}})}}
