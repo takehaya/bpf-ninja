@@ -46,6 +46,14 @@ func (r *resolver) resolveBracketPredicate(ap *ast.Predicate, layer *ir.LayerIns
 	if ap.Kind == ast.PredInSet && layer.Quant != ast.QuantOne {
 		return nil, errorf(ap.Pos, "`in @%s` is only supported on a mandatory layer; %q here is optional/repeated (quantifier %s)", ap.SetName, layer.Spec.Name, layer.QuantText())
 	}
+	// A set key is a declared width: at most 64 bits, or the whole 128-bit
+	// field ([0:128] included). A slice between them has no key type; the
+	// spec types it as an error in checkPred, and so does the resolver.
+	if ap.Kind == ast.PredInSet && field.Slice != nil {
+		if bits := field.Slice.Hi - field.Slice.Lo; bits > 64 && bits < 128 {
+			return nil, errorf(ap.Pos, "`in @%s`: %s.%s[%d:%d] is a %d-bit slice; a set key is at most 64 bits unless it is the whole 128-bit field", ap.SetName, layer.Spec.Name, field.Field.Name, field.Slice.Lo, field.Slice.Hi, bits)
+		}
+	}
 	// Bracket-predicate fit check: an integer literal must fit the
 	// field's effective bit width (dsl-types.md §7.2) and a network
 	// literal must match it exactly (§7.5), as in a where clause.

@@ -2551,6 +2551,22 @@ func (sidSlot8) SlotFor(set, _ string) (off int16, size int, ok bool) {
 	return 0, 0, false
 }
 
+// TestCompileInSetKeyWidthErrors: a 3-byte field's key is its 4-byte
+// window, so a 2-byte key field is a plain width mismatch, and a slice
+// between 64 and 128 bits has no key type. Neither is ErrNotImplemented.
+func TestCompileInSetKeyWidthErrors(t *testing.T) {
+	for expr, want := range map[string]string{
+		"eth/ipv4/udp/vxlan[vni in @k]": "is 4 bytes but set @k key field",
+		"eth[dst in @k]/ipv4/tcp":       "is 8 bytes but set @k key field",
+		"eth/ipv6[dst[0:96] in @k]/tcp": "a 96-bit slice; a set key is at most 64 bits",
+	} {
+		_, err := Compile(expr, keySlotCaps(2)())
+		if err == nil || errors.Is(err, codegen.ErrNotImplemented) || !strings.Contains(err.Error(), want) {
+			t.Errorf("Compile(%q) = %v; want an error containing %q", expr, err, want)
+		}
+	}
+}
+
 // TestCompileInSetSRv6SegmentSliceKey pins the in-set key a sliced segment
 // yields now that the static aux path admits slices: one 8-byte extraction
 // swapped to host order before the store, like the primary ipv6.dst[64:128].

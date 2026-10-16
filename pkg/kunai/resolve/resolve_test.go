@@ -575,6 +575,15 @@ func TestResolvePredicateInSetRejectsOptionalLayer(t *testing.T) {
 	resolveErr(t, "eth/vlan[tci in @vlans]{1,2}/ipv4/tcp", nil, "(quantifier {1,2})")
 }
 
+func TestResolvePredicateInSetSliceKeyWidth(t *testing.T) {
+	// A set key is at most 64 bits or the whole 128-bit field: a slice
+	// between them has no key type (spec checkPred).
+	resolveErr(t, "eth/ipv6[dst[0:96] in @d]/tcp", nil, "a 96-bit slice; a set key is at most 64 bits")
+	resolveErr(t, "eth/ipv6[dst[0:72] in @d]/tcp", nil, "a 72-bit slice")
+	resolveOK(t, "eth/ipv6[dst[0:128] in @d]/tcp", nil)
+	resolveOK(t, "eth/ipv6[dst[64:128] in @d]/tcp", nil)
+}
+
 func TestResolvePredicateInSetRejectsAlternationMember(t *testing.T) {
 	// An alternation branch may not be taken; reject `in @set` inside one.
 	resolveErr(t, "eth/(vlan[tci in @vlans]|qinq)/ipv4/tcp", nil, "alternation")
