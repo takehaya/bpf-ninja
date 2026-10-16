@@ -69,10 +69,10 @@ func TestBpfGatedEntryCopyFailure(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := attachTracingProbe(p, target, "copy_exit", xdpFuncName, ebpf.AttachTraceFExit, exit); err != nil {
+			if err := attachTracingProbe(p, target, "copy_exit", xdpFuncName, ebpf.AttachTraceFExit, exit, false); err != nil {
 				t.Fatal(err)
 			}
-			if err := attachTracingProbe(p, target, "copy_entry", xdpFuncName, ebpf.AttachTraceFEntry, entry); err != nil {
+			if err := attachTracingProbe(p, target, "copy_entry", xdpFuncName, ebpf.AttachTraceFEntry, entry, false); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := target.Run(&ebpf.RunOptions{Data: dsltest.BuildEthIPv4UDP(t, 1234, 6081, []byte{1, 2, 3, 4})}); err != nil {

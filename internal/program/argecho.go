@@ -38,7 +38,7 @@ func LoadArgEcho(
 	argFilters []filter.ArgFilter,
 	echoParams []attach.FuncParamInfo,
 	isFexit bool,
-	allowDispatcherSlot ...bool,
+	allowDispatcherSlot bool,
 ) (*Probe, error) {
 	if len(echoParams) == 0 {
 		return nil, fmt.Errorf("--arg-echo requires at least one filterable integer parameter (see --list-params)")
@@ -73,19 +73,18 @@ func LoadArgEcho(
 	}
 
 	probe := &Probe{
-		extensionGuard:      guard,
-		allowDispatcherSlot: len(allowDispatcherSlot) > 0 && allowDispatcherSlot[0],
-		IsFexit:             isFexit,
-		EchoRing:            ring,
-		EchoParams:          echoParams,
-		maps:                []*ebpf.Map{ring},
+		extensionGuard: guard,
+		IsFexit:        isFexit,
+		EchoRing:       ring,
+		EchoParams:     echoParams,
+		maps:           []*ebpf.Map{ring},
 	}
 
 	// "njecho_entry" (12) / "njecho_exit" (11): distinct from the capture
 	// probe's "bpf_ninja_entry"/"bpf_ninja_exit" and within the 15-char
 	// BPF name limit (so the distinguishing name isn't truncated away).
 	insns := buildArgEchoInsns(ring.FD(), argFilters, echoParams)
-	if err := attachTracingProbe(probe, targetProg, fmt.Sprintf("njecho_%s", label), funcName, attachType, insns); err != nil {
+	if err := attachTracingProbe(probe, targetProg, fmt.Sprintf("njecho_%s", label), funcName, attachType, insns, allowDispatcherSlot); err != nil {
 		return nil, err
 	}
 	return probe, nil

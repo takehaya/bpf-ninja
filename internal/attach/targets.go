@@ -55,7 +55,7 @@ func CloseTargets(targets []Target) {
 // CloseTargets. Program-type validation (uniform, supported) is owned by
 // program.loadMulti, the single enforcement point every attach path passes
 // through.
-func ResolveTargets(infos []*ProgInfo, funcNames []string) ([]Target, error) {
+func ResolveTargets(infos []*ProgInfo, funcNames []string, allowDispatcherSlot bool) ([]Target, error) {
 	var targets []Target
 	seenPair := map[string]bool{}
 	funcFound := map[string]bool{}
@@ -69,6 +69,7 @@ func ResolveTargets(infos []*ProgInfo, funcNames []string) ([]Target, error) {
 		target := Target{
 			Program: info.Program, ProgID: info.ProgID, FuncName: fn,
 			Type: info.Type, HookType: info.HookType, Params: params,
+			AllowDispatcherSlot: allowDispatcherSlot,
 		}
 		target.HookType = target.EffectiveHookType()
 		targets = append(targets, target)
