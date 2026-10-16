@@ -141,7 +141,7 @@ func newSetAddCommand() *cli.Command {
 func newSetDelCommand() *cli.Command {
 	return &cli.Command{
 		Name:      "del",
-		Usage:     "delete one entry (full key required)",
+		Usage:     "delete one entry (full key required); a u64 field also takes a MAC (aa:bb:cc:dd:ee:ff)",
 		ArgsUsage: "<pin-path> field=value ...",
 		Action: func(_ context.Context, cmd *cli.Command) error {
 			def, fields, val, err := setOpenWithFields(cmd)
