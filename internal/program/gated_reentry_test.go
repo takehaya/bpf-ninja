@@ -170,6 +170,11 @@ func runGatedReentry(t *testing.T, levels, runs int, entryExpr string, prepare f
 	prog := loadReentryTC(t, idx, levels)
 	attachReentryEgress(t, idx, prog)
 
+	// Small records: the deepest nest leaves hundreds of them in one CPU's
+	// ring before it is read, which must fit the smallest shard.
+	prevSnap := SnaplenOverride
+	SnaplenOverride = 64
+	t.Cleanup(func() { SnaplenOverride = prevSnap })
 	targets := []attach.Target{{Program: prog, FuncName: reentryFuncName, Type: ebpf.SchedCLS}}
 	probe, err := LoadMultiPoint(targets, []Stage{{Expr: entryExpr}, {Expr: "eth", IsFexit: true}}, nil, true, nil, EmitBoth)
 	if err != nil {
