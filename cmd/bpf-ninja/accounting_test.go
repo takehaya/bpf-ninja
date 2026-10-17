@@ -11,7 +11,7 @@ import (
 )
 
 func TestCaptureReportOutcomes(t *testing.T) {
-	for _, kind := range []string{"complete", "reserve", "lookup", "copy", "overwrite", "mismatch", "malformed", "write", "limit", "null", "unknown", "unread", "overcount"} {
+	for _, kind := range []string{"complete", "reserve", "lookup", "copy", "overwrite", "mismatch", "overflow", "resync", "malformed", "write", "limit", "null", "unknown", "unread", "overcount"} {
 		t.Run(kind, func(t *testing.T) {
 			c := &captureControl{stats: &capture.SessionStats{}}
 			c.stats.Consumed.Store(10)
@@ -32,6 +32,10 @@ func TestCaptureReportOutcomes(t *testing.T) {
 				k.HoldOverwrite = 1
 			case "mismatch":
 				k.HoldUnpaired = 1
+			case "resync":
+				k.HoldResync = 1
+			case "overflow":
+				k.HoldOverflow = 1
 			case "malformed":
 				c.stats.Malformed.Store(1)
 				c.written.Store(9)

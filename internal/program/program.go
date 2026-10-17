@@ -269,7 +269,7 @@ func LoadMultiPoint(targets []attach.Target, stages []Stage, filters []filter.Ta
 		}
 		holdMap, err := ebpf.NewMap(&ebpf.MapSpec{
 			Name: "ninja_gated_hold", Type: ebpf.PerCPUArray,
-			KeySize: 4, ValueSize: uint32(holdSize), MaxEntries: 1,
+			KeySize: 4, ValueSize: uint32(holdSize), MaxEntries: uint32(holdSlots),
 		})
 		if err != nil {
 			_ = probe.Close()

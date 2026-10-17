@@ -517,7 +517,7 @@ sudo bpf-ninja -i eth0 --mode entry "eth/ipv4/udp[dport==6081]" --mode exit "eth
 - 入口の姿は出口の判定が出るまで CPU ごとの一時領域 (hold) に取り置き、出口で両方の条件が揃ったときだけ ring に出す。入口の条件に一致した packet にはこの取り置きのコピーが掛かる (`--emit exit` を除く)。入口の条件を空にすると全 packet を取り置くので警告が出る。
 - `--emit both` (既定) は入口の姿と出口の姿を 2 record (同じ id、同じ判定付き)、`--emit entry` は入口の姿だけ、`--emit exit` は出口の姿だけ (取り置きは印だけで一番安い)。`--emit` は `--mode` が 2 つのときだけ書ける。迷ったら `both`。
 - 対象は 1 つの関数に限る (`--func` の複数指定や複数プログラムとの併用は不可)。`--split-by-tag` と `--arg-echo` は併用できない。PREEMPT_RT の kernel は対象外 (起動時に警告が出る)。
-- 対象が `bpf_clone_redirect` などで同じ関数に同期的に入り直すと、内側の実行が外側の取り置きを上書きするか消費する。その外側の実行は判定できないので記録を出さず、終了時の `capture status` に `hold_overwrite` または `hold_unpaired` として数え、status を `incomplete` にする。誤った組み合わせの record は出ない。
+- 対象が `bpf_clone_redirect` などで同じ関数に同期的に入り直しても、取り置きは入れ子の深さごとに別の領域を使うので、外側と内側の実行をそれぞれ対にして出す。領域は CPU ごとに 10 段で、kernel が許す送信の入れ子の上限に足りる。それより深い実行は取り置かずに `hold_depth_overflow` として数える。別の attach が trampoline を書き換えたせいで probe が飛ばされたときは、`hold_overwrite` か `hold_unpaired` として数え、深さの数え方がずれたら次の実行で数え直して `hold_depth_resync` に数える。どの場合も終了時の `capture status` は `incomplete` になり、誤った組み合わせの record は出ない。
 - 対象が tail call をする program (Cilium や Katran の inline decap) の場合、CVE-2026-92485 に当たる kernel (7.0 から 7.2.6 / 7.3-rc1 の修正まで) は 2 本目の attach を拒否する。失敗した attach の後片付けで trampoline が壊れ、machine が panic することがあるので、bpf-ninja は試さずに説明付きで止まる。その kernel では `--mode` を 1 つずつ取るか、修正の入った kernel を使う。
 - `-c` は record 数で数える。`--emit both` なら 1 packet で 2 record なので、`-c 10` は 5 組。
 - ring が詰まると、入口 record だけ書けて出口 record の確保に失敗することがある (出口側の reserve が後)。対の無い入口 record は取りこぼしとして扱い、判定の証拠にしない。

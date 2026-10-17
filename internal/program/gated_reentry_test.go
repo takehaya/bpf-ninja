@@ -1,9 +1,11 @@
 package program
 
 import (
+	"encoding/binary"
 	"maps"
 	"runtime"
 	"testing"
+	"time"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/asm"
@@ -161,23 +163,26 @@ type reentryResult struct {
 // gated EmitBoth probe and checks every emitted pair against the ground
 // truth: entry and exit records joined by packet id must belong to the
 // same invocation (entry TOS, exit TOS and verdict all agree).
-func runGatedReentry(t *testing.T, levels, runs int, entryExpr string, stopped bool) reentryResult {
+func runGatedReentry(t *testing.T, levels, runs int, entryExpr string, prepare func(*testing.T, *Probe)) reentryResult {
 	t.Helper()
 	idx := reentryNetns(t)
+	pinTest(t, affinityCPUs(t)[0]) // every nest on one CPU (one hold set)
 	prog := loadReentryTC(t, idx, levels)
 	attachReentryEgress(t, idx, prog)
 
+	// Small records: the deepest nest leaves hundreds of them in one CPU's
+	// ring before it is read, which must fit the smallest shard.
+	prevSnap := SnaplenOverride
+	SnaplenOverride = 64
+	t.Cleanup(func() { SnaplenOverride = prevSnap })
 	targets := []attach.Target{{Program: prog, FuncName: reentryFuncName, Type: ebpf.SchedCLS}}
 	probe, err := LoadMultiPoint(targets, []Stage{{Expr: entryExpr}, {Expr: "eth", IsFexit: true}}, nil, true, nil, EmitBoth)
 	if err != nil {
 		t.Fatalf("load gated probe: %v", err)
 	}
 	defer func() { _ = probe.Close() }()
-	if stopped {
-		// What Quiesce does before detaching: no fentry writes a hold.
-		if err := probe.holdStop.Update(uint32(0), uint32(1), ebpf.UpdateAny); err != nil {
-			t.Fatal(err)
-		}
+	if prepare != nil {
+		prepare(t, probe)
 	}
 
 	frame := dsltest.BuildEthIPv4UDP(t, 1234, 6081, []byte{1, 2, 3, 4})
@@ -251,46 +256,93 @@ func modes(recs []capture.Packet) []uint8 {
 	return out
 }
 
-// TestBpfGatedReentry re-enters the target synchronously (one nested
-// invocation per run, through bpf_clone_redirect) under a gated capture.
-// Every invocation selected by both filters is either emitted as a
-// correct pair or counted as lost; a missing pair is never silent.
+// TestBpfGatedReentry re-enters the target synchronously (nested
+// invocations through bpf_clone_redirect) under a gated capture. Every
+// invocation selected by both filters is either emitted as a correct
+// pair or counted as lost; a missing pair is never silent.
 func TestBpfGatedReentry(t *testing.T) {
 	testutil.SkipIfNotRoot(t)
 	const runs = 20
+	all := func(levels int) map[int]int {
+		m := map[int]int{}
+		for d := range levels {
+			m[d] = runs
+		}
+		return m
+	}
 	for _, tc := range []struct {
 		name      string
-		stopped   bool
+		prepare   func(*testing.T, *Probe)
+		slots     int
 		levels    int
 		entryExpr string
 		pairs     map[int]int
-		overwrite uint64
-		unpaired  uint64
+		overflow  uint64
 	}{
 		// No re-entry: the baseline pairs every invocation.
-		{"flat", false, 1, "eth/ipv4", map[int]int{0: runs}, 0, 0},
+		{"flat", nil, holdSlots, 1, "eth/ipv4", all(1), 0},
 		// Stopped holds: nothing is held, so nothing is emitted or lost.
-		{"stopped", true, 2, "eth/ipv4", map[int]int{}, 0, 0},
-		// The inner fentry overwrites the outer hold.
-		{"both", false, 2, "eth/ipv4", map[int]int{1: runs}, runs, 0},
-		// The inner fexit consumes the outer hold.
-		{"outer-only", false, 2, "eth/ipv4[diffserv==0]", map[int]int{}, 0, runs},
-		// Only the inner invocation holds; nothing is lost.
-		{"inner-only", false, 2, "eth/ipv4[diffserv==1]", map[int]int{1: runs}, 0, 0},
+		{"stopped", stopHolds, holdSlots, 2, "eth/ipv4", map[int]int{}, 0},
+		// Each depth has its own hold: both invocations pair.
+		{"both", nil, holdSlots, 2, "eth/ipv4", all(2), 0},
+		{"outer-only", nil, holdSlots, 2, "eth/ipv4[diffserv==0]", map[int]int{0: runs}, 0},
+		{"inner-only", nil, holdSlots, 2, "eth/ipv4[diffserv==1]", map[int]int{1: runs}, 0},
+		// The deepest nest the kernel's xmit recursion limit allows fits the
+		// default slots: asking for two more levels adds none.
+		{"deepest", nil, holdSlots, holdSlots + 2, "eth/ipv4", all(holdSlots), 0},
+		// Past the last slot an invocation is counted, not held; the
+		// shallower ones still pair.
+		{"overflow", nil, 2, 4, "eth/ipv4", all(2), 2 * runs},
+		{"overflow-unselected", nil, 2, 4, "eth/ipv4[diffserv==0]", map[int]int{0: runs}, 0},
+		// Every depth left open by skipped fexits: the first fentry finds
+		// the depth stale, restarts it, and the nests pair as usual.
+		{"stale-depth", leakDepth, holdSlots, 2, "eth/ipv4", all(2), 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			res := runGatedReentry(t, tc.levels, runs, tc.entryExpr, tc.stopped)
-			if !maps.Equal(res.pairs, tc.pairs) || res.stats.HoldOverwrite != tc.overwrite || res.stats.HoldUnpaired != tc.unpaired {
-				t.Fatalf("pairs by depth %v, overwrite %d, unpaired %d; want %v, %d, %d",
-					res.pairs, res.stats.HoldOverwrite, res.stats.HoldUnpaired, tc.pairs, tc.overwrite, tc.unpaired)
+			prev := holdSlots
+			holdSlots = tc.slots
+			t.Cleanup(func() { holdSlots = prev })
+			res := runGatedReentry(t, tc.levels, runs, tc.entryExpr, tc.prepare)
+			s := res.stats
+			resync := uint64(0)
+			if tc.name == "stale-depth" {
+				resync = 1 // once, on the CPU that ran the nests
+			}
+			if !maps.Equal(res.pairs, tc.pairs) || s.HoldOverflow != tc.overflow || s.HoldResync != resync || s.HoldOverwrite+s.HoldUnpaired != 0 {
+				t.Fatalf("pairs by depth %v, stats %+v; want pairs %v, hold_depth_overflow %d, hold_depth_resync %d and no other hold loss",
+					res.pairs, s, tc.pairs, tc.overflow, resync)
 			}
 			emitted := 0
 			for _, n := range res.pairs {
 				emitted += n
 			}
-			if res.stats.Submitted != uint64(2*emitted) || res.stats.ReserveFail+res.stats.LookupMiss+res.stats.CopyFail != 0 {
-				t.Fatalf("export stats %+v for %d pairs", res.stats, emitted)
+			if s.Submitted != uint64(2*emitted) || s.ReserveFail+s.LookupMiss+s.CopyFail != 0 {
+				t.Fatalf("export stats %+v for %d pairs", s, emitted)
 			}
 		})
 	}
+}
+
+// stopHolds does what Quiesce does before detaching: no fentry writes a
+// hold.
+func stopHolds(t *testing.T, p *Probe) {
+	if err := p.holdStop.Update(uint32(0), uint32(1), ebpf.UpdateAny); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// leakDepth leaves every CPU's depth past the last slot with entry times
+// long past, as fexits skipped by trampoline rewrites would.
+func leakDepth(t *testing.T, p *Probe) {
+	var values [][]byte
+	if err := p.holdMap.Lookup(uint32(0), &values); err != nil {
+		t.Fatal(err)
+	}
+	for _, v := range values {
+		binary.NativeEndian.PutUint32(v[holdDepth:], uint32(holdSlots+3)) // past the slots too
+	}
+	if err := p.holdMap.Update(uint32(0), values, ebpf.UpdateExist); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(50 * time.Millisecond) // more than one jiffy at any HZ
 }

@@ -20,6 +20,12 @@ const (
 	// different invocation; that invocation's entry image is dropped.
 	// ExportStats adds the holds no exit consumed by the end of the capture.
 	statHoldUnpaired
+	// statHoldOverflow counts entry-matched gated invocations nested deeper
+	// than the hold slots; they are not held.
+	statHoldOverflow
+	// statHoldResync counts gated fentries that found the depth stale (an
+	// fexit was skipped) and restarted it from 0.
+	statHoldResync
 	statCount
 )
 
@@ -29,6 +35,11 @@ type ExportStats struct {
 	// whose exit decision was lost; their records are neither exported nor
 	// counted as selected.
 	HoldOverwrite, HoldUnpaired uint64
+	// HoldOverflow counts entry-matched gated invocations nested deeper
+	// than the hold slots, also lost.
+	HoldOverflow uint64
+	// HoldResync counts restarts of a stale gated depth (a skipped fexit).
+	HoldResync uint64
 }
 
 func (p *Probe) ExportStats() (ExportStats, error) {
@@ -36,7 +47,7 @@ func (p *Probe) ExportStats() (ExportStats, error) {
 	if p.StatsMap == nil {
 		return out, fmt.Errorf("export counters unavailable")
 	}
-	fields := []*uint64{&out.ReserveFail, &out.Submitted, &out.LookupMiss, &out.CopyFail, &out.HoldOverwrite, &out.HoldUnpaired}
+	fields := []*uint64{&out.ReserveFail, &out.Submitted, &out.LookupMiss, &out.CopyFail, &out.HoldOverwrite, &out.HoldUnpaired, &out.HoldOverflow, &out.HoldResync}
 	for key, dst := range fields {
 		var values []uint64
 		if err := p.StatsMap.Lookup(uint32(key), &values); err != nil {
@@ -60,14 +71,16 @@ func (p *Probe) ExportStats() (ExportStats, error) {
 }
 
 func (p *Probe) residualHolds() (uint64, error) {
-	var values [][]byte
-	if err := p.holdMap.Lookup(uint32(0), &values); err != nil {
-		return 0, fmt.Errorf("reading gated holds: %w", err)
-	}
 	var n uint64
-	for _, v := range values {
-		if binary.NativeEndian.Uint16(v[holdValid:]) != 0 {
-			n++
+	for slot := range p.holdMap.MaxEntries() {
+		var values [][]byte
+		if err := p.holdMap.Lookup(slot, &values); err != nil {
+			return 0, fmt.Errorf("reading gated hold slot %d: %w", slot, err)
+		}
+		for _, v := range values {
+			if binary.NativeEndian.Uint16(v[holdValid:]) != 0 {
+				n++
+			}
 		}
 	}
 	return n, nil
