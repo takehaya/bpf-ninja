@@ -275,6 +275,14 @@ func buildGatedEntryInsns(h *hook.Hook, filterOut codegen.Output, tf filter.Targ
 		asm.StoreMem(asm.R8, holdNextSeq, asm.R1, asm.DWord),
 	)
 	insns = append(insns, emitHoldSlot(holdFD)...)
+	if emit == EmitEager {
+		// Keep the depth (this invocation's slot) for its entry record now:
+		// the counters below reuse stack[-16] as their key.
+		insns = append(insns,
+			asm.LoadMem(asm.R2, asm.R10, -16, asm.Word),
+			asm.StoreMem(asm.R0, holdEagerDepth, asm.R2, asm.Word),
+		)
+	}
 	insns = append(insns,
 		asm.LoadMem(asm.R2, asm.R10, -16, asm.Word),
 		asm.JGE.Imm(asm.R2, int32(holdSlots), "exit"), // bound for the verifier
@@ -316,13 +324,11 @@ func buildGatedEntryInsns(h *hook.Hook, filterOut codegen.Output, tf filter.Targ
 		// entry never yields a decision record (R8 survives the helpers).
 		// packet id = cpu << packetIDCPUShift | seq, parked in R6: ctx is
 		// not read again after the identity above.
-		// The depth (this invocation's slot, still in stack[-16]) rides in
-		// the entry record's action field: an entry at depth d means every
-		// earlier pending entry at depth >= d has finished.
+		// The depth saved in the hold rides in the entry record's action
+		// field: an entry at depth d means every earlier pending entry at
+		// depth >= d has finished.
 		insns = append(insns,
 			asm.StoreImm(asm.R8, holdValid, 0, asm.Half),
-			asm.LoadMem(asm.R1, asm.R10, -16, asm.Word),
-			asm.StoreMem(asm.R8, holdEagerDepth, asm.R1, asm.Word),
 			asm.LoadMem(asm.R6, asm.R8, holdSeq, asm.DWord),
 			asm.FnGetSmpProcessorId.Call(),
 			asm.LSh.Imm(asm.R0, packetIDCPUShift),

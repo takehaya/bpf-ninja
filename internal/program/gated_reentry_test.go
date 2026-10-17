@@ -354,6 +354,34 @@ func leakDepth(t *testing.T, p *Probe) {
 // LIFO order.
 func TestBpfEagerReentry(t *testing.T) {
 	testutil.SkipIfNotRoot(t)
+	// stale-holds: every slot starts with a valid hold left by another
+	// invocation, so the outer fentry counts an overwrite (which reuses
+	// the stack key) before it writes its entry.
+	for _, tc := range []struct {
+		name    string
+		prepare func(*testing.T, *Probe)
+	}{{"flat-start", nil}, {"stale-holds", staleHolds}} {
+		t.Run(tc.name, func(t *testing.T) { runEagerReentry(t, tc.prepare) })
+	}
+}
+
+// staleHolds marks every hold slot on every CPU valid.
+func staleHolds(t *testing.T, p *Probe) {
+	for slot := range uint32(holdSlots) {
+		var values [][]byte
+		if err := p.holdMap.Lookup(slot, &values); err != nil {
+			t.Fatal(err)
+		}
+		for _, v := range values {
+			binary.NativeEndian.PutUint16(v[holdValid:], 1)
+		}
+		if err := p.holdMap.Update(slot, values, ebpf.UpdateExist); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func runEagerReentry(t *testing.T, prepare func(*testing.T, *Probe)) {
 	const runs, levels = 10, 2
 	idx := reentryNetns(t)
 	pinTest(t, affinityCPUs(t)[0])
@@ -368,6 +396,9 @@ func TestBpfEagerReentry(t *testing.T) {
 		t.Fatalf("load eager probe: %v", err)
 	}
 	defer func() { _ = probe.Close() }()
+	if prepare != nil {
+		prepare(t, probe)
+	}
 	frame := dsltest.BuildEthIPv4UDP(t, 1234, 6081, []byte{1, 2, 3, 4})
 	ctx := [3]uint32{0, 0, 1}
 	for range runs {
