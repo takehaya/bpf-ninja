@@ -4,16 +4,20 @@ import (
 	"sync/atomic"
 
 	"github.com/takehaya/bpf-ninja/internal/capture"
+	"github.com/takehaya/bpf-ninja/internal/program"
 )
 
 // eagerPairer is the userspace half of the experimental --emit eager
 // baseline: the kernel exports every entry image at once and a
 // metadata-only decision record when the exit filter matches. Each shard
-// is one CPU's ring, so a decision follows its own entry in order; the
-// pairer keeps the last unanswered entry per shard and writes it, stamped
-// with the decision's verdict, when the decision with the same packet id
-// arrives. A second entry before a decision means the first did not match
-// at exit (or its decision was lost).
+// is one CPU's ring, so records arrive in execution order. Nesting on one
+// CPU is LIFO (synchronous re-entry, as in gated capture), so the pairer
+// keeps a stack of unanswered entries per shard: a decision takes the
+// entry with its packet id and drops the entries pushed after it, which
+// are invocations nested inside it that finished without a decision.
+// Entries below it may still be open outer invocations. An entry whose
+// invocation ended without a decision is dropped when it falls off the
+// bounded stack or when the capture stops.
 type eagerPairer struct {
 	shards                    []eagerShard
 	paired, unmatched, orphan atomic.Uint64
@@ -22,11 +26,20 @@ type eagerPairer struct {
 	discard *atomic.Uint64
 }
 
+// eagerDepth bounds the pending entries per shard: one per possible
+// nesting depth of the gated hold.
+var eagerDepth = program.MaxHoldSlots
+
 type eagerShard struct {
-	pkt  capture.Packet
-	ok   bool
-	bufs [2][]byte
-	cur  int
+	stack []eagerPending
+	// spare holds buffers free for reuse; released holds buffers whose
+	// entries were handed to the sink in the current batch.
+	spare, released [][]byte
+}
+
+type eagerPending struct {
+	pkt   capture.Packet
+	owned []byte // non-nil once pkt.Data was copied out of the batch arena
 }
 
 func newEagerPairer(shards int, discard *atomic.Uint64) *eagerPairer {
@@ -37,60 +50,74 @@ func newEagerPairer(shards int, discard *atomic.Uint64) *eagerPairer {
 // has drained.
 func (p *eagerPairer) finish() {
 	for i := range p.shards {
-		if p.shards[i].ok {
-			p.shards[i].ok = false
-			p.unmatched.Add(1)
-			p.discard.Add(1)
-		}
+		n := uint64(len(p.shards[i].stack))
+		p.shards[i].stack = nil
+		p.unmatched.Add(n)
+		p.discard.Add(n)
 	}
 }
 
 // pair filters one shard batch in place and returns the entry images to
-// write. pkts is owned by the reader until the sink returns; an entry left
-// pending at the end of the batch is copied out.
+// write. pkts is owned by the reader until the sink returns, so entries
+// still pending at the end of the batch are copied out.
 func (p *eagerPairer) pair(shard int, pkts []capture.Packet) []capture.Packet {
 	st := &p.shards[shard]
+	// The sink has consumed the previous batch.
+	st.spare = append(st.spare, st.released...)
+	st.released = st.released[:0]
 	out := pkts[:0]
-	pend := -1
 	var paired, unmatched, orphan, decisions uint64
+	drop := func(e eagerPending) {
+		unmatched++
+		if e.owned != nil {
+			st.spare = append(st.spare, e.owned)
+		}
+	}
 	for i := range pkts {
 		pk := pkts[i]
 		if pk.Mode == 0 {
-			if pend >= 0 || st.ok {
-				unmatched++
+			if len(st.stack) == eagerDepth {
+				drop(st.stack[0])
+				st.stack = append(st.stack[:0], st.stack[1:]...)
 			}
-			st.ok, pend = false, i
+			st.stack = append(st.stack, eagerPending{pkt: pk})
 			continue
 		}
 		decisions++
-		var e *capture.Packet
-		switch {
-		case pend >= 0:
-			e = &pkts[pend]
-		case st.ok:
-			e = &st.pkt
+		j := len(st.stack) - 1
+		for j >= 0 && st.stack[j].pkt.PacketID != pk.PacketID {
+			j--
 		}
-		if e != nil && e.PacketID == pk.PacketID {
-			ent := *e
-			ent.Action = pk.Action
-			out = append(out, ent)
-			paired++
-		} else {
-			if e != nil {
-				unmatched++
-			}
+		if j < 0 {
 			orphan++
+			continue
 		}
-		st.ok, pend = false, -1
+		for _, e := range st.stack[j+1:] {
+			drop(e)
+		}
+		e := st.stack[j]
+		st.stack = st.stack[:j]
+		ent := e.pkt
+		ent.Action = pk.Action
+		// out's write index never passes i, and the entry was read before
+		// this slot is overwritten.
+		out = append(out, ent)
+		if e.owned != nil {
+			st.released = append(st.released, e.owned)
+		}
+		paired++
 	}
-	if pend >= 0 {
-		// Alternate buffers: an entry written from st.pkt in this batch
-		// still points at the other one until the sink returns.
-		st.cur ^= 1
-		st.bufs[st.cur] = append(st.bufs[st.cur][:0], pkts[pend].Data...)
-		st.pkt = pkts[pend]
-		st.pkt.Data = st.bufs[st.cur]
-		st.ok = true
+	for k := range st.stack {
+		e := &st.stack[k]
+		if e.owned != nil {
+			continue
+		}
+		var buf []byte
+		if n := len(st.spare); n > 0 {
+			buf, st.spare = st.spare[n-1][:0], st.spare[:n-1]
+		}
+		e.owned = append(buf, e.pkt.Data...)
+		e.pkt.Data = e.owned
 	}
 	p.paired.Add(paired)
 	p.unmatched.Add(unmatched)

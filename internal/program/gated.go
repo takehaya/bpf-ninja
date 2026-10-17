@@ -144,6 +144,9 @@ const (
 // per depth).
 const maxHoldSlots = 10
 
+// MaxHoldSlots is the deepest nesting on one CPU a gated capture pairs.
+const MaxHoldSlots = maxHoldSlots
+
 // holdSlots is the number of per-CPU hold slots, one per nesting depth of
 // the target on one CPU. Synchronous re-entry goes through a BPF
 // transmit (bpf_clone_redirect -> dev_queue_xmit), which the kernel
