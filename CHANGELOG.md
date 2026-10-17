@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.30.1](https://github.com/takehaya/bpf-ninja/compare/v0.30.0...v0.30.1) (2026-10-17)
+
+
+### 🐛 Bug Fixes
+
+* **program:** count gated holds lost to synchronous re-entry ([#252](https://github.com/takehaya/bpf-ninja/issues/252)) ([d3abf7b](https://github.com/takehaya/bpf-ninja/commit/d3abf7b552fc3014801d3a7da91885cbe7e3053a))
+* **program:** give each nesting depth its own gated hold ([#254](https://github.com/takehaya/bpf-ninja/issues/254)) ([e1f3c67](https://github.com/takehaya/bpf-ninja/commit/e1f3c67c34e431e01e239d96ea6c388167b2ee11))
+
 ## [0.30.0](https://github.com/takehaya/bpf-ninja/compare/v0.29.0...v0.30.0) (2026-10-16)
 
 
