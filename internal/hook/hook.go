@@ -136,6 +136,8 @@ func UnsupportedTypeError(pt ebpf.ProgramType) error {
 // tracingPrelude is the hook-independent head of every PacketPrologue:
 // save the tracing args pointer at stack[-48] (fexit action lookup, arg
 // filters) and load args[0] — the host-specific packet ctx — into R6.
+// EXT uses the replaced program's kernel ctx too: xdp_md / __sk_buff in
+// its BTF do not change the runtime xdp_buff / sk_buff pointer layout.
 func tracingPrelude() asm.Instructions {
 	return asm.Instructions{
 		asm.StoreMem(asm.R10, -48, asm.R1, asm.DWord),

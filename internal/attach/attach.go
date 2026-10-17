@@ -3,7 +3,9 @@ package attach
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
+	"os"
 	"slices"
 	"strings"
 
@@ -15,14 +17,14 @@ import (
 )
 
 // ProgInfo holds information about an existing BPF program targeted
-// by a probe. `Type` discriminates between XDP and tc clsact targets
-// so callers can route to the correct host adapter.
+// by a probe. Type is the actual type; HookType selects the host adapter.
 type ProgInfo struct {
 	ProgID    uint32
 	Program   *ebpf.Program
 	FuncName  string // BTF-resolved entry function name
 	IfaceName string
 	Type      ebpf.ProgramType
+	HookType  ebpf.ProgramType
 
 	// Spec is the program's parsed BTF, cached by the Find* constructors
 	// (parsing is the expensive part of BTFSpec) so downstream lookups —
@@ -45,27 +47,22 @@ func (p *ProgInfo) BTFSpecCached() (*btf.Spec, error) {
 	return spec, nil
 }
 
-// FindXDPProgramByID gets an XDP program by its BPF program ID. The
-// type check is strict: tc clsact programs are rejected here so that
-// `--mode entry/exit` callers don't accidentally attach to a TC
-// target. Use FindBPFProgramByID for the type-permissive variant the
-// `--mode tc-*` paths consume.
+// FindXDPProgramByID gets an XDP program or an EXT replacing an XDP function.
+// Targets with other hook types are rejected.
 func FindXDPProgramByID(progID uint32) (*ProgInfo, error) {
 	info, err := FindBPFProgramByID(progID)
 	if err != nil {
 		return nil, err
 	}
-	if info.Type != ebpf.XDP {
+	if info.HookType != ebpf.XDP {
 		_ = info.Program.Close()
 		return nil, fmt.Errorf("program (id=%d) is %s, expected XDP", progID, info.Type)
 	}
 	return info, nil
 }
 
-// FindBPFProgramByID gets a BPF program by ID, accepting XDP /
-// SchedCLS / SchedACT — the program types bpf-ninja can attach a
-// fentry/fexit probe to. Returns the resolved entry func name and the
-// program type so the caller can route to the correct host adapter.
+// FindBPFProgramByID gets a supported packet program, including an attached
+// EXT. The entry function and BTF always belong to the actual program.
 func FindBPFProgramByID(progID uint32) (*ProgInfo, error) {
 	prog, err := ebpf.NewProgramFromID(ebpf.ProgramID(progID))
 	if err != nil {
@@ -78,9 +75,14 @@ func FindBPFProgramByID(progID uint32) (*ProgInfo, error) {
 		return nil, fmt.Errorf("reading program info (id=%d): %w", progID, err)
 	}
 	progType := progInfo.Type
-	if _, ok := hook.ByProgramType(progType); !ok {
+	hookType, err := ProgramHookType(progID, progType)
+	if err != nil {
 		_ = prog.Close()
-		return nil, fmt.Errorf("program (id=%d): %w", progID, hook.UnsupportedTypeError(progType))
+		return nil, err
+	}
+	if _, ok := hook.ByProgramType(hookType); !ok {
+		_ = prog.Close()
+		return nil, fmt.Errorf("program (id=%d): %w", progID, hook.UnsupportedTypeError(hookType))
 	}
 
 	funcName, spec, err := resolveEntryFunc(prog, progID)
@@ -94,6 +96,7 @@ func FindBPFProgramByID(progID uint32) (*ProgInfo, error) {
 		Program:  prog,
 		FuncName: funcName,
 		Type:     progType,
+		HookType: hookType,
 		Spec:     spec,
 	}, nil
 }
@@ -177,16 +180,17 @@ func FindXDPProgram(ifaceName string) (*ProgInfo, error) {
 		FuncName:  funcName,
 		IfaceName: ifaceName,
 		Type:      ebpf.XDP,
+		HookType:  ebpf.XDP,
 		Spec:      spec,
 	}, nil
 }
 
 // ProgTarget describes a program reachable from another program: a
 // tail-call target in a PROG_ARRAY, or an XDP program attached to a
-// CPUMAP / DEVMAP entry the program can bpf_redirect_map() into.
+// CPUMAP / DEVMAP entry the program can bpf_redirect_map() into, or an EXT.
 type ProgTarget struct {
-	Via      string // "tailcall", "cpumap", "devmap", or "devmap_hash"
-	Key      uint32 // map key: tail-call index, CPU id, or devmap key
+	Via      string // "tailcall", "cpumap", "devmap", "devmap_hash", or "freplace"
+	Key      uint32 // map key, or target BTF function ID for freplace
 	ProgID   uint32
 	ProgName string
 }
@@ -194,17 +198,23 @@ type ProgTarget struct {
 // ListReachablePrograms scans the maps referenced by prog for downstream
 // programs: tail-call targets in PROG_ARRAY maps, plus XDP programs
 // attached to CPUMAP / DEVMAP / DEVMAP_HASH entries (the redirect_map
-// datapath). Entries without an attached program are skipped.
+// datapath), and live freplace links. Entries without an attached program
+// are skipped.
 func ListReachablePrograms(prog *ebpf.Program) ([]ProgTarget, error) {
+	edges, err := extensionLinks()
+	if err != nil {
+		return nil, fmt.Errorf("listing freplace links: %w", err)
+	}
+	return listReachablePrograms(prog, edges)
+}
+
+func listReachablePrograms(prog *ebpf.Program, edges []extensionLink) ([]ProgTarget, error) {
 	info, err := prog.Info()
 	if err != nil {
 		return nil, fmt.Errorf("getting program info: %w", err)
 	}
 
-	mapIDs, ok := info.MapIDs()
-	if !ok {
-		return nil, nil
-	}
+	mapIDs, _ := info.MapIDs()
 
 	var targets []ProgTarget
 	cache := progNameCache{}
@@ -222,6 +232,20 @@ func ListReachablePrograms(prog *ebpf.Program) ([]ProgTarget, error) {
 		targets = append(targets, found...)
 	}
 
+	id, _ := info.ID()
+	for _, edge := range edges {
+		if edge.TargetID != uint32(id) {
+			continue
+		}
+		target, err := resolveProgTarget("freplace", uint32(edge.FuncID), edge.ProgramID, cache)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		targets = append(targets, *target)
+	}
 	return targets, nil
 }
 
@@ -239,13 +263,17 @@ type ReachableProgram struct {
 	ParentID uint32
 }
 
-// WalkReachablePrograms transitively follows tail-call and redirect-map
+// WalkReachablePrograms transitively follows tail-call, freplace, and redirect-map
 // edges from root, returning every reachable program deduped by id in
 // breadth-first order. This descends through multi-stage dispatchers (e.g.
 // cpu_dispatch -> CPUMAP -> entry_jump -> PROG_ARRAY -> handler), unlike
 // ListReachablePrograms which only reports the direct (one-hop) targets.
 // The root program is not closed; programs opened while descending are.
 func WalkReachablePrograms(root *ebpf.Program, rootID uint32) ([]ReachableProgram, error) {
+	edges, err := extensionLinks()
+	if err != nil {
+		return nil, fmt.Errorf("listing freplace links: %w", err)
+	}
 	type item struct {
 		id    uint32
 		prog  *ebpf.Program
@@ -261,7 +289,7 @@ func WalkReachablePrograms(root *ebpf.Program, rootID uint32) ([]ReachableProgra
 		cur := queue[0]
 		queue = queue[1:]
 
-		targets, err := ListReachablePrograms(cur.prog)
+		targets, err := listReachablePrograms(cur.prog, edges)
 		if cur.owns {
 			_ = cur.prog.Close()
 		}
