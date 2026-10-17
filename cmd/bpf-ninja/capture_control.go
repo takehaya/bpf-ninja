@@ -9,6 +9,7 @@ type captureControl struct {
 	written     atomic.Uint64
 	limited     atomic.Uint64
 	nullRecords atomic.Uint64
+	pairDiscard atomic.Uint64 // --emit eager: decision records and unmatched entries
 	quiesce     func() error
 	blockTag    func(uint32) error
 	barrier     func() func() (bool, error)

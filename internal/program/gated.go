@@ -97,7 +97,16 @@ const (
 	// records that the packet matched (no copy), which is the cheapest
 	// gated form.
 	EmitExit
+	// EmitEager is an experimental export-first baseline: the entry stage
+	// emits its image at once (no bytes held), and the exit stage emits a
+	// metadata-only decision record carrying the verdict and the same
+	// packet id. Userspace keeps an entry only when its decision follows.
+	// It exists to measure holding against exporting under one backend.
+	EmitEager
 )
+
+// holdsBytes reports whether the hold slot carries the entry image.
+func (e Emit) holdsBytes() bool { return e == EmitBoth || e == EmitEntry }
 
 // ParseEmit maps the --emit value.
 func ParseEmit(s string) (Emit, error) {
@@ -108,8 +117,10 @@ func ParseEmit(s string) (Emit, error) {
 		return EmitEntry, nil
 	case "exit":
 		return EmitExit, nil
+	case "eager":
+		return EmitEager, nil
 	}
-	return 0, fmt.Errorf("invalid --emit %q: must be both, entry, or exit", s)
+	return 0, fmt.Errorf("invalid --emit %q: must be both, entry, exit, or eager", s)
 }
 
 const (
@@ -169,8 +180,9 @@ func emitHoldSlot(holdFD int) asm.Instructions {
 
 // buildGatedEntryInsns is the fentry half: filter gate, then on match
 // write the hold slot (and the entry bytes unless only the exit image is
-// wanted). Never emits to the ring.
-func buildGatedEntryInsns(h *hook.Hook, filterOut codegen.Output, tf filter.TargetFilters, holdFD, holdStopFD, statsFD, scratchFD int, slots *pktSetSlots, pktRefs []string, emit Emit, entryCapLen int, gateFD int) (asm.Instructions, error) {
+// wanted). Never emits to the ring, except with EmitEager, which emits the
+// entry image at once instead of holding it.
+func buildGatedEntryInsns(h *hook.Hook, filterOut codegen.Output, tf filter.TargetFilters, eventsFD, holdFD, holdStopFD, statsFD, scratchFD int, slots *pktSetSlots, pktRefs []string, emit Emit, entryCapLen int, gateFD int) (asm.Instructions, error) {
 	// Every invocation, matched or not, takes the next depth on this CPU
 	// before the filter runs; its fexit gives it back. A skipped fexit
 	// (another attach rewrote the trampoline mid-invocation) would leave
@@ -295,7 +307,23 @@ func buildGatedEntryInsns(h *hook.Hook, filterOut codegen.Output, tf filter.Targ
 		asm.LoadMem(asm.R1, asm.R10, tagSlot, asm.DWord),
 		asm.StoreMem(asm.R8, holdTag, asm.R1, asm.Word),
 	)
-	if emit != EmitExit {
+	if emit == EmitEager {
+		// Arm the hold only once the entry image is in the ring, so a lost
+		// entry never yields a decision record (R8 survives the helpers).
+		// packet id = cpu << packetIDCPUShift | seq, parked in R6: ctx is
+		// not read again after the identity above.
+		insns = append(insns,
+			asm.StoreImm(asm.R8, holdValid, 0, asm.Half),
+			asm.LoadMem(asm.R6, asm.R8, holdSeq, asm.DWord),
+			asm.FnGetSmpProcessorId.Call(),
+			asm.LSh.Imm(asm.R0, packetIDCPUShift),
+			asm.Or.Reg(asm.R6, asm.R0),
+		)
+		insns = append(insns, captureWithRingbuf(eventsFD, statsFD, false, entryCapLen, asm.Instructions{asm.Mov.Reg(asm.R1, asm.R6)})...)
+		insns = append(insns, asm.StoreImm(asm.R8, holdValid, 1, asm.Half))
+		return finishProgram(append(insns, emitExportTerminals(statsFD)...), filterOut, 0), nil
+	}
+	if emit.holdsBytes() {
 		insns = append(insns,
 			// bpf_probe_read_kernel(hold + holdHdr, caplen, data)
 			asm.Mov.Reg(asm.R1, asm.R8), asm.Add.Imm(asm.R1, holdHdr),
@@ -371,7 +399,7 @@ func buildGatedExitInsns(h *hook.Hook, filterOut codegen.Output, tf filter.Targe
 		insns = append(insns, asm.LoadMem(asm.R1, asm.R8, holdTag, asm.Word), asm.StoreMem(asm.R10, -16, asm.R1, asm.Word), asm.LoadMapPtr(asm.R1, gateFD), asm.Mov.Reg(asm.R2, asm.R10), asm.Add.Imm(asm.R2, -16), asm.FnMapLookupElem.Call(), asm.JNE.Imm(asm.R0, 0, "exit"))
 	}
 
-	if emit != EmitExit {
+	if emit.holdsBytes() {
 		// Count a failed entry snapshot only after both filters selected this
 		// invocation. No ring record has been reserved, so skip the discard path.
 		insns = append(insns, asm.LoadMem(asm.R1, asm.R8, holdCopyErr, asm.Word), asm.JNE.Imm(asm.R1, 0, "rb_copy_count"))
@@ -387,7 +415,18 @@ func buildGatedExitInsns(h *hook.Hook, filterOut codegen.Output, tf filter.Targe
 	)
 	packetID := asm.Instructions{asm.Mov.Reg(asm.R1, asm.R6)}
 
-	if emit != EmitExit {
+	if emit == EmitEager {
+		insns = append(insns, captureDecision(eventsFD, statsFD, packetID)...)
+		// No payload copy, so only the submit and reserve terminals are reachable.
+		insns = append(insns, emitExportCounter(statsFD, statSubmitted, "rb_submitted")...)
+		if statsFD > 0 {
+			insns = append(insns, emitExportCounter(statsFD, statReserveFail, "rb_fail")...)
+			insns = append(insns, emitExportCounter(statsFD, statLookupMiss, "rb_lookup_fail")...)
+		}
+		insns = append(insns, emitExportCounter(statsFD, statHoldUnpaired, "hold_unpaired")...)
+		return finishProgram(insns, filterOut, 0), nil
+	}
+	if emit.holdsBytes() {
 		insns = append(insns, captureFromHold(eventsFD, statsFD, entryCapLen, packetID)...)
 		if emit == EmitBoth && statsFD > 0 {
 			count := emitExportCounter(statsFD, statSubmitted, "hold_submitted")
@@ -446,6 +485,39 @@ func captureFromHold(eventsFD, statsFD, entryCapLen int, packetID asm.Instructio
 		asm.FnProbeReadKernel.Call(),
 		asm.JNE.Imm(asm.R0, 0, "rb_copy_fail"),
 		// submit
+		asm.LoadMem(asm.R1, asm.R10, -32, asm.DWord),
+		asm.Mov.Imm(asm.R2, int32(RingbufSubmitFlags)),
+		asm.FnRingbufSubmit.Call(),
+	)
+	return insns
+}
+
+// captureDecision emits the metadata-only decision record of EmitEager:
+// mode 1 (exit), caplen 0, the verdict (args[1]) and the packet id loaded
+// by packetID (→ R1; must not clobber R0). Same ring/stack conventions as
+// captureWithRingbuf.
+func captureDecision(eventsFD, statsFD int, packetID asm.Instructions) asm.Instructions {
+	insns := asm.Instructions{
+		asm.FnKtimeGetNs.Call(),
+		asm.StoreMem(asm.R10, -56, asm.R0, asm.DWord),
+		asm.FnGetSmpProcessorId.Call(),
+		asm.StoreMem(asm.R10, -16, asm.R0, asm.Word),
+	}
+	insns = append(insns, emitShardedRBReserve(eventsFD, statsFD, int32(metadataSize))...)
+	insns = append(insns,
+		asm.LoadMem(asm.R1, asm.R10, -56, asm.DWord),
+		asm.StoreMem(asm.R0, 0, asm.R1, asm.DWord),
+		asm.LoadMem(asm.R2, asm.R10, savedReturnSlot, asm.Word),
+		asm.StoreMem(asm.R0, 8, asm.R2, asm.Word),
+		asm.StoreImm(asm.R0, 12, 1, asm.Byte),
+		asm.StoreImm(asm.R0, 13, 0, asm.Byte),
+		asm.StoreImm(asm.R0, 14, 0, asm.Half),
+		asm.LoadMem(asm.R1, asm.R10, tagSlot, asm.DWord),
+		asm.StoreMem(asm.R0, 16, asm.R1, asm.Word),
+	)
+	insns = append(insns, packetID...)
+	insns = append(insns,
+		asm.StoreMem(asm.R0, 20, asm.R1, asm.DWord),
 		asm.LoadMem(asm.R1, asm.R10, -32, asm.DWord),
 		asm.Mov.Imm(asm.R2, int32(RingbufSubmitFlags)),
 		asm.FnRingbufSubmit.Call(),

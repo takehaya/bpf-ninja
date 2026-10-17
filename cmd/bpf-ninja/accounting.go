@@ -28,9 +28,10 @@ func captureReport(k program.ExportStats, statsErr, errorResult error, c *captur
 	written := c.written.Load()
 	limited := c.limited.Load()
 	discarded := c.nullRecords.Load()
+	paired := c.pairDiscard.Load()
 	unconfirmed := uint64(0)
-	if read > written+limited+discarded+bad {
-		unconfirmed = read - written - limited - discarded - bad
+	if read > written+limited+discarded+paired+bad {
+		unconfirmed = read - written - limited - discarded - paired - bad
 	}
 	status := "complete"
 	if limited > 0 {
@@ -39,12 +40,16 @@ func captureReport(k program.ExportStats, statsErr, errorResult error, c *captur
 	if discarded > 0 {
 		status = "discarded"
 	}
-	if statsErr != nil || errorResult != nil || bad > 0 || unconfirmed > 0 || written+limited+discarded+bad > read || k.ReserveFail+k.LookupMiss+k.CopyFail+k.HoldOverwrite+k.HoldUnpaired+k.HoldOverflow+k.HoldResync > 0 || k.Submitted != read {
+	if statsErr != nil || errorResult != nil || bad > 0 || unconfirmed > 0 || written+limited+discarded+paired+bad > read || k.ReserveFail+k.LookupMiss+k.CopyFail+k.HoldOverwrite+k.HoldUnpaired+k.HoldOverflow+k.HoldResync > 0 || k.Submitted != read {
 		status = "incomplete"
 	}
 	producer := fmt.Sprintf("selected=%d exported=%d ringbuf_reserve_fail=%d lookup_miss=%d copy_fail=%d hold_overwrite=%d hold_unpaired=%d hold_depth_overflow=%d hold_depth_resync=%d", k.Submitted+k.ReserveFail+k.LookupMiss+k.CopyFail, k.Submitted, k.ReserveFail, k.LookupMiss, k.CopyFail, k.HoldOverwrite, k.HoldUnpaired, k.HoldOverflow, k.HoldResync)
 	if statsErr != nil {
 		producer = "selected=unknown exported=unknown ringbuf_reserve_fail=unknown lookup_miss=unknown copy_fail=unknown hold_overwrite=unknown hold_unpaired=unknown hold_depth_overflow=unknown hold_depth_resync=unknown"
 	}
-	return fmt.Sprintf("capture status=%s %s consumed=%d written=%d intentional_limit=%d null_discard=%d malformed=%d persistence_unconfirmed=%d drained_at_stop=%d affinity_failures=%d filtered_or_parse_rejected=unmeasured", status, producer, read, written, limited, discarded, bad, unconfirmed, c.stats.DrainedAtStop.Load(), c.stats.AffinityFailures.Load())
+	report := fmt.Sprintf("capture status=%s %s consumed=%d written=%d intentional_limit=%d null_discard=%d malformed=%d persistence_unconfirmed=%d drained_at_stop=%d affinity_failures=%d filtered_or_parse_rejected=unmeasured", status, producer, read, written, limited, discarded, bad, unconfirmed, c.stats.DrainedAtStop.Load(), c.stats.AffinityFailures.Load())
+	if paired > 0 {
+		report += fmt.Sprintf(" pair_discard=%d", paired)
+	}
+	return report
 }
