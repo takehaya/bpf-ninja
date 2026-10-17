@@ -129,7 +129,7 @@ func TestBpfGatedResidualHold(t *testing.T) {
 		t.Fatal(err)
 	}
 	frame := dsltest.BuildEthIPv4UDP(t, 1234, 6081, []byte{1, 2, 3, 4})
-	runPinned(t, 0, func() { // both runs must share one CPU's hold
+	runPinned(t, affinityCPUs(t)[0], func() { // both runs must share one CPU's hold
 		for range 2 {
 			if _, err := target.Run(&ebpf.RunOptions{Data: frame}); err != nil {
 				t.Fatal(err)

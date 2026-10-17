@@ -1,9 +1,8 @@
 package program
 
 import (
-	"fmt"
 	"maps"
-	"os"
+	"runtime"
 	"testing"
 
 	"github.com/cilium/ebpf"
@@ -11,6 +10,7 @@ import (
 	"github.com/cilium/ebpf/btf"
 	"github.com/cilium/ebpf/link"
 	"github.com/vishvananda/netlink"
+	"github.com/vishvananda/netns"
 	"golang.org/x/sys/unix"
 
 	"github.com/takehaya/bpf-ninja/internal/attach"
@@ -76,35 +76,42 @@ func loadReentryTC(t *testing.T, ifindex, levels int) *ebpf.Program {
 	return prog
 }
 
-// reentryVeth creates a veth pair and returns the ifindex of its first
-// end; attachReentryEgress then puts the program at that end's egress.
-func reentryVeth(t *testing.T) int {
+// reentryNetns moves the calling test goroutine, locked to its thread,
+// into a new network namespace and returns the ifindex of its loopback
+// device, brought up. BPF_PROG_RUN gives the skb that namespace's
+// loopback device, so the clone and the egress attach stay inside it and
+// no host traffic reaches the program.
+func reentryNetns(t *testing.T) int {
 	t.Helper()
-	name0, name1 := fmt.Sprintf("kxr%da", os.Getpid()%100000), fmt.Sprintf("kxr%db", os.Getpid()%100000)
-	if old, err := netlink.LinkByName(name0); err == nil {
-		_ = netlink.LinkDel(old) // left behind by an interrupted run
-	}
-	la := netlink.NewLinkAttrs()
-	la.Name = name0
-	veth := &netlink.Veth{LinkAttrs: la, PeerName: name1}
-	if err := netlink.LinkAdd(veth); err != nil {
-		t.Skipf("veth unavailable (%v)", err)
-	}
-	t.Cleanup(func() { _ = netlink.LinkDel(veth) })
-	for _, name := range []string{name0, name1} {
-		l, err := netlink.LinkByName(name)
-		if err != nil {
-			t.Fatalf("LinkByName: %v", err)
-		}
-		if err := netlink.LinkSetUp(l); err != nil {
-			t.Fatalf("LinkSetUp: %v", err)
-		}
-	}
-	l, err := netlink.LinkByName(name0)
+	runtime.LockOSThread()
+	orig, err := netns.Get()
 	if err != nil {
-		t.Fatalf("LinkByName: %v", err)
+		runtime.UnlockOSThread()
+		t.Fatalf("current netns: %v", err)
 	}
-	return l.Attrs().Index
+	ns, err := netns.New()
+	if err != nil {
+		_ = orig.Close()
+		runtime.UnlockOSThread()
+		t.Fatalf("new netns: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := netns.Set(orig); err != nil {
+			t.Errorf("restoring netns: %v", err)
+			return // leave the thread locked: it is still in the test namespace
+		}
+		_ = ns.Close()
+		_ = orig.Close()
+		runtime.UnlockOSThread()
+	})
+	lo, err := netlink.LinkByName("lo")
+	if err != nil {
+		t.Fatalf("LinkByName(lo): %v", err)
+	}
+	if err := netlink.LinkSetUp(lo); err != nil {
+		t.Fatalf("LinkSetUp(lo): %v", err)
+	}
+	return lo.Attrs().Index
 }
 
 func attachReentryEgress(t *testing.T, idx int, prog *ebpf.Program) {
@@ -156,7 +163,7 @@ type reentryResult struct {
 // same invocation (entry TOS, exit TOS and verdict all agree).
 func runGatedReentry(t *testing.T, levels, runs int, entryExpr string, stopped bool) reentryResult {
 	t.Helper()
-	idx := reentryVeth(t)
+	idx := reentryNetns(t)
 	prog := loadReentryTC(t, idx, levels)
 	attachReentryEgress(t, idx, prog)
 
