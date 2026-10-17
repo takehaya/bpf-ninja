@@ -346,3 +346,102 @@ func leakDepth(t *testing.T, p *Probe) {
 	}
 	time.Sleep(50 * time.Millisecond) // more than one jiffy at any HZ
 }
+
+// TestBpfEagerReentry checks the record order an eager capture produces
+// under synchronous re-entry: per CPU ring, entry(outer), entry(inner),
+// decision(inner), decision(outer), each entry carrying its depth and
+// each decision its own invocation's packet id and verdict. The userspace pairer relies on this
+// LIFO order.
+func TestBpfEagerReentry(t *testing.T) {
+	testutil.SkipIfNotRoot(t)
+	// stale-holds: every slot starts with a valid hold left by another
+	// invocation, so the outer fentry counts an overwrite (which reuses
+	// the stack key) before it writes its entry.
+	for _, tc := range []struct {
+		name    string
+		prepare func(*testing.T, *Probe)
+	}{{"flat-start", nil}, {"stale-holds", staleHolds}} {
+		t.Run(tc.name, func(t *testing.T) { runEagerReentry(t, tc.prepare) })
+	}
+}
+
+// staleHolds marks every hold slot on every CPU valid.
+func staleHolds(t *testing.T, p *Probe) {
+	for slot := range uint32(holdSlots) {
+		var values [][]byte
+		if err := p.holdMap.Lookup(slot, &values); err != nil {
+			t.Fatal(err)
+		}
+		for _, v := range values {
+			binary.NativeEndian.PutUint16(v[holdValid:], 1)
+		}
+		if err := p.holdMap.Update(slot, values, ebpf.UpdateExist); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func runEagerReentry(t *testing.T, prepare func(*testing.T, *Probe)) {
+	const runs, levels = 10, 2
+	idx := reentryNetns(t)
+	pinTest(t, affinityCPUs(t)[0])
+	prog := loadReentryTC(t, idx, levels)
+	attachReentryEgress(t, idx, prog)
+	prevSnap := SnaplenOverride
+	SnaplenOverride = 64
+	t.Cleanup(func() { SnaplenOverride = prevSnap })
+	targets := []attach.Target{{Program: prog, FuncName: reentryFuncName, Type: ebpf.SchedCLS}}
+	probe, err := LoadMultiPoint(targets, []Stage{{Expr: "eth/ipv4"}, {Expr: "eth", IsFexit: true}}, nil, true, nil, EmitEager)
+	if err != nil {
+		t.Fatalf("load eager probe: %v", err)
+	}
+	defer func() { _ = probe.Close() }()
+	if prepare != nil {
+		prepare(t, probe)
+	}
+	frame := dsltest.BuildEthIPv4UDP(t, 1234, 6081, []byte{1, 2, 3, 4})
+	ctx := [3]uint32{0, 0, 1}
+	for range runs {
+		if _, err := prog.Run(&ebpf.RunOptions{Data: frame, Context: ctx}); err != nil {
+			t.Fatalf("prog run: %v", err)
+		}
+	}
+	if err := probe.Quiesce(); err != nil {
+		t.Fatal(err)
+	}
+	var recs []capture.Packet
+	for _, m := range probe.InnerMaps {
+		r, err := fastrb.New(m.FD(), int(m.MaxEntries()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		r.ReadBatch(func(raw []byte) {
+			p, err := capture.ParseRawSample(raw)
+			if err != nil {
+				t.Errorf("parse record: %v", err)
+				return
+			}
+			p.Data = append([]byte(nil), p.Data...)
+			recs = append(recs, p)
+		})
+		_ = r.Close()
+	}
+	if len(recs) != 4*runs {
+		t.Fatalf("records = %d, want %d", len(recs), 4*runs)
+	}
+	for i := 0; i < len(recs); i += 4 {
+		outer, inner, dIn, dOut := recs[i], recs[i+1], recs[i+2], recs[i+3]
+		if outer.Mode != 0 || inner.Mode != 0 || dIn.Mode != 1 || dOut.Mode != 1 {
+			t.Fatalf("nest %d: modes %v, want entry, entry, decision, decision", i/4, modes(recs[i:i+4]))
+		}
+		if outer.Data[15] != 0 || inner.Data[15] != 1 || outer.Action != 0 || inner.Action != 1 {
+			t.Errorf("nest %d: entry TOS %d,%d depth %d,%d, want 0,1 and 0,1", i/4, outer.Data[15], inner.Data[15], outer.Action, inner.Action)
+		}
+		if dIn.PacketID != inner.PacketID || dOut.PacketID != outer.PacketID || dIn.CapLen != 0 || dOut.CapLen != 0 {
+			t.Errorf("nest %d: decision ids %#x,%#x for entries %#x,%#x", i/4, dIn.PacketID, dOut.PacketID, inner.PacketID, outer.PacketID)
+		}
+		if dIn.Action != reentryTruth(levels, 1).verdict || dOut.Action != reentryTruth(levels, 0).verdict {
+			t.Errorf("nest %d: verdicts %d,%d", i/4, dIn.Action, dOut.Action)
+		}
+	}
+}

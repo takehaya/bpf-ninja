@@ -69,7 +69,7 @@ func rootFlags() []cli.Flag {
 		},
 		&cli.StringFlag{
 			Name: "emit", Value: "both",
-			Usage: "with two --mode: which image(s) to write for a packet that matched both filters — both, entry, or exit",
+			Usage: "with two --mode: which image(s) to write for a packet that matched both filters — both, entry, or exit; eager is an experimental export-first baseline (every entry image is exported and paired with its exit decision in userspace, output as with entry)",
 		},
 		&cli.IntFlag{
 			Name: "count", Aliases: []string{"c"},
@@ -507,6 +507,9 @@ func run(ctx context.Context, cmd *cli.Command) error {
 	}
 	if cmd.IsSet("emit") && len(modes) < 2 {
 		return fmt.Errorf("--emit only applies with two --mode (entry + exit); a single --mode always emits its own records")
+	}
+	if emit == program.EmitEager && cmd.Bool("raw-dump") {
+		return fmt.Errorf("--emit eager pairs records in the pcap-ng path; it cannot be combined with --raw-dump")
 	}
 	if cmd.Bool("rx-hwts") {
 		if !isXDPNative {
@@ -1365,8 +1368,17 @@ func pumpShards(cmd *cli.Command, inners []*ebpf.Map, label string, writeShard f
 	exitWhenCapped := cmd.Bool("exit-when-capped")
 	var captured atomic.Int64
 	failure := ctl.outputErr
+	var eager *eagerPairer
+	if cmd.String("emit") == "eager" {
+		eager = newEagerPairer(len(inners), &ctl.pairDiscard)
+	}
 
 	sink := func(shardIdx int, pkts []capture.Packet) error {
+		if eager != nil {
+			if pkts = eager.pair(shardIdx, pkts); len(pkts) == 0 {
+				return nil
+			}
+		}
 		if count > 0 {
 			n := claimPackets(&captured, count, int64(len(pkts)))
 			ctl.limited.Add(uint64(len(pkts)) - uint64(n))
@@ -1530,6 +1542,10 @@ func pumpShards(cmd *cli.Command, inners []*ebpf.Map, label string, writeShard f
 done:
 	stop()
 	fmt.Fprintf(os.Stderr, "\n%d packets captured\n", ctl.written.Load()+ctl.nullRecords.Load())
+	if eager != nil {
+		eager.finish()
+		fmt.Fprintf(os.Stderr, "eager pairing: paired=%d unmatched=%d orphan=%d\n", eager.paired.Load(), eager.unmatched.Load(), eager.orphan.Load())
+	}
 	if fin != nil {
 		return errors.Join(failure.err(), fin.Err())
 	}
