@@ -39,7 +39,7 @@ func TestBpfGatedEntryCopyFailure(t *testing.T) {
 			h, _ := hook.ByProgramType(ebpf.XDP)
 			var out codegen.Output
 			out.Capture.MaxCapLen = 64
-			entry, err := buildGatedEntryInsns(h, out, filter.TargetFilters{}, hold.FD(), 0, nil, nil, tc.emit, 64, 0)
+			entry, err := buildGatedEntryInsns(h, out, filter.TargetFilters{}, hold.FD(), 0, p.StatsMap.FD(), 0, nil, nil, tc.emit, 64, 0)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -98,5 +98,53 @@ func TestBpfGatedEntryCopyFailure(t *testing.T) {
 				t.Fatalf("records=%d stats=%+v want submitted=%d copy_fail=%d", records, stats, tc.submitted, tc.failed)
 			}
 		})
+	}
+}
+
+// TestBpfGatedResidualHold covers a hold whose fexit never ran: after
+// Quiesce, ExportStats counts it as unpaired. Only the entry half is
+// attached, the way an invocation whose exit a trampoline rewrite
+// skipped leaves the slot.
+func TestBpfGatedResidualHold(t *testing.T) {
+	target := loadDummyXDP(t)
+	p := &Probe{}
+	defer func() { _ = p.Close() }()
+	if err := p.initExportStats(); err != nil {
+		t.Fatal(err)
+	}
+	hold, err := ebpf.NewMap(&ebpf.MapSpec{Type: ebpf.PerCPUArray, KeySize: 4, ValueSize: holdHdr + 64, MaxEntries: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.maps = append(p.maps, hold)
+	p.holdMap = hold
+	h, _ := hook.ByProgramType(ebpf.XDP)
+	var out codegen.Output
+	out.Capture.MaxCapLen = 64
+	entry, err := buildGatedEntryInsns(h, out, filter.TargetFilters{}, hold.FD(), 0, p.StatsMap.FD(), 0, nil, nil, EmitBoth, 64, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := attachTracingProbe(p, target, "residual_entry", xdpFuncName, ebpf.AttachTraceFEntry, entry); err != nil {
+		t.Fatal(err)
+	}
+	frame := dsltest.BuildEthIPv4UDP(t, 1234, 6081, []byte{1, 2, 3, 4})
+	runPinned(t, affinityCPUs(t)[0], func() { // both runs must share one CPU's hold
+		for range 2 {
+			if _, err := target.Run(&ebpf.RunOptions{Data: frame}); err != nil {
+				t.Fatal(err)
+			}
+		}
+	})
+	if err := p.Quiesce(); err != nil {
+		t.Fatal(err)
+	}
+	stats, err := p.ExportStats()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The second run overwrote the first hold; the second is left behind.
+	if stats.HoldOverwrite != 1 || stats.HoldUnpaired != 1 {
+		t.Fatalf("stats %+v, want hold_overwrite=1 hold_unpaired=1", stats)
 	}
 }

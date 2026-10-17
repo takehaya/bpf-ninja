@@ -32,8 +32,11 @@ type Probe struct {
 	// StatsMap contains per-CPU export outcome counters (see ExportStats).
 	StatsMap   *ebpf.Map
 	closedTags *ebpf.Map
-	IsFexit    bool
-	Warnings   []string // resolver / codegen non-fatal notices; the CLI prints them with WriteWarnings
+	// Gated captures only: the per-CPU hold slots and the flag that stops
+	// fentry from writing holds before the links are detached.
+	holdMap, holdStop *ebpf.Map
+	IsFexit           bool
+	Warnings          []string // resolver / codegen non-fatal notices; the CLI prints them with WriteWarnings
 
 	// --arg-echo diagnostic mode: non-nil EchoRing means this probe emits
 	// the target function's integer args (EchoParams, in order) to a
@@ -74,8 +77,19 @@ func (p *Probe) AttachCount() int {
 func (p *Probe) Quiesce() error {
 	p.detachOnce.Do(func() {
 		var errs []error
-		for _, l := range p.links {
-			errs = append(errs, l.Close())
+		// Detaching a link rewrites the trampoline, and an invocation still
+		// running the old image skips its fexit, so a gated capture first
+		// stops writing holds and waits for the invocations that did, while
+		// both probes are still in place.
+		if p.holdStop != nil {
+			if err := p.holdStop.Update(uint32(0), uint32(1), ebpf.UpdateAny); err != nil {
+				errs = append(errs, fmt.Errorf("stopping gated holds: %w", err))
+			} else {
+				errs = append(errs, p.Barrier())
+			}
+		}
+		for i := len(p.links) - 1; i >= 0; i-- {
+			errs = append(errs, p.links[i].Close())
 		}
 		p.links = nil
 		errs = append(errs, p.Barrier())
@@ -242,7 +256,7 @@ func LoadMultiPoint(targets []attach.Target, stages []Stage, filters []filter.Ta
 
 	// Gated capture: the per-CPU hold slot carrying the entry image
 	// (header only when just the exit image is emitted).
-	holdFD := 0
+	holdFD, holdStopFD := 0, 0
 	entryCapLen := 0
 	if gated {
 		entryCapLen = comp[0].out.Capture.MaxCapLen
@@ -262,7 +276,19 @@ func LoadMultiPoint(targets []attach.Target, stages []Stage, filters []filter.Ta
 			return nil, fmt.Errorf("creating hold map: %w", err)
 		}
 		probe.maps = append(probe.maps, holdMap)
+		probe.holdMap = holdMap
 		holdFD = holdMap.FD()
+		stop, err := ebpf.NewMap(&ebpf.MapSpec{
+			Name: "ninja_hold_stop", Type: ebpf.Array,
+			KeySize: 4, ValueSize: 4, MaxEntries: 1,
+		})
+		if err != nil {
+			_ = probe.Close()
+			return nil, fmt.Errorf("creating hold stop map: %w", err)
+		}
+		probe.maps = append(probe.maps, stop)
+		probe.holdStop = stop
+		holdStopFD = stop.FD()
 	}
 
 	// Filter scratch buffer: kunai/cBPF eval cannot read xdp_buff packet
@@ -325,7 +351,7 @@ func LoadMultiPoint(targets []attach.Target, stages []Stage, filters []filter.Ta
 			var err error
 			switch {
 			case gated && !st.IsFexit:
-				insns, err = buildGatedEntryInsns(h, c.out, tf, holdFD, scratchFD, c.slots, c.pktRefs, emit, entryCapLen, gateFD)
+				insns, err = buildGatedEntryInsns(h, c.out, tf, holdFD, holdStopFD, statsFD, scratchFD, c.slots, c.pktRefs, emit, entryCapLen, gateFD)
 			case gated:
 				insns, err = buildGatedExitInsns(h, c.out, tf, outerMap.FD(), holdFD, statsFD, scratchFD, c.slots, c.pktRefs, emit, entryCapLen, returnOffset, gateFD)
 			default:
