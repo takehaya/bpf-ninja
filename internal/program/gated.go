@@ -38,11 +38,13 @@ import (
 // and its fexit gives it back, so each invocation finds its own slot.
 // An invocation deeper than holdSlots is counted (statHoldOverflow), not
 // held. A probe skipped because another attach rewrote the trampoline
-// mid-invocation can still leave a slot or the depth stale; the identity
-// check drops a stale slot, the next fentry restarts a stale depth
-// (statHoldResync), and the counters (statHoldOverwrite,
-// statHoldUnpaired, and holds still valid at the end, added by
-// ExportStats) report the loss.
+// mid-invocation can still leave a slot or the depth stale. Every fentry
+// numbers its invocation and a hold carries the number of the one that
+// wrote it, so a fexit never pairs a hold left by another invocation,
+// even when that invocation's frame address has been recycled. The next
+// fentry restarts a stale depth (statHoldResync), and the counters
+// (statHoldOverwrite, statHoldUnpaired, and holds still valid at the
+// end, added by ExportStats) report the loss.
 //
 // A tail call in the target does not skip its fexit: the tail-called
 // program returns into the caller's trampoline (the return address
@@ -66,11 +68,15 @@ import (
 //	24  u64 seq      this invocation's packet sequence; (cpu << 48 | seq)
 //	                 is the opaque packet id both records carry
 //	32  u32 copy_error  entry snapshot error, checked after exit selection
-//	36  u32 depth    slot 0 only: invocations on this CPU between their
+//	36  u32 padding
+//	40  u64 inv      number of the invocation whose fentry wrote the hold
+//	48  u32 depth    slot 0 only: invocations on this CPU between their
 //	                 fentry and fexit
-//	40  u64 next_seq slot 0 only: per-CPU count of matched entries
-//	48  u64 enter_j[maxHoldSlots]  slot 0 only: jiffies at each depth's fentry
-//	128 u8  bytes[entryCapLen]  (absent when only the exit image is emitted)
+//	56  u64 next_seq slot 0 only: per-CPU count of matched entries
+//	64  u64 next_inv slot 0 only: per-CPU count of fentries
+//	72  u64 enter_j[maxHoldSlots]    slot 0 only: jiffies at each depth's fentry
+//	152 u64 enter_inv[maxHoldSlots]  slot 0 only: invocation number at each depth
+//	232 u8  bytes[entryCapLen]  (absent when only the exit image is emitted)
 
 // packetIDCPUShift places the CPU id above the per-CPU sequence in a
 // gated record's packet id: cpu << packetIDCPUShift | seq.
@@ -114,10 +120,13 @@ const (
 	holdTag     = 20
 	holdSeq     = 24
 	holdCopyErr = 32
-	holdDepth   = 36 // slot 0 only
-	holdNextSeq = 40 // slot 0 only
-	holdEnterJ  = 48 // slot 0 only: u64 jiffies at each depth's fentry
-	holdHdr     = holdEnterJ + 8*maxHoldSlots
+	holdInv     = 40                          // invocation number of the fentry that wrote the hold
+	holdDepth   = 48                          // slot 0 only
+	holdNextSeq = 56                          // slot 0 only
+	holdNextInv = 64                          // slot 0 only
+	holdEnterJ  = 72                          // slot 0 only: u64 jiffies at each depth's fentry
+	holdEnterI  = holdEnterJ + 8*maxHoldSlots // slot 0 only: u64 invocation number at each depth
+	holdHdr     = holdEnterI + 8*maxHoldSlots
 )
 
 // maxHoldSlots bounds holdSlots (the slot-0 header has one entry time
@@ -201,6 +210,11 @@ func buildGatedEntryInsns(h *hook.Hook, filterOut codegen.Output, tf filter.Targ
 		asm.Mov.Reg(asm.R5, asm.R8),
 		asm.Add.Reg(asm.R5, asm.R3),
 		asm.StoreMem(asm.R5, holdEnterJ, asm.R7, asm.DWord),
+		// number this invocation; its fexit accepts only a hold with it
+		asm.LoadMem(asm.R4, asm.R8, holdNextInv, asm.DWord),
+		asm.Add.Imm(asm.R4, 1),
+		asm.StoreMem(asm.R8, holdNextInv, asm.R4, asm.DWord),
+		asm.StoreMem(asm.R5, holdEnterI, asm.R4, asm.DWord),
 		asm.Add.Imm(asm.R2, 1).WithSymbol("gd_inc"),
 		asm.StoreMem(asm.R8, holdDepth, asm.R2, asm.Word),
 		asm.Mov.Reg(asm.R1, asm.R6),
@@ -246,6 +260,12 @@ func buildGatedEntryInsns(h *hook.Hook, filterOut codegen.Output, tf filter.Targ
 	)
 	insns = append(insns, emitHoldSlot(holdFD)...)
 	insns = append(insns,
+		asm.LoadMem(asm.R2, asm.R10, -16, asm.Word),
+		asm.JGE.Imm(asm.R2, int32(holdSlots), "exit"), // bound for the verifier
+		asm.LSh.Imm(asm.R2, 3),
+		asm.Add.Reg(asm.R2, asm.R8),
+		asm.LoadMem(asm.R3, asm.R2, holdEnterI, asm.DWord),
+		asm.StoreMem(asm.R0, holdInv, asm.R3, asm.DWord),
 		asm.LoadMem(asm.R1, asm.R8, holdNextSeq, asm.DWord),
 		asm.Mov.Reg(asm.R8, asm.R0),
 		asm.StoreMem(asm.R8, holdSeq, asm.R1, asm.DWord),
@@ -313,6 +333,12 @@ func buildGatedExitInsns(h *hook.Hook, filterOut codegen.Output, tf filter.Targe
 		asm.StoreMem(asm.R0, holdDepth, asm.R2, asm.Word),
 		asm.JGE.Imm(asm.R2, int32(holdSlots), "exit"),
 		asm.StoreMem(asm.R10, -16, asm.R2, asm.Word),
+		// this invocation's number, parked in the filter's scratch-pointer
+		// slot, which the filter only writes later
+		asm.LSh.Imm(asm.R2, 3),
+		asm.Add.Reg(asm.R2, asm.R0),
+		asm.LoadMem(asm.R3, asm.R2, holdEnterI, asm.DWord),
+		asm.StoreMem(asm.R10, -24, asm.R3, asm.DWord),
 	)
 	insns = append(insns, emitHoldSlot(holdFD)...)
 	insns = append(insns,
@@ -320,6 +346,12 @@ func buildGatedExitInsns(h *hook.Hook, filterOut codegen.Output, tf filter.Targe
 		asm.LoadMem(asm.R2, asm.R8, holdValid, asm.Half),
 		asm.JEq.Imm(asm.R2, 0, "exit"),               // entry stage did not match: nothing to do
 		asm.StoreImm(asm.R8, holdValid, 0, asm.Half), // consume, whatever happens below
+		// A hold another invocation left at this depth (its fexit was
+		// skipped, or the depth was resynchronised) never pairs, even if
+		// its frame address was recycled for this invocation.
+		asm.LoadMem(asm.R2, asm.R8, holdInv, asm.DWord),
+		asm.LoadMem(asm.R3, asm.R10, -24, asm.DWord),
+		asm.JNE.Reg(asm.R2, asm.R3, "hold_unpaired"),
 		asm.LoadMem(asm.R2, asm.R8, holdFrame, asm.DWord),
 	)
 	insns = append(insns, identity...)
