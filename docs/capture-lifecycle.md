@@ -37,8 +37,10 @@ After shutdown and merge, `capture status=...` reports one session's totals:
 | `ringbuf_reserve_fail` | Selected records lost because reserve returned NULL |
 | `lookup_miss` | Selected records with no ring map for their CPU |
 | `copy_fail` | Reserved records discarded after a packet-copy helper failed |
-| `hold_overwrite` | Gated captures: entry-matched invocations whose hold was overwritten by a re-entry of the same function before their exit ran |
+| `hold_overwrite` | Gated captures: entry-matched invocations whose hold was overwritten before their exit ran (a probe skipped by a trampoline rewrite) |
 | `hold_unpaired` | Gated captures: entry images their own exit never consumed (an exit of a different invocation did, or none had by the end of the capture) |
+| `hold_depth_overflow` | Gated captures: entry-matched invocations nested deeper on one CPU than the hold slots (10), so not held |
+| `hold_depth_resync` | Gated captures: restarts of a per-CPU nesting depth left stale by a skipped fexit (the holds it overwrites are counted as `hold_overwrite`) |
 | `consumed` | Non-discard ring records consumed across all shards |
 | `written` | Records in successful writer calls; final status also checks flush/close/merge |
 | `intentional_limit` | Consumed records omitted because of a count/byte/tag cap |

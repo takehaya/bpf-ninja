@@ -31,7 +31,7 @@ func TestBpfGatedEntryCopyFailure(t *testing.T) {
 			if err := p.initExportStats(); err != nil {
 				t.Fatal(err)
 			}
-			hold, err := ebpf.NewMap(&ebpf.MapSpec{Type: ebpf.PerCPUArray, KeySize: 4, ValueSize: holdHdr + 64, MaxEntries: 1})
+			hold, err := ebpf.NewMap(&ebpf.MapSpec{Type: ebpf.PerCPUArray, KeySize: 4, ValueSize: holdHdr + 64, MaxEntries: uint32(holdSlots)})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -104,7 +104,7 @@ func TestBpfGatedEntryCopyFailure(t *testing.T) {
 // TestBpfGatedResidualHold covers a hold whose fexit never ran: after
 // Quiesce, ExportStats counts it as unpaired. Only the entry half is
 // attached, the way an invocation whose exit a trampoline rewrite
-// skipped leaves the slot.
+// skipped leaves its slot.
 func TestBpfGatedResidualHold(t *testing.T) {
 	target := loadDummyXDP(t)
 	p := &Probe{}
@@ -112,7 +112,7 @@ func TestBpfGatedResidualHold(t *testing.T) {
 	if err := p.initExportStats(); err != nil {
 		t.Fatal(err)
 	}
-	hold, err := ebpf.NewMap(&ebpf.MapSpec{Type: ebpf.PerCPUArray, KeySize: 4, ValueSize: holdHdr + 64, MaxEntries: 1})
+	hold, err := ebpf.NewMap(&ebpf.MapSpec{Type: ebpf.PerCPUArray, KeySize: 4, ValueSize: holdHdr + 64, MaxEntries: uint32(holdSlots)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -143,8 +143,9 @@ func TestBpfGatedResidualHold(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The second run overwrote the first hold; the second is left behind.
-	if stats.HoldOverwrite != 1 || stats.HoldUnpaired != 1 {
-		t.Fatalf("stats %+v, want hold_overwrite=1 hold_unpaired=1", stats)
+	// With no exit to give the depth back, the second run held at depth 1;
+	// both holds are left behind.
+	if stats.HoldOverwrite != 0 || stats.HoldUnpaired != 2 {
+		t.Fatalf("stats %+v, want hold_overwrite=0 hold_unpaired=2", stats)
 	}
 }
