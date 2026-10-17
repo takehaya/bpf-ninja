@@ -8,16 +8,14 @@ import (
 )
 
 // eagerPairer is the userspace half of the experimental --emit eager
-// baseline: the kernel exports every entry image at once and a
-// metadata-only decision record when the exit filter matches. Each shard
-// is one CPU's ring, so records arrive in execution order. Nesting on one
-// CPU is LIFO (synchronous re-entry, as in gated capture), so the pairer
-// keeps a stack of unanswered entries per shard: a decision takes the
-// entry with its packet id and drops the entries pushed after it, which
-// are invocations nested inside it that finished without a decision.
-// Entries below it may still be open outer invocations. An entry whose
-// invocation ended without a decision is dropped when it falls off the
-// bounded stack or when the capture stops.
+// baseline: the kernel exports every entry image at once, carrying its
+// nesting depth on this CPU in the action field, and a metadata-only
+// decision record when the exit filter matches. Each shard is one CPU's
+// ring, so records arrive in execution order, and nesting is LIFO. The
+// pairer keeps a stack of unanswered entries per shard. An entry at depth
+// d retires every pending entry at depth >= d (those invocations have
+// finished without a decision); a decision takes the entry with its
+// packet id and retires the entries pushed after it.
 type eagerPairer struct {
 	shards                    []eagerShard
 	paired, unmatched, orphan atomic.Uint64
@@ -27,7 +25,8 @@ type eagerPairer struct {
 }
 
 // eagerDepth bounds the pending entries per shard: one per possible
-// nesting depth of the gated hold.
+// nesting depth of the gated hold. Depth retirement keeps the stack
+// within it; the bound only guards against a malformed depth.
 var eagerDepth = program.MaxHoldSlots
 
 type eagerShard struct {
@@ -39,6 +38,7 @@ type eagerShard struct {
 
 type eagerPending struct {
 	pkt   capture.Packet
+	depth uint32
 	owned []byte // non-nil once pkt.Data was copied out of the batch arena
 }
 
@@ -76,11 +76,17 @@ func (p *eagerPairer) pair(shard int, pkts []capture.Packet) []capture.Packet {
 	for i := range pkts {
 		pk := pkts[i]
 		if pk.Mode == 0 {
+			d := pk.Action
+			for len(st.stack) > 0 && st.stack[len(st.stack)-1].depth >= d {
+				drop(st.stack[len(st.stack)-1])
+				st.stack = st.stack[:len(st.stack)-1]
+			}
 			if len(st.stack) == eagerDepth {
 				drop(st.stack[0])
 				st.stack = append(st.stack[:0], st.stack[1:]...)
 			}
-			st.stack = append(st.stack, eagerPending{pkt: pk})
+			pk.Action = 0
+			st.stack = append(st.stack, eagerPending{pkt: pk, depth: d})
 			continue
 		}
 		decisions++

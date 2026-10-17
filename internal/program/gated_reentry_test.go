@@ -349,8 +349,8 @@ func leakDepth(t *testing.T, p *Probe) {
 
 // TestBpfEagerReentry checks the record order an eager capture produces
 // under synchronous re-entry: per CPU ring, entry(outer), entry(inner),
-// decision(inner), decision(outer), each decision carrying its own
-// invocation's packet id and verdict. The userspace pairer relies on this
+// decision(inner), decision(outer), each entry carrying its depth and
+// each decision its own invocation's packet id and verdict. The userspace pairer relies on this
 // LIFO order.
 func TestBpfEagerReentry(t *testing.T) {
 	testutil.SkipIfNotRoot(t)
@@ -403,8 +403,8 @@ func TestBpfEagerReentry(t *testing.T) {
 		if outer.Mode != 0 || inner.Mode != 0 || dIn.Mode != 1 || dOut.Mode != 1 {
 			t.Fatalf("nest %d: modes %v, want entry, entry, decision, decision", i/4, modes(recs[i:i+4]))
 		}
-		if outer.Data[15] != 0 || inner.Data[15] != 1 {
-			t.Errorf("nest %d: entry TOS %d,%d, want 0,1", i/4, outer.Data[15], inner.Data[15])
+		if outer.Data[15] != 0 || inner.Data[15] != 1 || outer.Action != 0 || inner.Action != 1 {
+			t.Errorf("nest %d: entry TOS %d,%d depth %d,%d, want 0,1 and 0,1", i/4, outer.Data[15], inner.Data[15], outer.Action, inner.Action)
 		}
 		if dIn.PacketID != inner.PacketID || dOut.PacketID != outer.PacketID || dIn.CapLen != 0 || dOut.CapLen != 0 {
 			t.Errorf("nest %d: decision ids %#x,%#x for entries %#x,%#x", i/4, dIn.PacketID, dOut.PacketID, inner.PacketID, outer.PacketID)
