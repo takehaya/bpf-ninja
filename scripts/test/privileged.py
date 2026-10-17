@@ -26,7 +26,7 @@ def allowed_skip(package, test, output, kernel):
         return "veth not supported on this kernel" in output
     if kernel and test in {"TestBpfVlanWireFrameAtTC", "TestBpfVlanWireFrameAtTCEdges", "TestBpfVlanWireFrameAtTCEgress"}:
         return "veth unavailable" in output or "neither tcx nor clsact" in output or "vlan device unavailable" in output
-    if kernel == "6.1" and test.startswith("TestBpfGatedReentry/"):
+    if kernel == "6.1" and test.startswith(("TestBpfGatedReentry/", "TestBpfEagerReentry/")):
         return "neither tcx nor clsact" in output
     if kernel == "6.1" and test in {
         "TestBpfEntryWithDSLFilterNetfilter", "TestBpfExitWithDSLFilterNetfilter",
