@@ -236,14 +236,19 @@ func TestBpfGatedStaleHoldNeverPairs(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
-	if err := p.Quiesce(); err != nil {
-		t.Fatal(err)
-	}
+	// Read before Quiesce, so the count is the fexit's, not the scan of
+	// holds left valid at the end.
 	stats, err := p.ExportStats()
 	if err != nil {
 		t.Fatal(err)
 	}
 	if stats.Submitted != 0 || stats.HoldUnpaired != 1 || stats.HoldResync != 1 || stats.HoldOverwrite != 0 {
 		t.Fatalf("stats %+v, want no export, hold_unpaired=1, hold_depth_resync=1", stats)
+	}
+	if err := p.Quiesce(); err != nil {
+		t.Fatal(err)
+	}
+	if after, err := p.ExportStats(); err != nil || after.HoldUnpaired != 1 {
+		t.Fatalf("after Quiesce: stats %+v (%v), want the stale hold consumed (hold_unpaired=1)", after, err)
 	}
 }

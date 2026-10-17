@@ -204,16 +204,16 @@ func buildGatedEntryInsns(h *hook.Hook, filterOut codegen.Output, tf filter.Targ
 	insns = append(insns, emitCounterInc(statsFD, statHoldResync, "gd_reload")...)
 	insns = append(insns,
 		asm.LoadMem(asm.R2, asm.R8, holdDepth, asm.Word).WithSymbol("gd_reload"),
-		asm.JGE.Imm(asm.R2, int32(holdSlots), "gd_inc").WithSymbol("gd_take"),
+		// number this invocation; its fexit accepts only a hold with it
+		asm.LoadMem(asm.R4, asm.R8, holdNextInv, asm.DWord).WithSymbol("gd_take"),
+		asm.Add.Imm(asm.R4, 1),
+		asm.StoreMem(asm.R8, holdNextInv, asm.R4, asm.DWord),
+		asm.JGE.Imm(asm.R2, int32(holdSlots), "gd_inc"),
 		asm.Mov.Reg(asm.R3, asm.R2),
 		asm.LSh.Imm(asm.R3, 3),
 		asm.Mov.Reg(asm.R5, asm.R8),
 		asm.Add.Reg(asm.R5, asm.R3),
 		asm.StoreMem(asm.R5, holdEnterJ, asm.R7, asm.DWord),
-		// number this invocation; its fexit accepts only a hold with it
-		asm.LoadMem(asm.R4, asm.R8, holdNextInv, asm.DWord),
-		asm.Add.Imm(asm.R4, 1),
-		asm.StoreMem(asm.R8, holdNextInv, asm.R4, asm.DWord),
 		asm.StoreMem(asm.R5, holdEnterI, asm.R4, asm.DWord),
 		asm.Add.Imm(asm.R2, 1).WithSymbol("gd_inc"),
 		asm.StoreMem(asm.R8, holdDepth, asm.R2, asm.Word),
