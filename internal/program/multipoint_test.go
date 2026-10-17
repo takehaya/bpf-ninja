@@ -41,6 +41,8 @@ func TestBpfMultiPointLoad(t *testing.T) {
 		{"dsl-entry", xdp, "eth/ipv4/udp[dport==6081]", "eth where action == XDP_DROP", true, EmitEntry},
 		{"dsl-exit", xdp, "eth/ipv4/udp[dport==6081]", "eth/ipv4/tcp where action == XDP_DROP", true, EmitExit},
 		{"no-entry-filter", xdp, "", "eth/ipv4/icmp where action == XDP_PASS", true, EmitEntry},
+		{"dsl-eager", xdp, "eth/ipv4/udp[dport==6081]", "eth where action == XDP_DROP", true, EmitEager},
+		{"tc-eager", tc, "eth/ipv4/tcp", "eth/ipv4/tcp where action == TC_ACT_SHOT", true, EmitEager},
 		{"tc-both", tc, "eth/ipv4/tcp", "eth/ipv4/tcp where action == TC_ACT_SHOT", true, EmitBoth},
 		{"cgroup-skb-both", cgroup, "ipv4/tcp", "ipv4/tcp where action == SK_DROP", true, EmitBoth},
 		{"netfilter-entry", netfilter, "ipv4/tcp", "ipv4/tcp where action == NF_DROP", true, EmitEntry},
@@ -204,6 +206,33 @@ func TestBpfMultiPointGatedTestRun(t *testing.T) {
 			for i, p := range pkts {
 				if p.Mode != 1 || p.Action != 2 || p.PacketID == 0 || !bytes.Equal(p.Data, udp) {
 					t.Errorf("shard %d record %d: mode=%d action=%d id=%#x, want exit image with verdict PASS", shard, i, p.Mode, p.Action, p.PacketID)
+				}
+			}
+		}
+	})
+
+	t.Run("eager", func(t *testing.T) {
+		got := runGatedTestRun(t, entry, exitPass, EmitEager, repeatFrame(udp, runs), 2*runs)
+		for shard, pkts := range got {
+			for i := 0; i+1 < len(pkts); i += 2 {
+				e, d := pkts[i], pkts[i+1]
+				if e.Mode != 0 || e.Action != 0 || !bytes.Equal(e.Data, udp) {
+					t.Errorf("shard %d pair %d: entry mode=%d action=%d len=%d, want the input frame before the verdict", shard, i/2, e.Mode, e.Action, len(e.Data))
+				}
+				if d.Mode != 1 || d.Action != 2 || d.CapLen != 0 || d.PacketID != e.PacketID || e.PacketID == 0 {
+					t.Errorf("shard %d pair %d: decision mode=%d action=%d caplen=%d id=%#x (entry %#x), want a metadata-only PASS for the same id", shard, i/2, d.Mode, d.Action, d.CapLen, d.PacketID, e.PacketID)
+				}
+			}
+		}
+	})
+
+	t.Run("eager-exit-miss", func(t *testing.T) {
+		// Every entry image is exported; no decision follows.
+		got := runGatedTestRun(t, entry, "eth/ipv4/udp where action == XDP_DROP", EmitEager, repeatFrame(udp, runs), runs)
+		for shard, pkts := range got {
+			for i, p := range pkts {
+				if p.Mode != 0 {
+					t.Errorf("shard %d record %d: mode=%d, want only entry images", shard, i, p.Mode)
 				}
 			}
 		}

@@ -40,7 +40,7 @@ func TestBpfGatedEntryCopyFailure(t *testing.T) {
 			h, _ := hook.ByProgramType(ebpf.XDP)
 			var out codegen.Output
 			out.Capture.MaxCapLen = 64
-			entry, err := buildGatedEntryInsns(h, out, filter.TargetFilters{}, hold.FD(), 0, p.StatsMap.FD(), 0, nil, nil, tc.emit, 64, 0)
+			entry, err := buildGatedEntryInsns(h, out, filter.TargetFilters{}, 0, hold.FD(), 0, p.StatsMap.FD(), 0, nil, nil, tc.emit, 64, 0)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -122,7 +122,7 @@ func TestBpfGatedResidualHold(t *testing.T) {
 	h, _ := hook.ByProgramType(ebpf.XDP)
 	var out codegen.Output
 	out.Capture.MaxCapLen = 64
-	entry, err := buildGatedEntryInsns(h, out, filter.TargetFilters{}, hold.FD(), 0, p.StatsMap.FD(), 0, nil, nil, EmitBoth, 64, 0)
+	entry, err := buildGatedEntryInsns(h, out, filter.TargetFilters{}, 0, hold.FD(), 0, p.StatsMap.FD(), 0, nil, nil, EmitBoth, 64, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -199,7 +199,7 @@ func TestBpfGatedStaleHoldNeverPairs(t *testing.T) {
 		t.Fatal(err)
 	}
 	entryOut.Capture.MaxCapLen = 64
-	entry, err := buildGatedEntryInsns(h, entryOut, filter.TargetFilters{}, hold.FD(), 0, p.StatsMap.FD(), scratch.FD(), nil, nil, EmitBoth, 64, 0)
+	entry, err := buildGatedEntryInsns(h, entryOut, filter.TargetFilters{}, 0, hold.FD(), 0, p.StatsMap.FD(), scratch.FD(), nil, nil, EmitBoth, 64, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

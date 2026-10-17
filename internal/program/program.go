@@ -264,7 +264,7 @@ func LoadMultiPoint(targets []attach.Target, stages []Stage, filters []filter.Ta
 			entryCapLen = defaultCapLen
 		}
 		holdSize := holdHdr
-		if emit != EmitExit {
+		if emit.holdsBytes() {
 			holdSize += entryCapLen
 		}
 		holdMap, err := ebpf.NewMap(&ebpf.MapSpec{
@@ -351,7 +351,7 @@ func LoadMultiPoint(targets []attach.Target, stages []Stage, filters []filter.Ta
 			var err error
 			switch {
 			case gated && !st.IsFexit:
-				insns, err = buildGatedEntryInsns(h, c.out, tf, holdFD, holdStopFD, statsFD, scratchFD, c.slots, c.pktRefs, emit, entryCapLen, gateFD)
+				insns, err = buildGatedEntryInsns(h, c.out, tf, outerMap.FD(), holdFD, holdStopFD, statsFD, scratchFD, c.slots, c.pktRefs, emit, entryCapLen, gateFD)
 			case gated:
 				insns, err = buildGatedExitInsns(h, c.out, tf, outerMap.FD(), holdFD, statsFD, scratchFD, c.slots, c.pktRefs, emit, entryCapLen, returnOffset, gateFD)
 			default:

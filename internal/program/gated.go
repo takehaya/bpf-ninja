@@ -68,7 +68,7 @@ import (
 //	24  u64 seq      this invocation's packet sequence; (cpu << 48 | seq)
 //	                 is the opaque packet id both records carry
 //	32  u32 copy_error  entry snapshot error, checked after exit selection
-//	36  u32 padding
+//	36  u32 depth of the invocation (EmitEager only; padding otherwise)
 //	40  u64 inv      number of the invocation whose fentry wrote the hold
 //	48  u32 depth    slot 0 only: invocations on this CPU between their
 //	                 fentry and fexit
@@ -97,7 +97,16 @@ const (
 	// records that the packet matched (no copy), which is the cheapest
 	// gated form.
 	EmitExit
+	// EmitEager is an experimental export-first baseline: the entry stage
+	// emits its image at once (no bytes held), and the exit stage emits a
+	// metadata-only decision record carrying the verdict and the same
+	// packet id. Userspace keeps an entry only when its decision follows.
+	// It exists to measure holding against exporting under one backend.
+	EmitEager
 )
+
+// holdsBytes reports whether the hold slot carries the entry image.
+func (e Emit) holdsBytes() bool { return e == EmitBoth || e == EmitEntry }
 
 // ParseEmit maps the --emit value.
 func ParseEmit(s string) (Emit, error) {
@@ -108,30 +117,36 @@ func ParseEmit(s string) (Emit, error) {
 		return EmitEntry, nil
 	case "exit":
 		return EmitExit, nil
+	case "eager":
+		return EmitEager, nil
 	}
-	return 0, fmt.Errorf("invalid --emit %q: must be both, entry, or exit", s)
+	return 0, fmt.Errorf("invalid --emit %q: must be both, entry, exit, or eager", s)
 }
 
 const (
-	holdTs      = 0
-	holdFrame   = 8
-	holdCapLen  = 16
-	holdValid   = 18
-	holdTag     = 20
-	holdSeq     = 24
-	holdCopyErr = 32
-	holdInv     = 40                          // invocation number of the fentry that wrote the hold
-	holdDepth   = 48                          // slot 0 only
-	holdNextSeq = 56                          // slot 0 only
-	holdNextInv = 64                          // slot 0 only
-	holdEnterJ  = 72                          // slot 0 only: u64 jiffies at each depth's fentry
-	holdEnterI  = holdEnterJ + 8*maxHoldSlots // slot 0 only: u64 invocation number at each depth
-	holdHdr     = holdEnterI + 8*maxHoldSlots
+	holdTs         = 0
+	holdFrame      = 8
+	holdCapLen     = 16
+	holdValid      = 18
+	holdTag        = 20
+	holdSeq        = 24
+	holdCopyErr    = 32
+	holdEagerDepth = 36                          // EmitEager: the invocation's depth, for its entry record
+	holdInv        = 40                          // invocation number of the fentry that wrote the hold
+	holdDepth      = 48                          // slot 0 only
+	holdNextSeq    = 56                          // slot 0 only
+	holdNextInv    = 64                          // slot 0 only
+	holdEnterJ     = 72                          // slot 0 only: u64 jiffies at each depth's fentry
+	holdEnterI     = holdEnterJ + 8*maxHoldSlots // slot 0 only: u64 invocation number at each depth
+	holdHdr        = holdEnterI + 8*maxHoldSlots
 )
 
 // maxHoldSlots bounds holdSlots (the slot-0 header has one entry time
 // per depth).
 const maxHoldSlots = 10
+
+// MaxHoldSlots is the deepest nesting on one CPU a gated capture pairs.
+const MaxHoldSlots = maxHoldSlots
 
 // holdSlots is the number of per-CPU hold slots, one per nesting depth of
 // the target on one CPU. Synchronous re-entry goes through a BPF
@@ -169,8 +184,9 @@ func emitHoldSlot(holdFD int) asm.Instructions {
 
 // buildGatedEntryInsns is the fentry half: filter gate, then on match
 // write the hold slot (and the entry bytes unless only the exit image is
-// wanted). Never emits to the ring.
-func buildGatedEntryInsns(h *hook.Hook, filterOut codegen.Output, tf filter.TargetFilters, holdFD, holdStopFD, statsFD, scratchFD int, slots *pktSetSlots, pktRefs []string, emit Emit, entryCapLen int, gateFD int) (asm.Instructions, error) {
+// wanted). Never emits to the ring, except with EmitEager, which emits the
+// entry image at once instead of holding it.
+func buildGatedEntryInsns(h *hook.Hook, filterOut codegen.Output, tf filter.TargetFilters, eventsFD, holdFD, holdStopFD, statsFD, scratchFD int, slots *pktSetSlots, pktRefs []string, emit Emit, entryCapLen int, gateFD int) (asm.Instructions, error) {
 	// Every invocation, matched or not, takes the next depth on this CPU
 	// before the filter runs; its fexit gives it back. A skipped fexit
 	// (another attach rewrote the trampoline mid-invocation) would leave
@@ -259,6 +275,14 @@ func buildGatedEntryInsns(h *hook.Hook, filterOut codegen.Output, tf filter.Targ
 		asm.StoreMem(asm.R8, holdNextSeq, asm.R1, asm.DWord),
 	)
 	insns = append(insns, emitHoldSlot(holdFD)...)
+	if emit == EmitEager {
+		// Keep the depth (this invocation's slot) for its entry record now:
+		// the counters below reuse stack[-16] as their key.
+		insns = append(insns,
+			asm.LoadMem(asm.R2, asm.R10, -16, asm.Word),
+			asm.StoreMem(asm.R0, holdEagerDepth, asm.R2, asm.Word),
+		)
+	}
 	insns = append(insns,
 		asm.LoadMem(asm.R2, asm.R10, -16, asm.Word),
 		asm.JGE.Imm(asm.R2, int32(holdSlots), "exit"), // bound for the verifier
@@ -295,7 +319,26 @@ func buildGatedEntryInsns(h *hook.Hook, filterOut codegen.Output, tf filter.Targ
 		asm.LoadMem(asm.R1, asm.R10, tagSlot, asm.DWord),
 		asm.StoreMem(asm.R8, holdTag, asm.R1, asm.Word),
 	)
-	if emit != EmitExit {
+	if emit == EmitEager {
+		// Arm the hold only once the entry image is in the ring, so a lost
+		// entry never yields a decision record (R8 survives the helpers).
+		// packet id = cpu << packetIDCPUShift | seq, parked in R6: ctx is
+		// not read again after the identity above.
+		// The depth saved in the hold rides in the entry record's action
+		// field: an entry at depth d means every earlier pending entry at
+		// depth >= d has finished.
+		insns = append(insns,
+			asm.StoreImm(asm.R8, holdValid, 0, asm.Half),
+			asm.LoadMem(asm.R6, asm.R8, holdSeq, asm.DWord),
+			asm.FnGetSmpProcessorId.Call(),
+			asm.LSh.Imm(asm.R0, packetIDCPUShift),
+			asm.Or.Reg(asm.R6, asm.R0),
+		)
+		insns = append(insns, captureEagerEntry(eventsFD, statsFD, entryCapLen)...)
+		insns = append(insns, asm.StoreImm(asm.R8, holdValid, 1, asm.Half))
+		return finishProgram(append(insns, emitExportTerminals(statsFD)...), filterOut, 0), nil
+	}
+	if emit.holdsBytes() {
 		insns = append(insns,
 			// bpf_probe_read_kernel(hold + holdHdr, caplen, data)
 			asm.Mov.Reg(asm.R1, asm.R8), asm.Add.Imm(asm.R1, holdHdr),
@@ -371,7 +414,7 @@ func buildGatedExitInsns(h *hook.Hook, filterOut codegen.Output, tf filter.Targe
 		insns = append(insns, asm.LoadMem(asm.R1, asm.R8, holdTag, asm.Word), asm.StoreMem(asm.R10, -16, asm.R1, asm.Word), asm.LoadMapPtr(asm.R1, gateFD), asm.Mov.Reg(asm.R2, asm.R10), asm.Add.Imm(asm.R2, -16), asm.FnMapLookupElem.Call(), asm.JNE.Imm(asm.R0, 0, "exit"))
 	}
 
-	if emit != EmitExit {
+	if emit.holdsBytes() {
 		// Count a failed entry snapshot only after both filters selected this
 		// invocation. No ring record has been reserved, so skip the discard path.
 		insns = append(insns, asm.LoadMem(asm.R1, asm.R8, holdCopyErr, asm.Word), asm.JNE.Imm(asm.R1, 0, "rb_copy_count"))
@@ -387,7 +430,18 @@ func buildGatedExitInsns(h *hook.Hook, filterOut codegen.Output, tf filter.Targe
 	)
 	packetID := asm.Instructions{asm.Mov.Reg(asm.R1, asm.R6)}
 
-	if emit != EmitExit {
+	if emit == EmitEager {
+		insns = append(insns, captureDecision(eventsFD, statsFD, packetID)...)
+		// No payload copy, so only the submit and reserve terminals are reachable.
+		insns = append(insns, emitExportCounter(statsFD, statSubmitted, "rb_submitted")...)
+		if statsFD > 0 {
+			insns = append(insns, emitExportCounter(statsFD, statReserveFail, "rb_fail")...)
+			insns = append(insns, emitExportCounter(statsFD, statLookupMiss, "rb_lookup_fail")...)
+		}
+		insns = append(insns, emitExportCounter(statsFD, statHoldUnpaired, "hold_unpaired")...)
+		return finishProgram(insns, filterOut, 0), nil
+	}
+	if emit.holdsBytes() {
 		insns = append(insns, captureFromHold(eventsFD, statsFD, entryCapLen, packetID)...)
 		if emit == EmitBoth && statsFD > 0 {
 			count := emitExportCounter(statsFD, statSubmitted, "hold_submitted")
@@ -446,6 +500,76 @@ func captureFromHold(eventsFD, statsFD, entryCapLen int, packetID asm.Instructio
 		asm.FnProbeReadKernel.Call(),
 		asm.JNE.Imm(asm.R0, 0, "rb_copy_fail"),
 		// submit
+		asm.LoadMem(asm.R1, asm.R10, -32, asm.DWord),
+		asm.Mov.Imm(asm.R2, int32(RingbufSubmitFlags)),
+		asm.FnRingbufSubmit.Call(),
+	)
+	return insns
+}
+
+// captureDecision emits the metadata-only decision record of EmitEager:
+// mode 1 (exit), caplen 0, the verdict (args[1]) and the packet id loaded
+// by packetID (→ R1; must not clobber R0). Same ring/stack conventions as
+// captureWithRingbuf.
+func captureDecision(eventsFD, statsFD int, packetID asm.Instructions) asm.Instructions {
+	insns := asm.Instructions{
+		asm.FnKtimeGetNs.Call(),
+		asm.StoreMem(asm.R10, -56, asm.R0, asm.DWord),
+		asm.FnGetSmpProcessorId.Call(),
+		asm.StoreMem(asm.R10, -16, asm.R0, asm.Word),
+	}
+	insns = append(insns, emitShardedRBReserve(eventsFD, statsFD, int32(metadataSize))...)
+	insns = append(insns,
+		asm.LoadMem(asm.R1, asm.R10, -56, asm.DWord),
+		asm.StoreMem(asm.R0, 0, asm.R1, asm.DWord),
+		asm.LoadMem(asm.R2, asm.R10, savedReturnSlot, asm.Word),
+		asm.StoreMem(asm.R0, 8, asm.R2, asm.Word),
+		asm.StoreImm(asm.R0, 12, 1, asm.Byte),
+		asm.StoreImm(asm.R0, 13, 0, asm.Byte),
+		asm.StoreImm(asm.R0, 14, 0, asm.Half),
+		asm.LoadMem(asm.R1, asm.R10, tagSlot, asm.DWord),
+		asm.StoreMem(asm.R0, 16, asm.R1, asm.Word),
+	)
+	insns = append(insns, packetID...)
+	insns = append(insns,
+		asm.StoreMem(asm.R0, 20, asm.R1, asm.DWord),
+		asm.LoadMem(asm.R1, asm.R10, -32, asm.DWord),
+		asm.Mov.Imm(asm.R2, int32(RingbufSubmitFlags)),
+		asm.FnRingbufSubmit.Call(),
+	)
+	return insns
+}
+
+// captureEagerEntry emits the EmitEager entry image straight from the
+// packet (R7 data, R9 len, as captureWithRingbuf), with the packet id in
+// R6 and the invocation's depth from the hold (R8) in the action field.
+func captureEagerEntry(eventsFD, statsFD, maxCapLen int) asm.Instructions {
+	insns := asm.Instructions{
+		asm.FnKtimeGetNs.Call(),
+		asm.StoreMem(asm.R10, -56, asm.R0, asm.DWord),
+		asm.FnGetSmpProcessorId.Call(),
+		asm.StoreMem(asm.R10, -16, asm.R0, asm.Word),
+	}
+	insns = append(insns, emitShardedRBReserve(eventsFD, statsFD, int32(metadataSize+maxCapLen))...)
+	insns = append(insns,
+		asm.LoadMem(asm.R1, asm.R10, -56, asm.DWord),
+		asm.StoreMem(asm.R0, 0, asm.R1, asm.DWord),
+		asm.LoadMem(asm.R2, asm.R8, holdEagerDepth, asm.Word),
+		asm.StoreMem(asm.R0, 8, asm.R2, asm.Word),
+		asm.StoreImm(asm.R0, 12, 0, asm.Byte), // mode = 0 (entry)
+		asm.StoreImm(asm.R0, 13, 0, asm.Byte),
+		asm.Mov.Reg(asm.R3, asm.R9),
+		asm.JLE.Imm(asm.R3, int32(maxCapLen), "ge_cap_ok"),
+		asm.Mov.Imm(asm.R3, int32(maxCapLen)),
+		asm.StoreMem(asm.R0, 14, asm.R3, asm.Half).WithSymbol("ge_cap_ok"),
+		asm.LoadMem(asm.R1, asm.R10, tagSlot, asm.DWord),
+		asm.StoreMem(asm.R0, 16, asm.R1, asm.Word),
+		asm.StoreMem(asm.R0, 20, asm.R6, asm.DWord),
+		asm.Mov.Reg(asm.R1, asm.R0), asm.Add.Imm(asm.R1, int32(metadataSize)),
+		asm.Mov.Reg(asm.R2, asm.R3),
+		asm.Mov.Reg(asm.R3, asm.R7),
+		asm.FnProbeReadKernel.Call(),
+		asm.JNE.Imm(asm.R0, 0, "rb_copy_fail"),
 		asm.LoadMem(asm.R1, asm.R10, -32, asm.DWord),
 		asm.Mov.Imm(asm.R2, int32(RingbufSubmitFlags)),
 		asm.FnRingbufSubmit.Call(),
