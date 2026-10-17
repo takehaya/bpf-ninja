@@ -30,6 +30,19 @@ import (
 // current invocation's. PREEMPT_RT with CONFIG_PREEMPT_RT_NEEDS_BH_LOCK
 // off is out of scope (a higher-priority NAPI thread can interleave).
 //
+// The one exception on a non-RT kernel is synchronous re-entry: the
+// target calls bpf_clone_redirect, whose dev_queue_xmit runs the same
+// program again (attached at the egress) before the outer invocation
+// returns. The inner fentry then overwrites the outer hold, or the inner
+// fexit consumes it. Neither is ever paired wrongly (the identity check
+// fails for the clone), but the outer invocation cannot be decided: the
+// fentry counts a still-valid hold it overwrites (statHoldOverwrite) and
+// the fexit counts a hold it consumed for another invocation
+// (statHoldUnpaired), so the loss shows in the capture status. The same
+// counters catch an fexit skipped because another attach rewrote the
+// trampoline mid-invocation; a hold left valid at the end is added to
+// the unpaired count by ExportStats.
+//
 // A tail call in the target does not skip its fexit: the tail-called
 // program returns into the caller's trampoline (the return address
 // survives the jump; the kernel keeps tail_call_cnt across it with
@@ -117,7 +130,7 @@ func emitHoldLookup(holdFD int) asm.Instructions {
 // buildGatedEntryInsns is the fentry half: filter gate, then on match
 // write the hold slot (and the entry bytes unless only the exit image is
 // wanted). Never emits to the ring.
-func buildGatedEntryInsns(h *hook.Hook, filterOut codegen.Output, tf filter.TargetFilters, holdFD, scratchFD int, slots *pktSetSlots, pktRefs []string, emit Emit, entryCapLen int, gateFD int) (asm.Instructions, error) {
+func buildGatedEntryInsns(h *hook.Hook, filterOut codegen.Output, tf filter.TargetFilters, holdFD, holdStopFD, statsFD, scratchFD int, slots *pktSetSlots, pktRefs []string, emit Emit, entryCapLen int, gateFD int) (asm.Instructions, error) {
 	insns, err := buildFilterGate(h, filterOut, tf, scratchFD, slots, pktRefs, false, 0)
 	if err != nil {
 		return nil, err
@@ -127,9 +140,30 @@ func buildGatedEntryInsns(h *hook.Hook, filterOut codegen.Output, tf filter.Targ
 	if err != nil {
 		return nil, err
 	}
+	if holdStopFD > 0 {
+		// Quiesce sets the stop flag before detaching (see Probe.Quiesce).
+		insns = append(insns,
+			asm.StoreImm(asm.R10, -16, 0, asm.Word),
+			asm.LoadMapPtr(asm.R1, holdStopFD),
+			asm.Mov.Reg(asm.R2, asm.R10), asm.Add.Imm(asm.R2, -16),
+			asm.FnMapLookupElem.Call(),
+			asm.JEq.Imm(asm.R0, 0, "exit"),
+			asm.LoadMem(asm.R1, asm.R0, 0, asm.Word),
+			asm.JNE.Imm(asm.R1, 0, "exit"),
+		)
+	}
 	insns = append(insns, emitHoldLookup(holdFD)...)
+	// A still-valid hold belongs to an invocation that has not reached its
+	// exit: the target re-entered synchronously (bpf_clone_redirect ->
+	// dev_queue_xmit). Count the earlier invocation as lost before
+	// overwriting its hold.
 	insns = append(insns,
-		asm.FnKtimeGetNs.Call(),
+		asm.LoadMem(asm.R2, asm.R8, holdValid, asm.Half),
+		asm.JEq.Imm(asm.R2, 0, "gh_fresh"),
+	)
+	insns = append(insns, emitCounterInc(statsFD, statHoldOverwrite, "gh_fresh")...)
+	insns = append(insns,
+		asm.FnKtimeGetNs.Call().WithSymbol("gh_fresh"),
 		asm.StoreMem(asm.R8, holdTs, asm.R0, asm.DWord),
 	)
 	insns = append(insns, identity...)
@@ -186,7 +220,7 @@ func buildGatedExitInsns(h *hook.Hook, filterOut codegen.Output, tf filter.Targe
 	)
 	insns = append(insns, identity...)
 	insns = append(insns,
-		asm.JNE.Reg(asm.R1, asm.R2, "exit"), // stale slot (missed fentry, RT interleave): drop it
+		asm.JNE.Reg(asm.R1, asm.R2, "hold_unpaired"), // written by another invocation: count and drop it
 	)
 
 	body, err := buildFilterBody(h, filterOut, tf, scratchFD, slots, pktRefs)
@@ -230,7 +264,9 @@ func buildGatedExitInsns(h *hook.Hook, filterOut codegen.Output, tf filter.Targe
 		// submitting either if pairs must be atomic under ring pressure.
 		insns = append(insns, captureWithRingbuf(eventsFD, statsFD, true, filterOut.Capture.MaxCapLen, packetID)...)
 	}
-	return finishProgram(append(insns, emitExportTerminals(statsFD)...), filterOut, 0), nil
+	insns = append(insns, emitExportTerminals(statsFD)...)
+	insns = append(insns, emitExportCounter(statsFD, statHoldUnpaired, "hold_unpaired")...)
+	return finishProgram(insns, filterOut, 0), nil
 }
 
 // captureFromHold emits the entry image kept in the hold slot (R8) as a

@@ -32,11 +32,13 @@ After shutdown and merge, `capture status=...` reports one session's totals:
 
 | Field | Unit and meaning |
 | --- | --- |
-| `selected` | Export attempts after the filter, set membership and tag gate; sum of the four producer outcomes below |
+| `selected` | Export attempts after the filter, set membership and tag gate; sum of the four producer outcomes below (the two `hold_` counters are not included: their exit decision is unknown) |
 | `exported` | Records submitted to the ring |
 | `ringbuf_reserve_fail` | Selected records lost because reserve returned NULL |
 | `lookup_miss` | Selected records with no ring map for their CPU |
 | `copy_fail` | Reserved records discarded after a packet-copy helper failed |
+| `hold_overwrite` | Gated captures: entry-matched invocations whose hold was overwritten by a re-entry of the same function before their exit ran |
+| `hold_unpaired` | Gated captures: entry images their own exit never consumed (an exit of a different invocation did, or none had by the end of the capture) |
 | `consumed` | Non-discard ring records consumed across all shards |
 | `written` | Records in successful writer calls; final status also checks flush/close/merge |
 | `intentional_limit` | Consumed records omitted because of a count/byte/tag cap |
