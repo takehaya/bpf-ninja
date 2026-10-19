@@ -24,6 +24,24 @@ sudo bpf-ninja -i veth0 "eth/ipv4/tcp[dport==443]"
 
 hook 種別 (XDP / TC clsact / cgroup-skb / netfilter) は指定不要です。ターゲットプログラムの型から自動判別されます。`-p <progID>` はどの対応型でも受け付け、`-i <iface>` は interface の XDP プログラムを引き、`--cgroup <path>` は cgroup v2 パスに attach された cgroup-skb プログラムを列挙します (BPF_PROG_QUERY、ingress + egress)。TC clsact filter (`tc filter add ... direction ingress/egress` で張ったもの) も fentry/fexit の対象にできますが、TC clsact qdisc の interface walk は未配線のため、target 指定は `-p <progID>` のみです。
 
+attach 済みの freplace (`BPF_PROG_TYPE_EXT`) も `-p <EXT_ID>` で指定できます。
+`-p <dispatcher_ID> --list-progs` は `freplace` の子プログラムを表示します。
+packet の読み方と action 名は置換元の型から選び、probe と BTF の参照先は EXT 自身です。
+未 attach の EXT は拒否します。
+
+```sh
+sudo bpf-ninja -p <EXT_ID> --mode entry 'eth/ipv4' --mode exit 'eth/ipv4' --emit both -w ext.pcap
+sudo bpf-ninja -p <EXT_ID> --list-params
+```
+
+EXT の entry が ctx の後に `orig_ret` などの整数引数を持つ場合、`--func` なしで
+`--arg-filter` / `--list-params` / `--arg-echo` を使えます。
+置換済みの stub への probe は拒否し、指定すべき EXT ID をエラーに表示します。
+freplace link を持つプログラムの他の global subfunction も既定では保護します。
+`--allow-dispatcher-slot` で解除できますが、その probe が後の freplace を `EBUSY` にする可能性があります。
+link 一覧は snapshot のため、並行して attach が変わると kernel の attach エラーになる場合があります。その場合は一覧を取り直してください。
+
+
 cgroup-skb ターゲットには注意点が 2 つあります。パケットは network header (L3) 始まりで Ethernet ヘッダを含まないため、DSL チェインは `ipv4/...` または `ipv6/...` を起点にします (`eth/...` は警告付きで誤 parse になります)。pcap-ng 出力も LINKTYPE_RAW になり、Wireshark / tcpdump はバージョン nibble から v4/v6 を自動判定します。
 
 netfilter ターゲット (BPF_PROG_TYPE_NETFILTER、カーネル 6.4+) も同じく L3 始まりで、cgroup-skb と同じ注意点が当てはまります。target 指定は `-p <progID>` のみで、exit mode の verdict は `where action == NF_DROP` または `where action == NF_ACCEPT` で絞れます (両方拾うなら `or` でつなぎます) (カーネルが netfilter BPF の返り値をこの 2 値に制限しているため、これで全 verdict です)。
@@ -565,8 +583,9 @@ mergecap -w merged.pcap path.pcap.cpu*
 
 ### `--list-progs` で到達可能プログラムを洗い出す
 
-`--list-progs` は、起点プログラムから到達できるプログラムを推移的に辿って一覧します。起点は `-i` の XDP か `-p` の ID です。辿るエッジは次の 2 種類です。
+`--list-progs` は、起点プログラムから到達できるプログラムを推移的に辿って一覧します。起点は `-i` の XDP か `-p` の ID です。辿るエッジは次の 3 種類です。
 
+- freplace は、関数を置換している attach 済み EXT プログラムです。
 - tail call は、`bpf_tail_call` が使う `PROG_ARRAY` のエントリ先です。
 - redirect は、`CPUMAP` / `DEVMAP` / `DEVMAP_HASH` のエントリに attach された XDP プログラム、すなわち `bpf_redirect_map()` の飛び先です。
 
@@ -708,7 +727,7 @@ sudo bpf-ninja -p 1661 --func upf_capture_point_ul --arg-echo -c 1
 #   upf_capture_point_ul: imsi=999990000000001 (0x38d7c50ba9c01) teid=12345 (0x3039)
 ```
 
-- `--func` は必須です。表示対象は `--list-params` が挙げる整数引数で、10 進と 16 進を併記します。
+- `--func`、または整数引数を持つ EXT entry が必要です。表示対象は `--list-params` が挙げる整数引数で、10 進と 16 進を併記します。
 - `--arg-filter` と併用すると、その述語にマッチした呼び出しだけを表示します。値の当たりを付けてから絞り込むという使い方ができます。
 - 連続して同じ引数タプルが来た場合は 1 行に畳んで `(xN)` と表示します。`-c N` を付けると N 件表示したところで終了し、無指定なら Ctrl-C まで続きます。
 - リーダは capture path と同じ in-tree の `fastrb` (mmap + epoll) を使います。

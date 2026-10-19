@@ -615,7 +615,7 @@ sudo ./bpf-ninja -i vtest0 --func process_packet --arg-filter "no_such=42"
 sudo ./bpf-ninja -i vtest0 --arg-filter "tunnel_id=42"
 ```
 
-期待: `--arg-filter requires --func` というエラーになる。
+期待: `--arg-filter requires --func or an entry function with filterable integer parameters` を含むエラーになる。この XDP entry は整数引数を持たないため。
 
 ### 4.13 クリーンアップ
 
