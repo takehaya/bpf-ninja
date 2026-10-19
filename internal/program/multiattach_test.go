@@ -156,7 +156,7 @@ func TestBpfMultiAttachEntryPrograms(t *testing.T) {
 		progInfoFor(t, progB, "xdp_multi_b"),
 	}
 	// No --func: each program contributes its entry function.
-	targets, err := attach.ResolveTargets(infos, nil)
+	targets, err := attach.ResolveTargets(infos, nil, false)
 	if err != nil {
 		t.Fatalf("ResolveTargets: %v", err)
 	}
@@ -196,7 +196,7 @@ func TestBpfMultiAttachNoinlineAcrossPrograms(t *testing.T) {
 		progInfoFor(t, progV4, "xdp_v4_handler"),
 		progInfoFor(t, progV6, "xdp_v6_handler"),
 	}
-	targets, err := attach.ResolveTargets(infos, []string{"capture_pt"})
+	targets, err := attach.ResolveTargets(infos, []string{"capture_pt"}, false)
 	if err != nil {
 		t.Fatalf("ResolveTargets: %v", err)
 	}
@@ -234,7 +234,7 @@ func TestResolveTargetsFuncMissingEverywhere(t *testing.T) {
 
 	prog := loadXDPByName(t, multiXDPSource("xdp_multi_solo"), "xdp_multi_solo")
 	infos := []*attach.ProgInfo{progInfoFor(t, prog, "xdp_multi_solo")}
-	if _, err := attach.ResolveTargets(infos, []string{"no_such_func"}); err == nil {
+	if _, err := attach.ResolveTargets(infos, []string{"no_such_func"}, false); err == nil {
 		t.Fatal("expected error for func missing from every program, got nil")
 	}
 }

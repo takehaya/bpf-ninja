@@ -42,6 +42,25 @@ Supported hooks and how to name the target:
 | cgroup-skb | `--cgroup <cgroup v2 path>` (enumerates attached programs) or `-p <progID>` | packet bytes start at the IP header — root DSL chains at `ipv4`/`ipv6`, pcap-ng is LINKTYPE_RAW |
 | netfilter | `-p <progID>` (kernel 6.4+, programs attached to NF_INET_* hooks via bpf_link) | packet bytes start at the IP header, same L3-start notes as cgroup-skb; exit-mode verdicts are `NF_DROP` / `NF_ACCEPT` |
 
+Attached freplace (`BPF_PROG_TYPE_EXT`) programs are also accepted by `-p <EXT_ID>`.
+Use `-p <dispatcher_ID> --list-progs` to find their IDs (`freplace` edges).
+The replaced program determines the packet layout and action names; probes and
+BTF parameter lookup target the EXT itself. An unattached EXT is rejected.
+For example, capture both images at an XDP replacement with:
+
+```sh
+sudo bpf-ninja -p <EXT_ID> --mode entry 'eth/ipv4' --mode exit 'eth/ipv4' --emit both -w ext.pcap
+sudo bpf-ninja -p <EXT_ID> --list-params
+```
+
+If the EXT entry has integer parameters after ctx (for example `orig_ret`),
+`--arg-filter`, `--list-params`, and `--arg-echo` work without `--func`.
+Probing a replaced dispatcher stub is rejected with the EXT ID to use instead.
+Other global subfunctions of a program with live freplace links are guarded:
+`--allow-dispatcher-slot` permits probing them, but can block a later freplace
+with `EBUSY`. Link discovery is a snapshot, so concurrent attachment changes
+can still cause a kernel attach error; rerun discovery after such changes.
+
 `entry`/`exit` are non-invasive: the target program is unmodified, attach is via BPF trampoline. `xdp` is the standalone path for "I just want to capture, there's nothing else here". `tc-entry`/`tc-exit` remain as deprecated aliases for `entry`/`exit`.
 
 `--mode` is repeatable: `--mode entry EXPR --mode exit EXPR` captures **only the packets that match both** — the entry filter on the packet as the program received it, the exit filter on the packet as the program left it (after decap / rewrite) plus the verdict. The entry image is held in a per-CPU slot until the verdict is known, so you can ask for "the pre-decap header of every packet the program dropped" without exporting anything else. `--emit both` (default) writes the entry and the exit image, `--emit entry` / `--emit exit` just one. Entry records go to a `<hook>:entry` pcap-ng interface and every record carries an opaque `epb_packetid` (CPU + per-CPU sequence, no kernel address) shared by the two images of one invocation so they pair up. `-c` counts records (`-c 10` with `--emit both` is 5 pairs); `merge` and `convert` output drops the id, so pair on the per-CPU shard files or the raw-dump. Under ring pressure an entry record can appear without its exit twin (the exit-side reservation failed after the entry was written), so treat an unpaired entry as a drop, not as a verdict:
@@ -311,12 +330,13 @@ int parse_headers(struct xdp_md *ctx) {
 | `--dump-hook` | Hook whose capabilities/prologue `--dump-asm` renders: `xdp` (default) \| `tc` \| `cgroup-skb` \| `netfilter` (offline compiles have no target program to auto-detect from) | — |
 | `--func` | Attach to a specific `__noinline` subfunction by BTF name | entry, exit |
 | `--list-funcs` | List available BTF functions in the target program and exit | entry, exit |
-| `--list-progs` | List tail call targets reachable from the target program and exit | entry, exit |
-| `--list-params` | List filterable parameters for `--func` (requires `--func`) | entry, exit |
+| `--allow-dispatcher-slot` | Allow probing an unreplaced global dispatcher subfunction; may block later freplace with `EBUSY` | entry, exit |
+| `--list-progs` | List reachable freplace, tail-call, and redirect-map targets and exit | entry, exit |
+| `--list-params` | List filterable parameters for the target function (requires `--func` or an EXT entry with integer parameters) | entry, exit |
 | `--json` | Print `--list-progs` / `--list-funcs` / `--list-params` output as JSON on stdout instead of text on stderr | entry, exit |
-| `--arg-filter` | Filter by function argument value (requires `--func`); format: `param=value`, `param>=val`, `param<=val`, `param=min..max` | entry, exit |
+| `--arg-filter` | Filter by function argument value (requires `--func` or an EXT entry with integer parameters); format: `param=value`, `param>=val`, `param<=val`, `param=min..max` | entry, exit |
 | `--set` | Define a named match set backed by a pinned BPF hash map: `NAME=/sys/fs/bpf/path[,key(field=arg:param,...)]`. Reference it with `--arg-filter @NAME` or the DSL predicate `layer[field in @NAME]`; manage entries at runtime with `bpf-ninja set`. Repeatable | all |
-| `--arg-echo` | Print the target function's integer args for each call (gated by `--arg-filter` if set) instead of capturing. Requires `--func` and a single `--mode`; combine with `-c N` | entry, exit |
+| `--arg-echo` | Print the target function's integer args for each call (gated by `--arg-filter` if set) instead of capturing. Requires `--func` or an EXT entry with integer parameters, and a single `--mode`; combine with `-c N` | entry, exit |
 | `--split-by-tag` | Route matched packets to one pcap per set-map value (tag): `-w out.pcap` yields `out.<tag>.pcap` (requires `-w`) | all |
 | `--max-bytes` | Stop the whole capture once total output bytes reach N (works with or without `--split-by-tag`). Per-tag caps live on the set entries: `set add ... max-bytes=N` (0 / omitted = uncapped; entries sharing a tag share one budget — an uncapped entry makes the tag uncapped, otherwise the largest cap wins) | all |
 | `--exit-when-capped` | Exit 0 once every entry that has a per-entry cap reached it; uncapped entries don't participate (requires `--split-by-tag` and at least one `--set`) | all |

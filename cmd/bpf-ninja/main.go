@@ -80,12 +80,16 @@ func rootFlags() []cli.Flag {
 			Usage: "attach to a specific __noinline subfunction (by BTF name) instead of the entry function; repeatable, and each func attaches in every target program whose BTF has it",
 		},
 		&cli.BoolFlag{
+			Name:  "allow-dispatcher-slot",
+			Usage: "allow probes on unreplaced global dispatcher functions (may block later freplace with EBUSY)",
+		},
+		&cli.BoolFlag{
 			Name:  "list-funcs",
 			Usage: "list available BTF functions in the target program and exit",
 		},
 		&cli.BoolFlag{
 			Name:  "list-progs",
-			Usage: "list programs reachable from the target: tail calls + CPUMAP/DEVMAP/DEVMAP_HASH redirect targets (followed transitively), then exit",
+			Usage: "list programs reachable from the target: freplace + tail calls + CPUMAP/DEVMAP/DEVMAP_HASH redirect targets (followed transitively), then exit",
 		},
 		&cli.BoolFlag{
 			Name:  "json",
@@ -93,7 +97,7 @@ func rootFlags() []cli.Flag {
 		},
 		&cli.StringSliceFlag{
 			Name:  "arg-filter",
-			Usage: "filter by function argument value (requires --func); format: param=value, param>=val, param<=val, param=min..max, or @NAME to match against a --set pinned-map set",
+			Usage: "filter by function argument value (requires --func or an entry function with filterable integer parameters); format: param=value, param>=val, param<=val, param=min..max, or @NAME to match against a --set pinned-map set",
 		},
 		&cli.StringSliceFlag{
 			Name:  "set",
@@ -101,11 +105,11 @@ func rootFlags() []cli.Flag {
 		},
 		&cli.BoolFlag{
 			Name:  "list-params",
-			Usage: "list filterable parameters for the target function (requires --func) and exit",
+			Usage: "list filterable parameters for the target function (requires --func or an entry function with filterable integer parameters) and exit",
 		},
 		&cli.BoolFlag{
 			Name:  "arg-echo",
-			Usage: "diagnostic: print the target function's integer args for each call (gated by --arg-filter if set) instead of capturing packets; requires --func; combine with -c N to stop after N",
+			Usage: "diagnostic: print the target function's integer args for each call (gated by --arg-filter if set) instead of capturing packets; requires --func or an entry function with filterable integer parameters; combine with -c N to stop after N",
 		},
 		&cli.BoolFlag{
 			Name:  "cbpf",
@@ -646,19 +650,11 @@ func run(ctx context.Context, cmd *cli.Command) error {
 	// subfuncs get one copy per calling program); without --func each
 	// program contributes its entry function.
 	funcNames := cmd.StringSlice("func")
-	needParams := cmd.Bool("list-params") || len(cmd.StringSlice("arg-filter")) > 0 || cmd.Bool("arg-echo")
-	if len(funcNames) == 0 && needParams {
-		switch {
-		case cmd.Bool("list-params"):
-			return fmt.Errorf("--list-params requires --func")
-		case cmd.Bool("arg-echo"):
-			return fmt.Errorf("--arg-echo requires --func")
-		default:
-			return fmt.Errorf("--arg-filter requires --func")
-		}
-	}
-	targets, err := attach.ResolveTargets(infos, funcNames)
+	targets, err := attach.ResolveTargets(infos, funcNames, cmd.Bool("allow-dispatcher-slot"))
 	if err != nil {
+		return err
+	}
+	if err := validateImplicitEntryParams(cmd, targets); err != nil {
 		return err
 	}
 	for _, t := range targets {
@@ -761,7 +757,7 @@ func run(ctx context.Context, cmd *cli.Command) error {
 		if filters != nil {
 			af = filters[0].Args
 		}
-		probe, err := program.LoadArgEcho(t.Program, t.FuncName, af, t.Params, isFexit)
+		probe, err := program.LoadArgEcho(t.Program, t.FuncName, af, t.Params, isFexit, t.AllowDispatcherSlot)
 		if err != nil {
 			return err
 		}
@@ -825,7 +821,7 @@ func run(ctx context.Context, cmd *cli.Command) error {
 		}
 		label = fmt.Sprintf("%d attach points: %s", len(targets), strings.Join(names, ", "))
 	}
-	h, ok := hook.ByProgramType(targets[0].Type)
+	h, ok := hook.ByProgramType(targets[0].EffectiveHookType())
 	if !ok {
 		return hook.UnsupportedTypeError(targets[0].Type)
 	}
@@ -2035,4 +2031,29 @@ func logVerbose(cmd *cli.Command, format string, args ...any) {
 	if cmd.Bool("verbose") {
 		fmt.Fprintf(os.Stderr, format+"\n", args...)
 	}
+}
+
+// validateImplicitEntryParams runs after target resolution so EXT entry
+// parameters are available without requiring an explicit --func.
+func validateImplicitEntryParams(cmd *cli.Command, targets []attach.Target) error {
+	if len(cmd.StringSlice("func")) > 0 {
+		return nil
+	}
+	var option string
+	switch {
+	case cmd.Bool("list-params"):
+		option = "--list-params"
+	case cmd.Bool("arg-echo"):
+		option = "--arg-echo"
+	case len(cmd.StringSlice("arg-filter")) > 0:
+		option = "--arg-filter"
+	default:
+		return nil
+	}
+	for _, target := range targets {
+		if len(target.Params) == 0 {
+			return fmt.Errorf("%s requires --func or an entry function with filterable integer parameters; entry %q (program id=%d) has none", option, target.FuncName, target.ProgID)
+		}
+	}
+	return nil
 }

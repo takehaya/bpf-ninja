@@ -33,6 +33,20 @@ class AuditTests(unittest.TestCase):
                   {"Package": package, "Action": "pass"}]
         self.assertTrue(module.audit(events, {(package, test)}, "6.12"))
 
+    def test_reentry_skip_requires_subtest_kernel_and_reason(self):
+        reason = "neither tcx nor clsact available (operation not supported)"
+        for parent in ("TestBpfGatedReentry", "TestBpfExtensionReentry"):
+            test = parent + "/both"
+            self.assertTrue(module.allowed_skip(module.PROGRAM, test, reason, "6.1"))
+            for package, name, message, kernel in (
+                (module.PROGRAM, test, reason, "6.6"),
+                (module.PROGRAM, test, reason, None),
+                (module.PROGRAM, test, "unexpected verifier failure", "6.1"),
+                (module.PROGRAM, parent, reason, "6.1"),
+                ("other/package", test, reason, "6.1"),
+            ):
+                self.assertFalse(module.allowed_skip(package, name, message, kernel))
+
     def test_multipoint_netfilter_skip_is_specific(self):
         test = "TestBpfMultiPointLoad/netfilter-entry"
         reason = "BPF_PROG_TYPE_NETFILTER not supported"

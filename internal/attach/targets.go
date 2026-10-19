@@ -19,11 +19,13 @@ import (
 // from the program's cached BTF so downstream arg-filter / list-params /
 // arg-echo consumers don't re-parse BTF per use.
 type Target struct {
-	Program  *ebpf.Program
-	ProgID   uint32
-	FuncName string
-	Type     ebpf.ProgramType
-	Params   []FuncParamInfo
+	Program             *ebpf.Program
+	ProgID              uint32
+	FuncName            string
+	Type                ebpf.ProgramType
+	HookType            ebpf.ProgramType
+	Params              []FuncParamInfo
+	AllowDispatcherSlot bool
 }
 
 // CloseTargets closes the programs of all targets. Each program handle is
@@ -53,7 +55,7 @@ func CloseTargets(targets []Target) {
 // CloseTargets. Program-type validation (uniform, supported) is owned by
 // program.loadMulti, the single enforcement point every attach path passes
 // through.
-func ResolveTargets(infos []*ProgInfo, funcNames []string) ([]Target, error) {
+func ResolveTargets(infos []*ProgInfo, funcNames []string, allowDispatcherSlot bool) ([]Target, error) {
 	var targets []Target
 	seenPair := map[string]bool{}
 	funcFound := map[string]bool{}
@@ -64,17 +66,29 @@ func ResolveTargets(infos []*ProgInfo, funcNames []string) ([]Target, error) {
 			return
 		}
 		seenPair[key] = true
-		targets = append(targets, Target{
+		target := Target{
 			Program: info.Program, ProgID: info.ProgID, FuncName: fn,
-			Type: info.Type, Params: params,
-		})
+			Type: info.Type, HookType: info.HookType, Params: params,
+			AllowDispatcherSlot: allowDispatcherSlot,
+		}
+		target.HookType = target.EffectiveHookType()
+		targets = append(targets, target)
 	}
 
 	for _, info := range infos {
 		if len(funcNames) == 0 {
-			// Entry functions never take filterable args (their only
-			// param is the ctx pointer), so no params to resolve.
-			addTarget(info, info.FuncName, nil)
+			var params []FuncParamInfo
+			if info.Type == ebpf.Extension {
+				spec, err := info.BTFSpecCached()
+				if err != nil {
+					return nil, err
+				}
+				params, err = GetFuncParamsFromSpec(spec, info.FuncName)
+				if err != nil {
+					return nil, err
+				}
+			}
+			addTarget(info, info.FuncName, params)
 			continue
 		}
 		spec, err := info.BTFSpecCached()
@@ -129,4 +143,12 @@ func availableFuncs(infos []*ProgInfo) []string {
 		}
 	}
 	return names
+}
+
+// EffectiveHookType also supports hand-built non-EXT targets.
+func (t Target) EffectiveHookType() ebpf.ProgramType {
+	if t.HookType == 0 && t.Type != ebpf.Extension {
+		return t.Type
+	}
+	return t.HookType
 }
