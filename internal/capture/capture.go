@@ -91,6 +91,7 @@ type Reader struct {
 	reader *ringbuf.Reader
 	rec    ringbuf.Record
 
+	filter       RecordFilter
 	session      *shardSession
 	cursors      []*fastrb.Cursor
 	shardReaders []*ringbuf.Reader
@@ -315,6 +316,17 @@ func NewShardedReader(inners []*ebpf.Map) (*Reader, error) {
 	return r, nil
 }
 
+// RecordFilter screens parsed records inside a reader before their bytes
+// are copied out of the ring, so the records it drops cost no copy.
+// Record gets each record, whose Data points into reader memory, and
+// passes the packets to write to keep, which copies them into the batch.
+// Detach runs before that memory is reused, so a record Record still
+// holds must be copied out by then. Both run on the shard's goroutine.
+type RecordFilter interface {
+	Record(shard int, pkt Packet, keep func(Packet))
+	Detach(shard int)
+}
+
 // batchSize is the target batch size: the initial Packet/arena capacity
 // and the drain bound for the default reader (RunShards stops draining
 // and flushes once the batch reaches batchSize). The fast reader
@@ -403,10 +415,20 @@ func (r *Reader) RunShards(sink ShardSink) (func(), error) {
 		if LegacyTimestamp {
 			pkt.Timestamp = time.Now()
 		}
-		builders[i].add(pkt)
+		if r.filter == nil {
+			builders[i].add(pkt)
+			return nil
+		}
+		// The next ReadInto reuses raw.
+		r.filter.Record(i, pkt, builders[i].add)
+		r.filter.Detach(i)
 		return nil
 	}, func(i int) error { return builders[i].flush() })
 }
+
+// SetRecordFilter makes RunShards pass every record through f. Call it
+// before RunShards.
+func (r *Reader) SetRecordFilter(f RecordFilter) { r.filter = f }
 
 func (r *Reader) Stats() *SessionStats {
 	if r.session == nil {
@@ -501,6 +523,7 @@ func (r *Reader) RunRawShards(sink RawShardSink) (func(), error) {
 // NewShardedReader on the same maps (they would race on the
 // consumer-position page).
 type FastShardedReader struct {
+	filter  RecordFilter
 	session *shardSession
 	cursors []*fastrb.Cursor
 	readers []*fastrb.Reader
@@ -552,10 +575,18 @@ func (r *FastShardedReader) RunShardsFast(sink ShardSink) (func(), error) {
 		if LegacyTimestamp {
 			pkt.Timestamp = time.Now()
 		}
+		if r.filter != nil {
+			r.filter.Record(i, pkt, builders[i].add)
+			return nil
+		}
 		builders[i].add(pkt)
 		return nil
 	}, func(i int) error { return builders[i].flush() })
 }
+
+// SetRecordFilter makes RunShardsFast pass every record through f, which
+// reads it in place in the mmap'd ring. Call it before RunShardsFast.
+func (r *FastShardedReader) SetRecordFilter(f RecordFilter) { r.filter = f }
 
 func (r *FastShardedReader) Stats() *SessionStats {
 	if r.session == nil {
@@ -590,6 +621,10 @@ func (r *FastShardedReader) run(sink RawShardSink, flush func(int) error) (func(
 		LatencySamples = make([][]int64, len(r.readers))
 	}
 	for i, rr := range r.readers {
+		var detach func()
+		if r.filter != nil {
+			detach = func() { r.filter.Detach(i) }
+		}
 		s.done.Add(1)
 		go func(i int, rr *fastrb.Reader) {
 			defer s.done.Done()
@@ -612,7 +647,7 @@ func (r *FastShardedReader) run(sink RawShardSink, flush func(int) error) (func(
 						return
 					}
 				}
-				rr.ReadBatch(func(raw []byte) {
+				rr.ReadBatchThen(func(raw []byte) {
 					consumed++
 					if draining {
 						drained++
@@ -624,7 +659,7 @@ func (r *FastShardedReader) run(sink RawShardSink, flush func(int) error) (func(
 						}
 						seen++
 					}
-				})
+				}, detach)
 				s.fail(flush(i))
 				s.acknowledge(i)
 				if draining && r.cursors[i].Consumed() >= s.final[i] {

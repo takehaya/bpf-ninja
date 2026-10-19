@@ -146,6 +146,13 @@ func (r *Reader) WaitForData(timeoutMs int) (int, error) {
 // Returns the number of records delivered to fn (discards are
 // counted as advances but not delivered).
 func (r *Reader) ReadBatch(fn func(record []byte)) int {
+	return r.ReadBatchThen(fn, nil)
+}
+
+// ReadBatchThen is ReadBatch that calls beforeCommit, when non-nil,
+// after the last record and before the consumer position moves past
+// them: the last moment their bytes are still valid.
+func (r *Reader) ReadBatchThen(fn func(record []byte), beforeCommit func()) int {
 	prod := atomic.LoadUintptr(r.prodPos)
 	cons := *r.consPos
 	n := 0
@@ -173,6 +180,9 @@ func (r *Reader) ReadBatch(fn func(record []byte)) int {
 		cons = dataStart + alignedData
 	}
 
+	if beforeCommit != nil {
+		beforeCommit()
+	}
 	atomic.StoreUintptr(r.consPos, cons)
 	return n
 }

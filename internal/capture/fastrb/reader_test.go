@@ -236,3 +236,32 @@ func TestReadBatch_BusyClearsThenDelivers(t *testing.T) {
 		t.Fatalf("second n=%d, want 1", n)
 	}
 }
+
+func TestReadBatchThen_BeforeCommit(t *testing.T) {
+	r := newTestReader(4096)
+	advance := writeRecord(r.ring, 0, 16, 0, 0xaa)
+	advance += writeRecord(r.ring, advance, 8, 0, 0xbb)
+	setProd(r, advance)
+
+	var seen []byte
+	called := false
+	n := r.ReadBatchThen(func(rec []byte) {
+		seen = rec
+	}, func() {
+		called = true
+		// The records are still the consumer's: the position has not
+		// moved, and their bytes are intact.
+		if got := atomic.LoadUintptr(r.consPos); got != 0 {
+			t.Errorf("consPos before commit = %d, want 0", got)
+		}
+		if seen[0] != 0xbb {
+			t.Errorf("last record byte = %#x, want 0xbb", seen[0])
+		}
+	})
+	if n != 2 || !called {
+		t.Fatalf("n = %d, beforeCommit called = %v", n, called)
+	}
+	if got := atomic.LoadUintptr(r.consPos); got != advance {
+		t.Fatalf("consPos = %d, want %d", got, advance)
+	}
+}

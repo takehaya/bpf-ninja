@@ -1374,11 +1374,6 @@ func pumpShards(cmd *cli.Command, inners []*ebpf.Map, label string, writeShard f
 	}
 
 	sink := func(shardIdx int, pkts []capture.Packet) error {
-		if eager != nil {
-			if pkts = eager.pair(shardIdx, pkts); len(pkts) == 0 {
-				return nil
-			}
-		}
 		if count > 0 {
 			n := claimPackets(&captured, count, int64(len(pkts)))
 			ctl.limited.Add(uint64(len(pkts)) - uint64(n))
@@ -1449,6 +1444,9 @@ func pumpShards(cmd *cli.Command, inners []*ebpf.Map, label string, writeShard f
 		if err != nil {
 			return err
 		}
+		if eager != nil {
+			fr.SetRecordFilter(eager)
+		}
 		stop, err = fr.RunShardsFast(sink)
 		readerErr = fr.Err
 		readerFailure = fr.Failures()
@@ -1462,6 +1460,9 @@ func pumpShards(cmd *cli.Command, inners []*ebpf.Map, label string, writeShard f
 		r, err := capture.NewShardedReader(inners)
 		if err != nil {
 			return err
+		}
+		if eager != nil {
+			r.SetRecordFilter(eager)
 		}
 		stop, err = r.RunShards(sink)
 		readerErr = r.Err
