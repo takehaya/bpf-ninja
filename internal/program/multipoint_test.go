@@ -219,11 +219,19 @@ func TestBpfMultiPointGatedTestRun(t *testing.T) {
 				if e.Mode != 0 || e.Action != 0 || !bytes.Equal(e.Data, udp) {
 					t.Errorf("shard %d pair %d: entry mode=%d action=%d len=%d, want the input frame before the verdict", shard, i/2, e.Mode, e.Action, len(e.Data))
 				}
-				if d.Mode != 1 || d.Action != 2 || d.CapLen != 0 || d.PacketID != e.PacketID || e.PacketID == 0 {
-					t.Errorf("shard %d pair %d: decision mode=%d action=%d caplen=%d id=%#x (entry %#x), want a metadata-only PASS for the same id", shard, i/2, d.Mode, d.Action, d.CapLen, d.PacketID, e.PacketID)
+				if d.Mode != 1 || d.Action != 2 || d.CapLen != 0 || d.PacketID != e.PacketID || e.PacketID == 0 || !d.Timestamp.Equal(e.Timestamp) {
+					t.Errorf("shard %d pair %d: decision mode=%d action=%d caplen=%d id=%#x ts=%v (entry %#x ts=%v), want a metadata-only PASS for the same id and entry time", shard, i/2, d.Mode, d.Action, d.CapLen, d.PacketID, d.Timestamp, e.PacketID, e.Timestamp)
 				}
 			}
 		}
+	})
+
+	t.Run("eager-no-wakeup", func(t *testing.T) {
+		// --no-wakeup takes the plain submit instead of the ring query.
+		old := RingbufSubmitFlags
+		RingbufSubmitFlags = BPF_RB_NO_WAKEUP
+		t.Cleanup(func() { RingbufSubmitFlags = old })
+		runGatedTestRun(t, entry, exitPass, EmitEager, repeatFrame(udp, runs), 2*runs)
 	})
 
 	t.Run("eager-exit-miss", func(t *testing.T) {

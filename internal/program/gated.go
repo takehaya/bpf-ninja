@@ -326,15 +326,20 @@ func buildGatedEntryInsns(h *hook.Hook, filterOut codegen.Output, tf filter.Targ
 		// not read again after the identity above.
 		// The depth saved in the hold rides in the entry record's action
 		// field: an entry at depth d means every earlier pending entry at
-		// depth >= d has finished.
+		// depth >= d has finished. The CPU also keys the shard reserve.
 		insns = append(insns,
 			asm.StoreImm(asm.R8, holdValid, 0, asm.Half),
 			asm.LoadMem(asm.R6, asm.R8, holdSeq, asm.DWord),
 			asm.FnGetSmpProcessorId.Call(),
+			asm.StoreMem(asm.R10, -16, asm.R0, asm.Word),
 			asm.LSh.Imm(asm.R0, packetIDCPUShift),
 			asm.Or.Reg(asm.R6, asm.R0),
 		)
-		insns = append(insns, captureEagerEntry(eventsFD, statsFD, entryCapLen)...)
+		record, err := captureEagerEntry(eventsFD, statsFD, entryCapLen)
+		if err != nil {
+			return nil, err
+		}
+		insns = append(insns, record...)
 		insns = append(insns, asm.StoreImm(asm.R8, holdValid, 1, asm.Half))
 		return finishProgram(append(insns, emitExportTerminals(statsFD)...), filterOut, 0), nil
 	}
@@ -420,6 +425,30 @@ func buildGatedExitInsns(h *hook.Hook, filterOut codegen.Output, tf filter.Targe
 		insns = append(insns, asm.LoadMem(asm.R1, asm.R8, holdCopyErr, asm.Word), asm.JNE.Imm(asm.R1, 0, "rb_copy_count"))
 	}
 
+	if emit == EmitEager {
+		// The CPU also keys the shard reserve of the decision record.
+		insns = append(insns,
+			asm.FnGetSmpProcessorId.Call(),
+			asm.StoreMem(asm.R10, -16, asm.R0, asm.Word),
+			asm.LSh.Imm(asm.R0, packetIDCPUShift),
+			asm.LoadMem(asm.R6, asm.R8, holdSeq, asm.DWord),
+			asm.Or.Reg(asm.R6, asm.R0),
+		)
+		decision, err := captureDecision(eventsFD, statsFD, entryCapLen)
+		if err != nil {
+			return nil, err
+		}
+		insns = append(insns, decision...)
+		// No payload copy, so only the submit and reserve terminals are reachable.
+		insns = append(insns, emitExportCounter(statsFD, statSubmitted, "rb_submitted")...)
+		if statsFD > 0 {
+			insns = append(insns, emitExportCounter(statsFD, statReserveFail, "rb_fail")...)
+			insns = append(insns, emitExportCounter(statsFD, statLookupMiss, "rb_lookup_fail")...)
+		}
+		insns = append(insns, emitExportCounter(statsFD, statHoldUnpaired, "hold_unpaired")...)
+		return finishProgram(insns, filterOut, 0), nil
+	}
+
 	// --- packet id for both records: cpu << packetIDCPUShift | hold.seq, parked in
 	// R6 (ctx is not read again after the filter) ---
 	insns = append(insns,
@@ -430,17 +459,6 @@ func buildGatedExitInsns(h *hook.Hook, filterOut codegen.Output, tf filter.Targe
 	)
 	packetID := asm.Instructions{asm.Mov.Reg(asm.R1, asm.R6)}
 
-	if emit == EmitEager {
-		insns = append(insns, captureDecision(eventsFD, statsFD, packetID)...)
-		// No payload copy, so only the submit and reserve terminals are reachable.
-		insns = append(insns, emitExportCounter(statsFD, statSubmitted, "rb_submitted")...)
-		if statsFD > 0 {
-			insns = append(insns, emitExportCounter(statsFD, statReserveFail, "rb_fail")...)
-			insns = append(insns, emitExportCounter(statsFD, statLookupMiss, "rb_lookup_fail")...)
-		}
-		insns = append(insns, emitExportCounter(statsFD, statHoldUnpaired, "hold_unpaired")...)
-		return finishProgram(insns, filterOut, 0), nil
-	}
 	if emit.holdsBytes() {
 		insns = append(insns, captureFromHold(eventsFD, statsFD, entryCapLen, packetID)...)
 		if emit == EmitBoth && statsFD > 0 {
@@ -507,20 +525,74 @@ func captureFromHold(eventsFD, statsFD, entryCapLen int, packetID asm.Instructio
 	return insns
 }
 
-// captureDecision emits the metadata-only decision record of EmitEager:
-// mode 1 (exit), caplen 0, the verdict (args[1]) and the packet id loaded
-// by packetID (→ R1; must not clobber R0). Same ring/stack conventions as
-// captureWithRingbuf.
-func captureDecision(eventsFD, statsFD int, packetID asm.Instructions) asm.Instructions {
-	insns := asm.Instructions{
-		asm.FnKtimeGetNs.Call(),
-		asm.StoreMem(asm.R10, -56, asm.R0, asm.DWord),
-		asm.FnGetSmpProcessorId.Call(),
-		asm.StoreMem(asm.R10, -16, asm.R0, asm.Word),
+// eagerRingSlot keeps the shard's ring for eagerWakeFlags.
+const eagerRingSlot int16 = -40
+
+// bpf_ringbuf_submit and bpf_ringbuf_query arguments from uapi bpf.h.
+const (
+	bpfRBForceWakeup = 2
+	bpfRBAvailData   = 0
+)
+
+// ringRecordBytes is the ring space a record of n bytes takes: the 8-byte
+// header, then the data rounded up to 8 bytes.
+func ringRecordBytes(n int) int32 { return int32(8 + (n+7)&^7) }
+
+// eagerWakeFlags leaves the bpf_ringbuf_submit flags of an EmitEager
+// record in R2, then falls through to the submit, which carries the
+// "ew_submit" symbol. With --no-wakeup that is RingbufSubmitFlags. With
+// wakeups, a default submit wakes the reader only when it waits for that
+// very record: the entry record would do so whenever the reader keeps up,
+// and the decision record never, because the reader then waits for the
+// entry before it. So the entry does not wake the reader, and the decision
+// does when the ring holds no more than this pair (pairBytes): one wakeup
+// per exported entry, as a gated capture's default submit gives. Either
+// record also wakes the reader once a quarter of the shard is pending, so
+// a run of entries without a decision does not wait for the reader's
+// poll timeout. The ring is in stack[eagerRingSlot]; clobbers R0-R5.
+func eagerWakeFlags(pairBytes int32) (asm.Instructions, error) {
+	if RingbufSubmitFlags != 0 {
+		return asm.Instructions{asm.Mov.Imm(asm.R2, int32(RingbufSubmitFlags))}, nil
 	}
-	insns = append(insns, emitShardedRBReserve(eventsFD, statsFD, int32(metadataSize))...)
+	cpus, err := possibleCPUSlots()
+	if err != nil {
+		return nil, err
+	}
+	insns := asm.Instructions{
+		asm.LoadMem(asm.R1, asm.R10, eagerRingSlot, asm.DWord),
+		asm.Mov.Imm(asm.R2, bpfRBAvailData),
+		asm.FnRingbufQuery.Call(),
+		asm.Mov.Imm(asm.R2, bpfRBForceWakeup),
+		asm.JGE.Imm(asm.R0, int32(shardRingbufSize(RingbufSize, cpus)/4), "ew_submit"),
+	}
+	if pairBytes > 0 {
+		insns = append(insns, asm.JLE.Imm(asm.R0, pairBytes, "ew_submit"))
+	}
+	return append(insns, asm.Mov.Imm(asm.R2, int32(BPF_RB_NO_WAKEUP))), nil
+}
+
+// eagerReserve is the shard reserve of an EmitEager record, keeping the
+// ring for eagerWakeFlags when the submit may wake the reader.
+func eagerReserve(eventsFD, statsFD int, reserveSize int32) asm.Instructions {
+	if RingbufSubmitFlags != 0 {
+		return emitShardedRBReserve(eventsFD, statsFD, reserveSize)
+	}
+	return emitShardedRBReserveKeep(eventsFD, statsFD, reserveSize, eagerRingSlot)
+}
+
+// captureDecision emits the metadata-only decision record of EmitEager:
+// mode 1 (exit), caplen 0, the verdict (args[1]), the hold's timestamp
+// (the entry's: userspace keeps the entry record's own) and the packet id
+// in R6. The shard CPU is in stack[-16]; same ring/stack conventions as
+// captureWithRingbuf. entryCapLen sizes the entry record of the pair.
+func captureDecision(eventsFD, statsFD, entryCapLen int) (asm.Instructions, error) {
+	wake, err := eagerWakeFlags(ringRecordBytes(metadataSize+entryCapLen) + ringRecordBytes(metadataSize))
+	if err != nil {
+		return nil, err
+	}
+	insns := eagerReserve(eventsFD, statsFD, int32(metadataSize))
 	insns = append(insns,
-		asm.LoadMem(asm.R1, asm.R10, -56, asm.DWord),
+		asm.LoadMem(asm.R1, asm.R8, holdTs, asm.DWord),
 		asm.StoreMem(asm.R0, 0, asm.R1, asm.DWord),
 		asm.LoadMem(asm.R2, asm.R10, savedReturnSlot, asm.Word),
 		asm.StoreMem(asm.R0, 8, asm.R2, asm.Word),
@@ -529,30 +601,32 @@ func captureDecision(eventsFD, statsFD int, packetID asm.Instructions) asm.Instr
 		asm.StoreImm(asm.R0, 14, 0, asm.Half),
 		asm.LoadMem(asm.R1, asm.R10, tagSlot, asm.DWord),
 		asm.StoreMem(asm.R0, 16, asm.R1, asm.Word),
+		asm.StoreMem(asm.R0, 20, asm.R6, asm.DWord),
 	)
-	insns = append(insns, packetID...)
-	insns = append(insns,
-		asm.StoreMem(asm.R0, 20, asm.R1, asm.DWord),
-		asm.LoadMem(asm.R1, asm.R10, -32, asm.DWord),
-		asm.Mov.Imm(asm.R2, int32(RingbufSubmitFlags)),
+	return append(insns, eagerSubmit(wake)...), nil
+}
+
+// eagerSubmit submits the reservation in stack[-32] with the flags wake
+// leaves in R2.
+func eagerSubmit(wake asm.Instructions) asm.Instructions {
+	return append(wake,
+		asm.LoadMem(asm.R1, asm.R10, -32, asm.DWord).WithSymbol("ew_submit"),
 		asm.FnRingbufSubmit.Call(),
 	)
-	return insns
 }
 
 // captureEagerEntry emits the EmitEager entry image straight from the
 // packet (R7 data, R9 len, as captureWithRingbuf), with the packet id in
-// R6 and the invocation's depth from the hold (R8) in the action field.
-func captureEagerEntry(eventsFD, statsFD, maxCapLen int) asm.Instructions {
-	insns := asm.Instructions{
-		asm.FnKtimeGetNs.Call(),
-		asm.StoreMem(asm.R10, -56, asm.R0, asm.DWord),
-		asm.FnGetSmpProcessorId.Call(),
-		asm.StoreMem(asm.R10, -16, asm.R0, asm.Word),
+// R6, the hold's (R8) timestamp, and the invocation's depth from the hold
+// in the action field. The shard CPU is in stack[-16].
+func captureEagerEntry(eventsFD, statsFD, maxCapLen int) (asm.Instructions, error) {
+	wake, err := eagerWakeFlags(0)
+	if err != nil {
+		return nil, err
 	}
-	insns = append(insns, emitShardedRBReserve(eventsFD, statsFD, int32(metadataSize+maxCapLen))...)
+	insns := eagerReserve(eventsFD, statsFD, int32(metadataSize+maxCapLen))
 	insns = append(insns,
-		asm.LoadMem(asm.R1, asm.R10, -56, asm.DWord),
+		asm.LoadMem(asm.R1, asm.R8, holdTs, asm.DWord),
 		asm.StoreMem(asm.R0, 0, asm.R1, asm.DWord),
 		asm.LoadMem(asm.R2, asm.R8, holdEagerDepth, asm.Word),
 		asm.StoreMem(asm.R0, 8, asm.R2, asm.Word),
@@ -570,9 +644,6 @@ func captureEagerEntry(eventsFD, statsFD, maxCapLen int) asm.Instructions {
 		asm.Mov.Reg(asm.R3, asm.R7),
 		asm.FnProbeReadKernel.Call(),
 		asm.JNE.Imm(asm.R0, 0, "rb_copy_fail"),
-		asm.LoadMem(asm.R1, asm.R10, -32, asm.DWord),
-		asm.Mov.Imm(asm.R2, int32(RingbufSubmitFlags)),
-		asm.FnRingbufSubmit.Call(),
 	)
-	return insns
+	return append(insns, eagerSubmit(wake)...), nil
 }
