@@ -157,6 +157,10 @@ char _license[] SEC("license") = "GPL";
 					if err := probe.Quiesce(); err != nil {
 						t.Fatal(err)
 					}
+					// Running the dispatcher after quiesce must not add records or counters.
+					if _, err := dispatcher.Run(&ebpf.RunOptions{Data: packet}); err != nil {
+						t.Fatal(err)
+					}
 					var records []capture.Packet
 					for _, m := range probe.InnerMaps {
 						r, err := fastrb.New(m.FD(), int(m.MaxEntries()))
@@ -177,6 +181,13 @@ char _license[] SEC("license") = "GPL";
 					want := len(tc.stages)
 					if strings.Contains(tc.name, "miss") {
 						want = 0
+					}
+					stats, err := probe.ExportStats()
+					if err != nil {
+						t.Fatal(err)
+					}
+					if stats != (ExportStats{Submitted: uint64(want)}) {
+						t.Fatalf("export stats: %+v, want %d submitted and no losses", stats, want)
 					}
 					if len(records) != want {
 						t.Fatalf("records=%d want=%d", len(records), want)

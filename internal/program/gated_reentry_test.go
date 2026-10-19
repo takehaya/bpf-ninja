@@ -35,7 +35,7 @@ const skbMarkOff = 8
 // TC_ACT_SHOT; at m == levels it returns TC_ACT_OK unchanged. A packet
 // started with mark 1 and TOS 0 therefore runs the program `levels`
 // times, nested, and the invocation at depth d sees TOS d at entry.
-func loadReentryTC(t *testing.T, ifindex, levels int) *ebpf.Program {
+func loadReentryTC(t *testing.T, ifindex, levels int, dispatcher *ebpf.Program) *ebpf.Program {
 	t.Helper()
 	fn := &btf.Func{
 		Name: reentryFuncName,
@@ -70,7 +70,13 @@ func loadReentryTC(t *testing.T, ifindex, levels int) *ebpf.Program {
 		asm.Mov.Imm(asm.R0, 0).WithSymbol("pass"), // TC_ACT_OK
 		asm.Return(),
 	}
-	prog, err := ebpf.NewProgram(&ebpf.ProgramSpec{Name: reentryFuncName, Type: ebpf.SchedCLS, License: "GPL", Instructions: insns})
+	spec := &ebpf.ProgramSpec{Name: reentryFuncName, Type: ebpf.SchedCLS, License: "GPL", Instructions: insns}
+	if dispatcher != nil {
+		spec.Type = ebpf.Extension
+		spec.AttachTarget = dispatcher
+		spec.AttachTo = "slot"
+	}
+	prog, err := ebpf.NewProgram(spec)
 	if err != nil {
 		t.Fatalf("load tc program: %v", err)
 	}
@@ -163,19 +169,40 @@ type reentryResult struct {
 // gated EmitBoth probe and checks every emitted pair against the ground
 // truth: entry and exit records joined by packet id must belong to the
 // same invocation (entry TOS, exit TOS and verdict all agree).
-func runGatedReentry(t *testing.T, levels, runs int, entryExpr string, prepare func(*testing.T, *Probe)) reentryResult {
+func runGatedReentry(t *testing.T, levels, runs int, entryExpr string, prepare func(*testing.T, *Probe), extension bool) reentryResult {
 	t.Helper()
 	idx := reentryNetns(t)
 	pinTest(t, affinityCPUs(t)[0]) // every nest on one CPU (one hold set)
-	prog := loadReentryTC(t, idx, levels)
-	attachReentryEgress(t, idx, prog)
+	var dispatcher *ebpf.Program
+	if extension {
+		dispatcher = loadXDPByName(t, `
+#include <linux/bpf.h>
+#define SEC(NAME) __attribute__((section(NAME), used))
+__attribute__((noinline))
+int slot(struct __sk_buff *skb) { return skb->len == 0; }
+SEC("tc")
+int dispatcher(struct __sk_buff *skb) { return slot(skb); }
+char _license[] SEC("license") = "GPL";
+`, "dispatcher")
+	}
+	prog := loadReentryTC(t, idx, levels, dispatcher)
+	runner := prog
+	if extension {
+		lnk, err := link.AttachFreplace(dispatcher, "slot", prog)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = lnk.Close() })
+		runner = dispatcher
+	}
+	attachReentryEgress(t, idx, runner)
 
 	// Small records: the deepest nest leaves hundreds of them in one CPU's
 	// ring before it is read, which must fit the smallest shard.
 	prevSnap := SnaplenOverride
 	SnaplenOverride = 64
 	t.Cleanup(func() { SnaplenOverride = prevSnap })
-	targets := []attach.Target{{Program: prog, FuncName: reentryFuncName, Type: ebpf.SchedCLS}}
+	targets := []attach.Target{{Program: prog, FuncName: reentryFuncName, Type: prog.Type(), HookType: ebpf.SchedCLS}}
 	probe, err := LoadMultiPoint(targets, []Stage{{Expr: entryExpr}, {Expr: "eth", IsFexit: true}}, nil, true, nil, EmitBoth)
 	if err != nil {
 		t.Fatalf("load gated probe: %v", err)
@@ -191,7 +218,7 @@ func runGatedReentry(t *testing.T, levels, runs int, entryExpr string, prepare f
 	}
 	ctx := [3]uint32{0, 0, 1} // __sk_buff len, pkt_type, mark = 1
 	for range runs {
-		ret, err := prog.Run(&ebpf.RunOptions{Data: frame, Context: ctx})
+		ret, err := runner.Run(&ebpf.RunOptions{Data: frame, Context: ctx})
 		if err != nil {
 			t.Fatalf("prog run: %v", err)
 		}
@@ -261,6 +288,14 @@ func modes(recs []capture.Packet) []uint8 {
 // invocation selected by both filters is either emitted as a correct
 // pair or counted as lost; a missing pair is never silent.
 func TestBpfGatedReentry(t *testing.T) {
+	testGatedReentry(t, false)
+}
+
+func TestBpfExtensionReentry(t *testing.T) {
+	testGatedReentry(t, true)
+}
+
+func testGatedReentry(t *testing.T, extension bool) {
 	testutil.SkipIfNotRoot(t)
 	const runs = 20
 	all := func(levels int) map[int]int {
@@ -302,7 +337,7 @@ func TestBpfGatedReentry(t *testing.T) {
 			prev := holdSlots
 			holdSlots = tc.slots
 			t.Cleanup(func() { holdSlots = prev })
-			res := runGatedReentry(t, tc.levels, runs, tc.entryExpr, tc.prepare)
+			res := runGatedReentry(t, tc.levels, runs, tc.entryExpr, tc.prepare, extension)
 			s := res.stats
 			resync := uint64(0)
 			if tc.name == "stale-depth" {
