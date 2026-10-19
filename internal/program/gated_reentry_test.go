@@ -178,8 +178,17 @@ func runGatedReentry(t *testing.T, levels, runs int, entryExpr string, prepare f
 		dispatcher = loadXDPByName(t, `
 #include <linux/bpf.h>
 #define SEC(NAME) __attribute__((section(NAME), used))
+static long (*bpf_clone_redirect)(struct __sk_buff *, __u32, __u64) =
+    (void *)BPF_FUNC_clone_redirect;
 __attribute__((noinline))
-int slot(struct __sk_buff *skb) { return skb->len == 0; }
+int slot(struct __sk_buff *skb) {
+    // freplace requires changes_pkt_data on the original target when the
+    // replacement changes packet data. Keep a verifier-visible helper call
+    // on a path unused by the test (marks start at 1 and increase by depth).
+    if (skb->mark == 0xffffffff)
+        bpf_clone_redirect(skb, skb->ifindex, 0);
+    return skb->len == 0;
+}
 SEC("tc")
 int dispatcher(struct __sk_buff *skb) { return slot(skb); }
 char _license[] SEC("license") = "GPL";
