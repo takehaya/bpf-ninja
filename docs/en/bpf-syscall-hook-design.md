@@ -3,8 +3,7 @@
 Status: the [raw-load front end](lookup-site-injection.md#raw-load-api) and a Linux x86-64 ptrace launcher prototype are implemented.
 `bpf-ninja inject-run --config rules.json -- ./target` transforms loads in the target through `inject.TransformLookupRaw`.
 The privileged integration test verifies the hook in the child's loaded program and executes it with `BPF_PROG_TEST_RUN`.
-See [inject-run](inject-run.md) for the supported scope, failure behavior, tests, and remaining work; this is not yet a production supervisor for UPFs.
-Goal set 2026-10-24.
+See [inject-run](inject-run.md) for the supported scope, failure behavior, tests, and remaining work; this is not yet a production supervisor.
 
 ## The problem this solves
 
@@ -22,10 +21,10 @@ The one difference from the ELF path is that it arrives as raw syscall arguments
 `mptcpize` overrides a libc symbol through `LD_PRELOAD`.
 That reaches only the loaders that issue `bpf(2)` through libc, such as libbpf, bpftool, and other C agents.
 
-Our targets do not qualify.
-Cilium, eUPF, and Ella are Go programs built on `cilium/ebpf`, which issues `SYS_bpf` directly through the Go runtime and never calls the libc `bpf()` wrapper.
+Many loaders worth instrumenting do not.
+Cilium, eUPF, and Ella Core are Go programs built on `cilium/ebpf`, which issues `SYS_bpf` directly through the Go runtime and never calls the libc `bpf()` wrapper.
 An `LD_PRELOAD` override of `bpf()` or `syscall()` never observes those calls.
-This constraint, not a preference, decides the backend: an `LD_PRELOAD`-only tool cannot instrument the Go UPFs this research is about.
+This constraint, not a preference, decides the backend: an `LD_PRELOAD`-only tool cannot instrument these Go loaders.
 
 The general interception that does reach a Go process is `ptrace`.
 A supervisor stops the target on entry to `bpf(2)`, reads and rewrites its registers and memory, and lets the call proceed.
@@ -34,10 +33,10 @@ This works at the syscall boundary, below libc, so the loader's language does no
 | Backend | Reaches | Mechanism | Cost |
 |---|---|---|---|
 | `LD_PRELOAD` shim | C/libbpf loaders, dynamically linked | override `bpf()`/`syscall()`, rewrite `attr`, call the real syscall | small, the `mptcpize` model |
-| `ptrace` supervisor | Go and statically linked loaders (our UPFs) | `PTRACE_SYSCALL`, rewrite tracee registers and memory at `bpf(2)` | larger, but language-independent |
+| `ptrace` supervisor | Go and statically linked loaders | `PTRACE_SYSCALL`, rewrite tracee registers and memory at `bpf(2)` | larger, but language-independent |
 | seccomp user-notify | nothing here | can skip a call or replace its return, but cannot swap in larger instruction or BTF buffers with new pointers | rejected as the wrong tool |
 
-The plan is to ship the `ptrace` supervisor first, since it reaches the Go UPFs, and to add the `LD_PRELOAD` shim later for C loaders.
+The plan is to ship the `ptrace` supervisor first, since it reaches Go loaders, and to add the `LD_PRELOAD` shim later for C loaders.
 Both drive the same transform core.
 
 ## What the transform core must accept
