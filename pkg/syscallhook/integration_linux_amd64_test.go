@@ -45,6 +45,7 @@ func TestIntegrationLoader(t *testing.T) {
 		{"fail-open", "plain", false, func(r *Rule) { r.Map = "missing" }},
 		{"fail-closed", "refused", true, func(r *Rule) { r.Map = "missing" }},
 		{"unmatched", "plain", true, func(r *Rule) { r.Program = "unmatched" }},
+		{"auto", "hook", true, func(r *Rule) { r.Auto, r.Map = true, "" }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("SYSCALLHOOK_INTEGRATION_CHILD", tc.expected)
@@ -119,7 +120,8 @@ func loadIntegrationProgram(t *testing.T, expected string) {
 	}
 	found := false
 	for _, f := range funcs {
-		if f.Func.Name == "lookup_hook" {
+		// Auto names the hook lookup_hook_sessions.
+		if strings.HasPrefix(f.Func.Name, "lookup_hook") {
 			found = true
 		}
 	}

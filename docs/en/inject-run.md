@@ -45,6 +45,15 @@ A lookup that inlining copies to several places shares one source line, so `"all
 The two are mutually exclusive, and duplicate or missing PCs are refused.
 The transformation core currently accepts lookup sites in the entry function and applies its existing map, control-flow, reference, and stack restrictions.
 
+`"auto": true` instruments every supported lookup in the program instead of one selected lookup.
+`map`, `func`, `line`, `all_matches`, and `site_pcs` must then be absent, and `hook` is a prefix: each map gets its own hook named `HOOK_MAP`, with a `u32 site` argument after `ctx` that carries the lookup's raw instruction index.
+Lookups that the transform cannot support are skipped and listed in the diagnostic rather than refusing the load.
+The naming and hook ABI are described in [lookup-site-injection.md](lookup-site-injection.md#automatic-selection).
+
+```json
+[{"program": "xdp_ingress", "auto": true, "hook": "obs", "stack_lowest_offset": -128}]
+```
+
 `stack_lowest_offset` is mandatory: it is an explicit audit of the deepest stack access, including aliases and callees, not an inferred value.
 It must be between -488 and 0; the hook reserves three eight-byte slots below the audited region, aligned downward.
 Do not copy the example bound without auditing the actual program.
@@ -94,6 +103,7 @@ The wire offsets and stop discriminators follow the Linux [BPF UAPI](https://git
 By default, read, metadata, transform, BTF-load, and transformed-program rejection errors produce an `injection skipped` diagnostic and allow the original program load.
 If the transformed load has already been attempted, the supervisor retries the original syscall with its original attr and input pointers.
 It reports `injected hook` only after the transformed load returns a nonnegative program fd.
+The diagnostic names each hook with its map and site PCs, followed by any lookups that `auto` skipped and why.
 A successful target exit alone does not prove injection; inspect the diagnostic or loaded program metadata.
 
 `--fail-closed` returns `EPERM` when a matched program cannot be injected.

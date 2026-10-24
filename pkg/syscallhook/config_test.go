@@ -14,6 +14,7 @@ func TestConfig(t *testing.T) {
 	for input, check := range map[string]func(Rule) bool{
 		strings.Replace(valid, `"line":42`, `"line":42,"all_matches":true`, 1): func(r Rule) bool { return r.AllMatches },
 		strings.Replace(valid, `"line":42`, `"line":42,"site_pcs":[3,9]`, 1):   func(r Rule) bool { return len(r.SitePCs) == 2 && r.SitePCs[1] == 9 },
+		`[{"program":"p","auto":true,"hook":"h","stack_lowest_offset":-8}]`:    func(r Rule) bool { return r.Auto && r.Map == "" },
 	} {
 		if rules, err := ParseConfig(strings.NewReader(input)); err != nil || !check(rules[0]) {
 			t.Errorf("%s: %+v: %v", input, rules, err)
@@ -26,6 +27,10 @@ func TestConfig(t *testing.T) {
 		strings.Replace(valid, `"sessions"`, `""`, 1), `[` + valid[1:len(valid)-1] + `,` + valid[1:len(valid)-1] + `]`,
 		strings.Replace(valid, `"line":42`, `"line":42,"all_matches":true,"site_pcs":[3]`, 1),
 		strings.Replace(valid, `"line":42`, `"line":42,"site_pcs":3`, 1),
+		strings.Replace(valid, `"line":42`, `"line":42,"auto":true`, 1),
+		`[{"program":"p","auto":true,"line":4,"hook":"h","stack_lowest_offset":-8}]`,
+		`[{"program":"p","auto":true,"site_pcs":[1],"hook":"h","stack_lowest_offset":-8}]`,
+		`[{"program":"p","auto":false,"hook":"h","stack_lowest_offset":-8}]`,
 	} {
 		if _, err := ParseConfig(strings.NewReader(input)); err == nil {
 			t.Errorf("accepted %s", input)

@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"strings"
 	"syscall"
 
 	"github.com/cilium/ebpf"
@@ -297,7 +298,7 @@ func (s *supervisor) entry(pid int, t *thread, regs unix.PtraceRegs) error {
 	if err != nil {
 		return err
 	}
-	ret, injectErr := s.transformLoad(r, attr, *rule)
+	ret, summary, injectErr := s.transformLoad(r, attr, *rule)
 	if r.broken != nil {
 		return r.broken
 	}
@@ -314,7 +315,7 @@ func (s *supervisor) entry(pid int, t *thread, regs unix.PtraceRegs) error {
 			}
 		}
 	} else {
-		s.log("program %q: injected hook %q, tracee fd %d", name, rule.Hook, ret)
+		s.log("program %q: injected %s, tracee fd %d", name, summary, ret)
 	}
 	return r.finish(ret)
 }
@@ -404,10 +405,12 @@ func kernelBTF(id uint32) (*btf.Spec, error) {
 	return h.Spec(nil)
 }
 
-func (s *supervisor) transformLoad(r *remote, attr []byte, rule Rule) (ret int64, err error) {
+// transformLoad returns the tracee's PROG_LOAD result and, on success, a
+// summary of the injected hooks and their sites for the log.
+func (s *supervisor) transformLoad(r *remote, attr []byte, rule Rule) (ret int64, summary string, err error) {
 	info, err := r.info(u32(attr, 72), 32)
 	if err != nil {
-		return 0, err
+		return 0, "", err
 	}
 	var spec *btf.Spec
 	if remembered, ok := s.btf[u32(attr, 72)]; ok && remembered.id == u32(info, 12) {
@@ -416,46 +419,47 @@ func (s *supervisor) transformLoad(r *remote, attr []byte, rule Rule) (ret int64
 		spec, err = kernelBTF(u32(info, 12))
 	}
 	if err != nil {
-		return 0, err
+		return 0, "", err
 	}
 	entry, err := readEntryName(r.pid, attr, spec)
 	if err != nil {
-		return 0, err
+		return 0, "", err
 	}
 	liveRule, err := s.selectRule(cstring(attr[48:64]), entry)
 	if err != nil {
-		return 0, err
+		return 0, "", err
 	}
 	if liveRule == nil || liveRule.Program != rule.Program {
-		return 0, fmt.Errorf("BTF fd identity changed; selector no longer matches")
+		return 0, "", fmt.Errorf("BTF fd identity changed; selector no longer matches")
 	}
 	raw, err := extractRaw(r, attr, spec)
 	if err != nil {
-		return 0, err
+		return 0, "", err
 	}
 	result, err := inject.TransformLookupRaw(raw, inject.LookupRequestRaw{
 		Site:     inject.LookupSelector{MapName: rule.Map, FuncName: rule.Func, Line: rule.Line, AllMatches: rule.AllMatches, SitePCs: rule.SitePCs},
+		Auto:     rule.Auto,
 		HookName: rule.Hook, Stack: inject.StackAudit{LowestOffset: *rule.StackLowestOffset},
 	})
 	if err != nil {
-		return 0, err
+		return 0, "", err
 	}
 	var instructions bytes.Buffer
 	if err := result.Instructions.Marshal(&instructions, wire); err != nil {
-		return 0, err
+		return 0, "", err
 	}
 	// Load BTF inside the tracee. A supervisor-owned fd is not a valid substitute
 	// for prog_btf_fd, even when its numeric value happens to match a target fd.
 	btfAddr, err := r.alloc(result.BTFBytes)
 	if err != nil {
-		return 0, err
+		return 0, "", err
 	}
 	btfAttr := make([]byte, 32)
 	put64(btfAttr, 0, btfAddr)
 	put32(btfAttr, 16, uint32(len(result.BTFBytes)))
 	fd, err := r.bpf(unix.BPF_BTF_LOAD, btfAttr)
 	if err != nil {
-		return 0, fmt.Errorf("tracee extended BTF load: %w", err)
+		return 0, "", fmt.Errorf("tracee extended BTF load: %w", err)
 	}
 	defer func() {
 		closed, closeErr := r.call(unix.SYS_CLOSE, uint64(fd))
@@ -474,7 +478,7 @@ func (s *supervisor) transformLoad(r *remote, attr []byte, rule Rule) (ret int64
 	} {
 		addr, err := r.alloc(buffer.data)
 		if err != nil {
-			return 0, err
+			return 0, "", err
 		}
 		put64(patched, buffer.ptr, addr)
 		put32(patched, buffer.count, uint32(len(buffer.data)/buffer.recordSize))
@@ -485,11 +489,11 @@ func (s *supervisor) transformLoad(r *remote, attr []byte, rule Rule) (ret int64
 	// Preserve kernel output fields (currently log_true_size) in the caller's attr.
 	addr, err := r.alloc(patched)
 	if err != nil {
-		return 0, err
+		return 0, "", err
 	}
 	ret, err = r.call(unix.SYS_BPF, unix.BPF_PROG_LOAD, addr, uint64(len(patched)))
 	if err != nil {
-		return 0, err
+		return 0, "", err
 	}
 	if len(patched) >= 144 {
 		out, e := readMemory(r.pid, addr+140, 4)
@@ -498,13 +502,35 @@ func (s *supervisor) transformLoad(r *remote, attr []byte, rule Rule) (ret int64
 		}
 		if e != nil {
 			r.broken = e
-			return 0, e
+			return 0, "", e
 		}
 	}
 	if err := syscallError(ret, nil); err != nil {
-		return 0, fmt.Errorf("transformed PROG_LOAD: %w", err)
+		return 0, "", fmt.Errorf("transformed PROG_LOAD: %w", err)
 	}
-	return ret, nil
+	return ret, hookSummary(result), nil
+}
+
+// hookSummary lists each hook as name(map: pc, pc) and the skipped sites.
+func hookSummary(result *inject.LookupResultRaw) string {
+	var b strings.Builder
+	for i, hook := range result.Hooks {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		fmt.Fprintf(&b, "hook %q (map %q, site pc", hook.Name, hook.MapName)
+		for j, site := range hook.Sites {
+			if j > 0 {
+				b.WriteByte(',')
+			}
+			fmt.Fprintf(&b, " %d", site.SitePC)
+		}
+		b.WriteByte(')')
+	}
+	for _, site := range result.Skipped {
+		fmt.Fprintf(&b, "; skipped pc %d (%s)", site.SitePC, site.Reason)
+	}
+	return b.String()
 }
 
 func extractRaw(r *remote, attr []byte, spec *btf.Spec) (inject.RawProgram, error) {
