@@ -79,6 +79,31 @@ The loader owns the resulting collection and must close it when finished.
 Discovery reads the supplied bytes; it does not establish an audit.
 `TransformLookup` independently clones, hashes, and parses its supplied ELF bytes and requires the audited SHA-256.
 
+## Raw-load API
+
+`DiscoverLookupsRaw(p RawProgram)` and `TransformLookupRaw(p RawProgram, req LookupRequestRaw)` accept one flattened `BPF_PROG_LOAD` input without an ELF or `ebpf.CollectionSpec`.
+`RawProgram` contains decoded `asm.Instructions`, the `ebpf.ProgramType`, the `*btf.Spec` referenced by `prog_btf_fd`, and `FuncInfo`/`LineInfo` byte slices in native-endian kernel wire format (8-/16-byte records, no record-size header).
+Metadata offsets count raw instruction slots; callers must normalize other record sizes.
+The buffers supply function and source metadata independently of the instructions.
+CO-RE relocations must already be applied.
+
+`RawProgram.Maps` is a `map[int32]RawMap` keyed by the fd in each map-load immediate.
+Each `RawMap` supplies `Name`, `Type`, `KeySize`, `ValueSize`, and key/value `btf.Type` values; those types may come from a separate map BTF object.
+The selector uses `RawMap.Name`, while identity remains the fd: selecting sites with different fds is refused even when their names match.
+`LookupRequestRaw` contains the existing `LookupSelector` as `Site`, `HookName`, and `StackAudit` as `Stack`.
+The caller certifies the instructions, map identities, BTF and stack audit together; this API has no ELF hash binding.
+Both front ends share discovery, selection, map ABI checks, hook generation, placement, relocation and refusal rules.
+
+`LookupResultRaw` returns `Instructions`, `Site`/`Sites`, insertion counts and instruction checksums, plus an extended `BTF` spec and its `BTFBytes` blob.
+Original type IDs are preserved; the hook's types and any external map types are appended.
+`HookTypeID` identifies the generated `int hook(ctx, const KEY *, const VALUE *)` function, and `HookFuncInfo` contains its 8-byte function-info row.
+The returned `FuncInfo` and `LineInfo` buffers include the hook and relocated original rows.
+The BTF string table is rebuilt, so these buffers must accompany the returned blob.
+A future syscall front end can load `BTFBytes` with `BPF_BTF_LOAD`, set `prog_btf_fd` to that result, and supply these metadata buffers.
+`Instructions.Marshal` resolves generated symbolic hook calls; marshal a copy to retain the unresolved checksum representation.
+Raw checksums also include the supplied fd immediates and already-resolved numeric function references.
+This API performs no syscalls, BTF/program loads, interception, attachment or pinning.
+
 ## Supported sites and trust boundary
 
 One transform call instruments the selected sites in the program's entry function with the same hook.
@@ -200,6 +225,7 @@ This package does not retrieve those maps, load or swap programs, attach to inte
 
 ## Tests
 
+Raw-load tests check ELF parity, fd identity, numeric callback and multi-site relocation, metadata validation, the hook ABI, and preservation of BTF type IDs and declaration tags.
 Unit tests cover numeric and symbolic callback classification, relocation in both directions across one or several insertions, hook placement before subprograms, callback metadata and loader resolution, overflow and ambiguous-reference refusals, discovery, map provenance, ambiguity, explicit-PC and all-matches selection, map BTF validation, reserved stack boundaries, metadata preservation, clone isolation, relocation across multiple insertions and combined branch overflow, refusal without mutation, and ELF hash/checksum handling.
 `TestLookupThroughELF` compiles a synthetic BTF map fixture with a `bpf_loop` callback, checks that its symbolic reference and metadata survive, discovers two lookup source lines, and transforms both a line-selected site and multiple sites through the exported API without BPF privileges.
 `TestBpfLookupInjectionObservesContextKeyValue` uses asm fixtures with a hash map keyed by a packet `u32` and a value `{u64 seid; u64 imsi;}`.

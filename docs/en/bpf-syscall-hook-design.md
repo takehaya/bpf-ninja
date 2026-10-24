@@ -1,6 +1,6 @@
 # Design: retrofit injection through the bpf(2) syscall
 
-Status: design only, not implemented.
+Status: the [raw-load front end](lookup-site-injection.md#raw-load-api) exists as `inject.DiscoverLookupsRaw` / `inject.TransformLookupRaw`; syscall interception remains unimplemented.
 Goal set 2026-10-24.
 
 ## The problem this solves
