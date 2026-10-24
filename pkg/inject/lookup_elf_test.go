@@ -155,6 +155,17 @@ char _license[] SEC("license") = "GPL";
 			t.Fatal(err)
 		}
 	}
+	req.Site, req.Auto = LookupSelector{}, true
+	auto, err := TransformLookup(elf, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// One hook for the one map; each site also passes its SitePC.
+	if !reflect.DeepEqual(auto.Sites, sites) || len(auto.Hooks) != 1 || auto.Hooks[0].Name != "observe_lookup_sessions" ||
+		!reflect.DeepEqual(auto.Hooks[0].Sites, sites) || len(auto.Skipped) != 0 || auto.InsertedSlots != 26 {
+		t.Fatalf("unexpected auto result: %+v", auto)
+	}
+	assertRawLookupParity(t, src, req, auto)
 	if !bytes.Equal(elf, before) {
 		t.Fatal("ELF input mutated")
 	}

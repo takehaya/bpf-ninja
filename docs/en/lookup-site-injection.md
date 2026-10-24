@@ -46,6 +46,28 @@ Two optional selection modes support duplicated inline lookups and other multipl
 All selected sites must resolve to the named map and be supported entry-function lookups; any refusal rejects the entire transform.
 Selection results are always in original instruction order, regardless of the order in `SitePCs`.
 
+### Automatic selection
+
+`LookupRequest.Auto` instruments every supported lookup in the program instead of a selected one.
+`Site` must then be empty, and `HookName` becomes a prefix.
+Each map identity gets its own hook, because one hook prototype can only carry one key/value BTF type pair:
+
+```c
+int PREFIX_MAP(struct xdp_md *ctx, u32 site, const KEY *key, const VALUE *value);
+```
+
+`site` is the lookup's original `SitePC`, so an observer can tell inlined copies of the same lookup apart.
+`MAP` is the map name with characters outside `[A-Za-z0-9_]` replaced by `_`.
+When that name is empty, invalid, or already used by another hook in the request, the hook is named `PREFIX_<index>` instead, where index is the hook's position in `Hooks`.
+Hooks are numbered in the order their maps first appear in the program.
+`LookupResult.Hooks` lists each hook with its map name and sites.
+Sites that discovery lists with a `Reason` are not instrumented; they are reported in `LookupResult.Skipped` rather than refusing the transform.
+If no site is supported, the transform is refused.
+Every hook name passes the same collision checks as a single `HookName`.
+
+All hooks of one program share the three reserved stack slots, since only one lookup site runs at a time.
+An observer attaches one fentry program per hook it wants to see.
+
 ```go
 sites, err := inject.DiscoverLookups(elf, "ingress")
 if err != nil {
@@ -160,6 +182,8 @@ restore:
 r0 = *(u64 *)(r10 + result_slot)
 ```
 
+With `Auto`, the argument setup is `r1 = ctx`, `r2 = SitePC` (a 32-bit move), `r3 = key`, `r4 = r0`, one instruction longer per site.
+
 The generated hook is placed immediately after the entry function (before any other subprograms or callbacks, or at the end of the program when there are none).
 It reads `ctx->data`, checks its independently verified memory arguments for null, reads one byte from each non-null key/value pointer, and returns zero.
 These reads keep all arguments used without modifying the packet, key, or map value.
@@ -207,6 +231,7 @@ Its existing `Site` field is the first element of `Sites`.
 `InsertedAt` is zero because the first insertion saves ctx at entry.
 `InsertedSlots` is `8 + 8*len(Sites)`: one entry spill, eight instructions per site, and seven hook instructions.
 One site adds 16 slots (128 bytes); two sites add 24 slots (192 bytes).
+With `Auto`, it is `1 + 9*len(Sites) + 7*len(Hooks)`; the hooks are placed together right after the entry function.
 `SourceChecksum` and `TransformedChecksum` cover the raw instruction encoding, with symbolic calls and callback loads unresolved.
 They exclude BTF, source lines, CO-RE metadata, and symbolic/map references; they do not identify the fully loaded kernel artifact.
 The ELF SHA-256 binds the full input.
@@ -231,6 +256,7 @@ Unit tests cover numeric and symbolic callback classification, relocation in bot
 `TestBpfLookupInjectionObservesContextKeyValue` uses asm fixtures with a hash map keyed by a packet `u32` and a value `{u64 seid; u64 imsi;}`.
 It compares plain and injected programs, checks two keys with different packet lengths and `imsi` values, verifies silence for a missing key, and checks observation before attachment and after detachment.
 `TestBpfLookupInjectionMultipleSites` repeats these checks with two lookups on different paths, observed by one fentry observer on the shared hook.
+`TestBpfLookupInjectionAutoMultiMap` instruments a program with lookups on two maps whose values have different BTF types, attaches one observer per generated hook, and checks the key, value, and `site` argument each observer records.
 `TestBpfLookupInjectionCallback` checks symbolic and numeric callback loads with an unreached subprogram preceding the `bpf_loop` callback and a stack counter incremented three times by `bpf_loop`; the program returns `XDP_ABORTED` unless those increments occur.
 It repeats the plain/injected comparison and fentry observations (including direct `ctx` pointer dereferencing) for both callback forms.
 These tests exercise the transform core and fentry using `BPF_PROG_TEST_RUN`, without an interface attachment or pinning.
@@ -242,5 +268,5 @@ go test -count=1 ./pkg/inject/...
 sudo -E env PATH=$PATH go test -run 'TestBpfLookupInjection' ./pkg/inject/...
 ```
 
-All three privileged lookup tests passed on Linux `7.0.0-38-generic`.
+All four privileged lookup tests passed on Linux `7.0.0-38-generic`.
 This is finite test evidence for the fixture, not a general program-equivalence, concurrency, or kernel-version guarantee.

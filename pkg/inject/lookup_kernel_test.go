@@ -80,7 +80,34 @@ func lookupReq() LookupRequest {
 		HookName: "lookup_hook", Stack: StackAudit{LowestOffset: -8}}
 }
 
+// multiMapFixture is multiLookupFixture with the second lookup reading a
+// different map whose value has its own BTF type: key 7 takes that path.
+func multiMapFixture() *ebpf.CollectionSpec {
+	spec := multiLookupFixture()
+	insns := spec.Programs["p"].Instructions
+	for i, seen := 0, 0; i < len(insns); i++ {
+		if insns[i].IsLoadFromMap() {
+			if seen++; seen == 2 {
+				insns[i] = insns[i].WithReference("flows")
+			}
+		}
+	}
+	sessions := spec.Maps["sessions"]
+	spec.Maps["flows"] = &ebpf.MapSpec{Name: "flows", Type: ebpf.Hash, KeySize: 4, ValueSize: 16, MaxEntries: 4,
+		Key: sessions.Key, Value: &btf.Struct{Name: "flow", Size: 16, Members: []btf.Member{
+			{Name: "seid", Type: &btf.Int{Name: "u64", Size: 8}},
+			{Name: "imsi", Type: &btf.Int{Name: "u64", Size: 8}, Offset: 64},
+		}}}
+	return spec
+}
+
 func lookupObserver(t *testing.T, hook string, target *ebpf.Program) *ebpf.CollectionSpec {
+	return lookupObserverArgs(t, hook, target, false)
+}
+
+// lookupObserverArgs records seen, packet length, key, value.imsi and, with
+// withSite, the hook's u32 site argument at offset 24.
+func lookupObserverArgs(t *testing.T, hook string, target *ebpf.Program, withSite bool) *ebpf.CollectionSpec {
 	t.Helper()
 	kernel, err := btf.LoadKernelSpec()
 	if err != nil {
@@ -99,14 +126,19 @@ func lookupObserver(t *testing.T, hook string, target *ebpf.Program) *ebpf.Colle
 	if len(offsets) != 2 {
 		t.Fatal("kernel xdp_buff lacks data/data_end")
 	}
+	keyArg, recordSize := int32(1), uint32(24)
+	if withSite {
+		keyArg, recordSize = 2, 32
+	}
 	insns := asm.Instructions{
 		asm.LoadMem(asm.R6, asm.R1, 0, asm.DWord), // xdp ctx
 		asm.Mov.Reg(asm.R9, asm.R1),
-		asm.Mov.Imm(asm.R2, 1), asm.Mov.Reg(asm.R3, asm.RFP), asm.Add.Imm(asm.R3, -16),
+		asm.Mov.Imm(asm.R0, 0), asm.StoreMem(asm.RFP, -48, asm.R0, asm.DWord),
+		asm.Mov.Imm(asm.R2, keyArg), asm.Mov.Reg(asm.R3, asm.RFP), asm.Add.Imm(asm.R3, -16),
 		asm.FnGetFuncArg.Call(),
 		asm.JNE.Imm(asm.R0, 0, "done"),
 		asm.Mov.Reg(asm.R1, asm.R9),
-		asm.Mov.Imm(asm.R2, 2), asm.Mov.Reg(asm.R3, asm.RFP), asm.Add.Imm(asm.R3, -24),
+		asm.Mov.Imm(asm.R2, keyArg+1), asm.Mov.Reg(asm.R3, asm.RFP), asm.Add.Imm(asm.R3, -24),
 		asm.FnGetFuncArg.Call(),
 		asm.JNE.Imm(asm.R0, 0, "done"),
 		asm.LoadMem(asm.R7, asm.RFP, -16, asm.DWord), // raw key pointer
@@ -133,10 +165,19 @@ func lookupObserver(t *testing.T, hook string, target *ebpf.Program) *ebpf.Colle
 		asm.StoreMem(asm.R0, 12, asm.R1, asm.Word),
 		asm.LoadMem(asm.R1, asm.RFP, -40, asm.DWord),
 		asm.StoreMem(asm.R0, 16, asm.R1, asm.DWord),
-		asm.Mov.Imm(asm.R0, 0).WithSymbol("done"), asm.Return(),
 	}
+	if withSite {
+		insns = append(insns,
+			asm.Mov.Reg(asm.R7, asm.R0),
+			asm.Mov.Reg(asm.R1, asm.R9),
+			asm.Mov.Imm(asm.R2, 1), asm.Mov.Reg(asm.R3, asm.RFP), asm.Add.Imm(asm.R3, -48),
+			asm.FnGetFuncArg.Call(),
+			asm.LoadMem(asm.R1, asm.RFP, -48, asm.Word),
+			asm.StoreMem(asm.R7, 24, asm.R1, asm.Word))
+	}
+	insns = append(insns, asm.Mov.Imm(asm.R0, 0).WithSymbol("done"), asm.Return())
 	return &ebpf.CollectionSpec{ByteOrder: binary.LittleEndian,
-		Maps: map[string]*ebpf.MapSpec{"obs": {Type: ebpf.Array, KeySize: 4, ValueSize: 24, MaxEntries: 1}},
+		Maps: map[string]*ebpf.MapSpec{"obs": {Type: ebpf.Array, KeySize: 4, ValueSize: recordSize, MaxEntries: 1}},
 		Programs: map[string]*ebpf.ProgramSpec{"observe": {
 			Name: "lookup_observe", Type: ebpf.Tracing, AttachType: ebpf.AttachTraceFEntry,
 			AttachTo: hook, AttachTarget: target, License: "GPL", Instructions: insns,
@@ -296,5 +337,88 @@ func TestBpfLookupInjectionCallback(t *testing.T) {
 			req.Stack.LowestOffset = -16
 			testLookupObservation(t, func() *ebpf.CollectionSpec { return callbackLookupFixture(symbolic) }, req)
 		})
+	}
+}
+
+// Auto instruments both maps with separate typed hooks. Each observer sees
+// only its own map's lookups, and the site argument is the reported SitePC.
+func TestBpfLookupInjectionAutoMultiMap(t *testing.T) {
+	testutil.SkipIfNotRoot(t)
+	plain := loadOrSkip(t, multiMapFixture())
+	t.Cleanup(plain.Close)
+	work := multiMapFixture()
+	plan, err := transformLookup(work, LookupRequest{ProgramName: "p", Auto: true,
+		HookName: "obs", Stack: StackAudit{LowestOffset: -8}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.hooks) != 2 || len(plan.skipped) != 0 {
+		t.Fatalf("hooks=%+v skipped=%+v", plan.hooks, plan.skipped)
+	}
+	injected := loadOrSkip(t, work)
+	t.Cleanup(injected.Close)
+	imsi := map[string]uint64{"sessions": 100000000000001, "flows": 200000000000001}
+	for _, c := range []*ebpf.Collection{plain, injected} {
+		for name, base := range imsi {
+			for i, key := range []uint32{7, 0xffffffff} {
+				if err := c.Maps[name].Put(key, [2]uint64{2, base + uint64(i)}); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+	}
+	observers := map[string]*ebpf.Collection{}
+	site := map[string]uint32{}
+	for _, hook := range plan.hooks {
+		if len(hook.Sites) != 1 {
+			t.Fatalf("hook %s sites=%+v", hook.Name, hook.Sites)
+		}
+		obs := loadOrSkip(t, lookupObserverArgs(t, hook.Name, injected.Programs["p"], true))
+		t.Cleanup(obs.Close)
+		l, err := link.AttachTracing(link.TracingOptions{Program: obs.Programs["observe"], AttachType: ebpf.AttachTraceFEntry})
+		if err != nil {
+			if errors.Is(err, unix.EPERM) || errors.Is(err, ebpf.ErrNotSupported) {
+				t.Skipf("fentry unavailable: %v", err)
+			}
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = l.Close() })
+		observers[hook.MapName], site[hook.MapName] = obs, hook.Sites[0].SitePC
+	}
+	for i, tc := range []struct {
+		key  uint32
+		hits string // map whose hook must fire; the other stays silent
+	}{{7, "flows"}, {0xffffffff, "sessions"}} {
+		for _, obs := range observers {
+			if err := obs.Maps["obs"].Put(uint32(0), [32]byte{}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		packet := make([]byte, 64+16*i)
+		binary.LittleEndian.PutUint32(packet, tc.key)
+		for _, c := range []*ebpf.Collection{plain, injected} {
+			out := make([]byte, len(packet))
+			ret, err := c.Programs["p"].Run(&ebpf.RunOptions{Data: packet, DataOut: out, Repeat: 1})
+			if err != nil || ret != 2 || !bytes.Equal(packet, out) {
+				t.Fatalf("key=%d: action=%d err=%v", tc.key, ret, err)
+			}
+		}
+		for name, obs := range observers {
+			var got [32]byte
+			if err := obs.Maps["obs"].Lookup(uint32(0), &got); err != nil {
+				t.Fatal(err)
+			}
+			if name != tc.hits {
+				if got != [32]byte{} {
+					t.Fatalf("key=%d: %s hook fired: %x", tc.key, name, got)
+				}
+				continue
+			}
+			seen, length, key := binary.LittleEndian.Uint64(got[:]), binary.LittleEndian.Uint32(got[8:]), binary.LittleEndian.Uint32(got[12:])
+			value, gotSite := binary.LittleEndian.Uint64(got[16:]), binary.LittleEndian.Uint32(got[24:])
+			if seen != 1 || length != uint32(len(packet)) || key != tc.key || value != imsi[name]+uint64(i) || gotSite != site[name] {
+				t.Fatalf("key=%d %s: seen=%d length=%d key=%d imsi=%d site=%d want site %d", tc.key, name, seen, length, key, value, gotSite, site[name])
+			}
+		}
 	}
 }

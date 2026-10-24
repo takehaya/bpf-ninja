@@ -5,6 +5,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"sort"
+	"strings"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/asm"
@@ -44,21 +46,40 @@ type LookupSelector struct {
 // the entry function are supported: subprograms have independent stack frames.
 // Stack certifies three reserved slots, including aliases and callee stacks.
 // No caller-saved register liveness certification is required at helper calls.
+//
+// Auto instruments every supported lookup instead of Site, which must then be
+// empty. HookName becomes a prefix: each map identity gets its own hook,
+// int PREFIX_MAP(struct xdp_md *ctx, u32 site, const KEY *key, const VALUE *value),
+// where site is the original SitePC. Unsupported sites are reported in
+// Skipped instead of refusing the transform.
 type LookupRequest struct {
 	ELFSHA256   string
 	ProgramName string
 	Site        LookupSelector
+	Auto        bool
 	HookName    string
 	Stack       StackAudit
 }
 
+// LookupHook is one generated hook and the sites that call it, in original
+// instruction order. TypeID and FuncInfo are set by TransformLookupRaw only.
+type LookupHook struct {
+	Name     string
+	MapName  string
+	Sites    []LookupSite
+	TypeID   btf.TypeID
+	FuncInfo []byte
+}
+
 // LookupResult reports the selected original sites and the transformed clone.
 // Result.InsertedAt is zero (the ctx spill); InsertedSlots includes that spill,
-// the lookup instrumentation and generated hook. Checksums have Result's scope.
+// the lookup instrumentation and generated hooks. Checksums have Result's scope.
 type LookupResult struct {
 	Result
-	Site  LookupSite   // first selected site, retained for single-site callers
-	Sites []LookupSite // all selected sites in original instruction order
+	Site    LookupSite   // first selected site, retained for single-site callers
+	Sites   []LookupSite // all selected sites in original instruction order
+	Hooks   []LookupHook // one hook, or one per map identity with Auto
+	Skipped []LookupSite // with Auto, discovered sites that were not instrumented
 }
 
 // DiscoverLookups lists every map_lookup_elem helper in programName, in raw
@@ -83,9 +104,6 @@ func TransformLookup(elf []byte, req LookupRequest) (*LookupResult, error) {
 		HookName: req.HookName, Stack: req.Stack, Load: LoadShape{PtrReg: asm.R0}}); err != nil {
 		return nil, err
 	}
-	if req.Site.MapName == "" {
-		return nil, refuse("lookup MapName is required")
-	}
 	elf = bytes.Clone(elf)
 	sum := sha256.Sum256(elf)
 	want, _ := hex.DecodeString(req.ELFSHA256)
@@ -97,7 +115,7 @@ func TransformLookup(elf []byte, req LookupRequest) (*LookupResult, error) {
 		return nil, fmt.Errorf("inject: parsing ELF: %w", err)
 	}
 	work := src.Copy()
-	sites, err := transformLookup(work, req)
+	plan, err := transformLookup(work, req)
 	if err != nil {
 		return nil, err
 	}
@@ -113,7 +131,8 @@ func TransformLookup(elf []byte, req LookupRequest) (*LookupResult, error) {
 	added := int(after.Size() - before.Size())
 	return &LookupResult{Result: Result{Spec: work, HookName: req.HookName,
 		SourceChecksum: sourceSum, TransformedChecksum: resultSum,
-		InsertedAt: 0, InsertedSlots: added / asm.InstructionSize, AddedBytes: added}, Site: sites[0], Sites: sites}, nil
+		InsertedAt: 0, InsertedSlots: added / asm.InstructionSize, AddedBytes: added},
+		Site: plan.sites[0], Sites: plan.sites, Hooks: plan.hooks, Skipped: plan.skipped}, nil
 }
 
 func discoverLookups(spec *ebpf.CollectionSpec, name string) ([]LookupSite, error) {
@@ -273,24 +292,67 @@ func checkLookupMap(m *RawMap) error {
 	return nil
 }
 
-func transformLookup(work *ebpf.CollectionSpec, req LookupRequest) ([]LookupSite, error) {
-	prog := work.Programs[req.ProgramName]
-	if prog == nil {
-		return nil, refuse("program %q not found", req.ProgramName)
-	}
-	out, sites, err := transformLookupProgram(prog.Instructions, prog.Type, work.Types, elfLookupMaps(work), req)
-	if err != nil {
-		return sites, err
-	}
-	if err := checkNoCollision(work, req.HookName); err != nil {
-		return sites, err
-	}
-	prog.Instructions = out
-	return sites, nil
+// lookupPlan is what transformLookupProgram selected and generated.
+type lookupPlan struct {
+	sites   []LookupSite
+	hooks   []LookupHook
+	skipped []LookupSite
 }
 
-func transformLookupProgram(insns asm.Instructions, typ ebpf.ProgramType, types *btf.Spec, resolve lookupMapResolver, req LookupRequest) (asm.Instructions, []LookupSite, error) {
-	var selected []discoveredLookup
+func transformLookup(work *ebpf.CollectionSpec, req LookupRequest) (lookupPlan, error) {
+	prog := work.Programs[req.ProgramName]
+	if prog == nil {
+		return lookupPlan{}, refuse("program %q not found", req.ProgramName)
+	}
+	out, plan, err := transformLookupProgram(prog.Instructions, prog.Type, work.Types, elfLookupMaps(work), req)
+	if err != nil {
+		return plan, err
+	}
+	for _, hook := range plan.hooks {
+		if err := checkNoCollision(work, hook.Name); err != nil {
+			return plan, err
+		}
+	}
+	prog.Instructions = out
+	return plan, nil
+}
+
+// lookupGroup is one generated hook and its selected sites.
+type lookupGroup struct {
+	name  string
+	sites []discoveredLookup
+}
+
+func selectLookups(sites []discoveredLookup, req LookupRequest) ([]lookupGroup, []LookupSite, error) {
+	if req.Auto {
+		if req.Site.MapName != "" || req.Site.FuncName != "" || req.Site.Line != 0 || len(req.Site.SitePCs) != 0 || req.Site.AllMatches {
+			return nil, nil, refuse("Auto selects every supported lookup; Site must be empty")
+		}
+		var groups []lookupGroup
+		var skipped []LookupSite
+		index := map[string]int{}
+		for _, site := range sites {
+			if site.Reason != "" {
+				skipped = append(skipped, site.LookupSite)
+				continue
+			}
+			i, ok := index[site.mapID]
+			if !ok {
+				i = len(groups)
+				index[site.mapID] = i
+				groups = append(groups, lookupGroup{})
+			}
+			groups[i].sites = append(groups[i].sites, site)
+		}
+		if len(groups) == 0 {
+			return nil, skipped, refuse("no supported lookup sites (%d skipped)", len(skipped))
+		}
+		used := map[string]bool{}
+		for i := range groups {
+			groups[i].name = autoHookName(req.HookName, groups[i].sites[0].MapName, i, used)
+		}
+		return groups, skipped, nil
+	}
 	if req.Site.MapName == "" {
 		return nil, nil, refuse("lookup MapName is required")
 	}
@@ -304,10 +366,7 @@ func transformLookupProgram(insns asm.Instructions, typ ebpf.ProgramType, types 
 		}
 		pcs[pc] = true
 	}
-	sites, err := discoverLookupProgram(insns, typ, resolve)
-	if err != nil {
-		return nil, nil, err
-	}
+	var selected []discoveredLookup
 	for _, site := range sites {
 		if site.MapName == req.Site.MapName && (req.Site.FuncName == "" || site.FuncName == req.Site.FuncName) &&
 			(req.Site.Line == 0 || site.Line == req.Site.Line) && (len(pcs) == 0 || pcs[site.SitePC]) {
@@ -320,62 +379,127 @@ func transformLookupProgram(insns asm.Instructions, typ ebpf.ProgramType, types 
 	if len(selected) == 0 || (!req.Site.AllMatches && len(pcs) == 0 && len(selected) != 1) {
 		return nil, nil, refuse("lookup selector matches %d sites, need exactly one unless SitePCs or AllMatches is set", len(selected))
 	}
-	var sitePCs []uint32
 	for _, site := range selected {
 		if site.Reason != "" {
 			return nil, nil, refuse("lookup at %d: %s", site.SitePC, site.Reason)
 		}
-		sitePCs = append(sitePCs, site.SitePC)
+		if site.mapID != selected[0].mapID {
+			return nil, nil, refuse("selected lookups refer to different map identities")
+		}
 	}
-	for _, check := range []func() error{
-		func() error { return checkInstructionCollision(insns, req.HookName) },
-		func() error { return checkBTFCollision(types, req.HookName) },
-		func() error {
-			return checkInstructionReferences(insns, req.HookName, func(ins *asm.Instruction) bool { _, m := resolve(ins); return m != nil })
-		},
+	return []lookupGroup{{name: req.HookName, sites: selected}}, nil, nil
+}
+
+// autoHookName derives PREFIX_MAP, falling back to PREFIX_<index> when the
+// map name does not make a valid, unused identifier.
+func autoHookName(prefix, mapName string, index int, used map[string]bool) string {
+	var b strings.Builder
+	for _, r := range mapName {
+		if r == '_' || r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' {
+			b.WriteRune(r)
+		} else {
+			b.WriteByte('_')
+		}
+	}
+	name := prefix + "_" + b.String()
+	if b.Len() == 0 || !validIdent(name) || used[name] {
+		name = fmt.Sprintf("%s_%d", prefix, index)
+	}
+	for used[name] {
+		name += "_"
+	}
+	used[name] = true
+	return name
+}
+
+func transformLookupProgram(insns asm.Instructions, typ ebpf.ProgramType, types *btf.Spec, resolve lookupMapResolver, req LookupRequest) (asm.Instructions, lookupPlan, error) {
+	var plan lookupPlan
+	if !req.Auto && req.Site.MapName == "" {
+		return nil, plan, refuse("lookup MapName is required")
+	}
+	sites, err := discoverLookupProgram(insns, typ, resolve)
+	if err != nil {
+		return nil, plan, err
+	}
+	groups, skipped, err := selectLookups(sites, req)
+	plan.skipped = skipped
+	if err != nil {
+		return nil, plan, err
+	}
+	var selected []discoveredLookup
+	for _, group := range groups {
+		selected = append(selected, group.sites...)
+	}
+	sort.Slice(selected, func(i, j int) bool { return selected[i].SitePC < selected[j].SitePC })
+	plan.sites = publicLookupSites(selected)
+	checks := []func() error{
 		func() error { return checkExtInfo(insns) },
 		func() error { return checkStackBound(insns, req.Stack.LowestOffset) },
-	} {
+	}
+	for _, group := range groups {
+		name := group.name
+		checks = append(checks,
+			func() error { return checkInstructionCollision(insns, name) },
+			func() error { return checkBTFCollision(types, name) },
+			func() error {
+				return checkInstructionReferences(insns, name, func(ins *asm.Instruction) bool { _, m := resolve(ins); return m != nil })
+			})
+	}
+	for _, check := range checks {
 		if err := check(); err != nil {
-			return nil, publicLookupSites(selected), err
+			return nil, plan, err
 		}
 	}
 	fn := btf.FuncMetadata(&insns[0])
 	proto, ok := fn.Type.(*btf.FuncProto)
 	if !ok || len(proto.Params) != 1 {
-		return nil, publicLookupSites(selected), refuse("entry BTF must take one struct xdp_md pointer")
+		return nil, plan, refuse("entry BTF must take one struct xdp_md pointer")
 	}
 	ctx, ok := btf.UnderlyingType(proto.Params[0].Type).(*btf.Pointer)
 	if !ok {
-		return nil, publicLookupSites(selected), refuse("entry BTF context is not a pointer")
+		return nil, plan, refuse("entry BTF context is not a pointer")
 	}
 	ctxStruct, ok := btf.UnderlyingType(ctx.Target).(*btf.Struct)
 	if !ok || ctxStruct.Name != "xdp_md" {
-		return nil, publicLookupSites(selected), refuse("entry BTF context is not struct xdp_md")
+		return nil, plan, refuse("entry BTF context is not struct xdp_md")
 	}
-	m := selected[0].mapInfo
-	for _, site := range selected[1:] {
-		if site.mapID != selected[0].mapID {
-			return nil, nil, refuse("selected lookups refer to different map identities")
+	var hooks asm.Instructions
+	calls := map[uint32]siteCall{}
+	for _, group := range groups {
+		m := group.sites[0].mapInfo
+		hooks = append(hooks, lookupHook(group.name, proto.Params[0].Type, m.Key, m.Value, req.Auto)...)
+		hook := LookupHook{Name: group.name, MapName: group.sites[0].MapName, Sites: publicLookupSites(group.sites)}
+		plan.hooks = append(plan.hooks, hook)
+		for _, site := range group.sites {
+			calls[site.SitePC] = siteCall{hook: group.name, withSite: req.Auto}
 		}
 	}
-	hook := lookupHook(req.HookName, proto.Params[0].Type, m.Key, m.Value)
-	spliced, err := spliceLookupWithHook(insns, sitePCs, req, hook)
+	spliced, err := spliceLookupCalls(insns, calls, req.Stack, hooks)
 	if err != nil {
-		return nil, publicLookupSites(selected), err
+		return nil, plan, err
 	}
-	return spliced, publicLookupSites(selected), nil
+	return spliced, plan, nil
+}
+
+// siteCall is the hook a lookup site calls, and whether it passes its SitePC.
+type siteCall struct {
+	hook     string
+	withSite bool
 }
 
 func spliceLookup(input asm.Instructions, sitePCs []uint32, req LookupRequest) (asm.Instructions, error) {
-	return spliceLookupWithHook(input, sitePCs, req, nil)
+	calls := make(map[uint32]siteCall, len(sitePCs))
+	for _, pc := range sitePCs {
+		calls[pc] = siteCall{hook: req.HookName}
+	}
+	return spliceLookupCalls(input, calls, req.Stack, nil)
 }
 
-func spliceLookupWithHook(input asm.Instructions, sitePCs []uint32, req LookupRequest, hook asm.Instructions) (asm.Instructions, error) {
-	if req.Stack.LowestOffset < -512 || req.Stack.LowestOffset > 0 {
+func spliceLookupCalls(input asm.Instructions, calls map[uint32]siteCall, stack StackAudit, hook asm.Instructions) (asm.Instructions, error) {
+	if stack.LowestOffset < -512 || stack.LowestOffset > 0 {
 		return nil, refuse("StackAudit.LowestOffset must be in [-512, 0]")
 	}
-	ctx, key, err := spillSlots(req.Stack.LowestOffset)
+	ctx, key, err := spillSlots(stack.LowestOffset)
 	if err != nil {
 		return nil, err
 	}
@@ -384,17 +508,28 @@ func spliceLookupWithHook(input asm.Instructions, sitePCs []uint32, req LookupRe
 		return nil, refuse("three lookup spill slots exceed the 512-byte stack")
 	}
 	spillR0 := int16(result)
-	null := asm.JEq.Imm(asm.R0, 0, "")
-	null.Offset = 4 // skip argument setup and hook; restore R0 on both paths
-	after := asm.Instructions{
-		asm.StoreMem(asm.RFP, spillR0, asm.R0, asm.DWord), null,
-		asm.LoadMem(asm.R1, asm.RFP, ctx, asm.DWord),
-		asm.LoadMem(asm.R2, asm.RFP, key, asm.DWord),
-		asm.Mov.Reg(asm.R3, asm.R0), asm.Call.Label(req.HookName),
-		asm.LoadMem(asm.R0, asm.RFP, spillR0, asm.DWord),
+	// Every site of every hook shares the three slots: sites run one at a time.
+	afterFor := func(pc uint32, call siteCall) asm.Instructions {
+		args := asm.Instructions{asm.LoadMem(asm.R1, asm.RFP, ctx, asm.DWord)}
+		if call.withSite {
+			args = append(args, asm.Mov.Imm32(asm.R2, int32(pc)),
+				asm.LoadMem(asm.R3, asm.RFP, key, asm.DWord), asm.Mov.Reg(asm.R4, asm.R0))
+		} else {
+			args = append(args, asm.LoadMem(asm.R2, asm.RFP, key, asm.DWord), asm.Mov.Reg(asm.R3, asm.R0))
+		}
+		args = append(args, asm.Call.Label(call.hook))
+		null := asm.JEq.Imm(asm.R0, 0, "")
+		null.Offset = int16(len(args)) // skip argument setup and hook; restore R0 on both paths
+		out := asm.Instructions{asm.StoreMem(asm.RFP, spillR0, asm.R0, asm.DWord), null}
+		out = append(out, args...)
+		return append(out, asm.LoadMem(asm.R0, asm.RFP, spillR0, asm.DWord))
 	}
-	sites := make(map[uint32]bool, len(sitePCs))
-	for _, pc := range sitePCs {
+	after := make(map[uint32]asm.Instructions, len(calls))
+	for pc, call := range calls {
+		after[pc] = afterFor(pc, call)
+	}
+	sites := make(map[uint32]bool, len(calls))
+	for pc := range calls {
 		sites[pc] = true
 	}
 	hookSlots := int(hook.Size() / asm.InstructionSize)
@@ -414,7 +549,7 @@ func spliceLookupWithHook(input asm.Instructions, sitePCs []uint32, req LookupRe
 		}
 		pc += int(it.Ins.Size() / asm.InstructionSize)
 		if sites[uint32(old)] {
-			pc += len(after)
+			pc += len(after[uint32(old)])
 		}
 	}
 	entry := btf.WithFuncMetadata(asm.StoreMem(asm.RFP, ctx, asm.R1, asm.DWord).
@@ -452,7 +587,7 @@ func spliceLookupWithHook(input asm.Instructions, sitePCs []uint32, req LookupRe
 		}
 		out = append(out, ins)
 		if sites[uint32(old)] {
-			out = append(out, after...)
+			out = append(out, after[uint32(old)]...)
 		}
 	}
 	if hookAt < 0 {
@@ -461,22 +596,26 @@ func spliceLookupWithHook(input asm.Instructions, sitePCs []uint32, req LookupRe
 	return out, nil
 }
 
-func lookupHook(name string, ctx, key, value btf.Type) asm.Instructions {
+func lookupHook(name string, ctx, key, value btf.Type, withSite bool) asm.Instructions {
+	params := []btf.FuncParam{{Name: "ctx", Type: ctx}}
+	keyReg, valueReg := asm.R2, asm.R3
+	if withSite {
+		params = append(params, btf.FuncParam{Name: "site", Type: &btf.Int{Name: "u32", Size: 4}})
+		keyReg, valueReg = asm.R3, asm.R4
+	}
+	params = append(params,
+		btf.FuncParam{Name: "key", Type: &btf.Pointer{Target: &btf.Const{Type: key}}},
+		btf.FuncParam{Name: "value", Type: &btf.Pointer{Target: &btf.Const{Type: value}}})
 	fn := &btf.Func{Name: name, Linkage: btf.GlobalFunc, Type: &btf.FuncProto{
-		Return: &btf.Int{Name: "int", Size: 4, Encoding: btf.Signed},
-		Params: []btf.FuncParam{
-			{Name: "ctx", Type: ctx},
-			{Name: "key", Type: &btf.Pointer{Target: &btf.Const{Type: key}}},
-			{Name: "value", Type: &btf.Pointer{Target: &btf.Const{Type: value}}},
-		},
+		Return: &btf.Int{Name: "int", Size: 4, Encoding: btf.Signed}, Params: params,
 	}}
 	// Global functions are verified independently with nullable memory args.
 	// Actual reads keep every argument live, even after dead-register pruning.
 	head := btf.WithFuncMetadata(asm.LoadMem(asm.R0, asm.R1, 0, asm.Word).WithSymbol(name).
 		WithSource(asm.Comment("generated lookup observation hook "+name)), fn)
-	keyNull, valueNull := asm.JEq.Imm(asm.R2, 0, ""), asm.JEq.Imm(asm.R3, 0, "")
+	keyNull, valueNull := asm.JEq.Imm(keyReg, 0, ""), asm.JEq.Imm(valueReg, 0, "")
 	keyNull.Offset, valueNull.Offset = 1, 1
-	return asm.Instructions{head, keyNull, asm.LoadMem(asm.R0, asm.R2, 0, asm.Byte),
-		valueNull, asm.LoadMem(asm.R0, asm.R3, 0, asm.Byte),
+	return asm.Instructions{head, keyNull, asm.LoadMem(asm.R0, keyReg, 0, asm.Byte),
+		valueNull, asm.LoadMem(asm.R0, valueReg, 0, asm.Byte),
 		asm.Mov.Imm(asm.R0, 0), asm.Return()}
 }

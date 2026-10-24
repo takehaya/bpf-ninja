@@ -81,7 +81,7 @@ func rawLookupFixture(t *testing.T, spec *ebpf.CollectionSpec, name string, nume
 }
 
 func rawLookupRequest(req LookupRequest) LookupRequestRaw {
-	return LookupRequestRaw{Site: req.Site, HookName: req.HookName, Stack: req.Stack}
+	return LookupRequestRaw{Site: req.Site, Auto: req.Auto, HookName: req.HookName, Stack: req.Stack}
 }
 
 func assertRawLookupParity(t *testing.T, src *ebpf.CollectionSpec, req LookupRequest, want *LookupResult) {
@@ -93,8 +93,14 @@ func assertRawLookupParity(t *testing.T, src *ebpf.CollectionSpec, req LookupReq
 	}
 	if got.SourceChecksum != want.SourceChecksum || got.TransformedChecksum != want.TransformedChecksum ||
 		got.InsertedSlots != want.InsertedSlots || got.AddedBytes != want.AddedBytes || got.InsertedAt != want.InsertedAt ||
-		!reflect.DeepEqual(got.Sites, want.Sites) || got.Site != want.Site {
+		!reflect.DeepEqual(got.Sites, want.Sites) || got.Site != want.Site || !reflect.DeepEqual(got.Skipped, want.Skipped) ||
+		len(got.Hooks) != len(want.Hooks) {
 		t.Fatalf("raw/ELF result mismatch: raw=%+v ELF=%+v", got, want)
+	}
+	for i, hook := range want.Hooks {
+		if got.Hooks[i].Name != hook.Name || got.Hooks[i].MapName != hook.MapName || !reflect.DeepEqual(got.Hooks[i].Sites, hook.Sites) {
+			t.Fatalf("raw/ELF hook %d mismatch: raw=%+v ELF=%+v", i, got.Hooks[i], hook)
+		}
 	}
 	out := want.Spec.Programs[req.ProgramName].Instructions
 	if len(got.Instructions) != len(out) {
@@ -118,13 +124,19 @@ func assertRawMetadata(t *testing.T, p RawProgram, got *LookupResultRaw) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(funcs) != len(p.FuncInfo)/8+1 || len(got.HookFuncInfo) != 8 ||
-		binary.NativeEndian.Uint32(got.HookFuncInfo[4:]) != uint32(got.HookTypeID) {
+	if len(got.Hooks) == 0 || len(funcs) != len(p.FuncInfo)/8+len(got.Hooks) || len(got.HookFuncInfo) != 8 ||
+		binary.NativeEndian.Uint32(got.HookFuncInfo[4:]) != uint32(got.HookTypeID) ||
+		got.HookName != got.Hooks[0].Name || got.HookTypeID != got.Hooks[0].TypeID {
 		t.Fatal("missing hook func_info")
 	}
-	if funcs[0].Offset != 0 || funcs[1].Func.Name != got.HookName ||
-		uint32(funcs[1].Offset) != binary.NativeEndian.Uint32(got.HookFuncInfo) {
-		t.Fatal("hook is not immediately after entry")
+	if funcs[0].Offset != 0 {
+		t.Fatal("entry func_info is not at offset 0")
+	}
+	for i, hook := range got.Hooks {
+		if len(hook.FuncInfo) != 8 || binary.NativeEndian.Uint32(hook.FuncInfo[4:]) != uint32(hook.TypeID) ||
+			funcs[1+i].Func.Name != hook.Name || uint32(funcs[1+i].Offset) != binary.NativeEndian.Uint32(hook.FuncInfo) {
+			t.Fatalf("hook %s is not in order right after entry", hook.Name)
+		}
 	}
 	byPC := rawOffsets(got.Instructions)
 	for _, fn := range funcs {
@@ -159,8 +171,10 @@ func assertRawMetadata(t *testing.T, p RawProgram, got *LookupResultRaw) {
 		if err != nil || !reflect.DeepEqual(old, newType) {
 			t.Fatalf("original type ID %d changed: %v", id, err)
 		}
-		if got.HookTypeID <= id {
-			t.Fatal("hook ID overlaps original types")
+		for _, hook := range got.Hooks {
+			if hook.TypeID <= id {
+				t.Fatal("hook ID overlaps original types")
+			}
 		}
 	}
 }
