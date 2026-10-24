@@ -251,7 +251,7 @@ func runObservationCase(t *testing.T, value uint32) {
 		t.Fatalf("attach fentry: %v", err)
 	}
 	// Register cleanup immediately so a later t.Fatal cannot leak the link.
-	t.Cleanup(func() { obsLink.Close() })
+	t.Cleanup(func() { _ = obsLink.Close() })
 
 	// Attached: the action is still unchanged and the observer records the site,
 	// the loaded u32 value, and a non-zero seen count.

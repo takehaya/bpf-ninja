@@ -209,7 +209,7 @@ func testLookupObservation(t *testing.T, fixture func() *ebpf.CollectionSpec, re
 		}
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { attached.Close() })
+	t.Cleanup(func() { _ = attached.Close() })
 	for i, tc := range []struct {
 		name   string
 		key    uint32
