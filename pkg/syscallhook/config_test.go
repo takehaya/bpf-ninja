@@ -11,11 +11,21 @@ func TestConfig(t *testing.T) {
 	if err != nil || len(rules) != 1 || rules[0].Line != 42 || *rules[0].StackLowestOffset != -8 {
 		t.Fatalf("%+v: %v", rules, err)
 	}
+	for input, check := range map[string]func(Rule) bool{
+		strings.Replace(valid, `"line":42`, `"line":42,"all_matches":true`, 1): func(r Rule) bool { return r.AllMatches },
+		strings.Replace(valid, `"line":42`, `"line":42,"site_pcs":[3,9]`, 1):   func(r Rule) bool { return len(r.SitePCs) == 2 && r.SitePCs[1] == 9 },
+	} {
+		if rules, err := ParseConfig(strings.NewReader(input)); err != nil || !check(rules[0]) {
+			t.Errorf("%s: %+v: %v", input, rules, err)
+		}
+	}
 	for _, input := range []string{
 		`[]`, `null`, valid + ` {}`, valid + strings.Repeat(" ", 1<<20) + ` {}`, strings.Replace(valid, `"line":42`, `"lines":42`, 1),
 		strings.Replace(valid, `,"stack_lowest_offset":-8`, "", 1), strings.Replace(valid, `:-8`, `:1`, 1),
 		strings.Replace(valid, `:-8`, `:-489`, 1), strings.Replace(valid, `"lookup_hook"`, `"bad-name"`, 1),
 		strings.Replace(valid, `"sessions"`, `""`, 1), `[` + valid[1:len(valid)-1] + `,` + valid[1:len(valid)-1] + `]`,
+		strings.Replace(valid, `"line":42`, `"line":42,"all_matches":true,"site_pcs":[3]`, 1),
+		strings.Replace(valid, `"line":42`, `"line":42,"site_pcs":3`, 1),
 	} {
 		if _, err := ParseConfig(strings.NewReader(input)); err == nil {
 			t.Errorf("accepted %s", input)

@@ -39,7 +39,10 @@ Run with the privileges required for ptrace, the target's BPF operations, and op
 Kernel names are limited to 15 visible characters; function names allow a longer selector.
 `map` is the exact kernel map name.
 `func` and `line` are optional lookup-site filters.
-One rule per program and exactly one matching lookup per rule are supported; ambiguity is a refusal.
+One rule per program is supported.
+By default a rule must match exactly one lookup; ambiguity is a refusal.
+A lookup that inlining copies to several places shares one source line, so `"all_matches": true` instruments every matching site with the same hook, and `"site_pcs": [293, 1942]` instead names raw instruction indexes, each of which must also match the other filters.
+The two are mutually exclusive, and duplicate or missing PCs are refused.
 The transformation core currently accepts lookup sites in the entry function and applies its existing map, control-flow, reference, and stack restrictions.
 
 `stack_lowest_offset` is mandatory: it is an explicit audit of the deepest stack access, including aliases and callees, not an inferred value.

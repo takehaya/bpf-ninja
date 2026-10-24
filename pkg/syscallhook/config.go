@@ -9,15 +9,18 @@ import (
 	"regexp"
 )
 
-// Rule selects exactly one lookup. StackLowestOffset is the caller's audit of
-// all stack accesses, including aliases and callees (see inject.StackAudit).
+// Rule selects exactly one lookup unless AllMatches or SitePCs widens it (see
+// inject.LookupSelector). StackLowestOffset is the caller's audit of all stack
+// accesses, including aliases and callees (see inject.StackAudit).
 type Rule struct {
-	Program           string `json:"program"`
-	Map               string `json:"map"`
-	Func              string `json:"func,omitempty"`
-	Line              uint32 `json:"line,omitempty"`
-	Hook              string `json:"hook"`
-	StackLowestOffset *int16 `json:"stack_lowest_offset"`
+	Program           string   `json:"program"`
+	Map               string   `json:"map"`
+	Func              string   `json:"func,omitempty"`
+	Line              uint32   `json:"line,omitempty"`
+	AllMatches        bool     `json:"all_matches,omitempty"`
+	SitePCs           []uint32 `json:"site_pcs,omitempty"`
+	Hook              string   `json:"hook"`
+	StackLowestOffset *int16   `json:"stack_lowest_offset"`
 }
 
 var identifier = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
@@ -35,6 +38,9 @@ func Validate(rules []Rule) error {
 			return fmt.Errorf("rule %d: only one rule per program is supported", i)
 		}
 		seen[r.Program] = true
+		if r.AllMatches && len(r.SitePCs) > 0 {
+			return fmt.Errorf("rule %d: all_matches and site_pcs are mutually exclusive", i)
+		}
 		if r.StackLowestOffset == nil || *r.StackLowestOffset < -488 || *r.StackLowestOffset > 0 {
 			return fmt.Errorf("rule %d: audited stack_lowest_offset in [-488, 0] is required (24 bytes reserved for the hook)", i)
 		}
