@@ -160,6 +160,8 @@ The API does not compose transformations on an already transformed spec.
 Only the selected program changes, including when other programs share a linked subprogram or a map.
 
 Supported maps are hash, array, per-CPU hash/array, and LRU hash/per-CPU hash maps.
+Maps created with `BPF_F_RDONLY_PROG` are not supported: the verifier checks a global function's memory arguments for writes as well as reads, even through `const` pointers, so passing their values to the hook is rejected.
+For the same reason, a key that points into read-only memory (for example, a value of such a map) makes the verifier reject the transformed program; discovery does not detect this.
 The key and value must have BTF with nonzero sizes exactly matching the map's key and value sizes.
 The hook retains these types, including typedefs and qualifiers, under `const` pointer parameters.
 Types named `struct xdp_md` or `struct bpf_dynptr` are refused as map key/value types because the verifier assigns those pointer types special argument semantics.
@@ -272,8 +274,8 @@ Its existing `Site` field is the first element of `Sites`.
 `InsertedAt` is zero because the first insertion saves ctx at entry.
 `InsertedSlots` is `8 + 8*len(Sites)`: one entry spill, eight instructions per site, and seven hook instructions.
 One site adds 16 slots (128 bytes); two sites add 24 slots (192 bytes).
-With `Auto`, it is `1 + 9*len(Sites) + 7*len(Hooks)`; the hooks are placed together right after the entry function.
-`Entry` adds 2 slots plus a 3-slot hook, and `TailCalls` adds 6 slots per tail call plus a 3-slot hook.
+With `Auto`, it is `1 + 9*len(Sites) + 7*(number of lookup hooks)`; the hooks are placed together right after the entry function.
+On top of that, `Entry` adds 5 slots (2 in the prologue and a 3-slot hook), and `TailCalls` adds 6 slots per tail call plus a 3-slot hook.
 `SourceChecksum` and `TransformedChecksum` cover the raw instruction encoding, with symbolic calls and callback loads unresolved.
 They exclude BTF, source lines, CO-RE metadata, and symbolic/map references; they do not identify the fully loaded kernel artifact.
 The ELF SHA-256 binds the full input.

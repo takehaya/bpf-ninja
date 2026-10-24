@@ -18,7 +18,8 @@ func TestConfig(t *testing.T) {
 		`[{"program":"p","entry":true,"tail_calls":true,"hook":"h","stack_lowest_offset":-8}]`: func(r Rule) bool {
 			return r.Entry && r.TailCalls && r.Map == ""
 		},
-		strings.Replace(valid, `"line":42`, `"line":42,"entry":true`, 1): func(r Rule) bool { return r.Entry && r.Map == "sessions" },
+		strings.Replace(valid, `"line":42`, `"line":42,"entry":true`, 1):                                         func(r Rule) bool { return r.Entry && r.Map == "sessions" },
+		`[{"program":"p","tail_calls":true,"hook":"` + strings.Repeat("h", 117) + `","stack_lowest_offset":-8}]`: func(r Rule) bool { return r.TailCalls },
 	} {
 		if rules, err := ParseConfig(strings.NewReader(input)); err != nil || !check(rules[0]) {
 			t.Errorf("%s: %+v: %v", input, rules, err)
@@ -36,6 +37,7 @@ func TestConfig(t *testing.T) {
 		`[{"program":"p","auto":true,"site_pcs":[1],"hook":"h","stack_lowest_offset":-8}]`,
 		`[{"program":"p","auto":false,"hook":"h","stack_lowest_offset":-8}]`,
 		`[{"program":"p","entry":true,"line":3,"hook":"h","stack_lowest_offset":-8}]`,
+		`[{"program":"p","tail_calls":true,"hook":"` + strings.Repeat("h", 118) + `","stack_lowest_offset":-8}]`,
 	} {
 		if _, err := ParseConfig(strings.NewReader(input)); err == nil {
 			t.Errorf("accepted %s", input)

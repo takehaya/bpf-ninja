@@ -162,7 +162,8 @@ char _license[] SEC("license") = "GPL";
 	}
 	// One hook for the one map; each site also passes its SitePC.
 	if !reflect.DeepEqual(auto.Sites, sites) || len(auto.Hooks) != 1 || auto.Hooks[0].Name != "observe_lookup_sessions" ||
-		!reflect.DeepEqual(auto.Hooks[0].Sites, sites) || len(auto.Skipped) != 0 || auto.InsertedSlots != 26 {
+		!reflect.DeepEqual(auto.Hooks[0].Sites, sites) || len(auto.Skipped) != 0 || auto.InsertedSlots != 26 ||
+		auto.HookName != "observe_lookup_sessions" {
 		t.Fatalf("unexpected auto result: %+v", auto)
 	}
 	assertRawLookupParity(t, src, req, auto)

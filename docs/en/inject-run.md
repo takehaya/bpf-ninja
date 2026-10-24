@@ -62,7 +62,7 @@ See [lookup-site-injection.md](lookup-site-injection.md#entry-and-tail-call-hook
 `stack_lowest_offset` is mandatory: it is an explicit audit of the deepest stack access, including aliases and callees, not an inferred value.
 It must be between -488 and 0; the hook reserves three eight-byte slots below the audited region, aligned downward.
 Do not copy the example bound without auditing the actual program.
-`hook` must be a C identifier of at most 127 bytes.
+`hook` must be a C identifier of at most 127 bytes, including the suffixes that `entry`, `tail_calls`, and `auto` append.
 Unknown JSON fields, duplicate program selectors, trailing JSON, and configurations larger than 1 MiB are rejected before launching.
 
 ## What happens at the syscall boundary
@@ -84,7 +84,7 @@ For each map reference it injects `BPF_OBJ_GET_INFO_BY_FD` **in the tracee**, wh
 The returned map name, kind, sizes, BTF ID, and key/value type IDs identify the map and its ABI.
 It opens that system-wide BTF ID in the supervisor with `BPF_BTF_GET_FD_BY_ID` and reads the types, including when maps and programs have separate BTF objects.
 It never treats a tracee fd number as a supervisor fd, and it does not invent opaque map types as a fallback.
-Maps lacking accessible BTF cause injection to be skipped.
+A map without BTF keeps its identity but no types; lookups on it are skipped by `auto` and refused otherwise, while tail-call and entry hooks do not need map types.
 
 `inject.TransformLookupRaw` produces the new instructions and extended BTF with matching function and line records.
 A supervisor-only BTF load would produce an fd the target cannot use.

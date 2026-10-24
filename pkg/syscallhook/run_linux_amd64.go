@@ -570,19 +570,22 @@ func extractRaw(r *remote, attr []byte, spec *btf.Spec) (inject.RawProgram, erro
 		if err != nil {
 			return p, err
 		}
-		types, err := kernelBTF(u32(info, 64))
-		if err != nil {
-			return p, fmt.Errorf("map fd %d BTF: %w", fd, err)
+		// A map without BTF (often a program array) keeps its identity; the
+		// transform skips or refuses lookups that need its types.
+		var key, value btf.Type
+		if id := u32(info, 64); id != 0 {
+			types, err := kernelBTF(id)
+			if err != nil {
+				return p, fmt.Errorf("map fd %d BTF: %w", fd, err)
+			}
+			if key, err = types.TypeByID(btf.TypeID(u32(info, 68))); err != nil {
+				return p, err
+			}
+			if value, err = types.TypeByID(btf.TypeID(u32(info, 72))); err != nil {
+				return p, err
+			}
 		}
-		key, err := types.TypeByID(btf.TypeID(u32(info, 68)))
-		if err != nil {
-			return p, err
-		}
-		value, err := types.TypeByID(btf.TypeID(u32(info, 72)))
-		if err != nil {
-			return p, err
-		}
-		p.Maps[fd] = inject.RawMap{Name: cstring(info[24:40]), Type: ebpf.MapType(u32(info, 0)), KeySize: u32(info, 8), ValueSize: u32(info, 12), Key: key, Value: value}
+		p.Maps[fd] = inject.RawMap{Name: cstring(info[24:40]), Type: ebpf.MapType(u32(info, 0)), KeySize: u32(info, 8), ValueSize: u32(info, 12), Flags: u32(info, 20), Key: key, Value: value}
 	}
 	return p, nil
 }

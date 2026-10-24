@@ -3,8 +3,10 @@ package inject
 import (
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 
+	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/asm"
 	"github.com/cilium/ebpf/btf"
 )
@@ -254,5 +256,39 @@ func TestTailCallRawParity(t *testing.T) {
 		if !sameInstr(want[i], got.Instructions[i]) {
 			t.Fatalf("instruction %d: %v vs %v", i, want[i], got.Instructions[i])
 		}
+	}
+}
+
+// A value from a map that programs cannot write fails the verifier's write
+// check on the hook's memory argument, so such lookups are not instrumented.
+func TestLookupReadOnlyMap(t *testing.T) {
+	spec := multiMapFixture()
+	spec.Maps["flows"].Flags = bpfFRdonlyProg
+	sites, err := discoverLookups(spec, "p")
+	if err != nil || len(sites) != 2 || sites[0].Reason != "" || sites[1].Reason == "" {
+		t.Fatalf("sites=%+v err=%v", sites, err)
+	}
+	req := lookupReq()
+	req.Site.MapName = "flows"
+	if _, err := transformLookup(multiMapFixtureFlags(bpfFRdonlyProg), req); !errors.Is(err, ErrRefused) {
+		t.Fatalf("selected read-only map: %v", err)
+	}
+	plan, err := transformLookup(multiMapFixtureFlags(bpfFRdonlyProg), autoReq())
+	if err != nil || len(plan.hooks) != 1 || plan.hooks[0].MapName != "sessions" || len(plan.skipped) != 1 {
+		t.Fatalf("auto: %+v %v", plan, err)
+	}
+}
+
+func multiMapFixtureFlags(flags uint32) *ebpf.CollectionSpec {
+	spec := multiMapFixture()
+	spec.Maps["flows"].Flags = flags
+	return spec
+}
+
+func TestAutoHookNameLength(t *testing.T) {
+	req := autoReq()
+	req.HookName = strings.Repeat("h", maxHookName-1)
+	if _, err := transformLookup(multiLookupFixture(), req); !errors.Is(err, ErrRefused) {
+		t.Fatalf("overlong auto hook name: %v", err)
 	}
 }

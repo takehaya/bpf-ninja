@@ -44,6 +44,15 @@ func Validate(rules []Rule) error {
 		if (r.Auto || r.Map == "") && (r.Func != "" || r.Line != 0 || r.AllMatches || len(r.SitePCs) > 0) {
 			return fmt.Errorf("rule %d: func, line, all_matches and site_pcs filter map and cannot be used with auto or without map", i)
 		}
+		// The transform appends these suffixes; auto also appends _MAP or _N.
+		for _, suffix := range []struct {
+			on   bool
+			name string
+		}{{r.Entry, "_entry"}, {r.TailCalls, "_tail_call"}, {r.Auto, "_0"}} {
+			if suffix.on && len(r.Hook)+len(suffix.name) > 127 {
+				return fmt.Errorf("rule %d: hook %q with suffix %q exceeds 127 bytes", i, r.Hook, suffix.name)
+			}
+		}
 		if r.Auto && r.Map != "" {
 			return fmt.Errorf("rule %d: auto selects every supported lookup; map must be empty", i)
 		}

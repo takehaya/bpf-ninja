@@ -150,7 +150,7 @@ func TransformLookup(elf []byte, req LookupRequest) (*LookupResult, error) {
 		return nil, fmt.Errorf("inject: checksumming result: %w", err)
 	}
 	added := int(after.Size() - before.Size())
-	return &LookupResult{Result: Result{Spec: work, HookName: req.HookName,
+	return &LookupResult{Result: Result{Spec: work, HookName: plan.hooks[0].Name, // first generated hook, as in the raw API
 		SourceChecksum: sourceSum, TransformedChecksum: resultSum,
 		InsertedAt: 0, InsertedSlots: added / asm.InstructionSize, AddedBytes: added},
 		Site: plan.first(), Sites: plan.sites, Hooks: plan.hooks, Skipped: plan.skipped}, nil
@@ -189,7 +189,7 @@ func elfLookupMaps(spec *ebpf.CollectionSpec) lookupMapResolver {
 		if m == nil {
 			return name, nil
 		}
-		return name, &RawMap{Name: name, Type: m.Type, KeySize: m.KeySize, ValueSize: m.ValueSize, Key: m.Key, Value: m.Value}
+		return name, &RawMap{Name: name, Type: m.Type, KeySize: m.KeySize, ValueSize: m.ValueSize, Flags: m.Flags, Key: m.Key, Value: m.Value}
 	}
 }
 
@@ -286,6 +286,9 @@ func lookupTypeName(t btf.Type) string {
 	return btf.UnderlyingType(t).TypeName()
 }
 
+// bpfFRdonlyProg is BPF_F_RDONLY_PROG from the BPF UAPI.
+const bpfFRdonlyProg = 1 << 7
+
 func checkLookupMap(m *RawMap) error {
 	// These maps return ordinary value memory. Other map kinds can return
 	// special objects (notably map-in-map), so do not infer their pointer ABI.
@@ -293,6 +296,11 @@ func checkLookupMap(m *RawMap) error {
 	case ebpf.Hash, ebpf.Array, ebpf.PerCPUHash, ebpf.PerCPUArray, ebpf.LRUHash, ebpf.LRUCPUHash:
 	default:
 		return refuse("map type %s is unsupported", m.Type)
+	}
+	// The verifier checks a global function's memory arguments for writes
+	// as well as reads, even through const pointers.
+	if m.Flags&bpfFRdonlyProg != 0 {
+		return refuse("map is read-only for programs; the hook's value argument would be checked for writes")
 	}
 	for _, field := range []struct {
 		name string
@@ -410,6 +418,9 @@ func selectLookups(sites []discoveredLookup, req LookupRequest, reserved []strin
 		}
 		for i := range groups {
 			groups[i].name = autoHookName(req.HookName, groups[i].sites[0].MapName, i, used)
+			if !validIdent(groups[i].name) {
+				return nil, skipped, refuse("hook name %q is longer than %d bytes; use a shorter HookName", groups[i].name, maxHookName)
+			}
 		}
 		return groups, skipped, nil
 	}

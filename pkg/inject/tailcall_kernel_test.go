@@ -45,7 +45,7 @@ func tailCallerFixture() *ebpf.CollectionSpec {
 	}
 	insns[0] = btf.WithFuncMetadata(insns[0].WithSymbol("caller").WithSource(asm.Comment("tail caller")), xdpFunc("caller"))
 	return &ebpf.CollectionSpec{ByteOrder: binary.LittleEndian,
-		Maps: map[string]*ebpf.MapSpec{"jmp": {Name: "jmp", Type: ebpf.ProgramArray, KeySize: 4, ValueSize: 4, MaxEntries: 2}},
+		Maps:     map[string]*ebpf.MapSpec{"jmp": {Name: "jmp", Type: ebpf.ProgramArray, KeySize: 4, ValueSize: 4, MaxEntries: 2}},
 		Programs: map[string]*ebpf.ProgramSpec{"caller": {Name: "caller", Type: ebpf.XDP, License: "GPL", Instructions: insns}},
 	}
 }

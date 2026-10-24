@@ -18,6 +18,7 @@ type RawMap struct {
 	Name               string
 	Type               ebpf.MapType
 	KeySize, ValueSize uint32
+	Flags              uint32 // map_flags; maps read-only for programs are refused
 	Key, Value         btf.Type
 }
 
