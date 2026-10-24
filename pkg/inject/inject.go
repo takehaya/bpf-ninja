@@ -50,6 +50,10 @@
 // not perform.
 //
 // Any refusal returns a nil result and leaves every input untouched.
+//
+// [DiscoverLookups] and [TransformLookup] provide a separate map-lookup
+// transform with a ctx/key/value hook. It uses three stack slots and relies on
+// the helper calling convention instead of a caller liveness certification.
 package inject
 
 import (
@@ -122,9 +126,10 @@ type LoadShape struct {
 type StackAudit struct {
 	// LowestOffset is the most-negative R10/RFP byte offset the program uses,
 	// INCLUDING pointer aliases and called subprograms, as audited by the
-	// caller. It must be in [-512, 0]. The two spill slots are placed strictly
+	// caller. It must be in [-512, 0]. The spill slots are placed strictly
 	// below the 8-byte-aligned floor of this value; the transform additionally
 	// refuses if any direct RFP reference it can see is below LowestOffset.
+	// Transform reserves two slots; TransformLookup reserves three.
 	LowestOffset int16
 }
 
@@ -161,11 +166,12 @@ type Result struct {
 	TransformedChecksum string
 
 	// InsertedAt is the raw slot index of the first spliced call-site slot.
-	// InsertedSlots is insertSlots (call site) + genSlots (generated function).
+	// For Transform, InsertedSlots is insertSlots + genSlots. TransformLookup
+	// also counts its entry ctx spill; see LookupResult.
 	InsertedAt    uint32
 	InsertedSlots int
 
-	// AddedBytes is the growth in raw instruction bytes ((insertSlots+genSlots)*8).
+	// AddedBytes is the growth in raw instruction bytes (InsertedSlots*8).
 	AddedBytes int
 }
 
