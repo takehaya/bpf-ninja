@@ -83,9 +83,14 @@ int HOOK_tail_call(struct xdp_md *ctx, u32 site, u32 index); // LookupRequest.Ta
 Instrument the tail-call target with it.
 `TailCalls` calls `HOOK_tail_call` after every `bpf_tail_call` in the entry function.
 The helper only returns when the tail call failed (empty slot, index out of range, or the tail-call limit), so the hook sees failures only; a successful tail call does not return.
-`site` is the helper's original `SitePC`, and `index` is the index the program passed, zero-extended to 32 bits.
+`site` is the helper's original `SitePC`, and `index` is the index the program passed, truncated to 32 bits as the helper itself does.
+Observers should read both arguments as `u32`: on architectures whose JIT needs explicit zero extension, the upper halves of the argument registers are not defined.
 Tail calls in other functions are reported in `Skipped`.
 With `TailCalls` and no tail call in the entry function, the transform is refused.
+
+Every hook is a bpf-to-bpf call, and the verifier only allows bpf-to-bpf calls in a program that also uses `bpf_tail_call` when the program is JIT-compiled on an architecture that supports it (x86-64, arm64, s390, and loongarch; see `check_map_func_compatibility` in `kernel/bpf/verifier.c`).
+On such a program, any hook (lookup, entry, or tail-call) therefore makes it fail to load with "mixing of tail_calls and bpf-to-bpf calls is not supported" when the JIT is disabled or on other architectures.
+A tail call whose index register holds a pointer, which privileged loaders may pass, is also rejected after `TailCalls`, because the inserted `w3 = w3` is a partial copy of a pointer.
 
 Either flag may be combined with a lookup selector or `Auto`, or used alone with an empty `Site`.
 The hook names are `HookName` with the suffix appended, and `Auto` lookup hooks avoid them.

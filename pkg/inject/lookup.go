@@ -488,6 +488,10 @@ func autoHookName(prefix, mapName string, index int, used map[string]bool) strin
 
 func transformLookupProgram(insns asm.Instructions, typ ebpf.ProgramType, types *btf.Spec, resolve lookupMapResolver, req LookupRequest) (asm.Instructions, lookupPlan, error) {
 	var plan lookupPlan
+	// Missing function metadata would otherwise surface as "not in the entry function".
+	if err := checkExtInfo(insns); err != nil {
+		return nil, plan, err
+	}
 	sites, err := discoverLookupProgram(insns, typ, resolve)
 	if err != nil {
 		return nil, plan, err
@@ -536,10 +540,14 @@ func transformLookupProgram(insns asm.Instructions, typ ebpf.ProgramType, types 
 		names[name] = true
 	}
 	checks := []func() error{
-		func() error { return checkExtInfo(insns) },
 		func() error { return checkStackBound(insns, req.Stack.LowestOffset) },
 	}
+	sorted := make([]string, 0, len(names))
 	for name := range names {
+		sorted = append(sorted, name)
+	}
+	sort.Strings(sorted) // report the same collision on every run
+	for _, name := range sorted {
 		checks = append(checks,
 			func() error { return checkInstructionCollision(insns, name) },
 			func() error { return checkBTFCollision(types, name) },
