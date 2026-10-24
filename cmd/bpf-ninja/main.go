@@ -116,6 +116,14 @@ func rootFlags() []cli.Flag {
 			Usage: "list filterable parameters for the target function (requires --func or an entry function with filterable parameters) and exit",
 		},
 		&cli.BoolFlag{
+			Name:  "members",
+			Usage: "with --list-params, show pointer members and whether --arg-filter / --arg-echo accepts them",
+		},
+		&cli.IntFlag{
+			Name: "members-depth", Value: attach.DefaultMembersDepth,
+			Usage: "maximum named member levels with --list-params --members (1..32)",
+		},
+		&cli.BoolFlag{
 			Name:  "arg-echo",
 			Usage: "diagnostic: print integer args (or positional param->member expressions) for each call (gated by --arg-filter if set) instead of capturing packets; requires --func or an entry function with filterable parameters; combine with -c N to stop after N",
 		},
@@ -542,6 +550,10 @@ func run(ctx context.Context, cmd *cli.Command) error {
 		}
 	}
 
+	if err := validateMembersFlags(cmd); err != nil {
+		return err
+	}
+
 	if scope := cmd.String("dump-asm"); scope != "" {
 		if len(modes) > 1 {
 			return fmt.Errorf("--dump-asm renders one capture point; pass a single --mode")
@@ -709,29 +721,12 @@ func run(ctx context.Context, cmd *cli.Command) error {
 		asJSON := cmd.Bool("json")
 		var jsonOut []paramsTargetJSON
 		for _, t := range targets {
+			jt := paramsToJSON(t, cmd.Bool("members"), cmd.Int("members-depth"))
 			if asJSON {
-				jt := paramsTargetJSON{Func: t.FuncName, ID: t.ProgID, Params: []paramJSON{}}
-				for _, p := range t.Params {
-					jt.Params = append(jt.Params, paramJSON{Name: p.Name, Index: p.Index, Size: p.Size, Signed: p.Signed, Kind: p.Kind, TypeName: p.TypeName})
-				}
 				jsonOut = append(jsonOut, jt)
 				continue
 			}
-			fmt.Fprintf(os.Stderr, "Filterable parameters for %s (id=%d):\n", t.FuncName, t.ProgID)
-			if len(t.Params) == 0 {
-				fmt.Fprintf(os.Stderr, "  (none - integer or struct/union pointer parameters after the first argument are supported)\n")
-			}
-			for _, p := range t.Params {
-				if p.Kind != "" {
-					fmt.Fprintf(os.Stderr, "  %-20s [%s %s, arg index %d; use %s->member]\n", p.Name, p.Kind, p.TypeName, p.Index, p.Name)
-					continue
-				}
-				signStr := "unsigned"
-				if p.Signed {
-					signStr = "signed"
-				}
-				fmt.Fprintf(os.Stderr, "  %-20s [%d bytes, %s, arg index %d]\n", p.Name, p.Size, signStr, p.Index)
-			}
+			printParams(os.Stderr, jt)
 		}
 		if asJSON {
 			return emitJSON(jsonOut)

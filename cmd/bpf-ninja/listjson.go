@@ -51,14 +51,17 @@ type funcsTargetJSON struct {
 	Funcs []funcJSON `json:"funcs"`
 }
 
-// paramJSON is one filterable function parameter.
+// paramJSON is one integer or struct/union pointer parameter.
 type paramJSON struct {
-	Name     string `json:"name"`
-	Index    int    `json:"index"`
-	Size     uint32 `json:"size"`
-	Signed   bool   `json:"signed"`
-	Kind     string `json:"kind,omitempty"`
-	TypeName string `json:"type_name,omitempty"`
+	Name             string                  `json:"name"`
+	Index            int                     `json:"index"`
+	Size             uint32                  `json:"size"`
+	Signed           bool                    `json:"signed"`
+	Kind             string                  `json:"kind,omitempty"`
+	TypeName         string                  `json:"type_name,omitempty"`
+	Type             string                  `json:"type,omitempty"`
+	Members          *[]attach.ArgMemberInfo `json:"members,omitempty"`
+	MembersTruncated string                  `json:"members_truncated,omitempty"`
 }
 
 // paramsTargetJSON is one attach pair's filterable parameters.

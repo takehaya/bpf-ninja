@@ -335,6 +335,18 @@ int parse_headers(struct xdp_md *ctx) {
 
 `--arg-filter` can read an integer or enum member through a struct/union pointer argument.
 Use `->` for the argument pointer and `.` for nested members; names, offsets, widths, and signedness come from the target program's BTF.
+Discover the exact expressions before writing a filter:
+
+```sh
+sudo bpf-ninja -p <ID> --func sdf_classify --list-params --members
+sudo bpf-ninja -p <ID> --func sdf_classify --list-params --members --json
+```
+
+The tree shows types (including typedef names), offsets from the pointee, sizes, signedness, and whether each expression is usable by both `--arg-filter` and `--arg-echo`.
+Rejected expressions include the resolver's reason; anonymous members use promoted names and ambiguous names are flagged.
+The default depth is 3 named levels; use `--members-depth N` (1–32) to change it.
+Omitted branches are marked, including cycle and row limits.
+
 For example, with `sdf_classify(struct xdp_md *ctx_buff, struct classifier_query *q)`:
 
 ```sh
@@ -350,8 +362,14 @@ A null pointer or failed kernel read rejects the call (or suppresses its echo re
 Member reads run inside the existing entry/exit probe and add no probe; the [two-probe tail-call caveat](#modes) still applies when requesting both capture points.
 
 `--list-params` includes struct/union pointers; `--json` marks them with `kind` (`ptr-struct` or `ptr-union`) and `type_name`.
+Adding `--members` extends those JSON entries with a `members` tree while preserving existing fields; text stays on stderr and JSON goes to stdout.
 Bare `--arg-echo` still prints integer arguments; positional expressions select the arguments or members to print, using the existing u64 echo slots.
 Set references (`@NAME`) and `key(field=arg:param)` mappings do not support member expressions.
+
+At function entry, a member contains whatever the caller placed there, which may be stale or uninitialized on some paths.
+Being filterable does not mean the caller sets it on every call: check with `--arg-echo` before trusting a filter.
+If the callee fills the field, prefer exit mode or a function reached after initialization, then verify again.
+For discovery, syntax, BTF resolution, read failures, and a worked IMSI example, see the [English guide](docs/en/arg-member-filter.md) or [日本語ガイド](docs/ja/arg-member-filter.md).
 
 ## Options
 
@@ -381,6 +399,8 @@ Set references (`@NAME`) and `key(field=arg:param)` mappings do not support memb
 | `--list-maps` | With `--list-progs`, also list each function's calls and the maps it uses, with the op (`lookup`, `update`, `delete`, `tail_call`, ...) and source line, read from the loaded program's translated instructions (needs root) | entry, exit |
 | `--lookups-json` | With `--list-maps`, read the file `inject-run --lookups-json` wrote and mark each map use with its load-time site and why it cannot be instrumented | entry, exit |
 | `--list-params` | List integer and struct/union pointer parameters for the target function (requires `--func` or an EXT entry with filterable parameters) | entry, exit |
+| `--members` | With `--list-params`, show the pointee member tree with expressions, layout, and filter/echo eligibility | entry, exit |
+| `--members-depth` | Maximum named member levels for `--list-params --members` (default 3, range 1–32); omitted branches are marked | entry, exit |
 | `--json` | Print `--list-progs` (with `--list-maps`) / `--list-funcs` / `--list-params` output as JSON on stdout instead of text on stderr | entry, exit |
 | `--arg-filter` | Filter an integer argument or pointer member (requires `--func` or an EXT entry with filterable parameters); format: `param=value`, `param>=val`, `param<=val`, `param=min..max`, also `param->member.member` with any of these operators | entry, exit |
 | `--set` | Define a named match set backed by a pinned BPF hash map: `NAME=/sys/fs/bpf/path[,key(field=arg:param,...)]`. Reference it with `--arg-filter @NAME` or the DSL predicate `layer[field in @NAME]`; manage entries at runtime with `bpf-ninja set`. Repeatable | all |

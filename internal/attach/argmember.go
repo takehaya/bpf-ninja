@@ -96,30 +96,56 @@ type argMember struct {
 
 // Anonymous struct/union members expose their children at the enclosing level.
 func findMembers(members []btf.Member, name string, depth int) (matches []argMember, names []string) {
-	if depth > 32 { // Bound traversal of malformed or excessively nested BTF.
-		return nil, nil
-	}
-	for _, m := range members {
-		if m.Name != "" {
-			names = append(names, m.Name)
-			if m.Name == name {
-				matches = append(matches, argMember{m, uint64(m.Offset)})
-			}
-			continue
+	walkPromotedMembers(members, depth, func(m argMember) bool {
+		names = append(names, m.Name)
+		if m.Name == name {
+			matches = append(matches, m)
 		}
-		if children, ok := aggregateMembers(m.Type); ok {
-			found, available := findMembers(children, name, depth+1)
-			names = append(names, available...)
-			for _, child := range found {
-				child.offset += uint64(m.Offset)
-				if m.BitfieldSize != 0 {
-					child.BitfieldSize = m.BitfieldSize
-				}
-				matches = append(matches, child)
-			}
-		}
-	}
+		return true
+	})
 	return matches, names
+}
+
+// walkPromotedMembers shares anonymous-member promotion between resolution and
+// discovery. Returning false from visit stops traversal (the listing's row cap).
+func walkPromotedMembers(members []btf.Member, depth int, visit func(argMember) bool) string {
+	active := make(map[btf.Type]bool)
+	truncated := ""
+	var walk func([]btf.Member, int, uint64, btf.Bits) bool
+	walk = func(members []btf.Member, depth int, offset uint64, bits btf.Bits) bool {
+		if depth > 32 {
+			truncated = "anonymous depth limit (32)"
+			return true
+		}
+		for _, m := range members {
+			if bits != 0 {
+				m.BitfieldSize = bits
+			}
+			at := offset + uint64(m.Offset)
+			if m.Name != "" {
+				if !visit(argMember{m, at}) {
+					return false
+				}
+				continue
+			}
+			typ := btf.UnderlyingType(m.Type)
+			if children, ok := aggregateMembers(typ); ok {
+				if active[typ] {
+					truncated = "anonymous cycle"
+					continue
+				}
+				active[typ] = true
+				more := walk(children, depth+1, at, m.BitfieldSize)
+				delete(active, typ)
+				if !more {
+					return false
+				}
+			}
+		}
+		return true
+	}
+	walk(members, depth, 0, 0)
+	return truncated
 }
 
 // ResolveEchoArgs keeps bare --arg-echo limited to integer parameters, while
