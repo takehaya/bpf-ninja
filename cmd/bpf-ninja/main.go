@@ -293,6 +293,10 @@ func main() {
 
 	if err := app.Run(context.Background(), os.Args); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		var exit cli.ExitCoder
+		if errors.As(err, &exit) {
+			os.Exit(exit.ExitCode())
+		}
 		os.Exit(1)
 	}
 }
@@ -334,7 +338,7 @@ Examples:
   bpf-ninja -i eth0 -w out.pcap`,
 		Flags:                 rootFlags(),
 		Action:                run,
-		Commands:              []*cli.Command{newConvertCommand(), newSetCommand(), newMergeCommand()},
+		Commands:              []*cli.Command{newConvertCommand(), newSetCommand(), newMergeCommand(), newInjectRunCommand()},
 		EnableShellCompletion: true,
 		// Do not split slice-flag values on commas. --set carries a key
 		// mapping whose own syntax uses commas
