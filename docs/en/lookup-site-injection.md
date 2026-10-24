@@ -1,6 +1,6 @@
 # Typed map-lookup observation injection (`pkg/inject`)
 
-`inject.TransformLookup` instruments one `bpf_map_lookup_elem` helper call in one native XDP program before loading it.
+`inject.TransformLookup` instruments one or more `bpf_map_lookup_elem` helper calls to the same map in one native XDP program before loading it.
 It generates a global BTF function whose pointer types come from the entry function and the map definition in the ELF:
 
 ```c
@@ -28,13 +28,23 @@ It does not trace a map pointer through another register, stack memory, a preced
 Branch targets, function starts, and instructions after jumps or calls begin new blocks.
 Atomic instructions and legacy packet loads conservatively invalidate map provenance.
 Calls that cannot be resolved, lack usable map BTF, or lie in a called subprogram are still listed with a `Reason`.
-Unsupported relocation shapes return an error instead of a partial listing.
+Unsupported relocation shapes return an error instead of a partial listing, except for function-pointer loads.
+Discovery tolerates these loads without resolving their callback references and marks otherwise supported sites with a `Reason` explaining that transformation is refused.
 A listing with an empty `Reason` does not certify the stack, context prototype, or the rest of the transform's checks.
 
 `LookupSelector.MapName` is required.
 `FuncName` and `Line` optionally filter by containing BTF function and source line.
-The selector must match exactly one site, including sites with a `Reason`; ambiguity is refused rather than selecting the first match.
-Two calls to the same map on the same source line cannot be disambiguated by this API.
+By default, the selector must match exactly one site, including sites with a `Reason`; ambiguity is refused rather than selecting the first match.
+Two optional selection modes support duplicated inline lookups and other multiple-site cases:
+
+- `SitePCs: []uint32{pc1, pc2}` selects explicit raw PCs from discovery, each of which must also match `MapName`, `FuncName`, and `Line`.
+  A one-element list disambiguates a single call; an empty list is unspecified.
+  Duplicate PCs, non-lookup PCs, and PCs that fail any filter are refused.
+- `AllMatches: true` selects every site matching those filters and requires at least one match.
+
+`SitePCs` and `AllMatches` are mutually exclusive.
+All selected sites must resolve to the named map and be supported entry-function lookups; any refusal rejects the entire transform.
+Selection results are always in original instruction order, regardless of the order in `SitePCs`.
 
 ```go
 sites, err := inject.DiscoverLookups(elf, "ingress")
@@ -53,6 +63,7 @@ res, err := inject.TransformLookup(elf, inject.LookupRequest{
     ProgramName: "ingress",
     Site: inject.LookupSelector{
         MapName: "sessions", FuncName: "ingress", Line: 200,
+        AllMatches: true, // include compiler-duplicated instances of this lookup
     },
     HookName: "observe_session",
     Stack:    inject.StackAudit{LowestOffset: -64},
@@ -70,7 +81,9 @@ Discovery reads the supplied bytes; it does not establish an audit.
 
 ## Supported sites and trust boundary
 
-This version instruments **one site per transform call**, in the selected program's entry function.
+One transform call instruments the selected sites in the program's entry function with the same hook.
+It saves ctx once, shares three spill slots across the sites, and appends one hook function.
+The sites execute sequentially, including on different paths or repeated loop iterations; they do not require nested spill storage.
 Discovery includes called subprograms, but injection there is refused because their R10 refers to a different stack frame from the saved entry context.
 The API does not compose transformations on an already transformed spec.
 Only the selected program changes, including when other programs share a linked subprogram or a map.
@@ -86,7 +99,7 @@ The package checks the XDP program type; the cooperative loader owns attachment 
 | Transformer validates | Caller must certify |
 |---|---|
 | The input ELF matches `ELFSHA256` before parsing. | The hash identifies the audited build. |
-| The selector resolves exactly one direct-map lookup in the entry function. | This is the intended observation site. |
+| The selector resolves supported lookups of the same map in the entry function. | These are the intended observation sites. |
 | Map BTF sizes match the map definition, and entry BTF describes an XDP context pointer. | The BTF describes the audited build. |
 | Direct R10 references stay at or above `Stack.LowestOffset`; three aligned spill slots fit below it within 512 bytes. | Pointer aliases and called subprograms do not reach the reserved spill region. |
 | Existing function and source metadata are complete, references resolve, and relocation fits. | The transformed program remains acceptable to the target kernel verifier. |
@@ -107,7 +120,7 @@ At entry to the selected program, one instruction saves R1 into `ctx_slot`.
 The original entry function's symbol, BTF function metadata, and source line move to this instruction.
 Back edges to the original first instruction skip this one-time spill.
 
-At the selected lookup, the transform emits:
+At each selected lookup, the transform emits:
 
 ```text
 *(u64 *)(r10 + key_slot) = r2
@@ -141,28 +154,34 @@ No minimum kernel compatibility claim follows from the single tested version.
 ## Relocation and audit outputs
 
 The transform reuses the original transform's relocation classifier, collision checks, reference checks, stack check, and ext-info check.
-Numeric branches and calls retain their original targets after accounting for the entry spill and site insertion, including two-slot `LDIMM64` instructions.
+Numeric branches and calls retain their original targets after accounting for the entry spill and every site insertion, including two-slot `LDIMM64` instructions.
 A branch to the helper targets its key spill; a branch to the next original instruction bypasses the hook.
 Symbolic calls remain unresolved for the loader.
 Original map, line, BTF, and CO-RE metadata remain attached to their instructions, except for the entry metadata moved to the ctx spill.
 The appended global function has its own function and source metadata.
 
 As with the original transform, function-pointer loads, symbolic branches, long jumps, resolved symbolic calls, unknown references, targets off instruction boundaries, and relocation overflow are refused.
+Function-pointer loads such as an `LDIMM64` with `BPF_PSEUDO_FUNC` supplying a `bpf_loop` callback are tolerated only by discovery.
+Supporting transformation would require classifying these references separately from ordinary immediates, validating their subprogram targets, preserving unresolved symbolic references for the loader, and relocating numeric callback offsets across every insertion.
+That relocation would need instruction-boundary and overflow checks, rejection of ambiguous already-resolved symbolic references, and tests covering callback metadata and verifier acceptance.
+Callback relocation is not implemented.
 Calls back to the program entry are also refused.
 Hook names must be valid C/BTF identifiers and must not collide with existing symbols or BTF functions or satisfy an existing reference in the selected program.
 Refusals wrap `inject.ErrRefused`, return no result, and leave inputs untouched.
 ELF parse failures remain parse errors.
 
-`LookupResult` embeds `Result` and reports the original selected `Site`.
+`LookupResult` embeds `Result` and reports all original selected `Sites` in instruction order.
+Its existing `Site` field is the first element of `Sites`.
 `InsertedAt` is zero because the first insertion saves ctx at entry.
-`InsertedSlots` is 16: one entry spill, eight site instructions, and seven hook instructions, adding 128 bytes.
+`InsertedSlots` is `8 + 8*len(Sites)`: one entry spill, eight instructions per site, and seven hook instructions.
+One site adds 16 slots (128 bytes); two sites add 24 slots (192 bytes).
 `SourceChecksum` and `TransformedChecksum` cover the raw instruction encoding, with symbolic calls unresolved.
 They exclude BTF, source lines, CO-RE metadata, and symbolic/map references; they do not identify the fully loaded kernel artifact.
 The ELF SHA-256 binds the full input.
 
 ## What is not covered
 
-The transform observes successful lookup calls at the selected site only.
+The transform observes successful lookup calls at the selected sites only.
 It does not observe update/delete helpers, LRU eviction, non-map lookups such as `bpf_fib_lookup`, map-in-map traversal, or `bpf_for_each_map_elem` callbacks.
 It does not provide a consistent value version under concurrent control-plane updates or other writers.
 The observer reads the returned object during the hook; the program's later reads may see different contents.
@@ -174,18 +193,19 @@ This package does not retrieve those maps, load or swap programs, attach to inte
 
 ## Tests
 
-Unit tests cover discovery, map provenance, ambiguity, map BTF validation, reserved stack boundaries, metadata preservation, clone isolation, relocation, refusal without mutation, and ELF hash/checksum handling.
-`TestLookupThroughELF` compiles a synthetic BTF map fixture, discovers two lookup source lines, and transforms the line-selected site through the exported API without BPF privileges.
+Unit tests cover discovery, map provenance, ambiguity, explicit-PC and all-matches selection, map BTF validation, reserved stack boundaries, metadata preservation, clone isolation, relocation across multiple insertions and combined branch overflow, refusal without mutation, and ELF hash/checksum handling.
+`TestLookupThroughELF` compiles a synthetic BTF map fixture, discovers two lookup source lines, and transforms both a line-selected site and multiple sites through the exported API without BPF privileges.
 `TestBpfLookupInjectionObservesContextKeyValue` uses asm fixtures with a hash map keyed by a packet `u32` and a value `{u64 seid; u64 imsi;}`.
 It compares plain and injected programs, checks two keys with different packet lengths and `imsi` values, verifies silence for a missing key, and checks observation before attachment and after detachment.
-It exercises the transform core and fentry using `BPF_PROG_TEST_RUN`, without an interface attachment or pinning.
+`TestBpfLookupInjectionMultipleSites` repeats these checks with two lookups on different paths, observed by one fentry observer on the shared hook.
+These tests exercise the transform core and fentry using `BPF_PROG_TEST_RUN`, without an interface attachment or pinning.
 
 ```sh
 go build ./...
 go vet ./...
 go test -count=1 ./pkg/inject/...
-sudo -E env PATH=$PATH go test -run TestBpfLookupInjectionObservesContextKeyValue ./pkg/inject/...
+sudo -E env PATH=$PATH go test -run 'TestBpfLookupInjection' ./pkg/inject/...
 ```
 
-The privileged test passed on Linux `7.0.0-38-generic`.
+Both privileged lookup tests passed on Linux `7.0.0-38-generic`.
 This is finite test evidence for the fixture, not a general program-equivalence, concurrency, or kernel-version guarantee.

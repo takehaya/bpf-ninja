@@ -58,6 +58,23 @@ func lookupFixture() *ebpf.CollectionSpec {
 	}
 }
 
+// The packet key selects one of two paths, each with its own lookup helper.
+func multiLookupFixture() *ebpf.CollectionSpec {
+	spec := lookupFixture()
+	original := spec.Programs["p"].Instructions
+	branch, join := asm.JEq.Imm(asm.R2, 7, ""), asm.Ja.Label("")
+	branch.Offset, join.Offset = 6, 5
+	insns := append(asm.Instructions(nil), original[:7]...)
+	insns[4].Offset = 17 // short packet -> shared drop
+	insns = append(insns, branch)
+	insns = append(insns, original[7:11]...)
+	insns = append(insns, join)
+	insns = append(insns, original[7:11]...)
+	insns = append(insns, original[11:]...)
+	spec.Programs["p"].Instructions = insns
+	return spec
+}
+
 func lookupReq() LookupRequest {
 	return LookupRequest{ProgramName: "p", Site: LookupSelector{MapName: "sessions"},
 		HookName: "lookup_hook", Stack: StackAudit{LowestOffset: -8}}
@@ -128,11 +145,22 @@ func lookupObserver(t *testing.T, hook string, target *ebpf.Program) *ebpf.Colle
 }
 
 func TestBpfLookupInjectionObservesContextKeyValue(t *testing.T) {
+	testLookupObservation(t, lookupFixture, lookupReq())
+}
+
+func TestBpfLookupInjectionMultipleSites(t *testing.T) {
+	req := lookupReq()
+	req.Site.AllMatches = true
+	testLookupObservation(t, multiLookupFixture, req)
+}
+
+func testLookupObservation(t *testing.T, fixture func() *ebpf.CollectionSpec, req LookupRequest) {
+	t.Helper()
 	testutil.SkipIfNotRoot(t)
-	plain := loadOrSkip(t, lookupFixture())
+	plain := loadOrSkip(t, fixture())
 	t.Cleanup(plain.Close)
-	work := lookupFixture()
-	if _, err := transformLookup(work, lookupReq()); err != nil {
+	work := fixture()
+	if _, err := transformLookup(work, req); err != nil {
 		t.Fatal(err)
 	}
 	injected := loadOrSkip(t, work)
@@ -144,7 +172,7 @@ func TestBpfLookupInjectionObservesContextKeyValue(t *testing.T) {
 			}
 		}
 	}
-	obs := loadOrSkip(t, lookupObserver(t, lookupReq().HookName, injected.Programs["p"]))
+	obs := loadOrSkip(t, lookupObserver(t, req.HookName, injected.Programs["p"]))
 	t.Cleanup(obs.Close)
 	run := func(t *testing.T, key uint32, length int) {
 		t.Helper()

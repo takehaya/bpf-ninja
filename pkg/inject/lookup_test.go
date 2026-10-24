@@ -71,7 +71,7 @@ func TestLookupTransformCloneAndMetadata(t *testing.T) {
 	work := src.Copy()
 	before := append(asm.Instructions(nil), src.Programs["p"].Instructions...)
 	site, err := transformLookup(work, lookupReq())
-	if err != nil || site.SitePC != 11 {
+	if err != nil || len(site) != 1 || site[0].SitePC != 11 {
 		t.Fatalf("transform: %+v, %v", site, err)
 	}
 	out := work.Programs["p"].Instructions
@@ -209,7 +209,7 @@ func TestLookupRelocation(t *testing.T) {
 	input := asm.Instructions{branch, asm.LoadMapPtr(asm.R1, 0).WithReference("sessions"),
 		asm.Mov.Reg(asm.R2, asm.RFP), asm.FnMapLookupElem.Call(), back, call, bypass,
 		asm.Return(), asm.Mov.Imm(asm.R0, 0).WithSymbol("sub"), asm.Return()}
-	out, err := spliceLookup(input, 4, lookupReq())
+	out, err := spliceLookup(input, []uint32{4}, lookupReq())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -249,7 +249,7 @@ func TestLookupBranchOverflow(t *testing.T) {
 	for len(input) < 32768 {
 		input = append(input, asm.Return())
 	}
-	if _, err := spliceLookup(input, 3, lookupReq()); !errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), "overflows") {
+	if _, err := spliceLookup(input, []uint32{3}, lookupReq()); !errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), "overflows") {
 		t.Fatalf("want branch overflow refusal, got %v", err)
 	}
 }
@@ -258,7 +258,7 @@ func TestLookupStackBoundary(t *testing.T) {
 	for _, lowest := range []int16{0, -1, -488, -489, -512, -32768} {
 		req := lookupReq()
 		req.Stack.LowestOffset = lowest
-		out, err := spliceLookup(lookupFixture().Programs["p"].Instructions, 11, req)
+		out, err := spliceLookup(lookupFixture().Programs["p"].Instructions, []uint32{11}, req)
 		if lowest < -488 {
 			if !errors.Is(err, ErrRefused) {
 				t.Fatalf("bound %d: %v", lowest, err)
@@ -275,5 +275,205 @@ func TestLookupStackBoundary(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+func TestLookupMultipleSelection(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		selector LookupSelector
+		want     []uint32
+	}{
+		{"default-ambiguous", LookupSelector{MapName: "sessions"}, nil},
+		{"all", LookupSelector{MapName: "sessions", AllMatches: true}, []uint32{12, 18}},
+		{"explicit-reordered", LookupSelector{MapName: "sessions", SitePCs: []uint32{18, 12}}, []uint32{12, 18}},
+		{"explicit-single", LookupSelector{MapName: "sessions", SitePCs: []uint32{18}}, []uint32{18}},
+		{"duplicate", LookupSelector{MapName: "sessions", SitePCs: []uint32{12, 12}}, nil},
+		{"missing-pc", LookupSelector{MapName: "sessions", SitePCs: []uint32{12, 99}}, nil},
+		{"continuation-pc", LookupSelector{MapName: "sessions", SitePCs: []uint32{11}}, nil},
+		{"non-lookup-pc", LookupSelector{MapName: "sessions", SitePCs: []uint32{0}}, nil},
+		{"both", LookupSelector{MapName: "sessions", SitePCs: []uint32{12}, AllMatches: true}, nil},
+		{"wrong-function", LookupSelector{MapName: "sessions", FuncName: "other", SitePCs: []uint32{12}}, nil},
+		{"wrong-line", LookupSelector{MapName: "sessions", Line: 42, SitePCs: []uint32{12}}, nil},
+		{"all-no-match", LookupSelector{MapName: "absent", AllMatches: true}, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			spec, req := multiLookupFixture(), lookupReq()
+			req.Site = tc.selector
+			before := append(asm.Instructions(nil), spec.Programs["p"].Instructions...)
+			sites, err := transformLookup(spec, req)
+			if tc.want == nil {
+				if !errors.Is(err, ErrRefused) {
+					t.Fatalf("want refusal: %v", err)
+				}
+				if !reflect.DeepEqual(before, spec.Programs["p"].Instructions) {
+					t.Fatal("refusal mutated input")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			var got []uint32
+			for _, site := range sites {
+				got = append(got, site.SitePC)
+			}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("sites=%v want=%v", got, tc.want)
+			}
+			out := spec.Programs["p"].Instructions
+			if out.Size()-before.Size() != uint64(8+8*len(sites))*8 {
+				t.Fatal("incorrect insertion size")
+			}
+			var calls, hooks, ctxSpills int
+			for _, ins := range out {
+				if ins.IsFunctionCall() && ins.Reference() == req.HookName {
+					calls++
+				}
+				if ins.Symbol() == req.HookName {
+					hooks++
+				}
+				if sameInstr(ins, asm.StoreMem(asm.RFP, -16, asm.R1, asm.DWord).WithSymbol("p")) {
+					ctxSpills++
+				}
+			}
+			if calls != len(sites) || hooks != 1 || ctxSpills != 1 {
+				t.Fatalf("calls=%d hooks=%d ctxSpills=%d", calls, hooks, ctxSpills)
+			}
+		})
+	}
+}
+
+func TestLookupMultipleRefusal(t *testing.T) {
+	for _, mode := range []string{"different-map", "unsupported-site"} {
+		t.Run(mode, func(t *testing.T) {
+			spec, req := multiLookupFixture(), lookupReq()
+			sites, err := discoverLookups(spec, "p")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if mode == "different-map" {
+				spec.Maps["other"] = spec.Maps["sessions"].Copy()
+				idx := sites[1].InstructionIndex - 1
+				spec.Programs["p"].Instructions[idx] = spec.Programs["p"].Instructions[idx].WithReference("other")
+				req.Site.SitePCs = []uint32{12, 18}
+			} else {
+				idx := sites[1].InstructionIndex - 1
+				fn := *btf.FuncMetadata(&spec.Programs["p"].Instructions[0])
+				fn.Name = "sub"
+				spec.Programs["p"].Instructions[idx] = btf.WithFuncMetadata(spec.Programs["p"].Instructions[idx], &fn)
+				req.Site.AllMatches = true
+			}
+			before := append(asm.Instructions(nil), spec.Programs["p"].Instructions...)
+			if _, err := transformLookup(spec, req); !errors.Is(err, ErrRefused) {
+				t.Fatalf("want refusal: %v", err)
+			}
+			if !reflect.DeepEqual(before, spec.Programs["p"].Instructions) {
+				t.Fatal("refusal mutated input")
+			}
+		})
+	}
+}
+
+func TestLookupMultipleRelocation(t *testing.T) {
+	forward, toSecond, back, toFirst, bypass := asm.Ja.Label(""), asm.JEq.Imm(asm.R6, 0, ""), asm.JNE.Imm(asm.R6, 0, ""), asm.JNE.Imm(asm.R6, 0, ""), asm.Ja.Label("")
+	forward.Offset, toSecond.Offset, back.Offset, toFirst.Offset, bypass.Offset = 13, 3, -7, -7, -2
+	call := asm.Call.Label("")
+	call.Constant = 2
+	input := asm.Instructions{forward, asm.LoadMapPtr(asm.R1, 0).WithReference("sessions"), asm.Mov.Reg(asm.R2, asm.RFP), asm.FnMapLookupElem.Call(), toSecond, back,
+		asm.LoadMapPtr(asm.R1, 0).WithReference("sessions"), asm.FnMapLookupElem.Call(), toFirst, bypass, call, asm.Call.Label("sub"), asm.Return(), asm.Mov.Imm(asm.R0, 0).WithSymbol("sub"), asm.Return()}
+	out, err := spliceLookup(input, []uint32{4, 9}, lookupReq())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ins := rawOffsets(out)
+	for _, tc := range []struct {
+		pc, target int
+		call       bool
+	}{{1, 31, false}, {14, 18, false}, {15, 1, false}, {27, 5, false}, {28, 27, false}, {29, 32, true}} {
+		delta := int(ins[tc.pc].Offset)
+		if tc.call {
+			delta = int(ins[tc.pc].Constant)
+		}
+		if got := tc.pc + 1 + delta; got != tc.target {
+			t.Fatalf("%d -> %d, want %d", tc.pc, got, tc.target)
+		}
+	}
+	for _, pc := range []int{5, 18} {
+		if !sameInstr(ins[pc], asm.StoreMem(asm.RFP, -24, asm.R2, asm.DWord)) || !sameInstr(ins[pc+8], asm.LoadMem(asm.R0, asm.RFP, -32, asm.DWord)) || ins[pc+3].Offset != 4 || ins[pc+7].Reference() != lookupReq().HookName {
+			t.Fatalf("incorrect instrumentation at %d", pc)
+		}
+	}
+	if ins[30].Reference() != "sub" || ins[30].Constant != -1 {
+		t.Fatal("symbolic call changed")
+	}
+}
+
+func TestLookupDiscoveryFunctionPointer(t *testing.T) {
+	for _, dst := range []asm.Register{asm.R1, asm.R2} {
+		t.Run(dst.String(), func(t *testing.T) {
+			spec := lookupFixture()
+			p := spec.Programs["p"]
+			fp := asm.LoadImm(dst, -1, asm.DWord).WithReference("callback")
+			fp.Src = asm.PseudoFunc
+			// Insert between map load and helper: R1 must lose provenance, R2 must not.
+			p.Instructions = append(append(append(asm.Instructions(nil), p.Instructions[:10]...), fp), p.Instructions[10:]...)
+			before := append(asm.Instructions(nil), p.Instructions...)
+			sites, err := discoverLookups(spec, "p")
+			if err != nil || len(sites) != 1 {
+				t.Fatalf("sites=%+v err=%v", sites, err)
+			}
+			if dst == asm.R1 {
+				if sites[0].MapName != "" {
+					t.Fatal("stale R1 map provenance")
+				}
+			} else if sites[0].MapName != "sessions" || !strings.Contains(sites[0].Reason, "function-pointer load") {
+				t.Fatalf("site=%+v", sites[0])
+			}
+			if _, err := transformLookup(spec, lookupReq()); !errors.Is(err, ErrRefused) {
+				t.Fatalf("want refusal: %v", err)
+			}
+			if !reflect.DeepEqual(before, p.Instructions) {
+				t.Fatal("discovery/refusal mutated input")
+			}
+		})
+	}
+}
+
+func TestLookupMultipleCallRelocation(t *testing.T) {
+	call := asm.Call.Label("")
+	call.Constant = 7 // slot 0 -> subprogram at 8, across both insertions
+	input := asm.Instructions{
+		call,
+		asm.LoadMapPtr(asm.R1, 0).WithReference("sessions"),
+		asm.FnMapLookupElem.Call(), // 3
+		asm.LoadMapPtr(asm.R1, 0).WithReference("sessions"),
+		asm.FnMapLookupElem.Call(), // 6
+		asm.Return(),
+		asm.Mov.Imm(asm.R0, 0).WithSymbol("sub"), // 8
+		asm.Return(),
+	}
+	out, err := spliceLookup(input, []uint32{3, 6}, lookupReq())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ins := rawOffsets(out)
+	if got := 1 + 1 + int(ins[1].Constant); got != 25 || ins[got].Symbol() != "sub" {
+		t.Fatalf("call target = %d, want relocated subprogram at 25", got)
+	}
+}
+
+func TestLookupMultipleBranchOverflow(t *testing.T) {
+	jump := asm.JEq.Imm(asm.R6, 0, "")
+	jump.Offset = 32759
+	input := asm.Instructions{jump, asm.LoadMapPtr(asm.R1, 0).WithReference("sessions"), asm.FnMapLookupElem.Call(), asm.LoadMapPtr(asm.R1, 0).WithReference("sessions"), asm.FnMapLookupElem.Call()}
+	for len(input) < 32759 {
+		input = append(input, asm.Return())
+	}
+	if _, err := spliceLookup(input, []uint32{3}, lookupReq()); err != nil {
+		t.Fatalf("one insertion should fit: %v", err)
+	}
+	if _, err := spliceLookup(input, []uint32{3, 6}, lookupReq()); !errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), "overflows") {
+		t.Fatalf("want combined insertion overflow: %v", err)
 	}
 }

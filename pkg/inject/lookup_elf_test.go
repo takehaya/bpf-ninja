@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -102,6 +103,22 @@ char _license[] SEC("license") = "GPL";
 	}
 	if err := checkExtInfo(out); err != nil {
 		t.Fatal(err)
+	}
+	for _, selector := range []LookupSelector{
+		{MapName: "sessions", FuncName: "ingress", AllMatches: true},
+		{MapName: "sessions", SitePCs: []uint32{sites[1].SitePC, sites[0].SitePC}},
+	} {
+		req.Site = selector
+		multi, err := TransformLookup(elf, req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(multi.Sites, sites) || multi.Site != sites[0] || multi.InsertedSlots != 24 || multi.AddedBytes != 192 || multi.SourceChecksum != res.SourceChecksum || multi.TransformedChecksum == res.TransformedChecksum {
+			t.Fatalf("unexpected multi-site result: %+v", multi)
+		}
+		if err := checkExtInfo(multi.Spec.Programs["ingress"].Instructions); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if !bytes.Equal(elf, before) {
 		t.Fatal("ELF input mutated")

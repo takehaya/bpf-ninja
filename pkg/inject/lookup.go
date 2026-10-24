@@ -27,12 +27,18 @@ type LookupSite struct {
 	Reason           string
 }
 
-// LookupSelector must identify exactly one lookup. FuncName and Line are
-// optional filters on the containing BTF function and effective BTF line_info.
+// LookupSelector identifies lookups of one map. FuncName and Line optionally
+// filter the containing BTF function and effective BTF line_info. By default
+// exactly one site must match.
 type LookupSelector struct {
 	MapName  string
 	FuncName string
 	Line     uint32
+	// SitePCs selects explicit raw PCs, each of which must also match the filters.
+	// Empty means unspecified; duplicates and missing PCs are refused.
+	SitePCs []uint32
+	// AllMatches selects every matching site. Mutually exclusive with SitePCs.
+	AllMatches bool
 }
 
 // LookupRequest describes one hash-bound lookup transformation. Only sites in
@@ -47,18 +53,20 @@ type LookupRequest struct {
 	Stack       StackAudit
 }
 
-// LookupResult reports the selected original site and the transformed clone.
+// LookupResult reports the selected original sites and the transformed clone.
 // Result.InsertedAt is zero (the ctx spill); InsertedSlots includes that spill,
 // the lookup instrumentation and generated hook. Checksums have Result's scope.
 type LookupResult struct {
 	Result
-	Site LookupSite
+	Site  LookupSite   // first selected site, retained for single-site callers
+	Sites []LookupSite // all selected sites in original instruction order
 }
 
 // DiscoverLookups lists every map_lookup_elem helper in programName, in raw
 // instruction order, without loading BPF or requiring a stack audit. It resolves
 // only direct R1 map loads in the same basic block. Unsupported relocation
-// shapes refuse the listing; unresolved maps and unsupported sites get Reason.
+// shapes refuse the listing, except function-pointer loads, which are tolerated
+// for listing only. Unresolved maps and unsupported sites get Reason.
 func DiscoverLookups(elf []byte, programName string) ([]LookupSite, error) {
 	spec, err := ebpf.LoadCollectionSpecFromReader(bytes.NewReader(bytes.Clone(elf)))
 	if err != nil {
@@ -68,7 +76,7 @@ func DiscoverLookups(elf []byte, programName string) ([]LookupSite, error) {
 }
 
 // TransformLookup inserts int HOOK(struct xdp_md *ctx, const KEY *key,
-// const VALUE *value) at one selected lookup and returns an independent clone.
+// const VALUE *value) at each selected lookup and returns an independent clone.
 // The hook is called only for non-null results. This never loads or attaches BPF.
 func TransformLookup(elf []byte, req LookupRequest) (*LookupResult, error) {
 	// Reuse the existing hash/name/stack validation, without its load contract.
@@ -90,7 +98,7 @@ func TransformLookup(elf []byte, req LookupRequest) (*LookupResult, error) {
 		return nil, fmt.Errorf("inject: parsing ELF: %w", err)
 	}
 	work := src.Copy()
-	site, err := transformLookup(work, req)
+	sites, err := transformLookup(work, req)
 	if err != nil {
 		return nil, err
 	}
@@ -106,7 +114,7 @@ func TransformLookup(elf []byte, req LookupRequest) (*LookupResult, error) {
 	added := int(after.Size() - before.Size())
 	return &LookupResult{Result: Result{Spec: work, HookName: req.HookName,
 		SourceChecksum: sourceSum, TransformedChecksum: resultSum,
-		InsertedAt: 0, InsertedSlots: added / asm.InstructionSize, AddedBytes: added}, Site: site}, nil
+		InsertedAt: 0, InsertedSlots: added / asm.InstructionSize, AddedBytes: added}, Site: sites[0], Sites: sites}, nil
 }
 
 func discoverLookups(spec *ebpf.CollectionSpec, name string) ([]LookupSite, error) {
@@ -123,11 +131,18 @@ func discoverLookups(spec *ebpf.CollectionSpec, name string) ([]LookupSite, erro
 		indices[int(it.Offset)] = it.Index
 	}
 	starts := map[int]bool{0: true}
+	var unsupported string
 	it = prog.Instructions.Iterate()
 	for it.Next() {
 		pc, ins := int(it.Offset), it.Ins
+		if btf.FuncMetadata(ins) != nil {
+			starts[pc] = true
+		}
 		if ins.IsLoadOfFunctionPointer() {
-			return nil, refuse("function-pointer load at %d is unsupported", pc)
+			if unsupported == "" {
+				unsupported = fmt.Sprintf("function-pointer load at %d is unsupported for transformation", pc)
+			}
+			continue // discovery does not move or resolve callback references
 		}
 		target, relative, _, err := relocTarget(ins, pc, indices)
 		if err != nil {
@@ -138,9 +153,6 @@ func discoverLookups(spec *ebpf.CollectionSpec, name string) ([]LookupSite, erro
 		}
 		if ins.OpCode.Class().IsJump() {
 			starts[pc+1] = true
-		}
-		if btf.FuncMetadata(ins) != nil {
-			starts[pc] = true
 		}
 	}
 	var sites []LookupSite
@@ -177,6 +189,9 @@ func discoverLookups(spec *ebpf.CollectionSpec, name string) ([]LookupSite, erro
 				if err := checkLookupMap(m); err != nil {
 					site.Reason = err.Error()
 				}
+			}
+			if site.Reason == "" {
+				site.Reason = unsupported
 			}
 			sites = append(sites, site)
 		}
@@ -232,24 +247,43 @@ func checkLookupMap(m *ebpf.MapSpec) error {
 	return nil
 }
 
-func transformLookup(work *ebpf.CollectionSpec, req LookupRequest) (LookupSite, error) {
-	var selected LookupSite
+func transformLookup(work *ebpf.CollectionSpec, req LookupRequest) ([]LookupSite, error) {
+	var selected []LookupSite
+	if req.Site.MapName == "" {
+		return nil, refuse("lookup MapName is required")
+	}
+	if req.Site.AllMatches && len(req.Site.SitePCs) != 0 {
+		return nil, refuse("SitePCs and AllMatches are mutually exclusive")
+	}
+	pcs := make(map[uint32]bool, len(req.Site.SitePCs))
+	for _, pc := range req.Site.SitePCs {
+		if pcs[pc] {
+			return nil, refuse("duplicate SitePC %d", pc)
+		}
+		pcs[pc] = true
+	}
 	sites, err := discoverLookups(work, req.ProgramName)
 	if err != nil {
-		return selected, err
+		return nil, err
 	}
-	matches := 0
 	for _, site := range sites {
 		if site.MapName == req.Site.MapName && (req.Site.FuncName == "" || site.FuncName == req.Site.FuncName) &&
-			(req.Site.Line == 0 || site.Line == req.Site.Line) {
-			selected, matches = site, matches+1
+			(req.Site.Line == 0 || site.Line == req.Site.Line) && (len(pcs) == 0 || pcs[site.SitePC]) {
+			selected = append(selected, site)
 		}
 	}
-	if req.Site.MapName == "" || matches != 1 {
-		return selected, refuse("lookup selector matches %d sites, need exactly one", matches)
+	if len(pcs) != 0 && len(selected) != len(pcs) {
+		return nil, refuse("every SitePC must identify a lookup matching MapName/FuncName/Line")
 	}
-	if selected.Reason != "" {
-		return selected, refuse("lookup at %d: %s", selected.SitePC, selected.Reason)
+	if len(selected) == 0 || (!req.Site.AllMatches && len(pcs) == 0 && len(selected) != 1) {
+		return nil, refuse("lookup selector matches %d sites, need exactly one unless SitePCs or AllMatches is set", len(selected))
+	}
+	var sitePCs []uint32
+	for _, site := range selected {
+		if site.Reason != "" {
+			return nil, refuse("lookup at %d: %s", site.SitePC, site.Reason)
+		}
+		sitePCs = append(sitePCs, site.SitePC)
 	}
 	prog := work.Programs[req.ProgramName]
 	for _, check := range []func() error{
@@ -275,16 +309,16 @@ func transformLookup(work *ebpf.CollectionSpec, req LookupRequest) (LookupSite, 
 	if !ok || ctxStruct.Name != "xdp_md" {
 		return selected, refuse("entry BTF context is not struct xdp_md")
 	}
-	spliced, err := spliceLookup(prog.Instructions, selected.SitePC, req)
+	spliced, err := spliceLookup(prog.Instructions, sitePCs, req)
 	if err != nil {
 		return selected, err
 	}
-	m := work.Maps[selected.MapName]
+	m := work.Maps[req.Site.MapName]
 	prog.Instructions = appendLookupHook(spliced, req.HookName, proto.Params[0].Type, m.Key, m.Value)
 	return selected, nil
 }
 
-func spliceLookup(input asm.Instructions, sitePC uint32, req LookupRequest) (asm.Instructions, error) {
+func spliceLookup(input asm.Instructions, sitePCs []uint32, req LookupRequest) (asm.Instructions, error) {
 	if req.Stack.LowestOffset < -512 || req.Stack.LowestOffset > 0 {
 		return nil, refuse("StackAudit.LowestOffset must be in [-512, 0]")
 	}
@@ -306,17 +340,21 @@ func spliceLookup(input asm.Instructions, sitePC uint32, req LookupRequest) (asm
 		asm.Mov.Reg(asm.R3, asm.R0), asm.Call.Label(req.HookName),
 		asm.LoadMem(asm.R0, asm.RFP, spillR0, asm.DWord),
 	}
+	sites := make(map[uint32]bool, len(sitePCs))
+	for _, pc := range sitePCs {
+		sites[pc] = true
+	}
 	indices, mapped := map[int]int{}, map[int]int{}
 	pc := 1 // entry ctx spill
 	it := input.Iterate()
 	for it.Next() {
 		old := int(it.Offset)
 		indices[old], mapped[old] = it.Index, pc
-		if uint32(old) == sitePC {
+		if sites[uint32(old)] {
 			pc++ // branch to helper must execute the key spill first
 		}
 		pc += int(it.Ins.Size() / asm.InstructionSize)
-		if uint32(old) == sitePC {
+		if sites[uint32(old)] {
 			pc += len(after)
 		}
 	}
@@ -326,11 +364,14 @@ func spliceLookup(input asm.Instructions, sitePC uint32, req LookupRequest) (asm
 	it = input.Iterate()
 	for it.Next() {
 		old, ins := int(it.Offset), *it.Ins
+		if ins.IsLoadOfFunctionPointer() {
+			return nil, refuse("function-pointer load at %d is unsupported", old)
+		}
 		if ins.IsFunctionCall() && ins.Reference() != "" && ins.Reference() == input[0].Symbol() {
 			return nil, refuse("call to program entry is unsupported")
 		}
 		newPC := mapped[old]
-		if uint32(old) == sitePC {
+		if sites[uint32(old)] {
 			out = append(out, asm.StoreMem(asm.RFP, key, asm.R2, asm.DWord))
 			newPC++
 		}
@@ -360,7 +401,7 @@ func spliceLookup(input asm.Instructions, sitePC uint32, req LookupRequest) (asm
 			ins = btf.WithFuncMetadata(ins.WithSymbol(""), nil)
 		}
 		out = append(out, ins)
-		if uint32(old) == sitePC {
+		if sites[uint32(old)] {
 			out = append(out, after...)
 		}
 	}
