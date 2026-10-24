@@ -44,7 +44,7 @@ func TestLauncher(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer out.Close()
+	defer func() { _ = out.Close() }()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	code, err := Run(ctx, []string{os.Args[0], "-test.run=^TestLauncher$"}, Options{Rules: []Rule{testRule()}, Stdout: out, Stderr: out})
@@ -84,7 +84,7 @@ func TestFailPolicy(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer out.Close()
+			defer func() { _ = out.Close() }()
 			var log bytes.Buffer
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()

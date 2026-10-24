@@ -44,7 +44,7 @@ type supervisor struct {
 }
 
 func (s *supervisor) log(format string, args ...any) {
-	fmt.Fprintf(s.options.Log, "inject-run: "+format+"\n", args...)
+	_, _ = fmt.Fprintf(s.options.Log, "inject-run: "+format+"\n", args...)
 }
 
 // Run starts argv with PTRACE_TRACEME and returns the child's exit status (or
@@ -78,7 +78,7 @@ func Run(ctx context.Context, argv []string, opts Options) (int, error) {
 		return 0, err
 	}
 	pid := cmd.Process.Pid
-	defer cmd.Process.Release()
+	defer func() { _ = cmd.Process.Release() }()
 	done := make(chan struct{})
 	defer close(done)
 	go func() {
@@ -207,9 +207,10 @@ func Run(ctx context.Context, argv []string, opts Options) (int, error) {
 				return 0, err
 			}
 			if arch == 0xc000003e && regs.Orig_rax == unix.SYS_BPF {
-				if op == 1 {
+				switch op {
+				case 1:
 					err = s.entry(tid, t, regs)
-				} else if op == 2 {
+				case 2:
 					err = s.exit(tid, t, regs)
 				}
 				if err != nil {
@@ -399,7 +400,7 @@ func kernelBTF(id uint32) (*btf.Spec, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer h.Close()
+	defer func() { _ = h.Close() }()
 	return h.Spec(nil)
 }
 

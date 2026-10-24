@@ -31,7 +31,7 @@ func newInjectRunCommand() *cli.Command {
 				if err != nil {
 					return err
 				}
-				defer f.Close()
+				defer func() { _ = f.Close() }()
 				input = f
 			} else if os.Getenv("BPF_NINJA_INJECT_CONFIG") == "" {
 				return fmt.Errorf("--config or BPF_NINJA_INJECT_CONFIG is required")
