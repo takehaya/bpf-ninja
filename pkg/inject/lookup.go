@@ -298,16 +298,21 @@ func transformLookup(work *ebpf.CollectionSpec, req LookupRequest) ([]LookupSite
 	if !ok || ctxStruct.Name != "xdp_md" {
 		return selected, refuse("entry BTF context is not struct xdp_md")
 	}
-	spliced, err := spliceLookup(prog.Instructions, sitePCs, req)
+	m := work.Maps[req.Site.MapName]
+	hook := lookupHook(req.HookName, proto.Params[0].Type, m.Key, m.Value)
+	spliced, err := spliceLookupWithHook(prog.Instructions, sitePCs, req, hook)
 	if err != nil {
 		return selected, err
 	}
-	m := work.Maps[req.Site.MapName]
-	prog.Instructions = appendLookupHook(spliced, req.HookName, proto.Params[0].Type, m.Key, m.Value)
+	prog.Instructions = spliced
 	return selected, nil
 }
 
 func spliceLookup(input asm.Instructions, sitePCs []uint32, req LookupRequest) (asm.Instructions, error) {
+	return spliceLookupWithHook(input, sitePCs, req, nil)
+}
+
+func spliceLookupWithHook(input asm.Instructions, sitePCs []uint32, req LookupRequest, hook asm.Instructions) (asm.Instructions, error) {
 	if req.Stack.LowestOffset < -512 || req.Stack.LowestOffset > 0 {
 		return nil, refuse("StackAudit.LowestOffset must be in [-512, 0]")
 	}
@@ -333,11 +338,17 @@ func spliceLookup(input asm.Instructions, sitePCs []uint32, req LookupRequest) (
 	for _, pc := range sitePCs {
 		sites[pc] = true
 	}
+	hookSlots := int(hook.Size() / asm.InstructionSize)
+	hookAt := -1
 	indices, mapped := map[int]int{}, map[int]int{}
 	pc := 1 // entry ctx spill
 	it := input.Iterate()
 	for it.Next() {
 		old := int(it.Offset)
+		if hookAt < 0 && old > 0 && btf.FuncMetadata(it.Ins) != nil {
+			hookAt = old
+			pc += hookSlots
+		}
 		indices[old], mapped[old] = it.Index, pc
 		if sites[uint32(old)] {
 			pc++ // branch to helper must execute the key spill first
@@ -353,6 +364,9 @@ func spliceLookup(input asm.Instructions, sitePCs []uint32, req LookupRequest) (
 	it = input.Iterate()
 	for it.Next() {
 		old, ins := int(it.Offset), *it.Ins
+		if old == hookAt {
+			out = append(out, hook...)
+		}
 		if ins.IsFunctionCall() && ins.Reference() != "" && ins.Reference() == input[0].Symbol() {
 			return nil, refuse("call to program entry is unsupported")
 		}
@@ -382,10 +396,13 @@ func spliceLookup(input asm.Instructions, sitePCs []uint32, req LookupRequest) (
 			out = append(out, after...)
 		}
 	}
+	if hookAt < 0 {
+		out = append(out, hook...)
+	}
 	return out, nil
 }
 
-func appendLookupHook(insns asm.Instructions, name string, ctx, key, value btf.Type) asm.Instructions {
+func lookupHook(name string, ctx, key, value btf.Type) asm.Instructions {
 	fn := &btf.Func{Name: name, Linkage: btf.GlobalFunc, Type: &btf.FuncProto{
 		Return: &btf.Int{Name: "int", Size: 4, Encoding: btf.Signed},
 		Params: []btf.FuncParam{
@@ -400,7 +417,7 @@ func appendLookupHook(insns asm.Instructions, name string, ctx, key, value btf.T
 		WithSource(asm.Comment("generated lookup observation hook "+name)), fn)
 	keyNull, valueNull := asm.JEq.Imm(asm.R2, 0, ""), asm.JEq.Imm(asm.R3, 0, "")
 	keyNull.Offset, valueNull.Offset = 1, 1
-	return append(insns, head, keyNull, asm.LoadMem(asm.R0, asm.R2, 0, asm.Byte),
+	return asm.Instructions{head, keyNull, asm.LoadMem(asm.R0, asm.R2, 0, asm.Byte),
 		valueNull, asm.LoadMem(asm.R0, asm.R3, 0, asm.Byte),
-		asm.Mov.Imm(asm.R0, 0), asm.Return())
+		asm.Mov.Imm(asm.R0, 0), asm.Return()}
 }

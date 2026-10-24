@@ -237,4 +237,47 @@ func TestLookupInsideCallbackRefused(t *testing.T) {
 	if _, err := transformLookup(spec, req); err != nil {
 		t.Fatalf("entry site refused: %v", err)
 	}
+	var funcs []string
+	for i := range p.Instructions {
+		if fn := btf.FuncMetadata(&p.Instructions[i]); fn != nil {
+			funcs = append(funcs, fn.Name)
+		}
+	}
+	if !reflect.DeepEqual(funcs, []string{"p", req.HookName, "cb"}) {
+		t.Fatalf("func_info order = %v, want [p %s cb]", funcs, req.HookName)
+	}
+}
+
+func TestLookupHookPlacedBeforeSubprograms(t *testing.T) {
+	for _, symbolic := range []bool{false, true} {
+		spec := callbackLookupFixture(symbolic)
+		req := lookupReq()
+		req.Stack.LowestOffset = -16
+		if _, err := transformLookup(spec, req); err != nil {
+			t.Fatal(err)
+		}
+		out := spec.Programs["p"].Instructions
+		var funcs []string
+		for i := range out {
+			if fn := btf.FuncMetadata(&out[i]); fn != nil {
+				funcs = append(funcs, fn.Name)
+			}
+		}
+		if !reflect.DeepEqual(funcs, []string{"p", req.HookName, "unused", "callback"}) {
+			t.Fatalf("symbolic=%v: func_info order = %v", symbolic, funcs)
+		}
+		encoded := append(asm.Instructions(nil), out...)
+		if err := encoded.Marshal(new(bytes.Buffer), binary.LittleEndian); err != nil {
+			t.Fatal(err)
+		}
+		offsets := rawOffsets(encoded)
+		for pc, ins := range offsets {
+			if ins.IsLoadOfFunctionPointer() {
+				target := pc + 1 + int(ins.Constant)
+				if offsets[target].Symbol() != "callback" {
+					t.Fatalf("symbolic=%v: callback at %d targets %d (%q)", symbolic, pc, target, offsets[target].Symbol())
+				}
+			}
+		}
+	}
 }

@@ -82,7 +82,7 @@ Discovery reads the supplied bytes; it does not establish an audit.
 ## Supported sites and trust boundary
 
 One transform call instruments the selected sites in the program's entry function with the same hook.
-It saves ctx once, shares three spill slots across the sites, and appends one hook function.
+It saves ctx once, shares three spill slots across the sites, and inserts one hook function immediately after the entry function.
 The sites execute sequentially, including on different paths or repeated loop iterations; they do not require nested spill storage.
 Discovery includes called subprograms and callbacks, but injection there is refused because their R10 refers to a different stack frame from the saved entry context.
 The API does not compose transformations on an already transformed spec.
@@ -135,12 +135,14 @@ restore:
 r0 = *(u64 *)(r10 + result_slot)
 ```
 
-The appended hook reads `ctx->data`, checks its independently verified memory arguments for null, reads one byte from each non-null key/value pointer, and returns zero.
+The generated hook is placed immediately after the entry function (before any other subprograms or callbacks, or at the end of the program when there are none).
+It reads `ctx->data`, checks its independently verified memory arguments for null, reads one byte from each non-null key/value pointer, and returns zero.
 These reads keep all arguments used without modifying the packet, key, or map value.
 The call-site null guard prevents observation of missing keys; no `__arg_nullable` annotation is used.
 For global functions, the kernel derives generic memory argument sizes from the pointed-to BTF types, while recognizing the XDP context separately; see [`btf_prepare_func_args` in Linux](https://github.com/torvalds/linux/blob/v6.12/kernel/bpf/btf.c#L6930).
 The hook's internal checks allow independent verification with nullable generic memory arguments.
 The successful call site supplies the map value pointer and the original key pointer, including a stack key.
+Placing the hook immediately after the always-live entry function (`subprog 1`) avoids a kernel verifier bug where dead-subprogram removal (`adjust_subprog_starts_after_remove` in `kernel/bpf/verifier.c`) compacts `prog->aux->func_info` without compacting `prog->aux->func_info_aux`: if an unreached subprogram precedes a static callback or helper subprogram whose BTF argument check marked `func_info_aux` as `unreliable`, a hook appended after that callback shifts onto the stale `unreliable` flag and `bpf_check_attach_target` drops `attach_func_proto`, downgrading `fentry` arguments to untyped scalars.
 
 An fentry observer must also obey the tracing verifier's pointer rules.
 On the tested kernel, directly loading the custom struct pointer from the fentry context is rejected.
@@ -154,17 +156,17 @@ No minimum kernel compatibility claim follows from the single tested version.
 ## Relocation and audit outputs
 
 The transform reuses the original transform's relocation classifier, collision checks, reference checks, stack check, and ext-info check.
-Numeric branches, calls, and callback loads retain their original targets after accounting for the entry spill and every site insertion, including two-slot `LDIMM64` instructions.
+Numeric branches, calls, and callback loads retain their original targets after accounting for the entry spill, every site insertion, and the generated hook inserted after the entry function, including two-slot `LDIMM64` instructions.
 A branch to the helper targets its key spill; a branch to the next original instruction bypasses the hook.
 Symbolic calls and callback loads remain unresolved for the loader.
 Original map, line, BTF, and CO-RE metadata remain attached to their instructions, except for the entry metadata moved to the ctx spill.
-The appended global function has its own function and source metadata.
+The generated global function has its own function and source metadata.
 
 Function-pointer loads (`LDIMM64` with `BPF_PSEUDO_FUNC`, such as a `bpf_loop` callback) are classified separately from ordinary immediates.
 A symbolic callback load must have the loader's unresolved constant `-1` and reference exactly one symbol in the flattened program.
 Its instruction and metadata remain unchanged for the loader to resolve against the transformed stream.
 A numeric callback load has no symbolic reference and carries a signed `int32` offset relative to its first raw slot plus one, despite occupying two slots.
-That offset is relocated across the entry spill and every site insertion, with an `int32` overflow check.
+That offset is relocated across the entry spill, every site insertion, and the generated hook, with an `int32` overflow check.
 Both forms must target a non-entry instruction carrying BTF function metadata; references to the program entry, function interiors, missing or duplicate symbols, and non-instruction boundaries are refused.
 A nonzero instruction offset, an immediate outside signed `int32`, or a symbolic load whose constant is already resolved is also refused.
 Callback function and source metadata move with the original instructions.
@@ -198,13 +200,13 @@ This package does not retrieve those maps, load or swap programs, attach to inte
 
 ## Tests
 
-Unit tests cover numeric and symbolic callback classification, relocation in both directions across one or several insertions, callback metadata and loader resolution, overflow and ambiguous-reference refusals, discovery, map provenance, ambiguity, explicit-PC and all-matches selection, map BTF validation, reserved stack boundaries, metadata preservation, clone isolation, relocation across multiple insertions and combined branch overflow, refusal without mutation, and ELF hash/checksum handling.
+Unit tests cover numeric and symbolic callback classification, relocation in both directions across one or several insertions, hook placement before subprograms, callback metadata and loader resolution, overflow and ambiguous-reference refusals, discovery, map provenance, ambiguity, explicit-PC and all-matches selection, map BTF validation, reserved stack boundaries, metadata preservation, clone isolation, relocation across multiple insertions and combined branch overflow, refusal without mutation, and ELF hash/checksum handling.
 `TestLookupThroughELF` compiles a synthetic BTF map fixture with a `bpf_loop` callback, checks that its symbolic reference and metadata survive, discovers two lookup source lines, and transforms both a line-selected site and multiple sites through the exported API without BPF privileges.
 `TestBpfLookupInjectionObservesContextKeyValue` uses asm fixtures with a hash map keyed by a packet `u32` and a value `{u64 seid; u64 imsi;}`.
 It compares plain and injected programs, checks two keys with different packet lengths and `imsi` values, verifies silence for a missing key, and checks observation before attachment and after detachment.
 `TestBpfLookupInjectionMultipleSites` repeats these checks with two lookups on different paths, observed by one fentry observer on the shared hook.
-`TestBpfLookupInjectionCallback` checks symbolic and numeric callback loads with a stack counter incremented three times by `bpf_loop`; the program returns `XDP_ABORTED` unless those increments occur.
-It repeats the plain/injected comparison and fentry observations for both callback forms.
+`TestBpfLookupInjectionCallback` checks symbolic and numeric callback loads with an unreached subprogram preceding the `bpf_loop` callback and a stack counter incremented three times by `bpf_loop`; the program returns `XDP_ABORTED` unless those increments occur.
+It repeats the plain/injected comparison and fentry observations (including direct `ctx` pointer dereferencing) for both callback forms.
 These tests exercise the transform core and fentry using `BPF_PROG_TEST_RUN`, without an interface attachment or pinning.
 
 ```sh

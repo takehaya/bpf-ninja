@@ -245,14 +245,19 @@ func testLookupObservation(t *testing.T, fixture func() *ebpf.CollectionSpec, re
 
 // The callback increments a counter in the entry stack three times. The
 // program returns XDP_ABORTED unless all three increments survive injection.
+// An unreached subprogram precedes the callback so kernel dead-code elimination
+// compacts func_info without compacting func_info_aux.
 func callbackLookupFixture(symbolic bool) *ebpf.CollectionSpec {
 	spec := lookupFixture()
 	original := spec.Programs["p"].Instructions
+	skip := asm.JEq.Imm(asm.R0, 0, "")
+	skip.Offset = 1
 	done := asm.JEq.Imm(asm.R0, 3, "")
 	done.Offset = 2
 	insns := asm.Instructions{
 		asm.Mov.Reg(asm.R6, asm.R1),
 		asm.Mov.Imm(asm.R0, 0), asm.StoreMem(asm.RFP, -16, asm.R0, asm.DWord),
+		skip, asm.Call.Label("unused"),
 		asm.Mov.Imm(asm.R1, 3),
 		callbackLoad(asm.R2, -1, "callback"),
 		asm.Mov.Reg(asm.R3, asm.RFP), asm.Add.Imm(asm.R3, -16),
@@ -264,8 +269,13 @@ func callbackLookupFixture(symbolic bool) *ebpf.CollectionSpec {
 	insns[0] = btf.WithFuncMetadata(insns[0].WithSymbol("p").WithSource(original[0].Source()), btf.FuncMetadata(&original[0]))
 	original[0] = btf.WithFuncMetadata(original[0].WithSymbol(""), nil)
 	insns = append(insns, original...)
+	unused := btf.WithFuncMetadata(asm.Mov.Imm(asm.R0, 0).WithSymbol("unused").WithSource(asm.Comment("unused subprogram")),
+		&btf.Func{Name: "unused", Linkage: btf.GlobalFunc, Type: &btf.FuncProto{
+			Return: &btf.Int{Name: "int", Size: 4, Encoding: btf.Signed},
+		}})
+	insns = append(insns, unused, asm.Return())
 	if !symbolic {
-		insns[4] = callbackLoad(asm.R2, int64(insns.Size()/8)-4-1, "")
+		insns[6] = callbackLoad(asm.R2, int64(insns.Size()/8)-6-1, "")
 	}
 	insns = append(insns, callbackHead("callback"),
 		asm.Add.Imm(asm.R0, 1), asm.StoreMem(asm.R2, 0, asm.R0, asm.DWord),
