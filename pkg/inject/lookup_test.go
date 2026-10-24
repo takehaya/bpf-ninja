@@ -418,6 +418,7 @@ func TestLookupDiscoveryFunctionPointer(t *testing.T) {
 			fp.Src = asm.PseudoFunc
 			// Insert between map load and helper: R1 must lose provenance, R2 must not.
 			p.Instructions = append(append(append(asm.Instructions(nil), p.Instructions[:10]...), fp), p.Instructions[10:]...)
+			p.Instructions = append(p.Instructions, callbackHead("callback"), asm.Return())
 			before := append(asm.Instructions(nil), p.Instructions...)
 			sites, err := discoverLookups(spec, "p")
 			if err != nil || len(sites) != 1 {
@@ -427,14 +428,19 @@ func TestLookupDiscoveryFunctionPointer(t *testing.T) {
 				if sites[0].MapName != "" {
 					t.Fatal("stale R1 map provenance")
 				}
-			} else if sites[0].MapName != "sessions" || !strings.Contains(sites[0].Reason, "function-pointer load") {
+			} else if sites[0].MapName != "sessions" || sites[0].Reason != "" {
 				t.Fatalf("site=%+v", sites[0])
 			}
-			if _, err := transformLookup(spec, lookupReq()); !errors.Is(err, ErrRefused) {
-				t.Fatalf("want refusal: %v", err)
-			}
 			if !reflect.DeepEqual(before, p.Instructions) {
-				t.Fatal("discovery/refusal mutated input")
+				t.Fatal("discovery mutated input")
+			}
+			_, err = transformLookup(spec, lookupReq())
+			if dst == asm.R1 {
+				if !errors.Is(err, ErrRefused) || !reflect.DeepEqual(before, p.Instructions) {
+					t.Fatalf("want refusal without mutation: %v", err)
+				}
+			} else if err != nil {
+				t.Fatalf("valid callback refused: %v", err)
 			}
 		})
 	}

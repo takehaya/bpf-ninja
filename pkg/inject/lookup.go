@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"math"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/asm"
@@ -65,8 +64,8 @@ type LookupResult struct {
 // DiscoverLookups lists every map_lookup_elem helper in programName, in raw
 // instruction order, without loading BPF or requiring a stack audit. It resolves
 // only direct R1 map loads in the same basic block. Unsupported relocation
-// shapes refuse the listing, except function-pointer loads, which are tolerated
-// for listing only. Unresolved maps and unsupported sites get Reason.
+// shapes refuse the listing. Callback loads must reference subprogram starts.
+// Unresolved maps and unsupported sites get Reason.
 func DiscoverLookups(elf []byte, programName string) ([]LookupSite, error) {
 	spec, err := ebpf.LoadCollectionSpecFromReader(bytes.NewReader(bytes.Clone(elf)))
 	if err != nil {
@@ -131,20 +130,13 @@ func discoverLookups(spec *ebpf.CollectionSpec, name string) ([]LookupSite, erro
 		indices[int(it.Offset)] = it.Index
 	}
 	starts := map[int]bool{0: true}
-	var unsupported string
 	it = prog.Instructions.Iterate()
 	for it.Next() {
 		pc, ins := int(it.Offset), it.Ins
 		if btf.FuncMetadata(ins) != nil {
 			starts[pc] = true
 		}
-		if ins.IsLoadOfFunctionPointer() {
-			if unsupported == "" {
-				unsupported = fmt.Sprintf("function-pointer load at %d is unsupported for transformation", pc)
-			}
-			continue // discovery does not move or resolve callback references
-		}
-		target, relative, _, err := relocTarget(ins, pc, indices)
+		target, relative, _, err := relocTarget(ins, pc, indices, prog.Instructions)
 		if err != nil {
 			return nil, err
 		}
@@ -189,9 +181,6 @@ func discoverLookups(spec *ebpf.CollectionSpec, name string) ([]LookupSite, erro
 				if err := checkLookupMap(m); err != nil {
 					site.Reason = err.Error()
 				}
-			}
-			if site.Reason == "" {
-				site.Reason = unsupported
 			}
 			sites = append(sites, site)
 		}
@@ -364,9 +353,6 @@ func spliceLookup(input asm.Instructions, sitePCs []uint32, req LookupRequest) (
 	it = input.Iterate()
 	for it.Next() {
 		old, ins := int(it.Offset), *it.Ins
-		if ins.IsLoadOfFunctionPointer() {
-			return nil, refuse("function-pointer load at %d is unsupported", old)
-		}
 		if ins.IsFunctionCall() && ins.Reference() != "" && ins.Reference() == input[0].Symbol() {
 			return nil, refuse("call to program entry is unsupported")
 		}
@@ -375,26 +361,17 @@ func spliceLookup(input asm.Instructions, sitePCs []uint32, req LookupRequest) (
 			out = append(out, asm.StoreMem(asm.RFP, key, asm.R2, asm.DWord))
 			newPC++
 		}
-		target, relative, call, err := relocTarget(&ins, old, indices)
+		target, relative, function, err := relocTarget(&ins, old, indices, input)
 		if err != nil {
 			return nil, err
 		}
 		if relative {
+			if function && target == 0 {
+				return nil, refuse("call to program entry is unsupported")
+			}
 			// A branch to original slot zero skips the one-time ctx spill.
-			delta := int64(mapped[target] - newPC - 1)
-			if call {
-				if target == 0 {
-					return nil, refuse("call to program entry is unsupported")
-				}
-				if delta < math.MinInt32 || delta > math.MaxInt32 {
-					return nil, refuse("numeric call at %d overflows int32 after insertion", old)
-				}
-				ins.Constant = delta
-			} else {
-				if delta < math.MinInt16 || delta > math.MaxInt16 {
-					return nil, refuse("branch at %d overflows int16 after insertion", old)
-				}
-				ins.Offset = int16(delta)
+			if err := relocateOffset(&ins, newPC, mapped[target], function); err != nil {
+				return nil, err
 			}
 		}
 		if old == 0 {

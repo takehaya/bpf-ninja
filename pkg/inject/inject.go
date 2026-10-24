@@ -30,10 +30,10 @@
 //     caller-audited low-water mark, so the two 8-byte spill slots placed
 //     below it (8-byte aligned, within 512 bytes) cannot collide with a direct
 //     reference;
-//   - every relocated branch/call target is an original instruction boundary
-//     and no branch overflows int16 (nor a call its int32 constant) after
+//   - every relocated branch/call/callback target is an original instruction boundary
+//     and no branch overflows int16 (nor a function reference its int32 constant) after
 //     insertion;
-//   - every symbolic function call resolves to exactly one symbol in the
+//   - every symbolic function reference resolves to exactly one symbol in the
 //     selected program's flattened instruction stream, and every map load
 //     names a map the collection defines;
 //   - the generated hook name does not collide with an existing instruction
@@ -157,7 +157,7 @@ type Result struct {
 	// SourceChecksum and TransformedChecksum are SHA-256 over the raw
 	// per-instruction encoding of the target program before and after the
 	// transform. This encoding covers opcodes, registers, offsets and
-	// constants, with symbolic call constants left unresolved (-1); it does NOT
+	// constants, with symbolic function references left unresolved (-1); it does NOT
 	// cover BTF, source lines, CO-RE relocations, map or symbol references, and
 	// so does not pin the resolved hook-call target or identify the full loaded
 	// kernel artifact. Pin these to detect instruction-level changes to the
@@ -328,7 +328,7 @@ func checkNoCollision(spec *ebpf.CollectionSpec, hook string) error {
 
 // checkReferences validates that the target program's symbolic references
 // resolve within its flattened instruction stream, and that none names the
-// hook. A symbolic function call must resolve to exactly one symbol there;
+// hook. A symbolic function reference must resolve to exactly one symbol there;
 // an ambiguous (duplicated) definition and an unresolved call are
 // both refused, as is a map load that names a map the collection does not
 // define. Refusing an original reference equal to the hook name stops the
@@ -350,12 +350,12 @@ func checkReferences(spec *ebpf.CollectionSpec, target *ebpf.ProgramSpec, hook s
 			return refuse("instruction %d references %q, the generated hook name", i, ref)
 		}
 		switch {
-		case ins.IsFunctionCall():
+		case ins.IsFunctionReference():
 			switch {
 			case symCount[ref] == 0:
-				return refuse("symbolic call to %q does not resolve to a defined function", ref)
+				return refuse("symbolic function reference to %q does not resolve to a defined function", ref)
 			case symCount[ref] > 1:
-				return refuse("symbolic call to %q is ambiguous (%d definitions)", ref, symCount[ref])
+				return refuse("symbolic function reference to %q is ambiguous (%d definitions)", ref, symCount[ref])
 			}
 		case ins.IsLoadFromMap():
 			if spec.Maps == nil || spec.Maps[ref] == nil {
@@ -470,26 +470,13 @@ func splice(input asm.Instructions, req Request) (asm.Instructions, error) {
 		ins := *it.Ins // carries original BTF func, line, map and CO-RE metadata
 		pc := int(it.Offset)
 
-		if ins.IsLoadOfFunctionPointer() {
-			return nil, refuse("function-pointer load at %d is unsupported", pc)
-		}
-
-		target, relative, isCall, err := relocTarget(&ins, pc, indices)
+		target, relative, function, err := relocTarget(&ins, pc, indices, input)
 		if err != nil {
 			return nil, err
 		}
 		if relative {
-			delta := mapped(target) - mapped(pc) - 1
-			if isCall {
-				if delta < math.MinInt32 || delta > math.MaxInt32 {
-					return nil, refuse("numeric call at %d overflows int32 after insertion", pc)
-				}
-				ins.Constant = int64(delta)
-			} else {
-				if delta < math.MinInt16 || delta > math.MaxInt16 {
-					return nil, refuse("branch at %d overflows int16 after insertion", pc)
-				}
-				ins.Offset = int16(delta)
+			if err := relocateOffset(&ins, mapped(pc), mapped(target), function); err != nil {
+				return nil, err
 			}
 		}
 
@@ -501,13 +488,41 @@ func splice(input asm.Instructions, req Request) (asm.Instructions, error) {
 	return output, nil
 }
 
-// relocTarget classifies ins and, for a numeric branch/call, returns its raw
-// target slot. Symbolic calls are left for the loader to resolve; everything
-// else the transform cannot relocate soundly is refused. A numeric call or
-// branch target must be an original instruction boundary (a key in indices):
-// this rejects end-of-stream, LDIMM64-continuation and out-of-stream targets.
-func relocTarget(ins *asm.Instruction, pc int, indices map[int]int) (target int, relative, isCall bool, err error) {
+// relocTarget classifies branches, calls and callback loads. Function references
+// use an int32 constant; branches use an int16 offset. Symbolic references stay
+// unresolved for the loader. Numeric targets must be instruction boundaries;
+// callback targets additionally require a non-entry BTF function start.
+func relocTarget(ins *asm.Instruction, pc int, indices map[int]int, input asm.Instructions) (target int, relative, function bool, err error) {
 	switch {
+	case ins.IsLoadOfFunctionPointer():
+		if ins.Offset != 0 || ins.Constant < math.MinInt32 || ins.Constant > math.MaxInt32 {
+			return 0, false, false, refuse("malformed function-pointer load at %d", pc)
+		}
+		t := pc + 1 + int(ins.Constant)
+		if ref := ins.Reference(); ref != "" {
+			if ins.Constant != -1 {
+				return 0, false, false, refuse("symbolic function-pointer load at %d is already resolved", pc)
+			}
+			count := 0
+			for offset, idx := range indices {
+				if input[idx].Symbol() == ref {
+					t = offset
+					count++
+				}
+			}
+			if count != 1 {
+				return 0, false, false, refuse("function-pointer reference %q at %d has %d definitions", ref, pc, count)
+			}
+		}
+		idx, ok := indices[t]
+		if !ok {
+			return 0, false, false, refuse("function-pointer load at %d targets %d, not an instruction boundary", pc, t)
+		}
+		if t == 0 || btf.FuncMetadata(&input[idx]) == nil {
+			return 0, false, false, refuse("function-pointer load at %d targets %d, not a subprogram start", pc, t)
+		}
+		return t, ins.Reference() == "", true, nil
+
 	case ins.IsFunctionCall():
 		if ins.Reference() != "" {
 			// Symbolic bpf2bpf call: resolved by name at marshal time against
@@ -545,6 +560,24 @@ func relocTarget(ins *asm.Instruction, pc int, indices map[int]int) (target int,
 		}
 		return 0, false, false, nil
 	}
+}
+
+// relocateOffset uses the first raw slot plus one even for two-slot LDIMM64
+// callback loads, matching the kernel and the loader's function references.
+func relocateOffset(ins *asm.Instruction, pc, target int, function bool) error {
+	delta := int64(target) - int64(pc) - 1
+	if function {
+		if delta < math.MinInt32 || delta > math.MaxInt32 {
+			return refuse("function reference at %d overflows int32 after insertion", pc)
+		}
+		ins.Constant = delta
+	} else {
+		if delta < math.MinInt16 || delta > math.MaxInt16 {
+			return refuse("branch at %d overflows int16 after insertion", pc)
+		}
+		ins.Offset = int16(delta)
+	}
+	return nil
 }
 
 // checkShape enforces the audited load shape and site-register redefinition.

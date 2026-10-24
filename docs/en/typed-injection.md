@@ -36,8 +36,8 @@ It validates only mechanical properties of the bytecode:
 | The instruction after the site cleanly redefines `R1` (a MOV, a 64-bit immediate load, or a load from a pointer other than `R1`). | That `R1`, `R3`, `R4`, `R5` are dead or redefined-before-use across the call. |
 | The target carries BTF function info on its first instruction and a source line on every function start. | That the BTF describes the build you audited. |
 | Every **direct** `R10`/`RFP` reference is at or above `StackAudit.LowestOffset`; the two 8-byte spill slots sit below it, 8-byte aligned, within 512 bytes. | That no pointer **aliases** `R10` into the spill region and no called subprogram's stack reaches below the audited mark. |
-| Every relocated branch target is an original instruction boundary; no branch overflows `int16` and no call overflows `int32`. | — |
-| Every symbolic call resolves to exactly one symbol in the selected program's flattened instructions and every map load names a map the collection defines. | — |
+| Every relocated branch target is an original instruction boundary; no branch overflows `int16` and no call or callback offset overflows `int32`. | — |
+| Every symbolic function reference resolves to exactly one symbol in the selected program's flattened instructions and every map load names a map the collection defines. | — |
 | `HookName` is a valid C/BTF identifier, does not collide with an existing symbol, function-metadata name, or BTF `Func`, and is not already referenced by any instruction. | — |
 
 Only `R0` and `R2` are saved and restored around the call.
@@ -68,18 +68,24 @@ The slot arithmetic is done in widened integers, so a very negative `LowestOffse
 
 Instructions after the site shift by six raw slots (an `LdImm64` occupies two slots).
 `SitePC` indexes the flattened `ProgramSpec.Instructions` before transformation, including any appended subprograms; it is not an ELF section offset.
-The transform rewrites numeric branch offsets and numeric call constants for the shift.
+The transform rewrites numeric branch offsets, call constants, and callback-load constants for the shift.
 It keeps a branch that targeted the next original instruction landing past the insertion, so that branch still bypasses the hook.
-It leaves symbolic bpf-to-bpf calls for the loader to resolve by name.
+It leaves symbolic bpf-to-bpf calls and callback loads for the loader to resolve by name.
 It preserves original instruction, BTF, line, map, and CO-RE metadata.
 
-It **refuses** (returning an error wrapping `inject.ErrRefused`, mutating nothing) on: a function-pointer load, a symbolic branch, a long (`Jump32` `Ja`) jump, an already-resolved symbolic call, a branch or call target that is not an instruction boundary, a branch that overflows `int16`, a call that overflows `int32`, or an unrecognized instruction reference.
+Callback loads (`LDIMM64` with `BPF_PSEUDO_FUNC`) share the [lookup transform's relocation rules](lookup-site-injection.md#relocation-and-audit-outputs).
+Symbolic loads require constant `-1` and exactly one matching symbol; numeric loads use a signed `int32` offset from the first raw slot plus one.
+Both must target a non-entry instruction carrying BTF function metadata.
+Malformed loads, already-resolved symbolic loads, missing or duplicate callback symbols, and targets without subprogram metadata are refused.
+Callback support does not change the load shape, liveness certification, spill layout, or default site behavior of `Transform`.
+
+It **refuses** (returning an error wrapping `inject.ErrRefused`, mutating nothing) on: a symbolic branch, a long (`Jump32` `Ja`) jump, an already-resolved symbolic call, a branch, call, or callback target that is not an instruction boundary, a branch that overflows `int16`, a call or callback offset that overflows `int32`, or an unrecognized instruction reference.
 
 ## Auditing the output
 
 `Result` exposes `SourceChecksum` and `TransformedChecksum`, plus `InsertedAt`, `InsertedSlots`, and `AddedBytes`.
 Each checksum is a SHA-256 over the raw per-instruction encoding of the target program before and after the transform.
-That encoding covers opcodes, registers, offsets, and constants, with symbolic call constants left unresolved at `-1`.
+That encoding covers opcodes, registers, offsets, and constants, with symbolic call and callback-load constants left unresolved at `-1`.
 It does **not** cover BTF, source lines, CO-RE relocations, or map and symbol references, so it does not pin the resolved hook-call target and does not identify the full loaded kernel artifact.
 Pin the checksums to detect instruction-level changes to the stream; the input ELF hash remains the binding for all source content.
 `Result.Spec` is an independent clone; the parsed source spec is left pristine, and any refusal leaves every input untouched.
@@ -96,7 +102,7 @@ Because the first argument is a scalar site number (not a packet context), packe
 
 ## Tests
 
-The package unit tests cover the transform core, the request and shape validation, relocation, the reference and metadata checks, and the checksum, all without a kernel or compiler.
+The package unit tests cover numeric and symbolic callback support through `Transform`, shared callback classification and relocation refusals, the transform core, the request and shape validation, relocation, the reference and metadata checks, and the checksum, all without a kernel or compiler.
 `TestTransformThroughELF` additionally compiles a small synthetic fixture with clang and checks a successful exported `Transform` call, including its hash gate and source checksum, without BPF privileges.
 This compiler check follows the repository's optional local clang handling and fails on compiler errors.
 `TestBpfTypedInjectionObservesSiteAndValue` loads a synthetic XDP target plain and injected from asm fixtures, over the observed values `0`, `1`, and `0xffffffff`, attaches an fentry observer to the generated hook, and reads back the site and value with an explicit seen counter across the unobserved, attached, and detached phases.

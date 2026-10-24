@@ -360,12 +360,12 @@ func TestSpliceRedefinitionRefusals(t *testing.T) {
 	}
 }
 
-func TestSpliceFuncPtrLoadRefused(t *testing.T) {
+func TestSpliceInvalidFuncPtrLoadRefused(t *testing.T) {
 	fp := asm.LoadImm(asm.R3, 0, asm.DWord)
 	fp.Src = asm.PseudoFunc
 	in := asm.Instructions{siteLoad(), siteRedef(), fp, asm.Return()}
 	if _, err := splice(in, shapeReq(0)); err == nil || !errors.Is(err, ErrRefused) {
-		t.Fatalf("function-pointer load must be refused, got %v", err)
+		t.Fatalf("off-boundary function-pointer load must be refused, got %v", err)
 	}
 }
 

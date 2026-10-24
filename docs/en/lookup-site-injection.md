@@ -11,7 +11,7 @@ An fentry observer attached to `HOOK` can correlate packet context, the lookup k
 The hook runs only when the lookup returns a non-null value.
 It uses all three arguments and returns zero; the injected code restores the original lookup result before the program continues.
 This is a separate transform from the audited `u32` observation transform described in [typed-injection.md](typed-injection.md).
-The existing `Transform` API and behavior are unchanged.
+Both transforms share callback-reference relocation; their hook APIs and site-selection rules remain separate.
 
 ## Discovery and selection
 
@@ -28,8 +28,8 @@ It does not trace a map pointer through another register, stack memory, a preced
 Branch targets, function starts, and instructions after jumps or calls begin new blocks.
 Atomic instructions and legacy packet loads conservatively invalidate map provenance.
 Calls that cannot be resolved, lack usable map BTF, or lie in a called subprogram are still listed with a `Reason`.
-Unsupported relocation shapes return an error instead of a partial listing, except for function-pointer loads.
-Discovery tolerates these loads without resolving their callback references and marks otherwise supported sites with a `Reason` explaining that transformation is refused.
+Unsupported relocation shapes, including invalid callback references, return an error instead of a partial listing.
+Valid function-pointer loads do not prevent discovery or transformation of entry-function sites.
 A listing with an empty `Reason` does not certify the stack, context prototype, or the rest of the transform's checks.
 
 `LookupSelector.MapName` is required.
@@ -84,7 +84,7 @@ Discovery reads the supplied bytes; it does not establish an audit.
 One transform call instruments the selected sites in the program's entry function with the same hook.
 It saves ctx once, shares three spill slots across the sites, and appends one hook function.
 The sites execute sequentially, including on different paths or repeated loop iterations; they do not require nested spill storage.
-Discovery includes called subprograms, but injection there is refused because their R10 refers to a different stack frame from the saved entry context.
+Discovery includes called subprograms and callbacks, but injection there is refused because their R10 refers to a different stack frame from the saved entry context.
 The API does not compose transformations on an already transformed spec.
 Only the selected program changes, including when other programs share a linked subprogram or a map.
 
@@ -154,17 +154,22 @@ No minimum kernel compatibility claim follows from the single tested version.
 ## Relocation and audit outputs
 
 The transform reuses the original transform's relocation classifier, collision checks, reference checks, stack check, and ext-info check.
-Numeric branches and calls retain their original targets after accounting for the entry spill and every site insertion, including two-slot `LDIMM64` instructions.
+Numeric branches, calls, and callback loads retain their original targets after accounting for the entry spill and every site insertion, including two-slot `LDIMM64` instructions.
 A branch to the helper targets its key spill; a branch to the next original instruction bypasses the hook.
-Symbolic calls remain unresolved for the loader.
+Symbolic calls and callback loads remain unresolved for the loader.
 Original map, line, BTF, and CO-RE metadata remain attached to their instructions, except for the entry metadata moved to the ctx spill.
 The appended global function has its own function and source metadata.
 
-As with the original transform, function-pointer loads, symbolic branches, long jumps, resolved symbolic calls, unknown references, targets off instruction boundaries, and relocation overflow are refused.
-Function-pointer loads such as an `LDIMM64` with `BPF_PSEUDO_FUNC` supplying a `bpf_loop` callback are tolerated only by discovery.
-Supporting transformation would require classifying these references separately from ordinary immediates, validating their subprogram targets, preserving unresolved symbolic references for the loader, and relocating numeric callback offsets across every insertion.
-That relocation would need instruction-boundary and overflow checks, rejection of ambiguous already-resolved symbolic references, and tests covering callback metadata and verifier acceptance.
-Callback relocation is not implemented.
+Function-pointer loads (`LDIMM64` with `BPF_PSEUDO_FUNC`, such as a `bpf_loop` callback) are classified separately from ordinary immediates.
+A symbolic callback load must have the loader's unresolved constant `-1` and reference exactly one symbol in the flattened program.
+Its instruction and metadata remain unchanged for the loader to resolve against the transformed stream.
+A numeric callback load has no symbolic reference and carries a signed `int32` offset relative to its first raw slot plus one, despite occupying two slots.
+That offset is relocated across the entry spill and every site insertion, with an `int32` overflow check.
+Both forms must target a non-entry instruction carrying BTF function metadata; references to the program entry, function interiors, missing or duplicate symbols, and non-instruction boundaries are refused.
+A nonzero instruction offset, an immediate outside signed `int32`, or a symbolic load whose constant is already resolved is also refused.
+Callback function and source metadata move with the original instructions.
+
+As with the original transform, symbolic branches, long jumps, resolved symbolic calls, unknown references, targets off instruction boundaries, and relocation overflow are refused.
 Calls back to the program entry are also refused.
 Hook names must be valid C/BTF identifiers and must not collide with existing symbols or BTF functions or satisfy an existing reference in the selected program.
 Refusals wrap `inject.ErrRefused`, return no result, and leave inputs untouched.
@@ -175,14 +180,14 @@ Its existing `Site` field is the first element of `Sites`.
 `InsertedAt` is zero because the first insertion saves ctx at entry.
 `InsertedSlots` is `8 + 8*len(Sites)`: one entry spill, eight instructions per site, and seven hook instructions.
 One site adds 16 slots (128 bytes); two sites add 24 slots (192 bytes).
-`SourceChecksum` and `TransformedChecksum` cover the raw instruction encoding, with symbolic calls unresolved.
+`SourceChecksum` and `TransformedChecksum` cover the raw instruction encoding, with symbolic calls and callback loads unresolved.
 They exclude BTF, source lines, CO-RE metadata, and symbolic/map references; they do not identify the fully loaded kernel artifact.
 The ELF SHA-256 binds the full input.
 
 ## What is not covered
 
 The transform observes successful lookup calls at the selected sites only.
-It does not observe update/delete helpers, LRU eviction, non-map lookups such as `bpf_fib_lookup`, map-in-map traversal, or `bpf_for_each_map_elem` callbacks.
+It does not observe update/delete helpers, LRU eviction, non-map lookups such as `bpf_fib_lookup`, map-in-map traversal, or lookups inside `bpf_for_each_map_elem` callbacks.
 It does not provide a consistent value version under concurrent control-plane updates or other writers.
 The observer reads the returned object during the hook; the program's later reads may see different contents.
 There is no snapshot, locking, or transaction guarantee, and observation adds execution cost.
@@ -193,11 +198,13 @@ This package does not retrieve those maps, load or swap programs, attach to inte
 
 ## Tests
 
-Unit tests cover discovery, map provenance, ambiguity, explicit-PC and all-matches selection, map BTF validation, reserved stack boundaries, metadata preservation, clone isolation, relocation across multiple insertions and combined branch overflow, refusal without mutation, and ELF hash/checksum handling.
-`TestLookupThroughELF` compiles a synthetic BTF map fixture, discovers two lookup source lines, and transforms both a line-selected site and multiple sites through the exported API without BPF privileges.
+Unit tests cover numeric and symbolic callback classification, relocation in both directions across one or several insertions, callback metadata and loader resolution, overflow and ambiguous-reference refusals, discovery, map provenance, ambiguity, explicit-PC and all-matches selection, map BTF validation, reserved stack boundaries, metadata preservation, clone isolation, relocation across multiple insertions and combined branch overflow, refusal without mutation, and ELF hash/checksum handling.
+`TestLookupThroughELF` compiles a synthetic BTF map fixture with a `bpf_loop` callback, checks that its symbolic reference and metadata survive, discovers two lookup source lines, and transforms both a line-selected site and multiple sites through the exported API without BPF privileges.
 `TestBpfLookupInjectionObservesContextKeyValue` uses asm fixtures with a hash map keyed by a packet `u32` and a value `{u64 seid; u64 imsi;}`.
 It compares plain and injected programs, checks two keys with different packet lengths and `imsi` values, verifies silence for a missing key, and checks observation before attachment and after detachment.
 `TestBpfLookupInjectionMultipleSites` repeats these checks with two lookups on different paths, observed by one fentry observer on the shared hook.
+`TestBpfLookupInjectionCallback` checks symbolic and numeric callback loads with a stack counter incremented three times by `bpf_loop`; the program returns `XDP_ABORTED` unless those increments occur.
+It repeats the plain/injected comparison and fentry observations for both callback forms.
 These tests exercise the transform core and fentry using `BPF_PROG_TEST_RUN`, without an interface attachment or pinning.
 
 ```sh
@@ -207,5 +214,5 @@ go test -count=1 ./pkg/inject/...
 sudo -E env PATH=$PATH go test -run 'TestBpfLookupInjection' ./pkg/inject/...
 ```
 
-Both privileged lookup tests passed on Linux `7.0.0-38-generic`.
+All three privileged lookup tests passed on Linux `7.0.0-38-generic`.
 This is finite test evidence for the fixture, not a general program-equivalence, concurrency, or kernel-version guarantee.

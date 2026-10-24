@@ -31,7 +31,15 @@ struct {
     __type(value, struct session);
 } sessions SEC(".maps");
 static void *(*lookup)(void *, const void *) = (void *)1;
+static long (*loop)(u32, void *, void *, unsigned long long) = (void *)181;
+static long callback(u32 index, void *data) {
+    (*(u32 *)data)++;
+    return 0;
+}
 SEC("xdp") int ingress(struct xdp_md *ctx) {
+    u32 count = 0;
+    loop(3, callback, &count, 0);
+    if (count != 3) return 0;
     u32 key = ctx->data;
 #line 100 "lookup_fixture.c"
     struct session *a = lookup(&sessions, &key);
@@ -82,6 +90,31 @@ char _license[] SEC("license") = "GPL";
 		t.Fatalf("source checksum=%s want=%s error=%v", res.SourceChecksum, want, err)
 	}
 	out := res.Spec.Programs["ingress"].Instructions
+	// Exercise cilium/ebpf's actual ELF callback representation, including its
+	// unresolved sentinel and the callback's function and line metadata.
+	callbacks := 0
+	for _, ins := range src.Programs["ingress"].Instructions {
+		if !ins.IsLoadOfFunctionPointer() {
+			continue
+		}
+		callbacks++
+		if ins.Constant != -1 || ins.Reference() != "callback" {
+			t.Fatalf("unexpected ELF callback reference: %v", ins)
+		}
+		preserved, target := false, false
+		for _, transformed := range out {
+			preserved = preserved || reflect.DeepEqual(ins, transformed)
+			if transformed.Symbol() == ins.Reference() {
+				target = btf.FuncMetadata(&transformed) != nil && transformed.Source() != nil
+			}
+		}
+		if !preserved || !target {
+			t.Fatal("callback reference or target metadata changed")
+		}
+	}
+	if callbacks != 1 {
+		t.Fatalf("callback loads=%d, want 1", callbacks)
+	}
 	want, err = checksum(out, res.Spec.ByteOrder)
 	if err != nil || res.TransformedChecksum != want {
 		t.Fatalf("output checksum: %s, %v", want, err)

@@ -242,3 +242,49 @@ func testLookupObservation(t *testing.T, fixture func() *ebpf.CollectionSpec, re
 		t.Fatal("observation after detach")
 	}
 }
+
+// The callback increments a counter in the entry stack three times. The
+// program returns XDP_ABORTED unless all three increments survive injection.
+func callbackLookupFixture(symbolic bool) *ebpf.CollectionSpec {
+	spec := lookupFixture()
+	original := spec.Programs["p"].Instructions
+	done := asm.JEq.Imm(asm.R0, 3, "")
+	done.Offset = 2
+	insns := asm.Instructions{
+		asm.Mov.Reg(asm.R6, asm.R1),
+		asm.Mov.Imm(asm.R0, 0), asm.StoreMem(asm.RFP, -16, asm.R0, asm.DWord),
+		asm.Mov.Imm(asm.R1, 3),
+		callbackLoad(asm.R2, -1, "callback"),
+		asm.Mov.Reg(asm.R3, asm.RFP), asm.Add.Imm(asm.R3, -16),
+		asm.Mov.Imm(asm.R4, 0), asm.FnLoop.Call(),
+		asm.LoadMem(asm.R0, asm.RFP, -16, asm.DWord), done,
+		asm.Mov.Imm(asm.R0, 0), asm.Return(),
+		asm.Mov.Reg(asm.R1, asm.R6),
+	}
+	insns[0] = btf.WithFuncMetadata(insns[0].WithSymbol("p").WithSource(original[0].Source()), btf.FuncMetadata(&original[0]))
+	original[0] = btf.WithFuncMetadata(original[0].WithSymbol(""), nil)
+	insns = append(insns, original...)
+	if !symbolic {
+		insns[4] = callbackLoad(asm.R2, int64(insns.Size()/8)-4-1, "")
+	}
+	insns = append(insns, callbackHead("callback"),
+		asm.Add.Imm(asm.R0, 1), asm.StoreMem(asm.R2, 0, asm.R0, asm.DWord),
+		asm.Mov.Imm(asm.R0, 0), asm.Return())
+	spec.Programs["p"].Instructions = insns
+	return spec
+}
+
+func TestBpfLookupInjectionCallback(t *testing.T) {
+	testutil.SkipIfNotRoot(t)
+	for _, symbolic := range []bool{false, true} {
+		name := "numeric"
+		if symbolic {
+			name = "symbolic"
+		}
+		t.Run(name, func(t *testing.T) {
+			req := lookupReq()
+			req.Stack.LowestOffset = -16
+			testLookupObservation(t, func() *ebpf.CollectionSpec { return callbackLookupFixture(symbolic) }, req)
+		})
+	}
+}
