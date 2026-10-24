@@ -519,6 +519,8 @@ func compileFilterWithSlots(expr string, useDSL, isFexit bool, progType ebpf.Pro
 //   -16: map lookup の key
 //   -24: scratch buffer ポインタ (フィルタ時のみ)
 //   -48: tracing args ポインタの退避
+//   -128..-121: pointer-member read temporary (arg filters only; dead before
+//               set filters and runFilter, which owns KunaiStackTop=-56 downward)
 //   -57..-120: set filter のキーバッファ (emitSetFilters; runFilter の
 //              前で死ぬ。kunai は KunaiStackTop=-56 以深を所有するが
 //              それは runFilter 内のみ live — phase ordering で共存)
@@ -1023,18 +1025,51 @@ func asmSizeFor(n uint32) asm.Size {
 	return asm.DWord
 }
 
+// argMemberTmp is separate from setKeyBase and the saved args pointer. It
+// is live only before set/packet filtering, so kunai may reuse it later.
+const argMemberTmp = -128
+
+// emitArgMemberLoad returns the scalar in R3, preserving R6-R9. Both a null
+// pointer and a failed kernel read take the caller's failure branch.
+func emitArgMemberLoad(index int, offset, size uint32, signed bool, fail string) asm.Instructions {
+	insns := asm.Instructions{
+		// Direct ctx loads try to translate a program-defined struct to a
+		// vmlinux type. GetFuncArg retrieves the raw pointer without that cast.
+		asm.LoadMem(asm.R1, asm.R10, -48, asm.DWord),
+		asm.Mov.Imm(asm.R2, int32(index)),
+		asm.Mov.Reg(asm.R3, asm.R10),
+		asm.Add.Imm(asm.R3, argMemberTmp),
+		asm.FnGetFuncArg.Call(),
+		asm.JNE.Imm(asm.R0, 0, fail),
+		asm.LoadMem(asm.R3, asm.R10, argMemberTmp, asm.DWord),
+		asm.JEq.Imm(asm.R3, 0, fail),
+		asm.Add.Imm(asm.R3, int32(offset)),
+		asm.Mov.Reg(asm.R1, asm.R10),
+		asm.Add.Imm(asm.R1, argMemberTmp),
+		asm.Mov.Imm(asm.R2, int32(size)),
+		asm.FnProbeReadKernel.Call(),
+		asm.JNE.Imm(asm.R0, 0, fail),
+	}
+	return append(insns, emitArgLoad(asm.R3, asm.R10, argMemberTmp, size, signed)...)
+}
+
 func buildArgFilter(filters []filter.ArgFilter) asm.Instructions {
 	if len(filters) == 0 {
 		return nil
 	}
 
 	var insns asm.Instructions
-	// Load args pointer once — R2 is not clobbered by subsequent loads/compares.
+	// Integer loads preserve R2. Member reads restore it after the helper call.
 	insns = append(insns, asm.LoadMem(asm.R2, asm.R10, -48, asm.DWord))
 
 	for _, f := range filters {
 		offset := int16(f.ParamIndex * 8)
-		insns = append(insns, emitArgLoad(asm.R3, asm.R2, offset, f.ParamSize, f.Signed)...)
+		if f.Deref {
+			insns = append(insns, emitArgMemberLoad(f.ParamIndex, f.Offset, f.ParamSize, f.Signed, "exit")...)
+			insns = append(insns, asm.LoadMem(asm.R2, asm.R10, -48, asm.DWord))
+		} else {
+			insns = append(insns, emitArgLoad(asm.R3, asm.R2, offset, f.ParamSize, f.Signed)...)
+		}
 
 		// Select unsigned or signed jump ops based on parameter signedness.
 		jLT, jGT := asm.JLT, asm.JGT

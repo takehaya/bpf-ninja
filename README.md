@@ -331,6 +331,28 @@ int parse_headers(struct xdp_md *ctx) {
 
 `--func`, `--list-funcs`, `--list-progs`, `--list-params`, and `--arg-filter` only apply to `entry`/`exit` modes (xdp-native has no tracing args or BTF subfunction concept).
 
+### Filtering pointer members
+
+`--arg-filter` can read an integer or enum member through a struct/union pointer argument.
+Use `->` for the argument pointer and `.` for nested members; names, offsets, widths, and signedness come from the target program's BTF.
+For example, with `sdf_classify(struct xdp_md *ctx_buff, struct classifier_query *q)`:
+
+```sh
+sudo bpf-ninja -p <ID> --func sdf_classify --arg-filter 'q->imsi=262010000000001'
+sudo bpf-ninja -p <ID> --func sdf_classify --arg-filter 'q->target.pdr_id=3'
+sudo bpf-ninja -p <ID> --func sdf_classify --arg-filter 'q->seid=1..9'
+sudo bpf-ninja -p <ID> --func sdf_classify --arg-echo 'q->imsi' 'q->target.pdr_id'
+```
+
+Members support `=`, `>=`, `<=`, and inclusive `min..max` ranges, with widths of 1, 2, 4, or 8 bytes.
+Anonymous struct/union members are accessible by their promoted names; bitfields, arrays, and further pointer dereferences are unsupported.
+A null pointer or failed kernel read rejects the call (or suppresses its echo record).
+Member reads run inside the existing entry/exit probe and add no probe; the [two-probe tail-call caveat](#modes) still applies when requesting both capture points.
+
+`--list-params` includes struct/union pointers; `--json` marks them with `kind` (`ptr-struct` or `ptr-union`) and `type_name`.
+Bare `--arg-echo` still prints integer arguments; positional expressions select the arguments or members to print, using the existing u64 echo slots.
+Set references (`@NAME`) and `key(field=arg:param)` mappings do not support member expressions.
+
 ## Options
 
 [Complete CLI and protocol reference](docs/ja/cli/README.md) (Japanese navigation, generated English help).
@@ -358,11 +380,11 @@ int parse_headers(struct xdp_md *ctx) {
 | `--list-progs` | List reachable freplace, tail-call, and redirect-map targets and exit | entry, exit |
 | `--list-maps` | With `--list-progs`, also list each function's calls and the maps it uses, with the op (`lookup`, `update`, `delete`, `tail_call`, ...) and source line, read from the loaded program's translated instructions (needs root) | entry, exit |
 | `--lookups-json` | With `--list-maps`, read the file `inject-run --lookups-json` wrote and mark each map use with its load-time site and why it cannot be instrumented | entry, exit |
-| `--list-params` | List filterable parameters for the target function (requires `--func` or an EXT entry with integer parameters) | entry, exit |
+| `--list-params` | List integer and struct/union pointer parameters for the target function (requires `--func` or an EXT entry with filterable parameters) | entry, exit |
 | `--json` | Print `--list-progs` (with `--list-maps`) / `--list-funcs` / `--list-params` output as JSON on stdout instead of text on stderr | entry, exit |
-| `--arg-filter` | Filter by function argument value (requires `--func` or an EXT entry with integer parameters); format: `param=value`, `param>=val`, `param<=val`, `param=min..max` | entry, exit |
+| `--arg-filter` | Filter an integer argument or pointer member (requires `--func` or an EXT entry with filterable parameters); format: `param=value`, `param>=val`, `param<=val`, `param=min..max`, also `param->member.member` with any of these operators | entry, exit |
 | `--set` | Define a named match set backed by a pinned BPF hash map: `NAME=/sys/fs/bpf/path[,key(field=arg:param,...)]`. Reference it with `--arg-filter @NAME` or the DSL predicate `layer[field in @NAME]`; manage entries at runtime with `bpf-ninja set`. Repeatable | all |
-| `--arg-echo` | Print the target function's integer args for each call (gated by `--arg-filter` if set) instead of capturing. Requires `--func` or an EXT entry with integer parameters, and a single `--mode`; combine with `-c N` | entry, exit |
+| `--arg-echo` | Print integer args or positional member expressions (e.g. `--arg-echo 'q->imsi'`) for each call, gated by `--arg-filter`, instead of capturing. Requires `--func` or an EXT entry with filterable parameters, and a single `--mode`; combine with `-c N` | entry, exit |
 | `--split-by-tag` | Route matched packets to one pcap per set-map value (tag): `-w out.pcap` yields `out.<tag>.pcap` (requires `-w`) | all |
 | `--max-bytes` | Stop the whole capture once total output bytes reach N (works with or without `--split-by-tag`). Per-tag caps live on the set entries: `set add ... max-bytes=N` (0 / omitted = uncapped; entries sharing a tag share one budget — an uncapped entry makes the tag uncapped, otherwise the largest cap wins) | all |
 | `--exit-when-capped` | Exit 0 once every entry that has a per-entry cap reached it; uncapped entries don't participate (requires `--split-by-tag` and at least one `--set`) | all |

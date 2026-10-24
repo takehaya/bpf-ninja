@@ -105,7 +105,7 @@ func rootFlags() []cli.Flag {
 		},
 		&cli.StringSliceFlag{
 			Name:  "arg-filter",
-			Usage: "filter by function argument value (requires --func or an entry function with filterable integer parameters); format: param=value, param>=val, param<=val, param=min..max, or @NAME to match against a --set pinned-map set",
+			Usage: "filter by function argument value (requires --func or an entry function with filterable parameters); format: param=value, param>=val, param<=val, param=min..max (also param->member.member), or @NAME to match against a --set pinned-map set",
 		},
 		&cli.StringSliceFlag{
 			Name:  "set",
@@ -113,11 +113,11 @@ func rootFlags() []cli.Flag {
 		},
 		&cli.BoolFlag{
 			Name:  "list-params",
-			Usage: "list filterable parameters for the target function (requires --func or an entry function with filterable integer parameters) and exit",
+			Usage: "list filterable parameters for the target function (requires --func or an entry function with filterable parameters) and exit",
 		},
 		&cli.BoolFlag{
 			Name:  "arg-echo",
-			Usage: "diagnostic: print the target function's integer args for each call (gated by --arg-filter if set) instead of capturing packets; requires --func or an entry function with filterable integer parameters; combine with -c N to stop after N",
+			Usage: "diagnostic: print integer args (or positional param->member expressions) for each call (gated by --arg-filter if set) instead of capturing packets; requires --func or an entry function with filterable parameters; combine with -c N to stop after N",
 		},
 		&cli.BoolFlag{
 			Name:  "cbpf",
@@ -712,16 +712,20 @@ func run(ctx context.Context, cmd *cli.Command) error {
 			if asJSON {
 				jt := paramsTargetJSON{Func: t.FuncName, ID: t.ProgID, Params: []paramJSON{}}
 				for _, p := range t.Params {
-					jt.Params = append(jt.Params, paramJSON{Name: p.Name, Index: p.Index, Size: p.Size, Signed: p.Signed})
+					jt.Params = append(jt.Params, paramJSON{Name: p.Name, Index: p.Index, Size: p.Size, Signed: p.Signed, Kind: p.Kind, TypeName: p.TypeName})
 				}
 				jsonOut = append(jsonOut, jt)
 				continue
 			}
 			fmt.Fprintf(os.Stderr, "Filterable parameters for %s (id=%d):\n", t.FuncName, t.ProgID)
 			if len(t.Params) == 0 {
-				fmt.Fprintf(os.Stderr, "  (none - only integer parameters after the first argument are supported)\n")
+				fmt.Fprintf(os.Stderr, "  (none - integer or struct/union pointer parameters after the first argument are supported)\n")
 			}
 			for _, p := range t.Params {
+				if p.Kind != "" {
+					fmt.Fprintf(os.Stderr, "  %-20s [%s %s, arg index %d; use %s->member]\n", p.Name, p.Kind, p.TypeName, p.Index, p.Name)
+					continue
+				}
 				signStr := "unsigned"
 				if p.Signed {
 					signStr = "signed"
@@ -798,7 +802,11 @@ func run(ctx context.Context, cmd *cli.Command) error {
 		if filters != nil {
 			af = filters[0].Args
 		}
-		probe, err := program.LoadArgEcho(t.Program, t.FuncName, af, t.Params, isFexit, t.AllowDispatcherSlot)
+		echoParams, err := attach.ResolveEchoArgs(args, t.Params)
+		if err != nil {
+			return err
+		}
+		probe, err := program.LoadArgEcho(t.Program, t.FuncName, af, echoParams, isFexit, t.AllowDispatcherSlot)
 		if err != nil {
 			return err
 		}
@@ -2093,7 +2101,7 @@ func validateImplicitEntryParams(cmd *cli.Command, targets []attach.Target) erro
 	}
 	for _, target := range targets {
 		if len(target.Params) == 0 {
-			return fmt.Errorf("%s requires --func or an entry function with filterable integer parameters; entry %q (program id=%d) has none", option, target.FuncName, target.ProgID)
+			return fmt.Errorf("%s requires --func or an entry function with filterable parameters; entry %q (program id=%d) has none", option, target.FuncName, target.ProgID)
 		}
 	}
 	return nil

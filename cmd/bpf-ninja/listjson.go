@@ -53,10 +53,12 @@ type funcsTargetJSON struct {
 
 // paramJSON is one filterable function parameter.
 type paramJSON struct {
-	Name   string `json:"name"`
-	Index  int    `json:"index"`
-	Size   uint32 `json:"size"`
-	Signed bool   `json:"signed"`
+	Name     string `json:"name"`
+	Index    int    `json:"index"`
+	Size     uint32 `json:"size"`
+	Signed   bool   `json:"signed"`
+	Kind     string `json:"kind,omitempty"`
+	TypeName string `json:"type_name,omitempty"`
 }
 
 // paramsTargetJSON is one attach pair's filterable parameters.

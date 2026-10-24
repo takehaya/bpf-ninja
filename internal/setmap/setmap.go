@@ -186,6 +186,9 @@ func ParseSetSpec(s string) (SpecRef, error) {
 		if !strings.HasPrefix(source, "arg:") || len(source) <= len("arg:") {
 			return ref, fmt.Errorf("--set %q: source %q must be arg:<param> (pkt: sources are not supported yet)", s, source)
 		}
+		if strings.ContainsAny(strings.TrimPrefix(source, "arg:"), ">.") {
+			return ref, fmt.Errorf("--set %q: member syntax is not supported in key(field=arg:param)", s)
+		}
 		ref.Mapping = append(ref.Mapping, MapEntry{Field: field, Source: source})
 	}
 	if len(ref.Mapping) == 0 {

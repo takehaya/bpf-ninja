@@ -81,6 +81,9 @@ func ResolveSetFilters(sets []*setmap.Set, refs []string, params []attach.FuncPa
 
 	var out []SetFilter
 	for _, ref := range refs {
+		if strings.ContainsAny(ref, ">.") {
+			return nil, fmt.Errorf("@%s: member syntax is not supported in set references", ref)
+		}
 		s, ok := byName[ref]
 		if !ok {
 			return nil, fmt.Errorf("@%s: no such set (define it with --set %q)", ref, ref+"=/sys/fs/bpf/...")
@@ -107,9 +110,15 @@ func ResolveSetFilters(sets []*setmap.Set, refs []string, params []attach.FuncPa
 				src = "arg:" + f.Name // implicit match by name
 			}
 			paramName := strings.TrimPrefix(src, "arg:")
+			if strings.ContainsAny(paramName, ">.") {
+				return nil, fmt.Errorf("@%s: member syntax is not supported in key(field=arg:param)", ref)
+			}
 			p, ok := paramByName[paramName]
 			if !ok {
 				return nil, fmt.Errorf("@%s: key field %s needs arg %q, which the target function does not have (see --list-params); map it with key(%s=arg:<param>)", ref, f.Name, paramName, f.Name)
+			}
+			if p.Kind != "" || p.Deref {
+				return nil, fmt.Errorf("@%s: arg %s must be an integer parameter; pointer members are not supported in sets", ref, paramName)
 			}
 			if p.Size > f.Size {
 				return nil, fmt.Errorf("@%s: arg %s (u%d) is wider than key field %s (u%d) — truncation is not supported", ref, paramName, p.Size*8, f.Name, f.Size*8)
