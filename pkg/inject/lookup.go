@@ -52,19 +52,40 @@ type LookupSelector struct {
 // int PREFIX_MAP(struct xdp_md *ctx, u32 site, const KEY *key, const VALUE *value),
 // where site is the original SitePC. Unsupported sites are reported in
 // Skipped instead of refusing the transform.
+//
+// Entry also calls int HOOKNAME_entry(struct xdp_md *ctx) once at program
+// entry, which runs when the program is entered through a tail call, unlike an
+// fentry on the program itself. TailCalls calls int HOOKNAME_tail_call(
+// struct xdp_md *ctx, u32 site, u32 index) whenever a bpf_tail_call in the
+// entry function returns, that is, when the tail call failed. With either,
+// Site may be empty to instrument no lookup.
 type LookupRequest struct {
 	ELFSHA256   string
 	ProgramName string
 	Site        LookupSelector
 	Auto        bool
+	Entry       bool
+	TailCalls   bool
 	HookName    string
 	Stack       StackAudit
 }
 
+// HookKind is what a generated hook observes.
+type HookKind string
+
+const (
+	HookLookup   HookKind = "lookup"
+	HookEntry    HookKind = "entry"
+	HookTailCall HookKind = "tail_call"
+)
+
 // LookupHook is one generated hook and the sites that call it, in original
-// instruction order. TypeID and FuncInfo are set by TransformLookupRaw only.
+// instruction order. An entry hook has no sites; a tail-call hook's sites are
+// bpf_tail_call helpers with only location fields set. TypeID and FuncInfo are
+// set by TransformLookupRaw only.
 type LookupHook struct {
 	Name     string
+	Kind     HookKind
 	MapName  string
 	Sites    []LookupSite
 	TypeID   btf.TypeID
@@ -76,10 +97,10 @@ type LookupHook struct {
 // the lookup instrumentation and generated hooks. Checksums have Result's scope.
 type LookupResult struct {
 	Result
-	Site    LookupSite   // first selected site, retained for single-site callers
-	Sites   []LookupSite // all selected sites in original instruction order
-	Hooks   []LookupHook // one hook, or one per map identity with Auto
-	Skipped []LookupSite // with Auto, discovered sites that were not instrumented
+	Site    LookupSite   // first selected lookup, retained for single-site callers; zero without lookups
+	Sites   []LookupSite // all selected lookups in original instruction order
+	Hooks   []LookupHook // lookup hooks (one, or one per map with Auto), then entry and tail-call hooks
+	Skipped []LookupSite // with Auto or TailCalls, discovered sites that were not instrumented
 }
 
 // DiscoverLookups lists every map_lookup_elem helper in programName, in raw
@@ -132,7 +153,7 @@ func TransformLookup(elf []byte, req LookupRequest) (*LookupResult, error) {
 	return &LookupResult{Result: Result{Spec: work, HookName: req.HookName,
 		SourceChecksum: sourceSum, TransformedChecksum: resultSum,
 		InsertedAt: 0, InsertedSlots: added / asm.InstructionSize, AddedBytes: added},
-		Site: plan.sites[0], Sites: plan.sites, Hooks: plan.hooks, Skipped: plan.skipped}, nil
+		Site: plan.first(), Sites: plan.sites, Hooks: plan.hooks, Skipped: plan.skipped}, nil
 }
 
 func discoverLookups(spec *ebpf.CollectionSpec, name string) ([]LookupSite, error) {
@@ -299,6 +320,40 @@ type lookupPlan struct {
 	skipped []LookupSite
 }
 
+func (p lookupPlan) first() LookupSite {
+	if len(p.sites) == 0 {
+		return LookupSite{}
+	}
+	return p.sites[0]
+}
+
+// tailCallSites lists bpf_tail_call helpers. Only those in the entry function
+// can reach the ctx spill; the rest get a Reason.
+func tailCallSites(insns asm.Instructions) []LookupSite {
+	var sites []LookupSite
+	var funcName, file string
+	var line uint32
+	funcStart := -1
+	it := insns.Iterate()
+	for it.Next() {
+		pc, ins := int(it.Offset), it.Ins
+		if fn := btf.FuncMetadata(ins); fn != nil {
+			funcName, funcStart, file, line = fn.Name, pc, "", 0
+		}
+		if src, ok := ins.Source().(*btf.Line); ok {
+			file, line = src.FileName(), src.LineNumber()
+		}
+		if ins.IsBuiltinCall() && ins.Constant == int64(asm.FnTailCall) {
+			site := LookupSite{FuncName: funcName, File: file, Line: line, SitePC: uint32(pc), InstructionIndex: it.Index}
+			if funcStart != 0 {
+				site.Reason = "tail call is not in the entry function; ctx belongs to another stack frame"
+			}
+			sites = append(sites, site)
+		}
+	}
+	return sites
+}
+
 func transformLookup(work *ebpf.CollectionSpec, req LookupRequest) (lookupPlan, error) {
 	prog := work.Programs[req.ProgramName]
 	if prog == nil {
@@ -323,7 +378,9 @@ type lookupGroup struct {
 	sites []discoveredLookup
 }
 
-func selectLookups(sites []discoveredLookup, req LookupRequest) ([]lookupGroup, []LookupSite, error) {
+// selectLookups groups the selected lookups by hook. Auto hook names avoid
+// reserved, the entry and tail-call hook names.
+func selectLookups(sites []discoveredLookup, req LookupRequest, reserved []string) ([]lookupGroup, []LookupSite, error) {
 	if req.Auto {
 		if req.Site.MapName != "" || req.Site.FuncName != "" || req.Site.Line != 0 || len(req.Site.SitePCs) != 0 || req.Site.AllMatches {
 			return nil, nil, refuse("Auto selects every supported lookup; Site must be empty")
@@ -348,12 +405,18 @@ func selectLookups(sites []discoveredLookup, req LookupRequest) ([]lookupGroup, 
 			return nil, skipped, refuse("no supported lookup sites (%d skipped)", len(skipped))
 		}
 		used := map[string]bool{}
+		for _, name := range reserved {
+			used[name] = true
+		}
 		for i := range groups {
 			groups[i].name = autoHookName(req.HookName, groups[i].sites[0].MapName, i, used)
 		}
 		return groups, skipped, nil
 	}
 	if req.Site.MapName == "" {
+		if (req.Entry || req.TailCalls) && req.Site.FuncName == "" && req.Site.Line == 0 && len(req.Site.SitePCs) == 0 && !req.Site.AllMatches {
+			return nil, nil, nil
+		}
 		return nil, nil, refuse("lookup MapName is required")
 	}
 	if req.Site.AllMatches && len(req.Site.SitePCs) != 0 {
@@ -414,14 +477,19 @@ func autoHookName(prefix, mapName string, index int, used map[string]bool) strin
 
 func transformLookupProgram(insns asm.Instructions, typ ebpf.ProgramType, types *btf.Spec, resolve lookupMapResolver, req LookupRequest) (asm.Instructions, lookupPlan, error) {
 	var plan lookupPlan
-	if !req.Auto && req.Site.MapName == "" {
-		return nil, plan, refuse("lookup MapName is required")
-	}
 	sites, err := discoverLookupProgram(insns, typ, resolve)
 	if err != nil {
 		return nil, plan, err
 	}
-	groups, skipped, err := selectLookups(sites, req)
+	var reserved []string
+	entryName, tailName := req.HookName+"_entry", req.HookName+"_tail_call"
+	if req.Entry {
+		reserved = append(reserved, entryName)
+	}
+	if req.TailCalls {
+		reserved = append(reserved, tailName)
+	}
+	groups, skipped, err := selectLookups(sites, req, reserved)
 	plan.skipped = skipped
 	if err != nil {
 		return nil, plan, err
@@ -432,12 +500,35 @@ func transformLookupProgram(insns asm.Instructions, typ ebpf.ProgramType, types 
 	}
 	sort.Slice(selected, func(i, j int) bool { return selected[i].SitePC < selected[j].SitePC })
 	plan.sites = publicLookupSites(selected)
+	var tails []LookupSite
+	if req.TailCalls {
+		for _, site := range tailCallSites(insns) {
+			if site.Reason != "" {
+				plan.skipped = append(plan.skipped, site)
+			} else {
+				tails = append(tails, site)
+			}
+		}
+		sort.Slice(plan.skipped, func(i, j int) bool { return plan.skipped[i].SitePC < plan.skipped[j].SitePC })
+		if len(tails) == 0 {
+			return nil, plan, refuse("TailCalls: no bpf_tail_call in the entry function")
+		}
+	}
+	names := map[string]bool{}
+	for _, group := range groups {
+		names[group.name] = true
+	}
+	for _, name := range reserved {
+		if names[name] || !validIdent(name) {
+			return nil, plan, refuse("hook name %q is invalid or used twice", name)
+		}
+		names[name] = true
+	}
 	checks := []func() error{
 		func() error { return checkExtInfo(insns) },
 		func() error { return checkStackBound(insns, req.Stack.LowestOffset) },
 	}
-	for _, group := range groups {
-		name := group.name
+	for name := range names {
 		checks = append(checks,
 			func() error { return checkInstructionCollision(insns, name) },
 			func() error { return checkBTFCollision(types, name) },
@@ -463,28 +554,44 @@ func transformLookupProgram(insns asm.Instructions, typ ebpf.ProgramType, types 
 	if !ok || ctxStruct.Name != "xdp_md" {
 		return nil, plan, refuse("entry BTF context is not struct xdp_md")
 	}
+	ctxType := proto.Params[0].Type
 	var hooks asm.Instructions
 	calls := map[uint32]siteCall{}
 	for _, group := range groups {
 		m := group.sites[0].mapInfo
-		hooks = append(hooks, lookupHook(group.name, proto.Params[0].Type, m.Key, m.Value, req.Auto)...)
-		hook := LookupHook{Name: group.name, MapName: group.sites[0].MapName, Sites: publicLookupSites(group.sites)}
+		hooks = append(hooks, lookupHook(group.name, ctxType, m.Key, m.Value, req.Auto)...)
+		hook := LookupHook{Name: group.name, Kind: HookLookup, MapName: group.sites[0].MapName, Sites: publicLookupSites(group.sites)}
 		plan.hooks = append(plan.hooks, hook)
 		for _, site := range group.sites {
 			calls[site.SitePC] = siteCall{hook: group.name, withSite: req.Auto}
 		}
 	}
-	spliced, err := spliceLookupCalls(insns, calls, req.Stack, hooks)
+	var entryHook string
+	if req.Entry {
+		entryHook = entryName
+		hooks = append(hooks, scalarHook(entryName, ctxType)...)
+		plan.hooks = append(plan.hooks, LookupHook{Name: entryName, Kind: HookEntry})
+	}
+	if req.TailCalls {
+		hooks = append(hooks, scalarHook(tailName, ctxType, "site", "index")...)
+		plan.hooks = append(plan.hooks, LookupHook{Name: tailName, Kind: HookTailCall, Sites: tails})
+		for _, site := range tails {
+			calls[site.SitePC] = siteCall{hook: tailName, withSite: true, tailCall: true}
+		}
+	}
+	spliced, err := spliceLookupCalls(insns, calls, req.Stack, hooks, entryHook)
 	if err != nil {
 		return nil, plan, err
 	}
 	return spliced, plan, nil
 }
 
-// siteCall is the hook a lookup site calls, and whether it passes its SitePC.
+// siteCall is the hook a helper site calls, whether it passes its SitePC, and
+// whether the site is a bpf_tail_call rather than a lookup.
 type siteCall struct {
 	hook     string
 	withSite bool
+	tailCall bool
 }
 
 func spliceLookup(input asm.Instructions, sitePCs []uint32, req LookupRequest) (asm.Instructions, error) {
@@ -492,10 +599,13 @@ func spliceLookup(input asm.Instructions, sitePCs []uint32, req LookupRequest) (
 	for _, pc := range sitePCs {
 		calls[pc] = siteCall{hook: req.HookName}
 	}
-	return spliceLookupCalls(input, calls, req.Stack, nil)
+	return spliceLookupCalls(input, calls, req.Stack, nil, "")
 }
 
-func spliceLookupCalls(input asm.Instructions, calls map[uint32]siteCall, stack StackAudit, hook asm.Instructions) (asm.Instructions, error) {
+// spliceLookupCalls instruments each helper in calls and places hook right
+// after the entry function. A non-empty entryHook is called with ctx right
+// after the entry ctx spill.
+func spliceLookupCalls(input asm.Instructions, calls map[uint32]siteCall, stack StackAudit, hook asm.Instructions, entryHook string) (asm.Instructions, error) {
 	if stack.LowestOffset < -512 || stack.LowestOffset > 0 {
 		return nil, refuse("StackAudit.LowestOffset must be in [-512, 0]")
 	}
@@ -509,7 +619,18 @@ func spliceLookupCalls(input asm.Instructions, calls map[uint32]siteCall, stack 
 	}
 	spillR0 := int16(result)
 	// Every site of every hook shares the three slots: sites run one at a time.
+	// A tail-call site keeps its index (R3) in the key slot.
 	afterFor := func(pc uint32, call siteCall) asm.Instructions {
+		if call.tailCall {
+			// bpf_tail_call returned, so the tail call failed. The verifier
+			// leaves R0-R5 unreadable after it, so nothing needs restoring.
+			return asm.Instructions{
+				asm.LoadMem(asm.R1, asm.RFP, ctx, asm.DWord),
+				asm.Mov.Imm32(asm.R2, int32(pc)),
+				asm.LoadMem(asm.R3, asm.RFP, key, asm.DWord), asm.Mov.Reg32(asm.R3, asm.R3),
+				asm.Call.Label(call.hook),
+			}
+		}
 		args := asm.Instructions{asm.LoadMem(asm.R1, asm.RFP, ctx, asm.DWord)}
 		if call.withSite {
 			args = append(args, asm.Mov.Imm32(asm.R2, int32(pc)),
@@ -524,18 +645,26 @@ func spliceLookupCalls(input asm.Instructions, calls map[uint32]siteCall, stack 
 		out = append(out, args...)
 		return append(out, asm.LoadMem(asm.R0, asm.RFP, spillR0, asm.DWord))
 	}
+	before := func(call siteCall) asm.Instruction {
+		if call.tailCall {
+			return asm.StoreMem(asm.RFP, key, asm.R3, asm.DWord)
+		}
+		return asm.StoreMem(asm.RFP, key, asm.R2, asm.DWord)
+	}
 	after := make(map[uint32]asm.Instructions, len(calls))
 	for pc, call := range calls {
 		after[pc] = afterFor(pc, call)
 	}
-	sites := make(map[uint32]bool, len(calls))
-	for pc := range calls {
-		sites[pc] = true
+	// At entry only R1 and R10 are initialized, so the entry hook may clobber
+	// R0-R5; ctx is reloaded into R1.
+	prologue := asm.Instructions{}
+	if entryHook != "" {
+		prologue = asm.Instructions{asm.Call.Label(entryHook), asm.LoadMem(asm.R1, asm.RFP, ctx, asm.DWord)}
 	}
 	hookSlots := int(hook.Size() / asm.InstructionSize)
 	hookAt := -1
 	indices, mapped := map[int]int{}, map[int]int{}
-	pc := 1 // entry ctx spill
+	pc := 1 + len(prologue) // entry ctx spill and entry hook call
 	it := input.Iterate()
 	for it.Next() {
 		old := int(it.Offset)
@@ -544,17 +673,18 @@ func spliceLookupCalls(input asm.Instructions, calls map[uint32]siteCall, stack 
 			pc += hookSlots
 		}
 		indices[old], mapped[old] = it.Index, pc
-		if sites[uint32(old)] {
-			pc++ // branch to helper must execute the key spill first
+		_, site := calls[uint32(old)]
+		if site {
+			pc++ // branch to helper must execute the key or index spill first
 		}
 		pc += int(it.Ins.Size() / asm.InstructionSize)
-		if sites[uint32(old)] {
+		if site {
 			pc += len(after[uint32(old)])
 		}
 	}
 	entry := btf.WithFuncMetadata(asm.StoreMem(asm.RFP, ctx, asm.R1, asm.DWord).
 		WithSymbol(input[0].Symbol()).WithSource(input[0].Source()), btf.FuncMetadata(&input[0]))
-	out := asm.Instructions{entry}
+	out := append(asm.Instructions{entry}, prologue...)
 	it = input.Iterate()
 	for it.Next() {
 		old, ins := int(it.Offset), *it.Ins
@@ -565,8 +695,9 @@ func spliceLookupCalls(input asm.Instructions, calls map[uint32]siteCall, stack 
 			return nil, refuse("call to program entry is unsupported")
 		}
 		newPC := mapped[old]
-		if sites[uint32(old)] {
-			out = append(out, asm.StoreMem(asm.RFP, key, asm.R2, asm.DWord))
+		call, site := calls[uint32(old)]
+		if site {
+			out = append(out, before(call))
 			newPC++
 		}
 		target, relative, function, err := relocTarget(&ins, old, indices, input)
@@ -586,7 +717,7 @@ func spliceLookupCalls(input asm.Instructions, calls map[uint32]siteCall, stack 
 			ins = btf.WithFuncMetadata(ins.WithSymbol(""), nil)
 		}
 		out = append(out, ins)
-		if sites[uint32(old)] {
+		if site {
 			out = append(out, after[uint32(old)]...)
 		}
 	}
@@ -594,6 +725,21 @@ func spliceLookupCalls(input asm.Instructions, calls map[uint32]siteCall, stack 
 		out = append(out, hook...)
 	}
 	return out, nil
+}
+
+// scalarHook is int NAME(struct xdp_md *ctx, u32 scalars...): it reads ctx
+// like lookupHook and returns zero.
+func scalarHook(name string, ctx btf.Type, scalars ...string) asm.Instructions {
+	params := []btf.FuncParam{{Name: "ctx", Type: ctx}}
+	for _, scalar := range scalars {
+		params = append(params, btf.FuncParam{Name: scalar, Type: &btf.Int{Name: "u32", Size: 4}})
+	}
+	fn := &btf.Func{Name: name, Linkage: btf.GlobalFunc, Type: &btf.FuncProto{
+		Return: &btf.Int{Name: "int", Size: 4, Encoding: btf.Signed}, Params: params,
+	}}
+	head := btf.WithFuncMetadata(asm.LoadMem(asm.R0, asm.R1, 0, asm.Word).WithSymbol(name).
+		WithSource(asm.Comment("generated observation hook "+name)), fn)
+	return asm.Instructions{head, asm.Mov.Imm(asm.R0, 0), asm.Return()}
 }
 
 func lookupHook(name string, ctx, key, value btf.Type, withSite bool) asm.Instructions {

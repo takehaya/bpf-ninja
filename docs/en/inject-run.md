@@ -50,6 +50,11 @@ The transformation core currently accepts lookup sites in the entry function and
 Lookups that the transform cannot support are skipped and listed in the diagnostic rather than refusing the load.
 The naming and hook ABI are described in [lookup-site-injection.md](lookup-site-injection.md#automatic-selection).
 
+`"entry": true` adds `HOOK_entry(ctx)`, called at the start of the program, which also runs when the program is entered through a tail call.
+`"tail_calls": true` adds `HOOK_tail_call(ctx, u32 site, u32 index)`, called when a `bpf_tail_call` in the entry function fails.
+Either can be combined with a lookup rule, or used without `map` or `auto` to instrument no lookup.
+See [lookup-site-injection.md](lookup-site-injection.md#entry-and-tail-call-hooks).
+
 ```json
 [{"program": "xdp_ingress", "auto": true, "hook": "obs", "stack_lowest_offset": -128}]
 ```

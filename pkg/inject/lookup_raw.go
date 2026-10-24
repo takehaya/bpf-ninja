@@ -45,10 +45,12 @@ type RawProgram struct {
 // the supplied instructions, map identities, BTF and stack audit together;
 // there is no ELF hash binding. Checksums only cover instruction encoding.
 type LookupRequestRaw struct {
-	Site     LookupSelector
-	Auto     bool // see LookupRequest.Auto
-	HookName string
-	Stack    StackAudit
+	Site      LookupSelector
+	Auto      bool // see LookupRequest.Auto
+	Entry     bool // see LookupRequest.Entry
+	TailCalls bool // see LookupRequest.TailCalls
+	HookName  string
+	Stack     StackAudit
 }
 
 // LookupResultRaw contains a transformed instruction slice and matching load
@@ -115,7 +117,7 @@ func TransformLookupRaw(p RawProgram, req LookupRequestRaw) (*LookupResultRaw, e
 		}
 	}
 	out, plan, err := transformLookupProgram(insns, p.Type, types, resolve,
-		LookupRequest{Site: req.Site, Auto: req.Auto, HookName: req.HookName, Stack: req.Stack})
+		LookupRequest{Site: req.Site, Auto: req.Auto, Entry: req.Entry, TailCalls: req.TailCalls, HookName: req.HookName, Stack: req.Stack})
 	if err != nil {
 		return nil, err
 	}
@@ -167,7 +169,7 @@ func TransformLookupRaw(p RawProgram, req LookupRequestRaw) (*LookupResultRaw, e
 	added := int(out.Size() - insns.Size())
 	return &LookupResultRaw{Instructions: out, BTF: extended, BTFBytes: blob, FuncInfo: fi, LineInfo: li,
 		HookFuncInfo: plan.hooks[0].FuncInfo, HookTypeID: plan.hooks[0].TypeID, HookName: plan.hooks[0].Name,
-		Site: plan.sites[0], Sites: plan.sites, Hooks: plan.hooks, Skipped: plan.skipped,
+		Site: plan.first(), Sites: plan.sites, Hooks: plan.hooks, Skipped: plan.skipped,
 		SourceChecksum: sourceSum, TransformedChecksum: resultSum, InsertedSlots: added / asm.InstructionSize, AddedBytes: added}, nil
 }
 

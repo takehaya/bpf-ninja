@@ -147,3 +147,112 @@ func TestLookupRawAutoPerMapHooks(t *testing.T) {
 		}
 	}
 }
+
+func TestTailCallAndEntryHooks(t *testing.T) {
+	spec := tailCallerFixture()
+	plan, err := transformLookup(spec, LookupRequest{ProgramName: "caller", Entry: true, TailCalls: true,
+		HookName: "h", Stack: StackAudit{LowestOffset: -8}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.sites) != 0 || len(plan.hooks) != 2 || plan.hooks[0].Kind != HookEntry || plan.hooks[0].Name != "h_entry" ||
+		plan.hooks[1].Kind != HookTailCall || plan.hooks[1].Name != "h_tail_call" ||
+		len(plan.hooks[1].Sites) != 1 || plan.hooks[1].Sites[0].SitePC != 10 {
+		t.Fatalf("plan: %+v", plan)
+	}
+	out := spec.Programs["caller"].Instructions
+	// ctx spill, entry hook call, ctx reload, then the original entry.
+	if !sameInstr(out[1], asm.Call.Label("h_entry")) || out[1].Reference() != "h_entry" ||
+		!sameInstr(out[2], asm.LoadMem(asm.R1, asm.RFP, -16, asm.DWord)) || !sameInstr(out[3], asm.Mov.Reg(asm.R6, asm.R1)) {
+		t.Fatalf("entry prologue: %v", out[:4])
+	}
+	var tail int
+	for i, ins := range out {
+		if ins.IsBuiltinCall() && ins.Constant == int64(asm.FnTailCall) {
+			tail = i
+		}
+	}
+	// The index is spilled before the helper and passed with the site after it.
+	if !sameInstr(out[tail-1], asm.StoreMem(asm.RFP, -24, asm.R3, asm.DWord)) ||
+		!sameInstr(out[tail+2], asm.Mov.Imm32(asm.R2, 10)) || out[tail+5].Reference() != "h_tail_call" {
+		t.Fatalf("tail-call site: %v", out[tail-1:tail+6])
+	}
+	// The short-packet branch still lands on the original XDP_PASS.
+	pcs := rawOffsets(out)
+	var branchPC int
+	for pc, ins := range pcs {
+		if ins.OpCode.JumpOp() == asm.JGT {
+			branchPC = pc
+		}
+	}
+	if land := pcs[branchPC+1+int(pcs[branchPC].Offset)]; !sameInstr(land, asm.Mov.Imm(asm.R0, 2)) {
+		t.Fatalf("branch lands on %v", land)
+	}
+	if err := checkExtInfo(out); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestTailCallHookRefusalsAndSkips(t *testing.T) {
+	req := LookupRequest{ProgramName: "p", TailCalls: true, HookName: "h", Stack: StackAudit{LowestOffset: -8}}
+	if _, err := transformLookup(lookupFixture(), req); !errors.Is(err, ErrRefused) {
+		t.Fatalf("no tail call: %v", err)
+	}
+	// A tail call in a subprogram is skipped, not instrumented.
+	spec := tailCallerFixture()
+	prog := spec.Programs["caller"]
+	sub := xdpFunc("sub")
+	call := asm.Call.Label("sub")
+	prog.Instructions = append(asm.Instructions{prog.Instructions[0], call}, prog.Instructions[1:]...)
+	prog.Instructions = append(prog.Instructions,
+		btf.WithFuncMetadata(asm.FnTailCall.Call().WithSymbol("sub").WithSource(asm.Comment("sub")), sub),
+		asm.Mov.Imm(asm.R0, 0), asm.Return())
+	req.ProgramName = "caller"
+	plan, err := transformLookup(spec, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.skipped) != 1 || plan.skipped[0].FuncName != "sub" || len(plan.hooks[0].Sites) != 1 {
+		t.Fatalf("plan: %+v", plan)
+	}
+	// Auto names avoid the entry hook name; a map named "entry" falls back.
+	auto := lookupFixture()
+	auto.Maps["entry"] = auto.Maps["sessions"]
+	delete(auto.Maps, "sessions")
+	for i := range auto.Programs["p"].Instructions {
+		if ins := &auto.Programs["p"].Instructions[i]; ins.IsLoadFromMap() {
+			*ins = ins.WithReference("entry")
+		}
+	}
+	plan, err = transformLookup(auto, LookupRequest{ProgramName: "p", Auto: true, Entry: true, HookName: "h", Stack: StackAudit{LowestOffset: -8}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.hooks) != 2 || plan.hooks[0].Name != "h_0" || plan.hooks[1].Name != "h_entry" {
+		t.Fatalf("hooks: %+v", plan.hooks)
+	}
+}
+
+func TestTailCallRawParity(t *testing.T) {
+	req := LookupRequest{ProgramName: "caller", Entry: true, TailCalls: true, HookName: "h", Stack: StackAudit{LowestOffset: -8}}
+	work := tailCallerFixture()
+	plan, err := transformLookup(work, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := rawLookupFixture(t, tailCallerFixture(), "caller", false)
+	got, err := TransformLookupRaw(p, LookupRequestRaw{Entry: true, TailCalls: true, HookName: "h", Stack: req.Stack})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertRawMetadata(t, p, got)
+	want := work.Programs["caller"].Instructions
+	if len(got.Instructions) != len(want) || len(got.Hooks) != len(plan.hooks) {
+		t.Fatal("raw and ELF outputs differ in length")
+	}
+	for i := range want {
+		if !sameInstr(want[i], got.Instructions[i]) {
+			t.Fatalf("instruction %d: %v vs %v", i, want[i], got.Instructions[i])
+		}
+	}
+}

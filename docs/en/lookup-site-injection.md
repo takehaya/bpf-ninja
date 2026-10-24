@@ -68,6 +68,30 @@ Every hook name passes the same collision checks as a single `HookName`.
 All hooks of one program share the three reserved stack slots, since only one lookup site runs at a time.
 An observer attaches one fentry program per hook it wants to see.
 
+### Entry and tail-call hooks
+
+An fentry on an XDP program does not fire when the program is entered through `bpf_tail_call`: the tail call jumps past the trampoline at the program's start.
+Calls made from inside the program still reach their fentry trampolines.
+Two optional hooks use that to observe tail-call boundaries:
+
+```c
+int HOOK_entry(struct xdp_md *ctx);                        // LookupRequest.Entry
+int HOOK_tail_call(struct xdp_md *ctx, u32 site, u32 index); // LookupRequest.TailCalls
+```
+
+`Entry` calls `HOOK_entry` once at the start of the program, on direct runs and on tail-call entry alike.
+Instrument the tail-call target with it.
+`TailCalls` calls `HOOK_tail_call` after every `bpf_tail_call` in the entry function.
+The helper only returns when the tail call failed (empty slot, index out of range, or the tail-call limit), so the hook sees failures only; a successful tail call does not return.
+`site` is the helper's original `SitePC`, and `index` is the index the program passed, zero-extended to 32 bits.
+Tail calls in other functions are reported in `Skipped`.
+With `TailCalls` and no tail call in the entry function, the transform is refused.
+
+Either flag may be combined with a lookup selector or `Auto`, or used alone with an empty `Site`.
+The hook names are `HookName` with the suffix appended, and `Auto` lookup hooks avoid them.
+`LookupResult.Hooks` lists lookup hooks first, then the entry hook, then the tail-call hook; `LookupHook.Kind` tells them apart.
+`Site` is the zero value and `Sites` is empty when no lookup is instrumented.
+
 ```go
 sites, err := inject.DiscoverLookups(elf, "ingress")
 if err != nil {
@@ -184,6 +208,23 @@ r0 = *(u64 *)(r10 + result_slot)
 
 With `Auto`, the argument setup is `r1 = ctx`, `r2 = SitePC` (a 32-bit move), `r3 = key`, `r4 = r0`, one instruction longer per site.
 
+With `Entry`, the entry ctx spill is followed by `call HOOK_entry` and `r1 = *(u64 *)(r10 + ctx_slot)`.
+Only R1 and R10 are initialized at program entry, so the call clobbers nothing the program can read.
+Each `bpf_tail_call` with `TailCalls` becomes:
+
+```text
+*(u64 *)(r10 + key_slot) = r3        ; the index
+call bpf_tail_call                   ; original instruction
+r1 = *(u64 *)(r10 + ctx_slot)
+w2 = SitePC
+r3 = *(u64 *)(r10 + key_slot)
+w3 = w3
+call HOOK_tail_call
+```
+
+The key slot is free here because no lookup is in progress.
+R0 is not saved: the verifier treats R0 as unreadable after `bpf_tail_call`.
+
 The generated hook is placed immediately after the entry function (before any other subprograms or callbacks, or at the end of the program when there are none).
 It reads `ctx->data`, checks its independently verified memory arguments for null, reads one byte from each non-null key/value pointer, and returns zero.
 These reads keep all arguments used without modifying the packet, key, or map value.
@@ -232,6 +273,7 @@ Its existing `Site` field is the first element of `Sites`.
 `InsertedSlots` is `8 + 8*len(Sites)`: one entry spill, eight instructions per site, and seven hook instructions.
 One site adds 16 slots (128 bytes); two sites add 24 slots (192 bytes).
 With `Auto`, it is `1 + 9*len(Sites) + 7*len(Hooks)`; the hooks are placed together right after the entry function.
+`Entry` adds 2 slots plus a 3-slot hook, and `TailCalls` adds 6 slots per tail call plus a 3-slot hook.
 `SourceChecksum` and `TransformedChecksum` cover the raw instruction encoding, with symbolic calls and callback loads unresolved.
 They exclude BTF, source lines, CO-RE metadata, and symbolic/map references; they do not identify the fully loaded kernel artifact.
 The ELF SHA-256 binds the full input.
@@ -257,6 +299,10 @@ Unit tests cover numeric and symbolic callback classification, relocation in bot
 It compares plain and injected programs, checks two keys with different packet lengths and `imsi` values, verifies silence for a missing key, and checks observation before attachment and after detachment.
 `TestBpfLookupInjectionMultipleSites` repeats these checks with two lookups on different paths, observed by one fentry observer on the shared hook.
 `TestBpfLookupInjectionAutoMultiMap` instruments a program with lookups on two maps whose values have different BTF types, attaches one observer per generated hook, and checks the key, value, and `site` argument each observer records.
+`TestBpfTailCallHooks` tail-calls from an instrumented caller into a target instrumented with `Entry`.
+On a successful tail call, the entry hook fires and an fentry on the target program itself does not; on a failed one, the tail-call hook reports the site and index.
+A direct run of the target fires both.
+`TestBpfEntryHookWithLookup` combines `Entry` with a lookup hook in one program.
 `TestBpfLookupInjectionCallback` checks symbolic and numeric callback loads with an unreached subprogram preceding the `bpf_loop` callback and a stack counter incremented three times by `bpf_loop`; the program returns `XDP_ABORTED` unless those increments occur.
 It repeats the plain/injected comparison and fentry observations (including direct `ctx` pointer dereferencing) for both callback forms.
 These tests exercise the transform core and fentry using `BPF_PROG_TEST_RUN`, without an interface attachment or pinning.
@@ -265,8 +311,8 @@ These tests exercise the transform core and fentry using `BPF_PROG_TEST_RUN`, wi
 go build ./...
 go vet ./...
 go test -count=1 ./pkg/inject/...
-sudo -E env PATH=$PATH go test -run 'TestBpfLookupInjection' ./pkg/inject/...
+sudo -E env PATH=$PATH go test -run 'TestBpfLookupInjection|TestBpfTailCallHooks|TestBpfEntryHook' ./pkg/inject/...
 ```
 
-All four privileged lookup tests passed on Linux `7.0.0-38-generic`.
+All six privileged lookup and tail-call tests passed on Linux `7.0.0-38-generic`.
 This is finite test evidence for the fixture, not a general program-equivalence, concurrency, or kernel-version guarantee.

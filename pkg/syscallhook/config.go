@@ -12,12 +12,15 @@ import (
 // Rule selects exactly one lookup unless AllMatches or SitePCs widens it (see
 // inject.LookupSelector). With Auto, every supported lookup is instrumented,
 // the selector fields must be empty, and Hook is the prefix of the per-map
-// hook names (see inject.LookupRequest). StackLowestOffset is the caller's
-// audit of all stack accesses, including aliases and callees (see
-// inject.StackAudit).
+// hook names (see inject.LookupRequest). Entry and TailCalls add the
+// Hook_entry and Hook_tail_call hooks and allow a rule without lookups.
+// StackLowestOffset is the caller's audit of all stack accesses, including
+// aliases and callees (see inject.StackAudit).
 type Rule struct {
 	Program           string   `json:"program"`
 	Auto              bool     `json:"auto,omitempty"`
+	Entry             bool     `json:"entry,omitempty"`
+	TailCalls         bool     `json:"tail_calls,omitempty"`
 	Map               string   `json:"map,omitempty"`
 	Func              string   `json:"func,omitempty"`
 	Line              uint32   `json:"line,omitempty"`
@@ -35,11 +38,14 @@ func Validate(rules []Rule) error {
 	}
 	seen := make(map[string]bool)
 	for i, r := range rules {
-		if r.Program == "" || (r.Map == "") != r.Auto || !identifier.MatchString(r.Hook) || len(r.Hook) > 127 {
-			return fmt.Errorf("rule %d: program, map (or auto) and a C identifier hook (at most 127 bytes) are required", i)
+		if r.Program == "" || (r.Map == "" && !r.Auto && !r.Entry && !r.TailCalls) || !identifier.MatchString(r.Hook) || len(r.Hook) > 127 {
+			return fmt.Errorf("rule %d: program, a C identifier hook (at most 127 bytes) and one of map, auto, entry or tail_calls are required", i)
 		}
-		if r.Auto && (r.Func != "" || r.Line != 0 || r.AllMatches || len(r.SitePCs) > 0) {
-			return fmt.Errorf("rule %d: auto selects every supported lookup; map, func, line, all_matches and site_pcs must be empty", i)
+		if (r.Auto || r.Map == "") && (r.Func != "" || r.Line != 0 || r.AllMatches || len(r.SitePCs) > 0) {
+			return fmt.Errorf("rule %d: func, line, all_matches and site_pcs filter map and cannot be used with auto or without map", i)
+		}
+		if r.Auto && r.Map != "" {
+			return fmt.Errorf("rule %d: auto selects every supported lookup; map must be empty", i)
 		}
 		if seen[r.Program] {
 			return fmt.Errorf("rule %d: only one rule per program is supported", i)
