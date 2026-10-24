@@ -64,7 +64,7 @@ func ResolveArg(expr string, params []FuncParamInfo) (FuncParamInfo, error) {
 		case *btf.Enum:
 			p.Size, p.Signed = t.Size, t.Signed
 		default:
-			return FuncParamInfo{}, fmt.Errorf("%q: final member must be an integer or enum, got %T", expr, typ)
+			return FuncParamInfo{}, fmt.Errorf("%q: final member must be an integer or enum, got %s", expr, memberKind(typ))
 		}
 		if p.Size != 1 && p.Size != 2 && p.Size != 4 && p.Size != 8 {
 			return FuncParamInfo{}, fmt.Errorf("%q: unsupported member size %d (expected 1, 2, 4, or 8)", expr, p.Size)
@@ -77,6 +77,23 @@ func ResolveArg(expr string, params []FuncParamInfo) (FuncParamInfo, error) {
 		return p, nil
 	}
 	return FuncParamInfo{}, fmt.Errorf("parameter %q not found; available parameters: %v", name, available)
+}
+
+// memberKind names a non-integer member type for error messages.
+func memberKind(typ btf.Type) string {
+	switch typ.(type) {
+	case *btf.Struct:
+		return "struct (select one of its members)"
+	case *btf.Union:
+		return "union (select one of its members)"
+	case *btf.Array:
+		return "array"
+	case *btf.Pointer:
+		return "pointer (only one dereference is supported)"
+	case *btf.Float:
+		return "float"
+	}
+	return fmt.Sprintf("%T", typ)
 }
 
 func aggregateMembers(typ btf.Type) ([]btf.Member, bool) {

@@ -29,7 +29,7 @@ Here is illustrative output for a query with an embedded target:
 Filterable parameters for classify (id=42):
   q: struct query * (arg index 1)
     q->imsi  u64  off 0  size 8  unsigned  filterable
-    q->target  struct target  off 8  size 4  (not filterable: final member must be an integer or enum, got *btf.Struct)
+    q->target  struct target  off 8  size 4  (not filterable: final member must be an integer or enum, got struct (select one of its members))
       q->target.pdr_id  __u32  off 8  size 4  unsigned  filterable
     q->flags  __u32:3  off 12  size 4  unsigned  (not filterable: bitfield member "flags" is not supported)
 ```

@@ -34,7 +34,7 @@ func TestListParamsMembersOutput(t *testing.T) {
 	wantText := `Filterable parameters for classify (id=42):
   q: struct query * (arg index 1)
     q->imsi  u64  off 0  size 8  unsigned  filterable
-    q->target  struct target  off 8  size 4  (not filterable: final member must be an integer or enum, got *btf.Struct)
+    q->target  struct target  off 8  size 4  (not filterable: final member must be an integer or enum, got struct (select one of its members))
       q->target.pdr_id  __u32  off 8  size 4  unsigned  filterable
     q->flags  __u32:3  off 12  size 4  unsigned  (not filterable: bitfield member "flags" is not supported)
 `
@@ -50,7 +50,7 @@ func TestListParamsMembersOutput(t *testing.T) {
   "members":[
     {"expression":"q->imsi","type":"u64","offset":0,"size":8,"signed":false,"filterable":true},
     {"expression":"q->target","type":"struct target","offset":8,"size":4,"filterable":false,
-     "reason":"final member must be an integer or enum, got *btf.Struct",
+     "reason":"final member must be an integer or enum, got struct (select one of its members)",
      "members":[{"expression":"q->target.pdr_id","type":"__u32","offset":8,"size":4,"signed":false,"filterable":true}]},
     {"expression":"q->flags","type":"__u32","offset":12,"size":4,"signed":false,"bitfield_size":3,"filterable":false,
      "reason":"bitfield member \"flags\" is not supported"}
