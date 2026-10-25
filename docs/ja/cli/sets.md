@@ -6,7 +6,8 @@ Linux の BPF map 操作権限と、書込み可能な bpffs が必要です。
 下の説明用 pin 名は、共有ホストで使う前に存在確認が必要です。
 
 `set add/del` は実行中の capture に反映されます。
-`set resize` は writer を止めて実行し、capture も停止してから再 attach してください。
+`set resize` を実行する前に、map を更新する writer と capture を停止してください。
+容量変更後に再 attach します。
 既存 capture は古い map の参照を保持するため、新容量は pin の置換だけでは適用されません。
 
 停止後に `set list` と `set schema` を保存してから、自分で作成した pin だけを `rm -- "$PIN"` で外します。

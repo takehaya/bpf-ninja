@@ -24,7 +24,7 @@ VXLAN の内側には Ethernet、GTP の例では直接 IPv4 があるため、c
 ## 実機で確認する範囲
 
 実際の frame の header 順序、port、TEID、SRH の有無が式と一致するかを packet fixture で確認してください。
-observer の packet window、host の L2/L3 始まり、kernel の機能条件も必要です。
+observer が参照する packet window、host が L2 と L3 のどちらから始まるか、必要な kernel 機能も確認します。
 このページの command は compile の確認までであり、実パケット取得を検証した手順ではありません。
 既存の [DSL vectors](../../../pkg/kunai/dsltest/) と [program tests](../../../internal/program/)は、compile、kernel load、packet の判定を別に検査します。
 

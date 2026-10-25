@@ -16,7 +16,8 @@ tcpdump -n -r converted.pcapng
 ```
 
 convert は件数を stderr に表示します。
-入力は現在の raw V2 形式で、V1 は拒否します。V1 は作成時の対応版を使ってください。
+入力には現在の raw V2 形式を使います。
+V1 は拒否されるため、作成時の対応版で変換してください。
 pcap-ng の `.cpuN` shard は raw ではありません。
 [隔離 recipe](capture-recipes.md)でも 3 件の ICMP で変換を検査します。
 
@@ -34,7 +35,7 @@ tcpdump -n -r out.7.pcap
 
 `out.7.pcap` は tag=7 の例です。
 存在する shard の破損や切り詰めはエラーです。
-不足した shard が許容されても、全 packet が揃った証明にはなりません。
+欠けた shard があっても merge は成功する場合があるため、終了コードだけでは全パケットが揃ったと判断できません。
 merge と convert の出力には `epb_packetid` が残らないため、対応づけには元 shard または raw を保持してください。
 
 両コマンドは自動終了します。

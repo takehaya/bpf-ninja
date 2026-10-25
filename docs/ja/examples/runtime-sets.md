@@ -12,9 +12,11 @@ root、mount 済み bpffs、書込み権限が必要です。
 ```
 
 capture は `--set "types=$PIN" 'eth/ipv4/icmp[type in @types]'` で開始します。
-readiness 後に echo request を 3 件送り、entry を削除して 3 件送り、同じ key を戻して 3 件送ります。
+起動完了の表示後に echo request を 3 件送ります。
+続いて entry を削除して 3 件送り、同じ key を追加し直してさらに 3 件送ります。
 最終 pcap と summary は 6 件です。
-`set list` は map の内容であり、一致した証拠は pcap で確認します。
+`set list` では map の内容を確認できます。
+パケットがフィルタに一致したことは、pcap で確認してください。
 
 ```sh
 "$BINARY" set del "$PIN" type=8
@@ -23,7 +25,7 @@ readiness 後に echo request を 3 件送り、entry を削除して 3 件送�
 
 別ケースでは `--split-by-tag --finalize-on-del` で 3 件送信後に `set del` します。
 新規出力先の tag=7 の合算ファイルを制限時間付きで待ちます。
-固定秒数や live shard の存在を完了 ack にしません。
+一定時間の経過や live shard の存在だけで、出力が完了したと判断しないでください。
 finalize した tag は同じ capture 中に再利用しません。
 
 ## 容量変更と終了

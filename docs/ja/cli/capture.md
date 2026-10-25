@@ -5,8 +5,9 @@ Linux、kernel BTF、必要な権限を確認し、entry/exit では BTF 付き 
 [対応 hook と条件](../../../README.md#modes)を確認し、例中の interface、ID、関数名は実際に探索した値に置き換えます。
 以下の `eth0` や program ID は説明用です。
 
-一連の実行は [隔離 capture recipe](../examples/capture-recipes.md)を使ってください。
-readiness 表示後に送信し、Ctrl-C または count で終了後、summary と最終 pcap を確認します。
+準備から停止までの手順は [隔離 capture recipe](../examples/capture-recipes.md)を参照してください。
+起動完了を示す `capturing (...)...` が出てからパケットを送信します。
+Ctrl-C または count による終了後、summary と最終 pcap を確認してください。
 不一致ケースは count が増えないため明示停止します。
 
 ## `--mode xdp` で native XDP として直接 attach する

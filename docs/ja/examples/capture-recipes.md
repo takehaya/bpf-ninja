@@ -30,9 +30,9 @@ script は一意の namespace 名を確保し、その中だけに 192.0.2.1/30 
 | set 更新 | [runtime set](runtime-sets.md) | 同じ capture 中に add/del を反映 |
 | tag finalize | 同じ set の tag=7 | delete 後の合算 ack から 3 件を読める |
 
-固定 sleep を起動成功の判定にしません。
+起動成功は、一定時間の経過ではなく `capturing (...)...` の表示で判定します。
 不一致ケースは count に達しないので signal で止めます。
-timeout、起動失敗、summary 欠落、pcap 読取失敗は 0 件の成功とは扱いません。
+timeout、起動失敗、summary の欠落、pcap の読取失敗があれば、取得件数 0 件を確認できたとは扱いません。
 
 ## 停止と片付け
 
