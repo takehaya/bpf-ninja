@@ -84,8 +84,8 @@ const (
 // bpf_tail_call helpers with only location fields set. TypeID and FuncInfo are
 // set by TransformLookupRaw only.
 //
-// Untrusted is set for a lookup hook on a map that programs cannot write
-// (BPF_F_RDONLY_PROG). Its key and value are const void * tagged
+// Untrusted is set for a lookup hook on a map that programs cannot write or
+// cannot read (BPF_F_RDONLY_PROG or BPF_F_WRONLY_PROG). Its key and value are const void * tagged
 // arg:untrusted, so an observer reads them by the map's sizes.
 //
 // Generic is set for Auto's one hook over lookups whose map is not known
@@ -258,6 +258,8 @@ func discoverLookupProgram(insns asm.Instructions, typ ebpf.ProgramType, resolve
 			}
 			generic := false
 			switch {
+			case funcStart < 0:
+				site.Reason = "program lacks BTF function info"
 			case funcStart != 0:
 				site.Reason = "lookup is not in the entry function; ctx belongs to another stack frame"
 			case mapID == "":
@@ -302,8 +304,12 @@ func lookupTypeName(t btf.Type) string {
 	return btf.UnderlyingType(t).TypeName()
 }
 
-// bpfFRdonlyProg is BPF_F_RDONLY_PROG from the BPF UAPI.
-const bpfFRdonlyProg = 1 << 7
+// bpfFRdonlyProg and bpfFWronlyProg are BPF_F_RDONLY_PROG and
+// BPF_F_WRONLY_PROG from the BPF UAPI.
+const (
+	bpfFRdonlyProg = 1 << 7
+	bpfFWronlyProg = 1 << 8
+)
 
 func checkLookupMap(m *RawMap) error {
 	// These maps return ordinary value memory. Other map kinds can return
@@ -623,7 +629,9 @@ func transformLookupProgram(insns asm.Instructions, typ ebpf.ProgramType, types 
 		}
 		m := group.sites[0].mapInfo
 		key, value := lookupABI(m)
-		untrusted := m.Flags&bpfFRdonlyProg != 0
+		// The verifier checks an ordinary memory argument for both reads and
+		// writes, so either restriction needs untrusted arguments.
+		untrusted := m.Flags&(bpfFRdonlyProg|bpfFWronlyProg) != 0
 		hooks = append(hooks, lookupHook(group.name, ctxType, key, value, req.Auto, untrusted)...)
 		hook := LookupHook{Name: group.name, Kind: HookLookup, MapName: group.sites[0].MapName, Sites: publicLookupSites(group.sites), Untrusted: untrusted}
 		plan.hooks = append(plan.hooks, hook)
@@ -833,11 +841,18 @@ func genericHook(name string, ctx btf.Type) asm.Instructions {
 	}, ParamTags: [][]string{nil, nil, untrusted, untrusted, untrusted}}
 	head := btf.WithFuncMetadata(asm.LoadMem(asm.R0, asm.R1, 0, asm.Word).WithSymbol(name).
 		WithSource(asm.Comment("generated generic lookup observation hook "+name)), fn)
-	out := asm.Instructions{head}
-	for _, reg := range []asm.Register{asm.R3, asm.R4, asm.R5} {
-		null := asm.JEq.Imm(reg, 0, "")
-		null.Offset = 1
-		out = append(out, null, asm.LoadMem(asm.R0, reg, 0, asm.Byte))
+	return append(asm.Instructions{head}, untrustedReads(asm.R3, asm.R4, asm.R5)...)
+}
+
+// untrustedReads reads one byte through each arg:untrusted pointer, then
+// returns zero. Such a pointer is not nullable, so comparing it with zero is
+// a pointer comparison that loaders without CAP_PERFMON may not make. The
+// reads need no null check: the verifier turns them into fault-handled
+// loads, which read zero from a NULL pointer.
+func untrustedReads(regs ...asm.Register) asm.Instructions {
+	var out asm.Instructions
+	for _, reg := range regs {
+		out = append(out, asm.LoadMem(asm.R0, reg, 0, asm.Byte))
 	}
 	return append(out, asm.Mov.Imm(asm.R0, 0), asm.Return())
 }
@@ -887,6 +902,9 @@ func lookupHook(name string, ctx, key, value btf.Type, withSite, untrusted bool)
 	// Actual reads keep every argument live, even after dead-register pruning.
 	head := btf.WithFuncMetadata(asm.LoadMem(asm.R0, asm.R1, 0, asm.Word).WithSymbol(name).
 		WithSource(asm.Comment("generated lookup observation hook "+name)), fn)
+	if untrusted {
+		return append(asm.Instructions{head}, untrustedReads(keyReg, valueReg)...)
+	}
 	keyNull, valueNull := asm.JEq.Imm(keyReg, 0, ""), asm.JEq.Imm(valueReg, 0, "")
 	keyNull.Offset, valueNull.Offset = 1, 1
 	return asm.Instructions{head, keyNull, asm.LoadMem(asm.R0, keyReg, 0, asm.Byte),

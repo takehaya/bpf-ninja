@@ -76,6 +76,7 @@ int PREFIX_any(struct xdp_md *ctx, u32 site, const void *key __arg_untrusted,
 These are entry-function lookups where R1 is not a direct map reference in the same basic block, and lookups on hash-of-maps and array-of-maps.
 `map` is the lookup's R1 at run time, saved before the helper: the map itself, or for an inner lookup the inner map that an outer lookup returned.
 For an outer map-in-map lookup, `value` is the selected inner map, not value memory.
+Because the map is not known when transforming, the generic hook also receives lookups on map kinds that a typed hook refuses, such as an XSK map whose lookup returns a socket; an observer must check the map type before decoding `value`.
 The hook's BTF carries no key or value type, so an observer identifies the map from `map` (for example by reading `struct bpf_map` fields such as `id` with `bpf_probe_read_kernel`) and decodes the key and value by that map's sizes.
 A map ID identifies the map only while it exists; IDs of freed maps can be reused.
 
@@ -102,6 +103,7 @@ The helper only returns when the tail call failed (empty slot, index out of rang
 Observers should read both arguments as `u32`: on architectures whose JIT needs explicit zero extension, the upper halves of the argument registers are not defined.
 A tail call outside the entry function cannot reach the entry frame's ctx spill, so it also saves R1, the ctx the helper takes, into `ctx_slot` of its own frame before the helper.
 The stack audit covers direct R10 references in every function, so the same slot offsets are free in that frame.
+They also deepen that frame to the entry program's spill region, which counts toward the verifier's combined stack depth and its limit of 256 bytes for the frames below a tail call; chained subprograms that each tail-call can exceed it after the transform.
 With `TailCalls` and no tail call in the program, the transform is refused.
 
 Every hook is a bpf-to-bpf call, and the verifier only allows bpf-to-bpf calls in a program that also uses `bpf_tail_call` when the program is JIT-compiled on an architecture that supports it (x86-64, arm64, s390, and loongarch; see `check_map_func_compatibility` in `kernel/bpf/verifier.c`).
@@ -183,8 +185,9 @@ Only the selected program changes, including when other programs share a linked 
 Supported maps are hash, array, per-CPU hash/array, LRU hash/per-CPU hash, and LPM trie maps.
 An LPM trie hook receives the query key, not the matched prefix.
 The verifier checks a global function's memory arguments for writes as well as reads, even through `const` pointers.
-A value of a map created with `BPF_F_RDONLY_PROG` fails that check, so the hook for such a map takes `const void *key` and `const void *value` tagged `arg:untrusted` instead, and `LookupHook.Untrusted` is set.
+A value of a map created with `BPF_F_RDONLY_PROG` fails the write check, and one with `BPF_F_WRONLY_PROG` the read check, so the hook for such a map takes `const void *key` and `const void *value` tagged `arg:untrusted` instead, and `LookupHook.Untrusted` is set.
 The verifier does not check an untrusted argument at the call and reads it in the hook with fault-handled loads.
+The hook body reads through these pointers without comparing them with zero: an untrusted pointer is not nullable, and a pointer comparison would be rejected for loaders without `CAP_PERFMON`.
 An observer reads these arguments by the map's key and value sizes; the hook's BTF no longer carries their types.
 Kernels without the `arg:untrusted` tag reject the transformed program.
 A key that points into read-only memory (for example, a value of such a map) passed to a typed hook also makes the verifier reject the transformed program; discovery does not detect this.
@@ -303,7 +306,7 @@ Its existing `Site` field is the first element of `Sites`.
 `InsertedAt` is zero because the first insertion saves ctx at entry.
 `InsertedSlots` is `8 + 8*len(Sites)`: one entry spill, eight instructions per site, and seven hook instructions.
 One site adds 16 slots (128 bytes); two sites add 24 slots (192 bytes).
-With `Auto`, it is `1 + 9*len(Sites) + 7*(number of lookup hooks)`, plus 11 slots per generic-hook site and a 9-slot generic hook; the hooks are placed together right after the entry function.
+With `Auto`, it is `1 + 9*len(Sites) + 7*(number of lookup hooks)`, with 5 instead of 7 for an `Untrusted` hook, plus 11 slots per generic-hook site and a 6-slot generic hook; the hooks are placed together right after the entry function.
 On top of that, `Entry` adds 5 slots (2 in the prologue and a 3-slot hook), and `TailCalls` adds 6 slots per tail call (7 outside the entry function) plus a 3-slot hook.
 `SourceChecksum` and `TransformedChecksum` cover the raw instruction encoding, with symbolic calls and callback loads unresolved.
 They exclude BTF, source lines, CO-RE metadata, and symbolic/map references; they do not identify the fully loaded kernel artifact.

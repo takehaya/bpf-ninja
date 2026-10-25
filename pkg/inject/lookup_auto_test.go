@@ -304,6 +304,28 @@ func TestLookupReadOnlyMap(t *testing.T) {
 		if void != hook.Untrusted || tagged != hook.Untrusted {
 			t.Fatalf("hook %s: void=%v tags=%v", hook.Name, void, fn.ParamTags)
 		}
+		if hook.Untrusted {
+			assertNoPointerCompare(t, work.Programs["p"].Instructions, hook.Name)
+		}
+	}
+	plan, err = transformLookup(multiMapFixtureFlags(bpfFWronlyProg), autoReq())
+	if err != nil || len(plan.hooks) != 2 || !plan.hooks[1].Untrusted {
+		t.Fatalf("write-only: %+v %v", plan, err)
+	}
+}
+
+// assertNoPointerCompare checks that hook's body has no conditional jump: an
+// arg:untrusted pointer compared with zero needs CAP_PERFMON.
+func assertNoPointerCompare(t *testing.T, insns asm.Instructions, hook string) {
+	t.Helper()
+	in := false
+	for _, ins := range insns {
+		if fn := btf.FuncMetadata(&ins); fn != nil {
+			in = fn.Name == hook
+		}
+		if in && ins.OpCode.Class().IsJump() && ins.OpCode.JumpOp() != asm.Exit {
+			t.Fatalf("hook %s compares an untrusted pointer: %v", hook, ins)
+		}
 	}
 }
 
@@ -376,5 +398,28 @@ func TestLookupLPMTrie(t *testing.T) {
 	spec.Maps["sessions"].Type = ebpf.LPMTrie
 	if _, err := transformLookup(spec, lookupReq()); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// Both map-in-map lookups go to the generic hook, which saves R1 before each
+// helper; explicit selection still refuses them.
+func TestLookupGenericHook(t *testing.T) {
+	work := mapInMapFixture()
+	plan, err := transformLookup(work, autoReq())
+	if err != nil || len(plan.hooks) != 1 || !plan.hooks[0].Generic || len(plan.hooks[0].Sites) != 2 || plan.hooks[0].Name != "lookup_hook_any" {
+		t.Fatalf("plan: %+v %v", plan, err)
+	}
+	out := work.Programs["p"].Instructions
+	for i, ins := range out {
+		if ins.IsBuiltinCall() && ins.Constant == int64(asm.FnMapLookupElem) &&
+			!sameInstr(out[i-1], asm.StoreMem(asm.RFP, -40, asm.R1, asm.DWord)) {
+			t.Fatalf("lookup at %d: %v", i, out[i-2:i+1])
+		}
+	}
+	assertNoPointerCompare(t, out, "lookup_hook_any")
+	req := lookupReq()
+	req.Site.MapName = "outer"
+	if _, err := transformLookup(mapInMapFixture(), req); !errors.Is(err, ErrRefused) {
+		t.Fatalf("explicit map-in-map selection: %v", err)
 	}
 }
