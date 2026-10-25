@@ -3,7 +3,7 @@
 資料の位置づけ：比較方法論。記載の出力例と過去の測定を、現在の性能値として扱わないでください。
 [実装の案内](architecture/README.md) · [研究資料と根拠](research/README.md)
 
-bpf-ninja のデフォルトである DSL と、legacy cbpfc (`--cbpf` の tcpdump 構文) を比べたい人向けです。本ドキュメントは測定手順を説明します。
+bpf-ninja の既定の DSL と legacy cbpfc（`--cbpf` の tcpdump 構文）を比較する測定手順です。
 本文の出力例は当時の参考値であり、現在の環境で再測定した結果ではありません。
 
 ## 何を測るか

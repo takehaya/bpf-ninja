@@ -34,7 +34,7 @@ packet の読取り量と ring の占有量を減らせますが、後段で必�
 
 ### 3.2 --fast-reader を常用する
 
-旧見出しの推奨を無条件の既定にはしません。
+見出しは旧リンクを維持するために残していますが、`--fast-reader` の常用は測定結果に基づいて判断してください。
 `--fast-reader` は mmap と atomic を使う reader です。
 既定 reader と同じ負荷で比較し、CPU 使用量、損失、latency を確認して採否を決めます。
 
@@ -56,7 +56,8 @@ reader や target が律速なら、形式を変えても効果が小さいこ�
 `--no-wakeup` は `--fast-reader` が必要です。
 wakeup を減らす代わりに、到着から読取りまでの latency が変わるため、throughput だけで判断しません。
 
-過去の本文には p50 が約100µsから2.6ms、cgroup-skb/loopback 約0.2 Mppsで observer cost が約3.3µsから123nsという値が記録されていました。
+過去の本文には、p50 が約 100 µs から 2.6 ms に変わったという記録があります。
+cgroup-skb/loopback の約 0.2 Mpps の負荷では、observer cost が約 3.3 µs から 123 ns に変わったと記録されています。
 正確な commit、反復数、公開データへの対応が不足しているため、これらは当時の参考値として保持し、現在の改善率や保証値には使いません。
 再検証する場合は同じ hook、traffic、計数方法を記録します。
 
@@ -65,14 +66,15 @@ wakeup を減らす代わりに、到着から読取りまでの latency が変�
 `--rx-cores N` は全 shard の reader を許可された CPU ID のうち N 以上へ配置します。
 RX の affinity は別に設定し、queue 数だけで CPU 配置が決まると考えないでください。
 `--busy-poll` は CPU を消費するため、target の処理能力と idle の余裕を同時に測ります。
-NIC queue や IRQ の変更は運用影響のある別作業です。専用検証環境で現設定と復旧方法を記録してから行います。
+NIC queue や IRQ の変更は運用に影響するため、別の作業として扱います。
+専用検証環境で現在の設定と復旧方法を記録してから行ってください。
 
 | 既存の記録 | 条件と扱い |
 |---|---|
 | 旧 tuning 本文の「64 coreなら32+32」、出力約30%向上 | workload と実験 commit の対応が不足。一般的な最適値としては採用しない |
 | [ADR-0002](adr/0002-split-core-capture-optimal-width.md)の16+16、約19%向上 | 64論理CPU、E810、128B、cpumap、offered 3〜4 Mpps、約11〜12秒窓。N=8/16/24/32を比較した記録 |
 
-この二つを同じ測定の別表現として統合しません。
+32+32 と 16+16 は別の測定記録として参照してください。
 ADR 当時の reader 配置と現在の「全 shard を指定範囲へ配置する」実装も照合し、環境を揃えるまでは最適 N を引き継がないでください。
 target が総流量を処理できる範囲で配分を振り、capture と転送の両方を評価します。
 

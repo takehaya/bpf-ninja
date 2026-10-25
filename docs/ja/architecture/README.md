@@ -2,7 +2,8 @@
 
 対象はこの checkout の公開実装です。
 索引の対応を確認した基準は `43752fa9c40016e580edb4b9d2c654d7baeabf43` です。
-各解説の測定や歴史的判断を、この版で再検証したという意味ではありません。
+この版で確認したのは索引と実装の対応です。
+各解説の測定や過去の判断は再検証していません。
 
 ## CLI から出力まで
 
@@ -36,7 +37,8 @@ ABI の定数、ライブラリ API、build 手順は変更するコードの近
 | [0003 callback cursor mask](../adr/0003-mask-bpf-loop-cursor.md) | 採用 | 記載された kernel と verifier の問題に対する判断 |
 
 [Lean Decisions](../../../spec/lean/DECISIONS.md)の `D-NNN` は、意味論の未確定点と Go/Lean の差を追う別の台帳です。
-その「提案中」「承認済み」を ADR の状態へ変換したり、番号を統合したりしません。
+Lean の記録にある提案中や承認済みという状態は、その台帳での意味を保ちます。
+ADR の状態への変換や番号の統合は行いません。
 Lean は DSL と parser-machine のモデルであり、eBPF 命令意味論、codegen correctness、verifier 全体の証明を含みません。
 
 ## 保守
