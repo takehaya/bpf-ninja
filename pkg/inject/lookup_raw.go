@@ -46,12 +46,13 @@ type RawProgram struct {
 // the supplied instructions, map identities, BTF and stack audit together;
 // there is no ELF hash binding. Checksums only cover instruction encoding.
 type LookupRequestRaw struct {
-	Site      LookupSelector
-	Auto      bool // see LookupRequest.Auto
-	Entry     bool // see LookupRequest.Entry
-	TailCalls bool // see LookupRequest.TailCalls
-	HookName  string
-	Stack     StackAudit
+	Site         LookupSelector
+	Auto         bool // see LookupRequest.Auto
+	Entry        bool // see LookupRequest.Entry
+	TailCalls    bool // see LookupRequest.TailCalls
+	CopyReadOnly bool // see LookupRequest.CopyReadOnly
+	HookName     string
+	Stack        StackAudit
 }
 
 // LookupResultRaw contains a transformed instruction slice and matching load
@@ -118,7 +119,7 @@ func TransformLookupRaw(p RawProgram, req LookupRequestRaw) (*LookupResultRaw, e
 		}
 	}
 	out, plan, err := transformLookupProgram(insns, p.Type, types, resolve,
-		LookupRequest{Site: req.Site, Auto: req.Auto, Entry: req.Entry, TailCalls: req.TailCalls, HookName: req.HookName, Stack: req.Stack})
+		LookupRequest{Site: req.Site, Auto: req.Auto, Entry: req.Entry, TailCalls: req.TailCalls, CopyReadOnly: req.CopyReadOnly, HookName: req.HookName, Stack: req.Stack})
 	if err != nil {
 		return nil, err
 	}

@@ -375,22 +375,28 @@ func TestBpfLookupInjectionCallback(t *testing.T) {
 // Auto instruments both maps with separate typed hooks. Each observer sees
 // only its own map's lookups, and the site argument is the reported SitePC.
 func TestBpfLookupInjectionAutoMultiMap(t *testing.T) {
-	testAutoMultiMap(t, multiMapFixture)
+	testAutoMultiMap(t, multiMapFixture, false)
 }
 
 // The flows map is read-only for programs, so its hook takes untrusted
 // pointers; the observer reads the same key and value through them.
 func TestBpfLookupInjectionReadOnlyMap(t *testing.T) {
-	testAutoMultiMap(t, func() *ebpf.CollectionSpec { return multiMapFixtureFlags(bpfFRdonlyProg) })
+	testAutoMultiMap(t, func() *ebpf.CollectionSpec { return multiMapFixtureFlags(bpfFRdonlyProg) }, false)
 }
 
-func testAutoMultiMap(t *testing.T, fixture func() *ebpf.CollectionSpec) {
+// With CopyReadOnly the observer reads the read-only map's value from a stack
+// copy through a typed hook, which needs no arg:untrusted.
+func TestBpfLookupInjectionReadOnlyMapCopy(t *testing.T) {
+	testAutoMultiMap(t, func() *ebpf.CollectionSpec { return multiMapFixtureFlags(bpfFRdonlyProg) }, true)
+}
+
+func testAutoMultiMap(t *testing.T, fixture func() *ebpf.CollectionSpec, copyReadOnly bool) {
 	t.Helper()
 	testutil.SkipIfNotRoot(t)
 	plain := loadOrSkip(t, fixture())
 	t.Cleanup(plain.Close)
 	work := fixture()
-	plan, err := transformLookup(work, LookupRequest{ProgramName: "p", Auto: true,
+	plan, err := transformLookup(work, LookupRequest{ProgramName: "p", Auto: true, CopyReadOnly: copyReadOnly,
 		HookName: "obs", Stack: StackAudit{LowestOffset: -8}})
 	if err != nil {
 		t.Fatal(err)

@@ -191,6 +191,12 @@ The hook body reads through these pointers without comparing them with zero: an 
 An observer reads these arguments by the map's key and value sizes; the hook's BTF no longer carries their types.
 Kernels without the `arg:untrusted` tag reject the transformed program.
 In the CI kernel matrix, 6.15 and older reject it and 6.18 and newer load it.
+With `LookupRequest.CopyReadOnly`, a `BPF_F_RDONLY_PROG` map keeps a typed hook instead, and `LookupHook.Copied` is set.
+On a hit, each site of such a map copies the value onto the stack below the spill slots, widest aligned loads first, and passes a pointer to the copy.
+The copy is readable and writable stack memory, so the call passes the verifier on kernels without `arg:untrusted`.
+The observer then reads the value's type from the hook's BTF, but the pointer is the copy's address, not the map value's.
+The copy takes the value size rounded up to 8 bytes; a copy that would cross the 512-byte stack is refused.
+A `BPF_F_WRONLY_PROG` map and the generic hook stay untrusted, since a program cannot read such a value to copy it.
 A key that points into read-only memory (for example, a value of such a map) passed to a typed hook also makes the verifier reject the transformed program; discovery does not detect this.
 A key or value with BTF must have a nonzero size exactly matching the map's key or value size.
 The hook retains these types, including typedefs and qualifiers, under `const` pointer parameters.
@@ -205,7 +211,7 @@ The package checks the XDP program type; the cooperative loader owns attachment 
 | The input ELF matches `ELFSHA256` before parsing. | The hash identifies the audited build. |
 | The selector resolves supported lookups of the same map in the entry function. | These are the intended observation sites. |
 | Map BTF sizes, where present, match the map definition, and entry BTF describes an XDP context pointer. | The BTF describes the audited build. |
-| Direct R10 references stay at or above `Stack.LowestOffset`; three aligned spill slots (four with the generic hook) fit below it within 512 bytes. | Pointer aliases and called subprograms do not reach the reserved spill region. |
+| Direct R10 references stay at or above `Stack.LowestOffset`; three aligned spill slots (four with the generic hook, plus a value copy with `CopyReadOnly`) fit below it within 512 bytes. | Pointer aliases and called subprograms do not reach the reserved spill region. |
 | Existing function and source metadata are complete, references resolve, and relocation fits. | The transformed program remains acceptable to the target kernel verifier. |
 
 The stack audit has the same alias and callee limitations as `StackAudit` in the original transform.

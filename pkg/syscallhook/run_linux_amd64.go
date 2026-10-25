@@ -438,7 +438,7 @@ func (s *supervisor) transformLoad(r *remote, attr []byte, rule Rule) (ret int64
 	}
 	result, err := inject.TransformLookupRaw(raw, inject.LookupRequestRaw{
 		Site: inject.LookupSelector{MapName: rule.Map, FuncName: rule.Func, Line: rule.Line, AllMatches: rule.AllMatches, SitePCs: rule.SitePCs},
-		Auto: rule.Auto, Entry: rule.Entry, TailCalls: rule.TailCalls,
+		Auto: rule.Auto, Entry: rule.Entry, TailCalls: rule.TailCalls, CopyReadOnly: rule.CopyReadOnly,
 		HookName: rule.Hook, Stack: inject.StackAudit{LowestOffset: *rule.StackLowestOffset},
 	})
 	if err != nil {
@@ -527,6 +527,9 @@ func hookSummary(result *inject.LookupResultRaw) string {
 		}
 		if hook.Untrusted {
 			b.WriteString(", untrusted pointers")
+		}
+		if hook.Copied {
+			b.WriteString(", value copied to stack")
 		}
 		for j, site := range hook.Sites {
 			if j == 0 {

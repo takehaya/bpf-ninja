@@ -54,6 +54,7 @@ The naming and hook ABI are described in [lookup-site-injection.md](lookup-site-
 `"entry": true` adds `HOOK_entry(ctx)`, called at the start of the program, which also runs when the program is entered through a tail call.
 `"tail_calls": true` adds `HOOK_tail_call(ctx, u32 site, u32 index)`, called when a `bpf_tail_call` anywhere in the program fails.
 Either can be combined with a lookup rule, or used without `map` or `auto` to instrument no lookup.
+`"copy_read_only": true` passes a stack copy of a `BPF_F_RDONLY_PROG` map's value to a typed hook instead of an `arg:untrusted` one, so kernels older than 6.18 load it; see [lookup-site-injection.md](lookup-site-injection.md#supported-sites-and-trust-boundary).
 See [lookup-site-injection.md](lookup-site-injection.md#entry-and-tail-call-hooks), including why any hook in a program that uses `bpf_tail_call` needs the JIT on a supported architecture; without it the transformed load fails and the original program is loaded (or refused with `--fail-closed`).
 
 ```json

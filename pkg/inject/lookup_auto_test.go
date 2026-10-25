@@ -314,6 +314,41 @@ func TestLookupReadOnlyMap(t *testing.T) {
 	}
 }
 
+// With CopyReadOnly the read-only map keeps a typed hook and its site copies
+// the 16-byte value below the four spill slots; a write-only map stays untrusted.
+func TestLookupReadOnlyMapCopy(t *testing.T) {
+	req := autoReq()
+	req.CopyReadOnly = true
+	work := multiMapFixtureFlags(bpfFRdonlyProg)
+	plan, err := transformLookup(work, req)
+	if err != nil || len(plan.hooks) != 2 {
+		t.Fatalf("copy: %+v %v", plan, err)
+	}
+	for _, hook := range plan.hooks {
+		if hook.Untrusted || hook.Copied != (hook.MapName == "flows") {
+			t.Fatalf("hook %s untrusted=%v copied=%v", hook.Name, hook.Untrusted, hook.Copied)
+		}
+	}
+	floor := int16(req.Stack.LowestOffset) - 32
+	var stores []int16
+	for _, ins := range work.Programs["p"].Instructions {
+		if ins.OpCode.Class().IsStore() && ins.Dst == asm.RFP && ins.Offset < floor {
+			stores = append(stores, ins.Offset)
+		}
+	}
+	if !reflect.DeepEqual(stores, []int16{floor - 16, floor - 8}) {
+		t.Fatalf("value copy stores at %v, want [%d %d]", stores, floor-16, floor-8)
+	}
+	plan, err = transformLookup(multiMapFixtureFlags(bpfFWronlyProg), req)
+	if err != nil || !plan.hooks[1].Untrusted || plan.hooks[1].Copied {
+		t.Fatalf("write-only: %+v %v", plan, err)
+	}
+	req.Stack.LowestOffset = -480
+	if _, err := transformLookup(multiMapFixtureFlags(bpfFRdonlyProg), req); !errors.Is(err, ErrRefused) {
+		t.Fatalf("copy below the stack limit: %v", err)
+	}
+}
+
 // assertNoPointerCompare checks that hook's body has no conditional jump: an
 // arg:untrusted pointer compared with zero needs CAP_PERFMON.
 func assertNoPointerCompare(t *testing.T, insns asm.Instructions, hook string) {

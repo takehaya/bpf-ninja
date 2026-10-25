@@ -59,15 +59,20 @@ type LookupSelector struct {
 // struct xdp_md *ctx, u32 site, u32 index) whenever a bpf_tail_call in the
 // entry function returns, that is, when the tail call failed. With either,
 // Site may be empty to instrument no lookup.
+//
+// CopyReadOnly gives a BPF_F_RDONLY_PROG map a typed hook instead of an
+// untrusted one: each site copies the value to the stack below the spill
+// slots and passes the copy. Kernels without arg:untrusted load it.
 type LookupRequest struct {
-	ELFSHA256   string
-	ProgramName string
-	Site        LookupSelector
-	Auto        bool
-	Entry       bool
-	TailCalls   bool
-	HookName    string
-	Stack       StackAudit
+	ELFSHA256    string
+	ProgramName  string
+	Site         LookupSelector
+	Auto         bool
+	Entry        bool
+	TailCalls    bool
+	CopyReadOnly bool
+	HookName     string
+	Stack        StackAudit
 }
 
 // HookKind is what a generated hook observes.
@@ -88,6 +93,9 @@ const (
 // cannot read (BPF_F_RDONLY_PROG or BPF_F_WRONLY_PROG). Its key and value are const void * tagged
 // arg:untrusted, so an observer reads them by the map's sizes.
 //
+// Copied is set for a typed hook on a BPF_F_RDONLY_PROG map with
+// CopyReadOnly: its value points to a stack copy, not into the map.
+//
 // Generic is set for Auto's one hook over lookups whose map is not known
 // statically (R1 is not a direct map reference) or is a map-in-map. It has no
 // MapName and takes the map pointer as a fifth argument; see genericHook.
@@ -97,6 +105,7 @@ type LookupHook struct {
 	MapName   string
 	Sites     []LookupSite
 	Untrusted bool
+	Copied    bool
 	Generic   bool
 	TypeID    btf.TypeID
 	FuncInfo  []byte
@@ -630,13 +639,19 @@ func transformLookupProgram(insns asm.Instructions, typ ebpf.ProgramType, types 
 		m := group.sites[0].mapInfo
 		key, value := lookupABI(m)
 		// The verifier checks an ordinary memory argument for both reads and
-		// writes, so either restriction needs untrusted arguments.
+		// writes, so either restriction needs untrusted arguments, unless a
+		// readable value is copied to the stack.
 		untrusted := m.Flags&(bpfFRdonlyProg|bpfFWronlyProg) != 0
+		var copySize uint32
+		if untrusted && req.CopyReadOnly && m.Flags&bpfFWronlyProg == 0 {
+			untrusted, copySize = false, m.ValueSize
+		}
 		hooks = append(hooks, lookupHook(group.name, ctxType, key, value, req.Auto, untrusted)...)
-		hook := LookupHook{Name: group.name, Kind: HookLookup, MapName: group.sites[0].MapName, Sites: publicLookupSites(group.sites), Untrusted: untrusted}
+		hook := LookupHook{Name: group.name, Kind: HookLookup, MapName: group.sites[0].MapName, Sites: publicLookupSites(group.sites),
+			Untrusted: untrusted, Copied: copySize > 0}
 		plan.hooks = append(plan.hooks, hook)
 		for _, site := range group.sites {
-			calls[site.SitePC] = siteCall{hook: group.name, withSite: req.Auto}
+			calls[site.SitePC] = siteCall{hook: group.name, withSite: req.Auto, copySize: copySize}
 		}
 	}
 	var entryHook string
@@ -663,13 +678,15 @@ func transformLookupProgram(insns asm.Instructions, typ ebpf.ProgramType, types 
 
 // siteCall is the hook a helper site calls, whether it passes its SitePC and
 // the lookup's map pointer, and whether the site is a bpf_tail_call rather
-// than a lookup. A localCtx tail call saves its own ctx before the helper.
+// than a lookup. A localCtx tail call saves its own ctx before the helper. A
+// nonzero copySize passes a stack copy of that many value bytes.
 type siteCall struct {
 	hook     string
 	withSite bool
 	withMap  bool
 	tailCall bool
 	localCtx bool
+	copySize uint32
 }
 
 func spliceLookup(input asm.Instructions, sitePCs []uint32, req LookupRequest) (asm.Instructions, error) {
@@ -698,9 +715,14 @@ func spliceLookupCalls(input asm.Instructions, calls map[uint32]siteCall, stack 
 	spillR0 := int16(result)
 	// A generic hook's map pointer takes a fourth slot.
 	mapSlot := int16(result - 8)
+	// A value copy goes below the map slot, in 8-byte units.
+	copyAt := func(call siteCall) int { return int(mapSlot) - int((call.copySize+7)/8*8) }
 	for _, call := range calls {
 		if call.withMap && result-8 < -512 {
 			return nil, refuse("four lookup spill slots exceed the 512-byte stack")
+		}
+		if call.copySize > 0 && copyAt(call) < -512 {
+			return nil, refuse("a %d-byte value copy below the spill slots exceeds the 512-byte stack", call.copySize)
 		}
 	}
 	// Every site of every hook shares the slots: sites run one at a time.
@@ -716,7 +738,11 @@ func spliceLookupCalls(input asm.Instructions, calls map[uint32]siteCall, stack 
 				asm.Call.Label(call.hook),
 			}
 		}
-		args := asm.Instructions{asm.LoadMem(asm.R1, asm.RFP, ctx, asm.DWord)}
+		var args asm.Instructions
+		if call.copySize > 0 {
+			args = copyValue(asm.R0, int16(copyAt(call)), call.copySize)
+		}
+		args = append(args, asm.LoadMem(asm.R1, asm.RFP, ctx, asm.DWord))
 		if call.withSite {
 			args = append(args, asm.Mov.Imm32(asm.R2, int32(pc)),
 				asm.LoadMem(asm.R3, asm.RFP, key, asm.DWord), asm.Mov.Reg(asm.R4, asm.R0))
@@ -725,6 +751,10 @@ func spliceLookupCalls(input asm.Instructions, calls map[uint32]siteCall, stack 
 			}
 		} else {
 			args = append(args, asm.LoadMem(asm.R2, asm.RFP, key, asm.DWord), asm.Mov.Reg(asm.R3, asm.R0))
+		}
+		if call.copySize > 0 {
+			value := args[len(args)-1].Dst // the register given R0
+			args = append(args, asm.Mov.Reg(value, asm.RFP), asm.Add.Imm(value, int32(copyAt(call))))
 		}
 		args = append(args, asm.Call.Label(call.hook))
 		null := asm.JEq.Imm(asm.R0, 0, "")
@@ -824,6 +854,23 @@ func spliceLookupCalls(input asm.Instructions, calls map[uint32]siteCall, stack 
 		out = append(out, hook...)
 	}
 	return out, nil
+}
+
+// copyValue copies size bytes from src to the stack at off with R1 as scratch,
+// widest loads first, so every stack access stays aligned.
+func copyValue(src asm.Register, off int16, size uint32) asm.Instructions {
+	var out asm.Instructions
+	done := int16(0)
+	for _, width := range []struct {
+		n    uint32
+		size asm.Size
+	}{{8, asm.DWord}, {4, asm.Word}, {2, asm.Half}, {1, asm.Byte}} {
+		for size-uint32(done) >= width.n {
+			out = append(out, asm.LoadMem(asm.R1, src, done, width.size), asm.StoreMem(asm.RFP, off+done, asm.R1, width.size))
+			done += int16(width.n)
+		}
+	}
+	return out
 }
 
 // genericHook is int NAME(struct xdp_md *ctx, u32 site, const void *key,
