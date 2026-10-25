@@ -62,3 +62,13 @@ when one did, and 2 on an error such as a base without the golden test. make
 reports any failing recipe as status 2. Adding spec vectors with
 `make lean-gen` also needs `make golden-update`, because each new filter gets
 a manifest line.
+
+## Command and protocol references
+
+Run `make docs-update` after changing command metadata or public protocol help,
+then review `docs/ja/cli/generated/`. `make docs-check` and the normal Go tests
+compare the checked-in references without writing them or loading BPF.
+The generator uses urfave/cli v3 help and documentation interfaces; keep command
+constructors fresh and do not execute capture or map-management actions.
+Update the manually authored constraints and examples when behavior changes.
+A generated flag table is not a substitute for those explanations.

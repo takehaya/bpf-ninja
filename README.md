@@ -312,6 +312,8 @@ int parse_headers(struct xdp_md *ctx) {
 
 ## Options
 
+[Complete CLI and protocol reference](docs/ja/cli/README.md) (Japanese navigation, generated English help).
+
 | Option | Description | Modes |
 |---|---|---|
 | `-i, --interface` | Network interface to capture on (XDP hook) | entry, exit, xdp |
