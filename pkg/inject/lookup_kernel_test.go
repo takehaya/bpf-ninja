@@ -102,13 +102,19 @@ func multiMapFixture() *ebpf.CollectionSpec {
 }
 
 func lookupObserver(t *testing.T, hook string, target *ebpf.Program) *ebpf.CollectionSpec {
-	return lookupObserverArgs(t, hook, target, false, false)
+	return lookupObserverArgs(t, hook, target, observerArgs{})
 }
 
-// lookupObserverArgs records seen, packet length, key, value.imsi and, with
-// withSite, the hook's u32 site argument at offset 24. withMap, which needs
-// withSite, also records the id of the generic hook's map argument at 28.
-func lookupObserverArgs(t *testing.T, hook string, target *ebpf.Program, withSite, withMap bool) *ebpf.CollectionSpec {
+// observerArgs selects what lookupObserverArgs reads. site records the hook's
+// u32 site argument at offset 24. mapID, which needs site, also records the id
+// of the generic hook's map argument at 28. rawCtx reads the packet bounds
+// through bpf_probe_read_kernel, for a static hook whose ctx argument the
+// kernel passes as a u64.
+type observerArgs struct{ site, mapID, rawCtx bool }
+
+// lookupObserverArgs records seen, packet length, key, value.imsi and what
+// args selects.
+func lookupObserverArgs(t *testing.T, hook string, target *ebpf.Program, args observerArgs) *ebpf.CollectionSpec {
 	t.Helper()
 	kernel, err := btf.LoadKernelSpec()
 	if err != nil {
@@ -128,13 +134,31 @@ func lookupObserverArgs(t *testing.T, hook string, target *ebpf.Program, withSit
 		t.Fatal("kernel xdp_buff lacks data/data_end")
 	}
 	keyArg, recordSize := int32(1), uint32(24)
-	if withSite {
+	if args.site {
 		keyArg, recordSize = 2, 32
 	}
 	insns := asm.Instructions{
 		asm.LoadMem(asm.R6, asm.R1, 0, asm.DWord), // xdp ctx
 		asm.Mov.Reg(asm.R9, asm.R1),
 		asm.Mov.Imm(asm.R0, 0), asm.StoreMem(asm.RFP, -48, asm.R0, asm.DWord),
+	}
+	// The tracing verifier translates xdp_md to the kernel's xdp_buff.
+	bounds := asm.Instructions{
+		asm.LoadMem(asm.R1, asm.R6, offsets["data"], asm.DWord),
+		asm.LoadMem(asm.R2, asm.R6, offsets["data_end"], asm.DWord),
+	}
+	if args.rawCtx {
+		for i, field := range []string{"data", "data_end"} {
+			insns = append(insns,
+				asm.Mov.Reg(asm.R1, asm.RFP), asm.Add.Imm(asm.R1, int32(-72-8*i)),
+				asm.Mov.Imm(asm.R2, 8), asm.Mov.Reg(asm.R3, asm.R6), asm.Add.Imm(asm.R3, int32(offsets[field])),
+				asm.FnProbeReadKernel.Call(),
+				asm.JNE.Imm(asm.R0, 0, "done"))
+		}
+		bounds = asm.Instructions{asm.LoadMem(asm.R1, asm.RFP, -72, asm.DWord), asm.LoadMem(asm.R2, asm.RFP, -80, asm.DWord)}
+	}
+	insns = append(insns,
+		asm.Mov.Reg(asm.R1, asm.R9),
 		asm.Mov.Imm(asm.R2, keyArg), asm.Mov.Reg(asm.R3, asm.RFP), asm.Add.Imm(asm.R3, -16),
 		asm.FnGetFuncArg.Call(),
 		asm.JNE.Imm(asm.R0, 0, "done"),
@@ -156,18 +180,16 @@ func lookupObserverArgs(t *testing.T, hook string, target *ebpf.Program, withSit
 		asm.LoadMapPtr(asm.R1, 0).WithReference("obs"), asm.FnMapLookupElem.Call(),
 		asm.JEq.Imm(asm.R0, 0, "done"),
 		asm.LoadMem(asm.R1, asm.R0, 0, asm.DWord), asm.Add.Imm(asm.R1, 1),
-		asm.StoreMem(asm.R0, 0, asm.R1, asm.DWord),
-		// The tracing verifier translates xdp_md to the kernel's xdp_buff.
-		asm.LoadMem(asm.R1, asm.R6, offsets["data"], asm.DWord),
-		asm.LoadMem(asm.R2, asm.R6, offsets["data_end"], asm.DWord),
+		asm.StoreMem(asm.R0, 0, asm.R1, asm.DWord))
+	insns = append(insns, bounds...)
+	insns = append(insns,
 		asm.Sub.Reg(asm.R2, asm.R1),
 		asm.StoreMem(asm.R0, 8, asm.R2, asm.Word),
 		asm.LoadMem(asm.R1, asm.RFP, -28, asm.Word),
 		asm.StoreMem(asm.R0, 12, asm.R1, asm.Word),
 		asm.LoadMem(asm.R1, asm.RFP, -40, asm.DWord),
-		asm.StoreMem(asm.R0, 16, asm.R1, asm.DWord),
-	}
-	if withSite {
+		asm.StoreMem(asm.R0, 16, asm.R1, asm.DWord))
+	if args.site {
 		insns = append(insns,
 			asm.Mov.Reg(asm.R7, asm.R0),
 			asm.Mov.Reg(asm.R1, asm.R9),
@@ -176,7 +198,7 @@ func lookupObserverArgs(t *testing.T, hook string, target *ebpf.Program, withSit
 			asm.LoadMem(asm.R1, asm.RFP, -48, asm.Word),
 			asm.StoreMem(asm.R7, 24, asm.R1, asm.Word))
 	}
-	if withMap {
+	if args.mapID {
 		var bpfMap *btf.Struct
 		if err := kernel.TypeByName("bpf_map", &bpfMap); err != nil {
 			t.Fatal(err)
@@ -375,29 +397,37 @@ func TestBpfLookupInjectionCallback(t *testing.T) {
 // Auto instruments both maps with separate typed hooks. Each observer sees
 // only its own map's lookups, and the site argument is the reported SitePC.
 func TestBpfLookupInjectionAutoMultiMap(t *testing.T) {
-	testAutoMultiMap(t, multiMapFixture, false)
+	testAutoMultiMap(t, multiMapFixture, LookupRequest{})
 }
 
 // The flows map is read-only for programs, so its hook takes untrusted
 // pointers; the observer reads the same key and value through them.
 func TestBpfLookupInjectionReadOnlyMap(t *testing.T) {
-	testAutoMultiMap(t, func() *ebpf.CollectionSpec { return multiMapFixtureFlags(bpfFRdonlyProg) }, false)
+	testAutoMultiMap(t, func() *ebpf.CollectionSpec { return multiMapFixtureFlags(bpfFRdonlyProg) }, LookupRequest{})
 }
 
 // With CopyReadOnly the observer reads the read-only map's value from a stack
 // copy through a typed hook, which needs no arg:untrusted.
 func TestBpfLookupInjectionReadOnlyMapCopy(t *testing.T) {
-	testAutoMultiMap(t, func() *ebpf.CollectionSpec { return multiMapFixtureFlags(bpfFRdonlyProg) }, true)
+	testAutoMultiMap(t, func() *ebpf.CollectionSpec { return multiMapFixtureFlags(bpfFRdonlyProg) }, LookupRequest{CopyReadOnly: true})
 }
 
-func testAutoMultiMap(t *testing.T, fixture func() *ebpf.CollectionSpec, copyReadOnly bool) {
+// With StaticUntrusted the read-only map's hook is static, which needs no
+// arg:untrusted either. The fixture reads the value, so it cannot use a
+// write-only map.
+func TestBpfLookupInjectionReadOnlyMapStatic(t *testing.T) {
+	testAutoMultiMap(t, func() *ebpf.CollectionSpec { return multiMapFixtureFlags(bpfFRdonlyProg) }, LookupRequest{StaticUntrusted: true})
+}
+
+// testAutoMultiMap takes CopyReadOnly and StaticUntrusted from opts.
+func testAutoMultiMap(t *testing.T, fixture func() *ebpf.CollectionSpec, opts LookupRequest) {
 	t.Helper()
 	testutil.SkipIfNotRoot(t)
 	plain := loadOrSkip(t, fixture())
 	t.Cleanup(plain.Close)
 	work := fixture()
-	plan, err := transformLookup(work, LookupRequest{ProgramName: "p", Auto: true, CopyReadOnly: copyReadOnly,
-		HookName: "obs", Stack: StackAudit{LowestOffset: -8}})
+	plan, err := transformLookup(work, LookupRequest{ProgramName: "p", Auto: true, CopyReadOnly: opts.CopyReadOnly,
+		StaticUntrusted: opts.StaticUntrusted, HookName: "obs", Stack: StackAudit{LowestOffset: -8}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -419,10 +449,10 @@ func testAutoMultiMap(t *testing.T, fixture func() *ebpf.CollectionSpec, copyRea
 	observers := map[string]*ebpf.Collection{}
 	site := map[string]uint32{}
 	for _, hook := range plan.hooks {
-		if len(hook.Sites) != 1 {
-			t.Fatalf("hook %s sites=%+v", hook.Name, hook.Sites)
+		if len(hook.Sites) != 1 || hook.Static != (opts.StaticUntrusted && hook.MapName == "flows") {
+			t.Fatalf("hook %s sites=%+v static=%v", hook.Name, hook.Sites, hook.Static)
 		}
-		obs := loadOrSkip(t, lookupObserverArgs(t, hook.Name, injected.Programs["p"], true, false))
+		obs := loadOrSkip(t, lookupObserverArgs(t, hook.Name, injected.Programs["p"], observerArgs{site: true, rawCtx: hook.Static}))
 		t.Cleanup(obs.Close)
 		l, err := link.AttachTracing(link.TracingOptions{Program: obs.Programs["observe"], AttachType: ebpf.AttachTraceFEntry})
 		if err != nil {
@@ -603,15 +633,26 @@ func mapInMapFixture() *ebpf.CollectionSpec {
 // Auto passes both lookups to the generic hook. The observer sees the inner
 // lookup last: its key, value and the inner map's id.
 func TestBpfLookupInjectionMapInMap(t *testing.T) {
+	testMapInMap(t, false)
+}
+
+// The static generic hook reports the same maps without arg:untrusted.
+func TestBpfLookupInjectionMapInMapStatic(t *testing.T) {
+	testMapInMap(t, true)
+}
+
+func testMapInMap(t *testing.T, static bool) {
+	t.Helper()
 	testutil.SkipIfNotRoot(t)
 	plain := loadOrSkip(t, mapInMapFixture())
 	t.Cleanup(plain.Close)
 	work := mapInMapFixture()
-	plan, err := transformLookup(work, LookupRequest{ProgramName: "p", Auto: true, HookName: "obs", Stack: StackAudit{LowestOffset: -8}})
+	plan, err := transformLookup(work, LookupRequest{ProgramName: "p", Auto: true, StaticUntrusted: static,
+		HookName: "obs", Stack: StackAudit{LowestOffset: -8}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(plan.hooks) != 1 || !plan.hooks[0].Generic || len(plan.hooks[0].Sites) != 2 || len(plan.skipped) != 0 {
+	if len(plan.hooks) != 1 || !plan.hooks[0].Generic || plan.hooks[0].Static != static || len(plan.hooks[0].Sites) != 2 || len(plan.skipped) != 0 {
 		t.Fatalf("plan: %+v", plan)
 	}
 	injected := loadOrSkip(t, work)
@@ -635,7 +676,7 @@ func TestBpfLookupInjectionMapInMap(t *testing.T) {
 		}
 		innerID, _ = info.ID()
 	}
-	obs := loadOrSkip(t, lookupObserverArgs(t, "obs_any", injected.Programs["p"], true, true))
+	obs := loadOrSkip(t, lookupObserverArgs(t, "obs_any", injected.Programs["p"], observerArgs{site: true, mapID: true, rawCtx: static}))
 	t.Cleanup(obs.Close)
 	l, err := link.AttachTracing(link.TracingOptions{Program: obs.Programs["observe"], AttachType: ebpf.AttachTraceFEntry})
 	if err != nil {

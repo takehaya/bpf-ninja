@@ -66,7 +66,7 @@ Sites that discovery lists with a `Reason` are not instrumented; they are report
 If no site is supported, the transform is refused.
 Every hook name passes the same collision checks as a single `HookName`.
 
-Lookups whose map is only known at run time share one generic hook, placed after the per-map hooks and marked `Generic` and `Untrusted`:
+Lookups whose map is only known at run time share one generic hook, placed after the per-map hooks and marked `Generic` and `Untrusted` (`Static` with `StaticUntrusted`, see [below](#supported-sites-and-trust-boundary)):
 
 ```c
 int PREFIX_any(struct xdp_md *ctx, u32 site, const void *key __arg_untrusted,
@@ -197,6 +197,11 @@ The copy is readable and writable stack memory, so the call passes the verifier 
 The observer then reads the value's type from the hook's BTF, but the pointer is the copy's address, not the map value's.
 The copy takes the value size rounded up to 8 bytes; a copy that would cross the 512-byte stack is refused.
 A `BPF_F_WRONLY_PROG` map and the generic hook stay untrusted, since a program cannot read such a value to copy it.
+With `LookupRequest.StaticUntrusted`, every hook that would take `arg:untrusted` pointers, the generic hook included, is instead a static function whose body only returns zero, and `LookupHook.Static` is set instead of `Untrusted`.
+The verifier checks a static function at each call with the caller's registers rather than against its BTF, so the call needs no tag; in the CI kernel matrix, 6.1 and newer load it.
+A per-map static hook still declares its key and value types in BTF, but the kernel need not trust that BTF.
+On 7.0 it does not: an fentry observer receives every argument, `ctx` included, as a `u64` and reads through them with `bpf_probe_read_kernel`.
+With `CopyReadOnly` as well, a `BPF_F_RDONLY_PROG` map keeps its copied typed hook, and only write-only maps and the generic hook become static.
 A key that points into read-only memory (for example, a value of such a map) passed to a typed hook also makes the verifier reject the transformed program; discovery does not detect this.
 A key or value with BTF must have a nonzero size exactly matching the map's key or value size.
 The hook retains these types, including typedefs and qualifiers, under `const` pointer parameters.
@@ -313,7 +318,7 @@ Its existing `Site` field is the first element of `Sites`.
 `InsertedAt` is zero because the first insertion saves ctx at entry.
 `InsertedSlots` is `8 + 8*len(Sites)`: one entry spill, eight instructions per site, and seven hook instructions.
 One site adds 16 slots (128 bytes); two sites add 24 slots (192 bytes).
-With `Auto`, it is `1 + 9*len(Sites) + 7*(number of lookup hooks)`, with 5 instead of 7 for an `Untrusted` hook, plus 11 slots per generic-hook site and a 6-slot generic hook; the hooks are placed together right after the entry function.
+With `Auto`, it is `1 + 9*len(Sites) + 7*(number of lookup hooks)`, with 5 instead of 7 for an `Untrusted` hook and 2 for a `Static` one, plus 11 slots per generic-hook site and a 6-slot generic hook (2 slots when static); the hooks are placed together right after the entry function.
 On top of that, `Entry` adds 5 slots (2 in the prologue and a 3-slot hook), and `TailCalls` adds 6 slots per tail call (7 outside the entry function) plus a 3-slot hook.
 `SourceChecksum` and `TransformedChecksum` cover the raw instruction encoding, with symbolic calls and callback loads unresolved.
 They exclude BTF, source lines, CO-RE metadata, and symbolic/map references; they do not identify the fully loaded kernel artifact.

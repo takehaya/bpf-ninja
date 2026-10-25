@@ -63,16 +63,24 @@ type LookupSelector struct {
 // CopyReadOnly gives a BPF_F_RDONLY_PROG map a typed hook instead of an
 // untrusted one: each site copies the value to the stack below the spill
 // slots and passes the copy. Kernels without arg:untrusted load it.
+//
+// StaticUntrusted gives every hook that would take arg:untrusted pointers
+// (see LookupHook.Untrusted, and the generic hook) static linkage and an empty
+// body instead. The verifier checks a static function at each call with the
+// caller's registers, so the hook needs no tag and kernels without
+// arg:untrusted load it. With CopyReadOnly, a read-only map still gets the
+// typed hook.
 type LookupRequest struct {
-	ELFSHA256    string
-	ProgramName  string
-	Site         LookupSelector
-	Auto         bool
-	Entry        bool
-	TailCalls    bool
-	CopyReadOnly bool
-	HookName     string
-	Stack        StackAudit
+	ELFSHA256       string
+	ProgramName     string
+	Site            LookupSelector
+	Auto            bool
+	Entry           bool
+	TailCalls       bool
+	CopyReadOnly    bool
+	StaticUntrusted bool
+	HookName        string
+	Stack           StackAudit
 }
 
 // HookKind is what a generated hook observes.
@@ -96,6 +104,10 @@ const (
 // Copied is set for a typed hook on a BPF_F_RDONLY_PROG map with
 // CopyReadOnly: its value points to a stack copy, not into the map.
 //
+// Static is set instead of Untrusted with StaticUntrusted. The kernel may then
+// ignore the hook's BTF, as 7.0 does: an fentry observer gets every argument,
+// ctx included, as a u64 and reads through them with bpf_probe_read_kernel.
+//
 // Generic is set for Auto's one hook over lookups whose map is not known
 // statically (R1 is not a direct map reference) or is a map-in-map. It has no
 // MapName and takes the map pointer as a fifth argument; see genericHook.
@@ -106,6 +118,7 @@ type LookupHook struct {
 	Sites     []LookupSite
 	Untrusted bool
 	Copied    bool
+	Static    bool
 	Generic   bool
 	TypeID    btf.TypeID
 	FuncInfo  []byte
@@ -628,9 +641,13 @@ func transformLookupProgram(insns asm.Instructions, typ ebpf.ProgramType, types 
 	calls := map[uint32]siteCall{}
 	for _, group := range groups {
 		if group.generic {
-			hooks = append(hooks, genericHook(group.name, ctxType)...)
+			hook := genericHook(group.name, ctxType)
+			if req.StaticUntrusted {
+				hook = staticHook(hook)
+			}
+			hooks = append(hooks, hook...)
 			plan.hooks = append(plan.hooks, LookupHook{Name: group.name, Kind: HookLookup, Sites: publicLookupSites(group.sites),
-				Untrusted: true, Generic: true})
+				Untrusted: !req.StaticUntrusted, Static: req.StaticUntrusted, Generic: true})
 			for _, site := range group.sites {
 				calls[site.SitePC] = siteCall{hook: group.name, withSite: true, withMap: true}
 			}
@@ -646,9 +663,14 @@ func transformLookupProgram(insns asm.Instructions, typ ebpf.ProgramType, types 
 		if untrusted && req.CopyReadOnly && m.Flags&bpfFWronlyProg == 0 {
 			untrusted, copySize = false, m.ValueSize
 		}
-		hooks = append(hooks, lookupHook(group.name, ctxType, key, value, req.Auto, untrusted)...)
+		static := untrusted && req.StaticUntrusted
+		body := lookupHook(group.name, ctxType, key, value, req.Auto, untrusted && !static)
+		if static {
+			untrusted, body = false, staticHook(body)
+		}
+		hooks = append(hooks, body...)
 		hook := LookupHook{Name: group.name, Kind: HookLookup, MapName: group.sites[0].MapName, Sites: publicLookupSites(group.sites),
-			Untrusted: untrusted, Copied: copySize > 0}
+			Untrusted: untrusted, Copied: copySize > 0, Static: static}
 		plan.hooks = append(plan.hooks, hook)
 		for _, site := range group.sites {
 			calls[site.SitePC] = siteCall{hook: group.name, withSite: req.Auto, copySize: copySize}
@@ -889,6 +911,17 @@ func genericHook(name string, ctx btf.Type) asm.Instructions {
 	head := btf.WithFuncMetadata(asm.LoadMem(asm.R0, asm.R1, 0, asm.Word).WithSymbol(name).
 		WithSource(asm.Comment("generated generic lookup observation hook "+name)), fn)
 	return append(asm.Instructions{head}, untrustedReads(asm.R3, asm.R4, asm.R5)...)
+}
+
+// staticHook gives a generated hook static linkage and replaces its body with
+// return 0. The reads that keep a global hook's arguments live are not
+// needed, and through a pointer into a write-only map or to a map itself the
+// verifier would reject them.
+func staticHook(hook asm.Instructions) asm.Instructions {
+	fn := *btf.FuncMetadata(&hook[0])
+	fn.Linkage, fn.ParamTags = btf.StaticFunc, nil
+	head := btf.WithFuncMetadata(asm.Mov.Imm(asm.R0, 0).WithSymbol(hook[0].Symbol()).WithSource(hook[0].Source()), &fn)
+	return asm.Instructions{head, asm.Return()}
 }
 
 // untrustedReads reads one byte through each arg:untrusted pointer, then

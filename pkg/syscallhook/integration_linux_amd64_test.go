@@ -16,6 +16,7 @@ import (
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/asm"
 	"github.com/cilium/ebpf/btf"
+	"golang.org/x/sys/unix"
 )
 
 // The child is an ordinary cilium/ebpf loader. It has no injector calls and
@@ -47,6 +48,8 @@ func TestIntegrationLoader(t *testing.T) {
 		{"unmatched", "plain", true, func(r *Rule) { r.Program = "unmatched" }},
 		{"auto", "hook", true, func(r *Rule) { r.Auto, r.Map = true, "" }},
 		{"entry-only", "hook", true, func(r *Rule) { r.Entry, r.Map = true, "" }},
+		// The loader's map is BPF_F_RDONLY_PROG, whose hook becomes static.
+		{"static-untrusted", "hook-rdonly", true, func(r *Rule) { r.Auto, r.Map, r.StaticUntrusted = true, "", true }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("SYSCALLHOOK_INTEGRATION_CHILD", tc.expected)
@@ -66,8 +69,11 @@ func TestIntegrationLoader(t *testing.T) {
 			if err != nil || code != 0 {
 				t.Fatalf("code=%d err=%v", code, err)
 			}
-			if tc.expected == "hook" && !strings.Contains(logs.String(), "injected hook") {
+			if strings.HasPrefix(tc.expected, "hook") && !strings.Contains(logs.String(), "injected hook") {
 				t.Fatal("no successful injection reported")
+			}
+			if tc.expected == "hook-rdonly" && !strings.Contains(logs.String(), ", static") {
+				t.Fatal("no static hook reported")
 			}
 		})
 	}
@@ -76,7 +82,11 @@ func TestIntegrationLoader(t *testing.T) {
 func loadIntegrationProgram(t *testing.T, expected string) {
 	t.Helper()
 	u32 := &btf.Int{Name: "u32", Size: 4}
-	m, err := ebpf.NewMap(&ebpf.MapSpec{Name: "sessions", Type: ebpf.Hash, KeySize: 4, ValueSize: 4, MaxEntries: 1, Key: u32, Value: u32})
+	spec := &ebpf.MapSpec{Name: "sessions", Type: ebpf.Hash, KeySize: 4, ValueSize: 4, MaxEntries: 1, Key: u32, Value: u32}
+	if expected == "hook-rdonly" {
+		spec.Flags = unix.BPF_F_RDONLY_PROG
+	}
+	m, err := ebpf.NewMap(spec)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,7 +136,7 @@ func loadIntegrationProgram(t *testing.T, expected string) {
 			found = true
 		}
 	}
-	if found != (expected == "hook") {
+	if found != strings.HasPrefix(expected, "hook") {
 		t.Fatalf("kernel func_info hook=%v, expected %s; funcs=%+v", found, expected, funcs)
 	}
 	action, _, err := p.Test(make([]byte, 64))

@@ -15,7 +15,8 @@ import (
 // hook names (see inject.LookupRequest). Entry and TailCalls add the
 // Hook_entry and Hook_tail_call hooks and allow a rule without lookups.
 // CopyReadOnly passes stack copies of BPF_F_RDONLY_PROG map values to typed
-// hooks (see inject.LookupRequest).
+// hooks, and StaticUntrusted gives the hooks that would take arg:untrusted
+// pointers static linkage (see inject.LookupRequest).
 // StackLowestOffset is the caller's audit of all stack accesses, including
 // aliases and callees (see inject.StackAudit).
 type Rule struct {
@@ -24,6 +25,7 @@ type Rule struct {
 	Entry             bool     `json:"entry,omitempty"`
 	TailCalls         bool     `json:"tail_calls,omitempty"`
 	CopyReadOnly      bool     `json:"copy_read_only,omitempty"`
+	StaticUntrusted   bool     `json:"static_untrusted,omitempty"`
 	Map               string   `json:"map,omitempty"`
 	Func              string   `json:"func,omitempty"`
 	Line              uint32   `json:"line,omitempty"`

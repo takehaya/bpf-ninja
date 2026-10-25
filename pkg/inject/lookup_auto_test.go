@@ -349,6 +349,53 @@ func TestLookupReadOnlyMapCopy(t *testing.T) {
 	}
 }
 
+// With StaticUntrusted the hooks that would take arg:untrusted pointers are
+// static and only return zero; with CopyReadOnly a read-only map keeps the
+// copied typed hook.
+func TestLookupStaticUntrusted(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		fixture *ebpf.CollectionSpec
+		copyRO  bool
+		static  string // the static hook's map, "" for the generic hook or none
+		none    bool
+	}{
+		{"read-only", multiMapFixtureFlags(bpfFRdonlyProg), false, "flows", false},
+		{"write-only", multiMapFixtureFlags(bpfFWronlyProg), true, "flows", false},
+		{"read-only copied", multiMapFixtureFlags(bpfFRdonlyProg), true, "", true},
+		{"generic", mapInMapFixture(), false, "", false},
+	} {
+		req := autoReq()
+		req.StaticUntrusted, req.CopyReadOnly = true, tc.copyRO
+		plan, err := transformLookup(tc.fixture, req)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		statics := 0
+		for _, hook := range plan.hooks {
+			if hook.Untrusted || hook.Static != (!tc.none && hook.MapName == tc.static) {
+				t.Fatalf("%s: hook %s untrusted=%v static=%v", tc.name, hook.Name, hook.Untrusted, hook.Static)
+			}
+			if !hook.Static {
+				continue
+			}
+			statics++
+			insns := tc.fixture.Programs["p"].Instructions
+			for i, ins := range insns {
+				if fn := btf.FuncMetadata(&ins); fn != nil && fn.Name == hook.Name {
+					if fn.Linkage != btf.StaticFunc || fn.ParamTags != nil ||
+						!sameInstr(ins, asm.Mov.Imm(asm.R0, 0).WithSymbol(hook.Name)) || insns[i+1].OpCode.JumpOp() != asm.Exit {
+						t.Fatalf("%s: hook %s: %+v %v %v", tc.name, hook.Name, fn, ins, insns[i+1])
+					}
+				}
+			}
+		}
+		if statics != map[bool]int{true: 0, false: 1}[tc.none] {
+			t.Fatalf("%s: %d static hooks: %+v", tc.name, statics, plan.hooks)
+		}
+	}
+}
+
 // assertNoPointerCompare checks that hook's body has no conditional jump: an
 // arg:untrusted pointer compared with zero needs CAP_PERFMON.
 func assertNoPointerCompare(t *testing.T, insns asm.Instructions, hook string) {
