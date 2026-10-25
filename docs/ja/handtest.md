@@ -4,6 +4,11 @@ bpf-ninja の各機能を手動で検証する手順書。
 シンプルな XDP プログラムへの fentry/fexit から始め、
 `--func` によるサブ関数プローブ、tail call 環境での動作まで段階的に確認する。
 
+この手順は使い捨て Linux 環境用です。
+固定名の `nstest`、`vtest0`、`vtest1` が存在する場合は実行を止めてください。
+各 capture を Ctrl-C で停止してから、手順で作成した資源だけを cleanup します。
+[Docs の入口](README.md)も参照してください。
+
 ## 前提条件
 
 - Linux kernel 6.x 以上（bpf2bpf call と tail call の共存をサポート）
@@ -90,20 +95,25 @@ sudo ./bpf-ninja -i vtest0 --mode exit -v | tcpdump -n -r -
 
 ```bash
 # マッチするフィルタ
-sudo ./bpf-ninja -i vtest0 "icmp" -v | tcpdump -n -r -
+sudo ./bpf-ninja -i vtest0 "eth/ipv4/icmp" -v | tcpdump -n -r -
 
 # マッチしないフィルタ
-sudo ./bpf-ninja -i vtest0 "tcp port 80" -v -c 3 | tcpdump -n -r -
+sudo ./bpf-ninja -i vtest0 --cbpf "tcp port 80" -v | tcpdump -n -r -
 ```
 
-期待: icmp フィルタではキャプチャされ、tcp port 80 では `0 packets captured`。
+各コマンドは別々に実行し、`capturing (...)...` が出てからターミナル 2 で ping を送る。
+送信後はターミナル 1 で Ctrl-C を押し、終了 summary を確認する。
+DSL の `eth/ipv4/icmp` では ICMP が記録され、legacy の `--cbpf "tcp port 80"` では `0 packets captured` になる。
+不一致では件数が増えないため、`-c 3` を終了条件にしない。
+起動失敗や summary の欠落を 0 件と扱わない。
 
 ### 1.6 pcap ファイル出力
 
 ```bash
-sudo ./bpf-ninja -i vtest0 -w /tmp/capture.pcap -c 5 &
-sudo ip netns exec nstest ping -c 5 10.77.0.1
-wait
+sudo ./bpf-ninja -i vtest0 "eth/ipv4/icmp" -w /tmp/capture.pcap -c 5
+# 別ターミナルで capturing (...)... を確認後:
+# sudo ip netns exec nstest ping -c 5 10.77.0.1
+# capture が正常終了してから:
 tcpdump -n -r /tmp/capture.pcap
 ```
 
@@ -603,7 +613,7 @@ sudo ./bpf-ninja -i vtest0 --func process_packet --arg-filter "tunnel_id=0x2a" -
 ### 4.10 パケットフィルタとの併用
 
 ```bash
-sudo ./bpf-ninja -i vtest0 --func process_packet --arg-filter "tunnel_id=42" "icmp" -v | tcpdump -n -r -
+sudo ./bpf-ninja -i vtest0 --func process_packet --arg-filter "tunnel_id=42" "eth/ipv4/icmp" -v | tcpdump -n -r -
 ```
 
 期待: 引数フィルタとパケットフィルタの両方を満たすパケットのみキャプチャされる。

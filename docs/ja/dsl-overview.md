@@ -1,5 +1,7 @@
 # bpf-ninja DSL ドキュメント
 
+[プロジェクト全体の Docs](README.md)
+
 bpf-ninja の filter 式である DSL のドキュメント index です。GTP-U や MPLS、VXLAN、SRv6 のような多段カプセル化は legacy の `--cbpf` が使う tcpdump 構文では書きにくいので、これをプロトコルスタックの形のまま書けるようにするのが目的です。DSL は bpf-ninja の default filter syntax です。
 
 ## 役割別にどこから読むか
@@ -19,18 +21,18 @@ bpf-ninja の filter 式である DSL のドキュメント index です。GTP-U
 
 ## ファイル一覧
 
-| ファイル | 内容 | 行数目安 |
-|---|---|---|
-| [`dsl-usage.md`](./dsl-usage.md) | ユーザー向け CLI ガイド (例文豊富) | ~360 |
-| [`dsl-grammar.md`](./dsl-grammar.md) | formal EBNF (filter 式 + p4lite) + 例文 + parser 関数マッピング | ~360 |
-| [`dsl-types.md`](./dsl-types.md) | 言語仕様書 Part I (型・widening・fit check・エラーカタログ・実装ステージング) + Part II (抽象構文・typing rules・操作的意味論・soundness sketch) | ~1340 |
-| [`dsl-internals.md`](./dsl-internals.md) | 設計動機 / アーキテクチャ / パッケージ別ツアー / codegen ABI / vocab 開発ガイド / P4-16 互換性 / レビューチェックリスト | ~960 |
-| [`dsl-vocab-authoring.md`](./dsl-vocab-authoring.md) | vocab 開発の hands-on ガイド。.p4 の書き方全規約 (const / parser block / annotation)、可変長 8 機構の書き分け、loader 制約早見表、テスト手順、実例 walkthrough | ~570 |
-| [`dsl-benchmark.md`](./dsl-benchmark.md) | cbpfc vs DSL のベンチ方法論 | ~160 |
-| [`kunai-overview-article.md`](./kunai-overview-article.md) | 連載 3 部作の第 1 回。なぜ kunai を作ったか / DSL で書ける式 / 全体アーキ (読み物) | ~250 |
-| [`kunai-dsl-deepdive.md`](./kunai-dsl-deepdive.md) | 連載 3 部作の第 2 回。lexer / parser / resolver の実装読み込み (読み物) | ~340 |
-| [`kunai-codegen-deepdive.md`](./kunai-codegen-deepdive.md) | 連載 3 部作の第 3 回。IR → BPF lowering / ABI / chain quantifier 戦略 (読み物) | ~335 |
-| [`../../pkg/kunai/README.md`](../../pkg/kunai/README.md) | library 利用者向け (英語、godoc/pkg.go.dev 想定) | - |
+| ファイル | 内容 |
+|---|---|
+| [`dsl-usage.md`](./dsl-usage.md) | ユーザー向け CLI ガイド (例文豊富) |
+| [`dsl-grammar.md`](./dsl-grammar.md) | formal EBNF (filter 式 + p4lite) + 例文 + parser 関数マッピング |
+| [`dsl-types.md`](./dsl-types.md) | 言語仕様書 Part I (型・widening・fit check・エラーカタログ・実装ステージング) + Part II (抽象構文・typing rules・操作的意味論・soundness sketch) |
+| [`dsl-internals.md`](./dsl-internals.md) | 設計動機 / アーキテクチャ / パッケージ別ツアー / codegen ABI / vocab 開発ガイド / P4-16 互換性 / レビューチェックリスト |
+| [`dsl-vocab-authoring.md`](./dsl-vocab-authoring.md) | vocab 開発の hands-on ガイド。.p4 の書き方全規約 (const / parser block / annotation)、可変長 8 機構の書き分け、loader 制約早見表、テスト手順、実例 walkthrough |
+| [`dsl-benchmark.md`](./dsl-benchmark.md) | cbpfc vs DSL のベンチ方法論 |
+| [`kunai-overview-article.md`](./kunai-overview-article.md) | 連載 3 部作の第 1 回。なぜ kunai を作ったか / DSL で書ける式 / 全体アーキ (読み物) |
+| [`kunai-dsl-deepdive.md`](./kunai-dsl-deepdive.md) | 連載 3 部作の第 2 回。lexer / parser / resolver の実装読み込み (読み物) |
+| [`kunai-codegen-deepdive.md`](./kunai-codegen-deepdive.md) | 連載 3 部作の第 3 回。IR → BPF lowering / ABI / chain quantifier 戦略 (読み物) |
+| [`../../pkg/kunai/README.md`](../../pkg/kunai/README.md) | library 利用者向け (英語、godoc/pkg.go.dev 想定) |
 
 ## 30 秒でわかる概要
 

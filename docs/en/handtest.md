@@ -4,6 +4,11 @@ Step-by-step manual verification of bpf-ninja features.
 Starting from basic fentry/fexit on entry functions,
 progressing through `--func` subfunction probing, and tail call environments.
 
+Use a disposable Linux environment.
+Stop if `nstest`, `vtest0`, or `vtest1` already exists.
+Stop each capture with Ctrl-C before removing only the resources created by this procedure.
+See the [documentation entry point](../README.md).
+
 ## Prerequisites
 
 - Linux kernel 6.x or later (bpf2bpf call + tail call coexistence support)
@@ -90,20 +95,25 @@ Expected: ICMP packets are captured.
 
 ```bash
 # Matching filter
-sudo ./bpf-ninja -i vtest0 "icmp" -v | tcpdump -n -r -
+sudo ./bpf-ninja -i vtest0 "eth/ipv4/icmp" -v | tcpdump -n -r -
 
 # Non-matching filter
-sudo ./bpf-ninja -i vtest0 "tcp port 80" -v -c 3 | tcpdump -n -r -
+sudo ./bpf-ninja -i vtest0 --cbpf "tcp port 80" -v | tcpdump -n -r -
 ```
 
-Expected: The icmp filter captures packets; tcp port 80 results in `0 packets captured`.
+Run each command separately. Wait for `capturing (...)...`, then send ping from terminal 2.
+Press Ctrl-C in terminal 1 after sending and inspect the shutdown summary.
+The DSL chain `eth/ipv4/icmp` records ICMP; legacy `--cbpf "tcp port 80"` reports `0 packets captured`.
+Do not use `-c 3` to stop the negative case: no matching packets will advance the count.
+A failed start or missing summary is not a successful zero-packet result.
 
 ### 1.6 Pcap File Output
 
 ```bash
-sudo ./bpf-ninja -i vtest0 -w /tmp/capture.pcap -c 5 &
-sudo ip netns exec nstest ping -c 5 10.77.0.1
-wait
+sudo ./bpf-ninja -i vtest0 "eth/ipv4/icmp" -w /tmp/capture.pcap -c 5
+# In another terminal, after capturing (...)... appears:
+# sudo ip netns exec nstest ping -c 5 10.77.0.1
+# After capture exits successfully:
 tcpdump -n -r /tmp/capture.pcap
 ```
 
@@ -605,7 +615,7 @@ Expected: Packets are captured since 0x2a = 42.
 ### 4.10 Combined with Packet Filter
 
 ```bash
-sudo ./bpf-ninja -i vtest0 --func process_packet --arg-filter "tunnel_id=42" "icmp" -v | tcpdump -n -r -
+sudo ./bpf-ninja -i vtest0 --func process_packet --arg-filter "tunnel_id=42" "eth/ipv4/icmp" -v | tcpdump -n -r -
 ```
 
 Expected: Only packets matching both the argument filter and the packet filter are captured.
