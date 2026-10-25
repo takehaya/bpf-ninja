@@ -1,12 +1,13 @@
 # Typed map-lookup observation injection (`pkg/inject`)
 
-`inject.TransformLookup` instruments one or more `bpf_map_lookup_elem` helper calls to the same map in one native XDP program before loading it.
+`inject.TransformLookup` instruments one or more `bpf_map_lookup_elem` helper calls to the same map in one native XDP or tc (`SchedCLS`, `SchedACT`) program before loading it.
 It generates a global BTF function whose pointer types come from the entry function and the map definition in the ELF:
 
 ```c
 int HOOK(struct xdp_md *ctx, const KEY *key, const VALUE *value);
 ```
 
+In a tc program the hooks take `struct __sk_buff *ctx` instead; the signatures on this page show the XDP form.
 An fentry observer attached to `HOOK` can correlate packet context, the lookup key, and the returned value.
 The hook runs only when the lookup returns a non-null value.
 It uses all three arguments and returns zero; the injected code restores the original lookup result before the program continues.
@@ -236,16 +237,17 @@ A key that points into read-only memory (for example, a value of such a map) pas
 A key or value with BTF must have a nonzero size exactly matching the map's key or value size.
 The hook retains these types, including typedefs and qualifiers, under `const` pointer parameters.
 A side the map declares only by size, such as `__uint(key_size, 4)`, has no BTF; the hook takes it as an anonymous `struct { u8 bytes[N]; }` of the map's size.
-Types named `struct xdp_md` or `struct bpf_dynptr` are refused as map key/value types because the verifier assigns those pointer types special argument semantics.
+Types named `struct xdp_md`, `struct __sk_buff` or `struct bpf_dynptr` are refused as map key/value types because the verifier assigns those pointer types special argument semantics.
 Other map kinds are refused by a typed hook rather than assuming their helper return is ordinary value memory; `Auto` observes XSK maps and devmaps through the generic hook and skips the rest.
-The entry function must have one BTF parameter pointing to `struct xdp_md`.
-The package checks the XDP program type; the cooperative loader owns attachment mode and verifier acceptance.
+The entry function must have one BTF parameter pointing to `struct xdp_md` (XDP) or `struct __sk_buff` (tc).
+The package checks the program type; the cooperative loader owns attachment mode and verifier acceptance.
+The generated hooks read the context's first word (`len` for `__sk_buff`) and call no helper that changes packet data.
 
 | Transformer validates | Caller must certify |
 |---|---|
 | The input ELF matches `ELFSHA256` before parsing. | The hash identifies the audited build. |
 | The selector resolves supported lookups of the same map in the entry function. | These are the intended observation sites. |
-| Map BTF sizes, where present, match the map definition, and entry BTF describes an XDP context pointer. | The BTF describes the audited build. |
+| Map BTF sizes, where present, match the map definition, and entry BTF describes the program type's context pointer. | The BTF describes the audited build. |
 | Direct R10 references stay at or above `Stack.LowestOffset`; three aligned spill slots (four with the generic hook or, at lookup and tail-call sites, `Dispatch`, plus a value copy with `CopyReadOnly`) fit below it within 512 bytes, and within 480 in a frame that calls a lookup hook. The call chains of the transformed program stay within the verifier's stack and frame limits wherever the original's do. | Pointer aliases and called subprograms do not reach the reserved spill region. |
 | Existing function and source metadata are complete, references resolve, and relocation fits. | The transformed program remains acceptable to the target kernel verifier. |
 
