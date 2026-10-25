@@ -3,6 +3,8 @@ package inject
 import (
 	"encoding/binary"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/cilium/ebpf"
@@ -142,6 +144,12 @@ func loadOrSkip(t *testing.T, spec *ebpf.CollectionSpec) *ebpf.Collection {
 	}
 	var ve *ebpf.VerifierError
 	if errors.As(err, &ve) {
+		// Kernels before arg:untrusted reject the tag (6.12, 6.15) or ignore it
+		// and then cannot size the hook's const void * parameters (6.1, 6.6).
+		if log := fmt.Sprintf("%+v", ve); strings.Contains(log, "has unsupported set of tags") ||
+			strings.Contains(log, "reference type('UNKNOWN ') size cannot be determined") {
+			t.Skipf("skipping: kernel lacks arg:untrusted: %v", err)
+		}
 		t.Fatalf("verifier rejected a program that should load: %+v", ve)
 	}
 	if errors.Is(err, unix.EPERM) || errors.Is(err, unix.EACCES) ||

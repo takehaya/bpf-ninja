@@ -10,9 +10,16 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[2]
 PROGRAM = "github.com/takehaya/bpf-ninja/internal/program"
+INJECT = "github.com/takehaya/bpf-ninja/pkg/inject"
 
 
 def allowed_skip(package, test, output, kernel):
+    if package == INJECT:
+        # Hooks for read-only and runtime-resolved maps tag their parameters
+        # arg:untrusted, which 6.15 and older reject.
+        return kernel in {"6.1", "6.6", "6.12", "6.15"} and test in {
+            "TestBpfLookupInjectionReadOnlyMap", "TestBpfLookupInjectionMapInMap",
+        } and "kernel lacks arg:untrusted" in output
     if package != PROGRAM:
         return False
     unsupported_tc = {
@@ -79,6 +86,7 @@ def main():
         ("./internal/capture/...", "^Test"),
         ("./cmd/bpf-ninja", "^TestBpf" if args.kernel else "^Test"),
         ("./pkg/kunai/dsltest", "^Test"),
+        ("./pkg/inject", "^TestBpf" if args.kernel else "^Test"),
     ]
     events, expected = [], set()
     env = dict(os.environ, CI="true")

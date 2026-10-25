@@ -313,8 +313,11 @@ func testLookupObservation(t *testing.T, fixture func() *ebpf.CollectionSpec, re
 
 // The callback increments a counter in the entry stack three times. The
 // program returns XDP_ABORTED unless all three increments survive injection.
-// An unreached subprogram precedes the callback so kernel dead-code elimination
-// compacts func_info without compacting func_info_aux.
+// The counter starts from a value the verifier cannot know: 6.1 verifies a
+// bpf_loop callback once, so a constant start lets it prove the count is 1 and
+// remove the success branch. An unreached subprogram precedes the callback so
+// kernel dead-code elimination compacts func_info without compacting
+// func_info_aux.
 func callbackLookupFixture(symbolic bool) *ebpf.CollectionSpec {
 	spec := lookupFixture()
 	original := spec.Programs["p"].Instructions
@@ -324,13 +327,15 @@ func callbackLookupFixture(symbolic bool) *ebpf.CollectionSpec {
 	done.Offset = 2
 	insns := asm.Instructions{
 		asm.Mov.Reg(asm.R6, asm.R1),
-		asm.Mov.Imm(asm.R0, 0), asm.StoreMem(asm.RFP, -16, asm.R0, asm.DWord),
-		skip, asm.Call.Label("unused"),
+		asm.FnKtimeGetNs.Call(),
+		asm.StoreMem(asm.RFP, -16, asm.R0, asm.DWord), asm.StoreMem(asm.RFP, -24, asm.R0, asm.DWord),
+		asm.Mov.Imm(asm.R0, 0), skip, asm.Call.Label("unused"),
 		asm.Mov.Imm(asm.R1, 3),
 		callbackLoad(asm.R2, -1, "callback"),
 		asm.Mov.Reg(asm.R3, asm.RFP), asm.Add.Imm(asm.R3, -16),
 		asm.Mov.Imm(asm.R4, 0), asm.FnLoop.Call(),
-		asm.LoadMem(asm.R0, asm.RFP, -16, asm.DWord), done,
+		asm.LoadMem(asm.R0, asm.RFP, -16, asm.DWord), asm.LoadMem(asm.R1, asm.RFP, -24, asm.DWord),
+		asm.Sub.Reg(asm.R0, asm.R1), done,
 		asm.Mov.Imm(asm.R0, 0), asm.Return(),
 		asm.Mov.Reg(asm.R1, asm.R6),
 	}
@@ -343,7 +348,7 @@ func callbackLookupFixture(symbolic bool) *ebpf.CollectionSpec {
 		}})
 	insns = append(insns, unused, asm.Return())
 	if !symbolic {
-		insns[6] = callbackLoad(asm.R2, int64(insns.Size()/8)-6-1, "")
+		insns[8] = callbackLoad(asm.R2, int64(insns.Size()/8)-8-1, "")
 	}
 	insns = append(insns, callbackHead("callback"),
 		asm.Add.Imm(asm.R0, 1), asm.StoreMem(asm.R2, 0, asm.R0, asm.DWord),
@@ -361,7 +366,7 @@ func TestBpfLookupInjectionCallback(t *testing.T) {
 		}
 		t.Run(name, func(t *testing.T) {
 			req := lookupReq()
-			req.Stack.LowestOffset = -16
+			req.Stack.LowestOffset = -24
 			testLookupObservation(t, func() *ebpf.CollectionSpec { return callbackLookupFixture(symbolic) }, req)
 		})
 	}

@@ -285,7 +285,8 @@ func TestLookupRawMultipleCallbacks(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			req := lookupReq()
 			req.Site.AllMatches = true
-			req.Stack.LowestOffset = -16
+			// The callback fixture's counters reach fp-24.
+			req.Stack.LowestOffset = -24
 			p := rawLookupFixture(t, tc.spec, "p", true)
 			before := append(asm.Instructions(nil), p.Instructions...)
 			got, err := TransformLookupRaw(p, rawLookupRequest(req))

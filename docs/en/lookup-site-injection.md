@@ -190,6 +190,7 @@ The verifier does not check an untrusted argument at the call and reads it in th
 The hook body reads through these pointers without comparing them with zero: an untrusted pointer is not nullable, and a pointer comparison would be rejected for loaders without `CAP_PERFMON`.
 An observer reads these arguments by the map's key and value sizes; the hook's BTF no longer carries their types.
 Kernels without the `arg:untrusted` tag reject the transformed program.
+In the CI kernel matrix, 6.15 and older reject it and 6.18 and newer load it.
 A key that points into read-only memory (for example, a value of such a map) passed to a typed hook also makes the verifier reject the transformed program; discovery does not detect this.
 A key or value with BTF must have a nonzero size exactly matching the map's key or value size.
 The hook retains these types, including typedefs and qualifiers, under `const` pointer parameters.
