@@ -1,5 +1,8 @@
 # DSL 内部仕様
 
+資料の位置づけ：実装解説。現行の対応範囲は同じ checkout のコードと回帰試験に照合してください。
+[実装の案内](architecture/README.md) · [研究資料と根拠](research/README.md)
+
 bpf-ninja DSL の設計動機、全体アーキテクチャ、codegen ABI、vocab 開発ガイド、P4-16 互換性を 1 本にまとめた内部資料です。CLI 利用者向けは [`dsl-usage.md`](./dsl-usage.md) を、文法定義は [`dsl-grammar.md`](./dsl-grammar.md) を参照してください。
 
 型、演算子、形式意味論は [`dsl-types.md`](./dsl-types.md) (Part I + Part II) に分離しています。本書はそれと重ならないよう、resolver より下のレイヤである vocab、codegen ABI、可変長構造を中心に扱います。

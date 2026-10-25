@@ -1,0 +1,49 @@
+# 実装を読むための案内
+
+対象はこの checkout の公開実装です。
+索引の対応を確認した基準は `43752fa9c40016e580edb4b9d2c654d7baeabf43` です。
+各解説の測定や歴史的判断を、この版で再検証したという意味ではありません。
+
+## CLI から出力まで
+
+| 調べる対象 | 実装 | 説明と契約 |
+|---|---|---|
+| 引数と target の探索 | [cmd/bpf-ninja](../../../cmd/bpf-ninja/)、[internal/attach](../../../internal/attach/) | [利用ガイド](../dsl-usage.md)、[対応 hook](../../../README.md#modes) |
+| hook ごとの能力と packet layout | [internal/hook](../../../internal/hook/)、[host adapters](../../../pkg/kunai/host/) | [DSL internals](../dsl-internals.md) |
+| 構文から型付き IR への変換 | [parser](../../../pkg/kunai/parser/)、[resolve](../../../pkg/kunai/resolve/)、[ir](../../../pkg/kunai/ir/) | [文法](../dsl-grammar.md)、[型の仕様](../dsl-types.md) |
+| protocol の定義とロード | [protocols](../../../pkg/kunai/protocols/)、[vocab](../../../pkg/kunai/vocab/) | [vocab 作成](../dsl-vocab-authoring.md) |
+| eBPF 命令と host ABI | [codegen](../../../pkg/kunai/codegen/)、[internal/program](../../../internal/program/) | [codegen 解説](../kunai-codegen-deepdive.md)、[option accumulator](../dsl-multi-option-accumulator.md) |
+| ringbuf と reader | [internal/capture](../../../internal/capture/) | [capture datapath](../capture-datapath.md) |
+| writer、合算、完了 | [internal/output](../../../internal/output/)、[CLI lifecycle](../../../cmd/bpf-ninja/) | [capture lifecycle](../../capture-lifecycle.md) |
+| 回帰試験と形式モデル | [dsltest](../../../pkg/kunai/dsltest/)、[Lean](../../../spec/lean/) | [privileged tests](../../privileged-tests.md)、[Lean README](../../../spec/lean/README.md) |
+
+## 解説記事と仕様の使い分け
+
+[kunai 概説](../kunai-overview-article.md)、[DSL deep-dive](../kunai-dsl-deepdive.md)、[codegen deep-dive](../kunai-codegen-deepdive.md)は、実装の考え方を読むための連載です。
+サポートする式は文法と型の仕様、実際の対応は同じ版の実装と回帰試験で確認してください。
+ABI の定数、ライブラリ API、build 手順は変更するコードの近くに正本を残します。
+横断的な説明のために、それらを別の場所へ複製しません。
+
+## 設計判断を追う
+
+[ADR 台帳](../adr/README.md)は採用、却下、置換を記録します。
+番号と場所を維持し、置換時は過去の結論を書き換えず、置換先への参照を追加します。
+
+| 記録 | 状態 | 読むときの条件 |
+|---|---|---|
+| [0001 zero-copy flush](../adr/0001-fast-reader-zero-copy-flush.md) | 却下 | 当時の reader ownership と測定条件に対する判断 |
+| [0002 split-core 幅](../adr/0002-split-core-capture-optimal-width.md) | 採用 | 64 論理 CPU、E810、128B、cpumap 負荷の記録。全環境の最適値ではない |
+| [0003 callback cursor mask](../adr/0003-mask-bpf-loop-cursor.md) | 採用 | 記載された kernel と verifier の問題に対する判断 |
+
+[Lean Decisions](../../../spec/lean/DECISIONS.md)の `D-NNN` は、意味論の未確定点と Go/Lean の差を追う別の台帳です。
+その「提案中」「承認済み」を ADR の状態へ変換したり、番号を統合したりしません。
+Lean は DSL と parser-machine のモデルであり、eBPF 命令意味論、codegen correctness、verifier 全体の証明を含みません。
+
+## 保守
+
+- CLI の挙動を変えたら、利用手順と該当する回帰試験を更新する。
+- ABI や output 契約を変えたら、近接する定義と横断解説の該当箇所を確認する。
+- 設計の理由を変えたら、既存 ADR との関係を記録する。
+- 測定を根拠にする場合は [研究資料の記録項目](../research/README.md)を満たす。
+
+[DSL 索引](../dsl-overview.md) · [Repository README](../../../README.md)

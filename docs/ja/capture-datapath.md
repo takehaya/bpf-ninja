@@ -1,5 +1,8 @@
 # capture datapath deep-dive フィルタ一致からパケット書き出しまで
 
+資料の位置づけ：実装解説。kernel から output までを扱います。本文中の性能値はその節の測定条件に限定します。
+[実装の案内](architecture/README.md) · [研究資料と根拠](research/README.md)
+
 > kunai は in-kernel フィルタを生成するコンパイラで、生成物は 2 レジスタ間のパケットウィンドウに対する accept/reject 判定だけを持つ target-agnostic な命令列です。詳しくは [codegen deep-dive](./kunai-codegen-deepdive.md) を参照してください。本稿はその先を扱います。つまりフィルタが accept したパケットが、どうカーネルからユーザ空間へ運ばれ、pcap-ng として書き出されるかです。コードでいうとカーネル側で emit する `internal/program` と、ユーザ空間の `internal/capture` および `internal/output` が主題になります。
 
 ## データパスの全体像

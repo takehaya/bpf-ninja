@@ -1,92 +1,95 @@
 # bpf-ninja 性能チューニングガイド
 
-1 Mpps を超える高 pps の capture で取りこぼしを減らすための設定ガイドです。通常の用途では既定値で十分なので、まず取りこぼしが実際に出ているかどうかを測定してから手を入れてください。
-
-フラグの一覧と既定値については [dsl-usage.md の Performance flags](./dsl-usage.md#performance-flags) を参照してください。
+対象は現在の checkout の操作と、既存文書に残る条件付きの測定です。
+新しい測定結果は追加していません。
+まず実際の損失と律速箇所を測り、変更前後で同じ負荷と出力条件を使ってください。
+flag と既定値は `bpf-ninja --help`、履歴と根拠は [研究資料索引](research/README.md)を参照します。
 
 ## 1. 性能の上限を理解する
 
-bpf-ninja の capture スループットには、設定では越えられない物理的な上限があります。
-
-ボトルネックは packet データの cold read です。NIC が DMA したパケットは DDIO でいったん L3 に載りますが、line rate ではキャプチャ処理が読む前に後続のパケットによって evict され、メモリから読み直すことになります。このとき DRAM のレイテンシによる stall が発生します。性質としては次のとおりです。
-
-- メモリ帯域ではなくレイテンシによって律速されます。DDR5 にしても速くなりません。DRAM のレイテンシは世代でほぼ横ばいで、DDR5 の長所である帯域は元々余っているからです。
-- 効くのは大きい L3 です。DDIO の領域にパケットが長く留まるほど cold miss が減るため、巨大な L3 を積む CPU が有利になります。
-
-設定でできるのは、この上限をなるべく高くすることと、上限に近づけることです。上限そのものは消せません。これを踏まえた上で以下の対策を使ってください。
+capture の律速候補には packet の読取り、filter、ringbuf、reader、整形、storage、観測対象自身があります。
+以前の高 pps 調査では cold read と memory latency が支配的と解釈されましたが、全 hardware と workload に共通する結論ではありません。
+cache、メモリ帯域、CPU 配分、転送処理を別々に確認し、測定していない環境の限界を断定しないでください。
 
 ## 2. 現状を測定する
 
-チューニングの前に、現状を数値で把握してください。
+commit、kernel、CPU topology、NIC/driver、hook、式、snaplen、offered rate、実行時間、出力先を記録します。
+同じ条件で複数回測り、平均とばらつきを残してください。
 
-- --null-output を使うと、出力を捨てて reader の CPU コストだけを測れます。取りこぼしゼロで何 Mpps を通せるかという、パイプラインの上限が出ます。
-- -w による実出力では実効レートが出ます。--null-output より大きく落ちる場合は、producer と consumer の結合が効いています。3.6 の split-core を参照してください。
-- ringbuf drop は終了時に stderr へ出力されます。captured が XDP に届いた数より少ない場合は ring が溢れています。3.1 の snaplen や 3.3 の ringbuf-size を参照してください。
+- `--null-output` と `-w` を比較すると、保存処理の寄与を調べられます。出力を捨てても filter と reader の処理は残ります。
+- NIC receive、対象 program の処理数、filter 一致数、終了 summary、ring loss、出力件数を区別します。
+- captured が XDP 到達数より少ないだけでは ring overflow と断定できません。filter、停止時点、hold loss 等も確認します。
+- `complete` と損失指標の関係は [capture lifecycle](../capture-lifecycle.md)に従います。
 
 ## 3. 効果の大きい順に設定を変える
 
+この見出しは旧リンクを保持しています。実際の優先順位は測定した律速箇所で決めます。
+一度に一つの条件を変え、必要な packet bytes と待ち時間を満たす範囲で比較します。
+
 ### 3.1 snaplen を下げる
 
---snaplen N で 1 パケットあたりの保存バイト数を切り詰めます。DSL の capture 句でも指定できます。効果は二重にあります。
-
-- 読み込む cache line の数が減るため、cold miss の回数が減ります。
-- ringbuf の予約サイズが縮むため、同じ ring 容量により多くのレコードが入り、burst の吸収が増えます。
-
-ヘッダだけが必要なら capture headers+0、L4 ヘッダまで見たいなら 64 から 128 バイトで足りることが多いです。フルパケットが必要でなければ必ず下げてください。これを最優先で検討してください。
+`--snaplen N` または DSL の capture 句で保存長を指定します。
+packet の読取り量と ring の占有量を減らせますが、後段で必要な header/payload を切り落とさないよう、pcap を確認します。
+`--snaplen 0` は強制長を無効にする指定です。
 
 ### 3.2 --fast-reader を常用する
 
---fast-reader は mmap と atomic で直接読み出す reader です。cilium/ebpf の generic な reader より CPU が低く、スループットが高くなります。高 rate では実質的に必須で、以下のフラグはすべて --fast-reader を前提としています。
+旧見出しの推奨を無条件の既定にはしません。
+`--fast-reader` は mmap と atomic を使う reader です。
+既定 reader と同じ負荷で比較し、CPU 使用量、損失、latency を確認して採否を決めます。
 
 ### 3.3 --ringbuf-size を増やす
 
---ringbuf-size は全 shard のデータ容量の予算で、既定値は 64 MiB です。possible CPU ID の範囲へ分配し、各 shard は最低64KiB・2の冪へ調整するため、指定値と実際の合計は一致しない場合があります。瞬間的な burst で取りこぼすなら増やしてください。snaplen を下げる方が経済的ですが、両方とも効きます。
+`--ringbuf-size` は全体の MiB 容量で、shard 間で分割します。
+burst を吸収できても、継続的に consumer が遅い状態は解決しません。
+メモリ制約と、停止時に drain する量も確認します。
 
 ### 3.4 --raw-dump で出力経路を軽くする
 
---raw-dump は pcap-ng の整形を bypass し、パケットのバイト列とヘッダをそのまま raw ファイルに追記します。後から bpf-ninja convert で pcap-ng に変換します。writer や storage が律速になっているときに有効です。NVMe への書き込みが間に合わないなら、--in-memory-buffer N で mmap 上のバッファに退避できます。
-
-なお consumer 側が律速になっていない構成、たとえば 3.6 の split-core では、raw-dump と pcap-ng の差はほとんどありません。出力経路がボトルネックのときにだけ意味があります。
+`--raw-dump` は整形を後段の `convert` に回します。
+`--in-memory-buffer` は raw-dump の per-shard mmap buffer です。
+総メモリ消費と Close 時の書込みを含めて比較してください。
+reader や target が律速なら、形式を変えても効果が小さいことがあります。
 
 ### 3.5 --no-wakeup を有効にする
 
---no-wakeup は BPF_RB_NO_WAKEUP を全 submit に立て、reader を起こす eventfd を止めます。スループットは上がりますが、代わりに p50 のレイテンシが悪化します。おおよそ 100µs から 2.6ms 程度まで悪化し、polling の床が 1ms になります。--fast-reader が必須です。レイテンシより総量を優先する場面で使ってください。
+`--no-wakeup` は `--fast-reader` が必要です。
+wakeup を減らす代わりに、到着から読取りまでの latency が変わるため、throughput だけで判断しません。
 
-このフラグは高レート専用の節約ではありません。むしろ低レートのほうが効きます。レートが低いと consumer は submit のたびに寝ているので、observer は毎パケット wakeup を送ることになり、その IPI と起床のコストが observer 自身の実行時間に乗ります。実測では cgroup-skb の観測 (loopback、0.2 Mpps 級) で observer の per-packet コストがデフォルト約 3.3µs、--fast-reader --no-wakeup で約 123ns と、25 倍の差になりました。高レートでは consumer が起きたままになるので wakeup は自然に発火しなくなり、この差は消えます。つまり observer を常駐させて張りっぱなしにする低トラフィックな用途こそ、--fast-reader --no-wakeup を検討してください。observer の実コストは bpf_stats (sysctl kernel.bpf_stats_enabled=1 のうえで bpftool prog show の run_time_ns / run_cnt) で直接確認できます。
+過去の本文には p50 が約100µsから2.6ms、cgroup-skb/loopback 約0.2 Mppsで observer cost が約3.3µsから123nsという値が記録されていました。
+正確な commit、反復数、公開データへの対応が不足しているため、これらは当時の参考値として保持し、現在の改善率や保証値には使いません。
+再検証する場合は同じ hook、traffic、計数方法を記録します。
 
 ### 3.6 split-core でコアを分離する
 
--w の実出力でレートが --null-output の半分近くまで落ちるときに効きます。原因は、producer である RX softirq と consumer の結合です。寝ている consumer を起こす経路が RX softirq に背圧をかけ、結果として両方が遅くなります。
+`--rx-cores N` は全 shard の reader を許可された CPU ID のうち N 以上へ配置します。
+RX の affinity は別に設定し、queue 数だけで CPU 配置が決まると考えないでください。
+`--busy-poll` は CPU を消費するため、target の処理能力と idle の余裕を同時に測ります。
+NIC queue や IRQ の変更は運用影響のある別作業です。専用検証環境で現設定と復旧方法を記録してから行います。
 
-コアを分離する手順は次のとおりです。
+| 既存の記録 | 条件と扱い |
+|---|---|
+| 旧 tuning 本文の「64 coreなら32+32」、出力約30%向上 | workload と実験 commit の対応が不足。一般的な最適値としては採用しない |
+| [ADR-0002](adr/0002-split-core-capture-optimal-width.md)の16+16、約19%向上 | 64論理CPU、E810、128B、cpumap、offered 3〜4 Mpps、約11〜12秒窓。N=8/16/24/32を比較した記録 |
 
-1. NIC の queue を N に固定します。ethtool -L combined N を実行します。実行のタイミングについては下の注意を必ず読んでください。これで RX と capture が core 0 から N-1 に閉じます。
-2. --rx-cores N は全 shard の reader を、許可された CPU ID のうち N 以上へ分散します。RX affinity は別に設定します。NIC queue 数だけでは RX の CPU は決まりません。
-3. --busy-poll と --no-wakeup を指定すると、consumer が epoll_wait で寝なくなり、常時 drain して wakeup が不要になります。
-
-コアを半分ずつに分ける対称な分割が最も効きます。たとえば 64 コアなら 32 と 32 に分けます。RX 側のコアを増やす非対称な分割はむしろ逆効果になります。busy-poll の spinner が出すメモリトラフィックが、レイテンシ律速の RX をかき乱すからです。実測では -w の出力が 30% 向上しました。
-
-> ethtool -L のタイミングに注意してください。ethtool -L combined N は名前こそ軽そうですが、実態は VSI の再構築で、netdev のグローバルロックである RTNL を握る重い操作です。modprobe の直後でドライバの初期化が完了していない状態で実行すると、ice などのドライバが RTNL を握ったまま D-state でデッドロックし、udev や dmesg など box 全体に波及します。この場合は reboot が必要になります。ドライバが十分に安定してから実行してください。split-core を使わないなら queue の数はいじらなくて構いません。
+この二つを同じ測定の別表現として統合しません。
+ADR 当時の reader 配置と現在の「全 shard を指定範囲へ配置する」実装も照合し、環境を揃えるまでは最適 N を引き継がないでください。
+target が総流量を処理できる範囲で配分を振り、capture と転送の両方を評価します。
 
 ## 4. 効果がなかった対策を避ける
 
-時間を無駄にしないために記録しておきます。以下は、試して効果がなかった対策と、退行した対策です。
-
-- packet prefetch は効きませんでした。kprobe や kfunc で次の batch のバッファを暖める方法です。飽和した RX コアの上で prefetcher を走らせても memory-latency の壁は越えられません。prefetch した cache line が working set を汚し、むしろわずかに悪化します。
-- CPUMAP で capture を別のコアへ decouple する方法も効きませんでした。全コアが RX softirq で飽和した box では cpumap の kthread が starve し、ほとんど起動しません。逃がす先の空きコアがないからです。
-- wakeup-batch は効きませんでした。N 回に 1 回だけ wakeup を強制する方法ですが、単体では効果がありません。結合を断つのはコアの物理的な分離である split-core であって、wakeup の頻度ではありません。
-- writev による writer の zero-copy 化は退行しました。syscall の coalesce が既存の bufio に負けます。
-
-要するに、capture rate を上げる実効的な対策は snaplen、split-core、サンプリング、ハードウェアであって、prefetch や cpumap、wakeup の頻度、writer の小細工ではありません。
+過去には packet prefetch、CPUMAP による分離、wakeup の間引き、writev を試して改善しなかった記録があります。
+これらは当時の飽和条件に対する結果です。
+[ADR-0001](adr/0001-fast-reader-zero-copy-flush.md)のコピーと ownership の判断も参照し、測定条件を確認せず同じ案を再実装したり、全環境で無効と結論づけたりしません。
 
 ## 5. ワークロードごとに使い分ける
 
-- capture アプライアンスとして録って捨てる用途では、--mode xdp で観測した後そのまま XDP_DROP します。split-core で最大のスループットを狙えます。
-- inline で観測しつつ転送する用途では、転送アクションによって大きく変わります。reflect 系の XDP_TX はカーネルスタックを通らないので、実用的なレートが出ます。スタックへ流す XDP_PASS では skb の生成と netif の経路が壁になり大幅に落ちますが、これは bpf-ninja ではなくカーネルの netif 経路の性質であり、設定では救えません。
-- fentry や fexit で観測する用途では、既存の XDP プログラムに非侵襲で相乗りします。コストは観測対象の動作によって変わり、観測対象が drop するか tx するか redirect するかで変わります。
+- standalone xdp は既定で `XDP_PASS` です。`--bench-drop` を明示した場合だけ drop するため、専用のベンチ環境で使います。
+- XDP_TX、XDP_PASS、redirect では target と後段処理のコストが異なります。同じ throughput として比較しません。
+- entry/exit は target を変更せず観測しますが、観測コストは発生します。観測なしの baseline と比較してください。
 
 ## 6. ハードウェアを選ぶ
 
-- 大きい L3 が効きます。DDIO の領域にパケットが長く留まり、cold miss が減るからです。
-- DDR5 は効きません。律速しているのはレイテンシであり、DDR5 の長所は帯域だからです。DRAM のレイテンシは世代でほぼ横ばいです。
-- queue の数や IRQ の affinity を制御できる NIC なら、split-core を組みやすくなります。ice や E810 などが該当します。
+cache 容量、メモリ特性、CPU topology、NIC queue/affinity の制御性は比較する項目です。
+「DDR5は効かない」「大きいL3なら必ず改善する」といった一般化は、この資料の測定だけではできません。
+購入や構成変更の判断には、対象 workload の再現測定を使ってください。

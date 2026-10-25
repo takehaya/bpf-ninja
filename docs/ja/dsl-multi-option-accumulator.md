@@ -1,5 +1,8 @@
 # TCP 多 option フィルタの codegen (bit accumulator + forget)
 
+資料の位置づけ：codegen の実装解説。verifier 対策の判断は ADR-0003 と併せて参照してください。
+[実装の案内](architecture/README.md) · [研究資料と根拠](research/README.md)
+
 `eth/ipv4/tcp where tcp.options.MSS.value == 1460 and tcp.options.WS.shift == 7`
 や `eth/ipv4/tcp[mss.value == 1460, ws.shift == 7]` のように、同じ TLV リスト
 (TCP options) から複数の option を問い合わせるフィルタをどう eBPF に落とすかを扱う。Mechanism 7
