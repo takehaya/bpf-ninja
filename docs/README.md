@@ -8,7 +8,7 @@
 - [kunai library API (English)](../pkg/kunai/README.md)
 - [Published workshop artifact](publications/ebpf_workshop_2026/README.md)
 
-The Japanese guides provide the detailed user documentation.
-The English manual test guide remains a test procedure, rather than a first-use tutorial.
+For detailed usage instructions, read the Japanese guides.
+Use the English manual test guide to verify capture behavior after setup.
 Documents describe the source revision containing them unless they identify a fixed release or an experimental result.
 Historical decisions and published artifacts retain their original version and conditions.

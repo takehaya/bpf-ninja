@@ -1,8 +1,8 @@
 # フィルタをロードせず確認する
 
 式の解釈と生成命令を調べる例です。
-BPF をロードしないので、root、対象 program、interface、送信 traffic は不要です。
-Linux で `make build` を終えた repository root から実行します。
+BPF をロードしないため、root 権限、対象プログラム、インターフェース、パケットの送信は不要です。
+Linux で `make build` を実行した後、リポジトリのルートディレクトリで次のコマンドを実行します。
 
 ## 実行
 
@@ -25,15 +25,15 @@ warning がある場合は stderr も確認してください。
 ./bpf-ninja --dump-asm filter 'eth/ipv4/tcp[dport==65536]'
 ```
 
-16 bit の port に収まらない値なので、診断を表示して非ゼロで終了することを確認します。
+65536 は 16 bit のポート番号に収まらないため、エラーの説明を表示して非ゼロの終了コードを返すことを確認します。
 legacy の `tcp port 443` には `--cbpf` が必要です。
 DSL の Ethernet frame は `eth` から書き、L3 始まりの host では IP header から書きます。
 
 ## 結果の解釈と片付け
 
 各コマンドは自動終了し、この例ではファイルや kernel resource を作成しません。
-命令列が出たことは compiler の確認であり、verifier acceptance や実パケットとの一致を保証しません。
-後者は [privileged tests](../../privileged-tests.md) と packet fixture で別に確認します。
+命令列の表示で確認できるのは、コンパイルが成功したことまでです。
+verifier に受理されるか、実パケットが式に一致するかは、[privileged tests](../../privileged-tests.md) と packet fixture で別に確認します。
 対応する回帰試験は `cmd/bpf-ninja` の DSL help と dump-asm tests です。
 
 [Examples に戻る](README.md)

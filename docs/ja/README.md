@@ -1,7 +1,7 @@
 # bpf-ninja ドキュメント
 
 bpf-ninja を使うときは、導入、目的に合う手順、式の詳細の順に参照してください。
-この索引は同じ checkout の実装を対象とします。
+この索引は、手元でチェックアウトした版の実装を対象とします。
 過去の設計判断と公開論文は、それぞれに記された版と条件で読んでください。
 
 ## 導入と操作
@@ -20,7 +20,7 @@ bpf-ninja を使うときは、導入、目的に合う手順、式の詳細の�
 
 ## 実装と設計判断
 
-[Architecture の地図](architecture/README.md)から、処理の順序とコードの責務を辿れます。
+[実装を読むための案内](architecture/README.md)から、処理の順序とコードの責務を辿れます。
 
 - [Capture datapath](capture-datapath.md)：カーネルから出力までの実装。
 - [DSL internals](dsl-internals.md)：compiler と host ABI。
@@ -39,6 +39,6 @@ bpf-ninja を使うときは、導入、目的に合う手順、式の詳細の�
 - [保存データと再計算](../publications/ebpf_workshop_2026/data/README.md)：測定条件、集計方法、データの出典。
 
 測定結果を現在の環境に適用するときは、実装版、kernel、hardware、負荷、capture/export の条件を確認してください。
-仕様上の対応、コンパイル成功、kernel load 成功、実パケットの取得は別の検証です。
+仕様上の対応範囲、コンパイルの成否、カーネルへのロードの成否、実パケットの取得結果は、それぞれ分けて確認してください。
 
 [全言語の入口](../README.md)

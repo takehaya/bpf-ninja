@@ -5,10 +5,10 @@
 
 ## ビルド
 
-repository root で実行します。
+リポジトリのルートディレクトリで実行します。
 Go の版は `go.mod` に従い、C compiler と libpcap の開発用ヘッダを用意してください。
 Ubuntu では libpcap の開発パッケージは `libpcap-dev` です。
-配布 binary を使う場合は [Install](../../README.md#install) を参照してください。
+配布バイナリを使う場合は [Install](../../README.md#install) を参照してください。
 
 ```sh
 make build
@@ -17,7 +17,7 @@ make build
 git rev-parse HEAD
 ```
 
-source build の version は通常 `dev` です。
+ソースからビルドした場合、version は通常 `dev` です。
 不具合報告や測定記録には commit と `uname -r` も残してください。
 
 ## パケットを取得するための条件
@@ -32,7 +32,7 @@ xdp mode は対象 interface に既存 XDP がない場合に使います。
 gated capture には kernel の修正状況による制約もあるため、[現在の要件](../../README.md#prerequisites)と[mode の説明](../../README.md#modes)を確認してください。
 これらの最低条件と、各レシピを実際に検証した環境は区別します。
 
-初めての実機試験には使い捨て Linux VM を使ってください。
+初めてパケットを取得するときは、使い捨ての Linux VM を使ってください。
 手動試験は namespace と veth を作成するため、[前提と cleanup](handtest.md)を先に確認します。
 運用中の interface や既存 XDP を試験の都合で変更しないでください。
 

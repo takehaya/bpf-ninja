@@ -6,7 +6,8 @@ progressing through `--func` subfunction probing, and tail call environments.
 
 Use a disposable Linux environment.
 Stop if `nstest`, `vtest0`, or `vtest1` already exists.
-Stop each capture with Ctrl-C before removing only the resources created by this procedure.
+Stop each capture with Ctrl-C before cleanup.
+Remove only the resources created by this procedure.
 See the [documentation entry point](../README.md).
 
 ## Prerequisites
@@ -101,11 +102,12 @@ sudo ./bpf-ninja -i vtest0 "eth/ipv4/icmp" -v | tcpdump -n -r -
 sudo ./bpf-ninja -i vtest0 --cbpf "tcp port 80" -v | tcpdump -n -r -
 ```
 
-Run each command separately. Wait for `capturing (...)...`, then send ping from terminal 2.
+Run each command separately.
+Wait for `capturing (...)...`, then send ping from terminal 2.
 Press Ctrl-C in terminal 1 after sending and inspect the shutdown summary.
 The DSL chain `eth/ipv4/icmp` records ICMP; legacy `--cbpf "tcp port 80"` reports `0 packets captured`.
 Do not use `-c 3` to stop the negative case: no matching packets will advance the count.
-A failed start or missing summary is not a successful zero-packet result.
+If startup fails or the shutdown summary is missing, the test has not confirmed a zero-packet result.
 
 ### 1.6 Pcap File Output
 
