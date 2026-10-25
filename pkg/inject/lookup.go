@@ -360,10 +360,17 @@ func (p lookupPlan) first() LookupSite {
 	return p.sites[0]
 }
 
-// tailCallSites lists bpf_tail_call helpers. Only those in the entry function
-// can reach the ctx spill; the rest get a Reason.
-func tailCallSites(insns asm.Instructions) []LookupSite {
-	var sites []LookupSite
+// tailCallSite is a bpf_tail_call helper. A site outside the entry function
+// cannot reach the entry frame's ctx spill, so it saves its own R1 (the ctx
+// the helper takes) in its own frame.
+type tailCallSite struct {
+	LookupSite
+	local bool
+}
+
+// tailCallSites lists bpf_tail_call helpers in every function.
+func tailCallSites(insns asm.Instructions) []tailCallSite {
+	var sites []tailCallSite
 	var funcName, file string
 	var line uint32
 	funcStart := -1
@@ -378,10 +385,7 @@ func tailCallSites(insns asm.Instructions) []LookupSite {
 		}
 		if ins.IsBuiltinCall() && ins.Constant == int64(asm.FnTailCall) {
 			site := LookupSite{FuncName: funcName, File: file, Line: line, SitePC: uint32(pc), InstructionIndex: it.Index}
-			if funcStart != 0 {
-				site.Reason = "tail call is not in the entry function; ctx belongs to another stack frame"
-			}
-			sites = append(sites, site)
+			sites = append(sites, tailCallSite{site, funcStart != 0})
 		}
 	}
 	return sites
@@ -554,18 +558,10 @@ func transformLookupProgram(insns asm.Instructions, typ ebpf.ProgramType, types 
 	}
 	sort.Slice(selected, func(i, j int) bool { return selected[i].SitePC < selected[j].SitePC })
 	plan.sites = publicLookupSites(selected)
-	var tails []LookupSite
+	var tails []tailCallSite
 	if req.TailCalls {
-		for _, site := range tailCallSites(insns) {
-			if site.Reason != "" {
-				plan.skipped = append(plan.skipped, site)
-			} else {
-				tails = append(tails, site)
-			}
-		}
-		sort.Slice(plan.skipped, func(i, j int) bool { return plan.skipped[i].SitePC < plan.skipped[j].SitePC })
-		if len(tails) == 0 {
-			return nil, plan, refuse("TailCalls: no bpf_tail_call in the entry function")
+		if tails = tailCallSites(insns); len(tails) == 0 {
+			return nil, plan, refuse("TailCalls: no bpf_tail_call in the program")
 		}
 	}
 	names := map[string]bool{}
@@ -643,10 +639,12 @@ func transformLookupProgram(insns asm.Instructions, typ ebpf.ProgramType, types 
 	}
 	if req.TailCalls {
 		hooks = append(hooks, scalarHook(tailName, ctxType, "site", "index")...)
-		plan.hooks = append(plan.hooks, LookupHook{Name: tailName, Kind: HookTailCall, Sites: tails})
+		hook := LookupHook{Name: tailName, Kind: HookTailCall}
 		for _, site := range tails {
-			calls[site.SitePC] = siteCall{hook: tailName, withSite: true, tailCall: true}
+			hook.Sites = append(hook.Sites, site.LookupSite)
+			calls[site.SitePC] = siteCall{hook: tailName, withSite: true, tailCall: true, localCtx: site.local}
 		}
+		plan.hooks = append(plan.hooks, hook)
 	}
 	spliced, err := spliceLookupCalls(insns, calls, req.Stack, hooks, entryHook)
 	if err != nil {
@@ -657,12 +655,13 @@ func transformLookupProgram(insns asm.Instructions, typ ebpf.ProgramType, types 
 
 // siteCall is the hook a helper site calls, whether it passes its SitePC and
 // the lookup's map pointer, and whether the site is a bpf_tail_call rather
-// than a lookup.
+// than a lookup. A localCtx tail call saves its own ctx before the helper.
 type siteCall struct {
 	hook     string
 	withSite bool
 	withMap  bool
 	tailCall bool
+	localCtx bool
 }
 
 func spliceLookup(input asm.Instructions, sitePCs []uint32, req LookupRequest) (asm.Instructions, error) {
@@ -728,7 +727,13 @@ func spliceLookupCalls(input asm.Instructions, calls map[uint32]siteCall, stack 
 	}
 	before := func(call siteCall) asm.Instructions {
 		if call.tailCall {
-			return asm.Instructions{asm.StoreMem(asm.RFP, key, asm.R3, asm.DWord)}
+			spill := asm.Instructions{asm.StoreMem(asm.RFP, key, asm.R3, asm.DWord)}
+			if call.localCtx {
+				// The slot offsets are the same in every frame; the stack
+				// audit covers direct R10 references in all functions.
+				spill = append(spill, asm.StoreMem(asm.RFP, ctx, asm.R1, asm.DWord))
+			}
+			return spill
 		}
 		spill := asm.Instructions{asm.StoreMem(asm.RFP, key, asm.R2, asm.DWord)}
 		if call.withMap {

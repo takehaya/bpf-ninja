@@ -256,3 +256,68 @@ func TestBpfEntryHookWithLookup(t *testing.T) {
 		}
 	}
 }
+
+// subTailCallerFixture is tailCallerFixture with the tail call in a static
+// subprogram that the entry function calls with ctx.
+func subTailCallerFixture() *ebpf.CollectionSpec {
+	spec := tailCallerFixture()
+	body := spec.Programs["caller"].Instructions
+	sub := xdpFunc("sub")
+	sub.Linkage = btf.StaticFunc
+	body[0] = btf.WithFuncMetadata(body[0].WithSymbol("sub").WithSource(asm.Comment("tail-calling subprogram")), sub)
+	entry := btf.WithFuncMetadata(asm.Call.Label("sub").WithSymbol("caller").WithSource(asm.Comment("entry")), xdpFunc("caller"))
+	spec.Programs["caller"].Instructions = append(asm.Instructions{entry, asm.Return()}, body...)
+	return spec
+}
+
+// The tail-call hook also fires for a failed tail call in a subprogram, with
+// the ctx that subprogram passed to the helper.
+func TestBpfTailCallInSubprogram(t *testing.T) {
+	testutil.SkipIfNotRoot(t)
+	work := subTailCallerFixture()
+	plan, err := transformLookup(work, LookupRequest{ProgramName: "caller", TailCalls: true, HookName: "obs", Stack: StackAudit{LowestOffset: 0}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.hooks) != 1 || len(plan.hooks[0].Sites) != 1 || plan.hooks[0].Sites[0].FuncName != "sub" {
+		t.Fatalf("plan: %+v", plan)
+	}
+	site := plan.hooks[0].Sites[0].SitePC
+	load := func(spec *ebpf.CollectionSpec) *ebpf.Collection {
+		c, target := loadOrSkip(t, spec), loadOrSkip(t, tailTargetFixture())
+		t.Cleanup(c.Close)
+		t.Cleanup(target.Close)
+		if err := c.Maps["jmp"].Put(uint32(0), target.Programs["target"]); err != nil {
+			t.Fatal(err)
+		}
+		return c
+	}
+	plain, injected := load(subTailCallerFixture()), load(work)
+	tail := attachScalarObserver(t, "obs_tail_call", injected.Programs["caller"], 2)
+	for _, tc := range []struct {
+		index  byte
+		action uint32
+	}{{0, 3}, {1, 2}} {
+		if err := tail.Put(uint32(0), scalarRecord{}); err != nil {
+			t.Fatal(err)
+		}
+		packet := make([]byte, 64+int(tc.index)*16)
+		packet[0] = tc.index
+		for _, c := range []*ebpf.Collection{plain, injected} {
+			ret, err := c.Programs["caller"].Run(&ebpf.RunOptions{Data: packet, Repeat: 1})
+			if err != nil || ret != tc.action {
+				t.Fatalf("index=%d: action=%d err=%v", tc.index, ret, err)
+			}
+		}
+		var got scalarRecord
+		if err := tail.Lookup(uint32(0), &got); err != nil {
+			t.Fatal(err)
+		}
+		if tc.index == 0 && got.Seen != 0 {
+			t.Fatalf("successful tail call fired the hook: %+v", got)
+		}
+		if tc.index == 1 && (got.Seen != 1 || got.Len != uint32(len(packet)) || got.Args != [2]uint32{site, 1}) {
+			t.Fatalf("failed tail call: %+v, want site %d", got, site)
+		}
+	}
+}

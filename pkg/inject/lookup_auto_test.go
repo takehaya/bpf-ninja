@@ -200,7 +200,7 @@ func TestTailCallHookRefusalsAndSkips(t *testing.T) {
 	if _, err := transformLookup(lookupFixture(), req); !errors.Is(err, ErrRefused) {
 		t.Fatalf("no tail call: %v", err)
 	}
-	// A tail call in a subprogram is skipped, not instrumented.
+	// A tail call in a subprogram saves its own ctx before the helper.
 	spec := tailCallerFixture()
 	prog := spec.Programs["caller"]
 	sub := xdpFunc("sub")
@@ -214,8 +214,28 @@ func TestTailCallHookRefusalsAndSkips(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(plan.skipped) != 1 || plan.skipped[0].FuncName != "sub" || len(plan.hooks[0].Sites) != 1 {
+	if len(plan.skipped) != 0 || len(plan.hooks[0].Sites) != 2 || plan.hooks[0].Sites[1].FuncName != "sub" {
 		t.Fatalf("plan: %+v", plan)
+	}
+	out := spec.Programs["caller"].Instructions
+	var fn string
+	for i, ins := range out {
+		if f := btf.FuncMetadata(&ins); f != nil {
+			fn = f.Name
+		}
+		if ins.IsBuiltinCall() && ins.Constant == int64(asm.FnTailCall) {
+			// Only the subprogram's site spills R1, after the index.
+			index := out[i-1]
+			if fn == "sub" {
+				if !sameInstr(out[i-1], asm.StoreMem(asm.RFP, -16, asm.R1, asm.DWord)) {
+					t.Fatalf("sub tail call: %v", out[i-2:i+1])
+				}
+				index = out[i-2]
+			}
+			if !sameInstr(index, asm.StoreMem(asm.RFP, -24, asm.R3, asm.DWord)) {
+				t.Fatalf("%s tail call: %v", fn, out[i-2:i+1])
+			}
+		}
 	}
 	// Auto names avoid the entry hook name; a map named "entry" falls back.
 	auto := lookupFixture()
