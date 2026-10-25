@@ -522,6 +522,9 @@ func hookSummary(result *inject.LookupResultRaw) string {
 		if hook.MapName != "" {
 			fmt.Fprintf(&b, " map %q", hook.MapName)
 		}
+		if hook.Generic {
+			b.WriteString(" runtime map")
+		}
 		if hook.Untrusted {
 			b.WriteString(", untrusted pointers")
 		}

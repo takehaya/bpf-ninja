@@ -47,6 +47,7 @@ The transformation core currently accepts lookup sites in the entry function and
 
 `"auto": true` instruments every supported lookup in the program instead of one selected lookup.
 `map`, `func`, `line`, `all_matches`, and `site_pcs` must then be absent, and `hook` is a prefix: each map gets its own hook named `HOOK_MAP`, with a `u32 site` argument after `ctx` that carries the lookup's raw instruction index.
+Lookups whose map is only known at run time (map-in-map, or a map pointer that reaches R1 indirectly) share one `HOOK_any` hook that also takes the map pointer.
 Lookups that the transform cannot support are skipped and listed in the diagnostic rather than refusing the load.
 The naming and hook ABI are described in [lookup-site-injection.md](lookup-site-injection.md#automatic-selection).
 

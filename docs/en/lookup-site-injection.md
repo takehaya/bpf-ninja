@@ -25,6 +25,7 @@ Named typedefs retain their names.
 
 Discovery resolves a map only when R1 is assigned by an `LDIMM64` map reference in the same basic block and remains unchanged before the helper.
 It does not trace a map pointer through another register, stack memory, a preceding block, or an inner-map lookup.
+Such a site, and a lookup on a map-in-map, is listed with a `Reason`; only `Auto` observes it, through the generic hook below.
 Branch targets, function starts, and instructions after jumps or calls begin new blocks.
 Atomic instructions and legacy packet loads conservatively invalidate map provenance.
 Calls that cannot be resolved, lack usable map BTF, or lie in a called subprogram are still listed with a `Reason`.
@@ -65,7 +66,21 @@ Sites that discovery lists with a `Reason` are not instrumented; they are report
 If no site is supported, the transform is refused.
 Every hook name passes the same collision checks as a single `HookName`.
 
-All hooks of one program share the three reserved stack slots, since only one lookup site runs at a time.
+Lookups whose map is only known at run time share one generic hook, placed after the per-map hooks and marked `Generic` and `Untrusted`:
+
+```c
+int PREFIX_any(struct xdp_md *ctx, u32 site, const void *key __arg_untrusted,
+               const void *value __arg_untrusted, const void *map __arg_untrusted);
+```
+
+These are entry-function lookups where R1 is not a direct map reference in the same basic block, and lookups on hash-of-maps and array-of-maps.
+`map` is the lookup's R1 at run time, saved before the helper: the map itself, or for an inner lookup the inner map that an outer lookup returned.
+For an outer map-in-map lookup, `value` is the selected inner map, not value memory.
+The hook's BTF carries no key or value type, so an observer identifies the map from `map` (for example by reading `struct bpf_map` fields such as `id` with `bpf_probe_read_kernel`) and decodes the key and value by that map's sizes.
+A map ID identifies the map only while it exists; IDs of freed maps can be reused.
+
+All hooks of one program share the reserved stack slots, since only one lookup site runs at a time.
+The generic hook's map pointer takes a fourth slot.
 An observer attaches one fentry program per hook it wants to see.
 
 ### Entry and tail-call hooks
@@ -185,11 +200,11 @@ The package checks the XDP program type; the cooperative loader owns attachment 
 | The input ELF matches `ELFSHA256` before parsing. | The hash identifies the audited build. |
 | The selector resolves supported lookups of the same map in the entry function. | These are the intended observation sites. |
 | Map BTF sizes, where present, match the map definition, and entry BTF describes an XDP context pointer. | The BTF describes the audited build. |
-| Direct R10 references stay at or above `Stack.LowestOffset`; three aligned spill slots fit below it within 512 bytes. | Pointer aliases and called subprograms do not reach the reserved spill region. |
+| Direct R10 references stay at or above `Stack.LowestOffset`; three aligned spill slots (four with the generic hook) fit below it within 512 bytes. | Pointer aliases and called subprograms do not reach the reserved spill region. |
 | Existing function and source metadata are complete, references resolve, and relocation fits. | The transformed program remains acceptable to the target kernel verifier. |
 
 The stack audit has the same alias and callee limitations as `StackAudit` in the original transform.
-Three 8-byte slots require an audited bound of at least `-488`, rounded down to an 8-byte boundary before allocating the slots.
+Three 8-byte slots require an audited bound of at least `-488`, and four at least `-480`, rounded down to an 8-byte boundary before allocating the slots.
 The transform checks direct R10 references throughout the flattened selected program.
 It does not infer stack usage through aliases.
 
@@ -220,6 +235,7 @@ r0 = *(u64 *)(r10 + result_slot)
 ```
 
 With `Auto`, the argument setup is `r1 = ctx`, `r2 = SitePC` (a 32-bit move), `r3 = key`, `r4 = r0`, one instruction longer per site.
+A generic-hook site also saves R1 into `map_slot` before the helper and loads it into R5, two more instructions.
 
 With `Entry`, the entry ctx spill is followed by `call HOOK_entry` and `r1 = *(u64 *)(r10 + ctx_slot)`.
 Only R1 and R10 are initialized at program entry, so the call clobbers nothing the program can read.
@@ -285,7 +301,7 @@ Its existing `Site` field is the first element of `Sites`.
 `InsertedAt` is zero because the first insertion saves ctx at entry.
 `InsertedSlots` is `8 + 8*len(Sites)`: one entry spill, eight instructions per site, and seven hook instructions.
 One site adds 16 slots (128 bytes); two sites add 24 slots (192 bytes).
-With `Auto`, it is `1 + 9*len(Sites) + 7*(number of lookup hooks)`; the hooks are placed together right after the entry function.
+With `Auto`, it is `1 + 9*len(Sites) + 7*(number of lookup hooks)`, plus 11 slots per generic-hook site and a 9-slot generic hook; the hooks are placed together right after the entry function.
 On top of that, `Entry` adds 5 slots (2 in the prologue and a 3-slot hook), and `TailCalls` adds 6 slots per tail call plus a 3-slot hook.
 `SourceChecksum` and `TransformedChecksum` cover the raw instruction encoding, with symbolic calls and callback loads unresolved.
 They exclude BTF, source lines, CO-RE metadata, and symbolic/map references; they do not identify the fully loaded kernel artifact.
@@ -294,7 +310,7 @@ The ELF SHA-256 binds the full input.
 ## What is not covered
 
 The transform observes successful lookup calls at the selected sites only.
-It does not observe update/delete helpers, LRU eviction, non-map lookups such as `bpf_fib_lookup`, map-in-map traversal, or lookups inside `bpf_for_each_map_elem` callbacks.
+It does not observe update/delete helpers, LRU eviction, non-map lookups such as `bpf_fib_lookup`, or lookups inside `bpf_for_each_map_elem` callbacks.
 It does not provide a consistent value version under concurrent control-plane updates or other writers.
 The observer reads the returned object during the hook; the program's later reads may see different contents.
 There is no snapshot, locking, or transaction guarantee, and observation adds execution cost.

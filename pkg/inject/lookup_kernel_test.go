@@ -102,12 +102,13 @@ func multiMapFixture() *ebpf.CollectionSpec {
 }
 
 func lookupObserver(t *testing.T, hook string, target *ebpf.Program) *ebpf.CollectionSpec {
-	return lookupObserverArgs(t, hook, target, false)
+	return lookupObserverArgs(t, hook, target, false, false)
 }
 
 // lookupObserverArgs records seen, packet length, key, value.imsi and, with
-// withSite, the hook's u32 site argument at offset 24.
-func lookupObserverArgs(t *testing.T, hook string, target *ebpf.Program, withSite bool) *ebpf.CollectionSpec {
+// withSite, the hook's u32 site argument at offset 24. withMap, which needs
+// withSite, also records the id of the generic hook's map argument at 28.
+func lookupObserverArgs(t *testing.T, hook string, target *ebpf.Program, withSite, withMap bool) *ebpf.CollectionSpec {
 	t.Helper()
 	kernel, err := btf.LoadKernelSpec()
 	if err != nil {
@@ -174,6 +175,32 @@ func lookupObserverArgs(t *testing.T, hook string, target *ebpf.Program, withSit
 			asm.FnGetFuncArg.Call(),
 			asm.LoadMem(asm.R1, asm.RFP, -48, asm.Word),
 			asm.StoreMem(asm.R7, 24, asm.R1, asm.Word))
+	}
+	if withMap {
+		var bpfMap *btf.Struct
+		if err := kernel.TypeByName("bpf_map", &bpfMap); err != nil {
+			t.Fatal(err)
+		}
+		idOffset := int32(-1)
+		for _, member := range bpfMap.Members {
+			if member.Name == "id" {
+				idOffset = int32(member.Offset.Bytes())
+			}
+		}
+		if idOffset < 0 {
+			t.Fatal("kernel bpf_map lacks id")
+		}
+		insns = append(insns,
+			asm.Mov.Reg(asm.R1, asm.R9),
+			asm.Mov.Imm(asm.R2, 4), asm.Mov.Reg(asm.R3, asm.RFP), asm.Add.Imm(asm.R3, -56),
+			asm.FnGetFuncArg.Call(),
+			asm.JNE.Imm(asm.R0, 0, "done"),
+			asm.Mov.Reg(asm.R1, asm.RFP), asm.Add.Imm(asm.R1, -60),
+			asm.Mov.Imm(asm.R2, 4), asm.LoadMem(asm.R3, asm.RFP, -56, asm.DWord), asm.Add.Imm(asm.R3, idOffset),
+			asm.FnProbeReadKernel.Call(),
+			asm.JNE.Imm(asm.R0, 0, "done"),
+			asm.LoadMem(asm.R1, asm.RFP, -60, asm.Word),
+			asm.StoreMem(asm.R7, 28, asm.R1, asm.Word))
 	}
 	insns = append(insns, asm.Mov.Imm(asm.R0, 0).WithSymbol("done"), asm.Return())
 	return &ebpf.CollectionSpec{ByteOrder: binary.LittleEndian,
@@ -384,7 +411,7 @@ func testAutoMultiMap(t *testing.T, fixture func() *ebpf.CollectionSpec) {
 		if len(hook.Sites) != 1 {
 			t.Fatalf("hook %s sites=%+v", hook.Name, hook.Sites)
 		}
-		obs := loadOrSkip(t, lookupObserverArgs(t, hook.Name, injected.Programs["p"], true))
+		obs := loadOrSkip(t, lookupObserverArgs(t, hook.Name, injected.Programs["p"], true, false))
 		t.Cleanup(obs.Close)
 		l, err := link.AttachTracing(link.TracingOptions{Program: obs.Programs["observe"], AttachType: ebpf.AttachTraceFEntry})
 		if err != nil {
@@ -518,6 +545,132 @@ func TestBpfLookupInjectionLPMTrie(t *testing.T) {
 		seen, prefix, imsi := binary.LittleEndian.Uint64(got[:]), binary.LittleEndian.Uint32(got[12:]), binary.LittleEndian.Uint64(got[16:])
 		if seen != 1 || prefix != 32 || imsi != 100000000000001 {
 			t.Fatalf("seen=%d prefix=%d imsi=%d", seen, prefix, imsi)
+		}
+	}
+}
+
+// mapInMapFixture looks up the packet's first word in the inner map that
+// outer[0] holds. The inner lookup's R1 is the outer lookup's result.
+func mapInMapFixture() *ebpf.CollectionSpec {
+	spec := lookupFixture()
+	sessions := spec.Maps["sessions"]
+	short, outerMiss, innerMiss := asm.JGT.Reg(asm.R3, asm.R4, ""), asm.JEq.Imm(asm.R0, 0, ""), asm.JEq.Imm(asm.R0, 0, "")
+	short.Offset, outerMiss.Offset, innerMiss.Offset = 16, 7, 2 // slots 4, 13, 18 -> 21
+	insns := asm.Instructions{
+		asm.LoadMem(asm.R2, asm.R1, 0, asm.Word),         // 0: data
+		asm.LoadMem(asm.R4, asm.R1, 4, asm.Word),         // 1: data_end
+		asm.Mov.Reg(asm.R3, asm.R2),                      // 2
+		asm.Add.Imm(asm.R3, 4),                           // 3
+		short,                                            // 4
+		asm.LoadMem(asm.R2, asm.R2, 0, asm.Word),         // 5: packet key
+		asm.StoreMem(asm.RFP, -4, asm.R2, asm.Word),      // 6: inner key
+		asm.StoreImm(asm.RFP, -8, 0, asm.Word),           // 7: outer key
+		asm.Mov.Reg(asm.R2, asm.RFP),                     // 8
+		asm.Add.Imm(asm.R2, -8),                          // 9
+		asm.LoadMapPtr(asm.R1, 0).WithReference("outer"), // 10-11
+		asm.FnMapLookupElem.Call(),                       // 12: outer lookup
+		outerMiss,                                        // 13
+		asm.Mov.Reg(asm.R1, asm.R0),                      // 14: inner map
+		asm.Mov.Reg(asm.R2, asm.RFP),                     // 15
+		asm.Add.Imm(asm.R2, -4),                          // 16
+		asm.FnMapLookupElem.Call(),                       // 17: inner lookup
+		innerMiss,                                        // 18
+		asm.LoadMem(asm.R0, asm.R0, 0, asm.DWord),        // 19: seid = action
+		asm.Return(),                                     // 20
+		asm.Mov.Imm(asm.R0, 1),                           // 21: miss -> XDP_DROP
+		asm.Return(),                                     // 22
+	}
+	insns[0] = btf.WithFuncMetadata(insns[0].WithSymbol("p").WithSource(asm.Comment("map-in-map fixture")),
+		btf.FuncMetadata(&spec.Programs["p"].Instructions[0]))
+	spec.Programs["p"].Instructions = insns
+	delete(spec.Maps, "sessions")
+	spec.Maps["outer"] = &ebpf.MapSpec{Name: "outer", Type: ebpf.ArrayOfMaps, KeySize: 4, ValueSize: 4, MaxEntries: 1,
+		InnerMap: sessions}
+	return spec
+}
+
+// Auto passes both lookups to the generic hook. The observer sees the inner
+// lookup last: its key, value and the inner map's id.
+func TestBpfLookupInjectionMapInMap(t *testing.T) {
+	testutil.SkipIfNotRoot(t)
+	plain := loadOrSkip(t, mapInMapFixture())
+	t.Cleanup(plain.Close)
+	work := mapInMapFixture()
+	plan, err := transformLookup(work, LookupRequest{ProgramName: "p", Auto: true, HookName: "obs", Stack: StackAudit{LowestOffset: -8}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.hooks) != 1 || !plan.hooks[0].Generic || len(plan.hooks[0].Sites) != 2 || len(plan.skipped) != 0 {
+		t.Fatalf("plan: %+v", plan)
+	}
+	injected := loadOrSkip(t, work)
+	t.Cleanup(injected.Close)
+	var innerID ebpf.MapID
+	for _, c := range []*ebpf.Collection{plain, injected} {
+		inner, err := ebpf.NewMap(work.Maps["outer"].InnerMap)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = inner.Close() })
+		if err := inner.Put(uint32(7), [2]uint64{2, 100000000000001}); err != nil {
+			t.Fatal(err)
+		}
+		if err := c.Maps["outer"].Put(uint32(0), inner); err != nil {
+			t.Fatal(err)
+		}
+		info, err := inner.Info()
+		if err != nil {
+			t.Fatal(err)
+		}
+		innerID, _ = info.ID()
+	}
+	obs := loadOrSkip(t, lookupObserverArgs(t, "obs_any", injected.Programs["p"], true, true))
+	t.Cleanup(obs.Close)
+	l, err := link.AttachTracing(link.TracingOptions{Program: obs.Programs["observe"], AttachType: ebpf.AttachTraceFEntry})
+	if err != nil {
+		if errors.Is(err, unix.EPERM) || errors.Is(err, ebpf.ErrNotSupported) {
+			t.Skipf("fentry unavailable: %v", err)
+		}
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = l.Close() })
+	for _, tc := range []struct {
+		key  uint32
+		want uint32
+		seen uint64
+	}{{7, 2, 2}, {99, 1, 1}} {
+		if err := obs.Maps["obs"].Put(uint32(0), [32]byte{}); err != nil {
+			t.Fatal(err)
+		}
+		packet := make([]byte, 64)
+		binary.LittleEndian.PutUint32(packet, tc.key)
+		for _, c := range []*ebpf.Collection{plain, injected} {
+			out := make([]byte, len(packet))
+			ret, err := c.Programs["p"].Run(&ebpf.RunOptions{Data: packet, DataOut: out, Repeat: 1})
+			if err != nil || ret != tc.want || !bytes.Equal(packet, out) {
+				t.Fatalf("key=%d: action=%d err=%v", tc.key, ret, err)
+			}
+		}
+		var got [32]byte
+		if err := obs.Maps["obs"].Lookup(uint32(0), &got); err != nil {
+			t.Fatal(err)
+		}
+		seen, key, imsi := binary.LittleEndian.Uint64(got[:]), binary.LittleEndian.Uint32(got[12:]), binary.LittleEndian.Uint64(got[16:])
+		site, id := binary.LittleEndian.Uint32(got[24:]), binary.LittleEndian.Uint32(got[28:])
+		// A miss in the inner map leaves the outer lookup's observation: key 0
+		// and the outer map's id.
+		if tc.seen == 2 && (seen != 2 || key != 7 || imsi != 100000000000001 || site != plan.hooks[0].Sites[1].SitePC || ebpf.MapID(id) != innerID) {
+			t.Fatalf("hit: seen=%d key=%d imsi=%d site=%d id=%d want id %d", seen, key, imsi, site, id, innerID)
+		}
+		if tc.seen == 1 {
+			outerInfo, err := injected.Maps["outer"].Info()
+			if err != nil {
+				t.Fatal(err)
+			}
+			outerID, _ := outerInfo.ID()
+			if seen != 1 || key != 0 || site != plan.hooks[0].Sites[0].SitePC || ebpf.MapID(id) != outerID {
+				t.Fatalf("miss: seen=%d key=%d site=%d id=%d want id %d", seen, key, site, id, outerID)
+			}
 		}
 	}
 }
