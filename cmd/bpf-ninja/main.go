@@ -109,7 +109,7 @@ func rootFlags() []cli.Flag {
 		},
 		&cli.StringSliceFlag{
 			Name:  "set",
-			Usage: "define a named match set backed by a pinned BPF hash map: NAME=/sys/fs/bpf/path[,key(field=arg:param,...)]; reference it with --arg-filter @NAME (function arg) or the DSL predicate layer[field in @NAME] (packet field). Entries are managed at runtime via bpf-ninja set (no re-attach needed)",
+			Usage: "define a named match set backed by a pinned BPF hash map: NAME=/sys/fs/bpf/path[,key(field=arg:param,...)]; reference it with --arg-filter @NAME (function arg) or the DSL predicate layer[field in @NAME] (packet field). Use bpf-ninja set to update entries during capture without re-attaching",
 		},
 		&cli.BoolFlag{
 			Name:  "list-params",
@@ -125,7 +125,7 @@ func rootFlags() []cli.Flag {
 		},
 		&cli.BoolFlag{
 			Name:  "dsl-help",
-			Usage: "print the bpf-ninja DSL grammar + bundled protocol list and exit (pass a protocol name as positional arg to inspect its fields, e.g. --dsl-help ipv4)",
+			Usage: "print the bpf-ninja DSL grammar and bundled protocol list, then exit; pass a protocol name as a positional argument to inspect its fields, e.g. --dsl-help ipv4",
 		},
 		&cli.StringFlag{
 			Name:  "dump-asm",
@@ -213,7 +213,7 @@ func rootFlags() []cli.Flag {
 		&cli.IntFlag{
 			Name:  "in-memory-buffer",
 			Value: 0,
-			Usage: "if >0, per-shard raw-dump buffer size in MiB; bytes held in a pre-touched mmap buffer until Close (bypasses write(2) + tmpfs page-fault in the hot path; raw-dump only)",
+			Usage: "if >0, allocate this many MiB per raw-dump shard in a pre-touched mmap buffer; hold bytes until Close to bypass write(2) and tmpfs page faults in the hot path (raw-dump only)",
 		},
 		&cli.BoolFlag{
 			Name:  "rx-hwts",

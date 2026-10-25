@@ -65,10 +65,9 @@ a manifest line.
 
 ## Command and protocol references
 
-Run `make docs-update` after changing command metadata or public protocol help,
-then review `docs/ja/cli/generated/`. `make docs-check` and the normal Go tests
-compare the checked-in references without writing them or loading BPF.
-The generator uses urfave/cli v3 help and documentation interfaces; keep command
-constructors fresh and do not execute capture or map-management actions.
+Run `make docs-update` after changing command metadata or public protocol help, then review `docs/ja/cli/generated/`.
+Run `make docs-check` or the normal Go tests to compare the checked-in references without writing them or loading BPF.
+The generator uses urfave/cli v3 help and documentation interfaces.
+When changing the generator, construct a fresh command graph for each help invocation and keep capture and map-management actions disabled.
 Update the manually authored constraints and examples when behavior changes.
 A generated flag table is not a substitute for those explanations.
