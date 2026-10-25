@@ -293,7 +293,7 @@ func checkLookupMap(m *RawMap) error {
 	// These maps return ordinary value memory. Other map kinds can return
 	// special objects (notably map-in-map), so do not infer their pointer ABI.
 	switch m.Type {
-	case ebpf.Hash, ebpf.Array, ebpf.PerCPUHash, ebpf.PerCPUArray, ebpf.LRUHash, ebpf.LRUCPUHash:
+	case ebpf.Hash, ebpf.Array, ebpf.PerCPUHash, ebpf.PerCPUArray, ebpf.LRUHash, ebpf.LRUCPUHash, ebpf.LPMTrie:
 	default:
 		return refuse("map type %s is unsupported", m.Type)
 	}
@@ -308,7 +308,7 @@ func checkLookupMap(m *RawMap) error {
 		size uint32
 	}{{"key", m.Key, m.KeySize}, {"value", m.Value, m.ValueSize}} {
 		if field.typ == nil {
-			return refuse("map %s BTF is missing", field.name)
+			continue // lookupABI passes it as opaque bytes
 		}
 		size, err := btf.Sizeof(field.typ)
 		if err != nil || size <= 0 || uint64(size) != uint64(field.size) {
@@ -319,6 +319,20 @@ func checkLookupMap(m *RawMap) error {
 		}
 	}
 	return nil
+}
+
+// lookupABI returns the hook's key and value types. A side the map declares
+// only by size, without BTF, is passed as struct { u8 bytes[size]; }.
+func lookupABI(m *RawMap) (key, value btf.Type) {
+	return orBytes(m.Key, m.KeySize), orBytes(m.Value, m.ValueSize)
+}
+
+func orBytes(typ btf.Type, size uint32) btf.Type {
+	if typ != nil {
+		return typ
+	}
+	bytes := &btf.Array{Index: &btf.Int{Name: "u32", Size: 4}, Type: &btf.Int{Name: "u8", Size: 1}, Nelems: size}
+	return &btf.Struct{Size: size, Members: []btf.Member{{Name: "bytes", Type: bytes}}}
 }
 
 // lookupPlan is what transformLookupProgram selected and generated.
@@ -578,7 +592,8 @@ func transformLookupProgram(insns asm.Instructions, typ ebpf.ProgramType, types 
 	calls := map[uint32]siteCall{}
 	for _, group := range groups {
 		m := group.sites[0].mapInfo
-		hooks = append(hooks, lookupHook(group.name, ctxType, m.Key, m.Value, req.Auto)...)
+		key, value := lookupABI(m)
+		hooks = append(hooks, lookupHook(group.name, ctxType, key, value, req.Auto)...)
 		hook := LookupHook{Name: group.name, Kind: HookLookup, MapName: group.sites[0].MapName, Sites: publicLookupSites(group.sites)}
 		plan.hooks = append(plan.hooks, hook)
 		for _, site := range group.sites {

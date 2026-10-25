@@ -83,8 +83,8 @@ The supervisor reads the instructions, `func_info`, and `line_info` from tracee 
 For each map reference it injects `BPF_OBJ_GET_INFO_BY_FD` **in the tracee**, where the map fd is valid.
 The returned map name, kind, sizes, BTF ID, and key/value type IDs identify the map and its ABI.
 It opens that system-wide BTF ID in the supervisor with `BPF_BTF_GET_FD_BY_ID` and reads the types, including when maps and programs have separate BTF objects.
-It never treats a tracee fd number as a supervisor fd, and it does not invent opaque map types as a fallback.
-A map without BTF keeps its identity but no types; lookups on it are skipped by `auto` and refused otherwise, while tail-call and entry hooks do not need map types.
+It never treats a tracee fd number as a supervisor fd.
+A map without BTF, or a side with a zero type ID, keeps its identity and sizes; the transform passes that side as opaque bytes of the map's size.
 
 `inject.TransformLookupRaw` produces the new instructions and extended BTF with matching function and line records.
 A supervisor-only BTF load would produce an fd the target cannot use.

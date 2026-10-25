@@ -164,11 +164,13 @@ Discovery includes called subprograms and callbacks, but injection there is refu
 The API does not compose transformations on an already transformed spec.
 Only the selected program changes, including when other programs share a linked subprogram or a map.
 
-Supported maps are hash, array, per-CPU hash/array, and LRU hash/per-CPU hash maps.
+Supported maps are hash, array, per-CPU hash/array, LRU hash/per-CPU hash, and LPM trie maps.
+An LPM trie hook receives the query key, not the matched prefix.
 Maps created with `BPF_F_RDONLY_PROG` are not supported: the verifier checks a global function's memory arguments for writes as well as reads, even through `const` pointers, so passing their values to the hook is rejected.
 For the same reason, a key that points into read-only memory (for example, a value of such a map) makes the verifier reject the transformed program; discovery does not detect this.
-The key and value must have BTF with nonzero sizes exactly matching the map's key and value sizes.
+A key or value with BTF must have a nonzero size exactly matching the map's key or value size.
 The hook retains these types, including typedefs and qualifiers, under `const` pointer parameters.
+A side the map declares only by size, such as `__uint(key_size, 4)`, has no BTF; the hook takes it as an anonymous `struct { u8 bytes[N]; }` of the map's size.
 Types named `struct xdp_md` or `struct bpf_dynptr` are refused as map key/value types because the verifier assigns those pointer types special argument semantics.
 Other map kinds are refused rather than assuming their helper return is ordinary value memory.
 The entry function must have one BTF parameter pointing to `struct xdp_md`.
@@ -178,7 +180,7 @@ The package checks the XDP program type; the cooperative loader owns attachment 
 |---|---|
 | The input ELF matches `ELFSHA256` before parsing. | The hash identifies the audited build. |
 | The selector resolves supported lookups of the same map in the entry function. | These are the intended observation sites. |
-| Map BTF sizes match the map definition, and entry BTF describes an XDP context pointer. | The BTF describes the audited build. |
+| Map BTF sizes, where present, match the map definition, and entry BTF describes an XDP context pointer. | The BTF describes the audited build. |
 | Direct R10 references stay at or above `Stack.LowestOffset`; three aligned spill slots fit below it within 512 bytes. | Pointer aliases and called subprograms do not reach the reserved spill region. |
 | Existing function and source metadata are complete, references resolve, and relocation fits. | The transformed program remains acceptable to the target kernel verifier. |
 

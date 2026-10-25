@@ -422,3 +422,91 @@ func TestBpfLookupInjectionAutoMultiMap(t *testing.T) {
 		}
 	}
 }
+
+// The map declares key and value only by size, so the hook takes opaque bytes.
+func TestBpfLookupInjectionOpaqueTypes(t *testing.T) {
+	testLookupObservation(t, func() *ebpf.CollectionSpec {
+		spec := lookupFixture()
+		spec.Maps["sessions"].Key, spec.Maps["sessions"].Value = nil, nil
+		return spec
+	}, lookupReq())
+}
+
+// lpmFixture is lookupFixture over an LPM trie: the key is a /32 prefix
+// length at fp-8 followed by the packet's first word.
+func lpmFixture() *ebpf.CollectionSpec {
+	spec := lookupFixture()
+	original := spec.Programs["p"].Instructions
+	insns := append(asm.Instructions(nil), original[:7]...)
+	insns = append(insns, asm.StoreImm(asm.RFP, -8, 32, asm.Word))
+	insns = append(insns, original[7:]...)
+	insns[4].Offset++      // short packet still lands on XDP_DROP
+	insns[9].Constant = -8 // key starts at the prefix length
+	spec.Programs["p"].Instructions = insns
+	u32 := &btf.Int{Name: "u32", Size: 4}
+	m := spec.Maps["sessions"]
+	m.Type, m.KeySize, m.Flags = ebpf.LPMTrie, 8, unix.BPF_F_NO_PREALLOC
+	m.Key = &btf.Struct{Name: "lpm_key", Size: 8, Members: []btf.Member{
+		{Name: "prefixlen", Type: u32}, {Name: "addr", Type: u32, Offset: 32},
+	}}
+	return spec
+}
+
+func TestBpfLookupInjectionLPMTrie(t *testing.T) {
+	testutil.SkipIfNotRoot(t)
+	plain := loadOrSkip(t, lpmFixture())
+	t.Cleanup(plain.Close)
+	work := lpmFixture()
+	if _, err := transformLookup(work, lookupReq()); err != nil {
+		t.Fatal(err)
+	}
+	injected := loadOrSkip(t, work)
+	t.Cleanup(injected.Close)
+	for _, c := range []*ebpf.Collection{plain, injected} {
+		if err := c.Maps["sessions"].Put([2]uint32{32, 7}, [2]uint64{2, 100000000000001}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	obs := loadOrSkip(t, lookupObserver(t, "lookup_hook", injected.Programs["p"]))
+	t.Cleanup(obs.Close)
+	l, err := link.AttachTracing(link.TracingOptions{Program: obs.Programs["observe"], AttachType: ebpf.AttachTraceFEntry})
+	if err != nil {
+		if errors.Is(err, unix.EPERM) || errors.Is(err, ebpf.ErrNotSupported) {
+			t.Skipf("fentry unavailable: %v", err)
+		}
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = l.Close() })
+	for _, tc := range []struct {
+		key  uint32
+		want uint32
+	}{{7, 2}, {99, 1}} {
+		if err := obs.Maps["obs"].Put(uint32(0), [24]byte{}); err != nil {
+			t.Fatal(err)
+		}
+		packet := make([]byte, 64)
+		binary.LittleEndian.PutUint32(packet, tc.key)
+		for _, c := range []*ebpf.Collection{plain, injected} {
+			out := make([]byte, len(packet))
+			ret, err := c.Programs["p"].Run(&ebpf.RunOptions{Data: packet, DataOut: out, Repeat: 1})
+			if err != nil || ret != tc.want || !bytes.Equal(packet, out) {
+				t.Fatalf("key=%d: action=%d err=%v", tc.key, ret, err)
+			}
+		}
+		var got [24]byte
+		if err := obs.Maps["obs"].Lookup(uint32(0), &got); err != nil {
+			t.Fatal(err)
+		}
+		if tc.want == 1 {
+			if got != [24]byte{} {
+				t.Fatalf("miss generated observation: %x", got)
+			}
+			continue
+		}
+		// The observer reads the key's first word, the prefix length.
+		seen, prefix, imsi := binary.LittleEndian.Uint64(got[:]), binary.LittleEndian.Uint32(got[12:]), binary.LittleEndian.Uint64(got[16:])
+		if seen != 1 || prefix != 32 || imsi != 100000000000001 {
+			t.Fatalf("seen=%d prefix=%d imsi=%d", seen, prefix, imsi)
+		}
+	}
+}

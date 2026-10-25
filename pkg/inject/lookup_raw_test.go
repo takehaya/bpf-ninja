@@ -370,7 +370,6 @@ func TestLookupRawRefusals(t *testing.T) {
 		{"missing-map", func(p *RawProgram, r *LookupRequestRaw) { delete(p.Maps, 40) }},
 		{"bad-map-kind", func(p *RawProgram, r *LookupRequestRaw) { m := p.Maps[40]; m.Type = ebpf.HashOfMaps; p.Maps[40] = m }},
 		{"key-size", func(p *RawProgram, r *LookupRequestRaw) { m := p.Maps[40]; m.KeySize++; p.Maps[40] = m }},
-		{"missing-value", func(p *RawProgram, r *LookupRequestRaw) { m := p.Maps[40]; m.Value = nil; p.Maps[40] = m }},
 		{"wrong-ctx", func(p *RawProgram, r *LookupRequestRaw) {
 			typ, _ := p.BTF.AnyTypeByName("p")
 			typ.(*btf.Func).Type.(*btf.FuncProto).Params[0].Type = &btf.Int{Size: 4}

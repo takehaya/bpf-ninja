@@ -578,11 +578,16 @@ func extractRaw(r *remote, attr []byte, spec *btf.Spec) (inject.RawProgram, erro
 			if err != nil {
 				return p, fmt.Errorf("map fd %d BTF: %w", fd, err)
 			}
-			if key, err = types.TypeByID(btf.TypeID(u32(info, 68))); err != nil {
-				return p, err
+			// A zero type id is a side declared only by size; it stays nil.
+			if kid := u32(info, 68); kid != 0 {
+				if key, err = types.TypeByID(btf.TypeID(kid)); err != nil {
+					return p, err
+				}
 			}
-			if value, err = types.TypeByID(btf.TypeID(u32(info, 72))); err != nil {
-				return p, err
+			if vid := u32(info, 72); vid != 0 {
+				if value, err = types.TypeByID(btf.TypeID(vid)); err != nil {
+					return p, err
+				}
 			}
 		}
 		p.Maps[fd] = inject.RawMap{Name: cstring(info[24:40]), Type: ebpf.MapType(u32(info, 0)), KeySize: u32(info, 8), ValueSize: u32(info, 12), Flags: u32(info, 20), Key: key, Value: value}

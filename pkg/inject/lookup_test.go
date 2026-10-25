@@ -126,8 +126,6 @@ func TestLookupRefusalsDoNotMutate(t *testing.T) {
 		{"wrong-function", func(s *ebpf.CollectionSpec, r *LookupRequest) { r.Site.FuncName = "absent" }},
 		{"wrong-line", func(s *ebpf.CollectionSpec, r *LookupRequest) { r.Site.Line = 999 }},
 		{"missing-map", func(s *ebpf.CollectionSpec, r *LookupRequest) { delete(s.Maps, "sessions") }},
-		{"missing-key-btf", func(s *ebpf.CollectionSpec, r *LookupRequest) { s.Maps["sessions"].Key = nil }},
-		{"missing-value-btf", func(s *ebpf.CollectionSpec, r *LookupRequest) { s.Maps["sessions"].Value = nil }},
 		{"key-size", func(s *ebpf.CollectionSpec, r *LookupRequest) { s.Maps["sessions"].KeySize = 8 }},
 		{"value-size", func(s *ebpf.CollectionSpec, r *LookupRequest) { s.Maps["sessions"].ValueSize = 8 }},
 		{"unsized-value", func(s *ebpf.CollectionSpec, r *LookupRequest) { s.Maps["sessions"].Value = &btf.Fwd{Name: "session"} }},

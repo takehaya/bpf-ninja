@@ -292,3 +292,61 @@ func TestAutoHookNameLength(t *testing.T) {
 		t.Fatalf("overlong auto hook name: %v", err)
 	}
 }
+
+// hookParams returns the BTF parameters of the generated function name.
+func hookParams(t *testing.T, insns asm.Instructions, name string) []btf.FuncParam {
+	t.Helper()
+	for _, ins := range insns {
+		if fn := btf.FuncMetadata(&ins); fn != nil && fn.Name == name {
+			return fn.Type.(*btf.FuncProto).Params
+		}
+	}
+	t.Fatalf("no hook %s", name)
+	return nil
+}
+
+// opaqueSize is the size of a const pointer parameter's struct { u8 bytes[N]; }.
+func opaqueSize(t *testing.T, param btf.FuncParam) uint32 {
+	t.Helper()
+	s, ok := param.Type.(*btf.Pointer).Target.(*btf.Const).Type.(*btf.Struct)
+	if !ok || s.Name != "" || len(s.Members) != 1 || s.Members[0].Name != "bytes" {
+		t.Fatalf("%s is not opaque bytes: %v", param.Name, param.Type)
+	}
+	return s.Size
+}
+
+// A side the map declares only by size is passed as opaque bytes of that size.
+func TestLookupOpaqueTypes(t *testing.T) {
+	spec := lookupFixture()
+	spec.Maps["sessions"].Key, spec.Maps["sessions"].Value = nil, nil
+	if _, err := transformLookup(spec, lookupReq()); err != nil {
+		t.Fatal(err)
+	}
+	params := hookParams(t, spec.Programs["p"].Instructions, "lookup_hook")
+	if len(params) != 3 || opaqueSize(t, params[1]) != 4 || opaqueSize(t, params[2]) != 16 {
+		t.Fatalf("params: %+v", params)
+	}
+
+	p := rawLookupFixture(t, lookupFixture(), "p", true)
+	m := p.Maps[40]
+	m.Value = nil
+	p.Maps[40] = m
+	got, err := TransformLookupRaw(p, rawLookupRequest(lookupReq()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertRawMetadata(t, p, got)
+	params = hookParams(t, got.Instructions, "lookup_hook")
+	if opaqueSize(t, params[2]) != 16 {
+		t.Fatalf("raw params: %+v", params)
+	}
+}
+
+// An LPM trie lookup returns ordinary value memory, like a hash map.
+func TestLookupLPMTrie(t *testing.T) {
+	spec := lookupFixture()
+	spec.Maps["sessions"].Type = ebpf.LPMTrie
+	if _, err := transformLookup(spec, lookupReq()); err != nil {
+		t.Fatal(err)
+	}
+}
