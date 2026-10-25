@@ -86,6 +86,15 @@ func (s LookupSelector) empty() bool {
 // caller's registers, so the hook needs no tag and kernels without
 // arg:untrusted load it. With CopyReadOnly, a read-only map still gets the
 // typed hook.
+//
+// Dispatch sends every instrumented site, lookups, the entry and failed tail
+// calls, to one hook named HookName with the generic hook's signature (see
+// genericHook), so one observer attach sees them all. A lookup passes its
+// SitePC, key, value and map. A failed tail call passes its SitePC, a pointer
+// to the index register as a u64 in key (the helper uses its low 32 bits),
+// a NULL value and the prog array in map. The
+// entry passes DispatchEntrySite and NULL pointers. With StaticUntrusted the
+// hook is static. Dispatch does not combine with CopyReadOnly.
 type LookupRequest struct {
 	ELFSHA256       string
 	ProgramName     string
@@ -95,9 +104,14 @@ type LookupRequest struct {
 	TailCalls       bool
 	CopyReadOnly    bool
 	StaticUntrusted bool
+	Dispatch        bool
 	HookName        string
 	Stack           StackAudit
 }
+
+// DispatchEntrySite is the site a Dispatch hook reports for the entry call. A
+// raw slot index cannot reach it.
+const DispatchEntrySite = ^uint32(0)
 
 // HookKind is what a generated hook observes.
 type HookKind string
@@ -131,6 +145,11 @@ const (
 // statically (R1 is not a direct map reference), is a map-in-map, or is an
 // XSK map or devmap, which a typed hook refuses. It has no MapName and takes
 // the map pointer as a fifth argument; see genericHook.
+//
+// Dispatch is set on every hook of a Dispatch request. They all share Name and
+// the one hook's Untrusted and Static flags; Kind, MapName and Sites still
+// group the sites, so an observer maps a site to its kind, map and key and
+// value types from them.
 type LookupHook struct {
 	Name      string
 	Kind      HookKind
@@ -141,6 +160,7 @@ type LookupHook struct {
 	Static    bool
 	ReadOnly  bool
 	Generic   bool
+	Dispatch  bool
 	TypeID    btf.TypeID
 	FuncInfo  []byte
 }
@@ -404,12 +424,17 @@ func copiesValue(m *RawMap, req LookupRequest) bool {
 // the audited floor, as far as a request's flags determine it statically. The
 // entry always spills ctx (8 bytes); a tail-call site also keeps its index in
 // the key slot (16); a lookup site, possible with Site or Auto, also spills R0
-// (24). A generic hook's map slot and a CopyReadOnly value copy are
-// program-dependent and enforced during the transform (Auto skips the site,
-// explicit selection refuses), not here.
+// (24). With Dispatch, lookup and tail-call sites also pass the map, so they
+// need the map slot (32); a dispatch entry call passes only constants. A
+// generic hook's map slot and a CopyReadOnly value copy are program-dependent
+// and enforced during the transform (Auto skips the site, explicit selection
+// refuses), not here.
 func LookupStackReserve(req LookupRequest) int {
+	lookups := req.Auto || !req.Site.empty()
 	switch {
-	case req.Auto || !req.Site.empty():
+	case req.Dispatch && (lookups || req.TailCalls):
+		return 32
+	case lookups:
 		return 24
 	case req.TailCalls:
 		return 16
@@ -447,12 +472,12 @@ func CheckLookupStack(req LookupRequest) error {
 const siteFrameLimit = maxCombinedStack - 32
 
 // groupStackReach returns the most-negative stack offset instrumenting group
-// needs. A generic hook needs the map slot; a CopyReadOnly value copy goes
-// below it; a plain typed hook uses only the three base slots, which
+// needs. A generic or dispatch hook needs the map slot; a CopyReadOnly value
+// copy goes below it; a plain typed hook uses only the three base slots, which
 // CheckLookupStack already keeps within siteFrameLimit.
 func groupStackReach(group lookupGroup, req LookupRequest) int {
 	slots := lookupSlots(req.Stack.LowestOffset)
-	if group.generic {
+	if group.generic || req.Dispatch {
 		return slots.mapSlot
 	}
 	if m := group.sites[0].mapInfo; copiesValue(m, req) {
@@ -582,7 +607,8 @@ type lookupGroup struct {
 }
 
 // selectLookups groups the selected lookups by hook. Auto hook names avoid
-// reserved, the entry and tail-call hook names.
+// reserved, the entry and tail-call hook names; with Dispatch every group is
+// named HookName.
 func selectLookups(sites []discoveredLookup, req LookupRequest, reserved []string) ([]lookupGroup, []LookupSite, error) {
 	if req.Auto {
 		if !req.Site.empty() {
@@ -618,9 +644,14 @@ func selectLookups(sites []discoveredLookup, req LookupRequest, reserved []strin
 			used[name] = true
 		}
 		// A group whose hook name cannot be formed is skipped like any other
-		// site Auto cannot instrument.
+		// site Auto cannot instrument. With Dispatch every group is HookName.
 		var named []lookupGroup
 		for i, group := range groups {
+			if req.Dispatch {
+				group.name = req.HookName
+				named = append(named, group)
+				continue
+			}
 			mapName := group.sites[0].MapName
 			if group.generic {
 				mapName = "any"
@@ -708,13 +739,20 @@ func transformLookupProgram(insns asm.Instructions, typ ebpf.ProgramType, types 
 	if err != nil {
 		return nil, plan, err
 	}
+	if req.Dispatch && req.CopyReadOnly {
+		return nil, plan, refuse("Dispatch passes untrusted pointers; it does not combine with CopyReadOnly")
+	}
 	var reserved []string
 	entryName, tailName := req.HookName+"_entry", req.HookName+"_tail_call"
-	if req.Entry {
-		reserved = append(reserved, entryName)
-	}
-	if req.TailCalls {
-		reserved = append(reserved, tailName)
+	if req.Dispatch {
+		entryName, tailName = req.HookName, req.HookName
+	} else {
+		if req.Entry {
+			reserved = append(reserved, entryName)
+		}
+		if req.TailCalls {
+			reserved = append(reserved, tailName)
+		}
 	}
 	groups, skipped, err := selectLookups(sites, req, reserved)
 	plan.skipped = skipped
@@ -758,6 +796,9 @@ func transformLookupProgram(insns asm.Instructions, typ ebpf.ProgramType, types 
 	names := map[string]bool{}
 	for _, group := range groups {
 		names[group.name] = true
+	}
+	if req.Dispatch {
+		names[req.HookName] = true
 	}
 	for _, name := range reserved {
 		if names[name] || !validIdent(name) {
@@ -880,66 +921,108 @@ func (e lookupEmitter) splice(groups []lookupGroup) (asm.Instructions, []LookupH
 	var hooks asm.Instructions
 	var plan []LookupHook
 	calls := map[uint32]siteCall{}
-	for _, group := range groups {
-		if group.generic {
-			hook := genericHook(group.name, e.ctxType)
-			if req.StaticUntrusted {
-				hook = staticHook(hook)
+	entry := entryCall{name: e.entryName, on: req.Entry, dispatch: req.Dispatch}
+	if req.Dispatch {
+		hook := genericHook(req.HookName, e.ctxType)
+		if req.StaticUntrusted {
+			hook = staticHook(hook)
+		}
+		hooks = hook
+		shared := LookupHook{Name: req.HookName, Untrusted: !req.StaticUntrusted, Static: req.StaticUntrusted, Dispatch: true}
+		for _, group := range groups {
+			hook := shared
+			hook.Kind, hook.Sites, hook.Generic = HookLookup, publicLookupSites(group.sites), group.generic
+			if !group.generic {
+				hook.MapName = group.sites[0].MapName
 			}
-			hooks = append(hooks, hook...)
-			plan = append(plan, LookupHook{Name: group.name, Kind: HookLookup, Sites: publicLookupSites(group.sites),
-				Untrusted: !req.StaticUntrusted, Static: req.StaticUntrusted, Generic: true})
+			plan = append(plan, hook)
 			for _, site := range group.sites {
-				calls[site.SitePC] = siteCall{hook: group.name, withSite: true, withMap: true}
+				calls[site.SitePC] = siteCall{hook: req.HookName, withSite: true, withMap: true}
 			}
-			continue
 		}
-		m := group.sites[0].mapInfo
-		key, value := lookupABI(m)
-		// The verifier checks an ordinary memory argument for both reads and
-		// writes, so either restriction needs untrusted arguments, unless a
-		// readable value is copied to the stack, or the hook is static.
-		restricted := m.Flags&(bpfFRdonlyProg|bpfFWronlyProg) != 0
-		copied := copiesValue(m, req)
-		static := restricted && !copied && req.StaticUntrusted
-		untrusted := restricted && !copied && !static
-		var copySize uint32
-		if copied {
-			copySize = m.ValueSize
+		if req.Entry {
+			hook := shared
+			hook.Kind = HookEntry
+			plan = append(plan, hook)
 		}
-		body := lookupHook(group.name, e.ctxType, key, value, req.Auto, untrusted)
-		if static {
-			body = staticHook(body) // keeps the typed proto; the kernel need not trust it
+		if req.TailCalls {
+			hook := shared
+			hook.Kind = HookTailCall
+			for _, site := range e.tails {
+				hook.Sites = append(hook.Sites, site.LookupSite)
+				calls[site.SitePC] = siteCall{hook: req.HookName, withSite: true, withMap: true, tailCall: true, localCtx: site.local}
+			}
+			plan = append(plan, hook)
 		}
-		hooks = append(hooks, body...)
-		plan = append(plan, LookupHook{Name: group.name, Kind: HookLookup, MapName: group.sites[0].MapName, Sites: publicLookupSites(group.sites),
-			Untrusted: untrusted, Copied: copied, Static: static, ReadOnly: m.Flags&bpfFRdonlyProg != 0 && m.Flags&bpfFWronlyProg == 0})
-		for _, site := range group.sites {
-			calls[site.SitePC] = siteCall{hook: group.name, withSite: req.Auto, copySize: copySize}
+	} else {
+		for _, group := range groups {
+			if group.generic {
+				hook := genericHook(group.name, e.ctxType)
+				if req.StaticUntrusted {
+					hook = staticHook(hook)
+				}
+				hooks = append(hooks, hook...)
+				plan = append(plan, LookupHook{Name: group.name, Kind: HookLookup, Sites: publicLookupSites(group.sites),
+					Untrusted: !req.StaticUntrusted, Static: req.StaticUntrusted, Generic: true})
+				for _, site := range group.sites {
+					calls[site.SitePC] = siteCall{hook: group.name, withSite: true, withMap: true}
+				}
+				continue
+			}
+			m := group.sites[0].mapInfo
+			key, value := lookupABI(m)
+			// The verifier checks an ordinary memory argument for both reads and
+			// writes, so either restriction needs untrusted arguments, unless a
+			// readable value is copied to the stack, or the hook is static.
+			restricted := m.Flags&(bpfFRdonlyProg|bpfFWronlyProg) != 0
+			copied := copiesValue(m, req)
+			static := restricted && !copied && req.StaticUntrusted
+			untrusted := restricted && !copied && !static
+			var copySize uint32
+			if copied {
+				copySize = m.ValueSize
+			}
+			body := lookupHook(group.name, e.ctxType, key, value, req.Auto, untrusted)
+			if static {
+				body = staticHook(body) // keeps the typed proto; the kernel need not trust it
+			}
+			hooks = append(hooks, body...)
+			plan = append(plan, LookupHook{Name: group.name, Kind: HookLookup, MapName: group.sites[0].MapName, Sites: publicLookupSites(group.sites),
+				Untrusted: untrusted, Copied: copied, Static: static, ReadOnly: m.Flags&bpfFRdonlyProg != 0 && m.Flags&bpfFWronlyProg == 0})
+			for _, site := range group.sites {
+				calls[site.SitePC] = siteCall{hook: group.name, withSite: req.Auto, copySize: copySize}
+			}
+		}
+		if req.Entry {
+			hooks = append(hooks, scalarHook(e.entryName, e.ctxType)...)
+			plan = append(plan, LookupHook{Name: e.entryName, Kind: HookEntry})
+		}
+		if req.TailCalls {
+			hooks = append(hooks, scalarHook(e.tailName, e.ctxType, "site", "index")...)
+			hook := LookupHook{Name: e.tailName, Kind: HookTailCall}
+			for _, site := range e.tails {
+				hook.Sites = append(hook.Sites, site.LookupSite)
+				calls[site.SitePC] = siteCall{hook: e.tailName, withSite: true, tailCall: true, localCtx: site.local}
+			}
+			plan = append(plan, hook)
 		}
 	}
-	var entryHook string
-	if req.Entry {
-		entryHook = e.entryName
-		hooks = append(hooks, scalarHook(e.entryName, e.ctxType)...)
-		plan = append(plan, LookupHook{Name: e.entryName, Kind: HookEntry})
-	}
-	if req.TailCalls {
-		hooks = append(hooks, scalarHook(e.tailName, e.ctxType, "site", "index")...)
-		hook := LookupHook{Name: e.tailName, Kind: HookTailCall}
-		for _, site := range e.tails {
-			hook.Sites = append(hook.Sites, site.LookupSite)
-			calls[site.SitePC] = siteCall{hook: e.tailName, withSite: true, tailCall: true, localCtx: site.local}
-		}
-		plan = append(plan, hook)
-	}
-	out, err := spliceLookupCalls(e.insns, calls, req.Stack, hooks, entryHook)
+	out, err := spliceLookupCalls(e.insns, calls, req.Stack, hooks, entry)
 	return out, plan, err
+}
+
+// entryCall is the hook called right after the entry ctx spill, if on. A
+// dispatch entry call also passes DispatchEntrySite and NULL pointers.
+type entryCall struct {
+	name     string
+	on       bool
+	dispatch bool
 }
 
 // siteCall is the hook a helper site calls, whether it passes its SitePC and
 // the lookup's map pointer, and whether the site is a bpf_tail_call rather
 // than a lookup. A localCtx tail call saves its own ctx before the helper. A
+// tail call withMap calls a dispatch hook, which takes the prog array. A
 // nonzero copySize passes a stack copy of that many value bytes.
 type siteCall struct {
 	hook     string
@@ -964,21 +1047,32 @@ func spliceLookup(input asm.Instructions, sitePCs []uint32, req LookupRequest) (
 	for _, pc := range sitePCs {
 		calls[pc] = siteCall{hook: req.HookName}
 	}
-	return spliceLookupCalls(input, calls, req.Stack, nil, "")
+	return spliceLookupCalls(input, calls, req.Stack, nil, entryCall{})
 }
 
 // spliceLookupCalls instruments each helper in calls and places hook right
-// after the entry function. A non-empty entryHook is called with ctx right
-// after the entry ctx spill. The caller has checked that every slot the
-// calls use lies within the stack (CheckLookupStack and groupStackReach, or
-// spliceLookup).
-func spliceLookupCalls(input asm.Instructions, calls map[uint32]siteCall, stack StackAudit, hook asm.Instructions, entryHook string) (asm.Instructions, error) {
+// after the entry function. An entry hook is called with ctx right after the
+// entry ctx spill. The caller has checked that every slot the calls use lies
+// within the stack (CheckLookupStack and groupStackReach, or spliceLookup).
+func spliceLookupCalls(input asm.Instructions, calls map[uint32]siteCall, stack StackAudit, hook asm.Instructions, entryHook entryCall) (asm.Instructions, error) {
 	slots := lookupSlots(stack.LowestOffset)
 	ctx, key, spillR0, mapSlot := int16(slots.ctx), int16(slots.key), int16(slots.result), int16(slots.mapSlot)
 	copyAt := func(call siteCall) int { return slots.copyAt(call.copySize) }
 	// Every site of every hook shares the slots: sites run one at a time.
 	// A tail-call site keeps its index (R3) in the key slot.
 	afterFor := func(pc uint32, call siteCall) asm.Instructions {
+		if call.tailCall && call.withMap {
+			// A dispatch hook takes the index by pointer to its spill and the
+			// prog array as the map.
+			return asm.Instructions{
+				asm.LoadMem(asm.R1, asm.RFP, ctx, asm.DWord),
+				asm.Mov.Imm32(asm.R2, int32(pc)),
+				asm.Mov.Reg(asm.R3, asm.RFP), asm.Add.Imm(asm.R3, int32(key)),
+				asm.Mov.Imm(asm.R4, 0),
+				asm.LoadMem(asm.R5, asm.RFP, mapSlot, asm.DWord),
+				asm.Call.Label(call.hook),
+			}
+		}
 		if call.tailCall {
 			// bpf_tail_call returned, so the tail call failed. The verifier
 			// leaves R0-R5 unreadable after it, so nothing needs restoring.
@@ -1017,6 +1111,9 @@ func spliceLookupCalls(input asm.Instructions, calls map[uint32]siteCall, stack 
 	before := func(call siteCall) asm.Instructions {
 		if call.tailCall {
 			spill := asm.Instructions{asm.StoreMem(asm.RFP, key, asm.R3, asm.DWord)}
+			if call.withMap {
+				spill = append(spill, asm.StoreMem(asm.RFP, mapSlot, asm.R2, asm.DWord))
+			}
 			if call.localCtx {
 				// The slot offsets are the same in every frame; the stack
 				// audit covers direct R10 references in all functions.
@@ -1037,8 +1134,14 @@ func spliceLookupCalls(input asm.Instructions, calls map[uint32]siteCall, stack 
 	// At entry only R1 and R10 are initialized, so the entry hook may clobber
 	// R0-R5; ctx is reloaded into R1.
 	prologue := asm.Instructions{}
-	if entryHook != "" {
-		prologue = asm.Instructions{asm.Call.Label(entryHook), asm.LoadMem(asm.R1, asm.RFP, ctx, asm.DWord)}
+	if entryHook.dispatch && entryHook.on {
+		// The callee reads every argument register, so none may be left
+		// uninitialized.
+		prologue = asm.Instructions{asm.Mov.Imm32(asm.R2, -1) /* DispatchEntrySite */, asm.Mov.Imm(asm.R3, 0),
+			asm.Mov.Imm(asm.R4, 0), asm.Mov.Imm(asm.R5, 0)}
+	}
+	if entryHook.on {
+		prologue = append(prologue, asm.Call.Label(entryHook.name), asm.LoadMem(asm.R1, asm.RFP, ctx, asm.DWord))
 	}
 	hookSlots := int(hook.Size() / asm.InstructionSize)
 	hookAt := -1

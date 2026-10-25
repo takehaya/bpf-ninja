@@ -52,6 +52,7 @@ type LookupRequestRaw struct {
 	TailCalls       bool // see LookupRequest.TailCalls
 	CopyReadOnly    bool // see LookupRequest.CopyReadOnly
 	StaticUntrusted bool // see LookupRequest.StaticUntrusted
+	Dispatch        bool // see LookupRequest.Dispatch
 	HookName        string
 	Stack           StackAudit
 }
@@ -94,15 +95,18 @@ type LookupResultRaw struct {
 // against a dropped field).
 func (r LookupRequestRaw) Request() LookupRequest {
 	return LookupRequest{Site: r.Site, Auto: r.Auto, Entry: r.Entry, TailCalls: r.TailCalls,
-		CopyReadOnly: r.CopyReadOnly, StaticUntrusted: r.StaticUntrusted, HookName: r.HookName, Stack: r.Stack}
+		CopyReadOnly: r.CopyReadOnly, StaticUntrusted: r.StaticUntrusted, Dispatch: r.Dispatch, HookName: r.HookName, Stack: r.Stack}
 }
 
 // hookSuffix is the longest fixed suffix the transform appends to HookName
-// for req: "_tail_call" with TailCalls, "_entry" with Entry, and "_0" with
-// Auto, whose per-map names that would pass MaxHookName fall back to
-// HOOKNAME_<index>; a group whose name still does not fit is skipped.
+// for req: none with Dispatch, whose one hook is HookName itself,
+// "_tail_call" with TailCalls, "_entry" with Entry, and "_0" with Auto, whose
+// per-map names that would pass MaxHookName fall back to HOOKNAME_<index>; a
+// group whose name still does not fit is skipped.
 func hookSuffix(r LookupRequest) string {
 	switch {
+	case r.Dispatch:
+		return ""
 	case r.TailCalls:
 		return "_tail_call"
 	case r.Entry:
@@ -114,13 +118,17 @@ func hookSuffix(r LookupRequest) string {
 }
 
 // ValidateRaw checks the parts of req that do not depend on the program: the
-// hook name, with room for the suffix the transform appends (hookSuffix), and
-// the audited stack bound (CheckLookupStack). syscallhook.Validate calls it,
-// so a configuration check and the transform share these limits.
+// hook name, with room for the suffix the transform appends (hookSuffix),
+// Dispatch without CopyReadOnly, and the audited stack bound
+// (CheckLookupStack). syscallhook.Validate calls it, so a configuration check
+// and the transform share these limits.
 func ValidateRaw(req LookupRequestRaw) error {
 	r := req.Request()
 	if !validIdent(r.HookName) {
 		return refuse("HookName %q must be a valid C/BTF identifier (1-%d chars, [A-Za-z_][A-Za-z0-9_]*)", r.HookName, MaxHookName)
+	}
+	if r.Dispatch && r.CopyReadOnly {
+		return refuse("Dispatch passes untrusted pointers; it does not combine with CopyReadOnly")
 	}
 	if suffix := hookSuffix(r); len(r.HookName)+len(suffix) > MaxHookName {
 		return refuse("HookName %q with the suffix %q exceeds %d bytes", r.HookName, suffix, MaxHookName)

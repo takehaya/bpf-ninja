@@ -120,6 +120,29 @@ The hook names are `HookName` with the suffix appended, and `Auto` lookup hooks 
 `LookupResult.Hooks` lists lookup hooks first, then the entry hook, then the tail-call hook; `LookupHook.Kind` tells them apart.
 `Site` is the zero value and `Sites` is empty when no lookup is instrumented.
 
+### One dispatch hook
+
+With `LookupRequest.Dispatch`, every instrumented site calls one hook named `HookName`, with the generic hook's signature:
+
+```c
+int HOOK(struct xdp_md *ctx, u32 site, const void *key, const void *value, const void *map);
+```
+
+| Caller | `site` | `key` | `value` | `map` |
+|---|---|---|---|---|
+| Lookup hit | `SitePC` | the key | the result | R1 at the lookup |
+| Entry (`Entry`) | `DispatchEntrySite` (`0xffffffff`) | NULL | NULL | NULL |
+| Failed tail call (`TailCalls`) | `SitePC` | the index register, as a `u64` on the stack | NULL | the prog array |
+
+One observer attach then sees every site of the program, which saves trampolines and observer programs, and is the only way to see more than one site per run on kernels that allow one tracing attach to a program that tail-calls (7.0 to 7.2.5; see `internal/program/tailcall_guard.go`).
+The pointers are tagged `arg:untrusted` as in the generic hook, so the observer reads them with `bpf_probe_read_kernel`; with `StaticUntrusted` the hook is static and empty, and the observer reads every argument as a `u64`.
+The tail-call index is the full register the program passed; the helper uses its low 32 bits.
+`LookupResult.Hooks` keeps its grouping: one element per lookup map (and one for runtime-resolved maps, marked `Generic`), then the entry and the tail-call element, all with `Dispatch` set and the same `Name`.
+`Kind`, `MapName` and `Sites`, whose key and value type names come from BTF, map each `site` the observer sees to its kind and types.
+No suffix is appended to `HookName`.
+Every lookup and tail-call site uses the fourth spill slot in a frame that also calls the hook, so the stack bound must be at least `-448` (see [Supported sites and trust boundary](#supported-sites-and-trust-boundary)); the entry call alone uses only the ctx slot.
+`Dispatch` refuses `CopyReadOnly`, since it passes no typed value.
+
 ```go
 sites, err := inject.DiscoverLookups(elf, "ingress")
 if err != nil {
@@ -230,6 +253,7 @@ The audited bound is rounded down to an 8-byte boundary before allocating the sl
 A lookup site's frame also calls its hook, which kernels that round frames to 32 bytes count as 32 bytes of the 512-byte combined stack, so a site needs `-456` for three slots and `-448` for four; `Auto` skips a site past that, and explicit selection refuses it.
 `CheckLookupStack`, which inject-run's configuration check also calls, requires `-456` when the request may hold a lookup site (`Site` or `Auto`).
 Without one, the entry hook's frame holds only the 8-byte ctx slot and a tail-call site's frame the ctx and index slots, so `Entry` alone needs `-472` and `TailCalls` (with or without `Entry`) `-464`.
+With `Dispatch`, a lookup or tail-call site also fills the map slot, so such a request needs `-448`; `Entry` alone still needs `-472`.
 The transform checks direct R10 references throughout the flattened selected program.
 It does not infer stack usage through aliases; the call-chain check counts a function that copies R10 at the audited bound.
 
@@ -279,6 +303,10 @@ call HOOK_tail_call
 
 The key slot is free here because no lookup is in progress.
 R0 is not saved: the verifier treats R0 as unreadable after `bpf_tail_call`.
+
+With `Dispatch`, every lookup site is set up as a generic-hook site.
+A tail call also saves R2 into `map_slot` before the helper, and after it passes `r3 = r10 + key_slot`, `r4 = 0` and `r5 = map_slot` instead of loading the index; there is no `w3 = w3`.
+The entry call is preceded by `w2 = -1` and zeroing R3 to R5, since the hook reads every argument register.
 
 The generated hook is placed immediately after the entry function (before any other subprograms or callbacks, or at the end of the program when there are none).
 It reads `ctx->data`, checks its independently verified memory arguments for null, reads one byte from each non-null key/value pointer, and returns zero.
@@ -338,6 +366,7 @@ In general it is the sum of:
 
 The hooks are placed together right after the entry function.
 `TestLookupInsertedSlots` pins these counts.
+With `Dispatch`, it is `1 + 11*len(Sites)`, plus 6 for `Entry`, 9 per tail call (10 outside the entry function), and the one 6-slot hook (2 slots when static).
 `SourceChecksum` and `TransformedChecksum` cover the raw instruction encoding, with symbolic calls and callback loads unresolved.
 They exclude BTF, source lines, CO-RE metadata, and symbolic/map references; they do not identify the fully loaded kernel artifact.
 The ELF SHA-256 binds the full input.

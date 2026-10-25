@@ -574,6 +574,9 @@ func hookSummary(result *inject.LookupResultRaw) string {
 		if hook.Static {
 			b.WriteString(", static")
 		}
+		if hook.Dispatch {
+			b.WriteString(", dispatch")
+		}
 		for j, site := range hook.Sites {
 			if j == 0 {
 				b.WriteString(", site pc")

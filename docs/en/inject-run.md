@@ -56,6 +56,7 @@ The naming and hook ABI are described in [lookup-site-injection.md](lookup-site-
 `"tail_calls": true` adds `HOOK_tail_call(ctx, u32 site, u32 index)`, called when a `bpf_tail_call` anywhere in the program fails.
 Either can be combined with a lookup rule, or used without `map` or `auto` to instrument no lookup.
 `"copy_read_only": true` passes a stack copy of a `BPF_F_RDONLY_PROG` map's value to a typed hook instead of an `arg:untrusted` one, so kernels that reject `arg:untrusted` (6.15 and older in the CI matrix) load it; see [lookup-site-injection.md](lookup-site-injection.md#supported-sites-and-trust-boundary).
+`"dispatch": true` sends every instrumented site, lookups, the entry and failed tail calls, to one hook named `hook` with the generic signature, so one observer attach sees them all; it needs `stack_lowest_offset` of at least -448 (with only `entry`, -472 as without `dispatch`) and cannot be combined with `copy_read_only` ([lookup-site-injection.md](lookup-site-injection.md#one-dispatch-hook)).
 `"static_untrusted": true` makes every hook that would take `arg:untrusted` pointers, the generic hook included, a static function instead, which those kernels also load; an observer then reads all of its arguments as `u64` values (same section).
 See [lookup-site-injection.md](lookup-site-injection.md#entry-and-tail-call-hooks), including why any hook in a program that uses `bpf_tail_call` needs the JIT on a supported architecture; without it the transformed load fails and the original program is loaded (or refused with `--fail-closed`).
 
@@ -64,11 +65,11 @@ See [lookup-site-injection.md](lookup-site-injection.md#entry-and-tail-call-hook
 ```
 
 `stack_lowest_offset` is mandatory: it is an explicit audit of the deepest stack access, including aliases and callees, not an inferred value.
-It must be between -456 and 0 for a rule with `map` or `auto`; a rule with only `tail_calls` (and `entry`) allows -464, and one with only `entry` -472.
+It must be between -456 and 0 for a rule with `map` or `auto`; a rule with only `tail_calls` (and `entry`) allows -464, and one with only `entry` -472. With `dispatch`, a rule with `map`, `auto` or `tail_calls` needs -448.
 The transform reserves three eight-byte slots below the audited region, aligned downward (one for `entry` alone, two for `tail_calls` without lookups), four when `auto` finds a lookup whose map a typed hook cannot take, plus the value copy with `copy_read_only` (see the transform's refusal message for the exact bound).
 The frame holding the slots also calls the hook, which kernels that round frames to 32 bytes count as 32 bytes of the 512-byte stack, so the slots must end 480 bytes below the frame.
 Do not copy the example bound without auditing the actual program.
-`hook` must be a C identifier of at most 127 bytes, leaving room for the longest suffix the transform appends: at most 117 bytes with `tail_calls` (`_tail_call`), 121 with `entry` (`_entry`), and 125 with `auto` (`_0`). Under `auto`, a map whose hook name would still not fit is skipped.
+`hook` must be a C identifier of at most 127 bytes, leaving room for the longest suffix the transform appends: at most 117 bytes with `tail_calls` (`_tail_call`), 121 with `entry` (`_entry`), and 125 with `auto` (`_0`); with `dispatch` the hook is named `hook` itself, so up to 127 bytes. Under `auto`, a map whose hook name would still not fit is skipped.
 Unknown JSON fields, duplicate program selectors, trailing JSON, and configurations larger than 1 MiB are rejected before launching.
 
 ## What happens at the syscall boundary

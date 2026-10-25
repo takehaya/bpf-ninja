@@ -17,7 +17,11 @@ import (
 // Hook_entry and Hook_tail_call hooks and allow a rule without lookups.
 // CopyReadOnly passes stack copies of BPF_F_RDONLY_PROG map values to typed
 // hooks, and StaticUntrusted gives the hooks that would take arg:untrusted
-// pointers static linkage (see inject.LookupRequest).
+// pointers static linkage (see inject.LookupRequest). Dispatch sends every
+// site to one hook named Hook (see inject.LookupRequest.Dispatch); a lookup or
+// tail-call site then needs a fourth spill slot in a frame that also calls the
+// hook, so stack_lowest_offset must be at least -448 unless the rule has only
+// entry.
 // StackLowestOffset is the caller's audit of all stack accesses, including
 // aliases and callees (see inject.StackAudit).
 type Rule struct {
@@ -27,6 +31,7 @@ type Rule struct {
 	TailCalls         bool     `json:"tail_calls,omitempty"`
 	CopyReadOnly      bool     `json:"copy_read_only,omitempty"`
 	StaticUntrusted   bool     `json:"static_untrusted,omitempty"`
+	Dispatch          bool     `json:"dispatch,omitempty"`
 	Map               string   `json:"map,omitempty"`
 	Func              string   `json:"func,omitempty"`
 	Line              uint32   `json:"line,omitempty"`
@@ -51,6 +56,7 @@ func (r Rule) request() inject.LookupRequestRaw {
 		TailCalls:       r.TailCalls,
 		CopyReadOnly:    r.CopyReadOnly,
 		StaticUntrusted: r.StaticUntrusted,
+		Dispatch:        r.Dispatch,
 		HookName:        r.Hook,
 		Stack:           inject.StackAudit{LowestOffset: lo},
 	}

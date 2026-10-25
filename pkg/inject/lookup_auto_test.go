@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -902,6 +903,75 @@ func TestLookupStaticUntrusted(t *testing.T) {
 	}
 }
 
+// Dispatch generates one generic hook named HookName for every site and
+// reports the sites grouped as without it.
+func TestLookupDispatch(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		fixture *ebpf.CollectionSpec
+		req     func(*LookupRequest)
+		kinds   []HookKind
+	}{
+		{"auto+entry", multiMapFixture(), func(r *LookupRequest) { r.Entry = true }, []HookKind{HookLookup, HookLookup, HookEntry}},
+		{"single site", lookupFixture(), func(r *LookupRequest) { r.Auto, r.Site = false, LookupSelector{MapName: "sessions"} }, []HookKind{HookLookup}},
+		{"generic", mapInMapFixture(), func(*LookupRequest) {}, []HookKind{HookLookup}},
+	} {
+		req := autoReq()
+		req.Dispatch = true
+		tc.req(&req)
+		plan, err := transformLookup(tc.fixture, req)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		var kinds []HookKind
+		for _, hook := range plan.hooks {
+			if hook.Name != req.HookName || !hook.Dispatch || !hook.Untrusted || hook.Static {
+				t.Fatalf("%s: hook %+v", tc.name, hook)
+			}
+			kinds = append(kinds, hook.Kind)
+		}
+		if !slices.Equal(kinds, tc.kinds) {
+			t.Fatalf("%s: kinds %v, want %v", tc.name, kinds, tc.kinds)
+		}
+		insns := tc.fixture.Programs["p"].Instructions
+		var funcs []string
+		for _, ins := range insns {
+			if fn := btf.FuncMetadata(&ins); fn != nil {
+				funcs = append(funcs, fn.Name)
+			}
+		}
+		if len(funcs) != 2 || funcs[1] != req.HookName || len(hookParams(t, insns, req.HookName)) != 5 {
+			t.Fatalf("%s: functions %v", tc.name, funcs)
+		}
+		assertNoPointerCompare(t, insns, req.HookName)
+	}
+	// The entry spill, 6 entry, 11 lookup and 9 tail-call slots, and the
+	// 6-slot hook (2 when static).
+	for static, want := range map[bool]int{false: 33, true: 29} {
+		spec := dispatchFixture()
+		before := spec.Programs["p"].Instructions.Size()
+		req := autoReq()
+		req.Dispatch, req.Entry, req.TailCalls, req.StaticUntrusted = true, true, true, static
+		if _, err := transformLookup(spec, req); err != nil {
+			t.Fatal(err)
+		}
+		if got := int(spec.Programs["p"].Instructions.Size()-before) / asm.InstructionSize; got != want {
+			t.Fatalf("static=%v: %d inserted slots, want %d", static, got, want)
+		}
+	}
+	req := autoReq()
+	req.Dispatch, req.CopyReadOnly = true, true
+	if _, err := transformLookup(multiMapFixtureFlags(bpfFRdonlyProg), req); !errors.Is(err, ErrRefused) {
+		t.Fatalf("Dispatch with CopyReadOnly: %v", err)
+	}
+	// No suffix is appended, so the longest hook name is accepted.
+	req = autoReq()
+	req.Dispatch, req.Entry, req.HookName = true, true, strings.Repeat("h", MaxHookName)
+	if _, err := transformLookup(multiLookupFixture(), req); err != nil {
+		t.Fatalf("longest dispatch hook name: %v", err)
+	}
+}
+
 // assertNoPointerCompare checks that hook's body has no conditional jump: an
 // arg:untrusted pointer compared with zero needs CAP_PERFMON.
 func assertNoPointerCompare(t *testing.T, insns asm.Instructions, hook string) {
@@ -958,6 +1028,9 @@ func TestValidateRaw(t *testing.T) {
 		{"auto-entry-122", LookupRequestRaw{Auto: true, Entry: true, HookName: h(122)}, `suffix "_entry"`},
 		{"tails-117", LookupRequestRaw{TailCalls: true, HookName: h(117)}, ""},
 		{"tails-118", LookupRequestRaw{TailCalls: true, HookName: h(118)}, `suffix "_tail_call"`},
+		{"dispatch-127", LookupRequestRaw{Auto: true, Entry: true, TailCalls: true, Dispatch: true, HookName: h(MaxHookName), Stack: StackAudit{LowestOffset: -448}}, ""},
+		{"dispatch-copy", LookupRequestRaw{Auto: true, Dispatch: true, CopyReadOnly: true, HookName: "h"}, "does not combine with CopyReadOnly"},
+		{"dispatch-stack", LookupRequestRaw{TailCalls: true, Dispatch: true, HookName: "h", Stack: StackAudit{LowestOffset: -449}}, "32 reserved bytes"},
 		{"stack", LookupRequestRaw{Site: m, HookName: "h", Stack: StackAudit{LowestOffset: -457}}, "Stack.LowestOffset -457 leaves no room"},
 	} {
 		err := ValidateRaw(tc.req)
