@@ -10,14 +10,17 @@ bpf-ninja を使うときは、導入、目的に合う手順、式の詳細の�
 |---|---|
 | 必要条件を確認して導入する | [Getting started](getting-started.md) |
 | ロードせずフィルタを確認する | [Examples](examples/README.md) |
-| mode、出力、set の操作を調べる | [利用ガイド](dsl-usage.md) |
-| command と flag の現在の定義を見る | `./bpf-ninja --help`、`./bpf-ninja set --help`、各 subcommand の `--help` |
+| mode、出力、set の操作を調べる | [capture](cli/capture.md)、[output](cli/output.md)、[sets](cli/sets.md) |
+| command、flag、protocol の現在の定義を見る | [CLI reference](cli/README.md) |
 | フィルタを書く | [DSL 索引](dsl-overview.md)、[文法](dsl-grammar.md)、[型と意味](dsl-types.md) |
 | 終了とファイルの完成を判断する | [Capture lifecycle](../capture-lifecycle.md)（英語） |
 | 環境を用意して動作確認する | [手動試験](handtest.md)、[privileged tests](../privileged-tests.md)（英語） |
 | 性能を測って調整する | [Tuning](tuning.md) |
+| 起動、0件、未完成の出力を切り分ける | [Troubleshooting](troubleshooting.md) |
 
 ## 実装と設計判断
+
+[Architecture の地図](architecture/README.md)から、処理の順序とコードの責務を辿れます。
 
 - [Capture datapath](capture-datapath.md)：カーネルから出力までの実装。
 - [DSL internals](dsl-internals.md)：compiler と host ABI。
@@ -27,6 +30,8 @@ bpf-ninja を使うときは、導入、目的に合う手順、式の詳細の�
 - [Lean 仕様](../../spec/lean/README.md)と[意味論の決定記録](../../spec/lean/DECISIONS.md)：実装の説明と区別して読む形式モデル。
 
 ## 研究と公開成果
+
+[Research 索引](research/README.md)で資料の種類、対象版、根拠、再現範囲を確認できます。
 
 - [DSL benchmark](dsl-benchmark.md)：比較方法と測定対象。
 - [attach under load の調査](attach-under-load-rcu-finding.md)：特定条件での観測と仮説。
