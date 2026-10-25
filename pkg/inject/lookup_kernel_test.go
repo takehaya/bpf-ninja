@@ -343,10 +343,21 @@ func TestBpfLookupInjectionCallback(t *testing.T) {
 // Auto instruments both maps with separate typed hooks. Each observer sees
 // only its own map's lookups, and the site argument is the reported SitePC.
 func TestBpfLookupInjectionAutoMultiMap(t *testing.T) {
+	testAutoMultiMap(t, multiMapFixture)
+}
+
+// The flows map is read-only for programs, so its hook takes untrusted
+// pointers; the observer reads the same key and value through them.
+func TestBpfLookupInjectionReadOnlyMap(t *testing.T) {
+	testAutoMultiMap(t, func() *ebpf.CollectionSpec { return multiMapFixtureFlags(bpfFRdonlyProg) })
+}
+
+func testAutoMultiMap(t *testing.T, fixture func() *ebpf.CollectionSpec) {
+	t.Helper()
 	testutil.SkipIfNotRoot(t)
-	plain := loadOrSkip(t, multiMapFixture())
+	plain := loadOrSkip(t, fixture())
 	t.Cleanup(plain.Close)
-	work := multiMapFixture()
+	work := fixture()
 	plan, err := transformLookup(work, LookupRequest{ProgramName: "p", Auto: true,
 		HookName: "obs", Stack: StackAudit{LowestOffset: -8}})
 	if err != nil {

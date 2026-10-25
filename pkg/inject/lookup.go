@@ -83,13 +83,18 @@ const (
 // instruction order. An entry hook has no sites; a tail-call hook's sites are
 // bpf_tail_call helpers with only location fields set. TypeID and FuncInfo are
 // set by TransformLookupRaw only.
+//
+// Untrusted is set for a lookup hook on a map that programs cannot write
+// (BPF_F_RDONLY_PROG). Its key and value are const void * tagged
+// arg:untrusted, so an observer reads them by the map's sizes.
 type LookupHook struct {
-	Name     string
-	Kind     HookKind
-	MapName  string
-	Sites    []LookupSite
-	TypeID   btf.TypeID
-	FuncInfo []byte
+	Name      string
+	Kind      HookKind
+	MapName   string
+	Sites     []LookupSite
+	Untrusted bool
+	TypeID    btf.TypeID
+	FuncInfo  []byte
 }
 
 // LookupResult reports the selected original sites and the transformed clone.
@@ -296,11 +301,6 @@ func checkLookupMap(m *RawMap) error {
 	case ebpf.Hash, ebpf.Array, ebpf.PerCPUHash, ebpf.PerCPUArray, ebpf.LRUHash, ebpf.LRUCPUHash, ebpf.LPMTrie:
 	default:
 		return refuse("map type %s is unsupported", m.Type)
-	}
-	// The verifier checks a global function's memory arguments for writes
-	// as well as reads, even through const pointers.
-	if m.Flags&bpfFRdonlyProg != 0 {
-		return refuse("map is read-only for programs; the hook's value argument would be checked for writes")
 	}
 	for _, field := range []struct {
 		name string
@@ -593,8 +593,9 @@ func transformLookupProgram(insns asm.Instructions, typ ebpf.ProgramType, types 
 	for _, group := range groups {
 		m := group.sites[0].mapInfo
 		key, value := lookupABI(m)
-		hooks = append(hooks, lookupHook(group.name, ctxType, key, value, req.Auto)...)
-		hook := LookupHook{Name: group.name, Kind: HookLookup, MapName: group.sites[0].MapName, Sites: publicLookupSites(group.sites)}
+		untrusted := m.Flags&bpfFRdonlyProg != 0
+		hooks = append(hooks, lookupHook(group.name, ctxType, key, value, req.Auto, untrusted)...)
+		hook := LookupHook{Name: group.name, Kind: HookLookup, MapName: group.sites[0].MapName, Sites: publicLookupSites(group.sites), Untrusted: untrusted}
 		plan.hooks = append(plan.hooks, hook)
 		for _, site := range group.sites {
 			calls[site.SitePC] = siteCall{hook: group.name, withSite: req.Auto}
@@ -776,12 +777,20 @@ func scalarHook(name string, ctx btf.Type, scalars ...string) asm.Instructions {
 	return asm.Instructions{head, asm.Mov.Imm(asm.R0, 0), asm.Return()}
 }
 
-func lookupHook(name string, ctx, key, value btf.Type, withSite bool) asm.Instructions {
+// lookupHook generates a hook taking const KEY * and const VALUE *. With
+// untrusted, both are const void * tagged arg:untrusted instead: the verifier
+// checks an ordinary global-function memory argument for writes, even through
+// const, which a value of a BPF_F_RDONLY_PROG map fails; an untrusted one is
+// not checked at the call and is read with fault-handled loads.
+func lookupHook(name string, ctx, key, value btf.Type, withSite, untrusted bool) asm.Instructions {
 	params := []btf.FuncParam{{Name: "ctx", Type: ctx}}
 	keyReg, valueReg := asm.R2, asm.R3
 	if withSite {
 		params = append(params, btf.FuncParam{Name: "site", Type: &btf.Int{Name: "u32", Size: 4}})
 		keyReg, valueReg = asm.R3, asm.R4
+	}
+	if untrusted {
+		key, value = &btf.Void{}, &btf.Void{}
 	}
 	params = append(params,
 		btf.FuncParam{Name: "key", Type: &btf.Pointer{Target: &btf.Const{Type: key}}},
@@ -789,6 +798,11 @@ func lookupHook(name string, ctx, key, value btf.Type, withSite bool) asm.Instru
 	fn := &btf.Func{Name: name, Linkage: btf.GlobalFunc, Type: &btf.FuncProto{
 		Return: &btf.Int{Name: "int", Size: 4, Encoding: btf.Signed}, Params: params,
 	}}
+	if untrusted {
+		fn.ParamTags = make([][]string, len(params))
+		fn.ParamTags[len(params)-2] = []string{"arg:untrusted"}
+		fn.ParamTags[len(params)-1] = []string{"arg:untrusted"}
+	}
 	// Global functions are verified independently with nullable memory args.
 	// Actual reads keep every argument live, even after dead-register pruning.
 	head := btf.WithFuncMetadata(asm.LoadMem(asm.R0, asm.R1, 0, asm.Word).WithSymbol(name).

@@ -166,8 +166,12 @@ Only the selected program changes, including when other programs share a linked 
 
 Supported maps are hash, array, per-CPU hash/array, LRU hash/per-CPU hash, and LPM trie maps.
 An LPM trie hook receives the query key, not the matched prefix.
-Maps created with `BPF_F_RDONLY_PROG` are not supported: the verifier checks a global function's memory arguments for writes as well as reads, even through `const` pointers, so passing their values to the hook is rejected.
-For the same reason, a key that points into read-only memory (for example, a value of such a map) makes the verifier reject the transformed program; discovery does not detect this.
+The verifier checks a global function's memory arguments for writes as well as reads, even through `const` pointers.
+A value of a map created with `BPF_F_RDONLY_PROG` fails that check, so the hook for such a map takes `const void *key` and `const void *value` tagged `arg:untrusted` instead, and `LookupHook.Untrusted` is set.
+The verifier does not check an untrusted argument at the call and reads it in the hook with fault-handled loads.
+An observer reads these arguments by the map's key and value sizes; the hook's BTF no longer carries their types.
+Kernels without the `arg:untrusted` tag reject the transformed program.
+A key that points into read-only memory (for example, a value of such a map) passed to a typed hook also makes the verifier reject the transformed program; discovery does not detect this.
 A key or value with BTF must have a nonzero size exactly matching the map's key or value size.
 The hook retains these types, including typedefs and qualifiers, under `const` pointer parameters.
 A side the map declares only by size, such as `__uint(key_size, 4)`, has no BTF; the hook takes it as an anonymous `struct { u8 bytes[N]; }` of the map's size.

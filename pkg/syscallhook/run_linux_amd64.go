@@ -522,6 +522,9 @@ func hookSummary(result *inject.LookupResultRaw) string {
 		if hook.MapName != "" {
 			fmt.Fprintf(&b, " map %q", hook.MapName)
 		}
+		if hook.Untrusted {
+			b.WriteString(", untrusted pointers")
+		}
 		for j, site := range hook.Sites {
 			if j == 0 {
 				b.WriteString(", site pc")

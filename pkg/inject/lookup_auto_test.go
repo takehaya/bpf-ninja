@@ -259,23 +259,31 @@ func TestTailCallRawParity(t *testing.T) {
 	}
 }
 
-// A value from a map that programs cannot write fails the verifier's write
-// check on the hook's memory argument, so such lookups are not instrumented.
+// A map that programs cannot write gets a hook whose key and value are
+// const void * tagged arg:untrusted; other maps keep their typed hooks.
 func TestLookupReadOnlyMap(t *testing.T) {
-	spec := multiMapFixture()
-	spec.Maps["flows"].Flags = bpfFRdonlyProg
-	sites, err := discoverLookups(spec, "p")
-	if err != nil || len(sites) != 2 || sites[0].Reason != "" || sites[1].Reason == "" {
-		t.Fatalf("sites=%+v err=%v", sites, err)
-	}
-	req := lookupReq()
-	req.Site.MapName = "flows"
-	if _, err := transformLookup(multiMapFixtureFlags(bpfFRdonlyProg), req); !errors.Is(err, ErrRefused) {
-		t.Fatalf("selected read-only map: %v", err)
-	}
-	plan, err := transformLookup(multiMapFixtureFlags(bpfFRdonlyProg), autoReq())
-	if err != nil || len(plan.hooks) != 1 || plan.hooks[0].MapName != "sessions" || len(plan.skipped) != 1 {
+	work := multiMapFixtureFlags(bpfFRdonlyProg)
+	plan, err := transformLookup(work, autoReq())
+	if err != nil || len(plan.hooks) != 2 || len(plan.skipped) != 0 {
 		t.Fatalf("auto: %+v %v", plan, err)
+	}
+	for _, hook := range plan.hooks {
+		if hook.Untrusted != (hook.MapName == "flows") {
+			t.Fatalf("hook %s untrusted=%v", hook.Name, hook.Untrusted)
+		}
+		var fn *btf.Func
+		for _, ins := range work.Programs["p"].Instructions {
+			if f := btf.FuncMetadata(&ins); f != nil && f.Name == hook.Name {
+				fn = f
+			}
+		}
+		params := fn.Type.(*btf.FuncProto).Params
+		_, void := params[3].Type.(*btf.Pointer).Target.(*btf.Const).Type.(*btf.Void)
+		tagged := len(fn.ParamTags) == 4 && reflect.DeepEqual(fn.ParamTags[2], []string{"arg:untrusted"}) &&
+			reflect.DeepEqual(fn.ParamTags[3], []string{"arg:untrusted"})
+		if void != hook.Untrusted || tagged != hook.Untrusted {
+			t.Fatalf("hook %s: void=%v tags=%v", hook.Name, void, fn.ParamTags)
+		}
 	}
 }
 
