@@ -73,6 +73,8 @@ func TestValidateStack(t *testing.T) {
 	}
 	// Without a lookup, entry reserves only the ctx slot and tail_calls the
 	// ctx and index slots; auto may find a lookup and reserves all three.
+	// Dispatch adds the map slot to lookup and tail-call sites, not to the
+	// entry call.
 	flagged := func(lo int16, set func(*Rule)) Rule {
 		r := Rule{Program: "p", Hook: "h", StackLowestOffset: &lo}
 		set(&r)
@@ -81,15 +83,23 @@ func TestValidateStack(t *testing.T) {
 	entry := func(r *Rule) { r.Entry = true }
 	tails := func(r *Rule) { r.TailCalls = true }
 	auto := func(r *Rule) { r.Auto, r.Entry = true, true }
+	dispatch := func(set func(*Rule)) func(*Rule) { return func(r *Rule) { set(r); r.Dispatch = true } }
 	for _, tc := range []struct {
-		lo  int16
-		set func(*Rule)
-		ok  bool
-	}{{-472, entry, true}, {-473, entry, false}, {-464, tails, true}, {-465, tails, false}, {-456, auto, true}, {-464, auto, false}} {
+		lo      int16
+		set     func(*Rule)
+		ok      bool
+		reserve string
+	}{
+		{-472, entry, true, ""}, {-473, entry, false, "8 reserved"}, {-464, tails, true, ""}, {-465, tails, false, "16 reserved"},
+		{-456, auto, true, ""}, {-464, auto, false, "24 reserved"},
+		{-472, dispatch(entry), true, ""}, {-473, dispatch(entry), false, "8 reserved"},
+		{-448, dispatch(tails), true, ""}, {-449, dispatch(tails), false, "32 reserved"},
+		{-448, dispatch(auto), true, ""}, {-449, dispatch(auto), false, "32 reserved"}, {-456, dispatch(auto), false, "32 reserved"},
+	} {
 		r := flagged(tc.lo, tc.set)
 		got := Validate([]Rule{r})
 		want := inject.ValidateRaw(r.request())
-		if (got == nil) != tc.ok || (want == nil) != tc.ok || (got != nil && !strings.Contains(got.Error(), want.Error())) {
+		if (got == nil) != tc.ok || (want == nil) != tc.ok || (got != nil && (!strings.Contains(got.Error(), want.Error()) || !strings.Contains(got.Error(), tc.reserve))) {
 			t.Fatalf("%+v: Validate=%v, CheckLookupStack=%v", r, got, want)
 		}
 	}

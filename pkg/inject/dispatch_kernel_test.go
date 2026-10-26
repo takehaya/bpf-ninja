@@ -218,3 +218,30 @@ func testDispatch(t *testing.T, static bool) {
 		}
 	}
 }
+
+// With Dispatch a tail call in the entry function spills the prog array into
+// the map slot, so that frame reaches one slot deeper than with the scalar
+// tail-call hook. The transform refuses at the bound where that crosses the
+// caller-depth limit and loads one slot under it; the original at the refused
+// bound still loads. The hook is static so every kernel loads it.
+func TestBpfDispatchStackLimit(t *testing.T) {
+	testutil.SkipIfNotRoot(t)
+	req := func(bound int16) LookupRequest {
+		return LookupRequest{ProgramName: "caller", TailCalls: true, Dispatch: true, StaticUntrusted: true, HookName: "d", Stack: StackAudit{LowestOffset: bound}}
+	}
+	if _, err := transformLookup(nestedTailCaller(-200), req(-200)); !errors.Is(err, ErrRefused) {
+		t.Fatalf("-200: want refusal, got %v", err)
+	}
+	plain := loadOrSkip(t, nestedTailCaller(-200))
+	t.Cleanup(plain.Close)
+	work := nestedTailCaller(-192)
+	plan, err := transformLookup(work, req(-192))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.hooks) != 1 || plan.hooks[0].Kind != HookTailCall || len(plan.hooks[0].Sites) != 2 {
+		t.Fatalf("plan: %+v", plan)
+	}
+	injected := loadHooked(t, work, plan.hooks)
+	t.Cleanup(injected.Close)
+}
