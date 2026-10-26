@@ -45,6 +45,11 @@ func TestHookSummary(t *testing.T) {
 		{"copy", inject.LookupResultRaw{Hooks: []inject.LookupHook{
 			{Name: "obs_flows", Kind: inject.HookLookup, MapName: "flows", Copied: true, Sites: pcs(18)},
 		}}, `hook "obs_flows" (lookup map "flows", value copied to stack, site pc 18)`},
+		{"dispatch-static", inject.LookupResultRaw{Hooks: []inject.LookupHook{
+			{Name: "d", Kind: inject.HookLookup, MapName: "sessions", Static: true, Dispatch: true, Sites: pcs(13)},
+			{Name: "d", Kind: inject.HookEntry, Static: true, Dispatch: true},
+			{Name: "d", Kind: inject.HookTailCall, Static: true, Dispatch: true, Sites: pcs(20)},
+		}}, `hook "d" (lookup map "sessions", static, dispatch, site pc 13), hook "d" (entry, static, dispatch), hook "d" (tail_call, static, dispatch, site pc 20)`},
 	} {
 		if got := hookSummary(&tc.result); got != tc.want {
 			t.Fatalf("%s:\n got %s\nwant %s", tc.name, got, tc.want)

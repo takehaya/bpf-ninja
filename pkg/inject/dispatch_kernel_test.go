@@ -54,18 +54,26 @@ func dispatchFixture() *ebpf.CollectionSpec {
 }
 
 // dispatchRecord is one observed dispatch call: the site, the first 8 bytes
-// behind key (zero for NULL), and the value and map pointers.
+// behind key and value (zero for NULL) and the id of the bpf_map behind map.
 type dispatchRecord struct {
 	Site  uint32
 	Seen  uint32
 	Key   uint64
 	Value uint64
-	Map   uint64
+	MapID uint32
+	_     uint32
 }
 
 // dispatchObserver appends each call of fn to obs[0..7] in order; cnt[0]
-// counts the calls.
-func dispatchObserver(fn string, target *ebpf.Program) *ebpf.CollectionSpec {
+// counts the calls. The pointer arguments are read with
+// bpf_probe_read_kernel, which zeroes the destination for a NULL pointer.
+func dispatchObserver(t *testing.T, fn string, target *ebpf.Program) *ebpf.CollectionSpec {
+	t.Helper()
+	kernel, err := btf.LoadKernelSpec()
+	if err != nil {
+		t.Fatal(err)
+	}
+	idOffset := bpfMapIDOffset(t, kernel)
 	arg := func(n int32) asm.Instructions {
 		return asm.Instructions{
 			asm.Mov.Reg(asm.R1, asm.R9), asm.Mov.Imm(asm.R2, n),
@@ -73,6 +81,14 @@ func dispatchObserver(fn string, target *ebpf.Program) *ebpf.CollectionSpec {
 			asm.FnGetFuncArg.Call(),
 			asm.JNE.Imm(asm.R0, 0, "done"),
 			asm.LoadMem(asm.R1, asm.RFP, -16, asm.DWord),
+		}
+	}
+	// read copies size bytes from R1+off into the record at dst.
+	read := func(dst, size, off int32) asm.Instructions {
+		return asm.Instructions{
+			asm.Mov.Reg(asm.R3, asm.R1), asm.Add.Imm(asm.R3, off),
+			asm.Mov.Reg(asm.R1, asm.R6), asm.Add.Imm(asm.R1, dst),
+			asm.Mov.Imm(asm.R2, size), asm.FnProbeReadKernel.Call(),
 		}
 	}
 	insns := asm.Instructions{
@@ -95,12 +111,11 @@ func dispatchObserver(fn string, target *ebpf.Program) *ebpf.CollectionSpec {
 	insns = append(insns, arg(1)...)
 	insns = append(insns, asm.StoreMem(asm.R6, 0, asm.R1, asm.Word))
 	insns = append(insns, arg(2)...)
-	insns = append(insns, asm.Mov.Reg(asm.R3, asm.R1), asm.Mov.Reg(asm.R1, asm.R6), asm.Add.Imm(asm.R1, 8),
-		asm.Mov.Imm(asm.R2, 8), asm.FnProbeReadKernel.Call())
+	insns = append(insns, read(8, 8, 0)...)
 	insns = append(insns, arg(3)...)
-	insns = append(insns, asm.StoreMem(asm.R6, 16, asm.R1, asm.DWord))
+	insns = append(insns, read(16, 8, 0)...)
 	insns = append(insns, arg(4)...)
-	insns = append(insns, asm.StoreMem(asm.R6, 24, asm.R1, asm.DWord))
+	insns = append(insns, read(24, 4, idOffset)...)
 	insns = append(insns, asm.Mov.Imm(asm.R0, 0).WithSymbol("done"), asm.Return())
 	return &ebpf.CollectionSpec{ByteOrder: binary.LittleEndian,
 		Maps: map[string]*ebpf.MapSpec{
@@ -148,8 +163,10 @@ func testDispatch(t *testing.T, static bool) {
 	if len(kinds) != 3 || lookupPC != 13 || tailPC != 20 {
 		t.Fatalf("hooks %v, lookup %d, tail call %d", kinds, lookupPC, tailPC)
 	}
-	load := func(spec *ebpf.CollectionSpec) *ebpf.Collection {
-		c, target := loadOrSkip(t, spec), loadOrSkip(t, tailTargetFixture())
+	// hooks is nil for the plain program: only the transformed load may skip
+	// on a kernel without arg:untrusted.
+	load := func(spec *ebpf.CollectionSpec, hooks []LookupHook) *ebpf.Collection {
+		c, target := loadHooked(t, spec, hooks), loadOrSkip(t, tailTargetFixture())
 		t.Cleanup(c.Close)
 		t.Cleanup(target.Close)
 		if err := c.Maps["jmp"].Put(uint32(0), target.Programs["target"]); err != nil {
@@ -160,8 +177,17 @@ func testDispatch(t *testing.T, static bool) {
 		}
 		return c
 	}
-	plain, injected := load(dispatchFixture()), load(work)
-	obs := loadOrSkip(t, dispatchObserver("d", injected.Programs["p"]))
+	plain, injected := load(dispatchFixture(), nil), load(work, plan.hooks)
+	mapID := func(m *ebpf.Map) uint32 {
+		info, err := m.Info()
+		if err != nil {
+			t.Fatal(err)
+		}
+		id, _ := info.ID()
+		return uint32(id)
+	}
+	sessions, jmp := mapID(injected.Maps["sessions"]), mapID(injected.Maps["jmp"])
+	obs := loadOrSkip(t, dispatchObserver(t, "d", injected.Programs["p"]))
 	t.Cleanup(obs.Close)
 	l, err := link.AttachTracing(link.TracingOptions{Program: obs.Programs["observe"], AttachType: ebpf.AttachTraceFEntry})
 	if err != nil {
@@ -171,20 +197,20 @@ func testDispatch(t *testing.T, static bool) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = l.Close() })
-	type want struct {
-		site        uint32
-		key         uint32
-		value, map_ bool
-	}
 	for _, tc := range []struct {
 		key, index uint32
 		action     uint32
-		calls      []want
+		calls      []dispatchRecord
 	}{
-		// Hit, failed tail call.
-		{7, 1, 2, []want{{DispatchEntrySite, 0, false, false}, {lookupPC, 7, true, true}, {tailPC, 1, false, true}}},
+		// Hit, failed tail call: the lookup passes sessions and its value
+		// {3, 9}; the tail call passes the index and the prog array.
+		{7, 1, 2, []dispatchRecord{
+			{Site: DispatchEntrySite, Seen: 1},
+			{Site: lookupPC, Seen: 1, Key: 7, Value: 3, MapID: sessions},
+			{Site: tailPC, Seen: 1, Key: 1, MapID: jmp},
+		}},
 		// Miss, successful tail call: only the entry.
-		{8, 0, 3, []want{{DispatchEntrySite, 0, false, false}}},
+		{8, 0, 3, []dispatchRecord{{Site: DispatchEntrySite, Seen: 1}}},
 	} {
 		if err := obs.Maps["cnt"].Put(uint32(0), uint64(0)); err != nil {
 			t.Fatal(err)
@@ -212,7 +238,8 @@ func testDispatch(t *testing.T, static bool) {
 			if err := obs.Maps["obs"].Lookup(uint32(i), &r); err != nil {
 				t.Fatal(err)
 			}
-			if r.Seen != 1 || r.Site != w.site || uint32(r.Key) != w.key || (r.Value != 0) != w.value || (r.Map != 0) != w.map_ {
+			r.Key = uint64(uint32(r.Key)) // the key slot holds a u32; its upper half is stack
+			if r != w {
 				t.Fatalf("key=%d index=%d call %d: %+v, want %+v", tc.key, tc.index, i, r, w)
 			}
 		}
