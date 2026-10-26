@@ -103,7 +103,7 @@ The helper only returns when the tail call failed (empty slot, index out of rang
 Observers should read both arguments as `u32`: on architectures whose JIT needs explicit zero extension, the upper halves of the argument registers are not defined.
 A tail call outside the entry function cannot reach the entry frame's ctx spill, so it also saves R1, the ctx the helper takes, into `ctx_slot` of its own frame before the helper.
 The stack audit covers direct R10 references in every function, so the same slot offsets are free in that frame.
-They also deepen that frame to the entry program's spill region, which counts toward the verifier's combined stack depth and its limit of 256 bytes for the frames below a tail call; chained subprograms that each tail-call can exceed it after the transform.
+The transform deepens the entry frame to its spill region, and in a program that uses `bpf_tail_call` this counts toward the verifier's limit of 256 bytes for the frames above a tail call (`check_max_stack_depth_subprog`); even a single tail-calling subprogram with a deep entry frame can reach it. When the deepened frame would cross that limit, the transform refuses rather than emit a program the verifier would reject.
 With `TailCalls` and no tail call in the program, the transform is refused.
 
 Every hook is a bpf-to-bpf call, and the verifier only allows bpf-to-bpf calls in a program that also uses `bpf_tail_call` when the program is JIT-compiled on an architecture that supports it (x86-64, arm64, s390, and loongarch; see `check_map_func_compatibility` in `kernel/bpf/verifier.c`).

@@ -375,6 +375,25 @@ func TestTailCallHookRefusalsAndSkips(t *testing.T) {
 	}
 }
 
+// The transform refuses a tail-call program whose entry frame it would deepen
+// to or past the 256-byte caller-depth limit; one slot less transforms.
+func TestTailCallStackLimit(t *testing.T) {
+	for _, tc := range []struct {
+		bound  int16
+		refuse bool
+	}{{-232, false}, {-240, true}} {
+		work := paddedSubTailCaller(tc.bound)
+		_, err := transformLookup(work, LookupRequest{ProgramName: "caller", TailCalls: true, HookName: "obs", Stack: StackAudit{LowestOffset: tc.bound}})
+		if tc.refuse {
+			if !errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), "caller-depth limit") {
+				t.Fatalf("bound %d: want refusal, got %v", tc.bound, err)
+			}
+		} else if err != nil {
+			t.Fatalf("bound %d: %v", tc.bound, err)
+		}
+	}
+}
+
 func TestTailCallRawParity(t *testing.T) {
 	req := LookupRequest{ProgramName: "caller", Entry: true, TailCalls: true, HookName: "h", Stack: StackAudit{LowestOffset: -8}}
 	work := tailCallerFixture()

@@ -270,6 +270,41 @@ func subTailCallerFixture() *ebpf.CollectionSpec {
 	return spec
 }
 
+// paddedSubTailCaller is subTailCallerFixture whose entry frame references
+// R10+bound, so the transform's entry ctx spill lands one slot below it.
+func paddedSubTailCaller(bound int16) *ebpf.CollectionSpec {
+	spec := subTailCallerFixture()
+	insns := spec.Programs["caller"].Instructions
+	entry := insns[0] // Call sub, carrying the caller func metadata
+	pad := btf.WithFuncMetadata(asm.StoreImm(asm.RFP, bound, 0, asm.Word).
+		WithSymbol(entry.Symbol()).WithSource(entry.Source()), btf.FuncMetadata(&entry))
+	entry = btf.WithFuncMetadata(entry.WithSymbol("").WithSource(nil), nil)
+	spec.Programs["caller"].Instructions = append(asm.Instructions{pad, entry}, insns[1:]...)
+	return spec
+}
+
+// At an audited bound where the transform's entry ctx spill crosses the
+// kernel's 256-byte caller-depth limit the transform refuses; one slot less
+// transforms and the kernel loads it. The original at the deeper bound still
+// loads, so it is the transform, not the program, that crosses.
+func TestBpfTailCallStackLimit(t *testing.T) {
+	testutil.SkipIfNotRoot(t)
+	req := func(bound int16) LookupRequest {
+		return LookupRequest{ProgramName: "caller", TailCalls: true, HookName: "obs", Stack: StackAudit{LowestOffset: bound}}
+	}
+	if _, err := transformLookup(paddedSubTailCaller(-240), req(-240)); !errors.Is(err, ErrRefused) {
+		t.Fatalf("-240: want refusal, got %v", err)
+	}
+	plain := loadOrSkip(t, paddedSubTailCaller(-240))
+	t.Cleanup(plain.Close)
+	work := paddedSubTailCaller(-232)
+	if _, err := transformLookup(work, req(-232)); err != nil {
+		t.Fatal(err)
+	}
+	injected := loadOrSkip(t, work)
+	t.Cleanup(injected.Close)
+}
+
 // The tail-call hook also fires for a failed tail call in a subprogram, with
 // the ctx that subprogram passed to the helper.
 func TestBpfTailCallInSubprogram(t *testing.T) {

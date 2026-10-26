@@ -357,6 +357,13 @@ func lookupSlots(lowest int16) (ctx, key, spillR0, mapSlot int) {
 	return floor - 8, floor - 16, floor - 24, floor - 32
 }
 
+// maxCallerDepth is the limit check_max_stack_depth_subprog puts on the summed
+// stack depth of the frames above a bpf_tail_call. The kernel rounds each
+// frame up to 16 bytes before the comparison.
+const maxCallerDepth = 256
+
+func roundUp16(n int) int { return (n + 15) / 16 * 16 }
+
 // LookupStackReserve reports the bytes the transform reserves strictly below
 // the audited floor, as far as a request's flags determine it statically: the
 // three base slots (ctx, key, R0). A generic hook's map slot and a
@@ -674,9 +681,10 @@ func transformLookupProgram(insns asm.Instructions, typ ebpf.ProgramType, types 
 	}
 	sort.Slice(selected, func(i, j int) bool { return selected[i].SitePC < selected[j].SitePC })
 	plan.sites = publicLookupSites(selected)
+	allTails := tailCallSites(insns)
 	var tails []tailCallSite
 	if req.TailCalls {
-		if tails = tailCallSites(insns); len(tails) == 0 {
+		if tails = allTails; len(tails) == 0 {
 			return nil, plan, refuse("TailCalls: no bpf_tail_call in the program")
 		}
 	}
@@ -778,6 +786,35 @@ func transformLookupProgram(insns asm.Instructions, typ ebpf.ProgramType, types 
 			calls[site.SitePC] = siteCall{hook: tailName, withSite: true, tailCall: true, localCtx: site.local}
 		}
 		plan.hooks = append(plan.hooks, hook)
+	}
+	// A bpf_tail_call anywhere makes every frame above it count toward the
+	// kernel's 256-byte caller-depth limit (check_max_stack_depth_subprog). The
+	// transform always deepens the entry frame to the ctx spill, and lookup
+	// sites (entry-function only) reach deeper slots; refuse if that crosses the
+	// limit rather than emit a program the verifier would reject. A tail-call
+	// site spills in the tail-calling frame itself, which the limit does not
+	// count, so those slots are excluded.
+	if len(allTails) > 0 {
+		ctxSlot, _, spillR0, mapSlot := lookupSlots(req.Stack.LowestOffset)
+		deepest := ctxSlot
+		for _, call := range calls {
+			if call.tailCall {
+				continue
+			}
+			off := spillR0
+			if call.withMap {
+				off = mapSlot
+			}
+			if call.copySize > 0 {
+				off = mapSlot - int((call.copySize+7)/8*8)
+			}
+			if off < deepest {
+				deepest = off
+			}
+		}
+		if depth := roundUp16(-deepest); depth >= maxCallerDepth {
+			return nil, plan, refuse("tail-call program: the transform deepens a frame to %d bytes, at or past the kernel's %d-byte caller-depth limit; raise the audited bound", depth, maxCallerDepth)
+		}
 	}
 	spliced, err := spliceLookupCalls(insns, calls, req.Stack, hooks, entryHook)
 	if err != nil {
