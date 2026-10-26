@@ -166,6 +166,7 @@ Both front ends share discovery, selection, map ABI checks, hook generation, pla
 `LookupResultRaw` returns `Instructions`, `Site`/`Sites`, insertion counts and instruction checksums, plus an extended `BTF` spec and its `BTFBytes` blob.
 Original type IDs are preserved; the hook's types and any external map types are appended.
 `HookTypeID` identifies the generated `int hook(ctx, const KEY *, const VALUE *)` function, and `HookFuncInfo` contains its 8-byte function-info row.
+With several hooks, `HookTypeID`, `HookFuncInfo` and `HookName` describe the first element of `Hooks`.
 The returned `FuncInfo` and `LineInfo` buffers include the hook and relocated original rows.
 The BTF string table is rebuilt, so these buffers must accompany the returned blob.
 A future syscall front end can load `BTFBytes` with `BPF_BTF_LOAD`, set `prog_btf_fd` to that result, and supply these metadata buffers.
@@ -314,7 +315,7 @@ Refusals wrap `inject.ErrRefused`, return no result, and leave inputs untouched.
 ELF parse failures remain parse errors.
 
 `LookupResult` embeds `Result` and reports all original selected `Sites` in instruction order.
-Its existing `Site` field is the first element of `Sites`.
+Its existing `Site` field is the first element of `Sites`, and `Result.HookName` is the name of the first element of `Hooks`; with `Auto`, `Entry` or `TailCalls` use `Sites` and `Hooks` instead.
 `InsertedAt` is zero because the first insertion saves ctx at entry.
 `InsertedSlots` is `8 + 8*len(Sites)`: one entry spill, eight instructions per site, and seven hook instructions.
 One site adds 16 slots (128 bytes); two sites add 24 slots (192 bytes).
@@ -345,10 +346,12 @@ Unit tests cover numeric and symbolic callback classification, relocation in bot
 It compares plain and injected programs, checks two keys with different packet lengths and `imsi` values, verifies silence for a missing key, and checks observation before attachment and after detachment.
 `TestBpfLookupInjectionMultipleSites` repeats these checks with two lookups on different paths, observed by one fentry observer on the shared hook.
 `TestBpfLookupInjectionAutoMultiMap` instruments a program with lookups on two maps whose values have different BTF types, attaches one observer per generated hook, and checks the key, value, and `site` argument each observer records.
+`TestBpfLookupInjectionReadOnlyMap`, `...Copy` and `...Static` cover the untrusted, copied and static hook forms for a `BPF_F_RDONLY_PROG` map; `TestBpfLookupInjectionMapInMap[Static]` and `TestBpfLookupInjectionGenericKinds[Static]` cover the generic hook over a map-in-map and over direct XSK and devmap lookups.
 `TestBpfTailCallHooks` tail-calls from an instrumented caller into a target instrumented with `Entry`.
 On a successful tail call, the entry hook fires and an fentry on the target program itself does not; on a failed one, the tail-call hook reports the site and index.
 A direct run of the target fires both.
-`TestBpfEntryHookWithLookup` combines `Entry` with a lookup hook in one program.
+`TestBpfTailCallInSubprogram` fails a tail call inside a static subprogram and checks the hook gets that subprogram's ctx, and `TestBpfTailCallStackLimit` checks the transform refuses one slot past the 256-byte caller-depth limit and loads one slot under it.
+`TestBpfEntryHookWithLookup` combines `Entry` with a lookup hook in one program and observes both.
 `TestBpfLookupInjectionCallback` checks symbolic and numeric callback loads with an unreached subprogram preceding the `bpf_loop` callback and a stack counter incremented three times by `bpf_loop`; the program returns `XDP_ABORTED` unless those increments occur.
 It repeats the plain/injected comparison and fentry observations (including direct `ctx` pointer dereferencing) for both callback forms.
 These tests exercise the transform core and fentry using `BPF_PROG_TEST_RUN`, without an interface attachment or pinning.
@@ -357,8 +360,8 @@ These tests exercise the transform core and fentry using `BPF_PROG_TEST_RUN`, wi
 go build ./...
 go vet ./...
 go test -count=1 ./pkg/inject/...
-sudo -E env PATH=$PATH go test -run 'TestBpfLookupInjection|TestBpfTailCallHooks|TestBpfEntryHook' ./pkg/inject/...
+sudo -E env PATH=$PATH go test -count=1 -run 'TestBpfLookupInjection|TestBpfTailCall|TestBpfEntryHook' ./pkg/inject/
 ```
 
-All six privileged lookup and tail-call tests passed on Linux `7.0.0-38-generic`.
+All 17 privileged lookup, entry and tail-call tests passed on Linux `7.0.0-38-generic`; `make test-bpf` runs them across the CI kernel matrix (6.1 to 7.3-rc4), where the tests whose hooks need `arg:untrusted` skip on 6.1-6.15 (see scripts/test/privileged.py).
 This is finite test evidence for the fixture, not a general program-equivalence, concurrency, or kernel-version guarantee.

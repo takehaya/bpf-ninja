@@ -18,7 +18,7 @@ type RawMap struct {
 	Name               string
 	Type               ebpf.MapType
 	KeySize, ValueSize uint32
-	Flags              uint32 // map_flags; maps read-only for programs are refused
+	Flags              uint32 // map_flags; BPF_F_RDONLY_PROG or BPF_F_WRONLY_PROG makes the hook untrusted (see LookupHook)
 	Key, Value         btf.Type
 }
 
@@ -65,10 +65,11 @@ type LookupRequestRaw struct {
 // map types from other BTF objects are appended. The string table is rebuilt,
 // so the returned native-endian FuncInfo and LineInfo MUST be used with this
 // blob, not the original BTF. HookFuncInfo is the hook's 8-byte func_info row
-// and HookTypeID is its BTF FUNC ID; with several hooks they describe the
-// first, and Hooks lists each one. No BTF or program is loaded here.
+// and HookTypeID is its BTF FUNC ID; with several hooks they describe the first
+// element of Hooks, and Hooks lists each one. No BTF or program is loaded here.
 //
-// Site, Sites, insertion counts and checksums have LookupResult's semantics.
+// Site, Sites, Hooks, Skipped, insertion counts and checksums have
+// LookupResult's semantics.
 // Input slices and BTF types are not modified. Function and map BTF types
 // used by the transform are copied. Other instruction metadata is retained.
 type LookupResultRaw struct {

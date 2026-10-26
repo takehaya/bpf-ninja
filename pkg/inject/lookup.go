@@ -42,9 +42,12 @@ type LookupSelector struct {
 	AllMatches bool
 }
 
-// LookupRequest describes one hash-bound lookup transformation. Only sites in
-// the entry function are supported: subprograms have independent stack frames.
-// Stack certifies three reserved slots, including aliases and callee stacks.
+// LookupRequest describes one hash-bound lookup transformation. Lookups are
+// instrumented only in the entry function: a subprogram has its own frame and
+// cannot reach the entry frame's ctx spill (TailCalls does reach subprograms,
+// see below). Stack certifies the reserved spill slots below the audited
+// bound, three, four when a hook takes the map pointer (the generic hook),
+// plus the value copy with CopyReadOnly, including aliases and callee stacks.
 // No caller-saved register liveness certification is required at helper calls.
 //
 // Auto instruments every supported lookup instead of Site, which must then be
@@ -130,14 +133,18 @@ type LookupHook struct {
 }
 
 // LookupResult reports the selected original sites and the transformed clone.
+// Result.HookName and Site describe the first hook and the first selected
+// lookup: exact for a single-site request, but with Auto, Entry or TailCalls
+// the first hook is the first lookup hook in Hooks (the entry or tail-call hook
+// when there is no lookup), so use Hooks and Sites.
 // Result.InsertedAt is zero (the ctx spill); InsertedSlots includes that spill,
 // the lookup instrumentation and generated hooks. Checksums have Result's scope.
 type LookupResult struct {
 	Result
-	Site    LookupSite   // first selected lookup, retained for single-site callers; zero without lookups
+	Site    LookupSite   // first element of Sites; zero without lookups
 	Sites   []LookupSite // all selected lookups in original instruction order
-	Hooks   []LookupHook // lookup hooks (one, or one per map with Auto), then entry and tail-call hooks
-	Skipped []LookupSite // with Auto or TailCalls, discovered sites that were not instrumented
+	Hooks   []LookupHook // lookup hooks (one; with Auto one per map, then the generic hook), then the entry and tail-call hooks
+	Skipped []LookupSite // with Auto, discovered lookups that were not instrumented
 }
 
 // DiscoverLookups lists every map_lookup_elem helper in programName, in raw
@@ -153,9 +160,11 @@ func DiscoverLookups(elf []byte, programName string) ([]LookupSite, error) {
 	return discoverLookups(spec, programName)
 }
 
-// TransformLookup inserts int HOOK(struct xdp_md *ctx, const KEY *key,
-// const VALUE *value) at each selected lookup and returns an independent clone.
-// The hook is called only for non-null results. This never loads or attaches BPF.
+// TransformLookup instruments the program req describes and returns an
+// independent clone. A selected lookup calls
+// int HOOK(struct xdp_md *ctx, const KEY *key, const VALUE *value) for non-null
+// results; see LookupRequest for the Auto, Entry and TailCalls hooks. This
+// never loads or attaches BPF.
 func TransformLookup(elf []byte, req LookupRequest) (*LookupResult, error) {
 	// Reuse the existing hash/name/stack validation, without its load contract.
 	if err := validateRequest(Request{ELFSHA256: req.ELFSHA256, ProgramName: req.ProgramName,

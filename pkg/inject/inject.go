@@ -52,8 +52,10 @@
 // Any refusal returns a nil result and leaves every input untouched.
 //
 // [DiscoverLookups] and [TransformLookup] provide a separate map-lookup
-// transform with a ctx/key/value hook. It uses three stack slots and relies on
-// the helper calling convention instead of a caller liveness certification.
+// transform with ctx/key/value hooks (see [LookupRequest]). It reserves three
+// stack slots below the audited bound, four when a hook takes the map pointer,
+// plus any CopyReadOnly value copy, and relies on the helper calling
+// convention instead of a caller liveness certification.
 package inject
 
 import (
@@ -129,7 +131,8 @@ type StackAudit struct {
 	// caller. It must be in [-512, 0]. The spill slots are placed strictly
 	// below the 8-byte-aligned floor of this value; the transform additionally
 	// refuses if any direct RFP reference it can see is below LowestOffset.
-	// Transform reserves two slots; TransformLookup reserves three.
+	// Transform reserves two slots; TransformLookup three, four with a generic
+	// hook, and CopyReadOnly adds a value copy below them.
 	LowestOffset int16
 }
 

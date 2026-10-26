@@ -63,7 +63,7 @@ See [lookup-site-injection.md](lookup-site-injection.md#entry-and-tail-call-hook
 ```
 
 `stack_lowest_offset` is mandatory: it is an explicit audit of the deepest stack access, including aliases and callees, not an inferred value.
-It must be between -488 and 0; the hook reserves three eight-byte slots below the audited region, aligned downward.
+It must be between -488 and 0; the transform reserves three eight-byte slots below the audited region, aligned downward, four when `auto` finds a lookup whose map a typed hook cannot take, plus the value copy with `copy_read_only` (see the transform's refusal message for the exact bound).
 Do not copy the example bound without auditing the actual program.
 `hook` must be a C identifier of at most 127 bytes, including the suffixes that `entry`, `tail_calls`, and `auto` append.
 Unknown JSON fields, duplicate program selectors, trailing JSON, and configurations larger than 1 MiB are rejected before launching.
