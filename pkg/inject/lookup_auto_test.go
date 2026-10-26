@@ -381,7 +381,7 @@ func TestTailCallStackLimit(t *testing.T) {
 	for _, tc := range []struct {
 		bound  int16
 		refuse bool
-	}{{-232, false}, {-240, true}} {
+	}{{-216, false}, {-224, true}} {
 		work := paddedSubTailCaller(tc.bound)
 		_, err := transformLookup(work, LookupRequest{ProgramName: "caller", TailCalls: true, HookName: "obs", Stack: StackAudit{LowestOffset: tc.bound}})
 		if tc.refuse {

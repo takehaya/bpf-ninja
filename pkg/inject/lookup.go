@@ -358,11 +358,12 @@ func lookupSlots(lowest int16) (ctx, key, spillR0, mapSlot int) {
 }
 
 // maxCallerDepth is the limit check_max_stack_depth_subprog puts on the summed
-// stack depth of the frames above a bpf_tail_call. The kernel rounds each
-// frame up to 16 bytes before the comparison.
+// stack depth of the frames above a bpf_tail_call. The kernel rounds each frame
+// up before the comparison; older kernels (6.1) round to 32, so refuse at the
+// coarsest rounding to never emit a program any supported kernel rejects.
 const maxCallerDepth = 256
 
-func roundUp16(n int) int { return (n + 15) / 16 * 16 }
+func roundUpFrame(n int) int { return (n + 31) / 32 * 32 }
 
 // LookupStackReserve reports the bytes the transform reserves strictly below
 // the audited floor, as far as a request's flags determine it statically: the
@@ -812,7 +813,7 @@ func transformLookupProgram(insns asm.Instructions, typ ebpf.ProgramType, types 
 				deepest = off
 			}
 		}
-		if depth := roundUp16(-deepest); depth >= maxCallerDepth {
+		if depth := roundUpFrame(-deepest); depth >= maxCallerDepth {
 			return nil, plan, refuse("tail-call program: the transform deepens a frame to %d bytes, at or past the kernel's %d-byte caller-depth limit; raise the audited bound", depth, maxCallerDepth)
 		}
 	}
