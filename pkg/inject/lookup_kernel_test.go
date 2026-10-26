@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"net"
 	"testing"
 
 	"github.com/cilium/ebpf"
@@ -434,7 +435,7 @@ func testAutoMultiMap(t *testing.T, fixture func() *ebpf.CollectionSpec, opts Lo
 	if len(plan.hooks) != 2 || len(plan.skipped) != 0 {
 		t.Fatalf("hooks=%+v skipped=%+v", plan.hooks, plan.skipped)
 	}
-	injected := loadOrSkip(t, work)
+	injected := loadHooked(t, work, plan.hooks)
 	t.Cleanup(injected.Close)
 	imsi := map[string]uint64{"sessions": 100000000000001, "flows": 200000000000001}
 	for _, c := range []*ebpf.Collection{plain, injected} {
@@ -590,6 +591,112 @@ func TestBpfLookupInjectionLPMTrie(t *testing.T) {
 	}
 }
 
+// kindFixture looks up key 0 in a map of the given kind by a direct R1
+// reference, returning XDP_TX on a hit and XDP_PASS on a miss.
+func kindFixture(mapType ebpf.MapType, valueSize uint32) *ebpf.CollectionSpec {
+	miss := asm.JEq.Imm(asm.R0, 0, "")
+	miss.Offset = 2 // slot 6 -> slot 9
+	insns := asm.Instructions{
+		asm.StoreImm(asm.RFP, -4, 0, asm.Word),       // 0: key 0
+		asm.Mov.Reg(asm.R2, asm.RFP),                 // 1
+		asm.Add.Imm(asm.R2, -4),                      // 2
+		asm.LoadMapPtr(asm.R1, 0).WithReference("m"), // 3-4
+		asm.FnMapLookupElem.Call(),                   // 5
+		miss,                                         // 6
+		asm.Mov.Imm(asm.R0, 3),                       // 7: hit -> XDP_TX
+		asm.Return(),                                 // 8
+		asm.Mov.Imm(asm.R0, 2),                       // 9: miss -> XDP_PASS
+		asm.Return(),                                 // 10
+	}
+	insns[0] = btf.WithFuncMetadata(insns[0].WithSymbol("p").WithSource(asm.Comment("generic-kind fixture")), xdpFunc("p"))
+	return &ebpf.CollectionSpec{ByteOrder: binary.LittleEndian,
+		Maps:     map[string]*ebpf.MapSpec{"m": {Name: "m", Type: mapType, KeySize: 4, ValueSize: valueSize, MaxEntries: 1}},
+		Programs: map[string]*ebpf.ProgramSpec{"p": {Name: "p", Type: ebpf.XDP, License: "GPL", Instructions: insns}},
+	}
+}
+
+// Auto routes a direct lookup on a map kind a typed hook refuses to the generic
+// hook; the verifier accepts the generic ABI receiving the special result.
+func TestBpfLookupInjectionGenericKinds(t *testing.T)       { testGenericKinds(t, false) }
+func TestBpfLookupInjectionGenericKindsStatic(t *testing.T) { testGenericKinds(t, true) }
+
+func testGenericKinds(t *testing.T, static bool) {
+	t.Helper()
+	testutil.SkipIfNotRoot(t)
+	lo, err := net.InterfaceByName("lo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name string
+		typ  ebpf.MapType
+		size uint32
+		fill any // nil leaves the runtime hit unexercised
+	}{
+		{"xskmap", ebpf.XSKMap, 4, nil},
+		{"devmap", ebpf.DevMap, 4, uint32(lo.Index)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			plain := loadOrSkip(t, kindFixture(tc.typ, tc.size))
+			t.Cleanup(plain.Close)
+			work := kindFixture(tc.typ, tc.size)
+			plan, err := transformLookup(work, LookupRequest{ProgramName: "p", Auto: true, StaticUntrusted: static, HookName: "obs", Stack: StackAudit{LowestOffset: -8}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(plan.hooks) != 1 || !plan.hooks[0].Generic || plan.hooks[0].Static != static || len(plan.skipped) != 0 {
+				t.Fatalf("plan: %+v", plan)
+			}
+			injected := loadHooked(t, work, plan.hooks)
+			t.Cleanup(injected.Close)
+			obs := loadOrSkip(t, lookupObserverArgs(t, "obs_any", injected.Programs["p"], observerArgs{site: true, mapID: true, rawCtx: static}))
+			t.Cleanup(obs.Close)
+			l, err := link.AttachTracing(link.TracingOptions{Program: obs.Programs["observe"], AttachType: ebpf.AttachTraceFEntry})
+			if err != nil {
+				if errors.Is(err, unix.EPERM) || errors.Is(err, ebpf.ErrNotSupported) {
+					t.Skipf("fentry unavailable: %v", err)
+				}
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = l.Close() })
+			if err := obs.Maps["obs"].Put(uint32(0), [32]byte{}); err != nil {
+				t.Fatal(err)
+			}
+			// A miss: the empty map returns NULL, so the hook never fires.
+			if ret, _ := runXDP(t, injected.Programs["p"]); ret != 2 {
+				t.Fatalf("miss action %d", ret)
+			}
+			var got [32]byte
+			if err := obs.Maps["obs"].Lookup(uint32(0), &got); err != nil {
+				t.Fatal(err)
+			}
+			if got != [32]byte{} {
+				t.Fatalf("miss fired the hook: %x", got)
+			}
+			if tc.fill == nil {
+				return
+			}
+			if err := injected.Maps["m"].Put(uint32(0), tc.fill); err != nil {
+				t.Skipf("populate %s: %v", tc.name, err)
+			}
+			if ret, _ := runXDP(t, injected.Programs["p"]); ret != 3 {
+				t.Fatalf("hit action %d", ret)
+			}
+			info, err := injected.Maps["m"].Info()
+			if err != nil {
+				t.Fatal(err)
+			}
+			id, _ := info.ID()
+			if err := obs.Maps["obs"].Lookup(uint32(0), &got); err != nil {
+				t.Fatal(err)
+			}
+			if seen := binary.LittleEndian.Uint64(got[:]); seen != 1 || ebpf.MapID(binary.LittleEndian.Uint32(got[28:])) != id {
+				t.Fatalf("hit: seen=%d mapID=%d want %d", seen, binary.LittleEndian.Uint32(got[28:]), id)
+			}
+		})
+	}
+}
+
 // mapInMapFixture looks up the packet's first word in the inner map that
 // outer[0] holds. The inner lookup's R1 is the outer lookup's result.
 func mapInMapFixture() *ebpf.CollectionSpec {
@@ -655,7 +762,7 @@ func testMapInMap(t *testing.T, static bool) {
 	if len(plan.hooks) != 1 || !plan.hooks[0].Generic || plan.hooks[0].Static != static || len(plan.hooks[0].Sites) != 2 || len(plan.skipped) != 0 {
 		t.Fatalf("plan: %+v", plan)
 	}
-	injected := loadOrSkip(t, work)
+	injected := loadHooked(t, work, plan.hooks)
 	t.Cleanup(injected.Close)
 	var innerID ebpf.MapID
 	for _, c := range []*ebpf.Collection{plain, injected} {

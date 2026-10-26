@@ -239,6 +239,16 @@ func TestBpfEntryHookWithLookup(t *testing.T) {
 		}
 	}
 	entry := attachScalarObserver(t, "lookup_hook_entry", injected.Programs["p"], 0)
+	obs := loadOrSkip(t, lookupObserver(t, "lookup_hook", injected.Programs["p"]))
+	t.Cleanup(obs.Close)
+	l, err := link.AttachTracing(link.TracingOptions{Program: obs.Programs["observe"], AttachType: ebpf.AttachTraceFEntry})
+	if err != nil {
+		if errors.Is(err, unix.EPERM) || errors.Is(err, ebpf.ErrNotSupported) {
+			t.Skipf("fentry unavailable: %v", err)
+		}
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = l.Close() })
 	for i, key := range []uint32{7, 8} {
 		packet := make([]byte, 64)
 		binary.LittleEndian.PutUint32(packet, key)
@@ -253,6 +263,17 @@ func TestBpfEntryHookWithLookup(t *testing.T) {
 		var r scalarRecord
 		if err := entry.Lookup(uint32(0), &r); err != nil || r.Seen != uint64(i+1) || r.Len != 64 {
 			t.Fatalf("key=%d: entry=%+v err=%v", key, r, err)
+		}
+		// The lookup hook fired once, for the hit (key 7, imsi 9), after the
+		// entry hook left the ctx spill intact; the key-8 miss adds nothing.
+		var got [24]byte
+		if err := obs.Maps["obs"].Lookup(uint32(0), &got); err != nil {
+			t.Fatal(err)
+		}
+		seen, length, gotKey, imsi := binary.LittleEndian.Uint64(got[:]), binary.LittleEndian.Uint32(got[8:]),
+			binary.LittleEndian.Uint32(got[12:]), binary.LittleEndian.Uint64(got[16:])
+		if seen != 1 || length != 64 || gotKey != 7 || imsi != 9 {
+			t.Fatalf("key=%d: lookup seen=%d len=%d key=%d imsi=%d", key, seen, length, gotKey, imsi)
 		}
 	}
 }
@@ -292,13 +313,13 @@ func TestBpfTailCallStackLimit(t *testing.T) {
 	req := func(bound int16) LookupRequest {
 		return LookupRequest{ProgramName: "caller", TailCalls: true, HookName: "obs", Stack: StackAudit{LowestOffset: bound}}
 	}
-	if _, err := transformLookup(paddedSubTailCaller(-240), req(-240)); !errors.Is(err, ErrRefused) {
-		t.Fatalf("-240: want refusal, got %v", err)
+	if _, err := transformLookup(paddedSubTailCaller(-224), req(-224)); !errors.Is(err, ErrRefused) {
+		t.Fatalf("-224: want refusal, got %v", err)
 	}
-	plain := loadOrSkip(t, paddedSubTailCaller(-240))
+	plain := loadOrSkip(t, paddedSubTailCaller(-224))
 	t.Cleanup(plain.Close)
-	work := paddedSubTailCaller(-232)
-	if _, err := transformLookup(work, req(-232)); err != nil {
+	work := paddedSubTailCaller(-216)
+	if _, err := transformLookup(work, req(-216)); err != nil {
 		t.Fatal(err)
 	}
 	injected := loadOrSkip(t, work)
