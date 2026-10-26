@@ -69,3 +69,12 @@ class AuditTests(unittest.TestCase):
                      "TestBpfTailCallHooks"):
             self.assertFalse(module.allowed_skip(module.INJECT, test, reason, "6.1"))
         self.assertFalse(module.allowed_skip(module.PROGRAM, allowed[0], reason, "6.1"))
+
+    def test_inject_callback_tail_call_skip_is_specific(self):
+        reason = "kernel forbids tail calls in callbacks: cannot tail call within callback"
+        for test in ("TestBpfStackLimitsAcrossCalls/callback", "TestBpfStackLimitsAcrossCalls/callback-global"):
+            self.assertTrue(module.allowed_skip(module.INJECT, test, reason, "7.3-rc4"))
+            self.assertFalse(module.allowed_skip(module.INJECT, test, reason, "7.2"))
+            self.assertFalse(module.allowed_skip(module.INJECT, test, "verifier rejected a program that should load", "7.3-rc4"))
+        for test in ("TestBpfStackLimitsAcrossCalls", "TestBpfStackLimitsAcrossCalls/combined"):
+            self.assertFalse(module.allowed_skip(module.INJECT, test, reason, "7.3-rc4"))

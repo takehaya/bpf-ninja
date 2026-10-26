@@ -363,117 +363,6 @@ func lookupSlots(lowest int16) (ctx, key, spillR0, mapSlot int) {
 	return floor - 8, floor - 16, floor - 24, floor - 32
 }
 
-// maxCallerDepth is the limit check_max_stack_depth_subprog puts on the summed
-// stack depth of the frames above a subprogram that calls bpf_tail_call. The
-// kernel rounds each frame up before the comparison; older kernels (6.1) round
-// to 32, so refuse at the coarsest rounding to never emit a program any
-// supported kernel rejects.
-const maxCallerDepth = 256
-
-func roundUpFrame(n int) int { return (max(n, 1) + 31) / 32 * 32 }
-
-// checkTailCallDepth refuses when, after the transform, a subprogram that
-// calls bpf_tail_call is reached through caller frames whose summed, rounded
-// stack depth is at or past maxCallerDepth, over every call chain from the
-// entry (check_max_stack_depth_subprog; the entry itself is exempt but counts
-// as a caller). A function's depth is its deepest direct R10 reference,
-// deepened to the spill slots the transform places in it: the entry's ctx
-// spill and lookup slots, and the key (and local ctx) spill of a frame that
-// holds a tail-call site. Like checkStackBound this sees direct references
-// only; aliases and helper stack arguments are the caller's audit.
-func checkTailCallDepth(insns asm.Instructions, calls map[uint32]siteCall, lowest int16) error {
-	ctxSlot, keySlot, spillR0, mapSlot := lookupSlots(lowest)
-	type function struct {
-		name     string
-		depth    int // bytes below R10 after the transform
-		tailCall bool
-		callees  []int
-	}
-	var funcs []*function
-	byStart, bySymbol := map[int]int{}, map[string]int{}
-	it := insns.Iterate()
-	for it.Next() {
-		if fn := btf.FuncMetadata(it.Ins); fn != nil {
-			byStart[int(it.Offset)], bySymbol[it.Ins.Symbol()] = len(funcs), len(funcs)
-			funcs = append(funcs, &function{name: fn.Name})
-		}
-	}
-	deepen := func(f *function, off int) {
-		if -off > f.depth {
-			f.depth = -off
-		}
-	}
-	cur := 0
-	it = insns.Iterate()
-	for it.Next() {
-		pc, ins := int(it.Offset), it.Ins
-		if i, ok := byStart[pc]; ok {
-			cur = i
-		}
-		f := funcs[cur]
-		if (ins.Dst == asm.RFP || ins.Src == asm.RFP) && ins.Offset < 0 {
-			deepen(f, int(ins.Offset))
-		}
-		if ins.IsBuiltinCall() && ins.Constant == int64(asm.FnTailCall) {
-			f.tailCall = true
-		}
-		if ins.IsFunctionCall() {
-			var target int
-			var ok bool
-			if ref := ins.Reference(); ref != "" {
-				target, ok = bySymbol[ref]
-			} else {
-				target, ok = byStart[pc+1+int(ins.Constant)]
-			}
-			if !ok {
-				return refuse("call at %d does not target a subprogram", pc)
-			}
-			f.callees = append(f.callees, target)
-		}
-		if call, ok := calls[uint32(pc)]; ok {
-			deepen(f, keySlot)
-			switch {
-			case call.tailCall && call.localCtx:
-				deepen(f, ctxSlot)
-			case !call.tailCall:
-				deepen(f, spillR0)
-				if call.withMap {
-					deepen(f, mapSlot)
-				}
-				if call.copySize > 0 {
-					deepen(f, mapSlot-int((call.copySize+7)/8*8))
-				}
-			}
-		}
-	}
-	deepen(funcs[0], ctxSlot) // the entry ctx spill
-	// Longest path over the call DAG: sum is the rounded depth of the frames
-	// above the function being entered.
-	best, seen, onPath := make([]int, len(funcs)), make([]bool, len(funcs)), make([]bool, len(funcs))
-	var visit func(i, sum int) error
-	visit = func(i, sum int) error {
-		f := funcs[i]
-		if onPath[i] {
-			return refuse("recursive call to %s", f.name)
-		}
-		if i != 0 && f.tailCall && sum >= maxCallerDepth {
-			return refuse("tail-call program: the frames calling %s total %d bytes after the transform, at or past the kernel's %d-byte caller-depth limit; raise the audited bound", f.name, sum, maxCallerDepth)
-		}
-		if seen[i] && sum <= best[i] {
-			return nil
-		}
-		seen[i], best[i], onPath[i] = true, sum, true
-		defer func() { onPath[i] = false }()
-		for _, callee := range f.callees {
-			if err := visit(callee, sum+roundUpFrame(f.depth)); err != nil {
-				return err
-			}
-		}
-		return nil
-	}
-	return visit(0, 0)
-}
-
 // LookupStackReserve reports the bytes the transform reserves strictly below
 // the audited floor, as far as a request's flags determine it statically: the
 // three base slots (ctx, key, R0). A generic hook's map slot and a
@@ -495,8 +384,14 @@ func CheckLookupStack(req LookupRequest) error {
 	return nil
 }
 
+// siteFrameLimit is how deep a frame holding a lookup site may reach. The
+// site calls its hook, a frame that kernels rounding to 32 bytes count as 32
+// even without stack, so a deeper site frame crosses the 512-byte combined
+// limit checkStackLimits enforces.
+const siteFrameLimit = maxCombinedStack - 32
+
 // groupStackReach returns the most-negative stack offset instrumenting group
-// needs below the audited floor and, if it does not fit in 512 bytes, the
+// needs below the audited floor and, if that is past siteFrameLimit, the
 // reason. A generic hook needs the map slot; a CopyReadOnly value copy goes
 // below it; a plain typed hook uses only the three base slots.
 func groupStackReach(group lookupGroup, req LookupRequest) (int, string) {
@@ -509,7 +404,7 @@ func groupStackReach(group lookupGroup, req LookupRequest) (int, string) {
 		copyAt := mapSlot - int((m.ValueSize+7)/8*8)
 		return copyAt, fmt.Sprintf("read-only value copy needs %d bytes below the spill slots; stack_lowest_offset %d too low", m.ValueSize, req.Stack.LowestOffset)
 	}
-	return spillR0, ""
+	return spillR0, fmt.Sprintf("lookup spill slots need 24 bytes below the audited floor; stack_lowest_offset %d too low", req.Stack.LowestOffset)
 }
 
 // checkLookupMap returns why a typed hook cannot take m's key and value, or
@@ -765,13 +660,13 @@ func transformLookupProgram(insns asm.Instructions, typ ebpf.ProgramType, types 
 	if err := CheckLookupStack(req); err != nil {
 		return nil, plan, err
 	}
-	// Drop groups whose spill slots exceed the 512-byte stack. Auto skips the
+	// Drop groups whose spill slots reach past siteFrameLimit. Auto skips the
 	// sites and lists them; explicit selection refuses, since the user named
 	// them. Dropping the one generic group means no hook takes the map pointer.
 	var kept []lookupGroup
 	for _, group := range groups {
 		deepest, reason := groupStackReach(group, req)
-		if deepest >= -512 {
+		if deepest >= -siteFrameLimit {
 			kept = append(kept, group)
 			continue
 		}
@@ -902,16 +797,13 @@ func transformLookupProgram(insns asm.Instructions, typ ebpf.ProgramType, types 
 		}
 		plan.hooks = append(plan.hooks, hook)
 	}
-	// The transform deepens frames to the spill slots, which in a program that
-	// uses bpf_tail_call counts toward the kernel's caller-depth limit; refuse
-	// rather than emit a program the verifier would reject.
-	if len(allTails) > 0 {
-		if err := checkTailCallDepth(insns, calls, req.Stack.LowestOffset); err != nil {
-			return nil, plan, err
-		}
-	}
 	spliced, err := spliceLookupCalls(insns, calls, req.Stack, hooks, entryHook)
 	if err != nil {
+		return nil, plan, err
+	}
+	// Deeper frames and the hook frames count toward the kernel's limits on
+	// call chains; refuse rather than emit a program the verifier would reject.
+	if err := checkStackLimits(insns, spliced); err != nil {
 		return nil, plan, err
 	}
 	return spliced, plan, nil

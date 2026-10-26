@@ -3,6 +3,8 @@ package inject
 import (
 	"encoding/binary"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/cilium/ebpf"
@@ -359,6 +361,93 @@ func nestedTailCaller(bound int16) *ebpf.CollectionSpec {
 	return spec
 }
 
+// staticFunc is a static subprogram taking an XDP ctx, which the verifier
+// does not check against its BTF.
+func staticFunc(name string) *btf.Func {
+	fn := xdpFunc(name)
+	fn.Linkage = btf.StaticFunc
+	return fn
+}
+
+// subBody is tailCallerFixture's body as the subprogram sub with linkage.
+func subBody(linkage btf.FuncLinkage) asm.Instructions {
+	body := tailCallerFixture().Programs["caller"].Instructions
+	sub := xdpFunc("sub")
+	sub.Linkage = linkage
+	body[0] = btf.WithFuncMetadata(body[0].WithSymbol("sub").WithSource(asm.Comment("tail-calling subprogram")), sub)
+	return body
+}
+
+// loopTailCaller spills ctx at R10+bound in the entry and runs the bpf_loop
+// callback cb once, which reloads ctx and calls sub, which tail-calls. The
+// kernel walks the callback reference like a call, so the entry and cb frames
+// are sub's callers.
+func loopTailCaller(bound int16, linkage btf.FuncLinkage) *ebpf.CollectionSpec {
+	spec := tailCallerFixture()
+	cb := &btf.Func{Name: "cb", Linkage: btf.StaticFunc, Type: &btf.FuncProto{
+		Return: &btf.Int{Name: "long", Size: 8, Encoding: btf.Signed},
+		Params: []btf.FuncParam{{Name: "index", Type: &btf.Int{Name: "u32", Size: 4}}, {Name: "data", Type: &btf.Pointer{Target: &btf.Void{}}}},
+	}}
+	callback := asm.Instruction{OpCode: asm.LoadImmOp(asm.DWord), Dst: asm.R2, Src: asm.PseudoFunc, Constant: -1}
+	insns := asm.Instructions{
+		btf.WithFuncMetadata(asm.StoreMem(asm.RFP, bound, asm.R1, asm.DWord).WithSymbol("caller").WithSource(asm.Comment("entry")), xdpFunc("caller")),
+		asm.Mov.Imm(asm.R1, 1),
+		callback.WithReference("cb"),
+		asm.Mov.Reg(asm.R3, asm.RFP), asm.Add.Imm(asm.R3, int32(bound)),
+		asm.Mov.Imm(asm.R4, 0),
+		asm.FnLoop.Call(),
+		asm.Mov.Imm(asm.R0, 2),
+		asm.Return(),
+		btf.WithFuncMetadata(asm.LoadMem(asm.R1, asm.R2, 0, asm.DWord).WithSymbol("cb").WithSource(asm.Comment("callback")), cb),
+		asm.Call.Label("sub"),
+		asm.Mov.Imm(asm.R0, 0),
+		asm.Return(),
+	}
+	spec.Programs["caller"].Instructions = append(insns, subBody(linkage)...)
+	return spec
+}
+
+// wideCaller references R10-depth in the entry, tail-calls, and on failure
+// calls wide, which references R10-depth too and does not tail-call: the two
+// frames total 512 bytes at depth 248 or 256.
+func wideCaller(depth int16) *ebpf.CollectionSpec {
+	spec := nestedTailCaller(-depth)
+	insns := spec.Programs["caller"].Instructions[:16] // the entry, up to sub
+	insns[12] = asm.Call.Label("wide")
+	spec.Programs["caller"].Instructions = append(insns,
+		btf.WithFuncMetadata(asm.StoreImm(asm.RFP, -depth, 0, asm.Word).WithSymbol("wide").WithSource(asm.Comment("wide")), staticFunc("wide")),
+		asm.Mov.Imm(asm.R0, 2),
+		asm.Return())
+	return spec
+}
+
+// frameChain is a stackless call chain of frames functions, the entry
+// first and the tail-calling sub last.
+func frameChain(frames int) *ebpf.CollectionSpec {
+	name := func(i int) string {
+		switch i {
+		case 0:
+			return "caller"
+		case frames - 1:
+			return "sub"
+		}
+		return fmt.Sprintf("f%d", i)
+	}
+	var insns asm.Instructions
+	for i := range frames - 1 {
+		fn := staticFunc(name(i))
+		if i == 0 {
+			fn = xdpFunc("caller")
+		}
+		insns = append(insns,
+			btf.WithFuncMetadata(asm.Call.Label(name(i+1)).WithSymbol(name(i)).WithSource(asm.Comment(name(i))), fn),
+			asm.Return())
+	}
+	spec := tailCallerFixture()
+	spec.Programs["caller"].Instructions = append(insns, subBody(btf.StaticFunc)...)
+	return spec
+}
+
 // At an audited bound where the transform's entry ctx spill crosses the
 // kernel's 256-byte caller-depth limit the transform refuses; one slot less
 // transforms and the kernel loads it. The original at the deeper bound still
@@ -406,6 +495,41 @@ func TestBpfTailCallDepthSumsCallers(t *testing.T) {
 			}
 			work := tc.shallow()
 			if _, err := transformLookup(work, tc.shReq); err != nil {
+				t.Fatal(err)
+			}
+			injected := loadOrSkip(t, work)
+			t.Cleanup(injected.Close)
+		})
+	}
+}
+
+// The transform's deeper frames and hook frames reach the kernel's other call
+// chain limits too: the caller-depth limit through a bpf_loop callback, the
+// 512-byte combined stack (also a lookup site's frame plus its hook's), and
+// the 8-frame call depth. At the refusing bound the original loads; one step
+// shallower transforms and loads.
+func TestBpfStackLimitsAcrossCalls(t *testing.T) {
+	testutil.SkipIfNotRoot(t)
+	for _, tc := range stackLimitCases() {
+		if tc.refuse == nil {
+			continue // the shallow case loads below, next to its deep twin
+		}
+		t.Run(tc.name, func(t *testing.T) {
+			plain, err := ebpf.NewCollection(tc.spec())
+			var ve *ebpf.VerifierError
+			if errors.As(err, &ve) && strings.Contains(fmt.Sprintf("%+v", ve), "cannot tail call within callback") {
+				t.Skipf("kernel forbids tail calls in callbacks: %v", err)
+			}
+			if err != nil {
+				plain = loadOrSkip(t, tc.spec())
+			}
+			t.Cleanup(plain.Close)
+			if _, err := transformLookup(tc.spec(), tc.req); !errors.Is(err, ErrRefused) {
+				t.Fatalf("deep: want refusal, got %v", err)
+			}
+			shallow := findStackLimitCase(tc.name + "-shallow")
+			work := shallow.spec()
+			if _, err := transformLookup(work, shallow.req); err != nil {
 				t.Fatal(err)
 			}
 			injected := loadOrSkip(t, work)

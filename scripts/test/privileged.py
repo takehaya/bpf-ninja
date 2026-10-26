@@ -15,6 +15,9 @@ INJECT = "github.com/takehaya/bpf-ninja/pkg/inject"
 
 def allowed_skip(package, test, output, kernel):
     if package == INJECT:
+        # 7.3 rejects a tail call reachable from a bpf_loop callback outright.
+        if test in {"TestBpfStackLimitsAcrossCalls/callback", "TestBpfStackLimitsAcrossCalls/callback-global"}:
+            return kernel == "7.3-rc4" and "kernel forbids tail calls in callbacks" in output
         # Hooks for read-only and runtime-resolved maps tag their parameters
         # arg:untrusted, which 6.15 and older reject.
         # GenericKinds skips per map-kind subtest, so match the base test name.

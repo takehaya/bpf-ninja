@@ -270,7 +270,11 @@ func transform(work *ebpf.CollectionSpec, req Request) error {
 	if err != nil {
 		return err
 	}
-	prog.Instructions = appendHook(spliced, req)
+	out := appendHook(spliced, req)
+	if err := checkStackLimits(prog.Instructions, out); err != nil {
+		return err
+	}
+	prog.Instructions = out
 	return nil
 }
 

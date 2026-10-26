@@ -435,6 +435,91 @@ func TestTailCallDepthSumsCallers(t *testing.T) {
 	}
 }
 
+// stackLimitCase is a program and request at a bound where the transform
+// would reach a kernel call-chain limit (refuse names the limit and chain),
+// or, for a -shallow twin, one step shallower where it does not.
+type stackLimitCase struct {
+	name   string
+	spec   func() *ebpf.CollectionSpec
+	req    LookupRequest
+	refuse []string
+}
+
+func stackLimitCases() []stackLimitCase {
+	entry := func(bound int16) LookupRequest {
+		return LookupRequest{ProgramName: "caller", Entry: true, HookName: "obs", Stack: StackAudit{LowestOffset: bound}}
+	}
+	tails := func(bound int16) LookupRequest {
+		return LookupRequest{ProgramName: "caller", TailCalls: true, HookName: "obs", Stack: StackAudit{LowestOffset: bound}}
+	}
+	deepAuto := func(bound int16) LookupRequest {
+		req := autoReq()
+		req.Stack.LowestOffset = bound
+		return req
+	}
+	callback := []string{"caller-depth limit", "caller -> cb -> sub"}
+	return []stackLimitCase{
+		// The entry frame plus the callback's 32-byte frame are sub's callers.
+		{"callback", func() *ebpf.CollectionSpec { return loopTailCaller(-192, btf.StaticFunc) }, entry(-192), callback},
+		{"callback-shallow", func() *ebpf.CollectionSpec { return loopTailCaller(-184, btf.StaticFunc) }, entry(-184), nil},
+		{"callback-global", func() *ebpf.CollectionSpec { return loopTailCaller(-192, btf.GlobalFunc) }, entry(-192), callback},
+		{"callback-global-shallow", func() *ebpf.CollectionSpec { return loopTailCaller(-184, btf.GlobalFunc) }, entry(-184), nil},
+		// The entry's tail-call spill pushes entry + wide past 512 bytes.
+		{"combined", func() *ebpf.CollectionSpec { return wideCaller(248) }, tails(-248), []string{"512-byte combined limit", "caller -> wide"}},
+		{"combined-shallow", func() *ebpf.CollectionSpec { return wideCaller(240) }, tails(-240), nil},
+		// The tail-call hook called from the 8th frame is a 9th.
+		{"frames", func() *ebpf.CollectionSpec { return frameChain(8) }, tails(0),
+			[]string{"8-frame limit", "caller -> f1 -> f2 -> f3 -> f4 -> f5 -> f6 -> sub -> obs_tail_call"}},
+		{"frames-shallow", func() *ebpf.CollectionSpec { return frameChain(7) }, tails(0), nil},
+		// A lookup site's frame plus its hook's 32-byte frame: Auto skips
+		// every site whose slots pass 480 bytes.
+		{"site-frame", multiMapFixture, deepAuto(-464), []string{"no lookup site fits"}},
+		{"site-frame-shallow", multiMapFixture, deepAuto(-456), nil},
+	}
+}
+
+func findStackLimitCase(name string) stackLimitCase {
+	for _, tc := range stackLimitCases() {
+		if tc.name == name {
+			return tc
+		}
+	}
+	panic(name)
+}
+
+// The limit check walks callback references and hook calls, and sums whole
+// chains, in the ELF and both raw call forms.
+func TestStackLimitsAcrossCalls(t *testing.T) {
+	for _, tc := range stackLimitCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			check := func(form string, err error) {
+				t.Helper()
+				if tc.refuse == nil {
+					if err != nil {
+						t.Fatalf("%s: %v", form, err)
+					}
+					return
+				}
+				if !errors.Is(err, ErrRefused) {
+					t.Fatalf("%s: want refusal, got %v", form, err)
+				}
+				for _, want := range tc.refuse {
+					if !strings.Contains(err.Error(), want) {
+						t.Fatalf("%s: refusal %q does not mention %q", form, err, want)
+					}
+				}
+			}
+			_, err := transformLookup(tc.spec(), tc.req)
+			check("elf", err)
+			for _, numeric := range []bool{false, true} {
+				p := rawLookupFixture(t, tc.spec(), tc.req.ProgramName, numeric)
+				_, err := TransformLookupRaw(p, LookupRequestRaw{Auto: tc.req.Auto, Entry: tc.req.Entry, TailCalls: tc.req.TailCalls, HookName: tc.req.HookName, Stack: tc.req.Stack})
+				check(map[bool]string{false: "raw-symbolic", true: "raw-numeric"}[numeric], err)
+			}
+		})
+	}
+}
+
 func TestTailCallRawParity(t *testing.T) {
 	req := LookupRequest{ProgramName: "caller", Entry: true, TailCalls: true, HookName: "h", Stack: StackAudit{LowestOffset: -8}}
 	work := tailCallerFixture()
@@ -523,9 +608,10 @@ func TestLookupReadOnlyMapCopy(t *testing.T) {
 	if err != nil || !plan.hooks[1].Untrusted || plan.hooks[1].Copied {
 		t.Fatalf("write-only: %+v %v", plan, err)
 	}
-	// A copy that does not fit is skipped under Auto, not refused: the
-	// read-only flows copy overflows at -480 while the typed sessions hook fits.
-	req.Stack.LowestOffset = -480
+	// A copy that does not fit is skipped under Auto, not refused: at -448 the
+	// read-only flows copy (-496) passes the 480 bytes a frame calling a hook
+	// may use, while the typed sessions hook (-472) fits.
+	req.Stack.LowestOffset = -448
 	plan, err = transformLookup(multiMapFixtureFlags(bpfFRdonlyProg), req)
 	if err != nil || len(plan.hooks) != 1 || plan.hooks[0].MapName != "sessions" ||
 		len(plan.skipped) != 1 || plan.skipped[0].MapName != "flows" || plan.skipped[0].Reason == "" {
@@ -620,7 +706,7 @@ func TestLookupAutoSkipsOverflowingGeneric(t *testing.T) {
 	spec := multiMapFixture()
 	spec.Maps["flows"].Type = ebpf.HashOfMaps // a map-in-map site goes to the generic hook
 	req := autoReq()
-	req.Stack.LowestOffset = -488 // the 4th slot (-520) overflows; the three base slots fit
+	req.Stack.LowestOffset = -456 // the 4th slot (-488) is past the 480-byte site frame; the three base slots fit
 	plan, err := transformLookup(spec, req)
 	if err != nil || len(plan.hooks) != 1 || plan.hooks[0].MapName != "sessions" ||
 		len(plan.skipped) != 1 || plan.skipped[0].SitePC != 18 || !strings.Contains(plan.skipped[0].Reason, "4th spill slot") {

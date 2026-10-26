@@ -103,7 +103,7 @@ The helper only returns when the tail call failed (empty slot, index out of rang
 Observers should read both arguments as `u32`: on architectures whose JIT needs explicit zero extension, the upper halves of the argument registers are not defined.
 A tail call outside the entry function cannot reach the entry frame's ctx spill, so it also saves R1, the ctx the helper takes, into `ctx_slot` of its own frame before the helper.
 The stack audit covers direct R10 references in every function, so the same slot offsets are free in that frame.
-The transform deepens the entry frame, and every frame holding a tail-call site, to its spill region. In a program that uses `bpf_tail_call` the verifier sums the stack depth of every frame above a tail-calling subprogram along each call chain, each rounded up (to 32 bytes on older kernels), and rejects the program at 256 bytes (`check_max_stack_depth_subprog`); a deep entry frame, a stack-using intermediate frame, or the entry's own tail-call spill can each push a chain over it. The transform computes that sum per function from direct R10 references and the slots it adds (aliases are the audit's) and refuses when any chain into a tail-calling subprogram reaches the limit, rather than emit a program the verifier would reject.
+The transform deepens the entry frame, and every frame holding a site, to its spill region, and each hook is one more frame below the function that calls it. The verifier walks every call chain from the entry through bpf-to-bpf calls and callback references such as a `bpf_loop` callback (`check_max_stack_depth`), rounds each frame's stack depth up (to 32 bytes, at least 32, on 6.1 and for the interpreter; to 16 when newer kernels JIT the program), and rejects a chain whose frames above a tail-calling subprogram reach 256 bytes, whose frames total more than 512 bytes, or that is more than 8 frames deep. A deep entry frame, a stack-using intermediate frame or callback, the entry's own tail-call spill, a deep frame calling a hook, or a hook called from the 8th frame can each push a chain over a limit the original program stayed within. The transform measures the original and the transformed program the same way, under both roundings, with each function's depth taken from its direct R10 references (aliases are the audit's), callbacks walked like calls, and a function no chain reaches walked from its own frame; it refuses when the transformed program reaches a limit the original does not, naming the chain, rather than emit a program the verifier would reject.
 With `TailCalls` and no tail call in the program, the transform is refused.
 
 Every hook is a bpf-to-bpf call, and the verifier only allows bpf-to-bpf calls in a program that also uses `bpf_tail_call` when the program is JIT-compiled on an architecture that supports it (x86-64, arm64, s390, and loongarch; see `check_map_func_compatibility` in `kernel/bpf/verifier.c`).
@@ -196,7 +196,7 @@ With `LookupRequest.CopyReadOnly`, a `BPF_F_RDONLY_PROG` map keeps a typed hook 
 On a hit, each site of such a map copies the value onto the stack below the spill slots, widest aligned loads first, and passes a pointer to the copy.
 The copy is readable and writable stack memory, so the call passes the verifier on kernels without `arg:untrusted`.
 The observer then reads the value's type from the hook's BTF, but the pointer is the copy's address, not the map value's.
-The copy takes the value size rounded up to 8 bytes; a copy that would cross the 512-byte stack is refused.
+The copy takes the value size rounded up to 8 bytes; a copy that would take the frame past 480 bytes is refused (see below).
 A `BPF_F_WRONLY_PROG` map and the generic hook stay untrusted, since a program cannot read such a value to copy it.
 With `LookupRequest.StaticUntrusted`, every hook that would take `arg:untrusted` pointers, the generic hook included, is instead a static function whose body only returns zero, and `LookupHook.Static` is set instead of `Untrusted`.
 The verifier checks a static function at each call with the caller's registers rather than against its BTF, so the call needs no tag; in the CI kernel matrix, 6.1 and newer load it.
@@ -217,11 +217,12 @@ The package checks the XDP program type; the cooperative loader owns attachment 
 | The input ELF matches `ELFSHA256` before parsing. | The hash identifies the audited build. |
 | The selector resolves supported lookups of the same map in the entry function. | These are the intended observation sites. |
 | Map BTF sizes, where present, match the map definition, and entry BTF describes an XDP context pointer. | The BTF describes the audited build. |
-| Direct R10 references stay at or above `Stack.LowestOffset`; three aligned spill slots (four with the generic hook, plus a value copy with `CopyReadOnly`) fit below it within 512 bytes. | Pointer aliases and called subprograms do not reach the reserved spill region. |
+| Direct R10 references stay at or above `Stack.LowestOffset`; three aligned spill slots (four with the generic hook, plus a value copy with `CopyReadOnly`) fit below it within 512 bytes, and within 480 in a frame that calls a lookup hook. The call chains of the transformed program stay within the verifier's stack and frame limits wherever the original's do. | Pointer aliases and called subprograms do not reach the reserved spill region. |
 | Existing function and source metadata are complete, references resolve, and relocation fits. | The transformed program remains acceptable to the target kernel verifier. |
 
 The stack audit has the same alias and callee limitations as `StackAudit` in the original transform.
 Three 8-byte slots require an audited bound of at least `-488`, and four at least `-480`, rounded down to an 8-byte boundary before allocating the slots.
+A lookup site's frame also calls its hook, which kernels that round frames to 32 bytes count as 32 bytes of the 512-byte combined stack, so a site needs `-456` for three slots and `-448` for four; `Auto` skips a site past that, and explicit selection refuses it.
 The transform checks direct R10 references throughout the flattened selected program.
 It does not infer stack usage through aliases.
 
@@ -351,6 +352,7 @@ It compares plain and injected programs, checks two keys with different packet l
 On a successful tail call, the entry hook fires and an fentry on the target program itself does not; on a failed one, the tail-call hook reports the site and index.
 A direct run of the target fires both.
 `TestBpfTailCallInSubprogram` fails a tail call inside a static subprogram and checks the hook gets that subprogram's ctx; `TestBpfTailCallStackLimit` and `TestBpfTailCallDepthSumsCallers` check the transform refuses one slot past the 256-byte caller-depth limit (for a deep entry frame, a stack-using middle frame, and the entry's own tail-call spill) while the original still loads, and that one slot under it transforms and loads.
+`TestBpfStackLimitsAcrossCalls` does the same for a chain through a `bpf_loop` callback into a static or global tail-calling subprogram, for the 512-byte combined stack (a tail-calling entry that calls a 248-byte subprogram, and a lookup site's frame plus its hook), and for the 8-frame limit (a hook called from the 8th frame).
 `TestBpfEntryHookWithLookup` combines `Entry` with a lookup hook in one program and observes both.
 `TestBpfLookupInjectionCallback` checks symbolic and numeric callback loads with an unreached subprogram preceding the `bpf_loop` callback and a stack counter incremented three times by `bpf_loop`; the program returns `XDP_ABORTED` unless those increments occur.
 It repeats the plain/injected comparison and fentry observations (including direct `ctx` pointer dereferencing) for both callback forms.
@@ -360,8 +362,8 @@ These tests exercise the transform core and fentry using `BPF_PROG_TEST_RUN`, wi
 go build ./...
 go vet ./...
 go test -count=1 ./pkg/inject/...
-sudo -E env PATH=$PATH go test -count=1 -run 'TestBpfLookupInjection|TestBpfTailCall|TestBpfEntryHook' ./pkg/inject/
+sudo -E env PATH=$PATH go test -count=1 -run 'TestBpfLookupInjection|TestBpfTailCall|TestBpfEntryHook|TestBpfStackLimits' ./pkg/inject/
 ```
 
-All 18 privileged lookup, entry and tail-call tests passed on Linux `7.0.0-38-generic`; `make test-bpf` runs them across the CI kernel matrix (6.1 to 7.3-rc4), where the tests whose hooks need `arg:untrusted` skip on 6.1-6.15 (see scripts/test/privileged.py).
+All 19 privileged lookup, entry, tail-call and stack-limit tests pass across the CI kernel matrix (6.1 to 7.3-rc4) that `make test-bpf` runs, where the tests whose hooks need `arg:untrusted` skip on 6.1-6.15 and the callback stack-limit subtests skip on 7.3, which forbids tail calls in callbacks (see scripts/test/privileged.py).
 This is finite test evidence for the fixture, not a general program-equivalence, concurrency, or kernel-version guarantee.
