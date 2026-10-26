@@ -304,6 +304,61 @@ func paddedSubTailCaller(bound int16) *ebpf.CollectionSpec {
 	return spec
 }
 
+// chainTailCaller is entry -> middle -> sub, where only middle uses stack
+// (depth bytes) and only sub tail-calls, so the kernel's caller-depth check
+// for sub sums the entry and middle frames.
+func chainTailCaller(depth int16) *ebpf.CollectionSpec {
+	spec := tailCallerFixture()
+	body := spec.Programs["caller"].Instructions
+	sub := xdpFunc("sub")
+	sub.Linkage = btf.StaticFunc
+	body[0] = btf.WithFuncMetadata(body[0].WithSymbol("sub").WithSource(asm.Comment("tail-calling subprogram")), sub)
+	middle := xdpFunc("middle")
+	middle.Linkage = btf.StaticFunc
+	insns := asm.Instructions{
+		btf.WithFuncMetadata(asm.Call.Label("middle").WithSymbol("caller").WithSource(asm.Comment("entry")), xdpFunc("caller")),
+		asm.Return(),
+		btf.WithFuncMetadata(asm.StoreImm(asm.RFP, -depth, 0, asm.Word).WithSymbol("middle").WithSource(asm.Comment("middle")), middle),
+		asm.Call.Label("sub"),
+		asm.Return(),
+	}
+	spec.Programs["caller"].Instructions = append(insns, body...)
+	return spec
+}
+
+// nestedTailCaller tail-calls in the entry, whose frame reaches R10+bound,
+// and on failure calls sub, which tail-calls again: the entry's own tail-call
+// spill counts toward sub's caller depth.
+func nestedTailCaller(bound int16) *ebpf.CollectionSpec {
+	spec := tailCallerFixture()
+	body := spec.Programs["caller"].Instructions
+	sub := xdpFunc("sub")
+	sub.Linkage = btf.StaticFunc
+	body[0] = btf.WithFuncMetadata(body[0].WithSymbol("sub").WithSource(asm.Comment("tail-calling subprogram")), sub)
+	short := asm.JGT.Reg(asm.R4, asm.R3, "")
+	short.Offset = 8 // slot 6 -> 15
+	insns := asm.Instructions{
+		btf.WithFuncMetadata(asm.StoreImm(asm.RFP, bound, 0, asm.Word).WithSymbol("caller").WithSource(asm.Comment("entry")), xdpFunc("caller")), // 0
+		asm.Mov.Reg(asm.R6, asm.R1),                    // 1
+		asm.LoadMem(asm.R2, asm.R6, 0, asm.Word),       // 2: data
+		asm.LoadMem(asm.R3, asm.R6, 4, asm.Word),       // 3: data_end
+		asm.Mov.Reg(asm.R4, asm.R2),                    // 4
+		asm.Add.Imm(asm.R4, 1),                         // 5
+		short,                                          // 6
+		asm.LoadMem(asm.R3, asm.R2, 0, asm.Byte),       // 7: index
+		asm.Mov.Reg(asm.R1, asm.R6),                    // 8
+		asm.LoadMapPtr(asm.R2, 0).WithReference("jmp"), // 9-10
+		asm.FnTailCall.Call(),                          // 11
+		asm.Mov.Reg(asm.R1, asm.R6),                    // 12: failed; try sub
+		asm.Call.Label("sub"),                          // 13
+		asm.Return(),                                   // 14
+		asm.Mov.Imm(asm.R0, 2),                         // 15: XDP_PASS
+		asm.Return(),                                   // 16
+	}
+	spec.Programs["caller"].Instructions = append(insns, body...)
+	return spec
+}
+
 // At an audited bound where the transform's entry ctx spill crosses the
 // kernel's 256-byte caller-depth limit the transform refuses; one slot less
 // transforms and the kernel loads it. The original at the deeper bound still
@@ -324,6 +379,39 @@ func TestBpfTailCallStackLimit(t *testing.T) {
 	}
 	injected := loadOrSkip(t, work)
 	t.Cleanup(injected.Close)
+}
+
+// The kernel sums every frame above a tail-calling subprogram. At the refusing
+// bound the original still loads, so it is the transform's deepening that
+// crosses; one slot shallower transforms and loads.
+func TestBpfTailCallDepthSumsCallers(t *testing.T) {
+	testutil.SkipIfNotRoot(t)
+	for _, tc := range []struct {
+		name           string
+		deep, shallow  func() *ebpf.CollectionSpec
+		deepReq, shReq LookupRequest
+	}{
+		{"chain", func() *ebpf.CollectionSpec { return chainTailCaller(192) }, func() *ebpf.CollectionSpec { return chainTailCaller(96) },
+			LookupRequest{ProgramName: "caller", Entry: true, HookName: "obs", Stack: StackAudit{LowestOffset: -192}},
+			LookupRequest{ProgramName: "caller", Entry: true, HookName: "obs", Stack: StackAudit{LowestOffset: -96}}},
+		{"nested", func() *ebpf.CollectionSpec { return nestedTailCaller(-216) }, func() *ebpf.CollectionSpec { return nestedTailCaller(-208) },
+			LookupRequest{ProgramName: "caller", TailCalls: true, HookName: "obs", Stack: StackAudit{LowestOffset: -216}},
+			LookupRequest{ProgramName: "caller", TailCalls: true, HookName: "obs", Stack: StackAudit{LowestOffset: -208}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			plain := loadOrSkip(t, tc.deep())
+			t.Cleanup(plain.Close)
+			if _, err := transformLookup(tc.deep(), tc.deepReq); !errors.Is(err, ErrRefused) {
+				t.Fatalf("deep: want refusal, got %v", err)
+			}
+			work := tc.shallow()
+			if _, err := transformLookup(work, tc.shReq); err != nil {
+				t.Fatal(err)
+			}
+			injected := loadOrSkip(t, work)
+			t.Cleanup(injected.Close)
+		})
+	}
 }
 
 // The tail-call hook also fires for a failed tail call in a subprogram, with

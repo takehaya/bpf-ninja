@@ -103,7 +103,7 @@ The helper only returns when the tail call failed (empty slot, index out of rang
 Observers should read both arguments as `u32`: on architectures whose JIT needs explicit zero extension, the upper halves of the argument registers are not defined.
 A tail call outside the entry function cannot reach the entry frame's ctx spill, so it also saves R1, the ctx the helper takes, into `ctx_slot` of its own frame before the helper.
 The stack audit covers direct R10 references in every function, so the same slot offsets are free in that frame.
-The transform deepens the entry frame to its spill region, and in a program that uses `bpf_tail_call` this counts toward the verifier's limit of 256 bytes for the frames above a tail call (`check_max_stack_depth_subprog`); even a single tail-calling subprogram with a deep entry frame can reach it. When the deepened frame would cross that limit, the transform refuses rather than emit a program the verifier would reject.
+The transform deepens the entry frame, and every frame holding a tail-call site, to its spill region. In a program that uses `bpf_tail_call` the verifier sums the stack depth of every frame above a tail-calling subprogram along each call chain, each rounded up (to 32 bytes on older kernels), and rejects the program at 256 bytes (`check_max_stack_depth_subprog`); a deep entry frame, a stack-using intermediate frame, or the entry's own tail-call spill can each push a chain over it. The transform computes that sum per function from direct R10 references and the slots it adds (aliases are the audit's) and refuses when any chain into a tail-calling subprogram reaches the limit, rather than emit a program the verifier would reject.
 With `TailCalls` and no tail call in the program, the transform is refused.
 
 Every hook is a bpf-to-bpf call, and the verifier only allows bpf-to-bpf calls in a program that also uses `bpf_tail_call` when the program is JIT-compiled on an architecture that supports it (x86-64, arm64, s390, and loongarch; see `check_map_func_compatibility` in `kernel/bpf/verifier.c`).
@@ -350,7 +350,7 @@ It compares plain and injected programs, checks two keys with different packet l
 `TestBpfTailCallHooks` tail-calls from an instrumented caller into a target instrumented with `Entry`.
 On a successful tail call, the entry hook fires and an fentry on the target program itself does not; on a failed one, the tail-call hook reports the site and index.
 A direct run of the target fires both.
-`TestBpfTailCallInSubprogram` fails a tail call inside a static subprogram and checks the hook gets that subprogram's ctx, and `TestBpfTailCallStackLimit` checks the transform refuses one slot past the 256-byte caller-depth limit and loads one slot under it.
+`TestBpfTailCallInSubprogram` fails a tail call inside a static subprogram and checks the hook gets that subprogram's ctx; `TestBpfTailCallStackLimit` and `TestBpfTailCallDepthSumsCallers` check the transform refuses one slot past the 256-byte caller-depth limit (for a deep entry frame, a stack-using middle frame, and the entry's own tail-call spill) while the original still loads, and that one slot under it transforms and loads.
 `TestBpfEntryHookWithLookup` combines `Entry` with a lookup hook in one program and observes both.
 `TestBpfLookupInjectionCallback` checks symbolic and numeric callback loads with an unreached subprogram preceding the `bpf_loop` callback and a stack counter incremented three times by `bpf_loop`; the program returns `XDP_ABORTED` unless those increments occur.
 It repeats the plain/injected comparison and fentry observations (including direct `ctx` pointer dereferencing) for both callback forms.
@@ -363,5 +363,5 @@ go test -count=1 ./pkg/inject/...
 sudo -E env PATH=$PATH go test -count=1 -run 'TestBpfLookupInjection|TestBpfTailCall|TestBpfEntryHook' ./pkg/inject/
 ```
 
-All 17 privileged lookup, entry and tail-call tests passed on Linux `7.0.0-38-generic`; `make test-bpf` runs them across the CI kernel matrix (6.1 to 7.3-rc4), where the tests whose hooks need `arg:untrusted` skip on 6.1-6.15 (see scripts/test/privileged.py).
+All 18 privileged lookup, entry and tail-call tests passed on Linux `7.0.0-38-generic`; `make test-bpf` runs them across the CI kernel matrix (6.1 to 7.3-rc4), where the tests whose hooks need `arg:untrusted` skip on 6.1-6.15 (see scripts/test/privileged.py).
 This is finite test evidence for the fixture, not a general program-equivalence, concurrency, or kernel-version guarantee.

@@ -394,6 +394,47 @@ func TestTailCallStackLimit(t *testing.T) {
 	}
 }
 
+// The caller-depth check sums every frame above a tail-calling subprogram: the
+// entry's ctx spill through a stack-using middle frame, and the entry's own
+// tail-call spill when the entry then calls another tail-calling subprogram.
+// The shallower variants transform. Both the ELF and the raw call forms resolve.
+func TestTailCallDepthSumsCallers(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		spec   func() *ebpf.CollectionSpec
+		req    LookupRequest
+		refuse bool
+	}{
+		{"chain", func() *ebpf.CollectionSpec { return chainTailCaller(192) },
+			LookupRequest{ProgramName: "caller", Entry: true, HookName: "obs", Stack: StackAudit{LowestOffset: -192}}, true},
+		{"chain-shallow", func() *ebpf.CollectionSpec { return chainTailCaller(96) },
+			LookupRequest{ProgramName: "caller", Entry: true, HookName: "obs", Stack: StackAudit{LowestOffset: -96}}, false},
+		{"nested", func() *ebpf.CollectionSpec { return nestedTailCaller(-216) },
+			LookupRequest{ProgramName: "caller", TailCalls: true, HookName: "obs", Stack: StackAudit{LowestOffset: -216}}, true},
+		{"nested-shallow", func() *ebpf.CollectionSpec { return nestedTailCaller(-208) },
+			LookupRequest{ProgramName: "caller", TailCalls: true, HookName: "obs", Stack: StackAudit{LowestOffset: -208}}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			check := func(form string, err error) {
+				t.Helper()
+				if tc.refuse && (!errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), "caller-depth limit") || !strings.Contains(err.Error(), "sub")) {
+					t.Fatalf("%s: want refusal naming sub, got %v", form, err)
+				}
+				if !tc.refuse && err != nil {
+					t.Fatalf("%s: %v", form, err)
+				}
+			}
+			_, err := transformLookup(tc.spec(), tc.req)
+			check("elf", err)
+			for _, numeric := range []bool{false, true} {
+				p := rawLookupFixture(t, tc.spec(), "caller", numeric)
+				_, err := TransformLookupRaw(p, LookupRequestRaw{Entry: tc.req.Entry, TailCalls: tc.req.TailCalls, HookName: tc.req.HookName, Stack: tc.req.Stack})
+				check(map[bool]string{false: "raw-symbolic", true: "raw-numeric"}[numeric], err)
+			}
+		})
+	}
+}
+
 func TestTailCallRawParity(t *testing.T) {
 	req := LookupRequest{ProgramName: "caller", Entry: true, TailCalls: true, HookName: "h", Stack: StackAudit{LowestOffset: -8}}
 	work := tailCallerFixture()
