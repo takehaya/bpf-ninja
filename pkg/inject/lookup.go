@@ -364,24 +364,40 @@ func lookupSlots(lowest int16) (ctx, key, spillR0, mapSlot int) {
 }
 
 // LookupStackReserve reports the bytes the transform reserves strictly below
-// the audited floor, as far as a request's flags determine it statically: the
-// three base slots (ctx, key, R0). A generic hook's map slot and a
-// CopyReadOnly value copy are program-dependent and enforced during the
-// transform (Auto skips the site, explicit selection refuses), not here.
-func LookupStackReserve(LookupRequest) int { return 24 }
+// the audited floor, as far as a request's flags determine it statically. The
+// entry always spills ctx (8 bytes); a tail-call site also keeps its index in
+// the key slot (16); a lookup site, possible with Site or Auto, also spills R0
+// (24). A generic hook's map slot and a CopyReadOnly value copy are
+// program-dependent and enforced during the transform (Auto skips the site,
+// explicit selection refuses), not here.
+func LookupStackReserve(req LookupRequest) int {
+	s := req.Site
+	switch {
+	case req.Auto || s.MapName != "" || s.FuncName != "" || s.Line != 0 || len(s.SitePCs) != 0 || s.AllMatches:
+		return 24
+	case req.TailCalls:
+		return 16
+	case req.Entry:
+		return 8
+	}
+	return 24
+}
 
 // CheckLookupStack validates an audited LowestOffset against the statically
-// known reservation. transformLookupProgram and syscallhook.Validate both call
-// it, so Validate cannot drift from the transform's slot layout.
+// known reservation of req's flags. transformLookupProgram and
+// syscallhook.Validate both call it, so Validate cannot drift from the
+// transform's slot layout.
 func CheckLookupStack(req LookupRequest) error {
 	lo := int(req.Stack.LowestOffset)
 	if lo > 0 || lo < -512 {
 		return refuse("StackAudit.LowestOffset must be in [-512, 0]")
 	}
-	// A site's frame also calls its hook, so the slots must stay within
+	// Every reserved slot is in a frame that calls a hook (the entry hook, a
+	// tail-call or a lookup hook), so the slots must stay within
 	// siteFrameLimit, not the full 512 bytes.
-	if _, _, spillR0, _ := lookupSlots(req.Stack.LowestOffset); spillR0 < -siteFrameLimit {
-		return refuse("stack_lowest_offset %d leaves no room for %d reserved bytes below the audited floor", lo, LookupStackReserve(req))
+	ctx, _, _, _ := lookupSlots(req.Stack.LowestOffset)
+	if reserve := LookupStackReserve(req); ctx+8-reserve < -siteFrameLimit {
+		return refuse("stack_lowest_offset %d leaves no room for %d reserved bytes below the audited floor", lo, reserve)
 	}
 	return nil
 }
@@ -805,7 +821,7 @@ func transformLookupProgram(insns asm.Instructions, typ ebpf.ProgramType, types 
 	}
 	// Deeper frames and the hook frames count toward the kernel's limits on
 	// call chains; refuse rather than emit a program the verifier would reject.
-	if err := checkStackLimits(insns, spliced); err != nil {
+	if err := checkStackLimits(insns, spliced, req.Stack.LowestOffset); err != nil {
 		return nil, plan, err
 	}
 	return spliced, plan, nil

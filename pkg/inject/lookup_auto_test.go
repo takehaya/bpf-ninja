@@ -475,6 +475,120 @@ func stackLimitCases() []stackLimitCase {
 		// every site whose slots pass 480 bytes.
 		{"site-frame", multiMapFixture, deepAuto(-464), []string{"leaves no room"}},
 		{"site-frame-shallow", multiMapFixture, deepAuto(-456), nil},
+		// sub reaches its stack only through a copy of R10, which the audit
+		// covers: the entry's ctx spill plus sub's 256 bytes pass 512.
+		{"alias", func() *ebpf.CollectionSpec { return aliasCallee(256) }, entry(-256), []string{"512-byte combined limit", "caller -> sub"}},
+		{"alias-shallow", func() *ebpf.CollectionSpec { return aliasCallee(224) }, entry(-224), nil},
+	}
+}
+
+// overestimatedReq deepens deadStoreCallee's entry by its ctx spill.
+var overestimatedReq = LookupRequest{ProgramName: "caller", Entry: true, HookName: "obs", Stack: StackAudit{LowestOffset: -288}}
+
+// The original's instruction depths already pass 512 bytes on caller -> sub,
+// but the kernel counts 512; the transform deepens the chain, so it refuses
+// rather than treat the limit as already crossed. ELF and both raw forms.
+func TestStackLimitsOverestimatedOriginal(t *testing.T) {
+	check := func(form string, err error) {
+		t.Helper()
+		if !errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), "512-byte combined limit") || !strings.Contains(err.Error(), "caller -> sub") {
+			t.Fatalf("%s: want combined-limit refusal naming caller -> sub, got %v", form, err)
+		}
+	}
+	_, err := transformLookup(deadStoreCallee(), overestimatedReq)
+	check("elf", err)
+	for _, numeric := range []bool{false, true} {
+		p := rawLookupFixture(t, deadStoreCallee(), "caller", numeric)
+		_, err := TransformLookupRaw(p, LookupRequestRaw{Entry: true, HookName: "obs", Stack: overestimatedReq.Stack})
+		check(map[bool]string{false: "raw-symbolic", true: "raw-numeric"}[numeric], err)
+	}
+}
+
+// Only a chain the transform left as it was may stay past a limit: the
+// unreached orphan -> deep chain is 608 bytes in both programs and passes
+// while the transform only deepens the entry, and is refused once orphan is
+// deeper too.
+func TestStackLimitsUnchangedChain(t *testing.T) {
+	program := func(entry, orphan int16) asm.Instructions {
+		return asm.Instructions{
+			btf.WithFuncMetadata(asm.StoreImm(asm.RFP, entry, 0, asm.Word).WithSymbol("caller"), xdpFunc("caller")),
+			asm.Mov.Imm(asm.R0, 2),
+			asm.Return(),
+			btf.WithFuncMetadata(asm.StoreImm(asm.RFP, orphan, 0, asm.Word).WithSymbol("orphan"), staticFunc("orphan")),
+			asm.Call.Label("deep"),
+			asm.Return(),
+			btf.WithFuncMetadata(asm.StoreImm(asm.RFP, -304, 0, asm.Word).WithSymbol("deep"), staticFunc("deep")),
+			asm.Return(),
+		}
+	}
+	in := program(-8, -304)
+	if err := checkStackLimits(in, program(-16, -304), -304); err != nil {
+		t.Fatalf("unchanged chain: %v", err)
+	}
+	err := checkStackLimits(in, program(-16, -312), -304)
+	if !errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), "orphan -> deep") {
+		t.Fatalf("deepened chain: want refusal naming orphan -> deep, got %v", err)
+	}
+}
+
+// reserveCase is a request without lookups at a bound CheckLookupStack and
+// the transform both accept (ok) or both refuse.
+type reserveCase struct {
+	name string
+	req  LookupRequest
+	ok   bool
+}
+
+func reserveCases() []reserveCase {
+	req := func(entry, tails bool, bound int16) LookupRequest {
+		return LookupRequest{ProgramName: "caller", Entry: entry, TailCalls: tails, HookName: "obs", Stack: StackAudit{LowestOffset: bound}}
+	}
+	return []reserveCase{
+		{"entry-472", req(true, false, -472), true},
+		{"entry-473", req(true, false, -473), false},
+		{"entry-480", req(true, false, -480), false},
+		{"tails-464", req(false, true, -464), true},
+		{"tails-465", req(false, true, -465), false},
+		{"tails-472", req(false, true, -472), false},
+		{"entry-tails-464", req(true, true, -464), true},
+		{"entry-tails-472", req(true, true, -472), false},
+	}
+}
+
+// Entry and TailCalls without a lookup site reserve 8 and 16 bytes, not the
+// 24 a lookup needs, in CheckLookupStack and the transform alike (ELF and
+// raw forms); a request that may hold a lookup site still reserves 24.
+func TestEntryTailReserve(t *testing.T) {
+	for _, tc := range reserveCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			check := func(form string, err error) {
+				t.Helper()
+				if tc.ok && err != nil {
+					t.Fatalf("%s: %v", form, err)
+				}
+				if !tc.ok && !errors.Is(err, ErrRefused) {
+					t.Fatalf("%s: want refusal, got %v", form, err)
+				}
+			}
+			check("CheckLookupStack", CheckLookupStack(tc.req))
+			// The fixture's own reference stays at the bound the audit claims.
+			spec := func() *ebpf.CollectionSpec { return paddedTailCaller(max(tc.req.Stack.LowestOffset, -472)) }
+			_, err := transformLookup(spec(), tc.req)
+			check("elf", err)
+			for _, numeric := range []bool{false, true} {
+				p := rawLookupFixture(t, spec(), "caller", numeric)
+				_, err := TransformLookupRaw(p, LookupRequestRaw{Entry: tc.req.Entry, TailCalls: tc.req.TailCalls, HookName: tc.req.HookName, Stack: tc.req.Stack})
+				check(map[bool]string{false: "raw-symbolic", true: "raw-numeric"}[numeric], err)
+			}
+		})
+	}
+	for _, req := range []LookupRequest{
+		{Entry: true, Auto: true, Stack: StackAudit{LowestOffset: -464}},
+		{TailCalls: true, Site: LookupSelector{MapName: "m"}, Stack: StackAudit{LowestOffset: -464}},
+	} {
+		if err := CheckLookupStack(req); !errors.Is(err, ErrRefused) {
+			t.Fatalf("%+v: a possible lookup site must reserve 24 bytes, got %v", req, err)
+		}
 	}
 }
 

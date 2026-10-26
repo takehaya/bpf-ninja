@@ -421,6 +421,57 @@ func wideCaller(depth int16) *ebpf.CollectionSpec {
 	return spec
 }
 
+// aliasCallee is a stackless entry that calls sub, which reaches R10-depth
+// only through a copy of R10, so its depth has no direct R10 reference.
+func aliasCallee(depth int16) *ebpf.CollectionSpec {
+	spec := tailCallerFixture()
+	spec.Programs["caller"].Instructions = asm.Instructions{
+		btf.WithFuncMetadata(asm.Call.Label("sub").WithSymbol("caller").WithSource(asm.Comment("entry")), xdpFunc("caller")),
+		asm.Mov.Imm(asm.R0, 2),
+		asm.Return(),
+		btf.WithFuncMetadata(asm.Mov.Reg(asm.R2, asm.RFP).WithSymbol("sub").WithSource(asm.Comment("aliased stack")), staticFunc("sub")),
+		asm.Add.Imm(asm.R2, -int32(depth)),
+		asm.StoreImm(asm.R2, 0, 0, asm.Word),
+		asm.Mov.Imm(asm.R0, 0),
+		asm.Return(),
+	}
+	return spec
+}
+
+// deadStoreCallee is an entry 288 bytes deep calling sub, which is 224 bytes
+// deep but also stores at R10-256 behind a branch the verifier never takes:
+// the kernel counts 288+224 = 512 bytes, the instructions say 544.
+func deadStoreCallee() *ebpf.CollectionSpec {
+	spec := tailCallerFixture()
+	taken := asm.JEq.Imm(asm.R0, 0, "")
+	taken.Offset = 1 // always: R0 is 0
+	spec.Programs["caller"].Instructions = asm.Instructions{
+		btf.WithFuncMetadata(asm.StoreImm(asm.RFP, -288, 0, asm.Word).WithSymbol("caller").WithSource(asm.Comment("entry")), xdpFunc("caller")),
+		asm.Call.Label("sub"),
+		asm.Mov.Imm(asm.R0, 2),
+		asm.Return(),
+		btf.WithFuncMetadata(asm.StoreImm(asm.RFP, -224, 0, asm.Word).WithSymbol("sub").WithSource(asm.Comment("sub")), staticFunc("sub")),
+		asm.Mov.Imm(asm.R0, 0),
+		taken,
+		asm.StoreImm(asm.RFP, -256, 0, asm.Word), // never runs
+		asm.Return(),
+	}
+	return spec
+}
+
+// paddedTailCaller is tailCallerFixture whose entry frame references
+// R10+bound.
+func paddedTailCaller(bound int16) *ebpf.CollectionSpec {
+	spec := tailCallerFixture()
+	insns := spec.Programs["caller"].Instructions
+	entry := insns[0]
+	pad := btf.WithFuncMetadata(asm.StoreImm(asm.RFP, bound, 0, asm.Word).
+		WithSymbol(entry.Symbol()).WithSource(entry.Source()), btf.FuncMetadata(&entry))
+	insns[0] = btf.WithFuncMetadata(entry.WithSymbol("").WithSource(nil), nil)
+	spec.Programs["caller"].Instructions = append(asm.Instructions{pad}, insns...)
+	return spec
+}
+
 // frameChain is a stackless call chain of frames functions, the entry
 // first and the tail-calling sub last.
 func frameChain(frames int) *ebpf.CollectionSpec {
@@ -530,6 +581,40 @@ func TestBpfStackLimitsAcrossCalls(t *testing.T) {
 			shallow := findStackLimitCase(tc.name + "-shallow")
 			work := shallow.spec()
 			if _, err := transformLookup(work, shallow.req); err != nil {
+				t.Fatal(err)
+			}
+			injected := loadOrSkip(t, work)
+			t.Cleanup(injected.Close)
+		})
+	}
+}
+
+// A depth taken from instructions can overstate the kernel's: deadStoreCallee
+// loads, though its instructions add up past 512 bytes. The entry's ctx
+// spill really does push the chain past the limit, so the transform refuses
+// instead of treating the overestimated original as already past it.
+func TestBpfStackLimitsOverestimatedOriginal(t *testing.T) {
+	testutil.SkipIfNotRoot(t)
+	plain := loadOrSkip(t, deadStoreCallee())
+	t.Cleanup(plain.Close)
+	if _, err := transformLookup(deadStoreCallee(), overestimatedReq); !errors.Is(err, ErrRefused) {
+		t.Fatalf("want refusal, got %v", err)
+	}
+}
+
+// Entry and TailCalls without lookups reserve only the slots they use: an
+// entry-only request at -472 (ctx at -480) and a tail-call request at -464
+// (ctx and index down to -480) leave the 32 bytes their hook frame counts on
+// kernels that round to 32, and transform and load.
+func TestBpfStackLimitsReserve(t *testing.T) {
+	testutil.SkipIfNotRoot(t)
+	for _, tc := range reserveCases() {
+		if !tc.ok {
+			continue
+		}
+		t.Run(tc.name, func(t *testing.T) {
+			work := paddedTailCaller(tc.req.Stack.LowestOffset)
+			if _, err := transformLookup(work, tc.req); err != nil {
 				t.Fatal(err)
 			}
 			injected := loadOrSkip(t, work)

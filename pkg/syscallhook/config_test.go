@@ -51,6 +51,28 @@ func TestValidateStack(t *testing.T) {
 			t.Fatalf("lo=%d: Validate=%v, CheckLookupStack=%v", lo, got, want)
 		}
 	}
+	// Without a lookup, entry reserves only the ctx slot and tail_calls the
+	// ctx and index slots; auto may find a lookup and reserves all three.
+	flagged := func(lo int16, set func(*Rule)) Rule {
+		r := Rule{Program: "p", Hook: "h", StackLowestOffset: &lo}
+		set(&r)
+		return r
+	}
+	entry := func(r *Rule) { r.Entry = true }
+	tails := func(r *Rule) { r.TailCalls = true }
+	auto := func(r *Rule) { r.Auto, r.Entry = true, true }
+	for _, tc := range []struct {
+		lo  int16
+		set func(*Rule)
+		ok  bool
+	}{{-472, entry, true}, {-473, entry, false}, {-464, tails, true}, {-465, tails, false}, {-456, auto, true}, {-464, auto, false}} {
+		r := flagged(tc.lo, tc.set)
+		got := Validate([]Rule{r})
+		want := inject.CheckLookupStack(inject.LookupRequest{Auto: r.Auto, Entry: r.Entry, TailCalls: r.TailCalls, Stack: inject.StackAudit{LowestOffset: tc.lo}})
+		if (got == nil) != tc.ok || (want == nil) != tc.ok || (got != nil && !strings.Contains(got.Error(), want.Error())) {
+			t.Fatalf("%+v: Validate=%v, CheckLookupStack=%v", r, got, want)
+		}
+	}
 	r := rule(0)
 	r.StackLowestOffset = nil
 	if Validate([]Rule{r}) == nil {

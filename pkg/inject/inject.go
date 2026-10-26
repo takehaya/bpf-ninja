@@ -271,7 +271,7 @@ func transform(work *ebpf.CollectionSpec, req Request) error {
 		return err
 	}
 	out := appendHook(spliced, req)
-	if err := checkStackLimits(prog.Instructions, out); err != nil {
+	if err := checkStackLimits(prog.Instructions, out, req.Stack.LowestOffset); err != nil {
 		return err
 	}
 	prog.Instructions = out

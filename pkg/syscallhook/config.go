@@ -95,7 +95,8 @@ func Validate(rules []Rule) error {
 		// The reserved spill bytes come from inject, so Validate cannot drift
 		// from the transform. The generic-hook map slot and a CopyReadOnly value
 		// copy are program-dependent and are enforced during the transform.
-		if err := inject.CheckLookupStack(inject.LookupRequest{Stack: inject.StackAudit{LowestOffset: *r.StackLowestOffset}}); err != nil {
+		raw := r.request()
+		if err := inject.CheckLookupStack(inject.LookupRequest{Site: raw.Site, Auto: raw.Auto, Entry: raw.Entry, TailCalls: raw.TailCalls, Stack: raw.Stack}); err != nil {
 			return fmt.Errorf("rule %d: %w", i, err)
 		}
 	}

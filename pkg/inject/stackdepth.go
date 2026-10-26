@@ -39,15 +39,21 @@ var frameRoundings = []frameRounding{
 // stackFunc is one function of a program's call graph.
 type stackFunc struct {
 	name     string
-	depth    int // deepest direct R10 reference, in bytes
+	depth    int // see stackCallGraph
 	tailCall bool
+	changed  bool  // new in the transform, or deeper than in the original
 	callees  []int // deduplicated
 }
 
 // stackCallGraph splits insns into functions at BTF function metadata and
 // links them by bpf-to-bpf calls and callback references, symbolic or
 // numeric. Function 0 is the entry.
-func stackCallGraph(insns asm.Instructions) ([]stackFunc, error) {
+//
+// A function's depth is its deepest direct R10 reference (R10 as the base of
+// a load or store). A function that uses R10 in any other way, such as
+// R2 = R10, can reach deeper through the copy, which the audited bound lowest
+// covers by contract, so its depth is at least -lowest.
+func stackCallGraph(insns asm.Instructions, lowest int16) ([]stackFunc, error) {
 	var funcs []stackFunc
 	byStart, bySymbol := map[int]int{}, map[string]int{}
 	it := insns.Iterate()
@@ -65,6 +71,7 @@ func stackCallGraph(insns asm.Instructions) ([]stackFunc, error) {
 		}
 	}
 	edges := make([]map[int]bool, len(funcs))
+	aliased := make([]bool, len(funcs))
 	cur := 0
 	it = insns.Iterate()
 	for it.Next() {
@@ -74,8 +81,12 @@ func stackCallGraph(insns asm.Instructions) ([]stackFunc, error) {
 		}
 		f := &funcs[cur]
 		class := ins.OpCode.Class()
-		if (class.IsLoad() || class.IsStore()) && (ins.Dst == asm.RFP || ins.Src == asm.RFP) && ins.Offset < 0 && int(-ins.Offset) > f.depth {
+		load, store := class == asm.LdXClass, class == asm.StClass || class == asm.StXClass
+		if ((load && ins.Src == asm.RFP) || (store && ins.Dst == asm.RFP)) && ins.Offset < 0 && int(-ins.Offset) > f.depth {
 			f.depth = int(-ins.Offset)
+		}
+		if (ins.Src == asm.RFP && !load) || (ins.Dst == asm.RFP && !store) {
+			aliased[cur] = true
 		}
 		if ins.IsBuiltinCall() && ins.Constant == int64(asm.FnTailCall) {
 			f.tailCall = true
@@ -101,17 +112,24 @@ func stackCallGraph(insns asm.Instructions) ([]stackFunc, error) {
 			f.callees = append(f.callees, target)
 		}
 	}
+	for i := range funcs {
+		if aliased[i] {
+			funcs[i].depth = max(funcs[i].depth, -int(lowest))
+		}
+	}
 	return funcs, nil
 }
 
-// stackLimitsExceeded returns, keyed by the limit and the function where it is
-// reached, a description of every limit funcs exceed under round. Each value
-// is the longest chain to that function: the most caller bytes for the stack
-// limits, the most frames for the frame limit. Callbacks count as synchronous
-// frames under their referencing function, and functions no chain reaches
-// (an exception callback, say) are walked as their own roots; both only make
-// a chain longer than the kernel's walk.
-func stackLimitsExceeded(funcs []stackFunc, round func(int) int) (map[string]string, error) {
+// stackLimitBroken describes a limit that a changed chain of funcs breaks
+// under round, or returns "". A chain is changed when it passes through a
+// changed function; for the caller-depth limit, through a changed caller of
+// the tail-calling function. Of the chains to a function it takes the longest
+// changed one: the most caller bytes for the stack limits, the most frames for
+// the frame limit. Callbacks count as synchronous frames under their
+// referencing function, and functions no chain reaches (an exception
+// callback, say) are walked as their own roots; both only make a chain longer
+// than the kernel's walk.
+func stackLimitBroken(funcs []stackFunc, round func(int) int) (string, error) {
 	// Topological order by depth-first postorder; a cycle is recursion, which
 	// the kernel rejects.
 	const (
@@ -140,91 +158,145 @@ func stackLimitsExceeded(funcs []stackFunc, round func(int) int) (map[string]str
 	}
 	for i := range funcs {
 		if err := visit(i); err != nil {
-			return nil, err
+			return "", err
 		}
 	}
-	// above is the most caller bytes on a chain to a function, frames the
-	// most frames on a chain through it; the preds rebuild those chains.
-	above, frames := make([]int, len(funcs)), make([]int, len(funcs))
-	abovePred, framesPred := make([]int, len(funcs)), make([]int, len(funcs))
+	// above and frames are the most caller bytes and frames over every chain
+	// to a function; aboveNew and framesNew over the chains with a changed
+	// caller (-1 and 0 when there is none). The preds rebuild those chains.
+	n := len(funcs)
+	above, frames, aboveNew, framesNew := make([]int, n), make([]int, n), make([]int, n), make([]int, n)
+	abovePred, framesPred, aboveNewPred, framesNewPred := make([]int, n), make([]int, n), make([]int, n), make([]int, n)
 	for i := range funcs {
-		frames[i], abovePred[i], framesPred[i] = 1, -1, -1
+		frames[i], aboveNew[i] = 1, -1
+		abovePred[i], framesPred[i], aboveNewPred[i], framesNewPred[i] = -1, -1, -1, -1
 	}
 	for k := len(order) - 1; k >= 0; k-- {
 		i := order[k]
-		for _, c := range funcs[i].callees {
-			if sum := above[i] + round(funcs[i].depth); sum > above[c] {
+		f := funcs[i]
+		// What i hands its callees over changed chains: every chain once i
+		// itself changed.
+		passAbove, passFrames := aboveNew[i], framesNew[i]
+		if f.changed {
+			passAbove, passFrames = above[i], frames[i]
+		}
+		for _, c := range f.callees {
+			if sum := above[i] + round(f.depth); sum > above[c] {
 				above[c], abovePred[c] = sum, i
 			}
 			if frames[i]+1 > frames[c] {
 				frames[c], framesPred[c] = frames[i]+1, i
 			}
+			if sum := passAbove + round(f.depth); passAbove >= 0 && sum > aboveNew[c] {
+				aboveNew[c], aboveNewPred[c] = sum, i
+			}
+			if passFrames > 0 && passFrames+1 > framesNew[c] {
+				framesNew[c], framesNewPred[c] = passFrames+1, i
+			}
 		}
 	}
-	chain := func(i int, pred []int) string {
-		var names []string
-		for ; i >= 0; i = pred[i] {
-			names = append([]string{funcs[i].name}, names...)
+	// chain names the chain to i whose last caller is j: the longest changed
+	// chain up to its first changed function (from i itself when useAll), the
+	// longest chain of any kind above that.
+	chain := func(i, j int, useAll bool, all, changed []int) string {
+		names := []string{funcs[i].name}
+		for j >= 0 {
+			names = append([]string{funcs[j].name}, names...)
+			if useAll = useAll || funcs[j].changed; useAll {
+				j = all[j]
+			} else {
+				j = changed[j]
+			}
 		}
 		return strings.Join(names, " -> ")
 	}
-	exceeded := map[string]string{}
+	broken := map[string]string{}
 	for i, f := range funcs {
-		if i != 0 && f.tailCall && above[i] >= maxCallerDepth {
-			exceeded["caller:"+f.name] = fmt.Sprintf("the frames calling %s (%s) total %d bytes, at or past the kernel's %d-byte caller-depth limit for a subprogram that calls bpf_tail_call",
-				f.name, chain(i, abovePred), above[i], maxCallerDepth)
+		if i != 0 && f.tailCall && aboveNew[i] >= maxCallerDepth {
+			broken["caller:"+f.name] = fmt.Sprintf("the frames calling %s (%s) total %d bytes, at or past the kernel's %d-byte caller-depth limit for a subprogram that calls bpf_tail_call",
+				f.name, chain(i, aboveNewPred[i], false, abovePred, aboveNewPred), aboveNew[i], maxCallerDepth)
 		}
-		if total := above[i] + round(f.depth); total > maxCombinedStack {
-			exceeded["combined:"+f.name] = fmt.Sprintf("the call chain %s uses %d bytes of stack, past the kernel's %d-byte combined limit",
-				chain(i, abovePred), total, maxCombinedStack)
+		callers, pred := aboveNew[i], aboveNewPred[i]
+		if f.changed {
+			callers, pred = above[i], abovePred[i]
 		}
-		if frames[i] > maxCallFrames {
-			exceeded["frames:"+f.name] = fmt.Sprintf("the call chain %s is %d frames deep, past the kernel's %d-frame limit",
-				chain(i, framesPred), frames[i], maxCallFrames)
+		if total := callers + round(f.depth); callers >= 0 && total > maxCombinedStack {
+			broken["combined:"+f.name] = fmt.Sprintf("the call chain %s uses %d bytes of stack, past the kernel's %d-byte combined limit",
+				chain(i, pred, f.changed, abovePred, aboveNewPred), total, maxCombinedStack)
+		}
+		count, fpred := framesNew[i], framesNewPred[i]
+		if f.changed {
+			count, fpred = frames[i], framesPred[i]
+		}
+		if count > maxCallFrames {
+			broken["frames:"+f.name] = fmt.Sprintf("the call chain %s is %d frames deep, past the kernel's %d-frame limit",
+				chain(i, fpred, f.changed, framesPred, framesNewPred), count, maxCallFrames)
 		}
 	}
-	return exceeded, nil
+	if len(broken) == 0 {
+		return "", nil
+	}
+	keys := make([]string, 0, len(broken))
+	for key := range broken {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys) // report the same limit on every run
+	return broken[keys[0]], nil
 }
 
-// checkStackLimits refuses when out, the transformed program, reaches one of
-// check_max_stack_depth's limits that the original program in does not. The
-// transform deepens frames to its spill slots and adds its hooks as frames
+// checkStackLimits refuses when out, the transformed program, breaks one of
+// check_max_stack_depth's limits on a call chain the transform made deeper.
+// The transform deepens frames to its spill slots and adds its hooks as frames
 // called from each function holding a site, so a program the kernel accepted
 // can cross the caller-depth limit of a tail-calling subprogram, the combined
-// 512-byte stack, or the 8-frame call depth. Both programs are measured the
-// same way, under each kernel frame rounding, and a limit the original
-// already reaches is left to the kernel. A function's depth is its deepest
-// direct R10 reference, the bound checkStackBound trusts: stack reached only
-// through an alias or a helper argument is the stack audit's to cover.
-func checkStackLimits(in, out asm.Instructions) error {
-	before, err := stackCallGraph(in)
+// 512-byte stack, or the 8-frame call depth.
+//
+// Depths come from instructions, not from the verifier's walk, so they can
+// overstate what the kernel counts: a store behind a branch the verifier
+// never takes still deepens its function. An original chain past a limit is
+// therefore no evidence that the kernel tolerates it, and only a chain the
+// transform left unchanged may stay past a limit. A function is changed when
+// it is new (a hook) or reaches deeper than in the original; the transform's
+// slots lie below the audited bound, which every original direct reference
+// respects (checkStackBound), so any slot it places in a function counts.
+// Each limit is checked under each kernel frame rounding. lowest is the
+// audited bound, the depth of a function that copies R10 (see stackCallGraph).
+//
+// The model is conservative in two known ways, both of which only refuse a
+// program the kernel would load, never accept one it rejects: an async
+// callback (bpf_timer_set_callback, bpf_wq_set_callback) is walked as part of
+// the chain that references it, although 6.8 and later check it as a chain of
+// its own; and 7.1 and later restart the frame count at a global function,
+// which the frame limit here does not.
+func checkStackLimits(in, out asm.Instructions, lowest int16) error {
+	before, err := stackCallGraph(in, lowest)
 	if err != nil {
 		return err
 	}
-	after, err := stackCallGraph(out)
+	after, err := stackCallGraph(out, lowest)
 	if err != nil {
 		return err
 	}
-	for _, r := range frameRoundings {
-		was, err := stackLimitsExceeded(before, r.round)
-		if err != nil {
-			return err
-		}
-		now, err := stackLimitsExceeded(after, r.round)
-		if err != nil {
-			return err
-		}
-		var keys []string
-		for key := range now {
-			if _, ok := was[key]; !ok {
-				keys = append(keys, key)
-			}
-		}
-		if len(keys) == 0 {
+	depth := map[string]int{}
+	for _, f := range before {
+		if _, dup := depth[f.name]; dup {
+			depth[f.name] = -1 // ambiguous: every match counts as changed
 			continue
 		}
-		sort.Strings(keys) // report the same limit on every run
-		return refuse("after the transform %s (frames rounded to %s bytes)", now[keys[0]], r.name)
+		depth[f.name] = f.depth
+	}
+	for i := range after {
+		d, ok := depth[after[i].name]
+		after[i].changed = !ok || d < 0 || after[i].depth > d
+	}
+	for _, r := range frameRoundings {
+		broken, err := stackLimitBroken(after, r.round)
+		if err != nil {
+			return err
+		}
+		if broken != "" {
+			return refuse("after the transform %s (frames rounded to %s bytes)", broken, r.name)
+		}
 	}
 	return nil
 }
