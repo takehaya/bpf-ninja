@@ -111,10 +111,11 @@ func TransformLookupRaw(p RawProgram, req LookupRequestRaw) (*LookupResultRaw, e
 		return nil, err
 	}
 	// Numeric map loads have no Reference metadata for checkReferences to see.
+	// Maps are told apart by fd, so an unnamed map only fails to match a
+	// MapName selector.
 	for i := range insns {
 		if insns[i].IsLoadFromMap() {
-			_, m := resolve(&insns[i])
-			if m == nil || m.Name == "" {
+			if _, m := resolve(&insns[i]); m == nil {
 				return nil, refuse("map fd %d lacks identity", int32(insns[i].Constant))
 			}
 		}

@@ -207,6 +207,16 @@ func TestLookupRawMapIdentity(t *testing.T) {
 	if maps != 1 {
 		t.Fatal("map load lost")
 	}
+	// An unnamed map has no hook name to give; Auto falls back to a number.
+	m.Name = ""
+	p.Maps[40] = m
+	auto, err := TransformLookupRaw(p, LookupRequestRaw{Auto: true, Entry: true, HookName: req.HookName, Stack: req.Stack})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(auto.Hooks) != 2 || auto.Hooks[0].Name != req.HookName+"_0" || auto.Hooks[0].MapName != "" {
+		t.Fatalf("unnamed map hooks: %+v", auto.Hooks)
+	}
 	delete(p.Maps, 40)
 	sites, err = DiscoverLookupsRaw(p)
 	if err != nil || len(sites) != 1 || sites[0].Reason == "" {
