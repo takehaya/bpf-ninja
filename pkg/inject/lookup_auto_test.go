@@ -222,6 +222,10 @@ func TestTailCallHookRefusalsAndSkips(t *testing.T) {
 	for i, ins := range out {
 		if f := btf.FuncMetadata(&ins); f != nil {
 			fn = f.Name
+			// sub starts at the tail call, so it starts at the spills.
+			if fn == "sub" && !sameInstr(ins, asm.StoreMem(asm.RFP, -24, asm.R3, asm.DWord).WithSymbol("sub")) {
+				t.Fatalf("sub starts at %v", ins)
+			}
 		}
 		if ins.IsBuiltinCall() && ins.Constant == int64(asm.FnTailCall) {
 			// Only the subprogram's site spills R1, after the index.
@@ -232,7 +236,7 @@ func TestTailCallHookRefusalsAndSkips(t *testing.T) {
 				}
 				index = out[i-2]
 			}
-			if !sameInstr(index, asm.StoreMem(asm.RFP, -24, asm.R3, asm.DWord)) {
+			if !sameInstr(index.WithSymbol(""), asm.StoreMem(asm.RFP, -24, asm.R3, asm.DWord)) {
 				t.Fatalf("%s tail call: %v", fn, out[i-2:i+1])
 			}
 		}

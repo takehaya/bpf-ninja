@@ -848,6 +848,11 @@ func spliceLookupCalls(input asm.Instructions, calls map[uint32]siteCall, stack 
 		call, site := calls[uint32(old)]
 		if site {
 			spill := before(call)
+			if old > 0 && (ins.Symbol() != "" || btf.FuncMetadata(&ins) != nil) {
+				// A function that starts at the site starts at its spills.
+				spill[0] = btf.WithFuncMetadata(spill[0].WithSymbol(ins.Symbol()).WithSource(ins.Source()), btf.FuncMetadata(&ins))
+				ins = btf.WithFuncMetadata(ins.WithSymbol("").WithSource(nil), nil)
+			}
 			out = append(out, spill...)
 			newPC += len(spill)
 		}
