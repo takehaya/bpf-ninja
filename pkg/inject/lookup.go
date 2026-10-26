@@ -48,10 +48,13 @@ type LookupSelector struct {
 // No caller-saved register liveness certification is required at helper calls.
 //
 // Auto instruments every supported lookup instead of Site, which must then be
-// empty. HookName becomes a prefix: each map identity gets its own hook,
+// empty. HookName becomes a prefix: each statically known map gets its own hook,
 // int PREFIX_MAP(struct xdp_md *ctx, u32 site, const KEY *key, const VALUE *value),
-// where site is the original SitePC. Unsupported sites are reported in
-// Skipped instead of refusing the transform.
+// where site is the original SitePC. Lookups whose map Auto cannot bind to a
+// typed hook (a map-in-map, an indirect map reference, or a map kind a typed
+// hook refuses) share one PREFIX_any generic hook (see LookupHook.Generic).
+// Sites that cannot be instrumented are reported in Skipped instead of
+// refusing the transform.
 //
 // Entry also calls int HOOKNAME_entry(struct xdp_md *ctx) once at program
 // entry, which runs when the program is entered through a tail call, unlike an
@@ -110,7 +113,8 @@ const (
 // ctx included, as a u64 and reads through them with bpf_probe_read_kernel.
 //
 // Generic is set for Auto's one hook over lookups whose map is not known
-// statically (R1 is not a direct map reference) or is a map-in-map. It has no
+// statically (R1 is not a direct map reference), is a map-in-map, or is a map
+// kind a typed hook refuses (such as an XSK, devmap or socket map). It has no
 // MapName and takes the map pointer as a fifth argument; see genericHook.
 type LookupHook struct {
 	Name      string
@@ -203,11 +207,14 @@ type lookupMapResolver func(*asm.Instruction) (string, *RawMap)
 
 // generic marks a lookup whose map Auto passes at run time to the generic
 // hook: R1 is not a direct map reference, or the map is a map-in-map.
+// typedOnly marks a direct lookup that only a typed hook refuses
+// (checkLookupMap); Auto also sends it to the generic hook.
 type discoveredLookup struct {
 	LookupSite
-	mapID   string
-	mapInfo *RawMap
-	generic bool
+	mapID     string
+	mapInfo   *RawMap
+	generic   bool
+	typedOnly bool
 }
 
 func publicLookupSites(sites []discoveredLookup) []LookupSite {
@@ -279,7 +286,7 @@ func discoverLookupProgram(insns asm.Instructions, typ ebpf.ProgramType, resolve
 			if m != nil {
 				site.KeyTypeName, site.ValueTypeName = lookupTypeName(m.Key), lookupTypeName(m.Value)
 			}
-			generic := false
+			generic, typedOnly := false, false
 			switch {
 			case funcStart < 0:
 				site.Reason = "program lacks BTF function info"
@@ -292,11 +299,11 @@ func discoverLookupProgram(insns asm.Instructions, typ ebpf.ProgramType, resolve
 			case m.Type == ebpf.HashOfMaps || m.Type == ebpf.ArrayOfMaps:
 				site.Reason, generic = "map-in-map lookup returns an inner map", true
 			default:
-				if err := checkLookupMap(m); err != nil {
-					site.Reason = err.Error()
+				if reason := checkLookupMap(m); reason != "" {
+					site.Reason, typedOnly = reason, true
 				}
 			}
-			sites = append(sites, discoveredLookup{site, mapID, m, generic})
+			sites = append(sites, discoveredLookup{site, mapID, m, generic, typedOnly})
 		}
 		// Track direct R1 definitions only; calls also clobber R1. Atomic
 		// operations and legacy packet loads are conservatively barriers.
@@ -334,13 +341,16 @@ const (
 	bpfFWronlyProg = 1 << 8
 )
 
-func checkLookupMap(m *RawMap) error {
+// checkLookupMap returns why a typed hook cannot take m's key and value, or
+// "". The two consumers wrap it: the explicit-selection refusal adds the
+// ErrRefused prefix once, and discovery leaves it bare in LookupSite.Reason.
+func checkLookupMap(m *RawMap) string {
 	// These maps return ordinary value memory. Other map kinds can return
 	// special objects (notably map-in-map), so do not infer their pointer ABI.
 	switch m.Type {
 	case ebpf.Hash, ebpf.Array, ebpf.PerCPUHash, ebpf.PerCPUArray, ebpf.LRUHash, ebpf.LRUCPUHash, ebpf.LPMTrie:
 	default:
-		return refuse("map type %s is unsupported", m.Type)
+		return fmt.Sprintf("map type %s is unsupported", m.Type)
 	}
 	for _, field := range []struct {
 		name string
@@ -352,13 +362,13 @@ func checkLookupMap(m *RawMap) error {
 		}
 		size, err := btf.Sizeof(field.typ)
 		if err != nil || size <= 0 || uint64(size) != uint64(field.size) {
-			return refuse("map %s BTF size does not match map size %d", field.name, field.size)
+			return fmt.Sprintf("map %s BTF size does not match map size %d", field.name, field.size)
 		}
 		if s, ok := btf.UnderlyingType(field.typ).(*btf.Struct); ok && (s.Name == "xdp_md" || s.Name == "bpf_dynptr") {
-			return refuse("map %s type %q has a special global-function pointer ABI", field.name, s.Name)
+			return fmt.Sprintf("map %s type %q has a special global-function pointer ABI", field.name, s.Name)
 		}
 	}
-	return nil
+	return ""
 }
 
 // lookupABI returns the hook's key and value types. A side the map declares
@@ -457,7 +467,7 @@ func selectLookups(sites []discoveredLookup, req LookupRequest, reserved []strin
 		var generic []discoveredLookup
 		index := map[string]int{}
 		for _, site := range sites {
-			if site.generic {
+			if site.generic || site.typedOnly {
 				site.Reason = ""
 				generic = append(generic, site)
 				continue

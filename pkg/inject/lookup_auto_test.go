@@ -134,6 +134,101 @@ func TestLookupAutoRefusals(t *testing.T) {
 	}
 }
 
+// A skip or refusal reason is a bare phrase; only the refusal wraps it with
+// the ErrRefused prefix, and only once.
+func TestLookupSkipReason(t *testing.T) {
+	skb := func() *ebpf.CollectionSpec {
+		spec := multiMapFixture()
+		spec.Maps["flows"].Value.(*btf.Struct).Name = "xdp_md"
+		return spec
+	}
+	want := `map value type "xdp_md" has a special global-function pointer ABI`
+	sites, err := discoverLookups(skb(), "p")
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, s := range sites {
+		if s.SitePC == 18 {
+			found = s.Reason == want
+		}
+	}
+	if !found {
+		t.Fatalf("discovery reason not bare: %+v", sites)
+	}
+	req := lookupReq()
+	req.Site.MapName = "flows"
+	if _, err := transformLookup(skb(), req); !errors.Is(err, ErrRefused) || err.Error() != "inject: refused: lookup at 18: "+want {
+		t.Fatalf("explicit: %v", err)
+	}
+}
+
+// A direct lookup whose map kind only a typed hook refuses goes to the generic
+// hook under Auto, not Skipped; explicit selection still refuses it.
+func TestLookupAutoTypedOnlyGoesGeneric(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		edit   func(*ebpf.MapSpec)
+		reason string
+	}{
+		{"xskmap", func(m *ebpf.MapSpec) { m.Type, m.ValueSize, m.Value = ebpf.XSKMap, 4, nil }, "map type XSKMap is unsupported"},
+		{"devmap", func(m *ebpf.MapSpec) { m.Type, m.ValueSize, m.Value = ebpf.DevMap, 4, nil }, "map type DevMap is unsupported"},
+		{"sockhash", func(m *ebpf.MapSpec) { m.Type, m.ValueSize, m.Value = ebpf.SockHash, 8, nil }, "map type SockHash is unsupported"},
+		{"special-value", func(m *ebpf.MapSpec) { m.Value.(*btf.Struct).Name = "xdp_md" }, `map value type "xdp_md" has a special global-function pointer ABI`},
+		{"size-mismatch", func(m *ebpf.MapSpec) { m.ValueSize = 8 }, "map value BTF size does not match map size 8"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fixture := func() *ebpf.CollectionSpec {
+				spec := multiMapFixture()
+				tc.edit(spec.Maps["flows"])
+				return spec
+			}
+			// Discovery lists the bare reason for the typed-only site.
+			sites, err := discoverLookups(fixture(), "p")
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, s := range sites {
+				if s.SitePC == 18 && s.Reason != tc.reason {
+					t.Fatalf("discovery reason %q, want %q", s.Reason, tc.reason)
+				}
+			}
+			// Auto keeps the typed hook for sessions and adds a generic hook
+			// carrying the flows site; nothing is skipped.
+			work := fixture()
+			plan, err := transformLookup(work, autoReq())
+			if err != nil || len(plan.skipped) != 0 || len(plan.hooks) != 2 {
+				t.Fatalf("auto: %+v %v", plan, err)
+			}
+			var generic *LookupHook
+			for i := range plan.hooks {
+				if plan.hooks[i].Generic {
+					generic = &plan.hooks[i]
+				}
+			}
+			if generic == nil || len(generic.Sites) != 1 || generic.Sites[0].SitePC != 18 {
+				t.Fatalf("generic hook: %+v", plan.hooks)
+			}
+			// The generic site spills the map pointer to the fourth slot once.
+			spills := 0
+			for _, ins := range work.Programs["p"].Instructions {
+				if sameInstr(ins, asm.StoreMem(asm.RFP, -40, asm.R1, asm.DWord)) {
+					spills++
+				}
+			}
+			if spills != 1 {
+				t.Fatalf("map pointer spilled %d times", spills)
+			}
+			// Explicit selection of the same map still refuses, with one prefix.
+			req := lookupReq()
+			req.Site.MapName = "flows"
+			if _, err := transformLookup(fixture(), req); !errors.Is(err, ErrRefused) || err.Error() != "inject: refused: lookup at 18: "+tc.reason {
+				t.Fatalf("explicit: %v", err)
+			}
+		})
+	}
+}
+
 func TestAutoHookName(t *testing.T) {
 	used := map[string]bool{}
 	for _, tc := range []struct{ mapName, want string }{

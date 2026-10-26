@@ -19,6 +19,7 @@ def allowed_skip(package, test, output, kernel):
         # arg:untrusted, which 6.15 and older reject.
         return kernel in {"6.1", "6.6", "6.12", "6.15"} and test in {
             "TestBpfLookupInjectionReadOnlyMap", "TestBpfLookupInjectionMapInMap",
+            "TestBpfLookupInjectionGenericKinds",
         } and "kernel lacks arg:untrusted" in output
     if package != PROGRAM:
         return False

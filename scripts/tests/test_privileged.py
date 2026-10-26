@@ -53,3 +53,19 @@ class AuditTests(unittest.TestCase):
         self.assertTrue(module.allowed_skip(module.PROGRAM, test, reason, "6.1"))
         for name, message, kernel in ((test, reason, "6.6"), (test, "verifier failure", "6.1"), ("TestBpfMultiPointLoad", reason, "6.1")):
             self.assertFalse(module.allowed_skip(module.PROGRAM, name, message, kernel))
+
+    def test_inject_untrusted_skip_is_specific(self):
+        reason = "skipping: kernel lacks arg:untrusted: program p: load program"
+        allowed = ("TestBpfLookupInjectionReadOnlyMap", "TestBpfLookupInjectionMapInMap",
+                   "TestBpfLookupInjectionGenericKinds")
+        for test in allowed:
+            for kernel in ("6.1", "6.6", "6.12", "6.15"):
+                self.assertTrue(module.allowed_skip(module.INJECT, test, reason, kernel))
+            self.assertFalse(module.allowed_skip(module.INJECT, test, reason, "6.18"))
+            self.assertFalse(module.allowed_skip(module.INJECT, test, reason, None))
+            self.assertFalse(module.allowed_skip(module.INJECT, test, "verifier rejected a program that should load", "6.1"))
+        for test in ("TestBpfLookupInjectionReadOnlyMapCopy", "TestBpfLookupInjectionReadOnlyMapStatic",
+                     "TestBpfLookupInjectionMapInMapStatic", "TestBpfLookupInjectionGenericKindsStatic",
+                     "TestBpfTailCallHooks"):
+            self.assertFalse(module.allowed_skip(module.INJECT, test, reason, "6.1"))
+        self.assertFalse(module.allowed_skip(module.PROGRAM, allowed[0], reason, "6.1"))

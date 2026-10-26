@@ -25,7 +25,7 @@ Named typedefs retain their names.
 
 Discovery resolves a map only when R1 is assigned by an `LDIMM64` map reference in the same basic block and remains unchanged before the helper.
 It does not trace a map pointer through another register, stack memory, a preceding block, or an inner-map lookup.
-Such a site, and a lookup on a map-in-map, is listed with a `Reason`; only `Auto` observes it, through the generic hook below.
+Such a site, a lookup on a map-in-map, and a direct lookup on a map kind that a typed hook refuses are listed with a `Reason`; only `Auto` observes them, through the generic hook below.
 Branch targets, function starts, and instructions after jumps or calls begin new blocks.
 Atomic instructions and legacy packet loads conservatively invalidate map provenance.
 Calls that cannot be resolved, lack usable map BTF, or lie in a called subprogram are still listed with a `Reason`.
@@ -62,21 +62,21 @@ int PREFIX_MAP(struct xdp_md *ctx, u32 site, const KEY *key, const VALUE *value)
 When that name is empty, invalid, or already used by another hook in the request, the hook is named `PREFIX_<index>` instead, where index is the hook's position in `Hooks`.
 Hooks are numbered in the order their maps first appear in the program.
 `LookupResult.Hooks` lists each hook with its map name and sites.
-Sites that discovery lists with a `Reason` are not instrumented; they are reported in `LookupResult.Skipped` rather than refusing the transform.
-If no site is supported, the transform is refused.
+Sites that discovery lists with a `Reason` that the generic hook cannot take either are not instrumented; they are reported in `LookupResult.Skipped` rather than refusing the transform.
+If nothing at all is instrumented, and neither `Entry` nor `TailCalls` is requested, the transform is refused.
 Every hook name passes the same collision checks as a single `HookName`.
 
-Lookups whose map is only known at run time share one generic hook, placed after the per-map hooks and marked `Generic` and `Untrusted` (`Static` with `StaticUntrusted`, see [below](#supported-sites-and-trust-boundary)):
+Lookups whose map a typed hook cannot take share one generic hook, placed after the per-map hooks and marked `Generic` and `Untrusted` (`Static` with `StaticUntrusted`, see [below](#supported-sites-and-trust-boundary)):
 
 ```c
 int PREFIX_any(struct xdp_md *ctx, u32 site, const void *key __arg_untrusted,
                const void *value __arg_untrusted, const void *map __arg_untrusted);
 ```
 
-These are entry-function lookups where R1 is not a direct map reference in the same basic block, and lookups on hash-of-maps and array-of-maps.
+These are entry-function lookups where R1 is not a direct map reference in the same basic block, lookups on hash-of-maps and array-of-maps, and direct lookups on map kinds a typed hook refuses.
 `map` is the lookup's R1 at run time, saved before the helper: the map itself, or for an inner lookup the inner map that an outer lookup returned.
 For an outer map-in-map lookup, `value` is the selected inner map, not value memory.
-Because the map is not known when transforming, the generic hook also receives lookups on map kinds that a typed hook refuses, such as an XSK map whose lookup returns a socket; an observer must check the map type before decoding `value`.
+Because the hook declares no value type, it also receives lookups on map kinds that a typed hook refuses, such as an XSK map whose lookup returns a socket, whether the map is a direct reference or not; an observer must check the map type before decoding `value`.
 The hook's BTF carries no key or value type, so an observer identifies the map from `map` (for example by reading `struct bpf_map` fields such as `id` with `bpf_probe_read_kernel`) and decodes the key and value by that map's sizes.
 A map ID identifies the map only while it exists; IDs of freed maps can be reused.
 
@@ -207,7 +207,7 @@ A key or value with BTF must have a nonzero size exactly matching the map's key 
 The hook retains these types, including typedefs and qualifiers, under `const` pointer parameters.
 A side the map declares only by size, such as `__uint(key_size, 4)`, has no BTF; the hook takes it as an anonymous `struct { u8 bytes[N]; }` of the map's size.
 Types named `struct xdp_md` or `struct bpf_dynptr` are refused as map key/value types because the verifier assigns those pointer types special argument semantics.
-Other map kinds are refused rather than assuming their helper return is ordinary value memory.
+Other map kinds are refused by a typed hook rather than assuming their helper return is ordinary value memory; `Auto` observes them through the generic hook.
 The entry function must have one BTF parameter pointing to `struct xdp_md`.
 The package checks the XDP program type; the cooperative loader owns attachment mode and verifier acceptance.
 
