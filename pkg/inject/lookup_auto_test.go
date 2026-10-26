@@ -473,7 +473,7 @@ func stackLimitCases() []stackLimitCase {
 		{"frames-shallow", func() *ebpf.CollectionSpec { return frameChain(7) }, tails(0), nil},
 		// A lookup site's frame plus its hook's 32-byte frame: Auto skips
 		// every site whose slots pass 480 bytes.
-		{"site-frame", multiMapFixture, deepAuto(-464), []string{"no lookup site fits"}},
+		{"site-frame", multiMapFixture, deepAuto(-464), []string{"leaves no room"}},
 		{"site-frame-shallow", multiMapFixture, deepAuto(-456), nil},
 	}
 }
@@ -690,12 +690,13 @@ func multiMapFixtureFlags(flags uint32) *ebpf.CollectionSpec {
 // CheckLookupStack accepts and refuses exactly the audited bounds that the
 // transform's own spill-slot placement does.
 func TestCheckLookupStack(t *testing.T) {
-	for _, lo := range []int16{0, -1, -480, -488, -489, -512, -513, 1, -32768} {
+	for _, lo := range []int16{-8, -456, -457, -464, -480, -488, -512, -513, 1, -32768} {
 		check := CheckLookupStack(LookupRequest{Stack: StackAudit{LowestOffset: lo}})
-		_, splice := spliceLookup(lookupFixture().Programs["p"].Instructions, []uint32{11},
-			LookupRequest{HookName: "h", Stack: StackAudit{LowestOffset: lo}})
-		if (check == nil) != (splice == nil) {
-			t.Fatalf("lo=%d: CheckLookupStack=%v spliceLookupCalls=%v", lo, check, splice)
+		req := lookupReq()
+		req.Stack.LowestOffset = lo
+		_, transform := transformLookup(lookupFixture(), req)
+		if (check == nil) != (transform == nil) {
+			t.Fatalf("lo=%d: CheckLookupStack=%v transform=%v", lo, check, transform)
 		}
 	}
 }

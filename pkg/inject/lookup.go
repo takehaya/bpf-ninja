@@ -378,7 +378,9 @@ func CheckLookupStack(req LookupRequest) error {
 	if lo > 0 || lo < -512 {
 		return refuse("StackAudit.LowestOffset must be in [-512, 0]")
 	}
-	if _, _, spillR0, _ := lookupSlots(req.Stack.LowestOffset); spillR0 < -512 {
+	// A site's frame also calls its hook, so the slots must stay within
+	// siteFrameLimit, not the full 512 bytes.
+	if _, _, spillR0, _ := lookupSlots(req.Stack.LowestOffset); spillR0 < -siteFrameLimit {
 		return refuse("stack_lowest_offset %d leaves no room for %d reserved bytes below the audited floor", lo, LookupStackReserve(req))
 	}
 	return nil

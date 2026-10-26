@@ -221,8 +221,9 @@ The package checks the XDP program type; the cooperative loader owns attachment 
 | Existing function and source metadata are complete, references resolve, and relocation fits. | The transformed program remains acceptable to the target kernel verifier. |
 
 The stack audit has the same alias and callee limitations as `StackAudit` in the original transform.
-Three 8-byte slots require an audited bound of at least `-488`, and four at least `-480`, rounded down to an 8-byte boundary before allocating the slots.
+The audited bound is rounded down to an 8-byte boundary before allocating the slots.
 A lookup site's frame also calls its hook, which kernels that round frames to 32 bytes count as 32 bytes of the 512-byte combined stack, so a site needs `-456` for three slots and `-448` for four; `Auto` skips a site past that, and explicit selection refuses it.
+`CheckLookupStack`, which inject-run's configuration check also calls, requires `-456`.
 The transform checks direct R10 references throughout the flattened selected program.
 It does not infer stack usage through aliases.
 

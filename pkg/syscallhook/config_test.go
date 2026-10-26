@@ -39,12 +39,12 @@ func TestRuleRequestForwardsOptions(t *testing.T) {
 // transform's own message, and a missing audit is refused.
 func TestValidateStack(t *testing.T) {
 	rule := func(lo int16) Rule { return Rule{Program: "p", Map: "sessions", Hook: "h", StackLowestOffset: &lo} }
-	for _, lo := range []int16{0, -8, -488} {
+	for _, lo := range []int16{0, -8, -456} {
 		if err := Validate([]Rule{rule(lo)}); err != nil {
 			t.Fatalf("lo=%d rejected: %v", lo, err)
 		}
 	}
-	for _, lo := range []int16{1, -489, -513} {
+	for _, lo := range []int16{1, -457, -488, -513} {
 		got := Validate([]Rule{rule(lo)})
 		want := inject.CheckLookupStack(inject.LookupRequest{Stack: inject.StackAudit{LowestOffset: lo}})
 		if got == nil || want == nil || !strings.Contains(got.Error(), want.Error()) {
@@ -81,7 +81,7 @@ func TestConfig(t *testing.T) {
 	for _, input := range []string{
 		`[]`, `null`, valid + ` {}`, valid + strings.Repeat(" ", 1<<20) + ` {}`, strings.Replace(valid, `"line":42`, `"lines":42`, 1),
 		strings.Replace(valid, `,"stack_lowest_offset":-8`, "", 1), strings.Replace(valid, `:-8`, `:1`, 1),
-		strings.Replace(valid, `:-8`, `:-489`, 1), strings.Replace(valid, `"lookup_hook"`, `"bad-name"`, 1),
+		strings.Replace(valid, `:-8`, `:-457`, 1), strings.Replace(valid, `"lookup_hook"`, `"bad-name"`, 1),
 		strings.Replace(valid, `"sessions"`, `""`, 1), `[` + valid[1:len(valid)-1] + `,` + valid[1:len(valid)-1] + `]`,
 		strings.Replace(valid, `"line":42`, `"line":42,"all_matches":true,"site_pcs":[3]`, 1),
 		strings.Replace(valid, `"line":42`, `"line":42,"site_pcs":3`, 1),
