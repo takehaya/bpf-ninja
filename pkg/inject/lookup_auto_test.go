@@ -310,9 +310,11 @@ func TestTailCallAndEntryHooks(t *testing.T) {
 			tail = i
 		}
 	}
-	// The index is spilled before the helper and passed with the site after it.
+	// The index is spilled before the helper and passed with the site after it,
+	// as a u32 in R3: the three-argument layout, not the dispatch one.
 	if !sameInstr(out[tail-1], asm.StoreMem(asm.RFP, -24, asm.R3, asm.DWord)) ||
-		!sameInstr(out[tail+2], asm.Mov.Imm32(asm.R2, 10)) || out[tail+5].Reference() != "h_tail_call" {
+		!sameInstr(out[tail+2], asm.Mov.Imm32(asm.R2, 10)) || !sameInstr(out[tail+3], asm.LoadMem(asm.R3, asm.RFP, -24, asm.DWord)) ||
+		!sameInstr(out[tail+4], asm.Mov.Reg32(asm.R3, asm.R3)) || out[tail+5].Reference() != "h_tail_call" {
 		t.Fatalf("tail-call site: %v", out[tail-1:tail+6])
 	}
 	// The short-packet branch still lands on the original XDP_PASS.

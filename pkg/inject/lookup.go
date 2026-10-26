@@ -921,92 +921,82 @@ func (e lookupEmitter) splice(groups []lookupGroup) (asm.Instructions, []LookupH
 	var hooks asm.Instructions
 	var plan []LookupHook
 	calls := map[uint32]siteCall{}
-	entry := entryCall{name: e.entryName, on: req.Entry, dispatch: req.Dispatch}
-	if req.Dispatch {
-		hook := genericHook(req.HookName, e.ctxType)
+	// A hook with the generic signature: the generic group's, or with Dispatch
+	// the one hook every site calls.
+	untrustedABI := func(name string) asm.Instructions {
+		hook := genericHook(name, e.ctxType)
 		if req.StaticUntrusted {
 			hook = staticHook(hook)
 		}
-		hooks = hook
-		shared := LookupHook{Name: req.HookName, Untrusted: !req.StaticUntrusted, Static: req.StaticUntrusted, Dispatch: true}
-		for _, group := range groups {
+		return hook
+	}
+	shared := LookupHook{Untrusted: !req.StaticUntrusted, Static: req.StaticUntrusted, Dispatch: req.Dispatch}
+	if req.Dispatch {
+		hooks = untrustedABI(req.HookName)
+	}
+	for _, group := range groups {
+		if group.generic || req.Dispatch {
+			if !req.Dispatch {
+				hooks = append(hooks, untrustedABI(group.name)...)
+			}
 			hook := shared
-			hook.Kind, hook.Sites, hook.Generic = HookLookup, publicLookupSites(group.sites), group.generic
+			hook.Name, hook.Kind, hook.Sites, hook.Generic = group.name, HookLookup, publicLookupSites(group.sites), group.generic
 			if !group.generic {
 				hook.MapName = group.sites[0].MapName
 			}
 			plan = append(plan, hook)
 			for _, site := range group.sites {
-				calls[site.SitePC] = siteCall{hook: req.HookName, withSite: true, withMap: true}
+				calls[site.SitePC] = siteCall{hook: group.name, withSite: true, withMap: true, dispatch: req.Dispatch}
 			}
+			continue
 		}
-		if req.Entry {
-			hook := shared
-			hook.Kind = HookEntry
-			plan = append(plan, hook)
+		m := group.sites[0].mapInfo
+		key, value := lookupABI(m)
+		// The verifier checks an ordinary memory argument for both reads and
+		// writes, so either restriction needs untrusted arguments, unless a
+		// readable value is copied to the stack, or the hook is static.
+		restricted := m.Flags&(bpfFRdonlyProg|bpfFWronlyProg) != 0
+		copied := copiesValue(m, req)
+		static := restricted && !copied && req.StaticUntrusted
+		untrusted := restricted && !copied && !static
+		var copySize uint32
+		if copied {
+			copySize = m.ValueSize
 		}
-		if req.TailCalls {
-			hook := shared
-			hook.Kind = HookTailCall
-			for _, site := range e.tails {
-				hook.Sites = append(hook.Sites, site.LookupSite)
-				calls[site.SitePC] = siteCall{hook: req.HookName, withSite: true, withMap: true, tailCall: true, localCtx: site.local}
-			}
-			plan = append(plan, hook)
+		body := lookupHook(group.name, e.ctxType, key, value, req.Auto, untrusted)
+		if static {
+			body = staticHook(body) // keeps the typed proto; the kernel need not trust it
 		}
-	} else {
-		for _, group := range groups {
-			if group.generic {
-				hook := genericHook(group.name, e.ctxType)
-				if req.StaticUntrusted {
-					hook = staticHook(hook)
-				}
-				hooks = append(hooks, hook...)
-				plan = append(plan, LookupHook{Name: group.name, Kind: HookLookup, Sites: publicLookupSites(group.sites),
-					Untrusted: !req.StaticUntrusted, Static: req.StaticUntrusted, Generic: true})
-				for _, site := range group.sites {
-					calls[site.SitePC] = siteCall{hook: group.name, withSite: true, withMap: true}
-				}
-				continue
-			}
-			m := group.sites[0].mapInfo
-			key, value := lookupABI(m)
-			// The verifier checks an ordinary memory argument for both reads and
-			// writes, so either restriction needs untrusted arguments, unless a
-			// readable value is copied to the stack, or the hook is static.
-			restricted := m.Flags&(bpfFRdonlyProg|bpfFWronlyProg) != 0
-			copied := copiesValue(m, req)
-			static := restricted && !copied && req.StaticUntrusted
-			untrusted := restricted && !copied && !static
-			var copySize uint32
-			if copied {
-				copySize = m.ValueSize
-			}
-			body := lookupHook(group.name, e.ctxType, key, value, req.Auto, untrusted)
-			if static {
-				body = staticHook(body) // keeps the typed proto; the kernel need not trust it
-			}
-			hooks = append(hooks, body...)
-			plan = append(plan, LookupHook{Name: group.name, Kind: HookLookup, MapName: group.sites[0].MapName, Sites: publicLookupSites(group.sites),
-				Untrusted: untrusted, Copied: copied, Static: static, ReadOnly: m.Flags&bpfFRdonlyProg != 0 && m.Flags&bpfFWronlyProg == 0})
-			for _, site := range group.sites {
-				calls[site.SitePC] = siteCall{hook: group.name, withSite: req.Auto, copySize: copySize}
-			}
-		}
-		if req.Entry {
-			hooks = append(hooks, scalarHook(e.entryName, e.ctxType)...)
-			plan = append(plan, LookupHook{Name: e.entryName, Kind: HookEntry})
-		}
-		if req.TailCalls {
-			hooks = append(hooks, scalarHook(e.tailName, e.ctxType, "site", "index")...)
-			hook := LookupHook{Name: e.tailName, Kind: HookTailCall}
-			for _, site := range e.tails {
-				hook.Sites = append(hook.Sites, site.LookupSite)
-				calls[site.SitePC] = siteCall{hook: e.tailName, withSite: true, tailCall: true, localCtx: site.local}
-			}
-			plan = append(plan, hook)
+		hooks = append(hooks, body...)
+		plan = append(plan, LookupHook{Name: group.name, Kind: HookLookup, MapName: group.sites[0].MapName, Sites: publicLookupSites(group.sites),
+			Untrusted: untrusted, Copied: copied, Static: static, ReadOnly: m.Flags&bpfFRdonlyProg != 0 && m.Flags&bpfFWronlyProg == 0})
+		for _, site := range group.sites {
+			calls[site.SitePC] = siteCall{hook: group.name, withSite: req.Auto, copySize: copySize}
 		}
 	}
+	// With Dispatch the entry and tail-call hooks are the shared hook; otherwise
+	// each gets its own scalar hook.
+	kindHook := func(name string, kind HookKind, scalars ...string) LookupHook {
+		if req.Dispatch {
+			hook := shared
+			hook.Name, hook.Kind = name, kind
+			return hook
+		}
+		hooks = append(hooks, scalarHook(name, e.ctxType, scalars...)...)
+		return LookupHook{Name: name, Kind: kind}
+	}
+	if req.Entry {
+		plan = append(plan, kindHook(e.entryName, HookEntry))
+	}
+	if req.TailCalls {
+		hook := kindHook(e.tailName, HookTailCall, "site", "index")
+		for _, site := range e.tails {
+			hook.Sites = append(hook.Sites, site.LookupSite)
+			calls[site.SitePC] = siteCall{hook: e.tailName, withSite: true, withMap: req.Dispatch, dispatch: req.Dispatch, tailCall: true, localCtx: site.local}
+		}
+		plan = append(plan, hook)
+	}
+	entry := entryCall{name: e.entryName, on: req.Entry, dispatch: req.Dispatch}
 	out, err := spliceLookupCalls(e.insns, calls, req.Stack, hooks, entry)
 	return out, plan, err
 }
@@ -1020,15 +1010,18 @@ type entryCall struct {
 }
 
 // siteCall is the hook a helper site calls, whether it passes its SitePC and
-// the lookup's map pointer, and whether the site is a bpf_tail_call rather
-// than a lookup. A localCtx tail call saves its own ctx before the helper. A
-// tail call withMap calls a dispatch hook, which takes the prog array. A
-// nonzero copySize passes a stack copy of that many value bytes.
+// the helper's map pointer (R1 of a lookup, R2 of a tail call), and whether
+// the site is a bpf_tail_call rather than a lookup. A localCtx tail call saves
+// its own ctx before the helper. dispatch selects the dispatch hook's argument
+// layout: a dispatch tail call passes the index by pointer, a NULL value and
+// the prog array. A nonzero copySize passes a stack copy of that many value
+// bytes.
 type siteCall struct {
 	hook     string
 	withSite bool
 	withMap  bool
 	tailCall bool
+	dispatch bool
 	localCtx bool
 	copySize uint32
 }
@@ -1061,7 +1054,7 @@ func spliceLookupCalls(input asm.Instructions, calls map[uint32]siteCall, stack 
 	// Every site of every hook shares the slots: sites run one at a time.
 	// A tail-call site keeps its index (R3) in the key slot.
 	afterFor := func(pc uint32, call siteCall) asm.Instructions {
-		if call.tailCall && call.withMap {
+		if call.tailCall && call.dispatch {
 			// A dispatch hook takes the index by pointer to its spill and the
 			// prog array as the map.
 			return asm.Instructions{
