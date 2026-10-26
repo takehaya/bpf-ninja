@@ -350,9 +350,6 @@ const (
 	bpfFWronlyProg = 1 << 8
 )
 
-// checkLookupMap returns why a typed hook cannot take m's key and value, or
-// "". The two consumers wrap it: the explicit-selection refusal adds the
-// ErrRefused prefix once, and discovery leaves it bare in LookupSite.Reason.
 // lookupSlots returns the spill-slot offsets the transform reserves below the
 // 8-byte-aligned floor of the audited mark: ctx, key and spillR0 (the three
 // base slots) and mapSlot (the fourth, for a hook that takes the map pointer).
@@ -515,6 +512,9 @@ func groupStackReach(group lookupGroup, req LookupRequest) (int, string) {
 	return spillR0, ""
 }
 
+// checkLookupMap returns why a typed hook cannot take m's key and value, or
+// "". The two consumers wrap it: the explicit-selection refusal adds the
+// ErrRefused prefix once, and discovery leaves it bare in LookupSite.Reason.
 func checkLookupMap(m *RawMap) string {
 	// These maps return ordinary value memory. Other map kinds can return
 	// special objects (notably map-in-map), so do not infer their pointer ABI.
