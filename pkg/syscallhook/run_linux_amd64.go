@@ -303,7 +303,11 @@ func (s *supervisor) entry(pid int, t *thread, regs unix.PtraceRegs) error {
 		return r.broken
 	}
 	if injectErr != nil {
-		s.log("program %q: injection skipped: %v", name, injectErr)
+		if summary != "" {
+			s.log("program %q: injection skipped: %v; attempted %s", name, injectErr, summary)
+		} else {
+			s.log("program %q: injection skipped: %v", name, injectErr)
+		}
 		if s.options.FailClosed {
 			ret = -int64(unix.EPERM)
 		} else {
@@ -502,12 +506,30 @@ func (s *supervisor) transformLoad(r *remote, attr []byte, rule Rule) (ret int64
 		}
 	}
 	if err := syscallError(ret, nil); err != nil {
-		return 0, "", fmt.Errorf("transformed PROG_LOAD: %w", err)
+		// Carry the summary so the caller can name the attempted hooks, and a
+		// hint when an untrusted-pointer ABI mismatch is the likely cause.
+		return ret, hookSummary(result), fmt.Errorf("transformed PROG_LOAD: %w%s", err, untrustedHint(result))
 	}
 	return ret, hookSummary(result), nil
 }
 
-// hookSummary lists each hook as name(map: pc, pc) and the skipped sites.
+// untrustedHint explains how to load a program whose hooks take arg:untrusted
+// pointers on a kernel without that tag; it is empty when no hook is untrusted.
+func untrustedHint(result *inject.LookupResultRaw) string {
+	for _, hook := range result.Hooks {
+		if hook.Untrusted {
+			return ` (hooks use arg:untrusted pointers, which needs kernel 6.18+; set "static_untrusted": true or, for read-only maps, "copy_read_only": true to load on older kernels)`
+		}
+	}
+	return ""
+}
+
+// hookSummary lists each hook as
+//
+//	hook "NAME" (KIND[ map "MAP"][ runtime map][, untrusted pointers][, value copied to stack][, static][, site pc N, N])
+//
+// separated by ", ", then "; skipped pc N (reason)" for each skipped lookup.
+// The launcher log and the integration test look for the leading "hook".
 func hookSummary(result *inject.LookupResultRaw) string {
 	var b strings.Builder
 	for i, hook := range result.Hooks {

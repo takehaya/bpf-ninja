@@ -112,6 +112,7 @@ By default, read, metadata, transform, BTF-load, and transformed-program rejecti
 If the transformed load has already been attempted, the supervisor retries the original syscall with its original attr and input pointers.
 It reports `injected hook` only after the transformed load returns a nonnegative program fd.
 The diagnostic names each hook with its map and site PCs, followed by any lookups that `auto` skipped and why.
+When the transformed load is rejected, the diagnostic also names the hooks it attempted; if any used `arg:untrusted` pointers it suggests `"static_untrusted": true` or, for read-only maps, `"copy_read_only": true` to load on kernels older than 6.18.
 A successful target exit alone does not prove injection; inspect the diagnostic or loaded program metadata.
 
 `--fail-closed` returns `EPERM` when a matched program cannot be injected.

@@ -46,6 +46,11 @@ func TestIntegrationLoader(t *testing.T) {
 		{"fail-open", "plain", false, func(r *Rule) { r.Map = "missing" }},
 		{"fail-closed", "refused", true, func(r *Rule) { r.Map = "missing" }},
 		{"unmatched", "plain", true, func(r *Rule) { r.Program = "unmatched" }},
+		// The loader's audit is wrong: its key store aliases the stack, so a
+		// bound of 0 passes the transform, the ctx spill is overwritten and the
+		// verifier rejects the transformed program.
+		{"bad-audit-open", "plain-alias", false, func(r *Rule) { *r.StackLowestOffset = 0 }},
+		{"bad-audit-closed", "refused-alias", true, func(r *Rule) { *r.StackLowestOffset = 0 }},
 		{"auto", "hook", true, func(r *Rule) { r.Auto, r.Map = true, "" }},
 		{"entry-only", "hook", true, func(r *Rule) { r.Entry, r.Map = true, "" }},
 		// The loader's map is BPF_F_RDONLY_PROG, whose hook becomes static.
@@ -75,12 +80,19 @@ func TestIntegrationLoader(t *testing.T) {
 			if tc.expected == "hook-rdonly" && !strings.Contains(logs.String(), ", static") {
 				t.Fatal("no static hook reported")
 			}
+			if strings.HasPrefix(tc.name, "bad-audit") && !strings.Contains(logs.String(), "transformed PROG_LOAD") {
+				t.Fatal("no verifier rejection of the transformed program reported")
+			}
 		})
 	}
 }
 
 func loadIntegrationProgram(t *testing.T, expected string) {
 	t.Helper()
+	// A "-alias" variant stores the key through a stack alias, so a bound of 0
+	// passes the transform but the ctx spill is overwritten.
+	alias := strings.HasSuffix(expected, "-alias")
+	expected = strings.TrimSuffix(expected, "-alias")
 	u32 := &btf.Int{Name: "u32", Size: 4}
 	spec := &ebpf.MapSpec{Name: "sessions", Type: ebpf.Hash, KeySize: 4, ValueSize: 4, MaxEntries: 1, Key: u32, Value: u32}
 	if expected == "hook-rdonly" {
@@ -98,10 +110,14 @@ func loadIntegrationProgram(t *testing.T, expected string) {
 		Return: &btf.Int{Name: "int", Size: 4, Encoding: btf.Signed},
 		Params: []btf.FuncParam{{Name: "ctx", Type: &btf.Pointer{Target: &btf.Struct{Name: "xdp_md", Size: 24}}}},
 	}}
+	store := asm.StoreImm(asm.RFP, -4, 0, asm.Word)
+	if alias {
+		store = asm.StoreImm(asm.R2, 0, 0, asm.Word)
+	}
 	insns := asm.Instructions{
 		asm.Mov.Reg(asm.R6, asm.R1),
-		asm.StoreImm(asm.RFP, -4, 0, asm.Word),
 		asm.Mov.Reg(asm.R2, asm.RFP), asm.Add.Imm(asm.R2, -4),
+		store,
 		asm.LoadMapPtr(asm.R1, m.FD()), asm.FnMapLookupElem.Call(),
 		asm.JEq.Imm(asm.R0, 0, "done"),
 		asm.LoadMem(asm.R0, asm.R0, 0, asm.Word), asm.Return(),

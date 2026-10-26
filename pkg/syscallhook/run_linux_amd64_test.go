@@ -15,8 +15,63 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/takehaya/bpf-ninja/pkg/inject"
 	"golang.org/x/sys/unix"
 )
+
+func TestHookSummary(t *testing.T) {
+	pcs := func(pcs ...uint32) []inject.LookupSite {
+		sites := make([]inject.LookupSite, len(pcs))
+		for i, pc := range pcs {
+			sites[i].SitePC = pc
+		}
+		return sites
+	}
+	for _, tc := range []struct {
+		name   string
+		result inject.LookupResultRaw
+		want   string
+	}{
+		{"auto", inject.LookupResultRaw{
+			Hooks: []inject.LookupHook{
+				{Name: "obs_sessions", Kind: inject.HookLookup, MapName: "sessions", Sites: pcs(12, 40)},
+				{Name: "obs_flows", Kind: inject.HookLookup, MapName: "flows", Untrusted: true, Sites: pcs(18)},
+				{Name: "obs_any", Kind: inject.HookLookup, Generic: true, Untrusted: true, Sites: pcs(51)},
+				{Name: "obs_entry", Kind: inject.HookEntry},
+				{Name: "obs_tail_call", Kind: inject.HookTailCall, Sites: pcs(60)},
+			},
+			Skipped: []inject.LookupSite{{SitePC: 7, Reason: "lookup is not in the entry function; ctx belongs to another stack frame"}},
+		}, `hook "obs_sessions" (lookup map "sessions", site pc 12, 40), hook "obs_flows" (lookup map "flows", untrusted pointers, site pc 18), hook "obs_any" (lookup runtime map, untrusted pointers, site pc 51), hook "obs_entry" (entry), hook "obs_tail_call" (tail_call, site pc 60); skipped pc 7 (lookup is not in the entry function; ctx belongs to another stack frame)`},
+		{"copy", inject.LookupResultRaw{Hooks: []inject.LookupHook{
+			{Name: "obs_flows", Kind: inject.HookLookup, MapName: "flows", Copied: true, Sites: pcs(18)},
+		}}, `hook "obs_flows" (lookup map "flows", value copied to stack, site pc 18)`},
+	} {
+		if got := hookSummary(&tc.result); got != tc.want {
+			t.Fatalf("%s:\n got %s\nwant %s", tc.name, got, tc.want)
+		}
+	}
+	// The launcher logs "injected " + summary, which the integration test
+	// matches as "injected hook".
+	if !strings.HasPrefix(hookSummary(&inject.LookupResultRaw{Hooks: []inject.LookupHook{{Name: "h", Kind: inject.HookEntry}}}), "hook ") {
+		t.Fatal("summary does not start with hook")
+	}
+}
+
+func TestUntrustedHint(t *testing.T) {
+	untrusted := &inject.LookupResultRaw{Hooks: []inject.LookupHook{{Name: "a", Kind: inject.HookLookup, Untrusted: true}}}
+	if h := untrustedHint(untrusted); !strings.Contains(h, "static_untrusted") || !strings.Contains(h, "copy_read_only") {
+		t.Fatalf("untrusted hint: %q", h)
+	}
+	for _, name := range []string{"static", "typed"} {
+		result := &inject.LookupResultRaw{Hooks: []inject.LookupHook{{Name: "a", Kind: inject.HookLookup}}}
+		if name == "static" {
+			result.Hooks[0].Static = true
+		}
+		if h := untrustedHint(result); h != "" {
+			t.Fatalf("%s hint not empty: %q", name, h)
+		}
+	}
+}
 
 func testRule() Rule {
 	floor := int16(-8)
