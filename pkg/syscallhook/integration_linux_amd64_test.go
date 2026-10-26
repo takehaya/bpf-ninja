@@ -55,7 +55,9 @@ func TestIntegrationLoader(t *testing.T) {
 		{"entry-only", "hook", true, func(r *Rule) { r.Entry, r.Map = true, "" }},
 		// The loader's map is BPF_F_RDONLY_PROG, whose hook becomes static.
 		{"static-untrusted", "hook-rdonly", true, func(r *Rule) { r.Auto, r.Map, r.StaticUntrusted = true, "", true }},
-		{"dispatch", "hook", true, func(r *Rule) { r.Auto, r.Map, r.Entry, r.Dispatch = true, "", true, true }},
+		// Static, so the dispatch hook loads on kernels without arg:untrusted
+		// too; TestBpfDispatch covers the untrusted form across the matrix.
+		{"dispatch", "hook", true, func(r *Rule) { r.Auto, r.Map, r.Entry, r.Dispatch, r.StaticUntrusted = true, "", true, true, true }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("SYSCALLHOOK_INTEGRATION_CHILD", tc.expected)
@@ -94,7 +96,7 @@ func TestIntegrationLoader(t *testing.T) {
 					t.Fatal("arg:untrusted hint for a typed hook")
 				}
 			}
-			if tc.name == "dispatch" && !strings.Contains(logs.String(), ", dispatch") {
+			if tc.name == "dispatch" && !strings.Contains(logs.String(), ", static, dispatch") {
 				t.Fatal("no dispatch hook reported")
 			}
 		})
