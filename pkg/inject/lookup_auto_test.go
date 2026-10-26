@@ -81,6 +81,27 @@ func TestLookupAutoSkipsUnsupported(t *testing.T) {
 	}
 }
 
+// Auto keeps the entry and tail-call hooks even when no lookup is supported;
+// it refuses only when nothing at all is instrumented.
+func TestSelectLookupsAutoEntryTailNoLookups(t *testing.T) {
+	base := func() LookupRequest {
+		return LookupRequest{ProgramName: "caller", Auto: true, HookName: "obs", Stack: StackAudit{LowestOffset: 0}}
+	}
+	req := base()
+	req.Entry, req.TailCalls = true, true
+	plan, err := transformLookup(tailCallerFixture(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.sites) != 0 || len(plan.skipped) != 0 || len(plan.hooks) != 2 ||
+		plan.hooks[0].Name != "obs_entry" || plan.hooks[1].Name != "obs_tail_call" || len(plan.hooks[1].Sites) != 1 {
+		t.Fatalf("entry+tail: %+v", plan)
+	}
+	if _, err := transformLookup(tailCallerFixture(), base()); !errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), "no supported lookup sites") {
+		t.Fatalf("auto only: %v", err)
+	}
+}
+
 func TestLookupAutoRefusals(t *testing.T) {
 	for _, tc := range []struct {
 		name string

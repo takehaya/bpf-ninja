@@ -477,7 +477,7 @@ func selectLookups(sites []discoveredLookup, req LookupRequest, reserved []strin
 		if len(generic) != 0 {
 			groups = append(groups, lookupGroup{sites: generic, generic: true})
 		}
-		if len(groups) == 0 {
+		if len(groups) == 0 && !req.Entry && !req.TailCalls {
 			return nil, skipped, refuse("no supported lookup sites (%d skipped)", len(skipped))
 		}
 		used := map[string]bool{}
