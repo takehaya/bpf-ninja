@@ -56,8 +56,9 @@ type LookupSelector struct {
 // Entry also calls int HOOKNAME_entry(struct xdp_md *ctx) once at program
 // entry, which runs when the program is entered through a tail call, unlike an
 // fentry on the program itself. TailCalls calls int HOOKNAME_tail_call(
-// struct xdp_md *ctx, u32 site, u32 index) whenever a bpf_tail_call in the
-// entry function returns, that is, when the tail call failed. With either,
+// struct xdp_md *ctx, u32 site, u32 index) whenever a bpf_tail_call returns,
+// that is, when the tail call failed. This covers tail calls in subprograms,
+// whose hook gets the ctx that subprogram passed to the helper. With either,
 // Site may be empty to instrument no lookup.
 //
 // CopyReadOnly gives a BPF_F_RDONLY_PROG map a typed hook instead of an
