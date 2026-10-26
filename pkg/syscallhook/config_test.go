@@ -3,7 +3,33 @@ package syscallhook
 import (
 	"strings"
 	"testing"
+
+	"github.com/takehaya/bpf-ninja/pkg/inject"
 )
+
+// Validate's stack bound comes from inject.CheckLookupStack, so the two cannot
+// drift: the base reserve is accepted, a too-low audit is refused with the
+// transform's own message, and a missing audit is refused.
+func TestValidateStack(t *testing.T) {
+	rule := func(lo int16) Rule { return Rule{Program: "p", Map: "sessions", Hook: "h", StackLowestOffset: &lo} }
+	for _, lo := range []int16{0, -8, -488} {
+		if err := Validate([]Rule{rule(lo)}); err != nil {
+			t.Fatalf("lo=%d rejected: %v", lo, err)
+		}
+	}
+	for _, lo := range []int16{1, -489, -513} {
+		got := Validate([]Rule{rule(lo)})
+		want := inject.CheckLookupStack(inject.LookupRequest{Stack: inject.StackAudit{LowestOffset: lo}})
+		if got == nil || want == nil || !strings.Contains(got.Error(), want.Error()) {
+			t.Fatalf("lo=%d: Validate=%v, CheckLookupStack=%v", lo, got, want)
+		}
+	}
+	r := rule(0)
+	r.StackLowestOffset = nil
+	if Validate([]Rule{r}) == nil {
+		t.Fatal("nil stack_lowest_offset accepted")
+	}
+}
 
 func TestConfig(t *testing.T) {
 	valid := `[{"program":"p","map":"sessions","func":"p","line":42,"hook":"lookup_hook","stack_lowest_offset":-8}]`

@@ -463,9 +463,13 @@ func TestLookupReadOnlyMapCopy(t *testing.T) {
 	if err != nil || !plan.hooks[1].Untrusted || plan.hooks[1].Copied {
 		t.Fatalf("write-only: %+v %v", plan, err)
 	}
+	// A copy that does not fit is skipped under Auto, not refused: the
+	// read-only flows copy overflows at -480 while the typed sessions hook fits.
 	req.Stack.LowestOffset = -480
-	if _, err := transformLookup(multiMapFixtureFlags(bpfFRdonlyProg), req); !errors.Is(err, ErrRefused) {
-		t.Fatalf("copy below the stack limit: %v", err)
+	plan, err = transformLookup(multiMapFixtureFlags(bpfFRdonlyProg), req)
+	if err != nil || len(plan.hooks) != 1 || plan.hooks[0].MapName != "sessions" ||
+		len(plan.skipped) != 1 || plan.skipped[0].MapName != "flows" || plan.skipped[0].Reason == "" {
+		t.Fatalf("copy below the stack limit: %+v %v", plan, err)
 	}
 }
 
@@ -535,6 +539,33 @@ func multiMapFixtureFlags(flags uint32) *ebpf.CollectionSpec {
 	spec := multiMapFixture()
 	spec.Maps["flows"].Flags = flags
 	return spec
+}
+
+// CheckLookupStack accepts and refuses exactly the audited bounds that the
+// transform's own spill-slot placement does.
+func TestCheckLookupStack(t *testing.T) {
+	for _, lo := range []int16{0, -1, -480, -488, -489, -512, -513, 1, -32768} {
+		check := CheckLookupStack(LookupRequest{Stack: StackAudit{LowestOffset: lo}})
+		_, splice := spliceLookup(lookupFixture().Programs["p"].Instructions, []uint32{11},
+			LookupRequest{HookName: "h", Stack: StackAudit{LowestOffset: lo}})
+		if (check == nil) != (splice == nil) {
+			t.Fatalf("lo=%d: CheckLookupStack=%v spliceLookupCalls=%v", lo, check, splice)
+		}
+	}
+}
+
+// Auto skips a generic group whose map slot overflows the stack while keeping
+// the typed hooks that fit, instead of refusing the whole transform.
+func TestLookupAutoSkipsOverflowingGeneric(t *testing.T) {
+	spec := multiMapFixture()
+	spec.Maps["flows"].Type = ebpf.HashOfMaps // a map-in-map site goes to the generic hook
+	req := autoReq()
+	req.Stack.LowestOffset = -488 // the 4th slot (-520) overflows; the three base slots fit
+	plan, err := transformLookup(spec, req)
+	if err != nil || len(plan.hooks) != 1 || plan.hooks[0].MapName != "sessions" ||
+		len(plan.skipped) != 1 || plan.skipped[0].SitePC != 18 || !strings.Contains(plan.skipped[0].Reason, "4th spill slot") {
+		t.Fatalf("plan: %+v %v", plan, err)
+	}
 }
 
 func TestAutoHookNameLength(t *testing.T) {

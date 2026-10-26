@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"regexp"
+
+	"github.com/takehaya/bpf-ninja/pkg/inject"
 )
 
 // Rule selects exactly one lookup unless AllMatches or SitePCs widens it (see
@@ -68,8 +70,14 @@ func Validate(rules []Rule) error {
 		if r.AllMatches && len(r.SitePCs) > 0 {
 			return fmt.Errorf("rule %d: all_matches and site_pcs are mutually exclusive", i)
 		}
-		if r.StackLowestOffset == nil || *r.StackLowestOffset < -488 || *r.StackLowestOffset > 0 {
-			return fmt.Errorf("rule %d: audited stack_lowest_offset in [-488, 0] is required (24 bytes reserved for the hook)", i)
+		if r.StackLowestOffset == nil {
+			return fmt.Errorf("rule %d: audited stack_lowest_offset is required", i)
+		}
+		// The reserved spill bytes come from inject, so Validate cannot drift
+		// from the transform. The generic-hook map slot and a CopyReadOnly value
+		// copy are program-dependent and are enforced during the transform.
+		if err := inject.CheckLookupStack(inject.LookupRequest{Stack: inject.StackAudit{LowestOffset: *r.StackLowestOffset}}); err != nil {
+			return fmt.Errorf("rule %d: %w", i, err)
 		}
 	}
 	return nil

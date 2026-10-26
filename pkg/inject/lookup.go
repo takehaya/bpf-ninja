@@ -344,6 +344,57 @@ const (
 // checkLookupMap returns why a typed hook cannot take m's key and value, or
 // "". The two consumers wrap it: the explicit-selection refusal adds the
 // ErrRefused prefix once, and discovery leaves it bare in LookupSite.Reason.
+// lookupSlots returns the spill-slot offsets the transform reserves below the
+// 8-byte-aligned floor of the audited mark: ctx, key and spillR0 (the three
+// base slots) and mapSlot (the fourth, for a hook that takes the map pointer).
+// A CopyReadOnly value copy goes below mapSlot. The arithmetic matches
+// spillSlots and spliceLookupCalls, so the three never drift.
+func lookupSlots(lowest int16) (ctx, key, spillR0, mapSlot int) {
+	floor := int(lowest)
+	if m := floor % 8; m != 0 {
+		floor -= 8 + m
+	}
+	return floor - 8, floor - 16, floor - 24, floor - 32
+}
+
+// LookupStackReserve reports the bytes the transform reserves strictly below
+// the audited floor, as far as a request's flags determine it statically: the
+// three base slots (ctx, key, R0). A generic hook's map slot and a
+// CopyReadOnly value copy are program-dependent and enforced during the
+// transform (Auto skips the site, explicit selection refuses), not here.
+func LookupStackReserve(LookupRequest) int { return 24 }
+
+// CheckLookupStack validates an audited LowestOffset against the statically
+// known reservation. transformLookupProgram and syscallhook.Validate both call
+// it, so Validate cannot drift from the transform's slot layout.
+func CheckLookupStack(req LookupRequest) error {
+	lo := int(req.Stack.LowestOffset)
+	if lo > 0 || lo < -512 {
+		return refuse("StackAudit.LowestOffset must be in [-512, 0]")
+	}
+	if _, _, spillR0, _ := lookupSlots(req.Stack.LowestOffset); spillR0 < -512 {
+		return refuse("stack_lowest_offset %d leaves no room for %d reserved bytes below the audited floor", lo, LookupStackReserve(req))
+	}
+	return nil
+}
+
+// groupStackReach returns the most-negative stack offset instrumenting group
+// needs below the audited floor and, if it does not fit in 512 bytes, the
+// reason. A generic hook needs the map slot; a CopyReadOnly value copy goes
+// below it; a plain typed hook uses only the three base slots.
+func groupStackReach(group lookupGroup, req LookupRequest) (int, string) {
+	_, _, spillR0, mapSlot := lookupSlots(req.Stack.LowestOffset)
+	if group.generic {
+		return mapSlot, fmt.Sprintf("runtime-map hook needs the 4th spill slot; stack_lowest_offset %d too low", req.Stack.LowestOffset)
+	}
+	m := group.sites[0].mapInfo
+	if m.Flags&(bpfFRdonlyProg|bpfFWronlyProg) != 0 && req.CopyReadOnly && m.Flags&bpfFWronlyProg == 0 {
+		copyAt := mapSlot - int((m.ValueSize+7)/8*8)
+		return copyAt, fmt.Sprintf("read-only value copy needs %d bytes below the spill slots; stack_lowest_offset %d too low", m.ValueSize, req.Stack.LowestOffset)
+	}
+	return spillR0, ""
+}
+
 func checkLookupMap(m *RawMap) string {
 	// These maps return ordinary value memory. Other map kinds can return
 	// special objects (notably map-in-map), so do not infer their pointer ABI.
@@ -590,6 +641,32 @@ func transformLookupProgram(insns asm.Instructions, typ ebpf.ProgramType, types 
 	plan.skipped = skipped
 	if err != nil {
 		return nil, plan, err
+	}
+	if err := CheckLookupStack(req); err != nil {
+		return nil, plan, err
+	}
+	// Drop groups whose spill slots exceed the 512-byte stack. Auto skips the
+	// sites and lists them; explicit selection refuses, since the user named
+	// them. Dropping the one generic group means no hook takes the map pointer.
+	var kept []lookupGroup
+	for _, group := range groups {
+		deepest, reason := groupStackReach(group, req)
+		if deepest >= -512 {
+			kept = append(kept, group)
+			continue
+		}
+		if !req.Auto {
+			return nil, plan, refuse("%s", reason)
+		}
+		for _, site := range group.sites {
+			s := site.LookupSite
+			s.Reason = reason
+			plan.skipped = append(plan.skipped, s)
+		}
+	}
+	groups = kept
+	if len(groups) == 0 && !req.Entry && !req.TailCalls {
+		return nil, plan, refuse("no lookup site fits the audited stack (%d skipped)", len(plan.skipped))
 	}
 	var selected []discoveredLookup
 	for _, group := range groups {
