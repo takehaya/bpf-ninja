@@ -13,6 +13,24 @@ import (
 	"github.com/cilium/ebpf/btf"
 )
 
+// Every bool option of LookupRequestRaw reaches LookupRequest, so a new flag
+// cannot be silently dropped when the raw request is converted.
+func TestRawRequestForwardsOptions(t *testing.T) {
+	var raw LookupRequestRaw
+	v := reflect.ValueOf(&raw).Elem()
+	for i := range v.NumField() {
+		if f := v.Field(i); f.Kind() == reflect.Bool {
+			f.SetBool(true)
+		}
+	}
+	got := reflect.ValueOf(raw.request())
+	for i := range v.NumField() {
+		if name := v.Type().Field(i).Name; v.Field(i).Kind() == reflect.Bool && !got.FieldByName(name).Bool() {
+			t.Errorf("%s is not forwarded", name)
+		}
+	}
+}
+
 // Convert the already-linked ProgramSpec to load inputs without loading BPF.
 // Keeping symbols tests checksum parity; numeric strips all instruction metadata
 // via a marshal/unmarshal, as a syscall front end would receive it.

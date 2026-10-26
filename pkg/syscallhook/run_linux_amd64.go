@@ -436,11 +436,7 @@ func (s *supervisor) transformLoad(r *remote, attr []byte, rule Rule) (ret int64
 	if err != nil {
 		return 0, "", err
 	}
-	result, err := inject.TransformLookupRaw(raw, inject.LookupRequestRaw{
-		Site: inject.LookupSelector{MapName: rule.Map, FuncName: rule.Func, Line: rule.Line, AllMatches: rule.AllMatches, SitePCs: rule.SitePCs},
-		Auto: rule.Auto, Entry: rule.Entry, TailCalls: rule.TailCalls, CopyReadOnly: rule.CopyReadOnly, StaticUntrusted: rule.StaticUntrusted,
-		HookName: rule.Hook, Stack: inject.StackAudit{LowestOffset: *rule.StackLowestOffset},
-	})
+	result, err := inject.TransformLookupRaw(raw, rule.request())
 	if err != nil {
 		return 0, "", err
 	}

@@ -88,6 +88,13 @@ type LookupResultRaw struct {
 	InsertedSlots, AddedBytes           int
 }
 
+// request is the ELF-side request this raw request stands for; every option is
+// forwarded (TestRawRequestForwardsOptions guards against a dropped field).
+func (r LookupRequestRaw) request() LookupRequest {
+	return LookupRequest{Site: r.Site, Auto: r.Auto, Entry: r.Entry, TailCalls: r.TailCalls,
+		CopyReadOnly: r.CopyReadOnly, StaticUntrusted: r.StaticUntrusted, HookName: r.HookName, Stack: r.Stack}
+}
+
 // DiscoverLookupsRaw lists lookup sites using map-fd identity and raw load
 // metadata. It performs no syscalls and requires no stack audit.
 func DiscoverLookupsRaw(p RawProgram) ([]LookupSite, error) {
@@ -120,8 +127,7 @@ func TransformLookupRaw(p RawProgram, req LookupRequestRaw) (*LookupResultRaw, e
 			}
 		}
 	}
-	out, plan, err := transformLookupProgram(insns, p.Type, types, resolve,
-		LookupRequest{Site: req.Site, Auto: req.Auto, Entry: req.Entry, TailCalls: req.TailCalls, CopyReadOnly: req.CopyReadOnly, StaticUntrusted: req.StaticUntrusted, HookName: req.HookName, Stack: req.Stack})
+	out, plan, err := transformLookupProgram(insns, p.Type, types, resolve, req.request())
 	if err != nil {
 		return nil, err
 	}

@@ -1,11 +1,38 @@
 package syscallhook
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/takehaya/bpf-ninja/pkg/inject"
 )
+
+// Every bool option of a Rule reaches the raw transform request, so a new flag
+// cannot be silently dropped when the rule is converted.
+func TestRuleRequestForwardsOptions(t *testing.T) {
+	var r Rule
+	v := reflect.ValueOf(&r).Elem()
+	for i := range v.NumField() {
+		if f := v.Field(i); f.Kind() == reflect.Bool {
+			f.SetBool(true)
+		}
+	}
+	got := r.request()
+	gv := reflect.ValueOf(got)
+	for i := range v.NumField() {
+		name := v.Type().Field(i).Name
+		if v.Field(i).Kind() != reflect.Bool || name == "AllMatches" {
+			continue // AllMatches lands in Site, checked below
+		}
+		if !gv.FieldByName(name).Bool() {
+			t.Errorf("%s is not forwarded", name)
+		}
+	}
+	if !got.Site.AllMatches {
+		t.Error("AllMatches is not forwarded to Site")
+	}
+}
 
 // Validate's stack bound comes from inject.CheckLookupStack, so the two cannot
 // drift: the base reserve is accepted, a too-low audit is refused with the

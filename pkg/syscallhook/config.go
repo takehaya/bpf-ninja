@@ -37,6 +37,25 @@ type Rule struct {
 	StackLowestOffset *int16   `json:"stack_lowest_offset"`
 }
 
+// request is the raw transform request r stands for; every option is forwarded
+// (TestRuleRequestForwardsOptions guards against a dropped field).
+func (r Rule) request() inject.LookupRequestRaw {
+	var lo int16
+	if r.StackLowestOffset != nil {
+		lo = *r.StackLowestOffset
+	}
+	return inject.LookupRequestRaw{
+		Site:            inject.LookupSelector{MapName: r.Map, FuncName: r.Func, Line: r.Line, AllMatches: r.AllMatches, SitePCs: r.SitePCs},
+		Auto:            r.Auto,
+		Entry:           r.Entry,
+		TailCalls:       r.TailCalls,
+		CopyReadOnly:    r.CopyReadOnly,
+		StaticUntrusted: r.StaticUntrusted,
+		HookName:        r.Hook,
+		Stack:           inject.StackAudit{LowestOffset: lo},
+	}
+}
+
 var identifier = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 func Validate(rules []Rule) error {
