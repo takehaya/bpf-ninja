@@ -17,7 +17,8 @@ def allowed_skip(package, test, output, kernel):
     if package == INJECT:
         # Hooks for read-only and runtime-resolved maps tag their parameters
         # arg:untrusted, which 6.15 and older reject.
-        return kernel in {"6.1", "6.6", "6.12", "6.15"} and test in {
+        # GenericKinds skips per map-kind subtest, so match the base test name.
+        return kernel in {"6.1", "6.6", "6.12", "6.15"} and test.split("/", 1)[0] in {
             "TestBpfLookupInjectionReadOnlyMap", "TestBpfLookupInjectionMapInMap",
             "TestBpfLookupInjectionGenericKinds",
         } and "kernel lacks arg:untrusted" in output

@@ -58,7 +58,7 @@ class AuditTests(unittest.TestCase):
         reason = "skipping: kernel lacks arg:untrusted: program p: load program"
         allowed = ("TestBpfLookupInjectionReadOnlyMap", "TestBpfLookupInjectionMapInMap",
                    "TestBpfLookupInjectionGenericKinds")
-        for test in allowed:
+        for test in allowed + ("TestBpfLookupInjectionGenericKinds/xskmap",):
             for kernel in ("6.1", "6.6", "6.12", "6.15"):
                 self.assertTrue(module.allowed_skip(module.INJECT, test, reason, kernel))
             self.assertFalse(module.allowed_skip(module.INJECT, test, reason, "6.18"))
