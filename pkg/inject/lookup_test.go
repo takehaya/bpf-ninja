@@ -120,7 +120,7 @@ func TestLookupRefusalsDoNotMutate(t *testing.T) {
 		change func(*ebpf.CollectionSpec, *LookupRequest)
 	}{
 		{"missing-program", func(s *ebpf.CollectionSpec, r *LookupRequest) { r.ProgramName = "absent" }},
-		{"non-xdp", func(s *ebpf.CollectionSpec, r *LookupRequest) { s.Programs["p"].Type = ebpf.SocketFilter }},
+		{"unsupported-type", func(s *ebpf.CollectionSpec, r *LookupRequest) { s.Programs["p"].Type = ebpf.SocketFilter }},
 		{"empty-map", func(s *ebpf.CollectionSpec, r *LookupRequest) { r.Site.MapName = "" }},
 		{"wrong-map", func(s *ebpf.CollectionSpec, r *LookupRequest) { r.Site.MapName = "absent" }},
 		{"wrong-function", func(s *ebpf.CollectionSpec, r *LookupRequest) { r.Site.FuncName = "absent" }},
