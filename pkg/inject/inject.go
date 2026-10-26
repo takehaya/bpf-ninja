@@ -132,11 +132,12 @@ type StackAudit struct {
 	// below the 8-byte-aligned floor of this value; the transform additionally
 	// refuses if any direct RFP reference it can see is below LowestOffset.
 	// Transform reserves two slots; TransformLookup three, four with a generic
-	// hook, and CopyReadOnly adds a value copy below them. The frame holding
-	// the slots also calls a hook, and the transform refuses a program whose
-	// call chains would then break a verifier stack limit: with a hook frame
-	// counted as 32 bytes, the 512-byte combined limit makes -464 the deepest
-	// usable bound for Transform (see CheckLookupStack for TransformLookup).
+	// or Dispatch hook, and CopyReadOnly adds a value copy below them. The
+	// frame holding the slots also calls a hook, and the transform refuses a
+	// program whose call chains would then break a verifier stack limit: with
+	// a hook frame counted as 32 bytes, the 512-byte combined limit makes -464
+	// the deepest usable bound for Transform (see CheckLookupStack for
+	// TransformLookup).
 	LowestOffset int16
 }
 

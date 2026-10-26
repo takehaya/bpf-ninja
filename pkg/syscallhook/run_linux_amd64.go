@@ -548,7 +548,7 @@ func copyReadOnlyHelps(hook inject.LookupHook) bool {
 
 // hookSummary lists each hook as
 //
-//	hook "NAME" (KIND[ map "MAP"][ runtime map][, untrusted pointers][, value copied to stack][, static][, site pc N, N])
+//	hook "NAME" (KIND[ map "MAP"][ runtime map][, untrusted pointers][, value copied to stack][, static][, dispatch][, site pc N, N])
 //
 // separated by ", ", then "; skipped pc N (reason)" for each skipped lookup.
 // The launcher log and the integration test look for the leading "hook".

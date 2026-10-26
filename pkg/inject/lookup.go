@@ -51,7 +51,7 @@ func (s LookupSelector) empty() bool {
 // instrumented only in the entry function: a subprogram has its own frame and
 // cannot reach the entry frame's ctx spill (TailCalls does reach subprograms,
 // see below). Stack certifies the reserved spill slots below the audited
-// bound, three, four when a hook takes the map pointer (the generic hook),
+// bound, three, four when a hook takes the map pointer (generic or Dispatch),
 // plus the value copy with CopyReadOnly, including aliases and callee stacks.
 // No caller-saved register liveness certification is required at helper calls.
 //
@@ -91,10 +91,10 @@ func (s LookupSelector) empty() bool {
 // calls, to one hook named HookName with the generic hook's signature (see
 // genericHook), so one observer attach sees them all. A lookup passes its
 // SitePC, key, value and map. A failed tail call passes its SitePC, a pointer
-// to the index register as a u64 in key (the helper uses its low 32 bits),
-// a NULL value and the prog array in map. The
-// entry passes DispatchEntrySite and NULL pointers. With StaticUntrusted the
-// hook is static. Dispatch does not combine with CopyReadOnly.
+// to the spilled index register in key (a u64 whose low 32 bits the helper
+// used), a NULL value and the prog array in map. The entry passes
+// DispatchEntrySite and NULL pointers. With StaticUntrusted the hook is
+// static. Dispatch does not combine with CopyReadOnly.
 type LookupRequest struct {
 	ELFSHA256       string
 	ProgramName     string
@@ -167,16 +167,16 @@ type LookupHook struct {
 
 // LookupResult reports the selected original sites and the transformed clone.
 // Result.HookName and Site describe the first hook and the first selected
-// lookup: exact for a single-site request, but with Auto, Entry or TailCalls
-// the first hook is the first lookup hook in Hooks (the entry or tail-call hook
-// when there is no lookup), so use Hooks and Sites.
+// lookup: exact for a single-site request, but with Auto, Entry, TailCalls or
+// Dispatch the first hook is the first lookup hook in Hooks (the entry or
+// tail-call hook when there is no lookup), so use Hooks and Sites.
 // Result.InsertedAt is zero (the ctx spill); InsertedSlots includes that spill,
 // the lookup instrumentation and generated hooks. Checksums have Result's scope.
 type LookupResult struct {
 	Result
 	Site    LookupSite   // first element of Sites; zero without lookups
 	Sites   []LookupSite // all selected lookups in original instruction order
-	Hooks   []LookupHook // lookup hooks (one; with Auto one per map, then the generic hook), then the entry and tail-call hooks
+	Hooks   []LookupHook // lookup hooks (one; with Auto one per map, then the generic hook), then the entry and tail-call hooks; with Dispatch all share one name
 	Skipped []LookupSite // with Auto, discovered lookups that were not instrumented
 }
 
@@ -197,8 +197,8 @@ func DiscoverLookups(elf []byte, programName string) ([]LookupSite, error) {
 // independent clone. A selected lookup calls
 // int HOOK(CTX *ctx, const KEY *key, const VALUE *value) for non-null results,
 // where CTX is the program's context type (struct xdp_md for XDP, the only
-// type supported here); see LookupRequest for the Auto, Entry and TailCalls
-// hooks. This never loads or attaches BPF.
+// type supported here); see LookupRequest for the Auto, Entry, TailCalls and
+// Dispatch hooks. This never loads or attaches BPF.
 func TransformLookup(elf []byte, req LookupRequest) (*LookupResult, error) {
 	// Reuse the existing hash/name/stack validation, without its load contract.
 	if err := validateRequest(Request{ELFSHA256: req.ELFSHA256, ProgramName: req.ProgramName,
