@@ -763,20 +763,22 @@ func transformLookupProgram(insns asm.Instructions, typ ebpf.ProgramType, types 
 		key, value := lookupABI(m)
 		// The verifier checks an ordinary memory argument for both reads and
 		// writes, so either restriction needs untrusted arguments, unless a
-		// readable value is copied to the stack.
-		untrusted := m.Flags&(bpfFRdonlyProg|bpfFWronlyProg) != 0
+		// readable value is copied to the stack, or the hook is static.
+		restricted := m.Flags&(bpfFRdonlyProg|bpfFWronlyProg) != 0
+		copied := restricted && req.CopyReadOnly && m.Flags&bpfFWronlyProg == 0
+		static := restricted && !copied && req.StaticUntrusted
+		untrusted := restricted && !copied && !static
 		var copySize uint32
-		if untrusted && req.CopyReadOnly && m.Flags&bpfFWronlyProg == 0 {
-			untrusted, copySize = false, m.ValueSize
+		if copied {
+			copySize = m.ValueSize
 		}
-		static := untrusted && req.StaticUntrusted
-		body := lookupHook(group.name, ctxType, key, value, req.Auto, untrusted && !static)
+		body := lookupHook(group.name, ctxType, key, value, req.Auto, untrusted)
 		if static {
-			untrusted, body = false, staticHook(body)
+			body = staticHook(body) // keeps the typed proto; the kernel need not trust it
 		}
 		hooks = append(hooks, body...)
 		hook := LookupHook{Name: group.name, Kind: HookLookup, MapName: group.sites[0].MapName, Sites: publicLookupSites(group.sites),
-			Untrusted: untrusted, Copied: copySize > 0, Static: static}
+			Untrusted: untrusted, Copied: copied, Static: static}
 		plan.hooks = append(plan.hooks, hook)
 		for _, site := range group.sites {
 			calls[site.SitePC] = siteCall{hook: group.name, withSite: req.Auto, copySize: copySize}
