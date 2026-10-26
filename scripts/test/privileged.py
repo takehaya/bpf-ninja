@@ -23,7 +23,7 @@ def allowed_skip(package, test, output, kernel):
         # GenericKinds skips per map-kind subtest, so match the base test name.
         return kernel in {"6.1", "6.6", "6.12", "6.15"} and test.split("/", 1)[0] in {
             "TestBpfLookupInjectionReadOnlyMap", "TestBpfLookupInjectionMapInMap",
-            "TestBpfLookupInjectionGenericKinds", "TestBpfDispatch",
+            "TestBpfLookupInjectionGenericKinds", "TestBpfDispatch", "TestBpfDispatchTC",
         } and "kernel lacks arg:untrusted" in output
     if package != PROGRAM:
         return False
