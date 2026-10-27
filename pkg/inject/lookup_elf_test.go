@@ -211,7 +211,9 @@ func TestLookupELFGates(t *testing.T) {
 // load-store chunk and 2 for the pointer with a CopyReadOnly value copy; per
 // hook 7 typed, 5 untrusted, 6 generic, 2 static; Entry 2 in the prologue and
 // a 3-slot hook; TailCalls 6 per tail call (7 outside the entry function) and
-// a 3-slot hook. docs/en/lookup-site-injection.md states the same formula.
+// a 3-slot hook. With Dispatch: 11 per lookup site, Entry 6 in the prologue,
+// 9 per tail call (10 outside the entry function), and one hook of 6 slots, 2
+// when static. docs/en/lookup-site-injection.md states the same formula.
 func TestLookupInsertedSlots(t *testing.T) {
 	auto := func(edit func(*LookupRequest)) LookupRequest {
 		req := autoReq()
@@ -238,6 +240,11 @@ func TestLookupInsertedSlots(t *testing.T) {
 		{"tail-call", tailCallerFixture, tails, 1 + 6 + 3},
 		{"entry-tail-call", tailCallerFixture, LookupRequest{Entry: true, TailCalls: true, HookName: "obs"}, 1 + 2 + 3 + 6 + 3},
 		{"tail-call-sub", subTailCallerFixture, tails, 1 + 7 + 3},
+		{"dispatch", multiMapFixture, auto(func(r *LookupRequest) { r.Dispatch = true }), 1 + 2*11 + 6},
+		{"dispatch-static", multiMapFixture, auto(func(r *LookupRequest) { r.Dispatch, r.StaticUntrusted = true, true }), 1 + 2*11 + 2},
+		{"dispatch-generic", mapInMapFixture, auto(func(r *LookupRequest) { r.Dispatch = true }), 1 + 2*11 + 6},
+		{"dispatch-entry-tail-call", tailCallerFixture, LookupRequest{Entry: true, TailCalls: true, Dispatch: true, HookName: "obs"}, 1 + 6 + 9 + 6},
+		{"dispatch-tail-call-sub", subTailCallerFixture, LookupRequest{TailCalls: true, Dispatch: true, HookName: "obs"}, 1 + 10 + 6},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			name := "p"
@@ -246,7 +253,7 @@ func TestLookupInsertedSlots(t *testing.T) {
 			}
 			got, err := TransformLookupRaw(rawLookupFixture(t, tc.spec(), name, true), LookupRequestRaw{Site: tc.req.Site, Auto: tc.req.Auto,
 				Entry: tc.req.Entry, TailCalls: tc.req.TailCalls, CopyReadOnly: tc.req.CopyReadOnly, StaticUntrusted: tc.req.StaticUntrusted,
-				HookName: tc.req.HookName, Stack: tc.req.Stack})
+				Dispatch: tc.req.Dispatch, HookName: tc.req.HookName, Stack: tc.req.Stack})
 			if err != nil {
 				t.Fatal(err)
 			}

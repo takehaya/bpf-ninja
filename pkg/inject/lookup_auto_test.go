@@ -545,6 +545,7 @@ func autoRetryCases() []autoRetryCase {
 	plain := func(*LookupRequest) {}
 	tails := func(r *LookupRequest) { r.TailCalls = true }
 	copyRO := func(r *LookupRequest) { r.CopyReadOnly = true }
+	dispatchTails := func(r *LookupRequest) { r.TailCalls, r.Dispatch, r.StaticUntrusted = true, true, true }
 	single := func() *ebpf.CollectionSpec { return lookupSubTailCaller(lookupFixture(), -208) }
 	readOnly := func() *ebpf.CollectionSpec { return lookupSubTailCaller(multiMapFixtureFlags(bpfFRdonlyProg), -200) }
 	mapInMap := func() *ebpf.CollectionSpec {
@@ -557,6 +558,9 @@ func autoRetryCases() []autoRetryCase {
 		// the tail-call hook alone reaches 216.
 		{"tails-208", single, auto(-208, tails), []string{"obs_tail_call"}, []uint32{15}, ""},
 		{"no-entry-tails-208", single, auto(-208, plain), nil, nil, "no lookup site fits the audited stack (1 skipped): after the transform"},
+		// Every dispatch lookup fills the map slot, so the first retry drops
+		// them all and keeps the static dispatch hook for the tail call.
+		{"dispatch-tails-208", single, auto(-208, dispatchTails), []string{"obs"}, []uint32{15}, ""},
 		// The flows copy or map slot reaches 248 or 232 bytes; the base
 		// slots alone reach 224, so only flows is dropped.
 		{"copy-200", readOnly, auto(-200, copyRO), []string{"obs_sessions"}, []uint32{22}, ""},
@@ -609,7 +613,7 @@ func TestAutoRetryStackLimits(t *testing.T) {
 			// numbers them apart, resolves them.
 			p := rawLookupFixture(t, tc.spec(), "p", true)
 			got, err := TransformLookupRaw(p, LookupRequestRaw{Auto: true, TailCalls: tc.req.TailCalls, CopyReadOnly: tc.req.CopyReadOnly,
-				HookName: tc.req.HookName, Stack: tc.req.Stack})
+				StaticUntrusted: tc.req.StaticUntrusted, Dispatch: tc.req.Dispatch, HookName: tc.req.HookName, Stack: tc.req.Stack})
 			if err != nil {
 				check("raw", nil, nil, err)
 			} else {
