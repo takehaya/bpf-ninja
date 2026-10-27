@@ -306,6 +306,24 @@ func paddedSubTailCaller(bound int16) *ebpf.CollectionSpec {
 	return spec
 }
 
+// lookupSubTailCaller is a lookup fixture whose entry first references
+// R10+bound and calls sub, a static subprogram that tail-calls, with ctx: the
+// entry frame, with the transform's slots, is sub's caller depth.
+func lookupSubTailCaller(spec *ebpf.CollectionSpec, bound int16) *ebpf.CollectionSpec {
+	insns := spec.Programs["p"].Instructions
+	entry := insns[0]
+	head := asm.Instructions{
+		btf.WithFuncMetadata(asm.StoreImm(asm.RFP, bound, 0, asm.Word).WithSymbol(entry.Symbol()).WithSource(entry.Source()), btf.FuncMetadata(&entry)),
+		asm.Mov.Reg(asm.R6, asm.R1),
+		asm.Call.Label("sub"),
+		asm.Mov.Reg(asm.R1, asm.R6),
+	}
+	insns[0] = btf.WithFuncMetadata(entry.WithSymbol("").WithSource(nil), nil)
+	spec.Programs["p"].Instructions = append(append(head, insns...), subBody(btf.StaticFunc)...)
+	spec.Maps["jmp"] = tailCallerFixture().Maps["jmp"]
+	return spec
+}
+
 // chainTailCaller is entry -> middle -> sub, where only middle uses stack
 // (depth bytes) and only sub tail-calls, so the kernel's caller-depth check
 // for sub sums the entry and middle frames.
@@ -618,6 +636,36 @@ func TestBpfStackLimitsReserve(t *testing.T) {
 				t.Fatal(err)
 			}
 			injected := loadOrSkip(t, work)
+			t.Cleanup(injected.Close)
+		})
+	}
+}
+
+// When the lookup slots alone break a call-chain limit, Auto retries with fewer
+// lookups instead of refusing the rule, and the kernel loads what it keeps:
+// the tail-call hook alone at -208, the typed sessions hook without the
+// read-only flows copy at -200.
+func TestBpfStackLimitsAutoRetry(t *testing.T) {
+	testutil.SkipIfNotRoot(t)
+	// The other cases keep every lookup, refuse, or (map-in-map) lack the
+	// inner map a load needs.
+	retried := map[string]bool{"tails-208": true, "copy-200": true}
+	for _, tc := range autoRetryCases() {
+		if !retried[tc.name] {
+			continue
+		}
+		t.Run(tc.name, func(t *testing.T) {
+			plain := loadOrSkip(t, tc.spec())
+			t.Cleanup(plain.Close)
+			work := tc.spec()
+			plan, err := transformLookup(work, tc.req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(plan.skipped) == 0 {
+				t.Fatalf("nothing skipped: %+v", plan)
+			}
+			injected := loadHooked(t, work, plan.hooks)
 			t.Cleanup(injected.Close)
 		})
 	}

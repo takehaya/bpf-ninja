@@ -62,7 +62,10 @@ func (s LookupSelector) empty() bool {
 // typed hook (a map-in-map, an indirect map reference, or a map kind a typed
 // hook refuses) share one PREFIX_any generic hook (see LookupHook.Generic).
 // Sites that cannot be instrumented are reported in Skipped instead of
-// refusing the transform.
+// refusing the transform: an unsupported site, slots past the audited stack,
+// or, when the instrumented program would break a kernel call-chain stack
+// limit, first the sites that need the map slot or a value copy and then
+// every lookup. Auto refuses only when nothing at all would be instrumented.
 //
 // Entry also calls int HOOKNAME_entry(struct xdp_md *ctx) once at program
 // entry, which runs when the program is entered through a tail call, unlike an
@@ -445,6 +448,12 @@ func groupStackReach(group lookupGroup, req LookupRequest) int {
 	return slots.result
 }
 
+// reachesBelowBase reports whether group uses slots below the three base ones:
+// the generic hook's map slot or a value copy.
+func reachesBelowBase(group lookupGroup, req LookupRequest) bool {
+	return groupStackReach(group, req) < lookupSlots(req.Stack.LowestOffset).result
+}
+
 // checkLookupMap returns why a typed hook cannot take m's key and value, or
 // "". The two consumers wrap it: the explicit-selection refusal adds the
 // ErrRefused prefix once, and discovery leaves it bare in LookupSite.Reason.
@@ -716,22 +725,12 @@ func transformLookupProgram(insns asm.Instructions, typ ebpf.ProgramType, types 
 		if !req.Auto {
 			return nil, plan, refuse("%s", reason)
 		}
-		for _, site := range group.sites {
-			s := site.LookupSite
-			s.Reason = reason
-			plan.skipped = append(plan.skipped, s)
-		}
+		plan.skipped = skipGroup(plan.skipped, group, reason)
 	}
 	groups = kept
 	if len(groups) == 0 && !req.Entry && !req.TailCalls {
 		return nil, plan, refuse("no lookup site fits the audited stack (%d skipped)", len(plan.skipped))
 	}
-	var selected []discoveredLookup
-	for _, group := range groups {
-		selected = append(selected, group.sites...)
-	}
-	sort.Slice(selected, func(i, j int) bool { return selected[i].SitePC < selected[j].SitePC })
-	plan.sites = publicLookupSites(selected)
 	allTails := tailCallSites(insns)
 	var tails []tailCallSite
 	if req.TailCalls {
@@ -783,17 +782,95 @@ func transformLookupProgram(insns asm.Instructions, typ ebpf.ProgramType, types 
 	if !ok || ctxStruct.Name != "xdp_md" {
 		return nil, plan, refuse("entry BTF context is not struct xdp_md")
 	}
-	ctxType := proto.Params[0].Type
+	emit := lookupEmitter{insns: insns, req: req, ctxType: proto.Params[0].Type, tails: tails, entryName: entryName, tailName: tailName}
+	spliced, hooks, err := emit.splice(groups)
+	if err != nil {
+		return nil, plan, err
+	}
+	// Deeper frames and the hook frames count toward the kernel's limits on
+	// call chains; refuse rather than emit a program the verifier would reject.
+	broken, err := stackLimitsBroken(insns, spliced, req.Stack.LowestOffset)
+	if err != nil {
+		return nil, plan, err
+	}
+	// Auto gives up lookups before the whole rule: first the groups that
+	// reach below the base slots (the generic hook's map slot, a value copy),
+	// then every lookup group, keeping the entry and tail-call hooks. Each
+	// dropped site is skipped with the limit it broke. Splicing is pure, so
+	// each retry starts again from insns.
+	for _, keep := range []func(lookupGroup) bool{
+		func(group lookupGroup) bool { return !reachesBelowBase(group, req) },
+		func(lookupGroup) bool { return false },
+	} {
+		if broken == "" || !req.Auto {
+			break
+		}
+		var fewer []lookupGroup
+		for _, group := range groups {
+			if keep(group) {
+				fewer = append(fewer, group)
+			} else {
+				plan.skipped = skipGroup(plan.skipped, group, broken)
+			}
+		}
+		if len(fewer) == len(groups) {
+			continue
+		}
+		if groups = fewer; len(groups) == 0 && !req.Entry && !req.TailCalls {
+			return nil, plan, refuse("no lookup site fits the audited stack (%d skipped): %s", len(plan.skipped), broken)
+		}
+		if spliced, hooks, err = emit.splice(groups); err != nil {
+			return nil, plan, err
+		}
+		if broken, err = stackLimitsBroken(insns, spliced, req.Stack.LowestOffset); err != nil {
+			return nil, plan, err
+		}
+	}
+	if broken != "" {
+		return nil, plan, refuse("%s", broken)
+	}
+	var selected []discoveredLookup
+	for _, group := range groups {
+		selected = append(selected, group.sites...)
+	}
+	sort.Slice(selected, func(i, j int) bool { return selected[i].SitePC < selected[j].SitePC })
+	plan.sites, plan.hooks = publicLookupSites(selected), hooks
+	return spliced, plan, nil
+}
+
+// skipGroup appends group's sites to skipped with reason.
+func skipGroup(skipped []LookupSite, group lookupGroup, reason string) []LookupSite {
+	for _, site := range group.sites {
+		s := site.LookupSite
+		s.Reason = reason
+		skipped = append(skipped, s)
+	}
+	return skipped
+}
+
+// lookupEmitter generates the hooks for a set of lookup groups, plus the
+// entry and tail-call hooks req asks for, and splices their calls into insns.
+type lookupEmitter struct {
+	insns               asm.Instructions
+	req                 LookupRequest
+	ctxType             btf.Type
+	tails               []tailCallSite
+	entryName, tailName string
+}
+
+func (e lookupEmitter) splice(groups []lookupGroup) (asm.Instructions, []LookupHook, error) {
+	req := e.req
 	var hooks asm.Instructions
+	var plan []LookupHook
 	calls := map[uint32]siteCall{}
 	for _, group := range groups {
 		if group.generic {
-			hook := genericHook(group.name, ctxType)
+			hook := genericHook(group.name, e.ctxType)
 			if req.StaticUntrusted {
 				hook = staticHook(hook)
 			}
 			hooks = append(hooks, hook...)
-			plan.hooks = append(plan.hooks, LookupHook{Name: group.name, Kind: HookLookup, Sites: publicLookupSites(group.sites),
+			plan = append(plan, LookupHook{Name: group.name, Kind: HookLookup, Sites: publicLookupSites(group.sites),
 				Untrusted: !req.StaticUntrusted, Static: req.StaticUntrusted, Generic: true})
 			for _, site := range group.sites {
 				calls[site.SitePC] = siteCall{hook: group.name, withSite: true, withMap: true}
@@ -813,43 +890,34 @@ func transformLookupProgram(insns asm.Instructions, typ ebpf.ProgramType, types 
 		if copied {
 			copySize = m.ValueSize
 		}
-		body := lookupHook(group.name, ctxType, key, value, req.Auto, untrusted)
+		body := lookupHook(group.name, e.ctxType, key, value, req.Auto, untrusted)
 		if static {
 			body = staticHook(body) // keeps the typed proto; the kernel need not trust it
 		}
 		hooks = append(hooks, body...)
-		hook := LookupHook{Name: group.name, Kind: HookLookup, MapName: group.sites[0].MapName, Sites: publicLookupSites(group.sites),
-			Untrusted: untrusted, Copied: copied, Static: static}
-		plan.hooks = append(plan.hooks, hook)
+		plan = append(plan, LookupHook{Name: group.name, Kind: HookLookup, MapName: group.sites[0].MapName, Sites: publicLookupSites(group.sites),
+			Untrusted: untrusted, Copied: copied, Static: static})
 		for _, site := range group.sites {
 			calls[site.SitePC] = siteCall{hook: group.name, withSite: req.Auto, copySize: copySize}
 		}
 	}
 	var entryHook string
 	if req.Entry {
-		entryHook = entryName
-		hooks = append(hooks, scalarHook(entryName, ctxType)...)
-		plan.hooks = append(plan.hooks, LookupHook{Name: entryName, Kind: HookEntry})
+		entryHook = e.entryName
+		hooks = append(hooks, scalarHook(e.entryName, e.ctxType)...)
+		plan = append(plan, LookupHook{Name: e.entryName, Kind: HookEntry})
 	}
 	if req.TailCalls {
-		hooks = append(hooks, scalarHook(tailName, ctxType, "site", "index")...)
-		hook := LookupHook{Name: tailName, Kind: HookTailCall}
-		for _, site := range tails {
+		hooks = append(hooks, scalarHook(e.tailName, e.ctxType, "site", "index")...)
+		hook := LookupHook{Name: e.tailName, Kind: HookTailCall}
+		for _, site := range e.tails {
 			hook.Sites = append(hook.Sites, site.LookupSite)
-			calls[site.SitePC] = siteCall{hook: tailName, withSite: true, tailCall: true, localCtx: site.local}
+			calls[site.SitePC] = siteCall{hook: e.tailName, withSite: true, tailCall: true, localCtx: site.local}
 		}
-		plan.hooks = append(plan.hooks, hook)
+		plan = append(plan, hook)
 	}
-	spliced, err := spliceLookupCalls(insns, calls, req.Stack, hooks, entryHook)
-	if err != nil {
-		return nil, plan, err
-	}
-	// Deeper frames and the hook frames count toward the kernel's limits on
-	// call chains; refuse rather than emit a program the verifier would reject.
-	if err := checkStackLimits(insns, spliced, req.Stack.LowestOffset); err != nil {
-		return nil, plan, err
-	}
-	return spliced, plan, nil
+	out, err := spliceLookupCalls(e.insns, calls, req.Stack, hooks, entryHook)
+	return out, plan, err
 }
 
 // siteCall is the hook a helper site calls, whether it passes its SitePC and

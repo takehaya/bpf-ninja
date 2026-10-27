@@ -482,6 +482,109 @@ func stackLimitCases() []stackLimitCase {
 	}
 }
 
+// autoRetryCase is an Auto request whose lookup slots alone push the entry,
+// sub's caller, to the 256-byte caller-depth limit. Auto keeps the hooks
+// named in hooks and skips the sites at skipped, each with the limit as its
+// reason, or refuses with refuse when nothing would be instrumented.
+type autoRetryCase struct {
+	name    string
+	spec    func() *ebpf.CollectionSpec
+	req     LookupRequest
+	hooks   []string
+	skipped []uint32
+	refuse  string
+}
+
+func autoRetryCases() []autoRetryCase {
+	auto := func(bound int16, edit func(*LookupRequest)) LookupRequest {
+		req := autoReq()
+		req.HookName, req.Stack.LowestOffset = "obs", bound
+		edit(&req)
+		return req
+	}
+	plain := func(*LookupRequest) {}
+	tails := func(r *LookupRequest) { r.TailCalls = true }
+	copyRO := func(r *LookupRequest) { r.CopyReadOnly = true }
+	single := func() *ebpf.CollectionSpec { return lookupSubTailCaller(lookupFixture(), -208) }
+	readOnly := func() *ebpf.CollectionSpec { return lookupSubTailCaller(multiMapFixtureFlags(bpfFRdonlyProg), -200) }
+	mapInMap := func() *ebpf.CollectionSpec {
+		spec := multiMapFixture()
+		spec.Maps["flows"].Type = ebpf.HashOfMaps
+		return lookupSubTailCaller(spec, -200)
+	}
+	return []autoRetryCase{
+		// The entry's three base slots reach 232 bytes, 256 rounded to 32;
+		// the tail-call hook alone reaches 216.
+		{"tails-208", single, auto(-208, tails), []string{"obs_tail_call"}, []uint32{15}, ""},
+		{"no-entry-tails-208", single, auto(-208, plain), nil, nil, "no lookup site fits the audited stack (1 skipped): after the transform"},
+		// The flows copy or map slot reaches 248 or 232 bytes; the base
+		// slots alone reach 224, so only flows is dropped.
+		{"copy-200", readOnly, auto(-200, copyRO), []string{"obs_sessions"}, []uint32{22}, ""},
+		{"map-in-map-200", mapInMap, auto(-200, plain), []string{"obs_sessions"}, []uint32{22}, ""},
+		{"plain-200", readOnly, auto(-200, plain), []string{"obs_sessions", "obs_flows"}, nil, ""},
+	}
+}
+
+// Auto drops the groups that reach below the base slots first, then every
+// lookup, and keeps the entry and tail-call hooks, when only the lookup slots
+// break a call-chain limit; explicit selection still refuses. ELF and raw
+// forms; a refusal leaves the input unchanged.
+func TestAutoRetryStackLimits(t *testing.T) {
+	for _, tc := range autoRetryCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			check := func(form string, hooks []LookupHook, skipped []LookupSite, err error) {
+				t.Helper()
+				if tc.refuse != "" {
+					if !errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), tc.refuse) || !strings.Contains(err.Error(), "caller-depth limit") {
+						t.Fatalf("%s: want refusal %q, got %v", form, tc.refuse, err)
+					}
+					return
+				}
+				if err != nil {
+					t.Fatalf("%s: %v", form, err)
+				}
+				var names []string
+				for _, hook := range hooks {
+					names = append(names, hook.Name)
+				}
+				var pcs []uint32
+				for _, site := range skipped {
+					pcs = append(pcs, site.SitePC)
+					if !strings.HasPrefix(site.Reason, "after the transform the frames calling sub (p -> sub)") || !strings.Contains(site.Reason, "caller-depth limit") {
+						t.Fatalf("%s: skip reason %q", form, site.Reason)
+					}
+				}
+				if !reflect.DeepEqual(names, tc.hooks) || !reflect.DeepEqual(pcs, tc.skipped) {
+					t.Fatalf("%s: hooks %v skipped %v, want %v %v", form, names, pcs, tc.hooks, tc.skipped)
+				}
+			}
+			work := tc.spec()
+			before := append(asm.Instructions(nil), work.Programs["p"].Instructions...)
+			plan, err := transformLookup(work, tc.req)
+			check("elf", plan.hooks, plan.skipped, err)
+			if err != nil && !reflect.DeepEqual(before, work.Programs["p"].Instructions) {
+				t.Fatal("refusal mutated input")
+			}
+			// The fixtures' maps all load fd 0, so only the numeric form, which
+			// numbers them apart, resolves them.
+			p := rawLookupFixture(t, tc.spec(), "p", true)
+			got, err := TransformLookupRaw(p, LookupRequestRaw{Auto: true, TailCalls: tc.req.TailCalls, CopyReadOnly: tc.req.CopyReadOnly,
+				HookName: tc.req.HookName, Stack: tc.req.Stack})
+			if err != nil {
+				check("raw", nil, nil, err)
+			} else {
+				check("raw", got.Hooks, got.Skipped, err)
+			}
+		})
+	}
+	// Explicit selection of a site the chain limit rules out refuses.
+	req := lookupReq()
+	req.TailCalls, req.Stack.LowestOffset = true, -208
+	if _, err := transformLookup(lookupSubTailCaller(lookupFixture(), -208), req); !errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), "caller-depth limit") {
+		t.Fatalf("explicit: want refusal, got %v", err)
+	}
+}
+
 // overestimatedReq deepens deadStoreCallee's entry by its ctx spill.
 var overestimatedReq = LookupRequest{ProgramName: "caller", Entry: true, HookName: "obs", Stack: StackAudit{LowestOffset: -288}}
 

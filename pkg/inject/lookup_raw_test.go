@@ -127,7 +127,7 @@ func rawLookupFixture(t *testing.T, spec *ebpf.CollectionSpec, name string, nume
 			}
 			ins.Constant = int64(fd)
 		}
-		maps[fd] = RawMap{Name: ins.Reference(), Type: m.Type, KeySize: m.KeySize, ValueSize: m.ValueSize, Key: m.Key, Value: m.Value}
+		maps[fd] = RawMap{Name: ins.Reference(), Type: m.Type, KeySize: m.KeySize, ValueSize: m.ValueSize, Flags: m.Flags, Key: m.Key, Value: m.Value}
 	}
 	if numeric {
 		var wire bytes.Buffer

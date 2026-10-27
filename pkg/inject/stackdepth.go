@@ -278,13 +278,27 @@ func stackLimitBroken(funcs []stackFunc, round func(int) int) (string, error) {
 // lookup transform always deepens the entry (its ctx spill lies below the
 // audited bound), so every chain from the entry counts as changed.
 func checkStackLimits(in, out asm.Instructions, lowest int16) error {
-	before, err := stackCallGraph(in, lowest)
+	broken, err := stackLimitsBroken(in, out, lowest)
 	if err != nil {
 		return err
 	}
+	if broken != "" {
+		return refuse("%s", broken)
+	}
+	return nil
+}
+
+// stackLimitsBroken is checkStackLimits' limit description without the
+// ErrRefused prefix, or "" when out keeps every limit; Auto uses it as a
+// skip reason.
+func stackLimitsBroken(in, out asm.Instructions, lowest int16) (string, error) {
+	before, err := stackCallGraph(in, lowest)
+	if err != nil {
+		return "", err
+	}
 	after, err := stackCallGraph(out, lowest)
 	if err != nil {
-		return err
+		return "", err
 	}
 	depth := map[string]int{}
 	for _, f := range before {
@@ -301,11 +315,11 @@ func checkStackLimits(in, out asm.Instructions, lowest int16) error {
 	for _, r := range frameRoundings {
 		broken, err := stackLimitBroken(after, r.round)
 		if err != nil {
-			return err
+			return "", err
 		}
 		if broken != "" {
-			return refuse("after the transform %s (frames rounded to %s bytes)", broken, r.name)
+			return fmt.Sprintf("after the transform %s (frames rounded to %s bytes)", broken, r.name), nil
 		}
 	}
-	return nil
+	return "", nil
 }
