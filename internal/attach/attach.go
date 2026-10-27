@@ -191,6 +191,7 @@ func FindXDPProgram(ifaceName string) (*ProgInfo, error) {
 type ProgTarget struct {
 	Via      string // "tailcall", "cpumap", "devmap", "devmap_hash", or "freplace"
 	Key      uint32 // map key, or target BTF function ID for freplace
+	MapID    uint32 // the map holding the entry; zero for freplace
 	ProgID   uint32
 	ProgName string
 }
@@ -258,6 +259,7 @@ type ReachableProgram struct {
 	ProgID   uint32
 	ProgName string
 	Via      string
+	MapID    uint32 // the map of the first edge; zero for freplace
 	Keys     []uint32
 	Depth    int
 	ParentID uint32
@@ -460,7 +462,7 @@ func groupTargets(targets []ProgTarget) []ReachableProgram {
 		k := gk{t.Via, t.ProgID}
 		g, ok := byKey[k]
 		if !ok {
-			g = &ReachableProgram{ProgID: t.ProgID, ProgName: t.ProgName, Via: t.Via}
+			g = &ReachableProgram{ProgID: t.ProgID, ProgName: t.ProgName, Via: t.Via, MapID: t.MapID}
 			byKey[k] = g
 			order = append(order, k)
 		}
@@ -512,6 +514,7 @@ func scanProgArray(m *ebpf.Map, mapID ebpf.MapID, cache progNameCache) ([]ProgTa
 		if err != nil {
 			return nil, err
 		}
+		t.MapID = uint32(mapID)
 		targets = append(targets, *t)
 	}
 	if err := iter.Err(); err != nil {
@@ -549,6 +552,7 @@ func scanRedirectMap(m *ebpf.Map, mapID ebpf.MapID, via string, keySize, valueSi
 		if err != nil {
 			return nil, err
 		}
+		t.MapID = uint32(mapID)
 		targets = append(targets, *t)
 	}
 	if err := iter.Err(); err != nil {

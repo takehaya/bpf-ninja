@@ -93,7 +93,7 @@ func rootFlags() []cli.Flag {
 		},
 		&cli.BoolFlag{
 			Name:  "list-maps",
-			Usage: "with --list-progs, also list each function's calls and the maps it uses, with the op (lookup, update, delete, tail_call, ...) and source line; needs root to read the translated instructions",
+			Usage: "with --list-progs, also list each function's calls and the maps it uses, with the op (lookup, update, delete, tail_call, ...) and source line, as a tree that replaces the --list-progs text; needs root to read the translated instructions",
 		},
 		&cli.StringFlag{
 			Name:  "lookups-json",
@@ -621,32 +621,30 @@ func run(ctx context.Context, cmd *cli.Command) error {
 				jsonOut = append(jsonOut, jt)
 				continue
 			}
-			fmt.Fprintf(os.Stderr, "id=%-6d %s\n", info.ProgID, info.FuncName)
-			if withFuncs {
-				printNodeFuncs(info.ProgID, info, "    ")
-			}
-			if maps != nil {
-				printMaps(maps.list(info.ProgID, info.Program), "    ")
-			}
 			byParent := map[uint32][]attach.ReachableProgram{}
 			for _, p := range progs {
 				byParent[p.ParentID] = append(byParent[p.ParentID], p)
 			}
-			var printTree func(parent uint32, indent string)
-			printTree = func(parent uint32, indent string) {
+			if maps != nil {
+				printTree(os.Stderr, maps.progTree(info.ProgID, info.FuncName, "", info.Program, byParent))
+				continue
+			}
+			fmt.Fprintf(os.Stderr, "id=%-6d %s\n", info.ProgID, info.FuncName)
+			if withFuncs {
+				printNodeFuncs(info.ProgID, info, "    ")
+			}
+			var printProgs func(parent uint32, indent string)
+			printProgs = func(parent uint32, indent string) {
 				for _, c := range byParent[parent] {
 					fmt.Fprintf(os.Stderr, "%sid=%-6d %s (%s[%s])\n",
 						indent, c.ProgID, c.ProgName, c.Via, formatKeyRanges(c.Keys))
 					if withFuncs {
 						printNodeFuncs(c.ProgID, nil, indent+"    ")
 					}
-					if maps != nil {
-						printMaps(maps.list(c.ProgID, nil), indent+"    ")
-					}
-					printTree(c.ProgID, indent+"  ")
+					printProgs(c.ProgID, indent+"  ")
 				}
 			}
-			printTree(info.ProgID, "  ")
+			printProgs(info.ProgID, "  ")
 		}
 		if asJSON {
 			return emitJSON(jsonOut)

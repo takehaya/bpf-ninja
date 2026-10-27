@@ -5,7 +5,9 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/cilium/ebpf"
@@ -38,13 +40,14 @@ type mapUseJSON struct {
 
 // loadCall is one entry of a lookups file's calls list.
 type loadCall struct {
-	Kind   string `json:"kind"`
-	PC     uint32 `json:"pc"`
-	Map    string `json:"map"`
-	Func   string `json:"func"`
-	File   string `json:"file"`
-	Line   uint32 `json:"line"`
-	Reason string `json:"reason"`
+	Kind    string `json:"kind"`
+	PC      uint32 `json:"pc"`
+	Map     string `json:"map"`
+	Func    string `json:"func"`
+	File    string `json:"file"`
+	Line    uint32 `json:"line"`
+	Reason  string `json:"reason"`
+	Generic bool   `json:"generic"`
 }
 
 // readLoadCalls reads the calls of every program in a file inject-run
@@ -182,34 +185,170 @@ func mapsToJSON(n nodeMaps) []funcMapsJSON {
 	return out
 }
 
-// printMaps prints the functions of a program with their calls and map uses
-// (text mode).
-func printMaps(n nodeMaps, indent string) {
-	maps := n.maps
-	if maps.Note != "" {
-		fmt.Fprintf(os.Stderr, "%s(%s)\n", indent, maps.Note)
-	}
-	for i, fn := range maps.Funcs {
-		fmt.Fprintf(os.Stderr, "%s%s\n", indent, fn.Name)
-		if len(fn.Calls) > 0 {
-			fmt.Fprintf(os.Stderr, "%s  calls %s\n", indent, strings.Join(fn.Calls, ", "))
+// treeNode is one line of the --list-maps text tree and the lines under it.
+type treeNode struct {
+	text string
+	kids []treeNode
+}
+
+// printTree prints n and, with box-drawing branches, everything under it.
+func printTree(w io.Writer, n treeNode) {
+	_, _ = fmt.Fprintln(w, n.text)
+	printKids(w, n.kids, "")
+}
+
+func printKids(w io.Writer, kids []treeNode, prefix string) {
+	for i, k := range kids {
+		branch, next := "├─ ", "│  "
+		if i == len(kids)-1 {
+			branch, next = "└─ ", "   "
 		}
-		if len(fn.Callbacks) > 0 {
-			fmt.Fprintf(os.Stderr, "%s  callbacks %s\n", indent, strings.Join(fn.Callbacks, ", "))
-		}
-		for j, u := range fn.Maps {
-			fmt.Fprintf(os.Stderr, "%s  %s%s\n", indent, u, siteText(n.site(i, j)))
-		}
+		_, _ = fmt.Fprintf(w, "%s%s%s\n", prefix, branch, k.text)
+		printKids(w, k.kids, prefix+next)
 	}
 }
 
-// siteText renders a matched load-time call for text listings.
-func siteText(c *loadCall) string {
+// progTree builds the tree of program id: its functions with their map
+// uses, then the programs it reaches. edge says how the parent reaches it.
+func (l *mapsLister) progTree(id uint32, name, edge string, prog *ebpf.Program, byParent map[uint32][]attach.ReachableProgram) treeNode {
+	return progNode(id, name, edge, l.list(id, prog), byParent[id], func(c attach.ReachableProgram, edge string) treeNode {
+		return l.progTree(c.ProgID, c.ProgName, edge, nil, byParent)
+	})
+}
+
+// progNode builds the tree of one program from its map uses and reached
+// programs; child builds the subtree of each reached program.
+func progNode(id uint32, name, edge string, n nodeMaps, children []attach.ReachableProgram, child func(attach.ReachableProgram, string) treeNode) treeNode {
+	node := treeNode{text: fmt.Sprintf("prog %d  %s%s", id, name, edge)}
+	if n.maps.Note != "" {
+		node.kids = append(node.kids, treeNode{text: "(" + n.maps.Note + ")"})
+	}
+	// Columns line up within a program.
+	var width [4]int
+	mapNames := map[uint32]string{}
+	for _, fn := range n.maps.Funcs {
+		for _, u := range fn.Maps {
+			for c, v := range useColumns(u) {
+				width[c] = max(width[c], len(v))
+			}
+			mapNames[u.MapID] = u.MapName
+		}
+	}
+	for i, fn := range n.maps.Funcs {
+		f := treeNode{text: "func " + fn.Name}
+		var extra []string
+		if len(fn.Calls) > 0 {
+			extra = append(extra, "calls: "+strings.Join(fn.Calls, ", "))
+		}
+		if len(fn.Callbacks) > 0 {
+			extra = append(extra, "callbacks: "+strings.Join(fn.Callbacks, ", "))
+		}
+		if len(extra) > 0 {
+			f.text += "  (" + strings.Join(extra, "; ") + ")"
+		}
+		for j, u := range fn.Maps {
+			cols := useColumns(u)
+			text := "map " + fmt.Sprintf("%-*s", width[0], cols[0])
+			for c, v := range cols[1:] {
+				text += fmt.Sprintf("  %-*s", width[c+1], v)
+			}
+			for _, part := range []string{n.status(i, j, u, children), useDetails(u, n.site(i, j))} {
+				if part != "" {
+					text += "  " + part
+				}
+			}
+			f.kids = append(f.kids, treeNode{text: strings.TrimRight(text, " ")})
+		}
+		node.kids = append(node.kids, f)
+	}
+	for _, c := range children {
+		node.kids = append(node.kids, child(c, edgeText(c, mapNames)))
+	}
+	return node
+}
+
+// useColumns are the aligned columns of a map use: name, type, op, place.
+func useColumns(u attach.MapUse) [4]string {
+	name := u.MapName
+	if name == "" {
+		name = fmt.Sprintf("id=%d", u.MapID)
+	}
+	typ := "unknown"
+	if u.MapType != ebpf.UnspecifiedMap {
+		typ = u.MapType.String()
+	}
+	place := ""
+	if u.Line != 0 {
+		place = fmt.Sprintf("%s:%d", filepath.Base(u.File), u.Line)
+	}
+	return [4]string{name, typ, u.Op, place}
+}
+
+// status says where a tail call or redirect goes and, with --lookups-json,
+// whether a lookup, update or delete can be instrumented.
+func (n nodeMaps) status(i, j int, u attach.MapUse, children []attach.ReachableProgram) string {
+	switch u.Op {
+	case attach.MapOpTailCall, attach.MapOpRedirect:
+		var targets []string
+		for _, c := range children {
+			if c.MapID == u.MapID {
+				targets = append(targets, fmt.Sprintf("prog %d", c.ProgID))
+			}
+		}
+		if len(targets) == 0 {
+			return ""
+		}
+		return "→ " + strings.Join(targets, ", ")
+	case attach.MapOpLookup, attach.MapOpUpdate, attach.MapOpDelete:
+	default:
+		return ""
+	}
+	if n.sites == nil {
+		return ""
+	}
+	c := n.site(i, j)
 	switch {
 	case c == nil:
-		return ""
-	case c.Reason != "":
-		return fmt.Sprintf(" site=%d [%s]", c.PC, c.Reason)
+		return "? not in the lookups file"
+	case u.Op != attach.MapOpLookup:
+		return "- no hook yet"
+	case c.Reason == "":
+		return "✓ injectable"
+	case c.Generic:
+		return "✓ injectable (generic hook)"
 	}
-	return fmt.Sprintf(" site=%d", c.PC)
+	// "lookup is not in the entry function; ctx belongs to ..." reads
+	// "not in the entry function".
+	reason, _, _ := strings.Cut(c.Reason, ";")
+	return "✗ " + strings.TrimPrefix(reason, u.Op+" is ")
+}
+
+// useDetails is the parenthesized tail of a map use line.
+func useDetails(u attach.MapUse, c *loadCall) string {
+	var parts []string
+	if u.Inlined {
+		parts = append(parts, "inlined")
+	}
+	if c != nil {
+		parts = append(parts, fmt.Sprintf("pc %d", c.PC))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "(" + strings.Join(parts, ", ") + ")"
+}
+
+// edgeText says how a reachable program is entered, after its name.
+func edgeText(c attach.ReachableProgram, mapNames map[uint32]string) string {
+	name := mapNames[c.MapID]
+	if name == "" {
+		name = fmt.Sprintf("map id=%d", c.MapID)
+	}
+	switch c.Via {
+	case "tailcall":
+		return fmt.Sprintf("  (tail call: %s[%s])", name, formatKeyRanges(c.Keys))
+	case "freplace":
+		return "  (freplace)"
+	}
+	return fmt.Sprintf("  (%s redirect: %s[%s])", c.Via, name, formatKeyRanges(c.Keys))
 }

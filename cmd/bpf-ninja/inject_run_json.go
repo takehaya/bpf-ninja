@@ -58,6 +58,9 @@ type hookSiteJSON struct {
 	File   string `json:"file,omitempty"`
 	Line   uint32 `json:"line,omitempty"`
 	Reason string `json:"reason,omitempty"`
+	// Generic is set only in the lookups file: auto instruments the lookup
+	// through the generic hook despite Reason.
+	Generic bool `json:"generic,omitempty"`
 }
 
 func siteJSON(kind inject.HookKind, site inject.LookupSite) hookSiteJSON {

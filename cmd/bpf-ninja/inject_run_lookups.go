@@ -64,7 +64,7 @@ func discoveryJSON(d syscallhook.Discovery) discoveredProgJSON {
 		return i
 	}
 	for _, site := range d.Lookups {
-		out.Lookups = append(out.Lookups, siteJSON(inject.HookLookup, site))
+		out.Lookups = append(out.Lookups, discoveredSiteJSON(site))
 		if site.MapName == "" {
 			continue
 		}
@@ -86,7 +86,7 @@ func discoveryJSON(d syscallhook.Discovery) discoveredProgJSON {
 		addMap(name)
 	}
 	for _, site := range d.Calls {
-		out.Calls = append(out.Calls, siteJSON(site.Op, site))
+		out.Calls = append(out.Calls, discoveredSiteJSON(site))
 		if i, ok := index[site.MapName]; ok && !slices.Contains(out.Maps[i].Ops, string(site.Op)) {
 			out.Maps[i].Ops = append(out.Maps[i].Ops, string(site.Op))
 		}
@@ -95,6 +95,12 @@ func discoveryJSON(d syscallhook.Discovery) discoveredProgJSON {
 	out.Rule.Auto = true
 	out.Rule.Hook = lookupsRuleHook
 	return out
+}
+
+func discoveredSiteJSON(site inject.LookupSite) hookSiteJSON {
+	s := siteJSON(site.Op, site)
+	s.Generic = site.Generic
+	return s
 }
 
 // lookupsWriter rewrites path with every discovered load so far.

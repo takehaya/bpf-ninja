@@ -3,9 +3,7 @@ package attach
 import (
 	"bufio"
 	"errors"
-	"fmt"
 	"os"
-	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -262,25 +260,4 @@ func helperOp(sym string) string {
 		return MapOpRedirect
 	}
 	return strings.TrimPrefix(sym, "bpf_")
-}
-
-// String renders a use as "name (type) op file:line" for text listings.
-func (u MapUse) String() string {
-	name := u.MapName
-	if name == "" {
-		name = fmt.Sprintf("map id=%d", u.MapID)
-	}
-	op := u.Op
-	if u.Inlined {
-		op += " (inlined)"
-	}
-	typ := "unknown"
-	if u.MapType != ebpf.UnspecifiedMap {
-		typ = u.MapType.String()
-	}
-	s := fmt.Sprintf("%s (%s) %s", name, typ, op)
-	if u.Line != 0 {
-		s += fmt.Sprintf(" %s:%d", filepath.Base(u.File), u.Line)
-	}
-	return s
 }

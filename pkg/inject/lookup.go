@@ -29,6 +29,9 @@ type LookupSite struct {
 	SitePC           uint32 // raw BPF slot index; LDIMM64 occupies two slots
 	InstructionIndex int    // index in the decoded instruction slice
 	Reason           string
+	// Generic marks a lookup with a Reason that Auto still instruments,
+	// through the generic hook (see LookupHook.Generic).
+	Generic bool
 }
 
 // LookupSelector identifies lookups of one map. FuncName and Line optionally
@@ -414,6 +417,7 @@ func discoverMapCalls(insns asm.Instructions, typ ebpf.ProgramType, resolve look
 			if op != HookLookup {
 				generic = false
 			}
+			site.Generic = generic || typedOnly
 			sites = append(sites, discoveredLookup{site, mapID, m, generic, typedOnly})
 		}
 		// Track direct R1 definitions only; calls also clobber R1. Atomic
