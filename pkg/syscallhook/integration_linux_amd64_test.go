@@ -80,8 +80,18 @@ func TestIntegrationLoader(t *testing.T) {
 			if tc.expected == "hook-rdonly" && !strings.Contains(logs.String(), ", static") {
 				t.Fatal("no static hook reported")
 			}
-			if strings.HasPrefix(tc.name, "bad-audit") && !strings.Contains(logs.String(), "transformed PROG_LOAD") {
-				t.Fatal("no verifier rejection of the transformed program reported")
+			if strings.HasPrefix(tc.name, "bad-audit") {
+				if !strings.Contains(logs.String(), "transformed PROG_LOAD") {
+					t.Fatal("no verifier rejection of the transformed program reported")
+				}
+				// The rejection names the attempted hooks; the hook is typed,
+				// so no arg:untrusted hint follows.
+				if !strings.Contains(logs.String(), `attempted hook "`) {
+					t.Fatal("rejection does not name the attempted hooks")
+				}
+				if strings.Contains(logs.String(), "arg:untrusted") {
+					t.Fatal("arg:untrusted hint for a typed hook")
+				}
 			}
 		})
 	}
