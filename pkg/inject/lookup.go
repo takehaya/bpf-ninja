@@ -201,9 +201,9 @@ func DiscoverLookups(elf []byte, programName string) ([]LookupSite, error) {
 // TransformLookup instruments the program req describes and returns an
 // independent clone. A selected lookup calls
 // int HOOK(CTX *ctx, const KEY *key, const VALUE *value) for non-null results,
-// where CTX is the program's context type (struct xdp_md for XDP, the only
-// type supported here); see LookupRequest for the Auto, Entry, TailCalls and
-// Dispatch hooks. This never loads or attaches BPF.
+// where CTX is the program's context type: struct xdp_md for XDP, struct
+// __sk_buff for tc (SchedCLS or SchedACT). See LookupRequest for the Auto,
+// Entry, TailCalls and Dispatch hooks. This never loads or attaches BPF.
 func TransformLookup(elf []byte, req LookupRequest) (*LookupResult, error) {
 	// Reuse the existing hash/name/stack validation, without its load contract.
 	if err := validateRequest(Request{ELFSHA256: req.ELFSHA256, ProgramName: req.ProgramName,
