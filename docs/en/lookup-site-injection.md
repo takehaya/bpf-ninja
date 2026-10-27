@@ -63,7 +63,7 @@ When that name is empty, invalid, or already used by another hook in the request
 Hooks are numbered in the order their maps first appear in the program.
 `LookupResult.Hooks` lists each hook with its map name and sites.
 Sites that discovery lists with a `Reason` that the generic hook cannot take either are not instrumented; they are reported in `LookupResult.Skipped` rather than refusing the transform.
-So are the sites of a hook whose name would pass 127 bytes, of a hook whose slots would pass the frame limit below, and, when the instrumented program would break a call-chain stack limit (see [Entry and tail-call hooks](#entry-and-tail-call-hooks)), first the sites of the generic hook and of copied read-only maps, then every lookup site, keeping the entry and tail-call hooks; each such site's `Reason` names the limit.
+So are the sites of a hook whose name would pass 127 bytes, of a hook whose slots would pass the frame limit below, and, when the instrumented program would break a call-chain stack limit (see [Entry and tail-call hooks](#entry-and-tail-call-hooks)), first the sites of the generic hook and of copied read-only maps, then every lookup site, keeping the entry and tail-call hooks (with `Dispatch` every lookup site fills the map slot, so the first step already drops them all); each such site's `Reason` names the limit.
 If nothing at all is instrumented, and neither `Entry` nor `TailCalls` is requested, the transform is refused.
 Every hook name passes the same collision checks as a single `HookName`.
 
@@ -141,6 +141,7 @@ The tail-call index is the full register the program passed; the helper used its
 `Kind`, `MapName` and `Sites`, whose key and value type names come from BTF, map each `site` the observer sees to its kind and types.
 No suffix is appended to `HookName`.
 Every lookup and tail-call site uses the fourth spill slot in a frame that also calls the hook, so the stack bound must be at least `-448` (`LookupStackReserve` reports 32 bytes; see [Supported sites and trust boundary](#supported-sites-and-trust-boundary)), and a tail call in the entry function deepens that frame to the slot, which the call-chain check above counts; the entry call alone uses only the ctx slot.
+Under `Auto`, a dispatch request whose lookups break a call-chain limit loses all of its lookup sites at once and keeps the entry and tail-call calls, as in [Automatic selection](#automatic-selection); a tail call still fills the map slot in its own frame, so a request whose tail calls alone break the limit is refused.
 `Dispatch` refuses `CopyReadOnly`, since it passes no typed value.
 
 ```go
@@ -245,7 +246,7 @@ The package checks the XDP program type; the cooperative loader owns attachment 
 | The input ELF matches `ELFSHA256` before parsing. | The hash identifies the audited build. |
 | The selector resolves supported lookups of the same map in the entry function. | These are the intended observation sites. |
 | Map BTF sizes, where present, match the map definition, and entry BTF describes an XDP context pointer. | The BTF describes the audited build. |
-| Direct R10 references stay at or above `Stack.LowestOffset`; three aligned spill slots (four with the generic hook, plus a value copy with `CopyReadOnly`) fit below it within 512 bytes, and within 480 in a frame that calls a lookup hook. The call chains of the transformed program stay within the verifier's stack and frame limits wherever the original's do. | Pointer aliases and called subprograms do not reach the reserved spill region. |
+| Direct R10 references stay at or above `Stack.LowestOffset`; three aligned spill slots (four with the generic hook or, at lookup and tail-call sites, `Dispatch`, plus a value copy with `CopyReadOnly`) fit below it within 512 bytes, and within 480 in a frame that calls a lookup hook. The call chains of the transformed program stay within the verifier's stack and frame limits wherever the original's do. | Pointer aliases and called subprograms do not reach the reserved spill region. |
 | Existing function and source metadata are complete, references resolve, and relocation fits. | The transformed program remains acceptable to the target kernel verifier. |
 
 The stack audit has the same alias and callee limitations as `StackAudit` in the original transform.
@@ -364,9 +365,9 @@ In general it is the sum of:
 - with `Entry`, 2 slots in the prologue and a 3-slot hook;
 - with `TailCalls`, 6 slots per tail call (7 outside the entry function) and a 3-slot hook.
 
+With `Dispatch`, it is 1, plus 11 slots per lookup site, 6 in the prologue with `Entry`, 9 per tail call (10 outside the entry function), and the one 6-slot hook (2 slots when static).
 The hooks are placed together right after the entry function.
-`TestLookupInsertedSlots` pins these counts.
-With `Dispatch`, it is `1 + 11*len(Sites)`, plus 6 for `Entry`, 9 per tail call (10 outside the entry function), and the one 6-slot hook (2 slots when static).
+`TestLookupInsertedSlots` pins these counts, the dispatch ones included.
 `SourceChecksum` and `TransformedChecksum` cover the raw instruction encoding, with symbolic calls and callback loads unresolved.
 They exclude BTF, source lines, CO-RE metadata, and symbolic/map references; they do not identify the fully loaded kernel artifact.
 The ELF SHA-256 binds the full input.
@@ -400,7 +401,7 @@ A direct run of the target fires both.
 `TestBpfStackLimitsAcrossCalls` does the same for a chain through a `bpf_loop` callback into a static or global tail-calling subprogram, for the 512-byte combined stack (a tail-calling entry that calls a 248-byte subprogram, and a lookup site's frame plus its hook, with and without `Dispatch`), and for the 8-frame limit (a hook called from the 8th frame), and for a callee that reaches 256 bytes only through a copy of R10.
 `TestBpfStackLimitsOverestimatedOriginal` loads a program whose callee has a store the verifier never reaches, so its instructions add up past 512 bytes while the kernel counts 512, and checks the transform refuses the `Entry` spill that really pushes the chain past the limit.
 `TestBpfStackLimitsReserve` transforms and loads an `Entry`-only request at `-472` and `TailCalls` requests at `-464`, and the same with a static `Dispatch` hook, whose tail calls need `-448`.
-`TestBpfStackLimitsAutoRetry` loads what `Auto` keeps when the lookup slots alone would push a tail-calling subprogram's callers to 256 bytes: the tail-call hook without the lookup at `-208`, and the typed hook without the copied read-only map's at `-200`.
+`TestBpfStackLimitsAutoRetry` loads what `Auto` keeps when the lookup slots alone would push a tail-calling subprogram's callers to 256 bytes: the tail-call hook without the lookup at `-208`, also as a static `Dispatch` hook, and the typed hook without the copied read-only map's at `-200`.
 `TestBpfEntryHookWithLookup` combines `Entry` with a lookup hook in one program and observes both.
 `TestBpfDispatch[Static]` attaches one observer to the dispatch hook and checks the entry, lookup and failed tail-call calls in order, with the map id and value bytes each passes; `TestBpfDispatchStackLimit` checks the transform refuses a dispatch tail call in the entry function one slot past the caller-depth limit and loads one slot under it.
 `TestBpfLookupInjectionCallback` checks symbolic and numeric callback loads with an unreached subprogram preceding the `bpf_loop` callback and a stack counter incremented three times by `bpf_loop`; the program returns `XDP_ABORTED` unless those increments occur.
