@@ -181,8 +181,8 @@ This API performs no syscalls, BTF/program loads, interception, attachment or pi
 
 ## Supported sites and trust boundary
 
-One transform call instruments the selected sites in the program's entry function with the same hook.
-It saves ctx once, shares three spill slots across the sites, and inserts one hook function immediately after the entry function.
+One transform call instruments the selected sites in the program's entry function with their hooks.
+It saves ctx once, shares three spill slots across the sites, and inserts the generated hooks immediately after the entry function.
 The sites execute sequentially, including on different paths or repeated loop iterations; they do not require nested spill storage.
 Discovery includes called subprograms and callbacks, but injection there is refused because their R10 refers to a different stack frame from the saved entry context.
 The API does not compose transformations on an already transformed spec.
@@ -327,8 +327,17 @@ Its existing `Site` field is the first element of `Sites`, and `Result.HookName`
 `InsertedAt` is zero because the first insertion saves ctx at entry.
 `InsertedSlots` is `8 + 8*len(Sites)`: one entry spill, eight instructions per site, and seven hook instructions.
 One site adds 16 slots (128 bytes); two sites add 24 slots (192 bytes).
-With `Auto`, it is `1 + 9*len(Sites) + 7*(number of lookup hooks)`, with 5 instead of 7 for an `Untrusted` hook and 2 for a `Static` one, plus 11 slots per generic-hook site and a 6-slot generic hook (2 slots when static); the hooks are placed together right after the entry function.
-On top of that, `Entry` adds 5 slots (2 in the prologue and a 3-slot hook), and `TailCalls` adds 6 slots per tail call (7 outside the entry function) plus a 3-slot hook.
+In general it is the sum of:
+
+- 1 for the entry ctx spill;
+- per site, 8 slots for a selected site, 9 for a typed-hook site under `Auto` (the `site` argument), or 11 for a generic-hook site;
+- per site with a `CopyReadOnly` value copy, 2 slots per load-store pair (widest aligned first, so 4 for a 16-byte value) and 2 for the copy's address;
+- per lookup hook, 7 slots for a typed hook, 5 for an `Untrusted` one, 6 for the generic hook, and 2 for a `Static` one;
+- with `Entry`, 2 slots in the prologue and a 3-slot hook;
+- with `TailCalls`, 6 slots per tail call (7 outside the entry function) and a 3-slot hook.
+
+The hooks are placed together right after the entry function.
+`TestLookupInsertedSlots` pins these counts.
 `SourceChecksum` and `TransformedChecksum` cover the raw instruction encoding, with symbolic calls and callback loads unresolved.
 They exclude BTF, source lines, CO-RE metadata, and symbolic/map references; they do not identify the fully loaded kernel artifact.
 The ELF SHA-256 binds the full input.

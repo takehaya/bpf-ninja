@@ -205,3 +205,54 @@ func TestLookupELFGates(t *testing.T) {
 		t.Fatalf("discovery parse error: %v", err)
 	}
 }
+
+// InsertedSlots, measured through the raw API: 1 for the entry ctx spill; per
+// site 8 (9 with Auto's site argument, 11 at a generic-hook site), plus 2 per
+// load-store chunk and 2 for the pointer with a CopyReadOnly value copy; per
+// hook 7 typed, 5 untrusted, 6 generic, 2 static; Entry 2 in the prologue and
+// a 3-slot hook; TailCalls 6 per tail call (7 outside the entry function) and
+// a 3-slot hook. docs/en/lookup-site-injection.md states the same formula.
+func TestLookupInsertedSlots(t *testing.T) {
+	auto := func(edit func(*LookupRequest)) LookupRequest {
+		req := autoReq()
+		edit(&req)
+		return req
+	}
+	tails := LookupRequest{TailCalls: true, HookName: "obs"}
+	for _, tc := range []struct {
+		name string
+		spec func() *ebpf.CollectionSpec
+		req  LookupRequest
+		want int
+	}{
+		{"single", lookupFixture, lookupReq(), 1 + 8 + 7},
+		{"entry", lookupFixture, func() LookupRequest { r := lookupReq(); r.Entry = true; return r }(), 1 + 8 + 7 + 2 + 3},
+		{"auto", multiMapFixture, autoReq(), 1 + 2*9 + 2*7},
+		{"untrusted", func() *ebpf.CollectionSpec { return multiMapFixtureFlags(bpfFRdonlyProg) }, autoReq(), 1 + 2*9 + 7 + 5},
+		{"copy", func() *ebpf.CollectionSpec { return multiMapFixtureFlags(bpfFRdonlyProg) },
+			auto(func(r *LookupRequest) { r.CopyReadOnly = true }), 1 + 2*9 + 2*2 + 2 + 2*7},
+		{"static", func() *ebpf.CollectionSpec { return multiMapFixtureFlags(bpfFRdonlyProg) },
+			auto(func(r *LookupRequest) { r.StaticUntrusted = true }), 1 + 2*9 + 7 + 2},
+		{"generic", mapInMapFixture, autoReq(), 1 + 2*11 + 6},
+		{"generic-static", mapInMapFixture, auto(func(r *LookupRequest) { r.StaticUntrusted = true }), 1 + 2*11 + 2},
+		{"tail-call", tailCallerFixture, tails, 1 + 6 + 3},
+		{"entry-tail-call", tailCallerFixture, LookupRequest{Entry: true, TailCalls: true, HookName: "obs"}, 1 + 2 + 3 + 6 + 3},
+		{"tail-call-sub", subTailCallerFixture, tails, 1 + 7 + 3},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			name := "p"
+			if tc.spec().Programs[name] == nil {
+				name = "caller"
+			}
+			got, err := TransformLookupRaw(rawLookupFixture(t, tc.spec(), name, true), LookupRequestRaw{Site: tc.req.Site, Auto: tc.req.Auto,
+				Entry: tc.req.Entry, TailCalls: tc.req.TailCalls, CopyReadOnly: tc.req.CopyReadOnly, StaticUntrusted: tc.req.StaticUntrusted,
+				HookName: tc.req.HookName, Stack: tc.req.Stack})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.InsertedSlots != tc.want {
+				t.Fatalf("InsertedSlots %d, want %d", got.InsertedSlots, tc.want)
+			}
+		})
+	}
+}

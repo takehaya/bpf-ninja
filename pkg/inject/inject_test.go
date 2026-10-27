@@ -658,6 +658,41 @@ func TestTransformNoMutationOnRefusal(t *testing.T) {
 	}
 }
 
+// The single-site Transform puts its two slots in the site's frame, which
+// calls the hook: with the hook's 32-byte frame, -464 fits the kernel's
+// 512-byte combined limit and -472 does not, and the refusal leaves work as
+// it was.
+func TestTransformStackLimit(t *testing.T) {
+	for _, tc := range []struct {
+		bound  int16
+		refuse bool
+	}{{-464, false}, {-472, true}} {
+		work := goSpec()
+		before := append(asm.Instructions(nil), work.Programs["p"].Instructions...)
+		req := shapeReq(0)
+		req.Stack.LowestOffset = tc.bound
+		err := transform(work, req)
+		if !tc.refuse {
+			if err != nil {
+				t.Fatalf("bound %d: %v", tc.bound, err)
+			}
+			continue
+		}
+		if !errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), "512-byte combined limit") {
+			t.Fatalf("bound %d: want the combined-limit refusal, got %v", tc.bound, err)
+		}
+		got := work.Programs["p"].Instructions
+		if len(got) != len(before) {
+			t.Fatalf("bound %d: refusal changed the instruction count", tc.bound)
+		}
+		for i := range before {
+			if !sameInstr(got[i], before[i]) || got[i].Metadata != before[i].Metadata {
+				t.Fatalf("bound %d: instruction %d mutated on refusal", tc.bound, i)
+			}
+		}
+	}
+}
+
 func TestChecksumStableAndDistinct(t *testing.T) {
 	a := asm.Instructions{siteLoad(), asm.Return()}
 	c1, err := checksum(a, binary.LittleEndian)

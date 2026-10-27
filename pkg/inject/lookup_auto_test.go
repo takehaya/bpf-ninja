@@ -978,6 +978,34 @@ func TestLookupAutoSkipsOverflowingGeneric(t *testing.T) {
 	}
 }
 
+// Auto without Entry or TailCalls refuses when every lookup it found is
+// dropped for its slots, rather than report success with nothing
+// instrumented; the refusal leaves the input unchanged. mapInMapFixture's two
+// lookups both go to the generic hook, whose map slot (-488) is past the
+// 480-byte site frame at -456. ELF and both raw forms.
+func TestLookupAutoNothingFits(t *testing.T) {
+	req := autoReq()
+	req.Stack.LowestOffset = -456
+	check := func(form string, err error) {
+		t.Helper()
+		if !errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), "no lookup site fits the audited stack (2 skipped)") {
+			t.Fatalf("%s: want refusal, got %v", form, err)
+		}
+	}
+	work := mapInMapFixture()
+	before := append(asm.Instructions(nil), work.Programs["p"].Instructions...)
+	_, err := transformLookup(work, req)
+	check("elf", err)
+	if !reflect.DeepEqual(before, work.Programs["p"].Instructions) {
+		t.Fatal("refusal mutated input")
+	}
+	for _, numeric := range []bool{false, true} {
+		p := rawLookupFixture(t, mapInMapFixture(), "p", numeric)
+		_, err := TransformLookupRaw(p, rawLookupRequest(req))
+		check(map[bool]string{false: "raw-symbolic", true: "raw-numeric"}[numeric], err)
+	}
+}
+
 // Auto skips a group whose hook name cannot be formed within MaxHookName and
 // keeps the others; it refuses only when no group is left.
 func TestAutoHookNameLength(t *testing.T) {
