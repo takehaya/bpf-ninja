@@ -42,6 +42,11 @@ type LookupSelector struct {
 	AllMatches bool
 }
 
+// empty reports whether s sets no field, so it selects no lookup.
+func (s LookupSelector) empty() bool {
+	return s.MapName == "" && s.FuncName == "" && s.Line == 0 && len(s.SitePCs) == 0 && !s.AllMatches
+}
+
 // LookupRequest describes one hash-bound lookup transformation. Lookups are
 // instrumented only in the entry function: a subprogram has its own frame and
 // cannot reach the entry frame's ctx spill (TailCalls does reach subprograms,
@@ -350,17 +355,33 @@ const (
 	bpfFWronlyProg = 1 << 8
 )
 
-// lookupSlots returns the spill-slot offsets the transform reserves below the
-// 8-byte-aligned floor of the audited mark: ctx, key and spillR0 (the three
-// base slots) and mapSlot (the fourth, for a hook that takes the map pointer).
-// A CopyReadOnly value copy goes below mapSlot. The arithmetic matches
-// spillSlots and spliceLookupCalls, so the three never drift.
-func lookupSlots(lowest int16) (ctx, key, spillR0, mapSlot int) {
+// lookupLayout is where the transform's slots sit below the 8-byte-aligned
+// floor of the audited mark: ctx, key and result (the three base slots), and
+// mapSlot (the fourth, for a hook that takes the map pointer). A CopyReadOnly
+// value copy goes below mapSlot, at copyAt. spliceLookupCalls places the slots
+// by this layout, and CheckLookupStack and groupStackReach measure it.
+type lookupLayout struct {
+	ctx, key, result, mapSlot int
+}
+
+func lookupSlots(lowest int16) lookupLayout {
 	floor := int(lowest)
 	if m := floor % 8; m != 0 {
 		floor -= 8 + m
 	}
-	return floor - 8, floor - 16, floor - 24, floor - 32
+	return lookupLayout{ctx: floor - 8, key: floor - 16, result: floor - 24, mapSlot: floor - 32}
+}
+
+// copyAt is where a size-byte value copy starts, in 8-byte units below mapSlot.
+func (l lookupLayout) copyAt(size uint32) int {
+	return l.mapSlot - int((size+7)/8*8)
+}
+
+// copiesValue reports whether a typed hook on m gets a stack copy of the value
+// instead of a pointer into the map: m is BPF_F_RDONLY_PROG and req asks for
+// CopyReadOnly.
+func copiesValue(m *RawMap, req LookupRequest) bool {
+	return req.CopyReadOnly && m.Flags&bpfFRdonlyProg != 0 && m.Flags&bpfFWronlyProg == 0
 }
 
 // LookupStackReserve reports the bytes the transform reserves strictly below
@@ -371,15 +392,16 @@ func lookupSlots(lowest int16) (ctx, key, spillR0, mapSlot int) {
 // program-dependent and enforced during the transform (Auto skips the site,
 // explicit selection refuses), not here.
 func LookupStackReserve(req LookupRequest) int {
-	s := req.Site
 	switch {
-	case req.Auto || s.MapName != "" || s.FuncName != "" || s.Line != 0 || len(s.SitePCs) != 0 || s.AllMatches:
+	case req.Auto || !req.Site.empty():
 		return 24
 	case req.TailCalls:
 		return 16
 	case req.Entry:
 		return 8
 	}
+	// Nothing is selected: the transform refuses ("lookup MapName is
+	// required"), so reserve as for a lookup.
 	return 24
 }
 
@@ -395,9 +417,9 @@ func CheckLookupStack(req LookupRequest) error {
 	// Every reserved slot is in a frame that calls a hook (the entry hook, a
 	// tail-call or a lookup hook), so the slots must stay within
 	// siteFrameLimit, not the full 512 bytes.
-	ctx, _, _, _ := lookupSlots(req.Stack.LowestOffset)
-	if reserve := LookupStackReserve(req); ctx+8-reserve < -siteFrameLimit {
-		return refuse("stack_lowest_offset %d leaves no room for %d reserved bytes below the audited floor", lo, reserve)
+	floor := lookupSlots(req.Stack.LowestOffset).ctx + 8
+	if reserve := LookupStackReserve(req); floor-reserve < -siteFrameLimit {
+		return refuse("Stack.LowestOffset %d leaves no room for %d reserved bytes below the audited floor", lo, reserve)
 	}
 	return nil
 }
@@ -409,20 +431,18 @@ func CheckLookupStack(req LookupRequest) error {
 const siteFrameLimit = maxCombinedStack - 32
 
 // groupStackReach returns the most-negative stack offset instrumenting group
-// needs below the audited floor and, if that is past siteFrameLimit, the
-// reason. A generic hook needs the map slot; a CopyReadOnly value copy goes
-// below it; a plain typed hook uses only the three base slots.
-func groupStackReach(group lookupGroup, req LookupRequest) (int, string) {
-	_, _, spillR0, mapSlot := lookupSlots(req.Stack.LowestOffset)
+// needs. A generic hook needs the map slot; a CopyReadOnly value copy goes
+// below it; a plain typed hook uses only the three base slots, which
+// CheckLookupStack already keeps within siteFrameLimit.
+func groupStackReach(group lookupGroup, req LookupRequest) int {
+	slots := lookupSlots(req.Stack.LowestOffset)
 	if group.generic {
-		return mapSlot, fmt.Sprintf("runtime-map hook needs the 4th spill slot; stack_lowest_offset %d too low", req.Stack.LowestOffset)
+		return slots.mapSlot
 	}
-	m := group.sites[0].mapInfo
-	if m.Flags&(bpfFRdonlyProg|bpfFWronlyProg) != 0 && req.CopyReadOnly && m.Flags&bpfFWronlyProg == 0 {
-		copyAt := mapSlot - int((m.ValueSize+7)/8*8)
-		return copyAt, fmt.Sprintf("read-only value copy needs %d bytes below the spill slots; stack_lowest_offset %d too low", m.ValueSize, req.Stack.LowestOffset)
+	if m := group.sites[0].mapInfo; copiesValue(m, req) {
+		return slots.copyAt(m.ValueSize)
 	}
-	return spillR0, fmt.Sprintf("lookup spill slots need 24 bytes below the audited floor; stack_lowest_offset %d too low", req.Stack.LowestOffset)
+	return slots.result
 }
 
 // checkLookupMap returns why a typed hook cannot take m's key and value, or
@@ -543,7 +563,7 @@ type lookupGroup struct {
 // reserved, the entry and tail-call hook names.
 func selectLookups(sites []discoveredLookup, req LookupRequest, reserved []string) ([]lookupGroup, []LookupSite, error) {
 	if req.Auto {
-		if req.Site.MapName != "" || req.Site.FuncName != "" || req.Site.Line != 0 || len(req.Site.SitePCs) != 0 || req.Site.AllMatches {
+		if !req.Site.empty() {
 			return nil, nil, refuse("Auto selects every supported lookup; Site must be empty")
 		}
 		var groups []lookupGroup
@@ -591,7 +611,7 @@ func selectLookups(sites []discoveredLookup, req LookupRequest, reserved []strin
 		return groups, skipped, nil
 	}
 	if req.Site.MapName == "" {
-		if (req.Entry || req.TailCalls) && req.Site.FuncName == "" && req.Site.Line == 0 && len(req.Site.SitePCs) == 0 && !req.Site.AllMatches {
+		if (req.Entry || req.TailCalls) && req.Site.empty() {
 			return nil, nil, nil
 		}
 		return nil, nil, refuse("lookup MapName is required")
@@ -678,15 +698,20 @@ func transformLookupProgram(insns asm.Instructions, typ ebpf.ProgramType, types 
 	if err := CheckLookupStack(req); err != nil {
 		return nil, plan, err
 	}
-	// Drop groups whose spill slots reach past siteFrameLimit. Auto skips the
+	// Drop groups whose slots reach past siteFrameLimit. Auto skips the
 	// sites and lists them; explicit selection refuses, since the user named
 	// them. Dropping the one generic group means no hook takes the map pointer.
 	var kept []lookupGroup
 	for _, group := range groups {
-		deepest, reason := groupStackReach(group, req)
-		if deepest >= -siteFrameLimit {
+		if groupStackReach(group, req) >= -siteFrameLimit {
 			kept = append(kept, group)
 			continue
+		}
+		// Only the map slot or a value copy can reach this far (groupStackReach).
+		reason := fmt.Sprintf("runtime-map hook needs the 4th spill slot; Stack.LowestOffset %d too low", req.Stack.LowestOffset)
+		if !group.generic {
+			reason = fmt.Sprintf("read-only value copy needs %d bytes below the spill slots; Stack.LowestOffset %d too low",
+				group.sites[0].mapInfo.ValueSize, req.Stack.LowestOffset)
 		}
 		if !req.Auto {
 			return nil, plan, refuse("%s", reason)
@@ -781,7 +806,7 @@ func transformLookupProgram(insns asm.Instructions, typ ebpf.ProgramType, types 
 		// writes, so either restriction needs untrusted arguments, unless a
 		// readable value is copied to the stack, or the hook is static.
 		restricted := m.Flags&(bpfFRdonlyProg|bpfFWronlyProg) != 0
-		copied := restricted && req.CopyReadOnly && m.Flags&bpfFWronlyProg == 0
+		copied := copiesValue(m, req)
 		static := restricted && !copied && req.StaticUntrusted
 		untrusted := restricted && !copied && !static
 		var copySize uint32
@@ -840,7 +865,16 @@ type siteCall struct {
 	copySize uint32
 }
 
+// spliceLookup splices one plain typed hook's calls, the narrow entry point
+// the splicing tests drive. Without CheckLookupStack in front of it, it checks
+// that the three base slots stay within the 512-byte stack itself.
 func spliceLookup(input asm.Instructions, sitePCs []uint32, req LookupRequest) (asm.Instructions, error) {
+	if req.Stack.LowestOffset < -512 || req.Stack.LowestOffset > 0 {
+		return nil, refuse("StackAudit.LowestOffset must be in [-512, 0]")
+	}
+	if lookupSlots(req.Stack.LowestOffset).result < -512 {
+		return nil, refuse("three lookup spill slots exceed the 512-byte stack")
+	}
 	calls := make(map[uint32]siteCall, len(sitePCs))
 	for _, pc := range sitePCs {
 		calls[pc] = siteCall{hook: req.HookName}
@@ -850,32 +884,13 @@ func spliceLookup(input asm.Instructions, sitePCs []uint32, req LookupRequest) (
 
 // spliceLookupCalls instruments each helper in calls and places hook right
 // after the entry function. A non-empty entryHook is called with ctx right
-// after the entry ctx spill.
+// after the entry ctx spill. The caller has checked that every slot the
+// calls use lies within the stack (CheckLookupStack and groupStackReach, or
+// spliceLookup).
 func spliceLookupCalls(input asm.Instructions, calls map[uint32]siteCall, stack StackAudit, hook asm.Instructions, entryHook string) (asm.Instructions, error) {
-	if stack.LowestOffset < -512 || stack.LowestOffset > 0 {
-		return nil, refuse("StackAudit.LowestOffset must be in [-512, 0]")
-	}
-	ctx, key, err := spillSlots(stack.LowestOffset)
-	if err != nil {
-		return nil, err
-	}
-	result := int(key) - 8
-	if result < -512 {
-		return nil, refuse("three lookup spill slots exceed the 512-byte stack")
-	}
-	spillR0 := int16(result)
-	// A generic hook's map pointer takes a fourth slot.
-	mapSlot := int16(result - 8)
-	// A value copy goes below the map slot, in 8-byte units.
-	copyAt := func(call siteCall) int { return int(mapSlot) - int((call.copySize+7)/8*8) }
-	for _, call := range calls {
-		if call.withMap && result-8 < -512 {
-			return nil, refuse("four lookup spill slots exceed the 512-byte stack")
-		}
-		if call.copySize > 0 && copyAt(call) < -512 {
-			return nil, refuse("a %d-byte value copy below the spill slots exceeds the 512-byte stack", call.copySize)
-		}
-	}
+	slots := lookupSlots(stack.LowestOffset)
+	ctx, key, spillR0, mapSlot := int16(slots.ctx), int16(slots.key), int16(slots.result), int16(slots.mapSlot)
+	copyAt := func(call siteCall) int { return slots.copyAt(call.copySize) }
 	// Every site of every hook shares the slots: sites run one at a time.
 	// A tail-call site keeps its index (R3) in the key slot.
 	afterFor := func(pc uint32, call siteCall) asm.Instructions {

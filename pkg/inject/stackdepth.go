@@ -26,6 +26,9 @@ const (
 // summing: up to 32 bytes, and at least 32, for the interpreter and on every
 // 6.1 kernel; up to 16 bytes when newer kernels JIT the program
 // (round_up_stack_depth). A program must pass under whichever its kernel uses.
+// The 32-byte rounding is never smaller than the 16-byte one, and every limit
+// only grows with the rounded depths, so the "16" pass never reports a chain
+// the "32" pass accepted. It stays to document what JITing kernels count.
 type frameRounding struct {
 	name  string
 	round func(int) int
@@ -268,6 +271,12 @@ func stackLimitBroken(funcs []stackFunc, round func(int) int) (string, error) {
 // the chain that references it, although 6.8 and later check it as a chain of
 // its own; and 7.1 and later restart the frame count at a global function,
 // which the frame limit here does not.
+//
+// The split into changed and unchanged chains matters only where an original
+// chain can stay unchanged: in the single-site Transform, and for an
+// exception callback or other root no chain from the entry reaches. The
+// lookup transform always deepens the entry (its ctx spill lies below the
+// audited bound), so every chain from the entry counts as changed.
 func checkStackLimits(in, out asm.Instructions, lowest int16) error {
 	before, err := stackCallGraph(in, lowest)
 	if err != nil {

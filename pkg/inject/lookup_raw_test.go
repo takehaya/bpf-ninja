@@ -13,6 +13,50 @@ import (
 	"github.com/cilium/ebpf/btf"
 )
 
+// fillNonZero sets every field reachable from v to a non-zero value.
+func fillNonZero(t *testing.T, v reflect.Value) {
+	t.Helper()
+	switch v.Kind() {
+	case reflect.Bool:
+		v.SetBool(true)
+	case reflect.String:
+		v.SetString("x")
+	case reflect.Uint32:
+		v.SetUint(7)
+	case reflect.Int16:
+		v.SetInt(-8)
+	case reflect.Slice:
+		s := reflect.MakeSlice(v.Type(), 1, 1)
+		fillNonZero(t, s.Index(0))
+		v.Set(s)
+	case reflect.Pointer:
+		p := reflect.New(v.Type().Elem())
+		fillNonZero(t, p.Elem())
+		v.Set(p)
+	case reflect.Struct:
+		for i := range v.NumField() {
+			fillNonZero(t, v.Field(i))
+		}
+	default:
+		t.Fatalf("fillNonZero: add a value for kind %s", v.Kind())
+	}
+}
+
+// A selector with any one field set is not empty.
+func TestLookupSelectorEmpty(t *testing.T) {
+	if !(LookupSelector{}).empty() {
+		t.Fatal("zero selector is not empty")
+	}
+	for i := range reflect.TypeFor[LookupSelector]().NumField() {
+		var s LookupSelector
+		f := reflect.ValueOf(&s).Elem().Field(i)
+		fillNonZero(t, f)
+		if s.empty() {
+			t.Errorf("selector with %s set is empty", reflect.TypeFor[LookupSelector]().Field(i).Name)
+		}
+	}
+}
+
 // Every bool option of LookupRequestRaw reaches LookupRequest, so a new flag
 // cannot be silently dropped when the raw request is converted.
 func TestRawRequestForwardsOptions(t *testing.T) {
