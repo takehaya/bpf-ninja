@@ -486,8 +486,24 @@ func groupStackReach(group lookupGroup, req LookupRequest) int {
 	return slots.result
 }
 
+// siteFrameReason says why group's slots pass siteFrameLimit. Only the map
+// slot or a value copy can reach that far (groupStackReach). With Dispatch
+// every group, typed or not, passes the map, but CheckLookupStack already
+// reserves its slot then, so the dispatch reason is kept only for accuracy.
+func siteFrameReason(group lookupGroup, req LookupRequest) string {
+	switch {
+	case req.Dispatch:
+		return fmt.Sprintf("dispatch hook needs the 4th spill slot for the map pointer; Stack.LowestOffset %d too low", req.Stack.LowestOffset)
+	case group.generic:
+		return fmt.Sprintf("runtime-map hook needs the 4th spill slot; Stack.LowestOffset %d too low", req.Stack.LowestOffset)
+	}
+	return fmt.Sprintf("read-only value copy needs %d bytes below the spill slots; Stack.LowestOffset %d too low",
+		group.sites[0].mapInfo.ValueSize, req.Stack.LowestOffset)
+}
+
 // reachesBelowBase reports whether group uses slots below the three base ones:
-// the generic hook's map slot or a value copy.
+// the generic or dispatch hook's map slot, or a value copy. Under Dispatch
+// that is every lookup group, so Auto's first retry already drops them all.
 func reachesBelowBase(group lookupGroup, req LookupRequest) bool {
 	return groupStackReach(group, req) < lookupSlots(req.Stack.LowestOffset).result
 }
@@ -771,12 +787,7 @@ func transformLookupProgram(insns asm.Instructions, typ ebpf.ProgramType, types 
 			kept = append(kept, group)
 			continue
 		}
-		// Only the map slot or a value copy can reach this far (groupStackReach).
-		reason := fmt.Sprintf("runtime-map hook needs the 4th spill slot; Stack.LowestOffset %d too low", req.Stack.LowestOffset)
-		if !group.generic {
-			reason = fmt.Sprintf("read-only value copy needs %d bytes below the spill slots; Stack.LowestOffset %d too low",
-				group.sites[0].mapInfo.ValueSize, req.Stack.LowestOffset)
-		}
+		reason := siteFrameReason(group, req)
 		if !req.Auto {
 			return nil, plan, refuse("%s", reason)
 		}

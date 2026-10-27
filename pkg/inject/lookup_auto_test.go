@@ -1108,6 +1108,31 @@ func TestLookupAutoSkipsOverflowingGeneric(t *testing.T) {
 	}
 }
 
+// The reason a group is dropped for its slots names what reaches that far: a
+// typed group under Dispatch passes the map too, so it is not a value copy.
+func TestSiteFrameReason(t *testing.T) {
+	typed := lookupGroup{sites: []discoveredLookup{{mapInfo: &RawMap{ValueSize: 12}}}}
+	generic := lookupGroup{sites: typed.sites, generic: true}
+	req := LookupRequest{Stack: StackAudit{LowestOffset: -456}}
+	dispatch := req
+	dispatch.Dispatch = true
+	for _, tc := range []struct {
+		name  string
+		group lookupGroup
+		req   LookupRequest
+		want  string
+	}{
+		{"copy", typed, req, "read-only value copy needs 12 bytes"},
+		{"generic", generic, req, "runtime-map hook needs the 4th spill slot"},
+		{"dispatch-typed", typed, dispatch, "dispatch hook needs the 4th spill slot for the map pointer"},
+		{"dispatch-generic", generic, dispatch, "dispatch hook needs the 4th spill slot for the map pointer"},
+	} {
+		if got := siteFrameReason(tc.group, tc.req); !strings.HasPrefix(got, tc.want) || !strings.HasSuffix(got, "Stack.LowestOffset -456 too low") {
+			t.Errorf("%s: %q", tc.name, got)
+		}
+	}
+}
+
 // Auto without Entry or TailCalls refuses when every lookup it found is
 // dropped for its slots, rather than report success with nothing
 // instrumented; the refusal leaves the input unchanged. mapInMapFixture's two
