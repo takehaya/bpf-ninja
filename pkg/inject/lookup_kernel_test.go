@@ -450,7 +450,13 @@ func TestBpfLookupInjectionReadOnlyMapStatic(t *testing.T) {
 	testAutoMultiMap(t, func() *ebpf.CollectionSpec { return multiMapFixtureFlags(bpfFRdonlyProg) }, LookupRequest{StaticUntrusted: true})
 }
 
-// testAutoMultiMap takes CopyReadOnly and StaticUntrusted from opts.
+// With Maps only the flows lookup gets a hook. The sessions lookup runs
+// unchanged, and the flows observer still sees only its own map.
+func TestBpfLookupInjectionAutoMaps(t *testing.T) {
+	testAutoMultiMap(t, multiMapFixture, LookupRequest{Maps: []string{"flows"}})
+}
+
+// testAutoMultiMap takes CopyReadOnly, StaticUntrusted and Maps from opts.
 func testAutoMultiMap(t *testing.T, fixture func() *ebpf.CollectionSpec, opts LookupRequest) {
 	t.Helper()
 	testutil.SkipIfNotRoot(t)
@@ -458,12 +464,21 @@ func testAutoMultiMap(t *testing.T, fixture func() *ebpf.CollectionSpec, opts Lo
 	t.Cleanup(plain.Close)
 	work := fixture()
 	plan, err := transformLookup(work, LookupRequest{ProgramName: "p", Auto: true, CopyReadOnly: opts.CopyReadOnly,
-		StaticUntrusted: opts.StaticUntrusted, HookName: "obs", Stack: StackAudit{LowestOffset: -8}})
+		StaticUntrusted: opts.StaticUntrusted, Maps: opts.Maps, HookName: "obs", Stack: StackAudit{LowestOffset: -8}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(plan.hooks) != 2 || len(plan.skipped) != 0 {
+	hooks := 2
+	if opts.Maps != nil {
+		hooks = len(opts.Maps)
+	}
+	if len(plan.hooks) != hooks || len(plan.skipped) != 2-hooks {
 		t.Fatalf("hooks=%+v skipped=%+v", plan.hooks, plan.skipped)
+	}
+	for _, s := range plan.skipped {
+		if slices.Contains(opts.Maps, s.MapName) || s.Reason != "map not selected by Maps" {
+			t.Fatalf("skipped %+v", s)
+		}
 	}
 	injected := loadHooked(t, work, plan.hooks)
 	t.Cleanup(injected.Close)
