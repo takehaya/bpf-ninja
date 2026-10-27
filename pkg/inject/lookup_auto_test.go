@@ -165,10 +165,10 @@ func TestLookupSkipReason(t *testing.T) {
 	}
 }
 
-// A direct lookup on an XSK map or devmap, which a typed hook refuses, goes to
-// the generic hook under Auto; Auto skips every other kind a typed hook
-// refuses, since no kernel test loads it through the generic hook. Explicit
-// selection refuses them all.
+// A direct lookup on an XSK map, devmap, devmap hash, sockmap or sockhash,
+// which a typed hook refuses, goes to the generic hook under Auto; Auto skips
+// every other kind a typed hook refuses, since no kernel test loads it through
+// the generic hook. Explicit selection refuses them all.
 func TestLookupAutoTypedOnlyGoesGeneric(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -178,9 +178,9 @@ func TestLookupAutoTypedOnlyGoesGeneric(t *testing.T) {
 	}{
 		{"xskmap", func(m *ebpf.MapSpec) { m.Type, m.ValueSize, m.Value = ebpf.XSKMap, 4, nil }, "map type XSKMap is unsupported", true},
 		{"devmap", func(m *ebpf.MapSpec) { m.Type, m.ValueSize, m.Value = ebpf.DevMap, 4, nil }, "map type DevMap is unsupported", true},
-		{"sockmap", func(m *ebpf.MapSpec) { m.Type, m.ValueSize, m.Value = ebpf.SockMap, 8, nil }, "map type SockMap is unsupported", false},
-		{"sockhash", func(m *ebpf.MapSpec) { m.Type, m.ValueSize, m.Value = ebpf.SockHash, 8, nil }, "map type SockHash is unsupported", false},
-		{"devmap-hash", func(m *ebpf.MapSpec) { m.Type, m.ValueSize, m.Value = ebpf.DevMapHash, 4, nil }, "map type DevMapHash is unsupported", false},
+		{"sockmap", func(m *ebpf.MapSpec) { m.Type, m.ValueSize, m.Value = ebpf.SockMap, 8, nil }, "map type SockMap is unsupported", true},
+		{"sockhash", func(m *ebpf.MapSpec) { m.Type, m.ValueSize, m.Value = ebpf.SockHash, 8, nil }, "map type SockHash is unsupported", true},
+		{"devmap-hash", func(m *ebpf.MapSpec) { m.Type, m.ValueSize, m.Value = ebpf.DevMapHash, 4, nil }, "map type DevMapHash is unsupported", true},
 		{"cpumap", func(m *ebpf.MapSpec) { m.Type, m.ValueSize, m.Value = ebpf.CPUMap, 4, nil }, "map type CPUMap is unsupported", false},
 		{"reuseport", func(m *ebpf.MapSpec) { m.Type, m.ValueSize, m.Value = ebpf.ReusePortSockArray, 8, nil }, "map type ReusePortSockArray is unsupported", false},
 		{"special-value", func(m *ebpf.MapSpec) { m.Value.(*btf.Struct).Name = "xdp_md" }, `map value type "xdp_md" has a special global-function pointer ABI`, false},
