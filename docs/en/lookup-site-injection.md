@@ -89,6 +89,12 @@ All hooks of one program share the reserved stack slots, since only one lookup s
 The generic hook's map pointer takes a fourth slot.
 An observer attaches one fentry program per hook it wants to see.
 
+`LookupRequest.Maps` limits `Auto` to lookups on the named maps, by exact kernel map name.
+The other lookups are reported in `Skipped` with the reason `map not selected by Maps`, so they cost nothing at run time.
+A lookup whose map is only known at run time has no name and is never selected; a direct lookup on a named generic-hook kind, such as a sockmap, is.
+A name that matches no lookup is a refusal, so a typo cannot silently instrument nothing.
+This matters most with `Dispatch` on a kernel where a tail-calling program takes only one tracing attach: the one hook then sees only the chosen maps, without a filter in the observer.
+
 ### Entry and tail-call hooks
 
 An fentry on an XDP program does not fire when the program is entered through `bpf_tail_call`: the tail call jumps past the trampoline at the program's start.
