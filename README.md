@@ -332,8 +332,9 @@ int parse_headers(struct xdp_md *ctx) {
 | `--list-funcs` | List available BTF functions in the target program and exit | entry, exit |
 | `--allow-dispatcher-slot` | Allow probing an unreplaced global dispatcher subfunction; may block later freplace with `EBUSY` | entry, exit |
 | `--list-progs` | List reachable freplace, tail-call, and redirect-map targets and exit | entry, exit |
+| `--list-maps` | With `--list-progs`, also list each function's calls and the maps it uses, with the op (`lookup`, `update`, `delete`, `tail_call`, ...) and source line, read from the loaded program's translated instructions (needs root) | entry, exit |
 | `--list-params` | List filterable parameters for the target function (requires `--func` or an EXT entry with integer parameters) | entry, exit |
-| `--json` | Print `--list-progs` / `--list-funcs` / `--list-params` output as JSON on stdout instead of text on stderr | entry, exit |
+| `--json` | Print `--list-progs` (with `--list-maps`) / `--list-funcs` / `--list-params` output as JSON on stdout instead of text on stderr | entry, exit |
 | `--arg-filter` | Filter by function argument value (requires `--func` or an EXT entry with integer parameters); format: `param=value`, `param>=val`, `param<=val`, `param=min..max` | entry, exit |
 | `--set` | Define a named match set backed by a pinned BPF hash map: `NAME=/sys/fs/bpf/path[,key(field=arg:param,...)]`. Reference it with `--arg-filter @NAME` or the DSL predicate `layer[field in @NAME]`; manage entries at runtime with `bpf-ninja set`. Repeatable | all |
 | `--arg-echo` | Print the target function's integer args for each call (gated by `--arg-filter` if set) instead of capturing. Requires `--func` or an EXT entry with integer parameters, and a single `--mode`; combine with `-c N` | entry, exit |

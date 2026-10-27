@@ -92,6 +92,10 @@ func rootFlags() []cli.Flag {
 			Usage: "list programs reachable from the target: freplace + tail calls + CPUMAP/DEVMAP/DEVMAP_HASH redirect targets (followed transitively), then exit",
 		},
 		&cli.BoolFlag{
+			Name:  "list-maps",
+			Usage: "with --list-progs, also list each function's calls and the maps it uses, with the op (lookup, update, delete, tail_call, ...) and source line; needs root to read the translated instructions",
+		},
+		&cli.BoolFlag{
 			Name:  "json",
 			Usage: "emit --list-progs / --list-funcs / --list-params output as JSON on stdout instead of human-readable text on stderr",
 		},
@@ -563,12 +567,20 @@ func run(ctx context.Context, cmd *cli.Command) error {
 		return fmt.Errorf("--json only applies to --list-progs / --list-funcs / --list-params")
 	}
 
+	if cmd.Bool("list-maps") && !cmd.Bool("list-progs") {
+		return fmt.Errorf("--list-maps needs --list-progs")
+	}
+
 	// --list-progs: show reachable programs (tail calls +
 	// CPUMAP/DEVMAP/DEVMAP_HASH redirect targets, followed
 	// transitively) for each target, then exit
 	if cmd.Bool("list-progs") {
 		asJSON := cmd.Bool("json")
 		withFuncs := cmd.Bool("list-funcs")
+		var maps *mapsLister
+		if cmd.Bool("list-maps") {
+			maps = newMapsLister()
+		}
 		var jsonOut []progsTargetJSON
 		for _, info := range infos {
 			progs, err := attach.WalkReachablePrograms(info.Program, info.ProgID)
@@ -581,11 +593,19 @@ func run(ctx context.Context, cmd *cli.Command) error {
 					f := funcsToJSON(fetchNodeFuncs(info.ProgID, info))
 					jt.Funcs = &f
 				}
+				if maps != nil {
+					m := maps.list(info.ProgID, info.Program)
+					jt.Maps, jt.MapsNote = mapsToJSON(m), m.Note
+				}
 				for _, p := range progs {
 					n := progNodeJSON{ID: p.ProgID, Name: p.ProgName, Via: p.Via, Keys: p.Keys, Depth: p.Depth, Parent: p.ParentID}
 					if withFuncs {
 						f := funcsToJSON(fetchNodeFuncs(p.ProgID, nil))
 						n.Funcs = &f
+					}
+					if maps != nil {
+						m := maps.list(p.ProgID, nil)
+						n.Maps, n.MapsNote = mapsToJSON(m), m.Note
 					}
 					jt.Reachable = append(jt.Reachable, n)
 				}
@@ -595,6 +615,9 @@ func run(ctx context.Context, cmd *cli.Command) error {
 			fmt.Fprintf(os.Stderr, "id=%-6d %s\n", info.ProgID, info.FuncName)
 			if withFuncs {
 				printNodeFuncs(info.ProgID, info, "    ")
+			}
+			if maps != nil {
+				printMaps(maps.list(info.ProgID, info.Program), "    ")
 			}
 			byParent := map[uint32][]attach.ReachableProgram{}
 			for _, p := range progs {
@@ -607,6 +630,9 @@ func run(ctx context.Context, cmd *cli.Command) error {
 						indent, c.ProgID, c.ProgName, c.Via, formatKeyRanges(c.Keys))
 					if withFuncs {
 						printNodeFuncs(c.ProgID, nil, indent+"    ")
+					}
+					if maps != nil {
+						printMaps(maps.list(c.ProgID, nil), indent+"    ")
 					}
 					printTree(c.ProgID, indent+"  ")
 				}

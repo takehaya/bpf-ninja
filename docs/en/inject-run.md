@@ -131,6 +131,34 @@ Each hook is one function in the loaded program:
 
 `skipped` lists the lookups that `auto` did not instrument, with the same site fields plus `reason`.
 
+## Maps of a running program
+
+Before writing a rule, `bpf-ninja --list-progs --list-maps` shows where the maps are used in a program that is already loaded.
+Under each program of the reachable tree it lists the functions, the functions each one calls, and every map reference with its op and source line:
+
+```
+id=458449 entry
+    entry
+      calls classify, global_sub
+      stats (Array) lookup (inlined) prog.c:29
+      flows (Hash) delete prog.c:33
+      jmp (ProgramArray) tail_call prog.c:35
+    classify
+      flows (Hash) lookup prog.c:11
+      flows (Hash) update prog.c:14
+    global_sub
+      routes (LPMTrie) lookup prog.c:21
+  id=458450 next_stage (tailcall[0])
+      next_stage
+        flows (Hash) update prog.c:45
+```
+
+The listing reads the translated instructions the kernel keeps for the loaded program, so it needs root.
+The verifier rewrites some calls there: an array lookup becomes inline instructions, shown as `lookup (inlined)`, and other map helpers call the map's own function, whose kernel symbol gives the op.
+Without access to kernel addresses (`kptr_restrict`) the op shows as `ref`.
+With `--json`, each program gets a `maps` list of functions with their `calls`, `callbacks` and `uses`; a use's `pc` indexes the translated instructions and does not match the load-time `pc` of [the lookups file](#lookups-as-json), so match the two by function, file and line.
+Only lookups in the entry function can be instrumented so far; the lookups file gives the reason for each lookup that cannot.
+
 ## Lookups as JSON
 
 `--lookups-json PATH` lists every XDP and tc program the target loads with BTF, whether or not a rule selects it, so the maps to instrument can be chosen before a run that injects:

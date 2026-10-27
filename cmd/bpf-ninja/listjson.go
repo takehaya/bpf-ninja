@@ -28,6 +28,9 @@ type progNodeJSON struct {
 	Depth  int         `json:"depth,omitempty"`
 	Parent uint32      `json:"parent,omitempty"`
 	Funcs  *[]funcJSON `json:"funcs,omitempty"`
+	// Maps is set by --list-maps; MapsNote says what it is missing.
+	Maps     []funcMapsJSON `json:"maps,omitempty"`
+	MapsNote string         `json:"maps_note,omitempty"`
 }
 
 // progsTargetJSON is one -p / -i target: its entry (root) plus the reachable
@@ -37,6 +40,8 @@ type progsTargetJSON struct {
 	ID        uint32         `json:"id"`
 	Func      string         `json:"func"`
 	Funcs     *[]funcJSON    `json:"funcs,omitempty"`
+	Maps      []funcMapsJSON `json:"maps,omitempty"`
+	MapsNote  string         `json:"maps_note,omitempty"`
 	Reachable []progNodeJSON `json:"reachable"`
 }
 
