@@ -1392,6 +1392,37 @@ func TestLookupTC(t *testing.T) {
 	} else if ctx := ctxStructName(t, work.Programs["p"].Instructions, plan.hooks[0].Name); ctx != "__sk_buff" {
 		t.Fatalf("entry hook takes %s", ctx)
 	}
+	// Without Entry or TailCalls, Auto refuses a tc program it would leave
+	// uninstrumented, leaving the input unchanged, ELF and raw: the
+	// __sk_buff-valued lookup is skipped at selection (not a genericKinds
+	// kind), and generic lookups whose map slot passes the site frame are
+	// dropped for the stack.
+	for _, tc := range []struct {
+		name string
+		spec func() *ebpf.CollectionSpec
+		want string
+	}{
+		{"skb-value", func() *ebpf.CollectionSpec {
+			spec := asTC(lookupFixture())
+			spec.Maps["sessions"].Value = &btf.Struct{Name: "__sk_buff", Size: spec.Maps["sessions"].ValueSize}
+			return spec
+		}, "no supported lookup sites (1 skipped)"},
+		{"generic", func() *ebpf.CollectionSpec { return asTC(mapInMapFixture()) }, "no lookup site fits the audited stack (2 skipped)"},
+	} {
+		req := autoReq()
+		req.Stack.LowestOffset = -456
+		work := tc.spec()
+		before := append(asm.Instructions(nil), work.Programs["p"].Instructions...)
+		if _, err := transformLookup(work, req); !errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), tc.want) {
+			t.Fatalf("%s: want %q, got %v", tc.name, tc.want, err)
+		}
+		if !reflect.DeepEqual(before, work.Programs["p"].Instructions) {
+			t.Fatalf("%s: refusal mutated input", tc.name)
+		}
+		if _, err := TransformLookupRaw(rawLookupFixture(t, tc.spec(), "p", true), rawLookupRequest(req)); !errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), tc.want) {
+			t.Fatalf("%s raw: want %q, got %v", tc.name, tc.want, err)
+		}
+	}
 	// The raw front end carries the program type, as inject-run does.
 	p := rawLookupFixture(t, asTC(lookupFixture()), "p", true)
 	got, err := TransformLookupRaw(p, rawLookupRequest(lookupReq()))
