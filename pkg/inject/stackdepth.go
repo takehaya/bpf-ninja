@@ -50,7 +50,8 @@ type stackFunc struct {
 
 // stackCallGraph splits insns into functions at BTF function metadata and
 // links them by bpf-to-bpf calls and callback references, symbolic or
-// numeric. Function 0 is the entry.
+// numeric. Function 0 is the entry. Every callback reference is an edge, an
+// async registration included (see checkStackLimits).
 //
 // A function's depth is its deepest direct R10 reference (R10 as the base of
 // a load or store). A function that uses R10 in any other way, such as
@@ -322,12 +323,38 @@ func stackLimitBroken(funcs []stackFunc, round func(int) int) (string, error) {
 // Each limit is checked under each kernel frame rounding. lowest is the
 // audited bound, the depth of a function that copies R10 (see stackCallGraph).
 //
-// The model is conservative in two known ways, both of which only refuse a
-// program the kernel would load, never accept one it rejects: an async
-// callback (bpf_timer_set_callback, bpf_wq_set_callback) is walked as part of
-// the chain that references it, although 6.8 and later check it as a chain of
-// its own; and 7.1 and later restart the frame count at a global function,
-// which the frame limit here does not.
+// The model stays conservative in three known ways, each of which can only
+// refuse a program the kernel would load, never accept one it rejects. The
+// rewriter does not know the target kernel, so it keeps to what holds on
+// every one from 6.1 on:
+//   - A function that copies R10 is charged the audited bound rather than
+//     what the copy reaches. The verifier grows a frame's stack_depth with
+//     every access through its stack pointers (update_stack_depth on 6.1,
+//     grow_stack_state later), helper memory arguments and callees included
+//     (check_helper_mem_access), which only a value analysis of the copy
+//     could reproduce; the bound covers it by contract.
+//   - An async callback (bpf_timer_set_callback, and the kfuncs
+//     bpf_wq_set_callback_impl and bpf_task_work_schedule_*) is walked under
+//     the chain that registers it. The kernel marks a callback is_async_cb
+//     only in do_check, when it analyzes the registering call
+//     (__check_func_call); check_max_stack_depth then skips a reference to
+//     a marked callback (6.1) or walks it as a root of its own instead (6.6
+//     on, and the 6.1 stable branch). A registration behind a branch the
+//     verifier proves dead by value is never analyzed, so its callback stays
+//     unmarked and check_max_stack_depth, which runs before
+//     opt_remove_dead_code, walks the reference as a plain call with the
+//     callback's frames counted (at their unverified depth, 0 before
+//     rounding). The instruction shape cannot tell a live registration from
+//     a dead one, so dropping the edge on shape alone accepted a program
+//     6.1 and 6.6 reject (a live 448-byte entry, a dead registration and
+//     cb -> sub: 448+32+32 originally, 480+32+32 once the entry spills).
+//   - The frame count never restarts. 7.1 restarts it at a global function
+//     (check_max_stack_depth_subprog: `frame = bpf_subprog_is_global(env,
+//     idx) ? 0 : frame + 1`), but 6.1 through 7.0 count every frame of the
+//     chain (`frame++`), so a chain over eight frames through a global
+//     function loads on 7.1 and is rejected on every earlier kernel. An
+//     opt-in would move that decision to the caller for little gain, since
+//     the limit binds only on chains eight frames deep.
 //
 // The split into changed and unchanged chains matters only where an original
 // chain can stay unchanged: in the single-site Transform, and for an

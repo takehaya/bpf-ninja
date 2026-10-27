@@ -678,6 +678,42 @@ func TestStackLimitsUnchangedChain(t *testing.T) {
 	}
 }
 
+// A timer callback counts under the chain that registers it however the
+// pointer reaches the helper, live or behind a dead branch: with the entry's
+// ctx spill (288 bytes with the 32-byte rounding), cb's 32 and sub's 256 the
+// chain is 576 bytes and the transform refuses. ELF and both raw forms.
+func TestStackLimitsTimerCallback(t *testing.T) {
+	req := LookupRequest{ProgramName: "caller", Entry: true, HookName: "obs", Stack: StackAudit{LowestOffset: -256}}
+	for _, register := range []string{"timer", "dead", "moved", "jump", "loop", "direct"} {
+		t.Run(register, func(t *testing.T) {
+			check := func(form string, err error) {
+				t.Helper()
+				if !errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), "caller -> cb -> sub uses 576 bytes") {
+					t.Fatalf("%s: want refusal naming caller -> cb -> sub, got %v", form, err)
+				}
+			}
+			spec := func() *ebpf.CollectionSpec { return timerCallee(-256, -16, -256, register) }
+			_, err := transformLookup(spec(), req)
+			check("elf", err)
+			for _, numeric := range []bool{false, true} {
+				p := rawLookupFixture(t, spec(), "caller", numeric)
+				_, err := TransformLookupRaw(p, LookupRequestRaw{Entry: true, HookName: "obs", Stack: req.Stack})
+				check(map[bool]string{false: "raw-symbolic", true: "raw-numeric"}[numeric], err)
+			}
+		})
+	}
+	// The dead-registration shape at the kernel's own boundary: 448 + 32 + 32
+	// loads, the entry's spill (480) breaks it.
+	spec := timerCallee(-448, -16, -16, "dead")
+	if err := checkStackLimits(spec.Programs["caller"].Instructions, spec.Programs["caller"].Instructions, -448); err != nil {
+		t.Fatalf("unchanged dead chain at 512: %v", err)
+	}
+	_, err := transformLookup(spec, LookupRequest{ProgramName: "caller", Entry: true, HookName: "obs", Stack: StackAudit{LowestOffset: -448}})
+	if !errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), "caller -> cb -> sub uses 544 bytes") {
+		t.Fatalf("dead chain past 512: want refusal naming caller -> cb -> sub, got %v", err)
+	}
+}
+
 // reserveCase is a request without lookups at a bound CheckLookupStack and
 // the transform both accept (ok) or both refuse.
 type reserveCase struct {
