@@ -937,8 +937,8 @@ func TestCheckLookupStack(t *testing.T) {
 	}
 }
 
-// ValidateRaw checks the hook name, leaving room for the longest suffix
-// whenever the transform appends one, then the stack bound with
+// ValidateRaw checks the hook name, leaving room for the longest suffix the
+// request's flags make the transform append, then the stack bound with
 // CheckLookupStack's own message.
 func TestValidateRaw(t *testing.T) {
 	h := func(n int) string { return strings.Repeat("h", n) }
@@ -951,9 +951,12 @@ func TestValidateRaw(t *testing.T) {
 		{"map-127", LookupRequestRaw{Site: m, HookName: h(MaxHookName)}, ""},
 		{"map-128", LookupRequestRaw{Site: m, HookName: h(MaxHookName + 1)}, "valid C/BTF identifier"},
 		{"bad-ident", LookupRequestRaw{Site: m, HookName: "bad-name"}, "valid C/BTF identifier"},
-		{"auto-117", LookupRequestRaw{Auto: true, HookName: h(117)}, ""},
-		{"auto-118", LookupRequestRaw{Auto: true, HookName: h(118)}, `suffix "_tail_call"`},
-		{"entry-118", LookupRequestRaw{Entry: true, HookName: h(118)}, `suffix "_tail_call"`},
+		{"auto-125", LookupRequestRaw{Auto: true, HookName: h(125)}, ""},
+		{"auto-126", LookupRequestRaw{Auto: true, HookName: h(126)}, `suffix "_0"`},
+		{"entry-121", LookupRequestRaw{Entry: true, HookName: h(121)}, ""},
+		{"entry-122", LookupRequestRaw{Entry: true, HookName: h(122)}, `suffix "_entry"`},
+		{"auto-entry-122", LookupRequestRaw{Auto: true, Entry: true, HookName: h(122)}, `suffix "_entry"`},
+		{"tails-117", LookupRequestRaw{TailCalls: true, HookName: h(117)}, ""},
 		{"tails-118", LookupRequestRaw{TailCalls: true, HookName: h(118)}, `suffix "_tail_call"`},
 		{"stack", LookupRequestRaw{Site: m, HookName: "h", Stack: StackAudit{LowestOffset: -457}}, "Stack.LowestOffset -457 leaves no room"},
 	} {

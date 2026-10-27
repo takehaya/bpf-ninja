@@ -68,7 +68,7 @@ It must be between -456 and 0 for a rule with `map` or `auto`; a rule with only 
 The transform reserves three eight-byte slots below the audited region, aligned downward (one for `entry` alone, two for `tail_calls` without lookups), four when `auto` finds a lookup whose map a typed hook cannot take, plus the value copy with `copy_read_only` (see the transform's refusal message for the exact bound).
 The frame holding the slots also calls the hook, which kernels that round frames to 32 bytes count as 32 bytes of the 512-byte stack, so the slots must end 480 bytes below the frame.
 Do not copy the example bound without auditing the actual program.
-`hook` must be a C identifier of at most 127 bytes; with `entry`, `tail_calls` or `auto` it must leave room for the longest suffix the transform appends, `_tail_call` (at most 117 bytes).
+`hook` must be a C identifier of at most 127 bytes, leaving room for the longest suffix the transform appends: at most 117 bytes with `tail_calls` (`_tail_call`), 121 with `entry` (`_entry`), and 125 with `auto` (`_0`). Under `auto`, a map whose hook name would still not fit is skipped.
 Unknown JSON fields, duplicate program selectors, trailing JSON, and configurations larger than 1 MiB are rejected before launching.
 
 ## What happens at the syscall boundary

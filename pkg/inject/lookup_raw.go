@@ -97,22 +97,33 @@ func (r LookupRequestRaw) Request() LookupRequest {
 		CopyReadOnly: r.CopyReadOnly, StaticUntrusted: r.StaticUntrusted, HookName: r.HookName, Stack: r.Stack}
 }
 
-// longestHookSuffix is the longest fixed suffix the transform appends to
-// HookName. Auto's per-map names that would pass MaxHookName fall back to
-// HOOKNAME_<index>, and a group whose name still does not fit is skipped.
-const longestHookSuffix = "_tail_call"
+// hookSuffix is the longest fixed suffix the transform appends to HookName
+// for req: "_tail_call" with TailCalls, "_entry" with Entry, and "_0" with
+// Auto, whose per-map names that would pass MaxHookName fall back to
+// HOOKNAME_<index>; a group whose name still does not fit is skipped.
+func hookSuffix(r LookupRequest) string {
+	switch {
+	case r.TailCalls:
+		return "_tail_call"
+	case r.Entry:
+		return "_entry"
+	case r.Auto:
+		return "_0"
+	}
+	return ""
+}
 
 // ValidateRaw checks the parts of req that do not depend on the program: the
-// hook name, with room for longestHookSuffix whenever the transform appends a
-// suffix, and the audited stack bound (CheckLookupStack). syscallhook.Validate
-// calls it, so a configuration check and the transform share these limits.
+// hook name, with room for the suffix the transform appends (hookSuffix), and
+// the audited stack bound (CheckLookupStack). syscallhook.Validate calls it,
+// so a configuration check and the transform share these limits.
 func ValidateRaw(req LookupRequestRaw) error {
 	r := req.Request()
 	if !validIdent(r.HookName) {
 		return refuse("HookName %q must be a valid C/BTF identifier (1-%d chars, [A-Za-z_][A-Za-z0-9_]*)", r.HookName, MaxHookName)
 	}
-	if (r.Auto || r.Entry || r.TailCalls) && len(r.HookName)+len(longestHookSuffix) > MaxHookName {
-		return refuse("HookName %q with the suffix %q exceeds %d bytes", r.HookName, longestHookSuffix, MaxHookName)
+	if suffix := hookSuffix(r); len(r.HookName)+len(suffix) > MaxHookName {
+		return refuse("HookName %q with the suffix %q exceeds %d bytes", r.HookName, suffix, MaxHookName)
 	}
 	return CheckLookupStack(r)
 }
