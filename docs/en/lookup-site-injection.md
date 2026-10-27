@@ -74,10 +74,12 @@ int PREFIX_any(struct xdp_md *ctx, u32 site, const void *key __arg_untrusted,
                const void *value __arg_untrusted, const void *map __arg_untrusted);
 ```
 
-These are entry-function lookups where R1 is not a direct map reference in the same basic block, lookups on hash-of-maps and array-of-maps, and direct lookups on map kinds a typed hook refuses.
+These are entry-function lookups where R1 is not a direct map reference in the same basic block, lookups on hash-of-maps and array-of-maps, and direct lookups on XSK maps and devmaps.
+Kernel tests load the generic hook over each of these.
+A direct lookup on any other map kind a typed hook refuses (a sockmap or sockhash, whose result is a socket reference the verifier tracks, a devmap hash, a cpumap, a reuseport array), or on a map whose key or value BTF a typed hook refuses, is skipped.
 `map` is the lookup's R1 at run time, saved before the helper: the map itself, or for an inner lookup the inner map that an outer lookup returned.
 For an outer map-in-map lookup, `value` is the selected inner map, not value memory.
-Because the hook declares no value type, it also receives lookups on map kinds that a typed hook refuses, such as an XSK map whose lookup returns a socket, whether the map is a direct reference or not; an observer must check the map type before decoding `value`.
+Because the hook declares no value type, it also receives lookups whose map is only known at run time, of any kind, such as an XSK map whose lookup returns a socket; an observer must check the map type before decoding `value`.
 The hook's BTF carries no key or value type, so an observer identifies the map from `map` (for example by reading `struct bpf_map` fields such as `id` with `bpf_probe_read_kernel`) and decodes the key and value by that map's sizes.
 A map ID identifies the map only while it exists; IDs of freed maps can be reused.
 
@@ -211,7 +213,7 @@ A key or value with BTF must have a nonzero size exactly matching the map's key 
 The hook retains these types, including typedefs and qualifiers, under `const` pointer parameters.
 A side the map declares only by size, such as `__uint(key_size, 4)`, has no BTF; the hook takes it as an anonymous `struct { u8 bytes[N]; }` of the map's size.
 Types named `struct xdp_md` or `struct bpf_dynptr` are refused as map key/value types because the verifier assigns those pointer types special argument semantics.
-Other map kinds are refused by a typed hook rather than assuming their helper return is ordinary value memory; `Auto` observes them through the generic hook.
+Other map kinds are refused by a typed hook rather than assuming their helper return is ordinary value memory; `Auto` observes XSK maps and devmaps through the generic hook and skips the rest.
 The entry function must have one BTF parameter pointing to `struct xdp_md`.
 The package checks the XDP program type; the cooperative loader owns attachment mode and verifier acceptance.
 

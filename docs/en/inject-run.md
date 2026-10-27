@@ -47,8 +47,8 @@ The transformation core currently accepts lookup sites in the entry function and
 
 `"auto": true` instruments every supported lookup in the program instead of one selected lookup.
 `map`, `func`, `line`, `all_matches`, and `site_pcs` must then be absent, and `hook` is a prefix: each map gets its own hook named `HOOK_MAP`, with a `u32 site` argument after `ctx` that carries the lookup's raw instruction index.
-Lookups whose map is only known at run time (map-in-map, or a map pointer that reaches R1 indirectly), and lookups on map kinds without a typed hook (XSK, devmap, sockmap and sockhash), share one `HOOK_any` hook that also takes the map pointer.
-Lookups that the transform cannot support are skipped and listed in the diagnostic rather than refusing the load: lookups whose slots do not fit the audited stack and, when the instrumented program would break a kernel call-chain stack limit, first the `HOOK_any` and `copy_read_only` lookups and then every lookup.
+Lookups whose map is only known at run time (map-in-map, or a map pointer that reaches R1 indirectly), and lookups on XSK maps and devmaps, which have no typed hook, share one `HOOK_any` hook that also takes the map pointer.
+Lookups that the transform cannot support are skipped and listed in the diagnostic rather than refusing the load: lookups on other map kinds without a typed hook (sockmap and sockhash among them), lookups whose slots do not fit the audited stack and, when the instrumented program would break a kernel call-chain stack limit, first the `HOOK_any` and `copy_read_only` lookups and then every lookup.
 `entry` and `tail_calls` hooks are kept; a rule that would instrument nothing at all is refused.
 The naming and hook ABI are described in [lookup-site-injection.md](lookup-site-injection.md#automatic-selection).
 

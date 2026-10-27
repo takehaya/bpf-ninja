@@ -59,10 +59,10 @@ func (s LookupSelector) empty() bool {
 // empty. HookName becomes a prefix: each statically known map gets its own hook,
 // int PREFIX_MAP(struct xdp_md *ctx, u32 site, const KEY *key, const VALUE *value),
 // where site is the original SitePC. Lookups whose map Auto cannot bind to a
-// typed hook (a map-in-map, an indirect map reference, or a map kind a typed
-// hook refuses) share one PREFIX_any generic hook (see LookupHook.Generic).
-// Sites that cannot be instrumented are reported in Skipped instead of
-// refusing the transform: an unsupported site, slots past the audited stack,
+// typed hook (a map-in-map, an indirect map reference, an XSK map or a devmap)
+// share one PREFIX_any generic hook (see LookupHook.Generic). Sites that
+// cannot be instrumented are reported in Skipped instead of refusing the
+// transform: an unsupported site or map kind, slots past the audited stack,
 // or, when the instrumented program would break a kernel call-chain stack
 // limit, first the sites that need the map slot or a value copy and then
 // every lookup. Auto refuses only when nothing at all would be instrumented.
@@ -124,9 +124,9 @@ const (
 // ctx included, as a u64 and reads through them with bpf_probe_read_kernel.
 //
 // Generic is set for Auto's one hook over lookups whose map is not known
-// statically (R1 is not a direct map reference), is a map-in-map, or is a map
-// kind a typed hook refuses (such as an XSK, devmap or socket map). It has no
-// MapName and takes the map pointer as a fifth argument; see genericHook.
+// statically (R1 is not a direct map reference), is a map-in-map, or is an
+// XSK map or devmap, which a typed hook refuses. It has no MapName and takes
+// the map pointer as a fifth argument; see genericHook.
 type LookupHook struct {
 	Name      string
 	Kind      HookKind
@@ -224,8 +224,8 @@ type lookupMapResolver func(*asm.Instruction) (string, *RawMap)
 
 // generic marks a lookup whose map Auto passes at run time to the generic
 // hook: R1 is not a direct map reference, or the map is a map-in-map.
-// typedOnly marks a direct lookup that only a typed hook refuses
-// (checkLookupMap); Auto also sends it to the generic hook.
+// typedOnly marks a direct lookup that a typed hook refuses (checkLookupMap)
+// on a map of a genericKinds kind; Auto also sends it to the generic hook.
 type discoveredLookup struct {
 	LookupSite
 	mapID     string
@@ -317,7 +317,7 @@ func discoverLookupProgram(insns asm.Instructions, typ ebpf.ProgramType, resolve
 				site.Reason, generic = "map-in-map lookup returns an inner map", true
 			default:
 				if reason := checkLookupMap(m); reason != "" {
-					site.Reason, typedOnly = reason, true
+					site.Reason, typedOnly = reason, genericKinds[m.Type]
 				}
 			}
 			sites = append(sites, discoveredLookup{site, mapID, m, generic, typedOnly})
@@ -350,6 +350,13 @@ func lookupTypeName(t btf.Type) string {
 	}
 	return btf.UnderlyingType(t).TypeName()
 }
+
+// genericKinds are the map kinds a typed hook refuses whose direct lookups Auto
+// passes to the generic hook; testGenericKinds loads each one on the kernel
+// matrix. Auto skips a lookup on any other refused kind, such as a socket map,
+// whose result is a reference the verifier tracks. Add a kind only together
+// with its kernel test.
+var genericKinds = map[ebpf.MapType]bool{ebpf.XSKMap: true, ebpf.DevMap: true}
 
 // bpfFRdonlyProg and bpfFWronlyProg are BPF_F_RDONLY_PROG and
 // BPF_F_WRONLY_PROG from the BPF UAPI.
