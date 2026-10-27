@@ -284,6 +284,11 @@ func elfLookupMaps(spec *ebpf.CollectionSpec) lookupMapResolver {
 	}
 }
 
+// ContextType names the BTF struct the ctx argument of every hook in a
+// program of type typ points to, empty if TransformLookup does not support
+// the type.
+func ContextType(typ ebpf.ProgramType) string { return lookupContext(typ) }
+
 // lookupContext names the context struct the hooks of a program of type typ
 // take, and whose first word they read: struct xdp_md for XDP, struct
 // __sk_buff (len) for tc. Empty means the type is not supported.
