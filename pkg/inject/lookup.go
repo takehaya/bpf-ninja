@@ -397,7 +397,7 @@ func discoverMapCalls(insns asm.Instructions, typ ebpf.ProgramType, resolve look
 			case funcStart < 0:
 				site.Reason = "program lacks BTF function info"
 			case funcStart != 0:
-				site.Reason = "lookup is not in the entry function; ctx belongs to another stack frame"
+				site.Reason = string(op) + " is not in the entry function; ctx belongs to another stack frame"
 			case mapID == "":
 				site.Reason, generic = "R1 is not a direct map reference in this basic block", true
 			case m == nil:

@@ -134,30 +134,40 @@ Each hook is one function in the loaded program:
 ## Maps of a running program
 
 Before writing a rule, `bpf-ninja --list-progs --list-maps` shows where the maps are used in a program that is already loaded.
-Under each program of the reachable tree it lists the functions, the functions each one calls, and every map reference with its op and source line:
+Under each program of the reachable tree it lists the functions, the functions each one calls, and every map reference with its op and source line.
+With `--lookups-json` it also reads the file `inject-run --lookups-json` wrote for the same load, and marks each lookup, update and delete with its load-time `site` and the reason it cannot be instrumented:
+
+```sh
+bpf-ninja inject-run --lookups-json lookups.json -- ./loader &
+bpf-ninja -p "$PROG_ID" --list-progs --list-maps --lookups-json lookups.json
+```
+
+This output is from a test program on 7.0:
 
 ```
-id=458449 entry
+id=2      entry
     entry
       calls classify, global_sub
-      stats (Array) lookup (inlined) prog.c:29
-      flows (Hash) delete prog.c:33
+      stats (Array) lookup (inlined) prog.c:29 site=7
+      flows (Hash) delete prog.c:33 site=18
       jmp (ProgramArray) tail_call prog.c:35
     classify
-      flows (Hash) lookup prog.c:11
-      flows (Hash) update prog.c:14
+      flows (Hash) lookup prog.c:11 site=33 [lookup is not in the entry function; ctx belongs to another stack frame]
+      flows (Hash) update prog.c:14 site=45 [update is not in the entry function; ctx belongs to another stack frame]
     global_sub
-      routes (LPMTrie) lookup prog.c:21
-  id=458450 next_stage (tailcall[0])
+      routes (LPMTrie) lookup prog.c:21 site=56 [lookup is not in the entry function; ctx belongs to another stack frame]
+  id=3      next_stage (tailcall[0])
       next_stage
-        flows (Hash) update prog.c:45
+        flows (Hash) update prog.c:45 site=11
 ```
 
 The listing reads the translated instructions the kernel keeps for the loaded program, so it needs root.
 The verifier rewrites some calls there: an array lookup becomes inline instructions, shown as `lookup (inlined)`, and other map helpers call the map's own function, whose kernel symbol gives the op.
 Without access to kernel addresses (`kptr_restrict`) the op shows as `ref`.
-With `--json`, each program gets a `maps` list of functions with their `calls`, `callbacks` and `uses`; a use's `pc` indexes the translated instructions and does not match the load-time `pc` of [the lookups file](#lookups-as-json), so match the two by function, file and line.
-Only lookups in the entry function can be instrumented so far; the lookups file gives the reason for each lookup that cannot.
+Instruction indexes differ between the load and the translated program, so a use is matched to the load-time call with the same op, map, function, file and line, in order; the program is found by its entry function, and a program loaded more than once uses its last load.
+A use with no match has no `site`.
+Only lookups can be instrumented so far, so an update or delete with no reason is still not instrumented.
+With `--json`, each program gets a `maps` list of functions with their `calls`, `callbacks` and `uses`; a use's `pc` indexes the translated instructions, and `site` and `reason` come from the lookups file.
 
 ## Lookups as JSON
 

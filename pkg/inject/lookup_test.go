@@ -24,7 +24,11 @@ func TestMapCallDiscovery(t *testing.T) {
 		asm.FnMapLookupElem.Call(),                          // 8
 		asm.FnMapUpdateElem.Call(),                          // 9: R1 clobbered
 		asm.Return(),
+		asm.LoadMapPtr(asm.R1, 0).WithReference("sessions"), // 11-12: a subprogram
+		asm.FnMapDeleteElem.Call(),                          // 13
+		asm.Return(),
 	}
+	insns[8] = btf.WithFuncMetadata(insns[8].WithSymbol("sub"), btf.FuncMetadata(&spec.Programs["p"].Instructions[0]))
 	insns[0] = btf.WithFuncMetadata(insns[0].WithSymbol("p"), btf.FuncMetadata(&spec.Programs["p"].Instructions[0]))
 	sites, err := discoverMapCalls(insns, ebpf.XDP, elfLookupMaps(spec))
 	if err != nil {
@@ -43,6 +47,7 @@ func TestMapCallDiscovery(t *testing.T) {
 	want := []got{
 		{HookUpdate, 2, "sessions", ""}, {HookDelete, 5, "sessions", ""}, {HookLookup, 8, "sessions", ""},
 		{HookUpdate, 9, "", "R1 is not a direct map reference in this basic block"},
+		{HookDelete, 13, "sessions", "delete is not in the entry function; ctx belongs to another stack frame"},
 	}
 	if !reflect.DeepEqual(have, want) {
 		t.Fatalf("map calls = %+v\nwant %+v", have, want)

@@ -333,6 +333,7 @@ int parse_headers(struct xdp_md *ctx) {
 | `--allow-dispatcher-slot` | Allow probing an unreplaced global dispatcher subfunction; may block later freplace with `EBUSY` | entry, exit |
 | `--list-progs` | List reachable freplace, tail-call, and redirect-map targets and exit | entry, exit |
 | `--list-maps` | With `--list-progs`, also list each function's calls and the maps it uses, with the op (`lookup`, `update`, `delete`, `tail_call`, ...) and source line, read from the loaded program's translated instructions (needs root) | entry, exit |
+| `--lookups-json` | With `--list-maps`, read the file `inject-run --lookups-json` wrote and mark each map use with its load-time site and why it cannot be instrumented | entry, exit |
 | `--list-params` | List filterable parameters for the target function (requires `--func` or an EXT entry with integer parameters) | entry, exit |
 | `--json` | Print `--list-progs` (with `--list-maps`) / `--list-funcs` / `--list-params` output as JSON on stdout instead of text on stderr | entry, exit |
 | `--arg-filter` | Filter by function argument value (requires `--func` or an EXT entry with integer parameters); format: `param=value`, `param>=val`, `param<=val`, `param=min..max` | entry, exit |

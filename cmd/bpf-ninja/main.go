@@ -95,6 +95,10 @@ func rootFlags() []cli.Flag {
 			Name:  "list-maps",
 			Usage: "with --list-progs, also list each function's calls and the maps it uses, with the op (lookup, update, delete, tail_call, ...) and source line; needs root to read the translated instructions",
 		},
+		&cli.StringFlag{
+			Name:  "lookups-json",
+			Usage: "with --list-maps, read the file inject-run --lookups-json wrote and mark each map use with the load-time site of the same call and why it cannot be instrumented",
+		},
 		&cli.BoolFlag{
 			Name:  "json",
 			Usage: "emit --list-progs / --list-funcs / --list-params output as JSON on stdout instead of human-readable text on stderr",
@@ -570,6 +574,9 @@ func run(ctx context.Context, cmd *cli.Command) error {
 	if cmd.Bool("list-maps") && !cmd.Bool("list-progs") {
 		return fmt.Errorf("--list-maps needs --list-progs")
 	}
+	if cmd.String("lookups-json") != "" && !cmd.Bool("list-maps") {
+		return fmt.Errorf("--lookups-json needs --list-maps")
+	}
 
 	// --list-progs: show reachable programs (tail calls +
 	// CPUMAP/DEVMAP/DEVMAP_HASH redirect targets, followed
@@ -579,7 +586,9 @@ func run(ctx context.Context, cmd *cli.Command) error {
 		withFuncs := cmd.Bool("list-funcs")
 		var maps *mapsLister
 		if cmd.Bool("list-maps") {
-			maps = newMapsLister()
+			if maps, err = newMapsLister(cmd.String("lookups-json")); err != nil {
+				return err
+			}
 		}
 		var jsonOut []progsTargetJSON
 		for _, info := range infos {
@@ -595,7 +604,7 @@ func run(ctx context.Context, cmd *cli.Command) error {
 				}
 				if maps != nil {
 					m := maps.list(info.ProgID, info.Program)
-					jt.Maps, jt.MapsNote = mapsToJSON(m), m.Note
+					jt.Maps, jt.MapsNote = mapsToJSON(m), m.maps.Note
 				}
 				for _, p := range progs {
 					n := progNodeJSON{ID: p.ProgID, Name: p.ProgName, Via: p.Via, Keys: p.Keys, Depth: p.Depth, Parent: p.ParentID}
@@ -605,7 +614,7 @@ func run(ctx context.Context, cmd *cli.Command) error {
 					}
 					if maps != nil {
 						m := maps.list(p.ProgID, nil)
-						n.Maps, n.MapsNote = mapsToJSON(m), m.Note
+						n.Maps, n.MapsNote = mapsToJSON(m), m.maps.Note
 					}
 					jt.Reachable = append(jt.Reachable, n)
 				}
