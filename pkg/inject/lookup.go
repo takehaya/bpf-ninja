@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
@@ -14,10 +15,11 @@ import (
 )
 
 // LookupSite describes a map_lookup_elem helper in a flattened XDP or tc
-// program.
+// program, or with Op another map helper (DiscoverMapCalls).
 // Empty names or zero Line mean the input did not supply that information.
 // Reason explains why a site cannot be injected; discovery still lists it.
 type LookupSite struct {
+	Op               HookKind // HookLookup, HookUpdate or HookDelete; HookTailCall on a tail call
 	MapName          string
 	KeyTypeName      string
 	ValueTypeName    string
@@ -131,6 +133,11 @@ const (
 	HookLookup   HookKind = "lookup"
 	HookEntry    HookKind = "entry"
 	HookTailCall HookKind = "tail_call"
+	// HookUpdate and HookDelete name the op of map_update_elem and
+	// map_delete_elem sites, which DiscoverMapCalls lists; no hook observes
+	// them yet.
+	HookUpdate HookKind = "update"
+	HookDelete HookKind = "delete"
 )
 
 // LookupHook is one generated hook and the sites that call it, in original
@@ -247,6 +254,23 @@ func TransformLookup(elf []byte, req LookupRequest) (*LookupResult, error) {
 		Site: plan.first(), Sites: plan.sites, Hooks: plan.hooks, Skipped: plan.skipped}, nil
 }
 
+// DiscoverMapCalls is DiscoverLookups for every map_lookup_elem,
+// map_update_elem and map_delete_elem helper, told apart by Op. Reason on an
+// update or delete site says only what keeps its R1 or ctx out of reach,
+// since no hook takes those ops yet.
+func DiscoverMapCalls(elf []byte, programName string) ([]LookupSite, error) {
+	spec, err := ebpf.LoadCollectionSpecFromReader(bytes.NewReader(bytes.Clone(elf)))
+	if err != nil {
+		return nil, fmt.Errorf("load collection spec: %w", err)
+	}
+	prog := spec.Programs[programName]
+	if prog == nil {
+		return nil, refuse("program %q not found", programName)
+	}
+	sites, err := discoverMapCalls(prog.Instructions, prog.Type, elfLookupMaps(spec))
+	return publicLookupSites(sites), err
+}
+
 func discoverLookups(spec *ebpf.CollectionSpec, name string) ([]LookupSite, error) {
 	prog := spec.Programs[name]
 	if prog == nil {
@@ -308,7 +332,17 @@ func lookupContext(typ ebpf.ProgramType) string {
 	return ""
 }
 
+// mapCallOps are the helpers discoverMapCalls lists.
+var mapCallOps = map[asm.BuiltinFunc]HookKind{
+	asm.FnMapLookupElem: HookLookup, asm.FnMapUpdateElem: HookUpdate, asm.FnMapDeleteElem: HookDelete,
+}
+
 func discoverLookupProgram(insns asm.Instructions, typ ebpf.ProgramType, resolve lookupMapResolver) ([]discoveredLookup, error) {
+	sites, err := discoverMapCalls(insns, typ, resolve)
+	return slices.DeleteFunc(sites, func(site discoveredLookup) bool { return site.Op != HookLookup }), err
+}
+
+func discoverMapCalls(insns asm.Instructions, typ ebpf.ProgramType, resolve lookupMapResolver) ([]discoveredLookup, error) {
 	if lookupContext(typ) == "" {
 		return nil, refuse("only XDP and tc programs are supported")
 	}
@@ -352,8 +386,8 @@ func discoverLookupProgram(insns asm.Instructions, typ ebpf.ProgramType, resolve
 		if src, ok := ins.Source().(*btf.Line); ok {
 			file, line = src.FileName(), src.LineNumber()
 		}
-		if ins.IsBuiltinCall() && ins.Constant == int64(asm.FnMapLookupElem) {
-			site := LookupSite{MapName: mapName, FuncName: funcName, File: file, Line: line,
+		if op := mapCallOps[asm.BuiltinFunc(ins.Constant)]; ins.IsBuiltinCall() && op != "" {
+			site := LookupSite{Op: op, MapName: mapName, FuncName: funcName, File: file, Line: line,
 				SitePC: uint32(pc), InstructionIndex: it.Index}
 			if m != nil {
 				site.KeyTypeName, site.ValueTypeName = lookupTypeName(m.Key), lookupTypeName(m.Value)
@@ -370,10 +404,15 @@ func discoverLookupProgram(insns asm.Instructions, typ ebpf.ProgramType, resolve
 				site.Reason = "map reference is not defined in the collection"
 			case m.Type == ebpf.HashOfMaps || m.Type == ebpf.ArrayOfMaps:
 				site.Reason, generic = "map-in-map lookup returns an inner map", true
+			case op != HookLookup:
+				// checkLookupMap judges the typed lookup hook only.
 			default:
 				if reason := checkLookupMap(m); reason != "" {
 					site.Reason, typedOnly = reason, genericKinds[m.Type]
 				}
+			}
+			if op != HookLookup {
+				generic = false
 			}
 			sites = append(sites, discoveredLookup{site, mapID, m, generic, typedOnly})
 		}
@@ -623,7 +662,7 @@ func tailCallSites(insns asm.Instructions) []tailCallSite {
 			file, line = src.FileName(), src.LineNumber()
 		}
 		if ins.IsBuiltinCall() && ins.Constant == int64(asm.FnTailCall) {
-			site := LookupSite{FuncName: funcName, File: file, Line: line, SitePC: uint32(pc), InstructionIndex: it.Index}
+			site := LookupSite{Op: HookTailCall, FuncName: funcName, File: file, Line: line, SitePC: uint32(pc), InstructionIndex: it.Index}
 			sites = append(sites, tailCallSite{site, funcStart != 0})
 		}
 	}

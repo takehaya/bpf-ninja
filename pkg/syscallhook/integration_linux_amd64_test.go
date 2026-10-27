@@ -113,7 +113,8 @@ func TestIntegrationLoader(t *testing.T) {
 			} else if discover {
 				d := discovered[0]
 				if d.Program != "p" || d.Func != "entry_with_long_name" || d.Type != ebpf.XDP || len(d.Lookups) != 1 ||
-					d.Lookups[0].MapName != "sessions" || d.Lookups[0].Reason != "" || d.Maps["sessions"] != ebpf.Hash {
+					d.Lookups[0].MapName != "sessions" || d.Lookups[0].Reason != "" || d.Maps["sessions"] != ebpf.Hash ||
+					len(d.Calls) != 1 || d.Calls[0] != d.Lookups[0] {
 					t.Fatalf("discovery %+v does not match the loader", d)
 				}
 			}

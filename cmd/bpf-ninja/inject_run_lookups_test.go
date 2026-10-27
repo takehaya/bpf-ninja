@@ -21,17 +21,32 @@ func TestDiscoveryJSON(t *testing.T) {
 			{SitePC: 41, MapName: "services", FuncName: "sub", Reason: "lookup is not in the entry function"},
 			{SitePC: 50, FuncName: "tail_lb_ipv4_full"},
 		},
-		Maps: map[string]ebpf.MapType{"services": ebpf.Hash, "backends": ebpf.Hash, "calls": ebpf.ProgramArray, "x.rodata": ebpf.Array, "": ebpf.Array},
+		Calls: []inject.LookupSite{
+			{Op: inject.HookLookup, SitePC: 12, MapName: "services", FuncName: "tail_lb_ipv4_full"},
+			{Op: inject.HookUpdate, SitePC: 20, MapName: "services", FuncName: "tail_lb_ipv4_full"},
+			{Op: inject.HookLookup, SitePC: 30, MapName: "backends", FuncName: "tail_lb_ipv4_full", File: "lb.c", Line: 7},
+			{Op: inject.HookDelete, SitePC: 35, MapName: "x.bss", FuncName: "tail_lb_ipv4_full"},
+			{Op: inject.HookLookup, SitePC: 41, MapName: "services", FuncName: "sub", Reason: "lookup is not in the entry function"},
+			{Op: inject.HookLookup, SitePC: 50, FuncName: "tail_lb_ipv4_full"},
+		},
+		Maps: map[string]ebpf.MapType{"x.bss": ebpf.Hash, "services": ebpf.Hash, "backends": ebpf.Hash, "calls": ebpf.ProgramArray, "x.rodata": ebpf.Array, "": ebpf.Array},
 	}
 	got, err := json.Marshal(discoveryJSON(d))
 	if err != nil {
 		t.Fatal(err)
 	}
 	want := `{"program":"tail_lb_ipv4","func":"tail_lb_ipv4_full","type":"SchedCLS","ctx_type":"__sk_buff",` +
-		`"maps":[{"name":"services","type":"Hash","sites":[12,41]},{"name":"backends","type":"Hash","sites":[30]},` +
-		`{"name":"calls","type":"ProgramArray","sites":[]},{"name":"x.rodata","type":"Array","sites":[]}],` +
+		`"maps":[{"name":"services","type":"Hash","sites":[12,41],"ops":["lookup","update"]},{"name":"backends","type":"Hash","sites":[30],"ops":["lookup"]},` +
+		`{"name":"calls","type":"ProgramArray","sites":[],"ops":[]},{"name":"x.bss","type":"Hash","sites":[],"ops":["delete"]},` +
+		`{"name":"x.rodata","type":"Array","sites":[],"ops":[]}],` +
 		`"lookups":[{"kind":"lookup","pc":12,"map":"services","func":"tail_lb_ipv4_full"},` +
 		`{"kind":"lookup","pc":30,"map":"backends","func":"tail_lb_ipv4_full","file":"lb.c","line":7},` +
+		`{"kind":"lookup","pc":41,"map":"services","func":"sub","reason":"lookup is not in the entry function"},` +
+		`{"kind":"lookup","pc":50,"func":"tail_lb_ipv4_full"}],` +
+		`"calls":[{"kind":"lookup","pc":12,"map":"services","func":"tail_lb_ipv4_full"},` +
+		`{"kind":"update","pc":20,"map":"services","func":"tail_lb_ipv4_full"},` +
+		`{"kind":"lookup","pc":30,"map":"backends","func":"tail_lb_ipv4_full","file":"lb.c","line":7},` +
+		`{"kind":"delete","pc":35,"map":"x.bss","func":"tail_lb_ipv4_full"},` +
 		`{"kind":"lookup","pc":41,"map":"services","func":"sub","reason":"lookup is not in the entry function"},` +
 		`{"kind":"lookup","pc":50,"func":"tail_lb_ipv4_full"}],` +
 		`"rule":{"program":"tail_lb_ipv4_full","auto":true,"maps":["services","backends"],"hook":"ninja","stack_lowest_offset":null}}`

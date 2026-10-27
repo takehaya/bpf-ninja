@@ -41,13 +41,15 @@ type Options struct {
 }
 
 // Discovery lists the lookups of one program load (see
-// inject.DiscoverLookupsRaw) and the kinds of the maps it references, by
+// inject.DiscoverLookupsRaw), all its map calls with lookups among them
+// (inject.DiscoverMapCallsRaw), and the kinds of the maps it references, by
 // kernel map name. Program is the kernel program name and Func the entry
 // function.
 type Discovery struct {
 	Program, Func string
 	Type          ebpf.ProgramType
 	Lookups       []inject.LookupSite
+	Calls         []inject.LookupSite
 	Maps          map[string]ebpf.MapType
 }
 
@@ -511,11 +513,16 @@ func (s *supervisor) discover(r *remote, attr []byte, name string) error {
 	if err != nil {
 		return err
 	}
-	lookups, err := inject.DiscoverLookupsRaw(raw)
+	calls, err := inject.DiscoverMapCallsRaw(raw)
 	if err != nil {
 		return err
 	}
-	d := Discovery{Program: name, Func: entry, Type: raw.Type, Lookups: lookups, Maps: map[string]ebpf.MapType{}}
+	d := Discovery{Program: name, Func: entry, Type: raw.Type, Calls: calls, Maps: map[string]ebpf.MapType{}}
+	for _, site := range calls {
+		if site.Op == inject.HookLookup {
+			d.Lookups = append(d.Lookups, site)
+		}
+	}
 	for _, m := range raw.Maps {
 		d.Maps[m.Name] = m.Type
 	}

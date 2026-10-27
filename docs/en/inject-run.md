@@ -156,9 +156,12 @@ This output is from the integration loader on 7.0:
       "type": "XDP",
       "ctx_type": "xdp_md",
       "maps": [
-        {"name": "sessions", "type": "Hash", "sites": [6]}
+        {"name": "sessions", "type": "Hash", "sites": [6], "ops": ["lookup"]}
       ],
       "lookups": [
+        {"kind": "lookup", "pc": 6, "map": "sessions", "func": "entry_with_long_name"}
+      ],
+      "calls": [
         {"kind": "lookup", "pc": 6, "map": "sessions", "func": "entry_with_long_name"}
       ],
       "rule": {
@@ -173,8 +176,9 @@ This output is from the integration loader on 7.0:
 }
 ```
 
-- `maps` lists every map the program references: first those with lookups, in the order of their first lookup, with the `pc` of each, then the others by name with no sites.
+- `maps` lists every map the program references: first those with lookups, in the order of their first lookup, with the `pc` of each in `sites`, then the others by name with no sites.
 - `lookups` are the discovered lookup sites with the fields of a hooks-file site; one that `auto` would skip carries a `reason`.
+- `calls` lists every `bpf_map_lookup_elem`, `bpf_map_update_elem` and `bpf_map_delete_elem` call, with the op as `kind`, and each map's `ops` lists the ops called on it. Only lookups can be instrumented so far; the `reason` of an update or delete only says why its map or `ctx` is out of reach.
 - `rule` is a rule for this program that instruments every named map with lookups. Its `stack_lowest_offset` is `null` because only the caller can audit the program's stack, so the rule is refused until it is filled in. Edit `maps`, and add `dispatch`, `entry` or `tail_calls` as needed.
 - A program loaded twice is listed twice.
 
@@ -267,7 +271,7 @@ Unprivileged tests cover strict config parsing, attr sizes and offsets, target a
 The integration test is guarded by the `integration` build tag and a root check.
 It launches the same Go loader both directly and under the supervisor, verifies kernel function metadata, and executes the loaded XDP program using `BPF_PROG_TEST_RUN`.
 It covers kernel-name and function-name selection, fail-open, fail-closed, and unmatched loads.
-It also checks that the launcher reports each successful injection, and only those, with the program ID the loader sees, that `maps` instruments the named map and refuses an unknown one, and that discovery reports the loader's lookup with and without a rule; `--hooks-json` and `--lookups-json` are covered by unit tests of the JSON shape and of the file they write.
+It also checks that the launcher reports each successful injection, and only those, with the program ID the loader sees, that `maps` instruments the named map and refuses an unknown one, and that discovery reports the loader's lookup, among its map calls, with and without a rule; `--hooks-json` and `--lookups-json` are covered by unit tests of the JSON shape and of the file they write.
 It never attaches to an interface, pins objects, or changes sysctls, routes, or firewall rules.
 
 ```sh

@@ -24,9 +24,11 @@ type lookupsFileJSON struct {
 	Programs []discoveredProgJSON `json:"programs"`
 }
 
-// discoveredProgJSON is one program load. Rule instruments every named map
-// with lookups; its stack_lowest_offset is null because only the caller can
-// audit the stack, so the rule is refused until it is filled in.
+// discoveredProgJSON is one program load. Calls lists every lookup, update
+// and delete, with the op as kind; only lookups can be instrumented so far.
+// Rule instruments every named map with lookups; its stack_lowest_offset is
+// null because only the caller can audit the stack, so the rule is refused
+// until it is filled in.
 type discoveredProgJSON struct {
 	Program string              `json:"program"`
 	Func    string              `json:"func"`
@@ -34,33 +36,42 @@ type discoveredProgJSON struct {
 	CtxType string              `json:"ctx_type"`
 	Maps    []discoveredMapJSON `json:"maps"`
 	Lookups []hookSiteJSON      `json:"lookups"`
+	Calls   []hookSiteJSON      `json:"calls"`
 	Rule    syscallhook.Rule    `json:"rule"`
 }
 
 // discoveredMapJSON is one map the program references, with the PCs of its
-// lookups; a map the program only passes to other helpers has none.
+// lookups and the ops the program calls on it; a map the program only passes
+// to other helpers has neither.
 type discoveredMapJSON struct {
 	Name  string   `json:"name"`
 	Type  string   `json:"type"`
 	Sites []uint32 `json:"sites"`
+	Ops   []string `json:"ops"`
 }
 
 func discoveryJSON(d syscallhook.Discovery) discoveredProgJSON {
 	out := discoveredProgJSON{Program: d.Program, Func: d.Func, Type: d.Type.String(), CtxType: inject.ContextType(d.Type),
-		Maps: []discoveredMapJSON{}, Lookups: []hookSiteJSON{}}
+		Maps: []discoveredMapJSON{}, Lookups: []hookSiteJSON{}, Calls: []hookSiteJSON{}}
 	index := map[string]int{}
+	addMap := func(name string) int {
+		i, ok := index[name]
+		if !ok {
+			i = len(out.Maps)
+			index[name] = i
+			out.Maps = append(out.Maps, discoveredMapJSON{Name: name, Type: d.Maps[name].String(), Sites: []uint32{}, Ops: []string{}})
+		}
+		return i
+	}
 	for _, site := range d.Lookups {
 		out.Lookups = append(out.Lookups, siteJSON(inject.HookLookup, site))
 		if site.MapName == "" {
 			continue
 		}
-		i, ok := index[site.MapName]
-		if !ok {
-			i = len(out.Maps)
-			index[site.MapName] = i
-			out.Maps = append(out.Maps, discoveredMapJSON{Name: site.MapName, Type: d.Maps[site.MapName].String()})
+		if _, ok := index[site.MapName]; !ok {
 			out.Rule.Maps = append(out.Rule.Maps, site.MapName)
 		}
+		i := addMap(site.MapName)
 		out.Maps[i].Sites = append(out.Maps[i].Sites, site.SitePC)
 	}
 	// Then the maps without lookups, by name so the output is stable.
@@ -72,7 +83,13 @@ func discoveryJSON(d syscallhook.Discovery) discoveredProgJSON {
 	}
 	slices.Sort(rest)
 	for _, name := range rest {
-		out.Maps = append(out.Maps, discoveredMapJSON{Name: name, Type: d.Maps[name].String(), Sites: []uint32{}})
+		addMap(name)
+	}
+	for _, site := range d.Calls {
+		out.Calls = append(out.Calls, siteJSON(site.Op, site))
+		if i, ok := index[site.MapName]; ok && !slices.Contains(out.Maps[i].Ops, string(site.Op)) {
+			out.Maps[i].Ops = append(out.Maps[i].Ops, string(site.Op))
+		}
 	}
 	out.Rule.Program = cmp.Or(d.Func, d.Program)
 	out.Rule.Auto = true
