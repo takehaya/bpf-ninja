@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"slices"
 	"strings"
 	"testing"
 
@@ -131,6 +132,56 @@ func bpfMapIDOffset(t *testing.T, kernel *btf.Spec) int32 {
 	return -1
 }
 
+// packetLength reads the packet length from the hook ctx in R6. read runs
+// first and may exit to "done"; length leaves the length in R2, clobbering
+// R1. The tracing verifier translates xdp_md to the kernel's xdp_buff (data_end
+// - data) and __sk_buff to sk_buff (len). raw reads through
+// bpf_probe_read_kernel into fp-72 and fp-80, for a static hook whose ctx
+// argument the kernel passes as a u64.
+func packetLength(t *testing.T, kernel *btf.Spec, target *ebpf.Program, raw bool) (read, length asm.Instructions) {
+	t.Helper()
+	name, fields := "xdp_buff", []string{"data", "data_end"}
+	if target.Type() == ebpf.SchedCLS || target.Type() == ebpf.SchedACT {
+		name, fields = "sk_buff", []string{"len"}
+	}
+	var ctx *btf.Struct
+	if err := kernel.TypeByName(name, &ctx); err != nil {
+		t.Fatal(err)
+	}
+	offsets := map[string]int16{}
+	for _, member := range ctx.Members {
+		if slices.Contains(fields, member.Name) {
+			offsets[member.Name] = int16(member.Offset.Bytes())
+		}
+	}
+	if len(offsets) != len(fields) {
+		t.Fatalf("kernel %s lacks %v", name, fields)
+	}
+	size := asm.DWord
+	if name == "sk_buff" {
+		size = asm.Word
+	}
+	base, at := asm.R6, func(i int) int16 { return offsets[fields[i]] }
+	if raw {
+		for i, field := range fields {
+			read = append(read,
+				asm.Mov.Reg(asm.R1, asm.RFP), asm.Add.Imm(asm.R1, int32(-72-8*i)),
+				asm.Mov.Imm(asm.R2, int32(size.Sizeof())), asm.Mov.Reg(asm.R3, asm.R6), asm.Add.Imm(asm.R3, int32(offsets[field])),
+				asm.FnProbeReadKernel.Call(),
+				asm.JNE.Imm(asm.R0, 0, "done"))
+		}
+		base, at = asm.RFP, func(i int) int16 { return int16(-72 - 8*i) }
+	}
+	if name == "sk_buff" {
+		return read, asm.Instructions{asm.LoadMem(asm.R2, base, at(0), size)}
+	}
+	return read, asm.Instructions{
+		asm.LoadMem(asm.R1, base, at(0), size),
+		asm.LoadMem(asm.R2, base, at(1), size),
+		asm.Sub.Reg(asm.R2, asm.R1),
+	}
+}
+
 // lookupObserverArgs records seen, packet length, key, value.imsi and what
 // args selects.
 func lookupObserverArgs(t *testing.T, hook string, target *ebpf.Program, args observerArgs) *ebpf.CollectionSpec {
@@ -139,43 +190,17 @@ func lookupObserverArgs(t *testing.T, hook string, target *ebpf.Program, args ob
 	if err != nil {
 		t.Fatal(err)
 	}
-	var xdp *btf.Struct
-	if err := kernel.TypeByName("xdp_buff", &xdp); err != nil {
-		t.Fatal(err)
-	}
-	offsets := map[string]int16{}
-	for _, member := range xdp.Members {
-		if member.Name == "data" || member.Name == "data_end" {
-			offsets[member.Name] = int16(member.Offset.Bytes())
-		}
-	}
-	if len(offsets) != 2 {
-		t.Fatal("kernel xdp_buff lacks data/data_end")
-	}
 	keyArg, recordSize := int32(1), uint32(24)
 	if args.site {
 		keyArg, recordSize = 2, 32
 	}
 	insns := asm.Instructions{
-		asm.LoadMem(asm.R6, asm.R1, 0, asm.DWord), // xdp ctx
+		asm.LoadMem(asm.R6, asm.R1, 0, asm.DWord), // hook ctx
 		asm.Mov.Reg(asm.R9, asm.R1),
 		asm.Mov.Imm(asm.R0, 0), asm.StoreMem(asm.RFP, -48, asm.R0, asm.DWord),
 	}
-	// The tracing verifier translates xdp_md to the kernel's xdp_buff.
-	bounds := asm.Instructions{
-		asm.LoadMem(asm.R1, asm.R6, offsets["data"], asm.DWord),
-		asm.LoadMem(asm.R2, asm.R6, offsets["data_end"], asm.DWord),
-	}
-	if args.rawCtx {
-		for i, field := range []string{"data", "data_end"} {
-			insns = append(insns,
-				asm.Mov.Reg(asm.R1, asm.RFP), asm.Add.Imm(asm.R1, int32(-72-8*i)),
-				asm.Mov.Imm(asm.R2, 8), asm.Mov.Reg(asm.R3, asm.R6), asm.Add.Imm(asm.R3, int32(offsets[field])),
-				asm.FnProbeReadKernel.Call(),
-				asm.JNE.Imm(asm.R0, 0, "done"))
-		}
-		bounds = asm.Instructions{asm.LoadMem(asm.R1, asm.RFP, -72, asm.DWord), asm.LoadMem(asm.R2, asm.RFP, -80, asm.DWord)}
-	}
+	read, length := packetLength(t, kernel, target, args.rawCtx)
+	insns = append(insns, read...)
 	insns = append(insns,
 		asm.Mov.Reg(asm.R1, asm.R9),
 		asm.Mov.Imm(asm.R2, keyArg), asm.Mov.Reg(asm.R3, asm.RFP), asm.Add.Imm(asm.R3, -16),
@@ -200,9 +225,8 @@ func lookupObserverArgs(t *testing.T, hook string, target *ebpf.Program, args ob
 		asm.JEq.Imm(asm.R0, 0, "done"),
 		asm.LoadMem(asm.R1, asm.R0, 0, asm.DWord), asm.Add.Imm(asm.R1, 1),
 		asm.StoreMem(asm.R0, 0, asm.R1, asm.DWord))
-	insns = append(insns, bounds...)
+	insns = append(insns, length...)
 	insns = append(insns,
-		asm.Sub.Reg(asm.R2, asm.R1),
 		asm.StoreMem(asm.R0, 8, asm.R2, asm.Word),
 		asm.LoadMem(asm.R1, asm.RFP, -28, asm.Word),
 		asm.StoreMem(asm.R0, 12, asm.R1, asm.Word),

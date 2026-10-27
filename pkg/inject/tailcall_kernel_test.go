@@ -69,18 +69,9 @@ func scalarObserver(t *testing.T, fn string, target *ebpf.Program, args int) *eb
 	if err != nil {
 		t.Fatal(err)
 	}
-	var xdp *btf.Struct
-	if err := kernel.TypeByName("xdp_buff", &xdp); err != nil {
-		t.Fatal(err)
-	}
-	offsets := map[string]int16{}
-	for _, member := range xdp.Members {
-		if member.Name == "data" || member.Name == "data_end" {
-			offsets[member.Name] = int16(member.Offset.Bytes())
-		}
-	}
+	_, length := packetLength(t, kernel, target, false)
 	insns := asm.Instructions{
-		asm.LoadMem(asm.R6, asm.R1, 0, asm.DWord), // xdp ctx
+		asm.LoadMem(asm.R6, asm.R1, 0, asm.DWord), // hook ctx
 		asm.Mov.Reg(asm.R9, asm.R1),
 		asm.StoreImm(asm.RFP, -4, 0, asm.Word),
 		asm.Mov.Reg(asm.R2, asm.RFP), asm.Add.Imm(asm.R2, -4),
@@ -89,11 +80,9 @@ func scalarObserver(t *testing.T, fn string, target *ebpf.Program, args int) *eb
 		asm.Mov.Reg(asm.R7, asm.R0),
 		asm.LoadMem(asm.R1, asm.R7, 0, asm.DWord), asm.Add.Imm(asm.R1, 1),
 		asm.StoreMem(asm.R7, 0, asm.R1, asm.DWord),
-		asm.LoadMem(asm.R1, asm.R6, offsets["data"], asm.DWord),
-		asm.LoadMem(asm.R2, asm.R6, offsets["data_end"], asm.DWord),
-		asm.Sub.Reg(asm.R2, asm.R1),
-		asm.StoreMem(asm.R7, 8, asm.R2, asm.Word),
 	}
+	insns = append(insns, length...)
+	insns = append(insns, asm.StoreMem(asm.R7, 8, asm.R2, asm.Word))
 	for i := 1; i <= args; i++ {
 		insns = append(insns,
 			asm.Mov.Reg(asm.R1, asm.R9),
@@ -276,6 +265,121 @@ func TestBpfEntryHookWithLookup(t *testing.T) {
 			binary.LittleEndian.Uint32(got[12:]), binary.LittleEndian.Uint64(got[16:])
 		if seen != 1 || length != 64 || gotKey != 7 || imsi != 9 {
 			t.Fatalf("key=%d: lookup seen=%d len=%d key=%d imsi=%d", key, seen, length, gotKey, imsi)
+		}
+	}
+}
+
+// The per-map hooks of a tc program take struct __sk_buff *. Auto with Entry
+// and TailCalls instruments dispatchFixture as a SchedCLS program with a typed
+// lookup hook, an entry hook and a tail-call hook; an fentry on each reads the
+// packet length through the ctx (sk_buff len) and the hook's own arguments,
+// and the program's results do not change.
+func TestBpfLookupHooksTC(t *testing.T) {
+	testutil.SkipIfNotRoot(t)
+	fixture := func() *ebpf.CollectionSpec { return asTC(dispatchFixture()) }
+	work := fixture()
+	plan, err := transformLookup(work, LookupRequest{ProgramName: "p", Auto: true, Entry: true, TailCalls: true,
+		HookName: "obs", Stack: StackAudit{LowestOffset: -8}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := map[HookKind]string{}
+	var lookupPC, tailPC uint32
+	for _, hook := range plan.hooks {
+		if hook.Dispatch || hook.Static || hook.Untrusted {
+			t.Fatalf("hook: %+v", hook)
+		}
+		names[hook.Kind] = hook.Name
+		switch hook.Kind {
+		case HookLookup:
+			if hook.MapName != "sessions" || len(hook.Sites) != 1 {
+				t.Fatalf("lookup hook: %+v", hook)
+			}
+			lookupPC = hook.Sites[0].SitePC
+		case HookTailCall:
+			tailPC = hook.Sites[0].SitePC
+		}
+	}
+	if len(plan.hooks) != 3 || len(names) != 3 || lookupPC != 13 || tailPC != 20 {
+		t.Fatalf("hooks %+v", plan.hooks)
+	}
+	load := func(spec *ebpf.CollectionSpec) *ebpf.Collection {
+		c, tgt := loadOrSkip(t, spec), loadOrSkip(t, asTC(tailTargetFixture()))
+		t.Cleanup(c.Close)
+		t.Cleanup(tgt.Close)
+		if err := c.Maps["jmp"].Put(uint32(0), tgt.Programs["target"]); err != nil {
+			t.Fatal(err)
+		}
+		if err := c.Maps["sessions"].Put(uint32(7), [2]uint64{3, 9}); err != nil {
+			t.Fatal(err)
+		}
+		return c
+	}
+	plain, injected := load(fixture()), load(work)
+	prog := injected.Programs["p"]
+	entry := attachScalarObserver(t, names[HookEntry], prog, 0)
+	tail := attachScalarObserver(t, names[HookTailCall], prog, 2)
+	obs := loadOrSkip(t, lookupObserverArgs(t, names[HookLookup], prog, observerArgs{site: true}))
+	t.Cleanup(obs.Close)
+	l, err := link.AttachTracing(link.TracingOptions{Program: obs.Programs["observe"], AttachType: ebpf.AttachTraceFEntry})
+	if err != nil {
+		if errors.Is(err, unix.EPERM) || errors.Is(err, ebpf.ErrNotSupported) {
+			t.Skipf("fentry unavailable: %v", err)
+		}
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = l.Close() })
+	for _, tc := range []struct {
+		key, index uint32
+		length     int
+		action     uint32
+		hit        bool // the lookup hits and the tail call fails
+	}{{7, 1, 64, 2, true}, {8, 0, 80, 3, false}} {
+		for _, m := range []*ebpf.Map{entry, tail} {
+			if err := m.Put(uint32(0), scalarRecord{}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := obs.Maps["obs"].Put(uint32(0), [32]byte{}); err != nil {
+			t.Fatal(err)
+		}
+		packet := make([]byte, tc.length)
+		binary.LittleEndian.PutUint32(packet, tc.key)
+		binary.LittleEndian.PutUint32(packet[4:], tc.index)
+		for _, c := range []*ebpf.Collection{plain, injected} {
+			ret, err := c.Programs["p"].Run(&ebpf.RunOptions{Data: packet, Repeat: 1})
+			if err != nil || ret != tc.action {
+				t.Fatalf("key=%d index=%d: action=%d want %d err=%v", tc.key, tc.index, ret, tc.action, err)
+			}
+		}
+		read := func(m *ebpf.Map) scalarRecord {
+			var r scalarRecord
+			if err := m.Lookup(uint32(0), &r); err != nil {
+				t.Fatal(err)
+			}
+			return r
+		}
+		var got [32]byte
+		if err := obs.Maps["obs"].Lookup(uint32(0), &got); err != nil {
+			t.Fatal(err)
+		}
+		seen, length, key := binary.LittleEndian.Uint64(got[:]), binary.LittleEndian.Uint32(got[8:]), binary.LittleEndian.Uint32(got[12:])
+		imsi, site := binary.LittleEndian.Uint64(got[16:]), binary.LittleEndian.Uint32(got[24:])
+		gotEntry, gotTail := read(entry), read(tail)
+		if gotEntry.Seen != 1 || gotEntry.Len != uint32(tc.length) {
+			t.Fatalf("key=%d: entry=%+v", tc.key, gotEntry)
+		}
+		if !tc.hit {
+			if got != [32]byte{} || gotTail != (scalarRecord{}) {
+				t.Fatalf("key=%d: lookup %x tail=%+v", tc.key, got, gotTail)
+			}
+			continue
+		}
+		if seen != 1 || length != uint32(tc.length) || key != tc.key || imsi != 9 || site != lookupPC {
+			t.Fatalf("key=%d: lookup seen=%d len=%d key=%d imsi=%d site=%d, want site %d", tc.key, seen, length, key, imsi, site, lookupPC)
+		}
+		if gotTail.Seen != 1 || gotTail.Len != uint32(tc.length) || gotTail.Args != [2]uint32{tailPC, tc.index} {
+			t.Fatalf("key=%d: tail=%+v, want site %d", tc.key, gotTail, tailPC)
 		}
 	}
 }
