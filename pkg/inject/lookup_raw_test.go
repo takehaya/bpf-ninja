@@ -42,6 +42,21 @@ func fillNonZero(t *testing.T, v reflect.Value) {
 	}
 }
 
+// Every field of LookupRequestRaw reaches LookupRequest unchanged, so a new
+// option cannot be silently dropped when the raw request is converted.
+func TestRawRequestForwardsOptions(t *testing.T) {
+	var raw LookupRequestRaw
+	v := reflect.ValueOf(&raw).Elem()
+	fillNonZero(t, v)
+	got := reflect.ValueOf(raw.Request())
+	for i := range v.NumField() {
+		name := v.Type().Field(i).Name
+		if f := got.FieldByName(name); !f.IsValid() || !reflect.DeepEqual(f.Interface(), v.Field(i).Interface()) {
+			t.Errorf("%s is not forwarded", name)
+		}
+	}
+}
+
 // A selector with any one field set is not empty.
 func TestLookupSelectorEmpty(t *testing.T) {
 	if !(LookupSelector{}).empty() {
@@ -53,24 +68,6 @@ func TestLookupSelectorEmpty(t *testing.T) {
 		fillNonZero(t, f)
 		if s.empty() {
 			t.Errorf("selector with %s set is empty", reflect.TypeFor[LookupSelector]().Field(i).Name)
-		}
-	}
-}
-
-// Every bool option of LookupRequestRaw reaches LookupRequest, so a new flag
-// cannot be silently dropped when the raw request is converted.
-func TestRawRequestForwardsOptions(t *testing.T) {
-	var raw LookupRequestRaw
-	v := reflect.ValueOf(&raw).Elem()
-	for i := range v.NumField() {
-		if f := v.Field(i); f.Kind() == reflect.Bool {
-			f.SetBool(true)
-		}
-	}
-	got := reflect.ValueOf(raw.request())
-	for i := range v.NumField() {
-		if name := v.Type().Field(i).Name; v.Field(i).Kind() == reflect.Bool && !got.FieldByName(name).Bool() {
-			t.Errorf("%s is not forwarded", name)
 		}
 	}
 }

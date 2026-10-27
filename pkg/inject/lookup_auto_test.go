@@ -2,6 +2,7 @@ package inject
 
 import (
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -936,6 +937,33 @@ func TestCheckLookupStack(t *testing.T) {
 	}
 }
 
+// ValidateRaw checks the hook name, leaving room for the longest suffix
+// whenever the transform appends one, then the stack bound with
+// CheckLookupStack's own message.
+func TestValidateRaw(t *testing.T) {
+	h := func(n int) string { return strings.Repeat("h", n) }
+	m := LookupSelector{MapName: "m"}
+	for _, tc := range []struct {
+		name string
+		req  LookupRequestRaw
+		want string // "" accepts
+	}{
+		{"map-127", LookupRequestRaw{Site: m, HookName: h(MaxHookName)}, ""},
+		{"map-128", LookupRequestRaw{Site: m, HookName: h(MaxHookName + 1)}, "valid C/BTF identifier"},
+		{"bad-ident", LookupRequestRaw{Site: m, HookName: "bad-name"}, "valid C/BTF identifier"},
+		{"auto-117", LookupRequestRaw{Auto: true, HookName: h(117)}, ""},
+		{"auto-118", LookupRequestRaw{Auto: true, HookName: h(118)}, `suffix "_tail_call"`},
+		{"entry-118", LookupRequestRaw{Entry: true, HookName: h(118)}, `suffix "_tail_call"`},
+		{"tails-118", LookupRequestRaw{TailCalls: true, HookName: h(118)}, `suffix "_tail_call"`},
+		{"stack", LookupRequestRaw{Site: m, HookName: "h", Stack: StackAudit{LowestOffset: -457}}, "Stack.LowestOffset -457 leaves no room"},
+	} {
+		err := ValidateRaw(tc.req)
+		if tc.want == "" && err != nil || tc.want != "" && (!errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), tc.want)) {
+			t.Errorf("%s: %v, want %q", tc.name, err, tc.want)
+		}
+	}
+}
+
 // Auto skips a generic group whose map slot overflows the stack while keeping
 // the typed hooks that fit, instead of refusing the whole transform.
 func TestLookupAutoSkipsOverflowingGeneric(t *testing.T) {
@@ -950,11 +978,25 @@ func TestLookupAutoSkipsOverflowingGeneric(t *testing.T) {
 	}
 }
 
+// Auto skips a group whose hook name cannot be formed within MaxHookName and
+// keeps the others; it refuses only when no group is left.
 func TestAutoHookNameLength(t *testing.T) {
 	req := autoReq()
-	req.HookName = strings.Repeat("h", maxHookName-1)
-	if _, err := transformLookup(multiLookupFixture(), req); !errors.Is(err, ErrRefused) {
+	req.HookName = strings.Repeat("h", MaxHookName-1)
+	if _, err := transformLookup(multiLookupFixture(), req); !errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), "no supported lookup sites (2 skipped)") {
 		t.Fatalf("overlong auto hook name: %v", err)
+	}
+	// With a 125-byte prefix, PREFIX_<index> fits for indexes 0-9 only.
+	var sites []discoveredLookup
+	for i := range 11 {
+		name := fmt.Sprintf("map_with_a_long_name_%d", i)
+		sites = append(sites, discoveredLookup{LookupSite: LookupSite{MapName: name, SitePC: uint32(i)}, mapID: name})
+	}
+	req.HookName = strings.Repeat("h", MaxHookName-2)
+	groups, skipped, err := selectLookups(sites, req, nil)
+	if err != nil || len(groups) != 10 || len(skipped) != 1 || skipped[0].SitePC != 10 ||
+		skipped[0].Reason != fmt.Sprintf("hook name %q is longer than 127 bytes", req.HookName+"_10") {
+		t.Fatalf("groups=%d skipped=%+v err=%v", len(groups), skipped, err)
 	}
 }
 

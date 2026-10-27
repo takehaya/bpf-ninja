@@ -62,10 +62,11 @@ func (s LookupSelector) empty() bool {
 // typed hook (a map-in-map, an indirect map reference, an XSK map or a devmap)
 // share one PREFIX_any generic hook (see LookupHook.Generic). Sites that
 // cannot be instrumented are reported in Skipped instead of refusing the
-// transform: an unsupported site or map kind, slots past the audited stack,
-// or, when the instrumented program would break a kernel call-chain stack
-// limit, first the sites that need the map slot or a value copy and then
-// every lookup. Auto refuses only when nothing at all would be instrumented.
+// transform: an unsupported site or map kind, a hook name past MaxHookName,
+// slots past the audited stack, or, when the instrumented program would break
+// a kernel call-chain stack limit, first the sites that need the map slot or
+// a value copy and then every lookup. Auto refuses only when nothing at all
+// would be instrumented.
 //
 // Entry also calls int HOOKNAME_entry(struct xdp_md *ctx) once at program
 // entry, which runs when the program is entered through a tail call, unlike an
@@ -607,24 +608,28 @@ func selectLookups(sites []discoveredLookup, req LookupRequest, reserved []strin
 		if len(generic) != 0 {
 			groups = append(groups, lookupGroup{sites: generic, generic: true})
 		}
-		if len(groups) == 0 && !req.Entry && !req.TailCalls {
-			return nil, skipped, refuse("no supported lookup sites (%d skipped)", len(skipped))
-		}
 		used := map[string]bool{}
 		for _, name := range reserved {
 			used[name] = true
 		}
-		for i := range groups {
-			mapName := groups[i].sites[0].MapName
-			if groups[i].generic {
+		// A group whose hook name cannot be formed is skipped like any other
+		// site Auto cannot instrument.
+		var named []lookupGroup
+		for i, group := range groups {
+			mapName := group.sites[0].MapName
+			if group.generic {
 				mapName = "any"
 			}
-			groups[i].name = autoHookName(req.HookName, mapName, i, used)
-			if !validIdent(groups[i].name) {
-				return nil, skipped, refuse("hook name %q is longer than %d bytes; use a shorter HookName", groups[i].name, maxHookName)
+			if group.name = autoHookName(req.HookName, mapName, i, used); validIdent(group.name) {
+				named = append(named, group)
+				continue
 			}
+			skipped = skipGroup(skipped, group, fmt.Sprintf("hook name %q is longer than %d bytes", group.name, MaxHookName))
 		}
-		return groups, skipped, nil
+		if len(named) == 0 && !req.Entry && !req.TailCalls {
+			return nil, skipped, refuse("no supported lookup sites (%d skipped)", len(skipped))
+		}
+		return named, skipped, nil
 	}
 	if req.Site.MapName == "" {
 		if (req.Entry || req.TailCalls) && req.Site.empty() {

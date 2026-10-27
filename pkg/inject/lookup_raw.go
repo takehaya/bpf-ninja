@@ -89,11 +89,32 @@ type LookupResultRaw struct {
 	InsertedSlots, AddedBytes           int
 }
 
-// request is the ELF-side request this raw request stands for; every option is
-// forwarded (TestRawRequestForwardsOptions guards against a dropped field).
-func (r LookupRequestRaw) request() LookupRequest {
+// Request is the ELF-side request r stands for, without ELFSHA256 and
+// ProgramName; every field is forwarded (TestRawRequestForwardsOptions guards
+// against a dropped field).
+func (r LookupRequestRaw) Request() LookupRequest {
 	return LookupRequest{Site: r.Site, Auto: r.Auto, Entry: r.Entry, TailCalls: r.TailCalls,
 		CopyReadOnly: r.CopyReadOnly, StaticUntrusted: r.StaticUntrusted, HookName: r.HookName, Stack: r.Stack}
+}
+
+// longestHookSuffix is the longest fixed suffix the transform appends to
+// HookName. Auto's per-map names that would pass MaxHookName fall back to
+// HOOKNAME_<index>, and a group whose name still does not fit is skipped.
+const longestHookSuffix = "_tail_call"
+
+// ValidateRaw checks the parts of req that do not depend on the program: the
+// hook name, with room for longestHookSuffix whenever the transform appends a
+// suffix, and the audited stack bound (CheckLookupStack). syscallhook.Validate
+// calls it, so a configuration check and the transform share these limits.
+func ValidateRaw(req LookupRequestRaw) error {
+	r := req.Request()
+	if !validIdent(r.HookName) {
+		return refuse("HookName %q must be a valid C/BTF identifier (1-%d chars, [A-Za-z_][A-Za-z0-9_]*)", r.HookName, MaxHookName)
+	}
+	if (r.Auto || r.Entry || r.TailCalls) && len(r.HookName)+len(longestHookSuffix) > MaxHookName {
+		return refuse("HookName %q with the suffix %q exceeds %d bytes", r.HookName, longestHookSuffix, MaxHookName)
+	}
+	return CheckLookupStack(r)
 }
 
 // DiscoverLookupsRaw lists lookup sites using map-fd identity and raw load
@@ -112,7 +133,7 @@ func DiscoverLookupsRaw(p RawProgram) ([]LookupSite, error) {
 // Any refusal returns nil and leaves the caller's inputs untouched.
 func TransformLookupRaw(p RawProgram, req LookupRequestRaw) (*LookupResultRaw, error) {
 	if !validIdent(req.HookName) {
-		return nil, refuse("HookName must be a valid C/BTF identifier (1-%d chars)", maxHookName)
+		return nil, refuse("HookName must be a valid C/BTF identifier (1-%d chars)", MaxHookName)
 	}
 	insns, types, resolve, err := prepareRawLookup(p)
 	if err != nil {
@@ -128,7 +149,7 @@ func TransformLookupRaw(p RawProgram, req LookupRequestRaw) (*LookupResultRaw, e
 			}
 		}
 	}
-	out, plan, err := transformLookupProgram(insns, p.Type, types, resolve, req.request())
+	out, plan, err := transformLookupProgram(insns, p.Type, types, resolve, req.Request())
 	if err != nil {
 		return nil, err
 	}

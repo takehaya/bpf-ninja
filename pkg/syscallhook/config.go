@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"regexp"
 
 	"github.com/takehaya/bpf-ninja/pkg/inject"
 )
@@ -37,8 +36,9 @@ type Rule struct {
 	StackLowestOffset *int16   `json:"stack_lowest_offset"`
 }
 
-// request is the raw transform request r stands for; every option is forwarded
-// (TestRuleRequestForwardsOptions guards against a dropped field).
+// request is the raw transform request r stands for; every field but Program,
+// which selects the load, is forwarded (TestRuleRequestForwardsOptions guards
+// against a dropped field).
 func (r Rule) request() inject.LookupRequestRaw {
 	var lo int16
 	if r.StackLowestOffset != nil {
@@ -56,28 +56,17 @@ func (r Rule) request() inject.LookupRequestRaw {
 	}
 }
 
-var identifier = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
-
 func Validate(rules []Rule) error {
 	if len(rules) == 0 {
 		return fmt.Errorf("at least one injection rule is required")
 	}
 	seen := make(map[string]bool)
 	for i, r := range rules {
-		if r.Program == "" || (r.Map == "" && !r.Auto && !r.Entry && !r.TailCalls) || !identifier.MatchString(r.Hook) || len(r.Hook) > 127 {
-			return fmt.Errorf("rule %d: program, a C identifier hook (at most 127 bytes) and one of map, auto, entry or tail_calls are required", i)
+		if r.Program == "" || (r.Map == "" && !r.Auto && !r.Entry && !r.TailCalls) {
+			return fmt.Errorf("rule %d: program and one of map, auto, entry or tail_calls are required", i)
 		}
 		if (r.Auto || r.Map == "") && (r.Func != "" || r.Line != 0 || r.AllMatches || len(r.SitePCs) > 0) {
 			return fmt.Errorf("rule %d: func, line, all_matches and site_pcs filter map and cannot be used with auto or without map", i)
-		}
-		// The transform appends these suffixes; auto also appends _MAP or _N.
-		for _, suffix := range []struct {
-			on   bool
-			name string
-		}{{r.Entry, "_entry"}, {r.TailCalls, "_tail_call"}, {r.Auto, "_0"}} {
-			if suffix.on && len(r.Hook)+len(suffix.name) > 127 {
-				return fmt.Errorf("rule %d: hook %q with suffix %q exceeds 127 bytes", i, r.Hook, suffix.name)
-			}
 		}
 		if r.Auto && r.Map != "" {
 			return fmt.Errorf("rule %d: auto selects every supported lookup; map must be empty", i)
@@ -92,11 +81,11 @@ func Validate(rules []Rule) error {
 		if r.StackLowestOffset == nil {
 			return fmt.Errorf("rule %d: audited stack_lowest_offset is required", i)
 		}
-		// The reserved spill bytes come from inject, so Validate cannot drift
-		// from the transform. The generic-hook map slot and a CopyReadOnly value
-		// copy are program-dependent and are enforced during the transform.
-		raw := r.request()
-		if err := inject.CheckLookupStack(inject.LookupRequest{Site: raw.Site, Auto: raw.Auto, Entry: raw.Entry, TailCalls: raw.TailCalls, Stack: raw.Stack}); err != nil {
+		// The hook-name and stack limits come from inject, so Validate cannot
+		// drift from the transform. The generic-hook map slot, a CopyReadOnly
+		// value copy and call-chain limits are program-dependent and are
+		// enforced during the transform.
+		if err := inject.ValidateRaw(r.request()); err != nil {
 			return fmt.Errorf("rule %d: %w", i, err)
 		}
 	}

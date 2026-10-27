@@ -526,7 +526,7 @@ func TestValidateRequest(t *testing.T) {
 		{"empty-hook", func(r *Request) { r.HookName = "" }},
 		{"bad-hook-char", func(r *Request) { r.HookName = "bad name" }},
 		{"bad-hook-digit", func(r *Request) { r.HookName = "9hook" }},
-		{"long-hook", func(r *Request) { r.HookName = strings.Repeat("a", maxHookName+1) }},
+		{"long-hook", func(r *Request) { r.HookName = strings.Repeat("a", MaxHookName+1) }},
 		{"ptr-not-r0", func(r *Request) { r.Load.PtrReg = asm.R3 }},
 		{"stack-positive", func(r *Request) { r.Stack.LowestOffset = 8 }},
 		{"stack-too-deep", func(r *Request) { r.Stack.LowestOffset = -513 }},

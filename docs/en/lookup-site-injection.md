@@ -63,7 +63,7 @@ When that name is empty, invalid, or already used by another hook in the request
 Hooks are numbered in the order their maps first appear in the program.
 `LookupResult.Hooks` lists each hook with its map name and sites.
 Sites that discovery lists with a `Reason` that the generic hook cannot take either are not instrumented; they are reported in `LookupResult.Skipped` rather than refusing the transform.
-So are the sites of a hook whose slots would pass the frame limit below and, when the instrumented program would break a call-chain stack limit (see [Entry and tail-call hooks](#entry-and-tail-call-hooks)), first the sites of the generic hook and of copied read-only maps, then every lookup site, keeping the entry and tail-call hooks; each such site's `Reason` names the limit.
+So are the sites of a hook whose name would pass 127 bytes, of a hook whose slots would pass the frame limit below, and, when the instrumented program would break a call-chain stack limit (see [Entry and tail-call hooks](#entry-and-tail-call-hooks)), first the sites of the generic hook and of copied read-only maps, then every lookup site, keeping the entry and tail-call hooks; each such site's `Reason` names the limit.
 If nothing at all is instrumented, and neither `Entry` nor `TailCalls` is requested, the transform is refused.
 Every hook name passes the same collision checks as a single `HookName`.
 

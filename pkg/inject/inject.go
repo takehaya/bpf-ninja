@@ -80,8 +80,8 @@ const insertSlots = 6
 // genSlots is the number of raw slots the appended generated function occupies.
 const genSlots = 3
 
-// maxHookName bounds the generated name to a conservative kernel symbol length.
-const maxHookName = 127
+// MaxHookName bounds the generated name to a conservative kernel symbol length.
+const MaxHookName = 127
 
 // ErrRefused is wrapped by every refusal so callers can branch on it without
 // string matching. A refusal never mutates any input.
@@ -289,7 +289,7 @@ func validateRequest(req Request) error {
 	case req.HookName == "":
 		return refuse("HookName is required")
 	case !validIdent(req.HookName):
-		return refuse("HookName %q must be a valid C/BTF identifier (1-%d chars, [A-Za-z_][A-Za-z0-9_]*)", req.HookName, maxHookName)
+		return refuse("HookName %q must be a valid C/BTF identifier (1-%d chars, [A-Za-z_][A-Za-z0-9_]*)", req.HookName, MaxHookName)
 	case req.Load.PtrReg != asm.R0:
 		return refuse("Load.PtrReg must be R0, got R%d", req.Load.PtrReg)
 	case req.Stack.LowestOffset > 0:
@@ -304,7 +304,7 @@ func validateRequest(req Request) error {
 }
 
 func validIdent(s string) bool {
-	return len(s) >= 1 && len(s) <= maxHookName && identRe.MatchString(s)
+	return len(s) >= 1 && len(s) <= MaxHookName && identRe.MatchString(s)
 }
 
 // checkNoCollision refuses if HookName already exists as an instruction symbol,
