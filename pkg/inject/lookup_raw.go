@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"slices"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/asm"
@@ -47,13 +48,14 @@ type RawProgram struct {
 // there is no ELF hash binding. Checksums only cover instruction encoding.
 type LookupRequestRaw struct {
 	Site            LookupSelector
-	Auto            bool     // see LookupRequest.Auto
-	Maps            []string // see LookupRequest.Maps
-	Entry           bool     // see LookupRequest.Entry
-	TailCalls       bool     // see LookupRequest.TailCalls
-	CopyReadOnly    bool     // see LookupRequest.CopyReadOnly
-	StaticUntrusted bool     // see LookupRequest.StaticUntrusted
-	Dispatch        bool     // see LookupRequest.Dispatch
+	Auto            bool       // see LookupRequest.Auto
+	Maps            []string   // see LookupRequest.Maps
+	Entry           bool       // see LookupRequest.Entry
+	TailCalls       bool       // see LookupRequest.TailCalls
+	CopyReadOnly    bool       // see LookupRequest.CopyReadOnly
+	StaticUntrusted bool       // see LookupRequest.StaticUntrusted
+	Dispatch        bool       // see LookupRequest.Dispatch
+	Lookups         LookupWhen // see LookupRequest.Lookups
 	HookName        string
 	Stack           StackAudit
 }
@@ -96,26 +98,34 @@ type LookupResultRaw struct {
 // against a dropped field).
 func (r LookupRequestRaw) Request() LookupRequest {
 	return LookupRequest{Site: r.Site, Auto: r.Auto, Maps: r.Maps, Entry: r.Entry, TailCalls: r.TailCalls,
-		CopyReadOnly: r.CopyReadOnly, StaticUntrusted: r.StaticUntrusted, Dispatch: r.Dispatch, HookName: r.HookName, Stack: r.Stack}
+		CopyReadOnly: r.CopyReadOnly, StaticUntrusted: r.StaticUntrusted, Dispatch: r.Dispatch, Lookups: r.Lookups, HookName: r.HookName, Stack: r.Stack}
 }
 
 // hookSuffix is the longest fixed suffix the transform appends to HookName
 // for req: none with Dispatch, whose one hook is HookName itself,
-// "_tail_call" with TailCalls, "_entry" with Entry, and "_0" with Auto, whose
-// per-map names that would pass MaxHookName fall back to HOOKNAME_<index>; a
-// group whose name still does not fit is skipped.
+// "_tail_call" with TailCalls, "_entry" with Entry, "_0" with Auto, whose
+// per-map names that would pass MaxHookName fall back to HOOKNAME_<index> (a
+// group whose name still does not fit is skipped), and "_miss" after the
+// lookup hook's name when Lookups observes misses.
 func hookSuffix(r LookupRequest) string {
-	switch {
-	case r.Dispatch:
+	if r.Dispatch {
 		return ""
-	case r.TailCalls:
-		return "_tail_call"
-	case r.Entry:
-		return "_entry"
-	case r.Auto:
-		return "_0"
 	}
-	return ""
+	lookup := ""
+	if r.Auto {
+		lookup = "_0"
+	}
+	if r.Lookups.miss() {
+		lookup += "_miss"
+	}
+	suffixes := []string{lookup}
+	if r.TailCalls {
+		suffixes = append(suffixes, "_tail_call")
+	}
+	if r.Entry {
+		suffixes = append(suffixes, "_entry")
+	}
+	return slices.MaxFunc(suffixes, func(a, b string) int { return len(a) - len(b) })
 }
 
 // ValidateRaw checks the parts of req that do not depend on the program: the
@@ -130,6 +140,9 @@ func ValidateRaw(req LookupRequestRaw) error {
 	}
 	if r.Dispatch && r.CopyReadOnly {
 		return refuse("Dispatch passes untrusted pointers; it does not combine with CopyReadOnly")
+	}
+	if !r.Lookups.valid() {
+		return refuse("Lookups must be hit, miss or any; got %q", r.Lookups)
 	}
 	if suffix := hookSuffix(r); len(r.HookName)+len(suffix) > MaxHookName {
 		return refuse("HookName %q with the suffix %q exceeds %d bytes", r.HookName, suffix, MaxHookName)

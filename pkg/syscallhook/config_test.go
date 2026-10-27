@@ -43,6 +43,7 @@ func TestRuleRequestForwardsOptions(t *testing.T) {
 	for i := range v.NumField() {
 		fillNonZero(t, v.Field(i))
 	}
+	full.Ops = []string{"lookup:miss"} // an op parseOps accepts
 	want := full.request()
 	for i := range v.NumField() {
 		name := v.Type().Field(i).Name
@@ -127,10 +128,17 @@ func TestConfig(t *testing.T) {
 		`[{"program":"p","entry":true,"tail_calls":true,"hook":"h","stack_lowest_offset":-8}]`: func(r Rule) bool {
 			return r.Entry && r.TailCalls && r.Map == ""
 		},
-		strings.Replace(valid, `"line":42`, `"line":42,"entry":true`, 1):                                         func(r Rule) bool { return r.Entry && r.Map == "sessions" },
-		`[{"program":"p","tail_calls":true,"hook":"` + strings.Repeat("h", 117) + `","stack_lowest_offset":-8}]`: func(r Rule) bool { return r.TailCalls },
-		`[{"program":"p","auto":true,"hook":"` + strings.Repeat("h", 125) + `","stack_lowest_offset":-8}]`:       func(r Rule) bool { return r.Auto },
-		`[{"program":"p","entry":true,"hook":"` + strings.Repeat("h", 121) + `","stack_lowest_offset":-8}]`:      func(r Rule) bool { return r.Entry },
+		`[{"program":"p","auto":true,"ops":["lookup:any"],"hook":"h","stack_lowest_offset":-8}]`: func(r Rule) bool {
+			return r.request().Lookups == inject.LookupAny
+		},
+		strings.Replace(valid, `"line":42`, `"line":42,"ops":["lookup:miss"]`, 1): func(r Rule) bool { return r.request().Lookups == inject.LookupMiss },
+		strings.Replace(valid, `"line":42`, `"line":42,"ops":["lookup"]`, 1):      func(r Rule) bool { return r.request().Lookups == inject.LookupHit },
+		// The miss hook's suffix counts toward the name limit: _0_miss.
+		`[{"program":"p","auto":true,"ops":["lookup:miss"],"hook":"` + strings.Repeat("h", 120) + `","stack_lowest_offset":-8}]`: func(r Rule) bool { return r.Auto },
+		strings.Replace(valid, `"line":42`, `"line":42,"entry":true`, 1):                                                         func(r Rule) bool { return r.Entry && r.Map == "sessions" },
+		`[{"program":"p","tail_calls":true,"hook":"` + strings.Repeat("h", 117) + `","stack_lowest_offset":-8}]`:                 func(r Rule) bool { return r.TailCalls },
+		`[{"program":"p","auto":true,"hook":"` + strings.Repeat("h", 125) + `","stack_lowest_offset":-8}]`:                       func(r Rule) bool { return r.Auto },
+		`[{"program":"p","entry":true,"hook":"` + strings.Repeat("h", 121) + `","stack_lowest_offset":-8}]`:                      func(r Rule) bool { return r.Entry },
 		`[{"program":"p","auto":true,"tail_calls":true,"dispatch":true,"hook":"` + strings.Repeat("h", 127) + `","stack_lowest_offset":-448}]`: func(r Rule) bool {
 			return r.Dispatch && r.TailCalls
 		},
@@ -159,6 +167,12 @@ func TestConfig(t *testing.T) {
 		`[{"program":"p","map":"m","hook":"` + strings.Repeat("h", 128) + `","stack_lowest_offset":-8}]`,
 		`[{"program":"p","auto":true,"dispatch":true,"hook":"h","stack_lowest_offset":-481}]`,
 		`[{"program":"p","auto":true,"dispatch":true,"copy_read_only":true,"hook":"h","stack_lowest_offset":-8}]`,
+		`[{"program":"p","auto":true,"ops":["lookup:miss"],"hook":"` + strings.Repeat("h", 121) + `","stack_lowest_offset":-8}]`,
+		`[{"program":"p","auto":true,"ops":["update"],"hook":"h","stack_lowest_offset":-8}]`,
+		`[{"program":"p","auto":true,"ops":["lookup:sometimes"],"hook":"h","stack_lowest_offset":-8}]`,
+		`[{"program":"p","auto":true,"ops":["lookup","lookup:miss"],"hook":"h","stack_lowest_offset":-8}]`,
+		`[{"program":"p","auto":true,"ops":["peek"],"hook":"h","stack_lowest_offset":-8}]`,
+		`[{"program":"p","entry":true,"ops":["lookup"],"hook":"h","stack_lowest_offset":-8}]`,
 	} {
 		if _, err := ParseConfig(strings.NewReader(input)); err == nil {
 			t.Errorf("accepted %s", input)

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/takehaya/bpf-ninja/pkg/inject"
 )
@@ -23,6 +24,10 @@ import (
 // tail-call site then needs a fourth spill slot in a frame that also calls the
 // hook, so stack_lowest_offset must be at least -448 unless the rule has only
 // entry.
+// Ops picks the map operations a rule's lookup hooks observe, as op or
+// op:when: "lookup" or "lookup:hit" (the default), "lookup:miss" or
+// "lookup:any" (see inject.LookupRequest.Lookups). Only lookup is supported
+// so far.
 // StackLowestOffset is the caller's audit of all stack accesses, including
 // aliases and callees (see inject.StackAudit).
 type Rule struct {
@@ -34,6 +39,7 @@ type Rule struct {
 	CopyReadOnly      bool     `json:"copy_read_only,omitempty"`
 	StaticUntrusted   bool     `json:"static_untrusted,omitempty"`
 	Dispatch          bool     `json:"dispatch,omitempty"`
+	Ops               []string `json:"ops,omitempty"`
 	Map               string   `json:"map,omitempty"`
 	Func              string   `json:"func,omitempty"`
 	Line              uint32   `json:"line,omitempty"`
@@ -51,6 +57,7 @@ func (r Rule) request() inject.LookupRequestRaw {
 	if r.StackLowestOffset != nil {
 		lo = *r.StackLowestOffset
 	}
+	lookups, _ := parseOps(r.Ops) // Validate reports the error
 	return inject.LookupRequestRaw{
 		Site:            inject.LookupSelector{MapName: r.Map, FuncName: r.Func, Line: r.Line, AllMatches: r.AllMatches, SitePCs: r.SitePCs},
 		Auto:            r.Auto,
@@ -60,9 +67,37 @@ func (r Rule) request() inject.LookupRequestRaw {
 		CopyReadOnly:    r.CopyReadOnly,
 		StaticUntrusted: r.StaticUntrusted,
 		Dispatch:        r.Dispatch,
+		Lookups:         lookups,
 		HookName:        r.Hook,
 		Stack:           inject.StackAudit{LowestOffset: lo},
 	}
+}
+
+// parseOps reads Rule.Ops into the lookup results the hooks observe.
+func parseOps(ops []string) (inject.LookupWhen, error) {
+	var lookups inject.LookupWhen
+	for _, op := range ops {
+		name, when, _ := strings.Cut(op, ":")
+		switch name {
+		case "lookup":
+		case "update", "delete":
+			return "", fmt.Errorf("op %q is not supported yet", op)
+		default:
+			return "", fmt.Errorf("unknown op %q", op)
+		}
+		if lookups != "" {
+			return "", fmt.Errorf("op lookup is given twice")
+		}
+		switch w := inject.LookupWhen(when); w {
+		case "":
+			lookups = inject.LookupHit
+		case inject.LookupHit, inject.LookupMiss, inject.LookupAny:
+			lookups = w
+		default:
+			return "", fmt.Errorf("op %q: lookup takes hit, miss or any", op)
+		}
+	}
+	return lookups, nil
 }
 
 func Validate(rules []Rule) error {
@@ -79,6 +114,12 @@ func Validate(rules []Rule) error {
 		}
 		if len(r.Maps) != 0 && !r.Auto {
 			return fmt.Errorf("rule %d: maps filters auto and needs it", i)
+		}
+		if _, err := parseOps(r.Ops); err != nil {
+			return fmt.Errorf("rule %d: %w", i, err)
+		}
+		if len(r.Ops) != 0 && r.Map == "" && !r.Auto {
+			return fmt.Errorf("rule %d: ops applies to the hooks of map or auto", i)
 		}
 		if r.Auto && r.Map != "" {
 			return fmt.Errorf("rule %d: auto selects every supported lookup; map must be empty", i)

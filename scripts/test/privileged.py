@@ -24,6 +24,7 @@ def allowed_skip(package, test, output, kernel):
         return kernel in {"6.1", "6.6", "6.12", "6.15"} and test.split("/", 1)[0] in {
             "TestBpfLookupInjectionReadOnlyMap", "TestBpfLookupInjectionMapInMap",
             "TestBpfLookupInjectionGenericKinds", "TestBpfDispatch", "TestBpfDispatchTC",
+            "TestBpfDispatchMiss", "TestBpfDispatchAny", "TestBpfDispatchAnyTC",
         } and "kernel lacks arg:untrusted" in output
     if package != PROGRAM:
         return False

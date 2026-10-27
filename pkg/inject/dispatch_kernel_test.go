@@ -3,6 +3,7 @@ package inject
 import (
 	"encoding/binary"
 	"errors"
+	"slices"
 	"testing"
 
 	"github.com/cilium/ebpf"
@@ -152,15 +153,22 @@ func asTC(spec *ebpf.CollectionSpec) *ebpf.CollectionSpec {
 	return spec
 }
 
-func TestBpfDispatch(t *testing.T)         { testDispatch(t, false, false) }
-func TestBpfDispatchStatic(t *testing.T)   { testDispatch(t, true, false) }
-func TestBpfDispatchTC(t *testing.T)       { testDispatch(t, false, true) }
-func TestBpfDispatchTCStatic(t *testing.T) { testDispatch(t, true, true) }
+func TestBpfDispatch(t *testing.T)         { testDispatch(t, false, false, "") }
+func TestBpfDispatchStatic(t *testing.T)   { testDispatch(t, true, false, "") }
+func TestBpfDispatchTC(t *testing.T)       { testDispatch(t, false, true, "") }
+func TestBpfDispatchTCStatic(t *testing.T) { testDispatch(t, true, true, "") }
+
+// With Lookups the lookup reports misses too, with a NULL value, or only them.
+func TestBpfDispatchMiss(t *testing.T)         { testDispatch(t, false, false, LookupMiss) }
+func TestBpfDispatchAny(t *testing.T)          { testDispatch(t, false, false, LookupAny) }
+func TestBpfDispatchAnyStatic(t *testing.T)    { testDispatch(t, true, false, LookupAny) }
+func TestBpfDispatchAnyTC(t *testing.T)        { testDispatch(t, false, true, LookupAny) }
+func TestBpfDispatchMissTCStatic(t *testing.T) { testDispatch(t, true, true, LookupMiss) }
 
 // One fentry on the dispatch hook sees the entry, each lookup hit and each
 // failed tail call of the program, in order, and the program's results do
 // not change. With tc, the same program runs as a tc classifier.
-func testDispatch(t *testing.T, static, tc bool) {
+func testDispatch(t *testing.T, static, tc bool, lookups LookupWhen) {
 	testutil.SkipIfNotRoot(t)
 	fixture, target := dispatchFixture, tailTargetFixture
 	if tc {
@@ -169,7 +177,7 @@ func testDispatch(t *testing.T, static, tc bool) {
 	}
 	work := fixture()
 	plan, err := transformLookup(work, LookupRequest{ProgramName: "p", Auto: true, Entry: true, TailCalls: true,
-		Dispatch: true, StaticUntrusted: static, HookName: "d", Stack: StackAudit{LowestOffset: -8}})
+		Dispatch: true, StaticUntrusted: static, Lookups: lookups, HookName: "d", Stack: StackAudit{LowestOffset: -8}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -227,6 +235,15 @@ func testDispatch(t *testing.T, static, tc bool) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = l.Close() })
+	entry := dispatchRecord{Site: DispatchEntrySite, Seen: 1}
+	hit := []dispatchRecord{{Site: lookupPC, Seen: 1, Key: 7, Value: 3, MapID: sessions}}
+	miss := []dispatchRecord{{Site: lookupPC, Seen: 1, Key: 8, MapID: sessions}}
+	if !lookups.hit() {
+		hit = nil
+	}
+	if !lookups.miss() {
+		miss = nil
+	}
 	for _, tc := range []struct {
 		key, index uint32
 		action     uint32
@@ -234,13 +251,10 @@ func testDispatch(t *testing.T, static, tc bool) {
 	}{
 		// Hit, failed tail call: the lookup passes sessions and its value
 		// {3, 9}; the tail call passes the index and the prog array.
-		{7, 1, 2, []dispatchRecord{
-			{Site: DispatchEntrySite, Seen: 1},
-			{Site: lookupPC, Seen: 1, Key: 7, Value: 3, MapID: sessions},
-			{Site: tailPC, Seen: 1, Key: 1, MapID: jmp},
-		}},
-		// Miss, successful tail call: only the entry.
-		{8, 0, 3, []dispatchRecord{{Site: DispatchEntrySite, Seen: 1}}},
+		{7, 1, 2, slices.Concat([]dispatchRecord{entry}, hit, []dispatchRecord{{Site: tailPC, Seen: 1, Key: 1, MapID: jmp}})},
+		// Miss, successful tail call: the entry, and the lookup with a NULL
+		// value when misses are observed.
+		{8, 0, 3, slices.Concat([]dispatchRecord{entry}, miss)},
 	} {
 		if err := obs.Maps["cnt"].Put(uint32(0), uint64(0)); err != nil {
 			t.Fatal(err)
