@@ -789,8 +789,8 @@ func TestLookupReadOnlyMap(t *testing.T) {
 		t.Fatalf("auto: %+v %v", plan, err)
 	}
 	for _, hook := range plan.hooks {
-		if hook.Untrusted != (hook.MapName == "flows") {
-			t.Fatalf("hook %s untrusted=%v", hook.Name, hook.Untrusted)
+		if hook.Untrusted != (hook.MapName == "flows") || hook.ReadOnly != hook.Untrusted {
+			t.Fatalf("hook %s untrusted=%v read-only=%v", hook.Name, hook.Untrusted, hook.ReadOnly)
 		}
 		var fn *btf.Func
 		for _, ins := range work.Programs["p"].Instructions {
@@ -810,7 +810,7 @@ func TestLookupReadOnlyMap(t *testing.T) {
 		}
 	}
 	plan, err = transformLookup(multiMapFixtureFlags(bpfFWronlyProg), autoReq())
-	if err != nil || len(plan.hooks) != 2 || !plan.hooks[1].Untrusted {
+	if err != nil || len(plan.hooks) != 2 || !plan.hooks[1].Untrusted || plan.hooks[1].ReadOnly {
 		t.Fatalf("write-only: %+v %v", plan, err)
 	}
 }

@@ -5,6 +5,7 @@ package syscallhook
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -409,8 +410,10 @@ func kernelBTF(id uint32) (*btf.Spec, error) {
 	return h.Spec(nil)
 }
 
-// transformLoad returns the tracee's PROG_LOAD result and, on success, a
-// summary of the injected hooks and their sites for the log.
+// transformLoad returns the tracee's PROG_LOAD result and, once the transform
+// succeeded, a summary of the injected hooks and their sites for the log: also
+// when the transformed PROG_LOAD then fails, so the caller can name the
+// hooks it attempted.
 func (s *supervisor) transformLoad(r *remote, attr []byte, rule Rule) (ret int64, summary string, err error) {
 	info, err := r.info(u32(attr, 72), 32)
 	if err != nil {
@@ -507,21 +510,40 @@ func (s *supervisor) transformLoad(r *remote, attr []byte, rule Rule) (ret int64
 	}
 	if err := syscallError(ret, nil); err != nil {
 		// Carry the summary so the caller can name the attempted hooks, and a
-		// hint when an untrusted-pointer ABI mismatch is the likely cause.
-		return ret, hookSummary(result), fmt.Errorf("transformed PROG_LOAD: %w%s", err, untrustedHint(result))
+		// hint when an untrusted-pointer ABI mismatch may be the cause.
+		return 0, hookSummary(result), fmt.Errorf("transformed PROG_LOAD: %w%s", err, untrustedHint(result, err))
 	}
 	return ret, hookSummary(result), nil
 }
 
 // untrustedHint explains how to load a program whose hooks take arg:untrusted
-// pointers on a kernel without that tag; it is empty when no hook is untrusted.
-func untrustedHint(result *inject.LookupResultRaw) string {
-	for _, hook := range result.Hooks {
-		if hook.Untrusted {
-			return ` (hooks use arg:untrusted pointers, which needs kernel 6.18+; set "static_untrusted": true or, for read-only maps, "copy_read_only": true to load on older kernels)`
-		}
+// pointers on a kernel without that tag. It is empty unless some hook is
+// untrusted and the load failed the way those kernels fail it: EINVAL on 6.1
+// and 6.6, EOPNOTSUPP on 6.12 and 6.15, or EACCES.
+func untrustedHint(result *inject.LookupResultRaw, err error) string {
+	if !errors.Is(err, unix.EINVAL) && !errors.Is(err, unix.EOPNOTSUPP) && !errors.Is(err, unix.EACCES) {
+		return ""
 	}
-	return ""
+	untrusted, copyHelps := false, false
+	for _, hook := range result.Hooks {
+		untrusted = untrusted || hook.Untrusted
+		copyHelps = copyHelps || copyReadOnlyHelps(hook)
+	}
+	if !untrusted {
+		return ""
+	}
+	fix := `"static_untrusted": true`
+	if copyHelps {
+		fix += ` or, for read-only maps, "copy_read_only": true`
+	}
+	return ` (hooks use arg:untrusted pointers, which kernels 6.15 and older in our CI matrix reject; set ` + fix + ` to load on those kernels)`
+}
+
+// copyReadOnlyHelps reports whether copy_read_only would give hook a typed
+// hook: an untrusted lookup hook on a read-only map (never the generic hook).
+// A hook whose rule cannot also set copy_read_only must be excluded here.
+func copyReadOnlyHelps(hook inject.LookupHook) bool {
+	return hook.Kind == inject.HookLookup && hook.Untrusted && hook.ReadOnly && !hook.Generic
 }
 
 // hookSummary lists each hook as

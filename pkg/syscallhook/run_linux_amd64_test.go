@@ -57,17 +57,36 @@ func TestHookSummary(t *testing.T) {
 	}
 }
 
+// The hint names copy_read_only only for an untrusted hook on a read-only
+// map, and fires only for an untrusted hook and an errno the kernels without
+// arg:untrusted return.
 func TestUntrustedHint(t *testing.T) {
-	untrusted := &inject.LookupResultRaw{Hooks: []inject.LookupHook{{Name: "a", Kind: inject.HookLookup, Untrusted: true}}}
-	if h := untrustedHint(untrusted); !strings.Contains(h, "static_untrusted") || !strings.Contains(h, "copy_read_only") {
-		t.Fatalf("untrusted hint: %q", h)
+	hint := func(err error, hooks ...inject.LookupHook) string {
+		return untrustedHint(&inject.LookupResultRaw{Hooks: hooks}, err)
 	}
-	for _, name := range []string{"static", "typed"} {
-		result := &inject.LookupResultRaw{Hooks: []inject.LookupHook{{Name: "a", Kind: inject.HookLookup}}}
-		if name == "static" {
-			result.Hooks[0].Static = true
+	readOnly := inject.LookupHook{Name: "a", Kind: inject.HookLookup, Untrusted: true, ReadOnly: true}
+	writeOnly := inject.LookupHook{Name: "b", Kind: inject.HookLookup, Untrusted: true}
+	generic := inject.LookupHook{Name: "c", Kind: inject.HookLookup, Untrusted: true, Generic: true}
+	for _, errno := range []unix.Errno{unix.EINVAL, unix.EOPNOTSUPP, unix.EACCES} {
+		h := hint(errno, writeOnly, readOnly)
+		if !strings.Contains(h, `"static_untrusted": true`) || !strings.Contains(h, "copy_read_only") || !strings.Contains(h, "6.15 and older in our CI matrix reject") {
+			t.Fatalf("%v read-only hint: %q", errno, h)
 		}
-		if h := untrustedHint(result); h != "" {
+	}
+	for name, h := range map[string]string{
+		"write-only": hint(unix.EINVAL, writeOnly),
+		"generic":    hint(unix.EINVAL, generic),
+	} {
+		if !strings.Contains(h, "static_untrusted") || strings.Contains(h, "copy_read_only") {
+			t.Fatalf("%s hint: %q", name, h)
+		}
+	}
+	for name, h := range map[string]string{
+		"E2BIG":  hint(unix.E2BIG, readOnly),
+		"static": hint(unix.EINVAL, inject.LookupHook{Name: "a", Kind: inject.HookLookup, Static: true, ReadOnly: true}),
+		"typed":  hint(unix.EINVAL, inject.LookupHook{Name: "a", Kind: inject.HookLookup}),
+	} {
+		if h != "" {
 			t.Fatalf("%s hint not empty: %q", name, h)
 		}
 	}

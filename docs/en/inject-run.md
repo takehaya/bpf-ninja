@@ -55,8 +55,8 @@ The naming and hook ABI are described in [lookup-site-injection.md](lookup-site-
 `"entry": true` adds `HOOK_entry(ctx)`, called at the start of the program, which also runs when the program is entered through a tail call.
 `"tail_calls": true` adds `HOOK_tail_call(ctx, u32 site, u32 index)`, called when a `bpf_tail_call` anywhere in the program fails.
 Either can be combined with a lookup rule, or used without `map` or `auto` to instrument no lookup.
-`"copy_read_only": true` passes a stack copy of a `BPF_F_RDONLY_PROG` map's value to a typed hook instead of an `arg:untrusted` one, so kernels older than 6.18 load it; see [lookup-site-injection.md](lookup-site-injection.md#supported-sites-and-trust-boundary).
-`"static_untrusted": true` makes every hook that would take `arg:untrusted` pointers, the generic hook included, a static function instead, which kernels older than 6.18 also load; an observer then reads all of its arguments as `u64` values (same section).
+`"copy_read_only": true` passes a stack copy of a `BPF_F_RDONLY_PROG` map's value to a typed hook instead of an `arg:untrusted` one, so kernels that reject `arg:untrusted` (6.15 and older in the CI matrix) load it; see [lookup-site-injection.md](lookup-site-injection.md#supported-sites-and-trust-boundary).
+`"static_untrusted": true` makes every hook that would take `arg:untrusted` pointers, the generic hook included, a static function instead, which those kernels also load; an observer then reads all of its arguments as `u64` values (same section).
 See [lookup-site-injection.md](lookup-site-injection.md#entry-and-tail-call-hooks), including why any hook in a program that uses `bpf_tail_call` needs the JIT on a supported architecture; without it the transformed load fails and the original program is loaded (or refused with `--fail-closed`).
 
 ```json
@@ -115,7 +115,8 @@ By default, read, metadata, transform, BTF-load, and transformed-program rejecti
 If the transformed load has already been attempted, the supervisor retries the original syscall with its original attr and input pointers.
 It reports `injected hook` only after the transformed load returns a nonnegative program fd.
 The diagnostic names each hook with its map and site PCs, followed by any lookups that `auto` skipped and why.
-When the transformed load is rejected, the diagnostic also names the hooks it attempted; if any used `arg:untrusted` pointers it suggests `"static_untrusted": true` or, for read-only maps, `"copy_read_only": true` to load on kernels older than 6.18.
+When the transformed load is rejected, the diagnostic also names the hooks it attempted.
+If any used `arg:untrusted` pointers and the kernel returned `EINVAL`, `EOPNOTSUPP` or `EACCES` (6.1 and 6.6 reject the tag with `EINVAL`, 6.12 and 6.15 with `EOPNOTSUPP`), it suggests `"static_untrusted": true`, and `"copy_read_only": true` as well when one of them is a read-only map's hook, to load on kernels that reject the tag (6.15 and older in the CI matrix).
 A successful target exit alone does not prove injection; inspect the diagnostic or loaded program metadata.
 
 `--fail-closed` returns `EPERM` when a matched program cannot be injected.

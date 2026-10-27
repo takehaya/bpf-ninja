@@ -124,6 +124,9 @@ const (
 // ignore the hook's BTF, as 7.0 does: an fentry observer gets every argument,
 // ctx included, as a u64 and reads through them with bpf_probe_read_kernel.
 //
+// ReadOnly is set for a typed lookup hook on a BPF_F_RDONLY_PROG map, which
+// CopyReadOnly turns from an untrusted hook into a copied one.
+//
 // Generic is set for Auto's one hook over lookups whose map is not known
 // statically (R1 is not a direct map reference), is a map-in-map, or is an
 // XSK map or devmap, which a typed hook refuses. It has no MapName and takes
@@ -136,6 +139,7 @@ type LookupHook struct {
 	Untrusted bool
 	Copied    bool
 	Static    bool
+	ReadOnly  bool
 	Generic   bool
 	TypeID    btf.TypeID
 	FuncInfo  []byte
@@ -908,7 +912,7 @@ func (e lookupEmitter) splice(groups []lookupGroup) (asm.Instructions, []LookupH
 		}
 		hooks = append(hooks, body...)
 		plan = append(plan, LookupHook{Name: group.name, Kind: HookLookup, MapName: group.sites[0].MapName, Sites: publicLookupSites(group.sites),
-			Untrusted: untrusted, Copied: copied, Static: static})
+			Untrusted: untrusted, Copied: copied, Static: static, ReadOnly: m.Flags&bpfFRdonlyProg != 0 && m.Flags&bpfFWronlyProg == 0})
 		for _, site := range group.sites {
 			calls[site.SitePC] = siteCall{hook: group.name, withSite: req.Auto, copySize: copySize}
 		}
