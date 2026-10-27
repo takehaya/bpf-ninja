@@ -5,10 +5,12 @@
 package main
 
 import (
+	"cmp"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 
 	"github.com/takehaya/bpf-ninja/pkg/inject"
 	"github.com/takehaya/bpf-ninja/pkg/syscallhook"
@@ -103,6 +105,17 @@ func injectionJSON(inj syscallhook.Injection) injectedProgJSON {
 			dispatch = len(out.Hooks)
 		}
 		out.Hooks = append(out.Hooks, h)
+	}
+	// The merged groups are per map and kind; order them as the program runs:
+	// the entry call first, then by PC.
+	if dispatch >= 0 {
+		rank := func(site hookSiteJSON) int64 {
+			if site.Kind == string(inject.HookEntry) {
+				return -1
+			}
+			return int64(site.PC)
+		}
+		slices.SortStableFunc(out.Hooks[dispatch].Sites, func(a, b hookSiteJSON) int { return cmp.Compare(rank(a), rank(b)) })
 	}
 	for _, site := range inj.Skipped {
 		out.Skipped = append(out.Skipped, siteJSON(inject.HookLookup, site))

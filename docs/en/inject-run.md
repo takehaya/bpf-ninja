@@ -122,7 +122,7 @@ Each hook is one function in the loaded program:
 - `kind` is `typed` (a lookup hook with the map's key and value types), `generic` (the `HOOK_any` hook that also takes the map pointer), `entry`, `tail_call`, or `dispatch`.
 - `map` is the map of a `typed` hook. A `generic` or `dispatch` hook serves several maps, so the map is given on each site instead.
 - `sites` are the helper calls that call the hook, in instruction order. Each has a `kind` (`lookup`, `tail_call`, or `entry`), its raw instruction index `pc` (the `site` argument the hook receives), and, where known, `map`, `func`, `file` and `line`. An `entry` hook has no sites.
-- A `dispatch` rule produces one hook with every site: the lookups, the failed tail calls, and the entry call as the site `4294967295` (`inject.DispatchEntrySite`).
+- A `dispatch` rule produces one hook with every site: the lookups, the failed tail calls, and the entry call as the site `4294967295` (`inject.DispatchEntrySite`). The entry call comes first, since it runs at program start, and the other sites follow in instruction order across maps and kinds.
 - `untrusted`, `copied`, `static` and `read_only` mirror `inject.LookupHook`: the hook takes `arg:untrusted` pointers, its value is a stack copy, it is a static function (read every argument as a `u64`), and its map is `BPF_F_RDONLY_PROG`.
 
 `skipped` lists the lookups that `auto` did not instrument, with the same site fields plus `reason`.

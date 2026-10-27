@@ -37,7 +37,7 @@ func TestInjectionJSON(t *testing.T) {
 				`{"name":"obs_tail_call","kind":"tail_call","sites":[{"kind":"tail_call","pc":60,"func":"sub"}],"untrusted":false,"copied":false,"static":false,"read_only":false}],` +
 				`"skipped":[{"kind":"lookup","pc":7,"map":"socks","reason":"sockhash has no typed hook"}]}`},
 		// Dispatch hooks share one name: one function, every site, the entry
-		// as DispatchEntrySite.
+		// as DispatchEntrySite first and then by PC across maps and kinds.
 		{"dispatch", syscallhook.Injection{Program: "tc_main", Type: ebpf.SchedCLS, Hooks: []inject.LookupHook{
 			{Name: "d", Kind: inject.HookLookup, MapName: "a", Static: true, Dispatch: true, Sites: []inject.LookupSite{{SitePC: 13, MapName: "a"}}},
 			{Name: "d", Kind: inject.HookLookup, MapName: "b", Static: true, Dispatch: true, Sites: []inject.LookupSite{{SitePC: 30, MapName: "b"}}},
@@ -45,7 +45,7 @@ func TestInjectionJSON(t *testing.T) {
 			{Name: "d", Kind: inject.HookTailCall, Static: true, Dispatch: true, Sites: []inject.LookupSite{{SitePC: 20}}},
 		}},
 			`{"program":"tc_main","func":"","type":"SchedCLS","prog_id":0,"ctx_type":"__sk_buff","hooks":[` +
-				`{"name":"d","kind":"dispatch","sites":[{"kind":"lookup","pc":13,"map":"a"},{"kind":"lookup","pc":30,"map":"b"},{"kind":"entry","pc":4294967295},{"kind":"tail_call","pc":20}],"untrusted":false,"copied":false,"static":true,"read_only":false}],` +
+				`{"name":"d","kind":"dispatch","sites":[{"kind":"entry","pc":4294967295},{"kind":"lookup","pc":13,"map":"a"},{"kind":"tail_call","pc":20},{"kind":"lookup","pc":30,"map":"b"}],"untrusted":false,"copied":false,"static":true,"read_only":false}],` +
 				`"skipped":[]}`},
 	} {
 		got, err := json.Marshal(injectionJSON(tc.inj))
