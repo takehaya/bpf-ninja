@@ -42,6 +42,19 @@ func TestInjectRunCommand(t *testing.T) {
 	if err := newRootCommand().Run(context.Background(), []string{"bpf-ninja", "inject-run", "--"}); err == nil {
 		t.Fatal("accepted missing target")
 	}
+	// --lookups-json makes the rules optional and writes an empty document
+	// when nothing loads; without rules or it, the command refuses.
+	t.Setenv("BPF_NINJA_INJECT_CONFIG", "")
+	lookups := filepath.Join(t.TempDir(), "lookups.json")
+	if err := newRootCommand().Run(context.Background(), []string{"bpf-ninja", "inject-run", "--lookups-json", lookups, "--", "/bin/true"}); err != nil {
+		t.Fatal(err)
+	}
+	if data, err := os.ReadFile(lookups); err != nil || string(data) != "{\n  \"version\": 1,\n  \"programs\": []\n}\n" {
+		t.Fatalf("lookups file %q: %v", data, err)
+	}
+	if err := newRootCommand().Run(context.Background(), []string{"bpf-ninja", "inject-run", "--", "/bin/true"}); err == nil {
+		t.Fatal("accepted no rules without --lookups-json")
+	}
 	t.Setenv("BPF_NINJA_INJECT_CONFIG", "[]")
 	if err := newRootCommand().Run(context.Background(), []string{"bpf-ninja", "inject-run", "--", "/bin/true"}); err == nil {
 		t.Fatal("accepted empty config")
