@@ -541,9 +541,10 @@ func untrustedHint(result *inject.LookupResultRaw, err error) string {
 
 // copyReadOnlyHelps reports whether copy_read_only would give hook a typed
 // hook: an untrusted lookup hook on a read-only map (never the generic hook).
-// A hook whose rule cannot also set copy_read_only must be excluded here.
+// A hook whose rule cannot also set copy_read_only must be excluded here: a
+// dispatch hook, since Validate rejects dispatch with copy_read_only.
 func copyReadOnlyHelps(hook inject.LookupHook) bool {
-	return hook.Kind == inject.HookLookup && hook.Untrusted && hook.ReadOnly && !hook.Generic
+	return hook.Kind == inject.HookLookup && hook.Untrusted && hook.ReadOnly && !hook.Generic && !hook.Dispatch
 }
 
 // hookSummary lists each hook as
