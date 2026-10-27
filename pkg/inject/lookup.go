@@ -69,6 +69,11 @@ func (s LookupSelector) empty() bool {
 // a value copy and then every lookup. Auto refuses only when nothing at all
 // would be instrumented.
 //
+// Maps limits Auto to lookups on the named maps (exact kernel names); the
+// others are reported in Skipped. A name that matches no discovered lookup is
+// a refusal, so a typo cannot silently instrument nothing. A lookup whose map
+// is known only at run time has no name and is never selected.
+//
 // The hooks take the entry function's context: struct xdp_md * in an XDP
 // program, struct __sk_buff * in a tc program (SchedCLS or SchedACT). The
 // signatures below show the XDP form.
@@ -105,6 +110,7 @@ type LookupRequest struct {
 	ProgramName     string
 	Site            LookupSelector
 	Auto            bool
+	Maps            []string
 	Entry           bool
 	TailCalls       bool
 	CopyReadOnly    bool
@@ -657,11 +663,26 @@ func selectLookups(sites []discoveredLookup, req LookupRequest, reserved []strin
 		if !req.Site.empty() {
 			return nil, nil, refuse("Auto selects every supported lookup; Site must be empty")
 		}
+		selected := make(map[string]bool, len(req.Maps))
+		for _, name := range req.Maps {
+			if _, dup := selected[name]; name == "" || dup {
+				return nil, nil, refuse("Maps names must be non-empty and unique; got %q", name)
+			}
+			selected[name] = false
+		}
 		var groups []lookupGroup
 		var skipped []LookupSite
 		var generic []discoveredLookup
 		index := map[string]int{}
 		for _, site := range sites {
+			if len(selected) != 0 {
+				if _, ok := selected[site.MapName]; !ok || site.MapName == "" {
+					site.Reason = "map not selected by Maps"
+					skipped = append(skipped, site.LookupSite)
+					continue
+				}
+				selected[site.MapName] = true
+			}
 			if site.generic || site.typedOnly {
 				site.Reason = ""
 				generic = append(generic, site)
@@ -678,6 +699,11 @@ func selectLookups(sites []discoveredLookup, req LookupRequest, reserved []strin
 				groups = append(groups, lookupGroup{})
 			}
 			groups[i].sites = append(groups[i].sites, site)
+		}
+		for _, name := range req.Maps {
+			if !selected[name] {
+				return nil, nil, refuse("Maps name %q matches no lookup", name)
+			}
 		}
 		if len(generic) != 0 {
 			groups = append(groups, lookupGroup{sites: generic, generic: true})
@@ -709,6 +735,9 @@ func selectLookups(sites []discoveredLookup, req LookupRequest, reserved []strin
 			return nil, skipped, refuse("no supported lookup sites (%d skipped)", len(skipped))
 		}
 		return named, skipped, nil
+	}
+	if len(req.Maps) != 0 {
+		return nil, nil, refuse("Maps filters Auto and needs it")
 	}
 	if req.Site.MapName == "" {
 		if (req.Entry || req.TailCalls) && req.Site.empty() {

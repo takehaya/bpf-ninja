@@ -13,8 +13,9 @@ import (
 // Rule selects exactly one lookup unless AllMatches or SitePCs widens it (see
 // inject.LookupSelector). With Auto, every supported lookup is instrumented,
 // the selector fields must be empty, and Hook is the prefix of the per-map
-// hook names (see inject.LookupRequest). Entry and TailCalls add the
-// Hook_entry and Hook_tail_call hooks and allow a rule without lookups.
+// hook names (see inject.LookupRequest); Maps limits Auto to the named maps.
+// Entry and TailCalls add the Hook_entry and Hook_tail_call hooks and allow a
+// rule without lookups.
 // CopyReadOnly passes stack copies of BPF_F_RDONLY_PROG map values to typed
 // hooks, and StaticUntrusted gives the hooks that would take arg:untrusted
 // pointers static linkage (see inject.LookupRequest). Dispatch sends every
@@ -27,6 +28,7 @@ import (
 type Rule struct {
 	Program           string   `json:"program"`
 	Auto              bool     `json:"auto,omitempty"`
+	Maps              []string `json:"maps,omitempty"`
 	Entry             bool     `json:"entry,omitempty"`
 	TailCalls         bool     `json:"tail_calls,omitempty"`
 	CopyReadOnly      bool     `json:"copy_read_only,omitempty"`
@@ -52,6 +54,7 @@ func (r Rule) request() inject.LookupRequestRaw {
 	return inject.LookupRequestRaw{
 		Site:            inject.LookupSelector{MapName: r.Map, FuncName: r.Func, Line: r.Line, AllMatches: r.AllMatches, SitePCs: r.SitePCs},
 		Auto:            r.Auto,
+		Maps:            r.Maps,
 		Entry:           r.Entry,
 		TailCalls:       r.TailCalls,
 		CopyReadOnly:    r.CopyReadOnly,
@@ -73,6 +76,9 @@ func Validate(rules []Rule) error {
 		}
 		if (r.Auto || r.Map == "") && (r.Func != "" || r.Line != 0 || r.AllMatches || len(r.SitePCs) > 0) {
 			return fmt.Errorf("rule %d: func, line, all_matches and site_pcs filter map and cannot be used with auto or without map", i)
+		}
+		if len(r.Maps) != 0 && !r.Auto {
+			return fmt.Errorf("rule %d: maps filters auto and needs it", i)
 		}
 		if r.Auto && r.Map != "" {
 			return fmt.Errorf("rule %d: auto selects every supported lookup; map must be empty", i)
