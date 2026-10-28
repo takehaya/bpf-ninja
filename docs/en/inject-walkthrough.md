@@ -3,6 +3,7 @@
 This walkthrough takes a small XDP program from "which maps does it use?" to a live trace of its queue pushes and pops, using `--list-maps`, a rule for `inject-run`, and an fentry observer.
 Every output below was recorded on a 7.0 host with the program and loader shown here; long file paths are shortened to `prog.c`.
 Nothing is attached to an interface: the loader runs the program with `BPF_PROG_TEST_RUN`.
+The program, the loader, the observer and the rule are in [examples/inject-walkthrough](../../examples/inject-walkthrough), with the commands to build and run them.
 
 ## The program and its loader
 
@@ -10,29 +11,45 @@ Nothing is attached to an interface: the loader runs the program with `BPF_PROG_
 
 ```c
 #include <linux/bpf.h>
+
 #include <bpf/bpf_helpers.h>
 
-struct { __uint(type, BPF_MAP_TYPE_QUEUE); __uint(max_entries, 2); __type(value, __u64); } recent SEC(".maps");
-struct { __uint(type, BPF_MAP_TYPE_BLOOM_FILTER); __uint(max_entries, 16); __type(value, __u32); } seen SEC(".maps");
-struct stat { __u64 pkts; __u64 bytes; };
-struct { __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY); __uint(max_entries, 1); __type(key, __u32); __type(value, struct stat); } stats SEC(".maps");
+struct {
+  __uint(type, BPF_MAP_TYPE_QUEUE);
+  __uint(max_entries, 2);
+  __type(value, __u64);
+} recent SEC(".maps");
+struct {
+  __uint(type, BPF_MAP_TYPE_BLOOM_FILTER);
+  __uint(max_entries, 16);
+  __type(value, __u32);
+} seen SEC(".maps");
+struct stat {
+  __u64 pkts;
+  __u64 bytes;
+};
+struct {
+  __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+  __uint(max_entries, 1);
+  __type(key, __u32);
+  __type(value, struct stat);
+} stats SEC(".maps");
 
 SEC("xdp")
-int entry(struct xdp_md *ctx)
-{
-	__u32 len = ctx->data_end - ctx->data;
-	__u64 v = len;
-	__u32 k = 0;
-	struct stat *st;
+int entry(struct xdp_md *ctx) {
+  __u32 len = ctx->data_end - ctx->data;
+  __u64 v = len;
+  __u32 k = 0;
+  struct stat *st;
 
-	if (bpf_map_peek_elem(&seen, &len))
-		bpf_map_push_elem(&seen, &len, BPF_ANY);
-	if (bpf_map_push_elem(&recent, &v, BPF_ANY))
-		bpf_map_pop_elem(&recent, &v);
-	st = bpf_map_lookup_percpu_elem(&stats, &k, 0);
-	if (st)
-		return st->pkts ? XDP_DROP : XDP_PASS;
-	return XDP_ABORTED;
+  if (bpf_map_peek_elem(&seen, &len))
+    bpf_map_push_elem(&seen, &len, BPF_ANY);
+  if (bpf_map_push_elem(&recent, &v, BPF_ANY))
+    bpf_map_pop_elem(&recent, &v);
+  st = bpf_map_lookup_percpu_elem(&stats, &k, 0);
+  if (st)
+    return st->pkts ? XDP_DROP : XDP_PASS;
+  return XDP_ABORTED;
 }
 char LICENSE[] SEC("license") = "GPL";
 ```
@@ -95,24 +112,24 @@ bpf-ninja -p "$PROG_ID" --list-progs --list-maps --lookups-json lookups.json
 ```
 
 ```
-prog 463345  entry
+prog 464334  entry
 └─ func entry
-   ├─ map seen    BloomFilter  peek    prog.c:17  ✓ injectable  (pc 11)
-   ├─ map seen    BloomFilter  push    prog.c:18  ✓ injectable  (pc 18)
-   ├─ map recent  Queue        push    prog.c:19  ✓ injectable  (pc 24)
-   ├─ map recent  Queue        pop     prog.c:20  ✓ injectable  (pc 30)
-   └─ map stats   PerCPUArray  lookup  prog.c:21  ✓ injectable  (pc 37)
+   ├─ map seen    BloomFilter  peek    prog.c:33  ✓ injectable  (pc 11)
+   ├─ map seen    BloomFilter  push    prog.c:34  ✓ injectable  (pc 18)
+   ├─ map recent  Queue        push    prog.c:35  ✓ injectable  (pc 24)
+   ├─ map recent  Queue        pop     prog.c:36  ✓ injectable  (pc 30)
+   └─ map stats   PerCPUArray  lookup  prog.c:37  ✓ injectable  (pc 37)
 ```
 
 `lookups.json` has the same calls with their load-time `pc` and a starting rule:
 
 ```json
 "calls": [
-  {"kind": "peek", "pc": 11, "map": "seen", "func": "entry", "file": "prog.c", "line": 17},
-  {"kind": "push", "pc": 18, "map": "seen", "func": "entry", "file": "prog.c", "line": 18},
-  {"kind": "push", "pc": 24, "map": "recent", "func": "entry", "file": "prog.c", "line": 19},
-  {"kind": "pop", "pc": 30, "map": "recent", "func": "entry", "file": "prog.c", "line": 20},
-  {"kind": "lookup", "pc": 37, "map": "stats", "func": "entry", "file": "prog.c", "line": 21}
+  {"kind": "peek", "pc": 11, "map": "seen", "func": "entry", "file": "prog.c", "line": 33},
+  {"kind": "push", "pc": 18, "map": "seen", "func": "entry", "file": "prog.c", "line": 34},
+  {"kind": "push", "pc": 24, "map": "recent", "func": "entry", "file": "prog.c", "line": 35},
+  {"kind": "pop", "pc": 30, "map": "recent", "func": "entry", "file": "prog.c", "line": 36},
+  {"kind": "lookup", "pc": 37, "map": "stats", "func": "entry", "file": "prog.c", "line": 37}
 ],
 "rule": {"program": "entry", "auto": true, "maps": ["stats"], "hook": "ninja", "stack_lowest_offset": null}
 ```
@@ -147,10 +164,10 @@ inject-run: program "entry": injected hook "ninja_seen_peek" (peek map "seen", s
 `hooks.json` gives the kernel ID of the transformed program and each hook with its sites:
 
 ```json
-{"program": "entry", "func": "entry", "type": "XDP", "prog_id": 463355, "ctx_type": "xdp_md", "skipped": [],
+{"program": "entry", "func": "entry", "type": "XDP", "prog_id": 464331, "ctx_type": "xdp_md", "skipped": [],
  "hooks": [
   {"name": "ninja_seen_peek", "kind": "typed", "when": "error", "map": "seen",
-   "sites": [{"kind": "peek", "pc": 11, "map": "seen", "func": "entry", "file": "prog.c", "line": 17}],
+   "sites": [{"kind": "peek", "pc": 11, "map": "seen", "func": "entry", "file": "prog.c", "line": 33}],
    "untrusted": false, "copied": false, "static": false, "read_only": false},
   ...
  ]}
@@ -171,31 +188,39 @@ A pop hook runs after the helper and sees the value it wrote.
 
 `inject-run` does not attach observers.
 Any fentry program attached to a hook of the program in `prog_id` sees its calls.
-This one reads the arguments with `bpf_get_func_arg` and sends them to user space through a ring buffer:
+This one, `bpf/observer.c` in the example, reads the arguments with `bpf_get_func_arg` and sends them to user space through a ring buffer:
 
 ```c
-struct event { __u32 op; __u32 site; __u64 value; __u64 status; };
-struct { __uint(type, BPF_MAP_TYPE_RINGBUF); __uint(max_entries, 4096); } events SEC(".maps");
+struct event {
+  __u32 op;
+  __u32 site;
+  __u64 value;
+  __u64 status;
+};
+struct {
+  __uint(type, BPF_MAP_TYPE_RINGBUF);
+  __uint(max_entries, 4096);
+} events SEC(".maps");
 
-static int report(void *ctx, __u32 op)
-{
-	__u64 site = 0, value = 0, status = 0;
-	struct event *e;
+static int report(void *ctx, __u32 op) {
+  __u64 site = 0, value = 0, status = 0;
+  struct event *e;
 
-	bpf_get_func_arg(ctx, 1, &site);
-	bpf_get_func_arg(ctx, 2, &value);
-	bpf_get_func_arg(ctx, 3, &status);
-	e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
-	if (!e)
-		return 0;
-	e->op = op;
-	e->site = site;
-	e->value = 0;
-	/* The bloom filter holds __u32 values, the queue __u64 ones. */
-	bpf_probe_read_kernel(&e->value, op == 2 ? sizeof(__u32) : sizeof(__u64), (void *)value);
-	e->status = status;
-	bpf_ringbuf_submit(e, 0);
-	return 0;
+  bpf_get_func_arg(ctx, 1, &site);
+  bpf_get_func_arg(ctx, 2, &value);
+  bpf_get_func_arg(ctx, 3, &status);
+  e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
+  if (!e)
+    return 0;
+  e->op = op;
+  e->site = site;
+  e->value = 0;
+  /* The bloom filter holds __u32 values, the queue __u64 ones. */
+  bpf_probe_read_kernel(&e->value, op == 2 ? sizeof(__u32) : sizeof(__u64),
+                        (void *)value);
+  e->status = status;
+  bpf_ringbuf_submit(e, 0);
+  return 0;
 }
 
 SEC("fentry/ninja_recent_push")
@@ -208,7 +233,7 @@ SEC("fentry/ninja_seen_peek")
 int on_peek(void *ctx) { return report(ctx, 2); }
 ```
 
-The Go side opens the transformed program by its ID, makes it the attach target, and prints each event:
+The Go side, `observer/main.go`, opens the transformed program by its ID, makes it the attach target, and prints each event:
 
 ```go
 target, _ := ebpf.NewProgramFromID(ebpf.ProgramID(id))
@@ -219,7 +244,7 @@ for _, p := range spec.Programs {
 coll, _ := ebpf.NewCollection(spec)
 for _, name := range []string{"on_push", "on_pop", "on_peek"} {
 	l, _ := link.AttachTracing(link.TracingOptions{Program: coll.Programs[name]})
-	defer l.Close()
+	defer func() { _ = l.Close() }()
 }
 // read coll.Maps["events"] with ringbuf.NewReader and print each record
 ```
