@@ -572,6 +572,11 @@ A direct run of the target fires both.
 `TestBpfDispatchTC[Static]` repeats `TestBpfDispatch[Static]` on a `SchedCLS` program with an `__sk_buff` context; `TestBpfLookupHooksTC` instruments the same `SchedCLS` program with per-map typed lookup, entry and tail-call hooks, and an fentry on each checks the key, value, `site`, tail-call index and the `sk_buff` length it sees; `TestLookupTC` (unprivileged) checks that every hook kind takes `__sk_buff` in a tc program, in the ELF and raw forms.
 `TestBpfLookupInjectionCallback` checks symbolic and numeric callback loads with an unreached subprogram preceding the `bpf_loop` callback and a stack counter incremented three times by `bpf_loop`; the program returns `XDP_ABORTED` unless those increments occur.
 It repeats the plain/injected comparison and fentry observations (including direct `ctx` pointer dereferencing) for both callback forms.
+`TestBpfMapCallEquivalence` generates XDP programs and compares the plain and rewritten return value, output packet and final map contents under seven request configurations.
+Its default 14 seeds cover entry-function operations, read-only pointers crossing stack spills and static or global subprogram calls, hash, queue and read-only array inner maps, and precise or conservative R10 aliases in lookup and XDP byte-load leaves.
+`BPF_NINJA_EQUIV=1` defaults to seeds 1 through 14.
+`BPF_NINJA_EQUIV_SEED` and `BPF_NINJA_EQUIV_SEEDS` select longer contiguous ranges.
+Only seeds congruent to 1 modulo 14 randomize the entry program; the others repeat fixed feature shapes with new packet bytes.
 These tests exercise the transform core and fentry using `BPF_PROG_TEST_RUN`, without an interface attachment or pinning.
 
 ```sh
@@ -581,5 +586,5 @@ go test -count=1 ./pkg/inject/...
 sudo -E env PATH=$PATH go test -count=1 -run 'TestBpfLookupInjection|TestBpfLookupMiss|TestBpfLookupAny|TestBpfMapCalls|TestBpfTailCall|TestBpfEntryHook|TestBpfStackLimits|TestBpfDispatch|TestBpfSpecialFields|TestBpfSockHash|TestBpfQueue|TestBpfStackOps|TestBpfBloom|TestBpfLookupPercpu' ./pkg/inject/
 ```
 
-All 76 privileged `TestBpf` tests of this package, including the lookup, miss, update, delete, push, pop, peek, special-field, socket-map, entry, tail-call, stack-limit and dispatch tests, pass across the CI kernel matrix (6.1 to 7.3-rc4) that `make test-bpf` runs, where the tests whose hooks need `arg:untrusted` skip on 6.1-6.15, the callback stack-limit subtests skip on 7.3, which forbids tail calls in callbacks, and the sockhash update tests skip on 7.3, which no longer lets tc update a socket map (see scripts/test/privileged.py).
+All 77 privileged `TestBpf` tests of this package, including the lookup, miss, update, delete, push, pop, peek, special-field, socket-map, entry, tail-call, stack-limit, dispatch and generated equivalence tests, pass across the CI kernel matrix (6.1 to 7.3-rc4) that `make test-bpf` runs, where the tests whose hooks need `arg:untrusted` skip on 6.1-6.15, the callback stack-limit subtests skip on 7.3, which forbids tail calls in callbacks, and the sockhash update tests skip on 7.3, which no longer lets tc update a socket map (see scripts/test/privileged.py).
 This is finite test evidence for the fixture, not a general program-equivalence, concurrency, or kernel-version guarantee.
