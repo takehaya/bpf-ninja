@@ -25,8 +25,11 @@ The two negative captures must time out with empty pcaps.
 The loader supplies an empty BTF key type to the walkthrough queue map so the
 kernel retains its scalar value type; without a key type, map creation retries
 without BTF and inject-run only sees opaque bytes.
-On 6.1, dispatch uses `static_untrusted` because that kernel predates
-`arg:untrusted`; static XDP ctx reads use the fault-handled kernel-read helper.
+On the 6.1, 6.6, 6.12 and 6.15 matrix kernels, dispatch uses `static_untrusted`
+because they reject `arg:untrusted`.
+A small, unattached load probe checks the target's direct XDP context reads.
+Only targets rejected with a scalar context use the fault-handled kernel-read
+helper; static helpers that accept direct reads keep their original bytecode.
 
 The related privileged Go tests are:
 
@@ -34,10 +37,13 @@ The related privileged Go tests are:
 mkdir -p /tmp/argmember-kernel
 go test -c -o /tmp/argmember-kernel/x.test ./internal/program
 # Run as root inside the VM:
-./x.test -test.run 'TestBpfArgMember|TestIntegerArgFilterByteIdentical' -test.v
+./x.test -test.run 'TestBpfArgMember|TestBpfStaticXDP|TestIntegerArgFilterByteIdentical' -test.v
 ```
 
 They cover integer/member comparisons and echo, struct/union/scalar/void NULL
 predicates, signed widening, mixed argument/member set keys, NULL set rejection,
 and entry/exit/gated packet capture with a packet DSL condition.
 `TestIntegerArgFilterByteIdentical` pins the original integer filter bytecode.
+The static XDP tests compare entry, exit and gated-exit bytecode against
+`origin/main` (060811d) for a ctx-only static helper, check the selected capture
+prologues, and force a failed ctx read to verify depth and hold cleanup.

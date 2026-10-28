@@ -45,6 +45,26 @@ func TestParseMemberFilters(t *testing.T) {
 	}
 }
 
+func TestRejectMemberNullComparison(t *testing.T) {
+	params := []attach.FuncParamInfo{{Name: "value", Index: 1, Kind: "ptr-struct", Type: &btf.Pointer{Target: &btf.Struct{
+		Size: 4, Members: []btf.Member{{Name: "action", Type: &btf.Int{Size: 4}}},
+	}}}}
+	for _, expr := range []string{"value->action==null", "value->action=null", "value->action!=null"} {
+		t.Run(expr, func(t *testing.T) {
+			_, err := ParseAndValidateFilters([]string{expr}, params)
+			if err == nil || !strings.Contains(err.Error(), "null comparison requires a pointer parameter") {
+				t.Fatalf("got %v, want pointer parameter rejection", err)
+			}
+		})
+	}
+	if _, err := ParseAndValidateFilters([]string{"value==null"}, params); err != nil {
+		t.Fatalf("bare pointer NULL comparison: %v", err)
+	}
+	if _, err := ParseAndValidateFilters([]string{"value->action==0"}, params); err != nil {
+		t.Fatalf("integer member comparison: %v", err)
+	}
+}
+
 func TestSetMemberMappings(t *testing.T) {
 	for _, ref := range []string{"flows->imsi", "flows.imsi"} {
 		if _, err := ResolveSetFilters(nil, []string{ref}, nil); err == nil || !strings.Contains(err.Error(), "member syntax") {

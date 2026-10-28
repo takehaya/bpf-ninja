@@ -108,9 +108,6 @@ func TestMembersFlags(t *testing.T) {
 		{[]string{"--members"}, "--members requires --list-params"},
 		{[]string{"--members-depth", "2"}, "--members-depth requires --list-params --members"},
 		{[]string{"--list-params", "--members-depth", "2"}, "--members-depth requires"},
-		{[]string{"--list-params", "--members", "--members-depth", "0"}, "must be between 1 and 32"},
-		{[]string{"--list-params", "--members", "--members-depth", "-1"}, "must be between 1 and 32"},
-		{[]string{"--list-params", "--members", "--members-depth", "33"}, "must be between 1 and 32"},
 		{[]string{"--list-params", "--members", "--list-funcs"}, "cannot be combined"},
 		{[]string{"--list-params", "--members", "--list-progs"}, "cannot be combined"},
 		{[]string{"--list-params", "--members", "--dump-asm", "filter"}, "cannot be combined"},
@@ -138,6 +135,21 @@ func TestMembersFlags(t *testing.T) {
 			}
 			if err := cmd.Run(context.Background(), args); err != nil {
 				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestMembersDepthOutOfRangeCLI(t *testing.T) {
+	for _, depth := range []string{"-1", "0", "33", "2147483647"} {
+		t.Run(depth, func(t *testing.T) {
+			// Run the real command action without a target. Validation must
+			// reject the range before target discovery or any BPF operations.
+			err := newRootCommand().Run(context.Background(), []string{
+				"bpf-ninja", "--list-params", "--members", "--members-depth", depth,
+			})
+			if err == nil || err.Error() != "--members-depth must be between 1 and 32" {
+				t.Fatalf("got %v, want members-depth range rejection", err)
 			}
 		})
 	}
