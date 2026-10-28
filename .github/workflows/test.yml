@@ -90,6 +90,9 @@ jobs:
       - name: Build
         run: go build -o bpf-ninja ./cmd/bpf-ninja/
 
+      - name: Build inject observer examples
+        run: ./examples/inject-observers/build.sh
+
       - name: Mount bpffs for privileged tests
         run: mountpoint -q /sys/fs/bpf || sudo mount -t bpf bpf /sys/fs/bpf
 
