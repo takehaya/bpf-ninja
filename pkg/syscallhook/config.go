@@ -27,10 +27,10 @@ import (
 // Ops picks the map operations a rule's hooks observe, as op or op:when:
 // "lookup" or "lookup:hit", "lookup:miss" or "lookup:any" (see
 // inject.LookupRequest.Lookups), "update" or "update:error", "update:any",
-// and the same for "delete" (see inject.LookupRequest.Updates). Without ops
-// a rule observes lookup hits; with ops it observes only the ops listed.
-// update and delete need auto, and an update needs one spill slot more
-// (two with dispatch).
+// and the same for "delete", "push", "pop" and "peek" (see
+// inject.LookupRequest.Updates and Pushes). Without ops a rule observes
+// lookup hits; with ops it observes only the ops listed. Every op but lookup
+// needs auto, and an update needs one spill slot more (two with dispatch).
 // StackLowestOffset is the caller's audit of all stack accesses, including
 // aliases and callees (see inject.StackAudit).
 type Rule struct {
@@ -73,6 +73,9 @@ func (r Rule) request() inject.LookupRequestRaw {
 		Lookups:         ops.lookups,
 		Updates:         ops.updates,
 		Deletes:         ops.deletes,
+		Pushes:          ops.pushes,
+		Pops:            ops.pops,
+		Peeks:           ops.peeks,
 		HookName:        r.Hook,
 		Stack:           inject.StackAudit{LowestOffset: lo},
 	}
@@ -80,8 +83,8 @@ func (r Rule) request() inject.LookupRequestRaw {
 
 // ruleOps is Rule.Ops as the results each op's hooks observe.
 type ruleOps struct {
-	lookups          inject.LookupWhen
-	updates, deletes inject.CallWhen
+	lookups                               inject.LookupWhen
+	updates, deletes, pushes, pops, peeks inject.CallWhen
 }
 
 // parseOps reads Rule.Ops. No ops observes lookup hits; a list without
@@ -108,7 +111,7 @@ func parseOps(ops []string) (ruleOps, error) {
 			default:
 				return ruleOps{}, fmt.Errorf("op %q: lookup takes hit, miss or any", op)
 			}
-		case "update", "delete":
+		case "update", "delete", "push", "pop", "peek":
 			w := inject.CallWhen(when)
 			switch w {
 			case "":
@@ -117,11 +120,8 @@ func parseOps(ops []string) (ruleOps, error) {
 			default:
 				return ruleOps{}, fmt.Errorf("op %q: %s takes error or any", op, name)
 			}
-			if name == "update" {
-				parsed.updates = w
-			} else {
-				parsed.deletes = w
-			}
+			*map[string]*inject.CallWhen{"update": &parsed.updates, "delete": &parsed.deletes,
+				"push": &parsed.pushes, "pop": &parsed.pops, "peek": &parsed.peeks}[name] = w
 		default:
 			return ruleOps{}, fmt.Errorf("unknown op %q", op)
 		}

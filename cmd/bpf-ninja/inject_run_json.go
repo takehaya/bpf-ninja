@@ -73,14 +73,14 @@ func siteJSON(kind inject.HookKind, site inject.LookupSite) hookSiteJSON {
 }
 
 // hookKind is typed, generic, entry, tail_call or dispatch. The sites of a
-// typed or generic hook say whether it observes lookups, updates or deletes.
+// typed or generic hook say which map helper it observes.
 func hookKind(hook inject.LookupHook) string {
 	switch {
 	case hook.Dispatch:
 		return "dispatch"
 	case hook.Generic:
 		return "generic"
-	case hook.Kind == inject.HookLookup || hook.Kind == inject.HookUpdate || hook.Kind == inject.HookDelete:
+	case hook.Kind != inject.HookEntry && hook.Kind != inject.HookTailCall:
 		return "typed"
 	}
 	return string(hook.Kind)
@@ -97,7 +97,7 @@ func injectionJSON(inj syscallhook.Injection) injectedProgJSON {
 		}
 		for _, site := range hook.Sites {
 			s := siteJSON(hook.Kind, site)
-			if hook.Dispatch && (hook.Kind == inject.HookUpdate || hook.Kind == inject.HookDelete) {
+			if hook.Dispatch && hook.Kind != inject.HookLookup && hook.Kind != inject.HookEntry && hook.Kind != inject.HookTailCall {
 				s.When = hook.When
 			}
 			sites = append(sites, s)

@@ -158,7 +158,7 @@ func TestMapCallRefusals(t *testing.T) {
 		req  func() LookupRequest
 		want string
 	}{
-		{func() LookupRequest { r := lookupReq(); r.Updates = CallError; return r }, "Updates and Deletes need Auto"},
+		{func() LookupRequest { r := lookupReq(); r.Updates = CallError; return r }, "Updates, Deletes, Pushes, Pops and Peeks need Auto"},
 		{func() LookupRequest { r := autoReq(); r.Deletes = "sometimes"; return r }, "Updates and Deletes must be error or any"},
 		{func() LookupRequest { r := lookupReq(); r.Lookups = LookupNone; return r }, "Lookups none selects no lookup"},
 		// The fixture has no update or delete, and lookups are not observed.

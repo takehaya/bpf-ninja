@@ -59,8 +59,10 @@ A name that matches no lookup refuses the rule, and `maps` without `auto` is a c
 A typed hook then gets a second hook, `HOOK_MAP_miss(ctx, u32 site, key)`, since its value cannot be NULL; the `HOOK_any` and dispatch hooks are called with a NULL value ([lookup-site-injection.md](lookup-site-injection.md#misses)).
 `"update"` and `"delete"` (or `"update:error"`, `"delete:error"`) call `HOOK_MAP_update(ctx, u32 site, key, value, u64 status)` and `HOOK_MAP_delete(ctx, u32 site, key, u64 status)` when the helper fails, and `"update:any"` and `"delete:any"` after every call; `status` is the helper's result in the low 32 bits and the update's flags above them ([lookup-site-injection.md](lookup-site-injection.md#updates-and-deletes)).
 An update or delete on a map known only at run time, or on a sockmap or sockhash, whose update passes a socket rather than memory, calls `HOOK_any_update` or `HOOK_any_delete` with the generic hook's arguments instead.
+`"push"`, `"pop"` and `"peek"` (each also with `:error` or `:any`) do the same for the queue, stack and bloom-filter helpers, calling `HOOK_MAP_push`, `HOOK_MAP_pop` or `HOOK_MAP_peek` with `(ctx, u32 site, value, u64 status)`; a pop or peek hook sees the value the helper wrote ([lookup-site-injection.md](lookup-site-injection.md#pushes-pops-and-peeks)).
+A `bpf_map_lookup_percpu_elem` call is a lookup and takes the `lookup` op.
 With `ops`, a rule observes only the ops it lists, so `"ops": ["update"]` leaves the lookups alone.
-`ops` needs `map` or `auto`, and `update` and `delete` need `auto`.
+`ops` needs `map` or `auto`, and `update`, `delete`, `push`, `pop` and `peek` need `auto`.
 
 `"entry": true` adds `HOOK_entry(ctx)`, called at the start of the program, which also runs when the program is entered through a tail call.
 `"tail_calls": true` adds `HOOK_tail_call(ctx, u32 site, u32 index)`, called when a `bpf_tail_call` anywhere in the program fails.
@@ -79,7 +81,7 @@ It must be between -456 and 0 for a rule with `map` or `auto`; a rule with only 
 The transform reserves three eight-byte slots below the audited region, aligned downward (one for `entry` alone, two for `tail_calls` without lookups), four with `dispatch` (unless the rule has only `entry`) or when `auto` finds a lookup whose map a typed hook cannot take, plus the value copy with `copy_read_only` (see the transform's refusal message for the exact bound).
 The frame holding the slots also calls the hook, which kernels that round frames to 32 bytes count as 32 bytes of the 512-byte stack, so the slots must end 480 bytes below the frame.
 Do not copy the example bound without auditing the actual program.
-`hook` must be a C identifier of at most 127 bytes, leaving room for the longest suffix the transform appends: at most 117 bytes with `tail_calls` (`_tail_call`), 121 with `entry` (`_entry`), 125 with `auto` (`_0`), 120 with `lookup:miss` (`_0_miss`), and 118 with `update` or `delete` (`_0_update`); with `dispatch` the hook is named `hook` itself, so up to 127 bytes. Under `auto`, a map whose hook name would still not fit is skipped.
+`hook` must be a C identifier of at most 127 bytes, leaving room for the longest suffix the transform appends: at most 117 bytes with `tail_calls` (`_tail_call`), 121 with `entry` (`_entry`), 125 with `auto` (`_0`), 120 with `lookup:miss` (`_0_miss`), and 118 with `update`, `delete`, `push`, `pop` or `peek` (`_0_update`); with `dispatch` the hook is named `hook` itself, so up to 127 bytes. Under `auto`, a map whose hook name would still not fit is skipped.
 Unknown JSON fields, duplicate program selectors, trailing JSON, and configurations larger than 1 MiB are rejected before launching.
 
 ## Hooks as JSON
@@ -130,20 +132,20 @@ Each entry of `programs` is one injected load, in load order, so a program loade
 
 Each hook is one function in the loaded program:
 
-- `kind` is `typed` (a hook with the map's key and value types), `generic` (a `HOOK_any` hook that also takes the map pointer), `entry`, `tail_call`, or `dispatch`. The sites of a `typed` or `generic` hook say whether it observes lookups, updates or deletes.
-- `when` is the results that call the hook: `hit`, `miss` (a typed hook's `_miss` hook, which takes no value) or `any` for lookups, and `error` or `any` for updates and deletes. A `dispatch` hook's `when` is its lookups'; its update and delete sites carry their own `when`.
+- `kind` is `typed` (a hook with the map's key and value types), `generic` (a `HOOK_any` hook that also takes the map pointer), `entry`, `tail_call`, or `dispatch`. The sites of a `typed` or `generic` hook say which map helper it observes.
+- `when` is the results that call the hook: `hit`, `miss` (a typed hook's `_miss` hook, which takes no value) or `any` for lookups, and `error` or `any` for updates, deletes, pushes, pops and peeks. A `dispatch` hook's `when` is its lookups'; its other map-call sites carry their own `when`.
 - `map` is the map of a `typed` hook. A `generic` or `dispatch` hook serves several maps, so the map is given on each site instead.
-- `sites` are the helper calls that call the hook, in instruction order. Each has a `kind` (`lookup`, `update`, `delete`, `tail_call`, or `entry`), its raw instruction index `pc` (the `site` argument the hook receives, or the low 32 bits of a generic or dispatch hook's `info`), and, where known, `map`, `func`, `file` and `line`. An `entry` hook has no sites.
+- `sites` are the helper calls that call the hook, in instruction order. Each has a `kind` (`lookup`, `update`, `delete`, `push`, `pop`, `peek`, `tail_call`, or `entry`), its raw instruction index `pc` (the `site` argument the hook receives, or the low 32 bits of a generic or dispatch hook's `info`), and, where known, `map`, `func`, `file` and `line`. An `entry` hook has no sites.
 - A `dispatch` rule produces one hook with every site: the lookups, the failed tail calls, and the entry call as the site `4294967295` (`inject.DispatchEntrySite`). The entry call comes first, since it runs at program start, and the other sites follow in instruction order across maps and kinds.
 - `untrusted`, `copied`, `static` and `read_only` mirror `inject.LookupHook`: the hook takes `arg:untrusted` pointers (a lookup hook on a read-only or write-only map, or on a value holding a `bpf_spin_lock`, `bpf_timer`, kptr or similar field), its value is a stack copy, it is a static function (read every argument as a `u64`), and its map is `BPF_F_RDONLY_PROG`.
 
-`skipped` lists the lookups, updates and deletes that `auto` did not instrument, with the same site fields plus `reason`.
+`skipped` lists the map calls that `auto` did not instrument, with the same site fields plus `reason`.
 
 ## Maps of a running program
 
 Before writing a rule, `bpf-ninja --list-progs --list-maps` shows where the maps are used in a program that is already loaded.
 Under each program of the reachable tree it lists the functions, the functions each one calls, and every map reference with its op and source line.
-With `--lookups-json` it also reads the file `inject-run --lookups-json` wrote for the same load, and marks each lookup, update and delete with whether it can be instrumented and its load-time `pc`:
+With `--lookups-json` it also reads the file `inject-run --lookups-json` wrote for the same load, and marks each map call with whether it can be instrumented and its load-time `pc`:
 
 ```sh
 bpf-ninja inject-run --lookups-json lookups.json -- ./loader &
@@ -171,7 +173,7 @@ prog 2  entry
 Each `map` line gives the map's name and type, the op and the source line of the helper call (of the map load when the op is not known), then:
 
 - for a tail call or redirect, the reached program (`→ prog 3`);
-- with `--lookups-json`, `✓ injectable` for a lookup, update or delete `auto` can instrument (`(generic hook)` when it goes to the generic hook), `✗` and the reason for one it skips, and `? not in the lookups file` when no load-time call matched;
+- with `--lookups-json`, `✓ injectable` for a map call `auto` can instrument (`(generic hook)` when it goes to the generic hook), `✗` and the reason for one it skips, and `? not in the lookups file` when no load-time call matched;
 - in parentheses, `inlined` for an array lookup the verifier inlined, and the load-time `pc` of the matched call, the one the lookups and hooks files use.
 
 Without `--lookups-json` there is no status column.
@@ -230,7 +232,7 @@ This output is from the integration loader on 7.0:
 
 - `maps` lists every map the program references: first those with lookups, in the order of their first lookup, with the `pc` of each in `sites`, then the others by name with no sites.
 - `lookups` are the discovered lookup sites with the fields of a hooks-file site; one that `auto` would skip carries a `reason`, and one it sends to the generic hook despite its `reason` has `"generic": true`.
-- `calls` lists every `bpf_map_lookup_elem`, `bpf_map_update_elem` and `bpf_map_delete_elem` call, with the op as `kind`, and each map's `ops` lists the ops called on it. Only lookups can be instrumented so far; the `reason` of an update or delete only says why its map or `ctx` is out of reach.
+- `calls` lists every `bpf_map_lookup_elem`, `bpf_map_lookup_percpu_elem`, `bpf_map_update_elem`, `bpf_map_delete_elem`, `bpf_map_push_elem`, `bpf_map_pop_elem` and `bpf_map_peek_elem` call, with the op as `kind`, and each map's `ops` lists the ops called on it. As in `lookups`, a call with a `reason` is one `auto` skips, unless it also has `"generic": true`.
 - `rule` is a rule for this program that instruments every named map with lookups. Its `stack_lowest_offset` is `null` because only the caller can audit the program's stack, so the rule is refused until it is filled in. Edit `maps`, and add `dispatch`, `entry` or `tail_calls` as needed.
 - A program loaded twice is listed twice.
 

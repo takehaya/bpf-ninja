@@ -19,7 +19,7 @@ import (
 // Empty names or zero Line mean the input did not supply that information.
 // Reason explains why a site cannot be injected; discovery still lists it.
 type LookupSite struct {
-	Op               HookKind // HookLookup, HookUpdate or HookDelete; HookTailCall on a tail call
+	Op               HookKind // HookLookup, HookUpdate, HookDelete, HookPush, HookPop or HookPeek; HookTailCall on a tail call
 	MapName          string
 	KeyTypeName      string
 	ValueTypeName    string
@@ -131,6 +131,16 @@ func (s LookupSelector) empty() bool {
 // on a map known only at run time goes to the generic hook PREFIX_any_update
 // or PREFIX_any_delete. A generic or Dispatch hook gets the result in its
 // info argument instead (see genericHook); a delete passes a NULL value.
+//
+// Pushes, Pops and Peeks, which need Auto too, instrument map_push_elem,
+// map_pop_elem and map_peek_elem on queue, stack and bloom filter maps the
+// same way. They take no key: each map gets int PREFIX_MAP_push(struct
+// xdp_md *ctx, u32 site, const VALUE *value, u64 status), and _pop and _peek
+// alike, where status is (u32)ret | flags << 32 (flags is zero for a pop or
+// peek). A pop or peek's value is what the helper wrote, zeroes when it
+// failed; a bloom filter peek's is the value tested. A generic or Dispatch
+// hook gets a NULL key and the value. bpf_map_lookup_percpu_elem counts as
+// a lookup: its hooks do not get the CPU.
 type LookupRequest struct {
 	ELFSHA256       string
 	ProgramName     string
@@ -145,6 +155,9 @@ type LookupRequest struct {
 	Lookups         LookupWhen
 	Updates         CallWhen
 	Deletes         CallWhen
+	Pushes          CallWhen
+	Pops            CallWhen
+	Peeks           CallWhen
 	HookName        string
 	Stack           StackAudit
 }
@@ -179,13 +192,22 @@ const (
 
 func (w CallWhen) valid() bool { return w == "" || w == CallError || w == CallAny }
 
+// calls returns the results req observes for op, a map call other than a
+// lookup, or "".
+func (req LookupRequest) calls(op HookKind) CallWhen {
+	return map[HookKind]CallWhen{HookUpdate: req.Updates, HookDelete: req.Deletes,
+		HookPush: req.Pushes, HookPop: req.Pops, HookPeek: req.Peeks}[op]
+}
+
+// mapCalls reports whether req observes any map call other than a lookup.
+func (req LookupRequest) mapCalls() bool {
+	return req.Updates != "" || req.Deletes != "" || req.Pushes != "" || req.Pops != "" || req.Peeks != ""
+}
+
 // observes reports whether req instruments sites of op.
 func (req LookupRequest) observes(op HookKind) bool {
-	switch op {
-	case HookUpdate:
-		return req.Updates != ""
-	case HookDelete:
-		return req.Deletes != ""
+	if op.mapCall() {
+		return req.calls(op) != ""
 	}
 	return req.Lookups != LookupNone
 }
@@ -198,8 +220,11 @@ func checkOps(req LookupRequest) error {
 	if !req.Updates.valid() || !req.Deletes.valid() {
 		return refuse("Updates and Deletes must be error or any; got %q and %q", req.Updates, req.Deletes)
 	}
-	if (req.Updates != "" || req.Deletes != "") && !req.Auto {
-		return refuse("Updates and Deletes need Auto")
+	if !req.Pushes.valid() || !req.Pops.valid() || !req.Peeks.valid() {
+		return refuse("Pushes, Pops and Peeks must be error or any; got %q, %q and %q", req.Pushes, req.Pops, req.Peeks)
+	}
+	if req.mapCalls() && !req.Auto {
+		return refuse("Updates, Deletes, Pushes, Pops and Peeks need Auto")
 	}
 	if req.Lookups == LookupNone && !req.Site.empty() {
 		return refuse("Lookups none selects no lookup; Site must be empty")
@@ -230,7 +255,24 @@ const (
 	// (LookupRequest.Updates and Deletes).
 	HookUpdate HookKind = "update"
 	HookDelete HookKind = "delete"
+	// HookPush, HookPop and HookPeek observe map_push_elem, map_pop_elem and
+	// map_peek_elem (LookupRequest.Pushes, Pops and Peeks).
+	HookPush HookKind = "push"
+	HookPop  HookKind = "pop"
+	HookPeek HookKind = "peek"
 )
+
+// mapCall reports whether k is a map helper other than a lookup.
+func (k HookKind) mapCall() bool {
+	switch k {
+	case HookUpdate, HookDelete, HookPush, HookPop, HookPeek:
+		return true
+	}
+	return false
+}
+
+// keyless reports whether k's helper takes a value in R2 instead of a key.
+func (k HookKind) keyless() bool { return k == HookPush || k == HookPop || k == HookPeek }
 
 // LookupHook is one generated hook and the sites that call it, in original
 // instruction order. An entry hook has no sites; a tail-call hook's sites are
@@ -431,6 +473,9 @@ func lookupContext(typ ebpf.ProgramType) string {
 // mapCallOps are the helpers discoverMapCalls lists.
 var mapCallOps = map[asm.BuiltinFunc]HookKind{
 	asm.FnMapLookupElem: HookLookup, asm.FnMapUpdateElem: HookUpdate, asm.FnMapDeleteElem: HookDelete,
+	asm.FnMapPushElem: HookPush, asm.FnMapPopElem: HookPop, asm.FnMapPeekElem: HookPeek,
+	// The value of the CPU the program names, as typed as a lookup's.
+	asm.FnMapLookupPercpuElem: HookLookup,
 }
 
 func discoverLookupProgram(insns asm.Instructions, typ ebpf.ProgramType, resolve lookupMapResolver) ([]discoveredLookup, error) {
@@ -505,7 +550,9 @@ func discoverMapCalls(insns asm.Instructions, typ ebpf.ProgramType, resolve look
 				// or an xskmap, so those sites fail here too. A socket map's
 				// update takes a socket, which only the generic hook's
 				// untyped value accepts; its delete goes along.
-				if reason := checkLookupMap(m); reason != "" {
+				if op.keyless() {
+					site.Reason = checkQueueMap(m)
+				} else if reason := checkLookupMap(m); reason != "" {
 					site.Reason, typedOnly = reason, genericKinds[m.Type] && (op == HookLookup || sockKinds[m.Type])
 				}
 			}
@@ -661,7 +708,8 @@ const siteFrameLimit = maxCombinedStack - 32
 // groupStackReach returns the most-negative stack offset instrumenting group
 // needs. A generic or dispatch hook needs the map slot; a CopyReadOnly value
 // copy goes below it; an update keeps its value pointer below the map slot or
-// in it; a plain typed lookup or delete uses only the three base slots, which
+// in it; a plain typed lookup, delete, push, pop or peek uses only the three
+// base slots, which
 // CheckLookupStack already keeps within siteFrameLimit.
 func groupStackReach(group lookupGroup, req LookupRequest) int {
 	slots := lookupSlots(req.Stack.LowestOffset)
@@ -672,7 +720,7 @@ func groupStackReach(group lookupGroup, req LookupRequest) int {
 	if withMap {
 		return slots.mapSlot
 	}
-	if group.op == HookDelete {
+	if group.op != HookLookup {
 		return slots.result
 	}
 	if m := group.sites[0].mapInfo; copiesValue(m, req) {
@@ -735,6 +783,24 @@ func checkLookupMap(m *RawMap) string {
 		if s, ok := btf.UnderlyingType(field.typ).(*btf.Struct); ok && (s.Name == "xdp_md" || s.Name == "__sk_buff" || s.Name == "bpf_dynptr") {
 			return fmt.Sprintf("map %s type %q has a special global-function pointer ABI", field.name, s.Name)
 		}
+	}
+	return ""
+}
+
+// checkQueueMap returns why a typed push, pop or peek hook cannot take m's
+// value, or "". Only queue, stack and bloom filter maps take these helpers;
+// the verifier refuses them on any other kind.
+func checkQueueMap(m *RawMap) string {
+	switch m.Type {
+	case ebpf.Queue, ebpf.Stack, ebpf.BloomFilter:
+	default:
+		return fmt.Sprintf("map type %s is unsupported", m.Type)
+	}
+	if m.Value == nil {
+		return ""
+	}
+	if size, err := btf.Sizeof(m.Value); err != nil || size <= 0 || uint64(size) != uint64(m.ValueSize) {
+		return fmt.Sprintf("map value BTF size does not match map size %d", m.ValueSize)
 	}
 	return ""
 }
@@ -953,7 +1019,7 @@ func selectLookups(sites []discoveredLookup, req LookupRequest, reserved []strin
 		for _, name := range req.Maps {
 			if !selected[name] {
 				what := "lookup"
-				if req.Updates != "" || req.Deletes != "" {
+				if req.mapCalls() {
 					what = "map call"
 				}
 				return nil, nil, refuse("Maps name %q matches no %s", name, what)
@@ -1297,7 +1363,7 @@ func (e lookupEmitter) splice(groups []lookupGroup) (asm.Instructions, []LookupH
 		hooks = untrustedABI(req.HookName)
 	}
 	for _, group := range groups {
-		results := map[HookKind]CallWhen{HookUpdate: req.Updates, HookDelete: req.Deletes}[group.op]
+		results := req.calls(group.op)
 		when := string(results)
 		if group.op == HookLookup {
 			when = string(req.Lookups.normal())
@@ -1323,10 +1389,16 @@ func (e lookupEmitter) splice(groups []lookupGroup) (asm.Instructions, []LookupH
 		if group.op != HookLookup {
 			// The key and value are the program's memory, never the map's,
 			// so the hook is typed even on a write-only map.
-			if group.op == HookDelete {
-				value = nil
+			var hook asm.Instructions
+			switch {
+			case group.op.keyless():
+				hook = valueHook(group.name, e.ctxType, value)
+			case group.op == HookDelete:
+				hook = lookupHook(group.name, e.ctxType, key, nil, true, false, "status")
+			default:
+				hook = lookupHook(group.name, e.ctxType, key, value, true, false, "status")
 			}
-			hooks = append(hooks, lookupHook(group.name, e.ctxType, key, value, true, false, "status")...)
+			hooks = append(hooks, hook...)
 			plan = append(plan, LookupHook{Name: group.name, Kind: group.op, When: when, MapName: group.sites[0].MapName, Sites: publicLookupSites(group.sites)})
 			for _, site := range group.sites {
 				calls[site.SitePC] = siteCall{hook: group.name, op: group.op, results: results, withSite: true}
@@ -1453,7 +1525,7 @@ func spliceLookupCalls(input asm.Instructions, calls map[uint32]siteCall, stack 
 	// Every site of every hook shares the slots: sites run one at a time.
 	// A tail-call site keeps its index (R3) in the key slot.
 	afterFor := func(pc uint32, call siteCall) asm.Instructions {
-		if call.op == HookUpdate || call.op == HookDelete {
+		if call.op.mapCall() {
 			return mapCallAfter(pc, call, slots)
 		}
 		if call.tailCall && call.dispatch {
@@ -1538,12 +1610,17 @@ func spliceLookupCalls(input asm.Instructions, calls map[uint32]siteCall, stack 
 		return append(out, asm.LoadMem(asm.R0, asm.RFP, spillR0, asm.DWord))
 	}
 	before := func(call siteCall) asm.Instructions {
-		if call.op == HookUpdate || call.op == HookDelete {
+		if call.op.mapCall() {
+			// R2 is the key, or the value of a push, pop or peek; the key
+			// slot keeps either.
 			spill := asm.Instructions{asm.StoreMem(asm.RFP, key, asm.R2, asm.DWord)}
-			if call.op == HookUpdate {
+			switch call.op {
+			case HookUpdate:
 				// The flags wait in the result slot until the helper returns.
 				spill = append(spill, asm.StoreMem(asm.RFP, spillR0, asm.R4, asm.DWord),
 					asm.StoreMem(asm.RFP, int16(slots.updateValue(call.withMap)), asm.R3, asm.DWord))
+			case HookPush:
+				spill = append(spill, asm.StoreMem(asm.RFP, spillR0, asm.R3, asm.DWord))
 			}
 			if call.withMap {
 				spill = append(spill, asm.StoreMem(asm.RFP, mapSlot, asm.R1, asm.DWord))
@@ -1656,25 +1733,34 @@ func spliceLookupCalls(input asm.Instructions, calls map[uint32]siteCall, stack 
 	return out, nil
 }
 
-// InfoOpUpdate and InfoOpDelete are the ops in bits 32-35 of a generic or
-// Dispatch hook's info argument. A lookup, the entry and a failed tail call
-// leave bits 32-63 zero, so their info is the site alone.
+// InfoOpUpdate, InfoOpDelete, InfoOpPush, InfoOpPop and InfoOpPeek are the
+// ops in bits 32-35 of a generic or Dispatch hook's info argument. A lookup,
+// the entry and a failed tail call leave bits 32-63 zero, so their info is
+// the site alone.
 const (
 	InfoOpUpdate = 1
 	InfoOpDelete = 2
+	InfoOpPush   = 3
+	InfoOpPop    = 4
+	InfoOpPeek   = 5
 )
 
-// mapCallAfter calls an update or delete site's hook after the helper, on
-// every result or (CallError) when R0 is negative, then restores R0. A typed
-// hook gets status = (u32)ret | flags << 32 after its key (and value). A
-// generic or dispatch hook gets info = site | op << 32 | (flags & 0xff) << 36
-// | (u16)ret << 48, the key, the value or NULL, and the map.
+var infoOps = map[HookKind]int32{HookUpdate: InfoOpUpdate, HookDelete: InfoOpDelete,
+	HookPush: InfoOpPush, HookPop: InfoOpPop, HookPeek: InfoOpPeek}
+
+// mapCallAfter calls a map call site's hook after the helper, on every
+// result or (CallError) when R0 is negative, then restores R0. A typed hook
+// gets status = (u32)ret | flags << 32 after its key and value (a push, pop
+// or peek: its value alone). A generic or dispatch hook gets info = site |
+// op << 32 | (flags & 0xff) << 36 | (u16)ret << 48, the key or NULL, the
+// value or NULL, and the map.
 func mapCallAfter(pc uint32, call siteCall, slots lookupLayout) asm.Instructions {
-	update := call.op == HookUpdate
+	update, keyless := call.op == HookUpdate, call.op.keyless()
+	flags := update || call.op == HookPush
 	ctx, key, spillR0 := int16(slots.ctx), int16(slots.key), int16(slots.result)
 	value := int16(slots.updateValue(call.withMap))
-	// word builds status or info. An update loads its flags into it before
-	// R0 takes their slot.
+	// word builds status or info. An update or push loads its flags into it
+	// before R0 takes their slot.
 	word := asm.R4
 	switch {
 	case call.withMap:
@@ -1683,33 +1769,33 @@ func mapCallAfter(pc uint32, call siteCall, slots lookupLayout) asm.Instructions
 		word = asm.R5
 	}
 	var out asm.Instructions
-	if update {
+	if flags {
 		out = append(out, asm.LoadMem(word, asm.RFP, spillR0, asm.DWord))
 	}
 	out = append(out, asm.StoreMem(asm.RFP, spillR0, asm.R0, asm.DWord))
 	var args asm.Instructions
 	if call.withMap {
-		op := int32(InfoOpDelete)
-		if update {
-			op = InfoOpUpdate
+		if flags {
 			args = append(args, asm.And.Imm(word, 0xff), asm.LSh.Imm(word, 36))
 		} else {
 			args = append(args, asm.Mov.Imm(word, 0))
 		}
 		args = append(args,
 			asm.Mov.Reg(asm.R3, asm.R0), asm.LSh.Imm(asm.R3, 48), asm.Or.Reg(word, asm.R3),
-			asm.Mov.Imm(asm.R3, op), asm.LSh.Imm(asm.R3, 32), asm.Or.Reg(word, asm.R3),
+			asm.Mov.Imm(asm.R3, infoOps[call.op]), asm.LSh.Imm(asm.R3, 32), asm.Or.Reg(word, asm.R3),
 			asm.Mov.Imm32(asm.R3, int32(pc)), asm.Or.Reg(word, asm.R3),
-			asm.LoadMem(asm.R1, asm.RFP, ctx, asm.DWord),
-			asm.LoadMem(asm.R3, asm.RFP, key, asm.DWord))
-		if update {
-			args = append(args, asm.LoadMem(asm.R4, asm.RFP, value, asm.DWord))
-		} else {
-			args = append(args, asm.Mov.Imm(asm.R4, 0))
+			asm.LoadMem(asm.R1, asm.RFP, ctx, asm.DWord))
+		switch {
+		case keyless:
+			args = append(args, asm.Mov.Imm(asm.R3, 0), asm.LoadMem(asm.R4, asm.RFP, key, asm.DWord))
+		case update:
+			args = append(args, asm.LoadMem(asm.R3, asm.RFP, key, asm.DWord), asm.LoadMem(asm.R4, asm.RFP, value, asm.DWord))
+		default:
+			args = append(args, asm.LoadMem(asm.R3, asm.RFP, key, asm.DWord), asm.Mov.Imm(asm.R4, 0))
 		}
 		args = append(args, asm.LoadMem(asm.R5, asm.RFP, int16(slots.mapSlot), asm.DWord))
 	} else {
-		if update {
+		if flags {
 			args = append(args, asm.LSh.Imm(word, 32), asm.Mov.Reg32(asm.R2, asm.R0), asm.Or.Reg(word, asm.R2))
 		} else {
 			args = append(args, asm.Mov.Reg32(word, asm.R0))
@@ -1809,6 +1895,14 @@ func scalarHook(name string, ctx btf.Type, scalars ...string) asm.Instructions {
 	head := btf.WithFuncMetadata(asm.LoadMem(asm.R0, asm.R1, 0, asm.Word).WithSymbol(name).
 		WithSource(asm.Comment("generated observation hook "+name)), fn)
 	return asm.Instructions{head, asm.Mov.Imm(asm.R0, 0), asm.Return()}
+}
+
+// valueHook is a push, pop or peek hook, int NAME(ctx, u32 site, const VALUE
+// *value, u64 status): lookupHook's miss hook with the pointer named value.
+func valueHook(name string, ctx, value btf.Type) asm.Instructions {
+	hook := lookupHook(name, ctx, value, nil, true, false, "status")
+	btf.FuncMetadata(&hook[0]).Type.(*btf.FuncProto).Params[2].Name = "value"
+	return hook
 }
 
 // lookupHook generates a hook taking const KEY * and const VALUE *. With

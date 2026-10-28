@@ -143,8 +143,8 @@ A generic or dispatch hook gets the result in its `info` argument:
 | Bits | Content |
 |---|---|
 | 0-31 | the site's `SitePC` (`DispatchEntrySite` for the dispatch entry call) |
-| 32-35 | 0 for a lookup, the entry or a tail call; `InfoOpUpdate` (1) or `InfoOpDelete` (2) |
-| 36-43 | the low 8 bits of an update's flags |
+| 32-35 | 0 for a lookup, the entry or a tail call; `InfoOpUpdate` (1), `InfoOpDelete` (2), `InfoOpPush` (3), `InfoOpPop` (4) or `InfoOpPeek` (5) |
+| 36-43 | the low 8 bits of an update's or a push's flags |
 | 48-63 | the helper's result as a signed 16-bit value (an error is at least -4095) |
 
 A lookup, the entry and a failed tail call leave bits 32 to 63 at zero, so their `info` equals the `u32 site` these hooks took before.
@@ -156,6 +156,31 @@ An update site keeps its flags in the result slot until the helper returns, and 
 A typed update therefore needs a stack bound of `-448`, and a generic or dispatch update `-440`; `Auto` skips a generic update past that, and `CheckLookupStack` requires `-448` with `Updates`, or `-440` with `Dispatch` as well.
 A delete uses the slots of a lookup.
 With `CallError`, a successful call runs only the spills, one compare and the restore of R0.
+
+### Pushes, pops and peeks
+
+`LookupRequest.Pushes`, `Pops` and `Peeks`, which need `Auto` too, instrument `bpf_map_push_elem`, `bpf_map_pop_elem` and `bpf_map_peek_elem` in the entry function, with the same `CallError` and `CallAny`.
+These helpers take no key: R2 is the value, which a push reads and a pop or peek writes.
+Each map gets one hook per op:
+
+```c
+int PREFIX_MAP_push(struct xdp_md *ctx, u32 site, const VALUE *value, u64 status);
+int PREFIX_MAP_pop(struct xdp_md *ctx, u32 site, const VALUE *value, u64 status);
+int PREFIX_MAP_peek(struct xdp_md *ctx, u32 site, const VALUE *value, u64 status);
+```
+
+`status` is `(u32)ret | flags << 32` as for an update; only a push has flags.
+The hook runs after the helper, so a pop or peek hook sees the value the helper wrote: the element on success, zeroes when a queue or stack is empty (`ENOENT`).
+A push with `BPF_EXIST` on a full queue or stack drops its oldest element, and without it fails with `E2BIG`.
+A peek on a bloom filter tests the value the program passed, and fails with `ENOENT` when the value is absent.
+The value is the program's memory, so these hooks are always typed.
+Only queues, stacks and bloom filters take these helpers; a site on any other kind, or on a map whose value BTF does not match its size, is skipped with a `Reason`.
+With `Dispatch`, these sites call the dispatch hook with a NULL `key` and the value in `value`.
+`LookupHook.Kind` is `HookPush`, `HookPop` or `HookPeek`, and the suffixes `_push`, `_pop` and `_peek` count toward the name limit like `_update`.
+A push keeps its flags in the result slot and its value pointer in the key slot until the helper returns, so these sites use the slots of a lookup.
+
+`bpf_map_lookup_percpu_elem` takes the lookup hooks of its map, hit and miss alike, and is selected with `Lookups`.
+The hit hook gets the value of the CPU the program named; the CPU itself is not passed.
 
 ### Entry and tail-call hooks
 
@@ -485,7 +510,7 @@ The ELF SHA-256 binds the full input.
 ## What is not covered
 
 The transform observes lookups, updates and deletes in the entry function and failed tail calls, and nothing else.
-It does not observe other map helpers (`bpf_map_push_elem`, `bpf_map_pop_elem`, `bpf_map_peek_elem`, `bpf_map_lookup_percpu_elem`), LRU eviction, non-map lookups such as `bpf_fib_lookup`, or lookups inside `bpf_for_each_map_elem` callbacks.
+It does not observe other map helpers (`bpf_for_each_map_elem`, `bpf_ringbuf_*`, `bpf_sk_storage_get` and the like), LRU eviction, non-map lookups such as `bpf_fib_lookup`, or lookups inside `bpf_for_each_map_elem` callbacks.
 It does not provide a consistent value version under concurrent control-plane updates or other writers.
 The observer reads the returned object during the hook; the program's later reads may see different contents.
 There is no snapshot, locking, or transaction guarantee, and observation adds execution cost.
@@ -510,6 +535,7 @@ It compares plain and injected programs, checks two keys with different packet l
 `TestBpfMapCallsDispatch`, `...Static` and `...TCStatic` do the same through one dispatch hook at the lowest bound an update allows (`-440`) and check its `info` words; `TestBpfMapCallsArrayWriteOnly` loads the typed hooks on a `BPF_F_WRONLY_PROG` array and checks its `E2BIG`, `EEXIST` and `EINVAL` statuses; `TestBpfMapCallsInnerUpdate[Static]` sends an update of the inner map of an array of maps to `PREFIX_any_update`.
 `TestBpfSpecialFieldsLookup[Static]` looks up values with a `bpf_spin_lock`, a `bpf_timer` and a kptr through the untrusted or static hook and checks the key, value and site its observer sees; `TestBpfSpecialFieldsUpdate` keeps the typed update and delete hooks for the spin lock and kptr values and checks each call's key, value and status.
 `TestBpfSockHashUpdateTC[Static]` updates a sockhash from tc with the socket `BPF_PROG_TEST_RUN` gives the skb, which no socket map accepts, then deletes from the empty map, and checks that the generic update and delete hooks see each failure's `info`, the key, the socket (NULL for the delete) and the map, while the program's result does not change.
+`TestBpfQueueOps`, `TestBpfStackOps` and `TestBpfQueueOpsTC` fill a two-entry queue or stack (`E2BIG` when full, `BPF_EXIST` dropping the oldest element), then pop and peek until both fail with `ENOENT`, and check that the push, pop and peek hooks see each call's site, value and status while the program's result does not change; `TestBpfBloomFilterOps` peeks a bloom filter before and after a push and checks that the error-only peek hook sees only the misses; `TestBpfQueueOpsDispatch[Static]` checks the `info` words, the NULL key and the value at the dispatch hook; `TestBpfLookupPercpu` looks up a per-CPU array on the first and last CPU and past the last, and checks that the hit hook sees the named CPU's value and the miss hook the CPU past the last.
 `TestBpfLookupInjectionReadOnlyMap`, `...Copy` and `...Static` cover the untrusted, copied and static hook forms for a `BPF_F_RDONLY_PROG` map; `TestBpfLookupInjectionMapInMap[Static]` and `TestBpfLookupInjectionGenericKinds[Static]` cover the generic hook over a map-in-map and over direct XSK and devmap lookups.
 `TestBpfTailCallHooks` tail-calls from an instrumented caller into a target instrumented with `Entry`.
 On a successful tail call, the entry hook fires and an fentry on the target program itself does not; on a failed one, the tail-call hook reports the site and index.
@@ -531,8 +557,8 @@ These tests exercise the transform core and fentry using `BPF_PROG_TEST_RUN`, wi
 go build ./...
 go vet ./...
 go test -count=1 ./pkg/inject/...
-sudo -E env PATH=$PATH go test -count=1 -run 'TestBpfLookupInjection|TestBpfLookupMiss|TestBpfLookupAny|TestBpfMapCalls|TestBpfTailCall|TestBpfEntryHook|TestBpfStackLimits|TestBpfDispatch|TestBpfSpecialFields|TestBpfSockHash' ./pkg/inject/
+sudo -E env PATH=$PATH go test -count=1 -run 'TestBpfLookupInjection|TestBpfLookupMiss|TestBpfLookupAny|TestBpfMapCalls|TestBpfTailCall|TestBpfEntryHook|TestBpfStackLimits|TestBpfDispatch|TestBpfSpecialFields|TestBpfSockHash|TestBpfQueue|TestBpfStackOps|TestBpfBloom|TestBpfLookupPercpu' ./pkg/inject/
 ```
 
-All 54 privileged `TestBpf` tests of this package, including the lookup, miss, update, delete, special-field, socket-map, entry, tail-call, stack-limit and dispatch tests, pass across the CI kernel matrix (6.1 to 7.3-rc4) that `make test-bpf` runs, where the tests whose hooks need `arg:untrusted` skip on 6.1-6.15 the callback stack-limit subtests skip on 7.3, which forbids tail calls in callbacks, and the sockhash update tests skip on 7.3, which no longer lets tc update a socket map (see scripts/test/privileged.py).
+All 61 privileged `TestBpf` tests of this package, including the lookup, miss, update, delete, push, pop, peek, special-field, socket-map, entry, tail-call, stack-limit and dispatch tests, pass across the CI kernel matrix (6.1 to 7.3-rc4) that `make test-bpf` runs, where the tests whose hooks need `arg:untrusted` skip on 6.1-6.15, the callback stack-limit subtests skip on 7.3, which forbids tail calls in callbacks, and the sockhash update tests skip on 7.3, which no longer lets tc update a socket map (see scripts/test/privileged.py).
 This is finite test evidence for the fixture, not a general program-equivalence, concurrency, or kernel-version guarantee.

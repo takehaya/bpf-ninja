@@ -300,7 +300,7 @@ func (n nodeMaps) status(i, j int, u attach.MapUse, children []attach.ReachableP
 			return ""
 		}
 		return "→ " + strings.Join(targets, ", ")
-	case attach.MapOpLookup, attach.MapOpUpdate, attach.MapOpDelete:
+	case attach.MapOpLookup, attach.MapOpUpdate, attach.MapOpDelete, attach.MapOpPush, attach.MapOpPop, attach.MapOpPeek:
 	default:
 		return ""
 	}

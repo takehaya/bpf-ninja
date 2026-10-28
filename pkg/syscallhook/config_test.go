@@ -43,7 +43,7 @@ func TestRuleRequestForwardsOptions(t *testing.T) {
 	for i := range v.NumField() {
 		fillNonZero(t, v.Field(i))
 	}
-	full.Ops = []string{"lookup:miss", "update:any", "delete"} // ops parseOps accepts
+	full.Ops = []string{"lookup:miss", "update:any", "delete", "push", "pop:any", "peek"} // ops parseOps accepts
 	want := full.request()
 	for i := range v.NumField() {
 		name := v.Type().Field(i).Name
@@ -141,6 +141,10 @@ func TestConfig(t *testing.T) {
 			req := r.request()
 			return req.Lookups == inject.LookupHit && req.Updates == inject.CallAny && req.Deletes == inject.CallAny
 		},
+		`[{"program":"p","auto":true,"ops":["push","pop:any","peek:error"],"hook":"h","stack_lowest_offset":-8}]`: func(r Rule) bool {
+			req := r.request()
+			return req.Lookups == inject.LookupNone && req.Pushes == inject.CallError && req.Pops == inject.CallAny && req.Peeks == inject.CallError
+		},
 		// With dispatch an update keeps its value pointer in a fifth slot.
 		`[{"program":"p","auto":true,"dispatch":true,"ops":["update"],"hook":"h","stack_lowest_offset":-440}]`: func(r Rule) bool { return r.Dispatch },
 		// _0_update counts toward the name limit.
@@ -189,7 +193,9 @@ func TestConfig(t *testing.T) {
 		`[{"program":"p","auto":true,"ops":["delete","delete:any"],"hook":"h","stack_lowest_offset":-8}]`,
 		`[{"program":"p","auto":true,"ops":["lookup:sometimes"],"hook":"h","stack_lowest_offset":-8}]`,
 		`[{"program":"p","auto":true,"ops":["lookup","lookup:miss"],"hook":"h","stack_lowest_offset":-8}]`,
-		`[{"program":"p","auto":true,"ops":["peek"],"hook":"h","stack_lowest_offset":-8}]`,
+		`[{"program":"p","auto":true,"ops":["splice"],"hook":"h","stack_lowest_offset":-8}]`,
+		`[{"program":"p","auto":true,"ops":["push:miss"],"hook":"h","stack_lowest_offset":-8}]`,
+		`[{"program":"p","map":"m","ops":["pop"],"hook":"h","stack_lowest_offset":-8}]`,
 		`[{"program":"p","entry":true,"ops":["lookup"],"hook":"h","stack_lowest_offset":-8}]`,
 	} {
 		if _, err := ParseConfig(strings.NewReader(input)); err == nil {
