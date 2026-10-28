@@ -30,9 +30,10 @@ const (
 // as the guard does. Each helper has its own map reference, since a branch
 // ends the basic block discovery tracks R1 in. With peekOnly the pop is a
 // peek too, for a bloom filter, which has no pop. The pop and peek branches
-// read the value first: 7.1 and newer reject a bloom filter peek behind a
-// branch when nothing else on its path reads the value ("slot poisoned by
-// dead code elimination"), which 7.0 loads.
+// read the value first: 7.1 and newer kernels without the verifier fix reject
+// a bloom filter peek behind a branch when nothing else on its path reads the
+// value ("slot poisoned by dead code elimination"), which 7.0 loads. See
+// TestBpfBloomPeekPoisoned.
 func queueFixture(typ ebpf.MapType, peekOnly bool) *ebpf.CollectionSpec {
 	u64 := &btf.Int{Name: "u64", Size: 8}
 	jump := func(ins asm.Instruction, off int16) asm.Instruction { ins.Offset = off; return ins }
@@ -971,9 +972,24 @@ func TestBpfCopyReadOnlyKey(t *testing.T) {
 }
 
 // TestBpfBloomPeekPoisoned pins why queueFixture reads the value before a
-// pop or peek: without those reads 7.1 and newer reject the plain bloom
-// filter program, before any rewrite, while older kernels load it. If a
-// kernel loads it, the reads may no longer be needed.
+// pop or peek.
+//
+// A bloom filter peek only reads its value: it hashes the value and tests
+// the bits. Queue and stack peeks write it. The helper prototype they share
+// marks the value as written, and the argument checks correct this for a
+// bloom filter, but the static stack liveness analysis added in 7.1 reads the
+// prototype as is. It then takes the value stored at fp-8 as dead before the
+// peek, a checkpoint poisons the slot, and checking the peek reads the
+// poisoned slot: the verifier rejects the plain program, before any rewrite,
+// with "slot poisoned by dead code elimination". Reading fp-8 on the path to
+// the peek keeps the slot live, so the fixture loads.
+//
+// Mainline fixed this in 830e4372de5c ("bpf: Describe helper stack accesses
+// with arg_access_info"), which 7.1 to 7.3 lack. The test drops the reads and
+// requires 7.0 and older to load the program. On 7.1 and newer it accepts
+// either outcome, since a release or a backport may carry the fix: a
+// rejection must be this one, and a load is logged, as the reads are not
+// needed on that kernel.
 func TestBpfBloomPeekPoisoned(t *testing.T) {
 	testutil.SkipIfNotRoot(t)
 	spec := queueFixture(ebpf.BloomFilter, true)
@@ -1003,12 +1019,15 @@ func TestBpfBloomPeekPoisoned(t *testing.T) {
 		coll.Close()
 	}
 	const msg = "slot poisoned by dead code elimination"
-	if major > 7 || major == 7 && minor >= 1 {
-		if err == nil || !strings.Contains(fmt.Sprintf("%+v", err), msg) {
-			t.Errorf("%s: err = %v, want %q", release, err, msg)
+	switch {
+	case major < 7 || major == 7 && minor < 1:
+		if err != nil {
+			t.Errorf("%s: %+v", release, err)
 		}
-	} else if err != nil {
-		t.Errorf("%s: %+v", release, err)
+	case err == nil:
+		t.Logf("%s loads the bloom filter peek without the reads: the kernel has the verifier fix", release)
+	case !strings.Contains(fmt.Sprintf("%+v", err), msg):
+		t.Errorf("%s: err = %v, want %q or a load", release, err, msg)
 	}
 }
 
