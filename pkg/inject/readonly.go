@@ -171,10 +171,50 @@ func readOnlyStep(s *readOnlyState, ins *asm.Instruction, mapPointer func(*asm.I
 			delete(s.slots, slot)
 		}
 	}
+	// load and store access ins.Offset from a base register; only 8-byte
+	// accesses move a pointer.
+	load := func(base pointerState) pointerState {
+		if op.Size() != asm.DWord {
+			return pointerState{}
+		}
+		switch base.stack {
+		case stackKnown:
+			return joinTracked(s.anySlot, s.slots[base.off+int64(ins.Offset)])
+		case stackUnknown:
+			p := s.anySlot
+			for _, slot := range s.slots {
+				p = joinTracked(p, slot)
+			}
+			return p
+		}
+		return pointerState{}
+	}
+	store := func(p pointerState) {
+		if op.Size() != asm.DWord {
+			p = pointerState{}
+		}
+		switch base := regs[ins.Dst]; base.stack {
+		case stackKnown:
+			off := base.off + int64(ins.Offset)
+			clearSlots(off, int64(op.Size().Sizeof()))
+			if p != (pointerState{}) && off%8 == 0 {
+				if s.slots == nil {
+					s.slots = map[int64]pointerState{}
+				}
+				s.slots[off] = p
+			}
+		case stackUnknown:
+			s.anySlot = joinTracked(s.anySlot, p)
+		}
+	}
 	switch {
 	case ins.IsBuiltinCall() || ins.IsKfuncCall():
 		ret := pointerState{}
 		fn := asm.BuiltinFunc(ins.Constant)
+		if ins.IsKfuncCall() || takesCallback(fn) {
+			// The callback is a subprogram and may write through a stack argument.
+			subprogCall(s, subprogReadOnly)
+		}
 		if ins.IsKfuncCall() || (fn == asm.FnMapLookupElem || fn == asm.FnMapLookupPercpuElem) && regs[asm.R1].roMap {
 			ret.readOnly = true
 		}
@@ -186,23 +226,7 @@ func readOnlyStep(s *readOnlyState, ins *asm.Instruction, mapPointer func(*asm.I
 		}
 		regs[asm.R0] = ret
 	case ins.IsFunctionCall():
-		ret := pointerState{readOnly: subprogReadOnly, roMap: subprogReadOnly, innerROMap: subprogReadOnly}
-		stackArg := false
-		for r := asm.R1; r <= asm.R5; r++ {
-			p := regs[r]
-			ret = joinTracked(ret, p)
-			ret.readOnly = ret.readOnly || p.roMap || p.innerROMap
-			stackArg = stackArg || p.stack != notStack
-		}
-		if stackArg {
-			for _, p := range s.slots {
-				ret = joinTracked(ret, p)
-				ret.readOnly = ret.readOnly || p.roMap || p.innerROMap
-			}
-			ret = joinTracked(ret, s.anySlot)
-			ret.readOnly = ret.readOnly || s.anySlot.roMap || s.anySlot.innerROMap
-			s.anySlot = joinTracked(s.anySlot, ret)
-		}
+		ret := subprogCall(s, subprogReadOnly)
 		for r := asm.R0; r <= asm.R5; r++ {
 			regs[r] = pointerState{}
 		}
@@ -227,6 +251,13 @@ func readOnlyStep(s *readOnlyState, ins *asm.Instruction, mapPointer func(*asm.I
 	case class == asm.ALU64Class && (op.ALUOp() == asm.Add || op.ALUOp() == asm.Sub):
 		p := regs[ins.Dst]
 		p.roMap = false
+		if src := regs[ins.Src]; op.ALUOp() == asm.Add && op.Source() == asm.RegSource {
+			// scalar += pointer makes a pointer.
+			p.readOnly = p.readOnly || src.readOnly
+			if src.stack != notStack && p.stack == notStack {
+				p.stack = stackUnknown
+			}
+		}
 		switch {
 		case p.stack == stackKnown && op.Source() == asm.ImmSource && op.ALUOp() == asm.Add:
 			p.off += int64(ins.Constant)
@@ -239,43 +270,70 @@ func readOnlyStep(s *readOnlyState, ins *asm.Instruction, mapPointer func(*asm.I
 	case class.IsALU():
 		regs[ins.Dst] = pointerState{}
 	case class == asm.LdXClass:
-		p, base := pointerState{}, regs[ins.Src]
-		if op.Size() == asm.DWord {
-			switch base.stack {
-			case stackKnown:
-				p = joinTracked(s.anySlot, s.slots[base.off+int64(ins.Offset)])
-			case stackUnknown:
-				p = s.anySlot
-				for _, slot := range s.slots {
-					p = joinTracked(p, slot)
-				}
-			}
-		}
-		regs[ins.Dst] = p
+		regs[ins.Dst] = load(regs[ins.Src])
+	case class == asm.StXClass && op.AtomicOp() == atomicLoadAcquire:
+		regs[ins.Dst] = load(regs[ins.Src])
+	case class == asm.StXClass && op.AtomicOp() == atomicStoreRelease:
+		store(regs[ins.Src])
 	case class == asm.StXClass && op.Mode() == asm.AtomicMode:
+		// A fetch returns the old value, which may be a spilled pointer; the
+		// slot is left holding a scalar.
+		old := load(regs[ins.Dst])
 		if base := regs[ins.Dst]; base.stack == stackKnown {
 			clearSlots(base.off+int64(ins.Offset), int64(op.Size().Sizeof()))
 		}
-		regs[ins.Src], regs[asm.R0] = pointerState{}, pointerState{}
-	case class == asm.StXClass || class == asm.StClass:
-		base := regs[ins.Dst]
-		p := pointerState{}
-		if class == asm.StXClass && op.Size() == asm.DWord {
-			p = regs[ins.Src]
+		switch atomic := op.AtomicOp(); {
+		case atomic == asm.CmpXchg:
+			regs[asm.R0] = old
+		case atomic&atomicFetch != 0:
+			regs[ins.Src] = old
 		}
-		switch base.stack {
-		case stackKnown:
-			off := base.off + int64(ins.Offset)
-			clearSlots(off, int64(op.Size().Sizeof()))
-			if p != (pointerState{}) && off%8 == 0 {
-				if s.slots == nil {
-					s.slots = map[int64]pointerState{}
-				}
-				s.slots[off] = p
-			}
-		case stackUnknown:
-			s.anySlot = joinTracked(s.anySlot, p)
-		}
+	case class == asm.StXClass:
+		store(regs[ins.Src])
+	case class == asm.StClass:
+		store(pointerState{})
 	}
 	regs[asm.RFP] = pointerState{stack: stackKnown}
 }
+
+// subprogCall applies a call to a subprogram, or a callback a helper calls,
+// to s before the call clobbers R0-R5. The subprogram may return what its
+// arguments reach and store it through a stack argument.
+func subprogCall(s *readOnlyState, subprogReadOnly bool) pointerState {
+	ret := pointerState{readOnly: subprogReadOnly, roMap: subprogReadOnly, innerROMap: subprogReadOnly}
+	stackArg := false
+	for r := asm.R1; r <= asm.R5; r++ {
+		p := s.regs[r]
+		ret = joinTracked(ret, p)
+		ret.readOnly = ret.readOnly || p.roMap || p.innerROMap
+		stackArg = stackArg || p.stack != notStack
+	}
+	if stackArg {
+		for _, p := range s.slots {
+			ret = joinTracked(ret, p)
+			ret.readOnly = ret.readOnly || p.roMap || p.innerROMap
+		}
+		ret = joinTracked(ret, s.anySlot)
+		ret.readOnly = ret.readOnly || s.anySlot.roMap || s.anySlot.innerROMap
+		s.anySlot = joinTracked(s.anySlot, ret)
+	}
+	return ret
+}
+
+// takesCallback reports whether helper fn calls a subprogram of the program.
+func takesCallback(fn asm.BuiltinFunc) bool {
+	switch fn {
+	case asm.FnLoop, asm.FnForEachMapElem, asm.FnTimerSetCallback, asm.FnFindVma, asm.FnUserRingbufDrain:
+		return true
+	}
+	return false
+}
+
+// Atomic forms cilium/ebpf does not export: load-acquire reads into Dst from
+// Src, store-release writes Src through Dst, and the fetch bit returns the old
+// value in Src.
+const (
+	atomicFetch        asm.AtomicOp = 0x0100
+	atomicLoadAcquire  asm.AtomicOp = 0x1_0000
+	atomicStoreRelease asm.AtomicOp = 0x1_1000
+)

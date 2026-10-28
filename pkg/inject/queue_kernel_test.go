@@ -726,6 +726,29 @@ func readOnlyArgStoreFixture() *ebpf.CollectionSpec {
 	return spec
 }
 
+// readOnlyArgCallbackFixture spills a writable value pointer, and the
+// bpf_loop callback replaces it with the read-only one through its data
+// argument before the entry pushes the reloaded pointer.
+func readOnlyArgCallbackFixture() *ebpf.CollectionSpec {
+	spec := readOnlyArgFixture()
+	spec.Maps["rw"] = spec.Maps["ro"].Copy()
+	spec.Maps["rw"].Name, spec.Maps["rw"].Flags = "rw", 0
+	cb := callbackHead("cb")
+	insns := asm.Instructions{
+		asm.LoadMapValue(asm.R0, 0, 0).WithReference("rw"), asm.StoreMem(asm.RFP, -8, asm.R0, asm.DWord),
+		asm.Mov.Imm(asm.R1, 1), callbackLoad(asm.R2, -1, "cb"), asm.Mov.Reg(asm.R3, asm.RFP), asm.Add.Imm(asm.R3, -8),
+		asm.Mov.Imm(asm.R4, 0), asm.FnLoop.Call(),
+		asm.LoadMem(asm.R2, asm.RFP, -8, asm.DWord),
+		asm.LoadMapPtr(asm.R1, 0).WithReference("q"), asm.Mov.Imm(asm.R3, 0), asm.FnMapPushElem.Call(),
+		asm.Mov.Imm(asm.R0, 2), asm.Return(),
+		btf.WithFuncMetadata(asm.LoadMapValue(asm.R0, 0, 0).WithReference("ro").WithSymbol("cb").WithSource(asm.Comment("read-only callback")), btf.FuncMetadata(&cb)),
+		asm.StoreMem(asm.R2, 0, asm.R0, asm.DWord), asm.Mov.Imm(asm.R0, 0), asm.Return(),
+	}
+	insns[0] = btf.WithFuncMetadata(insns[0].WithSymbol("p").WithSource(asm.Comment("read-only callback fixture")), xdpFunc("p"))
+	spec.Programs["p"].Instructions = insns
+	return spec
+}
+
 // readOnlyArgSubprogLoadFixture has no read-only map reference in the entry;
 // the static subprogram loads and returns the value itself.
 func readOnlyArgSubprogLoadFixture() *ebpf.CollectionSpec {
@@ -788,6 +811,7 @@ func testReadOnlyArgCalls(t *testing.T, static bool) {
 		{"spilled map argument", func() *ebpf.CollectionSpec { return readOnlyArgCallFixture(true) }},
 		{"callee stack store", readOnlyArgStoreFixture},
 		{"callee map load", readOnlyArgSubprogLoadFixture},
+		{"callback stack store", readOnlyArgCallbackFixture},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			plainSpec := tc.fixture()
@@ -847,6 +871,14 @@ func testReadOnlyArgShapes(t *testing.T, static bool) {
 	}{
 		{"register copy", asm.Instructions{ro(asm.R6), asm.Mov.Reg(asm.R2, asm.R6)}},
 		{"subtract zero", asm.Instructions{ro(asm.R2), asm.Sub.Imm(asm.R2, 0)}},
+		{"scalar plus pointer", asm.Instructions{ro(asm.R6), asm.Mov.Imm(asm.R2, 0), asm.Add.Reg(asm.R2, asm.R6)}},
+		// A plain atomic add keeps R0.
+		{"atomic", asm.Instructions{ro(asm.R0), asm.Mov.Imm(asm.R6, 1), asm.StoreMem(asm.RFP, -8, asm.R6, asm.DWord),
+			{OpCode: asm.StoreXAddOp(asm.DWord), Dst: asm.RFP, Src: asm.R6, Offset: -8}, asm.Mov.Reg(asm.R2, asm.R0)}},
+		// An exchange returns the spilled pointer.
+		{"atomic exchange", asm.Instructions{ro(asm.R6), asm.StoreMem(asm.RFP, -8, asm.R6, asm.DWord), asm.Mov.Imm(asm.R2, 0), atomicMem(asm.Xchg, asm.RFP, asm.R2, -8)}},
+		{"atomic compare exchange", asm.Instructions{ro(asm.R6), asm.StoreMem(asm.RFP, -8, asm.R6, asm.DWord), asm.Mov.Imm(asm.R0, 0), asm.Mov.Imm(asm.R3, 0),
+			atomicMem(asm.CmpXchg, asm.RFP, asm.R3, -8), asm.Mov.Reg(asm.R2, asm.R0)}},
 		{"stack reload", asm.Instructions{ro(asm.R2), asm.StoreMem(asm.RFP, -8, asm.R2, asm.DWord), asm.LoadMem(asm.R2, asm.RFP, -8, asm.DWord)}},
 		{"branch", asm.Instructions{ro(asm.R2), asm.LoadMem(asm.R0, asm.R1, 16, asm.Word), jump(asm.JEq.Imm(asm.R0, 0, ""), 1), asm.Add.Imm(asm.R2, 0)}},
 		// The stack on one path, the constant on the other.
@@ -978,4 +1010,13 @@ func TestBpfBloomPeekPoisoned(t *testing.T) {
 	} else if err != nil {
 		t.Errorf("%s: %+v", release, err)
 	}
+}
+
+// atomicMem is op.Mem for an 8-byte access with the immediate set:
+// cilium/ebpf v0.22 marshals the immediate before deriving it from the
+// opcode, so op.Mem would load as an atomic add.
+func atomicMem(op asm.AtomicOp, dst, src asm.Register, off int16) asm.Instruction {
+	ins := op.Mem(dst, src, asm.DWord, off)
+	ins.Constant = int64(op >> 8)
+	return ins
 }
