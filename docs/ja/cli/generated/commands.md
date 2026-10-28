@@ -55,10 +55,11 @@ DESCRIPTION:
      bpf-ninja -i eth0 -w out.pcap
 
 COMMANDS:
-   convert  convert raw-dump files to standard pcap-ng
-   set      manage pinned-map match sets (see --set / --arg-filter @NAME)
-   merge    merge leftover per-CPU tag shards from --split-by-tag into one pcap-ng per tag
-   help, h  Shows a list of commands or help for one command
+   convert     convert raw-dump files to standard pcap-ng
+   set         manage pinned-map match sets (see --set / --arg-filter @NAME)
+   merge       merge leftover per-CPU tag shards from --split-by-tag into one pcap-ng per tag
+   inject-run  run an unmodified BPF loader under the experimental ptrace injector
+   help, h     Shows a list of commands or help for one command
 
 GLOBAL OPTIONS:
    --interface string, -i string                    network interface to capture on
@@ -73,6 +74,8 @@ GLOBAL OPTIONS:
    --allow-dispatcher-slot                          allow probes on unreplaced global dispatcher functions (may block later freplace with EBUSY)
    --list-funcs                                     list available BTF functions in the target program and exit
    --list-progs                                     list programs reachable from the target: freplace + tail calls + CPUMAP/DEVMAP/DEVMAP_HASH redirect targets (followed transitively), then exit
+   --list-maps                                      with --list-progs, also list each function's calls and the maps it uses, with the op (lookup, update, delete, tail_call, ...) and source line, as a tree that replaces the --list-progs text; needs root to read the translated instructions
+   --lookups-json string                            with --list-maps, read the file inject-run --lookups-json wrote and mark each map use with the load-time site of the same call and why it cannot be instrumented
    --json                                           emit --list-progs / --list-funcs / --list-params output as JSON on stdout instead of human-readable text on stderr
    --arg-filter string [ --arg-filter string ]      filter by function argument value (requires --func or an entry function with filterable integer parameters); format: param=value, param>=val, param<=val, param=min..max, or @NAME to match against a --set pinned-map set
    --set string [ --set string ]                    define a named match set backed by a pinned BPF hash map: NAME=/sys/fs/bpf/path[,key(field=arg:param,...)]; reference it with --arg-filter @NAME (function arg) or the DSL predicate layer[field in @NAME] (packet field). Use bpf-ninja set to update entries during capture without re-attaching
@@ -124,6 +127,8 @@ GLOBAL OPTIONS:
 | <code>allow-dispatcher-slot</code> | <code>bool</code> | <code></code> | false | false | <code></code> |
 | <code>list-funcs</code> | <code>bool</code> | <code></code> | false | false | <code></code> |
 | <code>list-progs</code> | <code>bool</code> | <code></code> | false | false | <code></code> |
+| <code>list-maps</code> | <code>bool</code> | <code></code> | false | false | <code></code> |
+| <code>lookups-json</code> | <code>string</code> | <code></code> | false | false | <code></code> |
 | <code>json</code> | <code>bool</code> | <code></code> | false | false | <code></code> |
 | <code>arg-filter</code> | <code>string</code> | <code></code> | false | true | <code></code> |
 | <code>set</code> | <code>string</code> | <code></code> | false | true | <code></code> |
@@ -196,6 +201,8 @@ GLOBAL OPTIONS:
    --allow-dispatcher-slot                          allow probes on unreplaced global dispatcher functions (may block later freplace with EBUSY)
    --list-funcs                                     list available BTF functions in the target program and exit
    --list-progs                                     list programs reachable from the target: freplace + tail calls + CPUMAP/DEVMAP/DEVMAP_HASH redirect targets (followed transitively), then exit
+   --list-maps                                      with --list-progs, also list each function's calls and the maps it uses, with the op (lookup, update, delete, tail_call, ...) and source line, as a tree that replaces the --list-progs text; needs root to read the translated instructions
+   --lookups-json string                            with --list-maps, read the file inject-run --lookups-json wrote and mark each map use with the load-time site of the same call and why it cannot be instrumented
    --json                                           emit --list-progs / --list-funcs / --list-params output as JSON on stdout instead of human-readable text on stderr
    --arg-filter string [ --arg-filter string ]      filter by function argument value (requires --func or an entry function with filterable integer parameters); format: param=value, param>=val, param<=val, param=min..max, or @NAME to match against a --set pinned-map set
    --set string [ --set string ]                    define a named match set backed by a pinned BPF hash map: NAME=/sys/fs/bpf/path[,key(field=arg:param,...)]; reference it with --arg-filter @NAME (function arg) or the DSL predicate layer[field in @NAME] (packet field). Use bpf-ninja set to update entries during capture without re-attaching
@@ -306,6 +313,8 @@ GLOBAL OPTIONS:
    --allow-dispatcher-slot                          allow probes on unreplaced global dispatcher functions (may block later freplace with EBUSY)
    --list-funcs                                     list available BTF functions in the target program and exit
    --list-progs                                     list programs reachable from the target: freplace + tail calls + CPUMAP/DEVMAP/DEVMAP_HASH redirect targets (followed transitively), then exit
+   --list-maps                                      with --list-progs, also list each function's calls and the maps it uses, with the op (lookup, update, delete, tail_call, ...) and source line, as a tree that replaces the --list-progs text; needs root to read the translated instructions
+   --lookups-json string                            with --list-maps, read the file inject-run --lookups-json wrote and mark each map use with the load-time site of the same call and why it cannot be instrumented
    --json                                           emit --list-progs / --list-funcs / --list-params output as JSON on stdout instead of human-readable text on stderr
    --arg-filter string [ --arg-filter string ]      filter by function argument value (requires --func or an entry function with filterable integer parameters); format: param=value, param>=val, param<=val, param=min..max, or @NAME to match against a --set pinned-map set
    --set string [ --set string ]                    define a named match set backed by a pinned BPF hash map: NAME=/sys/fs/bpf/path[,key(field=arg:param,...)]; reference it with --arg-filter @NAME (function arg) or the DSL predicate layer[field in @NAME] (packet field). Use bpf-ninja set to update entries during capture without re-attaching
@@ -373,6 +382,8 @@ GLOBAL OPTIONS:
    --allow-dispatcher-slot                          allow probes on unreplaced global dispatcher functions (may block later freplace with EBUSY)
    --list-funcs                                     list available BTF functions in the target program and exit
    --list-progs                                     list programs reachable from the target: freplace + tail calls + CPUMAP/DEVMAP/DEVMAP_HASH redirect targets (followed transitively), then exit
+   --list-maps                                      with --list-progs, also list each function's calls and the maps it uses, with the op (lookup, update, delete, tail_call, ...) and source line, as a tree that replaces the --list-progs text; needs root to read the translated instructions
+   --lookups-json string                            with --list-maps, read the file inject-run --lookups-json wrote and mark each map use with the load-time site of the same call and why it cannot be instrumented
    --json                                           emit --list-progs / --list-funcs / --list-params output as JSON on stdout instead of human-readable text on stderr
    --arg-filter string [ --arg-filter string ]      filter by function argument value (requires --func or an entry function with filterable integer parameters); format: param=value, param>=val, param<=val, param=min..max, or @NAME to match against a --set pinned-map set
    --set string [ --set string ]                    define a named match set backed by a pinned BPF hash map: NAME=/sys/fs/bpf/path[,key(field=arg:param,...)]; reference it with --arg-filter @NAME (function arg) or the DSL predicate layer[field in @NAME] (packet field). Use bpf-ninja set to update entries during capture without re-attaching
@@ -437,6 +448,8 @@ GLOBAL OPTIONS:
    --allow-dispatcher-slot                          allow probes on unreplaced global dispatcher functions (may block later freplace with EBUSY)
    --list-funcs                                     list available BTF functions in the target program and exit
    --list-progs                                     list programs reachable from the target: freplace + tail calls + CPUMAP/DEVMAP/DEVMAP_HASH redirect targets (followed transitively), then exit
+   --list-maps                                      with --list-progs, also list each function's calls and the maps it uses, with the op (lookup, update, delete, tail_call, ...) and source line, as a tree that replaces the --list-progs text; needs root to read the translated instructions
+   --lookups-json string                            with --list-maps, read the file inject-run --lookups-json wrote and mark each map use with the load-time site of the same call and why it cannot be instrumented
    --json                                           emit --list-progs / --list-funcs / --list-params output as JSON on stdout instead of human-readable text on stderr
    --arg-filter string [ --arg-filter string ]      filter by function argument value (requires --func or an entry function with filterable integer parameters); format: param=value, param>=val, param<=val, param=min..max, or @NAME to match against a --set pinned-map set
    --set string [ --set string ]                    define a named match set backed by a pinned BPF hash map: NAME=/sys/fs/bpf/path[,key(field=arg:param,...)]; reference it with --arg-filter @NAME (function arg) or the DSL predicate layer[field in @NAME] (packet field). Use bpf-ninja set to update entries during capture without re-attaching
@@ -501,6 +514,8 @@ GLOBAL OPTIONS:
    --allow-dispatcher-slot                          allow probes on unreplaced global dispatcher functions (may block later freplace with EBUSY)
    --list-funcs                                     list available BTF functions in the target program and exit
    --list-progs                                     list programs reachable from the target: freplace + tail calls + CPUMAP/DEVMAP/DEVMAP_HASH redirect targets (followed transitively), then exit
+   --list-maps                                      with --list-progs, also list each function's calls and the maps it uses, with the op (lookup, update, delete, tail_call, ...) and source line, as a tree that replaces the --list-progs text; needs root to read the translated instructions
+   --lookups-json string                            with --list-maps, read the file inject-run --lookups-json wrote and mark each map use with the load-time site of the same call and why it cannot be instrumented
    --json                                           emit --list-progs / --list-funcs / --list-params output as JSON on stdout instead of human-readable text on stderr
    --arg-filter string [ --arg-filter string ]      filter by function argument value (requires --func or an entry function with filterable integer parameters); format: param=value, param>=val, param<=val, param=min..max, or @NAME to match against a --set pinned-map set
    --set string [ --set string ]                    define a named match set backed by a pinned BPF hash map: NAME=/sys/fs/bpf/path[,key(field=arg:param,...)]; reference it with --arg-filter @NAME (function arg) or the DSL predicate layer[field in @NAME] (packet field). Use bpf-ninja set to update entries during capture without re-attaching
@@ -565,6 +580,8 @@ GLOBAL OPTIONS:
    --allow-dispatcher-slot                          allow probes on unreplaced global dispatcher functions (may block later freplace with EBUSY)
    --list-funcs                                     list available BTF functions in the target program and exit
    --list-progs                                     list programs reachable from the target: freplace + tail calls + CPUMAP/DEVMAP/DEVMAP_HASH redirect targets (followed transitively), then exit
+   --list-maps                                      with --list-progs, also list each function's calls and the maps it uses, with the op (lookup, update, delete, tail_call, ...) and source line, as a tree that replaces the --list-progs text; needs root to read the translated instructions
+   --lookups-json string                            with --list-maps, read the file inject-run --lookups-json wrote and mark each map use with the load-time site of the same call and why it cannot be instrumented
    --json                                           emit --list-progs / --list-funcs / --list-params output as JSON on stdout instead of human-readable text on stderr
    --arg-filter string [ --arg-filter string ]      filter by function argument value (requires --func or an entry function with filterable integer parameters); format: param=value, param>=val, param<=val, param=min..max, or @NAME to match against a --set pinned-map set
    --set string [ --set string ]                    define a named match set backed by a pinned BPF hash map: NAME=/sys/fs/bpf/path[,key(field=arg:param,...)]; reference it with --arg-filter @NAME (function arg) or the DSL predicate layer[field in @NAME] (packet field). Use bpf-ninja set to update entries during capture without re-attaching
@@ -638,6 +655,8 @@ GLOBAL OPTIONS:
    --allow-dispatcher-slot                          allow probes on unreplaced global dispatcher functions (may block later freplace with EBUSY)
    --list-funcs                                     list available BTF functions in the target program and exit
    --list-progs                                     list programs reachable from the target: freplace + tail calls + CPUMAP/DEVMAP/DEVMAP_HASH redirect targets (followed transitively), then exit
+   --list-maps                                      with --list-progs, also list each function's calls and the maps it uses, with the op (lookup, update, delete, tail_call, ...) and source line, as a tree that replaces the --list-progs text; needs root to read the translated instructions
+   --lookups-json string                            with --list-maps, read the file inject-run --lookups-json wrote and mark each map use with the load-time site of the same call and why it cannot be instrumented
    --json                                           emit --list-progs / --list-funcs / --list-params output as JSON on stdout instead of human-readable text on stderr
    --arg-filter string [ --arg-filter string ]      filter by function argument value (requires --func or an entry function with filterable integer parameters); format: param=value, param>=val, param<=val, param=min..max, or @NAME to match against a --set pinned-map set
    --set string [ --set string ]                    define a named match set backed by a pinned BPF hash map: NAME=/sys/fs/bpf/path[,key(field=arg:param,...)]; reference it with --arg-filter @NAME (function arg) or the DSL predicate layer[field in @NAME] (packet field). Use bpf-ninja set to update entries during capture without re-attaching
@@ -716,6 +735,8 @@ GLOBAL OPTIONS:
    --allow-dispatcher-slot                          allow probes on unreplaced global dispatcher functions (may block later freplace with EBUSY)
    --list-funcs                                     list available BTF functions in the target program and exit
    --list-progs                                     list programs reachable from the target: freplace + tail calls + CPUMAP/DEVMAP/DEVMAP_HASH redirect targets (followed transitively), then exit
+   --list-maps                                      with --list-progs, also list each function's calls and the maps it uses, with the op (lookup, update, delete, tail_call, ...) and source line, as a tree that replaces the --list-progs text; needs root to read the translated instructions
+   --lookups-json string                            with --list-maps, read the file inject-run --lookups-json wrote and mark each map use with the load-time site of the same call and why it cannot be instrumented
    --json                                           emit --list-progs / --list-funcs / --list-params output as JSON on stdout instead of human-readable text on stderr
    --arg-filter string [ --arg-filter string ]      filter by function argument value (requires --func or an entry function with filterable integer parameters); format: param=value, param>=val, param<=val, param=min..max, or @NAME to match against a --set pinned-map set
    --set string [ --set string ]                    define a named match set backed by a pinned BPF hash map: NAME=/sys/fs/bpf/path[,key(field=arg:param,...)]; reference it with --arg-filter @NAME (function arg) or the DSL predicate layer[field in @NAME] (packet field). Use bpf-ninja set to update entries during capture without re-attaching
@@ -755,4 +776,78 @@ GLOBAL OPTIONS:
 |---|---|---|---|---|---|
 | <code>base, b</code> | <code>string</code> | <code></code> | false | false | <code></code> |
 | <code>fexit</code> | <code>bool</code> | <code></code> | false | false | <code></code> |
+| <code>help, h</code> | <code>bool</code> | <code>(help では省略)</code> | false | false | <code></code> |
+
+## bpf-ninja inject-run
+
+```text
+NAME:
+   bpf-ninja inject-run - run an unmodified BPF loader under the experimental ptrace injector
+
+USAGE:
+   bpf-ninja inject-run [options] -- <target> [args...]
+
+OPTIONS:
+   --config string        JSON injection rules file (otherwise BPF_NINJA_INJECT_CONFIG contains JSON)
+   --fail-closed          refuse matched loads when injection fails; default retries the original load
+   --hooks-json string    write the injected programs' hooks and skipped sites as JSON to this file, rewritten after each injected load
+   --lookups-json string  write every loaded XDP and tc program's lookups and maps, with a rule to edit, as JSON to this file; rules become optional
+   --help, -h             show help
+
+GLOBAL OPTIONS:
+   --interface string, -i string                    network interface to capture on
+   --prog-id int, -p int [ --prog-id int, -p int ]  BPF program ID to attach to (use instead of -i for multi-prog setups); repeatable to attach several programs in one run
+   --prog-name string [ --prog-name string ]        select target program(s) by name instead of ID (requires -i); resolved against the interface's reachable program tree, so you skip looking up numeric IDs. Repeatable. Kernel program names are truncated to 15 chars; a full name matches by prefix
+   --cgroup string                                  capture on the cgroup-skb program(s) attached to this cgroup v2 path (enumerated via BPF_PROG_QUERY, ingress + egress); alternative to -i / -p
+   --write string, -w string                        write packets to pcap file instead of stdout
+   --mode string [ --mode string ]                  capture point: entry / exit (fentry/fexit observer on the target program, hook auto-detected) or xdp (attach as native XDP). Repeatable with one quoted filter after each: --mode entry EXPR --mode exit EXPR captures only the packets that match both (see README). tc-entry / tc-exit are deprecated aliases (default: "entry")
+   --emit string                                    with two --mode: which image(s) to write for a packet that matched both filters — both, entry, or exit (default: "both")
+   --count int, -c int                              exit after capturing N packets (0 = unlimited) (default: 0)
+   --func string [ --func string ]                  attach to a specific __noinline subfunction (by BTF name) instead of the entry function; repeatable, and each func attaches in every target program whose BTF has it
+   --allow-dispatcher-slot                          allow probes on unreplaced global dispatcher functions (may block later freplace with EBUSY)
+   --list-funcs                                     list available BTF functions in the target program and exit
+   --list-progs                                     list programs reachable from the target: freplace + tail calls + CPUMAP/DEVMAP/DEVMAP_HASH redirect targets (followed transitively), then exit
+   --list-maps                                      with --list-progs, also list each function's calls and the maps it uses, with the op (lookup, update, delete, tail_call, ...) and source line, as a tree that replaces the --list-progs text; needs root to read the translated instructions
+   --lookups-json string                            with --list-maps, read the file inject-run --lookups-json wrote and mark each map use with the load-time site of the same call and why it cannot be instrumented
+   --json                                           emit --list-progs / --list-funcs / --list-params output as JSON on stdout instead of human-readable text on stderr
+   --arg-filter string [ --arg-filter string ]      filter by function argument value (requires --func or an entry function with filterable integer parameters); format: param=value, param>=val, param<=val, param=min..max, or @NAME to match against a --set pinned-map set
+   --set string [ --set string ]                    define a named match set backed by a pinned BPF hash map: NAME=/sys/fs/bpf/path[,key(field=arg:param,...)]; reference it with --arg-filter @NAME (function arg) or the DSL predicate layer[field in @NAME] (packet field). Use bpf-ninja set to update entries during capture without re-attaching
+   --list-params                                    list filterable parameters for the target function (requires --func or an entry function with filterable integer parameters) and exit
+   --arg-echo                                       diagnostic: print the target function's integer args for each call (gated by --arg-filter if set) instead of capturing packets; requires --func or an entry function with filterable integer parameters; combine with -c N to stop after N
+   --cbpf                                           use the legacy tcpdump/cBPF filter syntax (compiled via cbpfc); default is the built-in DSL
+   --dsl-help                                       print the bpf-ninja DSL grammar and bundled protocol list, then exit; pass a protocol name as a positional argument to inspect its fields, e.g. --dsl-help ipv4
+   --dump-asm string                                compile the filter and print the resulting eBPF asm without loading; values: filter (kunai/cbpfc Main + Callbacks) | full (wrapped tracing program)
+   --dump-hook string                               hook whose capabilities/prologue --dump-asm renders (no target program exists to auto-detect from): xdp | tc | cgroup-skb | netfilter (default xdp; deprecated --mode tc-* aliases imply tc)
+   --verbose, -v                                    verbose output to stderr
+   --snaplen int                                    force the per-packet capture length (0 = use the DSL capture clause's value, falling back to the host default of 1500 bytes) (default: 0)
+   --null-output                                    skip pcap-ng emission and just count packets (bench / profiling)
+   --cpuprofile string                              write Go cpu profile to file (bench / debugging)
+   --no-async-preempt-off                           keep Go's SIGURG-based goroutine preemption enabled (diagnostic opt-out)
+   --bench-drop                                     (--mode xdp only) return XDP_DROP after capturing instead of XDP_PASS, bypassing kernel skb-create / IP drop path. Bench-only; production should leave this off
+   --no-cpu-affinity                                disable pinning each per-shard ringbuf reader to its producer CPU (diagnostic opt-out)
+   --ringbuf-size int                               total ringbuf capacity in MiB (power of two); in sharded modes split evenly across CPUs (default: 64)
+   --legacy-timestamp                               use a per-batch userland time.Now() instead of the per-packet kernel bpf_ktime_get_ns() timestamp
+   --raw-dump                                       dump ringbuf records verbatim to per-CPU .raw files; reconstruct standard pcap-ng offline via bpf-ninja convert
+   --split-by-tag                                   route matched packets to a separate pcap per set-map value (tag): -w out.pcap yields out.<tag>.pcap. requires -w (not stdout); live per-CPU files are flushed each second so they can be pulled mid-capture
+   --max-bytes int                                  stop the whole capture once total output bytes reach N (pcap-ng packet-block bytes; per-file headers excluded, batch-granular). Works with or without --split-by-tag; the shards are merged and the process exits 0 as with -c. Per-tag caps moved to the set entries: set add ... max-bytes=N (0 / omitted = uncapped) (default: 0)
+   --finalize-on-del                                with --split-by-tag and --set: when a tag's last set entry is removed and a kernel grace period and reader drain barrier have completed, flush+close its per-CPU shards and merge them into <stem>.<tag><ext> while the capture keeps running — the merged file appearing is the completion ack. Finalized tags are single-use: re-added entries with that tag stay blocked
+   --exit-when-capped                               with --split-by-tag and --set: exit 0 once every entry that has a per-entry cap (set add ... max-bytes=N) reached it; uncapped entries and tag 0 do not participate
+   --fast-reader                                    use the in-tree mmap+atomic batch ringbuf reader instead of cilium/ebpf's per-record API; supported in both --raw-dump and pcap-ng paths
+   --no-wakeup                                      set BPF_RB_NO_WAKEUP on every ringbuf submit (saves eventfd writes on the BPF side; safe only with --fast-reader since the slow path needs wakeups)
+   --busy-poll                                      spin the fast-reader shard goroutines on ReadBatch instead of blocking in epoll_wait; the consumer never sleeps so it drains continuously and needs no wakeup. burns a core per shard. requires --fast-reader; pair with --no-wakeup
+   --rx-cores int                                   pin all shard readers to permitted CPU IDs >=N; every producer shard is drained. requires --fast-reader; configure RX affinity separately (default: 0)
+   --in-memory-buffer int                           if >0, allocate this many MiB per raw-dump shard in a pre-touched mmap buffer; hold bytes until Close to bypass write(2) and tmpfs page faults in the hot path (raw-dump only) (default: 0)
+   --rx-hwts                                        use NIC hardware timestamps (bpf_xdp_metadata_rx_timestamp kfunc, Linux 6.8+); --mode xdp only; software fallback if kfunc / driver unsupported
+   --tc-vlan-reinsert                               at tc, put the outer VLAN tag the kernel moved into skb metadata back into the DSL filter's bytes, so the filter matches the frame as on the wire (eth/vlan[tci==100]/... works; eth/ipv4/tcp no longer matches tagged frames). Captured bytes are unchanged. Default off
+   --observer-prefetch                              force the fentry/fexit filter to probe_read the full 512-byte scratch regardless of the chain's actual prefix needs. Trades a per-packet helper-CPU cost for warming the ice driver's L1 dcache; on prod_tx_reflect-style targets this accelerated the observed XDP program by ~70% in our measurements. Default off — most deployments prefer lower observer CPU
+   --latency-sample-period int                      if >0, sample every Nth ringbuf record's BPF-submit→reader-read latency per shard. Samples land in --latency-sample-output (default stderr summary) for offline percentile analysis. Raw-dump path only (default: 0)
+   --latency-sample-output string                   tsv path to dump latency samples (one int64 ns per line). Empty = print summary (p50/p90/p99/p99.9/p99.99/max) to stderr
+```
+
+| Flag / aliases | 型 | 既定値の表示 | 必須 | 複数値 | 環境変数 |
+|---|---|---|---|---|---|
+| <code>config</code> | <code>string</code> | <code></code> | false | false | <code></code> |
+| <code>fail-closed</code> | <code>bool</code> | <code></code> | false | false | <code></code> |
+| <code>hooks-json</code> | <code>string</code> | <code></code> | false | false | <code></code> |
+| <code>lookups-json</code> | <code>string</code> | <code></code> | false | false | <code></code> |
 | <code>help, h</code> | <code>bool</code> | <code>(help では省略)</code> | false | false | <code></code> |
