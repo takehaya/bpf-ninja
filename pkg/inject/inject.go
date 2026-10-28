@@ -304,18 +304,29 @@ func validIdent(s string) bool {
 // function-metadata name, or BTF Func anywhere in the collection.
 func checkNoCollision(spec *ebpf.CollectionSpec, hook string) error {
 	for name, p := range spec.Programs {
-		for i := range p.Instructions {
-			ins := &p.Instructions[i]
-			if ins.Symbol() == hook {
-				return refuse("hook name %q collides with a symbol in program %q", hook, name)
-			}
-			if fn := btf.FuncMetadata(ins); fn != nil && fn.Name == hook {
-				return refuse("hook name %q collides with function metadata in program %q", hook, name)
-			}
+		if err := checkInstructionCollision(p.Instructions, hook); err != nil {
+			return fmt.Errorf("program %q: %w", name, err)
 		}
 	}
-	if spec.Types != nil {
-		if types, err := spec.Types.AnyTypesByName(hook); err == nil {
+	return checkBTFCollision(spec.Types, hook)
+}
+
+func checkInstructionCollision(insns asm.Instructions, hook string) error {
+	for i := range insns {
+		ins := &insns[i]
+		if ins.Symbol() == hook {
+			return refuse("hook name %q collides with a symbol", hook)
+		}
+		if fn := btf.FuncMetadata(ins); fn != nil && fn.Name == hook {
+			return refuse("hook name %q collides with function metadata", hook)
+		}
+	}
+	return nil
+}
+
+func checkBTFCollision(types *btf.Spec, hook string) error {
+	if types != nil {
+		if types, err := types.AnyTypesByName(hook); err == nil {
 			for _, t := range types {
 				if _, ok := t.(*btf.Func); ok {
 					return refuse("hook name %q collides with a BTF Func", hook)
@@ -334,14 +345,20 @@ func checkNoCollision(spec *ebpf.CollectionSpec, hook string) error {
 // define. Refusing an original reference equal to the hook name stops the
 // appended hook from silently satisfying a previously unresolved call.
 func checkReferences(spec *ebpf.CollectionSpec, target *ebpf.ProgramSpec, hook string) error {
+	return checkInstructionReferences(target.Instructions, hook, func(ins *asm.Instruction) bool {
+		return spec.Maps[ins.Reference()] != nil
+	})
+}
+
+func checkInstructionReferences(insns asm.Instructions, hook string, hasMap func(*asm.Instruction) bool) error {
 	symCount := map[string]int{}
-	for i := range target.Instructions {
-		if s := target.Instructions[i].Symbol(); s != "" {
+	for i := range insns {
+		if s := insns[i].Symbol(); s != "" {
 			symCount[s]++
 		}
 	}
-	for i := range target.Instructions {
-		ins := &target.Instructions[i]
+	for i := range insns {
+		ins := &insns[i]
 		ref := ins.Reference()
 		if ref == "" {
 			continue
@@ -358,7 +375,7 @@ func checkReferences(spec *ebpf.CollectionSpec, target *ebpf.ProgramSpec, hook s
 				return refuse("symbolic function reference to %q is ambiguous (%d definitions)", ref, symCount[ref])
 			}
 		case ins.IsLoadFromMap():
-			if spec.Maps == nil || spec.Maps[ref] == nil {
+			if !hasMap(ins) {
 				return refuse("map load references %q, which the collection does not define", ref)
 			}
 		}

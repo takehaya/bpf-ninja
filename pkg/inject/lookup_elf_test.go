@@ -85,6 +85,7 @@ char _license[] SEC("license") = "GPL";
 	if err != nil {
 		t.Fatal(err)
 	}
+	assertRawLookupParity(t, src, req, res)
 	want, err := checksum(src.Programs["ingress"].Instructions, src.ByteOrder)
 	if err != nil || res.SourceChecksum != want || res.SourceChecksum == res.TransformedChecksum {
 		t.Fatalf("source checksum=%s want=%s error=%v", res.SourceChecksum, want, err)
@@ -149,6 +150,7 @@ char _license[] SEC("license") = "GPL";
 		if !reflect.DeepEqual(multi.Sites, sites) || multi.Site != sites[0] || multi.InsertedSlots != 24 || multi.AddedBytes != 192 || multi.SourceChecksum != res.SourceChecksum || multi.TransformedChecksum == res.TransformedChecksum {
 			t.Fatalf("unexpected multi-site result: %+v", multi)
 		}
+		assertRawLookupParity(t, src, req, multi)
 		if err := checkExtInfo(multi.Spec.Programs["ingress"].Instructions); err != nil {
 			t.Fatal(err)
 		}

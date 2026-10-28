@@ -12,7 +12,7 @@ import (
 )
 
 // LookupSite describes a map_lookup_elem helper in a flattened XDP program.
-// Empty names or zero Line mean the ELF did not supply that information.
+// Empty names or zero Line mean the input did not supply that information.
 // Reason explains why a site cannot be injected; discovery still lists it.
 type LookupSite struct {
 	MapName          string
@@ -22,7 +22,7 @@ type LookupSite struct {
 	File             string
 	Line             uint32
 	SitePC           uint32 // raw BPF slot index; LDIMM64 occupies two slots
-	InstructionIndex int    // index in ProgramSpec.Instructions
+	InstructionIndex int    // index in the decoded instruction slice
 	Reason           string
 }
 
@@ -121,22 +121,55 @@ func discoverLookups(spec *ebpf.CollectionSpec, name string) ([]LookupSite, erro
 	if prog == nil {
 		return nil, refuse("program %q not found", name)
 	}
-	if prog.Type != ebpf.XDP {
+	sites, err := discoverLookupProgram(prog.Instructions, prog.Type, elfLookupMaps(spec))
+	return publicLookupSites(sites), err
+}
+
+// lookupMapResolver returns identity separately from the selectable map name.
+type lookupMapResolver func(*asm.Instruction) (string, *RawMap)
+
+type discoveredLookup struct {
+	LookupSite
+	mapID   string
+	mapInfo *RawMap
+}
+
+func publicLookupSites(sites []discoveredLookup) []LookupSite {
+	var result []LookupSite
+	for _, site := range sites {
+		result = append(result, site.LookupSite)
+	}
+	return result
+}
+
+func elfLookupMaps(spec *ebpf.CollectionSpec) lookupMapResolver {
+	return func(ins *asm.Instruction) (string, *RawMap) {
+		name := ins.Reference()
+		m := spec.Maps[name]
+		if m == nil {
+			return name, nil
+		}
+		return name, &RawMap{Name: name, Type: m.Type, KeySize: m.KeySize, ValueSize: m.ValueSize, Key: m.Key, Value: m.Value}
+	}
+}
+
+func discoverLookupProgram(insns asm.Instructions, typ ebpf.ProgramType, resolve lookupMapResolver) ([]discoveredLookup, error) {
+	if typ != ebpf.XDP {
 		return nil, refuse("only native XDP programs are supported")
 	}
 	indices := make(map[int]int)
-	it := prog.Instructions.Iterate()
+	it := insns.Iterate()
 	for it.Next() {
 		indices[int(it.Offset)] = it.Index
 	}
 	starts := map[int]bool{0: true}
-	it = prog.Instructions.Iterate()
+	it = insns.Iterate()
 	for it.Next() {
 		pc, ins := int(it.Offset), it.Ins
 		if btf.FuncMetadata(ins) != nil {
 			starts[pc] = true
 		}
-		target, relative, _, err := relocTarget(ins, pc, indices, prog.Instructions)
+		target, relative, _, err := relocTarget(ins, pc, indices, insns)
 		if err != nil {
 			return nil, err
 		}
@@ -147,15 +180,16 @@ func discoverLookups(spec *ebpf.CollectionSpec, name string) ([]LookupSite, erro
 			starts[pc+1] = true
 		}
 	}
-	var sites []LookupSite
-	var mapName, funcName, file string
+	var sites []discoveredLookup
+	var mapID, mapName, funcName, file string
+	var m *RawMap
 	var line uint32
 	funcStart := -1
-	it = prog.Instructions.Iterate()
+	it = insns.Iterate()
 	for it.Next() {
 		pc, ins := int(it.Offset), it.Ins
 		if starts[pc] {
-			mapName = ""
+			mapID, mapName, m = "", "", nil
 		}
 		if fn := btf.FuncMetadata(ins); fn != nil {
 			funcName, funcStart, file, line = fn.Name, pc, "", 0
@@ -166,12 +200,11 @@ func discoverLookups(spec *ebpf.CollectionSpec, name string) ([]LookupSite, erro
 		if ins.IsBuiltinCall() && ins.Constant == int64(asm.FnMapLookupElem) {
 			site := LookupSite{MapName: mapName, FuncName: funcName, File: file, Line: line,
 				SitePC: uint32(pc), InstructionIndex: it.Index}
-			m := spec.Maps[mapName]
 			if m != nil {
 				site.KeyTypeName, site.ValueTypeName = lookupTypeName(m.Key), lookupTypeName(m.Value)
 			}
 			switch {
-			case mapName == "":
+			case mapID == "":
 				site.Reason = "R1 is not a direct map reference in this basic block"
 			case m == nil:
 				site.Reason = "map reference is not defined in the collection"
@@ -182,7 +215,7 @@ func discoverLookups(spec *ebpf.CollectionSpec, name string) ([]LookupSite, erro
 					site.Reason = err.Error()
 				}
 			}
-			sites = append(sites, site)
+			sites = append(sites, discoveredLookup{site, mapID, m})
 		}
 		// Track direct R1 definitions only; calls also clobber R1. Atomic
 		// operations and legacy packet loads are conservatively barriers.
@@ -190,10 +223,14 @@ func discoverLookups(spec *ebpf.CollectionSpec, name string) ([]LookupSite, erro
 		if class.IsJump() || (class == asm.LdClass && (ins.OpCode != asm.LoadImmOp(asm.DWord) || ins.Dst == asm.R1)) ||
 			((class.IsALU() || class == asm.LdXClass) && ins.Dst == asm.R1) ||
 			(class == asm.StXClass && ins.OpCode.Mode() == asm.AtomicMode) {
-			mapName = ""
+			mapID, mapName, m = "", "", nil
 		}
 		if ins.IsLoadFromMap() && ins.Src == asm.PseudoMapFD && ins.Dst == asm.R1 {
+			mapID, m = resolve(ins)
 			mapName = ins.Reference()
+			if m != nil {
+				mapName = m.Name
+			}
 		}
 	}
 	return sites, nil
@@ -209,7 +246,7 @@ func lookupTypeName(t btf.Type) string {
 	return btf.UnderlyingType(t).TypeName()
 }
 
-func checkLookupMap(m *ebpf.MapSpec) error {
+func checkLookupMap(m *RawMap) error {
 	// These maps return ordinary value memory. Other map kinds can return
 	// special objects (notably map-in-map), so do not infer their pointer ABI.
 	switch m.Type {
@@ -237,23 +274,39 @@ func checkLookupMap(m *ebpf.MapSpec) error {
 }
 
 func transformLookup(work *ebpf.CollectionSpec, req LookupRequest) ([]LookupSite, error) {
-	var selected []LookupSite
+	prog := work.Programs[req.ProgramName]
+	if prog == nil {
+		return nil, refuse("program %q not found", req.ProgramName)
+	}
+	out, sites, err := transformLookupProgram(prog.Instructions, prog.Type, work.Types, elfLookupMaps(work), req)
+	if err != nil {
+		return sites, err
+	}
+	if err := checkNoCollision(work, req.HookName); err != nil {
+		return sites, err
+	}
+	prog.Instructions = out
+	return sites, nil
+}
+
+func transformLookupProgram(insns asm.Instructions, typ ebpf.ProgramType, types *btf.Spec, resolve lookupMapResolver, req LookupRequest) (asm.Instructions, []LookupSite, error) {
+	var selected []discoveredLookup
 	if req.Site.MapName == "" {
-		return nil, refuse("lookup MapName is required")
+		return nil, nil, refuse("lookup MapName is required")
 	}
 	if req.Site.AllMatches && len(req.Site.SitePCs) != 0 {
-		return nil, refuse("SitePCs and AllMatches are mutually exclusive")
+		return nil, nil, refuse("SitePCs and AllMatches are mutually exclusive")
 	}
 	pcs := make(map[uint32]bool, len(req.Site.SitePCs))
 	for _, pc := range req.Site.SitePCs {
 		if pcs[pc] {
-			return nil, refuse("duplicate SitePC %d", pc)
+			return nil, nil, refuse("duplicate SitePC %d", pc)
 		}
 		pcs[pc] = true
 	}
-	sites, err := discoverLookups(work, req.ProgramName)
+	sites, err := discoverLookupProgram(insns, typ, resolve)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	for _, site := range sites {
 		if site.MapName == req.Site.MapName && (req.Site.FuncName == "" || site.FuncName == req.Site.FuncName) &&
@@ -262,50 +315,56 @@ func transformLookup(work *ebpf.CollectionSpec, req LookupRequest) ([]LookupSite
 		}
 	}
 	if len(pcs) != 0 && len(selected) != len(pcs) {
-		return nil, refuse("every SitePC must identify a lookup matching MapName/FuncName/Line")
+		return nil, nil, refuse("every SitePC must identify a lookup matching MapName/FuncName/Line")
 	}
 	if len(selected) == 0 || (!req.Site.AllMatches && len(pcs) == 0 && len(selected) != 1) {
-		return nil, refuse("lookup selector matches %d sites, need exactly one unless SitePCs or AllMatches is set", len(selected))
+		return nil, nil, refuse("lookup selector matches %d sites, need exactly one unless SitePCs or AllMatches is set", len(selected))
 	}
 	var sitePCs []uint32
 	for _, site := range selected {
 		if site.Reason != "" {
-			return nil, refuse("lookup at %d: %s", site.SitePC, site.Reason)
+			return nil, nil, refuse("lookup at %d: %s", site.SitePC, site.Reason)
 		}
 		sitePCs = append(sitePCs, site.SitePC)
 	}
-	prog := work.Programs[req.ProgramName]
 	for _, check := range []func() error{
-		func() error { return checkNoCollision(work, req.HookName) },
-		func() error { return checkReferences(work, prog, req.HookName) },
-		func() error { return checkExtInfo(prog.Instructions) },
-		func() error { return checkStackBound(prog.Instructions, req.Stack.LowestOffset) },
+		func() error { return checkInstructionCollision(insns, req.HookName) },
+		func() error { return checkBTFCollision(types, req.HookName) },
+		func() error {
+			return checkInstructionReferences(insns, req.HookName, func(ins *asm.Instruction) bool { _, m := resolve(ins); return m != nil })
+		},
+		func() error { return checkExtInfo(insns) },
+		func() error { return checkStackBound(insns, req.Stack.LowestOffset) },
 	} {
 		if err := check(); err != nil {
-			return selected, err
+			return nil, publicLookupSites(selected), err
 		}
 	}
-	fn := btf.FuncMetadata(&prog.Instructions[0])
+	fn := btf.FuncMetadata(&insns[0])
 	proto, ok := fn.Type.(*btf.FuncProto)
 	if !ok || len(proto.Params) != 1 {
-		return selected, refuse("entry BTF must take one struct xdp_md pointer")
+		return nil, publicLookupSites(selected), refuse("entry BTF must take one struct xdp_md pointer")
 	}
 	ctx, ok := btf.UnderlyingType(proto.Params[0].Type).(*btf.Pointer)
 	if !ok {
-		return selected, refuse("entry BTF context is not a pointer")
+		return nil, publicLookupSites(selected), refuse("entry BTF context is not a pointer")
 	}
 	ctxStruct, ok := btf.UnderlyingType(ctx.Target).(*btf.Struct)
 	if !ok || ctxStruct.Name != "xdp_md" {
-		return selected, refuse("entry BTF context is not struct xdp_md")
+		return nil, publicLookupSites(selected), refuse("entry BTF context is not struct xdp_md")
 	}
-	m := work.Maps[req.Site.MapName]
+	m := selected[0].mapInfo
+	for _, site := range selected[1:] {
+		if site.mapID != selected[0].mapID {
+			return nil, nil, refuse("selected lookups refer to different map identities")
+		}
+	}
 	hook := lookupHook(req.HookName, proto.Params[0].Type, m.Key, m.Value)
-	spliced, err := spliceLookupWithHook(prog.Instructions, sitePCs, req, hook)
+	spliced, err := spliceLookupWithHook(insns, sitePCs, req, hook)
 	if err != nil {
-		return selected, err
+		return nil, publicLookupSites(selected), err
 	}
-	prog.Instructions = spliced
-	return selected, nil
+	return spliced, publicLookupSites(selected), nil
 }
 
 func spliceLookup(input asm.Instructions, sitePCs []uint32, req LookupRequest) (asm.Instructions, error) {
