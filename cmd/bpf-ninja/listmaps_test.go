@@ -30,6 +30,7 @@ func TestMatchLoadCalls(t *testing.T) {
 		{Name: "entry", Calls: []string{"classify"}, Maps: []attach.MapUse{
 			{MapName: "stats", MapType: ebpf.Array, Op: attach.MapOpLookup, Inlined: true, File: "p.c", Line: 29},
 			{MapID: 9, MapName: "jmp", MapType: ebpf.ProgramArray, Op: attach.MapOpTailCall, File: "p.c", Line: 35},
+			{MapID: 10, MapName: "alt", MapType: ebpf.ProgramArray, Op: attach.MapOpTailCall, File: "p.c", Line: 36},
 		}},
 		{Name: "classify", Maps: []attach.MapUse{
 			{MapName: "flows", MapType: ebpf.Hash, Op: attach.MapOpLookup, File: "p.c", Line: 11},
@@ -40,7 +41,9 @@ func TestMatchLoadCalls(t *testing.T) {
 		}},
 	}}
 	n := nodeMaps{maps: maps, sites: matchLoadCalls(maps, load["entry"])}
-	children := []attach.ReachableProgram{{ProgID: 3, ProgName: "next_stage", Via: "tailcall", MapID: 9, Keys: []uint32{0, 1}}}
+	// Two maps reach next_stage: each keeps its own keys.
+	children := []attach.ReachableProgram{{ProgID: 3, ProgName: "next_stage", Via: "tailcall", MapID: 9, Keys: []uint32{0, 1, 7},
+		Maps: []attach.MapKeys{{MapID: 9, Keys: []uint32{0, 1}}, {MapID: 10, Keys: []uint32{7}}}}}
 	tree := progNode(2, "entry", "", n, children, func(c attach.ReachableProgram, edge string) treeNode {
 		return progNode(c.ProgID, c.ProgName, edge, nodeMaps{maps: attach.ProgMaps{Funcs: []attach.FuncMaps{{Name: "next_stage"}}}}, nil, nil)
 	})
@@ -49,14 +52,15 @@ func TestMatchLoadCalls(t *testing.T) {
 	want := `prog 2  entry
 ├─ func entry  (calls: classify)
 │  ├─ map stats  Array         lookup     p.c:29  ✓ injectable  (inlined, pc 6)
-│  └─ map jmp    ProgramArray  tail_call  p.c:35  → prog 3
+│  ├─ map jmp    ProgramArray  tail_call  p.c:35  → prog 3
+│  └─ map alt    ProgramArray  tail_call  p.c:36  → prog 3
 ├─ func classify
 │  ├─ map flows  Hash          lookup     p.c:11  ✗ not in the entry function  (pc 9)
 │  ├─ map flows  Hash          update     p.c:14  - no hook yet  (pc 20)
 │  ├─ map flows  Hash          update     p.c:14  - no hook yet  (pc 25)
 │  ├─ map flows  Hash          update     p.c:14  ? not in the lookups file
 │  └─ map ids    Hash          lookup     p.c:16  ✓ injectable (generic hook)  (pc 30)
-└─ prog 3  next_stage  (tail call: jmp[0-1])
+└─ prog 3  next_stage  (tail call: jmp[0-1], alt[7])
    └─ func next_stage
 `
 	if out.String() != want {

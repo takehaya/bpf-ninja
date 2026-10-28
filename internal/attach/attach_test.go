@@ -708,3 +708,14 @@ func TestMatchProgramsByName(t *testing.T) {
 		t.Errorf("ambiguous: %v", err)
 	}
 }
+
+// A program reached through two maps keeps each map's keys apart.
+func TestGroupTargetsMaps(t *testing.T) {
+	got := groupTargets([]ProgTarget{
+		{Via: "tailcall", Key: 1, MapID: 10, ProgID: 100}, {Via: "tailcall", Key: 7, MapID: 20, ProgID: 100},
+		{Via: "tailcall", Key: 0, MapID: 10, ProgID: 100},
+	})
+	if len(got) != 1 || fmt.Sprint(got[0].Keys) != "[0 1 7]" || fmt.Sprint(got[0].Maps) != "[{10 [0 1]} {20 [7]}]" {
+		t.Errorf("grouped = %+v", got)
+	}
+}

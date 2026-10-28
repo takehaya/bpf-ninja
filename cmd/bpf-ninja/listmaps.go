@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/cilium/ebpf"
@@ -291,7 +292,7 @@ func (n nodeMaps) status(i, j int, u attach.MapUse, children []attach.ReachableP
 	case attach.MapOpTailCall, attach.MapOpRedirect:
 		var targets []string
 		for _, c := range children {
-			if c.MapID == u.MapID {
+			if slices.ContainsFunc(c.Maps, func(m attach.MapKeys) bool { return m.MapID == u.MapID }) {
 				targets = append(targets, fmt.Sprintf("prog %d", c.ProgID))
 			}
 		}
@@ -338,17 +339,22 @@ func useDetails(u attach.MapUse, c *loadCall) string {
 	return "(" + strings.Join(parts, ", ") + ")"
 }
 
-// edgeText says how a reachable program is entered, after its name.
+// edgeText says how a reachable program is entered, after its name: each
+// map that reaches it with that map's keys.
 func edgeText(c attach.ReachableProgram, mapNames map[uint32]string) string {
-	name := mapNames[c.MapID]
-	if name == "" {
-		name = fmt.Sprintf("map id=%d", c.MapID)
+	var slots []string
+	for _, m := range c.Maps {
+		name := mapNames[m.MapID]
+		if name == "" {
+			name = fmt.Sprintf("map id=%d", m.MapID)
+		}
+		slots = append(slots, fmt.Sprintf("%s[%s]", name, formatKeyRanges(m.Keys)))
 	}
 	switch c.Via {
 	case "tailcall":
-		return fmt.Sprintf("  (tail call: %s[%s])", name, formatKeyRanges(c.Keys))
+		return fmt.Sprintf("  (tail call: %s)", strings.Join(slots, ", "))
 	case "freplace":
 		return "  (freplace)"
 	}
-	return fmt.Sprintf("  (%s redirect: %s[%s])", c.Via, name, formatKeyRanges(c.Keys))
+	return fmt.Sprintf("  (%s redirect: %s)", c.Via, strings.Join(slots, ", "))
 }
