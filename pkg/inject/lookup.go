@@ -93,7 +93,8 @@ func (s LookupSelector) empty() bool {
 //
 // CopyReadOnly gives a BPF_F_RDONLY_PROG map a typed hook instead of an
 // untrusted one: each site copies the value to the stack below the spill
-// slots and passes the copy. Kernels without arg:untrusted load it.
+// slots and passes the copy. Kernels without arg:untrusted load it. A value
+// with a special field (see LookupHook.Untrusted) is never copied.
 //
 // StaticUntrusted gives every hook that would take arg:untrusted pointers
 // (see LookupHook.Untrusted, and the generic hook) static linkage and an empty
@@ -237,8 +238,11 @@ const (
 // set by TransformLookupRaw only.
 //
 // Untrusted is set for a lookup hook on a map that programs cannot write or
-// cannot read (BPF_F_RDONLY_PROG or BPF_F_WRONLY_PROG). Its key and value are const void * tagged
-// arg:untrusted, so an observer reads them by the map's sizes.
+// cannot read (BPF_F_RDONLY_PROG or BPF_F_WRONLY_PROG), or whose value holds a
+// field the verifier lets programs reach only through helpers and kfuncs: a
+// bpf_spin_lock, bpf_timer, kptr and the like. Its key and value are const void * tagged
+// arg:untrusted, so an observer reads them by the map's sizes. Update and
+// delete hooks stay typed: their key and value are the program's memory.
 //
 // Copied is set for a typed hook on a BPF_F_RDONLY_PROG map with
 // CopyReadOnly: its value points to a stack copy, not into the map.
@@ -497,11 +501,12 @@ func discoverMapCalls(insns asm.Instructions, typ ebpf.ProgramType, resolve look
 			case op == HookLookup && (m.Type == ebpf.HashOfMaps || m.Type == ebpf.ArrayOfMaps):
 				site.Reason, generic = "map-in-map lookup returns an inner map", true
 			default:
-				// A program cannot update or delete in a map-in-map, so its
-				// sites fail here too. Only lookups take the generic hook for
-				// the kinds a typed hook refuses.
+				// A program cannot update or delete in a map-in-map, a devmap
+				// or an xskmap, so those sites fail here too. A socket map's
+				// update takes a socket, which only the generic hook's
+				// untyped value accepts; its delete goes along.
 				if reason := checkLookupMap(m); reason != "" {
-					site.Reason, typedOnly = reason, op == HookLookup && genericKinds[m.Type]
+					site.Reason, typedOnly = reason, genericKinds[m.Type] && (op == HookLookup || sockKinds[m.Type])
 				}
 			}
 			site.Generic = generic || typedOnly
@@ -547,6 +552,10 @@ var genericKinds = map[ebpf.MapType]bool{
 	ebpf.XSKMap: true, ebpf.DevMap: true, ebpf.DevMapHash: true, ebpf.SockMap: true, ebpf.SockHash: true,
 }
 
+// sockKinds are the genericKinds whose updates and deletes Auto also passes to
+// the generic hook; testSockUpdate updates a sockhash from tc.
+var sockKinds = map[ebpf.MapType]bool{ebpf.SockMap: true, ebpf.SockHash: true}
+
 // bpfFRdonlyProg and bpfFWronlyProg are BPF_F_RDONLY_PROG and
 // BPF_F_WRONLY_PROG from the BPF UAPI.
 const (
@@ -591,7 +600,7 @@ func (l lookupLayout) copyAt(size uint32) int {
 // instead of a pointer into the map: m is BPF_F_RDONLY_PROG and req asks for
 // CopyReadOnly.
 func copiesValue(m *RawMap, req LookupRequest) bool {
-	return req.CopyReadOnly && m.Flags&bpfFRdonlyProg != 0 && m.Flags&bpfFWronlyProg == 0
+	return req.CopyReadOnly && m.Flags&bpfFRdonlyProg != 0 && m.Flags&bpfFWronlyProg == 0 && specialField(m.Value) == ""
 }
 
 // LookupStackReserve reports the bytes the transform reserves strictly below
@@ -728,6 +737,63 @@ func checkLookupMap(m *RawMap) string {
 		}
 	}
 	return ""
+}
+
+// specialStructs are the value fields the verifier lets a program reach only
+// through their helpers and kfuncs, never as memory passed to a function.
+var specialStructs = map[string]bool{
+	"bpf_spin_lock": true, "bpf_res_spin_lock": true, "bpf_timer": true, "bpf_wq": true, "bpf_task_work": true,
+	"bpf_list_head": true, "bpf_list_node": true, "bpf_rb_root": true, "bpf_rb_node": true, "bpf_refcount": true,
+}
+
+// specialField returns the name of the first special field (see
+// specialStructs) or kptr in typ, a map value type, or "". A typed lookup hook
+// passes the value as memory, which the verifier refuses for these fields
+// ("bpf_spin_lock cannot be accessed directly by load/store", "kptr cannot be
+// accessed indirectly by helper").
+func specialField(typ btf.Type) string {
+	var walk func(t btf.Type, depth int) string
+	walk = func(t btf.Type, depth int) string {
+		if depth > 8 {
+			return ""
+		}
+		switch t := btf.UnderlyingType(t).(type) {
+		case *btf.Struct:
+			if specialStructs[t.Name] {
+				return t.Name
+			}
+			for _, m := range t.Members {
+				if name := walk(m.Type, depth+1); name != "" {
+					return name
+				}
+			}
+		case *btf.Union:
+			for _, m := range t.Members {
+				if name := walk(m.Type, depth+1); name != "" {
+					return name
+				}
+			}
+		case *btf.Array:
+			return walk(t.Type, depth+1)
+		case *btf.Pointer:
+			for target := t.Target; ; {
+				tag, ok := target.(*btf.TypeTag)
+				if !ok {
+					break
+				}
+				switch tag.Value {
+				case "kptr", "kptr_untrusted", "kptr_ref", "percpu_kptr", "uptr":
+					return tag.Value
+				}
+				target = tag.Type
+			}
+		}
+		return ""
+	}
+	if typ == nil {
+		return ""
+	}
+	return walk(typ, 0)
 }
 
 // lookupABI returns the hook's key and value types. A side the map declares
@@ -1269,8 +1335,10 @@ func (e lookupEmitter) splice(groups []lookupGroup) (asm.Instructions, []LookupH
 		}
 		// The verifier checks an ordinary memory argument for both reads and
 		// writes, so either restriction needs untrusted arguments, unless a
-		// readable value is copied to the stack, or the hook is static.
-		restricted := m.Flags&(bpfFRdonlyProg|bpfFWronlyProg) != 0
+		// readable value is copied to the stack, or the hook is static. A
+		// value with a special field cannot be passed as memory at all, nor
+		// copied.
+		restricted := m.Flags&(bpfFRdonlyProg|bpfFWronlyProg) != 0 || specialField(m.Value) != ""
 		copied := copiesValue(m, req)
 		static := restricted && !copied && req.StaticUntrusted
 		untrusted := restricted && !copied && !static

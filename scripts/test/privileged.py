@@ -18,6 +18,9 @@ def allowed_skip(package, test, output, kernel):
         # 7.3 rejects a tail call reachable from a bpf_loop callback outright.
         if test in {"TestBpfStackLimitsAcrossCalls/callback", "TestBpfStackLimitsAcrossCalls/callback-global"}:
             return kernel == "7.3-rc4" and "kernel forbids tail calls in callbacks" in output
+        # 7.3 forbids updating a socket map from tc, so the fixture itself fails.
+        if kernel == "7.3-rc4" and test in {"TestBpfSockHashUpdateTC", "TestBpfSockHashUpdateTCStatic"}:
+            return "kernel forbids sockmap updates from tc" in output
         # Hooks for read-only and runtime-resolved maps and the dispatch hook
         # tag their parameters arg:untrusted, which 6.15 and older reject.
         # GenericKinds skips per map-kind subtest, so match the base test name.
@@ -26,6 +29,7 @@ def allowed_skip(package, test, output, kernel):
             "TestBpfLookupInjectionGenericKinds", "TestBpfDispatch", "TestBpfDispatchTC",
             "TestBpfDispatchMiss", "TestBpfDispatchAny", "TestBpfDispatchAnyTC",
             "TestBpfMapCallsDispatch", "TestBpfMapCallsInnerUpdate",
+            "TestBpfSpecialFieldsLookup", "TestBpfSockHashUpdateTC",
         } and "kernel lacks arg:untrusted" in output
     if package != PROGRAM:
         return False
