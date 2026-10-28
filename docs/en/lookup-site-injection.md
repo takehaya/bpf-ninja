@@ -134,7 +134,9 @@ int PREFIX_MAP_delete(struct xdp_md *ctx, u32 site, const KEY *key, u64 status);
 `status` is `(u32)ret | flags << 32`: the helper's result in the low half and, for an update, its flags argument in the upper half.
 The key and value are the program's memory, never the map's, so these hooks are typed even on a `BPF_F_WRONLY_PROG` map.
 A program cannot update or delete in a `BPF_F_RDONLY_PROG` map or in a map-in-map, so such sites never reach the transform.
-The typed hooks cover the map kinds of the typed lookup hook; an update or delete on any other kind is skipped.
+The typed hooks cover the map kinds of the typed lookup hook.
+An update on a sockmap or sockhash passes a socket, not memory, so updates and deletes on those two kinds go to the generic hooks below, whose `value` is untyped.
+An update or delete on any other kind is skipped; programs cannot update a devmap, an XSK map or a map-in-map at all.
 An update or delete whose map reaches R1 only at run time, such as the inner map an outer lookup returned, goes to `PREFIX_any_update` or `PREFIX_any_delete`, which have the generic hook's signature.
 A generic or dispatch hook gets the result in its `info` argument:
 
@@ -305,6 +307,11 @@ The verifier checks a static function at each call with the caller's registers r
 A per-map static hook still declares its key and value types in BTF, but the kernel need not trust that BTF.
 On 7.0 it does not: an fentry observer receives every argument, `ctx` included, as a `u64` and reads through them with `bpf_probe_read_kernel`.
 With `CopyReadOnly` as well, a `BPF_F_RDONLY_PROG` map keeps its copied typed hook, and only write-only maps and the generic hook become static.
+A value that holds a field programs reach only through helpers and kfuncs cannot be passed as memory either: the verifier refuses a `bpf_spin_lock` or `bpf_timer` in it ("cannot be accessed directly by load/store") and a kptr ("cannot be accessed indirectly by helper").
+The transform finds these fields in the value's BTF, through nested structs, unions, arrays and typedefs: `struct bpf_spin_lock`, `bpf_res_spin_lock`, `bpf_timer`, `bpf_wq`, `bpf_task_work`, `bpf_list_head`, `bpf_list_node`, `bpf_rb_root`, `bpf_rb_node` and `bpf_refcount`, and pointers tagged `kptr`, `kptr_untrusted`, `kptr_ref`, `percpu_kptr` or `uptr`.
+A lookup hook on such a map takes untrusted pointers, or is static with `StaticUntrusted`, as for a write-only map, and `CopyReadOnly` never copies such a value, since the copy would read the field.
+The miss, update and delete hooks stay typed, since their key and value are the program's memory.
+6.1 does not know the `kptr_untrusted` tag and takes such a field for a plain pointer, which a typed hook would accept; the transform does not depend on the kernel and treats it as a kptr.
 A key that points into read-only memory (for example, a value of such a map) passed to a typed hook also makes the verifier reject the transformed program; discovery does not detect this.
 A key or value with BTF must have a nonzero size exactly matching the map's key or value size.
 The hook retains these types, including typedefs and qualifiers, under `const` pointer parameters.
@@ -478,7 +485,7 @@ The ELF SHA-256 binds the full input.
 ## What is not covered
 
 The transform observes lookups, updates and deletes in the entry function and failed tail calls, and nothing else.
-It does not observe other map helpers (`bpf_map_push_elem`, `bpf_map_pop_elem`, `bpf_map_peek_elem`, `bpf_map_lookup_percpu_elem`), updates on map kinds without a typed hook such as sockmaps, LRU eviction, non-map lookups such as `bpf_fib_lookup`, or lookups inside `bpf_for_each_map_elem` callbacks.
+It does not observe other map helpers (`bpf_map_push_elem`, `bpf_map_pop_elem`, `bpf_map_peek_elem`, `bpf_map_lookup_percpu_elem`), LRU eviction, non-map lookups such as `bpf_fib_lookup`, or lookups inside `bpf_for_each_map_elem` callbacks.
 It does not provide a consistent value version under concurrent control-plane updates or other writers.
 The observer reads the returned object during the hook; the program's later reads may see different contents.
 There is no snapshot, locking, or transaction guarantee, and observation adds execution cost.
@@ -501,6 +508,8 @@ It compares plain and injected programs, checks two keys with different packet l
 `TestBpfDispatchMiss`, `...Any`, `...AnyStatic`, `...AnyTC` and `...MissTCStatic` repeat `TestBpfDispatch` with `Lookups`, and check that a miss reaches the dispatch hook with the key, a NULL value and the map.
 `TestBpfMapCallsTyped`, `...TypedAny` and `...TypedTC` run updates and deletes on a two-entry hash (`EEXIST` for `BPF_NOEXIST` on a present key, `ENOENT` for `BPF_EXIST` on an absent one, `E2BIG` when full, `ENOENT` for deleting an absent key) and check that the typed update and delete hooks see exactly the failed calls, or every call with `CallAny`, with the site, key, value and status, while the program, which returns its result, behaves as before.
 `TestBpfMapCallsDispatch`, `...Static` and `...TCStatic` do the same through one dispatch hook at the lowest bound an update allows (`-440`) and check its `info` words; `TestBpfMapCallsArrayWriteOnly` loads the typed hooks on a `BPF_F_WRONLY_PROG` array and checks its `E2BIG`, `EEXIST` and `EINVAL` statuses; `TestBpfMapCallsInnerUpdate[Static]` sends an update of the inner map of an array of maps to `PREFIX_any_update`.
+`TestBpfSpecialFieldsLookup[Static]` looks up values with a `bpf_spin_lock`, a `bpf_timer` and a kptr through the untrusted or static hook and checks the key, value and site its observer sees; `TestBpfSpecialFieldsUpdate` keeps the typed update and delete hooks for the spin lock and kptr values and checks each call's key, value and status.
+`TestBpfSockHashUpdateTC[Static]` updates a sockhash from tc with the socket `BPF_PROG_TEST_RUN` gives the skb, which no socket map accepts, then deletes from the empty map, and checks that the generic update and delete hooks see each failure's `info`, the key, the socket (NULL for the delete) and the map, while the program's result does not change.
 `TestBpfLookupInjectionReadOnlyMap`, `...Copy` and `...Static` cover the untrusted, copied and static hook forms for a `BPF_F_RDONLY_PROG` map; `TestBpfLookupInjectionMapInMap[Static]` and `TestBpfLookupInjectionGenericKinds[Static]` cover the generic hook over a map-in-map and over direct XSK and devmap lookups.
 `TestBpfTailCallHooks` tail-calls from an instrumented caller into a target instrumented with `Entry`.
 On a successful tail call, the entry hook fires and an fentry on the target program itself does not; on a failed one, the tail-call hook reports the site and index.
@@ -522,8 +531,8 @@ These tests exercise the transform core and fentry using `BPF_PROG_TEST_RUN`, wi
 go build ./...
 go vet ./...
 go test -count=1 ./pkg/inject/...
-sudo -E env PATH=$PATH go test -count=1 -run 'TestBpfLookupInjection|TestBpfLookupMiss|TestBpfLookupAny|TestBpfMapCalls|TestBpfTailCall|TestBpfEntryHook|TestBpfStackLimits|TestBpfDispatch' ./pkg/inject/
+sudo -E env PATH=$PATH go test -count=1 -run 'TestBpfLookupInjection|TestBpfLookupMiss|TestBpfLookupAny|TestBpfMapCalls|TestBpfTailCall|TestBpfEntryHook|TestBpfStackLimits|TestBpfDispatch|TestBpfSpecialFields|TestBpfSockHash' ./pkg/inject/
 ```
 
-All 49 privileged `TestBpf` tests of this package, including the lookup, miss, update, delete, entry, tail-call, stack-limit and dispatch tests, pass across the CI kernel matrix (6.1 to 7.3-rc4) that `make test-bpf` runs, where the tests whose hooks need `arg:untrusted` skip on 6.1-6.15 and the callback stack-limit subtests skip on 7.3, which forbids tail calls in callbacks (see scripts/test/privileged.py).
+All 54 privileged `TestBpf` tests of this package, including the lookup, miss, update, delete, special-field, socket-map, entry, tail-call, stack-limit and dispatch tests, pass across the CI kernel matrix (6.1 to 7.3-rc4) that `make test-bpf` runs, where the tests whose hooks need `arg:untrusted` skip on 6.1-6.15 the callback stack-limit subtests skip on 7.3, which forbids tail calls in callbacks, and the sockhash update tests skip on 7.3, which no longer lets tc update a socket map (see scripts/test/privileged.py).
 This is finite test evidence for the fixture, not a general program-equivalence, concurrency, or kernel-version guarantee.

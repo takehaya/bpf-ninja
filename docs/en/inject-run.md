@@ -58,6 +58,7 @@ A name that matches no lookup refuses the rule, and `maps` without `auto` is a c
 `"ops": ["lookup:miss"]` calls the lookup hooks when the lookup finds nothing instead of when it finds an entry, and `"lookup:any"` on both; `"lookup"` or `"lookup:hit"` is the default.
 A typed hook then gets a second hook, `HOOK_MAP_miss(ctx, u32 site, key)`, since its value cannot be NULL; the `HOOK_any` and dispatch hooks are called with a NULL value ([lookup-site-injection.md](lookup-site-injection.md#misses)).
 `"update"` and `"delete"` (or `"update:error"`, `"delete:error"`) call `HOOK_MAP_update(ctx, u32 site, key, value, u64 status)` and `HOOK_MAP_delete(ctx, u32 site, key, u64 status)` when the helper fails, and `"update:any"` and `"delete:any"` after every call; `status` is the helper's result in the low 32 bits and the update's flags above them ([lookup-site-injection.md](lookup-site-injection.md#updates-and-deletes)).
+An update or delete on a map known only at run time, or on a sockmap or sockhash, whose update passes a socket rather than memory, calls `HOOK_any_update` or `HOOK_any_delete` with the generic hook's arguments instead.
 With `ops`, a rule observes only the ops it lists, so `"ops": ["update"]` leaves the lookups alone.
 `ops` needs `map` or `auto`, and `update` and `delete` need `auto`.
 
@@ -134,7 +135,7 @@ Each hook is one function in the loaded program:
 - `map` is the map of a `typed` hook. A `generic` or `dispatch` hook serves several maps, so the map is given on each site instead.
 - `sites` are the helper calls that call the hook, in instruction order. Each has a `kind` (`lookup`, `update`, `delete`, `tail_call`, or `entry`), its raw instruction index `pc` (the `site` argument the hook receives, or the low 32 bits of a generic or dispatch hook's `info`), and, where known, `map`, `func`, `file` and `line`. An `entry` hook has no sites.
 - A `dispatch` rule produces one hook with every site: the lookups, the failed tail calls, and the entry call as the site `4294967295` (`inject.DispatchEntrySite`). The entry call comes first, since it runs at program start, and the other sites follow in instruction order across maps and kinds.
-- `untrusted`, `copied`, `static` and `read_only` mirror `inject.LookupHook`: the hook takes `arg:untrusted` pointers, its value is a stack copy, it is a static function (read every argument as a `u64`), and its map is `BPF_F_RDONLY_PROG`.
+- `untrusted`, `copied`, `static` and `read_only` mirror `inject.LookupHook`: the hook takes `arg:untrusted` pointers (a lookup hook on a read-only or write-only map, or on a value holding a `bpf_spin_lock`, `bpf_timer`, kptr or similar field), its value is a stack copy, it is a static function (read every argument as a `u64`), and its map is `BPF_F_RDONLY_PROG`.
 
 `skipped` lists the lookups, updates and deletes that `auto` did not instrument, with the same site fields plus `reason`.
 
