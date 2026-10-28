@@ -252,7 +252,7 @@ func TestLookupHookPlacedBeforeSubprograms(t *testing.T) {
 	for _, symbolic := range []bool{false, true} {
 		spec := callbackLookupFixture(symbolic)
 		req := lookupReq()
-		req.Stack.LowestOffset = -16
+		req.Stack.LowestOffset = -24
 		if _, err := transformLookup(spec, req); err != nil {
 			t.Fatal(err)
 		}

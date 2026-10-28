@@ -18,6 +18,7 @@ type RawMap struct {
 	Name               string
 	Type               ebpf.MapType
 	KeySize, ValueSize uint32
+	Flags              uint32 // map_flags; BPF_F_RDONLY_PROG or BPF_F_WRONLY_PROG makes the hook untrusted (see LookupHook)
 	Key, Value         btf.Type
 }
 
@@ -45,9 +46,14 @@ type RawProgram struct {
 // the supplied instructions, map identities, BTF and stack audit together;
 // there is no ELF hash binding. Checksums only cover instruction encoding.
 type LookupRequestRaw struct {
-	Site     LookupSelector
-	HookName string
-	Stack    StackAudit
+	Site            LookupSelector
+	Auto            bool // see LookupRequest.Auto
+	Entry           bool // see LookupRequest.Entry
+	TailCalls       bool // see LookupRequest.TailCalls
+	CopyReadOnly    bool // see LookupRequest.CopyReadOnly
+	StaticUntrusted bool // see LookupRequest.StaticUntrusted
+	HookName        string
+	Stack           StackAudit
 }
 
 // LookupResultRaw contains a transformed instruction slice and matching load
@@ -59,9 +65,11 @@ type LookupRequestRaw struct {
 // map types from other BTF objects are appended. The string table is rebuilt,
 // so the returned native-endian FuncInfo and LineInfo MUST be used with this
 // blob, not the original BTF. HookFuncInfo is the hook's 8-byte func_info row
-// and HookTypeID is its BTF FUNC ID. No BTF or program is loaded here.
+// and HookTypeID is its BTF FUNC ID; with several hooks they describe the first
+// element of Hooks, and Hooks lists each one. No BTF or program is loaded here.
 //
-// Site, Sites, insertion counts and checksums have LookupResult's semantics.
+// Site, Sites, Hooks, Skipped, insertion counts and checksums have
+// LookupResult's semantics.
 // Input slices and BTF types are not modified. Function and map BTF types
 // used by the transform are copied. Other instruction metadata is retained.
 type LookupResultRaw struct {
@@ -74,9 +82,50 @@ type LookupResultRaw struct {
 	HookName                            string
 	Site                                LookupSite
 	Sites                               []LookupSite
+	Hooks                               []LookupHook
+	Skipped                             []LookupSite
 	SourceChecksum, TransformedChecksum string
 	InsertedAt                          uint32
 	InsertedSlots, AddedBytes           int
+}
+
+// Request is the ELF-side request r stands for, without ELFSHA256 and
+// ProgramName; every field is forwarded (TestRawRequestForwardsOptions guards
+// against a dropped field).
+func (r LookupRequestRaw) Request() LookupRequest {
+	return LookupRequest{Site: r.Site, Auto: r.Auto, Entry: r.Entry, TailCalls: r.TailCalls,
+		CopyReadOnly: r.CopyReadOnly, StaticUntrusted: r.StaticUntrusted, HookName: r.HookName, Stack: r.Stack}
+}
+
+// hookSuffix is the longest fixed suffix the transform appends to HookName
+// for req: "_tail_call" with TailCalls, "_entry" with Entry, and "_0" with
+// Auto, whose per-map names that would pass MaxHookName fall back to
+// HOOKNAME_<index>; a group whose name still does not fit is skipped.
+func hookSuffix(r LookupRequest) string {
+	switch {
+	case r.TailCalls:
+		return "_tail_call"
+	case r.Entry:
+		return "_entry"
+	case r.Auto:
+		return "_0"
+	}
+	return ""
+}
+
+// ValidateRaw checks the parts of req that do not depend on the program: the
+// hook name, with room for the suffix the transform appends (hookSuffix), and
+// the audited stack bound (CheckLookupStack). syscallhook.Validate calls it,
+// so a configuration check and the transform share these limits.
+func ValidateRaw(req LookupRequestRaw) error {
+	r := req.Request()
+	if !validIdent(r.HookName) {
+		return refuse("HookName %q must be a valid C/BTF identifier (1-%d chars, [A-Za-z_][A-Za-z0-9_]*)", r.HookName, MaxHookName)
+	}
+	if suffix := hookSuffix(r); len(r.HookName)+len(suffix) > MaxHookName {
+		return refuse("HookName %q with the suffix %q exceeds %d bytes", r.HookName, suffix, MaxHookName)
+	}
+	return CheckLookupStack(r)
 }
 
 // DiscoverLookupsRaw lists lookup sites using map-fd identity and raw load
@@ -95,23 +144,23 @@ func DiscoverLookupsRaw(p RawProgram) ([]LookupSite, error) {
 // Any refusal returns nil and leaves the caller's inputs untouched.
 func TransformLookupRaw(p RawProgram, req LookupRequestRaw) (*LookupResultRaw, error) {
 	if !validIdent(req.HookName) {
-		return nil, refuse("HookName must be a valid C/BTF identifier (1-%d chars)", maxHookName)
+		return nil, refuse("HookName must be a valid C/BTF identifier (1-%d chars)", MaxHookName)
 	}
 	insns, types, resolve, err := prepareRawLookup(p)
 	if err != nil {
 		return nil, err
 	}
 	// Numeric map loads have no Reference metadata for checkReferences to see.
+	// Maps are told apart by fd, so an unnamed map only fails to match a
+	// MapName selector.
 	for i := range insns {
 		if insns[i].IsLoadFromMap() {
-			_, m := resolve(&insns[i])
-			if m == nil || m.Name == "" {
+			if _, m := resolve(&insns[i]); m == nil {
 				return nil, refuse("map fd %d lacks identity", int32(insns[i].Constant))
 			}
 		}
 	}
-	out, sites, err := transformLookupProgram(insns, p.Type, types, resolve,
-		LookupRequest{Site: req.Site, HookName: req.HookName, Stack: req.Stack})
+	out, plan, err := transformLookupProgram(insns, p.Type, types, resolve, req.Request())
 	if err != nil {
 		return nil, err
 	}
@@ -131,19 +180,25 @@ func TransformLookupRaw(p RawProgram, req LookupRequestRaw) (*LookupResultRaw, e
 	if err != nil {
 		return nil, refuse("parsing extended BTF: %v", err)
 	}
-	var hookID btf.TypeID
+	hookIDs := map[string]btf.TypeID{}
 	for i := range out {
-		if fn := btf.FuncMetadata(&out[i]); fn != nil && fn.Name == req.HookName {
-			hookID, err = builder.Add(fn)
-			if err != nil {
-				return nil, refuse("hook BTF ID: %v", err)
+		if fn := btf.FuncMetadata(&out[i]); fn != nil {
+			for _, hook := range plan.hooks {
+				if fn.Name == hook.Name {
+					if hookIDs[hook.Name], err = builder.Add(fn); err != nil {
+						return nil, refuse("hook BTF ID: %v", err)
+					}
+				}
 			}
 		}
 	}
-	var hookInfo []byte
-	for off := 0; off < len(fi); off += 8 {
-		if btf.TypeID(binary.NativeEndian.Uint32(fi[off+4:])) == hookID {
-			hookInfo = bytes.Clone(fi[off : off+8])
+	for i := range plan.hooks {
+		hook := &plan.hooks[i]
+		hook.TypeID = hookIDs[hook.Name]
+		for off := 0; off < len(fi); off += 8 {
+			if btf.TypeID(binary.NativeEndian.Uint32(fi[off+4:])) == hook.TypeID {
+				hook.FuncInfo = bytes.Clone(fi[off : off+8])
+			}
 		}
 	}
 	sourceSum, err := checksum(insns, rawByteOrder())
@@ -156,7 +211,8 @@ func TransformLookupRaw(p RawProgram, req LookupRequestRaw) (*LookupResultRaw, e
 	}
 	added := int(out.Size() - insns.Size())
 	return &LookupResultRaw{Instructions: out, BTF: extended, BTFBytes: blob, FuncInfo: fi, LineInfo: li,
-		HookFuncInfo: hookInfo, HookTypeID: hookID, HookName: req.HookName, Site: sites[0], Sites: sites,
+		HookFuncInfo: plan.hooks[0].FuncInfo, HookTypeID: plan.hooks[0].TypeID, HookName: plan.hooks[0].Name,
+		Site: plan.first(), Sites: plan.sites, Hooks: plan.hooks, Skipped: plan.skipped,
 		SourceChecksum: sourceSum, TransformedChecksum: resultSum, InsertedSlots: added / asm.InstructionSize, AddedBytes: added}, nil
 }
 

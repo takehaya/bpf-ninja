@@ -70,9 +70,9 @@ func TestLookupTransformCloneAndMetadata(t *testing.T) {
 	src.Programs["other"] = lookupFixture().Programs["p"]
 	work := src.Copy()
 	before := append(asm.Instructions(nil), src.Programs["p"].Instructions...)
-	site, err := transformLookup(work, lookupReq())
-	if err != nil || len(site) != 1 || site[0].SitePC != 11 {
-		t.Fatalf("transform: %+v, %v", site, err)
+	plan, err := transformLookup(work, lookupReq())
+	if err != nil || len(plan.sites) != 1 || plan.sites[0].SitePC != 11 {
+		t.Fatalf("transform: %+v, %v", plan, err)
 	}
 	out := work.Programs["p"].Instructions
 	if out.Size()-src.Programs["p"].Instructions.Size() != 16*8 {
@@ -126,8 +126,6 @@ func TestLookupRefusalsDoNotMutate(t *testing.T) {
 		{"wrong-function", func(s *ebpf.CollectionSpec, r *LookupRequest) { r.Site.FuncName = "absent" }},
 		{"wrong-line", func(s *ebpf.CollectionSpec, r *LookupRequest) { r.Site.Line = 999 }},
 		{"missing-map", func(s *ebpf.CollectionSpec, r *LookupRequest) { delete(s.Maps, "sessions") }},
-		{"missing-key-btf", func(s *ebpf.CollectionSpec, r *LookupRequest) { s.Maps["sessions"].Key = nil }},
-		{"missing-value-btf", func(s *ebpf.CollectionSpec, r *LookupRequest) { s.Maps["sessions"].Value = nil }},
 		{"key-size", func(s *ebpf.CollectionSpec, r *LookupRequest) { s.Maps["sessions"].KeySize = 8 }},
 		{"value-size", func(s *ebpf.CollectionSpec, r *LookupRequest) { s.Maps["sessions"].ValueSize = 8 }},
 		{"unsized-value", func(s *ebpf.CollectionSpec, r *LookupRequest) { s.Maps["sessions"].Value = &btf.Fwd{Name: "session"} }},
@@ -301,7 +299,8 @@ func TestLookupMultipleSelection(t *testing.T) {
 			spec, req := multiLookupFixture(), lookupReq()
 			req.Site = tc.selector
 			before := append(asm.Instructions(nil), spec.Programs["p"].Instructions...)
-			sites, err := transformLookup(spec, req)
+			plan, err := transformLookup(spec, req)
+			sites := plan.sites
 			if tc.want == nil {
 				if !errors.Is(err, ErrRefused) {
 					t.Fatalf("want refusal: %v", err)

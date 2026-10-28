@@ -3,6 +3,9 @@ package inject
 import (
 	"encoding/binary"
 	"errors"
+	"fmt"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/cilium/ebpf"
@@ -135,6 +138,13 @@ func observerSpec(hook string, targetProg *ebpf.Program) *ebpf.CollectionSpec {
 // loadOrSkip loads a collection, failing on a verifier rejection (a real defect
 // on a capable machine) but skipping on a known permission or feature gap.
 func loadOrSkip(t *testing.T, spec *ebpf.CollectionSpec) *ebpf.Collection {
+	return loadHooked(t, spec, nil)
+}
+
+// loadHooked is loadOrSkip for a transformed program: only when one of its
+// hooks takes arg:untrusted pointers does a kernel that lacks the tag skip the
+// test instead of failing it (scripts/test/privileged.py lists those tests).
+func loadHooked(t *testing.T, spec *ebpf.CollectionSpec, hooks []LookupHook) *ebpf.Collection {
 	t.Helper()
 	coll, err := ebpf.NewCollectionWithOptions(spec, ebpf.CollectionOptions{})
 	if err == nil {
@@ -142,6 +152,12 @@ func loadOrSkip(t *testing.T, spec *ebpf.CollectionSpec) *ebpf.Collection {
 	}
 	var ve *ebpf.VerifierError
 	if errors.As(err, &ve) {
+		// Kernels before arg:untrusted reject the tag (6.12, 6.15) or ignore it
+		// and then cannot size the hook's const void * parameters (6.1, 6.6).
+		if log := fmt.Sprintf("%+v", ve); slices.ContainsFunc(hooks, func(h LookupHook) bool { return h.Untrusted }) &&
+			(strings.Contains(log, "has unsupported set of tags") || strings.Contains(log, "reference type('UNKNOWN ') size cannot be determined")) {
+			t.Skipf("skipping: kernel lacks arg:untrusted: %v", err)
+		}
 		t.Fatalf("verifier rejected a program that should load: %+v", ve)
 	}
 	if errors.Is(err, unix.EPERM) || errors.Is(err, unix.EACCES) ||

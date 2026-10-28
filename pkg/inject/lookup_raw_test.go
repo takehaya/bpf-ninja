@@ -13,6 +13,65 @@ import (
 	"github.com/cilium/ebpf/btf"
 )
 
+// fillNonZero sets every field reachable from v to a non-zero value.
+func fillNonZero(t *testing.T, v reflect.Value) {
+	t.Helper()
+	switch v.Kind() {
+	case reflect.Bool:
+		v.SetBool(true)
+	case reflect.String:
+		v.SetString("x")
+	case reflect.Uint32:
+		v.SetUint(7)
+	case reflect.Int16:
+		v.SetInt(-8)
+	case reflect.Slice:
+		s := reflect.MakeSlice(v.Type(), 1, 1)
+		fillNonZero(t, s.Index(0))
+		v.Set(s)
+	case reflect.Pointer:
+		p := reflect.New(v.Type().Elem())
+		fillNonZero(t, p.Elem())
+		v.Set(p)
+	case reflect.Struct:
+		for i := range v.NumField() {
+			fillNonZero(t, v.Field(i))
+		}
+	default:
+		t.Fatalf("fillNonZero: add a value for kind %s", v.Kind())
+	}
+}
+
+// Every field of LookupRequestRaw reaches LookupRequest unchanged, so a new
+// option cannot be silently dropped when the raw request is converted.
+func TestRawRequestForwardsOptions(t *testing.T) {
+	var raw LookupRequestRaw
+	v := reflect.ValueOf(&raw).Elem()
+	fillNonZero(t, v)
+	got := reflect.ValueOf(raw.Request())
+	for i := range v.NumField() {
+		name := v.Type().Field(i).Name
+		if f := got.FieldByName(name); !f.IsValid() || !reflect.DeepEqual(f.Interface(), v.Field(i).Interface()) {
+			t.Errorf("%s is not forwarded", name)
+		}
+	}
+}
+
+// A selector with any one field set is not empty.
+func TestLookupSelectorEmpty(t *testing.T) {
+	if !(LookupSelector{}).empty() {
+		t.Fatal("zero selector is not empty")
+	}
+	for i := range reflect.TypeFor[LookupSelector]().NumField() {
+		var s LookupSelector
+		f := reflect.ValueOf(&s).Elem().Field(i)
+		fillNonZero(t, f)
+		if s.empty() {
+			t.Errorf("selector with %s set is empty", reflect.TypeFor[LookupSelector]().Field(i).Name)
+		}
+	}
+}
+
 // Convert the already-linked ProgramSpec to load inputs without loading BPF.
 // Keeping symbols tests checksum parity; numeric strips all instruction metadata
 // via a marshal/unmarshal, as a syscall front end would receive it.
@@ -65,7 +124,7 @@ func rawLookupFixture(t *testing.T, spec *ebpf.CollectionSpec, name string, nume
 			}
 			ins.Constant = int64(fd)
 		}
-		maps[fd] = RawMap{Name: ins.Reference(), Type: m.Type, KeySize: m.KeySize, ValueSize: m.ValueSize, Key: m.Key, Value: m.Value}
+		maps[fd] = RawMap{Name: ins.Reference(), Type: m.Type, KeySize: m.KeySize, ValueSize: m.ValueSize, Flags: m.Flags, Key: m.Key, Value: m.Value}
 	}
 	if numeric {
 		var wire bytes.Buffer
@@ -81,7 +140,7 @@ func rawLookupFixture(t *testing.T, spec *ebpf.CollectionSpec, name string, nume
 }
 
 func rawLookupRequest(req LookupRequest) LookupRequestRaw {
-	return LookupRequestRaw{Site: req.Site, HookName: req.HookName, Stack: req.Stack}
+	return LookupRequestRaw{Site: req.Site, Auto: req.Auto, HookName: req.HookName, Stack: req.Stack}
 }
 
 func assertRawLookupParity(t *testing.T, src *ebpf.CollectionSpec, req LookupRequest, want *LookupResult) {
@@ -93,8 +152,14 @@ func assertRawLookupParity(t *testing.T, src *ebpf.CollectionSpec, req LookupReq
 	}
 	if got.SourceChecksum != want.SourceChecksum || got.TransformedChecksum != want.TransformedChecksum ||
 		got.InsertedSlots != want.InsertedSlots || got.AddedBytes != want.AddedBytes || got.InsertedAt != want.InsertedAt ||
-		!reflect.DeepEqual(got.Sites, want.Sites) || got.Site != want.Site {
+		!reflect.DeepEqual(got.Sites, want.Sites) || got.Site != want.Site || !reflect.DeepEqual(got.Skipped, want.Skipped) ||
+		len(got.Hooks) != len(want.Hooks) {
 		t.Fatalf("raw/ELF result mismatch: raw=%+v ELF=%+v", got, want)
+	}
+	for i, hook := range want.Hooks {
+		if got.Hooks[i].Name != hook.Name || got.Hooks[i].MapName != hook.MapName || !reflect.DeepEqual(got.Hooks[i].Sites, hook.Sites) {
+			t.Fatalf("raw/ELF hook %d mismatch: raw=%+v ELF=%+v", i, got.Hooks[i], hook)
+		}
 	}
 	out := want.Spec.Programs[req.ProgramName].Instructions
 	if len(got.Instructions) != len(out) {
@@ -118,13 +183,19 @@ func assertRawMetadata(t *testing.T, p RawProgram, got *LookupResultRaw) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(funcs) != len(p.FuncInfo)/8+1 || len(got.HookFuncInfo) != 8 ||
-		binary.NativeEndian.Uint32(got.HookFuncInfo[4:]) != uint32(got.HookTypeID) {
+	if len(got.Hooks) == 0 || len(funcs) != len(p.FuncInfo)/8+len(got.Hooks) || len(got.HookFuncInfo) != 8 ||
+		binary.NativeEndian.Uint32(got.HookFuncInfo[4:]) != uint32(got.HookTypeID) ||
+		got.HookName != got.Hooks[0].Name || got.HookTypeID != got.Hooks[0].TypeID {
 		t.Fatal("missing hook func_info")
 	}
-	if funcs[0].Offset != 0 || funcs[1].Func.Name != got.HookName ||
-		uint32(funcs[1].Offset) != binary.NativeEndian.Uint32(got.HookFuncInfo) {
-		t.Fatal("hook is not immediately after entry")
+	if funcs[0].Offset != 0 {
+		t.Fatal("entry func_info is not at offset 0")
+	}
+	for i, hook := range got.Hooks {
+		if len(hook.FuncInfo) != 8 || binary.NativeEndian.Uint32(hook.FuncInfo[4:]) != uint32(hook.TypeID) ||
+			funcs[1+i].Func.Name != hook.Name || uint32(funcs[1+i].Offset) != binary.NativeEndian.Uint32(hook.FuncInfo) {
+			t.Fatalf("hook %s is not in order right after entry", hook.Name)
+		}
 	}
 	byPC := rawOffsets(got.Instructions)
 	for _, fn := range funcs {
@@ -159,8 +230,10 @@ func assertRawMetadata(t *testing.T, p RawProgram, got *LookupResultRaw) {
 		if err != nil || !reflect.DeepEqual(old, newType) {
 			t.Fatalf("original type ID %d changed: %v", id, err)
 		}
-		if got.HookTypeID <= id {
-			t.Fatal("hook ID overlaps original types")
+		for _, hook := range got.Hooks {
+			if hook.TypeID <= id {
+				t.Fatal("hook ID overlaps original types")
+			}
 		}
 	}
 }
@@ -192,6 +265,16 @@ func TestLookupRawMapIdentity(t *testing.T) {
 	}
 	if maps != 1 {
 		t.Fatal("map load lost")
+	}
+	// An unnamed map has no hook name to give; Auto falls back to a number.
+	m.Name = ""
+	p.Maps[40] = m
+	auto, err := TransformLookupRaw(p, LookupRequestRaw{Auto: true, Entry: true, HookName: req.HookName, Stack: req.Stack})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(auto.Hooks) != 2 || auto.Hooks[0].Name != req.HookName+"_0" || auto.Hooks[0].MapName != "" {
+		t.Fatalf("unnamed map hooks: %+v", auto.Hooks)
 	}
 	delete(p.Maps, 40)
 	sites, err = DiscoverLookupsRaw(p)
@@ -271,7 +354,8 @@ func TestLookupRawMultipleCallbacks(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			req := lookupReq()
 			req.Site.AllMatches = true
-			req.Stack.LowestOffset = -16
+			// The callback fixture's counters reach fp-24.
+			req.Stack.LowestOffset = -24
 			p := rawLookupFixture(t, tc.spec, "p", true)
 			before := append(asm.Instructions(nil), p.Instructions...)
 			got, err := TransformLookupRaw(p, rawLookupRequest(req))
@@ -356,7 +440,6 @@ func TestLookupRawRefusals(t *testing.T) {
 		{"missing-map", func(p *RawProgram, r *LookupRequestRaw) { delete(p.Maps, 40) }},
 		{"bad-map-kind", func(p *RawProgram, r *LookupRequestRaw) { m := p.Maps[40]; m.Type = ebpf.HashOfMaps; p.Maps[40] = m }},
 		{"key-size", func(p *RawProgram, r *LookupRequestRaw) { m := p.Maps[40]; m.KeySize++; p.Maps[40] = m }},
-		{"missing-value", func(p *RawProgram, r *LookupRequestRaw) { m := p.Maps[40]; m.Value = nil; p.Maps[40] = m }},
 		{"wrong-ctx", func(p *RawProgram, r *LookupRequestRaw) {
 			typ, _ := p.BTF.AnyTypeByName("p")
 			typ.(*btf.Func).Type.(*btf.FuncProto).Params[0].Type = &btf.Int{Size: 4}

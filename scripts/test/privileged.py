@@ -10,9 +10,21 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[2]
 PROGRAM = "github.com/takehaya/bpf-ninja/internal/program"
+INJECT = "github.com/takehaya/bpf-ninja/pkg/inject"
 
 
 def allowed_skip(package, test, output, kernel):
+    if package == INJECT:
+        # 7.3 rejects a tail call reachable from a bpf_loop callback outright.
+        if test in {"TestBpfStackLimitsAcrossCalls/callback", "TestBpfStackLimitsAcrossCalls/callback-global"}:
+            return kernel == "7.3-rc4" and "kernel forbids tail calls in callbacks" in output
+        # Hooks for read-only and runtime-resolved maps tag their parameters
+        # arg:untrusted, which 6.15 and older reject.
+        # GenericKinds skips per map-kind subtest, so match the base test name.
+        return kernel in {"6.1", "6.6", "6.12", "6.15"} and test.split("/", 1)[0] in {
+            "TestBpfLookupInjectionReadOnlyMap", "TestBpfLookupInjectionMapInMap",
+            "TestBpfLookupInjectionGenericKinds",
+        } and "kernel lacks arg:untrusted" in output
     if package != PROGRAM:
         return False
     unsupported_tc = {
@@ -79,6 +91,7 @@ def main():
         ("./internal/capture/...", "^Test"),
         ("./cmd/bpf-ninja", "^TestBpf" if args.kernel else "^Test"),
         ("./pkg/kunai/dsltest", "^Test"),
+        ("./pkg/inject", "^TestBpf" if args.kernel else "^Test"),
     ]
     events, expected = [], set()
     env = dict(os.environ, CI="true")

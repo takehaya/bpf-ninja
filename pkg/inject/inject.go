@@ -52,8 +52,10 @@
 // Any refusal returns a nil result and leaves every input untouched.
 //
 // [DiscoverLookups] and [TransformLookup] provide a separate map-lookup
-// transform with a ctx/key/value hook. It uses three stack slots and relies on
-// the helper calling convention instead of a caller liveness certification.
+// transform with ctx/key/value hooks (see [LookupRequest]). It reserves three
+// stack slots below the audited bound, four when a hook takes the map pointer,
+// plus any CopyReadOnly value copy, and relies on the helper calling
+// convention instead of a caller liveness certification.
 package inject
 
 import (
@@ -78,8 +80,8 @@ const insertSlots = 6
 // genSlots is the number of raw slots the appended generated function occupies.
 const genSlots = 3
 
-// maxHookName bounds the generated name to a conservative kernel symbol length.
-const maxHookName = 127
+// MaxHookName bounds the generated name to a conservative kernel symbol length.
+const MaxHookName = 127
 
 // ErrRefused is wrapped by every refusal so callers can branch on it without
 // string matching. A refusal never mutates any input.
@@ -129,7 +131,12 @@ type StackAudit struct {
 	// caller. It must be in [-512, 0]. The spill slots are placed strictly
 	// below the 8-byte-aligned floor of this value; the transform additionally
 	// refuses if any direct RFP reference it can see is below LowestOffset.
-	// Transform reserves two slots; TransformLookup reserves three.
+	// Transform reserves two slots; TransformLookup three, four with a generic
+	// hook, and CopyReadOnly adds a value copy below them. The frame holding
+	// the slots also calls a hook, and the transform refuses a program whose
+	// call chains would then break a verifier stack limit: with a hook frame
+	// counted as 32 bytes, the 512-byte combined limit makes -464 the deepest
+	// usable bound for Transform (see CheckLookupStack for TransformLookup).
 	LowestOffset int16
 }
 
@@ -267,7 +274,11 @@ func transform(work *ebpf.CollectionSpec, req Request) error {
 	if err != nil {
 		return err
 	}
-	prog.Instructions = appendHook(spliced, req)
+	out := appendHook(spliced, req)
+	if err := checkStackLimits(prog.Instructions, out, req.Stack.LowestOffset); err != nil {
+		return err
+	}
+	prog.Instructions = out
 	return nil
 }
 
@@ -282,7 +293,7 @@ func validateRequest(req Request) error {
 	case req.HookName == "":
 		return refuse("HookName is required")
 	case !validIdent(req.HookName):
-		return refuse("HookName %q must be a valid C/BTF identifier (1-%d chars, [A-Za-z_][A-Za-z0-9_]*)", req.HookName, maxHookName)
+		return refuse("HookName %q must be a valid C/BTF identifier (1-%d chars, [A-Za-z_][A-Za-z0-9_]*)", req.HookName, MaxHookName)
 	case req.Load.PtrReg != asm.R0:
 		return refuse("Load.PtrReg must be R0, got R%d", req.Load.PtrReg)
 	case req.Stack.LowestOffset > 0:
@@ -297,7 +308,7 @@ func validateRequest(req Request) error {
 }
 
 func validIdent(s string) bool {
-	return len(s) >= 1 && len(s) <= maxHookName && identRe.MatchString(s)
+	return len(s) >= 1 && len(s) <= MaxHookName && identRe.MatchString(s)
 }
 
 // checkNoCollision refuses if HookName already exists as an instruction symbol,

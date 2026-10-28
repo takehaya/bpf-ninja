@@ -5,11 +5,13 @@ package syscallhook
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"runtime"
+	"strings"
 	"syscall"
 
 	"github.com/cilium/ebpf"
@@ -297,12 +299,16 @@ func (s *supervisor) entry(pid int, t *thread, regs unix.PtraceRegs) error {
 	if err != nil {
 		return err
 	}
-	ret, injectErr := s.transformLoad(r, attr, *rule)
+	ret, summary, injectErr := s.transformLoad(r, attr, *rule)
 	if r.broken != nil {
 		return r.broken
 	}
 	if injectErr != nil {
-		s.log("program %q: injection skipped: %v", name, injectErr)
+		if summary != "" {
+			s.log("program %q: injection skipped: %v; attempted %s", name, injectErr, summary)
+		} else {
+			s.log("program %q: injection skipped: %v", name, injectErr)
+		}
 		if s.options.FailClosed {
 			ret = -int64(unix.EPERM)
 		} else {
@@ -314,7 +320,7 @@ func (s *supervisor) entry(pid int, t *thread, regs unix.PtraceRegs) error {
 			}
 		}
 	} else {
-		s.log("program %q: injected hook %q, tracee fd %d", name, rule.Hook, ret)
+		s.log("program %q: injected %s, tracee fd %d", name, summary, ret)
 	}
 	return r.finish(ret)
 }
@@ -404,10 +410,14 @@ func kernelBTF(id uint32) (*btf.Spec, error) {
 	return h.Spec(nil)
 }
 
-func (s *supervisor) transformLoad(r *remote, attr []byte, rule Rule) (ret int64, err error) {
+// transformLoad returns the tracee's PROG_LOAD result and, once the transform
+// succeeded, a summary of the injected hooks and their sites for the log: also
+// when the transformed PROG_LOAD then fails, so the caller can name the
+// hooks it attempted.
+func (s *supervisor) transformLoad(r *remote, attr []byte, rule Rule) (ret int64, summary string, err error) {
 	info, err := r.info(u32(attr, 72), 32)
 	if err != nil {
-		return 0, err
+		return 0, "", err
 	}
 	var spec *btf.Spec
 	if remembered, ok := s.btf[u32(attr, 72)]; ok && remembered.id == u32(info, 12) {
@@ -416,46 +426,43 @@ func (s *supervisor) transformLoad(r *remote, attr []byte, rule Rule) (ret int64
 		spec, err = kernelBTF(u32(info, 12))
 	}
 	if err != nil {
-		return 0, err
+		return 0, "", err
 	}
 	entry, err := readEntryName(r.pid, attr, spec)
 	if err != nil {
-		return 0, err
+		return 0, "", err
 	}
 	liveRule, err := s.selectRule(cstring(attr[48:64]), entry)
 	if err != nil {
-		return 0, err
+		return 0, "", err
 	}
 	if liveRule == nil || liveRule.Program != rule.Program {
-		return 0, fmt.Errorf("BTF fd identity changed; selector no longer matches")
+		return 0, "", fmt.Errorf("BTF fd identity changed; selector no longer matches")
 	}
 	raw, err := extractRaw(r, attr, spec)
 	if err != nil {
-		return 0, err
+		return 0, "", err
 	}
-	result, err := inject.TransformLookupRaw(raw, inject.LookupRequestRaw{
-		Site:     inject.LookupSelector{MapName: rule.Map, FuncName: rule.Func, Line: rule.Line, AllMatches: rule.AllMatches, SitePCs: rule.SitePCs},
-		HookName: rule.Hook, Stack: inject.StackAudit{LowestOffset: *rule.StackLowestOffset},
-	})
+	result, err := inject.TransformLookupRaw(raw, rule.request())
 	if err != nil {
-		return 0, err
+		return 0, "", err
 	}
 	var instructions bytes.Buffer
 	if err := result.Instructions.Marshal(&instructions, wire); err != nil {
-		return 0, err
+		return 0, "", err
 	}
 	// Load BTF inside the tracee. A supervisor-owned fd is not a valid substitute
 	// for prog_btf_fd, even when its numeric value happens to match a target fd.
 	btfAddr, err := r.alloc(result.BTFBytes)
 	if err != nil {
-		return 0, err
+		return 0, "", err
 	}
 	btfAttr := make([]byte, 32)
 	put64(btfAttr, 0, btfAddr)
 	put32(btfAttr, 16, uint32(len(result.BTFBytes)))
 	fd, err := r.bpf(unix.BPF_BTF_LOAD, btfAttr)
 	if err != nil {
-		return 0, fmt.Errorf("tracee extended BTF load: %w", err)
+		return 0, "", fmt.Errorf("tracee extended BTF load: %w", err)
 	}
 	defer func() {
 		closed, closeErr := r.call(unix.SYS_CLOSE, uint64(fd))
@@ -474,7 +481,7 @@ func (s *supervisor) transformLoad(r *remote, attr []byte, rule Rule) (ret int64
 	} {
 		addr, err := r.alloc(buffer.data)
 		if err != nil {
-			return 0, err
+			return 0, "", err
 		}
 		put64(patched, buffer.ptr, addr)
 		put32(patched, buffer.count, uint32(len(buffer.data)/buffer.recordSize))
@@ -485,11 +492,11 @@ func (s *supervisor) transformLoad(r *remote, attr []byte, rule Rule) (ret int64
 	// Preserve kernel output fields (currently log_true_size) in the caller's attr.
 	addr, err := r.alloc(patched)
 	if err != nil {
-		return 0, err
+		return 0, "", err
 	}
 	ret, err = r.call(unix.SYS_BPF, unix.BPF_PROG_LOAD, addr, uint64(len(patched)))
 	if err != nil {
-		return 0, err
+		return 0, "", err
 	}
 	if len(patched) >= 144 {
 		out, e := readMemory(r.pid, addr+140, 4)
@@ -498,13 +505,89 @@ func (s *supervisor) transformLoad(r *remote, attr []byte, rule Rule) (ret int64
 		}
 		if e != nil {
 			r.broken = e
-			return 0, e
+			return 0, "", e
 		}
 	}
 	if err := syscallError(ret, nil); err != nil {
-		return 0, fmt.Errorf("transformed PROG_LOAD: %w", err)
+		// Carry the summary so the caller can name the attempted hooks, and a
+		// hint when an untrusted-pointer ABI mismatch may be the cause.
+		return 0, hookSummary(result), fmt.Errorf("transformed PROG_LOAD: %w%s", err, untrustedHint(result, err))
 	}
-	return ret, nil
+	return ret, hookSummary(result), nil
+}
+
+// untrustedHint explains how to load a program whose hooks take arg:untrusted
+// pointers on a kernel without that tag. It is empty unless some hook is
+// untrusted and the load failed the way those kernels fail it: EINVAL on 6.1
+// and 6.6, EOPNOTSUPP on 6.12 and 6.15, or EACCES.
+func untrustedHint(result *inject.LookupResultRaw, err error) string {
+	if !errors.Is(err, unix.EINVAL) && !errors.Is(err, unix.EOPNOTSUPP) && !errors.Is(err, unix.EACCES) {
+		return ""
+	}
+	untrusted, copyHelps := false, false
+	for _, hook := range result.Hooks {
+		untrusted = untrusted || hook.Untrusted
+		copyHelps = copyHelps || copyReadOnlyHelps(hook)
+	}
+	if !untrusted {
+		return ""
+	}
+	fix := `"static_untrusted": true`
+	if copyHelps {
+		fix += ` or, for read-only maps, "copy_read_only": true`
+	}
+	return ` (hooks use arg:untrusted pointers, which kernels 6.15 and older in our CI matrix reject; set ` + fix + ` to load on those kernels)`
+}
+
+// copyReadOnlyHelps reports whether copy_read_only would give hook a typed
+// hook: an untrusted lookup hook on a read-only map (never the generic hook).
+// A hook whose rule cannot also set copy_read_only must be excluded here.
+func copyReadOnlyHelps(hook inject.LookupHook) bool {
+	return hook.Kind == inject.HookLookup && hook.Untrusted && hook.ReadOnly && !hook.Generic
+}
+
+// hookSummary lists each hook as
+//
+//	hook "NAME" (KIND[ map "MAP"][ runtime map][, untrusted pointers][, value copied to stack][, static][, site pc N, N])
+//
+// separated by ", ", then "; skipped pc N (reason)" for each skipped lookup.
+// The launcher log and the integration test look for the leading "hook".
+func hookSummary(result *inject.LookupResultRaw) string {
+	var b strings.Builder
+	for i, hook := range result.Hooks {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		fmt.Fprintf(&b, "hook %q (%s", hook.Name, hook.Kind)
+		if hook.MapName != "" {
+			fmt.Fprintf(&b, " map %q", hook.MapName)
+		}
+		if hook.Generic {
+			b.WriteString(" runtime map")
+		}
+		if hook.Untrusted {
+			b.WriteString(", untrusted pointers")
+		}
+		if hook.Copied {
+			b.WriteString(", value copied to stack")
+		}
+		if hook.Static {
+			b.WriteString(", static")
+		}
+		for j, site := range hook.Sites {
+			if j == 0 {
+				b.WriteString(", site pc")
+			} else {
+				b.WriteByte(',')
+			}
+			fmt.Fprintf(&b, " %d", site.SitePC)
+		}
+		b.WriteByte(')')
+	}
+	for _, site := range result.Skipped {
+		fmt.Fprintf(&b, "; skipped pc %d (%s)", site.SitePC, site.Reason)
+	}
+	return b.String()
 }
 
 func extractRaw(r *remote, attr []byte, spec *btf.Spec) (inject.RawProgram, error) {
@@ -539,19 +622,27 @@ func extractRaw(r *remote, attr []byte, spec *btf.Spec) (inject.RawProgram, erro
 		if err != nil {
 			return p, err
 		}
-		types, err := kernelBTF(u32(info, 64))
-		if err != nil {
-			return p, fmt.Errorf("map fd %d BTF: %w", fd, err)
+		// A map without BTF (often a program array) keeps its identity; the
+		// transform skips or refuses lookups that need its types.
+		var key, value btf.Type
+		if id := u32(info, 64); id != 0 {
+			types, err := kernelBTF(id)
+			if err != nil {
+				return p, fmt.Errorf("map fd %d BTF: %w", fd, err)
+			}
+			// A zero type id is a side declared only by size; it stays nil.
+			if kid := u32(info, 68); kid != 0 {
+				if key, err = types.TypeByID(btf.TypeID(kid)); err != nil {
+					return p, err
+				}
+			}
+			if vid := u32(info, 72); vid != 0 {
+				if value, err = types.TypeByID(btf.TypeID(vid)); err != nil {
+					return p, err
+				}
+			}
 		}
-		key, err := types.TypeByID(btf.TypeID(u32(info, 68)))
-		if err != nil {
-			return p, err
-		}
-		value, err := types.TypeByID(btf.TypeID(u32(info, 72)))
-		if err != nil {
-			return p, err
-		}
-		p.Maps[fd] = inject.RawMap{Name: cstring(info[24:40]), Type: ebpf.MapType(u32(info, 0)), KeySize: u32(info, 8), ValueSize: u32(info, 12), Key: key, Value: value}
+		p.Maps[fd] = inject.RawMap{Name: cstring(info[24:40]), Type: ebpf.MapType(u32(info, 0)), KeySize: u32(info, 8), ValueSize: u32(info, 12), Flags: u32(info, 20), Key: key, Value: value}
 	}
 	return p, nil
 }

@@ -45,10 +45,30 @@ A lookup that inlining copies to several places shares one source line, so `"all
 The two are mutually exclusive, and duplicate or missing PCs are refused.
 The transformation core currently accepts lookup sites in the entry function and applies its existing map, control-flow, reference, and stack restrictions.
 
+`"auto": true` instruments every supported lookup in the program instead of one selected lookup.
+`map`, `func`, `line`, `all_matches`, and `site_pcs` must then be absent, and `hook` is a prefix: each map gets its own hook named `HOOK_MAP`, with a `u32 site` argument after `ctx` that carries the lookup's raw instruction index.
+Lookups whose map is only known at run time (map-in-map, or a map pointer that reaches R1 indirectly), and lookups on XSK maps and devmaps, which have no typed hook, share one `HOOK_any` hook that also takes the map pointer.
+Lookups that the transform cannot support are skipped and listed in the diagnostic rather than refusing the load: lookups on other map kinds without a typed hook (sockmap and sockhash among them), lookups whose hook name would pass 127 bytes or whose slots do not fit the audited stack and, when the instrumented program would break a kernel call-chain stack limit, first the `HOOK_any` and `copy_read_only` lookups and then every lookup.
+`entry` and `tail_calls` hooks are kept; a rule that would instrument nothing at all is refused.
+The naming and hook ABI are described in [lookup-site-injection.md](lookup-site-injection.md#automatic-selection).
+
+`"entry": true` adds `HOOK_entry(ctx)`, called at the start of the program, which also runs when the program is entered through a tail call.
+`"tail_calls": true` adds `HOOK_tail_call(ctx, u32 site, u32 index)`, called when a `bpf_tail_call` anywhere in the program fails.
+Either can be combined with a lookup rule, or used without `map` or `auto` to instrument no lookup.
+`"copy_read_only": true` passes a stack copy of a `BPF_F_RDONLY_PROG` map's value to a typed hook instead of an `arg:untrusted` one, so kernels that reject `arg:untrusted` (6.15 and older in the CI matrix) load it; see [lookup-site-injection.md](lookup-site-injection.md#supported-sites-and-trust-boundary).
+`"static_untrusted": true` makes every hook that would take `arg:untrusted` pointers, the generic hook included, a static function instead, which those kernels also load; an observer then reads all of its arguments as `u64` values (same section).
+See [lookup-site-injection.md](lookup-site-injection.md#entry-and-tail-call-hooks), including why any hook in a program that uses `bpf_tail_call` needs the JIT on a supported architecture; without it the transformed load fails and the original program is loaded (or refused with `--fail-closed`).
+
+```json
+[{"program": "xdp_ingress", "auto": true, "hook": "obs", "stack_lowest_offset": -128}]
+```
+
 `stack_lowest_offset` is mandatory: it is an explicit audit of the deepest stack access, including aliases and callees, not an inferred value.
-It must be between -488 and 0; the hook reserves three eight-byte slots below the audited region, aligned downward.
+It must be between -456 and 0 for a rule with `map` or `auto`; a rule with only `tail_calls` (and `entry`) allows -464, and one with only `entry` -472.
+The transform reserves three eight-byte slots below the audited region, aligned downward (one for `entry` alone, two for `tail_calls` without lookups), four when `auto` finds a lookup whose map a typed hook cannot take, plus the value copy with `copy_read_only` (see the transform's refusal message for the exact bound).
+The frame holding the slots also calls the hook, which kernels that round frames to 32 bytes count as 32 bytes of the 512-byte stack, so the slots must end 480 bytes below the frame.
 Do not copy the example bound without auditing the actual program.
-`hook` must be a C identifier of at most 127 bytes.
+`hook` must be a C identifier of at most 127 bytes, leaving room for the longest suffix the transform appends: at most 117 bytes with `tail_calls` (`_tail_call`), 121 with `entry` (`_entry`), and 125 with `auto` (`_0`). Under `auto`, a map whose hook name would still not fit is skipped.
 Unknown JSON fields, duplicate program selectors, trailing JSON, and configurations larger than 1 MiB are rejected before launching.
 
 ## What happens at the syscall boundary
@@ -69,8 +89,8 @@ The supervisor reads the instructions, `func_info`, and `line_info` from tracee 
 For each map reference it injects `BPF_OBJ_GET_INFO_BY_FD` **in the tracee**, where the map fd is valid.
 The returned map name, kind, sizes, BTF ID, and key/value type IDs identify the map and its ABI.
 It opens that system-wide BTF ID in the supervisor with `BPF_BTF_GET_FD_BY_ID` and reads the types, including when maps and programs have separate BTF objects.
-It never treats a tracee fd number as a supervisor fd, and it does not invent opaque map types as a fallback.
-Maps lacking accessible BTF cause injection to be skipped.
+It never treats a tracee fd number as a supervisor fd.
+A map without BTF, or a side with a zero type ID, keeps its identity and sizes; the transform passes that side as opaque bytes of the map's size.
 
 `inject.TransformLookupRaw` produces the new instructions and extended BTF with matching function and line records.
 A supervisor-only BTF load would produce an fd the target cannot use.
@@ -94,6 +114,9 @@ The wire offsets and stop discriminators follow the Linux [BPF UAPI](https://git
 By default, read, metadata, transform, BTF-load, and transformed-program rejection errors produce an `injection skipped` diagnostic and allow the original program load.
 If the transformed load has already been attempted, the supervisor retries the original syscall with its original attr and input pointers.
 It reports `injected hook` only after the transformed load returns a nonnegative program fd.
+The diagnostic names each hook with its map and site PCs, followed by any lookups that `auto` skipped and why.
+When the transformed load is rejected, the diagnostic also names the hooks it attempted.
+If any used `arg:untrusted` pointers and the kernel returned `EINVAL`, `EOPNOTSUPP` or `EACCES` (6.1 and 6.6 reject the tag with `EINVAL`, 6.12 and 6.15 with `EOPNOTSUPP`), it suggests `"static_untrusted": true`, and `"copy_read_only": true` as well when one of them is a read-only map's hook, to load on kernels that reject the tag (6.15 and older in the CI matrix).
 A successful target exit alone does not prove injection; inspect the diagnostic or loaded program metadata.
 
 `--fail-closed` returns `EPERM` when a matched program cannot be injected.

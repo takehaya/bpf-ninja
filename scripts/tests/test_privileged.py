@@ -53,3 +53,28 @@ class AuditTests(unittest.TestCase):
         self.assertTrue(module.allowed_skip(module.PROGRAM, test, reason, "6.1"))
         for name, message, kernel in ((test, reason, "6.6"), (test, "verifier failure", "6.1"), ("TestBpfMultiPointLoad", reason, "6.1")):
             self.assertFalse(module.allowed_skip(module.PROGRAM, name, message, kernel))
+
+    def test_inject_untrusted_skip_is_specific(self):
+        reason = "skipping: kernel lacks arg:untrusted: program p: load program"
+        allowed = ("TestBpfLookupInjectionReadOnlyMap", "TestBpfLookupInjectionMapInMap",
+                   "TestBpfLookupInjectionGenericKinds")
+        for test in allowed + ("TestBpfLookupInjectionGenericKinds/xskmap",):
+            for kernel in ("6.1", "6.6", "6.12", "6.15"):
+                self.assertTrue(module.allowed_skip(module.INJECT, test, reason, kernel))
+            self.assertFalse(module.allowed_skip(module.INJECT, test, reason, "6.18"))
+            self.assertFalse(module.allowed_skip(module.INJECT, test, reason, None))
+            self.assertFalse(module.allowed_skip(module.INJECT, test, "verifier rejected a program that should load", "6.1"))
+        for test in ("TestBpfLookupInjectionReadOnlyMapCopy", "TestBpfLookupInjectionReadOnlyMapStatic",
+                     "TestBpfLookupInjectionMapInMapStatic", "TestBpfLookupInjectionGenericKindsStatic",
+                     "TestBpfTailCallHooks"):
+            self.assertFalse(module.allowed_skip(module.INJECT, test, reason, "6.1"))
+        self.assertFalse(module.allowed_skip(module.PROGRAM, allowed[0], reason, "6.1"))
+
+    def test_inject_callback_tail_call_skip_is_specific(self):
+        reason = "kernel forbids tail calls in callbacks: cannot tail call within callback"
+        for test in ("TestBpfStackLimitsAcrossCalls/callback", "TestBpfStackLimitsAcrossCalls/callback-global"):
+            self.assertTrue(module.allowed_skip(module.INJECT, test, reason, "7.3-rc4"))
+            self.assertFalse(module.allowed_skip(module.INJECT, test, reason, "7.2"))
+            self.assertFalse(module.allowed_skip(module.INJECT, test, "verifier rejected a program that should load", "7.3-rc4"))
+        for test in ("TestBpfStackLimitsAcrossCalls", "TestBpfStackLimitsAcrossCalls/combined"):
+            self.assertFalse(module.allowed_skip(module.INJECT, test, reason, "7.3-rc4"))
