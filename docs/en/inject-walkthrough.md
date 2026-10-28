@@ -278,6 +278,28 @@ pop  site=30 value=112 ret=0 flags=0
 
 The program's actions do not change: every run returned `XDP_PASS` with the hooks, as it does when the loader runs without `inject-run`.
 
+## 6. Capture the packets at a hook
+
+A hook takes the program's `ctx` as its first argument, so bpf-ninja's own capture attaches to it like to any other function of the program, and writes the packet of every call to a pcap file instead of an observer's event:
+
+```sh
+bpf-ninja -p "$PROG_ID" --func ninja_recent_push -v -c 3 -w push.pcap
+```
+
+```
+attach target: prog id=2 func="ninja_recent_push"
+capturing (prog "ninja_recent_push" id=2, mode=entry, sharded, 2 shards via ringbuf.Reader)...
+
+3 packets captured
+```
+
+- The capture sees a packet only when the program calls the hook, so the rule decides what it sees: with `peek`, `ninja_seen_peek` captures only the packets whose length the bloom filter has not seen, and nothing once all four lengths are in it. Use `peek:any` to capture every peek.
+- `--list-params` lists the hook's integer arguments, `site` and `status`, and `--arg-filter` selects calls by them: `--arg-filter site=24` keeps the pushes at pc 24, and `--arg-filter status=0` keeps the calls that succeeded. `status` is unsigned, so an error such as `-7` is a large value.
+- With `--mode exit` the capture runs when the hook returns. The recorded return value is the hook's, always 0, not the program's action.
+- The loader's packets are zero-filled, so `tcpdump` prints them as truncated frames.
+
+The capture was checked with the walkthrough's program on 6.1, 6.15, 7.0 and 7.3-rc4, in entry and exit mode, and `--list-params` and `--arg-filter` on 7.0.
+
 ## See also
 
 - [inject-run.md](inject-run.md) for the rule fields, the hooks file and the lookups file.
