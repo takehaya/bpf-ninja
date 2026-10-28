@@ -13,7 +13,41 @@ import (
 	"github.com/google/gopacket/pcapgo"
 
 	"github.com/takehaya/bpf-ninja/internal/capture"
+	"github.com/takehaya/bpf-ninja/internal/hook"
 )
+
+func TestRawHookLinkType(t *testing.T) {
+	for _, kind := range []hook.Kind{hook.KindCgroupSKB, hook.KindNetfilter} {
+		for _, fast := range []string{"0", "1"} {
+			t.Run(string(kind)+"/fast="+fast, func(t *testing.T) {
+				t.Setenv("BPF_NINJA_FAST_PCAPNG", fast)
+				h, ok := hook.ByName(kind)
+				if !ok {
+					t.Fatalf("no hook %s", kind)
+				}
+				path := filepath.Join(t.TempDir(), "raw.pcapng")
+				w, err := NewWriter(path, Config{LinkType: h.LinkType})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := w.Close(); err != nil {
+					t.Fatal(err)
+				}
+				data, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				r, err := pcapgo.NewNgReader(bytes.NewReader(data), pcapgo.DefaultNgReaderOptions)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if got := r.LinkType(); got != 101 {
+					t.Errorf("pcap-ng link type = %d, want LINKTYPE_RAW (101)", got)
+				}
+			})
+		}
+	}
+}
 
 // writePacketsToFile writes pkts through a fresh Writer at path. fast selects
 // the FastNgWriter (BPF_NINJA_FAST_PCAPNG=1, the default) vs the gopacket
