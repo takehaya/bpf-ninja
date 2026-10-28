@@ -53,16 +53,16 @@ type stackFunc struct {
 // numeric. Function 0 is the entry. Every callback reference is an edge, an
 // async registration included (see checkStackLimits).
 //
-// A function's depth is its deepest direct R10 reference (R10 as the base of
-// a load or store). A function that uses R10 in any other way, such as
-// R2 = R10, can reach deeper through the copy, which the audited bound lowest
-// covers by contract, so its depth is at least -lowest.
+// Frame depths include locally tracked R10 aliases, with the audited bound
+// lowest as the fallback when an alias cannot be followed (see stackFrameDepth).
 func stackCallGraph(insns asm.Instructions, lowest int16) ([]stackFunc, error) {
 	var funcs []stackFunc
+	var starts []int
 	byStart, bySymbol := map[int]int{}, map[string]int{}
 	it := insns.Iterate()
 	for it.Next() {
 		if fn := btf.FuncMetadata(it.Ins); fn != nil || it.Offset == 0 {
+			starts = append(starts, it.Index)
 			name := it.Ins.Symbol()
 			if fn != nil {
 				name = fn.Name
@@ -75,7 +75,6 @@ func stackCallGraph(insns asm.Instructions, lowest int16) ([]stackFunc, error) {
 		}
 	}
 	edges := make([]map[int]bool, len(funcs))
-	aliased := make([]bool, len(funcs))
 	cur := 0
 	it = insns.Iterate()
 	for it.Next() {
@@ -84,14 +83,6 @@ func stackCallGraph(insns asm.Instructions, lowest int16) ([]stackFunc, error) {
 			cur = i
 		}
 		f := &funcs[cur]
-		class := ins.OpCode.Class()
-		load, store := class == asm.LdXClass, class == asm.StClass || class == asm.StXClass
-		if ((load && ins.Src == asm.RFP) || (store && ins.Dst == asm.RFP)) && ins.Offset < 0 && int(-ins.Offset) > f.depth {
-			f.depth = int(-ins.Offset)
-		}
-		if (ins.Src == asm.RFP && !load) || (ins.Dst == asm.RFP && !store) {
-			aliased[cur] = true
-		}
 		if ins.IsBuiltinCall() && ins.Constant == int64(asm.FnTailCall) {
 			f.tailCall = true
 		}
@@ -116,10 +107,9 @@ func stackCallGraph(insns asm.Instructions, lowest int16) ([]stackFunc, error) {
 			f.callees = append(f.callees, target)
 		}
 	}
+	starts = append(starts, len(insns))
 	for i := range funcs {
-		if aliased[i] {
-			funcs[i].depth = max(funcs[i].depth, -int(lowest))
-		}
+		funcs[i].depth = stackFrameDepth(insns[starts[i]:starts[i+1]], lowest)
 	}
 	return funcs, nil
 }
@@ -317,22 +307,22 @@ func stackLimitBroken(funcs []stackFunc, round func(int) int) (string, error) {
 // never takes still deepens its function. An original chain past a limit is
 // therefore no evidence that the kernel tolerates it, and only a chain the
 // transform left unchanged may stay past a limit. A function is changed when
-// it is new (a hook) or reaches deeper than in the original; the transform's
-// slots lie below the audited bound, which every original direct reference
-// respects (checkStackBound), so any slot it places in a function counts.
+// it is new (a hook), reaches deeper than in the original, or reaches below
+// the audited bound. That last check ensures new slots count even if an
+// unused pointer formation overstates the original frame's actual depth.
+// Every original direct reference respects the audit (checkStackBound).
 // Each limit is checked under each kernel frame rounding. lowest is the
-// audited bound, the depth of a function that copies R10 (see stackCallGraph).
+// audited fallback bound for aliases stackFrameDepth cannot follow.
 //
 // The model stays conservative in three known ways, each of which can only
 // refuse a program the kernel would load, never accept one it rejects. The
 // rewriter does not know the target kernel, so it keeps to what holds on
 // every one from 6.1 on:
-//   - A function that copies R10 is charged the audited bound rather than
-//     what the copy reaches. The verifier grows a frame's stack_depth with
-//     every access through its stack pointers (update_stack_depth on 6.1,
-//     grow_stack_state later), helper memory arguments and callees included
-//     (check_helper_mem_access), which only a value analysis of the copy
-//     could reproduce; the bound covers it by contract.
+//   - An alias that stackFrameDepth cannot follow is charged the audited
+//     bound. This includes stack-pointer spills, variable offsets, aliases
+//     crossing basic-block boundaries, and stack arguments to unknown helpers
+//     or BPF/kfunc calls. Those calls may access below the passed pointer,
+//     growing its owner's frame; the audit covers that by contract.
 //   - An async callback (bpf_timer_set_callback, and the kfuncs
 //     bpf_wq_set_callback_impl and bpf_task_work_schedule_*) is walked under
 //     the chain that registers it. The kernel marks a callback is_async_cb
@@ -394,7 +384,7 @@ func stackLimitsBroken(in, out asm.Instructions, lowest int16) (string, error) {
 	}
 	for i := range after {
 		d, ok := depth[after[i].name]
-		after[i].changed = !ok || d < 0 || after[i].depth > d
+		after[i].changed = !ok || d < 0 || after[i].depth > d || after[i].depth > -int(lowest)
 	}
 	for _, r := range frameRoundings {
 		broken, err := stackLimitBroken(after, r.round)
