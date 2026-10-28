@@ -123,8 +123,7 @@ func injectionJSON(inj syscallhook.Injection) injectedProgJSON {
 	return out
 }
 
-// hooksWriter rewrites path with every injection so far. The rename makes
-// each version appear whole to a reader polling the file.
+// hooksWriter rewrites path with every injection so far.
 type hooksWriter struct {
 	path string
 	file hooksFileJSON
@@ -140,12 +139,16 @@ func (w *hooksWriter) add(inj syscallhook.Injection) error {
 	return w.write()
 }
 
-func (w *hooksWriter) write() error {
-	data, err := json.MarshalIndent(w.file, "", "  ")
+func (w *hooksWriter) write() error { return writeJSONFile(w.path, w.file) }
+
+// writeJSONFile replaces path with v as indented JSON. The rename makes each
+// version appear whole to a reader polling the file.
+func writeJSONFile(path string, v any) error {
+	data, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
-		return fmt.Errorf("encoding hooks JSON: %w", err)
+		return fmt.Errorf("encoding JSON: %w", err)
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(w.path), "."+filepath.Base(w.path)+".*")
+	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*")
 	if err != nil {
 		return err
 	}
@@ -158,7 +161,7 @@ func (w *hooksWriter) write() error {
 		err = closeErr
 	}
 	if err == nil {
-		err = os.Rename(tmp.Name(), w.path)
+		err = os.Rename(tmp.Name(), path)
 	}
 	if err != nil {
 		_ = os.Remove(tmp.Name())

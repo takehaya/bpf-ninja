@@ -47,12 +47,13 @@ type RawProgram struct {
 // there is no ELF hash binding. Checksums only cover instruction encoding.
 type LookupRequestRaw struct {
 	Site            LookupSelector
-	Auto            bool // see LookupRequest.Auto
-	Entry           bool // see LookupRequest.Entry
-	TailCalls       bool // see LookupRequest.TailCalls
-	CopyReadOnly    bool // see LookupRequest.CopyReadOnly
-	StaticUntrusted bool // see LookupRequest.StaticUntrusted
-	Dispatch        bool // see LookupRequest.Dispatch
+	Auto            bool     // see LookupRequest.Auto
+	Maps            []string // see LookupRequest.Maps
+	Entry           bool     // see LookupRequest.Entry
+	TailCalls       bool     // see LookupRequest.TailCalls
+	CopyReadOnly    bool     // see LookupRequest.CopyReadOnly
+	StaticUntrusted bool     // see LookupRequest.StaticUntrusted
+	Dispatch        bool     // see LookupRequest.Dispatch
 	HookName        string
 	Stack           StackAudit
 }
@@ -94,7 +95,7 @@ type LookupResultRaw struct {
 // ProgramName; every field is forwarded (TestRawRequestForwardsOptions guards
 // against a dropped field).
 func (r LookupRequestRaw) Request() LookupRequest {
-	return LookupRequest{Site: r.Site, Auto: r.Auto, Entry: r.Entry, TailCalls: r.TailCalls,
+	return LookupRequest{Site: r.Site, Auto: r.Auto, Maps: r.Maps, Entry: r.Entry, TailCalls: r.TailCalls,
 		CopyReadOnly: r.CopyReadOnly, StaticUntrusted: r.StaticUntrusted, Dispatch: r.Dispatch, HookName: r.HookName, Stack: r.Stack}
 }
 

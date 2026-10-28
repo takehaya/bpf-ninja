@@ -33,6 +33,22 @@ type Options struct {
 	// transformed program replaced, before the target sees the new fd. It must
 	// not wait on the target.
 	OnInject func(Injection)
+	// OnDiscover, if set, is called on the tracing thread for every XDP or tc
+	// program load whose attr carries BTF, whether or not a rule selects it,
+	// before any transform. Rules may then be empty. It must not wait on the
+	// target.
+	OnDiscover func(Discovery)
+}
+
+// Discovery lists the lookups of one program load (see
+// inject.DiscoverLookupsRaw) and the kinds of the maps it references, by
+// kernel map name. Program is the kernel program name and Func the entry
+// function.
+type Discovery struct {
+	Program, Func string
+	Type          ebpf.ProgramType
+	Lookups       []inject.LookupSite
+	Maps          map[string]ebpf.MapType
 }
 
 // Injection describes one successful injected load. Program is the kernel
@@ -72,8 +88,10 @@ func Run(ctx context.Context, argv []string, opts Options) (int, error) {
 	if len(argv) == 0 {
 		return 0, fmt.Errorf("target command is required after --")
 	}
-	if err := Validate(opts.Rules); err != nil {
-		return 0, err
+	if len(opts.Rules) != 0 || opts.OnDiscover == nil {
+		if err := Validate(opts.Rules); err != nil {
+			return 0, err
+		}
 	}
 	if opts.Stdin == nil {
 		opts.Stdin = os.Stdin
@@ -305,15 +323,36 @@ func (s *supervisor) entry(pid int, t *thread, regs unix.PtraceRegs) error {
 	if err != nil {
 		return s.skipEntry(pid, regs, err)
 	}
-	if rule == nil {
+	discover := s.options.OnDiscover != nil && len(attr) >= 4 && inject.ContextType(ebpf.ProgramType(u32(attr, 0))) != ""
+	if rule == nil && !discover {
 		return nil
 	}
 	if err := parseProgAttr(attr); err != nil {
+		if rule == nil {
+			s.log("program %q: lookup discovery skipped: %v", name, err)
+			return nil
+		}
 		return s.skipEntry(pid, regs, err)
 	}
 	r, err := beginRemote(pid, regs, true)
 	if err != nil {
 		return err
+	}
+	if discover {
+		if err := s.discover(r, attr, name); err != nil {
+			s.log("program %q: lookup discovery failed: %v", name, err)
+		}
+		if r.broken != nil {
+			return r.broken
+		}
+	}
+	if rule == nil {
+		// Load the original program unchanged.
+		ret, err := r.call(unix.SYS_BPF, regs.Rdi, regs.Rsi, regs.Rdx)
+		if err != nil {
+			return err
+		}
+		return r.finish(ret)
 	}
 	ret, result, entry, injectErr := s.transformLoad(r, attr, *rule)
 	if r.broken != nil {
@@ -446,17 +485,46 @@ func kernelBTF(id uint32) (*btf.Spec, error) {
 // transformLoad returns the tracee's PROG_LOAD result, the entry function name
 // and, once the transformed PROG_LOAD ran, the transform's result: also when
 // that load fails, so the caller can name the hooks it attempted.
-func (s *supervisor) transformLoad(r *remote, attr []byte, rule Rule) (ret int64, result *inject.LookupResultRaw, entry string, err error) {
+// programBTF is the BTF behind the load's prog_btf_fd: the blob the target
+// loaded, while the fd still names it, else the kernel's copy.
+func (s *supervisor) programBTF(r *remote, attr []byte) (*btf.Spec, error) {
 	info, err := r.info(u32(attr, 72), 32)
 	if err != nil {
-		return 0, nil, "", err
+		return nil, err
 	}
-	var spec *btf.Spec
 	if remembered, ok := s.btf[u32(attr, 72)]; ok && remembered.id == u32(info, 12) {
-		spec, err = btf.LoadSpecFromReader(bytes.NewReader(remembered.blob))
-	} else {
-		spec, err = kernelBTF(u32(info, 12))
+		return btf.LoadSpecFromReader(bytes.NewReader(remembered.blob))
 	}
+	return kernelBTF(u32(info, 12))
+}
+
+func (s *supervisor) discover(r *remote, attr []byte, name string) error {
+	spec, err := s.programBTF(r, attr)
+	if err != nil {
+		return err
+	}
+	entry, err := readEntryName(r.pid, attr, spec)
+	if err != nil {
+		return err
+	}
+	raw, err := extractRaw(r, attr, spec)
+	if err != nil {
+		return err
+	}
+	lookups, err := inject.DiscoverLookupsRaw(raw)
+	if err != nil {
+		return err
+	}
+	d := Discovery{Program: name, Func: entry, Type: raw.Type, Lookups: lookups, Maps: map[string]ebpf.MapType{}}
+	for _, m := range raw.Maps {
+		d.Maps[m.Name] = m.Type
+	}
+	s.options.OnDiscover(d)
+	return nil
+}
+
+func (s *supervisor) transformLoad(r *remote, attr []byte, rule Rule) (ret int64, result *inject.LookupResultRaw, entry string, err error) {
+	spec, err := s.programBTF(r, attr)
 	if err != nil {
 		return 0, nil, "", err
 	}

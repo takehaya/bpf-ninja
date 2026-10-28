@@ -89,6 +89,13 @@ All hooks of one program share the reserved stack slots, since only one lookup s
 The generic hook's map pointer takes a fourth slot.
 An observer attaches one fentry program per hook it wants to see.
 
+`LookupRequest.Maps` limits `Auto` to lookups on the named maps, by exact kernel map name.
+For an ELF, whose map symbols can be longer than the 15 bytes the kernel keeps, the full symbol name matches too.
+The other lookups are reported in `Skipped` with the reason `map not selected by Maps`, so they cost nothing at run time.
+A lookup whose map is only known at run time has no name and is never selected; a direct lookup on a named generic-hook kind, such as a sockmap, is.
+A name that matches no lookup is a refusal, so a typo cannot silently instrument nothing.
+This matters most with `Dispatch` on a kernel where a tail-calling program takes only one tracing attach: the one hook then sees only the chosen maps, without a filter in the observer.
+
 ### Entry and tail-call hooks
 
 An fentry on an XDP program does not fire when the program is entered through `bpf_tail_call`: the tail call jumps past the trampoline at the program's start.
@@ -396,6 +403,7 @@ Unit tests cover numeric and symbolic callback classification, relocation in bot
 It compares plain and injected programs, checks two keys with different packet lengths and `imsi` values, verifies silence for a missing key, and checks observation before attachment and after detachment.
 `TestBpfLookupInjectionMultipleSites` repeats these checks with two lookups on different paths, observed by one fentry observer on the shared hook.
 `TestBpfLookupInjectionAutoMultiMap` instruments a program with lookups on two maps whose values have different BTF types, attaches one observer per generated hook, and checks the key, value, and `site` argument each observer records.
+`TestBpfLookupInjectionAutoMaps` limits the same program to one map with `Maps` and checks that only that map's hook is generated and fires, while the other lookup runs unchanged.
 `TestBpfLookupInjectionReadOnlyMap`, `...Copy` and `...Static` cover the untrusted, copied and static hook forms for a `BPF_F_RDONLY_PROG` map; `TestBpfLookupInjectionMapInMap[Static]` and `TestBpfLookupInjectionGenericKinds[Static]` cover the generic hook over a map-in-map and over direct XSK and devmap lookups.
 `TestBpfTailCallHooks` tail-calls from an instrumented caller into a target instrumented with `Entry`.
 On a successful tail call, the entry hook fires and an fentry on the target program itself does not; on a failed one, the tail-call hook reports the site and index.
@@ -420,5 +428,5 @@ go test -count=1 ./pkg/inject/...
 sudo -E env PATH=$PATH go test -count=1 -run 'TestBpfLookupInjection|TestBpfTailCall|TestBpfEntryHook|TestBpfStackLimits|TestBpfDispatch' ./pkg/inject/
 ```
 
-All 30 privileged lookup, entry, tail-call, stack-limit and dispatch tests pass across the CI kernel matrix (6.1 to 7.3-rc4) that `make test-bpf` runs, where the tests whose hooks need `arg:untrusted` skip on 6.1-6.15 and the callback stack-limit subtests skip on 7.3, which forbids tail calls in callbacks (see scripts/test/privileged.py).
+All 31 privileged lookup, entry, tail-call, stack-limit and dispatch tests pass across the CI kernel matrix (6.1 to 7.3-rc4) that `make test-bpf` runs, where the tests whose hooks need `arg:untrusted` skip on 6.1-6.15 and the callback stack-limit subtests skip on 7.3, which forbids tail calls in callbacks (see scripts/test/privileged.py).
 This is finite test evidence for the fixture, not a general program-equivalence, concurrency, or kernel-version guarantee.

@@ -83,6 +83,86 @@ func TestLookupAutoSkipsUnsupported(t *testing.T) {
 	}
 }
 
+// Maps limits Auto to the named maps and reports the other lookups as skipped.
+func TestLookupAutoMaps(t *testing.T) {
+	spec, req := multiMapFixture(), autoReq()
+	req.Maps = []string{"flows"}
+	plan, err := transformLookup(spec, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.hooks) != 1 || plan.hooks[0].Name != "lookup_hook_flows" || len(plan.sites) != 1 || plan.sites[0].SitePC != 18 ||
+		len(plan.skipped) != 1 || plan.skipped[0].SitePC != 12 || plan.skipped[0].Reason != "map not selected by Maps" {
+		t.Fatalf("plan: %+v", plan)
+	}
+	calls := 0
+	for _, ins := range spec.Programs["p"].Instructions {
+		if ins.IsFunctionCall() {
+			calls++
+			if ins.Reference() != "lookup_hook_flows" {
+				t.Fatalf("call to %s", ins.Reference())
+			}
+		}
+	}
+	if calls != 1 {
+		t.Fatalf("%d hook calls", calls)
+	}
+}
+
+// An ELF map whose symbol is longer than the kernel keeps is selected by
+// either name.
+func TestLookupAutoMapsKernelName(t *testing.T) {
+	const long = "flows_with_a_long_name"
+	for _, names := range [][]string{{long}, {"flows_with_a_lo"}, {long, "flows_with_a_lo"}} {
+		t.Run(strings.Join(names, ","), func(t *testing.T) {
+			spec, req := multiMapFixture(), autoReq()
+			spec.Maps[long] = spec.Maps["flows"]
+			spec.Maps[long].Name = long
+			delete(spec.Maps, "flows")
+			insns := spec.Programs["p"].Instructions
+			for i := range insns {
+				if insns[i].Reference() == "flows" {
+					insns[i] = insns[i].WithReference(long)
+				}
+			}
+			req.Maps = names
+			plan, err := transformLookup(spec, req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(plan.sites) != 1 || plan.sites[0].SitePC != 18 || len(plan.skipped) != 1 || plan.skipped[0].SitePC != 12 {
+				t.Fatalf("plan: %+v", plan)
+			}
+		})
+	}
+}
+
+func TestLookupAutoMapsRefusals(t *testing.T) {
+	for _, tc := range []struct {
+		name, want string
+		edit       func(*LookupRequest)
+	}{
+		{"unknown", `Maps name "flow" matches no lookup`, func(r *LookupRequest) { r.Maps = []string{"sessions", "flow"} }},
+		{"duplicate", "non-empty and unique", func(r *LookupRequest) { r.Maps = []string{"flows", "flows"} }},
+		{"empty", "non-empty and unique", func(r *LookupRequest) { r.Maps = []string{""} }},
+		{"without-auto", "Maps filters Auto", func(r *LookupRequest) {
+			r.Auto, r.Site.MapName, r.Maps = false, "flows", []string{"flows"}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			spec, req := multiMapFixture(), autoReq()
+			tc.edit(&req)
+			before := append(asm.Instructions(nil), spec.Programs["p"].Instructions...)
+			if _, err := transformLookup(spec, req); !errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("want refusal %q: %v", tc.want, err)
+			}
+			if !reflect.DeepEqual(before, spec.Programs["p"].Instructions) {
+				t.Fatal("refusal mutated input")
+			}
+		})
+	}
+}
+
 // Auto keeps the entry and tail-call hooks even when no lookup is supported;
 // it refuses only when nothing at all is instrumented.
 func TestSelectLookupsAutoEntryTailNoLookups(t *testing.T) {

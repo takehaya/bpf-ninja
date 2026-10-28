@@ -31,6 +31,7 @@ bpf-ninja inject-run --config rules.json -- ./loader --its-own-flags
 
 Alternatively, `BPF_NINJA_INJECT_CONFIG` can contain the JSON itself.
 `--config` takes precedence over the environment.
+With `--lookups-json`, the rules may be left out entirely to only list what the target loads.
 Flags before `--` belong to the supervisor; the command and arguments after it belong to the target.
 Standard streams are inherited, diagnostics go to stderr, and the launcher returns the target's exit status (128 plus signal number for a signal termination).
 Run with the privileges required for ptrace, the target's BPF operations, and opening BTF objects by ID in the supervisor; root is the tested setup.
@@ -51,6 +52,9 @@ Lookups whose map is only known at run time (map-in-map, or a map pointer that r
 Lookups that the transform cannot support are skipped and listed in the diagnostic rather than refusing the load: lookups on other map kinds without a typed hook, lookups whose hook name would pass 127 bytes or whose slots do not fit the audited stack and, when the instrumented program would break a kernel call-chain stack limit, first the `HOOK_any` and `copy_read_only` lookups and then every lookup (with `dispatch`, every lookup at once, since each passes its map).
 `entry` and `tail_calls` hooks are kept; a rule that would instrument nothing at all is refused.
 The naming and hook ABI are described in [lookup-site-injection.md](lookup-site-injection.md#automatic-selection).
+`"maps": ["lb4_services_v2", "lb4_backends_v3"]` limits `auto` to lookups on those maps (exact kernel names); the others are skipped with `map not selected by Maps` and run unchanged.
+A name that matches no lookup refuses the rule, and `maps` without `auto` is a configuration error.
+[Lookups as JSON](#lookups-as-json) lists the names to choose from.
 
 `"entry": true` adds `HOOK_entry(ctx)`, called at the start of the program, which also runs when the program is entered through a tail call.
 `"tail_calls": true` adds `HOOK_tail_call(ctx, u32 site, u32 index)`, called when a `bpf_tail_call` anywhere in the program fails.
@@ -126,6 +130,53 @@ Each hook is one function in the loaded program:
 - `untrusted`, `copied`, `static` and `read_only` mirror `inject.LookupHook`: the hook takes `arg:untrusted` pointers, its value is a stack copy, it is a static function (read every argument as a `u64`), and its map is `BPF_F_RDONLY_PROG`.
 
 `skipped` lists the lookups that `auto` did not instrument, with the same site fields plus `reason`.
+
+## Lookups as JSON
+
+`--lookups-json PATH` lists every XDP and tc program the target loads with BTF, whether or not a rule selects it, so the maps to instrument can be chosen before a run that injects:
+
+```sh
+bpf-ninja inject-run --lookups-json lookups.json -- ./loader
+jq '[.programs[].rule | .stack_lowest_offset = -64 | .dispatch = true | .maps = ["sessions"]]' lookups.json > rules.json
+bpf-ninja inject-run --config rules.json --hooks-json hooks.json -- ./loader
+```
+
+The listing happens before any rule's transform and does not change the load.
+Programs whose attr lacks BTF or func_info, or whose lookups cannot be discovered, are reported in the diagnostic and left out.
+The file is written like the [hooks file](#hooks-as-json): it exists before the target starts and is rewritten whole after each listed load.
+This output is from the integration loader on 7.0:
+
+```json
+{
+  "version": 1,
+  "programs": [
+    {
+      "program": "p",
+      "func": "entry_with_long_name",
+      "type": "XDP",
+      "ctx_type": "xdp_md",
+      "maps": [
+        {"name": "sessions", "type": "Hash", "sites": [6]}
+      ],
+      "lookups": [
+        {"kind": "lookup", "pc": 6, "map": "sessions", "func": "entry_with_long_name"}
+      ],
+      "rule": {
+        "program": "entry_with_long_name",
+        "auto": true,
+        "maps": ["sessions"],
+        "hook": "ninja",
+        "stack_lowest_offset": null
+      }
+    }
+  ]
+}
+```
+
+- `maps` lists every map the program references: first those with lookups, in the order of their first lookup, with the `pc` of each, then the others by name with no sites.
+- `lookups` are the discovered lookup sites with the fields of a hooks-file site; one that `auto` would skip carries a `reason`.
+- `rule` is a rule for this program that instruments every named map with lookups. Its `stack_lowest_offset` is `null` because only the caller can audit the program's stack, so the rule is refused until it is filled in. Edit `maps`, and add `dispatch`, `entry` or `tail_calls` as needed.
+- A program loaded twice is listed twice.
 
 ## What happens at the syscall boundary
 
@@ -216,7 +267,7 @@ Unprivileged tests cover strict config parsing, attr sizes and offsets, target a
 The integration test is guarded by the `integration` build tag and a root check.
 It launches the same Go loader both directly and under the supervisor, verifies kernel function metadata, and executes the loaded XDP program using `BPF_PROG_TEST_RUN`.
 It covers kernel-name and function-name selection, fail-open, fail-closed, and unmatched loads.
-It also checks that the launcher reports each successful injection, and only those, with the program ID the loader sees; `--hooks-json` is covered by unit tests of the JSON shape and of the file it writes.
+It also checks that the launcher reports each successful injection, and only those, with the program ID the loader sees, that `maps` instruments the named map and refuses an unknown one, and that discovery reports the loader's lookup with and without a rule; `--hooks-json` and `--lookups-json` are covered by unit tests of the JSON shape and of the file they write.
 It never attaches to an interface, pins objects, or changes sysctls, routes, or firewall rules.
 
 ```sh

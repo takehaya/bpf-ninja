@@ -58,6 +58,11 @@ func TestIntegrationLoader(t *testing.T) {
 		// Static, so the dispatch hook loads on kernels without arg:untrusted
 		// too; TestBpfDispatch covers the untrusted form across the matrix.
 		{"dispatch", "hook", true, func(r *Rule) { r.Auto, r.Map, r.Entry, r.Dispatch, r.StaticUntrusted = true, "", true, true, true }},
+		{"maps", "hook", true, func(r *Rule) { r.Auto, r.Map, r.Maps = true, "", []string{"sessions"} }},
+		{"maps-missing", "refused", true, func(r *Rule) { r.Auto, r.Map, r.Maps = true, "", []string{"missing"} }},
+		// The discover cases also set OnDiscover; discover-only has no rule.
+		{"discover-auto", "hook", true, func(r *Rule) { r.Auto, r.Map = true, "" }},
+		{"discover-only", "plain", true, func(r *Rule) {}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("SYSCALLHOOK_INTEGRATION_CHILD", tc.expected)
@@ -72,8 +77,17 @@ func TestIntegrationLoader(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 			defer cancel()
 			var injected []Injection
-			onInject := func(inj Injection) { injected = append(injected, inj) }
-			code, err := Run(ctx, child, Options{Rules: []Rule{rule}, FailClosed: tc.closed, Stdout: out, Stderr: out, Log: &logs, OnInject: onInject})
+			var discovered []Discovery
+			opts := Options{Rules: []Rule{rule}, FailClosed: tc.closed, Stdout: out, Stderr: out, Log: &logs,
+				OnInject: func(inj Injection) { injected = append(injected, inj) }}
+			discover := strings.HasPrefix(tc.name, "discover")
+			if discover {
+				opts.OnDiscover = func(d Discovery) { discovered = append(discovered, d) }
+			}
+			if tc.name == "discover-only" {
+				opts.Rules = nil
+			}
+			code, err := Run(ctx, child, opts)
 			data, _ := os.ReadFile(out.Name())
 			t.Logf("supervisor:\n%sloader:\n%s", &logs, data)
 			if err != nil || code != 0 {
@@ -92,6 +106,19 @@ func TestIntegrationLoader(t *testing.T) {
 					!strings.Contains(string(data), fmt.Sprintf("prog_id=%d\n", inj.ProgID)) || inj.ProgID == 0 {
 					t.Fatalf("injection %+v does not match the loader", inj)
 				}
+			}
+			// OnDiscover sees the original program once, with its one lookup.
+			if discover != (len(discovered) == 1) || len(discovered) > 1 {
+				t.Fatalf("OnDiscover calls: %+v", discovered)
+			} else if discover {
+				d := discovered[0]
+				if d.Program != "p" || d.Func != "entry_with_long_name" || d.Type != ebpf.XDP || len(d.Lookups) != 1 ||
+					d.Lookups[0].MapName != "sessions" || d.Lookups[0].Reason != "" || d.Maps["sessions"] != ebpf.Hash {
+					t.Fatalf("discovery %+v does not match the loader", d)
+				}
+			}
+			if tc.name == "maps-missing" && !strings.Contains(logs.String(), `Maps name "missing" matches no lookup`) {
+				t.Fatal("no refusal of the unknown map name reported")
 			}
 			if tc.expected == "hook-rdonly" && !strings.Contains(logs.String(), ", static") {
 				t.Fatal("no static hook reported")
