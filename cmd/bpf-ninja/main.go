@@ -65,7 +65,7 @@ func rootFlags() []cli.Flag {
 		},
 		&cli.StringSliceFlag{
 			Name: "mode", Value: []string{"entry"},
-			Usage: "capture point: entry / exit (fentry/fexit observer on the target program, hook auto-detected) or xdp (attach as native XDP). Repeatable with one quoted filter after each: `--mode entry EXPR --mode exit EXPR` captures only the packets that match both (see README). tc-entry / tc-exit are deprecated aliases",
+			Usage: "capture point: entry / exit (fentry/fexit observer on the target program, hook auto-detected) or xdp (attach as native XDP). Repeatable with one quoted filter after each: --mode entry EXPR --mode exit EXPR captures only the packets that match both (see README). tc-entry / tc-exit are deprecated aliases",
 		},
 		&cli.StringFlag{
 			Name: "emit", Value: "both",
@@ -109,7 +109,7 @@ func rootFlags() []cli.Flag {
 		},
 		&cli.StringSliceFlag{
 			Name:  "set",
-			Usage: "define a named match set backed by a pinned BPF hash map: NAME=/sys/fs/bpf/path[,key(field=arg:param,...)]; reference it with --arg-filter @NAME (function arg) or the DSL predicate layer[field in @NAME] (packet field). Entries are managed at runtime via `bpf-ninja set` (no re-attach needed)",
+			Usage: "define a named match set backed by a pinned BPF hash map: NAME=/sys/fs/bpf/path[,key(field=arg:param,...)]; reference it with --arg-filter @NAME (function arg) or the DSL predicate layer[field in @NAME] (packet field). Use bpf-ninja set to update entries during capture without re-attaching",
 		},
 		&cli.BoolFlag{
 			Name:  "list-params",
@@ -125,7 +125,7 @@ func rootFlags() []cli.Flag {
 		},
 		&cli.BoolFlag{
 			Name:  "dsl-help",
-			Usage: "print the bpf-ninja DSL grammar + bundled protocol list and exit (pass a protocol name as positional arg to inspect its fields, e.g. `--dsl-help ipv4`)",
+			Usage: "print the bpf-ninja DSL grammar and bundled protocol list, then exit; pass a protocol name as a positional argument to inspect its fields, e.g. --dsl-help ipv4",
 		},
 		&cli.StringFlag{
 			Name:  "dump-asm",
@@ -175,7 +175,7 @@ func rootFlags() []cli.Flag {
 		},
 		&cli.BoolFlag{
 			Name:  "raw-dump",
-			Usage: "dump ringbuf records verbatim to per-CPU .raw files; reconstruct standard pcap-ng offline via `bpf-ninja convert`",
+			Usage: "dump ringbuf records verbatim to per-CPU .raw files; reconstruct standard pcap-ng offline via bpf-ninja convert",
 		},
 		&cli.BoolFlag{
 			Name:  "split-by-tag",
@@ -183,7 +183,7 @@ func rootFlags() []cli.Flag {
 		},
 		&cli.IntFlag{
 			Name:  "max-bytes",
-			Usage: "stop the whole capture once total output bytes reach N (pcap-ng packet-block bytes; per-file headers excluded, batch-granular). Works with or without --split-by-tag; the shards are merged and the process exits 0 as with -c. Per-tag caps moved to the set entries: `set add ... max-bytes=N` (0 / omitted = uncapped)",
+			Usage: "stop the whole capture once total output bytes reach N (pcap-ng packet-block bytes; per-file headers excluded, batch-granular). Works with or without --split-by-tag; the shards are merged and the process exits 0 as with -c. Per-tag caps moved to the set entries: set add ... max-bytes=N (0 / omitted = uncapped)",
 		},
 		&cli.BoolFlag{
 			Name:  "finalize-on-del",
@@ -191,7 +191,7 @@ func rootFlags() []cli.Flag {
 		},
 		&cli.BoolFlag{
 			Name:  "exit-when-capped",
-			Usage: "with --split-by-tag and --set: exit 0 once every entry that has a per-entry cap (`set add ... max-bytes=N`) reached it; uncapped entries and tag 0 do not participate",
+			Usage: "with --split-by-tag and --set: exit 0 once every entry that has a per-entry cap (set add ... max-bytes=N) reached it; uncapped entries and tag 0 do not participate",
 		},
 		&cli.BoolFlag{
 			Name:  "fast-reader",
@@ -213,7 +213,7 @@ func rootFlags() []cli.Flag {
 		&cli.IntFlag{
 			Name:  "in-memory-buffer",
 			Value: 0,
-			Usage: "if >0, per-shard raw-dump buffer size in MiB; bytes held in pre-touched Go heap until Close (bypasses write(2) + tmpfs page-fault in the hot path; raw-dump only)",
+			Usage: "if >0, allocate this many MiB per raw-dump shard in a pre-touched mmap buffer; hold bytes until Close to bypass write(2) and tmpfs page faults in the hot path (raw-dump only)",
 		},
 		&cli.BoolFlag{
 			Name:  "rx-hwts",

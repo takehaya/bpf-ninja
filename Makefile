@@ -72,3 +72,11 @@ golden-update: ## Rewrite the bytecode golden (pkg/kunai/dsltest/testdata/golden
 GOLDEN_BASE ?= main
 golden-diff: ## Diff every golden filter's text between GOLDEN_BASE (default main) and the working tree, without instruction indexes (GOLDEN_DIFF_INDEX=1 keeps them); scripts/golden-diff.sh exits 0 same, 1 moved, 2 error
 	./scripts/golden-diff.sh "$(GOLDEN_BASE)"
+
+.PHONY: docs-update docs-check
+
+docs-update: ## Regenerate CLI and protocol references without loading BPF
+	go test ./cmd/bpf-ninja -run '^TestDocumentation$$' -count=1 -update-docs
+
+docs-check: ## Fail if generated references drift from this checkout
+	go test ./cmd/bpf-ninja -run '^TestDocumentation$$' -count=1
