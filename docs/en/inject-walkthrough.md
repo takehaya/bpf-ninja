@@ -70,6 +70,7 @@ import (
 	"time"
 
 	"github.com/cilium/ebpf"
+	"github.com/cilium/ebpf/btf"
 )
 
 // Load prog.o, print the program id, then run the program once a second on
@@ -79,6 +80,10 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
+	// A zero-sized BTF key lets queue maps keep their declared value type.
+	// Without it the loader retries map creation without BTF, and injected
+	// hooks can only describe the value as opaque bytes.
+	spec.Maps["recent"].Key = &btf.Struct{Name: "empty_key"}
 	coll, err := ebpf.NewCollection(spec)
 	if err != nil {
 		panic(err)
@@ -294,11 +299,53 @@ capturing (prog "ninja_recent_push" id=2, mode=entry, sharded, 2 shards via ring
 ```
 
 - The capture sees a packet only when the program calls the hook, so the rule decides what it sees: with `peek`, `ninja_seen_peek` captures only the packets whose length the bloom filter has not seen, and nothing once all four lengths are in it. Use `peek:any` to capture every peek.
-- `--list-params` lists the hook's integer arguments, `site` and `status`, and `--arg-filter` selects calls by them: `--arg-filter site=24` keeps the pushes at pc 24, and `--arg-filter status=0` keeps the calls that succeeded. `status` is unsigned, so an error such as `-7` is a large value.
+- `--list-params` lists the hook's integer and pointer arguments, and `--members` shows member or scalar-pointee expressions.
+  `--arg-filter` can select `site` and `status`: `--arg-filter site=24` keeps the pushes at pc 24, and `--arg-filter status=0` keeps the calls that succeeded. `status` is unsigned, so an error such as `-7` is a large value.
 - With `--mode exit` the capture runs when the hook returns. The recorded return value is the hook's, always 0, not the program's action.
 - The loader's packets are zero-filled, so `tcpdump` prints them as truncated frames.
 
 The capture was checked with the walkthrough's program on 6.1, 6.15, 7.0 and 7.3-rc4, in entry and exit mode, and `--list-params` and `--arg-filter` on 7.0.
+
+### Filter a key or value at the hook
+
+For a hash map whose value is `struct pol { __u32 action; __u16 port; }`, discover the generated typed hook, then filter its value:
+
+```sh
+bpf-ninja -p "$PROG_ID" --func ninja_policies --list-params --members
+bpf-ninja -p "$PROG_ID" --func ninja_policies \
+  --arg-filter 'value->action==2' -c 3 -w action2.pcap
+```
+
+The [test fixture](../../scripts/test/argmember/) loads such a map under `inject-run` and sends TCP packets to ports 443, 80, and 22 with `BPF_PROG_TEST_RUN`.
+Ports 443 and 80 have entries with actions 2 and 1; port 22 misses.
+On kernel 7.0.13, the parameter list included:
+
+```text
+  value: const struct pol * (arg index 3)
+    value->action  __u32  off 0  size 4  unsigned  filterable
+    value->port  __u16  off 4  size 2  unsigned  filterable
+```
+
+The capture reported `3 packets captured`.
+All three tcpdump rows had destination port 443; the first was:
+
+```text
+20:31:00.340572 IP 10.0.0.1.40000 > 10.0.0.2.443: Flags [S], seq 0:10, win 0, length 10
+```
+
+`value->action!=2` selected port 80, and `value->port==be16(443)` selected port 443 because `port` contains network-order bytes.
+A set can also use `--set 'ports=/sys/fs/bpf/ports,key(dport=arg:key->dport)' --arg-filter '@ports'`.
+See the [member filter guide](arg-member-filter.md) for comparisons, set bindings, and read failures.
+
+The bloom and queue hooks take scalar pointers, so use `--arg-filter 'value[0]==64'` at `ninja_seen_peek` or `ninja_recent_push`.
+Use `peek:any` to keep testing bloom values after all lengths have been seen.
+The loader above gives the queue a zero-sized BTF key so its `__u64` value type survives map creation.
+Without that key, this loader retries the queue creation without BTF and its injected hook describes opaque bytes, which cannot use `[0]`.
+
+A typed lookup hook is called only on a hit; its `_miss` variant has no `value` argument.
+To capture misses with `--arg-filter 'value==null'`, use a dispatch hook with `lookup:any`, whose `const void *value` can be NULL.
+On 6.1, set `static_untrusted: true` in that rule; capture reads the static XDP hook's ctx through the kernel-read helper.
+`value!=null` selects the hits without dereferencing the value.
 
 ## See also
 

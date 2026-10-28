@@ -4,6 +4,7 @@ Use `--arg-filter` when a BPF function receives a struct or union pointer and th
 For example, a UPF-style classifier may receive a query containing an IMSI and a packet detection rule ID.
 `--arg-echo` prints selected values before committing to a capture filter.
 These options work with `--mode entry` and `--mode exit`.
+Argument filters also work with gated entry/exit capture.
 
 The target program must already be loaded with BTF, which describes its functions and types.
 Use `-p <ID>` to select it and `--func classify` to select a function that survives compilation as a BPF subfunction.
@@ -22,7 +23,7 @@ sudo bpf-ninja -p <ID> --func classify --list-params
 sudo bpf-ninja -p <ID> --func classify --list-params --members
 ```
 
-The member view adds a tree for every listed struct/union pointer parameter.
+The member view adds a tree for every listed struct/union pointer parameter and a `[0]` expression for a supported scalar pointer.
 Here is illustrative output for a query with an embedded target:
 
 ```text
@@ -101,7 +102,8 @@ The argument filter syntax is separate from the packet DSL:
 
 | Expression | Meaning |
 |---|---|
-| `q->imsi=262010000000001` | Equal to the numeric value |
+| `q->imsi=262010000000001` | Equal to the numeric value (`==` is an alias) |
+| `q->target.pdr_id!=3` | Not equal to 3 |
 | `q->target.pdr_id>=3` | Greater than or equal to 3 |
 | `q->target.pdr_id<=9` | Less than or equal to 9 |
 | `q->target.pdr_id=3..9` | Inclusive range |
@@ -110,7 +112,8 @@ Values may be decimal or hexadecimal with `0x`; signed members also accept negat
 Use numeric values for enums, not enumerator names.
 Values must fit the member's width and signedness.
 Repeat `--arg-filter` to require all conditions.
-`!=`, strict `<`/`>`, array indexing, and a second `->` are not supported.
+The same operators work on ordinary integer arguments.
+Strict `<`/`>`, array-member indexing, and a second `->` are not supported.
 
 Echo takes member expressions as positional arguments, without comparison operators:
 
@@ -120,6 +123,66 @@ sudo bpf-ninja -p <ID> --func classify --arg-echo -c 10 'q->imsi' 'q->target.pdr
 
 Bare `--arg-echo` prints integer parameters only; it does not automatically expand pointer members.
 Echo supports one target and one mode, and can be gated by ordinary `--arg-filter` expressions.
+
+## Compare network-order values
+
+Use `be16(...)`, `be32(...)`, or `be64(...)` when the argument or member holds bytes in network order:
+
+```sh
+sudo bpf-ninja -p <ID> --func lookup_hook --arg-filter 'key->dport==be16(443)'
+sudo bpf-ninja -p <ID> --func lookup_hook --arg-filter 'key->addr!=be32(0x0a000001)'
+```
+
+The literal is an unsigned number converted to network byte order before comparison.
+Its width must equal the BTF argument/member width: `be32(443)` on a 16-bit port is an error.
+A signed leaf compares the same stored bits after sign extension.
+Use these literals only with `=`, `==`, or `!=`.
+`be16(1000)..be16(2000)`, mixed ranges such as `1000..be16(2000)`, and `>=`/`<=` with `beNN` are refused because converting byte order does not preserve numeric ordering.
+A plain number still means the native integer value read from memory.
+
+## Test NULL and read scalar pointers
+
+A bare pointer argument supports `value=null`, `value==null`, and `value!=null` without reading its pointee.
+These tests accept struct, union, scalar, and `const void *` pointers.
+A member comparison, including `value->action!=2`, always rejects a NULL pointer or failed read.
+It never interprets a failed read as zero.
+`value->action==null` is an error because NULL tests select the pointer parameter itself.
+
+A scalar pointer such as `const __u32 *value` or `const __u64 *value` uses `value[0]`:
+
+```sh
+sudo bpf-ninja -p <ID> --func ninja_seen_peek --list-params --members
+sudo bpf-ninja -p <ID> --func ninja_seen_peek --arg-filter 'value[0]==64'
+sudo bpf-ninja -p <ID> --func ninja_seen_peek --arg-echo 'value[0]'
+```
+
+Discovery shows `value[0]` with its type, size, and signedness.
+Only index zero of an integer/enum pointee is supported; this syntax cannot read a whole struct or an untyped `void` pointee.
+The target hook must retain the scalar type in BTF.
+A map loaded without BTF may instead produce an opaque byte-struct hook, which cannot use `[0]`.
+See the [walkthrough](inject-walkthrough.md#6-capture-the-packets-at-a-hook) for queue BTF and typed lookup/miss hook differences.
+
+## Build set keys from members
+
+A set key can use a member expression or scalar pointee in its explicit mapping:
+
+```sh
+sudo bpf-ninja -p <ID> --func lookup_hook \
+  --set 'ports=/sys/fs/bpf/ports,key(dport=arg:key->dport)' \
+  --arg-filter '@ports'
+```
+
+Each key field must be bound, and a source wider than its destination is refused.
+Narrow signed sources sign-extend into wider fields.
+NULL or unreadable sources reject the entire set lookup.
+Repeated set references and ordinary argument comparisons are ANDed; set tags and runtime updates behave as with integer arguments.
+The member's bytes enter the set key in native integer representation, so insert a matching key in the map; `beNN` is comparison syntax, not a set-mapping conversion.
+
+Without `key(...)`, an integer argument with the field's name wins.
+Otherwise a unique same-name member across the pointer arguments is used: a set field `dport` can bind to `key->dport` automatically.
+A scalar pointer named like the field binds to its `[0]` value.
+Multiple matching members are an error; use an explicit mapping to choose one.
+Nested members need an explicit path, and `@NAME` always names the set itself.
 
 ## How BTF resolution and reads work
 
@@ -141,7 +204,7 @@ Bitfields, arrays, whole structs/unions, and pointer-valued leaves are rejected.
 A pointer member is shown but never followed, including a pointer back to the same struct.
 Union discovery describes layout; it does not identify which alternative the caller currently uses.
 Ambiguous promoted names and offsets beyond the resolver's supported range are also rejected.
-Set references (`@NAME`) and `key(field=arg:param)` mappings cannot select members; `--arg-echo` does not support sets.
+`--arg-echo` does not support sets.
 
 ## Check an IMSI before filtering calls
 
@@ -183,6 +246,8 @@ sudo bpf-ninja -p <ID> --func classify --mode exit \
 ```
 
 Exit mode reads the object at exit; it is not an entry snapshot.
+Gated capture evaluates argument comparisons and set keys again at exit, so both stages must match.
+Changes by the callee or another CPU between the reads can prevent capture.
 It still requires a readable pointer and a field initialized on the paths of interest.
 
 There is a separate compiler pitfall: `clang -O2` can drop an unused argument from the calling convention while BTF still lists it.

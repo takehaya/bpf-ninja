@@ -356,15 +356,18 @@ sudo bpf-ninja -p <ID> --func sdf_classify --arg-filter 'q->seid=1..9'
 sudo bpf-ninja -p <ID> --func sdf_classify --arg-echo 'q->imsi' 'q->target.pdr_id'
 ```
 
-Members support `=`, `>=`, `<=`, and inclusive `min..max` ranges, with widths of 1, 2, 4, or 8 bytes.
+Members and integer args support `=`/`==`, `!=`, `>=`, `<=`, and inclusive `min..max` ranges, with widths of 1, 2, 4, or 8 bytes.
+Use `be16(443)`, `be32(...)`, or `be64(...)` for network-order equality; the width must match, and ordered comparisons/ranges with these literals are refused.
+Scalar pointers use `value[0]`; bare pointers accept `value==null` and `value!=null` without dereferencing.
 Anonymous struct/union members are accessible by their promoted names; bitfields, arrays, and further pointer dereferences are unsupported.
 A null pointer or failed kernel read rejects the call (or suppresses its echo record).
 Member reads run inside the existing entry/exit probe and add no probe; the [two-probe tail-call caveat](#modes) still applies when requesting both capture points.
 
-`--list-params` includes struct/union pointers; `--json` marks them with `kind` (`ptr-struct` or `ptr-union`) and `type_name`.
+`--list-params` includes pointers; `--json` marks them with `kind` (`ptr-struct`, `ptr-union`, or `ptr`) and `type_name`.
 Adding `--members` extends those JSON entries with a `members` tree while preserving existing fields; text stays on stderr and JSON goes to stdout.
 Bare `--arg-echo` still prints integer arguments; positional expressions select the arguments or members to print, using the existing u64 echo slots.
-Set references (`@NAME`) and `key(field=arg:param)` mappings do not support member expressions.
+Set keys support explicit member mappings such as `key(dport=arg:key->dport)` and unique same-name member bindings when the mapping is omitted.
+Filters and set keys run at both stages of gated capture; both must match.
 
 At function entry, a member contains whatever the caller placed there, which may be stale or uninitialized on some paths.
 Being filterable does not mean the caller sets it on every call: check with `--arg-echo` before trusting a filter.
@@ -398,13 +401,13 @@ For discovery, syntax, BTF resolution, read failures, and a worked IMSI example,
 | `--list-progs` | List reachable freplace, tail-call, and redirect-map targets and exit | entry, exit |
 | `--list-maps` | With `--list-progs`, also list each function's calls and the maps it uses, with the op (`lookup`, `update`, `delete`, `tail_call`, ...) and source line, read from the loaded program's translated instructions (needs root) | entry, exit |
 | `--lookups-json` | With `--list-maps`, read the file `inject-run --lookups-json` wrote and mark each map use with its load-time site and why it cannot be instrumented | entry, exit |
-| `--list-params` | List integer and struct/union pointer parameters for the target function (requires `--func` or an EXT entry with filterable parameters) | entry, exit |
-| `--members` | With `--list-params`, show the pointee member tree with expressions, layout, and filter/echo eligibility | entry, exit |
+| `--list-params` | List integer and pointer parameters for the target function (requires `--func` or an EXT entry with filterable parameters) | entry, exit |
+| `--members` | With `--list-params`, show the pointee member tree or scalar `[0]` expression, layout, and filter/echo eligibility | entry, exit |
 | `--members-depth` | Maximum named member levels for `--list-params --members` (default 3, range 1–32); omitted branches are marked | entry, exit |
 | `--json` | Print `--list-progs` (with `--list-maps`) / `--list-funcs` / `--list-params` output as JSON on stdout instead of text on stderr | entry, exit |
-| `--arg-filter` | Filter an integer argument or pointer member (requires `--func` or an EXT entry with filterable parameters); format: `param=value`, `param>=val`, `param<=val`, `param=min..max`, also `param->member.member` with any of these operators | entry, exit |
-| `--set` | Define a named match set backed by a pinned BPF hash map: `NAME=/sys/fs/bpf/path[,key(field=arg:param,...)]`. Reference it with `--arg-filter @NAME` or the DSL predicate `layer[field in @NAME]`; manage entries at runtime with `bpf-ninja set`. Repeatable | all |
-| `--arg-echo` | Print integer args or positional member expressions (e.g. `--arg-echo 'q->imsi'`) for each call, gated by `--arg-filter`, instead of capturing. Requires `--func` or an EXT entry with filterable parameters, and a single `--mode`; combine with `-c N` | entry, exit |
+| `--arg-filter` | Filter an integer argument or pointer member (requires `--func` or an EXT entry with filterable parameters); `=`, `==`, `!=`, `>=`, `<=`, and `min..max` for `param`, `param->member.member`, or `param[0]`; `be16/32/64(value)` for equality and `param==null`/`!=null` for pointers | entry, exit |
+| `--set` | Define a named match set backed by a pinned BPF hash map: `NAME=/sys/fs/bpf/path[,key(field=arg:expression,...)]` (including members and `[0]`). Reference it with `--arg-filter @NAME` or the DSL predicate `layer[field in @NAME]`; manage entries at runtime with `bpf-ninja set`. Repeatable | all |
+| `--arg-echo` | Print integer args or positional member/scalar-pointee expressions (e.g. `--arg-echo 'q->imsi' 'value[0]'`) for each call, gated by `--arg-filter`, instead of capturing. Requires `--func` or an EXT entry with filterable parameters, and a single `--mode`; combine with `-c N` | entry, exit |
 | `--split-by-tag` | Route matched packets to one pcap per set-map value (tag): `-w out.pcap` yields `out.<tag>.pcap` (requires `-w`) | all |
 | `--max-bytes` | Stop the whole capture once total output bytes reach N (works with or without `--split-by-tag`). Per-tag caps live on the set entries: `set add ... max-bytes=N` (0 / omitted = uncapped; entries sharing a tag share one budget — an uncapped entry makes the tag uncapped, otherwise the largest cap wins) | all |
 | `--exit-when-capped` | Exit 0 once every entry that has a per-entry cap reached it; uncapped entries don't participate (requires `--split-by-tag` and at least one `--set`) | all |
