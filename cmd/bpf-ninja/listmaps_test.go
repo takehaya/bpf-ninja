@@ -17,8 +17,8 @@ func TestMatchLoadCalls(t *testing.T) {
 		{"kind":"lookup","pc":6,"map":"stats","func":"entry","file":"p.c","line":29},
 		{"kind":"lookup","pc":9,"map":"flows","func":"classify","file":"p.c","line":11,"reason":"lookup is not in the entry function; ctx belongs to another stack frame"},
 		{"kind":"lookup","pc":30,"map":"ids","func":"classify","file":"p.c","line":16,"reason":"sockhash has no typed hook","generic":true},
-		{"kind":"update","pc":20,"map":"flows","func":"classify","file":"p.c","line":14},
-		{"kind":"update","pc":25,"map":"flows","func":"classify","file":"p.c","line":14}]}]}`
+		{"kind":"update","pc":20,"map":"flows","func":"classify","file":"p.c","line":14,"reason":"update is not in the entry function; ctx belongs to another stack frame"},
+		{"kind":"update","pc":25,"map":"flows","func":"classify","file":"p.c","line":14,"reason":"R1 is not a direct map reference in this basic block","generic":true}]}]}`
 	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -56,8 +56,8 @@ func TestMatchLoadCalls(t *testing.T) {
 │  └─ map alt    ProgramArray  tail_call  p.c:36  → prog 3
 ├─ func classify
 │  ├─ map flows  Hash          lookup     p.c:11  ✗ not in the entry function  (pc 9)
-│  ├─ map flows  Hash          update     p.c:14  - no hook yet  (pc 20)
-│  ├─ map flows  Hash          update     p.c:14  - no hook yet  (pc 25)
+│  ├─ map flows  Hash          update     p.c:14  ✗ not in the entry function  (pc 20)
+│  ├─ map flows  Hash          update     p.c:14  ✓ injectable (generic hook)  (pc 25)
 │  ├─ map flows  Hash          update     p.c:14  ? not in the lookups file
 │  └─ map ids    Hash          lookup     p.c:16  ✓ injectable (generic hook)  (pc 30)
 └─ prog 3  next_stage  (tail call: jmp[0-1], alt[7])

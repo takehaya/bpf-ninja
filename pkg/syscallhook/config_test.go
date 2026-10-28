@@ -43,7 +43,7 @@ func TestRuleRequestForwardsOptions(t *testing.T) {
 	for i := range v.NumField() {
 		fillNonZero(t, v.Field(i))
 	}
-	full.Ops = []string{"lookup:miss"} // an op parseOps accepts
+	full.Ops = []string{"lookup:miss", "update:any", "delete"} // ops parseOps accepts
 	want := full.request()
 	for i := range v.NumField() {
 		name := v.Type().Field(i).Name
@@ -133,6 +133,18 @@ func TestConfig(t *testing.T) {
 		},
 		strings.Replace(valid, `"line":42`, `"line":42,"ops":["lookup:miss"]`, 1): func(r Rule) bool { return r.request().Lookups == inject.LookupMiss },
 		strings.Replace(valid, `"line":42`, `"line":42,"ops":["lookup"]`, 1):      func(r Rule) bool { return r.request().Lookups == inject.LookupHit },
+		`[{"program":"p","auto":true,"ops":["update"],"hook":"h","stack_lowest_offset":-448}]`: func(r Rule) bool {
+			req := r.request()
+			return req.Lookups == inject.LookupNone && req.Updates == inject.CallError && req.Deletes == ""
+		},
+		`[{"program":"p","auto":true,"ops":["delete:any","lookup","update:any"],"hook":"h","stack_lowest_offset":-8}]`: func(r Rule) bool {
+			req := r.request()
+			return req.Lookups == inject.LookupHit && req.Updates == inject.CallAny && req.Deletes == inject.CallAny
+		},
+		// With dispatch an update keeps its value pointer in a fifth slot.
+		`[{"program":"p","auto":true,"dispatch":true,"ops":["update"],"hook":"h","stack_lowest_offset":-440}]`: func(r Rule) bool { return r.Dispatch },
+		// _0_update counts toward the name limit.
+		`[{"program":"p","auto":true,"ops":["update"],"hook":"` + strings.Repeat("h", 118) + `","stack_lowest_offset":-8}]`: func(r Rule) bool { return r.Auto },
 		// The miss hook's suffix counts toward the name limit: _0_miss.
 		`[{"program":"p","auto":true,"ops":["lookup:miss"],"hook":"` + strings.Repeat("h", 120) + `","stack_lowest_offset":-8}]`: func(r Rule) bool { return r.Auto },
 		strings.Replace(valid, `"line":42`, `"line":42,"entry":true`, 1):                                                         func(r Rule) bool { return r.Entry && r.Map == "sessions" },
@@ -168,7 +180,13 @@ func TestConfig(t *testing.T) {
 		`[{"program":"p","auto":true,"dispatch":true,"hook":"h","stack_lowest_offset":-481}]`,
 		`[{"program":"p","auto":true,"dispatch":true,"copy_read_only":true,"hook":"h","stack_lowest_offset":-8}]`,
 		`[{"program":"p","auto":true,"ops":["lookup:miss"],"hook":"` + strings.Repeat("h", 121) + `","stack_lowest_offset":-8}]`,
-		`[{"program":"p","auto":true,"ops":["update"],"hook":"h","stack_lowest_offset":-8}]`,
+		`[{"program":"p","auto":true,"ops":["update"],"hook":"h","stack_lowest_offset":-449}]`,
+		`[{"program":"p","auto":true,"dispatch":true,"ops":["delete","update"],"hook":"h","stack_lowest_offset":-441}]`,
+		`[{"program":"p","auto":true,"ops":["update"],"hook":"` + strings.Repeat("h", 119) + `","stack_lowest_offset":-8}]`,
+		`[{"program":"p","map":"m","ops":["update"],"hook":"h","stack_lowest_offset":-8}]`,
+		`[{"program":"p","map":"m","ops":["lookup","delete"],"hook":"h","stack_lowest_offset":-8}]`,
+		`[{"program":"p","auto":true,"ops":["update:miss"],"hook":"h","stack_lowest_offset":-8}]`,
+		`[{"program":"p","auto":true,"ops":["delete","delete:any"],"hook":"h","stack_lowest_offset":-8}]`,
 		`[{"program":"p","auto":true,"ops":["lookup:sometimes"],"hook":"h","stack_lowest_offset":-8}]`,
 		`[{"program":"p","auto":true,"ops":["lookup","lookup:miss"],"hook":"h","stack_lowest_offset":-8}]`,
 		`[{"program":"p","auto":true,"ops":["peek"],"hook":"h","stack_lowest_offset":-8}]`,

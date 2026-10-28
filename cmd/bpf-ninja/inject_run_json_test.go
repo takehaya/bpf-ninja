@@ -23,8 +23,8 @@ func TestInjectionJSON(t *testing.T) {
 		want string
 	}{
 		{"auto", syscallhook.Injection{Program: "xdp_ingress", Func: "xdp_ingress", Type: ebpf.XDP, ProgID: 42, Hooks: []inject.LookupHook{
-			{Name: "obs_sessions", Kind: inject.HookLookup, When: inject.LookupHit, MapName: "sessions", Sites: []inject.LookupSite{site(12, "sessions")}},
-			{Name: "obs_sessions_miss", Kind: inject.HookLookup, When: inject.LookupMiss, MapName: "sessions", Sites: []inject.LookupSite{site(12, "sessions")}},
+			{Name: "obs_sessions", Kind: inject.HookLookup, When: string(inject.LookupHit), MapName: "sessions", Sites: []inject.LookupSite{site(12, "sessions")}},
+			{Name: "obs_sessions_miss", Kind: inject.HookLookup, When: string(inject.LookupMiss), MapName: "sessions", Sites: []inject.LookupSite{site(12, "sessions")}},
 			{Name: "obs_flows", Kind: inject.HookLookup, MapName: "flows", ReadOnly: true, Copied: true, Sites: []inject.LookupSite{site(18, "flows")}},
 			{Name: "obs_any", Kind: inject.HookLookup, Generic: true, Untrusted: true, Sites: []inject.LookupSite{{SitePC: 51}}},
 			{Name: "obs_entry", Kind: inject.HookEntry},
@@ -41,8 +41,8 @@ func TestInjectionJSON(t *testing.T) {
 		// Dispatch hooks share one name: one function, every site, the entry
 		// as DispatchEntrySite first and then by PC across maps and kinds.
 		{"dispatch", syscallhook.Injection{Program: "tc_main", Type: ebpf.SchedCLS, Hooks: []inject.LookupHook{
-			{Name: "d", Kind: inject.HookLookup, When: inject.LookupAny, MapName: "a", Static: true, Dispatch: true, Sites: []inject.LookupSite{{SitePC: 13, MapName: "a"}}},
-			{Name: "d", Kind: inject.HookLookup, When: inject.LookupAny, MapName: "b", Static: true, Dispatch: true, Sites: []inject.LookupSite{{SitePC: 30, MapName: "b"}}},
+			{Name: "d", Kind: inject.HookLookup, When: string(inject.LookupAny), MapName: "a", Static: true, Dispatch: true, Sites: []inject.LookupSite{{SitePC: 13, MapName: "a"}}},
+			{Name: "d", Kind: inject.HookLookup, When: string(inject.LookupAny), MapName: "b", Static: true, Dispatch: true, Sites: []inject.LookupSite{{SitePC: 30, MapName: "b"}}},
 			{Name: "d", Kind: inject.HookEntry, Static: true, Dispatch: true},
 			{Name: "d", Kind: inject.HookTailCall, Static: true, Dispatch: true, Sites: []inject.LookupSite{{SitePC: 20}}},
 		}},

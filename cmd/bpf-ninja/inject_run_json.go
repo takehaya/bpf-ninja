@@ -38,7 +38,9 @@ type injectedProgJSON struct {
 
 // hookJSON is one hook function. A dispatch hook is one entry carrying every
 // site it reports; the entry call is the site inject.DispatchEntrySite. When
-// is the lookup results that call a lookup hook: hit, miss or any.
+// is the results that call the hook: hit, miss or any for lookups, error or
+// any for updates and deletes. A dispatch hook's When is its lookups'; its
+// update and delete sites carry their own.
 type hookJSON struct {
 	Name      string         `json:"name"`
 	Kind      string         `json:"kind"`
@@ -60,6 +62,7 @@ type hookSiteJSON struct {
 	File   string `json:"file,omitempty"`
 	Line   uint32 `json:"line,omitempty"`
 	Reason string `json:"reason,omitempty"`
+	When   string `json:"when,omitempty"`
 	// Generic is set only in the lookups file: auto instruments the lookup
 	// through the generic hook despite Reason.
 	Generic bool `json:"generic,omitempty"`
@@ -69,14 +72,15 @@ func siteJSON(kind inject.HookKind, site inject.LookupSite) hookSiteJSON {
 	return hookSiteJSON{Kind: string(kind), PC: site.SitePC, Map: site.MapName, Func: site.FuncName, File: site.File, Line: site.Line, Reason: site.Reason}
 }
 
-// hookKind is typed, generic, entry, tail_call or dispatch.
+// hookKind is typed, generic, entry, tail_call or dispatch. The sites of a
+// typed or generic hook say whether it observes lookups, updates or deletes.
 func hookKind(hook inject.LookupHook) string {
 	switch {
 	case hook.Dispatch:
 		return "dispatch"
 	case hook.Generic:
 		return "generic"
-	case hook.Kind == inject.HookLookup:
+	case hook.Kind == inject.HookLookup || hook.Kind == inject.HookUpdate || hook.Kind == inject.HookDelete:
 		return "typed"
 	}
 	return string(hook.Kind)
@@ -92,17 +96,25 @@ func injectionJSON(inj syscallhook.Injection) injectedProgJSON {
 			sites = append(sites, hookSiteJSON{Kind: string(inject.HookEntry), PC: inject.DispatchEntrySite})
 		}
 		for _, site := range hook.Sites {
-			sites = append(sites, siteJSON(hook.Kind, site))
+			s := siteJSON(hook.Kind, site)
+			if hook.Dispatch && (hook.Kind == inject.HookUpdate || hook.Kind == inject.HookDelete) {
+				s.When = hook.When
+			}
+			sites = append(sites, s)
+		}
+		when := hook.When
+		if hook.Dispatch && hook.Kind != inject.HookLookup {
+			when = ""
 		}
 		// Dispatch hooks share one name; merge them into one function.
 		if hook.Dispatch && dispatch >= 0 {
 			out.Hooks[dispatch].Sites = append(out.Hooks[dispatch].Sites, sites...)
-			if hook.When != "" {
-				out.Hooks[dispatch].When = string(hook.When)
+			if when != "" {
+				out.Hooks[dispatch].When = when
 			}
 			continue
 		}
-		h := hookJSON{Name: hook.Name, Kind: hookKind(hook), When: string(hook.When), Sites: sites, Untrusted: hook.Untrusted, Copied: hook.Copied, Static: hook.Static, ReadOnly: hook.ReadOnly}
+		h := hookJSON{Name: hook.Name, Kind: hookKind(hook), When: when, Sites: sites, Untrusted: hook.Untrusted, Copied: hook.Copied, Static: hook.Static, ReadOnly: hook.ReadOnly}
 		if !hook.Dispatch {
 			h.Map = hook.MapName
 		}
@@ -126,7 +138,11 @@ func injectionJSON(inj syscallhook.Injection) injectedProgJSON {
 		slices.SortStableFunc(out.Hooks[dispatch].Sites, func(a, b hookSiteJSON) int { return cmp.Compare(rank(a), rank(b)) })
 	}
 	for _, site := range inj.Skipped {
-		out.Skipped = append(out.Skipped, siteJSON(inject.HookLookup, site))
+		kind := site.Op
+		if kind == "" {
+			kind = inject.HookLookup
+		}
+		out.Skipped = append(out.Skipped, siteJSON(kind, site))
 	}
 	return out
 }

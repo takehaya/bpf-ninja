@@ -71,9 +71,11 @@ Every hook name passes the same collision checks as a single `HookName`.
 Lookups whose map a typed hook cannot take share one generic hook, placed after the per-map hooks and marked `Generic` and `Untrusted` (`Static` with `StaticUntrusted`, see [below](#supported-sites-and-trust-boundary)):
 
 ```c
-int PREFIX_any(struct xdp_md *ctx, u32 site, const void *key __arg_untrusted,
+int PREFIX_any(struct xdp_md *ctx, u64 info, const void *key __arg_untrusted,
                const void *value __arg_untrusted, const void *map __arg_untrusted);
 ```
+
+The low 32 bits of `info` are the site; for a lookup the upper bits are zero (see [Updates and deletes](#updates-and-deletes)).
 
 These are entry-function lookups where R1 is not a direct map reference in the same basic block, lookups on hash-of-maps and array-of-maps, and direct lookups on XSK maps, devmaps, devmap hashes, sockmaps and sockhashes.
 Kernel tests load the generic hook over each of these, in XDP and tc programs, with and without `Dispatch`.
@@ -117,6 +119,42 @@ The site keeps one test of R0 after the helper.
 For hits it is the existing `if r0 == 0` skip, for misses the reverse, and for both a branch to each hook; R0 is then restored on every path.
 Each hook therefore sees R0 as either a map value or zero, never as a pointer that may be NULL, and no slot is added, so the stack bounds do not change.
 
+### Updates and deletes
+
+`LookupRequest.Updates` and `Deletes`, which need `Auto`, also instrument `bpf_map_update_elem` and `bpf_map_delete_elem` in the entry function.
+`CallError` calls the hook only when the helper failed (R0 is negative), and `CallAny` after every call.
+`Lookups` set to `LookupNone` leaves the lookups alone, for a request that observes only updates or deletes.
+Each map gets one hook per op, named after its lookup hook:
+
+```c
+int PREFIX_MAP_update(struct xdp_md *ctx, u32 site, const KEY *key, const VALUE *value, u64 status);
+int PREFIX_MAP_delete(struct xdp_md *ctx, u32 site, const KEY *key, u64 status);
+```
+
+`status` is `(u32)ret | flags << 32`: the helper's result in the low half and, for an update, its flags argument in the upper half.
+The key and value are the program's memory, never the map's, so these hooks are typed even on a `BPF_F_WRONLY_PROG` map.
+A program cannot update or delete in a `BPF_F_RDONLY_PROG` map or in a map-in-map, so such sites never reach the transform.
+The typed hooks cover the map kinds of the typed lookup hook; an update or delete on any other kind is skipped.
+An update or delete whose map reaches R1 only at run time, such as the inner map an outer lookup returned, goes to `PREFIX_any_update` or `PREFIX_any_delete`, which have the generic hook's signature.
+A generic or dispatch hook gets the result in its `info` argument:
+
+| Bits | Content |
+|---|---|
+| 0-31 | the site's `SitePC` (`DispatchEntrySite` for the dispatch entry call) |
+| 32-35 | 0 for a lookup, the entry or a tail call; `InfoOpUpdate` (1) or `InfoOpDelete` (2) |
+| 36-43 | the low 8 bits of an update's flags |
+| 48-63 | the helper's result as a signed 16-bit value (an error is at least -4095) |
+
+A lookup, the entry and a failed tail call leave bits 32 to 63 at zero, so their `info` equals the `u32 site` these hooks took before.
+A delete passes a NULL `value`.
+On these hooks `LookupHook.Kind` is `HookUpdate` or `HookDelete`, and `When` is `error` or `any`.
+The `_update` and `_delete` suffixes count toward the 127-byte name limit (`_0_update` under `Auto`).
+
+An update site keeps its flags in the result slot until the helper returns, and its value pointer in the map slot, or with a hook that also takes the map, in a fifth slot below it.
+A typed update therefore needs a stack bound of `-448`, and a generic or dispatch update `-440`; `Auto` skips a generic update past that, and `CheckLookupStack` requires `-448` with `Updates`, or `-440` with `Dispatch` as well.
+A delete uses the slots of a lookup.
+With `CallError`, a successful call runs only the spills, one compare and the restore of R0.
+
 ### Entry and tail-call hooks
 
 An fentry on an XDP program does not fire when the program is entered through `bpf_tail_call`: the tail call jumps past the trampoline at the program's start.
@@ -155,23 +193,27 @@ The hook names are `HookName` with the suffix appended, and `Auto` lookup hooks 
 With `LookupRequest.Dispatch`, every instrumented site calls one hook named `HookName`, with the generic hook's signature:
 
 ```c
-int HOOK(struct xdp_md *ctx, u32 site, const void *key, const void *value, const void *map);
+int HOOK(struct xdp_md *ctx, u64 info, const void *key, const void *value, const void *map);
 ```
 
-| Caller | `site` | `key` | `value` | `map` |
+| Caller | `info` | `key` | `value` | `map` |
 |---|---|---|---|---|
 | Lookup hit | `SitePC` | the key | the result | R1 at the lookup |
 | Lookup miss (`Lookups` miss or any) | `SitePC` | the key | NULL | R1 at the lookup |
+| Update (`Updates`) | `SitePC`, op, flags and result | the key | the value | R1 at the update |
+| Delete (`Deletes`) | `SitePC`, op and result | the key | NULL | R1 at the delete |
 | Entry (`Entry`) | `DispatchEntrySite` (`0xffffffff`) | NULL | NULL | NULL |
 | Failed tail call (`TailCalls`) | `SitePC` | a pointer to the spilled index register (a `u64` whose low 32 bits the helper used) | NULL | the prog array |
+
+[Updates and deletes](#updates-and-deletes) gives the layout of `info`.
 
 One observer attach then sees every site of the program, which saves trampolines and observer programs, and is the only way to see more than one site per run on kernels that allow one tracing attach to a program that tail-calls (7.0 to 7.2.5; see `internal/program/tailcall_guard.go`).
 The pointers are tagged `arg:untrusted` as in the generic hook, so the observer reads them with `bpf_probe_read_kernel`; with `StaticUntrusted` the hook is static and empty, and the observer reads every argument as a `u64`.
 The tail-call index is the full register the program passed; the helper used its low 32 bits, and the upper half is whatever the program left there.
-`LookupResult.Hooks` keeps its grouping: one element per lookup map (and one for runtime-resolved maps, marked `Generic`), then the entry and the tail-call element, all with `Dispatch` set and the same `Name`.
+`LookupResult.Hooks` keeps its grouping: one element per map and op (and one per op for runtime-resolved maps, marked `Generic`), then the entry and the tail-call element, all with `Dispatch` set and the same `Name`.
 `Kind`, `MapName` and `Sites`, whose key and value type names come from BTF, map each `site` the observer sees to its kind and types.
 No suffix is appended to `HookName`.
-Every lookup and tail-call site uses the fourth spill slot in a frame that also calls the hook, so the stack bound must be at least `-448` (`LookupStackReserve` reports 32 bytes; see [Supported sites and trust boundary](#supported-sites-and-trust-boundary)), and a tail call in the entry function deepens that frame to the slot, which the call-chain check above counts; the entry call alone uses only the ctx slot.
+Every lookup, delete and tail-call site uses the fourth spill slot in a frame that also calls the hook, so the stack bound must be at least `-448` (`LookupStackReserve` reports 32 bytes; see [Supported sites and trust boundary](#supported-sites-and-trust-boundary)), and an update site also the fifth (`-440`, 40 bytes), and a tail call in the entry function deepens that frame to the slot, which the call-chain check above counts; the entry call alone uses only the ctx slot.
 Under `Auto`, a dispatch request whose lookups break a call-chain limit loses all of its lookup sites at once and keeps the entry and tail-call calls, as in [Automatic selection](#automatic-selection); a tail call still fills the map slot in its own frame, so a request whose tail calls alone break the limit is refused.
 `Dispatch` refuses `CopyReadOnly`, since it passes no typed value.
 
@@ -278,7 +320,7 @@ The generated hooks read the context's first word (`len` for `__sk_buff`) and ca
 | The input ELF matches `ELFSHA256` before parsing. | The hash identifies the audited build. |
 | The selector resolves supported lookups of the same map in the entry function. | These are the intended observation sites. |
 | Map BTF sizes, where present, match the map definition, and entry BTF describes the program type's context pointer. | The BTF describes the audited build. |
-| Direct R10 references stay at or above `Stack.LowestOffset`; three aligned spill slots (four with the generic hook or, at lookup and tail-call sites, `Dispatch`, plus a value copy with `CopyReadOnly`) fit below it within 512 bytes, and within 480 in a frame that calls a lookup hook. The call chains of the transformed program stay within the verifier's stack and frame limits wherever the original's do. | Pointer aliases and called subprograms do not reach the reserved spill region. |
+| Direct R10 references stay at or above `Stack.LowestOffset`; three aligned spill slots (four with the generic hook, at a typed update, or, at lookup, delete and tail-call sites, `Dispatch`; five at a generic or dispatch update; plus a value copy with `CopyReadOnly`) fit below it within 512 bytes, and within 480 in a frame that calls a lookup hook. The call chains of the transformed program stay within the verifier's stack and frame limits wherever the original's do. | Pointer aliases and called subprograms do not reach the reserved spill region. |
 | Existing function and source metadata are complete, references resolve, and relocation fits. | The transformed program remains acceptable to the target kernel verifier. |
 
 The stack audit has the same alias and callee limitations as `StackAudit` in the original transform.
@@ -287,6 +329,7 @@ A lookup site's frame also calls its hook, which kernels that round frames to 32
 `CheckLookupStack`, which inject-run's configuration check also calls, requires `-456` when the request may hold a lookup site (`Site` or `Auto`).
 Without one, the entry hook's frame holds only the 8-byte ctx slot and a tail-call site's frame the ctx and index slots, so `Entry` alone needs `-472` and `TailCalls` (with or without `Entry`) `-464`.
 With `Dispatch`, a lookup or tail-call site also fills the map slot, so such a request needs `-448`; `Entry` alone still needs `-472`.
+`Updates` needs `-448` for the update's value slot, and `-440` with `Dispatch`.
 The transform checks direct R10 references throughout the flattened selected program.
 It does not infer stack usage through aliases; the call-chain check counts a function that copies R10 at the audited bound.
 
@@ -335,6 +378,34 @@ call HOOK_tail_call
 ```
 
 The key slot is free here because no lookup is in progress.
+
+Each `bpf_map_update_elem` with `Updates` becomes, for a typed hook:
+
+```text
+*(u64 *)(r10 + key_slot) = r2
+*(u64 *)(r10 + result_slot) = r4     ; the flags
+*(u64 *)(r10 + map_slot) = r3        ; the value
+call bpf_map_update_elem             ; original instruction
+r5 = *(u64 *)(r10 + result_slot)     ; the flags
+*(u64 *)(r10 + result_slot) = r0
+if w0 s>= 0 goto restore             ; CallError only
+r5 <<= 32
+w2 = w0
+r5 |= r2                             ; status
+r1 = *(u64 *)(r10 + ctx_slot)
+w2 = SitePC
+r3 = *(u64 *)(r10 + key_slot)
+r4 = *(u64 *)(r10 + map_slot)
+call PREFIX_MAP_update
+restore:
+r0 = *(u64 *)(r10 + result_slot)
+```
+
+The guard tests W0, not R0: on 6.1 the kernel replaces the helper call with a call to the map's own operation, which returns `int`, so a failed update leaves R0 as, say, `0xffffffef` and a 64-bit `r0 s>= 0` would take it for success.
+A program that checks the result the same way misses the error too; on 6.6 and later the operation returns `long`.
+
+A delete saves only the key, and its status is `w4 = w0`.
+A generic or dispatch site also saves R1 into `map_slot`, keeps an update's value in the fifth slot, builds `info` in R2 with shifts and ORs (R3 as scratch), and passes the value (NULL for a delete) in R4 and the map in R5.
 R0 is not saved: the verifier treats R0 as unreadable after `bpf_tail_call`.
 
 With `Dispatch`, every lookup site is set up as a generic-hook site.
@@ -406,8 +477,8 @@ The ELF SHA-256 binds the full input.
 
 ## What is not covered
 
-The transform observes successful lookup calls at the selected sites only.
-It does not observe update/delete helpers, LRU eviction, non-map lookups such as `bpf_fib_lookup`, or lookups inside `bpf_for_each_map_elem` callbacks.
+The transform observes lookups, updates and deletes in the entry function and failed tail calls, and nothing else.
+It does not observe other map helpers (`bpf_map_push_elem`, `bpf_map_pop_elem`, `bpf_map_peek_elem`, `bpf_map_lookup_percpu_elem`), updates on map kinds without a typed hook such as sockmaps, LRU eviction, non-map lookups such as `bpf_fib_lookup`, or lookups inside `bpf_for_each_map_elem` callbacks.
 It does not provide a consistent value version under concurrent control-plane updates or other writers.
 The observer reads the returned object during the hook; the program's later reads may see different contents.
 There is no snapshot, locking, or transaction guarantee, and observation adds execution cost.
@@ -428,6 +499,8 @@ It compares plain and injected programs, checks two keys with different packet l
 `TestBpfLookupInjectionAutoMaps` limits the same program to one map with `Maps` and checks that only that map's hook is generated and fires, while the other lookup runs unchanged.
 `TestBpfLookupMiss` and `TestBpfLookupAny` attach one observer to each typed hook of a map and check that the hit hook sees only the present key, with its value, and the miss hook only the absent one; `TestBpfLookupMissReadOnlyMap` loads the miss hook of a `BPF_F_RDONLY_PROG` map without `arg:untrusted`.
 `TestBpfDispatchMiss`, `...Any`, `...AnyStatic`, `...AnyTC` and `...MissTCStatic` repeat `TestBpfDispatch` with `Lookups`, and check that a miss reaches the dispatch hook with the key, a NULL value and the map.
+`TestBpfMapCallsTyped`, `...TypedAny` and `...TypedTC` run updates and deletes on a two-entry hash (`EEXIST` for `BPF_NOEXIST` on a present key, `ENOENT` for `BPF_EXIST` on an absent one, `E2BIG` when full, `ENOENT` for deleting an absent key) and check that the typed update and delete hooks see exactly the failed calls, or every call with `CallAny`, with the site, key, value and status, while the program, which returns its result, behaves as before.
+`TestBpfMapCallsDispatch`, `...Static` and `...TCStatic` do the same through one dispatch hook at the lowest bound an update allows (`-440`) and check its `info` words; `TestBpfMapCallsArrayWriteOnly` loads the typed hooks on a `BPF_F_WRONLY_PROG` array and checks its `E2BIG`, `EEXIST` and `EINVAL` statuses; `TestBpfMapCallsInnerUpdate[Static]` sends an update of the inner map of an array of maps to `PREFIX_any_update`.
 `TestBpfLookupInjectionReadOnlyMap`, `...Copy` and `...Static` cover the untrusted, copied and static hook forms for a `BPF_F_RDONLY_PROG` map; `TestBpfLookupInjectionMapInMap[Static]` and `TestBpfLookupInjectionGenericKinds[Static]` cover the generic hook over a map-in-map and over direct XSK and devmap lookups.
 `TestBpfTailCallHooks` tail-calls from an instrumented caller into a target instrumented with `Entry`.
 On a successful tail call, the entry hook fires and an fentry on the target program itself does not; on a failed one, the tail-call hook reports the site and index.
@@ -449,8 +522,8 @@ These tests exercise the transform core and fentry using `BPF_PROG_TEST_RUN`, wi
 go build ./...
 go vet ./...
 go test -count=1 ./pkg/inject/...
-sudo -E env PATH=$PATH go test -count=1 -run 'TestBpfLookupInjection|TestBpfLookupMiss|TestBpfLookupAny|TestBpfTailCall|TestBpfEntryHook|TestBpfStackLimits|TestBpfDispatch' ./pkg/inject/
+sudo -E env PATH=$PATH go test -count=1 -run 'TestBpfLookupInjection|TestBpfLookupMiss|TestBpfLookupAny|TestBpfMapCalls|TestBpfTailCall|TestBpfEntryHook|TestBpfStackLimits|TestBpfDispatch' ./pkg/inject/
 ```
 
-All 40 privileged `TestBpf` tests of this package, including the lookup, miss, entry, tail-call, stack-limit and dispatch tests, pass across the CI kernel matrix (6.1 to 7.3-rc4) that `make test-bpf` runs, where the tests whose hooks need `arg:untrusted` skip on 6.1-6.15 and the callback stack-limit subtests skip on 7.3, which forbids tail calls in callbacks (see scripts/test/privileged.py).
+All 49 privileged `TestBpf` tests of this package, including the lookup, miss, update, delete, entry, tail-call, stack-limit and dispatch tests, pass across the CI kernel matrix (6.1 to 7.3-rc4) that `make test-bpf` runs, where the tests whose hooks need `arg:untrusted` skip on 6.1-6.15 and the callback stack-limit subtests skip on 7.3, which forbids tail calls in callbacks (see scripts/test/privileged.py).
 This is finite test evidence for the fixture, not a general program-equivalence, concurrency, or kernel-version guarantee.

@@ -56,6 +56,8 @@ type LookupRequestRaw struct {
 	StaticUntrusted bool       // see LookupRequest.StaticUntrusted
 	Dispatch        bool       // see LookupRequest.Dispatch
 	Lookups         LookupWhen // see LookupRequest.Lookups
+	Updates         CallWhen   // see LookupRequest.Updates
+	Deletes         CallWhen   // see LookupRequest.Deletes
 	HookName        string
 	Stack           StackAudit
 }
@@ -98,15 +100,16 @@ type LookupResultRaw struct {
 // against a dropped field).
 func (r LookupRequestRaw) Request() LookupRequest {
 	return LookupRequest{Site: r.Site, Auto: r.Auto, Maps: r.Maps, Entry: r.Entry, TailCalls: r.TailCalls,
-		CopyReadOnly: r.CopyReadOnly, StaticUntrusted: r.StaticUntrusted, Dispatch: r.Dispatch, Lookups: r.Lookups, HookName: r.HookName, Stack: r.Stack}
+		CopyReadOnly: r.CopyReadOnly, StaticUntrusted: r.StaticUntrusted, Dispatch: r.Dispatch, Lookups: r.Lookups, Updates: r.Updates, Deletes: r.Deletes,
+		HookName: r.HookName, Stack: r.Stack}
 }
 
 // hookSuffix is the longest fixed suffix the transform appends to HookName
 // for req: none with Dispatch, whose one hook is HookName itself,
 // "_tail_call" with TailCalls, "_entry" with Entry, "_0" with Auto, whose
 // per-map names that would pass MaxHookName fall back to HOOKNAME_<index> (a
-// group whose name still does not fit is skipped), and "_miss" after the
-// lookup hook's name when Lookups observes misses.
+// group whose name still does not fit is skipped), and "_miss", "_update" or
+// "_delete" after a map's name for the ops r observes.
 func hookSuffix(r LookupRequest) string {
 	if r.Dispatch {
 		return ""
@@ -115,10 +118,15 @@ func hookSuffix(r LookupRequest) string {
 	if r.Auto {
 		lookup = "_0"
 	}
-	if r.Lookups.miss() {
-		lookup += "_miss"
-	}
 	suffixes := []string{lookup}
+	for _, op := range []struct {
+		suffix string
+		on     bool
+	}{{"_miss", r.Lookups.miss()}, {"_update", r.Updates != ""}, {"_delete", r.Deletes != ""}} {
+		if op.on {
+			suffixes = append(suffixes, lookup+op.suffix)
+		}
+	}
 	if r.TailCalls {
 		suffixes = append(suffixes, "_tail_call")
 	}
@@ -130,9 +138,9 @@ func hookSuffix(r LookupRequest) string {
 
 // ValidateRaw checks the parts of req that do not depend on the program: the
 // hook name, with room for the suffix the transform appends (hookSuffix),
-// Dispatch without CopyReadOnly, and the audited stack bound
-// (CheckLookupStack). syscallhook.Validate calls it, so a configuration check
-// and the transform share these limits.
+// Dispatch without CopyReadOnly, the result sets (checkOps), and the audited
+// stack bound (CheckLookupStack). syscallhook.Validate calls it, so a
+// configuration check and the transform share these limits.
 func ValidateRaw(req LookupRequestRaw) error {
 	r := req.Request()
 	if !validIdent(r.HookName) {
@@ -141,8 +149,8 @@ func ValidateRaw(req LookupRequestRaw) error {
 	if r.Dispatch && r.CopyReadOnly {
 		return refuse("Dispatch passes untrusted pointers; it does not combine with CopyReadOnly")
 	}
-	if !r.Lookups.valid() {
-		return refuse("Lookups must be hit, miss or any; got %q", r.Lookups)
+	if err := checkOps(r); err != nil {
+		return err
 	}
 	if suffix := hookSuffix(r); len(r.HookName)+len(suffix) > MaxHookName {
 		return refuse("HookName %q with the suffix %q exceeds %d bytes", r.HookName, suffix, MaxHookName)
