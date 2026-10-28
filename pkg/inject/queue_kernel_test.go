@@ -2,7 +2,9 @@ package inject
 
 import (
 	"encoding/binary"
+	"fmt"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/cilium/ebpf"
@@ -196,13 +198,14 @@ func testQueueOps(t *testing.T, typ ebpf.MapType, tc bool) {
 }
 
 // A bloom filter peek tests the value the program passes, and misses with
-// ENOENT until the value was pushed; the peek hook sees each test.
+// ENOENT until the value was pushed. The push hook sees the push, and the
+// error-only peek hook each miss.
 func TestBpfBloomFilterOps(t *testing.T) {
 	testutil.SkipIfNotRoot(t)
 	fixture := func() *ebpf.CollectionSpec { return queueFixture(ebpf.BloomFilter, true) }
 	work := fixture()
 	req := autoReq()
-	req.Lookups, req.Pushes, req.Peeks, req.Stack.LowestOffset = LookupNone, CallError, CallError, -8
+	req.Lookups, req.Pushes, req.Peeks, req.Stack.LowestOffset = LookupNone, CallAny, CallError, -8
 	plan, err := transformLookup(work, req)
 	if err != nil {
 		t.Fatal(err)
@@ -219,8 +222,8 @@ func TestBpfBloomFilterOps(t *testing.T) {
 	runQueue(t, plain, injected, bloomSteps)
 	ret := -int64(unix.ENOENT)
 	enoent := uint64(uint32(ret))
-	if got := observed(t, push); len(got) != 0 {
-		t.Errorf("push hook saw a successful push: %x", got)
+	if got, want := observed(t, push), [][4]uint64{{queuePushPC, 5, 0}}; !slices.Equal(got, want) {
+		t.Errorf("push hook: %x\nwant %x", got, want)
 	}
 	want := [][4]uint64{{queuePeekPC, 5, enoent}, {queuePopPC, 6, enoent}} // the second peek sits at the pop's site
 	if got := observed(t, peek); !slices.Equal(got, want) {
@@ -491,6 +494,8 @@ func percpuFixture() *ebpf.CollectionSpec {
 
 // bpf_map_lookup_percpu_elem is instrumented as a lookup: the typed hook sees
 // the key and the named CPU's value, and the miss hook a CPU past the last.
+// Every CPU but the first holds another action, so a CPU argument the
+// rewrite loses changes what the program returns.
 func TestBpfLookupPercpu(t *testing.T) {
 	testutil.SkipIfNotRoot(t)
 	work := percpuFixture()
@@ -511,11 +516,15 @@ func TestBpfLookupPercpu(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if cpus < 2 {
+		t.Skip("needs two possible CPUs to tell them apart")
+	}
 	for _, c := range []*ebpf.Collection{plain, injected} {
 		values := make([][2]uint64, cpus)
 		for cpu := range values {
-			values[cpu] = [2]uint64{uint64(100 + cpu), 2}
+			values[cpu] = [2]uint64{uint64(100 + cpu), 3} // XDP_TX
 		}
+		values[0][1] = 2 // XDP_PASS
 		if err := c.Maps["m"].Put(uint32(1), values); err != nil {
 			t.Fatal(err)
 		}
@@ -525,7 +534,7 @@ func TestBpfLookupPercpu(t *testing.T) {
 	last := uint32(cpus - 1)
 	for _, tc := range []struct {
 		key, cpu, want uint32
-	}{{1, 0, 2}, {1, last, 2}, {1, uint32(cpus), 1}} {
+	}{{1, 0, 2}, {1, last, 3}, {1, uint32(cpus), 1}} {
 		packet := make([]byte, 64)
 		binary.LittleEndian.PutUint32(packet, tc.key)
 		binary.LittleEndian.PutUint32(packet[4:], tc.cpu)
@@ -613,5 +622,47 @@ func testReadOnlyArg(t *testing.T, static bool) {
 	}
 	if got, want := observed(t, update), [][4]uint64{{13, 42, 42, 0}}; !slices.Equal(got, want) {
 		t.Errorf("update hook: %x\nwant %x", got, want)
+	}
+}
+
+// TestBpfBloomPeekPoisoned pins why queueFixture reads the value before a
+// pop or peek: without those reads 7.1 and newer reject the plain bloom
+// filter program, before any rewrite, while older kernels load it. If a
+// kernel loads it, the reads may no longer be needed.
+func TestBpfBloomPeekPoisoned(t *testing.T) {
+	testutil.SkipIfNotRoot(t)
+	spec := queueFixture(ebpf.BloomFilter, true)
+	insns := spec.Programs["p"].Instructions
+	read := asm.LoadMem(asm.R1, asm.RFP, -8, asm.DWord)
+	reads := 0
+	for i, ins := range insns {
+		if ins.OpCode == read.OpCode && ins.Dst == asm.R1 && ins.Src == asm.RFP && ins.Offset == -8 {
+			insns[i] = asm.Mov.Imm(asm.R1, 0)
+			reads++
+		}
+	}
+	if reads != 2 {
+		t.Fatalf("replaced %d reads, want 2", reads)
+	}
+	var u unix.Utsname
+	if err := unix.Uname(&u); err != nil {
+		t.Fatal(err)
+	}
+	release := unix.ByteSliceToString(u.Release[:])
+	var major, minor int
+	if _, err := fmt.Sscanf(release, "%d.%d", &major, &minor); err != nil {
+		t.Fatalf("release %q: %v", release, err)
+	}
+	coll, err := ebpf.NewCollection(spec)
+	if err == nil {
+		coll.Close()
+	}
+	const msg = "slot poisoned by dead code elimination"
+	if major > 7 || major == 7 && minor >= 1 {
+		if err == nil || !strings.Contains(fmt.Sprintf("%+v", err), msg) {
+			t.Errorf("%s: err = %v, want %q", release, err, msg)
+		}
+	} else if err != nil {
+		t.Errorf("%s: %+v", release, err)
 	}
 }
