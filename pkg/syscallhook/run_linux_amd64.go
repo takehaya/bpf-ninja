@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"slices"
 	"strings"
 	"syscall"
 
@@ -656,9 +657,12 @@ func copyReadOnlyHelps(hook inject.LookupHook) bool {
 
 // hookSummary lists each hook as
 //
-//	hook "NAME" (KIND[ map "MAP"][ runtime map][, untrusted pointers][, value copied to stack][, static][, dispatch][, site pc N, N])
+//	hook "NAME" (KIND[ map "MAP"][ generic[ map "MAP"...][ runtime map]][, untrusted pointers][, value copied to stack][, static][, dispatch][, site pc N, N])
 //
 // separated by ", ", then "; skipped pc N (reason)" for each skipped lookup.
+// A generic hook names each map its sites reference directly, such as a
+// sockhash, and says "runtime map" when a site's map is known only at run
+// time.
 // The launcher log and the integration test look for the leading "hook".
 func hookSummary(result *inject.LookupResultRaw) string {
 	var b strings.Builder
@@ -671,7 +675,22 @@ func hookSummary(result *inject.LookupResultRaw) string {
 			fmt.Fprintf(&b, " map %q", hook.MapName)
 		}
 		if hook.Generic {
-			b.WriteString(" runtime map")
+			b.WriteString(" generic")
+			var named []string
+			atRuntime := false
+			for _, site := range hook.Sites {
+				if site.MapName == "" {
+					atRuntime = true
+				} else if !slices.Contains(named, site.MapName) {
+					named = append(named, site.MapName)
+				}
+			}
+			for _, name := range named {
+				fmt.Fprintf(&b, " map %q", name)
+			}
+			if atRuntime {
+				b.WriteString(" runtime map")
+			}
 		}
 		if hook.Untrusted {
 			b.WriteString(", untrusted pointers")
