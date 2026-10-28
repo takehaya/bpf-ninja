@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.32.0](https://github.com/takehaya/bpf-ninja/compare/v0.31.0...v0.32.0) (2026-10-28)
+
+
+### ⚠ BREAKING CHANGES
+
+* **build:** ship a static default binary; --cbpf needs the enable_libpcap build
+
+### 🎉 Features
+
+* **build:** ship a static default binary; --cbpf needs the enable_libpcap build ([359eeb0](https://github.com/takehaya/bpf-ninja/commit/359eeb0f04646b858b56f44132ad97c382751525))
+
+
+### 🐛 Bug Fixes
+
+* **program:** compile cgroup-skb legacy filters for raw IP ([#278](https://github.com/takehaya/bpf-ninja/issues/278)) ([2d705d7](https://github.com/takehaya/bpf-ninja/commit/2d705d765df694fe374ceb14ac95fda696b3012f))
+
+
+### 📝 Documentation
+
+* **inject:** capture the packets at a hook with --func ([#277](https://github.com/takehaya/bpf-ninja/issues/277)) ([15ca345](https://github.com/takehaya/bpf-ninja/commit/15ca345ff820d581bcc2209b4814ece0c1cff3f5))
+
 ## [0.31.0](https://github.com/takehaya/bpf-ninja/compare/v0.30.0...v0.31.0) (2026-10-28)
 
 
