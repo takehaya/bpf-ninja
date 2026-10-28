@@ -27,6 +27,9 @@ const (
 // MapUse is one reference to a map in the translated instructions of a
 // loaded program. Op names the helper the reference reaches; Inlined marks
 // a lookup the verifier replaced with instructions, which leaves no call.
+// File and Line are the source line of that call, or of the first inlined
+// instruction, and of the map load when no helper is known; PC is the map
+// load's.
 type MapUse struct {
 	MapID   uint32
 	MapName string
@@ -223,7 +226,7 @@ func analyzeXlated(insns asm.Instructions, progName string, lookup func(uint32) 
 				op = helperOp(helper(ins.Constant))
 			}
 			if i, ok := pending[reg]; ok && op != "" {
-				fn.Maps[i].Op = op
+				fn.Maps[i].Op, fn.Maps[i].File, fn.Maps[i].Line = op, file, line
 			}
 		}
 		class := ins.OpCode.Class()
@@ -234,6 +237,7 @@ func analyzeXlated(insns asm.Instructions, progName string, lookup func(uint32) 
 			if i, ok := pending[ins.Dst]; ok {
 				if class == asm.ALU64Class && ins.OpCode.ALUOp() == asm.Add && inlinedLookupKinds[fn.Maps[i].MapType] {
 					fn.Maps[i].Op, fn.Maps[i].Inlined = MapOpLookup, true
+					fn.Maps[i].File, fn.Maps[i].Line = file, line
 				}
 				delete(pending, ins.Dst)
 			}

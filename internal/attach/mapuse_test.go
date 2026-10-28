@@ -128,6 +128,45 @@ func TestProgramMaps(t *testing.T) {
 	}
 }
 
+// A map loaded on one line and passed to a helper on another takes the
+// helper's line, which is where load-time discovery puts the call.
+func TestProgramMapsCallLine(t *testing.T) {
+	testutil.SkipIfNotRoot(t)
+	const src = `
+#include <linux/bpf.h>
+#include <bpf/bpf_helpers.h>
+struct { __uint(type, BPF_MAP_TYPE_HASH); __uint(max_entries, 2); __type(key, __u32); __type(value, __u64); } h SEC(".maps");
+SEC("xdp") int map_line(struct xdp_md *ctx) {
+	__u64 v = 42;
+	__u32 k = 0;
+	void *map = &h;
+	asm volatile("" : "+r"(map));
+	return bpf_map_update_elem(map, &k, &v, 0) ? XDP_DROP : XDP_PASS;
+}
+char LICENSE[] SEC("license") = "GPL";
+`
+	spec, err := ebpf.LoadCollectionSpec(testutil.CompileBPFSource(t, src))
+	if err != nil {
+		t.Fatal(err)
+	}
+	coll, err := ebpf.NewCollection(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer coll.Close()
+	syms, err := LoadKernelSymbols()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := ProgramMaps(coll.Programs["map_line"], syms)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if uses := got.Funcs[0].Maps; len(uses) != 1 || uses[0].Op != MapOpUpdate || uses[0].Line != 10 {
+		t.Errorf("uses = %+v, want an update on line 10, the call", uses)
+	}
+}
+
 // TestAnalyzeXlatedDegraded covers a dump read without BTF and without
 // helper addresses: one function named after the program, every helper op
 // unknown, but tail calls and inlined array lookups still recognized.

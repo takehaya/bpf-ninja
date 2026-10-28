@@ -160,13 +160,14 @@ prog 2  entry
       └─ map flows  Hash  update  prog.c:45  - no hook yet  (pc 11)
 ```
 
-Each `map` line gives the map's name and type, the op and the source line, then:
+Each `map` line gives the map's name and type, the op and the source line of the helper call (of the map load when the op is not known), then:
 
 - for a tail call or redirect, the reached program (`→ prog 3`);
 - with `--lookups-json`, `✓ injectable` for a lookup `auto` instruments (`(generic hook)` when it goes to the generic hook), `✗` and the reason for one it skips, `- no hook yet` for an update or delete, and `? not in the lookups file` when no load-time call matched;
 - in parentheses, `inlined` for an array lookup the verifier inlined, and the load-time `pc` of the matched call, the one the lookups and hooks files use.
 
 Without `--lookups-json` there is no status column.
+A reached program's line names each map and the keys that reach it, such as `(tail call: jmp[0-1], alt[7])`.
 
 The listing reads the translated instructions the kernel keeps for the loaded program, so it needs root.
 The verifier rewrites some calls there: an array lookup becomes inline instructions, marked `inlined`, and other map helpers call the map's own function, whose kernel symbol gives the op.
