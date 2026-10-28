@@ -7,6 +7,9 @@ bpf-ninja captures packets at BPF hook points — XDP, tc-bpf, cgroup-skb, and n
 
 [Documentation / ドキュメント](docs/README.md) · [日本語の導入](docs/ja/getting-started.md) · [Examples](docs/ja/examples/README.md)
 
+For load-time observation, the experimental Linux x86-64 [`inject-run`](docs/en/inject-run.md) launcher adds hooks as an unmodified loader loads selected XDP or tc programs.
+Use `--list-progs --list-maps` to inspect map operations; the [injection walkthrough](docs/en/inject-walkthrough.md) follows discovery, configuration, and an fentry observer, with [example sources](examples/inject-walkthrough/README.md).
+
 ## Install
 
 ```bash

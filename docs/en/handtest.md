@@ -9,6 +9,7 @@ Stop if `nstest`, `vtest0`, or `vtest1` already exists.
 Stop each capture with Ctrl-C before cleanup.
 Remove only the resources created by this procedure.
 See the [documentation entry point](../README.md).
+For load-time hooks via the experimental `inject-run` launcher, see the separate [injection walkthrough](inject-walkthrough.md).
 
 ## Prerequisites
 
@@ -468,10 +469,11 @@ Expected: Packets are captured.
 ### 3.7 Direct Attach to Tail Call Target Entry (Does Not Fire)
 
 ```bash
-sudo ./bpf-ninja -p $LEAF_ID -v -c 3 | tcpdump -n -r -
+sudo ./bpf-ninja -p $LEAF_ID -v | tcpdump -n -r -
 ```
 
 Expected: `0 packets captured`.
+As in section 1.5, send ping after capture starts, stop with Ctrl-C, and check the shutdown summary.
 Tail calls use `jmp` to bypass the entry function's trampoline,
 so fentry on the entry function does not fire.
 However, internal bpf2bpf calls are regular function calls
@@ -492,6 +494,7 @@ sudo ip netns delete nstest 2>/dev/null
 
 Filter based on the values of function arguments specified with `--func`.
 Only integer parameters (excluding the first xdp_md pointer) are supported.
+Entry functions with filterable integer parameters also support these options without `--func`; this fixture's entry has only `ctx`.
 
 ### 4.1 Create Test Program
 
@@ -565,7 +568,7 @@ Filterable parameters for process_packet (id=XXXX):
 sudo ./bpf-ninja -i vtest0 --list-params
 ```
 
-Expected: `--list-params requires --func` error.
+Expected: An error containing `--list-params requires --func or an entry function with filterable integer parameters`, because this XDP entry has no integer parameters.
 
 ### 4.5 Exact Match Filter (Hit)
 
@@ -578,10 +581,11 @@ Expected: Packets are captured since tunnel_id=42.
 ### 4.6 Exact Match Filter (Miss)
 
 ```bash
-sudo ./bpf-ninja -i vtest0 --func process_packet --arg-filter "tunnel_id=99" -v -c 3 | tcpdump -n -r -
+sudo ./bpf-ninja -i vtest0 --func process_packet --arg-filter "tunnel_id=99" -v | tcpdump -n -r -
 ```
 
 Expected: `0 packets captured`.
+For this and the following argument-filter cases, run each command separately, send ping after capture starts, then stop with Ctrl-C and inspect the shutdown summary as in section 1.5.
 
 ### 4.7 Range Filter
 
@@ -590,7 +594,7 @@ Expected: `0 packets captured`.
 sudo ./bpf-ninja -i vtest0 --func process_packet --arg-filter "tunnel_id=40..50" -v | tcpdump -n -r -
 
 # Miss (42 is outside 100..200)
-sudo ./bpf-ninja -i vtest0 --func process_packet --arg-filter "tunnel_id=100..200" -v -c 3 | tcpdump -n -r -
+sudo ./bpf-ninja -i vtest0 --func process_packet --arg-filter "tunnel_id=100..200" -v | tcpdump -n -r -
 ```
 
 ### 4.8 Comparison Filters
@@ -603,7 +607,7 @@ sudo ./bpf-ninja -i vtest0 --func process_packet --arg-filter "tunnel_id>=40" -v
 sudo ./bpf-ninja -i vtest0 --func process_packet --arg-filter "tunnel_id<=50" -v | tcpdump -n -r -
 
 # >= (42 >= 100 → miss)
-sudo ./bpf-ninja -i vtest0 --func process_packet --arg-filter "tunnel_id>=100" -v -c 3 | tcpdump -n -r -
+sudo ./bpf-ninja -i vtest0 --func process_packet --arg-filter "tunnel_id>=100" -v | tcpdump -n -r -
 ```
 
 ### 4.9 Hexadecimal Values
@@ -636,7 +640,7 @@ Expected: Error message listing available parameter names.
 sudo ./bpf-ninja -i vtest0 --arg-filter "tunnel_id=42"
 ```
 
-Expected: `--arg-filter requires --func` error.
+Expected: An error containing `--arg-filter requires --func or an entry function with filterable integer parameters`, because this XDP entry has no integer parameters.
 
 ### 4.13 Cleanup
 

@@ -8,6 +8,7 @@ bpf-ninja の各機能を手動で検証する手順書。
 固定名の `nstest`、`vtest0`、`vtest1` が存在する場合は実行を止めてください。
 各キャプチャを Ctrl-C で停止してから、この手順で作成した資源だけを削除してください。
 [Docs の入口](README.md)も参照してください。
+実験的な `inject-run` によるロード時の hook 追加は、別の[injection walkthrough](../en/inject-walkthrough.md)（英語）を参照してください。
 
 ## 前提条件
 
@@ -465,10 +466,11 @@ sudo ./bpf-ninja -p $LEAF_ID --func classify_packet --mode exit -v | tcpdump -n 
 ### 3.7 tail call 先エントリ関数への直接アタッチ（発火しないケース）
 
 ```bash
-sudo ./bpf-ninja -p $LEAF_ID -v -c 3 | tcpdump -n -r -
+sudo ./bpf-ninja -p $LEAF_ID -v | tcpdump -n -r -
 ```
 
 期待: `0 packets captured`。
+1.5 節と同様に、capture 開始後に ping を送り、Ctrl-C で停止して終了 summary を確認する。
 tail call は `jmp` でエントリのトランポリンをバイパスするため、
 エントリ関数への fentry は発火しない。
 一方、内部の bpf2bpf call は通常の関数呼び出しなのでトランポリンが動作する。
@@ -488,6 +490,7 @@ sudo ip netns delete nstest 2>/dev/null
 
 `--func` で指定したサブ関数の引数値でフィルタリングする。
 整数型の引数（最初の xdp_md ポインタを除く）が対象。
+フィルタ可能な整数引数を持つエントリ関数では `--func` を省略できるが、この例のエントリ関数は `ctx` しか持たない。
 
 ### 4.1 テスト用プログラムの作成
 
@@ -561,7 +564,8 @@ Filterable parameters for process_packet (id=XXXX):
 sudo ./bpf-ninja -i vtest0 --list-params
 ```
 
-期待: `--list-params requires --func` というエラーになる。
+期待: `--list-params requires --func or an entry function with filterable integer parameters` を含むエラーになる。
+この XDP entry は整数引数を持たないため。
 
 ### 4.5 完全一致フィルタ（マッチ）
 
@@ -574,10 +578,12 @@ sudo ./bpf-ninja -i vtest0 --func process_packet --arg-filter "tunnel_id=42" -v 
 ### 4.6 完全一致フィルタ（不一致）
 
 ```bash
-sudo ./bpf-ninja -i vtest0 --func process_packet --arg-filter "tunnel_id=99" -v -c 3 | tcpdump -n -r -
+sudo ./bpf-ninja -i vtest0 --func process_packet --arg-filter "tunnel_id=99" -v | tcpdump -n -r -
 ```
 
 期待: `0 packets captured`。
+この節以降の引数フィルタの各コマンドは別々に実行し、capture 開始後に ping を送る。
+1.5 節と同様に Ctrl-C で停止し、終了 summary を確認する。
 
 ### 4.7 範囲フィルタ
 
@@ -586,7 +592,7 @@ sudo ./bpf-ninja -i vtest0 --func process_packet --arg-filter "tunnel_id=99" -v 
 sudo ./bpf-ninja -i vtest0 --func process_packet --arg-filter "tunnel_id=40..50" -v | tcpdump -n -r -
 
 # 不一致 (42 は 100..200 の範囲外)
-sudo ./bpf-ninja -i vtest0 --func process_packet --arg-filter "tunnel_id=100..200" -v -c 3 | tcpdump -n -r -
+sudo ./bpf-ninja -i vtest0 --func process_packet --arg-filter "tunnel_id=100..200" -v | tcpdump -n -r -
 ```
 
 ### 4.8 比較フィルタ
@@ -599,7 +605,7 @@ sudo ./bpf-ninja -i vtest0 --func process_packet --arg-filter "tunnel_id>=40" -v
 sudo ./bpf-ninja -i vtest0 --func process_packet --arg-filter "tunnel_id<=50" -v | tcpdump -n -r -
 
 # >= (42 >= 100 → 不一致)
-sudo ./bpf-ninja -i vtest0 --func process_packet --arg-filter "tunnel_id>=100" -v -c 3 | tcpdump -n -r -
+sudo ./bpf-ninja -i vtest0 --func process_packet --arg-filter "tunnel_id>=100" -v | tcpdump -n -r -
 ```
 
 ### 4.9 16進数値
@@ -632,7 +638,8 @@ sudo ./bpf-ninja -i vtest0 --func process_packet --arg-filter "no_such=42"
 sudo ./bpf-ninja -i vtest0 --arg-filter "tunnel_id=42"
 ```
 
-期待: `--arg-filter requires --func or an entry function with filterable integer parameters` を含むエラーになる。この XDP entry は整数引数を持たないため。
+期待: `--arg-filter requires --func or an entry function with filterable integer parameters` を含むエラーになる。
+この XDP entry は整数引数を持たないため。
 
 ### 4.13 クリーンアップ
 

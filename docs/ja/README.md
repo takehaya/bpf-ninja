@@ -12,6 +12,7 @@ bpf-ninja を使うときは、導入、目的に合う手順、式の詳細の�
 | ロードせずフィルタを確認する | [Examples](examples/README.md) |
 | mode、出力、set の操作を調べる | [capture](cli/capture.md)、[output](cli/output.md)、[sets](cli/sets.md) |
 | command、flag、protocol の現在の定義を見る | [CLI reference](cli/README.md) |
+| map 操作を列挙し、ロード時に観測 hook を追加する | [inject-run](../en/inject-run.md)、[--list-progs --list-maps から始める手順](../en/inject-walkthrough.md)（英語、実験的機能） |
 | フィルタを書く | [DSL 索引](dsl-overview.md)、[文法](dsl-grammar.md)、[型と意味](dsl-types.md) |
 | 終了とファイルの完成を判断する | [Capture lifecycle](../capture-lifecycle.md)（英語） |
 | 環境を用意して動作確認する | [手動試験](handtest.md)、[privileged tests](../privileged-tests.md)（英語） |
@@ -24,6 +25,8 @@ bpf-ninja を使うときは、導入、目的に合う手順、式の詳細の�
 
 - [Capture datapath](capture-datapath.md)：カーネルから出力までの実装。
 - [DSL internals](dsl-internals.md)：compiler と host ABI。
+- [Map 操作の injection](../en/lookup-site-injection.md)と[u32 load site の typed injection](../en/typed-injection.md)：変換 API、hook ABI、呼び出し側の監査条件（英語）。
+- [BPF syscall hook の設計](../en/bpf-syscall-hook-design.md)：`inject-run` の構成と実装状況（英語）。
 - [Vocab 作成](dsl-vocab-authoring.md)：protocol を追加する手順。
 - [kunai API](../../pkg/kunai/README.ja.md)：Go ライブラリとして使う場合。
 - [ADR](adr/)：採用、却下、置換を含む設計判断の履歴。

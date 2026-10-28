@@ -41,6 +41,7 @@ gated capture には kernel の修正状況による制約もあるため、[現
 - [Examples](examples/README.md)：目的と期待結果から選ぶ。
 - [DSL](dsl-overview.md)：packet layout に合う式を書く。
 - [利用ガイド](dsl-usage.md)：mode、set、出力の操作を調べる。
+- [inject-run](../en/inject-run.md)と[実行例](../en/inject-walkthrough.md)：`--list-progs --list-maps` で map 操作を調べ、ロード時に観測 hook を追加する（英語、Linux x86-64 の実験的機能）。
 - [終了の意味](../capture-lifecycle.md)：停止後に何を確認するか。
 
 [Docs に戻る](README.md)
