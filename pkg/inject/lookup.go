@@ -147,8 +147,8 @@ const (
 // CopyReadOnly turns from an untrusted hook into a copied one.
 //
 // Generic is set for Auto's one hook over lookups whose map is not known
-// statically (R1 is not a direct map reference), is a map-in-map, or is an
-// XSK map or devmap, which a typed hook refuses. It has no MapName and takes
+// statically (R1 is not a direct map reference), is a map-in-map, or is of a
+// genericKinds kind, which a typed hook refuses. It has no MapName and takes
 // the map pointer as a fifth argument; see genericHook.
 //
 // Dispatch is set on every hook of a Dispatch request. They all share Name and
@@ -284,6 +284,11 @@ func elfLookupMaps(spec *ebpf.CollectionSpec) lookupMapResolver {
 	}
 }
 
+// ContextType names the BTF struct the ctx argument of every hook in a
+// program of type typ points to, empty if TransformLookup does not support
+// the type.
+func ContextType(typ ebpf.ProgramType) string { return lookupContext(typ) }
+
 // lookupContext names the context struct the hooks of a program of type typ
 // take, and whose first word they read: struct xdp_md for XDP, struct
 // __sk_buff (len) for tc. Empty means the type is not supported.
@@ -396,11 +401,15 @@ func lookupTypeName(t btf.Type) string {
 }
 
 // genericKinds are the map kinds a typed hook refuses whose direct lookups Auto
-// passes to the generic hook; testGenericKinds loads each one on the kernel
-// matrix. Auto skips a lookup on any other refused kind, such as a socket map,
-// whose result is a reference the verifier tracks. Add a kind only together
-// with its kernel test.
-var genericKinds = map[ebpf.MapType]bool{ebpf.XSKMap: true, ebpf.DevMap: true}
+// passes to the generic hook; testGenericKinds loads each one, XDP and tc, with
+// and without Dispatch, on the kernel matrix. A sockmap or sockhash lookup
+// returns a socket reference; the hook only reads it, and the verifier still
+// demands the program's own release. Auto skips a lookup on any other refused
+// kind (a cpumap or reuseport array lookup does not load at all). Add a kind
+// only together with its kernel test.
+var genericKinds = map[ebpf.MapType]bool{
+	ebpf.XSKMap: true, ebpf.DevMap: true, ebpf.DevMapHash: true, ebpf.SockMap: true, ebpf.SockHash: true,
+}
 
 // bpfFRdonlyProg and bpfFWronlyProg are BPF_F_RDONLY_PROG and
 // BPF_F_WRONLY_PROG from the BPF UAPI.

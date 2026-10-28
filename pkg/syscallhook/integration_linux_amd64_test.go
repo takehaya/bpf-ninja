@@ -71,7 +71,9 @@ func TestIntegrationLoader(t *testing.T) {
 			var logs bytes.Buffer
 			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 			defer cancel()
-			code, err := Run(ctx, child, Options{Rules: []Rule{rule}, FailClosed: tc.closed, Stdout: out, Stderr: out, Log: &logs})
+			var injected []Injection
+			onInject := func(inj Injection) { injected = append(injected, inj) }
+			code, err := Run(ctx, child, Options{Rules: []Rule{rule}, FailClosed: tc.closed, Stdout: out, Stderr: out, Log: &logs, OnInject: onInject})
 			data, _ := os.ReadFile(out.Name())
 			t.Logf("supervisor:\n%sloader:\n%s", &logs, data)
 			if err != nil || code != 0 {
@@ -79,6 +81,17 @@ func TestIntegrationLoader(t *testing.T) {
 			}
 			if strings.HasPrefix(tc.expected, "hook") && !strings.Contains(logs.String(), "injected hook") {
 				t.Fatal("no successful injection reported")
+			}
+			// OnInject reports exactly the successful injections, with the
+			// program ID the loader sees.
+			if hooked := strings.HasPrefix(tc.expected, "hook"); hooked != (len(injected) == 1) || len(injected) > 1 {
+				t.Fatalf("OnInject calls: %+v", injected)
+			} else if hooked {
+				inj := injected[0]
+				if inj.Program != "p" || inj.Func != "entry_with_long_name" || inj.Type != ebpf.XDP || len(inj.Hooks) == 0 ||
+					!strings.Contains(string(data), fmt.Sprintf("prog_id=%d\n", inj.ProgID)) || inj.ProgID == 0 {
+					t.Fatalf("injection %+v does not match the loader", inj)
+				}
 			}
 			if tc.expected == "hook-rdonly" && !strings.Contains(logs.String(), ", static") {
 				t.Fatal("no static hook reported")
@@ -175,5 +188,6 @@ func loadIntegrationProgram(t *testing.T, expected string) {
 	if err != nil || action != 2 {
 		t.Fatalf("BPF_PROG_TEST_RUN: action=%d err=%v", action, err)
 	}
-	fmt.Printf("kernel hook=%v, action=%d, functions=%d\n", found, action, len(funcs))
+	id, _ := info.ID()
+	fmt.Printf("kernel hook=%v, action=%d, functions=%d, prog_id=%d\n", found, action, len(funcs), id)
 }

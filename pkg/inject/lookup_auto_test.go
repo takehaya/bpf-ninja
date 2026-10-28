@@ -165,10 +165,10 @@ func TestLookupSkipReason(t *testing.T) {
 	}
 }
 
-// A direct lookup on an XSK map or devmap, which a typed hook refuses, goes to
-// the generic hook under Auto; Auto skips every other kind a typed hook
-// refuses, since no kernel test loads it through the generic hook. Explicit
-// selection refuses them all.
+// A direct lookup on an XSK map, devmap, devmap hash, sockmap or sockhash,
+// which a typed hook refuses, goes to the generic hook under Auto; Auto skips
+// every other kind a typed hook refuses, since no kernel test loads it through
+// the generic hook. Explicit selection refuses them all.
 func TestLookupAutoTypedOnlyGoesGeneric(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -178,9 +178,9 @@ func TestLookupAutoTypedOnlyGoesGeneric(t *testing.T) {
 	}{
 		{"xskmap", func(m *ebpf.MapSpec) { m.Type, m.ValueSize, m.Value = ebpf.XSKMap, 4, nil }, "map type XSKMap is unsupported", true},
 		{"devmap", func(m *ebpf.MapSpec) { m.Type, m.ValueSize, m.Value = ebpf.DevMap, 4, nil }, "map type DevMap is unsupported", true},
-		{"sockmap", func(m *ebpf.MapSpec) { m.Type, m.ValueSize, m.Value = ebpf.SockMap, 8, nil }, "map type SockMap is unsupported", false},
-		{"sockhash", func(m *ebpf.MapSpec) { m.Type, m.ValueSize, m.Value = ebpf.SockHash, 8, nil }, "map type SockHash is unsupported", false},
-		{"devmap-hash", func(m *ebpf.MapSpec) { m.Type, m.ValueSize, m.Value = ebpf.DevMapHash, 4, nil }, "map type DevMapHash is unsupported", false},
+		{"sockmap", func(m *ebpf.MapSpec) { m.Type, m.ValueSize, m.Value = ebpf.SockMap, 8, nil }, "map type SockMap is unsupported", true},
+		{"sockhash", func(m *ebpf.MapSpec) { m.Type, m.ValueSize, m.Value = ebpf.SockHash, 8, nil }, "map type SockHash is unsupported", true},
+		{"devmap-hash", func(m *ebpf.MapSpec) { m.Type, m.ValueSize, m.Value = ebpf.DevMapHash, 4, nil }, "map type DevMapHash is unsupported", true},
 		{"cpumap", func(m *ebpf.MapSpec) { m.Type, m.ValueSize, m.Value = ebpf.CPUMap, 4, nil }, "map type CPUMap is unsupported", false},
 		{"reuseport", func(m *ebpf.MapSpec) { m.Type, m.ValueSize, m.Value = ebpf.ReusePortSockArray, 8, nil }, "map type ReusePortSockArray is unsupported", false},
 		{"special-value", func(m *ebpf.MapSpec) { m.Value.(*btf.Struct).Name = "xdp_md" }, `map value type "xdp_md" has a special global-function pointer ABI`, false},
@@ -675,6 +675,42 @@ func TestStackLimitsUnchangedChain(t *testing.T) {
 	err := checkStackLimits(in, program(-16, -312), -304)
 	if !errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), "orphan -> deep") {
 		t.Fatalf("deepened chain: want refusal naming orphan -> deep, got %v", err)
+	}
+}
+
+// A timer callback counts under the chain that registers it however the
+// pointer reaches the helper, live or behind a dead branch: with the entry's
+// ctx spill (288 bytes with the 32-byte rounding), cb's 32 and sub's 256 the
+// chain is 576 bytes and the transform refuses. ELF and both raw forms.
+func TestStackLimitsTimerCallback(t *testing.T) {
+	req := LookupRequest{ProgramName: "caller", Entry: true, HookName: "obs", Stack: StackAudit{LowestOffset: -256}}
+	for _, register := range []string{"timer", "dead", "moved", "jump", "loop", "direct"} {
+		t.Run(register, func(t *testing.T) {
+			check := func(form string, err error) {
+				t.Helper()
+				if !errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), "caller -> cb -> sub uses 576 bytes") {
+					t.Fatalf("%s: want refusal naming caller -> cb -> sub, got %v", form, err)
+				}
+			}
+			spec := func() *ebpf.CollectionSpec { return timerCallee(-256, -16, -256, register) }
+			_, err := transformLookup(spec(), req)
+			check("elf", err)
+			for _, numeric := range []bool{false, true} {
+				p := rawLookupFixture(t, spec(), "caller", numeric)
+				_, err := TransformLookupRaw(p, LookupRequestRaw{Entry: true, HookName: "obs", Stack: req.Stack})
+				check(map[bool]string{false: "raw-symbolic", true: "raw-numeric"}[numeric], err)
+			}
+		})
+	}
+	// The dead-registration shape at the kernel's own boundary: 448 + 32 + 32
+	// loads, the entry's spill (480) breaks it.
+	spec := timerCallee(-448, -16, -16, "dead")
+	if err := checkStackLimits(spec.Programs["caller"].Instructions, spec.Programs["caller"].Instructions, -448); err != nil {
+		t.Fatalf("unchanged dead chain at 512: %v", err)
+	}
+	_, err := transformLookup(spec, LookupRequest{ProgramName: "caller", Entry: true, HookName: "obs", Stack: StackAudit{LowestOffset: -448}})
+	if !errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), "caller -> cb -> sub uses 544 bytes") {
+		t.Fatalf("dead chain past 512: want refusal naming caller -> cb -> sub, got %v", err)
 	}
 }
 

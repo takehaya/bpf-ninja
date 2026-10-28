@@ -4,7 +4,10 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"net"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/cilium/ebpf"
@@ -129,6 +132,56 @@ func bpfMapIDOffset(t *testing.T, kernel *btf.Spec) int32 {
 	return -1
 }
 
+// packetLength reads the packet length from the hook ctx in R6. read runs
+// first and may exit to "done"; length leaves the length in R2, clobbering
+// R1. The tracing verifier translates xdp_md to the kernel's xdp_buff (data_end
+// - data) and __sk_buff to sk_buff (len). raw reads through
+// bpf_probe_read_kernel into fp-72 and fp-80, for a static hook whose ctx
+// argument the kernel passes as a u64.
+func packetLength(t *testing.T, kernel *btf.Spec, target *ebpf.Program, raw bool) (read, length asm.Instructions) {
+	t.Helper()
+	name, fields := "xdp_buff", []string{"data", "data_end"}
+	if target.Type() == ebpf.SchedCLS || target.Type() == ebpf.SchedACT {
+		name, fields = "sk_buff", []string{"len"}
+	}
+	var ctx *btf.Struct
+	if err := kernel.TypeByName(name, &ctx); err != nil {
+		t.Fatal(err)
+	}
+	offsets := map[string]int16{}
+	for _, member := range ctx.Members {
+		if slices.Contains(fields, member.Name) {
+			offsets[member.Name] = int16(member.Offset.Bytes())
+		}
+	}
+	if len(offsets) != len(fields) {
+		t.Fatalf("kernel %s lacks %v", name, fields)
+	}
+	size := asm.DWord
+	if name == "sk_buff" {
+		size = asm.Word
+	}
+	base, at := asm.R6, func(i int) int16 { return offsets[fields[i]] }
+	if raw {
+		for i, field := range fields {
+			read = append(read,
+				asm.Mov.Reg(asm.R1, asm.RFP), asm.Add.Imm(asm.R1, int32(-72-8*i)),
+				asm.Mov.Imm(asm.R2, int32(size.Sizeof())), asm.Mov.Reg(asm.R3, asm.R6), asm.Add.Imm(asm.R3, int32(offsets[field])),
+				asm.FnProbeReadKernel.Call(),
+				asm.JNE.Imm(asm.R0, 0, "done"))
+		}
+		base, at = asm.RFP, func(i int) int16 { return int16(-72 - 8*i) }
+	}
+	if name == "sk_buff" {
+		return read, asm.Instructions{asm.LoadMem(asm.R2, base, at(0), size)}
+	}
+	return read, asm.Instructions{
+		asm.LoadMem(asm.R1, base, at(0), size),
+		asm.LoadMem(asm.R2, base, at(1), size),
+		asm.Sub.Reg(asm.R2, asm.R1),
+	}
+}
+
 // lookupObserverArgs records seen, packet length, key, value.imsi and what
 // args selects.
 func lookupObserverArgs(t *testing.T, hook string, target *ebpf.Program, args observerArgs) *ebpf.CollectionSpec {
@@ -137,43 +190,17 @@ func lookupObserverArgs(t *testing.T, hook string, target *ebpf.Program, args ob
 	if err != nil {
 		t.Fatal(err)
 	}
-	var xdp *btf.Struct
-	if err := kernel.TypeByName("xdp_buff", &xdp); err != nil {
-		t.Fatal(err)
-	}
-	offsets := map[string]int16{}
-	for _, member := range xdp.Members {
-		if member.Name == "data" || member.Name == "data_end" {
-			offsets[member.Name] = int16(member.Offset.Bytes())
-		}
-	}
-	if len(offsets) != 2 {
-		t.Fatal("kernel xdp_buff lacks data/data_end")
-	}
 	keyArg, recordSize := int32(1), uint32(24)
 	if args.site {
 		keyArg, recordSize = 2, 32
 	}
 	insns := asm.Instructions{
-		asm.LoadMem(asm.R6, asm.R1, 0, asm.DWord), // xdp ctx
+		asm.LoadMem(asm.R6, asm.R1, 0, asm.DWord), // hook ctx
 		asm.Mov.Reg(asm.R9, asm.R1),
 		asm.Mov.Imm(asm.R0, 0), asm.StoreMem(asm.RFP, -48, asm.R0, asm.DWord),
 	}
-	// The tracing verifier translates xdp_md to the kernel's xdp_buff.
-	bounds := asm.Instructions{
-		asm.LoadMem(asm.R1, asm.R6, offsets["data"], asm.DWord),
-		asm.LoadMem(asm.R2, asm.R6, offsets["data_end"], asm.DWord),
-	}
-	if args.rawCtx {
-		for i, field := range []string{"data", "data_end"} {
-			insns = append(insns,
-				asm.Mov.Reg(asm.R1, asm.RFP), asm.Add.Imm(asm.R1, int32(-72-8*i)),
-				asm.Mov.Imm(asm.R2, 8), asm.Mov.Reg(asm.R3, asm.R6), asm.Add.Imm(asm.R3, int32(offsets[field])),
-				asm.FnProbeReadKernel.Call(),
-				asm.JNE.Imm(asm.R0, 0, "done"))
-		}
-		bounds = asm.Instructions{asm.LoadMem(asm.R1, asm.RFP, -72, asm.DWord), asm.LoadMem(asm.R2, asm.RFP, -80, asm.DWord)}
-	}
+	read, length := packetLength(t, kernel, target, args.rawCtx)
+	insns = append(insns, read...)
 	insns = append(insns,
 		asm.Mov.Reg(asm.R1, asm.R9),
 		asm.Mov.Imm(asm.R2, keyArg), asm.Mov.Reg(asm.R3, asm.RFP), asm.Add.Imm(asm.R3, -16),
@@ -198,9 +225,8 @@ func lookupObserverArgs(t *testing.T, hook string, target *ebpf.Program, args ob
 		asm.JEq.Imm(asm.R0, 0, "done"),
 		asm.LoadMem(asm.R1, asm.R0, 0, asm.DWord), asm.Add.Imm(asm.R1, 1),
 		asm.StoreMem(asm.R0, 0, asm.R1, asm.DWord))
-	insns = append(insns, bounds...)
+	insns = append(insns, length...)
 	insns = append(insns,
-		asm.Sub.Reg(asm.R2, asm.R1),
 		asm.StoreMem(asm.R0, 8, asm.R2, asm.Word),
 		asm.LoadMem(asm.R1, asm.RFP, -28, asm.Word),
 		asm.StoreMem(asm.R0, 12, asm.R1, asm.Word),
@@ -596,10 +622,15 @@ func TestBpfLookupInjectionLPMTrie(t *testing.T) {
 }
 
 // kindFixture looks up key 0 in a map of the given kind by a direct R1
-// reference, returning XDP_TX on a hit and XDP_PASS on a miss.
+// reference, returning XDP_TX on a hit and XDP_PASS on a miss. A socket map's
+// hit is a referenced socket, which the fixture releases.
 func kindFixture(mapType ebpf.MapType, valueSize uint32) *ebpf.CollectionSpec {
+	sock := mapType == ebpf.SockMap || mapType == ebpf.SockHash
 	miss := asm.JEq.Imm(asm.R0, 0, "")
-	miss.Offset = 2 // slot 6 -> slot 9
+	miss.Offset = 2 // slot 6 -> slot 9, or 11 after the release
+	if sock {
+		miss.Offset = 4
+	}
 	insns := asm.Instructions{
 		asm.StoreImm(asm.RFP, -4, 0, asm.Word),       // 0: key 0
 		asm.Mov.Reg(asm.R2, asm.RFP),                 // 1
@@ -607,11 +638,15 @@ func kindFixture(mapType ebpf.MapType, valueSize uint32) *ebpf.CollectionSpec {
 		asm.LoadMapPtr(asm.R1, 0).WithReference("m"), // 3-4
 		asm.FnMapLookupElem.Call(),                   // 5
 		miss,                                         // 6
-		asm.Mov.Imm(asm.R0, 3),                       // 7: hit -> XDP_TX
-		asm.Return(),                                 // 8
-		asm.Mov.Imm(asm.R0, 2),                       // 9: miss -> XDP_PASS
-		asm.Return(),                                 // 10
 	}
+	if sock {
+		insns = append(insns, asm.Mov.Reg(asm.R1, asm.R0), asm.FnSkRelease.Call())
+	}
+	insns = append(insns,
+		asm.Mov.Imm(asm.R0, 3), // hit -> XDP_TX
+		asm.Return(),
+		asm.Mov.Imm(asm.R0, 2), // miss -> XDP_PASS
+		asm.Return())
 	insns[0] = btf.WithFuncMetadata(insns[0].WithSymbol("p").WithSource(asm.Comment("generic-kind fixture")), xdpFunc("p"))
 	return &ebpf.CollectionSpec{ByteOrder: binary.LittleEndian,
 		Maps:     map[string]*ebpf.MapSpec{"m": {Name: "m", Type: mapType, KeySize: 4, ValueSize: valueSize, MaxEntries: 1}},
@@ -619,8 +654,28 @@ func kindFixture(mapType ebpf.MapType, valueSize uint32) *ebpf.CollectionSpec {
 	}
 }
 
+// boundUDP returns a bound UDP socket's fd, which a sockmap or sockhash takes.
+func boundUDP(t *testing.T) uint64 {
+	t.Helper()
+	conn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	raw, err := conn.SyscallConn()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fd uintptr
+	if err := raw.Control(func(f uintptr) { fd = f }); err != nil {
+		t.Fatal(err)
+	}
+	return uint64(fd)
+}
+
 // Auto routes a direct lookup on a map kind a typed hook refuses to the generic
-// hook; the verifier accepts the generic ABI receiving the special result.
+// hook, and Dispatch to the dispatch hook; the verifier accepts the generic ABI
+// receiving the special result.
 func TestBpfLookupInjectionGenericKinds(t *testing.T)       { testGenericKinds(t, false) }
 func TestBpfLookupInjectionGenericKindsStatic(t *testing.T) { testGenericKinds(t, true) }
 
@@ -635,67 +690,169 @@ func testGenericKinds(t *testing.T, static bool) {
 		name string
 		typ  ebpf.MapType
 		size uint32
-		fill any // nil leaves the runtime hit unexercised
+		fill func(t *testing.T) any // nil leaves the runtime hit unexercised
 	}{
 		{"xskmap", ebpf.XSKMap, 4, nil},
-		{"devmap", ebpf.DevMap, 4, uint32(lo.Index)},
+		{"devmap", ebpf.DevMap, 4, func(*testing.T) any { return uint32(lo.Index) }},
+		{"devmap-hash", ebpf.DevMapHash, 4, func(*testing.T) any { return uint32(lo.Index) }},
+		{"sockmap", ebpf.SockMap, 8, func(t *testing.T) any { return boundUDP(t) }},
+		{"sockhash", ebpf.SockHash, 8, func(t *testing.T) any { return boundUDP(t) }},
 	} {
+		for _, mode := range []struct {
+			suffix       string
+			dispatch, sk bool
+		}{{"", false, false}, {"-dispatch", true, false}, {"-tc", false, true}, {"-tc-dispatch", true, true}} {
+			t.Run(tc.name+mode.suffix, func(t *testing.T) {
+				testGenericKind(t, tc.typ, tc.size, tc.fill, static, mode.dispatch, mode.sk)
+			})
+		}
+	}
+}
+
+// testGenericKind runs kindFixture as XDP, or as tc with skb, through the
+// generic or dispatch hook. The tc observer is dispatchObserver, which does not
+// read the context.
+func testGenericKind(t *testing.T, typ ebpf.MapType, size uint32, fill func(*testing.T) any, static, dispatch, skb bool) {
+	fixture := func() *ebpf.CollectionSpec { return kindFixture(typ, size) }
+	if skb {
+		fixture = func() *ebpf.CollectionSpec { return asTC(kindFixture(typ, size)) }
+	}
+	plain := loadOrSkip(t, fixture())
+	t.Cleanup(plain.Close)
+	work := fixture()
+	plan, err := transformLookup(work, LookupRequest{ProgramName: "p", Auto: true, Dispatch: dispatch, StaticUntrusted: static,
+		HookName: "obs", Stack: StackAudit{LowestOffset: -8}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hook := "obs_any"
+	if dispatch {
+		hook = "obs"
+	}
+	if len(plan.hooks) != 1 || !plan.hooks[0].Generic || plan.hooks[0].Name != hook || plan.hooks[0].Static != static || len(plan.skipped) != 0 {
+		t.Fatalf("plan: %+v", plan)
+	}
+	injected := loadHooked(t, work, plan.hooks)
+	t.Cleanup(injected.Close)
+	if skb {
+		testGenericKindTC(t, injected, hook, fill)
+		return
+	}
+	obs := loadOrSkip(t, lookupObserverArgs(t, hook, injected.Programs["p"], observerArgs{site: true, mapID: true, rawCtx: static}))
+	t.Cleanup(obs.Close)
+	l, err := link.AttachTracing(link.TracingOptions{Program: obs.Programs["observe"], AttachType: ebpf.AttachTraceFEntry})
+	if err != nil {
+		if errors.Is(err, unix.EPERM) || errors.Is(err, ebpf.ErrNotSupported) {
+			t.Skipf("fentry unavailable: %v", err)
+		}
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = l.Close() })
+	if err := obs.Maps["obs"].Put(uint32(0), [32]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	// A miss: the empty map returns NULL, so the hook never fires.
+	if ret, _ := runXDP(t, injected.Programs["p"]); ret != 2 {
+		t.Fatalf("miss action %d", ret)
+	}
+	var got [32]byte
+	if err := obs.Maps["obs"].Lookup(uint32(0), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got != [32]byte{} {
+		t.Fatalf("miss fired the hook: %x", got)
+	}
+	if fill == nil {
+		return
+	}
+	if err := injected.Maps["m"].Put(uint32(0), fill(t)); err != nil {
+		t.Skipf("populate: %v", err)
+	}
+	// Repeated hits: a socket reference the hook path failed to release
+	// would leak per run.
+	for range 3 {
+		if ret, _ := runXDP(t, injected.Programs["p"]); ret != 3 {
+			t.Fatalf("hit action %d", ret)
+		}
+	}
+	info, err := injected.Maps["m"].Info()
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, _ := info.ID()
+	if err := obs.Maps["obs"].Lookup(uint32(0), &got); err != nil {
+		t.Fatal(err)
+	}
+	if seen := binary.LittleEndian.Uint64(got[:]); seen != 3 || ebpf.MapID(binary.LittleEndian.Uint32(got[28:])) != id {
+		t.Fatalf("hit: seen=%d mapID=%d want %d", seen, binary.LittleEndian.Uint32(got[28:]), id)
+	}
+}
+
+func testGenericKindTC(t *testing.T, injected *ebpf.Collection, hook string, fill func(*testing.T) any) {
+	obs := loadOrSkip(t, dispatchObserver(t, hook, injected.Programs["p"]))
+	t.Cleanup(obs.Close)
+	l, err := link.AttachTracing(link.TracingOptions{Program: obs.Programs["observe"], AttachType: ebpf.AttachTraceFEntry})
+	if err != nil {
+		if errors.Is(err, unix.EPERM) || errors.Is(err, ebpf.ErrNotSupported) {
+			t.Skipf("fentry unavailable: %v", err)
+		}
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = l.Close() })
+	calls := func() uint64 {
+		var n uint64
+		if err := obs.Maps["cnt"].Lookup(uint32(0), &n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	if ret, _ := runXDP(t, injected.Programs["p"]); ret != 2 || calls() != 0 {
+		t.Fatalf("miss: action %d, calls %d", ret, calls())
+	}
+	if fill == nil {
+		return
+	}
+	if err := injected.Maps["m"].Put(uint32(0), fill(t)); err != nil {
+		t.Skipf("populate: %v", err)
+	}
+	for range 3 {
+		if ret, _ := runXDP(t, injected.Programs["p"]); ret != 3 {
+			t.Fatalf("hit action %d", ret)
+		}
+	}
+	info, err := injected.Maps["m"].Info()
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, _ := info.ID()
+	var rec [32]byte
+	if err := obs.Maps["obs"].Lookup(uint32(0), &rec); err != nil {
+		t.Fatal(err)
+	}
+	if n := calls(); n != 3 || ebpf.MapID(binary.LittleEndian.Uint32(rec[24:])) != id {
+		t.Fatalf("hit: calls=%d mapID=%d want %d", n, binary.LittleEndian.Uint32(rec[24:]), id)
+	}
+}
+
+// The kernel refuses a program's bpf_map_lookup_elem on a cpumap or a
+// reuseport array, so Auto keeps skipping those kinds: no program could carry
+// such a lookup to the generic hook.
+func TestBpfLookupKindsWithoutProgramLookup(t *testing.T) {
+	testutil.SkipIfNotRoot(t)
+	for _, tc := range []struct {
+		name string
+		typ  ebpf.MapType
+		size uint32
+	}{{"cpumap", ebpf.CPUMap, 4}, {"reuseport", ebpf.ReusePortSockArray, 8}} {
 		t.Run(tc.name, func(t *testing.T) {
-			plain := loadOrSkip(t, kindFixture(tc.typ, tc.size))
-			t.Cleanup(plain.Close)
-			work := kindFixture(tc.typ, tc.size)
-			plan, err := transformLookup(work, LookupRequest{ProgramName: "p", Auto: true, StaticUntrusted: static, HookName: "obs", Stack: StackAudit{LowestOffset: -8}})
-			if err != nil {
-				t.Fatal(err)
+			c, err := ebpf.NewCollection(kindFixture(tc.typ, tc.size))
+			if err == nil {
+				c.Close()
+				t.Fatal("kernel accepted the lookup")
 			}
-			if len(plan.hooks) != 1 || !plan.hooks[0].Generic || plan.hooks[0].Static != static || len(plan.skipped) != 0 {
-				t.Fatalf("plan: %+v", plan)
-			}
-			injected := loadHooked(t, work, plan.hooks)
-			t.Cleanup(injected.Close)
-			obs := loadOrSkip(t, lookupObserverArgs(t, "obs_any", injected.Programs["p"], observerArgs{site: true, mapID: true, rawCtx: static}))
-			t.Cleanup(obs.Close)
-			l, err := link.AttachTracing(link.TracingOptions{Program: obs.Programs["observe"], AttachType: ebpf.AttachTraceFEntry})
-			if err != nil {
-				if errors.Is(err, unix.EPERM) || errors.Is(err, ebpf.ErrNotSupported) {
-					t.Skipf("fentry unavailable: %v", err)
-				}
-				t.Fatal(err)
-			}
-			t.Cleanup(func() { _ = l.Close() })
-			if err := obs.Maps["obs"].Put(uint32(0), [32]byte{}); err != nil {
-				t.Fatal(err)
-			}
-			// A miss: the empty map returns NULL, so the hook never fires.
-			if ret, _ := runXDP(t, injected.Programs["p"]); ret != 2 {
-				t.Fatalf("miss action %d", ret)
-			}
-			var got [32]byte
-			if err := obs.Maps["obs"].Lookup(uint32(0), &got); err != nil {
-				t.Fatal(err)
-			}
-			if got != [32]byte{} {
-				t.Fatalf("miss fired the hook: %x", got)
-			}
-			if tc.fill == nil {
-				return
-			}
-			if err := injected.Maps["m"].Put(uint32(0), tc.fill); err != nil {
-				t.Skipf("populate %s: %v", tc.name, err)
-			}
-			if ret, _ := runXDP(t, injected.Programs["p"]); ret != 3 {
-				t.Fatalf("hit action %d", ret)
-			}
-			info, err := injected.Maps["m"].Info()
-			if err != nil {
-				t.Fatal(err)
-			}
-			id, _ := info.ID()
-			if err := obs.Maps["obs"].Lookup(uint32(0), &got); err != nil {
-				t.Fatal(err)
-			}
-			if seen := binary.LittleEndian.Uint64(got[:]); seen != 1 || ebpf.MapID(binary.LittleEndian.Uint32(got[28:])) != id {
-				t.Fatalf("hit: seen=%d mapID=%d want %d", seen, binary.LittleEndian.Uint32(got[28:]), id)
+			var ve *ebpf.VerifierError
+			if !errors.As(err, &ve) || !strings.Contains(fmt.Sprintf("%+v", ve), "cannot pass map_type") {
+				t.Fatalf("want a map_type refusal: %+v", err)
 			}
 		})
 	}

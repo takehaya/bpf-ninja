@@ -50,7 +50,8 @@ type stackFunc struct {
 
 // stackCallGraph splits insns into functions at BTF function metadata and
 // links them by bpf-to-bpf calls and callback references, symbolic or
-// numeric. Function 0 is the entry.
+// numeric. Function 0 is the entry. Every callback reference is an edge, an
+// async registration included (see checkStackLimits).
 //
 // A function's depth is its deepest direct R10 reference (R10 as the base of
 // a load or store). A function that uses R10 in any other way, such as
@@ -123,24 +124,15 @@ func stackCallGraph(insns asm.Instructions, lowest int16) ([]stackFunc, error) {
 	return funcs, nil
 }
 
-// stackLimitBroken describes a limit that a changed chain of funcs breaks
-// under round, or returns "". A chain is changed when it passes through a
-// changed function; for the caller-depth limit, through a changed caller of
-// the tail-calling function. Of the chains to a function it takes the longest
-// changed one: the most caller bytes for the stack limits, the most frames for
-// the frame limit. Callbacks count as synchronous frames under their
-// referencing function, and functions no chain reaches (an exception
-// callback, say) are walked as their own roots; both only make a chain longer
-// than the kernel's walk.
-func stackLimitBroken(funcs []stackFunc, round func(int) int) (string, error) {
-	// Topological order by depth-first postorder; a cycle is recursion, which
-	// the kernel rejects.
+// stackTopoOrder lists funcs callers first. A cycle is recursion, which the
+// kernel rejects.
+func stackTopoOrder(funcs []stackFunc) ([]int, error) {
 	const (
 		open = iota + 1
 		done
 	)
 	state := make([]int, len(funcs))
-	var order []int
+	var postorder []int
 	var visit func(i int) error
 	visit = func(i int) error {
 		switch state[i] {
@@ -156,84 +148,150 @@ func stackLimitBroken(funcs []stackFunc, round func(int) int) (string, error) {
 			}
 		}
 		state[i] = done
-		order = append(order, i)
+		postorder = append(postorder, i)
 		return nil
 	}
 	for i := range funcs {
 		if err := visit(i); err != nil {
-			return "", err
+			return nil, err
 		}
 	}
-	// above and frames are the most caller bytes and frames over every chain
-	// to a function; aboveNew and framesNew over the chains with a changed
-	// caller (-1 and 0 when there is none). The preds rebuild those chains.
-	n := len(funcs)
-	above, frames, aboveNew, framesNew := make([]int, n), make([]int, n), make([]int, n), make([]int, n)
-	abovePred, framesPred, aboveNewPred, framesNewPred := make([]int, n), make([]int, n), make([]int, n), make([]int, n)
-	for i := range funcs {
-		frames[i], aboveNew[i] = 1, -1
-		abovePred[i], framesPred[i], aboveNewPred[i], framesNewPred[i] = -1, -1, -1, -1
+	for i, j := 0, len(postorder)-1; i < j; i, j = i+1, j-1 {
+		postorder[i], postorder[j] = postorder[j], postorder[i]
 	}
-	for k := len(order) - 1; k >= 0; k-- {
-		i := order[k]
+	return postorder, nil
+}
+
+// A chainKind selects the call chains to a function that a limit is measured
+// over.
+type chainKind int
+
+const (
+	anyChain     chainKind = iota // every chain
+	changedChain                  // the chains through a changed caller
+)
+
+// callerChain is one chain of callers above a function: their rounded frame
+// bytes and count, the direct caller the chain ends with (-1 at a root), and
+// which of that caller's own chains it extends.
+type callerChain struct {
+	bytes, frames int
+	caller        int
+	from          chainKind
+}
+
+// callerChains are the longest chains of callers above a function, by bytes
+// and by frames (the two can differ), or none when found is false.
+type callerChains struct {
+	found    bool
+	byBytes  callerChain
+	byFrames callerChain
+}
+
+// extend adds caller, whose frame holds bytes, to from's chains and keeps
+// whichever is longer. Ties keep the earlier caller.
+func (cc *callerChains) extend(from callerChains, kind chainKind, caller, bytes int) {
+	if !from.found {
+		return
+	}
+	grow := func(c callerChain) callerChain {
+		return callerChain{bytes: c.bytes + bytes, frames: c.frames + 1, caller: caller, from: kind}
+	}
+	if c := grow(from.byBytes); !cc.found || c.bytes > cc.byBytes.bytes {
+		cc.byBytes = c
+	}
+	if c := grow(from.byFrames); !cc.found || c.frames > cc.byFrames.frames {
+		cc.byFrames = c
+	}
+	cc.found = true
+}
+
+// stackReach is what the longest chains reach at each function of a call
+// graph: reach[i][anyChain] over every chain to i, reach[i][changedChain]
+// over the chains through a changed caller of i.
+type stackReach struct {
+	funcs []stackFunc
+	reach [][2]callerChains
+}
+
+// stackChains measures funcs' call chains with each frame rounded by round.
+// Callbacks count as frames under their referencing function, and a function
+// no chain reaches (an exception callback, say) starts a chain of its own.
+func stackChains(funcs []stackFunc, round func(int) int) (*stackReach, error) {
+	order, err := stackTopoOrder(funcs)
+	if err != nil {
+		return nil, err
+	}
+	s := &stackReach{funcs: funcs, reach: make([][2]callerChains, len(funcs))}
+	for i := range funcs {
+		s.reach[i][anyChain] = callerChains{found: true, byBytes: callerChain{caller: -1}, byFrames: callerChain{caller: -1}}
+	}
+	for _, i := range order {
 		f := funcs[i]
-		// What i hands its callees over changed chains: every chain once i
-		// itself changed.
-		passAbove, passFrames := aboveNew[i], framesNew[i]
+		// Below a changed function every chain counts as changed.
+		pass := changedChain
 		if f.changed {
-			passAbove, passFrames = above[i], frames[i]
+			pass = anyChain
 		}
 		for _, c := range f.callees {
-			if sum := above[i] + round(f.depth); sum > above[c] {
-				above[c], abovePred[c] = sum, i
-			}
-			if frames[i]+1 > frames[c] {
-				frames[c], framesPred[c] = frames[i]+1, i
-			}
-			if sum := passAbove + round(f.depth); passAbove >= 0 && sum > aboveNew[c] {
-				aboveNew[c], aboveNewPred[c] = sum, i
-			}
-			if passFrames > 0 && passFrames+1 > framesNew[c] {
-				framesNew[c], framesNewPred[c] = passFrames+1, i
-			}
+			s.reach[c][anyChain].extend(s.reach[i][anyChain], anyChain, i, round(f.depth))
+			s.reach[c][changedChain].extend(s.reach[i][pass], pass, i, round(f.depth))
 		}
 	}
-	// chain names the chain to i whose last caller is j: the longest changed
-	// chain up to its first changed function (from i itself when useAll), the
-	// longest chain of any kind above that.
-	chain := func(i, j int, useAll bool, all, changed []int) string {
-		names := []string{funcs[i].name}
-		for j >= 0 {
-			names = append([]string{funcs[j].name}, names...)
-			if useAll = useAll || funcs[j].changed; useAll {
-				j = all[j]
-			} else {
-				j = changed[j]
-			}
+	return s, nil
+}
+
+// counted returns the chains to i that a changed chain through i is measured
+// over: every chain when i itself changed, else those with a changed caller.
+func (s *stackReach) counted(i int) callerChains {
+	if s.funcs[i].changed {
+		return s.reach[i][anyChain]
+	}
+	return s.reach[i][changedChain]
+}
+
+// names spells out the chain c leads to i along, root first.
+func (s *stackReach) names(i int, c callerChain, byFrames bool) string {
+	names := []string{s.funcs[i].name}
+	for c.caller >= 0 {
+		names = append([]string{s.funcs[c.caller].name}, names...)
+		if next := s.reach[c.caller][c.from]; byFrames {
+			c = next.byFrames
+		} else {
+			c = next.byBytes
 		}
-		return strings.Join(names, " -> ")
+	}
+	return strings.Join(names, " -> ")
+}
+
+// stackLimitBroken describes a limit that a changed chain of funcs breaks
+// under round, or returns "". A chain is changed when it passes through a
+// changed function; for the caller-depth limit, through a changed caller of
+// the tail-calling function. Of the chains to a function it takes the longest
+// changed one: the most caller bytes for the stack limits, the most frames for
+// the frame limit.
+func stackLimitBroken(funcs []stackFunc, round func(int) int) (string, error) {
+	s, err := stackChains(funcs, round)
+	if err != nil {
+		return "", err
 	}
 	broken := map[string]string{}
 	for i, f := range funcs {
-		if i != 0 && f.tailCall && aboveNew[i] >= maxCallerDepth {
+		if callers := s.reach[i][changedChain]; i != 0 && f.tailCall && callers.found && callers.byBytes.bytes >= maxCallerDepth {
 			broken["caller:"+f.name] = fmt.Sprintf("the frames calling %s (%s) total %d bytes, at or past the kernel's %d-byte caller-depth limit for a subprogram that calls bpf_tail_call",
-				f.name, chain(i, aboveNewPred[i], false, abovePred, aboveNewPred), aboveNew[i], maxCallerDepth)
+				f.name, s.names(i, callers.byBytes, false), callers.byBytes.bytes, maxCallerDepth)
 		}
-		callers, pred := aboveNew[i], aboveNewPred[i]
-		if f.changed {
-			callers, pred = above[i], abovePred[i]
+		counted := s.counted(i)
+		if !counted.found {
+			continue
 		}
-		if total := callers + round(f.depth); callers >= 0 && total > maxCombinedStack {
+		if total := counted.byBytes.bytes + round(f.depth); total > maxCombinedStack {
 			broken["combined:"+f.name] = fmt.Sprintf("the call chain %s uses %d bytes of stack, past the kernel's %d-byte combined limit",
-				chain(i, pred, f.changed, abovePred, aboveNewPred), total, maxCombinedStack)
+				s.names(i, counted.byBytes, false), total, maxCombinedStack)
 		}
-		count, fpred := framesNew[i], framesNewPred[i]
-		if f.changed {
-			count, fpred = frames[i], framesPred[i]
-		}
-		if count > maxCallFrames {
+		if count := counted.byFrames.frames + 1; count > maxCallFrames {
 			broken["frames:"+f.name] = fmt.Sprintf("the call chain %s is %d frames deep, past the kernel's %d-frame limit",
-				chain(i, fpred, f.changed, framesPred, framesNewPred), count, maxCallFrames)
+				s.names(i, counted.byFrames, true), count, maxCallFrames)
 		}
 	}
 	if len(broken) == 0 {
@@ -265,12 +323,38 @@ func stackLimitBroken(funcs []stackFunc, round func(int) int) (string, error) {
 // Each limit is checked under each kernel frame rounding. lowest is the
 // audited bound, the depth of a function that copies R10 (see stackCallGraph).
 //
-// The model is conservative in two known ways, both of which only refuse a
-// program the kernel would load, never accept one it rejects: an async
-// callback (bpf_timer_set_callback, bpf_wq_set_callback) is walked as part of
-// the chain that references it, although 6.8 and later check it as a chain of
-// its own; and 7.1 and later restart the frame count at a global function,
-// which the frame limit here does not.
+// The model stays conservative in three known ways, each of which can only
+// refuse a program the kernel would load, never accept one it rejects. The
+// rewriter does not know the target kernel, so it keeps to what holds on
+// every one from 6.1 on:
+//   - A function that copies R10 is charged the audited bound rather than
+//     what the copy reaches. The verifier grows a frame's stack_depth with
+//     every access through its stack pointers (update_stack_depth on 6.1,
+//     grow_stack_state later), helper memory arguments and callees included
+//     (check_helper_mem_access), which only a value analysis of the copy
+//     could reproduce; the bound covers it by contract.
+//   - An async callback (bpf_timer_set_callback, and the kfuncs
+//     bpf_wq_set_callback_impl and bpf_task_work_schedule_*) is walked under
+//     the chain that registers it. The kernel marks a callback is_async_cb
+//     only in do_check, when it analyzes the registering call
+//     (__check_func_call); check_max_stack_depth then skips a reference to
+//     a marked callback (6.1) or walks it as a root of its own instead (6.6
+//     on, and the 6.1 stable branch). A registration behind a branch the
+//     verifier proves dead by value is never analyzed, so its callback stays
+//     unmarked and check_max_stack_depth, which runs before
+//     opt_remove_dead_code, walks the reference as a plain call with the
+//     callback's frames counted (at their unverified depth, 0 before
+//     rounding). The instruction shape cannot tell a live registration from
+//     a dead one, so dropping the edge on shape alone accepted a program
+//     6.1 and 6.6 reject (a live 448-byte entry, a dead registration and
+//     cb -> sub: 448+32+32 originally, 480+32+32 once the entry spills).
+//   - The frame count never restarts. 7.1 restarts it at a global function
+//     (check_max_stack_depth_subprog: `frame = bpf_subprog_is_global(env,
+//     idx) ? 0 : frame + 1`), but 6.1 through 7.0 count every frame of the
+//     chain (`frame++`), so a chain over eight frames through a global
+//     function loads on 7.1 and is rejected on every earlier kernel. An
+//     opt-in would move that decision to the caller for little gain, since
+//     the limit binds only on chains eight frames deep.
 //
 // The split into changed and unchanged chains matters only where an original
 // chain can stay unchanged: in the single-site Transform, and for an

@@ -47,8 +47,8 @@ The transformation core currently accepts lookup sites in the entry function and
 
 `"auto": true` instruments every supported lookup in the program instead of one selected lookup.
 `map`, `func`, `line`, `all_matches`, and `site_pcs` must then be absent, and `hook` is a prefix: each map gets its own hook named `HOOK_MAP`, with a `u32 site` argument after `ctx` that carries the lookup's raw instruction index.
-Lookups whose map is only known at run time (map-in-map, or a map pointer that reaches R1 indirectly), and lookups on XSK maps and devmaps, which have no typed hook, share one `HOOK_any` hook that also takes the map pointer.
-Lookups that the transform cannot support are skipped and listed in the diagnostic rather than refusing the load: lookups on other map kinds without a typed hook (sockmap and sockhash among them), lookups whose hook name would pass 127 bytes or whose slots do not fit the audited stack and, when the instrumented program would break a kernel call-chain stack limit, first the `HOOK_any` and `copy_read_only` lookups and then every lookup (with `dispatch`, every lookup at once, since each passes its map).
+Lookups whose map is only known at run time (map-in-map, or a map pointer that reaches R1 indirectly), and lookups on XSK maps, devmaps, devmap hashes, sockmaps and sockhashes, which have no typed hook, share one `HOOK_any` hook that also takes the map pointer.
+Lookups that the transform cannot support are skipped and listed in the diagnostic rather than refusing the load: lookups on other map kinds without a typed hook, lookups whose hook name would pass 127 bytes or whose slots do not fit the audited stack and, when the instrumented program would break a kernel call-chain stack limit, first the `HOOK_any` and `copy_read_only` lookups and then every lookup (with `dispatch`, every lookup at once, since each passes its map).
 `entry` and `tail_calls` hooks are kept; a rule that would instrument nothing at all is refused.
 The naming and hook ABI are described in [lookup-site-injection.md](lookup-site-injection.md#automatic-selection).
 
@@ -71,6 +71,61 @@ The frame holding the slots also calls the hook, which kernels that round frames
 Do not copy the example bound without auditing the actual program.
 `hook` must be a C identifier of at most 127 bytes, leaving room for the longest suffix the transform appends: at most 117 bytes with `tail_calls` (`_tail_call`), 121 with `entry` (`_entry`), and 125 with `auto` (`_0`); with `dispatch` the hook is named `hook` itself, so up to 127 bytes. Under `auto`, a map whose hook name would still not fit is skipped.
 Unknown JSON fields, duplicate program selectors, trailing JSON, and configurations larger than 1 MiB are rejected before launching.
+
+## Hooks as JSON
+
+`--hooks-json PATH` writes the injected programs and their hooks to `PATH`, so a tracer can find what to attach to without parsing the diagnostic.
+The target owns stdout, so the result goes to a file.
+The file is created before the target starts, with an empty `programs` list, and an unwritable path refuses before launching.
+After each injected load it is rewritten whole, by writing a temporary file in the same directory and renaming it, and this happens before the target receives the new program fd.
+A reader therefore sees a complete document, and every program the target can attach or run is already listed.
+Loads that fell back to the original program, or were refused, are not listed; the diagnostic still reports them.
+If a rewrite fails, the launcher reports it on stderr, keeps running the target, and exits with an error if the target itself succeeded.
+
+```json
+{
+  "version": 1,
+  "programs": [
+    {
+      "program": "p",
+      "func": "entry_with_long_name",
+      "type": "XDP",
+      "prog_id": 2,
+      "ctx_type": "xdp_md",
+      "hooks": [
+        {
+          "name": "lookup_hook_sessions",
+          "kind": "typed",
+          "map": "sessions",
+          "sites": [{"kind": "lookup", "pc": 6, "map": "sessions", "func": "entry_with_long_name"}],
+          "untrusted": false,
+          "copied": false,
+          "static": false,
+          "read_only": false
+        },
+        {"name": "lookup_hook_entry", "kind": "entry", "sites": [], "untrusted": false, "copied": false, "static": false, "read_only": false}
+      ],
+      "skipped": []
+    }
+  ]
+}
+```
+
+`version` is 1 and changes only when a field changes meaning or is removed; new fields can appear without a version change.
+Each entry of `programs` is one injected load, in load order, so a program loaded twice appears twice.
+`program` is the kernel program name, `func` the entry function, `type` the program type as cilium/ebpf names it (`XDP`, `SchedCLS`, `SchedACT`), and `prog_id` the kernel ID of the loaded program, which an fentry observer can open with `BPF_PROG_GET_FD_BY_ID`.
+`prog_id` is 0 if the launcher could not query it; the diagnostic then says why.
+`ctx_type` is the BTF struct the hooks' `ctx` argument points to: `xdp_md` or `__sk_buff`.
+
+Each hook is one function in the loaded program:
+
+- `kind` is `typed` (a lookup hook with the map's key and value types), `generic` (the `HOOK_any` hook that also takes the map pointer), `entry`, `tail_call`, or `dispatch`.
+- `map` is the map of a `typed` hook. A `generic` or `dispatch` hook serves several maps, so the map is given on each site instead.
+- `sites` are the helper calls that call the hook, in instruction order. Each has a `kind` (`lookup`, `tail_call`, or `entry`), its raw instruction index `pc` (the `site` argument the hook receives), and, where known, `map`, `func`, `file` and `line`. An `entry` hook has no sites.
+- A `dispatch` rule produces one hook with every site: the lookups, the failed tail calls, and the entry call as the site `4294967295` (`inject.DispatchEntrySite`). The entry call comes first, since it runs at program start, and the other sites follow in instruction order across maps and kinds.
+- `untrusted`, `copied`, `static` and `read_only` mirror `inject.LookupHook`: the hook takes `arg:untrusted` pointers, its value is a stack copy, it is a static function (read every argument as a `u64`), and its map is `BPF_F_RDONLY_PROG`.
+
+`skipped` lists the lookups that `auto` did not instrument, with the same site fields plus `reason`.
 
 ## What happens at the syscall boundary
 
@@ -161,6 +216,7 @@ Unprivileged tests cover strict config parsing, attr sizes and offsets, target a
 The integration test is guarded by the `integration` build tag and a root check.
 It launches the same Go loader both directly and under the supervisor, verifies kernel function metadata, and executes the loaded XDP program using `BPF_PROG_TEST_RUN`.
 It covers kernel-name and function-name selection, fail-open, fail-closed, and unmatched loads.
+It also checks that the launcher reports each successful injection, and only those, with the program ID the loader sees; `--hooks-json` is covered by unit tests of the JSON shape and of the file it writes.
 It never attaches to an interface, pins objects, or changes sysctls, routes, or firewall rules.
 
 ```sh

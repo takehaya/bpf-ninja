@@ -29,6 +29,22 @@ type Options struct {
 	FailClosed            bool
 	Stdin, Stdout, Stderr *os.File
 	Log                   io.Writer
+	// OnInject, if set, is called on the tracing thread for each load the
+	// transformed program replaced, before the target sees the new fd. It must
+	// not wait on the target.
+	OnInject func(Injection)
+}
+
+// Injection describes one successful injected load. Program is the kernel
+// program name and Func the entry function. ProgID is the loaded program's
+// kernel ID, zero if the tracee could not query it. Hooks and Skipped are
+// the transform's (see inject.LookupResult).
+type Injection struct {
+	Program, Func string
+	Type          ebpf.ProgramType
+	ProgID        uint32
+	Hooks         []inject.LookupHook
+	Skipped       []inject.LookupSite
 }
 
 type rememberedBTF struct {
@@ -299,9 +315,13 @@ func (s *supervisor) entry(pid int, t *thread, regs unix.PtraceRegs) error {
 	if err != nil {
 		return err
 	}
-	ret, summary, injectErr := s.transformLoad(r, attr, *rule)
+	ret, result, entry, injectErr := s.transformLoad(r, attr, *rule)
 	if r.broken != nil {
 		return r.broken
+	}
+	summary := ""
+	if result != nil {
+		summary = hookSummary(result)
 	}
 	if injectErr != nil {
 		if summary != "" {
@@ -321,6 +341,19 @@ func (s *supervisor) entry(pid int, t *thread, regs unix.PtraceRegs) error {
 		}
 	} else {
 		s.log("program %q: injected %s, tracee fd %d", name, summary, ret)
+		if s.options.OnInject != nil {
+			inj := Injection{Program: name, Func: entry, Type: ebpf.ProgramType(u32(attr, 0)), Hooks: result.Hooks, Skipped: result.Skipped}
+			// bpf_prog_info starts with type and id.
+			if info, err := r.info(uint32(ret), 8); err != nil {
+				s.log("program %q: cannot query program ID: %v", name, err)
+			} else {
+				inj.ProgID = u32(info, 4)
+			}
+			if r.broken != nil {
+				return r.broken
+			}
+			s.options.OnInject(inj)
+		}
 	}
 	return r.finish(ret)
 }
@@ -410,14 +443,13 @@ func kernelBTF(id uint32) (*btf.Spec, error) {
 	return h.Spec(nil)
 }
 
-// transformLoad returns the tracee's PROG_LOAD result and, once the transform
-// succeeded, a summary of the injected hooks and their sites for the log: also
-// when the transformed PROG_LOAD then fails, so the caller can name the
-// hooks it attempted.
-func (s *supervisor) transformLoad(r *remote, attr []byte, rule Rule) (ret int64, summary string, err error) {
+// transformLoad returns the tracee's PROG_LOAD result, the entry function name
+// and, once the transformed PROG_LOAD ran, the transform's result: also when
+// that load fails, so the caller can name the hooks it attempted.
+func (s *supervisor) transformLoad(r *remote, attr []byte, rule Rule) (ret int64, result *inject.LookupResultRaw, entry string, err error) {
 	info, err := r.info(u32(attr, 72), 32)
 	if err != nil {
-		return 0, "", err
+		return 0, nil, "", err
 	}
 	var spec *btf.Spec
 	if remembered, ok := s.btf[u32(attr, 72)]; ok && remembered.id == u32(info, 12) {
@@ -426,43 +458,43 @@ func (s *supervisor) transformLoad(r *remote, attr []byte, rule Rule) (ret int64
 		spec, err = kernelBTF(u32(info, 12))
 	}
 	if err != nil {
-		return 0, "", err
+		return 0, nil, "", err
 	}
-	entry, err := readEntryName(r.pid, attr, spec)
+	entry, err = readEntryName(r.pid, attr, spec)
 	if err != nil {
-		return 0, "", err
+		return 0, nil, "", err
 	}
 	liveRule, err := s.selectRule(cstring(attr[48:64]), entry)
 	if err != nil {
-		return 0, "", err
+		return 0, nil, "", err
 	}
 	if liveRule == nil || liveRule.Program != rule.Program {
-		return 0, "", fmt.Errorf("BTF fd identity changed; selector no longer matches")
+		return 0, nil, "", fmt.Errorf("BTF fd identity changed; selector no longer matches")
 	}
 	raw, err := extractRaw(r, attr, spec)
 	if err != nil {
-		return 0, "", err
+		return 0, nil, "", err
 	}
-	result, err := inject.TransformLookupRaw(raw, rule.request())
+	result, err = inject.TransformLookupRaw(raw, rule.request())
 	if err != nil {
-		return 0, "", err
+		return 0, nil, "", err
 	}
 	var instructions bytes.Buffer
 	if err := result.Instructions.Marshal(&instructions, wire); err != nil {
-		return 0, "", err
+		return 0, nil, "", err
 	}
 	// Load BTF inside the tracee. A supervisor-owned fd is not a valid substitute
 	// for prog_btf_fd, even when its numeric value happens to match a target fd.
 	btfAddr, err := r.alloc(result.BTFBytes)
 	if err != nil {
-		return 0, "", err
+		return 0, nil, "", err
 	}
 	btfAttr := make([]byte, 32)
 	put64(btfAttr, 0, btfAddr)
 	put32(btfAttr, 16, uint32(len(result.BTFBytes)))
 	fd, err := r.bpf(unix.BPF_BTF_LOAD, btfAttr)
 	if err != nil {
-		return 0, "", fmt.Errorf("tracee extended BTF load: %w", err)
+		return 0, nil, "", fmt.Errorf("tracee extended BTF load: %w", err)
 	}
 	defer func() {
 		closed, closeErr := r.call(unix.SYS_CLOSE, uint64(fd))
@@ -481,7 +513,7 @@ func (s *supervisor) transformLoad(r *remote, attr []byte, rule Rule) (ret int64
 	} {
 		addr, err := r.alloc(buffer.data)
 		if err != nil {
-			return 0, "", err
+			return 0, nil, "", err
 		}
 		put64(patched, buffer.ptr, addr)
 		put32(patched, buffer.count, uint32(len(buffer.data)/buffer.recordSize))
@@ -492,11 +524,11 @@ func (s *supervisor) transformLoad(r *remote, attr []byte, rule Rule) (ret int64
 	// Preserve kernel output fields (currently log_true_size) in the caller's attr.
 	addr, err := r.alloc(patched)
 	if err != nil {
-		return 0, "", err
+		return 0, nil, "", err
 	}
 	ret, err = r.call(unix.SYS_BPF, unix.BPF_PROG_LOAD, addr, uint64(len(patched)))
 	if err != nil {
-		return 0, "", err
+		return 0, nil, "", err
 	}
 	if len(patched) >= 144 {
 		out, e := readMemory(r.pid, addr+140, 4)
@@ -505,15 +537,15 @@ func (s *supervisor) transformLoad(r *remote, attr []byte, rule Rule) (ret int64
 		}
 		if e != nil {
 			r.broken = e
-			return 0, "", e
+			return 0, nil, "", e
 		}
 	}
 	if err := syscallError(ret, nil); err != nil {
 		// Carry the summary so the caller can name the attempted hooks, and a
 		// hint when an untrusted-pointer ABI mismatch may be the cause.
-		return 0, hookSummary(result), fmt.Errorf("transformed PROG_LOAD: %w%s", err, untrustedHint(result, err))
+		return 0, result, entry, fmt.Errorf("transformed PROG_LOAD: %w%s", err, untrustedHint(result, err))
 	}
-	return ret, hookSummary(result), nil
+	return ret, result, entry, nil
 }
 
 // untrustedHint explains how to load a program whose hooks take arg:untrusted
