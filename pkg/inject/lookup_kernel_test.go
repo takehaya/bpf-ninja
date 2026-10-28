@@ -113,6 +113,22 @@ func lookupObserver(t *testing.T, hook string, target *ebpf.Program) *ebpf.Colle
 // kernel passes as a u64.
 type observerArgs struct{ site, mapID, rawCtx bool }
 
+// bpfMapIDOffset is the byte offset of struct bpf_map's id in kernel.
+func bpfMapIDOffset(t *testing.T, kernel *btf.Spec) int32 {
+	t.Helper()
+	var bpfMap *btf.Struct
+	if err := kernel.TypeByName("bpf_map", &bpfMap); err != nil {
+		t.Fatal(err)
+	}
+	for _, member := range bpfMap.Members {
+		if member.Name == "id" {
+			return int32(member.Offset.Bytes())
+		}
+	}
+	t.Fatal("kernel bpf_map lacks id")
+	return -1
+}
+
 // lookupObserverArgs records seen, packet length, key, value.imsi and what
 // args selects.
 func lookupObserverArgs(t *testing.T, hook string, target *ebpf.Program, args observerArgs) *ebpf.CollectionSpec {
@@ -200,19 +216,7 @@ func lookupObserverArgs(t *testing.T, hook string, target *ebpf.Program, args ob
 			asm.StoreMem(asm.R7, 24, asm.R1, asm.Word))
 	}
 	if args.mapID {
-		var bpfMap *btf.Struct
-		if err := kernel.TypeByName("bpf_map", &bpfMap); err != nil {
-			t.Fatal(err)
-		}
-		idOffset := int32(-1)
-		for _, member := range bpfMap.Members {
-			if member.Name == "id" {
-				idOffset = int32(member.Offset.Bytes())
-			}
-		}
-		if idOffset < 0 {
-			t.Fatal("kernel bpf_map lacks id")
-		}
+		idOffset := bpfMapIDOffset(t, kernel)
 		insns = append(insns,
 			asm.Mov.Reg(asm.R1, asm.R9),
 			asm.Mov.Imm(asm.R2, 4), asm.Mov.Reg(asm.R3, asm.RFP), asm.Add.Imm(asm.R3, -56),

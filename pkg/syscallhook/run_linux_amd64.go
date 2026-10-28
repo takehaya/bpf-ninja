@@ -541,14 +541,15 @@ func untrustedHint(result *inject.LookupResultRaw, err error) string {
 
 // copyReadOnlyHelps reports whether copy_read_only would give hook a typed
 // hook: an untrusted lookup hook on a read-only map (never the generic hook).
-// A hook whose rule cannot also set copy_read_only must be excluded here.
+// A hook whose rule cannot also set copy_read_only must be excluded here: a
+// dispatch hook, since Validate rejects dispatch with copy_read_only.
 func copyReadOnlyHelps(hook inject.LookupHook) bool {
-	return hook.Kind == inject.HookLookup && hook.Untrusted && hook.ReadOnly && !hook.Generic
+	return hook.Kind == inject.HookLookup && hook.Untrusted && hook.ReadOnly && !hook.Generic && !hook.Dispatch
 }
 
 // hookSummary lists each hook as
 //
-//	hook "NAME" (KIND[ map "MAP"][ runtime map][, untrusted pointers][, value copied to stack][, static][, site pc N, N])
+//	hook "NAME" (KIND[ map "MAP"][ runtime map][, untrusted pointers][, value copied to stack][, static][, dispatch][, site pc N, N])
 //
 // separated by ", ", then "; skipped pc N (reason)" for each skipped lookup.
 // The launcher log and the integration test look for the leading "hook".
@@ -573,6 +574,9 @@ func hookSummary(result *inject.LookupResultRaw) string {
 		}
 		if hook.Static {
 			b.WriteString(", static")
+		}
+		if hook.Dispatch {
+			b.WriteString(", dispatch")
 		}
 		for j, site := range hook.Sites {
 			if j == 0 {

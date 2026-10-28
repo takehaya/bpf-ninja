@@ -73,6 +73,8 @@ func TestValidateStack(t *testing.T) {
 	}
 	// Without a lookup, entry reserves only the ctx slot and tail_calls the
 	// ctx and index slots; auto may find a lookup and reserves all three.
+	// Dispatch adds the map slot to lookup and tail-call sites, not to the
+	// entry call.
 	flagged := func(lo int16, set func(*Rule)) Rule {
 		r := Rule{Program: "p", Hook: "h", StackLowestOffset: &lo}
 		set(&r)
@@ -81,15 +83,23 @@ func TestValidateStack(t *testing.T) {
 	entry := func(r *Rule) { r.Entry = true }
 	tails := func(r *Rule) { r.TailCalls = true }
 	auto := func(r *Rule) { r.Auto, r.Entry = true, true }
+	dispatch := func(set func(*Rule)) func(*Rule) { return func(r *Rule) { set(r); r.Dispatch = true } }
 	for _, tc := range []struct {
-		lo  int16
-		set func(*Rule)
-		ok  bool
-	}{{-472, entry, true}, {-473, entry, false}, {-464, tails, true}, {-465, tails, false}, {-456, auto, true}, {-464, auto, false}} {
+		lo      int16
+		set     func(*Rule)
+		ok      bool
+		reserve string
+	}{
+		{-472, entry, true, ""}, {-473, entry, false, "8 reserved"}, {-464, tails, true, ""}, {-465, tails, false, "16 reserved"},
+		{-456, auto, true, ""}, {-464, auto, false, "24 reserved"},
+		{-472, dispatch(entry), true, ""}, {-473, dispatch(entry), false, "8 reserved"},
+		{-448, dispatch(tails), true, ""}, {-449, dispatch(tails), false, "32 reserved"},
+		{-448, dispatch(auto), true, ""}, {-449, dispatch(auto), false, "32 reserved"}, {-456, dispatch(auto), false, "32 reserved"},
+	} {
 		r := flagged(tc.lo, tc.set)
 		got := Validate([]Rule{r})
 		want := inject.ValidateRaw(r.request())
-		if (got == nil) != tc.ok || (want == nil) != tc.ok || (got != nil && !strings.Contains(got.Error(), want.Error())) {
+		if (got == nil) != tc.ok || (want == nil) != tc.ok || (got != nil && (!strings.Contains(got.Error(), want.Error()) || !strings.Contains(got.Error(), tc.reserve))) {
 			t.Fatalf("%+v: Validate=%v, CheckLookupStack=%v", r, got, want)
 		}
 	}
@@ -117,6 +127,9 @@ func TestConfig(t *testing.T) {
 		`[{"program":"p","tail_calls":true,"hook":"` + strings.Repeat("h", 117) + `","stack_lowest_offset":-8}]`: func(r Rule) bool { return r.TailCalls },
 		`[{"program":"p","auto":true,"hook":"` + strings.Repeat("h", 125) + `","stack_lowest_offset":-8}]`:       func(r Rule) bool { return r.Auto },
 		`[{"program":"p","entry":true,"hook":"` + strings.Repeat("h", 121) + `","stack_lowest_offset":-8}]`:      func(r Rule) bool { return r.Entry },
+		`[{"program":"p","auto":true,"tail_calls":true,"dispatch":true,"hook":"` + strings.Repeat("h", 127) + `","stack_lowest_offset":-448}]`: func(r Rule) bool {
+			return r.Dispatch && r.TailCalls
+		},
 	} {
 		if rules, err := ParseConfig(strings.NewReader(input)); err != nil || !check(rules[0]) {
 			t.Errorf("%s: %+v: %v", input, rules, err)
@@ -138,6 +151,8 @@ func TestConfig(t *testing.T) {
 		`[{"program":"p","auto":true,"hook":"` + strings.Repeat("h", 126) + `","stack_lowest_offset":-8}]`,
 		`[{"program":"p","entry":true,"hook":"` + strings.Repeat("h", 122) + `","stack_lowest_offset":-8}]`,
 		`[{"program":"p","map":"m","hook":"` + strings.Repeat("h", 128) + `","stack_lowest_offset":-8}]`,
+		`[{"program":"p","auto":true,"dispatch":true,"hook":"h","stack_lowest_offset":-481}]`,
+		`[{"program":"p","auto":true,"dispatch":true,"copy_read_only":true,"hook":"h","stack_lowest_offset":-8}]`,
 	} {
 		if _, err := ParseConfig(strings.NewReader(input)); err == nil {
 			t.Errorf("accepted %s", input)

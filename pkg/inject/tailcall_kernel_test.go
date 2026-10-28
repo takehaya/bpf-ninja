@@ -643,13 +643,13 @@ func TestBpfStackLimitsReserve(t *testing.T) {
 
 // When the lookup slots alone break a call-chain limit, Auto retries with fewer
 // lookups instead of refusing the rule, and the kernel loads what it keeps:
-// the tail-call hook alone at -208, the typed sessions hook without the
-// read-only flows copy at -200.
+// the tail-call hook alone at -208 (also as a static dispatch hook), the
+// typed sessions hook without the read-only flows copy at -200.
 func TestBpfStackLimitsAutoRetry(t *testing.T) {
 	testutil.SkipIfNotRoot(t)
 	// The other cases keep every lookup, refuse, or (map-in-map) lack the
 	// inner map a load needs.
-	retried := map[string]bool{"tails-208": true, "copy-200": true}
+	retried := map[string]bool{"tails-208": true, "dispatch-tails-208": true, "copy-200": true}
 	for _, tc := range autoRetryCases() {
 		if !retried[tc.name] {
 			continue

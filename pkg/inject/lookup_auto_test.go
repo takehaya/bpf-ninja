@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -309,9 +310,11 @@ func TestTailCallAndEntryHooks(t *testing.T) {
 			tail = i
 		}
 	}
-	// The index is spilled before the helper and passed with the site after it.
+	// The index is spilled before the helper and passed with the site after it,
+	// as a u32 in R3: the three-argument layout, not the dispatch one.
 	if !sameInstr(out[tail-1], asm.StoreMem(asm.RFP, -24, asm.R3, asm.DWord)) ||
-		!sameInstr(out[tail+2], asm.Mov.Imm32(asm.R2, 10)) || out[tail+5].Reference() != "h_tail_call" {
+		!sameInstr(out[tail+2], asm.Mov.Imm32(asm.R2, 10)) || !sameInstr(out[tail+3], asm.LoadMem(asm.R3, asm.RFP, -24, asm.DWord)) ||
+		!sameInstr(out[tail+4], asm.Mov.Reg32(asm.R3, asm.R3)) || out[tail+5].Reference() != "h_tail_call" {
 		t.Fatalf("tail-call site: %v", out[tail-1:tail+6])
 	}
 	// The short-packet branch still lands on the original XDP_PASS.
@@ -395,20 +398,30 @@ func TestTailCallHookRefusalsAndSkips(t *testing.T) {
 }
 
 // The transform refuses a tail-call program whose entry frame it would deepen
-// to or past the 256-byte caller-depth limit; one slot less transforms.
+// to or past the 256-byte caller-depth limit; one slot less transforms. With
+// Dispatch a tail call in the entry function deepens that frame one slot
+// further than its index spill, to the prog-array spill in the map slot.
 func TestTailCallStackLimit(t *testing.T) {
 	for _, tc := range []struct {
-		bound  int16
-		refuse bool
-	}{{-216, false}, {-224, true}} {
-		work := paddedSubTailCaller(tc.bound)
-		_, err := transformLookup(work, LookupRequest{ProgramName: "caller", TailCalls: true, HookName: "obs", Stack: StackAudit{LowestOffset: tc.bound}})
+		name     string
+		fixture  func(int16) *ebpf.CollectionSpec
+		dispatch bool
+		bound    int16
+		refuse   bool
+	}{
+		{"sub", paddedSubTailCaller, false, -216, false},
+		{"sub", paddedSubTailCaller, false, -224, true},
+		{"nested dispatch", nestedTailCaller, true, -192, false},
+		{"nested dispatch", nestedTailCaller, true, -200, true},
+	} {
+		work := tc.fixture(tc.bound)
+		_, err := transformLookup(work, LookupRequest{ProgramName: "caller", TailCalls: true, Dispatch: tc.dispatch, HookName: "obs", Stack: StackAudit{LowestOffset: tc.bound}})
 		if tc.refuse {
 			if !errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), "caller-depth limit") {
-				t.Fatalf("bound %d: want refusal, got %v", tc.bound, err)
+				t.Fatalf("%s bound %d: want refusal, got %v", tc.name, tc.bound, err)
 			}
 		} else if err != nil {
-			t.Fatalf("bound %d: %v", tc.bound, err)
+			t.Fatalf("%s bound %d: %v", tc.name, tc.bound, err)
 		}
 	}
 }
@@ -476,6 +489,11 @@ func stackLimitCases() []stackLimitCase {
 		req.Stack.LowestOffset = bound
 		return req
 	}
+	dispatchAuto := func(bound int16) LookupRequest {
+		req := deepAuto(bound)
+		req.Dispatch, req.StaticUntrusted = true, true
+		return req
+	}
 	callback := []string{"caller-depth limit", "caller -> cb -> sub"}
 	return []stackLimitCase{
 		// The entry frame plus the callback's 32-byte frame are sub's callers.
@@ -498,6 +516,9 @@ func stackLimitCases() []stackLimitCase {
 		// covers: the entry's ctx spill plus sub's 256 bytes pass 512.
 		{"alias", func() *ebpf.CollectionSpec { return aliasCallee(256) }, entry(-256), []string{"512-byte combined limit", "caller -> sub"}},
 		{"alias-shallow", func() *ebpf.CollectionSpec { return aliasCallee(224) }, entry(-224), nil},
+		// With Dispatch every site also fills the fourth slot.
+		{"dispatch-site-frame", multiMapFixture, dispatchAuto(-456), []string{"leaves no room for 32 reserved bytes"}},
+		{"dispatch-site-frame-shallow", multiMapFixture, dispatchAuto(-448), nil},
 	}
 }
 
@@ -524,6 +545,7 @@ func autoRetryCases() []autoRetryCase {
 	plain := func(*LookupRequest) {}
 	tails := func(r *LookupRequest) { r.TailCalls = true }
 	copyRO := func(r *LookupRequest) { r.CopyReadOnly = true }
+	dispatchTails := func(r *LookupRequest) { r.TailCalls, r.Dispatch, r.StaticUntrusted = true, true, true }
 	single := func() *ebpf.CollectionSpec { return lookupSubTailCaller(lookupFixture(), -208) }
 	readOnly := func() *ebpf.CollectionSpec { return lookupSubTailCaller(multiMapFixtureFlags(bpfFRdonlyProg), -200) }
 	mapInMap := func() *ebpf.CollectionSpec {
@@ -536,6 +558,9 @@ func autoRetryCases() []autoRetryCase {
 		// the tail-call hook alone reaches 216.
 		{"tails-208", single, auto(-208, tails), []string{"obs_tail_call"}, []uint32{15}, ""},
 		{"no-entry-tails-208", single, auto(-208, plain), nil, nil, "no lookup site fits the audited stack (1 skipped): after the transform"},
+		// Every dispatch lookup fills the map slot, so the first retry drops
+		// them all and keeps the static dispatch hook for the tail call.
+		{"dispatch-tails-208", single, auto(-208, dispatchTails), []string{"obs"}, []uint32{15}, ""},
 		// The flows copy or map slot reaches 248 or 232 bytes; the base
 		// slots alone reach 224, so only flows is dropped.
 		{"copy-200", readOnly, auto(-200, copyRO), []string{"obs_sessions"}, []uint32{22}, ""},
@@ -588,7 +613,7 @@ func TestAutoRetryStackLimits(t *testing.T) {
 			// numbers them apart, resolves them.
 			p := rawLookupFixture(t, tc.spec(), "p", true)
 			got, err := TransformLookupRaw(p, LookupRequestRaw{Auto: true, TailCalls: tc.req.TailCalls, CopyReadOnly: tc.req.CopyReadOnly,
-				HookName: tc.req.HookName, Stack: tc.req.Stack})
+				StaticUntrusted: tc.req.StaticUntrusted, Dispatch: tc.req.Dispatch, HookName: tc.req.HookName, Stack: tc.req.Stack})
 			if err != nil {
 				check("raw", nil, nil, err)
 			} else {
@@ -665,6 +690,11 @@ func reserveCases() []reserveCase {
 	req := func(entry, tails bool, bound int16) LookupRequest {
 		return LookupRequest{ProgramName: "caller", Entry: entry, TailCalls: tails, HookName: "obs", Stack: StackAudit{LowestOffset: bound}}
 	}
+	// Static, so the kernel test loads it without arg:untrusted.
+	dispatch := func(r LookupRequest) LookupRequest {
+		r.Dispatch, r.StaticUntrusted = true, true
+		return r
+	}
 	return []reserveCase{
 		{"entry-472", req(true, false, -472), true},
 		{"entry-473", req(true, false, -473), false},
@@ -674,12 +704,20 @@ func reserveCases() []reserveCase {
 		{"tails-472", req(false, true, -472), false},
 		{"entry-tails-464", req(true, true, -464), true},
 		{"entry-tails-472", req(true, true, -472), false},
+		// A dispatch tail call also spills the prog array into the map slot;
+		// the dispatch entry call passes only constants.
+		{"dispatch-entry-472", dispatch(req(true, false, -472)), true},
+		{"dispatch-entry-473", dispatch(req(true, false, -473)), false},
+		{"dispatch-tails-448", dispatch(req(true, true, -448)), true},
+		{"dispatch-tails-449", dispatch(req(false, true, -449)), false},
+		{"dispatch-tails-456", dispatch(req(true, true, -456)), false},
 	}
 }
 
 // Entry and TailCalls without a lookup site reserve 8 and 16 bytes, not the
 // 24 a lookup needs, in CheckLookupStack and the transform alike (ELF and
 // raw forms); a request that may hold a lookup site still reserves 24.
+// Dispatch adds the map slot only where a site passes the map.
 func TestEntryTailReserve(t *testing.T) {
 	for _, tc := range reserveCases() {
 		t.Run(tc.name, func(t *testing.T) {
@@ -699,7 +737,8 @@ func TestEntryTailReserve(t *testing.T) {
 			check("elf", err)
 			for _, numeric := range []bool{false, true} {
 				p := rawLookupFixture(t, spec(), "caller", numeric)
-				_, err := TransformLookupRaw(p, LookupRequestRaw{Entry: tc.req.Entry, TailCalls: tc.req.TailCalls, HookName: tc.req.HookName, Stack: tc.req.Stack})
+				_, err := TransformLookupRaw(p, LookupRequestRaw{Entry: tc.req.Entry, TailCalls: tc.req.TailCalls,
+					Dispatch: tc.req.Dispatch, StaticUntrusted: tc.req.StaticUntrusted, HookName: tc.req.HookName, Stack: tc.req.Stack})
 				check(map[bool]string{false: "raw-symbolic", true: "raw-numeric"}[numeric], err)
 			}
 		})
@@ -749,7 +788,8 @@ func TestStackLimitsAcrossCalls(t *testing.T) {
 			check("elf", err)
 			for _, numeric := range []bool{false, true} {
 				p := rawLookupFixture(t, tc.spec(), tc.req.ProgramName, numeric)
-				_, err := TransformLookupRaw(p, LookupRequestRaw{Auto: tc.req.Auto, Entry: tc.req.Entry, TailCalls: tc.req.TailCalls, HookName: tc.req.HookName, Stack: tc.req.Stack})
+				_, err := TransformLookupRaw(p, LookupRequestRaw{Auto: tc.req.Auto, Entry: tc.req.Entry, TailCalls: tc.req.TailCalls, Dispatch: tc.req.Dispatch,
+					StaticUntrusted: tc.req.StaticUntrusted, HookName: tc.req.HookName, Stack: tc.req.Stack})
 				check(map[bool]string{false: "raw-symbolic", true: "raw-numeric"}[numeric], err)
 			}
 		})
@@ -902,6 +942,75 @@ func TestLookupStaticUntrusted(t *testing.T) {
 	}
 }
 
+// Dispatch generates one generic hook named HookName for every site and
+// reports the sites grouped as without it.
+func TestLookupDispatch(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		fixture *ebpf.CollectionSpec
+		req     func(*LookupRequest)
+		kinds   []HookKind
+	}{
+		{"auto+entry", multiMapFixture(), func(r *LookupRequest) { r.Entry = true }, []HookKind{HookLookup, HookLookup, HookEntry}},
+		{"single site", lookupFixture(), func(r *LookupRequest) { r.Auto, r.Site = false, LookupSelector{MapName: "sessions"} }, []HookKind{HookLookup}},
+		{"generic", mapInMapFixture(), func(*LookupRequest) {}, []HookKind{HookLookup}},
+	} {
+		req := autoReq()
+		req.Dispatch = true
+		tc.req(&req)
+		plan, err := transformLookup(tc.fixture, req)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		var kinds []HookKind
+		for _, hook := range plan.hooks {
+			if hook.Name != req.HookName || !hook.Dispatch || !hook.Untrusted || hook.Static {
+				t.Fatalf("%s: hook %+v", tc.name, hook)
+			}
+			kinds = append(kinds, hook.Kind)
+		}
+		if !slices.Equal(kinds, tc.kinds) {
+			t.Fatalf("%s: kinds %v, want %v", tc.name, kinds, tc.kinds)
+		}
+		insns := tc.fixture.Programs["p"].Instructions
+		var funcs []string
+		for _, ins := range insns {
+			if fn := btf.FuncMetadata(&ins); fn != nil {
+				funcs = append(funcs, fn.Name)
+			}
+		}
+		if len(funcs) != 2 || funcs[1] != req.HookName || len(hookParams(t, insns, req.HookName)) != 5 {
+			t.Fatalf("%s: functions %v", tc.name, funcs)
+		}
+		assertNoPointerCompare(t, insns, req.HookName)
+	}
+	// The entry spill, 6 entry, 11 lookup and 9 tail-call slots, and the
+	// 6-slot hook (2 when static).
+	for static, want := range map[bool]int{false: 33, true: 29} {
+		spec := dispatchFixture()
+		before := spec.Programs["p"].Instructions.Size()
+		req := autoReq()
+		req.Dispatch, req.Entry, req.TailCalls, req.StaticUntrusted = true, true, true, static
+		if _, err := transformLookup(spec, req); err != nil {
+			t.Fatal(err)
+		}
+		if got := int(spec.Programs["p"].Instructions.Size()-before) / asm.InstructionSize; got != want {
+			t.Fatalf("static=%v: %d inserted slots, want %d", static, got, want)
+		}
+	}
+	req := autoReq()
+	req.Dispatch, req.CopyReadOnly = true, true
+	if _, err := transformLookup(multiMapFixtureFlags(bpfFRdonlyProg), req); !errors.Is(err, ErrRefused) {
+		t.Fatalf("Dispatch with CopyReadOnly: %v", err)
+	}
+	// No suffix is appended, so the longest hook name is accepted.
+	req = autoReq()
+	req.Dispatch, req.Entry, req.HookName = true, true, strings.Repeat("h", MaxHookName)
+	if _, err := transformLookup(multiLookupFixture(), req); err != nil {
+		t.Fatalf("longest dispatch hook name: %v", err)
+	}
+}
+
 // assertNoPointerCompare checks that hook's body has no conditional jump: an
 // arg:untrusted pointer compared with zero needs CAP_PERFMON.
 func assertNoPointerCompare(t *testing.T, insns asm.Instructions, hook string) {
@@ -924,15 +1033,34 @@ func multiMapFixtureFlags(flags uint32) *ebpf.CollectionSpec {
 }
 
 // CheckLookupStack accepts and refuses exactly the audited bounds that the
-// transform's own spill-slot placement does.
+// transform's own spill-slot placement does: three slots, four with Dispatch,
+// ending within the 480-byte frame of a site that calls its hook.
 func TestCheckLookupStack(t *testing.T) {
-	for _, lo := range []int16{-8, -456, -457, -464, -480, -488, -512, -513, 1, -32768} {
-		check := CheckLookupStack(LookupRequest{Stack: StackAudit{LowestOffset: lo}})
-		req := lookupReq()
-		req.Stack.LowestOffset = lo
-		_, transform := transformLookup(lookupFixture(), req)
-		if (check == nil) != (transform == nil) {
-			t.Fatalf("lo=%d: CheckLookupStack=%v transform=%v", lo, check, transform)
+	for _, lo := range []int16{-8, -448, -449, -456, -457, -464, -480, -488, -512, -513, 1, -32768} {
+		for _, dispatch := range []bool{false, true} {
+			req := lookupReq()
+			req.Dispatch, req.StaticUntrusted = dispatch, dispatch
+			req.Stack.LowestOffset = lo
+			check := CheckLookupStack(req)
+			_, transform := transformLookup(lookupFixture(), req)
+			if (check == nil) != (transform == nil) {
+				t.Fatalf("lo=%d dispatch=%v: CheckLookupStack=%v transform=%v", lo, dispatch, check, transform)
+			}
+			if wantOK := lo <= 0 && int(lo) >= map[bool]int{false: -456, true: -448}[dispatch]; wantOK != (check == nil) {
+				t.Fatalf("lo=%d dispatch=%v: CheckLookupStack=%v", lo, dispatch, check)
+			}
+		}
+	}
+	for _, tc := range []struct {
+		req  LookupRequest
+		want int
+	}{
+		{LookupRequest{Auto: true}, 24}, {LookupRequest{Auto: true, Dispatch: true}, 32},
+		{LookupRequest{TailCalls: true, Dispatch: true}, 32}, {LookupRequest{Entry: true, Dispatch: true}, 8},
+		{LookupRequest{Site: LookupSelector{MapName: "m"}, Dispatch: true}, 32},
+	} {
+		if got := LookupStackReserve(tc.req); got != tc.want {
+			t.Fatalf("%+v: reserve %d, want %d", tc.req, got, tc.want)
 		}
 	}
 }
@@ -958,6 +1086,9 @@ func TestValidateRaw(t *testing.T) {
 		{"auto-entry-122", LookupRequestRaw{Auto: true, Entry: true, HookName: h(122)}, `suffix "_entry"`},
 		{"tails-117", LookupRequestRaw{TailCalls: true, HookName: h(117)}, ""},
 		{"tails-118", LookupRequestRaw{TailCalls: true, HookName: h(118)}, `suffix "_tail_call"`},
+		{"dispatch-127", LookupRequestRaw{Auto: true, Entry: true, TailCalls: true, Dispatch: true, HookName: h(MaxHookName), Stack: StackAudit{LowestOffset: -448}}, ""},
+		{"dispatch-copy", LookupRequestRaw{Auto: true, Dispatch: true, CopyReadOnly: true, HookName: "h"}, "does not combine with CopyReadOnly"},
+		{"dispatch-stack", LookupRequestRaw{TailCalls: true, Dispatch: true, HookName: "h", Stack: StackAudit{LowestOffset: -449}}, "32 reserved bytes"},
 		{"stack", LookupRequestRaw{Site: m, HookName: "h", Stack: StackAudit{LowestOffset: -457}}, "Stack.LowestOffset -457 leaves no room"},
 	} {
 		err := ValidateRaw(tc.req)
@@ -978,6 +1109,31 @@ func TestLookupAutoSkipsOverflowingGeneric(t *testing.T) {
 	if err != nil || len(plan.hooks) != 1 || plan.hooks[0].MapName != "sessions" ||
 		len(plan.skipped) != 1 || plan.skipped[0].SitePC != 18 || !strings.Contains(plan.skipped[0].Reason, "4th spill slot") {
 		t.Fatalf("plan: %+v %v", plan, err)
+	}
+}
+
+// The reason a group is dropped for its slots names what reaches that far: a
+// typed group under Dispatch passes the map too, so it is not a value copy.
+func TestSiteFrameReason(t *testing.T) {
+	typed := lookupGroup{sites: []discoveredLookup{{mapInfo: &RawMap{ValueSize: 12}}}}
+	generic := lookupGroup{sites: typed.sites, generic: true}
+	req := LookupRequest{Stack: StackAudit{LowestOffset: -456}}
+	dispatch := req
+	dispatch.Dispatch = true
+	for _, tc := range []struct {
+		name  string
+		group lookupGroup
+		req   LookupRequest
+		want  string
+	}{
+		{"copy", typed, req, "read-only value copy needs 12 bytes"},
+		{"generic", generic, req, "runtime-map hook needs the 4th spill slot"},
+		{"dispatch-typed", typed, dispatch, "dispatch hook needs the 4th spill slot for the map pointer"},
+		{"dispatch-generic", generic, dispatch, "dispatch hook needs the 4th spill slot for the map pointer"},
+	} {
+		if got := siteFrameReason(tc.group, tc.req); !strings.HasPrefix(got, tc.want) || !strings.HasSuffix(got, "Stack.LowestOffset -456 too low") {
+			t.Errorf("%s: %q", tc.name, got)
+		}
 	}
 }
 
