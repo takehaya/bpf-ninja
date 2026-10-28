@@ -21,6 +21,8 @@ func TestBpfReserveFailAccounting(t *testing.T) {
 	RingbufSize = 4096
 	t.Cleanup(func() { RingbufSize = old })
 
+	// Each CPU has its own ring: keep every run on one CPU so one ring fills.
+	pinTest(t, affinityCPUs(t)[0])
 	prog := loadDummyXDP(t)
 	targets := []attach.Target{{Program: prog, FuncName: xdpFuncName, Type: ebpf.XDP}}
 	probe, err := LoadMultiPoint(targets, []Stage{{Expr: "eth"}}, nil, true, nil, EmitBoth)
