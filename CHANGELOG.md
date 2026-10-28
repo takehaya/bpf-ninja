@@ -1,5 +1,39 @@
 # Changelog
 
+## [0.31.0](https://github.com/takehaya/bpf-ninja/compare/v0.30.0...v0.31.0) (2026-10-28)
+
+
+### 🎉 Features
+
+* **attach:** capture at freplace (EXT) programs ([#251](https://github.com/takehaya/bpf-ninja/issues/251)) ([43752fa](https://github.com/takehaya/bpf-ninja/commit/43752fa9c40016e580edb4b9d2c654d7baeabf43))
+* **attach:** show each function's map uses as a tree, with injection status ([#267](https://github.com/takehaya/bpf-ninja/issues/267)) ([481bc06](https://github.com/takehaya/bpf-ninja/commit/481bc0657cef1df8c8a9cf260a34f715dba8f418))
+* **inject:** add inject-run, a ptrace launcher that injects hooks into unmodified loaders ([#257](https://github.com/takehaya/bpf-ninja/issues/257)) ([e104d69](https://github.com/takehaya/bpf-ninja/commit/e104d69d18ee6b52df776b5b95494908e69bd8d3))
+* **inject:** add load-time lookup observation hooks for XDP ELF objects ([#256](https://github.com/takehaya/bpf-ninja/issues/256)) ([cb1afaf](https://github.com/takehaya/bpf-ninja/commit/cb1afafab2248909d98f1972c7032a24af640136))
+* **inject:** generic hooks for socket maps, inject-run hooks JSON, stack-check follow-ups ([#265](https://github.com/takehaya/bpf-ninja/issues/265)) ([e36ccb0](https://github.com/takehaya/bpf-ninja/commit/e36ccb01e7097a34df506c391fd8c7c5e74737d5))
+* **inject:** instrument every lookup of a program and its tail-call boundaries ([#262](https://github.com/takehaya/bpf-ninja/issues/262)) ([da800e9](https://github.com/takehaya/bpf-ninja/commit/da800e9c0de6e13d9b62ea869931f0e98f9817d0))
+* **inject:** instrument lookups in tc programs ([#264](https://github.com/takehaya/bpf-ninja/issues/264)) ([7a73f45](https://github.com/takehaya/bpf-ninja/commit/7a73f45bb750e1a10c5c74e19d0609c2a85a008f))
+* **inject:** observe lookup misses with ops lookup:miss and lookup:any ([#268](https://github.com/takehaya/bpf-ninja/issues/268)) ([2a9be83](https://github.com/takehaya/bpf-ninja/commit/2a9be8379d30b300b5edfb7e18b061828eaa6e4b))
+* **inject:** observe map updates and deletes with ops update and delete ([#269](https://github.com/takehaya/bpf-ninja/issues/269)) ([1cbb1d6](https://github.com/takehaya/bpf-ninja/commit/1cbb1d6500cb70f9571fef351f0b7195562a46cd))
+* **inject:** observe queue, stack and bloom filter pushes, pops and peeks ([#271](https://github.com/takehaya/bpf-ninja/issues/271)) ([284bb03](https://github.com/takehaya/bpf-ninja/commit/284bb0313e77911e452a1686c6d6a7218caf2527))
+* **inject:** pick the maps an auto rule instruments, and list them first ([#266](https://github.com/takehaya/bpf-ninja/issues/266)) ([948839f](https://github.com/takehaya/bpf-ninja/commit/948839f524e910015c71f086253e601bbb4c42d5))
+* **inject:** route special-field values and socket map updates to untyped hooks ([#270](https://github.com/takehaya/bpf-ninja/issues/270)) ([88018fd](https://github.com/takehaya/bpf-ninja/commit/88018fda1f1955d40aefd51723d838b397e2ec23))
+* **inject:** send every site of a program to one dispatch hook ([#263](https://github.com/takehaya/bpf-ninja/issues/263)) ([772ab81](https://github.com/takehaya/bpf-ninja/commit/772ab81fa96456dfbf5846e08d19c3f3a3e74c4c))
+
+
+### 🐛 Bug Fixes
+
+* **inject:** bound local stack aliases per function ([#272](https://github.com/takehaya/bpf-ninja/issues/272)) ([e29e0de](https://github.com/takehaya/bpf-ninja/commit/e29e0de40dd2225cdf8a2e7f68180c354b978886))
+* **program:** count gated holds lost to synchronous re-entry ([#252](https://github.com/takehaya/bpf-ninja/issues/252)) ([d3abf7b](https://github.com/takehaya/bpf-ninja/commit/d3abf7b552fc3014801d3a7da91885cbe7e3053a))
+* **program:** give each nesting depth its own gated hold ([#254](https://github.com/takehaya/bpf-ninja/issues/254)) ([e1f3c67](https://github.com/takehaya/bpf-ninja/commit/e1f3c67c34e431e01e239d96ea6c388167b2ee11))
+
+
+### 📝 Documentation
+
+* add documentation entry points and offline examples ([#258](https://github.com/takehaya/bpf-ninja/issues/258)) ([14587d9](https://github.com/takehaya/bpf-ninja/commit/14587d9d13308c02f96bcc0c4c3bb08d343588f4))
+* **cli:** generate complete command and protocol references ([#259](https://github.com/takehaya/bpf-ninja/issues/259)) ([8a7f7ff](https://github.com/takehaya/bpf-ninja/commit/8a7f7ff11b84b47bb1f6b080783c03573649e71f))
+* index architecture and research evidence with scoped tuning guidance ([#260](https://github.com/takehaya/bpf-ninja/issues/260)) ([ebfefef](https://github.com/takehaya/bpf-ninja/commit/ebfefefbd31cf1e18d16b48659505b2d053fc3c7))
+* separate capture guides and verify isolated recipes ([#261](https://github.com/takehaya/bpf-ninja/issues/261)) ([ef6e1d0](https://github.com/takehaya/bpf-ninja/commit/ef6e1d04ca35b0c801aad4f7314a37f6ebfe0ea9))
+
 ## [0.30.0](https://github.com/takehaya/bpf-ninja/compare/v0.29.0...v0.30.0) (2026-10-16)
 
 
