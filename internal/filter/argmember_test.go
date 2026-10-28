@@ -45,23 +45,60 @@ func TestParseMemberFilters(t *testing.T) {
 	}
 }
 
-func TestSetRejectsMembers(t *testing.T) {
+func TestSetMemberMappings(t *testing.T) {
 	for _, ref := range []string{"flows->imsi", "flows.imsi"} {
 		if _, err := ResolveSetFilters(nil, []string{ref}, nil); err == nil || !strings.Contains(err.Error(), "member syntax") {
 			t.Fatalf("reference: %v", err)
 		}
 	}
-	s := flowSet([]setmap.MapEntry{{Field: "imsi", Source: "arg:q->imsi"}})
-	if _, err := ResolveSetFilters([]*setmap.Set{s}, []string{"flows"}, nil); err == nil || !strings.Contains(err.Error(), "member syntax") {
-		t.Fatalf("mapping: %v", err)
+	params := []attach.FuncParamInfo{
+		{Name: "q", Index: 1, Kind: "ptr-struct", Type: &btf.Pointer{Target: &btf.Struct{Size: 16, Members: []btf.Member{
+			{Name: "imsi", Type: &btf.Int{Size: 8}},
+			{Name: "teid", Offset: 64, Type: &btf.Int{Size: 4}},
+		}}}},
+		{Name: "scalar", Index: 2, Kind: "ptr", Type: &btf.Pointer{Target: &btf.Int{Size: 8}}},
 	}
-	for _, source := range []string{"q->imsi", "q.target"} {
-		if _, err := setmap.ParseSetSpec("flows=/unused,key(imsi=arg:" + source + ")"); err == nil || !strings.Contains(err.Error(), "member syntax") {
-			t.Fatalf("parse mapping: %v", err)
+	for _, mapping := range [][]setmap.MapEntry{nil, {{Field: "imsi", Source: "arg:q->imsi"}}, {{Field: "imsi", Source: "arg:scalar[0]"}}} {
+		set := flowSet(mapping)
+		fs, err := ResolveSetFilters([]*setmap.Set{set}, []string{"flows"}, params)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(fs[0].Fields) != 2 || !fs[0].Fields[0].Deref || fs[0].Fields[1].Offset != 8 {
+			t.Fatalf("fields: %+v", fs)
 		}
 	}
-	p := []attach.FuncParamInfo{{Name: "imsi", Size: 8, Kind: "ptr-struct"}}
-	if _, err := ResolveSetFilters([]*setmap.Set{flowSet(nil)}, []string{"flows"}, p); err == nil || !strings.Contains(err.Error(), "must be an integer") {
-		t.Fatalf("pointer: %v", err)
+	if _, err := setmap.ParseSetSpec("flows=/unused,key(imsi=arg:q->imsi,teid=arg:scalar[0])"); err != nil {
+		t.Fatal(err)
+	}
+	params = append(params, attach.FuncParamInfo{Name: "other", Index: 3, Kind: "ptr-struct", Type: params[0].Type})
+	if _, err := ResolveSetFilters([]*setmap.Set{flowSet(nil)}, []string{"flows"}, params); err == nil || !strings.Contains(err.Error(), "multiple pointer members") {
+		t.Fatalf("ambiguity: %v", err)
+	}
+	explicit := flowSet([]setmap.MapEntry{{Field: "imsi", Source: "arg:q->imsi"}, {Field: "teid", Source: "arg:q->teid"}})
+	if _, err := ResolveSetFilters([]*setmap.Set{explicit}, []string{"flows"}, params); err != nil {
+		t.Fatal(err)
+	}
+	explicit.Mapping[0].Source = "arg:q->missing"
+	if _, err := ResolveSetFilters([]*setmap.Set{explicit}, []string{"flows"}, params); err == nil {
+		t.Fatal("accepted missing member")
+	}
+	explicit.Mapping[0].Source = "arg:q"
+	if _, err := ResolveSetFilters([]*setmap.Set{explicit}, []string{"flows"}, params); err == nil {
+		t.Fatal("accepted bare pointer")
+	}
+}
+
+func TestSetImplicitScalarPointer(t *testing.T) {
+	set := flowSet(nil)
+	set.Def.KeySize = 8
+	set.Def.Fields = set.Def.Fields[:1]
+	params := []attach.FuncParamInfo{{Name: "imsi", Index: 1, Kind: "ptr", Type: &btf.Pointer{Target: &btf.Int{Size: 8}}}}
+	fs, err := ResolveSetFilters([]*setmap.Set{set}, []string{"flows"}, params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f := fs[0].Fields[0]; !f.Deref || f.ParamName != "imsi[0]" {
+		t.Fatalf("field: %+v", f)
 	}
 }

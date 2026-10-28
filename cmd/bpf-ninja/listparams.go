@@ -40,18 +40,22 @@ func paramsToJSON(t attach.Target, members bool, depth int) paramsTargetJSON {
 }
 
 func printParams(w io.Writer, t paramsTargetJSON) {
-	fmt.Fprintf(w, "Filterable parameters for %s (id=%d):\n", t.Func, t.ID)
+	_, _ = fmt.Fprintf(w, "Filterable parameters for %s (id=%d):\n", t.Func, t.ID)
 	if len(t.Params) == 0 {
-		fmt.Fprintln(w, "  (none - integer or struct/union pointer parameters after the first argument are supported)")
+		_, _ = fmt.Fprintln(w, "  (none - integer or pointer parameters after the first argument are supported)")
 	}
 	for _, p := range t.Params {
 		if p.Members != nil {
-			fmt.Fprintf(w, "  %s: %s (arg index %d)\n", p.Name, p.Type, p.Index)
+			_, _ = fmt.Fprintf(w, "  %s: %s (arg index %d)\n", p.Name, p.Type, p.Index)
 			printMembers(w, *p.Members, p.MembersTruncated, "    ")
 		} else if p.Kind != "" {
-			fmt.Fprintf(w, "  %-20s [%s %s, arg index %d; use %s->member]\n", p.Name, p.Kind, p.TypeName, p.Index, p.Name)
+			hint := p.Name + "->member"
+			if p.Kind == "ptr" {
+				hint = p.Name + "[0] for scalar pointers"
+			}
+			_, _ = fmt.Fprintf(w, "  %-20s [%s %s, arg index %d; use %s or %s==null]\n", p.Name, p.Kind, p.TypeName, p.Index, hint, p.Name)
 		} else {
-			fmt.Fprintf(w, "  %-20s [%d bytes, %s, arg index %d]\n", p.Name, p.Size, signedness(p.Signed), p.Index)
+			_, _ = fmt.Fprintf(w, "  %-20s [%d bytes, %s, arg index %d]\n", p.Name, p.Size, signedness(p.Signed), p.Index)
 		}
 	}
 }
@@ -78,11 +82,11 @@ func printMembers(w io.Writer, members []attach.ArgMemberInfo, truncated, indent
 		if !m.Filterable {
 			status = "(not filterable: " + m.Reason + ")"
 		}
-		fmt.Fprintf(w, "%s%s  %s  %s  %s\n", indent, m.Expression, typ, detail, status)
+		_, _ = fmt.Fprintf(w, "%s%s  %s  %s  %s\n", indent, m.Expression, typ, detail, status)
 		printMembers(w, m.Members, m.Truncated, indent+"  ")
 	}
 	if truncated != "" {
-		fmt.Fprintf(w, "%s... (%s; members omitted)\n", indent, truncated)
+		_, _ = fmt.Fprintf(w, "%s... (%s; members omitted)\n", indent, truncated)
 	}
 }
 

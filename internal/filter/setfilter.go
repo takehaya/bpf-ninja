@@ -25,7 +25,9 @@ type SetKeyField struct {
 	ParamName   string
 	ParamIdx    int // per-target arg index
 	ParamSize   uint32
-	ParamSigned bool // sign-extend a narrow signed arg into the key field
+	ParamSigned bool   // sign-extend a narrow signed arg into the key field
+	Deref       bool   // Read a pointer member or scalar pointee
+	Offset      uint32 // Byte offset in the pointee
 }
 
 // SetFilter is one "@NAME" reference resolved against one target's
@@ -74,10 +76,6 @@ func ResolveSetFilters(sets []*setmap.Set, refs []string, params []attach.FuncPa
 	for _, s := range sets {
 		byName[s.Name] = s
 	}
-	paramByName := map[string]attach.FuncParamInfo{}
-	for _, p := range params {
-		paramByName[p.Name] = p
-	}
 
 	var out []SetFilter
 	for _, ref := range refs {
@@ -110,15 +108,34 @@ func ResolveSetFilters(sets []*setmap.Set, refs []string, params []attach.FuncPa
 				src = "arg:" + f.Name // implicit match by name
 			}
 			paramName := strings.TrimPrefix(src, "arg:")
-			if strings.ContainsAny(paramName, ">.") {
-				return nil, fmt.Errorf("@%s: member syntax is not supported in key(field=arg:param)", ref)
+			p, err := attach.ResolveArg(paramName, params)
+			if !ok && err != nil {
+				// Without an explicit mapping, a unique same-name member is
+				// useful for typed key/value hooks. Never guess on ambiguity.
+				var matches []attach.FuncParamInfo
+				for _, ptr := range params {
+					if ptr.Kind == "" {
+						continue
+					}
+					if member, e := attach.ResolveArg(ptr.Name+"->"+f.Name, params); e == nil {
+						matches = append(matches, member)
+					}
+					if ptr.Name == f.Name {
+						if scalar, e := attach.ResolveArg(ptr.Name+"[0]", params); e == nil {
+							matches = append(matches, scalar)
+						}
+					}
+				}
+				if len(matches) > 1 {
+					return nil, fmt.Errorf("@%s: key field %s matches multiple pointer members; use key(%s=arg:<expression>)", ref, f.Name, f.Name)
+				}
+				if len(matches) == 1 {
+					p, err = matches[0], nil
+					paramName = p.Name
+				}
 			}
-			p, ok := paramByName[paramName]
-			if !ok {
-				return nil, fmt.Errorf("@%s: key field %s needs arg %q, which the target function does not have (see --list-params); map it with key(%s=arg:<param>)", ref, f.Name, paramName, f.Name)
-			}
-			if p.Kind != "" || p.Deref {
-				return nil, fmt.Errorf("@%s: arg %s must be an integer parameter; pointer members are not supported in sets", ref, paramName)
+			if err != nil {
+				return nil, fmt.Errorf("@%s: key field %s needs arg %q (see --list-params); map it with key(%s=arg:<expression>): %w", ref, f.Name, paramName, f.Name, err)
 			}
 			if p.Size > f.Size {
 				return nil, fmt.Errorf("@%s: arg %s (u%d) is wider than key field %s (u%d) — truncation is not supported", ref, paramName, p.Size*8, f.Name, f.Size*8)
@@ -126,6 +143,7 @@ func ResolveSetFilters(sets []*setmap.Set, refs []string, params []attach.FuncPa
 			sf.Fields = append(sf.Fields, SetKeyField{
 				FieldName: f.Name, FieldOff: f.Off, FieldSize: f.Size,
 				ParamName: paramName, ParamIdx: p.Index, ParamSize: p.Size, ParamSigned: p.Signed,
+				Deref: p.Deref, Offset: p.Offset,
 			})
 		}
 		out = append(out, sf)

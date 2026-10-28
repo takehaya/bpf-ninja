@@ -38,6 +38,10 @@ func ListArgMembers(p FuncParamInfo, depth int) ([]ArgMemberInfo, string) {
 	if !ok {
 		return nil, ""
 	}
+	if resolved, err := ResolveArg(p.Name+"[0]", []FuncParamInfo{p}); err == nil {
+		size := int(resolved.Size)
+		return []ArgMemberInfo{{Expression: p.Name + "[0]", Type: ArgTypeName(ptr.Target), Size: &size, Signed: &resolved.Signed, Filterable: true}}, ""
+	}
 	depth = min(max(depth, 1), MaxMembersDepth)
 	remaining := maxMemberRows
 	active := make(map[btf.Type]bool)

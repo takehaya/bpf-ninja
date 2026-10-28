@@ -51,7 +51,7 @@ type funcsTargetJSON struct {
 	Funcs []funcJSON `json:"funcs"`
 }
 
-// paramJSON is one integer or struct/union pointer parameter.
+// paramJSON is one integer or pointer parameter.
 type paramJSON struct {
 	Name             string                  `json:"name"`
 	Index            int                     `json:"index"`

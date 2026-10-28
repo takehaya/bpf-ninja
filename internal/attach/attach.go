@@ -628,7 +628,7 @@ type FuncParamInfo struct {
 	Index    int      // 0-based index in the parameter list
 	Size     uint32   // Size in bytes
 	Signed   bool     // true if signed integer
-	Kind     string   // "ptr-struct" or "ptr-union"; empty for integer params
+	Kind     string   // Pointer kind (ptr-struct/ptr-union/ptr); empty for integers
 	TypeName string   // Pointee name
 	Type     btf.Type // Original parameter type, from the target BTF
 	Deref    bool     // Resolved member expression
@@ -636,7 +636,7 @@ type FuncParamInfo struct {
 }
 
 // GetFuncParams returns the function parameters for the given function from BTF.
-// Named integers and pointers to structs/unions after the first context argument
+// Named integers and pointers after the first context argument
 // are returned. Pointer members are resolved against these same BTF types.
 func GetFuncParams(prog *ebpf.Program, funcName string) ([]FuncParamInfo, error) {
 	spec, err := BTFSpec(prog)
@@ -674,7 +674,7 @@ func GetFuncParamsFromSpec(spec *btf.Spec, funcName string) ([]FuncParamInfo, er
 			continue
 		}
 		if ptr, ok := underlying.(*btf.Pointer); ok {
-			kind := ""
+			kind := "ptr"
 			target := btf.UnderlyingType(ptr.Target)
 			switch target.(type) {
 			case *btf.Struct:
@@ -682,9 +682,11 @@ func GetFuncParamsFromSpec(spec *btf.Spec, funcName string) ([]FuncParamInfo, er
 			case *btf.Union:
 				kind = "ptr-union"
 			}
-			if kind != "" {
-				params = append(params, FuncParamInfo{Name: p.Name, Index: i, Size: 8, Kind: kind, TypeName: target.TypeName(), Type: p.Type})
+			typeName := target.TypeName()
+			if kind == "ptr" {
+				typeName = ArgTypeName(ptr.Target)
 			}
+			params = append(params, FuncParamInfo{Name: p.Name, Index: i, Size: 8, Kind: kind, TypeName: typeName, Type: p.Type})
 			continue
 		}
 		intType, ok := underlying.(*btf.Int)

@@ -9,6 +9,7 @@ import (
 
 	"github.com/cilium/ebpf/asm"
 	"github.com/takehaya/bpf-ninja/internal/filter"
+	"github.com/takehaya/bpf-ninja/internal/hook"
 )
 
 func marshalArgInsns(t *testing.T, insns asm.Instructions) []byte {
@@ -92,5 +93,76 @@ func TestEchoMemberRecordLimit(t *testing.T) {
 	_, err := LoadArgEcho(nil, "", nil, make([]attach.FuncParamInfo, 4097), false, false)
 	if err == nil || !strings.Contains(err.Error(), "store offsets") {
 		t.Fatalf("oversized selection: %v", err)
+	}
+}
+
+func TestPointerNullAndNotEqualCodegen(t *testing.T) {
+	for _, op := range []filter.ArgFilterOp{filter.OpEqual, filter.OpNotEqual} {
+		insns := buildArgFilter([]filter.ArgFilter{{ParamIndex: 2, ParamSize: 8, Pointer: true, Op: op}})
+		calls := 0
+		for _, in := range insns {
+			if in == asm.FnProbeReadKernel.Call() {
+				t.Fatal("NULL test dereferences pointer")
+			}
+			if in == asm.FnGetFuncArg.Call() {
+				calls++
+			}
+		}
+		if calls != 1 {
+			t.Fatalf("get arg calls: %d", calls)
+		}
+		want := asm.JNE
+		if op == filter.OpNotEqual {
+			want = asm.JEq
+		}
+		if last := insns[len(insns)-1]; last.OpCode != want.Op(asm.ImmSource) || last.Constant != 0 || last.Reference() != "exit" {
+			t.Fatalf("comparison: %v", last)
+		}
+		marshalArgInsns(t, insns)
+	}
+	// Wide != uses a register operand, just as wide equality does.
+	insns := buildArgFilter([]filter.ArgFilter{{ParamIndex: 1, ParamSize: 8, Op: filter.OpNotEqual, Value: 1 << 40}})
+	if insns[len(insns)-1].OpCode != asm.JEq.Op(asm.RegSource) {
+		t.Fatalf("wide !=: %v", insns)
+	}
+	marshalArgInsns(t, insns)
+}
+
+func TestStaticXDPContextCodegen(t *testing.T) {
+	h, _ := hook.ByName(hook.KindXDP)
+	for _, exit := range []bool{false, true} {
+		safe := staticXDPHook(h, exit)
+		prologue, err := safe.PacketPrologue()
+		if err != nil {
+			t.Fatal(err)
+		}
+		identity, err := safe.Identity(asm.R1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, insns := range []asm.Instructions{prologue, identity} {
+			calls := 0
+			for _, in := range insns {
+				if in == asm.FnProbeReadKernel.Call() {
+					calls++
+				}
+				if in.OpCode.Class() == asm.LdXClass && in.Src == asm.R6 {
+					t.Fatalf("direct scalar ctx read: %v", in)
+				}
+			}
+			if calls != 1 {
+				t.Fatalf("helper calls=%d", calls)
+			}
+			marshalArgInsns(t, insns)
+		}
+		savedR2 := false
+		for _, in := range identity {
+			if in == asm.StoreMem(asm.R10, -144, asm.R2, asm.DWord) {
+				savedR2 = true
+			}
+		}
+		if savedR2 != exit {
+			t.Fatal("entry must not spill uninitialized R2; exit must preserve expected identity")
+		}
 	}
 }

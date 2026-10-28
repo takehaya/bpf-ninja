@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/cilium/ebpf"
+	"github.com/cilium/ebpf/btf"
 )
 
 // Load prog.o, print the program id, then run the program once a second on
@@ -15,6 +16,10 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
+	// A zero-sized BTF key lets queue maps keep their declared value type.
+	// Without it the loader retries map creation without BTF, and injected
+	// hooks can only describe the value as opaque bytes.
+	spec.Maps["recent"].Key = &btf.Struct{Name: "empty_key"}
 	coll, err := ebpf.NewCollection(spec)
 	if err != nil {
 		panic(err)

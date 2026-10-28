@@ -9,15 +9,19 @@ import (
 	"github.com/cilium/ebpf/btf"
 )
 
-var argExpression = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*(?:->[a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z_][a-zA-Z0-9_]*)*)?$`)
+var argExpression = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*(?:->[a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z_][a-zA-Z0-9_]*)*|\[0\])?$`)
 
 // ResolveArg resolves an integer argument or pointer-member expression using
 // the target function's BTF. It never follows a second pointer.
 func ResolveArg(expr string, params []FuncParamInfo) (FuncParamInfo, error) {
 	if !argExpression.MatchString(expr) {
-		return FuncParamInfo{}, fmt.Errorf("invalid argument expression %q (expected param or param->member.member)", expr)
+		return FuncParamInfo{}, fmt.Errorf("invalid argument expression %q (expected param, param->member.member, or param[0])", expr)
 	}
 	name, path, deref := strings.Cut(expr, "->")
+	scalar := strings.HasSuffix(expr, "[0]")
+	if scalar {
+		name, deref = strings.TrimSuffix(expr, "[0]"), true
+	}
 	var available []string
 	for _, p := range params {
 		available = append(available, p.Name)
@@ -26,7 +30,7 @@ func ResolveArg(expr string, params []FuncParamInfo) (FuncParamInfo, error) {
 		}
 		if !deref {
 			if p.Kind != "" {
-				return FuncParamInfo{}, fmt.Errorf("parameter %q is a pointer; select an integer member with %s->member", name, name)
+				return FuncParamInfo{}, fmt.Errorf("parameter %q is a pointer; select an integer member with %s->member or %s[0], or compare it with null", name, name, name)
 			}
 			return p, nil
 		}
@@ -36,7 +40,11 @@ func ResolveArg(expr string, params []FuncParamInfo) (FuncParamInfo, error) {
 		}
 		typ := btf.UnderlyingType(ptr.Target)
 		var offset uint64
-		for _, member := range strings.Split(path, ".") {
+		var membersPath []string
+		if !scalar {
+			membersPath = strings.Split(path, ".")
+		}
+		for _, member := range membersPath {
 			members, ok := aggregateMembers(typ)
 			if !ok {
 				return FuncParamInfo{}, fmt.Errorf("%q: cannot select member %q from %T; expected struct/union", expr, member, typ)
@@ -185,4 +193,17 @@ func ResolveEchoArgs(exprs []string, params []FuncParamInfo) ([]FuncParamInfo, e
 		out = append(out, p)
 	}
 	return out, nil
+}
+
+// ResolvePointerArg accepts a bare pointer parameter for an explicit NULL test.
+func ResolvePointerArg(expr string, params []FuncParamInfo) (FuncParamInfo, error) {
+	for _, p := range params {
+		if p.Name == expr {
+			if _, ok := btf.UnderlyingType(p.Type).(*btf.Pointer); ok {
+				p.Size, p.Signed = 8, false
+				return p, nil
+			}
+		}
+	}
+	return FuncParamInfo{}, fmt.Errorf("%q: null comparison requires a pointer parameter (see --list-params)", expr)
 }

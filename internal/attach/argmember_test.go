@@ -120,3 +120,54 @@ func TestResolveEchoMembers(t *testing.T) {
 		t.Fatal("invalid member accepted")
 	}
 }
+
+func TestScalarPointerDiscovery(t *testing.T) {
+	u32 := &btf.Typedef{Name: "__u32", Type: &btf.Int{Name: "unsigned int", Size: 4}}
+	fn := &btf.Func{Name: "scalar_hook", Type: &btf.FuncProto{Return: &btf.Int{Size: 4}, Params: []btf.FuncParam{
+		{Name: "ctx", Type: &btf.Pointer{Target: &btf.Struct{Name: "xdp_md", Size: 4}}},
+		{Name: "value", Type: &btf.Pointer{Target: &btf.Const{Type: u32}}},
+		{Name: "opaque", Type: &btf.Pointer{Target: &btf.Const{Type: &btf.Void{}}}},
+		{Name: "choice", Type: &btf.Pointer{Target: &btf.Union{Name: "choice", Size: 4}}},
+	}}}
+	builder, err := btf.NewBuilder([]btf.Type{fn}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := builder.Marshal(nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec, err := btf.LoadSpecFromReader(bytes.NewReader(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	params, err := GetFuncParamsFromSpec(spec, "scalar_hook")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(params) != 3 || params[0].Kind != "ptr" || params[1].Kind != "ptr" || params[2].Kind != "ptr-union" {
+		t.Fatalf("params: %+v", params)
+	}
+	got, err := ResolveArg("value[0]", params)
+	if err != nil || !got.Deref || got.Size != 4 || got.Offset != 0 || got.Index != 1 {
+		t.Fatalf("resolved: %+v %v", got, err)
+	}
+	rows, truncated := ListArgMembers(params[0], 3)
+	if len(rows) != 1 || rows[0].Expression != "value[0]" || rows[0].Type != "const __u32" || !rows[0].Filterable || truncated != "" {
+		t.Fatalf("members: %+v %s", rows, truncated)
+	}
+	for _, name := range []string{"value", "opaque", "choice"} {
+		if _, err := ResolvePointerArg(name, params); err != nil {
+			t.Fatal(err)
+		}
+	}
+	echo, err := ResolveEchoArgs([]string{"value[0]"}, params)
+	if err != nil || len(echo) != 1 || !echo[0].Deref {
+		t.Fatalf("echo: %+v %v", echo, err)
+	}
+	for _, expr := range []string{"value", "value[1]", "value[-1]", "opaque[0]", "value->member", "choice[0]"} {
+		if _, err := ResolveArg(expr, params); err == nil {
+			t.Errorf("accepted %s", expr)
+		}
+	}
+}
