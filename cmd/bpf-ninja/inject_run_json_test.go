@@ -23,14 +23,16 @@ func TestInjectionJSON(t *testing.T) {
 		want string
 	}{
 		{"auto", syscallhook.Injection{Program: "xdp_ingress", Func: "xdp_ingress", Type: ebpf.XDP, ProgID: 42, Hooks: []inject.LookupHook{
-			{Name: "obs_sessions", Kind: inject.HookLookup, MapName: "sessions", Sites: []inject.LookupSite{site(12, "sessions")}},
+			{Name: "obs_sessions", Kind: inject.HookLookup, When: inject.LookupHit, MapName: "sessions", Sites: []inject.LookupSite{site(12, "sessions")}},
+			{Name: "obs_sessions_miss", Kind: inject.HookLookup, When: inject.LookupMiss, MapName: "sessions", Sites: []inject.LookupSite{site(12, "sessions")}},
 			{Name: "obs_flows", Kind: inject.HookLookup, MapName: "flows", ReadOnly: true, Copied: true, Sites: []inject.LookupSite{site(18, "flows")}},
 			{Name: "obs_any", Kind: inject.HookLookup, Generic: true, Untrusted: true, Sites: []inject.LookupSite{{SitePC: 51}}},
 			{Name: "obs_entry", Kind: inject.HookEntry},
 			{Name: "obs_tail_call", Kind: inject.HookTailCall, Sites: []inject.LookupSite{{SitePC: 60, FuncName: "sub"}}},
 		}, Skipped: []inject.LookupSite{{SitePC: 7, MapName: "socks", Reason: "sockhash has no typed hook"}}},
 			`{"program":"xdp_ingress","func":"xdp_ingress","type":"XDP","prog_id":42,"ctx_type":"xdp_md","hooks":[` +
-				`{"name":"obs_sessions","kind":"typed","map":"sessions","sites":[{"kind":"lookup","pc":12,"map":"sessions","func":"xdp_ingress","file":"x.c","line":12}],"untrusted":false,"copied":false,"static":false,"read_only":false},` +
+				`{"name":"obs_sessions","kind":"typed","when":"hit","map":"sessions","sites":[{"kind":"lookup","pc":12,"map":"sessions","func":"xdp_ingress","file":"x.c","line":12}],"untrusted":false,"copied":false,"static":false,"read_only":false},` +
+				`{"name":"obs_sessions_miss","kind":"typed","when":"miss","map":"sessions","sites":[{"kind":"lookup","pc":12,"map":"sessions","func":"xdp_ingress","file":"x.c","line":12}],"untrusted":false,"copied":false,"static":false,"read_only":false},` +
 				`{"name":"obs_flows","kind":"typed","map":"flows","sites":[{"kind":"lookup","pc":18,"map":"flows","func":"xdp_ingress","file":"x.c","line":18}],"untrusted":false,"copied":true,"static":false,"read_only":true},` +
 				`{"name":"obs_any","kind":"generic","sites":[{"kind":"lookup","pc":51}],"untrusted":true,"copied":false,"static":false,"read_only":false},` +
 				`{"name":"obs_entry","kind":"entry","sites":[],"untrusted":false,"copied":false,"static":false,"read_only":false},` +
@@ -39,13 +41,13 @@ func TestInjectionJSON(t *testing.T) {
 		// Dispatch hooks share one name: one function, every site, the entry
 		// as DispatchEntrySite first and then by PC across maps and kinds.
 		{"dispatch", syscallhook.Injection{Program: "tc_main", Type: ebpf.SchedCLS, Hooks: []inject.LookupHook{
-			{Name: "d", Kind: inject.HookLookup, MapName: "a", Static: true, Dispatch: true, Sites: []inject.LookupSite{{SitePC: 13, MapName: "a"}}},
-			{Name: "d", Kind: inject.HookLookup, MapName: "b", Static: true, Dispatch: true, Sites: []inject.LookupSite{{SitePC: 30, MapName: "b"}}},
+			{Name: "d", Kind: inject.HookLookup, When: inject.LookupAny, MapName: "a", Static: true, Dispatch: true, Sites: []inject.LookupSite{{SitePC: 13, MapName: "a"}}},
+			{Name: "d", Kind: inject.HookLookup, When: inject.LookupAny, MapName: "b", Static: true, Dispatch: true, Sites: []inject.LookupSite{{SitePC: 30, MapName: "b"}}},
 			{Name: "d", Kind: inject.HookEntry, Static: true, Dispatch: true},
 			{Name: "d", Kind: inject.HookTailCall, Static: true, Dispatch: true, Sites: []inject.LookupSite{{SitePC: 20}}},
 		}},
 			`{"program":"tc_main","func":"","type":"SchedCLS","prog_id":0,"ctx_type":"__sk_buff","hooks":[` +
-				`{"name":"d","kind":"dispatch","sites":[{"kind":"entry","pc":4294967295},{"kind":"lookup","pc":13,"map":"a"},{"kind":"tail_call","pc":20},{"kind":"lookup","pc":30,"map":"b"}],"untrusted":false,"copied":false,"static":true,"read_only":false}],` +
+				`{"name":"d","kind":"dispatch","when":"any","sites":[{"kind":"entry","pc":4294967295},{"kind":"lookup","pc":13,"map":"a"},{"kind":"tail_call","pc":20},{"kind":"lookup","pc":30,"map":"b"}],"untrusted":false,"copied":false,"static":true,"read_only":false}],` +
 				`"skipped":[]}`},
 	} {
 		got, err := json.Marshal(injectionJSON(tc.inj))

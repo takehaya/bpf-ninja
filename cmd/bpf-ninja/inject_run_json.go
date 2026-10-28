@@ -37,10 +37,12 @@ type injectedProgJSON struct {
 }
 
 // hookJSON is one hook function. A dispatch hook is one entry carrying every
-// site it reports; the entry call is the site inject.DispatchEntrySite.
+// site it reports; the entry call is the site inject.DispatchEntrySite. When
+// is the lookup results that call a lookup hook: hit, miss or any.
 type hookJSON struct {
 	Name      string         `json:"name"`
 	Kind      string         `json:"kind"`
+	When      string         `json:"when,omitempty"`
 	Map       string         `json:"map,omitempty"`
 	Sites     []hookSiteJSON `json:"sites"`
 	Untrusted bool           `json:"untrusted"`
@@ -95,9 +97,12 @@ func injectionJSON(inj syscallhook.Injection) injectedProgJSON {
 		// Dispatch hooks share one name; merge them into one function.
 		if hook.Dispatch && dispatch >= 0 {
 			out.Hooks[dispatch].Sites = append(out.Hooks[dispatch].Sites, sites...)
+			if hook.When != "" {
+				out.Hooks[dispatch].When = string(hook.When)
+			}
 			continue
 		}
-		h := hookJSON{Name: hook.Name, Kind: hookKind(hook), Sites: sites, Untrusted: hook.Untrusted, Copied: hook.Copied, Static: hook.Static, ReadOnly: hook.ReadOnly}
+		h := hookJSON{Name: hook.Name, Kind: hookKind(hook), When: string(hook.When), Sites: sites, Untrusted: hook.Untrusted, Copied: hook.Copied, Static: hook.Static, ReadOnly: hook.ReadOnly}
 		if !hook.Dispatch {
 			h.Map = hook.MapName
 		}

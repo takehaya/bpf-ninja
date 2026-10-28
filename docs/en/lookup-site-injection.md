@@ -96,6 +96,27 @@ A lookup whose map is only known at run time has no name and is never selected; 
 A name that matches no lookup is a refusal, so a typo cannot silently instrument nothing.
 This matters most with `Dispatch` on a kernel where a tail-calling program takes only one tracing attach: the one hook then sees only the chosen maps, without a filter in the observer.
 
+### Misses
+
+By default a lookup hook is called only when the lookup found an entry.
+`LookupRequest.Lookups` changes that: `LookupMiss` calls the hooks only when the lookup returned NULL, and `LookupAny` on both results.
+A typed hook cannot take a NULL value (kernels before 6.8 refuse NULL for a sized memory argument of a global function), so a miss calls a second hook with the key alone:
+
+```c
+int PREFIX_MAP_miss(struct xdp_md *ctx, u32 site, const KEY *key);
+```
+
+Without `Auto` it is `HOOKNAME_miss(ctx, key)`.
+With `LookupAny` each map has both hooks, and with `LookupMiss` only the miss hook.
+The key is program memory, not the map's, so the miss hook is an ordinary typed hook even on a `BPF_F_RDONLY_PROG` map and loads on kernels without `arg:untrusted`.
+The `_miss` suffix counts toward the 127-byte name limit (`_0_miss` under `Auto`), and an underscore is appended while the name collides with another hook's.
+The generic hook and the dispatch hook are called on a miss with a NULL `value` and the same `site`, `key` and `map` as on a hit.
+`LookupHook.When` says which results call each hook: `LookupHit` or `LookupMiss` on a typed hook, and the request's set on a generic or dispatch hook.
+
+The site keeps one test of R0 after the helper.
+For hits it is the existing `if r0 == 0` skip, for misses the reverse, and for both a branch to each hook; R0 is then restored on every path.
+Each hook therefore sees R0 as either a map value or zero, never as a pointer that may be NULL, and no slot is added, so the stack bounds do not change.
+
 ### Entry and tail-call hooks
 
 An fentry on an XDP program does not fire when the program is entered through `bpf_tail_call`: the tail call jumps past the trampoline at the program's start.
@@ -140,6 +161,7 @@ int HOOK(struct xdp_md *ctx, u32 site, const void *key, const void *value, const
 | Caller | `site` | `key` | `value` | `map` |
 |---|---|---|---|---|
 | Lookup hit | `SitePC` | the key | the result | R1 at the lookup |
+| Lookup miss (`Lookups` miss or any) | `SitePC` | the key | NULL | R1 at the lookup |
 | Entry (`Entry`) | `DispatchEntrySite` (`0xffffffff`) | NULL | NULL | NULL |
 | Failed tail call (`TailCalls`) | `SitePC` | a pointer to the spilled index register (a `u64` whose low 32 bits the helper used) | NULL | the prog array |
 
@@ -404,6 +426,8 @@ It compares plain and injected programs, checks two keys with different packet l
 `TestBpfLookupInjectionMultipleSites` repeats these checks with two lookups on different paths, observed by one fentry observer on the shared hook.
 `TestBpfLookupInjectionAutoMultiMap` instruments a program with lookups on two maps whose values have different BTF types, attaches one observer per generated hook, and checks the key, value, and `site` argument each observer records.
 `TestBpfLookupInjectionAutoMaps` limits the same program to one map with `Maps` and checks that only that map's hook is generated and fires, while the other lookup runs unchanged.
+`TestBpfLookupMiss` and `TestBpfLookupAny` attach one observer to each typed hook of a map and check that the hit hook sees only the present key, with its value, and the miss hook only the absent one; `TestBpfLookupMissReadOnlyMap` loads the miss hook of a `BPF_F_RDONLY_PROG` map without `arg:untrusted`.
+`TestBpfDispatchMiss`, `...Any`, `...AnyStatic`, `...AnyTC` and `...MissTCStatic` repeat `TestBpfDispatch` with `Lookups`, and check that a miss reaches the dispatch hook with the key, a NULL value and the map.
 `TestBpfLookupInjectionReadOnlyMap`, `...Copy` and `...Static` cover the untrusted, copied and static hook forms for a `BPF_F_RDONLY_PROG` map; `TestBpfLookupInjectionMapInMap[Static]` and `TestBpfLookupInjectionGenericKinds[Static]` cover the generic hook over a map-in-map and over direct XSK and devmap lookups.
 `TestBpfTailCallHooks` tail-calls from an instrumented caller into a target instrumented with `Entry`.
 On a successful tail call, the entry hook fires and an fentry on the target program itself does not; on a failed one, the tail-call hook reports the site and index.
@@ -425,8 +449,8 @@ These tests exercise the transform core and fentry using `BPF_PROG_TEST_RUN`, wi
 go build ./...
 go vet ./...
 go test -count=1 ./pkg/inject/...
-sudo -E env PATH=$PATH go test -count=1 -run 'TestBpfLookupInjection|TestBpfTailCall|TestBpfEntryHook|TestBpfStackLimits|TestBpfDispatch' ./pkg/inject/
+sudo -E env PATH=$PATH go test -count=1 -run 'TestBpfLookupInjection|TestBpfLookupMiss|TestBpfLookupAny|TestBpfTailCall|TestBpfEntryHook|TestBpfStackLimits|TestBpfDispatch' ./pkg/inject/
 ```
 
-All 31 privileged lookup, entry, tail-call, stack-limit and dispatch tests pass across the CI kernel matrix (6.1 to 7.3-rc4) that `make test-bpf` runs, where the tests whose hooks need `arg:untrusted` skip on 6.1-6.15 and the callback stack-limit subtests skip on 7.3, which forbids tail calls in callbacks (see scripts/test/privileged.py).
+All 40 privileged `TestBpf` tests of this package, including the lookup, miss, entry, tail-call, stack-limit and dispatch tests, pass across the CI kernel matrix (6.1 to 7.3-rc4) that `make test-bpf` runs, where the tests whose hooks need `arg:untrusted` skip on 6.1-6.15 and the callback stack-limit subtests skip on 7.3, which forbids tail calls in callbacks (see scripts/test/privileged.py).
 This is finite test evidence for the fixture, not a general program-equivalence, concurrency, or kernel-version guarantee.

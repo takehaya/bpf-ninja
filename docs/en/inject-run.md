@@ -55,6 +55,9 @@ The naming and hook ABI are described in [lookup-site-injection.md](lookup-site-
 `"maps": ["lb4_services_v2", "lb4_backends_v3"]` limits `auto` to lookups on those maps (exact kernel names); the others are skipped with `map not selected by Maps` and run unchanged.
 A name that matches no lookup refuses the rule, and `maps` without `auto` is a configuration error.
 [Lookups as JSON](#lookups-as-json) lists the names to choose from.
+`"ops": ["lookup:miss"]` calls the lookup hooks when the lookup finds nothing instead of when it finds an entry, and `"lookup:any"` on both; `"lookup"` or `"lookup:hit"` is the default.
+A typed hook then gets a second hook, `HOOK_MAP_miss(ctx, u32 site, key)`, since its value cannot be NULL; the `HOOK_any` and dispatch hooks are called with a NULL value ([lookup-site-injection.md](lookup-site-injection.md#misses)).
+`ops` needs `map` or `auto`, and `update` and `delete` are not supported yet.
 
 `"entry": true` adds `HOOK_entry(ctx)`, called at the start of the program, which also runs when the program is entered through a tail call.
 `"tail_calls": true` adds `HOOK_tail_call(ctx, u32 site, u32 index)`, called when a `bpf_tail_call` anywhere in the program fails.
@@ -100,6 +103,7 @@ If a rewrite fails, the launcher reports it on stderr, keeps running the target,
         {
           "name": "lookup_hook_sessions",
           "kind": "typed",
+          "when": "hit",
           "map": "sessions",
           "sites": [{"kind": "lookup", "pc": 6, "map": "sessions", "func": "entry_with_long_name"}],
           "untrusted": false,
@@ -124,6 +128,7 @@ Each entry of `programs` is one injected load, in load order, so a program loade
 Each hook is one function in the loaded program:
 
 - `kind` is `typed` (a lookup hook with the map's key and value types), `generic` (the `HOOK_any` hook that also takes the map pointer), `entry`, `tail_call`, or `dispatch`.
+- `when` is the lookup results that call a lookup hook: `hit`, `miss` (a typed hook's `_miss` hook, which takes no value) or `any`.
 - `map` is the map of a `typed` hook. A `generic` or `dispatch` hook serves several maps, so the map is given on each site instead.
 - `sites` are the helper calls that call the hook, in instruction order. Each has a `kind` (`lookup`, `tail_call`, or `entry`), its raw instruction index `pc` (the `site` argument the hook receives), and, where known, `map`, `func`, `file` and `line`. An `entry` hook has no sites.
 - A `dispatch` rule produces one hook with every site: the lookups, the failed tail calls, and the entry call as the site `4294967295` (`inject.DispatchEntrySite`). The entry call comes first, since it runs at program start, and the other sites follow in instruction order across maps and kinds.

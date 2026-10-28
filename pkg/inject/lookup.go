@@ -110,6 +110,13 @@ func (s LookupSelector) empty() bool {
 // used), a NULL value and the prog array in map. The entry passes
 // DispatchEntrySite and NULL pointers. With StaticUntrusted the hook is
 // static. Dispatch does not combine with CopyReadOnly.
+//
+// Lookups picks the lookup results the hooks observe: LookupHit (the
+// default) calls them when the lookup found an entry, LookupMiss when it
+// returned NULL, LookupAny on both. A typed hook cannot take a NULL value, so
+// a miss calls int NAME_miss(struct xdp_md *ctx, u32 site, const KEY *key)
+// (without site when Auto is off) instead; with LookupAny both are generated.
+// A generic or Dispatch hook is called with a NULL value on a miss.
 type LookupRequest struct {
 	ELFSHA256       string
 	ProgramName     string
@@ -121,8 +128,35 @@ type LookupRequest struct {
 	CopyReadOnly    bool
 	StaticUntrusted bool
 	Dispatch        bool
+	Lookups         LookupWhen
 	HookName        string
 	Stack           StackAudit
+}
+
+// LookupWhen is a set of lookup results; see LookupRequest.Lookups.
+type LookupWhen string
+
+const (
+	LookupHit  LookupWhen = "hit"
+	LookupMiss LookupWhen = "miss"
+	LookupAny  LookupWhen = "any"
+)
+
+// hit and miss say whether w observes found entries and misses; the empty
+// set is LookupHit.
+func (w LookupWhen) hit() bool  { return w != LookupMiss }
+func (w LookupWhen) miss() bool { return w == LookupMiss || w == LookupAny }
+
+func (w LookupWhen) valid() bool {
+	return w == "" || w == LookupHit || w == LookupMiss || w == LookupAny
+}
+
+// normal is w with the empty set spelled LookupHit.
+func (w LookupWhen) normal() LookupWhen {
+	if w == "" {
+		return LookupHit
+	}
+	return w
 }
 
 // DispatchEntrySite is the site a Dispatch hook reports for the entry call. A
@@ -174,6 +208,7 @@ const (
 type LookupHook struct {
 	Name      string
 	Kind      HookKind
+	When      LookupWhen // lookup hooks only: the results that call it
 	MapName   string
 	Sites     []LookupSite
 	Untrusted bool
@@ -693,9 +728,10 @@ func transformLookup(work *ebpf.CollectionSpec, req LookupRequest) (lookupPlan, 
 
 // lookupGroup is one generated hook and its selected sites.
 type lookupGroup struct {
-	name    string
-	sites   []discoveredLookup
-	generic bool
+	name     string
+	missName string // a typed group's NAME_miss hook, with Lookups observing misses
+	sites    []discoveredLookup
+	generic  bool
 }
 
 // kernelObjName is the name the kernel keeps for an object named name: an ELF
@@ -784,8 +820,15 @@ func selectLookups(sites []discoveredLookup, req LookupRequest, reserved []strin
 				mapName = "any"
 			}
 			if group.name = autoHookName(req.HookName, mapName, i, used); validIdent(group.name) {
-				named = append(named, group)
-				continue
+				if group.generic || !req.Lookups.miss() {
+					named = append(named, group)
+					continue
+				}
+				if group.missName = missHookName(group.name, used); validIdent(group.missName) {
+					named = append(named, group)
+					continue
+				}
+				group.name = group.missName
 			}
 			skipped = skipGroup(skipped, group, fmt.Sprintf("hook name %q is longer than %d bytes", group.name, MaxHookName))
 		}
@@ -834,7 +877,21 @@ func selectLookups(sites []discoveredLookup, req LookupRequest, reserved []strin
 			return nil, nil, refuse("selected lookups refer to different map identities")
 		}
 	}
-	return []lookupGroup{{name: req.HookName, sites: selected}}, nil, nil
+	group := lookupGroup{name: req.HookName, sites: selected}
+	if req.Lookups.miss() && !req.Dispatch {
+		group.missName = req.HookName + "_miss"
+	}
+	return []lookupGroup{group}, nil, nil
+}
+
+// missHookName is NAME_miss, made unused like autoHookName's names.
+func missHookName(name string, used map[string]bool) string {
+	miss := name + "_miss"
+	for used[miss] {
+		miss += "_"
+	}
+	used[miss] = true
+	return miss
 }
 
 // autoHookName derives PREFIX_MAP, falling back to PREFIX_<index> when the
@@ -871,6 +928,9 @@ func transformLookupProgram(insns asm.Instructions, typ ebpf.ProgramType, types 
 	}
 	if req.Dispatch && req.CopyReadOnly {
 		return nil, plan, refuse("Dispatch passes untrusted pointers; it does not combine with CopyReadOnly")
+	}
+	if !req.Lookups.valid() {
+		return nil, plan, refuse("Lookups must be hit, miss or any; got %q", req.Lookups)
 	}
 	var reserved []string
 	entryName, tailName := req.HookName+"_entry", req.HookName+"_tail_call"
@@ -921,6 +981,12 @@ func transformLookupProgram(insns asm.Instructions, typ ebpf.ProgramType, types 
 	names := map[string]bool{}
 	for _, group := range groups {
 		names[group.name] = true
+		if group.missName != "" {
+			if names[group.missName] || !validIdent(group.missName) {
+				return nil, plan, refuse("hook name %q is invalid or used twice", group.missName)
+			}
+			names[group.missName] = true
+		}
 	}
 	if req.Dispatch {
 		names[req.HookName] = true
@@ -1067,12 +1133,13 @@ func (e lookupEmitter) splice(groups []lookupGroup) (asm.Instructions, []LookupH
 			}
 			hook := shared
 			hook.Name, hook.Kind, hook.Sites, hook.Generic = group.name, HookLookup, publicLookupSites(group.sites), group.generic
+			hook.When = req.Lookups.normal()
 			if !group.generic {
 				hook.MapName = group.sites[0].MapName
 			}
 			plan = append(plan, hook)
 			for _, site := range group.sites {
-				calls[site.SitePC] = siteCall{hook: group.name, withSite: true, withMap: true, dispatch: req.Dispatch}
+				calls[site.SitePC] = siteCall{hook: group.name, withSite: true, withMap: true, dispatch: req.Dispatch, when: req.Lookups}
 			}
 			continue
 		}
@@ -1089,15 +1156,25 @@ func (e lookupEmitter) splice(groups []lookupGroup) (asm.Instructions, []LookupH
 		if copied {
 			copySize = m.ValueSize
 		}
-		body := lookupHook(group.name, e.ctxType, key, value, req.Auto, untrusted)
-		if static {
-			body = staticHook(body) // keeps the typed proto; the kernel need not trust it
+		readOnly := m.Flags&bpfFRdonlyProg != 0 && m.Flags&bpfFWronlyProg == 0
+		if req.Lookups.hit() {
+			body := lookupHook(group.name, e.ctxType, key, value, req.Auto, untrusted)
+			if static {
+				body = staticHook(body) // keeps the typed proto; the kernel need not trust it
+			}
+			hooks = append(hooks, body...)
+			plan = append(plan, LookupHook{Name: group.name, Kind: HookLookup, When: LookupHit, MapName: group.sites[0].MapName, Sites: publicLookupSites(group.sites),
+				Untrusted: untrusted, Copied: copied, Static: static, ReadOnly: readOnly})
 		}
-		hooks = append(hooks, body...)
-		plan = append(plan, LookupHook{Name: group.name, Kind: HookLookup, MapName: group.sites[0].MapName, Sites: publicLookupSites(group.sites),
-			Untrusted: untrusted, Copied: copied, Static: static, ReadOnly: m.Flags&bpfFRdonlyProg != 0 && m.Flags&bpfFWronlyProg == 0})
+		if group.missName != "" {
+			// The key is program memory, never the map's, so the miss hook
+			// needs no untrusted arguments even on a restricted map.
+			hooks = append(hooks, lookupHook(group.missName, e.ctxType, key, nil, req.Auto, false)...)
+			plan = append(plan, LookupHook{Name: group.missName, Kind: HookLookup, When: LookupMiss, MapName: group.sites[0].MapName,
+				Sites: publicLookupSites(group.sites), ReadOnly: readOnly})
+		}
 		for _, site := range group.sites {
-			calls[site.SitePC] = siteCall{hook: group.name, withSite: req.Auto, copySize: copySize}
+			calls[site.SitePC] = siteCall{hook: group.name, missHook: group.missName, when: req.Lookups, withSite: req.Auto, copySize: copySize}
 		}
 	}
 	// With Dispatch the entry and tail-call hooks are the shared hook; otherwise
@@ -1141,9 +1218,12 @@ type entryCall struct {
 // its own ctx before the helper. dispatch selects the dispatch hook's argument
 // layout: a dispatch tail call passes the index by pointer, a NULL value and
 // the prog array. A nonzero copySize passes a stack copy of that many value
-// bytes.
+// bytes. when selects the lookup results that call a hook; on a miss a typed
+// lookup calls missHook without a value, a generic one hook with NULL.
 type siteCall struct {
 	hook     string
+	missHook string     // a typed lookup's NAME_miss hook
+	when     LookupWhen // the lookup results that call a hook
 	withSite bool
 	withMap  bool
 	tailCall bool
@@ -1202,29 +1282,63 @@ func spliceLookupCalls(input asm.Instructions, calls map[uint32]siteCall, stack 
 				asm.Call.Label(call.hook),
 			}
 		}
-		var args asm.Instructions
-		if call.copySize > 0 {
-			args = copyValue(asm.R0, int16(copyAt(call)), call.copySize)
-		}
-		args = append(args, asm.LoadMem(asm.R1, asm.RFP, ctx, asm.DWord))
-		if call.withSite {
-			args = append(args, asm.Mov.Imm32(asm.R2, int32(pc)),
-				asm.LoadMem(asm.R3, asm.RFP, key, asm.DWord), asm.Mov.Reg(asm.R4, asm.R0))
-			if call.withMap {
-				args = append(args, asm.LoadMem(asm.R5, asm.RFP, mapSlot, asm.DWord))
+		// hit calls the hook with the value in R0; on a miss a generic hook
+		// gets R0 too, which is then NULL, and a typed one its miss hook.
+		hit := func(copySize uint32) asm.Instructions {
+			var args asm.Instructions
+			if copySize > 0 {
+				args = copyValue(asm.R0, int16(copyAt(call)), copySize)
 			}
-		} else {
-			args = append(args, asm.LoadMem(asm.R2, asm.RFP, key, asm.DWord), asm.Mov.Reg(asm.R3, asm.R0))
+			args = append(args, asm.LoadMem(asm.R1, asm.RFP, ctx, asm.DWord))
+			if call.withSite {
+				args = append(args, asm.Mov.Imm32(asm.R2, int32(pc)),
+					asm.LoadMem(asm.R3, asm.RFP, key, asm.DWord), asm.Mov.Reg(asm.R4, asm.R0))
+				if call.withMap {
+					args = append(args, asm.LoadMem(asm.R5, asm.RFP, mapSlot, asm.DWord))
+				}
+			} else {
+				args = append(args, asm.LoadMem(asm.R2, asm.RFP, key, asm.DWord), asm.Mov.Reg(asm.R3, asm.R0))
+			}
+			if copySize > 0 {
+				value := args[len(args)-1].Dst // the register given R0
+				args = append(args, asm.Mov.Reg(value, asm.RFP), asm.Add.Imm(value, int32(copyAt(call))))
+			}
+			return append(args, asm.Call.Label(call.hook))
 		}
-		if call.copySize > 0 {
-			value := args[len(args)-1].Dst // the register given R0
-			args = append(args, asm.Mov.Reg(value, asm.RFP), asm.Add.Imm(value, int32(copyAt(call))))
+		miss := func() asm.Instructions {
+			if call.withMap {
+				return hit(0)
+			}
+			args := asm.Instructions{asm.LoadMem(asm.R1, asm.RFP, ctx, asm.DWord)}
+			if call.withSite {
+				args = append(args, asm.Mov.Imm32(asm.R2, int32(pc)), asm.LoadMem(asm.R3, asm.RFP, key, asm.DWord))
+			} else {
+				args = append(args, asm.LoadMem(asm.R2, asm.RFP, key, asm.DWord))
+			}
+			return append(args, asm.Call.Label(call.missHook))
 		}
-		args = append(args, asm.Call.Label(call.hook))
-		null := asm.JEq.Imm(asm.R0, 0, "")
-		null.Offset = int16(len(args)) // skip argument setup and hook; restore R0 on both paths
-		out := asm.Instructions{asm.StoreMem(asm.RFP, spillR0, asm.R0, asm.DWord), null}
-		out = append(out, args...)
+		// Each path tests R0 first, so a hook gets a value the verifier knows
+		// to be either a map value or zero. Both paths end by restoring R0.
+		out := asm.Instructions{asm.StoreMem(asm.RFP, spillR0, asm.R0, asm.DWord)}
+		switch {
+		case call.when.hit() && call.when.miss():
+			onHit, onMiss := hit(call.copySize), miss()
+			null := asm.JEq.Imm(asm.R0, 0, "")
+			null.Offset = int16(len(onHit) + 1)
+			done := asm.Ja.Label("")
+			done.Offset = int16(len(onMiss))
+			out = append(append(append(append(out, null), onHit...), done), onMiss...)
+		case call.when.miss():
+			onMiss := miss()
+			found := asm.JNE.Imm(asm.R0, 0, "")
+			found.Offset = int16(len(onMiss))
+			out = append(append(out, found), onMiss...)
+		default:
+			onHit := hit(call.copySize)
+			null := asm.JEq.Imm(asm.R0, 0, "")
+			null.Offset = int16(len(onHit))
+			out = append(append(out, null), onHit...)
+		}
 		return append(out, asm.LoadMem(asm.R0, asm.RFP, spillR0, asm.DWord))
 	}
 	before := func(call siteCall) asm.Instructions {
@@ -1412,38 +1526,46 @@ func scalarHook(name string, ctx btf.Type, scalars ...string) asm.Instructions {
 // untrusted, both are const void * tagged arg:untrusted instead: the verifier
 // checks an ordinary global-function memory argument for writes, even through
 // const, which a value of a BPF_F_RDONLY_PROG map fails; an untrusted one is
-// not checked at the call and is read with fault-handled loads.
+// not checked at the call and is read with fault-handled loads. A nil value
+// makes a miss hook, which takes only the key.
 func lookupHook(name string, ctx, key, value btf.Type, withSite, untrusted bool) asm.Instructions {
 	params := []btf.FuncParam{{Name: "ctx", Type: ctx}}
-	keyReg, valueReg := asm.R2, asm.R3
+	regs := []asm.Register{asm.R2, asm.R3}
 	if withSite {
 		params = append(params, btf.FuncParam{Name: "site", Type: &btf.Int{Name: "u32", Size: 4}})
-		keyReg, valueReg = asm.R3, asm.R4
+		regs = []asm.Register{asm.R3, asm.R4}
 	}
-	if untrusted {
-		key, value = &btf.Void{}, &btf.Void{}
+	types := []btf.Type{key, value}
+	if value == nil {
+		types, regs = types[:1], regs[:1]
 	}
-	params = append(params,
-		btf.FuncParam{Name: "key", Type: &btf.Pointer{Target: &btf.Const{Type: key}}},
-		btf.FuncParam{Name: "value", Type: &btf.Pointer{Target: &btf.Const{Type: value}}})
+	for i, typ := range types {
+		if untrusted {
+			typ = &btf.Void{}
+		}
+		params = append(params, btf.FuncParam{Name: []string{"key", "value"}[i], Type: &btf.Pointer{Target: &btf.Const{Type: typ}}})
+	}
 	fn := &btf.Func{Name: name, Linkage: btf.GlobalFunc, Type: &btf.FuncProto{
 		Return: &btf.Int{Name: "int", Size: 4, Encoding: btf.Signed}, Params: params,
 	}}
 	if untrusted {
 		fn.ParamTags = make([][]string, len(params))
-		fn.ParamTags[len(params)-2] = []string{"arg:untrusted"}
-		fn.ParamTags[len(params)-1] = []string{"arg:untrusted"}
+		for i := len(params) - len(regs); i < len(params); i++ {
+			fn.ParamTags[i] = []string{"arg:untrusted"}
+		}
 	}
 	// Global functions are verified independently with nullable memory args.
 	// Actual reads keep every argument live, even after dead-register pruning.
 	head := btf.WithFuncMetadata(asm.LoadMem(asm.R0, asm.R1, 0, asm.Word).WithSymbol(name).
 		WithSource(asm.Comment("generated lookup observation hook "+name)), fn)
 	if untrusted {
-		return append(asm.Instructions{head}, untrustedReads(keyReg, valueReg)...)
+		return append(asm.Instructions{head}, untrustedReads(regs...)...)
 	}
-	keyNull, valueNull := asm.JEq.Imm(keyReg, 0, ""), asm.JEq.Imm(valueReg, 0, "")
-	keyNull.Offset, valueNull.Offset = 1, 1
-	return asm.Instructions{head, keyNull, asm.LoadMem(asm.R0, keyReg, 0, asm.Byte),
-		valueNull, asm.LoadMem(asm.R0, valueReg, 0, asm.Byte),
-		asm.Mov.Imm(asm.R0, 0), asm.Return()}
+	out := asm.Instructions{head}
+	for _, reg := range regs {
+		null := asm.JEq.Imm(reg, 0, "")
+		null.Offset = 1
+		out = append(out, null, asm.LoadMem(asm.R0, reg, 0, asm.Byte))
+	}
+	return append(out, asm.Mov.Imm(asm.R0, 0), asm.Return())
 }
