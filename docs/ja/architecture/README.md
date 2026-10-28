@@ -1,7 +1,7 @@
 # 実装を読むための案内
 
 対象はこの checkout の公開実装です。
-索引の対応を確認した基準は `43752fa9c40016e580edb4b9d2c654d7baeabf43` です。
+索引の対応を確認した基準は `a501a275565b0661ebb11ef30ed1282f5eac57b6` です。
 この版で確認したのは索引と実装の対応です。
 各解説の測定や過去の判断は再検証していません。
 
@@ -10,6 +10,9 @@
 | 調べる対象 | 実装 | 説明と契約 |
 |---|---|---|
 | 引数と target の探索 | [cmd/bpf-ninja](../../../cmd/bpf-ninja/)、[internal/attach](../../../internal/attach/) | [利用ガイド](../dsl-usage.md)、[対応 hook](../../../README.md#modes) |
+| 関数ごとの map 利用と注入可否の表示 | [listmaps.go](../../../cmd/bpf-ninja/listmaps.go)、[mapuse.go](../../../internal/attach/mapuse.go) | [map 利用から観測までの手順](../../en/inject-walkthrough.md) |
+| load 前の観測 hook 注入 | [pkg/inject](../../../pkg/inject/) | [map 操作の観測](../../en/lookup-site-injection.md)、[監査済み u32 値の観測](../../en/typed-injection.md) |
+| 未変更 loader の起動と load 時注入 | [inject-run CLI](../../../cmd/bpf-ninja/inject_run.go)、[pkg/syscallhook](../../../pkg/syscallhook/) | [syscall hook 設計](../../en/bpf-syscall-hook-design.md)、[inject-run の制約と操作](../../en/inject-run.md) |
 | hook ごとの能力と packet layout | [internal/hook](../../../internal/hook/)、[host adapters](../../../pkg/kunai/host/) | [DSL internals](../dsl-internals.md) |
 | 構文から型付き IR への変換 | [parser](../../../pkg/kunai/parser/)、[resolve](../../../pkg/kunai/resolve/)、[ir](../../../pkg/kunai/ir/) | [文法](../dsl-grammar.md)、[型の仕様](../dsl-types.md) |
 | protocol の定義とロード | [protocols](../../../pkg/kunai/protocols/)、[vocab](../../../pkg/kunai/vocab/) | [vocab 作成](../dsl-vocab-authoring.md) |
