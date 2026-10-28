@@ -628,6 +628,212 @@ func testReadOnlyArg(t *testing.T, static bool) {
 func TestBpfReadOnlyArgShapes(t *testing.T)       { testReadOnlyArgShapes(t, false) }
 func TestBpfReadOnlyArgShapesStatic(t *testing.T) { testReadOnlyArgShapes(t, true) }
 
+// readOnlyArgCallFixture returns a read-only map value through a static
+// subprogram. The map pointer is either passed directly or spilled first.
+func readOnlyArgCallFixture(spillMap bool) *ebpf.CollectionSpec {
+	spec := readOnlyArgFixture()
+	done := asm.JEq.Imm(asm.R0, 0, "")
+	done.Offset = 5
+	call := asm.Instructions{
+		asm.StoreImm(asm.RFP, -4, 0, asm.Word),
+		asm.LoadMapPtr(asm.R1, 0).WithReference("ro"),
+	}
+	if spillMap {
+		call = append(call, asm.StoreMem(asm.RFP, -16, asm.R1, asm.DWord), asm.LoadMem(asm.R1, asm.RFP, -16, asm.DWord))
+	}
+	call = append(call,
+		asm.Mov.Reg(asm.R2, asm.RFP), asm.Add.Imm(asm.R2, -4), asm.Call.Label("sub"),
+		done, asm.Mov.Reg(asm.R2, asm.R0),
+		asm.LoadMapPtr(asm.R1, 0).WithReference("q"), asm.Mov.Imm(asm.R3, 0), asm.FnMapPushElem.Call(),
+		asm.Mov.Imm(asm.R0, 2).WithSymbol("done"), asm.Return(),
+		btf.WithFuncMetadata(asm.FnMapLookupElem.Call().WithSymbol("sub").WithSource(asm.Comment("read-only lookup subprogram")), staticFunc("sub")),
+		asm.Return(),
+	)
+	call[0] = btf.WithFuncMetadata(call[0].WithSymbol("p").WithSource(asm.Comment("read-only call fixture")), xdpFunc("p"))
+	spec.Programs["p"].Instructions = call
+	return spec
+}
+
+// readOnlyArgMapSpillFixture spills a read-only map pointer before looking up
+// the value passed to the queue helper.
+func readOnlyArgMapSpillFixture() *ebpf.CollectionSpec {
+	spec := readOnlyArgFixture()
+	done := asm.JEq.Imm(asm.R0, 0, "")
+	done.Offset = 5
+	insns := asm.Instructions{
+		asm.StoreImm(asm.RFP, -4, 0, asm.Word),
+		asm.LoadMapPtr(asm.R1, 0).WithReference("ro"),
+		asm.StoreMem(asm.RFP, -16, asm.R1, asm.DWord), asm.LoadMem(asm.R1, asm.RFP, -16, asm.DWord),
+		asm.Mov.Reg(asm.R2, asm.RFP), asm.Add.Imm(asm.R2, -4), asm.FnMapLookupElem.Call(),
+		done, asm.Mov.Reg(asm.R2, asm.R0),
+		asm.LoadMapPtr(asm.R1, 0).WithReference("q"), asm.Mov.Imm(asm.R3, 0), asm.FnMapPushElem.Call(),
+		asm.Mov.Imm(asm.R0, 2).WithSymbol("done"), asm.Return(),
+	}
+	insns[0] = btf.WithFuncMetadata(insns[0].WithSymbol("p").WithSource(asm.Comment("read-only map spill fixture")), xdpFunc("p"))
+	spec.Programs["p"].Instructions = insns
+	return spec
+}
+
+// readOnlyArgStackPointerSpillFixture reloads a spilled stack pointer before
+// using it to reload a spilled read-only value.
+func readOnlyArgStackPointerSpillFixture() *ebpf.CollectionSpec {
+	spec := readOnlyArgFixture()
+	insns := asm.Instructions{
+		asm.LoadMapValue(asm.R6, 0, 0).WithReference("ro"), asm.StoreMem(asm.RFP, -8, asm.R6, asm.DWord),
+		asm.Mov.Reg(asm.R7, asm.RFP), asm.StoreMem(asm.RFP, -16, asm.R7, asm.DWord),
+		asm.LoadMem(asm.R7, asm.RFP, -16, asm.DWord), asm.LoadMem(asm.R2, asm.R7, -8, asm.DWord),
+		asm.LoadMapPtr(asm.R1, 0).WithReference("q"), asm.Mov.Imm(asm.R3, 0), asm.FnMapPushElem.Call(),
+		asm.Mov.Imm(asm.R0, 2), asm.Return(),
+	}
+	insns[0] = btf.WithFuncMetadata(insns[0].WithSymbol("p").WithSource(asm.Comment("read-only stack pointer spill fixture")), xdpFunc("p"))
+	spec.Programs["p"].Instructions = insns
+	return spec
+}
+
+// readOnlyArgOffsetFixture adds a known register to a map-value relocation
+// with a nonzero offset.
+func readOnlyArgOffsetFixture() *ebpf.CollectionSpec {
+	spec := readOnlyArgFixture()
+	u64 := &btf.Int{Name: "u64", Size: 8}
+	spec.Maps["ro"].ValueSize = 16
+	spec.Maps["ro"].Value = &btf.Array{Index: &btf.Int{Name: "u32", Size: 4}, Type: u64, Nelems: 2}
+	spec.Maps["ro"].Contents = []ebpf.MapKV{{Key: uint32(0), Value: [2]uint64{41, 42}}}
+	insns := asm.Instructions{
+		asm.LoadMapValue(asm.R2, 0, 8).WithReference("ro"), asm.Mov.Imm(asm.R6, 0), asm.Add.Reg(asm.R2, asm.R6),
+		asm.LoadMapPtr(asm.R1, 0).WithReference("q"), asm.Mov.Imm(asm.R3, 0), asm.FnMapPushElem.Call(),
+		asm.Mov.Imm(asm.R0, 2), asm.Return(),
+	}
+	insns[0] = btf.WithFuncMetadata(insns[0].WithSymbol("p").WithSource(asm.Comment("read-only offset fixture")), xdpFunc("p"))
+	spec.Programs["p"].Instructions = insns
+	return spec
+}
+
+// readOnlyArgStoreFixture passes a read-only value and a caller stack pointer
+// to a static subprogram, which stores the value for the caller to reload.
+func readOnlyArgStoreFixture() *ebpf.CollectionSpec {
+	spec := readOnlyArgFixture()
+	call := asm.Instructions{
+		asm.LoadMapValue(asm.R2, 0, 0).WithReference("ro"),
+		asm.Mov.Reg(asm.R1, asm.RFP), asm.Add.Imm(asm.R1, -16), asm.Call.Label("sub"),
+		asm.LoadMem(asm.R2, asm.RFP, -16, asm.DWord),
+		asm.LoadMapPtr(asm.R1, 0).WithReference("q"), asm.Mov.Imm(asm.R3, 0), asm.FnMapPushElem.Call(),
+		asm.Mov.Imm(asm.R0, 2), asm.Return(),
+		btf.WithFuncMetadata(asm.StoreMem(asm.R1, 0, asm.R2, asm.DWord).WithSymbol("sub").WithSource(asm.Comment("read-only store subprogram")), staticFunc("sub")),
+		asm.Mov.Imm(asm.R0, 0), asm.Return(),
+	}
+	call[0] = btf.WithFuncMetadata(call[0].WithSymbol("p").WithSource(asm.Comment("read-only store fixture")), xdpFunc("p"))
+	spec.Programs["p"].Instructions = call
+	return spec
+}
+
+// readOnlyArgSubprogLoadFixture has no read-only map reference in the entry;
+// the static subprogram loads and returns the value itself.
+func readOnlyArgSubprogLoadFixture() *ebpf.CollectionSpec {
+	spec := readOnlyArgFixture()
+	done := asm.JEq.Imm(asm.R0, 0, "")
+	done.Offset = 5
+	insns := asm.Instructions{
+		btf.WithFuncMetadata(asm.Call.Label("sub").WithSymbol("p").WithSource(asm.Comment("read-only subprogram load fixture")), xdpFunc("p")),
+		done, asm.Mov.Reg(asm.R2, asm.R0),
+		asm.LoadMapPtr(asm.R1, 0).WithReference("q"), asm.Mov.Imm(asm.R3, 0), asm.FnMapPushElem.Call(),
+		asm.Mov.Imm(asm.R0, 2).WithSymbol("done"), asm.Return(),
+		btf.WithFuncMetadata(asm.LoadMapValue(asm.R0, 0, 0).WithReference("ro").WithSymbol("sub").WithSource(asm.Comment("read-only value subprogram")), staticFunc("sub")),
+		asm.Return(),
+	}
+	spec.Programs["p"].Instructions = insns
+	return spec
+}
+
+// readOnlyArgInnerMapFixture passes a value from a read-only inner map to the
+// queue helper. The program itself only contains a relocation for the outer
+// map, whose lookup returns the inner map pointer.
+func readOnlyArgInnerMapFixture() *ebpf.CollectionSpec {
+	u32, u64 := &btf.Int{Name: "u32", Size: 4}, &btf.Int{Name: "u64", Size: 8}
+	jump := func(ins asm.Instruction, off int16) asm.Instruction { ins.Offset = off; return ins }
+	insns := asm.Instructions{
+		asm.StoreImm(asm.RFP, -4, 0, asm.Word), asm.Mov.Reg(asm.R2, asm.RFP), asm.Add.Imm(asm.R2, -4),
+		asm.LoadMapPtr(asm.R1, 0).WithReference("outer"), asm.FnMapLookupElem.Call(),
+		jump(asm.JEq.Imm(asm.R0, 0, ""), 10), asm.Mov.Reg(asm.R1, asm.R0),
+		asm.Mov.Reg(asm.R2, asm.RFP), asm.Add.Imm(asm.R2, -4), asm.FnMapLookupElem.Call(),
+		jump(asm.JEq.Imm(asm.R0, 0, ""), 5), asm.Mov.Reg(asm.R2, asm.R0),
+		asm.LoadMapPtr(asm.R1, 0).WithReference("q"), asm.Mov.Imm(asm.R3, 0), asm.FnMapPushElem.Call(),
+		asm.Mov.Imm(asm.R0, 2), asm.Return(),
+	}
+	insns[0] = btf.WithFuncMetadata(insns[0].WithSymbol("p").WithSource(asm.Comment("read-only inner map fixture")), xdpFunc("p"))
+	inner := &ebpf.MapSpec{Name: "ro", Type: ebpf.Array, KeySize: 4, ValueSize: 8, MaxEntries: 1, Flags: bpfFRdonlyProg, Key: u32, Value: u64}
+	return &ebpf.CollectionSpec{ByteOrder: binary.LittleEndian,
+		Maps: map[string]*ebpf.MapSpec{
+			"outer": {Name: "outer", Type: ebpf.ArrayOfMaps, KeySize: 4, ValueSize: 4, MaxEntries: 1, InnerMap: inner},
+			"q":     {Name: "q", Type: ebpf.Queue, ValueSize: 8, MaxEntries: 2, Value: u64},
+		},
+		Programs: map[string]*ebpf.ProgramSpec{"p": {Name: "p", Type: ebpf.XDP, License: "GPL", Instructions: insns}}}
+}
+
+func TestBpfReadOnlyArgCalls(t *testing.T)       { testReadOnlyArgCalls(t, false) }
+func TestBpfReadOnlyArgCallsStatic(t *testing.T) { testReadOnlyArgCalls(t, true) }
+
+// Read-only values reached through spilled map and stack pointers, a called
+// subprogram, or a map-in-map take an untrusted or static push hook.
+func testReadOnlyArgCalls(t *testing.T, static bool) {
+	testutil.SkipIfNotRoot(t)
+	for _, tc := range []struct {
+		name    string
+		fixture func() *ebpf.CollectionSpec
+	}{
+		{"read-only inner map", readOnlyArgInnerMapFixture},
+		{"nonzero offset", readOnlyArgOffsetFixture},
+		{"stack pointer spill", readOnlyArgStackPointerSpillFixture},
+		{"map spill", readOnlyArgMapSpillFixture},
+		{"map argument", func() *ebpf.CollectionSpec { return readOnlyArgCallFixture(false) }},
+		{"spilled map argument", func() *ebpf.CollectionSpec { return readOnlyArgCallFixture(true) }},
+		{"callee stack store", readOnlyArgStoreFixture},
+		{"callee map load", readOnlyArgSubprogLoadFixture},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			plainSpec := tc.fixture()
+			plain := loadOrSkip(t, plainSpec)
+			t.Cleanup(plain.Close)
+			work := tc.fixture()
+			req := autoReq()
+			req.Lookups, req.Pushes, req.StaticUntrusted, req.Stack.LowestOffset = LookupNone, CallAny, static, -16
+			plan, err := transformLookup(work, req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(plan.hooks) != 1 || plan.hooks[0].Untrusted == static || plan.hooks[0].Static != static {
+				t.Fatalf("hooks: %+v", plan.hooks)
+			}
+			injected := loadHooked(t, work, plan.hooks)
+			t.Cleanup(injected.Close)
+			for _, c := range []*ebpf.Collection{plain, injected} {
+				if outer := c.Maps["outer"]; outer != nil {
+					inner, err := ebpf.NewMap(plainSpec.Maps["outer"].InnerMap)
+					if err != nil {
+						t.Fatal(err)
+					}
+					t.Cleanup(func() { _ = inner.Close() })
+					if err := inner.Put(uint32(0), uint64(42)); err != nil {
+						t.Fatal(err)
+					}
+					if err := outer.Put(uint32(0), inner); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			obs := attachArgObserver(t, "lookup_hook_q_push", injected.Programs["p"], false, true, false)
+			for _, c := range []*ebpf.Collection{plain, injected} {
+				if ret, err := c.Programs["p"].Run(&ebpf.RunOptions{Data: make([]byte, 64), Repeat: 1}); err != nil || ret != 2 {
+					t.Fatalf("action=%d err=%v", ret, err)
+				}
+			}
+			want := [][4]uint64{{uint64(plan.hooks[0].Sites[0].SitePC), 42, 0}}
+			if got := observed(t, obs); !slices.Equal(got, want) {
+				t.Errorf("push hook: %x\nwant %x", got, want)
+			}
+		})
+	}
+}
+
 // A pointer into a read-only map's value that reaches the push other than by
 // a direct load still gets an untrusted or static hook, which loads and sees
 // the constant.
@@ -648,6 +854,11 @@ func testReadOnlyArgShapes(t *testing.T, static bool) {
 			asm.LoadMem(asm.R0, asm.R1, 16, asm.Word), jump(asm.JNE.Imm(asm.R0, 0, ""), 2), ro(asm.R2)}},
 		{"lookup result", asm.Instructions{asm.StoreImm(asm.RFP, -4, 0, asm.Word), asm.Mov.Reg(asm.R2, asm.RFP), asm.Add.Imm(asm.R2, -4),
 			asm.LoadMapPtr(asm.R1, 0).WithReference("ro"), asm.FnMapLookupElem.Call(), jump(asm.JEq.Imm(asm.R0, 0, ""), 5), asm.Mov.Reg(asm.R2, asm.R0)}},
+		{"loop", asm.Instructions{ro(asm.R2), asm.Mov.Imm(asm.R6, 2), asm.Sub.Imm(asm.R6, 1), jump(asm.JNE.Imm(asm.R6, 0, ""), -2)}},
+		{"stack offset join", asm.Instructions{ro(asm.R6), asm.StoreMem(asm.RFP, -8, asm.R6, asm.DWord), asm.Mov.Imm(asm.R9, 42), asm.StoreMem(asm.RFP, -24, asm.R9, asm.DWord),
+			asm.Mov.Reg(asm.R8, asm.RFP), asm.Add.Imm(asm.R8, -24), asm.StoreMem(asm.RFP, -16, asm.R8, asm.DWord), asm.Mov.Reg(asm.R7, asm.RFP),
+			asm.LoadMem(asm.R0, asm.R1, 16, asm.Word), jump(asm.JEq.Imm(asm.R0, 0, ""), 2), asm.Add.Imm(asm.R7, -8), jump(asm.Ja.Label(""), 1),
+			asm.Add.Imm(asm.R7, -16), asm.LoadMem(asm.R2, asm.R7, 0, asm.DWord)}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			fixture := func() *ebpf.CollectionSpec {
@@ -660,7 +871,7 @@ func testReadOnlyArgShapes(t *testing.T, static bool) {
 			}
 			work := fixture()
 			req := autoReq()
-			req.Lookups, req.Pushes, req.StaticUntrusted, req.Stack.LowestOffset = LookupNone, CallAny, static, -8
+			req.Lookups, req.Pushes, req.StaticUntrusted, req.Stack.LowestOffset = LookupNone, CallAny, static, -24
 			plan, err := transformLookup(work, req)
 			if err != nil {
 				t.Fatal(err)

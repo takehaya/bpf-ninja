@@ -463,7 +463,11 @@ func elfLookupMaps(spec *ebpf.CollectionSpec) lookupMapResolver {
 		if m == nil {
 			return name, nil
 		}
-		return name, &RawMap{Name: name, Type: m.Type, KeySize: m.KeySize, ValueSize: m.ValueSize, Flags: m.Flags, Key: m.Key, Value: m.Value}
+		var innerFlags uint32
+		if m.InnerMap != nil {
+			innerFlags = m.InnerMap.Flags
+		}
+		return name, &RawMap{Name: name, Type: m.Type, KeySize: m.KeySize, ValueSize: m.ValueSize, Flags: m.Flags, InnerFlags: innerFlags, Key: m.Key, Value: m.Value}
 	}
 }
 

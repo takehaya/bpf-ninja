@@ -3,16 +3,18 @@ package inject
 import (
 	"maps"
 
+	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/asm"
 	"github.com/cilium/ebpf/btf"
 )
 
 // pointerState is what readOnlyPointers knows about one register.
 type pointerState struct {
-	readOnly bool // may point into the value of a BPF_F_RDONLY_PROG map
-	roMap    bool // is a BPF_F_RDONLY_PROG map
-	stack    stackKind
-	off      int64 // the offset from R10 when stack is stackKnown
+	readOnly   bool // may point into the value of a BPF_F_RDONLY_PROG map
+	roMap      bool // is a BPF_F_RDONLY_PROG value map
+	innerROMap bool // is a map-in-map whose inner-map template is BPF_F_RDONLY_PROG
+	stack      stackKind
+	off        int64 // the offset from R10 when stack is stackKnown
 }
 
 type stackKind uint8
@@ -26,37 +28,49 @@ const (
 // readOnlyState is the state before one instruction of the entry function.
 type readOnlyState struct {
 	regs [asm.R10 + 1]pointerState
-	// slots are the 8-byte stack slots, by offset from R10, that may hold a
-	// spilled read-only pointer; anySlot means any slot may.
-	slots   map[int64]bool
-	anySlot bool
+	// slots are tracked 8-byte stack spills by offset from R10. anySlot is
+	// state that an unknown slot may hold.
+	slots   map[int64]pointerState
+	anySlot pointerState
 }
 
 func (s readOnlyState) equal(o readOnlyState) bool {
 	return s.regs == o.regs && s.anySlot == o.anySlot && maps.Equal(s.slots, o.slots)
 }
 
+func joinPointer(a, b pointerState) pointerState {
+	p := pointerState{readOnly: a.readOnly || b.readOnly, roMap: a.roMap || b.roMap,
+		innerROMap: a.innerROMap || b.innerROMap, stack: a.stack, off: a.off}
+	if a.stack != b.stack || a.off != b.off {
+		p.stack, p.off = notStack, 0
+		if a.stack != notStack || b.stack != notStack {
+			p.stack = stackUnknown
+		}
+	}
+	return p
+}
+
+func joinTracked(a, b pointerState) pointerState {
+	if a == (pointerState{}) {
+		return b
+	}
+	if b == (pointerState{}) {
+		return a
+	}
+	return joinPointer(a, b)
+}
+
 // join merges o into s: what may hold on either path may hold after both.
 func (s readOnlyState) join(o readOnlyState) readOnlyState {
-	out := readOnlyState{slots: maps.Clone(s.slots), anySlot: s.anySlot || o.anySlot}
+	out := readOnlyState{slots: maps.Clone(s.slots), anySlot: joinTracked(s.anySlot, o.anySlot)}
 	for r := range s.regs {
-		a, b := s.regs[r], o.regs[r]
-		p := pointerState{readOnly: a.readOnly || b.readOnly, roMap: a.roMap || b.roMap, stack: a.stack, off: a.off}
-		if a.stack != b.stack || a.off != b.off {
-			p.stack, p.off = notStack, 0
-			if a.stack != notStack || b.stack != notStack {
-				p.stack = stackUnknown
-			}
-		}
-		out.regs[r] = p
+		out.regs[r] = joinPointer(s.regs[r], o.regs[r])
 	}
-	for off, ro := range o.slots {
-		if ro {
-			if out.slots == nil {
-				out.slots = map[int64]bool{}
-			}
-			out.slots[off] = true
+	for off, p := range o.slots {
+		if out.slots == nil {
+			out.slots = map[int64]pointerState{}
 		}
+		out.slots[off] = joinTracked(out.slots[off], p)
 	}
 	return out
 }
@@ -64,24 +78,34 @@ func (s readOnlyState) join(o readOnlyState) readOnlyState {
 // readOnlyPointers returns, for each reachable instruction of the entry
 // function, which registers may point into a BPF_F_RDONLY_PROG map's value:
 // a map-value load of such a map, a lookup in it, and the values they reach through registers, constant offsets,
-// stack spills and joining paths. A pointer the verifier sees as a scalar,
+// tracked pointer spills and joining paths. A pointer the verifier sees as a scalar,
 // such as one loaded from map memory, does not count. A subprogram call
 // that is passed a stack pointer may store such a pointer in the caller's
 // stack, and may return one, when a subprogram references such a map.
 //
-// Without a BPF_F_RDONLY_PROG map in the program nothing is marked, and a
-// read-only inner map reached only through a map-in-map is not seen.
+// A map-in-map's inner-map template and cilium/ebpf's unresolved .kconfig
+// map-value loads count too. Without any such load nothing is marked.
 func readOnlyPointers(insns asm.Instructions, indices map[int]int, resolve lookupMapResolver) (map[int]readOnlyState, error) {
-	readOnlyMap := func(ins *asm.Instruction) bool {
+	mapPointer := func(ins *asm.Instruction) pointerState {
 		_, m := resolve(ins)
-		return m != nil && m.Flags&bpfFRdonlyProg != 0
+		if m == nil {
+			// cilium/ebpf represents a .kconfig extern as an unresolved
+			// PseudoMapValue load whose private metadata creates the map later.
+			if ins.IsLoadFromMap() && ins.Src == asm.PseudoMapValue {
+				return pointerState{roMap: true}
+			}
+			return pointerState{}
+		}
+		mapInMap := m.Type == ebpf.HashOfMaps || m.Type == ebpf.ArrayOfMaps
+		return pointerState{roMap: !mapInMap && m.Flags&bpfFRdonlyProg != 0,
+			innerROMap: mapInMap && m.InnerFlags&bpfFRdonlyProg != 0}
 	}
 	// Subprograms follow the entry function.
 	any, inSubprog, subprogReadOnly := false, false, false
 	it := insns.Iterate()
 	for it.Next() {
 		inSubprog = inSubprog || it.Offset > 0 && btf.FuncMetadata(it.Ins) != nil
-		if it.Ins.IsLoadFromMap() && readOnlyMap(it.Ins) {
+		if it.Ins.IsLoadFromMap() && mapPointer(it.Ins) != (pointerState{}) {
 			any, subprogReadOnly = true, subprogReadOnly || inSubprog
 		}
 	}
@@ -114,7 +138,7 @@ func readOnlyPointers(insns asm.Instructions, indices map[int]int, resolve looku
 		ins := &insns[idx]
 		s := before[pc]
 		s.slots = maps.Clone(s.slots)
-		readOnlyStep(&s, ins, readOnlyMap, subprogReadOnly)
+		readOnlyStep(&s, ins, mapPointer, subprogReadOnly)
 		next := pc + int(ins.Size()/asm.InstructionSize)
 		op := ins.OpCode
 		switch {
@@ -139,7 +163,7 @@ func readOnlyPointers(insns asm.Instructions, indices map[int]int, resolve looku
 }
 
 // readOnlyStep applies ins to s (see readOnlyPointers).
-func readOnlyStep(s *readOnlyState, ins *asm.Instruction, readOnlyMap func(*asm.Instruction) bool, subprogReadOnly bool) {
+func readOnlyStep(s *readOnlyState, ins *asm.Instruction, mapPointer func(*asm.Instruction) pointerState, subprogReadOnly bool) {
 	op, class := ins.OpCode, ins.OpCode.Class()
 	regs := &s.regs
 	clearSlots := func(off int64, size int64) {
@@ -154,17 +178,30 @@ func readOnlyStep(s *readOnlyState, ins *asm.Instruction, readOnlyMap func(*asm.
 		if ins.IsKfuncCall() || (fn == asm.FnMapLookupElem || fn == asm.FnMapLookupPercpuElem) && regs[asm.R1].roMap {
 			ret.readOnly = true
 		}
+		if (fn == asm.FnMapLookupElem || fn == asm.FnMapLookupPercpuElem) && regs[asm.R1].innerROMap {
+			ret.roMap = true
+		}
 		for r := asm.R0; r <= asm.R5; r++ {
 			regs[r] = pointerState{}
 		}
 		regs[asm.R0] = ret
 	case ins.IsFunctionCall():
-		ret := pointerState{readOnly: subprogReadOnly}
+		ret := pointerState{readOnly: subprogReadOnly, roMap: subprogReadOnly, innerROMap: subprogReadOnly}
+		stackArg := false
 		for r := asm.R1; r <= asm.R5; r++ {
-			ret.readOnly = ret.readOnly || regs[r].readOnly
-			if regs[r].stack != notStack && subprogReadOnly {
-				s.anySlot = true
+			p := regs[r]
+			ret = joinTracked(ret, p)
+			ret.readOnly = ret.readOnly || p.roMap || p.innerROMap
+			stackArg = stackArg || p.stack != notStack
+		}
+		if stackArg {
+			for _, p := range s.slots {
+				ret = joinTracked(ret, p)
+				ret.readOnly = ret.readOnly || p.roMap || p.innerROMap
 			}
+			ret = joinTracked(ret, s.anySlot)
+			ret.readOnly = ret.readOnly || s.anySlot.roMap || s.anySlot.innerROMap
+			s.anySlot = joinTracked(s.anySlot, ret)
 		}
 		for r := asm.R0; r <= asm.R5; r++ {
 			regs[r] = pointerState{}
@@ -180,9 +217,9 @@ func readOnlyStep(s *readOnlyState, ins *asm.Instruction, readOnlyMap func(*asm.
 		p := pointerState{}
 		switch {
 		case ins.IsLoadFromMap() && ins.Src == asm.PseudoMapValue:
-			p.readOnly = readOnlyMap(ins)
+			p.readOnly = mapPointer(ins).roMap
 		case ins.IsLoadFromMap():
-			p.roMap = readOnlyMap(ins)
+			p = mapPointer(ins)
 		}
 		regs[ins.Dst] = p
 	case class == asm.ALU64Class && op.ALUOp() == asm.Mov && op.Source() == asm.RegSource && ins.Offset == 0:
@@ -206,9 +243,12 @@ func readOnlyStep(s *readOnlyState, ins *asm.Instruction, readOnlyMap func(*asm.
 		if op.Size() == asm.DWord {
 			switch base.stack {
 			case stackKnown:
-				p.readOnly = s.anySlot || s.slots[base.off+int64(ins.Offset)]
+				p = joinTracked(s.anySlot, s.slots[base.off+int64(ins.Offset)])
 			case stackUnknown:
-				p.readOnly = s.anySlot || len(s.slots) > 0
+				p = s.anySlot
+				for _, slot := range s.slots {
+					p = joinTracked(p, slot)
+				}
 			}
 		}
 		regs[ins.Dst] = p
@@ -219,19 +259,22 @@ func readOnlyStep(s *readOnlyState, ins *asm.Instruction, readOnlyMap func(*asm.
 		regs[ins.Src], regs[asm.R0] = pointerState{}, pointerState{}
 	case class == asm.StXClass || class == asm.StClass:
 		base := regs[ins.Dst]
-		ro := class == asm.StXClass && op.Size() == asm.DWord && regs[ins.Src].readOnly
+		p := pointerState{}
+		if class == asm.StXClass && op.Size() == asm.DWord {
+			p = regs[ins.Src]
+		}
 		switch base.stack {
 		case stackKnown:
 			off := base.off + int64(ins.Offset)
 			clearSlots(off, int64(op.Size().Sizeof()))
-			if ro && off%8 == 0 {
+			if p != (pointerState{}) && off%8 == 0 {
 				if s.slots == nil {
-					s.slots = map[int64]bool{}
+					s.slots = map[int64]pointerState{}
 				}
-				s.slots[off] = true
+				s.slots[off] = p
 			}
 		case stackUnknown:
-			s.anySlot = s.anySlot || ro
+			s.anySlot = joinTracked(s.anySlot, p)
 		}
 	}
 	regs[asm.RFP] = pointerState{stack: stackKnown}

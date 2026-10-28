@@ -172,6 +172,71 @@ char _license[] SEC("license") = "GPL";
 	}
 }
 
+func readOnlyKconfigELF(t *testing.T) []byte {
+	t.Helper()
+	obj := testutil.CompileBPFSource(t, `
+#define SEC(name) __attribute__((section(name), used))
+#define __uint(name, val) int (*name)[val]
+#define __type(name, val) val *name
+#define __kconfig __attribute__((section(".kconfig")))
+typedef unsigned int u32;
+struct xdp_md { u32 data, data_end; };
+struct {
+    __uint(type, 22);
+    __uint(max_entries, 2);
+    __type(value, u32);
+} q SEC(".maps");
+extern const volatile u32 CONFIG_HZ __kconfig;
+static long (*push)(void *, const void *, unsigned long long) = (void *)87;
+SEC("xdp") int p(struct xdp_md *ctx) {
+    return push(&q, &CONFIG_HZ, 0) ? 1 : 2;
+}
+char _license[] SEC("license") = "GPL";
+`)
+	elf, err := os.ReadFile(obj)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return elf
+}
+
+func TestReadOnlyKconfigThroughELF(t *testing.T) {
+	elf := readOnlyKconfigELF(t)
+	sum := sha256.Sum256(elf)
+	res, err := TransformLookup(elf, LookupRequest{ELFSHA256: hex.EncodeToString(sum[:]), ProgramName: "p", Auto: true,
+		Lookups: LookupNone, Pushes: CallAny, HookName: "observe", Stack: StackAudit{LowestOffset: 0}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Hooks) != 1 || !res.Hooks[0].Untrusted {
+		t.Fatalf("hooks: %+v", res.Hooks)
+	}
+}
+
+func TestBpfReadOnlyKconfigArg(t *testing.T) {
+	testutil.SkipIfNotRoot(t)
+	elf := readOnlyKconfigELF(t)
+	plainSpec, err := ebpf.LoadCollectionSpecFromReader(bytes.NewReader(elf))
+	if err != nil {
+		t.Fatal(err)
+	}
+	plain := loadOrSkip(t, plainSpec)
+	t.Cleanup(plain.Close)
+	sum := sha256.Sum256(elf)
+	res, err := TransformLookup(elf, LookupRequest{ELFSHA256: hex.EncodeToString(sum[:]), ProgramName: "p", Auto: true,
+		Lookups: LookupNone, Pushes: CallAny, HookName: "observe", Stack: StackAudit{LowestOffset: 0}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	injected := loadHooked(t, res.Spec, res.Hooks)
+	t.Cleanup(injected.Close)
+	for _, c := range []*ebpf.Collection{plain, injected} {
+		if ret, err := c.Programs["p"].Run(&ebpf.RunOptions{Data: make([]byte, 64), Repeat: 1}); err != nil || ret != 2 {
+			t.Fatalf("action=%d err=%v", ret, err)
+		}
+	}
+}
+
 func TestLookupELFGates(t *testing.T) {
 	for _, tc := range []struct {
 		name   string

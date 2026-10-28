@@ -30,7 +30,8 @@ def allowed_skip(package, test, output, kernel):
             "TestBpfDispatchMiss", "TestBpfDispatchAny", "TestBpfDispatchAnyTC",
             "TestBpfMapCallsDispatch", "TestBpfMapCallsInnerUpdate",
             "TestBpfSpecialFieldsLookup", "TestBpfSockHashUpdateTC", "TestBpfQueueOpsDispatch",
-            "TestBpfQueueOpsInner", "TestBpfReadOnlyArg", "TestBpfReadOnlyArgShapes",
+            "TestBpfQueueOpsInner", "TestBpfReadOnlyArg", "TestBpfReadOnlyArgShapes", "TestBpfReadOnlyArgCalls",
+            "TestBpfReadOnlyKconfigArg",
         } and "kernel lacks arg:untrusted" in output
     if package != PROGRAM:
         return False
