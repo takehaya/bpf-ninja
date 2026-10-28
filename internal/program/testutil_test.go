@@ -340,6 +340,9 @@ func runFilterMatrix(t *testing.T, xdpProg *ebpf.Program, funcName string, exprs
 // loadProbeOrFail loads a probe and fails with verifier output on error.
 func loadProbeOrFail(t *testing.T, xdpProg *ebpf.Program, funcName, filterExpr string, exit, useDSL bool) *Probe {
 	t.Helper()
+	if filterExpr != "" && !useDSL {
+		requireCBPF(t)
+	}
 	var probe *Probe
 	var err error
 	if exit {
@@ -446,4 +449,11 @@ func LoadMultiEntry(targets []attach.Target, filterExpr string, filters []filter
 
 func loadMulti(targets []attach.Target, filterExpr string, filters []filter.TargetFilters, isFexit, useDSL bool, sets []*setmap.Set) (*Probe, error) {
 	return LoadMultiPoint(targets, []Stage{{IsFexit: isFexit, Expr: filterExpr}}, filters, useDSL, sets, EmitBoth)
+}
+
+func requireCBPF(t testing.TB) {
+	t.Helper()
+	if !CBPFEnabled {
+		t.Skip("requires -tags enable_libpcap")
+	}
 }

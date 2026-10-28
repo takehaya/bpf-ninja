@@ -7,8 +7,17 @@ on:
 
 jobs:
   unit-test:
-    name: Unit Tests
+    name: Unit Tests (${{ matrix.config.name }})
     runs-on: ubuntu-26.04
+    strategy:
+      fail-fast: false
+      matrix:
+        config:
+          - {name: static, cgo: "0", goflags: ""}
+          - {name: enable_libpcap, cgo: "1", goflags: "-tags=enable_libpcap"}
+    env:
+      CGO_ENABLED: ${{ matrix.config.cgo }}
+      GOFLAGS: ${{ matrix.config.goflags }}
     steps:
       - uses: actions/checkout@v7
 
@@ -17,7 +26,11 @@ jobs:
           go-version-file: go.mod
 
       - name: Install test dependencies
-        run: sudo apt-get update -qq && sudo apt-get install -y libpcap-dev clang
+        run: sudo apt-get update -qq && sudo apt-get install -y clang
+
+      - name: Install libpcap-dev for legacy filters
+        if: matrix.config.name == 'enable_libpcap'
+        run: sudo apt-get install -y libpcap-dev
 
       - name: Build
         run: go build -o bpf-ninja ./cmd/bpf-ninja/
@@ -49,6 +62,9 @@ jobs:
   integration-test:
     name: Integration Tests
     runs-on: ubuntu-26.04
+    env:
+      CGO_ENABLED: "1"
+      GOFLAGS: "-tags=enable_libpcap"
     steps:
       - uses: actions/checkout@v7
 

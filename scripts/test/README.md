@@ -1,7 +1,8 @@
 # Integration tests
 
-Run `make test-integration` with root access, clang with BPF support, iproute2,
-ping, bpftool, and tcpdump installed. The suite creates the `xdptest`,
+Run `make test-integration` with root access, clang with BPF support, iproute2, ping, bpftool, tcpdump, and libpcap development files installed.
+The target builds with `CGO_ENABLED=1` and `-tags enable_libpcap` so legacy `--cbpf` cases run too.
+The suite creates the `xdptest`,
 `xdptctest`, and `xdpargtest` namespaces and their test interfaces. Run one suite
 at a time and do not reuse those names for other work.
 
@@ -25,6 +26,7 @@ The Go compiler helper skips only a missing clang in local runs. With `CI=true`
 or `CI=1`, missing clang fails too. An installed compiler returning an error
 always fails the test, including invalid C or missing BPF target support.
 
-`BINARY` can select another executable for the shell suite. The helper tests
-use `CAPTURE_READY_POLLS`, `CAPTURE_TIMEOUT` (seconds), and `CAPTURE_SETTLE`
+`BINARY` can select another executable for `run_tests.sh`; it must be built with `-tags enable_libpcap`.
+Both shell suites check legacy compilation before creating network resources.
+The helper tests use `CAPTURE_READY_POLLS`, `CAPTURE_TIMEOUT` (seconds), and `CAPTURE_SETTLE`
 (seconds) to exercise startup and timeout failures quickly.

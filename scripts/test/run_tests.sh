@@ -566,7 +566,13 @@ test_graceful_shutdown() {
 echo "Checking binary..."
 if [[ ! -x "$BINARY" ]]; then
     red "Binary not found: $BINARY"
-    red "Run 'go build -o bpf-ninja ./cmd/bpf-ninja/' first"
+    red "Run 'make build-libpcap' first"
+    exit 1
+fi
+
+# Check legacy support before creating interfaces or namespaces.
+if ! "$BINARY" --cbpf --dump-asm filter "icmp" >/dev/null; then
+    red "Legacy filters are required; run 'make build-libpcap' first"
     exit 1
 fi
 

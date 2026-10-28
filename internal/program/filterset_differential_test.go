@@ -1,3 +1,5 @@
+//go:build enable_libpcap
+
 package program
 
 // Differential correctness for the pcap-expressible filters (F1-F4, F6).

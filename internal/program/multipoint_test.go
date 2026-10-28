@@ -47,6 +47,9 @@ func TestBpfMultiPointLoad(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			if !tc.dsl && (tc.entry != "" || tc.exit != "") {
+				requireCBPF(t)
+			}
 			stages := []Stage{{Expr: tc.entry}, {IsFexit: true, Expr: tc.exit}}
 			probe, err := LoadMultiPoint(tc.targets(t), stages, nil, tc.dsl, nil, tc.emit)
 			if err != nil {

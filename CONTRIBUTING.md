@@ -39,6 +39,34 @@ Run the guard's tests with:
 python3 -m unittest discover -s scripts/tests -p 'test_public_content.py'
 ```
 
+## Build and test
+
+Use Go 1.25 or later on Linux.
+The default build is static and needs no libpcap:
+
+```sh
+make build
+make vet test
+```
+
+`make` defaults to `CGO_ENABLED=0` with no build tags.
+To enable legacy `--cbpf` filters, install the libpcap development package (`libpcap-dev` on Debian/Ubuntu or `libpcap-devel` on Fedora/RHEL), then run:
+
+```sh
+make build-libpcap
+make vet test CGO_ENABLED=1 GO_TAGS=enable_libpcap
+```
+
+The equivalent build command is `CGO_ENABLED=1 go build -tags enable_libpcap ./cmd/bpf-ninja`.
+This binary needs libpcap at runtime.
+The default build supports DSL filters, pcapng output, and conversion/merging; `--cbpf` and its assembly dumps return an error explaining how to enable legacy support.
+
+Local Lefthook checks default to the libpcap-free configuration.
+To run the same checks with legacy support, use `CGO_ENABLED=1 GOFLAGS=-tags=enable_libpcap make lint`.
+CI checks both configurations.
+`make test-bpf` always enables legacy support for both test discovery and execution, and `make test-integration` builds the libpcap variant.
+These privileged suites need root and clang with BPF support; see [the integration prerequisites](scripts/test/README.md).
+
 ## Bytecode golden
 
 `pkg/kunai/dsltest/testdata/golden` pins the bytecode kunai emits for every

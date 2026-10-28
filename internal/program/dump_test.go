@@ -58,6 +58,9 @@ func TestDumpAsmFilter(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			if !tc.useDSL {
+				requireCBPF(t)
+			}
 			var buf bytes.Buffer
 			if err := DumpAsm(&buf, io.Discard, DumpScopeFilter, tc.expr, tc.useDSL, tc.mode, hook.KindXDP); err != nil {
 				t.Fatalf("DumpAsm: %v", err)
@@ -102,6 +105,7 @@ func TestDumpAsmFull(t *testing.T) {
 // shape (direct packet access for filter, FnRingbufReserve +
 // FnRingbufSubmit epilogue) instead of the tracing wrapper.
 func TestDumpAsmFullXDP(t *testing.T) {
+	requireCBPF(t)
 	var buf bytes.Buffer
 	if err := DumpAsm(&buf, io.Discard, DumpScopeFull, "tcp port 443", false, "xdp", hook.KindXDP); err != nil {
 		t.Fatalf("DumpAsm full xdp: %v", err)
@@ -238,6 +242,7 @@ func TestDumpAsmWarnings(t *testing.T) {
 	})
 
 	t.Run("cbpf", func(t *testing.T) {
+		requireCBPF(t)
 		var asm, warn bytes.Buffer
 		if err := DumpAsm(&asm, &warn, DumpScopeFilter, "tcp port 443", false, "entry", hook.KindXDP); err != nil {
 			t.Fatalf("DumpAsm: %v", err)

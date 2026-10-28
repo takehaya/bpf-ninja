@@ -1,14 +1,21 @@
-.PHONY: build clean test test-unit test-bpf test-integration test-all vet goreleaser
+.PHONY: build build-libpcap clean test test-unit test-bpf test-integration test-all vet goreleaser
 .PHONY: install-lint-tools lint lint-ci p4c-check lean-build lean-gen lean-vocab golden-update golden-diff
 
 BINARY = bpf-ninja
 DIFF_FROM_BRANCH_NAME ?= main
+CGO_ENABLED ?= 0
+export CGO_ENABLED
+GO_TAGS ?=
+GO_TAG_FLAGS = $(if $(strip $(GO_TAGS)),-tags '$(GO_TAGS)')
 
 build:
-	go build -o $(BINARY) ./cmd/bpf-ninja/
+	go build $(GO_TAG_FLAGS) -o $(BINARY) ./cmd/bpf-ninja/
+
+build-libpcap: ## Build the legacy tcpdump/cBPF configuration (needs libpcap-dev)
+	$(MAKE) build CGO_ENABLED=1 GO_TAGS=enable_libpcap
 
 vet:
-	go vet ./...
+	go vet $(GO_TAG_FLAGS) ./...
 
 ## Lint:
 
@@ -26,17 +33,17 @@ lint-ci: ## Run lefthook pre-commit on changed files (for CI)
 test: test-unit
 
 test-unit:
-	go test ./...
+	go test $(GO_TAG_FLAGS) ./...
 
 test-bpf:
 	sudo env "PATH=$(PATH)" "HOME=$(HOME)" "GOPATH=$$(go env GOPATH)" "GOMODCACHE=$$(go env GOMODCACHE)" \
-		python3 scripts/test/privileged.py
+		CGO_ENABLED=1 python3 scripts/test/privileged.py
 
 test-bench-run:
 	sudo env "PATH=$(PATH)" "HOME=$(HOME)" "GOPATH=$$(go env GOPATH)" "GOMODCACHE=$$(go env GOMODCACHE)" \
 		bash benchmark/microbench/run_runtime.sh
 
-test-integration: build
+test-integration: build-libpcap
 	sudo scripts/test/run_tests.sh
 
 test-all: test-unit test-bpf test-integration
@@ -76,7 +83,7 @@ golden-diff: ## Diff every golden filter's text between GOLDEN_BASE (default mai
 .PHONY: docs-update docs-check
 
 docs-update: ## Regenerate CLI and protocol references without loading BPF
-	go test ./cmd/bpf-ninja -run '^TestDocumentation$$' -count=1 -update-docs
+	go test $(GO_TAG_FLAGS) ./cmd/bpf-ninja -run '^TestDocumentation$$' -count=1 -update-docs
 
 docs-check: ## Fail if generated references drift from this checkout
-	go test ./cmd/bpf-ninja -run '^TestDocumentation$$' -count=1
+	go test $(GO_TAG_FLAGS) ./cmd/bpf-ninja -run '^TestDocumentation$$' -count=1

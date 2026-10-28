@@ -45,7 +45,7 @@ DESCRIPTION:
      bpf-ninja -i eth0 "eth/ipv4[dst==10.0.0.1]" | tcpdump -r -
      bpf-ninja -i eth0 --mode exit | tcpdump -r -
      bpf-ninja --mode xdp -i eth0 "eth/ipv4/tcp[dport==443]" | tcpdump -r -
-     bpf-ninja --cbpf --mode xdp -i eth0 "tcp port 443" | tcpdump -r -   # legacy pcap syntax
+     bpf-ninja --cbpf --mode xdp -i eth0 "tcp port 443" | tcpdump -r -   # requires the enable_libpcap build
      bpf-ninja -p 42 | tcpdump -n -r -                  # XDP or tc program, auto-detected
      bpf-ninja -p 42 --mode exit "eth/ipv4 where action == TC_ACT_SHOT"  # tc verdict filter
      bpf-ninja -i eth0 --mode entry "eth/ipv4/udp[dport==6081]" --mode exit "eth/ipv4/tcp where action == XDP_DROP" -w both.pcapng
@@ -81,7 +81,7 @@ GLOBAL OPTIONS:
    --set string [ --set string ]                    define a named match set backed by a pinned BPF hash map: NAME=/sys/fs/bpf/path[,key(field=arg:param,...)]; reference it with --arg-filter @NAME (function arg) or the DSL predicate layer[field in @NAME] (packet field). Use bpf-ninja set to update entries during capture without re-attaching
    --list-params                                    list filterable parameters for the target function (requires --func or an entry function with filterable integer parameters) and exit
    --arg-echo                                       diagnostic: print the target function's integer args for each call (gated by --arg-filter if set) instead of capturing packets; requires --func or an entry function with filterable integer parameters; combine with -c N to stop after N
-   --cbpf                                           use the legacy tcpdump/cBPF filter syntax (compiled via cbpfc); default is the built-in DSL
+   --cbpf                                           use the legacy tcpdump/cBPF filter syntax (requires a build with -tags enable_libpcap and libpcap); default is the built-in DSL
    --dsl-help                                       print the bpf-ninja DSL grammar and bundled protocol list, then exit; pass a protocol name as a positional argument to inspect its fields, e.g. --dsl-help ipv4
    --dump-asm string                                compile the filter and print the resulting eBPF asm without loading; values: filter (kunai/cbpfc Main + Callbacks) | full (wrapped tracing program)
    --dump-hook string                               hook whose capabilities/prologue --dump-asm renders (no target program exists to auto-detect from): xdp | tc | cgroup-skb | netfilter (default xdp; deprecated --mode tc-* aliases imply tc)
@@ -208,7 +208,7 @@ GLOBAL OPTIONS:
    --set string [ --set string ]                    define a named match set backed by a pinned BPF hash map: NAME=/sys/fs/bpf/path[,key(field=arg:param,...)]; reference it with --arg-filter @NAME (function arg) or the DSL predicate layer[field in @NAME] (packet field). Use bpf-ninja set to update entries during capture without re-attaching
    --list-params                                    list filterable parameters for the target function (requires --func or an entry function with filterable integer parameters) and exit
    --arg-echo                                       diagnostic: print the target function's integer args for each call (gated by --arg-filter if set) instead of capturing packets; requires --func or an entry function with filterable integer parameters; combine with -c N to stop after N
-   --cbpf                                           use the legacy tcpdump/cBPF filter syntax (compiled via cbpfc); default is the built-in DSL
+   --cbpf                                           use the legacy tcpdump/cBPF filter syntax (requires a build with -tags enable_libpcap and libpcap); default is the built-in DSL
    --dsl-help                                       print the bpf-ninja DSL grammar and bundled protocol list, then exit; pass a protocol name as a positional argument to inspect its fields, e.g. --dsl-help ipv4
    --dump-asm string                                compile the filter and print the resulting eBPF asm without loading; values: filter (kunai/cbpfc Main + Callbacks) | full (wrapped tracing program)
    --dump-hook string                               hook whose capabilities/prologue --dump-asm renders (no target program exists to auto-detect from): xdp | tc | cgroup-skb | netfilter (default xdp; deprecated --mode tc-* aliases imply tc)
@@ -320,7 +320,7 @@ GLOBAL OPTIONS:
    --set string [ --set string ]                    define a named match set backed by a pinned BPF hash map: NAME=/sys/fs/bpf/path[,key(field=arg:param,...)]; reference it with --arg-filter @NAME (function arg) or the DSL predicate layer[field in @NAME] (packet field). Use bpf-ninja set to update entries during capture without re-attaching
    --list-params                                    list filterable parameters for the target function (requires --func or an entry function with filterable integer parameters) and exit
    --arg-echo                                       diagnostic: print the target function's integer args for each call (gated by --arg-filter if set) instead of capturing packets; requires --func or an entry function with filterable integer parameters; combine with -c N to stop after N
-   --cbpf                                           use the legacy tcpdump/cBPF filter syntax (compiled via cbpfc); default is the built-in DSL
+   --cbpf                                           use the legacy tcpdump/cBPF filter syntax (requires a build with -tags enable_libpcap and libpcap); default is the built-in DSL
    --dsl-help                                       print the bpf-ninja DSL grammar and bundled protocol list, then exit; pass a protocol name as a positional argument to inspect its fields, e.g. --dsl-help ipv4
    --dump-asm string                                compile the filter and print the resulting eBPF asm without loading; values: filter (kunai/cbpfc Main + Callbacks) | full (wrapped tracing program)
    --dump-hook string                               hook whose capabilities/prologue --dump-asm renders (no target program exists to auto-detect from): xdp | tc | cgroup-skb | netfilter (default xdp; deprecated --mode tc-* aliases imply tc)
@@ -389,7 +389,7 @@ GLOBAL OPTIONS:
    --set string [ --set string ]                    define a named match set backed by a pinned BPF hash map: NAME=/sys/fs/bpf/path[,key(field=arg:param,...)]; reference it with --arg-filter @NAME (function arg) or the DSL predicate layer[field in @NAME] (packet field). Use bpf-ninja set to update entries during capture without re-attaching
    --list-params                                    list filterable parameters for the target function (requires --func or an entry function with filterable integer parameters) and exit
    --arg-echo                                       diagnostic: print the target function's integer args for each call (gated by --arg-filter if set) instead of capturing packets; requires --func or an entry function with filterable integer parameters; combine with -c N to stop after N
-   --cbpf                                           use the legacy tcpdump/cBPF filter syntax (compiled via cbpfc); default is the built-in DSL
+   --cbpf                                           use the legacy tcpdump/cBPF filter syntax (requires a build with -tags enable_libpcap and libpcap); default is the built-in DSL
    --dsl-help                                       print the bpf-ninja DSL grammar and bundled protocol list, then exit; pass a protocol name as a positional argument to inspect its fields, e.g. --dsl-help ipv4
    --dump-asm string                                compile the filter and print the resulting eBPF asm without loading; values: filter (kunai/cbpfc Main + Callbacks) | full (wrapped tracing program)
    --dump-hook string                               hook whose capabilities/prologue --dump-asm renders (no target program exists to auto-detect from): xdp | tc | cgroup-skb | netfilter (default xdp; deprecated --mode tc-* aliases imply tc)
@@ -455,7 +455,7 @@ GLOBAL OPTIONS:
    --set string [ --set string ]                    define a named match set backed by a pinned BPF hash map: NAME=/sys/fs/bpf/path[,key(field=arg:param,...)]; reference it with --arg-filter @NAME (function arg) or the DSL predicate layer[field in @NAME] (packet field). Use bpf-ninja set to update entries during capture without re-attaching
    --list-params                                    list filterable parameters for the target function (requires --func or an entry function with filterable integer parameters) and exit
    --arg-echo                                       diagnostic: print the target function's integer args for each call (gated by --arg-filter if set) instead of capturing packets; requires --func or an entry function with filterable integer parameters; combine with -c N to stop after N
-   --cbpf                                           use the legacy tcpdump/cBPF filter syntax (compiled via cbpfc); default is the built-in DSL
+   --cbpf                                           use the legacy tcpdump/cBPF filter syntax (requires a build with -tags enable_libpcap and libpcap); default is the built-in DSL
    --dsl-help                                       print the bpf-ninja DSL grammar and bundled protocol list, then exit; pass a protocol name as a positional argument to inspect its fields, e.g. --dsl-help ipv4
    --dump-asm string                                compile the filter and print the resulting eBPF asm without loading; values: filter (kunai/cbpfc Main + Callbacks) | full (wrapped tracing program)
    --dump-hook string                               hook whose capabilities/prologue --dump-asm renders (no target program exists to auto-detect from): xdp | tc | cgroup-skb | netfilter (default xdp; deprecated --mode tc-* aliases imply tc)
@@ -521,7 +521,7 @@ GLOBAL OPTIONS:
    --set string [ --set string ]                    define a named match set backed by a pinned BPF hash map: NAME=/sys/fs/bpf/path[,key(field=arg:param,...)]; reference it with --arg-filter @NAME (function arg) or the DSL predicate layer[field in @NAME] (packet field). Use bpf-ninja set to update entries during capture without re-attaching
    --list-params                                    list filterable parameters for the target function (requires --func or an entry function with filterable integer parameters) and exit
    --arg-echo                                       diagnostic: print the target function's integer args for each call (gated by --arg-filter if set) instead of capturing packets; requires --func or an entry function with filterable integer parameters; combine with -c N to stop after N
-   --cbpf                                           use the legacy tcpdump/cBPF filter syntax (compiled via cbpfc); default is the built-in DSL
+   --cbpf                                           use the legacy tcpdump/cBPF filter syntax (requires a build with -tags enable_libpcap and libpcap); default is the built-in DSL
    --dsl-help                                       print the bpf-ninja DSL grammar and bundled protocol list, then exit; pass a protocol name as a positional argument to inspect its fields, e.g. --dsl-help ipv4
    --dump-asm string                                compile the filter and print the resulting eBPF asm without loading; values: filter (kunai/cbpfc Main + Callbacks) | full (wrapped tracing program)
    --dump-hook string                               hook whose capabilities/prologue --dump-asm renders (no target program exists to auto-detect from): xdp | tc | cgroup-skb | netfilter (default xdp; deprecated --mode tc-* aliases imply tc)
@@ -587,7 +587,7 @@ GLOBAL OPTIONS:
    --set string [ --set string ]                    define a named match set backed by a pinned BPF hash map: NAME=/sys/fs/bpf/path[,key(field=arg:param,...)]; reference it with --arg-filter @NAME (function arg) or the DSL predicate layer[field in @NAME] (packet field). Use bpf-ninja set to update entries during capture without re-attaching
    --list-params                                    list filterable parameters for the target function (requires --func or an entry function with filterable integer parameters) and exit
    --arg-echo                                       diagnostic: print the target function's integer args for each call (gated by --arg-filter if set) instead of capturing packets; requires --func or an entry function with filterable integer parameters; combine with -c N to stop after N
-   --cbpf                                           use the legacy tcpdump/cBPF filter syntax (compiled via cbpfc); default is the built-in DSL
+   --cbpf                                           use the legacy tcpdump/cBPF filter syntax (requires a build with -tags enable_libpcap and libpcap); default is the built-in DSL
    --dsl-help                                       print the bpf-ninja DSL grammar and bundled protocol list, then exit; pass a protocol name as a positional argument to inspect its fields, e.g. --dsl-help ipv4
    --dump-asm string                                compile the filter and print the resulting eBPF asm without loading; values: filter (kunai/cbpfc Main + Callbacks) | full (wrapped tracing program)
    --dump-hook string                               hook whose capabilities/prologue --dump-asm renders (no target program exists to auto-detect from): xdp | tc | cgroup-skb | netfilter (default xdp; deprecated --mode tc-* aliases imply tc)
@@ -662,7 +662,7 @@ GLOBAL OPTIONS:
    --set string [ --set string ]                    define a named match set backed by a pinned BPF hash map: NAME=/sys/fs/bpf/path[,key(field=arg:param,...)]; reference it with --arg-filter @NAME (function arg) or the DSL predicate layer[field in @NAME] (packet field). Use bpf-ninja set to update entries during capture without re-attaching
    --list-params                                    list filterable parameters for the target function (requires --func or an entry function with filterable integer parameters) and exit
    --arg-echo                                       diagnostic: print the target function's integer args for each call (gated by --arg-filter if set) instead of capturing packets; requires --func or an entry function with filterable integer parameters; combine with -c N to stop after N
-   --cbpf                                           use the legacy tcpdump/cBPF filter syntax (compiled via cbpfc); default is the built-in DSL
+   --cbpf                                           use the legacy tcpdump/cBPF filter syntax (requires a build with -tags enable_libpcap and libpcap); default is the built-in DSL
    --dsl-help                                       print the bpf-ninja DSL grammar and bundled protocol list, then exit; pass a protocol name as a positional argument to inspect its fields, e.g. --dsl-help ipv4
    --dump-asm string                                compile the filter and print the resulting eBPF asm without loading; values: filter (kunai/cbpfc Main + Callbacks) | full (wrapped tracing program)
    --dump-hook string                               hook whose capabilities/prologue --dump-asm renders (no target program exists to auto-detect from): xdp | tc | cgroup-skb | netfilter (default xdp; deprecated --mode tc-* aliases imply tc)
@@ -742,7 +742,7 @@ GLOBAL OPTIONS:
    --set string [ --set string ]                    define a named match set backed by a pinned BPF hash map: NAME=/sys/fs/bpf/path[,key(field=arg:param,...)]; reference it with --arg-filter @NAME (function arg) or the DSL predicate layer[field in @NAME] (packet field). Use bpf-ninja set to update entries during capture without re-attaching
    --list-params                                    list filterable parameters for the target function (requires --func or an entry function with filterable integer parameters) and exit
    --arg-echo                                       diagnostic: print the target function's integer args for each call (gated by --arg-filter if set) instead of capturing packets; requires --func or an entry function with filterable integer parameters; combine with -c N to stop after N
-   --cbpf                                           use the legacy tcpdump/cBPF filter syntax (compiled via cbpfc); default is the built-in DSL
+   --cbpf                                           use the legacy tcpdump/cBPF filter syntax (requires a build with -tags enable_libpcap and libpcap); default is the built-in DSL
    --dsl-help                                       print the bpf-ninja DSL grammar and bundled protocol list, then exit; pass a protocol name as a positional argument to inspect its fields, e.g. --dsl-help ipv4
    --dump-asm string                                compile the filter and print the resulting eBPF asm without loading; values: filter (kunai/cbpfc Main + Callbacks) | full (wrapped tracing program)
    --dump-hook string                               hook whose capabilities/prologue --dump-asm renders (no target program exists to auto-detect from): xdp | tc | cgroup-skb | netfilter (default xdp; deprecated --mode tc-* aliases imply tc)
@@ -814,7 +814,7 @@ GLOBAL OPTIONS:
    --set string [ --set string ]                    define a named match set backed by a pinned BPF hash map: NAME=/sys/fs/bpf/path[,key(field=arg:param,...)]; reference it with --arg-filter @NAME (function arg) or the DSL predicate layer[field in @NAME] (packet field). Use bpf-ninja set to update entries during capture without re-attaching
    --list-params                                    list filterable parameters for the target function (requires --func or an entry function with filterable integer parameters) and exit
    --arg-echo                                       diagnostic: print the target function's integer args for each call (gated by --arg-filter if set) instead of capturing packets; requires --func or an entry function with filterable integer parameters; combine with -c N to stop after N
-   --cbpf                                           use the legacy tcpdump/cBPF filter syntax (compiled via cbpfc); default is the built-in DSL
+   --cbpf                                           use the legacy tcpdump/cBPF filter syntax (requires a build with -tags enable_libpcap and libpcap); default is the built-in DSL
    --dsl-help                                       print the bpf-ninja DSL grammar and bundled protocol list, then exit; pass a protocol name as a positional argument to inspect its fields, e.g. --dsl-help ipv4
    --dump-asm string                                compile the filter and print the resulting eBPF asm without loading; values: filter (kunai/cbpfc Main + Callbacks) | full (wrapped tracing program)
    --dump-hook string                               hook whose capabilities/prologue --dump-asm renders (no target program exists to auto-detect from): xdp | tc | cgroup-skb | netfilter (default xdp; deprecated --mode tc-* aliases imply tc)

@@ -1,4 +1,6 @@
 ---
+# Default checks need no libpcap. CI also runs these with CGO_ENABLED=1
+# and GOFLAGS=-tags=enable_libpcap to cover the optional configuration.
 pre-commit:
   parallel: true
   commands:
@@ -66,15 +68,15 @@ pre-commit:
 
     go-vet:
       glob: "**/*.go"
-      run: go vet ./...
+      run: CGO_ENABLED=${CGO_ENABLED:-0} go vet ./...
 
     golangci-lint:
       glob: "**/*.go"
-      run: golangci-lint run --fix ./...
+      run: CGO_ENABLED=${CGO_ENABLED:-0} golangci-lint run --fix ./...
 
     go-test:
       glob: "**/*.go"
-      run: go test ./...
+      run: CGO_ENABLED=${CGO_ENABLED:-0} go test ./...
 
     clang-format:
       glob: "**/*.{c,h}"
@@ -90,10 +92,10 @@ commit-msg:
   commands:
     conventional-commit:
       run: |
-        if ! grep -qE '^(hotfix|feat|fix|docs|style|refactor|perf|test|chore|ci)(\([^\)]*\))?!?:\s' {1}; then
+        if ! grep -qE '^(hotfix|feat|fix|docs|style|refactor|perf|test|build|chore|ci)(\([^\)]*\))?!?:\s' {1}; then
           echo "Commit message must follow conventional commits format."
           echo "Format: <type>(<scope>): <description>"
-          echo "Types: feat, fix, docs, style, refactor, perf, test, chore, ci, hotfix"
+          echo "Types: feat, fix, docs, style, refactor, perf, test, build, chore, ci, hotfix"
           exit 1
         fi
 

@@ -1,17 +1,24 @@
 version: 2
-env:
-  - CGO_ENABLED=1
 before:
   hooks:
     - go mod tidy
 builds:
   - id: bpf-ninja
+    env: [CGO_ENABLED=0]
+    binary: bpf-ninja
+    main: ./cmd/bpf-ninja
+    goos: [linux]
+    goarch: [amd64]
+  - id: bpf-ninja-enable-libpcap
+    env: [CGO_ENABLED=1]
+    tags: [enable_libpcap]
     binary: bpf-ninja
     main: ./cmd/bpf-ninja
     goos: [linux]
     goarch: [amd64]
 archives:
   - id: bpf-ninja
+    ids: [bpf-ninja]
     formats: ['tar.gz']
     name_template: >-
       {{ .ProjectName }}_
@@ -19,6 +26,15 @@ archives:
       {{- .Os }}_
       {{- if eq .Arch "amd64" }}x86_64
       {{- else }}{{ .Arch }}{{ end }}
+  - id: bpf-ninja-enable-libpcap
+    ids: [bpf-ninja-enable-libpcap]
+    formats: ['tar.gz']
+    name_template: >-
+      {{ .ProjectName }}_
+      {{- .Version }}_
+      {{- .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else }}{{ .Arch }}{{ end }}_enable_libpcap
 checksum:
   name_template: 'checksums.txt'
 snapshot:

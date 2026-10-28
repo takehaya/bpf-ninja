@@ -126,10 +126,13 @@ func TestVlanTCWireCompiles(t *testing.T) {
 			}
 		}
 	}
-	// A pcap filter reads the bytes as the kernel holds them either way.
-	if out, err := compileFilter("tcp dst port 80", false /*useDSL*/, false, ebpf.SchedCLS); err != nil || out.WireFrame {
-		t.Fatalf("pcap filter at tc: WireFrame=%v err=%v; want false, nil", out.WireFrame, err)
-	}
+	t.Run("pcap", func(t *testing.T) {
+		requireCBPF(t)
+		// A pcap filter reads the bytes as the kernel holds them either way.
+		if out, err := compileFilter("tcp dst port 80", false, false, ebpf.SchedCLS); err != nil || out.WireFrame {
+			t.Fatalf("pcap filter at tc: WireFrame=%v err=%v; want false, nil", out.WireFrame, err)
+		}
+	})
 	// cgroup-skb keeps the tag in metadata too but has no OuterVlanTag:
 	// the option changes nothing there, and the hint does not offer it.
 	if _, err := compileFilter("eth/vlan/ipv4/tcp", true, false, ebpf.CGroupSKB); !errors.Is(err, codegen.ErrVlanInMetadata) || strings.Contains(err.Error(), "--tc-vlan-reinsert") {
