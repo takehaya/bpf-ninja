@@ -66,7 +66,7 @@ func TestBpfGatedEntryCopyFailure(t *testing.T) {
 				t.Fatal(err)
 			}
 			p.maps = append(p.maps, scratch)
-			exit, err := buildGatedExitInsns(h, out, filter.TargetFilters{}, outer.FD(), hold.FD(), p.StatsMap.FD(), scratch.FD(), nil, nil, tc.emit, 64, 8, 0)
+			exit, err := buildGatedExitInsns(h, out, filter.TargetFilters{}, outer.FD(), hold.FD(), p.StatsMap.FD(), scratch.FD(), nil, nil, tc.emit, 64, 8, 0, false)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -205,7 +205,7 @@ func TestBpfGatedStaleHoldNeverPairs(t *testing.T) {
 	}
 	var exitOut codegen.Output
 	exitOut.Capture.MaxCapLen = 64
-	exit, err := buildGatedExitInsns(h, exitOut, filter.TargetFilters{}, outer.FD(), hold.FD(), p.StatsMap.FD(), scratch.FD(), nil, nil, EmitBoth, 64, 8, 0)
+	exit, err := buildGatedExitInsns(h, exitOut, filter.TargetFilters{}, outer.FD(), hold.FD(), p.StatsMap.FD(), scratch.FD(), nil, nil, EmitBoth, 64, 8, 0, false)
 	if err != nil {
 		t.Fatal(err)
 	}

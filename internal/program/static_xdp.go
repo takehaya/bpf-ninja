@@ -1,12 +1,45 @@
 package program
 
 import (
+	"errors"
+	"fmt"
+	"strings"
+
+	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/asm"
 	"github.com/takehaya/bpf-ninja/internal/hook"
 )
 
-// Static BPF functions expose ctx as a scalar to tracing programs, including
-// inject-run's static_untrusted hooks on kernels without arg:untrusted.
+// staticXDPNeedsProbeRead checks the actual target instead of a kernel version:
+// on 6.1, btf_check_subprog_arg_match can mark static hooks with non-ctx pointer
+// arguments unreliable; bpf_check_attach_target then discards their prototype.
+// args[0] becomes SCALAR_VALUE, so the first xdp_buff load is rejected with
+// "R6 invalid mem access 'scalar'". Reproduced on matrix kernels 6.1, 6.6,
+// 6.12, 6.15, 6.18, 7.0, 7.1, 7.2 and 7.3-rc4, while static ctx-only helpers
+// accept direct loads on all of them. This is target dependent, so a tiny,
+// unattached load probe preserves working targets' existing codegen and
+// handles backports without guessing a version boundary. Other errors propagate.
+func staticXDPNeedsProbeRead(target *ebpf.Program, name string, attachType ebpf.AttachType) (bool, error) {
+	h, _ := hook.ByName(hook.KindXDP)
+	insns, err := h.PacketPrologue()
+	if err != nil {
+		return false, err
+	}
+	insns = append(insns, asm.Mov.Imm(asm.R0, 0), asm.Return())
+	p, err := ebpf.NewProgram(&ebpf.ProgramSpec{
+		Type: ebpf.Tracing, AttachType: attachType, AttachTo: name,
+		AttachTarget: target, Instructions: insns, License: "GPL",
+	})
+	if err == nil {
+		return false, p.Close()
+	}
+	var ve *ebpf.VerifierError
+	if errors.As(err, &ve) && strings.Contains(strings.Join(ve.Log, "\n"), "R6 invalid mem access 'scalar'") {
+		return true, nil
+	}
+	return false, fmt.Errorf("probing direct XDP context loads for %s: %w", name, err)
+}
+
 // Read the same xdp_buff layout as hook.xdpPacketPrologue through the fault-
 // handled helper. The temporary stack is dead before set/packet filtering.
 func staticXDPHook(h *hook.Hook, isFexit bool) *hook.Hook {

@@ -359,11 +359,19 @@ func LoadMultiPoint(targets []attach.Target, stages []Stage, filters []filter.Ta
 		// entry image with a later packet).
 		for si := len(stages) - 1; si >= 0; si-- {
 			st, c := stages[si], comp[si]
-			targetHook := h
-			if staticXDP {
-				targetHook = staticXDPHook(h, st.IsFexit)
-			}
 			stLabel, attachType := tracingLabel(st.IsFexit)
+			targetHook := h
+			probeRead := false
+			if staticXDP {
+				probeRead, err = staticXDPNeedsProbeRead(t.Program, t.FuncName, attachType)
+				if err != nil {
+					_ = probe.Close()
+					return nil, err
+				}
+				if probeRead {
+					targetHook = staticXDPHook(h, st.IsFexit)
+				}
+			}
 			var returnOffset int16
 			if st.IsFexit {
 				spec, specErr := probe.extensionGuard.Spec(t.Program)
@@ -383,7 +391,7 @@ func LoadMultiPoint(targets []attach.Target, stages []Stage, filters []filter.Ta
 			case gated && !st.IsFexit:
 				insns, err = buildGatedEntryInsns(targetHook, c.out, tf, holdFD, holdStopFD, statsFD, scratchFD, c.slots, c.pktRefs, emit, entryCapLen, gateFD)
 			case gated:
-				insns, err = buildGatedExitInsns(targetHook, c.out, tf, outerMap.FD(), holdFD, statsFD, scratchFD, c.slots, c.pktRefs, emit, entryCapLen, returnOffset, gateFD)
+				insns, err = buildGatedExitInsns(targetHook, c.out, tf, outerMap.FD(), holdFD, statsFD, scratchFD, c.slots, c.pktRefs, emit, entryCapLen, returnOffset, gateFD, probeRead)
 			default:
 				insns, err = buildTracingInsnsForHook(targetHook, c.out, tf, outerMap.FD(), scratchFD, statsFD, st.IsFexit, returnOffset, c.slots, c.pktRefs, gateFD)
 			}
