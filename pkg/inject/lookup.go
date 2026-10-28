@@ -142,9 +142,10 @@ func (s LookupSelector) empty() bool {
 // writes nothing. A bloom filter peek's value is the one tested. A push, pop
 // or peek on a map known only at run time goes to PREFIX_any_push,
 // PREFIX_any_pop or PREFIX_any_peek. A generic or Dispatch hook gets a NULL
-// key and the value. A key or value that points into a BPF_F_RDONLY_PROG
-// map's value makes its map's hooks for that op untrusted, or static with
-// StaticUntrusted. bpf_map_lookup_percpu_elem counts as a lookup: its hooks
+// key and the value. A key or value pointer that may point into a
+// BPF_F_RDONLY_PROG map's value, such as a .rodata constant, makes its map's
+// hooks for that op untrusted, or static with StaticUntrusted (see
+// readOnlyPointers). bpf_map_lookup_percpu_elem counts as a lookup: its hooks
 // do not get the CPU.
 type LookupRequest struct {
 	ELFSHA256       string
@@ -289,8 +290,10 @@ func (k HookKind) keyless() bool { return k == HookPush || k == HookPop || k == 
 // cannot read (BPF_F_RDONLY_PROG or BPF_F_WRONLY_PROG), or whose value holds a
 // field the verifier lets programs reach only through helpers and kfuncs: a
 // bpf_spin_lock, bpf_timer, kptr and the like. Its key and value are const void * tagged
-// arg:untrusted, so an observer reads them by the map's sizes. Update and
-// delete hooks stay typed: their key and value are the program's memory.
+// arg:untrusted, so an observer reads them by the map's sizes. Miss, update,
+// delete, push, pop and peek hooks stay typed, since their key and value are
+// usually the program's memory, unless they may point into a read-only map's
+// value (see LookupRequest).
 //
 // Copied is set for a typed hook on a BPF_F_RDONLY_PROG map with
 // CopyReadOnly: its value points to a stack copy, not into the map.
@@ -432,9 +435,10 @@ type lookupMapResolver func(*asm.Instruction) (string, *RawMap)
 // hook: R1 is not a direct map reference, or the map is a map-in-map.
 // typedOnly marks a direct lookup that a typed hook refuses (checkLookupMap)
 // on a map of a genericKinds kind; Auto also sends it to the generic hook.
-// readOnlyArg marks a site whose key or value pointer points into the value
-// of a BPF_F_RDONLY_PROG map, such as a .rodata constant: a typed hook cannot
-// take it as memory, so its hook takes untrusted pointers.
+// readOnlyArg marks a site whose key or value pointer may point into the
+// value of a BPF_F_RDONLY_PROG map, such as a .rodata constant (see
+// readOnlyPointers): a typed hook cannot take it as memory, so its hook takes
+// untrusted pointers.
 type discoveredLookup struct {
 	LookupSite
 	mapID       string
@@ -525,17 +529,16 @@ func discoverMapCalls(insns asm.Instructions, typ ebpf.ProgramType, resolve look
 	var mapID, mapName, funcName, file string
 	var m *RawMap
 	var line uint32
-	// readOnly[r] is set while R2 or R3 holds a pointer into the value of a
-	// BPF_F_RDONLY_PROG map, loaded directly in this basic block and moved
-	// only by adding a constant.
-	var readOnly [asm.R4]bool
+	readOnly, err := readOnlyPointers(insns, indices, resolve)
+	if err != nil {
+		return nil, err
+	}
 	funcStart := -1
 	it = insns.Iterate()
 	for it.Next() {
 		pc, ins := int(it.Offset), it.Ins
 		if starts[pc] {
 			mapID, mapName, m = "", "", nil
-			readOnly = [asm.R4]bool{}
 		}
 		if fn := btf.FuncMetadata(ins); fn != nil {
 			funcName, funcStart, file, line = fn.Name, pc, "", 0
@@ -575,23 +578,9 @@ func discoverMapCalls(insns asm.Instructions, typ ebpf.ProgramType, resolve look
 			site.Generic = generic || typedOnly
 			// The key is in R2, or for a push, pop or peek the value; an
 			// update's value is in R3.
-			readOnlyArg := readOnly[asm.R2] || (op == HookUpdate && readOnly[asm.R3])
+			regs := readOnly[pc].regs
+			readOnlyArg := regs[asm.R2].readOnly || op == HookUpdate && regs[asm.R3].readOnly
 			sites = append(sites, discoveredLookup{site, mapID, m, generic, typedOnly, readOnlyArg})
-		}
-		for r := asm.R2; r <= asm.R3; r++ {
-			if !readOnly[r] || ins.Dst != r {
-				continue
-			}
-			if class := ins.OpCode.Class(); class.IsALU() || class == asm.LdXClass || class == asm.LdClass {
-				readOnly[r] = class == asm.ALU64Class && ins.OpCode.ALUOp() == asm.Add && ins.OpCode.Source() == asm.ImmSource
-			}
-		}
-		if ins.OpCode.Class().IsJump() { // calls too
-			readOnly = [asm.R4]bool{}
-		}
-		if ins.IsLoadFromMap() && ins.Src == asm.PseudoMapValue && (ins.Dst == asm.R2 || ins.Dst == asm.R3) {
-			_, value := resolve(ins)
-			readOnly[ins.Dst] = value != nil && value.Flags&bpfFRdonlyProg != 0
 		}
 		// Track direct R1 definitions only; calls also clobber R1. Atomic
 		// operations and legacy packet loads are conservatively barriers.
@@ -757,8 +746,8 @@ func groupStackReach(group lookupGroup, req LookupRequest) int {
 	if group.op != HookLookup {
 		return slots.result
 	}
-	if m := group.sites[0].mapInfo; copiesValue(m, req) {
-		return slots.copyAt(m.ValueSize)
+	if group.copies(req) {
+		return slots.copyAt(group.sites[0].mapInfo.ValueSize)
 	}
 	return slots.result
 }
@@ -977,6 +966,19 @@ type lookupGroup struct {
 	op       HookKind
 	sites    []discoveredLookup
 	generic  bool
+}
+
+// readOnlyArg reports whether a site of group may pass a pointer into a
+// read-only map's value (see discoveredLookup).
+func (group lookupGroup) readOnlyArg() bool {
+	return slices.ContainsFunc(group.sites, func(site discoveredLookup) bool { return site.readOnlyArg })
+}
+
+// copies reports whether group's typed lookup hook takes a stack copy of the
+// value. Its hook is untrusted or static, and copies nothing, when a key may
+// point into a read-only map.
+func (group lookupGroup) copies(req LookupRequest) bool {
+	return copiesValue(group.sites[0].mapInfo, req) && !group.readOnlyArg()
 }
 
 // kernelObjName is the name the kernel keeps for an object named name: an ELF
@@ -1417,9 +1419,10 @@ func (e lookupEmitter) splice(groups []lookupGroup) (asm.Instructions, []LookupH
 		}
 		m := group.sites[0].mapInfo
 		key, value := lookupABI(m)
-		// A key or value pointer into a read-only map's value fails a typed
-		// hook's memory check like a read-only map's own value does.
-		readOnlyArg := slices.ContainsFunc(group.sites, func(site discoveredLookup) bool { return site.readOnlyArg })
+		// A key or value pointer that may point into a read-only map's value
+		// fails a typed hook's memory check like a read-only map's own value
+		// does.
+		readOnlyArg := group.readOnlyArg()
 		if group.op != HookLookup {
 			// The key and value are usually the program's memory, never the
 			// map's, so the hook is typed even on a write-only map.
@@ -1451,7 +1454,7 @@ func (e lookupEmitter) splice(groups []lookupGroup) (asm.Instructions, []LookupH
 		// value with a special field cannot be passed as memory at all, nor
 		// copied.
 		restricted := m.Flags&(bpfFRdonlyProg|bpfFWronlyProg) != 0 || specialField(m.Value) != "" || readOnlyArg
-		copied := copiesValue(m, req) && !readOnlyArg
+		copied := group.copies(req)
 		static := restricted && !copied && req.StaticUntrusted
 		untrusted := restricted && !copied && !static
 		var copySize uint32

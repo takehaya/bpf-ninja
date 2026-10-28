@@ -129,9 +129,10 @@ func TestLookupPercpuHooks(t *testing.T) {
 	}
 }
 
-// A push or update whose pointer comes from a read-only map takes untrusted
-// hooks, or static ones under StaticUntrusted; reading through the pointer
-// ends the tracking.
+// A push or update whose pointer may come from a read-only map takes
+// untrusted hooks, or static ones under StaticUntrusted. The pointer is
+// followed through registers and stack spills; a scalar made from it is not
+// a pointer.
 func TestReadOnlyArgHooks(t *testing.T) {
 	for _, static := range []bool{false, true} {
 		req := autoReq()
@@ -144,17 +145,42 @@ func TestReadOnlyArgHooks(t *testing.T) {
 			t.Errorf("static=%v: hooks %+v", static, plan.hooks)
 		}
 	}
+	for _, tc := range []struct {
+		name      string
+		key       asm.Instructions
+		untrusted bool
+	}{
+		{"stack", asm.Instructions{asm.Mov.Reg(asm.R2, asm.RFP), asm.Add.Imm(asm.R2, -8)}, false},
+		{"stack through r6", asm.Instructions{asm.Mov.Reg(asm.R6, asm.RFP), asm.Sub.Imm(asm.R6, 8), asm.Mov.Reg(asm.R2, asm.R6)}, false},
+		{"loaded from an unwritten slot", asm.Instructions{asm.Mov.Reg(asm.R2, asm.RFP), asm.LoadMem(asm.R2, asm.R2, -8, asm.DWord)}, false},
+		{"32-bit move", asm.Instructions{asm.LoadMapValue(asm.R2, 0, 0).WithReference("ro"), asm.Mov.Reg32(asm.R2, asm.R2)}, false},
+		{"read-only through r6", asm.Instructions{asm.LoadMapValue(asm.R6, 0, 0).WithReference("ro"), asm.Mov.Reg(asm.R2, asm.R6)}, true},
+		{"read-only spilled", asm.Instructions{asm.LoadMapValue(asm.R6, 0, 0).WithReference("ro"), asm.Mov.Reg(asm.R7, asm.RFP),
+			asm.StoreMem(asm.R7, -16, asm.R6, asm.DWord), asm.LoadMem(asm.R2, asm.RFP, -16, asm.DWord)}, true},
+		{"spill overwritten", asm.Instructions{asm.LoadMapValue(asm.R6, 0, 0).WithReference("ro"), asm.StoreMem(asm.RFP, -16, asm.R6, asm.DWord),
+			asm.Mov.Imm(asm.R7, 0), asm.StoreMem(asm.RFP, -16, asm.R7, asm.DWord), asm.LoadMem(asm.R2, asm.RFP, -16, asm.DWord)}, false},
+	} {
+		spec := readOnlyArgFixture()
+		insns := spec.Programs["p"].Instructions
+		key := append(asm.Instructions{}, tc.key...)
+		key[0] = btf.WithFuncMetadata(key[0].WithSymbol("p").WithSource(insns[0].Source()), btf.FuncMetadata(&insns[0]))
+		spec.Programs["p"].Instructions = append(key, insns[1:]...) // replaces the push's r2 = ro
+		req := autoReq()
+		req.Lookups, req.Pushes, req.Stack.LowestOffset = LookupNone, CallAny, -16
+		plan, err := transformLookup(spec, req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(plan.hooks) != 1 || plan.hooks[0].Untrusted != tc.untrusted {
+			t.Errorf("%s: hooks %+v", tc.name, plan.hooks)
+		}
+	}
+	// Without a read-only map nothing is read-only.
 	spec := readOnlyArgFixture()
-	insns := spec.Programs["p"].Instructions
-	// r2 = *(u64 *)r2 is no longer a pointer into ro.
-	spec.Programs["p"].Instructions = append(insns[:2:2], append(asm.Instructions{asm.LoadMem(asm.R2, asm.R2, 0, asm.DWord)}, insns[2:]...)...)
+	spec.Maps["ro"].Flags = 0
 	req := autoReq()
 	req.Lookups, req.Pushes, req.Stack.LowestOffset = LookupNone, CallAny, -8
-	plan, err := transformLookup(spec, req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(plan.hooks) != 1 || plan.hooks[0].Untrusted {
-		t.Errorf("after a load: hooks %+v", plan.hooks)
+	if plan, err := transformLookup(spec, req); err != nil || len(plan.hooks) != 1 || plan.hooks[0].Untrusted {
+		t.Errorf("writable map: hooks %+v err %v", plan.hooks, err)
 	}
 }

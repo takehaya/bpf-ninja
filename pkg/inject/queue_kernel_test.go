@@ -625,6 +625,108 @@ func testReadOnlyArg(t *testing.T, static bool) {
 	}
 }
 
+func TestBpfReadOnlyArgShapes(t *testing.T)       { testReadOnlyArgShapes(t, false) }
+func TestBpfReadOnlyArgShapesStatic(t *testing.T) { testReadOnlyArgShapes(t, true) }
+
+// A pointer into a read-only map's value that reaches the push other than by
+// a direct load still gets an untrusted or static hook, which loads and sees
+// the constant.
+func testReadOnlyArgShapes(t *testing.T, static bool) {
+	testutil.SkipIfNotRoot(t)
+	ro := func(r asm.Register) asm.Instruction { return asm.LoadMapValue(r, 0, 0).WithReference("ro") }
+	jump := func(ins asm.Instruction, off int16) asm.Instruction { ins.Offset = off; return ins }
+	for _, tc := range []struct {
+		name string
+		key  asm.Instructions
+	}{
+		{"register copy", asm.Instructions{ro(asm.R6), asm.Mov.Reg(asm.R2, asm.R6)}},
+		{"subtract zero", asm.Instructions{ro(asm.R2), asm.Sub.Imm(asm.R2, 0)}},
+		{"stack reload", asm.Instructions{ro(asm.R2), asm.StoreMem(asm.RFP, -8, asm.R2, asm.DWord), asm.LoadMem(asm.R2, asm.RFP, -8, asm.DWord)}},
+		{"branch", asm.Instructions{ro(asm.R2), asm.LoadMem(asm.R0, asm.R1, 16, asm.Word), jump(asm.JEq.Imm(asm.R0, 0, ""), 1), asm.Add.Imm(asm.R2, 0)}},
+		// The stack on one path, the constant on the other.
+		{"join", asm.Instructions{asm.Mov.Imm(asm.R3, 42), asm.StoreMem(asm.RFP, -8, asm.R3, asm.DWord), asm.Mov.Reg(asm.R2, asm.RFP), asm.Add.Imm(asm.R2, -8),
+			asm.LoadMem(asm.R0, asm.R1, 16, asm.Word), jump(asm.JNE.Imm(asm.R0, 0, ""), 2), ro(asm.R2)}},
+		{"lookup result", asm.Instructions{asm.StoreImm(asm.RFP, -4, 0, asm.Word), asm.Mov.Reg(asm.R2, asm.RFP), asm.Add.Imm(asm.R2, -4),
+			asm.LoadMapPtr(asm.R1, 0).WithReference("ro"), asm.FnMapLookupElem.Call(), jump(asm.JEq.Imm(asm.R0, 0, ""), 5), asm.Mov.Reg(asm.R2, asm.R0)}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fixture := func() *ebpf.CollectionSpec {
+				spec := readOnlyArgFixture()
+				insns := append(append(asm.Instructions{}, tc.key...), asm.LoadMapPtr(asm.R1, 0).WithReference("q"), asm.Mov.Imm(asm.R3, 0),
+					asm.FnMapPushElem.Call(), asm.Mov.Imm(asm.R0, 2), asm.Return())
+				insns[0] = btf.WithFuncMetadata(insns[0].WithSymbol("p").WithSource(asm.Comment("read-only shape")), xdpFunc("p"))
+				spec.Programs["p"].Instructions = insns
+				return spec
+			}
+			work := fixture()
+			req := autoReq()
+			req.Lookups, req.Pushes, req.StaticUntrusted, req.Stack.LowestOffset = LookupNone, CallAny, static, -8
+			plan, err := transformLookup(work, req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(plan.hooks) != 1 || plan.hooks[0].Untrusted == static || plan.hooks[0].Static != static {
+				t.Fatalf("hooks: %+v", plan.hooks)
+			}
+			plain := loadOrSkip(t, fixture())
+			t.Cleanup(plain.Close)
+			injected := loadHooked(t, work, plan.hooks)
+			t.Cleanup(injected.Close)
+			push := attachArgObserver(t, "lookup_hook_q_push", injected.Programs["p"], false, true, false)
+			for _, c := range []*ebpf.Collection{plain, injected} {
+				if ret, err := c.Programs["p"].Run(&ebpf.RunOptions{Data: make([]byte, 64), Repeat: 1}); err != nil || ret != 2 {
+					t.Fatalf("action=%d err=%v", ret, err)
+				}
+			}
+			if got, want := observed(t, push), [][4]uint64{{uint64(plan.hooks[0].Sites[0].SitePC), 42, 0}}; !slices.Equal(got, want) {
+				t.Errorf("push hook: %x\nwant %x", got, want)
+			}
+		})
+	}
+}
+
+// A lookup keyed by a read-only constant has a static hook under
+// StaticUntrusted, which copies nothing, so a value too large to copy
+// below the audited stack does not refuse it with CopyReadOnly.
+func TestBpfCopyReadOnlyKey(t *testing.T) {
+	testutil.SkipIfNotRoot(t)
+	fixture := func() *ebpf.CollectionSpec {
+		spec := readOnlyArgFixture()
+		u8, u32 := &btf.Int{Name: "u8", Size: 1}, &btf.Int{Name: "u32", Size: 4}
+		value := &btf.Struct{Name: "big", Size: 512, Members: []btf.Member{{Name: "data", Type: &btf.Array{Index: u32, Type: u8, Nelems: 512}}}}
+		spec.Maps["big"] = &ebpf.MapSpec{Name: "big", Type: ebpf.Array, KeySize: 4, ValueSize: 512, MaxEntries: 64, Flags: bpfFRdonlyProg, Key: u32, Value: value}
+		insns := asm.Instructions{
+			asm.LoadMapValue(asm.R2, 0, 0).WithReference("ro"),
+			asm.LoadMapPtr(asm.R1, 0).WithReference("big"),
+			asm.FnMapLookupElem.Call(),
+			asm.Mov.Imm(asm.R0, 2),
+			asm.Return(),
+		}
+		insns[0] = btf.WithFuncMetadata(insns[0].WithSymbol("p").WithSource(asm.Comment("copy with read-only key")), xdpFunc("p"))
+		spec.Programs["p"].Instructions = insns
+		return spec
+	}
+	work := fixture()
+	req := autoReq()
+	req.CopyReadOnly, req.StaticUntrusted, req.Stack.LowestOffset = true, true, 0
+	plan, err := transformLookup(work, req)
+	if err != nil {
+		t.Fatalf("%v; skipped %+v", err, plan.skipped)
+	}
+	if len(plan.hooks) != 1 || !plan.hooks[0].Static || plan.hooks[0].Copied {
+		t.Fatalf("hooks: %+v", plan.hooks)
+	}
+	plain := loadOrSkip(t, fixture())
+	t.Cleanup(plain.Close)
+	injected := loadHooked(t, work, plan.hooks)
+	t.Cleanup(injected.Close)
+	for _, c := range []*ebpf.Collection{plain, injected} {
+		if ret, err := c.Programs["p"].Run(&ebpf.RunOptions{Data: make([]byte, 64), Repeat: 1}); err != nil || ret != 2 {
+			t.Fatalf("action=%d err=%v", ret, err)
+		}
+	}
+}
+
 // TestBpfBloomPeekPoisoned pins why queueFixture reads the value before a
 // pop or peek: without those reads 7.1 and newer reject the plain bloom
 // filter program, before any rewrite, while older kernels load it. If a
