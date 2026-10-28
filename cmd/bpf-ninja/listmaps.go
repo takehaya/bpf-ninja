@@ -286,7 +286,8 @@ func useColumns(u attach.MapUse) [4]string {
 }
 
 // status says where a tail call or redirect goes and, with --lookups-json,
-// whether a lookup, update or delete can be instrumented.
+// whether a map call (a lookup, update, delete, push, pop or peek) can be
+// instrumented.
 func (n nodeMaps) status(i, j int, u attach.MapUse, children []attach.ReachableProgram) string {
 	switch u.Op {
 	case attach.MapOpTailCall, attach.MapOpRedirect:
@@ -300,7 +301,7 @@ func (n nodeMaps) status(i, j int, u attach.MapUse, children []attach.ReachableP
 			return ""
 		}
 		return "→ " + strings.Join(targets, ", ")
-	case attach.MapOpLookup, attach.MapOpUpdate, attach.MapOpDelete:
+	case attach.MapOpLookup, attach.MapOpUpdate, attach.MapOpDelete, attach.MapOpPush, attach.MapOpPop, attach.MapOpPeek:
 	default:
 		return ""
 	}

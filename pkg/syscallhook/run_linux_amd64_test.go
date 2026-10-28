@@ -42,7 +42,11 @@ func TestHookSummary(t *testing.T) {
 				{Name: "obs_tail_call", Kind: inject.HookTailCall, Sites: pcs(60)},
 			},
 			Skipped: []inject.LookupSite{{SitePC: 7, Reason: "lookup is not in the entry function; ctx belongs to another stack frame"}},
-		}, `hook "obs_sessions" (lookup map "sessions", site pc 12, 40), hook "obs_flows" (lookup map "flows", untrusted pointers, site pc 18), hook "obs_any" (lookup runtime map, untrusted pointers, site pc 51), hook "obs_entry" (entry), hook "obs_tail_call" (tail_call, site pc 60); skipped pc 7 (lookup is not in the entry function; ctx belongs to another stack frame)`},
+		}, `hook "obs_sessions" (lookup map "sessions", site pc 12, 40), hook "obs_flows" (lookup map "flows", untrusted pointers, site pc 18), hook "obs_any" (lookup generic runtime map, untrusted pointers, site pc 51), hook "obs_entry" (entry), hook "obs_tail_call" (tail_call, site pc 60); skipped pc 7 (lookup is not in the entry function; ctx belongs to another stack frame)`},
+		{"generic-named", inject.LookupResultRaw{Hooks: []inject.LookupHook{
+			{Name: "obs_any_update", Kind: inject.HookUpdate, Generic: true, Static: true,
+				Sites: []inject.LookupSite{{SitePC: 9, MapName: "socks"}, {SitePC: 20}, {SitePC: 31, MapName: "socks"}}},
+		}}, `hook "obs_any_update" (update generic map "socks" runtime map, static, site pc 9, 20, 31)`},
 		{"copy", inject.LookupResultRaw{Hooks: []inject.LookupHook{
 			{Name: "obs_flows", Kind: inject.HookLookup, MapName: "flows", Copied: true, Sites: pcs(18)},
 		}}, `hook "obs_flows" (lookup map "flows", value copied to stack, site pc 18)`},

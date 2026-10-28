@@ -20,6 +20,7 @@ type RawMap struct {
 	Type               ebpf.MapType
 	KeySize, ValueSize uint32
 	Flags              uint32 // map_flags; BPF_F_RDONLY_PROG or BPF_F_WRONLY_PROG makes the hook untrusted (see LookupHook)
+	InnerFlags         uint32 // map_flags of a map-in-map's inner-map template; BPF_F_RDONLY_PROG when unknown, so its values count as read-only
 	Key, Value         btf.Type
 }
 
@@ -58,6 +59,9 @@ type LookupRequestRaw struct {
 	Lookups         LookupWhen // see LookupRequest.Lookups
 	Updates         CallWhen   // see LookupRequest.Updates
 	Deletes         CallWhen   // see LookupRequest.Deletes
+	Pushes          CallWhen   // see LookupRequest.Pushes
+	Pops            CallWhen   // see LookupRequest.Pops
+	Peeks           CallWhen   // see LookupRequest.Peeks
 	HookName        string
 	Stack           StackAudit
 }
@@ -101,7 +105,7 @@ type LookupResultRaw struct {
 func (r LookupRequestRaw) Request() LookupRequest {
 	return LookupRequest{Site: r.Site, Auto: r.Auto, Maps: r.Maps, Entry: r.Entry, TailCalls: r.TailCalls,
 		CopyReadOnly: r.CopyReadOnly, StaticUntrusted: r.StaticUntrusted, Dispatch: r.Dispatch, Lookups: r.Lookups, Updates: r.Updates, Deletes: r.Deletes,
-		HookName: r.HookName, Stack: r.Stack}
+		Pushes: r.Pushes, Pops: r.Pops, Peeks: r.Peeks, HookName: r.HookName, Stack: r.Stack}
 }
 
 // hookSuffix is the longest fixed suffix the transform appends to HookName
@@ -122,7 +126,8 @@ func hookSuffix(r LookupRequest) string {
 	for _, op := range []struct {
 		suffix string
 		on     bool
-	}{{"_miss", r.Lookups.miss()}, {"_update", r.Updates != ""}, {"_delete", r.Deletes != ""}} {
+	}{{"_miss", r.Lookups.miss()}, {"_update", r.Updates != ""}, {"_delete", r.Deletes != ""},
+		{"_push", r.Pushes != ""}, {"_pop", r.Pops != ""}, {"_peek", r.Peeks != ""}} {
 		if op.on {
 			suffixes = append(suffixes, lookup+op.suffix)
 		}

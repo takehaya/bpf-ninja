@@ -18,6 +18,9 @@ const (
 	MapOpLookup   = "lookup"
 	MapOpUpdate   = "update"
 	MapOpDelete   = "delete"
+	MapOpPush     = "push"
+	MapOpPop      = "pop"
+	MapOpPeek     = "peek"
 	MapOpTailCall = "tail_call"
 	MapOpRedirect = "redirect"
 	MapOpValue    = "value" // direct access to a global variable's map value
@@ -260,6 +263,12 @@ func helperOp(sym string) string {
 		return MapOpUpdate
 	case strings.Contains(sym, "delete"):
 		return MapOpDelete
+	case strings.Contains(sym, "push_elem"):
+		return MapOpPush
+	case strings.Contains(sym, "pop_elem"):
+		return MapOpPop
+	case strings.Contains(sym, "peek_elem"):
+		return MapOpPeek
 	case strings.Contains(sym, "redirect"):
 		return MapOpRedirect
 	}

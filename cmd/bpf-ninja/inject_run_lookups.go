@@ -24,8 +24,9 @@ type lookupsFileJSON struct {
 	Programs []discoveredProgJSON `json:"programs"`
 }
 
-// discoveredProgJSON is one program load. Calls lists every lookup, update
-// and delete, with the op as kind; only lookups can be instrumented so far.
+// discoveredProgJSON is one program load. Calls lists every map helper call
+// the transform knows, with the op as kind; Reason and Generic are as for a
+// lookup.
 // Rule instruments every named map with lookups; its stack_lowest_offset is
 // null because only the caller can audit the stack, so the rule is refused
 // until it is filled in.
