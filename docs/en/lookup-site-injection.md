@@ -90,6 +90,7 @@ The generic hook's map pointer takes a fourth slot.
 An observer attaches one fentry program per hook it wants to see.
 
 `LookupRequest.Maps` limits `Auto` to lookups on the named maps, by exact kernel map name.
+For an ELF, whose map symbols can be longer than the 15 bytes the kernel keeps, the full symbol name matches too.
 The other lookups are reported in `Skipped` with the reason `map not selected by Maps`, so they cost nothing at run time.
 A lookup whose map is only known at run time has no name and is never selected; a direct lookup on a named generic-hook kind, such as a sockmap, is.
 A name that matches no lookup is a refusal, so a typo cannot silently instrument nothing.

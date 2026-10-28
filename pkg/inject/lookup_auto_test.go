@@ -109,6 +109,34 @@ func TestLookupAutoMaps(t *testing.T) {
 	}
 }
 
+// An ELF map whose symbol is longer than the kernel keeps is selected by
+// either name.
+func TestLookupAutoMapsKernelName(t *testing.T) {
+	const long = "flows_with_a_long_name"
+	for _, names := range [][]string{{long}, {"flows_with_a_lo"}, {long, "flows_with_a_lo"}} {
+		t.Run(strings.Join(names, ","), func(t *testing.T) {
+			spec, req := multiMapFixture(), autoReq()
+			spec.Maps[long] = spec.Maps["flows"]
+			spec.Maps[long].Name = long
+			delete(spec.Maps, "flows")
+			insns := spec.Programs["p"].Instructions
+			for i := range insns {
+				if insns[i].Reference() == "flows" {
+					insns[i] = insns[i].WithReference(long)
+				}
+			}
+			req.Maps = names
+			plan, err := transformLookup(spec, req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(plan.sites) != 1 || plan.sites[0].SitePC != 18 || len(plan.skipped) != 1 || plan.skipped[0].SitePC != 12 {
+				t.Fatalf("plan: %+v", plan)
+			}
+		})
+	}
+}
+
 func TestLookupAutoMapsRefusals(t *testing.T) {
 	for _, tc := range []struct {
 		name, want string

@@ -655,6 +655,15 @@ type lookupGroup struct {
 	generic bool
 }
 
+// kernelObjName is the name the kernel keeps for an object named name: an ELF
+// map's symbol cut to BPF_OBJ_NAME_LEN-1 bytes.
+func kernelObjName(name string) string {
+	if len(name) > 15 {
+		return name[:15]
+	}
+	return name
+}
+
 // selectLookups groups the selected lookups by hook. Auto hook names avoid
 // reserved, the entry and tail-call hook names; with Dispatch every group is
 // named HookName.
@@ -676,12 +685,18 @@ func selectLookups(sites []discoveredLookup, req LookupRequest, reserved []strin
 		index := map[string]int{}
 		for _, site := range sites {
 			if len(selected) != 0 {
-				if _, ok := selected[site.MapName]; !ok || site.MapName == "" {
+				match := false
+				for _, name := range []string{site.MapName, kernelObjName(site.MapName)} {
+					if _, ok := selected[name]; ok {
+						selected[name] = true
+						match = true
+					}
+				}
+				if !match {
 					site.Reason = "map not selected by Maps"
 					skipped = append(skipped, site.LookupSite)
 					continue
 				}
-				selected[site.MapName] = true
 			}
 			if site.generic || site.typedOnly {
 				site.Reason = ""
