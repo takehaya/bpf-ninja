@@ -24,10 +24,13 @@ import (
 // tail-call site then needs a fourth spill slot in a frame that also calls the
 // hook, so stack_lowest_offset must be at least -448 unless the rule has only
 // entry.
-// Ops picks the map operations a rule's lookup hooks observe, as op or
-// op:when: "lookup" or "lookup:hit" (the default), "lookup:miss" or
-// "lookup:any" (see inject.LookupRequest.Lookups). Only lookup is supported
-// so far.
+// Ops picks the map operations a rule's hooks observe, as op or op:when:
+// "lookup" or "lookup:hit", "lookup:miss" or "lookup:any" (see
+// inject.LookupRequest.Lookups), "update" or "update:error", "update:any",
+// and the same for "delete" (see inject.LookupRequest.Updates). Without ops
+// a rule observes lookup hits; with ops it observes only the ops listed.
+// update and delete need auto, and an update needs one spill slot more
+// (two with dispatch).
 // StackLowestOffset is the caller's audit of all stack accesses, including
 // aliases and callees (see inject.StackAudit).
 type Rule struct {
@@ -57,7 +60,7 @@ func (r Rule) request() inject.LookupRequestRaw {
 	if r.StackLowestOffset != nil {
 		lo = *r.StackLowestOffset
 	}
-	lookups, _ := parseOps(r.Ops) // Validate reports the error
+	ops, _ := parseOps(r.Ops) // Validate reports the error
 	return inject.LookupRequestRaw{
 		Site:            inject.LookupSelector{MapName: r.Map, FuncName: r.Func, Line: r.Line, AllMatches: r.AllMatches, SitePCs: r.SitePCs},
 		Auto:            r.Auto,
@@ -67,37 +70,63 @@ func (r Rule) request() inject.LookupRequestRaw {
 		CopyReadOnly:    r.CopyReadOnly,
 		StaticUntrusted: r.StaticUntrusted,
 		Dispatch:        r.Dispatch,
-		Lookups:         lookups,
+		Lookups:         ops.lookups,
+		Updates:         ops.updates,
+		Deletes:         ops.deletes,
 		HookName:        r.Hook,
 		Stack:           inject.StackAudit{LowestOffset: lo},
 	}
 }
 
-// parseOps reads Rule.Ops into the lookup results the hooks observe.
-func parseOps(ops []string) (inject.LookupWhen, error) {
-	var lookups inject.LookupWhen
+// ruleOps is Rule.Ops as the results each op's hooks observe.
+type ruleOps struct {
+	lookups          inject.LookupWhen
+	updates, deletes inject.CallWhen
+}
+
+// parseOps reads Rule.Ops. No ops observes lookup hits; a list without
+// lookup observes no lookup.
+func parseOps(ops []string) (ruleOps, error) {
+	if len(ops) == 0 {
+		return ruleOps{}, nil
+	}
+	parsed := ruleOps{lookups: inject.LookupNone}
+	seen := map[string]bool{}
 	for _, op := range ops {
 		name, when, _ := strings.Cut(op, ":")
+		if seen[name] {
+			return ruleOps{}, fmt.Errorf("op %s is given twice", name)
+		}
+		seen[name] = true
 		switch name {
 		case "lookup":
+			switch w := inject.LookupWhen(when); w {
+			case "":
+				parsed.lookups = inject.LookupHit
+			case inject.LookupHit, inject.LookupMiss, inject.LookupAny:
+				parsed.lookups = w
+			default:
+				return ruleOps{}, fmt.Errorf("op %q: lookup takes hit, miss or any", op)
+			}
 		case "update", "delete":
-			return "", fmt.Errorf("op %q is not supported yet", op)
+			w := inject.CallWhen(when)
+			switch w {
+			case "":
+				w = inject.CallError
+			case inject.CallError, inject.CallAny:
+			default:
+				return ruleOps{}, fmt.Errorf("op %q: %s takes error or any", op, name)
+			}
+			if name == "update" {
+				parsed.updates = w
+			} else {
+				parsed.deletes = w
+			}
 		default:
-			return "", fmt.Errorf("unknown op %q", op)
-		}
-		if lookups != "" {
-			return "", fmt.Errorf("op lookup is given twice")
-		}
-		switch w := inject.LookupWhen(when); w {
-		case "":
-			lookups = inject.LookupHit
-		case inject.LookupHit, inject.LookupMiss, inject.LookupAny:
-			lookups = w
-		default:
-			return "", fmt.Errorf("op %q: lookup takes hit, miss or any", op)
+			return ruleOps{}, fmt.Errorf("unknown op %q", op)
 		}
 	}
-	return lookups, nil
+	return parsed, nil
 }
 
 func Validate(rules []Rule) error {

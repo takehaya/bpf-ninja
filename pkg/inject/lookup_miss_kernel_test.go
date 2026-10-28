@@ -58,10 +58,10 @@ func testLookupMissTyped(t *testing.T, fixture func() *ebpf.CollectionSpec, look
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { _ = l.Close() })
-		observers[hook.When] = obs
+		observers[LookupWhen(hook.When)] = obs
 	}
 	for _, hook := range plan.hooks {
-		if hook.When == LookupMiss && (hook.Untrusted || hook.Static) {
+		if hook.When == string(LookupMiss) && (hook.Untrusted || hook.Static) {
 			t.Fatalf("miss hook: %+v", hook)
 		}
 	}

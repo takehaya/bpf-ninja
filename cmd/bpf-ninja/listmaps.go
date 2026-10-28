@@ -311,8 +311,6 @@ func (n nodeMaps) status(i, j int, u attach.MapUse, children []attach.ReachableP
 	switch {
 	case c == nil:
 		return "? not in the lookups file"
-	case u.Op != attach.MapOpLookup:
-		return "- no hook yet"
 	case c.Reason == "":
 		return "✓ injectable"
 	case c.Generic:

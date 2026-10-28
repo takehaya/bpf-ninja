@@ -49,14 +49,14 @@ func TestMapCallDiscovery(t *testing.T) {
 	const indirect = "R1 is not a direct map reference in this basic block"
 	want := []got{
 		{HookUpdate, 2, "sessions", "", false}, {HookDelete, 5, "sessions", "", false}, {HookLookup, 8, "sessions", "", false},
-		{HookUpdate, 9, "", indirect, false}, {HookLookup, 10, "", indirect, true},
+		{HookUpdate, 9, "", indirect, true}, {HookLookup, 10, "", indirect, true},
 		{HookDelete, 14, "sessions", "delete is not in the entry function; ctx belongs to another stack frame", false},
 	}
 	if !reflect.DeepEqual(have, want) {
 		t.Fatalf("map calls = %+v\nwant %+v", have, want)
 	}
-	if sites[3].generic {
-		t.Error("an update site is routed to the generic hook")
+	if !sites[3].generic {
+		t.Error("an update on a runtime map is not routed to the generic hook")
 	}
 	lookups, err := discoverLookupProgram(insns, ebpf.XDP, elfLookupMaps(spec))
 	if err != nil || len(lookups) != 2 || lookups[0].SitePC != 8 {

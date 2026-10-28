@@ -16,6 +16,7 @@ import (
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/asm"
 	"github.com/cilium/ebpf/btf"
+	"github.com/takehaya/bpf-ninja/pkg/inject"
 	"golang.org/x/sys/unix"
 )
 
@@ -60,6 +61,9 @@ func TestIntegrationLoader(t *testing.T) {
 		{"dispatch", "hook", true, func(r *Rule) { r.Auto, r.Map, r.Entry, r.Dispatch, r.StaticUntrusted = true, "", true, true, true }},
 		{"maps", "hook", true, func(r *Rule) { r.Auto, r.Map, r.Maps = true, "", []string{"sessions"} }},
 		{"maps-missing", "refused", true, func(r *Rule) { r.Auto, r.Map, r.Maps = true, "", []string{"missing"} }},
+		// The loader first inserts the present key with BPF_NOEXIST, which
+		// fails; ops instruments only that update.
+		{"ops-update", "hook-update", true, func(r *Rule) { r.Auto, r.Map, r.Ops = true, "", []string{"update"} }},
 		// The discover cases also set OnDiscover; discover-only has no rule.
 		{"discover-auto", "hook", true, func(r *Rule) { r.Auto, r.Map = true, "" }},
 		{"discover-only", "plain", true, func(r *Rule) {}},
@@ -137,6 +141,10 @@ func TestIntegrationLoader(t *testing.T) {
 					t.Fatal("arg:untrusted hint for a typed hook")
 				}
 			}
+			if tc.name == "ops-update" && (len(injected) != 1 || len(injected[0].Hooks) != 1 ||
+				injected[0].Hooks[0].Name != "lookup_hook_sessions_update" || injected[0].Hooks[0].Kind != inject.HookUpdate) {
+				t.Fatalf("update hook not injected: %+v", injected)
+			}
 			if tc.name == "dispatch" && !strings.Contains(logs.String(), ", static, dispatch") {
 				t.Fatal("no dispatch hook reported")
 			}
@@ -171,15 +179,23 @@ func loadIntegrationProgram(t *testing.T, expected string) {
 	if alias {
 		store = asm.StoreImm(asm.R2, 0, 0, asm.Word)
 	}
-	insns := asm.Instructions{
-		asm.Mov.Reg(asm.R6, asm.R1),
+	insns := asm.Instructions{asm.Mov.Reg(asm.R6, asm.R1)}
+	if expected == "hook-update" {
+		insns = append(insns,
+			asm.StoreImm(asm.RFP, -4, 0, asm.Word), asm.StoreImm(asm.RFP, -8, 2, asm.Word),
+			asm.Mov.Reg(asm.R2, asm.RFP), asm.Add.Imm(asm.R2, -4),
+			asm.Mov.Reg(asm.R3, asm.RFP), asm.Add.Imm(asm.R3, -8),
+			asm.Mov.Imm(asm.R4, unix.BPF_NOEXIST),
+			asm.LoadMapPtr(asm.R1, m.FD()), asm.FnMapUpdateElem.Call())
+	}
+	insns = append(insns,
 		asm.Mov.Reg(asm.R2, asm.RFP), asm.Add.Imm(asm.R2, -4),
 		store,
 		asm.LoadMapPtr(asm.R1, m.FD()), asm.FnMapLookupElem.Call(),
 		asm.JEq.Imm(asm.R0, 0, "done"),
 		asm.LoadMem(asm.R0, asm.R0, 0, asm.Word), asm.Return(),
 		asm.Mov.Imm(asm.R0, 2).WithSymbol("done"), asm.Return(),
-	}
+	)
 	insns[0] = btf.WithFuncMetadata(insns[0].WithSymbol(fn.Name).WithSource(asm.Comment("loader lookup")), fn)
 	p, err := ebpf.NewProgram(&ebpf.ProgramSpec{Name: "p", Type: ebpf.XDP, License: "GPL", Instructions: insns})
 	if expected == "refused" {

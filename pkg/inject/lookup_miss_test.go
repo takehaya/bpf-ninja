@@ -56,13 +56,13 @@ func TestLookupMiss(t *testing.T) {
 			r.Dispatch, r.HookName, r.Lookups, r.Stack.LowestOffset = true, "d", LookupMiss, -8
 			return r
 		}, []hook{{"d", LookupMiss}}, []string{"d"},
-			map[string][]string{"d": {"ctx", "site", "key", "value", "map"}}, []asm.JumpOp{asm.JNE}, true},
+			map[string][]string{"d": {"ctx", "info", "key", "value", "map"}}, []asm.JumpOp{asm.JNE}, true},
 		{"dispatch-any", func() LookupRequest {
 			r := autoReq()
 			r.Dispatch, r.HookName, r.Lookups, r.Stack.LowestOffset = true, "d", LookupAny, -8
 			return r
 		}, []hook{{"d", LookupAny}}, []string{"d", "d"},
-			map[string][]string{"d": {"ctx", "site", "key", "value", "map"}}, []asm.JumpOp{asm.JEq, asm.Ja}, true},
+			map[string][]string{"d": {"ctx", "info", "key", "value", "map"}}, []asm.JumpOp{asm.JEq, asm.Ja}, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			spec := lookupFixture()
@@ -72,7 +72,7 @@ func TestLookupMiss(t *testing.T) {
 			}
 			var hooks []hook
 			for _, h := range plan.hooks {
-				hooks = append(hooks, hook{h.Name, h.When})
+				hooks = append(hooks, hook{h.Name, LookupWhen(h.When)})
 			}
 			if !slices.Equal(hooks, tc.hooks) {
 				t.Fatalf("hooks = %v, want %v", hooks, tc.hooks)
@@ -115,7 +115,7 @@ func TestLookupMiss(t *testing.T) {
 func TestLookupMissRefusals(t *testing.T) {
 	req := autoReq()
 	req.Lookups = "sometimes"
-	if _, err := transformLookup(lookupFixture(), req); err == nil || !strings.Contains(err.Error(), "Lookups must be hit, miss or any") {
+	if _, err := transformLookup(lookupFixture(), req); err == nil || !strings.Contains(err.Error(), "Lookups must be hit, miss, any or none") {
 		t.Fatalf("err = %v", err)
 	}
 	req = lookupReq()
@@ -135,9 +135,9 @@ func TestLookupMissRefusals(t *testing.T) {
 	}
 }
 
-func TestMissHookName(t *testing.T) {
+func TestSuffixedHookName(t *testing.T) {
 	used := map[string]bool{"p_s_miss": true}
-	if got := missHookName("p_s", used); got != "p_s_miss_" || !used["p_s_miss_"] {
-		t.Fatalf("missHookName = %q", got)
+	if got := suffixedHookName("p_s", "_miss", used); got != "p_s_miss_" || !used["p_s_miss_"] {
+		t.Fatalf("suffixedHookName = %q", got)
 	}
 }
