@@ -231,13 +231,14 @@ func TestBpfBloomFilterOps(t *testing.T) {
 func TestBpfQueueOpsDispatch(t *testing.T)       { testQueueOpsDispatch(t, false) }
 func TestBpfQueueOpsDispatchStatic(t *testing.T) { testQueueOpsDispatch(t, true) }
 
-// One dispatch hook sees every failed push, pop and peek with info = site |
-// op << 32 | (flags & 0xff) << 36 | (u16)ret << 48, a NULL key and the value.
+// One dispatch hook sees every push and every failed pop and peek with info =
+// site | op << 32 | (flags & 0xff) << 36 | (u16)ret << 48, a NULL key and the
+// value.
 func testQueueOpsDispatch(t *testing.T, static bool) {
 	testutil.SkipIfNotRoot(t)
 	work := queueFixture(ebpf.Queue, false)
 	req := autoReq()
-	req.Lookups, req.Pushes, req.Pops, req.Peeks = LookupNone, CallError, CallError, CallError
+	req.Lookups, req.Pushes, req.Pops, req.Peeks = LookupNone, CallAny, CallError, CallError
 	req.Dispatch, req.StaticUntrusted, req.HookName, req.Stack.LowestOffset = true, static, "d", -8
 	plan, err := transformLookup(work, req)
 	if err != nil {
@@ -251,24 +252,205 @@ func testQueueOpsDispatch(t *testing.T, static bool) {
 	injected := loadHooked(t, work, plan.hooks)
 	t.Cleanup(injected.Close)
 	obs := attachArgObserver(t, "d", injected.Programs["p"], false, true, true)
-	steps := slices.Clone(queueSteps)
-	steps[3].ret = -int64(unix.E2BIG) // BPF_EXIST on a full queue succeeds; make the step a failure
-	steps[3].sel, steps[3].seen = 0, 13
-	steps = steps[:4]
-	steps = append(steps, queueStep{99, selPop, 0, 10}, queueStep{99, selPop, 0, 11},
-		queueStep{99, selPop, -int64(unix.ENOENT), 0}, queueStep{99, selPeek, -int64(unix.ENOENT), 0})
+	// The observer keeps eight calls: the four pushes and four of the pops
+	// and peeks, two of them failures.
+	steps := queueSteps[:8]
 	runQueue(t, plain, injected, steps)
 	var want [][4]uint64
 	for _, step := range steps {
-		if step.ret >= 0 {
+		op, pc := step.op()
+		if op != HookPush && step.ret >= 0 {
 			continue
 		}
-		op, pc := step.op()
 		info := pc | map[HookKind]uint64{HookPush: 3, HookPop: 4, HookPeek: 5}[op]<<32 | uint64(uint16(step.ret))<<48
+		if step.sel == 1 {
+			info |= bpfExist << 36
+		}
 		want = append(want, [4]uint64{info, 0, step.seen})
 	}
 	if got := observed(t, obs); !slices.Equal(got, want) {
 		t.Errorf("dispatch hook: %x\nwant %x", got, want)
+	}
+}
+
+const (
+	innerPushPC = 22
+	innerPopPC  = 24
+)
+
+// innerQueueFixture pushes the packet's value to the queue an array of maps
+// holds at index 0, with BPF_EXIST when the selector is 1, or pops it when
+// the selector is selPop. R1 is the inner map the outer lookup returned, so
+// the push and pop go to the generic hooks.
+func innerQueueFixture() *ebpf.CollectionSpec {
+	u64 := &btf.Int{Name: "u64", Size: 8}
+	jump := func(ins asm.Instruction, off int16) asm.Instruction { ins.Offset = off; return ins }
+	insns := asm.Instructions{
+		asm.Mov.Reg(asm.R6, asm.R1),                      // 0
+		asm.LoadMem(asm.R2, asm.R6, 0, asm.Word),         // 1: data
+		asm.LoadMem(asm.R3, asm.R6, 4, asm.Word),         // 2: data_end
+		asm.Mov.Reg(asm.R4, asm.R2),                      // 3
+		asm.Add.Imm(asm.R4, 8),                           // 4
+		jump(asm.JGT.Reg(asm.R4, asm.R3, ""), 24),        // 5 -> 30
+		asm.LoadMem(asm.R8, asm.R2, 0, asm.Word),         // 6: value
+		asm.LoadMem(asm.R9, asm.R2, 4, asm.Word),         // 7: selector
+		asm.StoreMem(asm.RFP, -16, asm.R8, asm.DWord),    // 8
+		asm.StoreImm(asm.RFP, -4, 0, asm.Word),           // 9: outer key
+		asm.Mov.Reg(asm.R2, asm.RFP),                     // 10
+		asm.Add.Imm(asm.R2, -4),                          // 11
+		asm.LoadMapPtr(asm.R1, 0).WithReference("outer"), // 12-13
+		asm.FnMapLookupElem.Call(),                       // 14
+		jump(asm.JEq.Imm(asm.R0, 0, ""), 14),             // 15 -> 30
+		asm.Mov.Reg(asm.R1, asm.R0),                      // 16: inner map
+		asm.Mov.Reg(asm.R2, asm.RFP),                     // 17
+		asm.Add.Imm(asm.R2, -16),                         // 18
+		jump(asm.JEq.Imm(asm.R9, selPop, ""), 4),         // 19 -> 24
+		asm.Mov.Reg(asm.R3, asm.R9),                      // 20
+		asm.LSh.Imm(asm.R3, 1),                           // 21: 1 -> BPF_EXIST
+		asm.FnMapPushElem.Call(),                         // 22
+		jump(asm.Ja.Label(""), 1),                        // 23 -> 25
+		asm.FnMapPopElem.Call(),                          // 24
+		asm.Mov.Imm(asm.R1, 2),                           // 25: XDP_PASS
+		jump(asm.JSGE.Imm32(asm.R0, 0, ""), 1),           // 26 -> 28
+		asm.Mov.Imm(asm.R1, 1),                           // 27: XDP_DROP
+		asm.Mov.Reg(asm.R0, asm.R1),                      // 28
+		asm.Return(),                                     // 29
+		asm.Mov.Imm(asm.R0, 1),                           // 30: short packet or no inner map
+		asm.Return(),                                     // 31
+	}
+	insns[0] = btf.WithFuncMetadata(insns[0].WithSymbol("p").WithSource(asm.Comment("inner queue fixture")), xdpFunc("p"))
+	inner := &ebpf.MapSpec{Name: "q", Type: ebpf.Queue, ValueSize: 8, MaxEntries: 2, Value: u64}
+	return &ebpf.CollectionSpec{ByteOrder: binary.LittleEndian,
+		Maps:     map[string]*ebpf.MapSpec{"outer": {Name: "outer", Type: ebpf.ArrayOfMaps, KeySize: 4, ValueSize: 4, MaxEntries: 1, InnerMap: inner}},
+		Programs: map[string]*ebpf.ProgramSpec{"p": {Name: "p", Type: ebpf.XDP, License: "GPL", Instructions: insns}},
+	}
+}
+
+func TestBpfQueueOpsInner(t *testing.T)       { testQueueOpsInner(t, false) }
+func TestBpfQueueOpsInnerStatic(t *testing.T) { testQueueOpsInner(t, true) }
+
+// Auto sends a push and pop on an inner queue to PREFIX_any_push and
+// PREFIX_any_pop, which see the info word, a NULL key and the value.
+func testQueueOpsInner(t *testing.T, static bool) {
+	testutil.SkipIfNotRoot(t)
+	work := innerQueueFixture()
+	req := autoReq()
+	req.Lookups, req.Pushes, req.Pops, req.StaticUntrusted, req.HookName, req.Stack.LowestOffset = LookupNone, CallAny, CallAny, static, "obs", -16
+	plan, err := transformLookup(work, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.hooks) != 2 || plan.hooks[0].Name != "obs_any_push" || plan.hooks[1].Name != "obs_any_pop" ||
+		slices.ContainsFunc(plan.hooks, func(h LookupHook) bool { return !h.Generic || h.Static != static }) {
+		t.Fatalf("hooks: %+v", plan.hooks)
+	}
+	plain := loadOrSkip(t, innerQueueFixture())
+	t.Cleanup(plain.Close)
+	injected := loadHooked(t, work, plan.hooks)
+	t.Cleanup(injected.Close)
+	for _, c := range []*ebpf.Collection{plain, injected} {
+		inner, err := ebpf.NewMap(work.Maps["outer"].InnerMap)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = inner.Close() })
+		if err := c.Maps["outer"].Put(uint32(0), inner); err != nil {
+			t.Fatal(err)
+		}
+	}
+	push := attachArgObserver(t, "obs_any_push", injected.Programs["p"], false, true, true)
+	pop := attachArgObserver(t, "obs_any_pop", injected.Programs["p"], false, true, true)
+	// queueSteps without the peeks: [11, 13] after the pushes.
+	steps := []queueStep{queueSteps[0], queueSteps[1], queueSteps[2], queueSteps[3], queueSteps[4], queueSteps[6], queueSteps[7]}
+	runQueue(t, plain, injected, steps)
+	want := map[HookKind][][4]uint64{}
+	for _, step := range steps {
+		op, pc := HookPush, uint64(innerPushPC)
+		if step.sel == selPop {
+			op, pc = HookPop, innerPopPC
+		}
+		info := pc | map[HookKind]uint64{HookPush: 3, HookPop: 4}[op]<<32 | uint64(uint16(step.ret))<<48
+		if step.sel == 1 {
+			info |= bpfExist << 36
+		}
+		want[op] = append(want[op], [4]uint64{info, 0, step.seen})
+	}
+	for op, o := range map[HookKind]*ebpf.Collection{HookPush: push, HookPop: pop} {
+		if got := observed(t, o); !slices.Equal(got, want[op]) {
+			t.Errorf("%s hook: %x\nwant %x", op, got, want[op])
+		}
+	}
+}
+
+// popUninitFixture pops q into fp-8, which nothing wrote before, and returns
+// XDP_PASS when the pop succeeded and XDP_DROP when it failed.
+func popUninitFixture() *ebpf.CollectionSpec {
+	spec := queueFixture(ebpf.Queue, false)
+	jump := func(ins asm.Instruction, off int16) asm.Instruction { ins.Offset = off; return ins }
+	insns := asm.Instructions{
+		asm.Mov.Reg(asm.R2, asm.RFP),                 // 0
+		asm.Add.Imm(asm.R2, -8),                      // 1
+		asm.LoadMapPtr(asm.R1, 0).WithReference("q"), // 2-3
+		asm.FnMapPopElem.Call(),                      // 4
+		asm.Mov.Imm(asm.R1, 2),                       // 5
+		jump(asm.JSGE.Imm32(asm.R0, 0, ""), 1),       // 6 -> 8
+		asm.Mov.Imm(asm.R1, 1),                       // 7
+		asm.Mov.Reg(asm.R0, asm.R1),                  // 8
+		asm.Return(),                                 // 9
+	}
+	insns[0] = btf.WithFuncMetadata(insns[0].WithSymbol("p").WithSource(asm.Comment("uninitialized pop fixture")), xdpFunc("p"))
+	spec.Programs["p"].Instructions = insns
+	return spec
+}
+
+func TestBpfQueuePopUninit(t *testing.T)         { testQueuePopUninit(t, false) }
+func TestBpfQueuePopUninitDispatch(t *testing.T) { testQueuePopUninit(t, true) }
+
+// A pop into stack nothing wrote loads with its hook, typed or (static)
+// dispatch, which sees the element popped and then the zeroes the kernel
+// writes when the queue is empty.
+func testQueuePopUninit(t *testing.T, dispatch bool) {
+	testutil.SkipIfNotRoot(t)
+	work := popUninitFixture()
+	req := autoReq()
+	req.Lookups, req.Pops, req.Stack.LowestOffset = LookupNone, CallAny, -8
+	name := "lookup_hook_q_pop"
+	if dispatch {
+		req.Dispatch, req.StaticUntrusted, req.HookName, name = true, true, "d", "d"
+	}
+	plan, err := transformLookup(work, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.hooks) != 1 || plan.hooks[0].Name != name {
+		t.Fatalf("hooks: %+v", plan.hooks)
+	}
+	plain := loadOrSkip(t, popUninitFixture())
+	t.Cleanup(plain.Close)
+	injected := loadHooked(t, work, plan.hooks)
+	t.Cleanup(injected.Close)
+	for _, c := range []*ebpf.Collection{plain, injected} {
+		if err := c.Maps["q"].Put(nil, uint64(7)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A typed hook's third argument is the status, the dispatch hook's the
+	// value.
+	obs := attachArgObserver(t, name, injected.Programs["p"], false, true, dispatch)
+	for _, want := range []uint32{2, 1} {
+		for _, c := range []*ebpf.Collection{plain, injected} {
+			if ret, err := c.Programs["p"].Run(&ebpf.RunOptions{Data: make([]byte, 64), Repeat: 1}); err != nil || ret != want {
+				t.Fatalf("action=%d want %d err=%v", ret, want, err)
+			}
+		}
+	}
+	ret := -int64(unix.ENOENT)
+	want := [][4]uint64{{4, 7, 0}, {4, 0, uint64(uint32(ret))}}
+	if dispatch {
+		want = [][4]uint64{{4 | 4<<32, 0, 7}, {4 | 4<<32 | uint64(uint16(ret))<<48, 0, 0}}
+	}
+	if got := observed(t, obs); !slices.Equal(got, want) {
+		t.Errorf("pop hook: %x\nwant %x", got, want)
 	}
 }
 
@@ -364,5 +546,72 @@ func TestBpfLookupPercpu(t *testing.T) {
 	}
 	if got, want := key(observed(t, miss)), [][4]uint64{{13, 1}}; !slices.Equal(got, want) {
 		t.Errorf("miss hook: %x\nwant %x", got, want)
+	}
+}
+
+// readOnlyArgFixture pushes a constant from the read-only map ro, as a
+// program pushes a .rodata value, and updates h with it as key and value.
+func readOnlyArgFixture() *ebpf.CollectionSpec {
+	u32, u64 := &btf.Int{Name: "u32", Size: 4}, &btf.Int{Name: "u64", Size: 8}
+	ro := func(r asm.Register) asm.Instruction { return asm.LoadMapValue(r, 0, 0).WithReference("ro") }
+	insns := asm.Instructions{
+		ro(asm.R2), // 0-1
+		asm.LoadMapPtr(asm.R1, 0).WithReference("q"), // 2-3
+		asm.Mov.Imm(asm.R3, 0),                       // 4
+		asm.FnMapPushElem.Call(),                     // 5
+		ro(asm.R2),                                   // 6-7
+		ro(asm.R3),                                   // 8-9
+		asm.LoadMapPtr(asm.R1, 0).WithReference("h"), // 10-11
+		asm.Mov.Imm(asm.R4, 0),                       // 12
+		asm.FnMapUpdateElem.Call(),                   // 13
+		asm.Mov.Imm(asm.R0, 2),                       // 14
+		asm.Return(),                                 // 15
+	}
+	insns[0] = btf.WithFuncMetadata(insns[0].WithSymbol("p").WithSource(asm.Comment("read-only arg fixture")), xdpFunc("p"))
+	return &ebpf.CollectionSpec{ByteOrder: binary.LittleEndian,
+		Maps: map[string]*ebpf.MapSpec{
+			"ro": {Name: "ro", Type: ebpf.Array, KeySize: 4, ValueSize: 8, MaxEntries: 1, Flags: bpfFRdonlyProg, Key: u32, Value: u64,
+				Contents: []ebpf.MapKV{{Key: uint32(0), Value: uint64(42)}}},
+			"q": {Name: "q", Type: ebpf.Queue, ValueSize: 8, MaxEntries: 2, Value: u64},
+			"h": {Name: "h", Type: ebpf.Hash, KeySize: 8, ValueSize: 8, MaxEntries: 2, Key: u64, Value: u64},
+		},
+		Programs: map[string]*ebpf.ProgramSpec{"p": {Name: "p", Type: ebpf.XDP, License: "GPL", Instructions: insns}},
+	}
+}
+
+func TestBpfReadOnlyArg(t *testing.T)       { testReadOnlyArg(t, false) }
+func TestBpfReadOnlyArgStatic(t *testing.T) { testReadOnlyArg(t, true) }
+
+// A key or value pointer into a read-only map's value fails a typed hook's
+// memory check, so the push and update hooks take untrusted pointers, or are
+// static under StaticUntrusted, and still see the constant.
+func testReadOnlyArg(t *testing.T, static bool) {
+	testutil.SkipIfNotRoot(t)
+	work := readOnlyArgFixture()
+	req := autoReq()
+	req.Lookups, req.Pushes, req.Updates, req.StaticUntrusted, req.Stack.LowestOffset = LookupNone, CallAny, CallAny, static, -8
+	plan, err := transformLookup(work, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.hooks) != 2 || slices.ContainsFunc(plan.hooks, func(h LookupHook) bool { return h.Untrusted == static || h.Static != static }) {
+		t.Fatalf("hooks: %+v", plan.hooks)
+	}
+	plain := loadOrSkip(t, readOnlyArgFixture())
+	t.Cleanup(plain.Close)
+	injected := loadHooked(t, work, plan.hooks)
+	t.Cleanup(injected.Close)
+	push := attachArgObserver(t, "lookup_hook_q_push", injected.Programs["p"], false, true, false)
+	update := attachArgObserver(t, "lookup_hook_h_update", injected.Programs["p"], false, true, true, false)
+	for _, c := range []*ebpf.Collection{plain, injected} {
+		if ret, err := c.Programs["p"].Run(&ebpf.RunOptions{Data: make([]byte, 64), Repeat: 1}); err != nil || ret != 2 {
+			t.Fatalf("action=%d err=%v", ret, err)
+		}
+	}
+	if got, want := observed(t, push), [][4]uint64{{5, 42, 0}}; !slices.Equal(got, want) {
+		t.Errorf("push hook: %x\nwant %x", got, want)
+	}
+	if got, want := observed(t, update), [][4]uint64{{13, 42, 42, 0}}; !slices.Equal(got, want) {
+		t.Errorf("update hook: %x\nwant %x", got, want)
 	}
 }

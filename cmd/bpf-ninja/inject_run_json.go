@@ -39,8 +39,8 @@ type injectedProgJSON struct {
 // hookJSON is one hook function. A dispatch hook is one entry carrying every
 // site it reports; the entry call is the site inject.DispatchEntrySite. When
 // is the results that call the hook: hit, miss or any for lookups, error or
-// any for updates and deletes. A dispatch hook's When is its lookups'; its
-// update and delete sites carry their own.
+// any for updates, deletes, pushes, pops and peeks. A dispatch hook's When is
+// its lookups'; its other map call sites carry their own.
 type hookJSON struct {
 	Name      string         `json:"name"`
 	Kind      string         `json:"kind"`
@@ -97,7 +97,7 @@ func injectionJSON(inj syscallhook.Injection) injectedProgJSON {
 		}
 		for _, site := range hook.Sites {
 			s := siteJSON(hook.Kind, site)
-			if hook.Dispatch && hook.Kind != inject.HookLookup && hook.Kind != inject.HookEntry && hook.Kind != inject.HookTailCall {
+			if hook.Dispatch && hook.Kind.MapCall() {
 				s.When = hook.When
 			}
 			sites = append(sites, s)

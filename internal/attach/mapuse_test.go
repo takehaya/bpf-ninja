@@ -198,13 +198,22 @@ func TestAnalyzeXlatedDegraded(t *testing.T) {
 
 func TestHelperOp(t *testing.T) {
 	for sym, want := range map[string]string{
-		"":                       "",
-		"htab_map_update_elem":   MapOpUpdate,
-		"__htab_map_lookup_elem": MapOpLookup,
-		"trie_lookup_elem":       MapOpLookup,
-		"htab_map_delete_elem":   MapOpDelete,
-		"dev_map_redirect":       MapOpRedirect,
-		"bpf_ringbuf_output":     "ringbuf_output",
+		"":                                    "",
+		"htab_map_update_elem":                MapOpUpdate,
+		"__htab_map_lookup_elem":              MapOpLookup,
+		"trie_lookup_elem":                    MapOpLookup,
+		"htab_map_delete_elem":                MapOpDelete,
+		"dev_map_redirect":                    MapOpRedirect,
+		"queue_stack_map_push_elem":           MapOpPush,
+		"bloom_map_push_elem":                 MapOpPush,
+		"queue_map_pop_elem":                  MapOpPop,
+		"stack_map_pop_elem":                  MapOpPop,
+		"queue_map_peek_elem":                 MapOpPeek,
+		"stack_map_peek_elem":                 MapOpPeek,
+		"bloom_map_peek_elem":                 MapOpPeek,
+		"percpu_array_map_lookup_percpu_elem": MapOpLookup,
+		"htab_percpu_map_lookup_percpu_elem":  MapOpLookup,
+		"bpf_ringbuf_output":                  "ringbuf_output",
 	} {
 		if got := helperOp(sym); got != want {
 			t.Errorf("helperOp(%q) = %q, want %q", sym, got, want)

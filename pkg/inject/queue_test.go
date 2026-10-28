@@ -70,6 +70,12 @@ func TestQueueOps(t *testing.T) {
 			t.Errorf("infoOps[%s] = %d, want %d", op, infoOps[op], want)
 		}
 	}
+	// Every map call has an info op; a missing one would pass 0, a lookup's.
+	for _, op := range []HookKind{HookLookup, HookEntry, HookTailCall, HookUpdate, HookDelete, HookPush, HookPop, HookPeek} {
+		if _, ok := infoOps[op]; ok != op.MapCall() {
+			t.Errorf("infoOps[%s] present = %v, MapCall = %v", op, ok, op.MapCall())
+		}
+	}
 }
 
 // Push, pop and peek are skipped on a map that is not a queue, stack or bloom
@@ -116,5 +122,35 @@ func TestLookupPercpuHooks(t *testing.T) {
 	}
 	if got := hookParamNames(spec.Programs["p"].Instructions)["lookup_hook_m"]; !slices.Equal(got, []string{"ctx", "site", "key", "value"}) {
 		t.Errorf("params = %v", got)
+	}
+}
+
+// A push or update whose pointer comes from a read-only map takes untrusted
+// hooks, or static ones under StaticUntrusted; reading through the pointer
+// ends the tracking.
+func TestReadOnlyArgHooks(t *testing.T) {
+	for _, static := range []bool{false, true} {
+		req := autoReq()
+		req.Lookups, req.Pushes, req.Updates, req.StaticUntrusted, req.Stack.LowestOffset = LookupNone, CallAny, CallAny, static, -8
+		plan, err := transformLookup(readOnlyArgFixture(), req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(plan.hooks) != 2 || slices.ContainsFunc(plan.hooks, func(h LookupHook) bool { return h.Untrusted == static || h.Static != static }) {
+			t.Errorf("static=%v: hooks %+v", static, plan.hooks)
+		}
+	}
+	spec := readOnlyArgFixture()
+	insns := spec.Programs["p"].Instructions
+	// r2 = *(u64 *)r2 is no longer a pointer into ro.
+	spec.Programs["p"].Instructions = append(insns[:2:2], append(asm.Instructions{asm.LoadMem(asm.R2, asm.R2, 0, asm.DWord)}, insns[2:]...)...)
+	req := autoReq()
+	req.Lookups, req.Pushes, req.Stack.LowestOffset = LookupNone, CallAny, -8
+	plan, err := transformLookup(spec, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.hooks) != 1 || plan.hooks[0].Untrusted {
+		t.Errorf("after a load: hooks %+v", plan.hooks)
 	}
 }
