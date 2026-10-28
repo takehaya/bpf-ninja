@@ -71,8 +71,8 @@ type LookupRequestRaw struct {
 // marshal a copy if retaining the unresolved checksum representation.
 //
 // BTFBytes is an extended standalone BTF blob for a future BPF_BTF_LOAD. BTF
-// is its parsed form. Original type IDs are preserved; hook types and any
-// map types from other BTF objects are appended. The string table is rebuilt,
+// is its parsed form. Original non-DECL_TAG type IDs are preserved; declaration tags, hook
+// types and any map types from other BTF objects are appended. The string table is rebuilt,
 // so the returned native-endian FuncInfo and LineInfo MUST be used with this
 // blob, not the original BTF. HookFuncInfo is the hook's 8-byte func_info row
 // and HookTypeID is its BTF FUNC ID; with several hooks they describe the first
@@ -218,7 +218,7 @@ func TransformLookupRaw(p RawProgram, req LookupRequestRaw) (*LookupResultRaw, e
 	if err != nil {
 		return nil, refuse("encoding load metadata: %v", err)
 	}
-	blob, err := marshalRawBTF(builder, types)
+	blob, err := builder.Marshal(nil, nil)
 	if err != nil {
 		return nil, refuse("extending program BTF: %v", err)
 	}
@@ -262,8 +262,17 @@ func TransformLookupRaw(p RawProgram, req LookupRequestRaw) (*LookupResultRaw, e
 		SourceChecksum: sourceSum, TransformedChecksum: resultSum, InsertedSlots: added / asm.InstructionSize, AddedBytes: added}, nil
 }
 
-// Seed every original ID, including unnamed types, before adding hook types.
+// Seed original IDs, including unnamed types, before adding hook types.
 func rawBTFBuilder(spec *btf.Spec) (*btf.Builder, error) {
+	// All omits DECL_TAGs, whose references ebpf-go v0.22.0 leaves behind
+	// when copying decoded types. Rebuild them from Tags, reserving their IDs.
+	types := make(map[btf.Type]bool)
+	for typ, err := range spec.All() {
+		if err != nil {
+			return nil, refuse("reading BTF types: %v", err)
+		}
+		types[typ] = true
+	}
 	builder := new(btf.Builder)
 	for id := btf.TypeID(1); ; id++ {
 		typ, err := spec.TypeByID(id)
@@ -273,54 +282,15 @@ func rawBTFBuilder(spec *btf.Spec) (*btf.Builder, error) {
 		if err != nil {
 			return nil, refuse("reading BTF type %d: %v", id, err)
 		}
+		if !types[typ] {
+			typ = &btf.Int{Name: "decl_tag_placeholder", Size: 1, Encoding: btf.Unsigned}
+		}
 		got, err := builder.Add(typ)
 		if err != nil || got != id {
 			return nil, refuse("cannot preserve BTF type ID %d: %v", id, err)
 		}
 	}
 	return builder, nil
-}
-
-// Existing DECL_TAG records already occupy IDs in the builder. Suppress the
-// synthetic tags the encoder would otherwise emit from their decoded fields.
-func marshalRawBTF(builder *btf.Builder, spec *btf.Spec) ([]byte, error) {
-	var fields []*[]string
-	for typ, err := range spec.All() {
-		if err != nil {
-			return nil, err
-		}
-		switch t := typ.(type) {
-		case *btf.Func:
-			fields = append(fields, &t.Tags)
-			for i := range t.ParamTags {
-				fields = append(fields, &t.ParamTags[i])
-			}
-		case *btf.Struct:
-			fields = append(fields, &t.Tags)
-			for i := range t.Members {
-				fields = append(fields, &t.Members[i].Tags)
-			}
-		case *btf.Union:
-			fields = append(fields, &t.Tags)
-			for i := range t.Members {
-				fields = append(fields, &t.Members[i].Tags)
-			}
-		case *btf.Typedef:
-			fields = append(fields, &t.Tags)
-		case *btf.Var:
-			fields = append(fields, &t.Tags)
-		}
-	}
-	saved := make([][]string, len(fields))
-	for i, field := range fields {
-		saved[i], *field = *field, nil
-	}
-	defer func() {
-		for i, field := range fields {
-			*field = saved[i]
-		}
-	}()
-	return builder.Marshal(nil, nil)
 }
 
 func prepareRawLookup(p RawProgram) (asm.Instructions, *btf.Spec, lookupMapResolver, error) {

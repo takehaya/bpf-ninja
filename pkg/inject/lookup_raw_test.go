@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
-	"fmt"
 	"reflect"
 	"testing"
 
@@ -90,12 +89,7 @@ func rawLookupFixture(t *testing.T, spec *ebpf.CollectionSpec, name string, nume
 	if err != nil {
 		t.Fatal(err)
 	}
-	var blob []byte
-	if spec.Types != nil {
-		blob, err = marshalRawBTF(builder, spec.Types)
-	} else {
-		blob, err = builder.Marshal(nil, nil)
-	}
+	blob, err := builder.Marshal(nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -222,11 +216,11 @@ func assertRawMetadata(t *testing.T, p RawProgram, got *LookupResultRaw) {
 			t.Fatal("line_info offset mismatch")
 		}
 	}
-	for id := btf.TypeID(1); ; id++ {
-		old, err := p.BTF.TypeByID(id)
-		if errors.Is(err, btf.ErrNotFound) {
-			break
+	for old, err := range p.BTF.All() {
+		if err != nil {
+			t.Fatal(err)
 		}
+		id, err := p.BTF.TypeID(old)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -484,18 +478,24 @@ func TestLookupRawRefusals(t *testing.T) {
 }
 
 func TestLookupRawBTFOriginalIDs(t *testing.T) {
-	for _, tagged := range []bool{false, true} {
-		t.Run(fmt.Sprint(tagged), func(t *testing.T) {
+	for _, tags := range []string{"none", "function", "all"} {
+		t.Run(tags, func(t *testing.T) {
 			spec := lookupFixture()
 			fn := btf.FuncMetadata(&spec.Programs["p"].Instructions[0])
-			if tagged {
+			if tags != "none" {
 				fn.Tags = []string{"original-function"}
+			}
+			if tags == "all" {
 				fn.ParamTags = [][]string{{"original-parameter"}}
 				ctx := fn.Type.(*btf.FuncProto).Params[0].Type.(*btf.Pointer).Target.(*btf.Struct)
 				ctx.Tags = []string{"original-struct"}
 				ctx.Members[0].Tags = []string{"original-member"}
 			}
 			p := rawLookupFixture(t, spec, "p", true)
+			// inject-run resolves the entry name before calling the raw API.
+			if _, err := p.BTF.TypeByID(btf.TypeID(binary.NativeEndian.Uint32(p.FuncInfo[4:]))); err != nil {
+				t.Fatal(err)
+			}
 			got, err := TransformLookupRaw(p, rawLookupRequest(lookupReq()))
 			if err != nil {
 				t.Fatal(err)
