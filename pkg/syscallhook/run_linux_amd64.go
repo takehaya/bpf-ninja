@@ -323,7 +323,7 @@ func (s *supervisor) entry(pid int, t *thread, regs unix.PtraceRegs) error {
 	if err != nil {
 		return s.skipEntry(pid, regs, err)
 	}
-	discover := s.options.OnDiscover != nil && inject.ContextType(ebpf.ProgramType(u32(attr, 0))) != ""
+	discover := s.options.OnDiscover != nil && len(attr) >= 4 && inject.ContextType(ebpf.ProgramType(u32(attr, 0))) != ""
 	if rule == nil && !discover {
 		return nil
 	}

@@ -15,6 +15,7 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/cilium/ebpf"
 	"github.com/takehaya/bpf-ninja/pkg/inject"
 	"golang.org/x/sys/unix"
 )
@@ -175,6 +176,33 @@ func TestFailPolicy(t *testing.T) {
 				t.Fatalf("code=%d err=%v log=%s child=%s", code, err, &log, data)
 			}
 		})
+	}
+}
+
+// A load too short to name its program type is left to the kernel, which
+// rejects it, even while discovery is on.
+func TestShortDiscoveryAttr(t *testing.T) {
+	if os.Getenv("SYSCALLHOOK_SHORT") == "1" {
+		attr := []byte{byte(ebpf.XDP)}
+		_, _, errno := unix.Syscall(unix.SYS_BPF, unix.BPF_PROG_LOAD, uintptr(unsafe.Pointer(&attr[0])), uintptr(len(attr)))
+		if errno == 0 {
+			t.Fatal("short attr loaded")
+		}
+		fmt.Println("short attr rejected")
+		return
+	}
+	t.Setenv("SYSCALLHOOK_SHORT", "1")
+	out, err := os.Create(filepath.Join(t.TempDir(), "child.out"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = out.Close() }()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	code, err := Run(ctx, []string{os.Args[0], "-test.run=^TestShortDiscoveryAttr$"}, Options{OnDiscover: func(Discovery) {}, Stdout: out, Stderr: out})
+	data, _ := os.ReadFile(out.Name())
+	if err != nil || code != 0 || !bytes.Contains(data, []byte("short attr rejected")) {
+		t.Fatalf("code=%d err=%v child=%s", code, err, data)
 	}
 }
 
