@@ -129,15 +129,45 @@ func dispatchObserver(t *testing.T, fn string, target *ebpf.Program) *ebpf.Colle
 	}
 }
 
-func TestBpfDispatch(t *testing.T)       { testDispatch(t, false) }
-func TestBpfDispatchStatic(t *testing.T) { testDispatch(t, true) }
+// asTC turns an XDP fixture whose context reads are data at 0 and data_end
+// at 4 into a tc program: struct __sk_buff context, data at 76, data_end at 80.
+func asTC(spec *ebpf.CollectionSpec) *ebpf.CollectionSpec {
+	u32 := &btf.Int{Name: "u32", Size: 4}
+	skb := &btf.Struct{Name: "__sk_buff", Size: 192, Members: []btf.Member{
+		{Name: "len", Type: u32}, {Name: "data", Type: u32, Offset: 76 * 8}, {Name: "data_end", Type: u32, Offset: 80 * 8},
+	}}
+	for _, p := range spec.Programs {
+		p.Type = ebpf.SchedCLS
+		fn := *btf.FuncMetadata(&p.Instructions[0])
+		proto := *fn.Type.(*btf.FuncProto)
+		proto.Params = []btf.FuncParam{{Name: "ctx", Type: &btf.Pointer{Target: skb}}}
+		fn.Type = &proto
+		p.Instructions[0] = btf.WithFuncMetadata(p.Instructions[0], &fn)
+		for i, ins := range p.Instructions {
+			if ins.OpCode.Class() == asm.LdXClass && ins.Src == asm.R6 && ins.Dst != asm.R6 && (ins.Offset == 0 || ins.Offset == 4) {
+				p.Instructions[i].Offset += 76
+			}
+		}
+	}
+	return spec
+}
+
+func TestBpfDispatch(t *testing.T)         { testDispatch(t, false, false) }
+func TestBpfDispatchStatic(t *testing.T)   { testDispatch(t, true, false) }
+func TestBpfDispatchTC(t *testing.T)       { testDispatch(t, false, true) }
+func TestBpfDispatchTCStatic(t *testing.T) { testDispatch(t, true, true) }
 
 // One fentry on the dispatch hook sees the entry, each lookup hit and each
 // failed tail call of the program, in order, and the program's results do
-// not change.
-func testDispatch(t *testing.T, static bool) {
+// not change. With tc, the same program runs as a tc classifier.
+func testDispatch(t *testing.T, static, tc bool) {
 	testutil.SkipIfNotRoot(t)
-	work := dispatchFixture()
+	fixture, target := dispatchFixture, tailTargetFixture
+	if tc {
+		fixture = func() *ebpf.CollectionSpec { return asTC(dispatchFixture()) }
+		target = func() *ebpf.CollectionSpec { return asTC(tailTargetFixture()) }
+	}
+	work := fixture()
 	plan, err := transformLookup(work, LookupRequest{ProgramName: "p", Auto: true, Entry: true, TailCalls: true,
 		Dispatch: true, StaticUntrusted: static, HookName: "d", Stack: StackAudit{LowestOffset: -8}})
 	if err != nil {
@@ -166,10 +196,10 @@ func testDispatch(t *testing.T, static bool) {
 	// hooks is nil for the plain program: only the transformed load may skip
 	// on a kernel without arg:untrusted.
 	load := func(spec *ebpf.CollectionSpec, hooks []LookupHook) *ebpf.Collection {
-		c, target := loadHooked(t, spec, hooks), loadOrSkip(t, tailTargetFixture())
+		c, tgt := loadHooked(t, spec, hooks), loadOrSkip(t, target())
 		t.Cleanup(c.Close)
-		t.Cleanup(target.Close)
-		if err := c.Maps["jmp"].Put(uint32(0), target.Programs["target"]); err != nil {
+		t.Cleanup(tgt.Close)
+		if err := c.Maps["jmp"].Put(uint32(0), tgt.Programs["target"]); err != nil {
 			t.Fatal(err)
 		}
 		if err := c.Maps["sessions"].Put(uint32(7), [2]uint64{3, 9}); err != nil {
@@ -177,7 +207,7 @@ func testDispatch(t *testing.T, static bool) {
 		}
 		return c
 	}
-	plain, injected := load(dispatchFixture(), nil), load(work, plan.hooks)
+	plain, injected := load(fixture(), nil), load(work, plan.hooks)
 	mapID := func(m *ebpf.Map) uint32 {
 		info, err := m.Info()
 		if err != nil {

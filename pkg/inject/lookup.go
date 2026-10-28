@@ -13,7 +13,8 @@ import (
 	"github.com/cilium/ebpf/btf"
 )
 
-// LookupSite describes a map_lookup_elem helper in a flattened XDP program.
+// LookupSite describes a map_lookup_elem helper in a flattened XDP or tc
+// program.
 // Empty names or zero Line mean the input did not supply that information.
 // Reason explains why a site cannot be injected; discovery still lists it.
 type LookupSite struct {
@@ -67,6 +68,10 @@ func (s LookupSelector) empty() bool {
 // a kernel call-chain stack limit, first the sites that need the map slot or
 // a value copy and then every lookup. Auto refuses only when nothing at all
 // would be instrumented.
+//
+// The hooks take the entry function's context: struct xdp_md * in an XDP
+// program, struct __sk_buff * in a tc program (SchedCLS or SchedACT). The
+// signatures below show the XDP form.
 //
 // Entry also calls int HOOKNAME_entry(struct xdp_md *ctx) once at program
 // entry, which runs when the program is entered through a tail call, unlike an
@@ -196,9 +201,9 @@ func DiscoverLookups(elf []byte, programName string) ([]LookupSite, error) {
 // TransformLookup instruments the program req describes and returns an
 // independent clone. A selected lookup calls
 // int HOOK(CTX *ctx, const KEY *key, const VALUE *value) for non-null results,
-// where CTX is the program's context type (struct xdp_md for XDP, the only
-// type supported here); see LookupRequest for the Auto, Entry, TailCalls and
-// Dispatch hooks. This never loads or attaches BPF.
+// where CTX is the program's context type: struct xdp_md for XDP, struct
+// __sk_buff for tc (SchedCLS or SchedACT). See LookupRequest for the Auto,
+// Entry, TailCalls and Dispatch hooks. This never loads or attaches BPF.
 func TransformLookup(elf []byte, req LookupRequest) (*LookupResult, error) {
 	// Reuse the existing hash/name/stack validation, without its load contract.
 	if err := validateRequest(Request{ELFSHA256: req.ELFSHA256, ProgramName: req.ProgramName,
@@ -279,9 +284,22 @@ func elfLookupMaps(spec *ebpf.CollectionSpec) lookupMapResolver {
 	}
 }
 
+// lookupContext names the context struct the hooks of a program of type typ
+// take, and whose first word they read: struct xdp_md for XDP, struct
+// __sk_buff (len) for tc. Empty means the type is not supported.
+func lookupContext(typ ebpf.ProgramType) string {
+	switch typ {
+	case ebpf.XDP:
+		return "xdp_md"
+	case ebpf.SchedCLS, ebpf.SchedACT:
+		return "__sk_buff"
+	}
+	return ""
+}
+
 func discoverLookupProgram(insns asm.Instructions, typ ebpf.ProgramType, resolve lookupMapResolver) ([]discoveredLookup, error) {
-	if typ != ebpf.XDP {
-		return nil, refuse("only native XDP programs are supported")
+	if lookupContext(typ) == "" {
+		return nil, refuse("only XDP and tc programs are supported")
 	}
 	indices := make(map[int]int)
 	it := insns.Iterate()
@@ -531,7 +549,7 @@ func checkLookupMap(m *RawMap) string {
 		if err != nil || size <= 0 || uint64(size) != uint64(field.size) {
 			return fmt.Sprintf("map %s BTF size does not match map size %d", field.name, field.size)
 		}
-		if s, ok := btf.UnderlyingType(field.typ).(*btf.Struct); ok && (s.Name == "xdp_md" || s.Name == "bpf_dynptr") {
+		if s, ok := btf.UnderlyingType(field.typ).(*btf.Struct); ok && (s.Name == "xdp_md" || s.Name == "__sk_buff" || s.Name == "bpf_dynptr") {
 			return fmt.Sprintf("map %s type %q has a special global-function pointer ABI", field.name, s.Name)
 		}
 	}
@@ -840,16 +858,17 @@ func transformLookupProgram(insns asm.Instructions, typ ebpf.ProgramType, types 
 	}
 	fn := btf.FuncMetadata(&insns[0])
 	proto, ok := fn.Type.(*btf.FuncProto)
+	ctxName := lookupContext(typ)
 	if !ok || len(proto.Params) != 1 {
-		return nil, plan, refuse("entry BTF must take one struct xdp_md pointer")
+		return nil, plan, refuse("entry BTF must take one struct %s pointer", ctxName)
 	}
 	ctx, ok := btf.UnderlyingType(proto.Params[0].Type).(*btf.Pointer)
 	if !ok {
 		return nil, plan, refuse("entry BTF context is not a pointer")
 	}
 	ctxStruct, ok := btf.UnderlyingType(ctx.Target).(*btf.Struct)
-	if !ok || ctxStruct.Name != "xdp_md" {
-		return nil, plan, refuse("entry BTF context is not struct xdp_md")
+	if !ok || ctxStruct.Name != ctxName {
+		return nil, plan, refuse("entry BTF context is not struct %s", ctxName)
 	}
 	emit := lookupEmitter{insns: insns, req: req, ctxType: proto.Params[0].Type, tails: tails, entryName: entryName, tailName: tailName}
 	spliced, hooks, err := emit.splice(groups)

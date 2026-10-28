@@ -1,12 +1,13 @@
 # Typed map-lookup observation injection (`pkg/inject`)
 
-`inject.TransformLookup` instruments one or more `bpf_map_lookup_elem` helper calls to the same map in one native XDP program before loading it.
+`inject.TransformLookup` instruments one or more `bpf_map_lookup_elem` helper calls to the same map in one native XDP or tc (`SchedCLS`, `SchedACT`) program before loading it.
 It generates a global BTF function whose pointer types come from the entry function and the map definition in the ELF:
 
 ```c
 int HOOK(struct xdp_md *ctx, const KEY *key, const VALUE *value);
 ```
 
+In a tc program the hooks take `struct __sk_buff *ctx` instead; the signatures on this page show the XDP form.
 An fentry observer attached to `HOOK` can correlate packet context, the lookup key, and the returned value.
 The hook runs only when the lookup returns a non-null value.
 It uses all three arguments and returns zero; the injected code restores the original lookup result before the program continues.
@@ -236,16 +237,17 @@ A key that points into read-only memory (for example, a value of such a map) pas
 A key or value with BTF must have a nonzero size exactly matching the map's key or value size.
 The hook retains these types, including typedefs and qualifiers, under `const` pointer parameters.
 A side the map declares only by size, such as `__uint(key_size, 4)`, has no BTF; the hook takes it as an anonymous `struct { u8 bytes[N]; }` of the map's size.
-Types named `struct xdp_md` or `struct bpf_dynptr` are refused as map key/value types because the verifier assigns those pointer types special argument semantics.
+Types named `struct xdp_md`, `struct __sk_buff` or `struct bpf_dynptr` are refused as map key/value types because the verifier assigns those pointer types special argument semantics.
 Other map kinds are refused by a typed hook rather than assuming their helper return is ordinary value memory; `Auto` observes XSK maps and devmaps through the generic hook and skips the rest.
-The entry function must have one BTF parameter pointing to `struct xdp_md`.
-The package checks the XDP program type; the cooperative loader owns attachment mode and verifier acceptance.
+The entry function must have one BTF parameter pointing to `struct xdp_md` (XDP) or `struct __sk_buff` (tc).
+The package checks the program type; the cooperative loader owns attachment mode and verifier acceptance.
+The generated hooks read the context's first word (`len` for `__sk_buff`) and call no helper that changes packet data.
 
 | Transformer validates | Caller must certify |
 |---|---|
 | The input ELF matches `ELFSHA256` before parsing. | The hash identifies the audited build. |
 | The selector resolves supported lookups of the same map in the entry function. | These are the intended observation sites. |
-| Map BTF sizes, where present, match the map definition, and entry BTF describes an XDP context pointer. | The BTF describes the audited build. |
+| Map BTF sizes, where present, match the map definition, and entry BTF describes the program type's context pointer. | The BTF describes the audited build. |
 | Direct R10 references stay at or above `Stack.LowestOffset`; three aligned spill slots (four with the generic hook or, at lookup and tail-call sites, `Dispatch`, plus a value copy with `CopyReadOnly`) fit below it within 512 bytes, and within 480 in a frame that calls a lookup hook. The call chains of the transformed program stay within the verifier's stack and frame limits wherever the original's do. | Pointer aliases and called subprograms do not reach the reserved spill region. |
 | Existing function and source metadata are complete, references resolve, and relocation fits. | The transformed program remains acceptable to the target kernel verifier. |
 
@@ -404,6 +406,7 @@ A direct run of the target fires both.
 `TestBpfStackLimitsAutoRetry` loads what `Auto` keeps when the lookup slots alone would push a tail-calling subprogram's callers to 256 bytes: the tail-call hook without the lookup at `-208`, also as a static `Dispatch` hook, and the typed hook without the copied read-only map's at `-200`.
 `TestBpfEntryHookWithLookup` combines `Entry` with a lookup hook in one program and observes both.
 `TestBpfDispatch[Static]` attaches one observer to the dispatch hook and checks the entry, lookup and failed tail-call calls in order, with the map id and value bytes each passes; `TestBpfDispatchStackLimit` checks the transform refuses a dispatch tail call in the entry function one slot past the caller-depth limit and loads one slot under it.
+`TestBpfDispatchTC[Static]` repeats `TestBpfDispatch[Static]` on a `SchedCLS` program with an `__sk_buff` context; `TestLookupTC` (unprivileged) checks that every hook kind takes `__sk_buff` in a tc program, in the ELF and raw forms.
 `TestBpfLookupInjectionCallback` checks symbolic and numeric callback loads with an unreached subprogram preceding the `bpf_loop` callback and a stack counter incremented three times by `bpf_loop`; the program returns `XDP_ABORTED` unless those increments occur.
 It repeats the plain/injected comparison and fentry observations (including direct `ctx` pointer dereferencing) for both callback forms.
 These tests exercise the transform core and fentry using `BPF_PROG_TEST_RUN`, without an interface attachment or pinning.
@@ -415,5 +418,5 @@ go test -count=1 ./pkg/inject/...
 sudo -E env PATH=$PATH go test -count=1 -run 'TestBpfLookupInjection|TestBpfTailCall|TestBpfEntryHook|TestBpfStackLimits|TestBpfDispatch' ./pkg/inject/
 ```
 
-All 25 privileged lookup, entry, tail-call, stack-limit and dispatch tests pass across the CI kernel matrix (6.1 to 7.3-rc4) that `make test-bpf` runs, where the tests whose hooks need `arg:untrusted` skip on 6.1-6.15 and the callback stack-limit subtests skip on 7.3, which forbids tail calls in callbacks (see scripts/test/privileged.py).
+All 27 privileged lookup, entry, tail-call, stack-limit and dispatch tests pass across the CI kernel matrix (6.1 to 7.3-rc4) that `make test-bpf` runs, where the tests whose hooks need `arg:untrusted` skip on 6.1-6.15 and the callback stack-limit subtests skip on 7.3, which forbids tail calls in callbacks (see scripts/test/privileged.py).
 This is finite test evidence for the fixture, not a general program-equivalence, concurrency, or kernel-version guarantee.

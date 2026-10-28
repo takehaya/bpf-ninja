@@ -1267,3 +1267,170 @@ func TestLookupGenericHook(t *testing.T) {
 		t.Fatalf("explicit map-in-map selection: %v", err)
 	}
 }
+
+// ctxStructName is the struct a hook's first parameter points to.
+func ctxStructName(t *testing.T, insns asm.Instructions, hook string) string {
+	t.Helper()
+	ptr, ok := btf.UnderlyingType(hookParams(t, insns, hook)[0].Type).(*btf.Pointer)
+	if !ok {
+		t.Fatalf("%s: ctx is not a pointer", hook)
+	}
+	return btf.UnderlyingType(ptr.Target).(*btf.Struct).Name
+}
+
+// A tc program gets __sk_buff hooks of every kind, typed, generic, entry,
+// tail-call and dispatch, in the ELF and raw forms; the entry ctx must match
+// the program type, and an __sk_buff key or value is refused like xdp_md.
+func TestLookupTC(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		spec func() *ebpf.CollectionSpec
+		edit func(*LookupRequest)
+	}{
+		{"per-map", func() *ebpf.CollectionSpec { return asTC(dispatchFixture()) }, func(r *LookupRequest) { r.Entry, r.TailCalls = true, true }},
+		{"dispatch", func() *ebpf.CollectionSpec { return asTC(dispatchFixture()) }, func(r *LookupRequest) { r.Entry, r.TailCalls, r.Dispatch = true, true, true }},
+		{"static", func() *ebpf.CollectionSpec {
+			spec := asTC(dispatchFixture())
+			spec.Maps["sessions"].Flags = bpfFRdonlyProg
+			return spec
+		}, func(r *LookupRequest) { r.StaticUntrusted = true }},
+		{"generic", func() *ebpf.CollectionSpec {
+			spec := asTC(multiMapFixture())
+			spec.Maps["flows"].Type = ebpf.HashOfMaps
+			return spec
+		}, func(*LookupRequest) {}},
+	} {
+		for _, raw := range []bool{false, true} {
+			req := autoReq()
+			req.HookName = "d"
+			tc.edit(&req)
+			var insns asm.Instructions
+			var hooks []LookupHook
+			if raw {
+				p := rawLookupFixture(t, tc.spec(), "p", true)
+				got, err := TransformLookupRaw(p, LookupRequestRaw{Auto: true, Entry: req.Entry, TailCalls: req.TailCalls, Dispatch: req.Dispatch,
+					StaticUntrusted: req.StaticUntrusted, HookName: req.HookName, Stack: req.Stack})
+				if err != nil {
+					t.Fatalf("%s raw: %v", tc.name, err)
+				}
+				if !req.Dispatch { // the dispatch hooks share one function
+					assertRawMetadata(t, p, got)
+				}
+				insns, hooks = got.Instructions, got.Hooks
+			} else {
+				spec := tc.spec()
+				plan, err := transformLookup(spec, req)
+				if err != nil {
+					t.Fatalf("%s: %v", tc.name, err)
+				}
+				insns, hooks = spec.Programs["p"].Instructions, plan.hooks
+			}
+			kinds := map[HookKind]bool{}
+			for _, hook := range hooks {
+				kinds[hook.Kind] = true
+				if ctx := ctxStructName(t, insns, hook.Name); ctx != "__sk_buff" {
+					t.Fatalf("%s raw=%v: hook %s takes %s", tc.name, raw, hook.Name, ctx)
+				}
+			}
+			if !kinds[HookLookup] || req.Entry && (!kinds[HookEntry] || !kinds[HookTailCall]) {
+				t.Fatalf("%s raw=%v: hooks %+v", tc.name, raw, hooks)
+			}
+		}
+	}
+	for _, tc := range []struct {
+		name string
+		typ  ebpf.ProgramType
+		skb  bool // __sk_buff ctx
+		ok   bool
+	}{
+		{"cls", ebpf.SchedCLS, true, true},
+		{"act", ebpf.SchedACT, true, true},
+		{"cls-xdp_md", ebpf.SchedCLS, false, false},
+		{"xdp-__sk_buff", ebpf.XDP, true, false},
+		{"socket-filter", ebpf.SocketFilter, true, false},
+	} {
+		spec := lookupFixture()
+		if tc.skb {
+			spec = asTC(spec)
+		}
+		spec.Programs["p"].Type = tc.typ
+		before := append(asm.Instructions(nil), spec.Programs["p"].Instructions...)
+		_, err := transformLookup(spec, lookupReq())
+		if tc.ok != (err == nil) || !tc.ok && !errors.Is(err, ErrRefused) {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		if !tc.ok && !reflect.DeepEqual(before, spec.Programs["p"].Instructions) {
+			t.Fatalf("%s: refusal mutated input", tc.name)
+		}
+	}
+	// An __sk_buff value is refused by a typed hook when selected. Auto skips
+	// it too: only kernel-tested map kinds go to the generic hook
+	// (genericKinds), and a hash map is not one.
+	skb := func() *ebpf.CollectionSpec {
+		spec := asTC(multiMapFixture())
+		spec.Maps["flows"].Value.(*btf.Struct).Name = "__sk_buff"
+		return spec
+	}
+	req := lookupReq()
+	req.Site.MapName = "flows"
+	if _, err := transformLookup(skb(), req); !errors.Is(err, ErrRefused) {
+		t.Fatalf("__sk_buff value: %v", err)
+	}
+	if plan, err := transformLookup(skb(), autoReq()); err != nil || len(plan.hooks) != 1 || plan.hooks[0].MapName != "sessions" ||
+		len(plan.skipped) != 1 || plan.skipped[0].SitePC != 18 || !strings.Contains(plan.skipped[0].Reason, "special global-function pointer ABI") {
+		t.Fatalf("auto with __sk_buff value: %+v %v", plan, err)
+	}
+	// Auto skips the only lookup, and Entry still instruments the entry with
+	// an __sk_buff hook.
+	work := asTC(lookupFixture())
+	work.Maps["sessions"].Value = &btf.Struct{Name: "__sk_buff", Size: work.Maps["sessions"].ValueSize}
+	entry := autoReq()
+	entry.Entry, entry.Stack.LowestOffset = true, -456
+	if plan, err := transformLookup(work, entry); err != nil || len(plan.hooks) != 1 || plan.hooks[0].Kind != HookEntry || len(plan.skipped) != 1 ||
+		!strings.Contains(plan.skipped[0].Reason, "special global-function pointer ABI") {
+		t.Fatalf("auto with only a skipped lookup and Entry: %+v %v", plan, err)
+	} else if ctx := ctxStructName(t, work.Programs["p"].Instructions, plan.hooks[0].Name); ctx != "__sk_buff" {
+		t.Fatalf("entry hook takes %s", ctx)
+	}
+	// Without Entry or TailCalls, Auto refuses a tc program it would leave
+	// uninstrumented, leaving the input unchanged, ELF and raw: the
+	// __sk_buff-valued lookup is skipped at selection (not a genericKinds
+	// kind), and generic lookups whose map slot passes the site frame are
+	// dropped for the stack.
+	for _, tc := range []struct {
+		name string
+		spec func() *ebpf.CollectionSpec
+		want string
+	}{
+		{"skb-value", func() *ebpf.CollectionSpec {
+			spec := asTC(lookupFixture())
+			spec.Maps["sessions"].Value = &btf.Struct{Name: "__sk_buff", Size: spec.Maps["sessions"].ValueSize}
+			return spec
+		}, "no supported lookup sites (1 skipped)"},
+		{"generic", func() *ebpf.CollectionSpec { return asTC(mapInMapFixture()) }, "no lookup site fits the audited stack (2 skipped)"},
+	} {
+		req := autoReq()
+		req.Stack.LowestOffset = -456
+		work := tc.spec()
+		before := append(asm.Instructions(nil), work.Programs["p"].Instructions...)
+		if _, err := transformLookup(work, req); !errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), tc.want) {
+			t.Fatalf("%s: want %q, got %v", tc.name, tc.want, err)
+		}
+		if !reflect.DeepEqual(before, work.Programs["p"].Instructions) {
+			t.Fatalf("%s: refusal mutated input", tc.name)
+		}
+		if _, err := TransformLookupRaw(rawLookupFixture(t, tc.spec(), "p", true), rawLookupRequest(req)); !errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), tc.want) {
+			t.Fatalf("%s raw: want %q, got %v", tc.name, tc.want, err)
+		}
+	}
+	// The raw front end carries the program type, as inject-run does.
+	p := rawLookupFixture(t, asTC(lookupFixture()), "p", true)
+	got, err := TransformLookupRaw(p, rawLookupRequest(lookupReq()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertRawMetadata(t, p, got)
+	if ctx := ctxStructName(t, got.Instructions, "lookup_hook"); ctx != "__sk_buff" {
+		t.Fatalf("raw hook takes %s", ctx)
+	}
+}
