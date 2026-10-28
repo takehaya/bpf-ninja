@@ -1031,6 +1031,95 @@ func TestBpfBloomPeekPoisoned(t *testing.T) {
 	}
 }
 
+// TestBpfBloomPeekInjected checks that injection does not make a bloom filter
+// peek trip the 7.1 to 7.3 verifier bug TestBpfBloomPeekPoisoned describes:
+// programs that peek without reading the value first, in shapes those kernels
+// load, must still load with peek hooks, typed or through a static dispatch
+// hook. A program the bug already rejects is out of scope: injection does not
+// make it load.
+func TestBpfBloomPeekInjected(t *testing.T) {
+	testutil.SkipIfNotRoot(t)
+	jump := func(ins asm.Instruction, off int16) asm.Instruction { ins.Offset = off; return ins }
+	m := func() asm.Instruction { return asm.LoadMapPtr(asm.R1, 0).WithReference("q") }
+	peek := asm.Instructions{
+		asm.Mov.Reg(asm.R2, asm.RFP),
+		asm.Add.Imm(asm.R2, -8),
+		m(),
+		asm.FnMapPeekElem.Call(),
+	}
+	verdict := asm.Instructions{
+		asm.Mov.Imm(asm.R1, 2),                 // XDP_PASS when the value is in the filter
+		jump(asm.JSGE.Imm32(asm.R0, 0, ""), 1), // -> mov r0, r1
+		asm.Mov.Imm(asm.R1, 1),                 // XDP_DROP
+		asm.Mov.Reg(asm.R0, asm.R1),
+		asm.Return(),
+	}
+	shapes := []struct {
+		name  string
+		insns asm.Instructions
+	}{
+		{"straight", slices.Concat(asm.Instructions{asm.StoreImm(asm.RFP, -8, 7, asm.Word)}, peek, verdict)},
+		{"bounds-then-peek", slices.Concat(asm.Instructions{
+			asm.LoadMem(asm.R2, asm.R1, 0, asm.Word), // data
+			asm.LoadMem(asm.R3, asm.R1, 4, asm.Word), // data_end
+			asm.Mov.Reg(asm.R4, asm.R2),
+			asm.Add.Imm(asm.R4, 4),
+			jump(asm.JGT.Reg(asm.R4, asm.R3, ""), 12), // -> short packet
+			asm.LoadMem(asm.R5, asm.R2, 0, asm.Word),
+			asm.StoreMem(asm.RFP, -8, asm.R5, asm.Word),
+		}, peek, verdict, asm.Instructions{asm.Mov.Imm(asm.R0, 1), asm.Return()})},
+		// The walkthrough's shape: push the value on a miss.
+		{"peek-then-push", slices.Concat(asm.Instructions{asm.StoreImm(asm.RFP, -8, 7, asm.Word)}, peek, asm.Instructions{
+			jump(asm.JEq.Imm(asm.R0, 0, ""), 6), // -> pass
+			asm.Mov.Reg(asm.R2, asm.RFP),
+			asm.Add.Imm(asm.R2, -8),
+			m(),
+			asm.Mov.Imm(asm.R3, 0),
+			asm.FnMapPushElem.Call(),
+			asm.Mov.Imm(asm.R0, 2),
+			asm.Return(),
+		})},
+	}
+	for _, shape := range shapes {
+		fixture := func() *ebpf.CollectionSpec {
+			insns := slices.Clone(shape.insns)
+			insns[0] = btf.WithFuncMetadata(insns[0].WithSymbol("p").WithSource(asm.Comment(shape.name)), xdpFunc("p"))
+			return &ebpf.CollectionSpec{ByteOrder: binary.LittleEndian,
+				Maps: map[string]*ebpf.MapSpec{"q": {Name: "q", Type: ebpf.BloomFilter, ValueSize: 4, MaxEntries: 16,
+					Value: &btf.Int{Name: "u32", Size: 4}}},
+				Programs: map[string]*ebpf.ProgramSpec{"p": {Name: "p", Type: ebpf.XDP, License: "GPL", Instructions: insns}},
+			}
+		}
+		for _, peeks := range []CallWhen{CallAny, CallError} {
+			for _, dispatch := range []bool{false, true} {
+				name := fmt.Sprintf("%s/peek=%s/typed", shape.name, peeks)
+				if dispatch {
+					name = fmt.Sprintf("%s/peek=%s/dispatch-static", shape.name, peeks)
+				}
+				t.Run(name, func(t *testing.T) {
+					plain := loadOrSkip(t, fixture())
+					plain.Close()
+					work := fixture()
+					req := autoReq()
+					req.Lookups, req.Pushes, req.Peeks, req.Stack.LowestOffset = LookupNone, CallAny, peeks, -64
+					if dispatch {
+						req.Dispatch, req.StaticUntrusted, req.HookName = true, true, "d"
+					}
+					plan, err := transformLookup(work, req)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if len(plan.hooks) == 0 {
+						t.Fatalf("no hooks: skipped %+v", plan.skipped)
+					}
+					injected := loadHooked(t, work, plan.hooks)
+					injected.Close()
+				})
+			}
+		}
+	}
+}
+
 // atomicMem is op.Mem for an 8-byte access with the immediate set:
 // cilium/ebpf v0.22 marshals the immediate before deriving it from the
 // opcode, so op.Mem would load as an atomic add.
