@@ -802,23 +802,10 @@ func checkLookupMap(m *RawMap) string {
 	default:
 		return fmt.Sprintf("map type %s is unsupported", m.Type)
 	}
-	for _, field := range []struct {
-		name string
-		typ  btf.Type
-		size uint32
-	}{{"key", m.Key, m.KeySize}, {"value", m.Value, m.ValueSize}} {
-		if field.typ == nil {
-			continue // lookupABI passes it as opaque bytes
-		}
-		size, err := btf.Sizeof(field.typ)
-		if err != nil || size <= 0 || uint64(size) != uint64(field.size) {
-			return fmt.Sprintf("map %s BTF size does not match map size %d", field.name, field.size)
-		}
-		if s, ok := btf.UnderlyingType(field.typ).(*btf.Struct); ok && (s.Name == "xdp_md" || s.Name == "__sk_buff" || s.Name == "bpf_dynptr") {
-			return fmt.Sprintf("map %s type %q has a special global-function pointer ABI", field.name, s.Name)
-		}
+	if reason := checkMapField("key", m.Key, m.KeySize); reason != "" {
+		return reason
 	}
-	return ""
+	return checkMapField("value", m.Value, m.ValueSize)
 }
 
 // checkQueueMap returns why a typed push, pop or peek hook cannot take m's
@@ -830,11 +817,21 @@ func checkQueueMap(m *RawMap) string {
 	default:
 		return fmt.Sprintf("map type %s is unsupported", m.Type)
 	}
-	if m.Value == nil {
+	return checkMapField("value", m.Value, m.ValueSize)
+}
+
+// checkMapField returns why a typed hook cannot take a pointer to typ, a map's
+// key or value of size bytes, or "". A nil typ is fine: lookupABI passes it as
+// opaque bytes.
+func checkMapField(name string, typ btf.Type, size uint32) string {
+	if typ == nil {
 		return ""
 	}
-	if size, err := btf.Sizeof(m.Value); err != nil || size <= 0 || uint64(size) != uint64(m.ValueSize) {
-		return fmt.Sprintf("map value BTF size does not match map size %d", m.ValueSize)
+	if n, err := btf.Sizeof(typ); err != nil || n <= 0 || uint64(n) != uint64(size) {
+		return fmt.Sprintf("map %s BTF size does not match map size %d", name, size)
+	}
+	if s, ok := btf.UnderlyingType(typ).(*btf.Struct); ok && (s.Name == "xdp_md" || s.Name == "__sk_buff" || s.Name == "bpf_dynptr") {
+		return fmt.Sprintf("map %s type %q has a special global-function pointer ABI", name, s.Name)
 	}
 	return ""
 }
@@ -1950,9 +1947,7 @@ func scalarHook(name string, ctx btf.Type, scalars ...string) asm.Instructions {
 // valueHook is a push, pop or peek hook, int NAME(ctx, u32 site, const VALUE
 // *value, u64 status): lookupHook's miss hook with the pointer named value.
 func valueHook(name string, ctx, value btf.Type, untrusted bool) asm.Instructions {
-	hook := lookupHook(name, ctx, value, nil, true, untrusted, "status")
-	btf.FuncMetadata(&hook[0]).Type.(*btf.FuncProto).Params[2].Name = "value"
-	return hook
+	return pointerHook(name, ctx, []btf.FuncParam{{Name: "value", Type: value}}, true, untrusted, "status")
 }
 
 // lookupHook generates a hook taking const KEY * and const VALUE *. With
@@ -1963,22 +1958,30 @@ func valueHook(name string, ctx, value btf.Type, untrusted bool) asm.Instruction
 // makes a miss hook, which takes only the key. scalars are u64 parameters
 // after the pointers, such as an update hook's status.
 func lookupHook(name string, ctx, key, value btf.Type, withSite, untrusted bool, scalars ...string) asm.Instructions {
+	ptrs := []btf.FuncParam{{Name: "key", Type: key}}
+	if value != nil {
+		ptrs = append(ptrs, btf.FuncParam{Name: "value", Type: value})
+	}
+	return pointerHook(name, ctx, ptrs, withSite, untrusted, scalars...)
+}
+
+// pointerHook generates lookupHook's hooks with one const pointer parameter
+// per ptrs entry, each a pointer to that entry's type.
+func pointerHook(name string, ctx btf.Type, ptrs []btf.FuncParam, withSite, untrusted bool, scalars ...string) asm.Instructions {
 	params := []btf.FuncParam{{Name: "ctx", Type: ctx}}
 	regs := []asm.Register{asm.R2, asm.R3}
 	if withSite {
 		params = append(params, btf.FuncParam{Name: "site", Type: &btf.Int{Name: "u32", Size: 4}})
 		regs = []asm.Register{asm.R3, asm.R4}
 	}
-	types := []btf.Type{key, value}
-	if value == nil {
-		types, regs = types[:1], regs[:1]
-	}
+	regs = regs[:len(ptrs)]
 	pointers := len(params)
-	for i, typ := range types {
+	for _, ptr := range ptrs {
+		typ := ptr.Type
 		if untrusted {
 			typ = &btf.Void{}
 		}
-		params = append(params, btf.FuncParam{Name: []string{"key", "value"}[i], Type: &btf.Pointer{Target: &btf.Const{Type: typ}}})
+		params = append(params, btf.FuncParam{Name: ptr.Name, Type: &btf.Pointer{Target: &btf.Const{Type: typ}}})
 	}
 	for _, scalar := range scalars {
 		params = append(params, btf.FuncParam{Name: scalar, Type: &btf.Int{Name: "u64", Size: 8}})

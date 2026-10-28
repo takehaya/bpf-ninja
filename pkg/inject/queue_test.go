@@ -7,6 +7,7 @@ import (
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/asm"
+	"github.com/cilium/ebpf/btf"
 )
 
 // Push, pop and peek each get a typed hook named after the map, taking the
@@ -79,7 +80,8 @@ func TestQueueOps(t *testing.T) {
 }
 
 // Push, pop and peek are skipped on a map that is not a queue, stack or bloom
-// filter, or whose value BTF does not match its size.
+// filter, whose value BTF does not match its size, or whose value type a
+// global function takes as something other than memory.
 func TestQueueOpsSkipped(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -88,6 +90,8 @@ func TestQueueOpsSkipped(t *testing.T) {
 	}{
 		{"hash", func(m *ebpf.MapSpec) { m.Type, m.KeySize = ebpf.Hash, 4 }, "map type Hash is unsupported"},
 		{"value size", func(m *ebpf.MapSpec) { m.ValueSize = 16 }, "map value BTF size does not match map size 16"},
+		{"ctx value", func(m *ebpf.MapSpec) { m.Value = &btf.Struct{Name: "xdp_md", Size: m.ValueSize} },
+			`map value type "xdp_md" has a special global-function pointer ABI`},
 	} {
 		spec := queueFixture(ebpf.Queue, false)
 		tc.mutate(spec.Maps["q"])
