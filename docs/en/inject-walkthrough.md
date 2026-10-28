@@ -9,6 +9,9 @@ Nothing is attached to an interface: the loader runs the program with `BPF_PROG_
 `prog.c` remembers the lengths of recent packets in a two-entry queue, notes each new length in a bloom filter, and reads a per-CPU counter:
 
 ```c
+#include <linux/bpf.h>
+#include <bpf/bpf_helpers.h>
+
 struct { __uint(type, BPF_MAP_TYPE_QUEUE); __uint(max_entries, 2); __type(value, __u64); } recent SEC(".maps");
 struct { __uint(type, BPF_MAP_TYPE_BLOOM_FILTER); __uint(max_entries, 16); __type(value, __u32); } seen SEC(".maps");
 struct stat { __u64 pkts; __u64 bytes; };
@@ -31,6 +34,7 @@ int entry(struct xdp_md *ctx)
 		return st->pkts ? XDP_DROP : XDP_PASS;
 	return XDP_ABORTED;
 }
+char LICENSE[] SEC("license") = "GPL";
 ```
 
 When the queue is full, the program pops the oldest length to make room, but it never pushes the new length again.
@@ -38,7 +42,42 @@ The trace below shows this.
 
 The loader is an ordinary cilium/ebpf program.
 It loads `prog.o`, prints the program's ID, then runs the program once a second on packets of 64, 80, 96 and 112 bytes in turn.
-`inject-run` needs no change to it.
+`inject-run` needs no change to it:
+
+```go
+package main
+
+import (
+	"fmt"
+	"os"
+	"time"
+
+	"github.com/cilium/ebpf"
+)
+
+// Load prog.o, print the program id, then run the program once a second on
+// packets of 64, 80, 96 and 112 bytes in turn, for a minute.
+func main() {
+	spec, err := ebpf.LoadCollectionSpec(os.Args[1])
+	if err != nil {
+		panic(err)
+	}
+	coll, err := ebpf.NewCollection(spec)
+	if err != nil {
+		panic(err)
+	}
+	defer coll.Close()
+	info, _ := coll.Programs["entry"].Info()
+	id, _ := info.ID()
+	fmt.Println(id)
+	for i := range 60 {
+		n := 64 + 16*(i%4)
+		ret, err := coll.Programs["entry"].Run(&ebpf.RunOptions{Data: make([]byte, n), Repeat: 1})
+		fmt.Fprintf(os.Stderr, "run len=%d action=%d err=%v\n", n, ret, err)
+		time.Sleep(time.Second)
+	}
+}
+```
 
 ## 1. List the map calls
 
@@ -56,7 +95,7 @@ bpf-ninja -p "$PROG_ID" --list-progs --list-maps --lookups-json lookups.json
 ```
 
 ```
-prog 462645  entry
+prog 463345  entry
 └─ func entry
    ├─ map seen    BloomFilter  peek    prog.c:17  ✓ injectable  (pc 11)
    ├─ map seen    BloomFilter  push    prog.c:18  ✓ injectable  (pc 18)
@@ -108,10 +147,10 @@ inject-run: program "entry": injected hook "ninja_seen_peek" (peek map "seen", s
 `hooks.json` gives the kernel ID of the transformed program and each hook with its sites:
 
 ```json
-{"program": "entry", "func": "entry", "type": "XDP", "prog_id": 462638, "ctx_type": "xdp_md", "skipped": [],
+{"program": "entry", "func": "entry", "type": "XDP", "prog_id": 463355, "ctx_type": "xdp_md", "skipped": [],
  "hooks": [
-  {"name": "ninja_recent_push", "kind": "typed", "when": "any", "map": "recent",
-   "sites": [{"kind": "push", "pc": 24, "map": "recent", "func": "entry", "file": "prog.c", "line": 19}],
+  {"name": "ninja_seen_peek", "kind": "typed", "when": "error", "map": "seen",
+   "sites": [{"kind": "peek", "pc": 11, "map": "seen", "func": "entry", "file": "prog.c", "line": 17}],
    "untrusted": false, "copied": false, "static": false, "read_only": false},
   ...
  ]}
@@ -152,7 +191,8 @@ static int report(void *ctx, __u32 op)
 	e->op = op;
 	e->site = site;
 	e->value = 0;
-	bpf_probe_read_kernel(&e->value, sizeof(e->value), (void *)value);
+	/* The bloom filter holds __u32 values, the queue __u64 ones. */
+	bpf_probe_read_kernel(&e->value, op == 2 ? sizeof(__u32) : sizeof(__u64), (void *)value);
 	e->status = status;
 	bpf_ringbuf_submit(e, 0);
 	return 0;
@@ -208,7 +248,7 @@ pop  site=30 value=112 ret=0 flags=0
 - A peek appears only for a length the bloom filter has not seen (`ret=-2`, `ENOENT`), because the rule observes failed peeks only.
 - The third packet's push fails with `E2BIG` (`ret=-7`): the queue holds 64 and 80.
   The pop that follows takes 64 out, so the queue keeps 80 and never receives 96.
-- From then on every 96-byte packet fails to push and pops the oldest length, and the queue never holds 96.
+- From then on the 64- and 96-byte packets always find the queue full: each fails to push and only pops the oldest length, so the queue never holds 64 or 96 again.
   If the program meant to keep the two most recent lengths, it needed `BPF_EXIST`, which drops the oldest element on a full queue.
 
 The program's actions do not change: every run returned `XDP_PASS` with the hooks, as it does when the loader runs without `inject-run`.
