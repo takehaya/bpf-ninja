@@ -4,6 +4,10 @@
 
 このドキュメントは利用者向けです。formal な EBNF と例文表は [dsl-grammar.md](./dsl-grammar.md) にあります。新しいプロトコル vocab を書きたい場合は [`pkg/kunai/protocols/`](../../pkg/kunai/protocols/) の既存 .p4 と [`pkg/kunai/vocab/loader.go`](../../pkg/kunai/vocab/loader.go) を参考にしてください。
 
+[capture の選択](cli/capture.md)、[出力と完了](cli/output.md)、[set の操作](cli/sets.md)、[capture recipes](examples/capture-recipes.md) は別のガイドです。
+このページはフィルタ式の構文と意味を説明します。
+問題の切り分けは [Troubleshooting](troubleshooting.md)、トンネル式の確認は [tunnel recipe](examples/tunnel-filters.md) を参照してください。
+
 ## クイックスタート
 
 ```bash
@@ -489,302 +493,54 @@ where (tcp.dport == 443) != gtp.opt.exists   # xor (片方だけ真)
 
 ## `--mode xdp` で native XDP として直接 attach する
 
-通常の bpf-ninja は、既存の XDP プログラムに fentry/fexit で trampoline attach する観測ツールであり、他人の XDP を覗くモードです。一方 `--mode xdp` を付けると、bpf-ninja 自身が XDP として interface に直接 attach します。interface に何も XDP が attach されていないが filter したい場合に便利です。
-
-```bash
-# DSL で TCP/443 だけ capture, それ以外は素通し (XDP_PASS)
-sudo bpf-ninja --mode xdp -i eth0 "eth/ipv4/tcp[dport==443]"
-
-# DSL filter (UDP は全部 capture)
-sudo bpf-ninja --mode xdp -i eth0 "eth/ipv4/udp"
-
-# 旧 pcap syntax を使いたい時は --cbpf 必須 (legacy)
-sudo bpf-ninja --cbpf --mode xdp -i eth0 "tcp port 443"
-
-# 既存 XDP がある interface では fail (production XDP を意図せず壊さない設計)
-sudo bpf-ninja --mode xdp -i eth0 "eth/ipv4/tcp[dport==443]"
-# → error: interface eth0 already has XDP program (id=42, mode=driver);
-#          use --mode entry to observe it via fentry, or detach the existing program first
-```
-
-挙動は次のとおりです。
-
-- マッチしたパケットは `bpf_perf_event_output` で perf ring に capture されます。
-- どのパケットも常に `XDP_PASS` を返します。drop モードは v2 follow-up です。
-- mode metadata 値は xdp-native を表す 2 です。既存は entry=0、exit=1 です。
-
-DSL / tcpdump の両方とも `--mode xdp` で load できます。native XDP では filter が packet pointer の上で直接動くので、kunai codegen は可変 offset の読みに packet 末尾との比較を付けます。verifier を通ることを確認している形は `internal/program/program_xdp_test.go` の `xdpNativeDSLExprs` にあり、IPv4 と IPv6 の chain、IPv6 を親にした dispatch (`eth/ipv6/ipv6/tcp`、`eth/ipv4/ipv6/tcp`)、`ipv4{1,2}` や `ipv6{1,2}` の繰り返し、gre の optional word、alternation、各種 quantifier、capture、where を含みます。IPv6 拡張ヘッダの write-back は packet を書き換えず stack slot に値を持つので、`--mode xdp` が通す frame は受け取ったままです。
+この節の操作説明は [capture guide](cli/capture.md) に移しました。
 
 ## 入口と出口の両方に一致した packet だけを取る (`--mode` を 2 回)
 
-`--mode` は繰り返せる。`--mode entry` と `--mode exit` を両方書くと、同じプログラムの入口 (fentry) と出口 (fexit) に同時に付き、**両方の条件に一致した packet だけ**を出す。式は `--mode` ごとに 1 つ (引用符で囲んで) 続ける。
-入口の条件はプログラムが受け取ったままの packet に対して、出口の条件はプログラムが返した後の packet (decap や書き換えの後) と判定 (`where action == ...`) に対して評価する。
-
-```bash
-# decap 後に捨てられた packet を、decap 前の姿 (outer header 付き) と decap 後の姿の両方で
-sudo bpf-ninja -i eth0 \
-  --mode entry "eth/ipv4/udp[dport==6081]" \
-  --mode exit  "eth/ipv4/tcp where action == XDP_DROP" \
-  -w both.pcapng
-
-# 同じ条件で、decap 前の姿だけ
-sudo bpf-ninja -i eth0 --mode entry "eth/ipv4/udp[dport==6081]" --mode exit "eth where action == XDP_DROP" --emit entry
-```
-
-- `--mode` が 1 つなら従来どおり (位置引数を空白でつないだものが式)。2 つなら式は `--mode` と同じ数だけ (それぞれ 1 引数)、または 0 個 (両方とも無条件)。
-- 入口の姿は出口の判定が出るまで CPU ごとの一時領域 (hold) に取り置き、出口で両方の条件が揃ったときだけ ring に出す。入口の条件に一致した packet にはこの取り置きのコピーが掛かる (`--emit exit` を除く)。入口の条件を空にすると全 packet を取り置くので警告が出る。
-- `--emit both` (既定) は入口の姿と出口の姿を 2 record (同じ id、同じ判定付き)、`--emit entry` は入口の姿だけ、`--emit exit` は出口の姿だけ (取り置きは印だけで一番安い)。`--emit` は `--mode` が 2 つのときだけ書ける。迷ったら `both`。
-- 対象は 1 つの関数に限る (`--func` の複数指定や複数プログラムとの併用は不可)。`--split-by-tag` と `--arg-echo` は併用できない。PREEMPT_RT の kernel は対象外 (起動時に警告が出る)。
-- 対象が `bpf_clone_redirect` などで同じ関数に同期的に入り直しても、取り置きは入れ子の深さごとに別の領域を使うので、外側と内側の実行をそれぞれ対にして出す。領域は CPU ごとに 10 段で、kernel が許す送信の入れ子の上限に足りる。それより深い実行は取り置かずに `hold_depth_overflow` として数える。別の attach が trampoline を書き換えたせいで probe が飛ばされたときは、`hold_overwrite` か `hold_unpaired` として数え、深さの数え方がずれたら次の実行で数え直して `hold_depth_resync` に数える。どの場合も終了時の `capture status` は `incomplete` になり、誤った組み合わせの record は出ない。
-- 対象が tail call をする program (Cilium や Katran の inline decap) の場合、CVE-2026-92485 に当たる kernel (7.0 から 7.2.6 / 7.3-rc1 の修正まで) は 2 本目の attach を拒否する。失敗した attach の後片付けで trampoline が壊れ、machine が panic することがあるので、bpf-ninja は試さずに説明付きで止まる。その kernel では `--mode` を 1 つずつ取るか、修正の入った kernel を使う。
-- `-c` は record 数で数える。`--emit both` なら 1 packet で 2 record なので、`-c 10` は 5 組。
-- ring が詰まると、入口 record だけ書けて出口 record の確保に失敗することがある (出口側の reserve が後)。対の無い入口 record は取りこぼしとして扱い、判定の証拠にしない。
-- 出口の式は「出口で見える layout」に対して書く。上の例で対象が outer UDP を剥がすなら、出口では inner の Ethernet が先頭に来ているので `eth/ipv4/tcp` と書く。同じ packet でも入口と出口で式が変わるのは、実際に header が変わっているからである。
-- pcap-ng の layout は exit mode と同じ verdict ごとの interface (`xdp:DROP`, `xdp:PASS`, ...) に、入口 record 用の `xdp:entry` を足したもの。
-- すべての record に `epb_packetid` option (pcap-ng 標準の「同じ packet を別の interface で見た印」) が入る。既定の値は「CPU 番号 << 48 | その CPU で入口の条件に一致した通し番号」で、同じ実行の入口と出口の record が同じ値を持つ。kernel のアドレスは含まない。
-- kernel 内では、取り置いた内容が同じ実行のものかを hook の packet identity (XDP なら `xdp_buff->data_hard_start`、tc / cgroup-skb なら `sk_buff` のアドレス、netfilter なら `bpf_nf_ctx->skb`) で確認する。この値は kernel の外には出ない。
-- raw-dump (`--raw-dump`) の record metadata は 28 byte になり、offset 20 に packet id が入る (形式 V2。V1 の dump は `convert` で読めない)。
-- `merge` した pcap-ng と `convert` で raw-dump から起こした pcap-ng には `epb_packetid` が入らない (どちらも id を持たない書き出し経路を通る)。対応づけが要るときは shard ごとの pcap-ng か raw-dump そのものを使う。
+この節の操作説明は [capture guide](cli/capture.md) に移しました。
 
 ## 出力ファイルレイアウト (per-CPU sharded)
 
-R22 以降、ringbuf は per-CPU shard (`BPF_MAP_TYPE_ARRAY_OF_MAPS` の inner は個別の `BPF_MAP_TYPE_RINGBUF`) で構成されます。user-space 側も shard ごとに 1 goroutine + 1 file で受けるので、`-w path.pcap` を指定したときの出力は次のようになります。
-
-```
-path.pcap         ← 全 shard を時刻順にマージした単一 pcap-ng (そのまま使える)
-path.pcap.cpu0    ← CPU 0 が受けた packets (残置)
-path.pcap.cpu1    ← CPU 1 が受けた packets (残置)
-...
-path.pcap.cpuN    ← (N = nproc - 1)
-```
-
-キャプチャ停止時 (Ctrl-C または `-c`) に、bpf-ninja は per-CPU shard を時刻順に k-way マージして base の `path.pcap` を単一 pcap-ng として書き出します。停止直後に `merging N shard(s) into path.pcap ...` と表示されるので、そこがマージ中です。`tcpdump -r path.pcap` でそのまま全パケットを時刻順に読めます。`.cpuN` は残るので、個別に読む・自分で mergecap することもできます。
-
-```bash
-# base をそのまま読む (全 CPU 分・時刻順)
-tcpdump -r path.pcap
-
-# CPU 12 が受けた分だけ読む
-tcpdump -r path.pcap.cpu12
-
-# 自分で mergecap したい場合 (base と同等)
-mergecap -w merged.pcap path.pcap.cpu*
-```
-
-`-w` を付けない場合 (stdout ストリーミング) は、全 CPU を 1 本の pcap-ng ストリームに直列化してマージするので、`sudo bpf-ninja ... | tcpdump -r -` で全コア分が見えます。高レートでは `-w` を使ってください。stdout の直列化はインタラクティブ経路向けです。
-
-注意点として、`bpf-ninja convert` は `--raw-dump` 用の `.raw` を pcap-ng に変換するサブコマンドで、`.cpuN` pcap-ng shards は処理しません。raw-dump path (`--raw-dump -w foo.raw`) を使う場合は `.cpuN` 分割が同じ命名規則で起こり、`bpf-ninja convert -i foo.raw.cpu0 ...` で 1 個ずつ pcap-ng に変換できます。raw-dump は自動マージの対象外です。
+この節の操作説明は [output guide](cli/output.md) に移しました。
 
 ## 複数の (プログラム, 関数) に同時アタッチする
 
-`-p` と `--func` はどちらも繰り返し指定できます。各 `--func` は、指定した全プログラムのうち BTF にその関数を持つものすべてにアタッチされます。関数を持たないプログラムはスキップされ、どのプログラムにも無い関数名はエラーになります。`--func` を省略した場合は各プログラムの entry 関数が対象です。
-
-モバイルコアの UPF を例にすると、上り (UL) と下り (DL) の capture point が別プログラムに分かれ、さらに多段 dispatcher (cpu_dispatch → CPUMAP → 方向別ハンドラ) を通ります。ここで `--func upf_capture_point_dl` が複数プログラムに当たる理由は、noinline サブ関数が呼び出し元プログラムごとに 1 コピーずつコンパイルされるからです。DL の実体が IPv4 ハンドラ (id 1610) と IPv6 ハンドラ (id 1611) の両方にあれば、関数名 1 つで両方へ張れます。UL + DL v4 + DL v6 の全網羅は従来3回の起動が必要でしたが、1回で済みます。
+この節の操作説明は [capture guide](cli/capture.md) に移しました。
 
 ### `--list-progs` で到達可能プログラムを洗い出す
 
-`--list-progs` は、起点プログラムから到達できるプログラムを推移的に辿って一覧します。起点は `-i` の XDP か `-p` の ID です。辿るエッジは次の 3 種類です。
-
-- freplace は、関数を置換している attach 済み EXT プログラムです。
-- tail call は、`bpf_tail_call` が使う `PROG_ARRAY` のエントリ先です。
-- redirect は、`CPUMAP` / `DEVMAP` / `DEVMAP_HASH` のエントリに attach された XDP プログラム、すなわち `bpf_redirect_map()` の飛び先です。
-
-さらにその先も同様に辿るので、`cpu_dispatch → CPUMAP[0..N] → 方向別ハンドラ` から別の redirect へ続くような多段構成でも、末端の実プログラム ID までまとめて出ます。
-
-```bash
-# --list-progs で dispatcher から末端の prog ID を推移的に洗い出し
-sudo bpf-ninja -i ens2f0 --list-progs
-
-# UL + DL (v4/v6 両実体) を1回でアタッチ。--func upf_capture_point_dl は
-# 1610/1611 の両方に、_ul は 1614 だけにマッチする
-sudo bpf-ninja -p 1610 -p 1611 -p 1614 \
-  --func upf_capture_point_ul --func upf_capture_point_dl \
-  --arg-filter "imsi=999990000000001" -w all.pcap
-```
+この節の操作説明は [capture guide](cli/capture.md) に移しました。
 
 ### ID の代わりに名前で選ぶ (`--prog-name`)
 
-`--list-progs` の出力から prog ID を控えてコピペするのが面倒なときは、`--prog-name` で名前から選べます。`-i` の到達ツリーに対して名前解決するので、ID を調べずに済みます。func 側は従来どおり `--func` を使います。
-
-```bash
-# ID の代わりに名前で選ぶ (-i の到達ツリーから解決)
-sudo bpf-ninja -i ens2f0 --prog-name upf_dl_v4 --prog-name upf_dl_v6 \
-  --func upf_capture_point_dl --arg-filter "imsi=999990000000001" -w dl.pcap
-```
-
-- カーネル上のプログラム名は 15 文字までに切り詰められるので、長い名前は前方一致で解決します。同じ切り詰め名のプログラムが複数あると曖昧としてエラーになるので、その場合は `-p <id>` を使います。
-- `--prog-name` は `-i` 専用です。`--mode xdp` や tc 系では使えません。
+この節の操作説明は [capture guide](cli/capture.md) に移しました。
 
 ### list 出力を JSON で得る (`--json`)
 
-`--json` を付けると、`--list-progs` / `--list-funcs` / `--list-params` の結果をテキストではなく JSON で stdout に出せます。jq などに渡して自動処理したいときに便利です。`--list-progs` と `--list-funcs` を同時に渡すと、到達ツリーの各プログラムにその BTF 関数一覧もぶら下がります。
-
-```bash
-# 到達ツリーを JSON で
-sudo bpf-ninja -i ens2f0 --list-progs --json | jq '.[].reachable[].name'
-
-# 到達ツリー + 各プログラムの BTF 関数を JSON で一括取得
-sudo bpf-ninja -i ens2f0 --list-progs --list-funcs --json | jq '.[].reachable[] | {name, funcs}'
-```
-
-- 全アタッチポイントが 1本の共有 ringbuf に emit するので、出力は通常どおり 1 つの pcap に時刻順で入ります (`-w` なら終了時マージ、stdout なら直列化ストリーム)。
-- `--arg-filter` は関数ごとに BTF を引いて検証・解決されます。同じ param 名が関数によって別の引数位置にあっても正しく効きます。指定した param を持たない関数が混ざるとエラーになります。
-- XDP と tc のターゲット混在は不可 (別々に起動してください)。`--arg-echo` は単一 (プログラム, 関数) のみ。
+この節の操作説明は [capture guide](cli/capture.md) に移しました。
 
 ## 集合マッチ (`--set` / `--arg-filter @NAME`)
 
-`--arg-filter "imsi=X"` は値を命令列に焼き込むため、値を変えるたびに re-attach が要ります。pinned BPF hash map を集合として参照すると、IMSI 群などの購読者リストをパケットごとの O(1) lookup で照合でき、エントリの追加・削除はキャプチャ中でも即時反映されます。この場合は re-attach が不要です。
-
-map のキーが照合する値そのもので、スカラまたは struct 複合キーになります。value は小さな tag です。複合キーのフィールド間は AND で 1 lookup し、OR はエントリを複数入れて表現します。すなわち集合は直和です。部分キーは不可です。
-
-```bash
-# 1) 集合を作る (BTF 付き hash map を pin)。--max-entries は省略可で既定 1024、
-#    1〜2^32-1 で指定できる
-sudo bpf-ninja set create /sys/fs/bpf/flows --key "imsi:u64,teid:u32" --max-entries 1024
-
-# 2) エントリ投入 (フィールド名で指定。幅・パディングはツールが保証)
-sudo bpf-ninja set add /sys/fs/bpf/flows imsi=999990000000001 teid=0x3039 tag=1
-
-# 3) キャプチャ (--set で名前を付け、@NAME で参照)
-sudo bpf-ninja -p 1661 --func upf_capture_point_ul \
-  --set "flows=/sys/fs/bpf/flows" --arg-filter "@flows" -w out.pcap
-
-# 4) キャプチャ中でも出し入れできる
-sudo bpf-ninja set add /sys/fs/bpf/flows imsi=999990000000777 teid=100
-sudo bpf-ninja set del /sys/fs/bpf/flows imsi=999990000000001 teid=0x3039
-sudo bpf-ninja set list /sys/fs/bpf/flows
-sudo bpf-ninja set schema /sys/fs/bpf/flows
-
-# 5) 容量が足りなくなったら resize (エントリと BTF スキーマは保たれる)
-sudo bpf-ninja set resize /sys/fs/bpf/flows --max-entries 4096
-```
-
-`set resize` は BPF map の容量を後から変えられない制約を、同じスキーマの新 map を作ってエントリを全コピーし pin を差し替えることで回避します。実行中のキャプチャは attach 時の旧 map を掴んだままなので、新しい容量は次回 attach から有効です。コピーと差し替えの間に旧 map へ入れたエントリは失われるため、resize は `set add` を止めてから行ってください。
-
-- キーの対応付けは、既定ではキーの BTF フィールド名と fentry 引数名を同名で一致させます。名前が違うときは `--set "flows=/sys/fs/bpf/flows,key(imsi=arg:subscriber,teid=arg:teid)"` と明示します。`()` は bash のメタ文字なのでクオートが必須です。
-- `@NAME` は他の `--arg-filter` と AND で合成されます。`--set` は複数定義できます。
-- 引数がキーのフィールドより広い場合、たとえば u64 引数を u32 フィールドに入れる場合は切り詰めになるためエラーです。
-- 外部で作った pinned map も、hash 型で BTF キー (整数 or 整数のみの struct、各 1/2/4/8B、キー全体 64B 以下) を持っていれば参照できます。BTF 無しの map は `set create` で作り直してください。
-- bpftool などで外部から直接書く場合は、パディングのゼロ埋めが必須です。hash はキー全バイトをハッシュするため、パディングが非ゼロだと永遠に一致しません。`bpf-ninja set add` はこれを自動で保証します。
-- スキーマとしてキー幅やオフセットは `set schema` で確認できます。`bpftool map dump pinned <path>` も、合成 BTF のおかげでフィールド名付きで整形表示されます。
+この節の操作説明は [sets guide](cli/sets.md) に移しました。
 
 ### DSL `layer[field in @NAME]` でパケットフィールドを照合する
 
-`--arg-filter @NAME` はキーを fentry 引数から作ります。GTP TEID や SRv6 SID のように、照合したい値が引数ではなくパケット内にあり dispatcher が渡してくれない場合は、DSL の bracket predicate でパケットフィールドをそのままキーにできます。
-
-```bash
-# 集合は同じ (キー = 照合する値)
-sudo bpf-ninja set create /sys/fs/bpf/teids --key "teid:u32"
-sudo bpf-ninja set add    /sys/fs/bpf/teids teid=0x3039
-
-# DSL でパケットの gtp.teid を集合照合 (fentry でも --mode xdp でも動く)
-sudo bpf-ninja -p 1661 --set "teids=/sys/fs/bpf/teids" \
-  'eth/ipv4/udp/gtp[teid in @teids]' -w out.pcap
-
-# 複合キーは 1 つの角括弧にカンマ併記 (エントリ内は AND)
-sudo bpf-ninja set create /sys/fs/bpf/flows --key "teid:u32,msg_type:u8"
-sudo bpf-ninja -i eth0 --mode xdp --set "flows=/sys/fs/bpf/flows" \
-  'eth/ipv4/udp/gtp[teid in @flows, msg_type in @flows]'
-
-# 128bit の SRv6 SID (= IPv6 宛先) を照合する。キー型は ipv6、値は IPv6 リテラル
-sudo bpf-ninja set create /sys/fs/bpf/sids --key "dst:ipv6"
-sudo bpf-ninja set add    /sys/fs/bpf/sids dst=fc00::1
-sudo bpf-ninja -i eth0 --mode xdp --set "sids=/sys/fs/bpf/sids" \
-  'eth/ipv6[dst in @sids]'
-
-# SRH の segment list の N 番目の SID を照合する。segments[0] は最終宛先
-sudo bpf-ninja -i eth0 --mode xdp --set "sids=/sys/fs/bpf/sids" \
-  'eth/ipv6/srv6[segments[0].addr in @sids]'
-
-# 送信元 MAC を照合する。48 bit の MAC は u64 のキーで、値は MAC の表記で書ける
-sudo bpf-ninja set create /sys/fs/bpf/macs --key "src:u64"
-sudo bpf-ninja set add    /sys/fs/bpf/macs src=aa:bb:cc:dd:ee:ff
-sudo bpf-ninja -i eth0 --mode xdp --set "macs=/sys/fs/bpf/macs" \
-  'eth[src in @macs]/ipv4/tcp'
-```
-
-- 同名一致します。DSL のフィールド名がそのまま集合キーのフィールド名になり、`gtp[teid in @teids]` は集合キー `teid` を引きます。ただしスカラ集合、つまりフィールドが 1 個のキーは名前がラベルにすぎないので、`ipv6[dst in @sids]` を `sid:ipv6` のようにフィールド名が違うキーへ当てても照合できます。
-- エンディアンはツールが吸収します。数値フィールドはパケットが network order、`set add` は host order で書きますが変換をツールが合わせるので、利用者は普段どおりの数値で `set add` するだけで済みます。`ipv6` フィールドは IPv6 アドレスのバイト列そのものが値なので、パケットも `set add fc00::1` も同じ network order のまま照合します。
-- キー幅には上限があります。パケット由来キーはホストスタックの空き領域を使うため、合計 16 バイトまでです。TEID の 4 バイト、IMSI の 8 バイト、TEID と IMSI を合わせた 12 バイト、SRv6 SID の 16 バイトはいずれも収まります。数値フィールドは 1 個 8 バイトまで、`ipv6` フィールドは 16 バイトで、16 バイトのキーはそれ 1 個で予算を使い切ります。
-- キーの型はパケットのフィールドを覆う最小の読み出し幅に合わせます。24 bit の `vxlan.vni` と `geneve.vni` は `u32`、48 bit の `eth.src` と `eth.dst` は `u64` です。値はフィールドの数値そのものなので、VNI は `set add vni=100`、MAC は `set add src=aa:bb:cc:dd:ee:ff` と書きます。`u64` のフィールドは MAC の表記も受け付け、`0xaabbccddeeff` と書いても同じキーになります。`set list` は 10 進の数値で表示します。bit slice をキーにできるのは 64 bit 以下の slice と、`ipv6.dst[0:128]` のように 128 bit のフィールド全体を指す slice だけで、65 bit から 127 bit の slice は型エラーです。byte の境界から始まらないフィールドの slice は、ヘッダ上の bit 範囲を覆う読み出し幅がキーの幅になります。`ipv6[traffic_class[0:4] in @tc]` は `u8`、DSCP の `ipv6[traffic_class[0:6] in @dscp]` は `u16` のキーです。
-- 定数インデックスの aux フィールドを bracket で参照できます。`srv6[segments[0].addr in @sids]` は SRH の segment list の 0 番目を引きます。`ipv6[exts[1].next_header in @nh]` のように entry の長さが可変な stack でも、定数インデックスなら手前の entry を辿って該当 entry の位置を求めます。該当する entry が無いパケットは不一致になります。bracket に書けるのは `[N]` の定数インデックスだけで、`segments[srv6.last_entry]` のような動的インデックスや添字なしの `any()/all()` は `where` 句を使います。`tcp[mss.value in @NAME]` のように、parser が走査して位置を決める option のフィールドも集合キーにでき、option が無いパケットは不一致になります。
-- `@NAME` は他の bracket 条件やレイヤ条件と AND で合成します。`in @NAME` は bracket predicate 専用で、`where` 句の中では使えません。
-- `in @NAME` は必ず通るレイヤ、すなわち quantifier のない `QuantOne` のレイヤにのみ書けます。`vlan[...]?` のような optional や繰り返しのレイヤ、`(vlan[...]|qinq)` のような alternation の枝は、そのレイヤが不在でもフィルタが成立しうるため、抽出が走らずキーが未書き込みになる可能性があり、reject されます。
-- 引数由来の `--arg-filter @NAME` は entry/exit 専用のままです。パケット由来の DSL `@NAME` は entry/exit と `--mode xdp` の両方で動きます。
+この節の操作説明は [sets guide](cli/sets.md) に移しました。
 
 ## 関数引数の値を覗く (`--arg-echo`)
 
-`--func` で狙ったサブ関数の整数引数が、実際にどんな値で呼ばれているかを見る診断モードです。`--arg-filter "imsi=..."` が当たらないとき、そもそも引数にどんな値が乗っているかを確認するのに使います。たとえば IMSI が 10 進なのか TBCD なのかを見分けられます。パケットキャプチャはせず、引数だけを専用 ringbuf に流して表示します。
-
-```bash
-# 対象関数の絞り込み可能な整数引数を確認
-sudo bpf-ninja -p 1661 --func upf_capture_point_ul --list-params
-#   imsi  [8 bytes, unsigned, arg index 1]
-#   teid  [4 bytes, unsigned, arg index 2]
-
-# 1 回だけ観測して終了 (-c 1)
-sudo bpf-ninja -p 1661 --func upf_capture_point_ul --arg-echo -c 1
-#   upf_capture_point_ul: imsi=999990000000001 (0x38d7c50ba9c01) teid=12345 (0x3039)
-```
-
-- `--func`、または整数引数を持つ EXT entry が必要です。表示対象は `--list-params` が挙げる整数引数で、10 進と 16 進を併記します。
-- `--arg-filter` と併用すると、その述語にマッチした呼び出しだけを表示します。値の当たりを付けてから絞り込むという使い方ができます。
-- 連続して同じ引数タプルが来た場合は 1 行に畳んで `(xN)` と表示します。`-c N` を付けると N 件表示したところで終了し、無指定なら Ctrl-C まで続きます。
-- リーダは capture path と同じ in-tree の `fastrb` (mmap + epoll) を使います。
+この節の操作説明は [capture guide](cli/capture.md) に移しました。
 
 ## capture point の書き方 (`--arg-filter` が当たらないとき)
 
-`--func` で狙う capture point を自作するときは、引数を関数本体で「使って」おく必要があります。本体が空の capture point だと、コンパイラは未使用の引数を呼び出し規約 (r1..r5) から落とすことがあります。BTF の関数シグネチャはそのまま残るため `--list-params` は正しく表示され、アタッチもキャプチャも成功します。しかし fentry/fexit の trampoline が保存するのはレジスタの実体なので、bpf-ninja が読むのは呼び出し元が残した無関係な値になります。
-
-この状態の症状は次のように見えます。
-
-- フィルタ無しのキャプチャは動く。`--list-params` も正しい。
-- `--arg-filter "imsi=<真値>"` や `--arg-filter @SET` の完全一致が 1 件も当たらない。
-- 範囲比較 (`imsi>=...`) だと桁だけ合う値でマッチしたりしなかったりする。呼び出し元のレジスタに残っていたのが目的の値の計算途中の断片だと、こういう「惜しい」挙動になります。
-
-疑わしいときは、まず `--arg-echo` で trampoline が実際に保存した値を見てください。datapath 側のデバッグ出力と食い違っていれば、引数が ABI から落ちています。
-
-対策は、対象プログラム側で引数を ABI に固定することです。リポジトリ同梱の `include/keep_args.h` の `KEEP_ARGS()` を関数本体の先頭に置きます。
-
-```c
-#include "keep_args.h"
-
-__attribute__((noinline))
-int upf_capture_point_ul(struct xdp_md *ctx, __u64 imsi, __u32 teid) {
-    KEEP_ARGS(ctx, imsi, teid);
-    return 0;
-}
-```
-
-`KEEP_ARGS` は各引数をレジスタ入力の空 asm に通すだけで、命令は 1 つも増えません。libbpf の `bpf_helpers.h` が入っている環境なら、同等の `barrier_var()` を引数ごとに並べても同じです。
+この節の操作説明は [capture guide](cli/capture.md) に移しました。
 
 ## Performance flags
 
-高 rate capture (>1 Mpps 級) で使う flag 群です。通常用途では既定値で十分です。
-
-| Flag | 既定 | 効果 / 注意 |
-|---|---|---|
-| `--snaplen N` | 0 (= MaxCapLen or DefaultCapLen=1500) | 1 packet あたりの保存 byte 数を CLI から強制上書きする。DSL の `capture` 句より優先 |
-| `--ringbuf-size MB` | 64 | 全 shard のデータ容量の予算。possible CPU ID 範囲へ分配し、各 shard は最低64KiB・2の冪へ調整する |
-| `--fast-reader` | off | mmap+atomic 直叩きの fastrb reader を使う。cilium/ebpf の generic reader より低 CPU かつ高 throughput |
-| `--no-wakeup` | off | `BPF_RB_NO_WAKEUP` を全 submit に立てる。reader 側の epoll wake が無くなり throughput が上がるが、1ms polling 床により p50 latency が 100µs → ~2.6ms に悪化する。`--fast-reader` 必須 |
-| `--observer-prefetch` | off | filter scratch を 512 B に強制する。R12 の ice driver で L1-dcache prefetch が効くケース向けの opt-in |
-| `--rx-cores N` | 0 (off) | 全 shard の reader を、許可された CPU ID のうち N 以上へ分散する。該当 CPU がなければ起動エラー。RX affinity は別途設定する。`--fast-reader` 必須 |
-| `--busy-poll` | off | fastrb shard を `epoll_wait` で寝かさず `ReadBatch` で spin させる。consumer が常時 drain するので wake が不要になる。shard ごとに 1 core を消費する。`--fast-reader` 必須、`--no-wakeup` と対 |
-| `--in-memory-buffer MB` | 0 (off) | raw-dump 出力先を mmap 上の `MAP_POPULATE` バッファに置く。NVMe write が bottleneck な時に隠せる |
-| `--null-output` | off | bench 用に、出力 file を一切開かず reader の CPU コストだけ測る |
-| `--latency-sample-period N` | 0 (off) | N packet ごとに 1 サンプル、BPF→reader latency を ns 単位で tsv に蓄積する |
-| `--latency-sample-output PATH` | (stderr) | 上の sample tsv の出力先 |
-| `--raw-dump` | off | pcap-ng 経由を bypass する。packet bytes + header をそのまま raw に追記し、後で `bpf-ninja convert` で pcap-ng 化できる |
-| `--rx-hwts` | off | `bpf_xdp_metadata_rx_timestamp` kfunc を使って NIC の HW timestamp を埋め込む。ice 等の 6.8+ driver 対応のみ |
-
-flag 同士の組合せについて補足します。
-
-- `--no-wakeup` は必ず `--fast-reader` と一緒に使います。cilium/ebpf reader は missing wake で永久ブロックします。
-- `--in-memory-buffer` は `--raw-dump` の時のみ意味があります。pcap-ng path には未対応です。
-- `--rx-hwts` は `--mode xdp` 限定です。entry/exit (fentry/fexit) では使えません。
-- `--rx-cores` は NIC queue 数を手で変える運用が前提です。`ethtool -L combined N` はドライバが安定してから実行してください。初期化が未完了の `modprobe` 直後に叩くと、ice 等が RTNL を握ったまま D-state デッドロックし、udev / dmesg など box 全体に波及して reboot が必須になります。split-core を使わないなら queue 数は変更不要です。
-- CLI 既定の `--snaplen 0` はバイパスを意味します。強制的に 0 B にしたい場合は `capture absolute 0` を DSL 側で書きます。
+現在の flag と既定値は `bpf-ninja --help`、測定と選び方は [tuning](tuning.md) を参照してください。
+`--no-wakeup`、`--busy-poll`、`--rx-cores` は `--fast-reader` が前提です。
+`--in-memory-buffer` は raw-dump、`--rx-hwts` は xdp mode 用です。
+`--snaplen 0` は DSL の capture 長に従う指定で、0 byte を取得する指定ではありません。
 
 ## Hand-test として `--dump-asm` で eBPF asm を覗く
 
@@ -815,197 +571,39 @@ resolver が出す warning も、通常のキャプチャと同じく `warning:`
 
 ## Hand-test として `set` map を手元で叩く
 
-`set` サブコマンドはキャプチャのターゲットが無くても単体で動きます。map を作ってエントリを出し入れし、`set list` / `set schema` で読み戻すだけで、集合まわりの配線を手元で確認できます。root と bpffs のマウントが要ります。
+この節の操作説明は [sets guide](cli/sets.md) に移しました。
 
 ### ライフサイクルをひととおり流す
 
-```bash
-PIN=/sys/fs/bpf/bpfninja_handtest
-
-# 1) BTF 付き hash map を作って pin する。value は既定で u32 の tag
-sudo bpf-ninja set create $PIN --key "imsi:u64,teid:u32" --max-entries 1024
-
-# 2) フィールド名でエントリを入れる。tag が value
-sudo bpf-ninja set add $PIN imsi=999990000000001 teid=0x3039 tag=1
-sudo bpf-ninja set add $PIN imsi=999990000000777 teid=100    tag=2
-
-# 3) 読み戻す
-sudo bpf-ninja set list   $PIN
-sudo bpf-ninja set schema $PIN
-
-# 4) 消す
-sudo bpf-ninja set del  $PIN imsi=999990000000001 teid=0x3039
-sudo bpf-ninja set list $PIN
-```
-
-`set list` は各エントリを `field=value ... tag=N` の形で印字します。`set schema` はキーのレイアウトを出します。並び順は hash map の iterate 順なので、実行ごとやカーネルごとに例と違って見えることがあります。
-
-```text
-$ sudo bpf-ninja set list $PIN
-imsi=999990000000777 teid=100 tag=2
-imsi=999990000000001 teid=12345 tag=1
-
-$ sudo bpf-ninja set schema $PIN
-hash map: key 16 B, value 4 B, max_entries 1024
-  imsi                 u64   offset 0
-  teid                 u32   offset 8
-note: entries must zero all padding bytes (hash covers the full key)
-```
-
-`teid=0x3039` は 16 進で入れても `set list` では 10 進の 12345 で出ます。入力は 10 進でも `0x` 付き 16 進でも構いません。
+この節の操作説明は [sets guide](cli/sets.md) に移しました。
 
 ### value すなわち tag を出し入れする
 
-value はエントリごとの小さな tag です。`tag=N` を省くと存在マーカーの 1 が入ります。`set add` で同じキーに別の tag を入れると上書きになります。読み戻しは `set list` の `tag=N` 列です。
-
-```bash
-sudo bpf-ninja set add  $PIN imsi=999990000000777 teid=100 tag=9  # 上書き
-sudo bpf-ninja set list $PIN | grep 999990000000777              # tag=9 になる
-```
-
-value 型は既定で `tag:u32,state:u8,max_bytes:u64` の struct です。`tag` に加えて、entry の状態 (`state`: active / capped / finalized、キャプチャプロセスが cap 到達や finalize 完了で書き換えます) と、entry ごとの出力バイト上限 (`max_bytes`: `set add ... max-bytes=N` で指定、省略または 0 = 無制限) を持ちます。`--value "tag:u16"` のような 1/2/4/8 バイトの単一整数も従来通り使えますが、その map では cap と state は使えません。tag は数値専用で、`ipv6` はキー側だけの型です。
+この節の操作説明は [sets guide](cli/sets.md) に移しました。
 
 ### 複数の値を照合する
 
-複合キーはフィールド間が AND で 1 lookup です。OR は同じ集合にエントリを複数入れて表現します。各エントリは独立した 1 つのキーで、マッチはそのいずれかに当たるかどうかです。
-
-```bash
-# (imsi=999990000000001 かつ teid=0x1000) または
-# (imsi=999990000000777 かつ teid=0x2000) を照合したい
-sudo bpf-ninja set add $PIN imsi=999990000000001 teid=0x1000 tag=1
-sudo bpf-ninja set add $PIN imsi=999990000000777 teid=0x2000 tag=1
-```
-
-複数の集合を 1 つのフィルタで組み合わせることもできます。`--set` は複数定義でき、DSL では `layer[a in @s1, b in @s2]` のようにカンマ併記します。ブラケット内のカンマは AND なので、両方がそれぞれの集合に当たったときだけ通ります。
-
-```bash
-sudo bpf-ninja set create /sys/fs/bpf/src --key "sport:u16"
-sudo bpf-ninja set create /sys/fs/bpf/dst --key "dport:u16"
-sudo bpf-ninja set add /sys/fs/bpf/src sport=1111
-sudo bpf-ninja set add /sys/fs/bpf/dst dport=443
-sudo bpf-ninja -i eth0 --mode xdp \
-  --set "src=/sys/fs/bpf/src" --set "dst=/sys/fs/bpf/dst" \
-  'eth/ipv4/tcp[sport in @src, dport in @dst]'
-```
-
-いま集合に何が入っているかは、フィルタを流しながら別ターミナルで `set list` を叩けば確認できます。`set list` は map のエントリ一覧で、マッチしたエントリを名指しするものではありません。エントリの追加・削除はキャプチャ中でも即時反映され、re-attach は要りません。
+この節の操作説明は [sets guide](cli/sets.md) に移しました。
 
 ### bpftool で map を直接覗く
 
-合成した BTF のおかげで、`bpftool map dump` はフィールド名付きで整形表示されます。`set list` と突き合わせて配線を確認できます。
-
-```bash
-sudo bpftool map dump pinned $PIN
-```
-
-```text
-[{
-        "key": {
-            "imsi": 999990000000777,
-            "teid": 100
-        },
-        "value": 2
-    }, ...
-```
-
-出力の見え方は bpftool のバージョンに依存します。上の JSON 風表示は libbpf ベースの新しい bpftool の既定です。古い bpftool ではフィールドを並べた素のテキストになることがあります。
-
-bpftool で直接書き込む場合は、パディングのゼロ埋めが必須です。hash はキー全バイトをハッシュするので、パディングが非ゼロだと永遠に一致しません。`bpf-ninja set add` はこのゼロ埋めを自動で保証するため、手で書くより安全です。外部で作った pinned map も、hash 型で BTF キーを持てば `set list` / `set schema` で読めます。
+この節の操作説明は [sets guide](cli/sets.md) に移しました。
 
 ### 16 バイトの SID キーを確認する
 
-`ipv6` 型のキーは IPv6 リテラルで出し入れし、`set list` でも IPv6 表記で戻ります。
-
-```bash
-sudo bpf-ninja set create /sys/fs/bpf/sids --key "dst:ipv6"
-sudo bpf-ninja set add    /sys/fs/bpf/sids dst=fc00::1
-sudo bpf-ninja set list   /sys/fs/bpf/sids     # dst=fc00::1 tag=1
-sudo bpf-ninja set schema /sys/fs/bpf/sids     # dst  ipv6  offset 0
-```
+この節の操作説明は [sets guide](cli/sets.md) に移しました。
 
 ## tag ごとに pcap を出し分ける (`--split-by-tag`)
 
-set の value すなわち tag を使って、マッチしたパケットを tag ごとに別々の pcap へ振り分けられます。`-w out.pcap` に `--split-by-tag` を足すと、tag=1 に当たったパケットは `out.1.pcap`、tag=2 は `out.2.pcap` へ流れます。拡張子の手前に tag を差し込む形なので、`out.pcap` が `out.1.pcap` になります。
-
-GTP-U トンネルの TEID ごとに tag を分けて入れておく例を次に示します。
-
-```bash
-PIN=/sys/fs/bpf/tunnels
-sudo bpf-ninja set create $PIN --key "teid:u32"
-sudo bpf-ninja set add    $PIN teid=0x1000 tag=1
-sudo bpf-ninja set add    $PIN teid=0x2000 tag=2
-
-sudo bpf-ninja -i eth0 --mode xdp --set "tunnels=$PIN" \
-  --split-by-tag -w out.pcap \
-  'eth/ipv4/udp/gtp[teid in @tunnels]'
-```
-
-出し分けはロックフリーの per-CPU 書き込みをそのまま使うため、キャプチャ中はシャードごとに `out.cpu0.1.pcap` や `out.cpu1.2.pcap` のような live ファイルが生えます。これらは 1 秒ごとに flush するので、実行中でも `cp` や tcpdump や Wireshark で取り出せます。map から entry を消してその tag への書き込みが止まれば、約 1 秒で対応するファイルがディスク上で完結します。
-
-Ctrl-C などでクリーンに終了すると、per-CPU の tag ファイルを tag ごとに時刻順でまとめて `out.1.pcap` や `out.2.pcap` を作ります。per-CPU ファイルはそのまま残します。途中で kill されたときは合算が走らないので、残った per-CPU ファイルを後から `bpf-ninja merge` でまとめられます。
-
-```bash
-sudo bpf-ninja merge --base out.pcap        # out.cpuN.<tag> を out.<tag> にまとめる
-sudo bpf-ninja merge --base out.pcap --fexit  # --mode exit で録った場合
-```
-
-注意点は次のとおりです。
-
-- `-w` が必須です。stdout は 1 本のストリームなのでファイルに分割できません。`--raw-dump` や `--null-output` との併用もできません。
-- set にマッチしなかったパケットは捕捉されずに落ちるので、どのファイルにも出ません。set を 1 つも使わないフィルタでは全パケットの tag が 0 になり、`out.0.pcap` に入ります。
-- 複数の set を参照するフィルタでは、ソース順で最後にマッチした set の tag を採用します。
-- tag の value 幅を `--value "tag:u64"` などで 8 バイトにした場合、出し分けに使うのは下位 32 ビットです。
-- live ファイルは CPU ごと tag ごとに 1 本開くので、tag の種類が多いとファイルディスクリプタを消費します。種類が多い運用では `ulimit -n` を上げてください。上限に達すると起動途中でその旨のエラーを出します。
-
-出力の write / flush / close に失敗した場合は非ゼロで終了し、不完全な shard を成功した合算結果として公開しません。`--finalize-on-del` の失敗した tag は再試行でも完了通知や `state=finalized` に変わりません。元の shard は調査・救出用に残ります。保存済み shard が正常で合算先の作成だけが失敗した場合は再試行できます。`merge` は欠けた shard は許容しますが、存在する shard の破損・切り詰めはエラーにします。完了はバッファの flush と close、合算ファイルの rename までを意味し、電源断への耐久性を保証する fsync は含みません。
+この節の操作説明は [output guide](cli/output.md) に移しました。
 
 ### set del で tag の出力を完成させる (`--finalize-on-del`)
 
-常駐プロセス 1 個で複数のキャプチャジョブを多重化する運用向けに、entry の削除を「この tag は終わり」の合図として使えます。`--finalize-on-del` を付けると、ある tag の entry が全 watch set から消え、かつ ringbuf の残りが掃けたと確認できた時点で、その tag の per-CPU ファイルを flush して閉じ、プロセスを止めずに `out.<tag>.pcap` へ合算します。合算は一時ファイルに書いてから rename するので、**`out.<tag>.pcap` の出現がそのまま完了の合図**です。呼び出し側の流れは `set del` → ファイルを待つ (inotify や stat) → 回収、だけになります。
-
-
-完了判定は無通信の秒数では決めません。削除を検出したtagをcapture専用mapで停止し、実行中のBPF処理が完了するまで待ってから各ringのproducer位置を記録します。全shardがその位置まで読み、writer登録・書き込みを終えたことを確認して合算します。別tagの保存が遅れている場合も、未処理レコードを残したまま完了通知を出しません。停止処理を始めたtagは同一capture中に再利用できず、set entryを再追加しても再開しません。停止tagは最大65,536個保持し、上限や同期処理の失敗はエラーとして報告します。
-
-```bash
-sudo bpf-ninja -i eth0 --mode xdp --set "tunnels=$PIN" \
-  --split-by-tag --finalize-on-del -w out.pcap \
-  'eth/ipv4/udp/gtp[teid in @tunnels]'
-
-# 別シェルから: ジョブ終了 = entry を消してファイルを待つ
-sudo bpf-ninja set del $PIN teid=0x1000
-until [ -f out.1.pcap ]; do sleep 0.1; done
-```
-
-- 静止判定は約 1 秒周期のポーリングで行い、2 周期の無活動で書き込みを止め、その次の周期で close と合算を実行します。削除の直前に ringbuf へ入った record も取りこぼしません。`set del` からファイル出現まではおおむね 3〜4 秒です。合算がディスク要因などで失敗した場合は成功するまで毎周期やり直し、それでも駄目なら終了時の合算で最後にもう一度試します。
-- 完成した tag は使い切りです。同じ tag の entry を後から add し直しても record は捨てられ、stderr に 1 回警告が出ます。`out.<tag>.pcap` は変わりません。
-- 1 パケットも来なかった tag も、entry の削除後に空の (ヘッダだけの) `out.<tag>.pcap` を作ります。合図としては同じに扱えます。ただし entry の存在をポーリングで観測する前 (追加から 1 秒未満) に消した場合は検知できません。
-- `--split-by-tag` と `--set` が必須です。tag 0 (set 不一致) は対象になりません。per-CPU の shard ファイルは合算後もそのまま残ります。
+この節の操作説明は [output guide](cli/output.md) に移しました。
 
 ### entry ごとの出力サイズ上限 (`set add ... max-bytes=N`)
 
-出力バイト上限は entry (すなわち tag) 単位で set map に持たせます。`set add` に `max-bytes=N` を付けると、その tag の出力 (per-CPU shard の合計) が N に達した時点でその tag への書き込みだけが止まり、他の tag はそのまま録り続けます。上限は entry ごとに別々の値にでき、省略または 0 なら無制限です。ジョブごとに予算が違う多重化運用がフラグ 1 個では表現できなかったため、v0.22.0 の `--max-bytes-per-tag` フラグはこの方式に置き換えて廃止しました。
-
-```bash
-sudo bpf-ninja set add $PIN teid=0x1000 tag=1 max-bytes=104857600
-sudo bpf-ninja set add $PIN teid=0x2000 tag=2 max-bytes=10485760
-sudo bpf-ninja set add $PIN teid=0x3000 tag=3      # 上限なし
-
-sudo bpf-ninja -i eth0 --mode xdp --set "tunnels=$PIN" \
-  --split-by-tag --exit-when-capped -w out.pcap \
-  'eth/ipv4/udp/gtp[teid in @tunnels]'
-```
-
-- 上限のカウント対象は pcap-ng の packet block バイトで、ファイルごとの固定ヘッダは含みません。判定は ringbuf バッチ単位なので、shard あたり最大 1 バッチぶんの超過があり得ます。
-- record が運ぶのは tag だけなので、上限は実質 **tag 単位**です。同じ tag を共有する entry は 1 つの予算を共有します。entry ごとに違う上限が付いている場合は大きい方が有効で、上限なし (0) の entry が 1 つでもあればその tag は上限なしになります。
-- 上限はキャプチャ中でも `set add` の上書きで変更でき、約 1 秒で反映されます。ただし一度上限に達した tag は、後から上限を引き上げても再開しません。
-- `set add` で既存 entry を更新するとき、`max-bytes=` を**省略しても既存の上限は維持されます** (state と同じ扱い)。上限を外すには明示的に `max-bytes=0` を指定します。tag を変えた更新は新しいジョブへの割り当てとみなし、state も上限もこの `set add` の指定どおりに始まります。
-- 上限に達した tag の live ファイルは閉じてファイルディスクリプタを解放します。到達を検知した CPU の分は即時に、他の CPU の分は次にその tag のパケットを見た時点で閉じます。
-- `--exit-when-capped` を足すと、**上限を持つ全 entry** が到達した時点で自動的に exit 0 します。上限なしの entry と tag 0 (set 不一致) は判定に参加しません。通常のシャットダウンと同じく per-CPU ファイルの合算まで行うので、待っている呼び出し側はそのまま完成した `out.<tag>.pcap` を回収できます。前回実行の残りで最初から全 entry が capped/finalized の map に対して起動した場合は、録るものが無いので即座に exit 0 します。
-- `--finalize-on-del` と併用すると、上限に達した tag は entry の `state` が `capped` に書き換わってカーネル側のマッチも止まり、そのまま静止 → 合算の経路に入って `out.<tag>.pcap` が生成され、最後に `state=finalized` になります。**`--exit-when-capped` の exit はこの finalize の完了を待つ**ので、プロセスが exit 0 した時点で上限付き全 tag の ack ファイルと `state=finalized` が揃っていることが保証されます (cap 到達から exit まで数秒かかります)。entry 自体は消えないので、`set list` で「どのキー (teid 等) のジョブがどこまで進んだか」を追えます。`--finalize-on-del` 無しの場合は state に触らず、従来通りユーザー空間で捨てるだけです。
-- state は pinned map に**プロセスを跨いで残ります**。capped/finalized の entry は次のキャプチャでもマッチしないので、同じコマンドを再実行しても該当 tag は何も録れません。キーを新しいジョブとして使い直すには `set add ... tag=<新しい番号>` で tag を振り直します (同じ tag への復帰手段は意図的にありません)。
-- キャプチャプロセスと `set add` は map の value を無同期で読み書きします (last-writer-wins)。state の書き込みが競合で失われても毎秒の巡回で自動修復されますが、`set add` の上限変更がまれに 1 回失われる可能性はあります (再実行すれば反映されます)。
-- プロセス全体の上限は `--max-bytes` フラグです。こちらは `--split-by-tag` 無しでも使えて、到達すると `-c` と同じ経路でキャプチャ全体を止めて exit 0 します。逆に、entry に `max-bytes` を付けても `--split-by-tag` 無しのキャプチャでは強制されません (起動時に警告を出します)。
-- 外部ツールで作った pinned map の value が struct の場合、認識できる layout (`tag[,state,max_bytes]`) 以外は open 時にエラーになります (0.22 までは value の BTF を見ていませんでした)。単一整数 value は従来どおり開けます。
+この節の操作説明は [output guide](cli/output.md) に移しました。
 
 ## 仕組みの概要
 

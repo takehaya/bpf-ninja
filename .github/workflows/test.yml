@@ -82,3 +82,6 @@ jobs:
 
       - name: Integration Tests
         run: sudo env CI=true scripts/test/run_tests.sh
+
+      - name: Documentation capture examples
+        run: sudo bash scripts/test/docs-capture.sh
