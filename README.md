@@ -313,6 +313,7 @@ int parse_headers(struct xdp_md *ctx) {
 ## Options
 
 [Complete CLI and protocol reference](docs/ja/cli/README.md) (Japanese navigation, generated English help).
+`inject-run` launches an unmodified BPF loader with experimental load-time hook injection on Linux x86-64; see [usage and constraints](docs/en/inject-run.md).
 
 | Option | Description | Modes |
 |---|---|---|
