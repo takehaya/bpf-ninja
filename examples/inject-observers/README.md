@@ -1,24 +1,25 @@
 # Inject hook observers
 
-Four small fentry observers for the unmodified program and loader in [inject-walkthrough](../inject-walkthrough).
+Three small fentry observers for the unmodified program and loader in [inject-walkthrough](../inject-walkthrough).
+Use the CLI first for hook capture and argument filtering (`--func`, `--arg-filter`, `--arg-echo`, `-w`).
+Write an observer for in-kernel counters, CPU IDs on selected events, or state across hooks.
 The [guide](../../docs/en/inject-observers.md) explains the examples and shows recorded VM output.
 
 - `bpf/count.c`: count calls and failures per hook/site in an observer-owned per-CPU map; print cumulative totals every second.
 - `bpf/conditional.c`: send only failed calls to a ring buffer, including the CPU ID.
-- `bpf/packet.c`: read the packet length and first eight bytes through the hook's XDP context.
 - `bpf/latency.c`: record entry time per CPU and report elapsed nanoseconds at each queue or bloom-filter push.
-- `observer/`: one Go command to attach and read any of the four examples.
+- `observer/`: one Go command to attach and read any of the three examples.
 
 ## Build
 
-From the repository root, with Go, `/usr/bin/clang`, libbpf headers and libpcap development files installed:
+From the repository root, with Go, clang (or `CLANG`) and libbpf headers installed:
 
 ```sh
 go build -o bpf-ninja ./cmd/bpf-ninja
 ./examples/inject-observers/build.sh
 ```
 
-The script builds the four BPF objects and one observer binary in `build/`, and builds the walkthrough's program and loader there without copying their sources.
+The script builds the three BPF objects and one observer binary in `build/`, and builds the walkthrough's program and loader there without copying their sources.
 `go vet ./...` includes the observer command.
 
 ## Run one example
@@ -26,7 +27,7 @@ The script builds the four BPF objects and one observer binary in `build/`, and 
 In a root shell inside a test VM, from this directory:
 
 ```sh
-name=count # or conditional, packet, latency
+name=count # or conditional, latency
 rules=../inject-walkthrough/rules.json
 if [ "$name" = latency ]; then rules=latency-rules.json; fi
 ../../bpf-ninja inject-run --config "$rules" --hooks-json build/hooks.json \
@@ -48,17 +49,17 @@ Nothing is attached to an interface; the loader uses `BPF_PROG_TEST_RUN` on zero
 ## Verify in a VM
 
 `verify.sh` starts a fresh loader for each example, waits up to 90 seconds for its program ID, then runs its observer for seven seconds.
-It checks for counters, failed pushes with a CPU ID, packet lengths and bytes, positive elapsed times, and `XDP_PASS` from every recorded loader run.
+It checks for counters, failed pushes with a CPU ID, positive elapsed times, and `XDP_PASS` from every recorded loader run.
 A timeout status of 124 ends each observation window as intended.
+`verify.sh --load-only` loads and attaches all three observers for two seconds each; CI runs this after the privileged BPF suites with root and bpffs mounted.
+The full VM check verifies event contents as well.
 Logs and hook metadata stay in `build/$(uname -r)/`.
 
 From the repository root on a host with vimto installed:
 
 ```sh
-VIMTO_DISABLE_KVM=1 flock /tmp/bpf-ninja-observers-vm.lock \
-  vimto -sudo -kernel ghcr.io/cilium/ci-kernels:7.0 -memory 2G -smp cpus=2 \
+vimto -sudo -kernel ghcr.io/cilium/ci-kernels:7.0 -memory 2G -smp cpus=2 \
   exec -- "$PWD/examples/inject-observers/verify.sh"
 ```
 
 Repeat with `:6.1`.
-Use an absolute script path: this vimto version could not mount the relative script directory.

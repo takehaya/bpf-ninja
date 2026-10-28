@@ -302,6 +302,6 @@ The capture was checked with the walkthrough's program on 6.1, 6.15, 7.0 and 7.3
 
 ## See also
 
-- [inject-observers.md](inject-observers.md) for small counting, filtering, packet-reading and timing observers.
+- [inject-observers.md](inject-observers.md) for small counting, CPU-tagged failure and timing observers.
 - [inject-run.md](inject-run.md) for the rule fields, the hooks file and the lookups file.
 - [lookup-site-injection.md](lookup-site-injection.md#pushes-pops-and-peeks) for the hook ABI of pushes, pops and peeks, and the other hook kinds.

@@ -1,6 +1,13 @@
 #!/bin/sh
 # Run as root inside a VM, after build.sh and the root bpf-ninja build.
 set -eu
+window=7
+load_only=false
+case "${1:-}" in
+  "") ;;
+  --load-only) window=2; load_only=true ;;
+  *) echo "usage: $0 [--load-only]" >&2; exit 2 ;;
+esac
 cd "$(dirname "$0")"
 results="build/$(uname -r)"
 mkdir -p "$results"
@@ -15,7 +22,7 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 1' INT TERM
 uname -r
-for name in count conditional packet latency; do
+for name in count conditional latency; do
   rules=../inject-walkthrough/rules.json
   if [ "$name" = latency ]; then rules=latency-rules.json; fi
   idfile="$results/$name.id"
@@ -33,24 +40,27 @@ for name in count conditional packet latency; do
   done
   test -s "$idfile"
   rc=0
-  timeout -s INT 7 ./build/observer-bin "$name" "build/$name.o" "$(cat "$idfile")" \
+  timeout -s INT "$window" ./build/observer-bin "$name" "build/$name.o" "$(cat "$idfile")" \
     > "$results/$name.log" 2>&1 || rc=$?
   cat "$results/$name.log"
   test "$rc" -eq 124
   grep -q "^attached $name$" "$results/$name.log"
+  if [ "$load_only" = true ]; then
+    cleanup
+    echo "$name: load PASS"
+    continue
+  fi
   case "$name" in
     count)
       grep -Eq '^hook=ninja_recent_push .* calls=[1-9][0-9]* failures=[1-9][0-9]*$' "$results/$name.log"
       grep -Eq '^hook=ninja_recent_pop .* calls=[1-9][0-9]* failures=0$' "$results/$name.log"
       ;;
     conditional)
-      grep -Eq '^hook=ninja_recent_push .* ret=-7 cpu=[01]$' "$results/$name.log"
+      grep -Eq '^hook=ninja_recent_push .* ret=-7 cpu=[0-9]+$' "$results/$name.log"
       if grep -q ' ret=0 ' "$results/$name.log"; then exit 1; fi
       ;;
-    packet)
-      grep -Eq '^site=[0-9]+ len=(64|80|96|112) ret=(0|-7) first=0000000000000000$' "$results/$name.log"
-      ;;
     latency)
+      grep -Eq '^site=18 ret=-?[0-9]+ ns=[1-9][0-9]*$' "$results/$name.log"
       grep -Eq '^site=24 ret=-?[0-9]+ ns=[1-9][0-9]*$' "$results/$name.log"
       ;;
   esac

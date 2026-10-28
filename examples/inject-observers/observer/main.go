@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/cilium/ebpf"
-	"github.com/cilium/ebpf/btf"
 	"github.com/cilium/ebpf/link"
 	"github.com/cilium/ebpf/ringbuf"
 )
@@ -29,8 +28,8 @@ func main() {
 }
 
 func run() error {
-	if len(os.Args) != 4 || !slices.Contains([]string{"count", "conditional", "packet", "latency"}, os.Args[1]) {
-		return fmt.Errorf("usage: %s count|conditional|packet|latency OBJECT PROG_ID", os.Args[0])
+	if len(os.Args) != 4 || !slices.Contains([]string{"count", "conditional", "latency"}, os.Args[1]) {
+		return fmt.Errorf("usage: %s count|conditional|latency OBJECT PROG_ID", os.Args[0])
 	}
 	kind := os.Args[1]
 	id, err := strconv.ParseUint(os.Args[3], 10, 32)
@@ -46,37 +45,41 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	if kind == "packet" {
-		if err := packetOffsets(spec); err != nil {
-			return err
-		}
+	names, mapName, err := observerLayout(spec, kind)
+	if err != nil {
+		return err
 	}
-	names := make([]string, 0, len(spec.Programs))
-	for name, p := range spec.Programs {
+	for _, p := range spec.Programs {
 		p.AttachTarget = target
-		names = append(names, name)
 	}
 	coll, err := ebpf.NewCollection(spec)
 	if err != nil {
 		return fmt.Errorf("load observer: %w", err)
 	}
 	defer coll.Close()
-	// Attach the entry observer before the push observer in the latency example.
-	slices.Sort(names)
+	// observerLayout puts the latency entry observer first, before either push.
 	for _, name := range names {
-		l, err := link.AttachTracing(link.TracingOptions{Program: coll.Programs[name]})
+		p, ok := coll.Programs[name]
+		if !ok {
+			return fmt.Errorf("%s object lacks program %q", kind, name)
+		}
+		l, err := link.AttachTracing(link.TracingOptions{Program: p})
 		if err != nil {
 			return err
 		}
 		defer func() { _ = l.Close() }()
 	}
+	m, ok := coll.Maps[mapName]
+	if !ok {
+		return fmt.Errorf("%s object lacks map %q", kind, mapName)
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	fmt.Printf("attached %s\n", kind)
 	if kind == "count" {
-		return printCounters(ctx, coll.Maps["counters"])
+		return printCounters(ctx, m)
 	}
-	rd, err := ringbuf.NewReader(coll.Maps["events"])
+	rd, err := ringbuf.NewReader(m)
 	if err != nil {
 		return err
 	}
@@ -102,12 +105,6 @@ func run() error {
 			}
 			fmt.Printf("hook=%s site=%d value=%d ret=%d cpu=%d\n", hooks[op], binary.LittleEndian.Uint32(b[4:]),
 				binary.LittleEndian.Uint64(b[8:]), int32(binary.LittleEndian.Uint64(b[16:])), binary.LittleEndian.Uint32(b[24:]))
-		case "packet":
-			if len(b) != 24 {
-				return fmt.Errorf("packet event size: %d", len(b))
-			}
-			fmt.Printf("site=%d len=%d ret=%d first=%x\n", binary.LittleEndian.Uint32(b),
-				binary.LittleEndian.Uint32(b[4:]), int32(binary.LittleEndian.Uint64(b[8:])), b[16:24])
 		case "latency":
 			if len(b) != 24 {
 				return fmt.Errorf("latency event size: %d", len(b))
@@ -118,35 +115,32 @@ func run() error {
 	}
 }
 
-func packetOffsets(spec *ebpf.CollectionSpec) error {
-	kernel, err := btf.LoadKernelSpec()
-	if err != nil {
-		return err
+// Return programs in attachment order and the map read by user space.
+func observerLayout(spec *ebpf.CollectionSpec, kind string) ([]string, string, error) {
+	names := []string{"on_push", "on_pop", "on_peek"}
+	mapName, mapType := "events", ebpf.RingBuf
+	switch kind {
+	case "count":
+		mapName, mapType = "counters", ebpf.PerCPUHash
+	case "conditional":
+	case "latency":
+		// Entry must be attached before either consumer of its timestamp.
+		names = []string{"on_entry", "on_push", "on_seen_push"}
+	default:
+		return nil, "", fmt.Errorf("unknown observer kind %q", kind)
 	}
-	var xdp *btf.Struct
-	if err := kernel.TypeByName("xdp_buff", &xdp); err != nil {
-		return err
+	if len(spec.Programs) != len(names) {
+		return nil, "", fmt.Errorf("%s object: expected %d programs, got %d", kind, len(names), len(spec.Programs))
 	}
-	for _, field := range []string{"data", "data_end"} {
-		found := false
-		for _, m := range xdp.Members {
-			if m.Name != field {
-				continue
-			}
-			if _, ok := btf.UnderlyingType(m.Type).(*btf.Pointer); !ok || m.BitfieldSize != 0 || m.Offset%8 != 0 {
-				return fmt.Errorf("xdp_buff.%s is not a byte-aligned pointer", field)
-			}
-			if err := spec.Variables[field+"_offset"].Set(uint32(m.Offset.Bytes())); err != nil {
-				return err
-			}
-			found = true
-			break
-		}
-		if !found {
-			return fmt.Errorf("kernel BTF lacks xdp_buff.%s", field)
+	for _, name := range names {
+		if p, ok := spec.Programs[name]; !ok || p == nil {
+			return nil, "", fmt.Errorf("%s object lacks program %q", kind, name)
 		}
 	}
-	return nil
+	if m, ok := spec.Maps[mapName]; !ok || m == nil || m.Type != mapType {
+		return nil, "", fmt.Errorf("%s object requires %s map %q", kind, mapType, mapName)
+	}
+	return names, mapName, nil
 }
 
 type counterKey struct{ Op, Site uint32 }

@@ -9,6 +9,7 @@ bpf-ninja captures packets at BPF hook points — XDP, tc-bpf, cgroup-skb, and n
 
 For load-time observation, the experimental Linux x86-64 [`inject-run`](docs/en/inject-run.md) launcher adds hooks as an unmodified loader loads selected XDP or tc programs.
 Use `--list-progs --list-maps` to inspect map operations; the [injection walkthrough](docs/en/inject-walkthrough.md) follows discovery, configuration, and an fentry observer, with [example sources](examples/inject-walkthrough/README.md).
+The [observer examples](docs/en/inject-observers.md) add in-kernel counters, CPU-tagged failures and timing across hooks, with [example sources](examples/inject-observers/README.md).
 
 ## Install
 
