@@ -20,7 +20,7 @@ type RawMap struct {
 	Type               ebpf.MapType
 	KeySize, ValueSize uint32
 	Flags              uint32 // map_flags; BPF_F_RDONLY_PROG or BPF_F_WRONLY_PROG makes the hook untrusted (see LookupHook)
-	InnerFlags         uint32 // map_flags of a map-in-map's inner-map template
+	InnerFlags         uint32 // map_flags of a map-in-map's inner-map template; BPF_F_RDONLY_PROG when unknown, so its values count as read-only
 	Key, Value         btf.Type
 }
 

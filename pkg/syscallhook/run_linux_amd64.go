@@ -772,7 +772,12 @@ func extractRaw(r *remote, attr []byte, spec *btf.Spec) (inject.RawProgram, erro
 				}
 			}
 		}
-		p.Maps[fd] = inject.RawMap{Name: cstring(info[24:40]), Type: ebpf.MapType(u32(info, 0)), KeySize: u32(info, 8), ValueSize: u32(info, 12), Flags: u32(info, 20), Key: key, Value: value}
+		m := inject.RawMap{Name: cstring(info[24:40]), Type: ebpf.MapType(u32(info, 0)), KeySize: u32(info, 8), ValueSize: u32(info, 12), Flags: u32(info, 20), Key: key, Value: value}
+		if m.Type == ebpf.ArrayOfMaps || m.Type == ebpf.HashOfMaps {
+			// The kernel does not report the inner-map template's flags.
+			m.InnerFlags = unix.BPF_F_RDONLY_PROG
+		}
+		p.Maps[fd] = m
 	}
 	return p, nil
 }
