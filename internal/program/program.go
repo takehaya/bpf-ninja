@@ -510,6 +510,10 @@ func compileFilterWithSlots(expr string, useDSL, isFexit bool, progType ebpf.Pro
 	if h, ok := hook.ByProgramType(progType); ok {
 		linkType = h.LinkType
 	}
+	if linkType == layers.LinkTypeRaw {
+		// libpcap needs the platform DLT_RAW, not the capture-file LINKTYPE_RAW (101).
+		linkType = layers.LinkType(pcap.DatalinkNameToVal("RAW"))
+	}
 	rawInsns, err := pcap.CompileBPFFilter(linkType, 65535, expr)
 	if err != nil {
 		return codegen.Output{}, fmt.Errorf("compiling filter %q: %w", expr, err)

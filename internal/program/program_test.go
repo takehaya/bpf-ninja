@@ -44,6 +44,27 @@ func TestCompileFilterInvalid(t *testing.T) {
 	}
 }
 
+func TestCompileFilterHookLinkTypes(t *testing.T) {
+	for _, progType := range []ebpf.ProgramType{ebpf.CGroupSKB, ebpf.Netfilter, ebpf.SchedCLS, ebpf.SchedACT, ebpf.XDP} {
+		t.Run(progType.String(), func(t *testing.T) {
+			for _, expr := range []string{"ip", "ip6", "tcp port 443"} {
+				out, err := compileFilter(expr, false, false, progType)
+				if err != nil {
+					t.Fatalf("compileFilter(%q): %v", expr, err)
+				}
+				if len(out.Main) == 0 {
+					t.Fatalf("compileFilter(%q) returned empty instructions", expr)
+				}
+			}
+			_, err := compileFilter("ether host 00:11:22:33:44:55", false, false, progType)
+			wantError := progType == ebpf.CGroupSKB || progType == ebpf.Netfilter
+			if (err != nil) != wantError {
+				t.Errorf("Ethernet filter: err = %v, want error = %v", err, wantError)
+			}
+		})
+	}
+}
+
 func TestCompileFilterDSL(t *testing.T) {
 	out, err := compileFilter("eth/ipv4/tcp[dport==443]", true, false, ebpf.XDP)
 	if err != nil {
