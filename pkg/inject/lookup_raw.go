@@ -148,6 +148,17 @@ func DiscoverLookupsRaw(p RawProgram) ([]LookupSite, error) {
 	return publicLookupSites(sites), err
 }
 
+// DiscoverMapCallsRaw is DiscoverLookupsRaw for every map call; see
+// DiscoverMapCalls.
+func DiscoverMapCallsRaw(p RawProgram) ([]LookupSite, error) {
+	insns, _, resolve, err := prepareRawLookup(p)
+	if err != nil {
+		return nil, err
+	}
+	sites, err := discoverMapCalls(insns, p.Type, resolve)
+	return publicLookupSites(sites), err
+}
+
 // TransformLookupRaw applies the same instruction-level transform as
 // TransformLookup, including hook placement before existing subprograms.
 // Any refusal returns nil and leaves the caller's inputs untouched.

@@ -191,6 +191,7 @@ func FindXDPProgram(ifaceName string) (*ProgInfo, error) {
 type ProgTarget struct {
 	Via      string // "tailcall", "cpumap", "devmap", "devmap_hash", or "freplace"
 	Key      uint32 // map key, or target BTF function ID for freplace
+	MapID    uint32 // the map holding the entry; zero for freplace
 	ProgID   uint32
 	ProgName string
 }
@@ -258,9 +259,17 @@ type ReachableProgram struct {
 	ProgID   uint32
 	ProgName string
 	Via      string
+	MapID    uint32 // the map of the first edge; zero for freplace
 	Keys     []uint32
+	Maps     []MapKeys // the keys per map, in the order the maps were scanned
 	Depth    int
 	ParentID uint32
+}
+
+// MapKeys are the keys of one parent map that reach a program.
+type MapKeys struct {
+	MapID uint32
+	Keys  []uint32
 }
 
 // WalkReachablePrograms transitively follows tail-call, freplace, and redirect-map
@@ -448,7 +457,8 @@ func availableNames(cands []progCand) string {
 
 // groupTargets collapses one program's direct targets by (via, program id),
 // merging the map keys so a program reached through many slots (e.g. a
-// per-CPU CPUMAP) becomes a single entry with all keys.
+// per-CPU CPUMAP) becomes a single entry with all keys. Maps keeps which
+// map each key belongs to.
 func groupTargets(targets []ProgTarget) []ReachableProgram {
 	type gk struct {
 		via string
@@ -460,16 +470,25 @@ func groupTargets(targets []ProgTarget) []ReachableProgram {
 		k := gk{t.Via, t.ProgID}
 		g, ok := byKey[k]
 		if !ok {
-			g = &ReachableProgram{ProgID: t.ProgID, ProgName: t.ProgName, Via: t.Via}
+			g = &ReachableProgram{ProgID: t.ProgID, ProgName: t.ProgName, Via: t.Via, MapID: t.MapID}
 			byKey[k] = g
 			order = append(order, k)
 		}
 		g.Keys = append(g.Keys, t.Key)
+		i := slices.IndexFunc(g.Maps, func(m MapKeys) bool { return m.MapID == t.MapID })
+		if i < 0 {
+			i = len(g.Maps)
+			g.Maps = append(g.Maps, MapKeys{MapID: t.MapID})
+		}
+		g.Maps[i].Keys = append(g.Maps[i].Keys, t.Key)
 	}
 	out := make([]ReachableProgram, 0, len(order))
 	for _, k := range order {
 		g := byKey[k]
 		slices.Sort(g.Keys)
+		for i := range g.Maps {
+			slices.Sort(g.Maps[i].Keys)
+		}
 		out = append(out, *g)
 	}
 	return out
@@ -512,6 +531,7 @@ func scanProgArray(m *ebpf.Map, mapID ebpf.MapID, cache progNameCache) ([]ProgTa
 		if err != nil {
 			return nil, err
 		}
+		t.MapID = uint32(mapID)
 		targets = append(targets, *t)
 	}
 	if err := iter.Err(); err != nil {
@@ -549,6 +569,7 @@ func scanRedirectMap(m *ebpf.Map, mapID ebpf.MapID, via string, keySize, valueSi
 		if err != nil {
 			return nil, err
 		}
+		t.MapID = uint32(mapID)
 		targets = append(targets, *t)
 	}
 	if err := iter.Err(); err != nil {

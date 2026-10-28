@@ -422,6 +422,13 @@ id=XXXX   xdp_dispatcher
 id=YYYY   xdp_leaf (tailcall[0])
 ```
 
+`--list-maps` を足すと、同じプログラムが関数の木として表示され、関数ごとに呼び出す関数と使う map が並ぶ。
+map の行には map の名前と種類、操作（`lookup`、`update`、`delete`、`tail_call` など）、ソースの行が出る。dispatcher の program array は `tail_call` の行になり、`→` のあとに leaf のプログラム ID が出る。
+
+```bash
+sudo ./bpf-ninja -i vtest0 --list-progs --list-maps
+```
+
 ### 3.4 leaf のサブ関数一覧
 
 ```bash

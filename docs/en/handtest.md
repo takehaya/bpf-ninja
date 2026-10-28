@@ -423,6 +423,13 @@ id=XXXX   xdp_dispatcher
 id=YYYY   xdp_leaf (tailcall[0])
 ```
 
+Add `--list-maps` to show the same programs as a tree of their functions, with the functions each one calls and the maps it uses.
+Each map line gives the map name and type, the op (`lookup`, `update`, `delete`, `tail_call`, ...) and the source line; the dispatcher's program array shows as `tail_call` with `→` and the leaf's program ID.
+
+```bash
+sudo ./bpf-ninja -i vtest0 --list-progs --list-maps
+```
+
 ### 3.4 List Leaf's Subfunctions
 
 ```bash

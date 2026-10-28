@@ -92,6 +92,14 @@ func rootFlags() []cli.Flag {
 			Usage: "list programs reachable from the target: freplace + tail calls + CPUMAP/DEVMAP/DEVMAP_HASH redirect targets (followed transitively), then exit",
 		},
 		&cli.BoolFlag{
+			Name:  "list-maps",
+			Usage: "with --list-progs, also list each function's calls and the maps it uses, with the op (lookup, update, delete, tail_call, ...) and source line, as a tree that replaces the --list-progs text; needs root to read the translated instructions",
+		},
+		&cli.StringFlag{
+			Name:  "lookups-json",
+			Usage: "with --list-maps, read the file inject-run --lookups-json wrote and mark each map use with the load-time site of the same call and why it cannot be instrumented",
+		},
+		&cli.BoolFlag{
 			Name:  "json",
 			Usage: "emit --list-progs / --list-funcs / --list-params output as JSON on stdout instead of human-readable text on stderr",
 		},
@@ -563,12 +571,25 @@ func run(ctx context.Context, cmd *cli.Command) error {
 		return fmt.Errorf("--json only applies to --list-progs / --list-funcs / --list-params")
 	}
 
+	if cmd.Bool("list-maps") && !cmd.Bool("list-progs") {
+		return fmt.Errorf("--list-maps needs --list-progs")
+	}
+	if cmd.String("lookups-json") != "" && !cmd.Bool("list-maps") {
+		return fmt.Errorf("--lookups-json needs --list-maps")
+	}
+
 	// --list-progs: show reachable programs (tail calls +
 	// CPUMAP/DEVMAP/DEVMAP_HASH redirect targets, followed
 	// transitively) for each target, then exit
 	if cmd.Bool("list-progs") {
 		asJSON := cmd.Bool("json")
 		withFuncs := cmd.Bool("list-funcs")
+		var maps *mapsLister
+		if cmd.Bool("list-maps") {
+			if maps, err = newMapsLister(cmd.String("lookups-json")); err != nil {
+				return err
+			}
+		}
 		var jsonOut []progsTargetJSON
 		for _, info := range infos {
 			progs, err := attach.WalkReachablePrograms(info.Program, info.ProgID)
@@ -581,37 +602,49 @@ func run(ctx context.Context, cmd *cli.Command) error {
 					f := funcsToJSON(fetchNodeFuncs(info.ProgID, info))
 					jt.Funcs = &f
 				}
+				if maps != nil {
+					m := maps.list(info.ProgID, info.Program)
+					jt.Maps, jt.MapsNote = mapsToJSON(m), m.maps.Note
+				}
 				for _, p := range progs {
 					n := progNodeJSON{ID: p.ProgID, Name: p.ProgName, Via: p.Via, Keys: p.Keys, Depth: p.Depth, Parent: p.ParentID}
 					if withFuncs {
 						f := funcsToJSON(fetchNodeFuncs(p.ProgID, nil))
 						n.Funcs = &f
 					}
+					if maps != nil {
+						m := maps.list(p.ProgID, nil)
+						n.Maps, n.MapsNote = mapsToJSON(m), m.maps.Note
+					}
 					jt.Reachable = append(jt.Reachable, n)
 				}
 				jsonOut = append(jsonOut, jt)
+				continue
+			}
+			byParent := map[uint32][]attach.ReachableProgram{}
+			for _, p := range progs {
+				byParent[p.ParentID] = append(byParent[p.ParentID], p)
+			}
+			if maps != nil {
+				printTree(os.Stderr, maps.progTree(info.ProgID, info.FuncName, "", info.Program, byParent))
 				continue
 			}
 			fmt.Fprintf(os.Stderr, "id=%-6d %s\n", info.ProgID, info.FuncName)
 			if withFuncs {
 				printNodeFuncs(info.ProgID, info, "    ")
 			}
-			byParent := map[uint32][]attach.ReachableProgram{}
-			for _, p := range progs {
-				byParent[p.ParentID] = append(byParent[p.ParentID], p)
-			}
-			var printTree func(parent uint32, indent string)
-			printTree = func(parent uint32, indent string) {
+			var printProgs func(parent uint32, indent string)
+			printProgs = func(parent uint32, indent string) {
 				for _, c := range byParent[parent] {
 					fmt.Fprintf(os.Stderr, "%sid=%-6d %s (%s[%s])\n",
 						indent, c.ProgID, c.ProgName, c.Via, formatKeyRanges(c.Keys))
 					if withFuncs {
 						printNodeFuncs(c.ProgID, nil, indent+"    ")
 					}
-					printTree(c.ProgID, indent+"  ")
+					printProgs(c.ProgID, indent+"  ")
 				}
 			}
-			printTree(info.ProgID, "  ")
+			printProgs(info.ProgID, "  ")
 		}
 		if asJSON {
 			return emitJSON(jsonOut)

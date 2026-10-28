@@ -11,10 +11,63 @@ import (
 	"github.com/cilium/ebpf/btf"
 )
 
+// Map call discovery lists update and delete next to lookups, and lookup
+// discovery still lists only lookups.
+func TestMapCallDiscovery(t *testing.T) {
+	spec := lookupFixture()
+	insns := asm.Instructions{
+		asm.LoadMapPtr(asm.R1, 0).WithReference("sessions"), // 0-1
+		asm.FnMapUpdateElem.Call(),                          // 2
+		asm.LoadMapPtr(asm.R1, 0).WithReference("sessions"), // 3-4
+		asm.FnMapDeleteElem.Call(),                          // 5
+		asm.LoadMapPtr(asm.R1, 0).WithReference("sessions"), // 6-7
+		asm.FnMapLookupElem.Call(),                          // 8
+		asm.FnMapUpdateElem.Call(),                          // 9: R1 clobbered
+		asm.FnMapLookupElem.Call(),                          // 10: R1 clobbered
+		asm.Return(),
+		asm.LoadMapPtr(asm.R1, 0).WithReference("sessions"), // 12-13: a subprogram
+		asm.FnMapDeleteElem.Call(),                          // 14
+		asm.Return(),
+	}
+	insns[9] = btf.WithFuncMetadata(insns[9].WithSymbol("sub"), btf.FuncMetadata(&spec.Programs["p"].Instructions[0]))
+	insns[0] = btf.WithFuncMetadata(insns[0].WithSymbol("p"), btf.FuncMetadata(&spec.Programs["p"].Instructions[0]))
+	sites, err := discoverMapCalls(insns, ebpf.XDP, elfLookupMaps(spec))
+	if err != nil {
+		t.Fatal(err)
+	}
+	type got struct {
+		op      HookKind
+		pc      uint32
+		mapNm   string
+		reason  string
+		generic bool
+	}
+	var have []got
+	for _, site := range sites {
+		have = append(have, got{site.Op, site.SitePC, site.MapName, site.Reason, site.Generic})
+	}
+	const indirect = "R1 is not a direct map reference in this basic block"
+	want := []got{
+		{HookUpdate, 2, "sessions", "", false}, {HookDelete, 5, "sessions", "", false}, {HookLookup, 8, "sessions", "", false},
+		{HookUpdate, 9, "", indirect, false}, {HookLookup, 10, "", indirect, true},
+		{HookDelete, 14, "sessions", "delete is not in the entry function; ctx belongs to another stack frame", false},
+	}
+	if !reflect.DeepEqual(have, want) {
+		t.Fatalf("map calls = %+v\nwant %+v", have, want)
+	}
+	if sites[3].generic {
+		t.Error("an update site is routed to the generic hook")
+	}
+	lookups, err := discoverLookupProgram(insns, ebpf.XDP, elfLookupMaps(spec))
+	if err != nil || len(lookups) != 2 || lookups[0].SitePC != 8 {
+		t.Fatalf("lookups = %+v, %v", lookups, err)
+	}
+}
+
 func TestLookupDiscovery(t *testing.T) {
 	spec := lookupFixture()
 	sites, err := discoverLookups(spec, "p")
-	want := []LookupSite{{MapName: "sessions", KeyTypeName: "u32", ValueTypeName: "session",
+	want := []LookupSite{{Op: HookLookup, MapName: "sessions", KeyTypeName: "u32", ValueTypeName: "session",
 		FuncName: "p", SitePC: 11, InstructionIndex: 10}}
 	if err != nil || !reflect.DeepEqual(sites, want) {
 		t.Fatalf("discovery = %+v, %v; want %+v", sites, err, want)
