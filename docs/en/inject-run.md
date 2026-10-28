@@ -7,6 +7,7 @@ The name makes the bytecode transformation explicit and distinguishes it from th
 The implementation works end to end for the tested Go loader: the target receives a real fd for the transformed program, the kernel reports the generated hook in `func_info`, and `BPF_PROG_TEST_RUN` executes the program successfully.
 There is no stub for fd transfer or memory growth.
 This does not establish support for arbitrary Cilium, eUPF, or Ella deployments.
+[inject-walkthrough.md](inject-walkthrough.md) follows one program from `--list-maps` through a rule and `inject-run` to an fentry observer.
 
 ## Usage and configuration
 
