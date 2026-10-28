@@ -68,7 +68,7 @@ var compileBenches = []compileBench{
 
 func BenchmarkCompile(b *testing.B) {
 	for _, tc := range compileBenches {
-		if tc.cbpfcExpr != "" {
+		if CBPFEnabled && tc.cbpfcExpr != "" {
 			b.Run("cbpfc/"+tc.name, func(b *testing.B) {
 				benchmarkCompile(b, tc.cbpfcExpr, false)
 			})
@@ -207,7 +207,7 @@ func BenchmarkFilterSet(b *testing.B) {
 		b.Run(fs.ID+"/dsl", func(b *testing.B) {
 			benchmarkCompile(b, fs.Expr, true)
 		})
-		if fs.CBPFCExpr != "" {
+		if CBPFEnabled && fs.CBPFCExpr != "" {
 			b.Run(fs.ID+"/cbpfc", func(b *testing.B) {
 				benchmarkCompile(b, fs.CBPFCExpr, false)
 			})
@@ -241,7 +241,7 @@ func BenchmarkFilterSetRun(b *testing.B) {
 		b.Run(fs.ID+"/kunai", func(b *testing.B) {
 			benchmarkRun(b, targetProg, fs.Expr, pkt, true)
 		})
-		if fs.CBPFCExpr != "" {
+		if CBPFEnabled && fs.CBPFCExpr != "" {
 			b.Run(fs.ID+"/cbpfc", func(b *testing.B) {
 				benchmarkRun(b, targetProg, fs.CBPFCExpr, pkt, false)
 			})

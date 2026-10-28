@@ -30,7 +30,7 @@ func TestBpfVerifierStats(t *testing.T) {
 	var variants []variant
 	for _, fs := range FilterSet {
 		variants = append(variants, variant{fs.ID + "/kunai", fs.Expr, true})
-		if fs.CBPFCExpr != "" {
+		if CBPFEnabled && fs.CBPFCExpr != "" {
 			variants = append(variants, variant{fs.ID + "/cbpfc", fs.CBPFCExpr, false})
 		}
 	}

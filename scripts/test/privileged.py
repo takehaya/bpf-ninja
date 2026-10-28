@@ -102,7 +102,9 @@ def main():
         ("./pkg/inject", "^TestBpf" if args.kernel else "^Test"),
     ]
     events, expected = [], set()
-    env = dict(os.environ, CI="true")
+    env = dict(os.environ, CI="true", CGO_ENABLED="1")
+    # Legacy filters are required here; use the same tag for listing and running.
+    go_test = ["go", "test", "-tags", "enable_libpcap"]
     if args.kernel:
         # TestVerifierStats checks its per-kernel budgets only on the matrix
         # images; a host kernel's numbers are logged, never asserted.
@@ -112,7 +114,7 @@ def main():
             # Enumerate selected tests independently of the execution report;
             # a successful command with no tests cannot satisfy the audit.
             listing = subprocess.run(
-                ["go", "test", "-json", "-list", pattern, package],
+                go_test + ["-json", "-list", pattern, package],
                 check=True, capture_output=True, text=True, env=env,
             )
             selected = set()
@@ -127,7 +129,7 @@ def main():
             prefix = ["vimto", "-sudo", "-kernel", ":"+args.kernel, "--"] if args.kernel else []
             # dsltest loads ~17k programs, and kernel 7.0+ verifies the TCP
             # option filters among them several times slower than 6.x did.
-            command = prefix + ["go", "test", "-json", "-count=1", "-timeout=15m", "-run", pattern, package]
+            command = prefix + go_test + ["-json", "-count=1", "-timeout=15m", "-run", pattern, package]
             print("+ " + " ".join(command), flush=True)
             with subprocess.Popen(command, stdout=subprocess.PIPE, text=True, env=env) as process:
                 for line in process.stdout:

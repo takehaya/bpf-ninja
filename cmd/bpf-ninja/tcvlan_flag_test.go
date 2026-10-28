@@ -16,6 +16,11 @@ func TestTCVlanReinsertFlag(t *testing.T) {
 	prev := program.TCVlanReinsert
 	t.Cleanup(func() { program.TCVlanReinsert = prev })
 
+	cbpfErr := "--tc-vlan-reinsert applies to DSL filters"
+	if !program.CBPFEnabled {
+		cbpfErr = program.ErrCBPFUnavailable.Error()
+	}
+
 	for _, tc := range []struct {
 		args    []string
 		want    bool
@@ -23,7 +28,7 @@ func TestTCVlanReinsertFlag(t *testing.T) {
 	}{
 		{nil, false, ""},
 		{[]string{"--tc-vlan-reinsert"}, true, ""},
-		{[]string{"--tc-vlan-reinsert", "--cbpf"}, false, "--tc-vlan-reinsert applies to DSL filters"},
+		{[]string{"--tc-vlan-reinsert", "--cbpf"}, false, cbpfErr},
 	} {
 		program.TCVlanReinsert = false
 		argv := append([]string{"bpf-ninja", "-i", "nonexist0"}, tc.args...)

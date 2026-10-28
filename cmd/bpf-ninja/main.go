@@ -121,7 +121,7 @@ func rootFlags() []cli.Flag {
 		},
 		&cli.BoolFlag{
 			Name:  "cbpf",
-			Usage: "use the legacy tcpdump/cBPF filter syntax (compiled via cbpfc); default is the built-in DSL",
+			Usage: "use the legacy tcpdump/cBPF filter syntax (requires a build with -tags enable_libpcap and libpcap); default is the built-in DSL",
 		},
 		&cli.BoolFlag{
 			Name:  "dsl-help",
@@ -336,7 +336,7 @@ Examples:
   bpf-ninja -i eth0 "eth/ipv4[dst==10.0.0.1]" | tcpdump -r -
   bpf-ninja -i eth0 --mode exit | tcpdump -r -
   bpf-ninja --mode xdp -i eth0 "eth/ipv4/tcp[dport==443]" | tcpdump -r -
-  bpf-ninja --cbpf --mode xdp -i eth0 "tcp port 443" | tcpdump -r -   # legacy pcap syntax
+  bpf-ninja --cbpf --mode xdp -i eth0 "tcp port 443" | tcpdump -r -   # requires the enable_libpcap build
   bpf-ninja -p 42 | tcpdump -n -r -                  # XDP or tc program, auto-detected
   bpf-ninja -p 42 --mode exit "eth/ipv4 where action == TC_ACT_SHOT"  # tc verdict filter
   bpf-ninja -i eth0 --mode entry "eth/ipv4/udp[dport==6081]" --mode exit "eth/ipv4/tcp where action == XDP_DROP" -w both.pcapng
@@ -367,6 +367,10 @@ func run(ctx context.Context, cmd *cli.Command) error {
 			return printProtoHelp(os.Stdout, args[0])
 		}
 		return printDSLHelp(os.Stdout)
+	}
+
+	if cmd.Bool("cbpf") && !program.CBPFEnabled {
+		return program.ErrCBPFUnavailable
 	}
 
 	if path := cmd.String("cpuprofile"); path != "" {

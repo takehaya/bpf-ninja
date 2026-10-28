@@ -7,7 +7,17 @@ on:
 
 jobs:
   lint:
+    name: Lint (${{ matrix.config.name }})
     runs-on: ubuntu-26.04
+    strategy:
+      fail-fast: false
+      matrix:
+        config:
+          - {name: static, cgo: "0", goflags: ""}
+          - {name: enable_libpcap, cgo: "1", goflags: "-tags=enable_libpcap"}
+    env:
+      CGO_ENABLED: ${{ matrix.config.cgo }}
+      GOFLAGS: ${{ matrix.config.goflags }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
@@ -36,12 +46,13 @@ jobs:
         uses: actions/cache@v6
         with:
           path: ~/.cache/golangci-lint
-          key: golangci-lint-${{ runner.os }}-${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('**/go.sum') }}
+          key: golangci-lint-${{ matrix.config.name }}-${{ runner.os }}-${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('**/go.sum') }}
           restore-keys: |
-            golangci-lint-${{ runner.os }}-${{ steps.setup-go.outputs.go-version }}-
-            golangci-lint-${{ runner.os }}-
+            golangci-lint-${{ matrix.config.name }}-${{ runner.os }}-${{ steps.setup-go.outputs.go-version }}-
+            golangci-lint-${{ matrix.config.name }}-${{ runner.os }}-
 
-      - name: Install dependencies
+      - name: Install libpcap-dev for legacy filters
+        if: matrix.config.name == 'enable_libpcap'
         run: sudo apt-get update -qq && sudo apt-get install -y libpcap-dev
 
       - name: Install lint tools

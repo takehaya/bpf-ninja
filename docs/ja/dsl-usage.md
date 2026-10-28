@@ -14,7 +14,11 @@
 sudo bpf-ninja -i veth0 "eth/ipv4/tcp[dport==443]"
 ```
 
-- DSL が default です。tcpdump/cBPF 構文を使いたいときだけ `--cbpf` を付けますが、これは legacy 扱いで deprecation notice が出ます。
+- DSL が default で、既定の静的ビルドは libpcap 不要です。
+- tcpdump/cBPF 構文の `--cbpf` には、`enable_libpcap` 版の配布バイナリ、または `CGO_ENABLED=1 go build -tags enable_libpcap ./cmd/bpf-ninja` で作ったバイナリが必要です。
+  ソースからのビルドには libpcap 開発パッケージ、実行時には libpcap が必要です。
+  legacy 扱いで deprecation notice が出ます。
+  既定ビルドでは DSL の利用か再ビルドを案内するエラーになります。
 - フィルタ式は位置引数として末尾に渡します。
 - 既存の `-w pcap`、`-c count`、`--mode entry/exit/xdp` などはすべて DSL でも使えます。
 
@@ -546,6 +550,9 @@ where (tcp.dport == 443) != gtp.opt.exists   # xor (片方だけ真)
 
 `--dump-asm` を付けると、フィルタをコンパイルした結果の eBPF 命令列を load せずに stdout に print して exit します。`-i` / `-p` は不要です。さまざまな式を試して codegen の挙動を確認したいときに便利です。
 
+DSL の dump は既定ビルドで使えます。
+`--cbpf --dump-asm filter` と `--cbpf --dump-asm full` はどちらも `enable_libpcap` ビルドが必要で、既定ビルドでは案内エラーになります。
+
 スコープは 2 段階あります。
 
 | 値 | 範囲 |
@@ -557,7 +564,7 @@ where (tcp.dport == 443) != gtp.opt.exists   # xor (片方だけ真)
 # DSL filter のみ
 bpf-ninja --dump-asm filter "eth/ipv4/tcp where tcp.dport == 443"
 
-# tcpdump filter のみ (cbpfc 出力、 --cbpf 必須)
+# tcpdump filter のみ (cbpfc 出力、enable_libpcap ビルドと --cbpf が必要)
 bpf-ninja --cbpf --dump-asm filter "tcp port 443"
 
 # 完全な tracing program (mode 別に shape が変わる)

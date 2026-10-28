@@ -33,9 +33,9 @@ jobs:
           manifest-file: .release-please-manifest.json
 
   goreleaser:
-    # Pinned: the release binary links libpcap and glibc dynamically, so the
-    # build host sets the glibc floor (GLIBC_2.34 from 24.04 today). A newer
-    # image could raise it and drop Ubuntu 22.04 and Debian 12 users.
+    # The default artifact is static. Only the enable_libpcap artifact links
+    # libpcap and glibc dynamically; pin its build host to keep its glibc
+    # requirement from increasing when the default runner image changes.
     runs-on: ubuntu-24.04
     needs: release-please
     if: needs.release-please.outputs.releases_created == 'true'
@@ -58,7 +58,7 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Install libpcap-dev
+      - name: Install libpcap-dev for the enable_libpcap artifact
         run: sudo apt-get update -qq && sudo apt-get install -y libpcap-dev
 
       - name: Run GoReleaser

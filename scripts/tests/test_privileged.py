@@ -1,6 +1,10 @@
 import importlib.util
+import io
+import json
+import subprocess
 from pathlib import Path
 import unittest
+from unittest import mock
 
 path = Path(__file__).resolve().parents[1] / "test/privileged.py"
 spec = importlib.util.spec_from_file_location("privileged", path)
@@ -78,3 +82,33 @@ class AuditTests(unittest.TestCase):
             self.assertFalse(module.allowed_skip(module.INJECT, test, "verifier rejected a program that should load", "7.3-rc4"))
         for test in ("TestBpfStackLimitsAcrossCalls", "TestBpfStackLimitsAcrossCalls/combined"):
             self.assertFalse(module.allowed_skip(module.INJECT, test, reason, "7.3-rc4"))
+
+
+class RunnerTests(unittest.TestCase):
+    def test_libpcap_tag_used_for_listing_and_running(self):
+        package, test = module.PROGRAM, "TestBpfLegacy"
+        listing = subprocess.CompletedProcess([], 0, stdout=json.dumps({
+            "Package": package, "Output": test + "\n",
+        }))
+        events = [
+            {"Package": package, "Test": test, "Action": "pass"},
+            {"Package": package, "Action": "pass"},
+        ]
+        with mock.patch.object(module.sys, "argv", ["privileged.py", "--kernel", "6.1"]), \
+                mock.patch.object(module.subprocess, "run", return_value=listing) as listing_run, \
+                mock.patch.object(module.subprocess, "Popen") as popen, \
+                mock.patch("builtins.open", mock.mock_open()), \
+                mock.patch("builtins.print"):
+            # A fresh stream is needed for each suite.
+            popen.return_value.__enter__.side_effect = lambda: mock.Mock(
+                stdout=io.StringIO("".join(json.dumps(e) + "\n" for e in events)),
+                wait=mock.Mock(return_value=0),
+            )
+            self.assertEqual(module.main(), 0)
+        self.assertEqual(listing_run.call_count, 6)
+        self.assertEqual(popen.call_count, 6)
+        for call in listing_run.call_args_list + popen.call_args_list:
+            command = call.args[0]
+            start = command.index("go")
+            self.assertEqual(command[start:start+4], ["go", "test", "-tags", "enable_libpcap"])
+            self.assertEqual(call.kwargs["env"]["CGO_ENABLED"], "1")

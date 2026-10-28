@@ -236,6 +236,9 @@ func runXDPOnce(prog *ebpf.Program, data, dataOut []byte) (uint32, int, error) {
 // up as a scheduler-dependent failure rather than a sure one.
 func loadXDPNative(t *testing.T, expr string, useDSL bool) (*ebpf.Program, *ebpf.Map, int) {
 	t.Helper()
+	if expr != "" && !useDSL {
+		requireCBPF(t)
+	}
 	out, err := compileFilter(expr, useDSL, false, ebpf.XDP)
 	if err != nil {
 		t.Fatalf("compile %q: %v", expr, err)

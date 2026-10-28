@@ -11,6 +11,7 @@ import (
 )
 
 func TestCompileFilter(t *testing.T) {
+	requireCBPF(t)
 	tests := []struct {
 		name string
 		expr string
@@ -38,6 +39,7 @@ func TestCompileFilter(t *testing.T) {
 }
 
 func TestCompileFilterInvalid(t *testing.T) {
+	requireCBPF(t)
 	_, err := compileFilter("not a valid filter ???", false, false, ebpf.XDP)
 	if err == nil {
 		t.Fatal("expected error for invalid filter, got nil")
@@ -45,6 +47,7 @@ func TestCompileFilterInvalid(t *testing.T) {
 }
 
 func TestCompileFilterHookLinkTypes(t *testing.T) {
+	requireCBPF(t)
 	for _, progType := range []ebpf.ProgramType{ebpf.CGroupSKB, ebpf.Netfilter, ebpf.SchedCLS, ebpf.SchedACT, ebpf.XDP} {
 		t.Run(progType.String(), func(t *testing.T) {
 			for _, expr := range []string{"ip", "ip6", "tcp port 443"} {

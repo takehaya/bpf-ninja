@@ -11,6 +11,11 @@ for tool in ip ping tcpdump timeout nsenter; do
     command -v "$tool" >/dev/null || { echo "missing $tool" >&2; exit 1; }
 done
 
+# This suite exercises --cbpf too; reject a default binary before network setup.
+"$BN_DOCS_BINARY" --cbpf --dump-asm filter "icmp" >/dev/null || {
+    echo "Legacy filters are required; run 'make build-libpcap' first" >&2; exit 1;
+}
+
 OUT=$(mktemp -d /tmp/bpf-ninja-docs.XXXXXX)
 export BN_DOCS_NS="bn-doc-a-$$"
 PEER="bn-doc-b-$$"

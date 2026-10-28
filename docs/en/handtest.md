@@ -16,12 +16,14 @@ For load-time hooks via the experimental `inject-run` launcher, see the separate
 - Linux kernel 6.x or later (bpf2bpf call + tail call coexistence support)
 - Root privileges
 - clang, bpftool, tcpdump
+- libpcap development files (Debian/Ubuntu: `libpcap-dev`) and its runtime
+- An `enable_libpcap` build, because section 1.5 exercises legacy `--cbpf` filters
 
 ## 0. Build
 
 ```bash
 cd /path/to/bpf-ninja
-go build -o bpf-ninja ./cmd/bpf-ninja/
+CGO_ENABLED=1 go build -tags enable_libpcap -o bpf-ninja ./cmd/bpf-ninja/
 ```
 
 ---

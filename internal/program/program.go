@@ -1,5 +1,5 @@
 // Package program dynamically builds and attaches a single fentry or fexit tracing program.
-// When a filter is specified, a cbpfc-compiled eBPF filter is embedded.
+// Filters are compiled with kunai, or with cbpfc in enable_libpcap builds.
 package program
 
 import (
@@ -11,17 +11,16 @@ import (
 	"github.com/cilium/ebpf/asm"
 	"github.com/cilium/ebpf/btf"
 	"github.com/cilium/ebpf/link"
-	"github.com/cloudflare/cbpfc"
-	"github.com/google/gopacket/layers"
-	"github.com/google/gopacket/pcap"
 	"github.com/takehaya/bpf-ninja/internal/attach"
 	"github.com/takehaya/bpf-ninja/internal/filter"
 	"github.com/takehaya/bpf-ninja/internal/hook"
 	"github.com/takehaya/bpf-ninja/internal/setmap"
 	"github.com/takehaya/bpf-ninja/pkg/kunai"
 	"github.com/takehaya/bpf-ninja/pkg/kunai/codegen"
-	"golang.org/x/net/bpf"
 )
+
+// ErrCBPFUnavailable explains how to enable legacy filter compilation.
+var ErrCBPFUnavailable = errors.New("--cbpf is unavailable in this build; use the default DSL or rebuild with CGO_ENABLED=1 go build -tags enable_libpcap ./cmd/bpf-ninja (requires libpcap development files)")
 
 // Probe は fentry/fexit のトレーシングポイント群。単一ターゲットなら
 // progs/links は1要素、multi-attach (複数の (prog, func) ペア) では
@@ -450,8 +449,8 @@ func attachTracingProbe(probe *Probe, targetProg *ebpf.Program, name, funcName s
 // Two paths share the runFilter contract (R0=scratch start, R1=scratch
 // end, filter sets R2 and ends at "filter_result"):
 //
-//   useDSL=false: tcpdump expression → cBPF → eBPF via cbpfc (default)
-//   useDSL=true:  bpf-ninja DSL → eBPF via kunai.Compile
+//   useDSL=false: tcpdump expression → cBPF → eBPF via cbpfc (requires the enable_libpcap build tag)
+//   useDSL=true:  bpf-ninja DSL → eBPF via kunai.Compile (default)
 //
 // See docs/ja/dsl-overview.md for the DSL doc index. The codegen
 // ABI this wrapper plugs into is documented in
@@ -503,37 +502,7 @@ func compileFilterWithSlots(expr string, useDSL, isFexit bool, progType ebpf.Pro
 		}
 		return out, nil
 	}
-	// Compile against the hook's link type: on an L3-start hook
-	// (LinkTypeRaw) libpcap then resolves `ip` / `tcp port 80` at the
-	// right offsets and rejects L2 atoms like `ether host` on its own.
-	linkType := layers.LinkTypeEthernet
-	if h, ok := hook.ByProgramType(progType); ok {
-		linkType = h.LinkType
-	}
-	if linkType == layers.LinkTypeRaw {
-		// libpcap needs the platform DLT_RAW, not the capture-file LINKTYPE_RAW (101).
-		linkType = layers.LinkType(pcap.DatalinkNameToVal("RAW"))
-	}
-	rawInsns, err := pcap.CompileBPFFilter(linkType, 65535, expr)
-	if err != nil {
-		return codegen.Output{}, fmt.Errorf("compiling filter %q: %w", expr, err)
-	}
-
-	bpfInsns := make([]bpf.Instruction, len(rawInsns))
-	for i, insn := range rawInsns {
-		bpfInsns[i] = bpf.RawInstruction{Op: insn.Code, Jt: insn.Jt, Jf: insn.Jf, K: insn.K}.Disassemble()
-	}
-
-	cbpfcInsns, err := cbpfc.ToEBPF(bpfInsns, cbpfc.EBPFOpts{
-		PacketStart: asm.R0, PacketEnd: asm.R1, Result: asm.R2,
-		ResultLabel: "filter_result",
-		Working:     [4]asm.Register{asm.R2, asm.R3, asm.R4, asm.R5},
-		LabelPrefix: "filter",
-	})
-	if err != nil {
-		return codegen.Output{}, err
-	}
-	return codegen.Output{Main: cbpfcInsns}, nil
+	return compileCBPF(expr, progType)
 }
 
 // --- eBPF program generation ---

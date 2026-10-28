@@ -3,7 +3,7 @@
 > [!NOTE]
 > This project was renamed from **xdp-ninja** (July 2026): the tool has outgrown XDP — it also observes tc-bpf programs, and more BPF hook points are planned. GitHub redirects the old repository URL, but the Go module path changed to `github.com/takehaya/bpf-ninja`, so `go install` / imports need the new path. Environment variables are now `BPF_NINJA_*` (the old `XDP_NINJA_*` names are no longer read).
 
-bpf-ninja captures packets at BPF hook points — XDP, tc-bpf, cgroup-skb, and netfilter, with more planned. `tcpdump` runs below XDP and can't show what XDP or tc-bpf did to the packet, and cBPF filters can't walk into VXLAN / GTP / MPLS / SRv6 inner headers. Attach via fentry/fexit to a running XDP without modifying it, or `--mode xdp` for standalone capture on a netdev. Filters use the built-in DSL by default — chains like `eth/ipv4/udp/vxlan/eth/ipv4/tcp`. Plain tcpdump syntax via [cbpfc](https://github.com/cloudflare/cbpfc) is still accepted via `--cbpf`, kept for backwards compatibility and planned to retire once the DSL surface stabilises. Output is pcap (pcapng) to stdout.🥷
+bpf-ninja captures packets at BPF hook points — XDP, tc-bpf, cgroup-skb, and netfilter, with more planned. `tcpdump` runs below XDP and can't show what XDP or tc-bpf did to the packet, and cBPF filters can't walk into VXLAN / GTP / MPLS / SRv6 inner headers. Attach via fentry/fexit to a running XDP without modifying it, or `--mode xdp` for standalone capture on a netdev. Filters use the built-in DSL by default — chains like `eth/ipv4/udp/vxlan/eth/ipv4/tcp`. Plain tcpdump syntax via [cbpfc](https://github.com/cloudflare/cbpfc) is available in the optional `enable_libpcap` build via `--cbpf`, kept for backwards compatibility and planned to retire once the DSL surface stabilises. Output is pcap (pcapng) to stdout.🥷
 
 [Documentation / ドキュメント](docs/README.md) · [日本語の導入](docs/ja/getting-started.md) · [Examples](docs/ja/examples/README.md)
 
@@ -19,13 +19,26 @@ curl -fsSL https://raw.githubusercontent.com/takehaya/bpf-ninja/main/scripts/ins
 # Specific version
 curl -fsSL https://raw.githubusercontent.com/takehaya/bpf-ninja/main/scripts/install.sh | sudo bash -s -- --version v0.1.0
 
-# Or via go install (requires Go + libpcap-dev)
-go install github.com/takehaya/bpf-ninja/cmd/bpf-ninja@latest
+# Or via go install (requires Go; no libpcap needed)
+CGO_ENABLED=0 go install github.com/takehaya/bpf-ninja/cmd/bpf-ninja@latest
 
 # Or build from source
 git clone https://github.com/takehaya/bpf-ninja.git
 cd bpf-ninja
 make build
+```
+
+The default release archive, `bpf-ninja_<version>_linux_x86_64.tar.gz`, is statically linked and needs no libpcap.
+The installer above selects this archive.
+DSL filters, pcapng output, and `convert` / `merge` work in this build.
+
+For legacy `--cbpf` filters, download `bpf-ninja_<version>_linux_x86_64_enable_libpcap.tar.gz` from the same release and install its `bpf-ninja` binary.
+This variant needs the libpcap runtime.
+`checksums.txt` covers both archives.
+To build it from source, install the libpcap development package and run `make build-libpcap`, or:
+
+```bash
+CGO_ENABLED=1 go build -tags enable_libpcap ./cmd/bpf-ninja
 ```
 
 ## Modes
@@ -184,6 +197,9 @@ User-facing CLI guide: [docs/ja/dsl-usage.md](./docs/ja/dsl-usage.md). Internal 
 bpf-ninja's `.p4` vocab files are a strict subset of P4-16 (see internals §5). They are NOT a full p4c-compatible program: the bundled fragments declare only `header` / `const` / `parser` blocks (no `action` / `table` / `control` / `apply` / `extern`).
 
 #### Legacy: tcpdump syntax (`--cbpf`)
+
+Use the `enable_libpcap` release artifact or build with `CGO_ENABLED=1` and `-tags enable_libpcap` (see [Install](#install)).
+The default build returns an error with build guidance for `--cbpf`, including `--cbpf --dump-asm filter` and `--cbpf --dump-asm full`.
 
 Pass `--cbpf` to interpret the filter expression as tcpdump syntax and compile it to eBPF via [cbpfc](https://github.com/cloudflare/cbpfc). Kept for backwards compatibility. Each invocation prints a deprecation notice on stderr; the flag is expected to retire once the DSL surface stabilises.
 
@@ -362,7 +378,7 @@ Common:
 - Linux kernel 5.8+ with BTF (`/sys/kernel/btf/vmlinux`)
 - Root privileges (or `CAP_BPF` + `CAP_NET_ADMIN`)
 - Go 1.25+ (build only — pre-built binaries don't need Go)
-- libpcap-dev (runtime + tcpdump-syntax filter compilation)
+- Only for the optional `enable_libpcap` build: libpcap at runtime, and libpcap-dev when building from source
 
 Mode-specific:
 
@@ -371,14 +387,14 @@ Mode-specific:
 - **DSL with chain quantifier (`+`, `*`, `{n,m>4}`) on a fixed-length layer, parser-machine self-loop (variable-length headers like IPv6 ext / GTP options / SRv6 segments), or alternation (`(a|b)`)**: kernel 5.17+ (uses `bpf_loop` + bpf2bpf subprograms). A repeated variable-length layer (`ipv4+`, `ipv6*`) unrolls to `MAX_DEPTH` parser machines instead of a bpf_loop chain; each machine's own option or extension walk keeps the 5.17 requirement where it applies. Plain DSL chains and `--cbpf` filters work on 5.8+.
 
 ```bash
-# Debian/Ubuntu
-sudo apt install libpcap-dev clang
+# Optional legacy build dependencies (Debian/Ubuntu)
+sudo apt install libpcap-dev
 
-# Fedora/RHEL
-sudo dnf install libpcap-devel clang
+# Optional legacy build dependencies (Fedora/RHEL)
+sudo dnf install libpcap-devel
 ```
 
-`clang` is only needed for running BPF load tests locally; not required for using bpf-ninja itself.
+`clang` is needed for running BPF load tests locally; install it separately for development. It is not required for using bpf-ninja itself.
 
 ## Development
 
@@ -387,7 +403,8 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution checks.
 ### Build
 
 ```bash
-make build
+make build          # CGO_ENABLED=0, no build tags
+make build-libpcap  # CGO_ENABLED=1, -tags enable_libpcap; needs libpcap-dev
 ```
 
 ### Test
