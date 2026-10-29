@@ -125,7 +125,8 @@ The feature neither infers layouts from source nor creates types; a name missing
 A size match cannot prove that a chosen type describes the map's semantics, byte order of individual members, or a layout changed by loader relocation.
 The operator must choose an ELF and types that describe the actual map, including any CO-RE or loader adjustments; the digest pins that choice rather than proving it.
 
-After injection, use the program ID in `hooks.json`:
+After injection, use the program ID in `hooks.json`.
+Keep the loader running and run the observer commands in another terminal:
 
 ```sh
 bpf-ninja inject-run --fail-closed --config rules.json --hooks-json hooks.json -- ./loader

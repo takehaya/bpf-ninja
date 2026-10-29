@@ -66,6 +66,7 @@ bpf-ninja -p "$PROG_ID" --func observe --arg-filter 'value->identity==7' -w sele
 ```
 
 `PROG_ID` には `hooks.json` に記録された program ID を使う。
+loader を実行したまま、別の terminal で member の表示と capture を行う。
 型を補完しない場合、BTF のない map の hook 引数は従来どおり opaque な byte 配列となり、元の struct member に対する条件は失敗する。
 [CLI 統合テスト](../../scripts/test/map-types.py)は、BTF なしの map を作る loader で補完の有無を比較し、選択された packet bytes と既存 BTF の拒否を検証する。
 [英語の inject-run guide](../en/inject-run.md#map-types-from-a-loader-elf)にも同じ設定を記載している。
