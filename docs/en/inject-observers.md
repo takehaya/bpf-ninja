@@ -59,9 +59,9 @@ A recorded snapshot on 7.0.13 was:
 
 ```text
 snapshot
-hook=ninja_recent_push site=24 calls=1 failures=0
-hook=ninja_seen_peek site=11 calls=1 failures=1
-snapshot
+hook=ninja_recent_push site=24 calls=6 failures=2
+hook=ninja_recent_pop site=30 calls=2 failures=0
+hook=ninja_seen_peek site=11 calls=4 failures=4
 ```
 
 ## Add the CPU ID to failed calls
@@ -117,14 +117,14 @@ int on_entry(void *ctx) {
   return 0;
 }
 
-static int report(void *ctx) {
+static int report(void *ctx, __u32 op) {
   __u64 now = bpf_ktime_get_ns(), site = 0, status = 0;
   __u32 key = 0;
   __u64 *t = bpf_map_lookup_elem(&start, &key);
   if (!t || !*t)
     return 0;
   __u64 elapsed = now - *t;
-  /* ... emit site, status and elapsed through the ring buffer ... */
+  /* ... emit op, site, status and elapsed through the ring buffer ... */
 ```
 
 The Go command attaches `on_entry` first and closes links in reverse order, keeping entry attached until both push observers have detached.
