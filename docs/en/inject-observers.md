@@ -5,9 +5,17 @@ The [walkthrough's capture example](inject-walkthrough.md#6-capture-the-packets-
 
 ```sh
 bpf-ninja -p "$PROG_ID" --func ninja_recent_push \
-  --arg-filter 'status>=1' --arg-echo -w push.pcap
+  --arg-filter 'status>=1' -w push.pcap
 ```
 
+To print the arguments instead, run a separate command:
+
+```sh
+bpf-ninja -p "$PROG_ID" --func ninja_recent_push \
+  --arg-filter 'status>=1' --arg-echo
+```
+
+`--arg-echo` selects argument output instead of packet capture; use the first command to write `push.pcap`.
 With the walkthrough's zero push flags, this selects failed pushes because `status` is unsigned and errors such as `-7` are large values.
 Write an observer when the CLI cannot supply the result: aggregate counts in the kernel, add the CPU ID to selected events, or keep state across hooks to measure elapsed time.
 For packet bytes and lengths, use the built-in capture.
@@ -58,6 +66,7 @@ hook=ninja_seen_peek site=11 calls=2 failures=2
 ## Add the CPU ID to failed calls
 
 [conditional.c](../../examples/inject-observers/bpf/conditional.c) attaches to the same three hooks.
+It emits events for failed calls to push, pop and peek.
 Failure filtering alone is already available through `--arg-filter`; this observer adds `bpf_get_smp_processor_id()` to each selected event, which `--arg-echo` cannot provide.
 It checks the signed low 32 bits of `status` in the kernel before reserving ring-buffer space:
 
