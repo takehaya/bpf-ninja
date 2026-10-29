@@ -13,6 +13,10 @@ An entry with supported parameters, such as an EXT replacement, can omit `--func
 If the entry has only a context argument, select a subfunction with `--func`.
 See the [README](../../README.md#attaching-to-subfunctions-entryexit-only) for attachment requirements.
 
+Member filters and echo, scalar-pointee `[0]` reads, pointer NULL comparisons, and member-derived set keys require the `bpf_get_func_arg` helper (upstream Linux 5.17+).
+These features have been measured on kernels 6.1+ in our test matrix; distribution backports may differ.
+The common 5.8+ prerequisite alone does not provide this helper.
+
 ## Discover members before writing a filter
 
 Start with the program's function and parameter lists:
