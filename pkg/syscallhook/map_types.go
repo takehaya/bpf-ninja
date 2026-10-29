@@ -102,6 +102,14 @@ func mapType(types *btf.Spec, name string, fallback btf.Type, size uint32, side 
 			return nil, fmt.Errorf("map types ELF: no BTF for %s type %q", side, name)
 		}
 		matches, err := types.AnyTypesByName(name)
+		// Check exact names ourselves: ebpf-go v0.22.0 can leave non-exact flavors.
+		var exact []btf.Type
+		for _, candidate := range matches {
+			if candidate.TypeName() == name {
+				exact = append(exact, candidate)
+			}
+		}
+		matches = exact
 		if err != nil || len(matches) == 0 {
 			return nil, fmt.Errorf("map types ELF: %s type %q missing", side, name)
 		}

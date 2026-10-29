@@ -119,10 +119,12 @@ These errors follow the usual `inject-run` policy: without `--fail-closed` the o
 
 For a legacy map definition that declares sizes instead of types, optional `map_key_type` and `map_value_type` select exact BTF names from the same hashed ELF.
 For example, `"map_key_type": "__u32", "map_value_type": "real_definition"` selects a typedef and a struct if those names each occur exactly once.
+Only full type names count: a unique `record` is selected even alongside `record___old` and `record___other`, while those flavors alone do not satisfy `record`.
 Use `real_definition`, without the C `struct ` prefix.
 An omitted side uses the map definition's own type, so a legacy map without either type needs both names.
 The feature neither infers layouts from source nor creates types; a name missing from the ELF BTF is an error.
 A size match cannot prove that a chosen type describes the map's semantics, byte order of individual members, or a layout changed by loader relocation.
+Types of the same size with a different member order cannot be detected by these checks.
 The operator must choose an ELF and types that describe the actual map, including any CO-RE or loader adjustments; the digest pins that choice rather than proving it.
 
 After injection, use the program ID in `hooks.json`.

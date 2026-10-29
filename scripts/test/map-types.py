@@ -66,9 +66,6 @@ def packets(path):
 
 # No interface attachment or host setting changes; packets use BPF_PROG_TEST_RUN.
 command(["uname", "-a"], out, "kernel")
-command(["ip", "link", "add", "mtprobe0", "type", "veth", "peer", "name", "mtprobe1"], out, "veth-probe")
-# Do not leave a link behind on kernels that support it.
-command(["ip", "link", "delete", "mtprobe0"], out, "veth-cleanup")
 for mode in ("without", "with", "named", "legacy", "existing-btf"):
     elf = legacy_elf if mode == "legacy" else source_elf
     d = out / mode
@@ -101,7 +98,8 @@ for mode in ("without", "with", "named", "legacy", "existing-btf"):
                           "-w", str(d / "negative.pcapng")], d, "filter-negative")
             assert rc != 0 and 'member "identity" not found' in (d / "filter-negative.stderr").read_text()
         else:
-            assert "value->identity" in schema and "filterable" in schema
+            assert any(line.split() == ["value->identity", "u32", "off", "0", "size", "4", "unsigned", "filterable"]
+                       for line in schema.splitlines()), schema
             capture = command([ninja, "-p", pid, "--func", "observe", "--arg-filter", "value->identity==7",
                                "--ringbuf-size", "2", "-w", str(d / "selected.pcapng"), "-v"], d, "capture", True)
             wait_for(lambda: "capturing (" in (d / "capture.stderr").read_text(), capture)

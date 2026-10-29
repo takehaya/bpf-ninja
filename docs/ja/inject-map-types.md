@@ -49,11 +49,13 @@ map type、key size、value size、flags は完全一致が必要で、補完す
 
 型ではなくサイズだけを宣言する legacy map には、任意の `map_key_type` と `map_value_type` で、同じ ELF の BTF にある型名を指定できる。
 たとえば `"map_key_type": "__u32", "map_value_type": "real_definition"` は、各名前の型が一意に存在するときだけ利用できる。
+型名は完全一致で照合するため、一意な `record` は `record___old` や `record___other` と混在していても選択するが、これらの flavor しかなければ `record` の指定を拒否する。
 struct の名前に C の `struct ` prefix は付けない。
 指定を省略した側は ELF の map 定義の型を使うため、key と value の型を持たない定義には両方の型名が必要になる。
 ソースから型を推測したり、存在しない型を生成したりはしない。
 
 サイズ一致だけでは、選んだ型の意味、個々の member の byte order、loader relocation 後の layout の一致を証明できない。
+同じサイズで member の順序が異なる型は、これらの検査では検出できない。
 CO-RE を含む loader 側の調整も考慮し、実 map に合う ELF と型を選ぶ責任は利用者にある。
 ハッシュは選んだ artifact を固定するものであり、実 map との由来の一致を証明するものではない。
 

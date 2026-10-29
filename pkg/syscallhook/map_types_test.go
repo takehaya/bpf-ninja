@@ -95,12 +95,24 @@ func TestMapTypesSpec(t *testing.T) {
 func TestMapTypesNamed(t *testing.T) {
 	u32 := &btf.Int{Name: "u32", Size: 4}
 	record := &btf.Struct{Name: "record", Size: 8}
+	oldKey := &btf.Int{Name: "u32___old", Size: 4}
+	otherKey := &btf.Int{Name: "u32___other", Size: 4}
+	oldValue := &btf.Struct{Name: "record___old", Size: 8}
+	otherValue := &btf.Struct{Name: "record___other", Size: 8}
 	for _, tc := range []struct {
 		name             string
 		types            []btf.Type
 		key, value, want string
 	}{
 		{"success", []btf.Type{u32, record}, "u32", "record", ""},
+		{"key-flavors-only", []btf.Type{oldKey, otherKey, record}, "u32", "record", "key type \"u32\" missing"},
+		{"value-flavors-only", []btf.Type{u32, oldValue, otherValue}, "u32", "record", "value type \"record\" missing"},
+		{"exact-key-after-flavors", []btf.Type{oldKey, otherKey, u32, record}, "u32", "record", ""},
+		{"exact-value-after-flavors", []btf.Type{u32, oldValue, otherValue, record}, "u32", "record", ""},
+		{"exact-key-between-flavors", []btf.Type{oldKey, u32, otherKey, record}, "u32", "record", ""},
+		{"exact-value-between-flavors", []btf.Type{u32, oldValue, record, otherValue}, "u32", "record", ""},
+		{"ambiguous-key-with-flavors", []btf.Type{oldKey, otherKey, u32, &btf.Int{Name: "u32", Size: 4}, record}, "u32", "record", "ambiguous key type"},
+		{"ambiguous-value-with-flavors", []btf.Type{u32, oldValue, otherValue, record, &btf.Struct{Name: "record", Size: 8}}, "u32", "record", "ambiguous value type"},
 		{"missing", []btf.Type{u32, record}, "u32", "missing", "value type \"missing\" missing"},
 		{"ambiguous", []btf.Type{u32, record, &btf.Struct{Name: "record", Size: 8}}, "u32", "record", "ambiguous value type"},
 		{"wrong-size", []btf.Type{u32, record}, "record", "record", "key BTF size mismatch"},
@@ -138,7 +150,7 @@ func TestMapTypesNamed(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if p.Maps[7].Value.TypeName() != "record" {
+			if p.Maps[7].Key.TypeName() != tc.key || p.Maps[7].Value.TypeName() != tc.value {
 				t.Fatal("named type not supplied")
 			}
 		})
