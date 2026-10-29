@@ -18,6 +18,12 @@ counts, err := injectcheck.Check(original, transformed, injectcheck.Certificate{
 メタデータを保持する変換器では、変換前の `Label` と変換後の `FromLabels` で対応位置を抽出できる。
 ラベルの欠落と重複を拒否し、ラベルで指した命令の一致は `Check` が別途検査する。
 
+`Instruction.Map()` が非 nil の命令は、元命令列と変換後命令列のどちらにあっても拒否する。
+同じ map の関連付けも拒否対象であり、挿入領域と hook も例外にしない。
+`AssociateMap` または map の書き換えを行う前に検査する。
+map operand は両命令列で共有する変化のない外部対応表を前提とし、未解決の `Reference` または同一 FD 空間の数値として比較する。
+同じ名前の map spec を別の実 map へ置換する処理は検査対象外である。
+
 検査項目は次のとおりである。
 
 - 元命令が順序を保って各 1 回現れ、opcode、register、offset、constant、map reference が保存されること。
@@ -35,6 +41,9 @@ counts, err := injectcheck.Check(original, transformed, injectcheck.Certificate{
 helper 後と u32 注入位置での liveness は、元の CFG の固定点から求める。
 helper の既知の引数数と元の callee の使用レジスタを使い、未知の helper と kfunc は R1–R5 をすべて使用すると扱う。
 到達不能な分岐を値解析で除外しないため、安全な変換も拒否しうる。
+`trace_printk` などの可変引数 helper は書式を解析せず、R1–R5 をすべて使用すると扱う。
+verifier が引数の初期化検査を省略しても、helper が実行時にその引数を読まない証拠にはならない。
+値や書式の証拠を独立に検査する機構がないため、certificate の未検証の到達不能宣言で CFG の辺を除外することはしない。
 helper 後の処理は最大 4096 ステップで全経路を調べ、未知の形式と予算超過を拒否する。
 
 ## 命令対をファイルから検査する
@@ -46,7 +55,13 @@ go build -o inject-check ./cmd/inject-check
 
 JSON の必須フィールドは `original`、`transformed`、`certificate` である。
 命令のフィールドは `asm.Instruction` の `OpCode`、`Dst`、`Src`、`Offset`、`Constant` に加え、文字列の `Symbol` と `Reference` である。
-`asm.Metadata` は JSON に保存できないため、symbol と reference を明示する。
+JSON 生成には `json.Marshal(injectcheck.Instructions(insns))` を使う。
+この型は symbol と reference を保存し、関連付け済み map があれば直列化をエラーにする。
+`asm.Instructions` を直接直列化すると map metadata が消えるため、その出力を CLI の入力にしてはならない。
+CLI は命令の未知のフィールドと空でない `Metadata` を入力エラーにする。
+旧 fixture の空の `Metadata: {}` は許容する。
+JSON 中の map 名と数値 FD は両命令列で共有する識別子であり、実 map やプロセスをまたぐ FD の有効性は保存しない。
+`PseudoMapValue` の上位32 bit の offset も `Constant` に保存し、`Src` の pseudo kind とともに完全一致を要求する。
 `certificate` は Go API と同じフィールドを持つ。
 標準出力に `Accepted`、`Counts`、`Reason` を出力し、受理時は終了コード 0、拒否時は 1、入力エラー時は 2 を返す。
 

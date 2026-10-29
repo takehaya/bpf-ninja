@@ -105,9 +105,17 @@ func target(in asm.Instructions, pcs []int, index map[int]int, i int) (int, erro
 
 // Check checks all original instructions, every explicit control-flow edge,
 // all gaps and all hook bodies. Unknown forms fail closed. It never loads BPF.
+// Associated maps are unsupported: callers must supply both streams before
+// map association, with the same external symbol/FD bindings throughout.
 func Check(in, out asm.Instructions, c Certificate) (Counts, error) {
 	counts := Counts{Instructions: len(in), Hooks: len(c.Hooks)}
 	fail := func(s string, args ...any) (Counts, error) { return counts, fmt.Errorf(s, args...) }
+	if err := unassociated(in); err != nil {
+		return fail("original: %v", err)
+	}
+	if err := unassociated(out); err != nil {
+		return fail("transformed: %v", err)
+	}
 	if len(in) == 0 || len(c.Original) != len(in) || c.LowestOffset > 0 || c.LowestOffset < -512 {
 		return fail("invalid input/certificate")
 	}

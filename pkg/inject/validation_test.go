@@ -246,15 +246,45 @@ func TestTranslationValidationMutations(t *testing.T) {
 	}
 	// Mutate code and independently repair correspondence hints where needed;
 	// detection must come from checking semantics/patterns, not stale indices.
-	cases := []string{"live-register", "drop-original", "wrong-jump", "hook-store", "missing-restore", "wrong-spill", "helper-in-hook", "forged-certificate"}
+	cases := []string{"live-register", "drop-original", "wrong-jump", "hook-store", "missing-restore", "wrong-spill", "helper-in-hook", "forged-certificate", "map-swap", "map-fd-value-swap", "ldimm64-pseudo-kind"}
 	killed := 0
 	for _, kind := range cases {
 		t.Run(kind, func(t *testing.T) {
+			original := append(asm.Instructions(nil), in...)
 			bad := append(asm.Instructions(nil), out...)
 			cc := cert
 			cc.Original = append([]int(nil), cert.Original...)
 			cc.Hooks = append([]injectcheck.Span(nil), cert.Hooks...)
 			switch kind {
+			case "map-swap", "map-fd-value-swap", "ldimm64-pseudo-kind":
+				found := false
+				for i, x := range in {
+					if !x.IsLoadFromMap() {
+						continue
+					}
+					at := cc.Original[i]
+					switch kind {
+					case "map-swap":
+						bad[at] = bad[at].WithReference(x.Reference() + "_other")
+					case "map-fd-value-swap":
+						// Use a numeric FD operand: a symbolic load's placeholder
+						// constant can be overwritten when its map is associated.
+						original[i] = original[i].WithReference("")
+						original[i].Constant = 100
+						bad[at] = original[i]
+						if _, err := injectcheck.Check(original, bad, cc); err != nil {
+							t.Fatalf("numeric FD baseline: %v", err)
+						}
+						bad[at].Constant = 101
+					case "ldimm64-pseudo-kind":
+						bad[at].Src ^= asm.PseudoMapFD ^ asm.PseudoMapValue
+					}
+					found = true
+					break
+				}
+				if !found {
+					t.Fatal("mutation requires a map load")
+				}
 			case "live-register":
 				for i, x := range bad {
 					if i > cc.Original[0] && x.IsFunctionCall() && strings.HasPrefix(x.Reference(), "eq_") {
@@ -306,7 +336,7 @@ func TestTranslationValidationMutations(t *testing.T) {
 			case "forged-certificate":
 				cc.Original[1] = cc.Original[0]
 			}
-			_, err := injectcheck.Check(in, bad, cc)
+			_, err := injectcheck.Check(original, bad, cc)
 			if dest := os.Getenv("BPF_NINJA_VALIDATE_OUTPUT"); dest != "" {
 				if e := os.MkdirAll(dest, 0755); e != nil {
 					t.Fatal(e)
@@ -315,7 +345,7 @@ func TestTranslationValidationMutations(t *testing.T) {
 				if err != nil {
 					reason = err.Error()
 				}
-				validationSave(t, filepath.Join(dest, "mutation-"+kind+".json"), map[string]any{"original": validationStream(in), "transformed": validationStream(bad), "certificate": cc, "reason": reason})
+				validationSave(t, filepath.Join(dest, "mutation-"+kind+".json"), map[string]any{"original": validationStream(original), "transformed": validationStream(bad), "certificate": cc, "reason": reason})
 			}
 			if err == nil {
 				t.Fatal("SURVIVED")
@@ -331,18 +361,8 @@ func stackSpillForValidation(i asm.Instruction) bool {
 	return i.OpCode == asm.StoreMem(asm.RFP, 0, asm.R0, asm.DWord).OpCode && i.Dst == asm.RFP
 }
 
-// Include relocation metadata explicitly: asm.Metadata has no JSON fields.
-type validationInstruction struct {
-	asm.Instruction
-	Symbol, Reference string
-}
-
-func validationStream(is asm.Instructions) []validationInstruction {
-	out := make([]validationInstruction, len(is))
-	for i, x := range is {
-		out[i] = validationInstruction{x, x.Symbol(), x.Reference()}
-	}
-	return out
+func validationStream(is asm.Instructions) injectcheck.Instructions {
+	return injectcheck.Instructions(is)
 }
 func validationSites(hooks []LookupHook) int {
 	sites := map[uint32]bool{}

@@ -11,22 +11,11 @@ import (
 	"github.com/takehaya/bpf-ninja/pkg/injectcheck"
 )
 
-type instruction struct {
-	asm.Instruction
-	Symbol, Reference string
-}
 type pair struct {
-	Original, Transformed []instruction
+	Original, Transformed injectcheck.Instructions
 	Certificate           injectcheck.Certificate
 }
 
-func decode(is []instruction) asm.Instructions {
-	out := make(asm.Instructions, len(is))
-	for i, ins := range is {
-		out[i] = ins.Instruction.WithSymbol(ins.Symbol).WithReference(ins.Reference)
-	}
-	return out
-}
 func run(args []string) int {
 	if len(args) != 1 {
 		fmt.Fprintln(os.Stderr, "usage: inject-check PAIR.json")
@@ -42,7 +31,7 @@ func run(args []string) int {
 		fmt.Fprintln(os.Stderr, err)
 		return 2
 	}
-	counts, err := injectcheck.Check(decode(p.Original), decode(p.Transformed), p.Certificate)
+	counts, err := injectcheck.Check(asm.Instructions(p.Original), asm.Instructions(p.Transformed), p.Certificate)
 	verdict := struct {
 		Accepted bool
 		Counts   injectcheck.Counts
