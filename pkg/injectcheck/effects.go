@@ -26,7 +26,7 @@ func initial() state {
 	for r := range s.regs {
 		s.regs[r] = value{id: r + 1}
 	}
-	s.regs[10] = value{id: 11, frame: true}
+	s.regs[10] = value{id: idFrame, frame: true}
 	return s
 }
 func (s state) clone() state { s.stack = maps.Clone(s.stack); return s }
@@ -44,9 +44,9 @@ func checkAfter(helper asm.Instruction, before, is, out asm.Instructions, pcs []
 	isLookup := asm.BuiltinFunc(helper.Constant) == asm.FnMapLookupElem || asm.BuiltinFunc(helper.Constant) == asm.FnMapLookupPercpuElem
 	tail := asm.BuiltinFunc(helper.Constant) == asm.FnTailCall
 	if len(is) == 0 {
-		return reject(PostludeMissing, "missing P2-P5 postlude")
+		return reject(PostludeMissing, "missing helper observation postlude")
 	}
-	// G3 A3 assumes verifier-accepted P: R1-R5 are unreadable after a helper,
+	// Helper postludes assume verifier-accepted originals: R1-R5 are unreadable after a helper,
 	// and RET_VOID tail-call failure also leaves R0 unreadable. P2-P5 may
 	// clobber these registers even when syntactic liveness includes infeasible
 	// paths. R0 is restored for other helpers; P6 still needs liveness because
@@ -57,7 +57,7 @@ func checkAfter(helper asm.Instruction, before, is, out asm.Instructions, pcs []
 		if is[0].OpCode.Class() == asm.LdXClass {
 			save = 1
 		}
-		if len(is) <= save+1 || !same(is[save], asm.StoreMem(asm.RFP, int16(f-24), asm.R0, asm.DWord)) || !same(is[len(is)-1], asm.LoadMem(asm.R0, asm.RFP, int16(f-24), asm.DWord)) {
+		if len(is) <= save+1 || !same(is[save], asm.StoreMem(asm.RFP, int16(f+slotResult), asm.R0, asm.DWord)) || !same(is[len(is)-1], asm.LoadMem(asm.R0, asm.RFP, int16(f+slotResult), asm.DWord)) {
 			return reject(ResultSaveRestore, "missing full-width R0 save/restore")
 		}
 	}
@@ -75,19 +75,19 @@ func checkAfter(helper asm.Instruction, before, is, out asm.Instructions, pcs []
 	}
 	if isLookup {
 		if calls < 1 || calls > 2 || conditions != 1 || branches != calls || len(is) < 2 || (is[1].OpCode.JumpOp() != asm.JEq && is[1].OpCode.JumpOp() != asm.JNE) {
-			return reject(LookupStructure, "not a P2 branch/call structure")
+			return reject(LookupStructure, "not a lookup branch/call structure")
 		}
 	} else if calls != 1 || branches > 1 || conditions != branches || tail && branches != 0 {
-		return reject(HelperStructure, "not a P3-P5 branch/call structure")
+		return reject(HelperStructure, "not a non-lookup helper branch/call structure")
 	}
 	s := initial()
 	if entryCtx {
-		s.stack[f-8] = cell{value{id: 100}, 8}
+		s.stack[f+slotContext] = cell{value{id: idContext}, 8}
 	}
 	for _, ins := range before {
 		s.store(int(ins.Offset), 8, s.regs[ins.Src])
 	}
-	s.regs[0] = value{id: 200}
+	s.regs[0] = value{id: idResult}
 	for r := 1; r <= 5; r++ {
 		s.regs[r] = value{}
 	}
@@ -98,11 +98,11 @@ func checkAfter(helper asm.Instruction, before, is, out asm.Instructions, pcs []
 	visits := 0
 	walk = func(i int, s state) error {
 		visits++
-		if visits > 4096 {
+		if visits > postludeBudget {
 			return reject(PathBudget, "postlude path budget exceeded")
 		}
 		if i == len(is) {
-			if !tail && s.regs[0].id != 200 {
+			if !tail && s.regs[0].id != idResult {
 				return reject(ResultPath, "R0 not restored on every path")
 			}
 			return nil
@@ -114,9 +114,9 @@ func checkAfter(helper asm.Instruction, before, is, out asm.Instructions, pcs []
 		}
 		read := func(r asm.Register) error {
 			if r > asm.R5 && r != asm.RFP {
-				return reject(RegisterRead, "inserted read of R%d outside P2-P5", r)
+				return reject(RegisterRead, "inserted read of R%d outside helper observation", r)
 			}
-			if s.regs[r].id == 0 {
+			if s.regs[r].id == idUndefined {
 				return reject(RegisterUndefined, "read of undefined R%d at postlude %d", r, i)
 			}
 			return nil
@@ -124,16 +124,16 @@ func checkAfter(helper asm.Instruction, before, is, out asm.Instructions, pcs []
 		switch {
 		case cl == asm.StXClass && ins.OpCode.Mode() == asm.MemMode:
 			at, w := int(ins.Offset), width(ins)
-			if ins.Dst != asm.RFP || at < -512 || at+w > f {
+			if ins.Dst != asm.RFP || at < stackBottom || at+w > f {
 				return reject(StoreBounds, "inserted store outside reserved frame")
 			}
 			if err := read(ins.Src); err != nil {
 				return err
 			}
-			result := at == f-24 && ins.Src == asm.R0 && w == 8 && (i == 0 || i == 1 && is[0].OpCode.Class() == asm.LdXClass)
-			copyPair := isLookup && s.calls == 0 && i > 0 && ins.Src == asm.R1 && at+w <= f-32 && same(is[i-1], asm.LoadMem(asm.R1, asm.R0, is[i-1].Offset, ins.OpCode.Size())) && is[i-1].Offset >= 0
+			result := at == f+slotResult && ins.Src == asm.R0 && w == 8 && (i == 0 || i == 1 && is[0].OpCode.Class() == asm.LdXClass)
+			copyPair := isLookup && s.calls == 0 && i > 0 && ins.Src == asm.R1 && at+w <= f+slotMap && same(is[i-1], asm.LoadMem(asm.R1, asm.R0, is[i-1].Offset, ins.OpCode.Size())) && is[i-1].Offset >= 0
 			if !result && !copyPair {
-				return reject(StoreShape, "store is not result spill or P2 value copy")
+				return reject(StoreShape, "store is not result spill or lookup value copy")
 			}
 			s.store(at, w, s.regs[ins.Src])
 		case cl == asm.LdXClass && ins.OpCode.Mode() == asm.MemMode:
@@ -151,12 +151,12 @@ func checkAfter(helper asm.Instruction, before, is, out asm.Instructions, pcs []
 				s.regs[ins.Dst] = cell.v
 			} else {
 				if !isLookup || s.calls != 0 || ins.Src != asm.R0 || ins.Dst != asm.R1 || ins.Offset < 0 || i+1 >= len(is) || is[i+1].OpCode.Class() != asm.StXClass {
-					return reject(CopyShape, "non-stack load is not P2 value copy")
+					return reject(CopyShape, "non-stack load is not lookup value copy")
 				}
 				if err := read(ins.Src); err != nil {
 					return err
 				}
-				s.regs[ins.Dst] = value{id: -1}
+				s.regs[ins.Dst] = value{id: idOpaque}
 			}
 		case cl == asm.ALUClass || cl == asm.ALU64Class:
 			if ins.Dst == asm.R0 || ins.Dst > asm.R5 {
@@ -166,7 +166,7 @@ func checkAfter(helper asm.Instruction, before, is, out asm.Instructions, pcs []
 				return reject(ALUEncoding, "unsupported ALU encoding")
 			}
 			op := ins.OpCode.ALUOp()
-			src := value{id: -1}
+			src := value{id: idOpaque}
 			if ins.OpCode.Source() == asm.RegSource {
 				if err := read(ins.Src); err != nil {
 					return err
@@ -182,22 +182,22 @@ func checkAfter(helper asm.Instruction, before, is, out asm.Instructions, pcs []
 			case asm.Mov:
 				s.regs[ins.Dst] = src
 				if cl == asm.ALUClass {
-					s.regs[ins.Dst] = value{id: -1}
+					s.regs[ins.Dst] = value{id: idOpaque}
 				}
 			case asm.Add:
-				if cl != asm.ALU64Class || ins.OpCode.Source() != asm.ImmSource || !s.regs[ins.Dst].frame || ins.Constant < -512 || ins.Constant >= int64(f) {
+				if cl != asm.ALU64Class || ins.OpCode.Source() != asm.ImmSource || !s.regs[ins.Dst].frame || ins.Constant < stackBottom || ins.Constant >= int64(f) {
 					return reject(PointerCalculation, "not a reserved-frame pointer calculation")
 				}
 				v := s.regs[ins.Dst]
 				v.ptr += int(ins.Constant)
-				if v.ptr < -512 || v.ptr >= f {
+				if v.ptr < stackBottom || v.ptr >= f {
 					return reject(PointerBounds, "frame pointer outside reserved stack")
 				}
 				s.regs[ins.Dst] = v
 			case asm.And, asm.LSh, asm.Or:
-				s.regs[ins.Dst] = value{id: -1}
+				s.regs[ins.Dst] = value{id: idOpaque}
 			default:
-				return reject(ALUOperation, "ALU operation %s outside P2-P5", op)
+				return reject(ALUOperation, "ALU operation %s outside helper observation", op)
 			}
 		case ins.IsFunctionCall():
 			if err := hookCall(out, pcs, idx, js[i], hooks); err != nil {
@@ -210,7 +210,7 @@ func checkAfter(helper asm.Instruction, before, is, out asm.Instructions, pcs []
 			for r := 0; r <= 5; r++ {
 				s.regs[r] = value{}
 			}
-			s.regs[0] = value{id: -1}
+			s.regs[0] = value{id: idOpaque}
 		case cl.IsJump() && ins.OpCode.JumpOp() != asm.Call && ins.OpCode.JumpOp() != asm.Exit:
 			op := ins.OpCode.JumpOp()
 			if ins.Reference() != "" || ins.Offset < 0 {
@@ -226,7 +226,7 @@ func checkAfter(helper asm.Instruction, before, is, out asm.Instructions, pcs []
 			if op != asm.Ja {
 				allowed := isLookup && cl == asm.JumpClass && (op == asm.JEq || op == asm.JNE) || !isLookup && cl == asm.Jump32Class && op == asm.JSGE
 				if tail || ins.Dst != asm.R0 || ins.Constant != 0 || ins.OpCode.Source() != asm.ImmSource || !allowed {
-					return reject(BranchGuard, "branch not a P2/P3 result guard")
+					return reject(BranchGuard, "branch not a helper result guard")
 				}
 				if err := read(asm.R0); err != nil {
 					return err
@@ -237,7 +237,7 @@ func checkAfter(helper asm.Instruction, before, is, out asm.Instructions, pcs []
 			}
 			return walk(j, s)
 		default:
-			return reject(PostludeInstruction, "instruction outside P2-P5: %v", ins)
+			return reject(PostludeInstruction, "instruction outside helper observation: %v", ins)
 		}
 		return walk(i+1, s)
 	}
@@ -246,17 +246,17 @@ func checkAfter(helper asm.Instruction, before, is, out asm.Instructions, pcs []
 
 func checkU32(load asm.Instruction, is, out asm.Instructions, pcs []int, idx map[int]int, js []int, hooks map[int]bool, f int, live uint16) error {
 	if !same(load, asm.LoadMem(asm.R2, asm.R0, load.Offset, asm.Word)) {
-		return reject(U32Placement, "insertion is not at a P6 load")
+		return reject(U32Placement, "insertion is not at a u32 load")
 	}
-	if live&0x3a != 0 {
-		return reject(U32Live, "P6 clobbers live registers mask %#x", live&0x3a)
+	if live&u32Clobbers != 0 {
+		return reject(U32Live, "u32 clobbers live registers mask %#x", live&u32Clobbers)
 	}
-	if f-16 < -512 || len(is) != 6 {
-		return reject(U32Length, "not a six-instruction P6 region")
+	if f+slotKey < stackBottom || len(is) != 6 {
+		return reject(U32Length, "not a six-instruction u32 region")
 	}
-	want := asm.Instructions{asm.StoreMem(asm.RFP, int16(f-8), asm.R0, asm.DWord), asm.StoreMem(asm.RFP, int16(f-16), asm.R2, asm.DWord), asm.Mov.Imm32(asm.R1, int32(is[2].Constant)), is[3], asm.LoadMem(asm.R0, asm.RFP, int16(f-8), asm.DWord), asm.LoadMem(asm.R2, asm.RFP, int16(f-16), asm.DWord)}
+	want := asm.Instructions{asm.StoreMem(asm.RFP, int16(f+slotContext), asm.R0, asm.DWord), asm.StoreMem(asm.RFP, int16(f+slotKey), asm.R2, asm.DWord), asm.Mov.Imm32(asm.R1, int32(is[2].Constant)), is[3], asm.LoadMem(asm.R0, asm.RFP, int16(f+slotContext), asm.DWord), asm.LoadMem(asm.R2, asm.RFP, int16(f+slotKey), asm.DWord)}
 	if !equal(is, want) {
-		return reject(U32Shape, "not a P6 save/call/restore sequence")
+		return reject(U32Shape, "not a u32 save/call/restore sequence")
 	}
 	if err := hookCall(out, pcs, idx, js[3], hooks); err != nil {
 		return err
@@ -266,14 +266,14 @@ func checkU32(load asm.Instruction, is, out asm.Instructions, pcs []int, idx map
 		return err
 	}
 	if start+3 > len(out) || !isU32Hook(out[start:start+3]) {
-		return reject(U32Hook, "P6 call does not target a u32 hook")
+		return reject(U32Hook, "u32 call does not target a u32 hook")
 	}
 	return nil
 }
 
-// liveness computes a conservative fixed point on the original CFG. Calls use
-// all five argument registers; this can reject a safe P6 site but never certifies
-// one from the transformer's liveness claims.
+// liveness computes a conservative fixed point on the original CFG. Known
+// helpers use their arity; BPF calls use callee live-in; unknown helpers and
+// kfuncs read all argument registers.
 func liveness(in asm.Instructions, pcs []int, idx map[int]int) ([]uint16, error) {
 	n := len(in)
 	live := make([]uint16, n+1)
@@ -282,7 +282,7 @@ func liveness(in asm.Instructions, pcs []int, idx map[int]int) ([]uint16, error)
 	succ := make([][]int, n)
 	bit := func(r asm.Register) uint16 {
 		if r > asm.RFP {
-			return 0x7ff
+			return allRegs
 		}
 		return 1 << r
 	}
@@ -303,7 +303,7 @@ func liveness(in asm.Instructions, pcs []int, idx map[int]int) ([]uint16, error)
 			w = bit(ins.Dst)
 		case asm.LdClass:
 			if ins.OpCode.Mode() != asm.ImmMode {
-				r = 0x7ff
+				r = allRegs
 			}
 			w = bit(ins.Dst)
 		case asm.StClass:
@@ -313,13 +313,13 @@ func liveness(in asm.Instructions, pcs []int, idx map[int]int) ([]uint16, error)
 		case asm.JumpClass, asm.Jump32Class:
 			switch ins.OpCode.JumpOp() {
 			case asm.Call:
-				r = 0x3e
-				w = 0x3f
+				r = argRegs
+				w = callerSaved
 				if ins.IsBuiltinCall() {
 					r = helperReads(ins.Constant)
 				}
 			case asm.Exit:
-				r = 1
+				r = resultRegs
 			case asm.Ja:
 			default:
 				r = bit(ins.Dst)
@@ -328,7 +328,7 @@ func liveness(in asm.Instructions, pcs []int, idx map[int]int) ([]uint16, error)
 				}
 			}
 		default:
-			r = 0x7ff
+			r = allRegs
 		}
 		reads[i], writes[i] = r, w
 		if cl.IsJump() && ins.OpCode.JumpOp() != asm.Call && ins.OpCode.JumpOp() != asm.Exit {
@@ -355,7 +355,7 @@ func liveness(in asm.Instructions, pcs []int, idx map[int]int) ([]uint16, error)
 				if e != nil {
 					return nil, e
 				}
-				r = live[j] & 0x3e
+				r = live[j] & argRegs
 			}
 			v := r | after&^writes[i]
 			if v != live[i] {

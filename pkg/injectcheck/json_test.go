@@ -10,7 +10,7 @@ import (
 
 func TestJSONMapPolicy(t *testing.T) {
 	a := asm.LoadMapPtr(asm.R1, 0)
-	if err := a.AssociateMap(rrFD(100)); err != nil {
+	if err := a.AssociateMap(testFD(100)); err != nil {
 		t.Fatal(err)
 	}
 	for _, kind := range []string{"same-map", "swapped-map", "original-only", "transformed-only", "non-map-opcode"} {
@@ -18,7 +18,7 @@ func TestJSONMapPolicy(t *testing.T) {
 			in, out := asm.Instructions{a, asm.Return()}, asm.Instructions{a, asm.Return()}
 			switch kind {
 			case "swapped-map":
-				if err := out[0].AssociateMap(rrFD(101)); err != nil {
+				if err := out[0].AssociateMap(testFD(101)); err != nil {
 					t.Fatal(err)
 				}
 			case "original-only":
@@ -29,16 +29,17 @@ func TestJSONMapPolicy(t *testing.T) {
 				in[0].OpCode = asm.Mov.Imm(asm.R0, 0).OpCode
 				out[0] = in[0]
 			}
-			if _, err := Check(in, out, Certificate{Original: []int{0, 1}}); err == nil || !strings.Contains(err.Error(), "associated maps") {
+			_, err := checkFixture(in, out, fixtureCertificate{Original: []int{0, 1}})
+			assertKind(t, err, AssociatedMap)
+			if err == nil || !strings.Contains(err.Error(), "associated maps") {
 				t.Fatalf("associated input: %v", err)
 			}
 			for _, is := range []asm.Instructions{in, out} {
 				if is[0].Map() == nil {
 					continue
 				}
-				if _, err := json.Marshal(Instructions(is)); err == nil {
-					t.Fatal("serialization silently discarded map identity")
-				}
+				_, err := json.Marshal(Instructions(is))
+				assertKind(t, err, AssociatedMap)
 			}
 		})
 	}
@@ -57,17 +58,16 @@ func TestJSONMapPolicy(t *testing.T) {
 		}
 	}
 	for _, b := range []string{`[{"Metadata":{}}]`, `[{"Map":{"FD":100}}]`, `[{"Metadata":{"Map":100}}]`} {
-		if err := json.Unmarshal([]byte(b), &out); err == nil {
-			t.Fatalf("accepted unsupported map metadata: %s", b)
-		}
+		err := json.Unmarshal([]byte(b), &out)
+		assertInputKind(t, err, InputJSON)
 	}
 }
 
 func TestMapOperandMutations(t *testing.T) {
 	for _, load := range []asm.Instruction{asm.LoadMapPtr(asm.R1, 100), asm.LoadMapValue(asm.R1, 100, 24)} {
 		in := asm.Instructions{load, asm.Mov.Imm(asm.R0, 2), asm.Return()}
-		c := Certificate{Original: []int{0, 1, 2}}
-		if _, err := Check(in, in, c); err != nil {
+		c := fixtureCertificate{Original: []int{0, 1, 2}}
+		if _, err := checkFixture(in, in, c); err != nil {
 			t.Fatal(err)
 		}
 		for _, mutation := range []string{"fd", "pseudo-kind", "value-offset"} {
@@ -80,7 +80,7 @@ func TestMapOperandMutations(t *testing.T) {
 			case "value-offset":
 				out[0].Constant ^= 1 << 32
 			}
-			_, err := Check(in, out, c)
+			_, err := checkFixture(in, out, c)
 			assertKind(t, err, OriginalChanged)
 		}
 	}

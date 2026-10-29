@@ -11,6 +11,7 @@
 - [BPF syscall interception design and implementation status (English)](en/bpf-syscall-hook-design.md)
 - [Capture lifecycle and completion (English)](capture-lifecycle.md)
 - [Privileged test environment (English)](privileged-tests.md)
+- [Independent injection validator (English)](../pkg/injectcheck/README.md), [日本語](../pkg/injectcheck/README.ja.md)
 - [kunai library API (English)](../pkg/kunai/README.md)
 - [Published workshop artifact](publications/ebpf_workshop_2026/README.md)
 

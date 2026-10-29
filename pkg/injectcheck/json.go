@@ -1,8 +1,8 @@
 package injectcheck
 
 import (
-	"bytes"
 	"encoding/json"
+	"fmt"
 
 	"github.com/cilium/ebpf/asm"
 )
@@ -24,11 +24,13 @@ func unassociated(is asm.Instructions) error {
 type Instructions asm.Instructions
 
 type wireInstruction struct {
-	OpCode            asm.OpCode
-	Dst, Src          asm.Register
-	Offset            int16
-	Constant          int64
-	Symbol, Reference string
+	OpCode    asm.OpCode   `json:"opcode"`
+	Dst       asm.Register `json:"dst"`
+	Src       asm.Register `json:"src"`
+	Offset    int16        `json:"offset"`
+	Constant  int64        `json:"constant"`
+	Symbol    string       `json:"symbol"`
+	Reference string       `json:"reference"`
 }
 
 func (is Instructions) MarshalJSON() ([]byte, error) {
@@ -37,6 +39,9 @@ func (is Instructions) MarshalJSON() ([]byte, error) {
 	}
 	wire := make([]wireInstruction, len(is))
 	for i, ins := range is {
+		if err := noLoadMetadata(ins); err != nil {
+			return nil, fmt.Errorf("instruction %d: %w", i, err)
+		}
 		wire[i] = wireInstruction{OpCode: ins.OpCode, Dst: ins.Dst, Src: ins.Src,
 			Offset: ins.Offset, Constant: ins.Constant, Symbol: ins.Symbol(), Reference: ins.Reference()}
 	}
@@ -45,11 +50,19 @@ func (is Instructions) MarshalJSON() ([]byte, error) {
 
 func (is *Instructions) UnmarshalJSON(data []byte) error {
 	var wire []wireInstruction
-	d := json.NewDecoder(bytes.NewReader(data))
-	d.DisallowUnknownFields()
-	if err := d.Decode(&wire); err != nil {
+	if err := strictJSON(data, &wire); err != nil {
 		return err
 	}
+	var values []json.RawMessage
+	if err := json.Unmarshal(data, &values); err != nil {
+		return inputError(InputJSON, "%v", err)
+	}
+	for i, value := range values {
+		if string(value) == "null" {
+			return inputError(InputJSON, "instruction %d is null", i)
+		}
+	}
+
 	out := make(Instructions, len(wire))
 	for i, ins := range wire {
 		out[i] = asm.Instruction{OpCode: ins.OpCode, Dst: ins.Dst, Src: ins.Src,

@@ -131,6 +131,7 @@ def main():
         ("./cmd/bpf-ninja", "^TestBpf" if args.kernel else "^Test"),
         ("./pkg/kunai/dsltest", "^Test"),
         ("./pkg/inject", "^TestBpf" if args.kernel else "^Test"),
+        ("./pkg/injectcheck", "^TestBpf" if args.kernel else "^Test"),
     ]
     events, expected = [], set()
     env = dict(os.environ, CI="true", CGO_ENABLED="1")

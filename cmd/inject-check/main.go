@@ -6,56 +6,32 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 
-	"github.com/cilium/ebpf/asm"
 	"github.com/takehaya/bpf-ninja/pkg/injectcheck"
 )
 
-type pair struct {
-	Original, Transformed *injectcheck.Instructions
-	Certificate           *injectcheck.Certificate
-}
-
-func run(args []string) int {
+func run(args []string, stdout, stderr io.Writer) int {
 	if len(args) != 1 {
-		fmt.Fprintln(os.Stderr, "usage: inject-check PAIR.json")
+		_, _ = fmt.Fprintln(stderr, "usage: inject-check PAIR.json")
 		return 2
 	}
 	b, err := os.ReadFile(args[0])
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		_, _ = fmt.Fprintln(stderr, err)
 		return 2
 	}
-	var p pair
+	var p injectcheck.Pair
 	if err = json.Unmarshal(b, &p); err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		_, _ = fmt.Fprintln(stderr, err)
 		return 2
 	}
-	for _, field := range []struct {
-		name    string
-		present bool
-	}{
-		{"original", p.Original != nil},
-		{"transformed", p.Transformed != nil},
-		{"certificate", p.Certificate != nil},
-	} {
-		if !field.present {
-			fmt.Fprintf(os.Stderr, "required field %q is missing or null\n", field.name)
-			return 2
-		}
-	}
-	counts, err := injectcheck.Check(asm.Instructions(*p.Original), asm.Instructions(*p.Transformed), *p.Certificate)
-	verdict := struct {
-		Accepted bool
-		Counts   injectcheck.Counts
-		Reason   string
-	}{Accepted: err == nil, Counts: counts}
-	if err != nil {
-		verdict.Reason = err.Error()
-	}
-	if encodeErr := json.NewEncoder(os.Stdout).Encode(verdict); encodeErr != nil {
-		fmt.Fprintln(os.Stderr, encodeErr)
+	verdict, err := p.Validate()
+	encoder := json.NewEncoder(stdout)
+	encoder.SetEscapeHTML(false)
+	if encodeErr := encoder.Encode(verdict); encodeErr != nil {
+		_, _ = fmt.Fprintln(stderr, encodeErr)
 		return 2
 	}
 	var input *injectcheck.InputError
@@ -67,4 +43,4 @@ func run(args []string) int {
 	}
 	return 0
 }
-func main() { os.Exit(run(os.Args[1:])) }
+func main() { os.Exit(run(os.Args[1:], os.Stdout, os.Stderr)) }

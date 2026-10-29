@@ -9,7 +9,7 @@ import (
 
 // The verifier prunes the R6 != 0 path. Syntactic liveness still includes its
 // undefined read after the helper, as in value-dependent corpus branches.
-func callingConventionFixture(tail bool) (asm.Instructions, asm.Instructions, Certificate) {
+func callingConventionFixture(tail bool) (asm.Instructions, asm.Instructions, fixtureCertificate) {
 	in := asm.Instructions{
 		asm.Mov.Imm(asm.R6, 0),
 		asm.StoreMem(asm.RFP, -8, asm.R6, asm.DWord),
@@ -27,7 +27,7 @@ func callingConventionFixture(tail bool) (asm.Instructions, asm.Instructions, Ce
 		in[7] = asm.Mov.Reg(asm.R0, asm.R0)
 	}
 	out := asm.Instructions{asm.StoreMem(asm.RFP, -16, asm.R1, asm.DWord)}
-	c := Certificate{LowestOffset: -8}
+	c := fixtureCertificate{LowestOffset: -8}
 	for i, ins := range in {
 		if i == 5 {
 			r := asm.R2
@@ -71,7 +71,7 @@ func TestHelperCallingConvention(t *testing.T) {
 			if err != nil || live[6]&mask == 0 {
 				t.Fatalf("fixture must be syntactically live: live=%v err=%v", live, err)
 			}
-			if _, err := Check(in, out, c); err != nil {
+			if _, err := checkFixture(in, out, c); err != nil {
 				t.Fatal(err)
 			}
 		})
@@ -80,7 +80,7 @@ func TestHelperCallingConvention(t *testing.T) {
 
 func TestMissingContextSpillWithU32HookFirst(t *testing.T) {
 	in, out, c := callingConventionFixture(false)
-	// Probe A: remove P1, then put an unrelated u32 hook first in Hooks.
+	// Remove the entry spill, then put an unrelated u32 hook first in Hooks.
 	out = out[1:]
 	for i := range c.Original {
 		c.Original[i]--
@@ -90,7 +90,8 @@ func TestMissingContextSpillWithU32HookFirst(t *testing.T) {
 	h := len(out)
 	out = append(out, asm.Mov.Reg32(asm.R0, asm.R1), asm.Xor.Reg32(asm.R0, asm.R2), asm.Return())
 	c.Hooks = append([]Span{{h, len(out)}}, c.Hooks...)
-	_, err := Check(in, out, c)
+	_, err := checkFixture(in, out, c)
+	assertKind(t, err, SpillUninitialized)
 	if err == nil || !strings.Contains(err.Error(), "load from uninitialized/nonmatching spill -16") {
 		t.Fatalf("missing ctx spill: %v", err)
 	}

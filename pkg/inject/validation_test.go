@@ -19,7 +19,7 @@ import (
 
 // Layout extraction is deliberately separate from the checker decision. Labels
 // only propose a correspondence; the checker compares the actual instructions.
-func validationCertificate(t *testing.T, in, out asm.Instructions, hooks []LookupHook, floor int16) injectcheck.Certificate {
+func validationCertificate(t *testing.T, in, out asm.Instructions, hooks []LookupHook) injectcheck.Certificate {
 	t.Helper()
 	names := map[string]bool{}
 	for _, h := range hooks {
@@ -37,7 +37,7 @@ func validationCertificate(t *testing.T, in, out asm.Instructions, hooks []Looku
 		spans = append(spans, injectcheck.Span{Start: i, End: end})
 		i = end - 1
 	}
-	c, e := injectcheck.FromLabels(out, len(in), spans, floor)
+	c, e := injectcheck.FromLabels(out, len(in), spans)
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -45,7 +45,7 @@ func validationCertificate(t *testing.T, in, out asm.Instructions, hooks []Looku
 }
 
 func TestTranslationValidationEquivalence(t *testing.T) {
-	total, accepted, sites := 0, 0, 0
+	total, accepted, sites, zeroSites := 0, 0, 0, 0
 	for _, seed := range equivDefaultSeeds {
 		for _, config := range []string{"typed-any", "typed-error", "typed-miss", "static-any", "dispatch-any", "dispatch-static", "copy-readonly"} {
 			t.Run(fmt.Sprintf("%d/%s", seed, config), func(t *testing.T) {
@@ -60,10 +60,22 @@ func TestTranslationValidationEquivalence(t *testing.T) {
 					t.Fatalf("TRANSFORM_REFUSED %v", e)
 				}
 				out := work.Programs["p"].Instructions
-				cert := validationCertificate(t, in, out, plan.hooks, req.Stack.LowestOffset)
-				n, e := injectcheck.Check(in, out, cert)
+				cert := validationCertificate(t, in, out, plan.hooks)
+				n, e := injectcheck.Check(in, out, cert, injectcheck.Premises{LowestOffset: req.Stack.LowestOffset})
 				if e != nil {
 					t.Fatal(e)
+				}
+				if n.Sites != validationSites(plan.hooks) || n.Hooks != len(cert.Hooks) {
+					t.Fatalf("checked sites/hooks %d/%d, planned %d/%d", n.Sites, n.Hooks, validationSites(plan.hooks), len(cert.Hooks))
+				}
+				if n.Sites == 0 {
+					zeroSites++
+				}
+				if dest := os.Getenv("BPF_NINJA_VALIDATE_OUTPUT"); dest != "" {
+					if err := os.MkdirAll(dest, 0755); err != nil {
+						t.Fatal(err)
+					}
+					validationSave(t, filepath.Join(dest, fmt.Sprintf("fixture-%d-%s.json", seed, config)), validationPair(in, out, cert, req.Stack.LowestOffset))
 				}
 				accepted++
 				sites += n.Sites
@@ -71,16 +83,17 @@ func TestTranslationValidationEquivalence(t *testing.T) {
 			})
 		}
 	}
-	t.Logf("VALIDATION attempted=%d accepted=%d sites=%d", total, accepted, sites)
+	t.Logf("VALIDATION attempted=%d accepted=%d sites=%d site_bearing=%d zero_site=%d", total, accepted, sites, accepted-zeroSites, zeroSites)
 	if accepted != total {
 		t.Fatalf("accepted %d of %d fixtures; no refusals are allowed", accepted, total)
 	}
 }
 
 type validationRow struct {
-	Object, Program, Form, Status, Reason                  string
+	Object, Program, Form, Status, Reason, FloorSource     string
 	Sites, Hooks, Instructions, PlannedSites, SkippedSites int
 	Floor                                                  int16
+	SerializedProjection                                   bool
 }
 
 // Opt-in corpus checking does no loading or attaching. Census floors are taken
@@ -88,7 +101,10 @@ type validationRow struct {
 func TestTranslationValidationCensus(t *testing.T) {
 	root := os.Getenv("BPF_NINJA_VALIDATE_OBJECTS")
 	if root == "" {
-		t.Skip("set BPF_NINJA_VALIDATE_OBJECTS and BPF_NINJA_VALIDATE_OUTPUT")
+		t.Skip("set BPF_NINJA_VALIDATE_OBJECTS, BPF_NINJA_VALIDATE_CENSUS and BPF_NINJA_VALIDATE_OUTPUT")
+	}
+	if os.Getenv("BPF_NINJA_VALIDATE_CENSUS") == "" {
+		t.Fatal("BPF_NINJA_VALIDATE_CENSUS is required")
 	}
 	dest := os.Getenv("BPF_NINJA_VALIDATE_OUTPUT")
 	if dest == "" {
@@ -122,13 +138,26 @@ func TestTranslationValidationCensus(t *testing.T) {
 			floor := int16(0)
 			// Use the same per-program audit bound recorded by the census CLI.
 			boundFile := filepath.Join(os.Getenv("BPF_NINJA_VALIDATE_CENSUS"), filepath.Base(file)+"--"+name, "plain", "load.json")
-			if b, e := os.ReadFile(boundFile); e == nil {
-				var r struct{ Bound int16 }
-				if e = json.Unmarshal(b, &r); e != nil {
-					t.Fatal(e)
+			b, e := os.ReadFile(boundFile)
+			if e != nil {
+				if !os.IsNotExist(e) {
+					t.Fatalf("required census bound %s: %v", boundFile, e)
 				}
-				floor = r.Bound
+				for _, form := range []string{"typed", "static", "raw-typed", "raw-static"} {
+					rows = append(rows, validationRow{Object: filepath.Base(file), Program: name, Form: form, Status: "INPUT_REFUSED", FloorSource: "missing-census-bound", Reason: "required census bound is missing"})
+				}
+				t.Logf("INPUT_REFUSED %s %s: required census bound is missing; all four forms excluded", filepath.Base(file), name)
+				continue
 			}
+			var bound struct{ Bound *int16 }
+			if e = json.Unmarshal(b, &bound); e != nil || bound.Bound == nil {
+				t.Fatalf("invalid census Bound in %s: %v", boundFile, e)
+			}
+			if *bound.Bound > 0 || *bound.Bound < -512 {
+				t.Fatalf("census Bound outside [-512,0] in %s: %d", boundFile, *bound.Bound)
+			}
+			floor = *bound.Bound
+
 			for _, ins := range src.Programs[name].Instructions {
 				cl := ins.OpCode.Class()
 				if cl == asm.LdXClass && ins.Src == asm.RFP || (cl == asm.StClass || cl == asm.StXClass) && ins.Dst == asm.RFP {
@@ -136,7 +165,7 @@ func TestTranslationValidationCensus(t *testing.T) {
 				}
 			}
 			for _, form := range []string{"typed", "static"} {
-				r := validationRow{Object: filepath.Base(file), Program: name, Form: form, Floor: floor}
+				r := validationRow{Object: filepath.Base(file), Program: name, Form: form, Floor: floor, FloorSource: "census-bound-and-direct-accesses", SerializedProjection: true}
 				work := src.Copy()
 				in := append(asm.Instructions(nil), work.Programs[name].Instructions...)
 				injectcheck.Label(work.Programs[name].Instructions)
@@ -152,13 +181,17 @@ func TestTranslationValidationCensus(t *testing.T) {
 					r.Status = "TRANSFORM_REFUSED"
 					r.Reason = e.Error()
 					rows = append(rows, r)
+					rows = append(rows, validationRow{Object: r.Object, Program: name, Form: "raw-" + form, Floor: floor, FloorSource: r.FloorSource, Status: "RAW_NOT_RUN", Reason: "typed transform refused: " + e.Error()})
 					continue
 				}
 				r.PlannedSites = validationSites(plan.hooks)
 				r.SkippedSites = len(plan.skipped)
 				out := work.Programs[name].Instructions
-				cert := validationCertificate(t, in, out, plan.hooks, floor)
-				counts, e := injectcheck.Check(in, out, cert)
+				cert := validationCertificate(t, in, out, plan.hooks)
+				counts, e := injectcheck.Check(in, out, cert, injectcheck.Premises{LowestOffset: req.Stack.LowestOffset})
+				if e == nil && (counts.Sites != r.PlannedSites || counts.Hooks != len(cert.Hooks)) {
+					t.Fatalf("checked %d/%d planned %d/%d", counts.Sites, counts.Hooks, r.PlannedSites, len(cert.Hooks))
+				}
 				r.Sites = counts.Sites
 				r.Hooks = counts.Hooks
 				r.Instructions = counts.Instructions
@@ -168,7 +201,7 @@ func TestTranslationValidationCensus(t *testing.T) {
 					r.Reason = e.Error()
 				}
 				stem := filepath.Base(file) + "--" + name + "--" + form
-				validationSave(t, filepath.Join(dest, stem+".json"), map[string]any{"request": req, "certificate": cert, "original": validationStream(in), "transformed": validationStream(out), "result": r})
+				validationSave(t, filepath.Join(dest, stem+".json"), validationPairEvidence(t, in, out, cert, floor, req, r, ""))
 				rows = append(rows, r)
 				t.Logf("%s %s %s %s sites=%d %s", r.Object, name, form, r.Status, r.Sites, r.Reason)
 				// Also exercise the fixed raw front end with numeric instructions/map FDs.
@@ -185,24 +218,30 @@ func TestTranslationValidationCensus(t *testing.T) {
 				}
 				rr := LookupRequestRaw{Auto: true, Entry: true, TailCalls: tail, Lookups: LookupAny, Updates: CallAny, Deletes: CallAny, Pushes: CallAny, Pops: CallAny, Peeks: CallAny, HookName: "n", StaticUntrusted: form == "static", Stack: StackAudit{LowestOffset: floor}}
 				result, e := TransformLookupRaw(raw, rr)
-				r.Form = "raw-" + form
+				r = validationRow{Object: filepath.Base(file), Program: name, Form: "raw-" + form, Floor: floor, FloorSource: "census-bound-and-direct-accesses", SerializedProjection: true}
 				if e != nil {
 					r.Status = "TRANSFORM_REFUSED"
 					r.Reason = e.Error()
 					rows = append(rows, r)
 					continue
 				}
-				cert = validationCertificate(t, raw.Instructions, result.Instructions, result.Hooks, floor)
-				counts, e = injectcheck.Check(raw.Instructions, result.Instructions, cert)
+				r.PlannedSites = validationSites(result.Hooks)
+				r.SkippedSites = len(result.Skipped)
+				cert = validationCertificate(t, raw.Instructions, result.Instructions, result.Hooks)
+				counts, e = injectcheck.Check(raw.Instructions, result.Instructions, cert, injectcheck.Premises{LowestOffset: floor})
 				r.Status = "ACCEPTED"
 				r.Reason = ""
+				if e == nil && (counts.Sites != r.PlannedSites || counts.Hooks != len(cert.Hooks)) {
+					t.Fatalf("checked %d/%d planned %d/%d", counts.Sites, counts.Hooks, r.PlannedSites, len(cert.Hooks))
+				}
 				r.Sites = counts.Sites
 				r.Hooks = counts.Hooks
+				r.Instructions = counts.Instructions
 				if e != nil {
 					r.Status = "REJECTED"
 					r.Reason = e.Error()
 				}
-				validationSave(t, filepath.Join(dest, stem+"--raw.json"), map[string]any{"certificate": cert, "original": validationStream(raw.Instructions), "transformed": validationStream(result.Instructions), "result": r})
+				validationSave(t, filepath.Join(dest, stem+"--raw.json"), validationPairEvidence(t, raw.Instructions, result.Instructions, cert, floor, rr, r, ""))
 				rows = append(rows, r)
 				t.Logf("%s %s %s %s sites=%d %s", r.Object, name, r.Form, r.Status, r.Sites, r.Reason)
 			}
@@ -215,7 +254,21 @@ func TestTranslationValidationCensus(t *testing.T) {
 			rejected++
 		}
 	}
-	t.Logf("CORPUS rows=%d checker_rejected=%d", len(rows), rejected)
+	accepted, missing, rawNotRun, zeroSites := 0, 0, 0, 0
+	for _, r := range rows {
+		switch r.Status {
+		case "ACCEPTED":
+			accepted++
+			if r.Sites == 0 {
+				zeroSites++
+			}
+		case "INPUT_REFUSED":
+			missing++
+		case "RAW_NOT_RUN":
+			rawNotRun++
+		}
+	}
+	t.Logf("CORPUS rows=%d accepted=%d checker_rejected=%d missing_bound=%d raw_not_run=%d zero_site_accepted=%d", len(rows), accepted, rejected, missing, rawNotRun, zeroSites)
 	// Rejections are findings, not a passing equivalence claim. Preserve all rows.
 	if rejected > 0 {
 		t.Fatalf("checker rejected %d transformed programs", rejected)
@@ -243,8 +296,8 @@ func TestTranslationValidationMutations(t *testing.T) {
 		t.Fatal(e)
 	}
 	out := work.Programs["p"].Instructions
-	cert := validationCertificate(t, in, out, plan.hooks, req.Stack.LowestOffset)
-	if _, e = injectcheck.Check(in, out, cert); e != nil {
+	cert := validationCertificate(t, in, out, plan.hooks)
+	if _, e = injectcheck.Check(in, out, cert, injectcheck.Premises{LowestOffset: req.Stack.LowestOffset}); e != nil {
 		t.Fatal(e)
 	}
 	// Mutate code and independently repair correspondence hints where needed;
@@ -276,7 +329,7 @@ func TestTranslationValidationMutations(t *testing.T) {
 						original[i] = original[i].WithReference("")
 						original[i].Constant = 100
 						bad[at] = original[i]
-						if _, err := injectcheck.Check(original, bad, cc); err != nil {
+						if _, err := injectcheck.Check(original, bad, cc, injectcheck.Premises{LowestOffset: req.Stack.LowestOffset}); err != nil {
 							t.Fatalf("numeric FD baseline: %v", err)
 						}
 						bad[at].Constant = 101
@@ -356,7 +409,7 @@ func TestTranslationValidationMutations(t *testing.T) {
 				// Forge a still-increasing mapping into the entry prologue.
 				cc.Original[0]--
 			}
-			_, err := injectcheck.Check(original, bad, cc)
+			_, err := injectcheck.Check(original, bad, cc, injectcheck.Premises{LowestOffset: req.Stack.LowestOffset})
 			if dest := os.Getenv("BPF_NINJA_VALIDATE_OUTPUT"); dest != "" {
 				if e := os.MkdirAll(dest, 0755); e != nil {
 					t.Fatal(e)
@@ -365,7 +418,7 @@ func TestTranslationValidationMutations(t *testing.T) {
 				if err != nil {
 					reason = err.Error()
 				}
-				validationSave(t, filepath.Join(dest, "mutation-"+kind+".json"), map[string]any{"original": validationStream(original), "transformed": validationStream(bad), "certificate": cc, "reason": reason})
+				validationSave(t, filepath.Join(dest, "mutation-"+kind+".json"), validationPairEvidence(t, original, bad, cc, req.Stack.LowestOffset, nil, nil, reason))
 			}
 			if err == nil {
 				t.Fatal("SURVIVED")
@@ -434,7 +487,15 @@ func stackSpillForValidation(i asm.Instruction) bool {
 }
 
 func validationStream(is asm.Instructions) injectcheck.Instructions {
-	return injectcheck.Instructions(is)
+	// Census artefacts deliberately save the compared instruction projection.
+	// Check above separately enforces in-memory load-time metadata identity.
+	out := make(injectcheck.Instructions, len(is))
+	for i, ins := range is {
+		out[i] = ins
+		out[i].Metadata = asm.Metadata{}
+		out[i] = out[i].WithSymbol(ins.Symbol()).WithReference(ins.Reference())
+	}
+	return out
 }
 func validationSites(hooks []LookupHook) int {
 	sites := map[uint32]bool{}
@@ -458,8 +519,8 @@ func TestTranslationValidationSubprogramTail(t *testing.T) {
 				t.Fatal(err)
 			}
 			out := work.Programs["caller"].Instructions
-			c := validationCertificate(t, in, out, plan.hooks, 0)
-			if _, err := injectcheck.Check(in, out, c); err != nil {
+			c := validationCertificate(t, in, out, plan.hooks)
+			if _, err := injectcheck.Check(in, out, c, injectcheck.Premises{LowestOffset: req.Stack.LowestOffset}); err != nil {
 				t.Fatal(err)
 			}
 			// The entry frame's ctx spill must not initialize the subprogram
@@ -475,8 +536,10 @@ func TestTranslationValidationSubprogramTail(t *testing.T) {
 			if !removed {
 				t.Fatal("fixture requires a local ctx spill")
 			}
-			c = validationCertificate(t, in, out, plan.hooks, 0)
-			if _, err := injectcheck.Check(in, out, c); err == nil || !strings.Contains(err.Error(), "load from uninitialized/nonmatching spill -8") {
+			c = validationCertificate(t, in, out, plan.hooks)
+			_, err = injectcheck.Check(in, out, c, injectcheck.Premises{LowestOffset: req.Stack.LowestOffset})
+			var rejection *injectcheck.Rejection
+			if !errors.As(err, &rejection) || rejection.Kind != injectcheck.SpillUninitialized {
 				t.Fatalf("missing subprogram ctx spill: %v", err)
 			} else {
 				t.Logf("missing subprogram ctx spill rejected: %v", err)
@@ -494,8 +557,31 @@ func TestTranslationValidationU32Fixture(t *testing.T) {
 		t.Fatal(err)
 	}
 	out := work.Programs["p"].Instructions
-	c := validationCertificate(t, in, out, []LookupHook{{Name: req.HookName}}, req.Stack.LowestOffset)
-	if _, err := injectcheck.Check(in, out, c); err != nil {
+	c := validationCertificate(t, in, out, []LookupHook{{Name: req.HookName}})
+	if _, err := injectcheck.Check(in, out, c, injectcheck.Premises{LowestOffset: req.Stack.LowestOffset}); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func validationPair(in, out asm.Instructions, c injectcheck.Certificate, floor int16) injectcheck.Pair {
+	return injectcheck.Pair{Format: injectcheck.FormatVersion, Original: validationStream(in), Transformed: validationStream(out), Certificate: c, Premises: injectcheck.Premises{LowestOffset: floor}}
+}
+func validationPairEvidence(t *testing.T, in, out asm.Instructions, c injectcheck.Certificate, floor int16, request, result any, reason string) injectcheck.Pair {
+	t.Helper()
+	p := validationPair(in, out, c, floor)
+	var err error
+	if request != nil {
+		p.Request, err = json.Marshal(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if result != nil {
+		p.Result, err = json.Marshal(result)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	p.Reason = reason
+	return p
 }

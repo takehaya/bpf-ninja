@@ -6,6 +6,8 @@ import "fmt"
 type Kind string
 
 const (
+	MetadataUnsupported    Kind = "metadata_unsupported"
+	MetadataChanged        Kind = "metadata_changed"
 	LabelInvalid           Kind = "label_invalid"
 	EdgeResolved           Kind = "edge_resolved"
 	SymbolAmbiguous        Kind = "symbol_ambiguous"
@@ -45,11 +47,11 @@ const (
 	ResultLoad             Kind = "result_load"
 	SpillUninitialized     Kind = "spill_uninitialized"
 	CopyShape              Kind = "copy_shape"
-	ALUClobber             Kind = "a_l_u_clobber"
-	ALUEncoding            Kind = "a_l_u_encoding"
+	ALUClobber             Kind = "alu_clobber"
+	ALUEncoding            Kind = "alu_encoding"
 	PointerCalculation     Kind = "pointer_calculation"
 	PointerBounds          Kind = "pointer_bounds"
-	ALUOperation           Kind = "a_l_u_operation"
+	ALUOperation           Kind = "alu_operation"
 	MultipleCalls          Kind = "multiple_calls"
 	BranchForward          Kind = "branch_forward"
 	BranchEscape           Kind = "branch_escape"

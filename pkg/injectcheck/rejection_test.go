@@ -11,14 +11,18 @@ import (
 
 func assertKind(t *testing.T, err error, want Kind) {
 	t.Helper()
+	if want == OriginalOrder || want == HookRange || want == HookOverlap {
+		assertInputKind(t, err, want)
+		return
+	}
 	var rejection *Rejection
 	if !errors.As(err, &rejection) || rejection.Kind != want {
 		t.Fatalf("got %v, want rejection kind %s", err, want)
 	}
 }
-func expectPairKind(t *testing.T, name string, in, out asm.Instructions, c Certificate, want Kind) {
+func expectPairKind(t *testing.T, name string, in, out asm.Instructions, c fixtureCertificate, want Kind) {
 	t.Helper()
-	_, err := Check(in, out, c)
+	_, err := checkFixture(in, out, c)
 	assertKind(t, err, want)
 	t.Logf("%s: %v", name, err)
 }
@@ -29,7 +33,7 @@ func clone(is asm.Instructions) asm.Instructions { return append(asm.Instruction
 // out 0 entry spill; 6 prelude; 7 helper; 8..14 postlude; 19..20 hook.
 func TestRejectPostlude(t *testing.T) {
 	in, out, c := callingConventionFixture(false)
-	if _, err := Check(in, out, c); err != nil {
+	if _, err := checkFixture(in, out, c); err != nil {
 		t.Fatal(err)
 	}
 	// Postlude is out[8:15]: stx -32 r0; jeq r0 0 +4; ldx r1 -16; ldx r2 -24; mov r3 0; call hook; ldx r0 -32.
@@ -72,7 +76,7 @@ func TestRejectPostlude(t *testing.T) {
 }
 
 // Two-call P2 shapes: [stx r0][jeq][call][ja][call][ldx r0].
-func twoCallLookup(jeqOff, jaOff int16) (asm.Instructions, asm.Instructions, Certificate) {
+func twoCallLookup(jeqOff, jaOff int16) (asm.Instructions, asm.Instructions, fixtureCertificate) {
 	in, out, c := callingConventionFixture(false)
 	j := asm.JEq.Imm(asm.R0, 0, "")
 	j.Offset = jeqOff
@@ -94,7 +98,7 @@ func twoCallLookup(jeqOff, jaOff int16) (asm.Instructions, asm.Instructions, Cer
 func TestRejectTwoCallPaths(t *testing.T) {
 	// Baseline: jeq to the second call, ja over the second call to the restore.
 	in, out, c := twoCallLookup(2, 1)
-	if _, err := Check(in, out, c); err != nil {
+	if _, err := checkFixture(in, out, c); err != nil {
 		t.Fatalf("baseline two-call postlude rejected: %v", err)
 	}
 	// ja +2 skips the final R0 restore on the first-hook path: the original
@@ -108,7 +112,7 @@ func TestRejectTwoCallPaths(t *testing.T) {
 
 func TestRejectTailReadsR0(t *testing.T) {
 	in, out, c := callingConventionFixture(true)
-	if _, err := Check(in, out, c); err != nil {
+	if _, err := checkFixture(in, out, c); err != nil {
 		t.Fatal(err)
 	}
 	// Tail postlude: out 8 ldx r1; 9 ldx r2; 10 mov r3 0; 11 call hook.
@@ -121,10 +125,10 @@ func TestRejectGapsAndHooks(t *testing.T) {
 	in := asm.Instructions{asm.Mov.Imm(asm.R0, 2), asm.Return()}
 	// Arbitrary code inserted after a non-helper, non-P6 instruction.
 	out := asm.Instructions{in[0], asm.Mov.Imm(asm.R1, 0), in[1]}
-	expectPairKind(t, "gap-after-plain-instruction", in, out, Certificate{Original: []int{0, 2}}, U32Placement)
+	expectPairKind(t, "gap-after-plain-instruction", in, out, fixtureCertificate{Original: []int{0, 2}}, U32Placement)
 	// Hook placed where the preceding original instruction falls through.
 	out = asm.Instructions{in[0], asm.Mov.Imm(asm.R0, 0).WithSymbol("hook"), asm.Return(), in[1]}
-	expectPairKind(t, "fall-through-into-hook", in, out, Certificate{Original: []int{0, 3}, Hooks: []Span{{1, 3}}}, HookFallthrough)
+	expectPairKind(t, "fall-through-into-hook", in, out, fixtureCertificate{Original: []int{0, 3}, Hooks: []Span{{1, 3}}}, HookFallthrough)
 }
 
 func TestRejectP6WrongHook(t *testing.T) {
@@ -134,7 +138,7 @@ func TestRejectP6WrongHook(t *testing.T) {
 	out = append(out, in[3:]...)
 	h := len(out)
 	out = append(out, asm.Mov.Imm(asm.R0, 0).WithSymbol("hook"), asm.Return())
-	expectPairKind(t, "p6-calls-non-u32-hook", in, out, Certificate{Original: []int{0, 1, 2, 9, 10, 11}, Hooks: []Span{{h, h + 2}}}, U32Hook)
+	expectPairKind(t, "p6-calls-non-u32-hook", in, out, fixtureCertificate{Original: []int{0, 1, 2, 9, 10, 11}, Hooks: []Span{{h, h + 2}}}, U32Hook)
 }
 
 // Numeric gotol (JA32 uses Constant) relocated across a P6 region.
@@ -148,13 +152,13 @@ func TestRejectJump32Ja(t *testing.T) {
 	out = append(out, in[3:]...)
 	h := len(out)
 	out = append(out, asm.Mov.Reg32(asm.R0, asm.R1).WithSymbol("hook"), asm.Xor.Reg32(asm.R0, asm.R2), asm.Return())
-	c := Certificate{Original: []int{0, 1, 2, 9, 10, 11}, Hooks: []Span{{h, h + 3}}}
+	c := fixtureCertificate{Original: []int{0, 1, 2, 9, 10, 11}, Hooks: []Span{{h, h + 3}}}
 	expectPairKind(t, "gotol-unrelocated", in, out, c, EdgeTarget)
 	out[0].Constant = 8
-	if _, err := Check(in, out, c); err != nil {
-		t.Errorf("PROBE gotol-relocated: rejected: %v", err)
+	if _, err := checkFixture(in, out, c); err != nil {
+		t.Errorf("gotol-relocated: rejected: %v", err)
 	} else {
-		t.Logf("PROBE gotol-relocated: accepted")
+		t.Logf("gotol-relocated: accepted")
 	}
 	out[0].Constant = 7
 	expectPairKind(t, "gotol-off-by-one", in, out, c, EdgeTarget)
@@ -164,12 +168,12 @@ func TestRejectJump32Ja(t *testing.T) {
 }
 
 // P6 liveness through a bpf-to-bpf callee and through helper arities.
-func p6Pair(tail asm.Instructions) (asm.Instructions, asm.Instructions, Certificate) {
+func p6Pair(tail asm.Instructions) (asm.Instructions, asm.Instructions, fixtureCertificate) {
 	in := append(asm.Instructions{asm.Mov.Imm(asm.R3, 7), asm.LoadMem(asm.R2, asm.R0, 0, asm.Word)}, tail...)
 	out := clone(in[:2])
 	out = append(out, asm.StoreMem(asm.RFP, -8, asm.R0, asm.DWord), asm.StoreMem(asm.RFP, -16, asm.R2, asm.DWord), asm.Mov.Imm32(asm.R1, 2), asm.Call.Label("hook"), asm.LoadMem(asm.R0, asm.RFP, -8, asm.DWord), asm.LoadMem(asm.R2, asm.RFP, -16, asm.DWord))
 	out = append(out, in[2:]...)
-	c := Certificate{Original: []int{0, 1}}
+	c := fixtureCertificate{Original: []int{0, 1}}
 	for i := 2; i < len(in); i++ {
 		c.Original = append(c.Original, i+6)
 	}
@@ -188,15 +192,15 @@ func TestRejectP6Liveness(t *testing.T) {
 	in, out, c = p6Pair(asm.Instructions{asm.FnProbeRead.Call(), asm.Return()})
 	expectPairKind(t, "p6-live-before-3-arg-helper", in, out, c, U32Live)
 	in, out, c = p6Pair(asm.Instructions{asm.FnKtimeGetNs.Call(), asm.Return()})
-	if _, err := Check(in, out, c); err != nil {
-		t.Errorf("PROBE p6-before-0-arg-helper: rejected: %v", err)
+	if _, err := checkFixture(in, out, c); err != nil {
+		t.Errorf("p6-before-0-arg-helper: rejected: %v", err)
 	} else {
-		t.Logf("PROBE p6-before-0-arg-helper: accepted")
+		t.Logf("p6-before-0-arg-helper: accepted")
 	}
 }
 
 // replacePostlude adjusts only layout hints; Check still derives the region.
-func replacePostlude(post asm.Instructions) (asm.Instructions, asm.Instructions, Certificate) {
+func replacePostlude(post asm.Instructions) (asm.Instructions, asm.Instructions, fixtureCertificate) {
 	in, out, c := callingConventionFixture(false)
 	n := append(clone(out[:8]), post...)
 	n = append(n, out[15:]...)
@@ -280,21 +284,21 @@ func TestRegionRejectionKinds(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		out  asm.Instructions
-		c    Certificate
+		c    fixtureCertificate
 		kind Kind
 	}{
-		{"order", in, Certificate{Original: []int{1, 0}}, OriginalOrder},
-		{"missing-index", in, Certificate{Original: []int{0, 2}}, OriginalOrder},
-		{"range", in, Certificate{Original: []int{0, 1}, Hooks: []Span{{-1, 0}}}, HookRange},
-		{"overlap", in, Certificate{Original: []int{0, 1}, Hooks: []Span{{0, 2}}}, HookOverlap},
-		{"entry-restore", append(asm.Instructions{asm.StoreMem(asm.RFP, -8, asm.R1, asm.DWord), asm.Mov.Imm(asm.R1, 0)}, in...), Certificate{Original: []int{2, 3}}, EntryRestore},
-		{"split", asm.Instructions{in[0], asm.Ja.Label(""), asm.Mov.Imm(asm.R0, 0), asm.Return(), asm.Mov.Imm(asm.R1, 0), in[1]}, Certificate{Original: []int{0, 5}, Hooks: []Span{{2, 4}}}, RegionSplit},
+		{"order", in, fixtureCertificate{Original: []int{1, 0}}, OriginalOrder},
+		{"missing-index", in, fixtureCertificate{Original: []int{0, 2}}, OriginalOrder},
+		{"range", in, fixtureCertificate{Original: []int{0, 1}, Hooks: []Span{{-1, 0}}}, HookRange},
+		{"overlap", in, fixtureCertificate{Original: []int{0, 1}, Hooks: []Span{{0, 2}}}, HookOverlap},
+		{"entry-restore", append(asm.Instructions{asm.StoreMem(asm.RFP, -8, asm.R1, asm.DWord), asm.Mov.Imm(asm.R1, 0)}, in...), fixtureCertificate{Original: []int{2, 3}}, EntryRestore},
+		{"split", asm.Instructions{in[0], asm.Ja.Label(""), asm.Mov.Imm(asm.R0, 0), asm.Return(), asm.Mov.Imm(asm.R1, 0), in[1]}, fixtureCertificate{Original: []int{0, 5}, Hooks: []Span{{2, 4}}}, RegionSplit},
 	} {
 		t.Run(tc.name, func(t *testing.T) { expectPairKind(t, tc.name, in, tc.out, tc.c, tc.kind) })
 	}
 	// A dispatch-shaped entry reaches its argument check before its call check.
 	entry := asm.Instructions{asm.StoreMem(asm.RFP, -8, asm.R1, asm.DWord), asm.Mov.Imm32(asm.R2, 0), asm.Mov.Imm(asm.R3, 0), asm.Mov.Imm(asm.R4, 0), asm.Mov.Imm(asm.R5, 0), asm.Call.Label("hook"), asm.LoadMem(asm.R1, asm.RFP, -8, asm.DWord)}
-	expectPairKind(t, "dispatch-arguments", in, append(entry, in...), Certificate{Original: []int{7, 8}}, EntryArguments)
+	expectPairKind(t, "dispatch-arguments", in, append(entry, in...), fixtureCertificate{Original: []int{7, 8}}, EntryArguments)
 	for _, tc := range []struct {
 		name string
 		ins  asm.Instruction
@@ -306,7 +310,7 @@ func TestRegionRejectionKinds(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			out := asm.Instructions{entry[0], tc.ins, entry[6], in[0].WithSymbol("original"), in[1]}
-			expectPairKind(t, tc.name, in, out, Certificate{Original: []int{3, 4}}, tc.kind)
+			expectPairKind(t, tc.name, in, out, fixtureCertificate{Original: []int{3, 4}}, tc.kind)
 		})
 	}
 	// The hook header is valid, so a forbidden interior store/helper reaches HookBody.
@@ -334,7 +338,7 @@ func TestEdgeRejectionKinds(t *testing.T) {
 			if tc.name == "slot" {
 				is[0].Offset = 99
 			}
-			expectPairKind(t, tc.name, is, is, Certificate{Original: []int{0, 1}}, tc.kind)
+			expectPairKind(t, tc.name, is, is, fixtureCertificate{Original: []int{0, 1}}, tc.kind)
 		})
 	}
 }
@@ -344,17 +348,17 @@ func TestInputErrorKinds(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		in   asm.Instructions
-		c    Certificate
+		c    fixtureCertificate
 		kind Kind
 	}{
-		{"original-empty", nil, Certificate{}, InputOriginalEmpty},
-		{"mapping-empty", in, Certificate{}, InputCertificateEmpty},
-		{"mapping-length", in, Certificate{Original: []int{0}}, InputCertificateLength},
-		{"floor-positive", in, Certificate{Original: []int{0, 1}, LowestOffset: 8}, InputStackFloor},
-		{"floor-too-low", in, Certificate{Original: []int{0, 1}, LowestOffset: -513}, InputStackFloor},
+		{"original-empty", nil, fixtureCertificate{}, InputOriginalEmpty},
+		{"mapping-empty", in, fixtureCertificate{}, InputCertificateEmpty},
+		{"mapping-length", in, fixtureCertificate{Original: []int{0}}, InputCertificateLength},
+		{"floor-positive", in, fixtureCertificate{Original: []int{0, 1}, LowestOffset: 8}, InputStackFloor},
+		{"floor-too-low", in, fixtureCertificate{Original: []int{0, 1}, LowestOffset: -513}, InputStackFloor},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := Check(tc.in, tc.in, tc.c)
+			_, err := checkFixture(tc.in, tc.in, tc.c)
 			var input *InputError
 			if !errors.As(err, &input) || input.Kind != tc.kind {
 				t.Fatalf("got %v, want input kind %s", err, tc.kind)
@@ -367,18 +371,18 @@ func TestRemainingRejectionKinds(t *testing.T) {
 	t.Run("duplicate-label", func(t *testing.T) {
 		in := asm.Instructions{asm.Mov.Imm(asm.R0, 0)}
 		Label(in)
-		_, err := FromLabels(append(in, in[0]), 1, nil, 0)
+		_, err := FromLabels(append(in, in[0]), 1, nil)
 		assertKind(t, err, LabelInvalid)
 	})
 	t.Run("callback-unresolved", func(t *testing.T) {
 		i := asm.LoadImm(asm.R2, -1, asm.DWord).WithReference("missing")
 		i.Src = asm.PseudoFunc
 		in := asm.Instructions{i, asm.Return()}
-		expectPairKind(t, "callback", in, in, Certificate{Original: []int{0, 1}}, SymbolUnresolved)
+		expectPairKind(t, "callback", in, in, fixtureCertificate{Original: []int{0, 1}}, SymbolUnresolved)
 	})
 	t.Run("call-unresolved", func(t *testing.T) {
 		in := asm.Instructions{asm.Call.Label("missing"), asm.Return()}
-		expectPairKind(t, "call", in, in, Certificate{Original: []int{0, 1}}, SymbolUnresolved)
+		expectPairKind(t, "call", in, in, fixtureCertificate{Original: []int{0, 1}}, SymbolUnresolved)
 	})
 	t.Run("prelude-bounds", func(t *testing.T) {
 		in, out, c := callingConventionFixture(false)
@@ -389,7 +393,7 @@ func TestRemainingRejectionKinds(t *testing.T) {
 	t.Run("missing-postlude", func(t *testing.T) {
 		in := asm.Instructions{asm.Return(), asm.FnMapLookupElem.Call()}
 		out := asm.Instructions{in[0], asm.StoreMem(asm.RFP, -16, asm.R2, asm.DWord), in[1]}
-		expectPairKind(t, "missing-postlude", in, out, Certificate{Original: []int{0, 2}}, PostludeMissing)
+		expectPairKind(t, "missing-postlude", in, out, fixtureCertificate{Original: []int{0, 2}}, PostludeMissing)
 	})
 	t.Run("path-budget", func(t *testing.T) {
 		_, base, _ := callingConventionFixture(false)
@@ -424,4 +428,24 @@ func TestRemainingRejectionKinds(t *testing.T) {
 		c.Hooks[0].End--
 		expectPairKind(t, "u32-length", in, out, c, U32Length)
 	})
+}
+
+// fixtureCertificate holds both fixture data sources. The public API receives
+// the trusted audit separately from the proposed correspondence.
+type fixtureCertificate struct {
+	Original     []int
+	Hooks        []Span
+	LowestOffset int16
+}
+
+func checkFixture(in, out asm.Instructions, c fixtureCertificate) (Counts, error) {
+	return Check(in, out, Certificate{Original: c.Original, Hooks: c.Hooks}, Premises{LowestOffset: c.LowestOffset})
+}
+
+func assertInputKind(t *testing.T, err error, want Kind) {
+	t.Helper()
+	var input *InputError
+	if !errors.As(err, &input) || input.Kind != want {
+		t.Fatalf("got %v, want input kind %s", err, want)
+	}
 }

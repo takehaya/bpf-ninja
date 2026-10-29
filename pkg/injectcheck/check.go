@@ -1,31 +1,44 @@
 // Package injectcheck independently checks the instruction-level safety of an
 // injection. It does not import the transformer. A certificate supplies only
 // correspondence hints: every hint and every otherwise unaccounted bytecode
-// instruction is checked. Acceptance is conditional on the original program
-// being valid BPF and on the caller's stack-alias audit.
+// instruction is checked. Acceptance is conditional on the original and
+// transformed programs being valid BPF, the BPF calling convention,
+// and the caller's trusted stack-alias audit.
 package injectcheck
 
 import (
 	"fmt"
 	"slices"
+	"strings"
 
 	"github.com/cilium/ebpf/asm"
 )
 
 // Span is a half-open range of decoded instruction indices, not raw slots.
-type Span struct{ Start, End int }
+type Span struct {
+	Start int `json:"start"`
+	End   int `json:"end"`
+}
 
 // Certificate is untrusted layout metadata. Original[i] locates original
 // instruction i in the output; Hooks lists all inserted function bodies.
 type Certificate struct {
-	Original     []int
-	Hooks        []Span
-	LowestOffset int16
+	Original []int  `json:"original"`
+	Hooks    []Span `json:"hooks"`
 }
 
 // Counts reports input size, checked sites and declared hook bodies.
 // Sites is partial when Check returns an error.
-type Counts struct{ Instructions, Sites, Hooks int }
+type Counts struct {
+	Instructions int `json:"instructions"`
+	Sites        int `json:"sites"`
+	Hooks        int `json:"hooks"`
+}
+
+// Premises is the trusted caller audit, separate from the untrusted certificate.
+type Premises struct {
+	LowestOffset int16 `json:"lowest_offset"`
+}
 
 type label struct{}
 
@@ -39,8 +52,8 @@ func Label(in asm.Instructions) {
 
 // FromLabels extracts hints, including hook ranges supplied by the caller.
 // Missing, repeated or forged labels are rejected here or by Check.
-func FromLabels(out asm.Instructions, n int, hooks []Span, floor int16) (Certificate, error) {
-	c := Certificate{Original: make([]int, n), Hooks: hooks, LowestOffset: floor}
+func FromLabels(out asm.Instructions, n int, hooks []Span) (Certificate, error) {
+	c := Certificate{Original: make([]int, n), Hooks: hooks}
 	for i := range c.Original {
 		c.Original[i] = -1
 	}
@@ -107,15 +120,9 @@ func target(in asm.Instructions, pcs []int, index map[int]int, i int) (int, erro
 // all gaps and all hook bodies. Unknown forms fail closed. It never loads BPF.
 // Associated maps are unsupported: callers must supply both streams before
 // map association, with the same external symbol/FD bindings throughout.
-func Check(in, out asm.Instructions, c Certificate) (Counts, error) {
+func Check(in, out asm.Instructions, c Certificate, premises Premises) (Counts, error) {
 	counts := Counts{Instructions: len(in), Hooks: len(c.Hooks)}
 	fail := func(kind Kind, s string, args ...any) (Counts, error) { return counts, reject(kind, s, args...) }
-	if err := unassociated(in); err != nil {
-		return counts, fmt.Errorf("original: %w", err)
-	}
-	if err := unassociated(out); err != nil {
-		return counts, fmt.Errorf("transformed: %w", err)
-	}
 	if len(in) == 0 {
 		return counts, inputError(InputOriginalEmpty, "original must contain instructions")
 	}
@@ -125,10 +132,21 @@ func Check(in, out asm.Instructions, c Certificate) (Counts, error) {
 	if len(c.Original) != len(in) {
 		return counts, inputError(InputCertificateLength, "certificate.original length %d differs from original length %d", len(c.Original), len(in))
 	}
-	if c.LowestOffset > 0 || c.LowestOffset < -512 {
-		return counts, inputError(InputStackFloor, "lowest_offset must be in [-512,0], got %d", c.LowestOffset)
+	if premises.LowestOffset > 0 || premises.LowestOffset < stackBottom {
+		return counts, inputError(InputStackFloor, "lowest_offset must be in [-512,0], got %d", premises.LowestOffset)
 	}
-	floor := int(c.LowestOffset) &^ 7
+	for i, a := range in {
+		if a.Dst > asm.RFP || a.Src > asm.RFP {
+			return counts, inputError(InputRegister, "original instruction %d: invalid register dst=%d src=%d", i, a.Dst, a.Src)
+		}
+	}
+	if err := unassociated(in); err != nil {
+		return counts, fmt.Errorf("original: %w", err)
+	}
+	if err := unassociated(out); err != nil {
+		return counts, fmt.Errorf("transformed: %w", err)
+	}
+	floor := int(premises.LowestOffset) &^ 7
 	owners := make([]int, len(out))
 	for i := range owners {
 		owners[i] = -1
@@ -136,7 +154,7 @@ func Check(in, out asm.Instructions, c Certificate) (Counts, error) {
 	prev := -1
 	for i, j := range c.Original {
 		if j <= prev || j >= len(out) {
-			return fail(OriginalOrder, "original %d missing or out of order at %d", i, j)
+			return counts, inputError(OriginalOrder, "original %d missing or out of order at %d", i, j)
 		}
 		owners[j] = i
 		prev = j
@@ -144,11 +162,11 @@ func Check(in, out asm.Instructions, c Certificate) (Counts, error) {
 	hooks := map[int]bool{}
 	for _, h := range c.Hooks {
 		if h.Start < 0 || h.End <= h.Start || h.End > len(out) {
-			return fail(HookRange, "invalid hook range %+v", h)
+			return counts, inputError(HookRange, "invalid hook range %+v", h)
 		}
 		for j := h.Start; j < h.End; j++ {
 			if owners[j] != -1 {
-				return fail(HookOverlap, "overlapping hook at %d", j)
+				return counts, inputError(HookOverlap, "overlapping hook at %d", j)
 			}
 			owners[j] = -2
 		}
@@ -157,7 +175,14 @@ func Check(in, out asm.Instructions, c Certificate) (Counts, error) {
 		}
 		hooks[h.Start] = true
 	}
-	// Remove hook bodies only after proving there is no fall-through into them.
+	for j, owner := range owners {
+		if owner < 0 {
+			if err := noLoadMetadata(out[j]); err != nil {
+				return counts, fmt.Errorf("transformed instruction %d: %w", j, err)
+			}
+		}
+	}
+	// Hook bodies were excluded above; reject any fall-through into one.
 	for _, h := range c.Hooks {
 		if h.Start == 0 || !terminal(out[h.Start-1]) {
 			return fail(HookFallthrough, "fall-through into hook %d", h.Start)
@@ -210,11 +235,14 @@ func Check(in, out asm.Instructions, c Certificate) (Counts, error) {
 	if err != nil {
 		return counts, fmt.Errorf("original CFG: %w", err)
 	}
-	// Every callable subprogram/callback has a function-reference target.
+	// Function-referenced subprogram/callback entries delimit the entry frame.
 	// The entry spill initializes only the entry frame, never a callee frame.
 	entryEnd := len(in)
 	for i, a := range in {
 		b := out[c.Original[i]]
+		if err := compareMetadata(a, b); err != nil {
+			return counts, fmt.Errorf("original instruction %d: %w", i, err)
+		}
 		aa, bb := a, b
 		if edge(a) {
 			t, e := target(in, opcs, oi, i)
@@ -248,9 +276,9 @@ func Check(in, out asm.Instructions, c Certificate) (Counts, error) {
 			return fail(OriginalReference, "original %d reference changed", i)
 		}
 		if !same(aa, bb) {
-			return fail(OriginalChanged, "original instruction %d changed: %v -> %v", i, a, b)
+			return fail(OriginalChanged, "original instruction %d changed: %s", i, differingFields(aa, bb))
 		}
-		if err := stackAudit(a, int(c.LowestOffset)); err != nil {
+		if err := stackAudit(a, int(premises.LowestOffset)); err != nil {
 			return counts, fmt.Errorf("original %d: %w", i, err)
 		}
 	}
@@ -280,8 +308,6 @@ func Check(in, out asm.Instructions, c Certificate) (Counts, error) {
 			counts.Sites++
 		}
 	}
-	// Original fall-throughs must not silently enter a hook (checked above),
-	// and all inserted calls must resolve to a validated hook start.
 	return counts, nil
 }
 
@@ -311,42 +337,42 @@ func checkBefore(helper asm.Instruction, is asm.Instructions, f int) error {
 	store := func(off int, r asm.Register) asm.Instruction { return asm.StoreMem(asm.RFP, int16(off), r, asm.DWord) }
 	var variants []asm.Instructions
 	for _, withMap := range []bool{false, true} {
-		v := asm.Instructions{store(f-16, asm.R2)}
+		v := asm.Instructions{store(f+slotKey, asm.R2)}
 		switch asm.BuiltinFunc(helper.Constant) {
 		case asm.FnTailCall:
-			v = asm.Instructions{store(f-16, asm.R3)}
+			v = asm.Instructions{store(f+slotKey, asm.R3)}
 			if withMap {
-				v = append(v, store(f-32, asm.R2))
+				v = append(v, store(f+slotMap, asm.R2))
 			}
 			variants = append(variants, slices.Clone(v))
-			v = append(v, store(f-8, asm.R1))
+			v = append(v, store(f+slotContext, asm.R1))
 			variants = append(variants, v)
 			continue
 		case asm.FnMapUpdateElem:
-			at := f - 32
+			at := f + slotMap
 			if withMap {
-				at = f - 40
+				at = f + slotValue
 			}
-			v = append(v, store(f-24, asm.R4), store(at, asm.R3))
+			v = append(v, store(f+slotResult, asm.R4), store(at, asm.R3))
 		case asm.FnMapPushElem:
-			v = append(v, store(f-24, asm.R3))
+			v = append(v, store(f+slotResult, asm.R3))
 		}
 		if withMap {
-			v = append(v, store(f-32, asm.R1))
+			v = append(v, store(f+slotMap, asm.R1))
 		}
 		variants = append(variants, v)
 	}
 	for _, v := range variants {
 		if equal(is, v) {
 			for _, ins := range is {
-				if int(ins.Offset) < -512 {
+				if int(ins.Offset) < stackBottom {
 					return reject(SpillBounds, "stack spill outside frame")
 				}
 			}
 			return nil
 		}
 	}
-	return reject(PreludeShape, "not a P2-P5 spill sequence")
+	return reject(PreludeShape, "not a helper observation spill sequence")
 }
 func equal(a, b asm.Instructions) bool { return slices.EqualFunc(a, b, same) }
 
@@ -358,7 +384,7 @@ func checkHook(is asm.Instructions) error {
 		return nil
 	}
 	if len(is) < 3 || !same(is[0], asm.LoadMem(asm.R0, asm.R1, 0, asm.Word)) || !equal(is[len(is)-2:], asm.Instructions{asm.Mov.Imm(asm.R0, 0), asm.Return()}) {
-		return reject(HookShape, "not a P7 hook")
+		return reject(HookShape, "not an observer hook")
 	}
 	body := is[1 : len(is)-2]
 	// Typed nullable pointer pairs, or untrusted fault-handled loads.
@@ -375,7 +401,7 @@ func checkHook(is asm.Instructions) error {
 			return nil
 		}
 	}
-	return reject(HookBody, "not a P7 pointer-read sequence (stores/calls forbidden)")
+	return reject(HookBody, "not an observer pointer-read sequence (stores/calls forbidden)")
 }
 
 func hookCall(out asm.Instructions, pcs []int, idx map[int]int, j int, hooks map[int]bool) error {
@@ -393,8 +419,8 @@ func hookCall(out asm.Instructions, pcs []int, idx map[int]int, j int, hooks map
 	return nil
 }
 func checkEntry(is, out asm.Instructions, pcs []int, idx map[int]int, js []int, hooks map[int]bool, f int) error {
-	if !same(is[0], asm.StoreMem(asm.RFP, int16(f-8), asm.R1, asm.DWord)) || f-8 < -512 {
-		return reject(EntrySpill, "not P1 ctx spill")
+	if !same(is[0], asm.StoreMem(asm.RFP, int16(f+slotContext), asm.R1, asm.DWord)) || f+slotContext < stackBottom {
+		return reject(EntrySpill, "not entry context spill")
 	}
 	if len(is) == 1 {
 		return nil
@@ -406,12 +432,32 @@ func checkEntry(is, out asm.Instructions, pcs []int, idx map[int]int, js []int, 
 		}
 		call = 5
 	}
-	if len(is) != call+2 || !same(is[len(is)-1], asm.LoadMem(asm.R1, asm.RFP, int16(f-8), asm.DWord)) {
-		return reject(EntryRestore, "not P1 entry call/restore")
+	if len(is) != call+2 || !same(is[len(is)-1], asm.LoadMem(asm.R1, asm.RFP, int16(f+slotContext), asm.DWord)) {
+		return reject(EntryRestore, "not entry call/restore")
 	}
 	return hookCall(out, pcs, idx, js[call], hooks)
 }
 
 func terminal(ins asm.Instruction) bool {
 	return ins.OpCode.Class().IsJump() && (ins.OpCode.JumpOp() == asm.Exit || ins.OpCode.JumpOp() == asm.Ja)
+}
+
+func differingFields(a, b asm.Instruction) string {
+	var fields []string
+	if a.OpCode != b.OpCode {
+		fields = append(fields, fmt.Sprintf("opcode %s -> %s", a.OpCode, b.OpCode))
+	}
+	if a.Dst != b.Dst {
+		fields = append(fields, fmt.Sprintf("dst %s -> %s", a.Dst, b.Dst))
+	}
+	if a.Src != b.Src {
+		fields = append(fields, fmt.Sprintf("src %s -> %s", a.Src, b.Src))
+	}
+	if a.Offset != b.Offset {
+		fields = append(fields, fmt.Sprintf("offset %d -> %d", a.Offset, b.Offset))
+	}
+	if a.Constant != b.Constant {
+		fields = append(fields, fmt.Sprintf("constant %d -> %d", a.Constant, b.Constant))
+	}
+	return strings.Join(fields, ", ")
 }

@@ -10,19 +10,19 @@ import (
 
 func TestIdentityAndCertificate(t *testing.T) {
 	in := asm.Instructions{asm.Mov.Imm(asm.R0, 2), asm.Return()}
-	c := Certificate{Original: []int{0, 1}}
-	if _, err := Check(in, in, c); err != nil {
+	c := fixtureCertificate{Original: []int{0, 1}}
+	if _, err := checkFixture(in, in, c); err != nil {
 		t.Fatal(err)
 	}
 	for _, tc := range []struct {
-		c    Certificate
+		c    fixtureCertificate
 		kind Kind
 	}{
-		{Certificate{Original: []int{1, 0}}, OriginalOrder},
-		{Certificate{Original: []int{0, 2}}, OriginalOrder},
-		{Certificate{Original: []int{0, 1}, Hooks: []Span{{0, 2}}}, HookOverlap},
+		{fixtureCertificate{Original: []int{1, 0}}, OriginalOrder},
+		{fixtureCertificate{Original: []int{0, 2}}, OriginalOrder},
+		{fixtureCertificate{Original: []int{0, 1}, Hooks: []Span{{0, 2}}}, HookOverlap},
 	} {
-		_, err := Check(in, in, tc.c)
+		_, err := checkFixture(in, in, tc.c)
 		assertKind(t, err, tc.kind)
 	}
 }
@@ -51,8 +51,8 @@ func TestRelocatedRawSlotEdges(t *testing.T) {
 				out[2].Constant += 2
 				out[3].Constant += 2
 			}
-			c := Certificate{Original: []int{1, 2, 3, 4, 5, 8, 9}, Hooks: []Span{{h, h + 2}}}
-			if _, err := Check(in, out, c); err != nil {
+			c := fixtureCertificate{Original: []int{1, 2, 3, 4, 5, 8, 9}, Hooks: []Span{{h, h + 2}}}
+			if _, err := checkFixture(in, out, c); err != nil {
 				t.Fatal(err)
 			}
 			bad := append(asm.Instructions(nil), out...)
@@ -61,7 +61,7 @@ func TestRelocatedRawSlotEdges(t *testing.T) {
 			} else {
 				bad[2].Constant--
 			}
-			_, err := Check(in, bad, c)
+			_, err := checkFixture(in, bad, c)
 			assertKind(t, err, EdgeTarget)
 			bad = append(asm.Instructions(nil), out...)
 			if symbolic {
@@ -69,7 +69,7 @@ func TestRelocatedRawSlotEdges(t *testing.T) {
 			} else {
 				bad[3].Constant--
 			}
-			_, err = Check(in, bad, c)
+			_, err = checkFixture(in, bad, c)
 			assertKind(t, err, EdgeTarget)
 		})
 	}
@@ -82,8 +82,8 @@ func TestU32LivenessAndRestore(t *testing.T) {
 	out = append(out, in[3:]...)
 	h := len(out)
 	out = append(out, asm.Mov.Reg32(asm.R0, asm.R1).WithSymbol("hook"), asm.Xor.Reg32(asm.R0, asm.R2), asm.Return())
-	c := Certificate{Original: []int{0, 1, 2, 9, 10, 11}, Hooks: []Span{{h, h + 3}}}
-	if _, err := Check(in, out, c); err != nil {
+	c := fixtureCertificate{Original: []int{0, 1, 2, 9, 10, 11}, Hooks: []Span{{h, h + 3}}}
+	if _, err := checkFixture(in, out, c); err != nil {
 		t.Fatal(err)
 	}
 	// A load leaves caller-saved registers readable in P (unlike P2-P5).
@@ -94,8 +94,9 @@ func TestU32LivenessAndRestore(t *testing.T) {
 		out[1] = in[1]
 		in[3] = asm.Mov.Reg(asm.R0, r)
 		out[9] = in[3]
-		_, err := Check(in, out, c)
-		want := fmt.Sprintf("P6 clobbers live registers mask %#x", 1<<r)
+		_, err := checkFixture(in, out, c)
+		assertKind(t, err, U32Live)
+		want := fmt.Sprintf("u32 clobbers live registers mask %#x", 1<<r)
 		if err == nil || !strings.Contains(err.Error(), want) {
 			t.Fatalf("live R%d: got %v, want %q", r, err, want)
 		}
@@ -113,7 +114,7 @@ func TestHookAndStackSafety(t *testing.T) {
 	}
 	for _, ins := range []asm.Instruction{asm.StoreMem(asm.RFP, -9, asm.R0, asm.Byte), asm.LoadMem(asm.R0, asm.RFP, -16, asm.DWord)} {
 		in := asm.Instructions{ins, asm.Return()}
-		_, err := Check(in, in, Certificate{Original: []int{0, 1}, LowestOffset: -8})
+		_, err := checkFixture(in, in, fixtureCertificate{Original: []int{0, 1}, LowestOffset: -8})
 		assertKind(t, err, StackAudit)
 	}
 }
@@ -124,6 +125,9 @@ func TestHelperABI(t *testing.T) {
 	}
 	if helperReads(int64(asm.FnMapLookupElem)) != 0x6 {
 		t.Fatal("lookup ABI")
+	}
+	if helperReads(1<<32+int64(asm.FnKtimeGetNs)) != argRegs || helperReads(-1) != argRegs {
+		t.Fatal("out-of-range helper must be conservative")
 	}
 	if helperReads(999999) != 0x3e {
 		t.Fatal("unknown helper must be conservative")

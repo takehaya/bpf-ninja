@@ -2,100 +2,133 @@
 
 [English](README.md)
 
-`injectcheck.Check` は元の命令列、変換後の命令列、対応位置を示す certificate を受け取り、検査結果とエラーを返す。
-`pkg/inject` を import せず、変換器の site 選択、再配置、liveness の判定を使用しない。
-certificate は検査対象を示すヒントであり、各対応命令の内容と挿入された全命令を検査する。
+`pkg/injectcheck` は `pkg/inject` の変換結果を調べるオフラインのテスト用 oracle である。
+`cmd/inject-check` は変換器への依存を含めず個別にビルドする開発ツールであり、`inject-run` やリリース用バイナリには組み込まれていない。
+`Check` は元命令の比較、制御フロー辺の解決、挿入領域の導出、挿入された全命令の検査を独立に行う。
+変換器の site 選択、再配置、liveness の判定は使用しない。
 
 ```go
 counts, err := injectcheck.Check(original, transformed, injectcheck.Certificate{
     Original: originalIndices,
     Hooks: hookRanges,
-    LowestOffset: auditedFloor,
-})
+}, injectcheck.Premises{LowestOffset: auditedFloor})
 ```
 
-`Original[i]` は元命令 i に対応する変換後の decoded instruction index である。
-`Hooks` は挿入関数本体の半開区間である。
-`LDIMM64` は decoded instruction としては 1 要素、再配置計算では raw slot 2 個として扱う。
-メタデータを保持する変換器では、変換前の `Label` と変換後の `FromLabels` で対応位置を抽出できる。
-ラベルの欠落と重複を拒否し、ラベルで指した命令の一致は `Check` が別途検査する。
+**certificate** は未信頼の対応ヒントである。
+`Original[i]` は元命令 i に対応する変換後の decoded index、`Hooks` は挿入関数本体の半開区間を表す。
+`LDIMM64` は decoded instruction では 1 要素、再配置計算では raw slot 2 個となる。
+変換前の `Label` と変換後の `FromLabels` で保持された metadata からヒントを抽出でき、`Check` が内容を別途検査する。
+別引数の **premise** である `LowestOffset` は、間接アクセスと callee からの caller-stack pointer の利用を含む、呼び出し側の信頼済み stack-alias audit である。
+チェッカーは値の範囲と直接 RFP アクセスを検査するが、命令 projection から alias audit の正しさは確立できない。
 
-`Instruction.Map()` が非 nil の命令は、元命令列と変換後命令列のどちらにあっても拒否する。
-同じ map の関連付けも拒否対象であり、挿入領域と hook も例外にしない。
-`AssociateMap` または map の書き換えを行う前に検査する。
-map operand は両命令列で共有する変化のない外部対応表を前提とし、未解決の `Reference` または同一 FD 空間の数値として比較する。
-同じ名前の map spec を別の実 map へ置換する処理は検査対象外である。
+## 検査する形式
 
-検査項目は次のとおりである。
+コメント中のパターン名は次の挿入形式を指す。
+「元プログラム」は変換対象のプログラムを指す。
 
-- 元命令が順序を保って各 1 回現れ、opcode、register、offset、constant、map reference が保存されること。
-- 分岐、BPF call、callback 参照の宛先が、同じ元命令または helper 前の spill 列の先頭に移ること。
-  元の先頭への後退辺は一度だけ実行する入口 spill を飛ばす。
-- 入口、helper 前の spill、u32 注入、hook 本体が許可された形式であること。
-- helper 後の処理が限定された命令集合と前方分岐で構成され、各経路で R0 を 64 bit のまま復元すること。
-  tail call の失敗経路では G3 A3 により R0–R5 が読めないことを前提とし、R0 の復元を要求しない。
-- 挿入 store が監査床より下の予約領域を使い、R6–R10 を変更しないこと。
-  map 値のコピーは R0 から R1 を介して予約領域へ書く load/store 対に限る。
-- hook が許可された引数読み出しと return だけを持つこと。
-  hook 内の store、helper、kfunc、別の BPF call は拒否する。
-- 元命令の直接 RFP アクセスが監査床以上であること。
+| 名前 | 形式 | 検査する内容 |
+| --- | --- | --- |
+| P1 | 入口の context spill、任意の entry/dispatch hook と R1 復元 | スロット、dispatch 引数、hook 宛先、復元の一致 |
+| P2 | lookup/per-CPU lookup の spill と条件付き observer postlude | 結果分岐 1 個、経路ごとに 1 回の call（分岐先を含め最大 2 個）、値コピー対、全経路での 64-bit R0 復元 |
+| P3 | map update/delete の spill と observer postlude | helper 引数 spill、任意の符号付き結果分岐、1 回の call、64-bit R0 復元 |
+| P4 | tail call 前の spill と失敗時の postlude | helper 引数と宛先の保存、失敗時の hook、local または入口 frame での context 初期化 |
+| P5 | queue/stack の push/pop/peek の spill と observer postlude | helper ごとの spill、1 回の hook、64-bit R0 復元 |
+| P6 | `ldxw R2, [R0+offset]` の後の u32 hook | 保存・call・復元の 6 命令、u32 hook 本体、元の継続位置での R1/R3–R5 の死 |
+| P7 | observer 関数 | no-op return、u32 XOR return、または許可された context/pointer 読み出しとゼロ return。store と call を拒否 |
 
-## 呼び出し規約と liveness
+スタックスロットの定義は変換器の実装と独立している。
+整列した床を `f = LowestOffset &^ 7` とする。
+`f` からの相対位置は context が `f-8`、key または tail index が `f-16`、helper 結果が `f-24`、map が `f-32`、update value が `f-40`（map spill がなければ `f-32`）である。
+`f-24` には意図的に update の R4/push の R3 の flags を先に置き、postlude が読み出した後に R0 で上書きする。
+u32 領域は R0 を `f-8`、R2 を `f-16` に保存するため、入口 context と key のスロットに重なる。
+u32 と helper の混在時に、後続 observer が元の context 値を受け取ることは保証しない。観測引数の正しさは受理条件の範囲外である。
+挿入 store はすべて `f` より下、512-byte frame 内に収まる必要がある。
 
-P2–P5 は G3 A3（呼び出し規約）を前提とする。
-元プログラム P は verifier に受理される有効な BPF であり、helper の直後の R1–R5 は、実行可能な経路で再定義前に読まれない。
-挿入領域は R6–R10 と元のスタックを保ち、通常の helper の R0 を全経路で復元するため、元命令の読める値と分岐条件は変わらない。
-したがって P で実行不能だった経路が、scratch レジスタへの書き込みによって実行可能になることもない。
-値域を使わない構文的 CFG の liveness は、そのような実行不能経路を含めて live と判定するため、P2–P5 の拒否条件には用いない。
+各元命令は順序を保って各 1 回現れ、opcode、register、offset、constant、辺以外の reference が一致する必要がある。
+不一致の診断はフィールド名を示す。
+分岐、BPF call、callback の宛先は対応する元命令または helper prelude の先頭へ再配置する必要がある。
+元の入口への後退辺は一度だけ実行する入口 spill を飛ばす。
+hook による元命令との重なり、挿入領域の分断、hook への fall-through は拒否する。
+挿入命令は R6–R10 と元のスタックを保存し、map 値のコピーは R0 から R1 を介して予約領域へ書く load/store 対に限る。
 
-P4 の tail call は成功すれば postlude を実行せず、helper の引数と転送先も不変である。
-失敗して戻る場合は `RET_VOID` の規約により R0 も未初期化となるため、A3 の下で R0–R5 への書き込みは P の観測を変えない。
-この判断は P の verifier validity と A3 に依存し、無効な P を入力した場合の保証はない。
-ctx スロットは、検査した入口 spill がある入口 frame、または同じ site の prelude に ctx spill がある frame でのみ初期化済みと扱う。
-subprogram と callback の開始位置は元の function reference の宛先から求め、入口 frame の spill を callee frame の初期化には使わない。
+## 呼び出し規約と保証の範囲
 
-P6（u32 版）の挿入位置は通常の load の直後であり、A3 の helper 規約は適用できない。
-P6 は R0 と R2 を保存して復元するが R1 と R3–R5 を壊すため、元 CFG の固定点から求めた liveness でこれらの死を要求する。
-既知 helper の引数数と元 callee の使用レジスタを使い、未知 helper、kfunc、`trace_printk` などの可変引数 helper は R1–R5 の全読みと扱う。
-値や書式を解析しないため、安全な P6 を拒否する場合がある。
-certificate の未検証の到達不能宣言で CFG の辺を除外することはしない。
-helper 後の処理は最大 4096 ステップで全経路を調べ、未知の形式と予算超過を拒否する。
+helper 後の処理は verifier-valid な元 BPF を前提とし、実行可能な経路では R1–R5 を再定義する前に読まない。
+tail call の失敗時は `RET_VOID` 規約により R0 も読めない。
+挿入命令は通常 helper の R0 を全経路で 64-bit 復元し、元命令が読める値と分岐条件を保存するため、読めない scratch register の変更で元の実行不能経路が実行可能になることはない。
+構文的 liveness は実行不能経路も含むため、helper 後の拒否条件には使わない。
+tail call 成功時は、保存された helper 引数により postlude より前に制御を移す。
 
-## 命令対をファイルから検査する
+u32 load では caller-saved register が読めるため、元 CFG の固定点解析で R1/R3–R5 の死を要求する。
+既知 helper は引数数、元 BPF callee は live-in register を用い、未知 helper、kfunc、可変引数 helper は R1–R5 の全読みと扱う。
+この保守的解析は安全な u32 site を拒否する場合がある。
+helper 後の経路検査は最大 4096 ステップとし、超過時は拒否する。
+入口 context spill は function-reference の subprogram/callback 宛先で区切る入口 frame だけを初期化し、callee frame の初期化には使わない。
+参照辺を持たない例外 callback は、この frame 識別の前提外である。
+
+受理が対象とする **比較 projection** は decoded instruction のフィールド、reference、解決した辺、検査済みの挿入規則である。
+メモリ上の元命令と対応先では、CO-RE、kconfig、kfunc、ksym metadata の pointer identity も一致させる必要があり、hook を含む挿入領域には許可しない。
+これは relocation の意味ではなく同一性の検査であり、共有 metadata object が検査中やロード中に変更されないことを前提とする。
+固定した cilium/ebpf にはこれらの public iterator がないため private metadata key を読み、各種類の ELF fixture で検査する。
+関連付け済み map は、両命令列が同じ関連付けを持っていても拒否する。
+map 関連付け前に、両命令列で共有する変化のない外部 symbol/FD 対応表の下で検査する。
+数値 FD はその名前空間の識別子であり、プロセスをまたぐ実 map の保存形式ではない。
+
+受理は元プログラムと変換後プログラムの BPF validity、呼び出し規約、信頼済み stack audit を前提とする。
+kernel の受理、BTF/CO-RE の意味、JIT の正しさ、observer noninterference、観測引数、並行実行、時刻、乱数は証明しない。
+検査で BPF のロード、attach、pin は行わない。
+
+## JSON とエラー分類
 
 ```sh
 go build -o inject-check ./cmd/inject-check
 ./inject-check pair.json
 ```
 
-JSON の必須のトップレベルフィールドは `Original`、`Transformed`、`Certificate` である。
-フィールド名の大文字小文字は区別せず、小文字の表記も受け付ける。
-必須フィールドの欠落または null は入力エラー（終了コード 2）とし、メッセージにフィールド名を示す。
-命令のフィールドは `asm.Instruction` の `OpCode`、`Dst`、`Src`、`Offset`、`Constant` に加え、文字列の `Symbol` と `Reference` である。
-JSON 生成には `json.Marshal(injectcheck.Instructions(insns))` を使う。
-この型は symbol と reference を保存し、関連付け済み map があれば直列化をエラーにする。
-`asm.Instructions` を直接直列化すると map metadata が消えるため、その出力を CLI の入力にしてはならない。
-CLI は命令の未知のフィールドを入力エラーにする。
-`Metadata` も空かどうかを問わず拒否し、専用 encoder が保存するフィールドだけを扱う。
-JSON 中の map 名と数値 FD は両命令列で共有する識別子であり、実 map やプロセスをまたぐ FD の有効性は保存しない。
-`PseudoMapValue` の上位32 bit の offset も `Constant` に保存し、`Src` の pseudo kind とともに完全一致を要求する。
-`certificate` は Go API と同じフィールドを持つ。
-標準出力に `Accepted`、`Counts`、`Reason` を出力し、受理時は終了コード 0、拒否時は 1、入力エラー時は 2 を返す。
+writer と reader はタグ付きの `injectcheck.Pair` 型を共有する。
+format 1 は cilium/ebpf v0.22 の decoded `asm.OpCode` 表現を固定するものであり、kernel の opcode byte とは異なる。
+必須のトップレベルキーは `format`、`original`、`transformed`、`certificate`、`premises` で、大文字小文字を区別する。
+`certificate.original` と `premises.lowest_offset` も必須で、`certificate.hooks` は空または省略してよい。
+Span のフィールドは `start` と `end` である。
+命令のフィールドは `opcode`、`dst`、`src`、`offset`、`constant`、`symbol`、`reference` である。
+`PseudoMapValue` の offset は `constant` の上位 32-bit、pseudo kind は `src` に保持する。
+未知のフィールドと規定外の大小文字表記は入力エラーとする。
+任意の証拠 object も含め、すべての階層で大小文字違いを含む重複キーを拒否する。
+トップレベルの任意キー `request`、`result`、`reason` は明示的に許可するが、判定には使用しない。
 
-検査は BPF をロードせず、attach と pin も行わない。
+`Pair` の命令には `injectcheck.Instructions` を使い、metadata を黙って失う `asm.Instructions` の直接直列化は使わない。
+専用 encoder は関連付け済み map と上記 4 種類の load-time metadata を拒否する。
+projection を明示的に保存する producer は、先にメモリ上の metadata identity を検査し、JSON の再検査が projection だけを対象とすることを記録する必要がある。
+local census harness はこの方式を使うため、JSON から metadata identity の検査は再現できない。
 
-## 保証の範囲
+CLI は `accepted`、`kind`、`counts`、`premises`、`reason` を出力する。
+`counts.sites` は検査した site 数で、拒否時は途中までの値となる。
+判定に使った premise も出力する。
+API エラーは `errors.As` で次のように区別でき、どちらも安定した `Kind` と診断用 `Detail` を持つ。
 
-受理は、元プログラムと変換後プログラムが有効な BPF であり、呼び出し規約と stack-alias audit が正しいことを前提とする。
-G3 §3.3 T2 の構文的十分条件を調べるものであり、kernel verifier や一般的な等価性の証明を提供するものではない。
-スタックエイリアス、callee を通じた予約領域へのアクセス、観測者の map 更新、並行実行、時刻と乱数の影響は証明しない。
-BTF、CO-RE、kernel verifier の受理、JIT の正しさも判定対象に含めない。
-helper 後の引数設定は許可された命令集合と保存条件を検査するが、観測者へ渡す site ID と引数値の正しさは検査しない。
-検査済みの命令保存条件と、観測チャネルの値の正しさは別の性質である。
+| 結果 | 型 | CLI 終了コード | 例 |
+| --- | --- | --- | --- |
+| 受理 | nil | 0 | 検査規則をすべて満たす |
+| 入力エラー | `*InputError` | 2 | JSON 不正、必須フィールドの欠落・null（名前を診断）、元命令列・対応表の空値、対応表の長さ・順序不正、hook 範囲の不正・重なり、[-512,0] 外の床、不正な元 register、未対応 format |
+| 変換の拒否 | `*Rejection` | 1 | 命令・reference・辺の変更、挿入 store・分岐・register effect・hook の違反、metadata の変更、関連付け済み map |
 
-通常のテストは `go test ./pkg/injectcheck ./pkg/inject` で実行する。
-既存の同値性 fixture の検査は `go test ./pkg/inject -run '^TestTranslationValidation' -v` で実行する。
-corpus の検査は `BPF_NINJA_VALIDATE_OBJECTS` に object ディレクトリ、`BPF_NINJA_VALIDATE_CENSUS` に既存の census 結果ディレクトリ、`BPF_NINJA_VALIDATE_OUTPUT` に保存先を指定する。
-corpus テストは拒否を結果ファイルに保存し、チェッカーによる拒否があればテストを失敗させる。
+decode・file・usage エラーは stderr に出し、validation が見つけた構造上の入力エラーは JSON verdict も返す。
+元命令列の空値、対応表の空値、長さ不一致、床の不正は別の kind を持つ。
 
-`errors.As` で `*InputError`（入力の欠落・不正、元命令列または対応表の空値、対応表の長さ不一致、[-512,0] 外の監査床。CLI 終了コード 2）と `*Rejection`（意味的な規則違反。終了コード 1）を区別できる。どちらも安定した `Kind` と診断用の `Detail` を持つ。受理時は終了コード 0 となる。
+## テストと local corpus の証拠
+
+通常の実行は `go test ./pkg/injectcheck ./pkg/inject ./cmd/inject-check` である。
+`TestPairCorpus` は CLI をビルドし、コミット済み命令対の期待値 `{accepted, kind}`、API、CLI の全 verdict を比較する。
+対象は受理される 7 設定と 11 変異であり、コミット済み CLI/API 一致テストの主張はこの範囲に限る。
+`TestTranslationValidationEquivalence` は予定 site/hook 数と検査数を照合し、site がある fixture とゼロの fixture を分けて記録する。
+依存テストは checker と CLI から `pkg/inject` への直接・間接依存を拒否する。
+
+privileged な `TestBpf*` fixture はロードと `BPF_PROG_TEST_RUN` だけを使い、`scripts/test/privileged.py` に登録している。
+適切なテスト VM の root で `go test ./pkg/injectcheck -run '^TestBpf' -v` を実行する。
+map identity と、lookup・delete・tail-call の postlude が前提とする verifier の挙動を検査する。
+
+local-only census には `BPF_NINJA_VALIDATE_OBJECTS`、`BPF_NINJA_VALIDATE_CENSUS`、`BPF_NINJA_VALIDATE_OUTPUT` を指定する。
+census 結果の `<object>--<program>/plain/load.json` に外部 stack-audit ツール由来の `Bound` が必要であり、このリポジトリはその audit を生成しない。
+床ファイルが欠落した program は全 4 形式を `INPUT_REFUSED` として記録し、受理数に含めない。
+raw 形式の数と plan は独立に計算し、typed 形式の変換拒否で raw を実行しなかった場合は `RAW_NOT_RUN` を明記する。
+4 形式は同じ program の反復であり、独立標本ではない。

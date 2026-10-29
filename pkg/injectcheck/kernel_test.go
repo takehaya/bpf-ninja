@@ -1,20 +1,16 @@
 package injectcheck
 
 import (
-	"fmt"
-	"os"
 	"testing"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/asm"
+	"github.com/takehaya/bpf-ninja/internal/testutil"
 )
 
-// Opt-in: this is the review's nine-instruction reproducer, using load and
-// TEST_RUN only. No host interface, attachment or pin is needed.
-func TestAssociatedMapKernelRegression(t *testing.T) {
-	if os.Getenv("BPF_NINJA_CHECK_MAP_KERNEL") == "" {
-		t.Skip("set BPF_NINJA_CHECK_MAP_KERNEL=1 to load the map-swap reproducer")
-	}
+// Loads and TEST_RUNs a map-swap fixture without attaching or pinning.
+func TestBpfAssociatedMapSwap(t *testing.T) {
+	testutil.SkipIfNotRoot(t)
 	maps := make([]*ebpf.Map, 2)
 	for i := range maps {
 		m, err := ebpf.NewMap(&ebpf.MapSpec{Type: ebpf.Array, KeySize: 4, ValueSize: 4, MaxEntries: 1})
@@ -38,11 +34,13 @@ func TestAssociatedMapKernelRegression(t *testing.T) {
 	if err := out[2].AssociateMap(maps[1]); err != nil {
 		t.Fatal(err)
 	}
-	c := Certificate{LowestOffset: -8}
+	c := fixtureCertificate{LowestOffset: -8}
 	for i := range in {
 		c.Original = append(c.Original, i)
 	}
-	if _, err := Check(in, out, c); err == nil {
+	_, err := checkFixture(in, out, c)
+	assertKind(t, err, AssociatedMap)
+	if err == nil {
 		t.Fatal("accepted associated map swap")
 	} else {
 		t.Logf("map-swap rejected: %v", err)
@@ -61,14 +59,13 @@ func TestAssociatedMapKernelRegression(t *testing.T) {
 	}
 }
 
-// This opt-in test confirms that the branch-sensitive P2/P4 fixtures satisfy
-// the verifier-validity premise used by TestHelperCallingConvention.
-func TestHelperCallingConventionKernel(t *testing.T) {
-	if os.Getenv("BPF_NINJA_CHECK_MAP_KERNEL") == "" {
-		t.Skip("set BPF_NINJA_CHECK_MAP_KERNEL=1 to load calling-convention fixtures")
-	}
-	for _, tail := range []bool{false, true} {
-		t.Run(fmt.Sprintf("tail=%t", tail), func(t *testing.T) {
+// Verifier pruning of the infeasible register read is the premise used by
+// helper postlude checking, tested for lookup, delete and tail-call helpers.
+func TestBpfHelperCallingConvention(t *testing.T) {
+	testutil.SkipIfNotRoot(t)
+	for _, helper := range []asm.BuiltinFunc{asm.FnMapLookupElem, asm.FnMapDeleteElem, asm.FnTailCall} {
+		t.Run(helper.String(), func(t *testing.T) {
+			tail := helper == asm.FnTailCall
 			mapType := ebpf.Array
 			if tail {
 				mapType = ebpf.ProgramArray
@@ -79,7 +76,14 @@ func TestHelperCallingConventionKernel(t *testing.T) {
 			}
 			t.Cleanup(func() { _ = m.Close() })
 			in, out, c := callingConventionFixture(tail)
-			if _, err := Check(in, out, c); err != nil {
+			if helper == asm.FnMapDeleteElem {
+				_, base, _ := callingConventionFixture(false)
+				post := append(clone(base[8:9]), base[10:15]...)
+				in, out, c = replacePostlude(post)
+				in[5] = helper.Call()
+				out[c.Original[5]] = in[5]
+			}
+			if _, err := checkFixture(in, out, c); err != nil {
 				t.Fatal(err)
 			}
 			for i, is := range []asm.Instructions{in, out} {
