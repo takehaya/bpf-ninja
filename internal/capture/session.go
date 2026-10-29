@@ -18,6 +18,7 @@ type SessionStats struct {
 
 type shardSession struct {
 	stopCh       chan struct{}
+	wake         func()
 	failure      chan struct{}
 	cursors      []*fastrb.Cursor
 	final        []uint64
@@ -60,6 +61,9 @@ func (s *shardSession) stop() {
 			s.final[i] = c.Produced()
 		}
 		close(s.stopCh)
+		if s.wake != nil {
+			s.wake()
+		}
 		s.done.Wait()
 		for _, c := range s.cursors {
 			s.fail(c.Close())
