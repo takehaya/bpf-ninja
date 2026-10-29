@@ -66,7 +66,8 @@ go build -o inject-check ./cmd/inject-check
 ./inject-check pair.json
 ```
 
-The JSON fields are `original`, `transformed` and `certificate`.
+The required top-level JSON fields are `Original`, `Transformed` and `Certificate`; field names are case-insensitive, so lowercase spellings are also accepted.
+Missing or null required fields are input errors (exit code 2), with a message naming the field.
 Instructions contain `asm.Instruction` fields `OpCode`, `Dst`, `Src`, `Offset` and `Constant`, plus string `Symbol` and `Reference` fields.
 Use `json.Marshal(injectcheck.Instructions(insns))` to produce them.
 This encoder preserves symbols and references and refuses associated maps before serialization can discard their identity.

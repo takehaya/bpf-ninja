@@ -12,8 +12,8 @@ import (
 )
 
 type pair struct {
-	Original, Transformed injectcheck.Instructions
-	Certificate           injectcheck.Certificate
+	Original, Transformed *injectcheck.Instructions
+	Certificate           *injectcheck.Certificate
 }
 
 func run(args []string) int {
@@ -31,7 +31,20 @@ func run(args []string) int {
 		fmt.Fprintln(os.Stderr, err)
 		return 2
 	}
-	counts, err := injectcheck.Check(asm.Instructions(p.Original), asm.Instructions(p.Transformed), p.Certificate)
+	for _, field := range []struct {
+		name    string
+		present bool
+	}{
+		{"original", p.Original != nil},
+		{"transformed", p.Transformed != nil},
+		{"certificate", p.Certificate != nil},
+	} {
+		if !field.present {
+			fmt.Fprintf(os.Stderr, "required field %q is missing or null\n", field.name)
+			return 2
+		}
+	}
+	counts, err := injectcheck.Check(asm.Instructions(*p.Original), asm.Instructions(*p.Transformed), *p.Certificate)
 	verdict := struct {
 		Accepted bool
 		Counts   injectcheck.Counts

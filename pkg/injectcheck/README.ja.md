@@ -68,7 +68,9 @@ go build -o inject-check ./cmd/inject-check
 ./inject-check pair.json
 ```
 
-JSON の必須フィールドは `original`、`transformed`、`certificate` である。
+JSON の必須のトップレベルフィールドは `Original`、`Transformed`、`Certificate` である。
+フィールド名の大文字小文字は区別せず、小文字の表記も受け付ける。
+必須フィールドの欠落または null は入力エラー（終了コード 2）とし、メッセージにフィールド名を示す。
 命令のフィールドは `asm.Instruction` の `OpCode`、`Dst`、`Src`、`Offset`、`Constant` に加え、文字列の `Symbol` と `Reference` である。
 JSON 生成には `json.Marshal(injectcheck.Instructions(insns))` を使う。
 この型は symbol と reference を保存し、関連付け済み map があれば直列化をエラーにする。
