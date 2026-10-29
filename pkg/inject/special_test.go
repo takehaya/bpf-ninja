@@ -1,6 +1,7 @@
 package inject
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -8,6 +9,43 @@ import (
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/btf"
 )
+
+func TestLookupRawMalformedPointee(t *testing.T) {
+	timer := time.AfterFunc(5*time.Second, func() { panic("raw transform pointee traversal did not terminate") })
+	defer timer.Stop()
+	for _, tc := range []struct{ kind, want string }{
+		{"direct-cycle", "cyclic pointer pointee"},
+		{"qualified-cycle", "cyclic pointer pointee"},
+		{"depth-33", "exceeds depth 32"},
+	} {
+		for _, mode := range []struct {
+			name  string
+			flags uint32
+			copy  bool
+		}{
+			{"ordinary", 0, false},
+			{"read-only-copy", bpfFRdonlyProg, true},
+		} {
+			t.Run(tc.kind+"/"+mode.name, func(t *testing.T) {
+				p := rawLookupFixture(t, lookupFixture(), "p", true)
+				req := rawLookupRequest(autoReq())
+				req.CopyReadOnly = mode.copy
+				for fd, m := range p.Maps {
+					m.Value, m.ValueSize = parsedPointeeRecord(t, tc.kind), 8
+					m.Flags = mode.flags
+					if copiesValue(&m, LookupRequest{CopyReadOnly: mode.copy}) {
+						t.Error("malformed value allowed a stack copy")
+					}
+					p.Maps[fd] = m
+				}
+				got, err := TransformLookupRaw(p, req)
+				if got != nil || !errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), "value BTF:") || !strings.Contains(err.Error(), tc.want) {
+					t.Fatalf("want nil result and value BTF refusal containing %q, got result=%v err=%v", tc.want, got != nil, err)
+				}
+			})
+		}
+	}
+}
 
 func TestSpecialFieldPointeeChains(t *testing.T) {
 	timer := time.AfterFunc(5*time.Second, func() { panic("special-field pointee traversal did not terminate") })
