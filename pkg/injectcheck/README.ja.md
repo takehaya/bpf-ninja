@@ -97,3 +97,5 @@ helper 後の引数設定は許可された命令集合と保存条件を検査�
 既存の同値性 fixture の検査は `go test ./pkg/inject -run '^TestTranslationValidation' -v` で実行する。
 corpus の検査は `BPF_NINJA_VALIDATE_OBJECTS` に object ディレクトリ、`BPF_NINJA_VALIDATE_CENSUS` に既存の census 結果ディレクトリ、`BPF_NINJA_VALIDATE_OUTPUT` に保存先を指定する。
 corpus テストは拒否を結果ファイルに保存し、チェッカーによる拒否があればテストを失敗させる。
+
+`errors.As` で `*InputError`（入力の欠落・不正、元命令列または対応表の空値、対応表の長さ不一致、[-512,0] 外の監査床。CLI 終了コード 2）と `*Rejection`（意味的な規則違反。終了コード 1）を区別できる。どちらも安定した `Kind` と診断用の `Detail` を持つ。受理時は終了コード 0 となる。

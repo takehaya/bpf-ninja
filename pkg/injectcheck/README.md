@@ -93,3 +93,5 @@ Run unit tests with `go test ./pkg/injectcheck ./pkg/inject`.
 Run the equivalence fixtures with `go test ./pkg/inject -run '^TestTranslationValidation' -v`.
 For the opt-in corpus test, set `BPF_NINJA_VALIDATE_OBJECTS` to an object directory, `BPF_NINJA_VALIDATE_CENSUS` to recorded census results, and `BPF_NINJA_VALIDATE_OUTPUT` to an output directory.
 It records all rejections and fails if the checker rejects any transformed program.
+
+`errors.As` distinguishes `*InputError` (malformed/missing input, empty original or certificate mapping, mapping length mismatch, stack floor outside [-512,0]; CLI exit 2) from `*Rejection` (semantic rule violation; exit 1). Both expose a stable `Kind` and a human-readable `Detail`. Acceptance exits 0.

@@ -4,6 +4,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 
@@ -53,8 +54,12 @@ func run(args []string) int {
 	if err != nil {
 		verdict.Reason = err.Error()
 	}
-	if err = json.NewEncoder(os.Stdout).Encode(verdict); err != nil {
-		fmt.Fprintln(os.Stderr, err)
+	if encodeErr := json.NewEncoder(os.Stdout).Encode(verdict); encodeErr != nil {
+		fmt.Fprintln(os.Stderr, encodeErr)
+		return 2
+	}
+	var input *injectcheck.InputError
+	if errors.As(err, &input) {
 		return 2
 	}
 	if !verdict.Accepted {

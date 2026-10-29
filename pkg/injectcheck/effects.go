@@ -1,7 +1,6 @@
 package injectcheck
 
 import (
-	"fmt"
 	"maps"
 
 	"github.com/cilium/ebpf/asm"
@@ -45,7 +44,7 @@ func checkAfter(helper asm.Instruction, before, is, out asm.Instructions, pcs []
 	isLookup := asm.BuiltinFunc(helper.Constant) == asm.FnMapLookupElem || asm.BuiltinFunc(helper.Constant) == asm.FnMapLookupPercpuElem
 	tail := asm.BuiltinFunc(helper.Constant) == asm.FnTailCall
 	if len(is) == 0 {
-		return fmt.Errorf("missing P2-P5 postlude")
+		return reject(PostludeMissing, "missing P2-P5 postlude")
 	}
 	// G3 A3 assumes verifier-accepted P: R1-R5 are unreadable after a helper,
 	// and RET_VOID tail-call failure also leaves R0 unreadable. P2-P5 may
@@ -59,7 +58,7 @@ func checkAfter(helper asm.Instruction, before, is, out asm.Instructions, pcs []
 			save = 1
 		}
 		if len(is) <= save+1 || !same(is[save], asm.StoreMem(asm.RFP, int16(f-24), asm.R0, asm.DWord)) || !same(is[len(is)-1], asm.LoadMem(asm.R0, asm.RFP, int16(f-24), asm.DWord)) {
-			return fmt.Errorf("missing full-width R0 save/restore")
+			return reject(ResultSaveRestore, "missing full-width R0 save/restore")
 		}
 	}
 	branches, calls, conditions := 0, 0, 0
@@ -76,10 +75,10 @@ func checkAfter(helper asm.Instruction, before, is, out asm.Instructions, pcs []
 	}
 	if isLookup {
 		if calls < 1 || calls > 2 || conditions != 1 || branches != calls || len(is) < 2 || (is[1].OpCode.JumpOp() != asm.JEq && is[1].OpCode.JumpOp() != asm.JNE) {
-			return fmt.Errorf("not a P2 branch/call structure")
+			return reject(LookupStructure, "not a P2 branch/call structure")
 		}
 	} else if calls != 1 || branches > 1 || conditions != branches || tail && branches != 0 {
-		return fmt.Errorf("not a P3-P5 branch/call structure")
+		return reject(HelperStructure, "not a P3-P5 branch/call structure")
 	}
 	s := initial()
 	if entryCtx {
@@ -100,25 +99,25 @@ func checkAfter(helper asm.Instruction, before, is, out asm.Instructions, pcs []
 	walk = func(i int, s state) error {
 		visits++
 		if visits > 4096 {
-			return fmt.Errorf("postlude path budget exceeded")
+			return reject(PathBudget, "postlude path budget exceeded")
 		}
 		if i == len(is) {
 			if !tail && s.regs[0].id != 200 {
-				return fmt.Errorf("R0 not restored on every path")
+				return reject(ResultPath, "R0 not restored on every path")
 			}
 			return nil
 		}
 		ins := is[i]
 		cl := ins.OpCode.Class()
 		if ins.Dst > asm.RFP || ins.Src > asm.RFP {
-			return fmt.Errorf("invalid register")
+			return reject(RegisterInvalid, "invalid register")
 		}
 		read := func(r asm.Register) error {
 			if r > asm.R5 && r != asm.RFP {
-				return fmt.Errorf("inserted read of R%d outside P2-P5", r)
+				return reject(RegisterRead, "inserted read of R%d outside P2-P5", r)
 			}
 			if s.regs[r].id == 0 {
-				return fmt.Errorf("read of undefined R%d at postlude %d", r, i)
+				return reject(RegisterUndefined, "read of undefined R%d at postlude %d", r, i)
 			}
 			return nil
 		}
@@ -126,7 +125,7 @@ func checkAfter(helper asm.Instruction, before, is, out asm.Instructions, pcs []
 		case cl == asm.StXClass && ins.OpCode.Mode() == asm.MemMode:
 			at, w := int(ins.Offset), width(ins)
 			if ins.Dst != asm.RFP || at < -512 || at+w > f {
-				return fmt.Errorf("inserted store outside reserved frame")
+				return reject(StoreBounds, "inserted store outside reserved frame")
 			}
 			if err := read(ins.Src); err != nil {
 				return err
@@ -134,25 +133,25 @@ func checkAfter(helper asm.Instruction, before, is, out asm.Instructions, pcs []
 			result := at == f-24 && ins.Src == asm.R0 && w == 8 && (i == 0 || i == 1 && is[0].OpCode.Class() == asm.LdXClass)
 			copyPair := isLookup && s.calls == 0 && i > 0 && ins.Src == asm.R1 && at+w <= f-32 && same(is[i-1], asm.LoadMem(asm.R1, asm.R0, is[i-1].Offset, ins.OpCode.Size())) && is[i-1].Offset >= 0
 			if !result && !copyPair {
-				return fmt.Errorf("store is not result spill or P2 value copy")
+				return reject(StoreShape, "store is not result spill or P2 value copy")
 			}
 			s.store(at, w, s.regs[ins.Src])
 		case cl == asm.LdXClass && ins.OpCode.Mode() == asm.MemMode:
 			if ins.Dst > asm.R5 {
-				return fmt.Errorf("inserted load clobbers R%d", ins.Dst)
+				return reject(LoadClobber, "inserted load clobbers R%d", ins.Dst)
 			}
 			if ins.Dst == asm.R0 && i != len(is)-1 {
-				return fmt.Errorf("R0 load outside final restore")
+				return reject(ResultLoad, "R0 load outside final restore")
 			}
 			if ins.Src == asm.RFP {
 				cell, ok := s.stack[int(ins.Offset)]
 				if !ok || cell.width != width(ins) {
-					return fmt.Errorf("load from uninitialized/nonmatching spill %d", ins.Offset)
+					return reject(SpillUninitialized, "load from uninitialized/nonmatching spill %d", ins.Offset)
 				}
 				s.regs[ins.Dst] = cell.v
 			} else {
 				if !isLookup || s.calls != 0 || ins.Src != asm.R0 || ins.Dst != asm.R1 || ins.Offset < 0 || i+1 >= len(is) || is[i+1].OpCode.Class() != asm.StXClass {
-					return fmt.Errorf("non-stack load is not P2 value copy")
+					return reject(CopyShape, "non-stack load is not P2 value copy")
 				}
 				if err := read(ins.Src); err != nil {
 					return err
@@ -161,10 +160,10 @@ func checkAfter(helper asm.Instruction, before, is, out asm.Instructions, pcs []
 			}
 		case cl == asm.ALUClass || cl == asm.ALU64Class:
 			if ins.Dst == asm.R0 || ins.Dst > asm.R5 {
-				return fmt.Errorf("inserted ALU clobbers R%d", ins.Dst)
+				return reject(ALUClobber, "inserted ALU clobbers R%d", ins.Dst)
 			}
 			if ins.Offset != 0 {
-				return fmt.Errorf("unsupported ALU encoding")
+				return reject(ALUEncoding, "unsupported ALU encoding")
 			}
 			op := ins.OpCode.ALUOp()
 			src := value{id: -1}
@@ -187,18 +186,18 @@ func checkAfter(helper asm.Instruction, before, is, out asm.Instructions, pcs []
 				}
 			case asm.Add:
 				if cl != asm.ALU64Class || ins.OpCode.Source() != asm.ImmSource || !s.regs[ins.Dst].frame || ins.Constant < -512 || ins.Constant >= int64(f) {
-					return fmt.Errorf("not a reserved-frame pointer calculation")
+					return reject(PointerCalculation, "not a reserved-frame pointer calculation")
 				}
 				v := s.regs[ins.Dst]
 				v.ptr += int(ins.Constant)
 				if v.ptr < -512 || v.ptr >= f {
-					return fmt.Errorf("frame pointer outside reserved stack")
+					return reject(PointerBounds, "frame pointer outside reserved stack")
 				}
 				s.regs[ins.Dst] = v
 			case asm.And, asm.LSh, asm.Or:
 				s.regs[ins.Dst] = value{id: -1}
 			default:
-				return fmt.Errorf("ALU operation %s outside P2-P5", op)
+				return reject(ALUOperation, "ALU operation %s outside P2-P5", op)
 			}
 		case ins.IsFunctionCall():
 			if err := hookCall(out, pcs, idx, js[i], hooks); err != nil {
@@ -206,7 +205,7 @@ func checkAfter(helper asm.Instruction, before, is, out asm.Instructions, pcs []
 			}
 			s.calls++
 			if s.calls > 1 {
-				return fmt.Errorf("multiple hooks on one site path")
+				return reject(MultipleCalls, "multiple hooks on one site path")
 			}
 			for r := 0; r <= 5; r++ {
 				s.regs[r] = value{}
@@ -215,19 +214,19 @@ func checkAfter(helper asm.Instruction, before, is, out asm.Instructions, pcs []
 		case cl.IsJump() && ins.OpCode.JumpOp() != asm.Call && ins.OpCode.JumpOp() != asm.Exit:
 			op := ins.OpCode.JumpOp()
 			if ins.Reference() != "" || ins.Offset < 0 {
-				return fmt.Errorf("non-forward postlude branch")
+				return reject(BranchForward, "non-forward postlude branch")
 			}
 			j := i + 1 + int(ins.Offset)
 			if j > len(is) {
-				return fmt.Errorf("branch escapes site postlude")
+				return reject(BranchEscape, "branch escapes site postlude")
 			}
 			if op == asm.Ja && (cl != asm.JumpClass || ins.Constant != 0 || ins.Dst != 0 || ins.Src != 0) {
-				return fmt.Errorf("noncanonical site jump")
+				return reject(BranchEncoding, "noncanonical site jump")
 			}
 			if op != asm.Ja {
 				allowed := isLookup && cl == asm.JumpClass && (op == asm.JEq || op == asm.JNE) || !isLookup && cl == asm.Jump32Class && op == asm.JSGE
 				if tail || ins.Dst != asm.R0 || ins.Constant != 0 || ins.OpCode.Source() != asm.ImmSource || !allowed {
-					return fmt.Errorf("branch not a P2/P3 result guard")
+					return reject(BranchGuard, "branch not a P2/P3 result guard")
 				}
 				if err := read(asm.R0); err != nil {
 					return err
@@ -238,7 +237,7 @@ func checkAfter(helper asm.Instruction, before, is, out asm.Instructions, pcs []
 			}
 			return walk(j, s)
 		default:
-			return fmt.Errorf("instruction outside P2-P5: %v", ins)
+			return reject(PostludeInstruction, "instruction outside P2-P5: %v", ins)
 		}
 		return walk(i+1, s)
 	}
@@ -247,17 +246,17 @@ func checkAfter(helper asm.Instruction, before, is, out asm.Instructions, pcs []
 
 func checkU32(load asm.Instruction, is, out asm.Instructions, pcs []int, idx map[int]int, js []int, hooks map[int]bool, f int, live uint16) error {
 	if !same(load, asm.LoadMem(asm.R2, asm.R0, load.Offset, asm.Word)) {
-		return fmt.Errorf("insertion is not at a P6 load")
+		return reject(U32Placement, "insertion is not at a P6 load")
 	}
 	if live&0x3a != 0 {
-		return fmt.Errorf("P6 clobbers live registers mask %#x", live&0x3a)
+		return reject(U32Live, "P6 clobbers live registers mask %#x", live&0x3a)
 	}
 	if f-16 < -512 || len(is) != 6 {
-		return fmt.Errorf("not a six-instruction P6 region")
+		return reject(U32Length, "not a six-instruction P6 region")
 	}
 	want := asm.Instructions{asm.StoreMem(asm.RFP, int16(f-8), asm.R0, asm.DWord), asm.StoreMem(asm.RFP, int16(f-16), asm.R2, asm.DWord), asm.Mov.Imm32(asm.R1, int32(is[2].Constant)), is[3], asm.LoadMem(asm.R0, asm.RFP, int16(f-8), asm.DWord), asm.LoadMem(asm.R2, asm.RFP, int16(f-16), asm.DWord)}
 	if !equal(is, want) {
-		return fmt.Errorf("not a P6 save/call/restore sequence")
+		return reject(U32Shape, "not a P6 save/call/restore sequence")
 	}
 	if err := hookCall(out, pcs, idx, js[3], hooks); err != nil {
 		return err
@@ -267,7 +266,7 @@ func checkU32(load asm.Instruction, is, out asm.Instructions, pcs []int, idx map
 		return err
 	}
 	if start+3 > len(out) || !isU32Hook(out[start:start+3]) {
-		return fmt.Errorf("P6 call does not target a u32 hook")
+		return reject(U32Hook, "P6 call does not target a u32 hook")
 	}
 	return nil
 }

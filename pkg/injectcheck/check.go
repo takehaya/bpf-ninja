@@ -47,7 +47,7 @@ func FromLabels(out asm.Instructions, n int, hooks []Span, floor int16) (Certifi
 	for j, ins := range out {
 		if i, ok := ins.Metadata.Get(label{}).(int); ok {
 			if i < 0 || i >= n || c.Original[i] != -1 {
-				return c, fmt.Errorf("duplicate/invalid original label %d", i)
+				return c, reject(LabelInvalid, "duplicate/invalid original label %d", i)
 			}
 			c.Original[i] = j
 		}
@@ -76,19 +76,19 @@ func target(in asm.Instructions, pcs []int, index map[int]int, i int) (int, erro
 	ins := in[i]
 	if ref := ins.Reference(); ref != "" {
 		if (ins.IsFunctionReference() && ins.Constant != -1) || (!ins.IsFunctionReference() && ins.Offset != -1) {
-			return 0, fmt.Errorf("already resolved symbolic edge at %d", i)
+			return 0, reject(EdgeResolved, "already resolved symbolic edge at %d", i)
 		}
 		found := -1
 		for j, x := range in {
 			if x.Symbol() == ref {
 				if found >= 0 {
-					return 0, fmt.Errorf("ambiguous symbol %q", ref)
+					return 0, reject(SymbolAmbiguous, "ambiguous symbol %q", ref)
 				}
 				found = j
 			}
 		}
 		if found < 0 {
-			return 0, fmt.Errorf("unresolved symbol %q", ref)
+			return 0, reject(SymbolUnresolved, "unresolved symbol %q", ref)
 		}
 		return found, nil
 	}
@@ -98,7 +98,7 @@ func target(in asm.Instructions, pcs []int, index map[int]int, i int) (int, erro
 	}
 	j, ok := index[pcs[i]+1+delta]
 	if !ok {
-		return 0, fmt.Errorf("edge at %d targets non-instruction slot %d", i, pcs[i]+1+delta)
+		return 0, reject(EdgeSlot, "edge at %d targets non-instruction slot %d", i, pcs[i]+1+delta)
 	}
 	return j, nil
 }
@@ -109,15 +109,24 @@ func target(in asm.Instructions, pcs []int, index map[int]int, i int) (int, erro
 // map association, with the same external symbol/FD bindings throughout.
 func Check(in, out asm.Instructions, c Certificate) (Counts, error) {
 	counts := Counts{Instructions: len(in), Hooks: len(c.Hooks)}
-	fail := func(s string, args ...any) (Counts, error) { return counts, fmt.Errorf(s, args...) }
+	fail := func(kind Kind, s string, args ...any) (Counts, error) { return counts, reject(kind, s, args...) }
 	if err := unassociated(in); err != nil {
-		return fail("original: %v", err)
+		return counts, fmt.Errorf("original: %w", err)
 	}
 	if err := unassociated(out); err != nil {
-		return fail("transformed: %v", err)
+		return counts, fmt.Errorf("transformed: %w", err)
 	}
-	if len(in) == 0 || len(c.Original) != len(in) || c.LowestOffset > 0 || c.LowestOffset < -512 {
-		return fail("invalid input/certificate")
+	if len(in) == 0 {
+		return counts, inputError(InputOriginalEmpty, "original must contain instructions")
+	}
+	if len(c.Original) == 0 {
+		return counts, inputError(InputCertificateEmpty, "certificate.original must not be empty")
+	}
+	if len(c.Original) != len(in) {
+		return counts, inputError(InputCertificateLength, "certificate.original length %d differs from original length %d", len(c.Original), len(in))
+	}
+	if c.LowestOffset > 0 || c.LowestOffset < -512 {
+		return counts, inputError(InputStackFloor, "lowest_offset must be in [-512,0], got %d", c.LowestOffset)
 	}
 	floor := int(c.LowestOffset) &^ 7
 	owners := make([]int, len(out))
@@ -127,7 +136,7 @@ func Check(in, out asm.Instructions, c Certificate) (Counts, error) {
 	prev := -1
 	for i, j := range c.Original {
 		if j <= prev || j >= len(out) {
-			return fail("original %d missing or out of order at %d", i, j)
+			return fail(OriginalOrder, "original %d missing or out of order at %d", i, j)
 		}
 		owners[j] = i
 		prev = j
@@ -135,23 +144,23 @@ func Check(in, out asm.Instructions, c Certificate) (Counts, error) {
 	hooks := map[int]bool{}
 	for _, h := range c.Hooks {
 		if h.Start < 0 || h.End <= h.Start || h.End > len(out) {
-			return fail("invalid hook range %+v", h)
+			return fail(HookRange, "invalid hook range %+v", h)
 		}
 		for j := h.Start; j < h.End; j++ {
 			if owners[j] != -1 {
-				return fail("overlapping hook at %d", j)
+				return fail(HookOverlap, "overlapping hook at %d", j)
 			}
 			owners[j] = -2
 		}
 		if err := checkHook(out[h.Start:h.End]); err != nil {
-			return fail("hook %d: %v", h.Start, err)
+			return counts, fmt.Errorf("hook %d: %w", h.Start, err)
 		}
 		hooks[h.Start] = true
 	}
 	// Remove hook bodies only after proving there is no fall-through into them.
 	for _, h := range c.Hooks {
 		if h.Start == 0 || !terminal(out[h.Start-1]) {
-			return fail("fall-through into hook %d", h.Start)
+			return fail(HookFallthrough, "fall-through into hook %d", h.Start)
 		}
 	}
 	opcs, oi := slots(in)
@@ -168,7 +177,7 @@ func Check(in, out asm.Instructions, c Certificate) (Counts, error) {
 	for _, g := range gaps {
 		for j := 1; j < len(g); j++ {
 			if g[j] != g[j-1]+1 {
-				return fail("hook splits an insertion region")
+				return fail(RegionSplit, "hook splits an insertion region")
 			}
 		}
 	}
@@ -191,7 +200,7 @@ func Check(in, out asm.Instructions, c Certificate) (Counts, error) {
 			}
 			gaps[i] = g[:n]
 			if err := checkBefore(in[i], before[i], floor); err != nil {
-				return fail("site %d prelude: %v", i, err)
+				return counts, fmt.Errorf("site %d prelude: %w", i, err)
 			}
 		}
 	}
@@ -199,7 +208,7 @@ func Check(in, out asm.Instructions, c Certificate) (Counts, error) {
 	starts[0] = c.Original[0]
 	live, err := liveness(in, opcs, oi)
 	if err != nil {
-		return fail("original CFG: %v", err)
+		return counts, fmt.Errorf("original CFG: %w", err)
 	}
 	// Every callable subprogram/callback has a function-reference target.
 	// The entry spill initializes only the entry frame, never a callee frame.
@@ -210,20 +219,20 @@ func Check(in, out asm.Instructions, c Certificate) (Counts, error) {
 		if edge(a) {
 			t, e := target(in, opcs, oi, i)
 			if e != nil {
-				return fail("original edge: %v", e)
+				return counts, fmt.Errorf("original edge: %w", e)
 			}
 			if a.IsFunctionReference() {
 				entryEnd = min(entryEnd, t)
 			}
 			if a.IsFunctionReference() && t == 0 {
-				return fail("original function reference targets entry")
+				return fail(FunctionEntry, "original function reference targets entry")
 			}
 			u, e := target(out, npcs, ni, c.Original[i])
 			if e != nil {
-				return fail("transformed edge: %v", e)
+				return counts, fmt.Errorf("transformed edge: %w", e)
 			}
 			if u != starts[t] {
-				return fail("edge %d targets %d; expected %d (original %d)", i, u, starts[t], t)
+				return fail(EdgeTarget, "edge %d targets %d; expected %d (original %d)", i, u, starts[t], t)
 			}
 			if a.IsFunctionReference() {
 				aa.Constant = 0
@@ -236,13 +245,13 @@ func Check(in, out asm.Instructions, c Certificate) (Counts, error) {
 				bb.Offset = 0
 			}
 		} else if a.Reference() != b.Reference() {
-			return fail("original %d reference changed", i)
+			return fail(OriginalReference, "original %d reference changed", i)
 		}
 		if !same(aa, bb) {
-			return fail("original instruction %d changed: %v -> %v", i, a, b)
+			return fail(OriginalChanged, "original instruction %d changed: %v -> %v", i, a, b)
 		}
 		if err := stackAudit(a, int(c.LowestOffset)); err != nil {
-			return fail("original %d: %v", i, err)
+			return counts, fmt.Errorf("original %d: %w", i, err)
 		}
 	}
 	gather := func(js []int) asm.Instructions {
@@ -254,19 +263,19 @@ func Check(in, out asm.Instructions, c Certificate) (Counts, error) {
 	}
 	if len(gaps[0]) > 0 {
 		if err := checkEntry(gather(gaps[0]), out, npcs, ni, gaps[0], hooks, floor); err != nil {
-			return fail("entry: %v", err)
+			return counts, fmt.Errorf("entry: %w", err)
 		}
 	}
 	for i := range in {
 		after := gather(gaps[i+1])
 		if len(before[i]) > 0 {
 			if err := checkAfter(in[i], before[i], after, out, npcs, ni, gaps[i+1], hooks, floor, len(gaps[0]) > 0 && i < entryEnd); err != nil {
-				return fail("site %d: %v", i, err)
+				return counts, fmt.Errorf("site %d: %w", i, err)
 			}
 			counts.Sites++
 		} else if len(after) > 0 {
 			if err := checkU32(in[i], after, out, npcs, ni, gaps[i+1], hooks, floor, live[i+1]); err != nil {
-				return fail("gap after %d: %v", i, err)
+				return counts, fmt.Errorf("gap after %d: %w", i, err)
 			}
 			counts.Sites++
 		}
@@ -280,7 +289,7 @@ func stackAudit(ins asm.Instruction, floor int) error {
 	cl := ins.OpCode.Class()
 	if cl == asm.LdXClass && ins.Src == asm.RFP || (cl == asm.StClass || cl == asm.StXClass) && ins.Dst == asm.RFP {
 		if int(ins.Offset) < floor {
-			return fmt.Errorf("direct stack access %d below audit %d", ins.Offset, floor)
+			return reject(StackAudit, "direct stack access %d below audit %d", ins.Offset, floor)
 		}
 	}
 	return nil
@@ -331,13 +340,13 @@ func checkBefore(helper asm.Instruction, is asm.Instructions, f int) error {
 		if equal(is, v) {
 			for _, ins := range is {
 				if int(ins.Offset) < -512 {
-					return fmt.Errorf("stack spill outside frame")
+					return reject(SpillBounds, "stack spill outside frame")
 				}
 			}
 			return nil
 		}
 	}
-	return fmt.Errorf("not a P2-P5 spill sequence")
+	return reject(PreludeShape, "not a P2-P5 spill sequence")
 }
 func equal(a, b asm.Instructions) bool { return slices.EqualFunc(a, b, same) }
 
@@ -349,7 +358,7 @@ func checkHook(is asm.Instructions) error {
 		return nil
 	}
 	if len(is) < 3 || !same(is[0], asm.LoadMem(asm.R0, asm.R1, 0, asm.Word)) || !equal(is[len(is)-2:], asm.Instructions{asm.Mov.Imm(asm.R0, 0), asm.Return()}) {
-		return fmt.Errorf("not a P7 hook")
+		return reject(HookShape, "not a P7 hook")
 	}
 	body := is[1 : len(is)-2]
 	// Typed nullable pointer pairs, or untrusted fault-handled loads.
@@ -366,26 +375,26 @@ func checkHook(is asm.Instructions) error {
 			return nil
 		}
 	}
-	return fmt.Errorf("not a P7 pointer-read sequence (stores/calls forbidden)")
+	return reject(HookBody, "not a P7 pointer-read sequence (stores/calls forbidden)")
 }
 
 func hookCall(out asm.Instructions, pcs []int, idx map[int]int, j int, hooks map[int]bool) error {
 	ins := out[j]
 	if !ins.IsFunctionCall() {
-		return fmt.Errorf("inserted call is not bpf-to-bpf")
+		return reject(CallKind, "inserted call is not bpf-to-bpf")
 	}
 	t, e := target(out, pcs, idx, j)
 	if e != nil {
 		return e
 	}
 	if !hooks[t] {
-		return fmt.Errorf("inserted call targets non-hook %d", t)
+		return reject(CallTarget, "inserted call targets non-hook %d", t)
 	}
 	return nil
 }
 func checkEntry(is, out asm.Instructions, pcs []int, idx map[int]int, js []int, hooks map[int]bool, f int) error {
 	if !same(is[0], asm.StoreMem(asm.RFP, int16(f-8), asm.R1, asm.DWord)) || f-8 < -512 {
-		return fmt.Errorf("not P1 ctx spill")
+		return reject(EntrySpill, "not P1 ctx spill")
 	}
 	if len(is) == 1 {
 		return nil
@@ -393,12 +402,12 @@ func checkEntry(is, out asm.Instructions, pcs []int, idx map[int]int, js []int, 
 	call := 1
 	if len(is) == 7 {
 		if !equal(is[1:5], asm.Instructions{asm.Mov.Imm32(asm.R2, -1), asm.Mov.Imm(asm.R3, 0), asm.Mov.Imm(asm.R4, 0), asm.Mov.Imm(asm.R5, 0)}) {
-			return fmt.Errorf("invalid dispatch entry arguments")
+			return reject(EntryArguments, "invalid dispatch entry arguments")
 		}
 		call = 5
 	}
 	if len(is) != call+2 || !same(is[len(is)-1], asm.LoadMem(asm.R1, asm.RFP, int16(f-8), asm.DWord)) {
-		return fmt.Errorf("not P1 entry call/restore")
+		return reject(EntryRestore, "not P1 entry call/restore")
 	}
 	return hookCall(out, pcs, idx, js[call], hooks)
 }

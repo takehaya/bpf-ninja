@@ -3,7 +3,6 @@ package injectcheck
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
 
 	"github.com/cilium/ebpf/asm"
 )
@@ -11,7 +10,7 @@ import (
 func unassociated(is asm.Instructions) error {
 	for i, ins := range is {
 		if ins.Map() != nil {
-			return fmt.Errorf("instruction %d: associated maps are unsupported; check before map association", i)
+			return reject(AssociatedMap, "instruction %d: associated maps are unsupported; check before map association", i)
 		}
 	}
 	return nil
