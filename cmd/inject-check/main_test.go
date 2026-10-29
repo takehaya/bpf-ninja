@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -183,6 +184,34 @@ func TestPairCorpus(t *testing.T) {
 	files, err := filepath.Glob("testdata/pairs/*.json")
 	if err != nil || len(files) == 0 {
 		t.Fatalf("empty corpus: %v", err)
+	}
+	// Keep all seven accepted configurations and eleven mutations in the run.
+	wantNames := []string{
+		"fixture-1-copy-readonly.json",
+		"fixture-1-dispatch-any.json",
+		"fixture-1-dispatch-static.json",
+		"fixture-1-static-any.json",
+		"fixture-1-typed-any.json",
+		"fixture-1-typed-error.json",
+		"fixture-1-typed-miss.json",
+		"mutation-callee-saved-clobber.json",
+		"mutation-drop-original.json",
+		"mutation-forged-certificate.json",
+		"mutation-helper-in-hook.json",
+		"mutation-hook-store.json",
+		"mutation-ldimm64-pseudo-kind.json",
+		"mutation-map-fd-value-swap.json",
+		"mutation-map-swap.json",
+		"mutation-missing-restore.json",
+		"mutation-wrong-jump.json",
+		"mutation-wrong-spill.json",
+	}
+	names := make([]string, len(files))
+	for i, file := range files {
+		names[i] = filepath.Base(file)
+	}
+	if !slices.Equal(names, wantNames) {
+		t.Fatalf("corpus inventory: got %v, want %v", names, wantNames)
 	}
 	for _, file := range files {
 		t.Run(filepath.Base(file), func(t *testing.T) {

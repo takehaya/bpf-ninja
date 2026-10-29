@@ -70,6 +70,7 @@ helper 後の経路検査は最大 4096 ステップとし、超過時は拒否�
 メモリ上の元命令と対応先では、CO-RE、kconfig、kfunc、ksym metadata の pointer identity も一致させる必要があり、hook を含む挿入領域には許可しない。
 これは relocation の意味ではなく同一性の検査であり、共有 metadata object が検査中やロード中に変更されないことを前提とする。
 固定した cilium/ebpf にはこれらの public iterator がないため private metadata key を読み、各種類の ELF fixture で検査する。
+nil metadata key はロード時の意味を持たないため checker と命令 encoder の両方で無視し、想定外の metadata layout は型付きの `MetadataUnsupported` 拒否として返す。
 関連付け済み map は、両命令列が同じ関連付けを持っていても拒否する。
 map 関連付け前に、両命令列で共有する変化のない外部 symbol/FD 対応表の下で検査する。
 数値 FD はその名前空間の識別子であり、プロセスをまたぐ実 map の保存形式ではない。
@@ -120,7 +121,7 @@ decode・file・usage エラーは stderr に出し、validation が見つけた
 通常の実行は `go test ./pkg/injectcheck ./pkg/inject ./cmd/inject-check` である。
 `TestPairCorpus` は CLI をビルドし、コミット済み命令対の期待値 `{accepted, kind}`、API、CLI の全 verdict を比較する。
 対象は受理される 7 設定と 11 変異であり、コミット済み CLI/API 一致テストの主張はこの範囲に限る。
-`TestTranslationValidationEquivalence` は予定 site/hook 数と検査数を照合し、site がある fixture とゼロの fixture を分けて記録する。
+`TestTranslationValidationEquivalence` は検査済み site 数と certificate の hook 名を計画と照合し、site を持たない entry hook も対象に含め、site がある fixture とゼロの fixture を分けて記録する。
 依存テストは checker と CLI から `pkg/inject` への直接・間接依存を拒否する。
 
 privileged な `TestBpf*` fixture はロードと `BPF_PROG_TEST_RUN` だけを使い、`scripts/test/privileged.py` に登録している。

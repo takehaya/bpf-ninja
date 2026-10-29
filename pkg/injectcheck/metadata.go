@@ -11,17 +11,31 @@ import (
 // kconfig/kfunc/ksym keys. Read their pointer identities without unsafe. The
 // pinned layout is checked by metadata fixtures; a layout change fails closed.
 func loadMetadata(ins asm.Instruction) (map[string]uintptr, error) {
-	head := reflect.ValueOf(ins.Metadata).FieldByName("head")
-	if !head.IsValid() || head.Kind() != reflect.Pointer {
+	metadata := reflect.ValueOf(ins.Metadata)
+	if metadata.Kind() != reflect.Struct {
+		return nil, reject(MetadataUnsupported, "unsupported asm.Metadata layout")
+	}
+	head := metadata.FieldByName("head")
+	if head.Kind() != reflect.Pointer || head.Type().Elem().Kind() != reflect.Struct {
 		return nil, reject(MetadataUnsupported, "unsupported asm.Metadata layout")
 	}
 	identities := map[string]uintptr{}
-	for e := head; !e.IsNil(); e = e.Elem().FieldByName("next") {
-		key := e.Elem().FieldByName("key").Elem().Type()
-		name := key.PkgPath() + "." + key.Name()
+	for e := head; !e.IsNil(); {
+		entry := e.Elem()
+		key, value, next := entry.FieldByName("key"), entry.FieldByName("value"), entry.FieldByName("next")
+		if key.Kind() != reflect.Interface || value.Kind() != reflect.Interface || next.Kind() != reflect.Pointer || next.Type() != head.Type() {
+			return nil, reject(MetadataUnsupported, "unsupported asm.Metadata layout")
+		}
+		e = next
+		// A nil key is a legal annotation with no load-time meaning.
+		if key.IsNil() {
+			continue
+		}
+		keyType := key.Elem().Type()
+		name := keyType.PkgPath() + "." + keyType.Name()
 		switch name {
 		case "github.com/cilium/ebpf/btf.coreRelocationMeta", "github.com/cilium/ebpf.kconfigMetaKey", "github.com/cilium/ebpf.kfuncMetaKey", "github.com/cilium/ebpf.ksymMetaKey":
-			value := e.Elem().FieldByName("value").Elem()
+			value = value.Elem()
 			if value.Kind() != reflect.Pointer {
 				return nil, reject(MetadataUnsupported, "unsupported load-time metadata %s", name)
 			}

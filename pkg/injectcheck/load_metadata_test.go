@@ -72,6 +72,31 @@ func TestLoadTimeMetadataIdentity(t *testing.T) {
 	}
 }
 
+func TestNilMetadataKey(t *testing.T) {
+	in := asm.Instructions{asm.Mov.Imm(asm.R0, 2), asm.Return()}
+	in[0].Metadata.Set(nil, "annotation")
+	out := clone(in)
+	out[0].Metadata = asm.Metadata{}
+	t.Run("Check", func(t *testing.T) {
+		if _, err := Check(in, out, Certificate{Original: []int{0, 1}}, Premises{}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	t.Run("JSON", func(t *testing.T) {
+		got, err := json.Marshal(Instructions(in))
+		if err != nil {
+			t.Fatal(err)
+		}
+		want, err := json.Marshal(Instructions(out))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != string(want) {
+			t.Fatalf("nil metadata key changed JSON: %s != %s", got, want)
+		}
+	})
+}
+
 func TestInvalidOriginalRegister(t *testing.T) {
 	in, out, c := p6Pair(asm.Instructions{asm.Mov.Imm(asm.R1, 0), asm.Mov.Reg(asm.R0, asm.R3), asm.Return()})
 	in[2].Dst = 12

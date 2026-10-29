@@ -70,6 +70,7 @@ Acceptance covers the **compared projection**: decoded instruction fields, refer
 In-memory originals must also retain identical CO-RE, kconfig, kfunc and ksym metadata pointers at every correspondence; none is permitted in inserted regions, including hooks.
 This checks identity, not relocation meaning, and assumes the shared metadata objects are not mutated during checking or loading.
 The implementation reads the private metadata keys of the pinned cilium/ebpf version because that library has no public iterator for them; tests parse an ELF fixture for each kind.
+Nil metadata keys carry no load-time meaning and are ignored by both the checker and the instruction encoder; unexpected metadata layouts return a typed `MetadataUnsupported` rejection.
 Associated maps are refused in both streams even if the associations are identical.
 Check before map association, using a shared, unchanged external symbol/FD binding table.
 Numeric FDs are identifiers in that namespace, not transferable live maps.
@@ -119,7 +120,7 @@ The kinds distinguish empty original, empty mapping, length mismatch and invalid
 Run `go test ./pkg/injectcheck ./pkg/inject ./cmd/inject-check`.
 `TestPairCorpus` builds the CLI and compares its complete verdict with the API and expected `{accepted, kind}` for the committed pair JSON corpus, including seven accepted configurations and all eleven mutations.
 This is the scope of the committed CLI/API agreement evidence.
-`TestTranslationValidationEquivalence` asserts planned site/hook counts and reports site-bearing and zero-site fixtures separately.
+`TestTranslationValidationEquivalence` compares checked site counts and certificate hook names against the plan, including entry-only hooks, and reports site-bearing and zero-site fixtures separately.
 The dependency test rejects a direct or transitive dependency on `pkg/inject` from the checker or CLI.
 
 Privileged `TestBpf*` fixtures use only load and `BPF_PROG_TEST_RUN` and are registered in `scripts/test/privileged.py`.

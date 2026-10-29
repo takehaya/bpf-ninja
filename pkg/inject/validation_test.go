@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -41,6 +42,19 @@ func validationCertificate(t *testing.T, in, out asm.Instructions, hooks []Looku
 	if e != nil {
 		t.Fatal(e)
 	}
+	want := make([]string, 0, len(names))
+	for name := range names {
+		want = append(want, name)
+	}
+	got := make([]string, 0, len(c.Hooks))
+	for _, h := range c.Hooks {
+		got = append(got, out[h.Start].Symbol())
+	}
+	sort.Strings(want)
+	sort.Strings(got)
+	if !slices.Equal(got, want) {
+		t.Fatalf("certificate hooks %v, planned %v", got, want)
+	}
 	return c
 }
 
@@ -65,8 +79,8 @@ func TestTranslationValidationEquivalence(t *testing.T) {
 				if e != nil {
 					t.Fatal(e)
 				}
-				if n.Sites != validationSites(plan.hooks) || n.Hooks != len(cert.Hooks) {
-					t.Fatalf("checked sites/hooks %d/%d, planned %d/%d", n.Sites, n.Hooks, validationSites(plan.hooks), len(cert.Hooks))
+				if n.Sites != validationSites(plan.hooks) {
+					t.Fatalf("checked sites %d, planned %d", n.Sites, validationSites(plan.hooks))
 				}
 				if n.Sites == 0 {
 					zeroSites++
@@ -189,8 +203,8 @@ func TestTranslationValidationCensus(t *testing.T) {
 				out := work.Programs[name].Instructions
 				cert := validationCertificate(t, in, out, plan.hooks)
 				counts, e := injectcheck.Check(in, out, cert, injectcheck.Premises{LowestOffset: req.Stack.LowestOffset})
-				if e == nil && (counts.Sites != r.PlannedSites || counts.Hooks != len(cert.Hooks)) {
-					t.Fatalf("checked %d/%d planned %d/%d", counts.Sites, counts.Hooks, r.PlannedSites, len(cert.Hooks))
+				if e == nil && counts.Sites != r.PlannedSites {
+					t.Fatalf("checked sites %d planned %d", counts.Sites, r.PlannedSites)
 				}
 				r.Sites = counts.Sites
 				r.Hooks = counts.Hooks
@@ -231,8 +245,8 @@ func TestTranslationValidationCensus(t *testing.T) {
 				counts, e = injectcheck.Check(raw.Instructions, result.Instructions, cert, injectcheck.Premises{LowestOffset: floor})
 				r.Status = "ACCEPTED"
 				r.Reason = ""
-				if e == nil && (counts.Sites != r.PlannedSites || counts.Hooks != len(cert.Hooks)) {
-					t.Fatalf("checked %d/%d planned %d/%d", counts.Sites, counts.Hooks, r.PlannedSites, len(cert.Hooks))
+				if e == nil && counts.Sites != r.PlannedSites {
+					t.Fatalf("checked sites %d planned %d", counts.Sites, r.PlannedSites)
 				}
 				r.Sites = counts.Sites
 				r.Hooks = counts.Hooks
