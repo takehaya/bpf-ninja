@@ -56,8 +56,7 @@ func TestTranslationValidationEquivalence(t *testing.T) {
 				req := c.request(config)
 				plan, e := transformLookup(work, req)
 				if e != nil {
-					t.Logf("TRANSFORM_REFUSED %v", e)
-					return
+					t.Fatalf("TRANSFORM_REFUSED %v", e)
 				}
 				out := work.Programs["p"].Instructions
 				cert := validationCertificate(t, in, out, plan.hooks, req.Stack.LowestOffset)
@@ -72,6 +71,9 @@ func TestTranslationValidationEquivalence(t *testing.T) {
 		}
 	}
 	t.Logf("VALIDATION attempted=%d accepted=%d sites=%d", total, accepted, sites)
+	if accepted != total {
+		t.Fatalf("accepted %d of %d fixtures; no refusals are allowed", accepted, total)
+	}
 }
 
 type validationRow struct {
@@ -245,8 +247,9 @@ func TestTranslationValidationMutations(t *testing.T) {
 		t.Fatal(e)
 	}
 	// Mutate code and independently repair correspondence hints where needed;
-	// detection must come from checking semantics/patterns, not stale indices.
-	cases := []string{"live-register", "drop-original", "wrong-jump", "hook-store", "missing-restore", "wrong-spill", "helper-in-hook", "forged-certificate", "map-swap", "map-fd-value-swap", "ldimm64-pseudo-kind"}
+	// Each assertion below identifies the rejecting check, including instruction
+	// comparison for a complete, increasing but forged correspondence.
+	cases := []string{"callee-saved-clobber", "drop-original", "wrong-jump", "hook-store", "missing-restore", "wrong-spill", "helper-in-hook", "forged-certificate", "map-swap", "map-fd-value-swap", "ldimm64-pseudo-kind"}
 	killed := 0
 	for _, kind := range cases {
 		t.Run(kind, func(t *testing.T) {
@@ -285,7 +288,7 @@ func TestTranslationValidationMutations(t *testing.T) {
 				if !found {
 					t.Fatal("mutation requires a map load")
 				}
-			case "live-register":
+			case "callee-saved-clobber":
 				for i, x := range bad {
 					if i > cc.Original[0] && x.IsFunctionCall() && strings.HasPrefix(x.Reference(), "eq_") {
 						bad[i-1] = asm.Mov.Imm(asm.R6, 0)
@@ -293,12 +296,21 @@ func TestTranslationValidationMutations(t *testing.T) {
 					}
 				}
 			case "drop-original":
-				at := cc.Original[1]
-				bad = append(bad[:at:at], bad[at+1:]...)
+				// Remove the first helper: its postlude provides room for a
+				// complete, increasing mapping with no missing (-1) indices.
+				at := -1
+				for i, x := range original {
+					if x.IsBuiltinCall() {
+						at = cc.Original[i]
+						break
+					}
+				}
+				if at < 0 {
+					t.Fatal("mutation requires a helper")
+				}
+				bad = validationDelete(bad, at)
 				for i, j := range cc.Original {
-					if j == at {
-						cc.Original[i] = -1
-					} else if j > at {
+					if j > at {
 						cc.Original[i]--
 					}
 				}
@@ -325,16 +337,23 @@ func TestTranslationValidationMutations(t *testing.T) {
 					}
 				}
 			case "wrong-spill":
-				for i, x := range bad {
-					if stackSpillForValidation(x) {
-						bad[i].Offset = 0
+				found := false
+				for i, x := range original {
+					at := cc.Original[i]
+					if x.IsBuiltinCall() && at > 0 && stackSpillForValidation(bad[at-1]) {
+						bad[at-1].Offset = 0
+						found = true
 						break
 					}
+				}
+				if !found {
+					t.Fatal("mutation requires a site spill")
 				}
 			case "helper-in-hook":
 				bad[cc.Hooks[0].Start] = asm.FnGetPrandomU32.Call()
 			case "forged-certificate":
-				cc.Original[1] = cc.Original[0]
+				// Forge a still-increasing mapping into the entry prologue.
+				cc.Original[0]--
 			}
 			_, err := injectcheck.Check(original, bad, cc)
 			if dest := os.Getenv("BPF_NINJA_VALIDATE_OUTPUT"); dest != "" {
@@ -350,6 +369,22 @@ func TestTranslationValidationMutations(t *testing.T) {
 			if err == nil {
 				t.Fatal("SURVIVED")
 			} else {
+				want := map[string]string{
+					"callee-saved-clobber": "inserted ALU clobbers R6",
+					"drop-original":        "original instruction ",
+					"forged-certificate":   "original instruction 0 changed",
+					"wrong-spill":          "prelude: not a P2-P5 spill sequence",
+					"wrong-jump":           "edge 5 targets",
+					"hook-store":           "not a P7 hook",
+					"helper-in-hook":       "not a P7 hook",
+					"missing-restore":      "missing full-width R0 save/restore",
+					"map-swap":             "reference changed",
+					"map-fd-value-swap":    "original instruction 34 changed",
+					"ldimm64-pseudo-kind":  "original instruction 34 changed",
+				}
+				if reason := want[kind]; reason == "" || !strings.Contains(err.Error(), reason) {
+					t.Fatalf("wrong rejecting check: got %v, want %q", err, reason)
+				}
 				killed++
 				t.Logf("KILLED %s: %v", kind, err)
 			}
@@ -357,6 +392,41 @@ func TestTranslationValidationMutations(t *testing.T) {
 	}
 	t.Logf("MUTATION killed=%d total=%d", killed, len(cases))
 }
+
+// validationDelete repairs numeric edges crossing a deleted single-slot
+// instruction. Correspondence hints are repaired separately by each mutation.
+func validationDelete(is asm.Instructions, at int) asm.Instructions {
+	removedPC := 0
+	for _, x := range is[:at] {
+		removedPC += int(x.Size() / asm.InstructionSize)
+	}
+	pc := 0
+	for i, x := range is {
+		cl, op := x.OpCode.Class(), x.OpCode.JumpOp()
+		if x.Reference() == "" && (x.IsFunctionReference() || cl.IsJump() && op != asm.Call && op != asm.Exit) {
+			delta := int(x.Offset)
+			constant := x.IsFunctionReference() || cl == asm.Jump32Class && op == asm.Ja
+			if constant {
+				delta = int(x.Constant)
+			}
+			target := pc + 1 + delta
+			if pc < removedPC && target > removedPC {
+				delta--
+			}
+			if pc > removedPC && target <= removedPC {
+				delta++
+			}
+			if constant {
+				is[i].Constant = int64(delta)
+			} else {
+				is[i].Offset = int16(delta)
+			}
+		}
+		pc += int(x.Size() / asm.InstructionSize)
+	}
+	return append(is[:at:at], is[at+1:]...)
+}
+
 func stackSpillForValidation(i asm.Instruction) bool {
 	return i.OpCode == asm.StoreMem(asm.RFP, 0, asm.R0, asm.DWord).OpCode && i.Dst == asm.RFP
 }
@@ -389,6 +459,25 @@ func TestTranslationValidationSubprogramTail(t *testing.T) {
 			c := validationCertificate(t, in, out, plan.hooks, 0)
 			if _, err := injectcheck.Check(in, out, c); err != nil {
 				t.Fatal(err)
+			}
+			// The entry frame's ctx spill must not initialize the subprogram
+			// frame: dropping its localCtx spill leaves the postlude load invalid.
+			removed := false
+			for j, ins := range out {
+				if j > c.Original[1] && stackSpillForValidation(ins) && ins.Src == asm.R1 && ins.Offset == -8 {
+					out = validationDelete(out, j)
+					removed = true
+					break
+				}
+			}
+			if !removed {
+				t.Fatal("fixture requires a local ctx spill")
+			}
+			c = validationCertificate(t, in, out, plan.hooks, 0)
+			if _, err := injectcheck.Check(in, out, c); err == nil || !strings.Contains(err.Error(), "load from uninitialized/nonmatching spill -8") {
+				t.Fatalf("missing subprogram ctx spill: %v", err)
+			} else {
+				t.Logf("missing subprogram ctx spill rejected: %v", err)
 			}
 		})
 	}

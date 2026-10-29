@@ -1,6 +1,7 @@
 package injectcheck
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -81,12 +82,20 @@ func TestU32LivenessAndRestore(t *testing.T) {
 	if _, err := Check(in, out, c); err != nil {
 		t.Fatal(err)
 	}
-	// Here R3 really is live across the inserted call, despite a valid R1
-	// redefinition. A transform's claimed audit cannot override this check.
-	in[4] = asm.Mov.Reg(asm.R0, asm.R3)
-	out[10] = in[4]
-	if _, err := Check(in, out, c); err == nil || !strings.Contains(err.Error(), "live") {
-		t.Fatalf("live R3: %v", err)
+	// A load leaves caller-saved registers readable in P (unlike P2-P5).
+	// Mutate both streams so instruction comparison passes and liveness must
+	// reject each register the P6 call fails to preserve.
+	for _, r := range []asm.Register{asm.R1, asm.R3, asm.R4, asm.R5} {
+		in[1] = asm.Mov.Imm(r, 7)
+		out[1] = in[1]
+		in[3] = asm.Mov.Reg(asm.R0, r)
+		out[9] = in[3]
+		_, err := Check(in, out, c)
+		want := fmt.Sprintf("P6 clobbers live registers mask %#x", 1<<r)
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Fatalf("live R%d: got %v, want %q", r, err, want)
+		}
+		t.Logf("live R%d rejected: %v", r, err)
 	}
 }
 

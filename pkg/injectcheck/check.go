@@ -201,6 +201,9 @@ func Check(in, out asm.Instructions, c Certificate) (Counts, error) {
 	if err != nil {
 		return fail("original CFG: %v", err)
 	}
+	// Every callable subprogram/callback has a function-reference target.
+	// The entry spill initializes only the entry frame, never a callee frame.
+	entryEnd := len(in)
 	for i, a := range in {
 		b := out[c.Original[i]]
 		aa, bb := a, b
@@ -208,6 +211,9 @@ func Check(in, out asm.Instructions, c Certificate) (Counts, error) {
 			t, e := target(in, opcs, oi, i)
 			if e != nil {
 				return fail("original edge: %v", e)
+			}
+			if a.IsFunctionReference() {
+				entryEnd = min(entryEnd, t)
 			}
 			if a.IsFunctionReference() && t == 0 {
 				return fail("original function reference targets entry")
@@ -250,13 +256,11 @@ func Check(in, out asm.Instructions, c Certificate) (Counts, error) {
 		if err := checkEntry(gather(gaps[0]), out, npcs, ni, gaps[0], hooks, floor); err != nil {
 			return fail("entry: %v", err)
 		}
-	} else if len(c.Hooks) > 0 && !isU32Hook(out[c.Hooks[0].Start:c.Hooks[0].End]) {
-		return fail("missing entry ctx spill")
 	}
 	for i := range in {
 		after := gather(gaps[i+1])
 		if len(before[i]) > 0 {
-			if err := checkAfter(in[i], before[i], after, out, npcs, ni, gaps[i+1], hooks, floor, live[i+1]); err != nil {
+			if err := checkAfter(in[i], before[i], after, out, npcs, ni, gaps[i+1], hooks, floor, len(gaps[0]) > 0 && i < entryEnd); err != nil {
 				return fail("site %d: %v", i, err)
 			}
 			counts.Sites++

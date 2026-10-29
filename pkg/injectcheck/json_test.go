@@ -56,7 +56,7 @@ func TestJSONMapPolicy(t *testing.T) {
 			t.Fatalf("map operands lost in JSON: %s", b)
 		}
 	}
-	for _, b := range []string{`[{"Map":{"FD":100}}]`, `[{"Metadata":{"Map":100}}]`} {
+	for _, b := range []string{`[{"Metadata":{}}]`, `[{"Map":{"FD":100}}]`, `[{"Metadata":{"Map":100}}]`} {
 		if err := json.Unmarshal([]byte(b), &out); err == nil {
 			t.Fatalf("accepted unsupported map metadata: %s", b)
 		}

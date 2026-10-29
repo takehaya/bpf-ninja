@@ -41,19 +41,17 @@ func (s *state) store(at, width int, v value) {
 }
 func width(ins asm.Instruction) int { return int(ins.OpCode.Size().Sizeof()) }
 
-func checkAfter(helper asm.Instruction, before, is, out asm.Instructions, pcs []int, idx map[int]int, js []int, hooks map[int]bool, f int, live uint16) error {
+func checkAfter(helper asm.Instruction, before, is, out asm.Instructions, pcs []int, idx map[int]int, js []int, hooks map[int]bool, f int, entryCtx bool) error {
 	isLookup := asm.BuiltinFunc(helper.Constant) == asm.FnMapLookupElem || asm.BuiltinFunc(helper.Constant) == asm.FnMapLookupPercpuElem
 	tail := asm.BuiltinFunc(helper.Constant) == asm.FnTailCall
 	if len(is) == 0 {
 		return fmt.Errorf("missing P2-P5 postlude")
 	}
-	dead := uint16(0x3e)
-	if tail {
-		dead = 0x3f
-	}
-	if live&dead != 0 {
-		return fmt.Errorf("hook clobbers live caller-saved registers mask %#x", live&dead)
-	}
+	// G3 A3 assumes verifier-accepted P: R1-R5 are unreadable after a helper,
+	// and RET_VOID tail-call failure also leaves R0 unreadable. P2-P5 may
+	// clobber these registers even when syntactic liveness includes infeasible
+	// paths. R0 is restored for other helpers; P6 still needs liveness because
+	// its load does not invalidate caller-saved registers.
 	if !tail {
 		// P2/P3 save the result once, optionally after loading saved flags.
 		save := 0
@@ -84,7 +82,9 @@ func checkAfter(helper asm.Instruction, before, is, out asm.Instructions, pcs []
 		return fmt.Errorf("not a P3-P5 branch/call structure")
 	}
 	s := initial()
-	s.stack[f-8] = cell{value{id: 100}, 8}
+	if entryCtx {
+		s.stack[f-8] = cell{value{id: 100}, 8}
+	}
 	for _, ins := range before {
 		s.store(int(ins.Offset), 8, s.regs[ins.Src])
 	}

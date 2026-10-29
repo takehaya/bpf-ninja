@@ -582,6 +582,9 @@ Its default 14 seeds cover entry-function operations, read-only pointers crossin
 Only seeds congruent to 1 modulo 14 randomize the entry program; the others repeat fixed feature shapes with new packet bytes.
 These tests exercise the transform core and fentry using `BPF_PROG_TEST_RUN`, without an interface attachment or pinning.
 
+The independent [instruction translation validator](../../pkg/injectcheck/README.md) checks preservation, relocation and allowed insertion forms without loading BPF.
+Its acceptance is conditional on valid original and transformed programs, the BPF calling convention and the caller's stack-alias audit.
+
 ```sh
 go build ./...
 go vet ./...

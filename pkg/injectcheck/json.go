@@ -30,8 +30,6 @@ type wireInstruction struct {
 	Offset            int16
 	Constant          int64
 	Symbol, Reference string
-	// Accept only the empty Metadata object emitted by older fixture writers.
-	Metadata map[string]json.RawMessage `json:",omitempty"`
 }
 
 func (is Instructions) MarshalJSON() ([]byte, error) {
@@ -55,9 +53,6 @@ func (is *Instructions) UnmarshalJSON(data []byte) error {
 	}
 	out := make(Instructions, len(wire))
 	for i, ins := range wire {
-		if len(ins.Metadata) != 0 {
-			return fmt.Errorf("instruction %d: nonempty Metadata is unsupported", i)
-		}
 		out[i] = asm.Instruction{OpCode: ins.OpCode, Dst: ins.Dst, Src: ins.Src,
 			Offset: ins.Offset, Constant: ins.Constant}.WithSymbol(ins.Symbol).WithReference(ins.Reference)
 	}

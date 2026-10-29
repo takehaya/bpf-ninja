@@ -36,8 +36,8 @@ func TestMapSerializationCLI(t *testing.T) {
 	for _, field := range []string{`"Metadata":{"Map":{"FD":100}}`, `"Map":{"FD":100}`} {
 		checkFile(t, []byte(`{"Original":[{`+field+`}],"Transformed":[],"Certificate":{}}`), 2)
 	}
-	// Older fixture writers emitted an empty Metadata object on every opcode.
-	checkFile(t, []byte(`{"Original":[{"OpCode":183,"Constant":2,"Metadata":{}},{"OpCode":149}],"Transformed":[{"OpCode":183,"Constant":2},{"OpCode":149}],"Certificate":{"Original":[0,1]}}`), 0)
+	// Metadata is unsupported even when empty; use injectcheck.Instructions.
+	checkFile(t, []byte(`{"Original":[{"OpCode":183,"Constant":2,"Metadata":{}},{"OpCode":149}],"Transformed":[{"OpCode":183,"Constant":2},{"OpCode":149}],"Certificate":{"Original":[0,1]}}`), 2)
 }
 
 func checkFile(t *testing.T, b []byte, want int) {

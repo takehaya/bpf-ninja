@@ -1,8 +1,10 @@
-# 注入後の命令列の独立検査
+# Independent validation of injected instructions
 
-`injectcheck.Check` は元の命令列、変換後の命令列、対応位置を示す certificate を受け取り、検査結果とエラーを返す。
-`pkg/inject` を import せず、変換器の site 選択、再配置、liveness の判定を使用しない。
-certificate は検査対象を示すヒントであり、各対応命令の内容と挿入された全命令を検査する。
+[日本語](README.ja.md)
+
+`injectcheck.Check` takes the original instructions, transformed instructions and a certificate proposing their correspondence, and returns counts and an error.
+It does not import `pkg/inject` or use the transformer's site selection, relocation or liveness decisions.
+The certificate is an untrusted hint: the checker compares every corresponding instruction and checks every inserted instruction.
 
 ```go
 counts, err := injectcheck.Check(original, transformed, injectcheck.Certificate{
@@ -12,70 +14,81 @@ counts, err := injectcheck.Check(original, transformed, injectcheck.Certificate{
 })
 ```
 
-`Original[i]` は元命令 i に対応する変換後の decoded instruction index である。
-`Hooks` は挿入関数本体の半開区間である。
-`LDIMM64` は decoded instruction としては 1 要素、再配置計算では raw slot 2 個として扱う。
-メタデータを保持する変換器では、変換前の `Label` と変換後の `FromLabels` で対応位置を抽出できる。
-ラベルの欠落と重複を拒否し、ラベルで指した命令の一致は `Check` が別途検査する。
+`Original[i]` is the decoded instruction index of original instruction i in the transformed stream.
+`Hooks` lists half-open ranges of inserted function bodies.
+An `LDIMM64` is one decoded instruction but occupies two raw slots for relocation.
+For transforms that preserve metadata, `Label` before transformation and `FromLabels` afterwards can extract correspondence hints.
+Missing and duplicate labels are rejected; `Check` independently compares the instructions they identify.
 
-`Instruction.Map()` が非 nil の命令は、元命令列と変換後命令列のどちらにあっても拒否する。
-同じ map の関連付けも拒否対象であり、挿入領域と hook も例外にしない。
-`AssociateMap` または map の書き換えを行う前に検査する。
-map operand は両命令列で共有する変化のない外部対応表を前提とし、未解決の `Reference` または同一 FD 空間の数値として比較する。
-同じ名前の map spec を別の実 map へ置換する処理は検査対象外である。
+An instruction with a non-nil `Instruction.Map()` is rejected in either stream, including insertion regions and hooks, even when both refer to the same map.
+Run the checker before `AssociateMap` or map rewriting.
+Map operands are compared as unresolved `Reference` names or numeric FDs in the same FD namespace, assuming a shared, unchanged external binding table.
+Rebinding a map spec name to a different live map is outside this contract.
 
-検査項目は次のとおりである。
+The checker verifies:
 
-- 元命令が順序を保って各 1 回現れ、opcode、register、offset、constant、map reference が保存されること。
-- 分岐、BPF call、callback 参照の宛先が、同じ元命令または helper 前の spill 列の先頭に移ること。
-  元の先頭への後退辺は一度だけ実行する入口 spill を飛ばす。
-- 入口、helper 前の spill、u32 注入、hook 本体が許可された形式であること。
-- helper 後の処理が限定された命令集合と前方分岐で構成され、各経路で R0 を 64 bit のまま復元すること。
-  tail call の失敗経路では R0 の復元を要求せず、R0–R5 の死を確認する。
-- 挿入 store が監査床より下の予約領域を使い、R6–R10 を変更しないこと。
-  map 値のコピーは R0 から R1 を介して予約領域へ書く load/store 対に限る。
-- hook が許可された引数読み出しと return だけを持つこと。
-  hook 内の store、helper、kfunc、別の BPF call は拒否する。
-- 元命令の直接 RFP アクセスが監査床以上であること。
+- Each original instruction appears once, in order, preserving its opcode, registers, offset, constant and map reference.
+- Branches, BPF calls and callback references target the corresponding original instruction or the start of its helper prelude.
+  Backward edges to the original entry skip the one-time entry spill.
+- Entry code, helper preludes, u32 injection regions and hook bodies have allowed forms.
+- Helper postludes use a limited instruction set and forward branches, and restore the full 64-bit R0 on every path except tail-call failure.
+- Inserted stores use reserved stack space below the audited floor, and inserted code preserves R6–R10.
+  Map-value copies are load/store pairs through R1 from R0 to reserved stack space.
+- Hooks contain only allowed argument reads and a return.
+  Stores, helpers, kfuncs and other BPF calls in hooks are rejected.
+- Direct RFP accesses in the original stay at or above the audited floor.
 
-helper 後と u32 注入位置での liveness は、元の CFG の固定点から求める。
-helper の既知の引数数と元の callee の使用レジスタを使い、未知の helper と kfunc は R1–R5 をすべて使用すると扱う。
-到達不能な分岐を値解析で除外しないため、安全な変換も拒否しうる。
-`trace_printk` などの可変引数 helper は書式を解析せず、R1–R5 をすべて使用すると扱う。
-verifier が引数の初期化検査を省略しても、helper が実行時にその引数を読まない証拠にはならない。
-値や書式の証拠を独立に検査する機構がないため、certificate の未検証の到達不能宣言で CFG の辺を除外することはしない。
-helper 後の処理は最大 4096 ステップで全経路を調べ、未知の形式と予算超過を拒否する。
+## Calling convention and liveness
 
-## 命令対をファイルから検査する
+P2–P5 rely on G3 assumption A3 (the BPF calling convention).
+The original P must be verifier-accepted, valid BPF: after a helper call, no executable path reads R1–R5 before redefining them.
+The inserted region preserves R6–R10 and the original stack, and restores an ordinary helper's R0 on every path, so readable original values and branch conditions remain equal.
+Changing scratch registers therefore cannot make a previously infeasible original path executable.
+Syntactic CFG liveness includes such infeasible paths and is not a rejection condition for P2–P5.
+
+For P4, a successful tail call skips the postlude, with unchanged helper arguments and destination.
+On failure, its `RET_VOID` calling convention also makes R0 unreadable; under A3, clobbering R0–R5 cannot change P's observations.
+This reasoning depends on P's verifier validity and A3; acceptance provides no guarantee for an invalid original.
+The ctx slot is initialized only by a checked entry spill in the entry frame, or by a ctx spill in that site's prelude.
+Original function-reference targets identify subprogram and callback entries; an entry-frame spill never initializes a callee frame.
+
+P6 (the u32 variant) follows an ordinary load, so the helper rule in A3 does not apply.
+P6 saves and restores R0 and R2 but clobbers R1 and R3–R5; the checker still requires these registers to be dead using a fixed point on the original CFG.
+It uses known helper arities and original callee register usage, treating unknown helpers, kfuncs and variadic helpers such as `trace_printk` as reading all of R1–R5.
+Without value or format analysis, this can reject safe P6 sites.
+Unverified unreachable-edge claims in a certificate never remove CFG edges.
+Helper postludes are checked along all paths within a 4096-step budget; unknown forms and budget exhaustion are rejected.
+
+## Checking a serialized instruction pair
 
 ```sh
 go build -o inject-check ./cmd/inject-check
 ./inject-check pair.json
 ```
 
-JSON の必須フィールドは `original`、`transformed`、`certificate` である。
-命令のフィールドは `asm.Instruction` の `OpCode`、`Dst`、`Src`、`Offset`、`Constant` に加え、文字列の `Symbol` と `Reference` である。
-JSON 生成には `json.Marshal(injectcheck.Instructions(insns))` を使う。
-この型は symbol と reference を保存し、関連付け済み map があれば直列化をエラーにする。
-`asm.Instructions` を直接直列化すると map metadata が消えるため、その出力を CLI の入力にしてはならない。
-CLI は命令の未知のフィールドと空でない `Metadata` を入力エラーにする。
-旧 fixture の空の `Metadata: {}` は許容する。
-JSON 中の map 名と数値 FD は両命令列で共有する識別子であり、実 map やプロセスをまたぐ FD の有効性は保存しない。
-`PseudoMapValue` の上位32 bit の offset も `Constant` に保存し、`Src` の pseudo kind とともに完全一致を要求する。
-`certificate` は Go API と同じフィールドを持つ。
-標準出力に `Accepted`、`Counts`、`Reason` を出力し、受理時は終了コード 0、拒否時は 1、入力エラー時は 2 を返す。
+The JSON fields are `original`, `transformed` and `certificate`.
+Instructions contain `asm.Instruction` fields `OpCode`, `Dst`, `Src`, `Offset` and `Constant`, plus string `Symbol` and `Reference` fields.
+Use `json.Marshal(injectcheck.Instructions(insns))` to produce them.
+This encoder preserves symbols and references and refuses associated maps before serialization can discard their identity.
+Direct serialization of `asm.Instructions` loses map metadata and must not be used as CLI input.
+The CLI rejects unknown instruction fields, including `Metadata` even when empty; only the dedicated encoder's fields are supported.
+Map names and numeric FDs are shared identifiers, not serialized live maps or transferable process FDs.
+The upper 32-bit offset of `PseudoMapValue` is retained in `Constant` and compared exactly along with the pseudo kind in `Src`.
+The certificate has the same fields as the Go API.
+The CLI prints `Accepted`, `Counts` and `Reason`, returning exit code 0 for acceptance, 1 for rejection and 2 for input errors.
 
-検査は BPF をロードせず、attach と pin も行わない。
+Checking does not load, attach or pin BPF.
 
-## 保証の範囲
+## Scope of acceptance
 
-受理は、元プログラムと変換後プログラムが有効な BPF であり、呼び出し規約と stack-alias audit が正しいことを前提とする。
-スタックエイリアス、callee を通じた予約領域へのアクセス、観測者の map 更新、並行実行、時刻と乱数の影響は証明しない。
-BTF、CO-RE、kernel verifier の受理、JIT の正しさも判定対象に含めない。
-helper 後の引数設定は許可された命令集合と保存条件を検査するが、観測者へ渡す site ID と引数値の正しさは検査しない。
-検査済みの命令保存条件と、観測チャネルの値の正しさは別の性質である。
+Acceptance is conditional on valid original and transformed BPF, the calling convention, and the caller's stack-alias audit.
+These are the syntactic sufficient conditions of translation validation (G3 §3.3 T2), not a kernel verifier or a general equivalence proof.
+Stack aliases, callee access to reserved caller-stack space, observer map updates, concurrency, time and randomness remain outside the checker.
+It also does not validate BTF, CO-RE, kernel acceptance or JIT correctness.
+Helper argument setup is checked for allowed instructions and preservation, not for correctness of the site ID or observation arguments passed to the observer.
+Instruction preservation and observation-channel correctness are separate properties.
 
-通常のテストは `go test ./pkg/injectcheck ./pkg/inject` で実行する。
-既存の同値性 fixture の検査は `go test ./pkg/inject -run '^TestTranslationValidation' -v` で実行する。
-corpus の検査は `BPF_NINJA_VALIDATE_OBJECTS` に object ディレクトリ、`BPF_NINJA_VALIDATE_CENSUS` に既存の census 結果ディレクトリ、`BPF_NINJA_VALIDATE_OUTPUT` に保存先を指定する。
-corpus テストは拒否を結果ファイルに保存し、チェッカーによる拒否があればテストを失敗させる。
+Run unit tests with `go test ./pkg/injectcheck ./pkg/inject`.
+Run the equivalence fixtures with `go test ./pkg/inject -run '^TestTranslationValidation' -v`.
+For the opt-in corpus test, set `BPF_NINJA_VALIDATE_OBJECTS` to an object directory, `BPF_NINJA_VALIDATE_CENSUS` to recorded census results, and `BPF_NINJA_VALIDATE_OUTPUT` to an output directory.
+It records all rejections and fails if the checker rejects any transformed program.
