@@ -17,6 +17,10 @@ Member filters and echo, scalar-pointee `[0]` reads, pointer NULL comparisons, a
 These features have been measured on kernels 6.1+ in our test matrix; distribution backports may differ.
 The common 5.8+ prerequisite alone does not provide this helper.
 
+Static XDP capture uses fault-handled context reads when its direct-read probe fails with a scalar context.
+Exit and gated capture on that path also require `bpf_get_func_ret` (upstream Linux 5.17+) to obtain the action because the kernel has discarded the BTF prototype.
+This fallback is specific to XDP; it does not add support for static tc, cgroup-skb or netfilter hooks with rejected context reads.
+
 ## Discover members before writing a filter
 
 Start with the program's function and parameter lists:

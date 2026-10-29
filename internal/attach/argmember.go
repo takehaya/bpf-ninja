@@ -47,7 +47,7 @@ func ResolveArg(expr string, params []FuncParamInfo) (FuncParamInfo, error) {
 		for _, member := range membersPath {
 			members, ok := aggregateMembers(typ)
 			if !ok {
-				return FuncParamInfo{}, fmt.Errorf("%q: cannot select member %q from %T; expected struct/union", expr, member, typ)
+				return FuncParamInfo{}, fmt.Errorf("%q: cannot select member %q from %s; expected struct/union", expr, member, memberKind(typ))
 			}
 			matches, names := findMembers(members, member, 0)
 			if len(matches) == 0 {
@@ -100,8 +100,14 @@ func memberKind(typ btf.Type) string {
 		return "pointer (only one dereference is supported)"
 	case *btf.Float:
 		return "float"
+	case *btf.Void:
+		return "void"
+	case *btf.Int:
+		return "integer"
+	case *btf.Enum:
+		return "enum"
 	}
-	return fmt.Sprintf("%T", typ)
+	return "unsupported type"
 }
 
 func aggregateMembers(typ btf.Type) ([]btf.Member, bool) {

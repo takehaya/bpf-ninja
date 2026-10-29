@@ -384,6 +384,11 @@ func LoadMultiPoint(targets []attach.Target, stages []Stage, filters []filter.Ta
 					_ = probe.Close()
 					return nil, fmt.Errorf("fexit target %s: %w", t.FuncName, err)
 				}
+				if probeRead {
+					// The kernel discarded the static prototype, so ask it for
+					// the return value instead of using a BTF-derived ctx slot.
+					returnOffset = fexitReturnViaHelper
+				}
 			}
 			var insns asm.Instructions
 			var err error

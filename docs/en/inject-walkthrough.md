@@ -346,6 +346,7 @@ A typed lookup hook is called only on a hit; its `_miss` variant has no `value` 
 To capture misses with `--arg-filter 'value==null'`, use a dispatch hook with `lookup:any`, whose `const void *value` can be NULL.
 On kernels 6.1, 6.6, 6.12 and 6.15 in our test matrix, set `"static_untrusted": true` in that rule because those kernels reject the global hook's `arg:untrusted` pointers.
 Capture reads the static XDP hook's ctx through the kernel-read helper when the direct context-read probe rejects that target.
+On that fallback path, exit and gated capture obtain the action through `bpf_get_func_ret` (upstream Linux 5.17+) because the kernel has discarded the hook's BTF prototype.
 `value!=null` selects the hits without dereferencing the value.
 
 ## See also

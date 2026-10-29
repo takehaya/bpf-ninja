@@ -428,6 +428,7 @@ Common:
 Mode-specific:
 
 - **Pointer argument features**: member filters/echo, scalar-pointee `[0]` reads, pointer NULL comparisons, and member-derived set keys require `bpf_get_func_arg` support (upstream Linux 5.17+). These features have been measured on kernels 6.1+ in our test matrix; distribution backports may differ.
+- **Static XDP context fallback**: when direct context reads are rejected, exit and gated capture also require `bpf_get_func_ret` (upstream Linux 5.17+) to obtain the action without relying on the discarded BTF prototype.
 - **`--mode entry` / `exit`**: a target BPF program (XDP, tc clsact, cgroup-skb, or netfilter) already loaded with BTF. With `-i`, an XDP program attached to the interface; tc targets go by `-p <progID>`; cgroup-skb targets by `--cgroup <path>` or `-p`.
 - **`--mode xdp`**: no XDP attached to the interface (bpf-ninja becomes the XDP program).
 - **DSL with chain quantifier (`+`, `*`, `{n,m>4}`) on a fixed-length layer, parser-machine self-loop (variable-length headers like IPv6 ext / GTP options / SRv6 segments), or alternation (`(a|b)`)**: kernel 5.17+ (uses `bpf_loop` + bpf2bpf subprograms). A repeated variable-length layer (`ipv4+`, `ipv6*`) unrolls to `MAX_DEPTH` parser machines instead of a bpf_loop chain; each machine's own option or extension walk keeps the 5.17 requirement where it applies. Plain DSL chains and `--cbpf` filters work on 5.8+.

@@ -1,68 +1,75 @@
 #!/usr/bin/env bash
 # Run as root inside a disposable VM. Uses only TEST_RUN and private bpffs pins.
 set -euo pipefail
-work=$(mktemp -d /tmp/ninja-argmember.XXXXXX)
+work=$(mktemp -d "$PWD/argmember-results.XXXXXX")
 pin=/sys/fs/bpf/ninja_argmember_$$
 pid=
 cleanup() {
+  local rc=$?
   if [[ -n "$pid" ]]; then kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; fi
-  rm -rf "$pin" "$work"
+  rm -rf "$pin"
+  echo "Artifacts retained in $work (exit=$rc)"
+  return "$rc"
 }
 trap cleanup EXIT
 mountpoint -q /sys/fs/bpf || mount -t bpf bpf /sys/fs/bpf
 mkdir -p "$pin"
 echo "kernel=$(uname -r)"
 checks=0
+starts=0
 start() {
   local object=$1 config=$2
   if [[ -n "$pid" ]]; then kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; fi
-  rm -f "$work/id"
-  printf '%s\n' "$config" > "$work/rules.json"
-  ./bpf-ninja inject-run --fail-closed --config "$work/rules.json" -- ./loader "$object" > "$work/id" 2> "$work/inject.err" &
+  starts=$((starts+1))
+  local dir=$work/start-$starts
+  mkdir -p "$dir"
+  printf '%s\n' "$config" > "$dir/rules.json"
+  ./bpf-ninja inject-run --fail-closed --config "$dir/rules.json" -- ./loader "$object" > "$dir/id" 2> "$dir/inject.err" &
   pid=$!
   for ((i=0;i<100;i++)); do
-    [[ -s "$work/id" ]] && break
-    kill -0 "$pid" 2>/dev/null || { cat "$work/inject.err"; return 1; }
+    [[ -s "$dir/id" ]] && break
+    kill -0 "$pid" 2>/dev/null || { cat "$dir/inject.err"; return 1; }
     sleep 0.1
   done
-  ID=$(cat "$work/id")
+  ID=$(cat "$dir/id")
   [[ "$ID" =~ ^[0-9]+$ ]]
-  cat "$work/inject.err"
+  cat "$dir/inject.err"
 }
 schema() {
   local hook=$1 expr=$2
-  ./bpf-ninja -p "$ID" --func "$hook" --list-params --members > /dev/null 2> "$work/schema"
-  cat "$work/schema"
-  grep -F "$expr" "$work/schema" > /dev/null
+  ./bpf-ninja -p "$ID" --func "$hook" --list-params --members > /dev/null 2> "$work/schema-$hook"
+  cat "$work/schema-$hook"
+  grep -F "$expr" "$work/schema-$hook" > /dev/null
   checks=$((checks+1))
 }
 cap() {
   local name=$1 hook=$2 port=$3
   shift 3
+  local dir=$work/$name
+  mkdir -p "$dir"
   local rc=0
-  timeout -s INT 4 ./bpf-ninja -p "$ID" --func "$hook" -c 3 -w "$work/cap.pcap" "$@" > /dev/null 2> "$work/cap.err" || rc=$?
+  timeout -s INT 4 ./bpf-ninja -p "$ID" --func "$hook" -c 3 -w "$dir/cap.pcap" "$@" > /dev/null 2> "$dir/cap.err" || rc=$?
   if [[ "$port" == none ]]; then
-    [[ $rc == 124 ]] || { cat "$work/cap.err"; return 1; }
+    [[ $rc == 124 ]] || { cat "$dir/cap.err"; return 1; }
   else
-    [[ $rc == 0 ]] || { cat "$work/cap.err"; return 1; }
+    [[ $rc == 0 ]] || { cat "$dir/cap.err"; return 1; }
   fi
-  tcpdump -nn -r "$work/cap.pcap" > "$work/decoded" 2> "$work/tcpdump.err"
+  tcpdump -nn -r "$dir/cap.pcap" > "$dir/decoded" 2> "$dir/tcpdump.err"
   local count got
-  count=$(wc -l < "$work/decoded")
-  got=$(awk '{for(i=1;i<=NF;i++)if($i~/^10\.0\.0\.2\.[0-9]+:$/){sub(/:$/,"",$i);sub(/^10\.0\.0\.2\./,"",$i);print $i}}' "$work/decoded" | sort -nu | paste -sd,)
+  count=$(wc -l < "$dir/decoded")
+  got=$(awk '{for(i=1;i<=NF;i++)if($i~/^10\.0\.0\.2\.[0-9]+:$/){sub(/:$/,"",$i);sub(/^10\.0\.0\.2\./,"",$i);print $i}}' "$dir/decoded" | sort -nu | paste -sd,)
   if [[ "$port" == none ]]; then
-    [[ "$count" == 0 ]] || { cat "$work/decoded"; return 1; }
+    [[ "$count" == 0 ]] || { cat "$dir/decoded"; return 1; }
   else
-    [[ "$count" == 3 && "$got" == "$port" ]] || { cat "$work/decoded"; cat "$work/cap.err"; return 1; }
+    [[ "$count" == 3 && "$got" == "$port" ]] || { cat "$dir/decoded"; cat "$dir/cap.err"; return 1; }
   fi
   echo "PASS $name: packets=$count dport=${got:-none} rc=$rc"
-  if [[ "$name" == member_equal ]]; then cat "$work/cap.err"; cat "$work/decoded"; fi
+  if [[ "$name" == member_equal ]]; then cat "$dir/cap.err"; cat "$dir/decoded"; fi
   checks=$((checks+1))
-  rm -f "$work"/cap.pcap*
 }
 start policies.o '[{"program":"entry","auto":true,"ops":["lookup:any"],"hook":"ninja","stack_lowest_offset":-16}]'
 schema ninja_policies 'value->action'
-grep -F 'key->dport' "$work/schema" > /dev/null
+grep -F 'key->dport' "$work/schema-ninja_policies" > /dev/null
 cap member_equal ninja_policies 443 --arg-filter 'value->action==2'
 cap member_not_equal ninja_policies 80 --arg-filter 'value->action!=2'
 cap member_be16 ninja_policies 443 --arg-filter 'value->port==be16(443)'
@@ -76,6 +83,7 @@ cap member_miss ninja_policies none --arg-filter 'value->action==3'
 ./bpf-ninja set add "$pin/ports" dport=47873 > /dev/null
 cap member_set ninja_policies 443 --set "ports=$pin/ports,key(dport=arg:key->dport)" --arg-filter @ports
 cap member_set_implicit ninja_policies 443 --set "ports=$pin/ports" --arg-filter @ports
+cap member_set_dotted ninja_policies 443 --set "flows.prod=$pin/ports,key(dport=arg:key->dport)" --arg-filter @flows.prod
 ./bpf-ninja set del "$pin/ports" dport=47873 > /dev/null
 cap member_set_removed ninja_policies none --set "ports=$pin/ports,key(dport=arg:key->dport)" --arg-filter @ports
 # The walkthrough's scalar value pointers are u32 for bloom, u64 for queue.

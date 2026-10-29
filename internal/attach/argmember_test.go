@@ -92,7 +92,7 @@ func TestResolveArgMember(t *testing.T) {
 		{"q->missing", "available members: [imsi target seid tag bits next array odd small half]"},
 		{"q->target.bad", "available members: [pdr_id]"},
 		{"q->bits", "bitfield"}, {"q->next", "integer or enum"},
-		{"q->next.value", "expected struct/union"}, {"q->target", "integer or enum"},
+		{"q->next.value", `cannot select member "value" from pointer (only one dereference is supported); expected struct/union`}, {"q->target", "integer or enum"},
 		{"q->array", "integer or enum"}, {"q->odd", "unsupported member size 3"},
 		{"q->", "invalid argument expression"}, {"q->target..pdr_id", "invalid argument expression"},
 		{"q->next->value", "invalid argument expression"},
@@ -169,5 +169,8 @@ func TestScalarPointerDiscovery(t *testing.T) {
 		if _, err := ResolveArg(expr, params); err == nil {
 			t.Errorf("accepted %s", expr)
 		}
+	}
+	if _, err := ResolveArg("opaque[0]", params); err == nil || err.Error() != `"opaque[0]": final member must be an integer or enum, got void` {
+		t.Fatalf("void pointee diagnostic: %v", err)
 	}
 }

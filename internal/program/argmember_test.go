@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"github.com/takehaya/bpf-ninja/internal/attach"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -58,7 +59,7 @@ func TestMemberLoadCodegen(t *testing.T) {
 			insns := emitArgMemberLoad(1, 12, size, signed, "exit")
 			// Null is checked before adding the offset; failed reads branch before
 			// touching the temporary. R6-R9 remain available to the capture path.
-			if insns[7].OpCode != asm.JEq.Op(asm.ImmSource) || insns[7].Reference() != "exit" || insns[4] != asm.FnGetFuncArg.Call() || insns[12] != asm.FnProbeReadKernel.Call() || insns[13].Reference() != "exit" || insns[14].Offset != argMemberTmp {
+			if !reflect.DeepEqual(insns[5], asm.JNE.Imm(asm.R0, 0, "exit")) || !reflect.DeepEqual(insns[7], asm.JEq.Imm(asm.R3, 0, "exit")) || insns[4] != asm.FnGetFuncArg.Call() || insns[12] != asm.FnProbeReadKernel.Call() || !reflect.DeepEqual(insns[13], asm.JNE.Imm(asm.R0, 0, "exit")) || insns[14].Offset != argMemberTmp {
 				t.Fatalf("unexpected member load: %v", insns)
 			}
 			for _, in := range insns {
