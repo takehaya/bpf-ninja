@@ -554,10 +554,10 @@ func (s *supervisor) transformLoad(r *remote, attr []byte, rule Rule) (ret int64
 	if err := supplyMapTypes(&raw, rule); err != nil {
 		return 0, nil, "", err
 	}
-	if rule.MapTypesELF != "" {
+	if rule.MapBTF != nil {
 		for _, m := range raw.Maps {
 			if m.Name == rule.Map && m.Key != nil && m.Value != nil {
-				s.log("program %q: map %q types from ELF sha256 %.12s: key %q, value %q", rule.Program, rule.Map, strings.ToLower(rule.MapTypesSHA256), m.Key.TypeName(), m.Value.TypeName())
+				s.log("program %q: map %q types from ELF sha256 %.12s: key %q, value %q", rule.Program, rule.Map, strings.ToLower(rule.MapBTF.SHA256), m.Key.TypeName(), m.Value.TypeName())
 			}
 		}
 	}

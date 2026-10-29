@@ -11,8 +11,8 @@ import (
 
 func TestMapTypesFIFO(t *testing.T) {
 	p, r, _ := mapTypesFixture()
-	r.MapTypesELF = filepath.Join(t.TempDir(), "fifo")
-	if err := unix.Mkfifo(r.MapTypesELF, 0600); err != nil {
+	r.MapBTF.ELF = filepath.Join(t.TempDir(), "fifo")
+	if err := unix.Mkfifo(r.MapBTF.ELF, 0600); err != nil {
 		t.Fatal(err)
 	}
 	done := make(chan error, 1)

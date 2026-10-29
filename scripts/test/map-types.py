@@ -86,14 +86,14 @@ for mode in ("without", "with", "named", "legacy", "legacy-missing", "existing-b
     d.mkdir()
     rule = {"program": "ingress", "map": "sessions", "hook": "observe", "stack_lowest_offset": -4}
     if mode != "without":
-        rule.update(map_types_elf=elf, map_types_sha256=hashlib.sha256(Path(elf).read_bytes()).hexdigest())
+        rule["map_btf"] = {"elf": elf, "sha256": hashlib.sha256(Path(elf).read_bytes()).hexdigest()}
     if mode in ("named", "legacy", "legacy-missing"):
-        rule.update(map_key_type="u32", map_value_type="record")
+        rule["map_btf"].update(key_type="u32", value_type="record")
     if mode == "legacy-missing":
-        rule["map_value_type"] = "record___new"
+        rule["map_btf"]["value_type"] = "record___new"
     if mode == "named":
         # A same-size reordered type must not override a typed ELF definition.
-        rule["map_value_type"] = "record___other"
+        rule["map_btf"]["value_type"] = "record___other"
     (d / "rules.json").write_text(json.dumps([rule]) + "\n")
     load = command([ninja, "inject-run", "--fail-closed", "--config", str(d / "rules.json"),
                     "--hooks-json", str(d / "hooks.json"), "--", loader, elf, str(d),
@@ -103,7 +103,7 @@ for mode in ("without", "with", "named", "legacy", "legacy-missing", "existing-b
         if mode in ("existing-btf", "legacy-missing", "named"):
             rc = load.wait(timeout=30)
             (d / "load.exit").write_text(str(rc) + "\n")
-            expected = {"existing-btf": "already has BTF", "legacy-missing": 'value type "record___new" missing',
+            expected = {"existing-btf": "already has BTF", "legacy-missing": 'map_btf.value_type "record___new" missing',
                         "named": "would replace the ELF map's declared type"}[mode]
             check(rc == 2 and expected in (d / "load.stderr").read_text(), f"{mode}: expected refusal {expected}, rc={rc}")
             if mode != "existing-btf":

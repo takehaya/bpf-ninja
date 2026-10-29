@@ -51,7 +51,7 @@ Each `ld_imm64 BPF_PSEUDO_MAP_FD` names a map fd, and an injected `BPF_OBJ_GET_I
 The supervisor cannot query a tracee fd directly: fd numbers are local to the owning process.
 It can open the returned system-wide BTF ID with `BPF_BTF_GET_FD_BY_ID` and read the types, subject to its own permissions.
 This is the default source of key and value types.
-For a map with `btf_id == 0` and no existing key/value types, an explicit rule can instead supply ordinary data types from an operator-selected, SHA-256-pinned ELF; see [map types from a loader ELF](inject-run.md#map-types-from-a-loader-elf).
+For a map with `btf_id == 0` and no existing key/value types, an explicit rule with `map_btf.elf` and required `map_btf.sha256` can instead supply ordinary data types from an operator-selected, SHA-256-pinned ELF; see [map types from a loader ELF](inject-run.md#map-types-from-a-loader-elf).
 The supervisor refuses special fields and pointer-ABI types before supplementation, so only hook metadata changes.
 Existing live-map BTF is never replaced; the operator remains responsible for matching the ELF layout to the actual map, since the digest pins a choice rather than proving its provenance.
 

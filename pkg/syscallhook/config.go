@@ -32,9 +32,8 @@ import (
 // inject.LookupRequest.Updates and Pushes). Without ops a rule observes
 // lookup hits; with ops it observes only the ops listed. Every op but lookup
 // needs auto, and an update needs one spill slot more (two with dispatch).
-// MapTypesELF and MapTypesSHA256 pin an ELF source for a BTF-less map.
-// MapKeyType and MapValueType fill untyped sides using exact BTF names in that ELF;
-// a side already typed by the ELF accepts only that same type.
+// MapBTF pins an ELF source for a BTF-less map and optionally selects exact
+// BTF names to fill untyped sides; already typed sides accept only the same type.
 // StackLowestOffset is the caller's audit of all stack accesses, including
 // aliases and callees (see inject.StackAudit).
 type Rule struct {
@@ -47,10 +46,7 @@ type Rule struct {
 	StaticUntrusted   bool     `json:"static_untrusted,omitempty"`
 	Dispatch          bool     `json:"dispatch,omitempty"`
 	Ops               []string `json:"ops,omitempty"`
-	MapTypesELF       string   `json:"map_types_elf,omitempty"`
-	MapTypesSHA256    string   `json:"map_types_sha256,omitempty"`
-	MapKeyType        string   `json:"map_key_type,omitempty"`
-	MapValueType      string   `json:"map_value_type,omitempty"`
+	MapBTF            *MapBTF  `json:"map_btf,omitempty"`
 	Map               string   `json:"map,omitempty"`
 	Func              string   `json:"func,omitempty"`
 	Line              uint32   `json:"line,omitempty"`
@@ -58,6 +54,15 @@ type Rule struct {
 	SitePCs           []uint32 `json:"site_pcs,omitempty"`
 	Hook              string   `json:"hook"`
 	StackLowestOffset *int16   `json:"stack_lowest_offset"`
+}
+
+// MapBTF pins the ELF supplying missing map BTF types to a SHA-256 digest.
+// KeyType and ValueType optionally select exact names with fill-only semantics.
+type MapBTF struct {
+	ELF       string `json:"elf"`
+	SHA256    string `json:"sha256"`
+	KeyType   string `json:"key_type,omitempty"`
+	ValueType string `json:"value_type,omitempty"`
 }
 
 // request forwards the transform options; the supervisor handles Program and
@@ -210,26 +215,26 @@ func ParseConfig(r io.Reader) ([]Rule, error) {
 }
 
 func (r Rule) validateMapTypes() error {
-	if r.MapTypesELF == "" {
-		if r.MapTypesSHA256 != "" || r.MapKeyType != "" || r.MapValueType != "" {
-			return fmt.Errorf("map_types_sha256, map_key_type and map_value_type require map_types_elf")
-		}
+	if r.MapBTF == nil {
 		return nil
 	}
+	if r.MapBTF.ELF == "" {
+		return fmt.Errorf("map_btf.elf is required when map_btf is present")
+	}
 	if r.Map == "" || r.Auto || inject.KernelObjName(r.Map) != r.Map {
-		return fmt.Errorf("map_types_elf requires a single explicit map kernel name (1-15 bytes), without auto")
+		return fmt.Errorf("map_btf.elf requires a single explicit map kernel name (1-15 bytes), without auto")
 	}
 	if r.Dispatch {
-		return fmt.Errorf("map_types_elf requires typed lookup hooks; dispatch uses a generic signature")
+		return fmt.Errorf("map_btf.elf requires typed lookup hooks; dispatch uses a generic signature")
 	}
 	for _, op := range r.Ops {
 		if name, _, _ := strings.Cut(op, ":"); name != "lookup" {
-			return fmt.Errorf("map_types_elf supports lookup hooks only")
+			return fmt.Errorf("map_btf.elf supports lookup hooks only")
 		}
 	}
-	hash, err := hex.DecodeString(r.MapTypesSHA256)
+	hash, err := hex.DecodeString(r.MapBTF.SHA256)
 	if err != nil || len(hash) != 32 {
-		return fmt.Errorf("map_types_sha256 must contain exactly 64 hexadecimal digits")
+		return fmt.Errorf("map_btf.sha256 must contain exactly 64 hexadecimal digits")
 	}
 	return nil
 }

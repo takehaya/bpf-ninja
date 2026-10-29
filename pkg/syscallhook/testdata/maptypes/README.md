@@ -2,8 +2,8 @@
 
 `program.c` declares a typed map, while `loader.go` deliberately creates that map without BTF before loading the ELF program.
 `legacy.c` instead declares the map by sizes and retains a named value struct and two flavors with reversed member order separately in ELF BTF.
-The check compares the opaque baseline with automatic ELF types, the legacy definition with explicit type names, then verifies that an existing typed map refuses supplementation.
-The `named` mode refuses a same-size reordered type that would override the typed ELF map; names have fill-only semantics.
+The check compares the opaque baseline with ELF map definition types via `map_btf.elf` and `map_btf.sha256`, the legacy definition with explicit type names, then verifies that an existing typed map refuses supplementation.
+The `named` mode refuses a same-size reordered type that would override the typed ELF map; `map_btf.key_type` and `map_btf.value_type` have fill-only semantics.
 For the legacy definition, it checks that `record` selects the exact layout among flavors and that the nonexistent exact name `record___new` is refused before the loader becomes ready, leaving no hooks.
 It sends three distinct 64-byte packets with identities 7, 8 and 7 using `BPF_PROG_TEST_RUN`, waits for capture readiness, and verifies that the final pcapng contains exactly the first and third packets with no reported capture losses.
 No interface attachment is required.
@@ -23,7 +23,7 @@ cp scripts/test/map-types.py "$DATA/vm/"
 In a root-capable Linux x86-64 VM with Python 3, program BTF, ptrace and fentry support, change to the copied directory and run:
 
 ```sh
-python3 ./map-types.py ./bpf-ninja ./loader ./program.o results ./legacy.o
+/usr/bin/python3 ./map-types.py ./bpf-ninja ./loader ./program.o results ./legacy.o
 ```
 
 `results` must not exist.

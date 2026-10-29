@@ -25,6 +25,10 @@ func fillNonZero(t *testing.T, v reflect.Value) {
 		s := reflect.MakeSlice(v.Type(), 1, 1)
 		fillNonZero(t, s.Index(0))
 		v.Set(s)
+	case reflect.Struct:
+		for i := range v.NumField() {
+			fillNonZero(t, v.Field(i))
+		}
 	case reflect.Pointer:
 		p := reflect.New(v.Type().Elem())
 		fillNonZero(t, p.Elem())
@@ -50,7 +54,7 @@ func TestRuleRequestForwardsOptions(t *testing.T) {
 		r := full
 		f := reflect.ValueOf(&r).Elem().Field(i)
 		f.Set(reflect.Zero(f.Type()))
-		if forwarded := !reflect.DeepEqual(r.request(), want); forwarded != (name != "Program" && name != "MapTypesELF" && name != "MapTypesSHA256" && name != "MapKeyType" && name != "MapValueType") {
+		if forwarded := !reflect.DeepEqual(r.request(), want); forwarded != (name != "Program" && name != "MapBTF") {
 			t.Errorf("%s: forwarded=%v", name, forwarded)
 		}
 	}

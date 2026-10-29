@@ -16,12 +16,12 @@ import (
 	"github.com/takehaya/bpf-ninja/pkg/inject"
 )
 
-// maxMapTypesELFSize bounds the per-load read while the tracee is stopped.
-const maxMapTypesELFSize = 64 << 20 // 64 MiB
+// maxMapBTFELFSize bounds the per-load read while the tracee is stopped.
+const maxMapBTFELFSize = 64 << 20 // 64 MiB
 
 // supplyMapTypes supplies hook metadata only; it never changes a live map.
 func supplyMapTypes(p *inject.RawProgram, rule Rule) error {
-	if rule.MapTypesELF == "" {
+	if rule.MapBTF == nil {
 		return nil
 	}
 	if _, _, err := mapTypesLive(p, rule.Map); err != nil {
@@ -29,38 +29,38 @@ func supplyMapTypes(p *inject.RawProgram, rule Rule) error {
 	}
 	// O_NONBLOCK lets us open a FIFO without waiting for a writer, then reject
 	// it using the opened descriptor rather than a racy path-only check.
-	f, err := os.OpenFile(rule.MapTypesELF, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	f, err := os.OpenFile(rule.MapBTF.ELF, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
-		return fmt.Errorf("map types ELF: %w", err)
+		return fmt.Errorf("map types ELF: map_btf.elf: %w", err)
 	}
 	defer func() { _ = f.Close() }()
 	info, err := f.Stat()
 	if err != nil {
-		return fmt.Errorf("map types ELF: %w", err)
+		return fmt.Errorf("map types ELF: map_btf.elf: %w", err)
 	}
 	if !info.Mode().IsRegular() {
-		return fmt.Errorf("map types ELF: source must be a regular file")
+		return fmt.Errorf("map types ELF: map_btf.elf source must be a regular file")
 	}
-	if info.Size() > maxMapTypesELFSize {
-		return fmt.Errorf("map types ELF: source exceeds 64 MiB limit")
+	if info.Size() > maxMapBTFELFSize {
+		return fmt.Errorf("map types ELF: map_btf.elf source exceeds 64 MiB limit")
 	}
-	data, err := io.ReadAll(io.LimitReader(f, maxMapTypesELFSize+1))
+	data, err := io.ReadAll(io.LimitReader(f, maxMapBTFELFSize+1))
 	if err != nil {
-		return fmt.Errorf("map types ELF: %w", err)
+		return fmt.Errorf("map types ELF: map_btf.elf: %w", err)
 	}
-	if len(data) > maxMapTypesELFSize {
-		return fmt.Errorf("map types ELF: source exceeds 64 MiB limit")
+	if len(data) > maxMapBTFELFSize {
+		return fmt.Errorf("map types ELF: map_btf.elf source exceeds 64 MiB limit")
 	}
-	if sum := fmt.Sprintf("%x", sha256.Sum256(data)); !strings.EqualFold(sum, rule.MapTypesSHA256) {
-		return fmt.Errorf("map types ELF: SHA-256 %s does not match %s", sum, rule.MapTypesSHA256)
+	if sum := fmt.Sprintf("%x", sha256.Sum256(data)); !strings.EqualFold(sum, rule.MapBTF.SHA256) {
+		return fmt.Errorf("map types ELF: map_btf.sha256 %s does not match %s", sum, rule.MapBTF.SHA256)
 	}
 	// Parse the same bytes that were hashed, so replacing the file cannot change the source.
 	spec, err := ebpf.LoadCollectionSpecFromReader(bytes.NewReader(data))
 	if err != nil {
-		return fmt.Errorf("map types ELF: %w", err)
+		return fmt.Errorf("map types ELF: map_btf.elf: %w", err)
 	}
 	if spec.ByteOrder != wire {
-		return fmt.Errorf("map types ELF: byte order does not match live program")
+		return fmt.Errorf("map types ELF: map_btf.elf byte order does not match live program")
 	}
 	return supplyMapTypesFromSpec(p, rule, spec)
 }
@@ -93,11 +93,11 @@ func supplyMapTypesFromSpec(p *inject.RawProgram, rule Rule, spec *ebpf.Collecti
 	if live.Flags != schema.Flags {
 		return fmt.Errorf("map types ELF: map %q flags mismatch: live %#x, ELF %#x", name, live.Flags, schema.Flags)
 	}
-	key, err := mapType(spec.Types, rule.MapKeyType, schema.Key, live.KeySize, "key")
+	key, err := mapType(spec.Types, rule.MapBTF.KeyType, schema.Key, live.KeySize, "key")
 	if err != nil {
 		return err
 	}
-	value, err := mapType(spec.Types, rule.MapValueType, schema.Value, live.ValueSize, "value")
+	value, err := mapType(spec.Types, rule.MapBTF.ValueType, schema.Value, live.ValueSize, "value")
 	if err != nil {
 		return err
 	}
@@ -137,11 +137,11 @@ func mapType(types *btf.Spec, name string, fallback btf.Type, size uint32, side 
 	typ := fallback
 	if name != "" {
 		if types == nil {
-			return nil, fmt.Errorf("map types ELF: no BTF for %s type %q", side, name)
+			return nil, fmt.Errorf("map types ELF: no BTF for map_btf.%s_type %q", side, name)
 		}
 		matches, err := types.AnyTypesByName(name)
 		if err != nil && !errors.Is(err, btf.ErrNotFound) {
-			return nil, fmt.Errorf("map types ELF: %s type %q: %w", side, name, err)
+			return nil, fmt.Errorf("map types ELF: map_btf.%s_type %q: %w", side, name, err)
 		}
 		// cilium/ebpf v0.22.0 AnyTypesByName can leave non-exact candidates, so filter them ourselves.
 		var exact []btf.Type
@@ -165,21 +165,21 @@ func mapType(types *btf.Spec, name string, fallback btf.Type, size uint32, side 
 		}
 		matches = exact
 		if len(matches) == 0 {
-			return nil, fmt.Errorf("map types ELF: %s type %q missing or has no sized layout", side, name)
+			return nil, fmt.Errorf("map types ELF: map_btf.%s_type %q missing or has no sized layout", side, name)
 		}
 		if len(matches) != 1 {
-			return nil, fmt.Errorf("map types ELF: ambiguous %s type %q (%d distinct layouts)", side, name, len(matches))
+			return nil, fmt.Errorf("map types ELF: ambiguous map_btf.%s_type %q (%d distinct layouts)", side, name, len(matches))
 		}
 		typ = matches[0]
 		if fallback != nil {
 			if btf.UnderlyingType(typ) != btf.UnderlyingType(fallback) {
-				return nil, fmt.Errorf("map types ELF: %s type %q would replace the ELF map's declared type %q", side, name, fallback.TypeName())
+				return nil, fmt.Errorf("map types ELF: map_btf.%s_type %q would replace the ELF map's declared type %q", side, name, fallback.TypeName())
 			}
 			typ = fallback
 		}
 	}
 	if typ == nil {
-		return nil, fmt.Errorf("map types ELF: map lacks %s BTF; select an existing type with map_%s_type", side, side)
+		return nil, fmt.Errorf("map types ELF: map lacks %s BTF; select an existing type with map_btf.%s_type", side, side)
 	}
 	n, err := btf.Sizeof(typ)
 	if err != nil {

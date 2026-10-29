@@ -89,7 +89,7 @@ Unknown JSON fields, duplicate program selectors, trailing JSON, and configurati
 ## Map types from a loader ELF
 
 Some loaders create maps without kernel BTF even though their ELF contains the key and value definitions.
-For one explicit `map` rule, `map_types_elf` supplies those definitions to the generated hook:
+For one explicit `map` rule, `map_btf.elf` supplies those definitions to the generated hook:
 
 ```json
 [
@@ -98,12 +98,16 @@ For one explicit `map` rule, `map_types_elf` supplies those definitions to the g
     "map": "sessions",
     "hook": "observe",
     "stack_lowest_offset": -4,
-    "map_types_elf": "/path/to/loader-generated.o",
-    "map_types_sha256": "REPLACE_WITH_64_HEXADECIMAL_DIGITS"
+    "map_btf": {
+      "elf": "/path/to/loader-generated.o",
+      "sha256": "REPLACE_WITH_64_HEXADECIMAL_DIGITS"
+    }
   }
 ]
 ```
 
+`map_btf` requires `elf` and `sha256`; `key_type` and `value_type` are optional.
+Omitting `map_btf` or setting it to `null` disables supplementation; an empty object is an error, and unknown fields inside it are rejected.
 Compute the digest with `sha256sum /path/to/loader-generated.o` and audit the stack bound for the actual program.
 The supervisor reads the path in its own filesystem, relative to its working directory, at each matching program load, after checking that the referenced live map exists and has no BTF.
 The source must be a regular file no larger than 64 MiB; it is read through that limit each time, with no launch-time preflight or cache.
@@ -125,8 +129,8 @@ A malformed digest is rejected during configuration parsing.
 A live map with any BTF is also refused, including a map whose existing value type is an anonymous byte array; existing types are never replaced.
 These errors follow the usual `inject-run` policy: without `--fail-closed` the original program can load unchanged; use `--fail-closed` to require successful injection.
 
-For a legacy map definition that declares sizes instead of types, optional `map_key_type` and `map_value_type` select exact BTF names from the same hashed ELF.
-For example, `"map_key_type": "u32", "map_value_type": "record"` selects a typedef and a struct when each name identifies one sized layout.
+For a legacy map definition that declares sizes instead of types, optional `map_btf.key_type` and `map_btf.value_type` select exact BTF names from the same hashed ELF.
+For example, adding `"key_type": "u32", "value_type": "record"` inside `map_btf` selects a typedef and a struct when each name identifies one sized layout.
 Names fill only sides that the ELF map declares by size; if the ELF already types a side, the name must resolve to that same type or injection is refused.
 Only full type names count: a unique `record` is selected even alongside `record___old` and `record___other`, while those flavors alone do not satisfy `record`.
 Give struct names without the C `struct ` prefix (`record`).

@@ -303,7 +303,7 @@ func TestIntegrationMapTypes(t *testing.T) {
 		t.Run(expected, func(t *testing.T) {
 			t.Setenv("SYSCALLHOOK_MAP_TYPES_CHILD", expected)
 			rule := testRule()
-			rule.MapTypesELF, rule.MapTypesSHA256 = elf, digest
+			rule.MapBTF = &MapBTF{ELF: elf, SHA256: digest}
 			var logs bytes.Buffer
 			var injected []Injection
 			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)

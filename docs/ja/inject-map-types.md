@@ -1,7 +1,7 @@
 # Loader の ELF から map の型を補う
 
 loader が BTF なしで map を作成しても、loader の ELF に key と value の型が残っていれば、`inject-run` の rule で hook の型を補完できる。
-単一の `map` を明示する rule に、`map_types_elf` と必須の `map_types_sha256` を指定する。
+単一の `map` を明示する rule に、`map_btf.elf` と必須の `map_btf.sha256` を指定する。
 
 ```json
 [
@@ -10,11 +10,16 @@ loader が BTF なしで map を作成しても、loader の ELF に key と val
     "map": "sessions",
     "hook": "observe",
     "stack_lowest_offset": -4,
-    "map_types_elf": "/path/to/loader-generated.o",
-    "map_types_sha256": "REPLACE_WITH_64_HEXADECIMAL_DIGITS"
+    "map_btf": {
+      "elf": "/path/to/loader-generated.o",
+      "sha256": "REPLACE_WITH_64_HEXADECIMAL_DIGITS"
+    }
   }
 ]
 ```
+
+`map_btf` を指定する場合、`elf` と `sha256` は必須で、`key_type` と `value_type` は任意だ。
+`map_btf` の省略と `null` は補完なしとして扱い、空オブジェクトと内部の未知キーは拒否する。
 
 `sha256sum /path/to/loader-generated.o` で得た64桁のハッシュに置き換える。
 大文字と小文字は区別しない。
@@ -56,8 +61,8 @@ map type、key size、value size、flags は完全一致が必要で、補完す
 
 ## Legacy map の型名指定
 
-型ではなくサイズだけを宣言する legacy map には、任意の `map_key_type` と `map_value_type` で、同じ ELF の BTF にある型名を指定できる。
-たとえば `"map_key_type": "u32", "map_value_type": "record"` は、各名前がサイズを持つ layout を一意に指す場合に利用できる。
+型ではなくサイズだけを宣言する legacy map には、任意の `map_btf.key_type` と `map_btf.value_type` で、同じ ELF の BTF にある型名を指定できる。
+たとえば `map_btf` 内の `"key_type": "u32", "value_type": "record"` は、各名前がサイズを持つ layout を一意に指す場合に利用できる。
 型名指定はサイズだけの側を埋める fill-only とし、ELF の map 定義が既に型を持つ側は、同じ型を指す名前だけを受け入れる。
 別の型を指定した場合は、同じサイズでも拒否する。
 型名は完全一致で照合するため、一意な `record` は `record___old` や `record___other` と混在していても選択するが、これらの flavor しかなければ `record` の指定を拒否する。
