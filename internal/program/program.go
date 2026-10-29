@@ -1073,6 +1073,10 @@ func emitArgPointerLoad(index int, fail string) asm.Instructions {
 		// vmlinux type. GetFuncArg retrieves the raw pointer without that cast.
 		asm.LoadMem(asm.R1, asm.R10, -48, asm.DWord),
 		asm.Mov.Imm(asm.R2, int32(index)),
+		// Kernels before 6.3 (6.1.y before 6.1.100) check the output slot as a
+		// read, so initialise it. cilium/ebpf cannot marshal an 8-byte StoreImm.
+		asm.StoreImm(asm.R10, argMemberTmp, 0, asm.Word),
+		asm.StoreImm(asm.R10, argMemberTmp+4, 0, asm.Word),
 		asm.Mov.Reg(asm.R3, asm.R10),
 		asm.Add.Imm(asm.R3, argMemberTmp),
 		asm.FnGetFuncArg.Call(),

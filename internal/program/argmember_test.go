@@ -59,7 +59,11 @@ func TestMemberLoadCodegen(t *testing.T) {
 			insns := emitArgMemberLoad(1, 12, size, signed, "exit")
 			// Null is checked before adding the offset; failed reads branch before
 			// touching the temporary. R6-R9 remain available to the capture path.
-			if !reflect.DeepEqual(insns[5], asm.JNE.Imm(asm.R0, 0, "exit")) || !reflect.DeepEqual(insns[7], asm.JEq.Imm(asm.R3, 0, "exit")) || insns[4] != asm.FnGetFuncArg.Call() || insns[12] != asm.FnProbeReadKernel.Call() || !reflect.DeepEqual(insns[13], asm.JNE.Imm(asm.R0, 0, "exit")) || insns[14].Offset != argMemberTmp {
+			// The helper's output slot is zeroed first: older verifiers check it as a read.
+			if insns[2] != asm.StoreImm(asm.R10, argMemberTmp, 0, asm.Word) || insns[3] != asm.StoreImm(asm.R10, argMemberTmp+4, 0, asm.Word) {
+				t.Fatalf("output slot not initialised: %v", insns)
+			}
+			if !reflect.DeepEqual(insns[7], asm.JNE.Imm(asm.R0, 0, "exit")) || !reflect.DeepEqual(insns[9], asm.JEq.Imm(asm.R3, 0, "exit")) || insns[6] != asm.FnGetFuncArg.Call() || insns[14] != asm.FnProbeReadKernel.Call() || !reflect.DeepEqual(insns[15], asm.JNE.Imm(asm.R0, 0, "exit")) || insns[16].Offset != argMemberTmp {
 				t.Fatalf("unexpected member load: %v", insns)
 			}
 			for _, in := range insns {
@@ -68,7 +72,7 @@ func TestMemberLoadCodegen(t *testing.T) {
 				}
 			}
 			marshalArgInsns(t, insns)
-			wantLen := 15
+			wantLen := 17
 			if signed && size < 8 {
 				wantLen += 2
 			}
@@ -85,7 +89,7 @@ func TestMemberLoadCodegen(t *testing.T) {
 		{ParamIndex: 2, ParamSize: 4},
 	})
 	// The helper clobbers R2, so the subsequent ordinary arg needs a reload.
-	if insns[16] != asm.LoadMem(asm.R2, asm.R10, -48, asm.DWord) {
+	if insns[18] != asm.LoadMem(asm.R2, asm.R10, -48, asm.DWord) {
 		t.Fatalf("args pointer not restored: %v", insns)
 	}
 }

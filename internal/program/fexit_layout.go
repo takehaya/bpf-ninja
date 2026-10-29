@@ -78,6 +78,10 @@ func loadSavedReturn(offset int16) asm.Instructions {
 	if offset == fexitReturnViaHelper {
 		return asm.Instructions{
 			asm.LoadMem(asm.R1, asm.R10, -48, asm.DWord),
+			// Kernels before 6.3 (6.1.y before 6.1.100) check the output slot as a
+			// read, so initialise it. cilium/ebpf cannot marshal an 8-byte StoreImm.
+			asm.StoreImm(asm.R10, argMemberTmp, 0, asm.Word),
+			asm.StoreImm(asm.R10, argMemberTmp+4, 0, asm.Word),
 			asm.Mov.Reg(asm.R2, asm.R10), asm.Add.Imm(asm.R2, argMemberTmp),
 			asm.FnGetFuncRet.Call(),
 			asm.JNE.Imm(asm.R0, 0, "exit"),
