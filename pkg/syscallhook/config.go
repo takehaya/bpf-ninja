@@ -3,6 +3,7 @@ package syscallhook
 
 import (
 	"bytes"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -31,6 +32,8 @@ import (
 // inject.LookupRequest.Updates and Pushes). Without ops a rule observes
 // lookup hits; with ops it observes only the ops listed. Every op but lookup
 // needs auto, and an update needs one spill slot more (two with dispatch).
+// MapTypesELF and MapTypesSHA256 pin an ELF source for a BTF-less map.
+// MapKeyType and MapValueType optionally select exact BTF names in that ELF.
 // StackLowestOffset is the caller's audit of all stack accesses, including
 // aliases and callees (see inject.StackAudit).
 type Rule struct {
@@ -43,6 +46,10 @@ type Rule struct {
 	StaticUntrusted   bool     `json:"static_untrusted,omitempty"`
 	Dispatch          bool     `json:"dispatch,omitempty"`
 	Ops               []string `json:"ops,omitempty"`
+	MapTypesELF       string   `json:"map_types_elf,omitempty"`
+	MapTypesSHA256    string   `json:"map_types_sha256,omitempty"`
+	MapKeyType        string   `json:"map_key_type,omitempty"`
+	MapValueType      string   `json:"map_value_type,omitempty"`
 	Map               string   `json:"map,omitempty"`
 	Func              string   `json:"func,omitempty"`
 	Line              uint32   `json:"line,omitempty"`
@@ -52,9 +59,8 @@ type Rule struct {
 	StackLowestOffset *int16   `json:"stack_lowest_offset"`
 }
 
-// request is the raw transform request r stands for; every field but Program,
-// which selects the load, is forwarded (TestRuleRequestForwardsOptions guards
-// against a dropped field).
+// request forwards the transform options; the supervisor handles Program and
+// the map type source before calling the transform.
 func (r Rule) request() inject.LookupRequestRaw {
 	var lo int16
 	if r.StackLowestOffset != nil {
@@ -150,6 +156,9 @@ func Validate(rules []Rule) error {
 		if len(r.Ops) != 0 && r.Map == "" && !r.Auto {
 			return fmt.Errorf("rule %d: ops applies to the hooks of map or auto", i)
 		}
+		if err := r.validateMapTypes(); err != nil {
+			return fmt.Errorf("rule %d: %w", i, err)
+		}
 		if r.Auto && r.Map != "" {
 			return fmt.Errorf("rule %d: auto selects every supported lookup; map must be empty", i)
 		}
@@ -197,4 +206,21 @@ func ParseConfig(r io.Reader) ([]Rule, error) {
 		return nil, err
 	}
 	return rules, nil
+}
+
+func (r Rule) validateMapTypes() error {
+	if r.MapTypesELF == "" {
+		if r.MapTypesSHA256 != "" || r.MapKeyType != "" || r.MapValueType != "" {
+			return fmt.Errorf("map_types_sha256, map_key_type and map_value_type require map_types_elf")
+		}
+		return nil
+	}
+	if r.Map == "" || r.Auto || len(r.Map) > 15 {
+		return fmt.Errorf("map_types_elf requires a single explicit map kernel name (1-15 bytes), without auto")
+	}
+	hash, err := hex.DecodeString(r.MapTypesSHA256)
+	if err != nil || len(hash) != 32 {
+		return fmt.Errorf("map_types_sha256 must contain exactly 64 hexadecimal digits")
+	}
+	return nil
 }

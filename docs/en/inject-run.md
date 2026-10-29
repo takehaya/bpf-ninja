@@ -86,6 +86,57 @@ Do not copy the example bound without auditing the actual program.
 `hook` must be a C identifier of at most 127 bytes, leaving room for the longest suffix the transform appends: at most 117 bytes with `tail_calls` (`_tail_call`), 121 with `entry` (`_entry`), 125 with `auto` (`_0`), 120 with `lookup:miss` (`_0_miss`), and 118 with `update`, `delete`, `push`, `pop` or `peek` (`_0_update`); with `dispatch` the hook is named `hook` itself, so up to 127 bytes. Under `auto`, a map whose hook name would still not fit is skipped.
 Unknown JSON fields, duplicate program selectors, trailing JSON, and configurations larger than 1 MiB are rejected before launching.
 
+## Map types from a loader ELF
+
+Some loaders create maps without kernel BTF even though their ELF contains the key and value definitions.
+For one explicit `map` rule, `map_types_elf` supplies those definitions to the generated hook:
+
+```json
+[
+  {
+    "program": "ingress",
+    "map": "sessions",
+    "hook": "observe",
+    "stack_lowest_offset": -4,
+    "map_types_elf": "/path/to/loader-generated.o",
+    "map_types_sha256": "REPLACE_WITH_64_HEXADECIMAL_DIGITS"
+  }
+]
+```
+
+Compute the digest with `sha256sum /path/to/loader-generated.o` and audit the stack bound for the actual program.
+The supervisor reads the path in its own filesystem, relative to its working directory, at each matching program load.
+The SHA-256 is mandatory and case-insensitive; the same bytes are hashed and parsed.
+The feature takes metadata from this ELF; it does not load its instructions or maps, change map contents, or attach BTF to the live map.
+The generated program's hook BTF makes members available to `--list-params --members` and `--arg-filter`.
+
+The rule requires a single explicit kernel `map` name of at most 15 bytes and cannot use `auto`.
+Exactly one ELF map definition must match that name after truncation to 15 bytes, and exactly one referenced live map must match it.
+Map type, key size, value size and flags must agree exactly, and each supplied BTF type must have the corresponding size.
+An absent or ambiguous map, an ELF read/parse error, a different byte order, a hash mismatch, or missing, ambiguous or incorrectly sized types refuses the injection.
+A live map with any BTF is also refused, including a map whose existing value type is an anonymous byte array; existing types are never replaced.
+These errors follow the usual `inject-run` policy: without `--fail-closed` the original program can load unchanged; use `--fail-closed` to require successful injection.
+
+For a legacy map definition that declares sizes instead of types, optional `map_key_type` and `map_value_type` select exact BTF names from the same hashed ELF.
+For example, `"map_key_type": "__u32", "map_value_type": "real_definition"` selects a typedef and a struct if those names each occur exactly once.
+Use `real_definition`, without the C `struct ` prefix.
+An omitted side uses the map definition's own type, so a legacy map without either type needs both names.
+The feature neither infers layouts from source nor creates types; a name missing from the ELF BTF is an error.
+A size match cannot prove that a chosen type describes the map's semantics, byte order of individual members, or a layout changed by loader relocation.
+The operator must choose an ELF and types that describe the actual map, including any CO-RE or loader adjustments; the digest pins that choice rather than proving it.
+
+After injection, use the program ID in `hooks.json`:
+
+```sh
+bpf-ninja inject-run --fail-closed --config rules.json --hooks-json hooks.json -- ./loader
+bpf-ninja -p "$PROG_ID" --func observe --list-params --members
+bpf-ninja -p "$PROG_ID" --func observe --arg-filter 'value->identity==7' -w selected.pcapng
+```
+
+Without type supplementation, a map with no BTF still uses the existing opaque byte-array hook arguments; member predicates for the missing struct fail.
+[The CLI integration check](../../scripts/test/map-types.py) exercises both paths with a loader that creates a map without BTF, compares selected packet bytes, and checks the existing-BTF refusal.
+[日本語の説明](../ja/inject-map-types.md) covers the same configuration.
+
 ## Hooks as JSON
 
 `--hooks-json PATH` writes the injected programs and their hooks to `PATH`, so a tracer can find what to attach to without parsing the diagnostic.

@@ -34,7 +34,7 @@ func fillNonZero(t *testing.T, v reflect.Value) {
 	}
 }
 
-// Every field of a Rule but Program reaches the raw transform request: with
+// Every transform field of a Rule reaches the raw transform request: with
 // every field set, clearing any one of them changes the request, so a new
 // option cannot be silently dropped when the rule is converted.
 func TestRuleRequestForwardsOptions(t *testing.T) {
@@ -50,7 +50,7 @@ func TestRuleRequestForwardsOptions(t *testing.T) {
 		r := full
 		f := reflect.ValueOf(&r).Elem().Field(i)
 		f.Set(reflect.Zero(f.Type()))
-		if forwarded := !reflect.DeepEqual(r.request(), want); forwarded != (name != "Program") {
+		if forwarded := !reflect.DeepEqual(r.request(), want); forwarded != (name != "Program" && name != "MapTypesELF" && name != "MapTypesSHA256" && name != "MapKeyType" && name != "MapValueType") {
 			t.Errorf("%s: forwarded=%v", name, forwarded)
 		}
 	}

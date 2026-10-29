@@ -13,6 +13,7 @@ bpf-ninja を使うときは、導入、目的に合う手順、式の詳細の�
 | mode、出力、set の操作を調べる | [capture](cli/capture.md)、[output](cli/output.md)、[sets](cli/sets.md) |
 | command、flag、protocol の現在の定義を見る | [CLI reference](cli/README.md) |
 | map 操作を列挙し、ロード時に観測 hook を追加する | [inject-run](../en/inject-run.md)、[--list-progs --list-maps から始める手順](../en/inject-walkthrough.md)（英語、実験的機能） |
+| BTF のない map の hook 引数に型を補う | [Loader の ELF から map の型を補う](inject-map-types.md) |
 | inject hook で集計、CPU ID、経過時間を観測する | [observer examples](../en/inject-observers.md)（英語） |
 | フィルタを書く | [DSL 索引](dsl-overview.md)、[文法](dsl-grammar.md)、[型と意味](dsl-types.md) |
 | 終了とファイルの完成を判断する | [Capture lifecycle](../capture-lifecycle.md)（英語） |
