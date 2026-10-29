@@ -152,6 +152,7 @@ func TestStructuralInputKindsCLI(t *testing.T) {
 		{"empty-certificate", injectcheck.InputCertificateEmpty, func(p *injectcheck.Pair) { p.Certificate.Original = []int{} }},
 		{"length", injectcheck.InputCertificateLength, func(p *injectcheck.Pair) { p.Certificate.Original = []int{0} }},
 		{"floor", injectcheck.InputStackFloor, func(p *injectcheck.Pair) { p.Premises.LowestOffset = 1 }},
+		{"original-cfg", injectcheck.InputOriginalCFG, func(p *injectcheck.Pair) { p.Original[0] = asm.Ja.Label("missing") }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			p := identityPair()

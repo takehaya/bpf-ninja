@@ -18,7 +18,6 @@ const (
 	HookOverlap            Kind = "hook_overlap"
 	HookFallthrough        Kind = "hook_fallthrough"
 	RegionSplit            Kind = "region_split"
-	FunctionEntry          Kind = "function_entry"
 	EdgeTarget             Kind = "edge_target"
 	OriginalReference      Kind = "original_reference"
 	OriginalChanged        Kind = "original_changed"
@@ -72,6 +71,7 @@ const (
 	InputMissing           Kind = "input.missing"
 	InputVersion           Kind = "input.version"
 	InputRegister          Kind = "input.register"
+	InputOriginalCFG       Kind = "input.original_cfg"
 )
 
 // Rejection means a well-formed proposed transformation violates a checked rule.

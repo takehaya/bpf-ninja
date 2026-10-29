@@ -233,7 +233,7 @@ func Check(in, out asm.Instructions, c Certificate, premises Premises) (Counts, 
 	starts[0] = c.Original[0]
 	live, err := liveness(in, opcs, oi)
 	if err != nil {
-		return counts, fmt.Errorf("original CFG: %w", err)
+		return counts, inputError(InputOriginalCFG, "original CFG: %v", err)
 	}
 	// Function-referenced subprogram/callback entries delimit the entry frame.
 	// The entry spill initializes only the entry frame, never a callee frame.
@@ -247,13 +247,13 @@ func Check(in, out asm.Instructions, c Certificate, premises Premises) (Counts, 
 		if edge(a) {
 			t, e := target(in, opcs, oi, i)
 			if e != nil {
-				return counts, fmt.Errorf("original edge: %w", e)
+				return counts, inputError(InputOriginalCFG, "original edge: %v", e)
 			}
 			if a.IsFunctionReference() {
 				entryEnd = min(entryEnd, t)
 			}
 			if a.IsFunctionReference() && t == 0 {
-				return fail(FunctionEntry, "original function reference targets entry")
+				return counts, inputError(InputOriginalCFG, "original function reference targets entry")
 			}
 			u, e := target(out, npcs, ni, c.Original[i])
 			if e != nil {

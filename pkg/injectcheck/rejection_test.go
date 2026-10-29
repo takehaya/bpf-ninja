@@ -11,7 +11,7 @@ import (
 
 func assertKind(t *testing.T, err error, want Kind) {
 	t.Helper()
-	if want == OriginalOrder || want == HookRange || want == HookOverlap {
+	if want == OriginalOrder || want == HookRange || want == HookOverlap || want == InputOriginalCFG {
 		assertInputKind(t, err, want)
 		return
 	}
@@ -325,10 +325,10 @@ func TestEdgeRejectionKinds(t *testing.T) {
 		is   asm.Instructions
 		kind Kind
 	}{
-		{"resolved", asm.Instructions{asm.Ja.Label("end").WithReference("end"), asm.Return().WithSymbol("end")}, EdgeResolved},
-		{"unresolved", asm.Instructions{asm.Ja.Label("missing"), asm.Return()}, SymbolUnresolved},
-		{"slot", asm.Instructions{asm.Ja.Label(""), asm.Return()}, EdgeSlot},
-		{"function-entry", asm.Instructions{asm.Call.Label("entry").WithSymbol("entry"), asm.Return()}, FunctionEntry},
+		{"resolved", asm.Instructions{asm.Ja.Label("end").WithReference("end"), asm.Return().WithSymbol("end")}, InputOriginalCFG},
+		{"unresolved", asm.Instructions{asm.Ja.Label("missing"), asm.Return()}, InputOriginalCFG},
+		{"slot", asm.Instructions{asm.Ja.Label(""), asm.Return()}, InputOriginalCFG},
+		{"function-entry", asm.Instructions{asm.Call.Label("entry").WithSymbol("entry"), asm.Return()}, InputOriginalCFG},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			is := clone(tc.is)
@@ -378,11 +378,11 @@ func TestRemainingRejectionKinds(t *testing.T) {
 		i := asm.LoadImm(asm.R2, -1, asm.DWord).WithReference("missing")
 		i.Src = asm.PseudoFunc
 		in := asm.Instructions{i, asm.Return()}
-		expectPairKind(t, "callback", in, in, fixtureCertificate{Original: []int{0, 1}}, SymbolUnresolved)
+		expectPairKind(t, "callback", in, in, fixtureCertificate{Original: []int{0, 1}}, InputOriginalCFG)
 	})
 	t.Run("call-unresolved", func(t *testing.T) {
 		in := asm.Instructions{asm.Call.Label("missing"), asm.Return()}
-		expectPairKind(t, "call", in, in, fixtureCertificate{Original: []int{0, 1}}, SymbolUnresolved)
+		expectPairKind(t, "call", in, in, fixtureCertificate{Original: []int{0, 1}}, InputOriginalCFG)
 	})
 	t.Run("prelude-bounds", func(t *testing.T) {
 		in, out, c := callingConventionFixture(false)
