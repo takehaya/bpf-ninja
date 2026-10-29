@@ -106,7 +106,8 @@ jobs:
           clang -O2 -g -target bpf -c pkg/syscallhook/testdata/maptypes/program.c -o program.o
 
       - name: Privileged supervisor integration tests (no skips)
-        run: sudo env SYSCALLHOOK_MAP_TYPES_ELF=./program.o /usr/bin/python3 scripts/test/privileged.py --syscallhook-binary ./syscallhook.test
+        shell: sudo bash -e {0}
+        run: env SYSCALLHOOK_MAP_TYPES_ELF=./program.o /usr/bin/python3 scripts/test/privileged.py --syscallhook-binary ./syscallhook.test
 
       - name: Load inject observer examples
         run: sudo ./examples/inject-observers/verify.sh --load-only
