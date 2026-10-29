@@ -105,6 +105,10 @@ func TestMapTypesNamed(t *testing.T) {
 		key, value, want string
 	}{
 		{"success", []btf.Type{u32, record}, "u32", "record", ""},
+		{"explicit-key-flavor", []btf.Type{oldKey, otherKey, u32, record}, "u32___old", "record", ""},
+		{"explicit-value-flavor", []btf.Type{u32, oldValue, otherValue, record}, "u32", "record___old", ""},
+		{"explicit-key-flavor-missing", []btf.Type{oldKey, otherKey, u32, record}, "u32___new", "record", "key type \"u32___new\" missing"},
+		{"explicit-value-flavor-missing", []btf.Type{u32, oldValue, otherValue, record}, "u32", "record___new", "value type \"record___new\" missing"},
 		{"key-flavors-only", []btf.Type{oldKey, otherKey, record}, "u32", "record", "key type \"u32\" missing"},
 		{"value-flavors-only", []btf.Type{u32, oldValue, otherValue}, "u32", "record", "value type \"record\" missing"},
 		{"exact-key-after-flavors", []btf.Type{oldKey, otherKey, u32, record}, "u32", "record", ""},
@@ -257,7 +261,14 @@ func TestMapTypesLegacyELF(t *testing.T) {
 	if err := supplyMapTypesFromSpec(&p, r, spec); err == nil || !strings.Contains(err.Error(), "lacks key BTF") {
 		t.Fatalf("got %v", err)
 	}
-	r.MapKeyType, r.MapValueType = "u32", "record"
+	r.MapKeyType, r.MapValueType = "u32", "record___new"
+	if err := supplyMapTypesFromSpec(&p, r, spec); err == nil || !strings.Contains(err.Error(), "value type \"record___new\" missing") {
+		t.Fatalf("got %v", err)
+	}
+	if p.Maps[7].Key != nil || p.Maps[7].Value != nil {
+		t.Fatal("partial supply on error")
+	}
+	r.MapValueType = "record"
 	if err := supplyMapTypesFromSpec(&p, r, spec); err != nil {
 		t.Fatal(err)
 	}

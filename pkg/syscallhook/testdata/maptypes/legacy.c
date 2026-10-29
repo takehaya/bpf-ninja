@@ -10,9 +10,17 @@ struct record {
   u32 identity, action;
 };
 // Legacy map definitions carry sizes but no key/value BTF association.
-// Keep this named type in the ELF BTF even when debug optimization drops
-// locals.
+// Keep the exact type and differently laid out flavors in ELF BTF to test
+// full-name selection, even when debug optimization drops locals.
 struct record retained_type SEC(".bss");
+struct record___old {
+  u32 action, identity;
+};
+struct record___old retained_old SEC(".bss");
+struct record___other {
+  u32 action, identity;
+};
+struct record___other retained_other SEC(".bss");
 struct map_def {
   u32 type, key_size, value_size, max_entries, flags;
 };

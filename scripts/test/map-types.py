@@ -66,15 +66,17 @@ def packets(path):
 
 # No interface attachment or host setting changes; packets use BPF_PROG_TEST_RUN.
 command(["uname", "-a"], out, "kernel")
-for mode in ("without", "with", "named", "legacy", "existing-btf"):
-    elf = legacy_elf if mode == "legacy" else source_elf
+for mode in ("without", "with", "named", "legacy", "legacy-missing", "existing-btf"):
+    elf = legacy_elf if mode in ("legacy", "legacy-missing") else source_elf
     d = out / mode
     d.mkdir()
     rule = {"program": "ingress", "map": "sessions", "hook": "observe", "stack_lowest_offset": -4}
     if mode != "without":
         rule.update(map_types_elf=elf, map_types_sha256=hashlib.sha256(Path(elf).read_bytes()).hexdigest())
-    if mode in ("named", "legacy"):
+    if mode in ("named", "legacy", "legacy-missing"):
         rule.update(map_key_type="u32", map_value_type="record")
+    if mode == "legacy-missing":
+        rule["map_value_type"] = "record___new"
     (d / "rules.json").write_text(json.dumps([rule]) + "\n")
     load = command([ninja, "inject-run", "--fail-closed", "--config", str(d / "rules.json"),
                     "--hooks-json", str(d / "hooks.json"), "--", loader, elf, str(d),
@@ -85,6 +87,15 @@ for mode in ("without", "with", "named", "legacy", "existing-btf"):
             rc = load.wait(timeout=30)
             (d / "load.exit").write_text(str(rc) + "\n")
             assert rc != 0 and "already has BTF" in (d / "load.stderr").read_text()
+            continue
+        if mode == "legacy-missing":
+            rc = load.wait(timeout=30)
+            (d / "load.exit").write_text(str(rc) + "\n")
+            assert rc == 2 and 'value type "record___new" missing' in (d / "load.stderr").read_text()
+            assert (d / "map-btf.txt").read_text() == "BTFID=0\n"
+            assert not (d / "ready").exists()
+            assert json.loads((d / "hooks.json").read_text())["programs"] == []
+            (d / "PASS").write_text("PASS\n")
             continue
         wait_for(lambda: (d / "ready").exists(), load)
         assert (d / "map-btf.txt").read_text() == "BTFID=0\n"
@@ -133,5 +144,5 @@ for mode in ("without", "with", "named", "legacy", "existing-btf"):
                     proc.wait()
             if proc:
                 (d / (name + ".exit")).write_text(str(proc.returncode) + "\n")
-(out / "PASS").write_text("PASS: baseline refusal; ELF and named member capture; existing BTF refusal\n")
+(out / "PASS").write_text("PASS: baseline refusal; ELF and named member capture; legacy exact selection amid flavors; missing exact name and existing BTF refusal\n")
 print((out / "PASS").read_text(), end="")

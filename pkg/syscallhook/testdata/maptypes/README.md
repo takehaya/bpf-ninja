@@ -1,8 +1,9 @@
 # Missing map type CLI integration test
 
 `program.c` declares a typed map, while `loader.go` deliberately creates that map without BTF before loading the ELF program.
-`legacy.c` instead declares the map by sizes and retains a named value struct separately in ELF BTF.
+`legacy.c` instead declares the map by sizes and retains a named value struct and two flavors with reversed member order separately in ELF BTF.
 The check compares the opaque baseline with automatic ELF types, explicit type names and the legacy definition, then verifies that an existing typed map refuses supplementation.
+For the legacy definition, it checks that `record` selects the exact layout among flavors and that the nonexistent exact name `record___new` is refused before the loader becomes ready, leaving no hooks.
 It sends three distinct 64-byte packets with identities 7, 8 and 7 using `BPF_PROG_TEST_RUN`, waits for capture readiness, and verifies that the final pcapng contains exactly the first and third packets with no reported capture losses.
 No interface attachment is required.
 
