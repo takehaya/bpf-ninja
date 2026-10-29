@@ -46,7 +46,7 @@ func TestMapTypesSpec(t *testing.T) {
 		{"missing-value", func(_ *inject.RawProgram, s *ebpf.CollectionSpec) { s.Maps["m"].Value = nil }, "lacks value BTF"},
 		{"key-BTF-size", func(_ *inject.RawProgram, s *ebpf.CollectionSpec) { s.Maps["m"].Key = &btf.Int{Size: 8} }, "key BTF size mismatch"},
 		{"value-BTF-size", func(_ *inject.RawProgram, s *ebpf.CollectionSpec) { s.Maps["m"].Value = &btf.Int{Size: 4} }, "value BTF size mismatch"},
-		{"unsized-BTF", func(_ *inject.RawProgram, s *ebpf.CollectionSpec) { s.Maps["m"].Value = &btf.Fwd{Name: "record"} }, "value BTF size mismatch"},
+		{"unsized-BTF", func(_ *inject.RawProgram, s *ebpf.CollectionSpec) { s.Maps["m"].Value = &btf.Fwd{Name: "record"} }, "value BTF type has no size"},
 		{"existing-key", func(p *inject.RawProgram, s *ebpf.CollectionSpec) {
 			m := p.Maps[7]
 			m.Key = s.Maps["m"].Key
@@ -115,10 +115,15 @@ func TestMapTypesNamed(t *testing.T) {
 		{"exact-value-after-flavors", []btf.Type{u32, oldValue, otherValue, record}, "u32", "record", ""},
 		{"exact-key-between-flavors", []btf.Type{oldKey, u32, otherKey, record}, "u32", "record", ""},
 		{"exact-value-between-flavors", []btf.Type{u32, oldValue, record, otherValue}, "u32", "record", ""},
-		{"ambiguous-key-with-flavors", []btf.Type{oldKey, otherKey, u32, &btf.Int{Name: "u32", Size: 4}, record}, "u32", "record", "ambiguous key type"},
-		{"ambiguous-value-with-flavors", []btf.Type{u32, oldValue, otherValue, record, &btf.Struct{Name: "record", Size: 8}}, "u32", "record", "ambiguous value type"},
+		{"ambiguous-key-with-flavors", []btf.Type{oldKey, otherKey, u32, &btf.Int{Name: "u32", Size: 4, Encoding: btf.Signed}, record}, "u32", "record", "ambiguous key type"},
+		{"ambiguous-value-with-flavors", []btf.Type{u32, oldValue, otherValue, record, &btf.Struct{Name: "record", Size: 16}}, "u32", "record", "ambiguous value type"},
 		{"missing", []btf.Type{u32, record}, "u32", "missing", "value type \"missing\" missing"},
-		{"ambiguous", []btf.Type{u32, record, &btf.Struct{Name: "record", Size: 8}}, "u32", "record", "ambiguous value type"},
+		{"ambiguous", []btf.Type{u32, record, &btf.Struct{Name: "record", Size: 16}}, "u32", "record", "ambiguous value type"},
+		{"same-name-typedef", []btf.Type{u32, record, &btf.Typedef{Name: "record", Type: record}}, "u32", "record", ""},
+		{"same-name-qualified-typedef", []btf.Type{u32, &btf.Typedef{Name: "record", Type: &btf.Const{Type: record}}, record}, "u32", "record", ""},
+		{"forward-and-definition", []btf.Type{u32, &btf.Fwd{Name: "record"}, record}, "u32", "record", ""},
+		{"struct-union-clash", []btf.Type{u32, record, &btf.Union{Name: "record", Size: 8}}, "u32", "record", "ambiguous value type"},
+		{"same-layout", []btf.Type{u32, record, &btf.Struct{Name: "record", Size: 8}}, "u32", "record", ""},
 		{"wrong-size", []btf.Type{u32, record}, "record", "record", "key BTF size mismatch"},
 		{"no-types", nil, "u32", "record", "no BTF"},
 	} {
@@ -180,6 +185,9 @@ func TestMapTypesConfig(t *testing.T) {
 		{"value-only", func(r *Rule) { r.MapTypesELF = ""; r.MapTypesSHA256 = ""; r.MapValueType = "record" }, "require map_types_elf"},
 		{"auto", func(r *Rule) { r.Auto = true; r.Map = ""; r.Func = ""; r.Line = 0 }, "single explicit map"},
 		{"entry-only", func(r *Rule) { r.Map = ""; r.Func = ""; r.Line = 0; r.Entry = true }, "single explicit map"},
+		{"dispatch", func(r *Rule) { r.Dispatch = true }, "requires typed lookup hooks"},
+		{"lookup-miss", func(r *Rule) { r.Ops = []string{"lookup:miss"} }, ""},
+		{"non-lookup", func(r *Rule) { r.Ops = []string{"update"} }, "lookup hooks only"},
 		{"long-map", func(r *Rule) { r.Map = strings.Repeat("a", 16) }, "single explicit map"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -206,7 +214,8 @@ func TestMapTypesFile(t *testing.T) {
 	if err := supplyMapTypes(&p, Rule{}); err != nil {
 		t.Fatal(err)
 	}
-	r := Rule{MapTypesELF: filepath.Join(t.TempDir(), "missing")}
+	p, r, _ := mapTypesFixture()
+	r.MapTypesELF = filepath.Join(t.TempDir(), "missing")
 	if err := supplyMapTypes(&p, r); err == nil {
 		t.Fatal("accepted missing file")
 	}
@@ -297,9 +306,138 @@ func TestMapTypesELFByteOrder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p := inject.RawProgram{}
-	r := Rule{MapTypesELF: obj, MapTypesSHA256: fmt.Sprintf("%x", sha256.Sum256(data))}
+	p, r, _ := mapTypesFixture()
+	r.MapTypesELF = obj
+	r.MapTypesSHA256 = fmt.Sprintf("%x", sha256.Sum256(data))
 	if err := supplyMapTypes(&p, r); err == nil || !strings.Contains(err.Error(), "byte order") {
 		t.Fatalf("got %v", err)
+	}
+}
+
+func TestMapTypesFillOnly(t *testing.T) {
+	src, err := os.ReadFile("testdata/maptypes/program.c")
+	if err != nil {
+		t.Fatal(err)
+	}
+	obj := testutil.CompileBPFSource(t, string(src)+"\nstruct other { u32 action, identity; }; struct other retained SEC(\".bss\");\n")
+	for _, tc := range []struct {
+		name, key, value         string
+		missingKey, missingValue bool
+		want                     string
+	}{
+		{"key-only", "u32", "", true, false, ""},
+		{"value-only", "", "record", false, true, ""},
+		{"same-key", "u32", "", false, false, ""},
+		{"same-value", "", "record", false, false, ""},
+		{"same-both", "u32", "record", false, false, ""},
+		{"replace-value", "", "other", false, false, "would replace"},
+		{"replace-key", "record", "", false, false, "would replace"},
+		{"missing-value-on-miss", "", "", false, true, "lacks value BTF"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, err := ebpf.LoadCollectionSpec(obj)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.missingKey {
+				s.Maps["sessions"].Key = nil
+			}
+			if tc.missingValue {
+				s.Maps["sessions"].Value = nil
+			}
+			p, r, _ := mapTypesFixture()
+			m := p.Maps[7]
+			m.Name = "sessions"
+			p.Maps[7] = m
+			r.Map, r.MapKeyType, r.MapValueType = "sessions", tc.key, tc.value
+			if tc.name == "missing-value-on-miss" {
+				r.Ops = []string{"lookup:miss"}
+			}
+			err = supplyMapTypesFromSpec(&p, r, s)
+			if tc.want != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.want) {
+					t.Fatalf("got %v, want %s", err, tc.want)
+				}
+				if p.Maps[7].Key != nil || p.Maps[7].Value != nil {
+					t.Fatal("partial supply on refusal")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if p.Maps[7].Key.TypeName() != "u32" || p.Maps[7].Value.TypeName() != "record" {
+				t.Fatalf("wrong types: %+v", p.Maps[7])
+			}
+		})
+	}
+}
+
+func TestMapTypesFileLimits(t *testing.T) {
+	p, r, _ := mapTypesFixture()
+	dir := t.TempDir()
+	large := filepath.Join(dir, "large.o")
+	f, err := os.Create(large)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Truncate((64 << 20) + 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct{ path, want string }{
+		{dir, "regular file"}, {large, "exceeds 64 MiB"},
+	} {
+		r.MapTypesELF = tc.path
+		if err := supplyMapTypes(&p, r); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Fatalf("%s: %v", tc.path, err)
+		}
+	}
+	// A nonexistent file must not hide cheap live-map refusals.
+	r.MapTypesELF = filepath.Join(dir, "missing")
+	for _, tc := range []struct {
+		name string
+		maps map[int32]inject.RawMap
+		want string
+	}{
+		{"missing", nil, "live map \"long_map_name_1\" missing"},
+		{"existing", map[int32]inject.RawMap{7: {Name: r.Map, BTFID: 1}}, "already has BTF"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p.Maps = tc.maps
+			if err := supplyMapTypes(&p, r); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("got %v", err)
+			}
+		})
+	}
+}
+
+func TestMapTypesGate(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		kind  ebpf.MapType
+		value btf.Type
+		want  string
+	}{
+		{"unsupported-map", ebpf.SockHash, &btf.Int{Size: 8}, "map type SockHash is unsupported"},
+		{"datasec", ebpf.Hash, &btf.Datasec{Name: ".bss", Size: 8}, "not a data kind"},
+		{"special", ebpf.Hash, &btf.Struct{Name: "bpf_timer", Size: 8}, "special field"},
+		{"special-abi", ebpf.Hash, &btf.Struct{Name: "xdp_md", Size: 8}, "special global-function pointer ABI"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p, r, s := mapTypesFixture()
+			m := p.Maps[7]
+			m.Type = tc.kind
+			p.Maps[7] = m
+			s.Maps["m"].Type, s.Maps["m"].Value = tc.kind, tc.value
+			if err := supplyMapTypesFromSpec(&p, r, s); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("got %v, want %s", err, tc.want)
+			}
+			if !reflect.DeepEqual(p.Maps[7], m) {
+				t.Fatal("partial supply on refusal")
+			}
+		})
 	}
 }

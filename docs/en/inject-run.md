@@ -105,22 +105,33 @@ For one explicit `map` rule, `map_types_elf` supplies those definitions to the g
 ```
 
 Compute the digest with `sha256sum /path/to/loader-generated.o` and audit the stack bound for the actual program.
-The supervisor reads the path in its own filesystem, relative to its working directory, at each matching program load.
+The supervisor reads the path in its own filesystem, relative to its working directory, at each matching program load, after checking that the referenced live map exists and has no BTF.
+The source must be a regular file no larger than 64 MiB; it is read through that limit each time, with no launch-time preflight or cache.
 The SHA-256 is mandatory and case-insensitive; the same bytes are hashed and parsed.
 The feature takes metadata from this ELF; it does not load its instructions or maps, change map contents, or attach BTF to the live map.
 The generated program's hook BTF makes members available to `--list-params --members` and `--arg-filter`.
 
-The rule requires a single explicit kernel `map` name of at most 15 bytes and cannot use `auto`.
+The rule requires a single explicit kernel `map` name of at most 15 bytes and cannot use `auto` or `dispatch`.
+Supplementation supports lookup hooks only, on the ordinary-memory map kinds accepted by typed lookup hooks (Hash, Array, PerCPUHash, PerCPUArray, LRUHash, LRUCPUHash and LPMTrie).
+Other map kinds and update/delete/push/pop/peek operations are refused.
+Even `ops: ["lookup:miss"]`, whose hook passes only the key, requires both key and value types so the whole map definition is checked.
 Exactly one ELF map definition must match that name after truncation to 15 bytes, and exactly one referenced live map must match it.
 Map type, key size, value size and flags must agree exactly, and each supplied BTF type must have the corresponding size.
-An absent or ambiguous map, an ELF read/parse error, a different byte order, a hash mismatch, or missing, ambiguous or incorrectly sized types refuses the injection.
+Any absent or ambiguous map, ELF read/parse error, different byte order, hash mismatch, or missing, ambiguous or incorrectly sized type causes injection to be refused.
+Supplied types must be data kinds, including through typedefs and qualifiers.
+Types containing special fields such as spin locks, timers or kptrs, and the special pointer-ABI structs `xdp_md`, `__sk_buff` and `bpf_dynptr`, are refused before the transform.
+With these checks, supplementation changes hook metadata only: emitted instructions, pointer trust and value-copy decisions are unchanged.
+A malformed digest is rejected during configuration parsing.
 A live map with any BTF is also refused, including a map whose existing value type is an anonymous byte array; existing types are never replaced.
 These errors follow the usual `inject-run` policy: without `--fail-closed` the original program can load unchanged; use `--fail-closed` to require successful injection.
 
 For a legacy map definition that declares sizes instead of types, optional `map_key_type` and `map_value_type` select exact BTF names from the same hashed ELF.
-For example, `"map_key_type": "__u32", "map_value_type": "real_definition"` selects a typedef and a struct if those names each occur exactly once.
+For example, `"map_key_type": "u32", "map_value_type": "record"` selects a typedef and a struct when each name identifies one sized layout.
+Names fill only sides that the ELF map declares by size; if the ELF already types a side, the name must resolve to that same type or injection is refused.
 Only full type names count: a unique `record` is selected even alongside `record___old` and `record___other`, while those flavors alone do not satisfy `record`.
-Use `real_definition`, without the C `struct ` prefix.
+Give struct names without the C `struct ` prefix (`record`).
+Unsized entries, including forward declarations, are ignored, and typedefs of the same underlying type count as one layout.
+Distinct layouts sharing a name, including a struct/union clash, remain ambiguous.
 An omitted side uses the map definition's own type, so a legacy map without either type needs both names.
 The feature neither infers layouts from source nor creates types; a name missing from the ELF BTF is an error.
 A size match cannot prove that a chosen type describes the map's semantics, byte order of individual members, or a layout changed by loader relocation.

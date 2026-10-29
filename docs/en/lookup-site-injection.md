@@ -596,5 +596,6 @@ This is finite test evidence for the fixture, not a general program-equivalence,
 
 The raw transform uses `RawMap.Key` and `RawMap.Value` as supplied by its caller.
 For a loader that creates a map without BTF, `inject-run` can populate these from a hash-pinned ELF before calling the transform; see [map types from a loader ELF](inject-run.md#map-types-from-a-loader-elf).
-The supervisor refuses supplementation when the live map already has BTF.
-This changes hook metadata only and preserves the transform's existing map-kind, pointer-trust and stack restrictions.
+The supervisor refuses existing live-map BTF, non-data types, special fields (spin locks, timers, kptrs and the like), and special pointer-ABI types before calling the transform.
+For the accepted ordinary data types, supplementation changes hook metadata only; emitted instructions, pointer trust and value-copy decisions are unchanged, and the existing map-kind and stack restrictions still apply.
+Kernel-BTF maps with special fields continue through the transform's existing restricted hook path.

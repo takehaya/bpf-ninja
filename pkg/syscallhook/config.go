@@ -33,7 +33,8 @@ import (
 // lookup hits; with ops it observes only the ops listed. Every op but lookup
 // needs auto, and an update needs one spill slot more (two with dispatch).
 // MapTypesELF and MapTypesSHA256 pin an ELF source for a BTF-less map.
-// MapKeyType and MapValueType optionally select exact BTF names in that ELF.
+// MapKeyType and MapValueType fill untyped sides using exact BTF names in that ELF;
+// a side already typed by the ELF accepts only that same type.
 // StackLowestOffset is the caller's audit of all stack accesses, including
 // aliases and callees (see inject.StackAudit).
 type Rule struct {
@@ -215,8 +216,16 @@ func (r Rule) validateMapTypes() error {
 		}
 		return nil
 	}
-	if r.Map == "" || r.Auto || len(r.Map) > 15 {
+	if r.Map == "" || r.Auto || inject.KernelObjName(r.Map) != r.Map {
 		return fmt.Errorf("map_types_elf requires a single explicit map kernel name (1-15 bytes), without auto")
+	}
+	if r.Dispatch {
+		return fmt.Errorf("map_types_elf requires typed lookup hooks; dispatch uses a generic signature")
+	}
+	for _, op := range r.Ops {
+		if name, _, _ := strings.Cut(op, ":"); name != "lookup" {
+			return fmt.Errorf("map_types_elf supports lookup hooks only")
+		}
 	}
 	hash, err := hex.DecodeString(r.MapTypesSHA256)
 	if err != nil || len(hash) != 32 {

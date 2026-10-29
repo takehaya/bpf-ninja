@@ -104,11 +104,6 @@ func TestUntrustedHint(t *testing.T) {
 	}
 }
 
-func testRule() Rule {
-	floor := int16(-8)
-	return Rule{Program: "p", Map: "sessions", Hook: "lookup_hook", StackLowestOffset: &floor}
-}
-
 func TestLauncher(t *testing.T) {
 	if os.Getenv("SYSCALLHOOK_CHILD") == "1" {
 		var wg sync.WaitGroup

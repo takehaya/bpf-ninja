@@ -5,17 +5,21 @@ package syscallhook
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/asm"
 	"github.com/cilium/ebpf/btf"
+	"github.com/takehaya/bpf-ninja/internal/testutil"
 	"github.com/takehaya/bpf-ninja/pkg/inject"
 	"golang.org/x/sys/unix"
 )
@@ -74,7 +78,7 @@ func TestIntegrationLoader(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer out.Close()
+			defer func() { _ = out.Close() }()
 			rule := testRule()
 			tc.change(&rule)
 			var logs bytes.Buffer
@@ -160,6 +164,15 @@ func loadIntegrationProgram(t *testing.T, expected string) {
 	expected = strings.TrimSuffix(expected, "-alias")
 	u32 := &btf.Int{Name: "u32", Size: 4}
 	spec := &ebpf.MapSpec{Name: "sessions", Type: ebpf.Hash, KeySize: 4, ValueSize: 4, MaxEntries: 1, Key: u32, Value: u32}
+	mapTypes := strings.Contains(expected, "map-types")
+	if mapTypes {
+		spec.ValueSize = 8
+		spec.Key, spec.Value = nil, nil
+		if expected == "refused-map-types" {
+			spec.Key = u32
+			spec.Value = &btf.Struct{Name: "record", Size: 8, Members: []btf.Member{{Name: "identity", Type: u32}, {Name: "action", Type: u32, Offset: 32}}}
+		}
+	}
 	if expected == "hook-rdonly" {
 		spec.Flags = unix.BPF_F_RDONLY_PROG
 	}
@@ -167,8 +180,12 @@ func loadIntegrationProgram(t *testing.T, expected string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer m.Close()
-	if err := m.Put(uint32(0), uint32(2)); err != nil {
+	defer func() { _ = m.Close() }()
+	var value any = uint32(2)
+	if mapTypes {
+		value = struct{ Identity, Action uint32 }{7, 2}
+	}
+	if err := m.Put(uint32(0), value); err != nil {
 		t.Fatal(err)
 	}
 	fn := &btf.Func{Name: "entry_with_long_name", Linkage: btf.GlobalFunc, Type: &btf.FuncProto{
@@ -188,19 +205,23 @@ func loadIntegrationProgram(t *testing.T, expected string) {
 			asm.Mov.Imm(asm.R4, unix.BPF_NOEXIST),
 			asm.LoadMapPtr(asm.R1, m.FD()), asm.FnMapUpdateElem.Call())
 	}
+	valueOffset := int16(0)
+	if mapTypes {
+		valueOffset = 4
+	}
 	insns = append(insns,
 		asm.Mov.Reg(asm.R2, asm.RFP), asm.Add.Imm(asm.R2, -4),
 		store,
 		asm.LoadMapPtr(asm.R1, m.FD()), asm.FnMapLookupElem.Call(),
 		asm.JEq.Imm(asm.R0, 0, "done"),
-		asm.LoadMem(asm.R0, asm.R0, 0, asm.Word), asm.Return(),
+		asm.LoadMem(asm.R0, asm.R0, valueOffset, asm.Word), asm.Return(),
 		asm.Mov.Imm(asm.R0, 2).WithSymbol("done"), asm.Return(),
 	)
 	insns[0] = btf.WithFuncMetadata(insns[0].WithSymbol(fn.Name).WithSource(asm.Comment("loader lookup")), fn)
 	p, err := ebpf.NewProgram(&ebpf.ProgramSpec{Name: "p", Type: ebpf.XDP, License: "GPL", Instructions: insns})
-	if expected == "refused" {
+	if expected == "refused" || expected == "refused-map-types" {
 		if err == nil {
-			p.Close()
+			_ = p.Close()
 			t.Fatal("fail-closed load unexpectedly succeeded")
 		}
 		fmt.Println("matched load refused")
@@ -209,7 +230,7 @@ func loadIntegrationProgram(t *testing.T, expected string) {
 	if err != nil {
 		t.Fatalf("program load: %+v", err)
 	}
-	defer p.Close()
+	defer func() { _ = p.Close() }()
 	info, err := p.Info()
 	if err != nil {
 		t.Fatal(err)
@@ -223,6 +244,20 @@ func loadIntegrationProgram(t *testing.T, expected string) {
 		// Auto and entry rules name the hook lookup_hook_sessions or lookup_hook_entry.
 		if strings.HasPrefix(f.Func.Name, "lookup_hook") {
 			found = true
+			if expected == "hook-map-types" {
+				proto := f.Func.Type.(*btf.FuncProto)
+				if len(proto.Params) != 3 {
+					t.Fatalf("hook params: %+v", proto.Params)
+				}
+				ptr, ok := proto.Params[2].Type.(*btf.Pointer)
+				if !ok {
+					t.Fatalf("value is not a pointer: %v", proto.Params[2].Type)
+				}
+				v, ok := btf.UnderlyingType(ptr.Target).(*btf.Struct)
+				if !ok || v.Name != "record" || len(v.Members) != 2 || v.Members[0].Name != "identity" || v.Members[1].Name != "action" {
+					t.Fatalf("supplied record not present in kernel hook BTF: %v", ptr.Target)
+				}
+			}
 		}
 	}
 	if found != strings.HasPrefix(expected, "hook") {
@@ -234,4 +269,180 @@ func loadIntegrationProgram(t *testing.T, expected string) {
 	}
 	id, _ := info.ID()
 	fmt.Printf("kernel hook=%v, action=%d, functions=%d, prog_id=%d\n", found, action, len(funcs), id)
+}
+
+func TestIntegrationMapTypes(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("requires root and BPF privileges")
+	}
+	if expected := os.Getenv("SYSCALLHOOK_MAP_TYPES_CHILD"); expected != "" {
+		loadIntegrationProgram(t, expected)
+		return
+	}
+	t.Run("extract-btf-id", integrationExtractMapBTF)
+	// VMs can receive a precompiled fixture; local runs compile it with the
+	// usual clang availability policy.
+	elf := os.Getenv("SYSCALLHOOK_MAP_TYPES_ELF")
+	if elf == "" {
+		src, err := os.ReadFile("testdata/maptypes/program.c")
+		if err != nil {
+			t.Fatal(err)
+		}
+		elf = testutil.CompileBPFSource(t, string(src))
+	}
+	elf, err := filepath.Abs(elf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(elf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := fmt.Sprintf("%x", sha256.Sum256(data))
+	for _, expected := range []string{"hook-map-types", "refused-map-types"} {
+		t.Run(expected, func(t *testing.T) {
+			t.Setenv("SYSCALLHOOK_MAP_TYPES_CHILD", expected)
+			rule := testRule()
+			rule.MapTypesELF, rule.MapTypesSHA256 = elf, digest
+			var logs bytes.Buffer
+			var injected []Injection
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+			out, err := os.Create(filepath.Join(t.TempDir(), "loader.out"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = out.Close() }()
+			code, err := Run(ctx, []string{os.Args[0], "-test.run=^TestIntegrationMapTypes$", "-test.v"}, Options{
+				Rules: []Rule{rule}, FailClosed: true, Log: &logs, Stdout: out, Stderr: out,
+				OnInject: func(inj Injection) { injected = append(injected, inj) },
+			})
+			childOut, _ := os.ReadFile(out.Name())
+			t.Logf("supervisor:\n%sloader:\n%s", &logs, childOut)
+			if err != nil || code != 0 {
+				t.Fatalf("code=%d err=%v", code, err)
+			}
+			if expected == "hook-map-types" {
+				if len(injected) != 1 || !strings.Contains(logs.String(), "types from ELF sha256 "+digest[:12]+": key \"u32\", value \"record\"") {
+					t.Fatalf("supplementation not reported: %+v", injected)
+				}
+			} else if len(injected) != 0 || !strings.Contains(logs.String(), "already has BTF") {
+				t.Fatalf("existing-BTF refusal missing: %+v", injected)
+			}
+		})
+	}
+}
+
+// Observe extractRaw against a real stopped loader's map info independently of
+// the nonnil Key/Value refusal, so removing BTFID extraction is detectable.
+func integrationExtractMapBTF(t *testing.T) {
+	t.Helper()
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	t.Setenv("SYSCALLHOOK_MAP_TYPES_CHILD", "plain")
+	cmd := exec.Command(os.Args[0], "-test.run=^TestIntegrationMapTypes$")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Ptrace: true}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	timer := time.AfterFunc(20*time.Second, func() { _ = cmd.Process.Kill() })
+	defer timer.Stop()
+	defer func() {
+		_ = cmd.Process.Kill()
+		for {
+			var status unix.WaitStatus
+			tid, err := unix.Wait4(-1, &status, unix.WALL|unix.WNOTHREAD, nil)
+			if err == unix.EINTR {
+				continue
+			}
+			if err != nil {
+				break
+			}
+			if status.Stopped() {
+				_ = unix.PtraceCont(tid, int(unix.SIGKILL))
+			}
+		}
+		_ = cmd.Process.Release()
+	}()
+	pid := cmd.Process.Pid
+	status, err := waitThread(pid)
+	if err != nil || !status.Stopped() {
+		t.Fatalf("initial stop: %v, %v", status, err)
+	}
+	if err := unix.PtraceSetOptions(pid, unix.PTRACE_O_TRACESYSGOOD|unix.PTRACE_O_TRACECLONE|unix.PTRACE_O_EXITKILL); err != nil {
+		t.Fatal(err)
+	}
+	if err := unix.PtraceSyscall(pid, 0); err != nil {
+		t.Fatal(err)
+	}
+	for {
+		var status unix.WaitStatus
+		tid, err := unix.Wait4(-1, &status, unix.WALL|unix.WNOTHREAD, nil)
+		if err == unix.EINTR {
+			continue
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if status.Exited() || status.Signaled() {
+			if tid == pid {
+				t.Fatal("loader exited before program load")
+			}
+			continue
+		}
+		if !status.Stopped() {
+			continue
+		}
+		if status.StopSignal() != unix.SIGTRAP|0x80 {
+			if err := unix.PtraceSyscall(tid, 0); err != nil && err != unix.ESRCH {
+				t.Fatal(err)
+			}
+			continue
+		}
+		op, _, err := syscallStop(tid)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var regs unix.PtraceRegs
+		if err := unix.PtraceGetRegs(tid, &regs); err != nil {
+			t.Fatal(err)
+		}
+		if op != 1 || regs.Orig_rax != unix.SYS_BPF || regs.Rdi != unix.BPF_PROG_LOAD {
+			if err := unix.PtraceSyscall(tid, 0); err != nil && err != unix.ESRCH {
+				t.Fatal(err)
+			}
+			continue
+		}
+		attr, err := readMemory(tid, regs.Rsi, regs.Rdx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(attr) < 64 || cstring(attr[48:64]) != "p" {
+			if err := unix.PtraceSyscall(tid, 0); err != nil && err != unix.ESRCH {
+				t.Fatal(err)
+			}
+			continue
+		}
+		if err := parseProgAttr(attr); err != nil {
+			t.Fatalf("program attr: %v", err)
+		}
+		r, err := beginRemote(tid, regs, true)
+		if err != nil {
+			t.Fatalf("begin remote: %v", err)
+		}
+		raw, err := extractRaw(r, attr, nil)
+		if err != nil {
+			t.Fatalf("extractRaw: %v", err)
+		}
+		if len(raw.Maps) != 1 {
+			t.Fatalf("maps: %+v", raw.Maps)
+		}
+		for _, m := range raw.Maps {
+			if m.Name != "sessions" || m.BTFID == 0 || m.Key == nil || m.Value == nil {
+				t.Fatalf("lost live map BTF: %+v", m)
+			}
+			t.Logf("extractRaw: map %s BTFID=%d, key=%s, value=%s", m.Name, m.BTFID, m.Key.TypeName(), m.Value.TypeName())
+		}
+		return
+	}
 }

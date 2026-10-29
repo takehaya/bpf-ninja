@@ -258,3 +258,8 @@ func TestProgAttr(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func testRule() Rule {
+	floor := int16(-8)
+	return Rule{Program: "p", Map: "sessions", Hook: "lookup_hook", StackLowestOffset: &floor}
+}

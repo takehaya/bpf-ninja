@@ -985,9 +985,9 @@ func (group lookupGroup) copies(req LookupRequest) bool {
 	return copiesValue(group.sites[0].mapInfo, req) && !group.readOnlyArg()
 }
 
-// kernelObjName is the name the kernel keeps for an object named name: an ELF
+// KernelObjName is the name the kernel keeps for an object named name: an ELF
 // map's symbol cut to BPF_OBJ_NAME_LEN-1 bytes.
-func kernelObjName(name string) string {
+func KernelObjName(name string) string {
 	if len(name) > 15 {
 		return name[:15]
 	}
@@ -1030,7 +1030,7 @@ func selectLookups(sites []discoveredLookup, req LookupRequest, reserved []strin
 		for _, site := range sites {
 			if len(selected) != 0 {
 				match := false
-				for _, name := range []string{site.MapName, kernelObjName(site.MapName)} {
+				for _, name := range []string{site.MapName, KernelObjName(site.MapName)} {
 					if _, ok := selected[name]; ok {
 						selected[name] = true
 						match = true

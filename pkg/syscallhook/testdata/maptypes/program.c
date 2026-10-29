@@ -9,6 +9,11 @@ struct xdp_md {
 struct record {
   u32 identity, action;
 };
+// A same-size layout that explicit names must not substitute for record.
+struct record___other {
+  u32 action, identity;
+};
+struct record___other retained_other SEC(".bss");
 struct {
   __uint(type, 1);
   __uint(max_entries, 1);
