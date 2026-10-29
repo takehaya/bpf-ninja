@@ -1,6 +1,6 @@
 # Inject hook observers
 
-Three small fentry observers for the unmodified program and loader in [inject-walkthrough](../inject-walkthrough).
+Three small fentry observers for the program and loader in [inject-walkthrough](../inject-walkthrough).
 Use the CLI first for hook capture and argument filtering (`--func`, `--arg-filter`, `--arg-echo`, `-w`).
 Write an observer for in-kernel counters, CPU IDs on selected events, or state across hooks.
 The [guide](../../docs/en/inject-observers.md) explains the examples and shows recorded VM output.
@@ -45,6 +45,7 @@ INJECT_OBSERVER_READY="$ready" ./build/observer-bin "$name" "build/$name.o" "$(c
 Interrupt the observer with Ctrl-C when finished.
 The optional second loader argument is an initially absent start file.
 The observer creates it after attaching every hook and preparing its reader; the loader then begins its one-minute workload.
+The loader waits for the file indefinitely, so stop the launcher if the observer fails before it attaches.
 Without this gate, the four initial Bloom-filter pushes can finish before a manually started observer attaches.
 The loader exits after one minute of workload; `kill -INT "$launcher"` stops it sooner.
 Start a fresh loader for each example.

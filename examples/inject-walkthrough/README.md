@@ -3,7 +3,7 @@
 The sources of [docs/en/inject-walkthrough.md](../../docs/en/inject-walkthrough.md): the XDP program, its loader, the fentry observer and the rule.
 
 - `bpf/prog.c`: the program whose queue and bloom filter calls are observed.
-- `loader/`: loads `prog.o`, prints its program ID and runs it once a second with `BPF_PROG_TEST_RUN`.
+- `loader/`: loads `prog.o`, prints its program ID and runs it once a second with `BPF_PROG_TEST_RUN`. An optional second argument names a file to wait for before the workload starts.
 - `bpf/observer.c` and `observer/`: attach to the hooks of a transformed program and print each call.
 - `rules.json`: the rule for `inject-run`.
 
