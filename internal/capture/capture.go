@@ -427,6 +427,14 @@ func (r *Reader) run(sink RawShardSink, flush func(int) error) (func(), error) {
 	}
 	r.session = newShardSession(r.cursors)
 	s := r.session
+	// Wake idle readers after stopCh closes, without closing away queued records.
+	s.wake = func() {
+		for _, rr := range r.shardReaders {
+			if err := rr.Flush(); !errors.Is(err, os.ErrClosed) {
+				s.fail(err)
+			}
+		}
+	}
 	for i, rr := range r.shardReaders {
 		s.done.Add(1)
 		go func(i int, rr *ringbuf.Reader) {
@@ -443,13 +451,14 @@ func (r *Reader) run(sink RawShardSink, flush func(int) error) (func(), error) {
 				if draining {
 					rr.SetDeadline(pollPastDeadline)
 				} else {
-					rr.SetDeadline(time.Now().Add(time.Millisecond))
+					// Leave a millisecond for epoll's integer timeout truncation.
+					rr.SetDeadline(time.Now().Add(2 * time.Millisecond))
 				}
 				n := 0
 				for n < batchSize {
 					err := rr.ReadInto(&rec)
 					if err != nil {
-						if errors.Is(err, os.ErrDeadlineExceeded) {
+						if errors.Is(err, os.ErrDeadlineExceeded) || errors.Is(err, ringbuf.ErrFlushed) {
 							break
 						}
 						s.fail(err)
