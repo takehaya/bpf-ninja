@@ -22,7 +22,11 @@ func CheckSuppliedMapTypes(m RawMap) error {
 				return nil
 			}
 			seen[typ] = true
-			if field := specialField(typ); field != "" {
+			field, err := specialField(typ)
+			if err != nil {
+				return fmt.Errorf("map %s type: %w", side.name, err)
+			}
+			if field != "" {
 				return fmt.Errorf("map %s type contains special field %q; a map without BTF cannot have special fields", side.name, field)
 			}
 			var members []btf.Member
@@ -30,19 +34,14 @@ func CheckSuppliedMapTypes(m RawMap) error {
 			case *btf.Int, *btf.Enum, *btf.Float:
 				return nil
 			case *btf.Pointer:
-				// As preserves tags while traversing pointee typedefs and qualifiers.
-				for target := t.Target; ; {
-					tag, ok := btf.As[*btf.TypeTag](target)
-					if !ok {
-						break
-					}
-					switch tag.Value {
-					case "kptr", "kptr_untrusted", "kptr_ref", "percpu_kptr", "uptr":
-						return fmt.Errorf("map %s type contains special field %q; a map without BTF cannot have special fields", side.name, tag.Value)
-					}
-					target = tag.Type
+				target, field, err := walkPointee(t.Target, true)
+				if err != nil {
+					return fmt.Errorf("map %s type: %w", side.name, err)
 				}
-				switch target := btf.UnderlyingType(t.Target); target.(type) {
+				if field != "" {
+					return fmt.Errorf("map %s type contains special field %q; a map without BTF cannot have special fields", side.name, field)
+				}
+				switch target.(type) {
 				case *btf.Void, *btf.Fwd:
 					return nil
 				default:

@@ -675,7 +675,11 @@ func (l lookupLayout) copyAt(size uint32) int {
 // instead of a pointer into the map: m is BPF_F_RDONLY_PROG and req asks for
 // CopyReadOnly.
 func copiesValue(m *RawMap, req LookupRequest) bool {
-	return req.CopyReadOnly && m.Flags&bpfFRdonlyProg != 0 && m.Flags&bpfFWronlyProg == 0 && specialField(m.Value) == ""
+	if !req.CopyReadOnly || m.Flags&bpfFRdonlyProg == 0 || m.Flags&bpfFWronlyProg != 0 {
+		return false
+	}
+	field, err := specialField(m.Value)
+	return field == "" && err == nil
 }
 
 // LookupStackReserve reports the bytes the transform reserves strictly below
@@ -840,48 +844,39 @@ var specialStructs = map[string]bool{
 // specialStructs) or kptr in typ, a map value type, or "". A typed lookup hook
 // passes the value as memory, which the verifier refuses for these fields
 // ("bpf_spin_lock cannot be accessed directly by load/store", "kptr cannot be
-// accessed indirectly by helper").
-func specialField(typ btf.Type) string {
-	var walk func(t btf.Type, depth int) string
-	walk = func(t btf.Type, depth int) string {
+// accessed indirectly by helper"). Malformed pointee chains return an error.
+func specialField(typ btf.Type) (string, error) {
+	var walk func(t btf.Type, depth int) (string, error)
+	walk = func(t btf.Type, depth int) (string, error) {
 		if depth > 8 {
-			return ""
+			return "", nil
 		}
 		switch t := btf.UnderlyingType(t).(type) {
 		case *btf.Struct:
 			if specialStructs[t.Name] {
-				return t.Name
+				return t.Name, nil
 			}
 			for _, m := range t.Members {
-				if name := walk(m.Type, depth+1); name != "" {
-					return name
+				if name, err := walk(m.Type, depth+1); name != "" || err != nil {
+					return name, err
 				}
 			}
 		case *btf.Union:
 			for _, m := range t.Members {
-				if name := walk(m.Type, depth+1); name != "" {
-					return name
+				if name, err := walk(m.Type, depth+1); name != "" || err != nil {
+					return name, err
 				}
 			}
 		case *btf.Array:
 			return walk(t.Type, depth+1)
 		case *btf.Pointer:
-			for target := t.Target; ; {
-				tag, ok := target.(*btf.TypeTag)
-				if !ok {
-					break
-				}
-				switch tag.Value {
-				case "kptr", "kptr_untrusted", "kptr_ref", "percpu_kptr", "uptr":
-					return tag.Value
-				}
-				target = tag.Type
-			}
+			_, field, err := walkPointee(t.Target, false)
+			return field, err
 		}
-		return ""
+		return "", nil
 	}
 	if typ == nil {
-		return ""
+		return "", nil
 	}
 	return walk(typ, 0)
 }
@@ -1457,7 +1452,11 @@ func (e lookupEmitter) splice(groups []lookupGroup) (asm.Instructions, []LookupH
 		// readable value is copied to the stack, or the hook is static. A
 		// value with a special field cannot be passed as memory at all, nor
 		// copied.
-		restricted := m.Flags&(bpfFRdonlyProg|bpfFWronlyProg) != 0 || specialField(m.Value) != "" || readOnlyArg
+		field, err := specialField(m.Value)
+		if err != nil {
+			return nil, nil, refuse("map %q value BTF: %v", m.Name, err)
+		}
+		restricted := m.Flags&(bpfFRdonlyProg|bpfFWronlyProg) != 0 || field != "" || readOnlyArg
 		copied := group.copies(req)
 		static := restricted && !copied && req.StaticUntrusted
 		untrusted := restricted && !copied && !static

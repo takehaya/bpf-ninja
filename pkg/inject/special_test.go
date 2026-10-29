@@ -1,11 +1,31 @@
 package inject
 
 import (
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/btf"
 )
+
+func TestSpecialFieldPointeeChains(t *testing.T) {
+	timer := time.AfterFunc(5*time.Second, func() { panic("special-field pointee traversal did not terminate") })
+	defer timer.Stop()
+	for _, kind := range []string{"direct-cycle", "qualified-cycle", "ordinary_annotation", "depth-32", "depth-33", "kptr", "kptr_untrusted", "kptr_ref", "percpu_kptr", "uptr"} {
+		t.Run(kind, func(t *testing.T) {
+			field, err := specialField(parsedPointeeRecord(t, kind))
+			if strings.HasSuffix(kind, "-cycle") || kind == "depth-33" {
+				if err == nil {
+					t.Fatal("accepted cyclic or over-deep pointee")
+				}
+			} else if err != nil || field != "" {
+				// Kernel BTF inspects only the direct tag prefix, even for kptr.
+				t.Fatalf("changed acyclic kernel-BTF behavior: field=%q err=%v", field, err)
+			}
+		})
+	}
+}
 
 // specialValue is the fixtures' session value {seid, imsi} followed at byte
 // 16 by the special field kind names: spin_lock, timer or kptr.
@@ -54,8 +74,8 @@ func TestSpecialField(t *testing.T) {
 		{"in a union", &btf.Union{Name: "u", Size: 16, Members: []btf.Member{
 			{Name: "x", Type: u64}, {Name: "root", Type: &btf.Struct{Name: "bpf_rb_root", Size: 16}}}}, "bpf_rb_root"},
 	} {
-		if got := specialField(tc.typ); got != tc.want {
-			t.Errorf("%s: specialField = %q, want %q", tc.name, got, tc.want)
+		if got, err := specialField(tc.typ); got != tc.want || err != nil {
+			t.Errorf("%s: specialField = %q, %v; want %q", tc.name, got, err, tc.want)
 		}
 	}
 }
