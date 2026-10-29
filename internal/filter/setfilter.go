@@ -79,11 +79,11 @@ func ResolveSetFilters(sets []*setmap.Set, refs []string, params []attach.FuncPa
 
 	var out []SetFilter
 	for _, ref := range refs {
-		if strings.ContainsAny(ref, ">.") {
-			return nil, fmt.Errorf("@%s: member syntax is not supported in set references", ref)
-		}
 		s, ok := byName[ref]
 		if !ok {
+			if strings.ContainsAny(ref, ">.") {
+				return nil, fmt.Errorf("@%s: member syntax is not supported in set references", ref)
+			}
 			return nil, fmt.Errorf("@%s: no such set (define it with --set %q)", ref, ref+"=/sys/fs/bpf/...")
 		}
 
