@@ -107,7 +107,7 @@ For one explicit `map` rule, `map_btf.elf` supplies those definitions to the gen
 ```
 
 `map_btf` requires `elf` and `sha256`; `key_type` and `value_type` are optional.
-Omitting `map_btf` or setting it to `null` disables supplementation; an empty object is an error, and unknown fields inside it are rejected.
+Without `map_btf`, or when it is `null`, inject-run supplies no map types; an empty object is an error, and unknown fields inside it are rejected.
 Compute the digest with `sha256sum /path/to/loader-generated.o` and audit the stack bound for the actual program.
 The supervisor reads the path in its own filesystem, relative to its working directory, at each matching program load, after checking that the referenced live map exists and has no BTF.
 The source must be a regular file no larger than 64 MiB; it is read through that limit each time, with no launch-time preflight or cache.

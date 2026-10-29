@@ -19,7 +19,8 @@ loader が BTF なしで map を作成しても、loader の ELF に key と val
 ```
 
 `map_btf` を指定する場合、`elf` と `sha256` は必須で、`key_type` と `value_type` は任意だ。
-`map_btf` の省略と `null` は補完なしとして扱い、空オブジェクトと内部の未知キーは拒否する。
+`map_btf` が未指定または `null` の場合、inject-run は map の型を補完しない。
+空オブジェクトと内部の未知キーは拒否する。
 
 `sha256sum /path/to/loader-generated.o` で得た64桁のハッシュに置き換える。
 大文字と小文字は区別しない。

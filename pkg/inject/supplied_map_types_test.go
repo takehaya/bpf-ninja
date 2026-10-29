@@ -9,6 +9,50 @@ import (
 	"github.com/cilium/ebpf/btf"
 )
 
+func TestCheckSuppliedMapTypesKptrPointeeQualifiers(t *testing.T) {
+	u32 := &btf.Int{Name: "u32", Size: 4}
+	tag := &btf.TypeTag{Value: "kptr_untrusted", Type: &btf.Struct{Name: "task_struct", Size: 8}}
+	for _, tc := range []struct {
+		name   string
+		target btf.Type
+	}{
+		{"direct", tag},
+		{"const-before-tag", &btf.Const{Type: tag}},
+		{"typedef-before-tag", &btf.Typedef{Name: "tagged_task", Type: tag}},
+	} {
+		for _, side := range []string{"key", "value"} {
+			t.Run(tc.name+"-"+side, func(t *testing.T) {
+				record := &btf.Struct{Name: "record", Size: 8, Members: []btf.Member{{Name: "task", Type: &btf.Pointer{Target: tc.target}}}}
+				builder, err := btf.NewBuilder([]btf.Type{record}, nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				blob, err := builder.Marshal(nil, nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				spec, err := btf.LoadSpecFromReader(bytes.NewReader(blob))
+				if err != nil {
+					t.Fatal(err)
+				}
+				typ, err := spec.AnyTypeByName("record")
+				if err != nil {
+					t.Fatal(err)
+				}
+				m := RawMap{Type: ebpf.Hash, Key: u32, Value: u32, KeySize: 4, ValueSize: 4}
+				if side == "key" {
+					m.Key, m.KeySize = typ, 8
+				} else {
+					m.Value, m.ValueSize = typ, 8
+				}
+				if err := CheckSuppliedMapTypes(m); err == nil || !strings.Contains(err.Error(), "map "+side+" type contains special field \"kptr_untrusted\"") {
+					t.Fatalf("accepted tagged pointee or wrong refusal: %v", err)
+				}
+			})
+		}
+	}
+}
+
 func TestCheckSuppliedMapTypes(t *testing.T) {
 	u32 := &btf.Int{Name: "u32", Size: 4}
 	lock, _ := specialValue("spin_lock")

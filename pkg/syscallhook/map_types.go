@@ -172,7 +172,7 @@ func mapType(types *btf.Spec, name string, fallback btf.Type, size uint32, side 
 		}
 		typ = matches[0]
 		if fallback != nil {
-			if btf.UnderlyingType(typ) != btf.UnderlyingType(fallback) {
+			if !reflect.DeepEqual(btf.UnderlyingType(typ), btf.UnderlyingType(fallback)) {
 				return nil, fmt.Errorf("map types ELF: map_btf.%s_type %q would replace the ELF map's declared type %q", side, name, fallback.TypeName())
 			}
 			typ = fallback

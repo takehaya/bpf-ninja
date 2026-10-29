@@ -1,6 +1,7 @@
 package syscallhook
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"fmt"
 	"os"
@@ -15,6 +16,54 @@ import (
 	"github.com/takehaya/bpf-ninja/internal/testutil"
 	"github.com/takehaya/bpf-ninja/pkg/inject"
 )
+
+func TestMapTypesDuplicateDeclaredLayout(t *testing.T) {
+	for _, side := range []string{"key", "value"} {
+		t.Run(side, func(t *testing.T) {
+			p, rule, spec := mapTypesFixture()
+			declared := spec.Maps["m"].Value
+			if side == "key" {
+				declared = spec.Maps["m"].Key
+			}
+			builder, err := btf.NewBuilder([]btf.Type{btf.Copy(declared), declared}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			id, err := builder.Add(declared)
+			if err != nil {
+				t.Fatal(err)
+			}
+			blob, err := builder.Marshal(nil, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			spec.Types, err = btf.LoadSpecFromReader(bytes.NewReader(blob))
+			if err != nil {
+				t.Fatal(err)
+			}
+			declared, err = spec.Types.TypeByID(id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if side == "key" {
+				spec.Maps["m"].Key, rule.MapBTF.KeyType = declared, declared.TypeName()
+			} else {
+				spec.Maps["m"].Value, rule.MapBTF.ValueType = declared, declared.TypeName()
+			}
+			size, err := btf.Sizeof(declared)
+			if err != nil {
+				t.Fatal(err)
+			}
+			selected, err := mapType(spec.Types, declared.TypeName(), declared, uint32(size), side)
+			if err != nil || selected != declared {
+				t.Fatalf("declared BTF ID %d: selected %v, err=%v", id, selected, err)
+			}
+			if err := supplyMapTypesFromSpec(&p, rule, spec); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
 
 func mapTypesFixture() (inject.RawProgram, Rule, *ebpf.CollectionSpec) {
 	u32 := &btf.Int{Name: "u32", Size: 4}
