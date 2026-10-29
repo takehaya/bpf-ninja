@@ -90,11 +90,17 @@ jobs:
       - name: Build
         run: go build -o bpf-ninja ./cmd/bpf-ninja/
 
+      - name: Build inject observer examples
+        run: ./examples/inject-observers/build.sh
+
       - name: Mount bpffs for privileged tests
         run: mountpoint -q /sys/fs/bpf || sudo mount -t bpf bpf /sys/fs/bpf
 
       - name: Privileged Go suites (required datapath and attach coverage)
         run: make test-bpf
+
+      - name: Load inject observer examples
+        run: sudo ./examples/inject-observers/verify.sh --load-only
 
       - name: Integration Tests
         run: sudo env CI=true scripts/test/run_tests.sh

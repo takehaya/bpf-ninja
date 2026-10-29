@@ -5,6 +5,7 @@
 - [Manual capture tests (English)](en/handtest.md)
 - [Experimental inject-run launcher and configuration (English)](en/inject-run.md)
 - [Map discovery and injection walkthrough (English)](en/inject-walkthrough.md), with [example sources](../examples/inject-walkthrough/README.md)
+- [Small observers for inject hooks (English)](en/inject-observers.md), with [example sources](../examples/inject-observers/README.md)
 - [Map-operation injection API and hook ABI (English)](en/lookup-site-injection.md)
 - [Audited u32 load-site injection API (English)](en/typed-injection.md)
 - [BPF syscall interception design and implementation status (English)](en/bpf-syscall-hook-design.md)

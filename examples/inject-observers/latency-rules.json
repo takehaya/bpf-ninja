@@ -1,0 +1,1 @@
+[{"program": "entry", "auto": true, "ops": ["push:any", "pop:any", "peek"], "entry": true, "hook": "ninja", "stack_lowest_offset": -64}]
