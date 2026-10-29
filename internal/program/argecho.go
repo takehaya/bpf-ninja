@@ -41,11 +41,16 @@ func LoadArgEcho(
 	allowDispatcherSlot bool,
 ) (*Probe, error) {
 	if len(echoParams) == 0 {
-		return nil, fmt.Errorf("--arg-echo requires at least one filterable integer parameter (see --list-params)")
+		return nil, fmt.Errorf("--arg-echo requires at least one integer argument or member expression (see --list-params)")
 	}
 	// One record is len(params)*8 bytes; it must fit in the ring (with head
 	// room for the 8-byte record header) or bpf_ringbuf_reserve always
 	// fails and nothing prints. In practice params is tiny; guard anyway.
+	// Store offsets are signed 16-bit immediates, so every slot must also
+	// stay within the addressable positive half of that range.
+	if len(echoParams) > 4096 {
+		return nil, fmt.Errorf("--arg-echo: at most 4096 values fit the record's store offsets")
+	}
 	if recordSize := len(echoParams) * 8; recordSize >= EchoRingSize {
 		return nil, fmt.Errorf("--arg-echo: %d params (%d B/record) exceed the %d B echo ring", len(echoParams), recordSize, EchoRingSize)
 	}
@@ -110,21 +115,36 @@ func buildArgEchoInsns(echoRingFD int, argFilters []filter.ArgFilter, params []a
 		asm.Mov.Imm(asm.R3, 0),
 		asm.FnRingbufReserve.Call(),
 		asm.JEq.Imm(asm.R0, 0, "exit"),
+		asm.Mov.Reg(asm.R6, asm.R0), // Preserve the reservation across member reads.
 	)
 
-	// R1 = args ptr; copy each arg into slot[i*8]. emitArgLoad (shared with
-	// the arg-filter gate) owns the size/sign-extend logic.
-	insns = append(insns, asm.LoadMem(asm.R1, asm.R10, -48, asm.DWord))
+	hasMembers := false
 	for i, p := range params {
-		insns = append(insns, emitArgLoad(asm.R3, asm.R1, int16(p.Index*8), p.Size, p.Signed)...)
-		insns = append(insns, asm.StoreMem(asm.R0, int16(i*8), asm.R3, asm.DWord))
+		if p.Deref {
+			hasMembers = true
+			insns = append(insns, emitArgMemberLoad(p.Index, p.Offset, p.Size, p.Signed, "discard")...)
+		} else {
+			insns = append(insns, asm.LoadMem(asm.R1, asm.R10, -48, asm.DWord))
+			insns = append(insns, emitArgLoad(asm.R3, asm.R1, int16(p.Index*8), p.Size, p.Signed)...)
+		}
+		insns = append(insns, asm.StoreMem(asm.R6, int16(i*8), asm.R3, asm.DWord))
 	}
 
 	// submit(slot, 0); then exit.
 	insns = append(insns,
-		asm.Mov.Reg(asm.R1, asm.R0),
+		asm.Mov.Reg(asm.R1, asm.R6),
 		asm.Mov.Imm(asm.R2, 0),
 		asm.FnRingbufSubmit.Call(),
+	)
+	if hasMembers {
+		insns = append(insns,
+			asm.Ja.Label("exit"),
+			asm.Mov.Reg(asm.R1, asm.R6).WithSymbol("discard"),
+			asm.Mov.Imm(asm.R2, 0),
+			asm.FnRingbufDiscard.Call(),
+		)
+	}
+	insns = append(insns,
 		asm.Mov.Imm(asm.R0, 0).WithSymbol("exit"),
 		asm.Return(),
 	)

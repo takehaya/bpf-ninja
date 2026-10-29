@@ -55,6 +55,22 @@ func TestResolveSetFiltersImplicit(t *testing.T) {
 	}
 }
 
+func TestResolveSetFiltersDottedName(t *testing.T) {
+	ref, err := setmap.ParseSetSpec("flows.prod=/sys/fs/bpf/flows")
+	if err != nil {
+		t.Fatal(err)
+	}
+	set := flowSet(nil)
+	set.SpecRef = ref
+	filters, err := ResolveSetFilters([]*setmap.Set{set}, []string{"flows.prod"}, ulParams)
+	if err != nil {
+		t.Fatalf("existing dotted set name rejected: %v", err)
+	}
+	if len(filters) != 1 || filters[0].SetName != "flows.prod" || len(filters[0].Fields) != 2 {
+		t.Fatalf("resolved = %+v", filters)
+	}
+}
+
 func TestResolveSetFiltersExplicitMapping(t *testing.T) {
 	// key field imsi sourced from a differently-named arg.
 	set := flowSet([]setmap.MapEntry{{Field: "imsi", Source: "arg:subscriber"}})

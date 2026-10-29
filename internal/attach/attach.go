@@ -624,15 +624,20 @@ type FuncInfo struct {
 
 // FuncParamInfo holds metadata about a function parameter from BTF.
 type FuncParamInfo struct {
-	Name   string // Parameter name from BTF
-	Index  int    // 0-based index in the parameter list
-	Size   uint32 // Size in bytes
-	Signed bool   // true if signed integer
+	Name     string   // Parameter name from BTF
+	Index    int      // 0-based index in the parameter list
+	Size     uint32   // Size in bytes
+	Signed   bool     // true if signed integer
+	Kind     string   // Pointer kind (ptr-struct/ptr-union/ptr); empty for integers
+	TypeName string   // Pointee name
+	Type     btf.Type // Original parameter type, from the target BTF
+	Deref    bool     // Resolved member expression
+	Offset   uint32   // Byte offset from pointer for a resolved member
 }
 
 // GetFuncParams returns the function parameters for the given function from BTF.
-// Only integer parameters (excluding the first xdp_md/xdp_buff pointer) are returned,
-// as those are the only types supported for argument filtering.
+// Named integers and pointers after the first context argument
+// are returned. Pointer members are resolved against these same BTF types.
 func GetFuncParams(prog *ebpf.Program, funcName string) ([]FuncParamInfo, error) {
 	spec, err := BTFSpec(prog)
 	if err != nil {
@@ -663,9 +668,25 @@ func GetFuncParamsFromSpec(spec *btf.Spec, funcName string) ([]FuncParamInfo, er
 		// Unwrap qualifiers and typedefs to get the underlying type
 		underlying := btf.UnderlyingType(p.Type)
 
-		// Only support named integer types for filtering.
+		// Only named parameters can be selected.
 		// Unnamed parameters can't be targeted by --arg-filter.
 		if p.Name == "" {
+			continue
+		}
+		if ptr, ok := underlying.(*btf.Pointer); ok {
+			kind := "ptr"
+			target := btf.UnderlyingType(ptr.Target)
+			switch target.(type) {
+			case *btf.Struct:
+				kind = "ptr-struct"
+			case *btf.Union:
+				kind = "ptr-union"
+			}
+			typeName := target.TypeName()
+			if kind == "ptr" {
+				typeName = ArgTypeName(ptr.Target)
+			}
+			params = append(params, FuncParamInfo{Name: p.Name, Index: i, Size: 8, Kind: kind, TypeName: typeName, Type: p.Type})
 			continue
 		}
 		intType, ok := underlying.(*btf.Int)

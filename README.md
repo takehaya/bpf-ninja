@@ -331,6 +331,49 @@ int parse_headers(struct xdp_md *ctx) {
 
 `--func`, `--list-funcs`, `--list-progs`, `--list-params`, and `--arg-filter` only apply to `entry`/`exit` modes (xdp-native has no tracing args or BTF subfunction concept).
 
+### Filtering pointer members
+
+`--arg-filter` can read an integer or enum member through a struct/union pointer argument.
+Use `->` for the argument pointer and `.` for nested members; names, offsets, widths, and signedness come from the target program's BTF.
+Discover the exact expressions before writing a filter:
+
+```sh
+sudo bpf-ninja -p <ID> --func sdf_classify --list-params --members
+sudo bpf-ninja -p <ID> --func sdf_classify --list-params --members --json
+```
+
+The tree shows types (including typedef names), offsets from the pointee, sizes, signedness, and whether each expression is usable by both `--arg-filter` and `--arg-echo`.
+Rejected expressions include the resolver's reason; anonymous members use promoted names and ambiguous names are flagged.
+The default depth is 3 named levels; use `--members-depth N` (1–32) to change it.
+Omitted branches are marked, including cycle and row limits.
+
+For example, with `sdf_classify(struct xdp_md *ctx_buff, struct classifier_query *q)`:
+
+```sh
+sudo bpf-ninja -p <ID> --func sdf_classify --arg-filter 'q->imsi=262010000000001'
+sudo bpf-ninja -p <ID> --func sdf_classify --arg-filter 'q->target.pdr_id=3'
+sudo bpf-ninja -p <ID> --func sdf_classify --arg-filter 'q->seid=1..9'
+sudo bpf-ninja -p <ID> --func sdf_classify --arg-echo 'q->imsi' 'q->target.pdr_id'
+```
+
+Members and integer args support `=`/`==`, `!=`, `>=`, `<=`, and inclusive `min..max` ranges, with widths of 1, 2, 4, or 8 bytes.
+Use `be16(443)`, `be32(...)`, or `be64(...)` for network-order equality; the width must match, and ordered comparisons/ranges with these literals are refused.
+Scalar pointers use `value[0]`; bare pointers accept `value==null` and `value!=null` without dereferencing.
+Anonymous struct/union members are accessible by their promoted names; bitfields, arrays, and further pointer dereferences are unsupported.
+A null pointer or failed kernel read rejects the call (or suppresses its echo record).
+Member reads run inside the existing entry/exit probe and add no probe; the [two-probe tail-call caveat](#modes) still applies when requesting both capture points.
+
+`--list-params` includes pointers; `--json` marks them with `kind` (`ptr-struct`, `ptr-union`, or `ptr`) and `type_name`.
+Adding `--members` extends those JSON entries with a `members` tree while preserving existing fields; text stays on stderr and JSON goes to stdout.
+Bare `--arg-echo` still prints integer arguments; positional expressions select the arguments or members to print, using the existing u64 echo slots.
+Set keys support explicit member mappings such as `key(dport=arg:key->dport)` and unique same-name member bindings when the mapping is omitted.
+Filters and set keys run at both stages of gated capture; both must match.
+
+At function entry, a member contains whatever the caller placed there, which may be stale or uninitialized on some paths.
+Being filterable does not mean the caller sets it on every call: check with `--arg-echo` before trusting a filter.
+If the callee fills the field, prefer exit mode or a function reached after initialization, then verify again.
+For discovery, syntax, BTF resolution, read failures, and a worked IMSI example, see the [English guide](docs/en/arg-member-filter.md) or [日本語ガイド](docs/ja/arg-member-filter.md).
+
 ## Options
 
 [Complete CLI and protocol reference](docs/ja/cli/README.md) (Japanese navigation, generated English help).
@@ -358,11 +401,13 @@ int parse_headers(struct xdp_md *ctx) {
 | `--list-progs` | List reachable freplace, tail-call, and redirect-map targets and exit | entry, exit |
 | `--list-maps` | With `--list-progs`, also list each function's calls and the maps it uses, with the op (`lookup`, `update`, `delete`, `tail_call`, ...) and source line, read from the loaded program's translated instructions (needs root) | entry, exit |
 | `--lookups-json` | With `--list-maps`, read the file `inject-run --lookups-json` wrote and mark each map use with its load-time site and why it cannot be instrumented | entry, exit |
-| `--list-params` | List filterable parameters for the target function (requires `--func` or an EXT entry with integer parameters) | entry, exit |
+| `--list-params` | List integer and pointer parameters for the target function (requires `--func` or an EXT entry with filterable parameters) | entry, exit |
+| `--members` | With `--list-params`, show the pointee member tree or scalar `[0]` expression, layout, and filter/echo eligibility | entry, exit |
+| `--members-depth` | Maximum named member levels for `--list-params --members` (default 3, range 1–32); omitted branches are marked | entry, exit |
 | `--json` | Print `--list-progs` (with `--list-maps`) / `--list-funcs` / `--list-params` output as JSON on stdout instead of text on stderr | entry, exit |
-| `--arg-filter` | Filter by function argument value (requires `--func` or an EXT entry with integer parameters); format: `param=value`, `param>=val`, `param<=val`, `param=min..max` | entry, exit |
-| `--set` | Define a named match set backed by a pinned BPF hash map: `NAME=/sys/fs/bpf/path[,key(field=arg:param,...)]`. Reference it with `--arg-filter @NAME` or the DSL predicate `layer[field in @NAME]`; manage entries at runtime with `bpf-ninja set`. Repeatable | all |
-| `--arg-echo` | Print the target function's integer args for each call (gated by `--arg-filter` if set) instead of capturing. Requires `--func` or an EXT entry with integer parameters, and a single `--mode`; combine with `-c N` | entry, exit |
+| `--arg-filter` | Filter an integer argument or pointer member (requires `--func` or an EXT entry with filterable parameters); `=`, `==`, `!=`, `>=`, `<=`, and `min..max` for `param`, `param->member.member`, or `param[0]`; `be16/32/64(value)` for equality and `param==null`/`!=null` for pointers | entry, exit |
+| `--set` | Define a named match set backed by a pinned BPF hash map: `NAME=/sys/fs/bpf/path[,key(field=arg:expression,...)]` (including members and `[0]`). Reference it with `--arg-filter @NAME` or the DSL predicate `layer[field in @NAME]`; manage entries at runtime with `bpf-ninja set`. Repeatable | all |
+| `--arg-echo` | Print integer args or positional member/scalar-pointee expressions (e.g. `--arg-echo 'q->imsi' 'value[0]'`) for each call, gated by `--arg-filter`, instead of capturing. Requires `--func` or an EXT entry with filterable parameters, and a single `--mode`; combine with `-c N` | entry, exit |
 | `--split-by-tag` | Route matched packets to one pcap per set-map value (tag): `-w out.pcap` yields `out.<tag>.pcap` (requires `-w`) | all |
 | `--max-bytes` | Stop the whole capture once total output bytes reach N (works with or without `--split-by-tag`). Per-tag caps live on the set entries: `set add ... max-bytes=N` (0 / omitted = uncapped; entries sharing a tag share one budget — an uncapped entry makes the tag uncapped, otherwise the largest cap wins) | all |
 | `--exit-when-capped` | Exit 0 once every entry that has a per-entry cap reached it; uncapped entries don't participate (requires `--split-by-tag` and at least one `--set`) | all |
@@ -382,6 +427,8 @@ Common:
 
 Mode-specific:
 
+- **Pointer argument features**: member filters/echo, scalar-pointee `[0]` reads, pointer NULL comparisons, and member-derived set keys require `bpf_get_func_arg` support (upstream Linux 5.17+). These features have been measured on kernels 6.1+ in our test matrix; distribution backports may differ.
+- **Static XDP context fallback**: when direct context reads are rejected, exit and gated capture also require `bpf_get_func_ret` (upstream Linux 5.17+) to obtain the action without relying on the discarded BTF prototype.
 - **`--mode entry` / `exit`**: a target BPF program (XDP, tc clsact, cgroup-skb, or netfilter) already loaded with BTF. With `-i`, an XDP program attached to the interface; tc targets go by `-p <progID>`; cgroup-skb targets by `--cgroup <path>` or `-p`.
 - **`--mode xdp`**: no XDP attached to the interface (bpf-ninja becomes the XDP program).
 - **DSL with chain quantifier (`+`, `*`, `{n,m>4}`) on a fixed-length layer, parser-machine self-loop (variable-length headers like IPv6 ext / GTP options / SRv6 segments), or alternation (`(a|b)`)**: kernel 5.17+ (uses `bpf_loop` + bpf2bpf subprograms). A repeated variable-length layer (`ipv4+`, `ipv6*`) unrolls to `MAX_DEPTH` parser machines instead of a bpf_loop chain; each machine's own option or extension walk keeps the 5.17 requirement where it applies. Plain DSL chains and `--cbpf` filters work on 5.8+.

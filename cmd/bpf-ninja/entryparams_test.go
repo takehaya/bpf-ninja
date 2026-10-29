@@ -15,6 +15,7 @@ func TestImplicitEntryParamFlags(t *testing.T) {
 		ProgID: 42, FuncName: "replacement", Type: ebpf.Extension,
 		Params: []attach.FuncParamInfo{{Name: "orig_ret", Index: 1, Size: 4, Signed: true}},
 	}
+	pointerEntry := attach.Target{ProgID: 45, FuncName: "pointer_replacement", Type: ebpf.Extension, Params: []attach.FuncParamInfo{{Name: "q", Index: 1, Size: 8, Kind: "ptr-struct"}}}
 	ctxEntry := attach.Target{ProgID: 43, FuncName: "entry", Type: ebpf.XDP}
 	ctxExtension := attach.Target{ProgID: 44, FuncName: "ctx_replacement", Type: ebpf.Extension}
 	for _, flag := range []string{"--arg-filter", "--list-params", "--arg-echo"} {
@@ -25,6 +26,7 @@ func TestImplicitEntryParamFlags(t *testing.T) {
 			wantErr  bool
 		}{
 			{"integer EXT entry", []attach.Target{integerEntry}, false, false},
+			{"pointer EXT entry", []attach.Target{pointerEntry}, false, false},
 			{"ordinary entry", []attach.Target{ctxEntry}, false, true},
 			{"ctx-only EXT entry", []attach.Target{ctxExtension}, false, true},
 			{"mixed targets", []attach.Target{integerEntry, ctxEntry}, false, true},
@@ -45,7 +47,7 @@ func TestImplicitEntryParamFlags(t *testing.T) {
 				}
 				err := cmd.Run(context.Background(), args)
 				if tc.wantErr {
-					if err == nil || !strings.Contains(err.Error(), flag+" requires --func or an entry function with filterable integer parameters") || !strings.Contains(err.Error(), "has none") {
+					if err == nil || !strings.Contains(err.Error(), flag+" requires --func or an entry function with filterable parameters") || !strings.Contains(err.Error(), "has none") {
 						t.Fatalf("unexpected validation error: %v", err)
 					}
 				} else if err != nil {

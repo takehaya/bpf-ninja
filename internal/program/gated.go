@@ -311,16 +311,21 @@ func buildGatedEntryInsns(h *hook.Hook, filterOut codegen.Output, tf filter.Targ
 // buildGatedExitInsns is the fexit half: consume the hold slot (bail out
 // cheaply when the entry stage did not match), run the exit filter, and
 // on match emit the entry image from the hold and/or the exit image.
-func buildGatedExitInsns(h *hook.Hook, filterOut codegen.Output, tf filter.TargetFilters, eventsFD, holdFD, statsFD, scratchFD int, slots *pktSetSlots, pktRefs []string, emit Emit, entryCapLen int, returnOffset int16, gateFD int) (asm.Instructions, error) {
+func buildGatedExitInsns(h *hook.Hook, filterOut codegen.Output, tf filter.TargetFilters, eventsFD, holdFD, statsFD, scratchFD int, slots *pktSetSlots, pktRefs []string, emit Emit, entryCapLen int, returnOffset int16, gateFD int, deferPrologue bool) (asm.Instructions, error) {
 	identity, err := h.Identity(asm.R1)
 	if err != nil {
 		return nil, err
 	}
-	insns, err := h.PacketPrologue()
+	prologue, err := h.PacketPrologue()
 	if err != nil {
 		return nil, err
 	}
-
+	insns := prologue
+	if deferPrologue {
+		// Fault-handled ctx reads may fail: return the depth and consume the
+		// hold first. Direct-load hooks retain their original instruction order.
+		insns = asm.Instructions{asm.StoreMem(asm.R10, -48, asm.R1, asm.DWord)}
+	}
 	insns = append(insns, loadSavedReturn(returnOffset)...)
 	// --- give the depth back and consume this depth's hold before any
 	// filter work. Depth 0 here means the fentry did not run (the fexit
@@ -346,6 +351,17 @@ func buildGatedExitInsns(h *hook.Hook, filterOut codegen.Output, tf filter.Targe
 		asm.LoadMem(asm.R2, asm.R8, holdValid, asm.Half),
 		asm.JEq.Imm(asm.R2, 0, "exit"),               // entry stage did not match: nothing to do
 		asm.StoreImm(asm.R8, holdValid, 0, asm.Half), // consume, whatever happens below
+	)
+	if deferPrologue {
+		insns = append(insns,
+			// The prologue uses R8 for data_end; the reserve slot is free here.
+			asm.StoreMem(asm.R10, -32, asm.R8, asm.DWord),
+			asm.LoadMem(asm.R1, asm.R10, -48, asm.DWord),
+		)
+		insns = append(insns, prologue...)
+		insns = append(insns, asm.LoadMem(asm.R8, asm.R10, -32, asm.DWord))
+	}
+	insns = append(insns,
 		// A hold another invocation left at this depth (its fexit was
 		// skipped, or the depth was resynchronised) never pairs, even if
 		// its frame address was recycled for this invocation.

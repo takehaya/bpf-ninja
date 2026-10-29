@@ -333,6 +333,22 @@ func LoadMultiPoint(targets []attach.Target, stages []Stage, filters []filter.Ta
 		return nil, err
 	}
 	for i, t := range targets {
+		staticXDP := false
+		if h.Kind == hook.KindXDP && t.FuncName != "" {
+			spec, specErr := probe.extensionGuard.Spec(t.Program)
+			if specErr != nil {
+				_ = probe.Close()
+				return nil, specErr
+			}
+			var fn *btf.Func
+			if specErr := spec.TypeByName(t.FuncName, &fn); specErr != nil {
+				_ = probe.Close()
+				return nil, specErr
+			}
+			if fn.Linkage == btf.StaticFunc {
+				staticXDP = true
+			}
+		}
 		var tf filter.TargetFilters
 		if filters != nil {
 			tf = filters[i]
@@ -344,6 +360,18 @@ func LoadMultiPoint(targets []attach.Target, stages []Stage, filters []filter.Ta
 		for si := len(stages) - 1; si >= 0; si-- {
 			st, c := stages[si], comp[si]
 			stLabel, attachType := tracingLabel(st.IsFexit)
+			targetHook := h
+			probeRead := false
+			if staticXDP {
+				probeRead, err = staticXDPNeedsProbeRead(t.Program, t.FuncName, attachType)
+				if err != nil {
+					_ = probe.Close()
+					return nil, err
+				}
+				if probeRead {
+					targetHook = staticXDPHook(h, st.IsFexit)
+				}
+			}
 			var returnOffset int16
 			if st.IsFexit {
 				spec, specErr := probe.extensionGuard.Spec(t.Program)
@@ -356,16 +384,21 @@ func LoadMultiPoint(targets []attach.Target, stages []Stage, filters []filter.Ta
 					_ = probe.Close()
 					return nil, fmt.Errorf("fexit target %s: %w", t.FuncName, err)
 				}
+				if probeRead {
+					// The kernel discarded the static prototype, so ask it for
+					// the return value instead of using a BTF-derived ctx slot.
+					returnOffset = fexitReturnViaHelper
+				}
 			}
 			var insns asm.Instructions
 			var err error
 			switch {
 			case gated && !st.IsFexit:
-				insns, err = buildGatedEntryInsns(h, c.out, tf, holdFD, holdStopFD, statsFD, scratchFD, c.slots, c.pktRefs, emit, entryCapLen, gateFD)
+				insns, err = buildGatedEntryInsns(targetHook, c.out, tf, holdFD, holdStopFD, statsFD, scratchFD, c.slots, c.pktRefs, emit, entryCapLen, gateFD)
 			case gated:
-				insns, err = buildGatedExitInsns(h, c.out, tf, outerMap.FD(), holdFD, statsFD, scratchFD, c.slots, c.pktRefs, emit, entryCapLen, returnOffset, gateFD)
+				insns, err = buildGatedExitInsns(targetHook, c.out, tf, outerMap.FD(), holdFD, statsFD, scratchFD, c.slots, c.pktRefs, emit, entryCapLen, returnOffset, gateFD, probeRead)
 			default:
-				insns, err = buildTracingInsns(c.out, tf, outerMap.FD(), scratchFD, statsFD, st.IsFexit, returnOffset, progType, c.slots, c.pktRefs, gateFD)
+				insns, err = buildTracingInsnsForHook(targetHook, c.out, tf, outerMap.FD(), scratchFD, statsFD, st.IsFexit, returnOffset, c.slots, c.pktRefs, gateFD)
 			}
 			if err != nil {
 				_ = probe.Close()
@@ -519,6 +552,8 @@ func compileFilterWithSlots(expr string, useDSL, isFexit bool, progType ebpf.Pro
 //   -16: map lookup の key
 //   -24: scratch buffer ポインタ (フィルタ時のみ)
 //   -48: tracing args ポインタの退避
+//   -128..-121: pointer-member read temporary (arg filters only; dead before
+//               set filters and runFilter, which owns KunaiStackTop=-56 downward)
 //   -57..-120: set filter のキーバッファ (emitSetFilters; runFilter の
 //              前で死ぬ。kunai は KunaiStackTop=-56 以深を所有するが
 //              それは runFilter 内のみ live — phase ordering で共存)
@@ -630,6 +665,10 @@ func buildTracingInsns(filterOut codegen.Output, tf filter.TargetFilters, events
 	if !ok {
 		return nil, hook.UnsupportedTypeError(progType)
 	}
+	return buildTracingInsnsForHook(h, filterOut, tf, eventsFD, scratchFD, statsFD, isFexit, returnOffset, slots, pktRefs, gateFD)
+}
+
+func buildTracingInsnsForHook(h *hook.Hook, filterOut codegen.Output, tf filter.TargetFilters, eventsFD, scratchFD, statsFD int, isFexit bool, returnOffset int16, slots *pktSetSlots, pktRefs []string, gateFD int) (asm.Instructions, error) {
 	insns, err := buildFilterGate(h, filterOut, tf, scratchFD, slots, pktRefs, isFexit, returnOffset)
 	if err != nil {
 		return nil, err
@@ -1023,18 +1062,65 @@ func asmSizeFor(n uint32) asm.Size {
 	return asm.DWord
 }
 
+// argMemberTmp is an eight-byte scratch slot below the set key buffer.
+// Individual pointer reads use it; it is never live across packet filtering.
+const argMemberTmp = -128
+
+// emitArgPointerLoad returns the raw pointer in R3, preserving R6-R9.
+func emitArgPointerLoad(index int, fail string) asm.Instructions {
+	return asm.Instructions{
+		// Direct ctx loads try to translate a program-defined struct to a
+		// vmlinux type. GetFuncArg retrieves the raw pointer without that cast.
+		asm.LoadMem(asm.R1, asm.R10, -48, asm.DWord),
+		asm.Mov.Imm(asm.R2, int32(index)),
+		// Kernels before 6.3 (6.1.y before 6.1.100) check the output slot as a
+		// read, so initialise it. cilium/ebpf cannot marshal an 8-byte StoreImm.
+		asm.StoreImm(asm.R10, argMemberTmp, 0, asm.Word),
+		asm.StoreImm(asm.R10, argMemberTmp+4, 0, asm.Word),
+		asm.Mov.Reg(asm.R3, asm.R10),
+		asm.Add.Imm(asm.R3, argMemberTmp),
+		asm.FnGetFuncArg.Call(),
+		asm.JNE.Imm(asm.R0, 0, fail),
+		asm.LoadMem(asm.R3, asm.R10, argMemberTmp, asm.DWord),
+	}
+}
+
+// emitArgMemberLoad returns the scalar in R3, preserving R6-R9. Both a null
+// pointer and a failed kernel read take the caller's failure branch.
+func emitArgMemberLoad(index int, offset, size uint32, signed bool, fail string) asm.Instructions {
+	insns := emitArgPointerLoad(index, fail)
+	insns = append(insns,
+		asm.JEq.Imm(asm.R3, 0, fail),
+		asm.Add.Imm(asm.R3, int32(offset)),
+		asm.Mov.Reg(asm.R1, asm.R10),
+		asm.Add.Imm(asm.R1, argMemberTmp),
+		asm.Mov.Imm(asm.R2, int32(size)),
+		asm.FnProbeReadKernel.Call(),
+		asm.JNE.Imm(asm.R0, 0, fail),
+	)
+	return append(insns, emitArgLoad(asm.R3, asm.R10, argMemberTmp, size, signed)...)
+}
+
 func buildArgFilter(filters []filter.ArgFilter) asm.Instructions {
 	if len(filters) == 0 {
 		return nil
 	}
 
 	var insns asm.Instructions
-	// Load args pointer once — R2 is not clobbered by subsequent loads/compares.
+	// Integer loads preserve R2. Member reads restore it after the helper call.
 	insns = append(insns, asm.LoadMem(asm.R2, asm.R10, -48, asm.DWord))
 
 	for _, f := range filters {
 		offset := int16(f.ParamIndex * 8)
-		insns = append(insns, emitArgLoad(asm.R3, asm.R2, offset, f.ParamSize, f.Signed)...)
+		if f.Pointer {
+			insns = append(insns, emitArgPointerLoad(f.ParamIndex, "exit")...)
+			insns = append(insns, asm.LoadMem(asm.R2, asm.R10, -48, asm.DWord))
+		} else if f.Deref {
+			insns = append(insns, emitArgMemberLoad(f.ParamIndex, f.Offset, f.ParamSize, f.Signed, "exit")...)
+			insns = append(insns, asm.LoadMem(asm.R2, asm.R10, -48, asm.DWord))
+		} else {
+			insns = append(insns, emitArgLoad(asm.R3, asm.R2, offset, f.ParamSize, f.Signed)...)
+		}
 
 		// Select unsigned or signed jump ops based on parameter signedness.
 		jLT, jGT := asm.JLT, asm.JGT
@@ -1045,6 +1131,8 @@ func buildArgFilter(filters []filter.ArgFilter) asm.Instructions {
 		switch f.Op {
 		case filter.OpEqual:
 			insns = appendCmpJump(insns, asm.JNE, f.Value)
+		case filter.OpNotEqual:
+			insns = appendCmpJump(insns, asm.JEq, f.Value)
 		case filter.OpGreaterEqual:
 			insns = appendCmpJump(insns, jLT, f.Value)
 		case filter.OpLessEqual:
@@ -1095,7 +1183,12 @@ func emitSetFilters(sets []filter.SetFilter) asm.Instructions {
 			// narrow negative arg fills the wider key field the same way a
 			// signed value written into the map would (ParamSize <=
 			// FieldSize is enforced at resolve time); store at field width.
-			insns = append(insns, emitArgLoad(asm.R3, asm.R2, int16(f.ParamIdx*8), f.ParamSize, f.ParamSigned)...)
+			if f.Deref {
+				insns = append(insns, emitArgMemberLoad(f.ParamIdx, f.Offset, f.ParamSize, f.ParamSigned, "exit")...)
+				insns = append(insns, asm.LoadMem(asm.R2, asm.R10, -48, asm.DWord))
+			} else {
+				insns = append(insns, emitArgLoad(asm.R3, asm.R2, int16(f.ParamIdx*8), f.ParamSize, f.ParamSigned)...)
+			}
 			insns = append(insns, asm.StoreMem(asm.R10, int16(setKeyBase+int(f.FieldOff)), asm.R3, asmSizeFor(f.FieldSize)))
 		}
 

@@ -19,6 +19,9 @@ bpf-ninja の filter 式である DSL のドキュメント index です。GTP-U
 | 性能比較したい | [`dsl-benchmark.md`](./dsl-benchmark.md) |
 | 設計思想を物語形式で読みたい (連載 3 部作) | [`kunai-overview-article.md`](./kunai-overview-article.md) → [`kunai-dsl-deepdive.md`](./kunai-dsl-deepdive.md) → [`kunai-codegen-deepdive.md`](./kunai-codegen-deepdive.md) |
 
+関数引数の構造体メンバーで絞り込む場合は、パケット用 DSL とは別に `--arg-filter` を使います。
+メンバー一覧の調べ方と `--arg-echo` による確認手順は、[日本語ガイド](./arg-member-filter.md)と [English guide](../en/arg-member-filter.md) を参照してください。
+
 ## ファイル一覧
 
 | ファイル | 内容 |

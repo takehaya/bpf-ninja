@@ -105,7 +105,7 @@ func rootFlags() []cli.Flag {
 		},
 		&cli.StringSliceFlag{
 			Name:  "arg-filter",
-			Usage: "filter by function argument value (requires --func or an entry function with filterable integer parameters); format: param=value, param>=val, param<=val, param=min..max, or @NAME to match against a --set pinned-map set",
+			Usage: "filter by function argument value (requires --func or an entry function with filterable parameters); format: param=value (or ==), param!=value, param>=val, param<=val, param=min..max; also param->member.member and param[0], be16/32/64(value) for equality, pointer=null/!=null, or @NAME to match against a --set pinned-map set",
 		},
 		&cli.StringSliceFlag{
 			Name:  "set",
@@ -113,11 +113,19 @@ func rootFlags() []cli.Flag {
 		},
 		&cli.BoolFlag{
 			Name:  "list-params",
-			Usage: "list filterable parameters for the target function (requires --func or an entry function with filterable integer parameters) and exit",
+			Usage: "list filterable parameters for the target function (requires --func or an entry function with filterable parameters) and exit",
+		},
+		&cli.BoolFlag{
+			Name:  "members",
+			Usage: "with --list-params, show pointer members and whether --arg-filter / --arg-echo accepts them",
+		},
+		&cli.IntFlag{
+			Name: "members-depth", Value: attach.DefaultMembersDepth,
+			Usage: "maximum named member levels with --list-params --members (1..32)",
 		},
 		&cli.BoolFlag{
 			Name:  "arg-echo",
-			Usage: "diagnostic: print the target function's integer args for each call (gated by --arg-filter if set) instead of capturing packets; requires --func or an entry function with filterable integer parameters; combine with -c N to stop after N",
+			Usage: "diagnostic: print integer args (or positional param->member or param[0] expressions) for each call (gated by --arg-filter if set) instead of capturing packets; requires --func or an entry function with filterable parameters; combine with -c N to stop after N",
 		},
 		&cli.BoolFlag{
 			Name:  "cbpf",
@@ -542,6 +550,10 @@ func run(ctx context.Context, cmd *cli.Command) error {
 		}
 	}
 
+	if err := validateMembersFlags(cmd); err != nil {
+		return err
+	}
+
 	if scope := cmd.String("dump-asm"); scope != "" {
 		if len(modes) > 1 {
 			return fmt.Errorf("--dump-asm renders one capture point; pass a single --mode")
@@ -709,25 +721,12 @@ func run(ctx context.Context, cmd *cli.Command) error {
 		asJSON := cmd.Bool("json")
 		var jsonOut []paramsTargetJSON
 		for _, t := range targets {
+			jt := paramsToJSON(t, cmd.Bool("members"), cmd.Int("members-depth"))
 			if asJSON {
-				jt := paramsTargetJSON{Func: t.FuncName, ID: t.ProgID, Params: []paramJSON{}}
-				for _, p := range t.Params {
-					jt.Params = append(jt.Params, paramJSON{Name: p.Name, Index: p.Index, Size: p.Size, Signed: p.Signed})
-				}
 				jsonOut = append(jsonOut, jt)
 				continue
 			}
-			fmt.Fprintf(os.Stderr, "Filterable parameters for %s (id=%d):\n", t.FuncName, t.ProgID)
-			if len(t.Params) == 0 {
-				fmt.Fprintf(os.Stderr, "  (none - only integer parameters after the first argument are supported)\n")
-			}
-			for _, p := range t.Params {
-				signStr := "unsigned"
-				if p.Signed {
-					signStr = "signed"
-				}
-				fmt.Fprintf(os.Stderr, "  %-20s [%d bytes, %s, arg index %d]\n", p.Name, p.Size, signStr, p.Index)
-			}
+			printParams(os.Stderr, jt)
 		}
 		if asJSON {
 			return emitJSON(jsonOut)
@@ -798,7 +797,11 @@ func run(ctx context.Context, cmd *cli.Command) error {
 		if filters != nil {
 			af = filters[0].Args
 		}
-		probe, err := program.LoadArgEcho(t.Program, t.FuncName, af, t.Params, isFexit, t.AllowDispatcherSlot)
+		echoParams, err := attach.ResolveEchoArgs(args, t.Params)
+		if err != nil {
+			return err
+		}
+		probe, err := program.LoadArgEcho(t.Program, t.FuncName, af, echoParams, isFexit, t.AllowDispatcherSlot)
 		if err != nil {
 			return err
 		}
@@ -2093,7 +2096,7 @@ func validateImplicitEntryParams(cmd *cli.Command, targets []attach.Target) erro
 	}
 	for _, target := range targets {
 		if len(target.Params) == 0 {
-			return fmt.Errorf("%s requires --func or an entry function with filterable integer parameters; entry %q (program id=%d) has none", option, target.FuncName, target.ProgID)
+			return fmt.Errorf("%s requires --func or an entry function with filterable parameters; entry %q (program id=%d) has none", option, target.FuncName, target.ProgID)
 		}
 	}
 	return nil
