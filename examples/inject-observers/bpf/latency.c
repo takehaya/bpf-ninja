@@ -10,7 +10,7 @@ struct {
 } start SEC(".maps");
 struct event {
   __u32 site;
-  __u32 pad;
+  __u32 op;
   __u64 status;
   __u64 ns;
 };
@@ -28,7 +28,7 @@ int on_entry(void *ctx) {
   return 0;
 }
 
-static int report(void *ctx) {
+static int report(void *ctx, __u32 op) {
   __u64 now = bpf_ktime_get_ns(), site = 0, status = 0;
   __u32 key = 0;
   __u64 *t = bpf_map_lookup_elem(&start, &key);
@@ -41,7 +41,7 @@ static int report(void *ctx) {
   if (!e)
     return 0;
   e->site = site;
-  e->pad = 0;
+  e->op = op;
   e->status = status;
   e->ns = elapsed;
   bpf_ringbuf_submit(e, 0);
@@ -49,9 +49,9 @@ static int report(void *ctx) {
 }
 
 SEC("fentry/ninja_recent_push")
-int on_push(void *ctx) { return report(ctx); }
+int on_push(void *ctx) { return report(ctx, 0); }
 
 SEC("fentry/ninja_seen_push")
-int on_seen_push(void *ctx) { return report(ctx); }
+int on_seen_push(void *ctx) { return report(ctx, 1); }
 
 char LICENSE[] SEC("license") = "GPL";

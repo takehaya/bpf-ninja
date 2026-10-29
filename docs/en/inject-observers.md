@@ -1,7 +1,7 @@
 # Small observers for inject hooks
 
 Use the CLI first: `--func` selects a hook, `--arg-filter` selects calls by their integer arguments, `--arg-echo` prints those arguments, and `-w` saves packets.
-The [walkthrough's capture example](inject-walkthrough.md#6-capture-the-packets-at-a-hook) already captures the packet at an injected hook:
+Add an argument filter to the [walkthrough's capture example](inject-walkthrough.md#6-capture-the-packets-at-a-hook) to select failed pushes:
 
 ```sh
 bpf-ninja -p "$PROG_ID" --func ninja_recent_push \
@@ -23,7 +23,8 @@ For packet bytes and lengths, use the built-in capture.
 The three examples in [examples/inject-observers](../../examples/inject-observers) reuse the walkthrough's XDP program and loader.
 Its [README](../../examples/inject-observers/README.md) has the build, run and VM verification commands.
 These observers read hook arguments and write their own maps; they cannot change the target's verdict.
-They obtain raw `u64` arguments with `bpf_get_func_arg` and read pointed-to memory with `bpf_probe_read_kernel`, as in the walkthrough.
+They obtain raw `u64` arguments with `bpf_get_func_arg`.
+The conditional observer also reads pointed-to memory with `bpf_probe_read_kernel`, as in the walkthrough.
 The low 32 bits of `status`, cast to a signed integer, hold the helper's return value; the upper bits hold push flags.
 
 ## Count calls and failures
@@ -58,9 +59,9 @@ A recorded snapshot on 7.0.13 was:
 
 ```text
 snapshot
-hook=ninja_recent_push site=24 calls=6 failures=3
-hook=ninja_recent_pop site=30 calls=3 failures=0
-hook=ninja_seen_peek site=11 calls=2 failures=2
+hook=ninja_recent_push site=24 calls=1 failures=0
+hook=ninja_seen_peek site=11 calls=1 failures=1
+snapshot
 ```
 
 ## Add the CPU ID to failed calls
@@ -91,10 +92,10 @@ The two-entry queue returns `-7` (`-E2BIG`) when full, and a bloom-filter miss r
 The first events on 7.0.13 were:
 
 ```text
+hook=ninja_seen_peek site=11 value=64 ret=-2 cpu=0
+hook=ninja_seen_peek site=11 value=80 ret=-2 cpu=0
 hook=ninja_seen_peek site=11 value=96 ret=-2 cpu=1
 hook=ninja_recent_push site=24 value=96 ret=-7 cpu=1
-hook=ninja_seen_peek site=11 value=112 ret=-2 cpu=1
-hook=ninja_recent_push site=24 value=64 ret=-7 cpu=0
 ```
 
 For live XDP traffic, the CPU ID describes where the hook ran.
@@ -126,15 +127,18 @@ static int report(void *ctx) {
   /* ... emit site, status and elapsed through the ring buffer ... */
 ```
 
-The Go command explicitly attaches `on_entry` before either push observer, so a push cannot consume a timestamp before the entry observer is attached.
+The Go command attaches `on_entry` first and closes links in reverse order, keeping entry attached until both push observers have detached.
+This prevents a remaining push observer from using a timestamp from an earlier invocation during shutdown.
+Before the first entry timestamp, `report` simply skips the event.
 The Go command rejects an object that does not match the requested example with a descriptive error.
-On 7.0.13, the first events included both the bloom-filter push (`site=18`) and queue push (`site=24`):
+Latency events identify the hook as well as its original instruction position (`site`); compiler versions can change that position.
+A run on 7.0.13 included both the bloom-filter push and queue push:
 
 ```text
-site=18 ret=0 ns=1683
-site=24 ret=-7 ns=12415
-site=18 ret=0 ns=1458
-site=24 ret=0 ns=17360
+hook=ninja_seen_push site=18 ret=0 ns=454
+hook=ninja_recent_push site=24 ret=0 ns=3417
+hook=ninja_seen_push site=18 ret=0 ns=1505
+hook=ninja_recent_push site=24 ret=0 ns=18062
 ```
 
 These times include intervening map calls and observer overhead; they measure neither the push helper alone nor the program's full duration.
@@ -143,21 +147,24 @@ Nested invocations would need separate state, and an entry hook reached through 
 
 ## VM verification
 
-On 2026-10-29, `verify.sh` ran each observer for seven seconds against a fresh loader in KVM VMs with 2 GiB RAM and two CPUs.
-The images were `ghcr.io/cilium/ci-kernels:6.1`, `:7.0` and `:7.3-rc4`.
+On 2026-10-29, the following checks passed in KVM VMs with 2 GiB RAM and two CPUs.
 
-| Kernel (`uname -r`) | count | conditional | latency |
-| --- | --- | --- | --- |
-| 6.1.188 | PASS | PASS | PASS |
-| 7.0.13 | PASS | PASS | PASS |
-| 7.3.0-rc4 | PASS | PASS | PASS |
+| Kernel | Full check (clang 21) | Full check (clang 18) | Latency startup delayed 5 seconds | Load-only |
+| --- | --- | --- | --- | --- |
+| 6.1.188 | PASS | PASS | PASS | PASS |
+| 7.0.13 | PASS | PASS | PASS | PASS |
 
-The excerpts above are verbatim from the 7.0.13 logs.
-The behavior on 6.1.188 and 7.3.0-rc4 was identical: counters included failed pushes and successful pops, failure events carried CPU IDs, and both push hooks reported positive elapsed times.
-Attachment happens after the loader starts, so the observer can miss early calls.
+The excerpts above are verbatim from the normal 7.0.13 run with clang 21.
+The clang 18 program used push sites 20 and 27; the clang 21 program used 18 and 24.
+The alternate compiler and delay were exercised by a local VM driver; the committed `verify.sh` runs the normal check or `--load-only`.
+
+The full `verify.sh` check uses a fresh loader per observer and verifies event contents and `XDP_PASS` verdicts through `BPF_PROG_TEST_RUN`.
+The loader prints its program ID, then waits for a start file created by the observer after attachment and reader setup.
+This preserves the four initial Bloom-filter pushes even when observer startup is delayed.
+The README's manual commands use the same gate.
+Verification identifies the two latency producers by hook name rather than fixed instruction positions.
 Counts, CPU placement and elapsed times can vary between runs.
 Ring-buffer observers drop an event if reservation fails.
-All recorded loader runs returned `action=2 err=<nil>` (`XDP_PASS`).
 
 CI builds the objects and then runs `verify.sh --load-only` after the privileged BPF suites, as root with bpffs mounted.
 That check loads and attaches all three examples for two seconds each; the full VM run also checks counters, event contents and loader verdicts.

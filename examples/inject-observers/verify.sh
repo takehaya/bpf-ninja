@@ -25,10 +25,12 @@ uname -r
 for name in count conditional latency; do
   rules=../inject-walkthrough/rules.json
   if [ "$name" = latency ]; then rules=latency-rules.json; fi
+  # A unique, initially absent file also permits repeated runs without stale readiness.
+  ready=$(mktemp -d "$results/$name.ready.XXXXXX")/start
   idfile="$results/$name.id"
   : > "$idfile"
   ../../bpf-ninja inject-run --config "$rules" --hooks-json "$results/$name.hooks.json" \
-    -- ./build/loader-bin build/prog.o > "$idfile" 2> "$results/$name.loader.log" &
+    -- ./build/loader-bin build/prog.o "$ready" > "$idfile" 2> "$results/$name.loader.log" &
   launcher=$!
   for _ in $(seq 90); do
     if [ -s "$idfile" ]; then break; fi
@@ -40,7 +42,7 @@ for name in count conditional latency; do
   done
   test -s "$idfile"
   rc=0
-  timeout -s INT "$window" ./build/observer-bin "$name" "build/$name.o" "$(cat "$idfile")" \
+  INJECT_OBSERVER_READY="$ready" timeout -s INT "$window" ./build/observer-bin "$name" "build/$name.o" "$(cat "$idfile")" \
     > "$results/$name.log" 2>&1 || rc=$?
   cat "$results/$name.log"
   test "$rc" -eq 124
@@ -60,8 +62,8 @@ for name in count conditional latency; do
       if grep -q ' ret=0 ' "$results/$name.log"; then exit 1; fi
       ;;
     latency)
-      grep -Eq '^site=18 ret=-?[0-9]+ ns=[1-9][0-9]*$' "$results/$name.log"
-      grep -Eq '^site=24 ret=-?[0-9]+ ns=[1-9][0-9]*$' "$results/$name.log"
+      grep -Eq '^hook=ninja_seen_push site=[0-9]+ ret=-?[0-9]+ ns=[1-9][0-9]*$' "$results/$name.log"
+      grep -Eq '^hook=ninja_recent_push site=[0-9]+ ret=-?[0-9]+ ns=[1-9][0-9]*$' "$results/$name.log"
       ;;
   esac
   grep -q 'action=2 err=<nil>' "$results/$name.loader.log"

@@ -75,8 +75,10 @@ func run() error {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	fmt.Printf("attached %s\n", kind)
 	if kind == "count" {
+		if err := announceReady(kind); err != nil {
+			return err
+		}
 		return printCounters(ctx, m)
 	}
 	rd, err := ringbuf.NewReader(m)
@@ -84,6 +86,9 @@ func run() error {
 		return err
 	}
 	defer func() { _ = rd.Close() }()
+	if err := announceReady(kind); err != nil {
+		return err
+	}
 	go func() { <-ctx.Done(); _ = rd.Close() }()
 	for {
 		rec, err := rd.Read()
@@ -109,10 +114,26 @@ func run() error {
 			if len(b) != 24 {
 				return fmt.Errorf("latency event size: %d", len(b))
 			}
-			fmt.Printf("site=%d ret=%d ns=%d\n", binary.LittleEndian.Uint32(b),
+			op := binary.LittleEndian.Uint32(b[4:])
+			names := []string{"ninja_recent_push", "ninja_seen_push"}
+			if int(op) >= len(names) {
+				return fmt.Errorf("unknown latency op: %d", op)
+			}
+			fmt.Printf("hook=%s site=%d ret=%d ns=%d\n", names[op], binary.LittleEndian.Uint32(b),
 				int32(binary.LittleEndian.Uint64(b[8:])), binary.LittleEndian.Uint64(b[16:]))
 		}
 	}
+}
+
+// The loader waits for this file before running its first packet.
+func announceReady(kind string) error {
+	if path := os.Getenv("INJECT_OBSERVER_READY"); path != "" {
+		if err := os.WriteFile(path, nil, 0600); err != nil {
+			return err
+		}
+	}
+	fmt.Printf("attached %s\n", kind)
+	return nil
 }
 
 // Return programs in attachment order and the map read by user space.
@@ -124,7 +145,7 @@ func observerLayout(spec *ebpf.CollectionSpec, kind string) ([]string, string, e
 		mapName, mapType = "counters", ebpf.PerCPUHash
 	case "conditional":
 	case "latency":
-		// Entry must be attached before either consumer of its timestamp.
+		// Keep entry attached until both push consumers have detached (LIFO).
 		names = []string{"on_entry", "on_push", "on_seen_push"}
 	default:
 		return nil, "", fmt.Errorf("unknown observer kind %q", kind)

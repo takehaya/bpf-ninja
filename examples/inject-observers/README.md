@@ -28,28 +28,33 @@ In a root shell inside a test VM, from this directory:
 
 ```sh
 name=count # or conditional, latency
+ready=$(mktemp -d build/ready.XXXXXX)/start
 rules=../inject-walkthrough/rules.json
 if [ "$name" = latency ]; then rules=latency-rules.json; fi
 ../../bpf-ninja inject-run --config "$rules" --hooks-json build/hooks.json \
-  -- ./build/loader-bin build/prog.o > build/id.txt 2> build/loader.log &
+  -- ./build/loader-bin build/prog.o "$ready" > build/id.txt 2> build/loader.log &
 launcher=$!
 for i in $(seq 90); do
   [ -s build/id.txt ] && break
   kill -0 "$launcher" || break
   sleep 1
 done
-./build/observer-bin "$name" "build/$name.o" "$(cat build/id.txt)"
+INJECT_OBSERVER_READY="$ready" ./build/observer-bin "$name" "build/$name.o" "$(cat build/id.txt)"
 ```
 
 Interrupt the observer with Ctrl-C when finished.
-The loader exits after one minute; `kill -INT "$launcher"` stops it sooner.
+The optional second loader argument is an initially absent start file.
+The observer creates it after attaching every hook and preparing its reader; the loader then begins its one-minute workload.
+Without this gate, the four initial Bloom-filter pushes can finish before a manually started observer attaches.
+The loader exits after one minute of workload; `kill -INT "$launcher"` stops it sooner.
 Start a fresh loader for each example.
 Nothing is attached to an interface; the loader uses `BPF_PROG_TEST_RUN` on zero-filled packets of 64, 80, 96 and 112 bytes.
 
 ## Verify in a VM
 
 `verify.sh` starts a fresh loader for each example, waits up to 90 seconds for its program ID, then runs its observer for seven seconds.
-It checks for counters, failed pushes with a CPU ID, positive elapsed times, and `XDP_PASS` from every recorded loader run.
+The loader waits for observer readiness before executing packets.
+It checks for counters, failed pushes with a CPU ID, positive elapsed times at both push hooks (identified by hook name, independent of compiler instruction positions), and `XDP_PASS` from every recorded loader run.
 A timeout status of 124 ends each observation window as intended.
 `verify.sh --load-only` loads and attaches all three observers for two seconds each; CI runs this after the privileged BPF suites with root and bpffs mounted.
 The full VM check verifies event contents as well.
