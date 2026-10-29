@@ -35,6 +35,9 @@ type RawMap struct {
 // not bytes or Go instruction indices. Other record sizes must be normalized
 // by the caller. These buffers override instruction function/source metadata.
 // Symbolic function references are also accepted, with the ELF path's rules.
+// Attribute tags (DECL_TAG or TYPE_TAG with kind_flag=1) are unsupported:
+// ebpf-go v0.22.0 loses that flag while decoding, before this API can inspect it.
+// Callers must exclude such BTF inputs before decoding them.
 type RawProgram struct {
 	Instructions asm.Instructions
 	Type         ebpf.ProgramType

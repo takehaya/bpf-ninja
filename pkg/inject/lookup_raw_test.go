@@ -76,6 +76,12 @@ func TestLookupSelectorEmpty(t *testing.T) {
 // via a marshal/unmarshal, as a syscall front end would receive it.
 func rawLookupFixture(t *testing.T, spec *ebpf.CollectionSpec, name string, numeric bool) RawProgram {
 	t.Helper()
+	p, _ := rawLookupFixtureBTF(t, spec, name, numeric)
+	return p
+}
+
+func rawLookupFixtureBTF(t *testing.T, spec *ebpf.CollectionSpec, name string, numeric bool) (RawProgram, []byte) {
+	t.Helper()
 	insns := append(asm.Instructions(nil), spec.Programs[name].Instructions...)
 	builder := new(btf.Builder)
 	var err error
@@ -134,7 +140,90 @@ func rawLookupFixture(t *testing.T, spec *ebpf.CollectionSpec, name string, nume
 			t.Fatal(err)
 		}
 	}
-	return RawProgram{Instructions: insns, Type: spec.Programs[name].Type, BTF: types, FuncInfo: fi, LineInfo: li, Maps: maps}
+	return RawProgram{Instructions: insns, Type: spec.Programs[name].Type, BTF: types, FuncInfo: fi, LineInfo: li, Maps: maps}, blob
+}
+
+type rawBTFRecord struct {
+	id, kind uint32
+	name     string
+	wire     []byte
+}
+
+// Read the wire records independently of Spec.All, which omits DECL_TAGs.
+func rawBTFRecords(t *testing.T, blob []byte) []rawBTFRecord {
+	t.Helper()
+	u32 := binary.NativeEndian.Uint32
+	header := u32(blob[4:])
+	start := header + u32(blob[8:])
+	end := start + u32(blob[12:])
+	strs := blob[header+u32(blob[16:]) : header+u32(blob[16:])+u32(blob[20:])]
+	var records []rawBTFRecord
+	for pos := start; pos < end; {
+		info := u32(blob[pos+4:])
+		kind, count := (info>>24)&31, info&65535
+		size := uint32(12)
+		switch kind {
+		case 1, 14, 17: // INT, VAR, DECL_TAG
+			size += 4
+		case 3: // ARRAY
+			size += 12
+		case 4, 5, 15, 19: // STRUCT, UNION, DATASEC, ENUM64
+			size += 12 * count
+		case 6, 13: // ENUM, FUNC_PROTO
+			size += 8 * count
+		case 2, 7, 8, 9, 10, 11, 12, 16, 18:
+		default:
+			t.Fatalf("unsupported raw BTF kind %d", kind)
+		}
+		if pos+size > end {
+			t.Fatal("raw BTF record exceeds type section")
+		}
+		name := strs[u32(blob[pos:]):]
+		records = append(records, rawBTFRecord{uint32(len(records) + 1), kind, string(name[:bytes.IndexByte(name, 0)]), blob[pos : pos+size]})
+		pos += size
+	}
+	return records
+}
+
+func assertRawDeclarationTags(t *testing.T, original []byte, got *LookupResultRaw) {
+	t.Helper()
+	type tag struct {
+		target    uint32
+		component int32
+		name      string
+		kindFlag  bool
+	}
+	tags := func(records []rawBTFRecord) map[tag]int {
+		counts := make(map[tag]int)
+		for _, r := range records {
+			if r.kind == 17 {
+				counts[tag{binary.NativeEndian.Uint32(r.wire[8:]), int32(binary.NativeEndian.Uint32(r.wire[12:])), r.name, binary.NativeEndian.Uint32(r.wire[4:])>>31 != 0}]++
+			}
+		}
+		return counts
+	}
+	before, after := rawBTFRecords(t, original), rawBTFRecords(t, got.BTFBytes)
+	if !reflect.DeepEqual(tags(before), tags(after)) {
+		t.Fatalf("raw DECL_TAG multiset changed: want %v, got %v", tags(before), tags(after))
+	}
+	for _, r := range before {
+		if r.kind != 17 {
+			continue
+		}
+		if int(r.id) > len(after) {
+			t.Fatalf("missing placeholder at original DECL_TAG ID %d", r.id)
+		}
+		placeholder := after[r.id-1]
+		if placeholder.kind != 1 || placeholder.name != "decl_tag_placeholder" ||
+			binary.NativeEndian.Uint32(placeholder.wire[8:]) != 1 || binary.NativeEndian.Uint32(placeholder.wire[12:]) != 8 {
+			t.Fatalf("original DECL_TAG ID %d has no unsigned byte placeholder: %+v", r.id, placeholder)
+		}
+	}
+	for _, hook := range got.Hooks {
+		if uint32(hook.TypeID) <= uint32(len(before)) {
+			t.Fatalf("hook ID %d overlaps original BTF", hook.TypeID)
+		}
+	}
 }
 
 func rawLookupRequest(req LookupRequest) LookupRequestRaw {
@@ -483,7 +572,7 @@ func TestLookupRawBTFOriginalIDs(t *testing.T) {
 			spec := lookupFixture()
 			fn := btf.FuncMetadata(&spec.Programs["p"].Instructions[0])
 			if tags != "none" {
-				fn.Tags = []string{"original-function"}
+				fn.Tags = []string{"original-function", "original-function"}
 			}
 			if tags == "all" {
 				fn.ParamTags = [][]string{{"original-parameter"}}
@@ -491,7 +580,7 @@ func TestLookupRawBTFOriginalIDs(t *testing.T) {
 				ctx.Tags = []string{"original-struct"}
 				ctx.Members[0].Tags = []string{"original-member"}
 			}
-			p := rawLookupFixture(t, spec, "p", true)
+			p, original := rawLookupFixtureBTF(t, spec, "p", true)
 			// inject-run resolves the entry name before calling the raw API.
 			if _, err := p.BTF.TypeByID(btf.TypeID(binary.NativeEndian.Uint32(p.FuncInfo[4:]))); err != nil {
 				t.Fatal(err)
@@ -501,6 +590,7 @@ func TestLookupRawBTFOriginalIDs(t *testing.T) {
 				t.Fatal(err)
 			}
 			assertRawMetadata(t, p, got)
+			assertRawDeclarationTags(t, original, got)
 		})
 	}
 }

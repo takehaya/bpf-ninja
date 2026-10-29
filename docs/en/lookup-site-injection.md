@@ -297,7 +297,10 @@ The caller certifies the instructions, map identities, BTF and stack audit toget
 Both front ends share discovery, selection, map ABI checks, hook generation, placement, relocation and refusal rules.
 
 `LookupResultRaw` returns `Instructions`, `Site`/`Sites`, insertion counts and instruction checksums, plus an extended `BTF` spec and its `BTFBytes` blob.
-Original type IDs are preserved; the hook's types and any external map types are appended.
+Original non-DECL_TAG type IDs are preserved; each original DECL_TAG ID holds a separate unsigned-byte placeholder, and the declaration tags are regenerated after the original types.
+The hook's types and any external map types are appended.
+Attribute tags (`DECL_TAG` or `TYPE_TAG` with `kind_flag=1`) are unsupported: ebpf-go v0.22.0 loses that flag during decoding, before this API receives the `*btf.Spec`.
+Callers must exclude those inputs before decoding; this API cannot detect or preserve the lost flag.
 `HookTypeID` identifies the generated `int hook(ctx, const KEY *, const VALUE *)` function, and `HookFuncInfo` contains its 8-byte function-info row.
 With several hooks, `HookTypeID`, `HookFuncInfo` and `HookName` describe the first element of `Hooks`.
 The returned `FuncInfo` and `LineInfo` buffers include the hook and relocated original rows.
