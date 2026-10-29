@@ -80,9 +80,8 @@ func TestMapOperandMutations(t *testing.T) {
 			case "value-offset":
 				out[0].Constant ^= 1 << 32
 			}
-			if _, err := Check(in, out, c); err == nil {
-				t.Fatalf("accepted %s for %v", mutation, load)
-			}
+			_, err := Check(in, out, c)
+			assertKind(t, err, OriginalChanged)
 		}
 	}
 }

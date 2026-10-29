@@ -14,10 +14,16 @@ func TestIdentityAndCertificate(t *testing.T) {
 	if _, err := Check(in, in, c); err != nil {
 		t.Fatal(err)
 	}
-	for _, bad := range []Certificate{{Original: []int{1, 0}}, {Original: []int{0, 2}}, {Original: []int{0, 1}, Hooks: []Span{{0, 2}}}} {
-		if _, err := Check(in, in, bad); err == nil {
-			t.Fatal("accepted forged certificate")
-		}
+	for _, tc := range []struct {
+		c    Certificate
+		kind Kind
+	}{
+		{Certificate{Original: []int{1, 0}}, OriginalOrder},
+		{Certificate{Original: []int{0, 2}}, OriginalOrder},
+		{Certificate{Original: []int{0, 1}, Hooks: []Span{{0, 2}}}, HookOverlap},
+	} {
+		_, err := Check(in, in, tc.c)
+		assertKind(t, err, tc.kind)
 	}
 }
 
@@ -55,18 +61,16 @@ func TestRelocatedRawSlotEdges(t *testing.T) {
 			} else {
 				bad[2].Constant--
 			}
-			if _, err := Check(in, bad, c); err == nil {
-				t.Fatal("accepted wrong callback target")
-			}
+			_, err := Check(in, bad, c)
+			assertKind(t, err, EdgeTarget)
 			bad = append(asm.Instructions(nil), out...)
 			if symbolic {
 				bad[3] = bad[3].WithReference("hook")
 			} else {
 				bad[3].Constant--
 			}
-			if _, err := Check(in, bad, c); err == nil {
-				t.Fatal("accepted wrong call target")
-			}
+			_, err = Check(in, bad, c)
+			assertKind(t, err, EdgeTarget)
 		})
 	}
 }
@@ -105,15 +109,12 @@ func TestHookAndStackSafety(t *testing.T) {
 		{asm.FnGetPrandomU32.Call(), asm.Return()},
 		{asm.StoreMem(asm.R1, 0, asm.R0, asm.DWord), asm.Return()},
 	} {
-		if err := checkHook(hook); err == nil {
-			t.Fatal("accepted impure hook")
-		}
+		assertKind(t, checkHook(hook), HookShape)
 	}
 	for _, ins := range []asm.Instruction{asm.StoreMem(asm.RFP, -9, asm.R0, asm.Byte), asm.LoadMem(asm.R0, asm.RFP, -16, asm.DWord)} {
 		in := asm.Instructions{ins, asm.Return()}
-		if _, err := Check(in, in, Certificate{Original: []int{0, 1}, LowestOffset: -8}); err == nil {
-			t.Fatal("accepted below-floor original access")
-		}
+		_, err := Check(in, in, Certificate{Original: []int{0, 1}, LowestOffset: -8})
+		assertKind(t, err, StackAudit)
 	}
 }
 

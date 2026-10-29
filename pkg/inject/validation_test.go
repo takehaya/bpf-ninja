@@ -3,6 +3,7 @@ package inject
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -369,21 +370,22 @@ func TestTranslationValidationMutations(t *testing.T) {
 			if err == nil {
 				t.Fatal("SURVIVED")
 			} else {
-				want := map[string]string{
-					"callee-saved-clobber": "inserted ALU clobbers R6",
-					"drop-original":        "original instruction ",
-					"forged-certificate":   "original instruction 0 changed",
-					"wrong-spill":          "prelude: not a P2-P5 spill sequence",
-					"wrong-jump":           "edge 5 targets",
-					"hook-store":           "not a P7 hook",
-					"helper-in-hook":       "not a P7 hook",
-					"missing-restore":      "missing full-width R0 save/restore",
-					"map-swap":             "reference changed",
-					"map-fd-value-swap":    "original instruction 34 changed",
-					"ldimm64-pseudo-kind":  "original instruction 34 changed",
+				want := map[string]injectcheck.Kind{
+					"callee-saved-clobber": injectcheck.ALUClobber,
+					"drop-original":        injectcheck.OriginalChanged,
+					"forged-certificate":   injectcheck.OriginalChanged,
+					"wrong-spill":          injectcheck.PreludeShape,
+					"wrong-jump":           injectcheck.EdgeTarget,
+					"hook-store":           injectcheck.HookShape,
+					"helper-in-hook":       injectcheck.HookShape,
+					"missing-restore":      injectcheck.ResultSaveRestore,
+					"map-swap":             injectcheck.OriginalReference,
+					"map-fd-value-swap":    injectcheck.OriginalChanged,
+					"ldimm64-pseudo-kind":  injectcheck.OriginalChanged,
 				}
-				if reason := want[kind]; reason == "" || !strings.Contains(err.Error(), reason) {
-					t.Fatalf("wrong rejecting check: got %v, want %q", err, reason)
+				var rejection *injectcheck.Rejection
+				if !errors.As(err, &rejection) || rejection.Kind != want[kind] {
+					t.Fatalf("wrong rejecting check: got %v, want kind %s", err, want[kind])
 				}
 				killed++
 				t.Logf("KILLED %s: %v", kind, err)

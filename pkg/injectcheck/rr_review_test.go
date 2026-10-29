@@ -31,9 +31,7 @@ func TestRRMapMetadataMutation(t *testing.T) {
 		t.Fatal(e)
 	}
 	t.Logf("Check error=%v original FD=100 transformed FD=101 marshaled_equal=%t", err, bytes.Equal(x.Bytes(), y.Bytes()))
-	if err == nil {
-		t.Fatal("UNSOUND ACCEPT: different associated maps have equal instruction fields")
-	}
+	assertKind(t, err, AssociatedMap)
 }
 func TestRRNewMutations(t *testing.T) {
 	in := asm.Instructions{asm.Mov.Reg(asm.R0, asm.R1), asm.LoadMem(asm.R2, asm.R0, 0, asm.Word), asm.Mov.Imm(asm.R1, 0), asm.Mov.Reg(asm.R0, asm.R2), asm.Return()}
@@ -49,12 +47,13 @@ func TestRRNewMutations(t *testing.T) {
 		name string
 		at   int
 		ins  asm.Instruction
+		kind Kind
 	}{
-		{"overlapping_R0_R2_spills", 3, asm.StoreMem(asm.RFP, -8, asm.R2, asm.DWord)},
-		{"R0_restore_zero_extends", 6, asm.LoadMem(asm.R0, asm.RFP, -8, asm.Word)},
-		{"R2_restore_from_R0_slot", 7, asm.LoadMem(asm.R2, asm.RFP, -8, asm.DWord)},
-		{"hook_reads_mutated_register", 12, asm.Xor.Reg32(asm.R0, asm.R3)},
-		{"hook_call_targets_original", 5, asm.Call.Label("original")},
+		{"overlapping_R0_R2_spills", 3, asm.StoreMem(asm.RFP, -8, asm.R2, asm.DWord), U32Shape},
+		{"R0_restore_zero_extends", 6, asm.LoadMem(asm.R0, asm.RFP, -8, asm.Word), U32Shape},
+		{"R2_restore_from_R0_slot", 7, asm.LoadMem(asm.R2, asm.RFP, -8, asm.DWord), U32Shape},
+		{"hook_reads_mutated_register", 12, asm.Xor.Reg32(asm.R0, asm.R3), HookShape},
+		{"hook_call_targets_original", 5, asm.Call.Label("original"), CallTarget},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -63,9 +62,7 @@ func TestRRNewMutations(t *testing.T) {
 			bad[8] = bad[8].WithSymbol("original")
 			_, e := Check(in, bad, c)
 			t.Logf("%v", e)
-			if e == nil {
-				t.Fatal("accepted mutation")
-			}
+			assertKind(t, e, tc.kind)
 		})
 	}
 }
