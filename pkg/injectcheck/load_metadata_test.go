@@ -60,6 +60,20 @@ func TestLoadTimeMetadataIdentity(t *testing.T) {
 				_, err := Check(in, out, c, Premises{})
 				assertKind(t, err, MetadataChanged)
 			}
+			if tc.program == "core" {
+				in[at].Metadata.Set(nil, "annotation")
+				t.Run("nil annotation swap", func(t *testing.T) {
+					out := clone(in)
+					out[at] = other[at]
+					out[at].Metadata.Set(nil, "annotation")
+					_, err := Check(in, out, c, Premises{})
+					assertKind(t, err, MetadataChanged)
+				})
+				t.Run("nil annotation JSON", func(t *testing.T) {
+					_, err := json.Marshal(Instructions(in))
+					assertKind(t, err, MetadataUnsupported)
+				})
+			}
 			out := append(asm.Instructions{in[at]}, in...)
 			for i := range c.Original {
 				c.Original[i]++
