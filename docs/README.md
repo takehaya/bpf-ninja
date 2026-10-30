@@ -11,6 +11,8 @@
 - [Audited u32 load-site injection API (English)](en/typed-injection.md)
 - [BPF syscall interception design and implementation status (English)](en/bpf-syscall-hook-design.md)
 - [Capture lifecycle and completion (English)](capture-lifecycle.md)
+- [Hook run correlation](en/hook-pcapng.md)
+- [Run correlation primitives (English)](en/run-correlation.md), [日本語](ja/run-correlation.md)
 - [Privileged test environment (English)](privileged-tests.md)
 - [Independent injection validator (English)](../pkg/injectcheck/README.md), [日本語](../pkg/injectcheck/README.ja.md)
 - [kunai library API (English)](../pkg/kunai/README.md)

@@ -75,6 +75,7 @@ clean:
 
 golden-update: ## Rewrite the bytecode golden (pkg/kunai/dsltest/testdata/golden) and list the filters that moved
 	cd pkg/kunai/dsltest && go test -run '^TestGolden$$' -update
+	UPDATE_RUN_GOLDEN=1 go test ./internal/program -run '^TestRunCaptureMarshal$$' -count=1
 
 GOLDEN_BASE ?= main
 golden-diff: ## Diff every golden filter's text between GOLDEN_BASE (default main) and the working tree, without instruction indexes (GOLDEN_DIFF_INDEX=1 keeps them); scripts/golden-diff.sh exits 0 same, 1 moved, 2 error

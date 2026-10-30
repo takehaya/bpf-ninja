@@ -139,4 +139,12 @@ sudo bpf-ninja -i eth0 --mode xdp --set "tunnels=$PIN" \
 - 外部ツールで作った pinned map の value が struct の場合、認識できる layout (`tag[,state,max_bytes]`) 以外は open 時にエラーになります (0.22 までは value の BTF を見ていませんでした)。単一整数 value は従来どおり開けます。
 
 
+
+
+## hook ごとの相関情報
+
+[`--hook-pcapng`](hook-pcapng.md) は hook ごとの interface と実行ごとの共通 packet id を出力する。
+この形式の `.cpuN` shard、通常終了時の合算、tag shard の合算は `if_description` と `epb_packetid` を保持する。
+既存の entry/exit gated capture の合算では packet id を保持しない。
+
 [DSL 利用ガイドに戻る](../dsl-usage.md)

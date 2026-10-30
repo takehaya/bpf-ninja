@@ -175,10 +175,13 @@ func (p *pktSetSlots) emitPktSetKeyZeroing(referenced []string) asm.Instructions
 // jumps to "exit" (skip capture); all sets AND together, and AND with the
 // kunai verdict that already ran.
 func (p *pktSetSlots) emitPktSetLookups(referenced []string) asm.Instructions {
+	return p.emitPktSetLookupsPolicy(referenced, "exit")
+}
+func (p *pktSetSlots) emitPktSetLookupsPolicy(referenced []string, denied string) asm.Instructions {
 	var insns asm.Instructions
 	for _, name := range referenced {
 		s := p.sets[name]
-		insns = append(insns, emitSetLookup(s.def.Map.FD(), s.base, int(s.def.TagWidth()), s.def.StateOff())...)
+		insns = append(insns, emitSetLookupPolicy(s.def.Map.FD(), s.base, int(s.def.TagWidth()), s.def.StateOff(), denied)...)
 	}
 	return insns
 }

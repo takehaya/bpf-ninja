@@ -292,3 +292,9 @@ func TestActiveTags(t *testing.T) {
 		t.Fatalf("activeTags = %v, want [1]", got)
 	}
 }
+
+func TestNilByteCapsIsUncapped(t *testing.T) {
+	if newByteCaps(false, 0).isCapped(7) {
+		t.Fatal("uncapped capture has a capped tag")
+	}
+}

@@ -92,14 +92,14 @@ func TestBpfFinalizeWaitsForWriterRegistration(t *testing.T) {
 			f.stateFor(7)
 			f.begin = func(uint32) (func() (bool, error), error) { return barrier(), nil }
 			for range 100 {
-				if done := f.step(nil); len(done) != 0 {
+				if done := f.step(nil, nil); len(done) != 0 {
 					t.Fatal("ack before writer registration")
 				}
 			}
 			close(release)
 			deadline := time.Now().Add(3 * time.Second)
 			for !f.isMerged(7) {
-				for _, tag := range f.step(nil) {
+				for _, tag := range f.step(nil, nil) {
 					if e := f.finalize(tag); e != nil {
 						t.Fatal(e)
 					}

@@ -30,6 +30,7 @@ type Probe struct {
 	InnerMaps []*ebpf.Map // non-nil only in per-CPU sharded mode
 	// StatsMap contains per-CPU export outcome counters (see ExportStats).
 	StatsMap   *ebpf.Map
+	runs       *runCapture
 	closedTags *ebpf.Map
 	// Gated captures only: the per-CPU hold slots and the flag that stops
 	// fentry from writing holds before the links are detached.
@@ -409,6 +410,7 @@ func LoadMultiPoint(targets []attach.Target, stages []Stage, filters []filter.Ta
 			}
 		}
 	}
+
 	return probe, nil
 }
 
@@ -559,20 +561,33 @@ func compileFilterWithSlots(expr string, useDSL, isFexit bool, progType ebpf.Pro
 // レジスタ割り当て (callee-saved):
 //   R6 = xdp_buff ポインタ (trusted, bpf_xdp_output に渡す)
 //   R7 = xdp->data (パケット先頭)
-//   R8 = xdp->data_end (パケット末尾)
+//   R8 = data_end during packet prologue/filter; callers may move a found
+//        run frame from R0 to R8 afterwards and keep it until record emission
 //   R9 = パケット長
 //
 // スタックレイアウト (R10 からの負オフセット):
 //   -8:  matched tag (u64 slot)
 //   -12: canonical fexit return value (u32)
 //   -16: map lookup の key
-//   -24: scratch buffer ポインタ (フィルタ時のみ)
+//   -24: scratch pointer during filtering; run ID before record emission
+//   -32..-25: ringbuf pointer / gated frame park
+//   -40..-33: copy size; packet set keys also use -40..-25
 //   -48: tracing args ポインタの退避
+//   -56..-49: timestamp
 //   -128..-121: pointer-member read temporary (arg filters only; dead before
 //               set filters and runFilter, which owns KunaiStackTop=-56 downward)
 //   -57..-120: set filter のキーバッファ (emitSetFilters; runFilter の
 //              前で死ぬ。kunai は KunaiStackTop=-56 以深を所有するが
 //              それは runFilter 内のみ live — phase ordering で共存)
+//
+//   -136..-129: static XDP identity R0 spill
+//   -144..-137: static XDP fexit identity R2 spill
+//   -160..-145: static XDP probe_read buffer (data, data_end)
+//   -192..-161: runFrameStack (initial HASH value; emitter-local)
+//   -208..-201: runCPUStack (u64 CPU bits; sequence emitter only)
+//   -216..-209: runKeyStack (u64 ctx key; locator emitter only)
+//   Run temporaries live only within one emitter. Kunai may reuse these bytes
+//   during filters; no run temporary survives a filter or hook prologue.
 //
 // 実際の on-wire フォーマットの正典は internal/capture/capture.go の
 // コメント。現行は ringbuf reserve/submit で 28B のメタデータヘッダを
@@ -733,12 +748,18 @@ func buildFilterGate(h *hook.Hook, filterOut codegen.Output, tf filter.TargetFil
 // reset, arg filters, set filters, the kunai/cBPF filter and the DSL set
 // lookups. Assumes R6=ctx, R7=data, R8=data_end, R9=len from the prologue.
 func buildFilterBody(h *hook.Hook, filterOut codegen.Output, tf filter.TargetFilters, scratchFD int, slots *pktSetSlots, pktRefs []string) (asm.Instructions, error) {
+	return buildFilterBodyPolicy(h, filterOut, tf, scratchFD, slots, pktRefs, "exit", "")
+}
+
+// The start observer supplies separate destinations for a parked match and a
+// failed packet read. Ordinary predicate misses still use exit.
+func buildFilterBodyPolicy(h *hook.Hook, filterOut codegen.Output, tf filter.TargetFilters, scratchFD int, slots *pktSetSlots, pktRefs []string, denied, readError string) (asm.Instructions, error) {
 	var insns asm.Instructions
 	// Default the tag to 0 before any set lookup can overwrite it, so a
 	// captured packet that matched no set (or a set-less filter) reports 0.
 	insns = append(insns, emitTagSlotZero()...)
 	insns = append(insns, buildArgFilter(tf.Args)...)
-	insns = append(insns, emitSetFilters(tf.Sets)...)
+	insns = append(insns, emitSetFiltersPolicy(tf.Sets, denied)...)
 	// DSL `field in @set`: zero the packet-key buffer, run the filter
 	// (kunai extracts fields into it), then look each referenced set up
 	// (miss → skip capture). ANDs with arg filters and the kunai verdict.
@@ -752,9 +773,9 @@ func buildFilterBody(h *hook.Hook, filterOut codegen.Output, tf filter.TargetFil
 			return nil, err
 		}
 	}
-	insns = append(insns, runFilter(filterOut.Main, scratchFD, filterScanLen(filterOut), vlan)...)
+	insns = append(insns, runFilterWithError(filterOut.Main, scratchFD, filterScanLen(filterOut), vlan, readError)...)
 	if slots != nil {
-		insns = append(insns, slots.emitPktSetLookups(pktRefs)...)
+		insns = append(insns, slots.emitPktSetLookupsPolicy(pktRefs, denied)...)
 	}
 	return insns, nil
 }
@@ -824,7 +845,7 @@ func outerVlanTag(h *hook.Hook) (asm.Instructions, error) {
 // frame: the MAC addresses, the 4-byte tag, then the bytes from the
 // ethertype on, so the filter's R1 bound grows by 4. R9 stays the
 // length of the bytes in the packet (capture copies those).
-func runFilter(filter asm.Instructions, scratchFD, scanLen int, vlan asm.Instructions) asm.Instructions {
+func runFilterWithError(filter asm.Instructions, scratchFD, scanLen int, vlan asm.Instructions, readError string) asm.Instructions {
 	if len(filter) == 0 {
 		return nil
 	}
@@ -868,6 +889,16 @@ func runFilter(filter asm.Instructions, scratchFD, scanLen int, vlan asm.Instruc
 	}...)
 	insns = append(insns, filter...)
 	insns = append(insns, asm.JEq.Imm(asm.R2, 0, "exit").WithSymbol("filter_result"))
+	if readError != "" {
+		var checked asm.Instructions
+		for _, in := range insns {
+			checked = append(checked, in)
+			if in.IsBuiltinCall() && asm.BuiltinFunc(in.Constant) == asm.FnProbeReadKernel {
+				checked = append(checked, asm.JNE.Imm(asm.R0, 0, readError))
+			}
+		}
+		insns = checked
+	}
 	return insns
 }
 
@@ -951,6 +982,10 @@ func wireFrameCopy(vlan asm.Instructions, scanLen int) asm.Instructions {
 // docs/paper/PLAN_bpf_ringbuf risk register entry "Verifier rejects
 // bpf_ringbuf_reserve with non-constant size".
 func captureWithRingbuf(eventsFD, statsFD int, isFexit bool, maxCapLen int, packetID asm.Instructions) asm.Instructions {
+	return captureWithRingbufSite(eventsFD, statsFD, isFexit, maxCapLen, packetID, 0)
+}
+
+func captureWithRingbufSite(eventsFD, statsFD int, isFexit bool, maxCapLen int, packetID asm.Instructions, site uint8) asm.Instructions {
 	if maxCapLen <= 0 {
 		maxCapLen = defaultCapLen
 	}
@@ -996,7 +1031,7 @@ func captureWithRingbuf(eventsFD, statsFD int, isFexit bool, maxCapLen int, pack
 		)
 	}
 	insns = append(insns,
-		asm.StoreImm(asm.R0, 13, 0, asm.Byte), // _pad
+		asm.StoreImm(asm.R0, 13, int64(site), asm.Byte), // capture-local hook site (legacy: 0)
 	)
 
 	// --- copy_size = min(pkt_len, maxCapLen) → caplen field + save ---
@@ -1175,7 +1210,7 @@ const setKeyBase = -120
 // key field from the target function's args, then bpf_map_lookup_elem —
 // a NULL result jumps to "exit" (skip capture), so multiple sets and
 // plain arg-filters AND together naturally.
-func emitSetFilters(sets []filter.SetFilter) asm.Instructions {
+func emitSetFiltersPolicy(sets []filter.SetFilter, denied string) asm.Instructions {
 	var insns asm.Instructions
 	for _, s := range sets {
 		// Only zero the key buffer when the fields leave padding gaps: hash
@@ -1208,7 +1243,7 @@ func emitSetFilters(sets []filter.SetFilter) asm.Instructions {
 			insns = append(insns, asm.StoreMem(asm.R10, int16(setKeyBase+int(f.FieldOff)), asm.R3, asmSizeFor(f.FieldSize)))
 		}
 
-		insns = append(insns, emitSetLookup(s.Map.FD(), setKeyBase, int(s.TagWidth), s.StateOff)...)
+		insns = append(insns, emitSetLookupPolicy(s.Map.FD(), setKeyBase, int(s.TagWidth), s.StateOff, denied)...)
 	}
 	return insns
 }
@@ -1245,7 +1280,7 @@ func emitTagSlotZero() asm.Instructions {
 // when written to the u32 metadata field. Clobbers R0-R5. Shared by the
 // arg-based emitSetFilters and the packet-based emitPktSetLookups
 // (setslots.go).
-func emitSetLookup(mapFD int, keyOff int16, tagSize, stateOff int) asm.Instructions {
+func emitSetLookupPolicy(mapFD int, keyOff int16, tagSize, stateOff int, denied string) asm.Instructions {
 	insns := asm.Instructions{
 		asm.LoadMapPtr(asm.R1, mapFD),
 		asm.Mov.Reg(asm.R2, asm.R10),
@@ -1256,7 +1291,7 @@ func emitSetLookup(mapFD int, keyOff int16, tagSize, stateOff int) asm.Instructi
 	if stateOff >= 0 {
 		insns = append(insns,
 			asm.LoadMem(asm.R1, asm.R0, int16(stateOff), asm.Byte),
-			asm.JNE.Imm(asm.R1, 0, "exit"),
+			asm.JNE.Imm(asm.R1, 0, denied),
 		)
 	}
 	// R0 = value ptr (non-NULL past the jump). Read the tag only for the

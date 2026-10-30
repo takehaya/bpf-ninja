@@ -2,6 +2,7 @@ package program
 
 import (
 	"fmt"
+
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/asm"
 )
@@ -22,15 +23,27 @@ func (p *Probe) initTagBarrier() (int, error) {
 // have passed the old gate, including a reserved but uncommitted ring record.
 // Call the reader watermark only AFTER this returns successfully.
 func (p *Probe) BlockTag(tag uint32) error {
+	if err := p.StopTag(tag); err != nil {
+		return err
+	}
+	return p.Barrier()
+}
+
+// StopTag blocks admission without waiting, so reader callbacks can request it.
+func (p *Probe) StopTag(tag uint32) error {
 	if tag == 0 || p.closedTags == nil {
 		return fmt.Errorf("tag barrier unavailable for tag %d", tag)
 	}
 	if err := p.closedTags.Update(tag, uint32(1), ebpf.UpdateAny); err != nil {
 		return fmt.Errorf("blocking tag %d: %w", tag, err)
 	}
-	return p.Barrier()
+	return nil
 }
 func emitTagBarrier(fd int) asm.Instructions {
+	return emitTagBarrierPolicy(fd, "exit")
+}
+
+func emitTagBarrierPolicy(fd int, denied string) asm.Instructions {
 	if fd <= 0 {
 		return nil
 	}
@@ -39,6 +52,6 @@ func emitTagBarrier(fd int) asm.Instructions {
 		asm.StoreMem(asm.R10, -16, asm.R1, asm.Word),
 		asm.LoadMapPtr(asm.R1, fd),
 		asm.Mov.Reg(asm.R2, asm.R10), asm.Add.Imm(asm.R2, -16),
-		asm.FnMapLookupElem.Call(), asm.JNE.Imm(asm.R0, 0, "exit"),
+		asm.FnMapLookupElem.Call(), asm.JNE.Imm(asm.R0, 0, denied),
 	}
 }

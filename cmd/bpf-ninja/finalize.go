@@ -29,6 +29,8 @@ type tagFinalizer struct {
 	cfg       output.Config
 	numShards int
 
+	// step serializes callbacks; finalize and closeAll run on the same pump goroutine.
+	stepMu  sync.Mutex
 	mu      sync.Mutex
 	tags    map[uint32]*tagFinState     // every tag ever seen (traffic or set union)
 	writers map[uint32][]*output.Writer // open shard writers per tag; index = shard
@@ -113,6 +115,8 @@ func (f *tagFinalizer) fail(tag uint32, err error) {
 func (f *tagFinalizer) failLocked(tag uint32, err error) {
 	if err != nil && f.failed[tag] == nil {
 		f.failed[tag] = fmt.Errorf("tag %d output failed: %w", tag, err)
+		delete(f.pending, tag)
+		delete(f.closing, tag)
 	}
 }
 
@@ -142,7 +146,9 @@ func (f *tagFinalizer) deregister(tag uint32, shardIdx int) {
 
 // step starts barriers for absent tags and returns only acknowledged tags.
 // No number of quiet polls can substitute for a reader acknowledgement.
-func (f *tagFinalizer) step(union []uint32) []uint32 {
+func (f *tagFinalizer) step(union []uint32, keepLive func(uint32) bool) []uint32 {
+	f.stepMu.Lock()
+	defer f.stepMu.Unlock()
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	live := map[uint32]bool{}
@@ -150,13 +156,18 @@ func (f *tagFinalizer) step(union []uint32) []uint32 {
 		live[tag] = true
 		f.stateForLocked(tag)
 	}
-	for tag, st := range f.tags {
+	tags := make([]uint32, 0, len(f.tags))
+	for tag := range f.tags {
+		tags = append(tags, tag)
+	}
+	for _, tag := range tags {
+		st := f.tags[tag]
 		if tag == 0 || st.finalized.Load() || f.failed[tag] != nil {
 			continue
 		}
 		poll := f.pending[tag]
 		if poll == nil {
-			if live[tag] {
+			if live[tag] || keepLive != nil && keepLive(tag) {
 				continue
 			}
 			if f.begin == nil {
@@ -164,16 +175,29 @@ func (f *tagFinalizer) step(union []uint32) []uint32 {
 				continue
 			}
 			var err error
-			poll, err = f.begin(tag)
+			begin := f.begin
+			f.mu.Unlock()
+			poll, err = begin(tag)
+			f.mu.Lock()
 			if err != nil {
 				f.failLocked(tag, err)
 				continue
 			}
+			if f.failed[tag] != nil {
+				continue
+			}
 			f.pending[tag] = poll
 		}
+		f.mu.Unlock()
 		ready, err := poll()
+		f.mu.Lock()
 		if err != nil {
 			f.failLocked(tag, err)
+			continue
+		}
+		if f.failed[tag] != nil {
+			delete(f.pending, tag)
+			delete(f.closing, tag)
 			continue
 		}
 		if ready {
@@ -270,6 +294,6 @@ func (f *tagFinalizer) finalize(tag uint32) error {
 // finalized tag are being dropped (a re-added entry after finalize).
 func warnDropped(tag uint32, st *tagFinState) {
 	if st.warned.CompareAndSwap(false, true) {
-		fmt.Fprintf(os.Stderr, "warning: tag %d was finalized; dropping records for its re-added set entry (--finalize-on-del tags are single-use)\n", tag)
+		fmt.Fprintf(os.Stderr, "warning: tag %d was finalized; dropping records for its re-added set entry (finalized tags are single-use)\n", tag)
 	}
 }

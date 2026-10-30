@@ -79,3 +79,6 @@ Reproduce the local successful-export and read-window cost comparisons with
 'Benchmark(ExportAccounting|TracingReadWindow)$' -benchtime=10000x -count=5`.
 They include syscall and amortized ring-drain time. They are comparison fixtures,
 not NIC throughput measurements or a universal performance guarantee.
+
+For [`--hook-pcapng`](en/hook-pcapng.md), `run_overflow` counts runs beyond the eight-level per-CPU correlation stack, and `run_sequence_exhausted` counts failed sequence allocations. Legacy `hold_depth_overflow` covers gated captures only.
+These runs export no hook records; the counter counts runs, not missing hook records.

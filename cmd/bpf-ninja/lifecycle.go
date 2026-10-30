@@ -12,10 +12,13 @@ import (
 // poll loop: refreshing per-entry cap limits, parking capped tags
 // (state=capped), stepping the finalizer, and deciding when
 // --exit-when-capped may stop the capture. Extracting it from
-// pumpShards keeps the poll loop itself down to signal/count checks and
+// captureLoopSharded keeps the poll loop itself down to signal/count checks and
 // makes the refresh → park → finalize → exit ordering a documented,
 // unit-testable sequence.
 type capLifecycle struct {
+	control        *captureControl
+	hookRuns       bool
+	finalizeOnDel  bool
 	caps           *byteCaps
 	fin            *tagFinalizer
 	sets           []*setmap.Set
@@ -105,7 +108,8 @@ func (l *capLifecycle) tick() (exitNow bool) {
 	}
 
 	if l.fin != nil {
-		for _, tag := range l.fin.step(activeTags(infos)) {
+		live := l.finalizationLiveTags(infos)
+		for _, tag := range l.fin.step(live, l.keepTagLive) {
 			if err := l.fin.finalize(tag); err != nil {
 				fmt.Fprintf(os.Stderr, "warning: %v\n", err)
 				continue
@@ -115,7 +119,11 @@ func (l *capLifecycle) tick() (exitNow bool) {
 					fmt.Fprintf(os.Stderr, "warning: marking tag %d finalized: %v\n", tag, serr)
 				}
 			}
-			fmt.Fprintf(os.Stderr, "tag %d finalized -> %s\n", tag, output.TagMergedPath(l.basePath, tag))
+			if l.control != nil {
+				fmt.Fprintln(os.Stderr, l.control.tagCompletion(tag, output.TagMergedPath(l.basePath, tag)))
+			} else {
+				fmt.Fprintf(os.Stderr, "tag %d finalized -> %s\n", tag, output.TagMergedPath(l.basePath, tag))
+			}
 		}
 	}
 
@@ -159,4 +167,31 @@ func (l *capLifecycle) exitReady(infos []setmap.TagInfo, hasActive map[uint32]bo
 		}
 	}
 	return participating
+}
+
+// Deletion finalizes only with --finalize-on-del. Otherwise every known tag
+// stays live until its byte cap requests completion, including traffic-only tags.
+func (l *capLifecycle) finalizationLiveTags(infos []setmap.TagInfo) []uint32 {
+	if !l.hookRuns {
+		return activeTags(infos)
+	}
+	live := map[uint32]bool{}
+	for _, in := range infos {
+		if !l.finalizeOnDel || in.State == setmap.StateActive {
+			live[in.Tag] = true
+		}
+	}
+	var tags []uint32
+	for tag := range live {
+		if !l.caps.isCapped(tag) {
+			tags = append(tags, tag)
+		}
+	}
+	return tags
+}
+
+// Called by step while holding the tag registry lock, so tags first registered
+// after the set snapshot also remain open until capped.
+func (l *capLifecycle) keepTagLive(tag uint32) bool {
+	return l.hookRuns && !l.finalizeOnDel && !l.caps.isCapped(tag)
 }

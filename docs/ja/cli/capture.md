@@ -67,7 +67,7 @@ sudo bpf-ninja -i eth0 --mode entry "eth/ipv4/udp[dport==6081]" --mode exit "eth
 - すべての record に `epb_packetid` option (pcap-ng 標準の「同じ packet を別の interface で見た印」) が入る。既定の値は「CPU 番号 << 48 | その CPU で入口の条件に一致した通し番号」で、同じ実行の入口と出口の record が同じ値を持つ。kernel のアドレスは含まない。
 - kernel 内では、取り置いた内容が同じ実行のものかを hook の packet identity (XDP なら `xdp_buff->data_hard_start`、tc / cgroup-skb なら `sk_buff` のアドレス、netfilter なら `bpf_nf_ctx->skb`) で確認する。この値は kernel の外には出ない。
 - raw-dump (`--raw-dump`) の record metadata は 28 byte になり、offset 20 に packet id が入る (形式 V2。V1 の dump は `convert` で読めない)。
-- `merge` した pcap-ng と `convert` で raw-dump から起こした pcap-ng には `epb_packetid` が入らない (どちらも id を持たない書き出し経路を通る)。対応づけが要るときは shard ごとの pcap-ng か raw-dump そのものを使う。
+- この gated capture で `merge` した pcap-ng と `convert` で raw-dump から起こした pcap-ng には `epb_packetid` が入らない (どちらも id を持たない書き出し経路を通る)。対応づけが要るときは shard ごとの pcap-ng か raw-dump そのものを使う。
 
 ## 複数の (プログラム, 関数) に同時アタッチする
 
@@ -178,5 +178,13 @@ int upf_capture_point_ul(struct xdp_md *ctx, __u64 imsi, __u32 teid) {
 
 `KEEP_ARGS` は各引数をレジスタ入力の空 asm に通すだけで、命令は 1 つも増えません。libbpf の `bpf_helpers.h` が入っている環境なら、同等の `barrier_var()` を引数ごとに並べても同じです。
 
+
+
+
+## hook ごとの interface と共有 ID
+
+一つの XDP または tc (SchedCLS) プログラムの複数 hook を識別する場合は、[`--hook-pcapng`](hook-pcapng.md) を指定する。
+hook 名を interface 名にし、同じ実行の全 hook record に共通の packet id を付ける。
+この形式では停止後の shard 合算でも ID と interface description を保持する。
 
 [DSL 利用ガイドに戻る](../dsl-usage.md)
