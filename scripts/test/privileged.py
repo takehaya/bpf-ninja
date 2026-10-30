@@ -11,6 +11,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[2]
 PROGRAM = "github.com/takehaya/bpf-ninja/internal/program"
 INJECT = "github.com/takehaya/bpf-ninja/pkg/inject"
+SYSCALLHOOK = "github.com/takehaya/bpf-ninja/pkg/syscallhook"
 
 
 def allowed_skip(package, test, output, kernel):
@@ -85,13 +86,43 @@ def audit(events, expected, kernel):
     return sorted(set(failures))
 
 
+def syscallhook_suite(binary, log_path):
+    # Run the same tagged binary in CI and in VMs without a Go toolchain.
+    command = [str(Path(binary).resolve()), "-test.v", "-test.count=1",
+               "-test.timeout=2m", "-test.run=^TestIntegration(MapTypes|Loader)$"]
+    expected = {(SYSCALLHOOK, "TestIntegration" + name) for name in ("MapTypes", "Loader")}
+    events = []
+    print("+ " + " ".join(command), flush=True)
+    with open(log_path, "w", encoding="utf-8") as log, \
+            subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True) as process:
+        for line in process.stdout:
+            print(line, end="", flush=True)
+            log.write(line)
+            match = re.match(r"\s*--- (PASS|FAIL|SKIP): (\S+)", line)
+            if match:
+                events.append({"Package": SYSCALLHOOK, "Test": match[2], "Action": match[1].lower()})
+        events.append({"Package": SYSCALLHOOK, "Action": "pass" if process.wait() == 0 else "fail"})
+    failures = audit(events, expected, None)
+    for failure in failures:
+        print(f"AUDIT FAIL: {failure}", file=sys.stderr)
+    if failures:
+        return 1
+    print("Privileged supervisor audit passed: both required tests passed; no skips.")
+    return 0
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--kernel", choices=["6.1", "6.6", "6.12", "6.15", "6.18", "7.0", "7.1", "7.2", "7.3-rc4"])
     parser.add_argument("--log", default="/tmp/bpf-ninja-privileged.jsonl")
+    parser.add_argument("--syscallhook-binary", help="run a prebuilt -tags integration syscallhook test binary")
     args = parser.parse_args()
     if not args.kernel and os.geteuid() != 0:
         parser.error("host suites require root; use make test-bpf")
+    if args.syscallhook_binary:
+        if args.kernel:
+            parser.error("run --syscallhook-binary inside the target VM, without --kernel")
+        return syscallhook_suite(args.syscallhook_binary, args.log)
     os.chdir(ROOT)
     suites = [
         ("./internal/program", "^TestBpf" if args.kernel else "^Test"),

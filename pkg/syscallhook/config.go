@@ -3,6 +3,7 @@ package syscallhook
 
 import (
 	"bytes"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -31,6 +32,8 @@ import (
 // inject.LookupRequest.Updates and Pushes). Without ops a rule observes
 // lookup hits; with ops it observes only the ops listed. Every op but lookup
 // needs auto, and an update needs one spill slot more (two with dispatch).
+// MapBTF pins an ELF source for a BTF-less map and optionally selects exact
+// BTF names to fill untyped sides; already typed sides accept only the same type.
 // StackLowestOffset is the caller's audit of all stack accesses, including
 // aliases and callees (see inject.StackAudit).
 type Rule struct {
@@ -43,6 +46,7 @@ type Rule struct {
 	StaticUntrusted   bool     `json:"static_untrusted,omitempty"`
 	Dispatch          bool     `json:"dispatch,omitempty"`
 	Ops               []string `json:"ops,omitempty"`
+	MapBTF            *MapBTF  `json:"map_btf,omitempty"`
 	Map               string   `json:"map,omitempty"`
 	Func              string   `json:"func,omitempty"`
 	Line              uint32   `json:"line,omitempty"`
@@ -52,9 +56,17 @@ type Rule struct {
 	StackLowestOffset *int16   `json:"stack_lowest_offset"`
 }
 
-// request is the raw transform request r stands for; every field but Program,
-// which selects the load, is forwarded (TestRuleRequestForwardsOptions guards
-// against a dropped field).
+// MapBTF pins the ELF supplying missing map BTF types to a SHA-256 digest.
+// KeyType and ValueType optionally select exact names with fill-only semantics.
+type MapBTF struct {
+	ELF       string `json:"elf"`
+	SHA256    string `json:"sha256"`
+	KeyType   string `json:"key_type,omitempty"`
+	ValueType string `json:"value_type,omitempty"`
+}
+
+// request forwards the transform options; the supervisor handles Program and
+// the map type source before calling the transform.
 func (r Rule) request() inject.LookupRequestRaw {
 	var lo int16
 	if r.StackLowestOffset != nil {
@@ -150,6 +162,9 @@ func Validate(rules []Rule) error {
 		if len(r.Ops) != 0 && r.Map == "" && !r.Auto {
 			return fmt.Errorf("rule %d: ops applies to the hooks of map or auto", i)
 		}
+		if err := r.validateMapTypes(); err != nil {
+			return fmt.Errorf("rule %d: %w", i, err)
+		}
 		if r.Auto && r.Map != "" {
 			return fmt.Errorf("rule %d: auto selects every supported lookup; map must be empty", i)
 		}
@@ -197,4 +212,29 @@ func ParseConfig(r io.Reader) ([]Rule, error) {
 		return nil, err
 	}
 	return rules, nil
+}
+
+func (r Rule) validateMapTypes() error {
+	if r.MapBTF == nil {
+		return nil
+	}
+	if r.MapBTF.ELF == "" {
+		return fmt.Errorf("map_btf.elf is required when map_btf is present")
+	}
+	if r.Map == "" || r.Auto || inject.KernelObjName(r.Map) != r.Map {
+		return fmt.Errorf("map_btf.elf requires a single explicit map kernel name (1-15 bytes), without auto")
+	}
+	if r.Dispatch {
+		return fmt.Errorf("map_btf.elf requires typed lookup hooks; dispatch uses a generic signature")
+	}
+	for _, op := range r.Ops {
+		if name, _, _ := strings.Cut(op, ":"); name != "lookup" {
+			return fmt.Errorf("map_btf.elf supports lookup hooks only")
+		}
+	}
+	hash, err := hex.DecodeString(r.MapBTF.SHA256)
+	if err != nil || len(hash) != 32 {
+		return fmt.Errorf("map_btf.sha256 must contain exactly 64 hexadecimal digits")
+	}
+	return nil
 }

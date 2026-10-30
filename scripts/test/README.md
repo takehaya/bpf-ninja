@@ -30,3 +30,6 @@ always fails the test, including invalid C or missing BPF target support.
 Both shell suites check legacy compilation before creating network resources.
 The helper tests use `CAPTURE_READY_POLLS`, `CAPTURE_TIMEOUT` (seconds), and `CAPTURE_SETTLE`
 (seconds) to exercise startup and timeout failures quickly.
+
+For an isolated VM check of `inject-run` map type supplementation without interface attachment, see the [map type fixture](../../pkg/syscallhook/testdata/maptypes/README.md).
+It uses the default libpcap-free build and `BPF_PROG_TEST_RUN`.

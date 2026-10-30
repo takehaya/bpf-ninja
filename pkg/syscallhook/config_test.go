@@ -25,6 +25,10 @@ func fillNonZero(t *testing.T, v reflect.Value) {
 		s := reflect.MakeSlice(v.Type(), 1, 1)
 		fillNonZero(t, s.Index(0))
 		v.Set(s)
+	case reflect.Struct:
+		for i := range v.NumField() {
+			fillNonZero(t, v.Field(i))
+		}
 	case reflect.Pointer:
 		p := reflect.New(v.Type().Elem())
 		fillNonZero(t, p.Elem())
@@ -34,7 +38,7 @@ func fillNonZero(t *testing.T, v reflect.Value) {
 	}
 }
 
-// Every field of a Rule but Program reaches the raw transform request: with
+// Every transform field of a Rule reaches the raw transform request: with
 // every field set, clearing any one of them changes the request, so a new
 // option cannot be silently dropped when the rule is converted.
 func TestRuleRequestForwardsOptions(t *testing.T) {
@@ -50,7 +54,7 @@ func TestRuleRequestForwardsOptions(t *testing.T) {
 		r := full
 		f := reflect.ValueOf(&r).Elem().Field(i)
 		f.Set(reflect.Zero(f.Type()))
-		if forwarded := !reflect.DeepEqual(r.request(), want); forwarded != (name != "Program") {
+		if forwarded := !reflect.DeepEqual(r.request(), want); forwarded != (name != "Program" && name != "MapBTF") {
 			t.Errorf("%s: forwarded=%v", name, forwarded)
 		}
 	}
@@ -257,4 +261,9 @@ func TestProgAttr(t *testing.T) {
 	if err := parseProgAttr(b[:108]); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func testRule() Rule {
+	floor := int16(-8)
+	return Rule{Program: "p", Map: "sessions", Hook: "lookup_hook", StackLowestOffset: &floor}
 }

@@ -591,3 +591,11 @@ sudo -E env PATH=$PATH go test -count=1 -run 'TestBpfLookupInjection|TestBpfLook
 
 All 77 privileged `TestBpf` tests of this package, including the lookup, miss, update, delete, push, pop, peek, special-field, socket-map, entry, tail-call, stack-limit, dispatch and generated equivalence tests, pass across the CI kernel matrix (6.1 to 7.3-rc4) that `make test-bpf` runs, where the tests whose hooks need `arg:untrusted` skip on 6.1-6.15, the callback stack-limit subtests skip on 7.3, which forbids tail calls in callbacks, and the sockhash update tests skip on 7.3, which no longer lets tc update a socket map (see scripts/test/privileged.py).
 This is finite test evidence for the fixture, not a general program-equivalence, concurrency, or kernel-version guarantee.
+
+## Supplying missing live map types
+
+The raw transform uses `RawMap.Key` and `RawMap.Value` as supplied by its caller.
+For a loader that creates a map without BTF, `inject-run` can populate these from a hash-pinned ELF before calling the transform; see [map types from a loader ELF](inject-run.md#map-types-from-a-loader-elf).
+The supervisor refuses existing live-map BTF, non-data types, special fields (spin locks, timers, kptrs and the like), and special pointer-ABI types before calling the transform.
+For the accepted ordinary data types, supplementation changes hook metadata only; emitted instructions, pointer trust and value-copy decisions are unchanged, and the existing map-kind and stack restrictions still apply.
+Kernel-BTF maps with special fields continue through the transform's existing restricted hook path.
