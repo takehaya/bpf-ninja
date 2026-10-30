@@ -63,7 +63,7 @@ func TestBpfArgEchoEmitsArgValue(t *testing.T) {
 		t.Fatalf("unexpected params: %+v", params)
 	}
 
-	probe, err := LoadArgEcho(objs.Target, "capture_pt", nil, params, false, false)
+	probe, err := LoadArgEcho(objs.Target, "capture_pt", nil, params, false, false, attach.FuncAvailability{})
 	if err != nil {
 		t.Fatalf("LoadArgEcho: %v", err)
 	}

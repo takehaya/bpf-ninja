@@ -7,6 +7,7 @@ import (
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/asm"
+	"github.com/takehaya/bpf-ninja/internal/attach"
 	"github.com/takehaya/bpf-ninja/internal/hook"
 )
 
@@ -19,7 +20,10 @@ import (
 // accept direct loads on all of them. This is target dependent, so a tiny,
 // unattached load probe preserves working targets' existing codegen and
 // handles backports without guessing a version boundary. Other errors propagate.
-func staticXDPNeedsProbeRead(target *ebpf.Program, name string, attachType ebpf.AttachType) (bool, error) {
+func staticXDPNeedsProbeRead(target *ebpf.Program, name string, attachType ebpf.AttachType, availability attach.FuncAvailability) (bool, error) {
+	if availability.Unavailable() {
+		return false, fmt.Errorf("function %q: %s", name, availability.Explain())
+	}
 	h, _ := hook.ByName(hook.KindXDP)
 	insns, err := h.PacketPrologue()
 	if err != nil {
@@ -37,7 +41,7 @@ func staticXDPNeedsProbeRead(target *ebpf.Program, name string, attachType ebpf.
 	if errors.As(err, &ve) && strings.Contains(strings.Join(ve.Log, "\n"), "R6 invalid mem access 'scalar'") {
 		return true, nil
 	}
-	return false, fmt.Errorf("probing direct XDP context loads for %s: %w", name, err)
+	return false, tracingLoadError("direct XDP context probe", name, availability, err)
 }
 
 // Read the same xdp_buff layout as hook.xdpPacketPrologue through the fault-

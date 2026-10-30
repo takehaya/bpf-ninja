@@ -77,7 +77,7 @@ func rootFlags() []cli.Flag {
 		},
 		&cli.StringSliceFlag{
 			Name:  "func",
-			Usage: "attach to a specific __noinline subfunction (by BTF name) instead of the entry function; repeatable, and each func attaches in every target program whose BTF has it",
+			Usage: "attach to a specific __noinline subfunction (by BTF name) instead of the entry function; repeatable; distinct names select multiple targets, skipping unavailable functions with warnings",
 		},
 		&cli.BoolFlag{
 			Name:  "allow-dispatcher-slot",
@@ -699,11 +699,12 @@ func run(ctx context.Context, cmd *cli.Command) error {
 	}
 
 	// Resolve the concrete (program, func) attach pairs: each --func
-	// attaches in every target program whose BTF carries it (noinline
-	// subfuncs get one copy per calling program); without --func each
-	// program contributes its entry function.
+	// selects matching BTF functions in every target program. Unavailable
+	// functions fail a single selection or are skipped in multi-selections;
+	// without --func each program contributes its entry function.
 	funcNames := cmd.StringSlice("func")
-	targets, err := attach.ResolveTargets(infos, funcNames, cmd.Bool("allow-dispatcher-slot"))
+	targets, diagnostics, err := attach.ResolveTargets(infos, funcNames, cmd.Bool("allow-dispatcher-slot"))
+	printTargetDiagnostics(os.Stderr, diagnostics)
 	if err != nil {
 		return err
 	}
@@ -801,7 +802,7 @@ func run(ctx context.Context, cmd *cli.Command) error {
 		if err != nil {
 			return err
 		}
-		probe, err := program.LoadArgEcho(t.Program, t.FuncName, af, echoParams, isFexit, t.AllowDispatcherSlot)
+		probe, err := program.LoadArgEcho(t.Program, t.FuncName, af, echoParams, isFexit, t.AllowDispatcherSlot, t.Availability)
 		if err != nil {
 			return err
 		}

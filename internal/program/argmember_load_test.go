@@ -92,7 +92,7 @@ func TestBpfArgMember(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			probe, err := LoadArgEcho(target, "sdf_classify", nil, plain, exit, false)
+			probe, err := LoadArgEcho(target, "sdf_classify", nil, plain, exit, false, attach.FuncAvailability{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -143,7 +143,7 @@ func TestBpfArgMember(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				probe, err := LoadArgEcho(target, "sdf_classify", fs, echo, exit, false)
+				probe, err := LoadArgEcho(target, "sdf_classify", fs, echo, exit, false, attach.FuncAvailability{})
 				if err != nil {
 					t.Fatalf("load echo: %+v", err)
 				}
@@ -245,7 +245,7 @@ func TestBpfArgMemberPointers(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					probe, err := LoadArgEcho(target, fn, fs, echo, exit, false)
+					probe, err := LoadArgEcho(target, fn, fs, echo, exit, false, attach.FuncAvailability{})
 					if err != nil {
 						t.Fatalf("load: %+v", err)
 					}
@@ -280,7 +280,7 @@ func TestBpfArgMemberPointers(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				probe, err := LoadArgEcho(target, fn, nil, selected, false, false)
+				probe, err := LoadArgEcho(target, fn, nil, selected, false, false, attach.FuncAvailability{})
 				if err != nil {
 					t.Fatal(err)
 				}

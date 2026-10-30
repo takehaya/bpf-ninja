@@ -9,9 +9,9 @@ package attach
 
 import (
 	"fmt"
+	"slices"
 
 	"github.com/cilium/ebpf"
-	"github.com/cilium/ebpf/btf"
 )
 
 // Target is one (program, function) pair to attach a tracing probe to.
@@ -25,6 +25,7 @@ type Target struct {
 	Type                ebpf.ProgramType
 	HookType            ebpf.ProgramType
 	Params              []FuncParamInfo
+	Availability        FuncAvailability
 	AllowDispatcherSlot bool
 }
 
@@ -41,84 +42,94 @@ func CloseTargets(targets []Target) {
 	}
 }
 
-// ResolveTargets expands the given programs × funcNames into attachable
-// (program, func) pairs.
-//
-// For each program: if funcNames is empty, its BTF-resolved entry function
-// (already on ProgInfo) is the single target. Otherwise each requested func
-// that exists in the program's BTF becomes a target; funcs missing from a
-// program are skipped (multi-program setups rarely have every func in every
-// program), but a func found in no program at all is an error listing the
-// functions that do exist. Duplicate (progID, func) pairs collapse.
-//
-// The returned targets borrow the ProgInfo program handles; free them with
-// CloseTargets. Program-type validation (uniform, supported) is owned by
-// program.loadMulti, the single enforcement point every attach path passes
-// through.
-func ResolveTargets(infos []*ProgInfo, funcNames []string, allowDispatcherSlot bool) ([]Target, error) {
+// TargetDiagnostic records a skipped or unreadable target.
+type TargetDiagnostic struct {
+	ProgID       uint32
+	FuncName     string
+	Availability FuncAvailability
+	Skipped      bool
+}
+
+func (d TargetDiagnostic) String() string {
+	return fmt.Sprintf("program (id=%d) function %q: %s", d.ProgID, d.FuncName, d.Availability)
+}
+
+// ResolveTargets expands programs × exact function names.
+// A single distinct function in one program fails when absent. Multi-selections
+// retain diagnostics for skipped functions; unknown membership proceeds to kernel validation.
+// Targets borrow the ProgInfo handles; the caller owns their lifetime.
+// Program-type validation (uniform, supported) is owned by program.loadMulti,
+// the single enforcement point every attach path passes through.
+func ResolveTargets(infos []*ProgInfo, funcNames []string, allowDispatcherSlot bool) ([]Target, []TargetDiagnostic, error) {
 	var targets []Target
+	var diagnostics []TargetDiagnostic
 	seenPair := map[string]bool{}
 	funcFound := map[string]bool{}
-
-	addTarget := func(info *ProgInfo, fn string, params []FuncParamInfo) {
-		key := fmt.Sprintf("%d/%s", info.ProgID, fn)
-		if seenPair[key] {
-			return
+	names := make([]string, 0, len(funcNames))
+	for _, name := range funcNames {
+		if !slices.Contains(names, name) {
+			names = append(names, name)
 		}
-		seenPair[key] = true
-		target := Target{
-			Program: info.Program, ProgID: info.ProgID, FuncName: fn,
-			Type: info.Type, HookType: info.HookType, Params: params,
-			AllowDispatcherSlot: allowDispatcherSlot,
-		}
-		target.HookType = target.EffectiveHookType()
-		targets = append(targets, target)
 	}
-
+	funcNames = names
+	multi := len(infos) > 1 || len(funcNames) > 1
 	for _, info := range infos {
-		if len(funcNames) == 0 {
-			var params []FuncParamInfo
-			if info.Type == ebpf.Extension {
-				spec, err := info.BTFSpecCached()
-				if err != nil {
-					return nil, err
-				}
-				params, err = GetFuncParamsFromSpec(spec, info.FuncName)
-				if err != nil {
-					return nil, err
-				}
-			}
-			addTarget(info, info.FuncName, params)
-			continue
+		names := funcNames
+		if len(names) == 0 {
+			names = []string{info.FuncName}
 		}
-		spec, err := info.BTFSpecCached()
-		if err != nil {
-			return nil, fmt.Errorf("program (id=%d): %w", info.ProgID, err)
-		}
-		for _, fn := range funcNames {
-			var f *btf.Func
-			if err := spec.TypeByName(fn, &f); err != nil {
-				continue // this program doesn't carry fn — fine in multi setups
+		for _, fn := range names {
+			a := info.FuncAvailability(fn)
+			if a.Reason == FuncMissing {
+				if !multi {
+					return nil, diagnostics, fmt.Errorf("program (id=%d) function %q: %s; available functions: %v", info.ProgID, fn, a.Explain(), availableFuncs(infos))
+				}
+				continue // Missing BTF names are expected across programs; check all below.
 			}
 			funcFound[fn] = true
-			params, err := GetFuncParamsFromSpec(spec, fn)
-			if err != nil {
-				return nil, fmt.Errorf("program (id=%d) func %s: %w", info.ProgID, fn, err)
+			key := fmt.Sprintf("%d/%s", info.ProgID, fn)
+			if seenPair[key] {
+				continue
 			}
-			addTarget(info, fn, params)
+			seenPair[key] = true
+			d := TargetDiagnostic{ProgID: info.ProgID, FuncName: fn, Availability: a}
+			if a.Unavailable() {
+				if !multi {
+					return nil, diagnostics, fmt.Errorf("program (id=%d) function %q: %s", info.ProgID, fn, a.Explain())
+				}
+				d.Skipped = true
+				diagnostics = append(diagnostics, d)
+				continue
+			}
+			if a.Reason == FuncUnknown {
+				diagnostics = append(diagnostics, d)
+			}
+			var params []FuncParamInfo
+			if len(funcNames) > 0 || info.Type == ebpf.Extension {
+				spec, err := info.BTFSpecCached()
+				if err != nil {
+					return nil, diagnostics, fmt.Errorf("program (id=%d): %w", info.ProgID, err)
+				}
+				params, err = GetFuncParamsFromSpec(spec, fn)
+				if err != nil {
+					return nil, diagnostics, fmt.Errorf("program (id=%d) func %s: %w", info.ProgID, fn, err)
+				}
+			}
+			target := Target{Program: info.Program, ProgID: info.ProgID, FuncName: fn,
+				Type: info.Type, HookType: info.HookType, Params: params, AllowDispatcherSlot: allowDispatcherSlot, Availability: a}
+			target.HookType = target.EffectiveHookType()
+			targets = append(targets, target)
 		}
 	}
-
 	for _, fn := range funcNames {
 		if !funcFound[fn] {
-			return nil, fmt.Errorf("function %q not found in any target program's BTF; available functions: %v",
-				fn, availableFuncs(infos))
+			return nil, diagnostics, fmt.Errorf("%s: function %q not found in any target program's BTF; available functions: %v", FuncMissing, fn, availableFuncs(infos))
 		}
 	}
 	if len(targets) == 0 {
-		return nil, fmt.Errorf("no attachable (program, function) pairs resolved")
+		return nil, diagnostics, fmt.Errorf("no attachable (program, function) pairs resolved; see https://github.com/takehaya/bpf-ninja/blob/main/docs/en/attach-troubleshooting.md")
 	}
-	return targets, nil
+	return targets, diagnostics, nil
 }
 
 // availableFuncs collects the BTF function names across all target

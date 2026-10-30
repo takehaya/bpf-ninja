@@ -30,7 +30,8 @@ type ProgInfo struct {
 	// (parsing is the expensive part of BTFSpec) so downstream lookups —
 	// target resolution, param extraction — don't re-parse per call.
 	// May be nil for hand-built ProgInfos; use BTFSpecCached.
-	Spec *btf.Spec
+	Spec        *btf.Spec
+	loadedFuncs *loadedFuncInfo
 }
 
 // BTFSpecCached returns the cached BTF spec, opening and caching it on

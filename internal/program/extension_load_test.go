@@ -97,7 +97,7 @@ char _license[] SEC("license") = "GPL";
 			if err != nil || len(children) != 1 || children[0].ProgID != uint32(id) || children[0].Via != "freplace" {
 				t.Fatalf("children: %v, %v", children, err)
 			}
-			targets, err := attach.ResolveTargets([]*attach.ProgInfo{info}, nil, false)
+			targets, _, err := attach.ResolveTargets([]*attach.ProgInfo{info}, nil, false)
 			if err != nil {
 				t.Fatal(err)
 			}

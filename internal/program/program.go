@@ -363,7 +363,7 @@ func LoadMultiPoint(targets []attach.Target, stages []Stage, filters []filter.Ta
 			targetHook := h
 			probeRead := false
 			if staticXDP {
-				probeRead, err = staticXDPNeedsProbeRead(t.Program, t.FuncName, attachType)
+				probeRead, err = staticXDPNeedsProbeRead(t.Program, t.FuncName, attachType, t.Availability)
 				if err != nil {
 					_ = probe.Close()
 					return nil, err
@@ -404,7 +404,7 @@ func LoadMultiPoint(targets []attach.Target, stages []Stage, filters []filter.Ta
 				_ = probe.Close()
 				return nil, err
 			}
-			if err := attachTracingProbe(probe, t.Program, fmt.Sprintf("bpf_ninja_%s", stLabel), t.FuncName, attachType, insns, t.AllowDispatcherSlot); err != nil {
+			if err := attachTracingProbe(probe, t.Program, fmt.Sprintf("bpf_ninja_%s", stLabel), t.FuncName, attachType, insns, t.AllowDispatcherSlot, t.Availability); err != nil {
 				return nil, err
 			}
 		}
@@ -444,7 +444,11 @@ func tracingLabel(isFexit bool) (string, ebpf.AttachType) {
 // Callable multiple times to build up a multi-attach probe; on failure it
 // closes probe (unwinding maps and any attaches already made).
 // Shared by loadMulti (capture) and LoadArgEcho (diagnostic).
-func attachTracingProbe(probe *Probe, targetProg *ebpf.Program, name, funcName string, attachType ebpf.AttachType, insns asm.Instructions, allowDispatcherSlot bool) error {
+func attachTracingProbe(probe *Probe, targetProg *ebpf.Program, name, funcName string, attachType ebpf.AttachType, insns asm.Instructions, allowDispatcherSlot bool, availability attach.FuncAvailability) error {
+	if availability.Unavailable() {
+		_ = probe.Close()
+		return fmt.Errorf("function %q: %s", funcName, availability.Explain())
+	}
 	if probe.extensionGuard == nil {
 		var err error
 		probe.extensionGuard, err = attach.NewExtensionGuard()
@@ -464,7 +468,7 @@ func attachTracingProbe(probe *Probe, targetProg *ebpf.Program, name, funcName s
 	})
 	if err != nil {
 		_ = probe.Close()
-		return fmt.Errorf("loading %s (%s) program: %w", name, funcName, err)
+		return tracingLoadError(name, funcName, availability, err)
 	}
 	probe.progs = append(probe.progs, prog)
 
@@ -475,6 +479,18 @@ func attachTracingProbe(probe *Probe, targetProg *ebpf.Program, name, funcName s
 	}
 	probe.links = append(probe.links, l)
 	return nil
+}
+
+// Keep the original error chain and full verifier log when preflight was unknown.
+func tracingLoadError(name, funcName string, availability attach.FuncAvailability, err error) error {
+	if availability.Reason == attach.FuncUnknown || availability.Reason == "" {
+		var ve *ebpf.VerifierError
+		if errors.As(err, &ve) {
+			return fmt.Errorf("loading %s (%s) program (%s): %w\n%+v", name, funcName, availability.Explain(), err, ve)
+		}
+		return fmt.Errorf("loading %s (%s) program (%s): %w", name, funcName, availability.Explain(), err)
+	}
+	return fmt.Errorf("loading %s (%s) program: %w", name, funcName, err)
 }
 
 // --- Filter compilation ---

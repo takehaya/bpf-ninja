@@ -70,7 +70,7 @@ GLOBAL OPTIONS:
    --mode string [ --mode string ]                  capture point: entry / exit (fentry/fexit observer on the target program, hook auto-detected) or xdp (attach as native XDP). Repeatable with one quoted filter after each: --mode entry EXPR --mode exit EXPR captures only the packets that match both (see README). tc-entry / tc-exit are deprecated aliases (default: "entry")
    --emit string                                    with two --mode: which image(s) to write for a packet that matched both filters — both, entry, or exit (default: "both")
    --count int, -c int                              exit after capturing N packets (0 = unlimited) (default: 0)
-   --func string [ --func string ]                  attach to a specific __noinline subfunction (by BTF name) instead of the entry function; repeatable, and each func attaches in every target program whose BTF has it
+   --func string [ --func string ]                  attach to a specific __noinline subfunction (by BTF name) instead of the entry function; repeatable; distinct names select multiple targets, skipping unavailable functions with warnings
    --allow-dispatcher-slot                          allow probes on unreplaced global dispatcher functions (may block later freplace with EBUSY)
    --list-funcs                                     list available BTF functions in the target program and exit
    --list-progs                                     list programs reachable from the target: freplace + tail calls + CPUMAP/DEVMAP/DEVMAP_HASH redirect targets (followed transitively), then exit
@@ -201,7 +201,7 @@ GLOBAL OPTIONS:
    --mode string [ --mode string ]                  capture point: entry / exit (fentry/fexit observer on the target program, hook auto-detected) or xdp (attach as native XDP). Repeatable with one quoted filter after each: --mode entry EXPR --mode exit EXPR captures only the packets that match both (see README). tc-entry / tc-exit are deprecated aliases (default: "entry")
    --emit string                                    with two --mode: which image(s) to write for a packet that matched both filters — both, entry, or exit (default: "both")
    --count int, -c int                              exit after capturing N packets (0 = unlimited) (default: 0)
-   --func string [ --func string ]                  attach to a specific __noinline subfunction (by BTF name) instead of the entry function; repeatable, and each func attaches in every target program whose BTF has it
+   --func string [ --func string ]                  attach to a specific __noinline subfunction (by BTF name) instead of the entry function; repeatable; distinct names select multiple targets, skipping unavailable functions with warnings
    --allow-dispatcher-slot                          allow probes on unreplaced global dispatcher functions (may block later freplace with EBUSY)
    --list-funcs                                     list available BTF functions in the target program and exit
    --list-progs                                     list programs reachable from the target: freplace + tail calls + CPUMAP/DEVMAP/DEVMAP_HASH redirect targets (followed transitively), then exit
@@ -315,7 +315,7 @@ GLOBAL OPTIONS:
    --mode string [ --mode string ]                  capture point: entry / exit (fentry/fexit observer on the target program, hook auto-detected) or xdp (attach as native XDP). Repeatable with one quoted filter after each: --mode entry EXPR --mode exit EXPR captures only the packets that match both (see README). tc-entry / tc-exit are deprecated aliases (default: "entry")
    --emit string                                    with two --mode: which image(s) to write for a packet that matched both filters — both, entry, or exit (default: "both")
    --count int, -c int                              exit after capturing N packets (0 = unlimited) (default: 0)
-   --func string [ --func string ]                  attach to a specific __noinline subfunction (by BTF name) instead of the entry function; repeatable, and each func attaches in every target program whose BTF has it
+   --func string [ --func string ]                  attach to a specific __noinline subfunction (by BTF name) instead of the entry function; repeatable; distinct names select multiple targets, skipping unavailable functions with warnings
    --allow-dispatcher-slot                          allow probes on unreplaced global dispatcher functions (may block later freplace with EBUSY)
    --list-funcs                                     list available BTF functions in the target program and exit
    --list-progs                                     list programs reachable from the target: freplace + tail calls + CPUMAP/DEVMAP/DEVMAP_HASH redirect targets (followed transitively), then exit
@@ -386,7 +386,7 @@ GLOBAL OPTIONS:
    --mode string [ --mode string ]                  capture point: entry / exit (fentry/fexit observer on the target program, hook auto-detected) or xdp (attach as native XDP). Repeatable with one quoted filter after each: --mode entry EXPR --mode exit EXPR captures only the packets that match both (see README). tc-entry / tc-exit are deprecated aliases (default: "entry")
    --emit string                                    with two --mode: which image(s) to write for a packet that matched both filters — both, entry, or exit (default: "both")
    --count int, -c int                              exit after capturing N packets (0 = unlimited) (default: 0)
-   --func string [ --func string ]                  attach to a specific __noinline subfunction (by BTF name) instead of the entry function; repeatable, and each func attaches in every target program whose BTF has it
+   --func string [ --func string ]                  attach to a specific __noinline subfunction (by BTF name) instead of the entry function; repeatable; distinct names select multiple targets, skipping unavailable functions with warnings
    --allow-dispatcher-slot                          allow probes on unreplaced global dispatcher functions (may block later freplace with EBUSY)
    --list-funcs                                     list available BTF functions in the target program and exit
    --list-progs                                     list programs reachable from the target: freplace + tail calls + CPUMAP/DEVMAP/DEVMAP_HASH redirect targets (followed transitively), then exit
@@ -454,7 +454,7 @@ GLOBAL OPTIONS:
    --mode string [ --mode string ]                  capture point: entry / exit (fentry/fexit observer on the target program, hook auto-detected) or xdp (attach as native XDP). Repeatable with one quoted filter after each: --mode entry EXPR --mode exit EXPR captures only the packets that match both (see README). tc-entry / tc-exit are deprecated aliases (default: "entry")
    --emit string                                    with two --mode: which image(s) to write for a packet that matched both filters — both, entry, or exit (default: "both")
    --count int, -c int                              exit after capturing N packets (0 = unlimited) (default: 0)
-   --func string [ --func string ]                  attach to a specific __noinline subfunction (by BTF name) instead of the entry function; repeatable, and each func attaches in every target program whose BTF has it
+   --func string [ --func string ]                  attach to a specific __noinline subfunction (by BTF name) instead of the entry function; repeatable; distinct names select multiple targets, skipping unavailable functions with warnings
    --allow-dispatcher-slot                          allow probes on unreplaced global dispatcher functions (may block later freplace with EBUSY)
    --list-funcs                                     list available BTF functions in the target program and exit
    --list-progs                                     list programs reachable from the target: freplace + tail calls + CPUMAP/DEVMAP/DEVMAP_HASH redirect targets (followed transitively), then exit
@@ -522,7 +522,7 @@ GLOBAL OPTIONS:
    --mode string [ --mode string ]                  capture point: entry / exit (fentry/fexit observer on the target program, hook auto-detected) or xdp (attach as native XDP). Repeatable with one quoted filter after each: --mode entry EXPR --mode exit EXPR captures only the packets that match both (see README). tc-entry / tc-exit are deprecated aliases (default: "entry")
    --emit string                                    with two --mode: which image(s) to write for a packet that matched both filters — both, entry, or exit (default: "both")
    --count int, -c int                              exit after capturing N packets (0 = unlimited) (default: 0)
-   --func string [ --func string ]                  attach to a specific __noinline subfunction (by BTF name) instead of the entry function; repeatable, and each func attaches in every target program whose BTF has it
+   --func string [ --func string ]                  attach to a specific __noinline subfunction (by BTF name) instead of the entry function; repeatable; distinct names select multiple targets, skipping unavailable functions with warnings
    --allow-dispatcher-slot                          allow probes on unreplaced global dispatcher functions (may block later freplace with EBUSY)
    --list-funcs                                     list available BTF functions in the target program and exit
    --list-progs                                     list programs reachable from the target: freplace + tail calls + CPUMAP/DEVMAP/DEVMAP_HASH redirect targets (followed transitively), then exit
@@ -590,7 +590,7 @@ GLOBAL OPTIONS:
    --mode string [ --mode string ]                  capture point: entry / exit (fentry/fexit observer on the target program, hook auto-detected) or xdp (attach as native XDP). Repeatable with one quoted filter after each: --mode entry EXPR --mode exit EXPR captures only the packets that match both (see README). tc-entry / tc-exit are deprecated aliases (default: "entry")
    --emit string                                    with two --mode: which image(s) to write for a packet that matched both filters — both, entry, or exit (default: "both")
    --count int, -c int                              exit after capturing N packets (0 = unlimited) (default: 0)
-   --func string [ --func string ]                  attach to a specific __noinline subfunction (by BTF name) instead of the entry function; repeatable, and each func attaches in every target program whose BTF has it
+   --func string [ --func string ]                  attach to a specific __noinline subfunction (by BTF name) instead of the entry function; repeatable; distinct names select multiple targets, skipping unavailable functions with warnings
    --allow-dispatcher-slot                          allow probes on unreplaced global dispatcher functions (may block later freplace with EBUSY)
    --list-funcs                                     list available BTF functions in the target program and exit
    --list-progs                                     list programs reachable from the target: freplace + tail calls + CPUMAP/DEVMAP/DEVMAP_HASH redirect targets (followed transitively), then exit
@@ -667,7 +667,7 @@ GLOBAL OPTIONS:
    --mode string [ --mode string ]                  capture point: entry / exit (fentry/fexit observer on the target program, hook auto-detected) or xdp (attach as native XDP). Repeatable with one quoted filter after each: --mode entry EXPR --mode exit EXPR captures only the packets that match both (see README). tc-entry / tc-exit are deprecated aliases (default: "entry")
    --emit string                                    with two --mode: which image(s) to write for a packet that matched both filters — both, entry, or exit (default: "both")
    --count int, -c int                              exit after capturing N packets (0 = unlimited) (default: 0)
-   --func string [ --func string ]                  attach to a specific __noinline subfunction (by BTF name) instead of the entry function; repeatable, and each func attaches in every target program whose BTF has it
+   --func string [ --func string ]                  attach to a specific __noinline subfunction (by BTF name) instead of the entry function; repeatable; distinct names select multiple targets, skipping unavailable functions with warnings
    --allow-dispatcher-slot                          allow probes on unreplaced global dispatcher functions (may block later freplace with EBUSY)
    --list-funcs                                     list available BTF functions in the target program and exit
    --list-progs                                     list programs reachable from the target: freplace + tail calls + CPUMAP/DEVMAP/DEVMAP_HASH redirect targets (followed transitively), then exit
@@ -749,7 +749,7 @@ GLOBAL OPTIONS:
    --mode string [ --mode string ]                  capture point: entry / exit (fentry/fexit observer on the target program, hook auto-detected) or xdp (attach as native XDP). Repeatable with one quoted filter after each: --mode entry EXPR --mode exit EXPR captures only the packets that match both (see README). tc-entry / tc-exit are deprecated aliases (default: "entry")
    --emit string                                    with two --mode: which image(s) to write for a packet that matched both filters — both, entry, or exit (default: "both")
    --count int, -c int                              exit after capturing N packets (0 = unlimited) (default: 0)
-   --func string [ --func string ]                  attach to a specific __noinline subfunction (by BTF name) instead of the entry function; repeatable, and each func attaches in every target program whose BTF has it
+   --func string [ --func string ]                  attach to a specific __noinline subfunction (by BTF name) instead of the entry function; repeatable; distinct names select multiple targets, skipping unavailable functions with warnings
    --allow-dispatcher-slot                          allow probes on unreplaced global dispatcher functions (may block later freplace with EBUSY)
    --list-funcs                                     list available BTF functions in the target program and exit
    --list-progs                                     list programs reachable from the target: freplace + tail calls + CPUMAP/DEVMAP/DEVMAP_HASH redirect targets (followed transitively), then exit
@@ -823,7 +823,7 @@ GLOBAL OPTIONS:
    --mode string [ --mode string ]                  capture point: entry / exit (fentry/fexit observer on the target program, hook auto-detected) or xdp (attach as native XDP). Repeatable with one quoted filter after each: --mode entry EXPR --mode exit EXPR captures only the packets that match both (see README). tc-entry / tc-exit are deprecated aliases (default: "entry")
    --emit string                                    with two --mode: which image(s) to write for a packet that matched both filters — both, entry, or exit (default: "both")
    --count int, -c int                              exit after capturing N packets (0 = unlimited) (default: 0)
-   --func string [ --func string ]                  attach to a specific __noinline subfunction (by BTF name) instead of the entry function; repeatable, and each func attaches in every target program whose BTF has it
+   --func string [ --func string ]                  attach to a specific __noinline subfunction (by BTF name) instead of the entry function; repeatable; distinct names select multiple targets, skipping unavailable functions with warnings
    --allow-dispatcher-slot                          allow probes on unreplaced global dispatcher functions (may block later freplace with EBUSY)
    --list-funcs                                     list available BTF functions in the target program and exit
    --list-progs                                     list programs reachable from the target: freplace + tail calls + CPUMAP/DEVMAP/DEVMAP_HASH redirect targets (followed transitively), then exit

@@ -69,7 +69,7 @@ func TestBpfArgMemberReadFailure(t *testing.T) {
 					}
 				}
 				_, at := tracingLabel(exit)
-				if err := attachTracingProbe(probe, target, "member_fault", "sdf_classify", at, insns, false); err != nil {
+				if err := attachTracingProbe(probe, target, "member_fault", "sdf_classify", at, insns, false, attach.FuncAvailability{}); err != nil {
 					t.Fatal(err)
 				}
 				rd, err := fastrb.New(ring.FD(), EchoRingSize)

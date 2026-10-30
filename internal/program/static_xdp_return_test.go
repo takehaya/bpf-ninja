@@ -48,7 +48,7 @@ func TestBpfStaticXDPReturnAction(t *testing.T) {
 	}
 	defer coll.Close()
 	target := coll.Programs["static4_target"]
-	fallback, err := staticXDPNeedsProbeRead(target, "static_hook4", ebpf.AttachTraceFExit)
+	fallback, err := staticXDPNeedsProbeRead(target, "static_hook4", ebpf.AttachTraceFExit, attach.FuncAvailability{})
 	if err != nil {
 		t.Fatal(err)
 	}

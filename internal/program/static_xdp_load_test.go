@@ -36,7 +36,7 @@ func TestBpfStaticXDPContextSelection(t *testing.T) {
 			target := coll.Programs[tc.entry]
 			for _, exit := range []bool{false, true} {
 				_, at := tracingLabel(exit)
-				fallback, err := staticXDPNeedsProbeRead(target, tc.fn, at)
+				fallback, err := staticXDPNeedsProbeRead(target, tc.fn, at, attach.FuncAvailability{})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -78,7 +78,7 @@ func TestBpfStaticXDPContextSelection(t *testing.T) {
 					}
 				}
 			}
-			if _, err := staticXDPNeedsProbeRead(target, "missing_function", ebpf.AttachTraceFEntry); err == nil {
+			if _, err := staticXDPNeedsProbeRead(target, "missing_function", ebpf.AttachTraceFEntry, attach.FuncAvailability{}); err == nil {
 				t.Fatal("unrelated load failure must propagate")
 			}
 		})
@@ -96,7 +96,7 @@ func assertOriginMainStaticXDPCodegen(t *testing.T, target *ebpf.Program, fn str
 		{"gated", "6e1d4fc1e8d59b5de9e9cea54d09c486827e5c7c3874d359ea5f850dbeb1bf98"},
 	} {
 		_, at := tracingLabel(tc.mode != "entry")
-		fallback, err := staticXDPNeedsProbeRead(target, fn, at)
+		fallback, err := staticXDPNeedsProbeRead(target, fn, at, attach.FuncAvailability{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -157,14 +157,14 @@ func TestBpfStaticXDPGatedContextReadFailure(t *testing.T) {
 	if !injected {
 		t.Fatal("missing ctx read")
 	}
-	if err := attachTracingProbe(p, target, "ctx_fail_exit", xdpFuncName, ebpf.AttachTraceFExit, insns, false); err != nil {
+	if err := attachTracingProbe(p, target, "ctx_fail_exit", xdpFuncName, ebpf.AttachTraceFExit, insns, false, attach.FuncAvailability{}); err != nil {
 		t.Fatal(err)
 	}
 	entry, err := buildGatedEntryInsns(h, out, filter.TargetFilters{}, hold.FD(), 0, 0, 0, nil, nil, EmitBoth, 64, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := attachTracingProbe(p, target, "ctx_fail_entry", xdpFuncName, ebpf.AttachTraceFEntry, entry, false); err != nil {
+	if err := attachTracingProbe(p, target, "ctx_fail_entry", xdpFuncName, ebpf.AttachTraceFEntry, entry, false, attach.FuncAvailability{}); err != nil {
 		t.Fatal(err)
 	}
 	for range maxHoldSlots + 1 {

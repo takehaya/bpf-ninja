@@ -3,6 +3,7 @@ package program
 import (
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/asm"
+	"github.com/takehaya/bpf-ninja/internal/attach"
 	"github.com/takehaya/bpf-ninja/internal/capture/fastrb"
 	"github.com/takehaya/bpf-ninja/internal/filter"
 	"github.com/takehaya/bpf-ninja/internal/hook"
@@ -70,10 +71,10 @@ func TestBpfGatedEntryCopyFailure(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := attachTracingProbe(p, target, "copy_exit", xdpFuncName, ebpf.AttachTraceFExit, exit, false); err != nil {
+			if err := attachTracingProbe(p, target, "copy_exit", xdpFuncName, ebpf.AttachTraceFExit, exit, false, attach.FuncAvailability{}); err != nil {
 				t.Fatal(err)
 			}
-			if err := attachTracingProbe(p, target, "copy_entry", xdpFuncName, ebpf.AttachTraceFEntry, entry, false); err != nil {
+			if err := attachTracingProbe(p, target, "copy_entry", xdpFuncName, ebpf.AttachTraceFEntry, entry, false, attach.FuncAvailability{}); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := target.Run(&ebpf.RunOptions{Data: dsltest.BuildEthIPv4UDP(t, 1234, 6081, []byte{1, 2, 3, 4})}); err != nil {
@@ -127,7 +128,7 @@ func TestBpfGatedResidualHold(t *testing.T) {
 		t.Fatal(err)
 	}
 	entry = constantJiffies(t, entry) // a jiffy tick between the runs must not resync
-	if err := attachTracingProbe(p, target, "residual_entry", xdpFuncName, ebpf.AttachTraceFEntry, entry, false); err != nil {
+	if err := attachTracingProbe(p, target, "residual_entry", xdpFuncName, ebpf.AttachTraceFEntry, entry, false, attach.FuncAvailability{}); err != nil {
 		t.Fatal(err)
 	}
 	frame := dsltest.BuildEthIPv4UDP(t, 1234, 6081, []byte{1, 2, 3, 4})
@@ -219,7 +220,7 @@ func TestBpfGatedStaleHoldNeverPairs(t *testing.T) {
 	if removed != 1 {
 		t.Fatalf("removed %d identity checks, want 1", removed)
 	}
-	if err := attachTracingProbe(p, target, "stale_entry", xdpFuncName, ebpf.AttachTraceFEntry, entry, false); err != nil {
+	if err := attachTracingProbe(p, target, "stale_entry", xdpFuncName, ebpf.AttachTraceFEntry, entry, false, attach.FuncAvailability{}); err != nil {
 		t.Fatal(err)
 	}
 	match := dsltest.BuildEthIPv4UDP(t, 1234, 6081, []byte{1, 2, 3, 4})
@@ -228,7 +229,7 @@ func TestBpfGatedStaleHoldNeverPairs(t *testing.T) {
 		if _, err := target.Run(&ebpf.RunOptions{Data: match}); err != nil { // holds at depth 0, never consumed
 			t.Fatal(err)
 		}
-		if err := attachTracingProbe(p, target, "stale_exit", xdpFuncName, ebpf.AttachTraceFExit, exit, false); err != nil {
+		if err := attachTracingProbe(p, target, "stale_exit", xdpFuncName, ebpf.AttachTraceFExit, exit, false, attach.FuncAvailability{}); err != nil {
 			t.Fatal(err)
 		}
 		time.Sleep(50 * time.Millisecond)                                   // the open depth goes stale
