@@ -279,6 +279,6 @@ Gated キャプチャでは exit で引数比較とセットのキーを再評�
 その場合、一覧が正しく見えても、プローブはレジスターに残った古い値を読みます。
 観測用の引数が未使用になる場合は [`keep_args.h`](../../include/keep_args.h) をインクルードし、関数本体に `KEEP_ARGS(ctx, q);` を置いてください。
 命令を追加せずに引数を保持できますが、`q->imsi` を初期化する効果はありません。
-`--list-funcs` に関数が残っていることを確認し、最終的な観測値は echo で確かめます。
+`--list-funcs` で関数が `present` と表示されることを確認し、最終的な観測値は echo で確かめます。
 
 [English version](../en/arg-member-filter.md)

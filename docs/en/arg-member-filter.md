@@ -262,6 +262,6 @@ There is a separate compiler pitfall: `clang -O2` can drop an unused argument fr
 The listing can therefore look correct while the probe observes a stale register value.
 If a capture-point argument would otherwise be unused, include [`keep_args.h`](../../include/keep_args.h) and put `KEEP_ARGS(ctx, q);` in the function body.
 This preserves the arguments without adding instructions, but does not initialize `q->imsi`.
-Confirm that the function still appears in `--list-funcs` and verify the observed values with echo.
+Confirm that `--list-funcs` reports the function as `present` and verify the observed values with echo.
 
 [日本語版](../ja/arg-member-filter.md)

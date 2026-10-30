@@ -20,7 +20,7 @@ kernel load や attach の問題は、実際の kernel と権限がある環境�
 
 ## fentry/fexit の Subprog エラーを調べる
 
-`Subprog <name> doesn't exist` が出た場合は、`sudo bpf-ninja -p "$PROG_ID" --list-funcs` で program ID と完全一致する BTF 関数名を確認する。
+`Subprog <name> doesn't exist` が出た場合は、`sudo bpf-ninja -p "$PROG_ID" --list-funcs --json` で program ID と完全一致する BTF 関数名を確認する。
 続いて `sudo bpf-ninja -p "$PROG_ID" --func "$FUNC" --list-params` で対象関数を確認する。
 BTF に名前があるだけでは attach できるとは限らない。
 `absent_from_loaded_func_info` は BTF FUNC が存在しても、この program の `func_info` にないことを示す。
@@ -38,7 +38,7 @@ global subprog の遅延検証がないカーネルでは、このような glob
 `present` はその BTF type ID がロード済み `func_info` にあることを示し、attach 時にはカーネルの他の検査も受ける。
 `missing_btf_func` は完全一致する BTF FUNC 名がないこと、`not_in_target_program` は本体のない外部宣言であることを示す。
 `unknown` は権限不足や非対応などで `func_info` の所属を確認できないことを示す。
-関数件数が0になる場合は CAP_BPF の不足が原因の可能性がある。
+関数件数が0になる場合は、loader が `func_info` を渡していないか、呼出元の CAP_BPF が不足している可能性がある。
 `unknown` の対象はカーネルで検証し、load に失敗した場合は元の verifier error とログ全体を保持する。
 似た名前や別 program への付け替えは行わない。
 
@@ -49,3 +49,10 @@ attach できる対象が残らない場合は、この切り分け資料への�
 `--list-params --json` は attach できる対象の配列を維持し、各要素は `func`、`id`、`params` を持つ。
 スキップした対象は stderr の警告だけに出す。
 通常の capture 出力は packet data のままであり、`--json` は一覧表示だけに適用する。
+
+`--list-funcs` は欠落した関数や外部宣言も一覧に残す。
+前述のとおり、object の BTF を共有する別 program の関数も `absent_from_loaded_func_info` と表示されるため、この理由だけでは verifier による除去と判断できない。
+各行は完全一致する BTF type ID で判定するため、同名の関数でもそれぞれの availability を保持する。
+テキストでは短い availability の理由だけを示し、JSON では `availability` に `reason`、`btf_func_present`、既知の場合の `func_type_id`、判定できなかった場合の `detail` を含める。
+availability が `unknown` の場合、テキストでは最初に得られた詳細を program ごとに一度表示する。
+`--list-progs` と組み合わせた場合も同じ情報を出す。

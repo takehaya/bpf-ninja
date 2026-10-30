@@ -249,9 +249,9 @@ Expected output:
 
 ```
 BTF functions in program (id=XXXX):
-  parse_headers                              [static]
-  classify_packet                            [global]
-  xdp_main                                   [global]
+  parse_headers                            [static] present
+  classify_packet                          [global] present
+  xdp_main                                 [global] present
 ```
 
 ### 2.4 fentry on `classify_packet` (global)

@@ -3,7 +3,7 @@
 If fentry/fexit reports `Subprog <name> doesn't exist`, check the program ID and exact BTF function name:
 
 ```sh
-sudo bpf-ninja -p "$PROG_ID" --list-funcs
+sudo bpf-ninja -p "$PROG_ID" --list-funcs --json
 sudo bpf-ninja -p "$PROG_ID" --func "$FUNC" --list-params
 ```
 
@@ -23,7 +23,7 @@ Absence alone cannot distinguish these causes.
 `missing_btf_func` means the exact BTF FUNC name is missing.
 `not_in_target_program` identifies an external BTF declaration without a body in this target.
 `unknown` means membership could not be checked, for example because reading `func_info` was denied or unsupported.
-A zero function count can indicate missing CAP_BPF.
+A zero function count can mean the loader did not supply `func_info`, or the caller lacks CAP_BPF.
 Unknown targets still go through kernel validation; a failed load retains its original verifier error and full log.
 Names are never guessed or redirected to another program.
 
@@ -33,3 +33,10 @@ BTF names missing from some selected programs are silently skipped, as before; a
 If no attachable targets remain, the command fails with one link to this troubleshooting page and without JSON on stdout, as on other resolution errors.
 `--list-params --json` keeps its array of attachable entries containing `func`, `id`, and `params`; skipped targets appear only in stderr warnings.
 Normal capture output remains packet data; `--json` applies only to listings.
+
+`--list-funcs` retains every BTF FUNC, including absent functions and external declarations.
+Functions of other programs sharing the object's BTF also show `absent_from_loaded_func_info`, as explained above; this reason alone does not identify verifier pruning.
+Rows are classified by their exact BTF type IDs, so same-named functions retain their own availability.
+Text rows show a short availability reason; JSON adds an `availability` object containing `reason`, `btf_func_present`, `func_type_id` when known, and `detail` when availability could not be determined.
+If availability is unknown, text mode prints the first available detail once per program.
+The same fields appear when combined with `--list-progs`.

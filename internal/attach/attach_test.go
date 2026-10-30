@@ -29,6 +29,9 @@ func TestListFuncs(t *testing.T) {
 	found := map[string]bool{}
 	for _, f := range funcs {
 		found[f.Name] = true
+		if f.Availability.Reason != "present" || !f.Availability.BTFFuncPresent || f.Availability.FuncTypeID == 0 {
+			t.Fatalf("unexpected availability: %+v", f)
+		}
 	}
 
 	if !found["xdp_subfunc_test"] {

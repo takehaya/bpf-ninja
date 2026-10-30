@@ -619,8 +619,9 @@ func resolveProgTarget(via string, key, progID uint32, cache progNameCache) (*Pr
 
 // FuncInfo holds metadata about a BTF function in a BPF program.
 type FuncInfo struct {
-	Name    string
-	Linkage string // "static", "global", "extern"
+	Name         string
+	Linkage      string // "static", "global", "extern"
+	Availability FuncAvailability
 }
 
 // FuncParamInfo holds metadata about a function parameter from BTF.
@@ -721,13 +722,10 @@ func BTFSpec(prog *ebpf.Program) (*btf.Spec, error) {
 	return spec, nil
 }
 
-// ListFuncs returns all BTF function entries found in the program.
+// ListFuncs returns all BTF FUNCs with availability from a fresh func_info read.
+// Use ProgInfo.ListFuncs to cache BTF and func_info across calls.
 func ListFuncs(prog *ebpf.Program) ([]FuncInfo, error) {
-	spec, err := BTFSpec(prog)
-	if err != nil {
-		return nil, err
-	}
-	return ListFuncsFromSpec(spec)
+	return (&ProgInfo{Program: prog}).ListFuncs()
 }
 
 // ValidateSubfunc checks that the given function name exists in the program's BTF.

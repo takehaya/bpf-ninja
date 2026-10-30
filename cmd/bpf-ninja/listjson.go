@@ -13,8 +13,9 @@ import (
 
 // funcJSON is one BTF function of a program.
 type funcJSON struct {
-	Name    string `json:"name"`
-	Linkage string `json:"linkage"`
+	Name         string                  `json:"name"`
+	Linkage      string                  `json:"linkage"`
+	Availability attach.FuncAvailability `json:"availability"`
 }
 
 // progNodeJSON is one node of a program's reachable tree. Funcs is a pointer
@@ -75,7 +76,7 @@ type paramsTargetJSON struct {
 func funcsToJSON(funcs []attach.FuncInfo) []funcJSON {
 	out := make([]funcJSON, len(funcs))
 	for i, f := range funcs {
-		out[i] = funcJSON{Name: f.Name, Linkage: f.Linkage}
+		out[i] = funcJSON{Name: f.Name, Linkage: f.Linkage, Availability: f.Availability}
 	}
 	return out
 }
