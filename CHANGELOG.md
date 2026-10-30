@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.33.0](https://github.com/takehaya/bpf-ninja/compare/v0.32.0...v0.33.0) (2026-10-30)
+
+
+### 🎉 Features
+
+* **filter:** select calls by pointer members and scalar pointees ([#281](https://github.com/takehaya/bpf-ninja/issues/281)) ([43900b4](https://github.com/takehaya/bpf-ninja/commit/43900b413f20b33e78571ce780ebdbbfbde3a743))
+* **injectcheck:** independently validate injected instruction diffs ([#286](https://github.com/takehaya/bpf-ninja/issues/286)) ([67dd943](https://github.com/takehaya/bpf-ninja/commit/67dd94362a2069891997b6623b639010cf03f075))
+* **inject:** supply missing map types from a hash-pinned ELF ([#287](https://github.com/takehaya/bpf-ninja/issues/287)) ([ec2b5eb](https://github.com/takehaya/bpf-ninja/commit/ec2b5eb0ae833d7b58b20da9f4a225ba3961a4a4))
+* **list:** show loaded function availability ([#289](https://github.com/takehaya/bpf-ninja/issues/289)) ([d2399fb](https://github.com/takehaya/bpf-ninja/commit/d2399fbdec8ce2bf5aa1d90bcaed2424dfa6bf6f))
+
+
+### 🐛 Bug Fixes
+
+* **attach:** explain functions absent from loaded func_info ([#288](https://github.com/takehaya/bpf-ninja/issues/288)) ([4bc8bb3](https://github.com/takehaya/bpf-ninja/commit/4bc8bb3c49965f2b1db102fbb03bebf17d413744))
+* **capture:** block idle shard readers and wake them on stop ([#284](https://github.com/takehaya/bpf-ninja/issues/284)) ([092c7dd](https://github.com/takehaya/bpf-ninja/commit/092c7dd7b579a1c82bd265f08b88ab2cdf5d8fd8))
+* **inject:** rebuild declaration tags while preserving original BTF IDs ([#283](https://github.com/takehaya/bpf-ninja/issues/283)) ([5c58a4d](https://github.com/takehaya/bpf-ninja/commit/5c58a4d0379d3c804c24aa1f9c1665f55b394723))
+
+
+### 📝 Documentation
+
+* **inject:** add focused observer examples and separate capture from echo ([#282](https://github.com/takehaya/bpf-ninja/issues/282)) ([6045521](https://github.com/takehaya/bpf-ninja/commit/6045521ebb522e98fafe6d8e6769266efce8ab59))
+
 ## [0.32.0](https://github.com/takehaya/bpf-ninja/compare/v0.31.0...v0.32.0) (2026-10-28)
 
 
