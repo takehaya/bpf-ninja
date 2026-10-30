@@ -413,7 +413,7 @@ func TestRunStackContract(t *testing.T) {
 	host := [][2]int{{-8, 0}, {-12, -8}, {-16, -12}, {-24, -16},
 		{-32, -24}, {-40, -32}, {-48, -40}, {-56, -48}, {-120, -56},
 		{-128, -120}, {-136, -128}, {-144, -136}, {-160, -144}}
-	slots := [][2]int{{runCPUStack, runCPUStack + 8}, {runKeyStack, runKeyStack + 8}}
+	slots := [][2]int{{runCPUStack, runCPUStack + 8}, {runKeyStack, runKeyStack + 8}, {runFrameStack, runFrameStack + 32}}
 	for i, slot := range slots {
 		for _, other := range slots[:i] {
 			if slot[0] < other[1] && other[0] < slot[1] {
@@ -426,19 +426,25 @@ func TestRunStackContract(t *testing.T) {
 			}
 		}
 	}
-	if runCPUStack != -208 || runKeyStack != -216 {
+	if runCPUStack != -208 || runKeyStack != -216 || runFrameStack != -192 || runPacketIDStack != -24 || runArgsStack != -48 {
 		t.Fatal("run temporary slots moved outside their reserved ranges")
 	}
 	emitters := []asm.Instructions{emitRunSequence(123, "seq", "bad"),
 		emitRunLookup(123, "bad"), emitRunTop(123, "bad"),
-		emitRunIdentity(asm.R8, asm.R6, "bad"), emitRunCounter(8)}
+		emitRunIdentity(asm.R8, asm.R6, "bad"), emitRunCounter(8),
+		(ctxRuns{123, 124}).create(), (ctxRuns{123, 124}).find("bad", "bad"), (ctxRuns{123, 124}).release()}
 	for _, emitter := range emitters {
-		for _, ins := range emitter {
+		for i, ins := range emitter {
+			if i > 0 && emitter[i-1].OpCode == asm.Mov.Reg(asm.R2, asm.R10).OpCode && emitter[i-1].Src == asm.R10 && ins.OpCode == asm.Add.Imm(asm.R2, 0).OpCode && ins.Dst == emitter[i-1].Dst {
+				if ins.Constant != -16 && ins.Constant != -216 && ins.Constant != -192 {
+					t.Fatalf("unexpected stack address: %v", ins)
+				}
+			}
 			if (ins.Dst == asm.R10 && ins.OpCode.Class().IsStore()) ||
 				(ins.Src == asm.R10 && ins.OpCode.Class().IsLoad()) {
 				start := int(ins.Offset)
 				end := start + ins.OpCode.Size().Sizeof()
-				if (start < -208 || end > -200) && (start < -16 || end > -12) {
+				if (start < -208 || end > -200) && (start < -16 || end > -12) && (start < -216 || end > -208) && (start < -192 || end > -160) {
 					t.Fatalf("unexpected stack access: %v", ins)
 				}
 			}

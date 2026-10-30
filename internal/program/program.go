@@ -30,6 +30,7 @@ type Probe struct {
 	InnerMaps []*ebpf.Map // non-nil only in per-CPU sharded mode
 	// StatsMap contains per-CPU export outcome counters (see ExportStats).
 	StatsMap   *ebpf.Map
+	runs       *runCapture
 	closedTags *ebpf.Map
 	// Gated captures only: the per-CPU hold slots and the flag that stops
 	// fentry from writing holds before the links are detached.

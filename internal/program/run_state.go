@@ -9,8 +9,7 @@ import (
 )
 
 // Run correlation associates hook observations with one root invocation.
-// These primitives are not used by capture yet; frame push/pop and capture
-// lifecycle handling must be added together before connecting them.
+// Both tracking modes share these frame offsets and sequence allocation.
 // These offsets describe map values, separate from the 28-byte record header.
 const (
 	runDepth  = 0
@@ -30,6 +29,7 @@ const (
 	runPending   = 0
 	runTracked   = 1
 	runBlocked   = 2
+	runRejected  = 4
 
 	runSeqCount     = 0
 	runSeqExhausted = 8
