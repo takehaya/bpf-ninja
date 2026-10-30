@@ -1622,6 +1622,7 @@ func pumpShards(cmd *cli.Command, inners []*ebpf.Map, label string, writeShard f
 		lc := newCapLifecycle(caps, fin, sets, cmd.String("write"), exitWhenCapped)
 		lc.control = ctl
 		lc.hookRuns = ctl.hookRuns
+		lc.finalizeOnDel = cmd.Bool("finalize-on-del")
 		for it := 0; ; it++ {
 			select {
 			case <-readerFailure:

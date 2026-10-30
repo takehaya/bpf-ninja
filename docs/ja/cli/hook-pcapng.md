@@ -68,6 +68,8 @@ tag ごとの上限は書いた EPB の byte 数で判定し、新しい追跡�
 reader callback や writer 登録の mutex を持ったまま barrier を待たない。
 reader が上限到達を認識する前に受け付けた実行もあるため、ring の backlog と進行中の実行の分だけ上限を超えることがある。
 開始条件が参照する set だけを対象とし、tag 0 は対象にしない。
+set entry の削除による確定は `--finalize-on-del` を指定した場合だけ行う。
+指定がなければ上限未到達の tag は終了まで開いたままにし、entry の再追加で追跡を再開できる。
 確定した tag を set に足し直しても再開しない。
 capture 全体の `-c` と `--max-bytes` は即時出力の件数と batch の規則を保つ。
 

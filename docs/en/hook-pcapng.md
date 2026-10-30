@@ -60,6 +60,7 @@ Per-tag byte limits block new starts when the written EPB bytes reach the limit,
 With `--split-by-tag` and start sets, capped tags use the same stop, grace period, reader watermark and close/merge barrier as `--finalize-on-del`.
 Barriers run outside reader callbacks and the writer registry mutex. Limits may be exceeded by runs admitted before the reader observed the cap, including ring backlog and in-flight runs.
 Only sets referenced by start predicates participate. Tag 0 has no per-tag limit or finalization.
+Deleting a set entry finalizes its tag only with `--finalize-on-del`; without it, uncapped tags remain open until shutdown and can resume after re-addition.
 A finalized tag stays blocked after re-addition. Capture-wide `-c` and `--max-bytes` retain immediate-output record/batch semantics.
 
 ## Merging

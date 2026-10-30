@@ -146,7 +146,7 @@ func (f *tagFinalizer) deregister(tag uint32, shardIdx int) {
 
 // step starts barriers for absent tags and returns only acknowledged tags.
 // No number of quiet polls can substitute for a reader acknowledgement.
-func (f *tagFinalizer) step(union []uint32) []uint32 {
+func (f *tagFinalizer) step(union []uint32, keepLive func(uint32) bool) []uint32 {
 	f.stepMu.Lock()
 	defer f.stepMu.Unlock()
 	f.mu.Lock()
@@ -167,7 +167,7 @@ func (f *tagFinalizer) step(union []uint32) []uint32 {
 		}
 		poll := f.pending[tag]
 		if poll == nil {
-			if live[tag] {
+			if live[tag] || keepLive != nil && keepLive(tag) {
 				continue
 			}
 			if f.begin == nil {

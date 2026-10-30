@@ -65,11 +65,11 @@ func TestStepWaitsForAcknowledgement(t *testing.T) {
 		return func() (bool, error) { return ready, nil }, nil
 	}
 	st := f.stateFor(7)
-	if done := f.step([]uint32{7}); len(done) != 0 || calls != 0 {
+	if done := f.step([]uint32{7}, nil); len(done) != 0 || calls != 0 {
 		t.Fatal("blocked live tag")
 	}
 	for range 100 {
-		if done := f.step(nil); len(done) != 0 || st.finalized.Load() {
+		if done := f.step(nil, nil); len(done) != 0 || st.finalized.Load() {
 			t.Fatal("quiet poll replaced barrier")
 		}
 	}
@@ -77,32 +77,32 @@ func TestStepWaitsForAcknowledgement(t *testing.T) {
 		t.Fatalf("barrier started %d times", calls)
 	}
 	// Once the tombstone exists, a re-add must not cancel or reopen the tag.
-	f.step([]uint32{7})
+	f.step([]uint32{7}, nil)
 	ready = true
-	if done := f.step([]uint32{7}); len(done) != 1 || done[0] != 7 {
+	if done := f.step([]uint32{7}, nil); len(done) != 1 || done[0] != 7 {
 		t.Fatalf("ack=%v", done)
 	}
 	if !st.finalized.Load() {
 		t.Fatal("stop sign absent after acknowledgement")
 	}
-	if done := f.step(nil); len(done) != 1 {
+	if done := f.step(nil, nil); len(done) != 1 {
 		t.Fatal("merge retry lost")
 	}
 	f.markMerged(7)
-	if done := f.step(nil); len(done) != 0 {
+	if done := f.step(nil, nil); len(done) != 0 {
 		t.Fatal("merged tag retried")
 	}
 }
 
 func TestStepUnionSeenAndTagZero(t *testing.T) {
 	f := newTestFinalizer(t, 1)
-	f.step([]uint32{9})
+	f.step([]uint32{9}, nil)
 	f.stateFor(0)
-	if done := f.step(nil); len(done) != 1 || done[0] != 9 {
+	if done := f.step(nil, nil); len(done) != 1 || done[0] != 9 {
 		t.Fatalf("done=%v", done)
 	}
 	f.markMerged(9)
-	if done := f.step(nil); len(done) != 0 {
+	if done := f.step(nil, nil); len(done) != 0 {
 		t.Fatal("tag zero finalized")
 	}
 }
@@ -131,9 +131,9 @@ func TestFinalizeFailureRetries(t *testing.T) {
 	f := newTestFinalizer(t, 1)
 	f.basePath = filepath.Join(missing, "out.pcap")
 	f.stateFor(4)
-	f.step(nil)
-	f.step(nil) // stop sign
-	if done := f.step(nil); len(done) != 1 || done[0] != 4 {
+	f.step(nil, nil)
+	f.step(nil, nil) // stop sign
+	if done := f.step(nil, nil); len(done) != 1 || done[0] != 4 {
 		t.Fatalf("step = %v, want [4]", done)
 	}
 
@@ -143,7 +143,7 @@ func TestFinalizeFailureRetries(t *testing.T) {
 	if got := f.mergedTags(); len(got) != 0 {
 		t.Fatalf("failed merge marked as merged: %v", got)
 	}
-	if done := f.step(nil); len(done) != 1 || done[0] != 4 {
+	if done := f.step(nil, nil); len(done) != 1 || done[0] != 4 {
 		t.Fatalf("failed tag not retried: %v", done)
 	}
 
@@ -156,7 +156,7 @@ func TestFinalizeFailureRetries(t *testing.T) {
 	if got := f.mergedTags(); len(got) != 1 || !got[4] {
 		t.Fatalf("mergedTags = %v, want {4}", got)
 	}
-	if done := f.step(nil); len(done) != 0 {
+	if done := f.step(nil, nil); len(done) != 0 {
 		t.Fatalf("merged tag still retried: %v", done)
 	}
 }
@@ -297,7 +297,7 @@ func TestStepBarrierFailureNeverAcknowledges(t *testing.T) {
 		}
 		f.stateFor(7)
 		for range 5 {
-			if done := f.step(nil); len(done) != 0 {
+			if done := f.step(nil, nil); len(done) != 0 {
 				t.Fatal("failed barrier acknowledged")
 			}
 		}
@@ -322,7 +322,7 @@ func TestFinalizeBarrierDoesNotHoldRegistryLock(t *testing.T) {
 		<-registered
 		return func() (bool, error) { f.stateFor(tag); return false, nil }, nil
 	}
-	go func() { f.step(nil); close(done) }()
+	go func() { f.step(nil, nil); close(done) }()
 	select {
 	case <-entered:
 	case <-time.After(time.Second):
@@ -352,7 +352,7 @@ func TestFinalizeFailureDuringCallbackLeavesNoPendingState(t *testing.T) {
 					return true, nil
 				}, nil
 			}
-			if got := f.step(nil); len(got) != 0 {
+			if got := f.step(nil, nil); len(got) != 0 {
 				t.Fatal(got)
 			}
 			if len(f.pending) != 0 || len(f.closing) != 0 || st.finalized.Load() || f.Err() == nil {
