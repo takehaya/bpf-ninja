@@ -76,14 +76,15 @@ type Packet struct {
 	Timestamp time.Time
 	Data      []byte
 	Action    uint32 // hook verdict: XDP action / TC verdict (fexit only)
-	Mode      uint8  // 0=entry(fentry), 1=exit(fexit), 2=xdp-native
+	Mode      uint8  // 0=entry, 1=exit, 2=xdp-native; 3/4 reserved for hook snapshot/decision
 	CapLen    uint16 // bytes the BPF side actually copied into Data
 	Tag       uint32 // set-map value of the matched entry (0 when no set matched)
-	// PacketID pairs the entry and exit records of one invocation in a
-	// gated (entry + exit) capture: an opaque cpu << 48 | per-CPU
-	// sequence, never a kernel address. Single-stage and xdp-native
-	// records carry 0.
+	// PacketID groups one invocation's records in gated (entry + exit) or
+	// hook capture: opaque cpu << 48 | per-CPU sequence, never a kernel
+	// address. Legacy single-stage and xdp-native records carry 0.
 	PacketID uint64
+	// SiteID is a capture-local hook index (1..255); zero is the legacy layout.
+	SiteID uint8
 }
 
 // Reader reads captured packets from the ringbuf.
@@ -121,7 +122,7 @@ func NewReader(eventsMap *ebpf.Map, _ int) (*Reader, error) {
 //	  u64 kernel_ts_ns (offset 0)  — bpf_ktime_get_ns() at packet ingest
 //	  u32 action       (offset 8)
 //	  u8  mode         (offset 12)
-//	  u8  _pad         (offset 13)
+//	  u8  site_id      (offset 13)
 //	  u16 caplen       (offset 14)
 //	  u32 tag          (offset 16) — set-map value of the matched entry, 0 if none
 //	  u64 packet_id    (offset 20) — see Packet.PacketID
@@ -133,6 +134,7 @@ const (
 	OffsetKernelTs = 0
 	OffsetAction   = 8
 	OffsetMode     = 12
+	OffsetSiteID   = 13
 	OffsetCapLen   = 14
 	OffsetTag      = 16
 	OffsetPacketID = 20
@@ -252,6 +254,7 @@ func ParseRawSample(raw []byte) (Packet, error) {
 		Timestamp: time.Unix(0, int64(kernelTs+WallOffsetNs)),
 		Action:    binary.NativeEndian.Uint32(raw[OffsetAction : OffsetAction+4]),
 		Mode:      raw[OffsetMode],
+		SiteID:    raw[OffsetSiteID],
 		CapLen:    caplen,
 		Tag:       binary.NativeEndian.Uint32(raw[OffsetTag : OffsetTag+4]),
 		PacketID:  binary.NativeEndian.Uint64(raw[OffsetPacketID : OffsetPacketID+8]),

@@ -53,9 +53,10 @@ const (
 	// latter is the pcap-ng way to say "this EPB and that EPB are the
 	// same packet seen at different interfaces", which is exactly what
 	// an entry record and an exit record of one invocation are.
-	idbOptIfName   = 2
-	epbOptPacketID = 5
-	optEndOfOpt    = 0
+	idbOptIfName        = 2
+	idbOptIfDescription = 3
+	epbOptPacketID      = 5
+	optEndOfOpt         = 0
 )
 
 // FastNgWriter writes pcap-ng to an io.Writer, bypassing gopacket
@@ -143,10 +144,20 @@ func (fw *FastNgWriter) writeSHB() error {
 //	Total: 16 + 8 + 4 + 4 = 32 bytes unnamed (pinned by
 //	TestFastNgWriterEquivalent), plus the if_name option when named.
 func (fw *FastNgWriter) writeIDB(linkType uint16, name string) error {
+	return fw.writeIDBDescription(linkType, name, "")
+}
+
+func (fw *FastNgWriter) writeIDBDescription(linkType uint16, name, description string) error {
+	if len(name) > 65535 || len(description) > 65535 {
+		return fmt.Errorf("interface name or description exceeds pcapng option length")
+	}
 	namePad := (len(name) + 3) &^ 3
 	total := 16 + 8 + 4 + 4
 	if name != "" {
 		total += 4 + namePad
+	}
+	if description != "" {
+		total += 4 + (len(description)+3)&^3
 	}
 	b := make([]byte, total)
 	binary.LittleEndian.PutUint32(b[0:4], blkIDB)
@@ -160,6 +171,12 @@ func (fw *FastNgWriter) writeIDB(linkType uint16, name string) error {
 		binary.LittleEndian.PutUint16(b[o+2:o+4], uint16(len(name)))
 		copy(b[o+4:], name)
 		o += 4 + namePad
+	}
+	if description != "" {
+		binary.LittleEndian.PutUint16(b[o:o+2], idbOptIfDescription)
+		binary.LittleEndian.PutUint16(b[o+2:o+4], uint16(len(description)))
+		copy(b[o+4:], description)
+		o += 4 + (len(description)+3)&^3
 	}
 	binary.LittleEndian.PutUint16(b[o:o+2], idbOptIfTsresol)
 	binary.LittleEndian.PutUint16(b[o+2:o+4], 1)
