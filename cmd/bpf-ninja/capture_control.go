@@ -6,11 +6,14 @@ import "github.com/takehaya/bpf-ninja/internal/capture"
 
 // One control belongs to one probe/capture, including all its shards.
 type captureControl struct {
+	hookRuns    bool
+	observe     func() error
 	written     atomic.Uint64
 	limited     atomic.Uint64
 	nullRecords atomic.Uint64
 	quiesce     func() error
 	blockTag    func(uint32) error
+	stopTag     func(uint32) error
 	barrier     func() func() (bool, error)
 	stats       *capture.SessionStats
 	outputErr   *outputFailure

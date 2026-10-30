@@ -134,6 +134,9 @@ func (c *byteCaps) cappedTags() []uint32 {
 
 // isCapped reports whether the tag's counter reached its cap.
 func (c *byteCaps) isCapped(tag uint32) bool {
+	if c == nil {
+		return false
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	ctr := c.tags[tag]

@@ -68,6 +68,12 @@ func rootFlags() []cli.Flag {
 			Name: "mode", Value: []string{"entry"},
 			Usage: "capture point: entry / exit (fentry/fexit observer on the target program, hook auto-detected) or xdp (attach as native XDP). Repeatable with one quoted filter after each: --mode entry EXPR --mode exit EXPR captures only the packets that match both (see README). tc-entry / tc-exit are deprecated aliases",
 		},
+		&cli.BoolFlag{
+			Name:  "hook-pcapng",
+			Usage: "entry capture of subfunctions in one XDP/tc program: one pcapng interface per selected hook and a shared packet id per program run (no tail calls or PREEMPT_RT)",
+		},
+		&cli.StringFlag{Name: "run-tracking", Value: "auto", Usage: "hook run tracking: auto (ctx before kernel 6.3, otherwise percpu), percpu or ctx"},
+		&cli.StringSliceFlag{Name: "start", Usage: "with --hook-pcapng: start following a run at the first matching NAME=FILTER hook; also records that hook"},
 		&cli.StringFlag{
 			Name: "emit", Value: "both",
 			Usage: "with two --mode: which image(s) to write for a packet that matched both filters — both, entry, or exit",
@@ -522,6 +528,29 @@ func run(ctx context.Context, cmd *cli.Command) error {
 			return fmt.Errorf("--split-by-tag takes a single --mode (per-tag files use the single-point layout)")
 		}
 	}
+	startFilters, err := parseHookStarts(cmd.StringSlice("start"))
+	if err != nil {
+		return err
+	}
+	if !cmd.Bool("hook-pcapng") && (len(startFilters) > 0 || cmd.IsSet("run-tracking")) {
+		return fmt.Errorf("--start and --run-tracking require --hook-pcapng")
+	}
+	if cmd.Bool("hook-pcapng") {
+		switch {
+		case len(modes) != 1 || modes[0] != "entry":
+			return fmt.Errorf("--hook-pcapng requires entry mode")
+		case len(cmd.StringSlice("func")) == 0 && len(startFilters) == 0:
+			return fmt.Errorf("--hook-pcapng requires --func or --start")
+		case cmd.Bool("raw-dump") || cmd.Bool("arg-echo") || cmd.String("dump-asm") != "":
+			return fmt.Errorf("--hook-pcapng requires packet output; incompatible with --raw-dump, --arg-echo and --dump-asm")
+		}
+		switch cmd.String("run-tracking") {
+		case "auto", "ctx", "percpu":
+		default:
+			return fmt.Errorf("--run-tracking must be auto, percpu or ctx")
+		}
+	}
+
 	// mode is the single capture point for the paths that take exactly
 	// one (--dump-asm, native XDP) and the run label otherwise.
 	mode := strings.Join(modes, "+")
@@ -697,7 +726,7 @@ func run(ctx context.Context, cmd *cli.Command) error {
 	// selects matching BTF functions in every target program. Unavailable
 	// functions fail a single selection or are skipped in multi-selections;
 	// without --func each program contributes its entry function.
-	funcNames := cmd.StringSlice("func")
+	funcNames := appendHookStarts(cmd.StringSlice("func"), startFilters)
 	targets, diagnostics, err := attach.ResolveTargets(infos, funcNames, cmd.Bool("allow-dispatcher-slot"))
 	printTargetDiagnostics(os.Stderr, diagnostics)
 	if err != nil {
@@ -733,9 +762,9 @@ func run(ctx context.Context, cmd *cli.Command) error {
 	// --set: open the named pinned-map sets. The CLI owns the map handles;
 	// they must stay open until the tracing programs are loaded (the
 	// kernel then holds its own reference).
-	var sets []*setmap.Set
+	var sets, openedSets []*setmap.Set
 	defer func() {
-		for _, s := range sets {
+		for _, s := range openedSets {
 			s.Def.Close()
 		}
 	}()
@@ -747,6 +776,8 @@ func run(ctx context.Context, cmd *cli.Command) error {
 	if sets, setErr = openDeclaredSets(cmd); setErr != nil {
 		return setErr
 	}
+
+	openedSets = sets
 
 	// --arg-filter: split "@NAME" set references from plain expressions,
 	// then validate and resolve both per target — the same param name can
@@ -842,11 +873,19 @@ func run(ctx context.Context, cmd *cli.Command) error {
 		}
 		logVerbose(cmd, "gated capture: entry AND exit, emit=%s", cmd.String("emit"))
 	}
-	probe, err := program.LoadMultiPoint(targets, stages, filters, useDSL, sets, emit)
+	var probe *program.Probe
+	if cmd.Bool("hook-pcapng") {
+		probe, err = program.LoadHookCapture(targets, stages[0].Expr, filters, useDSL, sets, program.HookCaptureOptions{Tracking: cmd.String("run-tracking"), EntryStart: stages[0].Expr != "", Starts: startFilters})
+	} else {
+		probe, err = program.LoadMultiPoint(targets, stages, filters, useDSL, sets, emit)
+	}
 	if err != nil {
 		return err
 	}
 	printProbeWarnings(probe)
+	if mode, reason := probe.RunTracking(); mode != "" {
+		fmt.Fprintf(os.Stderr, "run tracking: %s (%s)\n", mode, reason)
+	}
 
 	var label string
 	if len(targets) == 1 {
@@ -865,6 +904,9 @@ func run(ctx context.Context, cmd *cli.Command) error {
 	if !ok {
 		return hook.UnsupportedTypeError(targets[0].Type)
 	}
+	if cmd.Bool("hook-pcapng") {
+		sets = probe.AdmissionSets()
+	}
 	cfg := outputConfigFor(h, isFexit)
 	if isFexit && len(cmd.StringSlice("func")) > 0 {
 		// Explicit capture points can return application values unrelated to
@@ -873,6 +915,11 @@ func run(ctx context.Context, cmd *cli.Command) error {
 		cfg.Actions = []output.ActionName{{Value: 0, Name: "return:0x00000000"}}
 	}
 	cfg.MultiPoint = multiPoint
+	if cmd.Bool("hook-pcapng") {
+		for _, t := range targets {
+			cfg.Hooks = append(cfg.Hooks, t.FuncName)
+		}
+	}
 	return runCaptureLoop(cmd, probe, cfg, fmt.Sprintf("%s, mode=%s", label, mode), sets)
 }
 
@@ -1034,9 +1081,56 @@ func resolveFilterSyntax(cmd *cli.Command) (useDSL bool, err error) {
 // time-ordered pcap-ng at `path` (the shards are left in place). Integration
 // tests (run_pcap_test) read the `.cpuN` shards.
 func runCaptureLoop(cmd *cli.Command, probe *program.Probe, cfg output.Config, label string, sets []*setmap.Set) (retErr error) {
-	ctl := &captureControl{quiesce: probe.Quiesce, blockTag: probe.BlockTag, outputErr: newOutputFailure()}
+	ctl := &captureControl{quiesce: probe.Quiesce, blockTag: probe.BlockTag, stopTag: probe.StopTag, outputErr: newOutputFailure(), hookRuns: cmd.Bool("hook-pcapng")}
+	if ctl.hookRuns {
+		ctl.observe = func() error {
+			misses, e := probe.ObserverMisses()
+			if e != nil {
+				return e
+			}
+			d, e := probe.RunDiagnostics(false)
+			if e != nil {
+				return e
+			}
+			if misses > 0 || d.Incomplete() {
+				return fmt.Errorf("run tracking incomplete: observer_misses=%d %s", misses, d)
+			}
+			return nil
+		}
+		if e := ctl.observe(); e != nil {
+			return e
+		}
+		ctl.quiesce = func() error {
+			if e := probe.Quiesce(); e != nil {
+				return e
+			}
+			if e := ctl.observe(); e != nil {
+				return e
+			}
+			d, e := probe.RunDiagnostics(true)
+			if e != nil {
+				return e
+			}
+			if d.Residual != 0 {
+				return fmt.Errorf("run tracking incomplete: residual=%d", d.Residual)
+			}
+			return nil
+		}
+	}
 	defer func() {
 		retErr = errors.Join(retErr, probe.Quiesce())
+		if ctl.hookRuns {
+			misses, e := probe.ObserverMisses()
+			d, de := probe.RunDiagnostics(true)
+			fmt.Fprintf(os.Stderr, "run tracking: observer_misses=%d %s\n", misses, d)
+			if e != nil || de != nil || misses > 0 || d.Incomplete() {
+				retErr = errors.Join(retErr, e, de, fmt.Errorf("run tracking incomplete"))
+			}
+			mode, _ := probe.RunTracking()
+			if mode == "percpu" && d.Mismatches() > 0 {
+				fmt.Fprintln(os.Stderr, "hint: retry with --run-tracking=ctx")
+			}
+		}
 		kernel, statsErr := probe.ExportStats()
 		retErr = errors.Join(retErr, statsErr, probe.Close())
 		fmt.Fprintln(os.Stderr, captureReport(kernel, statsErr, retErr, ctl))
@@ -1048,7 +1142,7 @@ func runCaptureLoop(cmd *cli.Command, probe *program.Probe, cfg output.Config, l
 	// Built here (not in the capture loop) so the shutdown merge below can
 	// skip the tags already finalized mid-run.
 	var fin *tagFinalizer
-	if cmd.Bool("split-by-tag") && cmd.Bool("finalize-on-del") {
+	if cmd.Bool("split-by-tag") && (cmd.Bool("finalize-on-del") || ctl.hookRuns && len(sets) > 0) {
 		fin = newTagFinalizer(cmd.String("write"), cfg, len(probe.InnerMaps))
 	}
 	if err := captureLoopSharded(cmd, probe.InnerMaps, cfg, label, sets, fin, ctl); err != nil {
@@ -1314,7 +1408,7 @@ func captureLoopShardedSplit(cmd *cli.Command, inners []*ebpf.Map, cfg output.Co
 				i = j
 				continue
 			}
-			if e.ctr != nil && e.ctr.capped.Load() {
+			if !ctl.hookRuns && e.ctr != nil && e.ctr.capped.Load() {
 				ctl.limited.Add(uint64(j - i))
 				// Capped (possibly by another shard): drop the run and
 				// release the fd. capped is one-way, so the writer is
@@ -1363,19 +1457,26 @@ func captureLoopShardedSplit(cmd *cli.Command, inners []*ebpf.Map, cfg output.Co
 					// entry's max-bytes value.
 					fmt.Fprintf(os.Stderr, "tag %d capped at %d bytes (effective max-bytes %d)\n",
 						tag, e.ctr.bytes.Load(), e.ctr.limit.Load())
-					// Release this shard's fd right away instead of on
-					// the next sighting — traffic may stop here. Other
-					// shards close theirs when they next see the tag
-					// (their writers are not ours to touch).
-					if err := e.w.Close(); err != nil {
-						if fin != nil {
-							fin.fail(tag, err)
+					if ctl.hookRuns {
+						if err := ctl.stopTag(tag); err != nil {
+							return err
 						}
-						return err
 					}
-					e.w = nil
-					if fin != nil {
-						fin.deregister(tag, shardIdx)
+					if !ctl.hookRuns {
+						// Release this shard's fd right away instead of on
+						// the next sighting — traffic may stop here. Other
+						// shards close theirs when they next see the tag
+						// (their writers are not ours to touch).
+						if err := e.w.Close(); err != nil {
+							if fin != nil {
+								fin.fail(tag, err)
+							}
+							return err
+						}
+						e.w = nil
+						if fin != nil {
+							fin.deregister(tag, shardIdx)
+						}
 					}
 				}
 				if caps.totalLimit > 0 {
@@ -1506,6 +1607,11 @@ func pumpShards(cmd *cli.Command, inners []*ebpf.Map, label string, writeShard f
 			if err := ctl.blockTag(tag); err != nil {
 				return nil, err
 			}
+			if ctl.observe != nil {
+				if err := ctl.observe(); err != nil {
+					return nil, err
+				}
+			}
 			return ctl.barrier(), nil
 		}
 	}
@@ -1523,13 +1629,15 @@ func pumpShards(cmd *cli.Command, inners []*ebpf.Map, label string, writeShard f
 	// needs a periodic decision (per-entry caps need the ~1s snapshot
 	// to refresh limits and park capped entries).
 	needSnapshot := exitWhenCapped || fin != nil || (caps != nil && caps.perTag)
-	needPoll := count > 0 || caps != nil || needSnapshot
+	needPoll := count > 0 || caps != nil || needSnapshot || ctl.observe != nil
 	if needPoll {
 		// Same 10 ms poll as -c; the set-map iteration costs syscalls,
 		// so one shared ~1s lifecycle tick handles the limit refresh,
 		// the state transitions, the exit decision, and the finalizer
 		// (see capLifecycle.tick for the ordering contract).
 		lc := newCapLifecycle(caps, fin, sets, cmd.String("write"), exitWhenCapped)
+		lc.hookRuns = ctl.hookRuns
+		lc.finalizeOnDel = cmd.Bool("finalize-on-del")
 		for it := 0; ; it++ {
 			select {
 			case <-readerFailure:
@@ -1546,6 +1654,12 @@ func pumpShards(cmd *cli.Command, inners []*ebpf.Map, label string, writeShard f
 				if caps != nil && caps.totalReached() {
 					fmt.Fprintf(os.Stderr, "\ntotal output cap reached (--max-bytes %d); stopping\n", caps.totalLimit)
 					goto done
+				}
+				if it%100 == 0 && ctl.observe != nil {
+					if err := ctl.observe(); err != nil {
+						failure.record(err)
+						goto done
+					}
 				}
 				if needSnapshot && it%100 == 0 && lc.tick() {
 					goto done

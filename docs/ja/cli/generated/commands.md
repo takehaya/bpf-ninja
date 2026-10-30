@@ -68,6 +68,9 @@ GLOBAL OPTIONS:
    --cgroup string                                  capture on the cgroup-skb program(s) attached to this cgroup v2 path (enumerated via BPF_PROG_QUERY, ingress + egress); alternative to -i / -p
    --write string, -w string                        write packets to pcap file instead of stdout
    --mode string [ --mode string ]                  capture point: entry / exit (fentry/fexit observer on the target program, hook auto-detected) or xdp (attach as native XDP). Repeatable with one quoted filter after each: --mode entry EXPR --mode exit EXPR captures only the packets that match both (see README). tc-entry / tc-exit are deprecated aliases (default: "entry")
+   --hook-pcapng                                    entry capture of subfunctions in one XDP/tc program: one pcapng interface per selected hook and a shared packet id per program run (no tail calls or PREEMPT_RT)
+   --run-tracking string                            hook run tracking: auto (ctx before kernel 6.3, otherwise percpu), percpu or ctx (default: "auto")
+   --start string [ --start string ]                with --hook-pcapng: start following a run at the first matching NAME=FILTER hook; also records that hook
    --emit string                                    with two --mode: which image(s) to write for a packet that matched both filters — both, entry, or exit (default: "both")
    --count int, -c int                              exit after capturing N packets (0 = unlimited) (default: 0)
    --func string [ --func string ]                  attach to a specific __noinline subfunction (by BTF name) instead of the entry function; repeatable; distinct names select multiple targets, skipping unavailable functions with warnings
@@ -123,6 +126,9 @@ GLOBAL OPTIONS:
 | <code>cgroup</code> | <code>string</code> | <code></code> | false | false | <code></code> |
 | <code>write, w</code> | <code>string</code> | <code></code> | false | false | <code></code> |
 | <code>mode</code> | <code>string</code> | <code></code> | false | true | <code></code> |
+| <code>hook-pcapng</code> | <code>bool</code> | <code></code> | false | false | <code></code> |
+| <code>run-tracking</code> | <code>string</code> | <code></code> | false | false | <code></code> |
+| <code>start</code> | <code>string</code> | <code></code> | false | true | <code></code> |
 | <code>emit</code> | <code>string</code> | <code></code> | false | false | <code></code> |
 | <code>count, c</code> | <code>int</code> | <code></code> | false | false | <code></code> |
 | <code>func</code> | <code>string</code> | <code></code> | false | true | <code></code> |
@@ -199,6 +205,9 @@ GLOBAL OPTIONS:
    --cgroup string                                  capture on the cgroup-skb program(s) attached to this cgroup v2 path (enumerated via BPF_PROG_QUERY, ingress + egress); alternative to -i / -p
    --write string, -w string                        write packets to pcap file instead of stdout
    --mode string [ --mode string ]                  capture point: entry / exit (fentry/fexit observer on the target program, hook auto-detected) or xdp (attach as native XDP). Repeatable with one quoted filter after each: --mode entry EXPR --mode exit EXPR captures only the packets that match both (see README). tc-entry / tc-exit are deprecated aliases (default: "entry")
+   --hook-pcapng                                    entry capture of subfunctions in one XDP/tc program: one pcapng interface per selected hook and a shared packet id per program run (no tail calls or PREEMPT_RT)
+   --run-tracking string                            hook run tracking: auto (ctx before kernel 6.3, otherwise percpu), percpu or ctx (default: "auto")
+   --start string [ --start string ]                with --hook-pcapng: start following a run at the first matching NAME=FILTER hook; also records that hook
    --emit string                                    with two --mode: which image(s) to write for a packet that matched both filters — both, entry, or exit (default: "both")
    --count int, -c int                              exit after capturing N packets (0 = unlimited) (default: 0)
    --func string [ --func string ]                  attach to a specific __noinline subfunction (by BTF name) instead of the entry function; repeatable; distinct names select multiple targets, skipping unavailable functions with warnings
@@ -313,6 +322,9 @@ GLOBAL OPTIONS:
    --cgroup string                                  capture on the cgroup-skb program(s) attached to this cgroup v2 path (enumerated via BPF_PROG_QUERY, ingress + egress); alternative to -i / -p
    --write string, -w string                        write packets to pcap file instead of stdout
    --mode string [ --mode string ]                  capture point: entry / exit (fentry/fexit observer on the target program, hook auto-detected) or xdp (attach as native XDP). Repeatable with one quoted filter after each: --mode entry EXPR --mode exit EXPR captures only the packets that match both (see README). tc-entry / tc-exit are deprecated aliases (default: "entry")
+   --hook-pcapng                                    entry capture of subfunctions in one XDP/tc program: one pcapng interface per selected hook and a shared packet id per program run (no tail calls or PREEMPT_RT)
+   --run-tracking string                            hook run tracking: auto (ctx before kernel 6.3, otherwise percpu), percpu or ctx (default: "auto")
+   --start string [ --start string ]                with --hook-pcapng: start following a run at the first matching NAME=FILTER hook; also records that hook
    --emit string                                    with two --mode: which image(s) to write for a packet that matched both filters — both, entry, or exit (default: "both")
    --count int, -c int                              exit after capturing N packets (0 = unlimited) (default: 0)
    --func string [ --func string ]                  attach to a specific __noinline subfunction (by BTF name) instead of the entry function; repeatable; distinct names select multiple targets, skipping unavailable functions with warnings
@@ -384,6 +396,9 @@ GLOBAL OPTIONS:
    --cgroup string                                  capture on the cgroup-skb program(s) attached to this cgroup v2 path (enumerated via BPF_PROG_QUERY, ingress + egress); alternative to -i / -p
    --write string, -w string                        write packets to pcap file instead of stdout
    --mode string [ --mode string ]                  capture point: entry / exit (fentry/fexit observer on the target program, hook auto-detected) or xdp (attach as native XDP). Repeatable with one quoted filter after each: --mode entry EXPR --mode exit EXPR captures only the packets that match both (see README). tc-entry / tc-exit are deprecated aliases (default: "entry")
+   --hook-pcapng                                    entry capture of subfunctions in one XDP/tc program: one pcapng interface per selected hook and a shared packet id per program run (no tail calls or PREEMPT_RT)
+   --run-tracking string                            hook run tracking: auto (ctx before kernel 6.3, otherwise percpu), percpu or ctx (default: "auto")
+   --start string [ --start string ]                with --hook-pcapng: start following a run at the first matching NAME=FILTER hook; also records that hook
    --emit string                                    with two --mode: which image(s) to write for a packet that matched both filters — both, entry, or exit (default: "both")
    --count int, -c int                              exit after capturing N packets (0 = unlimited) (default: 0)
    --func string [ --func string ]                  attach to a specific __noinline subfunction (by BTF name) instead of the entry function; repeatable; distinct names select multiple targets, skipping unavailable functions with warnings
@@ -452,6 +467,9 @@ GLOBAL OPTIONS:
    --cgroup string                                  capture on the cgroup-skb program(s) attached to this cgroup v2 path (enumerated via BPF_PROG_QUERY, ingress + egress); alternative to -i / -p
    --write string, -w string                        write packets to pcap file instead of stdout
    --mode string [ --mode string ]                  capture point: entry / exit (fentry/fexit observer on the target program, hook auto-detected) or xdp (attach as native XDP). Repeatable with one quoted filter after each: --mode entry EXPR --mode exit EXPR captures only the packets that match both (see README). tc-entry / tc-exit are deprecated aliases (default: "entry")
+   --hook-pcapng                                    entry capture of subfunctions in one XDP/tc program: one pcapng interface per selected hook and a shared packet id per program run (no tail calls or PREEMPT_RT)
+   --run-tracking string                            hook run tracking: auto (ctx before kernel 6.3, otherwise percpu), percpu or ctx (default: "auto")
+   --start string [ --start string ]                with --hook-pcapng: start following a run at the first matching NAME=FILTER hook; also records that hook
    --emit string                                    with two --mode: which image(s) to write for a packet that matched both filters — both, entry, or exit (default: "both")
    --count int, -c int                              exit after capturing N packets (0 = unlimited) (default: 0)
    --func string [ --func string ]                  attach to a specific __noinline subfunction (by BTF name) instead of the entry function; repeatable; distinct names select multiple targets, skipping unavailable functions with warnings
@@ -520,6 +538,9 @@ GLOBAL OPTIONS:
    --cgroup string                                  capture on the cgroup-skb program(s) attached to this cgroup v2 path (enumerated via BPF_PROG_QUERY, ingress + egress); alternative to -i / -p
    --write string, -w string                        write packets to pcap file instead of stdout
    --mode string [ --mode string ]                  capture point: entry / exit (fentry/fexit observer on the target program, hook auto-detected) or xdp (attach as native XDP). Repeatable with one quoted filter after each: --mode entry EXPR --mode exit EXPR captures only the packets that match both (see README). tc-entry / tc-exit are deprecated aliases (default: "entry")
+   --hook-pcapng                                    entry capture of subfunctions in one XDP/tc program: one pcapng interface per selected hook and a shared packet id per program run (no tail calls or PREEMPT_RT)
+   --run-tracking string                            hook run tracking: auto (ctx before kernel 6.3, otherwise percpu), percpu or ctx (default: "auto")
+   --start string [ --start string ]                with --hook-pcapng: start following a run at the first matching NAME=FILTER hook; also records that hook
    --emit string                                    with two --mode: which image(s) to write for a packet that matched both filters — both, entry, or exit (default: "both")
    --count int, -c int                              exit after capturing N packets (0 = unlimited) (default: 0)
    --func string [ --func string ]                  attach to a specific __noinline subfunction (by BTF name) instead of the entry function; repeatable; distinct names select multiple targets, skipping unavailable functions with warnings
@@ -588,6 +609,9 @@ GLOBAL OPTIONS:
    --cgroup string                                  capture on the cgroup-skb program(s) attached to this cgroup v2 path (enumerated via BPF_PROG_QUERY, ingress + egress); alternative to -i / -p
    --write string, -w string                        write packets to pcap file instead of stdout
    --mode string [ --mode string ]                  capture point: entry / exit (fentry/fexit observer on the target program, hook auto-detected) or xdp (attach as native XDP). Repeatable with one quoted filter after each: --mode entry EXPR --mode exit EXPR captures only the packets that match both (see README). tc-entry / tc-exit are deprecated aliases (default: "entry")
+   --hook-pcapng                                    entry capture of subfunctions in one XDP/tc program: one pcapng interface per selected hook and a shared packet id per program run (no tail calls or PREEMPT_RT)
+   --run-tracking string                            hook run tracking: auto (ctx before kernel 6.3, otherwise percpu), percpu or ctx (default: "auto")
+   --start string [ --start string ]                with --hook-pcapng: start following a run at the first matching NAME=FILTER hook; also records that hook
    --emit string                                    with two --mode: which image(s) to write for a packet that matched both filters — both, entry, or exit (default: "both")
    --count int, -c int                              exit after capturing N packets (0 = unlimited) (default: 0)
    --func string [ --func string ]                  attach to a specific __noinline subfunction (by BTF name) instead of the entry function; repeatable; distinct names select multiple targets, skipping unavailable functions with warnings
@@ -665,6 +689,9 @@ GLOBAL OPTIONS:
    --cgroup string                                  capture on the cgroup-skb program(s) attached to this cgroup v2 path (enumerated via BPF_PROG_QUERY, ingress + egress); alternative to -i / -p
    --write string, -w string                        write packets to pcap file instead of stdout
    --mode string [ --mode string ]                  capture point: entry / exit (fentry/fexit observer on the target program, hook auto-detected) or xdp (attach as native XDP). Repeatable with one quoted filter after each: --mode entry EXPR --mode exit EXPR captures only the packets that match both (see README). tc-entry / tc-exit are deprecated aliases (default: "entry")
+   --hook-pcapng                                    entry capture of subfunctions in one XDP/tc program: one pcapng interface per selected hook and a shared packet id per program run (no tail calls or PREEMPT_RT)
+   --run-tracking string                            hook run tracking: auto (ctx before kernel 6.3, otherwise percpu), percpu or ctx (default: "auto")
+   --start string [ --start string ]                with --hook-pcapng: start following a run at the first matching NAME=FILTER hook; also records that hook
    --emit string                                    with two --mode: which image(s) to write for a packet that matched both filters — both, entry, or exit (default: "both")
    --count int, -c int                              exit after capturing N packets (0 = unlimited) (default: 0)
    --func string [ --func string ]                  attach to a specific __noinline subfunction (by BTF name) instead of the entry function; repeatable; distinct names select multiple targets, skipping unavailable functions with warnings
@@ -747,6 +774,9 @@ GLOBAL OPTIONS:
    --cgroup string                                  capture on the cgroup-skb program(s) attached to this cgroup v2 path (enumerated via BPF_PROG_QUERY, ingress + egress); alternative to -i / -p
    --write string, -w string                        write packets to pcap file instead of stdout
    --mode string [ --mode string ]                  capture point: entry / exit (fentry/fexit observer on the target program, hook auto-detected) or xdp (attach as native XDP). Repeatable with one quoted filter after each: --mode entry EXPR --mode exit EXPR captures only the packets that match both (see README). tc-entry / tc-exit are deprecated aliases (default: "entry")
+   --hook-pcapng                                    entry capture of subfunctions in one XDP/tc program: one pcapng interface per selected hook and a shared packet id per program run (no tail calls or PREEMPT_RT)
+   --run-tracking string                            hook run tracking: auto (ctx before kernel 6.3, otherwise percpu), percpu or ctx (default: "auto")
+   --start string [ --start string ]                with --hook-pcapng: start following a run at the first matching NAME=FILTER hook; also records that hook
    --emit string                                    with two --mode: which image(s) to write for a packet that matched both filters — both, entry, or exit (default: "both")
    --count int, -c int                              exit after capturing N packets (0 = unlimited) (default: 0)
    --func string [ --func string ]                  attach to a specific __noinline subfunction (by BTF name) instead of the entry function; repeatable; distinct names select multiple targets, skipping unavailable functions with warnings
@@ -821,6 +851,9 @@ GLOBAL OPTIONS:
    --cgroup string                                  capture on the cgroup-skb program(s) attached to this cgroup v2 path (enumerated via BPF_PROG_QUERY, ingress + egress); alternative to -i / -p
    --write string, -w string                        write packets to pcap file instead of stdout
    --mode string [ --mode string ]                  capture point: entry / exit (fentry/fexit observer on the target program, hook auto-detected) or xdp (attach as native XDP). Repeatable with one quoted filter after each: --mode entry EXPR --mode exit EXPR captures only the packets that match both (see README). tc-entry / tc-exit are deprecated aliases (default: "entry")
+   --hook-pcapng                                    entry capture of subfunctions in one XDP/tc program: one pcapng interface per selected hook and a shared packet id per program run (no tail calls or PREEMPT_RT)
+   --run-tracking string                            hook run tracking: auto (ctx before kernel 6.3, otherwise percpu), percpu or ctx (default: "auto")
+   --start string [ --start string ]                with --hook-pcapng: start following a run at the first matching NAME=FILTER hook; also records that hook
    --emit string                                    with two --mode: which image(s) to write for a packet that matched both filters — both, entry, or exit (default: "both")
    --count int, -c int                              exit after capturing N packets (0 = unlimited) (default: 0)
    --func string [ --func string ]                  attach to a specific __noinline subfunction (by BTF name) instead of the entry function; repeatable; distinct names select multiple targets, skipping unavailable functions with warnings

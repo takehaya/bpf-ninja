@@ -312,3 +312,52 @@ func TestStepBarrierFailureNeverAcknowledges(t *testing.T) {
 		}
 	}
 }
+
+func TestFinalizeBarrierDoesNotHoldRegistryLock(t *testing.T) {
+	f := newTestFinalizer(t, 1)
+	f.stateFor(7)
+	entered, registered, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	f.begin = func(tag uint32) (func() (bool, error), error) {
+		close(entered)
+		<-registered
+		return func() (bool, error) { f.stateFor(tag); return false, nil }, nil
+	}
+	go func() { f.step(nil); close(done) }()
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("barrier did not start")
+	}
+	go func() { f.register(7, 0, nil); close(registered) }()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("barrier held registry mutex")
+	}
+}
+
+func TestFinalizeFailureDuringCallbackLeavesNoPendingState(t *testing.T) {
+	for _, during := range []string{"begin", "poll"} {
+		t.Run(during, func(t *testing.T) {
+			f := newTagFinalizer("", output.Config{}, 1)
+			st := f.stateFor(7)
+			f.begin = func(tag uint32) (func() (bool, error), error) {
+				if during == "begin" {
+					f.fail(tag, fmt.Errorf("write failed"))
+				}
+				return func() (bool, error) {
+					if during == "poll" {
+						f.fail(tag, fmt.Errorf("write failed"))
+					}
+					return true, nil
+				}, nil
+			}
+			if got := f.step(nil); len(got) != 0 {
+				t.Fatal(got)
+			}
+			if len(f.pending) != 0 || len(f.closing) != 0 || st.finalized.Load() || f.Err() == nil {
+				t.Fatal("failed callback published completion or leaked state")
+			}
+		})
+	}
+}

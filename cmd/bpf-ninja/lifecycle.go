@@ -16,6 +16,8 @@ import (
 // makes the refresh → park → finalize → exit ordering a documented,
 // unit-testable sequence.
 type capLifecycle struct {
+	hookRuns       bool
+	finalizeOnDel  bool
 	caps           *byteCaps
 	fin            *tagFinalizer
 	sets           []*setmap.Set
@@ -105,7 +107,16 @@ func (l *capLifecycle) tick() (exitNow bool) {
 	}
 
 	if l.fin != nil {
-		for _, tag := range l.fin.step(activeTags(infos)) {
+		live := activeTags(infos)
+		if l.hookRuns {
+			live = nil
+			for _, in := range infos {
+				if !l.caps.isCapped(in.Tag) && (!l.finalizeOnDel || in.State == setmap.StateActive) {
+					live = append(live, in.Tag)
+				}
+			}
+		}
+		for _, tag := range l.fin.step(live) {
 			if err := l.fin.finalize(tag); err != nil {
 				fmt.Fprintf(os.Stderr, "warning: %v\n", err)
 				continue
