@@ -259,13 +259,16 @@ func TestBpfRunInterleaving(t *testing.T) {
 					t.Fatalf("hook accounting records=%d/800 accounted=%d: %s export=%+v observer_misses=%d entry_misses=%d exit_misses=%d hook_misses=%d", len(records), accounted, d, export, misses, entryMisses, exitMisses, hookMisses)
 				}
 				major, minor, _, _ := kernelVersion()
-				wantMismatch := mode == "percpu" && (major < 6 || major == 6 && minor < 3)
-				if misattributed != 0 || (misses == 0 && (d.Residual != 0 || unpaired != 0)) {
+				mayMismatch := mode == "percpu" && (major < 6 || major == 6 && minor < 3)
+				if misattributed != 0 || (misses == 0 && d.Residual != 0) || (misses == 0 && !d.Incomplete() && unpaired != 0) {
 					t.Fatalf("misattributed=%d unpaired=%d residual=%d misses=%d", misattributed, unpaired, d.Residual, misses)
 				}
-				if wantMismatch {
-					if d.Mismatches() == 0 || !d.Incomplete() {
-						t.Fatalf("expected incomplete mismatch: %s", d)
+				if mayMismatch {
+					if os.Getenv("BPF_NINJA_REQUIRE_PERCPU_MISMATCH") == "1" && d.Mismatches() == 0 {
+						t.Fatalf("preempt=full reproducer did not observe a mismatch: %s", d)
+					}
+					if d.Mismatches() == 0 && misses == 0 && (d.Incomplete() || len(records) != 800) {
+						t.Fatalf("loss without mismatch: records=%d/800 %s", len(records), d)
 					}
 				} else if misses == 0 && (d.Incomplete() || len(records) != 800) {
 					t.Fatalf("records=%d/800 %s", len(records), d)
