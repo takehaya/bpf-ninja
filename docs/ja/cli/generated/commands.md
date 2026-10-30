@@ -72,7 +72,7 @@ GLOBAL OPTIONS:
    --count int, -c int                              exit after capturing N packets (0 = unlimited) (default: 0)
    --func string [ --func string ]                  attach to a specific __noinline subfunction (by BTF name) instead of the entry function; repeatable; distinct names select multiple targets, skipping unavailable functions with warnings
    --allow-dispatcher-slot                          allow probes on unreplaced global dispatcher functions (may block later freplace with EBUSY)
-   --list-funcs                                     list available BTF functions in the target program and exit
+   --list-funcs                                     list BTF functions with loaded availability and exit
    --list-progs                                     list programs reachable from the target: freplace + tail calls + CPUMAP/DEVMAP/DEVMAP_HASH redirect targets (followed transitively), then exit
    --list-maps                                      with --list-progs, also list each function's calls and the maps it uses, with the op (lookup, update, delete, tail_call, ...) and source line, as a tree that replaces the --list-progs text; needs root to read the translated instructions
    --lookups-json string                            with --list-maps, read the file inject-run --lookups-json wrote and mark each map use with the load-time site of the same call and why it cannot be instrumented
@@ -203,7 +203,7 @@ GLOBAL OPTIONS:
    --count int, -c int                              exit after capturing N packets (0 = unlimited) (default: 0)
    --func string [ --func string ]                  attach to a specific __noinline subfunction (by BTF name) instead of the entry function; repeatable; distinct names select multiple targets, skipping unavailable functions with warnings
    --allow-dispatcher-slot                          allow probes on unreplaced global dispatcher functions (may block later freplace with EBUSY)
-   --list-funcs                                     list available BTF functions in the target program and exit
+   --list-funcs                                     list BTF functions with loaded availability and exit
    --list-progs                                     list programs reachable from the target: freplace + tail calls + CPUMAP/DEVMAP/DEVMAP_HASH redirect targets (followed transitively), then exit
    --list-maps                                      with --list-progs, also list each function's calls and the maps it uses, with the op (lookup, update, delete, tail_call, ...) and source line, as a tree that replaces the --list-progs text; needs root to read the translated instructions
    --lookups-json string                            with --list-maps, read the file inject-run --lookups-json wrote and mark each map use with the load-time site of the same call and why it cannot be instrumented
@@ -317,7 +317,7 @@ GLOBAL OPTIONS:
    --count int, -c int                              exit after capturing N packets (0 = unlimited) (default: 0)
    --func string [ --func string ]                  attach to a specific __noinline subfunction (by BTF name) instead of the entry function; repeatable; distinct names select multiple targets, skipping unavailable functions with warnings
    --allow-dispatcher-slot                          allow probes on unreplaced global dispatcher functions (may block later freplace with EBUSY)
-   --list-funcs                                     list available BTF functions in the target program and exit
+   --list-funcs                                     list BTF functions with loaded availability and exit
    --list-progs                                     list programs reachable from the target: freplace + tail calls + CPUMAP/DEVMAP/DEVMAP_HASH redirect targets (followed transitively), then exit
    --list-maps                                      with --list-progs, also list each function's calls and the maps it uses, with the op (lookup, update, delete, tail_call, ...) and source line, as a tree that replaces the --list-progs text; needs root to read the translated instructions
    --lookups-json string                            with --list-maps, read the file inject-run --lookups-json wrote and mark each map use with the load-time site of the same call and why it cannot be instrumented
@@ -388,7 +388,7 @@ GLOBAL OPTIONS:
    --count int, -c int                              exit after capturing N packets (0 = unlimited) (default: 0)
    --func string [ --func string ]                  attach to a specific __noinline subfunction (by BTF name) instead of the entry function; repeatable; distinct names select multiple targets, skipping unavailable functions with warnings
    --allow-dispatcher-slot                          allow probes on unreplaced global dispatcher functions (may block later freplace with EBUSY)
-   --list-funcs                                     list available BTF functions in the target program and exit
+   --list-funcs                                     list BTF functions with loaded availability and exit
    --list-progs                                     list programs reachable from the target: freplace + tail calls + CPUMAP/DEVMAP/DEVMAP_HASH redirect targets (followed transitively), then exit
    --list-maps                                      with --list-progs, also list each function's calls and the maps it uses, with the op (lookup, update, delete, tail_call, ...) and source line, as a tree that replaces the --list-progs text; needs root to read the translated instructions
    --lookups-json string                            with --list-maps, read the file inject-run --lookups-json wrote and mark each map use with the load-time site of the same call and why it cannot be instrumented
@@ -456,7 +456,7 @@ GLOBAL OPTIONS:
    --count int, -c int                              exit after capturing N packets (0 = unlimited) (default: 0)
    --func string [ --func string ]                  attach to a specific __noinline subfunction (by BTF name) instead of the entry function; repeatable; distinct names select multiple targets, skipping unavailable functions with warnings
    --allow-dispatcher-slot                          allow probes on unreplaced global dispatcher functions (may block later freplace with EBUSY)
-   --list-funcs                                     list available BTF functions in the target program and exit
+   --list-funcs                                     list BTF functions with loaded availability and exit
    --list-progs                                     list programs reachable from the target: freplace + tail calls + CPUMAP/DEVMAP/DEVMAP_HASH redirect targets (followed transitively), then exit
    --list-maps                                      with --list-progs, also list each function's calls and the maps it uses, with the op (lookup, update, delete, tail_call, ...) and source line, as a tree that replaces the --list-progs text; needs root to read the translated instructions
    --lookups-json string                            with --list-maps, read the file inject-run --lookups-json wrote and mark each map use with the load-time site of the same call and why it cannot be instrumented
@@ -524,7 +524,7 @@ GLOBAL OPTIONS:
    --count int, -c int                              exit after capturing N packets (0 = unlimited) (default: 0)
    --func string [ --func string ]                  attach to a specific __noinline subfunction (by BTF name) instead of the entry function; repeatable; distinct names select multiple targets, skipping unavailable functions with warnings
    --allow-dispatcher-slot                          allow probes on unreplaced global dispatcher functions (may block later freplace with EBUSY)
-   --list-funcs                                     list available BTF functions in the target program and exit
+   --list-funcs                                     list BTF functions with loaded availability and exit
    --list-progs                                     list programs reachable from the target: freplace + tail calls + CPUMAP/DEVMAP/DEVMAP_HASH redirect targets (followed transitively), then exit
    --list-maps                                      with --list-progs, also list each function's calls and the maps it uses, with the op (lookup, update, delete, tail_call, ...) and source line, as a tree that replaces the --list-progs text; needs root to read the translated instructions
    --lookups-json string                            with --list-maps, read the file inject-run --lookups-json wrote and mark each map use with the load-time site of the same call and why it cannot be instrumented
@@ -592,7 +592,7 @@ GLOBAL OPTIONS:
    --count int, -c int                              exit after capturing N packets (0 = unlimited) (default: 0)
    --func string [ --func string ]                  attach to a specific __noinline subfunction (by BTF name) instead of the entry function; repeatable; distinct names select multiple targets, skipping unavailable functions with warnings
    --allow-dispatcher-slot                          allow probes on unreplaced global dispatcher functions (may block later freplace with EBUSY)
-   --list-funcs                                     list available BTF functions in the target program and exit
+   --list-funcs                                     list BTF functions with loaded availability and exit
    --list-progs                                     list programs reachable from the target: freplace + tail calls + CPUMAP/DEVMAP/DEVMAP_HASH redirect targets (followed transitively), then exit
    --list-maps                                      with --list-progs, also list each function's calls and the maps it uses, with the op (lookup, update, delete, tail_call, ...) and source line, as a tree that replaces the --list-progs text; needs root to read the translated instructions
    --lookups-json string                            with --list-maps, read the file inject-run --lookups-json wrote and mark each map use with the load-time site of the same call and why it cannot be instrumented
@@ -669,7 +669,7 @@ GLOBAL OPTIONS:
    --count int, -c int                              exit after capturing N packets (0 = unlimited) (default: 0)
    --func string [ --func string ]                  attach to a specific __noinline subfunction (by BTF name) instead of the entry function; repeatable; distinct names select multiple targets, skipping unavailable functions with warnings
    --allow-dispatcher-slot                          allow probes on unreplaced global dispatcher functions (may block later freplace with EBUSY)
-   --list-funcs                                     list available BTF functions in the target program and exit
+   --list-funcs                                     list BTF functions with loaded availability and exit
    --list-progs                                     list programs reachable from the target: freplace + tail calls + CPUMAP/DEVMAP/DEVMAP_HASH redirect targets (followed transitively), then exit
    --list-maps                                      with --list-progs, also list each function's calls and the maps it uses, with the op (lookup, update, delete, tail_call, ...) and source line, as a tree that replaces the --list-progs text; needs root to read the translated instructions
    --lookups-json string                            with --list-maps, read the file inject-run --lookups-json wrote and mark each map use with the load-time site of the same call and why it cannot be instrumented
@@ -751,7 +751,7 @@ GLOBAL OPTIONS:
    --count int, -c int                              exit after capturing N packets (0 = unlimited) (default: 0)
    --func string [ --func string ]                  attach to a specific __noinline subfunction (by BTF name) instead of the entry function; repeatable; distinct names select multiple targets, skipping unavailable functions with warnings
    --allow-dispatcher-slot                          allow probes on unreplaced global dispatcher functions (may block later freplace with EBUSY)
-   --list-funcs                                     list available BTF functions in the target program and exit
+   --list-funcs                                     list BTF functions with loaded availability and exit
    --list-progs                                     list programs reachable from the target: freplace + tail calls + CPUMAP/DEVMAP/DEVMAP_HASH redirect targets (followed transitively), then exit
    --list-maps                                      with --list-progs, also list each function's calls and the maps it uses, with the op (lookup, update, delete, tail_call, ...) and source line, as a tree that replaces the --list-progs text; needs root to read the translated instructions
    --lookups-json string                            with --list-maps, read the file inject-run --lookups-json wrote and mark each map use with the load-time site of the same call and why it cannot be instrumented
@@ -825,7 +825,7 @@ GLOBAL OPTIONS:
    --count int, -c int                              exit after capturing N packets (0 = unlimited) (default: 0)
    --func string [ --func string ]                  attach to a specific __noinline subfunction (by BTF name) instead of the entry function; repeatable; distinct names select multiple targets, skipping unavailable functions with warnings
    --allow-dispatcher-slot                          allow probes on unreplaced global dispatcher functions (may block later freplace with EBUSY)
-   --list-funcs                                     list available BTF functions in the target program and exit
+   --list-funcs                                     list BTF functions with loaded availability and exit
    --list-progs                                     list programs reachable from the target: freplace + tail calls + CPUMAP/DEVMAP/DEVMAP_HASH redirect targets (followed transitively), then exit
    --list-maps                                      with --list-progs, also list each function's calls and the maps it uses, with the op (lookup, update, delete, tail_call, ...) and source line, as a tree that replaces the --list-progs text; needs root to read the translated instructions
    --lookups-json string                            with --list-maps, read the file inject-run --lookups-json wrote and mark each map use with the load-time site of the same call and why it cannot be instrumented

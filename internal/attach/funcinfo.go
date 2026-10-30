@@ -21,13 +21,13 @@ const (
 
 // FuncAvailability describes membership in this load, independently of BTF linkage.
 type FuncAvailability struct {
-	Reason         string
-	BTFFuncPresent bool
-	FuncTypeID     btf.TypeID
-	Detail         string
+	Reason         string     `json:"reason"`
+	BTFFuncPresent bool       `json:"btf_func_present"`
+	FuncTypeID     btf.TypeID `json:"func_type_id,omitempty"`
+	Detail         string     `json:"detail,omitempty"`
 }
 
-// String is the compact reason used in warnings.
+// String is the compact reason used in warnings and listings.
 func (a FuncAvailability) String() string {
 	return a.Reason
 }
@@ -126,7 +126,7 @@ type funcInfoRecord struct {
 
 func validateFuncInfoHeader(count, recSize uint32) error {
 	if count == 0 {
-		return errors.New("func_info unavailable (count=0); missing CAP_BPF is a likely cause")
+		return errors.New("func_info unavailable (count=0); the loader may not have supplied func_info, or the caller lacks CAP_BPF")
 	}
 	if recSize != 8 {
 		return fmt.Errorf("unsupported func_info record size %d (want 8)", recSize)
@@ -159,7 +159,11 @@ func (loaded loadedFuncInfo) classify(spec *btf.Spec, name string) FuncAvailabil
 		}
 		return a
 	}
-	a.BTFFuncPresent = true
+	return loaded.classifyFunc(spec, fn)
+}
+
+func (loaded loadedFuncInfo) classifyFunc(spec *btf.Spec, fn *btf.Func) FuncAvailability {
+	a := FuncAvailability{Reason: FuncUnknown, BTFFuncPresent: true}
 	id, err := spec.TypeID(fn)
 	if err != nil {
 		a.Detail = err.Error()
@@ -186,9 +190,36 @@ func (p *ProgInfo) FuncAvailability(name string) FuncAvailability {
 	if err != nil {
 		return FuncAvailability{Reason: FuncUnknown, Detail: err.Error()}
 	}
+	return p.funcInfoCached().classify(spec, name)
+}
+
+func (p *ProgInfo) funcInfoCached() *loadedFuncInfo {
 	if p.loadedFuncs == nil {
 		loaded := readLoadedFuncInfo(p.Program)
 		p.loadedFuncs = &loaded
 	}
-	return p.loadedFuncs.classify(spec, name)
+	return p.loadedFuncs
+}
+
+// ListFuncs reads and caches loaded func_info, including read failures, once per ProgInfo.
+// It includes every BTF FUNC, classified by exact type ID, even if absent from this load.
+func (p *ProgInfo) ListFuncs() ([]FuncInfo, error) {
+	spec, err := p.BTFSpecCached()
+	if err != nil {
+		return nil, err
+	}
+	loaded := p.funcInfoCached()
+	var funcs []FuncInfo
+	for typ, err := range spec.All() {
+		if err != nil {
+			return funcs, err
+		}
+		if fn, ok := typ.(*btf.Func); ok {
+			funcs = append(funcs, FuncInfo{
+				Name: fn.Name, Linkage: fn.Linkage.String(),
+				Availability: loaded.classifyFunc(spec, fn),
+			})
+		}
+	}
+	return funcs, nil
 }

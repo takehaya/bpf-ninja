@@ -286,11 +286,16 @@ Resolver warnings, such as the never-matching second member of `eth/ipv4/(tcp|tc
 
 You can use `--func` to attach fentry/fexit to a `__noinline` subfunction inside the target XDP program, instead of the entry function. The subfunction must take `struct xdp_md *ctx` as its first argument.
 
-Use `--list-funcs` to discover available functions:
+Use `--list-funcs` to list BTF functions and their loaded availability:
 
 ```bash
 sudo bpf-ninja -i eth0 --list-funcs
 ```
+
+Text rows include a short reason; `--json` adds an `availability` object with the BTF type ID when known.
+Absent functions and external declarations stay in the list, including functions of other programs sharing the BTF.
+`present` confirms membership in the loaded `func_info`; attachment still depends on the kernel's other checks.
+See [function availability troubleshooting](docs/en/attach-troubleshooting.md) for the reason codes.
 
 Both global and static `__noinline` subfunctions work:
 
@@ -397,7 +402,7 @@ For discovery, syntax, BTF resolution, read failures, and a worked IMSI example,
 | `--dump-asm` | Print compiled eBPF asm and exit. Values: `filter` (kunai/cbpfc body only) \| `full` (wrapped program). No `-i`/`-p` required | — |
 | `--dump-hook` | Hook whose capabilities/prologue `--dump-asm` renders: `xdp` (default) \| `tc` \| `cgroup-skb` \| `netfilter` (offline compiles have no target program to auto-detect from) | — |
 | `--func` | Attach to a specific `__noinline` subfunction by BTF name | entry, exit |
-| `--list-funcs` | List available BTF functions in the target program and exit | entry, exit |
+| `--list-funcs` | List all BTF functions with loaded availability and exit | entry, exit |
 | `--allow-dispatcher-slot` | Allow probing an unreplaced global dispatcher subfunction; may block later freplace with `EBUSY` | entry, exit |
 | `--list-progs` | List reachable freplace, tail-call, and redirect-map targets and exit | entry, exit |
 | `--list-maps` | With `--list-progs`, also list each function's calls and the maps it uses, with the op (`lookup`, `update`, `delete`, `tail_call`, ...) and source line, read from the loaded program's translated instructions (needs root) | entry, exit |

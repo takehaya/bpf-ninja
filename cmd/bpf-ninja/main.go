@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/cilium/ebpf"
+	"io"
 	"os"
 	"os/signal"
 	"runtime/pprof"
@@ -85,7 +86,7 @@ func rootFlags() []cli.Flag {
 		},
 		&cli.BoolFlag{
 			Name:  "list-funcs",
-			Usage: "list available BTF functions in the target program and exit",
+			Usage: "list BTF functions with loaded availability and exit",
 		},
 		&cli.BoolFlag{
 			Name:  "list-progs",
@@ -668,29 +669,23 @@ func run(ctx context.Context, cmd *cli.Command) error {
 		return nil
 	}
 
-	// --list-funcs: print available BTF functions per target and exit.
+	// --list-funcs: print all BTF functions with loaded availability and exit.
 	// (When combined with --list-progs, the funcs are printed per reachable
 	// node in the list-progs handler above, which returns first.)
 	if cmd.Bool("list-funcs") {
 		asJSON := cmd.Bool("json")
 		var jsonOut []funcsTargetJSON
 		for _, info := range infos {
-			spec, err := info.BTFSpecCached()
+			funcs, err := info.ListFuncs()
 			if err != nil {
 				return fmt.Errorf("program (id=%d): %w", info.ProgID, err)
-			}
-			funcs, err := attach.ListFuncsFromSpec(spec)
-			if err != nil {
-				return err
 			}
 			if asJSON {
 				jsonOut = append(jsonOut, funcsTargetJSON{ID: info.ProgID, Funcs: funcsToJSON(funcs)})
 				continue
 			}
 			fmt.Fprintf(os.Stderr, "BTF functions in program (id=%d):\n", info.ProgID)
-			for _, f := range funcs {
-				fmt.Fprintf(os.Stderr, "  %-40s [%s]\n", f.Name, f.Linkage)
-			}
+			printFuncRows(os.Stderr, funcs, "  ")
 		}
 		if asJSON {
 			return emitJSON(jsonOut)
@@ -2025,14 +2020,8 @@ func fetchNodeFuncs(progID uint32, root *attach.ProgInfo) []attach.FuncInfo {
 		defer func() { _ = opened.Program.Close() }()
 		info = opened
 	}
-	// Both the borrowed root and a fresh Find* cache their parsed BTF, so
-	// BTFSpecCached reuses it rather than re-parsing (which a bare
-	// attach.ListFuncs(prog) would do).
-	spec, err := info.BTFSpecCached()
-	if err != nil {
-		return nil
-	}
-	funcs, err := attach.ListFuncsFromSpec(spec)
+	// ListFuncs reuses the node's cached BTF and loaded func_info.
+	funcs, err := info.ListFuncs()
 	if err != nil {
 		return nil
 	}
@@ -2041,8 +2030,19 @@ func fetchNodeFuncs(progID uint32, root *attach.ProgInfo) []attach.FuncInfo {
 
 // printNodeFuncs prints a node's BTF functions indented under it (text mode).
 func printNodeFuncs(progID uint32, root *attach.ProgInfo, indent string) {
-	for _, f := range fetchNodeFuncs(progID, root) {
-		fmt.Fprintf(os.Stderr, "%s%-40s [%s]\n", indent, f.Name, f.Linkage)
+	printFuncRows(os.Stderr, fetchNodeFuncs(progID, root), indent)
+}
+
+func printFuncRows(w io.Writer, funcs []attach.FuncInfo, indent string) {
+	var detail string
+	for _, f := range funcs {
+		_, _ = fmt.Fprintf(w, "%s%-40s [%s] %s\n", indent, f.Name, f.Linkage, f.Availability)
+		if detail == "" && f.Availability.Reason == attach.FuncUnknown {
+			detail = f.Availability.Detail
+		}
+	}
+	if detail != "" {
+		_, _ = fmt.Fprintf(w, "%savailability unknown: %s\n", indent, strings.Join(strings.Fields(detail), " "))
 	}
 }
 

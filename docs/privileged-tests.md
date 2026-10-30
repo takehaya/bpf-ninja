@@ -50,7 +50,7 @@ privileged audit both have fault-injection tests under `scripts/tests`.
 `TestBpfPrunedSubprog` in internal/program and `TestBpfPrunedSubprogCLI` in
 cmd/bpf-ninja cover loaded `func_info` diagnostics using
 `internal/program/testdata/pruned_subprog.c`.
-The tests check fentry/fexit, explicit requests, parameter lists, multiple programs, and JSON
+The tests check fentry/fexit, explicit requests, function and parameter lists, multiple programs, and JSON
 exclusion of skipped targets.
 On 7.0 the disabled global call is removed; 6.1 retains that global function,
 while removing the disabled static functions.

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -60,6 +61,70 @@ func TestBpfPrunedSubprogCLI(t *testing.T) {
 		argv = append(argv, args...)
 		return captureStdio(t, func() error { return newRootCommand().Run(context.Background(), argv) })
 	}
+	t.Run("availability listing", func(t *testing.T) {
+		release, err := os.ReadFile("/proc/sys/kernel/osrelease")
+		if err != nil {
+			t.Fatal(err)
+		}
+		wantReasons := map[string]string{
+			"entry": "present", "live_hook": "present",
+			"static_dead": "absent_from_loaded_func_info", "static_dead_other": "absent_from_loaded_func_info",
+			"global_dead": "",
+		}
+		if strings.HasPrefix(string(release), "6.1.") {
+			wantReasons["global_dead"] = "present"
+		} else if strings.HasPrefix(string(release), "7.0.") {
+			wantReasons["global_dead"] = "absent_from_loaded_func_info"
+		}
+		for _, tree := range []bool{false, true} {
+			args := []string{"--list-funcs"}
+			if tree {
+				args = append(args, "--list-progs")
+			}
+			stdout, stderr, err := run(infos[:1], append(args, "--json")...)
+			if err != nil || stderr != "" {
+				t.Fatalf("%s %s %v", stdout, stderr, err)
+			}
+			var rows []struct {
+				ID    uint32 `json:"id"`
+				Funcs []struct {
+					Name         string `json:"name"`
+					Availability struct {
+						Reason         string `json:"reason"`
+						BTFFuncPresent bool   `json:"btf_func_present"`
+						FuncTypeID     uint32 `json:"func_type_id"`
+						Detail         string `json:"detail"`
+					} `json:"availability"`
+				} `json:"funcs"`
+				Reachable []json.RawMessage `json:"reachable"`
+			}
+			if err := json.Unmarshal([]byte(stdout), &rows); err != nil {
+				t.Fatal(err)
+			}
+			if len(rows) != 1 || rows[0].ID != infos[0].ProgID || len(rows[0].Funcs) != len(wantReasons) || (tree && rows[0].Reachable == nil) {
+				t.Fatal(stdout)
+			}
+			seen := map[string]bool{}
+			ids := map[uint32]bool{}
+			for _, f := range rows[0].Funcs {
+				want, ok := wantReasons[f.Name]
+				a := f.Availability
+				if !ok || seen[f.Name] || ids[a.FuncTypeID] || !a.BTFFuncPresent || a.FuncTypeID == 0 || a.Detail != "" {
+					t.Fatal(stdout)
+				}
+				seen[f.Name], ids[a.FuncTypeID] = true, true
+				if (want != "" && a.Reason != want) || (want == "" && a.Reason != "present" && a.Reason != "absent_from_loaded_func_info") {
+					t.Fatal(stdout)
+				}
+			}
+			t.Logf("tree=%t json=%s", tree, stdout)
+			stdout, stderr, err = run(infos[:1], args...)
+			if err != nil || stdout != "" || !regexp.MustCompile(`(?m)^\s+static_dead\s+\[static\] absent_from_loaded_func_info$`).MatchString(stderr) || strings.Contains(stderr, "type_id") || strings.Contains(stderr, "unreachable") {
+				t.Fatalf("%s %s %v", stdout, stderr, err)
+			}
+			t.Logf("tree=%t text=%s", tree, stderr)
+		}
+	})
 	for _, tc := range []struct {
 		name     string
 		programs []*attach.ProgInfo
