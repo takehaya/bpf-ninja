@@ -77,6 +77,10 @@ type Config struct {
 	// epb_packetid = Packet.PacketID so the entry and exit records of
 	// one invocation can be paired. NewWriter sets IsFexit for it.
 	MultiPoint bool
+
+	// Hooks enables one interface per capture-local site (slice index + 1).
+	// Every EPB carries the invocation PacketID. Mutually exclusive with verdict layouts.
+	Hooks []string
 }
 
 // linkTypeOrDefault resolves the zero value to Ethernet.
@@ -111,6 +115,9 @@ type Writer struct {
 // In exit mode (cfg.IsFexit), creates one pcapng interface per verdict in
 // cfg.Actions so that Wireshark displays the verdict as the interface name.
 func NewWriter(path string, cfg Config) (*Writer, error) {
+	if len(cfg.Hooks) > 0 && (cfg.MultiPoint || cfg.IsFexit || len(cfg.Hooks) > 255) {
+		return nil, fmt.Errorf("hook layout needs 1..255 hooks and no verdict layout")
+	}
 	if cfg.MultiPoint {
 		cfg.IsFexit = true
 	}
@@ -139,7 +146,9 @@ func NewWriter(path string, cfg Config) (*Writer, error) {
 	// gopacket writer for its per-action multi-interface layout. Set
 	// BPF_NINJA_FAST_PCAPNG=0 to force the gopacket writer.
 	useFast := os.Getenv("BPF_NINJA_FAST_PCAPNG") != "0" && !cfg.IsFexit
-	if cfg.MultiPoint {
+	if len(cfg.Hooks) > 0 {
+		err = w.initHooks(dest)
+	} else if cfg.MultiPoint {
 		err = w.initMultiPoint(dest)
 	} else if useFast {
 		w.fastWriter, err = NewFastNgWriter(dest, cfg.linkTypeOrDefault())
@@ -162,6 +171,28 @@ func NewWriter(path string, cfg Config) (*Writer, error) {
 	}
 
 	return w, nil
+}
+
+// initHooks uses the same opaque id option as gated capture, with a stable
+// interface table across shards. Site ids are local to this capture, not ELF PCs.
+func (w *Writer) initHooks(dest io.Writer) error {
+	fw := &FastNgWriter{w: dest, linkType: uint16(w.cfg.linkTypeOrDefault())}
+	if err := fw.writeSHB(); err != nil {
+		return err
+	}
+	seen := map[string]bool{}
+	for i, name := range w.cfg.Hooks {
+		if name == "" || seen[name] {
+			return fmt.Errorf("empty or duplicate hook name %q", name)
+		}
+		seen[name] = true
+		if err := fw.writeIDBDescription(fw.linkType, name, fmt.Sprintf("%s%d", hookDescriptionPrefix, i+1)); err != nil {
+			return err
+		}
+		fw.nIfaces++
+	}
+	w.fastWriter = fw
+	return nil
 }
 
 // initExitMode creates one pcapng interface per verdict in cfg.Actions
@@ -226,10 +257,10 @@ func (w *Writer) addInterface(name string) (int, error) {
 }
 
 // EPBSize is the on-disk size of one record this writer emits for a
-// packet of caplen bytes: the multi-point layout adds the epb_packetid
+// packet of caplen bytes: multi-point and hook layouts add the epb_packetid
 // option to every EPB. Byte-cap accounting uses it.
 func (w *Writer) EPBSize(caplen int) int {
-	if w.cfg.MultiPoint {
+	if w.cfg.MultiPoint || len(w.cfg.Hooks) > 0 {
 		return EPBSizeID(caplen)
 	}
 	return EPBSize(caplen)
@@ -353,7 +384,12 @@ func (w *Writer) WriteBatch(pkts []capture.Packet) (err error) {
 		for i := range pkts {
 			p := &pkts[i]
 			var err error
-			if w.cfg.MultiPoint {
+			if len(w.cfg.Hooks) > 0 {
+				if p.SiteID == 0 || int(p.SiteID) > len(w.cfg.Hooks) || p.PacketID == 0 {
+					return fmt.Errorf("invalid hook record: site_id=%d packet_id=%d", p.SiteID, p.PacketID)
+				}
+				err = w.fastWriter.WritePacketID(p.Timestamp, p.Data, int(p.SiteID)-1, p.PacketID)
+			} else if w.cfg.MultiPoint {
 				err = w.fastWriter.WritePacketID(p.Timestamp, p.Data, w.ifaceIDForPacket(p), p.PacketID)
 			} else {
 				err = w.fastWriter.WritePacket(p.Timestamp, p.Data)
