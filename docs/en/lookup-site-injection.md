@@ -592,6 +592,10 @@ sudo -E env PATH=$PATH go test -count=1 -run 'TestBpfLookupInjection|TestBpfLook
 All 77 privileged `TestBpf` tests of this package, including the lookup, miss, update, delete, push, pop, peek, special-field, socket-map, entry, tail-call, stack-limit, dispatch and generated equivalence tests, pass across the CI kernel matrix (6.1 to 7.3-rc4) that `make test-bpf` runs, where the tests whose hooks need `arg:untrusted` skip on 6.1-6.15, the callback stack-limit subtests skip on 7.3, which forbids tail calls in callbacks, and the sockhash update tests skip on 7.3, which no longer lets tc update a socket map (see scripts/test/privileged.py).
 This is finite test evidence for the fixture, not a general program-equivalence, concurrency, or kernel-version guarantee.
 
+The independent [instruction translation validator](../../pkg/injectcheck/README.md) checks preservation, relocation and allowed insertion forms without loading BPF.
+Its acceptance is conditional on valid original and transformed programs, the BPF calling convention and the caller's stack-alias audit.
+Run its offline fixtures with `go test ./pkg/injectcheck ./pkg/inject ./cmd/inject-check`.
+
 ## Supplying missing live map types
 
 The raw transform uses `RawMap.Key` and `RawMap.Value` as supplied by its caller.

@@ -16,6 +16,9 @@ SYSCALLHOOK = "github.com/takehaya/bpf-ninja/pkg/syscallhook"
 
 def allowed_skip(package, test, output, kernel):
     if package == INJECT:
+        # The opt-in census requires external corpus inputs on every kernel.
+        if test == "TestTranslationValidationCensus":
+            return "set BPF_NINJA_VALIDATE_OBJECTS, BPF_NINJA_VALIDATE_CENSUS and BPF_NINJA_VALIDATE_OUTPUT" in output
         # 7.3 rejects a tail call reachable from a bpf_loop callback outright.
         if test in {"TestBpfStackLimitsAcrossCalls/callback", "TestBpfStackLimitsAcrossCalls/callback-global"}:
             return kernel == "7.3-rc4" and "kernel forbids tail calls in callbacks" in output
@@ -131,6 +134,7 @@ def main():
         ("./cmd/bpf-ninja", "^TestBpf" if args.kernel else "^Test"),
         ("./pkg/kunai/dsltest", "^Test"),
         ("./pkg/inject", "^TestBpf" if args.kernel else "^Test"),
+        ("./pkg/injectcheck", "^TestBpf" if args.kernel else "^Test"),
     ]
     events, expected = [], set()
     env = dict(os.environ, CI="true", CGO_ENABLED="1")
