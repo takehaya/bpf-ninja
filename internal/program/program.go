@@ -559,7 +559,8 @@ func compileFilterWithSlots(expr string, useDSL, isFexit bool, progType ebpf.Pro
 // レジスタ割り当て (callee-saved):
 //   R6 = xdp_buff ポインタ (trusted, bpf_xdp_output に渡す)
 //   R7 = xdp->data (パケット先頭)
-//   R8 = xdp->data_end (パケット末尾)
+//   R8 = data_end during packet prologue/filter; callers may move a found
+//        run frame from R0 to R8 afterwards and keep it until record emission
 //   R9 = パケット長
 //
 // スタックレイアウト (R10 からの負オフセット):
@@ -567,12 +568,23 @@ func compileFilterWithSlots(expr string, useDSL, isFexit bool, progType ebpf.Pro
 //   -12: canonical fexit return value (u32)
 //   -16: map lookup の key
 //   -24: scratch buffer ポインタ (フィルタ時のみ)
+//   -32..-25: ringbuf pointer / gated frame park
+//   -40..-33: copy size; packet set keys also use -40..-25
 //   -48: tracing args ポインタの退避
+//   -56..-49: timestamp
 //   -128..-121: pointer-member read temporary (arg filters only; dead before
 //               set filters and runFilter, which owns KunaiStackTop=-56 downward)
 //   -57..-120: set filter のキーバッファ (emitSetFilters; runFilter の
 //              前で死ぬ。kunai は KunaiStackTop=-56 以深を所有するが
 //              それは runFilter 内のみ live — phase ordering で共存)
+//
+//   -136..-129: static XDP identity R0 spill
+//   -144..-137: static XDP fexit identity R2 spill
+//   -160..-145: static XDP probe_read buffer (data, data_end)
+//   -208..-201: runCPUStack (u64 CPU bits; sequence emitter only)
+//   -216..-209: runKeyStack (u64 ctx key; locator emitter only)
+//   Run temporaries live only within one emitter. Kunai may reuse these bytes
+//   during filters; no run temporary survives a filter or hook prologue.
 //
 // 実際の on-wire フォーマットの正典は internal/capture/capture.go の
 // コメント。現行は ringbuf reserve/submit で 28B のメタデータヘッダを

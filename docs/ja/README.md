@@ -26,6 +26,7 @@ bpf-ninja を使うときは、導入、目的に合う手順、式の詳細の�
 [実装を読むための案内](architecture/README.md)から、処理の順序とコードの責務を辿れます。
 
 - [Capture datapath](capture-datapath.md)：カーネルから出力までの実装。
+- [hook 実行相関の準備部品](run-correlation.md)：capture からまだ使っていない実行対応の部品を説明する。
 - [DSL internals](dsl-internals.md)：compiler と host ABI。
 - [Map 操作の injection](../en/lookup-site-injection.md)と[u32 load site の typed injection](../en/typed-injection.md)：変換 API、hook ABI、呼び出し側の監査条件（英語）。
 - [BPF syscall hook の設計](../en/bpf-syscall-hook-design.md)：`inject-run` の構成と実装状況（英語）。
