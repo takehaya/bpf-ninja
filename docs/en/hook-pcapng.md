@@ -105,7 +105,8 @@ Check the capture status and loss counters before interpreting the last observed
 
 ## Diagnostics
 
-Loss diagnostics mark a capture incomplete and stop capture.
+A loss never stops capture: recording and tag finalization continue, shards merge at shutdown, and the final summary reports `capture status=incomplete` with a nonzero exit status.
+Diagnostic read errors also make that status sticky.
 The mode remains fixed; a percpu mismatch prints the count and a hint for the next capture.
 For example, startup prints `run tracking: ctx (kernel before 6.3 allows normal test-run interleaving)`.
 Counters count events, so several counters may describe one affected run; do not add them to estimate lost runs.
@@ -161,3 +162,6 @@ No network attachment or link changes are needed.
 To update the run instruction goldens, run `UPDATE_RUN_GOLDEN=1 go test ./internal/program -run '^TestRunCaptureMarshal$' -count=1` and review both `.hex` wire pins and `.asm` listings.
 Each stage can also run independently.
 
+Diagnostic read failures retain the first error for the final summary.
+Tags finalized after a detected loss have a `run tracking incomplete` marker on their completion line.
+A ctx insertion failure during startup is a loss even though successful rejected startup frames only count as pre-tracking.

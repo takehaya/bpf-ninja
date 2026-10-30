@@ -5,9 +5,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"github.com/google/gopacket/pcapgo"
-	"github.com/takehaya/bpf-ninja/internal/output"
-	"github.com/takehaya/bpf-ninja/internal/setmap"
 	"io"
 	"os"
 	"os/exec"
@@ -18,6 +15,11 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/cilium/ebpf"
+	"github.com/google/gopacket/pcapgo"
+	"github.com/takehaya/bpf-ninja/internal/output"
+	"github.com/takehaya/bpf-ninja/internal/setmap"
 )
 
 func TestBpfRunCLITagCompletion(t *testing.T) {
@@ -185,4 +187,136 @@ func TestBpfRunCLITagCompletion(t *testing.T) {
 			})
 		}
 	}
+}
+
+// Inject a loss counter deterministically, then keep the CLI alive past its
+// periodic diagnostic tick. A loss must not bypass the final shard merge.
+func TestBpfRunCLILossContinues(t *testing.T) {
+	coll, old, _ := runFixtureCapture(t, "run_stress_xdp", "ctx", 0)
+	if err := old.Close(); err != nil {
+		t.Fatal(err)
+	}
+	prog := coll.Programs["run_stress_xdp"]
+	info, err := prog.Info()
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, _ := info.ID()
+	binaryPath := os.Getenv("BPF_NINJA_HOOK_TEST_BINARY")
+	if binaryPath == "" {
+		binaryPath = filepath.Join(t.TempDir(), "bpf-ninja")
+		if out, err := exec.Command("go", "build", "-o", binaryPath, "../../cmd/bpf-ninja").CombinedOutput(); err != nil {
+			t.Fatalf("build CLI: %v\n%s", err, out)
+		}
+	}
+	dir := os.Getenv("BPF_NINJA_HOOK_TEST_DIR")
+	if dir == "" {
+		dir = t.TempDir()
+	}
+	path := filepath.Join(dir, "loss-continues.pcapng")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, binaryPath, "-p", fmt.Sprint(id), "--hook-pcapng", "--run-tracking", "ctx", "--func", "run_begin_xdp", "--func", "run_hook_xdp", "--fast-reader", "--no-cpu-affinity", "-w", path)
+	pipe, err := cmd.StderrPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if cmd.ProcessState == nil {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+		}
+	}()
+	ready, scanned := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	var log bytes.Buffer
+	go func() {
+		defer close(scanned)
+		s := bufio.NewScanner(pipe)
+		for s.Scan() {
+			line := s.Text()
+			fmt.Fprintln(&log, line)
+			if strings.HasPrefix(line, "capturing (") {
+				once.Do(func() { close(ready) })
+			}
+		}
+	}()
+	select {
+	case <-ready:
+	case <-ctx.Done():
+		t.Fatal("CLI did not start")
+	}
+	var stats *ebpf.Map
+	for next := ebpf.MapID(0); ; {
+		next, err = ebpf.MapGetNextID(next)
+		if err != nil {
+			break
+		}
+		m, e := ebpf.NewMapFromID(next)
+		if e != nil {
+			continue
+		}
+		mi, e := m.Info()
+		if e == nil && mi.Name == "ninja_run_stats" {
+			stats = m
+			break
+		}
+		_ = m.Close()
+	}
+	if stats == nil {
+		t.Fatal("CLI run stats map missing")
+	}
+	defer func() { _ = stats.Close() }()
+	cpus, err := ebpf.PossibleCPU()
+	if err != nil {
+		t.Fatal(err)
+	}
+	counters := make([][runStatCount]uint64, cpus)
+	counters[0][runCollision] = 1
+	if err = stats.Update(uint32(0), counters, ebpf.UpdateAny); err != nil {
+		t.Fatal(err)
+	}
+	// Two diagnostic ticks must pass before the first real run is sent.
+	time.Sleep(2200 * time.Millisecond)
+	if _, _, err = prog.Test(make([]byte, 64)); err != nil {
+		t.Fatal(err)
+	}
+	if err = cmd.Process.Signal(syscall.SIGINT); err != nil {
+		t.Fatalf("capture stopped on loss: %v", err)
+	}
+	err = cmd.Wait()
+	<-scanned
+	if e := os.WriteFile(path+".stderr", log.Bytes(), 0644); e != nil {
+		t.Fatal(e)
+	}
+	if err == nil || !strings.Contains(log.String(), "capture status=incomplete") || !strings.Contains(log.String(), "run_collision=1") {
+		t.Fatalf("CLI=%v\n%s", err, log.String())
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatalf("loss skipped merge: %v\n%s", err, log.String())
+	}
+	defer func() { _ = f.Close() }()
+	rd, err := pcapgo.NewNgReader(f, pcapgo.DefaultNgReaderOptions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for {
+		_, _, err = rd.ReadPacketData()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		n++
+	}
+	if n != 2 {
+		t.Fatalf("records after loss=%d/2\n%s", n, log.String())
+	}
+	t.Log("continued past two polls and merged 2/2 records; summary incomplete")
 }

@@ -1083,37 +1083,19 @@ func resolveFilterSyntax(cmd *cli.Command) (useDSL bool, err error) {
 func runCaptureLoop(cmd *cli.Command, probe *program.Probe, cfg output.Config, label string, sets []*setmap.Set) (retErr error) {
 	ctl := &captureControl{quiesce: probe.Quiesce, blockTag: probe.BlockTag, stopTag: probe.StopTag, outputErr: newOutputFailure(), hookRuns: cmd.Bool("hook-pcapng")}
 	if ctl.hookRuns {
-		ctl.observe = func() error {
-			misses, e := probe.ObserverMisses()
-			if e != nil {
-				return e
-			}
-			d, e := probe.RunDiagnostics(false)
-			if e != nil {
-				return e
-			}
-			if misses > 0 || d.Incomplete() {
-				return fmt.Errorf("run tracking incomplete: observer_misses=%d %s", misses, d)
-			}
-			return nil
+		ctl.observe = func() {
+			misses, me := probe.ObserverMisses()
+			d, de := probe.RunDiagnostics(false)
+			ctl.observeRunLoss(misses > 0 || d.Incomplete(), errors.Join(me, de))
 		}
-		if e := ctl.observe(); e != nil {
-			return e
-		}
+		ctl.observe()
 		ctl.quiesce = func() error {
-			if e := probe.Quiesce(); e != nil {
-				return e
+			if err := probe.Quiesce(); err != nil {
+				return err
 			}
-			if e := ctl.observe(); e != nil {
-				return e
-			}
-			d, e := probe.RunDiagnostics(true)
-			if e != nil {
-				return e
-			}
-			if d.Residual != 0 {
-				return fmt.Errorf("run tracking incomplete: residual=%d", d.Residual)
-			}
+			ctl.observe()
+			d, err := probe.RunDiagnostics(true)
+			ctl.observeRunLoss(d.Incomplete(), err)
 			return nil
 		}
 	}
@@ -1122,13 +1104,17 @@ func runCaptureLoop(cmd *cli.Command, probe *program.Probe, cfg output.Config, l
 		if ctl.hookRuns {
 			misses, e := probe.ObserverMisses()
 			d, de := probe.RunDiagnostics(true)
-			fmt.Fprintf(os.Stderr, "run tracking: observer_misses=%d %s\n", misses, d)
-			if e != nil || de != nil || misses > 0 || d.Incomplete() {
-				retErr = errors.Join(retErr, e, de, fmt.Errorf("run tracking incomplete"))
+			entryMisses, exitMisses, be := probe.BoundaryMisses()
+			fmt.Fprintf(os.Stderr, "run tracking: observer_misses=%d root_entry_misses=%d root_exit_misses=%d %s\n", misses, entryMisses, exitMisses, d)
+			if e != nil || de != nil || be != nil || misses > 0 || d.Incomplete() || ctl.runIncomplete.Load() {
+				retErr = errors.Join(retErr, ctl.runDiagnosticError(), e, de, be, fmt.Errorf("run tracking incomplete"))
+			}
+			if entryMisses+exitMisses > 0 {
+				fmt.Fprintln(os.Stderr, "warning: root boundary misses make later run IDs and tags unreliable after ctx address reuse")
 			}
 			mode, _ := probe.RunTracking()
 			if mode == "percpu" && d.Mismatches() > 0 {
-				fmt.Fprintln(os.Stderr, "hint: retry with --run-tracking=ctx")
+				fmt.Fprintf(os.Stderr, "hint: percpu saw %d ctx mismatches; retry with --run-tracking=ctx\n", d.Mismatches())
 			}
 		}
 		kernel, statsErr := probe.ExportStats()
@@ -1608,9 +1594,7 @@ func pumpShards(cmd *cli.Command, inners []*ebpf.Map, label string, writeShard f
 				return nil, err
 			}
 			if ctl.observe != nil {
-				if err := ctl.observe(); err != nil {
-					return nil, err
-				}
+				ctl.observe()
 			}
 			return ctl.barrier(), nil
 		}
@@ -1636,8 +1620,8 @@ func pumpShards(cmd *cli.Command, inners []*ebpf.Map, label string, writeShard f
 		// the state transitions, the exit decision, and the finalizer
 		// (see capLifecycle.tick for the ordering contract).
 		lc := newCapLifecycle(caps, fin, sets, cmd.String("write"), exitWhenCapped)
+		lc.control = ctl
 		lc.hookRuns = ctl.hookRuns
-		lc.finalizeOnDel = cmd.Bool("finalize-on-del")
 		for it := 0; ; it++ {
 			select {
 			case <-readerFailure:
@@ -1656,10 +1640,7 @@ func pumpShards(cmd *cli.Command, inners []*ebpf.Map, label string, writeShard f
 					goto done
 				}
 				if it%100 == 0 && ctl.observe != nil {
-					if err := ctl.observe(); err != nil {
-						failure.record(err)
-						goto done
-					}
+					ctl.observe()
 				}
 				if needSnapshot && it%100 == 0 && lc.tick() {
 					goto done

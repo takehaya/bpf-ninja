@@ -118,7 +118,8 @@ hook record がない理由には、分岐による迂回、フィルターの�
 
 ## 欠落を診断する
 
-欠落を診断した場合は capture を停止し、不完全として報告する。
+欠落があっても capture と tag の確定を続け、停止後に shard を merge してから summary を `capture status=incomplete` とし、終了 status を非 0 にする。
+診断の読出し失敗も不完全として保持する。
 方式は途中で切り替えず、percpu の不一致数と次回の ctx 指定の hint を表示する。
 開始時には、例えば `run tracking: ctx (kernel before 6.3 allows normal test-run interleaving)` と表示する。
 counter は event 数であり、一つの実行について複数の counter が増えるため、合計を欠落した実行数とは扱わない。
@@ -176,3 +177,7 @@ run-tracking 用の object は `BPF_NINJA_RUN_TEST_OBJECT` に指定できる。
 
 命令 golden の更新は `UPDATE_RUN_GOLDEN=1 go test ./internal/program -run '^TestRunCaptureMarshal$' -count=1` で行い、`.hex` の byte 列と `.asm` の命令一覧の両方を確認する。
 各 stage は単独でも実行できる。
+
+診断値の読み取りに失敗した場合は、最初のエラーを終了時の要約に残す。
+欠落を検出した後に tag を完了した場合は、完了行に `run tracking incomplete` を付ける。
+ctx の挿入失敗は起動中でも欠落に数え、正常に拒否した起動中の frame だけを pre-tracking に数える。
