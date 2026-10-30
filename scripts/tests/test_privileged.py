@@ -83,6 +83,32 @@ class AuditTests(unittest.TestCase):
         for test in ("TestBpfStackLimitsAcrossCalls", "TestBpfStackLimitsAcrossCalls/combined"):
             self.assertFalse(module.allowed_skip(module.INJECT, test, reason, "7.3-rc4"))
 
+    def test_inject_census_opt_in_skip_is_specific(self):
+        test = "TestTranslationValidationCensus"
+        reason = "    validation_test.go:118: set BPF_NINJA_VALIDATE_OBJECTS, BPF_NINJA_VALIDATE_CENSUS and BPF_NINJA_VALIDATE_OUTPUT\n"
+        for kernel in (None, "6.1", "6.6", "6.12", "6.15", "6.18", "7.0", "7.1", "7.2", "7.3-rc4"):
+            for package, name, message, allowed in (
+                (module.INJECT, test, reason, True),
+                (module.INJECT, "TestOther", reason, False),
+                (module.INJECT, test + "/other", reason, False),
+                (module.INJECT, test, "unexpected verifier failure", False),
+                (module.PROGRAM, test, reason, False),
+            ):
+                with self.subTest(kernel=kernel, package=package, test=name, reason=message):
+                    key = (package, name)
+                    events = [
+                        {"Package": package, "Test": name, "Action": "output", "Output": message},
+                        {"Package": package, "Test": name, "Action": "skip"},
+                        {"Package": package, "Action": "pass"},
+                    ]
+                    self.assertEqual(module.allowed_skip(*key, message, kernel), allowed)
+                    failures = module.audit(events, {key}, kernel)
+                    if allowed:
+                        self.assertEqual(failures, [])
+                    else:
+                        self.assertEqual(len(failures), 1)
+                        self.assertIn("unexpected skip", failures[0])
+
 
 class RunnerTests(unittest.TestCase):
     def test_syscallhook_binary_requires_both_tests_and_no_skips(self):
@@ -127,8 +153,12 @@ class RunnerTests(unittest.TestCase):
                 wait=mock.Mock(return_value=0),
             )
             self.assertEqual(module.main(), 0)
-        self.assertEqual(listing_run.call_count, 6)
-        self.assertEqual(popen.call_count, 6)
+        packages = [
+            "./internal/program", "./internal/attach", "./internal/capture/...",
+            "./cmd/bpf-ninja", "./pkg/kunai/dsltest", "./pkg/inject", "./pkg/injectcheck",
+        ]
+        self.assertEqual([call.args[0][-1] for call in listing_run.call_args_list], packages)
+        self.assertEqual([call.args[0][-1] for call in popen.call_args_list], packages)
         for call in listing_run.call_args_list + popen.call_args_list:
             command = call.args[0]
             start = command.index("go")
