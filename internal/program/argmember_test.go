@@ -95,7 +95,7 @@ func TestMemberLoadCodegen(t *testing.T) {
 }
 
 func TestEchoMemberRecordLimit(t *testing.T) {
-	_, err := LoadArgEcho(nil, "", nil, make([]attach.FuncParamInfo, 4097), false, false)
+	_, err := LoadArgEcho(nil, "", nil, make([]attach.FuncParamInfo, 4097), false, false, attach.FuncAvailability{})
 	if err == nil || !strings.Contains(err.Error(), "store offsets") {
 		t.Fatalf("oversized selection: %v", err)
 	}

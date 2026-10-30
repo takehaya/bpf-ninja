@@ -39,6 +39,7 @@ func LoadArgEcho(
 	echoParams []attach.FuncParamInfo,
 	isFexit bool,
 	allowDispatcherSlot bool,
+	availability attach.FuncAvailability,
 ) (*Probe, error) {
 	if len(echoParams) == 0 {
 		return nil, fmt.Errorf("--arg-echo requires at least one integer argument or member expression (see --list-params)")
@@ -89,7 +90,7 @@ func LoadArgEcho(
 	// probe's "bpf_ninja_entry"/"bpf_ninja_exit" and within the 15-char
 	// BPF name limit (so the distinguishing name isn't truncated away).
 	insns := buildArgEchoInsns(ring.FD(), argFilters, echoParams)
-	if err := attachTracingProbe(probe, targetProg, fmt.Sprintf("njecho_%s", label), funcName, attachType, insns, allowDispatcherSlot); err != nil {
+	if err := attachTracingProbe(probe, targetProg, fmt.Sprintf("njecho_%s", label), funcName, attachType, insns, allowDispatcherSlot, availability); err != nil {
 		return nil, err
 	}
 	return probe, nil

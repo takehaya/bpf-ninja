@@ -3,6 +3,7 @@
 - [日本語の利用ガイドと資料案内](ja/README.md)
 - [Installation and supported hooks (English)](../README.md#install)
 - [Manual capture tests (English)](en/handtest.md)
+- [Functions missing from a loaded program (English)](en/attach-troubleshooting.md)
 - [Experimental inject-run launcher and configuration (English)](en/inject-run.md)
 - [Map discovery and injection walkthrough (English)](en/inject-walkthrough.md), with [example sources](../examples/inject-walkthrough/README.md)
 - [Small observers for inject hooks (English)](en/inject-observers.md), with [example sources](../examples/inject-observers/README.md)

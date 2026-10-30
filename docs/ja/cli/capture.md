@@ -71,19 +71,26 @@ sudo bpf-ninja -i eth0 --mode entry "eth/ipv4/udp[dport==6081]" --mode exit "eth
 
 ## 複数の (プログラム, 関数) に同時アタッチする
 
-`-p` と `--func` はどちらも繰り返し指定できます。各 `--func` は、指定した全プログラムのうち BTF にその関数を持つものすべてにアタッチされます。関数を持たないプログラムはスキップされ、どのプログラムにも無い関数名はエラーになります。`--func` を省略した場合は各プログラムの entry 関数が対象です。
+`-p` と `--func` はどちらも繰り返し指定できる。
+各 `--func` は、指定した全 program のうち BTF とロード済み `func_info` にその関数を持つものすべてにアタッチする。
+異なる関数名の複数指定や複数 program の指定では、BTF FUNC があっても `func_info` にない対象や外部宣言を短い理由付きの警告でスキップし、件数を stderr に出す。
+単一 program で関数名が一つなら、同名を繰り返しても欠落時は詳しい説明付きで失敗する。
+全対象をスキップした場合は、切り分け資料へのリンクを一度示して失敗する。
+一部の program の BTF にない関数名は従来どおり警告なしでスキップし、全 program にない関数名はエラーになる。
+`--func` を省略した場合は各 program の entry 関数が対象である。
+[Subprog エラーの切り分け](../troubleshooting.md#fentryfexit-の-subprog-エラーを調べる)を参照する。
 
-モバイルコアの UPF を例にすると、上り (UL) と下り (DL) の capture point が別プログラムに分かれ、さらに多段 dispatcher (cpu_dispatch → CPUMAP → 方向別ハンドラ) を通ります。ここで `--func upf_capture_point_dl` が複数プログラムに当たる理由は、noinline サブ関数が呼び出し元プログラムごとに 1 コピーずつコンパイルされるからです。DL の実体が IPv4 ハンドラ (id 1610) と IPv6 ハンドラ (id 1611) の両方にあれば、関数名 1 つで両方へ張れます。UL + DL v4 + DL v6 の全網羅は従来3回の起動が必要でしたが、1回で済みます。
+モバイルコアの UPF を例にすると、上り (UL) と下り (DL) の capture point が別プログラムに分かれ、さらに多段 dispatcher (cpu_dispatch → CPUMAP → 方向別ハンドラ) を通る。ここで `--func upf_capture_point_dl` が複数プログラムに当たる理由は、noinline サブ関数が呼び出し元プログラムごとに 1 コピーずつコンパイルされるからである。DL の実体が IPv4 ハンドラ (id 1610) と IPv6 ハンドラ (id 1611) の両方にあれば、関数名 1 つで両方へ張れる。UL + DL v4 + DL v6 の全網羅は従来3回の起動が必要だったが、1回で済む。
 
 ### `--list-progs` で到達可能プログラムを洗い出す
 
-`--list-progs` は、起点プログラムから到達できるプログラムを推移的に辿って一覧します。起点は `-i` の XDP か `-p` の ID です。辿るエッジは次の 3 種類です。
+`--list-progs` は、起点プログラムから到達できるプログラムを推移的に辿って一覧する。起点は `-i` の XDP か `-p` の ID である。辿るエッジは次の 3 種類がある。
 
-- freplace は、関数を置換している attach 済み EXT プログラムです。
-- tail call は、`bpf_tail_call` が使う `PROG_ARRAY` のエントリ先です。
-- redirect は、`CPUMAP` / `DEVMAP` / `DEVMAP_HASH` のエントリに attach された XDP プログラム、すなわち `bpf_redirect_map()` の飛び先です。
+- freplace は、関数を置換している attach 済み EXT プログラムである。
+- tail call は、`bpf_tail_call` が使う `PROG_ARRAY` のエントリ先である。
+- redirect は、`CPUMAP` / `DEVMAP` / `DEVMAP_HASH` のエントリに attach された XDP プログラム、すなわち `bpf_redirect_map()` の飛び先である。
 
-さらにその先も同様に辿るので、`cpu_dispatch → CPUMAP[0..N] → 方向別ハンドラ` から別の redirect へ続くような多段構成でも、末端の実プログラム ID までまとめて出ます。
+さらにその先も同様に辿るので、`cpu_dispatch → CPUMAP[0..N] → 方向別ハンドラ` から別の redirect へ続くような多段構成でも、末端の実プログラム ID までまとめて出る。
 
 ```bash
 # --list-progs で dispatcher から末端の prog ID を推移的に洗い出し
@@ -98,7 +105,7 @@ sudo bpf-ninja -p 1610 -p 1611 -p 1614 \
 
 ### ID の代わりに名前で選ぶ (`--prog-name`)
 
-`--list-progs` の出力から prog ID を控えてコピペするのが面倒なときは、`--prog-name` で名前から選べます。`-i` の到達ツリーに対して名前解決するので、ID を調べずに済みます。func 側は従来どおり `--func` を使います。
+`--list-progs` の出力から prog ID を控えてコピペするのが面倒なときは、`--prog-name` で名前から選べる。`-i` の到達ツリーに対して名前解決するので、ID を調べずに済む。func 側は従来どおり `--func` を使う。
 
 ```bash
 # ID の代わりに名前で選ぶ (-i の到達ツリーから解決)
@@ -106,12 +113,12 @@ sudo bpf-ninja -i ens2f0 --prog-name upf_dl_v4 --prog-name upf_dl_v6 \
   --func upf_capture_point_dl --arg-filter "imsi=999990000000001" -w dl.pcap
 ```
 
-- カーネル上のプログラム名は 15 文字までに切り詰められるので、長い名前は前方一致で解決します。同じ切り詰め名のプログラムが複数あると曖昧としてエラーになるので、その場合は `-p <id>` を使います。
-- `--prog-name` は `-i` 専用です。`--mode xdp` や tc 系では使えません。
+- カーネル上のプログラム名は 15 文字までに切り詰められるので、長い名前は前方一致で解決する。同じ切り詰め名のプログラムが複数あると曖昧としてエラーになるので、その場合は `-p <id>` を使う。
+- `--prog-name` は `-i` 専用である。`--mode xdp` や tc 系では使えない。
 
 ### list 出力を JSON で得る (`--json`)
 
-`--json` を付けると、`--list-progs` / `--list-funcs` / `--list-params` の結果をテキストではなく JSON で stdout に出せます。jq などに渡して自動処理したいときに便利です。`--list-progs` と `--list-funcs` を同時に渡すと、到達ツリーの各プログラムにその BTF 関数一覧もぶら下がります。
+`--json` を付けると、`--list-progs` / `--list-funcs` / `--list-params` の結果をテキストではなく JSON で stdout に出せる。jq などに渡して自動処理したいときに便利である。`--list-progs` と `--list-funcs` を同時に渡すと、到達ツリーの各プログラムにその BTF 関数一覧もぶら下がる。
 
 ```bash
 # 到達ツリーを JSON で
@@ -121,9 +128,9 @@ sudo bpf-ninja -i ens2f0 --list-progs --json | jq '.[].reachable[].name'
 sudo bpf-ninja -i ens2f0 --list-progs --list-funcs --json | jq '.[].reachable[] | {name, funcs}'
 ```
 
-- 全アタッチポイントが 1本の共有 ringbuf に emit するので、出力は通常どおり 1 つの pcap に時刻順で入ります (`-w` なら終了時マージ、stdout なら直列化ストリーム)。
-- `--arg-filter` は関数ごとに BTF を引いて検証・解決されます。同じ param 名が関数によって別の引数位置にあっても正しく効きます。指定した param を持たない関数が混ざるとエラーになります。
-- XDP と tc のターゲット混在は不可 (別々に起動してください)。`--arg-echo` は単一 (プログラム, 関数) のみ。
+- 全アタッチポイントが 1本の共有 ringbuf に emit するので、出力は通常どおり 1 つの pcap に時刻順で入る (`-w` なら終了時マージ、stdout なら直列化ストリーム)。
+- `--arg-filter` は関数ごとに BTF を引いて検証し、解決する。同じ param 名が関数によって別の引数位置にあっても正しく効く。指定した param を持たない関数が混ざるとエラーになる。
+- XDP と tc のターゲット混在は不可 (別々に起動する)。`--arg-echo` は単一 (プログラム, 関数) のみ。
 
 ## 関数引数の値を覗く (`--arg-echo`)
 

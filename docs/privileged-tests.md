@@ -46,3 +46,18 @@ packets with the expected length. Action interface names, Ethernet versus raw
 IP link types, and explicit capture lengths are checked without an optional
 tshark fallback. Missing, header-only, or truncated files fail. The reader and
 privileged audit both have fault-injection tests under `scripts/tests`.
+
+`TestBpfPrunedSubprog` in internal/program and `TestBpfPrunedSubprogCLI` in
+cmd/bpf-ninja cover loaded `func_info` diagnostics using
+`internal/program/testdata/pruned_subprog.c`.
+The tests check fentry/fexit, explicit requests, parameter lists, multiple programs, and JSON
+exclusion of skipped targets.
+On 7.0 the disabled global call is removed; 6.1 retains that global function,
+while removing the disabled static functions.
+The CLI test uses two distinct disabled static functions for all-skipped selections
+and checks that repeating one absent name retains the single-target explanation.
+For a VM without clang, compile the fixture with
+`clang -target bpf -O2 -g -c internal/program/testdata/pruned_subprog.c -o hooks.o`
+and set `BPF_NINJA_SUBPROG_OBJECT` to that object's path when running the test
+binaries.
+Without that variable the tests compile the fixture with the usual test helper.

@@ -9,6 +9,7 @@ Stop if `nstest`, `vtest0`, or `vtest1` already exists.
 Stop each capture with Ctrl-C before cleanup.
 Remove only the resources created by this procedure.
 See the [documentation entry point](../README.md).
+For a missing subfunction or `Subprog` error, see [attach troubleshooting](attach-troubleshooting.md).
 For load-time hooks via the experimental `inject-run` launcher, see the separate [injection walkthrough](inject-walkthrough.md).
 
 ## Prerequisites
