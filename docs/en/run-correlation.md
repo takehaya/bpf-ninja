@@ -1,9 +1,9 @@
 # Run correlation primitives
 
 The helpers in `internal/program/run_state.go` associate hook observations with a root invocation.
-Capture does not use them yet.
-They land separately so the map layout, ID allocation and diagnostics can be reviewed before adding frame push/pop and capture lifecycle handling.
-Existing gated numbering, CLI options and pcapng output are unchanged.
+Hook capture uses them through the per-CPU and ctx locators.
+They define the shared map layout, ID allocation and diagnostics for that lifecycle.
+Legacy gated numbering and output layouts are unchanged.
 
 A root invocation is one execution of the observed XDP/tc program.
 Frames are found in either a per-CPU LIFO stack (`ninja_runs`) or a hash keyed by the root ctx pointer (`ninja_run_table`); both use the same frame layout.
@@ -33,6 +33,7 @@ Only the per-CPU stack locator requires LIFO execution; the consumer establishes
 Frame lookup returns R0 and preserves R6–R9; identity checks accept caller-selected registers and use R1 as scratch.
 Lookup uses the shared `runLookupStack` at -16 through -13.
 Sequence allocation uses `runCPUStack` at -208 through -201; the context locator reserves `runKeyStack` at -216 through -209.
+The ctx locator also uses `runFrameStack` at -192 through -161 for an initial frame, dead before any filter or hook prologue.
 These named slots are listed in the layout table in `program.go` and do not alias the tag, return, argument, packet key or static XDP slots.
 Run temporaries live only within one emitter and never across a filter, hook prologue or identity sequence; Kunai may reuse their bytes during filters.
 Save live values before helper calls, move a found frame from R0 to R8 immediately, and find it again after a filter/prologue uses R8 for data_end.
@@ -51,4 +52,4 @@ Tracked frames require a nonzero ID; pending and blocked frames require zero, an
 A consumer must compare samples at start, during capture, after in-flight runs finish and at shutdown; a miss cannot repair output.
 
 See [injection observers](inject-observers.md) for the hooks being correlated.
-Before using these primitives, connect root entry/exit, hook recording, stop/drain and diagnostics as one capture lifecycle.
+Root entry/exit, hook recording, stop/drain and diagnostics are connected by `LoadHookCapture`; see the [hook capture guide](hook-pcapng.md).

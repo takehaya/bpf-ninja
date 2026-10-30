@@ -1,9 +1,9 @@
 # hook の観測を実行に対応づける
 
 `internal/program/run_state.go` の部品は、hook の観測を root の 1 回の実行に対応づけるためにある。
-現在の capture からは使っていない。
-段の追加と取り出し、capture の開始と停止を実装する前に、map の配置、ID の採番、診断を個別にレビューできるように分けている。
-既存の gated の採番、CLI、pcapng 出力は変わらない。
+hook capture が per-CPU と ctx の locator を介して使う。
+この lifecycle で共有する map の配置、ID の採番、診断を定める。
+既存の gated の採番と出力形式は変わらない。
 
 root の実行は観測対象の XDP/tc program の 1 回の呼出しを意味する。
 段の参照には CPU ごとの LIFO stack `ninja_runs` と、root ctx pointer を key にする HASH `ninja_run_table` の二方式があり、同じ段の配置を使う。
@@ -35,6 +35,7 @@ LIFO を必要とするのは per-CPU stack の locator だけであり、対応
 identity 検査の入力レジスタは呼び出し側で選び、R1 を作業用に使う。
 map の参照は共有の `runLookupStack` の -16〜-13 byte を使う。
 採番は `runCPUStack` の -208〜-201 byte を使い、ctx key は `runKeyStack` の -216〜-209 byte を予約する。
+ctx locator は初期 frame に `runFrameStack` の -192〜-161 byte も使い、filter や hook prologue の前に寿命を終える。
 `program.go` の配置表に定義し、tag、戻り値、引数、packet key、static XDP の slot と重ねない。
 これらは一つの emitter の中だけで生存し、filter、hook prologue、identity sequence をまたがない。
 filter の評価中は Kunai が同じ領域を再利用できる。
@@ -57,4 +58,5 @@ owner は診断専用で、poison の根拠にしない。
 `inspectRunTable` は同じ frame 規則で HASH の残存 entry を検査し、拒否状態も数える。
 
 対応づける hook は [inject observer](../en/inject-observers.md)（英語）を参照する。
-利用時には root の入口と出口、hook の記録、停止と drain、診断を一つの lifecycle として接続する。
+`LoadHookCapture` が root の入口と出口、hook の記録、停止と drain、診断を一つの lifecycle として接続する。
+使い方は [hook capture の説明](cli/hook-pcapng.md) にある。
