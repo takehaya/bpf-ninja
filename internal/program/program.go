@@ -333,8 +333,8 @@ func LoadMultiPoint(targets []attach.Target, stages []Stage, filters []filter.Ta
 		return nil, err
 	}
 	for i, t := range targets {
-		staticXDP := false
-		if h.Kind == hook.KindXDP && t.FuncName != "" {
+		staticXDP, staticTC := false, false
+		if (h.Kind == hook.KindXDP || h.Kind == hook.KindTC) && t.FuncName != "" {
 			spec, specErr := probe.extensionGuard.Spec(t.Program)
 			if specErr != nil {
 				_ = probe.Close()
@@ -346,7 +346,8 @@ func LoadMultiPoint(targets []attach.Target, stages []Stage, filters []filter.Ta
 				return nil, specErr
 			}
 			if fn.Linkage == btf.StaticFunc {
-				staticXDP = true
+				staticXDP = h.Kind == hook.KindXDP
+				staticTC = h.Kind == hook.KindTC
 			}
 		}
 		var tf filter.TargetFilters
@@ -362,6 +363,14 @@ func LoadMultiPoint(targets []attach.Target, stages []Stage, filters []filter.Ta
 			stLabel, attachType := tracingLabel(st.IsFexit)
 			targetHook := h
 			probeRead := false
+			if staticTC {
+				if TCVlanReinsert {
+					_ = probe.Close()
+					return nil, fmt.Errorf("static TC probe-read does not support VLAN reinsertion")
+				}
+				targetHook = hook.StaticTC(h)
+				probeRead = true
+			}
 			if staticXDP {
 				probeRead, err = staticXDPNeedsProbeRead(t.Program, t.FuncName, attachType, t.Availability)
 				if err != nil {
