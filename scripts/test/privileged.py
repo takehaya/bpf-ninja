@@ -92,8 +92,9 @@ def audit(events, expected, kernel):
 def syscallhook_suite(binary, log_path):
     # Run the same tagged binary in CI and in VMs without a Go toolchain.
     command = [str(Path(binary).resolve()), "-test.v", "-test.count=1",
-               "-test.timeout=2m", "-test.run=^TestIntegration(MapTypes|Loader)$"]
+               "-test.timeout=2m", "-test.run=^(TestIntegration(MapTypes|Loader)|TestBpfAutoStatic)$"]
     expected = {(SYSCALLHOOK, "TestIntegration" + name) for name in ("MapTypes", "Loader")}
+    expected.add((SYSCALLHOOK, "TestBpfAutoStatic"))
     events = []
     print("+ " + " ".join(command), flush=True)
     with open(log_path, "w", encoding="utf-8") as log, \
@@ -110,7 +111,7 @@ def syscallhook_suite(binary, log_path):
         print(f"AUDIT FAIL: {failure}", file=sys.stderr)
     if failures:
         return 1
-    print("Privileged supervisor audit passed: both required tests passed; no skips.")
+    print("Privileged supervisor audit passed: all required tests passed; no skips.")
     return 0
 
 

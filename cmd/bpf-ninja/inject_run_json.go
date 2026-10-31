@@ -27,13 +27,14 @@ type hooksFileJSON struct {
 // injectedProgJSON is one successful injected load. ProgID is zero when the
 // tracee could not query it.
 type injectedProgJSON struct {
-	Program string         `json:"program"`
-	Func    string         `json:"func"`
-	Type    string         `json:"type"`
-	ProgID  uint32         `json:"prog_id"`
-	CtxType string         `json:"ctx_type"`
-	Hooks   []hookJSON     `json:"hooks"`
-	Skipped []hookSiteJSON `json:"skipped"`
+	HookForm syscallhook.HookForm `json:"hook_form"`
+	Program  string               `json:"program"`
+	Func     string               `json:"func"`
+	Type     string               `json:"type"`
+	ProgID   uint32               `json:"prog_id"`
+	CtxType  string               `json:"ctx_type"`
+	Hooks    []hookJSON           `json:"hooks"`
+	Skipped  []hookSiteJSON       `json:"skipped"`
 }
 
 // hookJSON is one hook function. A dispatch hook is one entry carrying every
@@ -87,7 +88,7 @@ func hookKind(hook inject.LookupHook) string {
 }
 
 func injectionJSON(inj syscallhook.Injection) injectedProgJSON {
-	out := injectedProgJSON{Program: inj.Program, Func: inj.Func, Type: inj.Type.String(), ProgID: inj.ProgID,
+	out := injectedProgJSON{HookForm: inj.HookForm, Program: inj.Program, Func: inj.Func, Type: inj.Type.String(), ProgID: inj.ProgID,
 		CtxType: inject.ContextType(inj.Type), Hooks: []hookJSON{}, Skipped: []hookSiteJSON{}}
 	dispatch := -1
 	for _, hook := range inj.Hooks {

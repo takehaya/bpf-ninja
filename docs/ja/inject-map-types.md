@@ -90,4 +90,9 @@ bpf-ninja -p "$PROG_ID" --func observe --arg-filter 'value->identity==7' -w sele
 loader を実行したまま、別の terminal で member の表示と capture を行う。
 型を補完しない場合、BTF のない map の hook 引数は従来どおり opaque な byte 配列となり、元の struct member に対する条件は失敗する。
 [CLI 統合テスト](../../scripts/test/map-types.py)は、BTF なしの map を作る loader で補完の有無を比較し、選択された packet bytes と既存 BTF の拒否を検証する。
+`static_untrusted` を省略した rule では、inject-run が実行中のカーネルで global 関数の `arg:untrusted` 引数を検査し、対応していない場合に該当 hook を static にする。
+`true` は static、`false` は global を強制し、`false` では static への自動再試行も行わない。
+`copy_read_only` のコピーと型補完の判定は変わらず、コピー後にも untrusted 引数が必要な hook だけが自動選択の対象となる。
+`--hooks-json` の `hook_form.form` と `hook_form.reason` に選択と理由を記録し、hook ごとの `static`、`untrusted`、`copied` に実際の形式を示す。
+
 [英語の inject-run guide](../en/inject-run.md#map-types-from-a-loader-elf)にも同じ設定を記載している。
