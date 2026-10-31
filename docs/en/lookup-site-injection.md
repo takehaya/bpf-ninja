@@ -338,6 +338,11 @@ With `LookupRequest.StaticUntrusted`, every hook that would take `arg:untrusted`
 The verifier checks a static function at each call with the caller's registers rather than against its BTF, so the call needs no tag; in the CI kernel matrix, 6.1 and newer load it.
 A per-map static hook still declares its key and value types in BTF, but the kernel need not trust that BTF.
 On 7.0 it does not: an fentry observer receives every argument, `ctx` included, as a `u64` and reads through them with `bpf_probe_read_kernel`.
+For packet capture at a static tc hook, bpf-ninja reads `sk_buff.data`, `len` and `data_len` with `bpf_probe_read_kernel`, using offsets from kernel BTF.
+It captures only the linear head, `len - data_len`, as at other tc hooks; fragment bytes are not captured.
+A failed context read produces no capture.
+VLAN metadata reinsertion is refused on this path with `static TC probe-read does not support VLAN reinsertion`.
+
 With `CopyReadOnly` as well, a `BPF_F_RDONLY_PROG` map keeps its copied typed hook, and only write-only maps and the generic hook become static.
 A value that holds a field programs reach only through helpers and kfuncs cannot be passed as memory either: the verifier refuses a `bpf_spin_lock` or `bpf_timer` in it ("cannot be accessed directly by load/store") and a kptr ("cannot be accessed indirectly by helper").
 The transform finds these fields in the value's BTF, through nested structs, unions, arrays and typedefs: `struct bpf_spin_lock`, `bpf_res_spin_lock`, `bpf_timer`, `bpf_wq`, `bpf_task_work`, `bpf_list_head`, `bpf_list_node`, `bpf_rb_root`, `bpf_rb_node` and `bpf_refcount`, and pointers tagged `kptr`, `kptr_untrusted`, `kptr_ref`, `percpu_kptr` or `uptr`.

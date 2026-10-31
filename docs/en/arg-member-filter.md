@@ -18,8 +18,11 @@ These features have been measured on kernels 6.1+ in our test matrix; distributi
 The common 5.8+ prerequisite alone does not provide this helper.
 
 Static XDP capture uses fault-handled context reads when its direct-read probe fails with a scalar context.
-Exit and gated capture on that path also require `bpf_get_func_ret` (upstream Linux 5.17+) to obtain the action because the kernel has discarded the BTF prototype.
-This fallback is specific to XDP; it does not add support for static tc, cgroup-skb or netfilter hooks with rejected context reads.
+Static tc capture reads `sk_buff.data`, `len` and `data_len` through `bpf_probe_read_kernel`, with offsets resolved from kernel BTF, and captures only the linear head (`len - data_len`).
+A failed context read produces no capture.
+VLAN metadata reinsertion is refused on this path with `static TC probe-read does not support VLAN reinsertion`.
+Exit and gated capture on these paths also require `bpf_get_func_ret` (upstream Linux 5.17+) to obtain the action because the kernel has discarded the BTF prototype.
+These context-read paths do not extend to static cgroup-skb or netfilter hooks.
 
 ## Discover members before writing a filter
 

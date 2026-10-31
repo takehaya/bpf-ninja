@@ -99,3 +99,39 @@ func outerVlanTagInsns(v skBuffVlan) asm.Instructions {
 	}
 	return insns
 }
+
+// StaticTC reads an unreliable static hook's scalar ctx through probe_read.
+// VLAN metadata reinsertion must be refused by the caller on this path.
+func StaticTC(h *Hook) *Hook {
+	clone := *h
+	clone.PacketPrologue = func() (asm.Instructions, error) {
+		data, length, frags, err := skBuffPacketOffsets()
+		if err != nil {
+			return nil, fmt.Errorf("resolving struct sk_buff offsets via BTF: %w", err)
+		}
+		insns := tracingPrelude()
+		// Temporary slots are dead before argument and packet filtering starts.
+		for _, field := range []struct {
+			offset uint32
+			slot   int32
+			size   int32
+		}{
+			{data, -160, 8}, {length, -152, 4}, {frags, -148, 4},
+		} {
+			insns = append(insns,
+				asm.Mov.Reg(asm.R3, asm.R6), asm.Add.Imm(asm.R3, int32(field.offset)),
+				asm.Mov.Reg(asm.R1, asm.R10), asm.Add.Imm(asm.R1, field.slot),
+				asm.Mov.Imm(asm.R2, field.size), asm.FnProbeReadKernel.Call(),
+				asm.JNE.Imm(asm.R0, 0, "exit"),
+			)
+		}
+		return append(insns,
+			asm.LoadMem(asm.R7, asm.R10, -160, asm.DWord),
+			asm.LoadMem(asm.R9, asm.R10, -152, asm.Word),
+			asm.LoadMem(asm.R8, asm.R10, -148, asm.Word),
+			asm.Sub.Reg(asm.R9, asm.R8), // Only the linear head, as in skbPacketPrologue.
+			asm.Mov.Reg(asm.R8, asm.R7), asm.Add.Reg(asm.R8, asm.R9),
+		), nil
+	}
+	return &clone
+}
