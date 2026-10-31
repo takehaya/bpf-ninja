@@ -13,6 +13,7 @@ import (
 	"runtime"
 	"slices"
 	"strings"
+	"sync"
 	"syscall"
 
 	"github.com/cilium/ebpf"
@@ -59,6 +60,7 @@ type Discovery struct {
 // kernel ID, zero if the tracee could not query it. Hooks and Skipped are
 // the transform's (see inject.LookupResult).
 type Injection struct {
+	HookForm      HookForm
 	Program, Func string
 	Type          ebpf.ProgramType
 	ProgID        uint32
@@ -75,9 +77,10 @@ type thread struct {
 	newborn bool
 }
 type supervisor struct {
-	options    Options
-	btf        map[uint32]rememberedBTF
-	cacheBytes int
+	probeUntrusted func() error
+	options        Options
+	btf            map[uint32]rememberedBTF
+	cacheBytes     int
 }
 
 func (s *supervisor) log(format string, args ...any) {
@@ -88,6 +91,10 @@ func (s *supervisor) log(format string, args ...any) {
 // 128+signal). A supervisor error terminates the tracee: resuming with uncertain
 // registers is unsafe even in fail-open mode. No network attachments are made.
 func Run(ctx context.Context, argv []string, opts Options) (int, error) {
+	return run(ctx, argv, opts, probeGlobalUntrusted)
+}
+
+func run(ctx context.Context, argv []string, opts Options, probeUntrusted func() error) (int, error) {
 	if len(argv) == 0 {
 		return 0, fmt.Errorf("target command is required after --")
 	}
@@ -166,7 +173,7 @@ func Run(ctx context.Context, argv []string, opts Options) (int, error) {
 	if err := unix.PtraceSyscall(pid, 0); err != nil {
 		return 0, err
 	}
-	s := supervisor{options: opts, btf: make(map[uint32]rememberedBTF)}
+	s := supervisor{probeUntrusted: sync.OnceValue(probeUntrusted), options: opts, btf: make(map[uint32]rememberedBTF)}
 	exitCode := 0
 	for len(threads) > 0 {
 		tid, err := unix.Wait4(-1, &status, unix.WALL|unix.WNOTHREAD, nil)
@@ -357,7 +364,12 @@ func (s *supervisor) entry(pid int, t *thread, regs unix.PtraceRegs) error {
 		}
 		return r.finish(ret)
 	}
-	ret, result, entry, injectErr := s.transformLoad(r, attr, *rule)
+	form := chooseHookForm(rule.StaticUntrusted, s.probeUntrusted)
+	if form.Reason == "probe_inconclusive" {
+		s.log("global arg:untrusted probe inconclusive: %v", s.probeUntrusted())
+	}
+	s.log("program %q: untrusted hook form %s (%s)", name, form.Form, form.Reason)
+	ret, result, entry, injectErr := s.transformLoad(r, attr, *rule, &form)
 	if r.broken != nil {
 		return r.broken
 	}
@@ -384,7 +396,7 @@ func (s *supervisor) entry(pid int, t *thread, regs unix.PtraceRegs) error {
 	} else {
 		s.log("program %q: injected %s, tracee fd %d", name, summary, ret)
 		if s.options.OnInject != nil {
-			inj := Injection{Program: name, Func: entry, Type: ebpf.ProgramType(u32(attr, 0)), Hooks: result.Hooks, Skipped: result.Skipped}
+			inj := Injection{HookForm: form, Program: name, Func: entry, Type: ebpf.ProgramType(u32(attr, 0)), Hooks: result.Hooks, Skipped: result.Skipped}
 			// bpf_prog_info starts with type and id.
 			if info, err := r.info(uint32(ret), 8); err != nil {
 				s.log("program %q: cannot query program ID: %v", name, err)
@@ -531,7 +543,7 @@ func (s *supervisor) discover(r *remote, attr []byte, name string) error {
 	return nil
 }
 
-func (s *supervisor) transformLoad(r *remote, attr []byte, rule Rule) (ret int64, result *inject.LookupResultRaw, entry string, err error) {
+func (s *supervisor) transformLoad(r *remote, attr []byte, rule Rule, form *HookForm) (ret int64, result *inject.LookupResultRaw, entry string, err error) {
 	spec, err := s.programBTF(r, attr)
 	if err != nil {
 		return 0, nil, "", err
@@ -561,26 +573,43 @@ func (s *supervisor) transformLoad(r *remote, attr []byte, rule Rule) (ret int64
 			}
 		}
 	}
-	result, err = inject.TransformLookupRaw(raw, rule.request())
+	request := rule.request()
+	request.StaticUntrusted = form.Form == "static"
+	result, err = inject.TransformLookupRaw(raw, request)
 	if err != nil {
 		return 0, nil, "", err
 	}
+	ret, loadErr := loadTransformed(r, attr, result, rule.StaticUntrusted == nil && form.Form == "global")
+	if r.broken == nil && retryStatic(rule.StaticUntrusted, *form, result, loadErr) {
+		*form = HookForm{"static", "retry_arg_untrusted_rejected"}
+		s.log("program %q: retrying untrusted hook form %s (%s): %v", rule.Program, form.Form, form.Reason, loadErr)
+		request.StaticUntrusted = true
+		result, err = inject.TransformLookupRaw(raw, request)
+		if err != nil {
+			return 0, nil, entry, err
+		}
+		ret, loadErr = loadTransformed(r, attr, result, false)
+	}
+	return ret, result, entry, loadErr
+}
+
+func loadTransformed(r *remote, attr []byte, result *inject.LookupResultRaw, retryLog bool) (ret int64, err error) {
 	var instructions bytes.Buffer
 	if err := result.Instructions.Marshal(&instructions, wire); err != nil {
-		return 0, nil, "", err
+		return 0, err
 	}
 	// Load BTF inside the tracee. A supervisor-owned fd is not a valid substitute
 	// for prog_btf_fd, even when its numeric value happens to match a target fd.
 	btfAddr, err := r.alloc(result.BTFBytes)
 	if err != nil {
-		return 0, nil, "", err
+		return 0, err
 	}
 	btfAttr := make([]byte, 32)
 	put64(btfAttr, 0, btfAddr)
 	put32(btfAttr, 16, uint32(len(result.BTFBytes)))
 	fd, err := r.bpf(unix.BPF_BTF_LOAD, btfAttr)
 	if err != nil {
-		return 0, nil, "", fmt.Errorf("tracee extended BTF load: %w", err)
+		return 0, fmt.Errorf("tracee extended BTF load: %w", err)
 	}
 	defer func() {
 		closed, closeErr := r.call(unix.SYS_CLOSE, uint64(fd))
@@ -599,7 +628,7 @@ func (s *supervisor) transformLoad(r *remote, attr []byte, rule Rule) (ret int64
 	} {
 		addr, err := r.alloc(buffer.data)
 		if err != nil {
-			return 0, nil, "", err
+			return 0, err
 		}
 		put64(patched, buffer.ptr, addr)
 		put32(patched, buffer.count, uint32(len(buffer.data)/buffer.recordSize))
@@ -607,31 +636,45 @@ func (s *supervisor) transformLoad(r *remote, attr []byte, rule Rule) (ret int64
 			put32(patched, buffer.sizeOff, uint32(buffer.recordSize))
 		}
 	}
+	// Keep a verifier log for the narrowly classified automatic retry even when
+	// the loader did not request one. Caller-requested logs retain their buffer.
+	privateLog := retryLog && hasUntrustedHooks(result) && (u32(patched, 24) == 0 || u32(patched, 28) == 0 || u64(patched, 32) == 0)
+	if privateLog {
+		logAddr, e := r.alloc(make([]byte, 1<<20))
+		if e != nil {
+			return 0, e
+		}
+		put32(patched, 24, 1)
+		put32(patched, 28, 1<<20)
+		put64(patched, 32, logAddr)
+	}
 	// Preserve kernel output fields (currently log_true_size) in the caller's attr.
 	addr, err := r.alloc(patched)
 	if err != nil {
-		return 0, nil, "", err
+		return 0, err
 	}
 	ret, err = r.call(unix.SYS_BPF, unix.BPF_PROG_LOAD, addr, uint64(len(patched)))
 	if err != nil {
-		return 0, nil, "", err
+		return 0, err
 	}
-	if len(patched) >= 144 {
+	if len(patched) >= 144 && !privateLog {
 		out, e := readMemory(r.pid, addr+140, 4)
 		if e == nil {
 			e = writeMemory(r.pid, r.saved.Rsi+140, out)
 		}
 		if e != nil {
 			r.broken = e
-			return 0, nil, "", e
+			return 0, e
 		}
 	}
 	if err := syscallError(ret, nil); err != nil {
 		// Carry the summary so the caller can name the attempted hooks, and a
 		// hint when an untrusted-pointer ABI mismatch may be the cause.
-		return 0, result, entry, fmt.Errorf("transformed PROG_LOAD: %w%s", err, untrustedHint(result, err))
+		log, _ := readMemory(r.pid, u64(patched, 32), uint64(min(u32(patched, 28), 1<<20)))
+		ve := &ebpf.VerifierError{Cause: err, Log: strings.Split(strings.TrimSpace(cstring(log)), "\n")}
+		return 0, fmt.Errorf("transformed PROG_LOAD: %w%s", ve, untrustedHint(result, err))
 	}
-	return ret, result, entry, nil
+	return ret, nil
 }
 
 // untrustedHint explains how to load a program whose hooks take arg:untrusted

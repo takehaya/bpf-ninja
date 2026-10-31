@@ -59,10 +59,12 @@ func TestIntegrationLoader(t *testing.T) {
 		{"auto", "hook", true, func(r *Rule) { r.Auto, r.Map = true, "" }},
 		{"entry-only", "hook", true, func(r *Rule) { r.Entry, r.Map = true, "" }},
 		// The loader's map is BPF_F_RDONLY_PROG, whose hook becomes static.
-		{"static-untrusted", "hook-rdonly", true, func(r *Rule) { r.Auto, r.Map, r.StaticUntrusted = true, "", true }},
+		{"static-untrusted", "hook-rdonly", true, func(r *Rule) { r.Auto, r.Map, r.StaticUntrusted = true, "", boolPtr(true) }},
 		// Static, so the dispatch hook loads on kernels without arg:untrusted
 		// too; TestBpfDispatch covers the untrusted form across the matrix.
-		{"dispatch", "hook", true, func(r *Rule) { r.Auto, r.Map, r.Entry, r.Dispatch, r.StaticUntrusted = true, "", true, true, true }},
+		{"dispatch", "hook", true, func(r *Rule) {
+			r.Auto, r.Map, r.Entry, r.Dispatch, r.StaticUntrusted = true, "", true, true, boolPtr(true)
+		}},
 		{"maps", "hook", true, func(r *Rule) { r.Auto, r.Map, r.Maps = true, "", []string{"sessions"} }},
 		{"maps-missing", "refused", true, func(r *Rule) { r.Auto, r.Map, r.Maps = true, "", []string{"missing"} }},
 		// The loader first inserts the present key with BPF_NOEXIST, which
