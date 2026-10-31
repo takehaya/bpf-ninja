@@ -30,7 +30,7 @@ func TestInjectionJSON(t *testing.T) {
 			{Name: "obs_entry", Kind: inject.HookEntry},
 			{Name: "obs_tail_call", Kind: inject.HookTailCall, Sites: []inject.LookupSite{{SitePC: 60, FuncName: "sub"}}},
 		}, Skipped: []inject.LookupSite{{SitePC: 7, MapName: "socks", Reason: "sockhash has no typed hook"}}},
-			`{"program":"xdp_ingress","func":"xdp_ingress","type":"XDP","prog_id":42,"ctx_type":"xdp_md","hooks":[` +
+			`{"hook_form":{"form":"","reason":""},"program":"xdp_ingress","func":"xdp_ingress","type":"XDP","prog_id":42,"ctx_type":"xdp_md","hooks":[` +
 				`{"name":"obs_sessions","kind":"typed","when":"hit","map":"sessions","sites":[{"kind":"lookup","pc":12,"map":"sessions","func":"xdp_ingress","file":"x.c","line":12}],"untrusted":false,"copied":false,"static":false,"read_only":false},` +
 				`{"name":"obs_sessions_miss","kind":"typed","when":"miss","map":"sessions","sites":[{"kind":"lookup","pc":12,"map":"sessions","func":"xdp_ingress","file":"x.c","line":12}],"untrusted":false,"copied":false,"static":false,"read_only":false},` +
 				`{"name":"obs_flows","kind":"typed","map":"flows","sites":[{"kind":"lookup","pc":18,"map":"flows","func":"xdp_ingress","file":"x.c","line":18}],"untrusted":false,"copied":true,"static":false,"read_only":true},` +
@@ -46,7 +46,7 @@ func TestInjectionJSON(t *testing.T) {
 			{Name: "d", Kind: inject.HookEntry, Static: true, Dispatch: true},
 			{Name: "d", Kind: inject.HookTailCall, Static: true, Dispatch: true, Sites: []inject.LookupSite{{SitePC: 20}}},
 		}},
-			`{"program":"tc_main","func":"","type":"SchedCLS","prog_id":0,"ctx_type":"__sk_buff","hooks":[` +
+			`{"hook_form":{"form":"","reason":""},"program":"tc_main","func":"","type":"SchedCLS","prog_id":0,"ctx_type":"__sk_buff","hooks":[` +
 				`{"name":"d","kind":"dispatch","when":"any","sites":[{"kind":"entry","pc":4294967295},{"kind":"lookup","pc":13,"map":"a"},{"kind":"tail_call","pc":20},{"kind":"lookup","pc":30,"map":"b"}],"untrusted":false,"copied":false,"static":true,"read_only":false}],` +
 				`"skipped":[]}`},
 	} {
@@ -95,5 +95,20 @@ func TestHooksWriter(t *testing.T) {
 	}
 	if info, err := os.Stat(path); err != nil || info.Mode().Perm() != 0o644 {
 		t.Fatalf("mode: %v %v", info, err)
+	}
+}
+
+func TestInjectionJSONHookForm(t *testing.T) {
+	for _, form := range []syscallhook.HookForm{{Form: "static", Reason: "probe_arg_untrusted_unsupported"}, {Form: "global", Reason: "config_static_untrusted_false"}, {Form: "static", Reason: "retry_arg_untrusted_rejected"}} {
+		data, err := json.Marshal(injectionJSON(syscallhook.Injection{HookForm: form}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got struct {
+			HookForm syscallhook.HookForm `json:"hook_form"`
+		}
+		if err := json.Unmarshal(data, &got); err != nil || got.HookForm != form {
+			t.Fatalf("hook_form: %s, %v", data, err)
+		}
 	}
 }

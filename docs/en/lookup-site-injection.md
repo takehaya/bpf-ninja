@@ -334,6 +334,11 @@ The copy is readable and writable stack memory, so the call passes the verifier 
 The observer then reads the value's type from the hook's BTF, but the pointer is the copy's address, not the map value's.
 The copy takes the value size rounded up to 8 bytes; a copy that would take the frame past 480 bytes is refused (see below).
 A `BPF_F_WRONLY_PROG` map and the generic hook stay untrusted, since a program cannot read such a value to copy it.
+The transform APIs remain deterministic and kernel-independent: their `StaticUntrusted` boolean defaults to false.
+The [inject-run supervisor](inject-run.md#usage-and-configuration) instead treats an omitted `static_untrusted` as automatic, probes the global untrusted-pointer ABI once per run, and selects this boolean before transformation.
+Explicit true and false force the supervisor's choice.
+This does not alter `Auto` site selection, copy decisions or dispatch semantics.
+
 With `LookupRequest.StaticUntrusted`, every hook that would take `arg:untrusted` pointers, the generic hook included, is instead a static function whose body only returns zero, and `LookupHook.Static` is set instead of `Untrusted`.
 The verifier checks a static function at each call with the caller's registers rather than against its BTF, so the call needs no tag; in the CI kernel matrix, 6.1 and newer load it.
 A per-map static hook still declares its key and value types in BTF, but the kernel need not trust that BTF.

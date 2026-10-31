@@ -111,13 +111,14 @@ class AuditTests(unittest.TestCase):
 
 
 class RunnerTests(unittest.TestCase):
-    def test_syscallhook_binary_requires_both_tests_and_no_skips(self):
-        passed = "--- PASS: TestIntegrationMapTypes (0.01s)\n--- PASS: TestIntegrationLoader (0.01s)\n"
+    def test_syscallhook_binary_requires_all_tests_and_no_skips(self):
+        passed = "--- PASS: TestBpfAutoStatic (0.01s)\n--- PASS: TestIntegrationMapTypes (0.01s)\n--- PASS: TestIntegrationLoader (0.01s)\n"
         for output, code, expected in (
             (passed, 0, 0),
             (passed.replace("PASS: TestIntegrationMapTypes", "SKIP: TestIntegrationMapTypes"), 0, 1),
             (passed + "    --- SKIP: TestIntegrationMapTypes/hook-map-types (0.00s)\n", 0, 1),
-            ("--- PASS: TestIntegrationLoader (0.01s)\n", 0, 1),
+            ("--- PASS: TestBpfAutoStatic (0.01s)\n--- PASS: TestIntegrationLoader (0.01s)\n", 0, 1),
+            (passed.replace("--- PASS: TestBpfAutoStatic (0.01s)\n", ""), 0, 1),
             (passed, 1, 1),
             ("testing: warning: no tests to run\nPASS\n", 0, 1),
         ):
@@ -131,7 +132,7 @@ class RunnerTests(unittest.TestCase):
                 self.assertEqual(module.syscallhook_suite("./syscallhook.test", "unused.log"), expected)
                 command = popen.call_args.args[0]
                 self.assertIn("-test.count=1", command)
-                self.assertIn("-test.run=^TestIntegration(MapTypes|Loader)$", command)
+                self.assertIn("-test.run=^(TestIntegration(MapTypes|Loader)|TestBpfAutoStatic)$", command)
 
     def test_libpcap_tag_used_for_listing_and_running(self):
         package, test = module.PROGRAM, "TestBpfLegacy"
