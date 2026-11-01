@@ -8,6 +8,7 @@ bpf-ninja の各機能を手動で検証する手順書。
 固定名の `nstest`、`vtest0`、`vtest1` が存在する場合は実行を止めてください。
 各キャプチャを Ctrl-C で停止してから、この手順で作成した資源だけを削除してください。
 [Docs の入口](README.md)も参照してください。
+関数が見つからない場合や `Subprog` エラーが発生した場合は、[Subprog エラーの切り分け](troubleshooting.md#fentryfexit-の-subprog-エラーを調べる)を参照してください。
 実験的な `inject-run` によるロード時の hook 追加は、別の[injection walkthrough](../en/inject-walkthrough.md)（英語）を参照してください。
 
 ## 前提条件
@@ -15,12 +16,14 @@ bpf-ninja の各機能を手動で検証する手順書。
 - Linux kernel 6.x 以上（bpf2bpf call と tail call の共存をサポート）
 - root 権限
 - clang, bpftool, tcpdump
+- libpcap の開発用ファイル（Debian/Ubuntu では `libpcap-dev`）と実行時ライブラリ
+- `enable_libpcap` を有効にしたビルド（1.5 節で legacy の `--cbpf` を使うため）
 
 ## 0. ビルド
 
 ```bash
 cd /path/to/bpf-ninja
-go build -o bpf-ninja ./cmd/bpf-ninja/
+CGO_ENABLED=1 go build -tags enable_libpcap -o bpf-ninja ./cmd/bpf-ninja/
 ```
 
 ---
