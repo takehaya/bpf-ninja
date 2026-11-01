@@ -1,9 +1,37 @@
 # 実装を読むための案内
 
-対象はこの checkout の公開実装です。
-索引の対応を確認した基準は `a501a275565b0661ebb11ef30ed1282f5eac57b6` です。
-この版で確認したのは索引と実装の対応です。
-各解説の測定や過去の判断は再検証していません。
+このページでは現在の実装を説明します。
+
+## 全体の構造
+
+```mermaid
+flowchart TD
+  subgraph kunai["pkg/kunai: DSL のコンパイル"]
+    parser["pkg/kunai/parser"] --> resolve["pkg/kunai/resolve"] --> ir["pkg/kunai/ir"] --> codegen["pkg/kunai/codegen"]
+  end
+  cli["cmd/bpf-ninja: CLI"] --> attach["internal/attach: target の探索"]
+  attach --> hook["internal/hook: hook ごとの能力"]
+  hook --> kunai
+  kunai --> program["internal/program: ロードと attach"]
+  program --> bpf["hook 上の BPF プログラム"]
+  bpf --> ringbuf["ringbuf"]
+  ringbuf --> capture["internal/capture: reader"]
+  capture --> output["internal/output: writer"]
+```
+
+```mermaid
+flowchart TD
+  run["cmd/bpf-ninja: inject-run"] --> sup["pkg/syscallhook: ptrace supervisor"]
+  sup -- "BPF_PROG_LOAD で停止" --> inject["pkg/inject: hook の追加"]
+  inject --> loaded["hook 付きプログラム: pkg/syscallhook が loader 内でロード"]
+  sup --> hooks["hooks.json: prog_id と hook 名"]
+  loaded --> func["bpf-ninja -p ID --func HOOK: 上の capture 経路"]
+  hooks --> func
+```
+
+capture では、internal/program が target の hook に合わせて pkg/kunai でフィルターをコンパイルし、BPF プログラムを hook に attach します。
+そのプログラムが ringbuf に書き込んだパケットを internal/capture が読み取り、internal/output がファイルに書き出します。
+inject-run では、pkg/syscallhook が loader の BPF_PROG_LOAD を止め、pkg/inject で hook を追加したプログラムを loader のプロセス内でロードします。
 
 ## CLI から出力まで
 
