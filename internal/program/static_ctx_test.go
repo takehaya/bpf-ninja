@@ -28,12 +28,13 @@ func TestStaticCtxReachesCalls(t *testing.T) {
 	atomic := func(mode asm.Mode, dst, src asm.Register, off int16, op int64) asm.Instruction {
 		return asm.Instruction{OpCode: asm.OpCode(asm.StXClass).SetMode(mode).SetSize(asm.DWord), Dst: dst, Src: src, Offset: off, Constant: op}
 	}
-	const probeAtomic, xchg, cmpxchg = asm.Mode(0xe0), 0xe1, 0xf1
+	const probeAtomic, xchg, cmpxchg, loadAcquire = asm.Mode(0xe0), 0xe1, 0xf1, 0x100
 	key := I(asm.StoreImm(asm.RFP, -4, 0, asm.Word), asm.Mov.Reg(asm.R2, asm.RFP), asm.Add.Imm(asm.R2, -4))
 	lookup := I(asm.LoadImm(asm.R1, 0, asm.DWord), asm.FnMapLookupElem.Call())
 	spill := I(asm.StoreMem(asm.RFP, -64, asm.R1, asm.DWord))
 	reload := I(asm.LoadMem(asm.R1, asm.RFP, -64, asm.DWord))
 	call := I(asm.Call.Label("hook"))
+	ptrAt72 := I(asm.Mov.Reg(asm.R3, asm.RFP), asm.Add.Imm(asm.R3, -64), asm.StoreMem(asm.RFP, -72, asm.R3, asm.DWord))
 	above := I(asm.Mov.Reg(asm.R1, asm.RFP), asm.Add.Imm(asm.R1, -56))
 	fnptr := func(ref string) asm.Instruction {
 		return asm.Instruction{OpCode: asm.LoadImmOp(asm.DWord), Dst: asm.R2, Src: asm.PseudoFunc}.WithReference(ref)
@@ -72,9 +73,14 @@ func TestStaticCtxReachesCalls(t *testing.T) {
 			asm.LoadMem(asm.R5, asm.R3, 0, asm.DWord).WithSymbol("joined"), st64(asm.R5, 0)), reload, call), false},
 		{"callback writes below its ctx", cat(spill, I(asm.Mov.Imm(asm.R1, 4), fnptr("cb"), asm.Mov.Reg(asm.R3, asm.RFP), asm.Add.Imm(asm.R3, -32), asm.Mov.Imm(asm.R4, 0), asm.FnLoop.Call()), reload, call), false},
 		{"dynptr slice store", cat(I(asm.Mov.Reg(asm.R6, asm.R1), asm.Mov.Reg(asm.R1, asm.RFP), asm.Add.Imm(asm.R1, -64), asm.Mov.Imm(asm.R2, 8), asm.Mov.Imm(asm.R3, 0),
-			asm.Mov.Reg(asm.R4, asm.RFP), asm.Add.Imm(asm.R4, -16), asm.FnDynptrFromMem.Call(), asm.StoreMem(asm.RFP, -64, asm.R6, asm.DWord),
-			asm.Mov.Reg(asm.R1, asm.RFP), asm.Add.Imm(asm.R1, -16), asm.Mov.Imm(asm.R2, 0), asm.Mov.Imm(asm.R3, 8), asm.FnDynptrData.Call(),
+			asm.Mov.Reg(asm.R4, asm.RFP), asm.Add.Imm(asm.R4, -16), asm.FnDynptrFromMem.Call(),
+			asm.Mov.Reg(asm.R1, asm.RFP), asm.Add.Imm(asm.R1, -16), asm.Mov.Imm(asm.R2, 0), asm.Mov.Imm(asm.R3, 8), asm.FnDynptrData.Call(), asm.StoreMem(asm.RFP, -64, asm.R6, asm.DWord),
 			asm.JEq.Imm(asm.R0, 0, "out"), st64(asm.R0, 0), asm.LoadMem(asm.R1, asm.RFP, -64, asm.DWord).WithSymbol("out")), call), false},
+		{"xchg fetches a frame pointer from the frame", cat(spill, ptrAt72, I(asm.Mov.Imm(asm.R2, 0), atomic(asm.AtomicMode, asm.RFP, asm.R2, -72, int64(asm.Xchg)), st64(asm.R2, 0)), reload, call), false},
+		{"load-acquire with a frame pointer in src", cat(spill, ptrAt72, I(asm.Mov.Reg(asm.R4, asm.RFP), asm.Add.Imm(asm.R4, -72), asm.Mov.Imm(asm.R2, 0),
+			atomic(asm.AtomicMode, asm.R2, asm.R4, 0, loadAcquire), st64(asm.R2, 0)), reload, call), false},
+		{"r0 frame pointer kept across a map-value atomic add", cat(spill, I(asm.Mov.Reg(asm.R0, asm.RFP), asm.Add.Imm(asm.R0, -64), asm.LoadImm(asm.R3, 0, asm.DWord), asm.Mov.Imm(asm.R2, 1),
+			atomic(asm.AtomicMode, asm.R3, asm.R2, 0, int64(asm.Add)), st64(asm.R0, 0)), reload, call), false},
 		{"xchg returns the old value", cat(I(asm.Mov.Reg(asm.R2, asm.R1), atomic(asm.AtomicMode, asm.RFP, asm.R2, -64, int64(asm.Xchg)), asm.Mov.Reg(asm.R1, asm.R2)), call), false},
 		{"probe-atomic xchg overwrites r1", cat(I(asm.LoadImm(asm.R2, 0, asm.DWord), atomic(probeAtomic, asm.R2, asm.R1, 0, xchg)), call), false},
 		{"probe-atomic cmpxchg overwrites r0", cat(I(asm.Mov.Reg(asm.R0, asm.R1), asm.LoadImm(asm.R2, 0, asm.DWord), asm.Mov.Imm(asm.R3, 0),
@@ -120,7 +126,7 @@ func TestStaticCtxReachesCalls(t *testing.T) {
 	}{
 		{"jit dump, ctx", jit(asm.Mov.Reg(asm.R6, asm.R1)), true},
 		{"jit dump, no ctx", jit(asm.Mov.Imm(asm.R1, 0)), false},
-		{"function pointer", cat(fn("entry", asm.Instruction{OpCode: asm.LoadImmOp(asm.DWord), Dst: asm.R2, Src: asm.PseudoFunc, Constant: 3}, asm.Mov.Imm(asm.R0, 0), asm.Return()),
+		{"function pointer", cat(fn("entry", asm.Instruction{OpCode: asm.LoadImmOp(asm.DWord), Dst: asm.R2, Src: asm.PseudoFunc, Constant: 1<<32 | 3}, asm.Mov.Imm(asm.R0, 0), asm.Return()), // imm[1] holds the subprog id
 			fn("hook", ret()...)), false},
 		{"gotol skips the restore", cat(fn("entry", asm.Mov.Reg(asm.R6, asm.R1), asm.LoadMem(asm.R2, asm.R1, 0, asm.Word),
 			asm.Instruction{OpCode: asm.OpCode(asm.JumpClass).SetJumpOp(asm.JEq), Dst: asm.R2, Offset: 2}, // to the restore

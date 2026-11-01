@@ -213,7 +213,7 @@ func (s *ctxState) call(helper, writeFree, callbacks bool) {
 	for r := asm.R0; r <= asm.R5; r++ {
 		s.regs[r] = ctxKind{}
 	}
-	if exposed && !helper && !writeFree {
+	if exposed && !helper {
 		s.regs[asm.R0] = ctxKind{t: ctxAny} // may alias a caller buffer (a dynptr slice)
 	}
 }
