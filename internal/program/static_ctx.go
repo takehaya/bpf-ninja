@@ -3,6 +3,7 @@ package program
 import (
 	"fmt"
 	"math"
+	"runtime"
 	"slices"
 
 	"github.com/cilium/ebpf"
@@ -24,20 +25,62 @@ func checkStaticCtxArg(target *ebpf.Program, name string) error {
 		return fmt.Errorf("static function %q: reading the target's translated instructions to check its context argument: %w; "+
 			"lower kernel.kptr_restrict or net.core.bpf_jit_harden, or capture at its caller or at a global function", name, err)
 	}
-	if !ctxReachesCalls(insns, name) {
-		return fmt.Errorf("static function %q: cannot show that every call passes the program context as its first argument, "+
+	return checkStaticCtxInsns(insns, name)
+}
+
+// checkStaticCtxInsns is checkStaticCtxArg on translated instructions already read.
+func checkStaticCtxInsns(insns asm.Instructions, name string) error {
+	if hidesHelperIDs(insns) {
+		return fmt.Errorf("static function %q: the translated instructions hide helper IDs, so a helper call the %s JIT may inline, "+
+			"which keeps R1-R5, cannot be told from one that clobbers them; grant CAP_SYSLOG and keep kernel.kptr_restrict below 2, "+
+			"or capture at its caller or at a global function", name, hostArch)
+	}
+	if why := ctxRefusal(insns, name); why != "" {
+		return fmt.Errorf("static function %q: cannot show that every call passes the program context as its first argument (%s), "+
 			"which a context read with bpf_probe_read_kernel relies on; only calls from the entry function, "+
-			"with the context in a register or an 8-byte stack spill, are accepted; capture at its caller or at a global function", name)
+			"with the context in a register or an 8-byte stack spill, are accepted; capture at its caller or at a global function", name, why)
 	}
 	return nil
 }
 
+// hostArch is the architecture bpf-ninja was built for, which an emulated
+// binary does not share with the kernel; a test pins it to cover both
+// branches of hidesHelperIDs.
+var hostArch = runtime.GOARCH
+
+// hidesHelperIDs reports whether the dump zeroes helper IDs (the kernel does
+// so for every call without bpf_dump_raw_ok, e.g. under kernel.kptr_restrict)
+// on a host whose JIT may inline a helper call and keep R1-R5 across it. The
+// x86-64 JIT inlines none, so a call there always clobbers R1-R5.
+func hidesHelperIDs(insns asm.Instructions) bool {
+	if hostArch == "amd64" {
+		return false
+	}
+	for i := range insns {
+		if insns[i].IsBuiltinCall() && insns[i].Constant == 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// regParams is BPF_REG_PARAMS, through which Linux 7.2+ passes arguments past
+// the fifth. Before 7.2 R11 is BPF_REG_AX, which is never a store target.
+const regParams = asm.Register(11)
+
 // What a register or 8-byte stack slot may hold: a value the verifier never
-// lets point into this frame, the entry context, a pointer into this frame
-// (at off), or possibly such a pointer at an unknown offset.
+// lets point into this frame (and never a function pointer), the entry
+// context, possibly a function pointer (still not into this frame), a pointer
+// into this frame (at off), or anything, including such a pointer at an
+// unknown offset. The kinds are ordered so that <=ctxValue is a non-frame
+// scalar, <=ctxFunc adds a possible function pointer, and >=ctxFrame is a
+// frame pointer, exact or not. ctxOther means "none of the above in the
+// verifier's view", so joining into it, not resetting to it, is what keeps a
+// tracked function or frame pointer across an untracked write (see clobber).
 const (
 	ctxOther uint8 = iota
 	ctxValue
+	ctxFunc
 	ctxFrame
 	ctxAny
 )
@@ -59,6 +102,8 @@ func joinCtx(a, b ctxKind) ctxKind {
 		return a
 	case a.t <= ctxValue && b.t <= ctxValue:
 		return ctxKind{}
+	case a.t <= ctxFunc && b.t <= ctxFunc:
+		return ctxKind{t: ctxFunc}
 	}
 	return ctxKind{t: ctxAny}
 }
@@ -90,7 +135,9 @@ func (s *ctxState) set(r asm.Register, k ctxKind) {
 	}
 }
 
-// fill sets every slot overlapping frame bytes [lo, hi).
+// fill sets every slot overlapping frame bytes [lo, hi) to k. Use it for a
+// write the model can place exactly (a partial store through a frame
+// pointer), or with k = ctxAny for a write that may reach any byte.
 func (s *ctxState) fill(lo, hi int, k ctxKind) {
 	for i := range s.slots {
 		if off := -8 * (i + 1); off < hi && lo < off+8 {
@@ -99,6 +146,26 @@ func (s *ctxState) fill(lo, hi int, k ctxKind) {
 	}
 }
 
+// clobber joins every slot overlapping [lo, 0) with ctxOther. Use it for a
+// write the model cannot place: a helper's write somewhere in its buffers, or
+// a dynptr-slice alias write. The verifier keeps a slot such a write misses,
+// pointer type included, so resetting it would lose a frame or function
+// pointer. The join costs precision: a frame pointer in such a slot becomes
+// ctxAny, and a later store through it refuses the program.
+func (s *ctxState) clobber(lo int) {
+	for i := range s.slots {
+		if off := -8 * (i + 1); lo < off+8 {
+			s.slots[i] = joinCtx(s.slots[i], ctxKind{})
+		}
+	}
+}
+
+// ctxSlot maps a frame offset to a tracked 8-byte slot. Only fp-8..fp-512 are
+// tracked. shortcut: an inlined bpf_loop in a frame deeper than 488 bytes
+// spills R6-R8 below fp-512 and restores them after the loop; this stays sound
+// only because the always-emitted E2BIG bypass (fixups.c) joins the original
+// R6-R8 at the end label, so a frame or function pointer kept there widens
+// instead of becoming the ctxOther an untracked restore reads.
 func ctxSlot(off int) (int, bool) { return -off/8 - 1, off <= -8 && off >= -512 && off%8 == 0 }
 
 func (s *ctxState) store(base ctxKind, off, size int, k ctxKind) {
@@ -116,7 +183,12 @@ func (s *ctxState) store(base ctxKind, off, size int, k ctxKind) {
 	case ctxAny:
 		s.fill(-512, 0, ctxKind{t: ctxAny})
 	default:
-		s.fill(int(s.floor), 0, ctxKind{})
+		// A store through a map value, a slice or any other non-frame pointer:
+		// the only bytes it can reach that we must model are the floor region,
+		// where a dynptr-slice alias may write. shortcut: an alias write that
+		// replaces a spilled non-stack pointer with a frame address is not
+		// modelled; covering it would refuse the real Calico hooks.
+		s.clobber(int(s.floor))
 	}
 }
 
@@ -140,7 +212,7 @@ func (s *ctxState) step(ins asm.Instruction) {
 			if off >= -512 && off <= 0 {
 				other = ctxKind{t: ctxFrame, off: int16(off)}
 			}
-		case d.t >= ctxFrame || op.Source() == asm.RegSource && s.reg(ins.Src).t >= ctxFrame:
+		case d.t >= ctxFunc || op.Source() == asm.RegSource && s.reg(ins.Src).t >= ctxFunc:
 			other = ctxKind{t: ctxAny}
 		}
 		s.set(ins.Dst, other)
@@ -155,6 +227,9 @@ func (s *ctxState) step(ins asm.Instruction) {
 		}
 		s.set(ins.Dst, other)
 	case cls == asm.LdClass && op.Mode() == asm.ImmMode:
+		if ins.IsLoadOfFunctionPointer() {
+			other = ctxKind{t: ctxFunc}
+		}
 		s.set(ins.Dst, other)
 	case cls == asm.LdClass: // LD_ABS/IND clobber R0-R5 like a call
 		for r := asm.R0; r <= asm.R5; r++ {
@@ -187,13 +262,17 @@ func (s *ctxState) step(ins asm.Instruction) {
 // call applies a call's effect. A helper writes only forward of a frame
 // pointer it gets; a BPF function may write anywhere in the frame through
 // one unless it stores only to its own stack and calls nothing, and so may a
-// callback a helper runs. shortcut: an extension that later replaces a
+// synchronous callback a helper or kfunc runs. The verifier runs such a
+// callback only when it is passed as a function pointer argument, so a call
+// with no function pointer in R1-R5 runs none (an async timer callback runs
+// later, not during the call). shortcut: an extension that later replaces a
 // write-free callee is not modelled, since that needs the privileges to
 // replace the program itself; bound the write with the callee's BTF if not.
-func (s *ctxState) call(helper, writeFree, callbacks bool) {
-	exposed := false
+func (s *ctxState) call(helper, writeFree, fnPtrElsewhere bool) {
+	exposed, callback := false, false
 	for r := asm.R1; r <= asm.R5; r++ {
 		k := s.regs[r]
+		callback = callback || k.t == ctxFunc || k.t == ctxAny
 		if k.t < ctxFrame {
 			continue
 		}
@@ -206,23 +285,31 @@ func (s *ctxState) call(helper, writeFree, callbacks bool) {
 			s.floor = min(s.floor, lo)
 		}
 	}
-	s.fill(int(s.floor), 0, ctxKind{})
-	if exposed && (helper && callbacks || !helper && !writeFree) {
+	s.clobber(int(s.floor))
+	if exposed && (helper && callback || !helper && !writeFree) {
 		s.fill(-512, 0, ctxKind{t: ctxAny})
 	}
 	for r := asm.R0; r <= asm.R5; r++ {
 		s.regs[r] = ctxKind{}
 	}
-	if exposed && !helper {
-		s.regs[asm.R0] = ctxKind{t: ctxAny} // may alias a caller buffer (a dynptr slice)
+	if !helper {
+		if callback || fnPtrElsewhere {
+			s.regs[asm.R0] = ctxKind{t: ctxFunc} // a static callee may return a function pointer
+		}
+		if exposed {
+			s.regs[asm.R0] = ctxKind{t: ctxAny} // or alias a caller buffer (a dynptr slice)
+		}
 	}
 }
 
 // ctxReachesCalls reports whether R1 holds the entry context at every call to
-// the function name in the translated (or raw) instructions. It follows
-// registers and 8-byte stack slots through the entry function and refuses
-// what it cannot follow.
-func ctxReachesCalls(insns asm.Instructions, name string) bool {
+// the function name in the translated (or raw) instructions.
+func ctxReachesCalls(insns asm.Instructions, name string) bool { return ctxRefusal(insns, name) == "" }
+
+// ctxRefusal is ctxReachesCalls with the reason for a refusal, or "" when R1
+// holds the context at every call. It follows registers and 8-byte stack
+// slots through the entry function and refuses what it cannot follow.
+func ctxRefusal(insns asm.Instructions, name string) string {
 	at, sym := map[int]int{}, map[string]int{}
 	var starts []int
 	target := -1
@@ -236,14 +323,17 @@ func ctxReachesCalls(insns asm.Instructions, name string) bool {
 			starts = append(starts, pc)
 			if fn.Name == name {
 				if target >= 0 {
-					return false
+					return "the program defines the function more than once"
 				}
 				target = pc
 			}
 		}
 	}
-	if target <= 0 || insns.Size()/asm.InstructionSize > math.MaxInt16 {
-		return false // the dump keeps call offsets in 16 bits
+	if target <= 0 {
+		return "the function is the entry or is missing from the translated instructions"
+	}
+	if insns.Size()/asm.InstructionSize > math.MaxInt16 {
+		return "the program has more than 32,767 instructions" // the dump keeps call offsets in 16 bits
 	}
 	end := func(pc int) int {
 		for _, s := range starts {
@@ -267,16 +357,22 @@ func ctxReachesCalls(insns asm.Instructions, name string) bool {
 		return pc + 1 + rel
 	}
 	isCall := func(ins *asm.Instruction) bool { return ins.OpCode.Class().IsJump() && ins.OpCode.JumpOp() == asm.Call }
-	entryEnd, callbacks, targets := end(0), false, map[int]bool{}
+	entryEnd, targets, fnPtrElsewhere := end(0), map[int]bool{}, false
 	for it := insns.Iterate(); it.Next(); {
 		pc, ins := int(it.Offset), it.Ins
 		fnPtr := ins.IsLoadOfFunctionPointer()
 		if (fnPtr || ins.IsFunctionCall()) && jump(pc, ins) == target && (fnPtr || pc >= entryEnd) {
 			// shortcut: calls from other functions are refused; prove their callers in turn if needed.
-			return false
+			return "it is called from another function or used as a function pointer"
 		}
+		// A function pointer loaded outside the entry can reach the target as a
+		// static callee's R0, so its return may be a callback there (see call).
+		fnPtrElsewhere = fnPtrElsewhere || (fnPtr && pc >= entryEnd)
 		if pc < entryEnd {
-			callbacks = callbacks || fnPtr
+			if ins.OpCode.Class().IsStore() && ins.Dst == regParams {
+				// shortcut: a stack argument reaches the callee's frame unmodelled.
+				return "the entry passes a stack argument through r11"
+			}
 			if ins.OpCode.Class().IsJump() && !isCall(ins) && ins.OpCode.JumpOp() != asm.Exit {
 				targets[jump(pc, ins)] = true
 			}
@@ -315,7 +411,7 @@ func ctxReachesCalls(insns asm.Instructions, name string) bool {
 		for {
 			i, ok := at[pc]
 			if !ok || pc >= entryEnd {
-				return false
+				return "control leaves the entry function or lands inside an instruction"
 			}
 			ins := &insns[i]
 			op, next := ins.OpCode, pc+int(ins.Size()/asm.InstructionSize)
@@ -325,15 +421,28 @@ func ctxReachesCalls(insns asm.Instructions, name string) bool {
 				callee := -1
 				if ins.IsFunctionCall() {
 					if callee = jump(pc, ins); !slices.Contains(starts, callee) {
-						return false
+						return fmt.Sprintf("the call at instruction %d does not reach a function start", pc)
 					}
 				}
 				if callee == target && s.regs[asm.R1].t != ctxValue {
-					return false
+					return fmt.Sprintf("R1 may not hold the context at the call at instruction %d", pc)
 				}
-				s.call(callee < 0, callee >= 0 && writeFree(callee), callbacks)
+				keep := s.regs
+				s.call(callee < 0, callee >= 0 && writeFree(callee), fnPtrElsewhere)
+				// bpf_get_smp_processor_id, the only fastcall helper in 6.12-7.3,
+				// carries no arguments, and a JIT that inlines it (arm64, riscv and
+				// powerpc, plus s390 and loongarch from 7.2) keeps R1-R5; the
+				// verifier dropped the spill/fill pair.
+				// The dump shows its ID only with bpf_dump_raw_ok; without it
+				// hidesHelperIDs refuses first. A raw call does clobber R1-R5,
+				// so join rather than restore.
+				if ins.IsBuiltinCall() && ins.Constant == int64(asm.FnGetSmpProcessorId) {
+					for r := asm.R1; r <= asm.R5; r++ {
+						s.regs[r] = joinCtx(keep[r], ctxKind{})
+					}
+				}
 			case op.Class().IsJump() && op.JumpOp() == asm.Ja && op.Source() == asm.RegSource:
-				return false // gotox: jump-table targets are not followed
+				return fmt.Sprintf("the indirect jump at instruction %d is not followed", pc) // gotox: jump-table targets
 			case op.Class().IsJump() && op.JumpOp() == asm.Exit:
 				succ = nil
 			case op.Class().IsJump():
@@ -354,5 +463,5 @@ func ctxReachesCalls(insns asm.Instructions, name string) bool {
 			break
 		}
 	}
-	return true
+	return ""
 }
