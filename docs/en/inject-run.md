@@ -86,6 +86,9 @@ Do not copy the example bound without auditing the actual program.
 `hook` must be a C identifier of at most 127 bytes, leaving room for the longest suffix the transform appends: at most 117 bytes with `tail_calls` (`_tail_call`), 121 with `entry` (`_entry`), 125 with `auto` (`_0`), 120 with `lookup:miss` (`_0_miss`), and 118 with `update`, `delete`, `push`, `pop` or `peek` (`_0_update`); with `dispatch` the hook is named `hook` itself, so up to 127 bytes. Under `auto`, a map whose hook name would still not fit is skipped.
 Unknown JSON fields, duplicate program selectors, trailing JSON, and configurations larger than 1 MiB are rejected before launching.
 
+Packet capture with `--func` at a static XDP or tc hook reads the context through `bpf_probe_read_kernel` when direct reads are rejected, after checking that the entry passes the context to every call ([arg-member-filter.md](arg-member-filter.md) lists what the check refuses).
+At tc it captures only the linear packet head, and a filter with `--tc-vlan-reinsert` is refused there.
+
 ## Map types from a loader ELF
 
 Some loaders create maps without kernel BTF even though their ELF contains the key and value definitions.

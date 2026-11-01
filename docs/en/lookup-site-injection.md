@@ -359,6 +359,11 @@ The entry function must have one BTF parameter pointing to `struct xdp_md` (XDP)
 The package checks the program type; the cooperative loader owns attachment mode and verifier acceptance.
 The generated hooks read the context's first word (`len` for `__sk_buff`) and call no helper that changes packet data.
 
+For packet capture at a static XDP or tc hook, bpf-ninja reads the context with `bpf_probe_read_kernel`, after checking that every call passes the context the entry spilled as the first argument.
+A hook called from a subprogram, such as a tail-call hook there, is refused, and so is one whose spill a callee may overwrite; [arg-member-filter.md](arg-member-filter.md) lists the cases.
+At tc it reads `sk_buff.data`, `len` and `data_len`, using offsets from kernel BTF, and captures only the linear head, `len - data_len`, as at other tc hooks; fragment bytes are not captured.
+A failed context read produces no capture, and a filter with `--tc-vlan-reinsert` is refused on this path.
+
 | Transformer validates | Caller must certify |
 |---|---|
 | The input ELF matches `ELFSHA256` before parsing. | The hash identifies the audited build. |

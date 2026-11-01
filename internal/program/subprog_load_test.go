@@ -102,7 +102,7 @@ func TestBpfPrunedSubprog(t *testing.T) {
 								t.Fatalf("diagnostic: %v", err)
 							}
 							// The static prototype probe must also explain absence before loading.
-							if _, probeErr := staticXDPNeedsProbeRead(target, name, typ, a); probeErr == nil || !strings.Contains(probeErr.Error(), attach.FuncAbsent) {
+							if _, probeErr := staticNeedsProbeRead(xdpTestHook, target, name, typ, a); probeErr == nil || !strings.Contains(probeErr.Error(), attach.FuncAbsent) {
 								t.Fatalf("context probe diagnostic: %v", probeErr)
 							}
 							// Also verify the kernel's original failure independently of the preflight.
@@ -167,7 +167,7 @@ func TestCachedAvailability(t *testing.T) {
 	if err := attachTracingProbe(p, nil, "probe", "dead", ebpf.AttachTraceFEntry, nil, false, a); err == nil || !strings.Contains(err.Error(), attach.FuncAbsent) {
 		t.Fatalf("%v", err)
 	}
-	if _, err := staticXDPNeedsProbeRead(nil, "dead", ebpf.AttachTraceFEntry, a); err == nil || !strings.Contains(err.Error(), attach.FuncAbsent) {
+	if _, err := staticNeedsProbeRead(xdpTestHook, nil, "dead", ebpf.AttachTraceFEntry, a); err == nil || !strings.Contains(err.Error(), attach.FuncAbsent) {
 		t.Fatalf("%v", err)
 	}
 }

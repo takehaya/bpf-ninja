@@ -230,7 +230,7 @@ func rootFlags() []cli.Flag {
 		},
 		&cli.BoolFlag{
 			Name:  "tc-vlan-reinsert",
-			Usage: "at tc, put the outer VLAN tag the kernel moved into skb metadata back into the DSL filter's bytes, so the filter matches the frame as on the wire (eth/vlan[tci==100]/... works; eth/ipv4/tcp no longer matches tagged frames). Captured bytes are unchanged. Default off",
+			Usage: "at tc, put the outer VLAN tag the kernel moved into skb metadata back into the DSL filter's bytes, so the filter matches the frame as on the wire (eth/vlan[tci==100]/... works; eth/ipv4/tcp no longer matches tagged frames). Captured bytes are unchanged. Refused with a filter at a static --func whose context is read with bpf_probe_read_kernel. Default off",
 		},
 		&cli.BoolFlag{
 			Name:  "observer-prefetch",

@@ -333,8 +333,8 @@ func LoadMultiPoint(targets []attach.Target, stages []Stage, filters []filter.Ta
 		return nil, err
 	}
 	for i, t := range targets {
-		staticXDP := false
-		if h.Kind == hook.KindXDP && t.FuncName != "" {
+		static := false
+		if (h.Kind == hook.KindXDP || h.Kind == hook.KindTC) && t.FuncName != "" {
 			spec, specErr := probe.extensionGuard.Spec(t.Program)
 			if specErr != nil {
 				_ = probe.Close()
@@ -345,9 +345,7 @@ func LoadMultiPoint(targets []attach.Target, stages []Stage, filters []filter.Ta
 				_ = probe.Close()
 				return nil, specErr
 			}
-			if fn.Linkage == btf.StaticFunc {
-				staticXDP = true
-			}
+			static = fn.Linkage == btf.StaticFunc
 		}
 		var tf filter.TargetFilters
 		if filters != nil {
@@ -362,14 +360,20 @@ func LoadMultiPoint(targets []attach.Target, stages []Stage, filters []filter.Ta
 			stLabel, attachType := tracingLabel(st.IsFexit)
 			targetHook := h
 			probeRead := false
-			if staticXDP {
-				probeRead, err = staticXDPNeedsProbeRead(t.Program, t.FuncName, attachType, t.Availability)
+			if static {
+				probeRead, err = staticNeedsProbeRead(h, t.Program, t.FuncName, attachType, t.Availability)
+				if err == nil && probeRead {
+					err = checkStaticCtxArg(t.Program, t.FuncName)
+				}
 				if err != nil {
 					_ = probe.Close()
 					return nil, err
 				}
 				if probeRead {
 					targetHook = staticXDPHook(h, st.IsFexit)
+					if h.Kind == hook.KindTC {
+						targetHook = staticTCHook(h, t.FuncName)
+					}
 				}
 			}
 			var returnOffset int16
@@ -573,6 +577,8 @@ func compileFilterWithSlots(expr string, useDSL, isFexit bool, progType ebpf.Pro
 //   -57..-120: set filter のキーバッファ (emitSetFilters; runFilter の
 //              前で死ぬ。kunai は KunaiStackTop=-56 以深を所有するが
 //              それは runFilter 内のみ live — phase ordering で共存)
+//   -136, -144: static XDP identity read の退避 (staticXDPHook)
+//   -160..-145: static context read の一時領域 (static_xdp.go; prologue 後は死ぬ)
 //
 // 実際の on-wire フォーマットの正典は internal/capture/capture.go の
 // コメント。現行は ringbuf reserve/submit で 28B のメタデータヘッダを

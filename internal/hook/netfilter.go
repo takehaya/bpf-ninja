@@ -56,7 +56,7 @@ func nfPacketPrologue() (asm.Instructions, error) {
 	if err != nil {
 		return nil, fmt.Errorf("resolving struct bpf_nf_ctx offsets via BTF: %w", err)
 	}
-	dataOff, lenOff, dataLenOff, err := skBuffPacketOffsets()
+	dataOff, lenOff, dataLenOff, err := SkBuffPacketOffsets()
 	if err != nil {
 		return nil, fmt.Errorf("resolving struct sk_buff offsets via BTF: %w", err)
 	}
@@ -75,7 +75,7 @@ func nfPacketPrologue() (asm.Instructions, error) {
 // `struct bpf_nf_ctx`'s `skb` member. The struct is two pointers today
 // (state, skb) but the offset is resolved from BTF like the sk_buff
 // members, so a future member insertion cannot silently skew the read.
-// Cached at first call, same rationale as skBuffPacketOffsets.
+// Cached at first call, same rationale as SkBuffPacketOffsets.
 func nfCtxSkbOffset() (uint32, error) {
 	nfCtxOnce.Do(func() {
 		spec, err := btf.LoadKernelSpec()

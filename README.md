@@ -397,7 +397,7 @@ For discovery, syntax, BTF resolution, read failures, and a worked IMSI example,
 | `-c, --count` | Stop after N packets (0 = unlimited) | all |
 | `-v, --verbose` | Verbose output to stderr | all |
 | `--cbpf` | Use the legacy tcpdump/cBPF syntax (compiled via cbpfc); default is the built-in DSL. Prints a deprecation notice when used. | all |
-| `--tc-vlan-reinsert` | At a tc target, put the outer VLAN tag the kernel moved into skb metadata back into the bytes the DSL filter reads (`eth/vlan[tci==100]/...` then works; `eth/ipv4/tcp` stops matching tagged frames). Captured bytes stay as the kernel holds them; layer-bounded captures grow by 4 bytes. Not allowed with `--cbpf` | entry, exit |
+| `--tc-vlan-reinsert` | At a tc target, put the outer VLAN tag the kernel moved into skb metadata back into the bytes the DSL filter reads (`eth/vlan[tci==100]/...` then works; `eth/ipv4/tcp` stops matching tagged frames). Captured bytes stay as the kernel holds them; layer-bounded captures grow by 4 bytes. Not allowed with `--cbpf`, or with a filter at a static `--func` whose context is read with `bpf_probe_read_kernel` | entry, exit |
 | `--dsl-help` | Print the DSL grammar + bundled protocol catalogue and exit (no `-i`/`-p` required) | — |
 | `--dump-asm` | Print compiled eBPF asm and exit. Values: `filter` (kunai/cbpfc body only) \| `full` (wrapped program). No `-i`/`-p` required | — |
 | `--dump-hook` | Hook whose capabilities/prologue `--dump-asm` renders: `xdp` (default) \| `tc` \| `cgroup-skb` \| `netfilter` (offline compiles have no target program to auto-detect from) | — |
@@ -434,7 +434,7 @@ Common:
 Mode-specific:
 
 - **Pointer argument features**: member filters/echo, scalar-pointee `[0]` reads, pointer NULL comparisons, and member-derived set keys require `bpf_get_func_arg` support (upstream Linux 5.17+). These features have been measured on kernels 6.1+ in our test matrix; distribution backports may differ.
-- **Static XDP context fallback**: when direct context reads are rejected, exit and gated capture also require `bpf_get_func_ret` (upstream Linux 5.17+) to obtain the action without relying on the discarded BTF prototype.
+- **Static XDP and tc context fallback**: when a static function's direct context reads are rejected, bpf-ninja reads the context with `bpf_probe_read_kernel`, and only after checking that every call, from the entry function, passes the context as the first argument. Exit and gated capture on this path also require `bpf_get_func_ret` (upstream Linux 5.17+) to obtain the action without relying on the discarded BTF prototype, and at tc a filter with `--tc-vlan-reinsert` is refused.
 - **`--mode entry` / `exit`**: a target BPF program (XDP, tc clsact, cgroup-skb, or netfilter) already loaded with BTF. With `-i`, an XDP program attached to the interface; tc targets go by `-p <progID>`; cgroup-skb targets by `--cgroup <path>` or `-p`.
 - **`--mode xdp`**: no XDP attached to the interface (bpf-ninja becomes the XDP program).
 - **DSL with chain quantifier (`+`, `*`, `{n,m>4}`) on a fixed-length layer, parser-machine self-loop (variable-length headers like IPv6 ext / GTP options / SRv6 segments), or alternation (`(a|b)`)**: kernel 5.17+ (uses `bpf_loop` + bpf2bpf subprograms). A repeated variable-length layer (`ipv4+`, `ipv6*`) unrolls to `MAX_DEPTH` parser machines instead of a bpf_loop chain; each machine's own option or extension walk keeps the 5.17 requirement where it applies. Plain DSL chains and `--cbpf` filters work on 5.8+.

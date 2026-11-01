@@ -57,7 +57,7 @@ func skbIdentity(dst asm.Register) (asm.Instructions, error) {
 // unrelated kernel memory into the capture. The window (and therefore
 // caplen) is clamped to the head; frag bytes are not captured.
 func skbPacketPrologue() (asm.Instructions, error) {
-	dataOff, lenOff, dataLenOff, err := skBuffPacketOffsets()
+	dataOff, lenOff, dataLenOff, err := SkBuffPacketOffsets()
 	if err != nil {
 		return nil, fmt.Errorf("resolving struct sk_buff offsets via BTF: %w", err)
 	}
