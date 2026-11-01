@@ -234,13 +234,25 @@ eth/ipv6/srv6/tcp where srv6.segments[srv6.segments_left].addr == X # 現 active
 
 # IPv6 / GTP-U extension headers
 eth/ipv6/tcp where ipv6.exts[0].next_header == 44                    # 最初の ext type
-eth/ipv4/udp/gtp/ipv4/tcp where gtp.exts[0].ext_type == 1            # 最初の GTP ext type
+eth/ipv4/udp/gtp/ipv4/tcp where gtp.opt.next_ext == 0x85           # 最初の GTP ext の type
+eth/ipv4/udp/gtp/ipv4/tcp where gtp.exts[0].next_ext == 0x85        # 2 個目の GTP ext の type
+eth/ipv4/udp/gtp/ipv4/tcp where gtp.exts[0].ext_type[0:4] == 1      # 最初の GTP ext の中身の先頭 4 bit
 
 # TCP option lookup (走査して match)
 eth/ipv4/tcp where tcp.options.MSS.value == 1460
 eth/ipv4/tcp where tcp.options.WS.shift > 5
 eth/ipv4/tcp where tcp.options.TS.tsval > 0
 ```
+
+GTP-U の extension header の type は、その extension 自身ではなく、一つ前の Next Extension Header Type に入ります (TS 29.281 §5.2.1)。最初の extension の type は `gtp.opt.next_ext`、`i+1` 番目の extension の type は `gtp.exts[i].next_ext` にあります。`gtp.exts[i].ext_type` は名前に反して `i` 番目の extension の中身の先頭 2 byte で、PDU Session Container では PDU type と QFI を含みます。type と中身を対にして確かめるには、`any(...)` では一つ前の entry を参照できないので、index ごとに並べます。たとえば PDU Session Container の PDU type が 1、QFI が 9 の packet は、container が 1 個目か 2 個目にある場合を次のように書きます。
+
+```
+eth/ipv4/udp/gtp/ipv4/udp where
+  (gtp.opt.next_ext == 0x85 and gtp.exts[0].ext_type[0:4] == 1 and gtp.exts[0].ext_type[10:16] == 9) or
+  (gtp.exts[0].next_ext == 0x85 and gtp.exts[1].ext_type[0:4] == 1 and gtp.exts[1].ext_type[10:16] == 9)
+```
+
+保持する entry は 9 個までなので、それより後ろの extension と、filter が読む先頭 512 byte より後ろの extension には一致しません。
 
 1 つの filter で TCP の option を 2 種類以上見る場合は、option の field を読む条件をすべて `<option>.<field> == <定数>` の形にします。この条件は bracket に書くか、`where` 句の一番外側の `and` の項として書きます。`where` 句のほかの項、たとえば `tcp.dport == 80`、`ipv4.ttl == 64`、`options.valid` は、option を読まない限り自由に混ぜられます。`int<128>(n)` で field に収まらない定数を書くと、その filter はどの packet にも一致しません。option を `!=`、大小比較、`in`、`.exists` で読む条件や、`or` と `not` の内側で読む条件を混ぜると `ErrNotImplemented` になります。`tcp?` や alternation の member のように不在になりうる layer の bracket に option の `==` を書いた場合も compile できます。layer が不在の packet では、ほかの bracket と同じく条件は評価されません。
 
