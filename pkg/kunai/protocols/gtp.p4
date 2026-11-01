@@ -32,6 +32,9 @@ header gtp_opt_h {
 // (opt.next_ext for the first one), not in this header: ext_type
 // holds the first two content bytes, e.g. PDU type and QFI of a
 // PDU Session Container.
+// next_ext is read at byte 3 of every extension. TS 29.281 puts it in
+// the last octet, so the chain is only followed correctly through
+// 4-byte extensions (ext_length == 1).
 @kunai_variable_tail[len_field=ext_length, scale=4, min_total=4]
 header gtp_ext_h {
     bit<8>  ext_length;
