@@ -316,7 +316,7 @@ capturing (prog "ninja_recent_push" id=2, mode=entry, sharded, 2 shards via ring
 - The capture sees a packet only when the program calls the hook, so the rule decides what it sees: with `peek`, `ninja_seen_peek` captures only the packets whose length the bloom filter has not seen, and nothing once all four lengths are in it. Use `peek:any` to capture every peek.
 - `--list-params` lists the hook's integer and pointer arguments, and `--members` shows member or scalar-pointee expressions.
   `--arg-filter` can select `site` and `status`: `--arg-filter site=24` keeps the pushes at pc 24, and `--arg-filter status=0` keeps the calls that succeeded. `status` is unsigned, so an error such as `-7` is a large value.
-- With `--mode exit` the capture runs when the hook returns. The recorded return value is the hook's, always 0, not the program's action.
+- With `--mode exit` the capture runs when the hook returns. The recorded return value is the hook's, always 0, not the program's action; a recording capture (below) writes it as `return=0x00000000` at the start of each comment.
 - The loader's packets are zero-filled, so `tcpdump` prints them as truncated frames.
 
 The capture was checked with the walkthrough's program on 6.1, 6.15, 7.0 and 7.3-rc4, in entry and exit mode, and `--list-params` and `--arg-filter` on 7.0.
@@ -348,7 +348,7 @@ All three tcpdump rows had destination port 443; the first was:
 20:31:00.340572 IP 10.0.0.1.40000 > 10.0.0.2.443: Flags [S], seq 0:10, win 0, length 10
 ```
 
-`value->action!=2` selected port 80, and `value->port==be16(443)` selected port 443 because `port` contains network-order bytes.
+`value->action!=2` selected port 80, and `value->port==be16(443)` selected port 443 because `port` contains network-order bytes; a recorded `value->port` shows the stored bytes as a host-order integer, not the `be16` literal.
 A set can also use `--set 'ports=/sys/fs/bpf/ports,key(dport=arg:key->dport)' --arg-filter '@ports'`.
 See the [member filter guide](arg-member-filter.md) for comparisons, set bindings, and read failures.
 
@@ -363,6 +363,51 @@ On kernels that reject the global hook's `arg:untrusted` pointers (6.1, 6.6, 6.1
 Capture reads the static XDP hook's ctx through the kernel-read helper when the direct context-read probe rejects that target.
 On that fallback path, exit and gated capture obtain the action through `bpf_get_func_ret` (upstream Linux 5.17+) because the kernel has discarded the hook's BTF prototype.
 `value!=null` selects the hits without dereferencing the value.
+
+### Record the decision state with each packet
+
+A capture at a generated hook writes, as each packet's pcapng comment, the values the hook's call was decided on.
+`--record` selects them:
+
+- `filter` (the default) records the arguments and members that `--arg-filter` and `--set` keys read, named as in `--arg-filter`.
+  Without such a filter there is nothing to record and the file keeps the plain layout.
+  A condition on a member inside a `bpf_*` struct other than the LPM trie key structs (for example `tuple->ipv4.dport` in `struct bpf_sock_tuple`) still filters but is not recorded: the default layout leaves it out and `-v` names it, and an explicit `--record filter` refuses it.
+- `entry` records `site` (decimal), `status` and the whole key and value the hook received, decoded with the map's BTF. `status` is `(u32)ret | flags << 32`, written as `0x%016x` so both halves show, as in `status=0x00000002fffffffe`; `--arg-filter` accepts the same `0x` value. Key and value: `key->member=N` (members of anonymous structs and unions under their `--arg-filter` names), `value[0]=N` for a scalar, hex for arrays and named unions, and `value=` with the raw bytes in hex when the map has no BTF, the same at every hook form and cut to `--record-max`.
+  Pointers, `bpf_*` structs (timers, locks, kptr holders and the like; the uapi LPM trie key structs `bpf_lpm_trie_key`, `bpf_lpm_trie_key_hdr` and `bpf_lpm_trie_key_u8` excepted) and arrays or unions holding either are left out of the comment, so no pointer-typed or kernel-managed field reaches the file; an address a program keeps in a plain integer field looks like any integer and is recorded as one.
+  `--record-max N` (default 256, at most 4096) caps the recorded bytes of the key and of the value; `value_bytes=4/8` marks a value cut to 4 of its 8 bytes. An integer passed by value is recorded whole or not at all.
+  An untrusted per-map hook's `const void *` key and value carry no BTF type, but `inject-run` attaches `bpf-ninja:key_size`/`value_size` decl tags from the map, which `entry` reads to record the raw bytes (hex), capped by `--record-max`.
+  It attaches a size only when every byte is plain data or the map has no BTF for that side; a key or value holding any pointer or `bpf_*` field gets no size and is not recorded.
+  A generic or dispatch hook serves several maps and carries no size tags, so `entry` records only site and status there: `site` (the low half of `info`) and the full `info` word, shown as `info=0x%016x`.
+- `none` keeps the plain layout.
+
+`filter` records the value each field's conditions tested, snapshotted from one read as the filter ran, so the recorded value satisfies those conditions; `entry` reads site, status, key and value at the hook, so a field the filter did not test can differ from a concurrently changing map entry.
+A recording capture writes one pcapng interface per target (the function name, or `func@progid` when a name repeats across programs), and no `epb_packetid`. It has no per-verdict interfaces, so with `--mode exit` every comment starts with the function's return value, `return=0x%08x`.
+By default only hooks that `inject-run` generated record; they carry the `bpf-ninja:hook` BTF decl tag, so an ordinary function keeps its plain layout even when its parameters have the same names. An explicit `--record filter` or `--record entry` records at every `--func`, and `-v` logs where recording is on.
+Each field is read once and its conditions run on that read, so the recorded `filter` value is the value they tested; a field used by both an argument filter and a set key keeps the argument-filter read. An `entry` read that fails shows `?`.
+An explicit `--record` is refused when its worst-case comment, with the `return=` prefix, would not fit one pcapng option (65535 bytes); lower `--record-max` for `entry`, or filter fewer fields for `filter`. The default turns itself off instead.
+`--record` is refused with gated (entry plus exit) capture, `--raw-dump`, `--arg-echo`, `--mode xdp` and `--dump-asm`, where the default turns itself off.
+
+With the [record fixture](../../internal/program/record_kernel_test.go), whose program looks up and updates `pols` and looks up a read-only `ro` map (a static hook), on kernel 7.0.13:
+
+```sh
+bpf-ninja -p "$PROG_ID" --func rec_pols --arg-filter 'value->pol_rc>=3' \
+  --arg-filter 'key->policy_index<=9' -c 2 -w filter.pcapng
+bpf-ninja -p "$PROG_ID" --func rec_pols --func rec_pols_update --func rec_ro \
+  --record entry -c 10 -w entry.pcapng
+tshark -r entry.pcapng -T fields -e frame.interface_name -e frame.comment
+```
+
+```text
+rec_pols	site=13 key->policy_index=1 value->pol_rc=2 value->port=1001 value->pad=0
+rec_pols_update	site=30 status=0x0000000200000000 key->policy_index=1 value->pol_rc=10 value->port=0 value->pad=0
+rec_ro	site=35 key[0]=1 value[0]=7
+...
+rec_pols_update	site=30 status=0x00000002fffffffe key->policy_index=5 value->pol_rc=50 value->port=0 value->pad=0
+```
+
+The `filter.pcapng` comments were `value->pol_rc=3 key->policy_index=2` and `value->pol_rc=4 key->policy_index=3`.
+Select packets by a value with `-Y 'frame.comment matches "value->pol_rc=3( |$)"'`; `contains` would also match `value->pol_rc=30`.
+`entry` puts whole map values into the file, so use `filter` or a small `--record-max` when the values hold data that should not leave the host.
 
 ## See also
 

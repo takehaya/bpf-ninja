@@ -16,6 +16,7 @@ import (
 	"github.com/google/gopacket/pcapgo"
 
 	"github.com/takehaya/bpf-ninja/internal/capture"
+	"github.com/takehaya/bpf-ninja/internal/record"
 )
 
 // fileBufSize is the outer bufio.Writer capacity sitting between the
@@ -81,6 +82,19 @@ type Config struct {
 	// Hooks enables one interface per capture-local site (slice index + 1).
 	// Every EPB carries the invocation PacketID. Mutually exclusive with verdict layouts.
 	Hooks []string
+
+	// Records, when set, has one layout per Hooks element (nil for a site
+	// that records nothing); a record's block becomes its EPB's opt_comment.
+	Records []*record.Layout
+
+	// NoRunIDs accepts hook records with PacketID 0 (captures that do not
+	// follow runs) and writes them without epb_packetid.
+	NoRunIDs bool
+
+	// RecordReturn puts return=0x%08x (Packet.Action, the function's return
+	// at fexit) first in every hook record's comment, since the hook layout
+	// has no per-verdict interfaces.
+	RecordReturn bool
 }
 
 // linkTypeOrDefault resolves the zero value to Ethernet.
@@ -109,6 +123,11 @@ type Writer struct {
 	closed    bool
 	closeOnce sync.Once
 	closeErr  error
+	// lastBatchBytes is the on-disk size the last WriteBatch emitted, read by
+	// byte-cap accounting so a record comment is rendered only once.
+	lastBatchBytes uint64
+	// comment is the reusable render buffer for hook record comments.
+	comment []byte
 }
 
 // NewWriter creates a pcapng writer. If path is empty, writes to stdout.
@@ -117,6 +136,9 @@ type Writer struct {
 func NewWriter(path string, cfg Config) (*Writer, error) {
 	if len(cfg.Hooks) > 0 && (cfg.MultiPoint || cfg.IsFexit) {
 		return nil, fmt.Errorf("hook layout needs no verdict layout")
+	}
+	if len(cfg.Records) > 0 && len(cfg.Records) != len(cfg.Hooks) {
+		return nil, fmt.Errorf("record layouts need one entry per hook")
 	}
 	if cfg.MultiPoint {
 		cfg.IsFexit = true
@@ -384,31 +406,40 @@ func (w *Writer) WriteBatch(pkts []capture.Packet) (err error) {
 		return os.ErrClosed
 	}
 	if w.fastWriter != nil {
+		var batchBytes uint64
 		for i := range pkts {
 			p := &pkts[i]
 			var err error
-			if len(w.cfg.Hooks) > 0 {
-				if p.SiteID == 0 || int(p.SiteID) > len(w.cfg.Hooks) || p.PacketID == 0 {
-					err := fmt.Errorf("invalid hook record: site_id=%d packet_id=%d", p.SiteID, p.PacketID)
-					if w.bufWriter != nil {
-						// Keep the records already written mergeable.
-						err = errors.Join(err, w.bufWriter.Flush())
-					}
-					return err
+			switch {
+			case len(w.cfg.Hooks) > 0:
+				if p.SiteID == 0 || int(p.SiteID) > len(w.cfg.Hooks) || (p.PacketID == 0 && !w.cfg.NoRunIDs) {
+					return w.failBatch(fmt.Errorf("invalid hook record: site_id=%d packet_id=%d", p.SiteID, p.PacketID))
 				}
-				err = w.fastWriter.WritePacketID(p.Timestamp, p.Data, int(p.SiteID)-1, p.PacketID)
-			} else if w.cfg.MultiPoint {
-				err = w.fastWriter.WritePacketID(p.Timestamp, p.Data, w.ifaceIDForPacket(p), p.PacketID)
-			} else {
-				err = w.fastWriter.WritePacket(p.Timestamp, p.Data)
+				comment, cerr := w.recordComment(p)
+				if cerr != nil {
+					return w.failBatch(cerr)
+				}
+				if err = w.fastWriter.WriteHookPacket(p.Timestamp, p.Data, int(p.SiteID)-1, p.PacketID, comment); err == nil {
+					batchBytes += uint64(HookEPBSize(len(p.Data), p.PacketID != 0, len(comment)))
+				}
+			case w.cfg.MultiPoint:
+				if err = w.fastWriter.WritePacketID(p.Timestamp, p.Data, w.ifaceIDForPacket(p), p.PacketID); err == nil {
+					batchBytes += uint64(EPBSizeID(len(p.Data)))
+				}
+			default:
+				if err = w.fastWriter.WritePacket(p.Timestamp, p.Data); err == nil {
+					batchBytes += uint64(EPBSize(len(p.Data)))
+				}
 			}
 			if err != nil {
-				return err
+				return w.failBatch(err)
 			}
 		}
+		w.lastBatchBytes = batchBytes
 		return nil
 	}
 	var ci gopacket.CaptureInfo
+	w.lastBatchBytes = 0
 	for i := range pkts {
 		p := &pkts[i]
 		ci.Timestamp = p.Timestamp
@@ -424,8 +455,25 @@ func (w *Writer) WriteBatch(pkts []capture.Packet) (err error) {
 		if err := w.pcapWriter.WritePacket(ci, p.Data); err != nil {
 			return fmt.Errorf("writing pcap packet: %w", err)
 		}
+		w.lastBatchBytes += uint64(EPBSize(len(p.Data)))
 	}
 	return nil
+}
+
+// LastBatchBytes is the on-disk size the most recent WriteBatch emitted.
+func (w *Writer) LastBatchBytes() uint64 { return w.lastBatchBytes }
+
+// failBatch flushes the records already written (so the shard file stays a
+// readable, mergeable prefix) and returns err; remember records it. A flush
+// that fails with err itself (bufio keeps a failed write's error) is not
+// reported twice.
+func (w *Writer) failBatch(err error) error {
+	if w.bufWriter != nil {
+		if ferr := w.bufWriter.Flush(); ferr != nil && !errors.Is(err, ferr) {
+			err = errors.Join(err, ferr)
+		}
+	}
+	return err
 }
 
 // Flush forces both the pcapng inner buffer and (when present) the

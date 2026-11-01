@@ -70,6 +70,8 @@ type FastNgWriter struct {
 	// 28 bytes header + 4 bytes trailer fit; padding bytes (0-3) are
 	// emitted via a separate constant zero-buffer.
 	hdr [32]byte
+	// rec is WriteHookPacket's reusable EPB buffer.
+	rec []byte
 }
 
 // NewFastNgWriter creates a writer with SHB + a single IDB written.

@@ -12,6 +12,7 @@ import (
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/asm"
 	"github.com/cilium/ebpf/btf"
+	"github.com/takehaya/bpf-ninja/internal/hookabi"
 )
 
 // LookupSite describes a map_lookup_elem helper in a flattened XDP or tc
@@ -1431,10 +1432,19 @@ func (e lookupEmitter) splice(groups []lookupGroup) (asm.Instructions, []LookupH
 			switch {
 			case group.op.keyless():
 				hook = valueHook(group.name, e.ctxType, value, untrusted)
+				if untrusted {
+					setHookSizeTags(hook, 0, taggedSize(m.Value, m.ValueSize))
+				}
 			case group.op == HookDelete:
 				hook = lookupHook(group.name, e.ctxType, key, nil, true, untrusted, "status")
+				if untrusted {
+					setHookSizeTags(hook, taggedSize(m.Key, m.KeySize), 0)
+				}
 			default:
 				hook = lookupHook(group.name, e.ctxType, key, value, true, untrusted, "status")
+				if untrusted {
+					setHookSizeTags(hook, taggedSize(m.Key, m.KeySize), taggedSize(m.Value, m.ValueSize))
+				}
 			}
 			if static {
 				hook = staticHook(hook)
@@ -1467,6 +1477,9 @@ func (e lookupEmitter) splice(groups []lookupGroup) (asm.Instructions, []LookupH
 		readOnly := m.Flags&bpfFRdonlyProg != 0 && m.Flags&bpfFWronlyProg == 0
 		if req.Lookups.hit() {
 			body := lookupHook(group.name, e.ctxType, key, value, req.Auto, untrusted)
+			if untrusted {
+				setHookSizeTags(body, taggedSize(m.Key, m.KeySize), taggedSize(m.Value, m.ValueSize))
+			}
 			if static {
 				body = staticHook(body) // keeps the typed proto; the kernel need not trust it
 			}
@@ -1480,6 +1493,9 @@ func (e lookupEmitter) splice(groups []lookupGroup) (asm.Instructions, []LookupH
 			missStatic := readOnlyArg && req.StaticUntrusted
 			missUntrusted := readOnlyArg && !missStatic
 			miss := lookupHook(group.missName, e.ctxType, key, nil, req.Auto, missUntrusted)
+			if missUntrusted {
+				setHookSizeTags(miss, taggedSize(m.Key, m.KeySize), 0)
+			}
 			if missStatic {
 				miss = staticHook(miss)
 			}
@@ -1890,6 +1906,43 @@ func copyValue(src asm.Register, off int16, size uint32) asm.Instructions {
 	return out
 }
 
+// HookTag is the func-level BTF decl tag on every hook the transform
+// generates, so an observer can tell a generated hook from an ordinary
+// function with the same parameter names (see internal/hookabi). The
+// library-only Transform hook is not tagged.
+const HookTag = hookabi.HookTag
+
+// setHookSizeTags attaches func-level BTF decl tags carrying the key and
+// value sizes (bytes) to a generated hook whose key or value is an untyped
+// const void * (an untrusted or generic hook), so an observer can read them
+// by size although the BTF no longer carries their types. A zero size is
+// left out. The kernel stores these decl tags without interpreting them.
+func setHookSizeTags(hook asm.Instructions, keySize, valueSize uint32) {
+	fn := btf.FuncMetadata(&hook[0])
+	if fn == nil {
+		return
+	}
+	if keySize > 0 {
+		fn.Tags = append(fn.Tags, hookabi.SizeTag("key", keySize))
+	}
+	if valueSize > 0 {
+		fn.Tags = append(fn.Tags, hookabi.SizeTag("value", valueSize))
+	}
+}
+
+// taggedSize is the size an untyped hook may declare for a key or value of
+// type typ, or 0 unless every byte of it is plain data (hookabi.Plain): a
+// pointer or bpf_* field is never sized, so its bytes cannot reach a
+// recording. A side the map declares only by size (typ nil) is sized: the
+// kernel parses special fields only from value BTF, so those bytes hold
+// none, and a typed or static hook records them as struct { u8 bytes[]; }.
+func taggedSize(typ btf.Type, size uint32) uint32 {
+	if typ != nil && !hookabi.Plain(typ) {
+		return 0
+	}
+	return size
+}
+
 // genericHook is int NAME(struct xdp_md *ctx, u64 info, const void *key,
 // const void *value, const void *map), the pointers tagged arg:untrusted like
 // lookupHook's. The low 32 bits of info are the site; any other map call
@@ -1905,7 +1958,7 @@ func genericHook(name string, ctx btf.Type) asm.Instructions {
 	untrusted := []string{"arg:untrusted"}
 	fn := &btf.Func{Name: name, Linkage: btf.GlobalFunc, Type: &btf.FuncProto{
 		Return: &btf.Int{Name: "int", Size: 4, Encoding: btf.Signed}, Params: params,
-	}, ParamTags: [][]string{nil, nil, untrusted, untrusted, untrusted}}
+	}, Tags: []string{HookTag}, ParamTags: [][]string{nil, nil, untrusted, untrusted, untrusted}}
 	head := btf.WithFuncMetadata(asm.LoadMem(asm.R0, asm.R1, 0, asm.Word).WithSymbol(name).
 		WithSource(asm.Comment("generated generic lookup observation hook "+name)), fn)
 	return append(asm.Instructions{head}, untrustedReads(asm.R3, asm.R4, asm.R5)...)
@@ -1944,7 +1997,7 @@ func scalarHook(name string, ctx btf.Type, scalars ...string) asm.Instructions {
 	}
 	fn := &btf.Func{Name: name, Linkage: btf.GlobalFunc, Type: &btf.FuncProto{
 		Return: &btf.Int{Name: "int", Size: 4, Encoding: btf.Signed}, Params: params,
-	}}
+	}, Tags: []string{HookTag}}
 	head := btf.WithFuncMetadata(asm.LoadMem(asm.R0, asm.R1, 0, asm.Word).WithSymbol(name).
 		WithSource(asm.Comment("generated observation hook "+name)), fn)
 	return asm.Instructions{head, asm.Mov.Imm(asm.R0, 0), asm.Return()}
@@ -1994,7 +2047,7 @@ func pointerHook(name string, ctx btf.Type, ptrs []btf.FuncParam, withSite, untr
 	}
 	fn := &btf.Func{Name: name, Linkage: btf.GlobalFunc, Type: &btf.FuncProto{
 		Return: &btf.Int{Name: "int", Size: 4, Encoding: btf.Signed}, Params: params,
-	}}
+	}, Tags: []string{HookTag}}
 	if untrusted {
 		fn.ParamTags = make([][]string, len(params))
 		for i := pointers; i < pointers+len(regs); i++ {

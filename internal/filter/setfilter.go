@@ -28,6 +28,9 @@ type SetKeyField struct {
 	ParamSigned bool   // sign-extend a narrow signed arg into the key field
 	Deref       bool   // Read a pointer member or scalar pointee
 	Offset      uint32 // Byte offset in the pointee
+	// ThroughOpaque marks a member path through a bpf_* struct, which a
+	// recording capture does not record.
+	ThroughOpaque bool
 }
 
 // SetFilter is one "@NAME" reference resolved against one target's
@@ -143,7 +146,7 @@ func ResolveSetFilters(sets []*setmap.Set, refs []string, params []attach.FuncPa
 			sf.Fields = append(sf.Fields, SetKeyField{
 				FieldName: f.Name, FieldOff: f.Off, FieldSize: f.Size,
 				ParamName: paramName, ParamIdx: p.Index, ParamSize: p.Size, ParamSigned: p.Signed,
-				Deref: p.Deref, Offset: p.Offset,
+				Deref: p.Deref, Offset: p.Offset, ThroughOpaque: p.ThroughOpaque,
 			})
 		}
 		out = append(out, sf)

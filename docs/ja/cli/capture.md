@@ -152,6 +152,18 @@ sudo bpf-ninja -p 1661 --func upf_capture_point_ul --arg-echo -c 1
 - 連続して同じ引数タプルが来た場合は 1 行に畳んで `(xN)` と表示します。`-c N` を付けると N 件表示したところで終了し、無指定なら Ctrl-C まで続きます。
 - リーダは capture path と同じ in-tree の `fastrb` (mmap + epoll) を使います。
 
+## 判断材料をパケットと一緒に記録する (`--record`)
+
+inject した hook でキャプチャするとき、その hook がどんな値で呼ばれたかを各パケットの pcapng コメントとして書き込みます。`--record` は次を選びます。
+
+- `filter` は既定値で、`--arg-filter` と `--set` のキーが読む引数やメンバーを記録します。各フィールドは 1 回だけ読み、その読み取り値ですべての条件を判定して記録するため、記録値はその条件を満たします。参照するフィールドが無ければ記録せず、通常の pcap レイアウトのままになります。LPM trie のキー構造体以外の `bpf_*` 構造体の中のメンバー (`struct bpf_sock_tuple` の `tuple->ipv4.dport` など) の条件は、絞り込みには使えますが記録しません。既定のレイアウトはそのフィールドを外して `-v` でその名前を表示し、`--record filter` を明示した場合は拒否します。既定では `inject-run` が生成した hook だけが記録します。生成 hook には BTF の decl tag `bpf-ninja:hook` が付いているので、引数名が同じだけの通常の関数は通常のレイアウトのままです。`--record filter` や `--record entry` を明示するとすべての `--func` 対象で記録し、`-v` を付けると記録する対象を表示します。
+- `entry` は hook が受け取った `site`、`status`、キーと値の全体をマップの BTF で復号して記録します。無名の構造体や共用体のメンバーは `--arg-filter` と同じ名前で、配列と名前付きの共用体は 16 進で、マップに BTF が無いときは hook の形によらず `value=` に生のバイト列を 16 進で書き、`--record-max` で切り詰めます。`--record-max N` (既定 256、最大 4096) がキーと値それぞれの記録バイト数を抑えます。値渡しの整数は全体を記録するか、まったく記録しないかのどちらかです。ポインター、`bpf_*` 構造体 (`bpf_timer`、ロック、kptr を持つ構造体など。uapi の LPM trie キー構造体 `bpf_lpm_trie_key`、`bpf_lpm_trie_key_hdr`、`bpf_lpm_trie_key_u8` は除く)、それらを含む配列や共用体はコメントに出さないので、ポインター型のフィールドや kernel が管理するフィールドはファイルに入りません。ただし、プログラムが通常の整数フィールドに入れたアドレスは整数と区別できず、整数として記録されます。untrusted な per-map hook の `const void *` のキーと値には `inject-run` がマップから `bpf-ninja:key_size`/`value_size` の decl tag を付け、`entry` はそれを読んで生のバイト列 (16 進) を記録します。タグを付けるのは全バイトが単純なデータのときか、その側にマップの BTF が無いときだけで、ポインターや `bpf_*` フィールドを含むキーや値にはサイズが付かず記録されません。generic hook と dispatch hook は複数のマップを扱うのでサイズのタグが無く、`entry` は `site` (`info` の下位 32 ビット) と `info` 全体だけを `site=N info=0x...` として記録します。
+- `none` は通常の pcap レイアウトのままにします。
+
+コメントは空白区切りの `名前=値` の並びです。名前は `--arg-filter` と同じ書き方 (`value->action`、`key->hdr.prefixlen`、`value[0]`) で、整数は 10 進 (符号付きは符号拡張)、配列と名前付きの共用体は 16 進です。`status` と `info` は `(u32)ret | flags << 32` の形なので、上位と下位の 32 ビットが読めるよう `status=0x00000002fffffffe` のように `0x%016x` で書きます。この値はそのまま `--arg-filter` に指定できます。読み取りに失敗したフィールドは `名前=?`、NULL 判定の対象は `value=null` か `value!=null`、`--record-max` で切り詰めた値は `value_bytes=4/8` (8 バイト中 4 バイトを記録) と書きます。
+
+記録するキャプチャは `--func` ごとに 1 つの pcapng インターフェイスを作り (名前が重なるときは `func@progid`)、`epb_packetid` は付けません。verdict ごとのインターフェイスが無いので、`--mode exit` では各コメントの先頭に関数の戻り値を `return=0x%08x` として書きます。最悪の場合のコメントが `return=` の接頭辞込みで pcapng のオプション 1 つ (65535 バイト) に収まらないとき、明示した `--record` は拒否します。`entry` なら `--record-max` を下げ、`filter` なら条件のフィールドを減らしてください。既定値の場合は自動的に無効になります。`--record` は gated キャプチャ、`--raw-dump`、`--arg-echo`、`--mode xdp`、`--dump-asm` とは併用できず、既定値はそれらの場で自動的に無効になります。
+
 ## capture point の書き方 (`--arg-filter` が当たらないとき)
 
 `--func` で狙う capture point を自作するときは、引数を関数本体で「使って」おく必要があります。本体が空の capture point だと、コンパイラは未使用の引数を呼び出し規約 (r1..r5) から落とすことがあります。BTF の関数シグネチャはそのまま残るため `--list-params` は正しく表示され、アタッチもキャプチャも成功します。しかし fentry/fexit の trampoline が保存するのはレジスタの実体なので、bpf-ninja が読むのは呼び出し元が残した無関係な値になります。

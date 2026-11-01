@@ -1,6 +1,7 @@
 package capture
 
 import (
+	"bytes"
 	"encoding/binary"
 	"testing"
 )
@@ -251,5 +252,63 @@ func TestParseHookSite(t *testing.T) {
 	p, err := ParseRawSample(raw)
 	if err != nil || p.SiteID != 255 || p.PacketID != 7 || len(p.Data) != 1 || p.Data[0] != 42 {
 		t.Fatalf("packet=%+v err=%v", p, err)
+	}
+}
+
+func TestParseRecordBlock(t *testing.T) {
+	raw := make([]byte, MetadataSize+16+2+5)
+	raw[OffsetMode] = 1 | ModeRecordFlag
+	raw[OffsetSiteID] = 2
+	binary.NativeEndian.PutUint16(raw[OffsetCapLen:], 2)
+	binary.NativeEndian.PutUint16(raw[MetadataSize:], 16)
+	raw[MetadataSize+2] = 0xee
+	raw[MetadataSize+16], raw[MetadataSize+17] = 0xaa, 0xbb
+	p, err := ParseRawSample(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Mode != 1 || p.SiteID != 2 || len(p.Record) != 16 || p.Record[2] != 0xee || len(p.Data) != 2 || p.Data[0] != 0xaa || p.Data[1] != 0xbb {
+		t.Fatalf("packet=%+v", p)
+	}
+	legacy := make([]byte, MetadataSize+1)
+	binary.NativeEndian.PutUint16(legacy[OffsetCapLen:], 1)
+	if p, err := ParseRawSample(legacy); err != nil || p.Record != nil {
+		t.Fatalf("legacy record=%v err=%v", p.Record, err)
+	}
+	for name, n := range map[string]uint16{"short": 4, "overrun": 40} {
+		bad := append([]byte(nil), raw...)
+		binary.NativeEndian.PutUint16(bad[MetadataSize:], n)
+		if _, err := ParseRawSample(bad); err == nil {
+			t.Fatalf("%s block accepted", name)
+		}
+	}
+	tooLong := append([]byte(nil), raw...)
+	binary.NativeEndian.PutUint16(tooLong[OffsetCapLen:], 8)
+	if _, err := ParseRawSample(tooLong); err == nil {
+		t.Fatal("caplen past the block accepted")
+	}
+	noBlock := make([]byte, MetadataSize+4)
+	noBlock[OffsetMode] = ModeRecordFlag
+	if _, err := ParseRawSample(noBlock); err == nil {
+		t.Fatal("missing block accepted")
+	}
+	badMode := append([]byte(nil), raw...)
+	badMode[OffsetMode] = 3 | ModeRecordFlag
+	if _, err := ParseRawSample(badMode); err == nil {
+		t.Fatal("mode 3 accepted")
+	}
+}
+
+func TestBatchBuilderCopiesRecord(t *testing.T) {
+	var got []Packet
+	b := newBatchBuilder(0, func(_ int, pkts []Packet) error {
+		got = append(got, pkts...)
+		return nil
+	})
+	src := []byte{1, 2, 3, 4}
+	b.add(Packet{Data: src[:1], Record: src[1:]})
+	src[1], src[2] = 9, 9
+	if len(got) != 0 || !bytes.Equal(b.buf[0].Record, []byte{2, 3, 4}) {
+		t.Fatalf("record aliases the source: %v", b.buf[0].Record)
 	}
 }

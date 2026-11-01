@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/cilium/ebpf/btf"
+	"github.com/takehaya/bpf-ninja/internal/hookabi"
 )
 
 var argExpression = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*(?:->[a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z_][a-zA-Z0-9_]*)*|\[0\])?$`)
@@ -44,7 +45,11 @@ func ResolveArg(expr string, params []FuncParamInfo) (FuncParamInfo, error) {
 		if !scalar {
 			membersPath = strings.Split(path, ".")
 		}
+		through := false
 		for _, member := range membersPath {
+			if s, ok := typ.(*btf.Struct); ok && hookabi.Opaque(s) {
+				through = true
+			}
 			members, ok := aggregateMembers(typ)
 			if !ok {
 				return FuncParamInfo{}, fmt.Errorf("%q: cannot select member %q from %s; expected struct/union", expr, member, memberKind(typ))
@@ -65,6 +70,7 @@ func ResolveArg(expr string, params []FuncParamInfo) (FuncParamInfo, error) {
 			}
 			offset += m.offset / 8
 			typ = btf.UnderlyingType(m.Type)
+			through = through || m.opaque
 		}
 		switch t := typ.(type) {
 		case *btf.Int:
@@ -81,7 +87,7 @@ func ResolveArg(expr string, params []FuncParamInfo) (FuncParamInfo, error) {
 			return FuncParamInfo{}, fmt.Errorf("%q: member offset %d exceeds supported range", expr, offset)
 		}
 		p.Name, p.Kind, p.TypeName = expr, "", ""
-		p.Deref, p.Offset = true, uint32(offset)
+		p.Deref, p.Offset, p.ThroughOpaque = true, uint32(offset), through
 		return p, nil
 	}
 	return FuncParamInfo{}, fmt.Errorf("parameter %q not found; available parameters: %v", name, available)
@@ -123,6 +129,7 @@ func aggregateMembers(typ btf.Type) ([]btf.Member, bool) {
 type argMember struct {
 	btf.Member
 	offset uint64 // Bits, widened so anonymous nesting cannot wrap BTF's uint32 offset.
+	opaque bool   // promoted through an anonymous hookabi.Opaque struct
 }
 
 // Anonymous struct/union members expose their children at the enclosing level.
@@ -142,8 +149,8 @@ func findMembers(members []btf.Member, name string, depth int) (matches []argMem
 func walkPromotedMembers(members []btf.Member, depth int, visit func(argMember) bool) string {
 	active := make(map[btf.Type]bool)
 	truncated := ""
-	var walk func([]btf.Member, int, uint64, btf.Bits) bool
-	walk = func(members []btf.Member, depth int, offset uint64, bits btf.Bits) bool {
+	var walk func([]btf.Member, int, uint64, btf.Bits, bool) bool
+	walk = func(members []btf.Member, depth int, offset uint64, bits btf.Bits, opaque bool) bool {
 		if depth > 32 {
 			truncated = "anonymous depth limit (32)"
 			return true
@@ -154,7 +161,7 @@ func walkPromotedMembers(members []btf.Member, depth int, visit func(argMember) 
 			}
 			at := offset + uint64(m.Offset)
 			if m.Name != "" {
-				if !visit(argMember{m, at}) {
+				if !visit(argMember{m, at, opaque}) {
 					return false
 				}
 				continue
@@ -166,7 +173,8 @@ func walkPromotedMembers(members []btf.Member, depth int, visit func(argMember) 
 					continue
 				}
 				active[typ] = true
-				more := walk(children, depth+1, at, m.BitfieldSize)
+				s, isStruct := typ.(*btf.Struct)
+				more := walk(children, depth+1, at, m.BitfieldSize, opaque || isStruct && hookabi.Opaque(s))
 				delete(active, typ)
 				if !more {
 					return false
@@ -175,7 +183,7 @@ func walkPromotedMembers(members []btf.Member, depth int, visit func(argMember) 
 		}
 		return true
 	}
-	walk(members, depth, 0, 0)
+	walk(members, depth, 0, 0, false)
 	return truncated
 }
 

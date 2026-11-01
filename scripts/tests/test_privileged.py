@@ -51,6 +51,17 @@ class AuditTests(unittest.TestCase):
             ):
                 self.assertFalse(module.allowed_skip(package, name, message, kernel))
 
+    def test_record_untrusted_skip_is_specific(self):
+        reason = "skipping: kernel lacks arg:untrusted: loading the injected program"
+        for test in ("TestBpfRecordUntrustedHook", "TestBpfRecordDispatchHook"):
+            for kernel in ("6.1", "6.6", "6.12", "6.15"):
+                self.assertTrue(module.allowed_skip(module.PROGRAM, test, reason, kernel))
+            self.assertFalse(module.allowed_skip(module.PROGRAM, test, reason, "7.0"))
+            self.assertFalse(module.allowed_skip(module.PROGRAM, test, "some other failure", "6.1"))
+        # The static dispatch case must never be allowed to skip.
+        self.assertFalse(module.allowed_skip(module.PROGRAM, "TestBpfRecordDispatchStatic", reason, "6.1"))
+        self.assertFalse(module.allowed_skip(module.PROGRAM, "TestBpfRecordAtHook", reason, "6.1"))
+
     def test_multipoint_netfilter_skip_is_specific(self):
         test = "TestBpfMultiPointLoad/netfilter-entry"
         reason = "BPF_PROG_TYPE_NETFILTER not supported"

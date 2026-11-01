@@ -2,6 +2,7 @@ package inject
 
 import (
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -181,6 +182,128 @@ func TestSockMapUpdateGeneric(t *testing.T) {
 		if h := plan.hooks; len(h) != 2 || h[0].Name != "obs_any_update" || !h[0].Generic || h[0].Kind != HookUpdate ||
 			h[1].Name != "obs_any_delete" || !h[1].Generic || h[1].Kind != HookDelete {
 			t.Errorf("%s: hooks %+v", tc.typ, h)
+		}
+	}
+}
+
+// hookTags returns the decl tags of the generated hook named name.
+func hookTags(t *testing.T, spec *ebpf.CollectionSpec, name string) []string {
+	t.Helper()
+	for _, prog := range spec.Programs {
+		for _, ins := range prog.Instructions {
+			if fn := btf.FuncMetadata(&ins); fn != nil && fn.Name == name {
+				return fn.Tags
+			}
+		}
+	}
+	t.Fatalf("hook %s not found", name)
+	return nil
+}
+
+// An untyped hook declares the size of a key or value only when every byte
+// of it is plain data (hookabi.Plain) or the map gives it no BTF: not for a
+// special field, a pointer or a pointer array, whose bytes hold kernel
+// addresses.
+func TestHookSizeTags(t *testing.T) {
+	u32, u64 := &btf.Int{Name: "u32", Size: 4}, &btf.Int{Name: "u64", Size: 8}
+	ptr := &btf.Pointer{Target: u64}
+	both := []string{HookTag, "bpf-ninja:key_size=4", "bpf-ninja:value_size=16"}
+	keyOnly := []string{HookTag, "bpf-ninja:key_size=4"}
+	for _, tc := range []struct {
+		kind string
+		mod  func(m *ebpf.MapSpec)
+		want []string
+	}{
+		{"", nil, both},
+		{"spin_lock", nil, keyOnly},
+		{"timer", nil, keyOnly},
+		{"kptr", nil, keyOnly},
+		{"pointer member", func(m *ebpf.MapSpec) {
+			m.Value = &btf.Struct{Name: "v", Size: 16, Members: []btf.Member{{Name: "p", Type: ptr}, {Name: "x", Type: u64, Offset: 64}}}
+		}, keyOnly},
+		{"pointer array", func(m *ebpf.MapSpec) { m.Value = &btf.Array{Index: u32, Type: ptr, Nelems: 2} }, keyOnly},
+		{"pointer key", func(m *ebpf.MapSpec) {
+			m.Key = &btf.Struct{Name: "k", Size: 4, Members: []btf.Member{{Name: "p", Type: &btf.Pointer{Target: u32}}}}
+		}, []string{HookTag, "bpf-ninja:value_size=16"}},
+		{"no BTF", func(m *ebpf.MapSpec) { m.Key, m.Value = nil, nil }, both},
+		{"lpm key", func(m *ebpf.MapSpec) {
+			hdr := &btf.Struct{Name: "bpf_lpm_trie_key_hdr", Size: 4, Members: []btf.Member{{Name: "prefixlen", Type: u32}}}
+			m.Key = &btf.Struct{Name: "lpm_key", Size: 4, Members: []btf.Member{{Name: "hdr", Type: hdr}}}
+		}, both},
+	} {
+		spec := lookupFixture()
+		switch {
+		case tc.mod != nil:
+			spec.Maps["sessions"].Flags = bpfFRdonlyProg
+			tc.mod(spec.Maps["sessions"])
+		case tc.kind != "":
+			spec = withSpecialValue(spec, tc.kind)
+		default:
+			spec.Maps["sessions"].Flags = bpfFRdonlyProg
+		}
+		plan, err := transformLookup(spec, autoReq())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(plan.hooks) != 1 || !plan.hooks[0].Untrusted {
+			t.Fatalf("%s: hooks %+v", tc.kind, plan.hooks)
+		}
+		if got := hookTags(t, spec, plan.hooks[0].Name); !slices.Equal(got, tc.want) {
+			t.Errorf("%s: tags %q, want %q", tc.kind, got, tc.want)
+		}
+	}
+	// A typed hook needs no size tag, only the hook tag; so does a dispatch
+	// hook, which serves several maps and carries no sizes.
+	spec := lookupFixture()
+	plan, err := transformLookup(spec, autoReq())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := hookTags(t, spec, plan.hooks[0].Name); !slices.Equal(got, []string{HookTag}) {
+		t.Errorf("typed hook tags %q", got)
+	}
+	disp := lookupFixture()
+	dplan, err := transformLookup(disp, LookupRequest{ProgramName: "p", Auto: true, Dispatch: true,
+		HookName: "obs", Stack: StackAudit{LowestOffset: -448}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := hookTags(t, disp, dplan.hooks[0].Name); !slices.Equal(got, []string{HookTag}) {
+		t.Errorf("dispatch hook tags %q", got)
+	}
+	// Every other hook kind carries the tag first: a static lookup hook,
+	// entry and tail-call hooks, and update and delete hooks.
+	st := lookupFixture()
+	st.Maps["sessions"].Flags = bpfFRdonlyProg
+	req := autoReq()
+	req.StaticUntrusted, req.Entry = true, true
+	for _, tc := range []struct {
+		spec  *ebpf.CollectionSpec
+		req   LookupRequest
+		kinds []HookKind
+	}{
+		{st, req, []HookKind{HookLookup, HookEntry}},
+		{tailCallerFixture(), LookupRequest{ProgramName: "caller", Entry: true, TailCalls: true, HookName: "obs"}, []HookKind{HookEntry, HookTailCall}},
+		{mapCallFixture(), mixedReq(), []HookKind{HookUpdate, HookDelete}},
+	} {
+		plan, err := transformLookup(tc.spec, tc.req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		seen, static := map[HookKind]bool{}, false
+		for _, h := range plan.hooks {
+			if got := hookTags(t, tc.spec, h.Name); len(got) == 0 || got[0] != HookTag {
+				t.Errorf("%s (%s, static=%v) tags %q", h.Name, h.Kind, h.Static, got)
+			}
+			seen[h.Kind], static = true, static || h.Static
+		}
+		for _, k := range tc.kinds {
+			if !seen[k] {
+				t.Errorf("%v: no %s hook in %+v", tc.kinds, k, plan.hooks)
+			}
+		}
+		if tc.req.StaticUntrusted && !static {
+			t.Errorf("%v: no static hook", tc.kinds)
 		}
 	}
 }

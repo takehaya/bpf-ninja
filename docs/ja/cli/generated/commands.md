@@ -111,6 +111,8 @@ GLOBAL OPTIONS:
    --observer-prefetch                              force the fentry/fexit filter to probe_read the full 512-byte scratch regardless of the chain's actual prefix needs. Trades a per-packet helper-CPU cost for warming the ice driver's L1 dcache; on prod_tx_reflect-style targets this accelerated the observed XDP program by ~70% in our measurements. Default off — most deployments prefer lower observer CPU
    --latency-sample-period int                      if >0, sample every Nth ringbuf record's BPF-submit→reader-read latency per shard. Samples land in --latency-sample-output (default stderr summary) for offline percentile analysis. Raw-dump path only (default: 0)
    --latency-sample-output string                   tsv path to dump latency samples (one int64 ns per line). Empty = print summary (p50/p90/p99/p99.9/p99.99/max) to stderr
+   --record string                                  at an injected hook, write decision state as each packet's pcapng comment: filter (the arguments and members --arg-filter and --set keys read), entry (site, status, key and value bytes) or none. The default records only at hooks inject-run generated (which carry its bpf-ninja:hook BTF tag); an explicit value records at every --func target (default: "filter")
+   --record-max int                                 with --record entry, record at most N bytes each of the key and the value (0..4096) (default: 256)
    --help, -h                                       show help
    --version, -V                                    print the version
 ```
@@ -166,6 +168,8 @@ GLOBAL OPTIONS:
 | <code>observer-prefetch</code> | <code>bool</code> | <code></code> | false | false | <code></code> |
 | <code>latency-sample-period</code> | <code>int</code> | <code></code> | false | false | <code></code> |
 | <code>latency-sample-output</code> | <code>string</code> | <code></code> | false | false | <code></code> |
+| <code>record</code> | <code>string</code> | <code></code> | false | false | <code></code> |
+| <code>record-max</code> | <code>int</code> | <code></code> | false | false | <code></code> |
 | <code>help, h</code> | <code>bool</code> | <code>(help では省略)</code> | false | false | <code></code> |
 | <code>version, V</code> | <code>bool</code> | <code>(help では省略)</code> | false | false | <code></code> |
 
@@ -242,6 +246,8 @@ GLOBAL OPTIONS:
    --observer-prefetch                              force the fentry/fexit filter to probe_read the full 512-byte scratch regardless of the chain's actual prefix needs. Trades a per-packet helper-CPU cost for warming the ice driver's L1 dcache; on prod_tx_reflect-style targets this accelerated the observed XDP program by ~70% in our measurements. Default off — most deployments prefer lower observer CPU
    --latency-sample-period int                      if >0, sample every Nth ringbuf record's BPF-submit→reader-read latency per shard. Samples land in --latency-sample-output (default stderr summary) for offline percentile analysis. Raw-dump path only (default: 0)
    --latency-sample-output string                   tsv path to dump latency samples (one int64 ns per line). Empty = print summary (p50/p90/p99/p99.9/p99.99/max) to stderr
+   --record string                                  at an injected hook, write decision state as each packet's pcapng comment: filter (the arguments and members --arg-filter and --set keys read), entry (site, status, key and value bytes) or none. The default records only at hooks inject-run generated (which carry its bpf-ninja:hook BTF tag); an explicit value records at every --func target (default: "filter")
+   --record-max int                                 with --record entry, record at most N bytes each of the key and the value (0..4096) (default: 256)
 ```
 
 | Flag / aliases | 型 | 既定値の表示 | 必須 | 複数値 | 環境変数 |
@@ -356,6 +362,8 @@ GLOBAL OPTIONS:
    --observer-prefetch                              force the fentry/fexit filter to probe_read the full 512-byte scratch regardless of the chain's actual prefix needs. Trades a per-packet helper-CPU cost for warming the ice driver's L1 dcache; on prod_tx_reflect-style targets this accelerated the observed XDP program by ~70% in our measurements. Default off — most deployments prefer lower observer CPU
    --latency-sample-period int                      if >0, sample every Nth ringbuf record's BPF-submit→reader-read latency per shard. Samples land in --latency-sample-output (default stderr summary) for offline percentile analysis. Raw-dump path only (default: 0)
    --latency-sample-output string                   tsv path to dump latency samples (one int64 ns per line). Empty = print summary (p50/p90/p99/p99.9/p99.99/max) to stderr
+   --record string                                  at an injected hook, write decision state as each packet's pcapng comment: filter (the arguments and members --arg-filter and --set keys read), entry (site, status, key and value bytes) or none. The default records only at hooks inject-run generated (which carry its bpf-ninja:hook BTF tag); an explicit value records at every --func target (default: "filter")
+   --record-max int                                 with --record entry, record at most N bytes each of the key and the value (0..4096) (default: 256)
 ```
 
 | Flag / aliases | 型 | 既定値の表示 | 必須 | 複数値 | 環境変数 |
@@ -427,6 +435,8 @@ GLOBAL OPTIONS:
    --observer-prefetch                              force the fentry/fexit filter to probe_read the full 512-byte scratch regardless of the chain's actual prefix needs. Trades a per-packet helper-CPU cost for warming the ice driver's L1 dcache; on prod_tx_reflect-style targets this accelerated the observed XDP program by ~70% in our measurements. Default off — most deployments prefer lower observer CPU
    --latency-sample-period int                      if >0, sample every Nth ringbuf record's BPF-submit→reader-read latency per shard. Samples land in --latency-sample-output (default stderr summary) for offline percentile analysis. Raw-dump path only (default: 0)
    --latency-sample-output string                   tsv path to dump latency samples (one int64 ns per line). Empty = print summary (p50/p90/p99/p99.9/p99.99/max) to stderr
+   --record string                                  at an injected hook, write decision state as each packet's pcapng comment: filter (the arguments and members --arg-filter and --set keys read), entry (site, status, key and value bytes) or none. The default records only at hooks inject-run generated (which carry its bpf-ninja:hook BTF tag); an explicit value records at every --func target (default: "filter")
+   --record-max int                                 with --record entry, record at most N bytes each of the key and the value (0..4096) (default: 256)
 ```
 
 | Flag / aliases | 型 | 既定値の表示 | 必須 | 複数値 | 環境変数 |
@@ -495,6 +505,8 @@ GLOBAL OPTIONS:
    --observer-prefetch                              force the fentry/fexit filter to probe_read the full 512-byte scratch regardless of the chain's actual prefix needs. Trades a per-packet helper-CPU cost for warming the ice driver's L1 dcache; on prod_tx_reflect-style targets this accelerated the observed XDP program by ~70% in our measurements. Default off — most deployments prefer lower observer CPU
    --latency-sample-period int                      if >0, sample every Nth ringbuf record's BPF-submit→reader-read latency per shard. Samples land in --latency-sample-output (default stderr summary) for offline percentile analysis. Raw-dump path only (default: 0)
    --latency-sample-output string                   tsv path to dump latency samples (one int64 ns per line). Empty = print summary (p50/p90/p99/p99.9/p99.99/max) to stderr
+   --record string                                  at an injected hook, write decision state as each packet's pcapng comment: filter (the arguments and members --arg-filter and --set keys read), entry (site, status, key and value bytes) or none. The default records only at hooks inject-run generated (which carry its bpf-ninja:hook BTF tag); an explicit value records at every --func target (default: "filter")
+   --record-max int                                 with --record entry, record at most N bytes each of the key and the value (0..4096) (default: 256)
 ```
 
 | Flag / aliases | 型 | 既定値の表示 | 必須 | 複数値 | 環境変数 |
@@ -563,6 +575,8 @@ GLOBAL OPTIONS:
    --observer-prefetch                              force the fentry/fexit filter to probe_read the full 512-byte scratch regardless of the chain's actual prefix needs. Trades a per-packet helper-CPU cost for warming the ice driver's L1 dcache; on prod_tx_reflect-style targets this accelerated the observed XDP program by ~70% in our measurements. Default off — most deployments prefer lower observer CPU
    --latency-sample-period int                      if >0, sample every Nth ringbuf record's BPF-submit→reader-read latency per shard. Samples land in --latency-sample-output (default stderr summary) for offline percentile analysis. Raw-dump path only (default: 0)
    --latency-sample-output string                   tsv path to dump latency samples (one int64 ns per line). Empty = print summary (p50/p90/p99/p99.9/p99.99/max) to stderr
+   --record string                                  at an injected hook, write decision state as each packet's pcapng comment: filter (the arguments and members --arg-filter and --set keys read), entry (site, status, key and value bytes) or none. The default records only at hooks inject-run generated (which carry its bpf-ninja:hook BTF tag); an explicit value records at every --func target (default: "filter")
+   --record-max int                                 with --record entry, record at most N bytes each of the key and the value (0..4096) (default: 256)
 ```
 
 | Flag / aliases | 型 | 既定値の表示 | 必須 | 複数値 | 環境変数 |
@@ -631,6 +645,8 @@ GLOBAL OPTIONS:
    --observer-prefetch                              force the fentry/fexit filter to probe_read the full 512-byte scratch regardless of the chain's actual prefix needs. Trades a per-packet helper-CPU cost for warming the ice driver's L1 dcache; on prod_tx_reflect-style targets this accelerated the observed XDP program by ~70% in our measurements. Default off — most deployments prefer lower observer CPU
    --latency-sample-period int                      if >0, sample every Nth ringbuf record's BPF-submit→reader-read latency per shard. Samples land in --latency-sample-output (default stderr summary) for offline percentile analysis. Raw-dump path only (default: 0)
    --latency-sample-output string                   tsv path to dump latency samples (one int64 ns per line). Empty = print summary (p50/p90/p99/p99.9/p99.99/max) to stderr
+   --record string                                  at an injected hook, write decision state as each packet's pcapng comment: filter (the arguments and members --arg-filter and --set keys read), entry (site, status, key and value bytes) or none. The default records only at hooks inject-run generated (which carry its bpf-ninja:hook BTF tag); an explicit value records at every --func target (default: "filter")
+   --record-max int                                 with --record entry, record at most N bytes each of the key and the value (0..4096) (default: 256)
 ```
 
 | Flag / aliases | 型 | 既定値の表示 | 必須 | 複数値 | 環境変数 |
@@ -708,6 +724,8 @@ GLOBAL OPTIONS:
    --observer-prefetch                              force the fentry/fexit filter to probe_read the full 512-byte scratch regardless of the chain's actual prefix needs. Trades a per-packet helper-CPU cost for warming the ice driver's L1 dcache; on prod_tx_reflect-style targets this accelerated the observed XDP program by ~70% in our measurements. Default off — most deployments prefer lower observer CPU
    --latency-sample-period int                      if >0, sample every Nth ringbuf record's BPF-submit→reader-read latency per shard. Samples land in --latency-sample-output (default stderr summary) for offline percentile analysis. Raw-dump path only (default: 0)
    --latency-sample-output string                   tsv path to dump latency samples (one int64 ns per line). Empty = print summary (p50/p90/p99/p99.9/p99.99/max) to stderr
+   --record string                                  at an injected hook, write decision state as each packet's pcapng comment: filter (the arguments and members --arg-filter and --set keys read), entry (site, status, key and value bytes) or none. The default records only at hooks inject-run generated (which carry its bpf-ninja:hook BTF tag); an explicit value records at every --func target (default: "filter")
+   --record-max int                                 with --record entry, record at most N bytes each of the key and the value (0..4096) (default: 256)
 ```
 
 | Flag / aliases | 型 | 既定値の表示 | 必須 | 複数値 | 環境変数 |
@@ -790,6 +808,8 @@ GLOBAL OPTIONS:
    --observer-prefetch                              force the fentry/fexit filter to probe_read the full 512-byte scratch regardless of the chain's actual prefix needs. Trades a per-packet helper-CPU cost for warming the ice driver's L1 dcache; on prod_tx_reflect-style targets this accelerated the observed XDP program by ~70% in our measurements. Default off — most deployments prefer lower observer CPU
    --latency-sample-period int                      if >0, sample every Nth ringbuf record's BPF-submit→reader-read latency per shard. Samples land in --latency-sample-output (default stderr summary) for offline percentile analysis. Raw-dump path only (default: 0)
    --latency-sample-output string                   tsv path to dump latency samples (one int64 ns per line). Empty = print summary (p50/p90/p99/p99.9/p99.99/max) to stderr
+   --record string                                  at an injected hook, write decision state as each packet's pcapng comment: filter (the arguments and members --arg-filter and --set keys read), entry (site, status, key and value bytes) or none. The default records only at hooks inject-run generated (which carry its bpf-ninja:hook BTF tag); an explicit value records at every --func target (default: "filter")
+   --record-max int                                 with --record entry, record at most N bytes each of the key and the value (0..4096) (default: 256)
 ```
 
 | Flag / aliases | 型 | 既定値の表示 | 必須 | 複数値 | 環境変数 |
@@ -864,6 +884,8 @@ GLOBAL OPTIONS:
    --observer-prefetch                              force the fentry/fexit filter to probe_read the full 512-byte scratch regardless of the chain's actual prefix needs. Trades a per-packet helper-CPU cost for warming the ice driver's L1 dcache; on prod_tx_reflect-style targets this accelerated the observed XDP program by ~70% in our measurements. Default off — most deployments prefer lower observer CPU
    --latency-sample-period int                      if >0, sample every Nth ringbuf record's BPF-submit→reader-read latency per shard. Samples land in --latency-sample-output (default stderr summary) for offline percentile analysis. Raw-dump path only (default: 0)
    --latency-sample-output string                   tsv path to dump latency samples (one int64 ns per line). Empty = print summary (p50/p90/p99/p99.9/p99.99/max) to stderr
+   --record string                                  at an injected hook, write decision state as each packet's pcapng comment: filter (the arguments and members --arg-filter and --set keys read), entry (site, status, key and value bytes) or none. The default records only at hooks inject-run generated (which carry its bpf-ninja:hook BTF tag); an explicit value records at every --func target (default: "filter")
+   --record-max int                                 with --record entry, record at most N bytes each of the key and the value (0..4096) (default: 256)
 ```
 
 | Flag / aliases | 型 | 既定値の表示 | 必須 | 複数値 | 環境変数 |

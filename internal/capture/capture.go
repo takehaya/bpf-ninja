@@ -76,7 +76,7 @@ type Packet struct {
 	Timestamp time.Time
 	Data      []byte
 	Action    uint32 // hook verdict: XDP action / TC verdict (fexit only)
-	Mode      uint8  // 0=entry, 1=exit, 2=xdp-native; 3/4 reserved for hook snapshot/decision
+	Mode      uint8  // 0=entry, 1=exit, 2=xdp-native; high bit (ModeRecordFlag) marks a record block
 	CapLen    uint16 // bytes the BPF side actually copied into Data
 	Tag       uint32 // set-map value of the matched entry (0 when no set matched)
 	// PacketID groups one invocation's records in gated (entry + exit) or
@@ -85,6 +85,9 @@ type Packet struct {
 	PacketID uint64
 	// SiteID is a capture-local hook index (1..255); zero is the legacy layout.
 	SiteID uint8
+	// Record is the decision-state block written before the packet bytes
+	// (ModeRecordFlag set); nil otherwise. See internal/record.
+	Record []byte
 }
 
 // Reader reads captured packets from the ringbuf.
@@ -117,15 +120,18 @@ func NewReader(eventsMap *ebpf.Map, _ int) (*Reader, error) {
 
 // Ringbuf record layout emitted by captureWithRingbuf / captureXDPNative:
 //
-//	RawSample = [metadata (28B)] [packet bytes (caplen B)] [trailing slack]
+//	RawSample = [metadata (28B)] [record block] [packet bytes (caplen B)] [trailing slack]
 //	metadata:
 //	  u64 kernel_ts_ns (offset 0)  — bpf_ktime_get_ns() at packet ingest
 //	  u32 action       (offset 8)
-//	  u8  mode         (offset 12)
+//	  u8  mode         (offset 12) — ModeRecordFlag: a record block follows
 //	  u8  site_id      (offset 13)
 //	  u16 caplen       (offset 14)
 //	  u32 tag          (offset 16) — set-map value of the matched entry, 0 if none
 //	  u64 packet_id    (offset 20) — see Packet.PacketID
+//
+// The record block, present only with ModeRecordFlag, starts with its own
+// u16 length (internal/record documents the rest).
 //
 // All multi-byte fields are host-endian: BPF stores via asm.StoreMem
 // produce native-endian writes, so readers must use binary.NativeEndian.
@@ -138,6 +144,10 @@ const (
 	OffsetCapLen   = 14
 	OffsetTag      = 16
 	OffsetPacketID = 20
+	// ModeRecordFlag in the mode byte marks a record block after the metadata.
+	ModeRecordFlag = 0x80
+	// RecordHeaderSize is the smallest valid record block.
+	RecordHeaderSize = 8
 )
 
 // RecordKernelTs reads the kernel_ts_ns field from a raw ringbuf record.
@@ -243,22 +253,38 @@ func ParseRawSample(raw []byte) (Packet, error) {
 
 	kernelTs := RecordKernelTs(raw)
 	caplen := RecordCapLen(raw)
-	end := MetadataSize + int(caplen)
-	if end > len(raw) {
-		return Packet{}, fmt.Errorf("sample caplen %d exceeds payload %d", caplen, len(raw)-MetadataSize)
+	mode := raw[OffsetMode]
+	start := MetadataSize
+	var block []byte
+	if mode&ModeRecordFlag != 0 {
+		mode &^= ModeRecordFlag
+		if len(raw) < MetadataSize+RecordHeaderSize {
+			return Packet{}, fmt.Errorf("sample too short for a record block: %d bytes", len(raw))
+		}
+		n := int(binary.NativeEndian.Uint16(raw[MetadataSize:]))
+		if n < RecordHeaderSize || MetadataSize+n > len(raw) {
+			return Packet{}, fmt.Errorf("record block length %d exceeds sample %d", n, len(raw)-MetadataSize)
+		}
+		block = raw[MetadataSize : MetadataSize+n]
+		start += n
 	}
-	if raw[OffsetMode] > 2 {
+	end := start + int(caplen)
+	if end > len(raw) {
+		return Packet{}, fmt.Errorf("sample caplen %d exceeds payload %d", caplen, len(raw)-start)
+	}
+	if mode > 2 {
 		return Packet{}, fmt.Errorf("invalid capture mode %d", raw[OffsetMode])
 	}
 	return Packet{
 		Timestamp: time.Unix(0, int64(kernelTs+WallOffsetNs)),
 		Action:    binary.NativeEndian.Uint32(raw[OffsetAction : OffsetAction+4]),
-		Mode:      raw[OffsetMode],
+		Mode:      mode,
 		SiteID:    raw[OffsetSiteID],
 		CapLen:    caplen,
 		Tag:       binary.NativeEndian.Uint32(raw[OffsetTag : OffsetTag+4]),
 		PacketID:  binary.NativeEndian.Uint64(raw[OffsetPacketID : OffsetPacketID+8]),
-		Data:      raw[MetadataSize:end],
+		Data:      raw[start:end],
+		Record:    block,
 	}, nil
 }
 
@@ -374,6 +400,11 @@ func (b *batchBuilder) add(pkt Packet) {
 	start := len(b.arena)
 	b.arena = append(b.arena, pkt.Data...)
 	pkt.Data = b.arena[start : start+n]
+	if pkt.Record != nil {
+		r := len(b.arena)
+		b.arena = append(b.arena, pkt.Record...)
+		pkt.Record = b.arena[r : r+len(pkt.Record)]
+	}
 	b.buf = append(b.buf, pkt)
 }
 

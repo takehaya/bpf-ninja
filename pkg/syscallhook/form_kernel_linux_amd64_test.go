@@ -14,6 +14,7 @@ import (
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/asm"
 	"github.com/cilium/ebpf/link"
+	"github.com/takehaya/bpf-ninja/internal/attach"
 	"github.com/takehaya/bpf-ninja/internal/testutil"
 	"golang.org/x/sys/unix"
 )
@@ -90,6 +91,14 @@ func TestBpfAutoStatic(t *testing.T) {
 						return
 					}
 					defer func() { _ = target.Close() }()
+					// The raw-path BTF must carry the hook tag, so a capture
+					// resolving this program treats the hook as generated
+					// (ResolveTargets sets Target.Generated the same way).
+					spec, e := attach.BTFSpec(target)
+					if e != nil || !attach.IsGeneratedHook(spec, inj.Hooks[0].Name) {
+						t.Errorf("injected hook %s not recognised as generated: %v", inj.Hooks[0].Name, e)
+						return
+					}
 					observer, e := ebpf.NewProgram(&ebpf.ProgramSpec{Type: ebpf.Tracing, AttachType: ebpf.AttachTraceFEntry, AttachTarget: target, AttachTo: inj.Hooks[0].Name, License: "GPL", Instructions: asm.Instructions{asm.Mov.Imm(asm.R0, 0), asm.Return()}})
 					if e != nil {
 						t.Errorf("observer load: %+v", e)

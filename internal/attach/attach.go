@@ -12,6 +12,7 @@ import (
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/btf"
 	"github.com/takehaya/bpf-ninja/internal/hook"
+	"github.com/takehaya/bpf-ninja/internal/hookabi"
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netlink/nl"
 )
@@ -635,6 +636,25 @@ type FuncParamInfo struct {
 	Type     btf.Type // Original parameter type, from the target BTF
 	Deref    bool     // Resolved member expression
 	Offset   uint32   // Byte offset from pointer for a resolved member
+	// ThroughOpaque is set on a resolved member whose path crosses a
+	// hookabi.Opaque (bpf_*) struct, named or anonymous. It can be filtered
+	// on but is never recorded.
+	ThroughOpaque bool
+	// VoidSize is the byte size of an untyped const void * key or value,
+	// taken from a generated hook's key_size / value_size decl tag (see
+	// internal/hookabi). Zero when the pointee has a BTF type, no tag is
+	// present, or the function is not a generated hook.
+	VoidSize uint32
+}
+
+// IsGeneratedHook reports whether funcName in spec carries the hook tag
+// inject-run writes on every hook it generates (hookabi.HookTag).
+func IsGeneratedHook(spec *btf.Spec, funcName string) bool {
+	var fn *btf.Func
+	if err := spec.TypeByName(funcName, &fn); err != nil {
+		return false
+	}
+	return slices.Contains(fn.Tags, hookabi.HookTag)
 }
 
 // GetFuncParams returns the function parameters for the given function from BTF.
@@ -660,6 +680,11 @@ func GetFuncParamsFromSpec(spec *btf.Spec, funcName string) ([]FuncParamInfo, er
 		return nil, fmt.Errorf("function %q has unexpected type %T (expected FuncProto)", funcName, fn.Type)
 	}
 
+	// Size tags are trusted only on hooks inject-run generated.
+	var voidSize map[string]uint32
+	if slices.Contains(fn.Tags, hookabi.HookTag) {
+		voidSize = hookabi.SizeTags(fn.Tags)
+	}
 	var params []FuncParamInfo
 	for i, p := range proto.Params {
 		// Skip first parameter (xdp_md/xdp_buff pointer)
@@ -688,7 +713,11 @@ func GetFuncParamsFromSpec(spec *btf.Spec, funcName string) ([]FuncParamInfo, er
 			if kind == "ptr" {
 				typeName = ArgTypeName(ptr.Target)
 			}
-			params = append(params, FuncParamInfo{Name: p.Name, Index: i, Size: 8, Kind: kind, TypeName: typeName, Type: p.Type})
+			info := FuncParamInfo{Name: p.Name, Index: i, Size: 8, Kind: kind, TypeName: typeName, Type: p.Type}
+			if _, isVoid := target.(*btf.Void); isVoid {
+				info.VoidSize = voidSize[p.Name]
+			}
+			params = append(params, info)
 			continue
 		}
 		intType, ok := underlying.(*btf.Int)

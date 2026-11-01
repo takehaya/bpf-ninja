@@ -14,6 +14,7 @@ import (
 	"github.com/takehaya/bpf-ninja/internal/attach"
 	"github.com/takehaya/bpf-ninja/internal/filter"
 	"github.com/takehaya/bpf-ninja/internal/hook"
+	"github.com/takehaya/bpf-ninja/internal/record"
 	"github.com/takehaya/bpf-ninja/internal/setmap"
 	"github.com/takehaya/bpf-ninja/pkg/kunai"
 	"github.com/takehaya/bpf-ninja/pkg/kunai/codegen"
@@ -157,6 +158,17 @@ func LoadMultiExit(targets []attach.Target, expr string, filters []filter.Target
 // records carry the verdict and the same Packet.PacketID and land in
 // the same per-CPU shard, entry first.
 func LoadMultiPoint(targets []attach.Target, stages []Stage, filters []filter.TargetFilters, useDSL bool, sets []*setmap.Set, emit Emit) (*Probe, error) {
+	return LoadMultiPointRecord(targets, stages, filters, useDSL, sets, emit, nil)
+}
+
+// LoadMultiPointRecord is LoadMultiPoint for a single-stage capture that
+// records decision state. records has one layout per target (nil where the
+// target records nothing); target i writes site_id i+1 into its metadata,
+// so the reader can pick the layout. nil records is LoadMultiPoint.
+func LoadMultiPointRecord(targets []attach.Target, stages []Stage, filters []filter.TargetFilters, useDSL bool, sets []*setmap.Set, emit Emit, records []*record.Layout) (*Probe, error) {
+	if records != nil && (len(records) != len(targets) || len(stages) != 1 || len(targets) > 255) {
+		return nil, fmt.Errorf("a recording capture takes one stage and one layout per target (1..255 targets)")
+	}
 	if len(targets) == 0 {
 		return nil, fmt.Errorf("no attach targets")
 	}
@@ -311,6 +323,33 @@ func LoadMultiPoint(targets []attach.Target, stages []Stage, filters []filter.Ta
 		scratchFD = scratchMap.FD()
 	}
 
+	// Per-CPU snapshot of each filter-mode record field, written as the
+	// filter compares and read back when the block is filled, so the record
+	// is the value the condition tested rather than a re-read.
+	snaps := make([]*fieldSnap, len(targets))
+	maxFields := 0
+	for i := range records {
+		if records[i] != nil && records[i].Mode == record.ModeFilter {
+			maxFields = max(maxFields, len(records[i].Fields))
+		}
+	}
+	if maxFields > 0 {
+		snapMap, err := ebpf.NewMap(&ebpf.MapSpec{
+			Name: fmt.Sprintf("ninja_%s_rec", label), Type: ebpf.PerCPUArray,
+			KeySize: 4, ValueSize: uint32(8 * maxFields), MaxEntries: uint32(len(targets)),
+		})
+		if err != nil {
+			_ = probe.Close()
+			return nil, fmt.Errorf("creating record snapshot map: %w", err)
+		}
+		probe.maps = append(probe.maps, snapMap)
+		for i := range records {
+			if records[i] != nil && records[i].Mode == record.ModeFilter {
+				snaps[i] = &fieldSnap{fd: snapMap.FD(), key: i, layout: records[i]}
+			}
+		}
+	}
+
 	gateFD := 0
 	hasSets := len(sets) > 0
 	for _, tf := range filters {
@@ -401,6 +440,8 @@ func LoadMultiPoint(targets []attach.Target, stages []Stage, filters []filter.Ta
 				insns, err = buildGatedEntryInsns(targetHook, c.out, tf, holdFD, holdStopFD, statsFD, scratchFD, c.slots, c.pktRefs, emit, entryCapLen, gateFD)
 			case gated:
 				insns, err = buildGatedExitInsns(targetHook, c.out, tf, outerMap.FD(), holdFD, statsFD, scratchFD, c.slots, c.pktRefs, emit, entryCapLen, returnOffset, gateFD, probeRead)
+			case records != nil:
+				insns, err = buildRecordingInsns(targetHook, c.out, tf, outerMap.FD(), scratchFD, statsFD, st.IsFexit, returnOffset, c.slots, c.pktRefs, gateFD, records[i], uint8(i+1), snaps[i])
 			default:
 				insns, err = buildTracingInsnsForHook(targetHook, c.out, tf, outerMap.FD(), scratchFD, statsFD, st.IsFexit, returnOffset, c.slots, c.pktRefs, gateFD)
 			}
@@ -572,8 +613,13 @@ func compileFilterWithSlots(expr string, useDSL, isFexit bool, progType ebpf.Pro
 //   -16: map lookup の key
 //   -24: scratch buffer ポインタ (フィルタ時のみ)
 //   -48: tracing args ポインタの退避
+//   -64: record block の valid bits (entry record のみ; epilogue で死んだ
+//        kunai/set-key 領域を再利用)。filter record は snapshot map から
+//        埋めるのでこのスロットを使わない。
 //   -128..-121: pointer-member read temporary (arg filters only; dead before
-//               set filters and runFilter, which owns KunaiStackTop=-56 downward)
+//               set filters and runFilter, which owns KunaiStackTop=-56 downward).
+//               record の snapshot store も R3 の退避にここを使う
+//               (ninja_<label>_rec per-CPU array にフィールドを tee する)
 //   -57..-120: set filter のキーバッファ (emitSetFilters; runFilter の
 //              前で死ぬ。kunai は KunaiStackTop=-56 以深を所有するが
 //              それは runFilter 内のみ live — phase ordering で共存)
@@ -691,14 +737,20 @@ func buildTracingInsns(filterOut codegen.Output, tf filter.TargetFilters, events
 }
 
 func buildTracingInsnsForHook(h *hook.Hook, filterOut codegen.Output, tf filter.TargetFilters, eventsFD, scratchFD, statsFD int, isFexit bool, returnOffset int16, slots *pktSetSlots, pktRefs []string, gateFD int) (asm.Instructions, error) {
-	insns, err := buildFilterGate(h, filterOut, tf, scratchFD, slots, pktRefs, isFexit, returnOffset)
+	return buildRecordingInsns(h, filterOut, tf, eventsFD, scratchFD, statsFD, isFexit, returnOffset, slots, pktRefs, gateFD, nil, 0, nil)
+}
+
+// buildRecordingInsns is buildTracingInsnsForHook with the record block
+// of captureWithRecord; rec nil and siteID 0 build the same program.
+func buildRecordingInsns(h *hook.Hook, filterOut codegen.Output, tf filter.TargetFilters, eventsFD, scratchFD, statsFD int, isFexit bool, returnOffset int16, slots *pktSetSlots, pktRefs []string, gateFD int, rec *record.Layout, siteID uint8, snap *fieldSnap) (asm.Instructions, error) {
+	insns, err := buildFilterGate(h, filterOut, tf, scratchFD, slots, pktRefs, isFexit, returnOffset, snap)
 	if err != nil {
 		return nil, err
 	}
 	insns = append(insns, emitTagBarrier(gateFD)...)
 	// Single-stage records carry packet id 0.
 	packetID := asm.Instructions{asm.Mov.Imm(asm.R1, 0)}
-	insns = append(insns, captureWithRingbuf(eventsFD, statsFD, isFexit, filterOut.Capture.MaxCapLen, packetID)...)
+	insns = append(insns, captureWithRecord(eventsFD, statsFD, isFexit, filterOut.Capture.MaxCapLen, packetID, rec, siteID, snap)...)
 	return finishProgram(append(insns, emitExportTerminals(statsFD)...), filterOut, 0), nil
 }
 
@@ -720,7 +772,7 @@ func finishProgram(insns asm.Instructions, filterOut codegen.Output, ret int32) 
 // hook prologue (args[0] = the host packet ctx, a trusted BTF pointer
 // the trampoline guarantees) followed by buildFilterBody. Falls through
 // on match; every miss jumps to the "exit" label the caller must define.
-func buildFilterGate(h *hook.Hook, filterOut codegen.Output, tf filter.TargetFilters, scratchFD int, slots *pktSetSlots, pktRefs []string, isFexit bool, returnOffset int16) (asm.Instructions, error) {
+func buildFilterGate(h *hook.Hook, filterOut codegen.Output, tf filter.TargetFilters, scratchFD int, slots *pktSetSlots, pktRefs []string, isFexit bool, returnOffset int16, snap *fieldSnap) (asm.Instructions, error) {
 	insns, err := h.PacketPrologue()
 	if err != nil {
 		return nil, err
@@ -728,7 +780,7 @@ func buildFilterGate(h *hook.Hook, filterOut codegen.Output, tf filter.TargetFil
 	if isFexit {
 		insns = append(insns, loadSavedReturn(returnOffset)...)
 	}
-	body, err := buildFilterBody(h, filterOut, tf, scratchFD, slots, pktRefs)
+	body, err := buildFilterBody(h, filterOut, tf, scratchFD, slots, pktRefs, snap)
 	if err != nil {
 		return nil, err
 	}
@@ -738,13 +790,24 @@ func buildFilterGate(h *hook.Hook, filterOut codegen.Output, tf filter.TargetFil
 // buildFilterBody is the filter part of the gate (no prologue): tag
 // reset, arg filters, set filters, the kunai/cBPF filter and the DSL set
 // lookups. Assumes R6=ctx, R7=data, R8=data_end, R9=len from the prologue.
-func buildFilterBody(h *hook.Hook, filterOut codegen.Output, tf filter.TargetFilters, scratchFD int, slots *pktSetSlots, pktRefs []string) (asm.Instructions, error) {
+func buildFilterBody(h *hook.Hook, filterOut codegen.Output, tf filter.TargetFilters, scratchFD int, slots *pktSetSlots, pktRefs []string, snap *fieldSnap) (asm.Instructions, error) {
 	var insns asm.Instructions
 	// Default the tag to 0 before any set lookup can overwrite it, so a
 	// captured packet that matched no set (or a set-less filter) reports 0.
 	insns = append(insns, emitTagSlotZero()...)
-	insns = append(insns, buildArgFilter(tf.Args)...)
-	insns = append(insns, emitSetFilters(tf.Sets)...)
+	insns = append(insns, buildArgFilter(tf.Args, snap)...)
+	// Slots an argument filter already read; the set path reuses those reads
+	// and records its own, so every field is read once.
+	var written map[int16]bool
+	if snap != nil {
+		written = map[int16]bool{}
+		for _, f := range tf.Args {
+			if off := snap.off(f.ParamIndex, f.Deref, f.Pointer, f.Offset, f.ParamSize, f.Signed); off >= 0 {
+				written[off] = true
+			}
+		}
+	}
+	insns = append(insns, emitSetFilters(tf.Sets, snap, written)...)
 	// DSL `field in @set`: zero the packet-key buffer, run the filter
 	// (kunai extracts fields into it), then look each referenced set up
 	// (miss → skip capture). ANDs with arg filters and the kunai verdict.
@@ -957,10 +1020,23 @@ func wireFrameCopy(vlan asm.Instructions, scanLen int) asm.Instructions {
 // docs/paper/PLAN_bpf_ringbuf risk register entry "Verifier rejects
 // bpf_ringbuf_reserve with non-constant size".
 func captureWithRingbuf(eventsFD, statsFD int, isFexit bool, maxCapLen int, packetID asm.Instructions) asm.Instructions {
+	return captureWithRecord(eventsFD, statsFD, isFexit, maxCapLen, packetID, nil, 0, nil)
+}
+
+// captureWithRecord is captureWithRingbuf with a decision-state block:
+// with a non-nil rec, the block (fixed by rec) goes between the metadata
+// and the packet bytes, the mode byte carries capture.ModeRecordFlag and
+// siteID goes into metadata byte 13. A nil rec and zero siteID emit
+// exactly captureWithRingbuf's instructions.
+func captureWithRecord(eventsFD, statsFD int, isFexit bool, maxCapLen int, packetID asm.Instructions, rec *record.Layout, siteID uint8, snap *fieldSnap) asm.Instructions {
 	if maxCapLen <= 0 {
 		maxCapLen = defaultCapLen
 	}
-	reserveSize := int32(metadataSize + maxCapLen)
+	dataOff := int32(metadataSize)
+	if rec != nil {
+		dataOff += int32(rec.Size())
+	}
+	reserveSize := dataOff + int32(maxCapLen)
 
 	insns := asm.Instructions{
 		// --- kernel_ts_ns = bpf_ktime_get_ns() ---
@@ -978,6 +1054,9 @@ func captureWithRingbuf(eventsFD, statsFD int, isFexit bool, maxCapLen int, pack
 		asm.StoreMem(asm.R10, -16, asm.R0, asm.Word),
 	}
 	insns = append(insns, emitShardedRBReserve(eventsFD, statsFD, reserveSize)...)
+	if rec != nil {
+		insns = append(insns, emitRecordBlock(rec, snap)...)
+	}
 	insns = append(insns,
 		// --- Write kernel_ts_ns into slot[0..8] ---
 		asm.LoadMem(asm.R1, asm.R10, -56, asm.DWord),
@@ -989,20 +1068,27 @@ func captureWithRingbuf(eventsFD, statsFD int, isFexit bool, maxCapLen int, pack
 	insns = append(insns, asm.StoreMem(asm.R0, 20, asm.R1, asm.DWord))
 
 	// --- Write action+mode metadata at slot[8..14] ---
+	mode := int64(0)
+	if isFexit {
+		mode = 1
+	}
+	if rec != nil {
+		mode = recordMode(uint8(mode))
+	}
 	if isFexit {
 		insns = append(insns,
 			asm.LoadMem(asm.R2, asm.R10, savedReturnSlot, asm.Word),
 			asm.StoreMem(asm.R0, 8, asm.R2, asm.Word),
-			asm.StoreImm(asm.R0, 12, 1, asm.Byte), // mode = 1 (exit)
+			asm.StoreImm(asm.R0, 12, mode, asm.Byte), // mode = 1 (exit)
 		)
 	} else {
 		insns = append(insns,
 			asm.StoreImm(asm.R0, 8, 0, asm.Word),
-			asm.StoreImm(asm.R0, 12, 0, asm.Byte),
+			asm.StoreImm(asm.R0, 12, mode, asm.Byte),
 		)
 	}
 	insns = append(insns,
-		asm.StoreImm(asm.R0, 13, 0, asm.Byte), // _pad
+		asm.StoreImm(asm.R0, 13, int64(siteID), asm.Byte), // site_id (0 = legacy)
 	)
 
 	// --- copy_size = min(pkt_len, maxCapLen) → caplen field + save ---
@@ -1021,9 +1107,9 @@ func captureWithRingbuf(eventsFD, statsFD int, isFexit bool, maxCapLen int, pack
 		asm.StoreMem(asm.R0, 16, asm.R1, asm.Word),
 	)
 
-	// --- bpf_probe_read_kernel(R0 + 20, copy_size, packet_ptr) ---
+	// --- bpf_probe_read_kernel(R0 + dataOff, copy_size, packet_ptr) ---
 	insns = append(insns,
-		asm.Mov.Reg(asm.R1, asm.R0), asm.Add.Imm(asm.R1, int32(metadataSize)),
+		asm.Mov.Reg(asm.R1, asm.R0), asm.Add.Imm(asm.R1, dataOff),
 		asm.Mov.Reg(asm.R2, asm.R3),
 		asm.Mov.Reg(asm.R3, asm.R7),
 		asm.FnProbeReadKernel.Call(),
@@ -1123,9 +1209,12 @@ func emitArgMemberLoad(index int, offset, size uint32, signed bool, fail string)
 	return append(insns, emitArgLoad(asm.R3, asm.R10, argMemberTmp, size, signed)...)
 }
 
-func buildArgFilter(filters []filter.ArgFilter) asm.Instructions {
+func buildArgFilter(filters []filter.ArgFilter, snap *fieldSnap) asm.Instructions {
 	if len(filters) == 0 {
 		return nil
+	}
+	if snap != nil {
+		return buildRecordingArgFilter(filters, snap)
 	}
 
 	var insns asm.Instructions
@@ -1143,28 +1232,88 @@ func buildArgFilter(filters []filter.ArgFilter) asm.Instructions {
 		} else {
 			insns = append(insns, emitArgLoad(asm.R3, asm.R2, offset, f.ParamSize, f.Signed)...)
 		}
-
-		// Select unsigned or signed jump ops based on parameter signedness.
-		jLT, jGT := asm.JLT, asm.JGT
-		if f.Signed {
-			jLT, jGT = asm.JSLT, asm.JSGT
-		}
-
-		switch f.Op {
-		case filter.OpEqual:
-			insns = appendCmpJump(insns, asm.JNE, f.Value)
-		case filter.OpNotEqual:
-			insns = appendCmpJump(insns, asm.JEq, f.Value)
-		case filter.OpGreaterEqual:
-			insns = appendCmpJump(insns, jLT, f.Value)
-		case filter.OpLessEqual:
-			insns = appendCmpJump(insns, jGT, f.Value)
-		case filter.OpRange:
-			insns = appendCmpJump(insns, jLT, f.Value)
-			insns = appendCmpJump(insns, jGT, f.MaxValue)
-		}
+		insns = append(insns, emitArgCompare(f)...)
 	}
 
+	return insns
+}
+
+// emitArgCompare jumps to "exit" when R3 (the loaded argument value) fails
+// filter f. R3 is preserved.
+func emitArgCompare(f filter.ArgFilter) asm.Instructions {
+	jLT, jGT := asm.JLT, asm.JGT
+	if f.Signed {
+		jLT, jGT = asm.JSLT, asm.JSGT
+	}
+	var insns asm.Instructions
+	switch f.Op {
+	case filter.OpEqual:
+		insns = appendCmpJump(insns, asm.JNE, f.Value)
+	case filter.OpNotEqual:
+		insns = appendCmpJump(insns, asm.JEq, f.Value)
+	case filter.OpGreaterEqual:
+		insns = appendCmpJump(insns, jLT, f.Value)
+	case filter.OpLessEqual:
+		insns = appendCmpJump(insns, jGT, f.Value)
+	case filter.OpRange:
+		insns = appendCmpJump(insns, jLT, f.Value)
+		insns = appendCmpJump(insns, jGT, f.MaxValue)
+	}
+	return insns
+}
+
+// buildRecordingArgFilter reads each deduplicated field once, runs all of
+// its comparisons on that read, and snapshots it once, so the recorded value
+// is the value every condition on the field tested, not a later re-read.
+func buildRecordingArgFilter(filters []filter.ArgFilter, snap *fieldSnap) asm.Instructions {
+	// Group on the field itself, not its snapshot slot: fields missing from
+	// the layout all have slot -1 but are different reads.
+	type field struct {
+		index        int
+		deref, ptr   bool
+		offset, size uint32
+		signed       bool
+	}
+	type group struct {
+		rep   filter.ArgFilter
+		conds []filter.ArgFilter
+	}
+	var order []field
+	groups := map[field]*group{}
+	for _, f := range filters {
+		k := field{f.ParamIndex, f.Deref, f.Pointer, f.Offset, f.ParamSize, f.Signed}
+		g := groups[k]
+		if g == nil {
+			g = &group{rep: f}
+			groups[k] = g
+			order = append(order, k)
+		}
+		g.conds = append(g.conds, f)
+	}
+	insns := asm.Instructions{asm.LoadMem(asm.R2, asm.R10, -48, asm.DWord)}
+	for _, k := range order {
+		g := groups[k]
+		f := g.rep
+		off := snap.off(f.ParamIndex, f.Deref, f.Pointer, f.Offset, f.ParamSize, f.Signed)
+		switch {
+		case f.Pointer:
+			insns = append(insns, emitArgPointerLoad(f.ParamIndex, "exit")...)
+		case f.Deref:
+			insns = append(insns, emitArgMemberLoad(f.ParamIndex, f.Offset, f.ParamSize, f.Signed, "exit")...)
+		default:
+			insns = append(insns, emitArgLoad(asm.R3, asm.R2, int16(f.ParamIndex*8), f.ParamSize, f.Signed)...)
+		}
+		// Snapshot the single read (emitSnapStore reloads R3 and R2), then run
+		// every condition on that value.
+		if off >= 0 {
+			insns = append(insns, emitSnapStore(snap.fd, snap.key, off)...)
+		} else {
+			insns = append(insns, asm.LoadMem(asm.R2, asm.R10, -48, asm.DWord))
+		}
+		for _, c := range g.conds {
+			insns = append(insns, emitArgCompare(c)...)
+		}
+	}
 	return insns
 }
 
@@ -1181,7 +1330,13 @@ const setKeyBase = -120
 // key field from the target function's args, then bpf_map_lookup_elem —
 // a NULL result jumps to "exit" (skip capture), so multiple sets and
 // plain arg-filters AND together naturally.
-func emitSetFilters(sets []filter.SetFilter) asm.Instructions {
+// emitSetFilters builds each set key and looks it up. When recording (snap
+// != nil), a key field whose record slot was already read — by an argument
+// filter or an earlier set — is loaded back from the snapshot instead of
+// re-read, so every field is read exactly once and the recorded value is the
+// one the key used. written tracks which slots already hold their single
+// read; emitSetFilters adds to it.
+func emitSetFilters(sets []filter.SetFilter, snap *fieldSnap, written map[int16]bool) asm.Instructions {
 	var insns asm.Instructions
 	for _, s := range sets {
 		// Only zero the key buffer when the fields leave padding gaps: hash
@@ -1201,23 +1356,40 @@ func emitSetFilters(sets []filter.SetFilter) asm.Instructions {
 		// no callee-saved register is free — R6-R9 hold the capture prelude).
 		insns = append(insns, asm.LoadMem(asm.R2, asm.R10, -48, asm.DWord))
 		for _, f := range s.Fields {
-			// Load at param width, sign-extending signed params so a
-			// narrow negative arg fills the wider key field the same way a
-			// signed value written into the map would (ParamSize <=
-			// FieldSize is enforced at resolve time); store at field width.
-			if f.Deref {
+			off := int16(-1)
+			if snap != nil {
+				off = snap.off(f.ParamIdx, f.Deref, false, f.Offset, f.ParamSize, f.ParamSigned)
+			}
+			switch {
+			case off >= 0 && written[off]:
+				// Reuse the single read that an argument filter or an earlier
+				// set already snapshotted for this field (R2 restored).
+				insns = append(insns, emitSnapLoad(snap.fd, snap.key, off)...)
+			case f.Deref:
+				// Load at param width, sign-extending signed params so a
+				// narrow negative arg fills the wider key field the same way a
+				// signed value written into the map would (ParamSize <=
+				// FieldSize is enforced at resolve time); store at field width.
 				insns = append(insns, emitArgMemberLoad(f.ParamIdx, f.Offset, f.ParamSize, f.ParamSigned, "exit")...)
 				insns = append(insns, asm.LoadMem(asm.R2, asm.R10, -48, asm.DWord))
-			} else {
+			default:
 				insns = append(insns, emitArgLoad(asm.R3, asm.R2, int16(f.ParamIdx*8), f.ParamSize, f.ParamSigned)...)
+			}
+			if off >= 0 && !written[off] {
+				insns = append(insns, emitSnapStore(snap.fd, snap.key, off)...)
+				written[off] = true
 			}
 			insns = append(insns, asm.StoreMem(asm.R10, int16(setKeyBase+int(f.FieldOff)), asm.R3, asmSizeFor(f.FieldSize)))
 		}
 
-		insns = append(insns, emitSetLookup(s.Map.FD(), setKeyBase, int(s.TagWidth), s.StateOff)...)
+		insns = append(insns, emitSetLookup(setMapFD(s.Map), setKeyBase, int(s.TagWidth), s.StateOff)...)
 	}
 	return insns
 }
+
+// setMapFD is a --set map's FD; tests replace it to build set filters
+// without creating maps.
+var setMapFD = (*ebpf.Map).FD
 
 // tagSlot holds the matched set's value (the tag) between the set lookup
 // and the capture epilogue that writes it into the metadata. It is a full
