@@ -750,7 +750,7 @@ vocab 側は `KUNAI_<SELF>_<PARENT>_<FIELD>` 系の dispatch const で、どこ�
 ```
 ; パターン B: 拡張ヘッダ繰り返し
 eth/ipv4/udp/gtp/ipv4/tcp where gtp.opt.next_ext == 0xc0 or any(gtp.exts.next_ext == 0xc0)  ; type 0xc0 の ext を含む (type は一つ前の next_ext に入る)
-eth/ipv6/tcp where any(ipv6.exts.next_header == 44)              ; Fragment ext あり
+eth/ipv6/tcp where any(ipv6.exts.next_header == 44)              ; 2 個目以降に Fragment ext あり
 
 ; パターン C: wrapper + 内部項目列
 eth/ipv6/srv6/tcp where srv6.segments[0].addr == fc00::1         ; final dest
