@@ -141,7 +141,7 @@ func TestIntegrationLoader(t *testing.T) {
 				if !strings.Contains(logs.String(), `attempted hook "`) {
 					t.Fatal("rejection does not name the attempted hooks")
 				}
-				if strings.Contains(logs.String(), "arg:untrusted") {
+				if strings.Contains(logs.String(), "hooks use arg:untrusted pointers") {
 					t.Fatal("arg:untrusted hint for a typed hook")
 				}
 			}

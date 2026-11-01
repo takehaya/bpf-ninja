@@ -54,8 +54,8 @@ func TestBpfAutoStatic(t *testing.T) {
 				}
 				return probeGlobalUntrusted()
 			}
-			// The loader's own test output must not reach the stdout that
-			// scripts/test/privileged.py audits.
+			// The loader runs without -test.v and scripts/test/privileged.py
+			// ignores nested results, so its output stays out of the audit.
 			out, err := os.Create(filepath.Join(t.TempDir(), "loader.out"))
 			if err != nil {
 				t.Fatal(err)

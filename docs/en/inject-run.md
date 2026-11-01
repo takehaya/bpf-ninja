@@ -419,7 +419,7 @@ It also checks that the launcher reports each successful injection, and only tho
 `TestBpfAutoStatic`, under the same integration tag, leaves `static_untrusted` unset on a read-only map lookup and a dispatch rule, checks the selected form and reason, and loads and attaches an fentry observer to the injected hook.
 A third case replaces the probe result with an unsupported-tag rejection, so static hooks are selected and attached on every kernel.
 With `BPF_NINJA_EXPECT_HOOK_FORM` set to `global` or `static`, the real probe's choice must match it; CI sets `global` for its runner kernel.
-The loader's output goes to a file, so its test results never mix with the supervisor test's.
+The loader runs without `-test.v`, and the audit ignores result lines of tests nested inside another test.
 The tests never attach to an interface, pin objects, or change sysctls, routes, or firewall rules.
 
 ```sh
