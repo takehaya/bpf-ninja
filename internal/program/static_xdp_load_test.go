@@ -17,6 +17,8 @@ import (
 	"github.com/takehaya/bpf-ninja/pkg/kunai/codegen"
 )
 
+var xdpTestHook, _ = hook.ByName(hook.KindXDP)
+
 func TestBpfStaticXDPContextSelection(t *testing.T) {
 	testutil.SkipIfNotRoot(t)
 	for _, tc := range []struct{ name, source, entry, fn string }{
@@ -36,7 +38,7 @@ func TestBpfStaticXDPContextSelection(t *testing.T) {
 			target := coll.Programs[tc.entry]
 			for _, exit := range []bool{false, true} {
 				_, at := tracingLabel(exit)
-				fallback, err := staticXDPNeedsProbeRead(target, tc.fn, at, attach.FuncAvailability{})
+				fallback, err := staticNeedsProbeRead(xdpTestHook, target, tc.fn, at, attach.FuncAvailability{})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -78,7 +80,7 @@ func TestBpfStaticXDPContextSelection(t *testing.T) {
 					}
 				}
 			}
-			if _, err := staticXDPNeedsProbeRead(target, "missing_function", ebpf.AttachTraceFEntry, attach.FuncAvailability{}); err == nil {
+			if _, err := staticNeedsProbeRead(xdpTestHook, target, "missing_function", ebpf.AttachTraceFEntry, attach.FuncAvailability{}); err == nil {
 				t.Fatal("unrelated load failure must propagate")
 			}
 		})
@@ -96,7 +98,7 @@ func assertOriginMainStaticXDPCodegen(t *testing.T, target *ebpf.Program, fn str
 		{"gated", "6e1d4fc1e8d59b5de9e9cea54d09c486827e5c7c3874d359ea5f850dbeb1bf98"},
 	} {
 		_, at := tracingLabel(tc.mode != "entry")
-		fallback, err := staticXDPNeedsProbeRead(target, fn, at, attach.FuncAvailability{})
+		fallback, err := staticNeedsProbeRead(xdpTestHook, target, fn, at, attach.FuncAvailability{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -127,15 +129,20 @@ func assertOriginMainStaticXDPCodegen(t *testing.T, target *ebpf.Program, fn str
 }
 
 func TestBpfStaticXDPGatedContextReadFailure(t *testing.T) {
-	target := loadDummyXDP(t)
+	h, _ := hook.ByName(hook.KindXDP)
+	testGatedContextReadFailure(t, loadDummyXDP(t), xdpFuncName, h, staticXDPHook(h, true), 0)
+}
+
+// testGatedContextReadFailure forces the read-th fault-handled ctx read of
+// safe's prologue to fail at a gated exit and checks that no hold leaks.
+func testGatedContextReadFailure(t *testing.T, target *ebpf.Program, fn string, entryHook, safe *hook.Hook, read int) {
+	t.Helper()
 	hold, err := ebpf.NewMap(&ebpf.MapSpec{Type: ebpf.PerCPUArray, KeySize: 4, ValueSize: holdHdr + 64, MaxEntries: uint32(holdSlots)})
 	if err != nil {
 		t.Fatal(err)
 	}
 	p := &Probe{maps: []*ebpf.Map{hold}, holdMap: hold}
 	defer func() { _ = p.Close() }()
-	h, _ := hook.ByName(hook.KindXDP)
-	safe := staticXDPHook(h, true)
 	var out codegen.Output
 	out.Capture.MaxCapLen = 64
 	insns, err := buildGatedExitInsns(safe, out, filter.TargetFilters{}, 0, hold.FD(), 0, 0, nil, nil, EmitBoth, 64, 8, 0, true)
@@ -145,7 +152,9 @@ func TestBpfStaticXDPGatedContextReadFailure(t *testing.T) {
 	// Force the prologue's ctx read to fault, after an entry wrote a hold.
 	injected := false
 	for i, in := range insns {
-		if in == asm.FnProbeReadKernel.Call() {
+		if in == asm.FnProbeReadKernel.Call() && read > 0 {
+			read--
+		} else if in == asm.FnProbeReadKernel.Call() {
 			insns = append(insns[:i], append(asm.Instructions{asm.Mov.Imm(asm.R3, 0)}, insns[i:]...)...)
 			// No output maps are needed: all paths after this read must exit.
 			insns = append(insns[:i+3], asm.Ja.Label("exit"))
@@ -157,14 +166,14 @@ func TestBpfStaticXDPGatedContextReadFailure(t *testing.T) {
 	if !injected {
 		t.Fatal("missing ctx read")
 	}
-	if err := attachTracingProbe(p, target, "ctx_fail_exit", xdpFuncName, ebpf.AttachTraceFExit, insns, false, attach.FuncAvailability{}); err != nil {
+	if err := attachTracingProbe(p, target, "ctx_fail_exit", fn, ebpf.AttachTraceFExit, insns, false, attach.FuncAvailability{}); err != nil {
 		t.Fatal(err)
 	}
-	entry, err := buildGatedEntryInsns(h, out, filter.TargetFilters{}, hold.FD(), 0, 0, 0, nil, nil, EmitBoth, 64, 0)
+	entry, err := buildGatedEntryInsns(entryHook, out, filter.TargetFilters{}, hold.FD(), 0, 0, 0, nil, nil, EmitBoth, 64, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := attachTracingProbe(p, target, "ctx_fail_entry", xdpFuncName, ebpf.AttachTraceFEntry, entry, false, attach.FuncAvailability{}); err != nil {
+	if err := attachTracingProbe(p, target, "ctx_fail_entry", fn, ebpf.AttachTraceFEntry, entry, false, attach.FuncAvailability{}); err != nil {
 		t.Fatal(err)
 	}
 	for range maxHoldSlots + 1 {

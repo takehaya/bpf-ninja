@@ -72,8 +72,6 @@ Either can be combined with a lookup rule, or used without `map` or `auto` to in
 `"copy_read_only": true` passes a stack copy of a `BPF_F_RDONLY_PROG` map's value to a typed hook instead of an `arg:untrusted` one, so kernels that reject `arg:untrusted` (6.15 and older in the CI matrix) load it; see [lookup-site-injection.md](lookup-site-injection.md#supported-sites-and-trust-boundary).
 `"dispatch": true` sends every instrumented site, lookups, the entry and failed tail calls, to one hook named `hook` with the generic signature, so one observer attach sees them all; it needs `stack_lowest_offset` of at least -448 (with only `entry`, -472 as without `dispatch`) and cannot be combined with `copy_read_only` ([lookup-site-injection.md](lookup-site-injection.md#one-dispatch-hook)).
 `"static_untrusted": true` makes every hook that would take `arg:untrusted` pointers, the generic hook included, a static function instead, which those kernels also load; an observer then reads all of its arguments as `u64` values (same section).
-Packet capture with `--func` at a static tc hook reads the context through `bpf_probe_read_kernel` and captures only the linear packet head.
-VLAN metadata reinsertion is unsupported on this path and is refused explicitly.
 See [lookup-site-injection.md](lookup-site-injection.md#entry-and-tail-call-hooks), including why any hook in a program that uses `bpf_tail_call` needs the JIT on a supported architecture; without it the transformed load fails and the original program is loaded (or refused with `--fail-closed`).
 
 ```json
@@ -87,6 +85,8 @@ The frame holding the slots also calls the hook, which kernels that round frames
 Do not copy the example bound without auditing the actual program.
 `hook` must be a C identifier of at most 127 bytes, leaving room for the longest suffix the transform appends: at most 117 bytes with `tail_calls` (`_tail_call`), 121 with `entry` (`_entry`), 125 with `auto` (`_0`), 120 with `lookup:miss` (`_0_miss`), and 118 with `update`, `delete`, `push`, `pop` or `peek` (`_0_update`); with `dispatch` the hook is named `hook` itself, so up to 127 bytes. Under `auto`, a map whose hook name would still not fit is skipped.
 Unknown JSON fields, duplicate program selectors, trailing JSON, and configurations larger than 1 MiB are rejected before launching.
+
+Packet capture with `--func` at a static tc hook reads the context through `bpf_probe_read_kernel` when direct reads are rejected, and captures only the linear packet head; a filter with `--tc-vlan-reinsert` is refused there.
 
 ## Map types from a loader ELF
 

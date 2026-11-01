@@ -10,7 +10,7 @@ import (
 // wrap rather than fail loudly.
 func TestSkBuffPacketOffsetsResolvesValidOffsets(t *testing.T) {
 	t.Helper()
-	dataOff, lenOff, dataLenOff, err := skBuffPacketOffsets()
+	dataOff, lenOff, dataLenOff, err := SkBuffPacketOffsets()
 	if err != nil {
 		t.Skipf("kernel BTF not available (skBuff resolve failed): %v", err)
 	}
@@ -42,8 +42,8 @@ func TestSkBuffPacketOffsetsResolvesValidOffsets(t *testing.T) {
 // direct equality compare is the right check.
 func TestSkBuffPacketOffsetsCachesResult(t *testing.T) {
 	t.Helper()
-	d1, l1, dl1, err1 := skBuffPacketOffsets()
-	d2, l2, dl2, err2 := skBuffPacketOffsets()
+	d1, l1, dl1, err1 := SkBuffPacketOffsets()
+	d2, l2, dl2, err2 := SkBuffPacketOffsets()
 	if err1 != err2 {
 		t.Errorf("two calls returned different errors (cache not sticky): %v vs %v", err1, err2)
 	}

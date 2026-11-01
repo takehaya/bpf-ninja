@@ -17,15 +17,19 @@ EXT の置換関数など、対応する引数を持つエントリ関数では 
 これらの機能の実測範囲はテストマトリクスの 6.1 以降であり、ディストリビューションのバックポート状況によって異なります。
 共通の前提である 5.8 以降という条件だけでは、このヘルパーは使えません。
 
-static XDP のキャプチャでは、直接読み取りのプローブが scalar コンテキストとして拒否された場合に、失敗を処理できるヘルパーでコンテキストを読み取ります。
-static tc では、カーネル BTF から求めた `sk_buff` のオフセットを使い、`data`、`len`、`data_len` を `bpf_probe_read_kernel` で読む。
-キャプチャする範囲は線形ヘッドの `len - data_len` bytes に限り、fragment は含めない。
-読み取りに失敗した場合はキャプチャしない。
-この経路で VLAN metadata を再挿入しようとすると、`static TC probe-read does not support VLAN reinsertion` として拒否する。
+static XDP と static tc のキャプチャでは、直接読み取りのプローブが scalar コンテキストとして拒否された場合に、失敗を処理できるヘルパーでコンテキストを読み取ります。
+直接読み取りが通る static 関数は、そのまま直接読み取ります。
+この経路を使う前に、bpf-ninja は対象の命令列を調べ、すべての呼び出しが第 1 引数にプログラムのコンテキストを渡していることを確かめます。
+確かめられるのはエントリ関数のレジスターか 8 byte のスタック退避にあるコンテキストだけで、それ以外はキャプチャを拒否します。
+失敗を処理できる読み取りは、どのポインターでもコンテキストとして受け付けてしまうためです。
+static tc では、カーネル BTF から求めた `sk_buff` のオフセットを使い、`data`、`len`、`data_len` を `bpf_probe_read_kernel` で読みます。
+キャプチャする範囲は線形ヘッドの `len - data_len` bytes に限り、fragment は含めません。
+読み取りに失敗した場合はキャプチャしません。
+この経路でフィルターに `--tc-vlan-reinsert` を付けると、`--tc-vlan-reinsert is not supported at static tc function "NAME"` として拒否します。
 
 これらの経路の exit と gated キャプチャには、action の取得用に `bpf_get_func_ret` も必要です（upstream Linux 5.17 以降）。
-カーネルが BTF プロトタイプを破棄しているため、引数数から戻り値の位置を推測しません。
-cgroup-skb と netfilter の static フックには、この読み取り経路を適用しない。
+カーネルが BTF プロトタイプを破棄している可能性があるため、引数数から戻り値の位置を推測しません。
+cgroup-skb と netfilter の static フックには、この読み取り経路を適用しません。
 
 ## 式を書く前にメンバーを調べる
 

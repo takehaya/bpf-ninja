@@ -8,7 +8,7 @@ import (
 	"github.com/cilium/ebpf/btf"
 )
 
-// skBuffPacketOffsets returns the kernel BTF byte offsets of
+// SkBuffPacketOffsets returns the kernel BTF byte offsets of
 // `struct sk_buff`'s `data` (8B pointer), `len` (4B u32), and
 // `data_len` (4B u32) members. `len - data_len` is the linear head
 // length (skb_headlen()); the prologues clamp the packet window to it
@@ -21,7 +21,7 @@ import (
 //
 // Cached at first call: BTF spec load + walk is on the order of
 // milliseconds, fine to amortise across all probes loaded in-process.
-func skBuffPacketOffsets() (data uint32, length uint32, dataLen uint32, err error) {
+func SkBuffPacketOffsets() (data uint32, length uint32, dataLen uint32, err error) {
 	skBuffOnce.Do(func() {
 		var spec *btf.Spec
 		spec, skBuffErr = btf.LoadKernelSpec()

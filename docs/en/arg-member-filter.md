@@ -17,11 +17,12 @@ Member filters and echo, scalar-pointee `[0]` reads, pointer NULL comparisons, a
 These features have been measured on kernels 6.1+ in our test matrix; distribution backports may differ.
 The common 5.8+ prerequisite alone does not provide this helper.
 
-Static XDP capture uses fault-handled context reads when its direct-read probe fails with a scalar context.
+Static XDP and tc capture use fault-handled context reads when the direct-read probe fails with a scalar context; static functions that accept direct reads keep them.
+Before taking that path, bpf-ninja checks the target's instructions: every call must pass the program's context as the first argument, held in a register or an 8-byte stack spill of the entry function, or the capture is refused, because a fault-handled read would accept any pointer as the context.
 Static tc capture reads `sk_buff.data`, `len` and `data_len` through `bpf_probe_read_kernel`, with offsets resolved from kernel BTF, and captures only the linear head (`len - data_len`).
 A failed context read produces no capture.
-VLAN metadata reinsertion is refused on this path with `static TC probe-read does not support VLAN reinsertion`.
-Exit and gated capture on these paths also require `bpf_get_func_ret` (upstream Linux 5.17+) to obtain the action because the kernel has discarded the BTF prototype.
+A filter with `--tc-vlan-reinsert` is refused on this path with `--tc-vlan-reinsert is not supported at static tc function "NAME"`.
+Exit and gated capture on these paths also require `bpf_get_func_ret` (upstream Linux 5.17+) to obtain the action because the kernel may have discarded the BTF prototype.
 These context-read paths do not extend to static cgroup-skb or netfilter hooks.
 
 ## Discover members before writing a filter
