@@ -334,16 +334,14 @@ The copy is readable and writable stack memory, so the call passes the verifier 
 The observer then reads the value's type from the hook's BTF, but the pointer is the copy's address, not the map value's.
 The copy takes the value size rounded up to 8 bytes; a copy that would take the frame past 480 bytes is refused (see below).
 A `BPF_F_WRONLY_PROG` map and the generic hook stay untrusted, since a program cannot read such a value to copy it.
-The transform APIs remain deterministic and kernel-independent: their `StaticUntrusted` boolean defaults to false.
-The [inject-run supervisor](inject-run.md#usage-and-configuration) instead treats an omitted `static_untrusted` as automatic, probes the global untrusted-pointer ABI once per run, and selects this boolean before transformation.
-Explicit true and false force the supervisor's choice.
-This does not alter `Auto` site selection, copy decisions or dispatch semantics.
-
 With `LookupRequest.StaticUntrusted`, every hook that would take `arg:untrusted` pointers, the generic hook included, is instead a static function whose body only returns zero, and `LookupHook.Static` is set instead of `Untrusted`.
 The verifier checks a static function at each call with the caller's registers rather than against its BTF, so the call needs no tag; in the CI kernel matrix, 6.1 and newer load it.
 A per-map static hook still declares its key and value types in BTF, but the kernel need not trust that BTF.
 On 7.0 it does not: an fentry observer receives every argument, `ctx` included, as a `u64` and reads through them with `bpf_probe_read_kernel`.
 With `CopyReadOnly` as well, a `BPF_F_RDONLY_PROG` map keeps its copied typed hook, and only write-only maps and the generic hook become static.
+The transform APIs remain deterministic and kernel-independent: their `StaticUntrusted` boolean defaults to false.
+The [inject-run supervisor](inject-run.md#usage-and-configuration) instead treats an omitted or false `static_untrusted` as automatic, probes the global untrusted-pointer ABI once per run, and selects this boolean before transformation; `true` forces it.
+This does not alter `Auto` site selection, copy decisions or dispatch semantics.
 A value that holds a field programs reach only through helpers and kfuncs cannot be passed as memory either: the verifier refuses a `bpf_spin_lock` or `bpf_timer` in it ("cannot be accessed directly by load/store") and a kptr ("cannot be accessed indirectly by helper").
 The transform finds these fields in the value's BTF, through nested structs, unions, arrays and typedefs: `struct bpf_spin_lock`, `bpf_res_spin_lock`, `bpf_timer`, `bpf_wq`, `bpf_task_work`, `bpf_list_head`, `bpf_list_node`, `bpf_rb_root`, `bpf_rb_node` and `bpf_refcount`, and pointers tagged `kptr`, `kptr_untrusted`, `kptr_ref`, `percpu_kptr` or `uptr`.
 A lookup hook on such a map takes untrusted pointers, or is static with `StaticUntrusted`, as for a write-only map, and `CopyReadOnly` never copies such a value, since the copy would read the field.

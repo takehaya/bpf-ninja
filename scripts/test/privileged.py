@@ -96,15 +96,23 @@ def syscallhook_suite(binary, log_path):
     expected = {(SYSCALLHOOK, "TestIntegration" + name) for name in ("MapTypes", "Loader")}
     expected.add((SYSCALLHOOK, "TestBpfAutoStatic"))
     events = []
+    # A test that runs this binary again as a loader may echo the loader's
+    # results; while a top-level test runs, only its own results count.
+    running = None
     print("+ " + " ".join(command), flush=True)
     with open(log_path, "w", encoding="utf-8") as log, \
             subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True) as process:
         for line in process.stdout:
             print(line, end="", flush=True)
             log.write(line)
+            started = re.match(r"=== RUN\s+([^/\s]+)$", line)
+            if started and running is None:
+                running = started[1]
             match = re.match(r"\s*--- (PASS|FAIL|SKIP): (\S+)", line)
-            if match:
+            if match and running in (None, match[2].split("/", 1)[0]):
                 events.append({"Package": SYSCALLHOOK, "Test": match[2], "Action": match[1].lower()})
+                if match[2] == running:
+                    running = None
         events.append({"Package": SYSCALLHOOK, "Action": "pass" if process.wait() == 0 else "fail"})
     failures = audit(events, expected, None)
     for failure in failures:

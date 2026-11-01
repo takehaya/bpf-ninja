@@ -10,7 +10,6 @@ import (
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/asm"
 	"github.com/cilium/ebpf/btf"
-	"github.com/takehaya/bpf-ninja/pkg/inject"
 	"golang.org/x/sys/unix"
 )
 
@@ -21,19 +20,16 @@ type HookForm struct {
 	Reason string `json:"reason"`
 }
 
-func chooseHookForm(force *bool, probe func() error) HookForm {
-	if force != nil {
-		if *force {
-			return HookForm{"static", "config_static_untrusted_true"}
-		}
-		return HookForm{"global", "config_static_untrusted_false"}
+func chooseHookForm(static bool, probe func() error) HookForm {
+	if static {
+		return HookForm{"static", "config_static_untrusted_true"}
 	}
 	if err := probe(); err != nil {
 		if untrustedRejection(err) {
 			return HookForm{"static", "probe_arg_untrusted_unsupported"}
 		}
 		// An inconclusive probe must not turn permissions or resource failures into
-		// a claim of missing kernel support. The actual load remains authoritative.
+		// a claim of missing kernel support. The load then reports its own result.
 		return HookForm{"global", "probe_inconclusive"}
 	}
 	return HookForm{"global", "probe_arg_untrusted_supported"}
@@ -49,22 +45,6 @@ func untrustedRejection(err error) bool {
 	}
 	for _, line := range ve.Log {
 		if strings.Contains(line, "arg#") && (strings.Contains(line, "has unsupported set of tags") || strings.Contains(line, "reference type('UNKNOWN ')") && strings.Contains(line, "size cannot be determined")) {
-			return true
-		}
-	}
-	return false
-}
-
-func retryStatic(force *bool, form HookForm, result *inject.LookupResultRaw, err error) bool {
-	if force != nil || form.Form != "global" || result == nil || !untrustedRejection(err) {
-		return false
-	}
-	return hasUntrustedHooks(result)
-}
-
-func hasUntrustedHooks(result *inject.LookupResultRaw) bool {
-	for _, h := range result.Hooks {
-		if h.Untrusted {
 			return true
 		}
 	}

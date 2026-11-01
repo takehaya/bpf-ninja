@@ -176,13 +176,15 @@ bpf-ninja inject-run --config rules.json --hooks-json hooks.json -- ./loader pro
 The diagnostic names each hook, its op, map and site:
 
 ```
+inject-run: program "entry": untrusted hook form global (probe_arg_untrusted_supported)
 inject-run: program "entry": injected hook "ninja_seen_peek" (peek map "seen", site pc 11), hook "ninja_seen_push" (push map "seen", site pc 18), hook "ninja_recent_push" (push map "recent", site pc 24), hook "ninja_recent_pop" (pop map "recent", site pc 30), tracee fd 11
 ```
 
 `hooks.json` gives the kernel ID of the transformed program and each hook with its sites:
 
 ```json
-{"program": "entry", "func": "entry", "type": "XDP", "prog_id": 464331, "ctx_type": "xdp_md", "skipped": [],
+{"program": "entry", "func": "entry", "type": "XDP", "prog_id": 464331, "ctx_type": "xdp_md",
+ "hook_form": {"form": "global", "reason": "probe_arg_untrusted_supported"}, "skipped": [],
  "hooks": [
   {"name": "ninja_seen_peek", "kind": "typed", "when": "error", "map": "seen",
    "sites": [{"kind": "peek", "pc": 11, "map": "seen", "func": "entry", "file": "prog.c", "line": 33}],
@@ -357,7 +359,7 @@ Without that key, this loader retries the queue creation without BTF and its inj
 
 A typed lookup hook is called only on a hit; its `_miss` variant has no `value` argument.
 To capture misses with `--arg-filter 'value==null'`, use a dispatch hook with `lookup:any`, whose `const void *value` can be NULL.
-On kernels 6.1, 6.6, 6.12 and 6.15 in our test matrix, set `"static_untrusted": true` in that rule because those kernels reject the global hook's `arg:untrusted` pointers.
+On kernels that reject the global hook's `arg:untrusted` pointers (6.1, 6.6, 6.12 and 6.15 in our test matrix), inject-run makes that hook static automatically; `"static_untrusted": true` forces it.
 Capture reads the static XDP hook's ctx through the kernel-read helper when the direct context-read probe rejects that target.
 On that fallback path, exit and gated capture obtain the action through `bpf_get_func_ret` (upstream Linux 5.17+) because the kernel has discarded the hook's BTF prototype.
 `value!=null` selects the hits without dereferencing the value.

@@ -27,12 +27,12 @@ type hooksFileJSON struct {
 // injectedProgJSON is one successful injected load. ProgID is zero when the
 // tracee could not query it.
 type injectedProgJSON struct {
-	HookForm syscallhook.HookForm `json:"hook_form"`
 	Program  string               `json:"program"`
 	Func     string               `json:"func"`
 	Type     string               `json:"type"`
 	ProgID   uint32               `json:"prog_id"`
 	CtxType  string               `json:"ctx_type"`
+	HookForm syscallhook.HookForm `json:"hook_form"`
 	Hooks    []hookJSON           `json:"hooks"`
 	Skipped  []hookSiteJSON       `json:"skipped"`
 }

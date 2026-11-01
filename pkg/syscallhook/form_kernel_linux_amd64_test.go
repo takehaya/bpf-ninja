@@ -6,6 +6,8 @@ import (
 	"bytes"
 	"context"
 	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -19,11 +21,13 @@ import (
 func TestBpfAutoStatic(t *testing.T) {
 	testutil.SkipIfNotRoot(t)
 	t.Setenv("SYSCALLHOOK_INTEGRATION_CHILD", "hook-rdonly")
+	// The probe-unsupported case selects static hooks on every kernel.
+	unsupported := &ebpf.VerifierError{Cause: unix.EOPNOTSUPP, Log: []string{"arg#0 has unsupported set of tags"}}
 	for _, tc := range []struct {
-		name            string
-		dispatch, retry bool
+		name                 string
+		dispatch, rejectArgs bool
 	}{
-		{"typed", false, false}, {"dispatch", true, false}, {"inconclusive-probe", false, true},
+		{"read-only-untrusted", false, false}, {"dispatch", true, false}, {"probe-unsupported", false, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rule := testRule()
@@ -45,28 +49,33 @@ func TestBpfAutoStatic(t *testing.T) {
 			probeCalls := 0
 			probe := func() error {
 				probeCalls++
-				if tc.retry {
-					return unix.EPERM
+				if tc.rejectArgs {
+					return unsupported
 				}
 				return probeGlobalUntrusted()
 			}
-			code, err := run(ctx, []string{os.Args[0], "-test.run=^TestIntegrationLoader$", "-test.v"}, Options{
-				Rules: []Rule{rule}, FailClosed: true, Log: &logs,
+			// The loader's own test output must not reach the stdout that
+			// scripts/test/privileged.py audits.
+			out, err := os.Create(filepath.Join(t.TempDir(), "loader.out"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = out.Close() }()
+			code, err := run(ctx, []string{os.Args[0], "-test.run=^TestIntegrationLoader$"}, Options{
+				Rules: []Rule{rule}, FailClosed: true, Log: &logs, Stdout: out, Stderr: out,
 				OnInject: func(inj Injection) {
 					count++
 					t.Logf("form=%s reason=%s hooks=%+v", inj.HookForm.Form, inj.HookForm.Reason, inj.Hooks)
-					if want := os.Getenv("BPF_NINJA_EXPECT_HOOK_FORM"); want != "" && inj.HookForm.Form != want {
+					want := os.Getenv("BPF_NINJA_EXPECT_HOOK_FORM")
+					if tc.rejectArgs {
+						want = "static"
+					}
+					if want != "" && inj.HookForm.Form != want {
 						t.Errorf("form=%s, want %s", inj.HookForm.Form, want)
 					}
 					wantReason := "probe_arg_untrusted_supported"
 					if inj.HookForm.Form == "static" {
 						wantReason = "probe_arg_untrusted_unsupported"
-					}
-					if tc.retry {
-						wantReason = "probe_inconclusive"
-						if inj.HookForm.Form == "static" {
-							wantReason = "retry_arg_untrusted_rejected"
-						}
 					}
 					if inj.HookForm.Reason != wantReason {
 						t.Errorf("unexpected reason %+v", inj.HookForm)
@@ -98,9 +107,13 @@ func TestBpfAutoStatic(t *testing.T) {
 			if probeCalls != 1 {
 				t.Errorf("feature probe ran %d times", probeCalls)
 			}
-			t.Logf("supervisor:\n%s", &logs)
+			data, _ := os.ReadFile(out.Name())
+			t.Logf("supervisor:\n%sloader:\n%s", &logs, data)
 			if err != nil || code != 0 || count != 1 || len(links) != 1 {
 				t.Fatalf("code=%d err=%v injections=%d attaches=%d", code, err, count, len(links))
+			}
+			if !strings.Contains(string(data), "kernel hook=true, action=2") {
+				t.Fatal("loader did not report the injected hook")
 			}
 		})
 	}

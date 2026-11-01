@@ -94,14 +94,9 @@ schema ninja_recent_push 'value[0]'
 cap queue_scalar ninja_recent_push 443 --arg-filter 'value[0]=64'
 cap scalar_not_equal ninja_seen_peek 443 --arg-filter 'value[0]!=80' --arg-filter 'value[0]!=96'
 # A typed lookup miss hook has no value arg. Dispatch retains value=NULL.
-# Matrix kernels without arg:untrusted use static hooks. Context reads are
-# fault-handled only when a direct-load probe rejects this particular target.
-case "$(uname -r)" in
-  6.1.*|6.6.*|6.12.*|6.15.*)
-    start policies.o '[{"program":"entry","auto":true,"dispatch":true,"static_untrusted":true,"ops":["lookup:any"],"hook":"observe","stack_lowest_offset":-16}]' ;;
-  *)
-    start policies.o '[{"program":"entry","auto":true,"dispatch":true,"ops":["lookup:any"],"hook":"observe","stack_lowest_offset":-16}]' ;;
-esac
+# inject-run makes the hook static on kernels without arg:untrusted. Context
+# reads are fault-handled only when a direct-load probe rejects this target.
+start policies.o '[{"program":"entry","auto":true,"dispatch":true,"ops":["lookup:any"],"hook":"observe","stack_lowest_offset":-16}]'
 cap dispatch_null observe 22 --arg-filter 'value==null'
 cap dispatch_nonnull observe '80,443' --arg-filter 'value!=null'
 cap dispatch_null_exit observe 22 --mode exit --arg-filter 'value==null'

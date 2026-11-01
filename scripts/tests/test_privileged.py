@@ -119,6 +119,13 @@ class RunnerTests(unittest.TestCase):
             (passed + "    --- SKIP: TestIntegrationMapTypes/hook-map-types (0.00s)\n", 0, 1),
             ("--- PASS: TestBpfAutoStatic (0.01s)\n--- PASS: TestIntegrationLoader (0.01s)\n", 0, 1),
             (passed.replace("--- PASS: TestBpfAutoStatic (0.01s)\n", ""), 0, 1),
+            # A loader's echoed result inside another test is not the real test's.
+            ("=== RUN   TestBpfAutoStatic\n=== RUN   TestIntegrationLoader\n--- PASS: TestIntegrationLoader (0.01s)\n"
+             "    --- PASS: TestIntegrationLoader (0.01s)\n--- PASS: TestBpfAutoStatic (0.01s)\n"
+             "=== RUN   TestIntegrationMapTypes\n--- PASS: TestIntegrationMapTypes (0.01s)\n", 0, 1),
+            ("=== RUN   TestBpfAutoStatic\n=== RUN   TestBpfAutoStatic/dispatch\n    --- PASS: TestBpfAutoStatic/dispatch (0.01s)\n"
+             "--- PASS: TestBpfAutoStatic (0.01s)\n=== RUN   TestIntegrationMapTypes\n--- PASS: TestIntegrationMapTypes (0.01s)\n"
+             "=== RUN   TestIntegrationLoader\n--- PASS: TestIntegrationLoader (0.01s)\n", 0, 0),
             (passed, 1, 1),
             ("testing: warning: no tests to run\nPASS\n", 0, 1),
         ):

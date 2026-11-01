@@ -20,8 +20,9 @@ import (
 // rule without lookups.
 // CopyReadOnly passes stack copies of BPF_F_RDONLY_PROG map values to typed
 // hooks, and StaticUntrusted gives the hooks that would take arg:untrusted
-// pointers static linkage when true and global linkage when false. Nil probes
-// the running kernel once per Run (see inject.LookupRequest). Dispatch sends every
+// pointers static linkage (see inject.LookupRequest); without it, Run probes
+// the running kernel once and gives them static linkage only if the kernel
+// rejects arg:untrusted (see HookForm). Dispatch sends every
 // site to one hook named Hook (see inject.LookupRequest.Dispatch); a lookup or
 // tail-call site then needs a fourth spill slot in a frame that also calls the
 // hook, so stack_lowest_offset must be at least -448 unless the rule has only
@@ -44,7 +45,7 @@ type Rule struct {
 	Entry             bool     `json:"entry,omitempty"`
 	TailCalls         bool     `json:"tail_calls,omitempty"`
 	CopyReadOnly      bool     `json:"copy_read_only,omitempty"`
-	StaticUntrusted   *bool    `json:"static_untrusted,omitempty"`
+	StaticUntrusted   bool     `json:"static_untrusted,omitempty"`
 	Dispatch          bool     `json:"dispatch,omitempty"`
 	Ops               []string `json:"ops,omitempty"`
 	MapBTF            *MapBTF  `json:"map_btf,omitempty"`
@@ -81,7 +82,7 @@ func (r Rule) request() inject.LookupRequestRaw {
 		Entry:           r.Entry,
 		TailCalls:       r.TailCalls,
 		CopyReadOnly:    r.CopyReadOnly,
-		StaticUntrusted: r.StaticUntrusted != nil && *r.StaticUntrusted,
+		StaticUntrusted: r.StaticUntrusted,
 		Dispatch:        r.Dispatch,
 		Lookups:         ops.lookups,
 		Updates:         ops.updates,
