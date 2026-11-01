@@ -18,7 +18,9 @@ These features have been measured on kernels 6.1+ in our test matrix; distributi
 The common 5.8+ prerequisite alone does not provide this helper.
 
 Static XDP and tc capture use fault-handled context reads when the direct-read probe fails with a scalar context; static functions that accept direct reads keep them.
-Before taking that path, bpf-ninja checks the target's instructions: every call must pass the program's context as the first argument, held in a register or an 8-byte stack spill of the entry function, or the capture is refused, because a fault-handled read would accept any pointer as the context.
+Before taking that path, bpf-ninja checks the target's translated instructions: every call must come from the entry function and pass the program's context as the first argument, held in a register or an 8-byte stack spill, because a fault-handled read would accept any pointer as the context.
+The check refuses calls from a subprogram (tail-call hooks in subprograms included), uses of the function as a function pointer, indirect jumps, a context spill that a callee may overwrite, any helper call that gets a frame pointer once the entry references a callback, and programs over 32,767 instructions; capture at the caller or at a global function instead.
+It assumes that no extension later replaces a function the entry calls, which needs the same privileges as replacing the program.
 Static tc capture reads `sk_buff.data`, `len` and `data_len` through `bpf_probe_read_kernel`, with offsets resolved from kernel BTF, and captures only the linear head (`len - data_len`).
 A failed context read produces no capture.
 A filter with `--tc-vlan-reinsert` is refused on this path with `--tc-vlan-reinsert is not supported at static tc function "NAME"`.

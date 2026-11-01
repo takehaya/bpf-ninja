@@ -128,7 +128,7 @@ func TestBpfStaticTCCapture(t *testing.T) {
 	old := TCVlanReinsert
 	TCVlanReinsert = true
 	defer func() { TCVlanReinsert = old }()
-	for _, expr := range []string{"", "eth"} {
+	for _, expr := range []string{"", "eth/vlan[tci==100]/ipv4/tcp"} {
 		t.Run("vlan-reinsert/"+expr, func(t *testing.T) {
 			probe, err := LoadMultiPoint([]attach.Target{{Program: target, FuncName: "static_hook", Type: ebpf.SchedCLS}}, []Stage{{Expr: expr}}, nil, true, nil, EmitBoth)
 			if probe != nil {
@@ -167,14 +167,15 @@ int tc_ctx_only(struct __sk_buff *skb) {
 char _license[] SEC("license") = "GPL";
 `
 
-// clang drops the unused ctx and passes a stack pointer in R1, while BTF
-// still lists classify(skb, value).
+// Without KEEP, clang drops the unused ctx and passes a stack pointer in R1,
+// while BTF still lists classify(skb, value).
 const staticDeadCtxSource = `
 #include <linux/bpf.h>
 #include <bpf/bpf_helpers.h>
 volatile int g = 3;
 __attribute__((noinline))
 static int classify(CTX *ctx, int *value) {
+    KEEP
     return *value == 7 ? 2 : 0;
 }
 SEC(SECTION)
@@ -214,7 +215,8 @@ func TestBpfStaticContextArgument(t *testing.T) {
 		old := TCVlanReinsert
 		TCVlanReinsert = true
 		defer func() { TCVlanReinsert = old }()
-		for _, stages := range [][]Stage{{{Expr: "eth"}}, {{Expr: "eth", IsFexit: true}}, {{Expr: "eth"}, {Expr: "eth", IsFexit: true}}} {
+		vlan := "eth/vlan[tci==100]/ipv4/tcp"
+		for _, stages := range [][]Stage{{{Expr: vlan}}, {{Expr: vlan, IsFexit: true}}, {{Expr: vlan}, {Expr: vlan, IsFexit: true}}} {
 			p, err := LoadMultiPoint([]attach.Target{{Program: target, FuncName: "classify", Type: ebpf.SchedCLS}}, stages, nil, true, nil, EmitBoth)
 			if err != nil {
 				t.Fatal(err)
@@ -245,22 +247,26 @@ func TestBpfStaticContextArgument(t *testing.T) {
 		name, ctx, section string
 		typ                ebpf.ProgramType
 	}{{"tc", "struct __sk_buff", "tc", ebpf.SchedCLS}, {"xdp", "struct xdp_md", "xdp", ebpf.XDP}} {
-		t.Run(tc.name+" dead ctx is refused", func(t *testing.T) {
-			source := strings.NewReplacer("CTX", tc.ctx, "SECTION", `"`+tc.section+`"`).Replace(staticDeadCtxSource)
-			target := load(t, source, "dead_ctx")
-			h, _ := hook.ByProgramType(tc.typ)
-			if fallback, err := staticNeedsProbeRead(h, target, "classify", ebpf.AttachTraceFEntry, attach.FuncAvailability{}); err != nil || !fallback {
-				t.Fatalf("probe_read=%v err=%v", fallback, err)
-			}
-			p, err := LoadMultiPoint([]attach.Target{{Program: target, FuncName: "classify", Type: tc.typ}}, []Stage{{Expr: "eth"}}, nil, true, nil, EmitBoth)
-			if p != nil {
-				_ = p.Close()
-			}
-			if err == nil || !strings.Contains(err.Error(), "cannot show that every call passes the program context") {
-				t.Fatalf("load: %v", err)
-			}
-			t.Log(err)
-		})
+		for _, live := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s live ctx=%v", tc.name, live), func(t *testing.T) {
+				keep := map[bool]string{true: `asm volatile("" : : "r"(ctx));`}[live]
+				source := strings.NewReplacer("CTX", tc.ctx, "SECTION", `"`+tc.section+`"`, "KEEP", keep).Replace(staticDeadCtxSource)
+				target := load(t, source, "dead_ctx")
+				h, _ := hook.ByProgramType(tc.typ)
+				if fallback, err := staticNeedsProbeRead(h, target, "classify", ebpf.AttachTraceFEntry, attach.FuncAvailability{}); err != nil || !fallback {
+					t.Fatalf("probe_read=%v err=%v", fallback, err)
+				}
+				p, err := LoadMultiPoint([]attach.Target{{Program: target, FuncName: "classify", Type: tc.typ}}, []Stage{{Expr: "eth"}}, nil, true, nil, EmitBoth)
+				if p != nil {
+					_ = p.Close()
+				}
+				refused := err != nil && strings.Contains(err.Error(), "cannot show that every call passes the program context")
+				if refused == live || live && err != nil {
+					t.Fatalf("load: %v", err)
+				}
+				t.Log(err)
+			})
+		}
 	}
 }
 
@@ -319,7 +325,10 @@ char _license[] SEC("license") = "GPL";
 	defer coll.Close()
 	target := coll.Programs["p"]
 	fallback, err := staticNeedsProbeRead(tcTestHook, target, name, ebpf.AttachTraceFEntry, attach.FuncAvailability{})
-	if err != nil {
+	if err != nil || !fallback {
+		t.Fatalf("%s must take the probe-read path: probe_read=%v err=%v", name, fallback, err)
+	}
+	if err := checkStaticCtxArg(target, name); err != nil {
 		t.Fatal(err)
 	}
 	probe, err := LoadMultiPoint([]attach.Target{{Program: target, FuncName: name, Type: ebpf.SchedCLS}}, []Stage{{Expr: "eth"}}, nil, true, nil, EmitBoth)

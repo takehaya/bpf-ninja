@@ -1,8 +1,8 @@
 package program
 
 import (
-	"errors"
 	"fmt"
+	"math"
 	"slices"
 
 	"github.com/cilium/ebpf"
@@ -16,19 +16,20 @@ import (
 // unrelated kernel memory as packets.
 func checkStaticCtxArg(target *ebpf.Program, name string) error {
 	info, err := target.Info()
+	var insns asm.Instructions
 	if err == nil {
-		var insns asm.Instructions
-		if insns, err = info.Instructions(); err == nil && ctxReachesCalls(insns, name) {
-			return nil
-		}
+		insns, err = info.Instructions()
 	}
-	msg := fmt.Sprintf("static function %q: cannot show that every call passes the program context as its first argument, "+
-		"which a context read with bpf_probe_read_kernel relies on; only calls from the entry function, "+
-		"with the context in a register or an 8-byte stack spill, are accepted", name)
 	if err != nil {
-		return fmt.Errorf("%s (reading the target's instructions: %w)", msg, err)
+		return fmt.Errorf("static function %q: reading the target's translated instructions to check its context argument: %w; "+
+			"lower kernel.kptr_restrict or net.core.bpf_jit_harden, or capture at its caller or at a global function", name, err)
 	}
-	return errors.New(msg)
+	if !ctxReachesCalls(insns, name) {
+		return fmt.Errorf("static function %q: cannot show that every call passes the program context as its first argument, "+
+			"which a context read with bpf_probe_read_kernel relies on; only calls from the entry function, "+
+			"with the context in a register or an 8-byte stack spill, are accepted; capture at its caller or at a global function", name)
+	}
+	return nil
 }
 
 // What a register or 8-byte stack slot may hold: a value the verifier never
@@ -49,7 +50,7 @@ type ctxKind struct {
 type ctxState struct {
 	regs  [10]ctxKind
 	slots [64]ctxKind // fp-8 .. fp-512
-	floor int16       // lowest offset passed to a helper, which may keep an alias (local dynptr)
+	floor int16       // lowest offset passed to a helper, which may return an alias of it (a dynptr slice buffer)
 }
 
 func joinCtx(a, b ctxKind) ctxKind {
@@ -161,7 +162,7 @@ func (s *ctxState) step(ins asm.Instruction) {
 		}
 	case cls == asm.StClass && op.Mode() == asm.AtomicMode: // BPF_NOSPEC
 	case cls == asm.StClass || cls == asm.StXClass:
-		atomic := cls == asm.StXClass && op.Mode() == asm.AtomicMode
+		atomic := cls == asm.StXClass && op.Mode() != asm.MemMode // PROBE_ATOMIC too, in translated code
 		k := other
 		if atomic {
 			k = ctxKind{t: ctxAny}
@@ -170,9 +171,15 @@ func (s *ctxState) step(ins asm.Instruction) {
 		}
 		s.store(s.reg(ins.Dst), int(ins.Offset), int(op.Size().Sizeof()), k)
 		if atomic {
-			s.set(asm.R0, k)
-			s.set(ins.Src, k)
-			s.set(ins.Dst, k)
+			// cmpxchg writes R0, a fetch Src and load-acquire Dst; the old value
+			// can point into the frame only if the memory is the frame.
+			loaded := ctxKind{}
+			if s.reg(ins.Dst).t >= ctxFrame || s.reg(ins.Src).t >= ctxFrame {
+				loaded = ctxKind{t: ctxAny}
+			}
+			for _, r := range []asm.Register{asm.R0, ins.Src, ins.Dst} {
+				s.set(r, joinCtx(s.reg(r), loaded))
+			}
 		}
 	}
 }
@@ -180,7 +187,9 @@ func (s *ctxState) step(ins asm.Instruction) {
 // call applies a call's effect. A helper writes only forward of a frame
 // pointer it gets; a BPF function may write anywhere in the frame through
 // one unless it stores only to its own stack and calls nothing, and so may a
-// callback a helper runs.
+// callback a helper runs. shortcut: an extension that later replaces a
+// write-free callee is not modelled, since that needs the privileges to
+// replace the program itself; bound the write with the callee's BTF if not.
 func (s *ctxState) call(helper, writeFree, callbacks bool) {
 	exposed := false
 	for r := asm.R1; r <= asm.R5; r++ {
@@ -194,7 +203,6 @@ func (s *ctxState) call(helper, writeFree, callbacks bool) {
 			if k.t == ctxFrame {
 				lo = k.off
 			}
-			s.fill(int(lo), 0, ctxKind{})
 			s.floor = min(s.floor, lo)
 		}
 	}
@@ -204,6 +212,9 @@ func (s *ctxState) call(helper, writeFree, callbacks bool) {
 	}
 	for r := asm.R0; r <= asm.R5; r++ {
 		s.regs[r] = ctxKind{}
+	}
+	if exposed && !helper && !writeFree {
+		s.regs[asm.R0] = ctxKind{t: ctxAny} // may alias a caller buffer (a dynptr slice)
 	}
 }
 
@@ -231,8 +242,8 @@ func ctxReachesCalls(insns asm.Instructions, name string) bool {
 			}
 		}
 	}
-	if target <= 0 {
-		return false
+	if target <= 0 || insns.Size()/asm.InstructionSize > math.MaxInt16 {
+		return false // the dump keeps call offsets in 16 bits
 	}
 	end := func(pc int) int {
 		for _, s := range starts {
@@ -250,11 +261,8 @@ func ctxReachesCalls(insns asm.Instructions, name string) bool {
 			return -1
 		}
 		rel := int(ins.Offset)
-		switch {
-		case ins.IsLoadOfFunctionPointer(), ins.OpCode.Class() == asm.Jump32Class && ins.OpCode.JumpOp() == asm.Ja:
+		if ins.IsLoadOfFunctionPointer() || ins.OpCode.Class() == asm.Jump32Class && ins.OpCode.JumpOp() == asm.Ja {
 			rel = int(int32(ins.Constant))
-		case ins.IsFunctionCall() && rel == 0:
-			rel = int(ins.Constant) // see attach.analyzeXlated
 		}
 		return pc + 1 + rel
 	}
@@ -324,6 +332,8 @@ func ctxReachesCalls(insns asm.Instructions, name string) bool {
 					return false
 				}
 				s.call(callee < 0, callee >= 0 && writeFree(callee), callbacks)
+			case op.Class().IsJump() && op.JumpOp() == asm.Ja && op.Source() == asm.RegSource:
+				return false // gotox: jump-table targets are not followed
 			case op.Class().IsJump() && op.JumpOp() == asm.Exit:
 				succ = nil
 			case op.Class().IsJump():
