@@ -18,8 +18,9 @@ import (
 type mergeItem struct {
 	ts       time.Time
 	data     []byte
-	srcIface int // source-file interface index; mapped to the output by name (fexit)
-	idx      int // which shard reader to pull the next packet from
+	block    []byte // complete hook EPB, including options
+	srcIface int    // source-file interface index; mapped to the output by name (fexit)
+	idx      int    // which shard reader to pull the next packet from
 }
 
 // mergeHeap is a min-heap on packet timestamp.
@@ -69,6 +70,20 @@ func MergeOneTagShards(basePath string, numShards int, tag uint32, cfg Config) e
 // place. Shared by MergeShardFiles, the tag-split merge, and the `merge`
 // subcommand.
 func mergeFiles(inPaths []string, outPath string, cfg Config) error {
+	if len(cfg.Hooks) == 0 {
+		hooks, linkType, err := detectHookLayout(inPaths)
+		if err != nil {
+			return err
+		}
+		cfg.Hooks = hooks
+		if len(hooks) > 0 {
+			cfg.LinkType = linkType
+		}
+	}
+	if len(cfg.Hooks) > 0 {
+		return mergeHookFiles(inPaths, outPath, cfg)
+	}
+
 	// Inputs are re-read through gopacket, which drops EPB options, so
 	// a merged file never carries packet ids: use the plain layout.
 	cfg.MultiPoint = false

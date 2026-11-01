@@ -241,3 +241,15 @@ func TestParsePacketRejectsMalformedMetadata(t *testing.T) {
 		t.Fatal("unknown mode accepted")
 	}
 }
+
+func TestParseHookSite(t *testing.T) {
+	raw := make([]byte, MetadataSize+1)
+	raw[OffsetSiteID] = 255
+	binary.NativeEndian.PutUint16(raw[OffsetCapLen:], 1)
+	binary.NativeEndian.PutUint64(raw[OffsetPacketID:], 7)
+	raw[MetadataSize] = 42
+	p, err := ParseRawSample(raw)
+	if err != nil || p.SiteID != 255 || p.PacketID != 7 || len(p.Data) != 1 || p.Data[0] != 42 {
+		t.Fatalf("packet=%+v err=%v", p, err)
+	}
+}
