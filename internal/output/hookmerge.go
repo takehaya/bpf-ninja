@@ -152,22 +152,30 @@ func mergeHookFiles(paths []string, outPath string, cfg Config) (err error) {
 	if _, err := dest.Write(header.Bytes()); err != nil {
 		return err
 	}
+	// runIDs latches on the first EPB whether these shards carry epb_packetid;
+	// every later EPB must agree, so a file cannot mix the two shapes.
+	var runIDs *bool
 	next := func(i int) (mergeItem, error) {
 		b, err := readHookBlock(readers[i])
 		if err != nil {
 			return mergeItem{}, err
 		}
-		if binary.LittleEndian.Uint32(b) != blkEPB || len(b) < EPBSizeID(0) {
+		if binary.LittleEndian.Uint32(b) != blkEPB || len(b) < EPBSize(0) {
 			return mergeItem{}, fmt.Errorf("expected hook EPB")
 		}
 		iface := binary.LittleEndian.Uint32(b[8:])
 		caplen := int(binary.LittleEndian.Uint32(b[20:]))
-		if int(iface) >= len(cfg.Hooks) || caplen > 65535 || len(b) != EPBSizeID(caplen) {
+		if int(iface) >= len(cfg.Hooks) || caplen > 65535 || len(b) < EPBSize(caplen) {
 			return mergeItem{}, fmt.Errorf("invalid hook EPB interface or length")
 		}
-		opt := hookEPBHeaderSize + (caplen+3)&^3
-		if binary.LittleEndian.Uint16(b[opt:]) != epbOptPacketID || binary.LittleEndian.Uint16(b[opt+2:]) != 8 || binary.LittleEndian.Uint64(b[opt+4:]) == 0 || binary.LittleEndian.Uint32(b[opt+12:]) != 0 {
-			return mergeItem{}, fmt.Errorf("invalid hook packet id option")
+		hasID, err := checkHookOptions(b[hookEPBHeaderSize+(caplen+3)&^3 : len(b)-4])
+		if err != nil {
+			return mergeItem{}, err
+		}
+		if runIDs == nil {
+			runIDs = &hasID
+		} else if *runIDs != hasID {
+			return mergeItem{}, fmt.Errorf("hook EPB epb_packetid presence changes mid-stream")
 		}
 		ts := uint64(binary.LittleEndian.Uint32(b[12:]))<<32 | uint64(binary.LittleEndian.Uint32(b[16:]))
 		return mergeItem{ts: time.Unix(0, int64(ts)), block: b, idx: i}, nil
@@ -206,4 +214,61 @@ func mergeHookFiles(paths []string, outPath string, cfg Config) (err error) {
 	}
 	committed = true
 	return nil
+}
+
+// checkHookOptions parses the options WriteHookPacket writes — an optional
+// epb_packetid (nonzero), then an optional opt_comment (non-empty), ended by
+// opt_endofopt — and reports whether an epb_packetid was present. Each option
+// appears at most once and in that order; any other shape is an error naming
+// the offending option. An empty region means no options at all.
+func checkHookOptions(o []byte) (hasID bool, err error) {
+	if len(o) == 0 {
+		return false, nil
+	}
+	var sawComment, sawEnd bool
+	for pos := 0; pos < len(o); {
+		if len(o)-pos < 4 {
+			return false, fmt.Errorf("truncated hook EPB option header")
+		}
+		code, n := binary.LittleEndian.Uint16(o[pos:]), int(binary.LittleEndian.Uint16(o[pos+2:]))
+		pos += 4
+		if code == optEndOfOpt {
+			if n != 0 {
+				return false, fmt.Errorf("opt_endofopt has length %d", n)
+			}
+			sawEnd = true
+			break
+		}
+		if pos+n > len(o) {
+			return false, fmt.Errorf("hook EPB option %d overruns the block", code)
+		}
+		switch code {
+		case epbOptPacketID:
+			if hasID {
+				return false, fmt.Errorf("duplicate epb_packetid")
+			}
+			if sawComment {
+				return false, fmt.Errorf("epb_packetid after opt_comment")
+			}
+			if n != 8 || binary.LittleEndian.Uint64(o[pos:]) == 0 {
+				return false, fmt.Errorf("invalid epb_packetid")
+			}
+			hasID = true
+		case epbOptComment:
+			if sawComment {
+				return false, fmt.Errorf("duplicate opt_comment")
+			}
+			if n == 0 {
+				return false, fmt.Errorf("empty opt_comment")
+			}
+			sawComment = true
+		default:
+			return false, fmt.Errorf("unexpected hook EPB option %d", code)
+		}
+		pos += (n + 3) &^ 3
+	}
+	if !sawEnd {
+		return false, fmt.Errorf("hook EPB options missing opt_endofopt")
+	}
+	return hasID, nil
 }

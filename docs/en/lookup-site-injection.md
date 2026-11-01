@@ -326,6 +326,8 @@ A value of a map created with `BPF_F_RDONLY_PROG` fails the write check, and one
 The verifier does not check an untrusted argument at the call and reads it in the hook with fault-handled loads.
 The hook body reads through these pointers without comparing them with zero: an untrusted pointer is not nullable, and a pointer comparison would be rejected for loaders without `CAP_PERFMON`.
 An observer reads these arguments by the map's key and value sizes; the hook's BTF no longer carries their types.
+Every generated hook carries the func-level BTF decl tag `bpf-ninja:hook`, so an observer can tell it from an ordinary function with the same parameter names. To let an observer recover the sizes, the transform also attaches `bpf-ninja:key_size=N` and `bpf-ninja:value_size=N` (bytes) to an untyped per-map hook; the generic and dispatch hooks serve several maps and get no size tags, and a key or value gets a size tag only when every byte of its type is plain data (integers, enums, and arrays, structs and unions of those, without pointers or `bpf_*` structs other than the LPM trie key structs) or when the map gives that side no BTF, since other bytes can carry kernel pointers.
+These are plain decl tags that only `bpf-ninja` reads, not `arg:` tags the verifier interprets, so a kernel stores them without acting on them.
 Kernels without the `arg:untrusted` tag reject the transformed program.
 In the CI kernel matrix, 6.15 and older reject it and 6.18 and newer load it.
 With `LookupRequest.CopyReadOnly`, a `BPF_F_RDONLY_PROG` map keeps a typed hook instead, and `LookupHook.Copied` is set.

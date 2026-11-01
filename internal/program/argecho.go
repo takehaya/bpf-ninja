@@ -107,7 +107,7 @@ func buildArgEchoInsns(echoRingFD int, argFilters []filter.ArgFilter, params []a
 		asm.StoreMem(asm.R10, -48, asm.R1, asm.DWord),
 	}
 	// Optional gate: jumps to "exit" when the arg predicate doesn't match.
-	insns = append(insns, buildArgFilter(argFilters)...)
+	insns = append(insns, buildArgFilter(argFilters, nil)...)
 
 	// reserve(echoRing, len*8, 0); R0 = slot ptr (0 on failure).
 	insns = append(insns,

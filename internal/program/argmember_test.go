@@ -48,7 +48,7 @@ func TestIntegerArgFilterByteIdentical(t *testing.T) {
 		asm.JSLT.Imm(asm.R3, 1, "exit"),
 		asm.JSGT.Imm(asm.R3, 9, "exit"),
 	}
-	if got, want := marshalArgInsns(t, buildArgFilter(filters)), marshalArgInsns(t, before); !bytes.Equal(got, want) {
+	if got, want := marshalArgInsns(t, buildArgFilter(filters, nil)), marshalArgInsns(t, before); !bytes.Equal(got, want) {
 		t.Fatalf("integer bytecode changed:\ngot  %x\nwant %x", got, want)
 	}
 }
@@ -87,7 +87,7 @@ func TestMemberLoadCodegen(t *testing.T) {
 	insns := buildArgFilter([]filter.ArgFilter{
 		{ParamIndex: 1, ParamSize: 8, Deref: true},
 		{ParamIndex: 2, ParamSize: 4},
-	})
+	}, nil)
 	// The helper clobbers R2, so the subsequent ordinary arg needs a reload.
 	if insns[18] != asm.LoadMem(asm.R2, asm.R10, -48, asm.DWord) {
 		t.Fatalf("args pointer not restored: %v", insns)
@@ -103,7 +103,7 @@ func TestEchoMemberRecordLimit(t *testing.T) {
 
 func TestPointerNullAndNotEqualCodegen(t *testing.T) {
 	for _, op := range []filter.ArgFilterOp{filter.OpEqual, filter.OpNotEqual} {
-		insns := buildArgFilter([]filter.ArgFilter{{ParamIndex: 2, ParamSize: 8, Pointer: true, Op: op}})
+		insns := buildArgFilter([]filter.ArgFilter{{ParamIndex: 2, ParamSize: 8, Pointer: true, Op: op}}, nil)
 		calls := 0
 		for _, in := range insns {
 			if in == asm.FnProbeReadKernel.Call() {
@@ -126,7 +126,7 @@ func TestPointerNullAndNotEqualCodegen(t *testing.T) {
 		marshalArgInsns(t, insns)
 	}
 	// Wide != uses a register operand, just as wide equality does.
-	insns := buildArgFilter([]filter.ArgFilter{{ParamIndex: 1, ParamSize: 8, Op: filter.OpNotEqual, Value: 1 << 40}})
+	insns := buildArgFilter([]filter.ArgFilter{{ParamIndex: 1, ParamSize: 8, Op: filter.OpNotEqual, Value: 1 << 40}}, nil)
 	if insns[len(insns)-1].OpCode != asm.JEq.Op(asm.RegSource) {
 		t.Fatalf("wide !=: %v", insns)
 	}

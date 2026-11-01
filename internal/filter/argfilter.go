@@ -34,6 +34,9 @@ type ArgFilter struct {
 	Op         ArgFilterOp // Comparison operator
 	Value      uint64      // Value for exact/comparison (or min for range)
 	MaxValue   uint64      // Max value for range operator
+	// ThroughOpaque marks a member path through a bpf_* struct, which a
+	// recording capture does not record (see attach.FuncParamInfo).
+	ThroughOpaque bool
 }
 
 // String returns a human-readable representation of the filter.
@@ -235,16 +238,17 @@ func ParseAndValidateFilters(exprs []string, params []attach.FuncParamInfo) ([]A
 		}
 
 		filters = append(filters, ArgFilter{
-			ParamName:  pf.ParamName,
-			Pointer:    pf.Null,
-			ParamIndex: param.Index,
-			ParamSize:  param.Size,
-			Signed:     param.Signed,
-			Deref:      param.Deref,
-			Offset:     param.Offset,
-			Op:         pf.Op,
-			Value:      pf.Value,
-			MaxValue:   pf.MaxValue,
+			ParamName:     pf.ParamName,
+			Pointer:       pf.Null,
+			ParamIndex:    param.Index,
+			ParamSize:     param.Size,
+			Signed:        param.Signed,
+			Deref:         param.Deref,
+			Offset:        param.Offset,
+			ThroughOpaque: param.ThroughOpaque,
+			Op:            pf.Op,
+			Value:         pf.Value,
+			MaxValue:      pf.MaxValue,
 		})
 	}
 

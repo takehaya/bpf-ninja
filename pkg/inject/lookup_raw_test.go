@@ -203,8 +203,23 @@ func assertRawDeclarationTags(t *testing.T, original []byte, got *LookupResultRa
 		return counts
 	}
 	before, after := rawBTFRecords(t, original), rawBTFRecords(t, got.BTFBytes)
-	if !reflect.DeepEqual(tags(before), tags(after)) {
-		t.Fatalf("raw DECL_TAG multiset changed: want %v, got %v", tags(before), tags(after))
+	// Every generated hook adds exactly one HookTag on itself; the original
+	// tags must survive unchanged.
+	afterTags := tags(after)
+	seen := map[btf.TypeID]bool{}
+	for _, hook := range got.Hooks {
+		if seen[hook.TypeID] {
+			continue
+		}
+		seen[hook.TypeID] = true
+		key := tag{uint32(hook.TypeID), -1, HookTag, false}
+		if afterTags[key] != 1 {
+			t.Fatalf("hook %s (ID %d) has %d %s tags", hook.Name, hook.TypeID, afterTags[key], HookTag)
+		}
+		delete(afterTags, key)
+	}
+	if !reflect.DeepEqual(tags(before), afterTags) {
+		t.Fatalf("raw DECL_TAG multiset changed: want %v, got %v", tags(before), afterTags)
 	}
 	for _, r := range before {
 		if r.kind != 17 {

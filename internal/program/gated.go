@@ -219,7 +219,7 @@ func buildGatedEntryInsns(h *hook.Hook, filterOut codegen.Output, tf filter.Targ
 		asm.StoreMem(asm.R8, holdDepth, asm.R2, asm.Word),
 		asm.Mov.Reg(asm.R1, asm.R6),
 	)
-	gate, err := buildFilterGate(h, filterOut, tf, scratchFD, slots, pktRefs, false, 0)
+	gate, err := buildFilterGate(h, filterOut, tf, scratchFD, slots, pktRefs, false, 0, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -375,7 +375,7 @@ func buildGatedExitInsns(h *hook.Hook, filterOut codegen.Output, tf filter.Targe
 		asm.JNE.Reg(asm.R1, asm.R2, "hold_unpaired"), // written by another invocation: count and drop it
 	)
 
-	body, err := buildFilterBody(h, filterOut, tf, scratchFD, slots, pktRefs)
+	body, err := buildFilterBody(h, filterOut, tf, scratchFD, slots, pktRefs, nil)
 	if err != nil {
 		return nil, err
 	}

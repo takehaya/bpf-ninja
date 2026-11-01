@@ -27,6 +27,9 @@ type Target struct {
 	Params              []FuncParamInfo
 	Availability        FuncAvailability
 	AllowDispatcherSlot bool
+	// Generated is set when the function carries inject-run's hook decl tag
+	// (hookabi.HookTag): a generated observation hook, not just named like one.
+	Generated bool
 }
 
 // CloseTargets closes the programs of all targets. Each program handle is
@@ -105,6 +108,7 @@ func ResolveTargets(infos []*ProgInfo, funcNames []string, allowDispatcherSlot b
 				diagnostics = append(diagnostics, d)
 			}
 			var params []FuncParamInfo
+			var generated bool
 			if len(funcNames) > 0 || info.Type == ebpf.Extension {
 				spec, err := info.BTFSpecCached()
 				if err != nil {
@@ -114,9 +118,11 @@ func ResolveTargets(infos []*ProgInfo, funcNames []string, allowDispatcherSlot b
 				if err != nil {
 					return nil, diagnostics, fmt.Errorf("program (id=%d) func %s: %w", info.ProgID, fn, err)
 				}
+				generated = IsGeneratedHook(spec, fn)
 			}
 			target := Target{Program: info.Program, ProgID: info.ProgID, FuncName: fn,
-				Type: info.Type, HookType: info.HookType, Params: params, AllowDispatcherSlot: allowDispatcherSlot, Availability: a}
+				Type: info.Type, HookType: info.HookType, Params: params, AllowDispatcherSlot: allowDispatcherSlot, Availability: a,
+				Generated: generated}
 			target.HookType = target.EffectiveHookType()
 			targets = append(targets, target)
 		}

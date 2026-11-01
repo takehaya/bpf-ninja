@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/cilium/ebpf/btf"
+	"github.com/takehaya/bpf-ninja/internal/hookabi"
 )
 
 func memberTestParams(t *testing.T) []FuncParamInfo {
@@ -106,6 +107,36 @@ func TestResolveArgMember(t *testing.T) {
 	}
 }
 
+// A member path through a bpf_* struct resolves as before but is marked
+// ThroughOpaque, also when an anonymous bpf_* member promotes it; the LPM
+// key structs are not opaque.
+func TestResolveArgMarksBPFStructs(t *testing.T) {
+	u32, u64 := &btf.Int{Name: "__u32", Size: 4}, &btf.Int{Name: "__u64", Size: 8}
+	work := &btf.Struct{Name: "bpf_task_work", Size: 8, Members: []btf.Member{{Name: "__opaque", Type: u64}}}
+	hdr := &btf.Struct{Name: "bpf_lpm_trie_key_hdr", Size: 4, Members: []btf.Member{{Name: "prefixlen", Type: u32}}}
+	value := &btf.Struct{Name: "v", Size: 24, Members: []btf.Member{
+		{Name: "rc", Type: u32}, {Name: "hdr", Type: hdr, Offset: 32}, {Name: "tw", Type: work, Offset: 64},
+		{Type: work, Offset: 128}}} // anonymous: promotes __opaque at offset 16
+	ptr := func(t btf.Type) btf.Type { return &btf.Pointer{Target: &btf.Const{Type: t}} }
+	params := []FuncParamInfo{
+		{Name: "value", Index: 1, Size: 8, Kind: "ptr-struct", Type: ptr(value)},
+		{Name: "w", Index: 2, Size: 8, Kind: "ptr-struct", Type: ptr(work)},
+	}
+	for _, c := range []struct {
+		expr    string
+		offset  uint32
+		through bool
+	}{
+		{"value->rc", 0, false}, {"value->hdr.prefixlen", 4, false},
+		{"value->tw.__opaque", 8, true}, {"value->__opaque", 16, true}, {"w->__opaque", 0, true},
+	} {
+		got, err := ResolveArg(c.expr, params)
+		if err != nil || got.Offset != c.offset || got.ThroughOpaque != c.through {
+			t.Errorf("%s: %+v %v, want offset %d through %v", c.expr, got, err, c.offset, c.through)
+		}
+	}
+}
+
 func TestResolveEchoMembers(t *testing.T) {
 	params := memberTestParams(t)
 	got, err := ResolveEchoArgs(nil, params)
@@ -172,5 +203,64 @@ func TestScalarPointerDiscovery(t *testing.T) {
 	}
 	if _, err := ResolveArg("opaque[0]", params); err == nil || err.Error() != `"opaque[0]": final member must be an integer or enum, got void` {
 		t.Fatalf("void pointee diagnostic: %v", err)
+	}
+}
+
+// buildSpec marshals one FUNC with a void* value parameter and loads it back,
+// the way inject-run's BTF reaches the capture.
+// buildSpec round-trips one func named rec_hook per tag list.
+func buildSpec(t *testing.T, tags ...[]string) *btf.Spec {
+	t.Helper()
+	proto := &btf.FuncProto{Return: &btf.Int{Name: "int", Size: 4, Encoding: btf.Signed}, Params: []btf.FuncParam{
+		{Name: "ctx", Type: &btf.Pointer{Target: &btf.Struct{Name: "xdp_md", Size: 4, Members: []btf.Member{{Name: "data", Type: &btf.Int{Name: "u32", Size: 4}}}}}},
+		{Name: "value", Type: &btf.Pointer{Target: &btf.Const{Type: &btf.Void{}}}},
+	}}
+	var fns []btf.Type
+	for _, tg := range tags {
+		fns = append(fns, &btf.Func{Name: "rec_hook", Linkage: btf.StaticFunc, Type: proto, Tags: tg})
+	}
+	b, err := btf.NewBuilder(fns, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := b.Marshal(nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec, err := btf.LoadSpecFromReader(bytes.NewReader(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return spec
+}
+
+// IsGeneratedHook and the void size are read from a round-tripped BTF spec;
+// an untagged function is not generated, and its size tags are ignored.
+func TestGeneratedHookRoundTrip(t *testing.T) {
+	tagged := buildSpec(t, []string{hookabi.HookTag, "bpf-ninja:value_size=16"})
+	if !IsGeneratedHook(tagged, "rec_hook") {
+		t.Fatal("tagged func not recognised as generated")
+	}
+	params, err := GetFuncParamsFromSpec(tagged, "rec_hook")
+	if err != nil || len(params) != 1 || params[0].Name != "value" || params[0].VoidSize != 16 {
+		t.Fatalf("params %+v %v", params, err)
+	}
+	// Same tags, but without the hook tag: not generated, size ignored.
+	untagged := buildSpec(t, []string{"bpf-ninja:value_size=16"})
+	if IsGeneratedHook(untagged, "rec_hook") {
+		t.Fatal("untagged func recognised as generated")
+	}
+	params, err = GetFuncParamsFromSpec(untagged, "rec_hook")
+	if err != nil || params[0].VoidSize != 0 {
+		t.Fatalf("size honoured without the hook tag: %+v %v", params, err)
+	}
+	// Two funcs share the name (static functions of two objects): the name
+	// does not say which is the target, so neither counts as generated.
+	dup := buildSpec(t, []string{"bpf-ninja:value_size=16"}, []string{hookabi.HookTag, "bpf-ninja:value_size=16"})
+	if IsGeneratedHook(dup, "rec_hook") {
+		t.Fatal("ambiguous name recognised as generated")
+	}
+	if params, err := GetFuncParamsFromSpec(dup, "rec_hook"); err == nil {
+		t.Fatalf("ambiguous name resolved: %+v", params)
 	}
 }

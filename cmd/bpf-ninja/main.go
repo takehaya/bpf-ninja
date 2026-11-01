@@ -27,6 +27,7 @@ import (
 	"github.com/takehaya/bpf-ninja/internal/hook"
 	"github.com/takehaya/bpf-ninja/internal/output"
 	"github.com/takehaya/bpf-ninja/internal/program"
+	"github.com/takehaya/bpf-ninja/internal/record"
 	"github.com/takehaya/bpf-ninja/internal/setmap"
 )
 
@@ -245,6 +246,14 @@ func rootFlags() []cli.Flag {
 			Name:  "latency-sample-output",
 			Value: "",
 			Usage: "tsv path to dump latency samples (one int64 ns per line). Empty = print summary (p50/p90/p99/p99.9/p99.99/max) to stderr",
+		},
+		&cli.StringFlag{
+			Name: "record", Value: string(record.ModeFilter),
+			Usage: "at an injected hook, write decision state as each packet's pcapng comment: filter (the arguments and members --arg-filter and --set keys read), entry (site, status, key and value bytes) or none. The default records only at hooks inject-run generated (which carry its bpf-ninja:hook BTF tag); an explicit value records at every --func target",
+		},
+		&cli.IntFlag{
+			Name: "record-max", Value: record.DefaultMaxBytes,
+			Usage: fmt.Sprintf("with --record entry, record at most N bytes each of the key and the value (0..%d)", record.MaxBytesLimit),
 		},
 	}
 }
@@ -537,6 +546,10 @@ func run(ctx context.Context, cmd *cli.Command) error {
 	if cmd.IsSet("emit") && len(modes) < 2 {
 		return fmt.Errorf("--emit only applies with two --mode (entry + exit); a single --mode always emits its own records")
 	}
+	rec, err := parseRecordFlags(cmd)
+	if err != nil {
+		return err
+	}
 	if cmd.Bool("rx-hwts") {
 		if !isXDPNative {
 			return fmt.Errorf("--rx-hwts requires --mode xdp (kfunc only available on XDP-native)")
@@ -556,6 +569,9 @@ func run(ctx context.Context, cmd *cli.Command) error {
 	}
 
 	if scope := cmd.String("dump-asm"); scope != "" {
+		if err := rec.unsupported("--dump-asm"); err != nil {
+			return err
+		}
 		if len(modes) > 1 {
 			return fmt.Errorf("--dump-asm renders one capture point; pass a single --mode")
 		}
@@ -568,6 +584,9 @@ func run(ctx context.Context, cmd *cli.Command) error {
 	}
 
 	if isXDPNative {
+		if err := rec.unsupported("--mode xdp"); err != nil {
+			return err
+		}
 		return runXDPNative(cmd)
 	}
 
@@ -782,6 +801,9 @@ func run(ctx context.Context, cmd *cli.Command) error {
 	// interleaved output would be ambiguous, so require exactly one; set
 	// references are not supported on this path in v1.
 	if cmd.Bool("arg-echo") {
+		if err := rec.unsupported("--arg-echo"); err != nil {
+			return err
+		}
 		if len(targets) != 1 {
 			return fmt.Errorf("--arg-echo supports exactly one (program, func) target; %d resolved", len(targets))
 		}
@@ -842,7 +864,24 @@ func run(ctx context.Context, cmd *cli.Command) error {
 		}
 		logVerbose(cmd, "gated capture: entry AND exit, emit=%s", cmd.String("emit"))
 	}
-	probe, err := program.LoadMultiPoint(targets, stages, filters, useDSL, sets, emit)
+	if multiPoint {
+		if err := rec.unsupported("a gated (entry + exit) capture"); err != nil {
+			return err
+		}
+	}
+	if cmd.Bool("raw-dump") {
+		if err := rec.unsupported("--raw-dump"); err != nil {
+			return err
+		}
+	}
+	layouts, err := rec.layouts(targets, filters)
+	if err != nil {
+		return err
+	}
+	for _, m := range rec.omitted(targets, filters) {
+		logVerbose(cmd, "%s", m)
+	}
+	probe, err := program.LoadMultiPointRecord(targets, stages, filters, useDSL, sets, emit, layouts)
 	if err != nil {
 		return err
 	}
@@ -873,6 +912,14 @@ func run(ctx context.Context, cmd *cli.Command) error {
 		cfg.Actions = []output.ActionName{{Value: 0, Name: "return:0x00000000"}}
 	}
 	cfg.MultiPoint = multiPoint
+	if layouts != nil {
+		recordOutput(&cfg, targets, layouts, isFexit)
+		for i, l := range layouts {
+			if l != nil {
+				logVerbose(cmd, "record %s at %s (id=%d)", l.Mode, targets[i].FuncName, targets[i].ProgID)
+			}
+		}
+	}
 	return runCaptureLoop(cmd, probe, cfg, fmt.Sprintf("%s, mode=%s", label, mode), sets)
 }
 
@@ -1208,16 +1255,11 @@ func captureLoopSharded(cmd *cli.Command, inners []*ebpf.Map, cfg output.Config,
 	return pumpShards(cmd, inners, label, writeShard, caps, sets, nil, ctl)
 }
 
-// epbBytes sums the on-disk pcap-ng size of a batch as the given writer
-// emits it (the multi-point layout carries an epb_packetid option per
-// block; the gopacket / fexit layout differs by a few option bytes per
-// block — the caps are batch-granular anyway).
-func epbBytes(w *output.Writer, pkts []capture.Packet) uint64 {
-	var n uint64
-	for i := range pkts {
-		n += uint64(w.EPBSize(len(pkts[i].Data)))
-	}
-	return n
+// epbBytes is the on-disk pcap-ng size the writer emitted for the batch it
+// last wrote; the writer counts it as it writes, so a record comment is
+// rendered once.
+func epbBytes(w *output.Writer, _ []capture.Packet) uint64 {
+	return w.LastBatchBytes()
 }
 
 // captureLoopShardedSplit is the --split-by-tag path: each shard writes a

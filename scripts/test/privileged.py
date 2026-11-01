@@ -37,6 +37,13 @@ def allowed_skip(package, test, output, kernel):
             "TestBpfQueueOpsInner", "TestBpfReadOnlyArg", "TestBpfReadOnlyArgShapes", "TestBpfReadOnlyArgCalls",
             "TestBpfReadOnlyKconfigArg",
         } and "kernel lacks arg:untrusted" in output
+    # The record tests at untrusted and non-static dispatch hooks need
+    # arg:untrusted, which 6.15 and older reject; the static dispatch case
+    # (TestBpfRecordDispatchStatic) must pass on every kernel.
+    if package == PROGRAM and kernel in {"6.1", "6.6", "6.12", "6.15"} and test in {
+        "TestBpfRecordUntrustedHook", "TestBpfRecordDispatchHook",
+    }:
+        return "kernel lacks arg:untrusted" in output
     if package != PROGRAM:
         return False
     unsupported_tc = {

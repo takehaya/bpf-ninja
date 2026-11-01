@@ -198,6 +198,13 @@ A scalar pointer named like the field binds to its `[0]` value.
 Multiple matching members are an error; use an explicit mapping to choose one.
 Nested members need an explicit path, and `@NAME` always names the set itself.
 
+## Record the values with each packet
+
+At a generated hook, the capture writes the values these filters and set keys read as each packet's pcapng comment, such as `value->action=2 key->dport=443`.
+`--record entry` writes the hook's whole key and value instead, and `--record none` turns it off; see the [walkthrough](inject-walkthrough.md#record-the-decision-state-with-each-packet).
+`filter` records the value each field's conditions tested, read once as the filter ran, so the recorded value satisfies them; `entry` reads the key and value at the hook.
+A filter or set key on a member inside a `bpf_*` struct other than the LPM trie key structs, such as `tuple->ipv4.dport` in `struct bpf_sock_tuple`, still filters as usual but is not recorded: by default the comment leaves it out and `-v` names it, and an explicit `--record filter` refuses it.
+
 ## How BTF resolution and reads work
 
 bpf-ninja reads the target program's BTF and locates the selected function's prototype.
