@@ -20,7 +20,9 @@ import (
 // rule without lookups.
 // CopyReadOnly passes stack copies of BPF_F_RDONLY_PROG map values to typed
 // hooks, and StaticUntrusted gives the hooks that would take arg:untrusted
-// pointers static linkage (see inject.LookupRequest). Dispatch sends every
+// pointers static linkage (see inject.LookupRequest); without it, Run probes
+// the running kernel once and gives them static linkage only if the kernel
+// rejects arg:untrusted (see HookForm). Dispatch sends every
 // site to one hook named Hook (see inject.LookupRequest.Dispatch); a lookup or
 // tail-call site then needs a fourth spill slot in a frame that also calls the
 // hook, so stack_lowest_offset must be at least -448 unless the rule has only

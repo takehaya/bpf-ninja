@@ -27,8 +27,8 @@ The two negative captures must time out with empty pcaps.
 The loader supplies an empty BTF key type to the walkthrough queue map so the
 kernel retains its scalar value type; without a key type, map creation retries
 without BTF and inject-run only sees opaque bytes.
-On the 6.1, 6.6, 6.12 and 6.15 matrix kernels, dispatch uses `static_untrusted`
-because they reject `arg:untrusted`.
+On the 6.1, 6.6, 6.12 and 6.15 matrix kernels, inject-run selects a static
+dispatch hook because they reject `arg:untrusted`.
 A small, unattached load probe checks the target's direct XDP context reads.
 Only targets rejected with a scalar context use the fault-handled kernel-read
 helper; static helpers that accept direct reads keep their original bytecode.

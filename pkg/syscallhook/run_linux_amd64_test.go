@@ -69,10 +69,11 @@ func TestHookSummary(t *testing.T) {
 
 // The hint names copy_read_only only for an untrusted hook on a read-only
 // map whose rule may set it (not a dispatch rule), and fires only for an untrusted hook and an errno the kernels without
-// arg:untrusted return.
+// arg:untrusted return, after an inconclusive probe.
 func TestUntrustedHint(t *testing.T) {
+	inconclusive := HookForm{"global", "probe_inconclusive"}
 	hint := func(err error, hooks ...inject.LookupHook) string {
-		return untrustedHint(&inject.LookupResultRaw{Hooks: hooks}, err)
+		return untrustedHint(inconclusive, &inject.LookupResultRaw{Hooks: hooks}, err)
 	}
 	readOnly := inject.LookupHook{Name: "a", Kind: inject.HookLookup, Untrusted: true, ReadOnly: true}
 	writeOnly := inject.LookupHook{Name: "b", Kind: inject.HookLookup, Untrusted: true}
@@ -97,6 +98,9 @@ func TestUntrustedHint(t *testing.T) {
 		"E2BIG":  hint(unix.E2BIG, readOnly),
 		"static": hint(unix.EINVAL, inject.LookupHook{Name: "a", Kind: inject.HookLookup, Static: true, ReadOnly: true}),
 		"typed":  hint(unix.EINVAL, inject.LookupHook{Name: "a", Kind: inject.HookLookup}),
+		// The probe already showed whether the kernel accepts the tag.
+		"supported":   untrustedHint(HookForm{"global", "probe_arg_untrusted_supported"}, &inject.LookupResultRaw{Hooks: []inject.LookupHook{readOnly}}, unix.EINVAL),
+		"unsupported": untrustedHint(HookForm{"static", "probe_arg_untrusted_unsupported"}, &inject.LookupResultRaw{Hooks: []inject.LookupHook{readOnly}}, unix.EINVAL),
 	} {
 		if h != "" {
 			t.Fatalf("%s hint not empty: %q", name, h)

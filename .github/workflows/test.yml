@@ -107,7 +107,10 @@ jobs:
 
       - name: Privileged supervisor integration tests (no skips)
         shell: sudo bash -e {0}
-        run: env SYSCALLHOOK_MAP_TYPES_ELF=./program.o /usr/bin/python3 scripts/test/privileged.py --syscallhook-binary ./syscallhook.test
+        # The runner kernel accepts arg:untrusted, so the real probe must pick global hooks.
+        run: >-
+          env SYSCALLHOOK_MAP_TYPES_ELF=./program.o BPF_NINJA_EXPECT_HOOK_FORM=global
+          /usr/bin/python3 scripts/test/privileged.py --syscallhook-binary ./syscallhook.test
 
       - name: Load inject observer examples
         run: sudo ./examples/inject-observers/verify.sh --load-only

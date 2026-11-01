@@ -71,7 +71,16 @@ With `ops`, a rule observes only the ops it lists, so `"ops": ["update"]` leaves
 Either can be combined with a lookup rule, or used without `map` or `auto` to instrument no lookup.
 `"copy_read_only": true` passes a stack copy of a `BPF_F_RDONLY_PROG` map's value to a typed hook instead of an `arg:untrusted` one, so kernels that reject `arg:untrusted` (6.15 and older in the CI matrix) load it; see [lookup-site-injection.md](lookup-site-injection.md#supported-sites-and-trust-boundary).
 `"dispatch": true` sends every instrumented site, lookups, the entry and failed tail calls, to one hook named `hook` with the generic signature, so one observer attach sees them all; it needs `stack_lowest_offset` of at least -448 (with only `entry`, -472 as without `dispatch`) and cannot be combined with `copy_read_only` ([lookup-site-injection.md](lookup-site-injection.md#one-dispatch-hook)).
-`"static_untrusted": true` makes every hook that would take `arg:untrusted` pointers, the generic hook included, a static function instead, which those kernels also load; an observer then reads all of its arguments as `u64` values (same section).
+When `static_untrusted` is omitted or false, inject-run probes the running kernel once per invocation by loading a minimal XDP program with a global subprogram taking an `arg:untrusted` pointer.
+It uses global hooks when that load succeeds, and static hooks when the verifier reports an unsupported pointer tag or an unsized `UNKNOWN` reference argument.
+This tests the ABI rather than a kernel version, so backports are handled without a version table.
+`"static_untrusted": true` forces static hooks.
+The choice applies only to hooks that would take untrusted pointers, including the generic and dispatch hooks.
+An observer at a static hook reads every argument, including ctx, as a `u64` address and uses `bpf_probe_read_kernel` for memory reads (same section).
+Ordinary typed hooks remain global.
+With `copy_read_only`, eligible read-only values still use copied typed hooks; only the remaining untrusted hooks follow the choice.
+The existing prohibition on combining `copy_read_only` and `dispatch` still applies.
+A permission, resource or other inconclusive probe failure is logged and keeps the global form; if the kernel then rejects the global hooks, the load fails as described in [Failure behavior](#failure-behavior).
 See [lookup-site-injection.md](lookup-site-injection.md#entry-and-tail-call-hooks), including why any hook in a program that uses `bpf_tail_call` needs the JIT on a supported architecture; without it the transformed load fails and the original program is loaded (or refused with `--fail-closed`).
 
 ```json
@@ -178,6 +187,7 @@ If a rewrite fails, the launcher reports it on stderr, keeps running the target,
       "type": "XDP",
       "prog_id": 2,
       "ctx_type": "xdp_md",
+      "hook_form": {"form": "global", "reason": "probe_arg_untrusted_supported"},
       "hooks": [
         {
           "name": "lookup_hook_sessions",
@@ -203,6 +213,11 @@ Each entry of `programs` is one injected load, in load order, so a program loade
 `program` is the kernel program name, `func` the entry function, `type` the program type as cilium/ebpf names it (`XDP`, `SchedCLS`, `SchedACT`), and `prog_id` the kernel ID of the loaded program, which an fentry observer can open with `BPF_PROG_GET_FD_BY_ID`.
 `prog_id` is 0 if the launcher could not query it; the diagnostic then says why.
 `ctx_type` is the BTF struct the hooks' `ctx` argument points to: `xdp_md` or `__sk_buff`.
+
+`hook_form.form` is `global` or `static`: the selected policy for hooks that would take untrusted pointers, even if this program needs only ordinary typed hooks.
+`hook_form.reason` is `probe_arg_untrusted_supported`, `probe_arg_untrusted_unsupported`, `probe_inconclusive`, or `config_static_untrusted_true`.
+The per-hook `static`, `untrusted` and `copied` fields report the actual emitted form.
+The same choice and reason appear in the diagnostic log.
 
 Each hook is one function in the loaded program:
 
@@ -355,7 +370,8 @@ If the transformed load has already been attempted, the supervisor retries the o
 It reports `injected hook` only after the transformed load returns a nonnegative program fd.
 The diagnostic names each hook with its map and site PCs, followed by any lookups that `auto` skipped and why.
 When the transformed load is rejected, the diagnostic also names the hooks it attempted.
-If any used `arg:untrusted` pointers and the kernel returned `EINVAL`, `EOPNOTSUPP` or `EACCES` (6.1 and 6.6 reject the tag with `EINVAL`, 6.12 and 6.15 with `EOPNOTSUPP`), it suggests `"static_untrusted": true`, and `"copy_read_only": true` as well when one of them is a read-only map's hook, to load on kernels that reject the tag (6.15 and older in the CI matrix).
+A rejected load is not retried with another hook form.
+After an inconclusive probe, if any hook used `arg:untrusted` pointers and the kernel returned `EINVAL`, `EOPNOTSUPP` or `EACCES` (6.1 and 6.6 reject the tag with `EINVAL`, 6.12 and 6.15 with `EOPNOTSUPP`), it suggests `"static_untrusted": true`, and `"copy_read_only": true` as well when one of them is a read-only map's hook, to load on kernels that reject the tag (6.15 and older in the CI matrix).
 A successful target exit alone does not prove injection; inspect the diagnostic or loaded program metadata.
 
 `--fail-closed` returns `EPERM` when a matched program cannot be injected.
@@ -390,7 +406,7 @@ Cancellation, SIGINT, and SIGTERM also kill the launched process; graceful signa
   Nonzero kernel-side CO-RE records, fd arrays, token/signature inputs, and unknown extensions are refused.
   TODO: normalize larger known metadata records, relocate all offset-bearing fields, and resolve indexed map references before accepting those formats.
 - **Coverage:** the tested case uses a Go loader, one hash map with BTF, one XDP entry function, and one lookup.
-  No C/libbpf integration fixture, production UPF deployment, fentry observer attachment, throughput evaluation, or alternate architecture has been validated here.
+  No C/libbpf integration fixture, production UPF deployment, fentry observer beyond the empty one `TestBpfAutoStatic` attaches, throughput evaluation, or alternate architecture has been validated here.
   Observers can be attached separately; automatic observer attachment is outside this launcher.
 
 ## Tests
@@ -400,7 +416,11 @@ The integration test is guarded by the `integration` build tag and a root check.
 It launches the same Go loader both directly and under the supervisor, verifies kernel function metadata, and executes the loaded XDP program using `BPF_PROG_TEST_RUN`.
 It covers kernel-name and function-name selection, fail-open, fail-closed, and unmatched loads.
 It also checks that the launcher reports each successful injection, and only those, with the program ID the loader sees, that `maps` instruments the named map and refuses an unknown one, and that discovery reports the loader's lookup, among its map calls, with and without a rule; `--hooks-json` and `--lookups-json` are covered by unit tests of the JSON shape and of the file they write.
-It never attaches to an interface, pins objects, or changes sysctls, routes, or firewall rules.
+`TestBpfAutoStatic`, under the same integration tag, leaves `static_untrusted` unset on a read-only map lookup and a dispatch rule, checks the selected form and reason, and loads and attaches an fentry observer to the injected hook.
+A third case replaces the probe result with an unsupported-tag rejection, so static hooks are selected and attached on every kernel.
+With `BPF_NINJA_EXPECT_HOOK_FORM` set to `global` or `static`, the real probe's choice must match it; CI sets `global` for its runner kernel.
+The loader runs without `-test.v`, and the audit ignores result lines of tests nested inside another test.
+The tests never attach to an interface, pin objects, or change sysctls, routes, or firewall rules.
 
 ```sh
 go build ./...
@@ -408,6 +428,7 @@ go vet ./...
 go test ./...
 go test -count=50 -timeout 60s ./pkg/syscallhook
 sudo -E env PATH=$PATH go test -tags integration -run '^TestIntegrationLoader$' -v -timeout 90s ./pkg/syscallhook
+sudo -E env PATH=$PATH go test -tags integration -run '^TestBpfAutoStatic$' -v -timeout 90s ./pkg/syscallhook
 ```
 
 The privileged test fails on missing BPF capabilities even if uid is zero; it does not disguise a failed injection as a skip.
