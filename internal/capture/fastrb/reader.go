@@ -119,8 +119,19 @@ func (r *Reader) Close() error {
 	return errors.Join(errs...)
 }
 
+// AddWake adds fd to the epoll set, so making fd readable (an eventfd
+// write) also ends WaitForData.
+func (r *Reader) AddWake(fd int) error {
+	ev := unix.EpollEvent{Events: unix.EPOLLIN, Fd: int32(fd)}
+	if err := unix.EpollCtl(r.epollFD, unix.EPOLL_CTL_ADD, fd, &ev); err != nil {
+		return fmt.Errorf("epoll_ctl ADD wake fd: %w", err)
+	}
+	return nil
+}
+
 // WaitForData blocks until the kernel signals new data on the
-// underlying map FD, or timeoutMs elapses (-1 = no timeout).
+// underlying map FD, an AddWake fd becomes readable, or timeoutMs
+// elapses (-1 = no timeout).
 // Returns the number of fds ready (0 on timeout, 1 on data, or an
 // error). The caller should ReadBatch immediately after a successful
 // wake.

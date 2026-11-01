@@ -425,6 +425,7 @@ func run(ctx context.Context, cmd *cli.Command) error {
 			return fmt.Errorf("--no-wakeup requires --fast-reader (the slow ringbuf path would hang without wakeups)")
 		}
 		program.RingbufSubmitFlags = program.BPF_RB_NO_WAKEUP
+		capture.NoWakeup = true
 	}
 	if mib := cmd.Int("in-memory-buffer"); mib > 0 {
 		if !cmd.Bool("raw-dump") {

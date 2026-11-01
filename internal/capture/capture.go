@@ -45,10 +45,14 @@ var SplitCoreRX int
 // wrote. Set via --no-cpu-affinity for diagnostic use.
 var DisableCPUAffinity bool
 
-// shardPollTimeoutMs caps how long the fast-reader's epoll_wait
-// blocks before the shard goroutine re-checks the stop channel.
-// On the hot path EpollWait returns immediately (data is ready);
-// the timeout only bounds shutdown latency under idle traffic.
+// NoWakeup, when true, means producers submit with BPF_RB_NO_WAKEUP, so
+// the kernel never signals the fast reader. Set via --no-wakeup.
+var NoWakeup bool
+
+// shardPollTimeoutMs caps how long the fast-reader's epoll_wait blocks
+// under NoWakeup, where polling is the only way to see new records.
+// Otherwise a shard blocks until the kernel signals data or stop
+// writes the wake eventfd.
 const shardPollTimeoutMs = 1
 
 // LatencySamplePeriod, when > 0, makes the fast-reader sample every
@@ -627,8 +631,32 @@ func (r *FastShardedReader) run(sink RawShardSink, flush func(int) error) (func(
 		_ = r.Close()
 		return nil, err
 	}
+	// One eventfd in every shard's epoll set lets stop wake a blocked shard.
+	wake, err := unix.Eventfd(0, unix.EFD_CLOEXEC)
+	if err != nil {
+		_ = r.Close()
+		return nil, fmt.Errorf("eventfd: %w", err)
+	}
+	for _, rr := range r.readers {
+		if err := rr.AddWake(wake); err != nil {
+			_ = unix.Close(wake)
+			_ = r.Close()
+			return nil, err
+		}
+	}
 	r.session = newShardSession(r.cursors)
 	s := r.session
+	s.wake = func() {
+		_, err := unix.Write(wake, binary.NativeEndian.AppendUint64(nil, 1))
+		s.fail(err)
+	}
+	s.closeWake = func() error { return unix.Close(wake) }
+	// Blocking is safe: the kernel signals a submit the reader has caught up
+	// to, and level-triggered epoll re-checks the ring after every data wake.
+	timeout := -1
+	if NoWakeup {
+		timeout = shardPollTimeoutMs
+	}
 	if LatencySamplePeriod > 0 {
 		LatencySamples = make([][]int64, len(r.readers))
 	}
@@ -650,7 +678,7 @@ func (r *FastShardedReader) run(sink RawShardSink, flush func(int) error) (func(
 			for {
 				draining := s.stopping()
 				if !draining && !BusyPoll {
-					if _, err := rr.WaitForData(shardPollTimeoutMs); err != nil {
+					if _, err := rr.WaitForData(timeout); err != nil {
 						s.fail(err)
 						return
 					}
