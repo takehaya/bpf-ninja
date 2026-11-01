@@ -38,12 +38,13 @@ type Hook struct {
 
 	// PacketPrologue emits the tracing-program prelude that loads the
 	// packet window from the target's context. Contract on exit:
-	// R6=ctx, R7=data, R8=data_end, R9=pkt_len, stack[-48]=args ptr.
-	// The filter body leaves R6..R9 untouched. R8 is never read after
-	// the prologue on the tracing path (filters scan a scratch copy
-	// bounded by R9), so capture epilogues may reuse it. A prologue may
-	// clobber R0-R5 and jump to the caller's "exit" label; the static
-	// context fallbacks in internal/program also use stack -160..-145.
+	// R6=ctx, R7=data, R8=orig_len (the whole packet's length; R9 may
+	// stop at the linear head), R9=pkt_len, stack[-48]=args ptr.
+	// The filter body leaves R6..R9 untouched (kunai never writes
+	// R6-R8), so R8 carries orig_len to the capture epilogue; no stack
+	// slot outlives the filter. A prologue may clobber R0-R5 and jump to
+	// the caller's "exit" label; the static context fallbacks in
+	// internal/program also use stack -160..-145.
 	PacketPrologue func() (asm.Instructions, error)
 
 	// OuterVlanTag, when set, emits instructions that load the outer VLAN

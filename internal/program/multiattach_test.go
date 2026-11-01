@@ -8,6 +8,7 @@ import (
 	"github.com/cilium/ebpf"
 
 	"github.com/takehaya/bpf-ninja/internal/attach"
+	"github.com/takehaya/bpf-ninja/internal/capture"
 	"github.com/takehaya/bpf-ninja/internal/capture/fastrb"
 	"github.com/takehaya/bpf-ninja/internal/testutil"
 )
@@ -121,6 +122,12 @@ func drainMarkers(t *testing.T, probe *Probe, wantMarkers int) map[byte]int {
 			rd.ReadBatch(func(rec []byte) {
 				if len(rec) > metadataSize { // metadata + at least 1 payload byte
 					markers[rec[metadataSize]]++
+					// Test-run frames are linear, so a record the snaplen did not
+					// cut (caplen below the slot's payload room) is the whole packet.
+					caplen, orig := capture.RecordCapLen(rec), capture.RecordOrigLen(rec)
+					if orig < uint32(caplen) || int(caplen) < len(rec)-metadataSize && orig != uint32(caplen) {
+						t.Errorf("record %#x: orig_len %d, caplen %d", rec[metadataSize], orig, caplen)
+					}
 				}
 			})
 		}

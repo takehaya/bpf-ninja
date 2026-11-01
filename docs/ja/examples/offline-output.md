@@ -17,7 +17,8 @@ tcpdump -n -r converted.pcapng
 ```
 
 - `convert` は処理した件数を stderr に表示します。
-- 入力は raw V2 形式です。V1 形式の raw は拒否されます。V1 は、それを作成した版の bpf-ninja で変換してください。
+- 入力は raw V3 形式です。0.26 から 0.32 が書いた V2 形式も読めますが、V2 は元のパケット長を持たないため、元の長さは captured length と同じ値になります。
+- V1 形式の raw は拒否されます。V1 は 0.25 以前の bpf-ninja で変換してください。
 - pcap-ng の `.cpuN` shard は raw ではないため、`convert` には渡せません。
 
 ## tag shard を合算する

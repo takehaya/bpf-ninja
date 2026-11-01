@@ -39,7 +39,7 @@ func writeShardFile(t *testing.T, path string, base time.Time, secs []int) {
 	for _, s := range secs {
 		frame := make([]byte, 20)
 		frame[0] = byte(s) // tag the frame so we can check ordering
-		if err := w.Write(capture.Packet{Timestamp: base.Add(time.Duration(s) * time.Second), Data: frame}); err != nil {
+		if err := w.Write(capture.Packet{Timestamp: base.Add(time.Duration(s) * time.Second), Data: frame, OrigLen: uint32(1000 + s)}); err != nil {
 			t.Fatalf("Write: %v", err)
 		}
 	}
@@ -77,11 +77,14 @@ func TestMergeShardFiles(t *testing.T) {
 
 	var order []int
 	for {
-		data, _, err := r.ReadPacketData()
+		data, ci, err := r.ReadPacketData()
 		if err != nil {
 			break
 		}
 		order = append(order, int(data[0]))
+		if ci.Length != 1000+int(data[0]) {
+			t.Errorf("packet %d: original length %d, want %d", data[0], ci.Length, 1000+int(data[0]))
+		}
 	}
 
 	want := []int{1, 2, 3, 4, 5}

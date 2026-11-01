@@ -83,7 +83,10 @@ func testPackets() []capture.Packet {
 		}
 		return capture.Packet{Timestamp: base.Add(time.Duration(i) * 137 * time.Nanosecond), Data: data, CapLen: uint16(n)}
 	}
-	return []capture.Packet{mk(0, 64), mk(1, 65), mk(2, 128), mk(3, 1), mk(4, 1500), mk(5, 60)}
+	pkts := []capture.Packet{mk(0, 64), mk(1, 65), mk(2, 128), mk(3, 1), mk(4, 1500), mk(5, 60)}
+	pkts[2].OrigLen = 1500 // cut by the snaplen
+	pkts[5].OrigLen = 10   // below the captured length: written as 60
+	return pkts
 }
 
 // readbackPackets reads every packet from a pcap-ng file. Only a clean EOF
@@ -111,7 +114,7 @@ func readbackPackets(t *testing.T, path string) []capture.Packet {
 		}
 		cp := make([]byte, len(data))
 		copy(cp, data)
-		out = append(out, capture.Packet{Timestamp: ci.Timestamp, Data: cp})
+		out = append(out, capture.Packet{Timestamp: ci.Timestamp, Data: cp, OrigLen: uint32(ci.Length)})
 	}
 }
 
@@ -142,6 +145,47 @@ func TestFastNgWriterEquivalent(t *testing.T) {
 		if !bytes.Equal(fast[i].Data, std[i].Data) {
 			t.Fatalf("packet %d: data mismatch (fast %d vs std %d bytes)", i, len(fast[i].Data), len(std[i].Data))
 		}
+		if want := max(pkts[i].OrigLen, uint32(len(pkts[i].Data))); fast[i].OrigLen != want || std[i].OrigLen != want {
+			t.Fatalf("packet %d: original length fast=%d std=%d, want %d", i, fast[i].OrigLen, std[i].OrigLen, want)
+		}
+	}
+}
+
+// TestEPBOriginalLength writes a 128-byte cut of a 1500-byte packet with
+// each EPB writer and reads the EPB back: captured length 128, original
+// length 1500. An original length below the captured length (or 0, a
+// record without the field) is written as the captured length.
+func TestEPBOriginalLength(t *testing.T) {
+	data := make([]byte, 128)
+	writers := map[string]func(*FastNgWriter, uint32) error{
+		"plain": func(fw *FastNgWriter, n uint32) error { return fw.WritePacket(time.Unix(1, 0), data, n) },
+		"id":    func(fw *FastNgWriter, n uint32) error { return fw.WritePacketID(time.Unix(1, 0), data, n, 0, 7) },
+		"hook": func(fw *FastNgWriter, n uint32) error {
+			return fw.WriteHookPacket(time.Unix(1, 0), data, n, 0, 7, []byte("filter[a]=1"))
+		},
+	}
+	for name, write := range writers {
+		for orig, want := range map[uint32]int{1500: 1500, 129: 129, 128: 128, 127: 128, 0: 128, 64: 128, 1 << 20: 1 << 20} {
+			var buf bytes.Buffer
+			fw, err := NewFastNgWriter(&buf, layers.LinkTypeEthernet)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := write(fw, orig); err != nil {
+				t.Fatalf("%s: %v", name, err)
+			}
+			r, err := pcapgo.NewNgReader(&buf, pcapgo.DefaultNgReaderOptions)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, ci, err := r.ReadPacketData()
+			if err != nil {
+				t.Fatalf("%s: %v", name, err)
+			}
+			if ci.CaptureLength != len(data) || ci.Length != want {
+				t.Errorf("%s orig=%d: captured %d original %d, want %d and %d", name, orig, ci.CaptureLength, ci.Length, len(data), want)
+			}
+		}
 	}
 }
 
@@ -157,7 +201,7 @@ func TestEPBSizeMatchesWritePacket(t *testing.T) {
 	ts := time.Unix(1700000000, 123456789)
 	for caplen := 0; caplen <= 7; caplen++ {
 		before := buf.Len()
-		if err := fw.WritePacket(ts, make([]byte, caplen)); err != nil {
+		if err := fw.WritePacket(ts, make([]byte, caplen), 0); err != nil {
 			t.Fatalf("WritePacket(caplen=%d): %v", caplen, err)
 		}
 		if got, want := buf.Len()-before, EPBSize(caplen); got != want {

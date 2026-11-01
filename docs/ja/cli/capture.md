@@ -148,7 +148,8 @@ sudo bpf-ninja -i eth0 --mode entry "eth/ipv4/udp[dport==6081]" \
 - 標準出力への stream と、CPU ごとの shard (`-w path.pcap` の `path.pcap.cpuN`) では、各 record に `epb_packetid` option が付きます。
   値は `CPU 番号 << 48 | その CPU で入口の条件に一致した通し番号` です。同じ実行の入口と出口の record には同じ値が入ります。
   kernel のアドレスは含まれません。
-- raw-dump (`--raw-dump`) の record metadata は 28 byte で、offset 20 に packet id が入ります (形式 V2)。
+- raw-dump (`--raw-dump`) の record metadata は 32 byte で、offset 20 に packet id、offset 28 に元のパケット長が入ります (形式 V3)。
+  0.26 から 0.32 が書いた V2 の dump (28 byte で元の長さを持たない) も `convert` で読めます。その元の長さは captured length と同じ値になります。
   V1 の dump は `convert` で読み込めません。
 - 停止時に合算した `path.pcap`、`merge` した pcap-ng、`convert` で raw-dump から作成した pcap-ng には `epb_packetid` は入りません。
   入口と出口の対応づけが必要なときは、標準出力への stream、CPU ごとの shard、raw-dump のいずれかを使ってください。

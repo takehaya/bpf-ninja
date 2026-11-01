@@ -513,7 +513,7 @@ DSL output が既存の runFilter wrapper にどう乗るかを説明します�
 | R2 | filter result (out: 1==accept / 0==reject) |
 | R3 / R5 | 自由に clobber 可 (working)。ただし R5 は alt-diverged dispatch (P3-12) で `matchedAltReg` に流用される。alternation は match した member の番号を stack plan の matched-member slot に書き、次の layer の dispatch がそれを R5 に読み直して per-alt に分岐する (member の body が bpf_loop を呼んでも、後ろがもう 1 つの alternation でも値が残る)。 |
 | R4 | offsetBase: 現 layer の scratch buffer 内開始位置 (codegen 専用) |
-| R6-R8 | host 占有 (callee-saved from kunai's view、kunai は読み書き禁忌)。bpf-ninja wrapper では xdp_buff / data / data_end を保持。注: filter 後に走る `captureWithXdpOutput` (`internal/program/program.go`) が R6 を使うので、kunai が clobber すると capture 出力先 ctx が壊れる |
+| R6-R8 | host 占有 (callee-saved from kunai's view、kunai は読み書き禁忌)。bpf-ninja wrapper では ctx / data / orig_len (snaplen で切る前のパケット長) を保持し、R8 の orig_len は filter を越えて capture の metadata に書く。main stream が R6-R9 に書かないことは `pkg/kunai/dsltest` の `TestGolden` が golden corpus 全体で検査する。注: filter 後に走る `captureWithXdpOutput` (`internal/program/program.go`) が R6 を使うので、kunai が clobber すると capture 出力先 ctx が壊れる |
 | R9 | packet length (in: wrapper が事前計算)。read-only: filter 後に `captureWithXdpOutput` が `Mov R3, R9` で `MaxCapLen` を計算するパスがある (per-CPU map にコピーする bytes 長)。kunai が R9 に書くと capture 長が silent truncation する。`TestZeroCapsIsHostAgnostic` が R6-R8 / shallow stack を pin する一方、R9 への write も同じ違反として扱う必要がある (Int<128> dual-half compare で見落とした履歴あり、commit `b6d5e7f` 後に修正) |
 | R10 | stack pointer |
 
@@ -603,7 +603,7 @@ eBPF の LDX は x86 上で little-endian で読みます。packet bytes は net
 
 ### 4.10 キャプチャレコードのメタデータ
 
-`captureWithRingbuf` と `captureXDPNative` は ringbuf スロットの先頭に 28 バイトのメタデータヘッダを置き、その後ろにパケット本体を続けます。正典は `internal/capture/capture.go` のコメントで、capture 側の `MetadataSize` と program 側の `metadataSize` は `TestMetadataSizeMatchesCapture` が同期を保証します。
+`captureWithRingbuf` と `captureXDPNative` は ringbuf スロットの先頭に 32 バイトのメタデータヘッダを置き、その後ろにパケット本体を続けます。正典は `internal/capture/capture.go` のコメントで、capture 側の `MetadataSize` と program 側の `metadataSize` は `TestMetadataSizeMatchesCapture` が同期を保証します。
 
 レイアウトは次のとおりです。全フィールドはホストエンディアンで、BPF の store がネイティブエンディアンで書くため、ユーザー空間は `binary.NativeEndian` で読みます。
 
@@ -616,6 +616,7 @@ eBPF の LDX は x86 上で little-endian で読みます。packet bytes は net
 | 14 | 2 | caplen | コピー済みパケット長 |
 | 16 | 4 | tag | マッチした set エントリの value。set 未マッチや set 無しのときは 0 |
 | 20 | 8 | packet_id | gated entry/exit の対応 ID。それ以外は 0 |
+| 28 | 4 | orig_len | snaplen で切る前のパケット長。pcap-ng の Original Packet Length になる |
 
 tag は set lookup がヒットしたときに host スタックの専用スロット経由で書きます。複数の set をまたぐときはソース順で最後にマッチした set の value が入ります。value 幅が 8 バイトのときは下位 32 ビットだけを載せます。この tag を使ってパケットを set の value ごとに別々の pcap へ振り分ける機能が CLI の `--split-by-tag` で、詳細は [`dsl-usage.md`](./dsl-usage.md) を参照してください。
 

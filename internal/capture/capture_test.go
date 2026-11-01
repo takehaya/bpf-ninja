@@ -7,7 +7,7 @@ import (
 )
 
 func TestParsePacket(t *testing.T) {
-	// metadata (28B): kernel_ts=12345, action=2 (PASS), mode=1 (exit), pad=0, caplen=4, tag=7, packet id
+	// metadata (32B): kernel_ts=12345, action=2 (PASS), mode=1 (exit), pad=0, caplen=4, tag=7, packet id, orig_len
 	pktData := []byte{0xde, 0xad, 0xbe, 0xef}
 
 	raw := make([]byte, MetadataSize+len(pktData))
@@ -18,6 +18,7 @@ func TestParsePacket(t *testing.T) {
 	binary.NativeEndian.PutUint16(raw[14:16], uint16(len(pktData))) // caplen
 	binary.NativeEndian.PutUint32(raw[16:20], 7)                    // tag
 	binary.NativeEndian.PutUint64(raw[20:28], 3<<48|42)             // packet id (cpu 3, seq 42)
+	binary.NativeEndian.PutUint32(raw[28:32], 1500)                 // orig_len
 	copy(raw[MetadataSize:], pktData)
 
 	pkt, err := ParseRawSample(raw)
@@ -36,6 +37,9 @@ func TestParsePacket(t *testing.T) {
 	}
 	if pkt.CapLen != uint16(len(pktData)) {
 		t.Errorf("CapLen = %d, want %d", pkt.CapLen, len(pktData))
+	}
+	if pkt.OrigLen != 1500 {
+		t.Errorf("OrigLen = %d, want 1500", pkt.OrigLen)
 	}
 	if pkt.PacketID != 3<<48|42 {
 		t.Errorf("PacketID = %#x, want %#x", pkt.PacketID, uint64(3<<48|42))

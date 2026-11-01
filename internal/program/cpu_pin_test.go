@@ -161,6 +161,9 @@ func collectShards(t *testing.T, inners []*ebpf.Map) func() map[int][]capture.Pa
 		mu.Lock()
 		defer mu.Unlock()
 		for _, p := range pkts {
+			if p.OrigLen < uint32(p.CapLen) {
+				t.Errorf("shard %d: orig_len %d below caplen %d", shardIdx, p.OrigLen, p.CapLen)
+			}
 			p.Data = append([]byte(nil), p.Data...) // ring memory is reused after the sink returns
 			got[shardIdx] = append(got[shardIdx], p)
 		}

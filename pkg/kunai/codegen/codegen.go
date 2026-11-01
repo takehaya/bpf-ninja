@@ -42,11 +42,13 @@
 //     (bpf_loop ctx) belong to codegen. See KunaiStackTop's docblock
 //     for the full layout.
 //
-//   - Untouched: R6, R7, R8 are callee-saved from kunai's
-//     perspective. The host typically uses them to hold
-//     attach-point-specific pointers (e.g. xdp_buff / data /
-//     data_end). The main stream preserves them. TLV callbacks may use
-//     R6/R7 locally; the BPF call ABI preserves the caller's values.
+//   - Untouched: R6-R9 are callee-saved from kunai's perspective.
+//     The host uses them for attach-point values (ctx, data, data_end
+//     or bpf-ninja's orig_len, the packet length). The main stream never
+//     writes them and calls no BPF function; TestGolden in
+//     pkg/kunai/dsltest checks this over the golden corpus. TLV
+//     callbacks may use R6/R7 locally; the BPF call ABI preserves the
+//     caller's values.
 //
 // # Action atoms (host capability)
 //

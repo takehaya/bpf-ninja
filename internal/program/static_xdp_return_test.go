@@ -6,6 +6,7 @@ import (
 
 	"github.com/cilium/ebpf"
 	"github.com/takehaya/bpf-ninja/internal/attach"
+	"github.com/takehaya/bpf-ninja/internal/capture"
 	"github.com/takehaya/bpf-ninja/internal/capture/fastrb"
 	"github.com/takehaya/bpf-ninja/internal/testutil"
 )
@@ -86,6 +87,9 @@ func TestBpfStaticXDPReturnAction(t *testing.T) {
 						modes[rec[12]]++
 						if action := binary.NativeEndian.Uint32(rec[8:12]); action != 2 {
 							t.Errorf("mode=%d action=%d, want hook return XDP_PASS (2)", rec[12], action)
+						}
+						if orig := capture.RecordOrigLen(rec); orig != 64 {
+							t.Errorf("mode=%d orig_len=%d, want 64", rec[12], orig)
 						}
 					})
 					_ = rd.Close()

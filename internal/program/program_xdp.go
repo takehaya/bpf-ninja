@@ -224,7 +224,7 @@ func runFilterDirect(filter asm.Instructions) asm.Instructions {
 // tells userspace how many of the trailing payload bytes are real.
 // XDP-native always reports action = XDP_PASS (= 2) and mode = 2.
 //
-// Metadata layout matches capture.MetadataSize (28 B) — see
+// Metadata layout matches capture.MetadataSize (32 B) — see
 // internal/capture/capture.go for the wire format.
 //
 // Local stack slots used here (R10 negative offsets):
@@ -281,10 +281,9 @@ func captureXDPNative(eventsFD int, maxCapLen int, statsFD int) asm.Instructions
 
 	insns = append(insns, asm.Instructions{
 		// --- copy_size = min(pkt_len, maxCapLen) → metadata caplen ---
-		// pkt_len here is the LINEAR-region length (R9 = data_end -
-		// data); multi-buff frag total is not accessible without a
-		// working bpf_xdp_get_buff_len kfunc invocation, deferred as
-		// future work.
+		// pkt_len is R9 = data_end - data. The program is loaded without
+		// BPF_F_XDP_HAS_FRAGS, so the frame has no frags and that is its
+		// whole length (orig_len below).
 		asm.Mov.Reg(asm.R3, asm.R9),
 		asm.JLE.Imm(asm.R3, int32(maxCapLen), "xn_cap_ok"),
 		asm.Mov.Imm(asm.R3, int32(maxCapLen)),
@@ -302,9 +301,12 @@ func captureXDPNative(eventsFD int, maxCapLen int, statsFD int) asm.Instructions
 		// 8-byte StoreImm (the immediate is 32-bit).
 		asm.StoreImm(asm.R0, 20, 0, asm.Word),
 		asm.StoreImm(asm.R0, 24, 0, asm.Word),
+		// orig_len slot[28..32]: the program is loaded without frags,
+		// so the linear length is the whole frame.
+		asm.StoreMem(asm.R0, 28, asm.R9, asm.Word),
 
-		// --- bpf_xdp_load_bytes(ctx, 0, R0+28, copy_size) ---
-		// XDP-aware bounded read; dst = slot + metadataSize (= 28).
+		// --- bpf_xdp_load_bytes(ctx, 0, R0+metadataSize, copy_size) ---
+		// XDP-aware bounded read; dst = slot + metadataSize.
 		// Helper requires Linux 5.18+, which our verifier matrix
 		// (6.1+) satisfies.
 		//
@@ -318,7 +320,7 @@ func captureXDPNative(eventsFD int, maxCapLen int, statsFD int) asm.Instructions
 		asm.Mov.Reg(asm.R1, asm.R6),                                           // ctx
 		asm.Mov.Imm(asm.R2, 0),                                                // offset
 		asm.Mov.Reg(asm.R4, asm.R3),                                           // copy_size (umin=1)
-		asm.Mov.Reg(asm.R3, asm.R0), asm.Add.Imm(asm.R3, int32(metadataSize)), // dst = slot+28
+		asm.Mov.Reg(asm.R3, asm.R0), asm.Add.Imm(asm.R3, int32(metadataSize)), // dst = slot+metadataSize
 		asm.FnXdpLoadBytes.Call(),
 		asm.JNE.Imm(asm.R0, 0, "rb_copy_fail"),
 

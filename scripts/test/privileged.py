@@ -61,7 +61,8 @@ def allowed_skip(package, test, output, kernel):
         return "neither tcx nor clsact" in output
     if kernel == "6.1" and test in {
         "TestBpfEntryWithDSLFilterNetfilter", "TestBpfExitWithDSLFilterNetfilter",
-        "TestBpfFexitReturnLayoutNetfilter", "TestBpfMultiPointLoad/netfilter-entry"
+        "TestBpfFexitReturnLayoutNetfilter", "TestBpfMultiPointLoad/netfilter-entry",
+        "TestBpfOrigLen/netfilter-fentry",
     }:
         return "BPF_PROG_TYPE_NETFILTER not supported" in output
     return False

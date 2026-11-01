@@ -53,9 +53,11 @@ import (
 // of the whole chain. Attaching to a tail-call *target* fires neither
 // probe (its prologue is skipped), so no hold is written there either.
 //
-// Both programs keep the hold pointer in R8 for their whole body: the
-// prologue's data_end is never read on the tracing path (see
-// hook.PacketPrologue), and R8 is callee-saved across helper calls.
+// Both programs keep the hold pointer in R8 once they have it, so the
+// orig_len the prologue leaves in R8 (see hook.PacketPrologue) moves out
+// first: the fentry parks it at gatedOrigLenStash after its filter and
+// copies it into the hold; the fexit stores it at holdExitLen before R8
+// takes the hold. R8 is callee-saved across helper calls.
 //
 // Hold slot layout (per-CPU array, holdSlots entries, index = depth):
 //
@@ -68,10 +70,13 @@ import (
 //	24  u64 seq      this invocation's packet sequence; (cpu << 48 | seq)
 //	                 is the opaque packet id both records carry
 //	32  u32 copy_error  entry snapshot error, checked after exit selection
-//	36  u32 padding
+//	36  u32 orig_len    packet length at entry (the entry record's orig_len)
 //	40  u64 inv      number of the invocation whose fentry wrote the hold
 //	48  u32 depth    slot 0 only: invocations on this CPU between their
 //	                 fentry and fexit
+//	52  u32 exit_orig_len  packet length at exit, written and read by one
+//	                 fexit run (the exit record's orig_len); like the entry
+//	                 fields, a gated target nesting on the same CPU may reuse it
 //	56  u64 next_seq slot 0 only: per-CPU count of matched entries
 //	64  u64 next_inv slot 0 only: per-CPU count of fentries
 //	72  u64 enter_j[maxHoldSlots]    slot 0 only: jiffies at each depth's fentry
@@ -120,14 +125,22 @@ const (
 	holdTag     = 20
 	holdSeq     = 24
 	holdCopyErr = 32
+	holdOrigLen = 36
 	holdInv     = 40                          // invocation number of the fentry that wrote the hold
 	holdDepth   = 48                          // slot 0 only
+	holdExitLen = 52                          // the fexit's own orig_len
 	holdNextSeq = 56                          // slot 0 only
 	holdNextInv = 64                          // slot 0 only
 	holdEnterJ  = 72                          // slot 0 only: u64 jiffies at each depth's fentry
 	holdEnterI  = holdEnterJ + 8*maxHoldSlots // slot 0 only: u64 invocation number at each depth
 	holdHdr     = holdEnterI + 8*maxHoldSlots
 )
+
+// gatedOrigLenStash keeps the fentry's orig_len from its filter to the
+// hold write. Only that stretch of fixed code runs in between (map
+// lookups keyed at -16, counters, the identity read at -128..-144), and
+// the filter's own stack (kunai, set keys) is dead by then.
+const gatedOrigLenStash = -72
 
 // maxHoldSlots bounds holdSlots (the slot-0 header has one entry time
 // per depth).
@@ -224,6 +237,7 @@ func buildGatedEntryInsns(h *hook.Hook, filterOut codegen.Output, tf filter.Targ
 		return nil, err
 	}
 	insns = append(insns, gate...)
+	insns = append(insns, asm.StoreMem(asm.R10, gatedOrigLenStash, asm.R8, asm.Word))
 	insns = append(insns, emitTagBarrier(gateFD)...)
 	identity, err := h.Identity(asm.R1)
 	if err != nil {
@@ -294,6 +308,8 @@ func buildGatedEntryInsns(h *hook.Hook, filterOut codegen.Output, tf filter.Targ
 		asm.StoreImm(asm.R8, holdCopyErr, 0, asm.Word),
 		asm.LoadMem(asm.R1, asm.R10, tagSlot, asm.DWord),
 		asm.StoreMem(asm.R8, holdTag, asm.R1, asm.Word),
+		asm.LoadMem(asm.R1, asm.R10, gatedOrigLenStash, asm.Word),
+		asm.StoreMem(asm.R8, holdOrigLen, asm.R1, asm.Word),
 	)
 	if emit != EmitExit {
 		insns = append(insns,
@@ -346,6 +362,9 @@ func buildGatedExitInsns(h *hook.Hook, filterOut codegen.Output, tf filter.Targe
 		asm.StoreMem(asm.R10, -24, asm.R3, asm.DWord),
 	)
 	insns = append(insns, emitHoldSlot(holdFD)...)
+	if !deferPrologue {
+		insns = append(insns, asm.StoreMem(asm.R0, holdExitLen, asm.R8, asm.Word)) // the prologue's orig_len
+	}
 	insns = append(insns,
 		asm.Mov.Reg(asm.R8, asm.R0),
 		asm.LoadMem(asm.R2, asm.R8, holdValid, asm.Half),
@@ -354,12 +373,18 @@ func buildGatedExitInsns(h *hook.Hook, filterOut codegen.Output, tf filter.Targe
 	)
 	if deferPrologue {
 		insns = append(insns,
-			// The prologue uses R8 for data_end; the reserve slot is free here.
+			// The prologue leaves orig_len in R8; park the hold at the reserve
+			// slot (-32), free until the first reserve. The hold+52 store and
+			// the R8 reload below must stay before that reserve.
 			asm.StoreMem(asm.R10, -32, asm.R8, asm.DWord),
 			asm.LoadMem(asm.R1, asm.R10, -48, asm.DWord),
 		)
 		insns = append(insns, prologue...)
-		insns = append(insns, asm.LoadMem(asm.R8, asm.R10, -32, asm.DWord))
+		insns = append(insns,
+			asm.LoadMem(asm.R1, asm.R10, -32, asm.DWord),
+			asm.StoreMem(asm.R1, holdExitLen, asm.R8, asm.Word), // the prologue's orig_len
+			asm.LoadMem(asm.R8, asm.R10, -32, asm.DWord),
+		)
 	}
 	insns = append(insns,
 		// A hold another invocation left at this depth (its fexit was
@@ -414,7 +439,8 @@ func buildGatedExitInsns(h *hook.Hook, filterOut codegen.Output, tf filter.Targe
 		// ponytail: a failed reserve here leaves the entry record just
 		// submitted without its exit twin; reserve both slots before
 		// submitting either if pairs must be atomic under ring pressure.
-		insns = append(insns, captureWithRingbuf(eventsFD, statsFD, true, filterOut.Capture.MaxCapLen, packetID)...)
+		insns = append(insns, captureWithRingbuf(eventsFD, statsFD, true, filterOut.Capture.MaxCapLen, packetID,
+			asm.Instructions{asm.LoadMem(asm.R1, asm.R8, holdExitLen, asm.Word)})...)
 	}
 	insns = append(insns, emitExportTerminals(statsFD)...)
 	insns = append(insns, emitExportCounter(statsFD, statHoldUnpaired, "hold_unpaired")...)
@@ -451,6 +477,9 @@ func captureFromHold(eventsFD, statsFD, entryCapLen int, packetID asm.Instructio
 		// tag
 		asm.LoadMem(asm.R1, asm.R8, holdTag, asm.Word),
 		asm.StoreMem(asm.R0, 16, asm.R1, asm.Word),
+		// orig_len
+		asm.LoadMem(asm.R1, asm.R8, holdOrigLen, asm.Word),
+		asm.StoreMem(asm.R0, 28, asm.R1, asm.Word),
 	)
 	insns = append(insns, packetID...)
 	insns = append(insns,

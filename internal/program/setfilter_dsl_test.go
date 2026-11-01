@@ -364,7 +364,9 @@ func TestBpfDSLSetMatchIPv6Dst(t *testing.T) {
 	}
 	t.Cleanup(set.Def.Close)
 
-	const memberSID = "fc00::1"
+	// Key bytes 4..7 are non-zero, so a key write over the record's orig_len
+	// would show (drainMarkers checks orig_len).
+	const memberSID = "fc00:0:1:2::1"
 
 	// Differential: the wire bytes of the member SID must equal the key
 	// BuildKey writes for it (extraction side vs add side agree, no swap).
@@ -388,7 +390,7 @@ func TestBpfDSLSetMatchIPv6Dst(t *testing.T) {
 	}
 	defer func() { _ = probe.Close() }()
 
-	// Membership gates capture: fc00::1 is a member, fc00::2 is not.
+	// Membership gates capture: fc00:0:1:2::1 is a member, fc00::2 is not.
 	runIPv6(t, prog, 0x44, memberSID) // member, captured
 	runIPv6(t, prog, 0x55, "fc00::2") // non-member, dropped
 	markers := drainMarkers(t, probe, 1)

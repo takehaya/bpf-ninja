@@ -364,7 +364,7 @@ func (w *Writer) Write(pkt capture.Packet) error {
 // writePacketIface writes one packet to an explicit pcap-ng interface
 // id, bypassing the verdict→interface mapping. Only the shard merge
 // uses this (it resolves interfaces by name via ifaceIDByName).
-func (w *Writer) writePacketIface(ts time.Time, data []byte, ifaceID int) (err error) {
+func (w *Writer) writePacketIface(ts time.Time, data []byte, origLen uint32, ifaceID int) (err error) {
 	w.flushMu.Lock()
 	defer w.flushMu.Unlock()
 	defer func() { err = w.remember(err) }()
@@ -375,12 +375,12 @@ func (w *Writer) writePacketIface(ts time.Time, data []byte, ifaceID int) (err e
 		return os.ErrClosed
 	}
 	if w.fastWriter != nil {
-		return w.fastWriter.WritePacket(ts, data)
+		return w.fastWriter.WritePacket(ts, data, origLen)
 	}
 	ci := gopacket.CaptureInfo{
 		Timestamp:      ts,
 		CaptureLength:  len(data),
-		Length:         len(data),
+		Length:         int(origLength(data, origLen)),
 		InterfaceIndex: ifaceID,
 	}
 	if err := w.pcapWriter.WritePacket(ci, data); err != nil {
@@ -419,15 +419,15 @@ func (w *Writer) WriteBatch(pkts []capture.Packet) (err error) {
 				if cerr != nil {
 					return w.failBatch(cerr)
 				}
-				if err = w.fastWriter.WriteHookPacket(p.Timestamp, p.Data, int(p.SiteID)-1, p.PacketID, comment); err == nil {
+				if err = w.fastWriter.WriteHookPacket(p.Timestamp, p.Data, p.OrigLen, int(p.SiteID)-1, p.PacketID, comment); err == nil {
 					batchBytes += uint64(HookEPBSize(len(p.Data), p.PacketID != 0, len(comment)))
 				}
 			case w.cfg.MultiPoint:
-				if err = w.fastWriter.WritePacketID(p.Timestamp, p.Data, w.ifaceIDForPacket(p), p.PacketID); err == nil {
+				if err = w.fastWriter.WritePacketID(p.Timestamp, p.Data, p.OrigLen, w.ifaceIDForPacket(p), p.PacketID); err == nil {
 					batchBytes += uint64(EPBSizeID(len(p.Data)))
 				}
 			default:
-				if err = w.fastWriter.WritePacket(p.Timestamp, p.Data); err == nil {
+				if err = w.fastWriter.WritePacket(p.Timestamp, p.Data, p.OrigLen); err == nil {
 					batchBytes += uint64(EPBSize(len(p.Data)))
 				}
 			}
@@ -444,7 +444,7 @@ func (w *Writer) WriteBatch(pkts []capture.Packet) (err error) {
 		p := &pkts[i]
 		ci.Timestamp = p.Timestamp
 		ci.CaptureLength = len(p.Data)
-		ci.Length = len(p.Data)
+		ci.Length = int(origLength(p.Data, p.OrigLen))
 		ci.InterfaceIndex = 0
 		if w.actionToID != nil {
 			ci.InterfaceIndex = w.ifaceIDForAction(p.Action)

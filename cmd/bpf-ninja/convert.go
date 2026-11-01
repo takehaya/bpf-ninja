@@ -139,10 +139,14 @@ func convertFile(path string, fastW *output.FastNgWriter) (int, error) {
 	if _, err := io.ReadFull(br, hdr); err != nil {
 		return 0, fmt.Errorf("reading header: %w", err)
 	}
-	if !bytes.Equal(hdr[0:16], output.RawDumpMagic) {
-		if bytes.HasPrefix(hdr[0:16], []byte("XNINJA-RAW-V1")) {
-			return 0, fmt.Errorf("raw dump is format V1 (20-byte record metadata); this build reads V2 (28-byte, with the packet id) — convert it with a bpf-ninja release before the multi-point capture change")
-		}
+	meta := make([]byte, capture.MetadataSize)
+	switch {
+	case bytes.Equal(hdr[0:16], output.RawDumpMagic):
+	case bytes.HasPrefix(hdr[0:16], []byte("XNINJA-RAW-V2")):
+		meta = meta[:capture.OffsetOrigLen] // 28-byte metadata (0.26 to 0.32) without orig_len: written as uncut
+	case bytes.HasPrefix(hdr[0:16], []byte("XNINJA-RAW-V1")):
+		return 0, fmt.Errorf("raw dump is format V1 (20-byte record metadata); this build reads V2 and V3 — convert it with bpf-ninja 0.25 or earlier")
+	default:
 		return 0, fmt.Errorf("magic mismatch: got %q, want %q", hdr[0:16], output.RawDumpMagic)
 	}
 	if binary.BigEndian.Uint32(hdr[16:20]) != output.RawDumpEndianMagic {
@@ -150,7 +154,6 @@ func convertFile(path string, fastW *output.FastNgWriter) (int, error) {
 	}
 	wallOffsetNs := binary.LittleEndian.Uint64(hdr[20:28])
 
-	meta := make([]byte, capture.MetadataSize)
 	var data []byte
 	count := 0
 	for {
@@ -172,8 +175,12 @@ func convertFile(path string, fastW *output.FastNgWriter) (int, error) {
 				return count, fmt.Errorf("reading record data: %w", err)
 			}
 		}
+		var origLen uint32
+		if len(meta) == capture.MetadataSize {
+			origLen = capture.RecordOrigLen(meta)
+		}
 		ts := time.Unix(0, int64(kernelTs+wallOffsetNs))
-		if err := fastW.WritePacket(ts, data); err != nil {
+		if err := fastW.WritePacket(ts, data, origLen); err != nil {
 			return count, fmt.Errorf("writing EPB: %w", err)
 		}
 		count++

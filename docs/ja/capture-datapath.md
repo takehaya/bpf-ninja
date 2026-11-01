@@ -15,7 +15,7 @@
    ▼
 ① kunai (または cBPF) フィルタを inline 評価   ← accept なら続行、reject なら抜ける
    ▼
-② capture epilogue: per-CPU ringbuf に reserve → metadata 28B + パケット本体を書く → submit
+② capture epilogue: per-CPU ringbuf に reserve → metadata 32B + パケット本体を書く → submit
    ▼
 ③ per-CPU sharded ringbuf (ARRAY_OF_MAPS + CPU ごとの inner RingBuf)
    ▼
@@ -44,8 +44,8 @@ accept 後の書き出しは、tracing の `captureWithRingbuf` と XDP-native �
 1. `bpf_ktime_get_ns()` でタイムスタンプを取り、スタックに退避します。XDP-native では HW タイムスタンプ kfunc が使えればそちらを優先します。
 2. `bpf_get_smp_processor_id()` で自分の CPU 番号を取り、それを key にして自分の CPU の inner ringbuf を outer ARRAY_OF_MAPS から `emitShardedRBReserve` で引きます。
 3. `bpf_ringbuf_reserve` で `metadataSize + maxCapLen` バイトの固定長スロットを予約します。
-4. スロット先頭 28B に、後述の on-wire 形式で metadata を書きます。set にマッチしたときはその value である tag も host スタックの専用スロットから metadata に書きます。
-5. パケット本体を `min(pkt_len, maxCapLen)` バイトだけスロットの 28B 目以降にコピーします。tracing は `bpf_probe_read_kernel`、XDP-native は `bpf_xdp_load_bytes` を使います。
+4. スロット先頭 32B に、後述の on-wire 形式で metadata を書きます。set にマッチしたときはその value である tag も host スタックの専用スロットから metadata に書きます。
+5. パケット本体を `min(pkt_len, maxCapLen)` バイトだけスロットの 32B 目以降にコピーします。tracing は `bpf_probe_read_kernel`、XDP-native は `bpf_xdp_load_bytes` を使います。
 6. `bpf_ringbuf_submit` でスロットを consumer から見える状態にします。
 
 設計上の要点が 2 つあります。
@@ -60,7 +60,7 @@ accept 後の書き出しは、tracing の `captureWithRingbuf` と XDP-native �
 ringbuf に積まれる 1 レコードである `RawSample` は次の固定レイアウトです。定義は `internal/capture/capture.go` にあります。program 側の `metadataSize` と一致することは `TestMetadataSizeMatchesCapture` でピン留めしてあります。
 
 ```
-RawSample = [ metadata 28B ] [ packet bytes (caplen B) ] [ trailing slack ]
+RawSample = [ metadata 32B ] [ packet bytes (caplen B) ] [ trailing slack ]
 ```
 
 | offset | size | field        | 内容                                                  |
@@ -72,11 +72,12 @@ RawSample = [ metadata 28B ] [ packet bytes (caplen B) ] [ trailing slack ]
 |   14   |  2   | caplen       | 後続パケット領域のうち実際に有効なバイト数             |
 |   16   |  4   | tag          | マッチした set エントリの value、set 未マッチや set 無しなら 0 |
 |   20   |  8   | packet_id    | gated entry/exit の対応 ID。それ以外は 0 |
+|   28   |  4   | orig_len     | snaplen で切る前のパケット長。sk_buff を見る hook は `skb->len`、XDP は `data_end - data` で、multi-buffer の frag は数えない。gated の entry record は entry 時点の長さを持つ |
 
 注意点は次のとおりです。
 
 - 全マルチバイトフィールドはホストエンディアンです。BPF 側は `asm.StoreMem` でネイティブエンディアンに書くので、reader は `binary.NativeEndian` で読みます。
-- スロットは常に `metadataSize + maxCapLen` バイト予約されますが、producer が書くのは `28 + caplen` バイトだけです。残りの slack は未初期化メモリですが、submit すると予約全体が consumer から見えます。reader は `caplen` を信じてそこまでだけを読みます。
+- スロットは常に `metadataSize + maxCapLen` バイト予約されますが、producer が書くのは `32 + caplen` バイトだけです。残りの slack は未初期化メモリですが、submit すると予約全体が consumer から見えます。reader は `caplen` を信じてそこまでだけを読みます。
 - `tag` は set lookup がヒットしたときにマッチしたエントリの value が入ります。複数の set をまたぐときはソース順で最後にマッチした set の value になります。CLI の `--split-by-tag` はこの tag を使ってパケットを tag ごとに別々の pcap へ振り分けます。
 - 単独の fexit と gated capture は対象プログラムの戻り値を観測できるので、exit 側で `where action == XDP_DROP` のような述語が書けます。gated capture は exit の判定後に取り置いた entry 画像を出すため、その entry record にも最終の戻り値が入ります。単独の fentry はまだ戻り値が決まっていないので action は無効です。
 
