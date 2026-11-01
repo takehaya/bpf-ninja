@@ -115,8 +115,8 @@ type Writer struct {
 // In exit mode (cfg.IsFexit), creates one pcapng interface per verdict in
 // cfg.Actions so that Wireshark displays the verdict as the interface name.
 func NewWriter(path string, cfg Config) (*Writer, error) {
-	if len(cfg.Hooks) > 0 && (cfg.MultiPoint || cfg.IsFexit || len(cfg.Hooks) > 255) {
-		return nil, fmt.Errorf("hook layout needs 1..255 hooks and no verdict layout")
+	if len(cfg.Hooks) > 0 && (cfg.MultiPoint || cfg.IsFexit) {
+		return nil, fmt.Errorf("hook layout needs no verdict layout")
 	}
 	if cfg.MultiPoint {
 		cfg.IsFexit = true
@@ -179,6 +179,9 @@ func (w *Writer) initHooks(dest io.Writer) error {
 	fw := &FastNgWriter{w: dest, linkType: uint16(w.cfg.linkTypeOrDefault())}
 	if err := fw.writeSHB(); err != nil {
 		return err
+	}
+	if len(w.cfg.Hooks) > 255 {
+		return fmt.Errorf("hook layout needs 1..255 hooks, got %d", len(w.cfg.Hooks))
 	}
 	seen := map[string]bool{}
 	for i, name := range w.cfg.Hooks {
@@ -386,7 +389,12 @@ func (w *Writer) WriteBatch(pkts []capture.Packet) (err error) {
 			var err error
 			if len(w.cfg.Hooks) > 0 {
 				if p.SiteID == 0 || int(p.SiteID) > len(w.cfg.Hooks) || p.PacketID == 0 {
-					return fmt.Errorf("invalid hook record: site_id=%d packet_id=%d", p.SiteID, p.PacketID)
+					err := fmt.Errorf("invalid hook record: site_id=%d packet_id=%d", p.SiteID, p.PacketID)
+					if w.bufWriter != nil {
+						// Keep the records already written mergeable.
+						err = errors.Join(err, w.bufWriter.Flush())
+					}
+					return err
 				}
 				err = w.fastWriter.WritePacketID(p.Timestamp, p.Data, int(p.SiteID)-1, p.PacketID)
 			} else if w.cfg.MultiPoint {

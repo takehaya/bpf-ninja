@@ -170,7 +170,7 @@ func TestHookMergeRejectsDamage(t *testing.T) {
 			case "interface":
 				for off := 0; off < len(b); off += int(binary.LittleEndian.Uint32(b[off+4:])) {
 					if binary.LittleEndian.Uint32(b[off:]) == blkEPB {
-						binary.LittleEndian.PutUint32(b[off+8:], 7)
+						binary.LittleEndian.PutUint32(b[off+8:], uint32(len(cfg.Hooks)))
 						break
 					}
 				}
@@ -356,5 +356,46 @@ func TestHookMergeRawAndMissing(t *testing.T) {
 				t.Fatalf("ids=%v", got)
 			}
 		})
+	}
+}
+
+func TestHookShardMergesAfterInvalidRecord(t *testing.T) {
+	base := filepath.Join(t.TempDir(), "partial.pcapng")
+	cfg := Config{Hooks: []string{"a"}}
+	w, err := NewWriter(base+".cpu0", cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Write(capture.Packet{Timestamp: time.Unix(1, 0), Data: []byte{1}, SiteID: 1, PacketID: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Write(capture.Packet{Timestamp: time.Unix(2, 0), Data: []byte{2}, SiteID: 0, PacketID: 2}); err == nil {
+		t.Fatal("accepted invalid record")
+	}
+	_ = w.Close()
+	if err := MergeShardFiles(base, 1, cfg); err != nil {
+		t.Fatalf("records written before the invalid one did not merge: %v", err)
+	}
+	raw, err := os.ReadFile(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := pcapgo.NewNgReader(bytes.NewReader(raw), pcapgo.DefaultNgReaderOptions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if data, _, err := r.ReadPacketData(); err != nil || !bytes.Equal(data, []byte{1}) {
+		t.Fatalf("first record = %v, %v", data, err)
+	}
+}
+
+func TestHookMergeRejectsTooManyInterfaces(t *testing.T) {
+	names := make([]string, 256)
+	for i := range names {
+		names[i] = fmt.Sprintf("hook_%d", i)
+	}
+	w := &Writer{cfg: Config{Hooks: names}}
+	if err := w.initHooks(io.Discard); err == nil {
+		t.Fatal("accepted 256 hook interfaces")
 	}
 }

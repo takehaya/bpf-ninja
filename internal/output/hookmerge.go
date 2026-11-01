@@ -43,7 +43,7 @@ func detectHookLayout(paths []string) ([]string, layers.LinkType, error) {
 			hooks, linkType = names, lt
 		}
 		if legacy && len(hooks) > 0 {
-			return nil, 0, fmt.Errorf("cannot merge legacy and hook capture shards")
+			return nil, 0, fmt.Errorf("cannot merge legacy and hook capture shards (%s)", path)
 		}
 	}
 	return hooks, linkType, nil
