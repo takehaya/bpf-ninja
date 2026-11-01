@@ -195,7 +195,7 @@ IPv4 / IPv6 / MAC のアドレスリテラルと CIDR は slice 後の幅と比�
 
 #### 読めるのはパケットの先頭 512 byte まで
 
-filter が読めるのはパケットの先頭 512 byte (`codegen.ScratchBufSize`) までです。fentry / fexit / tc ではこの分だけを scratch にコピーして読むので、そこから先にある layer や field は match しません。`--mode xdp` はパケットを直接読みますが、可変長の walk (IPv4 / TCP の option 領域、IPv6 拡張ヘッダ、SRv6 の segment list) の位置は host に関係なく 512 byte で打ち切られるので、walk が 512 byte を越えるパケットも、walk より後ろの layer や field が 512 byte を越えるパケットも reject されます。固定長の layer だけの chain なら XDP では 512 byte より先も読めます。Lean の仕様にはこの上限が無く、両者で結果が違う唯一の既知の例がこれです (vector `srv6-past-scratch-window`、DECISIONS D-029 追記 2)。
+filter が読めるのはパケットの先頭 512 byte (`codegen.ScratchBufSize`) までです。fentry / fexit / tc ではこの分だけを scratch にコピーして読むので、そこから先にある layer や field は match しません。`--mode xdp` はパケットを直接読みますが、可変長の walk (IPv4 / TCP の option 領域、IPv6 拡張ヘッダ、SRv6 の segment list、GTP-U の extension header) の位置は host に関係なく 512 byte で打ち切られるので、walk が 512 byte を越えるパケットも、walk より後ろの layer や field が 512 byte を越えるパケットも reject されます。固定長の layer だけの chain なら XDP では 512 byte より先も読めます。Lean の仕様にはこの上限が無く、両者で結果が違う唯一の既知の例がこれです (vector `srv6-past-scratch-window`、DECISIONS D-029 追記 2)。
 
 #### フィールド参照
 
@@ -219,7 +219,7 @@ stack の index は静的でも動的でも、抽出された要素数以上を�
 - alternation の member (`eth/(ipv4|ipv6)/tcp where ipv4.ttl == 64`、label なら `(ipv4@a|ipv6) where a.ttl == 64`): 別の member がマッチしたパケットでは、その field を含む atom は **false** になります (`?` の layer が無い場合と同じ扱い)。member ごとの条件は `or` で並べます (`where ipv4.ttl == 64 or ipv6.hop_limit == 64`)。
 - `any` / `all` の対象 stack を持つ layer が無いときは、どちらも false です (空 stack の場合とは違います)。
 
-あるプロトコルにどんな aux / stack / options が露出しているか調べたいときは、`bpf-ninja --dsl-help <proto>` で full reference を出せます。たとえば `--dsl-help srv6` では `segments[0..7]` stack の field と access pattern が、`--dsl-help gtp` では `opt` aux + `exts[0..7]` stack が、`--dsl-help tcp` では options walk の named entries が一覧されます。
+あるプロトコルにどんな aux / stack / options が露出しているか調べたいときは、`bpf-ninja --dsl-help <proto>` で full reference を出せます。たとえば `--dsl-help srv6` では `segments[0..7]` stack の field と access pattern が、`--dsl-help gtp` では `opt` aux + `exts[0..8]` stack が、`--dsl-help tcp` では options walk の named entries が一覧されます。
 
 #### Aux header / stack / options アクセスの実例
 
@@ -233,14 +233,28 @@ eth/ipv6/srv6/tcp where srv6.segments[srv6.last_entry].addr == X    # 最後の 
 eth/ipv6/srv6/tcp where srv6.segments[srv6.segments_left].addr == X # 現 active hop
 
 # IPv6 / GTP-U extension headers
-eth/ipv6/tcp where ipv6.exts[0].next_header == 44                    # 最初の ext type
-eth/ipv4/udp/gtp/ipv4/tcp where gtp.exts[0].ext_type == 1            # 最初の GTP ext type
+eth/ipv6/tcp where ipv6.exts[0].next_header == 44                    # exts[1] の type
+eth/ipv4/udp/gtp/ipv4/tcp where gtp.opt.next_ext == 0x85           # gtp.exts[0] の type
+eth/ipv4/udp/gtp/ipv4/tcp where gtp.exts[0].next_ext == 0x85        # gtp.exts[1] の type (gtp.exts[0] が 4 byte のとき)
+eth/ipv4/udp/gtp/ipv4/tcp where gtp.exts[0].ext_type[0:4] == 1      # gtp.exts[0] の中身の先頭 4 bit
 
 # TCP option lookup (走査して match)
 eth/ipv4/tcp where tcp.options.MSS.value == 1460
 eth/ipv4/tcp where tcp.options.WS.shift > 5
 eth/ipv4/tcp where tcp.options.TS.tsval > 0
 ```
+
+GTP-U の extension header の type は、その extension 自身ではなく、一つ前の Next Extension Header Type に入ります (TS 29.281 §5.2.1)。`gtp.exts[0]` の type は `gtp.opt.next_ext` にあります。`gtp.exts[0]` から `gtp.exts[i]` までがすべて 4 byte (`ext_length == 1`) のとき、`gtp.exts[i+1]` の type は `gtp.exts[i].next_ext` にあります。`gtp.exts[i].ext_type` は名前に反して `gtp.exts[i]` の中身の先頭 2 byte で、PDU Session Container では PDU type と QFI を含みます。type と中身を対にして確かめるには、`any(...)` では一つ前の entry を参照できないので、index ごとに並べます。たとえば PDU Session Container の PDU type が 1、QFI が 9 の packet は、container が 1 個目か 2 個目にある場合を次のように書きます。
+
+```
+eth/ipv4/udp/gtp/ipv4/udp where
+  (gtp.opt.next_ext == 0x85 and gtp.exts[0].ext_type[0:4] == 1 and gtp.exts[0].ext_type[10:16] == 9) or
+  (gtp.exts[0].next_ext == 0x85 and gtp.exts[1].ext_type[0:4] == 1 and gtp.exts[1].ext_type[10:16] == 9)
+```
+
+2 項目は `gtp.exts[0]` が 4 byte のときに限ります。
+
+`gtp` の parser (`pkg/kunai/protocols/gtp.p4`) は、長さによらず各 extension の 4 byte 目を `next_ext` として読み、その値で次の extension に進むかどうかも決めます。TS 29.281 では Next Extension Header Type は extension の最後の byte にあるので、4 byte を超える extension があると、その後ろでは上の対応が成り立ちません。walk が実際の chain より早く止まるか、内側の packet を extension として読み進むので、`gtp` の後ろの layer は正しい位置から読まれず、`gtp` の後ろに layer を書いた filter は条件によらずその packet に一致しないことがあります。`gtp.exts` に入る extension は 9 個までです。`gtp` の後ろに layer を書いた filter では、extension が 10 個以上ある packet と、extension の列が先頭 512 byte を越える packet には条件によらず一致しません。`gtp` で終わる filter では、10 個目以降の extension が `gtp.exts` に入らないだけです。
 
 1 つの filter で TCP の option を 2 種類以上見る場合は、option の field を読む条件をすべて `<option>.<field> == <定数>` の形にします。この条件は bracket に書くか、`where` 句の一番外側の `and` の項として書きます。`where` 句のほかの項、たとえば `tcp.dport == 80`、`ipv4.ttl == 64`、`options.valid` は、option を読まない限り自由に混ぜられます。`int<128>(n)` で field に収まらない定数を書くと、その filter はどの packet にも一致しません。option を `!=`、大小比較、`in`、`.exists` で読む条件や、`or` と `not` の内側で読む条件を混ぜると `ErrNotImplemented` になります。`tcp?` や alternation の member のように不在になりうる layer の bracket に option の `==` を書いた場合も compile できます。layer が不在の packet では、ほかの bracket と同じく条件は評価されません。
 
