@@ -3,6 +3,7 @@ package capture
 import (
 	"errors"
 	"os"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -64,8 +65,10 @@ func TestReaderIdleCPU(t *testing.T) {
 	}
 }
 
+const rbNoWakeup int32 = 1 // BPF_RB_NO_WAKEUP
+
 // submitter returns a function that writes n zeroed MetadataSize records to
-// m with the given bpf_ringbuf_output flags (1 = BPF_RB_NO_WAKEUP).
+// m with the given bpf_ringbuf_output flags.
 func submitter(t *testing.T, m *ebpf.Map, flags int32) func(n int) {
 	t.Helper()
 	p, err := ebpf.NewProgram(&ebpf.ProgramSpec{
@@ -100,6 +103,25 @@ func submitter(t *testing.T, m *ebpf.Map, flags int32) func(n int) {
 	}
 }
 
+// stopWithin fails the test instead of the whole suite timing out when a
+// stop never returns.
+func stopWithin(t *testing.T, stop func(), d time.Duration) time.Duration {
+	t.Helper()
+	stopped := make(chan time.Duration, 1)
+	go func() {
+		start := time.Now()
+		stop()
+		stopped <- time.Since(start)
+	}()
+	select {
+	case took := <-stopped:
+		return took
+	case <-time.After(d):
+		t.Fatal("stop did not wake idle shards")
+		return 0
+	}
+}
+
 func voluntarySwitches(t *testing.T) int64 {
 	t.Helper()
 	var usage unix.Rusage
@@ -113,7 +135,7 @@ func TestReaderStopDrainsNoWakeup(t *testing.T) {
 	m := newPollTestMap(t)
 	// Submit a finite backlog without notifications, before the reader starts.
 	const count = 600 // More than two batches.
-	submitter(t, m, 1)(count)
+	submitter(t, m, rbNoWakeup)(count)
 	r, err := NewShardedReader([]*ebpf.Map{m})
 	if err != nil {
 		t.Fatal(err)
@@ -145,7 +167,7 @@ func TestFastReaderStopWhileIdle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// No Close cleanup: it would wait on a stop that never returns.
+	// No Close cleanup: Close calls stop, which would hang if the wake failed.
 	stop, err := r.RunRawShardsFast(func(_ int, _ []byte) error {
 		t.Error("unexpected record in idle ring")
 		return nil
@@ -156,18 +178,8 @@ func TestFastReaderStopWhileIdle(t *testing.T) {
 	before := voluntarySwitches(t)
 	time.Sleep(500 * time.Millisecond)
 	switches := voluntarySwitches(t) - before
-	stopped := make(chan time.Duration)
-	go func() {
-		start := time.Now()
-		stop()
-		stopped <- time.Since(start)
-	}()
-	select {
-	case took := <-stopped:
-		t.Logf("idle for 500ms: %d voluntary context switches; stop took %s", switches, took)
-	case <-time.After(5 * time.Second):
-		t.Fatal("stop did not wake idle shards")
-	}
+	took := stopWithin(t, stop, 5*time.Second)
+	t.Logf("idle for 500ms: %d voluntary context switches; stop took %s", switches, took)
 	if err := r.Err(); err != nil {
 		t.Fatal(err)
 	}
@@ -181,7 +193,7 @@ func TestFastReaderStopKeepsRecords(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
 		flags int32
-	}{{"wakeup", 0}, {"no-wakeup", 1}} {
+	}{{"wakeup", 0}, {"no-wakeup", rbNoWakeup}} {
 		t.Run(tc.name, func(t *testing.T) {
 			NoWakeup = tc.flags != 0
 			t.Cleanup(func() { NoWakeup = false })
@@ -191,7 +203,6 @@ func TestFastReaderStopKeepsRecords(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			t.Cleanup(func() { _ = r.Close() })
 			var consumed atomic.Uint64
 			stop, err := r.RunRawShardsFast(func(_ int, raw []byte) error {
 				if len(raw) != MetadataSize {
@@ -214,9 +225,9 @@ func TestFastReaderStopKeepsRecords(t *testing.T) {
 				t.Fatalf("consumed %d records before stop, want 1", consumed.Load())
 			}
 			// Everything submitted before stop is consumed by stop.
-			const count = 600 // More than two batches.
+			const count = 600
 			submit(count)
-			stop()
+			stopWithin(t, stop, 5*time.Second)
 			if err := r.Err(); err != nil {
 				t.Fatal(err)
 			}
@@ -224,5 +235,107 @@ func TestFastReaderStopKeepsRecords(t *testing.T) {
 				t.Fatalf("consumed %d records, want %d", got, count+1)
 			}
 		})
+	}
+}
+
+// A submit committed while the shard is inside a batch sees the old consumer
+// position and sends no wakeup; only epoll's re-poll of the level-triggered
+// ring fd finds it. Delivery is checked before stop, which would drain it.
+func TestFastReaderStaleConsumer(t *testing.T) {
+	m := newPollTestMap(t)
+	submit := submitter(t, m, 0)
+	r, err := NewFastShardedReader([]*ebpf.Map{m})
+	if err != nil {
+		t.Fatal(err)
+	}
+	arrived, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	var consumed atomic.Uint64
+	stop, err := r.RunRawShardsFast(func(_ int, _ []byte) error {
+		once.Do(func() { close(arrived); <-release })
+		consumed.Add(1)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(20 * time.Millisecond)
+	submit(1)
+	select {
+	case <-arrived:
+	case <-time.After(5 * time.Second):
+		t.Fatal("first record not seen")
+	}
+	const more = 100
+	submit(more)
+	close(release)
+	deadline := time.Now().Add(3 * time.Second)
+	for consumed.Load() < 1+more && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	got := consumed.Load()
+	stopWithin(t, stop, 5*time.Second)
+	if got != 1+more {
+		t.Fatalf("consumed %d before stop, want %d (after stop: %d)", got, 1+more, consumed.Load())
+	}
+}
+
+// Stop must wake a blocked shard that has a backlog the kernel never
+// signalled, drain it, and count it as drained at stop.
+func TestFastReaderStopDrainsBacklog(t *testing.T) {
+	m := newPollTestMap(t)
+	submit := submitter(t, m, rbNoWakeup) // NoWakeup stays false: no poll
+	r, err := NewFastShardedReader([]*ebpf.Map{m})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var consumed atomic.Uint64
+	stop, err := r.RunRawShardsFast(func(_ int, _ []byte) error { consumed.Add(1); return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(20 * time.Millisecond)
+	const count = 300
+	submit(count)
+	time.Sleep(100 * time.Millisecond)
+	if got := consumed.Load(); got != 0 {
+		t.Fatalf("consumed %d unsignalled records before stop, want 0", got)
+	}
+	stopWithin(t, stop, 5*time.Second)
+	if err := r.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if got, drained := consumed.Load(), r.Stats().DrainedAtStop.Load(); got != count || drained != count {
+		t.Fatalf("consumed %d, drained at stop %d, want %d", got, drained, count)
+	}
+}
+
+func TestFastReaderNoFDLeak(t *testing.T) {
+	maps := []*ebpf.Map{newPollTestMap(t), newPollTestMap(t), newPollTestMap(t)}
+	fds := func() int {
+		entries, err := os.ReadDir("/proc/self/fd")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return len(entries)
+	}
+	before := fds()
+	for range 5 {
+		r, err := NewFastShardedReader(maps)
+		if err != nil {
+			t.Fatal(err)
+		}
+		stop, err := r.RunRawShardsFast(func(int, []byte) error { return nil })
+		if err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(5 * time.Millisecond)
+		stopWithin(t, stop, 5*time.Second)
+		if err := r.Err(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if after := fds(); after != before {
+		t.Fatalf("open fds: %d before, %d after 5 sessions", before, after)
 	}
 }

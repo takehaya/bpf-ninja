@@ -116,7 +116,8 @@ reader は全 shard に 1 goroutine ずつ立てます。producer CPU が observ
 
 この実装は `RunShardsFast` で、`cilium/ebpf` の per-record API を介さず、ringbuf map を直接 mmap して consumer ページと producer ページを自前で読みます。コードは `internal/capture/fastrb` にあります。
 
-- `--no-wakeup` と組み合わせると、producer 側の epoll wakeup を省けます。
+- 何も来ない shard は、データが届くか停止するまで `epoll_wait` で眠ります。停止は eventfd で全 shard を起こします。
+- `--no-wakeup` と組み合わせると、producer 側の wakeup を省けます。kernel が通知しないので、各 shard は何も来ない間も 1 ms ごとに起きて ring を見ます。
 - `--busy-poll` を付けると `epoll_wait` でブロックせずにスピンし、ringbuf を連続して drain します。ただし shard あたり 1 コアを使い切ります。
 - `--rx-cores N` は、許可された CPU ID のうち N 以上へ reader を分散します。該当 CPU がなければ起動エラーです。全 producer shard を読むため、RX が想定外の CPU に来ても shard を読み捨てません。NIC queue 数だけでは RX affinity は決まらず、別途設定が必要です。
 

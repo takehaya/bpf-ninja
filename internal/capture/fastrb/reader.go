@@ -72,6 +72,9 @@ func New(mapFD int, ringSize int) (*Reader, error) {
 		_ = unix.Munmap(prod)
 		return nil, fmt.Errorf("epoll_create1: %w", err)
 	}
+	// Level-triggered on purpose: ReadBatch publishes the consumer position
+	// once per batch, so a submit committed during a batch sends no wakeup
+	// and is found only because epoll re-polls a ready ring fd.
 	ev := unix.EpollEvent{Events: unix.EPOLLIN, Fd: int32(mapFD)}
 	if err := unix.EpollCtl(epfd, unix.EPOLL_CTL_ADD, mapFD, &ev); err != nil {
 		_ = unix.Close(epfd)
@@ -132,9 +135,9 @@ func (r *Reader) AddWake(fd int) error {
 // WaitForData blocks until the kernel signals new data on the
 // underlying map FD, an AddWake fd becomes readable, or timeoutMs
 // elapses (-1 = no timeout).
-// Returns the number of fds ready (0 on timeout, 1 on data, or an
-// error). The caller should ReadBatch immediately after a successful
-// wake.
+// Returns the number of fds ready (0 on timeout, 1 when the ring or a
+// wake fd is ready, or an error). The caller should ReadBatch
+// immediately after a successful wake.
 func (r *Reader) WaitForData(timeoutMs int) (int, error) {
 	for {
 		n, err := unix.EpollWait(r.epollFD, r.events[:], timeoutMs)

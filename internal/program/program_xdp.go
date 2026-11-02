@@ -324,7 +324,7 @@ func captureXDPNative(eventsFD int, maxCapLen int, statsFD int) asm.Instructions
 
 		// --- bpf_ringbuf_submit(reservation_ptr, flags) ---
 		asm.LoadMem(asm.R1, asm.R10, -32, asm.DWord).WithSymbol("xn_skip_load"),
-		asm.Mov.Imm(asm.R2, int32(RingbufSubmitFlags)),
+		asm.Mov.Imm(asm.R2, ringbufSubmitFlags()),
 		asm.FnRingbufSubmit.Call(),
 	}...)
 	return insns

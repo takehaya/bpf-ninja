@@ -250,7 +250,7 @@ The counters do not count filter and parse rejections, so they do not cover ever
 |------|---------|
 | `--snaplen N` | Force the per-packet capture length. 0 (the default) uses the DSL `capture` clause, else 1500 bytes |
 | `--fast-reader` | mmap+atomic ringbuf reader (lower CPU than cilium/ebpf generic) |
-| `--no-wakeup` | Suppress eventfd wake per submit. Trades p50 latency for throughput. **Requires `--fast-reader`** |
+| `--no-wakeup` | Skip the kernel's reader wakeup on each submit. Each fast-reader shard then polls every 1 ms, even when idle, instead of sleeping until data. Trades p50 latency for throughput. **Requires `--fast-reader`** |
 | `--ringbuf-size MB` | Total ringbuf data budget in MiB, a power of two (default 64); divided across possible CPU IDs, with a 64 KiB minimum per shard |
 | `--raw-dump` | Raw bytes path; convert offline with `bpf-ninja convert` |
 | `--rx-cores N` | Pin readers to permitted CPU IDs at or above `N`. All producer shards are drained. **Requires `--fast-reader`**; configure RX affinity separately. |
