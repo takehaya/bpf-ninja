@@ -28,7 +28,7 @@ flowchart TD
 `internal/capture` は、プログラムが ringbuf に書いた記録を読み取ります。`internal/output` は、`-w` を付けた場合はファイルに、付けない場合は標準出力に pcapng を書き出します。
 
 inject-run では、loader 自身がロードするプログラムに観測 hook を加えます。その hook に対して、上の capture を attach します。
-矢印は呼び出しや生成を、ラベル付きの矢印はデータの流れを、点線は利用者の操作を表します。
+矢印は呼び出し、生成、attach を、ラベル付きの矢印はデータの流れを、点線は利用者の操作を表します。
 
 ```mermaid
 flowchart TD
