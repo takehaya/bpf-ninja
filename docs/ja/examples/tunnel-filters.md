@@ -1,8 +1,8 @@
 # トンネル内部の式を確認する
 
-多段 header を含む式をロード前に確認する例です。
-Linux で build 済みの repository root から実行します。
-root、送信機、interface は不要です。
+多段のヘッダーを含む式を、ロード前に確認する例です。
+Linux でビルドしたリポジトリのルートから実行します。
+root 権限、送信機、インターフェースは不要です。
 
 ```sh
 ./bpf-ninja --dsl-help vxlan
@@ -16,18 +16,19 @@ root、送信機、interface は不要です。
   'eth/ipv6/srv6/tcp where any(srv6.segments.addr == fc00::1)'
 ```
 
-protocol help で dispatch と field を確認し、三つの式が命令列を出して正常終了することを確認します。
-VXLAN の内側には Ethernet、GTP の例では直接 IPv4 があるため、chain が異なります。
-同じ protocol を複数回参照するときは label を付けます。
-`capture headers+64` は保存長の指定で、parser が読める範囲を広げる指定ではありません。
+プロトコルのヘルプでディスパッチとフィールドを確認します。3 つの式が命令を出力し、正常に終了することも確認します。
 
-## 実機で確認する範囲
+- VXLAN の内側には Ethernet があり、GTP の例では直接 IPv4 が続きます。そのためチェーンが異なります。
+- 同じプロトコルを複数回参照するときは、`@outer` のようなラベルを付けます。
+- `capture headers+64` は保存する長さの指定です。パーサーが読める範囲は広がりません。
 
-実際の frame の header 順序、port、TEID、SRH の有無が式と一致するかを packet fixture で確認してください。
-observer が参照する packet window、host が L2 と L3 のどちらから始まるか、必要な kernel 機能も確認します。
-このページの command は compile の確認までであり、実パケット取得を検証した手順ではありません。
-既存の [DSL vectors](../../../pkg/kunai/dsltest/) と [program tests](../../../internal/program/)は、compile、kernel load、packet の判定を別に検査します。
+## 実際のトラフィックで確認すること
 
-各 command は自動終了します。
-ファイルと kernel resource を作らないため cleanup は不要です。
-実際の capture の開始、readiness、停止、pcap 確認は [隔離 recipe](capture-recipes.md)、既存 target の entry/exit は [手動試験](../handtest.md)を参照してください。
+このページのコマンドで分かるのは、式がコンパイルできることです。
+実際のフレームでヘッダーの順序、ポート、TEID、SRH の有無が式と一致するかは、パケットフィクスチャで確かめます。
+パケットが L2 と L3 のどちらから始まるかは hook ごとに異なります。この開始位置と必要なカーネル機能も確認します。
+entry と exit では、フィルタが読めるのはパケットの先頭 512 バイトまでです。`--mode xdp` でも、可変長のヘッダーと、その後ろで読むレイヤーやフィールドは、この範囲に収まっている必要があります（[詳細](../dsl-usage.md#読めるのはパケットの先頭-512-byte-まで)）。
+[DSL vectors](../../../pkg/kunai/dsltest/) と [program tests](../../../internal/program/) では、コンパイル、カーネルへのロード、パケットの判定をそれぞれ検査します。
+
+各コマンドは自動で終了し、ファイルやカーネルのリソースを作成しません。
+キャプチャの開始や停止、pcap の確認は [隔離 recipe](capture-recipes.md) を参照してください。既存のターゲットの entry と exit は [手動試験](../handtest.md) を参照してください。

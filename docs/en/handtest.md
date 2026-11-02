@@ -17,7 +17,7 @@ For load-time hooks via the experimental `inject-run` launcher, see the separate
 - Linux kernel 6.x or later (bpf2bpf call + tail call coexistence support)
 - Root privileges
 - clang, bpftool, tcpdump
-- libpcap development files (Debian/Ubuntu: `libpcap-dev`) and its runtime
+- A C compiler (cgo uses gcc by default), libpcap development files (Debian/Ubuntu: `libpcap-dev`) and its runtime
 - An `enable_libpcap` build, because section 1.5 exercises legacy `--cbpf` filters
 
 ## 0. Build

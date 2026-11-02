@@ -1,15 +1,19 @@
 # bpf-ninja
 
 > [!NOTE]
-> This project was renamed from **xdp-ninja** (July 2026): the tool has outgrown XDP — it also observes tc-bpf programs, and more BPF hook points are planned. GitHub redirects the old repository URL, but the Go module path changed to `github.com/takehaya/bpf-ninja`, so `go install` / imports need the new path. Environment variables are now `BPF_NINJA_*` (the old `XDP_NINJA_*` names are no longer read).
+> Formerly xdp-ninja. GitHub redirects the old repository URL. The Go module path is `github.com/takehaya/bpf-ninja`, and environment variables use the `BPF_NINJA_*` prefix; `XDP_NINJA_*` names are not read.
 
-bpf-ninja captures packets at BPF hook points — XDP, tc-bpf, cgroup-skb, and netfilter, with more planned. `tcpdump` runs below XDP and can't show what XDP or tc-bpf did to the packet, and cBPF filters can't walk into VXLAN / GTP / MPLS / SRv6 inner headers. Attach via fentry/fexit to a running XDP without modifying it, or `--mode xdp` for standalone capture on a netdev. Filters use the built-in DSL by default — chains like `eth/ipv4/udp/vxlan/eth/ipv4/tcp`. Plain tcpdump syntax via [cbpfc](https://github.com/cloudflare/cbpfc) is available in the optional `enable_libpcap` build via `--cbpf`, kept for backwards compatibility and planned to retire once the DSL surface stabilises. Output is pcap (pcapng) to stdout.🥷
+bpf-ninja captures packets at BPF hook points: XDP, tc, cgroup-skb and netfilter.
+tcpdump cannot show what an XDP or tc program did to a packet, and cBPF filters cannot read the inner headers of VXLAN, GTP, MPLS or SRv6.
+
+- It attaches fentry or fexit to a running program without changing it, so you see the packet the program received, or the packet and verdict it produced.
+- `--mode xdp` captures on a netdev that has no XDP program.
+- Filters use a built-in DSL that walks through encapsulations, such as `eth/ipv4/udp/vxlan/eth/ipv4/tcp`.
+- Output is pcap-ng, to stdout or to per-CPU files.
+- The tcpdump syntax (`--cbpf`, through [cbpfc](https://github.com/cloudflare/cbpfc)) is kept for compatibility in an optional libpcap build and is planned for removal.
+- The experimental [`inject-run`](docs/en/inject-run.md) adds hooks to selected XDP or tc programs as an unmodified loader loads them (Linux x86-64).
 
 [Documentation / ドキュメント](docs/README.md) · [日本語の導入](docs/ja/getting-started.md) · [Examples](docs/ja/examples/README.md)
-
-For load-time observation, the experimental Linux x86-64 [`inject-run`](docs/en/inject-run.md) launcher adds hooks as an unmodified loader loads selected XDP or tc programs.
-Use `--list-progs --list-maps` to inspect map operations; the [injection walkthrough](docs/en/inject-walkthrough.md) follows discovery, configuration, and an fentry observer, with [example sources](examples/inject-walkthrough/README.md).
-The [observer examples](docs/en/inject-observers.md) add in-kernel counters, CPU-tagged failures and timing across hooks, with [example sources](examples/inject-observers/README.md).
 
 ## Install
 
@@ -18,7 +22,7 @@ The [observer examples](docs/en/inject-observers.md) add in-kernel counters, CPU
 curl -fsSL https://raw.githubusercontent.com/takehaya/bpf-ninja/main/scripts/install.sh | sudo bash
 
 # Specific version
-curl -fsSL https://raw.githubusercontent.com/takehaya/bpf-ninja/main/scripts/install.sh | sudo bash -s -- --version v0.1.0
+curl -fsSL https://raw.githubusercontent.com/takehaya/bpf-ninja/main/scripts/install.sh | sudo bash -s -- --version vX.Y.Z
 
 # Or via go install (requires Go; no libpcap needed)
 CGO_ENABLED=0 go install github.com/takehaya/bpf-ninja/cmd/bpf-ninja@latest
@@ -36,134 +40,113 @@ DSL filters, pcapng output, and `convert` / `merge` work in this build.
 For legacy `--cbpf` filters, download `bpf-ninja_<version>_linux_x86_64_enable_libpcap.tar.gz` from the same release and install its `bpf-ninja` binary.
 This variant needs the libpcap runtime.
 `checksums.txt` covers both archives.
-To build it from source, install the libpcap development package and run `make build-libpcap`, or:
+To build it from source, install a C compiler and the libpcap development package, then run `make build-libpcap`, or:
 
 ```bash
 CGO_ENABLED=1 go build -tags enable_libpcap ./cmd/bpf-ninja
 ```
 
+## Quick start
+
+```bash
+# Observe the XDP program attached to eth0 (fentry on its entry)
+sudo bpf-ninja -i eth0 | tcpdump -n -r -
+
+# Filter with the DSL (the default syntax)
+sudo bpf-ninja -i eth0 "eth/ipv4/tcp[dport==80]" | tcpdump -n -r -
+
+# See the verdict (fexit) and filter on it
+sudo bpf-ninja -i eth0 --mode exit "eth/ipv4/tcp where action == XDP_DROP" | tcpdump -n -r -
+
+# Capture on a netdev with no XDP program
+sudo bpf-ninja --mode xdp -i eth0 "eth/ipv4/tcp[dport==443]" | tcpdump -n -r -
+
+# Attach by program ID: XDP, tc, cgroup-skb or netfilter, detected from the program type
+sudo bpf-ninja -p 42 | tcpdump -n -r -
+
+# Write to files and stop after 100 packets (see Sharded output)
+sudo bpf-ninja -i eth0 -w capture.pcap -c 100
+
+# Legacy tcpdump syntax (libpcap build only)
+sudo bpf-ninja --cbpf -i eth0 "host 10.0.0.1 and tcp port 80" | tcpdump -n -r -
+```
+
 ## Modes
 
-`--mode` selects the capture point; the hook kind (XDP, TC clsact, cgroup-skb, netfilter) is auto-detected from the target program's type:
+`--mode` selects the capture point.
+bpf-ninja detects the hook kind (XDP, tc clsact, cgroup-skb or netfilter) from the target program's type.
 
 | Mode | Attach via | Existing program needed | Sees return action | Typical use |
 |---|---|---|---|---|
-| `entry` (default) | fentry on the target program | yes (with BTF) | no — packet only | observe what reaches the production program |
+| `entry` (default) | fentry on the target program | yes (with BTF) | no, packet only | observe what reaches the production program |
 | `exit` | fexit on the target program | yes (with BTF) | yes (`XDP_PASS` / `TC_ACT_OK` / `SK_PASS` / ...) | observe the verdict; filter on `action == ...` |
-| `xdp` | attach as the primary XDP on the netdev | no — fails if one is attached | n/a (bpf-ninja decides; always returns `XDP_PASS`) | capture on a netdev with no XDP, no BTF needed |
+| `xdp` | attach as the primary XDP on the netdev | no; fails if one is attached | n/a (bpf-ninja returns `XDP_PASS`, or `XDP_DROP` with `--bench-drop`) | capture on a netdev with no XDP; no BTF needed |
 
-Supported hooks and how to name the target:
+`entry` and `exit` attach through a BPF trampoline and leave the target program unchanged.
+`tc-entry` and `tc-exit` are deprecated aliases for `entry` and `exit`.
 
 | Hook | Target selection | Notes |
 |---|---|---|
-| XDP | `-i <iface>` (interface's XDP) or `-p <progID>` | |
-| TC clsact | `-p <progID>` only (interface lookup for clsact is not yet wired) | the kernel moves the outer VLAN tag into skb metadata first, so by default DSL filters see the frame without it — see `--tc-vlan-reinsert` |
-| cgroup-skb | `--cgroup <cgroup v2 path>` (enumerates attached programs) or `-p <progID>` | packet bytes start at the IP header — root DSL chains at `ipv4`/`ipv6`, pcap-ng is LINKTYPE_RAW |
-| netfilter | `-p <progID>` (kernel 6.4+, programs attached to NF_INET_* hooks via bpf_link) | packet bytes start at the IP header, same L3-start notes as cgroup-skb; exit-mode verdicts are `NF_DROP` / `NF_ACCEPT` |
+| XDP | `-i <iface>` (the interface's XDP) or `-p <progID>` | |
+| tc clsact | `-p <progID>` only | The kernel moves the outer VLAN tag into skb metadata, so by default DSL filters see the frame without it; see [Filters](#filters) |
+| cgroup-skb | `--cgroup <cgroup v2 path>` (the attached programs) or `-p <progID>` | Packet bytes start at the IP header: chains start at `ipv4`/`ipv6`, and pcap-ng uses LINKTYPE_RAW |
+| netfilter | `-p <progID>` (kernel 6.4+, programs attached to `NF_INET_*` hooks through bpf_link) | Packet bytes start at the IP header, as for cgroup-skb; exit-mode verdicts are `NF_DROP` / `NF_ACCEPT` |
 
-Attached freplace (`BPF_PROG_TYPE_EXT`) programs are also accepted by `-p <EXT_ID>`.
-Use `-p <dispatcher_ID> --list-progs` to find their IDs (`freplace` edges).
-The replaced program determines the packet layout and action names; probes and
-BTF parameter lookup target the EXT itself. An unattached EXT is rejected.
-For example, capture both images at an XDP replacement with:
+```bash
+# cgroup-skb: packets start at the IP header
+sudo bpf-ninja --cgroup /sys/fs/cgroup/my-service "ipv4/tcp[dport==443]" | tcpdump -n -r -
+sudo bpf-ninja --cgroup /sys/fs/cgroup/my-service --mode exit "ipv4/tcp where action == SK_DROP"
+```
+
+### freplace programs
+
+`-p <EXT_ID>` also accepts an attached freplace (`BPF_PROG_TYPE_EXT`) program.
+`-p <dispatcher_ID> --list-progs` shows their IDs as `freplace` edges.
 
 ```sh
 sudo bpf-ninja -p <EXT_ID> --mode entry 'eth/ipv4' --mode exit 'eth/ipv4' --emit both -w ext.pcap
 sudo bpf-ninja -p <EXT_ID> --list-params
 ```
 
-If the EXT entry has integer parameters after ctx (for example `orig_ret`),
-`--arg-filter`, `--list-params`, and `--arg-echo` work without `--func`.
-Probing a replaced dispatcher stub is rejected with the EXT ID to use instead.
-Other global subfunctions of a program with live freplace links are guarded:
-`--allow-dispatcher-slot` permits probing them, but can block a later freplace
-with `EBUSY`. Link discovery is a snapshot, so concurrent attachment changes
-can still cause a kernel attach error; rerun discovery after such changes.
+- The replaced program sets the packet layout and the action names; probes and BTF parameter lookup target the EXT itself.
+- An unattached EXT is rejected.
+- If the EXT entry has integer parameters after ctx (for example `orig_ret`), `--arg-filter`, `--list-params` and `--arg-echo` work without `--func`.
+- Probing a replaced dispatcher stub is rejected with the EXT ID to use instead.
+- Other global subfunctions of a program with live freplace links are guarded.
+  `--allow-dispatcher-slot` permits probing them, but a later freplace may then fail with `EBUSY`.
+- Link discovery is a snapshot, so a concurrent attachment change can still cause a kernel attach error; run the discovery again after such changes.
 
-`entry`/`exit` are non-invasive: the target program is unmodified, attach is via BPF trampoline. `xdp` is the standalone path for "I just want to capture, there's nothing else here". `tc-entry`/`tc-exit` remain as deprecated aliases for `entry`/`exit`.
+### Entry and exit together
 
-`--mode` is repeatable: `--mode entry EXPR --mode exit EXPR` captures **only the packets that match both** — the entry filter on the packet as the program received it, the exit filter on the packet as the program left it (after decap / rewrite) plus the verdict. The entry image is held in a per-CPU slot until the verdict is known, so you can ask for "the pre-decap header of every packet the program dropped" without exporting anything else. `--emit both` (default) writes the entry and the exit image, `--emit entry` / `--emit exit` just one. Entry records go to a `<hook>:entry` pcap-ng interface and every record carries an opaque `epb_packetid` (CPU + per-CPU sequence, no kernel address) shared by the two images of one invocation so they pair up. `-c` counts records (`-c 10` with `--emit both` is 5 pairs); `merge` and `convert` output drops the id, so pair on the per-CPU shard files or the raw-dump. Under ring pressure an entry record can appear without its exit twin (the exit-side reservation failed after the entry was written), so treat an unpaired entry as a drop, not as a verdict:
+`--mode` is repeatable.
+`--mode entry EXPR --mode exit EXPR` captures only the packets that match both filters:
 
-
-A gated capture attaches two probes to the target, which kernels in the CVE-2026-92485 window (7.0 up to the 7.2.6 / 7.3-rc1 fix) refuse when the target performs tail calls, as Cilium and Katran's inline decap do. bpf-ninja stops with an explanation instead of attempting it, because the failed attach can leave the kernel's trampoline inconsistent and panic the machine. Capture one point at a time there, or use a kernel that carries the fix.
 ```bash
 sudo bpf-ninja -i eth0 --mode entry "eth/ipv4/udp[dport==6081]" --mode exit "eth/ipv4/tcp where action == XDP_DROP" -w both.pcapng
 ```
 
-## Usage
+- The entry filter sees the packet as the program received it; the exit filter sees it as the program left it (after decap or rewrite), plus the verdict.
+- bpf-ninja holds the entry image in a per-CPU slot until the verdict is known.
+  For example, you can capture the pre-decap header of every packet the program dropped, and nothing else.
+- `--emit both` (the default) writes both images; `--emit entry` or `--emit exit` writes one.
+- Entry records go to a `<hook>:entry` pcap-ng interface.
+  Both images of one invocation carry the same opaque `epb_packetid` (CPU and per-CPU sequence, no kernel address), so they pair up.
+- `-c` counts records: `-c 10` with `--emit both` is 5 pairs.
+- The merged `-w` file and the output of `merge` and `convert` drop the id; pair on the stdout stream, the per-CPU shard files or the raw dump, which keep it (see [offline output](docs/ja/examples/offline-output.md)).
+- Under ring pressure an entry record can appear without its exit twin, because the exit-side reservation failed after the entry was written.
+  Treat an unpaired entry as a drop, not as a verdict.
 
-```bash
-# Default: observe via fentry on whatever XDP is attached to eth0
-sudo bpf-ninja -i eth0 | tcpdump -n -r -
+Gated capture attaches two probes to the target.
+Kernels 7.0, 7.1 and 7.2.0 to 7.2.5 refuse a second tracing attach to a program that performs tail calls, as Cilium and Katran's inline decap do (CVE-2026-92485).
+On those kernels, and on kernels whose version bpf-ninja cannot read, bpf-ninja refuses gated capture of such a program with an explanation.
+It does not try, because the failed attach can leave the kernel's trampoline inconsistent and crash the machine.
+Capture one point at a time there, or use 7.2.6, 7.3-rc1 or later.
 
-# Filter (DSL is the default — no flag needed)
-sudo bpf-ninja -i eth0 "eth/ipv4/tcp[dport==80]" | tcpdump -n -r -
+## Filters
 
-# fexit — filter on the XDP return action
-sudo bpf-ninja -i eth0 --mode exit "eth/ipv4/tcp where action == XDP_DROP"
-
-# Standalone XDP attach (no existing XDP needed)
-sudo bpf-ninja --mode xdp -i eth0 "eth/ipv4/tcp[dport==443]" | tcpdump -n -r -
-
-# Legacy tcpdump/cBPF syntax (--cbpf opt-in, prints a deprecation notice)
-sudo bpf-ninja --cbpf -i eth0 "host 10.0.0.1 and tcp port 80" | tcpdump -n -r -
-
-# Write to pcap file, stop after 100 packets
-# (output is sharded across per-CPU files; see "Sharded output" below)
-sudo bpf-ninja -i eth0 -w capture.pcap -c 100
-
-# Attach by BPF program ID — works for XDP, tc clsact, cgroup-skb, and netfilter
-# programs alike (the hook is auto-detected from the program type)
-sudo bpf-ninja -p 42 | tcpdump -n -r -
-
-# cgroup-skb: capture on whatever is attached to a cgroup v2 path.
-# Packets start at the IP header, so chains root at ipv4/ipv6.
-sudo bpf-ninja --cgroup /sys/fs/cgroup/my-service "ipv4/tcp[dport==443]" | tcpdump -n -r -
-sudo bpf-ninja --cgroup /sys/fs/cgroup/my-service --mode exit "ipv4/tcp where action == SK_DROP"
-
-# List BTF functions in the target program
-sudo bpf-ninja -i eth0 --list-funcs
-
-# Attach to a specific __noinline subfunction (entry/exit only)
-sudo bpf-ninja -i eth0 --func process_packet | tcpdump -n -r -
-
-# Attach several (program, func) pairs in one run: -p and --func are
-# repeatable, and each func attaches in every listed program whose BTF
-# has it. All attach points share one ringbuf and merge into one pcap.
-# (e.g. UL + DL capture points living in separate per-direction programs)
-sudo bpf-ninja -p 1610 -p 1611 -p 1614 \
-  --func upf_capture_point_ul --func upf_capture_point_dl -w all.pcap
-
-# Match against a runtime-updatable set (pinned BPF hash map): the map
-# key IS the value to match; entries added/removed while capturing take
-# effect immediately, no re-attach. Manage entries by field name via
-# `bpf-ninja set` (schema comes from the map's BTF).
-sudo bpf-ninja set create /sys/fs/bpf/subs --key "imsi:u64"
-sudo bpf-ninja set add /sys/fs/bpf/subs imsi=999990000000001
-sudo bpf-ninja -p 1661 --func upf_capture_point_ul \
-  --set "subs=/sys/fs/bpf/subs" --arg-filter "@subs" -w subs.pcap
-# Capacity defaults to 1024 (set create --max-entries); grow it later
-# with `set resize` (entries and schema are preserved, takes effect
-# from the next attach)
-sudo bpf-ninja set resize /sys/fs/bpf/subs --max-entries 4096
-
-# Key the set off a PACKET field instead of a function arg — for values
-# that live in the packet (GTP TEID, SRv6 SID). Works on fentry and xdp.
-sudo bpf-ninja set create /sys/fs/bpf/teids --key "teid:u32"
-sudo bpf-ninja set add /sys/fs/bpf/teids teid=0x3039
-sudo bpf-ninja -p 1661 --set "teids=/sys/fs/bpf/teids" \
-  'eth/ipv4/udp/gtp[teid in @teids]' -w teids.pcap
-
-# A 128-bit SRv6 SID (the IPv6 destination): key type "ipv6", value an IPv6 literal
-sudo bpf-ninja set create /sys/fs/bpf/sids --key "dst:ipv6"
-sudo bpf-ninja set add /sys/fs/bpf/sids dst=fc00::1
-sudo bpf-ninja -i eth0 --mode xdp --set "sids=/sys/fs/bpf/sids" \
-  'eth/ipv6[dst in @sids]'
-```
-
-### Filter syntax
-
-The filter expression is interpreted as the built-in DSL by default. Write it as a protocol stack chain — it covers everything tcpdump's cBPF can express and adds the multi-encapsulation cases cBPF can't (MPLS label stacks, VXLAN inner Ethernet, GTP-U inner IP, SRv6, …):
+bpf-ninja reads the filter as the built-in DSL by default.
+Write it as a protocol stack chain.
+It covers what tcpdump's cBPF can express and adds the encapsulation cases cBPF cannot, such as MPLS label stacks, VXLAN inner Ethernet, GTP-U inner IP and SRv6:
 
 ```bash
 # IPv4/TCP, dport 443
@@ -187,30 +170,59 @@ sudo bpf-ninja -i eth0 --mode exit \
   "eth/ipv4/tcp where action == XDP_DROP"
 ```
 
-A filter reads the first 512 bytes of the packet. On entry/exit only that prefix is copied for the filter, so layers and fields past it never match. On `--mode xdp` a chain of fixed-size headers can read further, but variable-length walks (IPv4/TCP options, IPv6 extension headers, SRv6 segments) and everything read after them must stay inside the first 512 bytes, or the packet is rejected.
+`bpf-ninja --dsl-help` prints the grammar and the bundled protocol catalogue.
+`bpf-ninja --dsl-help <proto>` (for example `--dsl-help ipv4`) shows a protocol's fields, its dispatch parents and children, and any variable-layout note.
 
-At a tc target the kernel has normally already moved the outer VLAN tag into skb metadata: always at ingress, and at egress for frames sent through a VLAN device (with its default `reorder_hdr on`). A tagged frame written to a packet socket keeps its tag in the bytes at egress; `--tc-vlan-reinsert` then leaves the bytes as they are, so both kinds look the same to the filter. By default the filter reads the bytes the kernel holds: `eth/ipv4/tcp` also matches single-tagged frames, and a filter that requires the outer tag (`eth/vlan[tci==100]/...`) is a compile error, since no tagged frame carries it. An optional tag may be read (`eth/vlan[tci==100]?/...`, `where vlan.tci == ...`): on a single-tagged frame the layer is absent, so the predicate is skipped and the where atom is false. Only the outermost tag is moved: on a QinQ frame the inner C-tag stays in the bytes (so `eth/vlan?/ipv4/tcp` matches it, a read of `vlan` sees the C-tag, and `eth/ipv4/tcp` does not match), and tags inside a tunnel are always readable. `--tc-vlan-reinsert` puts the tag back into the bytes the filter reads, so filters are written against the frame as it was on the wire. Captured bytes are the kernel's either way, without a tag from metadata; with the flag, a layer-bounded capture such as `capture vlan` takes 4 more bytes. Details: [dsl-usage.md](./docs/ja/dsl-usage.md#tc-での-vlan-tag).
+- A filter reads the first 512 bytes of the packet.
+  In entry and exit mode only that prefix is copied for the filter, so layers and fields past it never match.
+  In `--mode xdp` a chain of fixed-size headers can read further, but variable-length walks (IPv4/TCP options, IPv6 extension headers, SRv6 segments) and everything read after them must stay inside the first 512 bytes, or the packet is rejected.
+- At a tc target the kernel has usually moved the outer VLAN tag into skb metadata: always at ingress, and at egress for frames sent through a VLAN device with the default `reorder_hdr on`.
+  By default the filter reads the bytes as the kernel holds them, so `eth/ipv4/tcp` also matches single-tagged frames, and a filter that requires the outer tag (`eth/vlan[tci==100]/...`) is a compile error.
+  `--tc-vlan-reinsert` puts the tag back into the bytes the filter reads, so you write filters against the frame as it was on the wire.
+  Captured bytes stay as the kernel holds them either way.
+  [dsl-usage.md](./docs/ja/dsl-usage.md#tc-での-vlan-tag) covers optional tags, QinQ and tunnels.
+- bpf-ninja's `.p4` vocab files are a strict subset of P4-16: they declare only `header`, `const` and `parser` blocks, not a full p4c-compatible program.
 
-Run `bpf-ninja --dsl-help` for the grammar + bundled protocol catalogue, or `bpf-ninja --dsl-help <proto>` (e.g. `--dsl-help ipv4`) to see a protocol's field list, dispatch parents/children, and any variable-layout note.
+Guides: [DSL usage](./docs/ja/dsl-usage.md), [grammar (EBNF)](./docs/ja/dsl-grammar.md), [internals and codegen ABI](./docs/ja/dsl-internals.md), [index](./docs/ja/dsl-overview.md).
 
-User-facing CLI guide: [docs/ja/dsl-usage.md](./docs/ja/dsl-usage.md). Internal architecture, codegen ABI, vocab authoring, and P4-16 conformance: [docs/ja/dsl-internals.md](./docs/ja/dsl-internals.md). Formal grammar (EBNF): [docs/ja/dsl-grammar.md](./docs/ja/dsl-grammar.md). Index: [docs/ja/dsl-overview.md](./docs/ja/dsl-overview.md).
+### Legacy: tcpdump syntax (`--cbpf`)
 
-bpf-ninja's `.p4` vocab files are a strict subset of P4-16 (see internals §5). They are NOT a full p4c-compatible program: the bundled fragments declare only `header` / `const` / `parser` blocks (no `action` / `table` / `control` / `apply` / `extern`).
-
-#### Legacy: tcpdump syntax (`--cbpf`)
-
-Use the `enable_libpcap` release artifact or build with `CGO_ENABLED=1` and `-tags enable_libpcap` (see [Install](#install)).
-The default build returns an error with build guidance for `--cbpf`, including `--cbpf --dump-asm filter` and `--cbpf --dump-asm full`.
-
-Pass `--cbpf` to interpret the filter expression as tcpdump syntax and compile it to eBPF via [cbpfc](https://github.com/cloudflare/cbpfc). Kept for backwards compatibility. Each invocation prints a deprecation notice on stderr; the flag is expected to retire once the DSL surface stabilises.
+`--cbpf` reads the filter as tcpdump syntax and compiles it to eBPF through [cbpfc](https://github.com/cloudflare/cbpfc).
+It needs the `enable_libpcap` release archive or a build with `make build-libpcap` (see [Install](#install)).
+In the default build, `--cbpf` stops with build guidance, also with `--dump-asm`; only `--dsl-help` runs regardless.
+Each run prints `warning: --cbpf selects the legacy cBPF path; prefer the default DSL.` on stderr.
 
 ```bash
 sudo bpf-ninja --cbpf -i eth0 "host 10.0.0.1 and tcp port 80"
 ```
 
+### Check a filter without loading: `--dump-asm`
+
+`--dump-asm` compiles a filter and prints the eBPF asm without loading it.
+It needs no `-i` or `-p`:
+
+```bash
+# Just the filter body
+bpf-ninja --dump-asm filter "eth/ipv4/tcp where tcp.dport == 443"
+
+# The wrapped program with its prologue and epilogue, per mode
+bpf-ninja --dump-asm full --mode entry "eth/ipv4/tcp[dport==443]"
+bpf-ninja --dump-asm full --mode exit  "eth/ipv4/tcp where action == XDP_DROP"
+
+# Legacy tcpdump syntax (libpcap build only)
+bpf-ninja --dump-asm filter --cbpf "tcp port 443"
+```
+
+Resolver warnings, such as the never-matching second member of `eth/ipv4/(tcp|tcp)`, go to stderr as `warning:` lines, as in a live capture.
+stdout carries only the asm, so you can diff or pipe dumps.
+`--dump-hook` picks the hook (`xdp`, `tc`, `cgroup-skb` or `netfilter`) whose prologue `--dump-asm full` renders.
+
+## Output
+
 ### Sharded output
 
-For high-rate captures, bpf-ninja uses a per-CPU sharded ringbuf and each CPU writes its own pcap-ng file with no lock. With `-w capture.pcap`:
+Each CPU writes its own pcap-ng file from its own ringbuf shard, with no lock.
+With `-w capture.pcap`:
 
 ```
 capture.pcap          # all shards merged, time-ordered (ready to use)
@@ -219,15 +231,24 @@ capture.pcap.cpu1     # CPU 1 packets (kept)
 ...
 ```
 
-When capture stops (Ctrl-C or `-c`), bpf-ninja merges the per-CPU shards into `capture.pcap` as a single time-ordered pcap-ng, so the base path is ready to open directly (`tcpdump -r capture.pcap`). The `.cpuN` shards are left in place; you can also read one with `tcpdump -r capture.pcap.cpu0` or merge them yourself with `mergecap -w merged.pcap capture.pcap.cpu*`. `bpf-ninja convert` handles `--raw-dump` `.raw` shards, not pcap-ng shards.
+- When the capture stops (Ctrl-C or `-c`), bpf-ninja merges the shards into `capture.pcap` as one time-ordered pcap-ng, ready for `tcpdump -r capture.pcap`.
+- The `.cpuN` shards stay in place.
+  You can read one with `tcpdump -r capture.pcap.cpu0`, or merge them yourself with `mergecap -w merged.pcap capture.pcap.cpu*`.
+- `bpf-ninja convert` reads `--raw-dump` `.raw` shards, not pcap-ng shards.
+- Without `-w`, bpf-ninja serializes all CPUs into one pcap-ng stream on stdout, so `sudo bpf-ninja ... | tcpdump -r -` shows every core's packets.
+  Use `-w` for high-rate captures.
 
-Without `-w` (streaming to stdout), all CPUs are merged into a single pcap-ng stream (serialized), so `sudo bpf-ninja ... | tcpdump -r -` shows every core's packets. Use `-w` for high-rate captures — stdout serialization is for the interactive path.
+On exit, the capture prints a `capture status=...` line to stderr.
+It counts selected export attempts, submitted records, reserve, lookup and copy failures, consumed and written records, intentional limits, and records drained after the producers stop.
+A producer or output failure makes the status `incomplete`.
+The counters do not count filter and parse rejections, so they do not cover every observed packet.
+[Capture completion](docs/capture-lifecycle.md) describes the fields, shutdown, per-tag acknowledgements and output limits.
 
 ### Performance flags (high-rate captures)
 
 | Flag | Purpose |
 |------|---------|
-| `--snaplen N` | Cap per-packet capture bytes (CLI override). Default = full packet (1500 B), libpcap-equivalent |
+| `--snaplen N` | Force the per-packet capture length. 0 (the default) uses the DSL `capture` clause, else 1500 bytes |
 | `--fast-reader` | mmap+atomic ringbuf reader (lower CPU than cilium/ebpf generic) |
 | `--no-wakeup` | Suppress eventfd wake per submit. Trades p50 latency for throughput. **Requires `--fast-reader`** |
 | `--ringbuf-size MB` | Total ringbuf data budget in MiB, a power of two (default 64); divided across possible CPU IDs, with a 64 KiB minimum per shard |
@@ -238,66 +259,48 @@ Without `-w` (streaming to stdout), all CPUs are merged into a single pcap-ng st
 | `--rx-hwts` | Use NIC hardware timestamps (`bpf_xdp_metadata_rx_timestamp` kfunc, Linux 6.8+). **Requires `--mode xdp`**; falls back to software timestamps when the kfunc or driver lacks support |
 | `--legacy-timestamp` | Replace the per-packet kernel `bpf_ktime_get_ns()` timestamp with userland `time.Now()` taken when the reader reads the record (shared across a read batch on the default reader). No effect with `--raw-dump` |
 | `--in-memory-buffer MB` | Buffer up to MB MiB per shard in pre-touched heap and write it out only when the buffer fills or at exit, keeping `write(2)` off the hot path. Memory use is MB × shard count. **Requires `--raw-dump`** |
-| `--observer-prefetch` | Entry/exit only: always copy the full 512-byte scratch instead of only the prefix the filter needs. Costs observer CPU; on an ice-driver XDP_TX target it sped up the observed program by warming the L1 dcache. Default off |
+| `--observer-prefetch` | Entry/exit only: always copy the full 512-byte scratch instead of only the prefix the filter needs. Costs observer CPU, but can speed up the observed program by warming its L1 data cache. Default off |
 
-On exit, capture prints a `capture status=...` line to stderr for both readers.
-It reports selected export attempts, submitted records, reserve/lookup/copy
-failures, consumed and written records, intentional limits, and records drained
-after producers stop. A producer or output failure makes the status `incomplete`.
-Filter and parse rejections are explicitly unmeasured; the counters do not measure
-all observed packets. See [Capture completion](docs/capture-lifecycle.md) for the
-fields and the scope of `complete`.
+[dsl-usage.md](./docs/ja/dsl-usage.md#performance-flags) covers the flags in detail and the snaplen trade-off of the DSL `capture` clause.
+[tuning.md](./docs/ja/tuning.md) gives the order in which to try them.
 
-Detailed flag reference + DSL `capture` clause's snaplen trade-off: [docs/ja/dsl-usage.md](./docs/ja/dsl-usage.md#performance-flags).
-
-High-rate tuning — which lever in which order, and what doesn't work: [docs/ja/tuning.md](./docs/ja/tuning.md).
-
-#### Diagnostics and benchmarking flags
+### Diagnostics and benchmarking flags
 
 | Flag | Purpose |
 |------|---------|
-| `--bench-drop` | `--mode xdp` only (ignored otherwise): return `XDP_DROP` for matched packets after capturing them, so they never reach the host stack. Non-matching packets still pass. Benchmarks only |
+| `--bench-drop` | `--mode xdp` only (ignored otherwise): return `XDP_DROP` for every packet, matched or not, after capturing the matched ones, so no packet reaches the host stack. Benchmarks only |
 | `--latency-sample-period N` | Sample every Nth record's BPF-submit → reader-read latency per shard. **Requires `--raw-dump` and `--fast-reader`**; otherwise nothing is sampled |
 | `--latency-sample-output FILE` | Write the latency samples as TSV (one ns value per line); empty prints a percentile summary to stderr |
 | `--cpuprofile FILE` | Write a Go CPU profile |
 | `--no-async-preempt-off` | By default bpf-ninja re-execs with `GODEBUG=asyncpreemptoff=1`; this flag keeps Go's SIGURG-based preemption enabled (diagnostic opt-out) |
 | `--no-cpu-affinity` | Do not pin shard readers to CPUs (also disables `--rx-cores` pinning). Diagnostic opt-out |
 
-### Hand-test: `--dump-asm`
+## Attaching to subfunctions (entry/exit only)
 
-`--dump-asm` compiles a filter and prints the resulting eBPF asm without loading. No `-i`/`-p` needed:
-
-```bash
-# Just the filter body (kunai/cbpfc Main + Callbacks + CaptureInfo)
-bpf-ninja --dump-asm filter "eth/ipv4/tcp where tcp.dport == 443"
-bpf-ninja --dump-asm filter --cbpf "tcp port 443"     # legacy tcpdump syntax
-
-# Wrapped program with prologue/epilogue (mode-aware)
-bpf-ninja --dump-asm full --mode entry "eth/ipv4/tcp[dport==443]"
-bpf-ninja --dump-asm full --mode exit  "eth/ipv4/tcp where action == XDP_DROP"
-bpf-ninja --dump-asm full --mode xdp --cbpf "tcp port 443"
-```
-
-Use this to sanity-check DSL parse/type errors, inspect codegen output, or verify the wrapped program shape per mode.
-
-Resolver warnings, such as the never-matching second member of `eth/ipv4/(tcp|tcp)`, go to stderr as `warning:` lines, the same lines a live capture prints. They come before the asm, and stdout carries only the asm, so dumps can be diffed or piped.
-
-### Attaching to subfunctions (entry/exit only)
-
-You can use `--func` to attach fentry/fexit to a `__noinline` subfunction inside the target XDP program, instead of the entry function. The subfunction must take `struct xdp_md *ctx` as its first argument.
-
-Use `--list-funcs` to list BTF functions and their loaded availability:
+`--func` attaches fentry or fexit to a `__noinline` subfunction of the target program instead of its entry function.
+The subfunction must take the program's context (for example `struct xdp_md *ctx`) as its first argument.
+`--func`, `--list-funcs`, `--list-progs`, `--list-params` and `--arg-filter` apply only to `entry` and `exit` modes.
 
 ```bash
+# List BTF functions and whether the loaded program has them
 sudo bpf-ninja -i eth0 --list-funcs
+
+# Attach to a subfunction
+sudo bpf-ninja -i eth0 --func process_packet | tcpdump -n -r -
+
+# Several (program, func) pairs in one run: -p and --func are repeatable,
+# and each func attaches in every listed program whose BTF has it.
+# All attach points share one ringbuf and merge into one pcap.
+sudo bpf-ninja -p 1610 -p 1611 -p 1614 \
+  --func upf_capture_point_ul --func upf_capture_point_dl -w all.pcap
 ```
 
+`--list-funcs` keeps absent functions and external declarations in the list, including functions of other programs that share the BTF.
 Text rows include a short reason; `--json` adds an `availability` object with the BTF type ID when known.
-Absent functions and external declarations stay in the list, including functions of other programs sharing the BTF.
-`present` confirms membership in the loaded `func_info`; attachment still depends on the kernel's other checks.
-See [function availability troubleshooting](docs/en/attach-troubleshooting.md) for the reason codes.
+`present` means the function is in the loaded `func_info`; the kernel still runs its other attach checks.
+[Function availability troubleshooting](docs/en/attach-troubleshooting.md) explains the reasons.
 
-Both global and static `__noinline` subfunctions work:
+Global and static `__noinline` subfunctions both work:
 
 ```c
 /* Global — always survives in BTF */
@@ -319,39 +322,36 @@ int parse_headers(struct xdp_md *ctx) {
 }
 ```
 
-> **Note:** The subfunction must have a non-trivial body (e.g. access `ctx->data`). A trivial body like `return 2;` will be constant-folded by `clang -O2`, eliminating the bpf2bpf call entirely.
+- The subfunction needs a non-trivial body, for example one that reads `ctx->data`.
+  `clang -O2` constant-folds a trivial body like `return 2;` and removes the bpf2bpf call.
+- Arguments you read with `--arg-filter` or `--arg-echo` must be used in the subfunction body.
+  `clang -O2` drops unused arguments from the calling convention even though BTF still lists them.
+  The trampoline then saves whatever stale value is in that register: `--list-params` looks fine and unfiltered capture works, but exact matches never hit.
+- Mark such arguments as used with `KEEP_ARGS()` from [`include/keep_args.h`](include/keep_args.h), which adds no instructions:
 
-> **Note:** Arguments you want to read with `--arg-filter` / `--arg-echo` must be *used* by the subfunction body. `clang -O2` drops unused arguments from the calling convention even though BTF still lists them, so the fentry trampoline saves whatever stale value the caller left in that register — `--list-params` looks fine, unfiltered capture works, but exact matches never hit. Pin the arguments with `KEEP_ARGS()` from [`include/keep_args.h`](include/keep_args.h) (zero instructions, it only marks them as used):
->
-> ```c
-> #include "keep_args.h"
->
-> __attribute__((noinline))
-> int capture_point(struct xdp_md *ctx, __u64 imsi, __u32 teid) {
->     KEEP_ARGS(ctx, imsi, teid);
->     return 0;
-> }
-> ```
->
-> If an exact `--arg-filter` never matches, check the value the trampoline actually saved with `--arg-echo` first.
+```c
+#include "keep_args.h"
 
-`--func`, `--list-funcs`, `--list-progs`, `--list-params`, and `--arg-filter` only apply to `entry`/`exit` modes (xdp-native has no tracing args or BTF subfunction concept).
+__attribute__((noinline))
+int capture_point(struct xdp_md *ctx, __u64 imsi, __u32 teid) {
+    KEEP_ARGS(ctx, imsi, teid);
+    return 0;
+}
+```
+
+If an exact `--arg-filter` never matches, check the value the trampoline saved with `--arg-echo` first.
 
 ### Filtering pointer members
 
-`--arg-filter` can read an integer or enum member through a struct/union pointer argument.
-Use `->` for the argument pointer and `.` for nested members; names, offsets, widths, and signedness come from the target program's BTF.
-Discover the exact expressions before writing a filter:
+`--arg-filter` can read an integer or enum member through a struct or union pointer argument.
+Use `->` for the argument pointer and `.` for nested members.
+Names, offsets, widths and signedness come from the target program's BTF.
+List the usable expressions first:
 
 ```sh
 sudo bpf-ninja -p <ID> --func sdf_classify --list-params --members
 sudo bpf-ninja -p <ID> --func sdf_classify --list-params --members --json
 ```
-
-The tree shows types (including typedef names), offsets from the pointee, sizes, signedness, and whether each expression is usable by both `--arg-filter` and `--arg-echo`.
-Rejected expressions include the resolver's reason; anonymous members use promoted names and ambiguous names are flagged.
-The default depth is 3 named levels; use `--members-depth N` (1–32) to change it.
-Omitted branches are marked, including cycle and row limits.
 
 For example, with `sdf_classify(struct xdp_md *ctx_buff, struct classifier_query *q)`:
 
@@ -362,45 +362,90 @@ sudo bpf-ninja -p <ID> --func sdf_classify --arg-filter 'q->seid=1..9'
 sudo bpf-ninja -p <ID> --func sdf_classify --arg-echo 'q->imsi' 'q->target.pdr_id'
 ```
 
-Members and integer args support `=`/`==`, `!=`, `>=`, `<=`, and inclusive `min..max` ranges, with widths of 1, 2, 4, or 8 bytes.
-Use `be16(443)`, `be32(...)`, or `be64(...)` for network-order equality; the width must match, and ordered comparisons/ranges with these literals are refused.
-Scalar pointers use `value[0]`; bare pointers accept `value==null` and `value!=null` without dereferencing.
-Anonymous struct/union members are accessible by their promoted names; bitfields, arrays, and further pointer dereferences are unsupported.
-A null pointer or failed kernel read rejects the call (or suppresses its echo record).
-Member reads run inside the existing entry/exit probe and add no probe; the [two-probe tail-call caveat](#modes) still applies when requesting both capture points.
+- The `--members` tree shows types (with typedef names), offsets, sizes, signedness, and whether `--arg-filter` and `--arg-echo` accept each expression.
+  It gives the reason for rejected expressions, uses promoted names for anonymous members, and flags ambiguous names.
+  It shows 3 named levels by default; `--members-depth N` (1 to 32) changes that, and omitted branches are marked.
+- Members and integer arguments support `=`/`==`, `!=`, `>=`, `<=` and inclusive `min..max` ranges, with widths of 1, 2, 4 or 8 bytes.
+- `be16(443)`, `be32(...)` and `be64(...)` give network-order equality; the width must match, and ordered comparisons or ranges with them are refused.
+- Scalar pointers use `value[0]`; bare pointers accept `value==null` and `value!=null` without dereferencing.
+- Bitfields, arrays and further pointer dereferences are not supported.
+- A null pointer or a failed kernel read rejects the call, or suppresses its echo record.
+- Member reads run in the existing entry or exit probe and add no probe.
+  Gated capture still needs two probes; see [Entry and exit together](#entry-and-exit-together).
+- `--list-params --json` marks pointers with `kind` (`ptr-struct`, `ptr-union` or `ptr`) and `type_name`; `--members` adds a `members` tree.
+  Text goes to stderr and JSON to stdout.
+- Bare `--arg-echo` prints integer arguments; positional expressions pick the arguments or members to print.
+- Set keys support member mappings such as `key(dport=arg:key->dport)`, and bind same-name members when the mapping is omitted and unique.
+- Filters and set keys run at both stages of gated capture; both must match.
 
-`--list-params` includes pointers; `--json` marks them with `kind` (`ptr-struct`, `ptr-union`, or `ptr`) and `type_name`.
-Adding `--members` extends those JSON entries with a `members` tree while preserving existing fields; text stays on stderr and JSON goes to stdout.
-Bare `--arg-echo` still prints integer arguments; positional expressions select the arguments or members to print, using the existing u64 echo slots.
-Set keys support explicit member mappings such as `key(dport=arg:key->dport)` and unique same-name member bindings when the mapping is omitted.
-Filters and set keys run at both stages of gated capture; both must match.
+At function entry, a member holds whatever the caller put there, which may be stale or uninitialized on some paths.
+Check with `--arg-echo` before trusting a filter.
+If the callee fills the field, use exit mode or a function reached after initialization, then check again.
+The [English guide](docs/en/arg-member-filter.md) and [日本語ガイド](docs/ja/arg-member-filter.md) cover discovery, syntax, BTF resolution, read failures and a worked IMSI example.
 
-At function entry, a member contains whatever the caller placed there, which may be stale or uninitialized on some paths.
-Being filterable does not mean the caller sets it on every call: check with `--arg-echo` before trusting a filter.
-If the callee fills the field, prefer exit mode or a function reached after initialization, then verify again.
-For discovery, syntax, BTF resolution, read failures, and a worked IMSI example, see the [English guide](docs/en/arg-member-filter.md) or [日本語ガイド](docs/ja/arg-member-filter.md).
+## Sets
+
+A set is a pinned BPF hash map whose key is the value to match.
+Entries added or removed during a capture take effect at once, without re-attaching.
+`bpf-ninja set` manages entries by field name, using the map's BTF.
+
+```bash
+# Match a function argument
+sudo bpf-ninja set create /sys/fs/bpf/subs --key "imsi:u64"
+sudo bpf-ninja set add /sys/fs/bpf/subs imsi=999990000000001
+sudo bpf-ninja -p 1661 --func upf_capture_point_ul \
+  --set "subs=/sys/fs/bpf/subs" --arg-filter "@subs" -w subs.pcap
+
+# Capacity defaults to 1024 (set create --max-entries). resize keeps the entries
+# and schema; the new capacity takes effect from the next attach.
+sudo bpf-ninja set resize /sys/fs/bpf/subs --max-entries 4096
+
+# Match a packet field (GTP TEID, SRv6 SID); works on fentry and xdp
+sudo bpf-ninja set create /sys/fs/bpf/teids --key "teid:u32"
+sudo bpf-ninja set add /sys/fs/bpf/teids teid=0x3039
+sudo bpf-ninja -p 1661 --set "teids=/sys/fs/bpf/teids" \
+  'eth/ipv4/udp/gtp[teid in @teids]' -w teids.pcap
+
+# A 128-bit SRv6 SID (the IPv6 destination): key type ipv6, value an IPv6 literal
+sudo bpf-ninja set create /sys/fs/bpf/sids --key "dst:ipv6"
+sudo bpf-ninja set add /sys/fs/bpf/sids dst=fc00::1
+sudo bpf-ninja -i eth0 --mode xdp --set "sids=/sys/fs/bpf/sids" \
+  'eth/ipv6[dst in @sids]'
+```
+
+[The set guide](docs/ja/cli/sets.md) covers composite keys, tags, per-tag output and caps.
+
+## Load-time hooks
+
+`inject-run` starts an unmodified BPF loader and adds hooks to selected XDP or tc programs as it loads them.
+It is experimental and runs on Linux x86-64 only.
+`--list-progs --list-maps` shows the map operations of a loaded program.
+
+- [inject-run](docs/en/inject-run.md): usage, rules and limits.
+- [Walkthrough](docs/en/inject-walkthrough.md) from discovery to an fentry observer and a capture, with [example sources](examples/inject-walkthrough/README.md).
+- [Observer examples](docs/en/inject-observers.md): in-kernel counters, CPU-tagged failures and timing across hooks, with [example sources](examples/inject-observers/README.md).
 
 ## Options
 
-[Complete CLI and protocol reference](docs/ja/cli/README.md) (Japanese navigation, generated English help).
-`inject-run` launches an unmodified BPF loader with experimental load-time hook injection on Linux x86-64; see [usage and constraints](docs/en/inject-run.md).
+The [complete command reference](docs/ja/cli/generated/commands.md) lists every flag and subcommand; [protocols.md](docs/ja/cli/generated/protocols.md) lists the DSL protocols and fields.
+Specify exactly one of `-i`, `-p` or `--cgroup`.
 
 | Option | Description | Modes |
 |---|---|---|
 | `-i, --interface` | Network interface to capture on (XDP hook) | entry, exit, xdp |
-| `-p, --prog-id` | BPF program ID to attach to — any supported hook, auto-detected (alternative to `-i`) | entry, exit |
+| `-p, --prog-id` | BPF program ID to attach to, for any supported hook (detected from the program type); alternative to `-i` | entry, exit |
 | `--prog-name` | Select target program(s) by name instead of ID (requires `-i`); resolved against the interface's reachable program tree. Repeatable. Kernel names are truncated to 15 chars, so a full name matches by prefix | entry, exit |
 | `--cgroup` | cgroup v2 path; targets the cgroup-skb program(s) attached to it (alternative to `-i` / `-p`) | entry, exit |
-| `--mode` | `entry` (default), `exit`, `xdp` (`tc-entry`/`tc-exit` are deprecated aliases). Repeatable: `--mode entry EXPR --mode exit EXPR` captures only packets matching both (see Modes above) | — |
-| `--emit` | With two `--mode`: `both` (default), `entry`, or `exit` — which image(s) to write for a packet that matched both filters | entry+exit |
+| `--mode` | `entry` (default), `exit`, `xdp` (`tc-entry`/`tc-exit` are deprecated aliases). Repeatable: `--mode entry EXPR --mode exit EXPR` captures only packets matching both (see Modes above) | n/a |
+| `--emit` | With two `--mode`: which image to write for a packet that matched both filters: `both` (default), `entry` or `exit` | entry+exit |
 | `-w, --write` | Write to pcap file instead of stdout | all |
 | `-c, --count` | Stop after N packets (0 = unlimited) | all |
 | `-v, --verbose` | Verbose output to stderr | all |
 | `--cbpf` | Use the legacy tcpdump/cBPF syntax (compiled via cbpfc); default is the built-in DSL. Prints a deprecation notice when used. | all |
 | `--tc-vlan-reinsert` | At a tc target, put the outer VLAN tag the kernel moved into skb metadata back into the bytes the DSL filter reads (`eth/vlan[tci==100]/...` then works; `eth/ipv4/tcp` stops matching tagged frames). Captured bytes stay as the kernel holds them; layer-bounded captures grow by 4 bytes. Not allowed with `--cbpf`, or with a filter at a static `--func` whose context is read with `bpf_probe_read_kernel` | entry, exit |
-| `--dsl-help` | Print the DSL grammar + bundled protocol catalogue and exit (no `-i`/`-p` required) | — |
-| `--dump-asm` | Print compiled eBPF asm and exit. Values: `filter` (kunai/cbpfc body only) \| `full` (wrapped program). No `-i`/`-p` required | — |
-| `--dump-hook` | Hook whose capabilities/prologue `--dump-asm` renders: `xdp` (default) \| `tc` \| `cgroup-skb` \| `netfilter` (offline compiles have no target program to auto-detect from) | — |
+| `--dsl-help` | Print the DSL grammar + bundled protocol catalogue and exit (no `-i`/`-p` required) | n/a |
+| `--dump-asm` | Print compiled eBPF asm and exit. Values: `filter` (kunai/cbpfc body only) \| `full` (wrapped program). No `-i`/`-p` required | n/a |
+| `--dump-hook` | Hook whose capabilities/prologue `--dump-asm` renders: `xdp` (default) \| `tc` \| `cgroup-skb` \| `netfilter` (offline compiles have no target program to auto-detect from) | n/a |
 | `--func` | Attach to a specific `__noinline` subfunction by BTF name | entry, exit |
 | `--list-funcs` | List all BTF functions with loaded availability and exit | entry, exit |
 | `--allow-dispatcher-slot` | Allow probing an unreplaced global dispatcher subfunction; may block later freplace with `EBUSY` | entry, exit |
@@ -414,39 +459,42 @@ For discovery, syntax, BTF resolution, read failures, and a worked IMSI example,
 | `--arg-filter` | Filter an integer argument or pointer member (requires `--func` or an EXT entry with filterable parameters); `=`, `==`, `!=`, `>=`, `<=`, and `min..max` for `param`, `param->member.member`, or `param[0]`; `be16/32/64(value)` for equality and `param==null`/`!=null` for pointers | entry, exit |
 | `--set` | Define a named match set backed by a pinned BPF hash map: `NAME=/sys/fs/bpf/path[,key(field=arg:expression,...)]` (including members and `[0]`). Reference it with `--arg-filter @NAME` or the DSL predicate `layer[field in @NAME]`; manage entries at runtime with `bpf-ninja set`. Repeatable | all |
 | `--arg-echo` | Print integer args or positional member/scalar-pointee expressions (e.g. `--arg-echo 'q->imsi' 'value[0]'`) for each call, gated by `--arg-filter`, instead of capturing. Requires `--func` or an EXT entry with filterable parameters, and a single `--mode`; combine with `-c N` | entry, exit |
-| `--record` | At an injected hook, write decision state as each packet's pcapng comment: `filter` (default; the arguments and members `--arg-filter` and `--set` keys read), `entry` (site, status, key and value) or `none`. See [the walkthrough](docs/en/inject-walkthrough.md#record-the-decision-state-with-each-packet) | entry, exit |
+| `--record` | At an injected hook, write decision state as each packet's pcapng comment: `filter` (default; the arguments and members `--arg-filter` and `--set` keys read), `entry` (whichever of site, status, key and value the hook has, key and value cut to `--record-max` bytes; only site and info at a generic or dispatch hook) or `none`. See [the walkthrough](docs/en/inject-walkthrough.md#record-the-decision-state-with-each-packet) | entry, exit |
 | `--record-max` | With `--record entry`, record at most N bytes each of the key and the value (default 256, at most 4096) | entry, exit |
 | `--split-by-tag` | Route matched packets to one pcap per set-map value (tag): `-w out.pcap` yields `out.<tag>.pcap` (requires `-w`) | all |
-| `--max-bytes` | Stop the whole capture once total output bytes reach N (works with or without `--split-by-tag`). Per-tag caps live on the set entries: `set add ... max-bytes=N` (0 / omitted = uncapped; entries sharing a tag share one budget — an uncapped entry makes the tag uncapped, otherwise the largest cap wins) | all |
+| `--max-bytes` | Stop the whole capture once total output bytes reach N (works with or without `--split-by-tag`). Per-tag caps live on the set entries: `set add ... max-bytes=N` (0 / omitted = uncapped; entries sharing a tag share one budget: an uncapped entry makes the tag uncapped, otherwise the largest cap wins) | all |
 | `--exit-when-capped` | Exit 0 once every entry that has a per-entry cap reached it; uncapped entries don't participate (requires `--split-by-tag` and at least one `--set`) | all |
-| `--finalize-on-del` | When a tag's last set entry is removed, merge its shards into `out.<tag>.pcap` while capturing continues — the file appearing is the completion ack (requires `--split-by-tag` and at least one `--set`) | all |
-| `-V, --version` | Print the version and exit | — |
-
-Specify exactly one of `-i`, `-p`, or `--cgroup`.
+| `--finalize-on-del` | When a tag's last set entry is removed, merge its shards into `out.<tag>.pcap` while capturing continues; the file appearing is the completion ack (requires `--split-by-tag` and at least one `--set`) | all |
+| `-V, --version` | Print the version and exit | n/a |
 
 ## Prerequisites
 
 Common:
 
 - Linux kernel 5.8+ with BTF (`/sys/kernel/btf/vmlinux`)
-- Root privileges (or `CAP_BPF` + `CAP_NET_ADMIN`)
-- Go 1.25+ (build only — pre-built binaries don't need Go)
-- Only for the optional `enable_libpcap` build: libpcap at runtime, and libpcap-dev when building from source
+- Root privileges
+- Go 1.25+ to build; pre-built binaries do not need Go
+- For the optional `enable_libpcap` build only: libpcap at run time, and a C compiler (cgo uses gcc unless `CC` says otherwise) and libpcap-dev to build from source
 
-Mode-specific:
+By feature:
 
-- **Pointer argument features**: member filters/echo, scalar-pointee `[0]` reads, pointer NULL comparisons, and member-derived set keys require `bpf_get_func_arg` support (upstream Linux 5.17+). These features have been measured on kernels 6.1+ in our test matrix; distribution backports may differ.
-- **Static XDP and tc context fallback**: when a static function's direct context reads are rejected, bpf-ninja reads the context with `bpf_probe_read_kernel`, and only after checking that every call, from the entry function, passes the context as the first argument. Exit and gated capture on this path also require `bpf_get_func_ret` (upstream Linux 5.17+) to obtain the action without relying on the discarded BTF prototype, and at tc a filter with `--tc-vlan-reinsert` is refused.
-- **`--mode entry` / `exit`**: a target BPF program (XDP, tc clsact, cgroup-skb, or netfilter) already loaded with BTF. With `-i`, an XDP program attached to the interface; tc targets go by `-p <progID>`; cgroup-skb targets by `--cgroup <path>` or `-p`.
-- **`--mode xdp`**: no XDP attached to the interface (bpf-ninja becomes the XDP program).
-- **DSL with chain quantifier (`+`, `*`, `{n,m>4}`) on a fixed-length layer, parser-machine self-loop (variable-length headers like IPv6 ext / GTP options / SRv6 segments), or alternation (`(a|b)`)**: kernel 5.17+ (uses `bpf_loop` + bpf2bpf subprograms). A repeated variable-length layer (`ipv4+`, `ipv6*`) unrolls to `MAX_DEPTH` parser machines instead of a bpf_loop chain; each machine's own option or extension walk keeps the 5.17 requirement where it applies. Plain DSL chains and `--cbpf` filters work on 5.8+.
+| Feature | Needs |
+|---|---|
+| `--mode entry` / `exit` | A target BPF program (XDP, tc clsact, cgroup-skb or netfilter) already loaded with BTF. With `-i`, an XDP program attached to the interface; tc targets by `-p <progID>`; cgroup-skb targets by `--cgroup <path>` or `-p` |
+| `--mode xdp` | No XDP program attached to the interface; bpf-ninja becomes the XDP program |
+| Pointer arguments: member filters and echo, scalar-pointee `[0]` reads, pointer NULL comparisons, member-derived set keys | `bpf_get_func_arg` (Linux 5.17+) |
+| Static XDP and tc context fallback | When the kernel rejects direct context reads in a static function, bpf-ninja reads the context with `bpf_probe_read_kernel`, after checking that every call from the entry function passes the context as the first argument. Exit and gated capture on this path need `bpf_get_func_ret` (Linux 5.17+). At tc, a filter with `--tc-vlan-reinsert` is refused on this path |
+| DSL chain quantifiers (`+`, `*`, `{n,m>4}`) on a fixed-length layer, variable-length headers (IPv6 extension headers, GTP options, SRv6 segments), alternation (`(a\|b)`) | Linux 5.17+ (`bpf_loop` and bpf2bpf subprograms). A repeated variable-length layer (`ipv4+`, `ipv6*`) unrolls to `MAX_DEPTH` parser machines instead of a `bpf_loop` chain; each machine's own option or extension walk keeps the 5.17 requirement |
+| Plain DSL chains and `--cbpf` filters | Linux 5.8+ |
+| netfilter targets | Linux 6.4+ |
+| `--rx-hwts` | Linux 6.8+ and driver support |
 
 ```bash
 # Optional legacy build dependencies (Debian/Ubuntu)
-sudo apt install libpcap-dev
+sudo apt install gcc libpcap-dev
 
 # Optional legacy build dependencies (Fedora/RHEL)
-sudo dnf install libpcap-devel
+sudo dnf install gcc libpcap-devel
 ```
 
 `clang` is needed for running BPF load tests locally; install it separately for development. It is not required for using bpf-ninja itself.
@@ -455,64 +503,21 @@ sudo dnf install libpcap-devel
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution checks.
 
-### Build
-
 ```bash
 make build          # CGO_ENABLED=0, no build tags
-make build-libpcap  # CGO_ENABLED=1, -tags enable_libpcap; needs libpcap-dev
+make build-libpcap  # CGO_ENABLED=1, -tags enable_libpcap; needs a C compiler and libpcap-dev
 ```
 
-### Test
+| Command | Runs | Needs |
+|---|---|---|
+| `make test` | Unit tests (`go test ./...`), with no BPF | nothing extra |
+| `make test-bpf` | `scripts/test/privileged.py`: the privileged Go suites, including verifier load tests of the generated fentry, fexit and xdp programs | root, python3, clang, a C compiler and libpcap-dev (it builds with `-tags enable_libpcap`); see [privileged tests](docs/privileged-tests.md) |
+| `make test-integration` | `scripts/test/run_tests.sh`: a veth pair with a dummy XDP program, entry and exit capture, filters, pcap output and graceful shutdown; it cleans up the veth pair | root, clang, tcpdump, python3, a C compiler (gcc) and libpcap-dev (it runs `make build-libpcap` first) |
+| `make test-all` | All three | all of the above |
 
-```bash
-# Unit tests (no root required)
-make test
-
-# BPF verifier load tests (root required, needs clang)
-make test-bpf
-
-# Integration tests with veth pair (root required, needs clang + tcpdump)
-make test-integration
-
-# All tests
-make test-all
-```
-
-#### Unit tests
-
-Pure Go logic tests. No BPF or root privileges needed.
-
-```bash
-make test
-# or: go test ./...
-```
-
-#### BPF load tests
-
-Verifies that the dynamically generated fentry/fexit/xdp programs pass the kernel's BPF verifier. Tests both with and without filters. Requires root and clang.
-
-```bash
-make test-bpf
-```
-
-#### Integration tests
-
-End-to-end tests using a veth pair and a dummy XDP program. Requires root, clang, and tcpdump.
-
-```bash
-make test-integration
-```
-
-This runs `scripts/test/run_tests.sh` which:
-1. Creates a veth pair with a dummy XDP program
-2. Tests entry/exit capture, filters, pcap output, graceful shutdown
-3. Cleans up the veth pair
-
-#### Multi-kernel testing (vimto + QEMU)
-
-BPF load tests and integration tests run on kernel 6.1, 6.6, 6.12, 6.15, 6.18, 7.0, 7.1, 7.2 and 7.3-rc4 via [vimto](https://github.com/lmb/vimto) + QEMU in GitHub Actions.
-
-To run locally:
+CI runs the privileged Go suites on kernels 6.1, 6.6, 6.12, 6.15, 6.18, 7.0, 7.1, 7.2 and 7.3-rc4 with [vimto](https://github.com/lmb/vimto) and QEMU.
+The shell integration tests run once, on the CI runner's kernel.
+To run the load tests on one kernel locally:
 
 ```bash
 # Install vimto and QEMU
@@ -532,10 +537,10 @@ vimto -kernel :6.6 exec -- go test -v -count 1 -timeout 5m ./internal/program/ -
 
 bpf-ninja's design was inspired by the following projects:
 
-- [xdp-dump](https://github.com/xdp-project/xdp-tools/blob/main/xdp-dump/README.org) (xdp-tools) — fentry/fexit trampoline approach for tracing XDP programs
-- [xdpcap](https://github.com/cloudflare/xdpcap) (Cloudflare) — tcpdump filter compilation via cBPF→eBPF ([cbpfc](https://github.com/cloudflare/cbpfc)), and the overall architecture of capturing XDP packets to pcap
+- [xdp-dump](https://github.com/xdp-project/xdp-tools/blob/main/xdp-dump/README.org) (xdp-tools): the fentry/fexit trampoline approach for tracing XDP programs
+- [xdpcap](https://github.com/cloudflare/xdpcap) (Cloudflare): tcpdump filter compilation via cBPF→eBPF ([cbpfc](https://github.com/cloudflare/cbpfc)), and the overall architecture of capturing XDP packets to pcap
 
-Capture shutdown, per-tag acknowledgements, output limits and the `capture status=...` counters are described in [Capture completion](docs/capture-lifecycle.md).
+
 ## License
 
 bpf-ninja is licensed under the [Apache License 2.0](LICENSE).

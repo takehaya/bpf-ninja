@@ -1,182 +1,345 @@
 # Capture の対象と観測点
 
-対象 program の動作前を見るなら entry、戻り値も見るなら exit、既存 XDP のない専用 interface で取得するなら xdp を選びます。
-Linux、kernel BTF、必要な権限を確認し、entry/exit では BTF 付き target を先に用意してください。
-[対応 hook と条件](../../../README.md#modes)を確認し、例中の interface、ID、関数名は実際に探索した値に置き換えます。
-以下の `eth0` や program ID は説明用です。
+このページでは、packet を取得する場所 (観測点) と、対象にするプログラム (target) の選び方を説明します。
+必要な環境と対応 hook は [README の Modes](../../../README.md#modes) を参照してください。
+準備から停止までを一通り試すには [隔離 capture recipe](../examples/capture-recipes.md) を使ってください。
+例にある `eth0`、program ID、関数名は説明用の値です。
+実際の値は `--list-progs` や `--list-funcs` で確認してください。
 
-準備から停止までの手順は [隔離 capture recipe](../examples/capture-recipes.md)を参照してください。
-起動完了を示す `capturing (...)...` が出てからパケットを送信します。
-Ctrl-C または count による終了後、summary と最終 pcap を確認してください。
-不一致ケースは count が増えないため明示停止します。
+## 観測点を選ぶ
 
-## `--mode xdp` で native XDP として直接 attach する
+| 指定 | 付く場所 | 使う場面 |
+|---|---|---|
+| `--mode entry` (既定) | 既存プログラムの入口 (fentry) | プログラムが受け取った直後の packet を確認する |
+| `--mode exit` | 既存プログラムの出口 (fexit) | 戻り値 (`where action == ...`) や書き換え後の packet を確認する |
+| `--mode entry EXPR --mode exit EXPR` | 入口と出口の両方 | 両方の条件に一致した packet だけを取得する |
+| `--mode xdp` | bpf-ninja 自体が interface の XDP になる | XDP が付いていない interface で取得する |
 
-通常の bpf-ninja は、既存の XDP プログラムに fentry/fexit で trampoline attach する観測ツールであり、他人の XDP を覗くモードです。一方 `--mode xdp` を付けると、bpf-ninja 自身が XDP として interface に直接 attach します。interface に何も XDP が attach されていないが filter したい場合に便利です。
+entry と exit を使うには、BTF 付きの target プログラムが先に動いている必要があります。
+hook の種類 (XDP、tc、cgroup-skb、netfilter) は target から自動で判定されます。
+`--mode tc-entry` と `--mode tc-exit` は非推奨の別名です。
+指定すると警告を表示し、`entry` および `exit` として動作します。
+
+## target を指定する
+
+| 指定 | 意味 |
+|---|---|
+| `-i IFACE` | interface に付いた XDP プログラム |
+| `-p ID` | program ID。複数指定できます |
+| `--cgroup PATH` | cgroup v2 に付いた cgroup-skb プログラム (ingress と egress) |
+| `-i IFACE --prog-name NAME` | interface から到達できるプログラムを名前で選びます。複数指定できます |
+| `--func NAME` | entry 関数の代わりに `__noinline` のサブ関数を対象にします。複数指定できます |
+
+`-i`、`-p`、`--cgroup` はいずれか 1 つだけを指定します。
+
+## 開始と停止
+
+起動後に `capturing (...)...` と表示されてから packet を送ります。
+Ctrl-C または `-c N` で停止すると、summary が表示されて最終的な pcap が出力されます。
+条件に一致しない packet は count に含まれないため、一致しないことを確認する試験では手動で停止してください。
+停止後の確認手順は [出力とキャプチャの完了](output.md#停止後に確認すること) を参照してください。
+
+## `--mode xdp` で interface に直接 attach する
+
+通常、bpf-ninja は既存の XDP プログラムに fentry/fexit で attach する観測ツールです。
+一方 `--mode xdp` では、bpf-ninja 自体が XDP プログラムとして interface に attach されます。
 
 ```bash
-# DSL で TCP/443 だけ capture, それ以外は素通し (XDP_PASS)
+# TCP/443 だけを取り、ほかは素通しする (XDP_PASS)
 sudo bpf-ninja --mode xdp -i eth0 "eth/ipv4/tcp[dport==443]"
 
-# DSL filter (UDP は全部 capture)
+# UDP をすべて取る
 sudo bpf-ninja --mode xdp -i eth0 "eth/ipv4/udp"
 
-# 旧 pcap syntax を使いたい時は --cbpf 必須 (legacy)
+# tcpdump の構文は --cbpf で使う (enable_libpcap 付きの build が必要)
 sudo bpf-ninja --cbpf --mode xdp -i eth0 "tcp port 443"
-
-# 既存 XDP がある interface では fail (production XDP を意図せず壊さない設計)
-sudo bpf-ninja --mode xdp -i eth0 "eth/ipv4/tcp[dport==443]"
-# → error: interface eth0 already has XDP program (id=42, mode=driver);
-#          use --mode entry to observe it via fentry, or detach the existing program first
 ```
 
-挙動は次のとおりです。
+- 条件に一致した packet は per-CPU の ringbuf に書き込まれます。
+- 戻り値は既定で `XDP_PASS` です。
+  `--bench-drop` を指定すると、一致の有無にかかわらず、すべての packet に `XDP_DROP` を返します。これは隔離されたベンチマーク環境専用です。
+- すでに XDP が付いている interface では起動しません。
+  `error: interface eth0 already has XDP program (id=42, mode=driver); use --mode entry to observe it via fentry, or detach the existing program first` というエラーを出して停止します。
+- `-i` の指定が必須です。
+  `-p`、`--prog-name`、`--cgroup`、`--func`、`--arg-filter`、`--list-*` は併用できません。
+- `--rx-hwts` (NIC の hardware timestamp) は `--mode xdp` でのみ使用できます。
+  kfunc が使えない環境では警告を出し、software の時刻に戻ります。
+- `--record` は使用できません。
+- raw-dump の record metadata では、mode の値は 2 になります (entry は 0、exit は 1)。
 
-- マッチしたパケットは per-CPU ringbuf に記録されます。
-- 既定では `XDP_PASS` を返します。`--bench-drop` は隔離したベンチ用途でのみ使う opt-in です。
-- mode metadata 値は xdp-native を表す 2 です。既存は entry=0、exit=1 です。
+`--mode xdp` では、DSL と `--cbpf` のどちらの filter もロードできます。
+filter は packet 上で直接動作するため、可変 offset の読み出し時には packet 末尾との境界比較が行われます。
+IPv4 と IPv6 の chain、IPv6 を親にした dispatch (`eth/ipv6/ipv6/tcp`、`eth/ipv4/ipv6/tcp`)、`ipv4{1,2}` や `ipv6{1,2}` の繰り返し、gre の optional word、alternation、quantifier、capture 句、where 句を使用できます。
+IPv6 拡張ヘッダの値は stack に保持するため、`--mode xdp` は受け取った frame を書き換えずにそのまま通します。
 
-DSL / tcpdump の両方とも `--mode xdp` で load できます。native XDP では filter が packet pointer の上で直接動くので、kunai codegen は可変 offset の読みに packet 末尾との比較を付けます。verifier を通ることを確認している形は `internal/program/program_xdp_test.go` の `xdpNativeDSLExprs` にあり、IPv4 と IPv6 の chain、IPv6 を親にした dispatch (`eth/ipv6/ipv6/tcp`、`eth/ipv4/ipv6/tcp`)、`ipv4{1,2}` や `ipv6{1,2}` の繰り返し、gre の optional word、alternation、各種 quantifier、capture、where を含みます。IPv6 拡張ヘッダの write-back は packet を書き換えず stack slot に値を持つので、`--mode xdp` が通す frame は受け取ったままです。
+## 入口と出口の両方に一致した packet だけを取る
 
-## 入口と出口の両方に一致した packet だけを取る (`--mode` を 2 回)
-
-`--mode` は繰り返せる。`--mode entry` と `--mode exit` を両方書くと、同じプログラムの入口 (fentry) と出口 (fexit) に同時に付き、**両方の条件に一致した packet だけ**を出す。式は `--mode` ごとに 1 つ (引用符で囲んで) 続ける。
-入口の条件はプログラムが受け取ったままの packet に対して、出口の条件はプログラムが返した後の packet (decap や書き換えの後) と判定 (`where action == ...`) に対して評価する。
+`--mode entry` と `--mode exit` を両方指定すると、同じプログラムの入口と出口に同時に attach します。
+両方の条件に一致した packet だけが出力されます。
+この動作を gated capture と呼びます。
 
 ```bash
-# decap 後に捨てられた packet を、decap 前の姿 (outer header 付き) と decap 後の姿の両方で
+# decap 後に捨てられた packet を、decap 前と decap 後の両方の姿で取る
 sudo bpf-ninja -i eth0 \
   --mode entry "eth/ipv4/udp[dport==6081]" \
   --mode exit  "eth/ipv4/tcp where action == XDP_DROP" \
   -w both.pcapng
 
-# 同じ条件で、decap 前の姿だけ
-sudo bpf-ninja -i eth0 --mode entry "eth/ipv4/udp[dport==6081]" --mode exit "eth where action == XDP_DROP" --emit entry
+# 同じ条件で decap 前の姿だけを取る
+sudo bpf-ninja -i eth0 --mode entry "eth/ipv4/udp[dport==6081]" \
+  --mode exit "eth where action == XDP_DROP" --emit entry
 ```
 
-- `--mode` が 1 つなら従来どおり (位置引数を空白でつないだものが式)。2 つなら式は `--mode` と同じ数だけ (それぞれ 1 引数)、または 0 個 (両方とも無条件)。
-- 入口の姿は出口の判定が出るまで CPU ごとの一時領域 (hold) に取り置き、出口で両方の条件が揃ったときだけ ring に出す。入口の条件に一致した packet にはこの取り置きのコピーが掛かる (`--emit exit` を除く)。入口の条件を空にすると全 packet を取り置くので警告が出る。
-- `--emit both` (既定) は入口の姿と出口の姿を 2 record (同じ id、同じ判定付き)、`--emit entry` は入口の姿だけ、`--emit exit` は出口の姿だけ (取り置きは印だけで一番安い)。`--emit` は `--mode` が 2 つのときだけ書ける。迷ったら `both`。
-- 対象は 1 つの関数に限る (`--func` の複数指定や複数プログラムとの併用は不可)。`--split-by-tag` と `--arg-echo` は併用できない。PREEMPT_RT の kernel は対象外 (起動時に警告が出る)。
-- 対象が `bpf_clone_redirect` などで同じ関数に同期的に入り直しても、取り置きは入れ子の深さごとに別の領域を使うので、外側と内側の実行をそれぞれ対にして出す。領域は CPU ごとに 10 段で、kernel が許す送信の入れ子の上限に足りる。それより深い実行は取り置かずに `hold_depth_overflow` として数える。別の attach が trampoline を書き換えたせいで probe が飛ばされたときは、`hold_overwrite` か `hold_unpaired` として数え、深さの数え方がずれたら次の実行で数え直して `hold_depth_resync` に数える。どの場合も終了時の `capture status` は `incomplete` になり、誤った組み合わせの record は出ない。
-- 対象が tail call をする program (Cilium や Katran の inline decap) の場合、CVE-2026-92485 に当たる kernel (7.0 から 7.2.6 / 7.3-rc1 の修正まで) は 2 本目の attach を拒否する。失敗した attach の後片付けで trampoline が壊れ、machine が panic することがあるので、bpf-ninja は試さずに説明付きで止まる。その kernel では `--mode` を 1 つずつ取るか、修正の入った kernel を使う。
-- `-c` は record 数で数える。`--emit both` なら 1 packet で 2 record なので、`-c 10` は 5 組。
-- ring が詰まると、入口 record だけ書けて出口 record の確保に失敗することがある (出口側の reserve が後)。対の無い入口 record は取りこぼしとして扱い、判定の証拠にしない。
-- 出口の式は「出口で見える layout」に対して書く。上の例で対象が outer UDP を剥がすなら、出口では inner の Ethernet が先頭に来ているので `eth/ipv4/tcp` と書く。同じ packet でも入口と出口で式が変わるのは、実際に header が変わっているからである。
-- pcap-ng の layout は exit mode と同じ verdict ごとの interface (`xdp:DROP`, `xdp:PASS`, ...) に、入口 record 用の `xdp:entry` を足したもの。
-- すべての record に `epb_packetid` option (pcap-ng 標準の「同じ packet を別の interface で見た印」) が入る。既定の値は「CPU 番号 << 48 | その CPU で入口の条件に一致した通し番号」で、同じ実行の入口と出口の record が同じ値を持つ。kernel のアドレスは含まない。
-- kernel 内では、取り置いた内容が同じ実行のものかを hook の packet identity (XDP なら `xdp_buff->data_hard_start`、tc / cgroup-skb なら `sk_buff` のアドレス、netfilter なら `bpf_nf_ctx->skb`) で確認する。この値は kernel の外には出ない。
-- raw-dump (`--raw-dump`) の record metadata は 28 byte になり、offset 20 に packet id が入る (形式 V2。V1 の dump は `convert` で読めない)。
-- `merge` した pcap-ng と `convert` で raw-dump から起こした pcap-ng には `epb_packetid` が入らない (どちらも id を持たない書き出し経路を通る)。対応づけが要るときは shard ごとの pcap-ng か raw-dump そのものを使う。
+### 式の書き方
 
-## 複数の (プログラム, 関数) に同時アタッチする
+- 各 `--mode` の後ろに、引用符で囲んだ式を 1 つずつ指定します。
+  式を 1 つも指定しない場合、両方とも無条件になります。
+  式の数が `--mode` の数と一致しないとエラーになります。
+- `--mode` が 1 つのときは、位置引数を空白でつないだものが式になります。
+- 入口の式は、プログラムが受け取った時点の packet に対して評価されます。
+- 出口の式は、プログラムの処理が終わった後の packet と判定 (`where action == ...`) に対して評価されます。
+  decap や書き換えが行われた後の layout に合わせて記述してください。
+  上の例では outer UDP が剥がれるため、出口では inner の Ethernet が先頭になります。
 
-`-p` と `--func` はどちらも繰り返し指定できる。
-各 `--func` は、指定した全 program のうち BTF とロード済み `func_info` にその関数を持つものすべてにアタッチする。
-異なる関数名の複数指定や複数 program の指定では、BTF FUNC があっても `func_info` にない対象や外部宣言を短い理由付きの警告でスキップし、件数を stderr に出す。
-単一 program で関数名が一つなら、同名を繰り返しても欠落時は詳しい説明付きで失敗する。
-全対象をスキップした場合は、切り分け資料へのリンクを一度示して失敗する。
-一部の program の BTF にない関数名は従来どおり警告なしでスキップし、全 program にない関数名はエラーになる。
-`--func` を省略した場合は各 program の entry 関数が対象である。
-[Subprog エラーの切り分け](../troubleshooting.md#fentryfexit-の-subprog-エラーを調べる)を参照する。
+### `--emit`
 
-モバイルコアの UPF を例にすると、上り (UL) と下り (DL) の capture point が別プログラムに分かれ、さらに多段 dispatcher (cpu_dispatch → CPUMAP → 方向別ハンドラ) を通る。ここで `--func upf_capture_point_dl` が複数プログラムに当たる理由は、noinline サブ関数が呼び出し元プログラムごとに 1 コピーずつコンパイルされるからである。DL の実体が IPv4 ハンドラ (id 1610) と IPv6 ハンドラ (id 1611) の両方にあれば、関数名 1 つで両方へ張れる。UL + DL v4 + DL v6 の全網羅は従来3回の起動が必要だったが、1回で済む。
+| 値 | 出す record |
+|---|---|
+| `both` (既定) | 入口と出口の姿を 1 組で出します (同じ id と同じ判定が付きます) |
+| `entry` | 入口の姿だけを出します |
+| `exit` | 出口の姿だけを出します。入口では印だけを残すため、最も負荷が軽くなります |
 
-### `--list-progs` で到達可能プログラムを洗い出す
+- `--emit` は `--mode` を 2 つ指定したときだけ使用できます。
+- `-c` は出力される record の数で数えます。`--emit both` では 1 packet が 2 record になるため、`-c 10` は 5 組分です。
 
-`--list-progs` は、起点プログラムから到達できるプログラムを推移的に辿って一覧する。起点は `-i` の XDP か `-p` の ID である。辿るエッジは次の 3 種類がある。
+### 制約
 
-- freplace は、関数を置換している attach 済み EXT プログラムである。
-- tail call は、`bpf_tail_call` が使う `PROG_ARRAY` のエントリ先である。
-- redirect は、`CPUMAP` / `DEVMAP` / `DEVMAP_HASH` のエントリに attach された XDP プログラム、すなわち `bpf_redirect_map()` の飛び先である。
+- 対象にできるのは 1 つの関数だけです。`--func` の複数指定や複数のプログラムとは組み合わせられません。
+- `--mode xdp`、`--split-by-tag`、`--arg-echo`、`--record`、`--dump-asm` とは併用できません。
+- 同じ `--mode` を 2 回指定することはできません。
+- PREEMPT_RT の kernel では起動時に警告が出ます。ペアの記録が欠落することがあります。
+- 入口の式を空にすると、すべての packet を一時保存するため警告が出ます。`--emit exit` では警告は出ません。
+- tail call を使うプログラム (Cilium や Katran の inline decap など) では、7.0 から 7.2.5 の kernel が 2 本目の attach を拒否します。
+  attach の失敗後に trampoline が壊れて machine が panic することがあるため、bpf-ninja は attach を試みずに説明を出して停止します (CVE-2026-92485、7.2.6 と 7.3-rc1 で修正済み)。
+  kernel のバージョンを読み取れないときも同様に停止します。
+  該当する kernel では `--mode` を 1 つずつ使うか、修正済みの kernel を使ってください。
 
-さらにその先も同様に辿るので、`cpu_dispatch → CPUMAP[0..N] → 方向別ハンドラ` から別の redirect へ続くような多段構成でも、末端の実プログラム ID までまとめて出る。
+### 取り置きと取りこぼし
+
+- 入口での packet の姿は、出口の判定が出るまで CPU ごとの一時領域 (hold) に保持されます。
+  出口で両方の条件がそろったときだけ ring に出力されます。
+  `--emit exit` 以外では、入口の条件に一致した packet ごとにこのコピーが発生します。
+- 対象プログラムが `bpf_clone_redirect` などで同じ関数に入り直しても、入れ子の深さごとに別の領域を使います。
+  外側と内側の実行は、それぞれ組にして出力されます。
+- 一時領域は CPU ごとに 10 段あり、kernel が許容する送信の入れ子上限を満たしています。
+  それより深い実行は保持されず、`hold_depth_overflow` に計上されます。
+- 別の attach が trampoline を書き換えて probe が飛ばされると、`hold_overwrite` または `hold_unpaired` に計上されます。
+  深さの数え方がずれた場合は、次の実行で数え直して `hold_depth_resync` に計上します。
+- これらが発生すると、終了時の `capture status` は `incomplete` になります。誤った組み合わせの record が出力されることはありません。
+- ring が詰まると、入口の record だけが書き込まれ、出口の record を確保できないことがあります。
+  対応する組がない入口の record は取りこぼしとして扱い、判定の証拠には使わないでください。
+- kernel 内部では、保持した内容が同じ実行のものかを hook の packet identity で確認します。
+  XDP では `xdp_buff->data_hard_start`、tc と cgroup-skb では `sk_buff` のアドレス、netfilter では `bpf_nf_ctx->skb` を使います。
+  この値が kernel の外に出ることはありません。
+
+### 出力の形式
+
+- pcap-ng の interface は、exit mode と同じ判定ごとの interface (`xdp:DROP`、`xdp:PASS` など) に、入口の record 用の `xdp:entry` を加えたものです。
+- 標準出力への stream と、CPU ごとの shard (`-w path.pcap` の `path.pcap.cpuN`) では、各 record に `epb_packetid` option が付きます。
+  値は `CPU 番号 << 48 | その CPU で入口の条件に一致した通し番号` です。同じ実行の入口と出口の record には同じ値が入ります。
+  kernel のアドレスは含まれません。
+- raw-dump (`--raw-dump`) の record metadata は 28 byte で、offset 20 に packet id が入ります (形式 V2)。
+  V1 の dump は `convert` で読み込めません。
+- 停止時に合算した `path.pcap`、`merge` した pcap-ng、`convert` で raw-dump から作成した pcap-ng には `epb_packetid` は入りません。
+  入口と出口の対応づけが必要なときは、標準出力への stream、CPU ごとの shard、raw-dump のいずれかを使ってください。
+  raw-dump の扱いは [offline 出力処理](../examples/offline-output.md) を参照してください。
+
+## 複数のプログラムと関数に attach する
+
+`-p` と `--func` はどちらも複数回指定できます。
+各 `--func` は、指定したプログラムのうち、BTF とロード済みの `func_info` にその関数を持つものすべてに attach します。
+`--func` を省略すると、各プログラムの entry 関数に attach します。
+
+| 状況 | 動作 |
+|---|---|
+| 関数名が一部のプログラムの BTF にない | 警告を出さずにそのプログラムをスキップします |
+| 関数名がどのプログラムの BTF にもない | エラーになります |
+| 複数の関数名または複数のプログラムで、BTF FUNC はあるが `func_info` にない対象や外部宣言がある | 理由付きの警告を出してスキップし、件数を stderr に出力します |
+| プログラム 1 つと関数名 1 つの指定で、その関数が使えない | 詳しい説明を表示して失敗します |
+| すべての対象をスキップした | 切り分け資料へのリンクを表示して失敗します |
+
+問題の切り分けは [Subprog エラーの調べ方](../troubleshooting.md#fentryfexit-の-subprog-エラーを調べる) を参照してください。
+
+- すべての attach 点は 1 本の共有 ringbuf に書き込むため、出力は 1 つの pcap に時刻順で記録されます。
+- `--arg-filter` は関数ごとに BTF を引いて解決します。同じ param 名が関数によって別の位置にあっても正しく動作します。
+  指定した param を持たない関数が混ざるとエラーになります。
+- hook の種類が違う target (XDP と tc など) は混在できません。hook ごとに bpf-ninja を起動してください。
+
+たとえばモバイルコアの UPF では、上り (UL) と下り (DL) の capture point が別のプログラムにあり、多段の dispatcher (cpu_dispatch → CPUMAP → 方向別ハンドラ) を通ります。
+`__noinline` のサブ関数は呼び出し元のプログラムごとにコピーされるため、DL の関数は IPv4 ハンドラ (id 1610) と IPv6 ハンドラ (id 1611) の両方に存在します。
+この場合も関数名 1 つで両方に attach でき、UL と合わせて 1 回の起動で済みます。
 
 ```bash
-# --list-progs で dispatcher から末端の prog ID を推移的に洗い出し
+# dispatcher から末端の program ID までを洗い出す
 sudo bpf-ninja -i ens2f0 --list-progs
 
-# UL + DL (v4/v6 両実体) を1回でアタッチ。--func upf_capture_point_dl は
-# 1610/1611 の両方に、_ul は 1614 だけにマッチする
+# UL と DL (v4 と v6) に 1 回で付ける。upf_capture_point_dl は 1610 と 1611 に、
+# upf_capture_point_ul は 1614 だけに一致する
 sudo bpf-ninja -p 1610 -p 1611 -p 1614 \
   --func upf_capture_point_ul --func upf_capture_point_dl \
   --arg-filter "imsi=999990000000001" -w all.pcap
 ```
 
+### `--list-progs` で到達できるプログラムを調べる
+
+`--list-progs` は、起点のプログラムから到達できるプログラムをたどって一覧表示します。
+起点は `-i` の XDP、`-p` の ID、または `--cgroup` の cgroup-skb プログラムです。
+たどる経路は次の 3 種類です。
+
+- freplace は、関数を置き換えている attach 済みの EXT プログラムです。
+- tail call は、`bpf_tail_call` が使う `PROG_ARRAY` の entry が指す先です。
+- redirect は、`CPUMAP`、`DEVMAP`、`DEVMAP_HASH` の entry に付いた XDP プログラムで、`bpf_redirect_map()` の飛び先です。
+
+到達した先も同じようにたどるため、多段の構成でも末端のプログラム ID まで表示されます。
+`--list-maps` を追加すると、関数ごとの呼び出しと map の使い方も表示します。
+詳しい使い方は [walkthrough の map 一覧の節](../../en/inject-walkthrough.md#1-list-the-map-calls) を参照してください。
+
 ### ID の代わりに名前で選ぶ (`--prog-name`)
 
-`--list-progs` の出力から prog ID を控えてコピペするのが面倒なときは、`--prog-name` で名前から選べる。`-i` の到達ツリーに対して名前解決するので、ID を調べずに済む。func 側は従来どおり `--func` を使う。
-
 ```bash
-# ID の代わりに名前で選ぶ (-i の到達ツリーから解決)
 sudo bpf-ninja -i ens2f0 --prog-name upf_dl_v4 --prog-name upf_dl_v6 \
   --func upf_capture_point_dl --arg-filter "imsi=999990000000001" -w dl.pcap
 ```
 
-- カーネル上のプログラム名は 15 文字までに切り詰められるので、長い名前は前方一致で解決する。同じ切り詰め名のプログラムが複数あると曖昧としてエラーになるので、その場合は `-p <id>` を使う。
-- `--prog-name` は `-i` 専用である。`--mode xdp` や tc 系では使えない。
+- `--prog-name` は `-i` の到達ツリーから名前を解決します。`-i` の指定が必須です。
+- `--mode xdp` では使用できません。tc のプログラムは `-p` で指定してください。
+- kernel のプログラム名は 15 文字で切り詰められるため、長い名前は前方一致で解決します。
+- 同じ名前に複数のプログラムが一致すると、特定できないためエラーになります。そのときは `-p <id>` を使ってください。
 
-### list 出力を JSON で得る (`--json`)
+### 一覧を JSON で得る (`--json`)
 
-`--json` を付けると、`--list-progs` / `--list-funcs` / `--list-params` の結果をテキストではなく JSON で stdout に出せる。jq などに渡して自動処理したいときに便利である。`--list-progs` と `--list-funcs` を同時に渡すと、到達ツリーの各プログラムにその BTF 関数一覧もぶら下がる。
+`--json` を付けると、`--list-progs`、`--list-funcs`、`--list-params` の結果を JSON 形式で stdout に出力します。
+`--list-progs` と `--list-funcs` を同時に渡すと、到達ツリーの各プログラムに BTF 関数の一覧が付きます。
+entry と exit の capture で、これらの一覧なしに `--json` を指定するとエラーになります。
 
 ```bash
 # 到達ツリーを JSON で
 sudo bpf-ninja -i ens2f0 --list-progs --json | jq '.[].reachable[].name'
 
-# 到達ツリー + 各プログラムの BTF 関数を JSON で一括取得
+# 到達ツリーと各プログラムの BTF 関数を JSON で
 sudo bpf-ninja -i ens2f0 --list-progs --list-funcs --json | jq '.[].reachable[] | {name, funcs}'
 ```
 
-- 全アタッチポイントが 1本の共有 ringbuf に emit するので、出力は通常どおり 1 つの pcap に時刻順で入る (`-w` なら終了時マージ、stdout なら直列化ストリーム)。
-- `--arg-filter` は関数ごとに BTF を引いて検証し、解決する。同じ param 名が関数によって別の引数位置にあっても正しく効く。指定した param を持たない関数が混ざるとエラーになる。
-- XDP と tc のターゲット混在は不可 (別々に起動する)。`--arg-echo` は単一 (プログラム, 関数) のみ。
+## 関数引数の値を見る (`--arg-echo`)
 
-## 関数引数の値を覗く (`--arg-echo`)
-
-`--func` で狙ったサブ関数の整数引数が、実際にどんな値で呼ばれているかを見る診断モードです。`--arg-filter "imsi=..."` が当たらないとき、そもそも引数にどんな値が乗っているかを確認するのに使います。たとえば IMSI が 10 進なのか TBCD なのかを見分けられます。パケットキャプチャはせず、引数だけを専用 ringbuf に流して表示します。
+`--arg-echo` は、`--func` で選んだ関数がどのような引数で呼ばれているかを表示します。
+packet の取得は行いません。
+`--arg-filter "imsi=..."` が一致しないときに、IMSI が 10 進数か TBCD かなどを確かめるのに使えます。
 
 ```bash
-# 対象関数の絞り込み可能な整数引数を確認
+# 絞り込みに使える引数を確認する
 sudo bpf-ninja -p 1661 --func upf_capture_point_ul --list-params
 #   imsi  [8 bytes, unsigned, arg index 1]
 #   teid  [4 bytes, unsigned, arg index 2]
 
-# 1 回だけ観測して終了 (-c 1)
+# 1 回だけ表示して終了する
 sudo bpf-ninja -p 1661 --func upf_capture_point_ul --arg-echo -c 1
 #   upf_capture_point_ul: imsi=999990000000001 (0x38d7c50ba9c01) teid=12345 (0x3039)
 ```
 
-- `--func`、または整数引数を持つ EXT entry が必要です。表示対象は `--list-params` が挙げる整数引数で、10 進と 16 進を併記します。
-- `--arg-filter` と併用すると、その述語にマッチした呼び出しだけを表示します。値の当たりを付けてから絞り込むという使い方ができます。
-- 連続して同じ引数タプルが来た場合は 1 行に畳んで `(xN)` と表示します。`-c N` を付けると N 件表示したところで終了し、無指定なら Ctrl-C まで続きます。
-- リーダは capture path と同じ in-tree の `fastrb` (mmap + epoll) を使います。
+- `--func` の指定、または絞り込める引数を持つ entry 関数が必要です。
+- 既定では、`--list-params` が挙げる整数引数を 10 進数と 16 進数で表示します。
+  位置引数に `'q->imsi'` や `'value[0]'` のような式を書くと、その値を表示します。
+- `--arg-filter` と組み合わせると、条件に一致した呼び出しだけを表示します。
+- 同じ値の組が連続すると、1 行にまとめて `(xN)` と表示します。
+- `-c N` で N 件表示して終了します。指定しないと Ctrl-C で止めるまで続きます。
+- 対象にできるのは (プログラム, 関数) の 1 組だけです。
+- `--set` と `--arg-filter @NAME` は使用できません。指定できる `--mode` も 1 つだけです。
 
-## 判断材料をパケットと一緒に記録する (`--record`)
+## 判断材料を packet と一緒に記録する (`--record`)
 
-inject した hook でキャプチャするとき、その hook がどんな値で呼ばれたかを各パケットの pcapng コメントとして書き込みます。`--record` は次を選びます。
+inject した hook で取得するとき、その hook がどのような値で呼ばれたかを各 packet の pcapng コメントに記録します。
 
-- `filter` は既定値で、`--arg-filter` と `--set` のキーが読む引数やメンバーを記録します。各フィールドは 1 回だけ読み、その読み取り値ですべての条件を判定して記録するため、記録値はその条件を満たします。参照するフィールドが無ければ記録せず、通常の pcap レイアウトのままになります。LPM trie のキー構造体以外の `bpf_*` 構造体の中のメンバー (`struct bpf_sock_tuple` の `tuple->ipv4.dport` など) の条件は、絞り込みには使えますが記録しません。既定のレイアウトはそのフィールドを外して `-v` でその名前を表示し、`--record filter` を明示した場合は拒否します。既定では `inject-run` が生成した hook だけが記録します。生成 hook には BTF の decl tag `bpf-ninja:hook` が付いているので、引数名が同じだけの通常の関数は通常のレイアウトのままです。`--record filter` や `--record entry` を明示するとすべての `--func` 対象で記録し、`-v` を付けると記録する対象を表示します。
-- `entry` は hook が受け取った `site`、`status`、キーと値の全体をマップの BTF で復号して記録します。無名の構造体や共用体のメンバーは `--arg-filter` と同じ名前で、配列と名前付きの共用体は 16 進で、マップに BTF が無いときは hook の形によらず `value=` に生のバイト列を 16 進で書き、`--record-max` で切り詰めます。`--record-max N` (既定 256、最大 4096) がキーと値それぞれの記録バイト数を抑えます。値渡しの整数は全体を記録するか、まったく記録しないかのどちらかです。ポインター、`bpf_*` 構造体 (`bpf_timer`、ロック、kptr を持つ構造体など。uapi の LPM trie キー構造体 `bpf_lpm_trie_key`、`bpf_lpm_trie_key_hdr`、`bpf_lpm_trie_key_u8` は除く)、それらを含む配列や共用体はコメントに出さないので、ポインター型のフィールドや kernel が管理するフィールドはファイルに入りません。ただし、プログラムが通常の整数フィールドに入れたアドレスは整数と区別できず、整数として記録されます。untrusted な per-map hook の `const void *` のキーと値には `inject-run` がマップから `bpf-ninja:key_size`/`value_size` の decl tag を付け、`entry` はそれを読んで生のバイト列 (16 進) を記録します。タグを付けるのは全バイトが単純なデータのときか、その側にマップの BTF が無いときだけで、ポインターや `bpf_*` フィールドを含むキーや値にはサイズが付かず記録されません。generic hook と dispatch hook は複数のマップを扱うのでサイズのタグが無く、`entry` は `site` (`info` の下位 32 ビット) と `info` 全体だけを `site=N info=0x...` として記録します。
-- `none` は通常の pcap レイアウトのままにします。
+| 値 | 記録する内容 |
+|---|---|
+| `filter` (既定) | `--arg-filter` と `--set` のキーが読む引数とメンバー |
+| `entry` | `site`、`status`、キー、値のうち hook にあるもの。キーと値はそれぞれ最大 `--record-max` バイトです。generic と dispatch の hook では `site` と `info` だけです |
+| `none` | 記録しません。通常の pcap の形のままになります |
 
-コメントは空白区切りの `名前=値` の並びです。名前は `--arg-filter` と同じ書き方 (`value->action`、`key->hdr.prefixlen`、`value[0]`) で、整数は 10 進 (符号付きは符号拡張)、配列と名前付きの共用体は 16 進です。`status` と `info` は `(u32)ret | flags << 32` の形なので、上位と下位の 32 ビットが読めるよう `status=0x00000002fffffffe` のように `0x%016x` で書きます。この値はそのまま `--arg-filter` に指定できます。読み取りに失敗したフィールドは `名前=?`、NULL 判定の対象は `value=null` か `value!=null`、`--record-max` で切り詰めた値は `value_bytes=4/8` (8 バイト中 4 バイトを記録) と書きます。
+### どこで記録するか
 
-記録するキャプチャは `--func` ごとに 1 つの pcapng インターフェイスを作り (名前が重なるときは `func@progid`)、`epb_packetid` は付けません。verdict ごとのインターフェイスが無いので、`--mode exit` では各コメントの先頭に関数の戻り値を `return=0x%08x` として書きます。最悪の場合のコメントが `return=` の接頭辞込みで pcapng のオプション 1 つ (65535 バイト) に収まらないとき、明示した `--record` は拒否します。`entry` なら `--record-max` を下げ、`filter` なら条件のフィールドを減らしてください。既定値の場合は自動的に無効になります。`--record` は gated キャプチャ、`--raw-dump`、`--arg-echo`、`--mode xdp`、`--dump-asm` とは併用できず、既定値はそれらの場で自動的に無効になります。
+- 既定では、`inject-run` が生成した hook だけで記録します。
+  生成された hook には BTF の decl tag `bpf-ninja:hook` が付いているため、引数名が同じだけの通常の関数は通常の形のままになります。
+- `--record filter` または `--record entry` を明示すると、すべての `--func` の対象で記録します。
+- `-v` を付けると、記録する対象を表示します。
+- gated capture、`--raw-dump`、`--arg-echo`、`--mode xdp`、`--dump-asm` では使用できません。
+  明示するとエラーになり、既定値は自動で無効になります。
+- 記録する対象は 255 個までです。これを超えると、明示した `--record` はエラーになり、既定値は無効になります。
 
-## capture point の書き方 (`--arg-filter` が当たらないとき)
+### `filter` の記録
 
-`--func` で狙う capture point を自作するときは、引数を関数本体で「使って」おく必要があります。本体が空の capture point だと、コンパイラは未使用の引数を呼び出し規約 (r1..r5) から落とすことがあります。BTF の関数シグネチャはそのまま残るため `--list-params` は正しく表示され、アタッチもキャプチャも成功します。しかし fentry/fexit の trampoline が保存するのはレジスタの実体なので、bpf-ninja が読むのは呼び出し元が残した無関係な値になります。
+- 各フィールドは 1 回だけ読み取り、その値ですべての条件を判定して記録します。記録された値は必ず条件を満たしています。
+- 読み取るフィールドがなければ記録せず、通常の pcap の形のままになります。
+- LPM trie のキー構造体以外の `bpf_*` 構造体に含まれるメンバー (`struct bpf_sock_tuple` の `tuple->ipv4.dport` など) は、絞り込みには使えますが記録されません。
+  既定ではそのフィールドを記録対象から外し、`-v` で名前を表示します。`--record filter` を明示した場合はエラーになります。
 
-この状態の症状は次のように見えます。
+### `entry` の記録
 
-- フィルタ無しのキャプチャは動く。`--list-params` も正しい。
-- `--arg-filter "imsi=<真値>"` や `--arg-filter @SET` の完全一致が 1 件も当たらない。
-- 範囲比較 (`imsi>=...`) だと桁だけ合う値でマッチしたりしなかったりする。呼び出し元のレジスタに残っていたのが目的の値の計算途中の断片だと、こういう「惜しい」挙動になります。
+- キーと値はマップの BTF を使って復号します。無名の構造体や共用体のメンバーは `--arg-filter` と同じ名前で出力します。
+- 配列と名前付きの共用体は 16 進数で出力します。
+- マップに BTF がないときは、hook の形にかかわらず `value=` に生のバイト列を 16 進数で出力します。
+- `--record-max N` (既定 256、0 から 4096) は、キーと値それぞれの記録バイト数の上限です。
+  `--record entry` のときだけ指定できます。
+- 値渡しの整数は、全体を記録するか、まったく記録しないかのどちらかになります。
+- ポインター、`bpf_*` 構造体 (`bpf_timer`、ロック、kptr を持つ構造体など)、およびそれらを含む配列や共用体は記録されません。
+  uapi の LPM trie キー構造体である `bpf_lpm_trie_key`、`bpf_lpm_trie_key_hdr`、`bpf_lpm_trie_key_u8` は記録されます。
+  プログラムが通常の整数フィールドに入れたアドレスは、整数として記録されます。
+- untrusted な per-map hook の `const void *` のキーと値には、`inject-run` がマップから `bpf-ninja:key_size` と `bpf-ninja:value_size` の decl tag を付けます。
+  `entry` はこれを読んで生のバイト列を 16 進数で記録します。
+  タグが付くのは、全バイトが単純なデータであるか、その側にマップの BTF がないときだけです。ポインターや `bpf_*` フィールドを含むキーや値は記録されません。
+- generic hook と dispatch hook は複数のマップを扱うため、サイズのタグがありません。
+  `entry` は `site` (`info` の下位 32 ビット) と `info` 全体だけを `site=N info=0x...` として記録します。
 
-疑わしいときは、まず `--arg-echo` で trampoline が実際に保存した値を見てください。datapath 側のデバッグ出力と食い違っていれば、引数が ABI から落ちています。
+### コメントの書式
 
-対策は、対象プログラム側で引数を ABI に固定することです。リポジトリ同梱の `include/keep_args.h` の `KEEP_ARGS()` を関数本体の先頭に置きます。
+- 空白区切りの `名前=値` の並びです。
+- 名前は `--arg-filter` と同じ書き方です (`value->action`、`key->hdr.prefixlen`、`value[0]`)。
+- 整数は 10 進数で出力します。符号付き整数は符号拡張されます。
+- `status` と `info` は `(u32)ret | flags << 32` であるため、`status=0x00000002fffffffe` のように `0x%016x` で出力します。この値はそのまま `--arg-filter` に渡せます。
+- 読み取りに失敗したフィールドは `名前=?` になります。
+- NULL 判定の対象は `value=null` または `value!=null` になります。
+- `--record-max` で切り詰められた値は `value_bytes=4/8` (8 バイト中 4 バイトを記録) と出力されます。
+
+### pcapng の形
+
+- (プログラム, 関数) の組ごとに 1 つの pcapng interface を作ります。
+  interface 名は関数名です。同じ関数名が複数のプログラムにあるときは `func@progid` になります。
+- `epb_packetid` は付きません。
+- 判定ごとの interface がないため、`--mode exit` では各コメントの先頭に関数の戻り値を `return=0x%08x` として出力します。
+- コメントの最大長が `return=` を含めて pcapng の option 1 つ分 (65535 バイト) に収まらない場合、明示した `--record` はエラーになります。
+  `entry` なら `--record-max` を下げ、`filter` なら条件のフィールドを減らしてください。既定値の場合は自動で無効になります。
+
+実際の出力例は [walkthrough の記録の節](../../en/inject-walkthrough.md#record-the-decision-state-with-each-packet) を参照してください。
+
+## 自作の capture point で `--arg-filter` が当たらないとき
+
+`--func` で狙う capture point を自作するときは、引数を関数の本体で使う必要があります。
+関数本体が空だと、コンパイラは使わない引数をレジスタ (r1 から r5) から落とすことがあります。
+BTF の関数シグネチャは残るため、`--list-params` は正しく表示され、attach も capture も成功します。
+しかし fentry/fexit の trampoline が保存するのはレジスタの中身であるため、bpf-ninja は呼び出し元が残した無関係な値を読み取ってしまいます。
+
+このときの症状は次のとおりです。
+
+- filter なしの capture は正常に動きます。`--list-params` も正しく表示されます。
+- `--arg-filter "imsi=<真値>"` や `--arg-filter @SET` の完全一致が 1 件も当たりません。
+- 範囲比較 (`imsi>=...`) は、桁だけ合う値で一致したりしなかったりします。
+  目的の値を計算している途中の断片がレジスタに残っているためです。
+
+この問題が疑わしいときは、まず `--arg-echo` で trampoline が保存した値を確認してください。
+datapath 側のデバッグ出力と食い違っていれば、引数がレジスタから落ちています。
+
+対策は、対象プログラム側で引数をレジスタに固定することです。
+リポジトリの `include/keep_args.h` にある `KEEP_ARGS()` を関数本体の先頭に置いてください。
 
 ```c
 #include "keep_args.h"
@@ -188,7 +351,7 @@ int upf_capture_point_ul(struct xdp_md *ctx, __u64 imsi, __u32 teid) {
 }
 ```
 
-`KEEP_ARGS` は各引数をレジスタ入力の空 asm に通すだけで、命令は 1 つも増えません。libbpf の `bpf_helpers.h` が入っている環境なら、同等の `barrier_var()` を引数ごとに並べても同じです。
-
+`KEEP_ARGS` は各引数をレジスタ入力の空の asm に通すだけで、命令は増えません。
+libbpf の `bpf_helpers.h` がある環境では、同じ働きをする `barrier_var()` を引数ごとに並べても構いません。
 
 [DSL 利用ガイドに戻る](../dsl-usage.md)

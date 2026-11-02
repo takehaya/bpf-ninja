@@ -1,8 +1,8 @@
 # フィルタをロードせず確認する
 
-式の解釈と生成命令を調べる例です。
-BPF をロードしないため、root 権限、対象プログラム、インターフェース、パケットの送信は不要です。
-Linux で `make build` を実行した後、リポジトリのルートディレクトリで次のコマンドを実行します。
+式の解釈と生成される命令を確認する例です。
+BPF をロードしないため、root 権限、対象プログラム、インターフェース、パケット送信は不要です。
+Linux で `make build` を実行したあと、リポジトリのルートで次のコマンドを実行します。
 
 ## 実行
 
@@ -10,14 +10,25 @@ Linux で `make build` を実行した後、リポジトリのルートディレ
 ./bpf-ninja --dsl-help
 ./bpf-ninja --dsl-help ipv4
 ./bpf-ninja --dump-asm filter 'eth/ipv4/tcp[dport==443]'
-./bpf-ninja --dump-asm full --dump-hook xdp --mode exit   'eth/ipv4/tcp where action == XDP_DROP'
+./bpf-ninja --dump-asm full --dump-hook xdp --mode exit 'eth/ipv4/tcp where action == XDP_DROP'
+```
+
+- 最初の 2 つは、簡易構文とプロトコルのフィールドを表示します。
+- `filter` はフィルタ本体の命令を表示します。`full` は、entry と exit では tracing プログラム、`--mode xdp` では XDP プログラムとして組み立てた命令を表示します。
+- `--dump-hook` は、ターゲットを探さないオフライン処理で hook を指定します。
+- 警告は stderr に出力されます。stdout には命令だけが出力されます。
+
+## legacy 構文
+
+tcpdump 構文の `tcp port 443` には `--cbpf` が必要です。
+`--cbpf` は libpcap 付きのビルドでのみ使えます。ビルドには C コンパイラと libpcap の開発用パッケージが必要です。
+
+```sh
+make build-libpcap
 ./bpf-ninja --cbpf --dump-asm filter 'tcp port 443'
 ```
 
-最初の二つは簡易構文と protocol/field の説明を表示します。
-`filter` はフィルタ本体、`full` は host に組み込んだ program の命令を表示し、正常終了します。
-warning がある場合は stderr も確認してください。
-`--dump-hook` は target を探索しない offline 処理で host を指定するために使います。
+既定のビルドで `--cbpf` を指定すると、ビルド方法を示すエラーを表示して終了します。`--dump-asm` と組み合わせた場合も同様です。ただし、`--dsl-help` だけは `--cbpf` が指定されていても動作します。
 
 ## エラーの確認
 
@@ -25,15 +36,15 @@ warning がある場合は stderr も確認してください。
 ./bpf-ninja --dump-asm filter 'eth/ipv4/tcp[dport==65536]'
 ```
 
-65536 は 16 bit のポート番号に収まらないため、エラーの説明を表示して非ゼロの終了コードを返すことを確認します。
-legacy の `tcp port 443` には `--cbpf` が必要です。
-DSL の Ethernet frame は `eth` から書き、L3 始まりの host では IP header から書きます。
+65536 は 16 bit のポート番号に収まりません。
+エラー内容が表示され、0 以外の終了コードが返ることを確認します。
+DSL で Ethernet フレームを扱う場合は `eth` から記述します。
+L3 から始まる hook では IP ヘッダから記述します。
 
-## 結果の解釈と片付け
+## 結果の読み方
 
-各コマンドは自動終了し、この例ではファイルや kernel resource を作成しません。
-命令列の表示で確認できるのは、コンパイルが成功したことまでです。
-verifier に受理されるか、実パケットが式に一致するかは、[privileged tests](../../privileged-tests.md) と packet fixture で別に確認します。
-対応する回帰試験は `cmd/bpf-ninja` の DSL help と dump-asm tests です。
+各コマンドは自動で終了し、ファイルやカーネルのリソースを作成しません。
+命令の表示で分かるのは、コンパイルが成功したことまでです。
+verifier による受理と実パケットへの一致は、[隔離 recipe](capture-recipes.md) または [privileged tests](../../privileged-tests.md) で確認します。
 
 [Examples に戻る](README.md)

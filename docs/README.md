@@ -1,9 +1,11 @@
 # Documentation
 
 - [日本語の利用ガイドと資料案内](ja/README.md)
-- [Installation and supported hooks (English)](../README.md#install)
+- [Installation (English)](../README.md#install) and [supported hooks (English)](../README.md#modes)
 - [Manual capture tests (English)](en/handtest.md)
 - [Functions missing from a loaded program (English)](en/attach-troubleshooting.md)
+- [Filtering on function arguments and pointer members (English)](en/arg-member-filter.md), [日本語](ja/arg-member-filter.md)
+- [DSL usage guide (Japanese)](ja/dsl-usage.md)
 - [Experimental inject-run launcher and configuration (English)](en/inject-run.md)
 - [Map discovery and injection walkthrough (English)](en/inject-walkthrough.md), with [example sources](../examples/inject-walkthrough/README.md)
 - [Small observers for inject hooks (English)](en/inject-observers.md), with [example sources](../examples/inject-observers/README.md)
@@ -16,7 +18,6 @@
 - [kunai library API (English)](../pkg/kunai/README.md)
 - [Published workshop artifact](publications/ebpf_workshop_2026/README.md)
 
-For detailed usage instructions, read the Japanese guides.
-Use the English manual test guide to verify capture behavior after setup.
-Documents describe the source revision containing them unless they identify a fixed release or an experimental result.
+The detailed user guides (CLI, DSL, output, sets, tuning) are in Japanese.
+The English manual test guide checks capture behavior after setup.
 Historical decisions and published artifacts retain their original version and conditions.

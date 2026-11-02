@@ -1,52 +1,60 @@
 # 隔離環境で ICMP を取得する
 
-専用の二つの network namespace と veth を作り、xdp mode の一致、不一致、legacy 構文、raw-dump を確認します。
+専用の network namespace 二つと veth を作成し、xdp mode での一致と不一致、legacy 構文、raw-dump、set の更新を確認します。
 既存の interface や XDP program は操作しません。
-実行手順は [docs-capture.sh](../../../scripts/test/docs-capture.sh) にあり、既存の readiness/停止 helper を使います。
+一連の手順は [docs-capture.sh](../../../scripts/test/docs-capture.sh) にまとまっています。
 
-## 必要条件と準備
+## 必要条件
 
-使い捨て Linux VM、root、kernel BTF、iproute2、ping、tcpdump、GNU timeout、nsenter、mount 済み bpffs が必要です。
-[対応条件](../../../README.md#prerequisites)と[試験環境](../../privileged-tests.md)を確認してください。
-script は不足条件を検査し、mount やパッケージ導入を自動では行いません。
-repository root で実行します。
+- 使い捨ての Linux VM と root 権限
+- kernel BTF（`/sys/kernel/btf/vmlinux`）と mount 済みの bpffs
+- iproute2、ping、tcpdump、GNU timeout、nsenter
+- C コンパイラ（cgo の既定は gcc）と libpcap の開発用パッケージ（Ubuntu では `libpcap-dev`）
+
+不足している項目があると、script はそれを検出して停止します。
+mount やパッケージのインストールは自動で行いません。
+[対応条件](../../../README.md#prerequisites)もあわせて確認してください。
+
+## 実行
+
+script は legacy の `--cbpf` もテストするため、libpcap を有効にして build します。
+既定の `make build` で作成した binary を使うと、ネットワークを作成する前に script が停止します。
+repository root で次のコマンドを実行します。
 
 ```sh
-make build
+make build-libpcap
 sudo bash scripts/test/docs-capture.sh
 ```
 
-## 実行と期待結果
+## 期待結果
 
-script は一意の namespace 名を確保し、その中だけに 192.0.2.1/30 と 192.0.2.2/30 を設定します。
-受信側の `doc0` に attach し、`capturing (...)...` を待って送信側から ping を送ります。
+script は一意な名前の namespace に 192.0.2.1/30 と 192.0.2.2/30 を設定します。
+受信側の `doc0` に attach し、`capturing (...)...` の表示を待ってから送信側で ping を送信します。
 
 | ケース | 式と指定 | 結果 |
 |---|---|---|
-| DSL 一致 | `eth/ipv4/icmp[type==8]`、`-c 3` | summary と最終 pcap が 3 件 |
-| DSL 不一致 | `eth/ipv4/tcp[dport==80]` | ping 後に SIGTERM、summary と pcap が 0 件 |
-| legacy 一致 | `--cbpf 'icmp'`、`-c 3` | ICMP 3 件 |
-| raw-dump | 同じ ICMP 式と `--raw-dump` | 正常終了後に convert、pcap が 3 件 |
-| set 更新 | [runtime set](runtime-sets.md) | 同じ capture 中に add/del を反映 |
-| tag finalize | 同じ set の tag=7 | delete 後の合算 ack から 3 件を読める |
+| DSL 一致 | `eth/ipv4/icmp[type==8]`、`-c 3` | summary と pcap が 3 件 |
+| DSL 不一致 | `eth/ipv4/tcp[dport==80]` | ping の後に SIGTERM で停止し、summary と pcap が 0 件 |
+| legacy 一致 | `--cbpf 'icmp'`、`-c 3` | ICMP が 3 件 |
+| raw-dump | 同じ ICMP 式と `--raw-dump` | `convert` の後に pcap が 3 件 |
+| set 更新 | [runtime set](runtime-sets.md) | 同じ capture 中の del と add を反映して 6 件 |
+| tag finalize | 同じ set の tag=7 | 削除後に合算ファイルから 3 件を読み取れる |
 
-起動成功は、一定時間の経過ではなく `capturing (...)...` の表示で判定します。
-不一致ケースは count に達しないので signal で止めます。
-timeout、起動失敗、summary の欠落、pcap の読取失敗があれば、取得件数 0 件を確認できたとは扱いません。
+起動の成功は、経過時間ではなく `capturing (...)...` の表示で判定します。
+不一致のケースでは指定した count に達しないため、signal で停止します。
+timeout、起動失敗、summary の欠落、pcap の読み取り失敗がある場合は、正常な 0 件の結果として扱いません。
+最後に `Documentation capture examples passed` が表示されます。
 
 ## 停止と片付け
 
 各 capture には時間制限があります。
-終了時と中断時は、この実行の子プロセスを止めてから namespace と pin を削除します。
-pcap と stderr は表示された一意の `/tmp/bpf-ninja-docs.*` ディレクトリに残します。
-内容を確認した後、そのディレクトリだけを手動で削除してください。
-再現記録には commit、`uname -r`、終了 summary も残します。
+終了時や中断時には、script が実行中の子プロセスを停止し、作成した namespace と pin を削除します。
+pcap と stderr は、表示された `/tmp/bpf-ninja-docs.*` ディレクトリに残ります。
+内容を確認した後、このディレクトリだけを手動で削除してください。
+不具合を報告する際は、commit、`uname -r`、終了時の summary も添えてください。
 
-## 検証範囲
-
-この smoke test は小規模な ICMP の取得と出力を検査します。
-高負荷性能、全 hook、全 protocol の保証には使いません。
-広い回帰試験は `make test-bpf` と `make test-integration` です。
-script は既存 Integration Tests job でも実行します。
+この script は、小規模な ICMP の取得と出力を確認します。
+CI でも実行されます。
+より広範囲の回帰試験は `make test-bpf` と `make test-integration` で実行できます。必要な環境は [privileged tests](../../privileged-tests.md) を参照してください。
 
 [capture guide](../cli/capture.md) · [出力 guide](../cli/output.md)

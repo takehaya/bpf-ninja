@@ -1,56 +1,70 @@
 # 出力とキャプチャの完了
 
-`-w` は pcap-ng の保存先です。
-取得中に書き込む shard、終了後の合算ファイル、tag の finalize 完了通知を区別してください。
-各実行には新しい出力ディレクトリを使い、以前のファイルを今回の完了通知と取り違えないようにします。
+`-w` で pcap-ng の保存先を指定します。
+取得中は CPU ごとの shard に書き込み、停止後に 1 つのファイルへ合算します。
+`--split-by-tag` では tag ごとのファイルに分け、`--finalize-on-del` ではファイルの出現によって tag ごとの完了を知らせます。
+前回のファイルと取り違えないよう、実行ごとに新しい出力ディレクトリを使ってください。
 
 ## 停止後に確認すること
 
-Ctrl-C または SIGTERM で停止を要求し、プロセスの終了を待ちます。
-終了コード、`capture status`、loss counters、最終 pcap の読み取りを確認してください。
-`complete` は対象の drain と出力完了を表し、全 wire packet の捕捉や fsync による耐久性を保証しません。
-損失指標がある場合は終了コードだけで成功と判断しないでください。
-契約の詳細は [capture lifecycle](../../capture-lifecycle.md) が正本です。
-[実行 recipe](../examples/capture-recipes.md)では停止と pcap 検査まで行います。
+1. Ctrl-C か SIGTERM で停止を要求し、プロセスの終了を待ちます。
+2. 終了コード、`capture status`、loss counters を確認します。
+3. 最終的な pcap が読めるか確認します。
 
-## 出力ファイルレイアウト (per-CPU sharded)
+`complete` は、対象の drain と出力が完了したことを表します。
+すべての wire packet を取得できたことや、fsync による耐久性を保証するものではありません。
+損失の指標が出ているときは、終了コードだけで成功と判断しないでください。
+契約の詳細は [capture lifecycle](../../capture-lifecycle.md) にあります。
+停止から pcap の検査までの手順は [実行 recipe](../examples/capture-recipes.md) で試せます。
 
-R22 以降、ringbuf は per-CPU shard (`BPF_MAP_TYPE_ARRAY_OF_MAPS` の inner は個別の `BPF_MAP_TYPE_RINGBUF`) で構成されます。user-space 側も shard ごとに 1 goroutine + 1 file で受けるので、`-w path.pcap` を指定したときの出力は次のようになります。
+## CPU ごとの shard と合算ファイル
+
+ringbuf は CPU ごとの shard に分かれており、user space でも shard ごとに 1 つのファイルへ書き出します。
+`-w path.pcap` の出力は次のようになります。
 
 ```
-path.pcap         ← 全 shard を時刻順にマージした単一 pcap-ng (そのまま使える)
-path.pcap.cpu0    ← CPU 0 が受けた packets (残置)
-path.pcap.cpu1    ← CPU 1 が受けた packets (残置)
+path.pcap         ← 全 shard を時刻順に合算した pcap-ng (そのまま使う)
+path.pcap.cpu0    ← CPU 0 が受けた packet (残る)
+path.pcap.cpu1    ← CPU 1 が受けた packet (残る)
 ...
-path.pcap.cpuN    ← (N = nproc - 1)
+path.pcap.cpuN    ← N は /sys/devices/system/cpu/possible の最大 CPU 番号
 ```
 
-キャプチャ停止時 (Ctrl-C または `-c`) に、bpf-ninja は per-CPU shard を時刻順に k-way マージして base の `path.pcap` を単一 pcap-ng として書き出します。停止直後に `merging N shard(s) into path.pcap ...` と表示されるので、そこがマージ中です。`tcpdump -r path.pcap` でそのまま全パケットを時刻順に読めます。`.cpuN` は残るので、個別に読む・自分で mergecap することもできます。
+- 停止 (Ctrl-C か `-c`) すると、全 shard を時刻順に合算して `path.pcap` に書き出します。
+- 合算中は `merging N shard(s) into path.pcap ...`、完了すると `merged into path.pcap (per-CPU .cpuN kept)` と表示します。
+- `.cpuN` ファイルはそのまま残るため、個別に読んだり `mergecap` で手動合算したりできます。
 
 ```bash
-# base をそのまま読む (全 CPU 分・時刻順)
+# 全 CPU 分を時刻順に読む
 tcpdump -r path.pcap
 
 # CPU 12 が受けた分だけ読む
 tcpdump -r path.pcap.cpu12
 
-# 自分で mergecap したい場合 (base と同等)
+# 自分で合算する (path.pcap と同じ内容)
 mergecap -w merged.pcap path.pcap.cpu*
 ```
 
-`-w` を付けない場合 (stdout ストリーミング) は、全 CPU を 1 本の pcap-ng ストリームに直列化してマージするので、`sudo bpf-ninja ... | tcpdump -r -` で全コア分が見えます。高レートでは `-w` を使ってください。stdout の直列化はインタラクティブ経路向けです。
+`-w` を指定しない場合、全 CPU の出力を 1 本の pcap-ng ストリームにまとめて stdout へ流します。
+`sudo bpf-ninja ... | tcpdump -r -` で全 CPU 分を確認できます。
+stdout は対話的な確認向けです。高 rate の環境では `-w` を使ってください。
 
-`convert` は raw-dump の `.raw` 専用です。
-`--raw-dump -w session` は `session.W<offset>.cpu<N>.raw` を生成し、自動合算しません。
-停止後に `bpf-ninja convert -r 'session.W*.cpu*.raw' -o session.pcapng` を実行します。
-`.cpuN` の pcap-ng shard は convert の入力ではありません。
-変換と救出は [offline 出力処理](../examples/offline-output.md)を参照してください。
+## raw-dump と `convert`
 
-## tag ごとに pcap を出し分ける (`--split-by-tag`)
+- `--raw-dump -w session` は `session.W<offset>.cpu<N>.raw` を出力します。自動では合算しません。
+- 停止後に `bpf-ninja convert -r 'session.W*.cpu*.raw' -o session.pcapng` を実行して pcap-ng に変換します。
+  `-o` を省略すると stdout に出力します。
+- `convert` に渡せるのは `.raw` ファイルだけです。`.cpuN` の pcap-ng shard は入力にできません。
 
-set の value すなわち tag を使って、マッチしたパケットを tag ごとに別々の pcap へ振り分けられます。`-w out.pcap` に `--split-by-tag` を足すと、tag=1 に当たったパケットは `out.1.pcap`、tag=2 は `out.2.pcap` へ流れます。拡張子の手前に tag を差し込む形なので、`out.pcap` が `out.1.pcap` になります。
+変換とデータ救出の手順は [offline 出力処理](../examples/offline-output.md) にあります。
 
-GTP-U トンネルの TEID ごとに tag を分けて入れておく例を次に示します。
+## tag ごとに pcap を分ける (`--split-by-tag`)
+
+set の value (tag) を使い、一致した packet を tag ごとのファイルに振り分けます。
+`-w out.pcap` に `--split-by-tag` を追加すると、tag=1 の packet は `out.1.pcap` に、tag=2 は `out.2.pcap` に出力されます。
+ファイル名の拡張子の手前に tag が入ります。
+
+以下は、GTP-U の TEID ごとに tag を分ける例です。
 
 ```bash
 PIN=/sys/fs/bpf/tunnels
@@ -63,58 +77,87 @@ sudo bpf-ninja -i eth0 --mode xdp --set "tunnels=$PIN" \
   'eth/ipv4/udp/gtp[teid in @tunnels]'
 ```
 
-出し分けはロックフリーの per-CPU 書き込みをそのまま使うため、キャプチャ中はシャードごとに `out.cpu0.1.pcap` や `out.cpu1.2.pcap` のような live ファイルが生えます。これらは 1 秒ごとに flush するので、実行中でも `cp` や tcpdump や Wireshark で取り出せます。周期的な flush だけでは完了 ack になりません。確定した成果物が必要なら正常終了か finalize の合算ファイルを待ちます。
+### 取得中と停止後のファイル
 
-Ctrl-C などでクリーンに終了すると、per-CPU の tag ファイルを tag ごとに時刻順でまとめて `out.1.pcap` や `out.2.pcap` を作ります。per-CPU ファイルはそのまま残します。途中で kill されたときは合算が走らないので、残った per-CPU ファイルを後から `bpf-ninja merge` でまとめられます。
+- 取得中は、shard と tag の組み合わせごとに `out.cpu0.1.pcap` や `out.cpu1.2.pcap` のような live ファイルが作られます。
+- live ファイルは 1 秒ごとに flush されるため、取得中でも `cp`、tcpdump、Wireshark で読み取れます。
+  ただし、周期的な flush は完了の合図ではありません。確定した結果が必要なときは、正常終了または finalize による合算ファイルを待ってください。
+- 正常に終了すると、tag ごとに時刻順で合算して `out.1.pcap` や `out.2.pcap` を作ります。live ファイルも残ります。
+- 途中で kill された場合は合算されません。残ったファイルは後から `bpf-ninja merge` でまとめられます。
 
 ```bash
-sudo bpf-ninja merge --base out.pcap        # out.cpuN.<tag> を out.<tag> にまとめる
-sudo bpf-ninja merge --base out.pcap --fexit  # --mode exit で録った場合
+sudo bpf-ninja merge --base out.pcap          # out.cpuN.<tag> を out.<tag> にまとめる
+sudo bpf-ninja merge --base out.pcap --fexit  # --mode exit で取った場合
 ```
 
-注意点は次のとおりです。
+### 制約
 
-- `-w` が必須です。stdout は 1 本のストリームなのでファイルに分割できません。`--raw-dump` や `--null-output` との併用もできません。
-- set にマッチしなかったパケットは捕捉されずに落ちるので、どのファイルにも出ません。set を 1 つも使わないフィルタでは全パケットの tag が 0 になり、`out.0.pcap` に入ります。
-- 複数の set を参照するフィルタでは、ソース順で最後にマッチした set の tag を採用します。
-- tag の value 幅を `--value "tag:u64"` などで 8 バイトにした場合、出し分けに使うのは下位 32 ビットです。
-- live ファイルは CPU ごと tag ごとに 1 本開くので、tag の種類が多いとファイルディスクリプタを消費します。種類が多い運用では `ulimit -n` を上げてください。上限に達すると起動途中でその旨のエラーを出します。
+- `-w` が必要です。stdout は 1 本のストリームなのでファイルを分けられません。
+- `--raw-dump`、`--null-output`、gated capture (`--mode` を 2 つ指定) とは併用できません。
+- set に一致しなかった packet は取得されず、どのファイルにも入りません。
+- set を使わない filter では、全 packet の tag が 0 になり、`out.0.pcap` に出力されます。
+- 複数の set を参照する filter では、記述順で最後に一致した set の tag が使われます。
+- `--value "tag:u64"` などで tag を 8 バイトにした場合、ファイルの振り分けには下位 32 ビットが使われます。
+- live ファイルは CPU と tag の組み合わせごとに 1 つ開くため、tag の種類が多いとファイルディスクリプタを多く消費します。
+  tag が多いときは `ulimit -n` を引き上げてください。
+  ファイルは tag の packet が初めて来たときに開くので、上限に達するとその時点でエラーになり、`ulimit -n` を上げるか tag の種類を減らすよう示します。
 
-出力の write / flush / close に失敗した場合は非ゼロで終了し、不完全な shard を成功した合算結果として公開しません。`--finalize-on-del` の失敗した tag は再試行でも完了通知や `state=finalized` に変わりません。元の shard は調査・救出用に残ります。保存済み shard が正常で合算先の作成だけが失敗した場合は再試行できます。`merge` は欠けた shard は許容しますが、存在する shard の破損・切り詰めはエラーにします。完了はバッファの flush と close、合算ファイルの rename までを意味し、電源断への耐久性を保証する fsync は含みません。
+### 書き込みに失敗したとき
 
-### set del で tag の出力を完成させる (`--finalize-on-del`)
+- write、flush、close のいずれかに失敗すると、非ゼロの終了コードで終了します。不完全な shard から合算ファイルを出力して成功扱いにすることはありません。
+- 元の shard は、原因調査やデータ救出のために残されます。
+- shard が正常で合算ファイルの作成だけに失敗した場合は、合算を再試行できます。
+- `merge` は存在しない shard があっても処理を続けますが、既存の shard に破損や切り詰めがある場合はエラーにします。
+- `--finalize-on-del` で合算に失敗した tag は、再試行しても完了通知や `state=finalized` にはなりません。
+- ここでいう完了とは、バッファの flush と close、および合算ファイルの rename までを指します。電源断に備える fsync は含みません。
 
-常駐プロセス 1 個で複数のキャプチャジョブを多重化する運用向けに、entry の削除を「この tag は終わり」の合図として使えます。`--finalize-on-del` を付けると、ある tag の entry が全 watch set から消え、かつ ringbuf の残りが掃けたと確認できた時点で、その tag の per-CPU ファイルを flush して閉じ、プロセスを止めずに `out.<tag>.pcap` へ合算します。合算は一時ファイルに書いてから rename するので、**`out.<tag>.pcap` の出現がそのまま完了の合図**です。呼び出し側の流れは `set del` → ファイルを待つ (inotify や stat) → 回収、だけになります。
+## set del で tag の出力を完成させる (`--finalize-on-del`)
 
-
-完了判定には、無通信の時間ではなく、BPF 処理と出力処理の完了を使います。
-削除を検出した tag を capture 専用 map で停止し、実行中の BPF 処理が完了するまで待ってから、各 ring の producer 位置を記録します。
-全 shard がその位置まで読み、writer の登録と書き込みを終えたことを確認して合算します。
-別 tag の保存が遅れている場合も、未処理レコードを残したまま完了通知を出しません。
-
-停止処理を始めた tag は、同じ capture 中には再利用できません。
-set entry を再追加しても再開しません。
-停止した tag は最大 65,536 個保持し、上限への到達や同期処理の失敗はエラーとして報告します。
+1 つの常駐プロセスで複数のキャプチャジョブを扱う場合、entry の削除をその tag の終了合図にできます。
+`--finalize-on-del` を付けると、ある tag の entry がすべての set から削除され、ringbuf の残りを読み終えた時点で、その tag の live ファイルを flush して閉じます。
+その後、プロセスを止めずに `out.<tag>.pcap` へ合算します。
+合算時は一時ファイルへ書き出してから rename するため、`out.<tag>.pcap` が現れた時点で完了と分かります。
+呼び出し側は、`set del` の実行、ファイル出現の待機 (inotify や stat)、ファイルの回収という手順で進められます。
 
 ```bash
 sudo bpf-ninja -i eth0 --mode xdp --set "tunnels=$PIN" \
   --split-by-tag --finalize-on-del -w out.pcap \
   'eth/ipv4/udp/gtp[teid in @tunnels]'
 
-# 別シェルから: ジョブ終了 = entry を消してファイルを待つ
+# 別のシェルから: entry を消してファイルを待つ
 sudo bpf-ninja set del $PIN teid=0x1000
 timeout 30s sh -c 'until [ -f out.1.pcap ]; do sleep 0.1; done'
-# timeout は失敗。capture の stderr とプロセス状態を確認する
+# timeout したら失敗。capture の stderr とプロセスの状態を確認する
 ```
 
-- 完了までの固定秒数は契約ではありません。kernel grace period、reader drain barrier、writer の終了、合算が完了してから ack を公開します。失敗時は正常な ack と扱わず、stderr と終了状態を確認してください。
-- 完成した tag は使い切りです。同じ tag の entry を後から add し直しても record は捨てられ、stderr に 1 回警告が出ます。`out.<tag>.pcap` は変わりません。
-- 1 パケットも来なかった tag も、entry の削除後に空の (ヘッダだけの) `out.<tag>.pcap` を作ります。合図としては同じに扱えます。ただし entry の存在をポーリングで観測する前 (追加から 1 秒未満) に消した場合は検知できません。
-- `--split-by-tag` と `--set` が必須です。tag 0 (set 不一致) は対象になりません。per-CPU の shard ファイルは合算後もそのまま残ります。
+### 完了の判定
 
-### entry ごとの出力サイズ上限 (`set add ... max-bytes=N`)
+完了の判定は、無通信の経過時間ではなく、BPF 処理と出力処理の完了に基づきます。
 
-出力バイト上限は entry (すなわち tag) 単位で set map に持たせます。`set add` に `max-bytes=N` を付けると、その tag の出力 (per-CPU shard の合計) が N に達した時点でその tag への書き込みだけが止まり、他の tag はそのまま録り続けます。上限は entry ごとに別々の値にでき、省略または 0 なら無制限です。ジョブごとに予算が違う多重化運用がフラグ 1 個では表現できなかったため、v0.22.0 の `--max-bytes-per-tag` フラグはこの方式に置き換えて廃止しました。
+1. 削除を検出した tag を、capture 専用の map で停止させます。
+2. kernel の grace period を待ち、実行中の BPF 処理を完了させます。
+3. 各 ring の producer 位置を記録します。
+4. 全 shard がその位置まで読み切り、writer の書き込み完了を確認してから合算します。
+
+- ほかの tag の保存が遅れていても、未処理の record を残したまま完了と判定することはありません。
+- 完了までにかかる秒数は一定ではありません。失敗したときは正常完了とみなさず、stderr と終了状態を確認してください。
+
+### 注意
+
+- `--split-by-tag` と `--set` が必要です。tag 0 (set に一致しない packet) は対象外です。
+- 停止を始めた tag は使い切りで、同じ capture 内では再利用できません。
+  同じ tag の entry を後から追加し直しても record は破棄され、stderr に 1 回だけ警告が出ます。`out.<tag>.pcap` は更新されません。
+- 停止した tag は 65,536 個まで保持できます。上限に達したときや同期処理に失敗したときは、エラーを報告します。
+- packet が 1 つも来なかった tag でも、entry の削除後に空 (ヘッダのみ) の `out.<tag>.pcap` を作ります。完了の合図として同じように扱えます。
+  ただし、entry を追加してから約 1 秒以内に削除すると、capture がその entry を認識する前に消えるため検知できません。
+- live ファイルは合算後も残ります。
+
+## entry ごとの出力上限 (`set add ... max-bytes=N`)
+
+出力バイト数の上限は、entry (tag) ごとに set map で管理します。
+`set add` に `max-bytes=N` を指定すると、その tag の出力 (全 shard の合計) が N バイトに達した時点で、その tag への書き込みだけが止まります。
+ほかの tag は取得を続けます。
+`max-bytes` を省略するか 0 にすると、上限なしになります。
 
 ```bash
 sudo bpf-ninja set add $PIN teid=0x1000 tag=1 max-bytes=104857600
@@ -126,17 +169,57 @@ sudo bpf-ninja -i eth0 --mode xdp --set "tunnels=$PIN" \
   'eth/ipv4/udp/gtp[teid in @tunnels]'
 ```
 
-- 上限のカウント対象は pcap-ng の packet block バイトで、ファイルごとの固定ヘッダは含みません。判定は ringbuf バッチ単位なので、shard あたり最大 1 バッチぶんの超過があり得ます。
-- record が運ぶのは tag だけなので、上限は実質 **tag 単位**です。同じ tag を共有する entry は 1 つの予算を共有します。entry ごとに違う上限が付いている場合は大きい方が有効で、上限なし (0) の entry が 1 つでもあればその tag は上限なしになります。
-- 上限はキャプチャ中でも `set add` の上書きで変更でき、約 1 秒で反映されます。ただし一度上限に達した tag は、後から上限を引き上げても再開しません。
-- `set add` で既存 entry を更新するとき、`max-bytes=` を**省略しても既存の上限は維持されます** (state と同じ扱い)。上限を外すには明示的に `max-bytes=0` を指定します。tag を変えた更新は新しいジョブへの割り当てとみなし、state も上限もこの `set add` の指定どおりに始まります。
-- 上限に達した tag の live ファイルは閉じてファイルディスクリプタを解放します。到達を検知した CPU の分は即時に、他の CPU の分は次にその tag のパケットを見た時点で閉じます。
-- `--exit-when-capped` を足すと、**上限を持つ全 entry** が到達した時点で自動的に exit 0 します。上限なしの entry と tag 0 (set 不一致) は判定に参加しません。通常のシャットダウンと同じく per-CPU ファイルの合算まで行うので、待っている呼び出し側はそのまま完成した `out.<tag>.pcap` を回収できます。前回実行の残りで最初から全 entry が capped/finalized の map に対して起動した場合は、録るものが無いので即座に exit 0 します。
-- `--finalize-on-del` と併用すると、上限に達した tag は entry の `state` が `capped` に書き換わってカーネル側のマッチも止まり、そのまま静止 → 合算の経路に入って `out.<tag>.pcap` が生成され、最後に `state=finalized` になります。**`--exit-when-capped` の exit はこの finalize の完了を待つ**ので、プロセスが exit 0 した時点で上限付き全 tag の ack ファイルと `state=finalized` が揃っていることが保証されます (cap 到達から exit まで数秒かかります)。entry 自体は消えないので、`set list` で「どのキー (teid 等) のジョブがどこまで進んだか」を追えます。`--finalize-on-del` 無しの場合は state に触らず、従来通りユーザー空間で捨てるだけです。
-- state は pinned map に**プロセスを跨いで残ります**。capped/finalized の entry は次のキャプチャでもマッチしないので、同じコマンドを再実行しても該当 tag は何も録れません。キーを新しいジョブとして使い直すには `set add ... tag=<新しい番号>` で tag を振り直します (同じ tag への復帰手段は意図的にありません)。
-- キャプチャプロセスと `set add` は map の value を無同期で読み書きします (last-writer-wins)。state の書き込みが競合で失われても毎秒の巡回で自動修復されますが、`set add` の上限変更がまれに 1 回失われる可能性はあります (再実行すれば反映されます)。
-- プロセス全体の上限は `--max-bytes` フラグです。こちらは `--split-by-tag` 無しでも使えて、到達すると `-c` と同じ経路でキャプチャ全体を止めて exit 0 します。逆に、entry に `max-bytes` を付けても `--split-by-tag` 無しのキャプチャでは強制されません (起動時に警告を出します)。
-- 外部ツールで作った pinned map の value が struct の場合、認識できる layout (`tag[,state,max_bytes]`) 以外は open 時にエラーになります (0.22 までは value の BTF を見ていませんでした)。単一整数 value は従来どおり開けます。
+### 数え方
 
+- 計算対象は pcap-ng の packet block のバイト数です。ファイルごとの固定ヘッダは含みません。
+- 上限の判定は ringbuf のバッチ単位で行うため、shard ごとに最大 1 バッチ分超過することがあります。
+- record が持つ情報は tag だけなので、上限は tag 単位で機能します。同じ tag を持つ複数の entry は、1 つの上限枠を共有します。
+- 同じ tag の entry 間で上限値が異なるときは、最も大きい値が使われます。上限なし (0) の entry が 1 つでもあれば、その tag は上限なしになります。
+- 上限は `--split-by-tag` を指定したときだけ有効です。指定せずに上限付きの entry が存在すると、起動時に警告を出します。
+
+### 変更と状態
+
+- 取得中でも `set add` で上書きすれば上限を変更でき、約 1 秒で反映されます。
+  ただし、一度上限に達した tag は、後から上限を引き上げても再開しません。
+- 既存の entry を `set add` で更新するとき、`max-bytes=` を省略すると現在の上限が維持されます。上限を解除するには `max-bytes=0` を指定します。
+- tag を変更する更新は新しいジョブとして扱われ、state と上限はその `set add` の指定値で初期化されます。
+- 上限に達した tag の live ファイルは閉じられ、ファイルディスクリプタが解放されます。
+  到達を検知した CPU のファイルは即座に閉じられ、ほかの CPU のファイルは次にその tag の packet を処理したときに閉じられます。
+- キャプチャプロセスと `set add` は、map の value を同期なしで読み書きします (後から書いた方が優先されます)。
+  競合によって state の書き込みが失われても、約 1 秒ごとの巡回処理で修復されます。
+  まれに `set add` による上限の変更が競合で失われることがあります。反映されない場合はもう一度実行してください。
+
+### `--exit-when-capped`
+
+- 上限付きの entry がすべて上限に達した時点で、プロセスが exit 0 します。
+  上限なしの entry と tag 0 は判定から除外されます。
+- 終了前に通常どおり合算を行うため、呼び出し側は完成した `out.<tag>.pcap` を回収できます。
+- 起動時点で上限付きの entry がすべて capped または finalized の場合、取得対象がないためすぐに exit 0 します。
+- 上限付きの entry がまだないときは、警告を出して追加されるまで待機します。
+  map の value が単一の整数であり上限を保持できない形式のときは、自動終了しない旨を警告します。
+- `--split-by-tag` と `--set` が必要です。
+
+### `--finalize-on-del` と組み合わせる
+
+- 上限に達した tag は、entry の `state` が `capped` に書き換わり、kernel 側での一致判定も止まります。
+- 続けて完了処理に進み、`out.<tag>.pcap` を合算してから、最後に `state=finalized` へ更新します。
+- `--exit-when-capped` による終了はこの完了処理を待ちます。そのため、exit 0 した時点ですべての上限付き tag の合算ファイルと `state=finalized` がそろっています。上限到達から exit までは数秒かかります。
+- entry 自体は削除されないため、`set list` で各キーのジョブの進行状況を確認できます。
+- `--finalize-on-del` を付けない場合は state を書き換えず、上限を超えた record を user space で破棄するだけです。
+
+### pinned map に残る状態
+
+- state は pinned map に保存され、プロセスをまたいで維持されます。
+- capped や finalized になった entry は次回の capture でも一致しないため、同じコマンドを再実行してもその tag の packet は取得されません。
+- 同じキーを新しいジョブで再利用するには、`set add ... tag=<新しい番号>` で別の tag を割り当てます。同じ tag を再び有効にする方法はありません。
+- 外部ツールで作成した pinned map の value が struct の場合、先頭が `tag` で、ほかに `state` (u8) と `max_bytes` (u64) だけを持つ構造でなければ開くときにエラーになります。value が単一の整数の map はそのまま開けます。
+
+## プロセス全体の上限 (`--max-bytes`)
+
+- `--max-bytes N` は、出力の合計が N バイトに達した時点でキャプチャ全体を停止します。バイト数の数え方は entry ごとの上限と同じです。
+- `--split-by-tag` がなくても使えます。
+- 上限に達して停止すると、`-c` と同様に shard を合算して exit 0 します。
+- 0 以上の値を指定してください。0 (既定) は上限なしです。
+- `--raw-dump` や `--null-output` とは併用できません。
 
 [DSL 利用ガイドに戻る](../dsl-usage.md)

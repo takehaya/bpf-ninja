@@ -1,47 +1,65 @@
 # 導入と最初の確認
 
 フィルタの確認だけなら、BPF のロードも root 権限も不要です。
-まず Linux 上でビルドし、[offline の例](examples/inspect-filter.md)を実行してください。
+まずは Linux 上でビルドし、[offline の例](examples/inspect-filter.md)を実行してください。
 
 ## ビルド
 
 リポジトリのルートディレクトリで実行します。
-Go の版は `go.mod` に従い、C compiler と libpcap の開発用ヘッダを用意してください。
-Ubuntu では libpcap の開発パッケージは `libpcap-dev` です。
+Go のバージョンは `go.mod` に従います。
+通常のビルドに C コンパイラや libpcap は不要です。
 配布バイナリを使う場合は [Install](../../README.md#install) を参照してください。
 
 ```sh
 make build
 ./bpf-ninja --version
 ./bpf-ninja --help
-git rev-parse HEAD
 ```
 
-ソースからビルドした場合、version は通常 `dev` です。
-不具合報告や測定記録には commit と `uname -r` も残してください。
+ソースからビルドした場合、バージョンは通常 `dev` になります。
+不具合を報告する際は、`git rev-parse HEAD` のコミットと `uname -r` の出力も添えてください。
+
+従来の tcpdump 構文（`--cbpf`）を使う場合のみ、libpcap を有効にしてビルドします。
+このビルドには C コンパイラ（cgo の既定は gcc）と libpcap の開発用パッケージが必要です。
+Ubuntu では `libpcap-dev`、Fedora では `libpcap-devel` をインストールしてから実行してください。
+コンパイラを使わない場合は、release の `enable_libpcap` 版バイナリを使います。
+
+```sh
+make build-libpcap
+```
 
 ## パケットを取得するための条件
 
-基本要件は Linux 5.8 以降、`/sys/kernel/btf/vmlinux`、root または必要な BPF/network capability です。
-capability だけで動かせるかは、kernel と環境の制限にも依存します。
-entry/exit では BTF 付きの対象 BPF program が既にロードされている必要があります。
-xdp mode は対象 interface に既存 XDP がない場合に使います。
+- Linux 5.8 以降と `/sys/kernel/btf/vmlinux`
+- root 権限
+- entry モードと exit モードでは、BTF 付きの対象 BPF プログラムがロード済みであること
+- xdp モードでは、対象のインターフェースに XDP がアタッチされていないこと
 
-機能によって要件が増えます。
-一部の DSL 繰り返し等は Linux 5.17 以降、netfilter は 6.4 以降、hardware timestamp は 6.8 以降と driver 対応が必要です。
-gated capture には kernel の修正状況による制約もあるため、[現在の要件](../../README.md#prerequisites)と[mode の説明](../../README.md#modes)を確認してください。
-これらの最低条件と、各レシピを実際に検証した環境は区別します。
+使用する機能によって追加の要件があります。
+DSL の一部の繰り返しとポインタ引数の読み取りには Linux 5.17 以降が必要です。
+netfilter には 6.4 以降、ハードウェアタイムスタンプには 6.8 以降とドライバの対応が必要です。
+詳細は [Prerequisites](../../README.md#prerequisites) と [Modes](../../README.md#modes) を参照してください。
+
+## 最初のキャプチャ
 
 初めてパケットを取得するときは、使い捨ての Linux VM を使ってください。
-手動試験は namespace と veth を作成するため、[前提と cleanup](handtest.md)を先に確認します。
-運用中の interface や既存 XDP を試験の都合で変更しないでください。
+[隔離 capture recipe](examples/capture-recipes.md)では、namespace と veth を作成してフィルタの一致と不一致を確認します。
+既存のターゲットを観測する手順は[手動試験](handtest.md)にあります。
+試験のために、運用中のインターフェースや既存の XDP を変更しないでください。
+
+XDP プログラムがアタッチされたインターフェースでは、次のコマンドで entry のパケットを取得できます。
+
+```sh
+sudo ./bpf-ninja -i eth0 -c 10 'eth/ipv4/tcp[dport==443]' | tcpdump -n -r -
+```
 
 ## 次に読む資料
 
-- [Examples](examples/README.md)：目的と期待結果から選ぶ。
-- [DSL](dsl-overview.md)：packet layout に合う式を書く。
-- [利用ガイド](dsl-usage.md)：mode、set、出力の操作を調べる。
-- [inject-run](../en/inject-run.md)と[実行例](../en/inject-walkthrough.md)：`--list-progs --list-maps` で map 操作を調べ、ロード時に観測 hook を追加する（英語、Linux x86-64 の実験的機能）。
-- [終了の意味](../capture-lifecycle.md)：停止後に何を確認するか。
+- [Examples](examples/README.md)：目的と期待する結果から選びます。
+- [DSL](dsl-overview.md)：パケットの構造に合わせた式を書きます。
+- [capture guide](cli/capture.md)：モードとターゲットを選びます。
+- [利用ガイド](dsl-usage.md)：DSL の書き方と性能に関する flag を説明します。
+- [inject-run](../en/inject-run.md)と[実行例](../en/inject-walkthrough.md)：`--list-progs --list-maps` でマップ操作を調べ、ロード時に観測用のフックを追加します（英語、Linux x86-64 の実験的機能）。
+- [終了の意味](../capture-lifecycle.md)：停止した後に何を確認するかを説明します。
 
 [Docs に戻る](README.md)

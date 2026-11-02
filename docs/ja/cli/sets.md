@@ -1,81 +1,130 @@
 # Set map の作成と更新
 
-set は bpffs に pin した BTF 付き hash map です。
-Linux の BPF map 操作権限と、書込み可能な bpffs が必要です。
-新しい pin 名を用意し、既存 map を上書きしないでください。
-下の説明用 pin 名は、共有ホストで使う前に存在確認が必要です。
+set は bpffs に pin された BTF 付きの hash map です。
+map のキーが照合する値そのもので、value は小さな tag です。
+キャプチャ中に entry を追加や削除でき、re-attach は不要です。
 
-`set add/del` は実行中の capture に反映されます。
-`set resize` を実行する前に、map を更新する writer と capture を停止してください。
-容量変更後に再 attach します。
-既存 capture は古い map の参照を保持するため、新容量は pin の置換だけでは適用されません。
+- Linux で BPF map を操作する権限と、書き込み可能な bpffs が必要です。
+- 新しい pin 名を使い、既存の map を上書きしないでください。例にある pin 名を使う場合も、共有ホストでは事前に存在しないか確認してください。
+- 片付けるときは `set list` と `set schema` の結果を保存してから、自分で作成した pin だけを `rm -- "$PIN"` で削除します。
+  `set del` は entry を削除するコマンドであり、map の unpin ではありません。
+- 専用の namespace の利用や pin の片付けまでを含む手順は [実行中の更新 recipe](../examples/runtime-sets.md) にあります。
 
-停止後に `set list` と `set schema` を保存してから、自分で作成した pin だけを `rm -- "$PIN"` で外します。
-`set del` は entry の削除であり、map の unpin ではありません。
-[実行中の更新 recipe](../examples/runtime-sets.md)は専用 namespace と pin の cleanup を含みます。
+## なぜ set を使うか
 
-## 集合マッチ (`--set` / `--arg-filter @NAME`)
+`--arg-filter "imsi=X"` は値を命令列に埋め込むため、値を変えるたびに re-attach が必要です。
+set を参照すると、IMSI の一覧などを packet ごとに O(1) の lookup で照合できます。
+entry の追加と削除は、実行中の capture にすぐ反映されます。
 
-`--arg-filter "imsi=X"` は値を命令列に焼き込むため、値を変えるたびに re-attach が要ります。pinned BPF hash map を集合として参照すると、IMSI 群などの購読者リストをパケットごとの O(1) lookup で照合でき、エントリの追加・削除はキャプチャ中でも即時反映されます。この場合は re-attach が不要です。
+- 複合キーの各フィールドは AND 条件として、1 回の lookup で照合します。
+- OR 条件は entry を複数登録して表します。
+- 部分キーでは照合できません。キーのフィールドはすべて指定します。
 
-map のキーが照合する値そのもので、スカラまたは struct 複合キーになります。value は小さな tag です。複合キーのフィールド間は AND で 1 lookup し、OR はエントリを複数入れて表現します。すなわち集合は直和です。部分キーは不可です。
+## 基本の流れ
 
 ```bash
-# 1) 集合を作る (BTF 付き hash map を pin)。--max-entries は省略可で既定 1024、
-#    1〜2^32-1 で指定できる
+# 1) set を作る (BTF 付きの hash map を pin する)
 sudo bpf-ninja set create /sys/fs/bpf/flows --key "imsi:u64,teid:u32" --max-entries 1024
 
-# 2) エントリ投入 (フィールド名で指定。幅・パディングはツールが保証)
+# 2) entry を入れる (フィールド名で指定する。幅とパディングはツールが合わせる)
 sudo bpf-ninja set add /sys/fs/bpf/flows imsi=999990000000001 teid=0x3039 tag=1
 
-# 3) キャプチャ (--set で名前を付け、@NAME で参照)
+# 3) capture する (--set で名前を付け、@NAME で参照する)
 sudo bpf-ninja -p 1661 --func upf_capture_point_ul \
   --set "flows=/sys/fs/bpf/flows" --arg-filter "@flows" -w out.pcap
 
-# 4) キャプチャ中でも出し入れできる
+# 4) capture 中でも出し入れできる
 sudo bpf-ninja set add /sys/fs/bpf/flows imsi=999990000000777 teid=100
 sudo bpf-ninja set del /sys/fs/bpf/flows imsi=999990000000001 teid=0x3039
 sudo bpf-ninja set list /sys/fs/bpf/flows
 sudo bpf-ninja set schema /sys/fs/bpf/flows
 
-# 5) 容量が足りなくなったら resize (エントリと BTF スキーマは保たれる)
+# 5) 容量が足りなくなったら resize する (entry と BTF のスキーマは保つ)
 sudo bpf-ninja set resize /sys/fs/bpf/flows --max-entries 4096
 ```
 
-`set resize` は BPF map の容量を後から変えられない制約を、同じスキーマの新 map を作ってエントリを全コピーし pin を差し替えることで回避します。実行中のキャプチャは attach 時の旧 map を掴んだままなので、新しい容量は次回 attach から有効です。コピーと差し替えの間に旧 map へ入れたエントリは失われるため、resize は `set add` を止めてから行ってください。
+## サブコマンド
 
-- キーの対応付けは、既定ではキーの BTF フィールド名と fentry 引数名を同名で一致させます。名前が違うときは `--set "flows=/sys/fs/bpf/flows,key(imsi=arg:subscriber,teid=arg:teid)"` と明示します。`()` は bash のメタ文字なのでクオートが必須です。
-- `@NAME` は他の `--arg-filter` と AND で合成されます。`--set` は複数定義できます。
-- 引数がキーのフィールドより広い場合、たとえば u64 引数を u32 フィールドに入れる場合は切り詰めになるためエラーです。
-- 外部で作った pinned map も、hash 型で BTF キー (整数 or 整数のみの struct、各 1/2/4/8B、キー全体 64B 以下) を持っていれば参照できます。BTF 無しの map は `set create` で作り直してください。
-- bpftool などで外部から直接書く場合は、パディングのゼロ埋めが必須です。hash はキー全バイトをハッシュするため、パディングが非ゼロだと永遠に一致しません。`bpf-ninja set add` はこれを自動で保証します。
-- スキーマとしてキー幅やオフセットは `set schema` で確認できます。`bpftool map dump pinned <path>` も、合成 BTF のおかげでフィールド名付きで整形表示されます。
+| コマンド | 働き |
+|---|---|
+| `set create PIN --key SCHEMA [--value SCHEMA] [--max-entries N]` | BTF 付きの hash map を作成して pin します。`--max-entries` の既定値は 1024 です (1 から 2^32-1) |
+| `set add PIN field=value ... [tag=N] [max-bytes=N]` | entry を追加または更新します |
+| `set del PIN field=value ...` | entry を削除します |
+| `set list PIN` | すべての entry を `field=value ... tag=N state=S max-bytes=M` の形式で表示します。value が単一整数の map では `tag=N` までです |
+| `set schema PIN` | map の BTF から読み取ったキーのレイアウトを表示します |
+| `set resize PIN --max-entries N` | 容量を変更します |
 
-### DSL `layer[field in @NAME]` でパケットフィールドを照合する
+## キー
 
-`--arg-filter @NAME` はキーを fentry 引数から作ります。GTP TEID や SRv6 SID のように、照合したい値が引数ではなくパケット内にあり dispatcher が渡してくれない場合は、DSL の bracket predicate でパケットフィールドをそのままキーにできます。
+- `--key` には `name:type` をカンマ区切りで指定します (例: `"imsi:u64,teid:u32"`)。
+- 型は `u8`、`u16`、`u32`、`u64`、`ipv6` (16 バイトのアドレスや SRv6 SID) です。
+- 数値のフィールドはそれぞれの幅に、`ipv6` は 8 バイト境界に揃えて配置されます。キー全体は最大 64 バイトです。
+- 24 bit の VNI は `u32` のフィールドに、MAC は `u64` のフィールドに入れます。
+- `tag`、`max-bytes`、`max_bytes`、`state` はキーのフィールド名に使えません。
+- 値は 10 進数でも `0x` 付きの 16 進数でも指定できます。`set list` は 10 進数で表示します。
+- `u64` のフィールドは MAC の表記 (`aa:bb:cc:dd:ee:ff`) も受け付けます。`0xaabbccddeeff` と指定しても同じキーになります。
+- `ipv6` のフィールドは IPv6 の表記で指定し、`set list` も IPv6 の表記で表示します。
+- フィールドの幅に収まらない値、不足しているフィールド、未定義のフィールドはエラーになります。
+
+## value と tag
+
+value の既定の型は `tag:u32,state:u8,max_bytes:u64` の struct です。
+
+| フィールド | 意味 |
+|---|---|
+| `tag` | entry ごとの小さな番号です。`tag=N` を省略すると 1 (存在を示す値) が入ります |
+| `state` | `active`、`capped`、`finalized` のいずれかです。上限への到達や finalize の完了時に capture プロセスが書き換えます |
+| `max_bytes` | entry ごとの出力バイト数の上限です。`set add ... max-bytes=N` で指定します。省略または 0 で上限なしになります |
+
+- 同じキーに `set add` を実行すると上書きされます。
+- 同じ tag で更新する場合、`state` と、指定しなかった `max-bytes` の値は維持されます。
+- `max-bytes` の使い方は [entry ごとの出力上限](output.md#entry-ごとの出力上限-set-add--max-bytesn) にあります。
+- `--value "tag:u16"` のように、1、2、4、8 バイトの単一の整数も使えます。
+  その map では上限と state を使えないため、`max-bytes=` を指定するとエラーになります。
+- tag に指定できるのはフィールドの幅に収まる数値だけです。`ipv6` はキー専用の型です。
+- tag 0 は set に一致しない traffic の番号です。そのため、tag 0 の entry に上限は設定できません。
+- 既定の型の map では、`set list` は `tag=N state=S max-bytes=M` を表示し、上限なしの場合は `max-bytes=unlimited` と表示します。
+
+## 関数の引数と照合する (`--set` と `--arg-filter @NAME`)
+
+`--set "NAME=/sys/fs/bpf/path"` で set に名前を付け、`--arg-filter "@NAME"` で参照します。
+キーは fentry の引数から作ります。
+
+- 既定では、キーの BTF フィールド名と同じ名前の引数を対応させます。
+- 名前が異なる場合は `--set "flows=/sys/fs/bpf/flows,key(imsi=arg:subscriber,teid=arg:teid)"` のように明示します。
+  `()` は bash のメタ文字のため、引用符が必要です。
+- `arg:` には `key->dport` のようなメンバー参照の式も書けます。
+- `@NAME` は、ほかの `--arg-filter` と AND 条件で組み合わさります。`--set` は複数定義できます。
+- 引数がキーのフィールドより広い場合、値が切り詰められるためエラーになります (u64 の引数を u32 のフィールドに入れる場合など)。
+- `--arg-filter @NAME` は `--mode entry` と `--mode exit` でのみ使えます。`--arg-echo` とは併用できません。
+
+## packet のフィールドと照合する (DSL の `layer[field in @NAME]`)
+
+GTP TEID や SRv6 SID のように、照合したい値が引数ではなく packet の中にあるときは、DSL の bracket predicate を使います。
+packet のフィールドがそのままキーになります。
+`--mode entry`、`--mode exit`、`--mode xdp` のどれでも使えます。
 
 ```bash
-# 集合は同じ (キー = 照合する値)
+# set は同じ (キー = 照合する値)
 sudo bpf-ninja set create /sys/fs/bpf/teids --key "teid:u32"
 sudo bpf-ninja set add    /sys/fs/bpf/teids teid=0x3039
 
-# DSL でパケットの gtp.teid を集合照合 (fentry でも --mode xdp でも動く)
+# packet の gtp.teid を set と照合する
 sudo bpf-ninja -p 1661 --set "teids=/sys/fs/bpf/teids" \
   'eth/ipv4/udp/gtp[teid in @teids]' -w out.pcap
 
-# 複合キーは 1 つの角括弧にカンマ併記 (エントリ内は AND)
+# 複合キーは 1 つの角括弧にカンマで並べる (entry の中は AND)
 sudo bpf-ninja set create /sys/fs/bpf/flows --key "teid:u32,msg_type:u8"
 sudo bpf-ninja -i eth0 --mode xdp --set "flows=/sys/fs/bpf/flows" \
   'eth/ipv4/udp/gtp[teid in @flows, msg_type in @flows]'
 
-# 128bit の SRv6 SID (= IPv6 宛先) を照合する。キー型は ipv6、値は IPv6 リテラル
+# 128 bit の SRv6 SID (IPv6 の宛先) を照合する。キーの型は ipv6
 sudo bpf-ninja set create /sys/fs/bpf/sids --key "dst:ipv6"
 sudo bpf-ninja set add    /sys/fs/bpf/sids dst=fc00::1
 sudo bpf-ninja -i eth0 --mode xdp --set "sids=/sys/fs/bpf/sids" \
   'eth/ipv6[dst in @sids]'
 
-# SRH の segment list の N 番目の SID を照合する。segments[0] は最終宛先
+# SRH の segment list の N 番目の SID を照合する。segments[0] は最終の宛先
 sudo bpf-ninja -i eth0 --mode xdp --set "sids=/sys/fs/bpf/sids" \
   'eth/ipv6/srv6[segments[0].addr in @sids]'
 
@@ -86,28 +135,100 @@ sudo bpf-ninja -i eth0 --mode xdp --set "macs=/sys/fs/bpf/macs" \
   'eth[src in @macs]/ipv4/tcp'
 ```
 
-- 同名一致します。DSL のフィールド名がそのまま集合キーのフィールド名になり、`gtp[teid in @teids]` は集合キー `teid` を引きます。ただしスカラ集合、つまりフィールドが 1 個のキーは名前がラベルにすぎないので、`ipv6[dst in @sids]` を `sid:ipv6` のようにフィールド名が違うキーへ当てても照合できます。
-- エンディアンはツールが吸収します。数値フィールドはパケットが network order、`set add` は host order で書きますが変換をツールが合わせるので、利用者は普段どおりの数値で `set add` するだけで済みます。`ipv6` フィールドは IPv6 アドレスのバイト列そのものが値なので、パケットも `set add fc00::1` も同じ network order のまま照合します。
-- キー幅には上限があります。パケット由来キーはホストスタックの空き領域を使うため、合計 16 バイトまでです。TEID の 4 バイト、IMSI の 8 バイト、TEID と IMSI を合わせた 12 バイト、SRv6 SID の 16 バイトはいずれも収まります。数値フィールドは 1 個 8 バイトまで、`ipv6` フィールドは 16 バイトで、16 バイトのキーはそれ 1 個で予算を使い切ります。
-- キーの型はパケットのフィールドを覆う最小の読み出し幅に合わせます。24 bit の `vxlan.vni` と `geneve.vni` は `u32`、48 bit の `eth.src` と `eth.dst` は `u64` です。値はフィールドの数値そのものなので、VNI は `set add vni=100`、MAC は `set add src=aa:bb:cc:dd:ee:ff` と書きます。`u64` のフィールドは MAC の表記も受け付け、`0xaabbccddeeff` と書いても同じキーになります。`set list` は 10 進の数値で表示します。bit slice をキーにできるのは 64 bit 以下の slice と、`ipv6.dst[0:128]` のように 128 bit のフィールド全体を指す slice だけで、65 bit から 127 bit の slice は型エラーです。byte の境界から始まらないフィールドの slice は、ヘッダ上の bit 範囲を覆う読み出し幅がキーの幅になります。`ipv6[traffic_class[0:4] in @tc]` は `u8`、DSCP の `ipv6[traffic_class[0:6] in @dscp]` は `u16` のキーです。
-- 定数インデックスの aux フィールドを bracket で参照できます。`srv6[segments[0].addr in @sids]` は SRH の segment list の 0 番目を引きます。`ipv6[exts[1].next_header in @nh]` のように entry の長さが可変な stack でも、定数インデックスなら手前の entry を辿って該当 entry の位置を求めます。該当する entry が無いパケットは不一致になります。bracket に書けるのは `[N]` の定数インデックスだけで、`segments[srv6.last_entry]` のような動的インデックスや添字なしの `any()/all()` は `where` 句を使います。`tcp[mss.value in @NAME]` のように、parser が走査して位置を決める option のフィールドも集合キーにでき、option が無いパケットは不一致になります。
-- `@NAME` は他の bracket 条件やレイヤ条件と AND で合成します。`in @NAME` は bracket predicate 専用で、`where` 句の中では使えません。
-- `in @NAME` は必ず通るレイヤ、すなわち quantifier のない `QuantOne` のレイヤにのみ書けます。`vlan[...]?` のような optional や繰り返しのレイヤ、`(vlan[...]|qinq)` のような alternation の枝は、そのレイヤが不在でもフィルタが成立しうるため、抽出が走らずキーが未書き込みになる可能性があり、reject されます。
-- 引数由来の `--arg-filter @NAME` は entry/exit 専用のままです。パケット由来の DSL `@NAME` は entry/exit と `--mode xdp` の両方で動きます。
+### 名前と型
 
-## Hand-test として `set` map を手元で叩く
+- DSL のフィールド名が、そのまま set のキーのフィールド名になります。`gtp[teid in @teids]` はキーの `teid` を参照します。
+- フィールドが 1 つだけのキーでは、名前はラベルにすぎません。`ipv6[dst in @sids]` は `sid:ipv6` のキーにも当てられます。
+- 数値のフィールドは、packet では network order、`set add` では host order です。変換はツールが行うため、通常の数値で `set add` を実行してください。
+- `ipv6` のフィールドはアドレスのバイト列そのものです。packet と `set add fc00::1` の値を同じ network order のまま照合します。
+- キーの型は、packet のフィールドが収まる最小の読み出し幅に合わせます。
+  24 bit の `vxlan.vni` と `geneve.vni` は `u32`、48 bit の `eth.src` と `eth.dst` は `u64` です。
+  値はフィールドの数値そのものなので、VNI は `set add vni=100`、MAC は `set add src=aa:bb:cc:dd:ee:ff` と指定します。
+- packet のフィールドと set のフィールドで幅が異なるとエラーになります。
 
-`set` サブコマンドはキャプチャのターゲットが無くても単体で動きます。map を作ってエントリを出し入れし、`set list` / `set schema` で読み戻すだけで、集合まわりの配線を手元で確認できます。root と bpffs のマウントが要ります。
+### キーの幅
 
-### ライフサイクルをひととおり流す
+- packet から作るキーは、合計 16 バイトまでです。
+  TEID (4)、IMSI (8)、TEID と IMSI (12)、SRv6 SID (16) はいずれも収まります。
+- 数値のフィールドは 1 つにつき 8 バイトまで、`ipv6` のフィールドは 16 バイトです。16 バイトのキーはそれだけで上限を使い切ります。
+- bit slice をキーにできるのは、64 bit 以下の slice と、`ipv6.dst[0:128]` のように 128 bit のフィールド全体を指す slice です。65 bit から 127 bit の slice は型エラーになります。
+- byte 境界から始まらない slice では、ヘッダ上の bit 範囲が収まる読み出し幅がキーの幅になります。
+  `ipv6[traffic_class[0:4] in @tc]` は `u8`、DSCP の `ipv6[traffic_class[0:6] in @dscp]` は `u16` のキーになります。
+
+### 書ける場所
+
+- 定数の添字を持つ aux フィールドを使えます。`srv6[segments[0].addr in @sids]` は segment list の 0 番目を参照します。
+- `ipv6[exts[1].next_header in @nh]` のように entry の長さが変わる stack でも、定数の添字であれば手前の entry をたどって位置を求めます。該当する entry がない packet は一致しません。
+- `tcp[mss.value in @NAME]` のように、parser が走査して位置を決める option のフィールドもキーにできます。該当する option がない packet は一致しません。
+- bracket に指定できるのは定数の添字 `[N]` だけです。`segments[srv6.last_entry]` のような動的な添字や、添字なしの `any()` と `all()` には `where` 句を使います。
+- `@NAME` は、ほかの bracket の条件やレイヤの条件と AND 条件で組み合わさります。
+- `in @NAME` は bracket predicate の中でのみ使えます。`where` 句では使えません。
+- `in @NAME` は、quantifier のない必須のレイヤにのみ指定できます。
+  `vlan[...]?` のような optional や繰り返しのレイヤ、`(vlan[...]|qinq)` のような alternation の分岐はエラーになります。そのレイヤがなくても filter が成立し、キーの値が定まらない場合があるためです。
+- 同じ set の同一キーフィールドを 2 回指定するとエラーになります。set は 1 つのキーで 1 回だけ lookup するためです。
+
+### 複数の値と複数の set
+
+OR 条件を表すには、同じ set に複数の entry を追加します。
+各 entry は独立した 1 つのキーであり、どれかに該当すれば一致します。
+
+```bash
+# (imsi=999990000000001 かつ teid=0x1000) または
+# (imsi=999990000000777 かつ teid=0x2000)
+sudo bpf-ninja set add $PIN imsi=999990000000001 teid=0x1000 tag=1
+sudo bpf-ninja set add $PIN imsi=999990000000777 teid=0x2000 tag=1
+```
+
+複数の set を 1 つの filter で組み合わせることもできます。
+`--set` を複数定義し、DSL では `layer[a in @s1, b in @s2]` のようにカンマで並べます。
+角括弧内のカンマは AND 条件のため、両方がそれぞれの set に一致したときだけ通過します。
+
+```bash
+sudo bpf-ninja set create /sys/fs/bpf/src --key "sport:u16"
+sudo bpf-ninja set create /sys/fs/bpf/dst --key "dport:u16"
+sudo bpf-ninja set add /sys/fs/bpf/src sport=1111
+sudo bpf-ninja set add /sys/fs/bpf/dst dport=443
+sudo bpf-ninja -i eth0 --mode xdp \
+  --set "src=/sys/fs/bpf/src" --set "dst=/sys/fs/bpf/dst" \
+  'eth/ipv4/tcp[sport in @src, dport in @dst]'
+```
+
+## 外部で作った map を使う
+
+- hash 型で、キーに BTF があれば参照できます。
+  キーは 1、2、4、8 バイトの整数、`__u8[16]`、またはこれらのみを持つ struct です。キー全体は最大 64 バイトです。
+  bitfield と、境界に揃っていないフィールドは使えません。
+- BTF のない map は `set create` で作り直してください。
+- value は単一の整数か、`tag` で始まる struct です。struct に追加できるのは `state` (u8) と `max_bytes` (u64) だけです。
+- bpftool などで直接書き込むときは、パディングを 0 で埋めてください。hash はキーの全バイトから計算されるため、パディングが 0 でないと一致しません。
+  `bpf-ninja set add` はこの処理を自動で行います。
+
+## resize
+
+BPF の map は作成後に容量を変更できません。
+`set resize` は、同じスキーマの新しい map を作成し、entry をすべてコピーしてから pin を差し替えます。
+
+1. map を更新する writer と capture を停止します。コピーから差し替えまでの間に古い map へ追加した entry は失われます。
+2. `set resize PIN --max-entries N` を実行します。
+3. capture を attach し直します。実行中の capture は attach 時の古い map を使い続けるため、新しい容量は次の attach から有効になります。
+
+- 現在の entry 数より少ない容量には変更できません。
+- 一時的な pin `${PIN}_resize_tmp` が残っているとエラーになります。前回の resize が異常終了したか、同時に実行していないかを確認してから削除してください。
+- 同じ容量を指定した場合は、何もせずに終了します。
+
+## 手元で動きを確かめる
+
+`set` のサブコマンドは、capture の target がなくても動作します。
+map を作成して entry を追加・削除し、`set list` と `set schema` で内容を確認すると、set の動作を手元で確かめられます。
+root 権限と bpffs の mount が必要です。
 
 ```bash
 PIN=/sys/fs/bpf/bpfninja_handtest
 
-# 1) BTF 付き hash map を作って pin する。この例では value を u32 の tag に限定
+# 1) BTF 付きの hash map を作って pin する。この例では value を u32 の tag だけにする
 sudo bpf-ninja set create $PIN --key "imsi:u64,teid:u32" --value "tag:u32" --max-entries 1024
 
-# 2) フィールド名でエントリを入れる。tag が value
+# 2) フィールド名で entry を入れる。tag が value になる
 sudo bpf-ninja set add $PIN imsi=999990000000001 teid=0x3039 tag=1
 sudo bpf-ninja set add $PIN imsi=999990000000777 teid=100    tag=2
 
@@ -115,12 +236,17 @@ sudo bpf-ninja set add $PIN imsi=999990000000777 teid=100    tag=2
 sudo bpf-ninja set list   $PIN
 sudo bpf-ninja set schema $PIN
 
-# 4) 消す
+# 4) 上書きする
+sudo bpf-ninja set add  $PIN imsi=999990000000777 teid=100 tag=9
+sudo bpf-ninja set list $PIN | grep 999990000000777              # tag=9 になる
+
+# 5) 消す
 sudo bpf-ninja set del  $PIN imsi=999990000000001 teid=0x3039
 sudo bpf-ninja set list $PIN
 ```
 
-`set list` は各エントリを `field=value ... tag=N` の形で印字します。`set schema` はキーのレイアウトを出します。並び順は hash map の iterate 順なので、実行ごとやカーネルごとに例と違って見えることがあります。
+手順 3 の出力は次のようになります。
+並び順は hash map を走査した順になるため、実行や kernel によって変わります。
 
 ```text
 $ sudo bpf-ninja set list $PIN
@@ -134,47 +260,13 @@ hash map: key 16 B, value 4 B, max_entries 1024
 note: entries must zero all padding bytes (hash covers the full key)
 ```
 
-`teid=0x3039` は 16 進で入れても `set list` では 10 進の 12345 で出ます。入力は 10 進でも `0x` 付き 16 進でも構いません。
+- `teid=0x3039` のように 16 進数で追加しても、`set list` では 10 進数の 12345 と表示されます。
+- `set list` は map 内の entry の一覧を表示します。どの entry に一致したかは示しません。
 
-### value すなわち tag を出し入れする
+### bpftool で map を見る
 
-value はエントリごとの小さな tag です。`tag=N` を省くと存在マーカーの 1 が入ります。`set add` で同じキーに別の tag を入れると上書きになります。読み戻しは `set list` の `tag=N` 列です。
-
-```bash
-sudo bpf-ninja set add  $PIN imsi=999990000000777 teid=100 tag=9  # 上書き
-sudo bpf-ninja set list $PIN | grep 999990000000777              # tag=9 になる
-```
-
-value 型は既定で `tag:u32,state:u8,max_bytes:u64` の struct です。`tag` に加えて、entry の状態 (`state`: active / capped / finalized、キャプチャプロセスが cap 到達や finalize 完了で書き換えます) と、entry ごとの出力バイト上限 (`max_bytes`: `set add ... max-bytes=N` で指定、省略または 0 = 無制限) を持ちます。`--value "tag:u16"` のような 1/2/4/8 バイトの単一整数も従来通り使えますが、その map では cap と state は使えません。tag は数値専用で、`ipv6` はキー側だけの型です。
-
-### 複数の値を照合する
-
-複合キーはフィールド間が AND で 1 lookup です。OR は同じ集合にエントリを複数入れて表現します。各エントリは独立した 1 つのキーで、マッチはそのいずれかに当たるかどうかです。
-
-```bash
-# (imsi=999990000000001 かつ teid=0x1000) または
-# (imsi=999990000000777 かつ teid=0x2000) を照合したい
-sudo bpf-ninja set add $PIN imsi=999990000000001 teid=0x1000 tag=1
-sudo bpf-ninja set add $PIN imsi=999990000000777 teid=0x2000 tag=1
-```
-
-複数の集合を 1 つのフィルタで組み合わせることもできます。`--set` は複数定義でき、DSL では `layer[a in @s1, b in @s2]` のようにカンマ併記します。ブラケット内のカンマは AND なので、両方がそれぞれの集合に当たったときだけ通ります。
-
-```bash
-sudo bpf-ninja set create /sys/fs/bpf/src --key "sport:u16"
-sudo bpf-ninja set create /sys/fs/bpf/dst --key "dport:u16"
-sudo bpf-ninja set add /sys/fs/bpf/src sport=1111
-sudo bpf-ninja set add /sys/fs/bpf/dst dport=443
-sudo bpf-ninja -i eth0 --mode xdp \
-  --set "src=/sys/fs/bpf/src" --set "dst=/sys/fs/bpf/dst" \
-  'eth/ipv4/tcp[sport in @src, dport in @dst]'
-```
-
-いま集合に何が入っているかは、フィルタを流しながら別ターミナルで `set list` を叩けば確認できます。`set list` は map のエントリ一覧で、マッチしたエントリを名指しするものではありません。エントリの追加・削除はキャプチャ中でも即時反映され、re-attach は要りません。
-
-### bpftool で map を直接覗く
-
-合成した BTF のおかげで、`bpftool map dump` はフィールド名付きで整形表示されます。`set list` と突き合わせて配線を確認できます。
+set の map は BTF を持つため、`bpftool map dump` はフィールド名付きで表示します。
+`set list` の結果と突き合わせて確認できます。
 
 ```bash
 sudo bpftool map dump pinned $PIN
@@ -190,20 +282,16 @@ sudo bpftool map dump pinned $PIN
     }, ...
 ```
 
-出力の見え方は bpftool のバージョンに依存します。上の JSON 風表示は libbpf ベースの新しい bpftool の既定です。古い bpftool ではフィールドを並べた素のテキストになることがあります。
+上の形式は libbpf を使う bpftool の既定の出力です。
+古い bpftool では、フィールドを並べただけのテキストになることがあります。
 
-bpftool で直接書き込む場合は、パディングのゼロ埋めが必須です。hash はキー全バイトをハッシュするので、パディングが非ゼロだと永遠に一致しません。`bpf-ninja set add` はこのゼロ埋めを自動で保証するため、手で書くより安全です。外部で作った pinned map も、hash 型で BTF キーを持てば `set list` / `set schema` で読めます。
-
-### 16 バイトの SID キーを確認する
-
-`ipv6` 型のキーは IPv6 リテラルで出し入れし、`set list` でも IPv6 表記で戻ります。
+### 16 バイトの SID キー
 
 ```bash
 sudo bpf-ninja set create /sys/fs/bpf/sids --key "dst:ipv6"
 sudo bpf-ninja set add    /sys/fs/bpf/sids dst=fc00::1
-sudo bpf-ninja set list   /sys/fs/bpf/sids     # dst=fc00::1 tag=1
+sudo bpf-ninja set list   /sys/fs/bpf/sids     # dst=fc00::1 tag=1 state=active max-bytes=unlimited
 sudo bpf-ninja set schema /sys/fs/bpf/sids     # dst  ipv6  offset 0
 ```
-
 
 [DSL 利用ガイドに戻る](../dsl-usage.md)
