@@ -54,9 +54,14 @@ var NoWakeup bool
 
 // shardPollTimeoutMs caps how long the fast-reader's epoll_wait blocks
 // under NoWakeup, where polling is the only way to see new records.
-// Otherwise a shard blocks until the kernel signals data or stop
-// writes the wake eventfd.
 const shardPollTimeoutMs = 1
+
+// shardWaitMs caps a fast-reader shard's epoll_wait otherwise. The probe
+// signals a submit only when the ring's backlog crosses a multiple of a
+// quarter of the ring, so a record below that is read within this bound;
+// stop still wakes every shard at once through the wake eventfd. A
+// variable so tests can stretch it.
+var shardWaitMs = 50
 
 // LatencySamplePeriod, when > 0, makes the fast-reader sample every
 // Nth ringbuf record's BPF-submit→reader-read latency. Samples land
@@ -665,11 +670,11 @@ func (r *FastShardedReader) run(sink RawShardSink, flush func(int) error) (func(
 		s.fail(err)
 	}
 	s.closeWake = func() error { return unix.Close(wakeFD) }
-	// No timeout, deliberately, as in libbpf and cilium/ebpf: the kernel
-	// signals a submit the reader has caught up to, and the level-triggered
-	// ring fd is re-polled after every data wake (TestFastReaderStaleConsumer).
-	// A fallback timeout would only turn a missed wakeup into latency.
-	timeout := -1
+	// The level-triggered ring fd is re-polled after every data wake
+	// (TestFastReaderStaleConsumer). Records committed while a shard
+	// sleeps, or during a pass that followed a timeout, wait for the
+	// probe's signal or this bound.
+	timeout := shardWaitMs
 	if NoWakeup {
 		timeout = shardPollTimeoutMs
 	}

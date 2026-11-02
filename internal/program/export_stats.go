@@ -127,7 +127,7 @@ func emitExportTerminals(fd int) asm.Instructions {
 		out = append(out, emitExportCounter(fd, statReserveFail, "rb_fail")...)
 		out = append(out, emitExportCounter(fd, statLookupMiss, "rb_lookup_fail")...)
 	}
-	out = append(out, asm.LoadMem(asm.R1, asm.R10, -32, asm.DWord).WithSymbol("rb_copy_fail"), asm.Mov.Imm(asm.R2, 0), asm.FnRingbufDiscard.Call())
+	out = append(out, asm.LoadMem(asm.R1, asm.R10, -32, asm.DWord).WithSymbol("rb_copy_fail"), ringbufSubmitFlag(), asm.FnRingbufDiscard.Call())
 	out = append(out, emitExportCounter(fd, statCopyFail, "rb_copy_count")...)
 	return out
 }

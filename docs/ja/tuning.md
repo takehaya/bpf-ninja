@@ -55,7 +55,7 @@ reader や target が律速なら、形式を変えても効果が小さいこ�
 
 `--no-wakeup` は `--fast-reader` が必要です。
 wakeup を減らす代わりに、到着から読取りまでの latency が変わるため、throughput だけで判断しません。
-付けない場合、何も来ない shard はデータが届くまで眠ります。付けると、各 shard は何も来ない間も 1 ms ごとに起きるので、一致の少ない capture では reader の CPU が増えます。
+付けない場合、shard は ring の 1/4 が溜まるか 50 ms たつまで眠ります。付けると、各 shard は何も来ない間も 1 ms ごとに起きるので、一致の少ない capture では reader の CPU が増えます。
 
 過去の本文には、p50 が約 100 µs から 2.6 ms に変わったという記録があります。
 cgroup-skb/loopback の約 0.2 Mpps の負荷では、observer cost が約 3.3 µs から 123 ns に変わったと記録されています。
@@ -81,7 +81,8 @@ target が総流量を処理できる範囲で配分を振り、capture と転�
 
 ## 4. 効果がなかった対策を避ける
 
-過去には packet prefetch、CPUMAP による分離、wakeup の間引き、writev を試して改善しなかった記録があります。
+過去には packet prefetch、CPUMAP による分離、wakeup の間引き、writev を試して throughput が改善しなかった記録があります。
+wakeup の間引きはその後、throughput ではなく submit ごとの irq_work による datapath の遅れを減らすために既定の動作になりました。
 これらは当時の飽和条件に対する結果です。
 [ADR-0001](adr/0001-fast-reader-zero-copy-flush.md)のコピーと ownership の判断も参照し、測定条件を確認せず同じ案を再実装したり、全環境で無効と結論づけたりしません。
 

@@ -616,11 +616,13 @@ func compileFilterWithSlots(expr string, useDSL, isFexit bool, progType ebpf.Pro
 //   -12: canonical fexit return value (u32)
 //   -16: map lookup の key
 //   -24: scratch buffer ポインタ (フィルタ時のみ)。gated exit は filter
-//        前まで invocation 番号の退避にも使う
+//        前まで invocation 番号の退避にも使う。capture では shard の lookup
+//        から submit まで submit の flag (emitWakeFlag) を置く
 //   [-40, -24): DSL packet-set のキーバッファ (filter 中から set lookup
 //        まで。setslots.go)
 //   -32: ringbuf 予約スロットのポインタ (reserve 以降)。deferred prologue の
-//        gated exit は filter 前から最初の reserve まで hold ポインタを置く
+//        gated exit は filter 前から最初の reserve まで hold ポインタを置く。
+//        reserve の直前は emitWakeFlag が閾値を一時的に置く
 //   -40: copy size (u32、epilogue)。--record filter はその前に snapshot
 //        ポインタ (u64、-40..-33) をここに退避する
 //   -48: tracing args ポインタの退避
@@ -671,16 +673,74 @@ var SnaplenOverride int
 // wakeup, so only a reader that polls sees the record.
 const BPF_RB_NO_WAKEUP uint32 = 1
 
-// ringbufSubmitFlags is the flags argument of bpf_ringbuf_submit in every
-// emit path (captureXDPNative, captureWithRingbuf, gated). It follows
+// bpf_ringbuf_query's selectors, from include/uapi/linux/bpf.h.
+const (
+	bpfRBAvailData = 0
+	bpfRBRingSize  = 1
+)
+
+// wakeFlagSlot carries the submit flag from emitWakeFlag to the submit.
+// Its users before the capture (the filter's scratch pointer, the gated
+// exit's invocation number) are dead once the filter has matched.
+const wakeFlagSlot = -24
+
+// ringbufSubmitFlag loads the flags argument of bpf_ringbuf_submit (R2) in
+// every emit path (captureXDPNative, captureWithRingbuf, gated), and of the
+// discard after a failed copy: a flag of 0 would let the kernel queue its
+// wakeup whenever the reader has caught up. It follows
 // capture.NoWakeup (--no-wakeup), which also keeps the fast reader
 // polling. Both read it once, at build and at reader start, so they agree
 // as long as it is set before either and not changed afterwards.
-func ringbufSubmitFlags() int32 {
+func ringbufSubmitFlag() asm.Instruction {
 	if capture.NoWakeup {
-		return int32(BPF_RB_NO_WAKEUP)
+		return asm.Mov.Imm(asm.R2, int32(BPF_RB_NO_WAKEUP))
 	}
-	return 0
+	return asm.LoadMem(asm.R2, asm.R10, wakeFlagSlot, asm.DWord)
+}
+
+// emitWakeFlag runs in emitShardedRBReserve between the shard lookup and
+// the reserve, with R0 = the shard's ring, and leaves R0 as it found it.
+// It stores BPF_RB_FORCE_WAKEUP at wakeFlagSlot when this record takes the
+// ring's backlog across a multiple of a quarter of the ring, else
+// BPF_RB_NO_WAKEUP. The kernel's own rule wakes a reader that has caught
+// up, which is almost every record when the reader keeps up, and each
+// wakeup stalls this CPU for about a microsecond. A quarter ring leaves
+// three quarters for the burst that arrives while the reader wakes; the
+// fast reader's bounded wait collects records below it. Two capture
+// programs that interleave on one CPU between this query and the reserve
+// can miss a crossing. A later multiple still wakes the reader, but if
+// every crossing up to a full ring is missed while it sleeps, reserves
+// fail and the records are dropped (counted as ringbuf_reserve_fail) until
+// the bounded wait reads the ring. Branch-free, so the verifier walks the
+// rest of the program once. Clobbers R1-R5 and reservedSlot: the reserve
+// overwrites T there, and a failed reserve leaves T, which nothing reads.
+// Emits nothing under capture.NoWakeup, whose flag is a constant.
+func emitWakeFlag(reserveSize int32) asm.Instructions {
+	if capture.NoWakeup {
+		return nil
+	}
+	recLen := (8 + reserveSize + 7) &^ 7 // the ring's 8-byte header, then the sample rounded up to 8
+	return asm.Instructions{
+		asm.StoreMem(asm.R10, wakeFlagSlot, asm.R0, asm.DWord), // the ring, until the flag replaces it
+		asm.Mov.Reg(asm.R1, asm.R0),
+		asm.Mov.Imm(asm.R2, bpfRBRingSize),
+		asm.FnRingbufQuery.Call(),
+		asm.RSh.Imm(asm.R0, 2), // T, a power of two like the ring
+		asm.StoreMem(asm.R10, reservedSlot, asm.R0, asm.DWord),
+		asm.LoadMem(asm.R1, asm.R10, wakeFlagSlot, asm.DWord),
+		asm.Mov.Imm(asm.R2, bpfRBAvailData),
+		asm.FnRingbufQuery.Call(), // R0 = backlog before this record
+		asm.Mov.Reg(asm.R1, asm.R0),
+		asm.Add.Imm(asm.R1, recLen),
+		asm.Xor.Reg(asm.R1, asm.R0), // >= T exactly when the record crosses a multiple of T
+		asm.LoadMem(asm.R2, asm.R10, reservedSlot, asm.DWord),
+		asm.Sub.Imm(asm.R2, 1),
+		asm.Sub.Reg(asm.R2, asm.R1),
+		asm.RSh.Imm(asm.R2, 63), // the sign of T-1-x: 1 when crossed (both stay below 2^63)
+		asm.Add.Imm(asm.R2, int32(BPF_RB_NO_WAKEUP)), // 1, or 2 (BPF_RB_FORCE_WAKEUP) when crossed
+		asm.LoadMem(asm.R0, asm.R10, wakeFlagSlot, asm.DWord),
+		asm.StoreMem(asm.R10, wakeFlagSlot, asm.R2, asm.DWord),
+	}
 }
 
 // HWTimestampKfuncID, when non-zero, makes captureXDPNative emit a
@@ -1033,6 +1093,7 @@ var origLenFromR8 = asm.Instructions{asm.Mov.Reg(asm.R1, asm.R8)}
 // Local stack slots used here:
 //
 //	stack[-8]  = u64 tag slot (low 32 bits = set-map value, 0 if none)
+//	stack[-24] = u64 submit flag (emitWakeFlag)
 //	stack[-32] = reserved-slot ptr (PTR_TO_MEM, mem_size = metadataSize + maxCapLen)
 //	stack[-40] = u32 saved copy_size (preserved across the
 //	             bpf_probe_read_kernel call, which clobbers R0..R5)
@@ -1143,7 +1204,7 @@ func captureWithRecord(eventsFD, statsFD int, isFexit bool, maxCapLen int, packe
 		asm.JNE.Imm(asm.R0, 0, "rb_copy_fail"),
 	)
 
-	// --- bpf_ringbuf_submit(reservation_ptr, ringbufSubmitFlags()) ---
+	// --- bpf_ringbuf_submit(reservation_ptr, ringbufSubmitFlag()) ---
 	// Same flag plumbing as captureXDPNative — must honour
 	// --no-wakeup uniformly across attach modes (the CLI flag
 	// promises "every ringbuf submit", and the R22 sharded-ringbuf
@@ -1151,7 +1212,7 @@ func captureWithRecord(eventsFD, statsFD int, isFexit bool, maxCapLen int, packe
 	// XDP-native).
 	insns = append(insns,
 		asm.LoadMem(asm.R1, asm.R10, -32, asm.DWord),
-		asm.Mov.Imm(asm.R2, ringbufSubmitFlags()),
+		ringbufSubmitFlag(),
 		asm.FnRingbufSubmit.Call(),
 	)
 	return insns

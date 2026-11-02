@@ -231,6 +231,7 @@ func runFilterDirect(filter asm.Instructions) asm.Instructions {
 //
 //	-8:  u64 tag slot (low 32 bits = set-map value, 0 if none)
 //	-16: u32 cpu_id (scratch for outer-map lookup)
+//	-24: u64 submit flag (emitWakeFlag)
 //	-32: reserved-slot ptr (PTR_TO_MEM, mem_size = metadataSize + maxCapLen)
 //	-40: u32 saved copy_size
 //	-48: u64 kernel_ts_ns (saved bpf_ktime_get_ns return)
@@ -326,7 +327,7 @@ func captureXDPNative(eventsFD int, maxCapLen int, statsFD int) asm.Instructions
 
 		// --- bpf_ringbuf_submit(reservation_ptr, flags) ---
 		asm.LoadMem(asm.R1, asm.R10, -32, asm.DWord).WithSymbol("xn_skip_load"),
-		asm.Mov.Imm(asm.R2, ringbufSubmitFlags()),
+		ringbufSubmitFlag(),
 		asm.FnRingbufSubmit.Call(),
 	}...)
 	return insns
