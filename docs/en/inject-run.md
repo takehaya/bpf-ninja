@@ -130,7 +130,7 @@ bpf-ninja -p "$PROG_ID" --func ninja_sessions --arg-filter 'value->action==2' -w
 - `--arg-filter` can select members of the key and value, and `site` and `status` where the hook has them.
 - At a hook that `inject-run` generated, the capture writes decision state as each packet's pcapng comment. `--record` picks it:
   - `filter` (the default) records the arguments and members that `--arg-filter` and `--set` keys read, and records nothing without them;
-  - `entry` records `site` and `status` where the hook has them, and up to `--record-max` bytes (default 256) each of the key and value; at a generic or dispatch hook it records only `site` and `info`;
+  - `entry` records whichever of `site`, `status`, the key and the value the hook has, the key and value cut to `--record-max` bytes (default 256); at a generic or dispatch hook it records only `site` and `info`;
   - `none` turns recording off.
 - At a static hook, the capture reads the context with `bpf_probe_read_kernel` when the kernel rejects direct reads.
   It first checks that the entry function passes the context to every call; [arg-member-filter.md](arg-member-filter.md) lists what that check refuses.

@@ -201,7 +201,7 @@ Nested members need an explicit path, and `@NAME` always names the set itself.
 ## Record the values with each packet
 
 At a generated hook, the capture writes the values these filters and set keys read as each packet's pcapng comment, such as `value->action=2 key->dport=443`.
-`--record entry` writes `site` and `status` where the hook has them, and up to `--record-max` bytes (default 256) each of the hook's key and value instead, or only `site` and `info` at a generic or dispatch hook; `--record none` turns it off. See the [walkthrough](inject-walkthrough.md#record-the-decision-state-with-each-packet).
+`--record entry` writes whichever of `site`, `status`, the key and the value the hook has instead, the key and value cut to `--record-max` bytes (default 256), or only `site` and `info` at a generic or dispatch hook; `--record none` turns it off. See the [walkthrough](inject-walkthrough.md#record-the-decision-state-with-each-packet).
 `filter` records the value each field's conditions tested, read once as the filter ran, so the recorded value satisfies them; `entry` reads the key and value at the hook.
 A filter or set key on a member inside a `bpf_*` struct other than the LPM trie key structs, such as `tuple->ipv4.dport` in `struct bpf_sock_tuple`, still filters as usual but is not recorded: by default the comment leaves it out and `-v` names it, and an explicit `--record filter` refuses it.
 
