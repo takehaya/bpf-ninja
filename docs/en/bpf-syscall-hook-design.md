@@ -1,8 +1,7 @@
 # Design: retrofit injection through the bpf(2) syscall
 
-Status: the [raw-load front end](lookup-site-injection.md#raw-load-api) and a Linux x86-64 ptrace launcher prototype are implemented.
+`bpf-ninja inject-run` implements this design on Linux x86-64 with a ptrace supervisor and the [raw-load front end](lookup-site-injection.md#raw-load-api) of `pkg/inject`.
 `bpf-ninja inject-run --config rules.json -- ./target` transforms loads in the target through `inject.TransformLookupRaw`.
-The privileged integration test verifies the hook in the child's loaded program and executes it with `BPF_PROG_TEST_RUN`.
 See [inject-run](inject-run.md) for usage, failure behavior and limits.
 
 ## The problem this solves
@@ -36,8 +35,8 @@ This works at the syscall boundary, below libc, so the loader's language does no
 | `ptrace` supervisor | Go and statically linked loaders | `PTRACE_SYSCALL`, rewrite tracee registers and memory at `bpf(2)` | larger, but language-independent |
 | seccomp user-notify | nothing here | can skip a call or replace its return, but cannot swap in larger instruction or BTF buffers with new pointers | rejected as the wrong tool |
 
-The plan is to ship the `ptrace` supervisor first, since it reaches Go loaders, and to add the `LD_PRELOAD` shim later for C loaders.
-Both drive the same transform core.
+`inject-run` uses the `ptrace` supervisor, since it reaches Go loaders as well as C loaders.
+An `LD_PRELOAD` shim would drive the same transform core, but none exists.
 
 ## What the transform core must accept
 
@@ -66,18 +65,12 @@ The hook needs a BTF `FUNC` and `FUNC_PROTO` for `int hook(struct xdp_md *, cons
 But BTF is loaded by an earlier, separate `BPF_BTF_LOAD`, and `BPF_PROG_LOAD` only references it by fd.
 So the supervisor has to intercept `BPF_BTF_LOAD` as well.
 
-On `BPF_BTF_LOAD`, parse the BTF blob and remember it under the fd the kernel returns.
-At this point we cannot yet know whether the BTF belongs to a program we will transform, so we remember every BTF, which is cheap.
+At a `BPF_BTF_LOAD`, the supervisor cannot yet know whether the BTF belongs to a program it will transform, so it remembers every BTF blob under the fd the kernel returns.
+At a matched `BPF_PROG_LOAD`, it extends that BTF with the hook's types and loads the result inside the tracee, because a BTF fd the supervisor owns would be useless as the target's `prog_btf_fd`.
+[How the supervisor handles a load](#how-the-supervisor-handles-a-load) gives the steps.
 
-On `BPF_PROG_LOAD` of a matched program, the supervisor builds the hook's types and extends the program's BTF using the raw transformer.
-It injects `bpf(BPF_BTF_LOAD)` into the tracee, so the new fd belongs to the tracee.
-Loading extended BTF only in the supervisor would produce an unusable `prog_btf_fd` for the target; the prototype therefore loads it directly in the target and does not perform a redundant supervisor load.
-It builds a copied attr with that fd, transformed instructions, and the updated `func_info` and `line_info` in an injected anonymous mapping.
-After the injected `BPF_PROG_LOAD`, it closes the temporary BTF fd, unmaps the scratch memory, and returns the program fd through the target's saved registers.
-
-The placement rule from `b87bc75`, which puts the hook right after the entry function, applies here and matters more.
-On the ELF path a verifier rejection is a failed load we can diagnose and retry.
-The prototype retains the original attr and buffers so a rejected transformed load can be retried unchanged before the syscall returns to the target.
+The transform places the hooks right after the entry function, which avoids a kernel verifier bug; see [Inserted instructions](lookup-site-injection.md#inserted-instructions).
+The supervisor keeps the original attr and buffers, so it can retry a rejected transformed load unchanged before the syscall returns to the target.
 
 ## Selection and failure behavior
 
@@ -130,20 +123,16 @@ The caller's verifier log and `log_true_size` output are preserved as syscall ou
 
 The wire offsets and stop discriminators follow the Linux [BPF UAPI](https://github.com/torvalds/linux/blob/master/include/uapi/linux/bpf.h) and [ptrace UAPI](https://github.com/torvalds/linux/blob/master/include/uapi/linux/ptrace.h).
 
-## Prototype decisions
+## Design decisions
 
-The prototype makes the following choices.
-
-1. Inject `mmap` and repoint a copied attr; the integration test covers a Go tracee with a larger instruction stream and additional function metadata.
+1. Inject `mmap` and repoint a copied attr at the larger instruction and metadata buffers.
 2. Launch with `PTRACE_TRACEME`, then use `PTRACE_SYSCALL` and follow threads with `PTRACE_O_TRACECLONE`.
-   The command is `inject-run` to distinguish transformation from ordinary packet observation.
-   Attaching to an existing process and supervising forked processes remain TODO.
-3. Attach an fentry observer separately with the existing observation commands.
-   The launcher adds the hook but does not attach an observer.
-4. CO-RE.
-   By load time the CO-RE relocations are already applied in the instructions, so we inherit a resolved program, which helps.
-   The raw transformer preserves original type IDs; the integration fixture carries its own BTF.
-   Kernel-side CO-RE records and fd arrays are refused until their offsets and references can be relocated.
+   The command is named `inject-run` to set transformation apart from packet observation.
+3. Attach observers separately with the existing observation commands.
+   The launcher adds the hooks but attaches nothing.
+4. By load time the CO-RE relocations are already applied in the instructions, so the transform works on a resolved program.
+   The raw transformer preserves the original type IDs.
+   Kernel-side CO-RE records and fd arrays are refused, because the transform does not relocate their offsets and references.
 
 ## Remaining work
 

@@ -41,7 +41,7 @@ bpf-ninja -p "$PROG_ID" --func "$HOOK" -c 10 -w hook.pcap
   "hook": "obs", "stack_lowest_offset": -64}]
 ```
 
-`auto` instruments every supported map call in the program, with one hook per map and operation.
+`auto` instruments every supported lookup in the program, and with `ops` the other map calls, with one hook per map and op.
 `maps` limits it to the named maps; calls on other maps run unchanged.
 `ops` picks the calls and results that call a hook:
 
@@ -54,24 +54,30 @@ bpf-ninja -p "$PROG_ID" --func "$HOOK" -c 10 -w hook.pcap
 | `update:any` | after every update |
 | `delete`, `push`, `pop`, `peek` | as for `update`, with `:error` (the default) or `:any` |
 
+An entry in `ops` names an op and, after the colon, the results that call its hook.
+Each op appears once, so use `lookup:any`, not `lookup:hit` together with `lookup:miss`.
+
 - A rule with `ops` observes only the ops it lists, so `"ops": ["update"]` leaves the lookups alone.
 - `bpf_map_lookup_percpu_elem` counts as a lookup.
 - Every op except `lookup` needs `auto`.
 - `push`, `pop` and `peek` work on queues, stacks and bloom filters.
-  A pop or peek hook sees the value the helper wrote.
+  On a queue or stack, a pop or peek hook sees the value the helper wrote; a bloom-filter peek hook sees the value tested.
 
 `auto` skips a site it cannot instrument, leaves it unchanged, and lists it with the reason in the diagnostic and in the `skipped` list of the [hooks file](#hooks-file).
 It skips these sites:
 
+- a call outside the entry function (`not in the entry function`);
+- a call on a map that `maps` does not name (`map not selected by Maps`);
 - a call on a map kind that has no hook;
 - a site whose hook name would be longer than 127 bytes;
 - a site whose spill slots do not fit below the stack bound;
 - sites that would make the rewritten program break a kernel call-chain stack limit.
-  `auto` first drops the sites of the generic hook and of copied read-only values, and then, if the program still breaks the limit, every map-call site.
+  `auto` first drops the sites that need slots below the three base ones (the generic hook, update hooks and copied read-only values), and then, if the program still breaks the limit, every map-call site.
   With `dispatch` it drops every map-call site at once.
 
 `auto` keeps the `entry` and `tail_calls` hooks.
 If nothing is left to instrument, the injection fails.
+A map call whose op the rule does not observe is left alone and does not appear in `skipped`.
 
 ### Observe one lookup
 
@@ -84,7 +90,7 @@ The rule must match exactly one lookup in the entry function; if it matches seve
 The compiler can inline one lookup into several places with the same source line.
 To take them all, add `"all_matches": true`.
 To take some of them, list their load-time instruction indexes in `"site_pcs": [293, 1942]`.
-The [lookups file](#lookups-file) and [`--list-maps`](#map-listing-of-a-running-program) show those indexes.
+The [lookups file](#lookups-file) and [`--list-maps --lookups-json`](#map-listing-of-a-running-program) show those indexes.
 This hook has no `site` argument: `lookup_hook(ctx, key, value)`.
 
 ### Observe program entry and failed tail calls
@@ -121,8 +127,8 @@ bpf-ninja -p "$PROG_ID" --func ninja_sessions --arg-filter 'value->action==2' -w
 ```
 
 - The capture sees a packet only when the program calls the hook, so your rule sets what gets captured.
-- `--arg-filter` can select `site`, `status`, and members of the key and value.
-- `--record` writes the values the call was decided on as each packet's pcapng comment.
+- `--arg-filter` can select members of the key and value, and `site` and `status` where the hook has them.
+- At a hook that `inject-run` generated, the capture writes the values the call was decided on as each packet's pcapng comment by default (`--record filter`); `--record entry` records the whole key and value, and `--record none` turns it off.
 - At a static hook, the capture reads the context with `bpf_probe_read_kernel` when the kernel rejects direct reads.
   It first checks that the entry function passes the context to every call; [arg-member-filter.md](arg-member-filter.md) lists what that check refuses.
   At a tc hook on this path, it captures only the linear packet head and refuses a filter with `--tc-vlan-reinsert`.
@@ -175,6 +181,9 @@ Without types, the hook passes the key and value as opaque bytes, and member fil
 ```sh
 sha256sum /path/to/loader-generated.o
 bpf-ninja inject-run --fail-closed --config rules.json --hooks-json hooks.json -- ./loader
+
+# In another terminal, while the loader runs
+PROG_ID=$(jq '.programs[0].prog_id' hooks.json)
 bpf-ninja -p "$PROG_ID" --func observe --list-params --members
 bpf-ninja -p "$PROG_ID" --func observe --arg-filter 'value->identity==7' -w selected.pcapng
 ```
@@ -193,6 +202,7 @@ The digest is 64 hexadecimal digits in either case; a malformed digest fails the
 At each matching load, the supervisor reads `elf` from its own filesystem, relative to its working directory.
 The file must be a regular file of at most 64 MiB.
 The supervisor reads and hashes it on every load, without a cache, and parses the same bytes it hashed.
+It checks the file only at those loads: nothing reads it when `inject-run` starts, so a missing or wrong file shows up as a failed injection, not as a configuration error.
 `inject-run` refuses the injection, and the normal [failure policy](#diagnostics-and-failures) applies, unless all of these hold:
 
 - exactly one referenced live map has the name, and it has no BTF at all, not even an anonymous byte-array value type;
@@ -244,7 +254,8 @@ bpf-ninja inject-run [--config FILE] [--fail-closed] [--hooks-json FILE] [--look
 - The target inherits stdin, stdout and stderr.
   `inject-run` writes its diagnostics to stderr, prefixed with `inject-run:`.
 - The exit status is the target's, or 128 plus the signal number if a signal killed it.
-  If writing the hooks or lookups file fails, `inject-run` exits nonzero even when the target succeeded.
+  A nonzero target status also prints `error: target exited with status N`.
+- `inject-run` exits with status 1 and an `error: ...` line when its configuration is invalid, when it fails, when SIGINT or SIGTERM stops it, or when writing the hooks or lookups file fails although the target succeeded.
 - Every `bpf(2)` command other than `BPF_BTF_LOAD` and a matched `BPF_PROG_LOAD` passes through unchanged.
 - `inject-run` needs ptrace, the target's BPF operations, and opening BTF objects by ID in the supervisor.
   The tests run as root.
@@ -255,20 +266,21 @@ The configuration is a JSON array of rules.
 `inject-run` rejects unknown keys, trailing data, an empty array, two rules for the same `program`, and files over 1 MiB before the target starts.
 It catches most errors against the table below at that point too.
 The rest, such as a selector that matches nothing, show up only when the program loads, and that load's injection fails.
+A rule whose `program` never loads produces no diagnostic at all.
 
 | Key | Type | Default | Meaning | Constraints |
 |---|---|---|---|---|
 | `program` | string | required | The program to rewrite: its kernel name or its entry function name. | Kernel names have at most 15 characters; a function name can be longer. One rule per program. |
 | `hook` | string | required | The hook name. With `auto`, `entry`, `tail_calls` or `ops`, the prefix of the hook names. With `dispatch`, the name of the one hook. | A C identifier. It must leave room for the longest suffix within 127 bytes; see [Hook names](#hook-names). |
-| `stack_lowest_offset` | integer | required | Your audit of the deepest stack offset the program reaches, including pointer copies and callees. The hook's spill slots go below it. | See [Stack bound](#stack-bound). `lookups.json` leaves it `null`, which is refused. |
+| `stack_lowest_offset` | integer | required | Your audit of the deepest stack offset the program reaches, including pointer copies and callees. The hook's spill slots go below it. | At most 0; see [Stack bound](#stack-bound). `lookups.json` leaves it `null`, which is refused. |
 | `map` | string | none | Observe lookups on this map, by exact kernel map name. | Not with `auto`. A rule needs one of `map`, `auto`, `entry` or `tail_calls`. |
 | `func` | string | none | With `map`: only lookups in this BTF function. | Needs `map`. |
 | `line` | integer | none | With `map`: only lookups on this source line. | Needs `map`. |
 | `all_matches` | bool | false | With `map`: take every matching lookup instead of requiring exactly one. | Needs `map`. Not with `site_pcs`. |
 | `site_pcs` | integer array | none | With `map`: take the lookups at these load-time instruction indexes. | Needs `map`. Not with `all_matches`. Each PC must be a lookup that matches the other filters, and must appear once. |
-| `auto` | bool | false | Instrument every supported map call, with one hook per map and op. | Not with `map`, `func`, `line`, `all_matches` or `site_pcs`. |
+| `auto` | bool | false | Instrument every supported lookup, and with `ops` the other map calls, with one hook per map and op. | Not with `map`, `func`, `line`, `all_matches` or `site_pcs`. |
 | `maps` | string array | every map | With `auto`: only calls on these maps, by exact kernel name. Calls on other maps run unchanged. | Needs `auto`. Names must be unique, and each must match a call the rule observes. |
-| `ops` | string array | `["lookup"]` | The calls and results that call a hook; see the [ops table](#choose-the-maps-and-operations-to-observe). | Needs `map` or `auto`. Ops other than `lookup` need `auto`. Each op appears once. |
+| `ops` | string array | `["lookup"]` | The calls and results that call a hook; see the [ops table](#choose-the-maps-and-operations-to-observe). | Needs `map` or `auto`. Ops other than `lookup` need `auto`. Each op appears once, so `lookup:hit` and `lookup:miss` together are refused; use `lookup:any`. |
 | `entry` | bool | false | Add `HOOK_entry(ctx)` at program start. | |
 | `tail_calls` | bool | false | Add `HOOK_tail_call(ctx, site, index)` after each failed tail call. | The program must call `bpf_tail_call`. |
 | `dispatch` | bool | false | Send every site to one hook named `hook`. | Not with `copy_read_only` or `map_btf`. |
@@ -282,7 +294,8 @@ The rest, such as a selector that matches nothing, show up only when the program
 Find the deepest stack access of the program, for example the lowest `r10 - N` in `llvm-objdump -d prog.o`, and include callees and copies of `r10`.
 Do not copy a bound from an example.
 The transform rounds the bound down to 8 bytes and puts its spill slots below it.
-The frame that holds them also calls the hook, and kernels count that call as 32 bytes of the 512-byte stack, so the slots must end within 480 bytes.
+The frame that holds them also calls the hook.
+Kernels that round frames to 32 bytes (6.1, and the interpreter) count that call as 32 bytes of the 512-byte stack, so the transform keeps the slots within 480 bytes on every kernel.
 The lowest accepted bound depends on the rule:
 
 | Rule has | Slots | Lowest bound |
@@ -295,8 +308,10 @@ The lowest accepted bound depends on the rule:
 | an `update` op and `dispatch` | 5 | -440 |
 
 The transform checks the rest, which depends on the program.
-A generic hook takes a fourth slot, or a fifth at an update, and `copy_read_only` puts the value copy below the slots.
-`auto` skips a site that does not fit, and an explicit `map` rule fails; the refusal message gives the exact bound.
+A generic hook takes a fourth slot (bound -448), or a fifth at an update (-440).
+`copy_read_only` puts the value copy below the fourth slot, so a copied value needs a bound of at least -448 plus its size rounded up to 8 bytes.
+`auto` skips a site that does not fit, and an explicit `map` rule fails.
+The refusal names the slots or bytes it needs and the bound you gave.
 
 ### Hook names
 
@@ -320,6 +335,7 @@ If that name is empty, invalid, taken or too long, `inject-run` names the hook `
 | `tail_calls` | `HOOK_tail_call` | `(ctx, u32 site, u32 index)` |
 | `dispatch` | `HOOK` | as `HOOK_any`, for every site |
 
+- A typed hook with `untrusted: true` in the [hooks file](#hooks-file) takes `const void *key` and `const void *value` instead of typed pointers, with their sizes in BTF decl tags when the bytes are plain data. Member filters such as `value->action` need `untrusted: false`.
 - An update or delete on a sockmap or sockhash goes to `HOOK_any_update` or `HOOK_any_delete`, since its value is a socket.
 - A `HOOK_any` hook gets a NULL `value` on a lookup miss or a delete, and a push, pop or peek on it gets a NULL `key`.
 
@@ -391,7 +407,7 @@ If a rewrite fails, `inject-run` reports it on stderr and keeps running the targ
 | `hooks[].when` | The results that call it: `hit`, `miss` or `any` for lookups; `error` or `any` for other map calls. A dispatch hook's `when` is its lookups'; its other map-call sites carry their own. |
 | `hooks[].map` | The map of a `typed` hook. Generic and dispatch hooks give the map on each site. |
 | `hooks[].sites` | The calls that call the hook, in instruction order: `kind` (`lookup`, `update`, `delete`, `push`, `pop`, `peek`, `tail_call` or `entry`), `pc` (the `site` argument, or the low 32 bits of `info`), and `map`, `func`, `file` and `line` where known. A dispatch hook lists the entry call first, as `pc` 4294967295. |
-| `hooks[].untrusted` | The hook takes `arg:untrusted` pointers. |
+| `hooks[].untrusted` | The hook takes `arg:untrusted` pointers: its key and value are `const void *`. |
 | `hooks[].copied` | The value is a stack copy. |
 | `hooks[].static` | The hook is static; read every argument as a `u64`. |
 | `hooks[].read_only` | A typed lookup hook on a `BPF_F_RDONLY_PROG` map. |
@@ -448,7 +464,7 @@ It writes the file like the hooks file: the file exists before the target starts
 | `lookups` | The lookup calls, with the fields of a hooks-file site. |
 | `calls` | Every lookup, per-CPU lookup, update, delete, push, pop and peek call, with the op as `kind`. |
 | `reason` on a lookup or call | `auto` would skip it, unless it also has `"generic": true`, which means `auto` sends it to the generic hook. |
-| `rule` | A rule that instruments the lookups on every named map. Fill in `stack_lowest_offset`, edit `maps`, and add `ops`, `dispatch`, `entry` or `tail_calls` as needed. |
+| `rule` | A rule that instruments the lookups on every named map. Its `program` is the entry function name. Fill in `stack_lowest_offset`, edit `maps`, and add `ops`, `dispatch`, `entry` or `tail_calls` as needed. |
 
 A program loaded twice is listed twice.
 
@@ -481,9 +497,9 @@ prog 2  entry
 - Each `map` line gives the map's name and type, the op, and the source line of the call, or of the map load when the op is unknown.
 - `✓ injectable` marks a call `auto` can instrument, with `(generic hook)` when it goes to the generic hook.
   `✗` gives the reason `auto` skips it, and `? not in the lookups file` means no load-time call matched.
-  Without `--lookups-json` there is no status column.
+  Without `--lookups-json` there is no status column and no `pc`.
 - In parentheses, `inlined` marks an array lookup the verifier inlined, and `pc` is the load-time index the lookups and hooks files use.
-- A tail call or redirect shows the program it reaches (`→ prog 3`).
+- A tail call or redirect shows the program it reaches (`→ prog 3`), with or without `--lookups-json`.
   A reached program's line names the maps and keys that reach it, such as `(tail call: jmp[0-1], alt[7])`.
 
 The listing reads the translated instructions the kernel keeps, so it needs root.
@@ -514,7 +530,7 @@ When the rewritten load fails, `inject-run` retries the original syscall with it
 It does not retry with another hook form.
 The loader's verifier log buffer can still hold the log of the attempted load.
 After an inconclusive probe, a rejection with `EINVAL`, `EOPNOTSUPP` or `EACCES` of a program with untrusted hooks adds a hint.
-It suggests `"static_untrusted": true`, or `"copy_read_only": true` when a read-only map's lookup hook is involved.
+The hint always suggests `"static_untrusted": true`; for a read-only map's lookup hook it also offers `"copy_read_only": true` as an alternative.
 A target that exits successfully has not necessarily been injected; check the diagnostic or the hooks file.
 
 With `--fail-closed`:
@@ -563,7 +579,8 @@ In both modes:
 | `arg:untrusted` on global functions | the global form of untrusted hooks | 6.18 or newer in CI; older kernels get static hooks automatically |
 | static BPF functions | static hooks | 6.1 or newer in CI |
 | BPF JIT enabled | any hook in a program that calls `bpf_tail_call` | x86-64 JIT on; otherwise the rewritten load fails |
-| fentry and kernel BTF | `--func` capture and observers at a hook | |
+| fentry and kernel BTF | `--func` capture and observers at a hook | kernel BTF (`/sys/kernel/btf/vmlinux`) |
+| `bpf_get_func_arg` | `--arg-filter` on pointer members at a hook | 5.17 or newer |
 | `bpf_get_func_ret` | exit and gated capture at a static hook whose ctx is read with `bpf_probe_read_kernel` | 5.17 or newer |
 | more than one tracing attach to a program that tail-calls | several observers or captures on such a program | any but 7.0 to 7.2.5; use `dispatch` there |
 

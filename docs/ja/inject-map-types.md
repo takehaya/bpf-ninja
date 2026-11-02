@@ -96,4 +96,4 @@ loader を実行したまま、別の terminal で member の表示と capture �
 `true` は static を強制する。
 `copy_read_only` のコピーと型補完の判定は変わらず、コピー後にも untrusted 引数が必要な hook だけが自動選択の対象となる。
 `--hooks-json` の `hook_form.form` と `hook_form.reason` に選択と理由を記録し、hook ごとの `static`、`untrusted`、`copied` に実際の形式を示す。
-詳細は[英語の inject-run guide の設定の節](../en/inject-run.md#rule-keys)にある。
+詳細は[英語版 inject-run guide の hook 形式の節](../en/inject-run.md#load-on-kernels-without-arguntrusted)に記載されている。
