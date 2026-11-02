@@ -9,7 +9,7 @@
 - 使い捨ての Linux VM と root 権限
 - kernel BTF（`/sys/kernel/btf/vmlinux`）と mount 済みの bpffs
 - iproute2、ping、tcpdump、GNU timeout、nsenter
-- libpcap の開発用パッケージ（Ubuntu では `libpcap-dev`）
+- C コンパイラ（cgo の既定は gcc）と libpcap の開発用パッケージ（Ubuntu では `libpcap-dev`）
 
 不足している項目があると、script はそれを検出して停止します。
 mount やパッケージのインストールは自動で行いません。
@@ -53,6 +53,8 @@ pcap と stderr は、表示された `/tmp/bpf-ninja-docs.*` ディレクトリ
 内容を確認した後、このディレクトリだけを手動で削除してください。
 不具合を報告する際は、commit、`uname -r`、終了時の summary も添えてください。
 
-より広範囲の回帰試験は `make test-bpf` と `make test-integration` で実行できます。
+この script は、小規模な ICMP の取得と出力を確認します。
+CI でも実行されます。
+より広範囲の回帰試験は `make test-bpf` と `make test-integration` で実行できます。必要な環境は [privileged tests](../../privileged-tests.md) を参照してください。
 
 [capture guide](../cli/capture.md) · [出力 guide](../cli/output.md)

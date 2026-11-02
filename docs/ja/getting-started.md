@@ -20,7 +20,9 @@ make build
 不具合を報告する際は、`git rev-parse HEAD` のコミットと `uname -r` の出力も添えてください。
 
 従来の tcpdump 構文（`--cbpf`）を使う場合のみ、libpcap を有効にしてビルドします。
+このビルドには C コンパイラ（cgo の既定は gcc）と libpcap の開発用パッケージが必要です。
 Ubuntu では `libpcap-dev`、Fedora では `libpcap-devel` をインストールしてから実行してください。
+コンパイラを使わない場合は、release の `enable_libpcap` 版バイナリを使います。
 
 ```sh
 make build-libpcap
@@ -29,7 +31,7 @@ make build-libpcap
 ## パケットを取得するための条件
 
 - Linux 5.8 以降と `/sys/kernel/btf/vmlinux`
-- root 権限、または `CAP_BPF` と `CAP_NET_ADMIN`
+- root 権限
 - entry モードと exit モードでは、BTF 付きの対象 BPF プログラムがロード済みであること
 - xdp モードでは、対象のインターフェースに XDP がアタッチされていないこと
 
@@ -56,6 +58,7 @@ sudo ./bpf-ninja -i eth0 -c 10 'eth/ipv4/tcp[dport==443]' | tcpdump -n -r -
 - [Examples](examples/README.md)：目的と期待する結果から選びます。
 - [DSL](dsl-overview.md)：パケットの構造に合わせた式を書きます。
 - [capture guide](cli/capture.md)：モードとターゲットを選びます。
+- [利用ガイド](dsl-usage.md)：DSL の書き方と性能に関する flag を説明します。
 - [inject-run](../en/inject-run.md)と[実行例](../en/inject-walkthrough.md)：`--list-progs --list-maps` でマップ操作を調べ、ロード時に観測用のフックを追加します（英語、Linux x86-64 の実験的機能）。
 - [終了の意味](../capture-lifecycle.md)：停止した後に何を確認するかを説明します。
 

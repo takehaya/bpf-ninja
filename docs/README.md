@@ -4,6 +4,8 @@
 - [Installation (English)](../README.md#install) and [supported hooks (English)](../README.md#modes)
 - [Manual capture tests (English)](en/handtest.md)
 - [Functions missing from a loaded program (English)](en/attach-troubleshooting.md)
+- [Filtering on function arguments and pointer members (English)](en/arg-member-filter.md), [日本語](ja/arg-member-filter.md)
+- [DSL usage guide (Japanese)](ja/dsl-usage.md)
 - [Experimental inject-run launcher and configuration (English)](en/inject-run.md)
 - [Map discovery and injection walkthrough (English)](en/inject-walkthrough.md), with [example sources](../examples/inject-walkthrough/README.md)
 - [Small observers for inject hooks (English)](en/inject-observers.md), with [example sources](../examples/inject-observers/README.md)

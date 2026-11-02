@@ -14,21 +14,21 @@ Linux で `make build` を実行したあと、リポジトリのルートで次
 ```
 
 - 最初の 2 つは、簡易構文とプロトコルのフィールドを表示します。
-- `filter` はフィルタ本体、`full` は hook に組み込んだプログラムの命令を表示します。
+- `filter` はフィルタ本体の命令を表示します。`full` は、entry と exit では tracing プログラム、`--mode xdp` では XDP プログラムとして組み立てた命令を表示します。
 - `--dump-hook` は、ターゲットを探さないオフライン処理で hook を指定します。
 - 警告は stderr に出力されます。stdout には命令だけが出力されます。
 
 ## legacy 構文
 
 tcpdump 構文の `tcp port 443` には `--cbpf` が必要です。
-`--cbpf` は libpcap 付きのビルドでのみ使えます。
+`--cbpf` は libpcap 付きのビルドでのみ使えます。ビルドには C コンパイラと libpcap の開発用パッケージが必要です。
 
 ```sh
 make build-libpcap
 ./bpf-ninja --cbpf --dump-asm filter 'tcp port 443'
 ```
 
-既定のビルドでは、`--cbpf` を指定するとビルド方法を示すエラーを出して終了します。
+既定のビルドで `--cbpf` を指定すると、ビルド方法を示すエラーを出して終了します。`--dump-asm` と組み合わせても同じです。
 
 ## エラーの確認
 

@@ -42,7 +42,7 @@ script は、新しい出力先に tag=7 の合算ファイルが作られるの
 - script は capture を止めた後、自分で作った pin だけを外します。共有の map は削除しません。
 
 一連の実行、期待件数、停止、後片付けは、次のコマンドで確認できます。
-script は `--cbpf` も試すため、libpcap 付きで build します。
+script は `--cbpf` も試すため、libpcap 付きで build します。C コンパイラと libpcap の開発用パッケージが必要です。
 
 ```sh
 make build-libpcap

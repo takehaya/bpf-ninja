@@ -22,7 +22,7 @@ tcpdump cannot show what an XDP or tc program did to a packet, and cBPF filters 
 curl -fsSL https://raw.githubusercontent.com/takehaya/bpf-ninja/main/scripts/install.sh | sudo bash
 
 # Specific version
-curl -fsSL https://raw.githubusercontent.com/takehaya/bpf-ninja/main/scripts/install.sh | sudo bash -s -- --version v0.1.0
+curl -fsSL https://raw.githubusercontent.com/takehaya/bpf-ninja/main/scripts/install.sh | sudo bash -s -- --version vX.Y.Z
 
 # Or via go install (requires Go; no libpcap needed)
 CGO_ENABLED=0 go install github.com/takehaya/bpf-ninja/cmd/bpf-ninja@latest
@@ -40,7 +40,7 @@ DSL filters, pcapng output, and `convert` / `merge` work in this build.
 For legacy `--cbpf` filters, download `bpf-ninja_<version>_linux_x86_64_enable_libpcap.tar.gz` from the same release and install its `bpf-ninja` binary.
 This variant needs the libpcap runtime.
 `checksums.txt` covers both archives.
-To build it from source, install the libpcap development package and run `make build-libpcap`, or:
+To build it from source, install a C compiler and the libpcap development package, then run `make build-libpcap`, or:
 
 ```bash
 CGO_ENABLED=1 go build -tags enable_libpcap ./cmd/bpf-ninja
@@ -56,7 +56,7 @@ sudo bpf-ninja -i eth0 | tcpdump -n -r -
 sudo bpf-ninja -i eth0 "eth/ipv4/tcp[dport==80]" | tcpdump -n -r -
 
 # See the verdict (fexit) and filter on it
-sudo bpf-ninja -i eth0 --mode exit "eth/ipv4/tcp where action == XDP_DROP"
+sudo bpf-ninja -i eth0 --mode exit "eth/ipv4/tcp where action == XDP_DROP" | tcpdump -n -r -
 
 # Capture on a netdev with no XDP program
 sudo bpf-ninja --mode xdp -i eth0 "eth/ipv4/tcp[dport==443]" | tcpdump -n -r -
@@ -80,7 +80,7 @@ bpf-ninja detects the hook kind (XDP, tc clsact, cgroup-skb or netfilter) from t
 |---|---|---|---|---|
 | `entry` (default) | fentry on the target program | yes (with BTF) | no, packet only | observe what reaches the production program |
 | `exit` | fexit on the target program | yes (with BTF) | yes (`XDP_PASS` / `TC_ACT_OK` / `SK_PASS` / ...) | observe the verdict; filter on `action == ...` |
-| `xdp` | attach as the primary XDP on the netdev | no; fails if one is attached | n/a (bpf-ninja always returns `XDP_PASS`) | capture on a netdev with no XDP; no BTF needed |
+| `xdp` | attach as the primary XDP on the netdev | no; fails if one is attached | n/a (bpf-ninja returns `XDP_PASS`, or `XDP_DROP` with `--bench-drop`) | capture on a netdev with no XDP; no BTF needed |
 
 `entry` and `exit` attach through a BPF trampoline and leave the target program unchanged.
 `tc-entry` and `tc-exit` are deprecated aliases for `entry` and `exit`.
@@ -132,12 +132,12 @@ sudo bpf-ninja -i eth0 --mode entry "eth/ipv4/udp[dport==6081]" --mode exit "eth
 - Entry records go to a `<hook>:entry` pcap-ng interface.
   Both images of one invocation carry the same opaque `epb_packetid` (CPU and per-CPU sequence, no kernel address), so they pair up.
 - `-c` counts records: `-c 10` with `--emit both` is 5 pairs.
-- `merge` and `convert` output drops the id; pair on the per-CPU shard files or the raw dump.
+- The merged `-w` file and the output of `merge` and `convert` drop the id; pair on the per-CPU shard files or the raw dump, which keep it (see [offline output](docs/ja/examples/offline-output.md)).
 - Under ring pressure an entry record can appear without its exit twin, because the exit-side reservation failed after the entry was written.
   Treat an unpaired entry as a drop, not as a verdict.
 
 Gated capture attaches two probes to the target.
-Kernels 7.0, 7.1 and 7.2.0 to 7.2.5 refuse a second tracing attach to a program that performs tail calls, as Cilium and Katran's inline decap do.
+Kernels 7.0, 7.1 and 7.2.0 to 7.2.5 refuse a second tracing attach to a program that performs tail calls, as Cilium and Katran's inline decap do (CVE-2026-92485).
 On those kernels, and on kernels whose version bpf-ninja cannot read, bpf-ninja refuses gated capture of such a program with an explanation.
 It does not try, because the failed attach can leave the kernel's trampoline inconsistent and crash the machine.
 Capture one point at a time there, or use 7.2.6, 7.3-rc1 or later.
@@ -189,7 +189,7 @@ Guides: [DSL usage](./docs/ja/dsl-usage.md), [grammar (EBNF)](./docs/ja/dsl-gram
 
 `--cbpf` reads the filter as tcpdump syntax and compiles it to eBPF through [cbpfc](https://github.com/cloudflare/cbpfc).
 It needs the `enable_libpcap` release archive or a build with `make build-libpcap` (see [Install](#install)).
-The default build stops with build guidance for any `--cbpf` use, `--cbpf --dump-asm` included.
+In the default build, `--cbpf` stops with build guidance, also with `--dump-asm`; only `--dsl-help` runs regardless.
 Each run prints `warning: --cbpf selects the legacy cBPF path; prefer the default DSL.` on stderr.
 
 ```bash
@@ -248,8 +248,6 @@ The counters do not count filter and parse rejections, so they do not cover ever
 
 | Flag | Purpose |
 |------|---------|
-| Flag | Purpose |
-|------|---------|
 | `--snaplen N` | Force the per-packet capture length. 0 (the default) uses the DSL `capture` clause, else 1500 bytes |
 | `--fast-reader` | mmap+atomic ringbuf reader (lower CPU than cilium/ebpf generic) |
 | `--no-wakeup` | Suppress eventfd wake per submit. Trades p50 latency for throughput. **Requires `--fast-reader`** |
@@ -270,9 +268,7 @@ The counters do not count filter and parse rejections, so they do not cover ever
 
 | Flag | Purpose |
 |------|---------|
-| Flag | Purpose |
-|------|---------|
-| `--bench-drop` | `--mode xdp` only (ignored otherwise): return `XDP_DROP` for matched packets after capturing them, so they never reach the host stack. Non-matching packets still pass. Benchmarks only |
+| `--bench-drop` | `--mode xdp` only (ignored otherwise): return `XDP_DROP` for every packet, matched or not, after capturing the matched ones, so no packet reaches the host stack. Benchmarks only |
 | `--latency-sample-period N` | Sample every Nth record's BPF-submit → reader-read latency per shard. **Requires `--raw-dump` and `--fast-reader`**; otherwise nothing is sampled |
 | `--latency-sample-output FILE` | Write the latency samples as TSV (one ns value per line); empty prints a percentile summary to stderr |
 | `--cpuprofile FILE` | Write a Go CPU profile |
@@ -307,9 +303,6 @@ Text rows include a short reason; `--json` adds an `availability` object with th
 Global and static `__noinline` subfunctions both work:
 
 ```c
-Both global and static `__noinline` subfunctions work:
-
-```c
 /* Global — always survives in BTF */
 __attribute__((noinline))
 int classify_packet(struct xdp_md *ctx) {
@@ -327,7 +320,6 @@ int parse_headers(struct xdp_md *ctx) {
     if (data + 1 > data_end) return -1;
     return 2;
 }
-```
 ```
 
 - The subfunction needs a non-trivial body, for example one that reads `ctx->data`.
@@ -435,7 +427,7 @@ It is experimental and runs on Linux x86-64 only.
 
 ## Options
 
-The [complete CLI and protocol reference](docs/ja/cli/README.md) lists every flag and subcommand.
+The [complete command reference](docs/ja/cli/generated/commands.md) lists every flag and subcommand; [protocols.md](docs/ja/cli/generated/protocols.md) lists the DSL protocols and fields.
 Specify exactly one of `-i`, `-p` or `--cgroup`.
 
 | Option | Description | Modes |
@@ -480,9 +472,9 @@ Specify exactly one of `-i`, `-p` or `--cgroup`.
 Common:
 
 - Linux kernel 5.8+ with BTF (`/sys/kernel/btf/vmlinux`)
-- Root privileges (or `CAP_BPF` + `CAP_NET_ADMIN`)
+- Root privileges
 - Go 1.25+ to build; pre-built binaries do not need Go
-- For the optional `enable_libpcap` build only: libpcap at run time, and libpcap-dev to build from source
+- For the optional `enable_libpcap` build only: libpcap at run time, and a C compiler (cgo uses gcc unless `CC` says otherwise) and libpcap-dev to build from source
 
 By feature:
 
@@ -513,18 +505,19 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution checks.
 
 ```bash
 make build          # CGO_ENABLED=0, no build tags
-make build-libpcap  # CGO_ENABLED=1, -tags enable_libpcap; needs libpcap-dev
+make build-libpcap  # CGO_ENABLED=1, -tags enable_libpcap; needs a C compiler and libpcap-dev
 ```
 
 | Command | Runs | Needs |
 |---|---|---|
 | `make test` | Unit tests (`go test ./...`), with no BPF | nothing extra |
-| `make test-bpf` | Verifier load tests of the generated fentry, fexit and xdp programs, with and without filters | root, clang |
+| `make test-bpf` | `scripts/test/privileged.py`: the privileged Go suites, including verifier load tests of the generated fentry, fexit and xdp programs | root, python3, clang, a C compiler and libpcap-dev (it builds with `-tags enable_libpcap`); see [privileged tests](docs/privileged-tests.md) |
 | `make test-integration` | `scripts/test/run_tests.sh`: a veth pair with a dummy XDP program, entry and exit capture, filters, pcap output and graceful shutdown; it cleans up the veth pair | root, clang, tcpdump, libpcap-dev (it runs `make build-libpcap` first) |
 | `make test-all` | All three | all of the above |
 
-CI runs the BPF load tests and the integration tests on kernels 6.1, 6.6, 6.12, 6.15, 6.18, 7.0, 7.1, 7.2 and 7.3-rc4 with [vimto](https://github.com/lmb/vimto) and QEMU.
-To run them on one kernel locally:
+CI runs the privileged Go suites on kernels 6.1, 6.6, 6.12, 6.15, 6.18, 7.0, 7.1, 7.2 and 7.3-rc4 with [vimto](https://github.com/lmb/vimto) and QEMU.
+The shell integration tests run once, on the CI runner's kernel.
+To run the load tests on one kernel locally:
 
 ```bash
 # Install vimto and QEMU
@@ -537,7 +530,7 @@ vimto -kernel :6.6 exec -- go test -v -count 1 -timeout 5m ./internal/program/ -
 
 ## Publications
 
-- [eBPF Workshop 2026: Kunai](docs/publications/ebpf_workshop_2026/README.md):
+- [eBPF Workshop 2026: Kunai](docs/publications/ebpf_workshop_2026/README.md) —
   paper source, figures, measurement data, and build instructions.
 
 ## Acknowledgements

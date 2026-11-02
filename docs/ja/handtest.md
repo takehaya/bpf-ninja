@@ -16,7 +16,7 @@ bpf-ninja の各機能を手動で検証する手順書。
 - Linux kernel 6.x 以上（bpf2bpf call と tail call の共存をサポート）
 - root 権限
 - clang, bpftool, tcpdump
-- libpcap の開発用ファイル（Debian/Ubuntu では `libpcap-dev`）と実行時ライブラリ
+- C コンパイラ（cgo の既定は gcc）、libpcap の開発用ファイル（Debian/Ubuntu では `libpcap-dev`）および実行時ライブラリ
 - `enable_libpcap` を有効にしたビルド（1.5 節で legacy の `--cbpf` を使うため）
 
 ## 0. ビルド

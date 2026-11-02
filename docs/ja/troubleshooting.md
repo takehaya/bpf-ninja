@@ -33,7 +33,7 @@ BTF に名前があるだけでは、attach できるとは限らない。
 | 理由 | 意味 |
 |---|---|
 | `present` | BTF type ID がロード済みの `func_info` にある。attach 時にはカーネルによる他の検査も受ける |
-| `absent_from_loaded_func_info` | BTF FUNC はあるが、この program の `func_info` にはない。次の節を参照する |
+| `absent_from_loaded_func_info` | BTF FUNC はあるが、この program の `func_info` にはない。[次の節](#func_info-にない関数)を参照する |
 | `missing_btf_func` | 完全一致する名前の BTF FUNC がない |
 | `not_in_target_program` | BTF にあるのは外部宣言だけで、この target に関数の本体がない |
 | `unknown` | 読み取りの拒否や非対応などにより、`func_info` に含まれるか確認できない |
@@ -57,7 +57,7 @@ BTF に名前があるだけでは、attach できるとは限らない。
 
 ### 複数の関数や program を指定した場合
 
-- 一つの program と関数の組だけを指定した場合は、同じ `--func` を繰り返しても、詳しい説明を出して失敗する。
+- program と関数の組を一つだけ指定した場合、その関数が使えないときは詳しい説明を出して失敗する。同じ `--func` を繰り返した場合も同様である。
 - 異なる複数の `--func` や複数の program を指定した場合は、利用できない対象をスキップする。
   対象ごとに短い理由を警告する。`func_info` にない関数と外部宣言を分けて、スキップした件数を stderr に出す。
 - 一部の program の BTF にない関数名は、警告なしでスキップする。

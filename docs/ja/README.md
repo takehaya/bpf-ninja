@@ -13,7 +13,8 @@
 | map 操作を列挙し、ロード時に観測 hook を追加する | [inject-run](../en/inject-run.md)、[--list-progs --list-maps から始める手順](../en/inject-walkthrough.md)（英語、実験的機能） |
 | BTF のない map の hook 引数に型を補う | [Loader の ELF から map の型を補う](inject-map-types.md) |
 | inject hook で集計、CPU ID、経過時間を観測する | [observer examples](../en/inject-observers.md)（英語） |
-| フィルタを書く | [DSL 索引](dsl-overview.md)、[文法](dsl-grammar.md)、[型と意味](dsl-types.md) |
+| フィルタを書く | [DSL 索引](dsl-overview.md)、[利用ガイド](dsl-usage.md)、[文法](dsl-grammar.md)、[型と意味](dsl-types.md) |
+| 関数の引数や構造体のメンバで絞り込む | [arg-member-filter](arg-member-filter.md) |
 | 終了とファイルの完成を判断する | [Capture lifecycle](../capture-lifecycle.md)（英語） |
 | 環境を用意して動作確認する | [手動試験](handtest.md)、[privileged tests](../privileged-tests.md)（英語） |
 | 性能を測って調整する | [Tuning](tuning.md) |

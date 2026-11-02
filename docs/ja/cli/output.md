@@ -219,7 +219,7 @@ sudo bpf-ninja -i eth0 --mode xdp --set "tunnels=$PIN" \
 - `--max-bytes N` は、出力の合計が N バイトに達した時点でキャプチャ全体を停止します。バイト数の数え方は entry ごとの上限と同じです。
 - `--split-by-tag` がなくても使えます。
 - 上限に達して停止すると、`-c` と同様に shard を合算して exit 0 します。
-- 0 以上の値を指定してください。
+- 0 以上の値を指定してください。0 (既定) は上限なしです。
 - `--raw-dump` や `--null-output` とは併用できません。
 
 [DSL 利用ガイドに戻る](../dsl-usage.md)

@@ -12,7 +12,7 @@
 | fentry/fexit と subfunction を手動で確認する | [手動試験](../handtest.md) | 隔離 Linux 環境の root |
 | map 操作の列挙から inject-run と fentry 観測までを試す | [injection walkthrough](../../en/inject-walkthrough.md)、[ソース](../../../examples/inject-walkthrough/README.md)（英語、実験的機能） | 専用 Linux x86-64 環境の root |
 | inject hook で集計、CPU ID、経過時間を観測する | [observer examples](../../en/inject-observers.md)、[ソース](../../../examples/inject-observers/README.md)（英語） | 専用 Linux x86-64 環境の root |
-| set map を手動で操作する | [set guide](../cli/sets.md) | Linux の BPF map 操作権限 |
+| set map を手動で操作する | [set guide](../cli/sets.md#手元で動きを確かめる) | Linux の BPF map 操作権限 |
 | 自動試験の環境を用意する | [privileged tests](../../privileged-tests.md) | 専用 Linux 環境の root |
 
 legacy の `--cbpf` を使う例では、`make build-libpcap` で作成した binary が必要です。

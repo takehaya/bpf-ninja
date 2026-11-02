@@ -57,7 +57,7 @@ sudo bpf-ninja --cbpf --mode xdp -i eth0 "tcp port 443"
 
 - 条件に一致した packet は per-CPU の ringbuf に書き込まれます。
 - 戻り値は既定で `XDP_PASS` です。
-  `--bench-drop` を指定すると `XDP_DROP` を返します。これは隔離されたベンチマーク環境専用です。
+  `--bench-drop` を指定すると、一致の有無にかかわらず、すべての packet に `XDP_DROP` を返します。これは隔離されたベンチマーク環境専用です。
 - すでに XDP が付いている interface では起動しません。
   `error: interface eth0 already has XDP program (id=42, mode=driver); use --mode entry to observe it via fentry, or detach the existing program first` というエラーを出して停止します。
 - `-i` の指定が必須です。
@@ -118,7 +118,7 @@ sudo bpf-ninja -i eth0 --mode entry "eth/ipv4/udp[dport==6081]" \
 - `--mode xdp`、`--split-by-tag`、`--arg-echo`、`--record`、`--dump-asm` とは併用できません。
 - 同じ `--mode` を 2 回指定することはできません。
 - PREEMPT_RT の kernel では起動時に警告が出ます。ペアの記録が欠落することがあります。
-- 入口の式を空にすると、すべての packet を一時保存するため警告が出ます。
+- 入口の式を空にすると、すべての packet を一時保存するため警告が出ます。`--emit exit` では警告は出ません。
 - tail call を使うプログラム (Cilium や Katran の inline decap など) では、7.0 から 7.2.5 の kernel が 2 本目の attach を拒否します。
   attach の失敗後に trampoline が壊れて machine が panic することがあるため、bpf-ninja は attach を試みずに説明を出して停止します (CVE-2026-92485、7.2.6 と 7.3-rc1 で修正済み)。
   kernel のバージョンを読み取れないときも同様に停止します。
@@ -145,13 +145,14 @@ sudo bpf-ninja -i eth0 --mode entry "eth/ipv4/udp[dport==6081]" \
 ### 出力の形式
 
 - pcap-ng の interface は、exit mode と同じ判定ごとの interface (`xdp:DROP`、`xdp:PASS` など) に、入口の record 用の `xdp:entry` を加えたものです。
-- すべての record に `epb_packetid` option が付きます。
+- CPU ごとの shard (`-w path.pcap` の `path.pcap.cpuN`) では、各 record に `epb_packetid` option が付きます。
   値は `CPU 番号 << 48 | その CPU で入口の条件に一致した通し番号` です。同じ実行の入口と出口の record には同じ値が入ります。
   kernel のアドレスは含まれません。
 - raw-dump (`--raw-dump`) の record metadata は 28 byte で、offset 20 に packet id が入ります (形式 V2)。
   V1 の dump は `convert` で読み込めません。
-- `merge` した pcap-ng や、`convert` で raw-dump から作成した pcap-ng には `epb_packetid` が入りません。
-  入口と出口の対応づけが必要なときは、shard ごとの pcap-ng または raw-dump を使ってください。
+- 停止時に合算した `path.pcap`、`merge` した pcap-ng、`convert` で raw-dump から作成した pcap-ng には `epb_packetid` は入りません。
+  入口と出口の対応づけが必要なときは、CPU ごとの shard か raw-dump を使ってください。
+  raw-dump の扱いは [offline 出力処理](../examples/offline-output.md) を参照してください。
 
 ## 複数のプログラムと関数に attach する
 
@@ -192,7 +193,7 @@ sudo bpf-ninja -p 1610 -p 1611 -p 1614 \
 ### `--list-progs` で到達できるプログラムを調べる
 
 `--list-progs` は、起点のプログラムから到達できるプログラムをたどって一覧表示します。
-起点は `-i` の XDP または `-p` の ID です。
+起点は `-i` の XDP、`-p` の ID、または `--cgroup` の cgroup-skb プログラムです。
 たどる経路は次の 3 種類です。
 
 - freplace は、関数を置き換えている attach 済みの EXT プログラムです。
@@ -219,7 +220,7 @@ sudo bpf-ninja -i ens2f0 --prog-name upf_dl_v4 --prog-name upf_dl_v6 \
 
 `--json` を付けると、`--list-progs`、`--list-funcs`、`--list-params` の結果を JSON 形式で stdout に出力します。
 `--list-progs` と `--list-funcs` を同時に渡すと、到達ツリーの各プログラムに BTF 関数の一覧が付きます。
-これら以外の用途で `--json` を付けるとエラーになります。
+entry と exit の capture で、これらの一覧なしに `--json` を指定するとエラーになります。
 
 ```bash
 # 到達ツリーを JSON で
@@ -311,7 +312,8 @@ inject した hook で取得するとき、その hook がどのような値で�
 
 ### pcapng の形
 
-- `--func` ごとに 1 つの pcapng interface を作ります。名前が重なるときは `func@progid` になります。
+- (プログラム, 関数) の組ごとに 1 つの pcapng interface を作ります。
+  interface 名は関数名です。同じ関数名が複数のプログラムにあるときは `func@progid` になります。
 - `epb_packetid` は付きません。
 - 判定ごとの interface がないため、`--mode exit` では各コメントの先頭に関数の戻り値を `return=0x%08x` として出力します。
 - コメントの最大長が `return=` を含めて pcapng の option 1 つ分 (65535 バイト) に収まらない場合、明示した `--record` はエラーになります。

@@ -39,7 +39,7 @@ The reason alone cannot tell these two causes apart:
 
 ## Several functions or programs
 
-- A request for one distinct program and function fails with the full diagnostic, even if the same `--func` name is repeated.
+- A request for one distinct program and function fails with the full diagnostic when that function is unavailable, even if the same `--func` name is repeated.
 - With several distinct `--func` names or several programs, bpf-ninja skips unavailable targets.
   It warns with a short reason for each, and prints separate counts for absent functions and external declarations on stderr.
 - A name missing from the BTF of some selected programs is skipped without a warning.

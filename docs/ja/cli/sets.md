@@ -50,7 +50,7 @@ sudo bpf-ninja set resize /sys/fs/bpf/flows --max-entries 4096
 | `set create PIN --key SCHEMA [--value SCHEMA] [--max-entries N]` | BTF 付きの hash map を作成して pin します。`--max-entries` の既定値は 1024 です (1 から 2^32-1) |
 | `set add PIN field=value ... [tag=N] [max-bytes=N]` | entry を追加または更新します |
 | `set del PIN field=value ...` | entry を削除します |
-| `set list PIN` | すべての entry を `field=value ... tag=N` の形式で表示します |
+| `set list PIN` | すべての entry を `field=value ... tag=N state=S max-bytes=M` の形式で表示します。value が単一整数の map では `tag=N` までです |
 | `set schema PIN` | map の BTF から読み取ったキーのレイアウトを表示します |
 | `set resize PIN --max-entries N` | 容量を変更します |
 
@@ -196,7 +196,7 @@ sudo bpf-ninja -i eth0 --mode xdp \
 ## 外部で作った map を使う
 
 - hash 型で、キーに BTF があれば参照できます。
-  キーは整数、整数のみの struct (各フィールドは 1、2、4、8 バイトまたは `__u8[16]`)、またはバイト配列です。キー全体は最大 64 バイトです。
+  キーは 1、2、4、8 バイトの整数、`__u8[16]`、またはこれらのみを持つ struct です。キー全体は最大 64 バイトです。
   bitfield と、境界に揃っていないフィールドは使えません。
 - BTF のない map は `set create` で作り直してください。
 - value は単一の整数か、`tag` で始まる struct です。struct に追加できるのは `state` (u8) と `max_bytes` (u64) だけです。
@@ -213,7 +213,7 @@ BPF の map は作成後に容量を変更できません。
 3. capture を attach し直します。実行中の capture は attach 時の古い map を使い続けるため、新しい容量は次の attach から有効になります。
 
 - 現在の entry 数より少ない容量には変更できません。
-- 一時的な pin `PIN_resize_tmp` が残っているとエラーになります。前回の resize が異常終了したか、同時に実行していないかを確認してから削除してください。
+- 一時的な pin `${PIN}_resize_tmp` が残っているとエラーになります。前回の resize が異常終了したか、同時に実行していないかを確認してから削除してください。
 - 同じ容量を指定した場合は、何もせずに終了します。
 
 ## 手元で動きを確かめる
