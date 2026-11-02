@@ -5,22 +5,22 @@
 ## 全体の構造
 
 capture では、`cmd/bpf-ninja` が target を探します。続いて `internal/program` がフィルターをコンパイルし、プログラムを attach します。
-矢印は呼び出しを、ラベル付きの矢印はデータの流れを表します。
+矢印は呼び出しや生成を、ラベル付きの矢印はデータの流れを表します。
 
 ```mermaid
 flowchart TD
   subgraph kunai["pkg/kunai: DSL のコンパイル"]
-    parser["pkg/kunai/parser"] --> resolve["pkg/kunai/resolve"]
-    resolve -- "pkg/kunai/ir" --> codegen["pkg/kunai/codegen"]
+    parser["pkg/kunai/parser"] -- "AST" --> resolve["pkg/kunai/resolve"]
+    resolve -- "型付き IR (pkg/kunai/ir)" --> codegen["pkg/kunai/codegen"]
   end
-  cli["cmd/bpf-ninja: CLI"] --> attach["internal/attach: target の探索"]
-  cli --> program["internal/program: プログラムの生成、ロード、attach"]
+  cli["cmd/bpf-ninja: CLI"] --> program["internal/program: プログラムの生成、ロード、attach"]
+  cli --> attach["internal/attach: target の探索"]
   program --> hook["internal/hook: hook 種別ごとの能力"]
   program --> kunai
   program --> bpf["tracing プログラム: target の関数に fentry/fexit で attach"]
-  bpf -- "パケット" --> ringbuf["ringbuf"]
+  bpf -- "記録" --> ringbuf["ringbuf"]
   ringbuf -- "記録" --> capture["internal/capture: reader"]
-  capture -- "記録" --> output["internal/output: writer"]
+  capture -- "パケット" --> output["internal/output: writer"]
 ```
 
 `internal/program` は、hook 種別の能力に合わせて `pkg/kunai` でフィルターをコンパイルします。生成した tracing プログラムは、target プログラムの関数に fentry または fexit で attach します。
@@ -28,15 +28,17 @@ flowchart TD
 `internal/capture` は、プログラムが ringbuf に書いた記録を読み取ります。`internal/output` は、`-w` を付けた場合はファイルに、付けない場合は標準出力に pcapng を書き出します。
 
 inject-run では、loader 自身がロードするプログラムに観測 hook を加えます。その hook に対して、上の capture を attach します。
+矢印は呼び出しや生成を、ラベル付きの矢印はデータの流れを、点線は利用者の操作を表します。
 
 ```mermaid
 flowchart TD
   run["cmd/bpf-ninja: inject-run"] --> sup["pkg/syscallhook: ptrace supervisor"]
-  sup -- "rule に一致した BPF_PROG_LOAD" --> inject["pkg/inject: 観測 hook の追加"]
-  inject --> loaded["観測 hook 付きプログラム: pkg/syscallhook が loader 内でロード"]
-  run -- "hooks-json を指定した場合" --> hooks["hooks.json: prog_id と hook 名"]
-  loaded --> func["bpf-ninja -p ID --func HOOK: 上の capture 経路"]
-  hooks --> func
+  sup -- "rule に一致した load の命令" --> inject["pkg/inject: 観測 hook の追加"]
+  inject -- "観測 hook 付きの命令" --> sup
+  sup --> loaded["観測 hook 付きプログラム: loader のプロセス内でロード"]
+  run -- "prog_id と hook 名" --> hooks["hooks.json: --hooks-json を指定した場合"]
+  hooks -.-> func["bpf-ninja -p ID --func HOOK: 上の capture 経路"]
+  func --> loaded
 ```
 
 `pkg/syscallhook` は loader の `BPF_PROG_LOAD` を横取りします。rule に一致したプログラムには `pkg/inject` で観測 hook を追加し、loader のプロセス内でロードします。
