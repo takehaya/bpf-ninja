@@ -7,8 +7,8 @@ See [inject-run](inject-run.md) for usage, failure behavior and limits.
 ## The problem this solves
 
 `pkg/inject` transforms an ELF before it is loaded.
-Using it today requires the target's own loader to call us, or to load an ELF we produced.
-We want the model `mptcpize` uses: run an unmodified binary under a wrapper, and transform its BPF programs as they load, with no change to the target's source, files, or loader.
+Using it directly requires the target's own loader to call it, or to load an ELF that it produced.
+The goal is the model `mptcpize` uses: run an unmodified binary under a wrapper, and transform its BPF programs as they load, with no change to the target's source, files, or loader.
 
 The interception point is the `bpf(2)` syscall.
 At `BPF_PROG_LOAD` the kernel already has the final instruction stream, the map file descriptors resolved into `ld_imm64` as `BPF_PSEUDO_MAP_FD`, a `prog_btf_fd`, and `func_info` and `line_info`.
@@ -32,7 +32,7 @@ This works at the syscall boundary, below libc, so the loader's language does no
 | Backend | Reaches | Mechanism | Cost |
 |---|---|---|---|
 | `LD_PRELOAD` shim | C/libbpf loaders, dynamically linked | override `bpf()`/`syscall()`, rewrite `attr`, call the real syscall | small, the `mptcpize` model |
-| `ptrace` supervisor | Go and statically linked loaders | `PTRACE_SYSCALL`, rewrite tracee registers and memory at `bpf(2)` | larger, but language-independent |
+| `ptrace` supervisor | any loader, including Go and statically linked ones | `PTRACE_SYSCALL`, rewrite tracee registers and memory at `bpf(2)` | larger, but language-independent |
 | seccomp user-notify | nothing here | can skip a call or replace its return, but cannot swap in larger instruction or BTF buffers with new pointers | rejected as the wrong tool |
 
 `inject-run` uses the `ptrace` supervisor, since it reaches Go loaders as well as C loaders.
@@ -83,9 +83,6 @@ On any such error, log it, pass the original load through unchanged, and record 
 Refusing the load with `EPERM` instead is opt-in through `--fail-closed`.
 Loss of ptrace control is fatal in either mode: the supervisor terminates the target rather than resuming it with uncertain registers or memory.
 
-The supervisor sees every `bpf(2)` the target makes, including map creation and link attachment.
-Everything it does not transform it passes through untouched.
-
 ## How the supervisor handles a load
 
 The launcher uses Go's fork/exec support with `PTRACE_TRACEME` and keeps ptrace operations on one locked OS thread.
@@ -118,7 +115,7 @@ Catchable signals are masked during replay; the saved mask and registers are res
 Executable memory and the target's stack are not patched.
 An injected anonymous read/write `mmap` provides a 64 MiB scratch arena for the larger buffers and the copied attr.
 The injected program load points at those buffers; afterwards the supervisor closes the temporary BTF fd and unmaps the arena.
-The original instruction and metadata buffers stay intact, so a rejected load can be retried unchanged.
+The original instruction and metadata buffers stay intact.
 The caller's verifier log and `log_true_size` output are preserved as syscall outputs.
 
 The wire offsets and stop discriminators follow the Linux [BPF UAPI](https://github.com/torvalds/linux/blob/master/include/uapi/linux/bpf.h) and [ptrace UAPI](https://github.com/torvalds/linux/blob/master/include/uapi/linux/ptrace.h).
@@ -126,8 +123,7 @@ The wire offsets and stop discriminators follow the Linux [BPF UAPI](https://git
 ## Design decisions
 
 1. Inject `mmap` and repoint a copied attr at the larger instruction and metadata buffers.
-2. Launch with `PTRACE_TRACEME`, then use `PTRACE_SYSCALL` and follow threads with `PTRACE_O_TRACECLONE`.
-   The command is named `inject-run` to set transformation apart from packet observation.
+2. Name the command `inject-run` to set transformation apart from packet observation.
 3. Attach observers separately with the existing observation commands.
    The launcher adds the hooks but attaches nothing.
 4. By load time the CO-RE relocations are already applied in the instructions, so the transform works on a resolved program.

@@ -41,7 +41,7 @@ bpf-ninja -p "$PROG_ID" --func "$HOOK" -c 10 -w hook.pcap
   "hook": "obs", "stack_lowest_offset": -64}]
 ```
 
-`auto` instruments every supported lookup in the program, and with `ops` the other map calls, with one hook per map and op.
+`auto` instruments every supported call of the observed ops, with one hook per map and op: lookups by default, or exactly the ops that `ops` lists.
 `maps` limits it to the named maps; calls on other maps run unchanged.
 `ops` picks the calls and results that call a hook:
 
@@ -72,7 +72,7 @@ It skips these sites:
 - a site whose hook name would be longer than 127 bytes;
 - a site whose spill slots do not fit below the stack bound;
 - sites that would make the rewritten program break a kernel call-chain stack limit.
-  `auto` first drops the sites that need slots below the three base ones (the generic hook, update hooks and copied read-only values), and then, if the program still breaks the limit, every map-call site.
+  `auto` first drops the sites that need slots below the three base ones (see [Stack bound](#stack-bound); the generic hook, update hooks and copied read-only values), and then, if the program still breaks the limit, every map-call site.
   With `dispatch` it drops every map-call site at once.
 
 `auto` keeps the `entry` and `tail_calls` hooks.
@@ -128,7 +128,10 @@ bpf-ninja -p "$PROG_ID" --func ninja_sessions --arg-filter 'value->action==2' -w
 
 - The capture sees a packet only when the program calls the hook, so your rule sets what gets captured.
 - `--arg-filter` can select members of the key and value, and `site` and `status` where the hook has them.
-- At a hook that `inject-run` generated, the capture writes the values the call was decided on as each packet's pcapng comment by default (`--record filter`); `--record entry` records the whole key and value, and `--record none` turns it off.
+- At a hook that `inject-run` generated, the capture writes decision state as each packet's pcapng comment. `--record` picks it:
+  - `filter` (the default) records the arguments and members that `--arg-filter` and `--set` keys read, and records nothing without them;
+  - `entry` records `site`, `status` where the hook has it, and up to `--record-max` bytes (default 256) each of the key and value; at a generic or dispatch hook it records only `site` and `info`;
+  - `none` turns recording off.
 - At a static hook, the capture reads the context with `bpf_probe_read_kernel` when the kernel rejects direct reads.
   It first checks that the entry function passes the context to every call; [arg-member-filter.md](arg-member-filter.md) lists what that check refuses.
   At a tc hook on this path, it captures only the linear packet head and refuses a filter with `--tc-vlan-reinsert`.
@@ -180,6 +183,7 @@ Without types, the hook passes the key and value as opaque bytes, and member fil
 
 ```sh
 sha256sum /path/to/loader-generated.o
+# --fail-closed: without it, a failed supplementation loads the original program without hooks
 bpf-ninja inject-run --fail-closed --config rules.json --hooks-json hooks.json -- ./loader
 
 # In another terminal, while the loader runs
@@ -254,7 +258,7 @@ bpf-ninja inject-run [--config FILE] [--fail-closed] [--hooks-json FILE] [--look
 - The target inherits stdin, stdout and stderr.
   `inject-run` writes its diagnostics to stderr, prefixed with `inject-run:`.
 - The exit status is the target's, or 128 plus the signal number if a signal killed it.
-  A nonzero target status also prints `error: target exited with status N`.
+  A nonzero target status also prints `target exited with status N`.
 - `inject-run` exits with status 1 and an `error: ...` line when its configuration is invalid, when it fails, when SIGINT or SIGTERM stops it, or when writing the hooks or lookups file fails although the target succeeded.
 - Every `bpf(2)` command other than `BPF_BTF_LOAD` and a matched `BPF_PROG_LOAD` passes through unchanged.
 - `inject-run` needs ptrace, the target's BPF operations, and opening BTF objects by ID in the supervisor.
@@ -278,7 +282,7 @@ A rule whose `program` never loads produces no diagnostic at all.
 | `line` | integer | none | With `map`: only lookups on this source line. | Needs `map`. |
 | `all_matches` | bool | false | With `map`: take every matching lookup instead of requiring exactly one. | Needs `map`. Not with `site_pcs`. |
 | `site_pcs` | integer array | none | With `map`: take the lookups at these load-time instruction indexes. | Needs `map`. Not with `all_matches`. Each PC must be a lookup that matches the other filters, and must appear once. |
-| `auto` | bool | false | Instrument every supported lookup, and with `ops` the other map calls, with one hook per map and op. | Not with `map`, `func`, `line`, `all_matches` or `site_pcs`. |
+| `auto` | bool | false | Instrument every supported call of the observed ops (lookups by default, or the ops that `ops` lists), with one hook per map and op. | Not with `map`, `func`, `line`, `all_matches` or `site_pcs`. |
 | `maps` | string array | every map | With `auto`: only calls on these maps, by exact kernel name. Calls on other maps run unchanged. | Needs `auto`. Names must be unique, and each must match a call the rule observes. |
 | `ops` | string array | `["lookup"]` | The calls and results that call a hook; see the [ops table](#choose-the-maps-and-operations-to-observe). | Needs `map` or `auto`. Ops other than `lookup` need `auto`. Each op appears once, so `lookup:hit` and `lookup:miss` together are refused; use `lookup:any`. |
 | `entry` | bool | false | Add `HOOK_entry(ctx)` at program start. | |
@@ -403,7 +407,7 @@ If a rewrite fails, `inject-run` reports it on stderr and keeps running the targ
 | `hook_form.form` | `global` or `static`: the choice for hooks that would take untrusted pointers, even if the program has none. |
 | `hook_form.reason` | `probe_arg_untrusted_supported`, `probe_arg_untrusted_unsupported`, `probe_inconclusive` or `config_static_untrusted_true`. |
 | `hooks[].name` | The function to attach to. |
-| `hooks[].kind` | `typed` (with the map's key and value types), `generic` (a `HOOK_any` hook), `entry`, `tail_call` or `dispatch`. |
+| `hooks[].kind` | `typed` (one map's hook; its key and value carry the map's types unless `untrusted` is set), `generic` (a `HOOK_any` hook), `entry`, `tail_call` or `dispatch`. |
 | `hooks[].when` | The results that call it: `hit`, `miss` or `any` for lookups; `error` or `any` for other map calls. A dispatch hook's `when` is its lookups'; its other map-call sites carry their own. |
 | `hooks[].map` | The map of a `typed` hook. Generic and dispatch hooks give the map on each site. |
 | `hooks[].sites` | The calls that call the hook, in instruction order: `kind` (`lookup`, `update`, `delete`, `push`, `pop`, `peek`, `tail_call` or `entry`), `pc` (the `site` argument, or the low 32 bits of `info`), and `map`, `func`, `file` and `line` where known. A dispatch hook lists the entry call first, as `pc` 4294967295. |
