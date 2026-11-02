@@ -12,6 +12,7 @@ import (
 	"github.com/cilium/ebpf/btf"
 	"github.com/cilium/ebpf/link"
 	"github.com/takehaya/bpf-ninja/internal/attach"
+	"github.com/takehaya/bpf-ninja/internal/capture"
 	"github.com/takehaya/bpf-ninja/internal/filter"
 	"github.com/takehaya/bpf-ninja/internal/hook"
 	"github.com/takehaya/bpf-ninja/internal/record"
@@ -651,18 +652,21 @@ const DefaultCapLen = 1500
 // compile chain has no callsite-level cap-override hook today.
 var SnaplenOverride int
 
-// BPF_RB_NO_WAKEUP skips the eventfd write that wakes a poll'ing
-// consumer on every bpf_ringbuf_submit. Safe only when the consumer
-// polls periodically; required when the producer rate is very high
-// to avoid wasted eventfd traffic.
+// BPF_RB_NO_WAKEUP makes bpf_ringbuf_submit skip the kernel's reader
+// wakeup, so only a reader that polls sees the record.
 const BPF_RB_NO_WAKEUP uint32 = 1
 
-// RingbufSubmitFlags is the flags argument passed to bpf_ringbuf_submit
-// in every emit path (XDP-native captureXDPNative + tracing
-// captureWithRingbuf). Set via --no-wakeup at startup; safe only with
-// --fast-reader since the cilium/ebpf slow path would block on the
-// missing wakeup.
-var RingbufSubmitFlags uint32
+// ringbufSubmitFlags is the flags argument of bpf_ringbuf_submit in every
+// emit path (captureXDPNative, captureWithRingbuf, gated). It follows
+// capture.NoWakeup (--no-wakeup), which also keeps the fast reader
+// polling. Both read it once, at build and at reader start, so they agree
+// as long as it is set before either and not changed afterwards.
+func ringbufSubmitFlags() int32 {
+	if capture.NoWakeup {
+		return int32(BPF_RB_NO_WAKEUP)
+	}
+	return 0
+}
 
 // HWTimestampKfuncID, when non-zero, makes captureXDPNative emit a
 // call to bpf_xdp_metadata_rx_timestamp(ctx, &ts) for the per-packet
@@ -1116,7 +1120,7 @@ func captureWithRecord(eventsFD, statsFD int, isFexit bool, maxCapLen int, packe
 		asm.JNE.Imm(asm.R0, 0, "rb_copy_fail"),
 	)
 
-	// --- bpf_ringbuf_submit(reservation_ptr, RingbufSubmitFlags) ---
+	// --- bpf_ringbuf_submit(reservation_ptr, ringbufSubmitFlags()) ---
 	// Same flag plumbing as captureXDPNative — must honour
 	// --no-wakeup uniformly across attach modes (the CLI flag
 	// promises "every ringbuf submit", and the R22 sharded-ringbuf
@@ -1124,7 +1128,7 @@ func captureWithRecord(eventsFD, statsFD int, isFexit bool, maxCapLen int, packe
 	// XDP-native).
 	insns = append(insns,
 		asm.LoadMem(asm.R1, asm.R10, -32, asm.DWord),
-		asm.Mov.Imm(asm.R2, int32(RingbufSubmitFlags)),
+		asm.Mov.Imm(asm.R2, ringbufSubmitFlags()),
 		asm.FnRingbufSubmit.Call(),
 	)
 	return insns

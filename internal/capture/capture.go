@@ -45,10 +45,17 @@ var SplitCoreRX int
 // wrote. Set via --no-cpu-affinity for diagnostic use.
 var DisableCPUAffinity bool
 
-// shardPollTimeoutMs caps how long the fast-reader's epoll_wait
-// blocks before the shard goroutine re-checks the stop channel.
-// On the hot path EpollWait returns immediately (data is ready);
-// the timeout only bounds shutdown latency under idle traffic.
+// NoWakeup, when true, makes internal/program emit every capture submit
+// with BPF_RB_NO_WAKEUP, so the kernel never signals the fast reader and
+// each shard polls every shardPollTimeoutMs, even when idle. Set via
+// --no-wakeup. Programs read it when built and readers when started, so
+// set it before either and never change it afterwards.
+var NoWakeup bool
+
+// shardPollTimeoutMs caps how long the fast-reader's epoll_wait blocks
+// under NoWakeup, where polling is the only way to see new records.
+// Otherwise a shard blocks until the kernel signals data or stop
+// writes the wake eventfd.
 const shardPollTimeoutMs = 1
 
 // LatencySamplePeriod, when > 0, makes the fast-reader sample every
@@ -627,8 +634,36 @@ func (r *FastShardedReader) run(sink RawShardSink, flush func(int) error) (func(
 		_ = r.Close()
 		return nil, err
 	}
+	// Stop writes this eventfd, which is in every shard's epoll set. Nothing
+	// reads it, so it stays readable and a shard that waits after stop
+	// returns at once.
+	wakeFD, err := unix.Eventfd(0, unix.EFD_CLOEXEC)
+	if err != nil {
+		_ = r.Close()
+		return nil, fmt.Errorf("eventfd: %w", err)
+	}
+	for _, rr := range r.readers {
+		if err := rr.AddWake(wakeFD); err != nil {
+			_ = unix.Close(wakeFD)
+			_ = r.Close()
+			return nil, err
+		}
+	}
 	r.session = newShardSession(r.cursors)
 	s := r.session
+	s.wake = func() {
+		_, err := unix.Write(wakeFD, binary.NativeEndian.AppendUint64(nil, 1))
+		s.fail(err)
+	}
+	s.closeWake = func() error { return unix.Close(wakeFD) }
+	// No timeout, deliberately, as in libbpf and cilium/ebpf: the kernel
+	// signals a submit the reader has caught up to, and the level-triggered
+	// ring fd is re-polled after every data wake (TestFastReaderStaleConsumer).
+	// A fallback timeout would only turn a missed wakeup into latency.
+	timeout := -1
+	if NoWakeup {
+		timeout = shardPollTimeoutMs
+	}
 	if LatencySamplePeriod > 0 {
 		LatencySamples = make([][]int64, len(r.readers))
 	}
@@ -647,13 +682,16 @@ func (r *FastShardedReader) run(sink RawShardSink, flush func(int) error) (func(
 					LatencySamples[i] = samples
 				}
 			}()
+			s.acknowledge(i) // a reused, drained ring must not hold up Barrier
 			for {
 				draining := s.stopping()
 				if !draining && !BusyPoll {
-					if _, err := rr.WaitForData(shardPollTimeoutMs); err != nil {
+					if _, err := rr.WaitForData(timeout); err != nil {
 						s.fail(err)
 						return
 					}
+					// After a stop wake, count this batch as drained.
+					draining = s.stopping()
 				}
 				rr.ReadBatch(func(raw []byte) {
 					consumed++

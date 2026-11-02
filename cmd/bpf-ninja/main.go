@@ -209,7 +209,7 @@ func rootFlags() []cli.Flag {
 		},
 		&cli.BoolFlag{
 			Name:  "no-wakeup",
-			Usage: "set BPF_RB_NO_WAKEUP on every ringbuf submit (saves eventfd writes on the BPF side; safe only with --fast-reader since the slow path needs wakeups)",
+			Usage: "set BPF_RB_NO_WAKEUP on every ringbuf submit, so the kernel skips the reader wakeup; each fast-reader shard then polls every 1 ms, even when idle, instead of sleeping until data. requires --fast-reader",
 		},
 		&cli.BoolFlag{
 			Name:  "busy-poll",
@@ -422,9 +422,9 @@ func run(ctx context.Context, cmd *cli.Command) error {
 	}
 	if cmd.Bool("no-wakeup") {
 		if !cmd.Bool("fast-reader") {
-			return fmt.Errorf("--no-wakeup requires --fast-reader (the slow ringbuf path would hang without wakeups)")
+			return fmt.Errorf("--no-wakeup requires --fast-reader")
 		}
-		program.RingbufSubmitFlags = program.BPF_RB_NO_WAKEUP
+		capture.NoWakeup = true
 	}
 	if mib := cmd.Int("in-memory-buffer"); mib > 0 {
 		if !cmd.Bool("raw-dump") {

@@ -55,6 +55,7 @@ reader や target が律速なら、形式を変えても効果が小さいこ�
 
 `--no-wakeup` は `--fast-reader` が必要です。
 wakeup を減らす代わりに、到着から読取りまでの latency が変わるため、throughput だけで判断しません。
+付けない場合、何も来ない shard はデータが届くまで眠ります。付けると、各 shard は何も来ない間も 1 ms ごとに起きるので、一致の少ない capture では reader の CPU が増えます。
 
 過去の本文には、p50 が約 100 µs から 2.6 ms に変わったという記録があります。
 cgroup-skb/loopback の約 0.2 Mpps の負荷では、observer cost が約 3.3 µs から 123 ns に変わったと記録されています。

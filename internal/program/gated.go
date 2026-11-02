@@ -463,7 +463,7 @@ func captureFromHold(eventsFD, statsFD, entryCapLen int, packetID asm.Instructio
 		asm.JNE.Imm(asm.R0, 0, "rb_copy_fail"),
 		// submit
 		asm.LoadMem(asm.R1, asm.R10, -32, asm.DWord),
-		asm.Mov.Imm(asm.R2, int32(RingbufSubmitFlags)),
+		asm.Mov.Imm(asm.R2, ringbufSubmitFlags()),
 		asm.FnRingbufSubmit.Call(),
 	)
 	return insns
