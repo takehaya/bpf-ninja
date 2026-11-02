@@ -117,7 +117,7 @@ func stopWithin(t *testing.T, stop func(), d time.Duration) time.Duration {
 	case took := <-stopped:
 		return took
 	case <-time.After(d):
-		t.Fatal("stop did not wake idle shards")
+		t.Fatalf("%s: stop did not return within %s", t.Name(), d)
 		return 0
 	}
 }
@@ -167,7 +167,6 @@ func TestFastReaderStopWhileIdle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// No Close cleanup: Close calls stop, which would hang if the wake failed.
 	stop, err := r.RunRawShardsFast(func(_ int, _ []byte) error {
 		t.Error("unexpected record in idle ring")
 		return nil
@@ -175,6 +174,7 @@ func TestFastReaderStopWhileIdle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { stopWithin(t, stop, 5*time.Second) })
 	before := voluntarySwitches(t)
 	time.Sleep(500 * time.Millisecond)
 	switches := voluntarySwitches(t) - before
@@ -214,6 +214,7 @@ func TestFastReaderStopKeepsRecords(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			t.Cleanup(func() { stopWithin(t, stop, 5*time.Second) })
 			// A shard blocked on an idle ring must see a record before stop.
 			time.Sleep(50 * time.Millisecond)
 			submit(1)
@@ -259,6 +260,9 @@ func TestFastReaderStaleConsumer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { stopWithin(t, stop, 5*time.Second) })
+	unpark := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(unpark) // runs before the stop cleanup
 	time.Sleep(20 * time.Millisecond)
 	submit(1)
 	select {
@@ -268,7 +272,7 @@ func TestFastReaderStaleConsumer(t *testing.T) {
 	}
 	const more = 100
 	submit(more)
-	close(release)
+	unpark()
 	deadline := time.Now().Add(3 * time.Second)
 	for consumed.Load() < 1+more && time.Now().Before(deadline) {
 		time.Sleep(time.Millisecond)
@@ -281,32 +285,87 @@ func TestFastReaderStaleConsumer(t *testing.T) {
 }
 
 // Stop must wake a blocked shard that has a backlog the kernel never
-// signalled, drain it, and count it as drained at stop.
+// signalled, drain it, hand it to the sink, and count it as drained at
+// stop. The packet sink sees the batch only in the flush after ReadBatch.
 func TestFastReaderStopDrainsBacklog(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		run  func(*FastShardedReader, *atomic.Uint64) (func(), error)
+	}{
+		{"raw", func(r *FastShardedReader, n *atomic.Uint64) (func(), error) {
+			return r.RunRawShardsFast(func(int, []byte) error { n.Add(1); return nil })
+		}},
+		{"packets", func(r *FastShardedReader, n *atomic.Uint64) (func(), error) {
+			return r.RunShardsFast(func(_ int, p []Packet) error { n.Add(uint64(len(p))); return nil })
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newPollTestMap(t)
+			submit := submitter(t, m, rbNoWakeup) // NoWakeup stays false: no poll
+			r, err := NewFastShardedReader([]*ebpf.Map{m})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var written atomic.Uint64
+			stop, err := tc.run(r, &written)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { stopWithin(t, stop, 5*time.Second) })
+			time.Sleep(20 * time.Millisecond)
+			const count = 300
+			submit(count)
+			time.Sleep(100 * time.Millisecond)
+			if got := written.Load(); got != 0 {
+				t.Fatalf("wrote %d unsignalled records before stop, want 0", got)
+			}
+			stopWithin(t, stop, 5*time.Second)
+			if err := r.Err(); err != nil {
+				t.Fatal(err)
+			}
+			got, consumed, drained := written.Load(), r.Stats().Consumed.Load(), r.Stats().DrainedAtStop.Load()
+			if got != count || consumed != count || drained != count {
+				t.Fatalf("wrote %d, consumed %d, drained at stop %d, want %d", got, consumed, drained, count)
+			}
+		})
+	}
+}
+
+// A new session on a drained ring must pass Barrier without a new record:
+// each shard acknowledges once before its first wait.
+func TestFastReaderBarrierReusedRing(t *testing.T) {
 	m := newPollTestMap(t)
-	submit := submitter(t, m, rbNoWakeup) // NoWakeup stays false: no poll
+	submitter(t, m, 0)(3)
+	first, err := NewFastShardedReader([]*ebpf.Map{m})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stop, err := first.RunRawShardsFast(func(int, []byte) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	stopWithin(t, stop, 5*time.Second)
+	if n := first.Stats().Consumed.Load(); n != 3 {
+		t.Fatalf("first session consumed %d, want 3", n)
+	}
 	r, err := NewFastShardedReader([]*ebpf.Map{m})
 	if err != nil {
 		t.Fatal(err)
 	}
-	var consumed atomic.Uint64
-	stop, err := r.RunRawShardsFast(func(_ int, _ []byte) error { consumed.Add(1); return nil })
+	stop, err = r.RunRawShardsFast(func(int, []byte) error { t.Error("unexpected record"); return nil })
 	if err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(20 * time.Millisecond)
-	const count = 300
-	submit(count)
-	time.Sleep(100 * time.Millisecond)
-	if got := consumed.Load(); got != 0 {
-		t.Fatalf("consumed %d unsignalled records before stop, want 0", got)
+	t.Cleanup(func() { stopWithin(t, stop, 5*time.Second) })
+	done := r.Barrier()
+	ok := false
+	for deadline := time.Now().Add(300 * time.Millisecond); time.Now().Before(deadline); time.Sleep(time.Millisecond) {
+		if ok, err = done(); ok || err != nil {
+			break
+		}
 	}
-	stopWithin(t, stop, 5*time.Second)
-	if err := r.Err(); err != nil {
-		t.Fatal(err)
-	}
-	if got, drained := consumed.Load(), r.Stats().DrainedAtStop.Load(); got != count || drained != count {
-		t.Fatalf("consumed %d, drained at stop %d, want %d", got, drained, count)
+	if err != nil || !ok {
+		t.Fatalf("Barrier on a drained, reused ring: done=%v err=%v after 300ms", ok, err)
 	}
 }
 
@@ -329,6 +388,7 @@ func TestFastReaderNoFDLeak(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		t.Cleanup(func() { stopWithin(t, stop, 5*time.Second) })
 		time.Sleep(5 * time.Millisecond)
 		stopWithin(t, stop, 5*time.Second)
 		if err := r.Err(); err != nil {

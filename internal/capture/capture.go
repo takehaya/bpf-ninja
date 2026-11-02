@@ -48,7 +48,8 @@ var DisableCPUAffinity bool
 // NoWakeup, when true, makes internal/program emit every capture submit
 // with BPF_RB_NO_WAKEUP, so the kernel never signals the fast reader and
 // each shard polls every shardPollTimeoutMs, even when idle. Set via
-// --no-wakeup.
+// --no-wakeup. Programs read it when built and readers when started, so
+// set it before either and never change it afterwards.
 var NoWakeup bool
 
 // shardPollTimeoutMs caps how long the fast-reader's epoll_wait blocks

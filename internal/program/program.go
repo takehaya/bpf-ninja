@@ -659,7 +659,8 @@ const BPF_RB_NO_WAKEUP uint32 = 1
 // ringbufSubmitFlags is the flags argument of bpf_ringbuf_submit in every
 // emit path (captureXDPNative, captureWithRingbuf, gated). It follows
 // capture.NoWakeup (--no-wakeup), which also keeps the fast reader
-// polling, so the producer and the reader cannot disagree.
+// polling. Both read it once, at build and at reader start, so they agree
+// as long as it is set before either and not changed afterwards.
 func ringbufSubmitFlags() int32 {
 	if capture.NoWakeup {
 		return int32(BPF_RB_NO_WAKEUP)
