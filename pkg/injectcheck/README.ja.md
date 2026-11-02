@@ -2,23 +2,35 @@
 
 [English](README.md)
 
-`pkg/injectcheck` は `pkg/inject` の変換結果を調べるオフラインのテスト用 oracle である。
-`cmd/inject-check` は変換器への依存を含めず個別にビルドする開発ツールであり、`inject-run` やリリース用バイナリには組み込まれていない。
+`pkg/injectcheck` は `pkg/inject` の変換結果を独立に検査し、`pkg/inject` の通常コードも target binding の型を利用する。
+`cmd/inject-check` は変換器への依存を含めず個別にビルドする開発ツールであり、`inject-run` には組み込まれていない。
 `Check` は元命令の比較、制御フロー辺の解決、挿入領域の導出、挿入された全命令の検査を独立に行う。
-変換器の site 選択、再配置、liveness の判定は使用しない。
+変換器の再配置と liveness の判定は再利用しない。
+命令形式だけでは site の意図を識別できないため、信頼済み入力 `Premises.Targets` で plan の site、結果、hook の対応を渡す。
 
 ```go
+plannedSiteTargets, err := inject.BuildLookupTargets(transformed, result.Hooks)
+if err != nil {
+    return err
+}
 counts, err := injectcheck.Check(original, transformed, injectcheck.Certificate{
     Original: originalIndices,
     Hooks: hookRanges,
-}, injectcheck.Premises{LowestOffset: auditedFloor})
+}, injectcheck.Premises{
+    LowestOffset: auditedFloor,
+    Targets: plannedSiteTargets,
+})
 ```
 
-**certificate** は未信頼の対応ヒントである。
-`Original[i]` は元命令 i に対応する変換後の decoded index、`Hooks` は挿入関数本体の半開区間を表す。
+**certificate** は対応情報を渡す。
+`Original[i]` は元命令 i に対応する変換後の decoded index、`Hooks` は挿入関数本体の半開区間を表し、どちらも `Check` が内容を独立に検査する未信頼のヒントである。
 `LDIMM64` は decoded instruction では 1 要素、再配置計算では raw slot 2 個となる。
 変換前の `Label` と変換後の `FromLabels` で保持された metadata からヒントを抽出でき、`Check` が内容を別途検査する。
-別引数の **premise** である `LowestOffset` は、間接アクセスと callee からの caller-stack pointer の利用を含む、呼び出し側の信頼済み stack-alias audit である。
+別引数の **premises** は呼び出し側の信頼済み入力である。
+`LowestOffset` は、間接アクセスと callee からの caller-stack pointer の利用を含む stack-alias audit である。
+`Targets` は plan の用語で `{Site, When, Hook}`、すなわち元命令 index、`hit`、`miss`、`any`、`error` のいずれか、生成 hook の decoded 開始 index を対応づける。
+lookup の `any` は hit と miss の両方の経路で hook を呼ぶことを要求する。
+caller は `inject.BuildLookupTargets` を使うか、同じ情報を変換後 call の reference ではなく plan から作る必要がある。
 チェッカーは値の範囲と直接 RFP アクセスを検査するが、命令 projection から alias audit の正しさは確立できない。
 
 ## 検査する形式
@@ -29,10 +41,10 @@ counts, err := injectcheck.Check(original, transformed, injectcheck.Certificate{
 | 名前 | 形式 | 検査する内容 |
 | --- | --- | --- |
 | P1 | 入口の context spill、任意の entry/dispatch hook と R1 復元 | スロット、dispatch 引数、hook 宛先、復元の一致 |
-| P2 | lookup/per-CPU lookup の spill と条件付き observer postlude | 結果分岐 1 個、経路ごとに 1 回の call（分岐先を含め最大 2 個）、値コピー対、全経路での 64-bit R0 復元 |
-| P3 | map update/delete の spill と observer postlude | helper 引数 spill、任意の符号付き結果分岐、1 回の call、64-bit R0 復元 |
-| P4 | tail call 前の spill と失敗時の postlude | helper 引数と宛先の保存、失敗時の hook、local または入口 frame での context 初期化 |
-| P5 | queue/stack の push/pop/peek の spill と observer postlude | helper ごとの spill、1 回の hook、64-bit R0 復元 |
+| P2 | lookup/per-CPU lookup の spill と条件付き observer postlude | 結果分岐 1 個、経路ごとに 1 回の call（分岐先を含め最大 2 個）、plan の結果経路別宛先、R1 context、generic/dispatch の R3-R5 の由来と順序、値コピー対、全経路での 64-bit R0 復元 |
+| P3 | map update/delete の spill と observer postlude | helper 引数 spill、任意の符号付き結果分岐、plan の結果別宛先、R1 context、generic/dispatch の R3-R5 の由来と順序、1 回の call、64-bit R0 復元 |
+| P4 | tail call 前の spill と失敗時の postlude | helper 引数と宛先の保存、plan の hook、R1 context、dispatch の R4/R5 の由来、local または入口 frame での context 初期化 |
+| P5 | queue/stack の push/pop/peek の spill と observer postlude | helper ごとの spill、plan の結果別宛先、R1 context、generic/dispatch の R3-R5 の由来と順序、1 回の hook、64-bit R0 復元 |
 | P6 | `ldxw R2, [R0+offset]` の後の u32 hook | 保存・call・復元の 6 命令、u32 hook 本体、元の継続位置での R1/R3–R5 の死 |
 | P7 | observer 関数 | no-op return、u32 XOR return、または許可された context/pointer 読み出しとゼロ return。store と call を拒否 |
 
@@ -41,7 +53,12 @@ counts, err := injectcheck.Check(original, transformed, injectcheck.Certificate{
 `f` からの相対位置は context が `f-8`、key または tail index が `f-16`、helper 結果が `f-24`、map が `f-32`、update value が `f-40`（map spill がなければ `f-32`）である。
 `f-24` には意図的に update の R4/push の R3 の flags を先に置き、postlude が読み出した後に R0 で上書きする。
 u32 領域は R0 を `f-8`、R2 を `f-16` に保存するため、入口 context と key のスロットに重なる。
-u32 と helper の混在時に、後続 observer が元の context 値を受け取ることは保証しない。観測引数の正しさは受理条件の範囲外である。
+helper hook call は保存済み context を R1 に要求する。
+generic と dispatch の map call は NULL 役の定数 0 を含む helper ごとの R3-R5 の役割を検査し、dispatch tail call は R3-R5 を検査する。
+R2 の site id または info word は、site tag を持つすべての hook で未検査である。
+typed hook と static non-generic hook の key/value の役割も受理条件の範囲外である。
+u32 と helper が混在する stream では、後続 observer が元の context を受け取ることまでは確立しない。
+u32 領域は、後続 helper hook が R1 を reload する slot と同じ場所へ R0 を保存するためである。
 挿入 store はすべて `f` より下、512-byte frame 内に収まる必要がある。
 
 各元命令は順序を保って各 1 回現れ、opcode、register、offset、constant、辺以外の reference が一致する必要がある。
@@ -75,8 +92,8 @@ nil metadata key はロード時の意味を持たないため checker と命令
 map 関連付け前に、両命令列で共有する変化のない外部 symbol/FD 対応表の下で検査する。
 数値 FD はその名前空間の識別子であり、プロセスをまたぐ実 map の保存形式ではない。
 
-受理は元プログラムと変換後プログラムの BPF validity、呼び出し規約、信頼済み stack audit を前提とする。
-kernel の受理、BTF/CO-RE の意味、JIT の正しさ、observer noninterference、観測引数、並行実行、時刻、乱数は証明しない。
+受理は元プログラムと変換後プログラムの BPF validity、呼び出し規約、信頼済み stack audit、plan 由来の信頼済み Targets を前提とする。
+kernel の受理、BTF/CO-RE の意味、JIT の正しさ、observer noninterference、明記した検査以外の観測引数、並行実行、時刻、乱数は証明しない。
 検査で BPF のロード、attach、pin は行わない。
 
 ## JSON とエラー分類
@@ -87,10 +104,10 @@ go build -o inject-check ./cmd/inject-check
 ```
 
 writer と reader はタグ付きの `injectcheck.Pair` 型を共有する。
-format 1 は cilium/ebpf v0.22 の decoded `asm.OpCode` 表現を固定するものであり、kernel の opcode byte とは異なる。
+format 2 は cilium/ebpf v0.22 の decoded `asm.OpCode` 表現と plan-level target 形式を固定するものであり、kernel の opcode byte とは異なる。
 必須のトップレベルキーは `format`、`original`、`transformed`、`certificate`、`premises` で、大文字小文字を区別する。
-`certificate.original` と `premises.lowest_offset` も必須で、`certificate.hooks` は空または省略してよい。
-Span のフィールドは `start` と `end` である。
+`certificate.original`、`premises.lowest_offset`、`premises.targets` も必須で、`certificate.hooks` は空または省略してよい。`premises.targets` を空にできるのは挿入 call がない場合だけである。
+Span のフィールドは `start` と `end`、target のフィールドは `site`、`when`、`hook` である。
 命令のフィールドは `opcode`、`dst`、`src`、`offset`、`constant`、`symbol`、`reference` である。
 `PseudoMapValue` の offset は `constant` の上位 32-bit、pseudo kind は `src` に保持する。
 未知のフィールドと規定外の大小文字表記は入力エラーとする。
@@ -104,14 +121,14 @@ local census harness はこの方式を使うため、JSON から metadata ident
 
 CLI は `accepted`、`kind`、`counts`、`premises`、`reason` を出力する。
 `counts.sites` は検査した site 数で、拒否時は途中までの値となる。
-判定に使った premise も出力する。
+判定に使った Targets を含む premises も出力する。
 API エラーは `errors.As` で次のように区別でき、どちらも安定した `Kind` と診断用 `Detail` を持つ。
 
 | 結果 | 型 | CLI 終了コード | 例 |
 | --- | --- | --- | --- |
 | 受理 | nil | 0 | 検査規則をすべて満たす |
-| 入力エラー | `*InputError` | 2 | JSON 不正、必須フィールドの欠落・null（名前を診断）、元命令列・対応表の空値、対応表の長さ・順序不正、hook 範囲の不正・重なり、[-512,0] 外の床、不正な元 register・CFG、未対応 format |
-| 変換の拒否 | `*Rejection` | 1 | 命令・reference・辺の変更、挿入 store・分岐・register effect・hook の違反、metadata の変更、関連付け済み map |
+| 入力エラー | `*InputError` | 2 | JSON 不正、必須フィールドの欠落・null、元命令列・対応表の空値、対応表の長さ・順序不正、hook 範囲の不正・重なり、target plan の欠落・不正・重複、[-512,0] 外の床、不正な元 register・CFG、未対応 format |
+| 変換の拒否 | `*Rejection` | 1 | 命令・reference・辺の変更、計画外の call または計画済み call の欠落、挿入 store・分岐・register effect・hook の違反、metadata の変更、関連付け済み map |
 
 decode・file・usage エラーは stderr に出し、validation が見つけた構造上の入力エラーは JSON verdict も返す。
 元命令列の空値、対応表の空値、長さ不一致、床の不正は別の kind を持つ。

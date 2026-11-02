@@ -1,12 +1,45 @@
 package injectcheck
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/cilium/ebpf/asm"
 )
+
+func TestPremisesJSONRoundTrip(t *testing.T) {
+	p := Pair{
+		Format:      FormatVersion,
+		Original:    Instructions{asm.Mov.Imm(asm.R0, 0), asm.Return()},
+		Transformed: Instructions{asm.Mov.Imm(asm.R0, 0), asm.Return()},
+		Certificate: Certificate{Original: []int{0, 1}},
+		Premises:    Premises{LowestOffset: -8},
+	}
+	b, err := json.Marshal(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got Pair
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatalf("nil Targets did not survive round trip: %v", err)
+	}
+	if got.Premises.Targets == nil || len(got.Premises.Targets) != 0 {
+		t.Fatalf("targets = %#v, want non-nil empty slice", got.Premises.Targets)
+	}
+}
+
+func TestPairV1ReportsVersionFirst(t *testing.T) {
+	b := []byte(`{"format":1,"original":[],"transformed":[],"certificate":{"original":[]},"premises":{"lowest_offset":-8}}`)
+	var p Pair
+	err := json.Unmarshal(b, &p)
+	var input *InputError
+	if !errors.As(err, &input) || input.Kind != InputVersion {
+		t.Fatalf("got %v, want %s", err, InputVersion)
+	}
+}
 
 func TestIdentityAndCertificate(t *testing.T) {
 	in := asm.Instructions{asm.Mov.Imm(asm.R0, 2), asm.Return()}
@@ -132,4 +165,44 @@ func TestHelperABI(t *testing.T) {
 	if helperReads(999999) != 0x3e {
 		t.Fatal("unknown helper must be conservative")
 	}
+}
+
+func TestTargetInputs(t *testing.T) {
+	in, out, fixture := callingConventionFixture(false)
+	cert := Certificate{Original: fixture.Original, Hooks: fixture.Hooks}
+	hook := fixture.Hooks[0].Start
+	valid := SiteTarget{Site: 5, When: TargetHit, Hook: hook}
+	check := func(targets ...SiteTarget) error {
+		_, err := Check(in, out, cert, Premises{LowestOffset: fixture.LowestOffset, Targets: targets})
+		return err
+	}
+	if err := check(valid); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name    string
+		targets []SiteTarget
+		kind    Kind
+	}{
+		{"missing", nil, InputTargetMissing},
+		{"site-range", []SiteTarget{{Site: len(in), When: TargetHit, Hook: hook}}, InputTarget},
+		{"condition", []SiteTarget{{Site: 5, When: "success", Hook: hook}}, InputTarget},
+		{"hook-start", []SiteTarget{{Site: 5, When: TargetHit, Hook: hook + 1}}, InputTarget},
+		{"duplicate", []SiteTarget{valid, valid}, InputTarget},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assertInputKind(t, check(tc.targets...), tc.kind)
+		})
+	}
+	t.Run("unused-non-call-site", func(t *testing.T) {
+		assertKind(t, check(valid, SiteTarget{Site: 4, When: TargetAny, Hook: hook}), CallTarget)
+	})
+	t.Run("unplanned-site", func(t *testing.T) {
+		assertKind(t, check(SiteTarget{Site: 4, When: TargetAny, Hook: hook}), CallTarget)
+	})
+
+	bad := clone(out)
+	bad[9].OpCode = asm.JNE.Imm(asm.R0, 0, "").OpCode
+	_, err := Check(in, bad, cert, Premises{LowestOffset: fixture.LowestOffset, Targets: []SiteTarget{valid}})
+	assertKind(t, err, CallTarget)
 }

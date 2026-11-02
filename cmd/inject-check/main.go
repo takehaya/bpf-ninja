@@ -1,5 +1,5 @@
-// inject-check validates a JSON instruction pair and an untrusted layout
-// certificate. It has no dependency on the injection implementation.
+// inject-check validates a JSON instruction pair using an untrusted layout
+// certificate and trusted stack-audit and plan-target premises.
 package main
 
 import (

@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -17,7 +18,7 @@ import (
 
 func identityPair() injectcheck.Pair {
 	in := injectcheck.Instructions{asm.Mov.Imm(asm.R0, 2), asm.Return()}
-	return injectcheck.Pair{Format: injectcheck.FormatVersion, Original: in, Transformed: in, Certificate: injectcheck.Certificate{Original: []int{0, 1}}, Premises: injectcheck.Premises{LowestOffset: -8}}
+	return injectcheck.Pair{Format: injectcheck.FormatVersion, Original: in, Transformed: in, Certificate: injectcheck.Certificate{Original: []int{0, 1}}, Premises: injectcheck.Premises{LowestOffset: -8, Targets: []injectcheck.SiteTarget{}}}
 }
 func checkFile(t *testing.T, b []byte, want int) (string, string) {
 	t.Helper()
@@ -63,7 +64,7 @@ func TestMapSerializationCLI(t *testing.T) {
 			if err := json.Unmarshal([]byte(out), &verdict); err != nil {
 				t.Fatal(err)
 			}
-			if verdict.Kind != tc.kind || verdict.Accepted != (code == 0) || verdict.Premises != p.Premises {
+			if verdict.Kind != tc.kind || verdict.Accepted != (code == 0) || !reflect.DeepEqual(verdict.Premises, p.Premises) {
 				t.Fatalf("wrong verdict: %+v", verdict)
 			}
 		})
@@ -98,7 +99,8 @@ func TestRequiredFieldsCLI(t *testing.T) {
 		}
 	}
 	for _, tc := range []struct{ old, new, field string }{
-		{`"lowest_offset":-8`, ``, "lowest_offset"}, {`"lowest_offset":-8`, `"lowest_offset":null`, "lowest_offset"},
+		{`"lowest_offset":-8,`, ``, "lowest_offset"}, {`"lowest_offset":-8`, `"lowest_offset":null`, "lowest_offset"},
+		{`,"targets":[]`, ``, "targets"}, {`"targets":[]`, `"targets":null`, "targets"},
 		{`"original":[0,1],`, ``, "original"}, {`"original":[0,1]`, `"original":null`, "original"},
 	} {
 		_, message := checkFile(t, []byte(strings.Replace(string(b), tc.old, tc.new, 1)), 2)
@@ -114,10 +116,10 @@ func TestStrictJSONCLI(t *testing.T) {
 	}
 	valid := string(b)
 	for _, tc := range []struct{ name, input string }{
-		{"top-unknown", strings.Replace(valid, `"format":1`, `"format":1,"extra":0`, 1)},
+		{"top-unknown", strings.Replace(valid, `"format":2`, `"format":2,"extra":0`, 1)},
 		{"top-case", strings.Replace(valid, `"certificate":`, `"Certificate":`, 1)},
-		{"top-duplicate", strings.Replace(valid, `"format":1`, `"format":1,"format":1`, 1)},
-		{"merged-certificates", strings.Replace(valid, `"format":1`, `"format":1,"Certificate":{"original":[0,1]}`, 1)},
+		{"top-duplicate", strings.Replace(valid, `"format":2`, `"format":2,"format":2`, 1)},
+		{"merged-certificates", strings.Replace(valid, `"format":2`, `"format":2,"Certificate":{"original":[0,1]}`, 1)},
 		{"certificate-unknown", strings.Replace(valid, `"original":[0,1]`, `"original":[0,1],"hook":[]`, 1)},
 		{"certificate-duplicate", strings.Replace(valid, `"original":[0,1]`, `"original":[0,1],"original":[0,1]`, 1)},
 		{"premise-duplicate", strings.Replace(valid, `"lowest_offset":-8`, `"lowest_offset":-8,"lowest_offset":-8`, 1)},
@@ -126,9 +128,9 @@ func TestStrictJSONCLI(t *testing.T) {
 		{"instruction-metadata", strings.Replace(valid, `"dst":0`, `"dst":0,"Metadata":{}`, 1)},
 		{"span-duplicate", strings.Replace(valid, `"hooks":null`, `"hooks":[{"start":2,"end":4,"end":4}]`, 1)},
 		{"span-case", strings.Replace(valid, `"hooks":null`, `"hooks":[{"Start":2,"end":4}]`, 1)},
-		{"artefact-nested-duplicate", strings.Replace(valid, `"format":1`, `"format":1,"request":{"a":{"x":1,"x":2}}`, 1)},
+		{"artefact-nested-duplicate", strings.Replace(valid, `"format":2`, `"format":2,"request":{"a":{"x":1,"x":2}}`, 1)},
 		{"null-instruction", strings.Replace(valid, `"original":[`, `"original":[null,`, 1)},
-		{"version", strings.Replace(valid, `"format":1`, `"format":2`, 1)},
+		{"version", strings.Replace(valid, `"format":2`, `"format":1`, 1)},
 		{"trailing", valid + `{}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -139,7 +141,7 @@ func TestStrictJSONCLI(t *testing.T) {
 		})
 	}
 	for _, field := range []string{"request", "result", "reason"} {
-		input := strings.Replace(valid, `"format":1`, `"format":1,"`+field+`":"evidence"`, 1)
+		input := strings.Replace(valid, `"format":2`, `"format":2,"`+field+`":"evidence"`, 1)
 		checkFile(t, []byte(input), 0)
 	}
 }
@@ -262,7 +264,7 @@ func TestPairCorpus(t *testing.T) {
 			if err := json.Unmarshal(stdout.Bytes(), &cli); err != nil {
 				t.Fatal(err)
 			}
-			if cli != api {
+			if !reflect.DeepEqual(cli, api) {
 				t.Fatalf("CLI %+v differs from API %+v", cli, api)
 			}
 		})

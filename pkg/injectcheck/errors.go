@@ -26,6 +26,7 @@ const (
 	PreludeShape           Kind = "prelude_shape"
 	HookShape              Kind = "hook_shape"
 	HookBody               Kind = "hook_body"
+	HookArguments          Kind = "hook_arguments"
 	CallKind               Kind = "call_kind"
 	CallTarget             Kind = "call_target"
 	EntrySpill             Kind = "entry_spill"
@@ -72,6 +73,9 @@ const (
 	InputVersion           Kind = "input.version"
 	InputRegister          Kind = "input.register"
 	InputOriginalCFG       Kind = "input.original_cfg"
+	InputTarget            Kind = "input.target"
+	InputTargetMissing     Kind = "input.target_missing"
+	InputTargetUnused      Kind = "input.target_unused"
 )
 
 // Rejection means a well-formed proposed transformation violates a checked rule.

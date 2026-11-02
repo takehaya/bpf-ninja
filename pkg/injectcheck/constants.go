@@ -12,6 +12,7 @@ const (
 	postludeBudget        = 4096
 	idUndefined           = 0
 	idOpaque              = -1
+	idZero                = -2
 	idFrame               = 11
 	idContext             = 100
 	idResult              = 200

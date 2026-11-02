@@ -19,10 +19,11 @@ type state struct {
 	regs  [11]value
 	stack map[int]cell
 	calls int
+	when  TargetWhen
 }
 
 func initial() state {
-	s := state{stack: map[int]cell{}}
+	s := state{stack: map[int]cell{}, when: TargetAny}
 	for r := range s.regs {
 		s.regs[r] = value{id: r + 1}
 	}
@@ -40,7 +41,7 @@ func (s *state) store(at, width int, v value) {
 }
 func width(ins asm.Instruction) int { return int(ins.OpCode.Size().Sizeof()) }
 
-func checkAfter(helper asm.Instruction, before, is, out asm.Instructions, pcs []int, idx map[int]int, js []int, hooks map[int]bool, f int, entryCtx bool) error {
+func checkAfter(site int, helper asm.Instruction, before, is, out asm.Instructions, pcs []int, idx map[int]int, js []int, hooks map[int]bool, targets targetBindings, f int, entryCtx bool) error {
 	isLookup := asm.BuiltinFunc(helper.Constant) == asm.FnMapLookupElem || asm.BuiltinFunc(helper.Constant) == asm.FnMapLookupPercpuElem
 	tail := asm.BuiltinFunc(helper.Constant) == asm.FnTailCall
 	if len(is) == 0 {
@@ -102,6 +103,9 @@ func checkAfter(helper asm.Instruction, before, is, out asm.Instructions, pcs []
 			return reject(PathBudget, "postlude path budget exceeded")
 		}
 		if i == len(is) {
+			if s.calls == 0 && targets.planned(site, s.when, isLookup) {
+				return reject(CallTarget, "site %d planned %s hook is not called", site, s.when)
+			}
 			if !tail && s.regs[0].id != idResult {
 				return reject(ResultPath, "R0 not restored on every path")
 			}
@@ -167,6 +171,9 @@ func checkAfter(helper asm.Instruction, before, is, out asm.Instructions, pcs []
 			}
 			op := ins.OpCode.ALUOp()
 			src := value{id: idOpaque}
+			if cl == asm.ALU64Class && op == asm.Mov && ins.OpCode.Source() == asm.ImmSource && ins.Constant == 0 {
+				src = value{id: idZero}
+			}
 			if ins.OpCode.Source() == asm.RegSource {
 				if err := read(ins.Src); err != nil {
 					return err
@@ -200,12 +207,39 @@ func checkAfter(helper asm.Instruction, before, is, out asm.Instructions, pcs []
 				return reject(ALUOperation, "ALU operation %s outside helper observation", op)
 			}
 		case ins.IsFunctionCall():
-			if err := hookCall(out, pcs, idx, js[i], hooks); err != nil {
+			lookupArm := isLookup && (s.when == TargetHit || s.when == TargetMiss)
+			if err := hookCall(out, pcs, idx, js[i], hooks, targets, site, s.when, lookupArm); err != nil {
 				return err
 			}
 			s.calls++
 			if s.calls > 1 {
 				return reject(MultipleCalls, "multiple hooks on one site path")
+			}
+			if ctx, ok := s.stack[f+slotContext]; !ok || s.regs[asm.R1] != ctx.v {
+				return reject(HookArguments, "R1 is not the saved context")
+			}
+			mp, hasMap := s.stack[f+slotMap]
+			if tail && hasMap {
+				key := value{id: idFrame, ptr: f + slotKey, frame: true}
+				if s.regs[asm.R3] != key || s.regs[asm.R4].id != idZero || s.regs[asm.R5] != mp.v {
+					return reject(HookArguments, "dispatch tail-call arguments R3-R5 have wrong provenance or order")
+				}
+			} else if generic := hasMap && mp.v == (value{id: int(asm.R1) + 1}); generic {
+				key := s.stack[f+slotKey].v
+				bad := s.regs[asm.R5] != mp.v
+				switch asm.BuiltinFunc(helper.Constant) {
+				case asm.FnMapLookupElem, asm.FnMapLookupPercpuElem:
+					bad = bad || s.regs[asm.R3] != key || s.regs[asm.R4].id != idResult
+				case asm.FnMapUpdateElem:
+					bad = bad || s.regs[asm.R3] != key || s.regs[asm.R4] != s.stack[f+slotValue].v
+				case asm.FnMapDeleteElem:
+					bad = bad || s.regs[asm.R3] != key || s.regs[asm.R4].id != idZero
+				case asm.FnMapPushElem, asm.FnMapPopElem, asm.FnMapPeekElem:
+					bad = bad || s.regs[asm.R3].id != idZero || s.regs[asm.R4] != key
+				}
+				if bad {
+					return reject(HookArguments, "generic hook arguments R3-R5 have wrong provenance or order")
+				}
 			}
 			for r := 0; r <= 5; r++ {
 				s.regs[r] = value{}
@@ -231,9 +265,19 @@ func checkAfter(helper asm.Instruction, before, is, out asm.Instructions, pcs []
 				if err := read(asm.R0); err != nil {
 					return err
 				}
-				if err := walk(i+1, s.clone()); err != nil {
+				fall, taken := s.clone(), s
+				if isLookup {
+					fall.when, taken.when = TargetHit, TargetMiss
+					if op == asm.JNE {
+						fall.when, taken.when = TargetMiss, TargetHit
+					}
+				} else {
+					fall.when, taken.when = TargetError, targetSuccess
+				}
+				if err := walk(i+1, fall); err != nil {
 					return err
 				}
+				s = taken
 			}
 			return walk(j, s)
 		default:
@@ -244,7 +288,7 @@ func checkAfter(helper asm.Instruction, before, is, out asm.Instructions, pcs []
 	return walk(0, s)
 }
 
-func checkU32(load asm.Instruction, is, out asm.Instructions, pcs []int, idx map[int]int, js []int, hooks map[int]bool, f int, live uint16) error {
+func checkU32(site int, load asm.Instruction, is, out asm.Instructions, pcs []int, idx map[int]int, js []int, hooks map[int]bool, targets targetBindings, f int, live uint16) error {
 	if !same(load, asm.LoadMem(asm.R2, asm.R0, load.Offset, asm.Word)) {
 		return reject(U32Placement, "insertion is not at a u32 load")
 	}
@@ -258,7 +302,7 @@ func checkU32(load asm.Instruction, is, out asm.Instructions, pcs []int, idx map
 	if !equal(is, want) {
 		return reject(U32Shape, "not a u32 save/call/restore sequence")
 	}
-	if err := hookCall(out, pcs, idx, js[3], hooks); err != nil {
+	if err := hookCall(out, pcs, idx, js[3], hooks, targets, site, TargetAny, false); err != nil {
 		return err
 	}
 	start, err := target(out, pcs, idx, js[3])
