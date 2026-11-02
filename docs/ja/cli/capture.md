@@ -263,7 +263,7 @@ inject した hook で取得するとき、その hook がどのような値で�
 | 値 | 記録する内容 |
 |---|---|
 | `filter` (既定) | `--arg-filter` と `--set` のキーが読む引数とメンバー |
-| `entry` | hook が受け取った `site`、`status`、キーと値の全体 |
+| `entry` | hook が受け取ったキーと値の全体。hook にある場合は `site` と `status` も記録します |
 | `none` | 記録しません。通常の pcap の形のままになります |
 
 ### どこで記録するか
