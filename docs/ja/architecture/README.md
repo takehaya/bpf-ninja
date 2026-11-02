@@ -1,37 +1,47 @@
 # 実装を読むための案内
 
-このページでは現在の実装を説明します。
+このページでは、現在の実装を処理の流れに沿って説明します。調べる対象ごとの実装と関連文書も示します。
 
 ## 全体の構造
+
+capture では、`cmd/bpf-ninja` が target を探します。続いて `internal/program` がフィルターをコンパイルし、プログラムを attach します。
+矢印は呼び出しを、ラベル付きの矢印はデータの流れを表します。
 
 ```mermaid
 flowchart TD
   subgraph kunai["pkg/kunai: DSL のコンパイル"]
-    parser["pkg/kunai/parser"] --> resolve["pkg/kunai/resolve"] --> ir["pkg/kunai/ir"] --> codegen["pkg/kunai/codegen"]
+    parser["pkg/kunai/parser"] --> resolve["pkg/kunai/resolve"]
+    resolve -- "pkg/kunai/ir" --> codegen["pkg/kunai/codegen"]
   end
   cli["cmd/bpf-ninja: CLI"] --> attach["internal/attach: target の探索"]
-  attach --> hook["internal/hook: hook ごとの能力"]
-  hook --> kunai
-  kunai --> program["internal/program: ロードと attach"]
-  program --> bpf["hook 上の BPF プログラム"]
-  bpf --> ringbuf["ringbuf"]
-  ringbuf --> capture["internal/capture: reader"]
-  capture --> output["internal/output: writer"]
+  cli --> program["internal/program: プログラムの生成、ロード、attach"]
+  program --> hook["internal/hook: hook 種別ごとの能力"]
+  program --> kunai
+  program --> bpf["tracing プログラム: target の関数に fentry/fexit で attach"]
+  bpf -- "パケット" --> ringbuf["ringbuf"]
+  ringbuf -- "記録" --> capture["internal/capture: reader"]
+  capture -- "記録" --> output["internal/output: writer"]
 ```
+
+`internal/program` は、hook 種別の能力に合わせて `pkg/kunai` でフィルターをコンパイルします。生成した tracing プログラムは、target プログラムの関数に fentry または fexit で attach します。
+`--mode xdp` では、bpf-ninja のプログラムを XDP として netdev に attach します。
+`internal/capture` は、プログラムが ringbuf に書いた記録を読み取ります。`internal/output` は、`-w` を付けた場合はファイルに、付けない場合は標準出力に pcapng を書き出します。
+
+inject-run では、loader 自身がロードするプログラムに観測 hook を加えます。その hook に対して、上の capture を attach します。
 
 ```mermaid
 flowchart TD
   run["cmd/bpf-ninja: inject-run"] --> sup["pkg/syscallhook: ptrace supervisor"]
-  sup -- "BPF_PROG_LOAD で停止" --> inject["pkg/inject: hook の追加"]
-  inject --> loaded["hook 付きプログラム: pkg/syscallhook が loader 内でロード"]
-  sup --> hooks["hooks.json: prog_id と hook 名"]
+  sup -- "rule に一致した BPF_PROG_LOAD" --> inject["pkg/inject: 観測 hook の追加"]
+  inject --> loaded["観測 hook 付きプログラム: pkg/syscallhook が loader 内でロード"]
+  run -- "hooks-json を指定した場合" --> hooks["hooks.json: prog_id と hook 名"]
   loaded --> func["bpf-ninja -p ID --func HOOK: 上の capture 経路"]
   hooks --> func
 ```
 
-capture では、internal/program が target の hook に合わせて pkg/kunai でフィルターをコンパイルし、BPF プログラムを hook に attach します。
-そのプログラムが ringbuf に書き込んだパケットを internal/capture が読み取り、internal/output がファイルに書き出します。
-inject-run では、pkg/syscallhook が loader の BPF_PROG_LOAD を止め、pkg/inject で hook を追加したプログラムを loader のプロセス内でロードします。
+`pkg/syscallhook` は loader の `BPF_PROG_LOAD` を横取りします。rule に一致したプログラムには `pkg/inject` で観測 hook を追加し、loader のプロセス内でロードします。
+一致しないプログラムはそのままロードされ、注入に失敗した場合も `--fail-closed` がなければ元のプログラムをロードします。
+`--hooks-json` を指定すると、`cmd/bpf-ninja` が `prog_id` と hook 名を `hooks.json` に書くので、それを `-p` と `--func` に渡します。
 
 ## CLI から出力まで
 
@@ -41,7 +51,7 @@ inject-run では、pkg/syscallhook が loader の BPF_PROG_LOAD を止め、pkg
 | 関数ごとの map 利用と注入可否の表示 | [listmaps.go](../../../cmd/bpf-ninja/listmaps.go)、[mapuse.go](../../../internal/attach/mapuse.go) | [map 利用から観測までの手順](../../en/inject-walkthrough.md) |
 | load 前の観測 hook 注入 | [pkg/inject](../../../pkg/inject/) | [map 操作の観測](../../en/lookup-site-injection.md)、[監査済み u32 値の観測](../../en/typed-injection.md) |
 | 未変更 loader の起動と load 時注入 | [inject-run CLI](../../../cmd/bpf-ninja/inject_run.go)、[pkg/syscallhook](../../../pkg/syscallhook/) | [syscall hook 設計](../../en/bpf-syscall-hook-design.md)、[inject-run の制約と操作](../../en/inject-run.md) |
-| hook ごとの能力と packet layout | [internal/hook](../../../internal/hook/)、[host adapters](../../../pkg/kunai/host/) | [DSL internals](../dsl-internals.md) |
+| hook 種別ごとの能力と packet layout | [internal/hook](../../../internal/hook/)、[host adapters](../../../pkg/kunai/host/) | [DSL internals](../dsl-internals.md) |
 | 構文から型付き IR への変換 | [parser](../../../pkg/kunai/parser/)、[resolve](../../../pkg/kunai/resolve/)、[ir](../../../pkg/kunai/ir/) | [文法](../dsl-grammar.md)、[型の仕様](../dsl-types.md) |
 | protocol の定義とロード | [protocols](../../../pkg/kunai/protocols/)、[vocab](../../../pkg/kunai/vocab/) | [vocab 作成](../dsl-vocab-authoring.md) |
 | eBPF 命令と host ABI | [codegen](../../../pkg/kunai/codegen/)、[internal/program](../../../internal/program/) | [codegen 解説](../kunai-codegen-deepdive.md)、[option accumulator](../dsl-multi-option-accumulator.md) |
