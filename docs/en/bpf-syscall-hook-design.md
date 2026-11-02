@@ -1,15 +1,14 @@
 # Design: retrofit injection through the bpf(2) syscall
 
-Status: the [raw-load front end](lookup-site-injection.md#raw-load-api) and a Linux x86-64 ptrace launcher prototype are implemented.
+`bpf-ninja inject-run` implements this design on Linux x86-64 with a ptrace supervisor and the [raw-load front end](lookup-site-injection.md#raw-load-api) of `pkg/inject`.
 `bpf-ninja inject-run --config rules.json -- ./target` transforms loads in the target through `inject.TransformLookupRaw`.
-The privileged integration test verifies the hook in the child's loaded program and executes it with `BPF_PROG_TEST_RUN`.
-See [inject-run](inject-run.md) for the supported scope, failure behavior, tests, and remaining work; this is not yet a production supervisor.
+See [inject-run](inject-run.md) for usage, failure behavior and limits.
 
 ## The problem this solves
 
 `pkg/inject` transforms an ELF before it is loaded.
-Using it today requires the target's own loader to call us, or to load an ELF we produced.
-We want the model `mptcpize` uses: run an unmodified binary under a wrapper, and transform its BPF programs as they load, with no change to the target's source, files, or loader.
+Using it directly requires the target's own loader to call it, or to load an ELF that it produced.
+The goal is the model `mptcpize` uses: run an unmodified binary under a wrapper, and transform its BPF programs as they load, with no change to the target's source, files, or loader.
 
 The interception point is the `bpf(2)` syscall.
 At `BPF_PROG_LOAD` the kernel already has the final instruction stream, the map file descriptors resolved into `ld_imm64` as `BPF_PSEUDO_MAP_FD`, a `prog_btf_fd`, and `func_info` and `line_info`.
@@ -33,11 +32,11 @@ This works at the syscall boundary, below libc, so the loader's language does no
 | Backend | Reaches | Mechanism | Cost |
 |---|---|---|---|
 | `LD_PRELOAD` shim | C/libbpf loaders, dynamically linked | override `bpf()`/`syscall()`, rewrite `attr`, call the real syscall | small, the `mptcpize` model |
-| `ptrace` supervisor | Go and statically linked loaders | `PTRACE_SYSCALL`, rewrite tracee registers and memory at `bpf(2)` | larger, but language-independent |
+| `ptrace` supervisor | any loader, including Go and statically linked ones | `PTRACE_SYSCALL`, rewrite tracee registers and memory at `bpf(2)` | larger, but language-independent |
 | seccomp user-notify | nothing here | can skip a call or replace its return, but cannot swap in larger instruction or BTF buffers with new pointers | rejected as the wrong tool |
 
-The plan is to ship the `ptrace` supervisor first, since it reaches Go loaders, and to add the `LD_PRELOAD` shim later for C loaders.
-Both drive the same transform core.
+`inject-run` uses the `ptrace` supervisor, since it reaches Go loaders as well as C loaders.
+An `LD_PRELOAD` shim would drive the same transform core, but none exists.
 
 ## What the transform core must accept
 
@@ -66,18 +65,12 @@ The hook needs a BTF `FUNC` and `FUNC_PROTO` for `int hook(struct xdp_md *, cons
 But BTF is loaded by an earlier, separate `BPF_BTF_LOAD`, and `BPF_PROG_LOAD` only references it by fd.
 So the supervisor has to intercept `BPF_BTF_LOAD` as well.
 
-On `BPF_BTF_LOAD`, parse the BTF blob and remember it under the fd the kernel returns.
-At this point we cannot yet know whether the BTF belongs to a program we will transform, so we remember every BTF, which is cheap.
+At a `BPF_BTF_LOAD`, the supervisor cannot yet know whether the BTF belongs to a program it will transform, so it remembers every BTF blob under the fd the kernel returns.
+At a matched `BPF_PROG_LOAD`, it extends that BTF with the hook's types and loads the result inside the tracee, because a BTF fd the supervisor owns would be useless as the target's `prog_btf_fd`.
+[How the supervisor handles a load](#how-the-supervisor-handles-a-load) gives the steps.
 
-On `BPF_PROG_LOAD` of a matched program, the supervisor builds the hook's types and extends the program's BTF using the raw transformer.
-It injects `bpf(BPF_BTF_LOAD)` into the tracee, so the new fd belongs to the tracee.
-Loading extended BTF only in the supervisor would produce an unusable `prog_btf_fd` for the target; the prototype therefore loads it directly in the target and does not perform a redundant supervisor load.
-It builds a copied attr with that fd, transformed instructions, and the updated `func_info` and `line_info` in an injected anonymous mapping.
-After the injected `BPF_PROG_LOAD`, it closes the temporary BTF fd, unmaps the scratch memory, and returns the program fd through the target's saved registers.
-
-The placement rule from `b87bc75`, which puts the hook right after the entry function, applies here and matters more.
-On the ELF path a verifier rejection is a failed load we can diagnose and retry.
-The prototype retains the original attr and buffers so a rejected transformed load can be retried unchanged before the syscall returns to the target.
+The transform places the hooks right after the entry function, which avoids a kernel verifier bug; see [Inserted instructions](lookup-site-injection.md#inserted-instructions).
+The supervisor keeps the original attr and buffers, so it can retry a rejected transformed load unchanged before the syscall returns to the target.
 
 ## Selection and failure behavior
 
@@ -90,29 +83,100 @@ On any such error, log it, pass the original load through unchanged, and record 
 Refusing the load with `EPERM` instead is opt-in through `--fail-closed`.
 Loss of ptrace control is fatal in either mode: the supervisor terminates the target rather than resuming it with uncertain registers or memory.
 
-The supervisor sees every `bpf(2)` the target makes, including map creation and link attachment.
-Everything it does not transform it passes through untouched.
+## How the supervisor handles a load
 
-## Prototype decisions and remaining work
+The launcher uses Go's fork/exec support with `PTRACE_TRACEME` and keeps ptrace operations on one locked OS thread.
+It follows target threads with `PTRACE_O_TRACECLONE` and uses `PTRACE_GET_SYSCALL_INFO` to tell syscall entry from exit.
+It intercepts native x86-64 `SYS_bpf`; compat and x32 calls pass through without injection.
+Every original BPF command other than `BPF_BTF_LOAD` and a matched `BPF_PROG_LOAD` passes through untouched.
+The supervisor also issues its own metadata and load operations, described below.
 
-The prototype makes the following choices.
+At `BPF_BTF_LOAD` entry it copies the blob.
+At successful exit it remembers the blob under the returned tracee fd, with the object's kernel BTF ID, which an injected object-info query obtains in the tracee.
+At a matched program load it rechecks the live fd's BTF ID before trusting the cache, so a reused fd cannot substitute unrelated cached types.
+If needed, it obtains the BTF from the kernel by ID instead.
+The cache holds at most 64 MiB and is cleared on exec or when full.
 
-1. Inject `mmap` and repoint a copied attr; the integration test covers a Go tracee with a larger instruction stream and additional function metadata.
-2. Launch with `PTRACE_TRACEME`, then use `PTRACE_SYSCALL` and follow threads with `PTRACE_O_TRACECLONE`.
-   The command is `inject-run` to distinguish transformation from ordinary packet observation.
-   Attaching to an existing process and supervising forked processes remain TODO.
-3. Attach an fentry observer separately with the existing observation commands.
-   The launcher adds the hook but does not attach an observer.
-4. CO-RE.
-   By load time the CO-RE relocations are already applied in the instructions, so we inherit a resolved program, which helps.
-   The raw transformer preserves original type IDs; the integration fixture carries its own BTF.
-   Kernel-side CO-RE records and fd arrays are refused until their offsets and references can be relocated.
+The supervisor reads the instructions, `func_info` and `line_info` from tracee memory to build an `inject.RawProgram`.
+For each map reference it injects `BPF_OBJ_GET_INFO_BY_FD` into the tracee, where the map fd is valid.
+The returned name, kind, sizes, flags, BTF ID and key/value type IDs identify the map and its ABI.
+It opens that system-wide BTF ID in the supervisor with `BPF_BTF_GET_FD_BY_ID` and reads the types, also when maps and programs have separate BTF objects.
+It never treats a tracee fd number as a supervisor fd.
+A map without BTF, or a side with a zero type ID, keeps its identity and sizes; the transform passes that side as opaque bytes of the map's size.
+The kernel does not report an inner-map template's flags, so the supervisor treats every inner map as read-only.
 
-The remaining ptrace work includes stopping sibling threads during snapshots, following fork/vfork with per-process fd identity, handling job-control stops, and supporting seccomp interactions.
-The [launcher guide](inject-run.md#limits-and-todos) specifies the mechanisms needed.
+`inject.TransformLookupRaw` produces the new instructions and extended BTF with matching function and line records.
+The supervisor injects `bpf(BPF_BTF_LOAD)` into the tracee and puts the returned tracee-owned fd in a copied program attr.
+The target's credentials and syscall restrictions govern this load.
+
+Injected syscalls replay the existing two-byte x86 `SYSCALL` instruction at the saved `RIP-2`.
+The original program-load syscall is first suppressed with an invalid syscall number to reach an exit stop.
+Catchable signals are masked during replay; the saved mask and registers are restored before returning to the target.
+Executable memory and the target's stack are not patched.
+An injected anonymous read/write `mmap` provides a 64 MiB scratch arena for the larger buffers and the copied attr.
+The injected program load points at those buffers; afterwards the supervisor closes the temporary BTF fd and unmaps the arena.
+The original instruction and metadata buffers stay intact.
+The caller's verifier log and `log_true_size` output are preserved as syscall outputs.
+
+The wire offsets and stop discriminators follow the Linux [BPF UAPI](https://github.com/torvalds/linux/blob/master/include/uapi/linux/bpf.h) and [ptrace UAPI](https://github.com/torvalds/linux/blob/master/include/uapi/linux/ptrace.h).
+
+## Design decisions
+
+1. Inject `mmap` and repoint a copied attr at the larger instruction and metadata buffers.
+2. Name the command `inject-run` to set transformation apart from packet observation.
+3. Attach observers separately with the existing observation commands.
+   The launcher adds the hooks but attaches nothing.
+4. By load time the CO-RE relocations are already applied in the instructions, so the transform works on a resolved program.
+   The raw transformer preserves the original type IDs.
+   Kernel-side CO-RE records and fd arrays are refused, because the transform does not relocate their offsets and references.
+
+## Remaining work
+
+These mechanisms would lift the [launcher's limits](inject-run.md#limits):
+
+- Child processes: add `PTRACE_O_TRACEFORK` and `PTRACE_O_TRACEVFORK`, keep per-process fd caches and thread groups, and handle nonleader exec identity changes across the process tree.
+- Attaching to a running process: `PTRACE_SEIZE` every `/proc/<pid>/task` entry, and recover BTF loaded before the attach.
+- Concurrent threads: use a seize-based launcher with `PTRACE_INTERRUPT` to stop all siblings, drain their stops, snapshot inputs and fd identities, and resume them after the load.
+- Signals and seccomp: tell group stops apart with `PTRACE_GETSIGINFO`, use `PTRACE_LISTEN` after switching to `PTRACE_SEIZE`, and model `PTRACE_EVENT_SECCOMP` and syscall restarts.
+- Function-name selection: resolve the live BTF ID before preselection, or track fd duplication and inheritance, instead of trusting the numeric fd.
+- Load formats: normalize larger known metadata records, relocate every offset-bearing field, and resolve indexed map references before accepting kernel-side CO-RE records and fd arrays.
 
 ## What this reuses
 
 This design reuses the instruction-level transform, the placement fix, and the callback relocation already in `pkg/inject`.
 It adds a raw-load front end and the `bpf(2)` and `BPF_BTF_LOAD` interception.
 The ELF path does not change.
+
+## Tests
+
+Unprivileged tests in `pkg/syscallhook` cover strict config parsing, attr sizes and offsets, target arguments and exit status, threaded launch, cancellation and the failure policy.
+Unit tests in `cmd/bpf-ninja` cover the JSON shape of `--hooks-json` and `--lookups-json` and the files they write.
+
+`TestIntegrationLoader` needs the `integration` build tag and root.
+It launches the same Go loader directly and under the supervisor, checks the kernel function metadata, and runs the loaded XDP program with `BPF_PROG_TEST_RUN`.
+It covers kernel-name and function-name selection, fail-open, fail-closed and unmatched loads.
+It checks that the launcher reports each successful injection, and only those, with the program ID the loader sees.
+It checks that `maps` instruments the named map and refuses an unknown one, and that discovery reports the loader's lookup among its map calls, with and without a rule.
+
+`TestBpfAutoStatic`, under the same tag, leaves `static_untrusted` unset on a read-only map lookup and on a dispatch rule.
+It checks the selected form and reason, and loads and attaches an fentry observer to the injected hook.
+A third case replaces the probe result with an unsupported-tag rejection, so static hooks are selected and attached on every kernel.
+With `BPF_NINJA_EXPECT_HOOK_FORM` set to `global` or `static`, the real probe's choice must match it; CI sets `global` for its runner kernel.
+The loader runs without `-test.v`, and the audit ignores result lines of tests nested inside another test.
+
+[The map types check](../../scripts/test/map-types.py) runs the CLI with a loader that creates a map without BTF.
+It exercises the paths with and without `map_btf`, compares selected packet bytes, and checks the refusal of a map that already has BTF.
+
+The tests never attach to an interface, pin objects, or change sysctls, routes or firewall rules.
+
+```sh
+go build ./...
+go vet ./...
+go test ./...
+go test -count=50 -timeout 60s ./pkg/syscallhook
+sudo -E env PATH=$PATH go test -tags integration -run '^TestIntegrationLoader$' -v -timeout 90s ./pkg/syscallhook
+sudo -E env PATH=$PATH go test -tags integration -run '^TestBpfAutoStatic$' -v -timeout 90s ./pkg/syscallhook
+```
+
+The privileged tests fail on missing BPF capabilities even when the uid is zero; they do not turn a failed injection into a skip.
+Only the explicit non-root guard skips them.

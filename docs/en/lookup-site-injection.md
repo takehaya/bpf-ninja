@@ -64,7 +64,7 @@ When that name is empty, invalid, or already used by another hook in the request
 Hooks are numbered in the order their maps first appear in the program.
 `LookupResult.Hooks` lists each hook with its map name and sites.
 Sites that discovery lists with a `Reason` that the generic hook cannot take either are not instrumented; they are reported in `LookupResult.Skipped` rather than refusing the transform.
-So are the sites of a hook whose name would pass 127 bytes, of a hook whose slots would pass the frame limit below, and, when the instrumented program would break a call-chain stack limit (see [Entry and tail-call hooks](#entry-and-tail-call-hooks)), first the sites of the generic hook and of copied read-only maps, then every lookup site, keeping the entry and tail-call hooks (with `Dispatch` every lookup site fills the map slot, so the first step already drops them all); each such site's `Reason` names the limit.
+So are the sites of a hook whose name would pass 127 bytes, of a hook whose slots would pass the frame limit below, and, when the instrumented program would break a call-chain stack limit (see [Entry and tail-call hooks](#entry-and-tail-call-hooks)), first the sites that need slots below the three base ones (the generic hook, update hooks and copied read-only maps), then every map-call site, keeping the entry and tail-call hooks (with `Dispatch` every map-call site fills the map slot, so the first step already drops them all); each such site's `Reason` names the limit.
 If nothing at all is instrumented, and neither `Entry` nor `TailCalls` is requested, the transform is refused.
 Every hook name passes the same collision checks as a single `HookName`.
 
@@ -342,7 +342,7 @@ A per-map static hook still declares its key and value types in BTF, but the ker
 On 7.0 it does not: an fentry observer receives every argument, `ctx` included, as a `u64` and reads through them with `bpf_probe_read_kernel`.
 With `CopyReadOnly` as well, a `BPF_F_RDONLY_PROG` map keeps its copied typed hook, and only write-only maps and the generic hook become static.
 The transform APIs remain deterministic and kernel-independent: their `StaticUntrusted` boolean defaults to false.
-The [inject-run supervisor](inject-run.md#usage-and-configuration) instead treats an omitted or false `static_untrusted` as automatic, probes the global untrusted-pointer ABI once per run, and selects this boolean before transformation; `true` forces it.
+The [inject-run supervisor](inject-run.md#load-on-kernels-without-arguntrusted) instead treats an omitted or false `static_untrusted` as automatic, probes the global untrusted-pointer ABI once per run, and selects this boolean before transformation; `true` forces it.
 This does not alter `Auto` site selection, copy decisions or dispatch semantics.
 A value that holds a field programs reach only through helpers and kfuncs cannot be passed as memory either: the verifier refuses a `bpf_spin_lock` or `bpf_timer` in it ("cannot be accessed directly by load/store") and a kptr ("cannot be accessed indirectly by helper").
 The transform finds these fields in the value's BTF, through nested structs, unions, arrays and typedefs: `struct bpf_spin_lock`, `bpf_res_spin_lock`, `bpf_timer`, `bpf_wq`, `bpf_task_work`, `bpf_list_head`, `bpf_list_node`, `bpf_rb_root`, `bpf_rb_node` and `bpf_refcount`, and pointers tagged `kptr`, `kptr_untrusted`, `kptr_ref`, `percpu_kptr` or `uptr`.

@@ -218,7 +218,7 @@ sudo bpf-ninja -p <ID> --func lookup_hook \
 
 生成されたフックでキャプチャすると、これらのフィルターとセットのキーが読む値を、各パケットの pcapng コメントとして書き込みます。
 たとえば `value->action=2 key->dport=443` のようになります。
-`--record entry` を指定するとフックが受け取ったキーと値の全体を書き込み、`--record none` で無効にできます。
+`--record entry` を指定すると、`site`、`status`、キー、値のうちフックにあるものを書き込みます。キーと値はそれぞれ最大 `--record-max` バイト（既定は 256）です。generic と dispatch のフックでは `site` と `info` だけを書き込みます。`--record none` で無効にできます。
 詳しくは[ウォークスルー](../en/inject-walkthrough.md#record-the-decision-state-with-each-packet)を参照してください。
 `filter` は各フィールドを 1 回読み、その読み取り値ですべての条件を判定して記録するため、記録値はその条件を満たします。`entry` はフックでキーと値を読むため、フィルターが見ていないフィールドは別の CPU による変更と食い違う場合があります。
 LPM trie のキー構造体以外の `bpf_*` 構造体の中のメンバー (`struct bpf_sock_tuple` の `tuple->ipv4.dport` など) に対するフィルターやセットのキーは、通常どおり絞り込みに使えますが記録しません。既定ではコメントから外して `-v` でその名前を表示し、`--record filter` を明示した場合は拒否します。
