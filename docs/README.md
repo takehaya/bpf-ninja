@@ -20,3 +20,4 @@
 
 The detailed user guides (CLI, DSL, output, sets, tuning) are in Japanese.
 The English manual test guide checks capture behavior after setup.
+Historical decisions and published artifacts retain their original version and conditions.

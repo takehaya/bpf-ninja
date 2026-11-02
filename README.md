@@ -132,7 +132,7 @@ sudo bpf-ninja -i eth0 --mode entry "eth/ipv4/udp[dport==6081]" --mode exit "eth
 - Entry records go to a `<hook>:entry` pcap-ng interface.
   Both images of one invocation carry the same opaque `epb_packetid` (CPU and per-CPU sequence, no kernel address), so they pair up.
 - `-c` counts records: `-c 10` with `--emit both` is 5 pairs.
-- The merged `-w` file and the output of `merge` and `convert` drop the id; pair on the per-CPU shard files or the raw dump, which keep it (see [offline output](docs/ja/examples/offline-output.md)).
+- The merged `-w` file and the output of `merge` and `convert` drop the id; pair on the stdout stream, the per-CPU shard files or the raw dump, which keep it (see [offline output](docs/ja/examples/offline-output.md)).
 - Under ring pressure an entry record can appear without its exit twin, because the exit-side reservation failed after the entry was written.
   Treat an unpaired entry as a drop, not as a verdict.
 
@@ -491,10 +491,10 @@ By feature:
 
 ```bash
 # Optional legacy build dependencies (Debian/Ubuntu)
-sudo apt install libpcap-dev
+sudo apt install gcc libpcap-dev
 
 # Optional legacy build dependencies (Fedora/RHEL)
-sudo dnf install libpcap-devel
+sudo dnf install gcc libpcap-devel
 ```
 
 `clang` is needed for running BPF load tests locally; install it separately for development. It is not required for using bpf-ninja itself.
@@ -512,7 +512,7 @@ make build-libpcap  # CGO_ENABLED=1, -tags enable_libpcap; needs a C compiler an
 |---|---|---|
 | `make test` | Unit tests (`go test ./...`), with no BPF | nothing extra |
 | `make test-bpf` | `scripts/test/privileged.py`: the privileged Go suites, including verifier load tests of the generated fentry, fexit and xdp programs | root, python3, clang, a C compiler and libpcap-dev (it builds with `-tags enable_libpcap`); see [privileged tests](docs/privileged-tests.md) |
-| `make test-integration` | `scripts/test/run_tests.sh`: a veth pair with a dummy XDP program, entry and exit capture, filters, pcap output and graceful shutdown; it cleans up the veth pair | root, clang, tcpdump, libpcap-dev (it runs `make build-libpcap` first) |
+| `make test-integration` | `scripts/test/run_tests.sh`: a veth pair with a dummy XDP program, entry and exit capture, filters, pcap output and graceful shutdown; it cleans up the veth pair | root, clang, tcpdump, python3, a C compiler (gcc) and libpcap-dev (it runs `make build-libpcap` first) |
 | `make test-all` | All three | all of the above |
 
 CI runs the privileged Go suites on kernels 6.1, 6.6, 6.12, 6.15, 6.18, 7.0, 7.1, 7.2 and 7.3-rc4 with [vimto](https://github.com/lmb/vimto) and QEMU.
