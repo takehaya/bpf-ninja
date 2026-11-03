@@ -609,10 +609,9 @@ func compileFilterWithSlots(expr string, useDSL, isFexit bool, progType ebpf.Pro
 //        gated は hold ポインタに使う前に退避する。XDP-native では data_end)
 //   R9 = パケット長 (window。skb では linear head)
 //
-// スタックレイアウト (R10 からの負オフセット)。DSL filter を越えて生きる
-// host スロットは -8/-12/-48 だけで、orig_len はスタックに置かない。
-// cBPF filter は scratch memory (M[]) を fp-4 から置くので、この保証は
-// DSL filter に限る:
+// スタックレイアウト (R10 からの負オフセット)。packet filter を越えて生きる
+// host スロットは -8/-12/-48。orig_len は R8 または hold に置き、
+// gated entry が -72 に退避するのは filter 後。
 //   -8:  matched tag (u64 slot)
 //   -12: canonical fexit return value (u32)
 //   -16: map lookup の key
@@ -637,6 +636,8 @@ func compileFilterWithSlots(expr string, useDSL, isFexit bool, progType ebpf.Pro
 //   -57..-120: set filter のキーバッファ (emitSetFilters; runFilter の
 //              前で死ぬ。kunai は KunaiStackTop=-56 以深を所有するが
 //              それは runFilter 内のみ live — phase ordering で共存)
+//   -60..-120: cBPF scratch M[0..15] (--cbpf; filter_pcap.go の StackOffset。
+//              kunai と同じく KunaiStackTop の下で、filter の実行中だけ live)
 //   -136, -144: static XDP identity read の退避 (staticXDPHook)
 //   -160..-145: static context read の一時領域 (static_xdp.go; prologue 後は死ぬ)
 //

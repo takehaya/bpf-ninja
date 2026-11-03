@@ -68,6 +68,39 @@ func TestCompileFilterHookLinkTypes(t *testing.T) {
 	}
 }
 
+// TestCompileFilterCBPFScratchBelowHostSlots checks that a cBPF filter's
+// scratch memory M[] stays below KunaiStackTop like kunai's own stack, off
+// the host slots that live across the filter (tag at -8, fexit action at
+// -12, args pointer at -48).
+func TestCompileFilterCBPFScratchBelowHostSlots(t *testing.T) {
+	requireCBPF(t)
+	for _, expr := range []string{
+		"tcp port 80 and (ip[2:2] - ((ip[0]&0xf)<<2)) - ((tcp[12]&0xf0)>>2) != 0",
+		"(ip[2:2] & 0xff) - (ip[3] & 0xf) > 0",
+		"len - ip[2:2] > 0",
+		"ip[1]-(ip[2]-(ip[3]-(ip[4]-(ip[5]-(ip[6]-(ip[7]-(ip[8]-(ip[9]-(ip[10]-(ip[11]-ip[12])))))))))) > 0",
+	} {
+		out, err := compileFilter(expr, false, false, ebpf.XDP)
+		if err != nil {
+			t.Fatalf("compileFilter(%q): %v", expr, err)
+		}
+		n := 0
+		for _, ins := range out.Main {
+			if ins.Dst != asm.R10 && ins.Src != asm.R10 {
+				continue
+			}
+			n++
+			if ins.Offset > codegen.KunaiStackTop {
+				t.Errorf("%q: %v uses host stack slot fp%d", expr, ins, ins.Offset)
+				break
+			}
+		}
+		if n == 0 {
+			t.Errorf("%q uses no scratch memory, so it checks nothing", expr)
+		}
+	}
+}
+
 func TestCompileFilterDSL(t *testing.T) {
 	out, err := compileFilter("eth/ipv4/tcp[dport==443]", true, false, ebpf.XDP)
 	if err != nil {

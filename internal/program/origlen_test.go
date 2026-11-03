@@ -231,7 +231,8 @@ func windowWrite(insns asm.Instructions, from int, base asm.Register, off int, d
 // built with arg filters and an arg set, with and without the tag barrier,
 // and with DSL packet sets of 4, 8, 10 and 16 key bytes (so the key zeroing,
 // kunai's key writes and the set lookups sit inside the checked stretch); tc
-// also with --tc-vlan-reinsert (the wire-frame copy).
+// also with --tc-vlan-reinsert (the wire-frame copy). Libpcap builds also
+// check a cBPF filter whose scratch reaches the gated stash at fp-72.
 func TestOrigLenFlow(t *testing.T) {
 	xdp, _ := hook.ByName(hook.KindXDP)
 	type hookCase struct {
@@ -332,6 +333,24 @@ func TestOrigLenFlow(t *testing.T) {
 				e = "eth/" + e
 			}
 			compile(e, e, false)
+		}
+		if CBPFEnabled {
+			c := filterCase{name: "cbpf-scratch", tf: tf}
+			for i, fexit := range []bool{false, true} {
+				out, err := compileFilter(cbpfDeepScratchFilter, false, fexit, h.ProgTypes[0])
+				if err != nil {
+					t.Fatal(err)
+				}
+				stashUsed := false
+				for _, ins := range out.Main {
+					stashUsed = stashUsed || ins.OpCode.Class().IsStore() && ins.Dst == asm.R10 && ins.Offset == gatedOrigLenStash
+				}
+				if !stashUsed {
+					t.Fatal("cBPF filter does not exercise fp-72")
+				}
+				c.out[i] = out
+			}
+			cases = append(cases, c)
 		}
 		if hc.vlan {
 			compile("vlan-reinsert", "eth/ipv4/tcp", true)
