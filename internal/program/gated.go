@@ -374,8 +374,9 @@ func buildGatedExitInsns(h *hook.Hook, filterOut codegen.Output, tf filter.Targe
 	if deferPrologue {
 		insns = append(insns,
 			// The prologue leaves orig_len in R8; park the hold at the reserve
-			// slot (-32), free until the first reserve. The hold+52 store and
-			// the R8 reload below must stay before that reserve.
+			// slot (-32), free until the first emitWakeFlag, which comes just
+			// before the first reserve. The hold+52 store and the R8 reload
+			// below must stay before it.
 			asm.StoreMem(asm.R10, -32, asm.R8, asm.DWord),
 			asm.LoadMem(asm.R1, asm.R10, -48, asm.DWord),
 		)
@@ -451,7 +452,8 @@ func buildGatedExitInsns(h *hook.Hook, filterOut codegen.Output, tf filter.Targe
 // mode-0 record stamped with the exit verdict (args[1]), the hold's
 // timestamp and tag, and the packet id loaded by packetID (→ R1; must
 // not clobber R0/R6..R9). Same ring/stack conventions as
-// captureWithRingbuf (stack[-16] cpu key, stack[-32] reserved slot).
+// captureWithRingbuf (stack[-16] cpu key, stack[-24] submit flag,
+// stack[-32] reserved slot).
 func captureFromHold(eventsFD, statsFD, entryCapLen int, packetID asm.Instructions) asm.Instructions {
 	reserveSize := int32(metadataSize + entryCapLen)
 	insns := asm.Instructions{
@@ -492,7 +494,7 @@ func captureFromHold(eventsFD, statsFD, entryCapLen int, packetID asm.Instructio
 		asm.JNE.Imm(asm.R0, 0, "rb_copy_fail"),
 		// submit
 		asm.LoadMem(asm.R1, asm.R10, -32, asm.DWord),
-		asm.Mov.Imm(asm.R2, ringbufSubmitFlags()),
+		ringbufSubmitFlag(),
 		asm.FnRingbufSubmit.Call(),
 	)
 	return insns

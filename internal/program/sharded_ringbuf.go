@@ -148,6 +148,7 @@ func createShardedRingbuf(label string) (outer *ebpf.Map, inners []*ebpf.Map, er
 //	R0          = reservation pointer (also saved at stack[-32])
 //	stack[-32]  = reservation pointer (consumed by the matching
 //	              bpf_ringbuf_submit emitted by the caller)
+//	stack[-24]  = the submit flag (emitWakeFlag), unless capture.NoWakeup
 //
 // On either map_lookup or ringbuf_reserve returning NULL, jumps to
 // the "exit" symbol the caller is responsible for emitting.
@@ -162,17 +163,19 @@ func emitShardedRBReserve(eventsFD, statsFD int, reserveSize int32) asm.Instruct
 		failSym = "rb_fail"
 		lookupSym = "rb_lookup_fail"
 	}
-	return asm.Instructions{
+	insns := asm.Instructions{
 		asm.LoadMapPtr(asm.R1, eventsFD),
 		asm.Mov.Reg(asm.R2, asm.R10), asm.Add.Imm(asm.R2, -16),
 		asm.FnMapLookupElem.Call(),
 		asm.JEq.Imm(asm.R0, 0, lookupSym),
-
+	}
+	insns = append(insns, emitWakeFlag(reserveSize)...)
+	return append(insns,
 		asm.Mov.Reg(asm.R1, asm.R0),
 		asm.Mov.Imm(asm.R2, reserveSize),
 		asm.Mov.Imm(asm.R3, 0),
 		asm.FnRingbufReserve.Call(),
 		asm.JEq.Imm(asm.R0, 0, failSym),
 		asm.StoreMem(asm.R10, -32, asm.R0, asm.DWord),
-	}
+	)
 }

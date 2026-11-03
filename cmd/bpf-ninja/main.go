@@ -209,7 +209,7 @@ func rootFlags() []cli.Flag {
 		},
 		&cli.BoolFlag{
 			Name:  "no-wakeup",
-			Usage: "set BPF_RB_NO_WAKEUP on every ringbuf submit, so the kernel skips the reader wakeup; each fast-reader shard then polls every 1 ms, even when idle, instead of sleeping until data. requires --fast-reader",
+			Usage: "set BPF_RB_NO_WAKEUP on every ringbuf submit, so the kernel never wakes the reader; each fast-reader shard then polls every 1 ms, even when idle, instead of waiting up to 50 ms for a quarter of its ring to fill. requires --fast-reader",
 		},
 		&cli.BoolFlag{
 			Name:  "busy-poll",

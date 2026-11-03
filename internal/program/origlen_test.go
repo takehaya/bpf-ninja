@@ -363,6 +363,9 @@ func TestOrigLenFlow(t *testing.T) {
 					if err == nil {
 						err = origLenFlow(insns, prologue, exitRecord)
 					}
+					if err == nil {
+						err = wakeFlagFlow(insns) // the submit flag survives to every release
+					}
 					if err != nil {
 						t.Errorf("%s/%s: %v", name, what, err)
 					}

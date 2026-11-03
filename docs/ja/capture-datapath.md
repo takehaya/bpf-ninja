@@ -46,7 +46,7 @@ accept 後の書き出しは、tracing の `captureWithRingbuf` と XDP-native �
 3. `bpf_ringbuf_reserve` で `metadataSize + maxCapLen` バイトの固定長スロットを予約します。
 4. スロット先頭 32B に、後述の on-wire 形式で metadata を書きます。set にマッチしたときはその value である tag も host スタックの専用スロットから metadata に書きます。
 5. パケット本体を `min(pkt_len, maxCapLen)` バイトだけスロットの 32B 目以降にコピーします。tracing は `bpf_probe_read_kernel`、XDP-native は `bpf_xdp_load_bytes` を使います。
-6. `bpf_ringbuf_submit` でスロットを consumer から見える状態にします。
+6. `bpf_ringbuf_submit` でスロットを consumer から見える状態にします。reserve の前に `bpf_ringbuf_query` で ring の大きさと溜まった量を読み、このレコードで溜まった量が ring の 1/4 の倍数を越えるときだけ `BPF_RB_FORCE_WAKEUP` を、それ以外は `BPF_RB_NO_WAKEUP` を渡します。`--no-wakeup` のときは query を省き、常に `BPF_RB_NO_WAKEUP` を渡します。flag 0 は使いません。flag 0 の submit は、reader が追いついていると待ち手の有無にかかわらず irq_work を積み、その処理の分だけ BPF プログラムの実行が延びるからです。
 
 設計上の要点が 2 つあります。
 
@@ -117,7 +117,7 @@ reader は全 shard に 1 goroutine ずつ立てます。producer CPU が observ
 
 この実装は `RunShardsFast` で、`cilium/ebpf` の per-record API を介さず、ringbuf map を直接 mmap して consumer ページと producer ページを自前で読みます。コードは `internal/capture/fastrb` にあります。
 
-- 何も来ない shard は、データが届くか停止するまで `epoll_wait` で眠ります。停止は eventfd で全 shard を起こします。
+- shard は `epoll_wait` で最大 50 ms 眠ります。probe は ring に溜まった量が ring の 1/4 の倍数を越えたときだけ reader を起こすので、それより少ないレコードはこの上限までに読まれます。停止は eventfd で全 shard をすぐに起こします。
 - `--no-wakeup` と組み合わせると、producer 側の wakeup を省けます。kernel が通知しないので、各 shard は何も来ない間も 1 ms ごとに起きて ring を見ます。
 - `--busy-poll` を付けると `epoll_wait` でブロックせずにスピンし、ringbuf を連続して drain します。ただし shard あたり 1 コアを使い切ります。
 - `--rx-cores N` は、許可された CPU ID のうち N 以上へ reader を分散します。該当 CPU がなければ起動エラーです。全 producer shard を読むため、RX が想定外の CPU に来ても shard を読み捨てません。NIC queue 数だけでは RX affinity は決まらず、別途設定が必要です。

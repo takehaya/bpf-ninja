@@ -93,11 +93,12 @@ func assertOriginMainStaticXDPCodegen(t *testing.T, target *ebpf.Program, fn str
 	// with map FDs 10..13, an integer filter and a packet DSL filter. This
 	// includes gated exit, whose direct-load instruction order must not move.
 	// Regenerated from b2dba63 plus the orig_len change, which adds moves
-	// and stores around the direct loads and moves none of them.
+	// and stores around the direct loads and moves none of them, and again
+	// for emitWakeFlag, which adds instructions after each shard lookup.
 	for _, tc := range []struct{ mode, hash string }{
-		{"entry", "b333aca68359108c5d56864991153873361f4b401a9ae5a46a0ab4071f02532c"},
-		{"exit", "66316de6bdf0529b584bddf16d46f72e9c6ef22d733844bb4d51c234f1928fd8"},
-		{"gated", "73755edde595853b50cc5639bdf25a968407a1758f57ef5bfe1c3d744fc3f426"},
+		{"entry", "56190adc6c672acc8bdfaaba402964a25e171963356aa6af7b0a676db2a4f348"},
+		{"exit", "0917d6da0fd966c2175fcf0c4cb9266a0753c5c96db8610f5ea4eda10aed90b4"},
+		{"gated", "45fba07fe07e1f079a14b0783e65523ee090b831eaf28eb44bf25507f02863f5"},
 	} {
 		_, at := tracingLabel(tc.mode != "entry")
 		fallback, err := staticNeedsProbeRead(xdpTestHook, target, fn, at, attach.FuncAvailability{})

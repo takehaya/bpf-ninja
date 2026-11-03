@@ -242,7 +242,11 @@ func TestFastReaderStopKeepsRecords(t *testing.T) {
 // A submit committed while the shard is inside a batch sees the old consumer
 // position and sends no wakeup; only epoll's re-poll of the level-triggered
 // ring fd finds it. Delivery is checked before stop, which would drain it.
+// The wait bound is stretched so that it cannot deliver the records instead.
 func TestFastReaderStaleConsumer(t *testing.T) {
+	wait := shardWaitMs
+	shardWaitMs = 60_000
+	t.Cleanup(func() { shardWaitMs = wait })
 	m := newPollTestMap(t)
 	submit := submitter(t, m, 0)
 	r, err := NewFastShardedReader([]*ebpf.Map{m})
@@ -284,10 +288,48 @@ func TestFastReaderStaleConsumer(t *testing.T) {
 	}
 }
 
+// A record the probe submits below its wakeup threshold carries
+// BPF_RB_NO_WAKEUP; a shard blocked on an idle ring must still read it
+// within the wait bound, without stop.
+func TestFastReaderBoundedWait(t *testing.T) {
+	m := newPollTestMap(t)
+	submit := submitter(t, m, rbNoWakeup)
+	r, err := NewFastShardedReader([]*ebpf.Map{m})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var consumed atomic.Uint64
+	stop, err := r.RunRawShardsFast(func(int, []byte) error { consumed.Add(1); return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { stopWithin(t, stop, 5*time.Second) })
+	time.Sleep(20 * time.Millisecond) // let the shard block
+	start := time.Now()
+	submit(1)
+	for consumed.Load() == 0 && time.Since(start) < 2*time.Second {
+		time.Sleep(time.Millisecond)
+	}
+	took := time.Since(start)
+	t.Logf("unsignalled record read after %s (bound %d ms)", took, shardWaitMs)
+	if consumed.Load() != 1 {
+		t.Fatalf("unsignalled record not read within %s without stop", took)
+	}
+	// Three times the 50 ms bound, fixed so that a longer bound fails here.
+	if limit := 150 * time.Millisecond; took > limit {
+		t.Fatalf("unsignalled record read after %s, want within %s", took, limit)
+	}
+}
+
 // Stop must wake a blocked shard that has a backlog the kernel never
 // signalled, drain it, hand it to the sink, and count it as drained at
 // stop. The packet sink sees the batch only in the flush after ReadBatch.
+// The wait bound is stretched so the backlog is still unread at stop, as
+// records below the wakeup threshold are when stop comes first.
 func TestFastReaderStopDrainsBacklog(t *testing.T) {
+	wait := shardWaitMs
+	shardWaitMs = 60_000
+	t.Cleanup(func() { shardWaitMs = wait })
 	for _, tc := range []struct {
 		name string
 		run  func(*FastShardedReader, *atomic.Uint64) (func(), error)

@@ -58,15 +58,16 @@ func TestRecordEpilogue(t *testing.T) {
 // b2dba63 plus the orig_len change: the prologue leaves the packet length
 // in R8, the metadata grows from 28 to 32 bytes (reserve size and data
 // offset +4) and the epilogue stores R8 into it. The PR that made the
-// change lists the instruction diff.
+// change lists the instruction diff. They moved again when the submit
+// flag began to follow the ring's backlog (emitWakeFlag).
 func TestNilRecordProgramsByteIdentical(t *testing.T) {
 	golden := map[string]string{
-		"entry-nofilter": "987b1849100b954d7cef99221b8b6025809ad73af4f850080f38bab3c6713b21",
-		"entry-int":      "82e77f7790c13b351080e630687d8ac9e2cb0c7bd660274c7bbcbcbdd90d11c9",
-		"entry-int2":     "c28713483b5c02315df1fd9b9c3ff2f9582bee6be705cb1ca1a1e3b24b7ef73c",
-		"entry-member":   "005292e8e309ddce507bb12964cfafda59df90e31440ca7632a78ec5194453ba",
-		"entry-ptr":      "d6da7ec1f0e3c13b959ee6718c87d3849fe987bdc4959738cca4419116f26fa9",
-		"exit-int":       "25cc8494506f941971008977cce64522ee436c815d7497324a4988c93806756a",
+		"entry-nofilter": "25f2fde88018dffbe0631b6e8329a95ee42e272a15dd20bd3c21ea8665d8096b",
+		"entry-int":      "a5eb55fb3dc072af119fcb773b5719b9168c8e9a731985dfbbfbea9b7c31c9a4",
+		"entry-int2":     "796f34fd837594604f4ed3f6f3a000db23e376f5e93339050510870bbff3022f",
+		"entry-member":   "f4f910d043eb19ee122300c090d5b2b9d501ad0cc4a4f2812f35d28b38c7a92c",
+		"entry-ptr":      "c6fc19df82838d5bebd4fb6f1d2457bca052bac7f6a05f239a4d4e8821b3ae1a",
+		"exit-int":       "e425709195a68a9b72e083aed4473c134bc5d878342c6af72696c58ee15f9dd5",
 	}
 	cases := []struct {
 		name  string
@@ -212,17 +213,17 @@ func TestRecordSetReusesRead(t *testing.T) {
 // The arg-echo program captures no packet and is unchanged.
 func TestNilRecordSetProgramsByteIdentical(t *testing.T) {
 	golden := map[string]string{
-		"tracing-scalar-set-fexit=false": "ff6961ac9eb321b865142964e70ff9330e8068d28e30d440f65a39d060cf1764",
-		"tracing-scalar-set-fexit=true":  "39bfc55df0986877a129be394a8bd0196c5b0d9eff845266645ae0d9b01e170c",
+		"tracing-scalar-set-fexit=false": "0bfa42ee6639266a1966819478500d4655afac58272369404fa3a191d48b9573",
+		"tracing-scalar-set-fexit=true":  "037692d1c1bebf89b782f74fb0110e4fb352097fc41578f3bde163444a1978b7",
 		"gated-scalar-set":               "c33773e6ad02178fa608a8dc31dda123c62c125d56197fee297cab6912ec4a22",
-		"tracing-deref-set-fexit=false":  "6483ba25575a3569d3494b8a47bd8f1de24141dcc580b0e5e3e2b9710261d3d3",
-		"tracing-deref-set-fexit=true":   "d051ae1767d856993c6809e9cc3185a1368604324f41cc7a1e1ec9558719b93c",
+		"tracing-deref-set-fexit=false":  "200d6624128879422af8e9cb0bd2494d23000ba01567cf3a3ba1546020063a76",
+		"tracing-deref-set-fexit=true":   "c12201b54c769cb8f2c03bfb7899dd230679e5fe425f7aa7377c54d1ac25682a",
 		"gated-deref-set":                "636937c1bf8874344ef6b77e07bba84ace83f36f7f19c45203f07952303bcfde",
-		"tracing-two-sets-fexit=false":   "8731597d85a71e56da56e8eb6aca7270c4e311bbae89aba40a9c88f664f62f56",
-		"tracing-two-sets-fexit=true":    "33516cea4399aed150d8a91e243364d6e92469424d5ad4d30bb7078a6debe6d9",
+		"tracing-two-sets-fexit=false":   "4f2701f46eac7e4b5d8feb3ed17c97004f37a6714ed0f7fde7d83878801f3e20",
+		"tracing-two-sets-fexit=true":    "2bebdb1cf0b190f73854d12d2c8e0b02a9f32579ba9d8f8b01d881454d0fdf27",
 		"gated-two-sets":                 "a2e168d38c3715c020a327d2e47ad8143fd64fd7f807cba4017e0c3f73851fdd",
-		"tracing-arg+set-fexit=false":    "b60e6189535e58665088205844a613d876ff740147bee94efb5cd82cdd475561",
-		"tracing-arg+set-fexit=true":     "b8e0784633f0300b0104c3d15fe102a9c59600f3894a72a1f030cfdfb2082eab",
+		"tracing-arg+set-fexit=false":    "79b6641d6cedc8dbb0ec2f8c225f5c03cb864bfc57f6e3bad82f21de4ceabae2",
+		"tracing-arg+set-fexit=true":     "dc1191ed8f35bee97e29c5e8aa1c205dafd82eb216baaa081f0d0f54aa8dc065",
 		"gated-arg+set":                  "1c8e117112a2120e156f0cbcf4dce0cf5a334d957a044c8aad1279614e83117e",
 		"argecho":                        "0dd44a0c2fbf4fdb4bef3035c6056e53697e0f21d787ad5003b13cd53488da1f",
 	}
