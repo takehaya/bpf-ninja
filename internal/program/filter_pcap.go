@@ -44,6 +44,9 @@ func compileCBPF(expr string, progType ebpf.ProgramType) (codegen.Output, error)
 		PacketStart: asm.R0, PacketEnd: asm.R1, Result: asm.R2,
 		ResultLabel: "filter_result",
 		Working:     [4]asm.Register{asm.R2, asm.R3, asm.R4, asm.R5},
+		// Scratch M[k] goes at fp-(56+4(k+1)), below KunaiStackTop like a DSL
+		// filter's stack: the tag, fexit action and args pointer sit above it.
+		StackOffset: -int(codegen.KunaiStackTop),
 		LabelPrefix: "filter",
 	})
 	if err != nil {
