@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -20,7 +19,7 @@ import (
 
 // Layout extraction is deliberately separate from the checker decision. Labels
 // only propose a correspondence; the checker compares the actual instructions.
-func validationCertificate(t *testing.T, in, out asm.Instructions, hooks []LookupHook) injectcheck.Certificate {
+func validationCertificate(t *testing.T, in, out asm.Instructions, hooks []LookupHook, floor int16) (injectcheck.Certificate, injectcheck.Premises) {
 	t.Helper()
 	names := map[string]bool{}
 	for _, h := range hooks {
@@ -42,20 +41,43 @@ func validationCertificate(t *testing.T, in, out asm.Instructions, hooks []Looku
 	if e != nil {
 		t.Fatal(e)
 	}
-	want := make([]string, 0, len(names))
-	for name := range names {
-		want = append(want, name)
+	targets, err := BuildLookupTargets(out, hooks)
+	if err != nil {
+		t.Fatal(err)
 	}
-	got := make([]string, 0, len(c.Hooks))
-	for _, h := range c.Hooks {
-		got = append(got, out[h.Start].Symbol())
+	return c, injectcheck.Premises{LowestOffset: floor, Targets: targets}
+}
+
+func TestBuildLookupTargets(t *testing.T) {
+	out := asm.Instructions{
+		asm.Mov.Imm(asm.R0, 0).WithSymbol("hit"), asm.Return(),
+		asm.Mov.Imm(asm.R0, 0).WithSymbol("miss"), asm.Return(),
 	}
-	sort.Strings(want)
-	sort.Strings(got)
-	if !slices.Equal(got, want) {
-		t.Fatalf("certificate hooks %v, planned %v", got, want)
+	hit := LookupHook{Name: "hit", Kind: HookLookup, Sites: []LookupSite{{InstructionIndex: 7}}}
+	targets, err := BuildLookupTargets(out, []LookupHook{hit})
+	if err != nil {
+		t.Fatal(err)
 	}
-	return c
+	if len(targets) != 1 || targets[0] != (injectcheck.SiteTarget{Site: 7, When: injectcheck.TargetHit, Hook: 0}) {
+		t.Fatalf("empty LookupWhen must mean hit: %+v", targets)
+	}
+	for _, tc := range []struct {
+		name  string
+		out   asm.Instructions
+		hooks []LookupHook
+	}{
+		{"missing-symbol", out, []LookupHook{{Name: "absent", Kind: HookLookup, When: string(LookupAny)}}},
+		{"duplicate-symbol", append(append(asm.Instructions(nil), out...), asm.Return().WithSymbol("hit")), []LookupHook{hit}},
+		{"duplicate-target", out, []LookupHook{hit, {Name: "miss", Kind: HookLookup, Sites: []LookupSite{{InstructionIndex: 7}}}}},
+		{"invalid-lookup-when", out, []LookupHook{{Name: "hit", Kind: HookLookup, When: "error"}}},
+		{"invalid-call-when", out, []LookupHook{{Name: "hit", Kind: HookUpdate, When: "hit"}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := BuildLookupTargets(tc.out, tc.hooks); err == nil {
+				t.Fatal("BuildLookupTargets accepted invalid input")
+			}
+		})
+	}
 }
 
 func TestTranslationValidationEquivalence(t *testing.T) {
@@ -74,8 +96,8 @@ func TestTranslationValidationEquivalence(t *testing.T) {
 					t.Fatalf("TRANSFORM_REFUSED %v", e)
 				}
 				out := work.Programs["p"].Instructions
-				cert := validationCertificate(t, in, out, plan.hooks)
-				n, e := injectcheck.Check(in, out, cert, injectcheck.Premises{LowestOffset: req.Stack.LowestOffset})
+				cert, premises := validationCertificate(t, in, out, plan.hooks, req.Stack.LowestOffset)
+				n, e := injectcheck.Check(in, out, cert, premises)
 				if e != nil {
 					t.Fatal(e)
 				}
@@ -89,7 +111,10 @@ func TestTranslationValidationEquivalence(t *testing.T) {
 					if err := os.MkdirAll(dest, 0755); err != nil {
 						t.Fatal(err)
 					}
-					validationSave(t, filepath.Join(dest, fmt.Sprintf("fixture-%d-%s.json", seed, config)), validationPair(in, out, cert, req.Stack.LowestOffset))
+					validationSave(t, filepath.Join(dest, fmt.Sprintf("fixture-%d-%s.json", seed, config)), validationPairEvidence(t, in, out, cert, premises, nil, struct {
+						Accepted bool             `json:"accepted"`
+						Kind     injectcheck.Kind `json:"kind"`
+					}{Accepted: true}, ""))
 				}
 				accepted++
 				sites += n.Sites
@@ -201,8 +226,8 @@ func TestTranslationValidationCensus(t *testing.T) {
 				r.PlannedSites = validationSites(plan.hooks)
 				r.SkippedSites = len(plan.skipped)
 				out := work.Programs[name].Instructions
-				cert := validationCertificate(t, in, out, plan.hooks)
-				counts, e := injectcheck.Check(in, out, cert, injectcheck.Premises{LowestOffset: req.Stack.LowestOffset})
+				cert, premises := validationCertificate(t, in, out, plan.hooks, req.Stack.LowestOffset)
+				counts, e := injectcheck.Check(in, out, cert, premises)
 				if e == nil && counts.Sites != r.PlannedSites {
 					t.Fatalf("checked sites %d planned %d", counts.Sites, r.PlannedSites)
 				}
@@ -215,7 +240,7 @@ func TestTranslationValidationCensus(t *testing.T) {
 					r.Reason = e.Error()
 				}
 				stem := filepath.Base(file) + "--" + name + "--" + form
-				validationSave(t, filepath.Join(dest, stem+".json"), validationPairEvidence(t, in, out, cert, floor, req, r, ""))
+				validationSave(t, filepath.Join(dest, stem+".json"), validationPairEvidence(t, in, out, cert, premises, req, r, ""))
 				rows = append(rows, r)
 				t.Logf("%s %s %s %s sites=%d %s", r.Object, name, form, r.Status, r.Sites, r.Reason)
 				// Also exercise the fixed raw front end with numeric instructions/map FDs.
@@ -241,8 +266,8 @@ func TestTranslationValidationCensus(t *testing.T) {
 				}
 				r.PlannedSites = validationSites(result.Hooks)
 				r.SkippedSites = len(result.Skipped)
-				cert = validationCertificate(t, raw.Instructions, result.Instructions, result.Hooks)
-				counts, e = injectcheck.Check(raw.Instructions, result.Instructions, cert, injectcheck.Premises{LowestOffset: floor})
+				cert, premises = validationCertificate(t, raw.Instructions, result.Instructions, result.Hooks, floor)
+				counts, e = injectcheck.Check(raw.Instructions, result.Instructions, cert, premises)
 				r.Status = "ACCEPTED"
 				r.Reason = ""
 				if e == nil && counts.Sites != r.PlannedSites {
@@ -255,7 +280,7 @@ func TestTranslationValidationCensus(t *testing.T) {
 					r.Status = "REJECTED"
 					r.Reason = e.Error()
 				}
-				validationSave(t, filepath.Join(dest, stem+"--raw.json"), validationPairEvidence(t, raw.Instructions, result.Instructions, cert, floor, rr, r, ""))
+				validationSave(t, filepath.Join(dest, stem+"--raw.json"), validationPairEvidence(t, raw.Instructions, result.Instructions, cert, premises, rr, r, ""))
 				rows = append(rows, r)
 				t.Logf("%s %s %s %s sites=%d %s", r.Object, name, r.Form, r.Status, r.Sites, r.Reason)
 			}
@@ -310,14 +335,27 @@ func TestTranslationValidationMutations(t *testing.T) {
 		t.Fatal(e)
 	}
 	out := work.Programs["p"].Instructions
-	cert := validationCertificate(t, in, out, plan.hooks)
-	if _, e = injectcheck.Check(in, out, cert, injectcheck.Premises{LowestOffset: req.Stack.LowestOffset}); e != nil {
+	cert, premises := validationCertificate(t, in, out, plan.hooks, req.Stack.LowestOffset)
+	if _, e = injectcheck.Check(in, out, cert, premises); e != nil {
 		t.Fatal(e)
 	}
 	// Mutate code and independently repair correspondence hints where needed;
 	// Each assertion below identifies the rejecting check, including instruction
 	// comparison for a complete, increasing but forged correspondence.
 	cases := []string{"callee-saved-clobber", "drop-original", "wrong-jump", "hook-store", "missing-restore", "wrong-spill", "helper-in-hook", "forged-certificate", "map-swap", "map-fd-value-swap", "ldimm64-pseudo-kind"}
+	want := map[string]injectcheck.Kind{
+		"callee-saved-clobber": injectcheck.ALUClobber,
+		"drop-original":        injectcheck.OriginalChanged,
+		"forged-certificate":   injectcheck.OriginalChanged,
+		"wrong-spill":          injectcheck.PreludeShape,
+		"wrong-jump":           injectcheck.EdgeTarget,
+		"hook-store":           injectcheck.HookShape,
+		"helper-in-hook":       injectcheck.HookShape,
+		"missing-restore":      injectcheck.ResultSaveRestore,
+		"map-swap":             injectcheck.OriginalReference,
+		"map-fd-value-swap":    injectcheck.OriginalChanged,
+		"ldimm64-pseudo-kind":  injectcheck.OriginalChanged,
+	}
 	killed := 0
 	for _, kind := range cases {
 		t.Run(kind, func(t *testing.T) {
@@ -326,6 +364,8 @@ func TestTranslationValidationMutations(t *testing.T) {
 			cc := cert
 			cc.Original = append([]int(nil), cert.Original...)
 			cc.Hooks = append([]injectcheck.Span(nil), cert.Hooks...)
+			pp := premises
+			pp.Targets = append([]injectcheck.SiteTarget(nil), premises.Targets...)
 			switch kind {
 			case "map-swap", "map-fd-value-swap", "ldimm64-pseudo-kind":
 				found := false
@@ -343,7 +383,7 @@ func TestTranslationValidationMutations(t *testing.T) {
 						original[i] = original[i].WithReference("")
 						original[i].Constant = 100
 						bad[at] = original[i]
-						if _, err := injectcheck.Check(original, bad, cc, injectcheck.Premises{LowestOffset: req.Stack.LowestOffset}); err != nil {
+						if _, err := injectcheck.Check(original, bad, cc, pp); err != nil {
 							t.Fatalf("numeric FD baseline: %v", err)
 						}
 						bad[at].Constant = 101
@@ -388,6 +428,11 @@ func TestTranslationValidationMutations(t *testing.T) {
 						cc.Hooks[i].End--
 					}
 				}
+				var err error
+				pp.Targets, err = BuildLookupTargets(bad, plan.hooks)
+				if err != nil {
+					t.Fatal(err)
+				}
 			case "wrong-jump":
 				for i, x := range in {
 					if x.OpCode.Class().IsJump() && x.OpCode.JumpOp() != asm.Call && x.OpCode.JumpOp() != asm.Exit {
@@ -423,7 +468,7 @@ func TestTranslationValidationMutations(t *testing.T) {
 				// Forge a still-increasing mapping into the entry prologue.
 				cc.Original[0]--
 			}
-			_, err := injectcheck.Check(original, bad, cc, injectcheck.Premises{LowestOffset: req.Stack.LowestOffset})
+			_, err := injectcheck.Check(original, bad, cc, pp)
 			if dest := os.Getenv("BPF_NINJA_VALIDATE_OUTPUT"); dest != "" {
 				if e := os.MkdirAll(dest, 0755); e != nil {
 					t.Fatal(e)
@@ -432,24 +477,14 @@ func TestTranslationValidationMutations(t *testing.T) {
 				if err != nil {
 					reason = err.Error()
 				}
-				validationSave(t, filepath.Join(dest, "mutation-"+kind+".json"), validationPairEvidence(t, original, bad, cc, req.Stack.LowestOffset, nil, nil, reason))
+				validationSave(t, filepath.Join(dest, "mutation-"+kind+".json"), validationPairEvidence(t, original, bad, cc, pp, nil, struct {
+					Accepted bool             `json:"accepted"`
+					Kind     injectcheck.Kind `json:"kind"`
+				}{Kind: want[kind]}, reason))
 			}
 			if err == nil {
 				t.Fatal("SURVIVED")
 			} else {
-				want := map[string]injectcheck.Kind{
-					"callee-saved-clobber": injectcheck.ALUClobber,
-					"drop-original":        injectcheck.OriginalChanged,
-					"forged-certificate":   injectcheck.OriginalChanged,
-					"wrong-spill":          injectcheck.PreludeShape,
-					"wrong-jump":           injectcheck.EdgeTarget,
-					"hook-store":           injectcheck.HookShape,
-					"helper-in-hook":       injectcheck.HookShape,
-					"missing-restore":      injectcheck.ResultSaveRestore,
-					"map-swap":             injectcheck.OriginalReference,
-					"map-fd-value-swap":    injectcheck.OriginalChanged,
-					"ldimm64-pseudo-kind":  injectcheck.OriginalChanged,
-				}
 				var rejection *injectcheck.Rejection
 				if !errors.As(err, &rejection) || rejection.Kind != want[kind] {
 					t.Fatalf("wrong rejecting check: got %v, want kind %s", err, want[kind])
@@ -460,6 +495,385 @@ func TestTranslationValidationMutations(t *testing.T) {
 		})
 	}
 	t.Logf("MUTATION killed=%d total=%d", killed, len(cases))
+}
+
+func TestTranslationValidationCheckerGaps(t *testing.T) {
+	t.Run("site-call-target", func(t *testing.T) {
+		c := newEquivCase(1)
+		work := c.spec()
+		in := append(asm.Instructions(nil), work.Programs["p"].Instructions...)
+		injectcheck.Label(work.Programs["p"].Instructions)
+		req := c.request("typed-any")
+		plan, err := transformLookup(work, req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := work.Programs["p"].Instructions
+		cert, premises := validationCertificate(t, in, out, plan.hooks, req.Stack.LowestOffset)
+		withoutTargets := premises
+		withoutTargets.Targets = nil
+		_, err = injectcheck.Check(in, out, cert, withoutTargets)
+		var input *injectcheck.InputError
+		if !errors.As(err, &input) || input.Kind != injectcheck.InputTargetMissing {
+			t.Fatal("checker accepted inserted calls without planned targets")
+		}
+		bad := append(asm.Instructions(nil), out...)
+		changed := false
+		for _, hook := range plan.hooks {
+			if hook.When != string(LookupHit) {
+				continue
+			}
+			for i, ins := range bad {
+				if ins.IsFunctionCall() && ins.Reference() == hook.Name {
+					bad[i] = ins.WithReference(hook.Name + "_miss")
+					changed = true
+					break
+				}
+			}
+			if changed {
+				break
+			}
+		}
+		if !changed {
+			t.Fatal("fixture has no typed hit/miss hook call")
+		}
+		_, err = injectcheck.Check(in, bad, cert, premises)
+		var rejection *injectcheck.Rejection
+		if !errors.As(err, &rejection) || rejection.Kind != injectcheck.CallTarget {
+			t.Fatal("checker accepted a site call retargeted to another generated hook")
+		}
+	})
+
+	t.Run("generic-argument-conditions", func(t *testing.T) {
+		c := newEquivCase(8)
+		work := c.spec()
+		in := append(asm.Instructions(nil), work.Programs["p"].Instructions...)
+		injectcheck.Label(work.Programs["p"].Instructions)
+		req := c.request("typed-any")
+		plan, err := transformLookup(work, req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var site LookupSite
+		hookName := ""
+		for _, hook := range plan.hooks {
+			if hook.Generic && hook.Kind == HookLookup {
+				hookName = hook.Name
+				if len(hook.Sites) > 0 {
+					site = hook.Sites[0]
+				}
+				break
+			}
+		}
+		out := work.Programs["p"].Instructions
+		cert, premises := validationCertificate(t, in, out, plan.hooks, req.Stack.LowestOffset)
+		start, end := cert.Original[site.InstructionIndex], cert.Original[site.InstructionIndex+1]
+		call, r1, r3, r4, r5 := -1, -1, -1, -1, -1
+		for i := start + 1; i < end; i++ {
+			ins := out[i]
+			if ins.IsFunctionCall() && ins.Reference() == hookName {
+				call = i
+				break
+			}
+			if ins.OpCode.Class() == asm.LdXClass {
+				switch ins.Dst {
+				case asm.R1:
+					r1 = i
+				case asm.R3:
+					r3 = i
+				case asm.R5:
+					r5 = i
+				}
+			}
+			if ins.OpCode.ALUOp() == asm.Mov && ins.Dst == asm.R4 {
+				r4 = i
+			}
+		}
+		if call < 0 || r1 < 0 || r3 < 0 || r4 < 0 || r5 < 0 {
+			t.Fatalf("generic call shape not found: call=%d r1=%d r3=%d r4=%d r5=%d", call, r1, r3, r4, r5)
+		}
+		for _, tc := range []struct {
+			name   string
+			mutate func(asm.Instructions)
+		}{
+			{"R1", func(bad asm.Instructions) { bad[r1].Offset = bad[r3].Offset }},
+			{"R3", func(bad asm.Instructions) { bad[r3].Offset = bad[r5].Offset }},
+			{"R4", func(bad asm.Instructions) { bad[r4] = asm.Mov.Imm(asm.R4, 0) }},
+			{"R5", func(bad asm.Instructions) { bad[r5].Offset = bad[r3].Offset }},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				bad := append(asm.Instructions(nil), out...)
+				tc.mutate(bad)
+				_, err := injectcheck.Check(in, bad, cert, premises)
+				var rejection *injectcheck.Rejection
+				if !errors.As(err, &rejection) || rejection.Kind != injectcheck.HookArguments {
+					t.Fatalf("checker accepted wrong %s provenance: %v", tc.name, err)
+				}
+			})
+		}
+	})
+
+	t.Run("static-body", func(t *testing.T) {
+		c := newEquivCase(8)
+		work := c.spec()
+		in := append(asm.Instructions(nil), work.Programs["p"].Instructions...)
+		injectcheck.Label(work.Programs["p"].Instructions)
+		req := c.request("static-any")
+		plan, err := transformLookup(work, req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var site LookupSite
+		for _, candidate := range plan.sites {
+			if candidate.Generic && candidate.Op == HookLookup {
+				site = candidate
+				break
+			}
+		}
+		if !site.Generic {
+			t.Fatal("fixture has no static generic lookup site")
+		}
+		hookName := ""
+		for _, hook := range plan.hooks {
+			if hook.Generic && hook.Kind == HookLookup {
+				hookName = hook.Name
+				break
+			}
+		}
+		out := work.Programs["p"].Instructions
+		cert, premises := validationCertificate(t, in, out, plan.hooks, req.Stack.LowestOffset)
+		bad := append(asm.Instructions(nil), out...)
+		start := cert.Original[site.InstructionIndex]
+		end := cert.Original[site.InstructionIndex+1]
+		call, key, mapArg := -1, -1, -1
+		for i := start + 1; i < end; i++ {
+			ins := bad[i]
+			if ins.IsFunctionCall() && ins.Reference() == hookName {
+				call = i
+				break
+			}
+		}
+		for i := start + 1; i < call; i++ {
+			ins := bad[i]
+			if ins.OpCode.Class() == asm.LdXClass && ins.Dst == asm.R3 {
+				key = i
+			}
+			if ins.OpCode.Class() == asm.LdXClass && ins.Dst == asm.R5 {
+				mapArg = i
+			}
+		}
+		if call < 0 || key < 0 || mapArg < 0 {
+			t.Fatalf("generic call shape not found: call=%d key=%d map=%d", call, key, mapArg)
+		}
+		bad[mapArg].Offset = bad[key].Offset
+		_, err = injectcheck.Check(in, bad, cert, premises)
+		var rejection *injectcheck.Rejection
+		if !errors.As(err, &rejection) || rejection.Kind != injectcheck.HookArguments {
+			t.Fatal("checker accepted wrong static-body map argument")
+		}
+	})
+}
+
+func genericArgumentFixture(t *testing.T, seed uint64, kind HookKind) (asm.Instructions, asm.Instructions, injectcheck.Certificate, injectcheck.Premises, int) {
+	t.Helper()
+	c := newEquivCase(seed)
+	work := c.spec()
+	in := append(asm.Instructions(nil), work.Programs["p"].Instructions...)
+	injectcheck.Label(work.Programs["p"].Instructions)
+	req := c.request("dispatch-static")
+	plan, err := transformLookup(work, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var selected LookupHook
+	for _, hook := range plan.hooks {
+		if hook.Kind == kind && hook.Dispatch && len(hook.Sites) != 0 {
+			selected = hook
+			break
+		}
+	}
+	if len(selected.Sites) == 0 {
+		t.Fatalf("seed %d has no dispatch %s site", seed, kind)
+	}
+	out := work.Programs["p"].Instructions
+	cert, premises := validationCertificate(t, in, out, plan.hooks, req.Stack.LowestOffset)
+	site := selected.Sites[0].InstructionIndex
+	for i := cert.Original[site] + 1; i < cert.Original[site+1]; i++ {
+		if out[i].IsFunctionCall() && out[i].Reference() == selected.Name {
+			return in, out, cert, premises, i
+		}
+	}
+	t.Fatalf("seed %d has no dispatch %s hook call", seed, kind)
+	return nil, nil, injectcheck.Certificate{}, injectcheck.Premises{}, 0
+}
+
+func TestTranslationValidationMapCallArgumentConditions(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		seed uint64
+		kind HookKind
+	}{
+		{"update", 11, HookUpdate},
+		{"delete", 15, HookDelete},
+		{"push", 2, HookPush},
+		{"pop", 10, HookPop},
+		{"peek", 1, HookPeek},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			in, out, cert, premises, call := genericArgumentFixture(t, tc.seed, tc.kind)
+			for _, reg := range []asm.Register{asm.R3, asm.R4} {
+				t.Run(reg.String(), func(t *testing.T) {
+					bad := append(asm.Instructions(nil), out...)
+					definition := -1
+					for i := cert.Original[findOriginalSite(cert, call)] + 1; i < call; i++ {
+						if !bad[i].OpCode.Class().IsJump() && bad[i].Dst == reg {
+							definition = i
+						}
+					}
+					if definition < 0 {
+						t.Fatalf("%s has no R%d definition", tc.kind, reg)
+					}
+					bad[definition] = asm.Mov.Reg(reg, asm.R1)
+					_, err := injectcheck.Check(in, bad, cert, premises)
+					var rejection *injectcheck.Rejection
+					if !errors.As(err, &rejection) || rejection.Kind != injectcheck.HookArguments {
+						t.Fatalf("checker accepted wrong %s R%d provenance: %v", tc.kind, reg, err)
+					}
+				})
+			}
+		})
+	}
+}
+
+func findOriginalSite(cert injectcheck.Certificate, call int) int {
+	site := -1
+	for i, at := range cert.Original {
+		if at >= call {
+			break
+		}
+		site = i
+	}
+	return site
+}
+
+func TestTranslationValidationPlannedLookupArms(t *testing.T) {
+	for _, config := range []string{"typed-any", "dispatch-any"} {
+		t.Run(config, func(t *testing.T) {
+			c := newEquivCase(1)
+			work := c.spec()
+			in := append(asm.Instructions(nil), work.Programs["p"].Instructions...)
+			injectcheck.Label(work.Programs["p"].Instructions)
+			req := c.request(config)
+			plan, err := transformLookup(work, req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			out := work.Programs["p"].Instructions
+			cert, premises := validationCertificate(t, in, out, plan.hooks, req.Stack.LowestOffset)
+			site, jump, restore := -1, -1, -1
+			for i, ins := range in {
+				if !ins.IsBuiltinCall() || (asm.BuiltinFunc(ins.Constant) != asm.FnMapLookupElem && asm.BuiltinFunc(ins.Constant) != asm.FnMapLookupPercpuElem) {
+					continue
+				}
+				start, end := cert.Original[i], cert.Original[i+1]
+				calls := 0
+				for j := start + 1; j < end; j++ {
+					if out[j].IsFunctionCall() {
+						calls++
+					}
+					if out[j].OpCode.Class() == asm.JumpClass && out[j].OpCode.JumpOp() == asm.Ja {
+						jump = j
+					}
+				}
+				if calls == 2 && jump >= 0 {
+					site, restore = i, end-1
+					break
+				}
+			}
+			if site < 0 {
+				t.Fatal("fixture has no two-arm lookup")
+			}
+			bad := append(asm.Instructions(nil), out...)
+			mutated := cert
+			mutated.Original = append([]int(nil), cert.Original...)
+			mutated.Hooks = append([]injectcheck.Span(nil), cert.Hooks...)
+			for range restore - jump {
+				bad = validationDelete(bad, jump)
+				for i, at := range mutated.Original {
+					if at > jump {
+						mutated.Original[i]--
+					}
+				}
+				for i, h := range mutated.Hooks {
+					if h.Start > jump {
+						mutated.Hooks[i].Start--
+						mutated.Hooks[i].End--
+					}
+				}
+			}
+			targets, err := BuildLookupTargets(bad, plan.hooks)
+			if err != nil {
+				t.Fatal(err)
+			}
+			premises.Targets = targets
+			_, err = injectcheck.Check(in, bad, mutated, premises)
+			var rejection *injectcheck.Rejection
+			if !errors.As(err, &rejection) || rejection.Kind != injectcheck.CallTarget {
+				t.Fatalf("checker accepted dropped lookup arm at site %d: %v", site, err)
+			}
+		})
+	}
+}
+
+func TestTranslationValidationErrorAndSuccessArms(t *testing.T) {
+	c := newEquivCase(1)
+	work := c.spec()
+	in := append(asm.Instructions(nil), work.Programs["p"].Instructions...)
+	injectcheck.Label(work.Programs["p"].Instructions)
+	req := c.request("typed-error")
+	plan, err := transformLookup(work, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := work.Programs["p"].Instructions
+	cert, premises := validationCertificate(t, in, out, plan.hooks, req.Stack.LowestOffset)
+	if _, err := injectcheck.Check(in, out, cert, premises); err != nil {
+		t.Fatalf("checker confused the error and success arms: %v", err)
+	}
+}
+
+func TestTranslationValidationNullArguments(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		seed uint64
+		kind HookKind
+		reg  asm.Register
+	}{
+		{"delete-R4", 15, HookDelete, asm.R4},
+		{"keyless-R3", 2, HookPush, asm.R3},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			in, out, cert, premises, call := genericArgumentFixture(t, tc.seed, tc.kind)
+			bad := append(asm.Instructions(nil), out...)
+			changed := false
+			for i := call - 1; i > cert.Original[findOriginalSite(cert, call)]; i-- {
+				ins := bad[i]
+				if ins.Dst == tc.reg && ins.OpCode.Class() == asm.ALU64Class && ins.OpCode.ALUOp() == asm.Mov && ins.OpCode.Source() == asm.ImmSource && ins.Constant == 0 {
+					bad[i].Constant = 0x1000
+					changed = true
+					break
+				}
+			}
+			if !changed {
+				t.Fatalf("%s has no NULL R%d definition", tc.kind, tc.reg)
+			}
+			_, err := injectcheck.Check(in, bad, cert, premises)
+			var rejection *injectcheck.Rejection
+			if !errors.As(err, &rejection) || rejection.Kind != injectcheck.HookArguments {
+				t.Fatalf("checker accepted non-NULL %s R%d: %v", tc.kind, tc.reg, err)
+			}
+		})
+	}
 }
 
 // validationDelete repairs numeric edges crossing a deleted single-slot
@@ -533,9 +947,58 @@ func TestTranslationValidationSubprogramTail(t *testing.T) {
 				t.Fatal(err)
 			}
 			out := work.Programs["caller"].Instructions
-			c := validationCertificate(t, in, out, plan.hooks)
-			if _, err := injectcheck.Check(in, out, c, injectcheck.Premises{LowestOffset: req.Stack.LowestOffset}); err != nil {
+			c, premises := validationCertificate(t, in, out, plan.hooks, req.Stack.LowestOffset)
+			if _, err := injectcheck.Check(in, out, c, premises); err != nil {
 				t.Fatal(err)
+			}
+			if dispatch {
+				call := -1
+				for i, ins := range out {
+					if ins.IsFunctionCall() && ins.Reference() == "obs" {
+						call = i
+					}
+				}
+				if call < 2 {
+					t.Fatal("dispatch tail fixture has no hook call")
+				}
+				for _, reg := range []asm.Register{asm.R3, asm.R4, asm.R5} {
+					bad := append(asm.Instructions(nil), out...)
+					for i := call - 1; i >= 0; i-- {
+						if bad[i].Dst == reg {
+							source := asm.R3
+							if reg == asm.R3 {
+								source = asm.R1
+							}
+							bad[i] = asm.Mov.Reg(reg, source)
+							break
+						}
+					}
+					_, err := injectcheck.Check(in, bad, c, premises)
+					var rejection *injectcheck.Rejection
+					if !errors.As(err, &rejection) || rejection.Kind != injectcheck.HookArguments {
+						t.Fatalf("dispatch tail R%d: %v", reg, err)
+					}
+				}
+				t.Run("R4-must-be-NULL", func(t *testing.T) {
+					bad := append(asm.Instructions(nil), out...)
+					changed := false
+					for i := call - 1; i >= 0; i-- {
+						ins := bad[i]
+						if ins.Dst == asm.R4 && ins.OpCode.Class() == asm.ALU64Class && ins.OpCode.ALUOp() == asm.Mov && ins.OpCode.Source() == asm.ImmSource && ins.Constant == 0 {
+							bad[i].Constant = 0x1000
+							changed = true
+							break
+						}
+					}
+					if !changed {
+						t.Fatal("dispatch tail fixture has no NULL R4 definition")
+					}
+					_, err := injectcheck.Check(in, bad, c, premises)
+					var rejection *injectcheck.Rejection
+					if !errors.As(err, &rejection) || rejection.Kind != injectcheck.HookArguments {
+						t.Fatalf("dispatch tail non-NULL R4: %v", err)
+					}
+				})
 			}
 			// The entry frame's ctx spill must not initialize the subprogram
 			// frame: dropping its localCtx spill leaves the postlude load invalid.
@@ -550,13 +1013,27 @@ func TestTranslationValidationSubprogramTail(t *testing.T) {
 			if !removed {
 				t.Fatal("fixture requires a local ctx spill")
 			}
-			c = validationCertificate(t, in, out, plan.hooks)
-			_, err = injectcheck.Check(in, out, c, injectcheck.Premises{LowestOffset: req.Stack.LowestOffset})
+			c, premises = validationCertificate(t, in, out, plan.hooks, req.Stack.LowestOffset)
+			_, err = injectcheck.Check(in, out, c, premises)
 			var rejection *injectcheck.Rejection
 			if !errors.As(err, &rejection) || rejection.Kind != injectcheck.SpillUninitialized {
 				t.Fatalf("missing subprogram ctx spill: %v", err)
 			} else {
 				t.Logf("missing subprogram ctx spill rejected: %v", err)
+			}
+			changed := false
+			for j, ins := range out {
+				if j > c.Original[1] && ins.OpCode.Class() == asm.LdXClass && ins.Dst == asm.R1 && ins.Src == asm.RFP && ins.Offset == -8 {
+					out[j].Offset = -16
+					changed = true
+				}
+			}
+			if !changed {
+				t.Fatal("fixture has no postlude context reload")
+			}
+			_, err = injectcheck.Check(in, out, c, premises)
+			if !errors.As(err, &rejection) || rejection.Kind != injectcheck.HookArguments {
+				t.Fatalf("missing context slot did not fail closed: %v", err)
 			}
 		})
 	}
@@ -571,18 +1048,32 @@ func TestTranslationValidationU32Fixture(t *testing.T) {
 		t.Fatal(err)
 	}
 	out := work.Programs["p"].Instructions
-	c := validationCertificate(t, in, out, []LookupHook{{Name: req.HookName}})
-	if _, err := injectcheck.Check(in, out, c, injectcheck.Premises{LowestOffset: req.Stack.LowestOffset}); err != nil {
+	site, pc := -1, uint32(0)
+	for i, ins := range in {
+		if pc == req.SitePC {
+			site = i
+			break
+		}
+		pc += uint32(ins.Size() / asm.InstructionSize)
+	}
+	if site < 0 {
+		t.Fatalf("raw site PC %d is not an instruction", req.SitePC)
+	}
+	c, premises := validationCertificate(t, in, out, []LookupHook{{
+		Name: req.HookName, Kind: HookLookup, When: string(LookupAny),
+		Sites: []LookupSite{{InstructionIndex: site}},
+	}}, req.Stack.LowestOffset)
+	if _, err := injectcheck.Check(in, out, c, premises); err != nil {
 		t.Fatal(err)
 	}
 }
 
-func validationPair(in, out asm.Instructions, c injectcheck.Certificate, floor int16) injectcheck.Pair {
-	return injectcheck.Pair{Format: injectcheck.FormatVersion, Original: validationStream(in), Transformed: validationStream(out), Certificate: c, Premises: injectcheck.Premises{LowestOffset: floor}}
+func validationPair(in, out asm.Instructions, c injectcheck.Certificate, premises injectcheck.Premises) injectcheck.Pair {
+	return injectcheck.Pair{Format: injectcheck.FormatVersion, Original: validationStream(in), Transformed: validationStream(out), Certificate: c, Premises: premises}
 }
-func validationPairEvidence(t *testing.T, in, out asm.Instructions, c injectcheck.Certificate, floor int16, request, result any, reason string) injectcheck.Pair {
+func validationPairEvidence(t *testing.T, in, out asm.Instructions, c injectcheck.Certificate, premises injectcheck.Premises, request, result any, reason string) injectcheck.Pair {
 	t.Helper()
-	p := validationPair(in, out, c, floor)
+	p := validationPair(in, out, c, premises)
 	var err error
 	if request != nil {
 		p.Request, err = json.Marshal(request)

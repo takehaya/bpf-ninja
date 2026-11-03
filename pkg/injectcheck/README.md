@@ -2,23 +2,35 @@
 
 [日本語](README.ja.md)
 
-`pkg/injectcheck` is an offline test-time oracle for instruction streams rewritten by `pkg/inject`.
-`cmd/inject-check` is a development tool, built separately so its dependency closure excludes the transformer; it is not integrated into `inject-run` or release binaries.
+`pkg/injectcheck` independently validates instruction streams rewritten by `pkg/inject`; `pkg/inject` also uses its target-binding types in production code.
+`cmd/inject-check` is a development tool built separately so its dependency closure excludes the transformer; it is not integrated into `inject-run`.
 `Check` independently compares the originals, resolves control-flow edges, derives insertion regions and validates every inserted instruction.
-It does not use the transformer's site selection, relocation or liveness decisions.
+It does not reuse the transformer's relocation or liveness decisions.
+The trusted `Premises.Targets` input supplies the plan's site/result-to-hook binding because instruction shapes alone do not identify intent.
 
 ```go
+plannedSiteTargets, err := inject.BuildLookupTargets(transformed, result.Hooks)
+if err != nil {
+    return err
+}
 counts, err := injectcheck.Check(original, transformed, injectcheck.Certificate{
     Original: originalIndices,
     Hooks: hookRanges,
-}, injectcheck.Premises{LowestOffset: auditedFloor})
+}, injectcheck.Premises{
+    LowestOffset: auditedFloor,
+    Targets: plannedSiteTargets,
+})
 ```
 
-The **certificate** supplies untrusted correspondence hints.
-`Original[i]` is original instruction i's decoded index in the transformed stream; `Hooks` contains half-open ranges of inserted function bodies.
+The **certificate** supplies correspondence data.
+`Original[i]` is original instruction i's decoded index in the transformed stream, and `Hooks` contains half-open ranges of inserted function bodies; both are untrusted hints whose contents `Check` verifies independently.
 An `LDIMM64` is one decoded instruction and two raw slots for relocation.
 `Label` before transformation and `FromLabels` afterwards extract hints from preserved metadata; `Check` verifies their contents independently.
-The separate **premise**, `LowestOffset`, is the caller's trusted stack-alias audit, including indirect accesses and callee use of caller-stack pointers.
+The separate **premises** are trusted caller inputs.
+`LowestOffset` is the stack-alias audit, including indirect accesses and callee use of caller-stack pointers.
+`Targets` binds `{Site, When, Hook}` in plan terms: the original instruction index, `hit`, `miss`, `any`, or `error`, and the decoded index of the generated hook start.
+For a lookup, `any` requires the hook on both the hit and miss paths.
+The caller must use `inject.BuildLookupTargets` or derive the same data from the plan, never from transformed call references.
 The checker checks its range and direct RFP accesses, but cannot establish the alias audit from the instruction projection.
 
 ## Checked shapes
@@ -29,10 +41,10 @@ They describe insertion shapes, while “original program” refers to the progr
 | Name | Shape | What is checked |
 | --- | --- | --- |
 | P1 | Entry context spill, optionally an entry/dispatch hook and R1 restore | Exact slot, dispatch arguments, hook destination and restore |
-| P2 | Lookup/per-CPU lookup spill and conditional observer postlude | One result guard, at most two alternative calls, value-copy pairs, full-width R0 restoration on every path |
-| P3 | Map update/delete spill and observer postlude | Helper argument spills, optional signed result guard, one call, full-width R0 restoration |
-| P4 | Tail-call prelude and failure postlude | Unchanged helper arguments and target, one hook on failure, local or entry-frame context initialization |
-| P5 | Queue/stack push/pop/peek spill and observer postlude | Helper-specific spills, one hook, full-width R0 restoration |
+| P2 | Lookup/per-CPU lookup spill and conditional observer postlude | One result guard, at most two alternative calls, planned result-arm targets, R1 context and generic/dispatch R3-R5 provenance/order, value-copy pairs, full-width R0 restoration on every path |
+| P3 | Map update/delete spill and observer postlude | Helper argument spills, optional signed result guard, planned result target, R1 context and generic/dispatch R3-R5 provenance/order, one call, full-width R0 restoration |
+| P4 | Tail-call prelude and failure postlude | Unchanged helper arguments and target, planned hook, R1 context, dispatch R4/R5 provenance, local or entry-frame context initialization |
+| P5 | Queue/stack push/pop/peek spill and observer postlude | Helper-specific spills, planned result target, R1 context and generic/dispatch R3-R5 provenance/order, one hook, full-width R0 restoration |
 | P6 | A u32 hook after `ldxw R2, [R0+offset]` | Exact six-instruction save/call/restore region, u32 hook body, R1/R3–R5 dead at the original continuation |
 | P7 | Observer function | No-op return, u32 XOR return, or permitted context/pointer reads followed by zero return; no stores or calls |
 
@@ -41,7 +53,9 @@ Let `f = LowestOffset &^ 7` be the aligned floor.
 Slots are relative to `f`: context at `f-8`, key or tail index at `f-16`, helper result at `f-24`, map at `f-32`, and update value at `f-40` (or `f-32` without a map spill).
 The `f-24` slot intentionally holds update R4/push R3 flags before the postlude reloads them and overwrites it with R0.
 The u32 region instead saves R0 at `f-8` and R2 at `f-16`, overlapping the entry context and key slots.
-Mixed u32/helper streams therefore do not establish that a later observer receives the original context value; observation-argument correctness is outside acceptance.
+Helper hook calls require the saved context in R1. Generic and dispatch map calls additionally check their helper-specific R3-R5 roles, including constant zero for NULL roles; dispatch tail calls check R3-R5.
+R2 (the site id or info word) remains unchecked at every site-tagged hook. Typed and static non-generic key/value roles also remain outside acceptance.
+Mixed u32/helper streams do not establish that a later observer receives the original context: a u32 region stores R0 in the same slot from which a later helper hook may reload R1.
 All inserted stores must fit below `f` and within the 512-byte frame.
 
 Each original instruction must occur exactly once and in order, with the same opcode, registers, offset, constant and non-edge reference.
@@ -75,8 +89,8 @@ Associated maps are refused in both streams even if the associations are identic
 Check before map association, using a shared, unchanged external symbol/FD binding table.
 Numeric FDs are identifiers in that namespace, not transferable live maps.
 
-Acceptance is conditional on valid original and transformed BPF, the calling convention and the trusted stack audit.
-The checker does not establish kernel acceptance, BTF/CO-RE meaning, JIT correctness, observer noninterference, observation arguments, concurrency, time or randomness.
+Acceptance is conditional on valid original and transformed BPF, the calling convention, the trusted stack audit, and trusted plan-derived targets.
+The checker does not establish kernel acceptance, BTF/CO-RE meaning, JIT correctness, observer noninterference, observation arguments beyond the listed checks, concurrency, time or randomness.
 It does not load, attach or pin BPF.
 
 ## JSON and error classification
@@ -87,10 +101,10 @@ go build -o inject-check ./cmd/inject-check
 ```
 
 The writer and reader share the tagged `injectcheck.Pair` type.
-Format 1 pins the decoded `asm.OpCode` representation of cilium/ebpf v0.22; it is not the kernel opcode byte.
+Format 2 pins the decoded `asm.OpCode` representation of cilium/ebpf v0.22 and the plan-level target shape; it is not the kernel opcode byte.
 Required, case-sensitive top-level keys are `format`, `original`, `transformed`, `certificate` and `premises`.
-`certificate.original` and `premises.lowest_offset` are also required; `certificate.hooks` may be empty or omitted.
-Span fields are `start` and `end`.
+`certificate.original`, `premises.lowest_offset`, and `premises.targets` are also required; `certificate.hooks` may be empty or omitted, and `premises.targets` may be empty only when there are no inserted calls.
+Span fields are `start` and `end`; target fields are `site`, `when`, and `hook`.
 Instruction fields are `opcode`, `dst`, `src`, `offset`, `constant`, `symbol` and `reference`.
 `PseudoMapValue` offsets remain in the upper 32 bits of `constant`, with its pseudo kind in `src`.
 Unknown fields and noncanonical case spellings are input errors.
@@ -103,14 +117,14 @@ A producer saving an explicit projection must first check the in-memory metadata
 The local census harness follows this rule; its JSON cannot replay metadata identity checks.
 
 The CLI emits `accepted`, `kind`, `counts`, `premises` and `reason`; `counts.sites` is the number of checked sites and is partial on rejection.
-The premise is echoed with the verdict.
+The trusted premises, including targets, are echoed with the verdict.
 `errors.As` distinguishes the following API errors; both expose a stable `Kind` and human-readable `Detail`.
 
 | Outcome | Type | CLI exit | Examples |
 | --- | --- | --- | --- |
 | Accepted | nil | 0 | All checked rules hold |
-| Input error | `*InputError` | 2 | Malformed JSON; missing/null required field (message names it); empty original/mapping; mapping length/order error; invalid/overlapping hook ranges; floor outside [-512,0]; invalid original register or CFG; unsupported format |
-| Rejected transformation | `*Rejection` | 1 | Changed instruction/reference/edge; unsafe inserted store, branch, register effect or hook; metadata change; associated map |
+| Input error | `*InputError` | 2 | Malformed JSON; missing/null required field; empty original/mapping; mapping length/order error; invalid/overlapping hook ranges; absent or malformed target plan; floor outside [-512,0]; invalid original register or CFG; unsupported format |
+| Rejected transformation | `*Rejection` | 1 | Changed instruction/reference/edge; unplanned call or missing planned call; unsafe inserted store, branch, register effect or hook; metadata change; associated map |
 
 Decode/file/usage errors go to stderr; structural input errors found by validation also receive a JSON verdict.
 The kinds distinguish empty original, empty mapping, length mismatch and invalid floor.

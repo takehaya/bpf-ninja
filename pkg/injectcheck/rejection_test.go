@@ -11,7 +11,7 @@ import (
 
 func assertKind(t *testing.T, err error, want Kind) {
 	t.Helper()
-	if want == OriginalOrder || want == HookRange || want == HookOverlap || want == InputOriginalCFG {
+	if want == OriginalOrder || want == HookRange || want == HookOverlap || want == InputOriginalCFG || want == InputTarget || want == InputTargetMissing || want == InputTargetUnused {
 		assertInputKind(t, err, want)
 		return
 	}
@@ -82,7 +82,12 @@ func twoCallLookup(jeqOff, jaOff int16) (asm.Instructions, asm.Instructions, fix
 	j.Offset = jeqOff
 	ja := asm.Ja.Label("")
 	ja.Offset = jaOff
-	post := asm.Instructions{asm.StoreMem(asm.RFP, -32, asm.R0, asm.DWord), j, asm.Call.Label("hook"), ja, asm.Call.Label("hook"), asm.LoadMem(asm.R0, asm.RFP, -32, asm.DWord)}
+	j.Offset++
+	ja.Offset++
+	post := asm.Instructions{asm.StoreMem(asm.RFP, -32, asm.R0, asm.DWord), j,
+		asm.LoadMem(asm.R1, asm.RFP, -16, asm.DWord), asm.Call.Label("hook"), ja,
+		asm.LoadMem(asm.R1, asm.RFP, -16, asm.DWord), asm.Call.Label("hook"),
+		asm.LoadMem(asm.R0, asm.RFP, -32, asm.DWord)}
 	n := append(clone(out[:8]), post...)
 	delta := len(post) - 7
 	n = append(n, out[15:]...)
@@ -270,7 +275,7 @@ func TestPostludeRejectionKinds(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			in, out, c := twoCallLookup(2, 1)
-			tc.change(&out[11])
+			tc.change(&out[12])
 			expectPairKind(t, tc.name, in, out, c, BranchEncoding)
 		})
 	}
@@ -439,7 +444,54 @@ type fixtureCertificate struct {
 }
 
 func checkFixture(in, out asm.Instructions, c fixtureCertificate) (Counts, error) {
-	return Check(in, out, Certificate{Original: c.Original, Hooks: c.Hooks}, Premises{LowestOffset: c.LowestOffset})
+	cert := Certificate{Original: c.Original, Hooks: c.Hooks}
+	originals, hookStarts, inHook := map[int]bool{}, map[int]bool{}, map[int]bool{}
+	for _, i := range c.Original {
+		originals[i] = true
+	}
+	for _, h := range c.Hooks {
+		hookStarts[h.Start] = true
+		for i := h.Start; i < h.End; i++ {
+			inHook[i] = true
+		}
+	}
+	// Generic checker fixtures have no rewrite plan. Self-derive the arm the
+	// fixture actually calls to keep unrelated rejection checks focused.
+	pcs, index := slots(out)
+	targets := []SiteTarget{}
+	bound := map[int]int{}
+	for i, ins := range out {
+		if originals[i] || inHook[i] || !ins.IsFunctionCall() {
+			continue
+		}
+		hook, err := target(out, pcs, index, i)
+		if err != nil || !hookStarts[hook] {
+			for start := range hookStarts {
+				if !hookStarts[hook] || start < hook {
+					hook = start
+				}
+			}
+		}
+		site := -1
+		for original, at := range c.Original {
+			if at < i {
+				site = original
+			}
+		}
+		lookup := site >= 0 && (in[site].Constant == int64(asm.FnMapLookupElem) || in[site].Constant == int64(asm.FnMapLookupPercpuElem))
+		if len(hookStarts) > 0 && (bound[site] == 0 || lookup && bound[site] == 1) {
+			when := TargetAny
+			if lookup {
+				when = TargetHit
+				if bound[site] == 1 {
+					when = TargetMiss
+				}
+			}
+			targets = append(targets, SiteTarget{Site: site, When: when, Hook: hook})
+			bound[site]++
+		}
+	}
+	return Check(in, out, cert, Premises{LowestOffset: c.LowestOffset, Targets: targets})
 }
 
 func assertInputKind(t *testing.T, err error, want Kind) {

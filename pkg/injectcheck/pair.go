@@ -8,7 +8,7 @@ import (
 )
 
 // FormatVersion pins the decoded cilium/ebpf v0.22 instruction representation.
-const FormatVersion = 1
+const FormatVersion = 2
 
 // Pair is the shared, versioned input for the offline checker and its CLI.
 // Request, Result and Reason carry optional census evidence and are not premises.
@@ -32,6 +32,9 @@ func (p *Pair) UnmarshalJSON(data []byte) error {
 	if err := requiredFields(data, "original", "transformed", "certificate", "premises", "format"); err != nil {
 		return err
 	}
+	if next.Format != FormatVersion {
+		return inputError(InputVersion, "format must be %d, got %d", FormatVersion, next.Format)
+	}
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(data, &fields); err != nil {
 		return inputError(InputJSON, "%v", err)
@@ -39,17 +42,23 @@ func (p *Pair) UnmarshalJSON(data []byte) error {
 	if err := requiredFields(fields["certificate"], "original"); err != nil {
 		return inputError(InputMissing, "certificate: %v", err)
 	}
-	if err := requiredFields(fields["premises"], "lowest_offset"); err != nil {
+	if err := requiredFields(fields["premises"], "lowest_offset", "targets"); err != nil {
 		return inputError(InputMissing, "premises: %v", err)
-	}
-	if next.Format != FormatVersion {
-		return inputError(InputVersion, "format must be %d, got %d", FormatVersion, next.Format)
 	}
 	*p = Pair(next)
 	return nil
 }
 
-// Verdict binds a decision to its trusted premise and the number of checked sites.
+// MarshalJSON keeps an empty trusted target plan representable as an array.
+func (p Premises) MarshalJSON() ([]byte, error) {
+	type wire Premises
+	if p.Targets == nil {
+		p.Targets = []SiteTarget{}
+	}
+	return json.Marshal(wire(p))
+}
+
+// Verdict binds a decision to its trusted stack audit and plan-derived targets.
 type Verdict struct {
 	Accepted bool     `json:"accepted"`
 	Kind     Kind     `json:"kind"`

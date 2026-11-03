@@ -2,8 +2,8 @@
 // injection. It does not import the transformer. A certificate supplies only
 // correspondence hints: every hint and every otherwise unaccounted bytecode
 // instruction is checked. Acceptance is conditional on the original and
-// transformed programs being valid BPF, the BPF calling convention,
-// and the caller's trusted stack-alias audit.
+// transformed programs being valid BPF, the BPF calling convention, and the
+// caller's trusted stack-alias audit and plan-derived site targets.
 package injectcheck
 
 import (
@@ -20,8 +20,27 @@ type Span struct {
 	End   int `json:"end"`
 }
 
+// TargetWhen is the planned helper result on which a hook runs.
+type TargetWhen string
+
+const (
+	TargetHit     TargetWhen = "hit"
+	TargetMiss    TargetWhen = "miss"
+	TargetAny     TargetWhen = "any"
+	TargetError   TargetWhen = "error"
+	targetSuccess TargetWhen = "success"
+)
+
+// SiteTarget binds one original helper site and result arm to a planned hook.
+// Site -1 is the entry hook.
+type SiteTarget struct {
+	Site int        `json:"site"`
+	When TargetWhen `json:"when"`
+	Hook int        `json:"hook"` // Decoded instruction index of the hook start.
+}
+
 // Certificate is untrusted layout metadata. Original[i] locates original
-// instruction i in the output; Hooks lists all inserted function bodies.
+// instruction i in the output; Hooks lists inserted functions.
 type Certificate struct {
 	Original []int  `json:"original"`
 	Hooks    []Span `json:"hooks"`
@@ -35,9 +54,11 @@ type Counts struct {
 	Hooks        int `json:"hooks"`
 }
 
-// Premises is the trusted caller audit, separate from the untrusted certificate.
+// Premises contains trusted caller inputs: the stack audit and the target
+// binding built from the rewrite plan, never from transformed call references.
 type Premises struct {
-	LowestOffset int16 `json:"lowest_offset"`
+	LowestOffset int16        `json:"lowest_offset"`
+	Targets      []SiteTarget `json:"targets"`
 }
 
 type label struct{}
@@ -175,6 +196,10 @@ func Check(in, out asm.Instructions, c Certificate, premises Premises) (Counts, 
 		}
 		hooks[h.Start] = true
 	}
+	targets, err := newTargetBindings(premises.Targets, len(in), hooks)
+	if err != nil {
+		return counts, err
+	}
 	for j, owner := range owners {
 		if owner < 0 {
 			if err := noLoadMetadata(out[j]); err != nil {
@@ -290,23 +315,26 @@ func Check(in, out asm.Instructions, c Certificate, premises Premises) (Counts, 
 		return is
 	}
 	if len(gaps[0]) > 0 {
-		if err := checkEntry(gather(gaps[0]), out, npcs, ni, gaps[0], hooks, floor); err != nil {
+		if err := checkEntry(gather(gaps[0]), out, npcs, ni, gaps[0], hooks, targets, floor); err != nil {
 			return counts, fmt.Errorf("entry: %w", err)
 		}
 	}
 	for i := range in {
 		after := gather(gaps[i+1])
 		if len(before[i]) > 0 {
-			if err := checkAfter(in[i], before[i], after, out, npcs, ni, gaps[i+1], hooks, floor, len(gaps[0]) > 0 && i < entryEnd); err != nil {
+			if err := checkAfter(i, in[i], before[i], after, out, npcs, ni, gaps[i+1], hooks, targets, floor, len(gaps[0]) > 0 && i < entryEnd); err != nil {
 				return counts, fmt.Errorf("site %d: %w", i, err)
 			}
 			counts.Sites++
 		} else if len(after) > 0 {
-			if err := checkU32(in[i], after, out, npcs, ni, gaps[i+1], hooks, floor, live[i+1]); err != nil {
+			if err := checkU32(i, in[i], after, out, npcs, ni, gaps[i+1], hooks, targets, floor, live[i+1]); err != nil {
 				return counts, fmt.Errorf("gap after %d: %w", i, err)
 			}
 			counts.Sites++
 		}
+	}
+	if err := targets.checkUsed(); err != nil {
+		return counts, err
 	}
 	return counts, nil
 }
@@ -404,7 +432,81 @@ func checkHook(is asm.Instructions) error {
 	return reject(HookBody, "not an observer pointer-read sequence (stores/calls forbidden)")
 }
 
-func hookCall(out asm.Instructions, pcs []int, idx map[int]int, j int, hooks map[int]bool) error {
+type targetKey struct {
+	site int
+	when TargetWhen
+}
+
+type targetBinding struct {
+	hook int
+	used bool
+}
+
+type targetBindings map[targetKey]*targetBinding
+
+func newTargetBindings(targets []SiteTarget, sites int, hooks map[int]bool) (targetBindings, error) {
+	b := make(targetBindings, len(targets))
+	for _, target := range targets {
+		if target.Site < -1 || target.Site >= sites || !hooks[target.Hook] {
+			return nil, inputError(InputTarget, "invalid site target %+v", target)
+		}
+		switch target.When {
+		case TargetHit, TargetMiss, TargetAny, TargetError:
+		default:
+			return nil, inputError(InputTarget, "invalid site target condition %q", target.When)
+		}
+		key := targetKey{target.Site, target.When}
+		if _, ok := b[key]; ok {
+			return nil, inputError(InputTarget, "duplicate site target site=%d when=%s", target.Site, target.When)
+		}
+		b[key] = &targetBinding{hook: target.Hook}
+	}
+	return b, nil
+}
+
+func (b targetBindings) consume(site int, when TargetWhen, hook int, lookupArm bool) error {
+	key := targetKey{site, when}
+	target := b[key]
+	if target == nil && lookupArm {
+		key.when = TargetAny
+		target = b[key]
+	}
+	if target == nil {
+		for planned := range b {
+			if planned.site == site {
+				return reject(CallTarget, "site %d has no target for %s", site, when)
+			}
+		}
+		if len(b) != 0 {
+			return reject(CallTarget, "call at unplanned site %d", site)
+		}
+		return inputError(InputTargetMissing, "site %d has no target binding", site)
+	}
+	if hook != target.hook {
+		return reject(CallTarget, "site %d %s call targets hook %d; expected %d", site, when, hook, target.hook)
+	}
+	target.used = true
+	return nil
+}
+
+// planned reports whether the plan expects a hook on this result arm.
+func (b targetBindings) planned(site int, when TargetWhen, lookup bool) bool {
+	if b[targetKey{site, when}] != nil {
+		return true
+	}
+	return lookup && (when == TargetHit || when == TargetMiss) && b[targetKey{site, TargetAny}] != nil
+}
+
+func (b targetBindings) checkUsed() error {
+	for key, target := range b {
+		if !target.used {
+			return reject(CallTarget, "planned site target is not called: site=%d when=%s hook=%d", key.site, key.when, target.hook)
+		}
+	}
+	return nil
+}
+
+func hookCall(out asm.Instructions, pcs []int, idx map[int]int, j int, hooks map[int]bool, targets targetBindings, site int, when TargetWhen, lookupArm bool) error {
 	ins := out[j]
 	if !ins.IsFunctionCall() {
 		return reject(CallKind, "inserted call is not bpf-to-bpf")
@@ -416,9 +518,12 @@ func hookCall(out asm.Instructions, pcs []int, idx map[int]int, j int, hooks map
 	if !hooks[t] {
 		return reject(CallTarget, "inserted call targets non-hook %d", t)
 	}
+	if err := targets.consume(site, when, t, lookupArm); err != nil {
+		return err
+	}
 	return nil
 }
-func checkEntry(is, out asm.Instructions, pcs []int, idx map[int]int, js []int, hooks map[int]bool, f int) error {
+func checkEntry(is, out asm.Instructions, pcs []int, idx map[int]int, js []int, hooks map[int]bool, targets targetBindings, f int) error {
 	if !same(is[0], asm.StoreMem(asm.RFP, int16(f+slotContext), asm.R1, asm.DWord)) || f+slotContext < stackBottom {
 		return reject(EntrySpill, "not entry context spill")
 	}
@@ -435,7 +540,7 @@ func checkEntry(is, out asm.Instructions, pcs []int, idx map[int]int, js []int, 
 	if len(is) != call+2 || !same(is[len(is)-1], asm.LoadMem(asm.R1, asm.RFP, int16(f+slotContext), asm.DWord)) {
 		return reject(EntryRestore, "not entry call/restore")
 	}
-	return hookCall(out, pcs, idx, js[call], hooks)
+	return hookCall(out, pcs, idx, js[call], hooks, targets, -1, TargetAny, false)
 }
 
 func terminal(ins asm.Instruction) bool {
