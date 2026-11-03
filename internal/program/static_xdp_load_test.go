@@ -92,10 +92,12 @@ func assertOriginMainStaticXDPCodegen(t *testing.T, target *ebpf.Program, fn str
 	// Full instruction-stream hashes generated from origin/main (060811d),
 	// with map FDs 10..13, an integer filter and a packet DSL filter. This
 	// includes gated exit, whose direct-load instruction order must not move.
+	// Regenerated from b2dba63 plus the orig_len change, which adds moves
+	// and stores around the direct loads and moves none of them.
 	for _, tc := range []struct{ mode, hash string }{
-		{"entry", "3a47dc19ef736429026b764b42c9971c7031bfe8230a51ee2710ee5f1d7d3a13"},
-		{"exit", "89c37135e804394ac31ae45661265f1cd619a030454c14f54c6a994c02749bcb"},
-		{"gated", "6e1d4fc1e8d59b5de9e9cea54d09c486827e5c7c3874d359ea5f850dbeb1bf98"},
+		{"entry", "b333aca68359108c5d56864991153873361f4b401a9ae5a46a0ab4071f02532c"},
+		{"exit", "66316de6bdf0529b584bddf16d46f72e9c6ef22d733844bb4d51c234f1928fd8"},
+		{"gated", "73755edde595853b50cc5639bdf25a968407a1758f57ef5bfe1c3d744fc3f426"},
 	} {
 		_, at := tracingLabel(tc.mode != "entry")
 		fallback, err := staticNeedsProbeRead(xdpTestHook, target, fn, at, attach.FuncAvailability{})

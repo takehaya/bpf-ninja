@@ -22,7 +22,7 @@ import (
 // epilogue, and that a layout moves the packet behind its block.
 func TestRecordEpilogue(t *testing.T) {
 	id := asm.Instructions{asm.Mov.Imm(asm.R1, 0)}
-	plain, legacy := captureWithRecord(3, 4, true, 64, id, nil, 0, nil), captureWithRingbuf(3, 4, true, 64, id)
+	plain, legacy := captureWithRecord(3, 4, true, 64, id, origLenFromR8, nil, 0, nil), captureWithRingbuf(3, 4, true, 64, id, origLenFromR8)
 	if len(plain) != len(legacy) {
 		t.Fatal("nil layout changed the epilogue")
 	}
@@ -32,7 +32,7 @@ func TestRecordEpilogue(t *testing.T) {
 		}
 	}
 	l := &record.Layout{Mode: record.ModeFilter, Fields: []record.Field{{Name: "site", ParamIndex: 1, Size: 4}}}
-	insns := captureWithRecord(3, 4, false, 64, id, l, 7, &fieldSnap{fd: 5, layout: l})
+	insns := captureWithRecord(3, 4, false, 64, id, origLenFromR8, l, 7, &fieldSnap{fd: 5, layout: l})
 	want := map[string]bool{
 		fmt.Sprint(asm.Mov.Imm(asm.R2, int32(metadataSize+l.Size()+64))):              false, // reserve size
 		fmt.Sprint(asm.StoreImm(asm.R0, 12, int64(capture.ModeRecordFlag), asm.Byte)): false,
@@ -54,15 +54,19 @@ func TestRecordEpilogue(t *testing.T) {
 // TestNilRecordProgramsByteIdentical pins the non-recording tracing programs
 // to the hashes their instructions had at 5d2c83d (before --record), so the
 // record changes cannot alter a capture that does not record. The golden
-// hashes were generated from a build at 5d2c83d.
+// hashes were generated from a build at 5d2c83d, then regenerated from
+// b2dba63 plus the orig_len change: the prologue leaves the packet length
+// in R8, the metadata grows from 28 to 32 bytes (reserve size and data
+// offset +4) and the epilogue stores R8 into it. The PR that made the
+// change lists the instruction diff.
 func TestNilRecordProgramsByteIdentical(t *testing.T) {
 	golden := map[string]string{
-		"entry-nofilter": "868ebed4a718e14b9a1c58114d844123f1a43dc301d05f02b5013f2eae9f3919",
-		"entry-int":      "c3f68bcf65d82eabed8e3e9561a716aa4f80ac2caca45907eada0c0ab96b307d",
-		"entry-int2":     "1f497398fe2e46ba668decc90db859f4e1557094972be570fbe368dc145c5935",
-		"entry-member":   "2844606119fac2b1a5375181a2846b9408c955ff715e960b2cafdcdee635a874",
-		"entry-ptr":      "7f54a75a8efc01faab8fd5bbf62fabf3e18244e7ecf6e950b2d2aad5f3dd3240",
-		"exit-int":       "95c73583778e54e893a40e43b3e7e237ec4709b66ce2bbad22d23f105b3fe354",
+		"entry-nofilter": "987b1849100b954d7cef99221b8b6025809ad73af4f850080f38bab3c6713b21",
+		"entry-int":      "82e77f7790c13b351080e630687d8ac9e2cb0c7bd660274c7bbcbcbdd90d11c9",
+		"entry-int2":     "c28713483b5c02315df1fd9b9c3ff2f9582bee6be705cb1ca1a1e3b24b7ef73c",
+		"entry-member":   "005292e8e309ddce507bb12964cfafda59df90e31440ca7632a78ec5194453ba",
+		"entry-ptr":      "d6da7ec1f0e3c13b959ee6718c87d3849fe987bdc4959738cca4419116f26fa9",
+		"exit-int":       "25cc8494506f941971008977cce64522ee436c815d7497324a4988c93806756a",
 	}
 	cases := []struct {
 		name  string
@@ -85,7 +89,7 @@ func TestNilRecordProgramsByteIdentical(t *testing.T) {
 		}
 		sum := sha256.Sum256([]byte(fmt.Sprintf("%+v", insns)))
 		if got := hex.EncodeToString(sum[:]); got != golden[c.name] {
-			t.Errorf("%s: program changed from 5d2c83d: got %s want %s", c.name, got, golden[c.name])
+			t.Errorf("%s: program changed from the pin: got %s want %s", c.name, got, golden[c.name])
 		}
 	}
 }
@@ -202,21 +206,24 @@ func TestRecordSetReusesRead(t *testing.T) {
 }
 
 // TestNilRecordSetProgramsByteIdentical pins --set, gated and arg-echo
-// programs built without a record layout to their 5d2c83d instructions.
+// programs built without a record layout to their 5d2c83d instructions,
+// regenerated for orig_len as above (a gated entry parks it at -72 after
+// its filter and keeps it in the hold).
+// The arg-echo program captures no packet and is unchanged.
 func TestNilRecordSetProgramsByteIdentical(t *testing.T) {
 	golden := map[string]string{
-		"tracing-scalar-set-fexit=false": "ffa040c61875de28b845149574a692e530ed035af736e4cac7e9aae6efba221d",
-		"tracing-scalar-set-fexit=true":  "c61a87c6d959bb4cc80c2ac57ae7a92ed08686148e8949d086904121d8aceadd",
-		"gated-scalar-set":               "97c9a82e13fcff146b1c4a4e3915cdbf57c774d6388534b81636d5c908d1b6ce",
-		"tracing-deref-set-fexit=false":  "c7c5a6b1d7b78bc6f373f9f7be5ddf482c6187cc3ec5bb4b9cdb36181fffa4c1",
-		"tracing-deref-set-fexit=true":   "e77aabe2f43136e7bc85e57d124fdfaf8aaf1562714bb5b7937d080257e3c742",
-		"gated-deref-set":                "3c7223f1d905c7c7118369c35709655bcf65d7224df5176bae78714188abd57d",
-		"tracing-two-sets-fexit=false":   "56166a1826f77dfef15810903d1fded8ab51982ad6c43c917e58e884a7310c36",
-		"tracing-two-sets-fexit=true":    "786313496ae835cb9258e9b9b27c11fc288cc12af606041b68b2c74fe6c28682",
-		"gated-two-sets":                 "40f4360b07b854c4b0414bbdbc39362c93b170b2fac54f3c545e556072c8106f",
-		"tracing-arg+set-fexit=false":    "64044378eb8e65d63cd22c941869a56432bcaf77c621d34a759302fa7b99fb88",
-		"tracing-arg+set-fexit=true":     "3203d6fe0ca224d655cc3ec22a433cda9d6e55a083efdcbb26e1d5b0e7965b0c",
-		"gated-arg+set":                  "3ea79465adfc79d65ef71b5a7f09d943b5dec37fc7e2c1fbee3f45bf6ad138ba",
+		"tracing-scalar-set-fexit=false": "ff6961ac9eb321b865142964e70ff9330e8068d28e30d440f65a39d060cf1764",
+		"tracing-scalar-set-fexit=true":  "39bfc55df0986877a129be394a8bd0196c5b0d9eff845266645ae0d9b01e170c",
+		"gated-scalar-set":               "c33773e6ad02178fa608a8dc31dda123c62c125d56197fee297cab6912ec4a22",
+		"tracing-deref-set-fexit=false":  "6483ba25575a3569d3494b8a47bd8f1de24141dcc580b0e5e3e2b9710261d3d3",
+		"tracing-deref-set-fexit=true":   "d051ae1767d856993c6809e9cc3185a1368604324f41cc7a1e1ec9558719b93c",
+		"gated-deref-set":                "636937c1bf8874344ef6b77e07bba84ace83f36f7f19c45203f07952303bcfde",
+		"tracing-two-sets-fexit=false":   "8731597d85a71e56da56e8eb6aca7270c4e311bbae89aba40a9c88f664f62f56",
+		"tracing-two-sets-fexit=true":    "33516cea4399aed150d8a91e243364d6e92469424d5ad4d30bb7078a6debe6d9",
+		"gated-two-sets":                 "a2e168d38c3715c020a327d2e47ad8143fd64fd7f807cba4017e0c3f73851fdd",
+		"tracing-arg+set-fexit=false":    "b60e6189535e58665088205844a613d876ff740147bee94efb5cd82cdd475561",
+		"tracing-arg+set-fexit=true":     "b8e0784633f0300b0104c3d15fe102a9c59600f3894a72a1f030cfdfb2082eab",
+		"gated-arg+set":                  "1c8e117112a2120e156f0cbcf4dce0cf5a334d957a044c8aad1279614e83117e",
 		"argecho":                        "0dd44a0c2fbf4fdb4bef3035c6056e53697e0f21d787ad5003b13cd53488da1f",
 	}
 	maps := testSetMaps(t, 77, 78)
@@ -230,7 +237,7 @@ func TestNilRecordSetProgramsByteIdentical(t *testing.T) {
 	sum := func(name string, insns asm.Instructions) {
 		s := sha256.Sum256([]byte(fmt.Sprintf("%+v", insns)))
 		if got := hex.EncodeToString(s[:]); got != golden[name] {
-			t.Errorf("%s: program changed from 5d2c83d: got %s want %s", name, got, golden[name])
+			t.Errorf("%s: program changed from the pin: got %s want %s", name, got, golden[name])
 		}
 	}
 	h, _ := hook.ByName(hook.KindXDP)

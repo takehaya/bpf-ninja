@@ -50,12 +50,12 @@ func skbIdentity(dst asm.Register) (asm.Instructions, error) {
 // struct sk_buff * (the kernel struct, NOT the BPF-rewritten __sk_buff
 // view — that rewrite does not fire in tracing context). Member offsets
 // drift across kernel versions, so they are resolved from kernel BTF at
-// runtime. sk_buff has no data_end member; it is computed as data plus
-// the LINEAR head length `len - data_len` (skb_headlen()), not the
-// total `len`: a GRO/GSO or fragmented skb keeps `data_len` bytes in
-// frags, and a flat probe_read from `data` past the head would copy
-// unrelated kernel memory into the capture. The window (and therefore
-// caplen) is clamped to the head; frag bytes are not captured.
+// runtime. The window length R9 is the LINEAR head length
+// `len - data_len` (skb_headlen()), not the total `len`: a GRO/GSO or
+// fragmented skb keeps `data_len` bytes in frags, and a flat probe_read
+// from `data` past the head would copy unrelated kernel memory into the
+// capture. The window (and therefore caplen) is clamped to the head;
+// frag bytes are not captured, but R8 = `len` counts them (orig_len).
 func skbPacketPrologue() (asm.Instructions, error) {
 	dataOff, lenOff, dataLenOff, err := SkBuffPacketOffsets()
 	if err != nil {
@@ -66,8 +66,7 @@ func skbPacketPrologue() (asm.Instructions, error) {
 		asm.LoadMem(asm.R9, asm.R6, int16(lenOff), asm.Word),     // R9 = skb->len
 		asm.LoadMem(asm.R8, asm.R6, int16(dataLenOff), asm.Word), // R8 = skb->data_len
 		asm.Sub.Reg(asm.R9, asm.R8),                              // R9 = linear head length
-		asm.Mov.Reg(asm.R8, asm.R7),
-		asm.Add.Reg(asm.R8, asm.R9), // R8 = data + headlen
+		asm.Add.Reg(asm.R8, asm.R9),                              // R8 = orig_len = skb->len
 	), nil
 }
 

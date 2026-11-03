@@ -12,7 +12,7 @@ pcap の payload に機密情報が含まれる場合は、そのまま公開 is
 | `capturing (...)...` が出ない | 起動失敗と setup 待ちを区別する。終了 summary がない状態を 0 件の成功とみなさない | [高負荷 attach の過去の調査](attach-under-load-rcu-finding.md) |
 | set の更新が反映されない | 同じ pin/key を参照しているか確認する。resize 後は再 attach する。capped/finalized の state と tag の再利用も確認する | [set guide](cli/sets.md) |
 | tag の完成ファイルがない | live shard と ack を区別する。全 entry の削除、stderr、drain、出力エラーを確認する。固定秒数の経過だけで成功とみなさない | [output guide](cli/output.md) |
-| convert が拒否する | 入力が raw V2 か確認する。pcap-ng shard や raw V1 を渡していないか確認する | [offline 出力](examples/offline-output.md) |
+| convert が拒否する | 入力が raw V3 か V2 か確認する。pcap-ng shard や raw V1 を渡していないか確認する | [offline 出力](examples/offline-output.md) |
 | 件数が少ない | filter、NIC、ring、hold、writer の計数を分けて確認する。終了コードだけで無損失と判断しない | [lifecycle](../capture-lifecycle.md)、[tuning](tuning.md) |
 
 kernel へのロードや attach の問題は、実際の kernel と必要な権限がある環境で再現する。

@@ -59,6 +59,7 @@ func staticXDPHook(h *hook.Hook, isFexit bool) *hook.Hook {
 			asm.LoadMem(asm.R7, asm.R10, -160, asm.DWord),
 			asm.LoadMem(asm.R8, asm.R10, -152, asm.DWord),
 			asm.Mov.Reg(asm.R9, asm.R8), asm.Sub.Reg(asm.R9, asm.R7),
+			asm.Mov.Reg(asm.R8, asm.R9), // R8 = orig_len, as in hook.xdpPacketPrologue
 		}, nil
 	}
 	clone.Identity = func(dst asm.Register) (asm.Instructions, error) {
@@ -114,7 +115,7 @@ func staticTCHook(h *hook.Hook, name string) *hook.Hook {
 			asm.LoadMem(asm.R9, asm.R10, -152, asm.Word),
 			asm.LoadMem(asm.R8, asm.R10, -148, asm.Word),
 			asm.Sub.Reg(asm.R9, asm.R8), // only the linear head, as in skbPacketPrologue
-			asm.Mov.Reg(asm.R8, asm.R7), asm.Add.Reg(asm.R8, asm.R9),
+			asm.Add.Reg(asm.R8, asm.R9), // R8 = orig_len = skb->len
 		), nil
 	}
 	// The tag loader reads sk_buff directly; only a wire-frame filter calls it.

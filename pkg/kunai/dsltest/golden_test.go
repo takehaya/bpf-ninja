@@ -15,6 +15,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/cilium/ebpf/asm"
 	"github.com/cilium/ebpf/btf"
 
 	"github.com/takehaya/bpf-ninja/pkg/kunai"
@@ -281,6 +282,28 @@ func changedPart(old, cur string) string {
 // the golden and prints the filters that moved; with -golden-dump it only
 // writes every filter's text into the directory (make golden-diff
 // compares two such dumps).
+// hostRegsKept checks the codegen ABI the hosts build on: the main stream
+// never writes R6-R9 (bpf-ninja carries the packet's orig_len in R8 across
+// the filter) and calls no BPF function. Callbacks run in their own frames.
+func hostRegsKept(main asm.Instructions) error {
+	for i, ins := range main {
+		if ins.IsFunctionCall() {
+			return fmt.Errorf("main insn %d calls a BPF function: %v", i, ins)
+		}
+		w := asm.Register(0xff)
+		switch cls := ins.OpCode.Class(); {
+		case cls.IsALU(), cls == asm.LdXClass, cls == asm.LdClass:
+			w = ins.Dst
+		case cls == asm.StXClass && ins.OpCode.Mode() != asm.MemMode:
+			w = ins.Src // atomics with fetch
+		}
+		if w >= asm.R6 && w <= asm.R9 {
+			return fmt.Errorf("main insn %d writes R%d: %v", i, w, ins)
+		}
+	}
+	return nil
+}
+
 func TestGolden(t *testing.T) {
 	// goldenText must cover every field the host reads.
 	if n := reflect.TypeFor[codegen.Output]().NumField(); n != 6 {
@@ -302,6 +325,9 @@ func TestGolden(t *testing.T) {
 		if err != nil {
 			t.Errorf("%s %q (sets %s): compile: %v", g.host, g.expr, g.setsText(), err)
 			continue
+		}
+		if err := hostRegsKept(out.Main); err != nil {
+			t.Errorf("%s %q (sets %s): %v", g.host, g.expr, g.setsText(), err)
 		}
 		code, meta := goldenText(out)
 		again, err := compileGolden(g)

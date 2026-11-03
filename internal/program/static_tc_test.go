@@ -113,8 +113,8 @@ func TestBpfStaticTCCapture(t *testing.T) {
 				}
 				for m, pkts := range got {
 					for _, pkt := range pkts {
-						if !bytes.Equal(pkt.Data, input) || m == 1 && pkt.Action != 2 {
-							t.Errorf("mode %d: action=%d data=%x, want TC_ACT_SHOT and %x", m, pkt.Action, pkt.Data, input)
+						if !bytes.Equal(pkt.Data, input) || m == 1 && pkt.Action != 2 || pkt.OrigLen != uint32(len(input)) {
+							t.Errorf("mode %d: action=%d orig_len=%d data=%x, want TC_ACT_SHOT, %d and %x", m, pkt.Action, pkt.OrigLen, pkt.Data, len(input), input)
 						}
 					}
 				}

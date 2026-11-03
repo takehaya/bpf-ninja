@@ -28,9 +28,9 @@ func HookEPBSize(caplen int, packetID bool, comment int) int {
 // WriteHookPacket writes one EPB on ifaceID with an epb_packetid when
 // packetID is nonzero and an opt_comment when comment is non-empty. With
 // a packet id and no comment it writes exactly what WritePacketID writes.
-func (fw *FastNgWriter) WriteHookPacket(ts time.Time, data []byte, ifaceID int, packetID uint64, comment []byte) error {
+func (fw *FastNgWriter) WriteHookPacket(ts time.Time, data []byte, origLen uint32, ifaceID int, packetID uint64, comment []byte) error {
 	if len(comment) == 0 && packetID != 0 {
-		return fw.WritePacketID(ts, data, ifaceID, packetID)
+		return fw.WritePacketID(ts, data, origLen, ifaceID, packetID)
 	}
 	if len(comment) > 65535 {
 		return fmt.Errorf("record comment exceeds pcapng option length")
@@ -38,7 +38,7 @@ func (fw *FastNgWriter) WriteHookPacket(ts time.Time, data []byte, ifaceID int, 
 	total := uint32(HookEPBSize(len(data), packetID != 0, len(comment)))
 	tsNs := uint64(ts.UnixNano())
 	b := fw.rec[:0]
-	for _, v := range []uint32{blkEPB, total, uint32(ifaceID), uint32(tsNs >> 32), uint32(tsNs), uint32(len(data)), uint32(len(data))} {
+	for _, v := range []uint32{blkEPB, total, uint32(ifaceID), uint32(tsNs >> 32), uint32(tsNs), uint32(len(data)), origLength(data, origLen)} {
 		b = binary.LittleEndian.AppendUint32(b, v)
 	}
 	b = append(append(b, data...), epbZeroPad[:(4-len(data)%4)%4]...)

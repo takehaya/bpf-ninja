@@ -22,7 +22,7 @@ func TestSubmitFlagsFollowNoWakeup(t *testing.T) {
 		}
 		for name, insns := range map[string]asm.Instructions{
 			"xdp-native": captureXDPNative(3, 64, 4),
-			"record":     captureWithRecord(3, 4, false, 64, id, nil, 0, nil),
+			"record":     captureWithRecord(3, 4, false, 64, id, origLenFromR8, nil, 0, nil),
 			"gated":      captureFromHold(3, 4, 64, id),
 		} {
 			submits := 0

@@ -332,10 +332,10 @@ func TestHookPacketCommentLimit(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = w.Close() }()
-	if err := w.fastWriter.WriteHookPacket(time.Unix(1, 0), []byte{0x45}, 0, 0, bytes.Repeat([]byte("x"), 65535)); err != nil {
+	if err := w.fastWriter.WriteHookPacket(time.Unix(1, 0), []byte{0x45}, 0, 0, 0, bytes.Repeat([]byte("x"), 65535)); err != nil {
 		t.Fatalf("65535-byte comment: %v", err)
 	}
-	if err := w.fastWriter.WriteHookPacket(time.Unix(1, 0), []byte{0x45}, 0, 0, bytes.Repeat([]byte("x"), 65536)); err == nil {
+	if err := w.fastWriter.WriteHookPacket(time.Unix(1, 0), []byte{0x45}, 0, 0, 0, bytes.Repeat([]byte("x"), 65536)); err == nil {
 		t.Fatal("65536-byte comment accepted")
 	}
 }

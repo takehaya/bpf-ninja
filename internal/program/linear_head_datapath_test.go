@@ -17,7 +17,10 @@ package program
 //       was cut by the head clamp and not by snaplen, i.e. a
 //       non-linear skb was actually exercised (guard against the test
 //       silently passing on a linear-only path), and
-//   (2) every captured byte after the TCP header equals the pattern.
+//   (2) every captured byte after the TCP header equals the pattern, and
+//   (3) every record's orig_len is skb->len, the IP total length, even
+//       when the window stops at the linear head (past 64 KiB, where
+//       IPv4 BIG TCP leaves the total length 0).
 // On the unclamped code (2) fails with overwhelming probability: the
 // bytes past the head are whatever the kernel heap held.
 //
@@ -36,6 +39,7 @@ import (
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
 
+	"github.com/takehaya/bpf-ninja/internal/capture"
 	"github.com/takehaya/bpf-ninja/internal/capture/fastrb"
 	"github.com/takehaya/bpf-ninja/internal/testutil"
 )
@@ -164,7 +168,7 @@ func TestLinearHeadClampAtCgroupSKB(t *testing.T) {
 		}
 	}()
 
-	var records, nonLinear, badBytes int
+	var records, nonLinear, badBytes, badOrig int
 	deadline := time.Now().Add(2 * time.Second)
 	for {
 		for _, rd := range readers {
@@ -189,6 +193,9 @@ func TestLinearHeadClampAtCgroupSKB(t *testing.T) {
 				// and the snaplen proves the head clamp fired.
 				if totLen > caplen && caplen < DefaultCapLen {
 					nonLinear++
+				}
+				if orig := int(capture.RecordOrigLen(rec)); orig != totLen && (totLen != 0 || orig <= 0xffff) {
+					badOrig++
 				}
 				if len(pkt) < ihl+20 {
 					return
@@ -215,6 +222,9 @@ func TestLinearHeadClampAtCgroupSKB(t *testing.T) {
 	}
 	if nonLinear == 0 {
 		t.Fatal("no record with IP total length beyond the capture window; the non-linear skb case was not exercised")
+	}
+	if badOrig != 0 {
+		t.Fatalf("%d of %d records carry an orig_len other than the IP total length", badOrig, records)
 	}
 	if badBytes != 0 {
 		t.Fatalf("%d captured payload bytes differ from the sent pattern across %d records; the capture window read past the linear head", badBytes, records)

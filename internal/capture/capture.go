@@ -85,6 +85,7 @@ type Packet struct {
 	Action    uint32 // hook verdict: XDP action / TC verdict (fexit only)
 	Mode      uint8  // 0=entry, 1=exit, 2=xdp-native; high bit (ModeRecordFlag) marks a record block
 	CapLen    uint16 // bytes the BPF side actually copied into Data
+	OrigLen   uint32 // packet length before the snaplen cut: skb->len, or data_end - data at XDP
 	Tag       uint32 // set-map value of the matched entry (0 when no set matched)
 	// PacketID groups one invocation's records in gated (entry + exit) or
 	// hook capture: opaque cpu << 48 | per-CPU sequence, never a kernel
@@ -127,7 +128,7 @@ func NewReader(eventsMap *ebpf.Map, _ int) (*Reader, error) {
 
 // Ringbuf record layout emitted by captureWithRingbuf / captureXDPNative:
 //
-//	RawSample = [metadata (28B)] [record block] [packet bytes (caplen B)] [trailing slack]
+//	RawSample = [metadata (32B)] [record block] [packet bytes (caplen B)] [trailing slack]
 //	metadata:
 //	  u64 kernel_ts_ns (offset 0)  — bpf_ktime_get_ns() at packet ingest
 //	  u32 action       (offset 8)
@@ -136,6 +137,7 @@ func NewReader(eventsMap *ebpf.Map, _ int) (*Reader, error) {
 //	  u16 caplen       (offset 14)
 //	  u32 tag          (offset 16) — set-map value of the matched entry, 0 if none
 //	  u64 packet_id    (offset 20) — see Packet.PacketID
+//	  u32 orig_len     (offset 28) — see Packet.OrigLen
 //
 // The record block, present only with ModeRecordFlag, starts with its own
 // u16 length (internal/record documents the rest).
@@ -143,7 +145,7 @@ func NewReader(eventsMap *ebpf.Map, _ int) (*Reader, error) {
 // All multi-byte fields are host-endian: BPF stores via asm.StoreMem
 // produce native-endian writes, so readers must use binary.NativeEndian.
 const (
-	MetadataSize   = 28
+	MetadataSize   = 32
 	OffsetKernelTs = 0
 	OffsetAction   = 8
 	OffsetMode     = 12
@@ -151,6 +153,7 @@ const (
 	OffsetCapLen   = 14
 	OffsetTag      = 16
 	OffsetPacketID = 20
+	OffsetOrigLen  = 28
 	// ModeRecordFlag in the mode byte marks a record block after the metadata.
 	ModeRecordFlag = 0x80
 	// RecordHeaderSize is the smallest valid record block.
@@ -165,6 +168,11 @@ func RecordKernelTs(raw []byte) uint64 {
 // RecordCapLen reads the caplen field from a raw ringbuf record.
 func RecordCapLen(raw []byte) uint16 {
 	return binary.NativeEndian.Uint16(raw[OffsetCapLen : OffsetCapLen+2])
+}
+
+// RecordOrigLen reads the orig_len field from a raw ringbuf record.
+func RecordOrigLen(raw []byte) uint32 {
+	return binary.NativeEndian.Uint32(raw[OffsetOrigLen : OffsetOrigLen+4])
 }
 
 // Read returns the next captured packet. Blocks until a packet is available.
@@ -288,6 +296,7 @@ func ParseRawSample(raw []byte) (Packet, error) {
 		Mode:      mode,
 		SiteID:    raw[OffsetSiteID],
 		CapLen:    caplen,
+		OrigLen:   RecordOrigLen(raw),
 		Tag:       binary.NativeEndian.Uint32(raw[OffsetTag : OffsetTag+4]),
 		PacketID:  binary.NativeEndian.Uint64(raw[OffsetPacketID : OffsetPacketID+8]),
 		Data:      raw[start:end],

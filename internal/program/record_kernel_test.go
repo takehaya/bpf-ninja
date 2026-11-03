@@ -258,6 +258,9 @@ func TestBpfRecordAtHook(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
+					if p.OrigLen != 64 { // the test-run frame, not cut by the snaplen
+						t.Errorf("orig_len %d, want 64", p.OrigLen)
+					}
 					p.Data, p.Record = append([]byte(nil), p.Data...), append([]byte(nil), p.Record...)
 					if len(p.Record) == 0 {
 						p.Record = nil

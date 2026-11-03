@@ -20,9 +20,11 @@ import (
 // which is free — during the filter and until the set lookup completes —
 // in BOTH attach paths:
 //
-//   - tracing: the host slots are -8/-12/-16/-24/-48; -32 and -40 are
-//     unused (the arg-based emitSetFilters key buffer sits at -57..-120,
-//     below KunaiStackTop, reused strictly before runFilter).
+//   - tracing: the host slots live across a DSL filter are -8/-12/-48;
+//     -32 and -40 are written only after the lookup (the capture
+//     epilogue, and a deferred gated exit parking its hold at -32) (the arg-based emitSetFilters key buffer sits at -57..-120,
+//     below KunaiStackTop, reused strictly before runFilter). The
+//     program.go stack table lists every host slot.
 //   - XDP-native: captureXDPNative reuses -32/-40 as scratch, but only
 //     AFTER the lookup has consumed the key buffer.
 //
@@ -178,7 +180,7 @@ func (p *pktSetSlots) emitPktSetLookups(referenced []string) asm.Instructions {
 	var insns asm.Instructions
 	for _, name := range referenced {
 		s := p.sets[name]
-		insns = append(insns, emitSetLookup(s.def.Map.FD(), s.base, int(s.def.TagWidth()), s.def.StateOff())...)
+		insns = append(insns, emitSetLookup(setMapFD(s.def.Map), s.base, int(s.def.TagWidth()), s.def.StateOff())...)
 	}
 	return insns
 }

@@ -18,6 +18,7 @@ import (
 type mergeItem struct {
 	ts       time.Time
 	data     []byte
+	origLen  uint32 // EPB Original Packet Length
 	block    []byte // complete hook EPB, including options
 	srcIface int    // source-file interface index; mapped to the output by name (fexit)
 	idx      int    // which shard reader to pull the next packet from
@@ -203,7 +204,7 @@ func mergeFiles(inPaths []string, outPath string, cfg Config) error {
 
 	for h.Len() > 0 {
 		it := heap.Pop(h).(mergeItem)
-		if err := out.writePacketIface(it.ts, it.data, outIface(it.idx, it.srcIface)); err != nil {
+		if err := out.writePacketIface(it.ts, it.data, it.origLen, outIface(it.idx, it.srcIface)); err != nil {
 			return fmt.Errorf("writing merged packet: %w", err)
 		}
 		if next, err := nextItem(readers[it.idx], it.idx, &bufs[it.idx]); err == nil {
@@ -239,5 +240,5 @@ func nextItem(r *pcapgo.NgReader, idx int, buf *[]byte) (mergeItem, error) {
 		*buf = (*buf)[:len(data)]
 	}
 	copy(*buf, data)
-	return mergeItem{ts: ci.Timestamp, data: *buf, srcIface: ci.InterfaceIndex, idx: idx}, nil
+	return mergeItem{ts: ci.Timestamp, data: *buf, origLen: uint32(ci.Length), srcIface: ci.InterfaceIndex, idx: idx}, nil
 }

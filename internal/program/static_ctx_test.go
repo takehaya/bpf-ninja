@@ -317,7 +317,7 @@ func TestStaticTCPrologueShape(t *testing.T) {
 	if want := fmt.Sprintf("[%d/8 %d/4 %d/4]", data, length, dataLen); fmt.Sprint(reads) != want {
 		t.Fatalf("reads %v, want %s", reads, want)
 	}
-	if got, want := fmt.Sprint(insns[len(insns)-3:]), fmt.Sprint(direct[len(direct)-3:]); got != want {
+	if got, want := fmt.Sprint(insns[len(insns)-2:]), fmt.Sprint(direct[len(direct)-2:]); got != want {
 		t.Fatalf("tail %s, want %s", got, want)
 	}
 }

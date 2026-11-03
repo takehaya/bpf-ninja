@@ -603,20 +603,33 @@ func compileFilterWithSlots(expr string, useDSL, isFexit bool, progType ebpf.Pro
 // --- eBPF program generation ---
 //
 // レジスタ割り当て (callee-saved):
-//   R6 = xdp_buff ポインタ (trusted, bpf_xdp_output に渡す)
-//   R7 = xdp->data (パケット先頭)
-//   R8 = xdp->data_end (パケット末尾)
-//   R9 = パケット長
+//   R6 = ctx (xdp_buff / sk_buff / bpf_nf_ctx)
+//   R7 = パケット先頭
+//   R8 = orig_len (tracing: prologue から epilogue まで。kunai は書かない。
+//        gated は hold ポインタに使う前に退避する。XDP-native では data_end)
+//   R9 = パケット長 (window。skb では linear head)
 //
-// スタックレイアウト (R10 からの負オフセット):
+// スタックレイアウト (R10 からの負オフセット)。DSL filter を越えて生きる
+// host スロットは -8/-12/-48 だけで、orig_len はスタックに置かない。
+// cBPF filter は scratch memory (M[]) を fp-4 から置くので、この保証は
+// DSL filter に限る:
 //   -8:  matched tag (u64 slot)
 //   -12: canonical fexit return value (u32)
 //   -16: map lookup の key
-//   -24: scratch buffer ポインタ (フィルタ時のみ)
+//   -24: scratch buffer ポインタ (フィルタ時のみ)。gated exit は filter
+//        前まで invocation 番号の退避にも使う
+//   [-40, -24): DSL packet-set のキーバッファ (filter 中から set lookup
+//        まで。setslots.go)
+//   -32: ringbuf 予約スロットのポインタ (reserve 以降)。deferred prologue の
+//        gated exit は filter 前から最初の reserve まで hold ポインタを置く
+//   -40: copy size (u32、epilogue)。--record filter はその前に snapshot
+//        ポインタ (u64、-40..-33) をここに退避する
 //   -48: tracing args ポインタの退避
+//   -56: bpf_ktime_get_ns の退避 (epilogue)
 //   -64: record block の valid bits (entry record のみ; epilogue で死んだ
 //        kunai/set-key 領域を再利用)。filter record は snapshot map から
 //        埋めるのでこのスロットを使わない。
+//   -72: gated entry の orig_len 退避 (filter 後から hold 書き込みまで)
 //   -128..-121: pointer-member read temporary (arg filters only; dead before
 //               set filters and runFilter, which owns KunaiStackTop=-56 downward).
 //               record の snapshot store も R3 の退避にここを使う
@@ -628,11 +641,12 @@ func compileFilterWithSlots(expr string, useDSL, isFexit bool, progType ebpf.Pro
 //   -160..-145: static context read の一時領域 (static_xdp.go; prologue 後は死ぬ)
 //
 // 実際の on-wire フォーマットの正典は internal/capture/capture.go の
-// コメント。現行は ringbuf reserve/submit で 28B のメタデータヘッダを
+// コメント。現行は ringbuf reserve/submit で 32B のメタデータヘッダを
 // パケットの前に置く:
-//   [metadata (28B)] [パケットデータ (caplen B)]
-//   metadata: u64 kernel_ts_ns + u32 action + u8 mode + u8 _pad
+//   [metadata (32B)] [パケットデータ (caplen B)]
+//   metadata: u64 kernel_ts_ns + u32 action + u8 mode + u8 site_id
 //             + u16 caplen + u32 tag + u64 packet_id (offset 20)
+//             + u32 orig_len (offset 28)
 
 // scratchBufSize is an alias for codegen.ScratchBufSize so this file's
 // existing references (map size, runFilter caps) keep their concise
@@ -729,7 +743,7 @@ const (
 	defaultCapLen = DefaultCapLen
 	// Must stay in sync with capture.MetadataSize; asserted by
 	// TestMetadataSizeMatchesCapture in metadata_size_test.go.
-	metadataSize = 28
+	metadataSize = 32
 )
 
 func buildTracingInsns(filterOut codegen.Output, tf filter.TargetFilters, eventsFD, scratchFD, statsFD int, isFexit bool, returnOffset int16, progType ebpf.ProgramType, slots *pktSetSlots, pktRefs []string, gateFD int) (asm.Instructions, error) {
@@ -752,9 +766,9 @@ func buildRecordingInsns(h *hook.Hook, filterOut codegen.Output, tf filter.Targe
 		return nil, err
 	}
 	insns = append(insns, emitTagBarrier(gateFD)...)
-	// Single-stage records carry packet id 0.
+	// Single-stage records carry packet id 0; the prologue left orig_len in R8.
 	packetID := asm.Instructions{asm.Mov.Imm(asm.R1, 0)}
-	insns = append(insns, captureWithRecord(eventsFD, statsFD, isFexit, filterOut.Capture.MaxCapLen, packetID, rec, siteID, snap)...)
+	insns = append(insns, captureWithRecord(eventsFD, statsFD, isFexit, filterOut.Capture.MaxCapLen, packetID, origLenFromR8, rec, siteID, snap)...)
 	return finishProgram(append(insns, emitExportTerminals(statsFD)...), filterOut, 0), nil
 }
 
@@ -793,7 +807,8 @@ func buildFilterGate(h *hook.Hook, filterOut codegen.Output, tf filter.TargetFil
 
 // buildFilterBody is the filter part of the gate (no prologue): tag
 // reset, arg filters, set filters, the kunai/cBPF filter and the DSL set
-// lookups. Assumes R6=ctx, R7=data, R8=data_end, R9=len from the prologue.
+// lookups. Assumes R6=ctx, R7=data, R8=orig_len, R9=len from the prologue
+// and leaves R6-R9 as they are.
 func buildFilterBody(h *hook.Hook, filterOut codegen.Output, tf filter.TargetFilters, scratchFD int, slots *pktSetSlots, pktRefs []string, snap *fieldSnap) (asm.Instructions, error) {
 	var insns asm.Instructions
 	// Default the tag to 0 before any set lookup can overwrite it, so a
@@ -989,6 +1004,9 @@ func wireFrameCopy(vlan asm.Instructions, scanLen int) asm.Instructions {
 	)
 }
 
+// origLenFromR8 loads the orig_len the packet prologue left in R8 into R1.
+var origLenFromR8 = asm.Instructions{asm.Mov.Reg(asm.R1, asm.R8)}
+
 // captureWithRingbuf is the tracing-mode capture epilogue: reserve a
 // fixed-size slot in the BPF ringbuf, write metadata + copy packet
 // bytes directly into the slot, then submit. This is the
@@ -1007,8 +1025,8 @@ func wireFrameCopy(vlan asm.Instructions, scanLen int) asm.Instructions {
 //
 //	R6 = ctx (xdp_buff* or sk_buff*)
 //	R7 = data start
-//	R8 = data_end
 //	R9 = pkt_len
+//	origLen loads orig_len into R1 (from R8, or from the hold at a gated exit)
 //	stack[-12] = canonical fexit action; stack[-48] = saved tracing args ptr
 //
 // Local stack slots used here:
@@ -1023,16 +1041,17 @@ func wireFrameCopy(vlan asm.Instructions, scanLen int) asm.Instructions {
 // as an immediate, never a register-derived value. See
 // docs/paper/PLAN_bpf_ringbuf risk register entry "Verifier rejects
 // bpf_ringbuf_reserve with non-constant size".
-func captureWithRingbuf(eventsFD, statsFD int, isFexit bool, maxCapLen int, packetID asm.Instructions) asm.Instructions {
-	return captureWithRecord(eventsFD, statsFD, isFexit, maxCapLen, packetID, nil, 0, nil)
+func captureWithRingbuf(eventsFD, statsFD int, isFexit bool, maxCapLen int, packetID, origLen asm.Instructions) asm.Instructions {
+	return captureWithRecord(eventsFD, statsFD, isFexit, maxCapLen, packetID, origLen, nil, 0, nil)
 }
 
 // captureWithRecord is captureWithRingbuf with a decision-state block:
+// origLen (like packetID) loads into R1 and must not clobber R0 or R3.
 // with a non-nil rec, the block (fixed by rec) goes between the metadata
 // and the packet bytes, the mode byte carries capture.ModeRecordFlag and
 // siteID goes into metadata byte 13. A nil rec and zero siteID emit
 // exactly captureWithRingbuf's instructions.
-func captureWithRecord(eventsFD, statsFD int, isFexit bool, maxCapLen int, packetID asm.Instructions, rec *record.Layout, siteID uint8, snap *fieldSnap) asm.Instructions {
+func captureWithRecord(eventsFD, statsFD int, isFexit bool, maxCapLen int, packetID, origLen asm.Instructions, rec *record.Layout, siteID uint8, snap *fieldSnap) asm.Instructions {
 	if maxCapLen <= 0 {
 		maxCapLen = defaultCapLen
 	}
@@ -1110,6 +1129,9 @@ func captureWithRecord(eventsFD, statsFD int, isFexit bool, maxCapLen int, packe
 		asm.LoadMem(asm.R1, asm.R10, tagSlot, asm.DWord),
 		asm.StoreMem(asm.R0, 16, asm.R1, asm.Word),
 	)
+	// --- orig_len at slot[28..32] (origLen → R1) ---
+	insns = append(insns, origLen...)
+	insns = append(insns, asm.StoreMem(asm.R0, 28, asm.R1, asm.Word))
 
 	// --- bpf_probe_read_kernel(R0 + dataOff, copy_size, packet_ptr) ---
 	insns = append(insns,

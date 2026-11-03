@@ -66,8 +66,7 @@ func nfPacketPrologue() (asm.Instructions, error) {
 		asm.LoadMem(asm.R8, asm.R7, int16(dataLenOff), asm.Word), // R8 = skb->data_len
 		asm.Sub.Reg(asm.R9, asm.R8),                              // R9 = linear head length
 		asm.LoadMem(asm.R7, asm.R7, int16(dataOff), asm.DWord),   // R7 = skb->data
-		asm.Mov.Reg(asm.R8, asm.R7),
-		asm.Add.Reg(asm.R8, asm.R9), // R8 = data + headlen
+		asm.Add.Reg(asm.R8, asm.R9),                              // R8 = orig_len = skb->len
 	), nil
 }
 

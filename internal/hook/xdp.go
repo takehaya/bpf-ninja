@@ -46,5 +46,8 @@ func xdpPacketPrologue() (asm.Instructions, error) {
 		asm.LoadMem(asm.R8, asm.R6, 8, asm.DWord),
 		asm.Mov.Reg(asm.R9, asm.R8),
 		asm.Sub.Reg(asm.R9, asm.R7),
+		// shortcut: a multi-buffer xdp_buff's frags are not counted; add
+		// them (bpf_xdp_get_buff_len) if frags are ever captured.
+		asm.Mov.Reg(asm.R8, asm.R9), // R8 = orig_len
 	), nil
 }

@@ -214,11 +214,18 @@ func EPBSizeID(caplen int) int {
 	return EPBSize(caplen) + epbIDOptSize
 }
 
+// origLength is the EPB Original Packet Length for data cut from a packet
+// of origLen bytes. It is never below the captured length, so a record
+// without the field (origLen 0) reads as uncut.
+func origLength(data []byte, origLen uint32) uint32 {
+	return max(origLen, uint32(len(data)))
+}
+
 // WritePacketID emits one Enhanced Packet Block on interface ifaceID
 // with an epb_packetid option carrying packetID. Same framing as
 // WritePacket plus 16 bytes of options between the padded data and the
 // trailing block length.
-func (fw *FastNgWriter) WritePacketID(ts time.Time, data []byte, ifaceID int, packetID uint64) error {
+func (fw *FastNgWriter) WritePacketID(ts time.Time, data []byte, origLen uint32, ifaceID int, packetID uint64) error {
 	caplen := uint32(len(data))
 	totalLen := uint32(EPBSizeID(len(data)))
 	pad := totalLen - 32 - epbIDOptSize - caplen
@@ -230,7 +237,7 @@ func (fw *FastNgWriter) WritePacketID(ts time.Time, data []byte, ifaceID int, pa
 	binary.LittleEndian.PutUint32(fw.hdr[12:16], uint32(tsNs>>32))
 	binary.LittleEndian.PutUint32(fw.hdr[16:20], uint32(tsNs))
 	binary.LittleEndian.PutUint32(fw.hdr[20:24], caplen)
-	binary.LittleEndian.PutUint32(fw.hdr[24:28], caplen)
+	binary.LittleEndian.PutUint32(fw.hdr[24:28], origLength(data, origLen))
 	if _, err := fw.w.Write(fw.hdr[:28]); err != nil {
 		return fmt.Errorf("EPB header: %w", err)
 	}
@@ -265,7 +272,7 @@ func (fw *FastNgWriter) WritePacketID(ts time.Time, data []byte, ifaceID int, pa
 //	Timestamp High (upper 32 of u64 ns):  (4 B)
 //	Timestamp Low  (lower 32 of u64 ns):  (4 B)
 //	Captured Packet Length:    len(data)   (4 B)
-//	Original Packet Length:    len(data)   (4 B)
+//	Original Packet Length:    origLen     (4 B, at least len(data))
 //	Packet Data:               len(data) bytes, padded to 4 B
 //	Block Total Length:        repeated    (4 B)
 //
@@ -273,7 +280,7 @@ func (fw *FastNgWriter) WritePacketID(ts time.Time, data []byte, ifaceID int, pa
 //
 // Single packet → 3 io.Writer.Write calls (header, data, trailer
 // with padding). The outer bufio.Writer coalesces them.
-func (fw *FastNgWriter) WritePacket(ts time.Time, data []byte) error {
+func (fw *FastNgWriter) WritePacket(ts time.Time, data []byte, origLen uint32) error {
 	caplen := uint32(len(data))
 	totalLen := uint32(EPBSize(len(data)))
 	pad := totalLen - 32 - caplen
@@ -287,7 +294,7 @@ func (fw *FastNgWriter) WritePacket(ts time.Time, data []byte) error {
 	binary.LittleEndian.PutUint32(fw.hdr[12:16], uint32(tsNs>>32))
 	binary.LittleEndian.PutUint32(fw.hdr[16:20], uint32(tsNs))
 	binary.LittleEndian.PutUint32(fw.hdr[20:24], caplen)
-	binary.LittleEndian.PutUint32(fw.hdr[24:28], caplen) // original length
+	binary.LittleEndian.PutUint32(fw.hdr[24:28], origLength(data, origLen))
 
 	if _, err := fw.w.Write(fw.hdr[:28]); err != nil {
 		return fmt.Errorf("EPB header: %w", err)
