@@ -61,8 +61,8 @@ func (c *commentBuf) int(name string, v int64) {
 	c.sep()
 	c.b = strconv.AppendInt(append(append(c.b, name...), '='), v, 10)
 }
-// word emits name=0x%016x, so the halves of a status or info word
-// ((u32)ret | flags << 32) stay readable.
+// word emits name=0x%016x, so the halves of a status word
+// ((u32)ret | flags << 32) or an info word stay readable.
 func (c *commentBuf) word(name string, v uint64) {
 	c.sep()
 	c.b = append(append(c.b, name...), "=0x"...)

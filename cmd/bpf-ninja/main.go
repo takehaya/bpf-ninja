@@ -249,7 +249,7 @@ func rootFlags() []cli.Flag {
 		},
 		&cli.StringFlag{
 			Name: "record", Value: string(record.ModeFilter),
-			Usage: "at an injected hook, write decision state as each packet's pcapng comment: filter (the arguments and members --arg-filter and --set keys read), entry (site, status, key and value bytes where present) or none. The default records only at hooks inject-run generated (which carry its bpf-ninja:hook BTF tag); an explicit value records at every --func target",
+			Usage: "at an injected hook, write decision state as each packet's pcapng comment: filter (the arguments and members --arg-filter and --set keys read), entry (site, status, key and value bytes where the hook has them; only site and info at a generic or dispatch hook) or none. The default records only at hooks inject-run generated (which carry its bpf-ninja:hook BTF tag); an explicit value records at every --func target",
 		},
 		&cli.IntFlag{
 			Name: "record-max", Value: record.DefaultMaxBytes,

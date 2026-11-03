@@ -306,7 +306,7 @@ inject した hook で取得するとき、その hook がどのような値で�
 - 空白区切りの `名前=値` の並びです。
 - 名前は `--arg-filter` と同じ書き方です (`value->action`、`key->hdr.prefixlen`、`value[0]`)。
 - 整数は 10 進数で出力します。符号付き整数は符号拡張されます。
-- `status` と `info` は `(u32)ret | flags << 32` であるため、`status=0x00000002fffffffe` のように `0x%016x` で出力します。この値はそのまま `--arg-filter` に渡せます。
+- `status` は `(u32)ret | flags << 32` であるため、`status=0x00000002fffffffe` のように `0x%016x` で出力します。`info` も `0x%016x` で出力します。どちらの値もそのまま `--arg-filter` に渡せます。
 - 読み取りに失敗したフィールドは `名前=?` になります。
 - NULL 判定の対象は `value=null` または `value!=null` になります。
 - `--record-max` で切り詰められた値は `value_bytes=4/8` (8 バイト中 4 バイトを記録) と出力されます。
