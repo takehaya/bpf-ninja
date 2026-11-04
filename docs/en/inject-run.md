@@ -6,7 +6,7 @@ You then capture packets at a hook with `--func`, or attach your own fentry obse
 Use it to see what a program does with its maps, such as which key a lookup used or which update failed, without changing the loader, its source or its object files.
 The loader can be a Go program that calls `bpf(2)` directly or a C loader.
 `inject-run` is experimental and runs on Linux x86-64 only.
-Every substituted instruction stream is checked by `pkg/injectcheck` before its `BPF_PROG_LOAD` runs.
+Each substituted instruction stream that the checker can pair is checked by `pkg/injectcheck` before its `BPF_PROG_LOAD` runs; see the [`callx` exception](#load-stream-check).
 [inject-walkthrough.md](inject-walkthrough.md) runs every step below on an example program.
 
 ## Quick start
