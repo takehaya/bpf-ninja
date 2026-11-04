@@ -3,7 +3,9 @@
 [English](README.md)
 
 `pkg/injectcheck` は `pkg/inject` の変換結果を独立に検査し、`pkg/inject` の通常コードも target binding の型を利用する。
-`cmd/inject-check` は変換器への依存を含めず個別にビルドする開発ツールであり、`inject-run` には組み込まれていない。
+`cmd/inject-check` は、変換器への依存を含めず個別にビルドする開発ツールである。
+`inject-run` もこの package を使い、置換する `BPF_PROG_LOAD` を再開する直前に assemble 済みの命令列を検査する。
+検査時点と保証範囲は、[load-stream check](../../docs/en/inject-run.md#load-stream-check)に示す。
 `Check` は元命令の比較、制御フロー辺の解決、挿入領域の導出、挿入された全命令の検査を独立に行う。
 変換器の再配置と liveness の判定は再利用しない。
 命令形式だけでは site の意図を識別できないため、信頼済み入力 `Premises.Targets` で plan の site、結果、hook の対応を渡す。
@@ -11,6 +13,9 @@
 ```go
 plannedSiteTargets, err := inject.BuildLookupTargets(transformed, result.Hooks)
 if err != nil {
+    if errors.Is(err, inject.ErrCheckerNotApplicable) {
+        // checker が対応づけられない場合の方針を caller 側で適用する。
+    }
     return err
 }
 counts, err := injectcheck.Check(original, transformed, injectcheck.Certificate{
@@ -31,6 +36,8 @@ counts, err := injectcheck.Check(original, transformed, injectcheck.Certificate{
 `Targets` は plan の用語で `{Site, When, Hook}`、すなわち元命令 index、`hit`、`miss`、`any`、`error` のいずれか、生成 hook の decoded 開始 index を対応づける。
 lookup の `any` は hit と miss の両方の経路で hook を呼ぶことを要求する。
 caller は `inject.BuildLookupTargets` を使うか、同じ情報を変換後 call の reference ではなく plan から作る必要がある。
+`BuildLookupTargets` は、宛先を対応づけられない indirect `callx` に `inject.ErrCheckerNotApplicable` を返す。
+`inject-run` は既定では置換後 stream を未検査のままロードし、`--fail-closed` 指定時だけ拒否する。
 チェッカーは値の範囲と直接 RFP アクセスを検査するが、命令 projection から alias audit の正しさは確立できない。
 
 ## 検査する形式

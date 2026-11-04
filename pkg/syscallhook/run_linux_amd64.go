@@ -20,6 +20,7 @@ import (
 	"github.com/cilium/ebpf/asm"
 	"github.com/cilium/ebpf/btf"
 	"github.com/takehaya/bpf-ninja/pkg/inject"
+	"github.com/takehaya/bpf-ninja/pkg/injectcheck"
 	"golang.org/x/sys/unix"
 )
 
@@ -85,6 +86,13 @@ type supervisor struct {
 
 func (s *supervisor) log(format string, args ...any) {
 	_, _ = fmt.Fprintf(s.options.Log, "inject-run: "+format+"\n", args...)
+}
+
+func retryOriginalOrRefuse(failClosed bool, retry func() (int64, error)) (int64, error) {
+	if failClosed {
+		return -int64(unix.EPERM), nil
+	}
+	return retry()
 }
 
 // Run starts argv with PTRACE_TRACEME and returns the child's exit status (or
@@ -378,20 +386,21 @@ func (s *supervisor) entry(pid int, t *thread, regs unix.PtraceRegs) error {
 		summary = hookSummary(result)
 	}
 	if injectErr != nil {
-		if summary != "" {
-			s.log("program %q: injection skipped: %v; attempted %s", name, injectErr, summary)
-		} else {
-			s.log("program %q: injection skipped: %v", name, injectErr)
-		}
-		if s.options.FailClosed {
-			ret = -int64(unix.EPERM)
-		} else {
-			// Original registers and all input buffers are unchanged. The verifier's
-			// caller-owned log buffer may have been written by the attempted load.
-			ret, err = r.call(unix.SYS_BPF, regs.Rdi, regs.Rsi, regs.Rdx)
-			if err != nil {
-				return err
+		if !errors.Is(injectErr, inject.ErrCheckerNotApplicable) {
+			if summary != "" {
+				s.log("program %q: injection skipped: %v; attempted %s", name, injectErr, summary)
+			} else {
+				s.log("program %q: injection skipped: %v", name, injectErr)
 			}
+		}
+		ret, err = retryOriginalOrRefuse(s.options.FailClosed, func() (int64, error) {
+			// Substituted attrs and buffers live in scratch memory, so the original
+			// registers, attr and input buffers still describe the unchanged load.
+			// A verifier attempt may have written the caller-owned log buffer.
+			return r.call(unix.SYS_BPF, regs.Rdi, regs.Rsi, regs.Rdx)
+		})
+		if err != nil {
+			return err
 		}
 	} else {
 		s.log("program %q: injected %s, tracee fd %d", name, summary, ret)
@@ -575,9 +584,18 @@ func (s *supervisor) transformLoad(r *remote, attr []byte, rule Rule, form HookF
 	}
 	request := rule.request()
 	request.StaticUntrusted = form.Form == "static"
+	injectcheck.Label(raw.Instructions)
 	result, err = inject.TransformLookupRaw(raw, request)
 	if err != nil {
 		return 0, nil, "", err
+	}
+	cert, premises, err := loadCheckInputs(raw.Instructions, result, *rule.StackLowestOffset)
+	if errors.Is(err, inject.ErrCheckerNotApplicable) {
+		s.log("program %q: %v; load not validated", rule.Program, err)
+	}
+	check, err := loadCheckPolicy(err, s.options.FailClosed)
+	if err != nil {
+		return 0, result, entry, err
 	}
 	var instructions bytes.Buffer
 	if err := result.Instructions.Marshal(&instructions, wire); err != nil {
@@ -626,9 +644,26 @@ func (s *supervisor) transformLoad(r *remote, attr []byte, rule Rule, form HookF
 	if err != nil {
 		return 0, nil, "", err
 	}
+	// This checks the bytes read from attr.insns immediately before the traced
+	// thread resumes. It neither freezes sibling threads nor proves kernel
+	// acceptance, BTF meaning, fd bindings, verifier behavior, or JIT behavior.
+	var verdict injectcheck.Verdict
+	if check {
+		encoded, err := readMemory(r.pid, u64(patched, 8), uint64(u32(patched, 4))*8)
+		if err != nil {
+			return 0, result, entry, fmt.Errorf("checker rejected the transform: read substituted load stream: %w; probe was not installed", err)
+		}
+		verdict, err = checkLoad(raw.Instructions, encoded, cert, premises)
+		if err != nil {
+			return 0, result, entry, fmt.Errorf("checker rejected the transform: %w; probe was not installed", err)
+		}
+	}
 	ret, err = r.call(unix.SYS_BPF, unix.BPF_PROG_LOAD, addr, uint64(len(patched)))
 	if err != nil {
 		return 0, nil, "", err
+	}
+	if check {
+		s.log("program %q: checker accepted sites=%d hooks=%d floor=%d", rule.Program, verdict.Counts.Sites, verdict.Counts.Hooks, verdict.Premises.LowestOffset)
 	}
 	if len(patched) >= 144 {
 		out, e := readMemory(r.pid, addr+140, 4)

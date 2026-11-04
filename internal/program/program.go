@@ -491,6 +491,10 @@ func tracingLabel(isFexit bool) (string, ebpf.AttachType) {
 // closes probe (unwinding maps and any attaches already made).
 // Shared by loadMulti (capture) and LoadArgEcho (diagnostic).
 func attachTracingProbe(probe *Probe, targetProg *ebpf.Program, name, funcName string, attachType ebpf.AttachType, insns asm.Instructions, allowDispatcherSlot bool, availability attach.FuncAvailability) error {
+	if err := checkObserverHelpers(insns); err != nil {
+		_ = probe.Close()
+		return err
+	}
 	if availability.Unavailable() {
 		_ = probe.Close()
 		return fmt.Errorf("function %q: %s", funcName, availability.Explain())
@@ -736,7 +740,7 @@ func emitWakeFlag(reserveSize int32) asm.Instructions {
 		asm.LoadMem(asm.R2, asm.R10, reservedSlot, asm.DWord),
 		asm.Sub.Imm(asm.R2, 1),
 		asm.Sub.Reg(asm.R2, asm.R1),
-		asm.RSh.Imm(asm.R2, 63), // the sign of T-1-x: 1 when crossed (both stay below 2^63)
+		asm.RSh.Imm(asm.R2, 63),                      // the sign of T-1-x: 1 when crossed (both stay below 2^63)
 		asm.Add.Imm(asm.R2, int32(BPF_RB_NO_WAKEUP)), // 1, or 2 (BPF_RB_FORCE_WAKEUP) when crossed
 		asm.LoadMem(asm.R0, asm.R10, wakeFlagSlot, asm.DWord),
 		asm.StoreMem(asm.R10, wakeFlagSlot, asm.R2, asm.DWord),

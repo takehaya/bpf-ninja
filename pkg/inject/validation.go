@@ -1,6 +1,7 @@
 package inject
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 
@@ -8,9 +9,16 @@ import (
 	"github.com/takehaya/bpf-ninja/pkg/injectcheck"
 )
 
+var ErrCheckerNotApplicable = errors.New("checker not applicable")
+
 // BuildLookupTargets builds the checker's trusted target binding from the
 // rewrite plan and generated hook symbols, never from transformed call targets.
 func BuildLookupTargets(out asm.Instructions, hooks []LookupHook) ([]injectcheck.SiteTarget, error) {
+	for i, ins := range out {
+		if ins.OpCode.Class().IsJump() && ins.OpCode.JumpOp() == asm.Call && ins.OpCode.Source() == asm.RegSource {
+			return nil, fmt.Errorf("%w: cannot pair indirect callx at instruction %d", ErrCheckerNotApplicable, i)
+		}
+	}
 	wanted := map[string]bool{}
 	for _, hook := range hooks {
 		wanted[hook.Name] = true
