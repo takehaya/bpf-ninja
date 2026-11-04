@@ -71,10 +71,13 @@ func TestBuildLookupTargets(t *testing.T) {
 		{"duplicate-target", out, []LookupHook{hit, {Name: "miss", Kind: HookLookup, Sites: []LookupSite{{InstructionIndex: 7}}}}},
 		{"invalid-lookup-when", out, []LookupHook{{Name: "hit", Kind: HookLookup, When: "error"}}},
 		{"invalid-call-when", out, []LookupHook{{Name: "hit", Kind: HookUpdate, When: "hit"}}},
+		{"indirect-callx", append(append(asm.Instructions(nil), out...), asm.Instruction{OpCode: asm.OpCode(asm.JumpClass).SetJumpOp(asm.Call).SetSource(asm.RegSource), Src: asm.R3}), []LookupHook{hit}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if _, err := BuildLookupTargets(tc.out, tc.hooks); err == nil {
 				t.Fatal("BuildLookupTargets accepted invalid input")
+			} else if tc.name == "indirect-callx" && (!errors.Is(err, ErrCheckerNotApplicable) || !strings.Contains(err.Error(), "cannot pair indirect callx")) {
+				t.Fatalf("callx was not classified as checker-inapplicable: %v", err)
 			}
 		})
 	}

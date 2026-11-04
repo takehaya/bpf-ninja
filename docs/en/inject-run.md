@@ -6,6 +6,7 @@ You then capture packets at a hook with `--func`, or attach your own fentry obse
 Use it to see what a program does with its maps, such as which key a lookup used or which update failed, without changing the loader, its source or its object files.
 The loader can be a Go program that calls `bpf(2)` directly or a C loader.
 `inject-run` is experimental and runs on Linux x86-64 only.
+Every substituted instruction stream is checked by `pkg/injectcheck` before its `BPF_PROG_LOAD` runs.
 [inject-walkthrough.md](inject-walkthrough.md) runs every step below on an example program.
 
 ## Quick start
@@ -248,7 +249,7 @@ bpf-ninja inject-run [--config FILE] [--fail-closed] [--hooks-json FILE] [--look
 | Flag | Meaning |
 |---|---|
 | `--config FILE` | Rules file (JSON). Without it, the environment variable `BPF_NINJA_INJECT_CONFIG` holds the JSON itself. |
-| `--fail-closed` | Refuse a matched load with `EPERM` when it cannot be injected. The default loads the original program. |
+| `--fail-closed` | Refuse a matched load with `EPERM` when transformation, checking, or the substituted kernel load fails, or when the checker is not applicable. By default a failed check loads the original program, while a checker-inapplicable transformed program loads without validation. |
 | `--hooks-json FILE` | Write the injected programs and their hooks to FILE. See [Hooks file](#hooks-file). |
 | `--lookups-json FILE` | Write every XDP and tc program the target loads, with its map calls and a suggested rule. Rules are then optional. See [Lookups file](#lookups-file). |
 
@@ -516,12 +517,16 @@ A use's `pc` there indexes the translated instructions, and its `site` and `reas
 
 ## Diagnostics and failures
 
-By default `inject-run` fails open: a load it cannot rewrite loads unchanged.
+By default `inject-run` fails open for transformation, metadata, BTF-load, substituted kernel-load, and checker failures: a rejected transform loads unchanged.
+If the checker is not applicable, the substituted program loads without validation by default.
 Diagnostics go to stderr:
 
 | Diagnostic | Meaning |
 |---|---|
 | `program "P": untrusted hook form F (REASON)` | The hook form chosen for a matched load. |
+| `program "P": checker accepted sites=N hooks=N floor=N` | The assembled substituted stream passed the load-stream checker. |
+| `program "P": checker not applicable: REASON; load not validated` | The checker cannot pair this stream. The substituted load proceeds unchecked by default; `--fail-closed` returns `EPERM`. |
+| `program "P": injection skipped: checker rejected the transform: ERR; probe was not installed; attempted ...` | The stream could not be read or decoded, or the checker rejected it. The original program is retried by default; `--fail-closed` returns `EPERM`. |
 | `program "P": injected hook "H" (...), tracee fd N` | The rewritten program loaded. The line names each hook with its map and site PCs, then each site `auto` skipped and why. |
 | `program "P": injection skipped: ERR[; attempted ...]` | A read, metadata, transform or BTF-load error, or the kernel rejected the rewritten program. After a rejection the line names the hooks it attempted. |
 | `bpf command N: injection skipped: ERR` | `inject-run` could not read or accept the arguments of a `BPF_BTF_LOAD` or `BPF_PROG_LOAD` call, for example a matched load without BTF, or two rules match the same load (`ambiguous program selectors`). |
@@ -531,6 +536,7 @@ Diagnostics go to stderr:
 | `program "P": map "M" types from ELF sha256 ...: key "K", value "V"` | `map_btf` supplied these types. |
 
 When the rewritten load fails, `inject-run` retries the original syscall with its original arguments.
+It also retries the original syscall after a checker read, decode, or validation failure.
 It does not retry with another hook form.
 The loader's verifier log buffer can still hold the log of the attempted load.
 After an inconclusive probe, a rejection with `EINVAL`, `EOPNOTSUPP` or `EACCES` of a program with untrusted hooks adds a hint.
@@ -542,6 +548,23 @@ With `--fail-closed`:
 - a matched program that cannot be injected gets `EPERM`;
 - so does a `BPF_BTF_LOAD` or `BPF_PROG_LOAD` call whose arguments `inject-run` cannot read, since it cannot tell whether the call matches;
 - unmatched programs still load unchanged.
+
+### Load-stream check
+
+Previously, `inject-run` transformed and marshalled the substituted stream without invoking the existing independent checker on the load path.
+`inject-run` labels the original decoded instructions, derives hook ranges and plan-based site targets after transformation, and marshals the result.
+After allocating the substituted `bpf_attr` and instruction buffer in the tracee, it reads back the exact byte range named by `attr.insns` and `insn_cnt`.
+It decodes and checks that byte range immediately before resuming the stopped thread for `BPF_PROG_LOAD`.
+No option is needed to enable this check.
+
+The check establishes that the bytes read at that moment satisfy `pkg/injectcheck` under the configured `stack_lowest_offset` and plan-derived site targets.
+It does not freeze tracee memory, so a sibling thread can still mutate the instruction buffer after the read and before the kernel copies it.
+It also does not establish kernel acceptance, BTF meaning, fd identity, verifier correctness, JIT correctness, or behavior of externally attached observers.
+
+The checker cannot pair an indirect `callx` instruction with its target.
+`inject.BuildLookupTargets` therefore returns `inject.ErrCheckerNotApplicable` for a matched transformed stream containing `callx`.
+By default `inject-run` reports `checker not applicable: cannot pair indirect callx at instruction N; load not validated` and loads the substituted stream unchecked, preserving programs such as Kmesh that use indirect BPF calls.
+With `--fail-closed`, it refuses that load with `EPERM`.
 
 In both modes:
 
@@ -556,6 +579,7 @@ In both modes:
   It does not follow children from fork or vfork, and it detaches a separate process created by clone.
   `inject-run` cannot attach to a running process.
 - Sibling threads keep running while the loading thread is stopped.
+  The checker reads the substituted stream immediately before resuming the loading thread, but it does not stop a sibling from changing that buffer afterward.
   Do not use `inject-run` with loaders that change load buffers, replace referenced fds, unshare fd tables or exec while another thread loads a program.
 - `inject-run` forwards ordinary signals outside syscall replay.
   It does not fully support job-control stops, seccomp tracing and notification, or uncatchable signals during replay; an unexpected stop during replay ends supervision.

@@ -3,7 +3,8 @@
 [日本語](README.ja.md)
 
 `pkg/injectcheck` independently validates instruction streams rewritten by `pkg/inject`; `pkg/inject` also uses its target-binding types in production code.
-`cmd/inject-check` is a development tool built separately so its dependency closure excludes the transformer; it is not integrated into `inject-run`.
+`cmd/inject-check` is a development tool built separately so its dependency closure excludes the transformer.
+`inject-run` also uses this package to check the assembled substituted stream immediately before resuming `BPF_PROG_LOAD`; see [load-stream check](../../docs/en/inject-run.md#load-stream-check).
 `Check` independently compares the originals, resolves control-flow edges, derives insertion regions and validates every inserted instruction.
 It does not reuse the transformer's relocation or liveness decisions.
 The trusted `Premises.Targets` input supplies the plan's site/result-to-hook binding because instruction shapes alone do not identify intent.
@@ -11,6 +12,9 @@ The trusted `Premises.Targets` input supplies the plan's site/result-to-hook bin
 ```go
 plannedSiteTargets, err := inject.BuildLookupTargets(transformed, result.Hooks)
 if err != nil {
+    if errors.Is(err, inject.ErrCheckerNotApplicable) {
+        // Apply the caller's policy for a stream the checker cannot pair.
+    }
     return err
 }
 counts, err := injectcheck.Check(original, transformed, injectcheck.Certificate{
@@ -31,6 +35,8 @@ The separate **premises** are trusted caller inputs.
 `Targets` binds `{Site, When, Hook}` in plan terms: the original instruction index, `hit`, `miss`, `any`, or `error`, and the decoded index of the generated hook start.
 For a lookup, `any` requires the hook on both the hit and miss paths.
 The caller must use `inject.BuildLookupTargets` or derive the same data from the plan, never from transformed call references.
+`BuildLookupTargets` returns `inject.ErrCheckerNotApplicable` for an indirect `callx`, whose target it cannot pair.
+`inject-run` loads that substituted stream without validation by default and refuses it only with `--fail-closed`.
 The checker checks its range and direct RFP accesses, but cannot establish the alias audit from the instruction projection.
 
 ## Checked shapes
