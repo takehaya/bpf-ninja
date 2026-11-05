@@ -112,7 +112,18 @@ func TestBpfSubprogStaticHookAttach(t *testing.T) {
 		t.Fatal(err)
 	}
 	if reason := ctxflow.CallsRefusal(translated, plan.hooks[0].Name); reason != "" {
-		t.Fatalf("translated context proof: %s", reason)
+		var calls strings.Builder
+		for it := translated.Iterate(); it.Next(); {
+			if fn := btf.FuncMetadata(it.Ins); fn != nil {
+				fmt.Fprintf(&calls, "func pc=%d name=%s linkage=%v symbol=%q\n", it.Offset, fn.Name, fn.Linkage, it.Ins.Symbol())
+			}
+			if it.Ins.OpCode.JumpOp() == asm.Call {
+				fmt.Fprintf(&calls, "call pc=%d opcode=%v src=%v off=%d imm=%d ref=%q function=%v builtin=%v\n",
+					it.Offset, it.Ins.OpCode, it.Ins.Src, it.Ins.Offset, it.Ins.Constant,
+					it.Ins.Reference(), it.Ins.IsFunctionCall(), it.Ins.IsBuiltinCall())
+			}
+		}
+		t.Fatalf("translated context proof: %s\n%s", reason, calls.String())
 	}
 	if err := target.Maps["sessions"].Put(uint32(0), [2]uint64{2, 987654321}); err != nil {
 		t.Fatal(err)
