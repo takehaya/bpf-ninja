@@ -37,24 +37,24 @@ import (
 // MapBTF pins an ELF source for a BTF-less map and optionally selects exact
 // BTF names to fill untyped sides; already typed sides accept only the same type.
 type Rule struct {
-	Program           string          `json:"program"`
-	Auto              bool            `json:"auto,omitempty"`
-	Maps              []string        `json:"maps,omitempty"`
-	Entry             bool            `json:"entry,omitempty"`
-	TailCalls         bool            `json:"tail_calls,omitempty"`
-	CopyReadOnly      bool            `json:"copy_read_only,omitempty"`
-	StaticUntrusted   bool            `json:"static_untrusted,omitempty"`
-	Dispatch          bool            `json:"dispatch,omitempty"`
-	Ops               []string        `json:"ops,omitempty"`
-	MapBTF            *MapBTF         `json:"map_btf,omitempty"`
-	Map               string          `json:"map,omitempty"`
-	Func              string          `json:"func,omitempty"`
-	Line              uint32          `json:"line,omitempty"`
-	AllMatches        bool            `json:"all_matches,omitempty"`
-	SitePCs           []uint32        `json:"site_pcs,omitempty"`
-	Hook              string          `json:"hook"`
-	StackLowestOffset json.RawMessage `json:"stack_lowest_offset,omitempty"`
-	FrameRounding     int             `json:"frame_rounding,omitempty"`
+	Program             string          `json:"program"`
+	Auto                bool            `json:"auto,omitempty"`
+	Maps                []string        `json:"maps,omitempty"`
+	Entry               bool            `json:"entry,omitempty"`
+	TailCalls           bool            `json:"tail_calls,omitempty"`
+	CopyReadOnly        bool            `json:"copy_read_only,omitempty"`
+	StaticUntrusted     bool            `json:"static_untrusted,omitempty"`
+	Dispatch            bool            `json:"dispatch,omitempty"`
+	Ops                 []string        `json:"ops,omitempty"`
+	MapBTF              *MapBTF         `json:"map_btf,omitempty"`
+	Map                 string          `json:"map,omitempty"`
+	Func                string          `json:"func,omitempty"`
+	Line                uint32          `json:"line,omitempty"`
+	AllMatches          bool            `json:"all_matches,omitempty"`
+	SitePCs             []uint32        `json:"site_pcs,omitempty"`
+	Hook                string          `json:"hook"`
+	StackLowestOffset   json.RawMessage `json:"stack_lowest_offset,omitempty"`
+	LegacyFrameRounding json.RawMessage `json:"frame_rounding,omitempty"`
 }
 
 // MapBTF pins the ELF supplying missing map BTF types to a SHA-256 digest.
@@ -86,7 +86,6 @@ func (r Rule) request() inject.LookupRequestRaw {
 		Pops:            ops.pops,
 		Peeks:           ops.peeks,
 		HookName:        r.Hook,
-		Stack:           inject.StackAudit{FrameRounding: r.FrameRounding},
 	}
 }
 
@@ -175,6 +174,9 @@ func Validate(rules []Rule) error {
 		if r.StackLowestOffset != nil {
 			return fmt.Errorf("rule %d: stack_lowest_offset is no longer accepted; inject-run takes the stack floor from the verifier; remove the field", i)
 		}
+		if r.LegacyFrameRounding != nil {
+			return fmt.Errorf("rule %d: frame_rounding is no longer accepted; inject-run detects the running kernel's frame rounding; remove the field", i)
+		}
 		// The hook-name and stack limits come from inject, so Validate cannot
 		// drift from the transform. The generic-hook map slot, a CopyReadOnly
 		// value copy and call-chain limits are program-dependent and are
@@ -188,16 +190,6 @@ func Validate(rules []Rule) error {
 
 // ParseConfig reads a strict JSON array. Unknown keys and trailing data are errors.
 func ParseConfig(r io.Reader) ([]Rule, error) {
-	return parseConfig(r, 0)
-}
-
-// ParseConfigWithFrameRounding applies frameRounding to rules that omit it
-// before validation. Explicit values are preserved.
-func ParseConfigWithFrameRounding(r io.Reader, frameRounding int) ([]Rule, error) {
-	return parseConfig(r, frameRounding)
-}
-
-func parseConfig(r io.Reader, frameRounding int) ([]Rule, error) {
 	data, err := io.ReadAll(io.LimitReader(r, (1<<20)+1))
 	if err != nil {
 		return nil, fmt.Errorf("injection config: %w", err)
@@ -214,19 +206,6 @@ func parseConfig(r io.Reader, frameRounding int) ([]Rule, error) {
 	var trailing any
 	if err := d.Decode(&trailing); err != io.EOF {
 		return nil, fmt.Errorf("injection config: expected one JSON array")
-	}
-	var fields []map[string]json.RawMessage
-	if err := json.Unmarshal(data, &fields); err != nil {
-		return nil, fmt.Errorf("injection config: %w", err)
-	}
-	for i := range rules {
-		if _, explicit := fields[i]["frame_rounding"]; explicit {
-			if rules[i].FrameRounding != 16 && rules[i].FrameRounding != 32 {
-				return nil, fmt.Errorf("rule %d: frame_rounding must be 16 or 32", i)
-			}
-			continue
-		}
-		rules[i].FrameRounding = frameRounding
 	}
 	if err := Validate(rules); err != nil {
 		return nil, err

@@ -58,7 +58,7 @@ func TestRuleRequestForwardsOptions(t *testing.T) {
 		r := full
 		f := reflect.ValueOf(&r).Elem().Field(i)
 		f.Set(reflect.Zero(f.Type()))
-		if forwarded := !reflect.DeepEqual(r.request(), want); forwarded != (name != "Program" && name != "MapBTF" && name != "StackLowestOffset") {
+		if forwarded := !reflect.DeepEqual(r.request(), want); forwarded != (name != "Program" && name != "MapBTF" && name != "StackLowestOffset" && name != "LegacyFrameRounding") {
 			t.Errorf("%s: forwarded=%v", name, forwarded)
 		}
 	}
@@ -73,20 +73,11 @@ func TestRuleWithStackLowestOffsetRejected(t *testing.T) {
 	}
 }
 
-func TestParseConfigAppliesFrameRoundingBeforeValidation(t *testing.T) {
-	config := `[{"program":"p","auto":true,"ops":["lookup:any","update:any"],"hook":"h"}]`
-	rules, err := ParseConfigWithFrameRounding(strings.NewReader(config), 16)
-	if err != nil || len(rules) != 1 || rules[0].FrameRounding != 16 {
-		t.Fatalf("16-byte default: %+v, %v", rules, err)
-	}
-	explicit := strings.Replace(config, `"hook":"h"`, `"frame_rounding":32,"hook":"h"`, 1)
-	if rules, err := ParseConfigWithFrameRounding(strings.NewReader(explicit), 16); err != nil || rules[0].FrameRounding != 32 {
-		t.Fatalf("explicit rounding: %+v %v", rules, err)
-	}
-	for _, value := range []string{"0", "null"} {
-		explicit = strings.Replace(config, `"hook":"h"`, `"frame_rounding":`+value+`,"hook":"h"`, 1)
-		if _, err := ParseConfigWithFrameRounding(strings.NewReader(explicit), 16); err == nil || !strings.Contains(err.Error(), "frame_rounding must be 16 or 32") {
-			t.Fatalf("explicit %s: %v", value, err)
+func TestRuleWithFrameRoundingRejected(t *testing.T) {
+	for _, value := range []string{"16", "null"} {
+		_, err := ParseConfig(strings.NewReader(`[{"program":"p","map":"sessions","hook":"h","frame_rounding":` + value + `}]`))
+		if err == nil || !strings.Contains(err.Error(), "frame_rounding is no longer accepted") || !strings.Contains(err.Error(), "remove the field") {
+			t.Fatalf("value %s: error = %v", value, err)
 		}
 	}
 }

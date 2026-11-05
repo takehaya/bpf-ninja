@@ -66,7 +66,7 @@ func newInjectRunCommand() *cli.Command {
 			var rules []syscallhook.Rule
 			if input != nil {
 				var err error
-				if rules, err = syscallhook.ParseConfigWithFrameRounding(input, runningKernelFrameRounding()); err != nil {
+				if rules, err = syscallhook.ParseConfig(input); err != nil {
 					return err
 				}
 			}

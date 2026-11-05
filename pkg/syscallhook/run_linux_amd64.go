@@ -115,6 +115,9 @@ func run(ctx context.Context, argv []string, opts Options, probeUntrusted, probe
 	if len(argv) == 0 {
 		return 0, fmt.Errorf("target command is required after --")
 	}
+	if opts.FrameRounding == 0 {
+		opts.FrameRounding = 32
+	}
 	if len(opts.Rules) != 0 || opts.OnDiscover == nil {
 		if err := Validate(opts.Rules); err != nil {
 			return 0, err
@@ -367,9 +370,6 @@ func (s *supervisor) entry(pid int, t *thread, regs unix.PtraceRegs) error {
 		return err
 	}
 	rounding := s.options.FrameRounding
-	if rule != nil {
-		rounding = rule.FrameRounding
-	}
 	stack, stackErr := s.preloadDepths(r, attr, rounding)
 	if s.options.preloadError != nil {
 		stackErr = s.options.preloadError
@@ -736,7 +736,7 @@ func (s *supervisor) transformLoad(r *remote, attr []byte, rule Rule, form HookF
 	}
 	request := rule.request()
 	request.StaticUntrusted = form.Form == "static"
-	request.Stack = inject.StackAudit{Frames: stack.Frames(), Source: stack.Source, FrameRounding: rule.FrameRounding}
+	request.Stack = inject.StackAudit{Frames: stack.Frames(), Source: stack.Source, FrameRounding: stack.FrameRounding}
 	injectcheck.Label(raw.Instructions)
 	result, err = inject.TransformLookupRawGuarded(raw, request, s.probeTailCallReachability)
 	if err != nil {
