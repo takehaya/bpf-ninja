@@ -11,6 +11,7 @@ import (
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/asm"
 	"github.com/cilium/ebpf/btf"
+	"github.com/takehaya/bpf-ninja/pkg/injectcheck"
 )
 
 func autoReq() LookupRequest {
@@ -1414,32 +1415,42 @@ func ctxStructName(t *testing.T, insns asm.Instructions, hook string) string {
 // tail-call and dispatch, in the ELF and raw forms; the entry ctx must match
 // the program type, and an __sk_buff key or value is refused like xdp_md.
 func TestLookupTC(t *testing.T) {
+	type form struct {
+		ctx  string
+		conv func(*ebpf.CollectionSpec) *ebpf.CollectionSpec
+		read asm.Size // of each global hook's first ctx read
+	}
+	sk, nf := form{"__sk_buff", asTC, asm.Word}, form{"bpf_nf_ctx", asNetfilter, asm.DWord}
 	for _, tc := range []struct {
 		name string
 		spec func() *ebpf.CollectionSpec
 		edit func(*LookupRequest)
 	}{
-		{"per-map", func() *ebpf.CollectionSpec { return asTC(dispatchFixture()) }, func(r *LookupRequest) { r.Entry, r.TailCalls = true, true }},
-		{"dispatch", func() *ebpf.CollectionSpec { return asTC(dispatchFixture()) }, func(r *LookupRequest) { r.Entry, r.TailCalls, r.Dispatch = true, true, true }},
+		{"per-map", dispatchFixture, func(r *LookupRequest) { r.Entry, r.TailCalls = true, true }},
+		{"dispatch", dispatchFixture, func(r *LookupRequest) { r.Entry, r.TailCalls, r.Dispatch = true, true, true }},
 		{"static", func() *ebpf.CollectionSpec {
-			spec := asTC(dispatchFixture())
+			spec := dispatchFixture()
 			spec.Maps["sessions"].Flags = bpfFRdonlyProg
 			return spec
 		}, func(r *LookupRequest) { r.StaticUntrusted = true }},
 		{"generic", func() *ebpf.CollectionSpec {
-			spec := asTC(multiMapFixture())
+			spec := multiMapFixture()
 			spec.Maps["flows"].Type = ebpf.HashOfMaps
 			return spec
 		}, func(*LookupRequest) {}},
 	} {
-		for _, raw := range []bool{false, true} {
+		for _, mode := range []struct {
+			f   form
+			raw bool
+		}{{sk, false}, {sk, true}, {nf, false}, {nf, true}} {
+			f, raw := mode.f, mode.raw
 			req := autoReq()
 			req.HookName = "d"
 			tc.edit(&req)
 			var insns asm.Instructions
 			var hooks []LookupHook
 			if raw {
-				p := rawLookupFixture(t, tc.spec(), "p", true)
+				p := rawLookupFixture(t, f.conv(tc.spec()), "p", true)
 				got, err := TransformLookupRaw(p, LookupRequestRaw{Auto: true, Entry: req.Entry, TailCalls: req.TailCalls, Dispatch: req.Dispatch,
 					StaticUntrusted: req.StaticUntrusted, HookName: req.HookName, Stack: req.Stack})
 				if err != nil {
@@ -1450,18 +1461,29 @@ func TestLookupTC(t *testing.T) {
 				}
 				insns, hooks = got.Instructions, got.Hooks
 			} else {
-				spec := tc.spec()
+				spec := f.conv(tc.spec())
+				in := append(asm.Instructions(nil), spec.Programs["p"].Instructions...)
+				injectcheck.Label(spec.Programs["p"].Instructions)
 				plan, err := transformLookup(spec, req)
 				if err != nil {
 					t.Fatalf("%s: %v", tc.name, err)
 				}
 				insns, hooks = spec.Programs["p"].Instructions, plan.hooks
+				cert, premises := validationCertificate(t, in, insns, hooks, req.Stack.LowestOffset)
+				if _, err := injectcheck.Check(in, insns, cert, premises); err != nil {
+					t.Fatalf("%s %s: checker: %v", tc.name, f.ctx, err)
+				}
 			}
 			kinds := map[HookKind]bool{}
 			for _, hook := range hooks {
 				kinds[hook.Kind] = true
-				if ctx := ctxStructName(t, insns, hook.Name); ctx != "__sk_buff" {
+				if ctx := ctxStructName(t, insns, hook.Name); ctx != f.ctx {
 					t.Fatalf("%s raw=%v: hook %s takes %s", tc.name, raw, hook.Name, ctx)
+				}
+				for _, ins := range insns {
+					if ins.Symbol() == hook.Name && btf.FuncMetadata(&ins).Linkage == btf.GlobalFunc && ins != asm.LoadMem(asm.R0, asm.R1, 0, f.read).WithMetadata(ins.Metadata) {
+						t.Fatalf("%s raw=%v %s: hook %s starts with %v", tc.name, raw, f.ctx, hook.Name, ins)
+					}
 				}
 			}
 			if !kinds[HookLookup] || req.Entry && (!kinds[HookEntry] || !kinds[HookTailCall]) {
@@ -1482,7 +1504,7 @@ func TestLookupTC(t *testing.T) {
 		{"socket-filter", ebpf.SocketFilter, true, false},
 		{"cgroup-skb", ebpf.CGroupSKB, true, true},
 		{"cgroup-skb-xdp_md", ebpf.CGroupSKB, false, false},
-		{"netfilter", ebpf.Netfilter, true, false},
+		{"netfilter-__sk_buff", ebpf.Netfilter, true, false},
 	} {
 		spec := lookupFixture()
 		if tc.skb {

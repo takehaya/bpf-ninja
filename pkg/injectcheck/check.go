@@ -483,7 +483,8 @@ func checkHook(is asm.Instructions) error {
 	if isU32Hook(is) || equal(is, asm.Instructions{asm.Mov.Imm(asm.R0, 0), asm.Return()}) {
 		return nil
 	}
-	if len(is) < 3 || !same(is[0], asm.LoadMem(asm.R0, asm.R1, 0, asm.Word)) || !equal(is[len(is)-2:], asm.Instructions{asm.Mov.Imm(asm.R0, 0), asm.Return()}) {
+	// The first read of ctx is 4 bytes, or 8 for a netfilter context.
+	if len(is) < 3 || !same(is[0], asm.LoadMem(asm.R0, asm.R1, 0, asm.Word)) && !same(is[0], asm.LoadMem(asm.R0, asm.R1, 0, asm.DWord)) || !equal(is[len(is)-2:], asm.Instructions{asm.Mov.Imm(asm.R0, 0), asm.Return()}) {
 		return reject(HookShape, "not an observer hook")
 	}
 	body := is[1 : len(is)-2]

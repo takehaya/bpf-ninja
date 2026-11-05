@@ -84,7 +84,8 @@ func (s LookupSelector) empty() bool {
 //
 // The hooks take the entry function's context: struct xdp_md * in an XDP
 // program, struct __sk_buff * in a tc (SchedCLS or SchedACT) or CGroupSKB
-// program. The signatures below show the XDP form.
+// program, struct bpf_nf_ctx * in a Netfilter program. The signatures below
+// show the XDP form.
 //
 // Entry also calls int HOOKNAME_entry(struct xdp_md *ctx) once at program
 // entry, which runs when the program is entered through a tail call, unlike an
@@ -366,7 +367,8 @@ func DiscoverLookups(elf []byte, programName string) ([]LookupSite, error) {
 // independent clone. A selected lookup calls
 // int HOOK(CTX *ctx, const KEY *key, const VALUE *value) for non-null results,
 // where CTX is the program's context type: struct xdp_md for XDP, struct
-// __sk_buff for tc (SchedCLS or SchedACT) and CGroupSKB. See LookupRequest for the Auto,
+// __sk_buff for tc (SchedCLS or SchedACT) and CGroupSKB, struct bpf_nf_ctx
+// for Netfilter. See LookupRequest for the Auto,
 // Entry, TailCalls and Dispatch hooks. This never loads or attaches BPF.
 func TransformLookup(elf []byte, req LookupRequest) (*LookupResult, error) {
 	// Reuse the existing hash/name/stack validation, without its load contract.
@@ -482,16 +484,31 @@ func elfLookupMaps(spec *ebpf.CollectionSpec) lookupMapResolver {
 func ContextType(typ ebpf.ProgramType) string { return lookupContext(typ) }
 
 // lookupContext names the context struct the hooks of a program of type typ
-// take, and whose first word they read: struct xdp_md for XDP, struct
-// __sk_buff (len) for tc and cgroup_skb. Empty means the type is not supported.
+// take, and whose first field they read (see ctxRead): struct xdp_md for XDP,
+// struct __sk_buff (len) for tc and cgroup_skb, struct bpf_nf_ctx (state) for
+// netfilter. Empty means the type is not supported.
 func lookupContext(typ ebpf.ProgramType) string {
 	switch typ {
 	case ebpf.XDP:
 		return "xdp_md"
 	case ebpf.SchedCLS, ebpf.SchedACT, ebpf.CGroupSKB:
 		return "__sk_buff"
+	case ebpf.Netfilter:
+		return "bpf_nf_ctx"
 	}
 	return ""
+}
+
+// ctxRead is a hook's first instruction, a read of its context's first field:
+// 8 bytes from struct bpf_nf_ctx, whose verifier allows only 8-byte reads, and
+// 4 bytes from the other contexts.
+func ctxRead(ctx btf.Type) asm.Instruction {
+	if p, ok := btf.UnderlyingType(ctx).(*btf.Pointer); ok {
+		if s, ok := btf.UnderlyingType(p.Target).(*btf.Struct); ok && s.Name == "bpf_nf_ctx" {
+			return asm.LoadMem(asm.R0, asm.R1, 0, asm.DWord)
+		}
+	}
+	return asm.LoadMem(asm.R0, asm.R1, 0, asm.Word)
 }
 
 // mapCallOps are the helpers discoverMapCalls lists.
@@ -509,7 +526,7 @@ func discoverLookupProgram(insns asm.Instructions, typ ebpf.ProgramType, resolve
 
 func discoverMapCalls(insns asm.Instructions, typ ebpf.ProgramType, resolve lookupMapResolver) ([]discoveredLookup, error) {
 	if lookupContext(typ) == "" {
-		return nil, refuse("only XDP, tc and cgroup_skb programs are supported")
+		return nil, refuse("only XDP, tc, cgroup_skb and netfilter programs are supported")
 	}
 	indices := make(map[int]int)
 	it := insns.Iterate()
@@ -933,7 +950,7 @@ func checkMapField(name string, typ btf.Type, size uint32) string {
 	if n, err := btf.Sizeof(typ); err != nil || n <= 0 || uint64(n) != uint64(size) {
 		return fmt.Sprintf("map %s BTF size does not match map size %d", name, size)
 	}
-	if s, ok := btf.UnderlyingType(typ).(*btf.Struct); ok && (s.Name == "xdp_md" || s.Name == "__sk_buff" || s.Name == "bpf_dynptr") {
+	if s, ok := btf.UnderlyingType(typ).(*btf.Struct); ok && (s.Name == "xdp_md" || s.Name == "__sk_buff" || s.Name == "bpf_nf_ctx" || s.Name == "bpf_dynptr") {
 		return fmt.Sprintf("map %s type %q has a special global-function pointer ABI", name, s.Name)
 	}
 	return ""
@@ -2202,7 +2219,7 @@ func genericHook(name string, ctx btf.Type) asm.Instructions {
 	fn := &btf.Func{Name: name, Linkage: btf.GlobalFunc, Type: &btf.FuncProto{
 		Return: &btf.Int{Name: "int", Size: 4, Encoding: btf.Signed}, Params: params,
 	}, Tags: []string{HookTag}, ParamTags: [][]string{nil, nil, untrusted, untrusted, untrusted}}
-	head := btf.WithFuncMetadata(asm.LoadMem(asm.R0, asm.R1, 0, asm.Word).WithSymbol(name).
+	head := btf.WithFuncMetadata(ctxRead(ctx).WithSymbol(name).
 		WithSource(asm.Comment("generated generic lookup observation hook "+name)), fn)
 	return append(asm.Instructions{head}, untrustedReads(asm.R3, asm.R4, asm.R5)...)
 }
@@ -2241,7 +2258,7 @@ func scalarHook(name string, ctx btf.Type, scalars ...string) asm.Instructions {
 	fn := &btf.Func{Name: name, Linkage: btf.GlobalFunc, Type: &btf.FuncProto{
 		Return: &btf.Int{Name: "int", Size: 4, Encoding: btf.Signed}, Params: params,
 	}, Tags: []string{HookTag}}
-	head := btf.WithFuncMetadata(asm.LoadMem(asm.R0, asm.R1, 0, asm.Word).WithSymbol(name).
+	head := btf.WithFuncMetadata(ctxRead(ctx).WithSymbol(name).
 		WithSource(asm.Comment("generated observation hook "+name)), fn)
 	return asm.Instructions{head, asm.Mov.Imm(asm.R0, 0), asm.Return()}
 }
@@ -2299,7 +2316,7 @@ func pointerHook(name string, ctx btf.Type, ptrs []btf.FuncParam, withSite, untr
 	}
 	// Global functions are verified independently with nullable memory args.
 	// Actual reads keep every argument live, even after dead-register pruning.
-	head := btf.WithFuncMetadata(asm.LoadMem(asm.R0, asm.R1, 0, asm.Word).WithSymbol(name).
+	head := btf.WithFuncMetadata(ctxRead(ctx).WithSymbol(name).
 		WithSource(asm.Comment("generated lookup observation hook "+name)), fn)
 	if untrusted {
 		return append(asm.Instructions{head}, untrustedReads(regs...)...)

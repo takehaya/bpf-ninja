@@ -365,11 +365,11 @@ At a site whose key or value may be such a pointer, all the hooks of that site's
 A key or value with BTF must have a nonzero size exactly matching the map's key or value size.
 The hook retains these types, including typedefs and qualifiers, under `const` pointer parameters.
 A side the map declares only by size, such as `__uint(key_size, 4)`, has no BTF; the hook takes it as an anonymous `struct { u8 bytes[N]; }` of the map's size.
-Types named `struct xdp_md`, `struct __sk_buff` or `struct bpf_dynptr` are refused as map key/value types because the verifier assigns those pointer types special argument semantics.
+Types named `struct xdp_md`, `struct __sk_buff`, `struct bpf_nf_ctx` or `struct bpf_dynptr` are refused as map key/value types because the verifier assigns those pointer types special argument semantics.
 Other map kinds are refused by a typed hook rather than assuming their helper return is ordinary value memory; `Auto` observes XSK maps, devmaps, devmap hashes, sockmaps and sockhashes through the generic hook and skips the rest.
-The entry function must have one BTF parameter pointing to `struct xdp_md` (XDP) or `struct __sk_buff` (tc, cgroup_skb).
+The entry function must have one BTF parameter pointing to `struct xdp_md` (XDP), `struct __sk_buff` (tc and cgroup_skb) or `struct bpf_nf_ctx` (netfilter).
 The package checks the program type; the cooperative loader owns attachment mode and verifier acceptance.
-The generated hooks read the context's first word (`len` for `__sk_buff`) and call no helper that changes packet data.
+The generated hooks read the context's first field (`len` for `__sk_buff`; 8-byte `state` for `bpf_nf_ctx`, whose verifier allows only 8-byte reads) and call no helper that changes packet data.
 
 For packet capture at a static XDP, tc or cgroup_skb hook, bpf-ninja reads the context with `bpf_probe_read_kernel`.
 A user-supplied static function must pass the translated-instruction context check at attach time.
