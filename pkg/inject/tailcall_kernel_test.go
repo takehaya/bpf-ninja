@@ -4,8 +4,11 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"net"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/asm"
@@ -418,6 +421,115 @@ func subTailCallerWithFallthroughCallFixture() *ebpf.CollectionSpec {
 	)
 	spec.Programs["caller"].Instructions = insns
 	return spec
+}
+
+func fixedSubTailCallerFixture() *ebpf.CollectionSpec {
+	spec := subTailCallerFixture()
+	insns := spec.Programs["caller"].Instructions
+	for i := range insns {
+		ins := &insns[i]
+		if ins.OpCode == asm.LoadMemOp(asm.Byte) && ins.Dst == asm.R3 && ins.Src == asm.R2 {
+			*ins = asm.Mov.Imm(asm.R3, 0).WithSource(ins.Source())
+		}
+	}
+	return spec
+}
+
+func tailMarkerTargetFixture() *ebpf.CollectionSpec {
+	insns := asm.Instructions{
+		asm.StoreImm(asm.RFP, -4, 0, asm.Word), asm.StoreImm(asm.RFP, -8, 1, asm.Word),
+		asm.LoadMapPtr(asm.R1, 0).WithReference("seen"), asm.Mov.Reg(asm.R2, asm.RFP), asm.Add.Imm(asm.R2, -4),
+		asm.Mov.Reg(asm.R3, asm.RFP), asm.Add.Imm(asm.R3, -8), asm.Mov.Imm(asm.R4, 0), asm.FnMapUpdateElem.Call(),
+		asm.Mov.Imm(asm.R0, 2), asm.Return(),
+	}
+	insns[0] = btf.WithFuncMetadata(insns[0].WithSymbol("target").WithSource(asm.Comment("tail marker target")), xdpFunc("target"))
+	return &ebpf.CollectionSpec{ByteOrder: binary.LittleEndian,
+		Maps:     map[string]*ebpf.MapSpec{"seen": {Name: "seen", Type: ebpf.Array, KeySize: 4, ValueSize: 4, MaxEntries: 1}},
+		Programs: map[string]*ebpf.ProgramSpec{"target": {Name: "target", Type: ebpf.XDP, License: "GPL", Instructions: insns}},
+	}
+}
+
+func nativeTailCallReachabilityProbe(t *testing.T) error {
+	t.Helper()
+	control := loadOrSkip(t, subTailCallerWithFallthroughCallFixture())
+	target := loadOrSkip(t, tailTargetFixture())
+	defer control.Close()
+	defer target.Close()
+	if err := control.Maps["jmp"].Put(uint32(0), target.Programs["target"]); err != nil {
+		return err
+	}
+	action, err := control.Programs["caller"].Run(&ebpf.RunOptions{Data: make([]byte, 64), Repeat: 1})
+	if err != nil {
+		return err
+	}
+	if action == 2 {
+		return errors.New("native BPF_PROG_TEST_RUN fell through after a tail call from a subprogram")
+	}
+	if action != 3 {
+		return fmt.Errorf("native BPF_PROG_TEST_RUN returned unexpected action %d", action)
+	}
+	return nil
+}
+
+// The guard probes only through BPF_PROG_TEST_RUN. On an affected kernel it
+// keeps the original program; on an unaffected kernel it keeps the rewrite.
+// Both variants must execute a successful tail call while attached.
+func TestBpfTailCallReachabilityGuardAttached(t *testing.T) {
+	testutil.SkipIfNotRoot(t)
+	work := fixedSubTailCallerFixture()
+	probeCalls := 0
+	var probeResult error
+	probe := sync.OnceValue(func() error {
+		probeCalls++
+		probeResult = nativeTailCallReachabilityProbe(t)
+		return probeResult
+	})
+	plan, err := transformLookupGuarded(work, LookupRequest{ProgramName: "caller", TailCalls: true, HookName: "obs", Stack: StackAudit{LowestOffset: 0}}, probe)
+	if probeCalls != 1 {
+		t.Fatalf("tail-call reachability probe ran %d times", probeCalls)
+	}
+	if probeResult != nil {
+		if !errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), probeResult.Error()) || len(plan.skipped) != 1 {
+			t.Fatalf("affected kernel: plan=%+v err=%v", plan, err)
+		}
+		t.Logf("affected kernel refused unsafe site: %v", err)
+	} else if err != nil || len(plan.hooks) != 1 || len(plan.skipped) != 0 {
+		t.Fatalf("unaffected kernel changed behavior: plan=%+v err=%v", plan, err)
+	}
+
+	caller := loadOrSkip(t, work)
+	target := loadOrSkip(t, tailMarkerTargetFixture())
+	defer caller.Close()
+	defer target.Close()
+	if err := caller.Maps["jmp"].Put(uint32(0), target.Programs["target"]); err != nil {
+		t.Fatal(err)
+	}
+	lo, err := net.InterfaceByName("lo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lnk, err := link.AttachXDP(link.XDPOptions{Program: caller.Programs["caller"], Interface: lo.Index, Flags: link.XDPGenericMode})
+	if err != nil {
+		t.Fatalf("attach guarded target: %v", err)
+	}
+	defer func() { _ = lnk.Close() }()
+	conn, err := net.DialUDP("udp4", nil, &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 9})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = conn.Write([]byte("guarded-tail-call"))
+	_ = conn.Close()
+	deadline := time.Now().Add(time.Second)
+	for {
+		var seen uint32
+		if err := target.Maps["seen"].Lookup(uint32(0), &seen); err == nil && seen == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("attached guarded target did not execute its tail-call target")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 // paddedSubTailCaller is subTailCallerFixture whose entry frame references
@@ -958,9 +1070,8 @@ func TestBpfTailCallInSubprogram(t *testing.T) {
 		return c
 	}
 	plain, injected := load(subTailCallerFixture()), load(work)
-	// Injection adds a BPF-to-BPF call on the tail call's fall-through
-	// path. Verify that the kernel executes that native shape correctly
-	// before attributing its result to injection.
+	// This test checks the rewritten hook itself only where the native shape
+	// works. TestBpfTailCallReachabilityGuardAttached covers guarded refusal.
 	control := load(subTailCallerWithFallthroughCallFixture())
 	ret, err := control.Programs["caller"].Run(&ebpf.RunOptions{Data: make([]byte, 64), Repeat: 1})
 	if err != nil {

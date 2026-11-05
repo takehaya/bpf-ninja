@@ -193,6 +193,17 @@ func DiscoverMapCallsRaw(p RawProgram) ([]LookupSite, error) {
 // TransformLookup, including hook placement before existing subprograms.
 // Any refusal returns nil and leaves the caller's inputs untouched.
 func TransformLookupRaw(p RawProgram, req LookupRequestRaw) (*LookupResultRaw, error) {
+	return transformLookupRawGuarded(p, req, nil)
+}
+
+// TransformLookupRawGuarded applies TransformLookupRaw and calls probe only
+// when the rewrite would newly expose a kernel tail-call reachability bug.
+// A probe error refuses the affected site groups while retaining safe groups.
+func TransformLookupRawGuarded(p RawProgram, req LookupRequestRaw, probe func() error) (*LookupResultRaw, error) {
+	return transformLookupRawGuarded(p, req, probe)
+}
+
+func transformLookupRawGuarded(p RawProgram, req LookupRequestRaw, probe func() error) (*LookupResultRaw, error) {
 	if !validIdent(req.HookName) {
 		return nil, refuse("HookName must be a valid C/BTF identifier (1-%d chars)", MaxHookName)
 	}
@@ -210,7 +221,7 @@ func TransformLookupRaw(p RawProgram, req LookupRequestRaw) (*LookupResultRaw, e
 			}
 		}
 	}
-	out, plan, err := transformLookupProgram(insns, p.Type, types, resolve, req.Request())
+	out, plan, err := transformLookupProgramGuarded(insns, p.Type, types, resolve, req.Request(), probe)
 	if err != nil {
 		return nil, err
 	}

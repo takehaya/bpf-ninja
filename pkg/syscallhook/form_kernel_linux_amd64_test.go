@@ -112,7 +112,7 @@ func TestBpfAutoStatic(t *testing.T) {
 					}
 					links = append(links, l)
 				},
-			}, probe)
+			}, probe, probeTailCallReachability)
 			if probeCalls != 1 {
 				t.Errorf("feature probe ran %d times", probeCalls)
 			}

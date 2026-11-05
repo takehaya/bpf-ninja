@@ -24,6 +24,10 @@ A function count of zero means the loader did not supply `func_info`, or the cal
 An `unknown` target still goes through kernel validation; a failed load keeps its verifier error and full log.
 bpf-ninja never guesses a name or redirects a request to another program.
 
+Some kernels lose tail-call reachability metadata when a static or global BPF subprogram contains `bpf_tail_call` and calls another BPF subprogram, which can make attached JIT code crash even though the program loaded successfully.
+`inject-run` previously could create that shape by adding a hook call.
+It now detects rewrites that would introduce the shape, runs a native `BPF_PROG_TEST_RUN` probe once without attaching it, and refuses the affected hook sites if the kernel fails the probe or the result is inconclusive; other sites remain available, and the normal failure policy applies when none remain.
+
 ## A function absent from func_info
 
 The reason alone cannot tell these two causes apart:
