@@ -25,8 +25,8 @@ import (
 // rejects arg:untrusted (see HookForm). Dispatch sends every
 // site to one hook named Hook (see inject.LookupRequest.Dispatch); a lookup or
 // tail-call site then needs a fourth spill slot in a frame that also calls the
-// hook, so stack_lowest_offset must be at least -448 unless the rule has only
-// entry.
+// hook. Auto checks that larger bound after discovery and skips groups that do
+// not fit; an explicit selection requires stack_lowest_offset of at least -448.
 // Ops picks the map operations a rule's hooks observe, as op or op:when:
 // "lookup" or "lookup:hit", "lookup:miss" or "lookup:any" (see
 // inject.LookupRequest.Lookups), "update" or "update:error", "update:any",

@@ -70,6 +70,13 @@ func TestValidateStack(t *testing.T) {
 			t.Fatalf("lo=%d rejected: %v", lo, err)
 		}
 	}
+	autoRule := rule(-456)
+	autoRule.Map = ""
+	autoRule.Auto = true
+	autoRule.Ops = []string{"lookup:any", "update:any"}
+	if err := Validate([]Rule{autoRule}); err != nil {
+		t.Fatalf("auto flags rejected before site discovery: %v", err)
+	}
 	for _, lo := range []int16{1, -457, -488, -513} {
 		got := Validate([]Rule{rule(lo)})
 		want := inject.ValidateRaw(rule(lo).request())
@@ -78,9 +85,8 @@ func TestValidateStack(t *testing.T) {
 		}
 	}
 	// Without a lookup, entry reserves only the ctx slot and tail_calls the
-	// ctx and index slots; auto may find a lookup and reserves all three.
-	// Dispatch adds the map slot to lookup and tail-call sites, not to the
-	// entry call.
+	// ctx and index slots. Auto preflights only the three base lookup slots;
+	// the transform applies operation and dispatch slots to discovered groups.
 	flagged := func(lo int16, set func(*Rule)) Rule {
 		r := Rule{Program: "p", Hook: "h", StackLowestOffset: &lo}
 		set(&r)
@@ -100,7 +106,7 @@ func TestValidateStack(t *testing.T) {
 		{-456, auto, true, ""}, {-464, auto, false, "24 reserved"},
 		{-472, dispatch(entry), true, ""}, {-473, dispatch(entry), false, "8 reserved"},
 		{-448, dispatch(tails), true, ""}, {-449, dispatch(tails), false, "32 reserved"},
-		{-448, dispatch(auto), true, ""}, {-449, dispatch(auto), false, "32 reserved"}, {-456, dispatch(auto), false, "32 reserved"},
+		{-456, dispatch(auto), true, ""}, {-457, dispatch(auto), false, "24 reserved"},
 	} {
 		r := flagged(tc.lo, tc.set)
 		got := Validate([]Rule{r})
@@ -188,8 +194,6 @@ func TestConfig(t *testing.T) {
 		`[{"program":"p","auto":true,"dispatch":true,"hook":"h","stack_lowest_offset":-481}]`,
 		`[{"program":"p","auto":true,"dispatch":true,"copy_read_only":true,"hook":"h","stack_lowest_offset":-8}]`,
 		`[{"program":"p","auto":true,"ops":["lookup:miss"],"hook":"` + strings.Repeat("h", 121) + `","stack_lowest_offset":-8}]`,
-		`[{"program":"p","auto":true,"ops":["update"],"hook":"h","stack_lowest_offset":-449}]`,
-		`[{"program":"p","auto":true,"dispatch":true,"ops":["delete","update"],"hook":"h","stack_lowest_offset":-441}]`,
 		`[{"program":"p","auto":true,"ops":["update"],"hook":"` + strings.Repeat("h", 119) + `","stack_lowest_offset":-8}]`,
 		`[{"program":"p","map":"m","ops":["update"],"hook":"h","stack_lowest_offset":-8}]`,
 		`[{"program":"p","map":"m","ops":["lookup","delete"],"hook":"h","stack_lowest_offset":-8}]`,

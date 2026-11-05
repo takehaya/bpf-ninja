@@ -713,11 +713,25 @@ func LookupStackReserve(req LookupRequest) int {
 	return 24
 }
 
-// CheckLookupStack validates an audited LowestOffset against the statically
-// known reservation of req's flags. transformLookupProgram and
-// syscallhook.Validate both call it, so Validate cannot drift from the
-// transform's slot layout.
+// CheckLookupStack validates an audited LowestOffset. Auto can only require
+// the three base lookup slots before discovery; transformLookupProgram checks
+// the actual groups below. Explicit selection remains fixed by its flags.
 func CheckLookupStack(req LookupRequest) error {
+	reserve := LookupStackReserve(req)
+	if req.Auto {
+		reserve = 24
+	}
+	return checkLookupStack(req, reserve)
+}
+
+// checkLookupStackFlags is the preflight used when no program is available,
+// such as syscall interception validation. Auto can only check the base slots
+// here; the transform applies larger reserves to the groups it discovers.
+func checkLookupStackFlags(req LookupRequest) error {
+	return CheckLookupStack(req)
+}
+
+func checkLookupStack(req LookupRequest, reserve int) error {
 	lo := int(req.Stack.LowestOffset)
 	if lo > 0 || lo < -512 {
 		return refuse("StackAudit.LowestOffset must be in [-512, 0]")
@@ -726,7 +740,7 @@ func CheckLookupStack(req LookupRequest) error {
 	// tail-call or a lookup hook), so the slots must stay within
 	// siteFrameLimit, not the full 512 bytes.
 	floor := lookupSlots(req.Stack.LowestOffset).ctx + 8
-	if reserve := LookupStackReserve(req); floor-reserve < -siteFrameLimit {
+	if floor-reserve < -siteFrameLimit {
 		return refuse("Stack.LowestOffset %d leaves no room for %d reserved bytes below the audited floor", lo, reserve)
 	}
 	return nil

@@ -153,7 +153,9 @@ On these hooks `LookupHook.Kind` is `HookUpdate` or `HookDelete`, and `When` is 
 The `_update` and `_delete` suffixes count toward the 127-byte name limit (`_0_update` under `Auto`).
 
 An update site keeps its flags in the result slot until the helper returns, and its value pointer in the map slot, or with a hook that also takes the map, in a fifth slot below it.
-A typed update therefore needs a stack bound of `-448`, and a generic or dispatch update `-440`; `Auto` skips a generic update past that, and `CheckLookupStack` requires `-448` with `Updates`, or `-440` with `Dispatch` as well.
+A typed update therefore needs a stack bound of `-448`, and a generic or dispatch update `-440`.
+With `Auto`, including raw configuration validation, the preflight reserves only the three base slots and the transform applies the larger bound only to update groups it actually discovered, skipping a group that does not fit.
+Explicit selection remains conservative because it does not defer a selected site to group discovery.
 A delete uses the slots of a lookup.
 With `CallError`, a successful call runs only the spills, one compare and the restore of R0.
 
@@ -380,7 +382,8 @@ A failed context read produces no capture, and a filter with `--tc-vlan-reinsert
 The stack audit has the same alias and callee limitations as `StackAudit` in the original transform.
 The audited bound is rounded down to an 8-byte boundary before allocating the slots.
 A lookup site's frame also calls its hook, which kernels that round frames to 32 bytes count as 32 bytes of the 512-byte combined stack, so a site needs `-456` for three slots and `-448` for four; `Auto` skips a site past that, and explicit selection refuses it.
-`CheckLookupStack`, which inject-run's configuration check also calls, requires `-456` when the request may hold a lookup site (`Site` or `Auto`).
+`CheckLookupStack` requires `-456` when the request may hold a lookup site.
+For `Auto`, deeper slots are checked from the selected site groups instead of from operation flags, so requesting update observation does not reserve an update slot in a program with no update site.
 Without one, the entry hook's frame holds only the 8-byte ctx slot and a tail-call site's frame the ctx and index slots, so `Entry` alone needs `-472` and `TailCalls` (with or without `Entry`) `-464`.
 With `Dispatch`, a lookup or tail-call site also fills the map slot, so such a request needs `-448`; `Entry` alone still needs `-472`.
 `Updates` needs `-448` for the update's value slot, and `-440` with `Dispatch`.
