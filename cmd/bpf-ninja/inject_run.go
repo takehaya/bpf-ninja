@@ -46,7 +46,7 @@ func newInjectRunCommand() *cli.Command {
 			&cli.StringFlag{Name: "config", Usage: "JSON injection rules file (otherwise BPF_NINJA_INJECT_CONFIG contains JSON)"},
 			&cli.BoolFlag{Name: "fail-closed", Usage: "refuse matched loads when injection fails; default retries the original load"},
 			&cli.StringFlag{Name: "hooks-json", Usage: "write the injected programs' hooks and skipped sites as JSON to this file, rewritten after each injected load"},
-			&cli.StringFlag{Name: "lookups-json", Usage: "write every loaded XDP, tc and cgroup_skb program's lookups and maps, with a rule to edit, as JSON to this file; rules become optional"},
+			&cli.StringFlag{Name: "lookups-json", Usage: "write every loaded XDP, tc, cgroup_skb and netfilter program's lookups and maps, with a rule to edit, as JSON to this file; rules become optional"},
 		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
 			var input io.Reader = strings.NewReader(os.Getenv("BPF_NINJA_INJECT_CONFIG"))

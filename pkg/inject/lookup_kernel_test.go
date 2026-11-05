@@ -141,7 +141,8 @@ func bpfMapIDOffset(t *testing.T, kernel *btf.Spec) int32 {
 func packetLength(t *testing.T, kernel *btf.Spec, target *ebpf.Program, raw bool) (read, length asm.Instructions) {
 	t.Helper()
 	name, fields := "xdp_buff", []string{"data", "data_end"}
-	if target.Type() == ebpf.SchedCLS || target.Type() == ebpf.SchedACT || target.Type() == ebpf.CGroupSKB {
+	nf := target.Type() == ebpf.Netfilter
+	if target.Type() == ebpf.SchedCLS || target.Type() == ebpf.SchedACT || target.Type() == ebpf.CGroupSKB || nf {
 		name, fields = "sk_buff", []string{"len"}
 	}
 	var ctx *btf.Struct
@@ -171,6 +172,12 @@ func packetLength(t *testing.T, kernel *btf.Spec, target *ebpf.Program, raw bool
 				asm.JNE.Imm(asm.R0, 0, "done"))
 		}
 		base, at = asm.RFP, func(i int) int16 { return int16(-72 - 8*i) }
+	}
+	if nf { // bpf_nf_ctx->skb (offset 8)->len
+		if raw {
+			t.Fatal("packetLength has no raw read for netfilter")
+		}
+		return nil, asm.Instructions{asm.LoadMem(asm.R2, asm.R6, 8, asm.DWord), asm.LoadMem(asm.R2, asm.R2, at(0), size)}
 	}
 	if name == "sk_buff" {
 		return read, asm.Instructions{asm.LoadMem(asm.R2, base, at(0), size)}

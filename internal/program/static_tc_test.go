@@ -58,6 +58,12 @@ func runCapture(t *testing.T, probe *Probe, target *ebpf.Program, input []byte) 
 	if err := probe.Quiesce(); err != nil {
 		t.Fatal(err)
 	}
+	return readCapture(t, probe)
+}
+
+// readCapture returns the entry and exit records a quiesced probe holds.
+func readCapture(t *testing.T, probe *Probe) [2][]capture.Packet {
+	t.Helper()
 	var got [2][]capture.Packet
 	for _, m := range probe.InnerMaps {
 		rd, err := fastrb.New(m.FD(), int(m.MaxEntries()))

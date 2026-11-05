@@ -11,7 +11,7 @@ tcpdump cannot show what an XDP or tc program did to a packet, and cBPF filters 
 - Filters use a built-in DSL that walks through encapsulations, such as `eth/ipv4/udp/vxlan/eth/ipv4/tcp`.
 - Output is pcap-ng, to stdout or to per-CPU files.
 - The tcpdump syntax (`--cbpf`, through [cbpfc](https://github.com/cloudflare/cbpfc)) is kept for compatibility in an optional libpcap build and is planned for removal.
-- The experimental [`inject-run`](docs/en/inject-run.md) adds hooks to selected XDP, tc or cgroup_skb programs as an unmodified loader loads them (Linux x86-64).
+- The experimental [`inject-run`](docs/en/inject-run.md) adds hooks to selected XDP, tc, cgroup_skb or netfilter programs as an unmodified loader loads them (Linux x86-64).
 
 [Documentation / ドキュメント](docs/README.md) · [日本語の導入](docs/ja/getting-started.md) · [Examples](docs/ja/examples/README.md)
 
@@ -418,7 +418,7 @@ sudo bpf-ninja -i eth0 --mode xdp --set "sids=/sys/fs/bpf/sids" \
 
 ## Load-time hooks
 
-`inject-run` starts an unmodified BPF loader and adds hooks to selected XDP, tc or cgroup_skb programs as it loads them.
+`inject-run` starts an unmodified BPF loader and adds hooks to selected XDP, tc, cgroup_skb or netfilter programs as it loads them.
 It is experimental and runs on Linux x86-64 only.
 `--list-progs --list-maps` shows the map operations of a loaded program.
 
@@ -484,7 +484,7 @@ By feature:
 | `--mode entry` / `exit` | A target BPF program (XDP, tc clsact, cgroup-skb or netfilter) already loaded with BTF. With `-i`, an XDP program attached to the interface; tc targets by `-p <progID>`; cgroup-skb targets by `--cgroup <path>` or `-p` |
 | `--mode xdp` | No XDP program attached to the interface; bpf-ninja becomes the XDP program |
 | Pointer arguments: member filters and echo, scalar-pointee `[0]` reads, pointer NULL comparisons, member-derived set keys | `bpf_get_func_arg` (Linux 5.17+) |
-| Static XDP, tc and cgroup-skb context fallback | When the kernel rejects direct context reads in a static function, bpf-ninja reads the context with `bpf_probe_read_kernel`, after checking that every call from the entry function passes the context as the first argument. Exit and gated capture on this path need `bpf_get_func_ret` (Linux 5.17+). At tc, a filter with `--tc-vlan-reinsert` is refused on this path |
+| Static XDP, tc, cgroup-skb and netfilter context fallback | When the kernel rejects direct context reads in a static function, bpf-ninja falls back to reading the context with `bpf_probe_read_kernel`, after checking that every call from the entry function passes the context as the first argument; a function that accepts direct reads keeps them, and a hook `inject-run` generated (tagged `bpf-ninja:hook`) skips that repeated check because its first argument is the saved program context. Exit and gated capture on this path need `bpf_get_func_ret` (Linux 5.17+). At tc, a filter with `--tc-vlan-reinsert` is refused on this path |
 | DSL chain quantifiers (`+`, `*`, `{n,m>4}`) on a fixed-length layer, variable-length headers (IPv6 extension headers, GTP options, SRv6 segments), alternation (`(a\|b)`) | Linux 5.17+ (`bpf_loop` and bpf2bpf subprograms). A repeated variable-length layer (`ipv4+`, `ipv6*`) unrolls to `MAX_DEPTH` parser machines instead of a `bpf_loop` chain; each machine's own option or extension walk keeps the 5.17 requirement |
 | Plain DSL chains and `--cbpf` filters | Linux 5.8+ |
 | netfilter targets | Linux 6.4+ |

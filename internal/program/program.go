@@ -414,7 +414,7 @@ targetLoop:
 			probe.progs = closeTargetResources(probe.progs, startProgs)
 		}
 		static := false
-		if (h.Kind == hook.KindXDP || h.Kind == hook.KindTC || h.Kind == hook.KindCgroupSKB) && t.FuncName != "" {
+		if (h.Kind == hook.KindXDP || h.Kind == hook.KindTC || h.Kind == hook.KindCgroupSKB || h.Kind == hook.KindNetfilter) && t.FuncName != "" {
 			spec, specErr := probe.extensionGuard.Spec(t.Program)
 			if specErr != nil {
 				results.refused(t, attach.TargetStaticCtxRefused, specErr)
@@ -460,8 +460,12 @@ targetLoop:
 					continue targetLoop
 				}
 				if probeRead {
-					targetHook = staticXDPHook(h, st.IsFexit)
-					if h.Kind != hook.KindXDP {
+					switch h.Kind {
+					case hook.KindXDP:
+						targetHook = staticXDPHook(h, st.IsFexit)
+					case hook.KindNetfilter:
+						targetHook = staticNFHook(h, t.FuncName, st.IsFexit)
+					default:
 						targetHook = staticTCHook(h, t.FuncName)
 					}
 				}
@@ -708,7 +712,8 @@ func compileFilterWithSlots(expr string, useDSL, isFexit bool, progType ebpf.Pro
 //              それは runFilter 内のみ live — phase ordering で共存)
 //   -60..-120: cBPF scratch M[0..15] (--cbpf; filter_pcap.go の StackOffset。
 //              kunai と同じく KunaiStackTop の下で、filter の実行中だけ live)
-//   -136, -144: static XDP identity read の退避 (staticXDPHook)
+//   -136, -144: static XDP と netfilter が共用する identity read の退避
+//               (probeReadIdentity; staticXDPHook と staticNFHook)
 //   -160..-145: static context read の一時領域 (static_xdp.go; prologue 後は死ぬ)
 //
 // 実際の on-wire フォーマットの正典は internal/capture/capture.go の

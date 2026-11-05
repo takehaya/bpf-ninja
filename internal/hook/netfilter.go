@@ -36,7 +36,7 @@ var netfilterHook = &Hook{
 // nfIdentity loads ctx->skb (R6 is the bpf_nf_ctx; the prologue
 // overwrote R7 with skb->data, so the skb pointer is re-read here).
 func nfIdentity(dst asm.Register) (asm.Instructions, error) {
-	skbOff, err := nfCtxSkbOffset()
+	skbOff, err := NFCtxSkbOffset()
 	if err != nil {
 		return nil, fmt.Errorf("resolving struct bpf_nf_ctx offsets via BTF: %w", err)
 	}
@@ -52,7 +52,7 @@ func nfIdentity(dst asm.Register) (asm.Instructions, error) {
 // R7 is the skb scratch (len and data_len are read before R7 is
 // overwritten with skb->data).
 func nfPacketPrologue() (asm.Instructions, error) {
-	skbOff, err := nfCtxSkbOffset()
+	skbOff, err := NFCtxSkbOffset()
 	if err != nil {
 		return nil, fmt.Errorf("resolving struct bpf_nf_ctx offsets via BTF: %w", err)
 	}
@@ -70,12 +70,12 @@ func nfPacketPrologue() (asm.Instructions, error) {
 	), nil
 }
 
-// nfCtxSkbOffset returns the kernel BTF byte offset of
+// NFCtxSkbOffset returns the kernel BTF byte offset of
 // `struct bpf_nf_ctx`'s `skb` member. The struct is two pointers today
 // (state, skb) but the offset is resolved from BTF like the sk_buff
 // members, so a future member insertion cannot silently skew the read.
 // Cached at first call, same rationale as SkBuffPacketOffsets.
-func nfCtxSkbOffset() (uint32, error) {
+func NFCtxSkbOffset() (uint32, error) {
 	nfCtxOnce.Do(func() {
 		spec, err := btf.LoadKernelSpec()
 		if err != nil {

@@ -86,6 +86,7 @@ func TestCheckSuppliedMapTypes(t *testing.T) {
 		{"union-lock", &btf.Union{Size: 24, Members: []btf.Member{{Type: lock}}}, "special field"},
 		{"xdp-abi", &btf.Struct{Name: "xdp_md", Size: 24}, "special global-function pointer ABI"},
 		{"skb-abi", &btf.Struct{Name: "__sk_buff", Size: 24}, "special global-function pointer ABI"},
+		{"nf-abi", &btf.Struct{Name: "bpf_nf_ctx", Size: 24}, "special global-function pointer ABI"},
 		{"dynptr-abi", &btf.Struct{Name: "bpf_dynptr", Size: 16}, "special global-function pointer ABI"},
 	} {
 		for _, wrapped := range []bool{false, true} {

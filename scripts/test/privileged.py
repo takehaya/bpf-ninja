@@ -23,6 +23,8 @@ def allowed_skip(package, test, output, kernel):
         # The opt-in census requires external corpus inputs on every kernel.
         if test == "TestTranslationValidationCensus":
             return "set BPF_NINJA_VALIDATE_OBJECTS, BPF_NINJA_VALIDATE_CENSUS and BPF_NINJA_VALIDATE_OUTPUT" in output
+        if test == "TestBpfLookupHooksNetfilter":
+            return kernel == "6.1" and "BPF_PROG_TYPE_NETFILTER not supported" in output
         # 7.3 rejects a tail call reachable from a bpf_loop callback outright.
         if test in {"TestBpfStackLimitsAcrossCalls/callback", "TestBpfStackLimitsAcrossCalls/callback-global"}:
             return kernel == "7.3-rc4" and "kernel forbids tail calls in callbacks" in output
@@ -69,7 +71,9 @@ def allowed_skip(package, test, output, kernel):
     if kernel == "6.1" and test in {
         "TestBpfEntryWithDSLFilterNetfilter", "TestBpfExitWithDSLFilterNetfilter",
         "TestBpfFexitReturnLayoutNetfilter", "TestBpfMultiPointLoad/netfilter-entry",
-        "TestBpfOrigLen/netfilter-fentry",
+        "TestBpfOrigLen/netfilter-fentry", "TestBpfStaticNetfilterInjectedHook",
+        "TestBpfStaticNetfilterGatedIdentity", "TestBpfStaticNetfilterContextReadFailure",
+        "TestBpfStaticNetfilterGatedContextReadFailure",
     }:
         return "BPF_PROG_TYPE_NETFILTER not supported" in output
     return False

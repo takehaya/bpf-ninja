@@ -215,6 +215,17 @@ func TestHookAndStackSafety(t *testing.T) {
 	} {
 		assertKind(t, checkHook(hook), HookShape)
 	}
+	// The first read is a 4-byte or (netfilter) 8-byte read of ctx at 0, nothing else.
+	ret0 := asm.Instructions{asm.Mov.Imm(asm.R0, 0), asm.Return()}
+	for _, read := range []asm.Instruction{asm.LoadMem(asm.R0, asm.R1, 0, asm.Word), asm.LoadMem(asm.R0, asm.R1, 0, asm.DWord)} {
+		if err := checkHook(append(asm.Instructions{read}, ret0...)); err != nil {
+			t.Fatalf("%v: %v", read, err)
+		}
+	}
+	for _, read := range []asm.Instruction{asm.LoadMem(asm.R0, asm.R1, 0, asm.Half), asm.LoadMem(asm.R0, asm.R1, 8, asm.DWord),
+		asm.LoadMem(asm.R0, asm.R2, 0, asm.DWord), asm.LoadMem(asm.R2, asm.R1, 0, asm.DWord)} {
+		assertKind(t, checkHook(append(asm.Instructions{read}, ret0...)), HookShape)
+	}
 	for _, ins := range []asm.Instruction{asm.StoreMem(asm.RFP, -9, asm.R0, asm.Byte), asm.LoadMem(asm.R0, asm.RFP, -16, asm.DWord)} {
 		in := asm.Instructions{ins, asm.Return()}
 		_, err := checkFixture(in, in, fixtureCertificate{Original: []int{0, 1}, LowestOffset: -8})

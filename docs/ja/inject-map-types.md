@@ -29,7 +29,7 @@ loader が BTF なしで map を作成しても、loader の ELF に key と val
 ハッシュを照合した同じ byte 列を ELF として解析する。
 
 補完するのは生成 hook の BTF だ。
-補完型は typedef や修飾子の内側も data kind に限り、spin lock、timer、kptr などの特殊 field を含む型と、特殊な pointer ABI を持つ `xdp_md`、`__sk_buff`、`bpf_dynptr` は拒否する。
+補完型は typedef や修飾子の内側も data kind に限り、spin lock、timer、kptr などの特殊 field を含む型と、特殊な pointer ABI を持つ `xdp_md`、`__sk_buff`、`bpf_nf_ctx`、`bpf_dynptr` は拒否する。
 この制約により、補完によって変わるのは hook metadata のみで、生成命令、pointer の信頼性、value copy の判断は変わらない。
 ELF の命令や map をロードせず、live map の内容も BTF も変更しない。
 生成 program の BTF に型を追加することで、`--list-params --members` と `--arg-filter` から member を利用できる。

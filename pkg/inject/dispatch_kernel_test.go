@@ -162,6 +162,23 @@ func asCGroupSKB(spec *ebpf.CollectionSpec) *ebpf.CollectionSpec {
 	return spec
 }
 
+// asNetfilter gives an XDP fixture's programs the netfilter type and a struct
+// bpf_nf_ctx context. Its context reads stay those of xdp_md, so it is not
+// loadable; it is for transform tests.
+func asNetfilter(spec *ebpf.CollectionSpec) *ebpf.CollectionSpec {
+	ptr := &btf.Pointer{Target: &btf.Void{}}
+	nf := &btf.Struct{Name: "bpf_nf_ctx", Size: 16, Members: []btf.Member{{Name: "state", Type: ptr}, {Name: "skb", Type: ptr, Offset: 64}}}
+	for _, p := range spec.Programs {
+		p.Type, p.AttachType = ebpf.Netfilter, ebpf.AttachNetfilter
+		fn := *btf.FuncMetadata(&p.Instructions[0])
+		proto := *fn.Type.(*btf.FuncProto)
+		proto.Params = []btf.FuncParam{{Name: "ctx", Type: &btf.Pointer{Target: nf}}}
+		fn.Type = &proto
+		p.Instructions[0] = btf.WithFuncMetadata(p.Instructions[0], &fn)
+	}
+	return spec
+}
+
 // l3Offset is where a program of type typ sees BPF_PROG_TEST_RUN's input
 // start: cgroup_skb gets the skb after the Ethernet header is pulled.
 func l3Offset(typ ebpf.ProgramType) int {
