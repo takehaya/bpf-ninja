@@ -109,6 +109,8 @@ func Prove(insns asm.Instructions, ctxStruct btf.Type) map[int]Proof {
 		switch {
 		case fn.CtxParam < 0 || fn.CtxParam >= 5:
 			proof.Reason = "function has no context parameter"
+		case fn.Start == p.funcs[0].Start && fn.CtxParam != 0:
+			proof.Reason = "entry function has no context first parameter"
 		case p.callback[fn.Start]:
 			proof.Reason = "function is used as a callback"
 		}

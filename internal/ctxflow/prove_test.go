@@ -119,6 +119,18 @@ func TestProve(t *testing.T) {
 		})
 	}
 
+	t.Run("entry context is not first", func(t *testing.T) {
+		insns := fixture(nil, nil)
+		entry := btf.FuncMetadata(&insns[0])
+		proto := entry.Type.(*btf.FuncProto)
+		proto.Params = append([]btf.FuncParam{{Name: "n", Type: i32}}, proto.Params...)
+		functions := Functions(insns, ctx)
+		proof := Prove(insns, ctx)[functions[0].Start]
+		if proof.Proven || proof.Reason != "entry function has no context first parameter" {
+			t.Fatalf("proof = %+v", proof)
+		}
+	})
+
 	t.Run("context dead at site", func(t *testing.T) {
 		insns := fixture(nil, asm.Instructions{asm.Mov.Imm(asm.R6, 0)})
 		functions := Functions(insns, ctx)
