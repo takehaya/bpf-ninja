@@ -667,7 +667,7 @@ func (s *supervisor) preloadDepths(r *remote, attr []byte, rounding int) (report
 		if namesErr != nil {
 			return namesErr
 		}
-		report, parseErr = inject.FrameFloors(depths, names, raw.Instructions, runningKernelInfo())
+		report, parseErr = inject.FrameFloorsRaw(depths, names, raw, runningKernelInfo())
 		report.FrameRounding = rounding
 		return parseErr
 	})

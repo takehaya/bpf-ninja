@@ -208,6 +208,16 @@ func FrameFloors(depths []int, loadedFuncs []string, insns asm.Instructions, ker
 	return report, nil
 }
 
+// FrameFloorsRaw restores function and line metadata from a syscall load
+// before computing floors. Raw instruction bytes don't carry either one.
+func FrameFloorsRaw(depths []int, loadedFuncs []string, program RawProgram, kernel KernelInfo) (StackReport, error) {
+	insns, _, _, err := prepareRawLookup(program)
+	if err != nil {
+		return StackReport{}, err
+	}
+	return FrameFloors(depths, loadedFuncs, insns, kernel)
+}
+
 func deepestTextAccess(insns asm.Instructions, fn functionRange) *TextAccess {
 	var deepest *TextAccess
 	var file string

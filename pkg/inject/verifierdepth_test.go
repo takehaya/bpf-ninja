@@ -46,6 +46,17 @@ func TestFrameFloorsUseDirectAccessAfterFastcallShrink(t *testing.T) {
 	}
 }
 
+func TestFrameFloorsRawRestoresFunctionMetadata(t *testing.T) {
+	raw := rawLookupFixture(t, lookupFixture(), "p", true)
+	report, err := FrameFloorsRaw([]int{8}, []string{"p"}, raw, KernelInfo{Major: 7})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Functions) != 1 || report.Functions[0].Name != "p" {
+		t.Fatalf("functions = %+v", report.Functions)
+	}
+}
+
 func TestFrameFloorsMarkDeadFunctions(t *testing.T) {
 	fn := func(name string) *btf.Func { return &btf.Func{Name: name, Type: &btf.FuncProto{}} }
 	insns := asm.Instructions{
