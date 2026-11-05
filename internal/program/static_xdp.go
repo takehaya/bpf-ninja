@@ -85,7 +85,7 @@ func staticXDPHook(h *hook.Hook, isFexit bool) *hook.Hook {
 }
 
 // staticTCHook reads the sk_buff fields hook.skbPacketPrologue loads through
-// the fault-handled helper; skbIdentity is a register move and stays valid.
+// the fault-handled helper, for tc and cgroup_skb; skbIdentity is a register move and stays valid.
 // The temporary stack is dead before arg/set/packet filtering.
 func staticTCHook(h *hook.Hook, name string) *hook.Hook {
 	clone := *h
@@ -119,8 +119,10 @@ func staticTCHook(h *hook.Hook, name string) *hook.Hook {
 		), nil
 	}
 	// The tag loader reads sk_buff directly; only a wire-frame filter calls it.
-	clone.OuterVlanTag = func() (asm.Instructions, error) {
-		return nil, fmt.Errorf("--tc-vlan-reinsert is not supported at static tc function %q, whose context is read with bpf_probe_read_kernel; omit the flag or capture at a global function", name)
+	if h.OuterVlanTag != nil {
+		clone.OuterVlanTag = func() (asm.Instructions, error) {
+			return nil, fmt.Errorf("--tc-vlan-reinsert is not supported at static tc function %q, whose context is read with bpf_probe_read_kernel; omit the flag or capture at a global function", name)
+		}
 	}
 	return &clone
 }

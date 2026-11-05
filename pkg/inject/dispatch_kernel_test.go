@@ -153,6 +153,38 @@ func asTC(spec *ebpf.CollectionSpec) *ebpf.CollectionSpec {
 	return spec
 }
 
+// asCGroupSKB is asTC as a cgroup_skb egress program, whose verifier allows
+// the fixtures' return values 0 to 3.
+func asCGroupSKB(spec *ebpf.CollectionSpec) *ebpf.CollectionSpec {
+	for _, p := range asTC(spec).Programs {
+		p.Type, p.AttachType = ebpf.CGroupSKB, ebpf.AttachCGroupInetEgress
+	}
+	return spec
+}
+
+// l3Offset is where a program of type typ sees BPF_PROG_TEST_RUN's input
+// start: cgroup_skb gets the skb after the Ethernet header is pulled.
+func l3Offset(typ ebpf.ProgramType) int {
+	if typ == ebpf.CGroupSKB {
+		return 14
+	}
+	return 0
+}
+
+// skipNoPacketPointers skips a cgroup_skb test where BPF_PROG_TEST_RUN does
+// not set the skb's data_end for cgroup_skb (6.12 does not): the fixtures
+// then take their short-packet path, return 1, for every packet. A zero
+// packet misses and tail-calls the target, which returns 3.
+func skipNoPacketPointers(t *testing.T, prog *ebpf.Program) {
+	t.Helper()
+	if prog.Type() != ebpf.CGroupSKB {
+		return
+	}
+	if ret, err := prog.Run(&ebpf.RunOptions{Data: make([]byte, 64), Repeat: 1}); err == nil && ret == 1 {
+		t.Skip("BPF_PROG_TEST_RUN sets no cgroup_skb packet pointers on this kernel")
+	}
+}
+
 func TestBpfDispatch(t *testing.T)         { testDispatch(t, false, false, "") }
 func TestBpfDispatchStatic(t *testing.T)   { testDispatch(t, true, false, "") }
 func TestBpfDispatchTC(t *testing.T)       { testDispatch(t, false, true, "") }
@@ -165,16 +197,25 @@ func TestBpfDispatchAnyStatic(t *testing.T)    { testDispatch(t, true, false, Lo
 func TestBpfDispatchAnyTC(t *testing.T)        { testDispatch(t, false, true, LookupAny) }
 func TestBpfDispatchMissTCStatic(t *testing.T) { testDispatch(t, true, true, LookupMiss) }
 
+func TestBpfDispatchCGroupSKB(t *testing.T)       { testDispatchAs(t, false, asCGroupSKB, LookupAny) }
+func TestBpfDispatchCGroupSKBStatic(t *testing.T) { testDispatchAs(t, true, asCGroupSKB, LookupAny) }
+
 // One fentry on the dispatch hook sees the entry, each lookup hit and each
 // failed tail call of the program, in order, and the program's results do
 // not change. With tc, the same program runs as a tc classifier.
 func testDispatch(t *testing.T, static, tc bool, lookups LookupWhen) {
-	testutil.SkipIfNotRoot(t)
-	fixture, target := dispatchFixture, tailTargetFixture
+	conv := func(spec *ebpf.CollectionSpec) *ebpf.CollectionSpec { return spec }
 	if tc {
-		fixture = func() *ebpf.CollectionSpec { return asTC(dispatchFixture()) }
-		target = func() *ebpf.CollectionSpec { return asTC(tailTargetFixture()) }
+		conv = asTC
 	}
+	testDispatchAs(t, static, conv, lookups)
+}
+
+// testDispatchAs is testDispatch with the fixtures converted by conv.
+func testDispatchAs(t *testing.T, static bool, conv func(*ebpf.CollectionSpec) *ebpf.CollectionSpec, lookups LookupWhen) {
+	testutil.SkipIfNotRoot(t)
+	fixture := func() *ebpf.CollectionSpec { return conv(dispatchFixture()) }
+	target := func() *ebpf.CollectionSpec { return conv(tailTargetFixture()) }
 	work := fixture()
 	plan, err := transformLookup(work, LookupRequest{ProgramName: "p", Auto: true, Entry: true, TailCalls: true,
 		Dispatch: true, StaticUntrusted: static, Lookups: lookups, HookName: "d", Stack: StackAudit{LowestOffset: -8}})
@@ -216,6 +257,7 @@ func testDispatch(t *testing.T, static, tc bool, lookups LookupWhen) {
 		return c
 	}
 	plain, injected := load(fixture(), nil), load(work, plan.hooks)
+	skipNoPacketPointers(t, plain.Programs["p"])
 	mapID := func(m *ebpf.Map) uint32 {
 		info, err := m.Info()
 		if err != nil {
@@ -265,8 +307,9 @@ func testDispatch(t *testing.T, static, tc bool, lookups LookupWhen) {
 			}
 		}
 		packet := make([]byte, 64)
-		binary.LittleEndian.PutUint32(packet, tc.key)
-		binary.LittleEndian.PutUint32(packet[4:], tc.index)
+		off := l3Offset(work.Programs["p"].Type)
+		binary.LittleEndian.PutUint32(packet[off:], tc.key)
+		binary.LittleEndian.PutUint32(packet[off+4:], tc.index)
 		for _, c := range []*ebpf.Collection{plain, injected} {
 			ret, err := c.Programs["p"].Run(&ebpf.RunOptions{Data: packet, Repeat: 1})
 			if err != nil || ret != tc.action {

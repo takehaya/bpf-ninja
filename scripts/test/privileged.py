@@ -29,13 +29,16 @@ def allowed_skip(package, test, output, kernel):
         # 7.3 forbids updating a socket map from tc, so the fixture itself fails.
         if kernel == "7.3-rc4" and test in {"TestBpfSockHashUpdateTC", "TestBpfSockHashUpdateTCStatic"}:
             return "kernel forbids sockmap updates from tc" in output
+        # BPF_PROG_TEST_RUN sets cgroup_skb packet pointers from 6.15 on.
+        if test in {"TestBpfDispatchCGroupSKBStatic", "TestBpfLookupHooksCGroupSKB"}:
+            return kernel in {"6.1", "6.6", "6.12"} and "sets no cgroup_skb packet pointers" in output
         # Hooks for read-only and runtime-resolved maps and the dispatch hook
         # tag their parameters arg:untrusted, which 6.15 and older reject.
         # GenericKinds skips per map-kind subtest, so match the base test name.
         return kernel in {"6.1", "6.6", "6.12", "6.15"} and test.split("/", 1)[0] in {
             "TestBpfLookupInjectionReadOnlyMap", "TestBpfLookupInjectionMapInMap",
             "TestBpfLookupInjectionGenericKinds", "TestBpfDispatch", "TestBpfDispatchTC",
-            "TestBpfDispatchMiss", "TestBpfDispatchAny", "TestBpfDispatchAnyTC",
+            "TestBpfDispatchMiss", "TestBpfDispatchAny", "TestBpfDispatchAnyTC", "TestBpfDispatchCGroupSKB",
             "TestBpfMapCallsDispatch", "TestBpfMapCallsInnerUpdate",
             "TestBpfSpecialFieldsLookup", "TestBpfSockHashUpdateTC", "TestBpfQueueOpsDispatch",
             "TestBpfQueueOpsInner", "TestBpfReadOnlyArg", "TestBpfReadOnlyArgShapes", "TestBpfReadOnlyArgCalls",

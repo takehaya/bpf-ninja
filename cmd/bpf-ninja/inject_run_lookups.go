@@ -1,7 +1,7 @@
 //go:build linux && amd64
 
-// JSON shape of inject-run --lookups-json: the lookups and maps of every XDP
-// and tc program the target loads, with a rule to start from, so the maps to
+// JSON shape of inject-run --lookups-json: the lookups and maps of every XDP,
+// tc and cgroup_skb program the target loads, with a rule to start from, so the maps to
 // instrument can be picked before a second run.
 package main
 

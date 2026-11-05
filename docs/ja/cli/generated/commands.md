@@ -831,7 +831,7 @@ OPTIONS:
    --config string        JSON injection rules file (otherwise BPF_NINJA_INJECT_CONFIG contains JSON)
    --fail-closed          refuse matched loads when injection fails; default retries the original load
    --hooks-json string    write the injected programs' hooks and skipped sites as JSON to this file, rewritten after each injected load
-   --lookups-json string  write every loaded XDP and tc program's lookups and maps, with a rule to edit, as JSON to this file; rules become optional
+   --lookups-json string  write every loaded XDP, tc and cgroup_skb program's lookups and maps, with a rule to edit, as JSON to this file; rules become optional
    --help, -h             show help
 
 GLOBAL OPTIONS:

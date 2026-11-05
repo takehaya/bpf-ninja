@@ -277,9 +277,14 @@ func TestBpfEntryHookWithLookup(t *testing.T) {
 // lookup hook, an entry hook and a tail-call hook; an fentry on each reads the
 // packet length through the ctx (sk_buff len) and the hook's own arguments,
 // and the program's results do not change.
-func TestBpfLookupHooksTC(t *testing.T) {
+func TestBpfLookupHooksTC(t *testing.T) { testLookupHooksSKB(t, asTC) }
+
+// The same with the program as cgroup_skb, whose packet starts at L3.
+func TestBpfLookupHooksCGroupSKB(t *testing.T) { testLookupHooksSKB(t, asCGroupSKB) }
+
+func testLookupHooksSKB(t *testing.T, conv func(*ebpf.CollectionSpec) *ebpf.CollectionSpec) {
 	testutil.SkipIfNotRoot(t)
-	fixture := func() *ebpf.CollectionSpec { return asTC(dispatchFixture()) }
+	fixture := func() *ebpf.CollectionSpec { return conv(dispatchFixture()) }
 	work := fixture()
 	plan, err := transformLookup(work, LookupRequest{ProgramName: "p", Auto: true, Entry: true, TailCalls: true,
 		HookName: "obs", Stack: StackAudit{LowestOffset: -8}})
@@ -307,7 +312,7 @@ func TestBpfLookupHooksTC(t *testing.T) {
 		t.Fatalf("hooks %+v", plan.hooks)
 	}
 	load := func(spec *ebpf.CollectionSpec) *ebpf.Collection {
-		c, tgt := loadOrSkip(t, spec), loadOrSkip(t, asTC(tailTargetFixture()))
+		c, tgt := loadOrSkip(t, spec), loadOrSkip(t, conv(tailTargetFixture()))
 		t.Cleanup(c.Close)
 		t.Cleanup(tgt.Close)
 		if err := c.Maps["jmp"].Put(uint32(0), tgt.Programs["target"]); err != nil {
@@ -319,6 +324,7 @@ func TestBpfLookupHooksTC(t *testing.T) {
 		return c
 	}
 	plain, injected := load(fixture()), load(work)
+	skipNoPacketPointers(t, plain.Programs["p"])
 	prog := injected.Programs["p"]
 	entry := attachScalarObserver(t, names[HookEntry], prog, 0)
 	tail := attachScalarObserver(t, names[HookTailCall], prog, 2)
@@ -347,8 +353,10 @@ func TestBpfLookupHooksTC(t *testing.T) {
 			t.Fatal(err)
 		}
 		packet := make([]byte, tc.length)
-		binary.LittleEndian.PutUint32(packet, tc.key)
-		binary.LittleEndian.PutUint32(packet[4:], tc.index)
+		off := l3Offset(work.Programs["p"].Type)
+		binary.LittleEndian.PutUint32(packet[off:], tc.key)
+		binary.LittleEndian.PutUint32(packet[off+4:], tc.index)
+		skbLen := uint32(tc.length - off)
 		for _, c := range []*ebpf.Collection{plain, injected} {
 			ret, err := c.Programs["p"].Run(&ebpf.RunOptions{Data: packet, Repeat: 1})
 			if err != nil || ret != tc.action {
@@ -369,7 +377,7 @@ func TestBpfLookupHooksTC(t *testing.T) {
 		seen, length, key := binary.LittleEndian.Uint64(got[:]), binary.LittleEndian.Uint32(got[8:]), binary.LittleEndian.Uint32(got[12:])
 		imsi, site := binary.LittleEndian.Uint64(got[16:]), binary.LittleEndian.Uint32(got[24:])
 		gotEntry, gotTail := read(entry), read(tail)
-		if gotEntry.Seen != 1 || gotEntry.Len != uint32(tc.length) {
+		if gotEntry.Seen != 1 || gotEntry.Len != skbLen {
 			t.Fatalf("key=%d: entry=%+v", tc.key, gotEntry)
 		}
 		if !tc.hit {
@@ -378,10 +386,10 @@ func TestBpfLookupHooksTC(t *testing.T) {
 			}
 			continue
 		}
-		if seen != 1 || length != uint32(tc.length) || key != tc.key || imsi != 9 || site != lookupPC {
+		if seen != 1 || length != skbLen || key != tc.key || imsi != 9 || site != lookupPC {
 			t.Fatalf("key=%d: lookup seen=%d len=%d key=%d imsi=%d site=%d, want site %d", tc.key, seen, length, key, imsi, site, lookupPC)
 		}
-		if gotTail.Seen != 1 || gotTail.Len != uint32(tc.length) || gotTail.Args != [2]uint32{tailPC, tc.index} {
+		if gotTail.Seen != 1 || gotTail.Len != skbLen || gotTail.Args != [2]uint32{tailPC, tc.index} {
 			t.Fatalf("key=%d: tail=%+v, want site %d", tc.key, gotTail, tailPC)
 		}
 	}

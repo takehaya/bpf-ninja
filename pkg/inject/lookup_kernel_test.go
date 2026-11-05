@@ -141,7 +141,7 @@ func bpfMapIDOffset(t *testing.T, kernel *btf.Spec) int32 {
 func packetLength(t *testing.T, kernel *btf.Spec, target *ebpf.Program, raw bool) (read, length asm.Instructions) {
 	t.Helper()
 	name, fields := "xdp_buff", []string{"data", "data_end"}
-	if target.Type() == ebpf.SchedCLS || target.Type() == ebpf.SchedACT {
+	if target.Type() == ebpf.SchedCLS || target.Type() == ebpf.SchedACT || target.Type() == ebpf.CGroupSKB {
 		name, fields = "sk_buff", []string{"len"}
 	}
 	var ctx *btf.Struct

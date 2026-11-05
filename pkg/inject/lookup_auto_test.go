@@ -1480,6 +1480,9 @@ func TestLookupTC(t *testing.T) {
 		{"cls-xdp_md", ebpf.SchedCLS, false, false},
 		{"xdp-__sk_buff", ebpf.XDP, true, false},
 		{"socket-filter", ebpf.SocketFilter, true, false},
+		{"cgroup-skb", ebpf.CGroupSKB, true, true},
+		{"cgroup-skb-xdp_md", ebpf.CGroupSKB, false, false},
+		{"netfilter", ebpf.Netfilter, true, false},
 	} {
 		spec := lookupFixture()
 		if tc.skb {
