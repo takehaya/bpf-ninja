@@ -100,10 +100,14 @@ func (r recordRequest) omitted(targets []attach.Target, filters []filter.TargetF
 // the site's decision state as its opt_comment. The hook layout has no
 // per-verdict interfaces, so an exit capture puts the return value first in
 // every comment instead.
-func recordOutput(cfg *output.Config, targets []attach.Target, layouts []*record.Layout, isFexit bool) {
+func recordOutput(cfg *output.Config, targets []attach.Target, layouts []*record.Layout, attached []int, isFexit bool) {
 	count := map[string]int{}
 	for _, t := range targets {
 		count[t.FuncName]++
+	}
+	active := make([]bool, len(targets))
+	for _, i := range attached {
+		active[i] = true
 	}
 	cfg.IsFexit, cfg.RawReturn, cfg.Actions, cfg.MultiPoint = false, false, nil, false
 	cfg.Hooks, cfg.Records, cfg.NoRunIDs = make([]string, len(targets)), layouts, true
@@ -112,6 +116,9 @@ func recordOutput(cfg *output.Config, targets []attach.Target, layouts []*record
 		cfg.Hooks[i] = t.FuncName
 		if count[t.FuncName] > 1 {
 			cfg.Hooks[i] = fmt.Sprintf("%s@%d", t.FuncName, t.ProgID)
+		}
+		if !active[i] {
+			cfg.Hooks[i] = "SKIPPED:" + cfg.Hooks[i]
 		}
 	}
 }

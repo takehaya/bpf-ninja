@@ -10,7 +10,7 @@ import (
 
 func TestStaticCtxRefusedTargetSkipped(t *testing.T) {
 	var results targetAttachResults
-	results.attached()
+	results.didAttach(0)
 	results.refused(attach.Target{ProgID: 42, FuncName: "unsafe"}, attach.TargetStaticCtxRefused, errors.New("R1 is not the context"))
 
 	if err := results.err(); err != nil {
@@ -34,12 +34,37 @@ func TestStaticCtxRefusedOnlyTargetFails(t *testing.T) {
 func TestObserverLoadRefusedTargetSkipped(t *testing.T) {
 	var results targetAttachResults
 	results.refused(attach.Target{ProgID: 42, FuncName: "rejected"}, attach.TargetObserverLoadFailed, errors.New("verifier rejected observer"))
-	results.attached()
+	results.didAttach(1)
 
 	if err := results.err(); err != nil {
 		t.Fatal(err)
 	}
 	if got := results.diagnostics[0].Detail; got != "verifier rejected observer" {
 		t.Fatalf("detail = %q", got)
+	}
+	if len(results.attached) != 1 || results.attached[0] != 1 {
+		t.Fatalf("attached = %v", results.attached)
+	}
+}
+
+type testCloser struct {
+	name   string
+	closed *[]string
+}
+
+func (c *testCloser) Close() error {
+	*c.closed = append(*c.closed, c.name)
+	return nil
+}
+
+func TestCloseTargetResourcesLeavesPriorTargets(t *testing.T) {
+	var closed []string
+	resources := []*testCloser{{name: "prior", closed: &closed}, {name: "stage-1", closed: &closed}, {name: "stage-2", closed: &closed}}
+	resources = closeTargetResources(resources, 1)
+	if len(resources) != 1 || resources[0].name != "prior" {
+		t.Fatalf("resources = %+v", resources)
+	}
+	if got := strings.Join(closed, ","); got != "stage-2,stage-1" {
+		t.Fatalf("close order = %q", got)
 	}
 }

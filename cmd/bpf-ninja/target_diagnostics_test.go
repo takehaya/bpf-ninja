@@ -38,6 +38,22 @@ func TestTargetDiagnosticsOutput(t *testing.T) {
 	if out.Len() != 0 {
 		t.Fatal(out.String())
 	}
+
+	printPartialCoverage(&out, 2, []int{1})
+	if got := out.String(); got != "warning: PARTIAL COVERAGE: coverage=partial requested=2 attached=1 skipped=1\n" {
+		t.Fatalf("coverage = %q", got)
+	}
+	out.Reset()
+	printPartialCoverage(&out, 2, []int{0, 1})
+	if out.Len() != 0 {
+		t.Fatalf("full coverage warning = %q", out.String())
+	}
+
+	targets := []attach.Target{{ProgID: 42, FuncName: "refused"}, {ProgID: 43, FuncName: "live"}}
+	attached := attachedTargets(targets, []int{1})
+	if got := captureTargetLabel(attached, ""); got != `prog "live" id=43` {
+		t.Fatalf("label = %q", got)
+	}
 }
 
 func TestParamsJSONKeys(t *testing.T) {

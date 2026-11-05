@@ -52,6 +52,8 @@ If the check cannot be completed, `dead_check_error` is recorded and no dead mar
 - With several distinct `--func` names or several programs, bpf-ninja skips unavailable targets.
   It also skips an individual target when the static-context proof refuses it or the kernel rejects that target's observer, while keeping observers that already attached to other targets.
   It warns with a short reason for each, and prints separate counts for absent functions, external declarations, static-context refusals and observer-load failures on stderr.
+  A late refusal also prints `PARTIAL COVERAGE: coverage=partial requested=N attached=N skipped=N`; this stable key/value line is the script-readable coverage status, and the following `capturing (...)` line names only attached targets.
+  With `--record`, a refused target keeps its site-ID slot so later records remain decodable, but its pcapng interface name starts with `SKIPPED:`.
 - A name missing from the BTF of some selected programs is skipped without a warning.
   A name missing from every selected program is an error.
 - If no target attaches, the command fails; it never weakens an observer or guesses that a refused context is safe.

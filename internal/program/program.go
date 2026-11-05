@@ -39,6 +39,8 @@ type Probe struct {
 	IsFexit           bool
 	Warnings          []string // resolver / codegen non-fatal notices; the CLI prints them with WriteWarnings
 	TargetDiagnostics []attach.TargetDiagnostic
+	// AttachedTargetIndices indexes targets accepted by every requested stage.
+	AttachedTargetIndices []int
 
 	// --arg-echo diagnostic mode: non-nil EchoRing means this probe emits
 	// the target function's integer args (EchoParams, in order) to a
@@ -58,12 +60,12 @@ type Probe struct {
 }
 
 type targetAttachResults struct {
-	count       int
+	attached    []int
 	diagnostics []attach.TargetDiagnostic
 	errs        []error
 }
 
-func (r *targetAttachResults) attached() { r.count++ }
+func (r *targetAttachResults) didAttach(target int) { r.attached = append(r.attached, target) }
 
 func (r *targetAttachResults) refused(t attach.Target, reason string, err error) {
 	r.diagnostics = append(r.diagnostics, attach.TargetDiagnostic{
@@ -74,10 +76,17 @@ func (r *targetAttachResults) refused(t attach.Target, reason string, err error)
 }
 
 func (r targetAttachResults) err() error {
-	if r.count > 0 {
+	if len(r.attached) > 0 {
 		return nil
 	}
 	return fmt.Errorf("no target attached: %w", errors.Join(r.errs...))
+}
+
+func closeTargetResources[T interface{ Close() error }](resources []T, start int) []T {
+	for i := len(resources) - 1; i >= start; i-- {
+		_ = resources[i].Close()
+	}
+	return resources[:start]
 }
 
 // Program returns the first underlying tracing program. Exposed so that
@@ -401,14 +410,8 @@ targetLoop:
 	for i, t := range targets {
 		startProgs, startLinks := len(probe.progs), len(probe.links)
 		rollback := func() {
-			for j := len(probe.links) - 1; j >= startLinks; j-- {
-				_ = probe.links[j].Close()
-			}
-			for j := len(probe.progs) - 1; j >= startProgs; j-- {
-				_ = probe.progs[j].Close()
-			}
-			probe.links = probe.links[:startLinks]
-			probe.progs = probe.progs[:startProgs]
+			probe.links = closeTargetResources(probe.links, startLinks)
+			probe.progs = closeTargetResources(probe.progs, startProgs)
 		}
 		static := false
 		if (h.Kind == hook.KindXDP || h.Kind == hook.KindTC) && t.FuncName != "" {
@@ -494,13 +497,14 @@ targetLoop:
 				continue targetLoop
 			}
 		}
-		results.attached()
+		results.didAttach(i)
 	}
 	if err := results.err(); err != nil {
 		_ = probe.Close()
 		return nil, err
 	}
 	probe.TargetDiagnostics = results.diagnostics
+	probe.AttachedTargetIndices = results.attached
 	return probe, nil
 }
 
