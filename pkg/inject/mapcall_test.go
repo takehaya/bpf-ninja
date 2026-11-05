@@ -160,6 +160,21 @@ func TestMapCallStack(t *testing.T) {
 	}
 }
 
+func TestSiteFrameLimitJIT(t *testing.T) {
+	for _, tc := range []struct {
+		rounding int
+		wantOK   bool
+	}{{16, true}, {32, false}, {0, false}} {
+		req := mixedReq()
+		req.Stack.LowestOffset = -480
+		req.Stack.FrameRounding = tc.rounding
+		_, err := transformLookup(mixedFixture(), req)
+		if (err == nil) != tc.wantOK {
+			t.Errorf("rounding=%d: err=%v, wantOK=%v", tc.rounding, err, tc.wantOK)
+		}
+	}
+}
+
 func TestMapCallRefusals(t *testing.T) {
 	for _, tc := range []struct {
 		req  func() LookupRequest

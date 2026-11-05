@@ -749,10 +749,10 @@ func TestStackLimitsUnchangedChain(t *testing.T) {
 		}
 	}
 	in := program(-8, -304)
-	if err := checkStackLimits(in, program(-16, -304), -304); err != nil {
+	if err := checkStackLimits(in, program(-16, -304), StackAudit{LowestOffset: -304}); err != nil {
 		t.Fatalf("unchanged chain: %v", err)
 	}
-	err := checkStackLimits(in, program(-16, -312), -304)
+	err := checkStackLimits(in, program(-16, -312), StackAudit{LowestOffset: -304})
 	if !errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), "orphan -> deep") {
 		t.Fatalf("deepened chain: want refusal naming orphan -> deep, got %v", err)
 	}
@@ -785,7 +785,7 @@ func TestStackLimitsTimerCallback(t *testing.T) {
 	// The dead-registration shape at the kernel's own boundary: 448 + 32 + 32
 	// loads, the entry's spill (480) breaks it.
 	spec := timerCallee(-448, -16, -16, "dead")
-	if err := checkStackLimits(spec.Programs["caller"].Instructions, spec.Programs["caller"].Instructions, -448); err != nil {
+	if err := checkStackLimits(spec.Programs["caller"].Instructions, spec.Programs["caller"].Instructions, StackAudit{LowestOffset: -448}); err != nil {
 		t.Fatalf("unchanged dead chain at 512: %v", err)
 	}
 	_, err := transformLookup(spec, LookupRequest{ProgramName: "caller", Entry: true, HookName: "obs", Stack: StackAudit{LowestOffset: -448}})

@@ -278,6 +278,7 @@ A rule whose `program` never loads produces no diagnostic at all.
 | `program` | string | required | The program to rewrite: its kernel name or its entry function name. | Kernel names have at most 15 characters; a function name can be longer. One rule per program. |
 | `hook` | string | required | The hook name. With `auto`, `entry`, `tail_calls` or `ops`, the prefix of the hook names. With `dispatch`, the name of the one hook. | A C identifier. It must leave room for the longest suffix within 127 bytes; see [Hook names](#hook-names). |
 | `stack_lowest_offset` | integer | required | Your audit of the deepest stack offset the program reaches, including pointer copies and callees. The hook's spill slots go below it. | At most 0; see [Stack bound](#stack-bound). `lookups.json` leaves it `null`, which is refused. |
+| `frame_rounding` | integer | detected | Override the running kernel's stack-frame rule. Omit it to detect Linux 6.9+ with JIT enabled; unknown states use 32. | `16` or `32`. |
 | `map` | string | none | Observe lookups on this map, by exact kernel map name. | Not with `auto`. A rule needs one of `map`, `auto`, `entry` or `tail_calls`. |
 | `func` | string | none | With `map`: only lookups in this BTF function. | Needs `map`. |
 | `line` | integer | none | With `map`: only lookups on this source line. | Needs `map`. |
@@ -300,17 +301,20 @@ Find the deepest stack access of the program, for example the lowest `r10 - N` i
 Do not copy a bound from an example.
 The transform rounds the bound down to 8 bytes and puts its spill slots below it.
 The frame that holds them also calls the hook.
-Kernels that round frames to 32 bytes (6.1, and the interpreter) count that call as 32 bytes of the 512-byte stack, so the transform keeps the slots within 480 bytes on every kernel.
+Kernels that round frames to 32 bytes (6.1-era kernels and the interpreter) count that call as 32 bytes of the 512-byte stack, so the transform keeps the slots within 480 bytes there.
+On Linux 6.9 or newer with `net.core.bpf_jit_enable` set to `1` or `2`, `inject-run` uses the JIT's 16-byte rounding and zero-byte empty hook frame, allowing the site frame to use all 512 bytes.
+If `uname` or the sysctl cannot be read, or the state is not recognized, it keeps the 32-byte rule.
+Set `frame_rounding` only to override this detection for a known target.
 The lowest accepted bound depends on the rule:
 
-| Rule has | Slots | Lowest bound |
-|---|---|---|
-| `map` or `auto` | 3 | -456 |
-| `tail_calls`, with or without `entry`, and no lookups | 2 | -464 |
-| only `entry` (also with `dispatch`) | 1 | -472 |
-| `dispatch` with `map`, `auto` or `tail_calls` | 4 | -448 |
-| an `update` op | 4 | -448 |
-| an `update` op and `dispatch` | 5 | -440 |
+| Rule has | Slots | 32-byte / unknown | Linux 6.9+ JIT |
+|---|---:|---:|---:|
+| `map` or `auto` | 3 | -456 | -488 |
+| `tail_calls`, with or without `entry`, and no lookups | 2 | -464 | -496 |
+| only `entry` (also with `dispatch`) | 1 | -472 | -504 |
+| `dispatch` with `map`, `auto` or `tail_calls` | 4 | -448 | -480 |
+| an `update` op | 4 | -448 | -480 |
+| an `update` op and `dispatch` | 5 | -440 | -472 |
 
 The transform checks the rest, which depends on the program.
 A generic hook takes a fourth slot (bound -448), or a fifth at an update (-440).

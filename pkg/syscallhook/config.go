@@ -56,6 +56,7 @@ type Rule struct {
 	SitePCs           []uint32 `json:"site_pcs,omitempty"`
 	Hook              string   `json:"hook"`
 	StackLowestOffset *int16   `json:"stack_lowest_offset"`
+	FrameRounding     int      `json:"frame_rounding,omitempty"`
 }
 
 // MapBTF pins the ELF supplying missing map BTF types to a SHA-256 digest.
@@ -91,7 +92,7 @@ func (r Rule) request() inject.LookupRequestRaw {
 		Pops:            ops.pops,
 		Peeks:           ops.peeks,
 		HookName:        r.Hook,
-		Stack:           inject.StackAudit{LowestOffset: lo},
+		Stack:           inject.StackAudit{LowestOffset: lo, FrameRounding: r.FrameRounding},
 	}
 }
 
@@ -193,6 +194,16 @@ func Validate(rules []Rule) error {
 
 // ParseConfig reads a strict JSON array. Unknown keys and trailing data are errors.
 func ParseConfig(r io.Reader) ([]Rule, error) {
+	return parseConfig(r, 0)
+}
+
+// ParseConfigWithFrameRounding applies frameRounding to rules that omit it
+// before validation. Explicit values are preserved.
+func ParseConfigWithFrameRounding(r io.Reader, frameRounding int) ([]Rule, error) {
+	return parseConfig(r, frameRounding)
+}
+
+func parseConfig(r io.Reader, frameRounding int) ([]Rule, error) {
 	data, err := io.ReadAll(io.LimitReader(r, (1<<20)+1))
 	if err != nil {
 		return nil, fmt.Errorf("injection config: %w", err)
@@ -209,6 +220,11 @@ func ParseConfig(r io.Reader) ([]Rule, error) {
 	var trailing any
 	if err := d.Decode(&trailing); err != io.EOF {
 		return nil, fmt.Errorf("injection config: expected one JSON array")
+	}
+	for i := range rules {
+		if rules[i].FrameRounding == 0 {
+			rules[i].FrameRounding = frameRounding
+		}
 	}
 	if err := Validate(rules); err != nil {
 		return nil, err

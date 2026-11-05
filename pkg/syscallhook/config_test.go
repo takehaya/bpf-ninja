@@ -21,6 +21,8 @@ func fillNonZero(t *testing.T, v reflect.Value) {
 		v.SetUint(7)
 	case reflect.Int16:
 		v.SetInt(-8)
+	case reflect.Int:
+		v.SetInt(16)
 	case reflect.Slice:
 		s := reflect.MakeSlice(v.Type(), 1, 1)
 		fillNonZero(t, s.Index(0))
@@ -84,6 +86,11 @@ func TestValidateStack(t *testing.T) {
 			t.Fatalf("lo=%d: Validate=%v, CheckLookupStack=%v", lo, got, want)
 		}
 	}
+	invalidRounding := rule(-8)
+	invalidRounding.FrameRounding = 8
+	if err := Validate([]Rule{invalidRounding}); err == nil || !strings.Contains(err.Error(), "FrameRounding must be 16 or 32") {
+		t.Fatalf("invalid frame rounding: %v", err)
+	}
 	// Without a lookup, entry reserves only the ctx slot and tail_calls the
 	// ctx and index slots. Auto preflights only the three base lookup slots;
 	// the transform applies operation and dispatch slots to discovered groups.
@@ -119,6 +126,21 @@ func TestValidateStack(t *testing.T) {
 	r.StackLowestOffset = nil
 	if Validate([]Rule{r}) == nil {
 		t.Fatal("nil stack_lowest_offset accepted")
+	}
+}
+
+func TestParseConfigAppliesFrameRoundingBeforeValidation(t *testing.T) {
+	config := `[{"program":"p","auto":true,"ops":["lookup:any","update:any"],"hook":"h","stack_lowest_offset":-480}]`
+	if _, err := ParseConfig(strings.NewReader(config)); err == nil {
+		t.Fatal("default 32-byte rounding accepted a frame past its limit")
+	}
+	rules, err := ParseConfigWithFrameRounding(strings.NewReader(config), 16)
+	if err != nil || len(rules) != 1 || rules[0].FrameRounding != 16 {
+		t.Fatalf("16-byte default: %+v, %v", rules, err)
+	}
+	explicit := strings.Replace(config, `"hook":"h"`, `"frame_rounding":32,"hook":"h"`, 1)
+	if _, err := ParseConfigWithFrameRounding(strings.NewReader(explicit), 16); err == nil {
+		t.Fatal("kernel default replaced an explicit 32-byte rule")
 	}
 }
 

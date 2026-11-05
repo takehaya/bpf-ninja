@@ -22,21 +22,23 @@ const (
 	maxCallFrames    = 8   // MAX_CALL_FRAMES
 )
 
-// frameRounding is how a kernel rounds each frame's stack depth before
-// summing: up to 32 bytes, and at least 32, for the interpreter and on every
-// 6.1 kernel; up to 16 bytes when newer kernels JIT the program
-// (round_up_stack_depth). A program must pass under whichever its kernel uses.
-// The 32-byte rounding is never smaller than the 16-byte one, and every limit
-// only grows with the rounded depths, so the "16" pass never reports a chain
-// the "32" pass accepted. It stays to document what JITing kernels count.
+// frameRounding is how the selected kernel path rounds each frame's stack
+// depth before summing.
 type frameRounding struct {
 	name  string
 	round func(int) int
 }
 
-var frameRoundings = []frameRounding{
-	{"32", func(n int) int { return (max(n, 1) + 31) / 32 * 32 }},
-	{"16", func(n int) int { return (n + 15) / 16 * 16 }},
+var (
+	frameRounding32 = frameRounding{"32", func(n int) int { return (max(n, 1) + 31) / 32 * 32 }}
+	frameRounding16 = frameRounding{"16", func(n int) int { return (n + 15) / 16 * 16 }}
+)
+
+func selectedFrameRoundings(stack StackAudit) []frameRounding {
+	if stack.FrameRounding == 16 {
+		return []frameRounding{frameRounding16}
+	}
+	return []frameRounding{frameRounding32}
 }
 
 // stackFunc is one function of a program's call graph.
@@ -353,8 +355,8 @@ func stackLimitBroken(funcs []stackFunc, round func(int) int) (string, error) {
 // exception callback or other root no chain from the entry reaches. The
 // lookup transform always deepens the entry (its ctx spill lies below the
 // audited bound), so every chain from the entry counts as changed.
-func checkStackLimits(in, out asm.Instructions, lowest int16) error {
-	broken, err := stackLimitsBroken(in, out, lowest)
+func checkStackLimits(in, out asm.Instructions, stack StackAudit) error {
+	broken, err := stackLimitsBroken(in, out, stack)
 	if err != nil {
 		return err
 	}
@@ -367,12 +369,12 @@ func checkStackLimits(in, out asm.Instructions, lowest int16) error {
 // stackLimitsBroken is checkStackLimits' limit description without the
 // ErrRefused prefix, or "" when out keeps every limit; Auto uses it as a
 // skip reason.
-func stackLimitsBroken(in, out asm.Instructions, lowest int16) (string, error) {
-	before, err := stackCallGraph(in, lowest)
+func stackLimitsBroken(in, out asm.Instructions, stack StackAudit) (string, error) {
+	before, err := stackCallGraph(in, stack.LowestOffset)
 	if err != nil {
 		return "", err
 	}
-	after, err := stackCallGraph(out, lowest)
+	after, err := stackCallGraph(out, stack.LowestOffset)
 	if err != nil {
 		return "", err
 	}
@@ -386,9 +388,9 @@ func stackLimitsBroken(in, out asm.Instructions, lowest int16) (string, error) {
 	}
 	for i := range after {
 		d, ok := depth[after[i].name]
-		after[i].changed = !ok || d < 0 || after[i].depth > d || after[i].depth > -int(lowest)
+		after[i].changed = !ok || d < 0 || after[i].depth > d || after[i].depth > -int(stack.LowestOffset)
 	}
-	for _, r := range frameRoundings {
+	for _, r := range selectedFrameRoundings(stack) {
 		broken, err := stackLimitBroken(after, r.round)
 		if err != nil {
 			return "", err

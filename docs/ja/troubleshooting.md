@@ -18,6 +18,10 @@ pcap の payload に機密情報が含まれる場合は、そのまま公開 is
 kernel へのロードや attach の問題は、実際の kernel と必要な権限がある環境で再現する。
 `--dump-asm` の成功が示すのは、コンパイルが通ったことだけである。
 
+`inject-run` の stack frame 計算は、Linux 6.9 以降で `net.core.bpf_jit_enable` が `1` または `2` の場合に 16 byte 丸めを使う。
+それ以外、または kernel release や sysctl を確認できない場合は 32 byte 丸めを使う。
+既知の対象を明示する場合だけ、rule の `frame_rounding` を `16` または `32` で上書きできる。
+
 ## fentry/fexit の Subprog エラーを調べる
 
 `Subprog <name> doesn't exist` が出た場合は、program ID と、完全一致する BTF 関数名を確認する。

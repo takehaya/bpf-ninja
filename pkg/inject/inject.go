@@ -135,10 +135,15 @@ type StackAudit struct {
 	// hook or at a Dispatch lookup or tail-call site, and CopyReadOnly adds a
 	// value copy below them. The frame holding the slots also calls a hook,
 	// and the transform refuses a program whose call chains would then break
-	// a verifier stack limit: with a hook frame counted as 32 bytes, the
+	// a verifier stack limit. With the conservative 32-byte rule, the
 	// 512-byte combined limit makes -464 the deepest usable bound for
-	// Transform (see CheckLookupStack for TransformLookup).
+	// Transform (see CheckLookupStack for TransformLookup); the 6.9+ JIT
+	// rule can use the full 512-byte site frame.
 	LowestOffset int16
+	// FrameRounding is 16 only when the caller has established that the
+	// running kernel uses the 6.9+ JIT stack rule. Zero and 32 use the
+	// conservative 32-byte rule.
+	FrameRounding int
 }
 
 // Request is the hash-bound description of one transformation. Every field is
@@ -276,7 +281,7 @@ func transform(work *ebpf.CollectionSpec, req Request) error {
 		return err
 	}
 	out := appendHook(spliced, req)
-	if err := checkStackLimits(prog.Instructions, out, req.Stack.LowestOffset); err != nil {
+	if err := checkStackLimits(prog.Instructions, out, req.Stack); err != nil {
 		return err
 	}
 	prog.Instructions = out
@@ -301,6 +306,8 @@ func validateRequest(req Request) error {
 		return refuse("StackAudit.LowestOffset must be <= 0")
 	case req.Stack.LowestOffset < -512:
 		return refuse("StackAudit.LowestOffset must be >= -512")
+	case req.Stack.FrameRounding != 0 && req.Stack.FrameRounding != 16 && req.Stack.FrameRounding != 32:
+		return refuse("StackAudit.FrameRounding must be 16 or 32")
 	}
 	if _, err := hex.DecodeString(req.ELFSHA256); err != nil {
 		return refuse("ELFSHA256 is not hex: %v", err)
