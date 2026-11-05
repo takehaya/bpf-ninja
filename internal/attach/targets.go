@@ -16,6 +16,7 @@ import (
 
 const (
 	TargetStaticCtxRefused   = "static_context_check_refused"
+	TargetStaticCtxUnchecked = "static_context_check_uses_stack_floor"
 	TargetObserverLoadFailed = "observer_load_failed"
 )
 
