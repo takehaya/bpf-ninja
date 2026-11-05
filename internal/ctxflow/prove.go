@@ -27,6 +27,10 @@ type Proof struct {
 	Proven bool
 	Reason string
 	States map[int]State
+	// Callback is set when the function is a synchronous callback whose context
+	// is proved through its caller's frame. Proven stays false: nothing passes it
+	// the context as an argument, so a static hook on it cannot read one.
+	Callback *Callback
 }
 
 // functions returns the BTF function ranges and identifies parameters whose
@@ -85,6 +89,7 @@ type flowProgram struct {
 	symbols        map[string]int
 	starts         map[int]int
 	callback       map[int]bool
+	refs           map[int][]callSite
 	callers        map[int][]callSite
 	writeFree      map[int]bool
 	fnPtrElsewhere bool
@@ -96,8 +101,8 @@ type callSite struct {
 }
 
 // Prove establishes context provenance for each BTF function. It fails closed
-// on callbacks, stack arguments, indirect jumps, malformed calls and control
-// flow outside the containing function.
+// on stack arguments, indirect jumps, malformed calls and control flow outside
+// the containing function, and on a callback unless proveCallback accepts it.
 func Prove(insns asm.Instructions, ctxStruct btf.Type) map[int]Proof {
 	p := newFlowProgram(insns, ctxStruct)
 	out := make(map[int]Proof, len(p.funcs))
@@ -187,6 +192,16 @@ func Prove(insns asm.Instructions, ctxStruct btf.Type) map[int]Proof {
 			out[fn.Start] = proof
 		}
 	}
+	for _, fn := range p.funcs {
+		if proof := out[fn.Start]; p.callback[fn.Start] {
+			proof.Reason = "function is used as a callback"
+			var why string
+			if proof.Callback, why = p.proveCallback(fn, out[p.funcs[0].Start]); why != "" {
+				proof.Reason = why
+			}
+			out[fn.Start] = proof
+		}
+	}
 	return out
 }
 
@@ -229,7 +244,7 @@ func CallsRefusal(insns asm.Instructions, name string) string {
 
 func newFlowProgram(insns asm.Instructions, ctxStruct btf.Type) *flowProgram {
 	p := &flowProgram{insns: insns, funcs: functions(insns, ctxStruct), at: map[int]int{}, symbols: map[string]int{},
-		starts: map[int]int{}, callback: map[int]bool{}, callers: map[int][]callSite{}, writeFree: map[int]bool{}}
+		starts: map[int]int{}, callback: map[int]bool{}, refs: map[int][]callSite{}, callers: map[int][]callSite{}, writeFree: map[int]bool{}}
 	for i, fn := range p.funcs {
 		p.starts[fn.Start] = i
 	}
@@ -251,6 +266,7 @@ func newFlowProgram(insns asm.Instructions, ctxStruct btf.Type) *flowProgram {
 			if ins.IsLoadOfFunctionPointer() {
 				if target, ok := p.target(pc, ins); ok {
 					p.callback[target] = true
+					p.refs[target] = append(p.refs[target], callSite{i, pc})
 				}
 				p.fnPtrElsewhere = p.fnPtrElsewhere || i > 0
 			}

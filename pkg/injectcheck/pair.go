@@ -3,15 +3,20 @@ package injectcheck
 import (
 	"encoding/json"
 	"errors"
+	"slices"
 
 	"github.com/cilium/ebpf/asm"
 )
 
-// FormatVersion adds per-frame stack floors. Readers continue to accept v2
-// and v3 pairs.
-const FormatVersion = 4
+// FormatVersion adds callback context sources. Readers continue to accept v2
+// through v4 pairs.
+const FormatVersion = 5
 
-func supportedFormat(format int) bool { return format == 2 || format == 3 || format == FormatVersion }
+func supportedFormat(format int) bool { return format >= 2 && format <= FormatVersion }
+
+func callbackPremise(targets []SiteTarget) bool {
+	return slices.ContainsFunc(targets, func(t SiteTarget) bool { return t.Ctx != nil && t.Ctx.Param != 0 })
+}
 
 // Pair is the shared, versioned input for the offline checker and its CLI.
 // Request, Result and Reason carry optional census evidence and are not premises.
@@ -36,7 +41,7 @@ func (p *Pair) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	if !supportedFormat(next.Format) {
-		return inputError(InputVersion, "format must be 2, 3, or %d, got %d", FormatVersion, next.Format)
+		return inputError(InputVersion, "format must be 2 through %d, got %d", FormatVersion, next.Format)
 	}
 	if next.Format < 3 {
 		for _, target := range next.Premises.Targets {
@@ -44,6 +49,9 @@ func (p *Pair) UnmarshalJSON(data []byte) error {
 				return inputError(InputVersion, "format 2 does not support target context provenance")
 			}
 		}
+	}
+	if next.Format < 5 && callbackPremise(next.Premises.Targets) {
+		return inputError(InputVersion, "format %d does not support callback context sources", next.Format)
 	}
 	if next.Format < 4 && len(next.Premises.Frames) != 0 {
 		return inputError(InputVersion, "format %d does not support per-frame stack floors", next.Format)
@@ -99,7 +107,7 @@ type Verdict struct {
 func (p Pair) Validate() (Verdict, error) {
 	v := Verdict{Premises: p.Premises}
 	if !supportedFormat(p.Format) {
-		err := inputError(InputVersion, "format must be 2, 3, or %d, got %d", FormatVersion, p.Format)
+		err := inputError(InputVersion, "format must be 2 through %d, got %d", FormatVersion, p.Format)
 		v.Kind = InputVersion
 		v.Reason = err.Error()
 		return v, err
@@ -112,6 +120,11 @@ func (p Pair) Validate() (Verdict, error) {
 				return v, err
 			}
 		}
+	}
+	if p.Format < 5 && callbackPremise(p.Premises.Targets) {
+		err := inputError(InputVersion, "format %d does not support callback context sources", p.Format)
+		v.Kind, v.Reason = InputVersion, err.Error()
+		return v, err
 	}
 	if p.Format < 4 && len(p.Premises.Frames) != 0 {
 		err := inputError(InputVersion, "format %d does not support per-frame stack floors", p.Format)

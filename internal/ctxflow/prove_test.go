@@ -151,7 +151,7 @@ func TestProve(t *testing.T) {
 		function  int
 		want      string
 	}{
-		{"callback", asm.Instructions{(asm.Instruction{OpCode: asm.LoadImmOp(asm.DWord), Dst: asm.R3, Src: asm.PseudoFunc}).WithReference("mid")}, nil, 1, "function is used as a callback"},
+		{"callback", asm.Instructions{(asm.Instruction{OpCode: asm.LoadImmOp(asm.DWord), Dst: asm.R3, Src: asm.PseudoFunc}).WithReference("mid")}, nil, 1, "callback: the function is also called directly"},
 		{"caller without ctx", asm.Instructions{asm.Mov.Reg(asm.R2, asm.RFP)}, nil, 1, "a caller does not pass the context (entry@"},
 		{"r11 stack argument", nil, asm.Instructions{asm.StoreMem(regParams, -8, asm.R1, asm.DWord)}, 1, "function passes a stack argument through r11"},
 		{"indirect jump", nil, asm.Instructions{{OpCode: asm.Ja.Op(asm.RegSource), Dst: asm.R7}}, 1, "indirect jump"},

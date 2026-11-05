@@ -164,7 +164,7 @@ func TestSubprogramCallbackSkipped(t *testing.T) {
 	insns = append(insns[:1], append(asm.Instructions{load}, insns[1:]...)...)
 	spec.Programs["p"].Instructions = insns
 	sites, err := discoverLookups(spec, "p")
-	if err != nil || len(sites) != 1 || sites[0].Reason != "function is used as a callback" {
+	if err != nil || len(sites) != 1 || sites[0].Reason != "callback: the function is also called directly" {
 		t.Fatalf("sites=%+v err=%v", sites, err)
 	}
 }

@@ -31,7 +31,7 @@ type LookupSite struct {
 	SitePC           uint32 // raw BPF slot index; LDIMM64 occupies two slots
 	InstructionIndex int    // index in the decoded instruction slice
 	Reason           string
-	CtxSource        string // entry, r6-r9 or fp-N
+	CtxSource        string // entry, r6-r9, fp-N or callback:PARAM:fp-X (see callbackCtxSource)
 	Floor            int16  // selected floor of FuncName's frame, when known
 	// Generic marks a lookup with a Reason that Auto still instruments,
 	// through the generic hook (see LookupHook.Generic).
@@ -59,7 +59,8 @@ func (s LookupSelector) empty() bool {
 
 // LookupRequest describes one hash-bound lookup transformation. A subprogram
 // site is supported only when BTF and context flow prove its context source;
-// it initializes the context slot in its own frame. Stack certifies the
+// it initializes the context slot in its own frame, at the site or, in a
+// synchronous callback, at the callback's entry. Stack certifies the
 // reserved spill slots below the audited bound, three, four when a hook takes the map pointer (generic or Dispatch),
 // plus the value copy with CopyReadOnly, including aliases and callee stacks.
 // No caller-saved register liveness certification is required at helper calls.
@@ -73,9 +74,9 @@ func (s LookupSelector) empty() bool {
 // cannot be instrumented are reported in Skipped instead of refusing the
 // transform: an unsupported site or map kind, a hook name past MaxHookName,
 // slots past the audited stack, or, when the instrumented program would break
-// a kernel call-chain stack limit, first the sites that need the map slot or
-// a value copy and then every lookup. Auto refuses only when nothing at all
-// would be instrumented.
+// a kernel call-chain stack limit, first the sites in callbacks, then the
+// sites that need the map slot or a value copy and then every lookup. Auto
+// refuses only when nothing at all would be instrumented.
 //
 // Maps limits Auto to lookups on the named maps (exact kernel names); the
 // others are reported in Skipped. A name that matches no discovered lookup is
@@ -463,6 +464,10 @@ type discoveredLookup struct {
 	readOnlyArg bool
 	ctxReg      asm.Register
 	ctxSlot     int16
+	// callback is set for a site in a synchronous callback starting at
+	// callbackStart; it gets its context through the callback's prologue.
+	callback      *ctxflow.Callback
+	callbackStart int
 }
 
 func publicLookupSites(sites []discoveredLookup) []LookupSite {
@@ -572,11 +577,14 @@ func discoverMapCalls(insns asm.Instructions, typ ebpf.ProgramType, resolve look
 	ctxStruct := lookupCtxStruct(insns)
 	proofs := ctxflow.Prove(insns, ctxStruct)
 	funcStart := -1
+	// ownStack marks registers holding R10 plus a constant, set in this block.
+	var ownStack [asm.R10 + 1]bool
 	it = insns.Iterate()
 	for it.Next() {
 		pc, ins := int(it.Offset), it.Ins
 		if starts[pc] {
 			mapID, mapName, m = "", "", nil
+			ownStack = [asm.R10 + 1]bool{}
 		}
 		if fn := btf.FuncMetadata(ins); fn != nil {
 			funcName, funcStart, file, line = fn.Name, pc, "", 0
@@ -593,6 +601,8 @@ func discoverMapCalls(insns asm.Instructions, typ ebpf.ProgramType, resolve look
 			generic, typedOnly := false, false
 			var ctxReg asm.Register
 			var ctxSlot int16
+			var callback *ctxflow.Callback
+			callbackStart := 0
 			switch {
 			case funcStart < 0:
 				site.Reason = "program lacks BTF function info"
@@ -602,6 +612,9 @@ func discoverMapCalls(insns asm.Instructions, typ ebpf.ProgramType, resolve look
 				proof := proofs[funcStart]
 				state, stateOK := proof.States[pc]
 				switch {
+				case proof.Callback != nil:
+					callback, callbackStart = proof.Callback, funcStart
+					site.CtxSource = callbackCtxSource(*proof.Callback)
 				case !proof.Proven:
 					site.Reason = proof.Reason
 				case !stateOK:
@@ -644,8 +657,15 @@ func discoverMapCalls(insns asm.Instructions, typ ebpf.ProgramType, resolve look
 			// update's value is in R3.
 			regs := readOnly[pc].regs
 			readOnlyArg := regs[asm.R2].readOnly || op == HookUpdate && regs[asm.R3].readOnly
+			// readOnlyPointers follows only the entry function. A callback's
+			// arguments include read-only memory, such as a for_each key, so
+			// its sites take untrusted pointers unless the key, and an update's
+			// value, are its own R10 plus a constant in this block.
+			if callback != nil && (!ownStack[asm.R2] || op == HookUpdate && !ownStack[asm.R3]) {
+				readOnlyArg = true
+			}
 			sites = append(sites, discoveredLookup{LookupSite: site, mapID: mapID, mapInfo: m, generic: generic,
-				typedOnly: typedOnly, readOnlyArg: readOnlyArg, ctxReg: ctxReg, ctxSlot: ctxSlot})
+				typedOnly: typedOnly, readOnlyArg: readOnlyArg, ctxReg: ctxReg, ctxSlot: ctxSlot, callback: callback, callbackStart: callbackStart})
 		}
 		// Track direct R1 definitions only; calls also clobber R1. Atomic
 		// operations and legacy packet loads are conservatively barriers.
@@ -654,6 +674,17 @@ func discoverMapCalls(insns asm.Instructions, typ ebpf.ProgramType, resolve look
 			((class.IsALU() || class == asm.LdXClass) && ins.Dst == asm.R1) ||
 			(class == asm.StXClass && ins.OpCode.Mode() == asm.AtomicMode) {
 			mapID, mapName, m = "", "", nil
+		}
+		switch {
+		case class.IsJump() || class == asm.LdClass && ins.OpCode != asm.LoadImmOp(asm.DWord):
+			ownStack = [asm.R10 + 1]bool{} // calls and legacy packet loads clobber R0-R5
+		case class == asm.StXClass && ins.OpCode.Mode() == asm.AtomicMode:
+			ownStack[asm.R0], ownStack[ins.Src], ownStack[ins.Dst] = false, false, false
+		case ins.OpCode == asm.Mov.Reg(asm.R0, asm.RFP).OpCode && ins.Src == asm.RFP && ins.Offset == 0:
+			ownStack[ins.Dst] = true
+		case ins.OpCode == asm.Add.Imm(asm.R0, 0).OpCode:
+		case class.IsALU() || class == asm.LdXClass || class == asm.LdClass:
+			ownStack[ins.Dst] = false
 		}
 		if ins.IsLoadFromMap() && ins.Src == asm.PseudoMapFD && ins.Dst == asm.R1 {
 			mapID, m = resolve(ins)
@@ -1205,6 +1236,23 @@ func selectLookups(sites []discoveredLookup, req LookupRequest, reserved []strin
 				return nil, nil, refuse("Maps name %q matches no %s", name, what)
 			}
 		}
+		// A callback site that may pass read-only memory would make the typed
+		// hook it shares with sites outside callbacks untrusted; it is
+		// skipped instead. Every Dispatch hook is untrusted or static already.
+		for i, group := range groups {
+			callback := func(site discoveredLookup) bool { return site.callback != nil }
+			others := slices.DeleteFunc(slices.Clone(group.sites), callback)
+			if req.Dispatch || len(others) == 0 || (lookupGroup{sites: others}).readOnlyArg() || !group.readOnlyArg() {
+				continue
+			}
+			for _, site := range group.sites {
+				if site.callback != nil && site.readOnlyArg {
+					site.Reason = "callback: the key or value may be read-only memory, which would make the typed hook it shares untrusted"
+					skipped = append(skipped, site.LookupSite)
+				}
+			}
+			groups[i].sites = slices.DeleteFunc(group.sites, func(site discoveredLookup) bool { return site.callback != nil && site.readOnlyArg })
+		}
 		groups = append(groups, generic...)
 		used := map[string]bool{}
 		for _, name := range reserved {
@@ -1350,6 +1398,15 @@ func transformLookupProgramGuarded(insns asm.Instructions, typ ebpf.ProgramType,
 			}
 		}
 	}
+	// A callback_ctx below the entry floor points at the slots the callback
+	// reads its context from, and the callback may write through it.
+	callerFloor := req.Stack.floor(btf.FuncMetadata(&insns[0]).Name)
+	for i, site := range sites {
+		if site.callback != nil && site.callback.Arg < callerFloor {
+			sites[i].Reason = fmt.Sprintf("callback: callback_ctx fp%d is below the entry stack floor %d", site.callback.Arg, callerFloor)
+			sites[i].generic, sites[i].typedOnly, sites[i].Generic = false, false, false // not for the generic hook either
+		}
+	}
 	if req.Dispatch && req.CopyReadOnly {
 		return nil, plan, refuse("Dispatch passes untrusted pointers; it does not combine with CopyReadOnly")
 	}
@@ -1396,6 +1453,12 @@ func transformLookupProgramGuarded(insns asm.Instructions, typ ebpf.ProgramType,
 			continue
 		}
 		reason := siteFrameReason(group, req)
+		if req.Auto {
+			if rest, skipped := dropCallbackSites([]lookupGroup{group}, plan.skipped, reason); len(rest) == 1 && groupStackReach(rest[0], req) >= -siteFrameLimit(req.Stack) {
+				kept, plan.skipped = append(kept, rest[0]), skipped
+				continue
+			}
+		}
 		if !req.Auto {
 			return nil, plan, refuse("%s", reason)
 		}
@@ -1506,6 +1569,9 @@ func transformLookupProgramGuarded(insns asm.Instructions, typ ebpf.ProgramType,
 			guardedReq.TailCalls = false
 			guardedEmit := emit
 			guardedEmit.req, guardedEmit.tails = guardedReq, nil
+			if req.Auto {
+				groups, plan.skipped = dropCallbackSites(groups, plan.skipped, reason)
+			}
 			var safe []lookupGroup
 			for _, group := range groups {
 				trial := append(slices.Clone(safe), group)
@@ -1561,6 +1627,19 @@ func transformLookupProgramGuarded(insns asm.Instructions, typ ebpf.ProgramType,
 	if err != nil {
 		return nil, plan, err
 	}
+	// Callback sites go first, all at once: without them the program is the
+	// one that was instrumented before callbacks were supported.
+	if before := len(plan.skipped); broken != "" && req.Auto {
+		groups, plan.skipped = dropCallbackSites(groups, plan.skipped, broken)
+		if len(plan.skipped) != before && (len(groups) != 0 || req.Entry || req.TailCalls) {
+			if spliced, hooks, err = emit.splice(groups); err != nil {
+				return nil, plan, err
+			}
+			if broken, err = stackLimitsBroken(insns, spliced, req.Stack); err != nil {
+				return nil, plan, err
+			}
+		}
+	}
 	// Auto gives up lookups before the whole rule: first the groups that
 	// reach below the base slots (the generic hook's map slot, a value copy),
 	// then every lookup group, keeping the entry and tail-call hooks. Each
@@ -1604,6 +1683,28 @@ func transformLookupProgramGuarded(insns asm.Instructions, typ ebpf.ProgramType,
 	sort.Slice(selected, func(i, j int) bool { return selected[i].SitePC < selected[j].SitePC })
 	plan.sites, plan.hooks = publicLookupSites(selected), hooks
 	return spliced, plan, nil
+}
+
+// dropCallbackSites removes the callback sites from groups, keeping each
+// group's other sites, and lists them as skipped with reason.
+func dropCallbackSites(groups []lookupGroup, skipped []LookupSite, reason string) ([]lookupGroup, []LookupSite) {
+	var kept []lookupGroup
+	for _, group := range groups {
+		sites := slices.DeleteFunc(slices.Clone(group.sites), func(site discoveredLookup) bool {
+			if site.callback != nil {
+				s := site.LookupSite
+				s.Reason = reason
+				skipped = append(skipped, s)
+				return true
+			}
+			return false
+		})
+		if len(sites) != 0 {
+			group.sites = sites
+			kept = append(kept, group)
+		}
+	}
+	return kept, skipped
 }
 
 // skipGroup appends group's sites to skipped with reason.
@@ -1801,13 +1902,21 @@ type entryCall struct {
 }
 
 type ctxSource struct {
-	reg      asm.Register
-	slot     int16
-	helperR1 bool
+	reg           asm.Register
+	slot          int16
+	helperR1      bool
+	callback      *ctxflow.Callback // read once at callbackStart, the callback's entry, not at the site
+	callbackStart int
 }
 
 func siteCtxSource(site discoveredLookup) ctxSource {
-	return ctxSource{reg: site.ctxReg, slot: site.ctxSlot}
+	return ctxSource{reg: site.ctxReg, slot: site.ctxSlot, callback: site.callback, callbackStart: site.callbackStart}
+}
+
+// callbackCtxSource names a callback's context source: the register holding
+// the caller's stack pointer and that pointer's offset in the entry frame.
+func callbackCtxSource(c ctxflow.Callback) string {
+	return fmt.Sprintf("callback:%s:fp%d", strings.ToLower(c.Param.String()), c.Arg)
 }
 
 // siteCall is the hook a helper site calls, whether it passes its SitePC and
@@ -2027,6 +2136,17 @@ func spliceLookupCalls(input asm.Instructions, calls map[uint32]siteCall, stack 
 	if entryHook.on {
 		prologue = append(prologue, asm.Call.Label(entryHook.name), asm.LoadMem(asm.R1, asm.RFP, entryCtx, asm.DWord))
 	}
+	// A callback with a site loads the context from the entry's slot through the
+	// pointer it receives. R0 is unreadable at a callback's entry.
+	callbackPrologue := map[int]asm.Instructions{}
+	for _, call := range calls {
+		if c := call.ctxFrom.callback; c != nil {
+			callbackPrologue[call.ctxFrom.callbackStart] = asm.Instructions{
+				asm.LoadMem(asm.R0, c.Param, entryCtx-c.Arg, asm.DWord),
+				asm.StoreMem(asm.RFP, int16(lookupSlots(call.frameFloor).ctx), asm.R0, asm.DWord),
+			}
+		}
+	}
 	hookSlots := int(hook.Size() / asm.InstructionSize)
 	hookAt := -1
 	indices, mapped := map[int]int{}, map[int]int{}
@@ -2038,6 +2158,7 @@ func spliceLookupCalls(input asm.Instructions, calls map[uint32]siteCall, stack 
 			hookAt = old
 			pc += hookSlots
 		}
+		pc += len(callbackPrologue[old]) // a branch to the first instruction skips it
 		indices[old], mapped[old] = it.Index, pc
 		call, site := calls[uint32(old)]
 		if site {
@@ -2060,6 +2181,11 @@ func spliceLookupCalls(input asm.Instructions, calls map[uint32]siteCall, stack 
 		if ins.IsFunctionCall() && ins.Reference() != "" && ins.Reference() == input[0].Symbol() {
 			return nil, refuse("call to program entry is unsupported")
 		}
+		if prologue := callbackPrologue[old]; prologue != nil {
+			prologue[0] = btf.WithFuncMetadata(prologue[0].WithSymbol(ins.Symbol()).WithSource(ins.Source()), btf.FuncMetadata(&ins))
+			ins = btf.WithFuncMetadata(ins.WithSymbol("").WithSource(nil), nil)
+			out = append(out, prologue...)
+		}
 		newPC := mapped[old]
 		call, site := calls[uint32(old)]
 		if site {
@@ -2081,7 +2207,11 @@ func spliceLookupCalls(input asm.Instructions, calls map[uint32]siteCall, stack 
 				return nil, refuse("call to program entry is unsupported")
 			}
 			// A branch to original slot zero skips the one-time ctx spill.
-			if err := relocateOffset(&ins, newPC, mapped[target], function); err != nil {
+			to := mapped[target]
+			if function {
+				to -= len(callbackPrologue[target]) // a callback is entered through its prologue
+			}
+			if err := relocateOffset(&ins, newPC, to, function); err != nil {
 				return nil, err
 			}
 		}

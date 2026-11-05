@@ -66,13 +66,15 @@ Each op appears once, so use `lookup:any`, not `lookup:hit` together with `looku
 `auto` skips a site it cannot instrument, leaves it unchanged, and lists it with the reason in the diagnostic and in the `skipped` list of the [hooks file](#hooks-file).
 It skips these sites:
 
-- a function without a context parameter, a callback, a caller that does not pass the context, or a site where no callee-saved register or aligned stack slot still holds it;
+- a function without a context parameter, a caller that does not pass the context, or a site where no callee-saved register or aligned stack slot still holds it;
+- a callback, unless its context can be proved through its caller (see [Limits](#limits)), for example a timer callback, a callback passed to another helper or a kfunc, a callback that is not static, a callback passed by a function other than the entry, a NULL or non-stack `callback_ctx`, a `callback_ctx` below the entry's stack floor, different `callback_ctx` values at different calls, an atomic, a legacy packet load or a branch between the function pointer or `callback_ctx` and the helper call, or a callback that is also called directly;
+- a callback site whose key or value may be read-only memory, when it shares a hook with sites outside callbacks that would otherwise stay typed;
 - a call on a map that `maps` does not name (`map not selected by Maps`);
 - a call on a map kind that has no hook;
 - a site whose hook name would be longer than 127 bytes;
 - a site whose spill slots do not fit below its function's stack floor;
 - sites that would make the rewritten program break a kernel call-chain stack limit.
-  `auto` first drops the sites that need slots below the three base ones (see [Stack floor](#stack-floor); the generic hook, update hooks and copied read-only values), and then, if the program still breaks the limit, every map-call site.
+  `auto` first drops the sites in callbacks, then the sites that need slots below the three base ones (see [Stack floor](#stack-floor); the generic hook, update hooks and copied read-only values), and then, if the program still breaks the limit, every map-call site.
   With `dispatch` it drops every map-call site at once.
 
 `auto` keeps the `entry` and `tail_calls` hooks.
@@ -155,6 +157,7 @@ Some hooks take `arg:untrusted` pointers:
 - a lookup hook on a `BPF_F_RDONLY_PROG` or `BPF_F_WRONLY_PROG` map;
 - a lookup hook on a map whose value holds a `bpf_spin_lock`, `bpf_timer`, kptr or similar field;
 - a hook whose key or value may point into a read-only map's value;
+- a hook with a site in a callback whose key, or an update's value, is not the callback's own stack;
 - the generic `HOOK_any` hooks and the dispatch hook.
 
 Kernels that do not know the tag reject such a hook in its global form.
@@ -655,7 +658,11 @@ In both modes:
 - `inject-run` can rewrite only XDP, tc (`SchedCLS`, `SchedACT`), cgroup_skb (`CGroupSKB`) and netfilter (`Netfilter`) programs loaded with BTF and `func_info`.
   In cgroup_skb and netfilter programs the packet starts at the network header, so `--func` records have no Ethernet header.
   A loader without `CAP_BPF` cannot load BTF, so `inject-run` skips its cgroup_skb programs: they load unchanged, or, when a rule matches the load, are refused with `--fail-closed`.
-- It instruments map calls in the entry function and in called subprograms whose BTF parameter, callers and held context value can all be proved; callbacks and unproved sites remain skipped. Static hooks repeat the proof on translated instructions before attach.
+- It instruments map calls in the entry function and in called subprograms whose BTF parameter, callers and held context value can all be proved, and in `bpf_loop` and `bpf_for_each_map_elem` callbacks that the entry function passes a pointer into its own frame, at the same offset at every call.
+  Such a callback loads the context from the entry's context slot through that pointer on entry, and its sites report `ctx_source` `callback:r2:fp-104`: the register the callback receives the pointer in, and the pointer's offset in the entry frame.
+  A callback site's hook takes untrusted pointers unless its key, and an update's value, are the callback's own stack (see [Load on kernels without `arg:untrusted`](#load-on-kernels-without-arguntrusted)).
+  Other callbacks and unproved sites remain skipped.
+  The kernel does not check the context a generated static hook receives, so these proofs and the checker are what stand behind it.
   One rule applies per program.
 - A function-name selector uses the BTF `inject-run` saw the loader load.
   It may not match when the BTF fd was duplicated, inherited, passed in from outside, or evicted from the 64 MiB cache.
