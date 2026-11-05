@@ -10,8 +10,18 @@ import (
 )
 
 func TestStaticCtxReachesCalls(t *testing.T) {
+	ctx := &btf.Struct{Name: "xdp_md", Size: 24}
+	i32 := &btf.Int{Name: "int", Size: 4, Encoding: btf.Signed}
 	fn := func(name string, body ...asm.Instruction) asm.Instructions {
-		body[0] = btf.WithFuncMetadata(body[0].WithSymbol(name), &btf.Func{Name: name, Linkage: btf.StaticFunc})
+		linkage := btf.StaticFunc
+		proto := &btf.FuncProto{Return: i32}
+		if name == "entry" || name == "hook" {
+			proto.Params = []btf.FuncParam{{Name: "ctx", Type: &btf.Pointer{Target: ctx}}}
+		}
+		if name == "entry" {
+			linkage = btf.GlobalFunc
+		}
+		body[0] = btf.WithFuncMetadata(body[0].WithSymbol(name), &btf.Func{Name: name, Linkage: linkage, Type: proto})
 		return body
 	}
 	cat := func(parts ...asm.Instructions) asm.Instructions {
@@ -271,7 +281,9 @@ func TestStaticCtxReachesCalls(t *testing.T) {
 			asm.Mov.Reg(asm.R1, asm.R6), pcall(2, 1), asm.Mov.Imm(asm.R0, 0), asm.Return()), fn("hook", ret()...)), false},
 		{"duplicate name", cat(fn("entry", asm.Call.Label("hook2"), asm.Call.Label("hook"), asm.Mov.Imm(asm.R0, 0), asm.Return()),
 			fn("hook", ret()...), I(btf.WithFuncMetadata(asm.Mov.Imm(asm.R0, 0).WithSymbol("hook2"), &btf.Func{Name: "hook", Linkage: btf.StaticFunc}), asm.Return())), false},
-		{"over 32K instructions", cat(jit(asm.Mov.Reg(asm.R6, asm.R1)), fn("filler", append(big, asm.Return())...)), false},
+		// Prove resolves each call in its actual Offset or Constant encoding,
+		// so program size alone is no longer a reason to refuse.
+		{"over 32K instructions", cat(jit(asm.Mov.Reg(asm.R6, asm.R1)), fn("filler", append(big, asm.Return())...)), true},
 		{"no function info", I(asm.Mov.Imm(asm.R0, 0), asm.Return()), false},
 		// entry 0-5 calls pc 7, inside other (6-8), then the hook at 9 with the context restored.
 		{"call into the middle of a function", cat(fn("entry", append([]asm.Instruction{asm.Mov.Reg(asm.R6, asm.R1), pcall(5, 0), asm.Mov.Reg(asm.R1, asm.R6), pcall(5, 0)}, ret()...)...),

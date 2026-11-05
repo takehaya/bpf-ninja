@@ -7,9 +7,9 @@ import (
 	"github.com/cilium/ebpf/btf"
 )
 
-// Function is one BTF-described function in an instruction stream. CtxParam
+// function is one BTF-described function in an instruction stream. CtxParam
 // is the zero-based context parameter, or -1 when the prototype has none.
-type Function struct {
+type function struct {
 	Name     string
 	Start    int
 	End      int
@@ -20,26 +20,27 @@ type Function struct {
 // State is the context provenance immediately before an instruction.
 type State struct{ state ctxState }
 
-// Proof describes whether every direct call path from the entry passes the
-// program context to a function, and the states proved inside that function.
+// Proof describes whether a function starts with a proved program context and
+// the states proved inside it. Global functions are independent BTF roots;
+// static functions require every direct caller to pass the context.
 type Proof struct {
 	Proven bool
 	Reason string
 	States map[int]State
 }
 
-// Functions returns the BTF function ranges and identifies parameters whose
+// functions returns the BTF function ranges and identifies parameters whose
 // pointee is ctxStruct. Malformed or duplicate metadata is left for Prove to
 // refuse; this function only describes ranges it can see.
-func Functions(insns asm.Instructions, ctxStruct btf.Type) []Function {
+func functions(insns asm.Instructions, ctxStruct btf.Type) []function {
 	ctxStruct = pointee(ctxStruct)
-	var out []Function
+	var out []function
 	for it := insns.Iterate(); it.Next(); {
 		fn := btf.FuncMetadata(it.Ins)
 		if fn == nil {
 			continue
 		}
-		f := Function{Name: fn.Name, Start: int(it.Offset), Linkage: fn.Linkage, CtxParam: -1}
+		f := function{Name: fn.Name, Start: int(it.Offset), Linkage: fn.Linkage, CtxParam: -1}
 		if proto, ok := fn.Type.(*btf.FuncProto); ok {
 			for i, param := range proto.Params {
 				if sameType(pointee(param.Type), ctxStruct) {
@@ -79,7 +80,7 @@ func sameType(a, b btf.Type) bool {
 
 type flowProgram struct {
 	insns          asm.Instructions
-	funcs          []Function
+	funcs          []function
 	at             map[int]int
 	symbols        map[string]int
 	starts         map[int]int
@@ -125,7 +126,11 @@ func Prove(insns asm.Instructions, ctxStruct btf.Type) map[int]Proof {
 			if proof.Proven || proof.Reason != "" {
 				continue
 			}
-			if i == 0 {
+			// The verifier checks a global function independently from its
+			// callers. Start it from its BTF-described context parameter just
+			// like the program entry; only static functions inherit the
+			// obligation that every direct caller passes context.
+			if i == 0 || fn.Linkage == btf.GlobalFunc {
 				states, reason := p.analyze(fn)
 				proof.States, proof.Reason = states, reason
 				proof.Proven = reason == ""
@@ -223,7 +228,7 @@ func CallsRefusal(insns asm.Instructions, name string) string {
 }
 
 func newFlowProgram(insns asm.Instructions, ctxStruct btf.Type) *flowProgram {
-	p := &flowProgram{insns: insns, funcs: Functions(insns, ctxStruct), at: map[int]int{}, symbols: map[string]int{},
+	p := &flowProgram{insns: insns, funcs: functions(insns, ctxStruct), at: map[int]int{}, symbols: map[string]int{},
 		starts: map[int]int{}, callback: map[int]bool{}, callers: map[int][]callSite{}, writeFree: map[int]bool{}}
 	for i, fn := range p.funcs {
 		p.starts[fn.Start] = i
@@ -275,7 +280,7 @@ func (p *flowProgram) target(pc int, ins *asm.Instruction) (int, bool) {
 	return target, ok
 }
 
-func (p *flowProgram) functionWriteFree(fn Function) bool {
+func (p *flowProgram) functionWriteFree(fn function) bool {
 	for pc := fn.Start; pc < fn.End; {
 		idx, ok := p.at[pc]
 		if !ok {
@@ -290,7 +295,7 @@ func (p *flowProgram) functionWriteFree(fn Function) bool {
 	return true
 }
 
-func (p *flowProgram) analyze(fn Function) (map[int]State, string) {
+func (p *flowProgram) analyze(fn function) (map[int]State, string) {
 	var initial ctxState
 	initial.regs[asm.R1+asm.Register(fn.CtxParam)] = ctxKind{t: ctxValue}
 	in, work := map[int]ctxState{fn.Start: initial}, []int{fn.Start}
@@ -361,10 +366,6 @@ func (p *flowProgram) analyze(fn Function) (map[int]State, string) {
 			default:
 				state.step(*ins)
 			}
-			if len(succ) == 1 && succ[0] == next {
-				pc = next
-				continue
-			}
 			for _, target := range succ {
 				if target < fn.Start || target >= fn.End {
 					return nil, "control leaves the function or lands inside an instruction"
@@ -395,14 +396,4 @@ func HeldAt(state State) (reg asm.Register, slot int16, ok bool) {
 		}
 	}
 	return 0, 0, false
-}
-
-// FunctionAt returns the function containing pc.
-func FunctionAt(functions []Function, pc int) (Function, bool) {
-	for _, fn := range functions {
-		if pc >= fn.Start && pc < fn.End {
-			return fn, true
-		}
-	}
-	return Function{}, false
 }
