@@ -41,6 +41,38 @@ func TestPairV1ReportsVersionFirst(t *testing.T) {
 	}
 }
 
+func TestPairV2Compatibility(t *testing.T) {
+	p := Pair{
+		Format:      2,
+		Original:    Instructions{asm.Mov.Imm(asm.R0, 0), asm.Return()},
+		Transformed: Instructions{asm.Mov.Imm(asm.R0, 0), asm.Return()},
+		Certificate: Certificate{Original: []int{0, 1}},
+		Premises:    Premises{LowestOffset: -8, Targets: []SiteTarget{}},
+	}
+	b, err := json.Marshal(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded Pair
+	if err := json.Unmarshal(b, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if verdict, err := decoded.Validate(); err != nil || !verdict.Accepted {
+		t.Fatalf("format 2 identity rejected: %+v %v", verdict, err)
+	}
+	p.Premises.Targets = []SiteTarget{{Site: 0, When: TargetAny, Hook: 0, Ctx: &CtxSource{Reg: 6}}}
+	if _, err := p.Validate(); err == nil {
+		t.Fatal("format 2 accepted a format 3 context premise")
+	}
+	b, err = json.Marshal(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(b, &decoded); err == nil {
+		t.Fatal("format 2 JSON accepted a format 3 context premise")
+	}
+}
+
 func TestIdentityAndCertificate(t *testing.T) {
 	in := asm.Instructions{asm.Mov.Imm(asm.R0, 2), asm.Return()}
 	c := fixtureCertificate{Original: []int{0, 1}}
@@ -189,6 +221,10 @@ func TestTargetInputs(t *testing.T) {
 		{"condition", []SiteTarget{{Site: 5, When: "success", Hook: hook}}, InputTarget},
 		{"hook-start", []SiteTarget{{Site: 5, When: TargetHit, Hook: hook + 1}}, InputTarget},
 		{"duplicate", []SiteTarget{valid, valid}, InputTarget},
+		{"ctx-register", []SiteTarget{{Site: 5, When: TargetHit, Hook: hook, Ctx: &CtxSource{Reg: 5}}}, InputTarget},
+		{"ctx-slot", []SiteTarget{{Site: 5, When: TargetHit, Hook: hook, Ctx: &CtxSource{Slot: -7}}}, InputTarget},
+		{"ctx-entry", []SiteTarget{{Site: -1, When: TargetAny, Hook: hook, Ctx: &CtxSource{Reg: 6}}}, InputTarget},
+		{"ctx-inconsistent", []SiteTarget{valid, {Site: 5, When: TargetMiss, Hook: hook, Ctx: &CtxSource{Reg: 6}}}, InputTarget},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			assertInputKind(t, check(tc.targets...), tc.kind)

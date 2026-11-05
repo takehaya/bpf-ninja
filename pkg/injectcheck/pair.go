@@ -7,8 +7,11 @@ import (
 	"github.com/cilium/ebpf/asm"
 )
 
-// FormatVersion pins the decoded cilium/ebpf v0.22 instruction representation.
-const FormatVersion = 2
+// FormatVersion adds callee-frame context provenance to the v2 instruction
+// representation. Readers continue to accept v2 pairs.
+const FormatVersion = 3
+
+func supportedFormat(format int) bool { return format == 2 || format == FormatVersion }
 
 // Pair is the shared, versioned input for the offline checker and its CLI.
 // Request, Result and Reason carry optional census evidence and are not premises.
@@ -32,8 +35,15 @@ func (p *Pair) UnmarshalJSON(data []byte) error {
 	if err := requiredFields(data, "original", "transformed", "certificate", "premises", "format"); err != nil {
 		return err
 	}
-	if next.Format != FormatVersion {
-		return inputError(InputVersion, "format must be %d, got %d", FormatVersion, next.Format)
+	if !supportedFormat(next.Format) {
+		return inputError(InputVersion, "format must be 2 or %d, got %d", FormatVersion, next.Format)
+	}
+	if next.Format == 2 {
+		for _, target := range next.Premises.Targets {
+			if target.Ctx != nil {
+				return inputError(InputVersion, "format 2 does not support target context provenance")
+			}
+		}
 	}
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(data, &fields); err != nil {
@@ -70,11 +80,20 @@ type Verdict struct {
 // Validate runs the API check on the same projection decoded by the CLI.
 func (p Pair) Validate() (Verdict, error) {
 	v := Verdict{Premises: p.Premises}
-	if p.Format != FormatVersion {
-		err := inputError(InputVersion, "format must be %d, got %d", FormatVersion, p.Format)
+	if !supportedFormat(p.Format) {
+		err := inputError(InputVersion, "format must be 2 or %d, got %d", FormatVersion, p.Format)
 		v.Kind = InputVersion
 		v.Reason = err.Error()
 		return v, err
+	}
+	if p.Format == 2 {
+		for _, target := range p.Premises.Targets {
+			if target.Ctx != nil {
+				err := inputError(InputVersion, "format 2 does not support target context provenance")
+				v.Kind, v.Reason = InputVersion, err.Error()
+				return v, err
+			}
+		}
 	}
 	counts, err := Check(asm.Instructions(p.Original), asm.Instructions(p.Transformed), p.Certificate, p.Premises)
 	v.Counts = counts

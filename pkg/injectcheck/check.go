@@ -37,6 +37,14 @@ type SiteTarget struct {
 	Site int        `json:"site"`
 	When TargetWhen `json:"when"`
 	Hook int        `json:"hook"` // Decoded instruction index of the hook start.
+	Ctx  *CtxSource `json:"ctx,omitempty"`
+}
+
+// CtxSource is the plan-proved context value used to initialize a callee
+// frame. Reg is R6-R9, or Slot is an aligned offset in the audited frame.
+type CtxSource struct {
+	Reg  int   `json:"reg,omitempty"`
+	Slot int16 `json:"slot,omitempty"`
 }
 
 // Certificate is untrusted layout metadata. Original[i] locates original
@@ -243,13 +251,21 @@ func Check(in, out asm.Instructions, c Certificate, premises Premises) (Counts, 
 		for n > 0 && stackSpill(out[g[n-1]]) {
 			n--
 		}
+		ctx := targets.ctxForSite(i)
+		if n > 0 && ctx != nil && ctx.Slot != 0 && n < len(g) &&
+			same(out[g[n-1]], asm.LoadMem(asm.R0, asm.RFP, ctx.Slot, asm.DWord)) {
+			n--
+			for n > 0 && stackSpill(out[g[n-1]]) {
+				n--
+			}
+		}
 		if n < len(g) {
 			starts[i] = g[n]
 			for _, j := range g[n:] {
 				before[i] = append(before[i], out[j])
 			}
 			gaps[i] = g[:n]
-			if err := checkBefore(in[i], before[i], floor); err != nil {
+			if err := checkBefore(in[i], before[i], floor, int(premises.LowestOffset), ctx); err != nil {
 				return counts, fmt.Errorf("site %d prelude: %w", i, err)
 			}
 		}
@@ -322,7 +338,8 @@ func Check(in, out asm.Instructions, c Certificate, premises Premises) (Counts, 
 	for i := range in {
 		after := gather(gaps[i+1])
 		if len(before[i]) > 0 {
-			if err := checkAfter(i, in[i], before[i], after, out, npcs, ni, gaps[i+1], hooks, targets, floor, len(gaps[0]) > 0 && i < entryEnd); err != nil {
+			if err := checkAfter(i, in[i], before[i], after, out, npcs, ni, gaps[i+1], hooks, targets,
+				floor, len(gaps[0]) > 0 && i < entryEnd, targets.ctxForSite(i)); err != nil {
 				return counts, fmt.Errorf("site %d: %w", i, err)
 			}
 			counts.Sites++
@@ -361,8 +378,21 @@ func supportedHelper(ins asm.Instruction) bool {
 func stackSpill(ins asm.Instruction) bool {
 	return ins.OpCode == asm.StoreMem(asm.RFP, 0, asm.R0, asm.DWord).OpCode && ins.Dst == asm.RFP
 }
-func checkBefore(helper asm.Instruction, is asm.Instructions, f int) error {
+func checkBefore(helper asm.Instruction, is asm.Instructions, f, lowest int, ctx *CtxSource) error {
 	store := func(off int, r asm.Register) asm.Instruction { return asm.StoreMem(asm.RFP, int16(off), r, asm.DWord) }
+	withCtx := func(v asm.Instructions) asm.Instructions {
+		if ctx == nil {
+			return v
+		}
+		switch {
+		case ctx.Reg >= int(asm.R6) && ctx.Reg <= int(asm.R9) && ctx.Slot == 0:
+			return append(v, store(f+slotContext, asm.Register(ctx.Reg)))
+		case ctx.Reg == 0 && int(ctx.Slot) >= lowest && ctx.Slot <= -8 && ctx.Slot%8 == 0:
+			return append(v, asm.LoadMem(asm.R0, asm.RFP, ctx.Slot, asm.DWord), store(f+slotContext, asm.R0))
+		default:
+			return nil
+		}
+	}
 	var variants []asm.Instructions
 	for _, withMap := range []bool{false, true} {
 		v := asm.Instructions{store(f+slotKey, asm.R2)}
@@ -388,7 +418,9 @@ func checkBefore(helper asm.Instruction, is asm.Instructions, f int) error {
 		if withMap {
 			v = append(v, store(f+slotMap, asm.R1))
 		}
-		variants = append(variants, v)
+		if v = withCtx(v); v != nil {
+			variants = append(variants, v)
+		}
 	}
 	for _, v := range variants {
 		if equal(is, v) {
@@ -399,6 +431,9 @@ func checkBefore(helper asm.Instruction, is asm.Instructions, f int) error {
 			}
 			return nil
 		}
+	}
+	if ctx != nil {
+		return reject(CtxProvenance, "callee context initialization does not match its premise")
 	}
 	return reject(PreludeShape, "not a helper observation spill sequence")
 }
@@ -440,16 +475,36 @@ type targetKey struct {
 type targetBinding struct {
 	hook int
 	used bool
+	ctx  *CtxSource
 }
 
 type targetBindings map[targetKey]*targetBinding
 
 func newTargetBindings(targets []SiteTarget, sites int, hooks map[int]bool) (targetBindings, error) {
 	b := make(targetBindings, len(targets))
+	ctxBySite := map[int]CtxSource{}
+	ctxSet := map[int]bool{}
 	for _, target := range targets {
 		if target.Site < -1 || target.Site >= sites || !hooks[target.Hook] {
 			return nil, inputError(InputTarget, "invalid site target %+v", target)
 		}
+		if target.Ctx != nil {
+			ctx := target.Ctx
+			validReg := ctx.Reg >= int(asm.R6) && ctx.Reg <= int(asm.R9) && ctx.Slot == 0
+			validSlot := ctx.Reg == 0 && ctx.Slot <= -8 && ctx.Slot >= stackBottom && ctx.Slot%8 == 0
+			if target.Site < 0 || !validReg && !validSlot {
+				return nil, inputError(InputTarget, "invalid context source in site target %+v", target)
+			}
+		}
+		ctx := CtxSource{}
+		if target.Ctx != nil {
+			ctx = *target.Ctx
+		}
+		if prior, ok := ctxBySite[target.Site]; ok && (prior != ctx || ctxSet[target.Site] != (target.Ctx != nil)) {
+			return nil, inputError(InputTarget, "inconsistent context sources at site %d", target.Site)
+		}
+		ctxBySite[target.Site] = ctx
+		ctxSet[target.Site] = target.Ctx != nil
 		switch target.When {
 		case TargetHit, TargetMiss, TargetAny, TargetError:
 		default:
@@ -459,9 +514,23 @@ func newTargetBindings(targets []SiteTarget, sites int, hooks map[int]bool) (tar
 		if _, ok := b[key]; ok {
 			return nil, inputError(InputTarget, "duplicate site target site=%d when=%s", target.Site, target.When)
 		}
-		b[key] = &targetBinding{hook: target.Hook}
+		b[key] = &targetBinding{hook: target.Hook, ctx: target.Ctx}
 	}
 	return b, nil
+}
+
+func (b targetBindings) ctxForSite(site int) *CtxSource {
+	var found *CtxSource
+	for key, target := range b {
+		if key.site != site || target.ctx == nil {
+			continue
+		}
+		if found == nil {
+			copy := *target.ctx
+			found = &copy
+		}
+	}
+	return found
 }
 
 func (b targetBindings) consume(site int, when TargetWhen, hook int, lookupArm bool) error {

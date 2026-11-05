@@ -317,8 +317,7 @@ func (n nodeMaps) status(i, j int, u attach.MapUse, children []attach.ReachableP
 	case c.Generic:
 		return "✓ injectable (generic hook)"
 	}
-	// "lookup is not in the entry function; ctx belongs to ..." reads
-	// "not in the entry function".
+	// Drop operation prefixes and secondary diagnostics in the tree view.
 	reason, _, _ := strings.Cut(c.Reason, ";")
 	return "✗ " + strings.TrimPrefix(reason, u.Op+" is ")
 }

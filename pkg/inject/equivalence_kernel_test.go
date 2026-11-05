@@ -220,12 +220,12 @@ func equivPinCPU(t *testing.T, cpu int) {
 
 func equivHasExpectedSkips(c equivCase, skipped []LookupSite) bool {
 	const (
-		nonEntry = "lookup is not in the entry function; ctx belongs to another stack frame"
-		stack    = "after the transform the call chain p -> leaf uses 544 bytes of stack, past the kernel's 512-byte combined limit (frames rounded to 32 bytes)"
+		noContext = "function has no context parameter"
+		stack     = "after the transform the call chain p -> leaf uses 544 bytes of stack, past the kernel's 512-byte combined limit (frames rounded to 32 bytes)"
 	)
 	want := []LookupSite{{Op: HookUpdate, MapName: "sessions", FuncName: "p", Reason: stack}}
 	if c.Feature == "stack-lookup-fallback" {
-		want = append(want, LookupSite{Op: HookLookup, MapName: "sessions", FuncName: "leaf", Reason: nonEntry})
+		want = append(want, LookupSite{Op: HookLookup, MapName: "sessions", FuncName: "leaf", Reason: noContext})
 	}
 	if len(skipped) != len(want) {
 		return false

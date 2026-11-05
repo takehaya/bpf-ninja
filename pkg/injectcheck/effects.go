@@ -41,7 +41,7 @@ func (s *state) store(at, width int, v value) {
 }
 func width(ins asm.Instruction) int { return int(ins.OpCode.Size().Sizeof()) }
 
-func checkAfter(site int, helper asm.Instruction, before, is, out asm.Instructions, pcs []int, idx map[int]int, js []int, hooks map[int]bool, targets targetBindings, f int, entryCtx bool) error {
+func checkAfter(site int, helper asm.Instruction, before, is, out asm.Instructions, pcs []int, idx map[int]int, js []int, hooks map[int]bool, targets targetBindings, f int, entryCtx bool, ctx *CtxSource) error {
 	isLookup := asm.BuiltinFunc(helper.Constant) == asm.FnMapLookupElem || asm.BuiltinFunc(helper.Constant) == asm.FnMapLookupPercpuElem
 	tail := asm.BuiltinFunc(helper.Constant) == asm.FnTailCall
 	if len(is) == 0 {
@@ -85,8 +85,20 @@ func checkAfter(site int, helper asm.Instruction, before, is, out asm.Instructio
 	if entryCtx {
 		s.stack[f+slotContext] = cell{value{id: idContext}, 8}
 	}
+	if ctx != nil {
+		if ctx.Reg != 0 {
+			s.regs[ctx.Reg] = value{id: idContext}
+		} else {
+			s.stack[int(ctx.Slot)] = cell{value{id: idContext}, 8}
+		}
+	}
 	for _, ins := range before {
-		s.store(int(ins.Offset), 8, s.regs[ins.Src])
+		if ins.OpCode.Class() == asm.LdXClass {
+			cell := s.stack[int(ins.Offset)]
+			s.regs[ins.Dst] = cell.v
+		} else {
+			s.store(int(ins.Offset), 8, s.regs[ins.Src])
+		}
 	}
 	s.regs[0] = value{id: idResult}
 	for r := 1; r <= 5; r++ {

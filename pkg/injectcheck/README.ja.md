@@ -33,7 +33,10 @@ counts, err := injectcheck.Check(original, transformed, injectcheck.Certificate{
 変換前の `Label` と変換後の `FromLabels` で保持された metadata からヒントを抽出でき、`Check` が内容を別途検査する。
 別引数の **premises** は呼び出し側の信頼済み入力である。
 `LowestOffset` は、間接アクセスと callee からの caller-stack pointer の利用を含む stack-alias audit である。
-`Targets` は plan の用語で `{Site, When, Hook}`、すなわち元命令 index、`hit`、`miss`、`any`、`error` のいずれか、生成 hook の decoded 開始 index を対応づける。
+`Targets` は plan の用語で `{Site, When, Hook, Ctx}`、すなわち元命令 index、`hit`、`miss`、`any`、`error` のいずれか、生成 hook の decoded 開始 index、任意の callee-frame context 由来を対応づける。
+`Ctx` は R6-R9 または audit 済み frame 内の整列 slot を指す。
+チェッカーは prelude が指定された由来をコピーすることを検査するが、その由来が意味的に context を保持することまでは証明しない。
+map call では省略時に既存の entry-frame 経路を使うが、従来の P4 tail-call 形式では helper R1 から callee frame を直接初期化する場合もある。
 lookup の `any` は hit と miss の両方の経路で hook を呼ぶことを要求する。
 caller は `inject.BuildLookupTargets` を使うか、同じ情報を変換後 call の reference ではなく plan から作る必要がある。
 `BuildLookupTargets` は、宛先を対応づけられない indirect `callx` に `inject.ErrCheckerNotApplicable` を返す。
@@ -48,6 +51,7 @@ caller は `inject.BuildLookupTargets` を使うか、同じ情報を変換後 c
 | 名前 | 形式 | 検査する内容 |
 | --- | --- | --- |
 | P1 | 入口の context spill、任意の entry/dispatch hook と R1 復元 | スロット、dispatch 引数、hook 宛先、復元の一致 |
+| P1c | map helper 前の callee-frame context 初期化 | plan が指名した R6-R9 からの store、または audit 済み slot から R0 を介した load と context store の完全一致 |
 | P2 | lookup/per-CPU lookup の spill と条件付き observer postlude | 結果分岐 1 個、経路ごとに 1 回の call（分岐先を含め最大 2 個）、plan の結果経路別宛先、R1 context、generic/dispatch の R3-R5 の由来と順序、値コピー対、全経路での 64-bit R0 復元 |
 | P3 | map update/delete の spill と observer postlude | helper 引数 spill、任意の符号付き結果分岐、plan の結果別宛先、R1 context、generic/dispatch の R3-R5 の由来と順序、1 回の call、64-bit R0 復元 |
 | P4 | tail call 前の spill と失敗時の postlude | helper 引数と宛先の保存、plan の hook、R1 context、dispatch の R4/R5 の由来、local または入口 frame での context 初期化 |
@@ -67,6 +71,7 @@ typed hook と static non-generic hook の key/value の役割も受理条件の
 u32 と helper が混在する stream では、後続 observer が元の context を受け取ることまでは確立しない。
 u32 領域は、後続 helper hook が R1 を reload する slot と同じ場所へ R0 を保存するためである。
 挿入 store はすべて `f` より下、512-byte frame 内に収まる必要がある。
+P1c が読めるのは `LowestOffset` 以上にある premise 指名の整列 slot だけである。
 
 各元命令は順序を保って各 1 回現れ、opcode、register、offset、constant、辺以外の reference が一致する必要がある。
 不一致の診断はフィールド名を示す。
@@ -87,7 +92,8 @@ u32 load では caller-saved register が読めるため、元 CFG の固定点�
 既知 helper は引数数、元 BPF callee は live-in register を用い、未知 helper、kfunc、可変引数 helper は R1–R5 の全読みと扱う。
 この保守的解析は安全な u32 site を拒否する場合がある。
 helper 後の経路検査は最大 4096 ステップとし、超過時は拒否する。
-入口 context spill は function-reference の subprogram/callback 宛先で区切る入口 frame だけを初期化し、callee frame の初期化には使わない。
+入口 context spill は function-reference の subprogram/callback 宛先で区切る入口 frame だけを初期化する。
+callee-frame の site は、信頼済み target premise が指名した register または slot から helper prelude 内で context slot を初期化する必要がある。
 参照辺を持たない例外 callback は、この frame 識別の前提外である。
 
 受理が対象とする **比較 projection** は decoded instruction のフィールド、reference、解決した辺、検査済みの挿入規則である。
@@ -111,10 +117,12 @@ go build -o inject-check ./cmd/inject-check
 ```
 
 writer と reader はタグ付きの `injectcheck.Pair` 型を共有する。
-format 2 は cilium/ebpf v0.22 の decoded `asm.OpCode` 表現と plan-level target 形式を固定するものであり、kernel の opcode byte とは異なる。
+format 3 は、format 2 が固定した cilium/ebpf v0.22 の decoded `asm.OpCode` 表現に、任意の callee context 由来を追加する。
+reader は format 2 と 3 の両方を受理し、format 番号は kernel の opcode byte とは異なる。
 必須のトップレベルキーは `format`、`original`、`transformed`、`certificate`、`premises` で、大文字小文字を区別する。
 `certificate.original`、`premises.lowest_offset`、`premises.targets` も必須で、`certificate.hooks` は空または省略してよい。`premises.targets` を空にできるのは挿入 call がない場合だけである。
-Span のフィールドは `start` と `end`、target のフィールドは `site`、`when`、`hook` である。
+Span のフィールドは `start` と `end`、target のフィールドは `site`、`when`、`hook`、任意の `ctx` である。
+`ctx` は `reg`（6 から 9）または `slot`（整列した負の frame offset）のどちらかを持つ。
 命令のフィールドは `opcode`、`dst`、`src`、`offset`、`constant`、`symbol`、`reference` である。
 `PseudoMapValue` の offset は `constant` の上位 32-bit、pseudo kind は `src` に保持する。
 未知のフィールドと規定外の大小文字表記は入力エラーとする。
@@ -143,8 +151,9 @@ decode・file・usage エラーは stderr に出し、validation が見つけた
 ## テストと local corpus の証拠
 
 通常の実行は `go test ./pkg/injectcheck ./pkg/inject ./cmd/inject-check` である。
-`TestPairCorpus` は CLI をビルドし、コミット済み命令対の期待値 `{accepted, kind}`、API、CLI の全 verdict を比較する。
+`TestPairCorpus` は CLI をビルドし、コミット済み format 2 命令対の期待値 `{accepted, kind}`、API、CLI の全 verdict を比較する。
 対象は受理される 7 設定と 11 変異であり、コミット済み CLI/API 一致テストの主張はこの範囲に限る。
+`TestTranslationValidationSubprogramContextPairCorpus` は register と slot の premise を format 3 で round-trip し、別 register、別 slot、対応する初期化の欠落を拒否する。
 `TestTranslationValidationEquivalence` は検査済み site 数と certificate の hook 名を計画と照合し、site を持たない entry hook も対象に含め、site がある fixture とゼロの fixture を分けて記録する。
 依存テストは checker と CLI から `pkg/inject` への直接・間接依存を拒否する。
 

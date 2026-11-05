@@ -63,7 +63,7 @@ func TestDeadCheckErrorPreservesIndependentKnownResults(t *testing.T) {
 
 func TestInjectionJSON(t *testing.T) {
 	site := func(pc uint32, m string) inject.LookupSite {
-		return inject.LookupSite{SitePC: pc, MapName: m, FuncName: "xdp_ingress", File: "x.c", Line: pc}
+		return inject.LookupSite{SitePC: pc, MapName: m, FuncName: "xdp_ingress", File: "x.c", Line: pc, CtxSource: "entry"}
 	}
 	for _, tc := range []struct {
 		name string
@@ -79,9 +79,9 @@ func TestInjectionJSON(t *testing.T) {
 			{Name: "obs_tail_call", Kind: inject.HookTailCall, Sites: []inject.LookupSite{{SitePC: 60, FuncName: "sub"}}},
 		}, Skipped: []inject.LookupSite{{SitePC: 7, MapName: "socks", Reason: "sockhash has no typed hook"}}},
 			`{"program":"xdp_ingress","func":"xdp_ingress","type":"XDP","prog_id":42,"ctx_type":"xdp_md","hook_form":{"form":"global","reason":"probe_arg_untrusted_supported"},"hooks":[` +
-				`{"name":"obs_sessions","kind":"typed","when":"hit","map":"sessions","sites":[{"kind":"lookup","pc":12,"map":"sessions","func":"xdp_ingress","file":"x.c","line":12}],"untrusted":false,"copied":false,"static":false,"read_only":false},` +
-				`{"name":"obs_sessions_miss","kind":"typed","when":"miss","map":"sessions","sites":[{"kind":"lookup","pc":12,"map":"sessions","func":"xdp_ingress","file":"x.c","line":12}],"untrusted":false,"copied":false,"static":false,"read_only":false},` +
-				`{"name":"obs_flows","kind":"typed","map":"flows","sites":[{"kind":"lookup","pc":18,"map":"flows","func":"xdp_ingress","file":"x.c","line":18}],"untrusted":false,"copied":true,"static":false,"read_only":true},` +
+				`{"name":"obs_sessions","kind":"typed","when":"hit","map":"sessions","sites":[{"kind":"lookup","pc":12,"map":"sessions","func":"xdp_ingress","file":"x.c","line":12,"ctx_source":"entry"}],"untrusted":false,"copied":false,"static":false,"read_only":false},` +
+				`{"name":"obs_sessions_miss","kind":"typed","when":"miss","map":"sessions","sites":[{"kind":"lookup","pc":12,"map":"sessions","func":"xdp_ingress","file":"x.c","line":12,"ctx_source":"entry"}],"untrusted":false,"copied":false,"static":false,"read_only":false},` +
+				`{"name":"obs_flows","kind":"typed","map":"flows","sites":[{"kind":"lookup","pc":18,"map":"flows","func":"xdp_ingress","file":"x.c","line":18,"ctx_source":"entry"}],"untrusted":false,"copied":true,"static":false,"read_only":true},` +
 				`{"name":"obs_any","kind":"generic","sites":[{"kind":"lookup","pc":51}],"untrusted":true,"copied":false,"static":false,"read_only":false},` +
 				`{"name":"obs_entry","kind":"entry","sites":[],"untrusted":false,"copied":false,"static":false,"read_only":false},` +
 				`{"name":"obs_tail_call","kind":"tail_call","sites":[{"kind":"tail_call","pc":60,"func":"sub"}],"untrusted":false,"copied":false,"static":false,"read_only":false}],` +

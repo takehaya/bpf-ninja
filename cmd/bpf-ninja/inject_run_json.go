@@ -64,14 +64,15 @@ type hookJSON struct {
 
 // hookSiteJSON is one instrumented (or, with Reason, skipped) helper call.
 type hookSiteJSON struct {
-	Kind   string `json:"kind"`
-	PC     uint32 `json:"pc"`
-	Map    string `json:"map,omitempty"`
-	Func   string `json:"func,omitempty"`
-	File   string `json:"file,omitempty"`
-	Line   uint32 `json:"line,omitempty"`
-	Reason string `json:"reason,omitempty"`
-	When   string `json:"when,omitempty"`
+	Kind      string `json:"kind"`
+	PC        uint32 `json:"pc"`
+	Map       string `json:"map,omitempty"`
+	Func      string `json:"func,omitempty"`
+	File      string `json:"file,omitempty"`
+	Line      uint32 `json:"line,omitempty"`
+	CtxSource string `json:"ctx_source,omitempty"`
+	Reason    string `json:"reason,omitempty"`
+	When      string `json:"when,omitempty"`
 	// Generic is set only in the lookups file: auto instruments the lookup
 	// through the generic hook despite Reason.
 	Generic        bool   `json:"generic,omitempty"`
@@ -160,7 +161,7 @@ func loadedHookAvailabilities(progID uint32, names []string) (map[string]attach.
 }
 
 func siteJSON(kind inject.HookKind, site inject.LookupSite) hookSiteJSON {
-	return hookSiteJSON{Kind: string(kind), PC: site.SitePC, Map: site.MapName, Func: site.FuncName, File: site.File, Line: site.Line, Reason: site.Reason}
+	return hookSiteJSON{Kind: string(kind), PC: site.SitePC, Map: site.MapName, Func: site.FuncName, File: site.File, Line: site.Line, CtxSource: site.CtxSource, Reason: site.Reason}
 }
 
 // hookKind is typed, generic, entry, tail_call or dispatch. The sites of a

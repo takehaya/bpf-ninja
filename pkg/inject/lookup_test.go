@@ -50,7 +50,7 @@ func TestMapCallDiscovery(t *testing.T) {
 	want := []got{
 		{HookUpdate, 2, "sessions", "", false}, {HookDelete, 5, "sessions", "", false}, {HookLookup, 8, "sessions", "", false},
 		{HookUpdate, 9, "", indirect, true}, {HookLookup, 10, "", indirect, true},
-		{HookDelete, 14, "sessions", "delete is not in the entry function; ctx belongs to another stack frame", false},
+		{HookDelete, 14, "sessions", "context is not held in a callee-saved register or an 8-byte slot at the site", false},
 	}
 	if !reflect.DeepEqual(have, want) {
 		t.Fatalf("map calls = %+v\nwant %+v", have, want)
@@ -68,7 +68,7 @@ func TestLookupDiscovery(t *testing.T) {
 	spec := lookupFixture()
 	sites, err := discoverLookups(spec, "p")
 	want := []LookupSite{{Op: HookLookup, MapName: "sessions", KeyTypeName: "u32", ValueTypeName: "session",
-		FuncName: "p", SitePC: 11, InstructionIndex: 10}}
+		FuncName: "p", SitePC: 11, InstructionIndex: 10, CtxSource: "entry"}}
 	if err != nil || !reflect.DeepEqual(sites, want) {
 		t.Fatalf("discovery = %+v, %v; want %+v", sites, err, want)
 	}
@@ -164,6 +164,38 @@ func TestLookupTransformCloneAndMetadata(t *testing.T) {
 	b, _ := checksum(out, work.ByteOrder)
 	if a == b {
 		t.Fatal("checksums should differ")
+	}
+}
+
+func TestEntrySiteOutputUnchanged(t *testing.T) {
+	// Seed 15 is the generated entry fixture: it contains lookup, update,
+	// delete, push, pop, and peek operations, a read-only argument, an entry hook,
+	// and every pre-existing hook form below. Keep callee fixtures out of this
+	// matrix so every digest must remain identical to origin/main.
+	originMain := []struct{ config, hash string }{
+		{"typed-any", "ba8f0dd427d2d617b7ec574a43dd48eeae3c6cb3e2db258a784a07559d378735"},
+		{"typed-error", "1303dd01ff1fbccf95eb34d30c5a1e932f260018fa242f854248aab5081e7694"},
+		{"typed-miss", "608e05e8357c8e23ace9777332e2252ace0e4f36849816d475905e5a84f2bbdf"},
+		{"static-any", "9dd74725539a35ddba36096ed3bf1fb892b533a9de351a55d1b922895efd6070"},
+		{"dispatch-any", "6123b056c75b3e0b219dfbe717edf73aa7f69f436e21ecaf379fefd081eace8f"},
+		{"dispatch-static", "165e5903ce020aca98b4252c634db61353086de1a9fd0aa27b6a47f53c5e6603"},
+		{"copy-readonly", "fd9e6224419ba56627fd58661ff961239a9cc255d24ac8ad552cf2e107c9c203"},
+	}
+	for _, test := range originMain {
+		t.Run(test.config, func(t *testing.T) {
+			fixture := newEquivCase(15)
+			spec := fixture.spec()
+			if _, err := transformLookup(spec, fixture.request(test.config)); err != nil {
+				t.Fatal(err)
+			}
+			got, err := checksum(spec.Programs["p"].Instructions, spec.ByteOrder)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != test.hash {
+				t.Fatalf("entry transform checksum = %s, origin/main was %s", got, test.hash)
+			}
+		})
 	}
 }
 

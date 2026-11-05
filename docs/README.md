@@ -1,5 +1,8 @@
 # Documentation
 
+Map-operation injection now supports sites in called subprograms when BTF and control-flow analysis prove the program context at the site.
+Sites without that proof remain skipped with a specific reason.
+
 - [日本語の利用ガイドと資料案内](ja/README.md)
 - [Installation (English)](../README.md#install) and [supported hooks (English)](../README.md#modes)
 - [Manual capture tests (English)](en/handtest.md)

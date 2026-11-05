@@ -476,6 +476,64 @@ func nativeTailCallReachabilityProbe(t *testing.T) error {
 // Both variants must execute a successful tail call while attached.
 func TestBpfTailCallReachabilityGuardAttached(t *testing.T) {
 	testutil.SkipIfNotRoot(t)
+	t.Run("subprogram lookup hook", func(t *testing.T) {
+		work := subprogramTailLookupFixture()
+		req := autoReq()
+		req.Stack.LowestOffset = -16
+		probeCalls := 0
+		var probeResult error
+		plan, err := transformLookupGuarded(work, req, func() error {
+			probeCalls++
+			probeResult = nativeTailCallReachabilityProbe(t)
+			return probeResult
+		})
+		if probeCalls != 1 {
+			t.Fatalf("tail-call reachability probe ran %d times", probeCalls)
+		}
+		if probeResult != nil {
+			if !errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), probeResult.Error()) || len(plan.skipped) != 1 {
+				t.Fatalf("affected kernel: plan=%+v err=%v", plan, err)
+			}
+			t.Logf("affected kernel refused unsafe subprogram lookup site: %v", err)
+		} else if err != nil || len(plan.hooks) != 1 || len(plan.skipped) != 0 {
+			t.Fatalf("unaffected kernel changed behavior: plan=%+v err=%v", plan, err)
+		}
+
+		caller := loadHooked(t, work, plan.hooks)
+		target := loadOrSkip(t, tailMarkerTargetFixture())
+		defer caller.Close()
+		defer target.Close()
+		if err := caller.Maps["jmp"].Put(uint32(0), target.Programs["target"]); err != nil {
+			t.Fatal(err)
+		}
+		lo, err := net.InterfaceByName("lo")
+		if err != nil {
+			t.Fatal(err)
+		}
+		lnk, err := link.AttachXDP(link.XDPOptions{Program: caller.Programs["p"], Interface: lo.Index, Flags: link.XDPGenericMode})
+		if err != nil {
+			t.Fatalf("attach subprogram lookup target: %v", err)
+		}
+		defer func() { _ = lnk.Close() }()
+		conn, err := net.DialUDP("udp4", nil, &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 9})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = conn.Write([]byte("guarded-subprogram-lookup"))
+		_ = conn.Close()
+		deadline := time.Now().Add(time.Second)
+		for {
+			var seen uint32
+			if err := target.Maps["seen"].Lookup(uint32(0), &seen); err == nil && seen == 1 {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatal("attached subprogram lookup target did not execute its tail-call target")
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	})
+
 	work := fixedSubTailCallerFixture()
 	probeCalls := 0
 	var probeResult error

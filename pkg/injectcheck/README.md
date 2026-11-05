@@ -32,7 +32,10 @@ An `LDIMM64` is one decoded instruction and two raw slots for relocation.
 `Label` before transformation and `FromLabels` afterwards extract hints from preserved metadata; `Check` verifies their contents independently.
 The separate **premises** are trusted caller inputs.
 `LowestOffset` is the stack-alias audit, including indirect accesses and callee use of caller-stack pointers.
-`Targets` binds `{Site, When, Hook}` in plan terms: the original instruction index, `hit`, `miss`, `any`, or `error`, and the decoded index of the generated hook start.
+`Targets` binds `{Site, When, Hook, Ctx}` in plan terms: the original instruction index, `hit`, `miss`, `any`, or `error`, the decoded index of the generated hook start, and an optional callee-frame context source.
+`Ctx` names either R6-R9 or an aligned slot within the audited frame.
+The checker verifies that the prelude copies the named source; it does not prove that source semantically contains context.
+For map calls, omission selects the existing entry-frame path; the older P4 tail-call shape may instead initialize a callee frame directly from helper R1.
 For a lookup, `any` requires the hook on both the hit and miss paths.
 The caller must use `inject.BuildLookupTargets` or derive the same data from the plan, never from transformed call references.
 `BuildLookupTargets` returns `inject.ErrCheckerNotApplicable` for an indirect `callx`, whose target it cannot pair.
@@ -47,6 +50,7 @@ They describe insertion shapes, while “original program” refers to the progr
 | Name | Shape | What is checked |
 | --- | --- | --- |
 | P1 | Entry context spill, optionally an entry/dispatch hook and R1 restore | Exact slot, dispatch arguments, hook destination and restore |
+| P1c | Callee-frame context initialization before a map helper | Exact plan-named R6-R9 store, or exact audited-slot load through R0 and context store |
 | P2 | Lookup/per-CPU lookup spill and conditional observer postlude | One result guard, at most two alternative calls, planned result-arm targets, R1 context and generic/dispatch R3-R5 provenance/order, value-copy pairs, full-width R0 restoration on every path |
 | P3 | Map update/delete spill and observer postlude | Helper argument spills, optional signed result guard, planned result target, R1 context and generic/dispatch R3-R5 provenance/order, one call, full-width R0 restoration |
 | P4 | Tail-call prelude and failure postlude | Unchanged helper arguments and target, planned hook, R1 context, dispatch R4/R5 provenance, local or entry-frame context initialization |
@@ -63,6 +67,7 @@ Helper hook calls require the saved context in R1. Generic and dispatch map call
 R2 (the site id or info word) remains unchecked at every site-tagged hook. Typed and static non-generic key/value roles also remain outside acceptance.
 Mixed u32/helper streams do not establish that a later observer receives the original context: a u32 region stores R0 in the same slot from which a later helper hook may reload R1.
 All inserted stores must fit below `f` and within the 512-byte frame.
+P1c may read only the premise-named aligned slot at or above `LowestOffset`.
 
 Each original instruction must occur exactly once and in order, with the same opcode, registers, offset, constant and non-edge reference.
 Diagnostics name differing fields.
@@ -83,7 +88,8 @@ A u32 load does not invalidate caller-saved registers, so its hook still require
 Known helpers use their argument counts, original BPF callees use their live-in registers, and unknown helpers, kfuncs and variadic helpers read all R1–R5.
 This conservative analysis can reject safe u32 sites.
 Helper postludes have a 4096-step path budget; exhaustion rejects the pair.
-An entry context spill initializes only the entry frame, bounded by function-referenced subprogram/callback entries; it never initializes a callee frame.
+An entry context spill initializes only the entry frame, bounded by function-referenced subprogram/callback entries.
+A callee-frame site must initialize its context slot in the helper prelude from the register or slot named by its trusted target premise.
 Unreferenced exception callbacks are outside this frame-identification premise.
 
 Acceptance covers the **compared projection**: decoded instruction fields, references, resolved edges and the checked insertion rules.
@@ -107,10 +113,12 @@ go build -o inject-check ./cmd/inject-check
 ```
 
 The writer and reader share the tagged `injectcheck.Pair` type.
-Format 2 pins the decoded `asm.OpCode` representation of cilium/ebpf v0.22 and the plan-level target shape; it is not the kernel opcode byte.
+Format 3 adds the optional callee context source to the decoded `asm.OpCode` representation pinned by format 2; readers accept both versions.
+The format number is not the kernel opcode byte.
 Required, case-sensitive top-level keys are `format`, `original`, `transformed`, `certificate` and `premises`.
 `certificate.original`, `premises.lowest_offset`, and `premises.targets` are also required; `certificate.hooks` may be empty or omitted, and `premises.targets` may be empty only when there are no inserted calls.
-Span fields are `start` and `end`; target fields are `site`, `when`, and `hook`.
+Span fields are `start` and `end`; target fields are `site`, `when`, `hook`, and optional `ctx`.
+`ctx` contains either `reg` (6 through 9) or `slot` (an aligned negative frame offset).
 Instruction fields are `opcode`, `dst`, `src`, `offset`, `constant`, `symbol` and `reference`.
 `PseudoMapValue` offsets remain in the upper 32 bits of `constant`, with its pseudo kind in `src`.
 Unknown fields and noncanonical case spellings are input errors.
@@ -138,7 +146,8 @@ The kinds distinguish empty original, empty mapping, length mismatch and invalid
 ## Tests and local corpus evidence
 
 Run `go test ./pkg/injectcheck ./pkg/inject ./cmd/inject-check`.
-`TestPairCorpus` builds the CLI and compares its complete verdict with the API and expected `{accepted, kind}` for the committed pair JSON corpus, including seven accepted configurations and all eleven mutations.
+`TestPairCorpus` builds the CLI and compares its complete verdict with the API and expected `{accepted, kind}` for the committed format 2 pair JSON corpus, including seven accepted configurations and all eleven mutations.
+`TestTranslationValidationSubprogramContextPairCorpus` round-trips accepted register and slot premises through format 3 and rejects a different register, a different slot, and a missing matching initialization.
 This is the scope of the committed CLI/API agreement evidence.
 `TestTranslationValidationEquivalence` compares checked site counts and certificate hook names against the plan, including entry-only hooks, and reports site-bearing and zero-site fixtures separately.
 The dependency test rejects a direct or transitive dependency on `pkg/inject` from the checker or CLI.

@@ -6,12 +6,27 @@ import (
 
 	"github.com/cilium/ebpf/asm"
 	"github.com/cilium/ebpf/btf"
+	"github.com/takehaya/bpf-ninja/internal/ctxflow"
 	"github.com/takehaya/bpf-ninja/internal/hook"
 )
 
+func ctxReachesCalls(insns asm.Instructions, name string) bool {
+	return ctxflow.CallsRefusal(insns, name) == ""
+}
+
 func TestStaticCtxReachesCalls(t *testing.T) {
+	ctx := &btf.Struct{Name: "xdp_md", Size: 24}
+	i32 := &btf.Int{Name: "int", Size: 4, Encoding: btf.Signed}
 	fn := func(name string, body ...asm.Instruction) asm.Instructions {
-		body[0] = btf.WithFuncMetadata(body[0].WithSymbol(name), &btf.Func{Name: name, Linkage: btf.StaticFunc})
+		linkage := btf.StaticFunc
+		proto := &btf.FuncProto{Return: i32}
+		if name == "entry" || name == "hook" {
+			proto.Params = []btf.FuncParam{{Name: "ctx", Type: &btf.Pointer{Target: ctx}}}
+		}
+		if name == "entry" {
+			linkage = btf.GlobalFunc
+		}
+		body[0] = btf.WithFuncMetadata(body[0].WithSymbol(name), &btf.Func{Name: name, Linkage: linkage, Type: proto})
 		return body
 	}
 	cat := func(parts ...asm.Instructions) asm.Instructions {
@@ -271,7 +286,9 @@ func TestStaticCtxReachesCalls(t *testing.T) {
 			asm.Mov.Reg(asm.R1, asm.R6), pcall(2, 1), asm.Mov.Imm(asm.R0, 0), asm.Return()), fn("hook", ret()...)), false},
 		{"duplicate name", cat(fn("entry", asm.Call.Label("hook2"), asm.Call.Label("hook"), asm.Mov.Imm(asm.R0, 0), asm.Return()),
 			fn("hook", ret()...), I(btf.WithFuncMetadata(asm.Mov.Imm(asm.R0, 0).WithSymbol("hook2"), &btf.Func{Name: "hook", Linkage: btf.StaticFunc}), asm.Return())), false},
-		{"over 32K instructions", cat(jit(asm.Mov.Reg(asm.R6, asm.R1)), fn("filler", append(big, asm.Return())...)), false},
+		// Prove resolves each call in its actual Offset or Constant encoding,
+		// so program size alone is no longer a reason to refuse.
+		{"over 32K instructions", cat(jit(asm.Mov.Reg(asm.R6, asm.R1)), fn("filler", append(big, asm.Return())...)), true},
 		{"no function info", I(asm.Mov.Imm(asm.R0, 0), asm.Return()), false},
 		// entry 0-5 calls pc 7, inside other (6-8), then the hook at 9 with the context restored.
 		{"call into the middle of a function", cat(fn("entry", append([]asm.Instruction{asm.Mov.Reg(asm.R6, asm.R1), pcall(5, 0), asm.Mov.Reg(asm.R1, asm.R6), pcall(5, 0)}, ret()...)...),
@@ -327,8 +344,18 @@ func TestStaticTCPrologueShape(t *testing.T) {
 func TestStaticCtxHiddenHelperIDs(t *testing.T) {
 	old := hostArch
 	t.Cleanup(func() { hostArch = old })
+	ctx := &btf.Struct{Name: "xdp_md", Size: 24}
+	i32 := &btf.Int{Name: "int", Size: 4, Encoding: btf.Signed}
 	fn := func(name string, body ...asm.Instruction) asm.Instructions {
-		body[0] = btf.WithFuncMetadata(body[0].WithSymbol(name), &btf.Func{Name: name, Linkage: btf.StaticFunc})
+		linkage := btf.StaticFunc
+		proto := &btf.FuncProto{Return: i32}
+		if name == "entry" || name == "hook" {
+			proto.Params = []btf.FuncParam{{Name: "ctx", Type: &btf.Pointer{Target: ctx}}}
+		}
+		if name == "entry" {
+			linkage = btf.GlobalFunc
+		}
+		body[0] = btf.WithFuncMetadata(body[0].WithSymbol(name), &btf.Func{Name: name, Linkage: linkage, Type: proto})
 		return body
 	}
 	prog := func(body ...asm.Instruction) asm.Instructions {
@@ -354,5 +381,31 @@ func TestStaticCtxHiddenHelperIDs(t *testing.T) {
 		if err := checkStaticCtxInsns(tc.insns, tc.name); (err != nil) != tc.refused {
 			t.Errorf("%s %s: err=%v, want refused=%v", tc.arch, tc.name, err, tc.refused)
 		}
+	}
+}
+
+func TestStaticCtxCalledFromProvedSubprogram(t *testing.T) {
+	ctx := &btf.Struct{Name: "xdp_md", Size: 24}
+	i32 := &btf.Int{Name: "int", Size: 4, Encoding: btf.Signed}
+	fn := func(name string, linkage btf.FuncLinkage, body ...asm.Instruction) asm.Instructions {
+		proto := &btf.FuncProto{Return: i32, Params: []btf.FuncParam{{Name: "ctx", Type: &btf.Pointer{Target: ctx}}}}
+		body[0] = btf.WithFuncMetadata(body[0].WithSymbol(name), &btf.Func{Name: name, Linkage: linkage, Type: proto})
+		return body
+	}
+	build := func(wrong bool) asm.Instructions {
+		entry := fn("entry", btf.GlobalFunc, asm.Mov.Reg(asm.R6, asm.R1), asm.Call.Label("sub"), asm.Mov.Imm(asm.R0, 0), asm.Return())
+		pass := asm.Mov.Reg(asm.R1, asm.R6)
+		if wrong {
+			pass = asm.Mov.Imm(asm.R1, 0)
+		}
+		sub := fn("sub", btf.StaticFunc, asm.Mov.Reg(asm.R6, asm.R1), asm.FnKtimeGetNs.Call(), pass, asm.Call.Label("hook"), asm.Mov.Imm(asm.R0, 0), asm.Return())
+		hook := fn("hook", btf.StaticFunc, asm.Mov.Imm(asm.R0, 0), asm.Return())
+		return append(append(entry, sub...), hook...)
+	}
+	if err := checkStaticCtxInsns(build(false), "hook"); err != nil {
+		t.Fatal(err)
+	}
+	if err := checkStaticCtxInsns(build(true), "hook"); err == nil {
+		t.Fatal("accepted a subprogram call without context in R1")
 	}
 }

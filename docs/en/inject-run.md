@@ -67,7 +67,7 @@ Each op appears once, so use `lookup:any`, not `lookup:hit` together with `looku
 `auto` skips a site it cannot instrument, leaves it unchanged, and lists it with the reason in the diagnostic and in the `skipped` list of the [hooks file](#hooks-file).
 It skips these sites:
 
-- a call outside the entry function (`not in the entry function`);
+- a function without a context parameter, a callback, a caller that does not pass the context, or a site where no callee-saved register or aligned stack slot still holds it;
 - a call on a map that `maps` does not name (`map not selected by Maps`);
 - a call on a map kind that has no hook;
 - a site whose hook name would be longer than 127 bytes;
@@ -87,7 +87,7 @@ A map call whose op the rule does not observe is left alone and does not appear 
   "hook": "lookup_hook", "stack_lowest_offset": -128}]
 ```
 
-The rule must match exactly one lookup in the entry function; if it matches several, the injection fails.
+The rule must match exactly one supported lookup; if it matches several, the injection fails.
 The compiler can inline one lookup into several places with the same source line.
 To take them all, add `"all_matches": true`.
 To take some of them, list their load-time instruction indexes in `"site_pcs": [293, 1942]`.
@@ -389,7 +389,7 @@ If a rewrite fails, `inject-run` reports it on stderr and keeps running the targ
           "kind": "typed",
           "when": "hit",
           "map": "sessions",
-          "sites": [{"kind": "lookup", "pc": 6, "map": "sessions", "func": "entry_with_long_name"}],
+          "sites": [{"kind": "lookup", "pc": 6, "map": "sessions", "func": "entry_with_long_name", "ctx_source": "entry"}],
           "untrusted": false,
           "copied": false,
           "static": false,
@@ -417,7 +417,7 @@ If a rewrite fails, `inject-run` reports it on stderr and keeps running the targ
 | `hooks[].kind` | `typed` (one map's hook; its key and value carry the map's types unless `untrusted` is set), `generic` (a `HOOK_any` hook), `entry`, `tail_call` or `dispatch`. |
 | `hooks[].when` | The results that call it: `hit`, `miss` or `any` for lookups; `error` or `any` for other map calls. A dispatch hook's `when` is its lookups'; its other map-call sites carry their own. |
 | `hooks[].map` | The map of a `typed` hook. Generic and dispatch hooks give the map on each site. |
-| `hooks[].sites` | The calls that call the hook, in instruction order: `kind` (`lookup`, `update`, `delete`, `push`, `pop`, `peek`, `tail_call` or `entry`), `pc` (the `site` argument, or the low 32 bits of `info`), and `map`, `func`, `file` and `line` where known. A dispatch hook lists the entry call first, as `pc` 4294967295. |
+| `hooks[].sites` | The calls that call the hook, in instruction order: `kind` (`lookup`, `update`, `delete`, `push`, `pop`, `peek`, `tail_call` or `entry`), `pc` (the `site` argument, or the low 32 bits of `info`), and `map`, `func`, `file`, `line` and `ctx_source` where known. `ctx_source` is `entry`, `r6` through `r9`, or an aligned frame slot such as `fp-80`. A dispatch hook lists the entry call first, as `pc` 4294967295. |
 | `hooks[].untrusted` | The hook takes `arg:untrusted` pointers: its key and value are `const void *`. |
 | `hooks[].copied` | The value is a stack copy. |
 | `hooks[].static` | The hook is static; read every argument as a `u64`. |
@@ -482,6 +482,7 @@ It writes the file like the hooks file: the file exists before the target starts
 | `lookups` | The lookup calls, with the fields of a hooks-file site. |
 | `calls` | Every lookup, per-CPU lookup, update, delete, push, pop and peek call, with the op as `kind`. |
 | `reason` on a lookup or call | `auto` would skip it, unless it also has `"generic": true`, which means `auto` sends it to the generic hook. |
+| `ctx_source` on a lookup or call | The proven source used to initialize the site's frame: `entry`, `r6` through `r9`, or an aligned slot such as `fp-80`. It is omitted when no source was proven. |
 | `rule` | A rule that instruments the lookups on every named map. Its `program` is the entry function name. Fill in `stack_lowest_offset`, edit `maps`, and add `ops`, `dispatch`, `entry` or `tail_calls` as needed. |
 
 A program loaded twice is listed twice.
@@ -503,10 +504,10 @@ prog 2  entry
 │  ├─ map flows   Hash          delete     prog.c:33  ✓ injectable  (pc 18)
 │  └─ map jmp     ProgramArray  tail_call  prog.c:35  → prog 3
 ├─ func classify
-│  ├─ map flows   Hash          lookup     prog.c:11  ✗ not in the entry function  (pc 33)
-│  └─ map flows   Hash          update     prog.c:14  ✗ not in the entry function  (pc 45)
+│  ├─ map flows   Hash          lookup     prog.c:11  ✗ function has no context parameter  (pc 33)
+│  └─ map flows   Hash          update     prog.c:14  ✗ context is not held in a callee-saved register or an 8-byte slot at the site  (pc 45)
 ├─ func global_sub
-│  └─ map routes  LPMTrie       lookup     prog.c:21  ✗ not in the entry function  (pc 56)
+│  └─ map routes  LPMTrie       lookup     prog.c:21  ✗ a caller does not pass the context (entry@42)  (pc 56)
 └─ prog 3  next_stage  (tail call: jmp[0])
    └─ func next_stage
       └─ map flows  Hash  update  prog.c:45  ✓ injectable  (pc 11)
@@ -599,7 +600,7 @@ In both modes:
 - `inject-run` handles only native x86-64 `bpf(2)` calls.
   Compat and x32 calls pass through without injection.
 - `inject-run` can rewrite only XDP and tc (`SchedCLS`, `SchedACT`) programs loaded with BTF and `func_info`.
-- It instruments map calls only in the entry function; tail-call hooks also work in subprograms.
+- It instruments map calls in the entry function and in called subprograms whose BTF parameter, callers and held context value can all be proved; callbacks and unproved sites remain skipped. Static hooks repeat the proof on translated instructions before attach.
   One rule applies per program.
 - A function-name selector uses the BTF `inject-run` saw the loader load.
   It may not match when the BTF fd was duplicated, inherited, passed in from outside, or evicted from the 64 MiB cache.

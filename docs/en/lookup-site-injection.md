@@ -17,7 +17,7 @@ Both transforms share callback-reference relocation; their hook APIs and site-se
 ## Discovery and selection
 
 `DiscoverLookups(elf, programName)` lists lookup helper calls in instruction order without loading BPF or requiring a stack audit.
-Each `LookupSite` reports the map name, key and value BTF type names, containing BTF function, file and line, raw `SitePC`, and slice `InstructionIndex`.
+Each `LookupSite` reports the map name, key and value BTF type names, containing BTF function, file and line, raw `SitePC`, slice `InstructionIndex`, and proven `CtxSource`.
 `SitePC` counts raw BPF slots in the flattened `ProgramSpec.Instructions`; `LDIMM64` occupies two slots.
 `InstructionIndex` indexes that Go instruction slice.
 Source locations use the most recent BTF `line_info` within the containing function.
@@ -29,7 +29,7 @@ It does not trace a map pointer through another register, stack memory, a preced
 Such a site, a lookup on a map-in-map, and a direct lookup on a map kind that a typed hook refuses are listed with a `Reason`; only `Auto` observes them, through the generic hook below.
 Branch targets, function starts, and instructions after jumps or calls begin new blocks.
 Atomic instructions and legacy packet loads conservatively invalidate map provenance.
-Calls that cannot be resolved, lack usable map BTF, or lie in a called subprogram are still listed with a `Reason`.
+Calls that cannot be resolved, lack usable map BTF, or lack a proved context source are still listed with a `Reason`.
 Unsupported relocation shapes, including invalid callback references, return an error instead of a partial listing.
 Valid function-pointer loads do not prevent discovery or transformation of entry-function sites.
 A listing with an empty `Reason` does not certify the stack, context prototype, or the rest of the transform's checks.
@@ -203,7 +203,9 @@ Instrument the tail-call target with it.
 The helper only returns when the tail call failed (empty slot, index out of range, or the tail-call limit), so the hook sees failures only; a successful tail call does not return.
 `site` is the helper's original `SitePC`, and `index` is the index the program passed, truncated to 32 bits as the helper itself does.
 Observers should read both arguments as `u32`: on architectures whose JIT needs explicit zero extension, the upper halves of the argument registers are not defined.
-A tail call outside the entry function cannot reach the entry frame's ctx spill, so it also saves R1, the ctx the helper takes, into `ctx_slot` of its own frame before the helper.
+A site outside the entry function cannot reach the entry frame's ctx spill, so it initializes `ctx_slot` in its own frame before the helper.
+A proved R6-R9 value is stored directly; a proved aligned stack slot is loaded through R0 and then stored.
+Tail calls keep their existing R1 initialization because the helper itself takes ctx in R1.
 The stack audit covers direct R10 references in every function, so the same slot offsets are free in that frame.
 The transform deepens the entry frame, and every frame holding a site, to its spill region, and each hook is one more frame below the function that calls it. The verifier walks every call chain from the entry through bpf-to-bpf calls and callback references such as a `bpf_loop` callback (`check_max_stack_depth`), rounds each frame's stack depth up (to 32 bytes, at least 32, on 6.1-era kernels and for the interpreter; to 16 when Linux 6.9 or newer JITs the program), and rejects a chain whose frames above a tail-calling subprogram reach 256 bytes, whose frames total more than 512 bytes, or that is more than 8 frames deep. A deep entry frame, a stack-using intermediate frame or callback, the entry's own tail-call spill, a deep frame calling a hook, or a hook called from the 8th frame can each push a chain over a limit the original program stayed within. `inject-run` selects the running kernel's rule from `uname` and `net.core.bpf_jit_enable`; an unreadable or unknown state uses 32. The transform measures with that selected rounding, with each function's depth taken from its direct R10 references and supported constant-offset aliases, callbacks walked like calls, and a function no chain reaches walked from its own frame.
 An unsupported alias uses the audited `Stack.LowestOffset` for its entire frame.
@@ -314,10 +316,11 @@ This API performs no syscalls, BTF/program loads, interception, attachment or pi
 
 ## Supported sites and trust boundary
 
-One transform call instruments the selected sites in the program's entry function with their hooks.
-It saves ctx once, shares three spill slots across the sites, and inserts the generated hooks immediately after the entry function.
+One transform call instruments selected sites in the program's entry function and in called subprograms whose context provenance is proved.
+It saves ctx once in the entry frame and initializes the same relative slot in each supported callee frame, shares three spill slots within each frame, and inserts the generated hooks immediately after the entry function.
 The sites execute sequentially, including on different paths or repeated loop iterations; they do not require nested spill storage.
-Discovery includes called subprograms and callbacks, but injection there is refused because their R10 refers to a different stack frame from the saved entry context.
+Discovery proves a callee site only when its BTF prototype has a context parameter, every direct caller passes the proved context, the function is not used as a callback, and R6-R9 or an aligned slot still holds the context on every path at the site.
+Each failed stage produces a distinct `Reason`; the transform does not infer a context from naming or instruction proximity.
 The API does not compose transformations on an already transformed spec.
 Only the selected program changes, including when other programs share a linked subprogram or a map.
 
@@ -367,16 +370,16 @@ The package checks the program type; the cooperative loader owns attachment mode
 The generated hooks read the context's first word (`len` for `__sk_buff`) and call no helper that changes packet data.
 
 For packet capture at a static XDP or tc hook, bpf-ninja reads the context with `bpf_probe_read_kernel`, after checking that every call passes the context the entry spilled as the first argument.
-A hook called from a subprogram, such as a tail-call hook there, is refused, and so is one whose spill a callee may overwrite; [arg-member-filter.md](arg-member-filter.md) lists the cases.
+A static hook called from a subprogram is accepted only when the translated-instruction context check proves every direct call chain again at attach time, and a hook whose spill a callee may overwrite is refused; [arg-member-filter.md](arg-member-filter.md) lists the cases.
 At tc it reads `sk_buff.data`, `len` and `data_len`, using offsets from kernel BTF, and captures only the linear head, `len - data_len`, as at other tc hooks; fragment bytes are not captured.
 A failed context read produces no capture, and a filter with `--tc-vlan-reinsert` is refused on this path.
 
 | Transformer validates | Caller must certify |
 |---|---|
 | The input ELF matches `ELFSHA256` before parsing. | The hash identifies the audited build. |
-| The selector resolves supported lookups of the same map in the entry function. | These are the intended observation sites. |
+| The selector resolves supported lookups of the same map in the entry function or a context-proved called subprogram. | These are the intended observation sites. |
 | Map BTF sizes, where present, match the map definition, and entry BTF describes the program type's context pointer. | The BTF describes the audited build. |
-| Direct R10 references stay at or above `Stack.LowestOffset`; three aligned spill slots (four with the generic hook, at a typed update, or, at lookup, delete and tail-call sites, `Dispatch`; five at a generic or dispatch update; plus a value copy with `CopyReadOnly`) fit below it within the selected 480- or 512-byte site-frame limit. The call chains of the transformed program stay within the verifier's stack and frame limits wherever the original's do. | Pointer aliases and called subprograms do not reach the reserved spill region. |
+| Direct R10 references stay at or above `Stack.LowestOffset`; three aligned spill slots (four with the generic hook, at a typed update, or, at lookup, delete and tail-call sites, `Dispatch`; five at a generic or dispatch update; plus a value copy with `CopyReadOnly`) fit below it within the selected 480- or 512-byte site-frame limit. The call chains of the transformed program stay within the verifier's stack and frame limits wherever the original's do. | Pointer aliases do not reach the reserved spill region in any audited frame, including called subprograms. |
 | Existing function and source metadata are complete, references resolve, and relocation fits. | The transformed program remains acceptable to the target kernel verifier. |
 
 The stack audit has the same alias and callee limitations as `StackAudit` in the original transform.
@@ -426,6 +429,21 @@ call HOOK
 restore:
 r0 = *(u64 *)(r10 + result_slot)
 ```
+
+Before the key spill, a callee-frame site initializes its own `ctx_slot` from the source proved during discovery:
+
+```text
+*(u64 *)(r10 + ctx_slot) = r6       ; register premise, R6-R9
+```
+
+or:
+
+```text
+r0 = *(u64 *)(r10 - 80)             ; slot premise example
+*(u64 *)(r10 + ctx_slot) = r0
+```
+
+R0 is dead immediately before the helper, which defines it again.
 
 With `Auto`, the argument setup is `r1 = ctx`, `r2 = SitePC` (a 32-bit move), `r3 = key`, `r4 = r0`, one instruction longer per site.
 A generic-hook site also saves R1 into `map_slot` before the helper and loads it into R5, two more instructions.
@@ -545,7 +563,7 @@ The ELF SHA-256 binds the full input.
 
 ## What is not covered
 
-The transform observes lookups (`bpf_map_lookup_percpu_elem` included), updates, deletes, pushes, pops and peeks in the entry function and failed tail calls, and nothing else.
+The transform observes lookups (`bpf_map_lookup_percpu_elem` included), updates, deletes, pushes, pops and peeks in the entry function or a context-proved called subprogram, plus failed tail calls, and nothing else.
 It does not observe other map helpers (`bpf_for_each_map_elem`, `bpf_ringbuf_*`, `bpf_sk_storage_get` and the like), LRU eviction, non-map lookups such as `bpf_fib_lookup`, or lookups inside `bpf_for_each_map_elem` callbacks.
 It does not provide a consistent value version under concurrent control-plane updates or other writers.
 The observer reads the returned object during the hook; the program's later reads may see different contents.
@@ -577,6 +595,7 @@ It compares plain and injected programs, checks two keys with different packet l
 On a successful tail call, the entry hook fires and an fentry on the target program itself does not; on a failed one, the tail-call hook reports the site and index.
 A direct run of the target fires both.
 `TestBpfTailCallInSubprogram` fails a tail call inside a static subprogram and checks the hook gets that subprogram's ctx; `TestBpfTailCallStackLimit` and `TestBpfTailCallDepthSumsCallers` check the transform refuses one slot past the 256-byte caller-depth limit (for a deep entry frame, a stack-using middle frame, and the entry's own tail-call spill) while the original still loads, and that one slot under it transforms and loads.
+`TestBpfSubprogSiteLoads` loads register-held and stack-spilled callee context sites and a caller-frame key; `TestBpfSubprogSiteWrongCtxRejected` checks that a global typed hook rejects a non-context R1; `TestBpfSubprogStaticHookWrongCtxLoads` records that the corresponding static hook loads and exposes a raw u64; `TestBpfSubprogStaticHookAttach` attaches to the transformed static hook and checks packet length, key, value, site, return value and output bytes.
 `TestBpfStackLimitsAcrossCalls` does the same for a chain through a `bpf_loop` callback into a static or global tail-calling subprogram, for the 512-byte combined stack (a tail-calling entry that calls a 248-byte subprogram, and a lookup site's frame plus its hook, with and without `Dispatch`), and for the 8-frame limit (a hook called from the 8th frame), and for a callee that reaches 256 bytes only through a copy of R10.
 `TestBpfStackBoundShallowLeaf` loads and compares a 240-byte entry with an 8-byte leaf that copies R10, using typed and static dispatch update hooks.
 `TestBpfStackBoundDeepLeafRefused` loads the original with a 248-byte leaf, checks the transform refuses its added spills, and independently checks that the kernel rejects the deeper chain.
