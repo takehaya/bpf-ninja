@@ -80,6 +80,85 @@ func TestBpfPerFrameFloorLoads(t *testing.T) {
 	}
 }
 
+func TestBpfFastcallSpillKept(t *testing.T) {
+	testutil.SkipIfNotRoot(t)
+	work := fastcallLookupFixture()
+	trial, err := ebpf.NewCollectionWithOptions(work, ebpf.CollectionOptions{
+		Programs: ebpf.ProgramOptions{LogLevel: ebpf.LogLevelStats, LogSizeStart: 64 << 10},
+	})
+	if err != nil {
+		loadOrSkip(t, work).Close()
+		t.Fatalf("loading trial with verifier statistics: %v", err)
+	}
+	log := trial.Programs["p"].VerifierLog
+	trial.Close()
+	depths, err := ParseStackDepths(log)
+	if err != nil {
+		t.Fatalf("parsing verifier statistics: %v\n%s", err, log)
+	}
+	report, err := FrameFloors(depths, []string{"p"}, work.Programs["p"].Instructions, KernelInfo{Major: 7})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Functions) != 1 || report.Functions[0].TextDepth < 16 || report.Functions[0].Floor > -16 {
+		t.Fatalf("fastcall floor = %+v", report.Functions)
+	}
+	t.Logf("fastcall verifier depth=%d text depth=%d source=%s", report.Functions[0].VerifiedDepth,
+		report.Functions[0].TextDepth, report.Functions[0].Source)
+	req := autoReq()
+	req.Stack = StackAudit{Frames: report.Frames(), Source: "verifier", FrameRounding: 32}
+	if slots := lookupSlots(req.Stack.floor("p")); slots.ctx >= -16 {
+		t.Fatalf("ctx slot %d overlaps fastcall spill", slots.ctx)
+	}
+	plan, err := transformLookup(work, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.sites) != 1 {
+		t.Fatalf("plan = %+v", plan.sites)
+	}
+	coll := loadHooked(t, work, plan.hooks)
+	t.Cleanup(coll.Close)
+	if err := coll.Maps["sessions"].Put(uint32(0), uint32(2)); err != nil {
+		t.Fatal(err)
+	}
+	if ret, err := coll.Programs["p"].Run(&ebpf.RunOptions{Data: make([]byte, 64), Repeat: 1}); err != nil || ret != 2 {
+		t.Fatalf("action=%d err=%v", ret, err)
+	}
+}
+
+func fastcallLookupFixture() *ebpf.CollectionSpec {
+	u32 := &btf.Int{Name: "u32", Size: 4}
+	ctx := &btf.Struct{Name: "xdp_md", Size: 24}
+	fn := &btf.Func{Name: "p", Linkage: btf.GlobalFunc, Type: &btf.FuncProto{
+		Return: &btf.Int{Name: "int", Size: 4, Encoding: btf.Signed},
+		Params: []btf.FuncParam{{Name: "ctx", Type: &btf.Pointer{Target: ctx}}},
+	}}
+	insns := asm.Instructions{
+		asm.Mov.Imm(asm.R2, 123),
+		asm.StoreMem(asm.RFP, -16, asm.R2, asm.DWord),
+		asm.FnGetSmpProcessorId.Call(),
+		asm.LoadMem(asm.R6, asm.RFP, -16, asm.DWord),
+		asm.StoreImm(asm.RFP, -4, 0, asm.Word),
+		asm.Mov.Reg(asm.R2, asm.RFP), asm.Add.Imm(asm.R2, -4),
+		asm.LoadMapPtr(asm.R1, 0).WithReference("sessions"), asm.FnMapLookupElem.Call(),
+		asm.JEq.Imm(asm.R0, 0, "bad"),
+		asm.JNE.Imm(asm.R6, 123, "bad"),
+		asm.LoadMem(asm.R0, asm.R0, 0, asm.Word), asm.Return(),
+		asm.Mov.Imm(asm.R0, 1).WithSymbol("bad"), asm.Return(),
+	}
+	insns[0] = btf.WithFuncMetadata(insns[0].WithSymbol("p"), fn)
+	return &ebpf.CollectionSpec{
+		ByteOrder: binary.LittleEndian,
+		Maps: map[string]*ebpf.MapSpec{"sessions": {
+			Name: "sessions", Type: ebpf.Hash, KeySize: 4, ValueSize: 4, MaxEntries: 1, Key: u32, Value: u32,
+		}},
+		Programs: map[string]*ebpf.ProgramSpec{"p": {
+			Name: "p", Type: ebpf.XDP, License: "GPL", Instructions: insns,
+		}},
+	}
+}
+
 func TestBpfSubprogSiteWrongCtxRejected(t *testing.T) {
 	testutil.SkipIfNotRoot(t)
 	_, err := ebpf.NewCollection(subprogCtxTarget(btf.GlobalFunc, true))

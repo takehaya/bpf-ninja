@@ -42,9 +42,9 @@ func TestIntegrationLoader(t *testing.T) {
 		t.Fatalf("baseline loader: %v\n%s", err, out)
 	}
 	kernel := runningKernelInfo()
-	inexactExpected := "hook-alias"
+	inexactExpected := "hook-inexact"
 	if kernel.Major < 6 || kernel.Major == 6 && kernel.Minor < 8 {
-		inexactExpected = "plain-alias"
+		inexactExpected = "plain-inexact"
 	}
 	for _, tc := range []struct {
 		name, expected string
@@ -165,9 +165,13 @@ func TestIntegrationLoader(t *testing.T) {
 func loadIntegrationProgram(t *testing.T, expected string) {
 	t.Helper()
 	// A "-alias" variant stores the key through a stack alias, so a bound of 0
-	// passes the transform but the ctx spill is overwritten.
+	// passes the transform but the ctx spill is overwritten. The "-inexact"
+	// variant also uses a verifier-bounded variable stack offset, which kernels
+	// before 6.8 don't include in their reported stack depth.
 	alias := strings.HasSuffix(expected, "-alias")
 	expected = strings.TrimSuffix(expected, "-alias")
+	inexact := strings.HasSuffix(expected, "-inexact")
+	expected = strings.TrimSuffix(expected, "-inexact")
 	u32 := &btf.Int{Name: "u32", Size: 4}
 	spec := &ebpf.MapSpec{Name: "sessions", Type: ebpf.Hash, KeySize: 4, ValueSize: 4, MaxEntries: 1, Key: u32, Value: u32}
 	mapTypes := strings.Contains(expected, "map-types")
@@ -203,6 +207,13 @@ func loadIntegrationProgram(t *testing.T, expected string) {
 		store = asm.StoreImm(asm.R2, 0, 0, asm.Word)
 	}
 	insns := asm.Instructions{asm.Mov.Reg(asm.R6, asm.R1)}
+	if inexact {
+		insns = append(insns,
+			asm.LoadMem(asm.R3, asm.R1, 16, asm.Word), asm.And.Imm(asm.R3, 3),
+			asm.Mov.Reg(asm.R2, asm.RFP), asm.Add.Imm(asm.R2, -8), asm.Add.Reg(asm.R2, asm.R3),
+			asm.StoreImm(asm.R2, 0, 0, asm.Byte),
+		)
+	}
 	if expected == "hook-update" {
 		insns = append(insns,
 			asm.StoreImm(asm.RFP, -4, 0, asm.Word), asm.StoreImm(asm.RFP, -8, 2, asm.Word),
