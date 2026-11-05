@@ -61,6 +61,7 @@ They describe insertion shapes, while “original program” refers to the progr
 | P4 | Tail-call prelude and failure postlude | Unchanged helper arguments and target, planned hook, R1 context, dispatch R4/R5 provenance, local or entry-frame context initialization |
 | P5 | Queue/stack push/pop/peek spill and observer postlude | Helper-specific spills, planned result target, R1 context and generic/dispatch R3-R5 provenance/order, one hook, full-width R0 restoration |
 | P6 | A u32 hook after `ldxw R2, [R0+offset]` | Exact six-instruction save/call/restore region, u32 hook body, R1/R3–R5 dead at the original continuation |
+| P8 | A lookup site whose helper moved into a wrapper function (`Certificate.Wrappers`) | Exact prelude loading the planned ctx into R4, one site per wrapper, exact wrapper body, planned result-arm targets |
 | P7 | Observer function | No-op return, u32 XOR return, or permitted context/pointer reads followed by zero return; no stores or calls |
 
 The stack layout is independent of the transformer's implementation.
@@ -80,6 +81,13 @@ Branch, BPF-call and callback targets must relocate to the corresponding origina
 Backward edges to original entry skip the one-time entry spill.
 Hooks cannot overlap originals, split a contiguous insertion region or receive fall-through.
 Inserted code preserves R6–R10 and the original stack; map-value copies use paired loads through R1 from R0 and stores into reserved space.
+
+A wrapper is accepted because it is the original helper call in a callee.
+The prelude writes only R4, which a lookup does not read and which is unreadable after a helper.
+The wrapper is one exact body: it copies R4, R2 and sometimes R1 to its own R6, R7 and R9, runs the original helper with its original arguments, copies R0 to R8, calls at most the planned hook on each result arm with arguments from those registers, and returns R8 in R0.
+It never names R10, so the caller's stack is untouched, and the BPF calling convention keeps the caller's R6-R9.
+This is the one case in which an original instruction leaves its position: `Original[i]` then locates the call to the wrapper, and the checker compares the helper in the wrapper with original instruction i.
+`Certificate.Wrappers` is a hint like `Hooks`; a wrapper no site calls, or two sites call, is rejected.
 
 ## Calling convention and scope
 

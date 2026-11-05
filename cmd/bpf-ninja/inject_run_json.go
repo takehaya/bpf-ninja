@@ -74,6 +74,7 @@ type hookSiteJSON struct {
 	CtxSource string `json:"ctx_source,omitempty"`
 	Frame     string `json:"frame,omitempty"`
 	Floor     *int16 `json:"floor,omitempty"`
+	Wrapper   string `json:"wrapper,omitempty"`
 	Reason    string `json:"reason,omitempty"`
 	When      string `json:"when,omitempty"`
 	// Generic is set only in the lookups file: auto instruments the lookup
@@ -164,7 +165,7 @@ func loadedHookAvailabilities(progID uint32, names []string) (map[string]attach.
 }
 
 func siteJSON(kind inject.HookKind, site inject.LookupSite) hookSiteJSON {
-	return hookSiteJSON{Kind: string(kind), PC: site.SitePC, Map: site.MapName, Func: site.FuncName, File: site.File, Line: site.Line, CtxSource: site.CtxSource, Reason: site.Reason}
+	return hookSiteJSON{Kind: string(kind), PC: site.SitePC, Map: site.MapName, Func: site.FuncName, File: site.File, Line: site.Line, CtxSource: site.CtxSource, Reason: site.Reason, Wrapper: site.Wrapper}
 }
 
 // hookKind is typed, generic, entry, tail_call or dispatch. The sites of a

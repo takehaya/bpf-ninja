@@ -62,6 +62,7 @@ caller は `inject.BuildLookupTargets` を使うか、同じ情報を変換後 c
 | P4 | tail call 前の spill と失敗時の postlude | helper 引数と宛先の保存、plan の hook、R1 context、dispatch の R4/R5 の由来、local または入口 frame での context 初期化 |
 | P5 | queue/stack の push/pop/peek の spill と observer postlude | helper ごとの spill、plan の結果別宛先、R1 context、generic/dispatch の R3-R5 の由来と順序、1 回の hook、64-bit R0 復元 |
 | P6 | `ldxw R2, [R0+offset]` の後の u32 hook | 保存・call・復元の 6 命令、u32 hook 本体、元の継続位置での R1/R3–R5 の死 |
+| P8 | helper を wrapper 関数へ移した lookup site（`Certificate.Wrappers`） | 計画どおりの ctx を R4 へ読む 1 命令の prelude、wrapper と site の 1 対 1、wrapper 本体の完全一致、結果ごとの計画どおりの hook |
 | P7 | observer 関数 | no-op return、u32 XOR return、または許可された context/pointer 読み出しとゼロ return。store と call を拒否 |
 
 スタックスロットの定義は変換器の実装と独立している。

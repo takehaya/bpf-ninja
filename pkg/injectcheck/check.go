@@ -55,10 +55,12 @@ type CtxSource struct {
 }
 
 // Certificate is untrusted layout metadata. Original[i] locates original
-// instruction i in the output; Hooks lists inserted functions.
+// instruction i in the output; Hooks lists inserted functions. Wrappers lists
+// inserted functions that hold a lookup helper (see checkWrapper).
 type Certificate struct {
 	Original []int  `json:"original"`
 	Hooks    []Span `json:"hooks"`
+	Wrappers []Span `json:"wrappers,omitempty"`
 }
 
 // Counts reports input size, checked sites and declared hook bodies.
@@ -248,6 +250,19 @@ func Check(in, out asm.Instructions, c Certificate, premises Premises) (Counts, 
 		}
 		hooks[h.Start] = true
 	}
+	wrappers := map[int]Span{}
+	for _, w := range c.Wrappers {
+		if w.Start < 0 || w.End <= w.Start || w.End > len(out) {
+			return counts, inputError(HookRange, "invalid wrapper range %+v", w)
+		}
+		for j := w.Start; j < w.End; j++ {
+			if owners[j] != -1 {
+				return counts, inputError(HookOverlap, "overlapping wrapper at %d", j)
+			}
+			owners[j] = -2
+		}
+		wrappers[w.Start] = w
+	}
 	targets, err := newTargetBindings(premises.Targets, len(in), hooks)
 	if err != nil {
 		return counts, err
@@ -260,7 +275,7 @@ func Check(in, out asm.Instructions, c Certificate, premises Premises) (Counts, 
 		}
 	}
 	// Hook bodies were excluded above; reject any fall-through into one.
-	for _, h := range c.Hooks {
+	for _, h := range slices.Concat(c.Hooks, c.Wrappers) {
 		if h.Start == 0 || !terminal(out[h.Start-1]) {
 			return fail(HookFallthrough, "fall-through into hook %d", h.Start)
 		}
@@ -323,8 +338,44 @@ func Check(in, out asm.Instructions, c Certificate, premises Premises) (Counts, 
 	// A helper's prelude is the trailing sequence of stack spills before it.
 	starts := slices.Clone(c.Original)
 	before := make([]asm.Instructions, len(in))
+	// A wrapped site is a lookup helper whose output is a call to a wrapper,
+	// entered through the one instruction that loads ctx into R4.
+	wrapped := map[int]Span{}
+	calledWrappers := map[int]bool{}
+	for i := range in {
+		j := c.Original[i]
+		if !out[j].IsFunctionCall() || in[i].IsFunctionCall() {
+			continue
+		}
+		t, e := target(out, npcs, ni, j)
+		if e != nil {
+			return counts, fmt.Errorf("transformed call: %w", e)
+		}
+		w, ok := wrappers[t]
+		if !ok {
+			continue
+		}
+		if calledWrappers[t] {
+			return fail(WrapperCall, "wrapper %d called by two sites", t)
+		}
+		calledWrappers[t] = true
+		wrapped[i] = w
+		g := gaps[i]
+		if len(g) == 0 {
+			return fail(WrapperPrelude, "site %d loads no context for its wrapper", i)
+		}
+		starts[i] = g[len(g)-1]
+		before[i] = asm.Instructions{out[g[len(g)-1]]}
+		gaps[i] = g[:len(g)-1]
+	}
+	if len(calledWrappers) != len(wrappers) {
+		return fail(WrapperCall, "a wrapper is not called by any site")
+	}
 	for i := range in {
 		if !supportedHelper(in[i]) {
+			continue
+		}
+		if _, ok := wrapped[i]; ok {
 			continue
 		}
 		g := gaps[i]
@@ -364,6 +415,9 @@ func Check(in, out asm.Instructions, c Certificate, premises Premises) (Counts, 
 		b := out[c.Original[i]]
 		if err := compareMetadata(a, b); err != nil {
 			return counts, fmt.Errorf("original instruction %d: %w", i, err)
+		}
+		if _, ok := wrapped[i]; ok {
+			continue // checkWrapper finds this instruction, unchanged, in the wrapper
 		}
 		aa, bb := a, b
 		if edge(a) {
@@ -415,6 +469,19 @@ func Check(in, out asm.Instructions, c Certificate, premises Premises) (Counts, 
 	}
 	for i := range in {
 		after := gather(gaps[i+1])
+		if w, ok := wrapped[i]; ok {
+			if len(after) != 0 {
+				return fail(WrapperShape, "site %d has a postlude beside its wrapper", i)
+			}
+			if err := checkWrapperPrelude(before[i][0], targets.ctxForSite(i), lowestAt(i), floorAt(i), len(gaps[0]) > 0 && i < entryEnd); err != nil {
+				return counts, fmt.Errorf("site %d: %w", i, err)
+			}
+			if err := checkWrapper(i, in[i], out, npcs, ni, w, hooks, targets); err != nil {
+				return counts, fmt.Errorf("site %d wrapper: %w", i, err)
+			}
+			counts.Sites++
+			continue
+		}
 		if len(before[i]) > 0 {
 			if err := checkAfter(i, in[i], before[i], after, out, npcs, ni, gaps[i+1], hooks, targets,
 				floorAt(i), len(gaps[0]) > 0 && i < entryEnd || callbackSite(targets, i), siteCtx(targets, i)); err != nil {
@@ -696,6 +763,134 @@ func checkHook(is asm.Instructions) error {
 		}
 	}
 	return reject(HookBody, "not an observer pointer-read sequence (stores/calls forbidden)")
+}
+
+// checkWrapperPrelude accepts only the load of a planned ctx source into R4.
+// R4 is dead there: a lookup reads R1, R2 and, per-CPU, R3, and R1-R5 are
+// unreadable after a helper.
+func checkWrapperPrelude(ins asm.Instruction, ctx *CtxSource, lowest, f int, entryCtx bool) error {
+	var want asm.Instruction
+	switch {
+	case ctx != nil && ctx.Reg != 0:
+		want = asm.Mov.Reg(asm.R4, asm.Register(ctx.Reg))
+	case ctx != nil:
+		if int(ctx.Slot) < lowest {
+			return reject(CtxProvenance, "wrapper context slot %d is below the frame floor", ctx.Slot)
+		}
+		want = asm.LoadMem(asm.R4, asm.RFP, ctx.Slot, asm.DWord)
+	case entryCtx && f+slotContext >= stackBottom:
+		want = asm.LoadMem(asm.R4, asm.RFP, int16(f+slotContext), asm.DWord)
+	default:
+		return reject(WrapperPrelude, "site outside the entry frame has no planned context source")
+	}
+	if !same(ins, want) {
+		return reject(WrapperPrelude, "not the planned context load into R4")
+	}
+	return nil
+}
+
+// checkWrapper accepts exactly the functions pkg/inject generates in place of
+// a lookup helper. A wrapped site is the original helper call in a callee:
+//   - The helper is the original's, with the original's R1, R2 and R3: nothing
+//     writes them between the site and the helper.
+//   - R0 returns to the caller unchanged on every path: it goes to R8 at once
+//     and comes back after the hook. What the caller reads afterwards is what
+//     it read after the helper, since R1-R5 are unreadable either way.
+//   - The caller's R6-R10 and stack stay intact: the wrapper names no R10, and
+//     the BPF calling convention gives a callee its own R6-R9.
+//   - It uses only R0-R9, one helper, and at most one hook on a path, which the
+//     plan binds per result arm. Hook arguments have exact provenance: R6 is
+//     R4 on entry, the ctx of checkWrapperPrelude; R7 is the key; R9 the map.
+//
+// The match is on the whole body; anything else fails closed.
+func checkWrapper(site int, helper asm.Instruction, out asm.Instructions, pcs []int, idx map[int]int, w Span, hooks map[int]bool, targets targetBindings) error {
+	if c := asm.BuiltinFunc(helper.Constant); !helper.IsBuiltinCall() || c != asm.FnMapLookupElem && c != asm.FnMapLookupPercpuElem {
+		return reject(WrapperShape, "only a lookup helper can move into a wrapper")
+	}
+	is := out[w.Start:w.End]
+	call := asm.Call.Label("")
+	isCall := func(ins asm.Instruction) bool { return ins.IsFunctionCall() && ins.OpCode == call.OpCode }
+	for withMap := range 2 {
+		head := asm.Instructions{asm.Mov.Reg(asm.R6, asm.R4), asm.Mov.Reg(asm.R7, asm.R2)}
+		if withMap == 1 {
+			head = append(head, asm.Mov.Reg(asm.R9, asm.R1))
+		}
+		head = append(head, helper, asm.Mov.Reg(asm.R8, asm.R0))
+		tail := asm.Instructions{asm.Mov.Reg(asm.R0, asm.R8), asm.Return()}
+		if len(is) < len(head)+len(tail)+1 || !equal(is[:len(head)], head) || !equal(is[len(is)-2:], tail) {
+			continue
+		}
+		body := is[len(head) : len(is)-2]
+		at := w.Start + len(head)
+		arm := func(from int, value bool) (int, bool) {
+			// R1 ctx, then either R2 site, R3 key, R4 R0, R5 map or R2 key, R3 R0;
+			// without value a typed miss, which has no R4 (or R3).
+			args := asm.Instructions{asm.Mov.Reg(asm.R1, asm.R6)}
+			if from+1 < len(body) && body[from+1].OpCode == asm.Mov.Imm32(asm.R2, 0).OpCode && body[from+1].Dst == asm.R2 {
+				args = append(args, body[from+1], asm.Mov.Reg(asm.R3, asm.R7))
+				if value {
+					args = append(args, asm.Mov.Reg(asm.R4, asm.R0))
+					if withMap == 1 {
+						args = append(args, asm.Mov.Reg(asm.R5, asm.R9))
+					}
+				}
+			} else {
+				if withMap == 1 {
+					return 0, false
+				}
+				args = append(args, asm.Mov.Reg(asm.R2, asm.R7))
+				if value {
+					args = append(args, asm.Mov.Reg(asm.R3, asm.R0))
+				}
+			}
+			end := from + len(args)
+			if end >= len(body) || !equal(body[from:end], args) || !isCall(body[end]) {
+				return 0, false
+			}
+			return end + 1, true
+		}
+		bind := func(j int, when TargetWhen) error {
+			return hookCall(out, pcs, idx, at+j, hooks, targets, site, when, true)
+		}
+		missValue := withMap == 1 // a generic miss passes the NULL in R0 as its value
+		guard := func(j asm.JumpOp, offset int) bool {
+			want := asm.JEq.Imm(asm.R0, 0, "")
+			if j == asm.JNE {
+				want = asm.JNE.Imm(asm.R0, 0, "")
+			}
+			want.Offset = int16(offset)
+			return same(body[0], want)
+		}
+		if end, ok := arm(1, true); ok {
+			if end == len(body) && guard(asm.JEq, end-1) {
+				if targets.planned(site, TargetMiss, true) {
+					return reject(CallTarget, "site %d planned miss hook is not called", site)
+				}
+				return bind(end-1, TargetHit)
+			}
+			if end < len(body) && same(body[end], jaBy(len(body)-end-1)) && guard(asm.JEq, end) {
+				if e2, ok := arm(end+1, missValue); ok && e2 == len(body) {
+					if err := bind(end-1, TargetHit); err != nil {
+						return err
+					}
+					return bind(e2-1, TargetMiss)
+				}
+			}
+		}
+		if end, ok := arm(1, missValue); ok && end == len(body) && guard(asm.JNE, end-1) {
+			if targets.planned(site, TargetHit, true) {
+				return reject(CallTarget, "site %d planned hit hook is not called", site)
+			}
+			return bind(end-1, TargetMiss)
+		}
+	}
+	return reject(WrapperShape, "not a lookup wrapper body")
+}
+
+func jaBy(n int) asm.Instruction {
+	ja := asm.Ja.Label("")
+	ja.Offset = int16(n)
+	return ja
 }
 
 type targetKey struct {
