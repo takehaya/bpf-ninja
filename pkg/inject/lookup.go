@@ -12,6 +12,7 @@ import (
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/asm"
 	"github.com/cilium/ebpf/btf"
+	"github.com/takehaya/bpf-ninja/internal/ctxflow"
 	"github.com/takehaya/bpf-ninja/internal/hookabi"
 )
 
@@ -30,6 +31,7 @@ type LookupSite struct {
 	SitePC           uint32 // raw BPF slot index; LDIMM64 occupies two slots
 	InstructionIndex int    // index in the decoded instruction slice
 	Reason           string
+	CtxSource        string // entry, r6-r9 or fp-N
 	// Generic marks a lookup with a Reason that Auto still instruments,
 	// through the generic hook (see LookupHook.Generic).
 	Generic bool
@@ -447,6 +449,8 @@ type discoveredLookup struct {
 	generic     bool
 	typedOnly   bool
 	readOnlyArg bool
+	ctxReg      asm.Register
+	ctxSlot     int16
 }
 
 func publicLookupSites(sites []discoveredLookup) []LookupSite {
@@ -538,6 +542,8 @@ func discoverMapCalls(insns asm.Instructions, typ ebpf.ProgramType, resolve look
 	if err != nil {
 		return nil, err
 	}
+	ctxStruct := lookupCtxStruct(insns)
+	proofs := ctxflow.Prove(insns, ctxStruct)
 	funcStart := -1
 	it = insns.Iterate()
 	for it.Next() {
@@ -558,26 +564,50 @@ func discoverMapCalls(insns asm.Instructions, typ ebpf.ProgramType, resolve look
 				site.KeyTypeName, site.ValueTypeName = lookupTypeName(m.Key), lookupTypeName(m.Value)
 			}
 			generic, typedOnly := false, false
+			var ctxReg asm.Register
+			var ctxSlot int16
 			switch {
 			case funcStart < 0:
 				site.Reason = "program lacks BTF function info"
-			case funcStart != 0:
-				site.Reason = string(op) + " is not in the entry function; ctx belongs to another stack frame"
-			case mapID == "":
-				site.Reason, generic = "R1 is not a direct map reference in this basic block", true
-			case m == nil:
-				site.Reason = "map reference is not defined in the collection"
-			case op == HookLookup && (m.Type == ebpf.HashOfMaps || m.Type == ebpf.ArrayOfMaps):
-				site.Reason, generic = "map-in-map lookup returns an inner map", true
+			case funcStart == 0:
+				site.CtxSource = "entry"
 			default:
-				// A program cannot update or delete in a map-in-map, a devmap
-				// or an xskmap, so those sites fail here too. A socket map's
-				// update takes a socket, which only the generic hook's
-				// untyped value accepts; its delete goes along.
-				if op.keyless() {
-					site.Reason = checkQueueMap(m)
-				} else if reason := checkLookupMap(m); reason != "" {
-					site.Reason, typedOnly = reason, genericKinds[m.Type] && (op == HookLookup || sockKinds[m.Type])
+				proof := proofs[funcStart]
+				state, stateOK := proof.States[pc]
+				switch {
+				case !proof.Proven:
+					site.Reason = proof.Reason
+				case !stateOK:
+					site.Reason = "context state is unavailable at the site"
+				default:
+					ctxReg, ctxSlot, stateOK = ctxflow.HeldAt(state)
+					if !stateOK {
+						site.Reason = "context is not held in a callee-saved register or an 8-byte slot at the site"
+					} else if ctxReg != 0 {
+						site.CtxSource = strings.ToLower(ctxReg.String())
+					} else {
+						site.CtxSource = fmt.Sprintf("fp%d", ctxSlot)
+					}
+				}
+			}
+			if site.Reason == "" {
+				switch {
+				case mapID == "":
+					site.Reason, generic = "R1 is not a direct map reference in this basic block", true
+				case m == nil:
+					site.Reason = "map reference is not defined in the collection"
+				case op == HookLookup && (m.Type == ebpf.HashOfMaps || m.Type == ebpf.ArrayOfMaps):
+					site.Reason, generic = "map-in-map lookup returns an inner map", true
+				default:
+					// A program cannot update or delete in a map-in-map, a devmap
+					// or an xskmap, so those sites fail here too. A socket map's
+					// update takes a socket, which only the generic hook's
+					// untyped value accepts; its delete goes along.
+					if op.keyless() {
+						site.Reason = checkQueueMap(m)
+					} else if reason := checkLookupMap(m); reason != "" {
+						site.Reason, typedOnly = reason, genericKinds[m.Type] && (op == HookLookup || sockKinds[m.Type])
+					}
 				}
 			}
 			site.Generic = generic || typedOnly
@@ -585,7 +615,8 @@ func discoverMapCalls(insns asm.Instructions, typ ebpf.ProgramType, resolve look
 			// update's value is in R3.
 			regs := readOnly[pc].regs
 			readOnlyArg := regs[asm.R2].readOnly || op == HookUpdate && regs[asm.R3].readOnly
-			sites = append(sites, discoveredLookup{site, mapID, m, generic, typedOnly, readOnlyArg})
+			sites = append(sites, discoveredLookup{LookupSite: site, mapID: mapID, mapInfo: m, generic: generic,
+				typedOnly: typedOnly, readOnlyArg: readOnlyArg, ctxReg: ctxReg, ctxSlot: ctxSlot})
 		}
 		// Track direct R1 definitions only; calls also clobber R1. Atomic
 		// operations and legacy packet loads are conservatively barriers.
@@ -604,6 +635,25 @@ func discoverMapCalls(insns asm.Instructions, typ ebpf.ProgramType, resolve look
 		}
 	}
 	return sites, nil
+}
+
+func lookupCtxStruct(insns asm.Instructions) btf.Type {
+	if len(insns) == 0 {
+		return nil
+	}
+	fn := btf.FuncMetadata(&insns[0])
+	if fn == nil {
+		return nil
+	}
+	proto, ok := fn.Type.(*btf.FuncProto)
+	if !ok || len(proto.Params) == 0 {
+		return nil
+	}
+	ptr, ok := btf.UnderlyingType(proto.Params[0].Type).(*btf.Pointer)
+	if !ok {
+		return nil
+	}
+	return btf.UnderlyingType(ptr.Target)
 }
 
 func lookupTypeName(t btf.Type) string {
@@ -1246,6 +1296,41 @@ func transformLookupProgramGuarded(insns asm.Instructions, typ ebpf.ProgramType,
 	if err := CheckLookupStack(req); err != nil {
 		return nil, plan, err
 	}
+	// A static hook does not get the kernel's typed context-argument check.
+	// Until attach-time context proof covers callees, keep such sites closed.
+	var globalGroups []lookupGroup
+	for _, group := range groups {
+		static, err := groupUsesStaticHook(group, req)
+		if err != nil {
+			return nil, plan, err
+		}
+		if !static {
+			globalGroups = append(globalGroups, group)
+			continue
+		}
+		kept := group.sites[:0]
+		for _, site := range group.sites {
+			if site.CtxSource == "entry" {
+				kept = append(kept, site)
+				continue
+			}
+			const reason = "site in a callee frame needs a global hook; static hook form"
+			if !req.Auto {
+				return nil, plan, refuse("%s", reason)
+			}
+			skipped := site.LookupSite
+			skipped.Reason = reason
+			plan.skipped = append(plan.skipped, skipped)
+		}
+		if len(kept) != 0 {
+			group.sites = kept
+			globalGroups = append(globalGroups, group)
+		}
+	}
+	groups = globalGroups
+	if len(groups) == 0 && !req.Entry && !req.TailCalls {
+		return nil, plan, refuse("no supported lookup sites (%d skipped)", len(plan.skipped))
+	}
 	// Drop groups whose slots reach past siteFrameLimit. Auto skips the
 	// sites and lists them; explicit selection refuses, since the user named
 	// them. Dropping the one generic group means no hook takes the map pointer.
@@ -1442,6 +1527,25 @@ func transformLookupProgramGuarded(insns asm.Instructions, typ ebpf.ProgramType,
 	return spliced, plan, nil
 }
 
+func groupUsesStaticHook(group lookupGroup, req LookupRequest) (bool, error) {
+	if !req.StaticUntrusted {
+		return false, nil
+	}
+	if group.generic || req.Dispatch {
+		return true, nil
+	}
+	if group.op != HookLookup {
+		return group.readOnlyArg(), nil
+	}
+	m := group.sites[0].mapInfo
+	field, err := specialField(m.Value)
+	if err != nil {
+		return false, refuse("map %q value BTF: %v", m.Name, err)
+	}
+	restricted := m.Flags&(bpfFRdonlyProg|bpfFWronlyProg) != 0 || field != "" || group.readOnlyArg()
+	return req.Lookups.hit() && restricted && !group.copies(req) || req.Lookups.miss() && group.readOnlyArg(), nil
+}
+
 // skipGroup appends group's sites to skipped with reason.
 func skipGroup(skipped []LookupSite, group lookupGroup, reason string) []LookupSite {
 	for _, site := range group.sites {
@@ -1498,7 +1602,8 @@ func (e lookupEmitter) splice(groups []lookupGroup) (asm.Instructions, []LookupH
 			}
 			plan = append(plan, hook)
 			for _, site := range group.sites {
-				calls[site.SitePC] = siteCall{hook: group.name, op: group.op, withSite: true, withMap: true, dispatch: req.Dispatch, when: req.Lookups, results: results}
+				calls[site.SitePC] = siteCall{hook: group.name, op: group.op, withSite: true, withMap: true,
+					dispatch: req.Dispatch, when: req.Lookups, results: results, ctxFrom: siteCtxSource(site)}
 			}
 			continue
 		}
@@ -1538,7 +1643,7 @@ func (e lookupEmitter) splice(groups []lookupGroup) (asm.Instructions, []LookupH
 			plan = append(plan, LookupHook{Name: group.name, Kind: group.op, When: when, MapName: group.sites[0].MapName, Sites: publicLookupSites(group.sites),
 				Untrusted: untrusted, Static: static})
 			for _, site := range group.sites {
-				calls[site.SitePC] = siteCall{hook: group.name, op: group.op, results: results, withSite: true}
+				calls[site.SitePC] = siteCall{hook: group.name, op: group.op, results: results, withSite: true, ctxFrom: siteCtxSource(site)}
 			}
 			continue
 		}
@@ -1589,7 +1694,8 @@ func (e lookupEmitter) splice(groups []lookupGroup) (asm.Instructions, []LookupH
 				Sites: publicLookupSites(group.sites), ReadOnly: readOnly, Untrusted: missUntrusted, Static: missStatic})
 		}
 		for _, site := range group.sites {
-			calls[site.SitePC] = siteCall{hook: group.name, missHook: group.missName, when: req.Lookups, withSite: req.Auto, copySize: copySize}
+			calls[site.SitePC] = siteCall{hook: group.name, missHook: group.missName, when: req.Lookups,
+				withSite: req.Auto, copySize: copySize, ctxFrom: siteCtxSource(site)}
 		}
 	}
 	// With Dispatch the entry and tail-call hooks are the shared hook; otherwise
@@ -1610,7 +1716,12 @@ func (e lookupEmitter) splice(groups []lookupGroup) (asm.Instructions, []LookupH
 		hook := kindHook(e.tailName, HookTailCall, "site", "index")
 		for _, site := range e.tails {
 			hook.Sites = append(hook.Sites, site.LookupSite)
-			calls[site.SitePC] = siteCall{hook: e.tailName, withSite: true, withMap: req.Dispatch, dispatch: req.Dispatch, tailCall: true, localCtx: site.local}
+			from := ctxSource{}
+			if site.local {
+				from.helperR1 = true
+			}
+			calls[site.SitePC] = siteCall{hook: e.tailName, withSite: true, withMap: req.Dispatch,
+				dispatch: req.Dispatch, tailCall: true, ctxFrom: from}
 		}
 		plan = append(plan, hook)
 	}
@@ -1625,6 +1736,16 @@ type entryCall struct {
 	name     string
 	on       bool
 	dispatch bool
+}
+
+type ctxSource struct {
+	reg      asm.Register
+	slot     int16
+	helperR1 bool
+}
+
+func siteCtxSource(site discoveredLookup) ctxSource {
+	return ctxSource{reg: site.ctxReg, slot: site.ctxSlot}
 }
 
 // siteCall is the hook a helper site calls, whether it passes its SitePC and
@@ -1646,7 +1767,7 @@ type siteCall struct {
 	withMap  bool
 	tailCall bool
 	dispatch bool
-	localCtx bool
+	ctxFrom  ctxSource
 	copySize uint32
 }
 
@@ -1763,6 +1884,19 @@ func spliceLookupCalls(input asm.Instructions, calls map[uint32]siteCall, stack 
 		return append(out, asm.LoadMem(asm.R0, asm.RFP, spillR0, asm.DWord))
 	}
 	before := func(call siteCall) asm.Instructions {
+		initCtx := func(spill asm.Instructions) asm.Instructions {
+			switch {
+			case call.ctxFrom.helperR1:
+				return append(spill, asm.StoreMem(asm.RFP, ctx, asm.R1, asm.DWord))
+			case call.ctxFrom.reg != 0:
+				return append(spill, asm.StoreMem(asm.RFP, ctx, call.ctxFrom.reg, asm.DWord))
+			case call.ctxFrom.slot != 0:
+				return append(spill, asm.LoadMem(asm.R0, asm.RFP, call.ctxFrom.slot, asm.DWord),
+					asm.StoreMem(asm.RFP, ctx, asm.R0, asm.DWord))
+			default:
+				return spill
+			}
+		}
 		if call.op.MapCall() {
 			// R2 is the key, or the value of a push, pop or peek; the key
 			// slot keeps either.
@@ -1778,25 +1912,20 @@ func spliceLookupCalls(input asm.Instructions, calls map[uint32]siteCall, stack 
 			if call.withMap {
 				spill = append(spill, asm.StoreMem(asm.RFP, mapSlot, asm.R1, asm.DWord))
 			}
-			return spill
+			return initCtx(spill)
 		}
 		if call.tailCall {
 			spill := asm.Instructions{asm.StoreMem(asm.RFP, key, asm.R3, asm.DWord)}
 			if call.withMap {
 				spill = append(spill, asm.StoreMem(asm.RFP, mapSlot, asm.R2, asm.DWord))
 			}
-			if call.localCtx {
-				// The slot offsets are the same in every frame; the stack
-				// audit covers direct R10 references in all functions.
-				spill = append(spill, asm.StoreMem(asm.RFP, ctx, asm.R1, asm.DWord))
-			}
-			return spill
+			return initCtx(spill)
 		}
 		spill := asm.Instructions{asm.StoreMem(asm.RFP, key, asm.R2, asm.DWord)}
 		if call.withMap {
 			spill = append(spill, asm.StoreMem(asm.RFP, mapSlot, asm.R1, asm.DWord))
 		}
-		return spill
+		return initCtx(spill)
 	}
 	after := make(map[uint32]asm.Instructions, len(calls))
 	for pc, call := range calls {

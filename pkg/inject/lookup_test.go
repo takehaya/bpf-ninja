@@ -50,7 +50,7 @@ func TestMapCallDiscovery(t *testing.T) {
 	want := []got{
 		{HookUpdate, 2, "sessions", "", false}, {HookDelete, 5, "sessions", "", false}, {HookLookup, 8, "sessions", "", false},
 		{HookUpdate, 9, "", indirect, true}, {HookLookup, 10, "", indirect, true},
-		{HookDelete, 14, "sessions", "delete is not in the entry function; ctx belongs to another stack frame", false},
+		{HookDelete, 14, "sessions", "function has no direct caller", false},
 	}
 	if !reflect.DeepEqual(have, want) {
 		t.Fatalf("map calls = %+v\nwant %+v", have, want)
@@ -68,7 +68,7 @@ func TestLookupDiscovery(t *testing.T) {
 	spec := lookupFixture()
 	sites, err := discoverLookups(spec, "p")
 	want := []LookupSite{{Op: HookLookup, MapName: "sessions", KeyTypeName: "u32", ValueTypeName: "session",
-		FuncName: "p", SitePC: 11, InstructionIndex: 10}}
+		FuncName: "p", SitePC: 11, InstructionIndex: 10, CtxSource: "entry"}}
 	if err != nil || !reflect.DeepEqual(sites, want) {
 		t.Fatalf("discovery = %+v, %v; want %+v", sites, err, want)
 	}
@@ -164,6 +164,21 @@ func TestLookupTransformCloneAndMetadata(t *testing.T) {
 	b, _ := checksum(out, work.ByteOrder)
 	if a == b {
 		t.Fatal("checksums should differ")
+	}
+}
+
+func TestEntrySiteOutputUnchanged(t *testing.T) {
+	spec := lookupFixture()
+	if _, err := transformLookup(spec, lookupReq()); err != nil {
+		t.Fatal(err)
+	}
+	got, err := checksum(spec.Programs["p"].Instructions, spec.ByteOrder)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const mainOutput = "edc3c20a2108092a72ebc48b39405019f77dfac05edfd84c75f3506cecbd7fa1"
+	if got != mainOutput {
+		t.Fatalf("entry transform checksum = %s, origin/main was %s", got, mainOutput)
 	}
 }
 

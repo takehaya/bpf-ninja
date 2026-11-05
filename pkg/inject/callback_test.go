@@ -225,7 +225,7 @@ func TestLookupInsideCallbackRefused(t *testing.T) {
 	p := spec.Programs["p"]
 	p.Instructions = append(p.Instructions, callbackLoad(asm.R2, -1, "cb"), asm.Return(), callbackHead("cb"), asm.LoadMapPtr(asm.R1, 0).WithReference("sessions"), asm.FnMapLookupElem.Call(), asm.Return())
 	sites, err := discoverLookups(spec, "p")
-	if err != nil || len(sites) != 2 || sites[0].Reason != "" || !strings.Contains(sites[1].Reason, "another stack frame") {
+	if err != nil || len(sites) != 2 || sites[0].Reason != "" || sites[1].Reason != "function has no context parameter" {
 		t.Fatalf("sites=%+v err=%v", sites, err)
 	}
 	req := lookupReq()
