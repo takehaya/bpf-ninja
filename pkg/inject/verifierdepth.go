@@ -2,6 +2,7 @@ package inject
 
 import (
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -74,11 +75,44 @@ func (r StackReport) Frames() map[string]int16 {
 	return out
 }
 
-// ParseStackDepths parses the numeric prefix of the verifier's stats line.
-// Kernel and distribution suffixes after the number list are ignored.
+// subprogStatsLine is the per-function verifier stats line of Linux 7.3.
+var subprogStatsLine = regexp.MustCompile(`^subprog (\d+) \(.*\) \S+ insns_self \d+ insns_total \d+ stack (\d+)$`)
+
+// parseSubprogStats reads the per-function stats lines in subprogram order.
+func parseSubprogStats(lines []string) ([]int, error) {
+	var out []int
+	for _, line := range lines {
+		m := subprogStatsLine.FindStringSubmatch(strings.TrimSpace(line))
+		if m == nil {
+			continue
+		}
+		index, err := strconv.Atoi(m[1])
+		if err != nil {
+			return nil, fmt.Errorf("subprog stats: %w", err)
+		}
+		if index != len(out) {
+			return nil, fmt.Errorf("subprog stats: got subprog %d, want %d", index, len(out))
+		}
+		n, err := strconv.Atoi(m[2])
+		if err != nil {
+			return nil, fmt.Errorf("subprog stats: %w", err)
+		}
+		out = append(out, n)
+	}
+	return out, nil
+}
+
+// ParseStackDepths parses the verifier's per-function stack depths: the
+// subprog lines of Linux 7.3 when present, otherwise the numeric prefix of the
+// older "stack depth" line. Kernel and distribution suffixes after that number
+// list are ignored.
 func ParseStackDepths(log string) ([]int, error) {
 	const marker = "stack depth "
-	for _, line := range strings.Split(log, "\n") {
+	lines := strings.Split(log, "\n")
+	if out, err := parseSubprogStats(lines); err != nil || len(out) > 0 {
+		return out, err
+	}
+	for _, line := range lines {
 		i := strings.Index(line, marker)
 		if i < 0 {
 			continue

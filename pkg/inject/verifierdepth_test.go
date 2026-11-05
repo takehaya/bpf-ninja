@@ -16,13 +16,16 @@ func TestParseStackDepths(t *testing.T) {
 	}{
 		{"processed 4 insns\nstack depth 8+24+160\n", []int{8, 24, 160}},
 		{"stack depth 504 max 512\n", []int{504}},
+		{"stack depth max 16\nsubprog 0 (p) main insns_self 16 insns_total 16 stack 8\nprocessed 16 insns\n", []int{8}},
+		{"stack depth max 40\nsubprog 0 (<unknown>) main insns_self 3 insns_total 9 stack 24\nsubprog 1 (sub) static insns_self 6 insns_total 6 stack 16\n", []int{24, 16}},
 	} {
 		got, err := ParseStackDepths(tc.log)
 		if err != nil || !reflect.DeepEqual(got, tc.want) {
 			t.Fatalf("ParseStackDepths(%q) = %v, %v; want %v", tc.log, got, err, tc.want)
 		}
 	}
-	for _, log := range []string{"", "processed 4 insns\n"} {
+	for _, log := range []string{"", "processed 4 insns\n", "stack depth max 16\n",
+		"subprog 1 (sub) static insns_self 6 insns_total 6 stack 16\n"} {
 		if _, err := ParseStackDepths(log); err == nil {
 			t.Fatalf("ParseStackDepths(%q) succeeded", log)
 		}
