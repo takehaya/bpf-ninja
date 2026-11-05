@@ -179,4 +179,4 @@ sudo -E env PATH=$PATH go test -tags integration -run '^TestBpfAutoStatic$' -v -
 ```
 
 The privileged tests fail on missing BPF capabilities even when the uid is zero; they do not turn a failed injection into a skip.
-Only the explicit non-root guard skips them.
+Only the explicit non-root guard skips them, and `TestIntegrationIndirectJump` also skips on a kernel that rejects `BPF_MAP_TYPE_INSN_ARRAY` with `EINVAL`.

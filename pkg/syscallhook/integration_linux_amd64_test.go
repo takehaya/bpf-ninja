@@ -492,8 +492,11 @@ func TestIntegrationIndirectJump(t *testing.T) {
 		return
 	}
 	insnArray, err := ebpf.NewMap(&ebpf.MapSpec{Type: ebpf.MapType(34), KeySize: 4, ValueSize: 16, MaxEntries: 1})
+	if errors.Is(err, unix.EINVAL) {
+		t.Skipf("kernel lacks BPF_MAP_TYPE_INSN_ARRAY: %v", err)
+	}
 	if err != nil {
-		t.Skipf("BPF_MAP_TYPE_INSN_ARRAY: %v", err)
+		t.Fatal(err)
 	}
 	_ = insnArray.Close()
 	for _, tc := range []struct {

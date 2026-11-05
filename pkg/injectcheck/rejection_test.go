@@ -510,6 +510,11 @@ func TestRejectIndirectJump(t *testing.T) {
 		a[7], b[c.Original[7]] = gotox(asm.R3), gotox(asm.R3)
 		expectPairKind(t, "both-streams", a, b, c, IndirectJump)
 	})
+	t.Run("original-only", func(t *testing.T) {
+		bad := clone(in)
+		bad[7] = gotox(asm.R3)
+		expectPairKind(t, "original-only", bad, out, c, IndirectJump)
+	})
 	t.Run("transformed-only", func(t *testing.T) {
 		bad := clone(out)
 		bad[12] = gotox(asm.R0)
