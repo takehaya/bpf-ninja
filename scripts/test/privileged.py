@@ -16,6 +16,10 @@ SYSCALLHOOK = "github.com/takehaya/bpf-ninja/pkg/syscallhook"
 
 def allowed_skip(package, test, output, kernel):
     if package == INJECT:
+        # The native control shape falls through on kernels that lose tail-call
+        # reachability; the guarded refusal test covers those kernels instead.
+        if test == "TestBpfTailCallInSubprogram":
+            return "kernel loses tail-call reachability" in output
         # The opt-in census requires external corpus inputs on every kernel.
         if test == "TestTranslationValidationCensus":
             return "set BPF_NINJA_VALIDATE_OBJECTS, BPF_NINJA_VALIDATE_CENSUS and BPF_NINJA_VALIDATE_OUTPUT" in output
