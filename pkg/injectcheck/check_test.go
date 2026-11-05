@@ -189,6 +189,10 @@ func TestTargetInputs(t *testing.T) {
 		{"condition", []SiteTarget{{Site: 5, When: "success", Hook: hook}}, InputTarget},
 		{"hook-start", []SiteTarget{{Site: 5, When: TargetHit, Hook: hook + 1}}, InputTarget},
 		{"duplicate", []SiteTarget{valid, valid}, InputTarget},
+		{"ctx-register", []SiteTarget{{Site: 5, When: TargetHit, Hook: hook, Ctx: &CtxSource{Reg: 5}}}, InputTarget},
+		{"ctx-slot", []SiteTarget{{Site: 5, When: TargetHit, Hook: hook, Ctx: &CtxSource{Slot: -7}}}, InputTarget},
+		{"ctx-entry", []SiteTarget{{Site: -1, When: TargetAny, Hook: hook, Ctx: &CtxSource{Reg: 6}}}, InputTarget},
+		{"ctx-inconsistent", []SiteTarget{valid, {Site: 5, When: TargetMiss, Hook: hook, Ctx: &CtxSource{Reg: 6}}}, InputTarget},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			assertInputKind(t, check(tc.targets...), tc.kind)

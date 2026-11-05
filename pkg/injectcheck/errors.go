@@ -24,6 +24,7 @@ const (
 	StackAudit             Kind = "stack_audit"
 	SpillBounds            Kind = "spill_bounds"
 	PreludeShape           Kind = "prelude_shape"
+	CtxProvenance          Kind = "ctx_provenance"
 	HookShape              Kind = "hook_shape"
 	HookBody               Kind = "hook_body"
 	HookArguments          Kind = "hook_arguments"

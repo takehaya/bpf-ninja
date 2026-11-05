@@ -131,6 +131,63 @@ func TestTranslationValidationEquivalence(t *testing.T) {
 	}
 }
 
+func TestTranslationValidationSubprogramContextPairCorpus(t *testing.T) {
+	for _, source := range []string{"register", "slot"} {
+		t.Run(source, func(t *testing.T) {
+			work := subprogramLookupFixture(source)
+			in := append(asm.Instructions(nil), work.Programs["p"].Instructions...)
+			injectcheck.Label(work.Programs["p"].Instructions)
+			req := autoReq()
+			req.Stack.LowestOffset = -16
+			plan, err := transformLookup(work, req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			out := work.Programs["p"].Instructions
+			cert, premises := validationCertificate(t, in, out, plan.hooks, req.Stack.LowestOffset)
+			if len(premises.Targets) != 1 || premises.Targets[0].Ctx == nil {
+				t.Fatalf("context premise = %+v", premises.Targets)
+			}
+			if _, err := injectcheck.Check(in, out, cert, premises); err != nil {
+				t.Fatalf("transform output rejected: target=%+v helper=%d around=%v: %v", premises.Targets[0], cert.Original[premises.Targets[0].Site], out[cert.Original[premises.Targets[0].Site]-6:cert.Original[premises.Targets[0].Site]], err)
+			}
+			pair := injectcheck.Pair{Format: injectcheck.FormatVersion, Original: injectcheck.Instructions(in), Transformed: injectcheck.Instructions(out), Certificate: cert, Premises: premises}
+			encoded, err := json.Marshal(pair)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var decoded injectcheck.Pair
+			if err := json.Unmarshal(encoded, &decoded); err != nil {
+				t.Fatal(err)
+			}
+			if verdict, err := decoded.Validate(); err != nil || !verdict.Accepted {
+				t.Fatalf("valid pair rejected: verdict=%+v err=%v", verdict, err)
+			}
+
+			target := premises.Targets[0]
+			helper := cert.Original[target.Site]
+			for _, mutation := range []string{"wrong-source", "missing-init"} {
+				t.Run(mutation, func(t *testing.T) {
+					bad := append(asm.Instructions(nil), out...)
+					switch {
+					case source == "register" && mutation == "wrong-source":
+						bad[helper-1] = asm.StoreMem(asm.RFP, bad[helper-1].Offset, asm.R7, asm.DWord)
+					case source == "slot" && mutation == "wrong-source":
+						bad[helper-2] = asm.LoadMem(asm.R0, asm.RFP, -8, asm.DWord)
+					default:
+						bad[helper-1] = asm.StoreMem(asm.RFP, bad[helper-1].Offset, asm.R1, asm.DWord)
+					}
+					_, err := injectcheck.Check(in, bad, cert, premises)
+					var rejection *injectcheck.Rejection
+					if !errors.As(err, &rejection) || rejection.Kind != injectcheck.CtxProvenance {
+						t.Fatalf("mutation accepted or misclassified: %v", err)
+					}
+				})
+			}
+		})
+	}
+}
+
 type validationRow struct {
 	Object, Program, Form, Status, Reason, FloorSource     string
 	Sites, Hooks, Instructions, PlannedSites, SkippedSites int
