@@ -116,6 +116,12 @@ func (r *remote) step(want byte) error {
 		return err
 	}
 	status, err := waitThread(r.pid)
+	// A replayed bpf(2) passes the filter again on its way to the exit stop.
+	for err == nil && status.Stopped() && status.TrapCause() == unix.PTRACE_EVENT_SECCOMP {
+		if err = unix.PtraceSyscall(r.pid, 0); err == nil {
+			status, err = waitThread(r.pid)
+		}
+	}
 	if err == nil && (!status.Stopped() || status.StopSignal() != unix.SIGTRAP|0x80) {
 		err = fmt.Errorf("unexpected stop during injected syscall: %#x", uint32(status))
 	}

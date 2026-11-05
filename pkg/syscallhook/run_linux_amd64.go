@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"runtime"
@@ -15,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"unsafe"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/asm"
@@ -45,6 +47,13 @@ type Options struct {
 	// before any transform. Rules may then be empty. It must not wait on the
 	// target.
 	OnDiscover func(Discovery)
+	// BPFStopsOnly stops the target only on bpf(2), through a seccomp filter
+	// installed in the target at its first syscall, and follows every child
+	// process so the filter never meets a process without a tracer. See
+	// docs/en/inject-run.md for what this changes for the target.
+	BPFStopsOnly bool
+	// stops counts ptrace stops, for tests.
+	stops *int
 }
 
 // Discovery lists the lookups of one program load (see
@@ -82,6 +91,10 @@ type rememberedBTF struct {
 type thread struct {
 	btf     []byte
 	newborn bool
+	// foreign marks a followed child process: it is only kept running.
+	foreign bool
+	// traceExit asks for the exit stop of the bpf call stopped at seccomp.
+	traceExit bool
 }
 type supervisor struct {
 	probeUntrusted            func() error
@@ -89,6 +102,9 @@ type supervisor struct {
 	options                   Options
 	btf                       map[uint32]rememberedBTF
 	cacheBytes                int
+	// filterPending waits for the first syscall-exit stop to install the filter.
+	filterPending bool
+	filtered      bool
 }
 
 var errTrialVerifier = errors.New("trial load was rejected by the verifier")
@@ -153,10 +169,20 @@ func run(ctx context.Context, argv []string, opts Options, probeUntrusted, probe
 	defer func() { _ = cmd.Process.Release() }()
 	done := make(chan struct{})
 	defer close(done)
+	var foreignMu sync.Mutex
+	foreign := map[int]bool{}
+	killAll := func() {
+		_ = unix.Kill(pid, unix.SIGKILL)
+		foreignMu.Lock()
+		defer foreignMu.Unlock()
+		for tid := range foreign {
+			_ = unix.Kill(tid, unix.SIGKILL)
+		}
+	}
 	go func() {
 		select {
 		case <-ctx.Done():
-			_ = unix.Kill(pid, unix.SIGKILL)
+			killAll()
 		case <-done:
 		}
 	}()
@@ -166,7 +192,7 @@ func run(ctx context.Context, argv []string, opts Options, probeUntrusted, probe
 		if finished {
 			return
 		}
-		_ = unix.Kill(pid, unix.SIGKILL)
+		killAll()
 		// Reap any thread first: waiting for the leader before its dying siblings
 		// can deadlock because Linux delays the leader's final wait notification.
 		for {
@@ -200,15 +226,27 @@ func run(ctx context.Context, argv []string, opts Options, probeUntrusted, probe
 		return 0, err
 	}
 	s := supervisor{probeUntrusted: sync.OnceValue(probeUntrusted), probeTailCallReachability: sync.OnceValue(probeTailCallReachability),
-		options: opts, btf: make(map[uint32]rememberedBTF)}
+		options: opts, btf: make(map[uint32]rememberedBTF), filterPending: opts.BPFStopsOnly || defaultBPFStopsOnly}
+	// An inherited filter may kill the seccomp call that would add ours.
+	if s.filterPending && seccompMode(pid) != "0" {
+		s.filterPending = false
+		s.log("target inherits a seccomp filter; stopping on every syscall")
+	}
 	exitCode := 0
 	for len(threads) > 0 {
 		tid, err := unix.Wait4(-1, &status, unix.WALL|unix.WNOTHREAD, nil)
 		if err == unix.EINTR {
 			continue
 		}
+		// The entry of a followed thread that lost its tid to exec stays behind.
+		if err == unix.ECHILD && s.filtered {
+			break
+		}
 		if err != nil {
 			return 0, err
+		}
+		if opts.stops != nil {
+			*opts.stops++
 		}
 		t := threads[tid]
 		if t == nil {
@@ -217,6 +255,11 @@ func run(ctx context.Context, argv []string, opts Options, probeUntrusted, probe
 		}
 		if status.Exited() || status.Signaled() {
 			delete(threads, tid)
+			if t.foreign {
+				foreignMu.Lock()
+				delete(foreign, tid)
+				foreignMu.Unlock()
+			}
 			if tid == pid {
 				if status.Exited() {
 					exitCode = status.ExitStatus()
@@ -232,7 +275,7 @@ func run(ctx context.Context, argv []string, opts Options, probeUntrusted, probe
 		sig := int(status.StopSignal())
 		event := status.TrapCause()
 		switch {
-		case event == unix.PTRACE_EVENT_CLONE:
+		case event == unix.PTRACE_EVENT_CLONE || event == unix.PTRACE_EVENT_FORK || event == unix.PTRACE_EVENT_VFORK:
 			child, err := unix.PtraceGetEventMsg(tid)
 			if err == unix.ESRCH {
 				continue
@@ -245,21 +288,44 @@ func run(ctx context.Context, argv []string, opts Options, probeUntrusted, probe
 			}
 			sig = 0
 		case event == unix.PTRACE_EVENT_EXEC:
+			sig = 0
+			if t.foreign {
+				break
+			}
 			// exec from a nonleader changes its tid to pid and destroys other threads.
-			threads = map[int]*thread{pid: {}}
+			maps.DeleteFunc(threads, func(_ int, t *thread) bool { return !t.foreign })
+			threads[pid] = &thread{}
 			s.btf = make(map[uint32]rememberedBTF)
 			s.cacheBytes = 0
+		case event == unix.PTRACE_EVENT_SECCOMP:
 			sig = 0
+			regs, ok, err := s.seccompStop(tid, t)
+			if err != nil {
+				return 0, err
+			}
+			if !ok {
+				continue
+			}
+			t.traceExit = t.btf != nil && !t.foreign && regs.Orig_rax == unix.SYS_BPF
 		case t.newborn && status.StopSignal() == unix.SIGSTOP:
 			t.newborn = false
 			// TRACECLONE can also report clone without CLONE_THREAD. Those separate
 			// processes are outside this prototype; detach without changing them.
 			if !sameThreadGroup(pid, tid) {
-				if err := unix.PtraceDetach(tid); err != nil {
-					return 0, err
+				if !s.filtered {
+					if err := unix.PtraceDetach(tid); err != nil {
+						return 0, err
+					}
+					delete(threads, tid)
+					continue
 				}
-				delete(threads, tid)
-				continue
+				t.foreign = true
+				foreignMu.Lock()
+				foreign[tid] = true
+				foreignMu.Unlock()
+				if ctx.Err() != nil {
+					_ = unix.Kill(tid, unix.SIGKILL)
+				}
 			}
 			sig = 0
 		case status.StopSignal() == unix.SIGTRAP|0x80:
@@ -290,9 +356,19 @@ func run(ctx context.Context, argv []string, opts Options, probeUntrusted, probe
 					return 0, err
 				}
 			}
+			t.traceExit = false
+			if s.filterPending && op == 2 {
+				if err := s.installFilter(tid, len(threads), arch, regs); err != nil {
+					return 0, err
+				}
+			}
 			sig = 0
 		}
-		if err := unix.PtraceSyscall(tid, sig); err != nil && err != unix.ESRCH {
+		resume := unix.PtraceSyscall
+		if s.filtered && !t.traceExit {
+			resume = unix.PtraceCont
+		}
+		if err := resume(tid, sig); err != nil && err != unix.ESRCH {
 			return 0, err
 		}
 	}
@@ -301,6 +377,131 @@ func run(ctx context.Context, argv []string, opts Options, probeUntrusted, probe
 		return exitCode, ctx.Err()
 	}
 	return exitCode, nil
+}
+
+// seccompMode returns the Seccomp field of the thread's status.
+func seccompMode(tid int) string {
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/status", tid))
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if mode, ok := strings.CutPrefix(line, "Seccomp:\t"); ok {
+			return mode
+		}
+	}
+	return ""
+}
+
+// The action data tells our two stops apart from a target filter's own.
+const (
+	seccompDataBPF   = 0x4250
+	seccompDataWatch = 0x4253
+)
+
+// defaultBPFStopsOnly lets the test suite run on the filtered path.
+var defaultBPFStopsOnly = false
+
+// bpfStopFilter traces native bpf(2), and seccomp(2) and prctl(PR_SET_SECCOMP)
+// to log a target's own filter, which can hide bpf(2) from us. Compat and x32
+// calls stay allowed: inject-run passes them through without injection anyway.
+var bpfStopFilter = []unix.SockFilter{
+	{Code: unix.BPF_LD | unix.BPF_W | unix.BPF_ABS, K: 4},
+	{Code: unix.BPF_JMP | unix.BPF_JEQ | unix.BPF_K, Jf: 6, K: unix.AUDIT_ARCH_X86_64},
+	{Code: unix.BPF_LD | unix.BPF_W | unix.BPF_ABS, K: 0},
+	{Code: unix.BPF_JMP | unix.BPF_JEQ | unix.BPF_K, Jt: 6, K: unix.SYS_BPF},
+	{Code: unix.BPF_JMP | unix.BPF_JEQ | unix.BPF_K, Jt: 4, K: unix.SYS_SECCOMP},
+	{Code: unix.BPF_JMP | unix.BPF_JEQ | unix.BPF_K, Jf: 2, K: unix.SYS_PRCTL},
+	{Code: unix.BPF_LD | unix.BPF_W | unix.BPF_ABS, K: 16},
+	{Code: unix.BPF_JMP | unix.BPF_JEQ | unix.BPF_K, Jt: 1, K: unix.PR_SET_SECCOMP},
+	{Code: unix.BPF_RET | unix.BPF_K, K: unix.SECCOMP_RET_ALLOW},
+	{Code: unix.BPF_RET | unix.BPF_K, K: unix.SECCOMP_RET_TRACE | seccompDataWatch},
+	{Code: unix.BPF_RET | unix.BPF_K, K: unix.SECCOMP_RET_TRACE | seccompDataBPF},
+}
+
+// installFilter runs at the exit stop of the target's first syscall, which went
+// through the every-syscall path, so no bpf(2) comes before the filter. It never
+// sets no_new_privs: without CAP_SYS_ADMIN the kernel returns EACCES and the
+// target stays on the every-syscall path. SPEC_ALLOW keeps
+// spec_store_bypass_disable=seccomp from slowing the target.
+func (s *supervisor) installFilter(tid, threads int, arch uint32, regs unix.PtraceRegs) error {
+	switch regs.Orig_rax {
+	case unix.SYS_EXECVE, unix.SYS_EXECVEAT, unix.SYS_RT_SIGRETURN:
+		return nil // these return somewhere other than a SYSCALL instruction
+	}
+	s.filterPending = false
+	if arch != 0xc000003e || threads != 1 {
+		s.log("cannot install the seccomp filter (arch %#x, %d threads); stopping on every syscall", arch, threads)
+		return nil
+	}
+	r, err := beginRemote(tid, regs, false)
+	if err != nil {
+		return err
+	}
+	prog := make([]byte, 0, 8*len(bpfStopFilter))
+	for _, f := range bpfStopFilter {
+		prog = append(prog, unsafe.Slice((*byte)(unsafe.Pointer(&f)), 8)...)
+	}
+	progAddr, err := r.alloc(prog)
+	if err == nil {
+		fprog := make([]byte, 16)
+		put32(fprog, 0, uint32(len(bpfStopFilter)))
+		put64(fprog, 8, progAddr)
+		var addr uint64
+		if addr, err = r.alloc(fprog); err == nil {
+			var ret int64
+			ret, err = r.call(unix.SYS_SECCOMP, unix.SECCOMP_SET_MODE_FILTER, unix.SECCOMP_FILTER_FLAG_SPEC_ALLOW, addr)
+			err = syscallError(ret, err)
+		}
+	}
+	if r.broken != nil {
+		return r.broken
+	}
+	if err != nil {
+		s.log("cannot install the seccomp filter: %v; stopping on every syscall", err)
+		return r.finish(int64(regs.Rax))
+	}
+	s.filtered = true
+	flags := unix.PTRACE_O_TRACESYSGOOD | unix.PTRACE_O_TRACECLONE | unix.PTRACE_O_TRACEEXEC | unix.PTRACE_O_EXITKILL |
+		unix.PTRACE_O_TRACESECCOMP | unix.PTRACE_O_TRACEFORK | unix.PTRACE_O_TRACEVFORK
+	if err := unix.PtraceSetOptions(tid, flags); err != nil {
+		return err
+	}
+	s.log("stopping only on bpf()")
+	return r.finish(int64(regs.Rax))
+}
+
+// seccompStop handles a PTRACE_EVENT_SECCOMP stop. ok is false if the thread
+// died in the stop.
+func (s *supervisor) seccompStop(tid int, t *thread) (regs unix.PtraceRegs, ok bool, err error) {
+	data, err := unix.PtraceGetEventMsg(tid)
+	if err == nil {
+		err = unix.PtraceGetRegs(tid, &regs)
+	}
+	if err == unix.ESRCH {
+		return regs, false, nil
+	}
+	if err != nil {
+		return regs, false, err
+	}
+	switch {
+	case data == seccompDataWatch:
+		if !t.foreign {
+			s.log("target installs a seccomp filter; bpf() calls it denies or hands to a listener bypass the supervisor")
+		}
+	case data != seccompDataBPF:
+		// A target filter's own SECCOMP_RET_TRACE: without PTRACE_O_TRACESECCOMP
+		// the kernel would fail the call with ENOSYS, so keep that.
+		regs.Orig_rax = ^uint64(0)
+		regs.Rax = ^uint64(unix.ENOSYS) + 1
+		err = unix.PtraceSetRegs(tid, &regs)
+	case !t.foreign:
+		err = s.entry(tid, t, regs)
+	}
+	if err == unix.ESRCH {
+		return regs, false, nil
+	}
+	return regs, err == nil, err
 }
 
 func sameThreadGroup(pid, tid int) bool {
