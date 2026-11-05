@@ -20,7 +20,8 @@ kernel へのロードや attach の問題は、実際の kernel と必要な権
 
 `inject-run` の stack frame 計算は、Linux 6.9 以降で `net.core.bpf_jit_enable` が `1` または `2` の場合に 16 byte 丸めを使う。
 それ以外、または kernel release や sysctl を確認できない場合は 32 byte 丸めを使う。
-既知の対象を明示する場合だけ、rule の `frame_rounding` を `16` または `32` で上書きできる。
+rule からこの検出結果を上書きすることはできない。
+廃止された `frame_rounding` を含む rule は、フィールドの削除を求めるエラーになる。
 
 ## fentry/fexit の Subprog エラーを調べる
 

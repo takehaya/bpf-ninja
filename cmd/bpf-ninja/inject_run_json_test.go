@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/cilium/ebpf"
@@ -83,7 +84,7 @@ func TestInjectionJSON(t *testing.T) {
 				`{"name":"obs_sessions_miss","kind":"typed","when":"miss","map":"sessions","sites":[{"kind":"lookup","pc":12,"map":"sessions","func":"xdp_ingress","file":"x.c","line":12,"ctx_source":"entry"}],"untrusted":false,"copied":false,"static":false,"read_only":false},` +
 				`{"name":"obs_flows","kind":"typed","map":"flows","sites":[{"kind":"lookup","pc":18,"map":"flows","func":"xdp_ingress","file":"x.c","line":18,"ctx_source":"entry"}],"untrusted":false,"copied":true,"static":false,"read_only":true},` +
 				`{"name":"obs_any","kind":"generic","sites":[{"kind":"lookup","pc":51}],"untrusted":true,"copied":false,"static":false,"read_only":false},` +
-				`{"name":"obs_entry","kind":"entry","sites":[],"untrusted":false,"copied":false,"static":false,"read_only":false},` +
+				`{"name":"obs_entry","kind":"entry","sites":[{"kind":"entry","pc":4294967295}],"untrusted":false,"copied":false,"static":false,"read_only":false},` +
 				`{"name":"obs_tail_call","kind":"tail_call","sites":[{"kind":"tail_call","pc":60,"func":"sub"}],"untrusted":false,"copied":false,"static":false,"read_only":false}],` +
 				`"skipped":[{"kind":"lookup","pc":7,"map":"socks","reason":"sockhash has no typed hook"}]}`},
 		// Dispatch hooks share one name: one function, every site, the entry
@@ -108,6 +109,21 @@ func TestInjectionJSON(t *testing.T) {
 	}
 }
 
+func TestInjectionJSONReportsZeroFloor(t *testing.T) {
+	in := syscallhook.Injection{Program: "p", Func: "entry", Type: ebpf.XDP,
+		Stack: inject.StackReport{Source: "verifier", Functions: []inject.FrameFloor{{Name: "entry", Floor: 0}}},
+		Hooks: []inject.LookupHook{{Name: "h", Kind: inject.HookEntry}}}
+	b, err := json.Marshal(injectionJSON(in))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"stack":{"source":"verifier"`, `"frame":"entry","floor":0`} {
+		if !strings.Contains(string(b), want) {
+			t.Fatalf("%s does not contain %s", b, want)
+		}
+	}
+}
+
 func TestHooksWriter(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "hooks.json")
 	read := func() hooksFileJSON {
@@ -126,7 +142,7 @@ func TestHooksWriter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if f := read(); f.Version != 1 || f.Programs == nil || len(f.Programs) != 0 {
+	if f := read(); f.Version != 2 || f.Programs == nil || len(f.Programs) != 0 {
 		t.Fatalf("initial file: %+v", f)
 	}
 	for _, name := range []string{"a", "b"} {

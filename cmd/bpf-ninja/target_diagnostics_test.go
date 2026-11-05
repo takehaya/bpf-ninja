@@ -19,6 +19,7 @@ func TestTargetDiagnosticsOutput(t *testing.T) {
 		{ProgID: 46, FuncName: "unknown", Availability: attach.FuncAvailability{Reason: attach.FuncUnknown}},
 		{ProgID: 47, FuncName: "unsafe", Reason: attach.TargetStaticCtxRefused, Detail: "R1 is not the context", Skipped: true},
 		{ProgID: 48, FuncName: "rejected", Reason: attach.TargetObserverLoadFailed, Detail: "invalid access", Skipped: true},
+		{ProgID: 49, FuncName: "ninja_hook", Reason: attach.TargetStaticCtxUnchecked, Detail: "generated hook; the context argument is the saved program context, which rests on the stack floor"},
 	}
 	var out bytes.Buffer
 	printTargetDiagnostics(&out, ds)
@@ -29,7 +30,8 @@ func TestTargetDiagnosticsOutput(t *testing.T) {
 		"warning: program (id=46) function \"unknown\": unknown; could not check func_info; letting the kernel verify it\n" +
 		"warning: skipping program (id=47) function \"unsafe\": static_context_check_refused: R1 is not the context\n" +
 		"warning: skipping program (id=48) function \"rejected\": observer_load_failed: invalid access\n" +
-		"Skipped 4 target(s): 1 absent from loaded func_info, 1 external declaration(s), 1 refused by the static context check, 1 observer load failure(s).\n"
+		"Skipped 4 target(s): 1 absent from loaded func_info, 1 external declaration(s), 1 refused by the static context check, 1 observer load failure(s).\n" +
+		"1 generated hook(s): context check rests on the stack floor.\n"
 	if out.String() != want {
 		t.Fatalf("got %s want %s", &out, want)
 	}

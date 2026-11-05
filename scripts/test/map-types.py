@@ -84,7 +84,7 @@ for mode in ("without", "with", "named", "legacy", "legacy-missing", "existing-b
     elf = legacy_elf if mode in ("legacy", "legacy-missing") else source_elf
     d = out / mode
     d.mkdir()
-    rule = {"program": "ingress", "map": "sessions", "hook": "observe", "stack_lowest_offset": -4}
+    rule = {"program": "ingress", "map": "sessions", "hook": "observe"}
     if mode != "without":
         rule["map_btf"] = {"elf": elf, "sha256": hashlib.sha256(Path(elf).read_bytes()).hexdigest()}
     if mode in ("named", "legacy", "legacy-missing"):

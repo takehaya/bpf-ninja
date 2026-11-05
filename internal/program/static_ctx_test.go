@@ -409,3 +409,29 @@ func TestStaticCtxCalledFromProvedSubprogram(t *testing.T) {
 		t.Fatal("accepted a subprogram call without context in R1")
 	}
 }
+
+func TestGeneratedStaticHookSkipsCtxProof(t *testing.T) {
+	insns := asm.Instructions{
+		asm.Mov.Imm(asm.R1, 0).WithSymbol("entry"),
+		asm.Call.Label("hook"),
+		asm.Return(),
+		asm.Mov.Imm(asm.R0, 0).WithSymbol("hook"),
+		asm.Return(),
+	}
+	if err := checkStaticCtxInsnsForTarget(insns, "hook", true); err != nil {
+		t.Fatalf("generated hook: %v", err)
+	}
+}
+
+func TestUntaggedStaticHookKeepsCtxProof(t *testing.T) {
+	insns := asm.Instructions{
+		asm.Mov.Imm(asm.R1, 0).WithSymbol("entry"),
+		asm.Call.Label("hook"),
+		asm.Return(),
+		asm.Mov.Imm(asm.R0, 0).WithSymbol("hook"),
+		asm.Return(),
+	}
+	if err := checkStaticCtxInsnsForTarget(insns, "hook", false); err == nil {
+		t.Fatal("untagged hook bypassed the context proof")
+	}
+}

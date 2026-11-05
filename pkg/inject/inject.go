@@ -140,11 +140,25 @@ type StackAudit struct {
 	// Transform (see CheckLookupStack for TransformLookup); the 6.9+ JIT
 	// rule can use the full 512-byte site frame.
 	LowestOffset int16
+	// Frames overrides LowestOffset for named functions. inject-run fills this
+	// from a trial load's per-subprogram verifier accounting.
+	Frames map[string]int16
+	// Source identifies who supplied Frames ("verifier" or "caller").
+	Source string
 	// FrameRounding is 16 only when the caller has established that the
 	// running kernel uses the 6.9+ JIT stack rule. Zero and 32 use the
 	// conservative 32-byte rule.
 	FrameRounding int
 }
+
+func (s StackAudit) floor(name string) int16 {
+	if floor, ok := s.Frames[name]; ok {
+		return floor
+	}
+	return s.LowestOffset
+}
+
+func (s StackAudit) perFrame() bool { return s.Source == "verifier" || len(s.Frames) != 0 }
 
 // Request is the hash-bound description of one transformation. Every field is
 // required; there is no path-based entry point, so the supported API cannot
@@ -432,6 +446,26 @@ func checkStackBound(insns asm.Instructions, lowest int16) error {
 			if ins.Offset < lowest {
 				return refuse("direct stack offset %d is below audited bound %d", ins.Offset, lowest)
 			}
+		}
+	}
+	return nil
+}
+
+func checkStackBounds(insns asm.Instructions, audit StackAudit) error {
+	if !audit.perFrame() {
+		return checkStackBound(insns, audit.LowestOffset)
+	}
+	ranges, err := instructionFunctions(insns)
+	if err != nil {
+		return refuse("stack functions: %v", err)
+	}
+	for _, fn := range ranges {
+		floor, ok := audit.Frames[fn.name]
+		if !ok {
+			continue
+		}
+		if err := checkStackBound(insns[fn.start:fn.end], floor); err != nil {
+			return fmt.Errorf("function %s: %w", fn.name, err)
 		}
 	}
 	return nil

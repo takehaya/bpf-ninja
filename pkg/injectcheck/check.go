@@ -66,7 +66,15 @@ type Counts struct {
 // binding built from the rewrite plan, never from transformed call references.
 type Premises struct {
 	LowestOffset int16        `json:"lowest_offset"`
+	Frames       []FrameFloor `json:"frames,omitempty"`
 	Targets      []SiteTarget `json:"targets"`
+}
+
+// FrameFloor applies LowestOffset from Start until the next frame start.
+// Start is a decoded instruction index in the original program.
+type FrameFloor struct {
+	Start        int   `json:"start"`
+	LowestOffset int16 `json:"lowest_offset"`
 }
 
 type label struct{}
@@ -164,6 +172,17 @@ func Check(in, out asm.Instructions, c Certificate, premises Premises) (Counts, 
 	if premises.LowestOffset > 0 || premises.LowestOffset < stackBottom {
 		return counts, inputError(InputStackFloor, "lowest_offset must be in [-512,0], got %d", premises.LowestOffset)
 	}
+	for i, frame := range premises.Frames {
+		if frame.LowestOffset > 0 || frame.LowestOffset < stackBottom {
+			return counts, inputError(InputStackFloor, "frames[%d].lowest_offset must be in [-512,0], got %d", i, frame.LowestOffset)
+		}
+		if frame.Start < 0 || frame.Start >= len(in) || i > 0 && frame.Start <= premises.Frames[i-1].Start {
+			return counts, inputError(InputStackFloor, "frames must have increasing starts within the original program")
+		}
+	}
+	if len(premises.Frames) != 0 && premises.Frames[0].Start != 0 {
+		return counts, inputError(InputStackFloor, "frames must start at original instruction 0")
+	}
 	for i, a := range in {
 		if a.Dst > asm.RFP || a.Src > asm.RFP {
 			return counts, inputError(InputRegister, "original instruction %d: invalid register dst=%d src=%d", i, a.Dst, a.Src)
@@ -175,7 +194,17 @@ func Check(in, out asm.Instructions, c Certificate, premises Premises) (Counts, 
 	if err := unassociated(out); err != nil {
 		return counts, fmt.Errorf("transformed: %w", err)
 	}
-	floor := int(premises.LowestOffset) &^ 7
+	lowestAt := func(i int) int {
+		lowest := int(premises.LowestOffset)
+		for _, frame := range premises.Frames {
+			if frame.Start > i {
+				break
+			}
+			lowest = int(frame.LowestOffset)
+		}
+		return lowest
+	}
+	floorAt := func(i int) int { return lowestAt(i) &^ 7 }
 	owners := make([]int, len(out))
 	for i := range owners {
 		owners[i] = -1
@@ -265,7 +294,7 @@ func Check(in, out asm.Instructions, c Certificate, premises Premises) (Counts, 
 				before[i] = append(before[i], out[j])
 			}
 			gaps[i] = g[:n]
-			if err := checkBefore(in[i], before[i], floor, int(premises.LowestOffset), ctx); err != nil {
+			if err := checkBefore(in[i], before[i], floorAt(i), lowestAt(i), ctx); err != nil {
 				return counts, fmt.Errorf("site %d prelude: %w", i, err)
 			}
 		}
@@ -319,7 +348,7 @@ func Check(in, out asm.Instructions, c Certificate, premises Premises) (Counts, 
 		if !same(aa, bb) {
 			return fail(OriginalChanged, "original instruction %d changed: %s", i, differingFields(aa, bb))
 		}
-		if err := stackAudit(a, int(premises.LowestOffset)); err != nil {
+		if err := stackAudit(a, lowestAt(i)); err != nil {
 			return counts, fmt.Errorf("original %d: %w", i, err)
 		}
 	}
@@ -331,7 +360,7 @@ func Check(in, out asm.Instructions, c Certificate, premises Premises) (Counts, 
 		return is
 	}
 	if len(gaps[0]) > 0 {
-		if err := checkEntry(gather(gaps[0]), out, npcs, ni, gaps[0], hooks, targets, floor); err != nil {
+		if err := checkEntry(gather(gaps[0]), out, npcs, ni, gaps[0], hooks, targets, floorAt(0)); err != nil {
 			return counts, fmt.Errorf("entry: %w", err)
 		}
 	}
@@ -339,12 +368,12 @@ func Check(in, out asm.Instructions, c Certificate, premises Premises) (Counts, 
 		after := gather(gaps[i+1])
 		if len(before[i]) > 0 {
 			if err := checkAfter(i, in[i], before[i], after, out, npcs, ni, gaps[i+1], hooks, targets,
-				floor, len(gaps[0]) > 0 && i < entryEnd, targets.ctxForSite(i)); err != nil {
+				floorAt(i), len(gaps[0]) > 0 && i < entryEnd, targets.ctxForSite(i)); err != nil {
 				return counts, fmt.Errorf("site %d: %w", i, err)
 			}
 			counts.Sites++
 		} else if len(after) > 0 {
-			if err := checkU32(i, in[i], after, out, npcs, ni, gaps[i+1], hooks, targets, floor, live[i+1]); err != nil {
+			if err := checkU32(i, in[i], after, out, npcs, ni, gaps[i+1], hooks, targets, floorAt(i), live[i+1]); err != nil {
 				return counts, fmt.Errorf("gap after %d: %w", i, err)
 			}
 			counts.Sites++

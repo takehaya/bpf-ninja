@@ -7,11 +7,11 @@ import (
 	"github.com/cilium/ebpf/asm"
 )
 
-// FormatVersion adds callee-frame context provenance to the v2 instruction
-// representation. Readers continue to accept v2 pairs.
-const FormatVersion = 3
+// FormatVersion adds per-frame stack floors. Readers continue to accept v2
+// and v3 pairs.
+const FormatVersion = 4
 
-func supportedFormat(format int) bool { return format == 2 || format == FormatVersion }
+func supportedFormat(format int) bool { return format == 2 || format == 3 || format == FormatVersion }
 
 // Pair is the shared, versioned input for the offline checker and its CLI.
 // Request, Result and Reason carry optional census evidence and are not premises.
@@ -36,14 +36,17 @@ func (p *Pair) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	if !supportedFormat(next.Format) {
-		return inputError(InputVersion, "format must be 2 or %d, got %d", FormatVersion, next.Format)
+		return inputError(InputVersion, "format must be 2, 3, or %d, got %d", FormatVersion, next.Format)
 	}
-	if next.Format == 2 {
+	if next.Format < 3 {
 		for _, target := range next.Premises.Targets {
 			if target.Ctx != nil {
 				return inputError(InputVersion, "format 2 does not support target context provenance")
 			}
 		}
+	}
+	if next.Format < 4 && len(next.Premises.Frames) != 0 {
+		return inputError(InputVersion, "format %d does not support per-frame stack floors", next.Format)
 	}
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(data, &fields); err != nil {
@@ -54,6 +57,21 @@ func (p *Pair) UnmarshalJSON(data []byte) error {
 	}
 	if err := requiredFields(fields["premises"], "lowest_offset", "targets"); err != nil {
 		return inputError(InputMissing, "premises: %v", err)
+	}
+	var premiseFields map[string]json.RawMessage
+	if err := json.Unmarshal(fields["premises"], &premiseFields); err != nil {
+		return inputError(InputJSON, "premises: %v", err)
+	}
+	if rawFrames, ok := premiseFields["frames"]; ok && string(rawFrames) != "null" {
+		var frames []json.RawMessage
+		if err := json.Unmarshal(rawFrames, &frames); err != nil {
+			return inputError(InputJSON, "premises.frames: %v", err)
+		}
+		for i, frame := range frames {
+			if err := requiredFields(frame, "start", "lowest_offset"); err != nil {
+				return inputError(InputMissing, "premises.frames[%d]: %v", i, err)
+			}
+		}
 	}
 	*p = Pair(next)
 	return nil
@@ -81,12 +99,12 @@ type Verdict struct {
 func (p Pair) Validate() (Verdict, error) {
 	v := Verdict{Premises: p.Premises}
 	if !supportedFormat(p.Format) {
-		err := inputError(InputVersion, "format must be 2 or %d, got %d", FormatVersion, p.Format)
+		err := inputError(InputVersion, "format must be 2, 3, or %d, got %d", FormatVersion, p.Format)
 		v.Kind = InputVersion
 		v.Reason = err.Error()
 		return v, err
 	}
-	if p.Format == 2 {
+	if p.Format < 3 {
 		for _, target := range p.Premises.Targets {
 			if target.Ctx != nil {
 				err := inputError(InputVersion, "format 2 does not support target context provenance")
@@ -94,6 +112,11 @@ func (p Pair) Validate() (Verdict, error) {
 				return v, err
 			}
 		}
+	}
+	if p.Format < 4 && len(p.Premises.Frames) != 0 {
+		err := inputError(InputVersion, "format %d does not support per-frame stack floors", p.Format)
+		v.Kind, v.Reason = InputVersion, err.Error()
+		return v, err
 	}
 	counts, err := Check(asm.Instructions(p.Original), asm.Instructions(p.Transformed), p.Certificate, p.Premises)
 	v.Counts = counts

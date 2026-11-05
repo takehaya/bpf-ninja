@@ -435,6 +435,7 @@ targetLoop:
 		// so no fentry can fill the hold before its consumer exists
 		// (otherwise the first fexit after attach could pair a stale
 		// entry image with a later packet).
+		generatedCtxUnchecked := false
 		for si := len(stages) - 1; si >= 0; si-- {
 			st, c := stages[si], comp[si]
 			stLabel, attachType := tracingLabel(st.IsFexit)
@@ -443,7 +444,15 @@ targetLoop:
 			if static {
 				probeRead, err = staticNeedsProbeRead(h, t.Program, t.FuncName, attachType, t.Availability)
 				if err == nil && probeRead {
-					err = checkStaticCtxArg(t.Program, t.FuncName)
+					err = checkStaticCtxArgForTarget(t.Program, t.FuncName, t.Generated)
+					if err == nil && t.Generated && skipGeneratedCtxProof && !generatedCtxUnchecked {
+						results.diagnostics = append(results.diagnostics, attach.TargetDiagnostic{
+							ProgID: t.ProgID, FuncName: t.FuncName, Availability: t.Availability,
+							Reason: attach.TargetStaticCtxUnchecked,
+							Detail: "generated hook; the context argument is the saved program context, which rests on the stack floor",
+						})
+						generatedCtxUnchecked = true
+					}
 				}
 				if err != nil {
 					rollback()

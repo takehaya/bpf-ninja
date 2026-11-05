@@ -32,7 +32,7 @@ func TestKernelFrameRounding(t *testing.T) {
 }
 
 func TestInjectRunCommand(t *testing.T) {
-	t.Setenv("BPF_NINJA_INJECT_CONFIG", `[{"program":"p","map":"sessions","hook":"lookup_hook","stack_lowest_offset":-8}]`)
+	t.Setenv("BPF_NINJA_INJECT_CONFIG", `[{"program":"p","map":"sessions","hook":"lookup_hook"}]`)
 	// The shell's flag and script must belong to the child, and its exit code
 	// must reach main's ExitCoder path rather than being collapsed to status 1.
 	app := newRootCommand()
@@ -47,7 +47,7 @@ func TestInjectRunCommand(t *testing.T) {
 	if err := newRootCommand().Run(context.Background(), []string{"bpf-ninja", "inject-run", "--hooks-json", hooks, "--", "/bin/true"}); err != nil {
 		t.Fatal(err)
 	}
-	if data, err := os.ReadFile(hooks); err != nil || string(data) != "{\n  \"version\": 1,\n  \"programs\": []\n}\n" {
+	if data, err := os.ReadFile(hooks); err != nil || string(data) != "{\n  \"version\": 2,\n  \"programs\": []\n}\n" {
 		t.Fatalf("hooks file %q: %v", data, err)
 	}
 	// An unwritable path refuses before launching.
@@ -68,7 +68,7 @@ func TestInjectRunCommand(t *testing.T) {
 	if err := newRootCommand().Run(context.Background(), []string{"bpf-ninja", "inject-run", "--lookups-json", lookups, "--", "/bin/true"}); err != nil {
 		t.Fatal(err)
 	}
-	if data, err := os.ReadFile(lookups); err != nil || string(data) != "{\n  \"version\": 1,\n  \"programs\": []\n}\n" {
+	if data, err := os.ReadFile(lookups); err != nil || string(data) != "{\n  \"version\": 2,\n  \"programs\": []\n}\n" {
 		t.Fatalf("lookups file %q: %v", data, err)
 	}
 	if err := newRootCommand().Run(context.Background(), []string{"bpf-ninja", "inject-run", "--", "/bin/true"}); err == nil {

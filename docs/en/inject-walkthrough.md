@@ -149,7 +149,7 @@ prog 464334  entry
   {"kind": "pop", "pc": 30, "map": "recent", "func": "entry", "file": "prog.c", "line": 36},
   {"kind": "lookup", "pc": 37, "map": "stats", "func": "entry", "file": "prog.c", "line": 37}
 ],
-"rule": {"program": "entry", "auto": true, "maps": ["stats"], "hook": "ninja", "stack_lowest_offset": null}
+"rule": {"program": "entry", "auto": true, "maps": ["stats"], "hook": "ninja"}
 ```
 
 The starting rule names only the maps with lookups, because a rule without `ops` observes lookups only.
@@ -159,12 +159,12 @@ The starting rule names only the maps with lookups, because a rule without `ops`
 Observe every push and pop and the failed peeks, and leave the lookup alone:
 
 ```json
-[{"program": "entry", "auto": true, "ops": ["push:any", "pop:any", "peek"], "hook": "ninja", "stack_lowest_offset": -64}]
+[{"program": "entry", "auto": true, "ops": ["push:any", "pop:any", "peek"], "hook": "ninja"}]
 ```
 
 - `push:any` and `pop:any` call the hooks after every call, and `peek`, which means `peek:error`, only when the peek fails (the length is new).
-- `stack_lowest_offset` is the caller's audit of the deepest stack access, including aliases and callees; the transform's spill slots go below it.
-  This program has no callees, and its deepest access, found with `llvm-objdump -d prog.o`, is `r10 - 0x14`, so -64 is below it.
+- `inject-run` performs a trial verifier load and places each spill region below the owning function's reported stack floor.
+  The `stack` block in `lookups.json` records the floor and the reserved slots.
 - Without `maps`, `auto` takes every map; the lookup on `stats` is not instrumented because `lookup` is not in `ops`.
 
 ## 3. Load with the hooks

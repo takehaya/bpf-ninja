@@ -9,7 +9,6 @@ loader が BTF なしで map を作成しても、loader の ELF に key と val
     "program": "ingress",
     "map": "sessions",
     "hook": "observe",
-    "stack_lowest_offset": -4,
     "map_btf": {
       "elf": "/path/to/loader-generated.o",
       "sha256": "REPLACE_WITH_64_HEXADECIMAL_DIGITS"
@@ -24,7 +23,8 @@ loader が BTF なしで map を作成しても、loader の ELF に key と val
 
 `sha256sum /path/to/loader-generated.o` で得た64桁のハッシュに置き換える。
 大文字と小文字は区別しない。
-`stack_lowest_offset` は実際の program の stack access を監査して指定する。
+`inject-run` は試行ロードの verifier 統計から、関数ごとの stack の床を自動で取得する。
+取得した値は `--lookups-json` と `--hooks-json` の `stack` に記録される。
 相対パスは supervisor の作業ディレクトリを基準とし、対象 program のロードごとに supervisor の filesystem から読み込む。
 ハッシュを照合した同じ byte 列を ELF として解析する。
 

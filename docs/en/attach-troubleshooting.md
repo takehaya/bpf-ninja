@@ -28,6 +28,10 @@ Some kernels lose tail-call reachability metadata when a static or global BPF su
 `inject-run` previously could create that shape by adding a hook call.
 It now detects rewrites that would introduce the shape, runs a native `BPF_PROG_TEST_RUN` probe once without attaching it, and refuses the affected hook sites if the kernel fails the probe or the result is inconclusive; other sites remain available, and the normal failure policy applies when none remain.
 
+Static generated hooks carry the `bpf-ninja:hook` tag and do not run the ordinary translated-instruction context proof.
+Their first argument comes from the context slot reserved below the original function's stack floor, so the capture reports that the context check rests on that floor.
+Untagged static functions keep the ordinary proof and refusal behavior.
+
 ## A function absent from func_info
 
 The reason alone cannot tell these two causes apart:

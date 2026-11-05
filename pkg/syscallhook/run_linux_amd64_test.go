@@ -5,6 +5,7 @@ package syscallhook
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -64,6 +65,22 @@ func TestHookSummary(t *testing.T) {
 	// matches as "injected hook".
 	if !strings.HasPrefix(hookSummary(&inject.LookupResultRaw{Hooks: []inject.LookupHook{{Name: "h", Kind: inject.HookEntry}}}), "hook ") {
 		t.Fatal("summary does not start with hook")
+	}
+}
+
+func TestWithTrialProgramClosesOnWorkAndCloseErrors(t *testing.T) {
+	workErr := errors.New("reading verifier stats")
+	closeErr := errors.New("close failed")
+	closed := false
+	err := withTrialProgram(17, func(fd int64) error {
+		closed = true
+		if fd != 17 {
+			t.Fatalf("fd = %d, want 17", fd)
+		}
+		return closeErr
+	}, func() error { return workErr })
+	if !closed || !errors.Is(err, workErr) || !errors.Is(err, closeErr) {
+		t.Fatalf("closed=%t err=%v", closed, err)
 	}
 }
 

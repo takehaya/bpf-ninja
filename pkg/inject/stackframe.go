@@ -10,6 +10,11 @@ import "github.com/cilium/ebpf/asm"
 // whole frame. In particular, a callee may subtract from a passed stack pointer,
 // and a spilled pointer may later be reloaded: neither is followed here.
 func stackFrameDepth(insns asm.Instructions, lowest int16) int {
+	depth, _ := stackFrameDepthExact(insns, lowest)
+	return depth
+}
+
+func stackFrameDepthExact(insns asm.Instructions, lowest int16) (int, bool) {
 	depth := 0
 	bySymbol := map[string]int{}
 	targets := map[int]bool{}
@@ -35,7 +40,7 @@ func stackFrameDepth(insns asm.Instructions, lowest int16) int {
 				var ok bool
 				target, ok = bySymbol[ref]
 				if !ok {
-					return max(depth, -int(lowest))
+					return max(depth, -int(lowest)), false
 				}
 			}
 			targets[target] = true
@@ -128,7 +133,7 @@ func stackFrameDepth(insns asm.Instructions, lowest int16) int {
 	if !precise {
 		depth = max(depth, -int(lowest))
 	}
-	return depth
+	return depth, precise
 }
 
 // These helpers neither retain stack pointers nor return them, and access

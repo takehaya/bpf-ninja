@@ -21,7 +21,7 @@ counts, err := injectcheck.Check(original, transformed, injectcheck.Certificate{
     Original: originalIndices,
     Hooks: hookRanges,
 }, injectcheck.Premises{
-    LowestOffset: auditedFloor,
+    Frames: verifierFloors,
     Targets: plannedSiteTargets,
 })
 ```
@@ -31,7 +31,10 @@ The **certificate** supplies correspondence data.
 An `LDIMM64` is one decoded instruction and two raw slots for relocation.
 `Label` before transformation and `FromLabels` afterwards extract hints from preserved metadata; `Check` verifies their contents independently.
 The separate **premises** are trusted caller inputs.
-`LowestOffset` is the stack-alias audit, including indirect accesses and callee use of caller-stack pointers.
+`Frames` gives each function start and its trusted stack floor.
+When present, entries must contain both fields, start at original instruction zero, and cover the whole original stream in increasing order.
+`inject-run` fills it from the verifier's per-subprogram accounting of a trial load, with deeper direct text accesses taking precedence.
+`LowestOffset` remains the library API's single-floor fallback when `Frames` is empty.
 `Targets` binds `{Site, When, Hook, Ctx}` in plan terms: the original instruction index, `hit`, `miss`, `any`, or `error`, the decoded index of the generated hook start, and an optional callee-frame context source.
 `Ctx` names either R6-R9 or an aligned slot within the audited frame.
 The checker verifies that the prelude copies the named source; it does not prove that source semantically contains context.
@@ -59,7 +62,7 @@ They describe insertion shapes, while “original program” refers to the progr
 | P7 | Observer function | No-op return, u32 XOR return, or permitted context/pointer reads followed by zero return; no stores or calls |
 
 The stack layout is independent of the transformer's implementation.
-Let `f = LowestOffset &^ 7` be the aligned floor.
+For the function that owns an instruction, let `f` be its frame floor rounded down to 8 bytes.
 Slots are relative to `f`: context at `f-8`, key or tail index at `f-16`, helper result at `f-24`, map at `f-32`, and update value at `f-40` (or `f-32` without a map spill).
 The `f-24` slot intentionally holds update R4/push R3 flags before the postlude reloads them and overwrites it with R0.
 The u32 region instead saves R0 at `f-8` and R2 at `f-16`, overlapping the entry context and key slots.
@@ -67,7 +70,7 @@ Helper hook calls require the saved context in R1. Generic and dispatch map call
 R2 (the site id or info word) remains unchecked at every site-tagged hook. Typed and static non-generic key/value roles also remain outside acceptance.
 Mixed u32/helper streams do not establish that a later observer receives the original context: a u32 region stores R0 in the same slot from which a later helper hook may reload R1.
 All inserted stores must fit below `f` and within the 512-byte frame.
-P1c may read only the premise-named aligned slot at or above `LowestOffset`.
+P1c may read only the premise-named aligned slot at or above its owning frame's floor.
 
 Each original instruction must occur exactly once and in order, with the same opcode, registers, offset, constant and non-edge reference.
 Diagnostics name differing fields.
@@ -101,7 +104,7 @@ Associated maps are refused in both streams even if the associations are identic
 Check before map association, using a shared, unchanged external symbol/FD binding table.
 Numeric FDs are identifiers in that namespace, not transferable live maps.
 
-Acceptance is conditional on valid original and transformed BPF, the calling convention, the trusted stack audit, and trusted plan-derived targets.
+Acceptance is conditional on valid original and transformed BPF, the calling convention, trusted per-function floors, and trusted plan-derived targets.
 The checker does not establish kernel acceptance, BTF/CO-RE meaning, JIT correctness, observer noninterference, observation arguments beyond the listed checks, concurrency, time or randomness.
 It does not load, attach or pin BPF.
 
@@ -113,10 +116,12 @@ go build -o inject-check ./cmd/inject-check
 ```
 
 The writer and reader share the tagged `injectcheck.Pair` type.
-Format 3 adds the optional callee context source to the decoded `asm.OpCode` representation pinned by format 2; readers accept both versions.
+Format 3 adds the optional callee context source to the decoded `asm.OpCode` representation pinned by format 2.
+Format 4 adds per-function floors in `premises.frames`; readers accept versions 2 through 4.
 The format number is not the kernel opcode byte.
 Required, case-sensitive top-level keys are `format`, `original`, `transformed`, `certificate` and `premises`.
-`certificate.original`, `premises.lowest_offset`, and `premises.targets` are also required; `certificate.hooks` may be empty or omitted, and `premises.targets` may be empty only when there are no inserted calls.
+`certificate.original`, `premises.lowest_offset`, and `premises.targets` are also required; format 4 may additionally provide `premises.frames` entries with both `start` and `lowest_offset`, beginning at zero.
+`certificate.hooks` may be empty or omitted, and `premises.targets` may be empty only when there are no inserted calls.
 Span fields are `start` and `end`; target fields are `site`, `when`, `hook`, and optional `ctx`.
 `ctx` contains either `reg` (6 through 9) or `slot` (an aligned negative frame offset).
 Instruction fields are `opcode`, `dst`, `src`, `offset`, `constant`, `symbol` and `reference`.

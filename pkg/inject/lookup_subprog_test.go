@@ -71,6 +71,31 @@ func TestSubprogramSiteCtxSlot(t *testing.T) {
 	testSubprogramSiteCtx(t, "slot", "fp-16")
 }
 
+func TestPerFrameSlots(t *testing.T) {
+	spec := subprogramLookupFixture("register")
+	req := autoReq()
+	req.Stack = StackAudit{Frames: map[string]int16{"p": -8, "sub": -168}, Source: "verifier", FrameRounding: 16}
+	if _, err := transformLookup(spec, req); err != nil {
+		t.Fatal(err)
+	}
+	insns := spec.Programs["p"].Instructions
+	if got, want := insns[0].Offset, int16(lookupSlots(-8).ctx); got != want {
+		t.Fatalf("entry ctx slot = %d, want %d", got, want)
+	}
+	want := int16(lookupSlots(-168).ctx)
+	for i, ins := range insns {
+		if ins.IsBuiltinCall() && ins.Constant == int64(asm.FnMapLookupElem) {
+			for _, before := range insns[max(0, i-4):i] {
+				if before.Dst == asm.RFP && before.Offset == want {
+					return
+				}
+			}
+			t.Fatalf("callee prelude before %d does not use ctx slot %d: %v", i, want, insns[max(0, i-4):i])
+		}
+	}
+	t.Fatal("lookup helper not found")
+}
+
 func testSubprogramSiteCtx(t *testing.T, source, wantSource string) {
 	spec := subprogramLookupFixture(source)
 	req := autoReq()

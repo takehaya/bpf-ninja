@@ -22,7 +22,7 @@ counts, err := injectcheck.Check(original, transformed, injectcheck.Certificate{
     Original: originalIndices,
     Hooks: hookRanges,
 }, injectcheck.Premises{
-    LowestOffset: auditedFloor,
+    Frames: verifierFloors,
     Targets: plannedSiteTargets,
 })
 ```
@@ -32,7 +32,10 @@ counts, err := injectcheck.Check(original, transformed, injectcheck.Certificate{
 `LDIMM64` は decoded instruction では 1 要素、再配置計算では raw slot 2 個となる。
 変換前の `Label` と変換後の `FromLabels` で保持された metadata からヒントを抽出でき、`Check` が内容を別途検査する。
 別引数の **premises** は呼び出し側の信頼済み入力である。
-`LowestOffset` は、間接アクセスと callee からの caller-stack pointer の利用を含む stack-alias audit である。
+`Frames` は各関数の開始位置と、信頼済みの stack の床を渡す。
+指定する場合は両 field を持たせ、元命令 0 から始め、開始位置の昇順で元の命令列全体を覆う必要がある。
+`inject-run` は試行ロードに対する verifier の subprogram 別の計上値からこれを作り、より深い直接参照があればそちらを使う。
+`Frames` が空の場合、`LowestOffset` はライブラリ API の単一床 fallback として残る。
 `Targets` は plan の用語で `{Site, When, Hook, Ctx}`、すなわち元命令 index、`hit`、`miss`、`any`、`error` のいずれか、生成 hook の decoded 開始 index、任意の callee-frame context 由来を対応づける。
 `Ctx` は R6-R9 または audit 済み frame 内の整列 slot を指す。
 チェッカーは prelude が指定された由来をコピーすることを検査するが、その由来が意味的に context を保持することまでは証明しない。
@@ -60,7 +63,7 @@ caller は `inject.BuildLookupTargets` を使うか、同じ情報を変換後 c
 | P7 | observer 関数 | no-op return、u32 XOR return、または許可された context/pointer 読み出しとゼロ return。store と call を拒否 |
 
 スタックスロットの定義は変換器の実装と独立している。
-整列した床を `f = LowestOffset &^ 7` とする。
+命令を所有する関数の床を 8 byte 単位で切り下げた値を `f` とする。
 `f` からの相対位置は context が `f-8`、key または tail index が `f-16`、helper 結果が `f-24`、map が `f-32`、update value が `f-40`（map spill がなければ `f-32`）である。
 `f-24` には意図的に update の R4/push の R3 の flags を先に置き、postlude が読み出した後に R0 で上書きする。
 u32 領域は R0 を `f-8`、R2 を `f-16` に保存するため、入口 context と key のスロットに重なる。
@@ -71,7 +74,7 @@ typed hook と static non-generic hook の key/value の役割も受理条件の
 u32 と helper が混在する stream では、後続 observer が元の context を受け取ることまでは確立しない。
 u32 領域は、後続 helper hook が R1 を reload する slot と同じ場所へ R0 を保存するためである。
 挿入 store はすべて `f` より下、512-byte frame 内に収まる必要がある。
-P1c が読めるのは `LowestOffset` 以上にある premise 指名の整列 slot だけである。
+P1c が読めるのは、その関数の床以上にある premise 指名の整列 slot だけである。
 
 各元命令は順序を保って各 1 回現れ、opcode、register、offset、constant、辺以外の reference が一致する必要がある。
 不一致の診断はフィールド名を示す。
@@ -105,7 +108,7 @@ nil metadata key はロード時の意味を持たないため checker と命令
 map 関連付け前に、両命令列で共有する変化のない外部 symbol/FD 対応表の下で検査する。
 数値 FD はその名前空間の識別子であり、プロセスをまたぐ実 map の保存形式ではない。
 
-受理は元プログラムと変換後プログラムの BPF validity、呼び出し規約、信頼済み stack audit、plan 由来の信頼済み Targets を前提とする。
+受理は元プログラムと変換後プログラムの BPF validity、呼び出し規約、信頼済みの関数別 stack の床、plan 由来の信頼済み Targets を前提とする。
 kernel の受理、BTF/CO-RE の意味、JIT の正しさ、observer noninterference、明記した検査以外の観測引数、並行実行、時刻、乱数は証明しない。
 検査で BPF のロード、attach、pin は行わない。
 
@@ -118,9 +121,11 @@ go build -o inject-check ./cmd/inject-check
 
 writer と reader はタグ付きの `injectcheck.Pair` 型を共有する。
 format 3 は、format 2 が固定した cilium/ebpf v0.22 の decoded `asm.OpCode` 表現に、任意の callee context 由来を追加する。
-reader は format 2 と 3 の両方を受理し、format 番号は kernel の opcode byte とは異なる。
+format 4 は `premises.frames` に関数別の床を追加する。
+reader は format 2 から 4 を受理し、format 番号は kernel の opcode byte とは異なる。
 必須のトップレベルキーは `format`、`original`、`transformed`、`certificate`、`premises` で、大文字小文字を区別する。
-`certificate.original`、`premises.lowest_offset`、`premises.targets` も必須で、`certificate.hooks` は空または省略してよい。`premises.targets` を空にできるのは挿入 call がない場合だけである。
+`certificate.original`、`premises.lowest_offset`、`premises.targets` も必須で、format 4 では `start` と `lowest_offset` の両方を持ち、0 から始まる `premises.frames` も指定できる。
+`certificate.hooks` は空または省略してよく、`premises.targets` を空にできるのは挿入 call がない場合だけである。
 Span のフィールドは `start` と `end`、target のフィールドは `site`、`when`、`hook`、任意の `ctx` である。
 `ctx` は `reg`（6 から 9）または `slot`（整列した負の frame offset）のどちらかを持つ。
 命令のフィールドは `opcode`、`dst`、`src`、`offset`、`constant`、`symbol`、`reference` である。

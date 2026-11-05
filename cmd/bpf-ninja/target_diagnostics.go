@@ -9,7 +9,7 @@ import (
 )
 
 func printTargetDiagnostics(w io.Writer, diagnostics []attach.TargetDiagnostic) {
-	absent, external, ctxRefused, loadFailed := 0, 0, 0, 0
+	absent, external, ctxRefused, ctxUnchecked, loadFailed := 0, 0, 0, 0, 0
 	for _, d := range diagnostics {
 		if d.Skipped {
 			switch {
@@ -25,6 +25,10 @@ func printTargetDiagnostics(w io.Writer, diagnostics []attach.TargetDiagnostic) 
 			_, _ = fmt.Fprintf(w, "warning: skipping %s\n", d)
 			continue
 		}
+		if d.Reason == attach.TargetStaticCtxUnchecked {
+			ctxUnchecked++
+			continue
+		}
 		detail := ""
 		if d.Availability.Detail != "" {
 			detail = ": " + d.Availability.Detail
@@ -33,6 +37,9 @@ func printTargetDiagnostics(w io.Writer, diagnostics []attach.TargetDiagnostic) 
 	}
 	if skipped := absent + external + ctxRefused + loadFailed; skipped > 0 {
 		_, _ = fmt.Fprintf(w, "Skipped %d target(s): %d absent from loaded func_info, %d external declaration(s), %d refused by the static context check, %d observer load failure(s).\n", skipped, absent, external, ctxRefused, loadFailed)
+	}
+	if ctxUnchecked > 0 {
+		_, _ = fmt.Fprintf(w, "%d generated hook(s): context check rests on the stack floor.\n", ctxUnchecked)
 	}
 }
 

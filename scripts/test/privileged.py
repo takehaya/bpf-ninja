@@ -182,7 +182,8 @@ def main():
             if not selected:
                 raise RuntimeError(f"no tests selected in {package}")
             expected.update(selected)
-            prefix = ["vimto", "-sudo", "-kernel", ":"+args.kernel, "--"] if args.kernel else []
+            prefix = ["vimto", "-sudo", "-kernel", ":"+args.kernel,
+                      "-memory", "4G", "-smp", "cpus=2", "--"] if args.kernel else []
             # dsltest loads ~17k programs, and kernel 7.0+ verifies the TCP
             # option filters among them several times slower than 6.x did.
             command = prefix + go_test + ["-json", "-count=1", "-timeout=15m", "-run", pattern, package]

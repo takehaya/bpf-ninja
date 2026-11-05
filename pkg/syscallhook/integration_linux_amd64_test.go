@@ -41,36 +41,41 @@ func TestIntegrationLoader(t *testing.T) {
 	if out, err := exec.Command(child[0], child[1:]...).CombinedOutput(); err != nil {
 		t.Fatalf("baseline loader: %v\n%s", err, out)
 	}
+	kernel := runningKernelInfo()
+	inexactExpected := "hook-inexact"
+	if kernel.Major < 6 || kernel.Major == 6 && kernel.Minor < 8 {
+		inexactExpected = "plain-inexact"
+	}
 	for _, tc := range []struct {
 		name, expected string
 		closed         bool
+		preloadError   bool
 		change         func(*Rule)
 	}{
-		{"kernel-name", "hook", false, func(r *Rule) {}},
-		{"func-info-name", "hook", false, func(r *Rule) { r.Program = "entry_with_long_name" }},
-		{"fail-open", "plain", false, func(r *Rule) { r.Map = "missing" }},
-		{"fail-closed", "refused", true, func(r *Rule) { r.Map = "missing" }},
-		{"unmatched", "plain", true, func(r *Rule) { r.Program = "unmatched" }},
-		// The loader's audit is wrong: its key store aliases the stack, so a
-		// bound of 0 passes the transform, the ctx spill is overwritten and the
-		// verifier rejects the transformed program.
-		{"bad-audit-open", "plain-alias", false, func(r *Rule) { *r.StackLowestOffset = 0 }},
-		{"bad-audit-closed", "refused-alias", true, func(r *Rule) { *r.StackLowestOffset = 0 }},
-		{"auto", "hook", true, func(r *Rule) { r.Auto, r.Map = true, "" }},
-		{"entry-only", "hook", true, func(r *Rule) { r.Entry, r.Map = true, "" }},
+		{"kernel-name", "hook", false, false, func(r *Rule) {}},
+		{"func-info-name", "hook", false, false, func(r *Rule) { r.Program = "entry_with_long_name" }},
+		{"fail-open", "plain", false, false, func(r *Rule) { r.Map = "missing" }},
+		{"fail-closed", "refused", true, false, func(r *Rule) { r.Map = "missing" }},
+		{"unmatched", "plain", true, false, func(r *Rule) { r.Program = "unmatched" }},
+		{"auto", "hook", true, false, func(r *Rule) { r.Auto, r.Map = true, "" }},
+		{"entry-only", "hook", true, false, func(r *Rule) { r.Entry, r.Map = true, "" }},
+		{"pre68-inexact", inexactExpected, false, false, func(r *Rule) {}},
+		{"preload-auto", "plain", false, true, func(r *Rule) { r.Auto, r.Map = true, "" }},
+		{"preload-explicit", "refused", false, true, func(r *Rule) {}},
+		{"preload-closed", "refused", true, true, func(r *Rule) { r.Auto, r.Map = true, "" }},
 		// The loader's map is BPF_F_RDONLY_PROG, whose hook becomes static.
-		{"static-untrusted", "hook-rdonly", true, func(r *Rule) { r.Auto, r.Map, r.StaticUntrusted = true, "", true }},
+		{"static-untrusted", "hook-rdonly", true, false, func(r *Rule) { r.Auto, r.Map, r.StaticUntrusted = true, "", true }},
 		// Static, so the dispatch hook loads on kernels without arg:untrusted
 		// too; TestBpfDispatch covers the untrusted form across the matrix.
-		{"dispatch", "hook", true, func(r *Rule) { r.Auto, r.Map, r.Entry, r.Dispatch, r.StaticUntrusted = true, "", true, true, true }},
-		{"maps", "hook", true, func(r *Rule) { r.Auto, r.Map, r.Maps = true, "", []string{"sessions"} }},
-		{"maps-missing", "refused", true, func(r *Rule) { r.Auto, r.Map, r.Maps = true, "", []string{"missing"} }},
+		{"dispatch", "hook", true, false, func(r *Rule) { r.Auto, r.Map, r.Entry, r.Dispatch, r.StaticUntrusted = true, "", true, true, true }},
+		{"maps", "hook", true, false, func(r *Rule) { r.Auto, r.Map, r.Maps = true, "", []string{"sessions"} }},
+		{"maps-missing", "refused", true, false, func(r *Rule) { r.Auto, r.Map, r.Maps = true, "", []string{"missing"} }},
 		// The loader first inserts the present key with BPF_NOEXIST, which
 		// fails; ops instruments only that update.
-		{"ops-update", "hook-update", true, func(r *Rule) { r.Auto, r.Map, r.Ops = true, "", []string{"update"} }},
+		{"ops-update", "hook-update", true, false, func(r *Rule) { r.Auto, r.Map, r.Ops = true, "", []string{"update"} }},
 		// The discover cases also set OnDiscover; discover-only has no rule.
-		{"discover-auto", "hook", true, func(r *Rule) { r.Auto, r.Map = true, "" }},
-		{"discover-only", "plain", true, func(r *Rule) {}},
+		{"discover-auto", "hook", true, false, func(r *Rule) { r.Auto, r.Map = true, "" }},
+		{"discover-only", "plain", true, false, func(r *Rule) {}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("SYSCALLHOOK_INTEGRATION_CHILD", tc.expected)
@@ -88,6 +93,9 @@ func TestIntegrationLoader(t *testing.T) {
 			var discovered []Discovery
 			opts := Options{Rules: []Rule{rule}, FailClosed: tc.closed, Stdout: out, Stderr: out, Log: &logs,
 				OnInject: func(inj Injection) { injected = append(injected, inj) }}
+			if tc.preloadError {
+				opts.preloadError = fmt.Errorf("forced trial-load failure")
+			}
 			discover := strings.HasPrefix(tc.name, "discover")
 			if discover {
 				opts.OnDiscover = func(d Discovery) { discovered = append(discovered, d) }
@@ -114,6 +122,10 @@ func TestIntegrationLoader(t *testing.T) {
 					!strings.Contains(string(data), fmt.Sprintf("prog_id=%d\n", inj.ProgID)) || inj.ProgID == 0 {
 					t.Fatalf("injection %+v does not match the loader", inj)
 				}
+				if inj.Stack.Source != "verifier" || len(inj.Stack.Functions) != 1 || inj.Stack.Functions[0].VerifiedDepth == 0 ||
+					inj.Stack.Functions[0].Name != "entry_with_long_name" || inj.Stack.Functions[0].Slots == nil {
+					t.Fatalf("injection has no verifier stack accounting: %+v", inj.Stack)
+				}
 			}
 			// OnDiscover sees the original program once, with its one lookup.
 			if discover != (len(discovered) == 1) || len(discovered) > 1 {
@@ -125,25 +137,19 @@ func TestIntegrationLoader(t *testing.T) {
 					len(d.Calls) != 1 || d.Calls[0] != d.Lookups[0] {
 					t.Fatalf("discovery %+v does not match the loader", d)
 				}
+				if d.Stack.Source != "verifier" || len(d.Stack.Functions) != 1 || d.Stack.Functions[0].VerifiedDepth == 0 {
+					t.Fatalf("discovery has no verifier stack accounting: %+v", d.Stack)
+				}
+			}
+			if tc.name == "pre68-inexact" && strings.HasPrefix(tc.expected, "plain") &&
+				!strings.Contains(logs.String(), "kernel before 6.8 does not count variable-offset stack accesses") {
+				t.Fatal("old-kernel inexact function was not reported")
 			}
 			if tc.name == "maps-missing" && !strings.Contains(logs.String(), `Maps name "missing" matches no lookup`) {
 				t.Fatal("no refusal of the unknown map name reported")
 			}
 			if tc.expected == "hook-rdonly" && !strings.Contains(logs.String(), ", static") {
 				t.Fatal("no static hook reported")
-			}
-			if strings.HasPrefix(tc.name, "bad-audit") {
-				if !strings.Contains(logs.String(), "transformed PROG_LOAD") {
-					t.Fatal("no verifier rejection of the transformed program reported")
-				}
-				// The rejection names the attempted hooks; the hook is typed,
-				// so no arg:untrusted hint follows.
-				if !strings.Contains(logs.String(), `attempted hook "`) {
-					t.Fatal("rejection does not name the attempted hooks")
-				}
-				if strings.Contains(logs.String(), "hooks use arg:untrusted pointers") {
-					t.Fatal("arg:untrusted hint for a typed hook")
-				}
 			}
 			if tc.name == "ops-update" && (len(injected) != 1 || len(injected[0].Hooks) != 1 ||
 				injected[0].Hooks[0].Name != "lookup_hook_sessions_update" || injected[0].Hooks[0].Kind != inject.HookUpdate) {
@@ -159,9 +165,13 @@ func TestIntegrationLoader(t *testing.T) {
 func loadIntegrationProgram(t *testing.T, expected string) {
 	t.Helper()
 	// A "-alias" variant stores the key through a stack alias, so a bound of 0
-	// passes the transform but the ctx spill is overwritten.
+	// passes the transform but the ctx spill is overwritten. The "-inexact"
+	// variant also uses a verifier-bounded variable stack offset, which kernels
+	// before 6.8 don't include in their reported stack depth.
 	alias := strings.HasSuffix(expected, "-alias")
 	expected = strings.TrimSuffix(expected, "-alias")
+	inexact := strings.HasSuffix(expected, "-inexact")
+	expected = strings.TrimSuffix(expected, "-inexact")
 	u32 := &btf.Int{Name: "u32", Size: 4}
 	spec := &ebpf.MapSpec{Name: "sessions", Type: ebpf.Hash, KeySize: 4, ValueSize: 4, MaxEntries: 1, Key: u32, Value: u32}
 	mapTypes := strings.Contains(expected, "map-types")
@@ -197,6 +207,13 @@ func loadIntegrationProgram(t *testing.T, expected string) {
 		store = asm.StoreImm(asm.R2, 0, 0, asm.Word)
 	}
 	insns := asm.Instructions{asm.Mov.Reg(asm.R6, asm.R1)}
+	if inexact {
+		insns = append(insns,
+			asm.LoadMem(asm.R3, asm.R1, 16, asm.Word), asm.And.Imm(asm.R3, 3),
+			asm.Mov.Reg(asm.R2, asm.RFP), asm.Add.Imm(asm.R2, -8), asm.Add.Reg(asm.R2, asm.R3),
+			asm.StoreImm(asm.R2, 0, 0, asm.Byte),
+		)
+	}
 	if expected == "hook-update" {
 		insns = append(insns,
 			asm.StoreImm(asm.RFP, -4, 0, asm.Word), asm.StoreImm(asm.RFP, -8, 2, asm.Word),
@@ -231,6 +248,20 @@ func loadIntegrationProgram(t *testing.T, expected string) {
 		t.Fatalf("program load: %+v", err)
 	}
 	defer func() { _ = p.Close() }()
+	entries, err := os.ReadDir("/proc/self/fd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	programFDs := 0
+	for _, entry := range entries {
+		target, err := os.Readlink(filepath.Join("/proc/self/fd", entry.Name()))
+		if err == nil && strings.Contains(target, "bpf-prog") {
+			programFDs++
+		}
+	}
+	if programFDs != 1 {
+		t.Fatalf("open BPF program fds = %d, trial load fd leaked", programFDs)
+	}
 	info, err := p.Info()
 	if err != nil {
 		t.Fatal(err)

@@ -32,6 +32,10 @@ type Options struct {
 	FailClosed            bool
 	Stdin, Stdout, Stderr *os.File
 	Log                   io.Writer
+	FrameRounding         int
+	// preloadError is a test-only fault injection point. It is deliberately
+	// unexported so callers cannot bypass verifier accounting.
+	preloadError error
 	// OnInject, if set, is called on the tracing thread for each load the
 	// transformed program replaced, before the target sees the new fd. It must
 	// not wait on the target.
@@ -54,6 +58,7 @@ type Discovery struct {
 	Lookups       []inject.LookupSite
 	Calls         []inject.LookupSite
 	Maps          map[string]ebpf.MapType
+	Stack         inject.StackReport
 }
 
 // Injection describes one successful injected load. Program is the kernel
@@ -67,6 +72,7 @@ type Injection struct {
 	ProgID        uint32
 	Hooks         []inject.LookupHook
 	Skipped       []inject.LookupSite
+	Stack         inject.StackReport
 }
 
 type rememberedBTF struct {
@@ -84,6 +90,8 @@ type supervisor struct {
 	btf                       map[uint32]rememberedBTF
 	cacheBytes                int
 }
+
+var errTrialVerifier = errors.New("trial load was rejected by the verifier")
 
 func (s *supervisor) log(format string, args ...any) {
 	_, _ = fmt.Fprintf(s.options.Log, "inject-run: "+format+"\n", args...)
@@ -106,6 +114,9 @@ func Run(ctx context.Context, argv []string, opts Options) (int, error) {
 func run(ctx context.Context, argv []string, opts Options, probeUntrusted, probeTailCallReachability func() error) (int, error) {
 	if len(argv) == 0 {
 		return 0, fmt.Errorf("target command is required after --")
+	}
+	if opts.FrameRounding == 0 {
+		opts.FrameRounding = 32
 	}
 	if len(opts.Rules) != 0 || opts.OnDiscover == nil {
 		if err := Validate(opts.Rules); err != nil {
@@ -358,8 +369,30 @@ func (s *supervisor) entry(pid int, t *thread, regs unix.PtraceRegs) error {
 	if err != nil {
 		return err
 	}
+	rounding := s.options.FrameRounding
+	stack, stackErr := s.preloadDepths(r, attr, rounding)
+	if s.options.preloadError != nil {
+		stackErr = s.options.preloadError
+	}
+	if stackErr != nil {
+		stack = inject.StackReport{Source: "unavailable", FrameRounding: rounding, Error: stackErr.Error()}
+		s.log("program %q: stack depth unavailable: %v", name, stackErr)
+	} else {
+		parts := make([]string, 0, len(stack.Functions))
+		for _, frame := range stack.Functions {
+			switch {
+			case frame.Dead:
+				parts = append(parts, fmt.Sprintf("%s dead", frame.Name))
+			case frame.SkipReason != "":
+				parts = append(parts, fmt.Sprintf("%s skipped (%s)", frame.Name, frame.SkipReason))
+			default:
+				parts = append(parts, fmt.Sprintf("%s %d (verified %d, text %d)", frame.Name, frame.Floor, frame.VerifiedDepth, frame.TextDepth))
+			}
+		}
+		s.log("program %q: stack floor from the verifier: %s", name, strings.Join(parts, ", "))
+	}
 	if discover {
-		if err := s.discover(r, attr, name); err != nil {
+		if err := s.discover(r, attr, name, stack); err != nil {
 			s.log("program %q: lookup discovery failed: %v", name, err)
 		}
 		if r.broken != nil {
@@ -379,7 +412,15 @@ func (s *supervisor) entry(pid int, t *thread, regs unix.PtraceRegs) error {
 		s.log("global arg:untrusted probe inconclusive: %v", s.probeUntrusted())
 	}
 	s.log("program %q: untrusted hook form %s (%s)", name, form.Form, form.Reason)
-	ret, result, entry, injectErr := s.transformLoad(r, attr, *rule, form)
+	var ret int64
+	var result *inject.LookupResultRaw
+	var entry string
+	var injectErr error
+	if stackErr != nil {
+		injectErr = fmt.Errorf("stack depth unavailable: %w", stackErr)
+	} else {
+		ret, result, entry, injectErr = s.transformLoad(r, attr, *rule, form, stack)
+	}
 	if r.broken != nil {
 		return r.broken
 	}
@@ -395,7 +436,8 @@ func (s *supervisor) entry(pid int, t *thread, regs unix.PtraceRegs) error {
 				s.log("program %q: injection skipped: %v", name, injectErr)
 			}
 		}
-		ret, err = retryOriginalOrRefuse(s.options.FailClosed, func() (int64, error) {
+		refuse := s.options.FailClosed || stackErr != nil && !rule.Auto && !errors.Is(stackErr, errTrialVerifier)
+		ret, err = retryOriginalOrRefuse(refuse, func() (int64, error) {
 			// Substituted attrs and buffers live in scratch memory, so the original
 			// registers, attr and input buffers still describe the unchanged load.
 			// A verifier attempt may have written the caller-owned log buffer.
@@ -407,7 +449,7 @@ func (s *supervisor) entry(pid int, t *thread, regs unix.PtraceRegs) error {
 	} else {
 		s.log("program %q: injected %s, tracee fd %d", name, summary, ret)
 		if s.options.OnInject != nil {
-			inj := Injection{HookForm: form, Program: name, Func: entry, Type: ebpf.ProgramType(u32(attr, 0)), Hooks: result.Hooks, Skipped: result.Skipped}
+			inj := Injection{HookForm: form, Program: name, Func: entry, Type: ebpf.ProgramType(u32(attr, 0)), Hooks: result.Hooks, Skipped: result.Skipped, Stack: stack}
 			// bpf_prog_info starts with type and id.
 			if info, err := r.info(uint32(ret), 8); err != nil {
 				s.log("program %q: cannot query program ID: %v", name, err)
@@ -524,7 +566,115 @@ func (s *supervisor) programBTF(r *remote, attr []byte) (*btf.Spec, error) {
 	return kernelBTF(u32(info, 12))
 }
 
-func (s *supervisor) discover(r *remote, attr []byte, name string) error {
+func runningKernelInfo() inject.KernelInfo {
+	var u unix.Utsname
+	if err := unix.Uname(&u); err != nil {
+		return inject.KernelInfo{}
+	}
+	release := unix.ByteSliceToString(u.Release[:])
+	info := inject.KernelInfo{Release: release}
+	_, _ = fmt.Sscanf(release, "%d.%d", &info.Major, &info.Minor)
+	return info
+}
+
+func loadedFunctionNames(records []byte, spec *btf.Spec) ([]string, error) {
+	if len(records)%8 != 0 {
+		return nil, fmt.Errorf("loaded func_info has %d bytes, not 8-byte records", len(records))
+	}
+	names := make([]string, 0, len(records)/8)
+	for off := 0; off < len(records); off += 8 {
+		typ, err := spec.TypeByID(btf.TypeID(u32(records, off+4)))
+		if err != nil {
+			return nil, fmt.Errorf("loaded func_info type: %w", err)
+		}
+		fn, ok := typ.(*btf.Func)
+		if !ok {
+			return nil, fmt.Errorf("loaded func_info type is %T, not FUNC", typ)
+		}
+		names = append(names, fn.Name)
+	}
+	return names, nil
+}
+
+func withTrialProgram(fd int64, closeFD func(int64) error, work func() error) (err error) {
+	defer func() {
+		if closeErr := closeFD(fd); closeErr != nil {
+			err = errors.Join(err, fmt.Errorf("closing trial program fd: %w", closeErr))
+		}
+	}()
+	return work()
+}
+
+func (s *supervisor) preloadDepths(r *remote, attr []byte, rounding int) (report inject.StackReport, err error) {
+	if len(attr) < 68 || u32(attr, 64) != 0 {
+		return report, fmt.Errorf("offloaded programs do not expose local verifier stack accounting")
+	}
+	spec, err := s.programBTF(r, attr)
+	if err != nil {
+		return report, err
+	}
+	raw, err := extractRaw(r, attr, spec)
+	if err != nil {
+		return report, err
+	}
+	const logSize = 64 << 10
+	logAddr, err := r.alloc(make([]byte, logSize))
+	if err != nil {
+		return report, err
+	}
+	trial := bytes.Clone(attr)
+	put32(trial, 24, 4) // BPF_LOG_STATS
+	put32(trial, 28, logSize)
+	put64(trial, 32, logAddr)
+	fd, loadErr := r.bpf(unix.BPF_PROG_LOAD, trial)
+	readLog := func() (string, error) {
+		logBytes, readErr := readMemory(r.pid, logAddr, logSize)
+		if readErr != nil {
+			return "", fmt.Errorf("reading verifier stats: %w", readErr)
+		}
+		return cstring(logBytes), nil
+	}
+	if loadErr != nil {
+		log, readErr := readLog()
+		if readErr != nil {
+			return report, readErr
+		}
+		if (errors.Is(loadErr, unix.EACCES) || errors.Is(loadErr, unix.EINVAL)) && !strings.Contains(log, "processed") {
+			return report, fmt.Errorf("%w: %v: %s", errTrialVerifier, loadErr, strings.TrimSpace(log))
+		}
+		if log != "" {
+			return report, fmt.Errorf("trial PROG_LOAD: %w: %s", loadErr, strings.TrimSpace(log))
+		}
+		return report, fmt.Errorf("trial PROG_LOAD: %w", loadErr)
+	}
+	err = withTrialProgram(fd, func(fd int64) error {
+		closed, closeErr := r.call(unix.SYS_CLOSE, uint64(fd))
+		return syscallError(closed, closeErr)
+	}, func() error {
+		log, readErr := readLog()
+		if readErr != nil {
+			return readErr
+		}
+		depths, parseErr := inject.ParseStackDepths(log)
+		if parseErr != nil {
+			return parseErr
+		}
+		records, infoErr := r.progFuncInfo(uint32(fd))
+		if infoErr != nil {
+			return infoErr
+		}
+		names, namesErr := loadedFunctionNames(records, spec)
+		if namesErr != nil {
+			return namesErr
+		}
+		report, parseErr = inject.FrameFloorsRaw(depths, names, raw, runningKernelInfo())
+		report.FrameRounding = rounding
+		return parseErr
+	})
+	return report, err
+}
+
+func (s *supervisor) discover(r *remote, attr []byte, name string, stack inject.StackReport) error {
 	spec, err := s.programBTF(r, attr)
 	if err != nil {
 		return err
@@ -541,7 +691,7 @@ func (s *supervisor) discover(r *remote, attr []byte, name string) error {
 	if err != nil {
 		return err
 	}
-	d := Discovery{Program: name, Func: entry, Type: raw.Type, Calls: calls, Maps: map[string]ebpf.MapType{}}
+	d := Discovery{Program: name, Func: entry, Type: raw.Type, Calls: calls, Maps: map[string]ebpf.MapType{}, Stack: stack}
 	for _, site := range calls {
 		if site.Op == inject.HookLookup {
 			d.Lookups = append(d.Lookups, site)
@@ -554,7 +704,7 @@ func (s *supervisor) discover(r *remote, attr []byte, name string) error {
 	return nil
 }
 
-func (s *supervisor) transformLoad(r *remote, attr []byte, rule Rule, form HookForm) (ret int64, result *inject.LookupResultRaw, entry string, err error) {
+func (s *supervisor) transformLoad(r *remote, attr []byte, rule Rule, form HookForm, stack inject.StackReport) (ret int64, result *inject.LookupResultRaw, entry string, err error) {
 	spec, err := s.programBTF(r, attr)
 	if err != nil {
 		return 0, nil, "", err
@@ -586,12 +736,13 @@ func (s *supervisor) transformLoad(r *remote, attr []byte, rule Rule, form HookF
 	}
 	request := rule.request()
 	request.StaticUntrusted = form.Form == "static"
+	request.Stack = inject.StackAudit{Frames: stack.Frames(), Source: stack.Source, FrameRounding: stack.FrameRounding}
 	injectcheck.Label(raw.Instructions)
 	result, err = inject.TransformLookupRawGuarded(raw, request, s.probeTailCallReachability)
 	if err != nil {
 		return 0, nil, "", err
 	}
-	cert, premises, err := loadCheckInputs(raw.Instructions, result, *rule.StackLowestOffset)
+	cert, premises, err := loadCheckInputs(raw.Instructions, result, request.Stack, stack)
 	if errors.Is(err, inject.ErrCheckerNotApplicable) {
 		s.log("program %q: %v; load not validated", rule.Program, err)
 	}

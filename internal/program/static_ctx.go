@@ -26,6 +26,22 @@ func checkStaticCtxArg(target *ebpf.Program, name string) error {
 	return checkStaticCtxInsns(insns, name)
 }
 
+var skipGeneratedCtxProof = true
+
+func checkStaticCtxArgForTarget(target *ebpf.Program, name string, generated bool) error {
+	if generated && skipGeneratedCtxProof {
+		return nil
+	}
+	return checkStaticCtxArg(target, name)
+}
+
+func checkStaticCtxInsnsForTarget(insns asm.Instructions, name string, generated bool) error {
+	if generated && skipGeneratedCtxProof {
+		return nil
+	}
+	return checkStaticCtxInsns(insns, name)
+}
+
 // checkStaticCtxInsns is checkStaticCtxArg on translated instructions already read.
 func checkStaticCtxInsns(insns asm.Instructions, name string) error {
 	if hidesHelperIDs(insns) {

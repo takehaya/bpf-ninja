@@ -15,6 +15,8 @@ It never rewrites a running program, loads or attaches anything, infers sites, p
 
 This is a mechanism for cooperative loaders operating on **caller-audited** ELF builds.
 It is not a compiler, a DSL, or a general instrumentation framework.
+This document describes the library API.
+The `inject-run` command instead obtains per-function floors automatically from a trial verifier load and does not accept a floor in its rules.
 
 ## Scope
 

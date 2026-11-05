@@ -206,9 +206,10 @@ Observers should read both arguments as `u32`: on architectures whose JIT needs 
 A site outside the entry function cannot reach the entry frame's ctx spill, so it initializes `ctx_slot` in its own frame before the helper.
 A proved R6-R9 value is stored directly; a proved aligned stack slot is loaded through R0 and then stored.
 Tail calls keep their existing R1 initialization because the helper itself takes ctx in R1.
-The stack audit covers direct R10 references in every function, so the same slot offsets are free in that frame.
-The transform deepens the entry frame, and every frame holding a site, to its spill region, and each hook is one more frame below the function that calls it. The verifier walks every call chain from the entry through bpf-to-bpf calls and callback references such as a `bpf_loop` callback (`check_max_stack_depth`), rounds each frame's stack depth up (to 32 bytes, at least 32, on 6.1-era kernels and for the interpreter; to 16 when Linux 6.9 or newer JITs the program), and rejects a chain whose frames above a tail-calling subprogram reach 256 bytes, whose frames total more than 512 bytes, or that is more than 8 frames deep. A deep entry frame, a stack-using intermediate frame or callback, the entry's own tail-call spill, a deep frame calling a hook, or a hook called from the 8th frame can each push a chain over a limit the original program stayed within. `inject-run` selects the running kernel's rule from `uname` and `net.core.bpf_jit_enable`; an unreadable or unknown state uses 32. The transform measures with that selected rounding, with each function's depth taken from its direct R10 references and supported constant-offset aliases, callbacks walked like calls, and a function no chain reaches walked from its own frame.
-An unsupported alias uses the audited `Stack.LowestOffset` for its entire frame.
+Each frame uses its own floor, so a shallow entry function does not inherit a callee's deep spill region.
+`inject-run` obtains these floors from the verifier's per-subprogram accounting of a trial load and uses direct text accesses to protect fast-call spills that the verifier removed.
+The library API instead accepts caller-certified `StackAudit.Frames`, or `StackAudit.LowestOffset` as a single-floor fallback.
+The transform deepens the entry frame, and every frame holding a site, to its spill region, and each hook is one more frame below the function that calls it. The verifier walks every call chain from the entry through bpf-to-bpf calls and callback references such as a `bpf_loop` callback (`check_max_stack_depth`), rounds each frame's stack depth up (to 32 bytes, at least 32, on 6.1-era kernels and for the interpreter; to 16 when Linux 6.9 or newer JITs the program), and rejects a chain whose frames above a tail-calling subprogram reach 256 bytes, whose frames total more than 512 bytes, or that is more than 8 frames deep. A deep entry frame, a stack-using intermediate frame or callback, the entry's own tail-call spill, a deep frame calling a hook, or a hook called from the 8th frame can each push a chain over a limit the original program stayed within. `inject-run` selects the running kernel's rule from `uname` and `net.core.bpf_jit_enable`; an unreadable or unknown state uses 32.
 The transform refuses, naming the chain, when a chain the transform made deeper (a function with spill slots, or a hook frame) breaks a limit, rather than emit a program the verifier would reject; with `Auto` it first drops lookups, as described under [Automatic selection](#automatic-selection).
 These depths come from the instructions, not from the verifier's walk, so a store behind a branch the verifier never takes still counts; an original chain that appears past a limit is therefore no proof that the kernel tolerates it, and only a chain the transform left unchanged may stay past one.
 The model stays conservative in three known ways, each of which can only refuse a program the kernel would load. A function with an unsupported R10 alias is charged the audited bound rather than what the copy reaches. An async callback (`bpf_timer_set_callback`, `bpf_wq_set_callback_impl`, `bpf_task_work_schedule_*`) is walked under the chain that registers it: the kernel marks a callback `is_async_cb` only when `do_check` analyzes the registering call, and `check_max_stack_depth` (which runs before dead code is removed) walks a reference to an unmarked callback as a plain call, so a registration behind a branch the verifier proves dead by value keeps its callback in the chain; the instruction shape cannot tell such a registration from a live one, whose callback 6.6 and later check as a root of its own. The frame count never restarts, although 7.1 restarts it at a global function (`check_max_stack_depth_subprog`: `frame = bpf_subprog_is_global(env, idx) ? 0 : frame + 1`) where 6.1 through 7.0 count every frame, so a chain over eight frames through a global function loads only on 7.1 and later.
@@ -280,7 +281,8 @@ if err != nil {
 coll, err := ebpf.NewCollectionWithOptions(res.Spec, ebpf.CollectionOptions{})
 ```
 
-The names, source line, and stack bound above are placeholders for an audited build.
+The names, source line, and library stack bound above are placeholders for an audited build.
+The `inject-run` command does not accept that bound in a rule; it fills `StackAudit.Frames` from the trial verifier load.
 The loader owns the resulting collection and must close it when finished.
 Discovery reads the supplied bytes; it does not establish an audit.
 `TransformLookup` independently clones, hashes, and parses its supplied ELF bytes and requires the audited SHA-256.
@@ -369,8 +371,9 @@ The entry function must have one BTF parameter pointing to `struct xdp_md` (XDP)
 The package checks the program type; the cooperative loader owns attachment mode and verifier acceptance.
 The generated hooks read the context's first word (`len` for `__sk_buff`) and call no helper that changes packet data.
 
-For packet capture at a static XDP or tc hook, bpf-ninja reads the context with `bpf_probe_read_kernel`, after checking that every call passes the context the entry spilled as the first argument.
-A static hook called from a subprogram is accepted only when the translated-instruction context check proves every direct call chain again at attach time, and a hook whose spill a callee may overwrite is refused; [arg-member-filter.md](arg-member-filter.md) lists the cases.
+For packet capture at a static XDP or tc hook, bpf-ninja reads the context with `bpf_probe_read_kernel`.
+A user-supplied static function must pass the translated-instruction context check at attach time.
+A generated function tagged `bpf-ninja:hook` skips that repeated proof because its first argument comes from the context slot placed below the verifier-backed frame floor; [arg-member-filter.md](arg-member-filter.md) lists the cases.
 At tc it reads `sk_buff.data`, `len` and `data_len`, using offsets from kernel BTF, and captures only the linear head, `len - data_len`, as at other tc hooks; fragment bytes are not captured.
 A failed context read produces no capture, and a filter with `--tc-vlan-reinsert` is refused on this path.
 
@@ -379,11 +382,12 @@ A failed context read produces no capture, and a filter with `--tc-vlan-reinsert
 | The input ELF matches `ELFSHA256` before parsing. | The hash identifies the audited build. |
 | The selector resolves supported lookups of the same map in the entry function or a context-proved called subprogram. | These are the intended observation sites. |
 | Map BTF sizes, where present, match the map definition, and entry BTF describes the program type's context pointer. | The BTF describes the audited build. |
-| Direct R10 references stay at or above `Stack.LowestOffset`; three aligned spill slots (four with the generic hook, at a typed update, or, at lookup, delete and tail-call sites, `Dispatch`; five at a generic or dispatch update; plus a value copy with `CopyReadOnly`) fit below it within the selected 480- or 512-byte site-frame limit. The call chains of the transformed program stay within the verifier's stack and frame limits wherever the original's do. | Pointer aliases do not reach the reserved spill region in any audited frame, including called subprograms. |
+| Direct R10 references stay at or above the owning frame's floor from `Stack.Frames`, or `Stack.LowestOffset` in single-floor library mode; three aligned spill slots (four with the generic hook, at a typed update, or, at lookup, delete and tail-call sites, `Dispatch`; five at a generic or dispatch update; plus a value copy with `CopyReadOnly`) fit below that floor within the selected 480- or 512-byte site-frame limit. The call chains of the transformed program stay within the verifier's stack and frame limits wherever the original's do. | Pointer aliases do not reach the reserved spill region in any audited frame, including called subprograms. |
 | Existing function and source metadata are complete, references resolve, and relocation fits. | The transformed program remains acceptable to the target kernel verifier. |
 
-The stack audit has the same alias and callee limitations as `StackAudit` in the original transform.
-The audited bound is rounded down to an 8-byte boundary before allocating the slots.
+For library callers, the stack audit has the same alias and callee limitations as `StackAudit` in the original transform.
+`inject-run` discharges that input with the verifier's accounting of the original load.
+Each owning frame's audited bound is rounded down to an 8-byte boundary before allocating its slots.
 A lookup site's frame also calls its hook. Kernels using 32-byte rounding count the empty hook as 32 bytes of the 512-byte combined stack, so a site needs `-456` for three slots and `-448` for four. Linux 6.9+ JIT rounding counts the empty hook as zero, allowing `-488` and `-480` respectively. `Auto` skips a site past the selected limit, and explicit selection refuses it.
 With the default 32-byte rule, `CheckLookupStack` requires `-456` when the request may hold a lookup site; selected 16-byte rounding permits `-488`.
 For `Auto`, deeper slots are checked from the selected site groups instead of from operation flags, so requesting update observation does not reserve an update slot in a program with no update site.
@@ -397,11 +401,11 @@ It follows 64-bit register copies and immediate addition/subtraction, counting b
 For `bpf_map_lookup_elem`, `bpf_map_delete_elem`, `bpf_map_update_elem`, and `bpf_xdp_load_bytes`, a stack argument in the documented buffer position accesses memory from that pointer forward, so the pointer offset also bounds its deepest access.
 Calls clear R0–R5 and preserve R6–R9 in this analysis.
 
-An alias that crosses a branch or jump target, is stored (including a stack spill), is returned, uses unsupported arithmetic, or is passed to another helper, a BPF subprogram, or a kfunc restores the shared audited bound for the entire frame.
+An alias that crosses a branch or jump target, is stored (including a stack spill), is returned, uses unsupported arithmetic, or is passed to another helper, a BPF subprogram, or a kfunc restores that frame's audited bound.
 A callee can subtract from a passed pointer and deepen the caller's frame; such escapes therefore need the audit even when the pointer's initial offset is known.
 This restricted analysis needs no merging of register values across paths: every supported alias is defined and consumed within one basic block, and every memory access through it has a known offset.
 Direct references in every block still count, including code the verifier may prove dead.
-The shared audit remains required for spill placement and all unsupported aliases.
+The per-frame audit remains required for spill placement and all unsupported aliases.
 A transformed frame that reaches below the audit is always counted as changed, even when an unused pointer formation makes its estimated depth equal before and after injection.
 
 Unlike the existing transform, this transform requires **no caller-saved register liveness certification**.

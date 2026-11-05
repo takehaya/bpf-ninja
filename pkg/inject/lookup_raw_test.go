@@ -30,6 +30,13 @@ func fillNonZero(t *testing.T, v reflect.Value) {
 		s := reflect.MakeSlice(v.Type(), 1, 1)
 		fillNonZero(t, s.Index(0))
 		v.Set(s)
+	case reflect.Map:
+		m := reflect.MakeMap(v.Type())
+		key, value := reflect.New(v.Type().Key()).Elem(), reflect.New(v.Type().Elem()).Elem()
+		fillNonZero(t, key)
+		fillNonZero(t, value)
+		m.SetMapIndex(key, value)
+		v.Set(m)
 	case reflect.Pointer:
 		p := reflect.New(v.Type().Elem())
 		fillNonZero(t, p.Elem())

@@ -53,6 +53,132 @@ func TestBpfSubprogSiteLoads(t *testing.T) {
 	})
 }
 
+func TestBpfPerFrameFloorLoads(t *testing.T) {
+	testutil.SkipIfNotRoot(t)
+	work := subprogramLookupFixture("register")
+	insns := work.Programs["p"].Instructions
+	for i, ins := range insns {
+		if fn := btf.FuncMetadata(&ins); fn != nil && fn.Name == "sub" {
+			insns = append(insns[:i+1], append(asm.Instructions{asm.StoreImm(asm.RFP, -168, 0, asm.Word)}, insns[i+1:]...)...)
+			break
+		}
+	}
+	work.Programs["p"].Instructions = insns
+	req := autoReq()
+	req.Stack = StackAudit{Frames: map[string]int16{"p": -8, "sub": -168}, Source: "verifier", FrameRounding: 16}
+	plan, err := transformLookup(work, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.sites) != 1 || plan.sites[0].FuncName != "sub" {
+		t.Fatalf("plan = %+v", plan)
+	}
+	coll := loadHooked(t, work, plan.hooks)
+	t.Cleanup(coll.Close)
+	if ret, err := coll.Programs["p"].Run(&ebpf.RunOptions{Data: make([]byte, 64), Repeat: 1}); err != nil || ret != 2 {
+		t.Fatalf("action=%d err=%v", ret, err)
+	}
+}
+
+func TestBpfFastcallSpillKept(t *testing.T) {
+	testutil.SkipIfNotRoot(t)
+	work := fastcallLookupFixture()
+	trial, err := ebpf.NewCollectionWithOptions(work, ebpf.CollectionOptions{
+		Programs: ebpf.ProgramOptions{LogLevel: ebpf.LogLevelStats, LogSizeStart: 64 << 10},
+	})
+	if err != nil {
+		loadOrSkip(t, work).Close()
+		t.Fatalf("loading trial with verifier statistics: %v", err)
+	}
+	log := trial.Programs["p"].VerifierLog
+	trial.Close()
+	depths, err := ParseStackDepths(log)
+	if err != nil {
+		t.Fatalf("parsing verifier statistics: %v\n%s", err, log)
+	}
+	var uts unix.Utsname
+	if err := unix.Uname(&uts); err != nil {
+		t.Fatal(err)
+	}
+	release := unix.ByteSliceToString(uts.Release[:])
+	var major, minor int
+	if _, err := fmt.Sscanf(release, "%d.%d", &major, &minor); err != nil {
+		t.Fatalf("release %q: %v", release, err)
+	}
+	report, err := FrameFloors(depths, []string{"p"}, work.Programs["p"].Instructions, KernelInfo{Major: major, Minor: minor})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Functions) != 1 || report.Functions[0].TextDepth < 16 || report.Functions[0].Floor > -16 {
+		t.Fatalf("fastcall floor = %+v", report.Functions)
+	}
+	t.Logf("fastcall verifier depth=%d text depth=%d source=%s", report.Functions[0].VerifiedDepth,
+		report.Functions[0].TextDepth, report.Functions[0].Source)
+	if major > 6 || major == 6 && minor >= 12 {
+		f := report.Functions[0]
+		if f.VerifiedDepth >= f.TextDepth || f.Source != "text" {
+			t.Fatalf("kernel %s did not exercise fastcall shrink: %+v", release, f)
+		}
+	}
+	req := autoReq()
+	req.Stack = StackAudit{Frames: report.Frames(), Source: "verifier", FrameRounding: 32}
+	if slots := lookupSlots(req.Stack.floor("p")); slots.ctx >= -16 {
+		t.Fatalf("ctx slot %d overlaps fastcall spill", slots.ctx)
+	}
+	plan, err := transformLookup(work, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.sites) != 1 {
+		t.Fatalf("plan = %+v", plan.sites)
+	}
+	coll := loadHooked(t, work, plan.hooks)
+	t.Cleanup(coll.Close)
+	if err := coll.Maps["sessions"].Put(uint32(0), uint32(2)); err != nil {
+		t.Fatal(err)
+	}
+	if ret, err := coll.Programs["p"].Run(&ebpf.RunOptions{Data: make([]byte, 64), Repeat: 1}); err != nil || ret != 2 {
+		t.Fatalf("action=%d err=%v", ret, err)
+	}
+}
+
+func fastcallLookupFixture() *ebpf.CollectionSpec {
+	u32 := &btf.Int{Name: "u32", Size: 4}
+	ctx := &btf.Struct{Name: "xdp_md", Size: 24}
+	fn := &btf.Func{Name: "p", Linkage: btf.GlobalFunc, Type: &btf.FuncProto{
+		Return: &btf.Int{Name: "int", Size: 4, Encoding: btf.Signed},
+		Params: []btf.FuncParam{{Name: "ctx", Type: &btf.Pointer{Target: ctx}}},
+	}}
+	missing := asm.JEq.Imm(asm.R0, 0, "")
+	missing.Offset = 3 // slot 11 -> 15
+	changed := asm.JNE.Imm(asm.R6, 123, "")
+	changed.Offset = 2 // slot 12 -> 15
+	insns := asm.Instructions{
+		asm.Mov.Imm(asm.R2, 123),
+		asm.StoreMem(asm.RFP, -16, asm.R2, asm.DWord),
+		asm.FnGetSmpProcessorId.Call(),
+		asm.LoadMem(asm.R2, asm.RFP, -16, asm.DWord),
+		asm.Mov.Reg(asm.R6, asm.R2),
+		asm.StoreImm(asm.RFP, -4, 0, asm.Word),
+		asm.Mov.Reg(asm.R2, asm.RFP), asm.Add.Imm(asm.R2, -4),
+		asm.LoadMapPtr(asm.R1, 0).WithReference("sessions"), asm.FnMapLookupElem.Call(),
+		missing,
+		changed,
+		asm.LoadMem(asm.R0, asm.R0, 0, asm.Word), asm.Return(),
+		asm.Mov.Imm(asm.R0, 1).WithSymbol("bad"), asm.Return(),
+	}
+	insns[0] = btf.WithFuncMetadata(insns[0].WithSymbol("p").WithSource(asm.Comment("fastcall entry")), fn)
+	return &ebpf.CollectionSpec{
+		ByteOrder: binary.LittleEndian,
+		Maps: map[string]*ebpf.MapSpec{"sessions": {
+			Name: "sessions", Type: ebpf.Hash, KeySize: 4, ValueSize: 4, MaxEntries: 1, Key: u32, Value: u32,
+		}},
+		Programs: map[string]*ebpf.ProgramSpec{"p": {
+			Name: "p", Type: ebpf.XDP, License: "GPL", Instructions: insns,
+		}},
+	}
+}
+
 func TestBpfSubprogSiteWrongCtxRejected(t *testing.T) {
 	testutil.SkipIfNotRoot(t)
 	_, err := ebpf.NewCollection(subprogCtxTarget(btf.GlobalFunc, true))

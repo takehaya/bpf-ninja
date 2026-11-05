@@ -59,6 +59,10 @@ type stackFunc struct {
 // Frame depths include locally tracked R10 aliases, with the audited bound
 // lowest as the fallback when an alias cannot be followed (see stackFrameDepth).
 func stackCallGraph(insns asm.Instructions, lowest int16) ([]stackFunc, error) {
+	return stackCallGraphAudit(insns, StackAudit{LowestOffset: lowest})
+}
+
+func stackCallGraphAudit(insns asm.Instructions, audit StackAudit) ([]stackFunc, error) {
 	var funcs []stackFunc
 	var starts []int
 	byStart, bySymbol := map[int]int{}, map[string]int{}
@@ -113,7 +117,7 @@ func stackCallGraph(insns asm.Instructions, lowest int16) ([]stackFunc, error) {
 	}
 	starts = append(starts, len(insns))
 	for i := range funcs {
-		funcs[i].depth = stackFrameDepth(insns[starts[i]:starts[i+1]], lowest)
+		funcs[i].depth = stackFrameDepth(insns[starts[i]:starts[i+1]], audit.floor(funcs[i].name))
 	}
 	return funcs, nil
 }
@@ -370,11 +374,11 @@ func checkStackLimits(in, out asm.Instructions, stack StackAudit) error {
 // ErrRefused prefix, or "" when out keeps every limit; Auto uses it as a
 // skip reason.
 func stackLimitsBroken(in, out asm.Instructions, stack StackAudit) (string, error) {
-	before, err := stackCallGraph(in, stack.LowestOffset)
+	before, err := stackCallGraphAudit(in, stack)
 	if err != nil {
 		return "", err
 	}
-	after, err := stackCallGraph(out, stack.LowestOffset)
+	after, err := stackCallGraphAudit(out, stack)
 	if err != nil {
 		return "", err
 	}
@@ -388,7 +392,7 @@ func stackLimitsBroken(in, out asm.Instructions, stack StackAudit) (string, erro
 	}
 	for i := range after {
 		d, ok := depth[after[i].name]
-		after[i].changed = !ok || d < 0 || after[i].depth > d || after[i].depth > -int(stack.LowestOffset)
+		after[i].changed = !ok || d < 0 || after[i].depth > d || after[i].depth > -int(stack.floor(after[i].name))
 	}
 	for _, r := range selectedFrameRoundings(stack) {
 		broken, err := stackLimitBroken(after, r.round)
