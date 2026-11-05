@@ -149,6 +149,10 @@ func fastcallLookupFixture() *ebpf.CollectionSpec {
 		Return: &btf.Int{Name: "int", Size: 4, Encoding: btf.Signed},
 		Params: []btf.FuncParam{{Name: "ctx", Type: &btf.Pointer{Target: ctx}}},
 	}}
+	missing := asm.JEq.Imm(asm.R0, 0, "")
+	missing.Offset = 3 // slot 11 -> 15
+	changed := asm.JNE.Imm(asm.R6, 123, "")
+	changed.Offset = 2 // slot 12 -> 15
 	insns := asm.Instructions{
 		asm.Mov.Imm(asm.R2, 123),
 		asm.StoreMem(asm.RFP, -16, asm.R2, asm.DWord),
@@ -158,8 +162,8 @@ func fastcallLookupFixture() *ebpf.CollectionSpec {
 		asm.StoreImm(asm.RFP, -4, 0, asm.Word),
 		asm.Mov.Reg(asm.R2, asm.RFP), asm.Add.Imm(asm.R2, -4),
 		asm.LoadMapPtr(asm.R1, 0).WithReference("sessions"), asm.FnMapLookupElem.Call(),
-		asm.JEq.Imm(asm.R0, 0, "bad"),
-		asm.JNE.Imm(asm.R6, 123, "bad"),
+		missing,
+		changed,
 		asm.LoadMem(asm.R0, asm.R0, 0, asm.Word), asm.Return(),
 		asm.Mov.Imm(asm.R0, 1).WithSymbol("bad"), asm.Return(),
 	}
