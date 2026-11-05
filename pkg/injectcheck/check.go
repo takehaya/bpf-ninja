@@ -486,7 +486,7 @@ func checkHook(is asm.Instructions) error {
 	// A 4- or 8-byte read of ctx at 0, whatever the ctx type: of the supported
 	// contexts the verifier allows the 8-byte read only for bpf_nf_ctx, and
 	// neither read has a side effect.
-	if len(is) < 3 || !(same(is[0], asm.LoadMem(asm.R0, asm.R1, 0, asm.Word)) || same(is[0], asm.LoadMem(asm.R0, asm.R1, 0, asm.DWord))) || !equal(is[len(is)-2:], asm.Instructions{asm.Mov.Imm(asm.R0, 0), asm.Return()}) {
+	if len(is) < 3 || (!same(is[0], asm.LoadMem(asm.R0, asm.R1, 0, asm.Word)) && !same(is[0], asm.LoadMem(asm.R0, asm.R1, 0, asm.DWord))) || !equal(is[len(is)-2:], asm.Instructions{asm.Mov.Imm(asm.R0, 0), asm.Return()}) {
 		return reject(HookShape, "not an observer hook")
 	}
 	body := is[1 : len(is)-2]
