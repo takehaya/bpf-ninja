@@ -1,8 +1,12 @@
 package capture
 
 import (
+	"bufio"
 	"errors"
+	"fmt"
 	"os"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -122,13 +126,59 @@ func stopWithin(t *testing.T, stop func(), d time.Duration) time.Duration {
 	}
 }
 
-func voluntarySwitches(t *testing.T) int64 {
+func taskVoluntarySwitches(t *testing.T, tid int) int64 {
 	t.Helper()
-	var usage unix.Rusage
-	if err := unix.Getrusage(unix.RUSAGE_SELF, &usage); err != nil {
+	f, err := os.Open(fmt.Sprintf("/proc/self/task/%d/status", tid))
+	if err != nil {
 		t.Fatal(err)
 	}
-	return usage.Nvcsw
+	defer func() { _ = f.Close() }()
+	s := bufio.NewScanner(f)
+	for s.Scan() {
+		const prefix = "voluntary_ctxt_switches:"
+		if !strings.HasPrefix(s.Text(), prefix) {
+			continue
+		}
+		n, err := strconv.ParseInt(strings.TrimSpace(strings.TrimPrefix(s.Text(), prefix)), 10, 64)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	if err := s.Err(); err != nil {
+		t.Fatal(err)
+	}
+	t.Fatalf("thread %d has no voluntary context-switch counter", tid)
+	return 0
+}
+
+func pinnedReaderThreads(t *testing.T, cpus []int) map[int]int64 {
+	t.Helper()
+	want := make(map[int]bool, len(cpus))
+	for _, cpu := range cpus {
+		want[cpu] = true
+	}
+	entries, err := os.ReadDir("/proc/self/task")
+	if err != nil {
+		t.Fatal(err)
+	}
+	threads := make(map[int]int64, len(cpus))
+	for _, entry := range entries {
+		tid, err := strconv.Atoi(entry.Name())
+		if err != nil {
+			continue
+		}
+		var set unix.CPUSet
+		if err := unix.SchedGetaffinity(tid, &set); err != nil || set.Count() != 1 {
+			continue
+		}
+		for cpu := range want {
+			if set.IsSet(cpu) {
+				threads[tid] = taskVoluntarySwitches(t, tid)
+			}
+		}
+	}
+	return threads
 }
 
 func TestReaderStopDrainsNoWakeup(t *testing.T) {
@@ -163,6 +213,17 @@ func TestReaderStopDrainsNoWakeup(t *testing.T) {
 }
 
 func TestFastReaderStopWhileIdle(t *testing.T) {
+	var allowed unix.CPUSet
+	if err := unix.SchedGetaffinity(0, &allowed); err != nil {
+		t.Fatal(err)
+	}
+	if allowed.Count() < 2 {
+		t.Skip("needs two CPUs to identify the pinned reader threads")
+	}
+	cpus, err := readerCPUs(2)
+	if err != nil {
+		t.Fatal(err)
+	}
 	r, err := NewFastShardedReader([]*ebpf.Map{newPollTestMap(t), newPollTestMap(t)})
 	if err != nil {
 		t.Fatal(err)
@@ -175,17 +236,29 @@ func TestFastReaderStopWhileIdle(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { stopWithin(t, stop, 5*time.Second) })
-	before := voluntarySwitches(t)
+	var before map[int]int64
+	for deadline := time.Now().Add(time.Second); time.Now().Before(deadline); time.Sleep(time.Millisecond) {
+		before = pinnedReaderThreads(t, cpus)
+		if len(before) == 2 {
+			break
+		}
+	}
+	if len(before) != 2 {
+		t.Fatalf("found %d pinned reader threads, want 2", len(before))
+	}
 	time.Sleep(500 * time.Millisecond)
-	switches := voluntarySwitches(t) - before
+	var switches int64
+	for tid, n := range before {
+		switches += taskVoluntarySwitches(t, tid) - n
+	}
 	took := stopWithin(t, stop, 5*time.Second)
-	t.Logf("idle for 500ms: %d voluntary context switches; stop took %s", switches, took)
+	t.Logf("idle for 500ms: %d reader-thread voluntary context switches; stop took %s", switches, took)
 	if err := r.Err(); err != nil {
 		t.Fatal(err)
 	}
-	// A 1 ms poll would wake each of the two shards about 500 times.
-	if switches > 200 {
-		t.Fatalf("idle shards switched %d times in 500ms, want <=200", switches)
+	// The 50 ms bound wakes two shards about 20 times; a 1 ms poll about 1,000.
+	if switches > 80 {
+		t.Fatalf("idle reader threads switched %d times in 500ms, want <=80", switches)
 	}
 }
 
